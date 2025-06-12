@@ -44,7 +44,7 @@
 
     services:
       emby-actor-processor:
-        image: hbq0405/emby-actor-processor:latest # 将 'yourdockerhubusername' 替换为你的 Docker Hub 用户名
+        image: hbq0405/emby-actor-processor:latest 
         container_name: emby-actor-processor
         ports:
           - "5257:5257" # 将容器的 5257 端口映射到宿主机的 5257 端口 (左边可以改成你希望的宿主机端口)
