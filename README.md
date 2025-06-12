@@ -50,7 +50,7 @@
           - "5257:5257" # 将容器的 5257 端口映射到宿主机的 5257 端口 (左边可以改成你希望的宿主机端口)
         volumes:
           - /path/app_data/emby_actor_processor_config:/config # 将宿主机的数据目录挂载到容器的 /config 目录
-          - /path/cache:/cache #可选，神医Pro版豆瓣缓存路径
+          - /path/tmdb:/tmdb #可选，神医Pro版豆瓣缓存路径
         environment:
           - APP_DATA_DIR=/config # 告诉应用数据存储在 /config 目录
           - TZ=Asia/Shanghai     # (可选) 设置容器时区，例如亚洲/上海
