@@ -32,8 +32,9 @@ RUN apt-get update && \
         nodejs \
         npm \
         docker.io \
-        gosu \  # 或者 sudo，但 gosu 更轻量、更安全
-    && apt-get clean && rm -rf /var/lib/apt/lists/*
+        gosu \
+    && apt-get clean \
+    && rm -rf /var/lib/apt/lists/*
 
 # 安装 Python 依赖
 COPY requirements.txt .
