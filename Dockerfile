@@ -31,6 +31,7 @@ RUN apt-get update && \
         tini \
         nodejs \
         npm \
+        docker.io \
     && apt-get clean && rm -rf /var/lib/apt/lists/*
 
 # 安装 Python 依赖
