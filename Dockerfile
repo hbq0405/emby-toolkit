@@ -32,6 +32,7 @@ RUN apt-get update && \
         nodejs \
         npm \
         docker.io \
+        gosu \  # 或者 sudo，但 gosu 更轻量、更安全
     && apt-get clean && rm -rf /var/lib/apt/lists/*
 
 # 安装 Python 依赖
@@ -41,7 +42,9 @@ RUN pip install --no-cache-dir -r requirements.txt
 # 拷贝后端所有源码
 # 使用 .dockerignore 文件来排除不必要的文件会更优雅
 COPY . .
-
+# ★★★ 创建用户，但不在这里切换 ★★★
+RUN groupadd -g ${PGID} myuser || groupmod -g ${PGID} myuser && \
+    useradd -u ${PUID} -g myuser -s /bin/sh -m myuser || usermod -u ${PUID} myuser
 # 从前端构建阶段拷贝编译好的静态文件
 # 确保目标目录存在
 RUN mkdir -p /app/static
@@ -70,7 +73,9 @@ USER myuser
 # 暴露端口
 EXPOSE 5257 
 
-# ★★★ 5. 使用 tini 和入口脚本来启动应用 ★★★
-# tini 是一个轻量级的 init 系统，能更好地处理信号和僵尸进程
-# entrypoint.sh 会负责检查更新和最终启动 Python 应用
-ENTRYPOINT ["/usr/bin/tini", "--", "/entrypoint.sh"]
+# ★★★ 入口点以 root 身份运行 entrypoint.sh ★★★
+# 我们需要 root 权限来修改组和文件权限
+ENTRYPOINT ["/usr/bin/tini", "--", "/app/entrypoint.sh"]
+
+# CMD 保持不变，它会被 entrypoint.sh 的 exec 调用
+CMD ["python", "web_app.py"]
