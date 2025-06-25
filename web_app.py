@@ -1,6 +1,7 @@
 # web_app.py
 import os
 import re
+import sys
 import inspect
 import sqlite3
 import shutil
@@ -56,46 +57,48 @@ except ImportError:
     WEB_PARSER_AVAILABLE = False
 # vue_dev_server_origin = "http://localhost:5173"
 # CORS(app, resources={r"/api/*": {"origins": vue_dev_server_origin}})
-# --- 路径和配置定义 ---
+# 1. 尝试从环境变量获取数据目录
 APP_DATA_DIR_ENV = os.environ.get("APP_DATA_DIR")
-app = Flask(__name__, static_folder='static')
-app.secret_key = os.urandom(24)
 
 if APP_DATA_DIR_ENV:
-    # 如果在 Docker 中，并且设置了 APP_DATA_DIR 环境变量 (例如设置为 "/config")
+    # --- Docker 环境 ---
+    # 如果环境变量存在，我们认为它在 Docker 中运行，并使用该路径
     PERSISTENT_DATA_PATH = APP_DATA_DIR_ENV
-    logger.info(f"检测到 APP_DATA_DIR 环境变量，将使用持久化数据路径: {PERSISTENT_DATA_PATH}")
+    print(f"INFO: 检测到 APP_DATA_DIR 环境变量，将使用持久化数据路径: {PERSISTENT_DATA_PATH}")
 else:
-    # 本地开发环境：在 web_app.py 文件所在的目录的上一级，创建一个名为 'local_data' 的文件夹
-    # 或者，如果你希望 local_data 与 web_app.py 同级，可以调整 BASE_DIR_FOR_DATA
-    # BASE_DIR_FOR_DATA = os.path.dirname(os.path.abspath(__file__)) # web_app.py 所在目录
-    # PERSISTENT_DATA_PATH = os.path.join(BASE_DIR_FOR_DATA, "local_data")
-    
-    # 更常见的本地开发做法：数据目录在项目根目录（假设 web_app.py 在项目根目录或子目录）
-    # 如果 web_app.py 在项目根目录:
+    # --- 本地开发环境 ---
+    # 如果环境变量不存在，我们回退到本地开发模式
+    # 在当前项目根目录下创建一个 'local_data' 文件夹
+    # 这种方式可以确保无论 web_app.py 在哪个子目录，路径都是正确的
     PROJECT_ROOT = os.path.dirname(os.path.abspath(__file__))
-    # 如果 web_app.py 在类似 src/ 的子目录，你可能需要 os.path.dirname(PROJECT_ROOT)
     PERSISTENT_DATA_PATH = os.path.join(PROJECT_ROOT, "local_data")
-    logger.debug(f"未检测到 APP_DATA_DIR 环境变量，将使用本地开发数据路径: {PERSISTENT_DATA_PATH}")
+    print(f"DEBUG: 未检测到 APP_DATA_DIR 环境变量，将使用本地开发数据路径: {PERSISTENT_DATA_PATH}")
 
-# 确保这个持久化数据目录存在 (无论是在本地还是在容器内)
+# 2. 确保这个持久化数据目录存在 (无论是在本地还是在容器内)
 try:
-    if not os.path.exists(PERSISTENT_DATA_PATH):
-        os.makedirs(PERSISTENT_DATA_PATH, exist_ok=True)
-        logger.info(f"持久化数据目录已创建/确认: {PERSISTENT_DATA_PATH}")
+    os.makedirs(PERSISTENT_DATA_PATH, exist_ok=True)
 except OSError as e:
-    logger.error(f"创建持久化数据目录 '{PERSISTENT_DATA_PATH}' 失败: {e}。程序可能无法正常读写配置文件和数据库。")
-    # 在这种情况下，程序可能无法继续，可以考虑退出或抛出异常
-    # raise RuntimeError(f"无法创建必要的数据目录: {PERSISTENT_DATA_PATH}") from e
+    print(f"FATAL: 创建持久化数据目录 '{PERSISTENT_DATA_PATH}' 失败: {e}。")
+    sys.exit(1)
 
-CONFIG_FILE_NAME = getattr(constants, 'CONFIG_FILE_NAME', "config.ini")
-CONFIG_FILE_PATH = os.path.join(PERSISTENT_DATA_PATH, CONFIG_FILE_NAME)
+# 3. ★★★ 关键：将最终确定的路径，也设置回环境变量中 ★★★
+#    这样做可以统一后续代码对路径的获取方式，所有模块都可以安全地使用 os.environ.get
+#    即使是在本地开发模式下。
+os.environ['APP_DATA_DIR'] = PERSISTENT_DATA_PATH
 
-DB_NAME = getattr(constants, 'DB_NAME', "emby_actor_processor.sqlite")
-DB_PATH = os.path.join(PERSISTENT_DATA_PATH, DB_NAME)
+# 4. 基于这个唯一的、正确的路径来定义其他核心路径常量
+#    这些常量在整个应用中都应该是只读的
+CONFIG_FILE_PATH = os.path.join(PERSISTENT_DATA_PATH, constants.CONFIG_FILE_NAME)
+DB_PATH = os.path.join(PERSISTENT_DATA_PATH, constants.DB_NAME)
+
+# 5. 配置日志文件处理器
+#    注意：这里我们不再需要 print 日志了，因为 logger 还没完全配置好
+#    我们应该在 logger_setup.py 中配置好基础的 StreamHandler 后再调用它
 add_file_handler(PERSISTENT_DATA_PATH)
-logger.info(f"配置文件路径 (CONFIG_FILE_PATH) 设置为: {CONFIG_FILE_PATH}")
-logger.info(f"数据库文件路径 (DB_PATH) 设置为: {DB_PATH}")
+
+# 6. 现在，我们可以安全地使用 logger 了
+logger.info(f"配置文件路径设置为: {CONFIG_FILE_PATH}")
+logger.info(f"数据库文件路径设置为: {DB_PATH}")
 logging.basicConfig(
     level=logging.INFO,
     # ✨ 关键在这里：设置你想要的格式 ✨
