@@ -50,10 +50,12 @@ RUN groupadd -g ${PGID} myuser || groupmod -g ${PGID} myuser && \
 # 确保目标目录存在
 RUN mkdir -p /app/static
 COPY --from=frontend-build /app/emby-actor-ui/dist /app/static
+# 1. 拷贝入口脚本到容器中
+COPY entrypoint.sh /app/entrypoint.sh
+# 2. ★★★ 使用 chmod +x 命令，赋予它可执行权限 ★★★
+RUN chmod +x /app/entrypoint.sh
 
-# ★★★ 3. 添加并设置入口脚本 (为“一键更新”做准备) ★★★
-COPY entrypoint.sh /entrypoint.sh
-RUN chmod +x /entrypoint.sh
+
 
 # ★★★ 4. 创建用户和组 (更简洁、更健壮的修复方案) ★★★
 # 这个命令会智能地处理已存在的情况，无需手动删除
