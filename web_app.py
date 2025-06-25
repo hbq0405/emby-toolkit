@@ -45,7 +45,8 @@ logger = logging.getLogger(__name__)
 logging.getLogger("apscheduler.scheduler").setLevel(logging.WARNING)
 logging.getLogger('werkzeug').setLevel(logging.ERROR)
 static_folder='static'
-app = Flask(__name__)
+app = Flask(__name__, static_folder='static')
+app.secret_key = os.urandom(24)
 # CORS(app) # 最简单的全局启用 CORS，允许所有源
 # app.secret_key = os.urandom(24) # 用于 flash 消息等
 # ✨✨✨ 新增：导入我们创建的网页解析器 ✨✨✨
