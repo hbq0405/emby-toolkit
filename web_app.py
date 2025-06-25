@@ -115,7 +115,11 @@ task_lock = threading.Lock() # 用于确保后台任务串行执行
 APP_CONFIG: Dict[str, Any] = {} # ✨✨✨ 新增：全局配置字典 ✨✨✨
 media_processor_instance: Optional[MediaProcessorSA] = None
 watchlist_processor_instance: Optional[WatchlistProcessor] = None
-
+update_info = {
+    "has_update": False,
+    "latest_version": None,
+    "error": None # 增加一个错误字段，便于排查
+}
 # ✨✨✨ 任务队列 ✨✨✨
 task_queue = Queue()
 task_worker_thread: Optional[threading.Thread] = None
@@ -140,7 +144,183 @@ def get_db_connection() -> sqlite3.Connection:
     conn = sqlite3.connect(DB_PATH, timeout=10.0)
     conn.row_factory = sqlite3.Row
     return conn
+def initialize_processors():
+    """
+    【修复版】初始化所有需要的处理器实例，包括 MediaProcessor 和 WatchlistProcessor。
+    """
+    # ★★★ 1. 声明所有需要修改的全局变量 ★★★
+    global media_processor_instance, watchlist_processor_instance
+    
+    if not APP_CONFIG:
+        logger.error("无法初始化处理器：全局配置 APP_CONFIG 为空。")
+        return
 
+    current_config = APP_CONFIG.copy()
+    current_config['db_path'] = DB_PATH
+
+    # --- 初始化 MediaProcessor (您的原有逻辑) ---
+    if media_processor_instance:
+        try:
+            media_processor_instance.close()
+        except Exception as e:
+            logger.warning(f"关闭旧的 media_processor_instance 时出错: {e}")
+
+    use_sa_mode = current_config.get(constants.CONFIG_OPTION_USE_SA_MODE, True)
+    
+    try:
+        if use_sa_mode:
+            logger.info("【模式切换】当前为：神医模式")
+            media_processor_instance = MediaProcessorSA(config=current_config)
+        else:
+            logger.info("【模式切换】当前为：普通模式")
+            media_processor_instance = MediaProcessorAPI(config=current_config)
+        
+        logger.debug("MediaProcessor 实例已成功创建/更新。")
+
+    except Exception as e:
+        logger.error(f"创建 MediaProcessor 实例失败: {e}", exc_info=True)
+        media_processor_instance = None
+
+    # --- ★★★ 2. 新增：初始化 WatchlistProcessor ★★★ ---
+    if watchlist_processor_instance:
+        try:
+            watchlist_processor_instance.close()
+        except Exception as e:
+            logger.warning(f"关闭旧的 watchlist_processor_instance 时出错: {e}")
+
+    # 追剧功能通常依赖于核心配置，我们在这里创建它，让它随时待命
+    # 假设 WatchlistProcessor 也需要 Emby URL 和 API Key
+    if current_config.get("emby_server_url") and current_config.get("emby_api_key"):
+        try:
+            # 假设 WatchlistProcessor 的构造函数和 MediaProcessor 类似，接收一个 config 字典
+            watchlist_processor_instance = WatchlistProcessor(config=current_config)
+            logger.debug("WatchlistProcessor 实例已成功初始化，随时待命。")
+        except Exception as e:
+            logger.error(f"创建 WatchlistProcessor 实例失败: {e}", exc_info=True)
+            watchlist_processor_instance = None # 初始化失败，明确设为 None
+    else:
+        logger.warning("WatchlistProcessor 未初始化，因为缺少必要的 Emby 配置。")
+        watchlist_processor_instance = None
+def setup_scheduled_tasks():
+    config = APP_CONFIG
+
+    # --- 处理全量扫描的定时任务 ---
+    schedule_scan_enabled = config.get("schedule_enabled", False)
+    scan_cron_expression = config.get("schedule_cron", "0 3 * * *")
+    force_reprocess_scheduled_scan = config.get("schedule_force_reprocess", False)
+
+    if scheduler.get_job(JOB_ID_FULL_SCAN):
+        scheduler.remove_job(JOB_ID_FULL_SCAN)
+        # logger.info("已移除旧的定时全量扫描任务。") # 可以选择性保留或移除此日志
+
+    if schedule_scan_enabled:
+        try:
+            def submit_scheduled_scan_to_queue():
+                # ... (内部逻辑保持不变)
+                logger.info(f"定时任务触发：准备提交全量扫描到任务队列 (强制={force_reprocess_scheduled_scan})。")
+                if force_reprocess_scheduled_scan:
+                    logger.info("定时任务：检测到“强制重处理”选项，将在任务开始前清空已处理日志。")
+                    if media_processor_instance:
+                        media_processor_instance.clear_processed_log()
+                    else:
+                        logger.error("定时任务：无法清空日志，因为处理器未初始化。")
+                current_config, _ = load_config()
+                process_episodes = current_config.get('process_episodes', True)
+                submit_task_to_queue(
+                    task_process_full_library,
+                    "定时全量扫描",
+                    process_episodes=process_episodes
+                )
+
+            scheduler.add_job(
+                func=submit_scheduled_scan_to_queue,
+                trigger=CronTrigger.from_crontab(scan_cron_expression, timezone=str(pytz.timezone(constants.TIMEZONE))),
+                id=JOB_ID_FULL_SCAN,
+                name="定时全量媒体库扫描",
+                replace_existing=True,
+            )
+            # ✨ 日志优化 ✨
+            next_run_str = _get_next_run_time_str(scan_cron_expression)
+            force_str = " (强制重处理)" if force_reprocess_scheduled_scan else ""
+            logger.info(f"已设置定时任务：全量扫描，将{next_run_str}{force_str}")
+
+        except Exception as e:
+            logger.error(f"设置定时全量扫描任务失败: {e}", exc_info=True)
+    else:
+        logger.info("定时全量扫描任务未启用。")
+
+    # --- 对同步映射表的定时任务也做类似修改 ---
+    schedule_sync_map_enabled = config.get("schedule_sync_map_enabled", False)
+    sync_map_cron_expression = config.get("schedule_sync_map_cron", "0 1 * * *")
+
+    if scheduler.get_job(JOB_ID_SYNC_PERSON_MAP):
+        scheduler.remove_job(JOB_ID_SYNC_PERSON_MAP)
+
+    if schedule_sync_map_enabled:
+        try:
+            def scheduled_sync_map_task():
+                # ... (内部逻辑保持不变)
+                logger.info("定时任务触发：演员映射表同步。")
+                submit_task_to_queue(
+                    task_sync_person_map,
+                    "定时同步演员映射表"
+                )
+
+            scheduler.add_job(
+                func=scheduled_sync_map_task,
+                trigger=CronTrigger.from_crontab(sync_map_cron_expression, timezone=str(pytz.timezone(constants.TIMEZONE))),
+                id=JOB_ID_SYNC_PERSON_MAP, name="定时同步Emby演员映射表", replace_existing=True
+            )
+            # ✨ 日志优化 ✨
+            next_run_str = _get_next_run_time_str(sync_map_cron_expression)
+            logger.info(f"已设置定时任务：同步演员映射表，将{next_run_str}")
+
+        except Exception as e:
+            logger.error(f"设置定时同步演员映射表任务失败: {e}", exc_info=True)
+    else:
+        logger.info("定时同步演员映射表任务未启用。")
+
+    # --- 对智能追剧任务也做类似修改 ---
+    if scheduler.get_job(JOB_ID_PROCESS_WATCHLIST):
+        scheduler.remove_job(JOB_ID_PROCESS_WATCHLIST)
+
+    if config.get(constants.CONFIG_OPTION_SCHEDULE_WATCHLIST_ENABLED, False):
+        if config.get(constants.CONFIG_OPTION_USE_SA_MODE, False):
+            cron_expression = config.get(constants.CONFIG_OPTION_SCHEDULE_WATCHLIST_CRON)
+            if cron_expression:
+                try:
+                    def scheduled_watchlist_task():
+                        # ... (内部逻辑保持不变)
+                        logger.debug("定时任务触发：智能追剧更新。")
+                        submit_task_to_queue(task_process_watchlist, "定时智能追剧更新")
+
+                    scheduler.add_job(
+                        func=scheduled_watchlist_task,
+                        trigger=CronTrigger.from_crontab(cron_expression, timezone=str(pytz.timezone(constants.TIMEZONE))),
+                        id=JOB_ID_PROCESS_WATCHLIST,
+                        name="定时智能追剧更新",
+                        replace_existing=True,
+                    )
+                    # ✨ 日志优化 ✨
+                    next_run_str = _get_next_run_time_str(cron_expression)
+                    logger.info(f"已设置定时任务：智能追剧更新，将{next_run_str}")
+
+                except Exception as e:
+                    logger.error(f"设置定时智能追剧更新任务失败: {e}", exc_info=True)
+    else:
+        logger.info("定时智能追剧更新任务未启用。")
+
+    # --- 启动调度器逻辑保持不变 ---
+    scan_enabled = config.get("schedule_enabled", False)
+    sync_enabled = config.get("schedule_sync_map_enabled", False)
+    watchlist_enabled = config.get(constants.CONFIG_OPTION_SCHEDULE_WATCHLIST_ENABLED, False)
+
+    if not scheduler.running and (scan_enabled or sync_enabled or watchlist_enabled):
+        try:
+            scheduler.start()
+            logger.info("APScheduler 已根据任务需求启动。")
+        except Exception as e_scheduler_start:
+            logger.error(f"APScheduler 启动失败: {e_scheduler_start}", exc_info=True)
 def init_db():
     """
     【重建版】初始化数据库，创建面向未来的统一表结构。
@@ -600,64 +780,65 @@ def save_config(new_config: Dict[str, Any]): # 移除 trigger_reload 参数，�
 
     except Exception as e:
         logger.error(f"保存配置文件或重新初始化组件时失败: {e}", exc_info=True)
-
-def initialize_processors():
+# ======================================================================
+#  ★★★ 最终的、统一的应用初始化函数 ★★★
+# ======================================================================
+def initialize_application():
     """
-    【修复版】初始化所有需要的处理器实例，包括 MediaProcessor 和 WatchlistProcessor。
+    执行所有必要的应用启动和初始化任务。
+    这个函数应该只被调用一次。
     """
-    # ★★★ 1. 声明所有需要修改的全局变量 ★★★
-    global media_processor_instance, watchlist_processor_instance
-    
-    if not APP_CONFIG:
-        logger.error("无法初始化处理器：全局配置 APP_CONFIG 为空。")
-        return
+    global APP_CONFIG # 声明我们要修改全局变量
 
-    current_config = APP_CONFIG.copy()
-    current_config['db_path'] = DB_PATH
-
-    # --- 初始化 MediaProcessor (您的原有逻辑) ---
-    if media_processor_instance:
-        try:
-            media_processor_instance.close()
-        except Exception as e:
-            logger.warning(f"关闭旧的 media_processor_instance 时出错: {e}")
-
-    use_sa_mode = current_config.get(constants.CONFIG_OPTION_USE_SA_MODE, True)
-    
-    try:
-        if use_sa_mode:
-            logger.info("【模式切换】当前为：神医模式")
-            media_processor_instance = MediaProcessorSA(config=current_config)
-        else:
-            logger.info("【模式切换】当前为：普通模式")
-            media_processor_instance = MediaProcessorAPI(config=current_config)
-        
-        logger.debug("MediaProcessor 实例已成功创建/更新。")
-
-    except Exception as e:
-        logger.error(f"创建 MediaProcessor 实例失败: {e}", exc_info=True)
-        media_processor_instance = None
-
-    # --- ★★★ 2. 新增：初始化 WatchlistProcessor ★★★ ---
-    if watchlist_processor_instance:
-        try:
-            watchlist_processor_instance.close()
-        except Exception as e:
-            logger.warning(f"关闭旧的 watchlist_processor_instance 时出错: {e}")
-
-    # 追剧功能通常依赖于核心配置，我们在这里创建它，让它随时待命
-    # 假设 WatchlistProcessor 也需要 Emby URL 和 API Key
-    if current_config.get("emby_server_url") and current_config.get("emby_api_key"):
-        try:
-            # 假设 WatchlistProcessor 的构造函数和 MediaProcessor 类似，接收一个 config 字典
-            watchlist_processor_instance = WatchlistProcessor(config=current_config)
-            logger.debug("WatchlistProcessor 实例已成功初始化，随时待命。")
-        except Exception as e:
-            logger.error(f"创建 WatchlistProcessor 实例失败: {e}", exc_info=True)
-            watchlist_processor_instance = None # 初始化失败，明确设为 None
+    # 步骤 1: 确定并创建持久化数据目录
+    # (这部分逻辑从顶层移到这里)
+    APP_DATA_DIR_ENV = os.environ.get("APP_DATA_DIR")
+    if APP_DATA_DIR_ENV:
+        PERSISTENT_DATA_PATH = APP_DATA_DIR_ENV
     else:
-        logger.warning("WatchlistProcessor 未初始化，因为缺少必要的 Emby 配置。")
-        watchlist_processor_instance = None
+        PROJECT_ROOT = os.path.dirname(os.path.abspath(__file__))
+        PERSISTENT_DATA_PATH = os.path.join(PROJECT_ROOT, "local_data")
+    
+    os.makedirs(PERSISTENT_DATA_PATH, exist_ok=True)
+    
+    # 步骤 2: 定义核心路径常量，并配置日志文件
+    # (这部分逻辑也从顶层移到这里)
+    global CONFIG_FILE_PATH, DB_PATH
+    CONFIG_FILE_PATH = os.path.join(PERSISTENT_DATA_PATH, constants.CONFIG_FILE_NAME)
+    DB_PATH = os.path.join(PERSISTENT_DATA_PATH, constants.DB_NAME)
+    add_file_handler(PERSISTENT_DATA_PATH)
+    logger.info(f"配置文件路径设置为: {CONFIG_FILE_PATH}")
+    logger.info(f"数据库文件路径设置为: {DB_PATH}")
+
+    # 步骤 3: 加载配置到全局变量
+    config_data, _ = load_config()
+    APP_CONFIG.update(config_data)
+
+    # 步骤 4: 初始化数据库
+    init_db()
+    
+    # 步骤 5: 初始化认证系统
+    init_auth()
+
+    # 步骤 6: 初始化所有处理器 (MediaProcessor, WatchlistProcessor)
+    initialize_processors()
+    
+    # 步骤 7: 启动后台任务工人线程
+    start_task_worker_if_not_running()
+    
+    # 步骤 8: 设置定时任务
+    setup_scheduled_tasks()
+    
+    # 步骤 9: 启动后台更新检查线程
+    try:
+        update_thread = threading.Thread(target=update_checker_task, daemon=True)
+        update_thread.start()
+        logger.info("后台更新检查线程已启动。")
+    except Exception as e:
+        logger.error(f"启动后台更新检查线程失败: {e}", exc_info=True)
+
+    logger.info(f"--- 应用初始化完成 (版本: {constants.APP_VERSION}) ---")
+
 # --- 后台任务回调 ---
 def update_status_from_thread(progress: int, message: str):
     global background_task_status
@@ -830,126 +1011,7 @@ def _get_next_run_time_str(cron_expression: str) -> str:
         logger.warning(f"无法解析CRON表达式 '{cron_expression}': {e}")
         return f"按计划 '{cron_expression}' 执行"
 
-def setup_scheduled_tasks():
-    config = APP_CONFIG
 
-    # --- 处理全量扫描的定时任务 ---
-    schedule_scan_enabled = config.get("schedule_enabled", False)
-    scan_cron_expression = config.get("schedule_cron", "0 3 * * *")
-    force_reprocess_scheduled_scan = config.get("schedule_force_reprocess", False)
-
-    if scheduler.get_job(JOB_ID_FULL_SCAN):
-        scheduler.remove_job(JOB_ID_FULL_SCAN)
-        # logger.info("已移除旧的定时全量扫描任务。") # 可以选择性保留或移除此日志
-
-    if schedule_scan_enabled:
-        try:
-            def submit_scheduled_scan_to_queue():
-                # ... (内部逻辑保持不变)
-                logger.info(f"定时任务触发：准备提交全量扫描到任务队列 (强制={force_reprocess_scheduled_scan})。")
-                if force_reprocess_scheduled_scan:
-                    logger.info("定时任务：检测到“强制重处理”选项，将在任务开始前清空已处理日志。")
-                    if media_processor_instance:
-                        media_processor_instance.clear_processed_log()
-                    else:
-                        logger.error("定时任务：无法清空日志，因为处理器未初始化。")
-                current_config, _ = load_config()
-                process_episodes = current_config.get('process_episodes', True)
-                submit_task_to_queue(
-                    task_process_full_library,
-                    "定时全量扫描",
-                    process_episodes=process_episodes
-                )
-
-            scheduler.add_job(
-                func=submit_scheduled_scan_to_queue,
-                trigger=CronTrigger.from_crontab(scan_cron_expression, timezone=str(pytz.timezone(constants.TIMEZONE))),
-                id=JOB_ID_FULL_SCAN,
-                name="定时全量媒体库扫描",
-                replace_existing=True,
-            )
-            # ✨ 日志优化 ✨
-            next_run_str = _get_next_run_time_str(scan_cron_expression)
-            force_str = " (强制重处理)" if force_reprocess_scheduled_scan else ""
-            logger.info(f"已设置定时任务：全量扫描，将{next_run_str}{force_str}")
-
-        except Exception as e:
-            logger.error(f"设置定时全量扫描任务失败: {e}", exc_info=True)
-    else:
-        logger.info("定时全量扫描任务未启用。")
-
-    # --- 对同步映射表的定时任务也做类似修改 ---
-    schedule_sync_map_enabled = config.get("schedule_sync_map_enabled", False)
-    sync_map_cron_expression = config.get("schedule_sync_map_cron", "0 1 * * *")
-
-    if scheduler.get_job(JOB_ID_SYNC_PERSON_MAP):
-        scheduler.remove_job(JOB_ID_SYNC_PERSON_MAP)
-
-    if schedule_sync_map_enabled:
-        try:
-            def scheduled_sync_map_task():
-                # ... (内部逻辑保持不变)
-                logger.info("定时任务触发：演员映射表同步。")
-                submit_task_to_queue(
-                    task_sync_person_map,
-                    "定时同步演员映射表"
-                )
-
-            scheduler.add_job(
-                func=scheduled_sync_map_task,
-                trigger=CronTrigger.from_crontab(sync_map_cron_expression, timezone=str(pytz.timezone(constants.TIMEZONE))),
-                id=JOB_ID_SYNC_PERSON_MAP, name="定时同步Emby演员映射表", replace_existing=True
-            )
-            # ✨ 日志优化 ✨
-            next_run_str = _get_next_run_time_str(sync_map_cron_expression)
-            logger.info(f"已设置定时任务：同步演员映射表，将{next_run_str}")
-
-        except Exception as e:
-            logger.error(f"设置定时同步演员映射表任务失败: {e}", exc_info=True)
-    else:
-        logger.info("定时同步演员映射表任务未启用。")
-
-    # --- 对智能追剧任务也做类似修改 ---
-    if scheduler.get_job(JOB_ID_PROCESS_WATCHLIST):
-        scheduler.remove_job(JOB_ID_PROCESS_WATCHLIST)
-
-    if config.get(constants.CONFIG_OPTION_SCHEDULE_WATCHLIST_ENABLED, False):
-        if config.get(constants.CONFIG_OPTION_USE_SA_MODE, False):
-            cron_expression = config.get(constants.CONFIG_OPTION_SCHEDULE_WATCHLIST_CRON)
-            if cron_expression:
-                try:
-                    def scheduled_watchlist_task():
-                        # ... (内部逻辑保持不变)
-                        logger.debug("定时任务触发：智能追剧更新。")
-                        submit_task_to_queue(task_process_watchlist, "定时智能追剧更新")
-
-                    scheduler.add_job(
-                        func=scheduled_watchlist_task,
-                        trigger=CronTrigger.from_crontab(cron_expression, timezone=str(pytz.timezone(constants.TIMEZONE))),
-                        id=JOB_ID_PROCESS_WATCHLIST,
-                        name="定时智能追剧更新",
-                        replace_existing=True,
-                    )
-                    # ✨ 日志优化 ✨
-                    next_run_str = _get_next_run_time_str(cron_expression)
-                    logger.info(f"已设置定时任务：智能追剧更新，将{next_run_str}")
-
-                except Exception as e:
-                    logger.error(f"设置定时智能追剧更新任务失败: {e}", exc_info=True)
-    else:
-        logger.info("定时智能追剧更新任务未启用。")
-
-    # --- 启动调度器逻辑保持不变 ---
-    scan_enabled = config.get("schedule_enabled", False)
-    sync_enabled = config.get("schedule_sync_map_enabled", False)
-    watchlist_enabled = config.get(constants.CONFIG_OPTION_SCHEDULE_WATCHLIST_ENABLED, False)
-
-    if not scheduler.running and (scan_enabled or sync_enabled or watchlist_enabled):
-        try:
-            scheduler.start()
-            logger.info("APScheduler 已根据任务需求启动。")
-        except Exception as e_scheduler_start:
-            logger.error(f"APScheduler 启动失败: {e_scheduler_start}", exc_info=True)
 # --- 定时任务结束 ---
 def enrich_and_match_douban_cast_to_emby(
     douban_actors_api_data: List[Dict[str, Any]],
@@ -1217,6 +1279,32 @@ def task_full_image_sync(processor: MediaProcessorSA):
     """
     # 直接把回调函数传进去
     processor.sync_all_images(update_status_callback=update_status_from_thread)
+
+# ★★★ 后台检查更新的线程目标函数 ★★★
+def update_checker_task():
+    """
+    后台线程，定期检查更新。
+    """
+    # 应用启动时先等待一小会儿（比如60秒），避免和应用初始化抢占资源
+    time.sleep(60) 
+    
+    while True:
+        try:
+            has_update, latest_version = utils.check_for_updates(
+                constants.APP_VERSION, 
+                constants.GITHUB_REPO
+            )
+            update_info["has_update"] = has_update
+            update_info["latest_version"] = latest_version
+            update_info["error"] = None # 成功后清空错误信息
+        except Exception as e:
+            # 如果检查更新时发生异常，记录下来
+            logger.error(f"后台更新检查线程发生错误: {e}", exc_info=True)
+            update_info["has_update"] = False
+            update_info["error"] = str(e)
+
+        # 每隔 6 小时检查一次
+        time.sleep(6 * 60 * 60)
 # --- 路由区 ---
 # --- webhook通知任务 ---
 @app.route('/webhook/emby', methods=['POST'])
@@ -2530,6 +2618,56 @@ def api_trigger_full_image_sync():
     )
     
     return jsonify({"message": "全量海报同步任务已成功提交。"}), 202
+# ★★★ 触发应用更新和重启的 API ★★★
+@app.route('/api/actions/trigger_app_update', methods=['POST'])
+@login_required
+def api_trigger_app_update():
+    """
+    触发应用更新。创建一个标记文件，然后优雅地退出程序。
+    Docker 的重启策略和 entrypoint.sh 脚本会接管后续工作。
+    """
+    logger.info("API: 收到应用更新请求...")
+
+    # 获取持久化数据目录的路径
+    # 我们从全局配置 APP_CONFIG 中获取
+    data_dir = APP_CONFIG.get("local_data_path")
+    if not data_dir:
+        logger.error("更新失败：数据目录未在配置中定义。")
+        return jsonify({"error": "数据目录未配置，无法执行更新。"}), 500
+
+    # 创建标记文件
+    marker_file_path = os.path.join(data_dir, ".update_in_progress")
+    try:
+        with open(marker_file_path, 'w') as f:
+            f.write('update requested by api') # 写入一些内容，便于调试
+        logger.info(f"已成功创建更新标记文件: {marker_file_path}")
+    except Exception as e:
+        logger.error(f"创建更新标记文件失败: {e}", exc_info=True)
+        return jsonify({"error": "创建更新标记失败，请检查目录权限。"}), 500
+
+    # 定义一个延迟退出的函数，以便先给前端返回 HTTP 202 响应
+    def delayed_exit():
+        # 等待几秒，确保 HTTP 响应已经成功发送给前端
+        time.sleep(3) 
+        logger.info("应用即将退出以进行更新...")
+        # 使用 os._exit(0) 是一种比较强硬但非常可靠的退出方式，
+        # 它可以立即终止进程，避免被其他线程阻塞。
+        os._exit(0)
+
+    # 在一个新的、非守护线程中执行延迟退出
+    # 这样即使主线程（Flask请求线程）结束了，这个退出线程也能继续运行
+    threading.Thread(target=delayed_exit).start()
+
+    # 返回 202 Accepted，告诉前端“请求已收到，正在处理”
+    return jsonify({"message": "更新请求已收到，应用将在几秒后重启以应用更新。"}), 202
+# ★★★ 让前端可以查询更新状态 ★★★
+@app.route('/api/update_status')
+def get_update_status():
+    """
+    返回当前的应用更新状态。
+    """
+    # 直接返回我们后台线程维护的全局字典
+    return jsonify(update_info)
 # ★★★ END: 1. ★★★
 #--- 兜底路由，必须放最后 ---
 @app.route('/', defaults={'path': ''})
@@ -2544,28 +2682,6 @@ def serve(path):
     
 if __name__ == '__main__':
     logger.info(f"应用程序启动... 版本: {constants.APP_VERSION}")
-    
-    # 1. 加载配置到全局变量
-    load_config()
-    
-    # 2. 初始化数据库
-    init_db()
-    
-    # 3. 初始化认证系统 (它会依赖全局配置)
-    init_auth()
-
-    # 4. ★★★ 创建唯一的 MediaProcessor 实例 ★★★
-    initialize_processors()
-    
-    # 5. 启动后台任务工人
-    start_task_worker_if_not_running()
-    
-    # 6. 设置定时任务 (它会依赖全局配置和实例)
-    if not scheduler.running:
-        scheduler.start()
-    setup_scheduled_tasks()
-    
-    # 7. 运行 Flask 应用
-    app.run(host='0.0.0.0', port=constants.WEB_APP_PORT, debug=True, use_reloader=True)
-
+    initialize_application()
+    app.run(host='0.0.0.0', port=constants.WEB_APP_PORT, debug=True, use_reloader=False)
 # # --- 主程序入口结束 ---

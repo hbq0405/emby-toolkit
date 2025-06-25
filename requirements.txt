@@ -11,6 +11,7 @@ lxml             # [必须] beautifulsoup4 的高性能解析器
 translators      # 用于翻译演员名和角色名
 pypinyin         # 用于处理人名拼音
 concurrent-log-handler
+packaging        # 用于版本检查 
 # --- 定时任务 ---
 APScheduler
 pytz             # APScheduler 的时区依赖

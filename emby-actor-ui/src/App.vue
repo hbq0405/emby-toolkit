@@ -28,6 +28,19 @@
                       <svg xmlns="http://www.w3.org/2000/svg" width="1em" height="1em" viewBox="0 0 24 24"><path fill="currentColor" d="m7 10l5 5l5-5z"></path></svg>
                     </div>
                   </n-dropdown>
+                  <n-popconfirm
+                    v-if="updateInfo.has_update"
+                    @positive-click="triggerUpdate"
+                    positive-text="立即重启更新"
+                    negative-text="稍后"
+                  >
+                    <template #trigger>
+                      <n-button type="warning" size="small" :loading="isUpdating" secondary strong>
+                        更新到 {{ updateInfo.latest_version }}
+                      </n-button>
+                    </template>
+                    确定要立即更新应用吗？服务将会短暂重启。
+                  </n-popconfirm>
 
                   <span style="font-size: 12px; color: #999;">v{{ appVersion }}</span>
                   <n-switch v-model:value="isDarkTheme" size="small">
@@ -113,7 +126,7 @@ import {
   NConfigProvider, NLayout, NLayoutHeader, NLayoutSider, NLayoutContent,
   NMenu, NSwitch, NIcon, NCard, NText, NProgress,
   darkTheme, zhCN, dateZhCN, useMessage, NMessageProvider,
-  NModal, NDropdown
+  NModal, NDropdown, useNotification, NBadge
 } from 'naive-ui';
 import axios from 'axios';
 import { useAuthStore } from './stores/auth';
@@ -147,7 +160,43 @@ const backgroundTaskStatus = ref({ is_running: false, current_action: '空闲', 
 const showStatusArea = ref(true);
 const activeMenuKey = computed(() => route.name);
 const appVersion = ref(__APP_VERSION__);
+// ★★★ 新增：用于更新功能的状态 ★★★
+const updateInfo = ref({ has_update: false, latest_version: null });
+const isUpdating = ref(false);
+// ★★★ 新增：检查更新的函数 ★★★
+const checkForUpdates = async () => {
+  // 如果用户未登录，则不检查更新
+  if (!authStore.isLoggedIn) return;
 
+  try {
+    const response = await axios.get('/api/update_status');
+    updateInfo.value = response.data;
+    
+    if (response.data.has_update) {
+      notification.info({
+        title: '发现新版本！',
+        content: `检测到新版本 ${response.data.latest_version}。您可以点击右上角的按钮进行更新。`,
+        duration: 15000, // 15秒后自动关闭
+        closable: true,
+      });
+    }
+  } catch (error) {
+    console.error("检查更新失败:", error);
+  }
+};
+
+// ★★★ 新增：触发更新的函数 ★★★
+const triggerUpdate = async () => {
+  isUpdating.value = true;
+  try {
+    const response = await axios.post('/api/actions/trigger_app_update');
+    message.success(response.data.message || '更新请求已发送，请稍候...');
+    // 这里可以进一步优化，比如显示一个全屏的遮罩层，提示用户“正在更新，请勿操作，页面稍后会自动刷新”
+  } catch (error) {
+    message.error(error.response?.data?.error || '发送更新请求失败！');
+    isUpdating.value = false;
+  }
+};
 watch(isDarkTheme, (newValue) => {
   localStorage.setItem('theme', newValue ? 'dark' : 'light');
 });
@@ -266,6 +315,8 @@ onMounted(() => {
     fetchStatus();
     statusIntervalId = setInterval(fetchStatus, 1000);
   }
+  checkForUpdates();
+  setInterval(checkForUpdates, 6 * 60 * 60 * 1000); // 每6小时检查一次
 });
 
 onBeforeUnmount(() => {
@@ -284,6 +335,11 @@ watch(() => authStore.isLoggedIn, (newIsLoggedIn) => {
       statusIntervalId = null;
     }
   }
+  if (newIsLoggedIn) {
+        checkForUpdates(); // 登录后也检查一次更新
+    } else {
+        updateInfo.value = { has_update: false, latest_version: null }; // 退出登录后重置更新状态
+    }
 });
 </script>
 

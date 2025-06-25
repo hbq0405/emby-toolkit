@@ -4,8 +4,10 @@ import re
 import os
 from typing import Optional, List, Dict, Any
 from urllib.parse import quote_plus
+from packaging.version import parse as parse_version
 import unicodedata
 import logging
+import requests
 logger = logging.getLogger(__name__)
 # 尝试导入 pypinyin，如果失败则创建一个模拟函数
 try:
@@ -209,6 +211,46 @@ def get_override_path_for_item(item_type: str, tmdb_id: str, config: dict) -> st
 
     logger.warning(f"未知的媒体类型 '{item_type}'，无法确定 override 路径。")
     return None
+# ★★★ 版本检查函数 ★★★
+def check_for_updates(current_version: str, github_repo: str) -> tuple[bool, str | None]:
+    """
+    通过 GitHub API 检查应用是否有新版本。
+
+    :param current_version: 当前应用的版本号 (例如 "2.2.7")
+    :param github_repo: GitHub 仓库路径 (例如 "your_username/your_repo_name")
+    :return: 一个元组 (has_update: bool, latest_version: str | None)
+    """
+    # GitHub API 获取最新 release 的 URL
+    api_url = f"https://api.github.com/repos/{github_repo}/releases/latest"
+    
+    logger.debug(f"正在从 {api_url} 检查更新...")
+    
+    try:
+        response = requests.get(api_url, timeout=10)
+        response.raise_for_status()
+        data = response.json()
+        
+        # 从 API 响应中获取最新的版本标签名
+        latest_version_tag = data.get("tag_name")
+        if not latest_version_tag:
+            logger.warning("GitHub API 响应中未找到 'tag_name'。")
+            return False, None
+
+        # 使用 packaging.version 库来正确比较版本号
+        # 它可以处理 "v2.3.0" 和 "2.3.0" 这样的情况
+        if parse_version(latest_version_tag) > parse_version(current_version):
+            logger.info(f"发现新版本！当前版本: {current_version}, 最新版本: {latest_version_tag}")
+            return True, latest_version_tag
+        else:
+            logger.info(f"当前已是最新版本。当前: {current_version}, 最新: {latest_version_tag}")
+            return False, latest_version_tag
+
+    except requests.exceptions.RequestException as e:
+        logger.error(f"检查更新时发生网络错误: {e}")
+        return False, None
+    except Exception as e:
+        logger.error(f"检查更新时发生未知错误: {e}", exc_info=True)
+        return False, None
 
 if __name__ == '__main__':
     # 测试新的 are_names_match
