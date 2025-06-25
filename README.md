@@ -51,6 +51,7 @@
         volumes:
           - /path/app_data/emby_actor_processor_config:/config # 将宿主机的数据目录挂载到容器的 /config 目录
           - /path/tmdb:/tmdb #映射神医本地TMDB目录，神医Pro用户必须配置此项，非神医Pro用户无需配置
+          - /var/run/docker.sock:/var/run/docker.sock #自动更新需要
         environment:
           - APP_DATA_DIR=/config # 告诉应用数据存储在 /config 目录
           - TZ=Asia/Shanghai     # (可选) 设置容器时区，例如亚洲/上海
@@ -70,6 +71,7 @@
       --name emby-actor-processor \
       -p 5257:5257 \
       -v /path/app_data/emby_actor_processor_config:/config \
+      -v /var/run/docker.sock:/var/run/docker.sock \
       -v /path/cache:/cache \
       -e APP_DATA_DIR="/config" \
       -e TZ="Asia/Shanghai" \
