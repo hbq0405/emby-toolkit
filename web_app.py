@@ -788,25 +788,16 @@ def save_config(new_config: Dict[str, Any]): # 移除 trigger_reload 参数，�
 #  ★★★ 最终的、统一的应用初始化函数 ★★★
 # ======================================================================
 def initialize_application():
-    """
-    执行所有必要的应用启动和初始化任务。
-    这个函数应该只被调用一次。
-    """
-    global APP_CONFIG # 声明我们要修改全局变量
-
-    # 步骤 1: 确定并创建持久化数据目录
-    # (这部分逻辑从顶层移到这里)
+    # --- 确定路径 (这部分逻辑不变) ---
     APP_DATA_DIR_ENV = os.environ.get("APP_DATA_DIR")
     if APP_DATA_DIR_ENV:
         PERSISTENT_DATA_PATH = APP_DATA_DIR_ENV
     else:
         PROJECT_ROOT = os.path.dirname(os.path.abspath(__file__))
         PERSISTENT_DATA_PATH = os.path.join(PROJECT_ROOT, "local_data")
-    
     os.makedirs(PERSISTENT_DATA_PATH, exist_ok=True)
-    
-    # 步骤 2: 定义核心路径常量，并配置日志文件
-    # (这部分逻辑也从顶层移到这里)
+
+    # --- 定义核心路径常量 (这部分逻辑不变) ---
     global CONFIG_FILE_PATH, DB_PATH
     CONFIG_FILE_PATH = os.path.join(PERSISTENT_DATA_PATH, constants.CONFIG_FILE_NAME)
     DB_PATH = os.path.join(PERSISTENT_DATA_PATH, constants.DB_NAME)
@@ -814,26 +805,29 @@ def initialize_application():
     logger.info(f"配置文件路径设置为: {CONFIG_FILE_PATH}")
     logger.info(f"数据库文件路径设置为: {DB_PATH}")
 
-    # 步骤 3: 加载配置到全局变量
-    config_data, _ = load_config()
-    APP_CONFIG.update(config_data)
+    # --- ★★★ 关键修改：加载配置并存入 Flask 官方地址簿 ★★★ ---
+    
+    # 1. 从 config.ini 文件加载配置到一个临时字典
+    config_from_file, _ = load_config()
+    
+    # 2. 把我们手动确定的、绝对正确的路径也加进去
+    config_from_file['PERSISTENT_DATA_PATH'] = PERSISTENT_DATA_PATH
+    
+    # 3. 把这个完整的配置字典，一次性更新到 app.config 中
+    app.config.update(config_from_file)
+    
+    logger.info("所有配置已加载到 Flask app.config。")
+    # --- ★★★ 修改结束 ★★★
 
-    # 步骤 4: 初始化数据库
+    # --- 后续的初始化流程，现在都应该依赖 app.config ---
+    # (为了最小化改动，我们暂时保持它们不变，它们可能还在用旧的全局变量)
     init_db()
-    
-    # 步骤 5: 初始化认证系统
     init_auth()
-
-    # 步骤 6: 初始化所有处理器 (MediaProcessor, WatchlistProcessor)
     initialize_processors()
-    
-    # 步骤 7: 启动后台任务工人线程
     start_task_worker_if_not_running()
-    
-    # 步骤 8: 设置定时任务
     setup_scheduled_tasks()
     
-    # 步骤 9: 启动后台更新检查线程
+    # 启动后台更新检查线程 (不变)
     try:
         update_thread = threading.Thread(target=update_checker_task, daemon=True)
         update_thread.start()
@@ -2627,42 +2621,36 @@ def api_trigger_full_image_sync():
 @login_required
 def api_trigger_app_update():
     """
-    触发应用更新。创建一个标记文件，然后优雅地退出程序。
-    Docker 的重启策略和 entrypoint.sh 脚本会接管后续工作。
+    触发应用更新。
     """
     logger.info("API: 收到应用更新请求...")
 
-    # 获取持久化数据目录的路径
-    # 我们从全局配置 APP_CONFIG 中获取
-    data_dir = APP_CONFIG.get("local_data_path")
+    # ★★★ 核心修复：从 app.config 获取路径，不再依赖任何全局变量 ★★★
+    data_dir = app.config.get('PERSISTENT_DATA_PATH')
+    
     if not data_dir:
-        logger.error("更新失败：数据目录未在配置中定义。")
+        logger.error("更新失败：数据目录未在 app.config 中配置。")
         return jsonify({"error": "数据目录未配置，无法执行更新。"}), 500
 
-    # 创建标记文件
+    # 现在 data_dir 的值一定是正确的 ("/config" 或 "local_data")
     marker_file_path = os.path.join(data_dir, ".update_in_progress")
+    
     try:
         with open(marker_file_path, 'w') as f:
-            f.write('update requested by api') # 写入一些内容，便于调试
-        logger.info(f"已成功创建更新标记文件: {marker_file_path}")
+            f.write('update requested by api')
+        # 这里的日志现在会显示正确的路径
+        logger.info(f"已成功创建更新标记文件: {marker_file_path}") 
     except Exception as e:
         logger.error(f"创建更新标记文件失败: {e}", exc_info=True)
         return jsonify({"error": "创建更新标记失败，请检查目录权限。"}), 500
 
-    # 定义一个延迟退出的函数，以便先给前端返回 HTTP 202 响应
+    # (后续的 delayed_exit 延迟退出逻辑保持不变)
     def delayed_exit():
-        # 等待几秒，确保 HTTP 响应已经成功发送给前端
         time.sleep(3) 
         logger.info("应用即将退出以进行更新...")
-        # 使用 os._exit(0) 是一种比较强硬但非常可靠的退出方式，
-        # 它可以立即终止进程，避免被其他线程阻塞。
         os._exit(0)
-
-    # 在一个新的、非守护线程中执行延迟退出
-    # 这样即使主线程（Flask请求线程）结束了，这个退出线程也能继续运行
     threading.Thread(target=delayed_exit).start()
-
-    # 返回 202 Accepted，告诉前端“请求已收到，正在处理”
+    
     return jsonify({"message": "更新请求已收到，应用将在几秒后重启以应用更新。"}), 202
 # ★★★ 让前端可以查询更新状态 ★★★
 @app.route('/api/update_status')
