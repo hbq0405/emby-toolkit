@@ -29,7 +29,8 @@ WORKDIR /app
 RUN apt-get update && \
     apt-get install -y --no-install-recommends \
         tini \
-        # 如果有需要，可以在这里添加其他系统依赖，比如 libcurl4-openssl-dev
+        nodejs \
+        npm \
     && apt-get clean && rm -rf /var/lib/apt/lists/*
 
 # 安装 Python 依赖
