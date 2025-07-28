@@ -6,7 +6,7 @@ on:
       - main      # 监听 主 分支
       - dev        # 监听 开发 分支
     tags:
-      - 'v*.*.*'
+      - 'v*'
   workflow_dispatch:
 
 jobs:

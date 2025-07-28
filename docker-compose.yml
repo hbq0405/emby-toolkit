@@ -15,7 +15,7 @@ services:
       - CONTAINER_NAME=emby-actor-processor                   # 一键更新需要，保持和container_name一致
       - APP_DATA_DIR=/config                                  # 持久化目录
     volumes:
-      - ./test:/config                                      # 配置文件目录
+      - ./config:/config                                      # 配置文件目录
       - ./tmdb:/tmdb                                          # 映射神医本地TMDB目录，必须配置
       - /var/run/docker.sock:/var/run/docker.sock             # 一键更新需要
     ports:
