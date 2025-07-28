@@ -113,7 +113,9 @@ class DoubanApi:
             headers['Cookie'] = DoubanApi._user_cookie
         resp = None
         try:
+            logger.trace(f"GET Request: {req_url}, Params: {params.get('q', params)}") # 简化日志
             resp = DoubanApi._session.get(req_url, params=params, headers=headers, timeout=DoubanApi._default_timeout)
+            logger.trace(f"GET Response Status: {resp.status_code} for {params.get('q', url)}")
             resp.raise_for_status()
             response_json = resp.json()
             if response_json.get("code") == 1080:
@@ -237,7 +239,7 @@ class DoubanApi:
                     # 3. ✨✨✨ 核心修正：直接使用从 Emby 传入的 mtype 作为最终类型 ✨✨✨
                     final_mtype = 'tv' if mtype and mtype.lower() in ['series', 'tv'] else 'movie'
                     
-                    logger.info(f"IMDBID '{actual_imdbid}' -> 豆瓣ID: {actual_douban_id}。将使用传入的类型: '{final_mtype}'")
+                    logger.trace(f"IMDBID '{actual_imdbid}' -> 豆瓣ID: {actual_douban_id}。将使用传入的类型: '{final_mtype}'")
                     
                     title = result_from_imdb.get("title", result_from_imdb.get("alt_title", name))
                     original_title = result_from_imdb.get("original_title")

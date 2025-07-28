@@ -183,9 +183,11 @@ class AITranslator:
         # 调度员开始看指令
         if mode == 'quality':
             # 如果指令是“高质量”，就喊“顾问组”来干活
+            logger.trace(f"[顾问模式] 开始上下文翻译 {len(unique_texts)} 个词条...")
             return self._translate_quality_mode(unique_texts, title, year)
         else:
             # 其他所有情况（包括默认的'fast'），都喊“翻译组”来干活
+            logger.trace(f"[翻译模式] 开始快速翻译 {len(unique_texts)} 个词条...")
             return self._translate_fast_mode(unique_texts)
     # ★★★ “翻译快做”小组长 (现在负责分批和调度！) ★★★
     def _translate_fast_mode(self, texts: List[str]) -> Dict[str, str]:

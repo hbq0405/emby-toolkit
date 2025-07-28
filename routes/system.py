@@ -2,7 +2,11 @@
 
 from flask import Blueprint, jsonify, request
 import logging
+import threading
 import re
+import os
+import time
+import docker
 
 # 导入底层模块
 import task_manager
@@ -152,3 +156,64 @@ def get_about_info():
         logger.error(f"API /system/about_info 发生错误: {e}", exc_info=True)
         return jsonify({"error": "获取版本信息时发生服务器内部错误"}), 500
 
+# --- 一键更新容器 ---
+@system_bp.route('/system/trigger_update', methods=['POST'])
+@extensions.login_required
+def trigger_self_update():
+    """
+    【V4 - 最终版：异步点火】触发应用自我更新。
+    将耗时的 docker pull 操作放入后台线程，立即返回响应，
+    以避免当前进程因 docker-compose 自动重启而被杀死。
+    """
+    container_name = os.environ.get('CONTAINER_NAME', 'emby-actor-processor')
+    logger.info(f"API: 接收到自我更新请求，目标容器: '{container_name}'")
+
+    def update_task():
+        """这个函数将在一个独立的后台线程中运行。"""
+        logger.info("[Update Worker]: 后台更新线程已启动。")
+        try:
+            # 在新线程中需要重新创建 docker 客户端
+            client = docker.from_env()
+            
+            # 1. 获取当前容器和镜像信息
+            container = client.containers.get(container_name)
+            image_name_tag = container.image.tags[0]
+            
+            # 2. 拉取最新镜像 (这是耗时操作)
+            logger.info(f"[Update Worker]: 正在拉取最新镜像: {image_name_tag}...")
+            new_image = client.images.pull(image_name_tag)
+
+            # 3. 检查镜像 ID 是否有变化
+            if container.image.id == new_image.id:
+                logger.info("[Update Worker]: 当前已是最新版本，无需更新。")
+            else:
+                logger.info("[Update Worker]: 新镜像拉取完成。Docker Compose 将在后台自动使用新镜像重建容器。")
+            
+            # 线程任务到此结束。后续的重启完全交给 Docker Compose。
+
+        except Exception as e:
+            # 线程中的错误只能记录到日志中
+            logger.error(f"[Update Worker]: 后台更新线程发生错误: {e}", exc_info=True)
+
+    # --- 主 API 逻辑 ---
+    try:
+        # 快速检查一下容器是否存在，避免启动一个注定失败的线程
+        docker.from_env().containers.get(container_name)
+        
+        # 创建并启动后台线程
+        update_thread = threading.Thread(target=update_task)
+        update_thread.start()
+        
+        logger.info("API: 后台更新任务已启动，立即返回 202 Accepted 响应。")
+        # 立即返回，不等待线程结束
+        return jsonify({
+            "success": True, 
+            "message": "更新指令已发送！应用将在后台下载新版本并自动重启，请在约1分钟后刷新页面查看结果。"
+        }), 202
+
+    except docker.errors.NotFound:
+        logger.error(f"API: 未找到名为 '{container_name}' 的容器！无法启动更新。")
+        return jsonify({"success": False, "message": f"容器 '{container_name}' 未找到。"}), 404
+    except Exception as e:
+        logger.error(f"API: 启动更新线程时发生错误: {e}", exc_info=True)
+        return jsonify({"success": False, "message": f"启动更新失败: {str(e)}"}), 500

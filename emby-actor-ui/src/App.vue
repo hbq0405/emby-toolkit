@@ -1,119 +1,121 @@
-<!-- src/App.vue -->
 <template>
+  <!-- 
+    最外层的 Provider 组件已被移除，并移至新的 Provider.vue 文件。
+    这个组件现在是 Provider 的子组件，可以安全地使用所有上下文 API。
+  -->
   <div :class="isDarkTheme ? 'dark-mode' : 'light-mode'">
-    <n-config-provider :theme="isDarkTheme ? darkTheme : undefined" :theme-overrides="themeOverridesComputed" :locale="zhCN" :date-locale="dateZhCN">
-      <n-message-provider>
-        <n-dialog-provider>
-        <!-- 1. 如果需要登录，则显示全屏的登录页面 -->
-        <div v-if="authStore.isAuthEnabled && !authStore.isLoggedIn" class="fullscreen-container">
-          <Login />
-        </div>
+    <!-- 1. 如果需要登录，则显示全屏的登录页面 -->
+    <div v-if="authStore.isAuthEnabled && !authStore.isLoggedIn" class="fullscreen-container">
+      <Login />
+    </div>
 
-        <!-- 2. 否则，显示后台管理布局 -->
-        <n-layout v-else style="height: 100vh;">
-          <n-layout-header :bordered="false" class="app-header">
-            <div style="display: flex; justify-content: space-between; align-items: center; width: 100%;">
-              <span>Emby 演员/角色中文化</span>
-                <div style="display: flex; align-items: center; gap: 16px;">
-                  <!-- 用户名下拉菜单 -->
-                  <n-dropdown 
-                    v-if="authStore.isAuthEnabled" 
-                    trigger="hover" 
-                    :options="userOptions" 
-                    @select="handleUserSelect"
-                  >
-                    <div style="display: flex; align-items: center; cursor: pointer; gap: 4px;">
-                      <span style="font-size: 14px;">欢迎, {{ authStore.username }}</span>
-                      <!-- 可以加一个下拉小箭头图标，更美观 -->
-                      <svg xmlns="http://www.w3.org/2000/svg" width="1em" height="1em" viewBox="0 0 24 24"><path fill="currentColor" d="m7 10l5 5l5-5z"></path></svg>
-                    </div>
-                  </n-dropdown>
-
-                  <!-- +++ 核心修改：版本号区域 +++ -->
-                    <router-link to="/about" custom v-slot="{ navigate }">
-                      <div @click="navigate" style="cursor: pointer; display: flex; align-items: center; gap: 6px;">
-                        <!-- 1. 显示当前版本号 -->
-                        <span style="font-size: 12px; color: #999;">v{{ appStore.currentVersion || appVersion }}</span>
-                        
-                        <!-- 2. 如果有更新，则显示一个醒目的文字标签 -->
-                        <n-tag v-if="appStore.isUpdateAvailable" type="success" size="tiny" round>
-                          有更新
-                        </n-tag>
-                      </div>
-                    </router-link>
-                  <n-switch v-model:value="isDarkTheme" size="small">
-                    <template #checked>暗色</template>
-                    <template #unchecked>亮色</template>
-                  </n-switch>
+    <!-- 2. 否则，显示后台管理布局 -->
+    <n-layout v-else style="height: 100vh;">
+      <n-layout-header :bordered="false" class="app-header">
+        <div style="display: flex; justify-content: space-between; align-items: center; width: 100%;">
+          <span>Emby 演员/角色中文化</span>
+            <div style="display: flex; align-items: center; gap: 16px;">
+              <!-- 用户名下拉菜单 -->
+              <n-dropdown 
+                v-if="authStore.isAuthEnabled" 
+                trigger="hover" 
+                :options="userOptions" 
+                @select="handleUserSelect"
+              >
+                <div style="display: flex; align-items: center; cursor: pointer; gap: 4px;">
+                  <span style="font-size: 14px;">欢迎, {{ authStore.username }}</span>
+                  <svg xmlns="http://www.w3.org/2000/svg" width="1em" height="1em" viewBox="0 0 24 24"><path fill="currentColor" d="m7 10l5 5l5-5z"></path></svg>
                 </div>
+              </n-dropdown>
+
+              <!-- 版本号与更新按钮区域 -->
+              <div style="display: flex; align-items: center; gap: 8px;">
+                <router-link to="/about" custom v-slot="{ navigate }">
+                  <span @click="navigate" style="font-size: 12px; color: #999; cursor: pointer;" title="查看版本详情">
+                    v{{ appStore.currentVersion || appVersion }}
+                  </span>
+                </router-link>
+                <n-button 
+                  v-if="appStore.isUpdateAvailable" 
+                  type="success" 
+                  size="tiny" 
+                  round 
+                  @click="handleUpdate"
+                  :loading="isUpdating"
+                >
+                  更新
+                </n-button>
+              </div>
+
+              <n-switch v-model:value="isDarkTheme" size="small">
+                <template #checked>暗色</template>
+                <template #unchecked>亮色</template>
+              </n-switch>
             </div>
-          </n-layout-header>
-          <n-layout has-sider>
-            <n-layout-sider
-              :bordered="false"
-              collapse-mode="width"
-              :collapsed-width="64"
-              :width="240"
-              show-trigger="arrow-circle"
-              content-style="padding-top: 10px;"
-              :native-scrollbar="false"
-              :collapsed="collapsed"
-              @update:collapsed="val => collapsed = val"
-            >
-              <n-menu
-                :collapsed="collapsed"
-                :collapsed-width="64"
-                :collapsed-icon-size="22"
-                :options="menuOptions"
-                :value="activeMenuKey"
-                @update:value="handleMenuUpdate"
-              />
-            </n-layout-sider>
-            <n-layout-content
-              class="app-main-content-wrapper"
-              content-style="padding: 24px; transition: background-color 0.3s;"
-              :style="{ backgroundColor: isDarkTheme ? (themeOverridesComputed?.common?.bodyColor || '#101014') : (themeOverridesComputed?.common?.bodyColor || '#f0f2f5') }"
-              :native-scrollbar="false"
-            >
-              <div class="status-display-area" v-if="showStatusArea">
-                <n-card size="small" :bordered="false" style="margin-bottom: 15px;">
-                   <p style="margin: 0; font-size: 0.9em;">
-                      <strong>任务状态:</strong>
-                      <n-text :type="statusTypeComputed">{{ backgroundTaskStatus.current_action }}</n-text> -
-                      <n-text :type="statusTypeComputed" :depth="2">{{ backgroundTaskStatus.message }}</n-text>
-                      <n-progress
-                          v-if="backgroundTaskStatus.is_running && backgroundTaskStatus.progress >= 0 && backgroundTaskStatus.progress < 100"
-                          type="line"
-                          :percentage="backgroundTaskStatus.progress"
-                          :indicator-placement="'inside'"
-                          processing
-                          style="margin-top: 5px;"
-                      />
-                      <span v-else-if="backgroundTaskStatus.is_running"> ({{ backgroundTaskStatus.progress }}%)</span>
-                   </p>
-                </n-card>
-              </div>
-              <div class="page-content-inner-wrapper">
-               <router-view v-slot="slotProps">
-                <component :is="slotProps.Component" :task-status="backgroundTaskStatus" />
-              </router-view>
-              </div>
-            </n-layout-content>
-          </n-layout>
-        </n-layout>
-        <n-modal 
-            v-model:show="showPasswordModal"
-            preset="card"
-            style="width: 90%; max-width: 500px;"
-            title="修改密码"
-            :bordered="false"
-            size="huge"
-          >
-            <ChangePassword @password-changed="showPasswordModal = false" />
-          </n-modal>
-         </n-dialog-provider>
-        </n-message-provider>
-    </n-config-provider>
+        </div>
+      </n-layout-header>
+      <n-layout has-sider>
+        <n-layout-sider
+          :bordered="false"
+          collapse-mode="width"
+          :collapsed-width="64"
+          :width="240"
+          show-trigger="arrow-circle"
+          content-style="padding-top: 10px;"
+          :native-scrollbar="false"
+          :collapsed="collapsed"
+          @update:collapsed="val => collapsed = val"
+        >
+          <n-menu
+            :collapsed="collapsed"
+            :collapsed-width="64"
+            :collapsed-icon-size="22"
+            :options="menuOptions"
+            :value="activeMenuKey"
+            @update:value="handleMenuUpdate"
+          />
+        </n-layout-sider>
+        <n-layout-content
+          class="app-main-content-wrapper"
+          content-style="padding: 24px; transition: background-color 0.3s;"
+          :native-scrollbar="false"
+        >
+          <div class="status-display-area" v-if="showStatusArea">
+            <n-card size="small" :bordered="false" style="margin-bottom: 15px;">
+               <p style="margin: 0; font-size: 0.9em;">
+                  <strong>任务状态:</strong>
+                  <n-text :type="statusTypeComputed">{{ backgroundTaskStatus.current_action }}</n-text> -
+                  <n-text :type="statusTypeComputed" :depth="2">{{ backgroundTaskStatus.message }}</n-text>
+                  <n-progress
+                      v-if="backgroundTaskStatus.is_running && backgroundTaskStatus.progress >= 0 && backgroundTaskStatus.progress < 100"
+                      type="line"
+                      :percentage="backgroundTaskStatus.progress"
+                      :indicator-placement="'inside'"
+                      processing
+                      style="margin-top: 5px;"
+                  />
+                  <span v-else-if="backgroundTaskStatus.is_running"> ({{ backgroundTaskStatus.progress }}%)</span>
+               </p>
+            </n-card>
+          </div>
+          <div class="page-content-inner-wrapper">
+           <router-view v-slot="slotProps">
+            <component :is="slotProps.Component" :task-status="backgroundTaskStatus" />
+          </router-view>
+          </div>
+        </n-layout-content>
+      </n-layout>
+    </n-layout>
+    <n-modal 
+        v-model:show="showPasswordModal"
+        preset="card"
+        style="width: 90%; max-width: 500px;"
+        title="修改密码"
+        :bordered="false"
+        size="huge"
+      >
+        <ChangePassword @password-changed="showPasswordModal = false" />
+      </n-modal>
   </div>
 </template>
 
@@ -121,14 +123,13 @@
 import { ref, computed, h, onMounted, onBeforeUnmount, watch } from 'vue';
 import { useRouter, useRoute } from 'vue-router';
 import {
-  NConfigProvider, NLayout, NLayoutHeader, NLayoutSider, NLayoutContent,
+  // 移除了所有 Provider 和 useDialog/useMessage
+  NLayout, NLayoutHeader, NLayoutSider, NLayoutContent,
   NMenu, NSwitch, NIcon, NCard, NText, NProgress,
-  darkTheme, zhCN, dateZhCN, useMessage, NMessageProvider,
-  NModal, NDropdown
+  NModal, NDropdown, NButton
 } from 'naive-ui';
 import axios from 'axios';
 import { useAuthStore } from './stores/auth';
-// [新增] 引入 useConfig 以获取全局配置
 import { useConfig } from './composables/useConfig';
 import Login from './components/Login.vue';
 import ChangePassword from './components/settings/ChangePassword.vue';
@@ -146,16 +147,13 @@ import {
   InformationCircleOutline as AboutIcon,
 } from '@vicons/ionicons5';
 import { Password24Regular as PasswordIcon } from '@vicons/fluent'
-import { watchEffect } from 'vue'
 import { useAppStore } from './stores/app';
-import { NBadge } from 'naive-ui';
 
 const appStore = useAppStore();
 const appVersion = ref(__APP_VERSION__);
 const router = useRouter(); 
 const route = useRoute(); 
 const authStore = useAuthStore();
-// [新增] 调用 useConfig 获取配置模型
 const { configModel } = useConfig();
 
 // --- 状态定义 (Refs) ---
@@ -165,7 +163,9 @@ const collapsed = ref(false);
 const backgroundTaskStatus = ref({ is_running: false, current_action: '空闲', message: '等待任务', progress: 0, last_action: null });
 const showStatusArea = ref(true);
 const activeMenuKey = computed(() => route.name);
+const isUpdating = ref(false); // 更新按钮的加载状态
 
+// 主题切换时，更新 localStorage，Provider.vue 会监听到变化并应用主题
 watch(isDarkTheme, (newValue) => {
   localStorage.setItem('theme', newValue ? 'dark' : 'light');
 });
@@ -173,11 +173,7 @@ watch(isDarkTheme, (newValue) => {
 const renderIcon = (iconComponent) => {
   return () => h(NIcon, null, { default: () => h(iconComponent) });
 };
-watchEffect(() => {
-  const html = document.documentElement
-  html.classList.remove('dark', 'light')
-  html.classList.add(isDarkTheme.value ? 'dark' : 'light')
-})
+
 // --- 用户下拉菜单的逻辑 ---
 const userOptions = computed(() => [
   {
@@ -201,7 +197,7 @@ const handleUserSelect = async (key) => {
   }
 };
 
-// --- [修改] 侧边栏菜单的定义，使其动态化 ---
+// --- 侧边栏菜单的定义 ---
 const menuOptions = computed(() => [
   { label: 'Emby 配置', key: 'settings-emby', icon: renderIcon(EmbyIcon) },
   { label: '通用设置', key: 'settings-general', icon: renderIcon(GeneralIcon) },
@@ -215,18 +211,41 @@ const menuOptions = computed(() => [
   { label: '关于软件', key: 'About', icon: renderIcon(AboutIcon) },
 ]);
 
-
-// --- 菜单点击事件处理 ---
 async function handleMenuUpdate(key) {
   router.push({ name: key });
 }
+
+// --- 更新按钮处理函数 ---
+const handleUpdate = () => {
+  // ✨ 直接使用在 Provider.vue 中挂载到 window 上的全局 API
+  window.$dialog.warning({
+    title: '确认更新',
+    content: '这将拉取最新的镜像并重启应用，期间服务将短暂中断。确定要继续吗？',
+    positiveText: '立即更新',
+    negativeText: '取消',
+    onPositiveClick: async () => {
+      isUpdating.value = true;
+      window.$message.info('正在发送更新指令，请稍候...');
+      try {
+        await axios.post('/api/system/trigger_update');
+        window.$message.success('更新指令已发送！应用将在约1分钟后重启完毕，请稍后手动刷新页面。');
+        setTimeout(() => {
+          window.location.reload();
+        }, 60000); // 60秒后刷新
+      } catch (error) {
+        const errorMsg = error.response?.data?.message || '更新请求失败，请检查日志。';
+        window.$message.error(`更新失败: ${errorMsg}`);
+        isUpdating.value = false;
+      }
+    },
+  });
+};
 
 const statusTypeComputed = computed(() => 'info');
 
 const fetchStatus = async () => {
   try {
     const response = await axios.get('/api/status');
-    
     backgroundTaskStatus.value = response.data;
   } catch (error) {
     if (error.response?.status !== 401) {
@@ -235,46 +254,10 @@ const fetchStatus = async () => {
   }
 };
 
-const themeOverridesComputed = computed(() => {
-  const lightCardShadow = '0 1px 2px -2px rgba(0, 0, 0, 0.08), 0 3px 6px 0 rgba(0, 0, 0, 0.06), 0 5px 12px 4px rgba(0, 0, 0, 0.04)';
-  const darkCardShadow = '0 1px 2px -2px rgba(0, 0, 0, 0.24), 0 3px 6px 0 rgba(0, 0, 0, 0.18), 0 5px 12px 4px rgba(0, 0, 0, 0.12)';
-
-  if (!isDarkTheme.value) {
-    return {
-      common: { bodyColor: '#f0f2f5' },
-      Card: { boxShadow: lightCardShadow }
-    };
-  }
-  
-  return {
-    common: { 
-      bodyColor: '#101014', 
-      cardColor: '#1a1a1e', 
-      inputColor: '#1a1a1e', 
-      actionColor: '#242428', 
-      borderColor: 'rgba(255, 255, 255, 0.12)' 
-    },
-    Card: { 
-      color: '#1a1a1e', 
-      titleTextColor: 'rgba(255, 255, 255, 0.92)',
-      boxShadow: darkCardShadow,
-    },
-    DataTable: { 
-      tdColor: '#1a1a1e', 
-      thColor: '#1a1a1e', 
-      tdColorStriped: '#202024' 
-    },
-    Input: { color: '#1a1a1e' },
-    Select: { peers: { InternalSelection: { color: '#1a1a1e' } } }
-  };
-});
-
 let statusIntervalId = null;
 
 onMounted(() => {
-  // +++ 核心修改：应用启动时就去获取版本信息 +++
   appStore.fetchVersionInfo();
-
   if (authStore.isLoggedIn) {
     fetchStatus();
     statusIntervalId = setInterval(fetchStatus, 1000);

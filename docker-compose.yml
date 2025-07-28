@@ -2,18 +2,22 @@ version: '3'
 
 services:
   emby-actor-processor:
-    image: hbq0405/emby-actor-processor:latest
+    image: hbq0405/emby-actor-processor:test
+    pull_policy: never
     container_name: emby-actor-processor
     network_mode: bridge
     environment:
-      - TZ=Asia/Shanghai         # 设置时区
-      - AUTH_USERNAME=admin      # 用户名可任意设置，密码在程序首次运行会生成随机密码打印在日志中
-      - PUID=0                   # 设置为你的用户ID，默认为0，建议根据实际情况修改
-      - PGID=0                   # 设置为你的组ID，默认为0，建议根据实际情况修改
-      - UMASK=000                # 设置权限掩码，默认为000，建议根据实际情况修改
+      - TZ=Asia/Shanghai                                      # 设置时区
+      - AUTH_USERNAME=admin                                   # 用户名可任意设置，密码在程序首次运行会生成随机密码打印在日志中
+      - PUID=0                                                # 设置为你的用户ID，默认为0，建议根据实际情况修改
+      - PGID=0                                                # 设置为你的组ID，默认为0，建议根据实际情况修改
+      - UMASK=000                                             # 设置权限掩码，默认为000，建议根据实际情况修改
+      - CONTAINER_NAME=emby-actor-processor                   # 一键更新需要，保持和container_name一致
+      - APP_DATA_DIR=/config                                  # 持久化目录
     volumes:
-      - ./config:/config         # 配置文件目录
-      - ./tmdb:/tmdb             # 映射神医本地TMDB目录，必须配置
+      - ./test:/config                                      # 配置文件目录
+      - ./tmdb:/tmdb                                          # 映射神医本地TMDB目录，必须配置
+      - /var/run/docker.sock:/var/run/docker.sock             # 一键更新需要
     ports:
-      - "5257:5257"              # 应用端口
+      - "5257:5257"                                           # 应用端口
     restart: unless-stopped
