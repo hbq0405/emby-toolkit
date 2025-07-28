@@ -191,7 +191,7 @@ def trigger_self_update():
 
                 try:
                     subprocess.run(
-                        ["docker-compose", "up", "-d", container_name],
+                        ["docker-compose", "up", "-d", "--force-recreate", container_name],
                         check=True,
                         cwd=compose_dir
                     )
