@@ -162,10 +162,10 @@ def get_about_info():
 @extensions.login_required
 def trigger_self_update():
     container_name = os.environ.get('CONTAINER_NAME', 'emby-actor-processor')
-    logger.info(f"API: 接收到自我更新请求，目标容器: '{container_name}'")
+    logger.info(f"api: 接收到更新请求，目标容器: '{container_name}'")
 
     def update_task():
-        logger.info("[Update Worker]: 后台更新线程已启动。")
+        logger.info("[一键更新]: 后台更新线程已启动。")
         try:
             client = docker.from_env()
             container = client.containers.get(container_name)
@@ -175,16 +175,16 @@ def trigger_self_update():
                 if container.image.tags:
                     image_name_tag = container.image.tags[0]
                 else:
-                    logger.error("[Update Worker]: 无法获取镜像 tag，且未配置 CONTAINER_IMAGE 环境变量。")
+                    logger.error("[一键更新]: 无法获取镜像 tag，且未配置 CONTAINER_IMAGE 环境变量。")
                     return
 
-            logger.info(f"[Update Worker]: 正在拉取最新镜像: {image_name_tag}...")
+            logger.info(f"[一键更新]: 正在拉取最新镜像: {image_name_tag}...")
             new_image = client.images.pull(image_name_tag)
 
             if container.image.id == new_image.id:
-                logger.info("[Update Worker]: 当前已是最新版本，无需更新。")
+                logger.info("[一键更新]: 当前已是最新版本，无需更新。")
             else:
-                logger.info("[Update Worker]: 新镜像拉取完成。开始使用 docker-compose 重启容器...")
+                logger.info("[一键更新]: 新镜像拉取完成。开始使用 docker-compose 重启容器...")
 
                 # 动态使用持久化目录
                 compose_dir = config_manager.PERSISTENT_DATA_PATH
@@ -208,10 +208,10 @@ def trigger_self_update():
         update_thread = threading.Thread(target=update_task, daemon=True)
         update_thread.start()
 
-        logger.info("API: 后台更新任务已启动，立即返回 202 Accepted 响应。")
+        logger.trace("API: 后台更新任务已启动，立即返回 202 Accepted 响应。")
         return jsonify({
             "success": True,
-            "message": "更新指令已发送！应用将在后台下载新版本并自动重启，请在约1分钟后刷新页面查看结果。"
+            "message": "更新指令已发送！应用将在后台下载新版本并自动重启。"
         }), 202
 
     except docker.errors.NotFound:
