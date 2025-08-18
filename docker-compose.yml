@@ -9,13 +9,14 @@ services:
     restart: unless-stopped
     volumes:
       - ./local_data:/config
-      - /var/run/docker.sock:/var/run/docker.sock
+      - /var/run/docker.sock:/var/run/docker.sock:rw
     environment:
       - APP_DATA_DIR=/config
       - PUID=1000
       - PGID=1000
       - CONTAINER_NAME=emby-toolkit
       - DOCKER_IMAGE_NAME=emby-toolkit
+    user: "1000:999"  # 用户ID:docker组ID，确保有访问docker.sock的权限
     ports:
       - "5257:5257"
     networks:

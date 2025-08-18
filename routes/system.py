@@ -282,7 +282,25 @@ def stream_update_progress():
                 os.environ['HTTPS_PROXY'] = proxy_url
                 os.environ['HTTP_PROXY'] = proxy_url # 有些系统也需要设置 http_proxy
                 yield from send_event({"status": f"检测到代理配置，将通过 {proxy_url} 拉取镜像...", "layers": {}})
-            client = docker.from_env()
+            
+            # ★★★ 增强 Docker 客户端初始化和错误处理 ★★★
+            try:
+                client = docker.from_env()
+                # 测试 Docker 连接
+                client.ping()
+                yield from send_event({"status": "Docker 连接正常，开始更新流程...", "layers": {}})
+            except docker.errors.DockerException as docker_err:
+                error_msg = f"Docker 连接失败: {str(docker_err)}"
+                if "Permission denied" in str(docker_err):
+                    error_msg += "\n请确保容器有访问 Docker socket 的权限，或者重启容器服务。"
+                logger.error(f"Docker 客户端初始化失败: {docker_err}", exc_info=True)
+                yield from send_event({"status": error_msg, "event": "ERROR"})
+                return
+            except Exception as init_err:
+                error_msg = f"初始化 Docker 客户端时发生未知错误: {str(init_err)}"
+                logger.error(f"Docker 客户端初始化异常: {init_err}", exc_info=True)
+                yield from send_event({"status": error_msg, "event": "ERROR"})
+                return
             container_name = config_manager.APP_CONFIG.get('container_name', 'emby-toolkit')
             image_name_tag = config_manager.APP_CONFIG.get('docker_image_name', 'hbq0405/emby-toolkit:latest')
 
