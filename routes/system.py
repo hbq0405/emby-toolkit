@@ -386,11 +386,12 @@ def stream_update_progress():
                 command = [
                     "--cleanup",
                     "--run-once",
-                    container_name # 明确告诉 watchtower 只更新我们自己
+                    container_name, # 主程序容器
+                    "emby-proxy-nginx" # nginx容器，确保同时重启
                 ]
 
                 # 启动更新器容器！
-                logger.info(f"正在应用更新 '{container_name}'...")
+                logger.info(f"正在应用更新 '{container_name}' 和 'emby-proxy-nginx'...")
                 client.containers.run(
                     image=updater_image,
                     command=command,
@@ -399,7 +400,7 @@ def stream_update_progress():
                     volumes={'/var/run/docker.sock': {'bind': '/var/run/docker.sock', 'mode': 'rw'}}
                 )
                 
-                yield from send_event({"status": "更新任务已成功交接给临时更新器！本容器将在后台被重启。", "progress": 90})
+                yield from send_event({"status": "更新任务已成功交接给临时更新器！主程序和Nginx将在后台被重启。", "progress": 90})
                 yield from send_event({"status": "稍后手动刷新页面以访问新版本。", "progress": 100, "event": "DONE"})
 
             except docker.errors.NotFound:
