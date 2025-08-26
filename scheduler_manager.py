@@ -19,6 +19,9 @@ logger = logging.getLogger(__name__)
 
 # 为我们的任务链定义一个独一无二、固定不变的ID
 CHAIN_JOB_ID = 'automated_task_chain_job'
+# ★★★ 新增：为复活检查任务定义一个固定的ID ★★★
+REVIVAL_CHECK_JOB_ID = 'scheduled_revival_check'
+
 
 # --- 友好的CRON日志翻译函数】 ---
 def _get_next_run_time_str(cron_expression: str) -> str:
@@ -85,15 +88,17 @@ class SchedulerManager:
         self.processor = extensions.media_processor_instance
 
     def start(self):
-        """启动调度器并加载初始任务。"""
+        """启动调度器并加载所有任务。"""
         if self.scheduler.running:
             logger.info("定时任务调度器已在运行。")
             return
         try:
             self.scheduler.start()
             logger.info("定时任务调度器已启动。")
-            # 在启动时，就根据当前配置更新一次任务
+            # 在启动时，加载所有需要的任务
             self.update_task_chain_job()
+            # ★★★ 新增：调用设置独立任务的方法 ★★★
+            self._setup_standalone_jobs()
         except Exception as e:
             logger.error(f"启动定时任务调度器失败: {e}", exc_info=True)
 
@@ -103,6 +108,47 @@ class SchedulerManager:
             self.scheduler.shutdown(wait=False)
             logger.info("定时任务调度器已关闭。")
 
+    # ▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼
+    # ★★★ 新增：一个专门用于设置独立、硬编码任务的方法 ★★★
+    # ▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼
+    def _setup_standalone_jobs(self):
+        """设置不通过UI配置的、固定的后台任务。"""
+        logger.info("正在设置固定的后台计划任务...")
+
+        # --- 任务1: 每周剧集复活检查 ---
+        try:
+            # 定义一个包装函数，以便安全地调用需要参数的任务
+            def revival_check_wrapper():
+                logger.info("定时任务触发：已完结剧集复活检查。")
+                watchlist_proc = extensions.watchlist_processor_instance
+                if watchlist_proc:
+                    # 对于后台任务，我们不需要真实的进度回调，所以传递一个空的lambda
+                    dummy_callback = lambda progress, message: None
+                    watchlist_proc.run_revival_check_task(progress_callback=dummy_callback)
+                else:
+                    logger.error("无法执行复活检查：WatchlistProcessor 实例未初始化。")
+
+            self.scheduler.add_job(
+                func=revival_check_wrapper,
+                trigger='cron',
+                day_of_week='sun',  # 'sun' 代表周日
+                hour=5,             # 5点
+                minute=0,           # 0分
+                id=REVIVAL_CHECK_JOB_ID,
+                name='每周剧集复活检查',
+                replace_existing=True,
+                misfire_grace_time=3600, # 如果错过了，1小时内仍会尝试执行
+                coalesce=True            # 如果错过了多次，只执行一次
+            )
+            logger.info("✅ 已成功调度【每周剧集复活检查】任务，将在每周日凌晨5点执行。")
+
+        except Exception as e:
+            logger.error(f"设置【每周剧集复活检查】任务时失败: {e}", exc_info=True)
+
+    # ▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲
+    # ★★★ 新增方法结束 ★★★
+    # ▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲
+
     def update_task_chain_job(self):
         """
         【核心函数】根据当前配置文件，更新任务链的定时作业。
@@ -110,9 +156,7 @@ class SchedulerManager:
         """
         if not self.scheduler.running:
             logger.warning("调度器未运行，无法更新任务。")
-            # 即使未运行，也尝试启动它
-            self.start()
-            if not self.scheduler.running: return
+            return
 
         logger.info("正在根据最新配置更新自动化任务链...")
 
@@ -154,7 +198,7 @@ class SchedulerManager:
                 )
                 # 调用辅助函数来生成友好的日志
                 friendly_cron_str = _get_next_run_time_str(cron_str)
-                logger.info(f"已成功设置自动化任务链，执行计划: {friendly_cron_str}，包含 {len(task_sequence)} 个任务。")
+                logger.info(f"✅ 已成功设置自动化任务链，执行计划: {friendly_cron_str}，包含 {len(task_sequence)} 个任务。")
             except ValueError as e:
                 logger.error(f"设置任务链失败：CRON表达式 '{cron_str}' 无效。错误: {e}")
             except Exception as e:
