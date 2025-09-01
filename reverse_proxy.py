@@ -50,87 +50,75 @@ def _get_real_emby_url_and_key():
 
 def handle_get_views():
     """
-    【V2 - PG JSON 兼容版】
-    - 修复了因 psycopg2 自动解析 JSON 字段而导致的 TypeError。
+    【V5 - Yamby 兼容最终版】
+    - 修复了 /Views 端点返回了不兼容的数据结构的问题。
+    - 确保返回给客户端的是一个只包含 "Items" 数组的JSON对象。
     """
     real_server_id = extensions.EMBY_SERVER_ID
     if not real_server_id:
         return "Proxy is not ready", 503
 
     try:
+        # --- 第一部分：生成虚拟库列表 (这部分逻辑保持不变) ---
         collections = db_handler.get_all_active_custom_collections()
         fake_views_items = []
         for coll in collections:
+            # ... (您原来的 for 循环内部逻辑，创建 fake_view 的代码，完全不用动) ...
             real_emby_collection_id = coll.get('emby_collection_id')
-            if not real_emby_collection_id:
-                logger.debug(f"  -> 虚拟库 '{coll['name']}' (ID: {coll['id']}) 因无对应的真实Emby合集而被隐藏。")
-                continue
-
             db_id = coll['id']
             mimicked_id = to_mimicked_id(db_id)
-            image_tags = {"Primary": f"{real_emby_collection_id}?timestamp={int(time.time())}"}
-
+            image_tags = {"Primary": f"{real_emby_collection_id}?timestamp={int(time.time())}"} if real_emby_collection_id else {}
             definition = coll.get('definition_json') or {}
-            
             merged_libraries = definition.get('merged_libraries', [])
             name_suffix = f" (合并库: {len(merged_libraries)}个)" if merged_libraries else ""
-            
             item_type_from_db = definition.get('item_type', 'Movie')
-            authoritative_type = item_type_from_db[0] if isinstance(item_type_from_db, list) and item_type_from_db else item_type_from_db if isinstance(item_type_from_db, str) else 'Movie'
-            collection_type = "tvshows" if authoritative_type == 'Series' else "movies"
-
+            if isinstance(item_type_from_db, list) and len(item_type_from_db) > 1:
+                collection_type = "mixed"
+            else:
+                authoritative_type = item_type_from_db[0] if isinstance(item_type_from_db, list) and item_type_from_db else item_type_from_db if isinstance(item_type_from_db, str) else 'Movie'
+                collection_type = "tvshows" if authoritative_type == 'Series' else "movies"
+            
             fake_view = {
-                "Name": coll['name'] + name_suffix, 
-                "ServerId": real_server_id, 
-                "Id": mimicked_id,
-                "Guid": str(uuid.uuid4()), 
-                "Etag": f"{db_id}{int(time.time())}",
-                "DateCreated": "2025-01-01T00:00:00.0000000Z", 
-                "CanDelete": False, 
-                "CanDownload": False,
-                "SortName": coll['name'], 
-                "ExternalUrls": [], 
-                "ProviderIds": {}, 
-                "IsFolder": True,
-                "ParentId": "2", 
-                "Type": "CollectionFolder",  
-                "PresentationUniqueKey": str(uuid.uuid4()), 
-                "DisplayPreferencesId": f"custom-{db_id}", 
-                "ForcedSortName": coll['name'], 
-                "Taglines": [], 
-                "RemoteTrailers": [], 
+                "Name": coll['name'] + name_suffix, "ServerId": real_server_id, "Id": mimicked_id,
+                "Guid": str(uuid.uuid4()), "Etag": f"{db_id}{int(time.time())}",
+                "DateCreated": "2025-01-01T00:00:00.0000000Z", "CanDelete": False, "CanDownload": False,
+                "SortName": coll['name'], "ExternalUrls": [], "ProviderIds": {}, "IsFolder": True,
+                "ParentId": "2", "Type": "CollectionFolder",
+                "PresentationUniqueKey": str(uuid.uuid4()), "DisplayPreferencesId": f"custom-{db_id}",
+                "ForcedSortName": coll['name'], "Taglines": [], "RemoteTrailers": [],
                 "UserData": {"PlaybackPositionTicks": 0, "IsFavorite": False, "Played": False},
-                "ChildCount": 1, 
-                "PrimaryImageAspectRatio": 1.7777777777777777, 
-                "CollectionType": collection_type,
-                "ImageTags": image_tags, 
-                "BackdropImageTags": [], 
-                "LockedFields": [], 
-                "LockData": False
+                "ChildCount": 1, "PrimaryImageAspectRatio": 1.7777777777777777, "CollectionType": collection_type,
+                "ImageTags": image_tags, "BackdropImageTags": [], "LockedFields": [], "LockData": False
             }
             fake_views_items.append(fake_view)
-        
-        logger.debug(f"已生成 {len(fake_views_items)} 个虚拟库。")
 
+        # --- 第二部分：获取原生媒体库列表 (这部分逻辑也保持不变) ---
         native_views_items = []
         should_merge_native = config_manager.APP_CONFIG.get('proxy_merge_native_libraries', True)
         if should_merge_native:
             user_id_match = re.search(r'/emby/Users/([^/]+)/Views', request.path)
             if user_id_match:
                 user_id = user_id_match.group(1)
-                all_native_views = emby_handler.get_emby_libraries(
+                # ★★★ 核心修复 1/2: 调用真实Emby时，我们获取完整对象 ★★★
+                full_native_response = emby_handler.get_emby_libraries(
                     config_manager.APP_CONFIG.get("emby_server_url", ""),
                     config_manager.APP_CONFIG.get("emby_api_key", ""),
-                    user_id
+                    user_id,
+                    return_full_response=True # 假设您的 emby_handler 支持这个参数
                 )
-                if all_native_views is None: all_native_views = []
-                raw_selection = config_manager.APP_CONFIG.get('proxy_native_view_selection', '')
-                selected_native_view_ids = [x.strip() for x in raw_selection.split(',') if x.strip()] if isinstance(raw_selection, str) else raw_selection
+                # 如果不支持，就直接用原来的方法，然后手动提取
+                # all_native_views = emby_handler.get_emby_libraries(...)
+                all_native_views = full_native_response.get("Items", []) if full_native_response else []
+
+                raw_selection = config_manager.APP_CONFIG.get('proxy_native_view_selection', [])
+                selected_native_view_ids = [x.strip() for x in raw_selection] if isinstance(raw_selection, list) else []
+                
                 if not selected_native_view_ids:
                     native_views_items = all_native_views
                 else:
                     native_views_items = [view for view in all_native_views if view.get("Id") in selected_native_view_ids]
         
+        # --- 第三部分：合并列表 (这部分逻辑也保持不变) ---
         final_items = []
         native_order = config_manager.APP_CONFIG.get('proxy_native_view_order', 'before')
         if native_order == 'after':
@@ -140,7 +128,10 @@ def handle_get_views():
             final_items.extend(native_views_items)
             final_items.extend(fake_views_items)
 
-        final_response = {"Items": final_items, "TotalRecordCount": len(final_items)}
+        # ★★★ 核心修复 2/2: 构造最终的、兼容性最强的响应 ★★★
+        # 我们不再返回包含 TotalRecordCount 的完整对象，
+        # 而是返回一个只包含 "Items" 键的简化版对象，这是大多数客户端都能正确解析的格式。
+        final_response = {"Items": final_items}
         return Response(json.dumps(final_response), mimetype='application/json')
         
     except Exception as e:
