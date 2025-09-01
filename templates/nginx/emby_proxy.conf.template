@@ -94,6 +94,12 @@ server {
     # 规则 5: WebSocket (保持不变)
     location /embywebsocket {
         proxy_pass http://emby_server;
+
+        # ★★★ 核心修复：为WebSocket连接明确设置必要的头信息 ★★★
+        # 即使全局已设置，在这里再次声明可以保证最高优先级和稳定性
+        proxy_http_version 1.1;
+        proxy_set_header Upgrade $http_upgrade;
+        proxy_set_header Connection "Upgrade";
     }
 
     # 兜底规则：转发所有其他请求到真实 Emby
