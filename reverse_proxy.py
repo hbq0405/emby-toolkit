@@ -82,11 +82,8 @@ def handle_get_views():
             name_suffix = f" (合并库: {len(merged_libraries)}个)" if merged_libraries else ""
             
             item_type_from_db = definition.get('item_type', 'Movie')
-            if isinstance(item_type_from_db, list) and len(item_type_from_db) > 1:
-                collection_type = "mixed"
-            else:
-                authoritative_type = item_type_from_db[0] if isinstance(item_type_from_db, list) and item_type_from_db else item_type_from_db if isinstance(item_type_from_db, str) else 'Movie'
-                collection_type = "tvshows" if authoritative_type == 'Series' else "movies"
+            authoritative_type = item_type_from_db[0] if isinstance(item_type_from_db, list) and item_type_from_db else item_type_from_db if isinstance(item_type_from_db, str) else 'Movie'
+            collection_type = "tvshows" if authoritative_type == 'Series' else "movies"
 
             fake_view = {
                 "Name": coll['name'] + name_suffix, 
