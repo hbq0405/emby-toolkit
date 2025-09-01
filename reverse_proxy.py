@@ -89,16 +89,37 @@ def handle_get_views():
                 collection_type = "tvshows" if authoritative_type == 'Series' else "movies"
 
             fake_view = {
-                "Name": coll['name'] + name_suffix, "ServerId": real_server_id, "Id": mimicked_id,
-                "Guid": str(uuid.uuid4()), "Etag": f"{db_id}{int(time.time())}",
-                "DateCreated": "2025-01-01T00:00:00.0000000Z", "CanDelete": False, "CanDownload": False,
-                "SortName": coll['name'], "ExternalUrls": [], "ProviderIds": {}, "IsFolder": True,
-                "ParentId": "2", "Type": "Collection",
+                "Name": coll['name'] + name_suffix, 
+                "ServerId": real_server_id, 
+                "Id": mimicked_id,
+                "Guid": str(uuid.uuid4()), # 我们会用这个Guid
+                "Etag": f"{db_id}{int(time.time())}",
+                "DateCreated": "2025-01-01T00:00:00.0000000Z", 
+                "CanDelete": False, 
+                "CanDownload": False,
+                "SortName": coll['name'], 
+                "ExternalUrls": [], 
+                "ProviderIds": {}, 
+                "IsFolder": True,
+                "ParentId": "2", 
+                
+                # ★★★ 核心修改点 (应用了用户建议) ★★★
+                "Type": "CollectionFolder",  # 1. 改为 CollectionFolder
+                "PresentationUniqueKey": str(uuid.uuid4()), # 2. 增加 PresentationUniqueKey
+                "DisplayPreferencesId": f"custom-{db_id}", # 3. DisplayPreferencesId 保持不变或改为Guid都可以
+                "ForcedSortName": coll['name'], # 4. 增加 ForcedSortName
+                "Taglines": [], # 5. 增加空的 Taglines
+                "RemoteTrailers": [], # 6. 增加空的 RemoteTrailers
+                # ★★★ 修改结束 ★★★
+
                 "UserData": {"PlaybackPositionTicks": 0, "IsFavorite": False, "Played": False},
                 "ChildCount": 1, 
-                "DisplayPreferencesId": f"custom-{db_id}",
-                "PrimaryImageAspectRatio": 1.7777777777777777, "CollectionType": collection_type,
-                "ImageTags": image_tags, "BackdropImageTags": [], "LockedFields": [], "LockData": False
+                "PrimaryImageAspectRatio": 1.7777777777777777, 
+                "CollectionType": collection_type,
+                "ImageTags": image_tags, 
+                "BackdropImageTags": [], 
+                "LockedFields": [], 
+                "LockData": False
             }
             fake_views_items.append(fake_view)
         
