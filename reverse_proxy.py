@@ -16,6 +16,7 @@ import config_manager
 import db_handler
 import extensions
 import emby_handler
+import constants
 logger = logging.getLogger(__name__)
 
 # --- 【核心修改】---
@@ -244,7 +245,9 @@ def handle_get_mimicked_library_items(user_id, mimicked_id, params):
             if isinstance(item_type_from_db, list) and len(item_type_from_db) > 1:
                 new_params.pop('IncludeItemTypes', None)
             new_params["ParentId"] = real_emby_collection_id
-            new_params['Fields'] = new_params.get('Fields', '') + ',ProviderIds,UserData,DateCreated,PremiereDate,CommunityRating,ProductionYear'
+            existing_fields = new_params.get('Fields', '')
+            required_fields = 'ProviderIds,UserData,DateCreated,PremiereDate,CommunityRating,ProductionYear,Path,MediaSources'
+            new_params['Fields'] = f"{existing_fields},{required_fields}"
             new_params['api_key'] = api_key
             new_params['Limit'] = 5000
             resp = requests.get(target_url, params=new_params, timeout=30.0)
@@ -289,6 +292,42 @@ def handle_get_mimicked_library_items(user_id, mimicked_id, params):
                 final_items.sort(key=lambda item: item.get('SortName', ''))
         else:
             logger.debug("未设置虚拟库排序，将使用Emby原生排序。")
+
+        redirect_paths = config_manager.APP_CONFIG.get(constants.CONFIG_OPTION_PROXY_REDIRECT_PATHS, [])
+        redirect_url_enabled = config_manager.APP_CONFIG.get(constants.CONFIG_OPTION_PROXY_302_REDIRECT_URL)
+
+        if redirect_url_enabled:
+            logger.debug(f"检测到302重定向已启用，开始为媒体项注入重定向标签...")
+            for item in final_items:
+                item_path = item.get("Path", "")
+                needs_redirect = False
+
+                if not item_path:
+                    continue
+
+                # 条件1: .strm 文件 (最优先)
+                if item_path.lower().endswith('.strm'):
+                    needs_redirect = True
+                # 条件2: 路径匹配 (仅在配置了路径时检查)
+                elif redirect_paths:
+                    for path_prefix in redirect_paths:
+                        if path_prefix and item_path.startswith(path_prefix):
+                            needs_redirect = True
+                            break
+                
+                if needs_redirect:
+                    logger.trace(f"  -> 为项目 '{item.get('Name')}' (路径: {item_path}) 注入标签。")
+                    # 为项目的所有媒体源注入标签
+                    media_sources = item.get("MediaSources", [])
+                    for source in media_sources:
+                        # Emby客户端主要使用 Path 和 DirectStreamUrl 来构建播放链接
+                        for key in ["Path", "DirectStreamUrl"]:
+                            if source.get(key):
+                                original_url = source[key]
+                                if '?' in original_url:
+                                    source[key] = f"{original_url}&force_redirect=true"
+                                else:
+                                    source[key] = f"{original_url}?force_redirect=true"
 
         final_response = {"Items": final_items, "TotalRecordCount": len(final_items)}
         return Response(json.dumps(final_response), mimetype='application/json')

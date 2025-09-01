@@ -150,6 +150,20 @@
                           </n-text>
                         </template>
                       </n-form-item-grid-item>
+                      <!-- ★★★ 需要302重定向的网盘挂载路径 ★★★ -->
+                      <n-form-item-grid-item label="网盘挂载路径" path="proxy_redirect_paths">
+                        <n-dynamic-tags 
+                          v-model:value="configModel.proxy_redirect_paths" 
+                          :disabled="!configModel.proxy_enabled || !configModel.proxy_302_redirect_url" 
+                        />
+                        <template #feedback>
+                          <n-text depth="3" style="font-size:0.8em;">
+                            填写被Emby视为本地、但实际需要302重定向的路径。例如: <code>/cd2/</code> 或 <code>/mnt/aliyun/</code>。
+                            <br>
+                            <b>重要:</b> 路径必须以 <code>/</code> 开头和结尾。
+                          </n-text>
+                        </template>
+                      </n-form-item-grid-item>
 
                       <n-divider title-placement="left" style="margin-top: 10px;">选择合并显示的原生媒体库</n-divider>
 
@@ -401,7 +415,7 @@ import {
   NCard, NForm, NFormItem, NInputNumber, NSwitch, NButton, NGrid, NGi, 
   NSpin, NAlert, NInput, NSelect, NSpace, useMessage, useDialog,
   NFormItemGridItem, NCheckboxGroup, NCheckbox, NText, NRadioGroup, NRadio,
-  NTag, NIcon, NUpload, NModal, NDivider, NInputGroup, NTabs, NTabPane
+  NTag, NIcon, NUpload, NModal, NDivider, NInputGroup, NTabs, NTabPane, NDynamicTags
 } from 'naive-ui';
 import { 
   MoveOutline as DragHandleIcon,

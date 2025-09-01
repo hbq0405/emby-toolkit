@@ -32,11 +32,29 @@ server {
     #  核心路由规则 (V4)
     # ====================================================================
 
-    # ★★★ 规则 1：转发 .strm 请求 ★★★
+    # ★★★ 规则 1：【条件化】网盘视频流转发 ★★★
+    # 此规则块仅在设置了 REDIRECT_UPSTREAM 时生效。
     {% if REDIRECT_UPSTREAM %}
+
+    # 规则 1a: 根据上游代理添加的“标签”处理所有视频流。
+    # 这个规则的优先级最高，精准捕获所有视频播放请求。
+    location ~ /videos/ {
+        # 检查 URL 查询参数中是否包含 `force_redirect=true` 标签。
+        if ($args ~* "force_redirect=true") {
+            proxy_pass http://redirect_service;
+        }
+        
+        # 如果没有该标签，则说明是真正的本地视频，直接交给 Emby 处理以保证秒播。
+        proxy_pass http://emby_server;
+    }
+
+    # 规则 1b: 兼容传统的 .strm 文件直接请求（作为备用）。
+    # 正常情况下，.strm 也会被 Python 代理打上标签，走上面的规则。
+    # 这条规则可以捕获一些边缘情况。
     location ~ \.strm$ {
         proxy_pass http://redirect_service;
     }
+
     {% endif %}
 
     # --- 以下是虚拟库路由规则 ---
