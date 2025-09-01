@@ -19,9 +19,6 @@ import emby_handler
 import constants
 logger = logging.getLogger(__name__)
 
-# --- 【核心修改】---
-# 不再使用字符串前缀，而是定义一个数字转换基数
-# 这将把数据库ID (例如 7) 转换为一个唯一的、负数的、看起来像原生ID的数字 (例如 -900007)
 MIMICKED_ID_BASE = 900000
 
 def to_mimicked_id(db_id):
@@ -40,8 +37,6 @@ def is_mimicked_id(item_id):
     except:
         return False
 
-# --- 【核心修改】---
-# 更新正则表达式以匹配新的数字ID格式（负数）
 MIMICKED_ITEMS_RE = re.compile(r'/emby/Users/([^/]+)/Items/(-(\d+))')
 MIMICKED_ITEM_DETAILS_RE = re.compile(r'emby/Users/([^/]+)/Items/(-(\d+))$')
 
@@ -75,7 +70,6 @@ def handle_get_views():
             mimicked_id = to_mimicked_id(db_id)
             image_tags = {"Primary": f"{real_emby_collection_id}?timestamp={int(time.time())}"}
 
-            # ★★★ 核心修复：直接使用已经是字典的 definition_json 字段 ★★★
             definition = coll.get('definition_json') or {}
             
             merged_libraries = definition.get('merged_libraries', [])
@@ -89,7 +83,7 @@ def handle_get_views():
                 "Name": coll['name'] + name_suffix, 
                 "ServerId": real_server_id, 
                 "Id": mimicked_id,
-                "Guid": str(uuid.uuid4()), # 我们会用这个Guid
+                "Guid": str(uuid.uuid4()), 
                 "Etag": f"{db_id}{int(time.time())}",
                 "DateCreated": "2025-01-01T00:00:00.0000000Z", 
                 "CanDelete": False, 
@@ -99,16 +93,12 @@ def handle_get_views():
                 "ProviderIds": {}, 
                 "IsFolder": True,
                 "ParentId": "2", 
-                
-                # ★★★ 核心修改点 (应用了用户建议) ★★★
-                "Type": "CollectionFolder",  # 1. 改为 CollectionFolder
-                "PresentationUniqueKey": str(uuid.uuid4()), # 2. 增加 PresentationUniqueKey
-                "DisplayPreferencesId": f"custom-{db_id}", # 3. DisplayPreferencesId 保持不变或改为Guid都可以
-                "ForcedSortName": coll['name'], # 4. 增加 ForcedSortName
-                "Taglines": [], # 5. 增加空的 Taglines
-                "RemoteTrailers": [], # 6. 增加空的 RemoteTrailers
-                # ★★★ 修改结束 ★★★
-
+                "Type": "CollectionFolder",  
+                "PresentationUniqueKey": str(uuid.uuid4()), 
+                "DisplayPreferencesId": f"custom-{db_id}", 
+                "ForcedSortName": coll['name'], 
+                "Taglines": [], 
+                "RemoteTrailers": [], 
                 "UserData": {"PlaybackPositionTicks": 0, "IsFavorite": False, "Played": False},
                 "ChildCount": 1, 
                 "PrimaryImageAspectRatio": 1.7777777777777777, 
@@ -171,7 +161,6 @@ def handle_get_mimicked_library_details(user_id, mimicked_id):
         real_emby_collection_id = coll.get('emby_collection_id')
         image_tags = {"Primary": real_emby_collection_id} if real_emby_collection_id else {}
         
-        # ★★★ 核心修复：直接使用已经是字典的 definition_json 字段 ★★★
         definition = coll.get('definition_json') or {}
         item_type_from_db = definition.get('item_type', 'Movie')
         collection_type = "mixed"
@@ -205,7 +194,6 @@ def handle_get_mimicked_library_image(path):
     except Exception as e:
         return "Internal Proxy Error", 500
 
-# --- ★★★ 核心修复 #1：用下面这个通用的“万能翻译”函数，替换掉旧的 a_prefixes 函数 ★★★ ---
 def handle_mimicked_library_metadata_endpoint(path, mimicked_id, params):
     """
     【V3 - URL修正版】
@@ -221,7 +209,6 @@ def handle_mimicked_library_metadata_endpoint(path, mimicked_id, params):
         
         base_url, api_key = _get_real_emby_url_and_key()
         
-        # ★★★ 核心修复：在这里加上一个至关重要的斜杠！ ★★★
         target_url = f"{base_url}/{path}"
         
         headers = {k: v for k, v in request.headers if k.lower() not in ['host']}
@@ -251,7 +238,6 @@ def handle_get_mimicked_library_items(user_id, mimicked_id, params):
         if not collection_info:
             return Response(json.dumps({"Items": [], "TotalRecordCount": 0}), mimetype='application/json')
 
-        # ★★★ 核心修复 1/2：直接使用已经是字典的 definition_json 字段 ★★★
         definition = collection_info.get('definition_json') or {}
         real_items_map = {}
         real_emby_collection_id = collection_info.get('emby_collection_id')
@@ -274,7 +260,6 @@ def handle_get_mimicked_library_items(user_id, mimicked_id, params):
                 tmdb_id = str(item.get('ProviderIds', {}).get('Tmdb'))
                 if tmdb_id: real_items_map[tmdb_id] = item
         
-        # ★★★ 核心修复 2/2：直接使用已经是列表的 generated_media_info_json 字段 ★★★
         all_db_items = collection_info.get('generated_media_info_json') or []
         final_items = []
         processed_real_tmdb_ids = set()
@@ -289,12 +274,9 @@ def handle_get_mimicked_library_items(user_id, mimicked_id, params):
         
         sort_by_field = definition.get('default_sort_by')
         
-        # --- ▼▼▼ 核心修改：增加对 'original' 排序的处理 ▼▼▼ ---
         if sort_by_field and sort_by_field == 'original':
             logger.trace("执行虚拟库排序劫持: 'original' (榜单原始顺序)，将保持数据库中的顺序。")
-            # 不执行任何操作，final_items 此时的顺序就是我们想要的原始顺序
         elif sort_by_field and sort_by_field != 'none':
-        # --- ▲▲▲ 修改结束 ▲▲▲ ---
             sort_order = definition.get('default_sort_order', 'Ascending')
             is_descending = (sort_order == 'Descending')
             logger.trace(f"执行虚拟库排序劫持: '{sort_by_field}' ({sort_order})")
@@ -309,13 +291,13 @@ def handle_get_mimicked_library_items(user_id, mimicked_id, params):
                 logger.warning(f"排序时遇到类型不匹配问题，已回退到按名称排序。")
                 final_items.sort(key=lambda item: item.get('SortName', ''))
         else:
-            logger.debug("未设置虚拟库排序，将使用Emby原生排序。")
+            logger.trace("未设置虚拟库排序，将使用Emby原生排序。")
 
         redirect_paths = config_manager.APP_CONFIG.get(constants.CONFIG_OPTION_PROXY_REDIRECT_PATHS, [])
         redirect_url_enabled = config_manager.APP_CONFIG.get(constants.CONFIG_OPTION_PROXY_302_REDIRECT_URL)
 
         if redirect_url_enabled:
-            logger.debug(f"检测到302重定向已启用，开始为媒体项注入重定向标签...")
+            logger.trace(f"检测到302重定向已启用，开始为媒体项注入重定向标签...")
             for item in final_items:
                 item_path = item.get("Path", "")
                 needs_redirect = False
@@ -323,10 +305,8 @@ def handle_get_mimicked_library_items(user_id, mimicked_id, params):
                 if not item_path:
                     continue
 
-                # 条件1: .strm 文件 (最优先)
                 if item_path.lower().endswith('.strm'):
                     needs_redirect = True
-                # 条件2: 路径匹配 (仅在配置了路径时检查)
                 elif redirect_paths:
                     for path_prefix in redirect_paths:
                         if path_prefix and item_path.startswith(path_prefix):
@@ -335,10 +315,8 @@ def handle_get_mimicked_library_items(user_id, mimicked_id, params):
                 
                 if needs_redirect:
                     logger.trace(f"  -> 为项目 '{item.get('Name')}' (路径: {item_path}) 注入标签。")
-                    # 为项目的所有媒体源注入标签
                     media_sources = item.get("MediaSources", [])
                     for source in media_sources:
-                        # Emby客户端主要使用 Path 和 DirectStreamUrl 来构建播放链接
                         for key in ["Path", "DirectStreamUrl"]:
                             if source.get(key):
                                 original_url = source[key]
@@ -359,10 +337,10 @@ def handle_get_latest_items(user_id, params):
         base_url, api_key = _get_real_emby_url_and_key()
         virtual_library_id = params.get('ParentId') or params.get('customViewId')
 
-        if virtual_library_id and is_mimicked_id(virtual_library_id): # <-- 【核心修改】
+        if virtual_library_id and is_mimicked_id(virtual_library_id): 
             logger.info(f"处理针对虚拟库 '{virtual_library_id}' 的最新媒体请求...")
             try:
-                virtual_library_db_id = from_mimicked_id(virtual_library_id) # <-- 【核心修改】
+                virtual_library_db_id = from_mimicked_id(virtual_library_id) 
             except (ValueError, TypeError):
                 return Response(json.dumps([]), mimetype='application/json')
 
@@ -371,10 +349,16 @@ def handle_get_latest_items(user_id, params):
                 return Response(json.dumps([]), mimetype='application/json')
 
             real_emby_collection_id = collection_info.get('emby_collection_id')
+            limit_value = params.get('Limit') or params.get('limit') or '20'
+            
             latest_params = {
-                "ParentId": real_emby_collection_id, "Limit": int(params.get('Limit', '20')),
-                "Fields": "PrimaryImageAspectRatio,BasicSyncInfo,DateCreated", "SortBy": "DateCreated", 
-                "SortOrder": "Descending", "Recursive": "true", "IncludeItemTypes": "Movie,Series",
+                "ParentId": real_emby_collection_id,
+                "Limit": int(limit_value), 
+                "Fields": "PrimaryImageAspectRatio,BasicSyncInfo,DateCreated",
+                "SortBy": "DateCreated", 
+                "SortOrder": "Descending",
+                "Recursive": "true",
+                "IncludeItemTypes": "Movie,Series",
                 'api_key': api_key,
             }
             target_url = f"{base_url}/emby/Users/{user_id}/Items"
@@ -404,7 +388,6 @@ proxy_app = Flask(__name__)
 @proxy_app.route('/', defaults={'path': ''})
 @proxy_app.route('/<path:path>', methods=['GET', 'POST', 'PUT', 'DELETE', 'HEAD', 'OPTIONS'])
 def proxy_all(path):
-    # --- 1. WebSocket 代理逻辑 (已添加超详细日志) ---
     if 'Upgrade' in request.headers and request.headers.get('Upgrade', '').lower() == 'websocket':
         logger.info("--- 收到一个新的 WebSocket 连接请求 ---")
         ws_client = request.environ.get('wsgi.websocket')
@@ -488,7 +471,7 @@ def proxy_all(path):
         
         return Response()
 
-    # --- 2. HTTP 代理逻辑 (保持不变) ---
+    # --- 2. HTTP 代理逻辑 ---
     try:
         # 1. 定义所有需要“翻译”ParentId的元数据端点
         METADATA_ENDPOINTS = [
