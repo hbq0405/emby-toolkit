@@ -374,10 +374,16 @@ def handle_get_latest_items(user_id, params):
                 return Response(json.dumps([]), mimetype='application/json')
 
             real_emby_collection_id = collection_info.get('emby_collection_id')
+            limit_value = params.get('Limit') or params.get('limit') or '20'
+            
             latest_params = {
-                "ParentId": real_emby_collection_id, "Limit": int(params.get('Limit', '20')),
-                "Fields": "PrimaryImageAspectRatio,BasicSyncInfo,DateCreated", "SortBy": "DateCreated", 
-                "SortOrder": "Descending", "Recursive": "true", "IncludeItemTypes": "Movie,Series",
+                "ParentId": real_emby_collection_id,
+                "Limit": int(limit_value), # 使用我们兼容处理后的值
+                "Fields": "PrimaryImageAspectRatio,BasicSyncInfo,DateCreated",
+                "SortBy": "DateCreated", 
+                "SortOrder": "Descending",
+                "Recursive": "true",
+                "IncludeItemTypes": "Movie,Series",
                 'api_key': api_key,
             }
             target_url = f"{base_url}/emby/Users/{user_id}/Items"
