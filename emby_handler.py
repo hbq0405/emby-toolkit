@@ -313,10 +313,10 @@ def update_emby_item_cast(item_id: str, new_cast_list_for_handler: List[Dict[str
         logger.error(f"更新Emby项目 {item_name_for_log} 演员信息时发生错误: {e}", exc_info=True)
         return False
 # ✨✨✨ 获取 Emby 用户可见媒体库列表 ✨✨✨
-def get_emby_libraries(emby_server_url, emby_api_key, user_id):
+def get_emby_libraries(emby_server_url, emby_api_key, user_id, return_full_response=False):
     """
-    【最终版】从Emby服务器获取指定用户可见的所有媒体库和合集 (Views)。
-    返回从Emby API获取的原始、完整的 "Items" 列表，以供调用者灵活使用。
+    【V2 - 功能增强版】从Emby服务器获取指定用户可见的所有媒体库和合集 (Views)。
+    - 新增 return_full_response 参数，允许调用者获取原始的、完整的API响应对象。
     """
     if not all([emby_server_url, emby_api_key, user_id]):
         logger.error("get_emby_libraries: 缺少必要的Emby配置信息。")
@@ -331,10 +331,16 @@ def get_emby_libraries(emby_server_url, emby_api_key, user_id):
         response.raise_for_status()
         data = response.json()
         
-        # ★★★ 核心修改：返回原始的、完整的Items列表 ★★★
-        items = data.get('Items', [])
-        logger.trace(f"  -> 成功获取到 {len(items)} 个媒体库/合集。")
-        return items
+        # ★★★ 核心修改：根据新参数决定返回值 ★★★
+        if return_full_response:
+            # 如果调用者需要完整的响应对象，就返回它
+            logger.trace(f"  -> 已获取完整的 /Views 响应对象。")
+            return data
+        else:
+            # 否则，保持原来的行为，只返回 Items 数组
+            items = data.get('Items', [])
+            logger.trace(f"  -> 成功获取到 {len(items)} 个媒体库/合集。")
+            return items
 
     except requests.exceptions.RequestException as e:
         logger.error(f"连接Emby服务器获取媒体库/合集时失败: {e}", exc_info=True)
