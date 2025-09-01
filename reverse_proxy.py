@@ -88,16 +88,33 @@ def handle_get_views():
                 collection_type = "tvshows" if authoritative_type == 'Series' else "movies"
 
             fake_view = {
-                "Name": coll['name'] + name_suffix, "ServerId": real_server_id, "Id": mimicked_id,
-                "Guid": str(uuid.uuid4()), "Etag": f"{db_id}{int(time.time())}",
-                "DateCreated": "2025-01-01T00:00:00.0000000Z", "CanDelete": False, "CanDownload": False,
-                "SortName": coll['name'], "ExternalUrls": [], "ProviderIds": {}, "IsFolder": True,
-                "ParentId": "2", "Type": "Collection",
+                "Name": coll['name'] + name_suffix, 
+                "ServerId": real_server_id, 
+                "Id": mimicked_id,
+                "Guid": str(uuid.uuid4()), 
+                "Etag": f"{db_id}{int(time.time())}",
+                "DateCreated": "2025-01-01T00:00:00.0000000Z", 
+                "CanDelete": False, 
+                "CanDownload": False,
+                "SortName": coll['name'], 
+                "ExternalUrls": [], 
+                "ProviderIds": {}, 
+                "IsFolder": True,
+                "ParentId": "2", 
+                "Type": "CollectionFolder",  
+                "PresentationUniqueKey": str(uuid.uuid4()), 
+                "DisplayPreferencesId": f"custom-{db_id}", 
+                "ForcedSortName": coll['name'], 
+                "Taglines": [], 
+                "RemoteTrailers": [], 
                 "UserData": {"PlaybackPositionTicks": 0, "IsFavorite": False, "Played": False},
                 "ChildCount": 1, 
-                "DisplayPreferencesId": f"custom-{db_id}",
-                "PrimaryImageAspectRatio": 1.7777777777777777, "CollectionType": collection_type,
-                "ImageTags": image_tags, "BackdropImageTags": [], "LockedFields": [], "LockData": False
+                "PrimaryImageAspectRatio": 1.7777777777777777, 
+                "CollectionType": collection_type,
+                "ImageTags": image_tags, 
+                "BackdropImageTags": [], 
+                "LockedFields": [], 
+                "LockData": False
             }
             fake_views_items.append(fake_view)
         
@@ -314,10 +331,16 @@ def handle_get_latest_items(user_id, params):
                 return Response(json.dumps([]), mimetype='application/json')
 
             real_emby_collection_id = collection_info.get('emby_collection_id')
+            limit_value = params.get('Limit') or params.get('limit') or '20'
+            
             latest_params = {
-                "ParentId": real_emby_collection_id, "Limit": int(params.get('Limit', '20')),
-                "Fields": "PrimaryImageAspectRatio,BasicSyncInfo,DateCreated", "SortBy": "DateCreated", 
-                "SortOrder": "Descending", "Recursive": "true", "IncludeItemTypes": "Movie,Series",
+                "ParentId": real_emby_collection_id,
+                "Limit": int(limit_value), 
+                "Fields": "PrimaryImageAspectRatio,BasicSyncInfo,DateCreated",
+                "SortBy": "DateCreated", 
+                "SortOrder": "Descending",
+                "Recursive": "true",
+                "IncludeItemTypes": "Movie,Series",
                 'api_key': api_key,
             }
             target_url = f"{base_url}/emby/Users/{user_id}/Items"
