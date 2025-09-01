@@ -50,16 +50,16 @@ def _get_real_emby_url_and_key():
 
 def handle_get_views():
     """
-    【V5 - Yamby 兼容最终版】
+    【V6 - 最终兼容版】
     - 修复了 /Views 端点返回了不兼容的数据结构的问题。
-    - 确保返回给客户端的是一个只包含 "Items" 数组的JSON对象。
+    - 不再依赖任何不存在的函数参数，直接使用现有功能。
     """
     real_server_id = extensions.EMBY_SERVER_ID
     if not real_server_id:
         return "Proxy is not ready", 503
 
     try:
-        # --- 第一部分：生成虚拟库列表 (这部分逻辑保持不变) ---
+        # --- 第一部分：生成虚拟库列表 (保持不变) ---
         collections = db_handler.get_all_active_custom_collections()
         fake_views_items = []
         for coll in collections:
@@ -92,33 +92,38 @@ def handle_get_views():
             }
             fake_views_items.append(fake_view)
 
-        # --- 第二部分：获取原生媒体库列表 (这部分逻辑也保持不变) ---
+        # --- 第二部分：获取原生媒体库列表 (使用现有函数) ---
         native_views_items = []
         should_merge_native = config_manager.APP_CONFIG.get('proxy_merge_native_libraries', True)
         if should_merge_native:
             user_id_match = re.search(r'/emby/Users/([^/]+)/Views', request.path)
             if user_id_match:
                 user_id = user_id_match.group(1)
-                # ★★★ 核心修复 1/2: 调用真实Emby时，我们获取完整对象 ★★★
-                full_native_response = emby_handler.get_emby_libraries(
+                
+                # ★★★ 核心修复 1/2: 直接调用您现有的函数 ★★★
+                # 它返回的已经是 Items 数组，我们直接使用即可。
+                all_native_views = emby_handler.get_emby_libraries(
                     config_manager.APP_CONFIG.get("emby_server_url", ""),
                     config_manager.APP_CONFIG.get("emby_api_key", ""),
-                    user_id,
-                    return_full_response=True # 假设您的 emby_handler 支持这个参数
+                    user_id
                 )
-                # 如果不支持，就直接用原来的方法，然后手动提取
-                # all_native_views = emby_handler.get_emby_libraries(...)
-                all_native_views = full_native_response.get("Items", []) if full_native_response else []
+                if all_native_views is None: 
+                    all_native_views = []
 
+                # --- 后续的筛选逻辑保持不变 ---
                 raw_selection = config_manager.APP_CONFIG.get('proxy_native_view_selection', [])
-                selected_native_view_ids = [x.strip() for x in raw_selection] if isinstance(raw_selection, list) else []
-                
+                # 修正：确保 raw_selection 是列表
+                if isinstance(raw_selection, str):
+                    selected_native_view_ids = [x.strip() for x in raw_selection.split(',') if x.strip()]
+                else:
+                    selected_native_view_ids = raw_selection
+
                 if not selected_native_view_ids:
                     native_views_items = all_native_views
                 else:
                     native_views_items = [view for view in all_native_views if view.get("Id") in selected_native_view_ids]
         
-        # --- 第三部分：合并列表 (这部分逻辑也保持不变) ---
+        # --- 第三部分：合并列表 (保持不变) ---
         final_items = []
         native_order = config_manager.APP_CONFIG.get('proxy_native_view_order', 'before')
         if native_order == 'after':
@@ -129,8 +134,7 @@ def handle_get_views():
             final_items.extend(fake_views_items)
 
         # ★★★ 核心修复 2/2: 构造最终的、兼容性最强的响应 ★★★
-        # 我们不再返回包含 TotalRecordCount 的完整对象，
-        # 而是返回一个只包含 "Items" 键的简化版对象，这是大多数客户端都能正确解析的格式。
+        # 返回一个只包含 "Items" 键的简化版对象。
         final_response = {"Items": final_items}
         return Response(json.dumps(final_response), mimetype='application/json')
         
