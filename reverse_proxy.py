@@ -333,14 +333,19 @@ def handle_get_mimicked_library_items(user_id, mimicked_id, params):
         return Response(json.dumps({"Items": [], "TotalRecordCount": 0}), mimetype='application/json')
 
 def handle_get_latest_items(user_id, params):
+    """
+    【V3 - Yamby 兼容最终版】
+    - 修复了 /Items/Latest 端点返回了错误的数据结构（对象而非数组）的问题。
+    - 保持了对 'limit' 参数的大小写兼容性。
+    """
     try:
         base_url, api_key = _get_real_emby_url_and_key()
         virtual_library_id = params.get('ParentId') or params.get('customViewId')
 
-        if virtual_library_id and is_mimicked_id(virtual_library_id): 
+        if virtual_library_id and is_mimicked_id(virtual_library_id):
             logger.info(f"处理针对虚拟库 '{virtual_library_id}' 的最新媒体请求...")
             try:
-                virtual_library_db_id = from_mimicked_id(virtual_library_id) 
+                virtual_library_db_id = from_mimicked_id(virtual_library_id)
             except (ValueError, TypeError):
                 return Response(json.dumps([]), mimetype='application/json')
 
@@ -353,7 +358,7 @@ def handle_get_latest_items(user_id, params):
             
             latest_params = {
                 "ParentId": real_emby_collection_id,
-                "Limit": int(limit_value), 
+                "Limit": int(limit_value),
                 "Fields": "PrimaryImageAspectRatio,BasicSyncInfo,DateCreated",
                 "SortBy": "DateCreated", 
                 "SortOrder": "Descending",
@@ -361,12 +366,21 @@ def handle_get_latest_items(user_id, params):
                 "IncludeItemTypes": "Movie,Series",
                 'api_key': api_key,
             }
+            
             target_url = f"{base_url}/emby/Users/{user_id}/Items"
             resp = requests.get(target_url, params=latest_params, timeout=15)
             resp.raise_for_status()
             items_data = resp.json()
-            return Response(json.dumps(items_data.get("Items", [])), mimetype='application/json')
+            
+            # ★★★ 核心修复：确保只返回 Items 数组 ★★★
+            # 从 Emby 返回的完整对象中，只提取 "Items" 字段的值。
+            # 这将返回一个纯粹的数组 [...]，正是 Yamby 所期望的。
+            items_array = items_data.get("Items", [])
+            return Response(json.dumps(items_array), mimetype='application/json')
+            # ★★★ 修改结束 ★★★
+
         else:
+            # --- 这部分默认转发逻辑保持不变 ---
             target_url = f"{base_url}/{request.path.lstrip('/')}"
             forward_headers = {k: v for k, v in request.headers if k.lower() not in ['host', 'accept-encoding']}
             forward_headers['Host'] = urlparse(base_url).netloc
