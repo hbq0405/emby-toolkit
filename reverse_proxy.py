@@ -49,21 +49,16 @@ def _get_real_emby_url_and_key():
     return base_url, api_key
 
 def handle_get_views():
-    """
-    【V5 - Yamby 兼容最终版】
-    - 修复了 /Views 端点返回了不兼容的数据结构的问题。
-    - 确保返回给客户端的是一个只包含 "Items" 数组的JSON对象。
-    """
     real_server_id = extensions.EMBY_SERVER_ID
     if not real_server_id:
         return "Proxy is not ready", 503
 
     try:
-        # --- 第一部分：生成虚拟库列表 (保持不变) ---
+        # --- 生成虚拟库列表 ---
         collections = db_handler.get_all_active_custom_collections()
         fake_views_items = []
         for coll in collections:
-            # ... (创建 fake_view 的代码保持不变) ...
+            # ... (创建 fake_view 的代码，使用 CollectionFolder 等兼容性字段) ...
             real_emby_collection_id = coll.get('emby_collection_id')
             db_id = coll['id']
             mimicked_id = to_mimicked_id(db_id)
@@ -81,7 +76,7 @@ def handle_get_views():
             fake_view = {
                 "Name": coll['name'] + name_suffix, "ServerId": real_server_id, "Id": mimicked_id,
                 "Guid": str(uuid.uuid4()), "Etag": f"{db_id}{int(time.time())}",
-                "DateCreated": "2025-0_1-01T00:00:00.0000000Z", "CanDelete": False, "CanDownload": False,
+                "DateCreated": "2025-01-01T00:00:00.0000000Z", "CanDelete": False, "CanDownload": False,
                 "SortName": coll['name'], "ExternalUrls": [], "ProviderIds": {}, "IsFolder": True,
                 "ParentId": "2", "Type": "CollectionFolder",
                 "PresentationUniqueKey": str(uuid.uuid4()), "DisplayPreferencesId": f"custom-{db_id}",
@@ -92,33 +87,32 @@ def handle_get_views():
             }
             fake_views_items.append(fake_view)
 
-        # --- 第二部分：获取原生媒体库列表 (现在可以正常工作了) ---
+        # --- 获取并合并原生媒体库 ---
         native_views_items = []
         should_merge_native = config_manager.APP_CONFIG.get('proxy_merge_native_libraries', True)
         if should_merge_native:
             user_id_match = re.search(r'/emby/Users/([^/]+)/Views', request.path)
             if user_id_match:
                 user_id = user_id_match.group(1)
-                
-                # ★★★ 现在这个调用是合法的了 ★★★
-                full_native_response = emby_handler.get_emby_libraries(
+                all_native_views = emby_handler.get_emby_libraries(
                     config_manager.APP_CONFIG.get("emby_server_url", ""),
                     config_manager.APP_CONFIG.get("emby_api_key", ""),
-                    user_id,
-                    return_full_response=True 
+                    user_id
                 )
-                all_native_views = full_native_response.get("Items", []) if full_native_response else []
-
-                # --- 后续筛选逻辑保持不变 ---
-                raw_selection = config_manager.APP_CONFIG.get('proxy_native_view_selection', [])
-                selected_native_view_ids = [x.strip() for x in raw_selection] if isinstance(raw_selection, list) else []
+                if all_native_views is None: all_native_views = []
                 
+                raw_selection = config_manager.APP_CONFIG.get('proxy_native_view_selection', [])
+                if isinstance(raw_selection, str):
+                    selected_native_view_ids = [x.strip() for x in raw_selection.split(',') if x.strip()]
+                else:
+                    selected_native_view_ids = raw_selection
+
                 if not selected_native_view_ids:
                     native_views_items = all_native_views
                 else:
                     native_views_items = [view for view in all_native_views if view.get("Id") in selected_native_view_ids]
         
-        # --- 第三部分：合并并返回 (保持不变) ---
+        # --- 合并并返回最终结果 ---
         final_items = []
         native_order = config_manager.APP_CONFIG.get('proxy_native_view_order', 'before')
         if native_order == 'after':
