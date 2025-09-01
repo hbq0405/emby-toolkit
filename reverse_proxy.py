@@ -334,8 +334,8 @@ def handle_get_mimicked_library_items(user_id, mimicked_id, params):
 
 def handle_get_latest_items(user_id, params):
     """
-    【V3 - Yamby 兼容最终版】
-    - 修复了 /Items/Latest 端点返回了错误的数据结构（对象而非数组）的问题。
+    【V4 - 完全兼容最终版】
+    - 修复了 /Items/Latest 端点在处理【原生库】和【虚拟库】时，都能正确返回数组而非对象。
     - 保持了对 'limit' 参数的大小写兼容性。
     """
     try:
@@ -343,6 +343,7 @@ def handle_get_latest_items(user_id, params):
         virtual_library_id = params.get('ParentId') or params.get('customViewId')
 
         if virtual_library_id and is_mimicked_id(virtual_library_id):
+            # --- 分支 A: 处理针对【虚拟库】的请求 (这部分逻辑已正确) ---
             logger.info(f"处理针对虚拟库 '{virtual_library_id}' 的最新媒体请求...")
             try:
                 virtual_library_db_id = from_mimicked_id(virtual_library_id)
@@ -357,42 +358,47 @@ def handle_get_latest_items(user_id, params):
             limit_value = params.get('Limit') or params.get('limit') or '20'
             
             latest_params = {
-                "ParentId": real_emby_collection_id,
-                "Limit": int(limit_value),
-                "Fields": "PrimaryImageAspectRatio,BasicSyncInfo,DateCreated",
-                "SortBy": "DateCreated", 
-                "SortOrder": "Descending",
-                "Recursive": "true",
-                "IncludeItemTypes": "Movie,Series",
+                "ParentId": real_emby_collection_id, "Limit": int(limit_value),
+                "Fields": "PrimaryImageAspectRatio,BasicSyncInfo,DateCreated", "SortBy": "DateCreated", 
+                "SortOrder": "Descending", "Recursive": "true", "IncludeItemTypes": "Movie,Series",
                 'api_key': api_key,
             }
-            
             target_url = f"{base_url}/emby/Users/{user_id}/Items"
             resp = requests.get(target_url, params=latest_params, timeout=15)
             resp.raise_for_status()
             items_data = resp.json()
             
-            # ★★★ 核心修复：确保只返回 Items 数组 ★★★
-            # 从 Emby 返回的完整对象中，只提取 "Items" 字段的值。
-            # 这将返回一个纯粹的数组 [...]，正是 Yamby 所期望的。
             items_array = items_data.get("Items", [])
             return Response(json.dumps(items_array), mimetype='application/json')
-            # ★★★ 修改结束 ★★★
-
+        
         else:
-            # --- 这部分默认转发逻辑保持不变 ---
+            # --- ★★★ 核心修复：分支 B, 处理针对【原生库】或【全服】的请求 ★★★ ---
+            logger.info(f"处理针对原生库/全服的最新媒体请求...")
+            
             target_url = f"{base_url}/{request.path.lstrip('/')}"
             forward_headers = {k: v for k, v in request.headers if k.lower() not in ['host', 'accept-encoding']}
             forward_headers['Host'] = urlparse(base_url).netloc
+            
             forward_params = request.args.copy()
             forward_params['api_key'] = api_key
-            resp = requests.request(
-                method=request.method, url=target_url, headers=forward_headers, params=forward_params,
-                data=request.get_data(), stream=True, timeout=30.0
+            
+            # 不再使用 stream=True，因为我们需要解析JSON
+            resp = requests.get(
+                url=target_url, 
+                headers=forward_headers, 
+                params=forward_params,
+                timeout=30.0
             )
-            excluded_resp_headers = ['content-encoding', 'content-length', 'transfer-encoding', 'connection']
-            response_headers = [(name, value) for name, value in resp.raw.headers.items() if name.lower() not in excluded_resp_headers]
-            return Response(resp.iter_content(chunk_size=8192), resp.status_code, response_headers)
+            resp.raise_for_status()
+            
+            # 从真实Emby的响应中，同样提取出 Items 数组
+            items_data = resp.json()
+            items_array = items_data.get("Items", [])
+            
+            # 返回修正后的纯数组给客户端
+            return Response(json.dumps(items_array), mimetype='application/json')
+            # ★★★ 修改结束 ★★★
+
     except Exception as e:
         logger.error(f"处理最新媒体时发生未知错误: {e}", exc_info=True)
         return Response(json.dumps([]), mimetype='application/json')
