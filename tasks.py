@@ -1290,6 +1290,7 @@ def get_task_registry(context: str = 'all'):
         'actor-tracking': (task_process_actor_subscriptions, "演员订阅扫描", 'actor', True),
         'generate-all-covers': (task_generate_all_covers, "生成所有封面", 'media', True),
         'auto-subscribe': (task_auto_subscribe, "智能订阅缺失", 'media', True),
+        'sync-user-data': (task_sync_all_user_data, "同步用户数据", 'media', True),
         'sync-images-map': (task_full_image_sync, "覆盖缓存备份", 'media', True),
 
         # --- 不适合任务链的、需要特定参数的任务 ---
@@ -2026,6 +2027,92 @@ def task_generate_all_covers(processor: MediaProcessor):
         final_message = "所有媒体库封面已处理完毕！"
         if processor.is_stop_requested(): final_message = "任务已中止。"
         task_manager.update_status_from_thread(100, final_message)
+
+    except Exception as e:
+        logger.error(f"执行 '{task_name}' 任务时发生严重错误: {e}", exc_info=True)
+        task_manager.update_status_from_thread(-1, f"任务失败: {e}")
+# ★★★ 全量同步所有用户数据的后台任务 ★★★
+def task_sync_all_user_data(processor: MediaProcessor):
+    """
+    【V3 - 配置读取修正最终版】
+    - 修复了错误地从全局 config_manager 读取媒体库列表的问题。
+    - 现在和其他所有任务一样，从传递进来的 processor 实例中获取配置，保证了配置的一致性。
+    """
+    task_name = "全量同步用户数据"
+    logger.info(f"--- 开始执行 '{task_name}' 任务 ---")
+    
+    try:
+        # ★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★
+        # ★★★ 核心修正：从 processor 对象中获取所有配置，不再碰全局变量 ★★★
+        # ★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★
+        emby_url = processor.emby_url
+        emby_api_key = processor.emby_api_key
+        # 直接从 processor 的内部配置字典里读取媒体库列表
+        library_ids_to_scan = processor.config.get("libraries_to_process", [])
+        # ★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★
+
+        task_manager.update_status_from_thread(5, "正在获取Emby用户列表...")
+        users_to_sync = emby_handler.get_all_users(emby_url, emby_api_key)
+        
+        if not users_to_sync:
+            task_manager.update_status_from_thread(-1, "任务失败：未能从Emby获取到任何用户，请检查API Key是否拥有管理员权限。")
+            return
+
+        if not library_ids_to_scan:
+            # 这里的日志现在是准确的，因为它反映了 processor 的真实状态
+            logger.error("任务中止：从处理器配置中未能获取到任何需要处理的媒体库。")
+            task_manager.update_status_from_thread(-1, "任务失败：未能获取到媒体库配置，请尝试重新保存一次设置。")
+            return
+
+        total_users = len(users_to_sync)
+        logger.info(f"将为 {total_users} 个用户，在 {len(library_ids_to_scan)} 个媒体库中同步数据。")
+
+        for i, user in enumerate(users_to_sync):
+            user_id = user.get("Id")
+            user_name = user.get("Name")
+            if not user_id or not user_name:
+                continue
+
+            progress = 10 + int((i / total_users) * 80)
+            task_manager.update_status_from_thread(progress, f"({i+1}/{total_users}) 正在同步用户 '{user_name}' 的数据...")
+            
+            all_items = emby_handler.get_emby_library_items(
+                base_url=emby_url,
+                api_key=emby_api_key,
+                user_id=user_id,
+                library_ids=library_ids_to_scan,
+                media_type_filter="Movie,Series,Episode",
+                fields="ProviderIds,UserData,SeriesId"
+            )
+
+            if not all_items:
+                logger.warning(f"用户 '{user_name}' 在指定的媒体库中没有任何媒体项，或无权访问。跳过。")
+                continue
+
+            data_to_upsert = []
+            for item in all_items:
+                user_data = item.get("UserData")
+                item_type = item.get("Type")
+                if user_data:
+                    record = {
+                        "user_emby_id": user_id,
+                        "item_emby_id": item["Id"],
+                        "is_favorite": user_data.get("IsFavorite", False),
+                        "is_played": user_data.get("Played", False),
+                        "playback_position_ticks": user_data.get("PlaybackPositionTicks", 0)
+                    }
+                    if item_type == "Episode":
+                        series_id = item.get("SeriesId")
+                        if series_id:
+                            record["series_emby_id"] = series_id
+                    data_to_upsert.append(record)
+            
+            if data_to_upsert:
+                logger.info(f"  -> 正在为用户 '{user_name}' 批量写入 {len(data_to_upsert)} 条数据...")
+                db_handler.batch_upsert_user_media_data(data_to_upsert)
+
+        task_manager.update_status_from_thread(100, "所有用户的播放和收藏数据已同步完成。")
+        logger.info(f"--- '{task_name}' 任务成功完成 ---")
 
     except Exception as e:
         logger.error(f"执行 '{task_name}' 任务时发生严重错误: {e}", exc_info=True)

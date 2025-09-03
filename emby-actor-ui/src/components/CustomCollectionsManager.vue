@@ -361,11 +361,13 @@
               <div style="width: 100%;">
                 <n-space v-for="(rule, index) in currentCollection.definition.dynamic_rules" :key="index" style="margin-bottom: 12px;" align="center">
                   
-                  <!-- 修复：使用 dynamicFieldOptions -->
+                  <!-- 1. 字段选择：使用 dynamicFieldOptions，这部分已正确 -->
                   <n-select v-model:value="rule.field" :options="dynamicFieldOptions" placeholder="字段" style="width: 150px;" clearable />
                   
+                  <!-- 2. 操作符选择：使用 getOperatorOptionsForRow，这部分已正确 -->
                   <n-select v-model:value="rule.operator" :options="getOperatorOptionsForRow(rule)" placeholder="操作" style="width: 120px;" :disabled="!rule.field" clearable />
                   
+                  <!-- 3. 值选择：根据不同的字段，渲染不同的输入组件 -->
                   <template v-if="rule.field === 'playback_status'">
                     <n-select
                       v-model:value="rule.value"
@@ -629,12 +631,12 @@ const getInitialFormModel = () => ({
     item_type: ['Movie'],
     url: '',
     limit: null,
-    // --- ▼▼▼ 核心修改 2/3：为新创建的合集设置更合理的默认排序 ▼▼▼ ---
-    default_sort_by: 'original', // 对于榜单类型，默认使用原始顺序
+    default_sort_by: 'original',
     default_sort_order: 'Ascending',
-    dynamic_filter_enabled: false, // 动态筛选开关，默认关闭
-    dynamic_logic: 'AND',          // 动态筛选的逻辑
-    dynamic_rules: []              // 存放动态规则的数组 
+    // --- 新增字段的默认值 ---
+    dynamic_filter_enabled: false, 
+    dynamic_logic: 'AND', // 动态筛选目前只支持 AND，但保留字段以备将来扩展
+    dynamic_rules: []      
   }
 });
 const currentCollection = ref(getInitialFormModel());
@@ -782,7 +784,7 @@ watch(() => currentCollection.value.definition.dynamic_rules, (newRules) => {
 }, { deep: true });
 
 const ruleConfig = {
-  // --- 静态规则 ---
+  // --- 静态规则 (无变化) ---
   title: { label: '标题', type: 'text', operators: ['contains', 'does_not_contain', 'starts_with', 'ends_with'] },
   actors: { label: '演员', type: 'text', operators: ['contains', 'is_one_of', 'is_none_of'] }, 
   directors: { label: '导演', type: 'text', operators: ['contains', 'is_one_of', 'is_none_of'] }, 
@@ -795,7 +797,9 @@ const ruleConfig = {
   unified_rating: { label: '家长分级', type: 'select', operators: ['is_one_of', 'is_none_of', 'eq'] },
   release_date: { label: '上映于', type: 'date', operators: ['in_last_days', 'not_in_last_days'] },
   date_added: { label: '入库于', type: 'date', operators: ['in_last_days', 'not_in_last_days'] },
-  // --- 动态规则 ---
+  
+  // --- ★★★ 动态规则的定义 ★★★ ---
+  // 我们把它们和静态规则放在一起，用一个新的 'type' 属性来区分
   playback_status: { label: '播放状态', type: 'user_data', operators: ['is', 'is_not'] },
   is_favorite: { label: '是否收藏', type: 'user_data', operators: ['is', 'is_not'] },
 };
@@ -805,6 +809,7 @@ const operatorLabels = {
   gte: '大于等于', lte: '小于等于', eq: '等于',
   in_last_days: '最近N天内', not_in_last_days: 'N天以前',
   is_one_of: '是其中之一', is_none_of: '不是任何一个',
+  // ★★★ 新增：动态规则操作符的标签 ★★★
   is: '是',
   is_not: '不是'
 };
@@ -1240,13 +1245,28 @@ const addDynamicRule = () => {
   if (!currentCollection.value.definition.dynamic_rules) {
     currentCollection.value.definition.dynamic_rules = [];
   }
-  // 修复：为新规则设置一个默认字段，避免UI显示为空
+  // 为新规则设置一个合理的默认值，避免UI显示为空
   currentCollection.value.definition.dynamic_rules.push({ field: 'playback_status', operator: 'is', value: 'unplayed' });
 };
 
 const removeDynamicRule = (index) => {
   currentCollection.value.definition.dynamic_rules.splice(index, 1);
 };
+
+watch(() => currentCollection.value.definition.dynamic_rules, (newRules) => {
+  if (Array.isArray(newRules)) {
+    newRules.forEach(rule => {
+      // 当字段切换为“是否收藏”且当前值不是布尔值时，重置
+      if (rule.field === 'is_favorite' && typeof rule.value !== 'boolean') {
+        rule.value = true; // 默认设置为 true (已收藏)
+      } 
+      // 当字段切换为“播放状态”且当前值无效时，重置
+      else if (rule.field === 'playback_status' && !['unplayed', 'in_progress', 'played'].includes(rule.value)) {
+        rule.value = 'unplayed'; // 默认设置为 'unplayed' (未播放)
+      }
+    });
+  }
+}, { deep: true });
 
 onMounted(() => {
   fetchCollections();

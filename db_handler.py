@@ -1728,3 +1728,176 @@ def match_and_update_list_collections_on_item_add(new_item_tmdb_id: str, new_ite
     except psycopg2.Error as e_db:
         logger.error(f"匹配和更新榜单合集时发生数据库错误: {e_db}", exc_info=True)
         raise
+
+# ★★★ 新增：用户媒体数据访问层 ★★★
+
+def upsert_user_media_data(user_id: str, item_id: str, data: Dict[str, Any]):
+    """
+    【V2 - 字段匹配最终修正版】
+    - 修复了 INSERT 语句中列和值数量不匹配的BUG。
+    - 移除了 last_updated 字段，让数据库在插入时自动使用默认的 NOW()。
+    """
+    # ★★★ 核心修正：从 INSERT 列表中移除 last_updated ★★★
+    sql = """
+        INSERT INTO user_media_data (user_emby_id, item_emby_id, series_emby_id, is_favorite, is_played, playback_position_ticks)
+        VALUES (%s, %s, %s, %s, %s, %s)
+        ON CONFLICT (user_emby_id, item_emby_id) DO UPDATE SET
+            series_emby_id = EXCLUDED.series_emby_id,
+            is_favorite = EXCLUDED.is_favorite,
+            is_played = EXCLUDED.is_played,
+            playback_position_ticks = EXCLUDED.playback_position_ticks,
+            last_updated = NOW();
+    """
+    try:
+        with get_db_connection() as conn:
+            with conn.cursor() as cursor:
+                # ★★★ 核心修正：传入的值也减少一个，完美匹配 ★★★
+                cursor.execute(sql, (
+                    user_id,
+                    item_id,
+                    data.get('series_emby_id'),
+                    data.get('is_favorite'),
+                    data.get('is_played'),
+                    data.get('playback_position_ticks')
+                ))
+            conn.commit()
+    except Exception as e:
+        logger.error(f"写入用户媒体数据时失败 (User: {user_id}, Item: {item_id}): {e}", exc_info=True)
+        raise
+
+# ★★★ 2. 修正【批量】写入函数 ★★★
+def batch_upsert_user_media_data(data_list: List[Dict[str, Any]]):
+    """
+    【V2 - 字段匹配最终修正版】
+    - 修复了 INSERT 语句中列和值数量不匹配的BUG。
+    - 移除了 last_updated 字段，让数据库在插入时自动使用默认的 NOW()。
+    """
+    if not data_list:
+        return
+    
+    from psycopg2.extras import execute_values
+    
+    # ★★★ 核心修正：从 INSERT 列表中移除 last_updated ★★★
+    sql = """
+        INSERT INTO user_media_data (user_emby_id, item_emby_id, series_emby_id, is_favorite, is_played, playback_position_ticks)
+        VALUES %s
+        ON CONFLICT (user_emby_id, item_emby_id) DO UPDATE SET
+            series_emby_id = EXCLUDED.series_emby_id,
+            is_favorite = EXCLUDED.is_favorite,
+            is_played = EXCLUDED.is_played,
+            playback_position_ticks = EXCLUDED.playback_position_ticks,
+            last_updated = NOW();
+    """
+    
+    # ★★★ 核心修正：传入的值也减少一个，完美匹配 ★★★
+    values_to_insert = [
+        (
+            d['user_emby_id'],
+            d['item_emby_id'],
+            d.get('series_emby_id'),
+            d.get('is_favorite', False),
+            d.get('is_played', False),
+            d.get('playback_position_ticks', 0)
+        ) for d in data_list
+    ]
+    
+    try:
+        with get_db_connection() as conn:
+            with conn.cursor() as cursor:
+                execute_values(cursor, sql, values_to_insert, page_size=1000)
+            conn.commit()
+    except Exception as e:
+        logger.error(f"批量写入用户媒体数据时失败: {e}", exc_info=True)
+        raise
+
+def get_user_media_data(user_id: str, item_id: str) -> Optional[Dict[str, Any]]:
+    """
+    【新增】为单个用户获取单个媒体项的本地化数据。
+    """
+    try:
+        with get_db_connection() as conn:
+            with conn.cursor() as cursor:
+                cursor.execute(
+                    "SELECT * FROM user_media_data WHERE user_emby_id = %s AND item_emby_id = %s",
+                    (user_id, item_id)
+                )
+                row = cursor.fetchone()
+                return dict(row) if row else None
+    except Exception as e:
+        logger.error(f"获取用户媒体数据时失败 (User: {user_id}, Item: {item_id}): {e}", exc_info=True)
+        return None
+
+def get_series_data_for_aggregation(user_id: str, series_id: str) -> Dict[str, Any]:
+    """
+    【最终版】
+    从数据库中一次性获取聚合剧集状态所需的所有数据：
+    1. 剧集本身的收藏状态。
+    2. 其下所有分集的播放状态。
+    """
+    result = {
+        'series_favorite_status': False,
+        'episodes_data': []
+    }
+    try:
+        with get_db_connection() as conn:
+            with conn.cursor() as cursor:
+                # 1. 获取剧集本身的收藏状态
+                cursor.execute(
+                    "SELECT is_favorite FROM user_media_data WHERE user_emby_id = %s AND item_emby_id = %s",
+                    (user_id, series_id)
+                )
+                series_row = cursor.fetchone()
+                if series_row:
+                    result['series_favorite_status'] = series_row['is_favorite']
+
+                # 2. 获取所有关联分集的数据 (利用我们新建的索引，这个查询会非常快)
+                cursor.execute(
+                    "SELECT is_played, playback_position_ticks FROM user_media_data WHERE user_emby_id = %s AND series_emby_id = %s",
+                    (user_id, series_id)
+                )
+                result['episodes_data'] = [dict(row) for row in cursor.fetchall()]
+        return result
+    except Exception as e:
+        logger.error(f"获取剧集聚合数据时失败 (User: {user_id}, Series: {series_id}): {e}", exc_info=True)
+        return result
+def get_all_user_media_data_for_user(user_id: str) -> List[Dict[str, Any]]:
+    """
+    【新增-性能优化】
+    一次性获取指定用户的所有媒体数据记录。
+    这是解决 N+1 查询问题的关键。
+    """
+    try:
+        with get_db_connection() as conn:
+            with conn.cursor() as cursor:
+                cursor.execute(
+                    "SELECT * FROM user_media_data WHERE user_emby_id = %s",
+                    (user_id,)
+                )
+                return [dict(row) for row in cursor.fetchall()]
+    except Exception as e:
+        logger.error(f"获取用户 {user_id} 的全部媒体数据时失败: {e}", exc_info=True)
+        return []
+def get_episode_counts_for_series_list(tmdb_ids: List[str]) -> Dict[str, int]:
+    """
+    【新增-性能优化】
+    根据一个TMDb ID列表，批量从 media_metadata 表获取对应的总集数。
+    返回一个 {tmdb_id: episode_count} 的字典。
+    """
+    if not tmdb_ids:
+        return {}
+    
+    counts_map = {}
+    try:
+        with get_db_connection() as conn:
+            with conn.cursor() as cursor:
+                # 使用 ANY(%s) 语法进行高效的批量查询
+                sql = "SELECT tmdb_id, episode_count FROM media_metadata WHERE tmdb_id = ANY(%s)"
+                cursor.execute(sql, (tmdb_ids,))
+                rows = cursor.fetchall()
+                for row in rows:
+                    if row['tmdb_id'] and row['episode_count'] is not None:
+                        counts_map[row['tmdb_id']] = row['episode_count']
+        return counts_map
+    except Exception as e:
+        logger.error(f"批量获取剧集总数时失败: {e}", exc_info=True)
+        return {}

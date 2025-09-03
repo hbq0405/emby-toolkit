@@ -399,7 +399,7 @@ def get_emby_library_items(
             
             # ★★★ 核心修复：在这里决定 Fields 参数的值 ★★★
             # 如果调用者提供了 fields，就用它；否则，使用我们原来的默认值。
-            fields_to_request = fields if fields else "Id,Name,Type,ProductionYear,ProviderIds,Path,OriginalTitle,DateCreated,PremiereDate,ChildCount,RecursiveItemCount,Overview,CommunityRating,OfficialRating,Genres,Studios,Taglines,People,ProductionLocations"
+            fields_to_request = fields if fields else "Id,Name,Type,ProductionYear,ProviderIds,Path,OriginalTitle,DateCreated,PremiereDate,ChildCount,RecursiveItemCount,Overview,CommunityRating,OfficialRating,Genres,Studios,Taglines,People,ProductionLocations,ChildCount,RecursiveItemCount"
 
             params = {
                 "api_key": api_key, "Recursive": "true", "ParentId": lib_id,
@@ -614,7 +614,7 @@ def get_series_children(
     user_id: str,
     series_name_for_log: Optional[str] = None,
     include_item_types: str = "Season,Episode",
-    fields: str = "Id,Name,ParentIndexNumber,IndexNumber,Overview"
+    fields: str = "Id,Name,ParentIndexNumber,IndexNumber,Overview,ParentId,UserData"
 ) -> Optional[List[Dict[str, Any]]]:
     """
     【V2 - 灵活版】获取指定剧集下的子项目，可以指定类型。
@@ -1319,3 +1319,26 @@ def update_emby_item_details(item_id: str, new_data: Dict[str, Any], emby_server
     except Exception as e:
         logger.error(f"更新项目详情时发生未知错误 (ID: {item_id}): {e}", exc_info=True)
         return False
+# ★★★ 获取服务器上的所有用户 ★★★
+def get_all_users(base_url: str, api_key: str) -> List[Dict[str, Any]]:
+    """
+    【新增】从 Emby 服务器获取所有用户的列表。
+    这需要管理员权限的 API Key。
+    """
+    if not base_url or not api_key:
+        logger.error("get_all_users: 缺少必要的 Emby 配置信息。")
+        return []
+
+    api_url = f"{base_url.rstrip('/')}/Users"
+    params = {"api_key": api_key}
+    
+    try:
+        logger.debug("正在从 Emby 获取所有用户列表...")
+        response = requests.get(api_url, params=params, timeout=15)
+        response.raise_for_status()
+        users = response.json()
+        logger.info(f"成功获取到 {len(users)} 个 Emby 用户。")
+        return users
+    except Exception as e:
+        logger.error(f"获取 Emby 用户列表时失败: {e}", exc_info=True)
+        return []

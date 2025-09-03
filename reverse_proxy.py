@@ -256,7 +256,7 @@ def handle_get_mimicked_library_items(user_id, mimicked_id, params):
         base_items = emby_handler.get_emby_library_items(
             base_url=base_url, api_key=api_key, user_id=user_id,
             library_ids=[real_emby_collection_id],
-            fields="PrimaryImageAspectRatio,ProviderIds,UserData,Name,ProductionYear,CommunityRating,DateCreated,PremiereDate"
+            fields="PrimaryImageAspectRatio,ProviderIds,UserData,Name,ProductionYear,CommunityRating,DateCreated,PremiereDate,RecursiveItemCount"
         )
         if not base_items:
             return Response(json.dumps({"Items": [], "TotalRecordCount": 0}), mimetype='application/json')
@@ -269,13 +269,65 @@ def handle_get_mimicked_library_items(user_id, mimicked_id, params):
         if definition.get('dynamic_filter_enabled'):
             logger.trace("  -> 阶段2：检测到已启用实时用户筛选，开始二次过滤...")
             
+            # ★★★ 核心性能优化：数据预加载 (备货) ★★★
+            logger.debug("    -> 正在为动态筛选预加载用户数据...")
+            all_user_data = db_handler.get_all_user_media_data_for_user(user_id)
+            
+            # ★★★ 核心性能优化：数据整理成快速查找表 ★★★
+            items_map = {d['item_emby_id']: d for d in all_user_data}
+            
+            # 在应用层进行剧集状态聚合
+            # 1. 从刚从Emby获取的 base_items 中创建一个剧集详情的快速查找表
+            series_details_map = {item['Id']: item for item in base_items if item.get('Type') == 'Series'}
+
+            # 2. 聚合本地数据库中的用户播放数据 (逻辑不变)
+            series_episodes_map = {}
+            for d in all_user_data:
+                if d.get('series_emby_id'):
+                    sid = d['series_emby_id']
+                    if sid not in series_episodes_map:
+                        series_episodes_map[sid] = []
+                    series_episodes_map[sid].append(d)
+            
+            # 3. 结合两边的数据，进行最终状态计算
+            series_aggregated_map = {}
+            for series_id, episodes in series_episodes_map.items():
+                # 从快速查找表中获取权威的剧集详情
+                series_details = series_details_map.get(series_id)
+                if not series_details:
+                    # 如果这个剧集不在当前的视图中（例如被Emby的某些规则排除了），则跳过
+                    continue
+
+                # ★★★ 关键：使用来自Emby的 RecursiveItemCount 作为权威的总集数 ★★★
+                total = series_details.get('RecursiveItemCount', 0)
+                
+                # 计算已播放和播放中的集数 (逻辑不变)
+                played = sum(1 for ep in episodes if ep.get('is_played'))
+                in_progress = sum(1 for ep in episodes if not ep.get('is_played') and ep.get('playback_position_ticks', 0) > 0)
+                
+                # 判断状态 (逻辑不变)
+                status = 'unplayed'
+                if total > 0 and played >= total: # 使用 >= 以增加容错性
+                    status = 'played'
+                elif played > 0 or in_progress > 0:
+                    status = 'in_progress'
+                
+                series_aggregated_map[series_id] = {'playback_status': status}
+
+            prefetched_user_data = {
+                "items_map": items_map,
+                "series_map": series_aggregated_map
+            }
+            logger.debug("    -> 用户数据预加载和聚合完成。")
+
             dynamic_definition = {
                 'rules': definition.get('dynamic_rules', []),
                 'logic': definition.get('dynamic_logic', 'AND')
             }
             
             engine = FilterEngine()
-            final_items = engine.execute_dynamic_filter(base_items, dynamic_definition)
+            # ★★★ 将预加载的数据传递给筛选引擎 ★★★
+            final_items = engine.execute_dynamic_filter(base_items, dynamic_definition, user_id, prefetched_user_data)
             logger.trace(f"  -> 阶段2完成：二次过滤后，剩下 {len(final_items)} 个媒体项。")
         else:
             logger.trace("  -> 阶段2跳过：未启用实时用户筛选。")

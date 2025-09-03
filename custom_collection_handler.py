@@ -452,57 +452,7 @@ class FilterEngine:
         return matched_collections
     
     # ▼▼▼ 动态筛选 ▼▼▼
-    def _item_matches_dynamic_rules(self, emby_item: Dict[str, Any], rules: List[Dict[str, Any]], logic: str) -> bool:
-        if not rules: return True
-        
-        results = []
-        user_data = emby_item.get('UserData', {})
-
-        for rule in rules:
-            field, op, value = rule.get("field"), rule.get("operator"), rule.get("value")
-            match = False
-            
-            # 默认操作符为 'is'，以兼容旧数据
-            if not op: op = 'is'
-
-            if field == 'playback_status':
-                is_played = user_data.get('Played', False)
-                in_progress = user_data.get('PlaybackPositionTicks', 0) > 0
-                
-                current_status = 'unplayed'
-                if is_played:
-                    current_status = 'played'
-                elif in_progress:
-                    current_status = 'in_progress'
-                
-                # 先判断是否“是”
-                is_match = (current_status == value)
-                
-                # 再根据操作符决定最终结果
-                if op == 'is':
-                    match = is_match
-                elif op == 'is_not':
-                    match = not is_match
-
-            elif field == 'is_favorite':
-                is_favorite = user_data.get('IsFavorite', False)
-                
-                # 先判断是否“是”
-                is_match = (value is True and is_favorite) or \
-                           (value is False and not is_favorite)
-                
-                # 再根据操作符决定最终结果
-                if op == 'is':
-                    match = is_match
-                elif op == 'is_not':
-                    match = not is_match
-            
-            results.append(match)
-
-        # 动态筛选目前只支持 AND
-        return all(results)
-
-    def execute_dynamic_filter(self, all_emby_items: List[Dict[str, Any]], definition: Dict[str, Any]) -> List[Dict[str, Any]]:
+    def execute_dynamic_filter(self, all_emby_items: List[Dict[str, Any]], definition: Dict[str, Any], user_id: str, prefetched_user_data: Dict[str, Any]) -> List[Dict[str, Any]]:
         logger.info("  -> 动态筛选引擎：开始在实时数据上执行规则...")
         rules = definition.get('rules', [])
         logic = definition.get('logic', 'AND')
@@ -510,7 +460,63 @@ class FilterEngine:
         if not rules:
             return all_emby_items
 
-        matched_items = [item for item in all_emby_items if self._item_matches_dynamic_rules(item, rules, logic)]
+        matched_items = [item for item in all_emby_items if self._item_matches_dynamic_rules(item, rules, logic, user_id, prefetched_user_data)]
         
         logger.info(f"  -> 动态筛选完成！共找到 {len(matched_items)} 部匹配的媒体项目。")
         return matched_items
+
+    def _item_matches_dynamic_rules(self, emby_item: Dict[str, Any], rules: List[Dict[str, Any]], logic: str, user_id: str, prefetched_user_data: Dict[str, Any]) -> bool:
+        """
+        【V4 - 高性能最终版】
+        - 不再执行任何数据库查询。
+        - 所有数据均从预加载的 prefetched_user_data 字典中进行高速内存查找。
+        """
+        if not rules: return True
+        
+        results = []
+        item_id = emby_item.get('Id')
+        item_type = emby_item.get('Type')
+        
+        # 从预加载数据中获取查找表
+        items_lookup = prefetched_user_data.get("items_map", {})
+        series_lookup = prefetched_user_data.get("series_map", {})
+
+        for rule in rules:
+            field, op, value = rule.get("field"), rule.get("operator"), rule.get("value")
+            match = False
+            if not op: op = 'is'
+
+            if field == 'playback_status':
+                current_status = 'unplayed'
+                if item_type == 'Movie':
+                    # ★★★ 告别数据库，拥抱内存查找 ★★★
+                    local_data = items_lookup.get(item_id)
+                    if local_data:
+                        if local_data.get('is_played'):
+                            current_status = 'played'
+                        elif local_data.get('playback_position_ticks', 0) > 0:
+                            current_status = 'in_progress'
+                elif item_type == 'Series':
+                    # ★★★ 直接从预聚合的结果中获取状态 ★★★
+                    agg_data = series_lookup.get(item_id)
+                    if agg_data:
+                        current_status = agg_data.get('playback_status', 'unplayed')
+                
+                is_match = (current_status == value)
+                if op == 'is': match = is_match
+                elif op == 'is_not': match = not is_match
+
+            elif field == 'is_favorite':
+                is_favorite = False
+                # ★★★ 告别数据库，拥抱内存查找 ★★★
+                local_data = items_lookup.get(item_id)
+                if local_data:
+                    is_favorite = local_data.get('is_favorite', False)
+
+                is_match = (value is True and is_favorite) or (value is False and not is_favorite)
+                if op == 'is': match = is_match
+                elif op == 'is_not': match = not is_match
+            
+            results.append(match)
+
+        return all(results) if logic.upper() == 'AND' else any(results)

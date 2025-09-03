@@ -20,6 +20,7 @@ from extensions import (
     processor_ready_required
 )
 from utils import LogDBManager
+import user_data_handler
 from flask import Flask, render_template, request, redirect, url_for, jsonify, flash, stream_with_context, send_from_directory,Response, abort, session
 from werkzeug.utils import safe_join, secure_filename
 from utils import get_override_path_for_item
@@ -61,6 +62,7 @@ from routes.auth import auth_bp, init_auth as init_auth_from_blueprint
 from routes.actions import actions_bp
 from routes.cover_generator_config import cover_generator_config_bp
 from routes.tasks import tasks_bp
+from routes.user_data import user_data_bp
 # --- 核心模块导入 ---
 import constants # 你的常量定义\
 import logging
@@ -309,6 +311,23 @@ def init_db():
                 """)
                 cursor.execute("CREATE INDEX IF NOT EXISTS idx_tam_subscription_id ON tracked_actor_media (subscription_id)")
                 cursor.execute("CREATE INDEX IF NOT EXISTS idx_tam_status ON tracked_actor_media (status)")
+
+                logger.trace("  -> 正在创建 'user_media_data' 表...")
+                cursor.execute("""
+                    CREATE TABLE IF NOT EXISTS user_media_data (
+                        user_emby_id TEXT NOT NULL,
+                        item_emby_id TEXT NOT NULL,
+                        series_emby_id TEXT, 
+                        is_favorite BOOLEAN DEFAULT FALSE,
+                        is_played BOOLEAN DEFAULT FALSE,
+                        playback_position_ticks BIGINT DEFAULT 0,
+                        last_updated TIMESTAMP WITH TIME ZONE DEFAULT NOW(),
+                        PRIMARY KEY (user_emby_id, item_emby_id)
+                    )
+                """)
+                cursor.execute("CREATE INDEX IF NOT EXISTS idx_umd_user_item ON user_media_data (user_emby_id, item_emby_id)")
+                cursor.execute("CREATE INDEX IF NOT EXISTS idx_umd_item_id ON user_media_data (item_emby_id)")
+                cursor.execute("CREATE INDEX IF NOT EXISTS idx_umd_user_series ON user_media_data (user_emby_id, series_emby_id)")
 
                 # --- 2. 执行平滑升级检查 ---
                 logger.info("  -> 开始执行数据库表结构平滑升级检查...")
@@ -569,9 +588,28 @@ def health_check():
 @app.route('/webhook/emby', methods=['POST'])
 @extensions.processor_ready_required
 def emby_webhook():
+    """
+    【V3 - 总调度中心版】
+    作为所有 Emby 事件的唯一入口，根据事件类型进行分发。
+    - 为高频的 'userdata.save' 事件建立快速处理通道。
+    - 保留并复用为 'item.add' 等媒体库事件设计的复杂防抖机制。
+    """
     data = request.json
     event_type = data.get("Event") if data else "未知事件"
     logger.info(f"收到Emby Webhook: {event_type}")
+
+    # --- 快速通道：处理用户数据事件 ---
+    if event_type in [
+        "userdata.save", 
+        "item.rate", 
+        "playback.start", 
+        "playback.stop",
+        "item.markplayed",
+        "item.markunplayed"
+    ]:
+        # 直接将数据交给“专家”处理，然后立即返回
+        user_data_handler.process_user_data_event(data)
+        return jsonify({"status": "user_data_processed_quickly"}), 200
 
     # --- 批量处理函数：处理队列中的所有新增/入库事件 (此函数不变) ---
     def _process_batch_webhook_events():
@@ -777,6 +815,7 @@ app.register_blueprint(auth_bp)
 app.register_blueprint(actions_bp)
 app.register_blueprint(cover_generator_config_bp)
 app.register_blueprint(tasks_bp)
+app.register_blueprint(user_data_bp)
 
 def main_app_start():
     """将主应用启动逻辑封装成一个函数"""
