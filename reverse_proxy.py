@@ -55,8 +55,8 @@ def _get_real_emby_url_and_key():
 
 def handle_get_views():
     """
-    【V2 - PG JSON 兼容版】
-    - 修复了因 psycopg2 自动解析 JSON 字段而导致的 TypeError。
+    【V2.1 - 真实库合并逻辑修正版】
+    - 修复了当不选择任何真实库时，会错误地合并所有真实库的 Bug。
     """
     real_server_id = extensions.EMBY_SERVER_ID
     if not real_server_id:
@@ -75,7 +75,6 @@ def handle_get_views():
             mimicked_id = to_mimicked_id(db_id)
             image_tags = {"Primary": f"{real_emby_collection_id}?timestamp={int(time.time())}"}
 
-            # ★★★ 核心修复：直接使用已经是字典的 definition_json 字段 ★★★
             definition = coll.get('definition_json') or {}
             
             merged_libraries = definition.get('merged_libraries', [])
@@ -92,7 +91,7 @@ def handle_get_views():
                 "Name": coll['name'] + name_suffix, 
                 "ServerId": real_server_id, 
                 "Id": mimicked_id,
-                "Guid": str(uuid.uuid4()), # 我们会用这个Guid
+                "Guid": str(uuid.uuid4()),
                 "Etag": f"{db_id}{int(time.time())}",
                 "DateCreated": "2025-01-01T00:00:00.0000000Z", 
                 "CanDelete": False, 
@@ -102,12 +101,12 @@ def handle_get_views():
                 "ProviderIds": {}, 
                 "IsFolder": True,
                 "ParentId": "2", 
-                "Type": "CollectionFolder",  # 1. 改为 CollectionFolder
-                "PresentationUniqueKey": str(uuid.uuid4()), # 2. 增加 PresentationUniqueKey
-                "DisplayPreferencesId": f"custom-{db_id}", # 3. DisplayPreferencesId 保持不变或改为Guid都可以
-                "ForcedSortName": coll['name'], # 4. 增加 ForcedSortName
-                "Taglines": [], # 5. 增加空的 Taglines
-                "RemoteTrailers": [], # 6. 增加空的 RemoteTrailers
+                "Type": "CollectionFolder",
+                "PresentationUniqueKey": str(uuid.uuid4()),
+                "DisplayPreferencesId": f"custom-{db_id}",
+                "ForcedSortName": coll['name'],
+                "Taglines": [],
+                "RemoteTrailers": [],
                 "UserData": {"PlaybackPositionTicks": 0, "IsFavorite": False, "Played": False},
                 "ChildCount": 1, 
                 "PrimaryImageAspectRatio": 1.7777777777777777, 
@@ -133,11 +132,10 @@ def handle_get_views():
                     user_id
                 )
                 if all_native_views is None: all_native_views = []
+                
                 raw_selection = config_manager.APP_CONFIG.get('proxy_native_view_selection', '')
                 selected_native_view_ids = [x.strip() for x in raw_selection.split(',') if x.strip()] if isinstance(raw_selection, str) else raw_selection
-                if not selected_native_view_ids:
-                    native_views_items = all_native_views
-                else:
+                if selected_native_view_ids:
                     native_views_items = [view for view in all_native_views if view.get("Id") in selected_native_view_ids]
         
         final_items = []
@@ -240,6 +238,11 @@ def handle_mimicked_library_metadata_endpoint(path, mimicked_id, params):
         return Response(json.dumps([]), mimetype='application/json')
     
 def handle_get_mimicked_library_items(user_id, mimicked_id, params):
+    """
+    【V4 - 排序修复与功能增强版】
+    - 恢复了'original' (榜单原始顺序) 排序功能。
+    - 整合了动态筛选功能，使其能在保持原始顺序的基础上工作。
+    """
     try:
         real_db_id = from_mimicked_id(mimicked_id)
         collection_info = db_handler.get_custom_collection_by_id(real_db_id)
@@ -249,25 +252,58 @@ def handle_get_mimicked_library_items(user_id, mimicked_id, params):
         definition = collection_info.get('definition_json') or {}
         real_emby_collection_id = collection_info.get('emby_collection_id')
 
-        # --- 阶段一：从真实的Emby合集获取基础内容 ---
+        # --- 阶段一：从真实的Emby合集获取所有项目，并建立一个ID->项目的映射，以便快速查找 ---
         logger.trace(f"  -> 阶段1：正在从真实合集 '{collection_info['name']}' (ID: {real_emby_collection_id}) 获取基础内容...")
         base_url, api_key = _get_real_emby_url_and_key()
         
-        base_items = emby_handler.get_emby_library_items(
+        # 获取所有项目，以便后续排序和筛选
+        all_live_items = emby_handler.get_emby_library_items(
             base_url=base_url, api_key=api_key, user_id=user_id,
             library_ids=[real_emby_collection_id],
-            fields="PrimaryImageAspectRatio,ProviderIds,UserData,Name,ProductionYear,CommunityRating,DateCreated,PremiereDate,Type,RecursiveItemCount"
+            fields="PrimaryImageAspectRatio,ProviderIds,UserData,Name,ProductionYear,CommunityRating,DateCreated,PremiereDate,Type,RecursiveItemCount,SortName"
         )
-        if not base_items:
+        if not all_live_items:
             return Response(json.dumps({"Items": [], "TotalRecordCount": 0}), mimetype='application/json')
         
-        logger.trace(f"  -> 阶段1完成：获取到 {len(base_items)} 个基础媒体项。")
+        # 创建一个从 TmdbId 到完整 Emby 项目的映射
+        live_items_map = {
+            item.get('ProviderIds', {}).get('Tmdb'): item 
+            for item in all_live_items 
+            if item.get('ProviderIds', {}).get('Tmdb')
+        }
+        logger.trace(f"  -> 阶段1完成：获取到 {len(all_live_items)} 个实时媒体项，并创建了映射。")
 
-        # --- 阶段二：如果启用了动态筛选，就执行二次过滤 ---
-        final_items = base_items
+        # --- 阶段二：根据数据库中存储的原始顺序，重建项目列表 ---
+        # 这是恢复“原始榜单排序”的关键步骤
+        ordered_items = []
+        # 从数据库获取预先生成、有顺序的媒体信息
+        db_ordered_media_list = collection_info.get('generated_media_info_json') or []
         
+        if db_ordered_media_list:
+            logger.trace(f"  -> 阶段2：检测到数据库中有 {len(db_ordered_media_list)} 个项目的原始顺序，开始重建列表...")
+            processed_tmdb_ids = set()
+            for db_item in db_ordered_media_list:
+                tmdb_id = str(db_item.get('tmdb_id', ''))
+                if tmdb_id in live_items_map:
+                    # 从实时数据映射中取出项目，并按数据库的顺序添加到列表中
+                    ordered_items.append(live_items_map[tmdb_id])
+                    processed_tmdb_ids.add(tmdb_id)
+            
+            # 追加那些在Emby合集中存在，但不在数据库顺序列表中的项目（例如手动添加的）
+            for tmdb_id, live_item in live_items_map.items():
+                if tmdb_id not in processed_tmdb_ids:
+                    ordered_items.append(live_item)
+
+            logger.trace(f"  -> 阶段2完成：成功按原始顺序排列了 {len(ordered_items)} 个项目。")
+        else:
+            # 如果数据库中没有顺序信息（例如，对于纯筛选合集），则退回到使用Emby返回的列表
+            logger.trace("  -> 阶段2跳过：数据库中无预生成顺序，将使用Emby原生顺序。")
+            ordered_items = all_live_items
+
+        # --- 阶段三：如果启用了动态筛选，就在已排序的列表上执行二次过滤 ---
+        final_items = ordered_items
         if definition.get('dynamic_filter_enabled'):
-            logger.trace("  -> 阶段2：检测到已启用实时用户筛选，开始二次过滤...")
+            logger.trace("  -> 阶段3：检测到已启用实时用户筛选，开始二次过滤...")
             
             dynamic_definition = {
                 'rules': definition.get('dynamic_rules', []),
@@ -275,17 +311,21 @@ def handle_get_mimicked_library_items(user_id, mimicked_id, params):
             }
             
             engine = FilterEngine()
-            final_items = engine.execute_dynamic_filter(base_items, dynamic_definition)
-            logger.trace(f"  -> 阶段2完成：二次过滤后，剩下 {len(final_items)} 个媒体项。")
+            # 在已经排好序的列表上进行过滤
+            final_items = engine.execute_dynamic_filter(ordered_items, dynamic_definition)
+            logger.trace(f"  -> 阶段3完成：二次过滤后，剩下 {len(final_items)} 个媒体项。")
         else:
-            logger.trace("  -> 阶段2跳过：未启用实时用户筛选。")
+            logger.trace("  -> 阶段3跳过：未启用实时用户筛选。")
 
-        # --- 排序和返回 ---
+        # --- 阶段四：处理最终排序 ---
         sort_by_field = definition.get('default_sort_by')
-        if sort_by_field and sort_by_field != 'none' and sort_by_field != 'original':
+        
+        # 仅当排序方式不是 'original' 且不是 'none' 时，才执行覆盖排序
+        if sort_by_field and sort_by_field not in ['original', 'none']:
             sort_order = definition.get('default_sort_order', 'Ascending')
             is_descending = (sort_order == 'Descending')
             logger.trace(f"执行虚拟库排序劫持: '{sort_by_field}' ({sort_order})")
+            
             default_sort_value = 0 if sort_by_field in ['CommunityRating', 'ProductionYear'] else "0"
             try:
                 final_items.sort(
@@ -294,6 +334,11 @@ def handle_get_mimicked_library_items(user_id, mimicked_id, params):
                 )
             except TypeError:
                 final_items.sort(key=lambda item: item.get('SortName', ''))
+        elif sort_by_field == 'original':
+             logger.trace("已应用 'original' (榜单原始顺序) 排序。")
+        else:
+            logger.trace("未设置或禁用虚拟库排序，将保持当前顺序（Emby原生或榜单原始顺序）。")
+
 
         final_response = {"Items": final_items, "TotalRecordCount": len(final_items)}
         return Response(json.dumps(final_response), mimetype='application/json')
