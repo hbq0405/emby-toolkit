@@ -1182,3 +1182,40 @@ def update_emby_item_details(item_id: str, new_data: Dict[str, Any], emby_server
     except Exception as e:
         logger.error(f"更新项目详情时发生未知错误 (ID: {item_id}): {e}", exc_info=True)
         return False
+def get_persons_by_ids_in_batches(
+    base_url: str,
+    api_key: str,
+    user_id: str,
+    person_ids: List[str],
+    batch_size: int = 200,
+    stop_event: Optional[threading.Event] = None  # ★★★ 核心修复：在这里添加 stop_event 参数 ★★★
+) -> Generator[List[Dict[str, Any]], None, None]:
+    """
+    【新增】根据一个庞大的演员ID列表，分批次地获取他们的详细信息。
+    这是为了避免URL过长或一次请求过多数据。
+    """
+    total_ids = len(person_ids)
+    logger.info(f"  -> 準備分批次獲取 {total_ids} 位演員的詳細資訊 (每批: {batch_size})...")
+    
+    for i in range(0, total_ids, batch_size):
+        # ★★★ 核心修复：在循环开始时检查停止信号 ★★★
+        if stop_event and stop_event.is_set():
+            logger.warning("分批获取演员详情任务被中止。")
+            return
+
+        batch_ids = person_ids[i:i + batch_size]
+        logger.debug(f"    -> 正在获取批次 {i//batch_size + 1} (数量: {len(batch_ids)})...")
+        
+        # 复用已有的 get_emby_items_by_id 函数
+        persons_batch = get_emby_items_by_id(
+            base_url=base_url,
+            api_key=api_key,
+            user_id=user_id,
+            item_ids=batch_ids,
+            fields="ProviderIds,Name"  # 我们只需要这两个核心字段
+        )
+        
+        if persons_batch:
+            yield persons_batch
+        
+        time.sleep(0.2) # 友好地请求，避免给Emby太大压力

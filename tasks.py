@@ -5,6 +5,7 @@ import os
 import json
 import psycopg2
 import pytz
+import threading
 from psycopg2 import sql
 from psycopg2.extras import execute_values, Json
 import logging
@@ -63,28 +64,29 @@ def task_run_full_scan(processor: MediaProcessor, force_reprocess: bool = False)
 def task_sync_person_map(processor):
     """
     【最终兼容版】任务：同步演员映射表。
-    接收 processor 和 is_full_sync 以匹配通用任务执行器，
-    但内部逻辑已统一，不再使用 is_full_sync。
     """
     task_name = "同步演员映射"
-    # 我们不再需要根据 is_full_sync 来改变任务名了，因为逻辑已经统一
-    
     logger.trace(f"开始执行 '{task_name}'...")
     
     try:
-        # ★★★ 从传入的 processor 对象中获取 config 字典 ★★★
+        # ★★★ 核心修改：将整个 processor.config 传递给 UnifiedSyncHandler ★★★
         config = processor.config
         
         sync_handler = UnifiedSyncHandler(
             emby_url=config.get("emby_server_url"),
             emby_api_key=config.get("emby_api_key"),
             emby_user_id=config.get("emby_user_id"),
-            tmdb_api_key=config.get("tmdb_api_key", "")
+            tmdb_api_key=config.get("tmdb_api_key", ""),
+            config=config  # <--- 把完整的配置传进去
         )
         
-        # 调用同步方法，不再需要传递 is_full_sync
+        # 假设您的 task_manager 可以处理 stop_event
+        stop_event = threading.Event()
+        # task_manager.register_stop_handler(stop_event.set) # 示例
+
         sync_handler.sync_emby_person_map_to_db(
-            update_status_callback=task_manager.update_status_from_thread
+            update_status_callback=task_manager.update_status_from_thread,
+            stop_event=stop_event
         )
         
         logger.trace(f"'{task_name}' 成功完成。")
