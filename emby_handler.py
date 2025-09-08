@@ -1195,7 +1195,7 @@ def get_persons_by_ids_in_batches(
     这是为了避免URL过长或一次请求过多数据。
     """
     total_ids = len(person_ids)
-    logger.info(f"  -> 準備分批次獲取 {total_ids} 位演員的詳細資訊 (每批: {batch_size})...")
+    logger.info(f"  -> 分批次获取 {total_ids} 位演员的详细数据 (每批: {batch_size})...")
     
     for i in range(0, total_ids, batch_size):
         # ★★★ 核心修复：在循环开始时检查停止信号 ★★★
