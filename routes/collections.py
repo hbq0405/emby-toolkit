@@ -59,27 +59,40 @@ def api_subscribe_moviepilot():
 @collections_bp.route('/subscribe_all_missing', methods=['POST'])
 @login_required
 def api_subscribe_all_missing():
+    """
+    【PG 兼容最终修复版】一键订阅所有缺失的电影。
+    - 移除了所有不必要的 json.loads() 调用。
+    - 直接处理由 psycopg2 解析好的 Python 列表对象。
+    """
     logger.info("API (Blueprint): 收到一键订阅所有缺失电影的请求。")
     total_subscribed_count = 0
     total_failed_count = 0
     
     try:
+        # 步骤 1: 从数据库获取所有包含缺失电影的合集。
+        # db_handler.get_collections_with_missing_movies() 现在返回的每一行中，
+        # 'missing_movies_json' 字段已经是 Python 列表。
         collections_to_process = db_handler.get_collections_with_missing_movies()
 
         if not collections_to_process:
             return jsonify({"message": "没有发现任何缺失的电影需要订阅。", "count": 0}), 200
 
+        # 步骤 2: 遍历合集列表
         for collection in collections_to_process:
             collection_id = collection['emby_collection_id']
-            collection_name = collection['name']
             
-            try:
-                movies = json.loads(collection.get('missing_movies_json', '[]'))
-            except (json.JSONDecodeError, TypeError):
+            # ▼▼▼ 核心修正：直接使用已经是列表的字段，不再需要 try-except 和 json.loads ▼▼▼
+            movies = collection.get('missing_movies_json')
+            
+            # 增加一个健壮性检查，确保它确实是一个列表
+            if not isinstance(movies, list):
+                logger.warning(f"合集 {collection_id} 的 missing_movies_json 字段格式不正确，已跳过。")
                 continue
+            # ▲▲▲ 修正结束 ▲▲▲
 
             needs_db_update = False
             for movie in movies:
+                # 步骤 3: 检查状态并订阅
                 if movie.get('status') == 'missing':
                     success = moviepilot_handler.subscribe_movie_to_moviepilot(movie, config_manager.APP_CONFIG)
                     if success:
@@ -89,6 +102,7 @@ def api_subscribe_all_missing():
                     else:
                         total_failed_count += 1
             
+            # 步骤 4: 如果状态有变，则更新数据库
             if needs_db_update:
                 db_handler.update_collection_movies(collection_id, movies)
         

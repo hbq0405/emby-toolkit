@@ -677,13 +677,25 @@ def get_all_custom_collection_emby_ids() -> set:
         return ids # 即使出错也返回一个空集合，保证上层逻辑不会崩溃
 
 def get_collections_with_missing_movies() -> List[Dict[str, Any]]:
-    """获取所有包含缺失电影的合集信息。"""
+    """
+    【PG 兼容版】获取所有包含缺失电影的合集信息。
+    确保返回的 'missing_movies_json' 字段是 Python 列表。
+    """
     try:
         with get_db_connection() as conn:
             cursor = conn.cursor()
+            # SQL 查询本身是正确的
             cursor.execute("SELECT emby_collection_id, name, missing_movies_json FROM collections_info WHERE has_missing = TRUE")
-            # 返回原始行，让业务逻辑层处理 JSON
-            return [dict(row) for row in cursor.fetchall()]
+            
+            results = []
+            for row in cursor.fetchall():
+                # psycopg2 已经将 missing_movies_json 解析为列表
+                # 我们在这里做一个额外的检查，确保它真的是列表，如果不是，就跳过这条脏数据
+                if isinstance(row.get('missing_movies_json'), list):
+                    results.append(dict(row))
+                else:
+                    logger.warning(f"数据库中合集 {row.get('emby_collection_id')} 的 missing_movies_json 字段不是一个有效的JSON数组，已在本次查询中忽略。")
+            return results
     except Exception as e:
         logger.error(f"DB: 获取有缺失电影的合集时失败: {e}", exc_info=True)
         raise
