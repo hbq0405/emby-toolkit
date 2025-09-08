@@ -498,65 +498,125 @@ def refresh_emby_item_metadata(item_emby_id: str,
         logger.error(f"  - 刷新请求时发生网络错误: {e}")
         return False
 # ✨✨✨ 分批次地从 Emby 获取所有 Person 条目 ✨✨✨
-def get_all_persons_from_emby(base_url: str, api_key: str, user_id: Optional[str], stop_event: Optional[threading.Event] = None) -> Generator[List[Dict[str, Any]], None, None]:
+def get_all_persons_from_emby(
+    base_url: str, 
+    api_key: str, 
+    user_id: Optional[str], 
+    stop_event: Optional[threading.Event] = None
+) -> Generator[List[Dict[str, Any]], None, None]:
+    """
+    分批次获取 Emby 中的 Person (演员) 项目。
+
+    此函数会自动检查全局配置。如果用户在配置中指定了要处理的媒体库，
+    则只获取这些媒体库关联的演员；否则，将获取服务器上的所有演员。
+    """
     if not user_id:
         logger.error("获取所有演员需要提供 User ID，但未提供。任务中止。")
         return
 
-    api_url = f"{base_url.rstrip('/')}/Users/{user_id}/Items"
-    
-    headers = {
-        "X-Emby-Token": api_key,
-        "Accept": "application/json",
-    }
-    
-    params = {
-        "Recursive": "true",
-        "IncludeItemTypes": "Person",
-        "Fields": "ProviderIds,Name",
-    }
+    # ▼▼▼ 核心逻辑：函数自己检查全局配置，决定行为模式 ▼▼▼
+    library_ids = config_manager.APP_CONFIG.get(constants.CONFIG_OPTION_EMBY_LIBRARIES_TO_PROCESS)
 
-    start_index = 0
-    batch_size = 5000
+    # --- 模式一：未配置特定媒体库，执行全量扫描 ---
+    if not library_ids:
+        logger.info("  -> 未在配置中指定媒体库，将从整个 Emby 服务器分批获取所有演员数据...")
+        api_url = f"{base_url.rstrip('/')}/Users/{user_id}/Items"
+        headers = {"X-Emby-Token": api_key, "Accept": "application/json"}
+        params = {
+            "Recursive": "true",
+            "IncludeItemTypes": "Person",
+            "Fields": "ProviderIds,Name",
+        }
+        start_index = 0
+        batch_size = 5000
+        api_timeout = config_manager.APP_CONFIG.get(constants.CONFIG_OPTION_EMBY_API_TIMEOUT, 60)
 
-    logger.info(f"  -> 开始从 Emby 分批次获取所有演员数据 (每批: {batch_size})...")
-    
-    # ★★★ 核心修改: 在循环外一次性获取超时时间 ★★★
-    api_timeout = config_manager.APP_CONFIG.get(constants.CONFIG_OPTION_EMBY_API_TIMEOUT, 60)
+        while True:
+            if stop_event and stop_event.is_set():
+                logger.info("Emby Person 获取任务被中止。")
+                return
 
-    while True:
+            request_params = params.copy()
+            request_params["StartIndex"] = start_index
+            request_params["Limit"] = batch_size
+            logger.debug(f"  -> 获取 Person 批次: StartIndex={start_index}, Limit={batch_size}")
+
+            try:
+                response = requests.get(api_url, headers=headers, params=request_params, timeout=api_timeout)
+                response.raise_for_status()
+                data = response.json()
+                items = data.get("Items", [])
+                
+                if not items:
+                    logger.trace("API 返回空列表，已获取所有 Person 数据。")
+                    break
+
+                yield items
+                start_index += len(items)
+                time.sleep(0.1)
+            except requests.exceptions.RequestException as e:
+                logger.error(f"请求 Emby API 失败 (批次 StartIndex={start_index}): {e}", exc_info=True)
+                return
+        return
+
+    # --- 模式二：已配置特定媒体库，执行精确扫描 ---
+    logger.info(f"  -> 检测到配置了 {len(library_ids)} 个媒体库，将只获取这些库中的演员数据...")
+
+    # 步骤 1: 获取指定库中所有媒体项目，并请求 'People' 字段
+    media_items = get_emby_library_items(
+        base_url=base_url,
+        api_key=api_key,
+        user_id=user_id,
+        library_ids=library_ids,
+        media_type_filter="Movie,Series",
+        fields="People"
+    )
+
+    if media_items is None:
+        logger.error("无法从指定的媒体库中获取媒体项，无法继续获取演员信息。")
+        return
+    if not media_items:
+        logger.info("指定的媒体库中没有找到任何媒体项。")
+        yield []
+        return
+
+    # 步骤 2: 从媒体项目中提取所有唯一的演员ID
+    unique_person_ids = set()
+    for item in media_items:
         if stop_event and stop_event.is_set():
-            logger.info("Emby Person 获取任务被中止。")
+            logger.info("在提取演员ID阶段，任务被中止。")
+            return
+        for person in item.get("People", []):
+            if person_id := person.get("Id"):
+                unique_person_ids.add(person_id)
+
+    person_ids_to_fetch = list(unique_person_ids)
+    logger.info(f"  -> 从媒体项目中识别出 {len(person_ids_to_fetch)} 位独立演员。")
+
+    if not person_ids_to_fetch:
+        yield []
+        return
+
+    # 步骤 3: 使用 get_emby_items_by_id 分批获取这些演员的完整信息
+    batch_size = 500
+    for i in range(0, len(person_ids_to_fetch), batch_size):
+        if stop_event and stop_event.is_set():
+            logger.info("在分批获取演员详情阶段，任务被中止。")
             return
 
-        request_params = params.copy()
-        request_params["StartIndex"] = start_index
-        request_params["Limit"] = batch_size
+        batch_ids = person_ids_to_fetch[i:i + batch_size]
+        logger.debug(f"  -> 正在获取批次 {i//batch_size + 1} 的演员详情 ({len(batch_ids)} 个)...")
+
+        person_details_batch = get_emby_items_by_id(
+            base_url=base_url,
+            api_key=api_key,
+            user_id=user_id,
+            item_ids=batch_ids,
+            fields="ProviderIds,Name"
+        )
         
-        logger.debug(f"  -> 获取 Person 批次: StartIndex={start_index}, Limit={batch_size}")
-        
-        try:
-            response = requests.get(api_url, headers=headers, params=request_params, timeout=api_timeout)
-            response.raise_for_status()
-            data = response.json()
-            items = data.get("Items", [])
-            
-            if not items:
-                logger.trace("API 返回空列表，已获取所有 Person 数据。")
-                break
-
-            yield items
-            
-            start_index += len(items)
-            
-            time.sleep(0.1) 
-
-        except requests.exceptions.RequestException as e:
-            logger.error(f"请求 Emby API 失败 (批次 StartIndex={start_index}): {e}", exc_info=True)
-            return
-        except Exception as e:
-            logger.error(f"处理 Emby 响应时发生未知错误 (批次 StartIndex={start_index}): {e}", exc_info=True)
-            return
+        if person_details_batch:
+            yield person_details_batch
 # ✨✨✨ 获取剧集下所有剧集的函数 ✨✨✨
 def get_series_children(
     series_id: str,

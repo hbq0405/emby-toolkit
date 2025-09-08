@@ -71,8 +71,6 @@ DYNAMIC_CONFIG_DEF = {
     constants.CONFIG_OPTION_PROXY_NATIVE_VIEW_SELECTION: (constants.CONFIG_SECTION_REVERSE_PROXY, 'list', []),
     constants.CONFIG_OPTION_PROXY_NATIVE_VIEW_ORDER: (constants.CONFIG_SECTION_REVERSE_PROXY, 'str', 'before'),
     constants.CONFIG_OPTION_PROXY_302_REDIRECT_URL: (constants.CONFIG_SECTION_REVERSE_PROXY, 'string', ""),
-    constants.CONFIG_OPTION_PROXY_MERGE_NATIVE: (constants.CONFIG_SECTION_REVERSE_PROXY, 'boolean', True),
-    constants.CONFIG_OPTION_PROXY_NATIVE_VIEW_SELECTION: (constants.CONFIG_SECTION_REVERSE_PROXY, 'list', []),
     constants.CONFIG_OPTION_PROXY_NATIVE_VIEW_ORDER: (constants.CONFIG_SECTION_REVERSE_PROXY, 'str', 'before'),
 
     # [TMDB]
@@ -232,26 +230,35 @@ def load_config():
 # --- 保存配置 ---
 def save_config(new_config: Dict[str, Any]):
     """
-    【V3 - 混合模式】
-    只将动态配置保存到数据库的 app_settings 表中。
-    不再写入 config.ini 文件。
+    【V4 - 健壮的合并保存模式】
+    1. 从数据库加载当前完整的动态配置。
+    2. 将前端传入的新配置（可能不完整）合并到加载的配置中。
+    3. 将合并后的完整配置对象存回数据库，确保任何标签页的保存都不会丢失其他标签页的设置。
     """
     global APP_CONFIG
     
-    # 从传入的新配置中，只提取出属于动态配置的部分
-    dynamic_config_to_save = {}
-    for key in DYNAMIC_CONFIG_DEF.keys():
-        if key in new_config:
-            dynamic_config_to_save[key] = new_config[key]
-            
     try:
-        # ★★★ 直接调用万能插座，将所有动态配置作为一个整体存进去 ★★★
+        # 步骤 1: 从数据库加载当前完整的动态配置，如果不存在则视为空字典
+        full_dynamic_config = db_handler.get_setting('dynamic_app_config') or {}
+        
+        # 步骤 2: 将前端传入的新配置更新（合并）到这个完整的配置对象中
+        # 这确保了只更新变化的键，而不会丢失其他键
+        full_dynamic_config.update(new_config)
+        
+        # 步骤 3: (可选但推荐) 创建一个最终要保存的字典，确保只包含在 DYNAMIC_CONFIG_DEF 中定义的合法键
+        # 这样可以防止任何意外的键被存入数据库
+        dynamic_config_to_save = {
+            key: value
+            for key, value in full_dynamic_config.items()
+            if key in DYNAMIC_CONFIG_DEF
+        }
+        
+        # 步骤 4: 将这个合并后的、完整的、干净的配置对象作为一个整体存回数据库
         db_handler.save_setting('dynamic_app_config', dynamic_config_to_save)
         
-        # 更新内存中的全局配置
-        # 注意：只更新动态部分，启动配置部分保持不变
+        # 步骤 5: 更新内存中的全局配置以立即生效
         APP_CONFIG.update(dynamic_config_to_save)
-        logger.info("动态应用配置已成功保存到数据库，内存中的配置已同步。")
+        logger.info("动态应用配置已成功合并保存到数据库，内存中的配置已同步。")
         
     except Exception as e:
         logger.error(f"保存动态配置到数据库时失败: {e}", exc_info=True)

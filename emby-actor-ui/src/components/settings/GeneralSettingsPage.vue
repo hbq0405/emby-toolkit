@@ -849,28 +849,41 @@ const save = async () => {
   try {
     await formRef.value?.validate();
 
-    // ▼▼▼ 修改点3: 增加 emby_server_url 到重启检查列表 ▼▼▼
+    // ▼▼▼ 核心修正：在这里创建一个干净的、临时的配置对象副本 ▼▼▼
+    // 使用 JSON.parse(JSON.stringify(...)) 是一个简单有效的深拷贝方法，
+    // 它可以断开所有响应式引用，得到一个纯净的 JavaScript 对象。
+    const cleanConfigPayload = JSON.parse(JSON.stringify(configModel.value));
+    
+    // ★★★ 关键净化步骤 ★★★
+    // 无论 configModel 内部发生了什么污染，我们在这里强制用当前组件的
+    // v-model 的值来覆盖 payload 中对应的字段，确保其绝对正确。
+    // 这一步看似多余，但它正是修复这个隐蔽BUG的关键。
+    if (configModel.value) {
+        cleanConfigPayload.libraries_to_process = configModel.value.libraries_to_process;
+        cleanConfigPayload.proxy_native_view_selection = configModel.value.proxy_native_view_selection;
+    }
+    // ▲▲▲ 修正结束 ▲▲▲
+
     const restartNeeded =
       initialRestartableConfig.value && (
-        configModel.value.proxy_port !== initialRestartableConfig.value.proxy_port ||
-        configModel.value.proxy_302_redirect_url !== initialRestartableConfig.value.proxy_302_redirect_url ||
-        configModel.value.log_rotation_size_mb !== initialRestartableConfig.value.log_rotation_size_mb ||
-        configModel.value.log_rotation_backup_count !== initialRestartableConfig.value.log_rotation_backup_count ||
-        configModel.value.emby_server_url !== initialRestartableConfig.value.emby_server_url
+        cleanConfigPayload.proxy_port !== initialRestartableConfig.value.proxy_port ||
+        cleanConfigPayload.proxy_302_redirect_url !== initialRestartableConfig.value.proxy_302_redirect_url ||
+        cleanConfigPayload.log_rotation_size_mb !== initialRestartableConfig.value.log_rotation_size_mb ||
+        cleanConfigPayload.log_rotation_backup_count !== initialRestartableConfig.value.log_rotation_backup_count ||
+        cleanConfigPayload.emby_server_url !== initialRestartableConfig.value.emby_server_url
       );
 
-    // 封装保存操作，以便复用
     const performSaveAndUpdateState = async () => {
-      const success = await handleSaveConfig();
+      // ▼▼▼ 核心修正：将净化后的 cleanConfigPayload 传递给保存函数 ▼▼▼
+      const success = await handleSaveConfig(cleanConfigPayload);
       if (success) {
         message.success('所有设置已成功保存！');
-        // ▼▼▼ 修改点4: 更新初始状态时也包含 emby_server_url ▼▼▼
         initialRestartableConfig.value = {
-          proxy_port: configModel.value.proxy_port,
-          proxy_302_redirect_url: configModel.value.proxy_302_redirect_url,
-          log_rotation_size_mb: configModel.value.log_rotation_size_mb,
-          log_rotation_backup_count: configModel.value.log_rotation_backup_count,
-          emby_server_url: configModel.value.emby_server_url,
+          proxy_port: cleanConfigPayload.proxy_port,
+          proxy_302_redirect_url: cleanConfigPayload.proxy_302_redirect_url,
+          log_rotation_size_mb: cleanConfigPayload.log_rotation_size_mb,
+          log_rotation_backup_count: cleanConfigPayload.log_rotation_backup_count,
+          emby_server_url: cleanConfigPayload.emby_server_url,
         };
       } else {
         message.error(configError.value || '配置保存失败，请检查后端日志。');
@@ -895,7 +908,6 @@ const save = async () => {
         }
       });
     } else {
-      // 如果无需重启，则直接保存
       await performSaveAndUpdateState();
     }
   } catch (errors) {
