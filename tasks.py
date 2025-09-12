@@ -3018,22 +3018,23 @@ def task_scan_for_cleanup_issues(processor: MediaProcessor):
         media_map = collections.defaultdict(list)
         for item in all_emby_items:
             tmdb_id = item.get("ProviderIds", {}).get("Tmdb")
-            if tmdb_id:
-                media_map[tmdb_id].append(item)
+            item_type = item.get("Type") # Get the item type
+            if tmdb_id and item_type: # Ensure both are present
+                media_map[(tmdb_id, item_type)].append(item)
 
         # --- 步骤二：遍历分组，只找出真正的重复项 ---
         duplicate_tasks = []
-        for tmdb_id, items in media_map.items():
+        for (tmdb_id, item_type), items in media_map.items(): # Unpack the composite key
             # 只有当分组内的 Item 数量大于1时，才可能是重复项
             if len(items) > 1:
-                logger.info(f"  -> [发现重复] TMDB ID {tmdb_id} 关联了 {len(items)} 个独立的媒体项。")
+                logger.info(f"  -> [发现重复] TMDB ID {tmdb_id} (类型: {item_type}) 关联了 {len(items)} 个独立的媒体项。")
                 versions_info = []
                 for item in items:
                     source = item.get("MediaSources", [{}])[0]
                     video_stream = next((s for s in source.get("MediaStreams", []) if s.get("Type") == "Video"), None)
                     versions_info.append({
                         "id": item.get("Id"), # ID 就是 Item ID
-                        "path": source.get("Path") or item.get("Path"), "size": source.get("Size", 0),
+                        "path": source.get("Path") or item.get("Path") or "", "size": source.get("Size", 0),
                         "resolution_wh": (video_stream.get("Width", 0), video_stream.get("Height", 0)) if video_stream else (0, 0),
                     })
                 
@@ -3042,7 +3043,9 @@ def task_scan_for_cleanup_issues(processor: MediaProcessor):
                 
                 duplicate_tasks.append({
                     "task_type": "duplicate", # 类型永远是 duplicate
-                    "tmdb_id": tmdb_id, "item_name": best_item_name,
+                    "tmdb_id": tmdb_id,
+                    "item_type": item_type, # Add item_type to the duplicate_tasks
+                    "item_name": best_item_name,
                     "versions_info_json": analyzed_versions, "best_version_id": best_id
                 })
 
