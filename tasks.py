@@ -2877,9 +2877,35 @@ def _extract_quality_tag_from_filename(filename_lower: str, video_stream: dict) 
 # ★★★ 媒体去重模块 (Media Cleanup Module) - 新增 ★★★
 # ======================================================================
 
-def _get_version_properties(version: Dict[str, Any]) -> Dict[str, Any]:
-    """【V5 - 全标签标准化终极版】辅助函数：确保所有质量标签都被正确识别和归一化。"""
-    path_lower = version.get("path", "").lower()
+def _get_version_properties(version: Optional[Dict]) -> Dict:
+    """【V2 - 安全加固版】从单个版本信息中提取并计算属性，能安全处理None输入。"""
+    
+    # ★★★ 在这里加上“安全气囊” ★★★
+    if not version or not isinstance(version, dict):
+        # 如果 version 是 None 或者不是一个字典，返回一个安全的、空的默认值
+        # 这样可以保证后续的逻辑不会因为拿到 None 而崩溃
+        return {
+            'id': 'unknown_or_invalid',
+            'path': '',
+
+            'resolution_rank': 0,
+            'video_range_rank': 0,
+            'audio_rank': 0,
+            'subtitle_rank': 0,
+            'source_rank': 0,
+            'tag_score': 0,
+            'final_score': 0,
+
+            'resolution': 'Unknown',
+            'video_range': 'SDR',
+            'audio_stream_count': 0,
+            'subtitle_stream_count': 0,
+            'size': 0,
+            'media_source_type': 'Unknown',
+            'tags': []
+        }
+
+    path_lower = version.get("Path", "").lower()
     
     # ★★★ 核心修复 1/2: 定义一个完整的、包含所有别名的“官方名称”映射表 ★★★
     QUALITY_ALIASES = {

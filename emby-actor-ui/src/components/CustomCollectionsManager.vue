@@ -760,11 +760,6 @@ const discoverParams = ref(getInitialDiscoverParams());
 
 const builtInLists = [
   { label: '自定义RSS/URL源', value: 'custom' },
-  { type: 'group', label: 'TMDb Discover 动态榜单', key: 'tmdb-discover' },
-  { label: '最近7天首播国语剧集', value: 'https://www.themoviedb.org/discover/tv?with_original_language=zh&first_air_date.gte={today-7}&first_air_date.lte={today}&sort_by=popularity.desc', contentType: ['Series'] },
-  { label: '最近30天首播国语剧集', value: 'https://www.themoviedb.org/discover/tv?with_original_language=zh&first_air_date.gte={today-30}&first_air_date.lte={today}&sort_by=popularity.desc', contentType: ['Series'] },
-  { label: '本月高分华语电影', value: 'https://www.themoviedb.org/discover/movie?with_original_language=zh&vote_count.gte=100&vote_average.gte=7.5&primary_release_date.gte={today-30}&primary_release_date.lte={today}&sort_by=vote_average.desc', contentType: ['Movie'] },
-  { label: 'IMDb Top 250 电影', value: 'https://www.themoviedb.org/list/7066840', contentType: ['Movie'] },
   { type: 'group', label: '猫眼电影榜单', key: 'maoyan-movie' },
   { label: '电影票房榜', value: 'maoyan://movie', contentType: ['Movie'] },
   { type: 'group', label: '猫眼全网热度榜', key: 'maoyan-all' },
