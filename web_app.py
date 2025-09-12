@@ -425,6 +425,9 @@ def init_db():
                         },
                         'resubscribe_rules': {
                             "resubscribe_subtitle_effect_only": "BOOLEAN DEFAULT FALSE"
+                        },
+                        'custom_collections': {
+                            "generated_emby_ids_json": "JSONB DEFAULT '[]'::jsonb NOT NULL"
                         }
                     }
 
