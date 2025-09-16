@@ -1486,33 +1486,34 @@ def get_all_emby_users_from_server(base_url: str, api_key: str) -> Optional[List
 
 def get_all_user_view_data(user_id: str, base_url: str, api_key: str) -> Optional[List[Dict[str, Any]]]:
     """
-    【V2 - 剧集兼容版】
-    为一个指定用户，获取其所有媒体库中，带有观看状态（UserData）的媒体项。
-    现在会同时获取电影、剧集和分集的数据。
+    【V5 - 最高权限版】
+    - 切换到 /Items 端点，并使用 UserId 参数进行查询。
+    - 这允许我们以管理员的身份，直接查询用户的核心数据，绕过因用户未登录而导致“视图”无法生成的权限问题。
+    - 彻底解决了“沉睡用户”无法同步数据的终极BUG。
     """
     if not all([user_id, base_url, api_key]):
         return None
 
     all_items_with_data = []
-    
-    # ★★★ 核心修复：把 Episode 也加到侦察列表里！ ★★★
     item_types = "Movie,Series,Episode"
+    fields = "UserData,Type,SeriesId,LastPlayedDate"
     
-    fields = "UserData,Type,SeriesId" # 确保请求了 Type 和 SeriesId
+    # ★★★ 核心改造：更换API端点，从“用户视图”切换到“系统级项目” ★★★
+    api_url = f"{base_url.rstrip('/')}/Items"
     
-    api_url = f"{base_url.rstrip('/')}/Users/{user_id}/Items"
     params = {
         "api_key": api_key,
         "Recursive": "true",
         "IncludeItemTypes": item_types,
-        "Fields": fields
+        "Fields": fields,
+        "UserId": user_id  # ★★★ 核心改造：将用户ID作为一个筛选参数传入 ★★★
     }
     
     start_index = 0
-    batch_size = 2000 # 适当减小批次，因为分集数量可能很大
+    batch_size = 2000
     api_timeout = config_manager.APP_CONFIG.get(constants.CONFIG_OPTION_EMBY_API_TIMEOUT, 120)
 
-    logger.debug(f"开始为用户 {user_id} 分批获取所有媒体的用户数据 (包含分集)...")
+    logger.debug(f"开始为用户 {user_id} 分批获取所有媒体的用户数据 (管理员模式)...")
     while True:
         try:
             request_params = params.copy()
@@ -1527,6 +1528,7 @@ def get_all_user_view_data(user_id: str, base_url: str, api_key: str) -> Optiona
             if not items:
                 break
 
+            # 过滤出那些真正有用户数据的项目
             for item in items:
                 user_data = item.get("UserData", {})
                 if user_data.get('Played') or user_data.get('IsFavorite') or user_data.get('PlaybackPositionTicks', 0) > 0:
