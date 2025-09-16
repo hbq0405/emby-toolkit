@@ -307,7 +307,7 @@ def health_check():
 def emby_webhook():
     data = request.json
     # ★★★ 真正的魔法咒语，就加在这一行！ ★★★
-    logger.info(f"--- 魔法日志：收到的完整 Webhook Payload ---\n{json.dumps(data, indent=2, ensure_ascii=False)}")
+    # logger.info(f"--- 魔法日志：收到的完整 Webhook Payload ---\n{json.dumps(data, indent=2, ensure_ascii=False)}")
     event_type = data.get("Event") if data else "未知事件"
     logger.info(f"收到Emby Webhook: {event_type}")
 
