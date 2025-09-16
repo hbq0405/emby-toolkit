@@ -29,6 +29,45 @@ GENRE_TRANSLATION_PATCH = {
 
 # 2. 定义API路由
 
+# ★★★ 获取 Emby 用户列表 ★★★
+@custom_collections_bp.route('/config/emby_users', methods=['GET'])
+@login_required
+def api_get_emby_users():
+    """为权限设置提供一个可选的 Emby 用户列表。"""
+    try:
+        # 1. 尝试从我们的本地缓存读取
+        cached_users = db_handler.get_all_emby_users()
+        
+        # 2. 如果缓存为空，则实时从 Emby 获取并更新缓存
+        if not cached_users:
+            logger.info("本地Emby用户缓存为空，正在从Emby实时获取...")
+            emby_url = config_manager.APP_CONFIG.get('emby_server_url')
+            emby_key = config_manager.APP_CONFIG.get('emby_api_key')
+            
+            if not all([emby_url, emby_key]):
+                return jsonify({"error": "Emby服务器配置不完整"}), 500
+            
+            # 这个函数需要你自己添加到 emby_handler.py 中
+            live_users = emby_handler.get_all_emby_users_from_server(emby_url, emby_key)
+            
+            if live_users is None:
+                return jsonify({"error": "无法从Emby获取用户列表"}), 500
+            
+            # 更新缓存
+            db_handler.upsert_emby_users_batch(live_users)
+            cached_users = live_users
+
+        # 3. 格式化为前端需要的格式
+        user_options = [{
+            "label": user.get('name'),
+            "value": user.get('id')
+        } for user in cached_users]
+        
+        return jsonify(user_options)
+    except Exception as e:
+        logger.error(f"获取 Emby 用户列表时出错: {e}", exc_info=True)
+        return jsonify({"error": "服务器内部错误"}), 500
+
 # --- 获取所有自定义合集定义 ---
 @custom_collections_bp.route('', methods=['GET']) # 原为 '/'
 @login_required
@@ -101,27 +140,23 @@ def api_create_custom_collection():
     name = data.get('name')
     type = data.get('type')
     definition = data.get('definition')
+    # ★★★ 新增：获取权限列表 ★★★
+    allowed_user_ids = data.get('allowed_user_ids')
 
     if not all([name, type, definition]):
         return jsonify({"error": "请求无效: 缺少 name, type, 或 definition"}), 400
-    # ... [其他数据验证代码] ...
-
+    
     definition_json = json.dumps(definition, ensure_ascii=False)
+    # ★★★ 新增：处理权限列表 ★★★
+    allowed_user_ids_json = json.dumps(allowed_user_ids) if isinstance(allowed_user_ids, list) else None
     
     try:
-        # ★★★ 将数据库操作包裹在新的 try...except 块中 ★★★
-        collection_id = db_handler.create_custom_collection(name, type, definition_json)
+        collection_id = db_handler.create_custom_collection(name, type, definition_json, allowed_user_ids_json)
         new_collection = db_handler.get_custom_collection_by_id(collection_id)
         return jsonify(new_collection), 201
-
     except psycopg2.IntegrityError:
-        # ★★★ 专门捕获唯一性冲突异常 ★★★
-        logger.warning(f"创建自定义合集失败：名称 '{name}' 已存在。")
-        # ★★★ 返回一个明确的、用户友好的错误信息，和 409 Conflict 状态码 ★★★
         return jsonify({"error": f"创建失败：名为 '{name}' 的合集已存在。"}), 409
-
     except Exception as e:
-        # ★★★ 捕获所有其他可能的错误（包括db_handler抛出的其他psycopg2.Error） ★★★
         logger.error(f"创建自定义合集 '{name}' 时发生严重错误: {e}", exc_info=True)
         return jsonify({"error": "数据库操作失败，无法创建合集，请检查后端日志。"}), 500
 
@@ -129,28 +164,26 @@ def api_create_custom_collection():
 @custom_collections_bp.route('/<int:collection_id>', methods=['PUT'])
 @login_required
 def api_update_custom_collection(collection_id):
-    """更新一个自定义合集定义 (V3 - 加固版)"""
+    """更新一个自定义合集定义"""
     try:
         data = request.json
         name = data.get('name')
         type = data.get('type')
         definition = data.get('definition')
         status = data.get('status')
+        # ★★★ 新增：获取权限列表 ★★★
+        allowed_user_ids = data.get('allowed_user_ids')
 
         if not all([name, type, definition, status]):
             return jsonify({"error": "请求无效: 缺少必要参数"}), 400
         
-        if type == 'list' and not definition.get('url'):
-            return jsonify({"error": "榜单导入模式下，definition 必须包含 'url'"}), 400
-        if type == 'filter':
-            if not isinstance(definition.get('rules'), list) or not definition.get('logic'):
-                 return jsonify({"error": "筛选规则模式下，definition 必须包含 'rules' 列表和 'logic'"}), 400
-            if not definition['rules']:
-                 return jsonify({"error": "筛选规则不能为空"}), 400
-
         definition_json = json.dumps(definition, ensure_ascii=False)
+        # ★★★ 新增：处理权限列表 ★★★
+        allowed_user_ids_json = json.dumps(allowed_user_ids) if isinstance(allowed_user_ids, list) else None
         
-        success = db_handler.update_custom_collection(collection_id, name, type, definition_json, status)
+        success = db_handler.update_custom_collection(
+            collection_id, name, type, definition_json, status, allowed_user_ids_json
+        )
         
         if success:
             updated_collection = db_handler.get_custom_collection_by_id(collection_id)

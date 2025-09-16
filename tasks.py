@@ -1492,6 +1492,7 @@ def get_task_registry(context: str = 'all'):
         'generate-all-covers': (task_generate_all_covers, "生成原生封面", 'media', True),
         'generate-custom-collection-covers': (task_generate_all_custom_collection_covers, "生成合集封面", 'media', True),
         'purge-ghost-actors': (task_purge_ghost_actors, "删除幽灵演员", 'media', True),
+        'sync-all-user-data': (task_sync_all_user_data, "同步用户数据", 'media', True),
         
 
         # --- 不适合任务链的、需要特定参数的任务 ---
@@ -3548,6 +3549,75 @@ def task_execute_cleanup(processor: MediaProcessor, task_ids: List[int], **kwarg
             db_handler.batch_update_cleanup_task_status([task_id], 'processed')
 
         final_message = f"清理完成！共处理 {total} 个任务，删除了 {deleted_count} 个多余版本/文件。"
+        task_manager.update_status_from_thread(100, final_message)
+
+    except Exception as e:
+        logger.error(f"执行 '{task_name}' 任务时发生严重错误: {e}", exc_info=True)
+        task_manager.update_status_from_thread(-1, f"任务失败: {e}")
+# ★★★ 用户数据全量同步任务 ★★★
+def task_sync_all_user_data(processor: MediaProcessor):
+    """
+    用户数据全量同步任务
+    """
+    task_name = "同步用户数据"
+    logger.info(f"--- 开始执行 '{task_name}' 任务 ---")
+    
+    try:
+        # ... (获取 all_users 的逻辑不变) ...
+        task_manager.update_status_from_thread(0, "正在获取所有Emby用户...")
+        emby_url = processor.emby_url
+        emby_key = processor.emby_api_key
+        all_users = emby_handler.get_all_emby_users_from_server(emby_url, emby_key)
+        if not all_users:
+            task_manager.update_status_from_thread(100, "任务完成：未能从Emby获取到任何用户。")
+            return
+        db_handler.upsert_emby_users_batch(all_users)
+        total_users = len(all_users)
+        logger.info(f"  -> 共找到 {total_users} 个Emby用户，将逐一同步其数据...")
+
+        for i, user in enumerate(all_users):
+            user_id = user.get('Id')
+            user_name = user.get('Name')
+            if not user_id: continue
+            if processor.is_stop_requested(): break
+
+            progress = int((i / total_users) * 100)
+            task_manager.update_status_from_thread(progress, f"({i+1}/{total_users}) 正在同步用户: {user_name}")
+
+            user_items_with_data = emby_handler.get_all_user_view_data(user_id, emby_url, emby_key)
+            if not user_items_with_data:
+                continue
+            
+            final_data_map = {}
+
+            # 聚合与去重逻辑保持不变
+            for item in user_items_with_data:
+                item_type = item.get('Type')
+                item_id = item.get('Id')
+                target_id = item_id if item_type in ['Movie', 'Series'] else item.get('SeriesId')
+                if not target_id: continue
+
+                if target_id not in final_data_map:
+                    final_data_map[target_id] = item
+                    if item_type == 'Episode':
+                        final_data_map[target_id]['Id'] = target_id
+                else:
+                    existing_item = final_data_map[target_id]
+                    new_user_data = item.get('UserData', {})
+                    if 'PlaybackPositionTicks' in new_user_data:
+                        existing_item['UserData']['PlaybackPositionTicks'] = new_user_data['PlaybackPositionTicks']
+                    if 'Played' in new_user_data:
+                        existing_item['UserData']['Played'] = new_user_data['Played']
+            
+            final_data_to_upsert = list(final_data_map.values())
+            
+            # ★★★ 核心改造：调用一个新的、不包含 last_played_date 的数据库函数 ★★★
+            db_handler.upsert_user_media_data_batch_no_date(user_id, final_data_to_upsert)
+            
+            logger.info(f"  -> 成功为用户 '{user_name}' 同步了 {len(final_data_to_upsert)} 条媒体状态。")
+
+        final_message = f"任务完成！已成功为 {total_users} 个用户同步数据。"
+        if processor.is_stop_requested(): final_message = "任务已中断。"
         task_manager.update_status_from_thread(100, final_message)
 
     except Exception as e:

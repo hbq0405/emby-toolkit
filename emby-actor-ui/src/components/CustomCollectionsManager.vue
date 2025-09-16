@@ -79,6 +79,27 @@
           <n-input v-model:value="currentCollection.name" placeholder="例如：周星驰系列" />
         </n-form-item>
         
+        <n-form-item label="可见用户" path="allowed_user_ids">
+          <template #label>
+            可见用户
+            <n-tooltip trigger="hover">
+              <template #trigger>
+                <n-icon :component="HelpIcon" style="margin-left: 4px;" />
+              </template>
+              指定哪些Emby用户可以在首页看到这个虚拟库。如果留空，则默认对所有用户可见。
+            </n-tooltip>
+          </template>
+          <n-select
+            v-model:value="currentCollection.allowed_user_ids"
+            multiple
+            filterable
+            clearable
+            placeholder="留空则对所有用户可见"
+            :options="embyUserOptions"
+            :loading="isLoadingEmbyUsers"
+          />
+        </n-form-item>
+
         <n-form-item label="合集类型" path="type">
           <n-select
             v-model:value="currentCollection.type"
@@ -415,6 +436,15 @@
                       style="flex-grow: 1; min-width: 180px;"
                     />
                   </template>
+                  <n-input-number
+                    v-else-if="rule.field === 'last_played_date'"
+                    v-model:value="rule.value"
+                    placeholder="天数"
+                    :disabled="!rule.operator"
+                    style="width: 180px;"
+                  >
+                    <template #suffix>天</template>
+                  </n-input-number>
 
                   <n-button text type="error" @click="removeDynamicRule(index)">
                     <template #icon><n-icon :component="DeleteIcon" /></template>
@@ -741,6 +771,10 @@ const directorOptions = ref([]);
 const tmdbCountryOptions = ref([]);
 const isLoadingTmdbCountries = ref(false);
 
+// ... (emby用户) ...
+const embyUserOptions = ref([]);
+const isLoadingEmbyUsers = ref(false);
+
 const getInitialDiscoverParams = () => ({
   type: 'movie',
   sort_by: 'popularity.desc',
@@ -764,7 +798,20 @@ const discoverParams = ref(getInitialDiscoverParams());
 // ▼▼▼ 确保所有函数和计算属性都在这里 ▼▼▼
 // ===================================================================
 
-// ★★★ 新增的封面生成处理函数 ★★★
+// ★★★ 获取 Emby 用户列表的函数 ★★★
+const fetchEmbyUsers = async () => {
+  isLoadingEmbyUsers.value = true;
+  try {
+    const response = await axios.get('/api/custom_collections/config/emby_users');
+    embyUserOptions.value = response.data;
+  } catch (error) {
+    message.error('获取Emby用户列表失败。');
+  } finally {
+    isLoadingEmbyUsers.value = false;
+  }
+};
+
+// ★★★ 封面生成处理函数 ★★★
 const handleGenerateAllCovers = async () => {
   isGeneratingCovers.value = true;
   try {
@@ -864,11 +911,12 @@ const getInitialFormModel = () => ({
   name: '',
   type: 'list',
   status: 'active',
+  allowed_user_ids: [], 
   definition: {
     item_type: ['Movie'],
     url: '',
     limit: null,
-    library_ids: [],
+    target_library_ids: [], 
     default_sort_by: 'original',
     default_sort_order: 'Ascending',
     dynamic_filter_enabled: false,
@@ -880,22 +928,28 @@ const currentCollection = ref(getInitialFormModel());
 
 watch(() => currentCollection.value.type, (newType) => {
   if (isEditing.value) { return; }
+  const sharedProps = {
+    item_type: ['Movie'],
+    default_sort_by: 'none',
+    default_sort_order: 'Ascending',
+    dynamic_filter_enabled: false,
+    dynamic_logic: 'AND',
+    dynamic_rules: []
+  };
   if (newType === 'filter') {
     currentCollection.value.definition = {
-      item_type: ['Movie'],
+      ...sharedProps,
       logic: 'AND',
       rules: [{ field: null, operator: null, value: '' }],
-      library_ids: [],
+      target_library_ids: [],
       default_sort_by: 'PremiereDate', 
-      default_sort_order: 'Descending'
     };
   } else if (newType === 'list') {
     currentCollection.value.definition = { 
-      item_type: ['Movie'],
+      ...sharedProps,
       url: '',
       limit: null,
       default_sort_by: 'original', 
-      default_sort_order: 'Ascending'
     };
     selectedBuiltInList.value = 'custom';
   }
@@ -1020,8 +1074,10 @@ const ruleConfig = {
   unified_rating: { label: '家长分级', type: 'select', operators: ['is_one_of', 'is_none_of', 'eq'] },
   release_date: { label: '上映于', type: 'date', operators: ['in_last_days', 'not_in_last_days'] },
   date_added: { label: '入库于', type: 'date', operators: ['in_last_days', 'not_in_last_days'] },
-  playback_status: { label: '播放状态', type: 'user_data', operators: ['is', 'is_not'] },
-  is_favorite: { label: '是否收藏', type: 'user_data', operators: ['is', 'is_not'] },
+  // 动态筛选规则
+  playback_status: { label: '播放状态', type: 'user_data_select', operators: ['is', 'is_not'] },
+  is_favorite: { label: '是否收藏', type: 'user_data_bool', operators: ['is', 'is_not'] },
+  last_played_date: { label: '最后播放于', type: 'user_data_date', operators: ['in_last_days', 'not_in_last_days'] },
 };
 
 const operatorLabels = {
@@ -1031,6 +1087,39 @@ const operatorLabels = {
   is_one_of: '是其中之一', is_none_of: '不是任何一个',
   is: '是',
   is_not: '不是'
+};
+
+const createRuleWatcher = (rulesRef) => {
+  watch(rulesRef, (newRules) => {
+    if (!Array.isArray(newRules)) return;
+    
+    newRules.forEach(rule => {
+      const config = ruleConfig[rule.field];
+      if (!config) return;
+
+      const validOperators = config.operators;
+      
+      // 1. 如果当前的操作符，不在新字段的合法列表里，就重置它
+      if (rule.operator && !validOperators.includes(rule.operator)) {
+        rule.operator = null;
+        rule.value = null;
+      }
+      
+      // 2. 如果操作符是空的，并且有合法的选项，就自动选中第一个
+      if (rule.field && !rule.operator && validOperators.length > 0) {
+          rule.operator = validOperators[0];
+      }
+      
+      // 3. 根据字段和操作符，设置值的默认格式
+      if (rule.field === 'is_favorite' && typeof rule.value !== 'boolean') {
+        rule.value = true;
+      } else if (rule.field === 'playback_status' && !['unplayed', 'in_progress', 'played'].includes(rule.value)) {
+        rule.value = 'unplayed';
+      } else if (rule.field && rule.field.includes('_date') && (rule.value === null || typeof rule.value === 'undefined' || typeof rule.value !== 'number')) {
+        rule.value = 7; // 确保时间字段的值永远是数字
+      }
+    });
+  }, { deep: true });
 };
 
 const unifiedRatingOptions = ref([]);
@@ -1054,7 +1143,7 @@ const staticFieldOptions = computed(() =>
 
 const dynamicFieldOptions = computed(() => 
   Object.keys(ruleConfig)
-    .filter(key => ruleConfig[key].type === 'user_data')
+    .filter(key => ruleConfig[key].type.startsWith('user_data')) // <-- 使用更通用的 startsWith
     .map(key => ({ label: ruleConfig[key].label, value: key }))
 );
 
@@ -1283,6 +1372,10 @@ const handleEditClick = (row) => {
   isEditing.value = true;
   const rowCopy = JSON.parse(JSON.stringify(row));
 
+  if (!Array.isArray(rowCopy.allowed_user_ids)) {
+    rowCopy.allowed_user_ids = [];
+  }
+
   if (!rowCopy.definition || typeof rowCopy.definition !== 'object') {
     console.error("合集定义 'definition' 丢失或格式不正确:", row);
     rowCopy.definition = rowCopy.type === 'filter'
@@ -1445,7 +1538,7 @@ const addDynamicRule = () => {
   if (!currentCollection.value.definition.dynamic_rules) {
     currentCollection.value.definition.dynamic_rules = [];
   }
-  currentCollection.value.definition.dynamic_rules.push({ field: 'playback_status', operator: 'is', value: 'unplayed' });
+  currentCollection.value.definition.dynamic_rules.push({ field: 'is_favorite', operator: 'is', value: true });
 };
 
 const removeDynamicRule = (index) => {
@@ -1702,6 +1795,9 @@ watch(selectedDirectors, (newValue) => {
   discoverParams.value.with_crew = newValue.map(d => d.value);
 }, { deep: true });
 
+createRuleWatcher(() => currentCollection.value.definition.rules);
+createRuleWatcher(() => currentCollection.value.definition.dynamic_rules);
+
 onMounted(() => {
   fetchCollections();
   fetchCountryOptions();
@@ -1711,6 +1807,7 @@ onMounted(() => {
   fetchEmbyLibraries();
   fetchTmdbGenres();
   fetchTmdbCountries();
+  fetchEmbyUsers();
 });
 </script>
 

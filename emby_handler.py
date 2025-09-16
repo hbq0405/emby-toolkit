@@ -1458,3 +1458,87 @@ def check_user_has_visible_items_in_id_list(
         logger.error(f"快速权限探测失败 (用户: {user_id}): {e}")
         # 在不确定的情况下，为安全起见，我们默认用户看不到
         return False
+# ======================================================================
+# ★★★ 新增模块：用户数据中心相关函数 ★★★
+# ======================================================================
+
+def get_all_emby_users_from_server(base_url: str, api_key: str) -> Optional[List[Dict[str, Any]]]:
+    """
+    【V1】从 Emby 服务器获取所有用户的列表。
+    """
+    if not base_url or not api_key:
+        return None
+    
+    api_url = f"{base_url.rstrip('/')}/Users"
+    params = {"api_key": api_key}
+    
+    logger.debug("正在从 Emby 服务器获取所有用户列表...")
+    try:
+        api_timeout = config_manager.APP_CONFIG.get(constants.CONFIG_OPTION_EMBY_API_TIMEOUT, 60)
+        response = requests.get(api_url, params=params, timeout=api_timeout)
+        response.raise_for_status()
+        users = response.json()
+        logger.info(f"  -> 成功从 Emby 获取到 {len(users)} 个用户。")
+        return users
+    except Exception as e:
+        logger.error(f"从 Emby 获取用户列表失败: {e}", exc_info=True)
+        return None
+
+def get_all_user_view_data(user_id: str, base_url: str, api_key: str) -> Optional[List[Dict[str, Any]]]:
+    """
+    【V2 - 剧集兼容版】
+    为一个指定用户，获取其所有媒体库中，带有观看状态（UserData）的媒体项。
+    现在会同时获取电影、剧集和分集的数据。
+    """
+    if not all([user_id, base_url, api_key]):
+        return None
+
+    all_items_with_data = []
+    
+    # ★★★ 核心修复：把 Episode 也加到侦察列表里！ ★★★
+    item_types = "Movie,Series,Episode"
+    
+    fields = "UserData,Type,SeriesId" # 确保请求了 Type 和 SeriesId
+    
+    api_url = f"{base_url.rstrip('/')}/Users/{user_id}/Items"
+    params = {
+        "api_key": api_key,
+        "Recursive": "true",
+        "IncludeItemTypes": item_types,
+        "Fields": fields
+    }
+    
+    start_index = 0
+    batch_size = 2000 # 适当减小批次，因为分集数量可能很大
+    api_timeout = config_manager.APP_CONFIG.get(constants.CONFIG_OPTION_EMBY_API_TIMEOUT, 120)
+
+    logger.debug(f"开始为用户 {user_id} 分批获取所有媒体的用户数据 (包含分集)...")
+    while True:
+        try:
+            request_params = params.copy()
+            request_params["StartIndex"] = start_index
+            request_params["Limit"] = batch_size
+            
+            response = requests.get(api_url, params=request_params, timeout=api_timeout)
+            response.raise_for_status()
+            data = response.json()
+            items = data.get("Items", [])
+            
+            if not items:
+                break
+
+            for item in items:
+                user_data = item.get("UserData", {})
+                if user_data.get('Played') or user_data.get('IsFavorite') or user_data.get('PlaybackPositionTicks', 0) > 0:
+                    all_items_with_data.append(item)
+            
+            start_index += len(items)
+            if len(items) < batch_size:
+                break
+
+        except Exception as e:
+            logger.error(f"为用户 {user_id} 获取媒体数据时，处理批次 StartIndex={start_index} 失败: {e}", exc_info=True)
+            break
+            
+    logger.debug(f"为用户 {user_id} 的全量同步完成，共找到 {len(all_items_with_data)} 个有状态的媒体项。")
+    return all_items_with_data

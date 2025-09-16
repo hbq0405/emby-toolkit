@@ -804,14 +804,16 @@ class FilterEngine:
             return []
 
         # ★★★ 核心修改：根据定义判断数据源 ★★★
-        library_ids = definition.get('library_ids')
+        library_ids = definition.get('library_ids') # 在新版UI中，这个字段叫 target_library_ids，但我们兼容旧的
+        if not library_ids:
+            library_ids = definition.get('target_library_ids')
+
         all_media_metadata = []
 
         if library_ids and isinstance(library_ids, list) and len(library_ids) > 0:
             # --- 分支1：从指定的媒体库加载数据 ---
             logger.info(f"  -> 已指定 {len(library_ids)} 个媒体库作为筛选范围。")
             
-            # 从配置中获取Emby连接信息
             cfg = config_manager.APP_CONFIG
             emby_url = cfg.get('emby_server_url')
             emby_key = cfg.get('emby_api_key')
@@ -821,20 +823,15 @@ class FilterEngine:
                 logger.error("Emby服务器配置不完整，无法从指定媒体库筛选。")
                 return []
 
-            # 1. 从指定的Emby库中获取所有媒体项
             emby_items = emby_handler.get_emby_library_items(
-                base_url=emby_url,
-                api_key=emby_key,
-                user_id=emby_user_id,
-                library_ids=library_ids,
-                media_type_filter=",".join(item_types_to_process)
+                base_url=emby_url, api_key=emby_key, user_id=emby_user_id,
+                library_ids=library_ids, media_type_filter=",".join(item_types_to_process)
             )
 
             if not emby_items:
                 logger.warning("从指定的媒体库中未能获取到任何媒体项。")
                 return []
 
-            # 2. 提取这些媒体项的TMDb ID
             tmdb_ids_from_libs = [
                 item['ProviderIds']['Tmdb']
                 for item in emby_items
@@ -845,7 +842,6 @@ class FilterEngine:
                 logger.warning("指定媒体库中的项目均缺少TMDb ID，无法进行筛选。")
                 return []
             
-            # 3. 根据TMDb ID列表，从我们的数据库缓存中批量获取元数据
             logger.info(f"  -> 正在从本地缓存中查询这 {len(tmdb_ids_from_libs)} 个项目的元数据...")
             for item_type in item_types_to_process:
                 metadata_for_type = db_handler.get_media_metadata_by_tmdb_ids(tmdb_ids_from_libs, item_type)

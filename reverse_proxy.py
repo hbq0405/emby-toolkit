@@ -25,41 +25,25 @@ logger = logging.getLogger(__name__)
 # 这将把数据库ID (例如 7) 转换为一个唯一的、负数的、看起来像原生ID的数字 (例如 -900007)
 MIMICKED_ID_BASE = 900000
 
-def to_mimicked_id(db_id):
-    """将数据库内部ID转换为代理使用的外部ID"""
-    return str(-(MIMICKED_ID_BASE + db_id))
-
-def from_mimicked_id(mimicked_id):
-    """将代理的外部ID转换回数据库内部ID"""
-    return -(int(mimicked_id)) - MIMICKED_ID_BASE
-
+MIMICKED_ID_BASE = 900000
+def to_mimicked_id(db_id): return str(-(MIMICKED_ID_BASE + db_id))
+def from_mimicked_id(mimicked_id): return -(int(mimicked_id)) - MIMICKED_ID_BASE
 def is_mimicked_id(item_id):
-    """检查一个ID是否是我们的虚拟ID"""
-    try:
-        # 我们的ID是负数
-        return isinstance(item_id, str) and item_id.startswith('-')
-    except:
-        return False
-
-# --- 【核心修改】---
-# 更新正则表达式以匹配新的数字ID格式（负数）
+    try: return isinstance(item_id, str) and item_id.startswith('-')
+    except: return False
 MIMICKED_ITEMS_RE = re.compile(r'/emby/Users/([^/]+)/Items/(-(\d+))')
 MIMICKED_ITEM_DETAILS_RE = re.compile(r'emby/Users/([^/]+)/Items/(-(\d+))$')
-
-
 def _get_real_emby_url_and_key():
     base_url = config_manager.APP_CONFIG.get("emby_server_url", "").rstrip('/')
     api_key = config_manager.APP_CONFIG.get("emby_api_key", "")
-    if not base_url or not api_key:
-        raise ValueError("Emby服务器地址或API Key未配置")
+    if not base_url or not api_key: raise ValueError("Emby服务器地址或API Key未配置")
     return base_url, api_key
 
 def handle_get_views():
     """
-    【V8 - 实时权限隐藏最终版】
-    - 终极解决方案：在返回虚拟库列表时，为每个库和当前用户执行一次“快速权限探测”。
-    - 调用一个新的、超快速的API检查，判断当前用户是否能在该虚拟库中看到至少一个媒体项。
-    - 只有用户有权看到内容时，虚拟库才会在主页显示，完美解决了管理员和受限用户视野不一致的问题。
+    【V12 - 极速裸奔最终版】
+    - 移除所有动态库的空壳检查，将主页加载速度置于最高优先级。
+    - 可见性现在只由两个核心条件决定：1. 库在Emby中真实存在。 2. 用户拥有访问权限。
     """
     real_server_id = extensions.EMBY_SERVER_ID
     if not real_server_id:
@@ -71,7 +55,6 @@ def handle_get_views():
             return "Could not determine user from request path", 400
         user_id = user_id_match.group(1)
 
-        # 获取用户可见的原生库，这个后续会用到
         user_visible_native_libs = emby_handler.get_emby_libraries(
             config_manager.APP_CONFIG.get("emby_server_url", ""),
             config_manager.APP_CONFIG.get("emby_api_key", ""),
@@ -82,34 +65,20 @@ def handle_get_views():
         collections = db_handler.get_all_active_custom_collections()
         fake_views_items = []
         for coll in collections:
-            # 1. 物理检查 (依然保留)
+            # 1. 物理检查：库在Emby里有实体吗？
             real_emby_collection_id = coll.get('emby_collection_id')
             if not real_emby_collection_id:
                 logger.debug(f"  -> 虚拟库 '{coll['name']}' 被隐藏，原因: 无对应Emby实体")
                 continue
 
-            # ★★★ 核心修复：执行实时、动态的权限检查 ★★★
-            # a. 从数据库获取这个库包含的所有Emby ID
-            db_media_list = coll.get('generated_media_info_json') or []
-            ordered_emby_ids = [item.get('emby_id') for item in db_media_list if item.get('emby_id')]
-
-            if not ordered_emby_ids:
-                logger.debug(f"  -> 虚拟库 '{coll['name']}' 被隐藏，原因: 库内无项目 (物理)")
-                continue
-
-            # b. 调用我们的新式武器进行“快速权限探测”
-            user_can_see_content = emby_handler.check_user_has_visible_items_in_id_list(
-                user_id=user_id,
-                item_ids=ordered_emby_ids,
-                base_url=config_manager.APP_CONFIG.get("emby_server_url", ""),
-                api_key=config_manager.APP_CONFIG.get("emby_api_key", "")
-            )
-
-            if not user_can_see_content:
-                logger.debug(f"  -> 虚拟库 '{coll['name']}' 被隐藏，原因: 库内无【用户可见】项目 (权限)")
-                continue
+            # 2. 权限检查：用户在不在邀请函上？
+            allowed_users = coll.get('allowed_user_ids')
+            if allowed_users and isinstance(allowed_users, list):
+                if user_id not in allowed_users:
+                    logger.debug(f"  -> 虚拟库 '{coll['name']}' 被隐藏，原因: 用户不在可见列表中 (权限)。")
+                    continue
             
-            # --- 所有检查通过，生成虚拟库 ---
+            # --- 所有检查通过，直接生成虚拟库 ---
             db_id = coll['id']
             mimicked_id = to_mimicked_id(db_id)
             image_tags = {"Primary": f"{real_emby_collection_id}?timestamp={int(time.time())}"}
@@ -133,7 +102,7 @@ def handle_get_views():
                 "DisplayPreferencesId": f"custom-{db_id}", "ForcedSortName": coll['name'],
                 "Taglines": [], "RemoteTrailers": [],
                 "UserData": {"PlaybackPositionTicks": 0, "IsFavorite": False, "Played": False},
-                "ChildCount": len(ordered_emby_ids), # 使用更准确的计数
+                "ChildCount": coll.get('in_library_count', 1), # 给个默认值，避免显示为0
                 "PrimaryImageAspectRatio": 1.7777777777777777, 
                 "CollectionType": collection_type, "ImageTags": image_tags, "BackdropImageTags": [], 
                 "LockedFields": [], "LockData": False
@@ -270,10 +239,8 @@ def handle_mimicked_library_metadata_endpoint(path, mimicked_id, params):
     
 def handle_get_mimicked_library_items(user_id, mimicked_id, params):
     """
-    【V5 - Emby ID 权威数据源 & 排序保持重构版】
-    - 直接从数据库 `generated_media_info_json` 读取权威的、有序的 Emby ID 列表。
-    - 使用批量接口精确获取媒体项，然后根据数据库中的顺序重新排序。
-    - 完美支持 'original' (榜单原始顺序) 排序。
+    【V7.1 - 变量未定义修复版】
+    - 修复了因重构导致 `final_items` 变量未在排序逻辑前初始化的问题。
     """
     try:
         real_db_id = from_mimicked_id(mimicked_id)
@@ -283,54 +250,41 @@ def handle_get_mimicked_library_items(user_id, mimicked_id, params):
 
         definition = collection_info.get('definition_json') or {}
         
-        # --- 阶段一：从数据库获取权威的、有序的 Emby ID 列表 ---
-        logger.trace(f"  -> 阶段1：为虚拟库 '{collection_info['name']}' 从DB读取有序Emby ID列表...")
+        # --- 阶段一 & 二 (保持不变) ---
         db_media_list = collection_info.get('generated_media_info_json') or []
-        
-        # 提取所有有效的 Emby ID，这个列表的顺序就是我们的“原始榜单顺序”
-        ordered_emby_ids = [
-            item.get('emby_id') 
-            for item in db_media_list 
-            if item.get('emby_id')
-        ]
-        
-        if not ordered_emby_ids:
-            logger.trace("  -> 数据库中无 Emby ID 记录，返回空列表。")
+        base_ordered_emby_ids = [item.get('emby_id') for item in db_media_list if item.get('emby_id')]
+        if not base_ordered_emby_ids:
             return Response(json.dumps({"Items": [], "TotalRecordCount": 0}), mimetype='application/json')
-        
-        logger.trace(f"  -> 阶段1完成：获取到 {len(ordered_emby_ids)} 个有序的 Emby ID。")
 
-        # --- 阶段二：使用权威 ID 列表，从 Emby 精确获取实时数据 ---
-        logger.trace(f"  -> 阶段2：正在从 Emby 批量获取这 {len(ordered_emby_ids)} 个媒体项的实时信息...")
+        final_emby_ids_to_fetch = base_ordered_emby_ids
+        if definition.get('dynamic_filter_enabled'):
+            dynamic_rules = definition.get('dynamic_rules', [])
+            ids_from_local_db = db_handler.get_item_ids_by_dynamic_rules(user_id, dynamic_rules)
+            if ids_from_local_db is not None:
+                base_ids_set = set(base_ordered_emby_ids)
+                local_ids_set = set(ids_from_local_db)
+                final_emby_ids_set = base_ids_set.intersection(local_ids_set)
+                final_emby_ids_to_fetch = [emby_id for emby_id in base_ordered_emby_ids if emby_id in final_emby_ids_set]
+            else:
+                final_emby_ids_to_fetch = []
+
+        if not final_emby_ids_to_fetch:
+            return Response(json.dumps({"Items": [], "TotalRecordCount": 0}), mimetype='application/json')
+
+        # --- 阶段三 (保持不变) ---
         base_url, api_key = _get_real_emby_url_and_key()
-        
         live_items_unordered = emby_handler.get_emby_items_by_id(
             base_url=base_url, api_key=api_key, user_id=user_id,
-            item_ids=ordered_emby_ids,
+            item_ids=final_emby_ids_to_fetch,
             fields="PrimaryImageAspectRatio,ProviderIds,UserData,Name,ProductionYear,CommunityRating,DateCreated,PremiereDate,Type,RecursiveItemCount,SortName"
         )
-        
-        # ★★★ 关键点: Emby返回的可能是乱序的，我们必须根据DB中的顺序重新排序 ★★★
         live_items_map = {item['Id']: item for item in live_items_unordered}
-        ordered_items = [live_items_map[emby_id] for emby_id in ordered_emby_ids if emby_id in live_items_map]
+        ordered_items = [live_items_map[emby_id] for emby_id in final_emby_ids_to_fetch if emby_id in live_items_map]
         
-        logger.trace(f"  -> 阶段2完成：成功获取并按原始顺序排序了 {len(ordered_items)} 个实时媒体项。")
-
-        # --- 阶段三：动态筛选 ---
-        final_items = ordered_items
-        if definition.get('dynamic_filter_enabled'):
-            logger.trace("  -> 阶段3：执行实时用户筛选...")
-            dynamic_definition = {
-                'rules': definition.get('dynamic_rules', []),
-                'logic': definition.get('dynamic_logic', 'AND')
-            }
-            engine = FilterEngine()
-            final_items = engine.execute_dynamic_filter(ordered_items, dynamic_definition)
-            logger.trace(f"  -> 阶段3完成：筛选后剩下 {len(final_items)} 个媒体项。")
-        else:
-            logger.trace("  -> 阶段3跳过：未启用实时用户筛选。")
-
         # --- 阶段四：处理最终排序 ---
+        
+        # ★★★ 核心修复：在这里把“交接棒”递过去！ ★★★
+        final_items = ordered_items
         sort_by_field = definition.get('default_sort_by')
         
         # ▼▼▼ 2. 替换整个排序逻辑块 ▼▼▼
@@ -646,7 +600,7 @@ def proxy_all(path):
 
         if path.startswith('emby/Items/') and '/Images/' in path and is_mimicked_id(path.split('/')[2]):
              return handle_get_mimicked_library_image(path)
-
+        
         # 检查是否是请求主页媒体库列表
         if path.endswith('/Views') and path.startswith('emby/Users/'):
             return handle_get_views()
