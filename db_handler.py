@@ -2973,20 +2973,6 @@ def get_item_ids_by_dynamic_rules(user_id: str, rules: List[Dict[str, Any]]) -> 
             if op == 'is': where_clauses.append(condition)
             elif op == 'is_not': where_clauses.append(f"NOT ({condition})")
 
-        # ★★★ 核心改造：增加对 last_played_date 的处理 ★★★
-        elif field == 'last_played_date':
-            if str(value).isdigit():
-                days = int(value)
-                # 使用 PostgreSQL 的 INTERVAL 语法进行日期计算，安全又高效
-                if op == 'in_last_days':
-                    # last_played_date 必须非空，且在 N 天之内
-                    where_clauses.append("last_played_date IS NOT NULL AND last_played_date >= (NOW() - INTERVAL '%s days')")
-                    params.append(days)
-                elif op == 'not_in_last_days':
-                    # last_played_date 为空，或者在 N 天之前
-                    where_clauses.append("(last_played_date IS NULL OR last_played_date < (NOW() - INTERVAL '%s days'))")
-                    params.append(days)
-
     if not where_clauses:
         return []
 
