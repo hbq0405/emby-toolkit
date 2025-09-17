@@ -22,7 +22,8 @@
                   target="_blank"
                   style="font-size: 0.85em; margin-left: 8px; color: var(--n-primary-color); text-decoration: underline;"
                 >justzerock</a><br />
-          开启监控新入库可实时生成封面，包括原生媒体库、自建合集。
+          开启监控新入库可实时生成封面，包括原生媒体库、自建合集。如需自定义图片，可以在【其他设置】里填写自定义路径，例如：/config/custom_images。<br />
+          然后在这个目录下新建想要自定义图片的媒体库子目录，例如：/config/custom_images/漫威宇宙，在这个目录下放入以1.jpg、2.jpg...命名的图片。
         </n-alert>
         </n-page-header>
 
