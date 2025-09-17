@@ -1,4 +1,4 @@
-<!-- src/components/CustomCollectionsManager.vue (V3.1 - 修复UI切换BUG版) -->
+<!-- src/components/CustomCollectionsManager.vue -->
 <template>
   <n-layout content-style="padding: 24px;">
     <div class="custom-collections-manager">
@@ -99,7 +99,7 @@
             :loading="isLoadingEmbyUsers"
           />
         </n-form-item>
-
+        
         <n-form-item label="合集类型" path="type">
           <n-select
             v-model:value="currentCollection.type"
@@ -123,7 +123,6 @@
 
         <!-- 榜单导入 (List) 类型的表单 -->
         <div v-if="currentCollection.type === 'list'">
-          <!-- ★★★ 核心修正：移除 path="definition.source" 属性 ★★★ -->
           <n-form-item label="榜单来源">
             <n-select
               v-model:value="selectedBuiltInList"
@@ -135,7 +134,7 @@
             <n-input-group>
               <n-input 
                 v-model:value="currentCollection.definition.url" 
-                placeholder="可手动输入URL，或通过右侧助手生成"
+                :placeholder="urlInputPlaceholder"
               />
               <n-button type="primary" ghost @click="openDiscoverHelper">
                 TMDb 探索助手
@@ -166,7 +165,7 @@
               </n-space>
             </n-radio-group>
           </n-form-item>
-          <n-form-item label="筛选范围" path="definition.library_ids">
+          <n-form-item label="筛选范围" path="definition.target_library_ids">
             <template #label>
               筛选范围
               <n-tooltip trigger="hover">
@@ -177,7 +176,7 @@
               </n-tooltip>
             </template>
             <n-select
-              v-model:value="currentCollection.definition.library_ids"
+              v-model:value="currentCollection.definition.target_library_ids"
               multiple
               filterable
               clearable
@@ -324,17 +323,26 @@
                   />
                 </template>
                 <template v-else-if="rule.field === 'directors'">
-                  <n-dynamic-tags
+                  <n-select
                     v-if="['is_one_of', 'is_none_of'].includes(rule.operator)"
                     v-model:value="rule.value"
+                    multiple filterable remote
+                    placeholder="输入以搜索并添加导演"
+                    :options="actorOptions"
+                    :loading="isSearchingActors"
+                    @search="handleActorSearch"
                     :disabled="!rule.operator"
-                    style="flex-grow: 1;"
+                    style="flex-grow: 1; min-width: 220px;"
                   />
-                  <n-input
+                  <n-auto-complete
                     v-else
                     v-model:value="rule.value"
-                    placeholder="输入导演名称"
+                    :options="actorOptions"
+                    :loading="isSearchingActors"
+                    placeholder="边输入边搜索导演"
+                    @update:value="handleActorSearch"
                     :disabled="!rule.operator"
+                    clearable
                   />
                 </template>
                 <n-input-number
@@ -405,12 +413,8 @@
             <n-form-item label="动态筛选规则" path="definition.dynamic_rules">
               <div style="width: 100%;">
                 <n-space v-for="(rule, index) in currentCollection.definition.dynamic_rules" :key="index" style="margin-bottom: 12px;" align="center">
-                  
-                  <!-- 修复：使用 dynamicFieldOptions -->
                   <n-select v-model:value="rule.field" :options="dynamicFieldOptions" placeholder="字段" style="width: 150px;" clearable />
-                  
                   <n-select v-model:value="rule.operator" :options="getOperatorOptionsForRow(rule)" placeholder="操作" style="width: 120px;" :disabled="!rule.field" clearable />
-                  
                   <template v-if="rule.field === 'playback_status'">
                     <n-select
                       v-model:value="rule.value"
@@ -436,7 +440,6 @@
                       style="flex-grow: 1; min-width: 180px;"
                     />
                   </template>
-
                   <n-button text type="error" @click="removeDynamicRule(index)">
                     <template #icon><n-icon :component="DeleteIcon" /></template>
                   </n-button>
@@ -711,10 +714,9 @@ import {
   HelpCircleOutline as HelpIcon,
   ImageOutline as CoverIcon,
 } from '@vicons/ionicons5';
-import { format } from 'date-fns';
 
 // ===================================================================
-// ▼▼▼ 确保所有 ref 变量都在这里定义好 ▼▼▼
+// ▼▼▼ 所有 ref 变量定义 ▼▼▼
 // ===================================================================
 const message = useMessage();
 const collections = ref([]);
@@ -742,9 +744,10 @@ const isSavingOrder = ref(false);
 const embyLibraryOptions = ref([]);
 const isLoadingLibraries = ref(false);
 const isGeneratingCovers = ref(false);
+const embyUserOptions = ref([]);
+const isLoadingEmbyUsers = ref(false);
 let sortableInstance = null;
 
-// --- TMDb 探索助手相关状态 ---
 const showDiscoverHelper = ref(false);
 const isLoadingTmdbGenres = ref(false);
 const tmdbMovieGenres = ref([]);
@@ -762,47 +765,83 @@ const directorOptions = ref([]);
 const tmdbCountryOptions = ref([]);
 const isLoadingTmdbCountries = ref(false);
 
-// ... (emby用户) ...
-const embyUserOptions = ref([]);
-const isLoadingEmbyUsers = ref(false);
-
 const getInitialDiscoverParams = () => ({
-  type: 'movie',
-  sort_by: 'popularity.desc',
-  release_year_gte: null,
-  release_year_lte: null,
-  with_genres: [],
-  without_genres: [],
-  with_runtime_gte: null, 
-  with_runtime_lte: null,
-  with_companies: [],
-  with_cast: [],
-  with_crew: [],
-  with_origin_country: null,
-  with_original_language: null,
-  vote_average_gte: 0,
-  vote_count_gte: 0,
+  type: 'movie', sort_by: 'popularity.desc', release_year_gte: null, release_year_lte: null,
+  with_genres: [], without_genres: [], with_runtime_gte: null, with_runtime_lte: null,
+  with_companies: [], with_cast: [], with_crew: [], with_origin_country: null,
+  with_original_language: null, vote_average_gte: 0, vote_count_gte: 0,
 });
 const discoverParams = ref(getInitialDiscoverParams());
 
 // ===================================================================
-// ▼▼▼ 确保所有函数和计算属性都在这里 ▼▼▼
+// ▼▼▼ 所有函数和计算属性 ▼▼▼
 // ===================================================================
 
-// ★★★ 获取 Emby 用户列表的函数 ★★★
-const fetchEmbyUsers = async () => {
-  isLoadingEmbyUsers.value = true;
-  try {
-    const response = await axios.get('/api/custom_collections/config/emby_users');
-    embyUserOptions.value = response.data;
-  } catch (error) {
-    message.error('获取Emby用户列表失败。');
-  } finally {
-    isLoadingEmbyUsers.value = false;
-  }
+const ruleConfig = {
+  title: { label: '标题', type: 'text', operators: ['contains', 'does_not_contain', 'starts_with', 'ends_with'] },
+  actors: { label: '演员', type: 'text', operators: ['contains', 'is_one_of', 'is_none_of'] }, 
+  directors: { label: '导演', type: 'text', operators: ['contains', 'is_one_of', 'is_none_of'] }, 
+  release_year: { label: '年份', type: 'number', operators: ['gte', 'lte', 'eq'] },
+  rating: { label: '评分', type: 'number', operators: ['gte', 'lte'] },
+  genres: { label: '类型', type: 'select', operators: ['contains', 'is_one_of', 'is_none_of'] }, 
+  countries: { label: '国家/地区', type: 'select', operators: ['contains', 'is_one_of', 'is_none_of'] },
+  studios: { label: '工作室', type: 'select', operators: ['contains', 'is_one_of', 'is_none_of'] },
+  tags: { label: '标签', type: 'select', operators: ['contains', 'is_one_of', 'is_none_of'] }, 
+  unified_rating: { label: '家长分级', type: 'select', operators: ['is_one_of', 'is_none_of', 'eq'] },
+  release_date: { label: '上映于', type: 'date', operators: ['in_last_days', 'not_in_last_days'] },
+  date_added: { label: '入库于', type: 'date', operators: ['in_last_days', 'not_in_last_days'] },
+  playback_status: { label: '播放状态', type: 'user_data_select', operators: ['is', 'is_not'] },
+  is_favorite: { label: '是否收藏', type: 'user_data_bool', operators: ['is', 'is_not'] },
 };
 
-// ★★★ 封面生成处理函数 ★★★
+const operatorLabels = {
+  contains: '包含', does_not_contain: '不包含', starts_with: '开头是', ends_with: '结尾是',    
+  gte: '大于等于', lte: '小于等于', eq: '等于',
+  in_last_days: '最近N天内', not_in_last_days: 'N天以前',
+  is_one_of: '是其中之一', is_none_of: '不是任何一个',
+  is: '是', is_not: '不是'
+};
+
+const staticFieldOptions = computed(() => 
+  Object.keys(ruleConfig)
+    .filter(key => !ruleConfig[key].type.startsWith('user_data'))
+    .map(key => ({ label: ruleConfig[key].label, value: key }))
+);
+
+const dynamicFieldOptions = computed(() => 
+  Object.keys(ruleConfig)
+    .filter(key => ruleConfig[key].type.startsWith('user_data'))
+    .map(key => ({ label: ruleConfig[key].label, value: key }))
+);
+
+const getOperatorOptionsForRow = (rule) => {
+  if (!rule.field) return [];
+  return (ruleConfig[rule.field]?.operators || []).map(op => ({ label: operatorLabels[op] || op, value: op }));
+};
+
+const createRuleWatcher = (rulesRef) => {
+  watch(rulesRef, (newRules) => {
+    if (!Array.isArray(newRules)) return;
+    newRules.forEach(rule => {
+      const config = ruleConfig[rule.field];
+      if (!config) return;
+      const validOperators = config.operators;
+      if (rule.operator && !validOperators.includes(rule.operator)) {
+        rule.operator = null;
+        rule.value = null;
+      }
+      if (rule.field && !rule.operator && validOperators.length > 0) {
+          rule.operator = validOperators[0];
+      }
+      if (rule.field === 'is_favorite' && typeof rule.value !== 'boolean') {
+        rule.value = true;
+      } else if (rule.field === 'playback_status' && !['unplayed', 'in_progress', 'played'].includes(rule.value)) {
+        rule.value = 'unplayed';
+      }
+    });
+  }, { deep: true });
+};
+
 const handleGenerateAllCovers = async () => {
   isGeneratingCovers.value = true;
   try {
@@ -812,6 +851,18 @@ const handleGenerateAllCovers = async () => {
     message.error(error.response?.data?.error || '提交任务失败。');
   } finally {
     isGeneratingCovers.value = false;
+  }
+};
+
+const fetchEmbyUsers = async () => {
+  isLoadingEmbyUsers.value = true;
+  try {
+    const response = await axios.get('/api/custom_collections/config/emby_users');
+    embyUserOptions.value = response.data;
+  } catch (error) {
+    message.error('获取Emby用户列表失败。');
+  } finally {
+    isLoadingEmbyUsers.value = false;
   }
 };
 
@@ -881,9 +932,7 @@ const sortFieldOptions = computed(() => {
 
   const itemTypes = currentCollection.value.definition?.item_type || [];
   if (Array.isArray(itemTypes) && itemTypes.includes('Series')) {
-    // ▼▼▼ 核心修改：更新标签和值 ▼▼▼
     options.splice(4, 0, { label: '最后一集更新时间', value: 'last_synced_at' });
-    // ▲▲▲ 修改结束 ▲▲▲
   }
 
   if (currentCollection.value.type === 'list') {
@@ -902,12 +951,12 @@ const getInitialFormModel = () => ({
   name: '',
   type: 'list',
   status: 'active',
-  allowed_user_ids: [], 
+  allowed_user_ids: [],
   definition: {
     item_type: ['Movie'],
     url: '',
     limit: null,
-    target_library_ids: [], 
+    target_library_ids: [],
     default_sort_by: 'original',
     default_sort_order: 'Ascending',
     dynamic_filter_enabled: false,
@@ -1017,89 +1066,24 @@ const handleStudioSearch = (query) => {
   }, 300);
 };
 
-watch(() => currentCollection.value.definition.rules, (newRules) => {
-  if (Array.isArray(newRules)) {
-    newRules.forEach(rule => {
-      const validOperators = getOperatorOptionsForRow(rule).map(opt => opt.value);
-      if (rule.operator && !validOperators.includes(rule.operator)) {
-        rule.operator = null;
-        rule.value = '';
-      }
-      if (rule.field && !rule.operator) {
-        const options = getOperatorOptionsForRow(rule);
-        if (options && options.length === 1) rule.operator = options[0].value;
-      }
-      const isMultiValueOp = ['is_one_of', 'is_none_of'].includes(rule.operator);
-      if (isMultiValueOp && !Array.isArray(rule.value)) {
-        rule.value = [];
-      } else if (!isMultiValueOp && Array.isArray(rule.value)) {
-        rule.value = '';
-      }
-    });
+const handleActorSearch = (query) => {
+  if (!query) {
+    actorOptions.value = [];
+    return;
   }
-}, { deep: true });
-
-watch(() => currentCollection.value.definition.dynamic_rules, (newRules) => {
-  if (Array.isArray(newRules)) {
-    newRules.forEach(rule => {
-      if (rule.field === 'is_favorite' && typeof rule.value !== 'boolean') {
-        rule.value = true;
-      } 
-      else if (rule.field === 'playback_status' && !['unplayed', 'in_progress', 'played'].includes(rule.value)) {
-        rule.value = 'unplayed';
-      }
-    });
-  }
-}, { deep: true });
-
-const ruleConfig = {
-  title: { label: '标题', type: 'text', operators: ['contains', 'does_not_contain', 'starts_with', 'ends_with'] },
-  actors: { label: '演员', type: 'text', operators: ['contains', 'is_one_of', 'is_none_of'] }, 
-  directors: { label: '导演', type: 'text', operators: ['contains', 'is_one_of', 'is_none_of'] }, 
-  release_year: { label: '年份', type: 'number', operators: ['gte', 'lte', 'eq'] },
-  rating: { label: '评分', type: 'number', operators: ['gte', 'lte'] },
-  genres: { label: '类型', type: 'select', operators: ['contains', 'is_one_of', 'is_none_of'] }, 
-  countries: { label: '国家/地区', type: 'select', operators: ['contains', 'is_one_of', 'is_none_of'] },
-  studios: { label: '工作室', type: 'select', operators: ['contains', 'is_one_of', 'is_none_of'] },
-  tags: { label: '标签', type: 'select', operators: ['contains', 'is_one_of', 'is_none_of'] }, 
-  unified_rating: { label: '家长分级', type: 'select', operators: ['is_one_of', 'is_none_of', 'eq'] },
-  release_date: { label: '上映于', type: 'date', operators: ['in_last_days', 'not_in_last_days'] },
-  date_added: { label: '入库于', type: 'date', operators: ['in_last_days', 'not_in_last_days'] },
-  // 动态筛选规则
-  playback_status: { label: '播放状态', type: 'user_data_select', operators: ['is', 'is_not'] },
-  is_favorite: { label: '是否收藏', type: 'user_data_bool', operators: ['is', 'is_not'] },
-};
-
-const operatorLabels = {
-  contains: '包含', does_not_contain: '不包含', starts_with: '开头是', ends_with: '结尾是',    
-  gte: '大于等于', lte: '小于等于', eq: '等于',
-  in_last_days: '最近N天内', not_in_last_days: 'N天以前',
-  is_one_of: '是其中之一', is_none_of: '不是任何一个',
-  is: '是',
-  is_not: '不是'
-};
-
-const createRuleWatcher = (rulesRef) => {
-  watch(rulesRef, (newRules) => {
-    if (!Array.isArray(newRules)) return;
-    newRules.forEach(rule => {
-      const config = ruleConfig[rule.field];
-      if (!config) return;
-      const validOperators = config.operators;
-      if (rule.operator && !validOperators.includes(rule.operator)) {
-        rule.operator = null;
-        rule.value = null;
-      }
-      if (rule.field && !rule.operator && validOperators.length > 0) {
-          rule.operator = validOperators[0];
-      }
-      if (rule.field === 'is_favorite' && typeof rule.value !== 'boolean') {
-        rule.value = true;
-      } else if (rule.field === 'playback_status' && !['unplayed', 'in_progress', 'played'].includes(rule.value)) {
-        rule.value = 'unplayed';
-      }
-    });
-  }, { deep: true });
+  isSearchingActors.value = true;
+  if (searchTimeout) clearTimeout(searchTimeout);
+  searchTimeout = setTimeout(async () => {
+    try {
+      const response = await axios.get(`/api/custom_collections/search_actors?q=${query}`);
+      actorOptions.value = response.data.map(name => ({ label: name, value: name }));
+    } catch (error) {
+      console.error('搜索演员失败:', error);
+      actorOptions.value = [];
+    } finally {
+      isSearchingActors.value = false;
+    }
+  }, 300);
 };
 
 const unifiedRatingOptions = ref([]);
@@ -1113,23 +1097,6 @@ const fetchUnifiedRatingOptions = async () => {
   } catch (error) {
     message.error('获取家长分级列表失败。');
   }
-};
-
-const staticFieldOptions = computed(() => 
-  Object.keys(ruleConfig)
-    .filter(key => !ruleConfig[key].type.startsWith('user_data')) 
-    .map(key => ({ label: ruleConfig[key].label, value: key }))
-);
-
-const dynamicFieldOptions = computed(() => 
-  Object.keys(ruleConfig)
-    .filter(key => ruleConfig[key].type.startsWith('user_data')) // <-- 使用更通用的 startsWith
-    .map(key => ({ label: ruleConfig[key].label, value: key }))
-);
-
-const getOperatorOptionsForRow = (rule) => {
-  if (!rule.field) return [];
-  return (ruleConfig[rule.field]?.operators || []).map(op => ({ label: operatorLabels[op] || op, value: op }));
 };
 
 const addRule = () => {
@@ -1357,7 +1324,6 @@ const handleEditClick = (row) => {
   }
 
   if (!rowCopy.definition || typeof rowCopy.definition !== 'object') {
-    console.error("合集定义 'definition' 丢失或格式不正确:", row);
     rowCopy.definition = rowCopy.type === 'filter'
       ? { item_type: ['Movie'], logic: 'AND', rules: [] }
       : { item_type: ['Movie'], url: '' };
@@ -1437,14 +1403,12 @@ const columns = [
       let tagType = 'default';
       if (row.type === 'list') {
         let url = row.definition?.url || '';
-        
-        // ★★★ 核心修改：在这里增加判断逻辑 ★★★
         if (url.startsWith('maoyan://')) {
             label = '猫眼榜单';
             tagType = 'error';
         } else if (url.includes('douban.com/doulist')) {
             label = '豆瓣豆列';
-            tagType = 'success'; // 用绿色区分
+            tagType = 'success';
         } else if (url.includes('themoviedb.org/discover/')) {
             label = '探索助手';
             tagType = 'warning';
@@ -1452,7 +1416,6 @@ const columns = [
             label = '榜单导入';
             tagType = 'info';
         }
-
       } else if (row.type === 'filter') {
         label = '筛选生成';
         tagType = 'default';
@@ -1525,38 +1488,25 @@ const removeDynamicRule = (index) => {
   currentCollection.value.definition.dynamic_rules.splice(index, 1);
 };
 
-// --- TMDb 探索助手函数 ---
 const tmdbSortOptions = computed(() => {
   if (discoverParams.value.type === 'movie') {
-    // 如果是电影，使用电影的排序参数
     return [
-      { label: '热度降序', value: 'popularity.desc' },
-      { label: '热度升序', value: 'popularity.asc' },
-      { label: '评分降序', value: 'vote_average.desc' },
-      { label: '评分升序', value: 'vote_average.asc' },
-      { label: '上映日期降序', value: 'primary_release_date.desc' },
-      { label: '上映日期升序', value: 'primary_release_date.asc' },
+      { label: '热度降序', value: 'popularity.desc' }, { label: '热度升序', value: 'popularity.asc' },
+      { label: '评分降序', value: 'vote_average.desc' }, { label: '评分升序', value: 'vote_average.asc' },
+      { label: '上映日期降序', value: 'primary_release_date.desc' }, { label: '上映日期升序', value: 'primary_release_date.asc' },
     ];
   } else {
-    // 如果是电视剧，使用电视剧的排序参数
     return [
-      { label: '热度降序', value: 'popularity.desc' },
-      { label: '热度升序', value: 'popularity.asc' },
-      { label: '评分降序', value: 'vote_average.desc' },
-      { label: '评分升序', value: 'vote_average.asc' },
-      { label: '首播日期降序', value: 'first_air_date.desc' }, // ◀◀◀ 核心修正
-      { label: '首播日期升序', value: 'first_air_date.asc' },  // ◀◀◀ 核心修正
+      { label: '热度降序', value: 'popularity.desc' }, { label: '热度升序', value: 'popularity.asc' },
+      { label: '评分降序', value: 'vote_average.desc' }, { label: '评分升序', value: 'vote_average.asc' },
+      { label: '首播日期降序', value: 'first_air_date.desc' }, { label: '首播日期升序', value: 'first_air_date.asc' },
     ];
   }
 });
 
 const tmdbLanguageOptions = [
-    { label: '中文', value: 'zh' },
-    { label: '英文', value: 'en' },
-    { label: '日文', value: 'ja' },
-    { label: '韩文', value: 'ko' },
-    { label: '法语', value: 'fr' },
-    { label: '德语', value: 'de' },
+    { label: '中文', value: 'zh' }, { label: '英文', value: 'en' }, { label: '日文', value: 'ja' },
+    { label: '韩文', value: 'ko' }, { label: '法语', value: 'fr' }, { label: '德语', value: 'de' },
 ];
 
 const tmdbGenreOptions = computed(() => {
@@ -1564,15 +1514,11 @@ const tmdbGenreOptions = computed(() => {
   return source.map(g => ({ label: g.name, value: g.id }));
 });
 
-// 计算属性：实时生成URL (精简可靠版)
 const generatedDiscoverUrl = computed(() => {
   const params = discoverParams.value;
   const base = `https://www.themoviedb.org/discover/${params.type}`;
   const query = new URLSearchParams();
-  
   query.append('sort_by', params.sort_by);
-
-  // 年份
   if (params.type === 'movie') {
     if (params.release_year_gte) query.append('primary_release_date.gte', `${params.release_year_gte}-01-01`);
     if (params.release_year_lte) query.append('primary_release_date.lte', `${params.release_year_lte}-12-31`);
@@ -1580,40 +1526,19 @@ const generatedDiscoverUrl = computed(() => {
     if (params.release_year_gte) query.append('first_air_date.gte', `${params.release_year_gte}-01-01`);
     if (params.release_year_lte) query.append('first_air_date.lte', `${params.release_year_lte}-12-31`);
   }
-
-  // 各种ID类参数
   if (params.with_genres?.length) query.append('with_genres', params.with_genres.join(','));
   if (params.without_genres?.length) query.append('without_genres', params.without_genres.join(','));
   if (params.with_companies?.length) query.append('with_companies', params.with_companies.join(','));
   if (params.with_cast?.length) query.append('with_cast', params.with_cast.join(','));
   if (params.with_crew?.length) query.append('with_crew', params.with_crew.join(','));
-  
-  // 各种代码类参数
-  if (params.with_origin_country) {
-    query.append('with_origin_country', params.with_origin_country);
-  }
-  if (params.with_original_language) {
-    query.append('with_original_language', params.with_original_language);
-  }
-  
-  // 评分和评分人数
-  if (params.vote_average_gte > 0) {
-    query.append('vote_average.gte', params.vote_average_gte);
-  }
-  if (params.vote_count_gte > 0) {
-    query.append('vote_count.gte', params.vote_count_gte);
-  }
-  
-  // 时长
+  if (params.with_origin_country) query.append('with_origin_country', params.with_origin_country);
+  if (params.with_original_language) query.append('with_original_language', params.with_original_language);
+  if (params.vote_average_gte > 0) query.append('vote_average.gte', params.vote_average_gte);
+  if (params.vote_count_gte > 0) query.append('vote_count.gte', params.vote_count_gte);
   if (params.type === 'tv') {
-    if (params.with_runtime_gte) { // 只要有值就添加
-      query.append('with_runtime.gte', params.with_runtime_gte);
-    }
-    if (params.with_runtime_lte) { // 只要有值就添加
-      query.append('with_runtime.lte', params.with_runtime_lte);
-    }
+    if (params.with_runtime_gte) query.append('with_runtime.gte', params.with_runtime_gte);
+    if (params.with_runtime_lte) query.append('with_runtime.lte', params.with_runtime_lte);
   }
-  
   return `${base}?${query.toString()}`;
 });
 
@@ -1627,7 +1552,6 @@ const fetchTmdbGenres = async () => {
     tmdbMovieGenres.value = movieRes.data;
     tmdbTvGenres.value = tvRes.data;
   } catch (error) {
-    console.error("获取TMDb类型列表失败，后端返回错误:", error.response?.data || error.message);
     message.error('获取TMDb类型列表失败，请检查后端日志。');
   } finally {
     isLoadingTmdbGenres.value = false;
@@ -1648,19 +1572,15 @@ const fetchTmdbCountries = async () => {
 
 const openDiscoverHelper = () => {
   discoverParams.value = getInitialDiscoverParams();
-  // 清理工作区，确保每次打开都是全新的状态
   selectedCompanies.value = [];
   selectedActors.value = [];
   selectedDirectors.value = [];
-  
-  // 清理可能残留的搜索结果和文本
   companySearchText.value = '';
   companyOptions.value = [];
   actorSearchText.value = '';
   actorOptions.value = [];
   directorSearchText.value = '';
   directorOptions.value = [];
-
   showDiscoverHelper.value = true;
 };
 
@@ -1705,9 +1625,8 @@ const handleCompanySelect = (option) => {
   companyOptions.value = [];
 };
 
-// --- 演员搜索 (独立版) ---
 let actorSearchTimeout = null;
-const handleActorSearch = (query) => {
+const handleActorSearchForDiscover = (query) => {
   actorSearchText.value = query;
   if (!query.length) {
     actorOptions.value = [];
@@ -1725,7 +1644,6 @@ const handleActorSearch = (query) => {
   }, 300);
 };
 
-// --- 导演搜索 (独立版) ---
 let directorSearchTimeout = null;
 const handleDirectorSearch = (query) => {
   directorSearchText.value = query;
@@ -1775,9 +1693,6 @@ watch(selectedDirectors, (newValue) => {
   discoverParams.value.with_crew = newValue.map(d => d.value);
 }, { deep: true });
 
-createRuleWatcher(() => currentCollection.value.definition.rules);
-createRuleWatcher(() => currentCollection.value.definition.dynamic_rules);
-
 onMounted(() => {
   fetchCollections();
   fetchCountryOptions();
@@ -1789,6 +1704,10 @@ onMounted(() => {
   fetchTmdbCountries();
   fetchEmbyUsers();
 });
+
+createRuleWatcher(() => currentCollection.value.definition.rules);
+createRuleWatcher(() => currentCollection.value.definition.dynamic_rules);
+
 </script>
 
 <style scoped>
