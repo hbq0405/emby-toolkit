@@ -689,7 +689,7 @@ class FilterEngine:
                 if item_object_list:
                     try:
                         # ★★★ 核心改造：只取列表中的前5个演员进行匹配！ ★★★
-                        item_name_list = [p['name'] for p in item_object_list[:5] if 'name' in p]
+                        item_name_list = [p['name'] for p in item_object_list[:3] if 'name' in p]
                         
                         if op == 'is_one_of':
                             if isinstance(value, list) and any(v in item_name_list for v in value):
