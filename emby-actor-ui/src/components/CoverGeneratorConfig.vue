@@ -130,14 +130,41 @@
             </n-tab-pane>
 
             <n-tab-pane name="title-tab" tab="封面标题">
-              <n-form-item label="中英标题配置 (YAML格式)">
-                <n-input
-                  v-model:value="configData.title_config"
-                  type="textarea"
-                  :autosize="{ minRows: 10 }"
-                  placeholder="媒体库名称:\n  - 中文标题\n  - 英文标题"
-                />
-              </n-form-item>
+              <n-space vertical>
+                <!-- 表头，用于引导用户 -->
+                <n-grid :cols="10" :x-gap="12" style="padding: 0 8px; margin-bottom: 4px;">
+                  <n-gi :span="3"><span style="font-weight: 500;">媒体库名称</span></n-gi>
+                  <n-gi :span="3"><span style="font-weight: 500;">中文标题</span></n-gi>
+                  <n-gi :span="3"><span style="font-weight: 500;">英文标题</span></n-gi>
+                  <n-gi :span="1"></n-gi> <!-- 操作区占位 -->
+                </n-grid>
+
+                <!-- 动态表单项 -->
+                <div v-for="(item, index) in titleConfigs" :key="item.id">
+                  <n-grid :cols="10" :x-gap="12" :y-gap="8">
+                    <n-gi :span="3">
+                      <n-input v-model:value="item.library" placeholder="与媒体库名称完全一致" />
+                    </n-gi>
+                    <n-gi :span="3">
+                      <n-input v-model:value="item.zh" placeholder="封面上显示的中文" />
+                    </n-gi>
+                    <n-gi :span="3">
+                      <n-input v-model:value="item.en" placeholder="封面上显示的英文" />
+                    </n-gi>
+                    <n-gi :span="1" style="display: flex; align-items: center;">
+                      <n-button type="error" dashed @click="removeTitleConfig(index)">
+                        <template #icon><n-icon :component="TrashIcon" /></template>
+                      </n-button>
+                    </n-gi>
+                  </n-grid>
+                </div>
+
+                <!-- 操作按钮 -->
+                <n-button @click="addTitleConfig" type="primary" dashed style="margin-top: 16px;">
+                  <template #icon><n-icon :component="AddIcon" /></template>
+                  新增配置
+                </n-button>
+              </n-space>
             </n-tab-pane>
 
             <n-tab-pane name="single-tab" tab="单图风格设置">
@@ -290,8 +317,19 @@
 <script setup>
 import { ref, onMounted, watch } from 'vue';
 import axios from 'axios';
-import { useMessage, NLayout, NPageHeader, NButton, NIcon, NCard, NGrid, NGi, NFormItem, NSwitch, NSelect, NTabs, NCheckboxGroup, NCheckbox, NSpin, NSpace } from 'naive-ui';
-import { SaveOutline as SaveIcon, ImagesOutline as ImagesIcon } from '@vicons/ionicons5';
+import { 
+  useMessage, NLayout, NPageHeader, NButton, NIcon, NCard, NGrid, NGi, 
+  NFormItem, NSwitch, NSelect, NTabs, NTabPane, NCheckboxGroup, NCheckbox, 
+  NSpin, NSpace, NInput, NInputNumber, NRadioGroup, NRadioButton, NSlider, 
+  NDivider, NAlert 
+} from 'naive-ui';
+import { 
+  SaveOutline as SaveIcon, 
+  ImagesOutline as ImagesIcon,
+  TrashOutline as TrashIcon, // ★ 新增：删除图标
+  AddOutline as AddIcon      // ★ 新增：添加图标
+} from '@vicons/ionicons5';
+import * as yaml from 'js-yaml'; // ★ 新增：导入 js-yaml
 
 // 导入静态图片数据
 import { single_1, single_2, multi_1 } from '../assets/cover_styles/images.js';
@@ -302,9 +340,9 @@ const stylePreviews = ref({
 });
 
 const styles = [
-  { title: "单图 1", value: "single_1", src: stylePreviews.value.single_1 },
-  { title: "单图 2", value: "single_2", src: stylePreviews.value.single_2 },
-  { title: "多图 1", value: "multi_1", src: stylePreviews.value.multi_1 }
+  { title: "单图 1", value: "single_1" },
+  { title: "单图 2", value: "single_2" },
+  { title: "多图 1", value: "multi_1" }
 ];
 
 const message = useMessage();
@@ -313,6 +351,9 @@ const isSaving = ref(false);
 const isGenerating = ref(false);
 const configData = ref({});
 
+// ★ 新增：用于封面标题UI的结构化数据
+const titleConfigs = ref([]);
+
 const libraryOptions = ref([]);
 
 const sortOptions = [
@@ -320,12 +361,73 @@ const sortOptions = [
   { label: "随机", value: "Random" },
 ];
 
+// ★ 新增：将YAML字符串解析为结构化数组
+const parseYamlToData = (yamlString) => {
+  try {
+    if (!yamlString || yamlString.trim() === '') {
+      titleConfigs.value = [];
+      return;
+    }
+    const data = yaml.load(yamlString);
+    titleConfigs.value = Object.entries(data).map(([library, titles], index) => ({
+      id: Date.now() + index, // 使用时间戳+索引确保key的唯一性
+      library: library,
+      zh: titles[0] || '',
+      en: titles[1] || ''
+    }));
+  } catch (e) {
+    message.error('封面标题配置 (YAML) 格式解析失败，请检查。');
+    console.error("YAML Parse Error:", e);
+    titleConfigs.value = []; // 解析失败则清空，避免UI出错
+  }
+};
+
+// ★ 新增：将结构化数组转换回YAML字符串
+const convertDataToYaml = () => {
+  try {
+    const dataObject = titleConfigs.value.reduce((acc, item) => {
+      // 过滤掉媒体库名称为空的无效配置
+      if (item.library && item.library.trim() !== '') {
+        acc[item.library.trim()] = [item.zh || '', item.en || ''];
+      }
+      return acc;
+    }, {});
+
+    if (Object.keys(dataObject).length === 0) {
+      return ''; // 如果没有有效配置，返回空字符串
+    }
+    
+    return yaml.dump(dataObject);
+  } catch (e) {
+    message.error('生成封面标题配置失败。');
+    console.error("YAML Dump Error:", e);
+    return configData.value.title_config; // 转换失败则返回原始值，防止数据丢失
+  }
+};
+
+// ★ 新增：添加一行新的标题配置
+const addTitleConfig = () => {
+  titleConfigs.value.push({
+    id: Date.now(),
+    library: '',
+    zh: '',
+    en: ''
+  });
+};
+
+// ★ 新增：移除指定索引的标题配置
+const removeTitleConfig = (index) => {
+  titleConfigs.value.splice(index, 1);
+};
+
 
 const fetchConfig = async () => {
   isLoading.value = true;
   try {
     const response = await axios.get('/api/config/cover_generator');
     configData.value = response.data;
+    // ★ 修改：获取配置后，立即解析YAML
+    parseYamlToData(configData.value.title_config);
   } catch (error) {
     message.error('加载封面生成器配置失败。');
   } finally {
@@ -344,6 +446,9 @@ const fetchLibraryOptions = async () => {
 
 const saveConfig = async () => {
   isSaving.value = true;
+  // ★ 修改：保存前，将结构化数据转换回YAML字符串
+  configData.value.title_config = convertDataToYaml();
+  
   try {
     await axios.post('/api/config/cover_generator', configData.value);
     message.success('配置已成功保存！');
@@ -366,21 +471,20 @@ const runGenerateAllTask = async () => {
   }
 };
 
+// --- 实时预览部分保持不变 ---
 let previewUpdateTimeout = null;
 const isPreviewLoading = ref(false);
 
-// 这是一个“防抖”函数，防止用户疯狂拖动滑块时发送大量请求
 function debounceUpdatePreview() {
   isPreviewLoading.value = true;
   if (previewUpdateTimeout) {
     clearTimeout(previewUpdateTimeout);
   }
-  previewUpdateTimeout = setTimeout(updateAllPreviews, 500); // 延迟500ms执行
+  previewUpdateTimeout = setTimeout(updateAllPreviews, 500);
 }
 
 async function updateAllPreviews() {
   if (!configData.value.show_item_count) {
-    // 如果开关是关的，就恢复原始图片
     stylePreviews.value.single_1 = single_1;
     stylePreviews.value.single_2 = single_2;
     stylePreviews.value.multi_1 = multi_1;
@@ -389,7 +493,6 @@ async function updateAllPreviews() {
   }
 
   try {
-    // 并发更新所有三个预览图
     const previewsToUpdate = [
       { key: 'single_1', base_image: single_1 },
       { key: 'single_2', base_image: single_2 },
@@ -417,7 +520,6 @@ async function updateAllPreviews() {
   }
 }
 
-// 监听所有相关设置的变化
 watch(
   () => [
     configData.value.show_item_count, 
@@ -426,7 +528,8 @@ watch(
   ],
   () => {
     debounceUpdatePreview();
-  }
+  },
+  { deep: true } // 建议对复杂对象监听开启deep
 );
 
 onMounted(() => {
@@ -436,6 +539,7 @@ onMounted(() => {
 </script>
 
 <style scoped>
+/* 样式部分保持不变 */
 .style-card {
   cursor: pointer;
   text-align: center;
