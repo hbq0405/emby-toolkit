@@ -1498,6 +1498,35 @@ def delete_actor_subscription(subscription_id: int) -> bool:
         logger.error(f"DB: 删除订阅 {subscription_id} 失败: {e}", exc_info=True)
         raise
 
+# ★★★ 根据 tracked_actor_media 的主键ID获取单条记录 ★★★
+def get_tracked_media_by_id(media_id: int) -> Optional[Dict[str, Any]]:
+    """根据 tracked_actor_media 表的主键 ID 获取单个媒体项的完整信息。"""
+    try:
+        with get_db_connection() as conn:
+            cursor = conn.cursor()
+            cursor.execute("SELECT * FROM tracked_actor_media WHERE id = %s", (media_id,))
+            row = cursor.fetchone()
+            return dict(row) if row else None
+    except Exception as e:
+        logger.error(f"DB: 获取已追踪媒体项 {media_id} 失败: {e}", exc_info=True)
+        raise
+
+# ★★★ 更新单个已追踪媒体项的状态 ★★★
+def update_tracked_media_status(media_id: int, new_status: str) -> bool:
+    """根据 tracked_actor_media 表的主键 ID 更新单个媒体项的状态。"""
+    try:
+        with get_db_connection() as conn:
+            cursor = conn.cursor()
+            cursor.execute(
+                "UPDATE tracked_actor_media SET status = %s, last_updated_at = CURRENT_TIMESTAMP WHERE id = %s",
+                (new_status, media_id)
+            )
+            conn.commit()
+            return cursor.rowcount > 0
+    except Exception as e:
+        logger.error(f"DB: 更新已追踪媒体项 {media_id} 状态失败: {e}", exc_info=True)
+        raise
+
 # --- 清空指定表的函数，返回受影响的行数 ---
 def clear_table(table_name: str) -> int:
     """

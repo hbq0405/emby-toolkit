@@ -9,6 +9,7 @@ import db_handler
 import config_manager
 import tmdb_handler
 import task_manager
+import moviepilot_handler
 from extensions import login_required, processor_ready_required, task_lock_required
 
 # 1. 创建演员订阅蓝图
@@ -181,3 +182,45 @@ def refresh_single_actor_subscription(sub_id):
     )
     
     return jsonify({"message": f"刷新演员 {actor_name} 作品的任务已提交！"}), 202
+
+# ★★★ 手动订阅单个缺失作品的API端点 ★★★
+@actor_subscriptions_bp.route('/media/<int:media_id>/subscribe', methods=['POST'])
+@login_required
+def subscribe_single_tracked_media(media_id):
+    """
+    手动触发对单个已追踪但状态为'MISSING'的媒体项的订阅。
+    """
+    try:
+        # 1. 检查配额
+        current_quota = db_handler.get_subscription_quota()
+        if current_quota <= 0:
+            return jsonify({"error": "今日订阅配额已用尽"}), 429 # 429 Too Many Requests
+
+        # 2. 获取媒体信息
+        media_info = db_handler.get_tracked_media_by_id(media_id)
+        if not media_info:
+            return jsonify({"error": "未找到指定的媒体项"}), 404
+        if media_info.get('status') != 'MISSING':
+            return jsonify({"error": f"此媒体项状态为 {media_info.get('status')}，无需订阅"}), 400
+
+        # 3. 执行订阅
+        success = False
+        config = config_manager.APP_CONFIG
+        if media_info['media_type'] == 'Movie':
+            movie_payload = {'title': media_info['title'], 'tmdb_id': media_info['tmdb_media_id']}
+            success = moviepilot_handler.subscribe_movie_to_moviepilot(movie_payload, config)
+        elif media_info['media_type'] == 'Series':
+            series_payload = {'item_name': media_info['title'], 'tmdb_id': media_info['tmdb_media_id']}
+            success = moviepilot_handler.subscribe_series_to_moviepilot(series_payload, season_number=None, config=config)
+
+        # 4. 根据结果更新数据库和配额
+        if success:
+            db_handler.decrement_subscription_quota()
+            db_handler.update_tracked_media_status(media_id, 'SUBSCRIBED')
+            return jsonify({"message": f"《{media_info['title']}》已成功提交订阅！"})
+        else:
+            return jsonify({"error": "提交到 MoviePilot 失败，请检查其日志"}), 500
+
+    except Exception as e:
+        logger.error(f"手动订阅媒体项 {media_id} 失败: {e}", exc_info=True)
+        return jsonify({"error": "订阅时发生未知的服务器错误"}), 500

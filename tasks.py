@@ -1217,6 +1217,47 @@ def task_auto_subscribe(processor: MediaProcessor):
                     except Exception as e_coll:
                         logger.error(f"  -> 处理自定义合集 '{collection_name}' 时发生错误: {e_coll}", exc_info=True)
 
+            # ★★★ 4. 处理演员订阅 (tracked_actor_media) ★★★
+            if not processor.is_stop_requested() and not quota_exhausted:
+                task_manager.update_status_from_thread(80, "正在检查演员订阅的缺失作品...")
+                sql_query_actors = "SELECT * FROM tracked_actor_media WHERE status = 'MISSING'"
+                cursor.execute(sql_query_actors)
+                actor_media_to_check = cursor.fetchall()
+                
+                logger.info(f"  -> 找到 {len(actor_media_to_check)} 个来自演员订阅的缺失作品。")
+
+                for media_item in actor_media_to_check:
+                    if processor.is_stop_requested() or quota_exhausted: break
+                    
+                    # 再次确认发布日期，以防万一
+                    release_date = media_item.get('release_date')
+                    if not release_date or release_date > today:
+                        continue
+
+                    # 检查配额
+                    current_quota = db_handler.get_subscription_quota()
+                    if current_quota <= 0:
+                        quota_exhausted = True
+                        logger.warning("每日订阅配额已用尽，演员订阅检查提前结束。")
+                        break
+                    
+                    success = False
+                    media_title = media_item.get('title', '未知标题')
+                    media_tmdb_id = media_item.get('tmdb_media_id')
+                    
+                    if media_item['media_type'] == 'Movie':
+                        movie_info = {'title': media_title, 'tmdb_id': media_tmdb_id}
+                        success = moviepilot_handler.subscribe_movie_to_moviepilot(movie_info, config_manager.APP_CONFIG)
+                    elif media_item['media_type'] == 'Series':
+                        series_info = {"item_name": media_title, "tmdb_id": media_tmdb_id}
+                        success = moviepilot_handler.subscribe_series_to_moviepilot(series_info, season_number=None, config=config_manager.APP_CONFIG)
+                    
+                    if success:
+                        db_handler.decrement_subscription_quota()
+                        successfully_subscribed_items.append(f"演员作品《{media_title}》")
+                        # 直接更新状态
+                        cursor.execute("UPDATE tracked_actor_media SET status = 'SUBSCRIBED' WHERE id = %s", (media_item['id'],))
+
             conn.commit()
 
         summary = ""

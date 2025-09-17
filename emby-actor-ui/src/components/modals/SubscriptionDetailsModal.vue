@@ -13,8 +13,9 @@
     <div v-else-if="subscriptionData">
       <n-tabs type="line" animated default-value="tracking">
         <n-tab-pane name="tracking" tab="追踪列表">
+          <!-- ★★★ 核心修改 1：将静态 columns 改为动态函数 createColumns() ★★★ -->
           <n-data-table
-            :columns="columns"
+            :columns="createColumns()"
             :data="subscriptionData.tracked_media"
             :pagination="{ pageSize: 10 }"
             :bordered="false"
@@ -24,7 +25,6 @@
         <n-tab-pane name="config" tab="订阅配置">
           <div style="max-width: 600px; margin: 0 auto; padding: 20px 0;">
             <p style="margin-bottom: 20px;">在这里可以修改订阅配置，保存后将对未来的扫描生效。</p>
-            <!-- ★★★ 核心修复 1：使用正确的 v-model 绑定 ★★★ -->
             <subscription-config-form v-model="editableConfig" />
             <n-space justify="end" style="margin-top: 20px;">
               <n-button @click="resetConfig">重置更改</n-button>
@@ -60,7 +60,8 @@
 
 <script setup>
 import { ref, watch, h } from 'vue';
-import { NModal, NSpin, NAlert, NTabs, NTabPane, NDataTable, NTag, NButton, NSpace, NPopconfirm, useMessage } from 'naive-ui';
+// ★★★ 引入 NImage 以便在表格中渲染海报 ★★★
+import { NModal, NSpin, NAlert, NTabs, NTabPane, NDataTable, NTag, NButton, NSpace, NPopconfirm, useMessage, NImage } from 'naive-ui';
 import axios from 'axios';
 import SubscriptionConfigForm from './SubscriptionConfigForm.vue';
 
@@ -76,14 +77,40 @@ const error = ref(null);
 const subscriptionData = ref(null);
 const editableConfig = ref({});
 
-// 定义数据表的列
-const columns = [
+// ★★★ 新增：用于跟踪正在订阅的媒体项ID，以显示行内加载状态 ★★★
+const subscribingMediaId = ref(null);
+
+// ★★★ 新增：手动订阅单个作品的函数 ★★★
+const handleSubscribe = async (mediaId) => {
+  subscribingMediaId.value = mediaId;
+  try {
+    const response = await axios.post(`/api/actor-subscriptions/media/${mediaId}/subscribe`);
+    message.success(response.data.message || '订阅成功！');
+    
+    // 实时更新UI：找到对应的媒体项并将其状态改为'SUBSCRIBED'
+    const mediaIndex = subscriptionData.value.tracked_media.findIndex(m => m.id === mediaId);
+    if (mediaIndex !== -1) {
+      subscriptionData.value.tracked_media[mediaIndex].status = 'SUBSCRIBED';
+    }
+  } catch (err) {
+    console.error("订阅失败:", err);
+    const errorMsg = err.response?.data?.error || '订阅失败，请检查后台日志。';
+    message.error(errorMsg);
+  } finally {
+    subscribingMediaId.value = null;
+  }
+};
+
+// ★★★ 核心修改 2：将静态的 columns 定义改为动态创建的函数 ★★★
+const createColumns = () => [
   {
     title: '海报',
     key: 'poster_path',
+    width: 65,
     render(row) {
       const url = row.poster_path ? `https://image.tmdb.org/t/p/w92${row.poster_path}` : 'https://via.placeholder.com/92x138.png?text=N/A';
-      return h('img', { src: url, style: 'width: 45px; height: 67px; object-fit: cover; border-radius: 3px;' });
+      // 使用 NImage 组件以支持懒加载和预览
+      return h(NImage, { src: url, width: "45", style: 'border-radius: 3px; display: block;' });
     }
   },
   { title: '标题', key: 'title', ellipsis: { tooltip: true } },
@@ -92,39 +119,61 @@ const columns = [
     key: 'media_type', 
     width: 80,
     render(row) {
-      const typeMap = {
-        'Series': '电视剧',
-        'Movie': '电影'
-      };
+      const typeMap = { 'Series': '电视剧', 'Movie': '电影' };
       return typeMap[row.media_type] || row.media_type;
     }
   },
   {
-  title: '发行日期',
-  key: 'release_date',
-  width: 120,
-  render(row) {
-  if (!row.release_date) return '';
-  const date = new Date(row.release_date);
-  // 使用 toLocaleDateString 带 zh-CN 区域，不带任何额外格式化，直接返回 yyyy/MM/dd
-  return date.toLocaleDateString('zh-CN');
-}
-},
+    title: '发行日期',
+    key: 'release_date',
+    width: 120,
+    render(row) {
+      if (!row.release_date) return '';
+      // 保持您原来的日期格式化逻辑
+      return new Date(row.release_date).toLocaleDateString('zh-CN');
+    }
+  },
   {
     title: '状态',
     key: 'status',
+    width: 100,
     render(row) {
       const statusMap = {
         'IN_LIBRARY': { type: 'success', text: '已入库' },
         'SUBSCRIBED': { type: 'info', text: '已订阅' },
         'PENDING_RELEASE': { type: 'default', text: '待发行' },
-        'MISSING': { type: 'error', text: '缺失' },
+        'MISSING': { type: 'warning', text: '缺失' }, // 将缺失状态改为 warning，更符合语义
       };
-      const info = statusMap[row.status] || { type: 'warning', text: '未知' };
+      const info = statusMap[row.status] || { type: 'error', text: '未知' };
       return h(NTag, { type: info.type, size: 'small', round: true }, { default: () => info.text });
     }
-  }
+  },
+  // ★★★ 新增“操作”列 ★★★
+  {
+    title: '操作',
+    key: 'actions',
+    width: 100,
+    render(row) {
+      // 只在状态为 'MISSING' 时显示按钮
+      if (row.status === 'MISSING') {
+        return h(
+          NButton,
+          {
+            size: 'small',
+            type: 'primary',
+            ghost: true,
+            loading: subscribingMediaId.value === row.id, // 绑定行内加载状态
+            disabled: !!subscribingMediaId.value, // 当有任何一项在订阅时，禁用其他按钮
+            onClick: () => handleSubscribe(row.id),
+          },
+          { default: () => '订阅' }
+        );
+      }
+      return null; // 其他状态不渲染任何内容
+    },
+  },
 ];
+
 
 const fetchDetails = async (id) => {
   if (!id) return;
@@ -142,14 +191,10 @@ const fetchDetails = async (id) => {
   }
 };
 
+// ... (您其他的 script setup 内容保持完全不变)
 const resetConfig = () => {
-  // 确保我们有数据和嵌套的 config 对象
   if (!subscriptionData.value || !subscriptionData.value.config) return;
-
-  // 直接引用加载到的 config 对象，让代码更清晰
   const config = subscriptionData.value.config;
-
-  // 使用加载到的数据填充表单的 v-model
   editableConfig.value = {
     start_year: config.start_year || 1900,
     media_types: config.media_types || ['Movie', 'TV'],
@@ -197,34 +242,27 @@ const handleRefresh = async () => {
     message.error(err.response?.data?.error || '启动刷新任务失败。');
   }
 };
+
 const handleToggleStatus = async () => {
   if (!props.subscriptionId || !subscriptionData.value || !subscriptionData.value.config) return;
-
   const newStatus = subscriptionData.value.status === 'active' ? 'paused' : 'active';
   const actionText = newStatus === 'paused' ? '暂停' : '恢复';
-
   try {
-    // 使用正确的、嵌套的 config 对象作为数据源
     const currentConfig = subscriptionData.value.config;
-
     const payload = {
       status: newStatus,
       config: {
         start_year: currentConfig.start_year,
-        // 为符合后端 API 要求，将数组转回字符串
-        media_types: currentConfig.media_types.join(','),
-        genres_include_json: JSON.stringify(currentConfig.genres_include_json),
-        genres_exclude_json: JSON.stringify(currentConfig.genres_exclude_json),
+        media_types: currentConfig.media_types, // 前端直接发送数组
+        genres_include_json: currentConfig.genres_include_json,
+        genres_exclude_json: currentConfig.genres_exclude_json,
         min_rating: currentConfig.min_rating
       }
     };
-
     await axios.put(`/api/actor-subscriptions/${props.subscriptionId}`, payload);
-
     message.success(`订阅已成功${actionText}！`);
     emit('subscription-updated');
     await fetchDetails(props.subscriptionId);
-
   } catch (err) {
     message.error(err.response?.data?.error || `${actionText}订阅失败。`);
   }
@@ -238,7 +276,7 @@ watch(() => props.subscriptionId, (newId) => {
 
 watch(() => props.show, (newVal) => {
   if (newVal && props.subscriptionId) {
-    fetchDetails(props.subscriptionId);
+    fetchDetails(newVal);
   }
 });
 </script>

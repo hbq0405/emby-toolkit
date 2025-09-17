@@ -688,8 +688,8 @@ class FilterEngine:
                 item_object_list = item_metadata.get(f"{field}_json")
                 if item_object_list:
                     try:
-                        # 不再需要 json.loads()
-                        item_name_list = [p['name'] for p in item_object_list if 'name' in p]
+                        # ★★★ 核心改造：只取列表中的前5个演员进行匹配！ ★★★
+                        item_name_list = [p['name'] for p in item_object_list[:5] if 'name' in p]
                         
                         if op == 'is_one_of':
                             if isinstance(value, list) and any(v in item_name_list for v in value):
@@ -701,7 +701,6 @@ class FilterEngine:
                             if value in item_name_list:
                                 match = True
                     except TypeError:
-                        # 增加保护，以防万一某行数据格式真的有问题
                         logger.warning(f"处理 {field}_json 时遇到意外的类型错误，内容: {item_object_list}")
 
             # 2. 检查字段是否为“字符串列表”（类型/国家/工作室/标签）

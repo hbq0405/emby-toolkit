@@ -257,55 +257,28 @@ class ActorSubscriptionProcessor:
         return filtered
 
     def _determine_media_status(self, work: Dict, emby_tmdb_ids: Set[str], today_str: str, old_status: Optional[str], session_subscribed_ids: Set[str]) -> Optional[MediaStatus]:
-        """判断单个作品的当前状态，如果需要则触发订阅。"""
-        # ... (此函数无数据库交互，无需修改) ...
+        """
+        【V2 - 逻辑简化版】
+        判断单个作品的当前状态。不再触发订阅，只负责标记状态。
+        """
         media_id_str = str(work.get('id'))
         release_date_str = work.get('release_date') or work.get('first_air_date', '')
 
+        # 1. 如果在 Emby 库中，状态就是 IN_LIBRARY
         if media_id_str in emby_tmdb_ids:
             return MediaStatus.IN_LIBRARY
         
+        # 2. 如果之前已被标记为 SUBSCRIBED，则保持此状态，直到它入库
         if old_status == MediaStatus.SUBSCRIBED.value:
             return MediaStatus.SUBSCRIBED
 
-        if media_id_str in session_subscribed_ids:
-            logger.trace(f"  -> 作品 '{work.get('title') or work.get('name')}' (ID: {media_id_str}) 已在本次任务中被订阅，跳过重复请求。")
-            return MediaStatus.SUBSCRIBED
-
+        # 3. 如果还未上映，状态为 PENDING_RELEASE
         if release_date_str > today_str:
             return MediaStatus.PENDING_RELEASE
         
-        current_quota = db_handler.get_subscription_quota()
-        if current_quota <= 0:
-            # 使用实例变量确保警告只打印一次
-            if not self._quota_warning_logged:
-                logger.warning("每日订阅配额已用尽，演员订阅任务将不再提交新的订阅请求。")
-                self._quota_warning_logged = True
-            return MediaStatus.MISSING # 配额用尽，标记为缺失，等待下次扫描
-
-        logger.info(f"  -> 发现缺失作品: {work.get('title') or work.get('name')}，准备提交订阅... (剩余配额: {current_quota})")
-        success = False
-        media_type_raw = work.get('media_type', 'movie' if 'title' in work else 'tv')
-
-        if media_type_raw == 'movie':
-            success = moviepilot_handler.subscribe_movie_to_moviepilot(
-                movie_info={'title': work.get('title'), 'tmdb_id': work.get('id')}, config=self.config)
-        else: # tv
-            success = moviepilot_handler.subscribe_series_to_moviepilot(
-                series_info={'item_name': work.get('name'), 'tmdb_id': work.get('id')}, season_number=None, config=self.config)
-        
-        time.sleep(self.subscribe_delay_sec)
-
-        if success:
-            db_handler.decrement_subscription_quota()
-            session_subscribed_ids.add(media_id_str)
-            
-            time.sleep(self.subscribe_delay_sec)
-            
-            return MediaStatus.SUBSCRIBED
-        else:
-            time.sleep(0.5)
-            return MediaStatus.MISSING
+        # 4. 对于其他所有情况（已上映、未入库、未订阅），状态均为 MISSING
+        #    实际的订阅操作将由“智能订阅”任务或用户手动触发
+        return MediaStatus.MISSING
 
     def _prepare_media_dict(self, work: Dict, subscription_id: int, status: MediaStatus) -> Dict:
         """根据作品信息和状态，准备用于插入数据库的字典。"""
