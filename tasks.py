@@ -1417,9 +1417,9 @@ def task_add_all_series_to_watchlist(processor: MediaProcessor):
 # --- 任务链 ---
 def task_run_chain(processor: MediaProcessor, task_sequence: list):
     """
-    【V7 - 最终修正版】
-    - 彻底修复了任务链中所有子任务的处理器分发逻辑。
-    - 确保所有子任务，无论是否带有额外参数，都能接收到正确的处理器实例。
+    【V8 - 拆包修复最终版】
+    - 修复了因任务注册表返回三元组而任务链尝试拆解四元组导致的 ValueError。
+    - 确保任务链能正确解析任务信息并执行。
     """
     task_name = "自动化任务链"
     total_tasks = len(task_sequence)
@@ -1463,8 +1463,10 @@ def task_run_chain(processor: MediaProcessor, task_sequence: list):
                 continue
 
             try:
-                task_function, task_description, processor_type, _ = task_info # 解包四元组
+                # ★★★ 核心修复：现在正确地拆解三元组 ★★★
+                task_function, task_description, processor_type = task_info
             except ValueError:
+                # 这个错误理论上不应该再发生了
                 logger.error(f"任务链错误：任务 '{task_key}' 的注册信息格式不正确，已跳过。")
                 continue
 
@@ -1490,7 +1492,6 @@ def task_run_chain(processor: MediaProcessor, task_sequence: list):
                 if task_key in ['enrich-aliases', 'full-scan', 'sync-images-map']:
                      task_function(target_processor, force_reprocess=False)
                 else:
-                     # ★★★ 核心修复：确保这里使用的是 target_processor ★★★
                      task_function(target_processor)
 
                 time.sleep(1)
