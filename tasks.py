@@ -3684,54 +3684,61 @@ def task_sync_all_user_data(processor: MediaProcessor):
         logger.error(f"执行 '{task_name}' 任务时发生严重错误: {e}", exc_info=True)
         task_manager.update_status_from_thread(-1, f"任务失败: {e}")
 
-def task_apply_main_cast_to_episodes(processor: MediaProcessor, series_id: str, episode_ids: List[str]):
+def task_apply_main_cast_to_episodes(processor: MediaProcessor, series_id: str, episode_ids: Optional[List[str]]):
     """
-    【新增】轻量级任务：将剧集主项目的演员表应用到指定的新增分集。
+    【V3 - 健壮版】轻量级任务：将剧集主项目的演员表应用到指定的新增分集。
+    - 如果 episode_ids 未提供，则自动获取该剧集下的所有分集进行同步。
     """
     try:
-        # 1. 获取剧集主项目的演员表和名字
         series_details = emby_handler.get_emby_item_details(
             series_id, processor.emby_url, processor.emby_api_key, processor.emby_user_id,
-            fields="People,Name"
+            fields="People,Name,ProviderIds"
         )
         if not series_details:
             logger.error(f"轻量化任务失败：无法获取剧集 {series_id} 的详情。")
             return
 
         series_name = series_details.get("Name", f"ID:{series_id}")
-
-        # 2. 准备好 Emby Handler 需要的演员表格式
         cast_for_handler = []
-        # 智能筛选，只同步类型为 'Actor' 的人员
         for person in series_details.get("People", []):
              if person.get("Type") == "Actor":
                 cast_for_handler.append({
                     "name": person.get("Name"),
                     "character": person.get("Role"),
                     "emby_person_id": person.get("Id")
-                    # ProviderIds 不是必须的，因为 emby_person_id 是精确匹配
                 })
         
         if not cast_for_handler:
             logger.warning(f"轻量化任务：剧集 '{series_name}' 主项目没有演员信息，无需同步。")
-            return
-
-        # 3. 遍历并逐个更新指定的分集
-        logger.info(f"轻量化任务：开始为《{series_name}》的 {len(episode_ids)} 个新分集同步演员表...")
-        for episode_id in episode_ids:
-            # 检查停止信号，以便任务可以被中止
-            if processor.is_stop_requested():
-                logger.warning("轻量化同步任务被中止。")
-                break
-
-            emby_handler.update_emby_item_cast(
-                item_id=episode_id,
-                new_cast_list_for_handler=cast_for_handler,
-                emby_server_url=processor.emby_url,
-                emby_api_key=processor.emby_api_key,
-                user_id=processor.emby_user_id
+        
+        # ★★★ 核心修改：如果 episode_ids 未提供，则自己获取所有分集 ★★★
+        if episode_ids is None:
+            logger.info(f"轻量化任务：未指定分集ID，将为《{series_name}》的所有分集同步演员表...")
+            all_episodes = emby_handler.get_series_children(
+                series_id, processor.emby_url, processor.emby_api_key, processor.emby_user_id,
+                include_item_types="Episode", fields="Id"
             )
-            time.sleep(0.2) # 加入微小延迟，避免请求过于密集
+            if all_episodes:
+                episode_ids_to_update = [ep['Id'] for ep in all_episodes]
+            else:
+                episode_ids_to_update = []
+        else:
+            episode_ids_to_update = episode_ids
+
+        if not episode_ids_to_update:
+            logger.info(f"轻量化任务：未找到需要更新的分集 for 《{series_name}》。")
+        else:
+            logger.info(f"轻量化任务：开始为《{series_name}》的 {len(episode_ids_to_update)} 个分集同步演员表...")
+            for episode_id in episode_ids_to_update:
+                if processor.is_stop_requested():
+                    logger.warning("轻量化同步任务被中止。")
+                    break
+                emby_handler.update_emby_item_cast(
+                    item_id=episode_id, new_cast_list_for_handler=cast_for_handler,
+                    emby_server_url=processor.emby_url, emby_api_key=processor.emby_api_key,
+                    user_id=processor.emby_user_id
+                )
+                time.sleep(0.2)
         
         logger.info(f"轻量化任务完成：已为《{series_name}》的新分集同步了演员表。")
 
