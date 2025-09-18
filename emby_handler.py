@@ -543,6 +543,103 @@ def get_emby_library_items(
     logger.debug(f"  -> 总共从 {len(library_ids)} 个选定库中获取到 {len(all_items_from_selected_libraries)} 个 {media_type_in_chinese} 项目。")
     
     return all_items_from_selected_libraries
+# ✨✨✨ 备份覆盖缓存专用 ✨✨✨
+def get_emby_library_items_old(
+    base_url: str,
+    api_key: str,
+    media_type_filter: Optional[str] = None,
+    user_id: Optional[str] = None,
+    library_ids: Optional[List[str]] = None,
+    search_term: Optional[str] = None,
+    library_name_map: Optional[Dict[str, str]] = None,
+    fields: Optional[str] = None,
+    force_user_endpoint: bool = False
+) -> Optional[List[Dict[str, Any]]]:
+    if not base_url or not api_key:
+        logger.error("get_emby_library_items: base_url 或 api_key 未提供。")
+        return None
+
+    # ★★★ 核心修改: 在函数开头一次性获取超时时间 ★★★
+    api_timeout = config_manager.APP_CONFIG.get(constants.CONFIG_OPTION_EMBY_API_TIMEOUT, 60)
+
+    if search_term and search_term.strip():
+        logger.info(f"进入搜索模式，关键词: '{search_term}'")
+        api_url = f"{base_url.rstrip('/')}/Users/{user_id}/Items"
+        params = {
+            "api_key": api_key,
+            "SearchTerm": search_term.strip(),
+            "IncludeItemTypes": media_type_filter or "Movie,Series",
+            "Recursive": "true",
+            "Fields": "Id,Name,Type,ProductionYear,ProviderIds,Path",
+            "Limit": 100
+        }
+        try:
+            response = requests.get(api_url, params=params, timeout=api_timeout)
+            response.raise_for_status()
+            items = response.json().get("Items", [])
+            logger.info(f"搜索到 {len(items)} 个匹配项。")
+            return items
+        except requests.exceptions.RequestException as e:
+            logger.error(f"搜索 Emby 时发生网络错误: {e}")
+            return None
+
+    if not library_ids:
+        return []
+
+    all_items_from_selected_libraries: List[Dict[str, Any]] = []
+    for lib_id in library_ids:
+        if not lib_id or not lib_id.strip():
+            continue
+        
+        library_name = library_name_map.get(lib_id, lib_id) if library_name_map else lib_id
+        
+        try:
+            fields_to_request = fields if fields else "ProviderIds,Name,Type,MediaStreams,ChildCount,Path,OriginalTitle"
+
+            params = {
+                "api_key": api_key, "Recursive": "true", "ParentId": lib_id,
+                "Fields": fields_to_request,
+            }
+            if media_type_filter:
+                params["IncludeItemTypes"] = media_type_filter
+            else:
+                params["IncludeItemTypes"] = "Movie,Series,Video"
+
+            if force_user_endpoint and user_id:
+                api_url = f"{base_url.rstrip('/')}/Users/{user_id}/Items"
+            else:
+                api_url = f"{base_url.rstrip('/')}/Items"
+                if user_id:
+                    params["UserId"] = user_id
+
+            logger.trace(f"Requesting items from library '{library_name}' (ID: {lib_id}) using URL: {api_url}.")
+            
+            response = requests.get(api_url, params=params, timeout=api_timeout)
+            response.raise_for_status()
+            items_in_lib = response.json().get("Items", [])
+            
+            if items_in_lib:
+                for item in items_in_lib:
+                    item['_SourceLibraryId'] = lib_id
+                all_items_from_selected_libraries.extend(items_in_lib)
+        
+        except Exception as e:
+            logger.error(f"请求库 '{library_name}' 中的项目失败: {e}", exc_info=True)
+            continue
+
+    type_to_chinese = {"Movie": "电影", "Series": "电视剧", "Video": "视频", "MusicAlbum": "音乐专辑"}
+    media_type_in_chinese = ""
+
+    if media_type_filter:
+        types = media_type_filter.split(',')
+        translated_types = [type_to_chinese.get(t, t) for t in types]
+        media_type_in_chinese = "、".join(translated_types)
+    else:
+        media_type_in_chinese = '所有'
+
+    logger.debug(f"  -> 总共从 {len(library_ids)} 个选定库中获取到 {len(all_items_from_selected_libraries)} 个 {media_type_in_chinese} 项目。")
+    
+    return all_items_from_selected_libraries
 # ✨✨✨ 刷新Emby元数据 ✨✨✨
 def refresh_emby_item_metadata(item_emby_id: str,
                                emby_server_url: str,
@@ -1417,46 +1514,6 @@ def delete_person_custom_api(base_url: str, api_key: str, person_id: str) -> boo
         return False
     except Exception as e:
         logger.error(f"使用临时令牌删除演员 {person_id} 时发生未知错误: {e}")
-        return False
-def check_user_has_visible_items_in_id_list(
-    user_id: str,
-    item_ids: List[str],
-    base_url: str,
-    api_key: str
-) -> bool:
-    """
-    【V1 - 快速权限探测】
-    以特定用户的身份，检查一个ID列表中是否至少有一个项目是该用户可见的。
-    使用 Limit=1 进行超快速查询。
-    """
-    if not all([user_id, item_ids, base_url, api_key]):
-        return False
-
-    # 为了防止URL过长，我们只取前200个ID进行探测，这对于判断“是否为空”已经足够准确
-    ids_to_check = item_ids[:200]
-
-    api_url = f"{base_url.rstrip('/')}/Users/{user_id}/Items"
-    params = {
-        'api_key': api_key,
-        'Ids': ",".join(ids_to_check),
-        'Limit': 1, # ★★★ 核心：我们只需要知道有没有，不需要知道有多少
-        'Fields': 'Id' # ★★★ 核心：我们只需要ID，其他信息都不要，追求最快速度
-    }
-
-    try:
-        api_timeout = config_manager.APP_CONFIG.get(constants.CONFIG_OPTION_EMBY_API_TIMEOUT, 15)
-        response = requests.get(api_url, params=params, timeout=api_timeout)
-        response.raise_for_status()
-        data = response.json()
-        
-        # 如果返回的 Items 列表不为空，就证明用户至少能看到一个
-        if data.get("Items"):
-            return True
-        else:
-            return False
-    except Exception as e:
-        logger.error(f"快速权限探测失败 (用户: {user_id}): {e}")
-        # 在不确定的情况下，为安全起见，我们默认用户看不到
         return False
 # ======================================================================
 # ★★★ 新增模块：用户数据中心相关函数 ★★★
