@@ -508,12 +508,11 @@ def get_emby_library_items(
             if limit is not None:
                 params["Limit"] = limit
 
-            if force_user_endpoint and user_id:
+            if user_id:
                 api_url = f"{base_url.rstrip('/')}/Users/{user_id}/Items"
             else:
+                # 仅在没有提供 user_id 时才回退到系统路径
                 api_url = f"{base_url.rstrip('/')}/Items"
-                if user_id:
-                    params["UserId"] = user_id
 
             logger.trace(f"Requesting items from library '{library_name}' (ID: {lib_id}) using URL: {api_url}.")
             
