@@ -556,6 +556,8 @@ const tableInfo = {
   'resubscribe_rules': { cn: '媒体洗版规则', isSharable: false },
   'resubscribe_cache': { cn: '媒体洗版缓存', isSharable: false },
   'media_cleanup_tasks': { cn: '媒体去重缓存', isSharable: false },
+  'emby_users': { cn: 'Emby用户', isSharable: false },
+  'user_media_data': { cn: 'Emby用户数据', isSharable: false },
 };
 
 // ★★★ START: 新增的依赖关系自动勾选逻辑 ★★★
