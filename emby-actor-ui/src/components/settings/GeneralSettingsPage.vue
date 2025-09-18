@@ -567,7 +567,8 @@ const tableInfo = {
 // 定义表之间的依赖关系 (这个可以保留或重新添加)
 const tableDependencies = {
   'person_identity_map': ['media_metadata', 'actor_metadata'],
-  'actor_subscriptions': ['tracked_actor_media']
+  'actor_subscriptions': ['tracked_actor_media'],
+  'emby_users': ['user_media_data']
 };
 
 // ★ 新增: 创建一个反向依赖映射，用于快速查找父表 (e.g., { 'media_metadata': 'person_identity_map' })
