@@ -393,8 +393,7 @@ def emby_webhook():
     def _process_batch_webhook_events():
         global WEBHOOK_BATCH_DEBOUNCER
         with WEBHOOK_BATCH_LOCK:
-            # 使用 set 去重原始事件，避免完全相同的事件被多次记录
-            items_in_batch = list(set(WEBHOOK_BATCH_QUEUE))
+            items_in_batch = list(set(WEBHOOK_BATCH_QUEUE)) # 去重
             WEBHOOK_BATCH_QUEUE.clear()
             WEBHOOK_BATCH_DEBOUNCER = None # 重置 debouncer
 
@@ -404,7 +403,7 @@ def emby_webhook():
 
         logger.info(f"  -> 防抖计时器到期，开始批量处理 {len(items_in_batch)} 个 Emby Webhook 新增/入库事件。")
 
-        # 步骤 1: 按父项ID对所有入库事件进行分组
+        # 步骤 1: 按父项ID对所有入库事件进行分组 (此部分逻辑不变)
         parent_item_children = collections.defaultdict(list)
         parent_item_names = {} # 存储父项的名字
         
@@ -421,34 +420,26 @@ def emby_webhook():
                     logger.warning(f"  -> 批量处理中，分集 '{item_name}' 未找到所属剧集，跳过。")
                     continue
                 parent_id = series_id
-                # 尝试获取剧集的真实名称以优化日志
                 if parent_id not in parent_item_names:
                      series_details = emby_handler.get_emby_item_details(parent_id, extensions.media_processor_instance.emby_url, extensions.media_processor_instance.emby_api_key, extensions.media_processor_instance.emby_user_id, fields="Name")
                      parent_item_names[parent_id] = series_details.get("Name", item_name) if series_details else item_name
             else:
                 parent_item_names[parent_id] = parent_name
 
-            # 记录原始添加项的ID和类型
             parent_item_children[parent_id].append({"id": item_id, "type": item_type})
 
         logger.info(f"  -> 批量事件去重后，将为 {len(parent_item_children)} 个独立媒体项分派任务。")
 
-        # 步骤 2: 遍历分组，决定执行重量级还是轻量级任务
+        # ★★★ 步骤 2: 遍历分组，执行全新的、简化的决策逻辑 ★★★
         for parent_id, children in parent_item_children.items():
             parent_name = parent_item_names.get(parent_id, f"未知项目(ID:{parent_id})")
             
-            # 智能判断条件：
-            # 1. 新增条目大于3个，认为是批量入库
-            # 2. 新增条目中包含 "Series" 或 "Movie" 容器本身，认为是首次入库
-            is_bulk_add = len(children) > 3 or any(c['type'] in ['Series', 'Movie'] for c in children)
-            
-            # 检查该媒体是否已经被完整处理过
+            # 核心判断：该媒体项是否已经被完整处理过？
             is_already_processed = parent_id in extensions.media_processor_instance.processed_items_cache
 
-            if is_bulk_add or not is_already_processed:
-                # 场景A: 批量入库 或 首次处理 -> 执行完整的重量级任务
-                log_reason = "批量入库" if is_bulk_add else "首次处理"
-                logger.info(f"  -> 为 '{parent_name}' 分派【完整处理】任务 (原因: {log_reason})。")
+            if not is_already_processed:
+                # 场景A: 从未处理过 -> 必须执行完整的重量级任务
+                logger.info(f"  -> 为 '{parent_name}' 分派【完整处理】任务 (原因: 首次入库)。")
                 task_manager.submit_task(
                     webhook_processing_task,
                     task_name=f"Webhook完整处理: {parent_name}",
@@ -457,13 +448,16 @@ def emby_webhook():
                     force_reprocess=True
                 )
             else:
-                # 场景B: 少量增量更新 -> 执行全新的轻量级任务
+                # 场景B: 已经处理过 -> 判定为追更，执行轻量级任务
+                # 筛选出本次入库的所有分集ID
                 episode_ids_to_update = [c['id'] for c in children if c['type'] == 'Episode']
-                if not episode_ids_to_update: continue # 如果没有分集（例如只是更新了图片），则跳过
-
-                logger.info(f"  -> 为 '{parent_name}' 分派【轻量化更新】任务，将为 {len(episode_ids_to_update)} 个新分集同步演员表。")
                 
-                # 调用我们即将创建的、专为此场景设计的轻量级任务
+                # 只有在确实有新分集入库时才执行任务
+                if not episode_ids_to_update:
+                    logger.info(f"  -> 剧集 '{parent_name}' 有更新事件，但未发现新增分集，跳过轻量化同步。")
+                    continue
+
+                logger.info(f"  -> 为 '{parent_name}' 分派【轻量化更新】任务 (原因: 追更)。")
                 task_manager.submit_task(
                     task_apply_main_cast_to_episodes,
                     task_name=f"轻量化同步演员表: {parent_name}",
