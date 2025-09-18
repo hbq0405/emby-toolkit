@@ -56,7 +56,7 @@ class ActorSubscriptionProcessor:
                 safe_progress = max(0, min(100, int(progress)))
                 update_status_callback(safe_progress, message)
 
-        logger.trace("--- 开始执行定时演员订阅扫描任务 ---")
+        logger.trace("--- 开始执行定时刷新演员订阅任务 ---")
         _update_status(0, "正在准备订阅列表...")
 
         self._quota_warning_logged = False
@@ -105,7 +105,7 @@ class ActorSubscriptionProcessor:
 
         for i, sub in enumerate(subs_to_process):
             if self.is_stop_requested():
-                logger.info("定时演员订阅扫描任务被用户中断。")
+                logger.info("定时刷新演员订阅任务被用户中断。")
                 break
             
             progress = int(5 + ((i + 1) / total_subs) * 95)
@@ -119,7 +119,7 @@ class ActorSubscriptionProcessor:
                 time.sleep(1) 
                 
         if not self.is_stop_requested():
-            logger.trace("--- 定时演员订阅扫描任务执行完毕 ---")
+            logger.trace("--- 定时刷新演员订阅任务执行完毕 ---")
             _update_status(100, "  -> 所有订阅扫描完成。")
 
 

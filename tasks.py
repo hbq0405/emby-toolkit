@@ -198,7 +198,7 @@ def task_scan_actor_media(processor: ActorSubscriptionProcessor, subscription_id
     processor.run_full_scan_for_actor(subscription_id, emby_tmdb_ids)
 # --- 演员订阅 ---
 def task_process_actor_subscriptions(processor: ActorSubscriptionProcessor):
-    """【新】后台任务：执行所有启用的演员订阅扫描。"""
+    """【新】后台任务：执行所有启用的刷新演员订阅。"""
     processor.run_scheduled_task(update_status_callback=task_manager.update_status_from_thread)
 # ★★★ 处理webhook、用于编排任务的函数 ★★★
 def webhook_processing_task(processor: MediaProcessor, item_id: str, force_reprocess: bool):
@@ -1544,7 +1544,7 @@ def get_task_registry(context: str = 'all'):
         'refresh-collections': (task_refresh_collections, "刷新原生合集", 'media', True),
         'custom-collections': (task_process_all_custom_collections, "刷新自建合集", 'media', True),
         'update-resubscribe-cache': (task_update_resubscribe_cache, "刷新洗版状态", 'media', True),
-        'actor-tracking': (task_process_actor_subscriptions, "演员订阅扫描", 'actor', True),
+        'actor-tracking': (task_process_actor_subscriptions, "刷新演员订阅", 'actor', True),
         'auto-subscribe': (task_auto_subscribe, "智能订阅缺失", 'media', True),
         'sync-images-map': (task_full_image_sync, "覆盖缓存备份", 'media', True),
         'resubscribe-library': (task_resubscribe_library, "媒体洗版订阅", 'media', True),
