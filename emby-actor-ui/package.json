@@ -1,7 +1,7 @@
 {
   "name": "emby-actor-ui",
   "private": true,
-  "version": "3.9.52",
+  "version": "3.9.53",
   "type": "module",
   "scripts": {
     "dev": "vite --force",
