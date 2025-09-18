@@ -446,16 +446,20 @@ def get_emby_library_items(
     search_term: Optional[str] = None,
     library_name_map: Optional[Dict[str, str]] = None,
     fields: Optional[str] = None,
+    # ★★★ 核心修复：增加新参数并提供默认值，以兼容旧调用 ★★★
+    sort_by: Optional[str] = None,
+    sort_order: Optional[str] = "Descending",
+    limit: Optional[int] = None,
     force_user_endpoint: bool = False
 ) -> Optional[List[Dict[str, Any]]]:
     if not base_url or not api_key:
         logger.error("get_emby_library_items: base_url 或 api_key 未提供。")
         return None
 
-    # ★★★ 核心修改: 在函数开头一次性获取超时时间 ★★★
     api_timeout = config_manager.APP_CONFIG.get(constants.CONFIG_OPTION_EMBY_API_TIMEOUT, 60)
 
     if search_term and search_term.strip():
+        # ... (搜索逻辑保持不变) ...
         logger.info(f"进入搜索模式，关键词: '{search_term}'")
         api_url = f"{base_url.rstrip('/')}/Users/{user_id}/Items"
         params = {
@@ -495,8 +499,14 @@ def get_emby_library_items(
             }
             if media_type_filter:
                 params["IncludeItemTypes"] = media_type_filter
-            else:
-                params["IncludeItemTypes"] = "Movie,Series,Video"
+            
+            # ★★★ 核心修复：应用服务器端优化参数 ★★★
+            if sort_by:
+                params["SortBy"] = sort_by
+            if sort_order and sort_by: # 只有在指定排序时才需要排序顺序
+                params["SortOrder"] = sort_order
+            if limit is not None:
+                params["Limit"] = limit
 
             if force_user_endpoint and user_id:
                 api_url = f"{base_url.rstrip('/')}/Users/{user_id}/Items"

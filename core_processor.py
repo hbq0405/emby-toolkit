@@ -2216,7 +2216,7 @@ class MediaProcessor:
                 api_key=self.emby_api_key,
                 user_id=self.emby_user_id,
                 library_ids=self.config.get('libraries_to_process', []),
-                fields="ProviderIds,Type,DateModified,Name"
+                fields="ProviderIds,Name,Type,DateModified,Path,MediaStreams"
             )
             if all_emby_items is None:
                 raise RuntimeError("从 Emby 获取媒体项列表失败。")
