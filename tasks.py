@@ -1417,8 +1417,9 @@ def task_add_all_series_to_watchlist(processor: MediaProcessor):
 # --- 任务链 ---
 def task_run_chain(processor: MediaProcessor, task_sequence: list):
     """
-    【V5 - 及时刹车版】
-    - 使用一个独立的计时器线程来触发全局停止信号，实现对耗时子任务的及时中断。
+    【V7 - 最终修正版】
+    - 彻底修复了任务链中所有子任务的处理器分发逻辑。
+    - 确保所有子任务，无论是否带有额外参数，都能接收到正确的处理器实例。
     """
     task_name = "自动化任务链"
     total_tasks = len(task_sequence)
@@ -1429,7 +1430,8 @@ def task_run_chain(processor: MediaProcessor, task_sequence: list):
     max_runtime_minutes = processor.config.get(constants.CONFIG_OPTION_TASK_CHAIN_MAX_RUNTIME_MINUTES, 0)
     timeout_seconds = max_runtime_minutes * 60 if max_runtime_minutes > 0 else None
     
-    processor.clear_stop_signal()
+    main_processor = extensions.media_processor_instance
+    main_processor.clear_stop_signal()
     timeout_triggered = threading.Event()
 
     def timeout_watcher():
@@ -1437,20 +1439,20 @@ def task_run_chain(processor: MediaProcessor, task_sequence: list):
             logger.info(f"任务链运行时长限制为 {max_runtime_minutes} 分钟，计时器已启动。")
             time.sleep(timeout_seconds)
             
-            if not processor.is_stop_requested():
+            if not main_processor.is_stop_requested():
                 logger.warning(f"任务链达到 {max_runtime_minutes} 分钟的运行时长限制，将发送停止信号...")
                 timeout_triggered.set()
-                processor.signal_stop()
+                main_processor.signal_stop()
 
-    # 启动计时器线程
     timer_thread = threading.Thread(target=timeout_watcher, daemon=True)
     timer_thread.start()
 
     try:
         # --- 主任务循环 ---
-        registry = get_task_registry()
+        registry = get_task_registry(context='all')
+
         for i, task_key in enumerate(task_sequence):
-            if processor.is_stop_requested():
+            if main_processor.is_stop_requested():
                 if not timeout_triggered.is_set():
                     logger.warning(f"'{task_name}' 被用户手动中止。")
                 break
@@ -1461,8 +1463,7 @@ def task_run_chain(processor: MediaProcessor, task_sequence: list):
                 continue
 
             try:
-                # ▼▼▼ 核心修复 1/2：我们不再需要 processor_type 了 ▼▼▼
-                task_function, task_description, _ = task_info
+                task_function, task_description, processor_type, _ = task_info # 解包四元组
             except ValueError:
                 logger.error(f"任务链错误：任务 '{task_key}' 的注册信息格式不正确，已跳过。")
                 continue
@@ -1473,16 +1474,30 @@ def task_run_chain(processor: MediaProcessor, task_sequence: list):
             task_manager.update_status_from_thread(progress, status_message)
 
             try:
-                # ▼▼▼ 核心修复 2/2：直接将 task_run_chain 收到的 processor 实例传递给子任务函数 ▼▼▼
-                # 所有子任务函数（如 task_run_full_scan）的第一个参数都是 processor
-                task_function(processor)
+                target_processor = None
+                if processor_type == 'media':
+                    target_processor = extensions.media_processor_instance
+                elif processor_type == 'watchlist':
+                    target_processor = extensions.watchlist_processor_instance
+                elif processor_type == 'actor':
+                    target_processor = extensions.actor_subscription_processor_instance
+                
+                if not target_processor:
+                    logger.error(f"任务链错误：无法为任务 '{task_description}' 找到类型为 '{processor_type}' 的处理器实例，已跳过。")
+                    continue
+
+                # 根据任务键判断是否需要传递额外参数
+                if task_key in ['enrich-aliases', 'full-scan', 'sync-images-map']:
+                     task_function(target_processor, force_reprocess=False)
+                else:
+                     # ★★★ 核心修复：确保这里使用的是 target_processor ★★★
+                     task_function(target_processor)
+
                 time.sleep(1)
 
             except Exception as e:
-                # 检查异常是否是由于我们的“刹车”引起的
                 if isinstance(e, InterruptedError):
                     logger.info(f"子任务 '{task_description}' 响应停止信号，已中断。")
-                    # 不需要再做什么，外层循环会处理
                 else:
                     error_message = f"任务链中的子任务 '{task_description}' 执行失败: {e}"
                     logger.error(error_message, exc_info=True)
@@ -1493,7 +1508,7 @@ def task_run_chain(processor: MediaProcessor, task_sequence: list):
     finally:
         # --- 任务结束后的清理和状态报告 ---
         final_message = f"'{task_name}' 执行完毕。"
-        if processor.is_stop_requested():
+        if main_processor.is_stop_requested():
             if timeout_triggered.is_set():
                 final_message = f"'{task_name}' 已达最长运行时限，自动结束。"
             else:
@@ -1502,8 +1517,7 @@ def task_run_chain(processor: MediaProcessor, task_sequence: list):
         logger.info(f"--- {final_message} ---")
         task_manager.update_status_from_thread(100, final_message)
         
-        # 确保在任务链结束后，清除停止信号，以免影响下一个手动任务
-        processor.clear_stop_signal()
+        main_processor.clear_stop_signal()
 # --- 任务注册表 ---
 def get_task_registry(context: str = 'all'):
     """
