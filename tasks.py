@@ -3694,7 +3694,7 @@ def task_apply_main_cast_to_episodes(processor: MediaProcessor, series_id: str, 
             fields="People,Name,ProviderIds"
         )
         if not series_details:
-            logger.error(f"轻量化任务失败：无法获取剧集 {series_id} 的详情。")
+            logger.error(f"  -> 更新任务失败：无法获取剧集 {series_id} 的详情。")
             return
 
         series_name = series_details.get("Name", f"ID:{series_id}")
@@ -3708,17 +3708,17 @@ def task_apply_main_cast_to_episodes(processor: MediaProcessor, series_id: str, 
                 })
         
         if not cast_for_handler:
-            logger.warning(f"轻量化任务：剧集 '{series_name}' 主项目没有演员信息，无需同步。")
+            logger.warning(f"  -> 剧集 '{series_name}' 主项目没有演员信息，无需更新。")
         
         # 直接使用传入的 episode_ids
         if not episode_ids:
-            logger.info(f"轻量化任务：未提供需要更新的分集ID for 《{series_name}》。")
+            logger.info(f"  -> 未提供需要更新的分集ID for 《{series_name}》。")
             return
 
-        logger.info(f"轻量化任务：开始为《{series_name}》的 {len(episode_ids)} 个新分集同步演员表...")
+        logger.info(f"  -> 开始为《{series_name}》的 {len(episode_ids)} 个新分集更新演员表...")
         for episode_id in episode_ids:
             if processor.is_stop_requested():
-                logger.warning("轻量化同步任务被中止。")
+                logger.warning("  -> 更新任务被中止。")
                 break
             emby_handler.update_emby_item_cast(
                 item_id=episode_id, new_cast_list_for_handler=cast_for_handler,
@@ -3727,12 +3727,12 @@ def task_apply_main_cast_to_episodes(processor: MediaProcessor, series_id: str, 
             )
             time.sleep(0.2)
         
-        logger.info(f"轻量化任务完成：已为《{series_name}》的新分集同步了演员表。")
+        logger.info(f"  -> 已为《{series_name}》的新分集更新了演员表。")
 
         # ★★★ 更新父剧集在元数据缓存中的 last_synced_at 时间戳 ★★★
         tmdb_id = series_details.get("ProviderIds", {}).get("Tmdb")
         if not tmdb_id:
-            logger.warning(f"轻量化任务后续：无法为剧集 '{series_name}' 找到 TMDB ID，跳过 last_synced_at 更新。")
+            logger.warning(f"  -> 无法为剧集 '{series_name}' 找到 TMDB ID，跳过 '最后更新时间戳' 更新。")
             return
 
         try:
@@ -3747,13 +3747,13 @@ def task_apply_main_cast_to_episodes(processor: MediaProcessor, series_id: str, 
                     cursor.execute(sql_update, (current_utc_time, tmdb_id))
                     
                     if cursor.rowcount > 0:
-                        logger.info(f"  -> 轻量化任务后续：成功更新剧集《{series_name}》在元数据缓存中的 last_synced_at 时间戳。")
+                        logger.info(f"  -> 成功更新剧集《{series_name}》在元数据缓存中的 '最后更新时间戳'。")
                     else:
                         # 这种情况可能发生在该剧集还未被完整处理过，所以缓存中没有记录。这是正常的。
-                        logger.debug(f"  -> 轻量化任务后续：在元数据缓存中未找到剧集《{series_name}》(TMDb ID: {tmdb_id})，无需更新时间戳。")
+                        logger.debug(f"  -> 在元数据缓存中未找到剧集《{series_name}》(TMDb ID: {tmdb_id})，无需更新时间戳。")
             # 'with' 语句会自动处理 conn.commit()
         except Exception as db_e:
-            logger.error(f"轻量化任务后续：更新剧集《{series_name}》的时间戳时发生数据库错误: {db_e}", exc_info=True)
+            logger.error(f"  -> 更新剧集《{series_name}》的时间戳时发生数据库错误: {db_e}", exc_info=True)
 
     except Exception as e:
-        logger.error(f"执行轻量化分集同步任务时发生错误: {e}", exc_info=True)
+        logger.error(f"  -> 分集更新任务时发生错误: {e}", exc_info=True)
