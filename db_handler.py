@@ -149,6 +149,7 @@ def init_db():
                     CREATE TABLE IF NOT EXISTS media_metadata (
                         tmdb_id TEXT,
                         item_type TEXT NOT NULL,
+                        emby_item_id TEXT,
                         title TEXT,
                         original_title TEXT,
                         release_year INTEGER,
@@ -166,6 +167,7 @@ def init_db():
                         PRIMARY KEY (tmdb_id, item_type)
                     )
                 """)
+                cursor.execute("CREATE INDEX IF NOT EXISTS idx_mm_emby_item_id ON media_metadata (emby_item_id);")
 
                 logger.trace("  -> 正在创建 'watchlist' 表...")
                 cursor.execute("""
@@ -345,7 +347,8 @@ def init_db():
                     schema_upgrades = {
                         'media_metadata': {
                             "official_rating": "TEXT",
-                            "unified_rating": "TEXT"
+                            "unified_rating": "TEXT",
+                            "emby_item_id": "TEXT"
                         },
                         'watchlist': {
                             "last_episode_to_air_json": "JSONB"

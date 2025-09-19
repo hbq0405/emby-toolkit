@@ -49,6 +49,7 @@ def _read_local_json(file_path: str) -> Optional[Dict[str, Any]]:
 def _save_metadata_to_cache(
     cursor: psycopg2.extensions.cursor,
     tmdb_id: str,
+    emby_item_id: str,
     item_type: str,
     item_details_from_emby: Dict[str, Any],
     final_processed_cast: List[Dict[str, Any]],
@@ -89,6 +90,7 @@ def _save_metadata_to_cache(
         
         metadata = {
             "tmdb_id": tmdb_id,
+            "emby_item_id": emby_item_id,
             "item_type": item_type,
             "title": item_details_from_emby.get('Name'),
             "original_title": item_details_from_emby.get('OriginalTitle'),
@@ -917,6 +919,7 @@ class MediaProcessor:
                 _save_metadata_to_cache(
                     cursor=cursor,
                     tmdb_id=tmdb_id,
+                    emby_item_id=item_id,
                     item_type=item_type,
                     item_details_from_emby=item_details_from_emby,
                     final_processed_cast=final_processed_cast,
@@ -2735,11 +2738,13 @@ class MediaProcessor:
             unified_rating = get_unified_rating(official_rating)    # 即使 official_rating 是 None，函数也能处理
 
             metadata = {
-                "tmdb_id": tmdb_id, "item_type": item_type,
+                "tmdb_id": tmdb_id,
+                "emby_item_id": full_details_emby.get('Id'), 
+                "item_type": item_type,
                 "title": full_details_emby.get('Name'), "original_title": full_details_emby.get('OriginalTitle'),
                 "release_year": full_details_emby.get('ProductionYear'), "rating": full_details_emby.get('CommunityRating'),
-                "official_rating": official_rating, # 保留原始值用于调试
-                "unified_rating": unified_rating,   # 存入计算后的统一分级
+                "official_rating": official_rating,
+                "unified_rating": unified_rating,
                 "release_date": release_date_str, "date_added": (full_details_emby.get("DateCreated") or '').split('T')[0] or None,
                 "genres_json": json.dumps(full_details_emby.get('Genres', []), ensure_ascii=False),
                 "actors_json": json.dumps(actors, ensure_ascii=False),

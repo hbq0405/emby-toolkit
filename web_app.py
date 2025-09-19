@@ -537,29 +537,24 @@ def emby_webhook():
     # --- 处理删除事件 (逻辑不变) ---
     if event_type == "library.deleted":
         try:
-            # 1. 从 webhook 负载中提取 TMDb ID
-            provider_ids = item_from_webhook.get("ProviderIds", {})
-            tmdb_id_to_delete = provider_ids.get("Tmdb")
-
-            # 2. 在同一个事务中执行所有数据库删除操作
+            # 在同一个事务中执行所有数据库删除操作
             with get_central_db_connection() as conn:
                 with conn.cursor() as cursor:
-                    # 2a. 从 processed_log 中删除
+                    # 步骤 1: 从 processed_log 中删除 (这个操作保持不变)
                     log_manager = LogDBManager()
                     log_manager.remove_from_processed_log(cursor, original_item_id)
                     logger.info(f"Webhook: 已从 processed_log 中移除项目 {original_item_id}。")
 
-                    # 2b. 如果获取到了 TMDb ID，则从 media_metadata 中删除
-                    if tmdb_id_to_delete:
-                        cursor.execute("DELETE FROM media_metadata WHERE tmdb_id = %s", (tmdb_id_to_delete,))
-                        if cursor.rowcount > 0:
-                            logger.info(f"Webhook: 已从 media_metadata 缓存中移除 TMDb ID 为 {tmdb_id_to_delete} 的媒体项。")
-                        else:
-                            logger.debug(f"Webhook: 在 media_metadata 中未找到 TMDb ID {tmdb_id_to_delete}，无需删除。")
+                    # ★★★ 核心修改：直接使用 Emby Item ID 从 media_metadata 中删除 ★★★
+                    cursor.execute("DELETE FROM media_metadata WHERE emby_item_id = %s", (original_item_id,))
+                    
+                    if cursor.rowcount > 0:
+                        logger.info(f"Webhook: 已从 media_metadata 缓存中移除 Emby ID 为 {original_item_id} 的媒体项。")
                     else:
-                        logger.warning(f"Webhook: 无法从 media_metadata 中删除项目 {original_item_id}，因为在 webhook 负载中未找到 TMDb ID。")
+                        # 这条日志现在表示在 media_metadata 中没有找到这个 Emby ID，这是正常的
+                        logger.debug(f"Webhook: 在 media_metadata 中未找到 Emby ID {original_item_id}，无需删除。")
                 
-                # 3. 提交事务
+                # 提交事务
                 conn.commit()
                 
             return jsonify({"status": "processed_log_and_metadata_entry_removed", "item_id": original_item_id}), 200
