@@ -731,97 +731,108 @@ def get_all_persons_from_emby(
     api_key: str, 
     user_id: Optional[str], 
     stop_event: Optional[threading.Event] = None,
-    # ★★★ 核心修改：新增 batch_size 参数，并设置高效的默认值 ★★★
-    batch_size: int = 500
+    batch_size: int = 500 # 保留参数以兼容，但新逻辑会覆盖
 ) -> Generator[List[Dict[str, Any]], None, None]:
     """
-    【V3 - 参数化批次版】
-    分批次获取 Emby 中的 Person (演员) 项目。
-    - 新增 batch_size 参数，允许调用方根据任务需求自定义批次大小。
-    - 默认批次大小为 5000，以保证常规同步任务的效率。
+    【V4 - 高效重构版】
+    - 优先使用“先获取媒体，再提取演员”的高效模式，极大降低Emby服务器负载。
+    - 仅当用户未在配置中选择任何媒体库时，才回退到旧的、直接获取Person的低效模式。
     """
     if not user_id:
         logger.error("获取所有演员需要提供 User ID，但未提供。任务中止。")
         return
 
+    # --- 核心优化：优先走高效模式 ---
+    # 1. 检查是否配置了要处理的媒体库
     library_ids = config_manager.APP_CONFIG.get(constants.CONFIG_OPTION_EMBY_LIBRARIES_TO_PROCESS)
 
-    if not library_ids:
-        logger.info("  -> 未在配置中指定媒体库，将从整个 Emby 服务器分批获取所有演员数据...")
-        api_url = f"{base_url.rstrip('/')}/Users/{user_id}/Items"
-        headers = {"X-Emby-Token": api_key, "Accept": "application/json"}
-        params = {
-            "Recursive": "true",
-            "IncludeItemTypes": "Person",
-            "Fields": "ProviderIds,Name",
-        }
-        start_index = 0
-        # ★★★ 核心修改：使用传入的 batch_size 参数 ★★★
-        # batch_size = 5000  <-- 删除或注释掉这一行硬编码
-        api_timeout = config_manager.APP_CONFIG.get(constants.CONFIG_OPTION_EMBY_API_TIMEOUT, 60)
-
-        while True:
-            if stop_event and stop_event.is_set():
-                logger.info("Emby Person 获取任务被中止。")
+    if library_ids:
+        # --- 模式一：高效模式 (已配置媒体库) ---
+        logger.info(f"  -> [高效模式] 检测到配置了 {len(library_ids)} 个媒体库，将只获取这些库中的演员数据...")
+        try:
+            # 2. 获取所有媒体项，但只请求 People 字段
+            media_items = get_emby_library_items(
+                base_url=base_url, api_key=api_key, user_id=user_id,
+                library_ids=library_ids, media_type_filter="Movie,Series", fields="People"
+            )
+            if media_items is None: return # API请求失败
+            if not media_items:
+                yield [] # 媒体库为空
                 return
 
-            request_params = params.copy()
-            request_params["StartIndex"] = start_index
-            request_params["Limit"] = batch_size
-            logger.debug(f"  -> 获取 Person 批次: StartIndex={start_index}, Limit={batch_size}")
+            # 3. 在本地内存中快速提取并去重所有演员ID
+            unique_person_ids = set()
+            for item in media_items:
+                if stop_event and stop_event.is_set(): return
+                for person in item.get("People", []):
+                    if person_id := person.get("Id"):
+                        unique_person_ids.add(person_id)
 
-            try:
-                response = requests.get(api_url, headers=headers, params=request_params, timeout=api_timeout)
-                response.raise_for_status()
-                data = response.json()
-                items = data.get("Items", [])
+            person_ids_to_fetch = list(unique_person_ids)
+            logger.info(f"  -> [高效模式] 从媒体项中提取了 {len(person_ids_to_fetch)} 位独立演员。")
+            if not person_ids_to_fetch:
+                yield []
+                return
+
+            # 4. 分批次精确获取这些演员的详情
+            precise_batch_size = 500 # 精确查询时，500是一个安全且高效的批次大小
+            for i in range(0, len(person_ids_to_fetch), precise_batch_size):
+                if stop_event and stop_event.is_set(): return
+                batch_ids = person_ids_to_fetch[i:i + precise_batch_size]
                 
-                if not items:
-                    logger.trace("API 返回空列表，已获取所有 Person 数据。")
-                    break
+                logger.debug(f"  -> [高效模式] 正在获取批次 {i//precise_batch_size + 1} 的演员详情 ({len(batch_ids)} 个)...")
+                person_details_batch = get_emby_items_by_id(
+                    base_url=base_url, api_key=api_key, user_id=user_id,
+                    item_ids=batch_ids, fields="ProviderIds,Name"
+                )
+                if person_details_batch:
+                    yield person_details_batch
+                time.sleep(0.2) # 增加一个短暂的延迟，更加友好
+            return
+        except Exception as e:
+            logger.error(f"[高效模式] 在处理演员同步时发生严重错误: {e}", exc_info=True)
+            return
 
-                yield items
-                start_index += len(items)
-                time.sleep(0.2)
-            except requests.exceptions.RequestException as e:
-                logger.error(f"请求 Emby API 失败 (批次 StartIndex={start_index}): {e}", exc_info=True)
-                return
-        return
 
-    # --- 模式二：已配置特定媒体库，执行精确扫描 (此部分逻辑不变) ---
-    logger.info(f"  -> 检测到配置了 {len(library_ids)} 个媒体库，将只获取这些库中的演员数据...")
-    media_items = get_emby_library_items(
-        base_url=base_url, api_key=api_key, user_id=user_id,
-        library_ids=library_ids, media_type_filter="Movie,Series", fields="People"
-    )
-    if media_items is None: return
-    if not media_items:
-        yield []
-        return
+    # --- 模式二：低效回退模式 (未配置媒体库) ---
+    logger.warning("  -> [低效模式] 未在配置中指定媒体库，将从整个 Emby 服务器分批获取所有演员数据... (这可能导致Emby响应缓慢)")
+    api_url = f"{base_url.rstrip('/')}/Users/{user_id}/Items"
+    headers = {"X-Emby-Token": api_key, "Accept": "application/json"}
+    params = {
+        "Recursive": "true",
+        "IncludeItemTypes": "Person",
+        "Fields": "ProviderIds,Name",
+    }
+    start_index = 0
+    api_timeout = config_manager.APP_CONFIG.get(constants.CONFIG_OPTION_EMBY_API_TIMEOUT, 60)
 
-    unique_person_ids = set()
-    for item in media_items:
-        if stop_event and stop_event.is_set(): return
-        for person in item.get("People", []):
-            if person_id := person.get("Id"):
-                unique_person_ids.add(person_id)
+    while True:
+        if stop_event and stop_event.is_set():
+            logger.info("Emby Person 获取任务被中止。")
+            return
 
-    person_ids_to_fetch = list(unique_person_ids)
-    if not person_ids_to_fetch:
-        yield []
-        return
+        request_params = params.copy()
+        request_params["StartIndex"] = start_index
+        request_params["Limit"] = batch_size # 使用传入的批次大小 (默认500)
+        logger.debug(f"  -> [低效模式] 获取 Person 批次: StartIndex={start_index}, Limit={batch_size}")
 
-    # 对于精确扫描，批次大小固定为500是合理的
-    precise_batch_size = 500
-    for i in range(0, len(person_ids_to_fetch), precise_batch_size):
-        if stop_event and stop_event.is_set(): return
-        batch_ids = person_ids_to_fetch[i:i + precise_batch_size]
-        person_details_batch = get_emby_items_by_id(
-            base_url=base_url, api_key=api_key, user_id=user_id,
-            item_ids=batch_ids, fields="ProviderIds,Name"
-        )
-        if person_details_batch:
-            yield person_details_batch
+        try:
+            response = requests.get(api_url, headers=headers, params=request_params, timeout=api_timeout)
+            response.raise_for_status()
+            data = response.json()
+            items = data.get("Items", [])
+            
+            if not items:
+                logger.trace("API 返回空列表，已获取所有 Person 数据。")
+                break
+
+            yield items
+            start_index += len(items)
+            time.sleep(0.2) # 同样增加延迟
+        except requests.exceptions.RequestException as e:
+            logger.error(f"请求 Emby API 失败 (批次 StartIndex={start_index}): {e}", exc_info=True)
+            return
+    return
 # ✨✨✨ 获取剧集下所有剧集的函数 ✨✨✨
 def get_series_children(
     series_id: str,
