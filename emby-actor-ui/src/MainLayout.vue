@@ -271,7 +271,7 @@ const menuOptions = computed(() => [
     key: 'group-system', 
     type: 'group', 
     children: [ 
-      { label: '会员管理', key: 'UserManagement', icon: renderIcon(UserManagementIcon) }, // <-- 在这里添加新菜单项
+      { label: '用户管理', key: 'UserManagement', icon: renderIcon(UserManagementIcon) }, // <-- 在这里添加新菜单项
       { label: '通用设置', key: 'settings-general', icon: renderIcon(GeneralIcon) }, 
       { label: '任务中心', key: 'settings-scheduler', icon: renderIcon(SchedulerIcon) }, 
       { label: '查看更新', key: 'Releases', icon: renderIcon(AboutIcon) }, 
