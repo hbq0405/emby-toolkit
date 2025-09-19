@@ -1,4 +1,4 @@
-<!-- src/components/UserTemplates.vue -->
+<!-- src/components/UserTemplates.vue (已更新) -->
 <template>
   <div>
     <n-button
@@ -67,20 +67,21 @@
 import { ref, onMounted, h, computed } from 'vue';
 import {
   NButton, NDataTable, NModal, NForm, NFormItem, NSelect, NInputNumber,
-  NIcon, NInput, useMessage
+  NIcon, NInput, useMessage, NPopconfirm, NSpace
 } from 'naive-ui';
-import { Add as AddIcon } from '@vicons/ionicons5';
+import { Add as AddIcon, TrashOutline as DeleteIcon } from '@vicons/ionicons5';
 
 // --- API ---
 const api = {
   getUserTemplates: () => fetch('/api/admin/user_templates').then(res => res.json()),
-  // 这个接口我们之前在 UserList.vue 里用过，这里复用
   getEmbyUsers: () => fetch('/api/admin/users').then(res => res.json()),
   createTemplate: (data) => fetch('/api/admin/user_templates', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify(data),
   }).then(res => res.json()),
+  // ★★★ 新增的 API 调用 ★★★
+  deleteTemplate: (templateId) => fetch(`/api/admin/user_templates/${templateId}`, { method: 'DELETE' }),
 };
 
 // --- 状态和Hooks ---
@@ -112,7 +113,6 @@ const embyUserOptions = computed(() =>
 const fetchData = async () => {
   loading.value = true;
   try {
-    // 同时获取模板列表和 Emby 用户列表
     const [templatesData, usersData] = await Promise.all([
       api.getUserTemplates(),
       api.getEmbyUsers(),
@@ -149,7 +149,7 @@ const handleOk = (e) => {
         if (response.status === 'ok') {
           message.success('模板创建成功！');
           isModalVisible.value = false;
-          fetchData(); // 重新加载数据
+          fetchData();
         } else {
           throw new Error(response.message || '创建失败');
         }
@@ -162,10 +162,48 @@ const handleOk = (e) => {
   });
 };
 
-// --- 表格列定义 ---
+// ★★★ 新增的删除处理函数 ★★★
+const handleDelete = async (templateId) => {
+  try {
+    const response = await api.deleteTemplate(templateId);
+    const data = await response.json();
+    if (response.ok) {
+      message.success('模板已删除');
+      fetchData(); // 重新加载数据
+    } else {
+      throw new Error(data.message || '删除失败');
+    }
+  } catch (error) {
+    message.error(`删除失败: ${error.message}`);
+  }
+};
+
+
+// ★★★ 修改表格列定义，增加“操作”列 ★★★
 const columns = [
   { title: '模板名称', key: 'name' },
   { title: '描述', key: 'description' },
   { title: '默认有效期(天)', key: 'default_expiration_days' },
+  {
+    title: '操作',
+    key: 'actions',
+    render(row) {
+      return h(
+        NPopconfirm,
+        {
+          onPositiveClick: () => handleDelete(row.id),
+        },
+        {
+          trigger: () => h(NButton, {
+            strong: true,
+            tertiary: true,
+            size: 'small',
+            type: 'error',
+          }, { default: () => '删除' }),
+          default: () => `确定要删除模板 “${row.name}” 吗？所有基于此模板创建的【未使用的】邀请链接也将被一并删除。`,
+        }
+      );
+    },
+  },
 ];
 </script>

@@ -400,3 +400,28 @@ def delete_user(user_id):
         return jsonify({"status": "ok", "message": "用户已彻底删除"}), 200
     else:
         return jsonify({"status": "error", "message": "在 Emby 中删除用户失败"}), 500
+@user_management_bp.route('/api/admin/user_templates/<int:template_id>', methods=['DELETE'])
+@login_required
+def delete_template(template_id):
+    """删除一个用户模板"""
+    try:
+        with db_handler.get_db_connection() as conn:
+            cursor = conn.cursor()
+            # 我们设置了外键 ON DELETE CASCADE，所以删除模板时，
+            # 关联的邀请链接会自动被删除。
+            cursor.execute("DELETE FROM user_templates WHERE id = %s", (template_id,))
+            conn.commit()
+            
+            if cursor.rowcount > 0:
+                return jsonify({"status": "ok", "message": "模板已删除"}), 200
+            else:
+                return jsonify({"status": "error", "message": "未找到该模板"}), 404
+    except psycopg2.Error as e:
+        # 捕获可能的外键约束错误
+        if e.pgcode == '23503': # foreign_key_violation
+             return jsonify({"status": "error", "message": "无法删除：仍有邀请链接在使用此模板。"}), 409
+        logger.error(f"删除模板 {template_id} 时出错: {e}", exc_info=True)
+        return jsonify({"status": "error", "message": "删除模板失败"}), 500
+    except Exception as e:
+        logger.error(f"删除模板 {template_id} 时发生未知错误: {e}", exc_info=True)
+        return jsonify({"status": "error", "message": "删除模板时发生未知错误"}), 500
