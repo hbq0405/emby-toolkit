@@ -239,8 +239,9 @@ def handle_mimicked_library_metadata_endpoint(path, mimicked_id, params):
     
 def handle_get_mimicked_library_items(user_id, mimicked_id, params):
     """
-    【V7.1 - 变量未定义修复版】
-    - 修复了因重构导致 `final_items` 变量未在排序逻辑前初始化的问题。
+    【V8 - 原生排序修复版】
+    - 新增“透传模式”：当合集排序设置为'none'时，将客户端的排序请求参数直接转发给Emby，实现真正的原生排序。
+    - 重构了数据获取和排序逻辑，根据排序模式选择不同的执行路径，代码更清晰。
     """
     try:
         real_db_id = from_mimicked_id(mimicked_id)
@@ -250,7 +251,7 @@ def handle_get_mimicked_library_items(user_id, mimicked_id, params):
 
         definition = collection_info.get('definition_json') or {}
         
-        # --- 阶段一 & 二 (保持不变) ---
+        # --- 阶段一 & 二 (过滤，获取最终ID列表) ---
         db_media_list = collection_info.get('generated_media_info_json') or []
         base_ordered_emby_ids = [item.get('emby_id') for item in db_media_list if item.get('emby_id')]
         if not base_ordered_emby_ids:
@@ -271,89 +272,83 @@ def handle_get_mimicked_library_items(user_id, mimicked_id, params):
         if not final_emby_ids_to_fetch:
             return Response(json.dumps({"Items": [], "TotalRecordCount": 0}), mimetype='application/json')
 
-        # --- 阶段三 (保持不变) ---
-        base_url, api_key = _get_real_emby_url_and_key()
-        live_items_unordered = emby_handler.get_emby_items_by_id(
-            base_url=base_url, api_key=api_key, user_id=user_id,
-            item_ids=final_emby_ids_to_fetch,
-            fields="PrimaryImageAspectRatio,ProviderIds,UserData,Name,ProductionYear,CommunityRating,DateCreated,PremiereDate,Type,RecursiveItemCount,SortName"
-        )
-        live_items_map = {item['Id']: item for item in live_items_unordered}
-        ordered_items = [live_items_map[emby_id] for emby_id in final_emby_ids_to_fetch if emby_id in live_items_map]
-        
-        # --- 阶段四：处理最终排序 ---
-        
-        # ★★★ 核心修复：在这里把“交接棒”递过去！ ★★★
-        final_items = ordered_items
+        # --- 阶段三 & 四: 数据获取与排序 (重构) ---
+        final_items = []
         sort_by_field = definition.get('default_sort_by')
-        
-        # ▼▼▼ 2. 替换整个排序逻辑块 ▼▼▼
-        if sort_by_field and sort_by_field not in ['original', 'none']:
-            sort_order = definition.get('default_sort_order', 'Ascending')
-            is_descending = (sort_order == 'Descending')
-            logger.trace(f"执行虚拟库排序劫持: '{sort_by_field}' ({sort_order})")
+        base_url, api_key = _get_real_emby_url_and_key()
+
+        # ▼▼▼ 核心修复：根据排序模式选择不同的数据获取和处理路径 ▼▼▼
+        if sort_by_field == 'none':
+            # --- 模式A: Emby原生排序 (Pass-through) ---
+            logger.trace(f"检测到 'none' 排序模式，请求将转发给Emby进行原生排序。客户端参数: {params}")
             
-            # ★★★ 新增：处理“最后更新”排序 (类型安全版) ★★★
-            if sort_by_field == 'last_synced_at':
-                movie_tmdb_ids = []
-                series_tmdb_ids = []
+            forward_params = params.copy()
+            forward_params['Ids'] = ",".join(final_emby_ids_to_fetch)
+            forward_params['api_key'] = api_key
+            if 'Fields' not in forward_params:
+                forward_params['Fields'] = "PrimaryImageAspectRatio,ProviderIds,UserData,Name,ProductionYear,CommunityRating,DateCreated,PremiereDate,Type,RecursiveItemCount,SortName"
+
+            target_url = f"{base_url}/emby/Users/{user_id}/Items"
+            try:
+                resp = requests.get(target_url, params=forward_params, timeout=20)
+                resp.raise_for_status()
+                final_items = resp.json().get("Items", [])
+                logger.trace(f"Emby原生排序成功返回 {len(final_items)} 个项目。")
+            except Exception as e_pass:
+                logger.error(f"在Emby原生排序模式下请求失败: {e_pass}", exc_info=True)
+                final_items = []
+
+        else:
+            # --- 模式B: 排序劫持 (原始逻辑) ---
+            live_items_unordered = emby_handler.get_emby_items_by_id(
+                base_url=base_url, api_key=api_key, user_id=user_id,
+                item_ids=final_emby_ids_to_fetch,
+                fields="PrimaryImageAspectRatio,ProviderIds,UserData,Name,ProductionYear,CommunityRating,DateCreated,PremiereDate,Type,RecursiveItemCount,SortName"
+            )
+            live_items_map = {item['Id']: item for item in live_items_unordered}
+            ordered_items = [live_items_map[emby_id] for emby_id in final_emby_ids_to_fetch if emby_id in live_items_map]
+            final_items = ordered_items
+
+            if sort_by_field and sort_by_field != 'original':
+                sort_order = definition.get('default_sort_order', 'Ascending')
+                is_descending = (sort_order == 'Descending')
+                logger.trace(f"执行虚拟库排序劫持: '{sort_by_field}' ({sort_order})")
                 
-                # 1. 按类型分离TMDb ID
-                for item in final_items:
-                    tmdb_id = item.get('ProviderIds', {}).get('Tmdb')
-                    if not tmdb_id: continue
+                if sort_by_field == 'last_synced_at':
+                    movie_tmdb_ids = [item.get('ProviderIds', {}).get('Tmdb') for item in final_items if item.get('Type') == 'Movie' and item.get('ProviderIds', {}).get('Tmdb')]
+                    series_tmdb_ids = [item.get('ProviderIds', {}).get('Tmdb') for item in final_items if item.get('Type') == 'Series' and item.get('ProviderIds', {}).get('Tmdb')]
                     
-                    item_type = item.get('Type')
-                    if item_type == 'Movie':
-                        movie_tmdb_ids.append(tmdb_id)
-                    elif item_type == 'Series':
-                        series_tmdb_ids.append(tmdb_id)
-                
-                logger.trace(f"  -> 分离出 {len(movie_tmdb_ids)} 个电影和 {len(series_tmdb_ids)} 个剧集的TMDb ID用于查询时间戳。")
+                    timestamp_map = {}
+                    default_timestamp = datetime.min.replace(tzinfo=timezone.utc)
+                    
+                    if movie_tmdb_ids:
+                        for meta in db_handler.get_media_metadata_by_tmdb_ids(movie_tmdb_ids, 'Movie'):
+                            timestamp = meta.get('last_synced_at') or meta.get('date_added') or default_timestamp
+                            timestamp_map[f"{meta['tmdb_id']}-Movie"] = timestamp
+                    
+                    if series_tmdb_ids:
+                        for meta in db_handler.get_media_metadata_by_tmdb_ids(series_tmdb_ids, 'Series'):
+                            timestamp = meta.get('last_synced_at') or meta.get('date_added') or default_timestamp
+                            timestamp_map[f"{meta['tmdb_id']}-Series"] = timestamp
 
-                timestamp_map = {}
-                default_timestamp = datetime.min.replace(tzinfo=timezone.utc)
-                
-                # 2. 分别查询电影和剧集的时间戳
-                if movie_tmdb_ids:
-                    movie_metadata = db_handler.get_media_metadata_by_tmdb_ids(movie_tmdb_ids, 'Movie')
-                    for meta in movie_metadata:
-                        # 1. 优先用 last_synced_at
-                        # 2. 如果没有，则用 date_added
-                        # 3. 如果连 date_added 都没有，用我们最终的 default_timestamp
-                        timestamp = meta.get('last_synced_at') or meta.get('date_added') or default_timestamp
-                        timestamp_map[f"{meta['tmdb_id']}-Movie"] = timestamp
-                
-                if series_tmdb_ids:
-                    series_metadata = db_handler.get_media_metadata_by_tmdb_ids(series_tmdb_ids, 'Series')
-                    for meta in series_metadata:
-                        timestamp = meta.get('last_synced_at') or meta.get('date_added') or default_timestamp
-                        timestamp_map[f"{meta['tmdb_id']}-Series"] = timestamp
-
-                # 3. 使用复合键进行安全排序
-                final_items.sort(
-                    key=lambda item: timestamp_map.get(
-                        f"{item.get('ProviderIds', {}).get('Tmdb')}-{item.get('Type')}", 
-                        default_timestamp
-                    ),
-                    reverse=is_descending
-                )
-            # ★★★ 原有排序逻辑 ★★★
-            else:
-                default_sort_value = 0 if sort_by_field in ['CommunityRating', 'ProductionYear'] else "0"
-                try:
                     final_items.sort(
-                        key=lambda item: item.get(sort_by_field, default_sort_value),
+                        key=lambda item: timestamp_map.get(f"{item.get('ProviderIds', {}).get('Tmdb')}-{item.get('Type')}", default_timestamp),
                         reverse=is_descending
                     )
-                except TypeError:
-                    final_items.sort(key=lambda item: item.get('SortName', ''))
-        elif sort_by_field == 'original':
-             logger.trace("已应用 'original' (榜单原始顺序) 排序。")
-        else:
-            logger.trace("未设置或禁用虚拟库排序，将保持榜单原始顺序。")
-        # ▲▲▲ 替换结束 ▲▲▲
+                else:
+                    default_sort_value = 0 if sort_by_field in ['CommunityRating', 'ProductionYear'] else "0"
+                    try:
+                        final_items.sort(
+                            key=lambda item: item.get(sort_by_field, default_sort_value),
+                            reverse=is_descending
+                        )
+                    except TypeError:
+                        final_items.sort(key=lambda item: str(item.get(sort_by_field, default_sort_value)), reverse=is_descending)
 
+            elif sort_by_field == 'original':
+                 logger.trace("已应用 'original' (榜单原始顺序) 排序。")
+        
+        # --- 统一返回 ---
         final_response = {"Items": final_items, "TotalRecordCount": len(final_items)}
         return Response(json.dumps(final_response), mimetype='application/json')
 
