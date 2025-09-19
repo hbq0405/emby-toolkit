@@ -1601,3 +1601,222 @@ def get_all_user_view_data(user_id: str, base_url: str, api_key: str) -> Optiona
             
     logger.debug(f"为用户 {user_id} 的全量同步完成，共找到 {len(all_items_with_data)} 个有状态的媒体项。")
     return all_items_with_data
+# --- 用户管理模块 ---
+def create_user_with_policy(
+    username: str, 
+    password: str, 
+    # policy: Dict[str, Any],  <-- ★★★ 1. 删除 policy 参数 ★★★
+    base_url: str, 
+    api_key: str
+) -> Optional[str]:
+    """
+    【V2 - 纯净创建版】
+    在 Emby 中创建一个新用户，只负责创建和设置密码，不处理权限策略。
+    权限策略由调用方在之后通过 force_set_user_policy 单独设置。
+    """
+    logger.info(f"准备在 Emby 中创建新用户 '{username}'...")
+    
+    create_url = f"{base_url}/Users/New"
+    headers = {"X-Emby-Token": api_key, "Content-Type": "application/json"}
+    
+    # ★★★ 2. 创建用户的请求体中，只包含 Name ★★★
+    create_payload = {
+        "Name": username
+    }
+    
+    try:
+        # ★★★ 3. 请求体不再包含 Policy ★★★
+        response = requests.post(create_url, headers=headers, json=create_payload, timeout=15)
+        
+        if response.status_code == 200:
+            new_user_data = response.json()
+            new_user_id = new_user_data.get("Id")
+            if not new_user_id:
+                logger.error("Emby 用户创建成功，但响应中未返回用户 ID。")
+                return None
+            
+            logger.info(f"  -> 用户 '{username}' 创建成功，新用户 ID: {new_user_id}。正在设置密码...")
+
+            password_url = f"{base_url}/Users/{new_user_id}/Password"
+            password_payload = {
+                "Id": new_user_id,
+                "CurrentPassword": None,
+                "NewPassword": password
+            }
+            
+            pw_response = requests.post(password_url, headers=headers, json=password_payload, timeout=15)
+            
+            if pw_response.status_code == 204:
+                logger.info(f"  -> ✅ 成功为用户 '{username}' 设置密码。")
+                return new_user_id
+            else:
+                logger.error(f"为用户 '{username}' 设置密码失败。状态码: {pw_response.status_code}, 响应: {pw_response.text}")
+                return None
+        else:
+            logger.error(f"创建 Emby 用户 '{username}' 失败。状态码: {response.status_code}, 响应: {response.text}")
+            return None
+
+    except Exception as e:
+        logger.error(f"创建 Emby 用户 '{username}' 时发生网络或未知错误: {e}", exc_info=True)
+        return None
+def set_user_disabled_status(
+    user_id: str, 
+    disable: bool, 
+    base_url: str, 
+    api_key: str
+) -> bool:
+    """
+    【核心功能】禁用或启用一个 Emby 用户。
+
+    :param user_id: 目标用户的 ID。
+    :param disable: True 表示禁用，False 表示启用。
+    :param base_url: Emby 服务器地址。
+    :param api_key: Emby API Key。
+    :return: 操作是否成功。
+    """
+    action_text = "禁用" if disable else "启用"
+    logger.info(f"正在为用户 {user_id} 执行【{action_text}】操作...")
+    
+    try:
+        # 步骤 1: 获取该用户当前的完整 Policy
+        # 注意：这里我们用 admin_user_id (从 config 读取) 来获取信息，确保有权限
+        admin_user_id = config_manager.APP_CONFIG.get("emby_user_id")
+        user_details = get_emby_item_details(user_id, base_url, api_key, admin_user_id)
+        if not user_details or 'Policy' not in user_details:
+            logger.error(f"无法获取用户 {user_id} 的当前策略，{action_text}失败。")
+            return False
+        
+        current_policy = user_details['Policy']
+        
+        # 步骤 2: 修改 Policy 中的 IsDisabled 标志位
+        current_policy['IsDisabled'] = disable
+        
+        # 步骤 3: 将修改后的完整 Policy 提交回 Emby
+        policy_update_url = f"{base_url}/Users/{user_id}/Policy"
+        headers = {
+            "X-Emby-Token": api_key,
+            "Content-Type": "application/json"
+        }
+        
+        response = requests.post(policy_update_url, headers=headers, json=current_policy, timeout=15)
+        
+        if response.status_code == 204: # 204 No Content 表示成功
+            logger.info(f"✅ 成功{action_text}用户 {user_id}。")
+            return True
+        else:
+            logger.error(f"{action_text}用户 {user_id} 失败。状态码: {response.status_code}, 响应: {response.text}")
+            return False
+
+    except Exception as e:
+        logger.error(f"{action_text}用户 {user_id} 时发生严重错误: {e}", exc_info=True)
+        return False
+def get_user_details(user_id: str, base_url: str, api_key: str) -> Optional[Dict[str, Any]]:
+    """
+    【新增】专门用于获取单个 Emby 用户完整详情的函数。
+    
+    :param user_id: 目标用户的 ID。
+    :return: 包含用户详情的字典，如果失败则返回 None。
+    """
+    # ★★★ 核心：使用正确的 API 端点 /Users/{Id} ★★★
+    url = f"{base_url}/Users/{user_id}"
+    headers = {"X-Emby-Token": api_key, "Accept": "application/json"}
+    
+    try:
+        response = requests.get(url, headers=headers, timeout=10)
+        
+        if response.status_code == 200:
+            return response.json()
+        else:
+            logger.warning(f"获取 Emby 用户详情失败 (ID: {user_id})。状态码: {response.status_code}")
+            return None
+            
+    except requests.exceptions.RequestException as e:
+        logger.error(f"请求 Emby 用户详情时发生网络错误 (ID: {user_id}): {e}", exc_info=True)
+        return None
+def check_if_user_exists(username: str, base_url: str, api_key: str) -> bool:
+    """
+    检查指定的用户名是否已在 Emby 中存在。
+    
+    :param username: 要检查的用户名 (不区分大小写)。
+    :return: 如果存在则返回 True，否则返回 False。
+    """
+    all_users = get_all_emby_users_from_server(base_url, api_key)
+    if all_users is None:
+        # 如果无法获取用户列表，为安全起见，我们假设用户可能存在，并抛出异常让上层处理
+        raise RuntimeError("无法从 Emby 获取用户列表来检查用户名是否存在。")
+    
+    # 进行不区分大小写的比较
+    username_lower = username.lower()
+    for user in all_users:
+        if user.get('Name', '').lower() == username_lower:
+            return True
+            
+    return False
+def force_set_user_policy(user_id: str, policy: Dict[str, Any], base_url: str, api_key: str) -> bool:
+    """
+    【新增】为一个已存在的用户强制设置一个全新的、完整的 Policy 对象。
+    
+    :param user_id: 目标用户的 ID。
+    :param policy: 一个完整的 Emby Policy 字典对象。
+    :return: 操作是否成功。
+    """
+    logger.info(f"正在为用户 {user_id} 强制应用新的权限策略...")
+    
+    policy_update_url = f"{base_url}/Users/{user_id}/Policy"
+    headers = {
+        "X-Emby-Token": api_key,
+        "Content-Type": "application/json"
+    }
+    
+    try:
+        response = requests.post(policy_update_url, headers=headers, json=policy, timeout=15)
+        
+        if response.status_code == 204: # 204 No Content 表示成功
+            logger.info(f"✅ 成功为用户 {user_id} 应用了新的权限策略。")
+            return True
+        else:
+            logger.error(f"为用户 {user_id} 应用新策略失败。状态码: {response.status_code}, 响应: {response.text}")
+            return False
+            
+    except Exception as e:
+        logger.error(f"为用户 {user_id} 应用新策略时发生严重错误: {e}", exc_info=True)
+        return False
+def delete_emby_user(user_id: str, base_url: str, api_key: str) -> bool:
+    """
+    【新增】专门用于删除一个 Emby 用户的函数。
+    使用管理员账密登录获取临时令牌来执行删除。
+    """
+    logger.warning(f"检测到删除用户请求，将使用 [自动登录模式] 执行...")
+    
+    cfg = config_manager.APP_CONFIG
+    admin_user = cfg.get(constants.CONFIG_OPTION_EMBY_ADMIN_USER)
+    admin_pass = cfg.get(constants.CONFIG_OPTION_EMBY_ADMIN_PASS)
+
+    if not all([admin_user, admin_pass]):
+        logger.error("删除用户操作失败：未配置 Emby 管理员账密。")
+        return False
+
+    access_token, logged_in_user_id = _get_emby_access_token(base_url, admin_user, admin_pass)
+    
+    if not access_token:
+        logger.error("无法获取临时 AccessToken，删除用户操作中止。")
+        return False
+
+    # ★★★ 核心：使用正确的 DELETE /Users/{Id} 端点 ★★★
+    api_url = f"{base_url.rstrip('/')}/Users/{user_id}"
+    
+    headers = { 'X-Emby-Token': access_token }
+    api_timeout = cfg.get(constants.CONFIG_OPTION_EMBY_API_TIMEOUT, 60)
+    
+    try:
+        # ★★★ 核心：使用 requests.delete 方法 ★★★
+        response = requests.delete(api_url, headers=headers, timeout=api_timeout)
+        response.raise_for_status()
+        logger.info(f"  -> ✅ 成功使用临时令牌删除 Emby 用户 ID: {user_id}。")
+        return True
+    except requests.exceptions.HTTPError as e:
+        logger.error(f"删除 Emby 用户 {user_id} 时发生HTTP错误: {e.response.status_code} - {e.response.text}")
+        return False
+    except Exception as e:
+        logger.error(f"删除 Emby 用户 {user_id} 时发生未知错误: {e}")
+        return False

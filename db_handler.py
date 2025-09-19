@@ -321,6 +321,56 @@ def init_db():
                 """)
                 cursor.execute("CREATE INDEX IF NOT EXISTS idx_cleanup_task_type ON media_cleanup_tasks (task_type);")
                 cursor.execute("CREATE INDEX IF NOT EXISTS idx_cleanup_task_status ON media_cleanup_tasks (status);")
+
+                logger.trace("  -> 正在创建 'emby_users_extended' 表 (用户扩展信息)...")
+                cursor.execute("""
+                    CREATE TABLE IF NOT EXISTS emby_users_extended (
+                        emby_user_id TEXT PRIMARY KEY,
+                        status TEXT NOT NULL DEFAULT 'pending', -- 状态: pending(待审批), active(激活), expired(过期), disabled(禁用)
+                        registration_date TIMESTAMP WITH TIME ZONE DEFAULT NOW(),
+                        expiration_date TIMESTAMP WITH TIME ZONE, -- 核心字段：用户的到期时间
+                        notes TEXT,
+                        created_by TEXT DEFAULT 'self-registered', -- 'self-registered' 或 'admin'
+                        FOREIGN KEY(emby_user_id) REFERENCES emby_users(id) ON DELETE CASCADE
+                    )
+                """)
+                cursor.execute("CREATE INDEX IF NOT EXISTS idx_eue_status ON emby_users_extended (status);")
+                cursor.execute("CREATE INDEX IF NOT EXISTS idx_eue_expiration_date ON emby_users_extended (expiration_date);")
+
+                logger.trace("  -> 正在创建 'user_templates' 表 (用户权限模板)...")
+                cursor.execute("""
+                    CREATE TABLE IF NOT EXISTS user_templates (
+                        id SERIAL PRIMARY KEY,
+                        name TEXT NOT NULL UNIQUE,
+                        description TEXT,
+                        -- 核心字段：存储一个完整的 Emby 用户策略 JSON 对象
+                        emby_policy_json JSONB NOT NULL,
+                        -- 模板默认的有效期（天数），0 表示永久
+                        default_expiration_days INTEGER DEFAULT 30,
+                        created_at TIMESTAMP WITH TIME ZONE DEFAULT NOW()
+                    )
+                """)
+
+                logger.trace("  -> 正在创建 'invitations' 表 (邀请码)...")
+                cursor.execute("""
+                    CREATE TABLE IF NOT EXISTS invitations (
+                        id SERIAL PRIMARY KEY,
+                        -- 核心字段：独一无二的邀请码
+                        token TEXT NOT NULL UNIQUE,
+                        -- 关联到使用的模板
+                        template_id INTEGER NOT NULL,
+                        -- 本次邀请的有效期，可以覆盖模板的默认值
+                        expiration_days INTEGER NOT NULL,
+                        status TEXT NOT NULL DEFAULT 'active', -- 状态: active(可用), used(已用), expired(过期)
+                        -- 邀请链接本身的有效期
+                        expires_at TIMESTAMP WITH TIME ZONE,
+                        created_at TIMESTAMP WITH TIME ZONE DEFAULT NOW(),
+                        -- 记录被哪个新用户使用了
+                        used_by_user_id TEXT,
+                        FOREIGN KEY(template_id) REFERENCES user_templates(id) ON DELETE CASCADE
+                    )
+                """)
+                cursor.execute("CREATE INDEX IF NOT EXISTS idx_invitations_token ON invitations (token);")
                 
                 # --- 2. 执行平滑升级检查 ---
                 logger.info("  -> 开始执行数据库表结构平滑升级检查...")

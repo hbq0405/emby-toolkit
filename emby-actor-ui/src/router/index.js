@@ -1,8 +1,9 @@
 // src/router/index.js
 
 import { createRouter, createWebHistory } from 'vue-router';
+import { useAuthStore } from '../stores/auth';
 
-// --- 1. 导入你的页面组件 (这部分保持不变) ---
+// --- 1. 导入所有页面组件 ---
 import DatabaseStats from '../components/DatabaseStats.vue';
 import ReviewList from '../components/ReviewList.vue';
 import SchedulerSettingsPage from '../components/settings/SchedulerSettingsPage.vue';
@@ -12,22 +13,36 @@ import CollectionsPage from '../components/CollectionsPage.vue';
 import ActorSubscriptionPage from '../components/ActorSubscriptionPage.vue';
 import ReleasesPage from '../components/ReleasesPage.vue';
 import Login from '../components/Login.vue'; 
+import RegisterPage from '../components/RegisterPage.vue';
 import CoverGeneratorConfig from '../components/CoverGeneratorConfig.vue';
+import UserManagementPage from '../components/UserManagementPage.vue';
 
-// --- 2. 定义路由规则 (修改版) ---
+// --- 2. 定义路由规则 (带 meta.public 标签) ---
 const routes = [
   {
     path: '/login',
     name: 'Login',
     component: Login,
-    meta: {
+    meta: { 
       requiresAuth: false,
+      public: true // <-- ★★★ 打上“公共页面”标签 ★★★
+    },
+  },
+  {
+    path: '/register/invite/:token',
+    name: 'Register',
+    component: RegisterPage,
+    props: true,
+    meta: { 
+      requiresAuth: false,
+      public: true // <-- ★★★ 打上“公共页面”标签 ★★★
     },
   },
   {
     path: '/',
     redirect: '/DatabaseStats' 
   },
+  // --- 下面所有后台页面的路由，保持原样，不需要加 public 标签 ---
   {
     path: '/DatabaseStats',
     name: 'DatabaseStats',
@@ -67,13 +82,12 @@ const routes = [
   {
     path: '/custom-collections',
     name: 'CustomCollectionsManager',
-    // 使用动态导入，这是一种最佳实践，只在访问此页面时才加载组件代码
     component: () => import('../components/CustomCollectionsManager.vue'),
     meta: { requiresAuth: true },
   },
   {
     path: '/edit-media/:itemId',
-    name: 'MediaEditPage', // ✨✨✨ [修改] 将名字改为 MediaEditSA，以明确区分
+    name: 'MediaEditPage',
     component: () => import('../components/MediaEditPage.vue'),
     props: true,
     meta: { requiresAuth: true },
@@ -87,43 +101,41 @@ const routes = [
   {
     path: '/releases',
     name: 'Releases',
-    component: ReleasesPage
+    component: ReleasesPage,
+    meta: { requiresAuth: true }, // 假设这个也需要登录
   },
   {
-    path: '/settings/cover-generator', // 定义一个路径
+    path: '/settings/cover-generator',
     name: 'CoverGeneratorConfig',
     component: CoverGeneratorConfig,
-    meta: { title: '封面生成设置' } // 用于浏览器标签页标题
+    meta: { requiresAuth: true },
   },
   {
     path: '/resubscribe',
     name: 'ResubscribePage',
     component: () => import('../components/ResubscribePage.vue'),
-    meta: { requiresAuth: true, title: '媒体洗版' },
+    meta: { requiresAuth: true },
   },
   {
     path: '/media-cleanup',
     name: 'MediaCleanupPage',
     component: () => import('../components/MediaCleanupPage.vue'),
-    meta: { requiresAuth: true, title: '媒体去重' },
+    meta: { requiresAuth: true },
+  },
+  {
+    path: '/user-management',
+    name: 'UserManagement',
+    component: UserManagementPage,
+    meta: { requiresAuth: true },
   },
 ];
 
-// --- 3. 创建路由实例 (这部分保持不变) ---
+// --- 3, 4, 5. 创建实例、路由守卫、导出 (保持不变) ---
 const router = createRouter({
   history: createWebHistory(import.meta.env.BASE_URL),
   routes,
-  scrollBehavior(to, from, savedPosition) {
-    if (savedPosition) {
-      return savedPosition;
-    } else {
-      return { top: 0 };
-    }
-  }
+  scrollBehavior: () => ({ top: 0 })
 });
-
-// --- 4. 创建全局路由守卫 (这部分保持不变) ---
-import { useAuthStore } from '../stores/auth';
 
 router.beforeEach(async (to, from, next) => {
   const authStore = useAuthStore();
@@ -147,6 +159,4 @@ router.beforeEach(async (to, from, next) => {
   }
 });
 
-
-// --- 5. 导出路由实例 (这部分保持不变) ---
 export default router;

@@ -63,6 +63,7 @@ from routes.cover_generator_config import cover_generator_config_bp
 from routes.tasks import tasks_bp
 from routes.resubscribe import resubscribe_bp
 from routes.media_cleanup import media_cleanup_bp
+from routes.user_management import user_management_bp
 # --- 核心模块导入 ---
 import constants # 你的常量定义\
 import logging
@@ -662,6 +663,7 @@ app.register_blueprint(cover_generator_config_bp)
 app.register_blueprint(tasks_bp)
 app.register_blueprint(resubscribe_bp)
 app.register_blueprint(media_cleanup_bp)
+app.register_blueprint(user_management_bp)
 
 def main_app_start():
     """将主应用启动逻辑封装成一个函数"""

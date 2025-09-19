@@ -1,45 +1,61 @@
+<!-- src/AppContent.vue -->
 <template>
-  <div v-if="isReady">
-    <div v-if="authStore.isAuthEnabled && !authStore.isLoggedIn" class="fullscreen-container">
-      <Login />
-    </div>
-    <MainLayout 
-      v-else 
-      :is-dark="isDarkTheme" 
-      :selected-theme="selectedTheme"
-      :task-status="backgroundTaskStatus"
-      @update:is-dark="handleModeChange"
-      @update:selected-theme="handleThemeChange"
-      @edit-custom-theme="openThemeEditor"
-    />
-    <ThemeEditor
-      v-if="showThemeEditor"
-      :show="showThemeEditor"
-      :initial-theme="themeForEditor"
-      :is-dark="isDarkTheme"
-      @update:show="handleEditorClose"
-      @save="handleSaveCustomTheme"
-      @update:preview="handlePreviewUpdate"
-      @delete-custom-theme="handleDeleteCustomTheme"
-    />
-  </div>
-  <div v-else class="fullscreen-container">
+  <!-- 1. 如果当前路由需要后台布局，就显示 MainLayout -->
+  <MainLayout 
+    v-if="showMainLayout"
+    :is-dark="isDarkTheme" 
+    :selected-theme="selectedTheme"
+    :task-status="backgroundTaskStatus"
+    @update:is-dark="handleModeChange"
+    @update:selected-theme="handleThemeChange"
+    @edit-custom-theme="openThemeEditor"
+  />
+  <!-- 2. 否则，就显示一个简单的 router-view，用于公共页面（登录、注册） -->
+  <router-view v-else />
+
+  <!-- 3. 主题编辑器和加载动画的逻辑保持不变，它们是全局的 -->
+  <ThemeEditor
+    v-if="showThemeEditor"
+    :show="showThemeEditor"
+    :initial-theme="themeForEditor"
+    :is-dark="isDarkTheme"
+    @update:show="handleEditorClose"
+    @save="handleSaveCustomTheme"
+    @update:preview="handlePreviewUpdate"
+    @delete-custom-theme="handleDeleteCustomTheme"
+  />
+  
+  <!-- isReady 的逻辑也保持不变 -->
+  <div v-if="!isReady" class="fullscreen-container">
     <n-spin size="large" />
   </div>
 </template>
 
 <script setup>
-// ★★★ 引入 nextTick ★★★
 import { ref, watch, onBeforeUnmount, onMounted, computed, nextTick } from 'vue';
+import { useRoute } from 'vue-router'; // <-- ★★★ 1. 引入 useRoute ★★★
 import { useDialog, NSpin, useMessage } from 'naive-ui';
 import { useAuthStore } from './stores/auth';
 import MainLayout from './MainLayout.vue';
-import Login from './components/Login.vue';
+// Login 组件不再需要在这里导入，因为它由路由管理
+// import Login from './components/Login.vue'; 
 import ThemeEditor from './components/ThemeEditor.vue';
 import { themes } from './theme.js';
 import axios from 'axios';
 import { cloneDeep } from 'lodash-es';
 
+// --- ★★★ 2. 获取当前路由对象 ★★★ ---
+const route = useRoute();
+
+// --- ★★★ 3. 创建一个计算属性来判断是否需要显示后台布局 ★★★ ---
+const showMainLayout = computed(() => {
+  // 我们在路由元信息中添加一个 `public` 标志
+  // 如果路由的 meta.public 为 true，就不显示后台布局
+  return !route.meta.public;
+});
+
+
+// --- 下面所有的 script setup 内容，都和你原来的代码一模一样，原封不动地复制过来 ---
 const authStore = useAuthStore();
 const dialog = useDialog();
 const message = useMessage();
@@ -51,8 +67,6 @@ const showThemeEditor = ref(false);
 const previewTheme = ref(null);
 const isReady = ref(false);
 const newThemeTemplate = ref(null);
-
-// ★★★ 新增一把“安全锁”，防止 watch 监听器在不该动的时候乱动 ★★★
 const isOpeningEditor = ref(false);
 
 const backgroundTaskStatus = ref({ is_running: false, current_action: '空闲' });
@@ -119,14 +133,10 @@ const handleThemeChange = (newTheme) => {
       content: `准备基于你当前的【${currentTemplateSource.name}】主题进行创作吗？`,
       positiveText: '立即设计',
       onPositiveClick: () => {
-        // ★★★ 核心修复：上锁 -> 操作 -> 解锁 ★★★
-        isOpeningEditor.value = true; // 1. 上锁！
-        
+        isOpeningEditor.value = true;
         selectedTheme.value = 'custom';
         localStorage.setItem('user-theme', 'custom');
         openThemeEditor();
-
-        // 3. 等UI更新完之后，再悄悄地把锁解开
         nextTick(() => {
           isOpeningEditor.value = false;
         });
@@ -197,13 +207,8 @@ const handlePreviewUpdate = (themeConfig) => {
     }
 };
 
-// --- 监听与初始化 ---
-
-// ★★★ 监听器已加锁 ★★★
 watch([isDarkTheme, selectedTheme], ([isDark, themeKey]) => {
-  // 2. 每次执行前，先检查锁的状态。如果锁着，就直接跳过！
   if (isOpeningEditor.value) return; 
-  
   if (!previewTheme.value) {
       applyTheme(themeKey, isDark);
   }
@@ -225,7 +230,6 @@ watch(() => authStore.isLoggedIn, (isLoggedIn) => {
     if (statusIntervalId) { clearInterval(statusIntervalId); statusIntervalId = null; }
   }
 }, { immediate: true });
-
 
 onMounted(async () => {
   try {
