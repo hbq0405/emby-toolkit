@@ -235,24 +235,29 @@ def register_with_invite():
             
             conn.commit()
 
-        # ★★★ 核心修改点：在成功响应中增加跳转地址 ★★★
+        # ★★★ 核心修改点：构建一个包含详细信息的数据包返回给前端 ★★★
         config = config_manager.APP_CONFIG
-        # 1. 从配置中读取自定义的跳转地址
-        custom_redirect_url = config.get(constants.CONFIG_OPTION_REGISTRATION_REDIRECT_URL)
         
-        # 2. 如果自定义地址不为空，就用它；否则，使用 Emby 服务器地址作为默认值
-        if custom_redirect_url and custom_redirect_url.strip():
-            final_redirect_url = custom_redirect_url
-        else:
-            final_redirect_url = config.get(constants.CONFIG_OPTION_EMBY_SERVER_URL)
+        # 1. 准备跳转地址
+        custom_redirect_url = config.get(constants.CONFIG_OPTION_REGISTRATION_REDIRECT_URL)
+        final_redirect_url = custom_redirect_url.strip() or config.get(constants.CONFIG_OPTION_EMBY_SERVER_URL)
 
+        # 2. 准备有效期显示信息
+        expiration_info = "永久有效"
+        if 'expiration_date' in locals() and expiration_date:
+            # 格式化日期为 YYYY-MM-DD
+            expiration_info = f"至 {expiration_date.strftime('%Y-%m-%d')}"
+
+        # 3. 将所有信息打包返回
         return jsonify({
             "status": "ok", 
             "message": "注册成功！",
-            "redirect_url": final_redirect_url # 3. 将最终地址返回给前端
+            "data": {
+                "username": username,
+                "expiration_info": expiration_info,
+                "redirect_url": final_redirect_url
+            }
         }), 201
-
-        return jsonify({"status": "ok", "message": "注册成功！"}), 201
     except Exception as e:
         if 'conn' in locals() and conn and conn.status != psycopg2.extensions.STATUS_READY:
             try:
