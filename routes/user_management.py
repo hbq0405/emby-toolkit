@@ -216,13 +216,16 @@ def register_with_invite():
                 "INSERT INTO emby_users (id, name, is_administrator) VALUES (%s, %s, %s)",
                 (new_user_id, username, False)
             )
-            expiration_date = datetime.now(timezone.utc) + timedelta(days=invitation['expiration_days'])
+            expiration_date = None # 默认设置为 None (即 NULL)
+            if invitation['expiration_days'] > 0:
+                # 只有当有效期天数大于0时，才计算具体的到期日期
+                expiration_date = datetime.now(timezone.utc) + timedelta(days=invitation['expiration_days'])
+            
             cursor.execute(
                 """
                 INSERT INTO emby_users_extended (emby_user_id, status, expiration_date, created_by, template_id)
                 VALUES (%s, 'active', %s, 'self-registered', %s)
                 """,
-                # ★★★ 新增了 invitation['template_id'] ★★★
                 (new_user_id, expiration_date, invitation['template_id'])
             )
             cursor.execute(

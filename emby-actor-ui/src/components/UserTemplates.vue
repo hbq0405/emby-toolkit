@@ -39,9 +39,12 @@
         <n-form-item label="默认有效期(天)" path="default_expiration_days">
           <n-input-number
             v-model:value="formModel.default_expiration_days"
-            :min="1"
+            :min="0"
             style="width: 100%"
           />
+          <template #feedback>
+            设置为 0 表示永久有效。
+          </template>
         </n-form-item>
         <n-form-item label="源 Emby 用户" path="source_emby_user_id">
           <n-select
@@ -80,7 +83,6 @@ const api = {
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify(data),
   }).then(res => res.json()),
-  // ★★★ 新增的 API 调用 ★★★
   deleteTemplate: (templateId) => fetch(`/api/admin/user_templates/${templateId}`, { method: 'DELETE' }),
 };
 
@@ -101,6 +103,7 @@ const formModel = ref({
 
 const rules = {
   name: { required: true, message: '请输入模板名称', trigger: 'blur' },
+  // ★★★ 允许 default_expiration_days 为 0，所以这里不需要 min: 1 的规则了 ★★★
   default_expiration_days: { type: 'number', required: true, message: '请输入默认有效期' },
   source_emby_user_id: { required: true, message: '请选择一个源用户', trigger: 'change' },
 };
@@ -162,14 +165,13 @@ const handleOk = (e) => {
   });
 };
 
-// ★★★ 新增的删除处理函数 ★★★
 const handleDelete = async (templateId) => {
   try {
     const response = await api.deleteTemplate(templateId);
     const data = await response.json();
     if (response.ok) {
       message.success('模板已删除');
-      fetchData(); // 重新加载数据
+      fetchData();
     } else {
       throw new Error(data.message || '删除失败');
     }
@@ -179,11 +181,18 @@ const handleDelete = async (templateId) => {
 };
 
 
-// ★★★ 修改表格列定义，增加“操作”列 ★★★
+// --- 表格列定义 ---
 const columns = [
   { title: '模板名称', key: 'name' },
   { title: '描述', key: 'description' },
-  { title: '默认有效期(天)', key: 'default_expiration_days' },
+  { 
+    title: '默认有效期(天)', 
+    key: 'default_expiration_days',
+    // ★★★ 在表格中也对 0 进行特殊显示 ★★★
+    render(row) {
+        return row.default_expiration_days === 0 ? '永久' : row.default_expiration_days;
+    }
+  },
   {
     title: '操作',
     key: 'actions',
