@@ -80,9 +80,12 @@ def api_subscribe_all_missing():
             collection_id = collection['emby_collection_id']
             collection_name = collection['name']
             
-            try:
-                movies = json.loads(collection.get('missing_movies_json', '[]'))
-            except (json.JSONDecodeError, TypeError):
+            # 直接从 collection 中获取已经由 psycopg2 解析好的 Python 列表
+            movies = collection.get('missing_movies_json')
+
+            # 增加一个健壮性检查，确保数据确实是一个列表，如果不是则跳过
+            if not isinstance(movies, list):
+                logger.warning(f"合集 {collection.get('name')} 的缺失电影数据格式不正确，已跳过。")
                 continue
 
             needs_db_update = False
