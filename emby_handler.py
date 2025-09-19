@@ -1235,13 +1235,13 @@ def get_emby_items_by_id(
         return []
 
     all_items = []
-    # 定义一个安全的分批大小，比如每次请求150个ID
-    BATCH_SIZE = 150
+    # 定义一个安全的分批大小，比如每次请求100个ID
+    BATCH_SIZE = 100
 
     # 将长列表切分成多个小批次
     id_chunks = [item_ids[i:i + BATCH_SIZE] for i in range(0, len(item_ids), BATCH_SIZE)]
     
-    logger.debug(f"ID列表总数({len(item_ids)})过长，已切分为 {len(id_chunks)} 个批次进行请求。")
+    logger.trace(f"  -> ID列表总数({len(item_ids)})过长，已切分为 {len(id_chunks)} 个批次进行请求。")
 
     api_url = f"{base_url.rstrip('/')}/Users/{user_id}/Items"
     
@@ -1269,7 +1269,7 @@ def get_emby_items_by_id(
             logger.error(f"根据ID列表批量获取Emby项目时，处理批次 {i+1} 失败: {e}")
             continue
 
-    logger.debug(f"所有批次请求完成，共获取到 {len(all_items)} 个媒体项。")
+    logger.trace(f"  -> 所有批次请求完成，共获取到 {len(all_items)} 个媒体项。")
     return all_items
     
 def append_item_to_collection(collection_id: str, item_emby_id: str, base_url: str, api_key: str, user_id: str) -> bool:
