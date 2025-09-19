@@ -579,6 +579,9 @@ const tableInfo = {
   'media_cleanup_tasks': { cn: '媒体去重缓存', isSharable: false },
   'emby_users': { cn: 'Emby用户', isSharable: false },
   'user_media_data': { cn: 'Emby用户数据', isSharable: false },
+  'user_templates': { cn: '用户权限模板', isSharable: false },
+  'invitations': { cn: '邀请链接', isSharable: false },
+  'emby_users_extended': { cn: 'Emby用户扩展信息', isSharable: false },
 };
 
 // ★★★ START: 新增的依赖关系自动勾选逻辑 ★★★
