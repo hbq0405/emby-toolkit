@@ -1666,22 +1666,17 @@ def set_user_disabled_status(
     api_key: str
 ) -> bool:
     """
-    【核心功能】禁用或启用一个 Emby 用户。
-
-    :param user_id: 目标用户的 ID。
-    :param disable: True 表示禁用，False 表示启用。
-    :param base_url: Emby 服务器地址。
-    :param api_key: Emby API Key。
-    :return: 操作是否成功。
+    【核心功能 - 已修复】禁用或启用一个 Emby 用户。
+    - 修复了因调用错误的详情函数而导致无法获取用户策略的问题。
     """
     action_text = "禁用" if disable else "启用"
     logger.info(f"正在为用户 {user_id} 执行【{action_text}】操作...")
     
     try:
-        # 步骤 1: 获取该用户当前的完整 Policy
-        # 注意：这里我们用 admin_user_id (从 config 读取) 来获取信息，确保有权限
-        admin_user_id = config_manager.APP_CONFIG.get("emby_user_id")
-        user_details = get_emby_item_details(user_id, base_url, api_key, admin_user_id)
+        # ★★★ 核心修复：调用正确的 get_user_details 函数 ★★★
+        # 之前错误地调用了 get_emby_item_details
+        user_details = get_user_details(user_id, base_url, api_key)
+        
         if not user_details or 'Policy' not in user_details:
             logger.error(f"无法获取用户 {user_id} 的当前策略，{action_text}失败。")
             return False

@@ -1,6 +1,6 @@
 <!-- src/AppContent.vue -->
 <template>
-  <!-- 1. 如果当前路由需要后台布局，就显示 MainLayout -->
+  <!-- 1. 如果需要后台布局，显示 MainLayout -->
   <MainLayout 
     v-if="showMainLayout"
     :is-dark="isDarkTheme" 
@@ -10,10 +10,14 @@
     @update:selected-theme="handleThemeChange"
     @edit-custom-theme="openThemeEditor"
   />
-  <!-- 2. 否则，就显示一个简单的 router-view，用于公共页面（登录、注册） -->
-  <router-view v-else />
+  
+  <!-- ★★★ 核心修复点 ★★★ -->
+  <!-- 2. 否则 (即公共页面)，用 .fullscreen-container 包裹 router-view -->
+  <div v-else class="fullscreen-container">
+    <router-view />
+  </div>
 
-  <!-- 3. 主题编辑器和加载动画的逻辑保持不变，它们是全局的 -->
+  <!-- 3. 主题编辑器和加载动画的逻辑保持不变 -->
   <ThemeEditor
     v-if="showThemeEditor"
     :show="showThemeEditor"
@@ -25,7 +29,6 @@
     @delete-custom-theme="handleDeleteCustomTheme"
   />
   
-  <!-- isReady 的逻辑也保持不变 -->
   <div v-if="!isReady" class="fullscreen-container">
     <n-spin size="large" />
   </div>
@@ -33,30 +36,25 @@
 
 <script setup>
 import { ref, watch, onBeforeUnmount, onMounted, computed, nextTick } from 'vue';
-import { useRoute } from 'vue-router'; // <-- ★★★ 1. 引入 useRoute ★★★
+import { useRoute } from 'vue-router';
 import { useDialog, NSpin, useMessage } from 'naive-ui';
 import { useAuthStore } from './stores/auth';
 import MainLayout from './MainLayout.vue';
-// Login 组件不再需要在这里导入，因为它由路由管理
-// import Login from './components/Login.vue'; 
 import ThemeEditor from './components/ThemeEditor.vue';
 import { themes } from './theme.js';
 import axios from 'axios';
 import { cloneDeep } from 'lodash-es';
 
-// --- ★★★ 2. 获取当前路由对象 ★★★ ---
+// --- 路由和认证 ---
 const route = useRoute();
+const authStore = useAuthStore();
 
-// --- ★★★ 3. 创建一个计算属性来判断是否需要显示后台布局 ★★★ ---
+// --- 布局决策 ---
 const showMainLayout = computed(() => {
-  // 我们在路由元信息中添加一个 `public` 标志
-  // 如果路由的 meta.public 为 true，就不显示后台布局
   return !route.meta.public;
 });
 
-
-// --- 下面所有的 script setup 内容，都和你原来的代码一模一样，原封不动地复制过来 ---
-const authStore = useAuthStore();
+// --- 下面的所有 script setup 内容都保持原样 ---
 const dialog = useDialog();
 const message = useMessage();
 

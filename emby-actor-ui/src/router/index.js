@@ -25,7 +25,7 @@ const routes = [
     component: Login,
     meta: { 
       requiresAuth: false,
-      public: true // <-- ★★★ 打上“公共页面”标签 ★★★
+      public: true // <-- ★★★ 在这里打上“公共页面”标签 ★★★
     },
   },
   {
@@ -35,7 +35,7 @@ const routes = [
     props: true,
     meta: { 
       requiresAuth: false,
-      public: true // <-- ★★★ 打上“公共页面”标签 ★★★
+      public: true // <-- ★★★ 在这里也打上“公共页面”标签 ★★★
     },
   },
   {
@@ -102,7 +102,7 @@ const routes = [
     path: '/releases',
     name: 'Releases',
     component: ReleasesPage,
-    meta: { requiresAuth: true }, // 假设这个也需要登录
+    meta: { requiresAuth: true },
   },
   {
     path: '/settings/cover-generator',

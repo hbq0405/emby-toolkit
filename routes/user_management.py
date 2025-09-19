@@ -7,6 +7,7 @@ from flask import Blueprint, request, jsonify
 import db_handler
 import emby_handler
 import config_manager
+import constants
 from extensions import login_required
 
 # 创建一个新的蓝图
@@ -229,6 +230,23 @@ def register_with_invite():
             )
             
             conn.commit()
+
+        # ★★★ 核心修改点：在成功响应中增加跳转地址 ★★★
+        config = config_manager.APP_CONFIG
+        # 1. 从配置中读取自定义的跳转地址
+        custom_redirect_url = config.get(constants.CONFIG_OPTION_REGISTRATION_REDIRECT_URL)
+        
+        # 2. 如果自定义地址不为空，就用它；否则，使用 Emby 服务器地址作为默认值
+        if custom_redirect_url and custom_redirect_url.strip():
+            final_redirect_url = custom_redirect_url
+        else:
+            final_redirect_url = config.get(constants.CONFIG_OPTION_EMBY_SERVER_URL)
+
+        return jsonify({
+            "status": "ok", 
+            "message": "注册成功！",
+            "redirect_url": final_redirect_url # 3. 将最终地址返回给前端
+        }), 201
 
         return jsonify({"status": "ok", "message": "注册成功！"}), 201
     except Exception as e:

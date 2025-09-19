@@ -129,6 +129,7 @@ constants.CONFIG_OPTION_EMBY_ADMIN_PASS: (constants.CONFIG_SECTION_EMBY, 'passwo
     # [Logging]
     constants.CONFIG_OPTION_LOG_ROTATION_SIZE_MB: (constants.CONFIG_SECTION_LOGGING, 'int', constants.DEFAULT_LOG_ROTATION_SIZE_MB),
     constants.CONFIG_OPTION_LOG_ROTATION_BACKUPS: (constants.CONFIG_SECTION_LOGGING, 'int', constants.DEFAULT_LOG_ROTATION_BACKUPS),
+    constants.CONFIG_OPTION_REGISTRATION_REDIRECT_URL: (constants.CONFIG_SECTION_USER_MANAGEMENT, 'string', ""),
 }
 
 # --- 全局配置字典 ---

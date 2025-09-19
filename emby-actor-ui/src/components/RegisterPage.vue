@@ -29,16 +29,17 @@
 
 <script setup>
 import { ref, onMounted } from 'vue';
-import { useRoute, useRouter } from 'vue-router';
+import { useRoute } from 'vue-router';
 import { NCard, NForm, NFormItem, NInput, NButton, NSpin, NAlert, useMessage } from 'naive-ui';
 import axios from 'axios';
 
 const route = useRoute();
-const router = useRouter();
+// ★★★ 不再需要 useRouter，因为我们将直接跳转 ★★★
+// const router = useRouter(); 
 const message = useMessage();
 
 const token = route.params.token;
-const cardTitle = ref('创建您的 Emby Toolkit 账户');
+const cardTitle = ref('创建您的 Emby 账户');
 const validationState = ref('validating'); // validating, valid, invalid
 const validationError = ref('');
 const loading = ref(false);
@@ -79,14 +80,28 @@ const handleRegister = () => {
     if (!errors) {
       loading.value = true;
       try {
-        await axios.post('/api/register/invite', formModel.value);
-        message.success('注册成功！现在您可以登录了。');
-        router.push({ name: 'Login' }); // 注册成功后跳转到登录页
+        // ★★★ 核心修改点 ★★★
+        const response = await axios.post('/api/register/invite', formModel.value);
+        const redirectUrl = response.data?.redirect_url;
+
+        message.success('注册成功！即将跳转...');
+        
+        // 延迟一小段时间，让用户看到成功提示
+        setTimeout(() => {
+          if (redirectUrl) {
+            // 如果后端返回了地址，直接让浏览器跳转过去
+            window.location.href = redirectUrl;
+          } else {
+            // 如果因为某些原因后端没返回地址，提供一个备用方案
+            message.warning('未获取到跳转地址，请手动访问您的 Emby。');
+          }
+        }, 1500);
+
       } catch (error) {
         message.error(error.response?.data?.message || '注册失败');
-      } finally {
-        loading.value = false;
-      }
+        loading.value = false; // 失败时需要手动停止 loading
+      } 
+      // 成功时不需要停止 loading，因为页面会直接跳转
     }
   });
 };

@@ -1552,6 +1552,7 @@ def get_task_registry(context: str = 'all'):
         'generate-custom-collection-covers': (task_generate_all_custom_collection_covers, "生成合集封面", 'media', True),
         'purge-ghost-actors': (task_purge_ghost_actors, "删除幽灵演员", 'media', True),
         'sync-all-user-data': (task_sync_all_user_data, "同步用户数据", 'media', True),
+        'check-expired-users': (task_check_expired_users, "检查过期用户", 'media', True),
         
 
         # --- 不适合任务链的、需要特定参数的任务 ---
@@ -3759,3 +3760,94 @@ def task_apply_main_cast_to_episodes(processor: MediaProcessor, series_id: str, 
 
     except Exception as e:
         logger.error(f"  -> 分集更新任务时发生错误: {e}", exc_info=True)
+# ★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★
+# ★★★ 新增的核心任务：检查并禁用过期用户 ★★★
+# ★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★
+
+def task_check_expired_users(processor: MediaProcessor):
+    """
+    【核心任务】检查并禁用所有已过期的用户。
+    这是一个计划任务，应由调度器定期调用。
+    """
+    task_name = "检查并禁用过期用户"
+    logger.info(f">>> 开始执行 [{task_name}] 任务...")
+    task_manager.update_status_from_thread(0, "正在检查过期用户...")
+    
+    expired_users = []
+    try:
+        with db_handler.get_db_connection() as conn:
+            cursor = conn.cursor()
+            # 查询所有状态为'active'，且到期时间早于当前时间的用户，并获取用户名用于日志
+            cursor.execute(
+                """
+                SELECT uex.emby_user_id, u.name
+                FROM emby_users_extended uex
+                LEFT JOIN emby_users u ON uex.emby_user_id = u.id
+                WHERE uex.status = 'active' AND uex.expiration_date IS NOT NULL AND uex.expiration_date < NOW()
+                """
+            )
+            expired_users = [dict(row) for row in cursor.fetchall()]
+    except Exception as e:
+        logger.error(f"检查过期用户时，查询数据库失败: {e}", exc_info=True)
+        task_manager.update_status_from_thread(-1, "任务失败：查询数据库出错")
+        return
+
+    if not expired_users:
+        logger.info(">>> 本次检查未发现已过期的用户。")
+        task_manager.update_status_from_thread(100, "任务完成：未发现过期用户")
+        return
+
+    total_to_disable = len(expired_users)
+    logger.warning(f"检测到 {total_to_disable} 个已过期的用户，准备开始禁用...")
+    task_manager.update_status_from_thread(10, f"发现 {total_to_disable} 个过期用户，正在处理...")
+    
+    config = processor.config
+    emby_url = config.get("emby_server_url")
+    api_key = config.get("emby_api_key")
+
+    successful_disables = 0
+    for i, user_info in enumerate(expired_users):
+        if processor.is_stop_requested():
+            logger.warning("任务被用户中止。")
+            break
+
+        user_id = user_info['emby_user_id']
+        user_name = user_info.get('name') or user_id # 如果join失败，用ID作为备用名
+        
+        progress = 10 + int((i / total_to_disable) * 90)
+        task_manager.update_status_from_thread(progress, f"({i+1}/{total_to_disable}) 正在禁用: {user_name}")
+
+        try:
+            # 1. 调用 Emby API 禁用用户
+            success = emby_handler.set_user_disabled_status(
+                user_id, 
+                disable=True, 
+                base_url=emby_url, 
+                api_key=api_key
+            )
+
+            if success:
+                logger.info(f"  -> Emby 用户 '{user_name}' (ID: {user_id}) 禁用成功。正在更新本地数据库状态...")
+                # 2. 如果 Emby 禁用成功，则更新我们自己数据库中的状态为 'expired'
+                with db_handler.get_db_connection() as conn:
+                    cursor = conn.cursor()
+                    cursor.execute(
+                        "UPDATE emby_users_extended SET status = 'expired' WHERE emby_user_id = %s",
+                        (user_id,)
+                    )
+                    conn.commit()
+                logger.info(f"  -> 本地数据库状态已更新为 'expired'。")
+                successful_disables += 1
+            else:
+                logger.error(f"  -> 禁用 Emby 用户 '{user_name}' (ID: {user_id}) 失败，请检查 Emby API 连接。")
+
+        except Exception as e:
+            logger.error(f"处理过期用户 '{user_name}' (ID: {user_id}) 时发生未知错误: {e}", exc_info=True)
+            continue # 即使单个用户处理失败，也继续处理下一个
+
+    final_message = f"任务完成。共成功禁用 {successful_disables}/{total_to_disable} 个过期用户。"
+    if processor.is_stop_requested():
+        final_message = f"任务已中止。本次运行成功禁用了 {successful_disables} 个用户。"
+    
+    logger.info(f">>> [{task_name}] {final_message}")
+    task_manager.update_status_from_thread(100, final_message)

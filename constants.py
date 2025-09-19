@@ -142,6 +142,10 @@ CONFIG_OPTION_AUTH_ENABLED = "auth_enabled"
 CONFIG_OPTION_AUTH_USERNAME = "username"
 DEFAULT_USERNAME = "admin"
 
+# ★★★ Emby：用户管理相关配置 ★★★
+CONFIG_SECTION_USER_MANAGEMENT = "UserManagement"
+CONFIG_OPTION_REGISTRATION_REDIRECT_URL = "registration_redirect_url"
+
 # --- 语言代码 ---
 CHINESE_LANG_CODES = ["zh", "zh-cn", "zh-hans", "cmn", "yue", "cn", "zh-sg", "zh-tw", "zh-hk"]
 

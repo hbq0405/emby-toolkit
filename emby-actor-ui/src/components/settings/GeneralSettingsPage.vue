@@ -321,54 +321,30 @@
               </n-grid>
             </n-tab-pane>
 
-            <!-- ================== 标签页 4: 高级 ================== -->
+            <!-- ================== 标签页 4: 高级 (核心修改区域) ================== -->
             <n-tab-pane name="advanced" tab="高级">
+              <!-- ★★★ 核心修改：将4个卡片平铺在Grid中，每个卡片一个 n-gi ★★★ -->
               <n-grid cols="1 l:2" :x-gap="24" :y-gap="24" responsive="screen">
+                
+                <!-- 卡片 1: 网络代理 (左上) -->
                 <n-gi>
-                  <n-space vertical :size="24">
-                    <n-card :bordered="false" class="dashboard-card">
-                      <template #header><span class="card-title">网络代理</span></template>
-                      <n-form-item-grid-item label="启用网络代理" path="network_proxy_enabled">
-                        <n-switch v-model:value="configModel.network_proxy_enabled" />
-                        <template #feedback><n-text depth="3" style="font-size:0.8em;">为 TMDb 等外部API请求启用 HTTP/HTTPS 代理。</n-text></template>
-                      </n-form-item-grid-item>
-                      <n-form-item-grid-item label="HTTP 代理地址" path="network_http_proxy_url">
-                        <n-input-group>
-                          <n-input v-model:value="configModel.network_http_proxy_url" placeholder="例如: http://127.0.0.1:7890" :disabled="!configModel.network_proxy_enabled"/>
-                          <n-button type="primary" ghost @click="testProxy" :loading="isTestingProxy" :disabled="!configModel.network_proxy_enabled || !configModel.network_http_proxy_url">测试连接</n-button>
-                        </n-input-group>
-                        <template #feedback><n-text depth="3" style="font-size:0.8em;">请填写完整的代理 URL，支持 http 和 https。</n-text></template>
-                      </n-form-item-grid-item>
-                    </n-card>
-                    <n-card :bordered="false" class="dashboard-card">
-                      <template #header><span class="card-title">数据管理</span></template>
-                      <n-space vertical>
-                        <n-space align="center">
-                          <n-button @click="showExportModal" :loading="isExporting" class="action-button"><template #icon><n-icon :component="ExportIcon" /></template>导出数据</n-button>
-                          <n-upload :custom-request="handleCustomImportRequest" :show-file-list="false" accept=".json"><n-button :loading="isImporting" class="action-button"><template #icon><n-icon :component="ImportIcon" /></template>导入数据</n-button></n-upload>
-                          <n-button @click="showClearTablesModal" :loading="isClearing" class="action-button" type="error" ghost><template #icon><n-icon :component="ClearIcon" /></template>清空指定表</n-button>
-                          <!-- ▼▼▼ 一键矫正计数器 ▼▼▼ -->
-                          <n-popconfirm @positive-click="handleCorrectSequences">
-                            <template #trigger>
-                              <n-button
-                                type="warning"
-                                ghost
-                                :loading="isCorrecting"
-                                class="action-button"
-                              >
-                                <template #icon><n-icon :component="BuildIcon" /></template>
-                                校准ID计数器
-                              </n-button>
-                            </template>
-                            确定要校准所有表的ID自增计数器吗？<br />
-                            这是一个安全的操作，用于修复导入数据后无法新增条目的问题。
-                          </n-popconfirm>
-                        </n-space>
-                        <p class="description-text"><b>导出：</b>将数据库中的一个或多个表备份为 JSON 文件。<br><b>导入：</b>从 JSON 备份文件中恢复数据。<br><b>清空：</b>删除指定表中的所有数据，此操作不可逆。<br><b>校准：</b>修复导入数据可能引起的自增序号错乱的问题。</p>
-                      </n-space>
-                    </n-card>
-                  </n-space>
+                  <n-card :bordered="false" class="dashboard-card">
+                    <template #header><span class="card-title">网络代理</span></template>
+                    <n-form-item-grid-item label="启用网络代理" path="network_proxy_enabled">
+                      <n-switch v-model:value="configModel.network_proxy_enabled" />
+                      <template #feedback><n-text depth="3" style="font-size:0.8em;">为 TMDb 等外部API请求启用 HTTP/HTTPS 代理。</n-text></template>
+                    </n-form-item-grid-item>
+                    <n-form-item-grid-item label="HTTP 代理地址" path="network_http_proxy_url">
+                      <n-input-group>
+                        <n-input v-model:value="configModel.network_http_proxy_url" placeholder="例如: http://127.0.0.1:7890" :disabled="!configModel.network_proxy_enabled"/>
+                        <n-button type="primary" ghost @click="testProxy" :loading="isTestingProxy" :disabled="!configModel.network_proxy_enabled || !configModel.network_http_proxy_url">测试连接</n-button>
+                      </n-input-group>
+                      <template #feedback><n-text depth="3" style="font-size:0.8em;">请填写完整的代理 URL，支持 http 和 https。</n-text></template>
+                    </n-form-item-grid-item>
+                  </n-card>
                 </n-gi>
+
+                <!-- 卡片 2: 日志配置 (右上) -->
                 <n-gi>
                   <n-card :bordered="false" class="dashboard-card">
                     <template #header><span class="card-title">日志配置</span></template>
@@ -404,9 +380,54 @@
                     </n-form-item-grid-item>
                   </n-card>
                 </n-gi>
+
+                <!-- 卡片 3: 数据管理 (左下) -->
+                <n-gi>
+                  <n-card :bordered="false" class="dashboard-card">
+                    <template #header><span class="card-title">数据管理</span></template>
+                    <n-space vertical>
+                      <n-space align="center">
+                        <n-button @click="showExportModal" :loading="isExporting" class="action-button"><template #icon><n-icon :component="ExportIcon" /></template>导出数据</n-button>
+                        <n-upload :custom-request="handleCustomImportRequest" :show-file-list="false" accept=".json"><n-button :loading="isImporting" class="action-button"><template #icon><n-icon :component="ImportIcon" /></template>导入数据</n-button></n-upload>
+                        <n-button @click="showClearTablesModal" :loading="isClearing" class="action-button" type="error" ghost><template #icon><n-icon :component="ClearIcon" /></template>清空指定表</n-button>
+                        <n-popconfirm @positive-click="handleCorrectSequences">
+                          <template #trigger>
+                            <n-button type="warning" ghost :loading="isCorrecting" class="action-button">
+                              <template #icon><n-icon :component="BuildIcon" /></template>
+                              校准ID计数器
+                            </n-button>
+                          </template>
+                          确定要校准所有表的ID自增计数器吗？<br />
+                          这是一个安全的操作，用于修复导入数据后无法新增条目的问题。
+                        </n-popconfirm>
+                      </n-space>
+                      <p class="description-text"><b>导出：</b>将数据库中的一个或多个表备份为 JSON 文件。<br><b>导入：</b>从 JSON 备份文件中恢复数据。<br><b>清空：</b>删除指定表中的所有数据，此操作不可逆。<br><b>校准：</b>修复导入数据可能引起的自增序号错乱的问题。</p>
+                    </n-space>
+                  </n-card>
+                </n-gi>
+
+                <!-- 卡片 4: 用户注册设置 (右下) -->
+                <n-gi>
+                  <n-card :bordered="false" class="dashboard-card">
+                    <template #header><span class="card-title">用户注册设置</span></template>
+                    <n-form-item-grid-item label="注册成功跳转地址" path="registration_redirect_url">
+                      <n-input 
+                        v-model:value="configModel.registration_redirect_url" 
+                        placeholder="留空则默认跳转到 Emby 服务器地址" 
+                      />
+                      <template #feedback>
+                        <n-text depth="3" style="font-size:0.8em;">
+                          新用户通过邀请链接注册成功后，将自动跳转到您在此处设置的 URL。
+                        </n-text>
+                      </template>
+                    </n-form-item-grid-item>
+                  </n-card>
+                </n-gi>
+
               </n-grid>
             </n-tab-pane>
           </n-tabs>
+
 
           <!-- 页面底部的统一保存按钮 -->
           <n-button type="primary" attr-type="submit" :loading="savingConfig" block size="large" style="margin-top: 24px;">
