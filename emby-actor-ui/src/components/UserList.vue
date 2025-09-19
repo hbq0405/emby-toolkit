@@ -24,13 +24,16 @@
             type="date"
             clearable
             style="width: 100%"
-            placeholder="清空并保存，即可设为永久"
+            placeholder="选择一个未来的日期"
           />
         </n-form-item>
       </n-form>
       <template #footer>
-        <n-button @click="isExpirationModalVisible = false">取消</n-button>
-        <n-button type="primary" @click="handleExpirationOk">保存</n-button>
+        <n-space justify="end">
+          <n-button @click="isExpirationModalVisible = false">取消</n-button>
+          <n-button type="warning" ghost @click="handleSetPermanent">设为永久</n-button>
+          <n-button type="primary" @click="handleExpirationOk">保存日期</n-button>
+        </n-space>
       </template>
     </n-modal>
 
@@ -186,6 +189,23 @@ const handleExpirationOk = async () => {
     } else { throw new Error('更新失败'); }
   } catch (error) {
     message.error('更新有效期失败');
+  }
+};
+
+// ★★★ 新增“设为永久”的处理函数 ★★★
+const handleSetPermanent = async () => {
+  try {
+    // 直接发送 null 到后端
+    const response = await api.setUserExpiration(currentUser.value.Id, null);
+    if (response.ok) {
+      message.success('用户已成功设为永久有效！');
+      isExpirationModalVisible.value = false;
+      fetchData();
+    } else {
+      throw new Error('设置失败');
+    }
+  } catch (error) {
+    message.error('设置为永久有效失败');
   }
 };
 
