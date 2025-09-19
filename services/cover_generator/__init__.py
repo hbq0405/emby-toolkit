@@ -115,7 +115,7 @@ class CoverGeneratorService:
         if library.get('Type') == 'BoxSet' or library.get('CollectionType') in ['boxsets', 'mixed']:
             original_types = media_type_to_fetch
             media_type_to_fetch = original_types.split(',')[0]
-            logger.info(f"  -> 检测到合集 '{library_name}'，为提升性能，将仅使用类型 '{media_type_to_fetch}' 进行查询。")
+            logger.trace(f"  -> 检测到合集 '{library_name}'，为提升性能，将仅使用类型 '{media_type_to_fetch}' 进行查询。")
 
         sort_by_param = "Random" if self._sort_by == "Random" else "DateCreated"
         api_limit = limit * 5 if limit < 10 else limit * 2 

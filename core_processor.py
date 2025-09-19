@@ -1715,10 +1715,10 @@ class MediaProcessor:
         """
         self.clear_stop_signal()
         
-        logger.info(f"进入核心执行层: process_full_library, 接收到的 force_reprocess_all = {force_reprocess_all}, force_fetch_from_tmdb = {force_fetch_from_tmdb}")
+        logger.trace(f"进入核心执行层: process_full_library, 接收到的 force_reprocess_all = {force_reprocess_all}, force_fetch_from_tmdb = {force_fetch_from_tmdb}")
 
         if force_reprocess_all:
-            logger.info("检测到“强制重处理”选项，正在清空已处理日志...")
+            logger.info("  -> 检测到“强制重处理”选项，正在清空已处理日志...")
             try:
                 self.clear_processed_log()
             except Exception as e:
@@ -1729,10 +1729,10 @@ class MediaProcessor:
         # --- ★★★ 补全了这部分代码 ★★★ ---
         libs_to_process_ids = self.config.get("libraries_to_process", [])
         if not libs_to_process_ids:
-            logger.warning("未在配置中指定要处理的媒体库。")
+            logger.warning("  -> 未在配置中指定要处理的媒体库。")
             return
 
-        logger.info("正在尝试从Emby获取媒体项目...")
+        logger.info("  -> 正在尝试从Emby获取媒体项目...")
         all_emby_libraries = emby_handler.get_emby_libraries(self.emby_url, self.emby_api_key, self.emby_user_id) or []
         library_name_map = {lib.get('Id'): lib.get('Name', '未知库名') for lib in all_emby_libraries}
         
@@ -1741,18 +1741,18 @@ class MediaProcessor:
         
         if movies:
             source_movie_lib_names = sorted(list({library_name_map.get(item.get('_SourceLibraryId')) for item in movies if item.get('_SourceLibraryId')}))
-            logger.info(f"从媒体库【{', '.join(source_movie_lib_names)}】获取到 {len(movies)} 个电影项目。")
+            logger.info(f"  -> 从媒体库【{', '.join(source_movie_lib_names)}】获取到 {len(movies)} 个电影项目。")
 
         if series:
             source_series_lib_names = sorted(list({library_name_map.get(item.get('_SourceLibraryId')) for item in series if item.get('_SourceLibraryId')}))
-            logger.info(f"从媒体库【{', '.join(source_series_lib_names)}】获取到 {len(series)} 个电视剧项目。")
+            logger.info(f"  -> 从媒体库【{', '.join(source_series_lib_names)}】获取到 {len(series)} 个电视剧项目。")
 
         all_items = movies + series
         total = len(all_items)
         # --- ★★★ 补全结束 ★★★ ---
         
         if total == 0:
-            logger.info("在所有选定的库中未找到任何可处理的项目。")
+            logger.info("  -> 在所有选定的库中未找到任何可处理的项目。")
             if update_status_callback: update_status_callback(100, "未找到可处理的项目。")
             return
 
@@ -1771,7 +1771,7 @@ class MediaProcessor:
             deleted_items_to_clean = processed_ids_in_db - emby_ids_in_library
             
             if deleted_items_to_clean:
-                logger.info(f"发现 {len(deleted_items_to_clean)} 个已从 Emby 媒体库删除的项目，正在从 '已处理' 中移除...")
+                logger.info(f"  -> 发现 {len(deleted_items_to_clean)} 个已从 Emby 媒体库删除的项目，正在从 '已处理' 中移除...")
                 for deleted_item_id in deleted_items_to_clean:
                     self.log_db_manager.remove_from_processed_log(cursor, deleted_item_id)
                     # 同时从内存缓存中移除
@@ -1779,9 +1779,9 @@ class MediaProcessor:
                         del self.processed_items_cache[deleted_item_id]
                     logger.debug(f"  -> 已从 '已处理' 中移除 ItemID: {deleted_item_id}")
                 conn.commit()
-                logger.info("已删除媒体项的清理工作完成。")
+                logger.info("  -> 已删除媒体项的清理工作完成。")
             else:
-                logger.info("未发现需要从 '已处理' 中清理的已删除媒体项。")
+                logger.info("  -> 未发现需要从 '已处理' 中清理的已删除媒体项。")
         
         if update_status_callback: update_status_callback(30, "已删除媒体项清理完成，开始处理现有媒体...")
 
@@ -1795,7 +1795,7 @@ class MediaProcessor:
             item_name = item.get('Name', f"ID:{item_id}")
 
             if not force_reprocess_all and item_id in self.processed_items_cache:
-                logger.info(f"正在跳过已处理的项目: {item_name}")
+                logger.info(f"  -> 正在跳过已处理的项目: {item_name}")
                 if update_status_callback:
                     # 调整进度条的起始点，使其在清理后从 30% 开始
                     progress_after_cleanup = 30

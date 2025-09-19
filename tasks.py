@@ -65,9 +65,9 @@ def task_run_full_scan(processor: MediaProcessor, force_reprocess: bool = False)
     """
     # 1. 根据参数决定日志信息
     if force_reprocess:
-        logger.warning("即将执行【强制】全量处理，将处理所有媒体项...")
+        logger.info("即将执行全量处理，将处理所有媒体项...")
     else:
-        logger.info("即将执行【标准】全量处理，将跳过已处理项...")
+        logger.info("即将执行增量处理，将跳过已处理项...")
 
 
     # 3. 调用核心处理函数，并将 force_reprocess 参数透传下去
