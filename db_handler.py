@@ -167,7 +167,6 @@ def init_db():
                         PRIMARY KEY (tmdb_id, item_type)
                     )
                 """)
-                cursor.execute("CREATE INDEX IF NOT EXISTS idx_mm_emby_item_id ON media_metadata (emby_item_id);")
 
                 logger.trace("  -> 正在创建 'watchlist' 表...")
                 cursor.execute("""
@@ -393,26 +392,10 @@ def init_db():
                     # 即使升级失败，也继续执行，不中断主程序启动
                 
                 try:
-                    # 检查 resubscribe_cache 表上是否已存在名为 fk_matched_rule 的外键
-                    cursor.execute("""
-                        SELECT 1 FROM pg_constraint 
-                        WHERE conname = 'fk_matched_rule' AND conrelid = 'resubscribe_cache'::regclass;
-                    """)
-                    if cursor.fetchone() is None:
-                        logger.info("    -> [数据库升级] 检测到 'resubscribe_cache' 表缺少外键，正在添加...")
-                        # ON DELETE SET NULL: 如果规则被删除，缓存项的 matched_rule_id 会被设为 NULL，而不是删除缓存项
-                        cursor.execute("""
-                            ALTER TABLE resubscribe_cache 
-                            ADD CONSTRAINT fk_matched_rule 
-                            FOREIGN KEY (matched_rule_id) 
-                            REFERENCES resubscribe_rules(id) 
-                            ON DELETE SET NULL;
-                        """)
-                        logger.info("    -> [数据库升级] 外键 'fk_matched_rule' 添加成功。")
-                    else:
-                        logger.trace("    -> 外键 'fk_matched_rule' 已存在，跳过。")
-                except Exception as e_fk:
-                     logger.error(f"  -> [数据库升级] 检查或添加外键时出错: {e_fk}", exc_info=True)
+                    logger.trace("  -> 正在为 'media_metadata.emby_item_id' 创建索引...")
+                    cursor.execute("CREATE INDEX IF NOT EXISTS idx_mm_emby_item_id ON media_metadata (emby_item_id);")
+                except Exception as e_index:
+                    logger.error(f"  -> 创建 'emby_item_id' 索引时出错: {e_index}", exc_info=True)
 
                 logger.info("  -> 数据库平滑升级检查完成。")
 
