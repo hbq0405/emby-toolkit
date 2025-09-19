@@ -239,9 +239,9 @@ def handle_mimicked_library_metadata_endpoint(path, mimicked_id, params):
     
 def handle_get_mimicked_library_items(user_id, mimicked_id, params):
     """
-    【V8 - 原生排序修复版】
-    - 新增“透传模式”：当合集排序设置为'none'时，将客户端的排序请求参数直接转发给Emby，实现真正的原生排序。
-    - 重构了数据获取和排序逻辑，根据排序模式选择不同的执行路径，代码更清晰。
+    【V8.1 - 原生排序空壳修复版】
+    - 修复了在'none'排序模式下，因错误转发虚拟ParentId导致请求结果为空的问题。
+    - 现在'none'模式会构建一个干净的请求，只包含真实的媒体ID列表和客户端的排序/分页参数。
     """
     try:
         real_db_id = from_mimicked_id(mimicked_id)
@@ -282,9 +282,19 @@ def handle_get_mimicked_library_items(user_id, mimicked_id, params):
             # --- 模式A: Emby原生排序 (Pass-through) ---
             logger.trace(f"检测到 'none' 排序模式，请求将转发给Emby进行原生排序。客户端参数: {params}")
             
-            forward_params = params.copy()
+            # ★★★ 核心修复：构建一个干净的请求，只转发必要的参数，绝不包含虚拟ParentId ★★★
+            passthrough_params_whitelist = [
+                'SortBy', 'SortOrder', 'StartIndex', 'Limit', 'Fields',
+                'IncludeItemTypes', 'Recursive', 'EnableImageTypes', 'ImageTypeLimit'
+            ]
+            forward_params = {}
+            for param in passthrough_params_whitelist:
+                if param in params:
+                    forward_params[param] = params[param]
+
             forward_params['Ids'] = ",".join(final_emby_ids_to_fetch)
             forward_params['api_key'] = api_key
+            
             if 'Fields' not in forward_params:
                 forward_params['Fields'] = "PrimaryImageAspectRatio,ProviderIds,UserData,Name,ProductionYear,CommunityRating,DateCreated,PremiereDate,Type,RecursiveItemCount,SortName"
 
@@ -292,6 +302,7 @@ def handle_get_mimicked_library_items(user_id, mimicked_id, params):
             try:
                 resp = requests.get(target_url, params=forward_params, timeout=20)
                 resp.raise_for_status()
+                # Emby对于带Ids的请求，返回的是一个Items数组，而不是{Items: [...]}结构
                 final_items = resp.json().get("Items", [])
                 logger.trace(f"Emby原生排序成功返回 {len(final_items)} 个项目。")
             except Exception as e_pass:
