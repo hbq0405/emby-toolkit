@@ -1,0 +1,171 @@
+<!-- src/components/UserTemplates.vue -->
+<template>
+  <div>
+    <n-button
+      type="primary"
+      @click="handleCreate"
+      style="margin-bottom: 16px"
+    >
+      <template #icon><n-icon :component="AddIcon" /></template>
+      创建新模板
+    </n-button>
+
+    <n-data-table
+      :columns="columns"
+      :data="templates"
+      :loading="loading"
+      :row-key="row => row.id"
+    />
+
+    <n-modal
+      v-model:show="isModalVisible"
+      preset="card"
+      style="width: 600px"
+      title="创建新的用户模板"
+      :bordered="false"
+      size="huge"
+    >
+      <n-form ref="formRef" :model="formModel" :rules="rules" label-placement="left" label-width="auto">
+        <n-form-item label="模板名称" path="name">
+          <n-input v-model:value="formModel.name" placeholder="例如：标准会员" />
+        </n-form-item>
+        <n-form-item label="模板描述" path="description">
+          <n-input
+            v-model:value="formModel.description"
+            type="textarea"
+            placeholder="简单描述这个模板的权限，方便自己记忆"
+          />
+        </n-form-item>
+        <n-form-item label="默认有效期(天)" path="default_expiration_days">
+          <n-input-number
+            v-model:value="formModel.default_expiration_days"
+            :min="1"
+            style="width: 100%"
+          />
+        </n-form-item>
+        <n-form-item label="源 Emby 用户" path="source_emby_user_id">
+          <n-select
+            v-model:value="formModel.source_emby_user_id"
+            placeholder="选择一个用户作为权限样板"
+            :options="embyUserOptions"
+            filterable
+          />
+           <template #feedback>
+            重要：新模板的权限将完全复制您在此选择的这个用户的当前权限设置。
+          </template>
+        </n-form-item>
+      </n-form>
+      <template #footer>
+        <n-button @click="isModalVisible = false">取消</n-button>
+        <n-button type="primary" @click="handleOk" :loading="isSubmitting">创建</n-button>
+      </template>
+    </n-modal>
+  </div>
+</template>
+
+<script setup>
+import { ref, onMounted, h, computed } from 'vue';
+import {
+  NButton, NDataTable, NModal, NForm, NFormItem, NSelect, NInputNumber,
+  NIcon, NInput, useMessage
+} from 'naive-ui';
+import { Add as AddIcon } from '@vicons/ionicons5';
+
+// --- API ---
+const api = {
+  getUserTemplates: () => fetch('/api/admin/user_templates').then(res => res.json()),
+  // 这个接口我们之前在 UserList.vue 里用过，这里复用
+  getEmbyUsers: () => fetch('/api/admin/users').then(res => res.json()),
+  createTemplate: (data) => fetch('/api/admin/user_templates', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(data),
+  }).then(res => res.json()),
+};
+
+// --- 状态和Hooks ---
+const message = useMessage();
+const templates = ref([]);
+const embyUsers = ref([]);
+const loading = ref(false);
+const isModalVisible = ref(false);
+const isSubmitting = ref(false);
+const formRef = ref(null);
+const formModel = ref({
+  name: '',
+  description: '',
+  default_expiration_days: 30,
+  source_emby_user_id: null,
+});
+
+const rules = {
+  name: { required: true, message: '请输入模板名称', trigger: 'blur' },
+  default_expiration_days: { type: 'number', required: true, message: '请输入默认有效期' },
+  source_emby_user_id: { required: true, message: '请选择一个源用户', trigger: 'change' },
+};
+
+const embyUserOptions = computed(() =>
+  embyUsers.value.map(u => ({ label: u.Name, value: u.Id }))
+);
+
+// --- 数据获取 ---
+const fetchData = async () => {
+  loading.value = true;
+  try {
+    // 同时获取模板列表和 Emby 用户列表
+    const [templatesData, usersData] = await Promise.all([
+      api.getUserTemplates(),
+      api.getEmbyUsers(),
+    ]);
+    templates.value = templatesData;
+    embyUsers.value = usersData;
+  } catch (error) {
+    message.error('加载模板或 Emby 用户列表失败');
+  } finally {
+    loading.value = false;
+  }
+};
+
+onMounted(fetchData);
+
+// --- 事件处理 ---
+const handleCreate = () => {
+  formModel.value = {
+    name: '',
+    description: '',
+    default_expiration_days: 30,
+    source_emby_user_id: null,
+  };
+  isModalVisible.value = true;
+};
+
+const handleOk = (e) => {
+  e.preventDefault();
+  formRef.value?.validate(async (errors) => {
+    if (!errors) {
+      isSubmitting.value = true;
+      try {
+        const response = await api.createTemplate(formModel.value);
+        if (response.status === 'ok') {
+          message.success('模板创建成功！');
+          isModalVisible.value = false;
+          fetchData(); // 重新加载数据
+        } else {
+          throw new Error(response.message || '创建失败');
+        }
+      } catch (error) {
+        message.error(`创建失败: ${error.message}`);
+      } finally {
+        isSubmitting.value = false;
+      }
+    }
+  });
+};
+
+// --- 表格列定义 ---
+const columns = [
+  { title: '模板名称', key: 'name' },
+  { title: '描述', key: 'description' },
+  { title: '默认有效期(天)', key: 'default_expiration_days' },
+];
+</script>
