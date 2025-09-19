@@ -732,7 +732,7 @@ def get_all_persons_from_emby(
     user_id: Optional[str], 
     stop_event: Optional[threading.Event] = None,
     # ★★★ 核心修改：新增 batch_size 参数，并设置高效的默认值 ★★★
-    batch_size: int = 5000
+    batch_size: int = 500
 ) -> Generator[List[Dict[str, Any]], None, None]:
     """
     【V3 - 参数化批次版】
@@ -782,7 +782,7 @@ def get_all_persons_from_emby(
 
                 yield items
                 start_index += len(items)
-                time.sleep(0.1)
+                time.sleep(0.2)
             except requests.exceptions.RequestException as e:
                 logger.error(f"请求 Emby API 失败 (批次 StartIndex={start_index}): {e}", exc_info=True)
                 return
