@@ -1,4 +1,4 @@
-<!-- src/components/UserList.vue -->
+<!-- src/components/UserList.vue (已升级) -->
 <template>
   <div>
     <n-data-table
@@ -8,18 +8,19 @@
       :row-key="row => row.Id"
     />
 
+    <!-- 续期模态框 (保持不变) -->
     <n-modal
-      v-model:show="isModalVisible"
+      v-model:show="isExpirationModalVisible"
       preset="card"
       style="width: 500px"
       :title="`设置用户 “${currentUser?.Name}” 的有效期`"
       :bordered="false"
       size="huge"
     >
-      <n-form ref="formRef" :model="formModel">
-        <n-form-item label="新的到期日期" path="expiration_date">
+      <n-form ref="expirationFormRef" :model="expirationFormModel">
+        <n-form-item label="新的到期日期" path="expiration_date_ts">
           <n-date-picker
-            v-model:value="formModel.expiration_date_ts"
+            v-model:value="expirationFormModel.expiration_date_ts"
             type="date"
             clearable
             style="width: 100%"
@@ -28,18 +29,44 @@
         </n-form-item>
       </n-form>
       <template #footer>
-        <n-button @click="isModalVisible = false">取消</n-button>
+        <n-button @click="isExpirationModalVisible = false">取消</n-button>
         <n-button type="primary" @click="handleExpirationOk">保存</n-button>
       </template>
     </n-modal>
+
+    <!-- ★★★ 新增：切换模板模态框 ★★★ -->
+    <n-modal
+      v-model:show="isTemplateModalVisible"
+      preset="card"
+      style="width: 500px"
+      :title="`切换用户 “${currentUser?.Name}” 的模板`"
+      :bordered="false"
+      size="huge"
+    >
+      <n-form ref="templateFormRef" :model="templateFormModel" :rules="templateFormRules">
+        <n-form-item label="选择新模板" path="template_id">
+          <n-select
+            v-model:value="templateFormModel.template_id"
+            placeholder="请选择一个新的权限模板"
+            :options="templateOptions"
+            filterable
+          />
+        </n-form-item>
+      </n-form>
+       <template #footer>
+        <n-button @click="isTemplateModalVisible = false">取消</n-button>
+        <n-button type="primary" @click="handleChangeTemplateOk" :loading="isSubmittingTemplate">确认切换</n-button>
+      </template>
+    </n-modal>
+
   </div>
 </template>
 
 <script setup>
-import { ref, onMounted, h } from 'vue';
+import { ref, onMounted, h, computed } from 'vue';
 import {
   NDataTable, NSwitch, NTag, NSpace, NButton, NPopconfirm, NModal,
-  NForm, NFormItem, NDatePicker, useMessage
+  NForm, NFormItem, NDatePicker, useMessage, NSelect
 } from 'naive-ui';
 import dayjs from 'dayjs';
 
@@ -57,28 +84,54 @@ const api = {
     body: JSON.stringify({ expiration_date: expirationDate }),
   }),
   deleteUser: (userId) => fetch(`/api/admin/users/${userId}`, { method: 'DELETE' }),
+  // ★★★ 新增 API 调用 ★★★
+  getUserTemplates: () => fetch('/api/admin/user_templates').then(res => res.json()),
+  changeUserTemplate: (userId, templateId) => fetch(`/api/admin/users/${userId}/template`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ template_id: templateId }),
+  }),
 };
 
 // --- 状态和Hooks ---
 const message = useMessage();
 const users = ref([]);
 const loading = ref(false);
-const isModalVisible = ref(false);
 const currentUser = ref(null);
-const formRef = ref(null);
-const formModel = ref({
-  expiration_date_ts: null,
-});
+
+// 续期模态框状态
+const isExpirationModalVisible = ref(false);
+const expirationFormRef = ref(null);
+const expirationFormModel = ref({ expiration_date_ts: null });
+
+// ★★★ 新增：切换模板模态框状态 ★★★
+const isTemplateModalVisible = ref(false);
+const templateFormRef = ref(null);
+const templateFormModel = ref({ template_id: null });
+const allTemplates = ref([]);
+const isSubmittingTemplate = ref(false);
+const templateFormRules = {
+  template_id: { type: 'number', required: true, message: '请选择一个模板', trigger: ['blur', 'change'] }
+};
+const templateOptions = computed(() => 
+  allTemplates.value.map(t => ({ label: t.name, value: t.id }))
+);
+
 
 // --- 数据获取 ---
 const fetchData = async () => {
   loading.value = true;
   try {
-    const data = await api.getUsers();
-    const formattedData = data.map(u => ({ ...u, IsDisabled: u.Policy?.IsDisabled ?? false }));
+    // ★★★ 同时获取用户和模板列表 ★★★
+    const [usersData, templatesData] = await Promise.all([
+      api.getUsers(),
+      api.getUserTemplates(),
+    ]);
+    const formattedData = usersData.map(u => ({ ...u, IsDisabled: u.Policy?.IsDisabled ?? false }));
     users.value = formattedData;
+    allTemplates.value = templatesData;
   } catch (error) {
-    message.error('加载用户列表失败');
+    message.error('加载用户或模板列表失败');
   } finally {
     loading.value = false;
   }
@@ -94,12 +147,9 @@ const handleStatusChange = async (user, value) => {
     if (response.ok) {
       message.success(`用户 ${user.Name} 已${disable ? '禁用' : '启用'}`);
       fetchData();
-    } else {
-      throw new Error('操作失败');
-    }
+    } else { throw new Error('操作失败'); }
   } catch (error) {
     message.error('更新用户状态失败');
-    // 状态切换失败时，把开关拨回去
     fetchData();
   }
 };
@@ -110,37 +160,65 @@ const handleDelete = async (user) => {
     if (response.ok) {
       message.success(`用户 ${user.Name} 已被彻底删除`);
       fetchData();
-    } else {
-      throw new Error('删除失败');
-    }
+    } else { throw new Error('删除失败'); }
   } catch (error) {
     message.error('删除用户失败');
   }
 };
 
+// 续期模态框处理
 const showExpirationModal = (user) => {
   currentUser.value = user;
-  formModel.value.expiration_date_ts = user.expiration_date ? dayjs(user.expiration_date).valueOf() : null;
-  isModalVisible.value = true;
+  expirationFormModel.value.expiration_date_ts = user.expiration_date ? dayjs(user.expiration_date).valueOf() : null;
+  isExpirationModalVisible.value = true;
 };
 
 const handleExpirationOk = async () => {
   try {
-    const expirationDate = formModel.value.expiration_date_ts
-      ? new Date(formModel.value.expiration_date_ts).toISOString()
+    const expirationDate = expirationFormModel.value.expiration_date_ts
+      ? new Date(expirationFormModel.value.expiration_date_ts).toISOString()
       : null;
     const response = await api.setUserExpiration(currentUser.value.Id, expirationDate);
     if (response.ok) {
       message.success('用户有效期已更新');
-      isModalVisible.value = false;
+      isExpirationModalVisible.value = false;
       fetchData();
-    } else {
-      throw new Error('更新失败');
-    }
+    } else { throw new Error('更新失败'); }
   } catch (error) {
     message.error('更新有效期失败');
   }
 };
+
+// ★★★ 新增：切换模板模态框处理 ★★★
+const showChangeTemplateModal = (user) => {
+  currentUser.value = user;
+  templateFormModel.value.template_id = user.template_id || null;
+  isTemplateModalVisible.value = true;
+};
+
+const handleChangeTemplateOk = async () => {
+  templateFormRef.value?.validate(async (errors) => {
+    if (!errors) {
+      isSubmittingTemplate.value = true;
+      try {
+        const response = await api.changeUserTemplate(currentUser.value.Id, templateFormModel.value.template_id);
+        const data = await response.json();
+        if (response.ok) {
+          message.success('用户模板已成功切换！');
+          isTemplateModalVisible.value = false;
+          fetchData();
+        } else {
+          throw new Error(data.message || '切换失败');
+        }
+      } catch (error) {
+        message.error(`切换模板失败: ${error.message}`);
+      } finally {
+        isSubmittingTemplate.value = false;
+      }
+    }
+  });
+};
+
 
 // --- 表格列定义 ---
 const createColumns = () => [
@@ -152,6 +230,12 @@ const createColumns = () => [
       value: !row.IsDisabled,
       onUpdateValue: (value) => handleStatusChange(row, value),
     })
+  },
+  // ★★★ 新增“所属模板”列 ★★★
+  {
+    title: '所属模板',
+    key: 'template_name',
+    render: (row) => row.template_name || h(NTag, { size: 'small', type: 'warning' }, () => '无')
   },
   {
     title: '到期时间',
@@ -169,10 +253,9 @@ const createColumns = () => [
     title: '操作',
     key: 'actions',
     render: (row) => h(NSpace, null, () => [
-      h(NButton, {
-        size: 'small',
-        onClick: () => showExpirationModal(row)
-      }, () => '续期'),
+      h(NButton, { size: 'small', onClick: () => showExpirationModal(row) }, () => '续期'),
+      // ★★★ 新增“切换模板”按钮 ★★★
+      h(NButton, { size: 'small', onClick: () => showChangeTemplateModal(row) }, () => '切换模板'),
       h(NPopconfirm, {
         onPositiveClick: () => handleDelete(row),
         negativeText: '取消',

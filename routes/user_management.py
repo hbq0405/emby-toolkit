@@ -219,10 +219,11 @@ def register_with_invite():
             expiration_date = datetime.now(timezone.utc) + timedelta(days=invitation['expiration_days'])
             cursor.execute(
                 """
-                INSERT INTO emby_users_extended (emby_user_id, status, expiration_date, created_by)
-                VALUES (%s, 'active', %s, 'self-registered')
+                INSERT INTO emby_users_extended (emby_user_id, status, expiration_date, created_by, template_id)
+                VALUES (%s, 'active', %s, 'self-registered', %s)
                 """,
-                (new_user_id, expiration_date)
+                # ★★★ 新增了 invitation['template_id'] ★★★
+                (new_user_id, expiration_date, invitation['template_id'])
             )
             cursor.execute(
                 "UPDATE invitations SET status = 'used', used_by_user_id = %s WHERE id = %s",
@@ -301,32 +302,35 @@ def get_all_managed_users():
     """获取所有 Emby 用户，并用我们数据库中的扩展信息丰富他们"""
     try:
         config = config_manager.APP_CONFIG
-        # 1. 从 Emby 获取所有用户的基础信息
         all_emby_users = emby_handler.get_all_emby_users_from_server(
             config.get("emby_server_url"), config.get("emby_api_key")
         )
         if all_emby_users is None:
             return jsonify({"error": "无法从 Emby 获取用户列表"}), 500
 
-        # 2. 从我们的数据库获取所有扩展信息
         with db_handler.get_db_connection() as conn:
             cursor = conn.cursor()
-            cursor.execute("SELECT * FROM emby_users_extended")
+            # ★★★ 核心修改：使用 LEFT JOIN 联查模板名称 ★★★
+            cursor.execute("""
+                SELECT eue.*, ut.name as template_name 
+                FROM emby_users_extended eue
+                LEFT JOIN user_templates ut ON eue.template_id = ut.id
+            """)
             extended_info_rows = cursor.fetchall()
             extended_info_map = {row['emby_user_id']: dict(row) for row in extended_info_rows}
 
-        # 3. 合并数据
         enriched_users = []
         for user in all_emby_users:
             user_id = user.get('Id')
             extended_data = extended_info_map.get(user_id, {})
             
-            # 将 Policy 中的 IsDisabled 状态作为最终的用户状态
             user['IsDisabled'] = user.get('Policy', {}).get('IsDisabled', False)
             
-            # 合并我们的扩展字段
             user['expiration_date'] = extended_data.get('expiration_date')
-            user['status_in_db'] = extended_data.get('status') # 我们数据库里的状态
+            user['status_in_db'] = extended_data.get('status')
+            # ★★★ 新增返回字段 ★★★
+            user['template_id'] = extended_data.get('template_id')
+            user['template_name'] = extended_data.get('template_name')
             
             enriched_users.append(user)
             
@@ -334,6 +338,53 @@ def get_all_managed_users():
     except Exception as e:
         logger.error(f"获取托管用户列表时出错: {e}", exc_info=True)
         return jsonify({"status": "error", "message": "获取用户列表失败"}), 500
+
+
+# 3. ★★★ 一个用于切换模板的 API 函数 ★★★
+# (可以放在 get_all_managed_users 函数的下面)
+@user_management_bp.route('/api/admin/users/<string:user_id>/template', methods=['POST'])
+@login_required
+def change_user_template(user_id):
+    """为一个现有用户切换模板并应用新权限"""
+    data = request.json
+    new_template_id = data.get('template_id')
+
+    if not new_template_id:
+        return jsonify({"status": "error", "message": "必须提供新的模板ID"}), 400
+
+    try:
+        with db_handler.get_db_connection() as conn:
+            cursor = conn.cursor()
+            
+            # 1. 从新模板中获取权限策略
+            cursor.execute("SELECT emby_policy_json FROM user_templates WHERE id = %s", (new_template_id,))
+            template = cursor.fetchone()
+            if not template:
+                return jsonify({"status": "error", "message": "模板不存在"}), 404
+            
+            template_policy = template['emby_policy_json']
+            
+            # 2. 调用 Emby Handler 将新策略应用到用户
+            config = config_manager.APP_CONFIG
+            policy_applied = emby_handler.force_set_user_policy(
+                user_id, template_policy,
+                config.get("emby_server_url"), config.get("emby_api_key")
+            )
+            
+            if not policy_applied:
+                return jsonify({"status": "error", "message": "在 Emby 中应用新模板权限失败"}), 500
+            
+            # 3. 更新我们自己数据库中的记录
+            cursor.execute(
+                "UPDATE emby_users_extended SET template_id = %s WHERE emby_user_id = %s",
+                (new_template_id, user_id)
+            )
+            conn.commit()
+
+        return jsonify({"status": "ok", "message": "用户模板已成功切换并应用新权限"}), 200
+    except Exception as e:
+        logger.error(f"切换用户 {user_id} 的模板时出错: {e}", exc_info=True)
+        return jsonify({"status": "error", "message": "切换模板失败"}), 500
 
 @user_management_bp.route('/api/admin/users/<string:user_id>/status', methods=['POST'])
 @login_required

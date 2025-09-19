@@ -331,7 +331,9 @@ def init_db():
                         expiration_date TIMESTAMP WITH TIME ZONE, -- 核心字段：用户的到期时间
                         notes TEXT,
                         created_by TEXT DEFAULT 'self-registered', -- 'self-registered' 或 'admin'
-                        FOREIGN KEY(emby_user_id) REFERENCES emby_users(id) ON DELETE CASCADE
+                        template_id INTEGER,
+                        FOREIGN KEY(emby_user_id) REFERENCES emby_users(id) ON DELETE CASCADE,
+                        FOREIGN KEY(template_id) REFERENCES user_templates(id) ON DELETE SET NULL
                     )
                 """)
                 cursor.execute("CREATE INDEX IF NOT EXISTS idx_eue_status ON emby_users_extended (status);")
