@@ -322,23 +322,6 @@ def init_db():
                 cursor.execute("CREATE INDEX IF NOT EXISTS idx_cleanup_task_type ON media_cleanup_tasks (task_type);")
                 cursor.execute("CREATE INDEX IF NOT EXISTS idx_cleanup_task_status ON media_cleanup_tasks (status);")
 
-                logger.trace("  -> 正在创建 'emby_users_extended' 表 (用户扩展信息)...")
-                cursor.execute("""
-                    CREATE TABLE IF NOT EXISTS emby_users_extended (
-                        emby_user_id TEXT PRIMARY KEY,
-                        status TEXT NOT NULL DEFAULT 'pending', -- 状态: pending(待审批), active(激活), expired(过期), disabled(禁用)
-                        registration_date TIMESTAMP WITH TIME ZONE DEFAULT NOW(),
-                        expiration_date TIMESTAMP WITH TIME ZONE, -- 核心字段：用户的到期时间
-                        notes TEXT,
-                        created_by TEXT DEFAULT 'self-registered', -- 'self-registered' 或 'admin'
-                        template_id INTEGER,
-                        FOREIGN KEY(emby_user_id) REFERENCES emby_users(id) ON DELETE CASCADE,
-                        FOREIGN KEY(template_id) REFERENCES user_templates(id) ON DELETE SET NULL
-                    )
-                """)
-                cursor.execute("CREATE INDEX IF NOT EXISTS idx_eue_status ON emby_users_extended (status);")
-                cursor.execute("CREATE INDEX IF NOT EXISTS idx_eue_expiration_date ON emby_users_extended (expiration_date);")
-
                 logger.trace("  -> 正在创建 'user_templates' 表 (用户权限模板)...")
                 cursor.execute("""
                     CREATE TABLE IF NOT EXISTS user_templates (
@@ -373,7 +356,24 @@ def init_db():
                     )
                 """)
                 cursor.execute("CREATE INDEX IF NOT EXISTS idx_invitations_token ON invitations (token);")
-                
+
+                logger.trace("  -> 正在创建 'emby_users_extended' 表 (用户扩展信息)...")
+                cursor.execute("""
+                    CREATE TABLE IF NOT EXISTS emby_users_extended (
+                        emby_user_id TEXT PRIMARY KEY,
+                        status TEXT NOT NULL DEFAULT 'pending', -- 状态: pending(待审批), active(激活), expired(过期), disabled(禁用)
+                        registration_date TIMESTAMP WITH TIME ZONE DEFAULT NOW(),
+                        expiration_date TIMESTAMP WITH TIME ZONE, -- 核心字段：用户的到期时间
+                        notes TEXT,
+                        created_by TEXT DEFAULT 'self-registered', -- 'self-registered' 或 'admin'
+                        template_id INTEGER,
+                        FOREIGN KEY(emby_user_id) REFERENCES emby_users(id) ON DELETE CASCADE,
+                        FOREIGN KEY(template_id) REFERENCES user_templates(id) ON DELETE SET NULL
+                    )
+                """)
+                cursor.execute("CREATE INDEX IF NOT EXISTS idx_eue_status ON emby_users_extended (status);")
+                cursor.execute("CREATE INDEX IF NOT EXISTS idx_eue_expiration_date ON emby_users_extended (expiration_date);")
+
                 # --- 2. 执行平滑升级检查 ---
                 logger.info("  -> 开始执行数据库表结构平滑升级检查...")
                 try:
