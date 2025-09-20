@@ -3351,7 +3351,7 @@ def task_scan_for_cleanup_issues(processor: MediaProcessor):
     在构造 versions_info 时，将 video_stream 传递下去。
     """
     task_name = "扫描媒体库重复项"
-    logger.info(f"--- 开始执行 '{task_name}' 任务 (特效支持模式) ---")
+    logger.info(f"--- 开始执行 '{task_name}' 任务 ---")
     task_manager.update_status_from_thread(0, "正在准备扫描媒体库...")
 
     try:
