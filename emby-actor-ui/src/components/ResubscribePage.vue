@@ -18,7 +18,6 @@
         </n-alert>
         <template #extra>
           <n-space>
-            <!-- ★★★ 批量操作下拉菜单 ★★★ -->
             <n-dropdown 
               trigger="click"
               :options="batchActions"
@@ -54,56 +53,71 @@
       <div v-else-if="displayedItems.length > 0">
         <n-grid cols="1 s:1 m:2 l:3 xl:4" :x-gap="20" :y-gap="20" responsive="screen">
           <n-gi v-for="(item, index) in displayedItems" :key="item.item_id">
-            <!-- ★★★ 卡片增加点击事件和选中样式绑定 ★★★ -->
             <n-card 
               class="dashboard-card series-card" 
               :bordered="false"
               :class="{ 'card-selected': selectedItems.has(item.item_id) }"
               @click="handleCardClick($event, item, index)"
             >
-            <n-checkbox
+              <n-checkbox
                 class="card-checkbox"
                 :checked="selectedItems.has(item.item_id)"
               />
+              
+              <div class="card-body-wrapper">
+                <div class="card-poster-container" @click="handleCardClick($event, item, index)">
+                  <n-image lazy :src="getPosterUrl(item.item_id)" class="card-poster" object-fit="cover" />
+                </div>
 
-              <div class="card-poster-container" @click="handleCardClick($event, item, index)">
-                <n-image lazy :src="getPosterUrl(item.item_id)" class="card-poster" object-fit="cover" />
+                <div class="card-content-container">
+                  <div class="card-header">
+                    <n-ellipsis class="card-title">{{ item.item_name }}</n-ellipsis>
+                  </div>
+                  <div class="card-status-area">
+                    <n-space vertical size="small">
+                      <n-tag :type="getStatusInfo(item.status).type" size="small">
+                        {{ getStatusInfo(item.status).text }}
+                      </n-tag>
+                      <div>
+                        <n-tooltip v-if="item.status === 'needed'">
+                          <template #trigger>
+                            <n-text :depth="3" class="reason-text" :line-clamp="2">原因: {{ item.reason }}</n-text>
+                          </template>
+                          {{ item.reason }}
+                        </n-tooltip>
+                        <n-text v-else :depth="3" class="reason-text" :line-clamp="2" style="visibility: hidden;">占位</n-text>
+                      </div>
+                      <n-divider style="margin: 4px 0;" />
+                      <n-text :depth="2" class="info-text">分辨率: {{ item.resolution_display }}</n-text>
+                      <n-text :depth="2" class="info-text">质量: {{ item.quality_display }}</n-text>
+                      <n-text :depth="2" class="info-text">特效: {{ item.effect_display }}</n-text>
+                      <n-tooltip><template #trigger><n-text :depth="2" class="info-text" :line-clamp="1">音轨: {{ item.audio_display }}</n-text></template>{{ item.audio_display }}</n-tooltip>
+                      <n-tooltip><template #trigger><n-text :depth="2" class="info-text" :line-clamp="1">字幕: {{ item.subtitle_display }}</n-text></template>{{ item.subtitle_display }}</n-tooltip>
+                    </n-space>
+                  </div>
+                </div>
               </div>
 
-              <div class="card-content-container">
-                <div class="card-header">
-                  <n-ellipsis class="card-title">{{ item.item_name }}</n-ellipsis>
-                </div>
-                <div class="card-status-area">
-                  <n-space vertical size="small">
-                    <n-tag :type="getStatusInfo(item.status).type" size="small">
-                      {{ getStatusInfo(item.status).text }}
-                    </n-tag>
-                    <div>
-                      <n-tooltip v-if="item.status === 'needed'">
-                        <template #trigger>
-                          <n-text :depth="3" class="reason-text" :line-clamp="2">原因: {{ item.reason }}</n-text>
-                        </template>
-                        {{ item.reason }}
-                      </n-tooltip>
-                      <n-text v-else :depth="3" class="reason-text" :line-clamp="2" style="visibility: hidden;">占位</n-text>
-                    </div>
-                    <n-divider style="margin: 4px 0;" />
-                    <n-text :depth="2" class="info-text">分辨率: {{ item.resolution_display }}</n-text>
-                    <n-text :depth="2" class="info-text">质量: {{ item.quality_display }}</n-text>
-                    <n-text :depth="2" class="info-text">特效: {{ item.effect_display }}</n-text>
-                    <n-tooltip><template #trigger><n-text :depth="2" class="info-text" :line-clamp="1">音轨: {{ item.audio_display }}</n-text></template>{{ item.audio_display }}</n-tooltip>
-                    <n-tooltip><template #trigger><n-text :depth="2" class="info-text" :line-clamp="1">字幕: {{ item.subtitle_display }}</n-text></template>{{ item.subtitle_display }}</n-tooltip>
-                  </n-space>
-                </div>
-                <div class="card-actions">
-                  <n-button v-if="item.status === 'needed'" size="small" type="primary" @click.stop="resubscribeItem(item)" :loading="subscribing[item.item_id]">洗版订阅</n-button>
-                  <n-button v-else-if="item.status === 'subscribed'" size="small" type="info" disabled>已订阅</n-button>
-                  <n-button v-else-if="item.status === 'ignored'" size="small" type="tertiary" @click.stop="unignoreItem(item)">取消忽略</n-button>
-                  <n-button v-else size="small" style="visibility: hidden;">占位按钮</n-button>
+              <div class="card-actions">
+                <n-space align="center">
+                  <n-button v-if="item.status === 'needed'" size="small" type="primary" @click.stop="resubscribeItem(item)" :loading="subscribing[item.item_id]">洗版</n-button>
+                  <n-button v-if="item.status === 'needed'" size="small" @click.stop="ignoreItem(item)">忽略</n-button>
+                  <n-button v-if="item.status === 'subscribed'" size="small" type="info" disabled>已订阅</n-button>
+                  <n-button v-if="item.status === 'ignored'" size="small" type="tertiary" @click.stop="unignoreItem(item)">取消忽略</n-button>
+                  
+                  <n-divider v-if="item.status !== 'ok'" vertical />
+
+                  <n-tooltip>
+                    <template #trigger>
+                      <n-button text type="error" @click.stop="deleteItem(item)">
+                        <template #icon><n-icon :component="TrashOutline" size="18" /></template>
+                      </n-button>
+                    </template>
+                    删除
+                  </n-tooltip>
                   <n-button text @click.stop="openInEmby(item.item_id)"><template #icon><n-icon :component="EmbyIcon" size="18" /></template></n-button>
                   <n-button text tag="a" :href="`https://www.themoviedb.org/${item.item_type === 'Movie' ? 'movie' : 'tv'}/${item.tmdb_id}`" target="_blank" @click.stop><template #icon><n-icon :component="TMDbIcon" size="18" /></template></n-button>
-                </div>
+                </n-space>
               </div>
             </n-card>
           </n-gi>
@@ -125,7 +139,7 @@
 import { ref, onMounted, onUnmounted, computed, h, watch, nextTick } from 'vue';
 import axios from 'axios';
 import { NLayout, NPageHeader, NDivider, NEmpty, NTag, NButton, NSpace, NIcon, useMessage, NGrid, NGi, NCard, NImage, NEllipsis, NSpin, NAlert, NRadioGroup, NRadioButton, NModal, NTooltip, NText, NDropdown, useDialog, NCheckbox } from 'naive-ui';
-import { SyncOutline } from '@vicons/ionicons5';
+import { SyncOutline, TrashOutline } from '@vicons/ionicons5';
 import { useConfig } from '../composables/useConfig.js';
 import ResubscribeSettingsPage from './settings/ResubscribeSettingsPage.vue';
 
@@ -147,7 +161,6 @@ const subscribing = ref({});
 const loaderTrigger = ref(null); 
 const PAGE_SIZE = 24; 
 
-// ★★★ 多选功能 Refs ★★★
 const selectedItems = ref(new Set());
 const lastSelectedIndex = ref(-1);
 
@@ -171,7 +184,7 @@ const getStatusInfo = (status) => {
 const fetchData = async () => {
   isLoading.value = true;
   error.value = null;
-  selectedItems.value.clear(); // 刷新时清空选择
+  selectedItems.value.clear(); 
   lastSelectedIndex.value = -1;
   try {
     const response = await axios.get('/api/resubscribe/library_status');
@@ -232,7 +245,6 @@ const handleCardClick = (event, item, index) => {
   lastSelectedIndex.value = index;
 };
 
-// ★★★ 批量操作逻辑 ★★★
 const batchActions = computed(() => {
   const actions = [];
   const noSelection = selectedItems.value.size === 0;
@@ -324,14 +336,46 @@ const executeBatchAction = async (actionKey, ids, isOneClick) => {
   }
 };
 
+const ignoreItem = async (item) => {
+  try {
+    await axios.post('/api/resubscribe/batch_action', { item_ids: [item.item_id], action: 'ignore' });
+    message.success(`《${item.item_name}》已忽略。`);
+    const itemInList = allItems.value.find(i => i.item_id === item.item_id);
+    if (itemInList) {
+      itemInList.status = 'ignored';
+    }
+  } catch (err) {
+    message.error(err.response?.data?.error || '忽略失败。');
+  }
+};
+
 const unignoreItem = async (item) => {
   try {
     await axios.post('/api/resubscribe/batch_action', { item_ids: [item.item_id], action: 'ok' });
     message.success(`《${item.item_name}》已取消忽略。`);
-    item.status = 'ok';
+    allItems.value = allItems.value.filter(i => i.item_id !== item.item_id);
   } catch (err) {
     message.error(err.response?.data?.error || '取消忽略失败。');
   }
+};
+
+const deleteItem = (item) => {
+  dialog.warning({
+    title: '高危操作确认',
+    content: `确定要永久删除《${item.item_name}》吗？此操作会从 Emby 和硬盘中删除文件，且不可恢复！`,
+    positiveText: '我确定，删除！',
+    negativeText: '取消',
+    onPositiveClick: async () => {
+      try {
+        await axios.post('/api/resubscribe/batch_action', { item_ids: [item.item_id], action: 'delete' });
+        message.success(`《${item.item_name}》已删除。`);
+        allItems.value = allItems.value.filter(i => i.item_id !== item.item_id);
+        selectedItems.value.delete(item.item_id);
+      } catch (err) {
+        message.error(err.response?.data?.error || '删除失败。');
+      }
+    }
+  });
 };
 
 const triggerRefreshStatus = async () => {
@@ -357,22 +401,19 @@ const handleSettingsSaved = (payload = {}) => {
   }
 };
 
-// ★★★ 核心修复：侦听整个 taskStatus 对象，而不是只侦听 is_running ★★★
 watch(() => props.taskStatus, (newStatus, oldStatus) => {
-  // 检查任务是否是从“运行中”变为“已结束”
   if (oldStatus.is_running && !newStatus.is_running) {
     const relevantActions = [
-      '刷新媒体洗版状态', // 扫描媒体库
-      '全库媒体洗版',   // 一键洗版
+      '刷新媒体洗版状态', 
+      '全库媒体洗版',   
     ];
     
-    // 关键：检查【旧状态】的任务名称，因为新状态的任务名称可能已被清空
     if (relevantActions.some(action => oldStatus.current_action.includes(action))) {
       message.info('相关后台任务已结束，正在刷新海报墙...');
       fetchData();
     }
   }
-}, { deep: true }); // 使用 deep: true 来侦听对象内部属性的变化
+}, { deep: true }); 
 </script>
 
 <style scoped>
@@ -408,15 +449,42 @@ watch(() => props.taskStatus, (newStatus, oldStatus) => {
   transform: translateY(-4px);
 }
 .center-container { display: flex; justify-content: center; align-items: center; height: calc(100vh - 200px); }
+
+.card-body-wrapper {
+  display: flex;
+  gap: 12px;
+}
 .card-poster-container { flex-shrink: 0; width: 160px; height: 240px; overflow: hidden; }
 .card-poster { width: 100%; height: 100%; }
-.card-content-container { flex-grow: 1; display: flex; flex-direction: column; padding: 12px 8px 12px 0; min-width: 0; }
+.card-content-container { 
+  flex-grow: 1; 
+  display: flex; 
+  flex-direction: column; 
+  padding: 0;
+  min-width: 0; 
+}
 .card-header { display: flex; justify-content: space-between; align-items: flex-start; gap: 8px; flex-shrink: 0; }
 .card-title { font-weight: 600; font-size: 1.1em; line-height: 1.3; }
 .card-status-area { flex-grow: 1; padding-top: 8px; }
 .reason-text { font-size: 0.85em; }
 .info-text { font-size: 0.85em; }
-.card-actions { border-top: 1px solid var(--n-border-color); padding-top: 8px; margin-top: 8px; display: flex; justify-content: space-around; align-items: center; flex-shrink: 0; }
 .loader-trigger { height: 50px; display: flex; justify-content: center; align-items: center; }
-.series-card.dashboard-card > :deep(.n-card__content) { flex-direction: row !important; justify-content: flex-start !important; padding: 12px !important; gap: 12px !important; }
+
+/* ★★★ START: 调整卡片操作区样式 - 居中对齐 ★★★ */
+.card-actions { 
+  border-top: 1px solid var(--n-border-color); 
+  padding-top: 12px; 
+  margin-top: 12px; 
+  flex-shrink: 0; 
+  display: flex;
+  justify-content: center;
+}
+/* ★★★ END: 调整卡片操作区样式 ★★★ */
+
+.series-card.dashboard-card > :deep(.n-card__content) { 
+  flex-direction: column !important;
+  justify-content: flex-start !important; 
+  padding: 12px !important; 
+  gap: 0 !important;
+}
 </style>
