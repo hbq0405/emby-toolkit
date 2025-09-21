@@ -194,6 +194,42 @@ const handleOk = (e) => {
   });
 };
 
+const copyToClipboard = (textToCopy) => {
+  // 优先使用 navigator.clipboard API (需要 HTTPS 或 localhost)
+  if (navigator.clipboard && window.isSecureContext) {
+    navigator.clipboard.writeText(textToCopy)
+      .then(() => {
+        message.success('邀请链接已复制到剪贴板！');
+      })
+      .catch(err => {
+        message.error('自动复制失败，请手动复制。');
+        console.error('Clipboard API failed: ', err);
+      });
+  } else {
+    // 降级方案：使用一个临时的 textarea 元素
+    const textArea = document.createElement('textarea');
+    textArea.value = textToCopy;
+    
+    // 避免在屏幕上闪烁
+    textArea.style.position = 'absolute';
+    textArea.style.left = '-9999px';
+    
+    document.body.appendChild(textArea);
+    textArea.focus();
+    textArea.select();
+    
+    try {
+      document.execCommand('copy');
+      message.success('邀请链接已复制到剪贴板！');
+    } catch (err) {
+      message.error('复制失败，请手动复制。');
+      console.error('Fallback copy failed: ', err);
+    } finally {
+      document.body.removeChild(textArea);
+    }
+  }
+};
+
 // --- 表格列定义 ---
 const createColumns = () => [
   {
@@ -207,10 +243,7 @@ const createColumns = () => [
           trigger: () => h(NButton, {
             size: 'small',
             circle: true,
-            onClick: () => {
-              navigator.clipboard.writeText(fullLink);
-              message.success('已复制到剪贴板');
-            }
+            onClick: () => copyToClipboard(fullLink)
           }, { icon: () => h(NIcon, { component: CopyIcon }) }),
           default: () => '复制链接'
         })
