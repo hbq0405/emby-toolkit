@@ -18,10 +18,10 @@ import constants
 import logging
 import actor_utils
 from cachetools import TTLCache
-from db_handler import ActorDBManager
+from db_handler import ActorDBManager, LogDBManager
 from db_handler import get_db_connection as get_central_db_connection
 from ai_translator import AITranslator
-from utils import LogDBManager, get_override_path_for_item, translate_country_list, get_unified_rating
+from utils import get_override_path_for_item, translate_country_list, get_unified_rating
 from watchlist_processor import WatchlistProcessor
 from douban import DoubanApi
 

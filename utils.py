@@ -133,73 +133,7 @@ def get_override_path_for_item(item_type: str, tmdb_id: str, config: dict) -> st
 
     logger.warning(f"未知的媒体类型 '{item_type}'，无法确定 override 路径。")
     return None
-class LogDBManager:
-    """
-    专门负责与日志相关的数据库表 (processed_log, failed_log) 进行交互的类。
-    """
-    def __init__(self):
-        pass
 
-    def save_to_processed_log(self, cursor: psycopg2.extensions.cursor, item_id: str, item_name: str, score: float = 10.0):
-        try:
-            sql = """
-                INSERT INTO processed_log (item_id, item_name, processed_at, score)
-                VALUES (%s, %s, NOW(), %s)
-                ON CONFLICT (item_id) DO UPDATE SET
-                    item_name = EXCLUDED.item_name,
-                    processed_at = NOW(),
-                    score = EXCLUDED.score;
-            """
-            cursor.execute(sql, (item_id, item_name, score))
-        except Exception as e:
-            logger.error(f"写入已处理 失败 (Item ID: {item_id}): {e}")
-    
-    def remove_from_processed_log(self, cursor: psycopg2.extensions.cursor, item_id: str):
-        try:
-            logger.debug(f"正在从已处理日志中删除 Item ID: {item_id}...")
-            cursor.execute("DELETE FROM processed_log WHERE item_id = %s", (item_id,))
-        except Exception as e:
-            logger.error(f"从已处理日志删除失败 for item {item_id}: {e}", exc_info=True)
-
-    def remove_from_failed_log(self, cursor: psycopg2.extensions.cursor, item_id: str):
-        try:
-            cursor.execute("DELETE FROM failed_log WHERE item_id = %s", (item_id,))
-        except Exception as e:
-            logger.error(f"从 failed_log 删除失败 (Item ID: {item_id}): {e}")
-
-    def save_to_failed_log(self, cursor: psycopg2.extensions.cursor, item_id: str, item_name: str, reason: str, item_type: str, score: Optional[float] = None):
-        try:
-            sql = """
-                INSERT INTO failed_log (item_id, item_name, reason, item_type, score, failed_at)
-                VALUES (%s, %s, %s, %s, %s, NOW())
-                ON CONFLICT (item_id) DO UPDATE SET
-                    item_name = EXCLUDED.item_name,
-                    reason = EXCLUDED.reason,
-                    item_type = EXCLUDED.item_type,
-                    score = EXCLUDED.score,
-                    failed_at = NOW();
-            """
-            cursor.execute(sql, (item_id, item_name, reason, item_type, score))
-        except Exception as e:
-            logger.error(f"写入 failed_log 失败 (Item ID: {item_id}): {e}")
-    
-    def mark_assets_as_synced(self, cursor, item_id: str, sync_timestamp_iso: str):
-        """
-        在 processed_log 中标记一个项目的资源文件已同步，并记录确切的同步时间。
-        如果条目不存在，会创建一个新条目。
-        """
-        logger.debug(f"正在更新 Item ID {item_id} 的备份状态和时间戳...")
-        sql = """
-            INSERT INTO processed_log (item_id, assets_synced_at)
-            VALUES (%s, %s)
-            ON CONFLICT (item_id) DO UPDATE SET
-                assets_synced_at = EXCLUDED.assets_synced_at;
-        """
-        try:
-            # 将 ISO 格式的时间戳字符串直接传递给数据库
-            cursor.execute(sql, (item_id, sync_timestamp_iso))
-        except Exception as e:
-            logger.error(f"更新资源同步时间戳时失败 for item {item_id}: {e}", exc_info=True)
 
 # --- ★★★ 统一分级映射功能 (V2 - 健壮版) ★★★ ---
 # 1. 定义我们自己的、统一的、友好的分级体系

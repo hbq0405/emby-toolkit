@@ -798,6 +798,85 @@ def delete_persons_by_emby_ids(emby_ids: list) -> int:
 # ======================================================================
 # 模块 3: 日志表数据访问 (Log Tables Data Access)
 # ======================================================================
+class LogDBManager:
+    """
+    专门负责与日志相关的数据库表 (processed_log, failed_log) 进行交互的类。
+    """
+    def __init__(self):
+        pass
+
+    def save_to_processed_log(self, cursor: psycopg2.extensions.cursor, item_id: str, item_name: str, score: float = 10.0):
+        try:
+            sql = """
+                INSERT INTO processed_log (item_id, item_name, processed_at, score)
+                VALUES (%s, %s, NOW(), %s)
+                ON CONFLICT (item_id) DO UPDATE SET
+                    item_name = EXCLUDED.item_name,
+                    processed_at = NOW(),
+                    score = EXCLUDED.score;
+            """
+            cursor.execute(sql, (item_id, item_name, score))
+        except Exception as e:
+            logger.error(f"写入已处理 失败 (Item ID: {item_id}): {e}")
+    
+    def remove_from_processed_log(self, cursor: psycopg2.extensions.cursor, item_id: str):
+        try:
+            logger.debug(f"正在从已处理日志中删除 Item ID: {item_id}...")
+            cursor.execute("DELETE FROM processed_log WHERE item_id = %s", (item_id,))
+        except Exception as e:
+            logger.error(f"从已处理日志删除失败 for item {item_id}: {e}", exc_info=True)
+
+    def remove_from_failed_log(self, cursor: psycopg2.extensions.cursor, item_id: str):
+        try:
+            cursor.execute("DELETE FROM failed_log WHERE item_id = %s", (item_id,))
+        except Exception as e:
+            logger.error(f"从 failed_log 删除失败 (Item ID: {item_id}): {e}")
+
+    def save_to_failed_log(self, cursor: psycopg2.extensions.cursor, item_id: str, item_name: str, reason: str, item_type: str, score: Optional[float] = None):
+        try:
+            sql = """
+                INSERT INTO failed_log (item_id, item_name, reason, item_type, score, failed_at)
+                VALUES (%s, %s, %s, %s, %s, NOW())
+                ON CONFLICT (item_id) DO UPDATE SET
+                    item_name = EXCLUDED.item_name,
+                    reason = EXCLUDED.reason,
+                    item_type = EXCLUDED.item_type,
+                    score = EXCLUDED.score,
+                    failed_at = NOW();
+            """
+            cursor.execute(sql, (item_id, item_name, reason, item_type, score))
+        except Exception as e:
+            logger.error(f"写入 failed_log 失败 (Item ID: {item_id}): {e}")
+    
+    def mark_assets_as_synced(self, cursor, item_id: str, sync_timestamp_iso: str):
+        """
+        在 processed_log 中标记一个项目的资源文件已同步，并记录确切的同步时间。
+        如果条目不存在，会创建一个新条目。
+        """
+        logger.debug(f"正在更新 Item ID {item_id} 的备份状态和时间戳...")
+        sql = """
+            INSERT INTO processed_log (item_id, assets_synced_at)
+            VALUES (%s, %s)
+            ON CONFLICT (item_id) DO UPDATE SET
+                assets_synced_at = EXCLUDED.assets_synced_at;
+        """
+        try:
+            # 将 ISO 格式的时间戳字符串直接传递给数据库
+            cursor.execute(sql, (item_id, sync_timestamp_iso))
+        except Exception as e:
+            logger.error(f"更新资源同步时间戳时失败 for item {item_id}: {e}", exc_info=True)
+
+def get_item_name_from_failed_log(item_id: str) -> Optional[str]:
+    """根据 item_id 从 failed_log 表中获取 item_name。"""
+    try:
+        with get_db_connection() as conn:
+            cursor = conn.cursor()
+            cursor.execute("SELECT item_name FROM failed_log WHERE item_id = %s", (item_id,))
+            result = cursor.fetchone()
+            return result['item_name'] if result else None
+    except Exception as e:
+        logger.error(f"从 failed_log 获取 item_name 时出错: {e}")
+        return None
 
 def get_review_items_paginated(page: int, per_page: int, query_filter: str) -> Tuple[List, int]:
     offset = (page - 1) * per_page
@@ -858,30 +937,40 @@ def mark_review_item_as_processed(item_id: str) -> bool:
         logger.error(f"DB: 标记项目 {item_id} 为已处理时失败: {e}", exc_info=True)
         raise
 
-def clear_all_review_items() -> int:
+def clear_all_review_items() -> List[Dict[str, str]]:
+    """将所有待复核项移至已处理，并返回被移动的项的列表。"""
+    moved_items = []
     try:
         with get_db_connection() as conn:
             with conn.cursor() as cursor:
-                # PostgreSQL可以用一条SQL完成这个操作，更安全
-                sql = """
-                    WITH moved_rows AS (
-                        DELETE FROM failed_log RETURNING item_id, item_name, score
+                # 1. 选出所有待复核的项
+                cursor.execute("SELECT item_id, item_name, score FROM failed_log")
+                items_to_move = cursor.fetchall()
+                
+                if not items_to_move:
+                    return []
+
+                # 2. 插入或更新到 processed_log
+                for item in items_to_move:
+                    score_to_save = item["score"] if item["score"] is not None else 10.0
+                    cursor.execute(
+                        "INSERT INTO processed_log (item_id, item_name, processed_at, score) VALUES (%s, %s, NOW(), %s) "
+                        "ON CONFLICT (item_id) DO UPDATE SET item_name = EXCLUDED.item_name, processed_at = NOW(), score = EXCLUDED.score",
+                        (item['item_id'], item['item_name'], score_to_save)
                     )
-                    INSERT INTO processed_log (item_id, item_name, score, processed_at)
-                    SELECT item_id, item_name, COALESCE(score, 10.0), NOW() FROM moved_rows
-                    ON CONFLICT (item_id) DO UPDATE SET
-                        item_name = EXCLUDED.item_name,
-                        score = EXCLUDED.score,
-                        processed_at = NOW();
-                """
-                cursor.execute(sql)
-                moved_count = cursor.rowcount
-            conn.commit()
-            logger.info(f"成功移动 {moved_count} 条记录从待复核到已处理。")
-            return moved_count
+                    # 将字典格式的 item 添加到返回列表
+                    moved_items.append(dict(item))
+
+                # 3. 清空 failed_log
+                cursor.execute("DELETE FROM failed_log")
+                conn.commit()
+                
+            logger.info(f"成功移动 {len(moved_items)} 条记录从待复核到已处理。")
+            return moved_items
     except Exception as e:
         logger.error(f"清空并标记待复核列表时发生异常：{e}", exc_info=True)
-        raise
+        # 发生错误时回滚事务（with conn 会自动处理）并返回空列表
+        return []
 # ======================================================================
 # 模块 4: 智能追剧列表数据访问 (Watchlist Data Access)
 # ======================================================================

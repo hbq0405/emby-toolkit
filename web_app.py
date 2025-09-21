@@ -8,7 +8,6 @@ import threading
 from datetime import datetime, timezone # Added timezone for image.update
 from jinja2 import Environment, FileSystemLoader
 from actor_sync_handler import UnifiedSyncHandler
-from db_handler import ActorDBManager
 import emby_handler
 import moviepilot_handler
 import utils
@@ -19,10 +18,10 @@ from extensions import (
     task_lock_required, 
     processor_ready_required
 )
-from utils import LogDBManager
+from db_handler import ActorDBManager, LogDBManager
 from flask import Flask, render_template, request, redirect, url_for, jsonify, flash, stream_with_context, send_from_directory,Response, abort, session
 from werkzeug.utils import safe_join, secure_filename
-from utils import get_override_path_for_item
+from utils import get_override_path_for_item, translate_country_list, get_unified_rating
 from watchlist_processor import WatchlistProcessor
 from datetime import datetime
 import requests
