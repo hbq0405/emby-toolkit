@@ -69,6 +69,8 @@ def create_template():
     except Exception as e:
         return jsonify({"status": "error", "message": str(e)}), 500
 
+# (未来可以添加更新和删除模板的 API)
+
 # --- 模块 2: 邀请链接管理 (Invitations) ---
 
 @user_management_bp.route('/api/admin/invitations', methods=['POST'])
@@ -186,27 +188,20 @@ def register_with_invite():
                 conn.rollback()
                 return jsonify({"status": "error", "message": "该用户名已被占用"}), 409
 
-            # 步骤 1: 创建一个“裸”用户，只设置用户名和密码。
-            # 我们调用那个不处理 Policy 的 `create_user_with_policy` 函数。
+            # ★★★ 核心修改点 ★★★
+
+            # 1. 调用【纯净版】的创建函数，它不再需要 policy 参数
             new_user_id = emby_handler.create_user_with_policy(
                 username, password,
                 config.get("emby_server_url"), config.get("emby_api_key")
             )
             if not new_user_id:
                 conn.rollback()
-                return jsonify({"status": "error", "message": "在 Emby 中创建基础用户失败，请联系管理员"}), 500
+                return jsonify({"status": "error", "message": "在 Emby 中创建用户失败，请联系管理员"}), 500
 
-            # 步骤 2: 用户创建成功后，立刻调用 `force_set_user_policy`，
-            # 用模板中的权限【完整覆盖】掉 Emby 的默认权限。
-            
-            # 2.1 从数据库获取 Policy 字典 (psycopg2 会自动解析)
+            # 2. 用户创建成功后，立刻调用强制设置函数，应用模板中的完整 Policy
+            # 这一步和之前一样，现在是它唯一负责设置权限的地方
             template_policy = template['emby_policy_json']
-            if not isinstance(template_policy, dict):
-                conn.rollback()
-                logger.error(f"模板 {template['id']} 中的权限策略格式不正确。")
-                return jsonify({"status": "error", "message": "内部错误：模板权限数据损坏"}), 500
-
-            # 2.2 执行覆盖操作
             policy_applied = emby_handler.force_set_user_policy(
                 new_user_id, template_policy,
                 config.get("emby_server_url"), config.get("emby_api_key")
@@ -214,8 +209,6 @@ def register_with_invite():
             if not policy_applied:
                 conn.rollback()
                 logger.error(f"用户 {username} (ID: {new_user_id}) 创建成功，但应用模板权限失败！已回滚。")
-                # 考虑在这里增加一步，自动删除刚刚创建失败的用户，避免产生垃圾数据
-                # emby_handler.delete_emby_user(new_user_id, ...)
                 return jsonify({"status": "error", "message": "应用模板权限失败，请联系管理员"}), 500
 
             # 3. 后续的数据库操作保持不变

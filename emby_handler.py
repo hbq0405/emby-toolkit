@@ -1605,23 +1605,27 @@ def get_all_user_view_data(user_id: str, base_url: str, api_key: str) -> Optiona
 def create_user_with_policy(
     username: str, 
     password: str, 
+    # policy: Dict[str, Any],  <-- ★★★ 1. 删除 policy 参数 ★★★
     base_url: str, 
     api_key: str
 ) -> Optional[str]:
     """
-    【V3 - 终极纯净版 - 密码修复】
-    在 Emby 中创建一个“裸”用户，然后立即为其强制设置密码。
+    【V2 - 纯净创建版】
+    在 Emby 中创建一个新用户，只负责创建和设置密码，不处理权限策略。
+    权限策略由调用方在之后通过 force_set_user_policy 单独设置。
     """
-    logger.info(f"准备在 Emby 中创建新用户 '{username}' (纯净模式)...")
+    logger.info(f"准备在 Emby 中创建新用户 '{username}'...")
     
     create_url = f"{base_url}/Users/New"
     headers = {"X-Emby-Token": api_key, "Content-Type": "application/json"}
     
+    # ★★★ 2. 创建用户的请求体中，只包含 Name ★★★
     create_payload = {
         "Name": username
     }
     
     try:
+        # ★★★ 3. 请求体不再包含 Policy ★★★
         response = requests.post(create_url, headers=headers, json=create_payload, timeout=15)
         
         if response.status_code == 200:
@@ -1631,17 +1635,13 @@ def create_user_with_policy(
                 logger.error("Emby 用户创建成功，但响应中未返回用户 ID。")
                 return None
             
-            logger.info(f"  -> “裸”用户 '{username}' 创建成功，新用户 ID: {new_user_id}。正在设置密码...")
+            logger.info(f"  -> 用户 '{username}' 创建成功，新用户 ID: {new_user_id}。正在设置密码...")
 
             password_url = f"{base_url}/Users/{new_user_id}/Password"
-            
-            # ★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★
-            # ★★★ 核心修复：增加 "ResetPassword": True 标志位 ★★★
-            # ★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★
             password_payload = {
                 "Id": new_user_id,
-                "NewPw": password,
-                "ResetPassword": True 
+                "CurrentPw": "",  
+                "NewPw": password
             }
             
             pw_response = requests.post(password_url, headers=headers, json=password_payload, timeout=15)
@@ -1653,11 +1653,11 @@ def create_user_with_policy(
                 logger.error(f"为用户 '{username}' 设置密码失败。状态码: {pw_response.status_code}, 响应: {pw_response.text}")
                 return None
         else:
-            logger.error(f"创建 Emby “裸”用户 '{username}' 失败。状态码: {response.status_code}, 响应: {response.text}")
+            logger.error(f"创建 Emby 用户 '{username}' 失败。状态码: {response.status_code}, 响应: {response.text}")
             return None
 
     except Exception as e:
-        logger.error(f"创建 Emby “裸”用户 '{username}' 时发生网络或未知错误: {e}", exc_info=True)
+        logger.error(f"创建 Emby 用户 '{username}' 时发生网络或未知错误: {e}", exc_info=True)
         return None
 def set_user_disabled_status(
     user_id: str, 
