@@ -53,6 +53,7 @@ def _process_batch_webhook_events():
 
     logger.info(f"  -> 防抖计时器到期，开始批量处理 {len(items_in_batch)} 个 Emby Webhook 新增/入库事件。")
 
+    # ★★★ 核心修复：恢复 V5 版本的、能够记录具体分集ID的数据结构 ★★★
     parent_items = collections.defaultdict(lambda: {
         "name": "", "type": "", "episode_ids": set()
     })
@@ -74,14 +75,18 @@ def _process_batch_webhook_events():
             parent_id = series_id
             parent_type = "Series"
             
+            # 将具体的分集ID添加到记录中
             parent_items[parent_id]["episode_ids"].add(item_id)
             
+            # 更新父项的名字（只需一次）
             if not parent_items[parent_id]["name"]:
                 series_details = emby_handler.get_emby_item_details(parent_id, extensions.media_processor_instance.emby_url, extensions.media_processor_instance.emby_api_key, extensions.media_processor_instance.emby_user_id, fields="Name")
                 parent_items[parent_id]["name"] = series_details.get("Name", item_name) if series_details else item_name
         else:
+            # 如果事件是电影或剧集容器本身，也记录下来
             parent_items[parent_id]["name"] = parent_name
         
+        # 更新父项的类型
         parent_items[parent_id]["type"] = parent_type
 
     logger.info(f"  -> 批量事件去重后，将为 {len(parent_items)} 个独立媒体项分派任务。")
@@ -102,9 +107,11 @@ def _process_batch_webhook_events():
                 force_reprocess=True
             )
         else:
+            # ★★★ 核心修复：恢复正确的追更处理逻辑 ★★★
             if parent_type == 'Series':
                 episode_ids_to_update = list(item_info["episode_ids"])
                 
+                # 只有在确实有新分集入库时才执行任务
                 if not episode_ids_to_update:
                     logger.info(f"  -> 剧集 '{parent_name}' 有更新事件，但未发现具体的新增分集，将触发一次轻量元数据缓存更新。")
                     task_manager.submit_task(
@@ -122,9 +129,9 @@ def _process_batch_webhook_events():
                     task_name=f"轻量化同步演员表: {parent_name}",
                     processor_type='media',
                     series_id=parent_id,
-                    episode_ids=episode_ids_to_update
+                    episode_ids=episode_ids_to_update # <-- 现在传递的是具体的分集ID列表
                 )
-            else:
+            else: # 电影等其他类型
                 logger.info(f"  -> 媒体项 '{parent_name}' 已处理过，将触发一次轻量元数据缓存更新。")
                 task_manager.submit_task(
                     task_sync_metadata_cache,
