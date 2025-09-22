@@ -3913,7 +3913,7 @@ def task_auto_sync_template_on_policy_change(processor: MediaProcessor, updated_
                     updated_user_id, config.get("emby_server_url"), config.get("emby_api_key")
                 )
                 if not user_details or 'Policy' not in user_details:
-                    logger.error(f"    -> 无法获取源用户的最新权限策略，跳过模板 '{template_name}'。")
+                    logger.error(f"  -> 无法获取源用户的最新权限策略，跳过模板 '{template_name}'。")
                     continue
                 
                 new_policy_json = json.dumps(user_details['Policy'], ensure_ascii=False)
@@ -3931,14 +3931,14 @@ def task_auto_sync_template_on_policy_change(processor: MediaProcessor, updated_
                 users_to_update = cursor.fetchall()
                 
                 if users_to_update:
-                    logger.info(f"    -> 正在将新权限推送到 {len(users_to_update)} 个关联用户...")
+                    logger.info(f"  -> 正在将新权限推送到 {len(users_to_update)} 个关联用户...")
                     for user in users_to_update:
                         user_id_to_push = user['id']
                         user_name_to_push = user['name']
 
                         # ★★★ 核心修复：在这里加入熔断判断 ★★★
                         if user_id_to_push == updated_user_id:
-                            logger.warning(f"    -> 跳过用户 '{user_name_to_push}'，因为他就是本次同步的触发源，以避免无限循环。")
+                            logger.warning(f"  -> 跳过用户 '{user_name_to_push}'，因为他就是本次同步的触发源，以避免无限循环。")
                             continue
 
                         emby_handler.force_set_user_policy(
