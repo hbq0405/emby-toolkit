@@ -932,7 +932,7 @@ const sortFieldOptions = computed(() => {
 
   const itemTypes = currentCollection.value.definition?.item_type || [];
   if (Array.isArray(itemTypes) && itemTypes.includes('Series')) {
-    options.splice(4, 0, { label: '最后一集更新时间', value: 'DateLastContentAdded' });
+    options.splice(4, 0, { label: '最后一集更新时间', value: 'last_synced_at' });
   }
 
   if (currentCollection.value.type === 'list') {
