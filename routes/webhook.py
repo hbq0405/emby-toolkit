@@ -137,7 +137,7 @@ def _process_batch_webhook_events():
     logger.info("  -> 所有 Webhook 批量任务已成功分派。")
 
 def _trigger_update_tasks(item_id, item_name, update_description, sync_timestamp_iso):
-    logger.info(f"防抖计时器到期，为 '{item_name}' (ID: {item_id}) 创建最终的同步任务。")
+    logger.info(f"  -> 防抖计时器到期，为 '{item_name}' (ID: {item_id}) 创建最终的同步任务。")
     
     task_manager.submit_task(
         task_sync_metadata_cache,
@@ -162,7 +162,7 @@ def _trigger_update_tasks(item_id, item_name, update_description, sync_timestamp
 def emby_webhook():
     data = request.json
     event_type = data.get("Event") if data else "未知事件"
-    logger.info(f"收到Emby Webhook: {event_type}")
+    logger.info(f"  -> 收到Emby Webhook: {event_type}")
 
     USER_DATA_EVENTS = [
         "item.markfavorite", "item.unmarkfavorite",
@@ -176,7 +176,7 @@ def emby_webhook():
         updated_user_id = updated_user.get("Id")
         
         if updated_user_id:
-            logger.info(f"检测到用户 '{updated_user.get('Name')}' 的权限策略已更新，将分派后台任务以检查是否需要同步模板。")
+            logger.info(f"  -> 检测到用户 '{updated_user.get('Name')}' 的权限策略已更新，将分派后台任务以检查是否需要同步模板。")
             task_manager.submit_task(
                 task_auto_sync_template_on_policy_change,
                 task_name=f"自动同步权限 (源: {updated_user.get('Name')})",
@@ -246,15 +246,15 @@ def emby_webhook():
                 logger.info(f"  -> Webhook: 已更新用户 '{user_id}' 对项目 '{id_to_update_in_db}' 的状态 ({event_type})。")
                 return jsonify({"status": "user_data_updated"}), 200
             else:
-                logger.debug(f"Webhook '{event_type}' 未包含可更新的用户数据，已忽略。")
+                logger.debug(f"  -> Webhook '{event_type}' 未包含可更新的用户数据，已忽略。")
                 return jsonify({"status": "event_ignored_no_updatable_data"}), 200
         except Exception as e:
-            logger.error(f"通过 Webhook 更新用户媒体数据时失败: {e}", exc_info=True)
+            logger.error(f"  -> 通过 Webhook 更新用户媒体数据时失败: {e}", exc_info=True)
             return jsonify({"status": "error_updating_user_data"}), 500
 
     trigger_events = ["item.add", "library.new", "library.deleted", "metadata.update", "image.update"]
     if event_type not in trigger_events:
-        logger.info(f"Webhook事件 '{event_type}' 不在触发列表 {trigger_events} 中，将被忽略。")
+        logger.info(f"  -> Webhook事件 '{event_type}' 不在触发列表 {trigger_events} 中，将被忽略。")
         return jsonify({"status": "event_ignored_not_in_trigger_list"}), 200
 
     item_from_webhook = data.get("Item", {}) if data else {}
@@ -264,7 +264,7 @@ def emby_webhook():
     
     trigger_types = ["Movie", "Series", "Episode"]
     if not (original_item_id and original_item_type in trigger_types):
-        logger.debug(f"Webhook事件 '{event_type}' (项目: {original_item_name}, 类型: {original_item_type}) 被忽略。")
+        logger.debug(f"  -> Webhook事件 '{event_type}' (项目: {original_item_name}, 类型: {original_item_type}) 被忽略。")
         return jsonify({"status": "event_ignored_no_id_or_wrong_type"}), 200
 
     if event_type == "library.deleted":
@@ -273,39 +273,39 @@ def emby_webhook():
                 with conn.cursor() as cursor:
                     log_manager = LogDBManager()
                     log_manager.remove_from_processed_log(cursor, original_item_id)
-                    logger.info(f"Webhook: 已从 processed_log 中移除项目 {original_item_id}。")
+                    logger.info(f"  -> Webhook: 已从 processed_log 中移除项目 {original_item_id}。")
 
                     cursor.execute("DELETE FROM media_metadata WHERE emby_item_id = %s", (original_item_id,))
                     
                     if cursor.rowcount > 0:
-                        logger.info(f"Webhook: 已从 media_metadata 缓存中移除 Emby ID 为 {original_item_id} 的媒体项。")
+                        logger.info(f"  -> Webhook: 已从 media_metadata 缓存中移除 Emby ID 为 {original_item_id} 的媒体项。")
                     else:
-                        logger.debug(f"Webhook: 在 media_metadata 中未找到 Emby ID {original_item_id}，无需删除。")
+                        logger.debug(f"  -> Webhook: 在 media_metadata 中未找到 Emby ID {original_item_id}，无需删除。")
                 
                 conn.commit()
                 
             return jsonify({"status": "processed_log_and_metadata_entry_removed", "item_id": original_item_id}), 200
         except Exception as e:
-            logger.error(f"处理删除事件 for item {original_item_id} 时发生错误: {e}", exc_info=True)
+            logger.error(f"  -> 处理删除事件 for item {original_item_id} 时发生错误: {e}", exc_info=True)
             return jsonify({"status": "error_processing_remove_event", "error": str(e)}), 500
     
     if event_type in ["item.add", "library.new"]:
         global WEBHOOK_BATCH_DEBOUNCER
         with WEBHOOK_BATCH_LOCK:
             WEBHOOK_BATCH_QUEUE.append((original_item_id, original_item_name, original_item_type))
-            logger.debug(f"Webhook事件 '{event_type}' (项目: {original_item_name}) 已添加到批量队列。当前队列大小: {len(WEBHOOK_BATCH_QUEUE)}")
+            logger.debug(f"  -> Webhook事件 '{event_type}' (项目: {original_item_name}) 已添加到批量队列。当前队列大小: {len(WEBHOOK_BATCH_QUEUE)}")
             
             if WEBHOOK_BATCH_DEBOUNCER is None or WEBHOOK_BATCH_DEBOUNCER.ready():
-                logger.info(f"启动 Webhook 批量处理 debouncer，将在 {WEBHOOK_BATCH_DEBOUNCE_TIME} 秒后执行。")
+                logger.info(f"  -> 启动 Webhook 批量处理 debouncer，将在 {WEBHOOK_BATCH_DEBOUNCE_TIME} 秒后执行。")
                 WEBHOOK_BATCH_DEBOUNCER = spawn_later(WEBHOOK_BATCH_DEBOUNCE_TIME, _process_batch_webhook_events)
             else:
-                logger.debug("Webhook 批量处理 debouncer 正在运行中，事件已加入队列。")
+                logger.debug("  -> Webhook 批量处理 debouncer 正在运行中，事件已加入队列。")
         
         return jsonify({"status": "added_to_batch_queue", "item_id": original_item_id}), 202
 
     if event_type in ["metadata.update", "image.update"]:
         if not config_manager.APP_CONFIG.get(constants.CONFIG_OPTION_LOCAL_DATA_PATH):
-            logger.debug(f"Webhook '{event_type}' 收到，但未配置本地数据源，将忽略。")
+            logger.debug(f"  -> Webhook '{event_type}' 收到，但未配置本地数据源，将忽略。")
             return jsonify({"status": "event_ignored_no_local_data_path"}), 200
 
         update_description = data.get("UpdateInfo", {}).get("Description", "Webhook Update")
@@ -320,7 +320,7 @@ def emby_webhook():
                 extensions.media_processor_instance.emby_api_key, extensions.media_processor_instance.emby_user_id, item_name=original_item_name
             )
             if not series_id:
-                logger.warning(f"Webhook '{event_type}': 剧集 '{original_item_name}' 未找到所属剧集，跳过。")
+                logger.warning(f"  -> Webhook '{event_type}': 剧集 '{original_item_name}' 未找到所属剧集，跳过。")
                 return jsonify({"status": "event_ignored_episode_no_series_id"}), 200
             id_to_process = series_id
             

@@ -3894,11 +3894,11 @@ def task_auto_sync_template_on_policy_change(processor: MediaProcessor, updated_
             templates_to_sync = cursor.fetchall()
             
             if not templates_to_sync:
-                logger.info(f"用户 {updated_user_id} 的权限已更新，但他不是任何模板的源用户，无需同步。")
+                logger.trace(f"  -> 用户 {updated_user_id} 的权限已更新，但他不是任何模板的源用户，无需同步。")
                 return
 
             total_templates = len(templates_to_sync)
-            logger.warning(f"检测到 {total_templates} 个模板使用该用户作为源，将开始自动同步...")
+            logger.warning(f"  -> 检测到 {total_templates} 个模板使用该用户作为源，将开始自动同步...")
 
             config = processor.config
             
@@ -3938,7 +3938,7 @@ def task_auto_sync_template_on_policy_change(processor: MediaProcessor, updated_
 
                         # ★★★ 核心修复：在这里加入熔断判断 ★★★
                         if user_id_to_push == updated_user_id:
-                            logger.warning(f"  -> 跳过用户 '{user_name_to_push}'，因为他就是本次同步的触发源，以避免无限循环。")
+                            logger.trace(f"  -> 跳过用户 '{user_name_to_push}'，因为他就是本次同步的触发源，以避免无限循环。")
                             continue
 
                         emby_handler.force_set_user_policy(
