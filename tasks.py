@@ -3620,21 +3620,49 @@ def task_execute_cleanup(processor: MediaProcessor, task_ids: List[int], **kwarg
 # ★★★ 用户数据全量同步任务 ★★★
 def task_sync_all_user_data(processor: MediaProcessor):
     """
-    用户数据全量同步任务
+    【V2 - 双向同步版】用户数据全量同步任务
+    - 新增逻辑：在同步开始时，清理掉本地数据库中存在、但 Emby 服务器上已不存在的用户。
     """
     task_name = "同步用户数据"
     logger.info(f"--- 开始执行 '{task_name}' 任务 ---")
     
     try:
-        # ... (获取 all_users 的逻辑不变) ...
         task_manager.update_status_from_thread(0, "正在获取所有Emby用户...")
         emby_url = processor.emby_url
         emby_key = processor.emby_api_key
+        
+        # 步骤 1: 从 Emby 获取当前所有用户的权威列表
         all_users = emby_handler.get_all_emby_users_from_server(emby_url, emby_key)
+        if all_users is None: # API 调用失败
+            task_manager.update_status_from_thread(-1, "任务失败：无法从Emby获取用户列表。")
+            return
+        
+        # 步骤 2: ★★★ 新增：执行清理逻辑 ★★★
+        task_manager.update_status_from_thread(5, "正在比对本地与Emby用户差异...")
+        
+        # a. 获取 Emby 上所有用户的 ID 集合
+        emby_user_ids = {user['Id'] for user in all_users}
+        
+        # b. 获取本地数据库中所有用户的 ID 集合
+        local_user_ids = db_handler.get_all_local_emby_user_ids()
+        
+        # c. 计算出需要删除的 ID (存在于本地，但不存在于 Emby)
+        ids_to_delete = list(local_user_ids - emby_user_ids)
+        
+        if ids_to_delete:
+            logger.warning(f"发现 {len(ids_to_delete)} 个用户已在Emby中被删除，将从本地数据库清理...")
+            task_manager.update_status_from_thread(8, f"正在清理 {len(ids_to_delete)} 个陈旧用户...")
+            db_handler.delete_emby_users_by_ids(ids_to_delete)
+        else:
+            logger.info("本地用户与Emby用户一致，无需清理。")
+
+        # 步骤 3: 更新或插入最新的用户信息到本地缓存 (此逻辑保持不变)
         if not all_users:
-            task_manager.update_status_from_thread(100, "任务完成：未能从Emby获取到任何用户。")
+            task_manager.update_status_from_thread(100, "任务完成：Emby中没有任何用户。")
             return
         db_handler.upsert_emby_users_batch(all_users)
+        
+        # 步骤 4: 循环同步每个用户的媒体播放状态 (此逻辑保持不变)
         total_users = len(all_users)
         logger.info(f"  -> 共找到 {total_users} 个Emby用户，将逐一同步其数据...")
 
@@ -3644,7 +3672,7 @@ def task_sync_all_user_data(processor: MediaProcessor):
             if not user_id: continue
             if processor.is_stop_requested(): break
 
-            progress = int((i / total_users) * 100)
+            progress = 10 + int((i / total_users) * 90) # 进度从10%开始
             task_manager.update_status_from_thread(progress, f"({i+1}/{total_users}) 正在同步用户: {user_name}")
 
             user_items_with_data = emby_handler.get_all_user_view_data(user_id, emby_url, emby_key)
@@ -3652,8 +3680,6 @@ def task_sync_all_user_data(processor: MediaProcessor):
                 continue
             
             final_data_map = {}
-
-            # 聚合与去重逻辑保持不变
             for item in user_items_with_data:
                 item_type = item.get('Type')
                 item_id = item.get('Id')
@@ -3674,7 +3700,6 @@ def task_sync_all_user_data(processor: MediaProcessor):
             
             final_data_to_upsert = list(final_data_map.values())
             
-            # ★★★ 核心改造：调用一个新的、不包含 last_played_date 的数据库函数 ★★★
             db_handler.upsert_user_media_data_batch_no_date(user_id, final_data_to_upsert)
             
             logger.info(f"  -> 成功为用户 '{user_name}' 同步了 {len(final_data_to_upsert)} 条媒体状态。")

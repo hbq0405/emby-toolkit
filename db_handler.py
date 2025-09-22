@@ -3145,6 +3145,38 @@ def get_item_ids_by_dynamic_rules(user_id: str, rules: List[Dict[str, Any]]) -> 
     except Exception as e:
         logger.error(f"DB: 根据动态规则获取媒体ID时失败 for user {user_id}: {e}", exc_info=True)
         return None
+    
+def get_all_local_emby_user_ids() -> set:
+    """获取本地数据库中所有 emby_users 的 ID 集合。"""
+    try:
+        with get_db_connection() as conn:
+            cursor = conn.cursor()
+            cursor.execute("SELECT id FROM emby_users")
+            # 使用集合推导式以获得最佳性能
+            return {row['id'] for row in cursor.fetchall()}
+    except Exception as e:
+        logger.error(f"DB: 获取所有本地用户ID时失败: {e}", exc_info=True)
+        # 在出错时返回空集合，以防止上游逻辑意外地删除所有用户
+        return set()
+
+def delete_emby_users_by_ids(user_ids: List[str]) -> int:
+    """根据用户ID列表，从 emby_users 表中批量删除用户。"""
+    if not user_ids:
+        return 0
+    try:
+        with get_db_connection() as conn:
+            cursor = conn.cursor()
+            # 使用 ANY(%s) 语法可以高效地处理列表删除
+            sql = "DELETE FROM emby_users WHERE id = ANY(%s)"
+            cursor.execute(sql, (user_ids,))
+            deleted_count = cursor.rowcount
+            conn.commit()
+            logger.info(f"  -> 从本地数据库中同步删除了 {deleted_count} 个陈旧的用户记录。")
+            return deleted_count
+    except Exception as e:
+        logger.error(f"DB: 批量删除陈旧用户时失败: {e}", exc_info=True)
+        raise
+
 def upsert_user_media_data_batch_no_date(user_id: str, items_data: List[Dict[str, Any]]):
     """
     【V1 - 精准夺权版】

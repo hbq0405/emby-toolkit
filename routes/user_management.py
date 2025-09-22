@@ -447,17 +447,38 @@ def delete_user(user_id):
     """从 Emby 和本地数据库中彻底删除一个用户"""
     config = config_manager.APP_CONFIG
     
-    # ★★★ 核心修改：调用我们刚刚创建的、正确的删除函数 ★★★
-    success = emby_handler.delete_emby_user(
+    # 步骤 1: 尝试从 Emby 服务器删除用户
+    emby_delete_success = emby_handler.delete_emby_user(
         user_id, 
         config.get("emby_server_url"), 
-        config.get("emby_api_key") # api_key 仍然需要，用于登录获取令牌
+        config.get("emby_api_key")
     )
     
-    if success:
-        # Emby 删除成功后，数据库记录会因为外键的 ON DELETE CASCADE 自动被清理
-        return jsonify({"status": "ok", "message": "用户已彻底删除"}), 200
+    if emby_delete_success:
+        # 步骤 2: 如果 Emby 删除成功，则从本地数据库删除
+        try:
+            with db_handler.get_db_connection() as conn:
+                cursor = conn.cursor()
+                # ★★★ 核心修复：在这里显式删除主表记录 ★★★
+                # 这将触发 ON DELETE CASCADE，自动清理 emby_users_extended 表中的关联数据
+                cursor.execute("DELETE FROM emby_users WHERE id = %s", (user_id,))
+                conn.commit()
+                
+                if cursor.rowcount > 0:
+                    logger.info(f"成功从本地数据库中删除了用户 {user_id} 的记录。")
+                else:
+                    # 这种情况很少见，可能意味着Emby上有这个用户，但我们的数据库里没有
+                    logger.warning(f"用户 {user_id} 已从 Emby 删除，但在本地数据库中未找到其主记录。")
+
+            # 无论本地是否找到记录，只要Emby删除成功，就应视为操作成功
+            return jsonify({"status": "ok", "message": "用户已彻底删除"}), 200
+            
+        except Exception as e:
+            logger.error(f"用户 {user_id} 已从 Emby 删除，但在清理本地数据库时出错: {e}", exc_info=True)
+            # 即使本地删除失败，也应告知前端Emby用户已删除，但后台可能存在数据不一致
+            return jsonify({"status": "error", "message": "用户已从 Emby 删除，但清理本地数据时发生错误，请联系管理员。"}), 500
     else:
+        # 如果第一步（从Emby删除）就失败了，直接返回错误
         return jsonify({"status": "error", "message": "在 Emby 中删除用户失败"}), 500
 @user_management_bp.route('/api/admin/user_templates/<int:template_id>', methods=['DELETE'])
 @login_required
