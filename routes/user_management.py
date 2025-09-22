@@ -353,7 +353,10 @@ def get_all_managed_users():
 @user_management_bp.route('/api/admin/users/<string:user_id>/template', methods=['POST'])
 @login_required
 def change_user_template(user_id):
-    """为一个现有用户切换模板并应用新权限"""
+    """
+    【V2 - 智能版】为一个现有用户切换模板并应用新权限。
+    - 能够自动“收编”原生用户，为他们创建扩展记录。
+    """
     data = request.json
     new_template_id = data.get('template_id')
 
@@ -364,15 +367,15 @@ def change_user_template(user_id):
         with db_handler.get_db_connection() as conn:
             cursor = conn.cursor()
             
-            # 1. 从新模板中获取权限策略
-            cursor.execute("SELECT emby_policy_json FROM user_templates WHERE id = %s", (new_template_id,))
+            # 1. 从新模板中获取权限策略 (逻辑不变)
+            cursor.execute("SELECT emby_policy_json, default_expiration_days FROM user_templates WHERE id = %s", (new_template_id,))
             template = cursor.fetchone()
             if not template:
                 return jsonify({"status": "error", "message": "模板不存在"}), 404
             
             template_policy = template['emby_policy_json']
             
-            # 2. 调用 Emby Handler 将新策略应用到用户
+            # 2. 调用 Emby Handler 将新策略应用到用户 (逻辑不变)
             config = config_manager.APP_CONFIG
             policy_applied = emby_handler.force_set_user_policy(
                 user_id, template_policy,
@@ -382,11 +385,31 @@ def change_user_template(user_id):
             if not policy_applied:
                 return jsonify({"status": "error", "message": "在 Emby 中应用新模板权限失败"}), 500
             
-            # 3. 更新我们自己数据库中的记录
-            cursor.execute(
-                "UPDATE emby_users_extended SET template_id = %s WHERE emby_user_id = %s",
-                (new_template_id, user_id)
-            )
+            # 3. ★★★ 核心修复：执行智能的 UPSERT 操作 ★★★
+            # 使用 PostgreSQL 的 ON CONFLICT 语法，一条 SQL 语句解决问题
+            upsert_sql = """
+                INSERT INTO emby_users_extended (emby_user_id, template_id, status, created_by)
+                VALUES (%s, %s, 'active', 'admin-assigned')
+                ON CONFLICT (emby_user_id) DO UPDATE SET
+                    template_id = EXCLUDED.template_id;
+            """
+            cursor.execute(upsert_sql, (user_id, new_template_id))
+            
+            # ★★★ 新增逻辑：如果是首次收编，根据模板设置默认有效期 ★★★
+            # cursor.rowcount 在 ON CONFLICT DO UPDATE 后的行为可能不一致，
+            # 所以我们直接检查用户之前是否有有效期来判断是否是首次收编。
+            cursor.execute("SELECT expiration_date FROM emby_users_extended WHERE emby_user_id = %s", (user_id,))
+            user_ext = cursor.fetchone()
+            if user_ext and user_ext['expiration_date'] is None:
+                default_days = template.get('default_expiration_days', 0)
+                if default_days > 0:
+                    expiration_date = datetime.now(timezone.utc) + timedelta(days=default_days)
+                    cursor.execute(
+                        "UPDATE emby_users_extended SET expiration_date = %s WHERE emby_user_id = %s",
+                        (expiration_date, user_id)
+                    )
+                    logger.info(f"已为首次收编的用户 {user_id} 设置了 {default_days} 天的默认有效期。")
+
             conn.commit()
 
         return jsonify({"status": "ok", "message": "用户模板已成功切换并应用新权限"}), 200
