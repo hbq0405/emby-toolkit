@@ -1,5 +1,6 @@
 import uuid
 import json
+import time
 import logging
 import psycopg2
 from datetime import datetime, timedelta, timezone
@@ -75,12 +76,12 @@ def create_template():
 @user_management_bp.route('/api/admin/user_templates/<int:template_id>/sync', methods=['POST'])
 @login_required
 def sync_template(template_id):
-    """【新增】从源用户同步并更新一个模板的权限策略"""
+    """【V2 - 增加权限推送】从源用户同步并更新一个模板的权限策略，并将其应用到所有关联用户。"""
     try:
         with db_handler.get_db_connection() as conn:
             cursor = conn.cursor()
             
-            # 1. 查找模板并获取其源用户ID
+            # 1. 查找模板并获取其源用户ID (逻辑不变)
             cursor.execute("SELECT source_emby_user_id, name FROM user_templates WHERE id = %s", (template_id,))
             template = cursor.fetchone()
             if not template:
@@ -89,32 +90,69 @@ def sync_template(template_id):
             source_user_id = template.get('source_emby_user_id')
             template_name = template.get('name')
             if not source_user_id:
-                return jsonify({"status": "error", "message": f"无法同步：模板 '{template_name}' 是一个旧版模板，没有记录源用户信息。"}), 400
+                return jsonify({"status": "error", "message": f"无法同步：模板 '{template_name}' 没有记录源用户信息。"}), 400
 
             logger.info(f"正在为模板 '{template_name}' 从源用户 {source_user_id} 同步最新权限...")
 
-            # 2. 从源用户获取最新的权限策略
+            # 2. 从源用户获取最新的权限策略 (逻辑不变)
             config = config_manager.APP_CONFIG
             user_details = emby_handler.get_user_details(
                 source_user_id, config.get("emby_server_url"), config.get("emby_api_key")
             )
             if not user_details or 'Policy' not in user_details:
-                return jsonify({"status": "error", "message": "无法获取源用户的最新权限策略，请检查该用户是否存在。"}), 404
+                return jsonify({"status": "error", "message": "无法获取源用户的最新权限策略。"}), 404
             
             new_policy_json = json.dumps(user_details['Policy'], ensure_ascii=False)
+            new_policy_dict = user_details['Policy'] # 我们需要字典格式用于推送
 
-            # 3. 更新数据库中的模板
+            # 3. 更新数据库中的模板 (逻辑不变)
             cursor.execute(
                 "UPDATE user_templates SET emby_policy_json = %s WHERE id = %s",
                 (new_policy_json, template_id)
             )
+            logger.info(f"模板 '{template_name}' 的数据库记录已更新。")
+
+            # ★★★ 核心修复：增加权限推送逻辑 ★★★
+            # 4. 查找所有使用此模板的用户
+            cursor.execute(
+                "SELECT u.id, u.name FROM emby_users_extended uex JOIN emby_users u ON uex.emby_user_id = u.id WHERE uex.template_id = %s",
+                (template_id,)
+            )
+            users_to_update = cursor.fetchall()
+            
+            total_users = len(users_to_update)
+            if total_users > 0:
+                logger.warning(f"检测到 {total_users} 个用户正在使用此模板，将开始逐一推送新权限...")
+                
+                successful_pushes = 0
+                # 5. 循环为每个用户应用新策略
+                for i, user in enumerate(users_to_update):
+                    user_id = user['id']
+                    user_name = user['name']
+                    logger.info(f"  -> ({i+1}/{total_users}) 正在将新权限应用到用户 '{user_name}'...")
+                    
+                    policy_applied = emby_handler.force_set_user_policy(
+                        user_id, new_policy_dict,
+                        config.get("emby_server_url"), config.get("emby_api_key")
+                    )
+                    if policy_applied:
+                        successful_pushes += 1
+                    else:
+                        logger.error(f"  -> 为用户 '{user_name}' (ID: {user_id}) 推送新权限失败！")
+                    
+                    # 添加一个小延迟，避免瞬间大量API请求冲击Emby服务器
+                    time.sleep(0.2)
+                
+                logger.info(f"权限推送完成！共成功更新了 {successful_pushes}/{total_users} 个用户。")
+            else:
+                logger.info("没有用户正在使用此模板，无需推送权限。")
+
             conn.commit()
             
-            logger.info(f"模板 '{template_name}' 的权限已成功同步！")
-            return jsonify({"status": "ok", "message": "模板权限已成功更新！"}), 200
+            return jsonify({"status": "ok", "message": f"模板权限已更新，并已成功应用到 {successful_pushes} 个用户！"}), 200
 
     except Exception as e:
-        logger.error(f"同步模板 {template_id} 时发生错误: {e}", exc_info=True)
+        logger.error(f"同步模板 {template_id} 时发生严重错误: {e}", exc_info=True)
         return jsonify({"status": "error", "message": str(e)}), 500
 
 # --- 模块 2: 邀请链接管理 (Invitations) ---
