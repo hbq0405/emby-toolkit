@@ -1666,27 +1666,29 @@ def set_user_disabled_status(
     api_key: str
 ) -> bool:
     """
-    【核心功能 - 已修复】禁用或启用一个 Emby 用户。
-    - 修复了因调用错误的详情函数而导致无法获取用户策略的问题。
+    【V2 - 增加日志用户名】禁用或启用一个 Emby 用户。
     """
     action_text = "禁用" if disable else "启用"
-    logger.info(f"正在为用户 {user_id} 执行【{action_text}】操作...")
+    
+    # 尝试获取用户名用于日志
+    user_name_for_log = user_id
+    try:
+        user_details = get_user_details(user_id, base_url, api_key)
+        if user_details and user_details.get('Name'):
+            user_name_for_log = user_details['Name']
+    except Exception:
+        pass
+
+    logger.info(f"正在为用户 '{user_name_for_log}' (ID: {user_id}) 执行【{action_text}】操作...")
     
     try:
-        # ★★★ 核心修复：调用正确的 get_user_details 函数 ★★★
-        # 之前错误地调用了 get_emby_item_details
-        user_details = get_user_details(user_id, base_url, api_key)
-        
         if not user_details or 'Policy' not in user_details:
-            logger.error(f"无法获取用户 {user_id} 的当前策略，{action_text}失败。")
+            logger.error(f"无法获取用户 '{user_name_for_log}' 的当前策略，{action_text}失败。")
             return False
         
         current_policy = user_details['Policy']
-        
-        # 步骤 2: 修改 Policy 中的 IsDisabled 标志位
         current_policy['IsDisabled'] = disable
         
-        # 步骤 3: 将修改后的完整 Policy 提交回 Emby
         policy_update_url = f"{base_url}/Users/{user_id}/Policy"
         headers = {
             "X-Emby-Token": api_key,
@@ -1695,12 +1697,16 @@ def set_user_disabled_status(
         
         response = requests.post(policy_update_url, headers=headers, json=current_policy, timeout=15)
         
-        if response.status_code == 204: # 204 No Content 表示成功
-            logger.info(f"✅ 成功{action_text}用户 {user_id}。")
+        if response.status_code == 204:
+            logger.info(f"✅ 成功{action_text}用户 '{user_name_for_log}'。")
             return True
         else:
-            logger.error(f"{action_text}用户 {user_id} 失败。状态码: {response.status_code}, 响应: {response.text}")
+            logger.error(f"{action_text}用户 '{user_name_for_log}' 失败。状态码: {response.status_code}, 响应: {response.text}")
             return False
+
+    except Exception as e:
+        logger.error(f"{action_text}用户 '{user_name_for_log}' 时发生严重错误: {e}", exc_info=True)
+        return False
 
     except Exception as e:
         logger.error(f"{action_text}用户 {user_id} 时发生严重错误: {e}", exc_info=True)
@@ -1749,13 +1755,18 @@ def check_if_user_exists(username: str, base_url: str, api_key: str) -> bool:
     return False
 def force_set_user_policy(user_id: str, policy: Dict[str, Any], base_url: str, api_key: str) -> bool:
     """
-    【新增】为一个已存在的用户强制设置一个全新的、完整的 Policy 对象。
-    
-    :param user_id: 目标用户的 ID。
-    :param policy: 一个完整的 Emby Policy 字典对象。
-    :return: 操作是否成功。
+    【V2 - 增加日志用户名】为一个已存在的用户强制设置一个全新的、完整的 Policy 对象。
     """
-    logger.info(f"正在为用户 {user_id} 强制应用新的权限策略...")
+    # 尝试获取用户名用于日志记录，即使失败也不影响核心功能
+    user_name_for_log = user_id
+    try:
+        user_details = get_user_details(user_id, base_url, api_key)
+        if user_details and user_details.get('Name'):
+            user_name_for_log = user_details['Name']
+    except Exception:
+        pass # 获取失败则继续使用ID
+
+    logger.info(f"正在为用户 '{user_name_for_log}' (ID: {user_id}) 强制应用新的权限策略...")
     
     policy_update_url = f"{base_url}/Users/{user_id}/Policy"
     headers = {
@@ -1767,21 +1778,29 @@ def force_set_user_policy(user_id: str, policy: Dict[str, Any], base_url: str, a
         response = requests.post(policy_update_url, headers=headers, json=policy, timeout=15)
         
         if response.status_code == 204: # 204 No Content 表示成功
-            logger.info(f"✅ 成功为用户 {user_id} 应用了新的权限策略。")
+            logger.info(f"✅ 成功为用户 '{user_name_for_log}' 应用了新的权限策略。")
             return True
         else:
-            logger.error(f"为用户 {user_id} 应用新策略失败。状态码: {response.status_code}, 响应: {response.text}")
+            logger.error(f"为用户 '{user_name_for_log}' 应用新策略失败。状态码: {response.status_code}, 响应: {response.text}")
             return False
             
     except Exception as e:
-        logger.error(f"为用户 {user_id} 应用新策略时发生严重错误: {e}", exc_info=True)
+        logger.error(f"为用户 '{user_name_for_log}' 应用新策略时发生严重错误: {e}", exc_info=True)
         return False
 def delete_emby_user(user_id: str, base_url: str, api_key: str) -> bool:
     """
-    【新增】专门用于删除一个 Emby 用户的函数。
-    使用管理员账密登录获取临时令牌来执行删除。
+    【V2 - 增加日志用户名】专门用于删除一个 Emby 用户的函数。
     """
-    logger.warning(f"检测到删除用户请求，将使用 [自动登录模式] 执行...")
+    # 在删除操作前先获取用户名，因为删除后就获取不到了
+    user_name_for_log = user_id
+    try:
+        user_details = get_user_details(user_id, base_url, api_key)
+        if user_details and user_details.get('Name'):
+            user_name_for_log = user_details['Name']
+    except Exception:
+        pass
+
+    logger.warning(f"检测到删除用户 '{user_name_for_log}' 的请求，将使用 [自动登录模式] 执行...")
     
     cfg = config_manager.APP_CONFIG
     admin_user = cfg.get(constants.CONFIG_OPTION_EMBY_ADMIN_USER)
@@ -1797,21 +1816,19 @@ def delete_emby_user(user_id: str, base_url: str, api_key: str) -> bool:
         logger.error("无法获取临时 AccessToken，删除用户操作中止。")
         return False
 
-    # ★★★ 核心：使用正确的 DELETE /Users/{Id} 端点 ★★★
     api_url = f"{base_url.rstrip('/')}/Users/{user_id}"
     
     headers = { 'X-Emby-Token': access_token }
     api_timeout = cfg.get(constants.CONFIG_OPTION_EMBY_API_TIMEOUT, 60)
     
     try:
-        # ★★★ 核心：使用 requests.delete 方法 ★★★
         response = requests.delete(api_url, headers=headers, timeout=api_timeout)
         response.raise_for_status()
-        logger.info(f"  -> ✅ 成功使用临时令牌删除 Emby 用户 ID: {user_id}。")
+        logger.info(f"  -> ✅ 成功使用临时令牌删除 Emby 用户 '{user_name_for_log}' (ID: {user_id})。")
         return True
     except requests.exceptions.HTTPError as e:
-        logger.error(f"删除 Emby 用户 {user_id} 时发生HTTP错误: {e.response.status_code} - {e.response.text}")
+        logger.error(f"删除 Emby 用户 '{user_name_for_log}' 时发生HTTP错误: {e.response.status_code} - {e.response.text}")
         return False
     except Exception as e:
-        logger.error(f"删除 Emby 用户 {user_id} 时发生未知错误: {e}")
+        logger.error(f"删除 Emby 用户 '{user_name_for_log}' 时发生未知错误: {e}")
         return False

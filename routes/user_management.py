@@ -354,8 +354,7 @@ def get_all_managed_users():
 @login_required
 def change_user_template(user_id):
     """
-    【V2 - 智能版】为一个现有用户切换模板并应用新权限。
-    - 能够自动“收编”原生用户，为他们创建扩展记录。
+    【V3 - 增加日志用户名】为一个现有用户切换模板并应用新权限。
     """
     data = request.json
     new_template_id = data.get('template_id')
@@ -367,7 +366,22 @@ def change_user_template(user_id):
         with db_handler.get_db_connection() as conn:
             cursor = conn.cursor()
             
-            # 1. 从新模板中获取权限策略 (逻辑不变)
+            # 在操作前获取用户名和模板名，用于日志
+            user_name_for_log = user_id
+            new_template_name = f"ID:{new_template_id}"
+            try:
+                cursor.execute("SELECT name FROM emby_users WHERE id = %s", (user_id,))
+                user_record = cursor.fetchone()
+                if user_record: user_name_for_log = user_record['name']
+                
+                cursor.execute("SELECT name FROM user_templates WHERE id = %s", (new_template_id,))
+                template_record = cursor.fetchone()
+                if template_record: new_template_name = template_record['name']
+            except Exception:
+                pass
+
+            logger.info(f"准备为用户 '{user_name_for_log}' 切换模板至 '{new_template_name}'...")
+
             cursor.execute("SELECT emby_policy_json, default_expiration_days FROM user_templates WHERE id = %s", (new_template_id,))
             template = cursor.fetchone()
             if not template:
@@ -375,7 +389,6 @@ def change_user_template(user_id):
             
             template_policy = template['emby_policy_json']
             
-            # 2. 调用 Emby Handler 将新策略应用到用户 (逻辑不变)
             config = config_manager.APP_CONFIG
             policy_applied = emby_handler.force_set_user_policy(
                 user_id, template_policy,
@@ -385,8 +398,6 @@ def change_user_template(user_id):
             if not policy_applied:
                 return jsonify({"status": "error", "message": "在 Emby 中应用新模板权限失败"}), 500
             
-            # 3. ★★★ 核心修复：执行智能的 UPSERT 操作 ★★★
-            # 使用 PostgreSQL 的 ON CONFLICT 语法，一条 SQL 语句解决问题
             upsert_sql = """
                 INSERT INTO emby_users_extended (emby_user_id, template_id, status, created_by)
                 VALUES (%s, %s, 'active', 'admin-assigned')
@@ -395,9 +406,6 @@ def change_user_template(user_id):
             """
             cursor.execute(upsert_sql, (user_id, new_template_id))
             
-            # ★★★ 新增逻辑：如果是首次收编，根据模板设置默认有效期 ★★★
-            # cursor.rowcount 在 ON CONFLICT DO UPDATE 后的行为可能不一致，
-            # 所以我们直接检查用户之前是否有有效期来判断是否是首次收编。
             cursor.execute("SELECT expiration_date FROM emby_users_extended WHERE emby_user_id = %s", (user_id,))
             user_ext = cursor.fetchone()
             if user_ext and user_ext['expiration_date'] is None:
@@ -408,7 +416,7 @@ def change_user_template(user_id):
                         "UPDATE emby_users_extended SET expiration_date = %s WHERE emby_user_id = %s",
                         (expiration_date, user_id)
                     )
-                    logger.info(f"已为首次收编的用户 {user_id} 设置了 {default_days} 天的默认有效期。")
+                    logger.info(f"已为首次收编的用户 '{user_name_for_log}' 设置了 {default_days} 天的默认有效期。")
 
             conn.commit()
 
@@ -420,9 +428,23 @@ def change_user_template(user_id):
 @user_management_bp.route('/api/admin/users/<string:user_id>/status', methods=['POST'])
 @login_required
 def set_user_status(user_id):
-    """手动禁用或启用一个用户"""
+    """【V2 - 增加日志用户名】手动禁用或启用一个用户"""
     data = request.json
-    disable = data.get('disable', False) # True 为禁用, False 为启用
+    disable = data.get('disable', False)
+    action_text = "禁用" if disable else "启用"
+    
+    # 在操作前获取用户名
+    user_name_for_log = user_id
+    try:
+        with db_handler.get_db_connection() as conn:
+            cursor = conn.cursor()
+            cursor.execute("SELECT name FROM emby_users WHERE id = %s", (user_id,))
+            user_record = cursor.fetchone()
+            if user_record: user_name_for_log = user_record['name']
+    except Exception:
+        pass
+
+    logger.info(f"准备为用户 '{user_name_for_log}' 执行 '{action_text}' 操作...")
     
     config = config_manager.APP_CONFIG
     success = emby_handler.set_user_disabled_status(
@@ -430,7 +452,6 @@ def set_user_status(user_id):
     )
     
     if success:
-        # 同时更新我们自己数据库的状态
         new_status = 'disabled' if disable else 'active'
         with db_handler.get_db_connection() as conn:
             cursor = conn.cursor()
@@ -439,38 +460,74 @@ def set_user_status(user_id):
                 (new_status, user_id)
             )
             conn.commit()
+        logger.info(f"用户 '{user_name_for_log}' 状态更新成功。")
         return jsonify({"status": "ok", "message": "用户状态已更新"}), 200
     else:
+        logger.error(f"为用户 '{user_name_for_log}' 更新状态失败。")
         return jsonify({"status": "error", "message": "更新用户状态失败"}), 500
 
 @user_management_bp.route('/api/admin/users/<string:user_id>/expiration', methods=['POST'])
 @login_required
 def set_user_expiration(user_id):
-    """设置或清除用户的有效期"""
+    """【V2 - 增加日志用户名】设置或清除用户的有效期"""
     data = request.json
-    # 前端可以传来一个 ISO 格式的日期字符串，或者 null 来清除有效期
     expiration_date = data.get('expiration_date') 
+    
+    # 在操作前获取用户名
+    user_name_for_log = user_id
+    try:
+        with db_handler.get_db_connection() as conn:
+            cursor = conn.cursor()
+            cursor.execute("SELECT name FROM emby_users WHERE id = %s", (user_id,))
+            user_record = cursor.fetchone()
+            if user_record: user_name_for_log = user_record['name']
+    except Exception:
+        pass
+
+    log_message = f"准备为用户 '{user_name_for_log}' 更新有效期至: {expiration_date or '永久'}"
+    logger.info(log_message)
     
     try:
         with db_handler.get_db_connection() as conn:
             cursor = conn.cursor()
+            # 检查用户是否在 emby_users_extended 中，如果不存在则先创建
+            cursor.execute("SELECT 1 FROM emby_users_extended WHERE emby_user_id = %s", (user_id,))
+            if not cursor.fetchone():
+                logger.info(f"用户 '{user_name_for_log}' 是原生用户，正在为其创建扩展记录...")
+                cursor.execute(
+                    "INSERT INTO emby_users_extended (emby_user_id, status, created_by) VALUES (%s, 'active', 'admin-assigned')",
+                    (user_id,)
+                )
+
             cursor.execute(
                 "UPDATE emby_users_extended SET expiration_date = %s WHERE emby_user_id = %s",
                 (expiration_date, user_id)
             )
             conn.commit()
+        logger.info(f"用户 '{user_name_for_log}' 的有效期更新成功。")
         return jsonify({"status": "ok", "message": "用户有效期已更新"}), 200
     except Exception as e:
-        logger.error(f"更新用户 {user_id} 有效期时出错: {e}", exc_info=True)
+        logger.error(f"更新用户 '{user_name_for_log}' 有效期时出错: {e}", exc_info=True)
         return jsonify({"status": "error", "message": "更新有效期失败"}), 500
 
 @user_management_bp.route('/api/admin/users/<string:user_id>', methods=['DELETE'])
 @login_required
 def delete_user(user_id):
-    """从 Emby 和本地数据库中彻底删除一个用户"""
+    """【V2 - 增加日志用户名】从 Emby 和本地数据库中彻底删除一个用户"""
     config = config_manager.APP_CONFIG
     
-    # 步骤 1: 尝试从 Emby 服务器删除用户
+    # 在删除前，先从本地数据库获取用户名用于日志记录
+    user_name_for_log = user_id
+    try:
+        with db_handler.get_db_connection() as conn:
+            cursor = conn.cursor()
+            cursor.execute("SELECT name FROM emby_users WHERE id = %s", (user_id,))
+            user_record = cursor.fetchone()
+            if user_record and user_record.get('name'):
+                user_name_for_log = user_record['name']
+    except Exception:
+        pass # 获取失败则继续使用ID
+
     emby_delete_success = emby_handler.delete_emby_user(
         user_id, 
         config.get("emby_server_url"), 
@@ -478,31 +535,24 @@ def delete_user(user_id):
     )
     
     if emby_delete_success:
-        # 步骤 2: 如果 Emby 删除成功，则从本地数据库删除
         try:
             with db_handler.get_db_connection() as conn:
                 cursor = conn.cursor()
-                # ★★★ 核心修复：在这里显式删除主表记录 ★★★
-                # 这将触发 ON DELETE CASCADE，自动清理 emby_users_extended 表中的关联数据
                 cursor.execute("DELETE FROM emby_users WHERE id = %s", (user_id,))
                 conn.commit()
                 
                 if cursor.rowcount > 0:
-                    logger.info(f"成功从本地数据库中删除了用户 {user_id} 的记录。")
+                    logger.info(f"成功从本地数据库中删除了用户 '{user_name_for_log}' (ID: {user_id}) 的记录。")
                 else:
-                    # 这种情况很少见，可能意味着Emby上有这个用户，但我们的数据库里没有
-                    logger.warning(f"用户 {user_id} 已从 Emby 删除，但在本地数据库中未找到其主记录。")
+                    logger.warning(f"用户 '{user_name_for_log}' 已从 Emby 删除，但在本地数据库中未找到其主记录。")
 
-            # 无论本地是否找到记录，只要Emby删除成功，就应视为操作成功
             return jsonify({"status": "ok", "message": "用户已彻底删除"}), 200
             
         except Exception as e:
-            logger.error(f"用户 {user_id} 已从 Emby 删除，但在清理本地数据库时出错: {e}", exc_info=True)
-            # 即使本地删除失败，也应告知前端Emby用户已删除，但后台可能存在数据不一致
+            logger.error(f"用户 '{user_name_for_log}' 已从 Emby 删除，但在清理本地数据库时出错: {e}", exc_info=True)
             return jsonify({"status": "error", "message": "用户已从 Emby 删除，但清理本地数据时发生错误，请联系管理员。"}), 500
     else:
-        # 如果第一步（从Emby删除）就失败了，直接返回错误
-        return jsonify({"status": "error", "message": "在 Emby 中删除用户失败"}), 500
+        return jsonify({"status": "error", "message": f"在 Emby 中删除用户 '{user_name_for_log}' 失败"}), 500
 @user_management_bp.route('/api/admin/user_templates/<int:template_id>', methods=['DELETE'])
 @login_required
 def delete_template(template_id):
