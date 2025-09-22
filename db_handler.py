@@ -3134,7 +3134,7 @@ def get_item_ids_by_dynamic_rules(user_id: str, rules: List[Dict[str, Any]]) -> 
 
     final_sql = f"{base_sql} AND {' AND '.join(where_clauses)}"
     
-    logger.debug(f"执行动态筛选SQL: {final_sql} with params: {params}")
+    logger.trace(f"执行动态筛选SQL: {final_sql} with params: {params}")
 
     try:
         with get_db_connection() as conn:
