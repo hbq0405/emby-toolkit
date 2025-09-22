@@ -3876,3 +3876,78 @@ def task_check_expired_users(processor: MediaProcessor):
     
     logger.info(f">>> [{task_name}] {final_message}")
     task_manager.update_status_from_thread(100, final_message)
+def task_auto_sync_template_on_policy_change(processor: MediaProcessor, updated_user_id: str):
+    """
+    【自动化任务】当源用户的权限变更时，自动同步关联的模板及其所有用户。
+    """
+    task_name = f"自动同步权限 (源用户: {updated_user_id})"
+    logger.info(f"--- 开始执行 '{task_name}' 任务 ---")
+    
+    try:
+        with db_handler.get_db_connection() as conn:
+            cursor = conn.cursor()
+            
+            # 1. 查找所有以此用户为源的模板
+            cursor.execute(
+                "SELECT id FROM user_templates WHERE source_emby_user_id = %s",
+                (updated_user_id,)
+            )
+            templates_to_sync = cursor.fetchall()
+            
+            if not templates_to_sync:
+                logger.info(f"用户 {updated_user_id} 的权限已更新，但他不是任何模板的源用户，无需同步。")
+                return
+
+            total_templates = len(templates_to_sync)
+            logger.warning(f"检测到 {total_templates} 个模板使用该用户作为源，将开始自动同步...")
+
+            # 2. 循环触发每个模板的同步逻辑
+            # (这里我们复用之前编写的 sync_template 函数的核心逻辑)
+            config = processor.config
+            
+            for i, template_row in enumerate(templates_to_sync):
+                template_id = template_row['id']
+                
+                # a. 获取模板名用于日志
+                cursor.execute("SELECT name FROM user_templates WHERE id = %s", (template_id,))
+                template_name = cursor.fetchone()['name']
+                logger.info(f"  -> ({i+1}/{total_templates}) 正在同步模板 '{template_name}'...")
+
+                # b. 从源用户获取最新的权限策略
+                user_details = emby_handler.get_user_details(
+                    updated_user_id, config.get("emby_server_url"), config.get("emby_api_key")
+                )
+                if not user_details or 'Policy' not in user_details:
+                    logger.error(f"    -> 无法获取源用户的最新权限策略，跳过模板 '{template_name}'。")
+                    continue
+                
+                new_policy_json = json.dumps(user_details['Policy'], ensure_ascii=False)
+                new_policy_dict = user_details['Policy']
+
+                # c. 更新数据库中的模板
+                cursor.execute(
+                    "UPDATE user_templates SET emby_policy_json = %s WHERE id = %s",
+                    (new_policy_json, template_id)
+                )
+
+                # d. 查找并推送给所有关联用户
+                cursor.execute(
+                    "SELECT u.id, u.name FROM emby_users_extended uex JOIN emby_users u ON uex.emby_user_id = u.id WHERE uex.template_id = %s",
+                    (template_id,)
+                )
+                users_to_update = cursor.fetchall()
+                
+                if users_to_update:
+                    logger.info(f"    -> 正在将新权限推送到 {len(users_to_update)} 个关联用户...")
+                    for user in users_to_update:
+                        emby_handler.force_set_user_policy(
+                            user['id'], new_policy_dict,
+                            config.get("emby_server_url"), config.get("emby_api_key")
+                        )
+                        time.sleep(0.2)
+            
+            conn.commit()
+            logger.info(f"--- '{task_name}' 任务成功完成 ---")
+
+    except Exception as e:
+        logger.error(f"执行 '{task_name}' 任务时发生严重错误: {e}", exc_info=True)

@@ -15,9 +15,9 @@ services:
       - PGID=1000
       - DB_HOST=db
       - DB_PORT=5432
-      - DB_USER=embytoolkit      # <-- ★★★ 请修改为你自己的用户名
-      - DB_PASSWORD=embytoolkit # <-- ★★★ 请修改为你自己的强密码
-      - DB_NAME=embytoolkit         # <-- ★★★ 请修改为你自己的数据库名
+      - DB_USER=embytoolkit      
+      - DB_PASSWORD=embytoolkit 
+      - DB_NAME=embytoolkit         
     ports:
       - "5257:5257"
       - "8096:8096"
@@ -34,21 +34,18 @@ services:
       start_period: 30s
   
   db:
-    image: postgres:16-alpine # 使用官方的、轻量的 PostgreSQL 镜像
+    image: postgres:16-alpine 
     container_name: emby-toolkit-db
     restart: unless-stopped
     volumes:
       - postgres_data:/var/lib/postgresql/data
     environment:
-      # 这些值必须与上面 emby-toolkit 服务中的环境变量匹配
-      - POSTGRES_USER=embytoolkit      # <-- ★★★ 请修改，与上面保持一致
-      - POSTGRES_PASSWORD=embytoolkit # <-- ★★★ 请修改，与上面保持一致
-      - POSTGRES_DB=embytoolkit         # <-- ★★★ 请修改，与上面保持一致
+      - POSTGRES_USER=embytoolkit      
+      - POSTGRES_PASSWORD=embytoolkit 
+      - POSTGRES_DB=embytoolkit         
     networks:
       - emby-net
     ports:
-      # (可选) 将数据库端口映射到宿主机，方便使用Navicat等工具连接调试
-      # 映射到 5433 是为了避免与宿主机上可能已有的 5432 端口冲突
       - "5432:5432"
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U embytoolkit -d embytoolkit"]
