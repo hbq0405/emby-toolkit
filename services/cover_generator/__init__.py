@@ -117,7 +117,14 @@ class CoverGeneratorService:
             media_type_to_fetch = original_types.split(',')[0]
             logger.trace(f"  -> 检测到合集 '{library_name}'，为提升性能，将仅使用类型 '{media_type_to_fetch}' 进行查询。")
 
-        sort_by_param = "Random" if self._sort_by == "Random" else "DateCreated"
+        # === 核心修改开始 ===
+        sort_by_param = "Random"
+        sort_order_param = None  # 随机排序不需要顺序
+        if self._sort_by != "Random": # 处理 "Latest" 或其他未来可能的排序
+            sort_by_param = "DateCreated"
+            sort_order_param = "Descending" # 明确指定降序
+        # === 核心修改结束 ===
+        
         api_limit = limit * 5 if limit < 10 else limit * 2 
 
         all_items = emby_handler.get_emby_library_items(
@@ -126,6 +133,7 @@ class CoverGeneratorService:
             media_type_filter=media_type_to_fetch,
             fields="Id,Name,Type,ImageTags,BackdropImageTags,DateCreated,PrimaryImageTag,PrimaryImageItemId",
             sort_by=sort_by_param,
+            sort_order=sort_order_param, # ★ 新增此行，明确传递排序顺序
             limit=api_limit,
             force_user_endpoint=True
         )
