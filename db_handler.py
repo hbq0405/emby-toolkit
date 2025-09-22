@@ -413,11 +413,11 @@ def init_db():
                             "resubscribe_subtitle_effect_only": "BOOLEAN DEFAULT FALSE"
                         },
                         'custom_collections': {
-                            "generated_emby_ids_json": "JSONB DEFAULT '[]'::jsonb NOT NULL"
-                        },
-                        'custom_collections': {
                             "generated_emby_ids_json": "JSONB DEFAULT '[]'::jsonb NOT NULL",
                             "allowed_user_ids": "JSONB" 
+                        },
+                        'user_templates': {
+                            "source_emby_user_id": "TEXT"
                         }
                     }
 

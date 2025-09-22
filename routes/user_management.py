@@ -32,18 +32,17 @@ def get_all_templates():
 @user_management_bp.route('/api/admin/user_templates', methods=['POST'])
 @login_required
 def create_template():
-    """创建一个新的用户模板"""
+    """【V2 - 记录源用户】创建一个新的用户模板"""
     data = request.json
     name = data.get('name')
     description = data.get('description')
     default_expiration_days = data.get('default_expiration_days', 30)
-    source_emby_user_id = data.get('source_emby_user_id') # 前端需要提供一个作为模板的 Emby 用户ID
+    source_emby_user_id = data.get('source_emby_user_id')
 
     if not name or not source_emby_user_id:
         return jsonify({"status": "error", "message": "模板名称和源用户ID不能为空"}), 400
 
     try:
-        # 从源用户获取 Policy
         config = config_manager.APP_CONFIG
         user_details = emby_handler.get_user_details(
             source_emby_user_id, config.get("emby_server_url"), config.get("emby_api_key")
@@ -55,12 +54,13 @@ def create_template():
 
         with db_handler.get_db_connection() as conn:
             cursor = conn.cursor()
+            # ★★★ 核心修复：在 INSERT 语句中增加 source_emby_user_id ★★★
             cursor.execute(
                 """
-                INSERT INTO user_templates (name, description, emby_policy_json, default_expiration_days)
-                VALUES (%s, %s, %s, %s) RETURNING id
+                INSERT INTO user_templates (name, description, emby_policy_json, default_expiration_days, source_emby_user_id)
+                VALUES (%s, %s, %s, %s, %s) RETURNING id
                 """,
-                (name, description, policy_json, default_expiration_days)
+                (name, description, policy_json, default_expiration_days, source_emby_user_id)
             )
             new_id = cursor.fetchone()['id']
             conn.commit()
@@ -69,7 +69,50 @@ def create_template():
     except Exception as e:
         return jsonify({"status": "error", "message": str(e)}), 500
 
-# (未来可以添加更新和删除模板的 API)
+@user_management_bp.route('/api/admin/user_templates/<int:template_id>/sync', methods=['POST'])
+@login_required
+def sync_template(template_id):
+    """【新增】从源用户同步并更新一个模板的权限策略"""
+    try:
+        with db_handler.get_db_connection() as conn:
+            cursor = conn.cursor()
+            
+            # 1. 查找模板并获取其源用户ID
+            cursor.execute("SELECT source_emby_user_id, name FROM user_templates WHERE id = %s", (template_id,))
+            template = cursor.fetchone()
+            if not template:
+                return jsonify({"status": "error", "message": "模板不存在"}), 404
+            
+            source_user_id = template.get('source_emby_user_id')
+            template_name = template.get('name')
+            if not source_user_id:
+                return jsonify({"status": "error", "message": f"无法同步：模板 '{template_name}' 是一个旧版模板，没有记录源用户信息。"}), 400
+
+            logger.info(f"正在为模板 '{template_name}' 从源用户 {source_user_id} 同步最新权限...")
+
+            # 2. 从源用户获取最新的权限策略
+            config = config_manager.APP_CONFIG
+            user_details = emby_handler.get_user_details(
+                source_user_id, config.get("emby_server_url"), config.get("emby_api_key")
+            )
+            if not user_details or 'Policy' not in user_details:
+                return jsonify({"status": "error", "message": "无法获取源用户的最新权限策略，请检查该用户是否存在。"}), 404
+            
+            new_policy_json = json.dumps(user_details['Policy'], ensure_ascii=False)
+
+            # 3. 更新数据库中的模板
+            cursor.execute(
+                "UPDATE user_templates SET emby_policy_json = %s WHERE id = %s",
+                (new_policy_json, template_id)
+            )
+            conn.commit()
+            
+            logger.info(f"模板 '{template_name}' 的权限已成功同步！")
+            return jsonify({"status": "ok", "message": "模板权限已成功更新！"}), 200
+
+    except Exception as e:
+        logger.error(f"同步模板 {template_id} 时发生错误: {e}", exc_info=True)
+        return jsonify({"status": "error", "message": str(e)}), 500
 
 # --- 模块 2: 邀请链接管理 (Invitations) ---
 

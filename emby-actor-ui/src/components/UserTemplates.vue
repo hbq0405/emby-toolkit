@@ -1,4 +1,4 @@
-<!-- src/components/UserTemplates.vue (已更新) -->
+<!-- src/components/UserTemplates.vue (已增加同步功能) -->
 <template>
   <div>
     <n-button
@@ -72,7 +72,8 @@ import {
   NButton, NDataTable, NModal, NForm, NFormItem, NSelect, NInputNumber,
   NIcon, NInput, useMessage, NPopconfirm, NSpace
 } from 'naive-ui';
-import { Add as AddIcon, TrashOutline as DeleteIcon } from '@vicons/ionicons5';
+// ★★★ 1. 导入新的图标 ★★★
+import { Add as AddIcon, TrashOutline as DeleteIcon, SyncOutline as SyncIcon } from '@vicons/ionicons5';
 
 // --- API ---
 const api = {
@@ -84,6 +85,10 @@ const api = {
     body: JSON.stringify(data),
   }).then(res => res.json()),
   deleteTemplate: (templateId) => fetch(`/api/admin/user_templates/${templateId}`, { method: 'DELETE' }),
+  // ★★★ 2. 新增 syncTemplate API 调用函数 ★★★
+  syncTemplate: (templateId) => fetch(`/api/admin/user_templates/${templateId}/sync`, {
+    method: 'POST',
+  }),
 };
 
 // --- 状态和Hooks ---
@@ -93,6 +98,8 @@ const embyUsers = ref([]);
 const loading = ref(false);
 const isModalVisible = ref(false);
 const isSubmitting = ref(false);
+// ★★★ 新增：用于跟踪哪个模板正在同步的状态 ★★★
+const syncingTemplateId = ref(null);
 const formRef = ref(null);
 const formModel = ref({
   name: '',
@@ -103,7 +110,6 @@ const formModel = ref({
 
 const rules = {
   name: { required: true, message: '请输入模板名称', trigger: 'blur' },
-  // ★★★ 允许 default_expiration_days 为 0，所以这里不需要 min: 1 的规则了 ★★★
   default_expiration_days: { type: 'number', required: true, message: '请输入默认有效期' },
   source_emby_user_id: { required: true, message: '请选择一个源用户', trigger: 'change' },
 };
@@ -180,6 +186,26 @@ const handleDelete = async (templateId) => {
   }
 };
 
+// ★★★ 3. 新增 handleSyncTemplate 事件处理函数 ★★★
+const handleSyncTemplate = async (template) => {
+  syncingTemplateId.value = template.id; // 设置当前正在同步的模板ID，用于显示加载状态
+  try {
+    const response = await api.syncTemplate(template.id);
+    const data = await response.json();
+    if (response.ok) {
+      message.success(`模板 “${template.name}” 已成功同步最新权限！`);
+      // 同步成功后，可以重新获取一次数据以防万一有其他信息变更
+      fetchData();
+    } else {
+      throw new Error(data.message || '同步失败');
+    }
+  } catch (error) {
+    message.error(`同步失败: ${error.message}`);
+  } finally {
+    syncingTemplateId.value = null; // 清除加载状态
+  }
+};
+
 
 // --- 表格列定义 ---
 const columns = [
@@ -188,7 +214,6 @@ const columns = [
   { 
     title: '默认有效期(天)', 
     key: 'default_expiration_days',
-    // ★★★ 在表格中也对 0 进行特殊显示 ★★★
     render(row) {
         return row.default_expiration_days === 0 ? '永久' : row.default_expiration_days;
     }
@@ -197,21 +222,42 @@ const columns = [
     title: '操作',
     key: 'actions',
     render(row) {
-      return h(
-        NPopconfirm,
-        {
-          onPositiveClick: () => handleDelete(row.id),
-        },
-        {
-          trigger: () => h(NButton, {
-            strong: true,
-            tertiary: true,
-            size: 'small',
-            type: 'error',
-          }, { default: () => '删除' }),
-          default: () => `确定要删除模板 “${row.name}” 吗？所有基于此模板创建的【未使用的】邀请链接也将被一并删除。`,
-        }
-      );
+      // ★★★ 4. 在操作列中增加“同步权限”按钮 ★★★
+      return h(NSpace, null, () => [
+        // 同步按钮
+        h(NButton, {
+          size: 'small',
+          type: 'info',
+          ghost: true,
+          // 只有记录了源用户的模板才能同步
+          disabled: !row.source_emby_user_id,
+          // 显示加载状态
+          loading: syncingTemplateId.value === row.id,
+          onClick: () => handleSyncTemplate(row),
+          title: row.source_emby_user_id ? '从源用户更新权限' : '旧版模板，无法同步'
+        }, { 
+          default: () => '同步权限',
+          icon: () => h(NIcon, { component: SyncIcon })
+        }),
+        
+        // 删除按钮 (使用 Popconfirm 包裹)
+        h(NPopconfirm, {
+            onPositiveClick: () => handleDelete(row.id),
+            positiveText: '确认删除',
+            negativeText: '取消'
+          }, {
+            trigger: () => h(NButton, {
+              size: 'small',
+              type: 'error',
+              ghost: true,
+            }, { 
+              default: () => '删除',
+              icon: () => h(NIcon, { component: DeleteIcon })
+            }),
+            default: () => `确定要删除模板 “${row.name}” 吗？`,
+          }
+        )
+      ]);
     },
   },
 ];
