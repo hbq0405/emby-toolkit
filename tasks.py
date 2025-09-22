@@ -3716,6 +3716,7 @@ def task_apply_main_cast_to_episodes(processor: MediaProcessor, series_id: str, 
     """
     【V1 - 精准版】轻量级任务：将剧集主项目的演员表应用到【指定】的新增分集。
     """
+    series_name_for_log = f"ID:{series_id}"
     try:
         series_details = emby_handler.get_emby_item_details(
             series_id, processor.emby_url, processor.emby_api_key, processor.emby_user_id,
@@ -3756,6 +3757,13 @@ def task_apply_main_cast_to_episodes(processor: MediaProcessor, series_id: str, 
             time.sleep(0.2)
         
         logger.info(f"  -> 已为《{series_name}》的新分集更新了演员表。")
+
+        logger.info(f"轻量化同步完成，即将为父剧集 '{series_name_for_log}' 触发一次覆盖缓存备份...")
+        processor.sync_single_item_assets(
+            item_id=series_id,
+            update_description=f"轻量化同步演员表后自动备份",
+            sync_timestamp_iso=datetime.now(timezone.utc).isoformat()
+        )
 
         # ★★★ 更新父剧集在元数据缓存中的 last_synced_at 时间戳 ★★★
         tmdb_id = series_details.get("ProviderIds", {}).get("Tmdb")
