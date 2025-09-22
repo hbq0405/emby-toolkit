@@ -3714,9 +3714,8 @@ def task_sync_all_user_data(processor: MediaProcessor):
 
 def task_apply_main_cast_to_episodes(processor: MediaProcessor, series_id: str, episode_ids: List[str]):
     """
-    【V1 - 精准版】轻量级任务：将剧集主项目的演员表应用到【指定】的新增分集。
+    轻量级任务：将剧集主项目的演员表应用到【指定】的新增分集。
     """
-    series_name_for_log = f"ID:{series_id}"
     try:
         series_details = emby_handler.get_emby_item_details(
             series_id, processor.emby_url, processor.emby_api_key, processor.emby_user_id,
@@ -3758,7 +3757,7 @@ def task_apply_main_cast_to_episodes(processor: MediaProcessor, series_id: str, 
         
         logger.info(f"  -> 已为《{series_name}》的新分集更新了演员表。")
 
-        logger.info(f"轻量化同步完成，即将为父剧集 '{series_name_for_log}' 触发一次覆盖缓存备份...")
+        # --- 备份覆盖缓存 ---
         processor.sync_single_item_assets(
             item_id=series_id,
             update_description=f"轻量化同步演员表后自动备份",
@@ -3793,14 +3792,11 @@ def task_apply_main_cast_to_episodes(processor: MediaProcessor, series_id: str, 
 
     except Exception as e:
         logger.error(f"  -> 分集更新任务时发生错误: {e}", exc_info=True)
-# ★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★
-# ★★★ 新增的核心任务：检查并禁用过期用户 ★★★
-# ★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★
 
+# ★★★ 检查并禁用过期用户 ★★★
 def task_check_expired_users(processor: MediaProcessor):
     """
     【核心任务】检查并禁用所有已过期的用户。
-    这是一个计划任务，应由调度器定期调用。
     """
     task_name = "检查并禁用过期用户"
     logger.info(f"  -> 开始执行 [{task_name}] 任务...")

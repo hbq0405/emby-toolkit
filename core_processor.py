@@ -2357,7 +2357,7 @@ class MediaProcessor:
             # 模式一：精准同步 (当描述存在时)
             if update_description:
                 log_prefix = "[精准图片备份]"
-                logger.debug(f"{log_prefix} 正在解析描述: '{update_description}'")
+                logger.trace(f"{log_prefix} 正在解析描述: '{update_description}'")
                 
                 # 定义关键词到Emby图片类型的映射 (使用小写以方便匹配)
                 keyword_map = {
@@ -2373,18 +2373,18 @@ class MediaProcessor:
                 for keyword, image_type_api in keyword_map.items():
                     if keyword in desc_lower and image_type_api in full_image_map:
                         images_to_sync[image_type_api] = full_image_map[image_type_api]
-                        logger.debug(f"{log_prefix} 匹配到关键词 '{keyword}'，将只同步 {image_type_api} 图片。")
+                        logger.trace(f"{log_prefix} 匹配到关键词 '{keyword}'，将只同步 {image_type_api} 图片。")
                         found_specific_image = True
                         break # 找到第一个匹配就停止，避免重复
                 
                 if not found_specific_image:
-                    logger.warning(f"{log_prefix} 未能在描述中找到可识别的图片关键词，将回退到完全同步。")
+                    logger.trace(f"{log_prefix} 未能在描述中找到可识别的图片关键词，将回退到完全同步。")
                     images_to_sync = full_image_map # 回退
             
             # 模式二：完全同步 (默认或回退)
             else:
                 log_prefix = "[全量图片备份]"
-                logger.debug(f"  -> {log_prefix} 未提供更新描述，将同步所有类型的图片。")
+                logger.trace(f"  -> {log_prefix} 未提供更新描述，将同步所有类型的图片。")
                 images_to_sync = full_image_map
 
             # --- 执行下载 ---
@@ -2596,7 +2596,7 @@ class MediaProcessor:
         【V1.5 - 任务队列版】为单个媒体项同步图片和元数据文件。
         - 职责单一化：只负责执行备份。并发控制和冷却逻辑已移交至任务管理器和调用方。
         """
-        log_prefix = f"实时覆盖缓存备份 (ID: {item_id}):"
+        log_prefix = f"实时覆盖缓存备份"
         logger.info(f"--- {log_prefix} 开始执行 ---")
 
         if not self.local_data_path:
