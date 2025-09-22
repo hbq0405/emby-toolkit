@@ -3876,11 +3876,21 @@ def task_check_expired_users(processor: MediaProcessor):
     
     logger.info(f">>> [{task_name}] {final_message}")
     task_manager.update_status_from_thread(100, final_message)
-def task_auto_sync_template_on_policy_change(processor: MediaProcessor, updated_user: str, updated_user_id: str):
+def task_auto_sync_template_on_policy_change(processor: MediaProcessor, updated_user_id: str):
     """
-    【V2 - 增加防循环逻辑】当源用户的权限变更时，自动同步关联的模板及其所有用户。
+    当源用户的权限变更时，自动同步关联的模板及其所有用户。
     """
-    task_name = f"自动同步权限 (源用户: {updated_user})"
+    user_name_for_log = updated_user_id 
+    try:
+        with db_handler.get_db_connection() as conn:
+            cursor = conn.cursor()
+            cursor.execute("SELECT name FROM emby_users WHERE id = %s", (updated_user_id,))
+            user_record = cursor.fetchone()
+            if user_record: user_name_for_log = user_record['name']
+    except Exception:
+        pass # 获取失败不影响主流程
+
+    task_name = f"自动同步权限 (源用户: '{user_name_for_log}')"
     logger.info(f"--- 开始执行 '{task_name}' 任务 ---")
     
     try:
@@ -3894,11 +3904,11 @@ def task_auto_sync_template_on_policy_change(processor: MediaProcessor, updated_
             templates_to_sync = cursor.fetchall()
             
             if not templates_to_sync:
-                logger.trace(f"  -> 用户 {updated_user} 的权限已更新，但他不是任何模板的源用户，无需同步。")
+                logger.info(f"  -> 用户 '{user_name_for_log}' 的权限已更新，但他不是任何模板的源用户，无需同步。")
                 return
 
             total_templates = len(templates_to_sync)
-            logger.warning(f"  -> 检测到 {total_templates} 个模板使用该用户作为源，将开始自动同步...")
+            logger.warning(f"  -> 检测到 {total_templates} 个模板使用用户 '{user_name_for_log}' 作为源，将开始自动同步...")
 
             config = processor.config
             
@@ -3936,9 +3946,8 @@ def task_auto_sync_template_on_policy_change(processor: MediaProcessor, updated_
                         user_id_to_push = user['id']
                         user_name_to_push = user['name']
 
-                        # ★★★ 核心修复：在这里加入熔断判断 ★★★
                         if user_id_to_push == updated_user_id:
-                            logger.trace(f"  -> 跳过用户 '{user_name_to_push}'，因为他就是本次同步的触发源，以避免无限循环。")
+                            logger.warning(f"  -> 跳过用户 '{user_name_to_push}'，因为他就是本次同步的触发源，以避免无限循环。")
                             continue
 
                         emby_handler.force_set_user_policy(

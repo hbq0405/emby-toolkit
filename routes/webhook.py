@@ -188,7 +188,6 @@ def emby_webhook():
                 task_auto_sync_template_on_policy_change,
                 task_name=f"自动同步权限 (源: {updated_user.get('Name')})",
                 processor_type='media',
-                updated_user=updated_user,
                 updated_user_id=updated_user_id
             )
             return jsonify({"status": "auto_sync_task_submitted"}), 202
