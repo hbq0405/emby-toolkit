@@ -3876,11 +3876,11 @@ def task_check_expired_users(processor: MediaProcessor):
     
     logger.info(f">>> [{task_name}] {final_message}")
     task_manager.update_status_from_thread(100, final_message)
-def task_auto_sync_template_on_policy_change(processor: MediaProcessor, updated_user_id: str):
+def task_auto_sync_template_on_policy_change(processor: MediaProcessor, updated_user: str, updated_user_id: str):
     """
     【V2 - 增加防循环逻辑】当源用户的权限变更时，自动同步关联的模板及其所有用户。
     """
-    task_name = f"自动同步权限 (源用户: {updated_user_id})"
+    task_name = f"自动同步权限 (源用户: {updated_user})"
     logger.info(f"--- 开始执行 '{task_name}' 任务 ---")
     
     try:
@@ -3894,7 +3894,7 @@ def task_auto_sync_template_on_policy_change(processor: MediaProcessor, updated_
             templates_to_sync = cursor.fetchall()
             
             if not templates_to_sync:
-                logger.trace(f"  -> 用户 {updated_user_id} 的权限已更新，但他不是任何模板的源用户，无需同步。")
+                logger.trace(f"  -> 用户 {updated_user} 的权限已更新，但他不是任何模板的源用户，无需同步。")
                 return
 
             total_templates = len(templates_to_sync)
