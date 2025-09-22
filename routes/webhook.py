@@ -276,24 +276,35 @@ def emby_webhook():
 
     if event_type == "library.deleted":
         try:
+            # ★★★ 核心优化：在一个事务中，清理所有相关表的记录 ★★★
             with get_central_db_connection() as conn:
                 with conn.cursor() as cursor:
+                    # 1. 从 processed_log 和 failed_log 中删除
                     log_manager = LogDBManager()
                     log_manager.remove_from_processed_log(cursor, original_item_id)
-                    logger.info(f"  -> Webhook: 已从 processed_log 中移除项目 {original_item_id}。")
+                    log_manager.remove_from_failed_log(cursor, original_item_id)
+                    logger.info(f"Webhook: 已从处理/失败日志中移除项目 {original_item_id}。")
 
+                    # 2. 从 media_metadata 缓存中删除
                     cursor.execute("DELETE FROM media_metadata WHERE emby_item_id = %s", (original_item_id,))
-                    
                     if cursor.rowcount > 0:
-                        logger.info(f"  -> Webhook: 已从 media_metadata 缓存中移除 Emby ID 为 {original_item_id} 的媒体项。")
-                    else:
-                        logger.debug(f"  -> Webhook: 在 media_metadata 中未找到 Emby ID {original_item_id}，无需删除。")
-                
+                        logger.info(f"Webhook: 已从 media_metadata 缓存中移除 Emby ID 为 {original_item_id} 的媒体项。")
+
+                    # 3. ★★★ 新增：从智能追剧列表中删除 ★★★
+                    cursor.execute("DELETE FROM watchlist WHERE item_id = %s", (original_item_id,))
+                    if cursor.rowcount > 0:
+                        logger.info(f"Webhook: 已从智能追剧列表中移除项目 {original_item_id}。")
+                        
+                    # 4. ★★★ 新增：从媒体洗版缓存中删除 ★★★
+                    cursor.execute("DELETE FROM resubscribe_cache WHERE item_id = %s", (original_item_id,))
+                    if cursor.rowcount > 0:
+                        logger.info(f"Webhook: 已从媒体洗版缓存中移除项目 {original_item_id}。")
+
                 conn.commit()
                 
-            return jsonify({"status": "processed_log_and_metadata_entry_removed", "item_id": original_item_id}), 200
+            return jsonify({"status": "all_related_data_removed", "item_id": original_item_id}), 200
         except Exception as e:
-            logger.error(f"  -> 处理删除事件 for item {original_item_id} 时发生错误: {e}", exc_info=True)
+            logger.error(f"处理删除事件 for item {original_item_id} 时发生错误: {e}", exc_info=True)
             return jsonify({"status": "error_processing_remove_event", "error": str(e)}), 500
     
     if event_type in ["item.add", "library.new"]:
