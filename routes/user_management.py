@@ -388,10 +388,23 @@ def delete_invitation(invitation_id):
     except Exception as e:
         logger.error(f"删除邀请码 {invitation_id} 时出错: {e}", exc_info=True)
         return jsonify({"status": "error", "message": "删除邀请码失败"}), 500
+    
+def _get_all_source_user_ids(cursor) -> set:
+    """从数据库中获取所有被用作模板源用户的ID集合，用于过滤。"""
+    try:
+        cursor.execute("SELECT DISTINCT source_emby_user_id FROM user_templates WHERE source_emby_user_id IS NOT NULL")
+        # 返回一个集合(set)，用于实现 O(1) 的高效查找
+        return {row['source_emby_user_id'] for row in cursor.fetchall()}
+    except Exception as e:
+        logger.error(f"获取源用户ID列表时出错: {e}", exc_info=True)
+        return set() # 出错时返回空集合，确保不会意外过滤掉所有用户
+
 @user_management_bp.route('/api/admin/users', methods=['GET'])
 @login_required
 def get_all_managed_users():
-    """获取所有 Emby 用户，并用我们数据库中的扩展信息丰富他们"""
+    """
+    【V2 - 隐藏源用户】获取所有 Emby 用户，并自动过滤掉被用作模板源的用户。
+    """
     try:
         config = config_manager.APP_CONFIG
         all_emby_users = emby_handler.get_all_emby_users_from_server(
@@ -402,7 +415,12 @@ def get_all_managed_users():
 
         with db_handler.get_db_connection() as conn:
             cursor = conn.cursor()
-            # ★★★ 核心修改：使用 LEFT JOIN 联查模板名称 ★★★
+            
+            # ★★★ 核心修复 1/2：在开始时就获取所有源用户的ID ★★★
+            source_user_ids = _get_all_source_user_ids(cursor)
+            if source_user_ids:
+                logger.debug(f"将从用户列表中隐藏 {len(source_user_ids)} 个源用户。")
+
             cursor.execute("""
                 SELECT eue.*, ut.name as template_name 
                 FROM emby_users_extended eue
@@ -414,13 +432,17 @@ def get_all_managed_users():
         enriched_users = []
         for user in all_emby_users:
             user_id = user.get('Id')
+            
+            # ★★★ 核心修复 2/2：在这里执行过滤 ★★★
+            if user_id in source_user_ids:
+                continue # 如果是源用户，则直接跳过，不添加到最终列表
+
             extended_data = extended_info_map.get(user_id, {})
             
             user['IsDisabled'] = user.get('Policy', {}).get('IsDisabled', False)
             
             user['expiration_date'] = extended_data.get('expiration_date')
             user['status_in_db'] = extended_data.get('status')
-            # ★★★ 新增返回字段 ★★★
             user['template_id'] = extended_data.get('template_id')
             user['template_name'] = extended_data.get('template_name')
             
