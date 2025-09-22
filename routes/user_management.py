@@ -19,11 +19,14 @@ logger = logging.getLogger(__name__)
 @user_management_bp.route('/api/admin/user_templates', methods=['GET'])
 @login_required
 def get_all_templates():
-    """获取所有用户模板"""
+    """【V2 - 返回源用户ID】获取所有用户模板"""
     try:
         with db_handler.get_db_connection() as conn:
             cursor = conn.cursor()
-            cursor.execute("SELECT id, name, description, default_expiration_days FROM user_templates ORDER BY name")
+            # ★★★ 核心修复：在 SELECT 语句中添加 source_emby_user_id ★★★
+            cursor.execute(
+                "SELECT id, name, description, default_expiration_days, source_emby_user_id FROM user_templates ORDER BY name"
+            )
             templates = [dict(row) for row in cursor.fetchall()]
         return jsonify(templates), 200
     except Exception as e:
