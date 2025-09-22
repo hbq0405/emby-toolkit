@@ -16,7 +16,6 @@ import constants
 import extensions
 from tasks import (
     task_auto_sync_template_on_policy_change, 
-    webhook_processing_task,
     task_sync_metadata_cache,
     task_sync_assets,
     task_apply_main_cast_to_episodes
