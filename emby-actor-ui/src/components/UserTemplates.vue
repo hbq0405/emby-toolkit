@@ -33,7 +33,7 @@
           <n-input
             v-model:value="formModel.description"
             type="textarea"
-            placeholder="简单描述这个模板的权限，方便自己记忆"
+            placeholder="简单描述这个模板的权限，方便用户注册成功后大致了解自己账号的权限。"
           />
         </n-form-item>
         <n-form-item label="默认有效期(天)" path="default_expiration_days">

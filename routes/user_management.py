@@ -332,6 +332,9 @@ def register_with_invite():
             # 格式化日期为 YYYY-MM-DD
             expiration_info = f"至 {expiration_date.strftime('%Y-%m-%d')}"
 
+        # ★★★ 新增逻辑：获取模板描述 ★★★
+        template_description = template.get('description') or template.get('name') # 如果描述为空，用模板名作为备用
+
         # 3. 将所有信息打包返回
         return jsonify({
             "status": "ok", 
@@ -339,7 +342,8 @@ def register_with_invite():
             "data": {
                 "username": username,
                 "expiration_info": expiration_info,
-                "redirect_url": final_redirect_url
+                "redirect_url": final_redirect_url,
+                "template_description": template_description # <-- 新增返回字段
             }
         }), 201
     except Exception as e:

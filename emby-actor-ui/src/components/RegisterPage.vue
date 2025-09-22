@@ -27,7 +27,7 @@
       </div>
     </n-card>
 
-    <!-- ★★★ 新增的成功提示模态框 ★★★ -->
+    <!-- ★★★ 成功提示模态框 ★★★ -->
     <n-modal v-model:show="showSuccessModal" preset="card" style="width: 90%; max-width: 450px;">
       <n-result
         status="success"
@@ -35,6 +35,7 @@
         :description="`欢迎加入，${registrationResult?.username}！`"
       >
         <template #footer>
+          <!-- ★★★ 核心修改：更新这里的描述项 ★★★ -->
           <n-descriptions
             label-placement="left"
             bordered
@@ -42,7 +43,12 @@
             style="margin-bottom: 20px;"
           >
             <n-descriptions-item label="您的账号">
+              <!-- 这里我们仍然可以显示用户名，让用户确认 -->
               {{ registrationResult?.username }}
+            </n-descriptions-item>
+            <n-descriptions-item label="账号类型">
+              <!-- 将模板描述作为“账号类型”或“权限说明”来显示 -->
+              {{ registrationResult?.template_description }}
             </n-descriptions-item>
             <n-descriptions-item label="账号有效期">
               {{ registrationResult?.expiration_info }}
