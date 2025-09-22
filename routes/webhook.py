@@ -14,6 +14,7 @@ import emby_handler
 import config_manager
 import constants
 import extensions
+from core_processor import MediaProcessor
 from tasks import (
     task_auto_sync_template_on_policy_change, 
     task_sync_metadata_cache,
@@ -40,12 +41,11 @@ UPDATE_DEBOUNCE_TIMERS = {}
 UPDATE_DEBOUNCE_LOCK = threading.Lock()
 UPDATE_DEBOUNCE_TIME = 15
 
-def _handle_full_processing_flow(item_id: str, force_reprocess: bool):
+def _handle_full_processing_flow(processor: 'MediaProcessor', item_id: str, force_reprocess: bool):
     """
     【Webhook 专用】编排一个新入库媒体项的完整处理流程。
     包括：元数据处理 -> 自定义合集匹配 -> 封面生成。
     """
-    processor = extensions.media_processor_instance
     if not processor:
         logger.error(f"完整处理流程中止：核心处理器 (MediaProcessor) 未初始化。")
         return
