@@ -57,7 +57,10 @@ def view_log_file():
 
     try:
         with open(full_path, 'r', encoding='utf-8', errors='ignore') as f:
-            content = f.read()
+            lines = f.readlines()  # 将所有行读入一个列表
+        
+        lines.reverse()  # 反转列表顺序
+        content = "".join(lines)  # 将列表重新组合成一个字符串
         
         return Response(content, mimetype='text/plain')
         
