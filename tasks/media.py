@@ -62,13 +62,12 @@ def task_sync_assets(processor, item_id: str, update_description: str, sync_time
     """
     任务：为单个媒体项同步图片和元数据文件到本地 override 目录。
     """
-    logger.info(f"任务开始：同步资源文件 for ID: {item_id} (原因: {update_description})")
+    logger.trace(f"任务开始：覆盖缓存备份 for ID: {item_id} (原因: {update_description})")
     try:
-        # 注意：这里我们不再需要冷却检查，因为任务队列本身就防止了并发
         processor.sync_single_item_assets(item_id, update_description, sync_timestamp_iso)
-        logger.info(f"任务成功：同步资源文件 for ID: {item_id}")
+        logger.trace(f"任务成功：覆盖缓存备份 for ID: {item_id}")
     except Exception as e:
-        logger.error(f"任务失败：同步资源文件 for ID: {item_id} 时发生错误: {e}", exc_info=True)
+        logger.error(f"任务失败：覆盖缓存备份 for ID: {item_id} 时发生错误: {e}", exc_info=True)
         raise
 
 # ★★★ 重新处理单个项目 ★★★
