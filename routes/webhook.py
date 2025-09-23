@@ -25,6 +25,7 @@ from custom_collection_handler import FilterEngine
 from services.cover_generator import CoverGeneratorService
 from database import collection_db
 from database import connection
+from database import settings_db
 from database.log_db import LogDBManager
 import logging
 logger = logging.getLogger(__name__)
@@ -137,7 +138,7 @@ def _handle_full_processing_flow(processor: 'MediaProcessor', item_id: str, forc
 
     # --- 封面生成逻辑 ---
     try:
-        cover_config = collection_db.get_setting('cover_generator_config') or {}
+        cover_config = settings_db.get_setting('cover_generator_config') or {}
 
         if cover_config.get("enabled") and cover_config.get("transfer_monitor"):
             logger.info(f"  -> 检测到 '{item_details.get('Name')}' 入库，将为其所属媒体库生成新封面...")
