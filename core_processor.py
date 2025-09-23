@@ -2474,7 +2474,7 @@ class MediaProcessor:
             return
         try:
             shutil.copytree(source_cache_dir, target_override_dir, dirs_exist_ok=True)
-            logger.info(f"  -> {log_prefix} 步骤 1/3: 成功将基础元数据从 '{source_cache_dir}' 复制到 '{target_override_dir}'。")
+            logger.info(f"  -> {log_prefix} 步骤 1/3: 成功将基础元数据复制到覆盖缓存。")
         except Exception as e:
             logger.error(f"  -> {log_prefix} 复制元数据时失败: {e}", exc_info=True)
             return
@@ -2546,17 +2546,16 @@ class MediaProcessor:
                 f.seek(0)
                 json.dump(data, f, ensure_ascii=False, indent=2)
                 f.truncate()
-                logger.info(f"  -> {log_prefix} 步骤 2/3: 成功将 Emby 中的 {len(new_perfect_cast)} 位完整演员信息重建并写入主备份文件。")
+                logger.info(f"  -> {log_prefix} 步骤 2/3: 成功将 Emby 中的 {len(new_perfect_cast)} 位完整演员信息重建并写入覆盖缓存文件。")
         except Exception as e:
             logger.error(f"  -> {log_prefix} 重建并写入 '{main_json_filename}' 时失败: {e}", exc_info=True)
             return
 
-        # 5. 新增：注入演员表到所有季/集文件 (不变)
+        # 5. 注入演员表到所有季/集文件
         if item_type == "Series":
             logger.info(f"  -> {log_prefix} 步骤 3/3: 开始将演员表、剧集名和简介注入所有季/集备份文件...")
             
-            # ★★★ 核心修改 1: 获取所有子项目的最新数据 ★★★
-            # 感谢 emby_handler.py 的修复，这里现在能获取到 Overview 了
+            # ★★★ 获取所有子项目的最新数据 ★★★
             children_from_emby = emby_handler.get_series_children(
                 series_id=item_details.get("Id"),
                 base_url=self.emby_url,
@@ -2565,7 +2564,7 @@ class MediaProcessor:
                 series_name_for_log=item_name_for_log
             ) or []
 
-            # ★★★ 核心修改 2: 创建一个高效的查找映射表 ★★★
+            # ★★★ 创建一个高效的查找映射表 ★★★
             # key 的格式为 "season-1-episode-12"，与文件名完美对应
             child_data_map = {}
             for child in children_from_emby:
