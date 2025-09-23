@@ -63,7 +63,6 @@ COPY web_app.py \
      config_manager.py \
      task_manager.py \
      extensions.py \
-     tasks.py \
      github_handler.py \
      custom_collection_handler.py \
      scheduler_manager.py \
@@ -72,6 +71,7 @@ COPY web_app.py \
      ./
 
 COPY database/ ./database/
+COPY tasks/ ./tasks/
 COPY fonts/ ./fonts/
 COPY services/ ./services/
 COPY routes/ ./routes/
