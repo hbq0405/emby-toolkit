@@ -2474,7 +2474,7 @@ class MediaProcessor:
             return
         try:
             shutil.copytree(source_cache_dir, target_override_dir, dirs_exist_ok=True)
-            logger.info(f"  -> {log_prefix} 步骤 1/3: 成功将基础元数据复制到覆盖缓存。")
+            logger.trace(f"  -> {log_prefix} 成功将基础元数据复制到覆盖缓存。")
         except Exception as e:
             logger.error(f"  -> {log_prefix} 复制元数据时失败: {e}", exc_info=True)
             return
@@ -2546,14 +2546,14 @@ class MediaProcessor:
                 f.seek(0)
                 json.dump(data, f, ensure_ascii=False, indent=2)
                 f.truncate()
-                logger.info(f"  -> {log_prefix} 步骤 2/3: 成功将 Emby 中的 {len(new_perfect_cast)} 位完整演员信息重建并写入覆盖缓存文件。")
+                logger.info(f"  -> {log_prefix} 成功将 Emby 中的 {len(new_perfect_cast)} 位演员信息写入覆盖缓存文件")
         except Exception as e:
             logger.error(f"  -> {log_prefix} 重建并写入 '{main_json_filename}' 时失败: {e}", exc_info=True)
             return
 
         # 5. 注入演员表到所有季/集文件
         if item_type == "Series":
-            logger.info(f"  -> {log_prefix} 步骤 3/3: 开始将演员表、剧集名和简介注入所有季/集备份文件...")
+            logger.info(f"  -> {log_prefix} 开始将演员表、剧集名和简介注入所有季/集备份文件...")
             
             # ★★★ 获取所有子项目的最新数据 ★★★
             children_from_emby = emby_handler.get_series_children(
