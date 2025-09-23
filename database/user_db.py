@@ -9,6 +9,10 @@ from .connection import get_db_connection
 
 logger = logging.getLogger(__name__)
 
+# ======================================================================
+# 模块: 用户数据访问
+# ======================================================================
+
 def upsert_user_media_data(data: Dict[str, Any]):
     """【V1】根据Webhook传入的数据，更新或插入单条用户媒体状态。"""
     

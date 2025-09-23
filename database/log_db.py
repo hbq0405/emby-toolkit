@@ -7,6 +7,10 @@ from .connection import get_db_connection
 
 logger = logging.getLogger(__name__)
 
+# ======================================================================
+# 模块: 日志数据访问
+# ======================================================================
+
 class LogDBManager:
     """专门负责与日志相关的数据库表 (processed_log, failed_log) 进行交互的类。"""
     def __init__(self):

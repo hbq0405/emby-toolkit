@@ -7,6 +7,10 @@ from .connection import get_db_connection
 
 logger = logging.getLogger(__name__)
 
+# ======================================================================
+# 模块: 追剧数据访问
+# ======================================================================
+
 def get_all_watchlist_items() -> List[Dict[str, Any]]:
     """获取所有追剧列表中的项目。"""
     

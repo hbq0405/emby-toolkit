@@ -10,6 +10,10 @@ from .connection import get_db_connection
 
 logger = logging.getLogger(__name__)
 
+# ======================================================================
+# 模块: 洗版数据访问
+# ======================================================================
+
 # --- 规则管理 (Rules Management) ---
 def _prepare_rule_data_for_db(rule_data: Dict[str, Any]) -> Dict[str, Any]:
     

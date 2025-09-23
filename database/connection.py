@@ -8,6 +8,10 @@ import constants
 
 logger = logging.getLogger(__name__)
 
+# ======================================================================
+# 模块: 中央数据访问 
+# ======================================================================
+
 def get_db_connection() -> psycopg2.extensions.connection:
     """
     【中央函数】获取一个配置好 RealDictCursor 的 PostgreSQL 数据库连接。

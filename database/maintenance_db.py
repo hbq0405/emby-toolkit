@@ -10,6 +10,10 @@ from .connection import get_db_connection
 
 logger = logging.getLogger(__name__)
 
+# ======================================================================
+# 模块: 维护数据访问
+# ======================================================================
+
 # --- 媒体去重模块 ---
 def get_all_cleanup_tasks() -> List[Dict[str, Any]]:
     
