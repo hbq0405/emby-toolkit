@@ -121,7 +121,7 @@ def search_all_logs():
                 # 如果单个文件读取失败，记录错误并继续
                 logging.warning(f"API: 搜索时无法读取文件 '{filename}': {e}")
 
-        search_results.sort(key=lambda x: x['date'])
+        search_results.sort(key=lambda x: x['date'], reverse=True)
         return jsonify(search_results)
 
     except Exception as e:

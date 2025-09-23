@@ -230,11 +230,11 @@ const stats = ref({});
 const logRef = ref(null);
 const isLogViewerVisible = ref(false);
 
-const logContent = computed(() => props.taskStatus?.logs?.join('\n') || '等待任务日志...');
+const logContent = computed(() => props.taskStatus?.logs?.slice().reverse().join('\n') || '等待任务日志...');
 
 watch(() => props.taskStatus.logs, async () => {
   await nextTick();
-  logRef.value?.scrollTo({ position: 'bottom', slient: true });
+  logRef.value?.scrollTo({ position: 'top', slient: true });
 }, { deep: true });
 
 const fetchStats = async () => {
