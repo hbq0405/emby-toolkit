@@ -2519,7 +2519,7 @@ class MediaProcessor:
                 # 用找到的 TMDB ID 去获取最详细的元数据
                 full_metadata = self._get_actor_metadata_from_cache(actor_tmdb_id, cursor)
                 if not full_metadata:
-                    logger.warning(f"  -> 无法在 actor_metadata 缓存中为 TMDB ID '{actor_tmdb_id}' 找到元数据，已跳过演员 '{person_name_cn}'。")
+                    logger.trace(f"  -> 无法在 actor_metadata 缓存中为 TMDB ID '{actor_tmdb_id}' 找到元数据，已跳过演员 '{person_name_cn}'。")
                     continue
 
                 # 构建一个符合 JSON 格式的、信息完整的演员字典
