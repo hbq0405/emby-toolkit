@@ -969,8 +969,8 @@ class MediaProcessor:
                 # ======================================================================
                 # 阶段 8: 覆盖缓存备份
                 # ======================================================================
-                logger.info(f"  -> 核心处理完成，开始为 '{item_name_for_log}' 同步到覆盖缓存...")
-                self.sync_single_item_assets(item_id)
+                # logger.info(f"  -> 核心处理完成，开始为 '{item_name_for_log}' 同步到覆盖缓存...")
+                # self.sync_single_item_assets(item_id)
 
         except (ValueError, InterruptedError) as e:
             logger.warning(f"处理 '{item_name_for_log}' 的过程中断: {e}")
