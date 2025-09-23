@@ -2376,7 +2376,7 @@ class MediaProcessor:
             
             # 模式一：精准同步 (当描述存在时)
             if update_description:
-                log_prefix = "[精准图片备份]"
+                log_prefix = "[图片备份]"
                 logger.trace(f"{log_prefix} 正在解析描述: '{update_description}'")
                 
                 # 定义关键词到Emby图片类型的映射 (使用小写以方便匹配)
@@ -2403,12 +2403,12 @@ class MediaProcessor:
             
             # 模式二：完全同步 (默认或回退)
             else:
-                log_prefix = "[全量图片备份]"
+                log_prefix = "[图片备份]"
                 logger.trace(f"  -> {log_prefix} 未提供更新描述，将同步所有类型的图片。")
                 images_to_sync = full_image_map
 
             # --- 执行下载 ---
-            logger.info(f"  -> {log_prefix} 开始为 '{item_name_for_log}' 下载 {len(images_to_sync)} 张图片至 {image_override_dir}...")
+            logger.info(f"  -> {log_prefix} 开始为 '{item_name_for_log}' 下载 {len(images_to_sync)} 张图片至覆盖缓存")
             for image_type, filename in images_to_sync.items():
                 if self.is_stop_requested():
                     logger.warning(f"  -> {log_prefix} 收到停止信号，中止图片下载。")
