@@ -10,7 +10,7 @@ from datetime import datetime, date
 from psycopg2 import sql
 
 # 导入底层模块
-import db_handler
+
 import config_manager
 import task_manager
 import constants

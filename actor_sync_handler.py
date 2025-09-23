@@ -4,9 +4,11 @@ from typing import Optional
 import threading
 # 导入必要的模块
 import emby_handler
+from database.actor_db import ActorDBManager
+from database import user_db
+from database import connection
+from database import actor_db
 import logging
-from db_handler import get_db_connection as get_central_db_connection, get_all_emby_person_ids_from_map, delete_persons_by_emby_ids
-from db_handler import ActorDBManager
 logger = logging.getLogger(__name__)
 
 class UnifiedSyncHandler:
@@ -47,7 +49,7 @@ class UnifiedSyncHandler:
         # 安全检查 (逻辑不变)
         if total_from_emby == 0:
             try:
-                pids_in_db = get_all_emby_person_ids_from_map()
+                pids_in_db = user_db.get_all_emby_person_ids_from_map()
                 if len(pids_in_db) > 100:
                     if update_status_callback: update_status_callback(-1, "安全中止：无法从Emby获取演员")
                     return
@@ -62,10 +64,10 @@ class UnifiedSyncHandler:
         if update_status_callback: update_status_callback(30, "阶段 2/2: 正在同步数据到本地数据库...")
         
         try:
-            pids_in_db_before_sync = get_all_emby_person_ids_from_map()
+            pids_in_db_before_sync = actor_db.get_all_emby_person_ids_from_map()
             all_emby_pids_from_sync = {str(p.get("Id", "")).strip() for p in all_persons_from_emby if p.get("Id")}
 
-            with get_central_db_connection() as conn:
+            with connection.get_db_connection() as conn:
                 cursor = conn.cursor()
                 emby_config_for_upsert = {"url": self.emby_url, "api_key": self.emby_api_key, "user_id": self.emby_user_id}
 
@@ -104,7 +106,7 @@ class UnifiedSyncHandler:
                 # 3. 清理操作 (逻辑不变)
                 pids_to_delete = list(pids_in_db_before_sync - all_emby_pids_from_sync)
                 if pids_to_delete:
-                    deleted_count = delete_persons_by_emby_ids(pids_to_delete)
+                    deleted_count = actor_db.delete_persons_by_emby_ids(pids_to_delete)
                     stats['deleted'] = deleted_count
 
         except InterruptedError:

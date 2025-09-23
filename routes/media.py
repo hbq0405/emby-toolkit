@@ -9,7 +9,7 @@ import emby_handler
 import config_manager
 import task_manager
 import extensions
-import db_handler
+
 from extensions import login_required, processor_ready_required
 from urllib.parse import urlparse
 

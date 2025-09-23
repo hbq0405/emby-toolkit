@@ -5,7 +5,7 @@ import json
 import logging
 from flask import Blueprint, request, jsonify
 import task_manager
-import db_handler
+
 from extensions import media_processor_instance
 import config_manager # 导入以获取数据路径
 from extensions import login_required

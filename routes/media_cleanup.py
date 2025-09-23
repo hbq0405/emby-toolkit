@@ -2,7 +2,7 @@
 
 from flask import Blueprint, jsonify, request
 from extensions import task_lock_required, processor_ready_required
-import db_handler
+
 import task_manager
 import config_manager
 from tasks import task_execute_cleanup

@@ -4,7 +4,7 @@ from flask import Blueprint, request, jsonify
 import logging
 from datetime import datetime, date
 # 导入需要的模块
-import db_handler
+
 import config_manager
 import moviepilot_handler
 import task_manager

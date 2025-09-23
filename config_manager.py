@@ -4,10 +4,10 @@ import configparser
 import logging
 from typing import Dict, Any, Tuple, Optional
 import json
-
+from database import settings_db
 # --- 核心模块导入 ---
 import constants # 你的常量定义
-import db_handler
+
 
 logger = logging.getLogger(__name__)
 
@@ -212,7 +212,7 @@ def load_config():
     # ======================================================================
     try:
         # 使用 'dynamic_app_config' 作为唯一的键来获取所有动态配置
-        dynamic_config_from_db = db_handler.get_setting('dynamic_app_config') or {}
+        dynamic_config_from_db = settings_db.get_setting('dynamic_app_config') or {}
         
         # 将数据库中的配置与 DYNAMIC_CONFIG_DEF 中定义的默认值合并
         # 这样可以确保即使数据库中的配置不完整，或者未来代码中新增了配置项，程序也能正常工作
@@ -248,7 +248,7 @@ def save_config(new_config: Dict[str, Any]):
     
     try:
         # 步骤 1: 从数据库加载当前完整的动态配置，如果不存在则视为空字典
-        full_dynamic_config = db_handler.get_setting('dynamic_app_config') or {}
+        full_dynamic_config = settings_db.get_setting('dynamic_app_config') or {}
         
         # 步骤 2: 将前端传入的新配置更新（合并）到这个完整的配置对象中
         # 这确保了只更新变化的键，而不会丢失其他键
@@ -263,7 +263,7 @@ def save_config(new_config: Dict[str, Any]):
         }
         
         # 步骤 4: 将这个合并后的、完整的、干净的配置对象作为一个整体存回数据库
-        db_handler.save_setting('dynamic_app_config', dynamic_config_to_save)
+        settings_db.save_setting('dynamic_app_config', dynamic_config_to_save)
         
         # 步骤 5: 更新内存中的全局配置以立即生效
         APP_CONFIG.update(dynamic_config_to_save)

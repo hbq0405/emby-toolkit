@@ -7,9 +7,10 @@ import concurrent.futures
 from typing import Optional, Dict, Any, List
 from datetime import datetime, timedelta, timezone
 import threading
-import db_handler
-from db_handler import get_db_connection as get_central_db_connection
+
 # 导入我们需要的辅助模块
+from database import connection
+from database import watchlist_db
 import moviepilot_handler
 import constants
 import tmdb_handler
@@ -79,7 +80,7 @@ class WatchlistProcessor:
     def _update_watchlist_entry(self, item_id: str, item_name: str, updates: Dict[str, Any]):
         """【V4 - 最终修复版】统一更新追剧列表中的一个条目。"""
         try:
-            with get_central_db_connection() as conn:
+            with connection.get_db_connection() as conn:
                 with conn.cursor() as cursor:
                     # ★★★ 核心修正：使用 datetime.utcnow() 生成不带时区的UTC时间 ★★★
                     # 这能最大限度地兼容各种数据库时区设置，避免类型冲突
@@ -114,7 +115,7 @@ class WatchlistProcessor:
         tmdb_status = tmdb_details.get("status")
         if tmdb_status in ["Returning Series", "In Production", "Planned"]:
             try:
-                with get_central_db_connection() as conn:
+                with connection.get_db_connection() as conn:
                     with conn.cursor() as cursor:
                         # ★★★ 核心修复: 改为 PostgreSQL 语法 ★★★
                         cursor.execute("""
@@ -181,7 +182,7 @@ class WatchlistProcessor:
                 # 2. 获取当前追剧列表中的所有剧集 ID
                 watchlist_series_ids = set()
                 try:
-                    with get_central_db_connection() as conn:
+                    with connection.get_db_connection() as conn:
                         cursor = conn.cursor()
                         cursor.execute("SELECT item_id FROM watchlist WHERE item_type = 'Series'")
                         watchlist_series_ids = {row['item_id'] for row in cursor.fetchall()}
@@ -195,7 +196,7 @@ class WatchlistProcessor:
                 if deleted_series_ids:
                     logger.warning(f"检测到 {len(deleted_series_ids)} 部剧集已从 Emby 删除，将从追剧列表移除。")
                     for deleted_id in deleted_series_ids:
-                        db_handler.remove_item_from_watchlist(item_id=deleted_id)
+                        watchlist_db.remove_item_from_watchlist(item_id=deleted_id)
                 else:
                     logger.info("未检测到 Emby 中有剧集被删除。")
             # --- 新增逻辑结束 ---
@@ -460,7 +461,7 @@ class WatchlistProcessor:
         - 如果提供了 item_id，则无视 WHERE 子句，强制只处理该项目。
         """
         try:
-            with get_central_db_connection() as conn:
+            with connection.get_db_connection() as conn:
                 cursor = conn.cursor()
                 
                 # ★★★ 核心修复：将传入的 where_clause 作为查询的基础 ★★★
@@ -494,7 +495,7 @@ class WatchlistProcessor:
         )
         if not item_details_for_check:
             logger.warning(f"  -> 剧集 '{item_name}' (ID: {item_id}) 在 Emby 中已不存在。将从追剧列表移除。")
-            db_handler.remove_item_from_watchlist(item_id=item_id)
+            watchlist_db.remove_item_from_watchlist(item_id=item_id)
             return 
 
         if not self.tmdb_api_key:
@@ -663,7 +664,7 @@ class WatchlistProcessor:
         
         series_to_process = []
         try:
-            with get_central_db_connection() as conn:
+            with connection.get_db_connection() as conn:
                 cursor = conn.cursor()
                 query = "SELECT * FROM watchlist WHERE status = 'Watching'"
                 params = []
@@ -772,7 +773,7 @@ class WatchlistProcessor:
     def _update_watchlist_status(self, item_id: str, status: str, item_name: str):
         """【V4 - 最终修复版】更新数据库中指定项目的状态。"""
         try:
-            with get_central_db_connection() as conn:
+            with connection.get_db_connection() as conn:
                 with conn.cursor() as cursor:
                     # ★★★ 核心修正：统一使用 datetime.utcnow() ★★★
                     current_time = datetime.utcnow()
@@ -785,7 +786,7 @@ class WatchlistProcessor:
     def _update_watchlist_timestamp(self, item_id: str, item_name: str):
         """【V4 - 最终修复版】仅更新数据库中指定项目的 last_checked_at 时间戳。"""
         try:
-            with get_central_db_connection() as conn:
+            with connection.get_db_connection() as conn:
                 with conn.cursor() as cursor:
                     # ★★★ 核心修正：统一使用 datetime.utcnow() ★★★
                     current_time = datetime.utcnow()

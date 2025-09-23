@@ -5,7 +5,7 @@ import logging
 import json
 
 # 导入需要的模块
-import db_handler
+
 import config_manager
 import moviepilot_handler
 from extensions import login_required, task_lock_required, processor_ready_required

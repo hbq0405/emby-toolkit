@@ -23,7 +23,7 @@ from actor_subscription_processor import ActorSubscriptionProcessor
 from custom_collection_handler import ListImporter, FilterEngine
 
 # 导入需要的底层模块和共享实例
-import db_handler
+
 import emby_handler
 import tmdb_handler
 import moviepilot_handler
@@ -39,6 +39,17 @@ from core_processor import _read_local_json
 from services.cover_generator import CoverGeneratorService
 import utils
 from utils import get_country_translation_map, translate_country_list, get_unified_rating
+from database import (
+    actor_db,
+    collection_db,
+    connection,
+    log_db,
+    maintenance_db,
+    resubscribe_db,
+    settings_db,
+    user_db,
+    watchlist_db
+)
 
 logger = logging.getLogger(__name__)
 
@@ -429,7 +440,7 @@ def task_import_database(processor, file_content: str, tables_to_import: List[st
         logger.info(f"调整后的导入顺序：{sorted_tables_to_import}")
         # --- 结束更新逻辑 ---
 
-        with db_handler.get_db_connection() as conn:
+        with connection.get_db_connection() as conn:
             with conn.cursor() as cursor:
                 logger.info("数据库事务已开始。")
                 # 使用排序后的列表进行迭代
@@ -642,7 +653,7 @@ def task_reprocess_all_review_items(processor: MediaProcessor):
     logger.trace("--- 开始执行“重新处理所有待复核项”任务 [强制在线获取模式] ---")
     try:
         # +++ 核心修改 1：同时查询 item_id 和 item_name +++
-        with db_handler.get_db_connection() as conn:
+        with connection.get_db_connection() as conn:
             cursor = conn.cursor()
             # 从 failed_log 中同时获取 ID 和 Name
             cursor.execute("SELECT item_id, item_name FROM failed_log")
@@ -718,7 +729,7 @@ def _process_single_collection_concurrently(collection_data: dict, tmdb_api_key:
         else:
             # ★★★ 核心修复 2/2: 修正数据库读取逻辑 ★★★
             previous_movies_map = {}
-            with db_handler.get_db_connection() as conn:
+            with connection.get_db_connection() as conn:
                 cursor = conn.cursor()
                 cursor.execute("SELECT missing_movies_json FROM collections_info WHERE emby_collection_id = %s", (collection_id,))
                 row = cursor.fetchone()
@@ -790,7 +801,7 @@ def task_refresh_collections(processor: MediaProcessor):
         task_manager.update_status_from_thread(5, f"共找到 {total} 个合集，准备开始并发处理...")
 
         # 清理数据库中已不存在的合集
-        with db_handler.get_db_connection() as conn:
+        with connection.get_db_connection() as conn:
             cursor = conn.cursor()
             emby_current_ids = {c['Id'] for c in emby_collections}
             # ★★★ 语法修正：PostgreSQL 的 cursor.fetchall() 返回字典列表，需要正确提取 ★★★
@@ -832,7 +843,7 @@ def task_refresh_collections(processor: MediaProcessor):
         
         if all_results:
             logger.info(f"  -> 并发处理完成，准备将 {len(all_results)} 条结果写入数据库...")
-            with db_handler.get_db_connection() as conn:
+            with connection.get_db_connection() as conn:
                 cursor = conn.cursor()
                 cursor.execute("BEGIN TRANSACTION;")
                 try:
@@ -888,7 +899,7 @@ def task_auto_subscribe(processor: MediaProcessor):
         successfully_subscribed_items = []
         quota_exhausted = False # 新增一个标志，用于记录配额是否用尽
 
-        with db_handler.get_db_connection() as conn:
+        with connection.get_db_connection() as conn:
             cursor = conn.cursor()
 
             # ★★★ 1. 处理原生电影合集 (collections_info) ★★★
@@ -922,7 +933,7 @@ def task_auto_subscribe(processor: MediaProcessor):
 
                             if release_date <= today:
                                 # ★★★ 核心修改 1/3: 在订阅前检查配额 ★★★
-                                current_quota = db_handler.get_subscription_quota()
+                                current_quota = settings_db.get_subscription_quota()
                                 if current_quota <= 0:
                                     quota_exhausted = True
                                     logger.warning("每日订阅配额已用尽，原生合集检查提前结束。")
@@ -930,7 +941,7 @@ def task_auto_subscribe(processor: MediaProcessor):
                                     break # 跳出内层循环
 
                                 if moviepilot_handler.subscribe_movie_to_moviepilot(movie, config_manager.APP_CONFIG):
-                                    db_handler.decrement_subscription_quota() # 消耗配额
+                                    settings_db.decrement_subscription_quota() # 消耗配额
                                     successfully_subscribed_items.append(f"电影《{movie['title']}》")
                                     movies_changed = True
                                     movie['status'] = 'subscribed'
@@ -978,7 +989,7 @@ def task_auto_subscribe(processor: MediaProcessor):
 
                             if season_date <= today:
                                 # ★★★ 核心修改 2/3: 在订阅前检查配额 ★★★
-                                current_quota = db_handler.get_subscription_quota()
+                                current_quota = settings_db.get_subscription_quota()
                                 if current_quota <= 0:
                                     quota_exhausted = True
                                     logger.warning("每日订阅配额已用尽，追剧检查提前结束。")
@@ -987,7 +998,7 @@ def task_auto_subscribe(processor: MediaProcessor):
 
                                 success = moviepilot_handler.subscribe_series_to_moviepilot(dict(series), season['season_number'], config_manager.APP_CONFIG)
                                 if success:
-                                    db_handler.decrement_subscription_quota() # 消耗配额
+                                    settings_db.decrement_subscription_quota() # 消耗配额
                                     successfully_subscribed_items.append(f"《{series['item_name']}》第 {season['season_number']} 季")
                                     seasons_changed = True
                                 else:
@@ -1043,7 +1054,7 @@ def task_auto_subscribe(processor: MediaProcessor):
 
                                 if release_date <= today:
                                     # ★★★ 核心修改 3/3: 在订阅前检查配额 ★★★
-                                    current_quota = db_handler.get_subscription_quota()
+                                    current_quota = settings_db.get_subscription_quota()
                                     if current_quota <= 0:
                                         quota_exhausted = True
                                         logger.warning("每日订阅配额已用尽，自定义合集检查提前结束。")
@@ -1059,7 +1070,7 @@ def task_auto_subscribe(processor: MediaProcessor):
                                         success = moviepilot_handler.subscribe_series_to_moviepilot(series_info, season_number=None, config=config_manager.APP_CONFIG)
                                     
                                     if success:
-                                        db_handler.decrement_subscription_quota() # 消耗配额
+                                        settings_db.decrement_subscription_quota() # 消耗配额
                                         successfully_subscribed_items.append(f"{authoritative_type}《{media_title}》")
                                         media_changed = True
                                         media_item['status'] = 'subscribed'
@@ -1098,7 +1109,7 @@ def task_auto_subscribe(processor: MediaProcessor):
                         continue
 
                     # 检查配额
-                    current_quota = db_handler.get_subscription_quota()
+                    current_quota = settings_db.get_subscription_quota()
                     if current_quota <= 0:
                         quota_exhausted = True
                         logger.warning("每日订阅配额已用尽，演员订阅检查提前结束。")
@@ -1116,7 +1127,7 @@ def task_auto_subscribe(processor: MediaProcessor):
                         success = moviepilot_handler.subscribe_series_to_moviepilot(series_info, season_number=None, config=config_manager.APP_CONFIG)
                     
                     if success:
-                        db_handler.decrement_subscription_quota()
+                        settings_db.decrement_subscription_quota()
                         successfully_subscribed_items.append(f"演员作品《{media_title}》")
                         # 直接更新状态
                         cursor.execute("UPDATE tracked_actor_media SET status = 'SUBSCRIBED' WHERE id = %s", (media_item['id'],))
@@ -1226,7 +1237,7 @@ def task_add_all_series_to_watchlist(processor: MediaProcessor):
         task_manager.update_status_from_thread(60, f"筛选出 {total_to_add} 部有效剧集，准备批量写入数据库...")
         
         # --- 高效批量写入数据库 ---
-        with db_handler.get_db_connection() as conn:
+        with connection.get_db_connection() as conn:
             cursor = conn.cursor()
             try:
                 # ★★★ 核心修复：使用 execute_values 进行高效批量插入 ★★★
@@ -1483,7 +1494,7 @@ def task_process_all_custom_collections(processor: MediaProcessor):
     try:
         # ... (前面的代码都不变，直到 for 循环) ...
         task_manager.update_status_from_thread(0, "正在获取所有启用的合集定义...")
-        active_collections = db_handler.get_all_active_custom_collections()
+        active_collections = collection_db.get_all_active_custom_collections()
         if not active_collections:
             logger.info("  -> 没有找到任何已启用的自定义合集，任务结束。")
             task_manager.update_status_from_thread(100, "没有已启用的合集。")
@@ -1508,7 +1519,7 @@ def task_process_all_custom_collections(processor: MediaProcessor):
         cover_service = None
         cover_config = {}
         try:
-            cover_config = db_handler.get_setting('cover_generator_config') or {}
+            cover_config = settings_db.get_setting('cover_generator_config') or {}
             
             if cover_config.get("enabled"):
                 cover_service = CoverGeneratorService(config=cover_config)
@@ -1552,7 +1563,7 @@ def task_process_all_custom_collections(processor: MediaProcessor):
                 # ... (后续代码直到封面生成部分) ...
                 if not tmdb_items:
                     logger.warning(f"合集 '{collection_name}' 未能生成任何媒体ID，跳过。")
-                    db_handler.update_custom_collection_after_sync(collection_id, {"emby_collection_id": None, "generated_media_info_json": "[]", "generated_emby_ids_json": "[]"})
+                    collection_db.update_custom_collection_after_sync(collection_id, {"emby_collection_id": None, "generated_media_info_json": "[]", "generated_emby_ids_json": "[]"})
                     continue
 
                 ordered_emby_ids_in_library = [
@@ -1662,7 +1673,7 @@ def task_process_all_custom_collections(processor: MediaProcessor):
                         "poster_path": None
                     })
                 
-                db_handler.update_custom_collection_after_sync(collection_id, update_data)
+                collection_db.update_custom_collection_after_sync(collection_id, update_data)
                 logger.info(f"  -> ✅ 合集 '{collection_name}' 处理完成，并已更新数据库状态。")
 
                 if cover_service and emby_collection_id:
@@ -1675,7 +1686,7 @@ def task_process_all_custom_collections(processor: MediaProcessor):
                         
                         # 3. 将数据库中最新的合集信息（包含in_library_count）传递给辅助函数
                         #    我们使用 db_handler 重新获取一次，确保拿到的是刚刚更新过的最新数据
-                        latest_collection_info = db_handler.get_custom_collection_by_id(collection_id)
+                        latest_collection_info = collection_db.get_custom_collection_by_id(collection_id)
                         item_count_to_pass = _get_cover_badge_text_for_collection(latest_collection_info)
                         
                         # 4. 调用封面生成服务
@@ -1711,7 +1722,7 @@ def task_process_custom_collection(processor: MediaProcessor, custom_collection_
     try:
         # ... (前面的代码都不变，直到 tmdb_items = [] ) ...
         task_manager.update_status_from_thread(0, "正在读取合集定义...")
-        collection = db_handler.get_custom_collection_by_id(custom_collection_id)
+        collection = collection_db.get_custom_collection_by_id(custom_collection_id)
         if not collection: raise ValueError(f"未找到ID为 {custom_collection_id} 的自定义合集。")
         
         collection_name = collection['name']
@@ -1742,7 +1753,7 @@ def task_process_custom_collection(processor: MediaProcessor, custom_collection_
         # ... (后续代码直到封面生成部分) ...
         if not tmdb_items:
             logger.warning(f"合集 '{collection_name}' 未能生成任何媒体ID，任务结束。")
-            db_handler.update_custom_collection_after_sync(custom_collection_id, {"emby_collection_id": None, "generated_media_info_json": "[]"})
+            collection_db.update_custom_collection_after_sync(custom_collection_id, {"emby_collection_id": None, "generated_media_info_json": "[]"})
             return
 
         task_manager.update_status_from_thread(70, f"已生成 {len(tmdb_items)} 个ID，正在Emby中创建/更新合集...")
@@ -1851,11 +1862,11 @@ def task_process_custom_collection(processor: MediaProcessor, custom_collection_
                 "poster_path": None
             })
 
-        db_handler.update_custom_collection_after_sync(custom_collection_id, update_data)
+        collection_db.update_custom_collection_after_sync(custom_collection_id, update_data)
         logger.info(f"  -> 已更新自定义合集 '{collection_name}' (ID: {custom_collection_id}) 的同步状态和健康信息。")
 
         try:
-            cover_config = db_handler.get_setting('cover_generator_config') or {}
+            cover_config = settings_db.get_setting('cover_generator_config') or {}
 
             if cover_config.get("enabled") and emby_collection_id:
                 logger.info(f"  -> 检测到封面生成器已启用，将为合集 '{collection_name}' 生成封面...")
@@ -1864,7 +1875,7 @@ def task_process_custom_collection(processor: MediaProcessor, custom_collection_
                 if library_info:
                     # ▼▼▼ 核心修改点 ▼▼▼
                     # 1. 获取最新的合集信息
-                    latest_collection_info = db_handler.get_custom_collection_by_id(custom_collection_id)
+                    latest_collection_info = collection_db.get_custom_collection_by_id(custom_collection_id)
                     
                     # 2. 调用辅助函数获取正确的角标参数
                     item_count_to_pass = _get_cover_badge_text_for_collection(latest_collection_info)
@@ -1928,7 +1939,7 @@ def task_populate_metadata_cache(processor: 'MediaProcessor', batch_size: int = 
             return
 
         db_tmdb_ids = set()
-        with db_handler.get_db_connection() as conn:
+        with connection.get_db_connection() as conn:
             cursor = conn.cursor()
             cursor.execute("SELECT tmdb_id FROM media_metadata")
             db_tmdb_ids = {row["tmdb_id"] for row in cursor.fetchall()}
@@ -1953,7 +1964,7 @@ def task_populate_metadata_cache(processor: 'MediaProcessor', batch_size: int = 
 
         if items_to_delete_tmdb_ids:
             logger.info(f"  -> 正在从数据库中删除 {len(items_to_delete_tmdb_ids)} 个已不存在的媒体项...")
-            with db_handler.get_db_connection() as conn:
+            with connection.get_db_connection() as conn:
                 cursor = conn.cursor()
                 ids_to_delete_list = list(items_to_delete_tmdb_ids)
                 for i in range(0, len(ids_to_delete_list), 500):
@@ -2105,7 +2116,7 @@ def task_populate_metadata_cache(processor: 'MediaProcessor', batch_size: int = 
                 break
 
             if metadata_batch:
-                with db_handler.get_db_connection() as conn:
+                with connection.get_db_connection() as conn:
                     cursor = conn.cursor()
                     # ★★★ 修复 2/2: 改进事务处理逻辑 ★★★
                     # 开启一个总事务
@@ -2165,7 +2176,7 @@ def task_generate_all_covers(processor: MediaProcessor):
     
     try:
         # 1. 读取配置
-        cover_config = db_handler.get_setting('cover_generator_config') or {}
+        cover_config = settings_db.get_setting('cover_generator_config') or {}
 
         if not cover_config:
             # 如果数据库里连配置都没有，可以认为功能未配置
@@ -2283,14 +2294,14 @@ def task_generate_all_custom_collection_covers(processor: MediaProcessor):
     
     try:
         # 1. 读取封面生成器的配置
-        cover_config = db_handler.get_setting('cover_generator_config') or {}
+        cover_config = settings_db.get_setting('cover_generator_config') or {}
         if not cover_config.get("enabled"):
             task_manager.update_status_from_thread(100, "任务跳过：封面生成器未启用。")
             return
 
         # 2. 从数据库获取所有已启用的自定义合集
         task_manager.update_status_from_thread(5, "正在获取所有已启用的自建合集...")
-        all_active_collections = db_handler.get_all_active_custom_collections()
+        all_active_collections = collection_db.get_all_active_custom_collections()
         
         # 3. 筛选出那些已经在Emby中成功创建的合集
         collections_to_process = [
@@ -2626,7 +2637,7 @@ def task_resubscribe_batch(processor: MediaProcessor, item_ids: List[str]):
     
     try:
         # 1. 从数据库中精确获取需要处理的项目
-        with db_handler.get_db_connection() as conn:
+        with connection.get_db_connection() as conn:
             cursor = conn.cursor()
             sql = "SELECT * FROM resubscribe_cache WHERE item_id = ANY(%s)"
             cursor.execute(sql, (item_ids,))
@@ -2640,7 +2651,7 @@ def task_resubscribe_batch(processor: MediaProcessor, item_ids: List[str]):
         logger.info(f"  -> 精准任务：共找到 {total_to_process} 个项目待处理，将开始订阅...")
         
         # 2. 后续的订阅、删除、配额检查逻辑和“一键洗版”完全一致
-        all_rules = db_handler.get_all_resubscribe_rules()
+        all_rules = resubscribe_db.get_all_resubscribe_rules()
         config = processor.config
         delay = float(config.get(constants.CONFIG_OPTION_RESUBSCRIBE_DELAY_SECONDS, 1.5))
         resubscribed_count = 0
@@ -2651,7 +2662,7 @@ def task_resubscribe_batch(processor: MediaProcessor, item_ids: List[str]):
                 logger.info("  -> 任务被用户中止。")
                 break
             
-            current_quota = db_handler.get_subscription_quota()
+            current_quota = settings_db.get_subscription_quota()
             if current_quota <= 0:
                 logger.warning("  -> 每日订阅配额已用尽，任务提前结束。")
                 break
@@ -2678,7 +2689,7 @@ def task_resubscribe_batch(processor: MediaProcessor, item_ids: List[str]):
             success = moviepilot_handler.subscribe_with_custom_payload(payload, config)
             
             if success:
-                db_handler.decrement_subscription_quota()
+                settings_db.decrement_subscription_quota()
                 resubscribed_count += 1
                 
                 matched_rule_id = item.get('matched_rule_id')
@@ -2690,12 +2701,12 @@ def task_resubscribe_batch(processor: MediaProcessor, item_ids: List[str]):
                         emby_api_key=processor.emby_api_key, user_id=processor.emby_user_id
                     )
                     if delete_success:
-                        db_handler.delete_resubscribe_cache_item(item_id)
+                        resubscribe_db.delete_resubscribe_cache_item(item_id)
                         deleted_count += 1
                     else:
-                        db_handler.update_resubscribe_item_status(item_id, 'subscribed')
+                        resubscribe_db.update_resubscribe_item_status(item_id, 'subscribed')
                 else:
-                    db_handler.update_resubscribe_item_status(item_id, 'subscribed')
+                    resubscribe_db.update_resubscribe_item_status(item_id, 'subscribed')
                 
                 if i < total_to_process - 1: time.sleep(delay)
 
@@ -2714,10 +2725,10 @@ def task_resubscribe_library(processor: MediaProcessor):
     config = processor.config
     
     try:
-        all_rules = db_handler.get_all_resubscribe_rules()
+        all_rules = resubscribe_db.get_all_resubscribe_rules()
         delay = float(config.get(constants.CONFIG_OPTION_RESUBSCRIBE_DELAY_SECONDS, 1.5))
 
-        with db_handler.get_db_connection() as conn:
+        with connection.get_db_connection() as conn:
             cursor = conn.cursor()
             cursor.execute("SELECT * FROM resubscribe_cache WHERE status = 'needed'")
             items_to_resubscribe = cursor.fetchall()
@@ -2734,7 +2745,7 @@ def task_resubscribe_library(processor: MediaProcessor):
         for i, item in enumerate(items_to_resubscribe):
             if processor.is_stop_requested(): break
             
-            current_quota = db_handler.get_subscription_quota()
+            current_quota = settings_db.get_subscription_quota()
             if current_quota <= 0:
                 logger.warning("  -> 每日订阅配额已用尽，任务提前结束。")
                 break
@@ -2761,7 +2772,7 @@ def task_resubscribe_library(processor: MediaProcessor):
             success = moviepilot_handler.subscribe_with_custom_payload(payload, config)
             
             if success:
-                db_handler.decrement_subscription_quota()
+                settings_db.decrement_subscription_quota()
                 resubscribed_count += 1
                 
                 matched_rule_id = item.get('matched_rule_id')
@@ -2776,14 +2787,14 @@ def task_resubscribe_library(processor: MediaProcessor):
                     )
                     if delete_success:
                         # 如果 Emby 项删除成功，就从我们的缓存里也删除
-                        db_handler.delete_resubscribe_cache_item(item_id)
+                        resubscribe_db.delete_resubscribe_cache_item(item_id)
                         deleted_count += 1
                     else:
                         # 如果 Emby 项删除失败，那我们只更新状态，让用户知道订阅成功了但删除失败
-                        db_handler.update_resubscribe_item_status(item_id, 'subscribed')
+                        resubscribe_db.update_resubscribe_item_status(item_id, 'subscribed')
                 else:
                     # 如果没有删除规则，就正常更新状态
-                    db_handler.update_resubscribe_item_status(item_id, 'subscribed')
+                    resubscribe_db.update_resubscribe_item_status(item_id, 'subscribed')
                 
                 if i < total_needed - 1: time.sleep(delay)
 
@@ -2804,7 +2815,7 @@ def task_delete_batch(processor: MediaProcessor, item_ids: List[str]):
     
     items_to_delete = []
     try:
-        with db_handler.get_db_connection() as conn:
+        with connection.get_db_connection() as conn:
             cursor = conn.cursor()
             sql = "SELECT * FROM resubscribe_cache WHERE item_id = ANY(%s)"
             cursor.execute(sql, (item_ids,))
@@ -2833,7 +2844,7 @@ def task_delete_batch(processor: MediaProcessor, item_ids: List[str]):
                 emby_api_key=processor.emby_api_key, user_id=processor.emby_user_id
             )
             if delete_success:
-                db_handler.delete_resubscribe_cache_item(item_id)
+                resubscribe_db.delete_resubscribe_cache_item(item_id)
                 deleted_count += 1
             
             time.sleep(0.5) # 避免请求过快
@@ -2855,7 +2866,7 @@ def task_update_resubscribe_cache(processor: MediaProcessor):
     
     try:
         task_manager.update_status_from_thread(0, "正在加载规则并确定扫描范围...")
-        all_enabled_rules = [rule for rule in db_handler.get_all_resubscribe_rules() if rule.get('enabled')]
+        all_enabled_rules = [rule for rule in resubscribe_db.get_all_resubscribe_rules() if rule.get('enabled')]
         library_ids_to_scan = set()
         for rule in all_enabled_rules:
             target_libs = rule.get('target_library_ids')
@@ -2874,7 +2885,7 @@ def task_update_resubscribe_cache(processor: MediaProcessor):
             fields="ProviderIds,Name,Type,ChildCount,_SourceLibraryId"
         ) or []
         
-        current_db_status_map = {item['item_id']: item['status'] for item in db_handler.get_all_resubscribe_cache()}
+        current_db_status_map = {item['item_id']: item['status'] for item in resubscribe_db.get_all_resubscribe_cache()}
         total = len(all_items_base_info)
         if total == 0:
             task_manager.update_status_from_thread(100, "任务完成：在目标媒体库中未找到任何项目。")
@@ -2906,7 +2917,7 @@ def task_update_resubscribe_cache(processor: MediaProcessor):
                 if not item_details: return None
                 
                 tmdb_id = item_details.get("ProviderIds", {}).get("Tmdb")
-                media_metadata = db_handler.get_media_metadata_by_tmdb_id(tmdb_id) if tmdb_id else None
+                media_metadata = collection_db.get_media_metadata_by_tmdb_id(tmdb_id) if tmdb_id else None
                 item_type = item_details.get('Type')
                 if item_type == 'Series' and item_details.get('ChildCount', 0) > 0:
                     first_episode_list = emby_handler.get_series_children(item_id, processor.emby_url, processor.emby_api_key, processor.emby_user_id, "Episode", "MediaStreams,Path")
@@ -2989,7 +3000,7 @@ def task_update_resubscribe_cache(processor: MediaProcessor):
 
         if cache_update_batch:
             logger.info(f"分析完成，正在将 {len(cache_update_batch)} 条记录写入缓存表...")
-            db_handler.upsert_resubscribe_cache_batch(cache_update_batch)
+            resubscribe_db.upsert_resubscribe_cache_batch(cache_update_batch)
             
             task_manager.update_status_from_thread(99, "缓存写入完成，即将刷新...")
             time.sleep(1) # 给前端一点反应时间，确保信号被接收
@@ -3081,7 +3092,7 @@ def _get_version_properties(version: Optional[Dict]) -> Dict:
 def _determine_best_version_by_rules(versions: List[Dict[str, Any]]) -> Tuple[List[Dict[str, Any]], Optional[str]]:
     """【V6 - 杜比Profile细分版】"""
     
-    rules = db_handler.get_setting('media_cleanup_rules')
+    rules = settings_db.get_setting('media_cleanup_rules')
     if not rules:
         # 更新默认规则，加入 effect
         rules = [
@@ -3147,7 +3158,7 @@ def _determine_best_version_by_rules(versions: List[Dict[str, Any]]) -> Tuple[Li
 def _determine_best_version_by_rules(versions: List[Dict[str, Any]]) -> Tuple[List[Dict[str, Any]], Optional[str]]:
     """【V5 - 特效支持最终版】"""
     
-    rules = db_handler.get_setting('media_cleanup_rules')
+    rules = settings_db.get_setting('media_cleanup_rules')
     if not rules:
         # 更新默认规则，加入 effect
         rules = [
@@ -3272,7 +3283,7 @@ def task_scan_for_cleanup_issues(processor: MediaProcessor):
                 })
 
         task_manager.update_status_from_thread(90, f"分析完成，正在将 {len(duplicate_tasks)} 组重复项写入数据库...")
-        db_handler.batch_insert_cleanup_tasks(duplicate_tasks)
+        maintenance_db.batch_insert_cleanup_tasks(duplicate_tasks)
 
         final_message = f"扫描完成！共发现 {len(duplicate_tasks)} 组重复项，待清理。"
         task_manager.update_status_from_thread(100, final_message)
@@ -3434,7 +3445,7 @@ def task_execute_cleanup(processor: MediaProcessor, task_ids: List[int], **kwarg
     logger.info(f"--- 开始执行 '{task_name}' 任务 (任务ID: {task_ids}) ---")
     
     try:
-        tasks_to_execute = db_handler.get_cleanup_tasks_by_ids(task_ids)
+        tasks_to_execute = maintenance_db.get_cleanup_tasks_by_ids(task_ids)
         total = len(tasks_to_execute)
         if total == 0:
             task_manager.update_status_from_thread(100, "任务完成：未找到指定的清理任务。")
@@ -3472,7 +3483,7 @@ def task_execute_cleanup(processor: MediaProcessor, task_ids: List[int], **kwarg
                     else:
                         logger.error(f"    -> 删除 ID: {id_to_delete} 失败！")
             
-            db_handler.batch_update_cleanup_task_status([task_id], 'processed')
+            maintenance_db.batch_update_cleanup_task_status([task_id], 'processed')
 
         final_message = f"清理完成！共处理 {total} 个任务，删除了 {deleted_count} 个多余版本/文件。"
         task_manager.update_status_from_thread(100, final_message)
@@ -3507,7 +3518,7 @@ def task_sync_all_user_data(processor: MediaProcessor):
         emby_user_ids = {user['Id'] for user in all_users}
         
         # b. 获取本地数据库中所有用户的 ID 集合
-        local_user_ids = db_handler.get_all_local_emby_user_ids()
+        local_user_ids = user_db.get_all_local_emby_user_ids()
         
         # c. 计算出需要删除的 ID (存在于本地，但不存在于 Emby)
         ids_to_delete = list(local_user_ids - emby_user_ids)
@@ -3515,7 +3526,7 @@ def task_sync_all_user_data(processor: MediaProcessor):
         if ids_to_delete:
             logger.warning(f"发现 {len(ids_to_delete)} 个用户已在Emby中被删除，将从本地数据库清理...")
             task_manager.update_status_from_thread(8, f"正在清理 {len(ids_to_delete)} 个陈旧用户...")
-            db_handler.delete_emby_users_by_ids(ids_to_delete)
+            user_db.delete_emby_users_by_ids(ids_to_delete)
         else:
             logger.info("本地用户与Emby用户一致，无需清理。")
 
@@ -3523,7 +3534,7 @@ def task_sync_all_user_data(processor: MediaProcessor):
         if not all_users:
             task_manager.update_status_from_thread(100, "任务完成：Emby中没有任何用户。")
             return
-        db_handler.upsert_emby_users_batch(all_users)
+        user_db.upsert_emby_users_batch(all_users)
         
         # 步骤 4: 循环同步每个用户的媒体播放状态 (此逻辑保持不变)
         total_users = len(all_users)
@@ -3563,7 +3574,7 @@ def task_sync_all_user_data(processor: MediaProcessor):
             
             final_data_to_upsert = list(final_data_map.values())
             
-            db_handler.upsert_user_media_data_batch_no_date(user_id, final_data_to_upsert)
+            user_db.upsert_user_media_data_batch_no_date(user_id, final_data_to_upsert)
             
             logger.info(f"  -> 成功为用户 '{user_name}' 同步了 {len(final_data_to_upsert)} 条媒体状态。")
 
@@ -3634,7 +3645,7 @@ def task_apply_main_cast_to_episodes(processor: MediaProcessor, series_id: str, 
             return
 
         try:
-            with db_handler.get_db_connection() as conn:
+            with connection.get_db_connection() as conn:
                 with conn.cursor() as cursor:
                     sql_update = """
                         UPDATE media_metadata
@@ -3667,7 +3678,7 @@ def task_check_expired_users(processor: MediaProcessor):
     
     expired_users = []
     try:
-        with db_handler.get_db_connection() as conn:
+        with connection.get_db_connection() as conn:
             cursor = conn.cursor()
             # 查询所有状态为'active'，且到期时间早于当前时间的用户，并获取用户名用于日志
             cursor.execute(
@@ -3721,7 +3732,7 @@ def task_check_expired_users(processor: MediaProcessor):
             if success:
                 logger.info(f"  -> Emby 用户 '{user_name}' (ID: {user_id}) 禁用成功。正在更新本地数据库状态...")
                 # 2. 如果 Emby 禁用成功，则更新我们自己数据库中的状态为 'expired'
-                with db_handler.get_db_connection() as conn:
+                with connection.get_db_connection() as conn:
                     cursor = conn.cursor()
                     cursor.execute(
                         "UPDATE emby_users_extended SET status = 'expired' WHERE emby_user_id = %s",
@@ -3749,7 +3760,7 @@ def task_auto_sync_template_on_policy_change(processor: MediaProcessor, updated_
     """
     user_name_for_log = updated_user_id 
     try:
-        with db_handler.get_db_connection() as conn:
+        with connection.get_db_connection() as conn:
             cursor = conn.cursor()
             cursor.execute("SELECT name FROM emby_users WHERE id = %s", (updated_user_id,))
             user_record = cursor.fetchone()
@@ -3761,7 +3772,7 @@ def task_auto_sync_template_on_policy_change(processor: MediaProcessor, updated_
     logger.info(f"--- 开始执行 '{task_name}' 任务 ---")
     
     try:
-        with db_handler.get_db_connection() as conn:
+        with connection.get_db_connection() as conn:
             cursor = conn.cursor()
             
             cursor.execute(

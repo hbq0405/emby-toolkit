@@ -7,7 +7,7 @@ import psycopg2
 import pytz
 from datetime import datetime
 import constants
-import db_handler
+
 import config_manager
 import task_manager
 import moviepilot_handler

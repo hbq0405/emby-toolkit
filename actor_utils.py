@@ -8,8 +8,8 @@ from datetime import datetime
 from typing import Optional, Dict, Any, List, Callable
 # 导入底层工具箱和日志
 import logging
-import db_handler
-from db_handler import ActorDBManager
+from database import connection
+from database.actor_db import ActorDBManager
 import utils
 import tmdb_handler
 from douban import DoubanApi
@@ -419,7 +419,7 @@ def enrich_all_actor_aliases_task(
 
     conn = None
     try:
-        with db_handler.get_db_connection() as conn:
+        with connection.get_db_connection() as conn:
             # --- 阶段一：从 TMDb 补充元数据 (并发执行) ---
             logger.info("  -> 阶段一：从 TMDb 补充演员元数据 (IMDb ID, 头像等) ---")
             cursor = conn.cursor()

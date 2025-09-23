@@ -5,7 +5,7 @@ import logging
 import psycopg2 
 
 # 导入需要的模块
-import db_handler 
+ 
 import config_manager
 import tmdb_handler
 import task_manager

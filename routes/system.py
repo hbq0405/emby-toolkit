@@ -11,7 +11,7 @@ import docker
 import task_manager
 from logger_setup import frontend_log_queue
 import config_manager
-import db_handler
+
 import emby_handler
 # 导入共享模块
 import extensions

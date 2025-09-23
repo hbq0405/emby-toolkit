@@ -18,7 +18,6 @@ from extensions import (
     task_lock_required, 
     processor_ready_required
 )
-from db_handler import ActorDBManager, LogDBManager
 from flask import Flask, render_template, request, redirect, url_for, jsonify, flash, stream_with_context, send_from_directory,Response, abort, session
 from werkzeug.utils import safe_join, secure_filename
 from utils import get_override_path_for_item, translate_country_list, get_unified_rating
@@ -38,8 +37,7 @@ from core_processor import MediaProcessor
 from actor_subscription_processor import ActorSubscriptionProcessor
 from werkzeug.security import generate_password_hash, check_password_hash
 from actor_utils import enrich_all_actor_aliases_task
-import db_handler
-from db_handler import get_db_connection as get_central_db_connection
+
 from flask import session
 from croniter import croniter
 from scheduler_manager import scheduler_manager
@@ -70,6 +68,7 @@ import logging
 from logger_setup import frontend_log_queue, add_file_handler # 日志记录器和前端日志队列
 import utils       # 例如，用于 /api/search_media
 import config_manager
+from database import connection
 
 import task_manager
 # --- 核心模块导入结束 ---
@@ -340,7 +339,7 @@ def main_app_start():
         log_backups = constants.DEFAULT_LOG_ROTATION_BACKUPS
     add_file_handler(log_directory=config_manager.LOG_DIRECTORY, log_size_mb=log_size, log_backups=log_backups)
     
-    db_handler.init_db()
+    connection.init_db()
 
     ensure_cover_generator_fonts()
     init_auth_from_blueprint()

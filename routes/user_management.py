@@ -5,7 +5,7 @@ import logging
 import psycopg2
 from datetime import datetime, timedelta, timezone
 from flask import Blueprint, request, jsonify
-import db_handler
+
 import emby_handler
 import config_manager
 import constants

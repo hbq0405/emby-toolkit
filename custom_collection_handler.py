@@ -17,7 +17,7 @@ from gevent import subprocess, Timeout
 import tmdb_handler
 import emby_handler
 import config_manager
-import db_handler 
+from database import collection_db 
 from douban import DoubanApi
 from tmdb_handler import search_media, get_tv_details_tmdb
 
@@ -843,14 +843,14 @@ class FilterEngine:
             
             logger.info(f"  -> 正在从本地缓存中查询这 {len(tmdb_ids_from_libs)} 个项目的元数据...")
             for item_type in item_types_to_process:
-                metadata_for_type = db_handler.get_media_metadata_by_tmdb_ids(tmdb_ids_from_libs, item_type)
+                metadata_for_type = collection_db.get_media_metadata_by_tmdb_ids(tmdb_ids_from_libs, item_type)
                 all_media_metadata.extend(metadata_for_type)
 
         else:
             # --- 分支2：保持原有逻辑，扫描全库 ---
             logger.info("  -> 未指定媒体库，将扫描所有媒体库的元数据缓存...")
             for item_type in item_types_to_process:
-                all_media_metadata.extend(db_handler.get_all_media_metadata(item_type=item_type))
+                all_media_metadata.extend(collection_db.get_all_media_metadata(item_type=item_type))
 
         # --- 后续的筛选逻辑保持不变 ---
         matched_items = []
@@ -876,7 +876,7 @@ class FilterEngine:
         logger.info(f"  -> 正在为{media_type_cn}《{item_metadata.get('title')}》实时匹配自定义合集...")
         matched_collections = []
         all_filter_collections = [
-            c for c in db_handler.get_all_custom_collections() 
+            c for c in collection_db.get_all_custom_collections() 
             if c['type'] == 'filter' and c['status'] == 'active' and c['emby_collection_id']
         ]
         if not all_filter_collections:

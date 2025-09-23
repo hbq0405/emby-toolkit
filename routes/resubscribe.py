@@ -2,7 +2,7 @@
 
 from flask import Blueprint, request, jsonify
 import logging
-import db_handler
+
 import tasks
 import task_manager
 import moviepilot_handler

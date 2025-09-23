@@ -9,7 +9,7 @@ from gevent import spawn_later
 
 # 导入需要的模块
 import task_manager
-import db_handler
+
 import emby_handler
 import config_manager
 import constants
@@ -21,10 +21,11 @@ from tasks import (
     task_sync_assets,
     task_apply_main_cast_to_episodes
 )
-from db_handler import LogDBManager, get_db_connection as get_central_db_connection
 from custom_collection_handler import FilterEngine
 from services.cover_generator import CoverGeneratorService
-
+from database import collection_db
+from database import connection
+from database.log_db import LogDBManager
 import logging
 logger = logging.getLogger(__name__)
 
@@ -70,7 +71,7 @@ def _handle_full_processing_flow(processor: 'MediaProcessor', item_id: str, forc
             logger.debug("  -> 媒体项缺少TMDb ID，无法进行自定义合集匹配。")
             return
 
-        item_metadata = db_handler.get_media_metadata_by_tmdb_id(tmdb_id)
+        item_metadata = collection_db.get_media_metadata_by_tmdb_id(tmdb_id)
         if not item_metadata:
             logger.warning(f"  -> 无法从本地缓存中找到TMDb ID为 {tmdb_id} 的元数据，无法匹配合集。")
             return
@@ -103,7 +104,7 @@ def _handle_full_processing_flow(processor: 'MediaProcessor', item_id: str, forc
                 )
                 
                 # ★★★ 核心修复：同步更新我们自己的数据库缓存 ★★★
-                db_handler.append_item_to_filter_collection_db(
+                collection_db.append_item_to_filter_collection_db(
                     collection_id=collection['id'],
                     new_item_tmdb_id=tmdb_id,
                     new_item_emby_id=item_id
@@ -112,7 +113,7 @@ def _handle_full_processing_flow(processor: 'MediaProcessor', item_id: str, forc
             logger.info(f"  -> 《{item_name}》没有匹配到任何筛选类合集。")
 
         # --- 匹配 List (榜单) 类型的合集 ---
-        updated_list_collections = db_handler.match_and_update_list_collections_on_item_add(
+        updated_list_collections = collection_db.match_and_update_list_collections_on_item_add(
             new_item_tmdb_id=tmdb_id,
             new_item_emby_id=item_id,
             new_item_name=item_name
@@ -136,7 +137,7 @@ def _handle_full_processing_flow(processor: 'MediaProcessor', item_id: str, forc
 
     # --- 封面生成逻辑 ---
     try:
-        cover_config = db_handler.get_setting('cover_generator_config') or {}
+        cover_config = collection_db.get_setting('cover_generator_config') or {}
 
         if cover_config.get("enabled") and cover_config.get("transfer_monitor"):
             logger.info(f"  -> 检测到 '{item_details.get('Name')}' 入库，将为其所属媒体库生成新封面...")
@@ -386,7 +387,7 @@ def emby_webhook():
 
         try:
             if len(update_data) > 2:
-                db_handler.upsert_user_media_data(update_data)
+                collection_db.upsert_user_media_data(update_data)
                 logger.info(f"  -> Webhook: 已更新用户 '{user_id}' 对项目 '{id_to_update_in_db}' 的状态 ({event_type})。")
                 return jsonify({"status": "user_data_updated"}), 200
             else:
@@ -414,7 +415,7 @@ def emby_webhook():
     if event_type == "library.deleted":
         try:
             # ★★★ 核心优化：在一个事务中，清理所有相关表的记录 ★★★
-            with get_central_db_connection() as conn:
+            with connection.get_db_connection() as conn:
                 with conn.cursor() as cursor:
                     # 1. 从 processed_log 和 failed_log 中删除
                     log_manager = LogDBManager()

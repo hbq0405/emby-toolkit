@@ -12,10 +12,11 @@ from datetime import datetime, timezone
 from gevent import spawn
 from geventwebsocket.websocket import WebSocket
 from websocket import create_connection
-
+from database import collection_db
+from database import user_db
 from custom_collection_handler import FilterEngine
 import config_manager
-import db_handler
+
 import extensions
 import emby_handler
 logger = logging.getLogger(__name__)
@@ -62,7 +63,7 @@ def handle_get_views():
         )
         if user_visible_native_libs is None: user_visible_native_libs = []
 
-        collections = db_handler.get_all_active_custom_collections()
+        collections = collection_db.get_all_active_custom_collections()
         fake_views_items = []
         for coll in collections:
             # 1. 物理检查：库在Emby里有实体吗？
@@ -146,7 +147,7 @@ def handle_get_mimicked_library_details(user_id, mimicked_id):
     """
     try:
         real_db_id = from_mimicked_id(mimicked_id)
-        coll = db_handler.get_custom_collection_by_id(real_db_id)
+        coll = collection_db.get_custom_collection_by_id(real_db_id)
         if not coll: return "Not Found", 404
 
         real_server_id = extensions.EMBY_SERVER_ID
@@ -210,7 +211,7 @@ def handle_mimicked_library_metadata_endpoint(path, mimicked_id, params):
 
     try:
         real_db_id = from_mimicked_id(mimicked_id)
-        collection_info = db_handler.get_custom_collection_by_id(real_db_id)
+        collection_info = collection_db.get_custom_collection_by_id(real_db_id)
         if not collection_info or not collection_info.get('emby_collection_id'):
             return Response(json.dumps([]), mimetype='application/json')
 
@@ -245,7 +246,7 @@ def handle_get_mimicked_library_items(user_id, mimicked_id, params):
     """
     try:
         real_db_id = from_mimicked_id(mimicked_id)
-        collection_info = db_handler.get_custom_collection_by_id(real_db_id)
+        collection_info = collection_db.get_custom_collection_by_id(real_db_id)
         if not collection_info:
             return Response(json.dumps({"Items": [], "TotalRecordCount": 0}), mimetype='application/json')
 
@@ -260,7 +261,7 @@ def handle_get_mimicked_library_items(user_id, mimicked_id, params):
         final_emby_ids_to_fetch = base_ordered_emby_ids
         if definition.get('dynamic_filter_enabled'):
             dynamic_rules = definition.get('dynamic_rules', [])
-            ids_from_local_db = db_handler.get_item_ids_by_dynamic_rules(user_id, dynamic_rules)
+            ids_from_local_db = user_db.get_item_ids_by_dynamic_rules(user_id, dynamic_rules)
             if ids_from_local_db is not None:
                 base_ids_set = set(base_ordered_emby_ids)
                 local_ids_set = set(ids_from_local_db)
@@ -333,12 +334,12 @@ def handle_get_mimicked_library_items(user_id, mimicked_id, params):
                     default_timestamp = datetime.min.replace(tzinfo=timezone.utc)
                     
                     if movie_tmdb_ids:
-                        for meta in db_handler.get_media_metadata_by_tmdb_ids(movie_tmdb_ids, 'Movie'):
+                        for meta in collection_db.get_media_metadata_by_tmdb_ids(movie_tmdb_ids, 'Movie'):
                             timestamp = meta.get('last_synced_at') or meta.get('date_added') or default_timestamp
                             timestamp_map[f"{meta['tmdb_id']}-Movie"] = timestamp
                     
                     if series_tmdb_ids:
-                        for meta in db_handler.get_media_metadata_by_tmdb_ids(series_tmdb_ids, 'Series'):
+                        for meta in collection_db.get_media_metadata_by_tmdb_ids(series_tmdb_ids, 'Series'):
                             timestamp = meta.get('last_synced_at') or meta.get('date_added') or default_timestamp
                             timestamp_map[f"{meta['tmdb_id']}-Series"] = timestamp
 
@@ -379,7 +380,7 @@ def handle_get_latest_items(user_id, params):
             except (ValueError, TypeError):
                 return Response(json.dumps([]), mimetype='application/json')
 
-            collection_info = db_handler.get_custom_collection_by_id(virtual_library_db_id)
+            collection_info = collection_db.get_custom_collection_by_id(virtual_library_db_id)
             if not collection_info or not collection_info.get('emby_collection_id'):
                 return Response(json.dumps([]), mimetype='application/json')
 

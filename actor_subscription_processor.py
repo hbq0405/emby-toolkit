@@ -10,9 +10,8 @@ from enum import Enum
 
 import tmdb_handler
 import emby_handler
-from db_handler import get_db_connection # ★★★ 核心修改：导入新的数据库连接函数
+from database.connection import get_db_connection
 import moviepilot_handler
-import db_handler
 import constants
 
 logger = logging.getLogger(__name__)

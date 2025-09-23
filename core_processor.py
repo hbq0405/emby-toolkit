@@ -17,9 +17,10 @@ import utils
 import constants
 import logging
 import actor_utils
+from database.actor_db import ActorDBManager
+from database.log_db import LogDBManager
+from database.connection import get_db_connection as get_central_db_connection
 from cachetools import TTLCache
-from db_handler import ActorDBManager, LogDBManager
-from db_handler import get_db_connection as get_central_db_connection
 from ai_translator import AITranslator
 from utils import get_override_path_for_item, translate_country_list, get_unified_rating
 from watchlist_processor import WatchlistProcessor
