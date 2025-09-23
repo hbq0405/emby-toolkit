@@ -12,7 +12,7 @@ logger = logging.getLogger(__name__)
 
 # --- 规则管理 (Rules Management) ---
 def _prepare_rule_data_for_db(rule_data: Dict[str, Any]) -> Dict[str, Any]:
-    # ... (函数体与原文件相同)
+    
     data_to_save = rule_data.copy()
     jsonb_fields = [
         'target_library_ids', 'resubscribe_audio_missing_languages',
@@ -25,7 +25,7 @@ def _prepare_rule_data_for_db(rule_data: Dict[str, Any]) -> Dict[str, Any]:
     return data_to_save
 
 def get_all_resubscribe_rules() -> List[Dict[str, Any]]:
-    # ... (函数体与原文件相同)
+    
     try:
         with get_db_connection() as conn:
             cursor = conn.cursor()
@@ -36,7 +36,7 @@ def get_all_resubscribe_rules() -> List[Dict[str, Any]]:
         return []
 
 def create_resubscribe_rule(rule_data: Dict[str, Any]) -> int:
-    # ... (函数体与原文件相同)
+    
     try:
         prepared_data = _prepare_rule_data_for_db(rule_data)
         columns = prepared_data.keys()
@@ -61,7 +61,7 @@ def create_resubscribe_rule(rule_data: Dict[str, Any]) -> int:
         raise
 
 def update_resubscribe_rule(rule_id: int, rule_data: Dict[str, Any]) -> bool:
-    # ... (函数体与原文件相同)
+    
     try:
         prepared_data = _prepare_rule_data_for_db(rule_data)
         set_clauses = [f"{key} = %s" for key in prepared_data.keys()]
@@ -83,7 +83,7 @@ def update_resubscribe_rule(rule_id: int, rule_data: Dict[str, Any]) -> bool:
         raise
 
 def delete_resubscribe_rule(rule_id: int) -> bool:
-    # ... (函数体与原文件相同)
+    
     try:
         with get_db_connection() as conn:
             cursor = conn.cursor()
@@ -99,7 +99,7 @@ def delete_resubscribe_rule(rule_id: int) -> bool:
         raise
 
 def update_resubscribe_rules_order(ordered_ids: List[int]) -> bool:
-    # ... (函数体与原文件相同)
+    
     if not ordered_ids:
         return True
     data_to_update = [(index, rule_id) for index, rule_id in enumerate(ordered_ids)]
@@ -117,7 +117,7 @@ def update_resubscribe_rules_order(ordered_ids: List[int]) -> bool:
 
 # --- 缓存管理 (Cache Management) ---
 def get_all_resubscribe_cache() -> List[Dict[str, Any]]:
-    # ... (函数体与原文件相同)
+    
     try:
         with get_db_connection() as conn:
             cursor = conn.cursor()
@@ -128,7 +128,7 @@ def get_all_resubscribe_cache() -> List[Dict[str, Any]]:
         return []
 
 def upsert_resubscribe_cache_batch(items_data: List[Dict[str, Any]]):
-    # ... (函数体与原文件相同)
+    
     if not items_data:
         return
 
@@ -177,7 +177,7 @@ def upsert_resubscribe_cache_batch(items_data: List[Dict[str, Any]]):
         raise
 
 def update_resubscribe_item_status(item_id: str, new_status: str) -> bool:
-    # ... (函数体与原文件相同)
+    
     try:
         with get_db_connection() as conn:
             cursor = conn.cursor()
@@ -192,7 +192,7 @@ def update_resubscribe_item_status(item_id: str, new_status: str) -> bool:
         return False
 
 def delete_resubscribe_cache_by_rule_id(rule_id: int) -> int:
-    # ... (函数体与原文件相同)
+    
     try:
         with get_db_connection() as conn:
             cursor = conn.cursor()
@@ -206,7 +206,7 @@ def delete_resubscribe_cache_by_rule_id(rule_id: int) -> int:
         raise
 
 def delete_resubscribe_cache_for_unwatched_libraries(watched_library_ids: List[str]) -> int:
-    # ... (函数体与原文件相同)
+    
     if not watched_library_ids:
         sql = "DELETE FROM resubscribe_cache"
         params = []
@@ -228,7 +228,7 @@ def delete_resubscribe_cache_for_unwatched_libraries(watched_library_ids: List[s
         raise
 
 def get_resubscribe_cache_item(item_id: str) -> Optional[Dict[str, Any]]:
-    # ... (函数体与原文件相同)
+    
     try:
         with get_db_connection() as conn:
             cursor = conn.cursor()
@@ -240,7 +240,7 @@ def get_resubscribe_cache_item(item_id: str) -> Optional[Dict[str, Any]]:
         return None
 
 def get_resubscribe_rule_by_id(rule_id: int) -> Optional[Dict[str, Any]]:
-    # ... (函数体与原文件相同)
+    
     try:
         with get_db_connection() as conn:
             cursor = conn.cursor()
@@ -252,7 +252,7 @@ def get_resubscribe_rule_by_id(rule_id: int) -> Optional[Dict[str, Any]]:
         return None
     
 def delete_resubscribe_cache_item(item_id: str) -> bool:
-    # ... (函数体与原文件相同)
+    
     try:
         with get_db_connection() as conn:
             cursor = conn.cursor()
@@ -264,7 +264,7 @@ def delete_resubscribe_cache_item(item_id: str) -> bool:
         return False
     
 def batch_update_resubscribe_cache_status(item_ids: List[str], new_status: str) -> int:
-    # ... (函数体与原文件相同)
+    
     if not item_ids or not new_status:
         return 0
     try:

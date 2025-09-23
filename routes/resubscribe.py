@@ -10,7 +10,7 @@ import config_manager
 import extensions
 import emby_handler
 from extensions import login_required, task_lock_required
-
+from database import resubscribe_db
 resubscribe_bp = Blueprint('resubscribe', __name__, url_prefix='/api/resubscribe')
 logger = logging.getLogger(__name__)
 
@@ -23,7 +23,7 @@ logger = logging.getLogger(__name__)
 def get_rules():
     """获取所有洗版规则列表。"""
     try:
-        rules = db_handler.get_all_resubscribe_rules()
+        rules = resubscribe_db.get_all_resubscribe_rules()
         return jsonify(rules)
     except Exception as e:
         logger.error(f"API: 获取洗版规则列表失败: {e}", exc_info=True)
@@ -38,10 +38,10 @@ def create_rule():
         if not rule_data or not rule_data.get('name'):
             return jsonify({"error": "规则名称不能为空"}), 400
         
-        new_id = db_handler.create_resubscribe_rule(rule_data)
+        new_id = resubscribe_db.create_resubscribe_rule(rule_data)
         return jsonify({"message": "洗版规则已成功创建！", "id": new_id}), 201
     except Exception as e:
-        # 捕获由 db_handler 抛出的唯一性冲突
+        # 捕获由 resubscribe_db 抛出的唯一性冲突
         if "UNIQUE constraint failed" in str(e) or "violates unique constraint" in str(e):
              return jsonify({"error": f"创建失败：规则名称 '{rule_data.get('name')}' 已存在。"}), 409
         logger.error(f"API: 创建洗版规则失败: {e}", exc_info=True)
@@ -56,7 +56,7 @@ def update_rule(rule_id):
         if not rule_data:
             return jsonify({"error": "请求体不能为空"}), 400
         
-        success = db_handler.update_resubscribe_rule(rule_id, rule_data)
+        success = resubscribe_db.update_resubscribe_rule(rule_id, rule_data)
         if success:
             return jsonify({"message": "洗版规则已成功更新！"})
         else:
@@ -71,8 +71,8 @@ def delete_rule(rule_id):
     """删除指定ID的洗版规则。"""
     try:
         logger.info(f"API: 准备删除规则 {rule_id}，将首先清理其关联的缓存...")
-        db_handler.delete_resubscribe_cache_by_rule_id(rule_id)
-        success = db_handler.delete_resubscribe_rule(rule_id)
+        resubscribe_db.delete_resubscribe_cache_by_rule_id(rule_id)
+        success = resubscribe_db.delete_resubscribe_rule(rule_id)
         if success:
             return jsonify({"message": "洗版规则已成功删除！"})
         else:
@@ -90,7 +90,7 @@ def update_rules_order():
         if not isinstance(ordered_ids, list):
             return jsonify({"error": "请求体必须是一个ID数组"}), 400
         
-        db_handler.update_resubscribe_rules_order(ordered_ids)
+        resubscribe_db.update_resubscribe_rules_order(ordered_ids)
         return jsonify({"message": "规则顺序已更新！"})
     except Exception as e:
         logger.error(f"API: 更新规则顺序失败: {e}", exc_info=True)
@@ -105,7 +105,7 @@ def update_rules_order():
 def get_library_status():
     """获取海报墙数据。"""
     try:
-        items = db_handler.get_all_resubscribe_cache()
+        items = resubscribe_db.get_all_resubscribe_cache()
         return jsonify(items)
     except Exception as e:
         logger.error(f"API: 获取洗版状态缓存失败: {e}", exc_info=True)
@@ -157,7 +157,7 @@ def resubscribe_single_item():
         return jsonify({"error": "请求中缺少必要的媒体项参数"}), 400
 
     try:
-        current_quota = db_handler.get_subscription_quota()
+        current_quota = resubscribe_db.get_subscription_quota()
         if current_quota <= 0:
             return jsonify({"error": "今日订阅配额已用尽，请明天再试。"}), 429
 
@@ -167,10 +167,10 @@ def resubscribe_single_item():
             return jsonify({"error": "核心处理器未初始化"}), 503
             
         # 1. 提前获取规则
-        cache_item = db_handler.get_resubscribe_cache_item(item_id)
+        cache_item = resubscribe_db.get_resubscribe_cache_item(item_id)
         rule_to_check = None
         if cache_item and cache_item.get('matched_rule_id'):
-            rule_to_check = db_handler.get_resubscribe_rule_by_id(cache_item['matched_rule_id'])
+            rule_to_check = resubscribe_db.get_resubscribe_rule_by_id(cache_item['matched_rule_id'])
 
         # 2. 构建媒体信息字典
         item_details_for_payload = {
@@ -190,14 +190,14 @@ def resubscribe_single_item():
         success = moviepilot_handler.subscribe_with_custom_payload(payload, processor.config)
         
         if success:
-            db_handler.decrement_subscription_quota()
+            resubscribe_db.decrement_subscription_quota()
             
             message = f"《{item_name}》的洗版请求已成功提交！"
             
-            cache_item = db_handler.get_resubscribe_cache_item(item_id)
+            cache_item = resubscribe_db.get_resubscribe_cache_item(item_id)
             rule_to_check = None
             if cache_item and cache_item.get('matched_rule_id'):
-                rule_to_check = db_handler.get_resubscribe_rule_by_id(cache_item['matched_rule_id'])
+                rule_to_check = resubscribe_db.get_resubscribe_rule_by_id(cache_item['matched_rule_id'])
 
             # --- ★★★ 核心逻辑改造：根据规则决定是“删除”还是“更新” ★★★ ---
             if rule_to_check and rule_to_check.get('delete_after_resubscribe'):
@@ -207,13 +207,13 @@ def resubscribe_single_item():
                     emby_api_key=processor.emby_api_key, user_id=processor.emby_user_id
                 )
                 if delete_success:
-                    db_handler.delete_resubscribe_cache_item(item_id)
+                    resubscribe_db.delete_resubscribe_cache_item(item_id)
                     message += " Emby中的源文件已根据规则删除，并已从洗版列表移除。"
                 else:
-                    db_handler.update_resubscribe_item_status(item_id, 'subscribed')
+                    resubscribe_db.update_resubscribe_item_status(item_id, 'subscribed')
                     message += " 但根据规则删除Emby源文件时失败。"
             else:
-                db_handler.update_resubscribe_item_status(item_id, 'subscribed')
+                resubscribe_db.update_resubscribe_item_status(item_id, 'subscribed')
 
             return jsonify({"message": message})
         else:
@@ -279,7 +279,7 @@ def batch_action():
             # “一键全部订阅”没有意义，所以我们只处理“需洗版”的
             sql = "SELECT item_id FROM resubscribe_cache WHERE status = 'needed'"
 
-        with db_handler.get_db_connection() as conn:
+        with resubscribe_db.get_db_connection() as conn:
             cursor = conn.cursor()
             cursor.execute(sql)
             item_ids = [row['item_id'] for row in cursor.fetchall()]
@@ -297,15 +297,15 @@ def batch_action():
                 processor_type='media',
                 item_ids=item_ids
             )
-            db_handler.batch_update_resubscribe_cache_status(item_ids, 'subscribed')
+            resubscribe_db.batch_update_resubscribe_cache_status(item_ids, 'subscribed')
             return jsonify({"message": "批量订阅任务已提交到后台！"}), 202
 
         elif action == 'ignore':
-            updated_count = db_handler.batch_update_resubscribe_cache_status(item_ids, 'ignored')
+            updated_count = resubscribe_db.batch_update_resubscribe_cache_status(item_ids, 'ignored')
             return jsonify({"message": f"成功忽略了 {updated_count} 个媒体项。"})
 
         elif action == 'ok':
-            updated_count = db_handler.batch_update_resubscribe_cache_status(item_ids, 'ok')
+            updated_count = resubscribe_db.batch_update_resubscribe_cache_status(item_ids, 'ok')
             return jsonify({"message": f"成功取消忽略了 {updated_count} 个媒体项。"})
         
         # ★★★ 新增：处理删除动作 ★★★

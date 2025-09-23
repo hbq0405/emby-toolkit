@@ -7,7 +7,10 @@ import psycopg2
 import pytz
 from datetime import datetime
 import constants
-
+from database import user_db
+from database import collection_db
+from database import connection
+from database import settings_db
 import config_manager
 import task_manager
 import moviepilot_handler
@@ -36,7 +39,7 @@ def api_get_emby_users():
     """为权限设置提供一个可选的 Emby 用户列表。"""
     try:
         # 1. 尝试从我们的本地缓存读取
-        cached_users = db_handler.get_all_emby_users()
+        cached_users = user_db.get_all_emby_users()
         
         # 2. 如果缓存为空，则实时从 Emby 获取并更新缓存
         if not cached_users:
@@ -54,7 +57,7 @@ def api_get_emby_users():
                 return jsonify({"error": "无法从Emby获取用户列表"}), 500
             
             # 更新缓存
-            db_handler.upsert_emby_users_batch(live_users)
+            user_db.upsert_emby_users_batch(live_users)
             cached_users = live_users
 
         # 3. 格式化为前端需要的格式
@@ -75,7 +78,7 @@ def api_get_all_custom_collections():
     """获取所有自定义合集定义 (V3.1 - 最终修正版)"""
     try:
         beijing_tz = pytz.timezone('Asia/Shanghai')
-        collections_from_db = db_handler.get_all_custom_collections()
+        collections_from_db = collection_db.get_all_custom_collections()
         processed_collections = []
 
         for collection in collections_from_db:
@@ -151,8 +154,8 @@ def api_create_custom_collection():
     allowed_user_ids_json = json.dumps(allowed_user_ids) if isinstance(allowed_user_ids, list) else None
     
     try:
-        collection_id = db_handler.create_custom_collection(name, type, definition_json, allowed_user_ids_json)
-        new_collection = db_handler.get_custom_collection_by_id(collection_id)
+        collection_id = collection_db.create_custom_collection(name, type, definition_json, allowed_user_ids_json)
+        new_collection = collection_db.get_custom_collection_by_id(collection_id)
         return jsonify(new_collection), 201
     except psycopg2.IntegrityError:
         return jsonify({"error": f"创建失败：名为 '{name}' 的合集已存在。"}), 409
@@ -181,12 +184,12 @@ def api_update_custom_collection(collection_id):
         # ★★★ 新增：处理权限列表 ★★★
         allowed_user_ids_json = json.dumps(allowed_user_ids) if isinstance(allowed_user_ids, list) else None
         
-        success = db_handler.update_custom_collection(
+        success = collection_db.update_custom_collection(
             collection_id, name, type, definition_json, status, allowed_user_ids_json
         )
         
         if success:
-            updated_collection = db_handler.get_custom_collection_by_id(collection_id)
+            updated_collection = collection_db.get_custom_collection_by_id(collection_id)
             return jsonify(updated_collection)
         else:
             return jsonify({"error": "数据库操作失败，未找到或无法更新该合集"}), 404
@@ -207,7 +210,7 @@ def api_update_custom_collections_order():
         return jsonify({"error": "请求无效: 需要一个ID列表。"}), 400
 
     try:
-        success = db_handler.update_custom_collections_order(ordered_ids)
+        success = collection_db.update_custom_collections_order(ordered_ids)
         if success:
             return jsonify({"message": "合集顺序已成功更新。"}), 200
         else:
@@ -223,7 +226,7 @@ def api_delete_custom_collection(collection_id):
     """【V8 - 最终决战版】通过清空所有成员来联动删除Emby合集"""
     try:
         # 步骤 1: 获取待删除合集的完整信息
-        collection_to_delete = db_handler.get_custom_collection_by_id(collection_id)
+        collection_to_delete = collection_db.get_custom_collection_by_id(collection_id)
         if not collection_to_delete:
             return jsonify({"error": "未找到要删除的合集"}), 404
 
@@ -243,7 +246,7 @@ def api_delete_custom_collection(collection_id):
             )
 
         # 步骤 3: 无论Emby端是否成功，都删除本地数据库中的记录
-        db_success = db_handler.delete_custom_collection(
+        db_success = collection_db.delete_custom_collection(
             collection_id=collection_id
         )
 
@@ -266,7 +269,7 @@ def api_get_custom_collection_status(collection_id):
     - 解决了编辑框因 definition 格式错误而无法加载规则的致命BUG。
     """
     try:
-        collection_details = db_handler.get_custom_collection_by_id(collection_id)
+        collection_details = collection_db.get_custom_collection_by_id(collection_id)
         if not collection_details:
             return jsonify({"error": "未在自定义合集表中找到该合集"}), 404
         
@@ -319,7 +322,7 @@ def api_update_custom_collection_media_status(collection_id):
         return jsonify({"error": "请求无效: 缺少 tmdb_id 或 new_status"}), 400
 
     try:
-        success = db_handler.update_single_media_status_in_custom_collection(
+        success = collection_db.update_single_media_status_in_custom_collection(
             collection_id=collection_id,
             media_tmdb_id=str(media_tmdb_id),
             new_status=new_status
@@ -345,7 +348,7 @@ def api_subscribe_media_from_custom_collection():
     if not all([tmdb_id, collection_id]):
         return jsonify({"error": "请求无效: 缺少 tmdb_id 或 collection_id"}), 400
     try:
-        with db_handler.get_db_connection() as conn:
+        with connection.get_db_connection() as conn:
             cursor = conn.cursor()
             cursor.execute("SELECT definition_json, generated_media_info_json FROM custom_collections WHERE id = %s", (collection_id,))
             collection_record = cursor.fetchone()
@@ -374,7 +377,7 @@ def api_subscribe_media_from_custom_collection():
             season_to_subscribe = target_media_item.get('season')
 
         # --- 新增: 配额检查 ---
-        current_quota = db_handler.get_subscription_quota()
+        current_quota = settings_db.get_subscription_quota()
         if current_quota <= 0:
             logger.warning(f"API: 用户尝试订阅《{authoritative_title}》，但每日配额已用尽。")
             return jsonify({"error": "今日订阅配额已用尽，请明天再试。"}), 429
@@ -399,10 +402,10 @@ def api_subscribe_media_from_custom_collection():
             return jsonify({"error": "提交到 MoviePilot 失败，请检查日志。"}), 500
 
         # 成功后扣配额
-        db_handler.decrement_subscription_quota()
+        settings_db.decrement_subscription_quota()
 
         target_media_item['status'] = 'subscribed'
-        with db_handler.get_db_connection() as conn:
+        with connection.get_db_connection() as conn:
             cursor = conn.cursor()
             new_missing_count = sum(1 for item in media_list if item.get('status') == 'missing')
             new_health_status = 'has_missing' if new_missing_count > 0 else 'ok'
@@ -428,7 +431,7 @@ def api_search_actors():
         return jsonify([])
     
     try:
-        actors = db_handler.search_unique_actors(search_term)
+        actors = collection_db.search_unique_actors(search_term)
         # 返回简单的字符串列表
         return jsonify(actors)
     except Exception as e:
@@ -457,7 +460,7 @@ def api_get_countries_for_filter():
 def api_get_tags_for_filter():
     """为筛选器提供一个标签列表。"""
     try:
-        tags = db_handler.get_unique_tags()
+        tags = collection_db.get_unique_tags()
         return jsonify(tags)
     except Exception as e:
         logger.error(f"获取标签列表时出错: {e}", exc_info=True)

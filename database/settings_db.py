@@ -14,7 +14,7 @@ logger = logging.getLogger(__name__)
 
 def get_setting(setting_key: str) -> Optional[Any]:
     """从 app_settings 表中获取一个设置项的值。"""
-    # ... (函数体与原文件相同)
+    
     try:
         with get_db_connection() as conn:
             cursor = conn.cursor()
@@ -27,7 +27,7 @@ def get_setting(setting_key: str) -> Optional[Any]:
 
 def _save_setting_with_cursor(cursor, setting_key: str, value: Dict[str, Any]):
     """【内部函数】使用一个已有的数据库游标来保存设置。"""
-    # ... (函数体与原文件相同)
+    
     sql = """
         INSERT INTO app_settings (setting_key, value_json, last_updated_at)
         VALUES (%s, %s, NOW())
@@ -40,7 +40,7 @@ def _save_setting_with_cursor(cursor, setting_key: str, value: Dict[str, Any]):
 
 def save_setting(setting_key: str, value: Dict[str, Any]):
     """【V2 - 重构版】向 app_settings 表中保存或更新一个设置项。"""
-    # ... (函数体与原文件相同)
+    
     try:
         with get_db_connection() as conn:
             cursor = conn.cursor()
@@ -54,7 +54,7 @@ def save_setting(setting_key: str, value: Dict[str, Any]):
 # --- 全局订阅配额管理器 ---
 def get_subscription_quota() -> int:
     """【V3 - 终极健壮版】获取当前可用的订阅配额。"""
-    # ... (函数体与原文件相同)
+    
     try:
         current_max_quota = config_manager.APP_CONFIG.get(constants.CONFIG_OPTION_RESUBSCRIBE_DAILY_CAP, 200)
         today_str = datetime.now(pytz.timezone(constants.TIMEZONE)).strftime('%Y-%m-%d')
@@ -104,7 +104,7 @@ def get_subscription_quota() -> int:
 
 def decrement_subscription_quota() -> bool:
     """将当前订阅配额减一。"""
-    # ... (函数体与原文件相同)
+    
     try:
         with get_db_connection() as conn:
             cursor = conn.cursor()

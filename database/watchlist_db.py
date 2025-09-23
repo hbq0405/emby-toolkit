@@ -9,7 +9,7 @@ logger = logging.getLogger(__name__)
 
 def get_all_watchlist_items() -> List[Dict[str, Any]]:
     """获取所有追剧列表中的项目。"""
-    # ... (函数体与原文件相同)
+    
     try:
         with get_db_connection() as conn:
             cursor = conn.cursor()
@@ -22,7 +22,7 @@ def get_all_watchlist_items() -> List[Dict[str, Any]]:
 
 def get_watchlist_item_name(item_id: str) -> Optional[str]:
     """根据 item_id 获取单个追剧项目的名称。"""
-    # ... (函数体与原文件相同)
+    
     try:
         with get_db_connection() as conn:
             cursor = conn.cursor()
@@ -35,7 +35,7 @@ def get_watchlist_item_name(item_id: str) -> Optional[str]:
 
 def add_item_to_watchlist(item_id: str, tmdb_id: str, item_name: str, item_type: str) -> bool:
     """【V2 - PG语法修复版】添加一个新项目到追剧列表。"""
-    # ... (函数体与原文件相同)
+    
     try:
         with get_db_connection() as conn:
             with conn.cursor() as cursor:
@@ -59,7 +59,7 @@ def add_item_to_watchlist(item_id: str, tmdb_id: str, item_name: str, item_type:
 
 def update_watchlist_item_status(item_id: str, new_status: str) -> bool:
     """更新追剧列表中某个项目的状态。"""
-    # ... (函数体与原文件相同)
+    
     try:
         with get_db_connection() as conn:
             cursor = conn.cursor()
@@ -80,7 +80,7 @@ def update_watchlist_item_status(item_id: str, new_status: str) -> bool:
 
 def remove_item_from_watchlist(item_id: str) -> bool:
     """从追剧列表中移除一个项目。"""
-    # ... (函数体与原文件相同)
+    
     try:
         with get_db_connection() as conn:
             cursor = conn.cursor()
@@ -104,7 +104,7 @@ def remove_item_from_watchlist(item_id: str) -> bool:
 
 def batch_force_end_watchlist_items(item_ids: List[str]) -> int:
     """【V2】批量将追剧项目标记为“强制完结”。"""
-    # ... (函数体与原文件相同)
+    
     if not item_ids:
         return 0
     
@@ -129,7 +129,7 @@ def batch_force_end_watchlist_items(item_ids: List[str]) -> int:
 
 def batch_update_watchlist_status(item_ids: list, new_status: str) -> int:
     """【V2 - 时间格式修复版】批量更新指定项目ID列表的追剧状态。"""
-    # ... (函数体与原文件相同)
+    
     if not item_ids:
         return 0
         
@@ -165,7 +165,7 @@ def batch_update_watchlist_status(item_ids: list, new_status: str) -> int:
 
 def get_watching_tmdb_ids() -> set:
     """获取所有正在追看（状态为 'Watching'）的剧集的 TMDB ID 集合。"""
-    # ... (函数体与原文件相同)
+    
     watching_ids = set()
     try:
         with get_db_connection() as conn:

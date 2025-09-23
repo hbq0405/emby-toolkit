@@ -13,6 +13,7 @@ from tasks import get_task_registry
 import emby_handler
 from services.cover_generator.styles.badge_drawer import draw_badge
 from services.cover_generator import CoverGeneratorService 
+from database import settings_db
 
 logger = logging.getLogger(__name__)
 
@@ -63,7 +64,7 @@ def get_cover_generator_config():
     """获取封面生成器的配置"""
     try:
         # ★★★ 核心修改 3：从数据库读取配置 ★★★
-        config = db_handler.get_setting('cover_generator_config')
+        config = settings_db.get_setting('cover_generator_config')
         
         if config:
             # 如果数据库中有配置，为了确保未来新增的配置项也能显示，与默认值合并
@@ -88,7 +89,7 @@ def save_cover_generator_config():
     try:
         new_config = request.json
         # ★★★ 核心修改 4：将配置保存到数据库 ★★★
-        db_handler.save_setting('cover_generator_config', new_config)
+        settings_db.save_setting('cover_generator_config', new_config)
         
         logger.info("封面生成器配置已保存到数据库。")
         return jsonify({"message": "配置已成功保存！"})

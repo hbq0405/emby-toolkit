@@ -6,6 +6,10 @@ from extensions import task_lock_required, processor_ready_required
 import task_manager
 import config_manager
 from tasks import task_execute_cleanup
+from database import (
+    maintenance_db,
+    settings_db
+)
 import logging
 
 logger = logging.getLogger(__name__)
@@ -16,7 +20,7 @@ media_cleanup_bp = Blueprint('media_cleanup_bp', __name__)
 def get_cleanup_tasks():
     """获取所有待处理的媒体去重任务。"""
     try:
-        tasks = db_handler.get_all_cleanup_tasks()
+        tasks = maintenance_db.get_all_cleanup_tasks()
         return jsonify(tasks)
     except Exception as e:
         return jsonify({"error": f"获取清理任务失败: {e}"}), 500
@@ -48,7 +52,7 @@ def ignore_cleanup_tasks():
         return jsonify({"error": "缺少或无效的 task_ids 参数"}), 400
     
     try:
-        updated_count = db_handler.batch_update_cleanup_task_status(task_ids, 'ignored')
+        updated_count = maintenance_db.batch_update_cleanup_task_status(task_ids, 'ignored')
         return jsonify({"message": f"成功忽略 {updated_count} 个任务。"}), 200
     except Exception as e:
         return jsonify({"error": f"忽略任务时失败: {e}"}), 500
@@ -62,7 +66,7 @@ def delete_cleanup_tasks():
         return jsonify({"error": "缺少或无效的 task_ids 参数"}), 400
 
     try:
-        deleted_count = db_handler.batch_delete_cleanup_tasks(task_ids)
+        deleted_count = maintenance_db.batch_delete_cleanup_tasks(task_ids)
         return jsonify({"message": f"成功删除 {deleted_count} 个任务。"}), 200
     except Exception as e:
         return jsonify({"error": f"删除任务时失败: {e}"}), 500
@@ -84,7 +88,7 @@ def get_cleanup_rules():
         }
         
         # 2. 从数据库加载用户已保存的规则列表
-        saved_rules_list = db_handler.get_setting('media_cleanup_rules')
+        saved_rules_list = settings_db.get_setting('media_cleanup_rules')
         
         if not saved_rules_list:
             # 如果数据库为空，直接返回最新的默认规则
@@ -143,7 +147,7 @@ def save_cleanup_rules():
     
     try:
         # 直接使用 db_handler 保存设置
-        db_handler.save_setting('media_cleanup_rules', new_rules)
+        settings_db.save_setting('media_cleanup_rules', new_rules)
         # 通知配置管理器重新加载内存中的设置，确保后续任务使用新规则
         return jsonify({"message": "清理规则已成功保存！"}), 200
     except Exception as e:

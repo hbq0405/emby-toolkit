@@ -6,7 +6,7 @@ import logging
 import os
 
 # 导入底层和共享模块
-
+from database import connection
 import config_manager
 import constants
 from extensions import login_required
@@ -26,7 +26,7 @@ def init_auth():
         return
 
     try:
-        with db_handler.get_db_connection() as conn:
+        with connection.get_db_connection() as conn:
             cursor = conn.cursor()
             
             # 【修改1】: 首先检查数据库中是否已存在任何用户
@@ -89,7 +89,7 @@ def login():
         return jsonify({"error": "缺少用户名或密码"}), 400
 
     try:
-        with db_handler.get_db_connection() as conn:
+        with connection.get_db_connection() as conn:
             cursor = conn.cursor()
             cursor.execute("SELECT * FROM users WHERE username = %s", (username,))
             user = cursor.fetchone()
@@ -137,7 +137,7 @@ def change_password():
 
     user_id = session.get('user_id')
     try:
-        with db_handler.get_db_connection() as conn:
+        with connection.get_db_connection() as conn:
             cursor = conn.cursor()
             cursor.execute("SELECT * FROM users WHERE id = %s", (user_id,))
             user = cursor.fetchone()

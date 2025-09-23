@@ -11,7 +11,7 @@ logger = logging.getLogger(__name__)
 
 def upsert_user_media_data(data: Dict[str, Any]):
     """【V1】根据Webhook传入的数据，更新或插入单条用户媒体状态。"""
-    # ... (函数体与原文件相同)
+    
     user_id = data.get('user_id')
     item_id = data.get('item_id')
     if not user_id or not item_id:
@@ -42,7 +42,7 @@ def upsert_user_media_data(data: Dict[str, Any]):
 
 def upsert_user_media_data_batch(user_id: str, items_data: List[Dict[str, Any]]):
     """【V1】为一个指定用户，批量更新或插入其所有媒体的状态。"""
-    # ... (函数体与原文件相同)
+    
     if not user_id or not items_data:
         return
 
@@ -86,7 +86,7 @@ def upsert_user_media_data_batch(user_id: str, items_data: List[Dict[str, Any]])
 
 def get_all_emby_users() -> List[Dict[str, Any]]:
     """获取本地缓存的所有Emby用户信息。"""
-    # ... (函数体与原文件相同)
+    
     try:
         with get_db_connection() as conn:
             cursor = conn.cursor()
@@ -98,7 +98,7 @@ def get_all_emby_users() -> List[Dict[str, Any]]:
 
 def upsert_emby_users_batch(users_data: List[Dict[str, Any]]):
     """批量更新或插入Emby用户信息到本地缓存。"""
-    # ... (函数体与原文件相同)
+    
     if not users_data:
         return
 
@@ -136,7 +136,7 @@ def upsert_emby_users_batch(users_data: List[Dict[str, Any]]):
 
 def get_item_ids_by_dynamic_rules(user_id: str, rules: List[Dict[str, Any]]) -> Optional[List[str]]:
     """【V2 - 时间维度版】根据动态筛选规则获取匹配的媒体项ID列表。"""
-    # ... (函数体与原文件相同)
+    
     if not user_id or not rules:
         return []
 
@@ -183,7 +183,7 @@ def get_item_ids_by_dynamic_rules(user_id: str, rules: List[Dict[str, Any]]) -> 
     
 def get_all_local_emby_user_ids() -> set:
     """获取本地数据库中所有 emby_users 的 ID 集合。"""
-    # ... (函数体与原文件相同)
+    
     try:
         with get_db_connection() as conn:
             cursor = conn.cursor()
@@ -195,7 +195,7 @@ def get_all_local_emby_user_ids() -> set:
 
 def delete_emby_users_by_ids(user_ids: List[str]) -> int:
     """根据用户ID列表，从 emby_users 表中批量删除用户。"""
-    # ... (函数体与原文件相同)
+    
     if not user_ids:
         return 0
     try:
@@ -213,7 +213,7 @@ def delete_emby_users_by_ids(user_ids: List[str]) -> int:
 
 def upsert_user_media_data_batch_no_date(user_id: str, items_data: List[Dict[str, Any]]):
     """【V1 - 精准夺权版】批量更新用户媒体状态，但排除 last_played_date。"""
-    # ... (函数体与原文件相同)
+    
     if not user_id or not items_data:
         return
 

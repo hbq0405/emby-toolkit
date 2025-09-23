@@ -9,7 +9,7 @@ import emby_handler
 import config_manager
 import task_manager
 import extensions
-
+from database import collection_db
 from extensions import login_required, processor_ready_required
 from urllib.parse import urlparse
 
@@ -346,7 +346,7 @@ def api_search_studios():
         return jsonify([])
         
     try:
-        studios = db_handler.search_unique_studios(search_term)
+        studios = collection_db.search_unique_studios(search_term)
         return jsonify(studios)
     except Exception as e:
         logger.error(f"搜索工作室时发生错误: {e}", exc_info=True)

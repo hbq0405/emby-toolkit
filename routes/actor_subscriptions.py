@@ -10,6 +10,8 @@ import config_manager
 import tmdb_handler
 import task_manager
 import moviepilot_handler
+from database import settings_db
+from database import actor_db
 from extensions import login_required, processor_ready_required, task_lock_required
 
 # 1. 创建演员订阅蓝图
@@ -61,7 +63,7 @@ def handle_default_actor_config():
     if request.method == 'GET':
         try:
             # 直接从数据库获取标准格式的配置
-            default_config = db_handler.get_setting('actor_subscriptions_default_config') or {}
+            default_config = settings_db.get_setting('actor_subscriptions_default_config') or {}
             
             # ★★★ 最终方案：直接返回标准格式，确保所有必需的键存在 ★★★
             final_config = {
@@ -80,7 +82,7 @@ def handle_default_actor_config():
         try:
             # ★★★ 最终方案：假设前端发送的就是带 _json 后缀的标准格式，直接保存 ★★★
             new_config = request.json
-            db_handler.save_setting('actor_subscriptions_default_config', new_config)
+            settings_db.save_setting('actor_subscriptions_default_config', new_config)
             return jsonify({"message": "默认配置已成功保存！"})
         except Exception as e:
             logger.error(f"保存默认演员订阅配置失败: {e}", exc_info=True)
@@ -91,7 +93,7 @@ def handle_default_actor_config():
 def handle_actor_subscriptions():
     if request.method == 'GET':
         try:
-            subscriptions = db_handler.get_all_actor_subscriptions()
+            subscriptions = actor_db.get_all_actor_subscriptions()
             return jsonify(subscriptions)
         except Exception as e:
             logger.error(f"获取演员订阅列表失败: {e}", exc_info=True)
@@ -112,12 +114,12 @@ def handle_actor_subscriptions():
         if not subscription_config:
             logger.info(f"为新演员 '{actor_name}' 应用默认订阅配置。")
             # ★★★ 从数据库获取默认配置 ★★★
-            subscription_config = db_handler.get_setting('actor_subscriptions_default_config') or {}
+            subscription_config = settings_db.get_setting('actor_subscriptions_default_config') or {}
         else:
             logger.info(f"为新演员 '{actor_name}' 使用了自定义的订阅配置。")
 
         try:
-            new_sub_id = db_handler.add_actor_subscription(
+            new_sub_id = actor_db.add_actor_subscription(
                 tmdb_person_id=tmdb_person_id,
                 actor_name=actor_name,
                 profile_path=data.get('profile_path'),
@@ -137,7 +139,7 @@ def handle_single_actor_subscription(sub_id):
     if request.method == 'GET':
         try:
             # ★★★ 核心修改：调用新的 db_handler 函数，不再需要 db_path 参数
-            response_data = db_handler.get_single_subscription_details(sub_id)
+            response_data = actor_db.get_single_subscription_details(sub_id)
             return jsonify(response_data) if response_data else ({"error": "未找到指定的订阅"}, 404)
         except Exception as e:
             logger.error(f"获取订阅详情 {sub_id} 失败: {e}", exc_info=True)
@@ -146,7 +148,7 @@ def handle_single_actor_subscription(sub_id):
     if request.method == 'PUT':
         try:
             # ★★★ 核心修改：调用新的 db_handler 函数，不再需要 db_path 参数
-            success = db_handler.update_actor_subscription(sub_id, request.json)
+            success = actor_db.update_actor_subscription(sub_id, request.json)
             return jsonify({"message": "订阅已成功更新！"}) if success else ({"error": "未找到指定的订阅"}, 404)
         except Exception as e:
             logger.error(f"更新订阅 {sub_id} 失败: {e}", exc_info=True)
@@ -155,7 +157,7 @@ def handle_single_actor_subscription(sub_id):
     if request.method == 'DELETE':
         try:
             # ★★★ 核心修改：调用新的 db_handler 函数，不再需要 db_path 参数
-            db_handler.delete_actor_subscription(sub_id)
+            actor_db.delete_actor_subscription(sub_id)
             return jsonify({"message": "订阅已成功删除。"})
         except Exception as e:
             logger.error(f"删除订阅 {sub_id} 失败: {e}", exc_info=True)
@@ -192,12 +194,12 @@ def subscribe_single_tracked_media(media_id):
     """
     try:
         # 1. 检查配额
-        current_quota = db_handler.get_subscription_quota()
+        current_quota = settings_db.get_subscription_quota()
         if current_quota <= 0:
             return jsonify({"error": "今日订阅配额已用尽"}), 429 # 429 Too Many Requests
 
         # 2. 获取媒体信息
-        media_info = db_handler.get_tracked_media_by_id(media_id)
+        media_info = actor_db.get_tracked_media_by_id(media_id)
         if not media_info:
             return jsonify({"error": "未找到指定的媒体项"}), 404
         if media_info.get('status') != 'MISSING':
@@ -215,8 +217,8 @@ def subscribe_single_tracked_media(media_id):
 
         # 4. 根据结果更新数据库和配额
         if success:
-            db_handler.decrement_subscription_quota()
-            db_handler.update_tracked_media_status(media_id, 'SUBSCRIBED')
+            settings_db.decrement_subscription_quota()
+            actor_db.update_tracked_media_status(media_id, 'SUBSCRIBED')
             return jsonify({"message": f"《{media_info['title']}》已成功提交订阅！"})
         else:
             return jsonify({"error": "提交到 MoviePilot 失败，请检查其日志"}), 500

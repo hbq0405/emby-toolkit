@@ -12,7 +12,7 @@ logger = logging.getLogger(__name__)
 
 # --- 媒体去重模块 ---
 def get_all_cleanup_tasks() -> List[Dict[str, Any]]:
-    # ... (函数体与原文件相同)
+    
     try:
         with get_db_connection() as conn:
             cursor = conn.cursor()
@@ -23,7 +23,7 @@ def get_all_cleanup_tasks() -> List[Dict[str, Any]]:
         return []
 
 def batch_insert_cleanup_tasks(tasks: List[Dict[str, Any]]):
-    # ... (函数体与原文件相同)
+    
     if not tasks:
         logger.info("没有发现需要清理的媒体项，无需更新数据库。")
         return
@@ -62,7 +62,7 @@ def batch_insert_cleanup_tasks(tasks: List[Dict[str, Any]]):
         raise
 
 def get_cleanup_tasks_by_ids(task_ids: List[int]) -> List[Dict[str, Any]]:
-    # ... (函数体与原文件相同)
+    
     if not task_ids:
         return []
     try:
@@ -76,7 +76,7 @@ def get_cleanup_tasks_by_ids(task_ids: List[int]) -> List[Dict[str, Any]]:
         return []
 
 def batch_update_cleanup_task_status(task_ids: List[int], new_status: str) -> int:
-    # ... (函数体与原文件相同)
+    
     if not task_ids:
         return 0
     try:
@@ -93,7 +93,7 @@ def batch_update_cleanup_task_status(task_ids: List[int], new_status: str) -> in
         return 0
 
 def batch_delete_cleanup_tasks(task_ids: List[int]) -> int:
-    # ... (函数体与原文件相同)
+    
     if not task_ids:
         return 0
     try:
@@ -112,7 +112,7 @@ def batch_delete_cleanup_tasks(task_ids: List[int]) -> int:
 # --- 通用维护函数 ---
 def clear_table(table_name: str) -> int:
     """清空指定的数据库表，返回删除的行数。"""
-    # ... (函数体与原文件相同)
+    
     try:
         with get_db_connection() as conn:
             cursor = conn.cursor()
@@ -128,7 +128,7 @@ def clear_table(table_name: str) -> int:
 
 def correct_all_sequences() -> list:
     """【V2 - 最终修正版】自动查找并校准所有表的自增序列。"""
-    # ... (函数体与原文件相同)
+    
     corrected_tables = []
     with get_db_connection() as conn:
         cursor = conn.cursor()

@@ -13,7 +13,7 @@ class LogDBManager:
         pass
 
     def save_to_processed_log(self, cursor: psycopg2.extensions.cursor, item_id: str, item_name: str, score: float = 10.0):
-        # ... (函数体与原文件相同)
+        
         try:
             sql = """
                 INSERT INTO processed_log (item_id, item_name, processed_at, score)
@@ -28,7 +28,7 @@ class LogDBManager:
             logger.error(f"写入已处理 失败 (Item ID: {item_id}): {e}")
     
     def remove_from_processed_log(self, cursor: psycopg2.extensions.cursor, item_id: str):
-        # ... (函数体与原文件相同)
+        
         try:
             logger.debug(f"正在从已处理日志中删除 Item ID: {item_id}...")
             cursor.execute("DELETE FROM processed_log WHERE item_id = %s", (item_id,))
@@ -36,14 +36,14 @@ class LogDBManager:
             logger.error(f"从已处理日志删除失败 for item {item_id}: {e}", exc_info=True)
 
     def remove_from_failed_log(self, cursor: psycopg2.extensions.cursor, item_id: str):
-        # ... (函数体与原文件相同)
+        
         try:
             cursor.execute("DELETE FROM failed_log WHERE item_id = %s", (item_id,))
         except Exception as e:
             logger.error(f"从 failed_log 删除失败 (Item ID: {item_id}): {e}")
 
     def save_to_failed_log(self, cursor: psycopg2.extensions.cursor, item_id: str, item_name: str, reason: str, item_type: str, score: Optional[float] = None):
-        # ... (函数体与原文件相同)
+        
         try:
             sql = """
                 INSERT INTO failed_log (item_id, item_name, reason, item_type, score, failed_at)
@@ -61,7 +61,7 @@ class LogDBManager:
     
     def mark_assets_as_synced(self, cursor, item_id: str, sync_timestamp_iso: str):
         """在 processed_log 中标记一个项目的资源文件已同步。"""
-        # ... (函数体与原文件相同)
+        
         logger.debug(f"正在更新 Item ID {item_id} 的备份状态和时间戳...")
         sql = """
             INSERT INTO processed_log (item_id, assets_synced_at)
@@ -75,7 +75,7 @@ class LogDBManager:
             logger.error(f"更新资源同步时间戳时失败 for item {item_id}: {e}", exc_info=True)
 
 def get_item_name_from_failed_log(item_id: str) -> Optional[str]:
-    # ... (函数体与原文件相同)
+    
     try:
         with get_db_connection() as conn:
             cursor = conn.cursor()
@@ -87,7 +87,7 @@ def get_item_name_from_failed_log(item_id: str) -> Optional[str]:
         return None
 
 def get_review_items_paginated(page: int, per_page: int, query_filter: str) -> Tuple[List, int]:
-    # ... (函数体与原文件相同)
+    
     offset = (page - 1) * per_page
     try:
         with get_db_connection() as conn:
@@ -118,7 +118,7 @@ def get_review_items_paginated(page: int, per_page: int, query_filter: str) -> T
         raise
 
 def mark_review_item_as_processed(item_id: str) -> bool:
-    # ... (函数体与原文件相同)
+    
     try:
         with get_db_connection() as conn:
             cursor = conn.cursor()
@@ -149,7 +149,7 @@ def mark_review_item_as_processed(item_id: str) -> bool:
 
 def clear_all_review_items() -> List[Dict[str, str]]:
     """将所有待复核项移至已处理。"""
-    # ... (函数体与原文件相同)
+    
     moved_items = []
     try:
         with get_db_connection() as conn:

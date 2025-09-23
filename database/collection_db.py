@@ -23,7 +23,7 @@ STATUS_TRANSLATION_MAP = {
 
 def get_all_collections() -> List[Dict[str, Any]]:
     """获取数据库中所有电影合集的信息。"""
-    # ... (函数体与原文件相同)
+    
     try:
         with get_db_connection() as conn:
             cursor = conn.cursor()
@@ -49,7 +49,7 @@ def get_all_collections() -> List[Dict[str, Any]]:
 
 def get_all_custom_collection_emby_ids() -> set:
     """从 custom_collections 表中获取所有非空的 emby_collection_id。"""
-    # ... (函数体与原文件相同)
+    
     ids = set()
     try:
         with get_db_connection() as conn:
@@ -66,7 +66,7 @@ def get_all_custom_collection_emby_ids() -> set:
 
 def get_collections_with_missing_movies() -> List[Dict[str, Any]]:
     """获取所有包含缺失电影的合集信息。"""
-    # ... (函数体与原文件相同)
+    
     try:
         with get_db_connection() as conn:
             cursor = conn.cursor()
@@ -78,7 +78,7 @@ def get_collections_with_missing_movies() -> List[Dict[str, Any]]:
 
 def update_collection_movies(collection_id: str, movies: List[Dict[str, Any]]):
     """更新指定合集的电影列表和缺失状态。"""
-    # ... (函数体与原文件相同)
+    
     try:
         with get_db_connection() as conn:
             still_has_missing = any(m.get('status') == 'missing' for m in movies)
@@ -97,7 +97,7 @@ def update_collection_movies(collection_id: str, movies: List[Dict[str, Any]]):
 
 def update_single_movie_status_in_collection(collection_id: str, movie_tmdb_id: str, new_status: str) -> bool:
     """【修复 #2】更新合集中单个电影的状态。"""
-    # ... (函数体与原文件相同)
+    
     try:
         with get_db_connection() as conn:
             cursor = conn.cursor()
@@ -141,7 +141,7 @@ def update_single_movie_status_in_collection(collection_id: str, movie_tmdb_id: 
 
 def batch_mark_movies_as_subscribed_in_collections(collection_ids: List[str]) -> int:
     """【V2 - PG 兼容修复版】批量将指定合集中的'missing'电影状态更新为'subscribed'。"""
-    # ... (函数体与原文件相同)
+    
     if not collection_ids:
         return 0
 
@@ -201,7 +201,7 @@ def batch_mark_movies_as_subscribed_in_collections(collection_ids: List[str]) ->
 
 def create_custom_collection(name: str, type: str, definition_json: str, allowed_user_ids_json: Optional[str] = None) -> int:
     """【V2 - 权限系统版】创建一个新的自定义合集，包含权限控制。"""
-    # ... (函数体与原文件相同)
+    
     sql = """
         INSERT INTO custom_collections (name, type, definition_json, status, created_at, allowed_user_ids)
         VALUES (%s, %s, %s, 'active', NOW(), %s) 
@@ -227,7 +227,7 @@ def create_custom_collection(name: str, type: str, definition_json: str, allowed
         raise
 
 def get_all_custom_collections() -> List[Dict[str, Any]]:
-    # ... (函数体与原文件相同)
+    
     try:
         with get_db_connection() as conn:
             cursor = conn.cursor()
@@ -243,7 +243,7 @@ def get_all_custom_collections() -> List[Dict[str, Any]]:
 
 def get_all_active_custom_collections() -> List[Dict[str, Any]]:
     """获取所有状态为 'active' 的自定义合集"""
-    # ... (函数体与原文件相同)
+    
     try:
         with get_db_connection() as conn:
             cursor = conn.cursor()
@@ -257,7 +257,7 @@ def get_all_active_custom_collections() -> List[Dict[str, Any]]:
 
 def get_custom_collection_by_id(collection_id: int) -> Optional[Dict[str, Any]]:
     """根据ID获取单个自定义合集的详细信息。"""
-    # ... (函数体与原文件相同)
+    
     try:
         with get_db_connection() as conn:
             cursor = conn.cursor()
@@ -270,7 +270,7 @@ def get_custom_collection_by_id(collection_id: int) -> Optional[Dict[str, Any]]:
 
 def update_custom_collection(collection_id: int, name: str, type: str, definition_json: str, status: str, allowed_user_ids_json: Optional[str] = None) -> bool:
     """【V3 - 权限系统版】更新一个自定义合集，包含权限控制。"""
-    # ... (函数体与原文件相同)
+    
     sql = """
         UPDATE custom_collections
         SET name = %s, type = %s, definition_json = %s, status = %s, allowed_user_ids = %s
@@ -296,7 +296,7 @@ def update_custom_collection(collection_id: int, name: str, type: str, definitio
 
 def delete_custom_collection(collection_id: int) -> bool:
     """【V5 - 职责单一版】从数据库中删除一个自定义合集定义。"""
-    # ... (函数体与原文件相同)
+    
     sql = "DELETE FROM custom_collections WHERE id = %s"
     try:
         with get_db_connection() as conn:
@@ -315,7 +315,7 @@ def delete_custom_collection(collection_id: int) -> bool:
 
 def update_custom_collections_order(ordered_ids: List[int]) -> bool:
     """根据提供的ID列表，批量更新自定义合集的 sort_order。"""
-    # ... (函数体与原文件相同)
+    
     if not ordered_ids:
         return True
 
@@ -338,7 +338,7 @@ def update_custom_collections_order(ordered_ids: List[int]) -> bool:
 
 def get_media_metadata_by_tmdb_id(tmdb_id: str) -> Optional[Dict[str, Any]]:
     """根据TMDb ID从媒体元数据缓存表中获取单条记录。"""
-    # ... (函数体与原文件相同)
+    
     try:
         with get_db_connection() as conn:
             cursor = conn.cursor()
@@ -351,7 +351,7 @@ def get_media_metadata_by_tmdb_id(tmdb_id: str) -> Optional[Dict[str, Any]]:
 
 def get_all_media_metadata(item_type: str = 'Movie') -> List[Dict[str, Any]]:
     """从媒体元数据缓存表中获取指定类型的所有记录。"""
-    # ... (函数体与原文件相同)
+    
     try:
         with get_db_connection() as conn:
             cursor = conn.cursor()
@@ -364,7 +364,7 @@ def get_all_media_metadata(item_type: str = 'Movie') -> List[Dict[str, Any]]:
 
 def get_unique_genres() -> List[str]:
     """【V2 - PG JSON 兼容版】从 media_metadata 表中提取所有不重复的类型。"""
-    # ... (函数体与原文件相同)
+    
     unique_genres = set()
     try:
         with get_db_connection() as conn:
@@ -393,7 +393,7 @@ def get_unique_genres() -> List[str]:
 
 def get_unique_studios() -> List[str]:
     """【V3 - PG JSON 兼容版】从 media_metadata 表中提取所有不重复的工作室。"""
-    # ... (函数体与原文件相同)
+    
     unique_studios = set()
     try:
         with get_db_connection() as conn:
@@ -422,7 +422,7 @@ def get_unique_studios() -> List[str]:
 
 def get_unique_tags() -> List[str]:
     """【V2 - PG JSON 兼容版】从 media_metadata 表中提取所有不重复的标签。"""
-    # ... (函数体与原文件相同)
+    
     unique_tags = set()
     try:
         with get_db_connection() as conn:
@@ -451,7 +451,7 @@ def get_unique_tags() -> List[str]:
 
 def search_unique_studios(search_term: str, limit: int = 20) -> List[str]:
     """(V3 - 智能排序版) 搜索工作室并优先返回以 search_term 开头的结果。"""
-    # ... (函数体与原文件相同)
+    
     if not search_term:
         return []
     
@@ -478,7 +478,7 @@ def search_unique_studios(search_term: str, limit: int = 20) -> List[str]:
 
 def search_unique_actors(search_term: str, limit: int = 20) -> List[str]:
     """【V6.1 - PG JSON 兼容版】搜索演员。"""
-    # ... (函数体与原文件相同)
+    
     if not search_term:
         return []
     
@@ -529,7 +529,7 @@ def search_unique_actors(search_term: str, limit: int = 20) -> List[str]:
         return []
 
 def get_unique_official_ratings():
-    # ... (函数体与原文件相同)
+    
     with get_db_connection() as conn:
         cursor = conn.cursor()
         cursor.execute("""
@@ -542,7 +542,7 @@ def get_unique_official_ratings():
 
 def upsert_collection_info(collection_data: Dict[str, Any]):
     """写入或更新一条合集检查信息到 collections_info 表。"""
-    # ... (函数体与原文件相同)
+    
     sql = """
         INSERT INTO collections_info 
         (emby_collection_id, name, tmdb_collection_id, item_type, status, has_missing, 
@@ -582,7 +582,7 @@ def upsert_collection_info(collection_data: Dict[str, Any]):
 
 def update_custom_collection_after_sync(collection_id: int, update_data: Dict[str, Any]) -> bool:
     """在同步任务完成后，更新自定义合集的状态。"""
-    # ... (函数体与原文件相同)
+    
     if not update_data:
         logger.warning(f"尝试更新自定义合集 {collection_id}，但没有提供任何更新数据。")
         return False
@@ -606,7 +606,7 @@ def update_custom_collection_after_sync(collection_id: int, update_data: Dict[st
 
 def update_single_media_status_in_custom_collection(collection_id: int, media_tmdb_id: str, new_status: str) -> bool:
     """ 更新自定义合集中单个媒体项的状态。"""
-    # ... (函数体与原文件相同)
+    
     try:
         with get_db_connection() as conn:
             cursor = conn.cursor()
@@ -658,7 +658,7 @@ def update_single_media_status_in_custom_collection(collection_id: int, media_tm
 
 def match_and_update_list_collections_on_item_add(new_item_tmdb_id: str, new_item_emby_id: str, new_item_name: str) -> List[Dict[str, Any]]:
     """【V3 - PG JSONB 查询修复版】当新媒体入库时，查找并更新所有匹配的'list'类型合集。"""
-    # ... (函数体与原文件相同)
+    
     collections_to_update_in_emby = []
     
     try:
@@ -745,7 +745,7 @@ def match_and_update_list_collections_on_item_add(new_item_tmdb_id: str, new_ite
 
 def get_media_metadata_by_tmdb_ids(tmdb_ids: List[str], item_type: str) -> List[Dict[str, Any]]:
     """根据 TMDb ID 列表批量获取媒体元数据。"""
-    # ... (函数体与原文件相同)
+    
     if not tmdb_ids:
         return []
     
@@ -762,7 +762,7 @@ def get_media_metadata_by_tmdb_ids(tmdb_ids: List[str], item_type: str) -> List[
 
 def append_item_to_filter_collection_db(collection_id: int, new_item_tmdb_id: str, new_item_emby_id: str) -> bool:
     """当新媒体项匹配规则筛选合集时，更新数据库状态。"""
-    # ... (函数体与原文件相同)
+    
     try:
         with get_db_connection() as conn:
             cursor = conn.cursor()

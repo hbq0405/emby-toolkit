@@ -10,7 +10,7 @@ import emby_handler
 import config_manager
 import constants
 from extensions import login_required
-
+from database import connection
 # 创建一个新的蓝图
 user_management_bp = Blueprint('user_management_bp', __name__)
 
@@ -22,7 +22,7 @@ logger = logging.getLogger(__name__)
 def get_all_templates():
     """【V2 - 返回源用户ID】获取所有用户模板"""
     try:
-        with db_handler.get_db_connection() as conn:
+        with connection.get_db_connection() as conn:
             cursor = conn.cursor()
             # ★★★ 核心修复：在 SELECT 语句中添加 source_emby_user_id ★★★
             cursor.execute(
@@ -56,7 +56,7 @@ def create_template():
         
         policy_json = json.dumps(user_details['Policy'], ensure_ascii=False)
 
-        with db_handler.get_db_connection() as conn:
+        with connection.get_db_connection() as conn:
             cursor = conn.cursor()
             # ★★★ 核心修复：在 INSERT 语句中增加 source_emby_user_id ★★★
             cursor.execute(
@@ -78,7 +78,7 @@ def create_template():
 def sync_template(template_id):
     """【V2 - 增加权限推送】从源用户同步并更新一个模板的权限策略，并将其应用到所有关联用户。"""
     try:
-        with db_handler.get_db_connection() as conn:
+        with connection.get_db_connection() as conn:
             cursor = conn.cursor()
             
             # 1. 查找模板并获取其源用户ID (逻辑不变)
@@ -170,7 +170,7 @@ def create_invitation():
         return jsonify({"status": "error", "message": "必须选择一个模板"}), 400
 
     try:
-        with db_handler.get_db_connection() as conn:
+        with connection.get_db_connection() as conn:
             cursor = conn.cursor()
             
             # ★★★ 核心修复：在这里进行健壮的逻辑判断 ★★★
@@ -218,7 +218,7 @@ def create_invitation():
 def validate_invite_token(token):
     """公开API：验证邀请码是否有效，供注册页面加载时调用"""
     try:
-        with db_handler.get_db_connection() as conn:
+        with connection.get_db_connection() as conn:
             cursor = conn.cursor()
             cursor.execute(
                 "SELECT status, expires_at FROM invitations WHERE token = %s", (token,)
@@ -249,7 +249,7 @@ def register_with_invite():
         return jsonify({"status": "error", "message": "用户名、密码和邀请码不能为空"}), 400
 
     try:
-        with db_handler.get_db_connection() as conn:
+        with connection.get_db_connection() as conn:
             cursor = conn.cursor()
             
             cursor.execute("BEGIN;")
@@ -361,7 +361,7 @@ def register_with_invite():
 def get_all_invitations():
     """获取所有已生成的邀请码及其状态"""
     try:
-        with db_handler.get_db_connection() as conn:
+        with connection.get_db_connection() as conn:
             cursor = conn.cursor()
             # 使用 JOIN 查询，一次性把模板名称也查出来
             cursor.execute("""
@@ -381,7 +381,7 @@ def get_all_invitations():
 def delete_invitation(invitation_id):
     """删除一个邀请码"""
     try:
-        with db_handler.get_db_connection() as conn:
+        with connection.get_db_connection() as conn:
             cursor = conn.cursor()
             cursor.execute("DELETE FROM invitations WHERE id = %s", (invitation_id,))
             conn.commit()
@@ -417,7 +417,7 @@ def get_all_managed_users():
         if all_emby_users is None:
             return jsonify({"error": "无法从 Emby 获取用户列表"}), 500
 
-        with db_handler.get_db_connection() as conn:
+        with connection.get_db_connection() as conn:
             cursor = conn.cursor()
             
             # ★★★ 核心修复 1/2：在开始时就获取所有源用户的ID ★★★
@@ -474,7 +474,7 @@ def change_user_template(user_id):
         return jsonify({"status": "error", "message": "必须提供新的模板ID"}), 400
 
     try:
-        with db_handler.get_db_connection() as conn:
+        with connection.get_db_connection() as conn:
             cursor = conn.cursor()
             
             # --- 获取用户名和模板名用于日志 (保持不变) ---
@@ -539,7 +539,7 @@ def set_user_status(user_id):
     # 在操作前获取用户名
     user_name_for_log = user_id
     try:
-        with db_handler.get_db_connection() as conn:
+        with connection.get_db_connection() as conn:
             cursor = conn.cursor()
             cursor.execute("SELECT name FROM emby_users WHERE id = %s", (user_id,))
             user_record = cursor.fetchone()
@@ -556,7 +556,7 @@ def set_user_status(user_id):
     
     if success:
         new_status = 'disabled' if disable else 'active'
-        with db_handler.get_db_connection() as conn:
+        with connection.get_db_connection() as conn:
             cursor = conn.cursor()
             cursor.execute(
                 "UPDATE emby_users_extended SET status = %s WHERE emby_user_id = %s",
@@ -579,7 +579,7 @@ def set_user_expiration(user_id):
     # 在操作前获取用户名
     user_name_for_log = user_id
     try:
-        with db_handler.get_db_connection() as conn:
+        with connection.get_db_connection() as conn:
             cursor = conn.cursor()
             cursor.execute("SELECT name FROM emby_users WHERE id = %s", (user_id,))
             user_record = cursor.fetchone()
@@ -591,7 +591,7 @@ def set_user_expiration(user_id):
     logger.info(log_message)
     
     try:
-        with db_handler.get_db_connection() as conn:
+        with connection.get_db_connection() as conn:
             cursor = conn.cursor()
             # 检查用户是否在 emby_users_extended 中，如果不存在则先创建
             cursor.execute("SELECT 1 FROM emby_users_extended WHERE emby_user_id = %s", (user_id,))
@@ -622,7 +622,7 @@ def delete_user(user_id):
     # 在删除前，先从本地数据库获取用户名用于日志记录
     user_name_for_log = user_id
     try:
-        with db_handler.get_db_connection() as conn:
+        with connection.get_db_connection() as conn:
             cursor = conn.cursor()
             cursor.execute("SELECT name FROM emby_users WHERE id = %s", (user_id,))
             user_record = cursor.fetchone()
@@ -639,7 +639,7 @@ def delete_user(user_id):
     
     if emby_delete_success:
         try:
-            with db_handler.get_db_connection() as conn:
+            with connection.get_db_connection() as conn:
                 cursor = conn.cursor()
                 cursor.execute("DELETE FROM emby_users WHERE id = %s", (user_id,))
                 conn.commit()
@@ -661,7 +661,7 @@ def delete_user(user_id):
 def delete_template(template_id):
     """删除一个用户模板"""
     try:
-        with db_handler.get_db_connection() as conn:
+        with connection.get_db_connection() as conn:
             cursor = conn.cursor()
             # 我们设置了外键 ON DELETE CASCADE，所以删除模板时，
             # 关联的邀请链接会自动被删除。

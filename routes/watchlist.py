@@ -10,6 +10,8 @@ import moviepilot_handler
 import task_manager
 import extensions
 from extensions import login_required, task_lock_required
+from database import watchlist_db
+from database import settings_db
 # 1. 创建追剧列表蓝图
 watchlist_bp = Blueprint('watchlist', __name__, url_prefix='/api/watchlist')
 
@@ -21,7 +23,7 @@ logger = logging.getLogger(__name__)
 def api_get_watchlist():
     logger.debug("API (Blueprint): 收到获取追剧列表的请求。")
     try:
-        items = db_handler.get_all_watchlist_items()
+        items = watchlist_db.get_all_watchlist_items()
 
         for item in items:
             # 1. 直接重命名字段，将 psycopg2 解析好的对象传递给前端
@@ -65,7 +67,7 @@ def api_add_to_watchlist():
     logger.info(f"API (Blueprint): 收到手动添加 '{item_name}' 到追剧列表的请求。")
     
     try:
-        db_handler.add_item_to_watchlist(
+        watchlist_db.add_item_to_watchlist(
             item_id=item_id,
             tmdb_id=tmdb_id,
             item_name=item_name,
@@ -89,7 +91,7 @@ def api_update_watchlist_status():
 
     logger.info(f"API (Blueprint): 收到请求，将项目 {item_id} 的追剧状态更新为 '{new_status}'。")
     try:
-        success = db_handler.update_watchlist_item_status(
+        success = watchlist_db.update_watchlist_item_status(
             item_id=item_id,
             new_status=new_status
         )
@@ -107,7 +109,7 @@ def api_remove_from_watchlist(item_id):
     # ... (函数逻辑和原来完全一样) ...
     logger.info(f"API (Blueprint): 收到请求，将项目 {item_id} 从追剧列表移除。")
     try:
-        success = db_handler.remove_item_from_watchlist(
+        success = watchlist_db.remove_item_from_watchlist(
             item_id=item_id
         )
         if success:
@@ -127,7 +129,7 @@ def api_trigger_single_watchlist_refresh(item_id):
     if not extensions.watchlist_processor_instance:
         return jsonify({"error": "追剧处理模块未就绪"}), 503
 
-    item_name = db_handler.get_watchlist_item_name(item_id) or "未知剧集"
+    item_name = watchlist_db.get_watchlist_item_name(item_id) or "未知剧集"
 
     task_manager.submit_task(
         task_refresh_single_watchlist_item,
@@ -156,8 +158,8 @@ def api_batch_force_end_watchlist_items():
     logger.info(f"API (Blueprint): 收到对 {len(item_ids)} 个项目的批量强制完结请求。")
     
     try:
-        # 调用更新后的 db_handler 函数
-        updated_count = db_handler.batch_force_end_watchlist_items(
+        # 调用更新后的 watchlist_db 函数
+        updated_count = watchlist_db.batch_force_end_watchlist_items(
             item_ids=item_ids
         )
         
@@ -192,8 +194,8 @@ def api_batch_update_watchlist_status():
     logger.info(f"API: 收到对 {len(item_ids)} 个项目的批量状态更新请求，新状态为 '{new_status}'。")
     
     try:
-        # 调用 db_handler 中我们将要创建的新函数
-        updated_count = db_handler.batch_update_watchlist_status(
+        # 调用 watchlist_db 中我们将要创建的新函数
+        updated_count = watchlist_db.batch_update_watchlist_status(
             item_ids=item_ids,
             new_status=new_status
         )
@@ -222,7 +224,7 @@ def api_subscribe_series_to_moviepilot():
     logger.info(f"API: 收到对《{title}》第 {season_number} 季 (TMDb ID: {tmdb_id}) 的 MoviePilot 订阅请求。")
 
     # --- 新增配额检查 ---
-    current_quota = db_handler.get_subscription_quota()
+    current_quota = settings_db.get_subscription_quota()
     if current_quota <= 0:
         logger.warning(f"API: 用户尝试订阅《{title}》第 {season_number} 季，但每日配额已用尽。")
         return jsonify({"error": "今日订阅配额已用尽，请明天再试。"}), 429
@@ -242,7 +244,7 @@ def api_subscribe_series_to_moviepilot():
         )
         if success:
             # 订阅成功后扣减配额
-            db_handler.decrement_subscription_quota()
+            settings_db.decrement_subscription_quota()
 
             return jsonify({"message": f"《{title}》第 {season_number} 季的订阅任务已成功提交到 MoviePilot！"}), 200
         else:

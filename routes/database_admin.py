@@ -14,7 +14,12 @@ from psycopg2 import sql
 import config_manager
 import task_manager
 import constants
-
+from database import (
+    connection,
+    log_db,
+    maintenance_db,
+    settings_db
+)
 # 导入共享模块
 import extensions
 from extensions import login_required, processor_ready_required, task_lock_required
@@ -78,7 +83,7 @@ def api_get_database_stats():
     彻底修复因总配额下调导致的“已用”配额为负数的BUG。
     """
     try:
-        with db_handler.get_db_connection() as conn:
+        with connection.get_db_connection() as conn:
             cursor = conn.cursor()
             
             raw_stats = _get_all_stats_in_one_query(cursor)
@@ -88,7 +93,7 @@ def api_get_database_stats():
 
             # ★★★ 核心修复：采用全新的、更健壮的配额计算方法 ★★★
             # 1. 获取当前可用的剩余配额
-            available_quota = db_handler.get_subscription_quota()
+            available_quota = settings_db.get_subscription_quota()
             # 2. 获取当前配置的总配额
             total_quota = config_manager.APP_CONFIG.get(constants.CONFIG_OPTION_RESUBSCRIBE_DAILY_CAP, 200)
             # 3. 计算已用配额，并确保它永远不会是负数
@@ -170,7 +175,7 @@ def _count_table_rows(cursor: psycopg2.extensions.cursor, table_name: str, condi
 def api_get_db_tables():
     """【修改2】: 使用 PostgreSQL 的 information_schema 来获取表列表。"""
     try:
-        with db_handler.get_db_connection() as conn:
+        with connection.get_db_connection() as conn:
             cursor = conn.cursor()
             # PostgreSQL 使用 information_schema.tables 来查询表信息
             # table_schema = 'public' 是查询默认的公共模式下的表
@@ -205,7 +210,7 @@ def api_export_database():
             }, "data": {}
         }
 
-        with db_handler.get_db_connection() as conn:
+        with connection.get_db_connection() as conn:
             cursor = conn.cursor()
             for table_name in tables_to_export:
                 if not re.match(r'^[a-zA-Z0-9_]+$', table_name):
@@ -316,7 +321,7 @@ def api_get_review_items():
     per_page = request.args.get('per_page', 20, type=int)
     query_filter = request.args.get('query', '', type=str).strip()
     try:
-        items, total = db_handler.get_review_items_paginated(page, per_page, query_filter)
+        items, total = log_db.get_review_items_paginated(page, per_page, query_filter)
         total_pages = (total + per_page - 1) // per_page if total > 0 else 0
         return jsonify({
             "items": items, "total_items": total, "total_pages": total_pages,
@@ -331,10 +336,10 @@ def api_mark_item_processed(item_id):
     if task_manager.is_task_running(): return jsonify({"error": "后台有任务正在运行，请稍后再试。"}), 409
     try:
         # ★★★ 核心修改 1: 在数据库操作前，先获取项目名称 ★★★
-        item_name = db_handler.get_item_name_from_failed_log(item_id)
+        item_name = log_db.get_item_name_from_failed_log(item_id)
 
         # 执行数据库操作
-        success = db_handler.mark_review_item_as_processed(item_id)
+        success = log_db.mark_review_item_as_processed(item_id)
         
         if success:
             # ★★★ 核心修改 2: 如果数据库操作成功，立即同步更新内存缓存 ★★★
@@ -354,7 +359,7 @@ def api_mark_item_processed(item_id):
 def api_clear_review_items():
     try:
         # ★★★ 核心修改 1: 调用修改后的函数，它会返回被移动的条目列表 ★★★
-        moved_items = db_handler.clear_all_review_items()
+        moved_items = log_db.clear_all_review_items()
         count = len(moved_items)
 
         # ★★★ 核心修改 2: 遍历返回的列表，逐个更新到内存缓存 ★★★
@@ -396,7 +401,7 @@ def api_clear_tables():
                 continue
             
             logger.info(f"正在清空表: {table_name}")
-            deleted_count = db_handler.clear_table(table_name)
+            deleted_count = maintenance_db.clear_table(table_name)
             total_deleted += deleted_count
             logger.info(f"表 {table_name} 清空完成，删除了 {deleted_count} 行。")
         
@@ -416,7 +421,7 @@ def api_correct_all_sequences():
     """
     try:
         # 直接调用 db_handler 中的核心函数
-        corrected_tables = db_handler.correct_all_sequences()
+        corrected_tables = maintenance_db.correct_all_sequences()
         
         if corrected_tables:
             message = f"操作成功！已成功校准 {len(corrected_tables)} 个表的ID计数器。"

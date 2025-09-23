@@ -15,6 +15,7 @@ import config_manager
 import emby_handler
 # 导入共享模块
 import extensions
+from database import collection_db
 from extensions import login_required, task_lock_required
 import tasks
 import constants
@@ -473,7 +474,7 @@ def api_get_genres_config():
     """
     try:
         # ★★★ 核心修复：直接调用新的数据库函数 ★★★
-        genres = db_handler.get_unique_genres()
+        genres = collection_db.get_unique_genres()
         # API直接返回一个字符串列表，例如 ["动作", "喜剧", "科幻"]
         return jsonify(genres)
     except Exception as e:
@@ -488,7 +489,7 @@ def api_get_studios_config():
     从媒体元数据缓存中动态获取所有唯一的工作室。
     """
     try:
-        studios = db_handler.get_unique_studios()
+        studios = collection_db.get_unique_studios()
         return jsonify(studios)
     except Exception as e:
         logger.error(f"动态获取工作室列表时发生错误: {e}", exc_info=True)

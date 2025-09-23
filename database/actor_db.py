@@ -18,7 +18,7 @@ class ActorDBManager:
 
     def get_translation_from_db(self, cursor: psycopg2.extensions.cursor, text: str, by_translated_text: bool = False) -> Optional[Dict[str, Any]]:
         """【PostgreSQL版】从数据库获取翻译缓存，并自我净化坏数据。"""
-        # ... (函数体与原文件相同)
+        
         try:
             if by_translated_text:
                 sql = "SELECT original_text, translated_text, engine_used FROM translation_cache WHERE translated_text = %s"
@@ -51,7 +51,7 @@ class ActorDBManager:
 
     def save_translation_to_db(self, cursor: psycopg2.extensions.cursor, original_text: str, translated_text: Optional[str], engine_used: Optional[str]):
         """【PostgreSQL版】将翻译结果保存到数据库，增加中文校验。"""
-        # ... (函数体与原文件相同)
+        
         if translated_text and translated_text.strip() and not contains_chinese(translated_text):
             logger.warning(f"翻译结果 '{translated_text}' 不含中文，已丢弃。原文: '{original_text}'")
             return
@@ -72,7 +72,7 @@ class ActorDBManager:
 
 
     def find_person_by_any_id(self, cursor: psycopg2.extensions.cursor, **kwargs) -> Optional[dict]:
-        # ... (函数体与原文件相同)
+        
         search_criteria = [
             ("tmdb_person_id", kwargs.get("tmdb_id")),
             ("emby_person_id", kwargs.get("emby_id")),
@@ -93,7 +93,7 @@ class ActorDBManager:
 
     def upsert_person(self, cursor: psycopg2.extensions.cursor, person_data: Dict[str, Any], emby_config: Dict[str, str]) -> Tuple[int, str]:
         """【V4.1 - 类型安全修复版】"""
-        # ... (函数体与原文件相同)
+        
         id_field_map = {
             "tmdb_person_id": "Tmdb",
             "imdb_id": "Imdb",
@@ -238,7 +238,7 @@ class ActorDBManager:
 
 def get_all_emby_person_ids_from_map() -> set:
     """从 person_identity_map 表中获取所有 emby_person_id 的集合。"""
-    # ... (函数体与原文件相同)
+    
     ids = set()
     try:
         with get_db_connection() as conn:
@@ -254,7 +254,7 @@ def get_all_emby_person_ids_from_map() -> set:
 
 def delete_persons_by_emby_ids(emby_ids: list) -> int:
     """根据 Emby Person ID 列表，从 person_identity_map 表中批量删除记录。"""
-    # ... (函数体与原文件相同)
+    
     if not emby_ids:
         return 0
     try:
@@ -274,7 +274,7 @@ def delete_persons_by_emby_ids(emby_ids: list) -> int:
 
 def get_all_actor_subscriptions() -> List[Dict[str, Any]]:
     """获取所有演员订阅的简略列表。"""
-    # ... (函数体与原文件相同)
+    
     try:
         with get_db_connection() as conn:
             cursor = conn.cursor()
@@ -286,7 +286,7 @@ def get_all_actor_subscriptions() -> List[Dict[str, Any]]:
 
 def get_single_subscription_details(subscription_id: int) -> Optional[Dict[str, Any]]:
     """【V2 - 格式化修复版】获取单个订阅的完整详情。"""
-    # ... (函数体与原文件相同)
+    
     try:
         with get_db_connection() as conn:
             cursor = conn.cursor()
@@ -335,7 +335,7 @@ def get_single_subscription_details(subscription_id: int) -> Optional[Dict[str, 
 
 def safe_json_dumps(value):
     """安全地将Python对象转换为JSON字符串。"""
-    # ... (函数体与原文件相同)
+    
     if isinstance(value, str):
         try:
             parsed = json.loads(value)
@@ -347,7 +347,7 @@ def safe_json_dumps(value):
 
 def add_actor_subscription(tmdb_person_id: int, actor_name: str, profile_path: str, config: dict) -> int:
     """【V3 - 最终修复版】新增一个演员订阅。"""
-    # ... (函数体与原文件相同)
+    
     start_year = config.get('start_year', 1900)
     media_types_list = config.get('media_types', ['Movie','TV'])
     if isinstance(media_types_list, list):
@@ -392,7 +392,7 @@ def add_actor_subscription(tmdb_person_id: int, actor_name: str, profile_path: s
 
 def update_actor_subscription(subscription_id: int, data: dict) -> bool:
     """【V6 - 逻辑重构最终修复版】更新一个演员订阅的状态或配置。"""
-    # ... (函数体与原文件相同)
+    
     try:
         with get_db_connection() as conn:
             cursor = conn.cursor()
@@ -442,7 +442,7 @@ def update_actor_subscription(subscription_id: int, data: dict) -> bool:
 
 def delete_actor_subscription(subscription_id: int) -> bool:
     """删除一个演员订阅及其所有追踪的媒体。"""
-    # ... (函数体与原文件相同)
+    
     try:
         with get_db_connection() as conn:
             cursor = conn.cursor()
@@ -456,7 +456,7 @@ def delete_actor_subscription(subscription_id: int) -> bool:
 
 def get_tracked_media_by_id(media_id: int) -> Optional[Dict[str, Any]]:
     """根据 tracked_actor_media 表的主键 ID 获取单个媒体项的完整信息。"""
-    # ... (函数体与原文件相同)
+    
     try:
         with get_db_connection() as conn:
             cursor = conn.cursor()
@@ -469,7 +469,7 @@ def get_tracked_media_by_id(media_id: int) -> Optional[Dict[str, Any]]:
 
 def update_tracked_media_status(media_id: int, new_status: str) -> bool:
     """根据 tracked_actor_media 表的主键 ID 更新单个媒体项的状态。"""
-    # ... (函数体与原文件相同)
+    
     try:
         with get_db_connection() as conn:
             cursor = conn.cursor()
