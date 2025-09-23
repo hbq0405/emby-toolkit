@@ -387,7 +387,7 @@ def emby_webhook():
         try:
             if len(update_data) > 2:
                 user_db.upsert_user_media_data(update_data)
-                logger.info(f"  -> Webhook: 已更新用户 '{user_id}' 对项目 '{id_to_update_in_db}' 的状态 ({event_type})。")
+                logger.trace(f"  -> Webhook: 已更新用户 '{user_id}' 对项目 '{id_to_update_in_db}' 的状态 ({event_type})。")
                 return jsonify({"status": "user_data_updated"}), 200
             else:
                 logger.debug(f"  -> Webhook '{event_type}' 未包含可更新的用户数据，已忽略。")
@@ -398,7 +398,7 @@ def emby_webhook():
 
     trigger_events = ["item.add", "library.new", "library.deleted", "metadata.update", "image.update"]
     if event_type not in trigger_events:
-        logger.info(f"  -> Webhook事件 '{event_type}' 不在触发列表 {trigger_events} 中，将被忽略。")
+        logger.debug(f"  -> Webhook事件 '{event_type}' 不在触发列表 {trigger_events} 中，将被忽略。")
         return jsonify({"status": "event_ignored_not_in_trigger_list"}), 200
 
     item_from_webhook = data.get("Item", {}) if data else {}
