@@ -944,7 +944,7 @@ def download_emby_image(
         return True
     except requests.exceptions.RequestException as e:
         if hasattr(e, 'response') and e.response is not None and e.response.status_code == 404:
-            logger.debug(f"图片类型 '{image_type}' 在 Emby 项目 '{item_id}' 中不存在。")
+            logger.trace(f"图片类型 '{image_type}' 在 Emby 项目 '{item_id}' 中不存在。")
         else:
             logger.error(f"下载图片时发生网络错误: {e}")
         return False
