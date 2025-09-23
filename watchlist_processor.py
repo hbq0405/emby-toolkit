@@ -352,7 +352,7 @@ class WatchlistProcessor:
             if progress_callback: progress_callback(100, "所有流程已完成（洗版功能未启用）。")
             return
 
-        logger.info(f"--- 后台任务 '{task_name}' 开始执行 ---")
+        logger.trace(f"  -> 后台任务 '{task_name}' 开始执行")
         if progress_callback: progress_callback(0, "正在查找需要洗版的剧集...")
 
         try:
@@ -446,7 +446,7 @@ class WatchlistProcessor:
 
             final_message = f"  -> 所有流程已完成！共为 {total_seasons_subscribed} 个缺失的季提交了洗版订阅。"
             if progress_callback: progress_callback(100, final_message)
-            logger.info(f"--- 后台任务 '{task_name}' 结束，最终状态: 处理完成。 ---")
+            logger.trace(f"  -> 后台任务 '{task_name}' 结束，最终状态: 处理完成")
 
         except Exception as e:
             logger.error(f"执行 '{task_name}' 时发生严重错误: {e}", exc_info=True)

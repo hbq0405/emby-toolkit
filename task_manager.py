@@ -59,7 +59,7 @@ def _execute_task_with_lock(task_function: Callable, task_name: str, processor: 
             "is_running": True, "current_action": task_name, "last_action": task_name,
             "progress": 0, "message": f"{task_name} 初始化..."
         })
-        logger.info(f"--- 后台任务 '{task_name}' 开始执行 ---")
+        logger.info(f"  -> 后台任务 '{task_name}' 开始执行")
 
         task_completed_normally = False
         try:
@@ -133,7 +133,7 @@ def start_task_worker_if_not_running():
             task_worker_thread = threading.Thread(target=task_worker_function, daemon=True)
             task_worker_thread.start()
         else:
-            logger.debug("通用任务线程已在运行。")
+            logger.trace("通用任务线程已在运行。")
 
 def submit_task(task_function: Callable, task_name: str, processor_type: ProcessorType = 'media', *args, **kwargs) -> bool:
     """
@@ -148,7 +148,7 @@ def submit_task(task_function: Callable, task_name: str, processor_type: Process
             return False
 
         frontend_log_queue.clear()
-        logger.info(f"任务 '{task_name}' 已提交到队列，并已清空前端日志。")
+        logger.trace(f"  -> 任务 '{task_name}' 已提交到队列，并已清空前端日志。")
         
         # ★★★ 核心修复：将 processor_type 加入任务信息元组 ★★★
         task_info = (task_function, task_name, processor_type, args, kwargs)

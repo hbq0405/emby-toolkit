@@ -49,12 +49,12 @@ def task_sync_metadata_cache(processor, item_id: str, item_name: str):
     """
     任务：为单个媒体项同步元数据到 media_metadata 数据库表。
     """
-    logger.info(f"任务开始：同步媒体元数据缓存 for '{item_name}' (ID: {item_id})")
+    logger.trace(f"  -> 任务开始：同步媒体元数据缓存 for '{item_name}' (ID: {item_id})")
     try:
         processor.sync_single_item_to_metadata_cache(item_id, item_name=item_name)
-        logger.info(f"任务成功：同步媒体元数据缓存 for '{item_name}'")
+        logger.trace(f"  -> 任务成功：同步媒体元数据缓存 for '{item_name}'")
     except Exception as e:
-        logger.error(f"任务失败：同步媒体元数据缓存 for '{item_name}' 时发生错误: {e}", exc_info=True)
+        logger.error(f"  -> 任务失败：同步媒体元数据缓存 for '{item_name}' 时发生错误: {e}", exc_info=True)
         # 根据需要，可以决定是否要重新抛出异常以标记任务失败
         raise
 
@@ -76,7 +76,7 @@ def task_reprocess_single_item(processor, item_id: str, item_name_for_ui: str):
     【最终版 - 职责分离】后台任务。
     此版本负责在任务开始时设置“正在处理”的状态，并执行核心逻辑。
     """
-    logger.debug(f"--- 后台任务开始执行 ({item_name_for_ui}) ---")
+    logger.trace(f"  -> 后台任务开始执行 ({item_name_for_ui})")
     
     try:
         # ✨ 关键修改：任务一开始，就用“正在处理”的状态覆盖掉旧状态
@@ -89,7 +89,7 @@ def task_reprocess_single_item(processor, item_id: str, item_name_for_ui: str):
             force_fetch_from_tmdb=True
         )
         # 任务成功完成后的状态更新会自动由任务队列处理，我们无需关心
-        logger.debug(f"--- 后台任务完成 ({item_name_for_ui}) ---")
+        logger.trace(f"  -> 后台任务完成 ({item_name_for_ui})")
 
     except Exception as e:
         logger.error(f"后台任务处理 '{item_name_for_ui}' 时发生严重错误: {e}", exc_info=True)

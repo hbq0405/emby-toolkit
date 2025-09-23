@@ -490,9 +490,9 @@ def emby_webhook():
             if id_to_process in UPDATE_DEBOUNCE_TIMERS:
                 old_timer = UPDATE_DEBOUNCE_TIMERS[id_to_process]
                 old_timer.kill()
-                logger.debug(f"已为 '{name_for_task}' 取消了旧的同步计时器，将以最新事件为准。")
+                logger.debug(f"  -> 已为 '{name_for_task}' 取消了旧的同步计时器，将以最新事件为准。")
 
-            logger.info(f"为 '{name_for_task}' 设置了 {UPDATE_DEBOUNCE_TIME} 秒的同步延迟，以合并连续的更新事件。")
+            logger.info(f"  -> 为 '{name_for_task}' 设置了 {UPDATE_DEBOUNCE_TIME} 秒的同步延迟，以合并连续的更新事件。")
             new_timer = spawn_later(
                 UPDATE_DEBOUNCE_TIME,
                 _trigger_update_tasks,

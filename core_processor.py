@@ -2663,7 +2663,7 @@ class MediaProcessor:
         这是 task_populate_metadata_cache 的单点执行版本。
         """
         log_prefix = f"实时同步媒体数据 '{item_name}'"
-        logger.info(f"--- {log_prefix} 开始执行 ---")
+        logger.info(f"  -> {log_prefix} 开始执行")
         
         try:
             # 1. 获取完整的 Emby 详情
@@ -2789,7 +2789,7 @@ class MediaProcessor:
                 cursor.execute(sql, tuple(metadata.values()) + (sync_time,))
                 conn.commit()
             
-            logger.info(f"--- {log_prefix} 成功完成 ---")
+            logger.info(f"  -> {log_prefix} 成功完成")
 
         except Exception as e:
             logger.error(f"{log_prefix} 执行时发生错误: {e}", exc_info=True)
