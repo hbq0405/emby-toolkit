@@ -23,9 +23,7 @@ from tasks import (
 )
 from custom_collection_handler import FilterEngine
 from services.cover_generator import CoverGeneratorService
-from database import collection_db
-from database import connection
-from database import settings_db
+from database import collection_db, connection, settings_db, user_db
 from database.log_db import LogDBManager
 import logging
 logger = logging.getLogger(__name__)
@@ -388,7 +386,7 @@ def emby_webhook():
 
         try:
             if len(update_data) > 2:
-                collection_db.upsert_user_media_data(update_data)
+                user_db.upsert_user_media_data(update_data)
                 logger.info(f"  -> Webhook: 已更新用户 '{user_id}' 对项目 '{id_to_update_in_db}' 的状态 ({event_type})。")
                 return jsonify({"status": "user_data_updated"}), 200
             else:
