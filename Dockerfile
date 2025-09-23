@@ -72,6 +72,7 @@ COPY web_app.py \
      maoyan_fetcher.py \
      ./
 
+COPY database/ ./database/
 COPY fonts/ ./fonts/
 COPY services/ ./services/
 COPY routes/ ./routes/
