@@ -150,21 +150,21 @@ class AITranslator:
             if self.provider == 'openai':
                 if not OPENAI_AVAILABLE: raise ImportError("OpenAI SDK 未安装")
                 self.client = OpenAI(api_key=self.api_key, base_url=self.base_url if self.base_url else None)
-                logger.info(f"OpenAI 初始化成功")
+                logger.info(f"  -> OpenAI 初始化成功")
             
             elif self.provider == 'zhipuai':
                 if not ZHIPUAI_AVAILABLE: raise ImportError("智谱AI SDK 未安装")
                 self.client = ZhipuAI(api_key=self.api_key)
-                logger.info(f"智谱AI 初始化成功")
+                logger.info(f"  -> 智谱AI 初始化成功")
             
             elif self.provider == 'gemini':
                 if not GEMINI_AVAILABLE: raise ImportError("Google Gemini SDK 未安装")
                 genai.configure(api_key=self.api_key)
                 self.client = genai.GenerativeModel(self.model)
-                logger.info(f"Google Gemini 初始化成功")
+                logger.info(f"  -> Google Gemini 初始化成功")
 
             else:
-                raise ValueError(f"不支持的AI提供商: {self.provider}")
+                raise ValueError(f"  -> 不支持的AI提供商: {self.provider}")
         except Exception as e:
             logger.error(f"{self.provider.capitalize()} client 初始化失败: {e}")
             raise
@@ -213,14 +213,14 @@ class AITranslator:
 
         # ▼▼▼ 只在真正分块时才打印详细日志 ▼▼▼
         if total_chunks > 1:
-            logger.info(f"[翻译模式] 数据量较大，已自动分块。共 {len(texts)} 个词条，分为 {total_chunks} 个批次，每批最多 {CHUNK_SIZE} 个。")
+            logger.info(f"  -> [翻译模式] 数据量较大，已自动分块。共 {len(texts)} 个词条，分为 {total_chunks} 个批次，每批最多 {CHUNK_SIZE} 个。")
         else:
-            logger.info(f"[翻译模式] 开始处理 {len(texts)} 个词条...")
+            logger.info(f"  -> [翻译模式] 开始处理 {len(texts)} 个词条...")
 
         # 3. 小组长逐个派发任务
         for i, chunk in enumerate(text_chunks):
             if total_chunks > 1:
-                logger.info(f"--- [翻译模式] 正在处理批次 {i + 1}/{total_chunks} ---")
+                logger.info(f"  -> [翻译模式] 正在处理批次 {i + 1}/{total_chunks}")
             
             # 根据公司（provider）选择不同的员工干活
             result_chunk = {}
@@ -236,7 +236,7 @@ class AITranslator:
             
             # 4. 安排休息时间（如果不是最后一批）
             if i < total_chunks - 1:
-                logger.debug(f"批次处理完毕，等待 {REQUEST_INTERVAL} 秒...")
+                logger.debug(f"  -> 批次处理完毕，等待 {REQUEST_INTERVAL} 秒...")
                 time.sleep(REQUEST_INTERVAL)
         
         return all_results
@@ -251,13 +251,13 @@ class AITranslator:
         total_chunks = len(text_chunks)
 
         if total_chunks > 1:
-            logger.info(f"[音译模式] 数据量较大，已自动分块。共 {len(texts)} 个词条，分为 {total_chunks} 个批次。")
+            logger.info(f"  -> [音译模式] 数据量较大，已自动分块。共 {len(texts)} 个词条，分为 {total_chunks} 个批次。")
         else:
-            logger.info(f"[音译模式] 开始处理 {len(texts)} 个词条...")
+            logger.info(f"  -> [音译模式] 开始处理 {len(texts)} 个词条...")
 
         for i, chunk in enumerate(text_chunks):
             if total_chunks > 1:
-                logger.info(f"--- [音译模式] 正在处理批次 {i + 1}/{total_chunks} ---")
+                logger.info(f"  -> [音译模式] 正在处理批次 {i + 1}/{total_chunks}")
             
             result_chunk = {}
             # 根据提供商选择不同的实现
@@ -287,15 +287,15 @@ class AITranslator:
 
         # ▼▼▼ 只在真正分块时才打印详细日志 ▼▼▼
         if total_chunks > 1:
-            logger.info(f"[顾问模式] 数据量较大，已自动分块。共 {len(texts)} 个词条，分为 {total_chunks} 个批次，每批最多 {CHUNK_SIZE} 个。")
+            logger.info(f"  -> [顾问模式] 数据量较大，已自动分块。共 {len(texts)} 个词条，分为 {total_chunks} 个批次，每批最多 {CHUNK_SIZE} 个。")
         else:
             # 如果只有一个批次，日志就应该更简洁
-            logger.info(f"[顾问模式] 开始处理 {len(texts)} 个词条 (上下文: '{title}') ...")
+            logger.info(f"  -> [顾问模式] 开始处理 {len(texts)} 个词条 (上下文: '{title}') ...")
 
         # 3. 小组长逐个派发任务
         for i, chunk in enumerate(text_chunks):
             if total_chunks > 1:
-                logger.info(f"--- [顾问模式] 正在处理批次 {i + 1}/{total_chunks} ---")
+                logger.info(f"  -> [顾问模式] 正在处理批次 {i + 1}/{total_chunks}")
             
             result_chunk = {}
             if self.provider == 'openai':
@@ -310,7 +310,7 @@ class AITranslator:
 
             # 4. 安排休息时间
             if i < total_chunks - 1:
-                logger.debug(f"批次处理完毕，等待 {REQUEST_INTERVAL} 秒...")
+                logger.debug(f"  -> 批次处理完毕，等待 {REQUEST_INTERVAL} 秒...")
                 time.sleep(REQUEST_INTERVAL)
         
         return all_results
@@ -334,7 +334,7 @@ class AITranslator:
             response_content = chat_completion.choices[0].message.content
             return _safe_json_loads(response_content) or {} # 如果抢救失败，返回一个空字典
         except Exception as e:
-            logger.error(f"[翻译模式-OpenAI] 翻译时发生错误: {e}", exc_info=True)
+            logger.error(f"  -> [翻译模式-OpenAI] 翻译时发生错误: {e}", exc_info=True)
             return {}
 
     def _quality_openai(self, texts: List[str], title: Optional[str], year: Optional[int]) -> Dict[str, str]:
@@ -356,7 +356,7 @@ class AITranslator:
             response_content = chat_completion.choices[0].message.content
             return _safe_json_loads(response_content) or {} # 如果抢救失败，返回一个空字典
         except Exception as e:
-            logger.error(f"[顾问模式-OpenAI] 翻译时发生错误: {e}", exc_info=True)
+            logger.error(f"  -> [顾问模式-OpenAI] 翻译时发生错误: {e}", exc_info=True)
             return {}
 
     # --- 智谱AI 员工 ---
@@ -377,7 +377,7 @@ class AITranslator:
             response_content = response.choices[0].message.content
             return _safe_json_loads(response_content) or {} # 如果抢救失败，返回一个空字典
         except Exception as e:
-            logger.error(f"[翻译模式-智谱AI] 翻译时发生错误: {e}", exc_info=True)
+            logger.error(f"  -> [翻译模式-智谱AI] 翻译时发生错误: {e}", exc_info=True)
             return {}
 
     def _quality_zhipuai(self, texts: List[str], title: Optional[str], year: Optional[int]) -> Dict[str, str]:
@@ -398,7 +398,7 @@ class AITranslator:
             response_content = response.choices[0].message.content
             return _safe_json_loads(response_content) or {} # 如果抢救失败，返回一个空字典
         except Exception as e:
-            logger.error(f"[顾问模式-智谱AI] 翻译时发生错误: {e}", exc_info=True)
+            logger.error(f"  -> [顾问模式-智谱AI] 翻译时发生错误: {e}", exc_info=True)
             return {}
 
     # --- Gemini 员工 ---
@@ -425,10 +425,10 @@ class AITranslator:
             # 另外，Gemini的JSON模式输出非常干净，通常不需要_safe_json_loads，但为了保险起见可以加上
             return _safe_json_loads(response.text) or {}
         except Exception as e:
-            logger.error(f"[翻译模式-Gemini] 翻译时发生错误: {e}", exc_info=True)
+            logger.error(f"  -> [翻译模式-Gemini] 翻译时发生错误: {e}", exc_info=True)
             # 尝试从错误中提取可解析的部分
             if hasattr(e, 'last_response') and e.last_response:
-                logger.info("尝试从Gemini的错误响应中恢复内容...")
+                logger.info("  -> 尝试从Gemini的错误响应中恢复内容...")
                 return _safe_json_loads(e.last_response.text) or {}
             return {}
 
@@ -451,9 +451,9 @@ class AITranslator:
             )
             return _safe_json_loads(response.text) or {}
         except Exception as e:
-            logger.error(f"[顾问模式-Gemini] 翻译时发生错误: {e}", exc_info=True)
+            logger.error(f"  -> [顾问模式-Gemini] 翻译时发生错误: {e}", exc_info=True)
             if hasattr(e, 'last_response') and e.last_response:
-                logger.info("尝试从Gemini的错误响应中恢复内容...")
+                logger.info("  -> 尝试从Gemini的错误响应中恢复内容...")
                 return _safe_json_loads(e.last_response.text) or {}
             return {}
         
@@ -476,7 +476,7 @@ class AITranslator:
             response_content = chat_completion.choices[0].message.content
             return _safe_json_loads(response_content) or {}
         except Exception as e:
-            logger.error(f"[音译模式-OpenAI] 翻译时发生错误: {e}", exc_info=True)
+            logger.error(f"  -> [音译模式-OpenAI] 翻译时发生错误: {e}", exc_info=True)
             return {}
 
     # ★★★ 智谱AI 音译实现 ★★★
@@ -497,7 +497,7 @@ class AITranslator:
             response_content = response.choices[0].message.content
             return _safe_json_loads(response_content) or {}
         except Exception as e:
-            logger.error(f"[音译模式-智谱AI] 翻译时发生错误: {e}", exc_info=True)
+            logger.error(f"  -> [音译模式-智谱AI] 翻译时发生错误: {e}", exc_info=True)
             return {}
 
     # ★★★ Gemini 音译实现 ★★★
@@ -519,7 +519,7 @@ class AITranslator:
             )
             return _safe_json_loads(response.text) or {}
         except Exception as e:
-            logger.error(f"[音译模式-Gemini] 翻译时发生错误: {e}", exc_info=True)
+            logger.error(f"  -> [音译模式-Gemini] 翻译时发生错误: {e}", exc_info=True)
             if hasattr(e, 'last_response') and e.last_response:
                 return _safe_json_loads(e.last_response.text) or {}
             return {}

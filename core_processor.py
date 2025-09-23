@@ -516,7 +516,7 @@ class MediaProcessor:
             if rating_str:
                 try:
                     douban_rating = float(rating_str)
-                    logger.info(f"在线获取到豆瓣评分 for '{item_name}': {douban_rating}")
+                    logger.info(f"  -> 在线获取到豆瓣评分 for '{item_name}': {douban_rating}")
                 except (ValueError, TypeError):
                     pass
 
@@ -1057,7 +1057,7 @@ class MediaProcessor:
         unmatched_local_actors = list(final_cast_list)
         merged_actors = []
         unmatched_douban_actors = []
-        logger.debug(f" --- 匹配阶段 1: 对号入座 ---")
+        logger.debug(f"  -> 匹配阶段 1: 对号入座")
         for d_actor in douban_candidates:
             douban_name_zh = d_actor.get("Name", "").lower().strip()
             douban_name_en = d_actor.get("OriginalName", "").lower().strip()
@@ -1111,7 +1111,7 @@ class MediaProcessor:
                 logger.info(f"  -> 当前演员数 ({current_actor_count}) 低于上限 ({limit})，进入补充模式。")
                 
                 # --- 阶段 3.1: 用豆瓣ID查'演员映射表' ---
-                logger.debug(f" --- 匹配阶段 2: 用豆瓣ID查'演员映射表' ({len(unmatched_douban_actors)} 位演员) ---")
+                logger.debug(f"  -> 匹配阶段 2: 用豆瓣ID查'演员映射表' ({len(unmatched_douban_actors)} 位演员)")
                 still_unmatched = []
                 for d_actor in unmatched_douban_actors:
                     if self.is_stop_requested(): raise InterruptedError("任务中止")
@@ -1139,7 +1139,7 @@ class MediaProcessor:
                 unmatched_douban_actors = still_unmatched
 
                 # --- 阶段 3.2: 用IMDb ID进行最终匹配 ---
-                logger.debug(f" --- 匹配阶段 3: 用IMDb ID进行最终匹配和新增 ({len(unmatched_douban_actors)} 位演员) ---")
+                logger.debug(f"  -> 匹配阶段 3: 用IMDb ID进行最终匹配和新增 ({len(unmatched_douban_actors)} 位演员)")
                 still_unmatched_final = []
                 # ★★★ 逻辑修改: 增加了 enumerate 以便记录日志 ★★★
                 for i, d_actor in enumerate(unmatched_douban_actors):
@@ -1230,16 +1230,28 @@ class MediaProcessor:
         if not (self.ai_translator and self.config.get(constants.CONFIG_OPTION_AI_TRANSLATION_ENABLED, False)):
             logger.info("  -> AI翻译未启用，将保留演员和角色名原文。")
         else:
-            final_translation_map = {}
+            # --- 数据准备 ---
+            final_translation_map = {} # 存储所有最终的翻译结果
+            
+            # 1. 收集所有需要翻译的词条
             terms_to_translate = set()
             for actor in cast_to_process:
+                name = actor.get('name')
+                if name and not utils.contains_chinese(name):
+                    terms_to_translate.add(name)
                 character = actor.get('character')
                 if character:
                     cleaned_character = utils.clean_character_name_static(character)
                     if cleaned_character and not utils.contains_chinese(cleaned_character):
                         terms_to_translate.add(cleaned_character)
+            
             remaining_terms = list(terms_to_translate)
+
+            # --- 🚀 第一级: 翻译官模式 (带全局缓存) ---
             if remaining_terms:
+                logger.info(f"  -> 第一级翻译开始: 快速模式处理 {len(remaining_terms)} 个词条")
+                
+                # 1.1 查缓存
                 cached_results = {}
                 terms_for_api = []
                 for term in remaining_terms:
@@ -1248,38 +1260,68 @@ class MediaProcessor:
                         cached_results[term] = cached['translated_text']
                     else:
                         terms_for_api.append(term)
+                
                 if cached_results:
                     final_translation_map.update(cached_results)
+                    logger.info(f"  -> 从数据库缓存命中 {len(cached_results)} 个词条。")
+
+                # 1.2 调API
                 if terms_for_api:
+                    logger.info(f"  -> 将 {len(terms_for_api)} 个词条提交给AI (模式: fast)...")
                     fast_api_results = self.ai_translator.batch_translate(terms_for_api, mode='fast')
+                    
+                    # 1.3 处理API结果并回写缓存
                     for term, translation in fast_api_results.items():
                         final_translation_map[term] = translation
                         self.actor_db_manager.save_translation_to_db(cursor, term, translation, self.ai_translator.provider)
+
+                # 1.4 筛选失败者
                 failed_terms = []
                 for term in remaining_terms:
                     if not utils.contains_chinese(final_translation_map.get(term, term)):
                         failed_terms.append(term)
+                
                 remaining_terms = failed_terms
+                if remaining_terms:
+                    logger.warning(f"  -> 快速模式后，仍有 {len(remaining_terms)} 个词条未翻译成中文，进入二级翻译流程。")
+
+            # --- 🚀 第二级: 强制音译模式 ---
             if remaining_terms:
+                logger.info(f"  -> 第二级翻译开始: 强制音译模式处理 {len(remaining_terms)} 个专有名词")
                 transliterate_results = self.ai_translator.batch_translate(remaining_terms, mode='transliterate')
-                final_translation_map.update(transliterate_results)
+                
+                final_translation_map.update(transliterate_results) # 直接更新最终结果
+                
                 still_failed_terms = []
                 for term in remaining_terms:
                     if not utils.contains_chinese(final_translation_map.get(term, term)):
                         still_failed_terms.append(term)
+                
                 remaining_terms = still_failed_terms
+                if remaining_terms:
+                    logger.warning(f"  -> 音译模式后，仍有 {len(remaining_terms)} 个顽固词条，将启动三级最终的顾问模式。")
+
+            # --- 🚀 第三级翻译: 全上下文顾问模式 ---
             if remaining_terms:
+                logger.info(f"  -> 第三级翻译开始: 顾问模式处理 {len(remaining_terms)} 个最棘手的词条")
                 item_title = item_details_from_emby.get("Name")
                 item_year = item_details_from_emby.get("ProductionYear")
                 quality_results = self.ai_translator.batch_translate(remaining_terms, mode='quality', title=item_title, year=item_year)
-                final_translation_map.update(quality_results)
+                final_translation_map.update(quality_results) # 最终信任顾问的结果
+            
+            # --- 应用所有翻译结果 ---
+            logger.info("------------ AI翻译流程成功，开始应用结果 ------------")
             for actor in cast_to_process:
+                original_name = actor.get('name')
+                actor['name'] = final_translation_map.get(original_name, original_name)
+                
                 original_character = actor.get('character')
                 if original_character:
                     cleaned_character = utils.clean_character_name_static(original_character)
                     actor['character'] = final_translation_map.get(cleaned_character, cleaned_character)
                 else:
                     actor['character'] = ''
+            logger.info("----------------------------------------------------")
 
         tmdb_to_emby_id_map = {
             str(actor.get('id')): actor.get('emby_person_id')

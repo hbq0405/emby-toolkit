@@ -119,7 +119,7 @@ def evaluate_cast_processing_quality(
     logger.debug(f"--- 质量评估开始 ---")
     logger.debug(f"  - 原始演员数: {original_cast_count}")
     logger.debug(f"  - 处理后演员数: {total_actors}")
-    logger.debug(f"------------------------------------")
+    logger.debug(f"------------------")
 
     for i, actor_data in enumerate(final_cast):
         # 每个演员的基础分是 0.0，通过加分项累加

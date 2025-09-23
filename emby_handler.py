@@ -1302,7 +1302,7 @@ def append_item_to_collection(collection_id: str, item_emby_id: str, base_url: s
         return False
     
 def get_all_libraries_with_paths(base_url: str, api_key: str) -> List[Dict[str, Any]]:
-    logger.debug("正在实时获取所有媒体库及其源文件夹路径...")
+    logger.debug("  -> 正在实时获取所有媒体库及其源文件夹路径...")
     try:
         folders_url = f"{base_url.rstrip('/')}/Library/VirtualFolders"
         params = {"api_key": api_key}
@@ -1331,7 +1331,7 @@ def get_all_libraries_with_paths(base_url: str, api_key: str) -> List[Dict[str, 
                     "paths": locations
                 })
         
-        logger.debug(f"实时获取到 {len(libraries_with_paths)} 个媒体库的路径信息。")
+        logger.debug(f"  -> 实时获取到 {len(libraries_with_paths)} 个媒体库的路径信息。")
         return libraries_with_paths
 
     except Exception as e:
@@ -1339,7 +1339,7 @@ def get_all_libraries_with_paths(base_url: str, api_key: str) -> List[Dict[str, 
         return []
 
 def get_library_root_for_item(item_id: str, base_url: str, api_key: str, user_id: str) -> Optional[Dict[str, Any]]:
-    logger.debug("正在为项目ID {item_id} 定位媒体库...")
+    logger.debug("  -> 正在为项目ID {item_id} 定位媒体库...")
     try:
         all_libraries_data = get_all_libraries_with_paths(base_url, api_key)
         if not all_libraries_data:
@@ -1370,7 +1370,7 @@ def get_library_root_for_item(item_id: str, base_url: str, api_key: str, user_id
             return None
 
     except Exception as e:
-        logger.error(f"定位媒体库时发生未知严重错误: {e}", exc_info=True)
+        logger.error(f"  -> 定位媒体库时发生未知严重错误: {e}", exc_info=True)
         return None
     
 def update_emby_item_details(item_id: str, new_data: Dict[str, Any], emby_server_url: str, emby_api_key: str, user_id: str) -> bool:
