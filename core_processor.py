@@ -2433,7 +2433,7 @@ class MediaProcessor:
                         if season_number is not None and episode_number is not None:
                             emby_handler.download_emby_image(child_id, "Primary", os.path.join(image_override_dir, f"season-{season_number}-episode-{episode_number}.jpg"), self.emby_url, self.emby_api_key)
             
-            logger.info(f"  -> {log_prefix} ✅ 成功完成 '{item_name_for_log}' 的覆盖缓存-图片备份。")
+            logger.info(f"  -> {log_prefix} 成功完成 '{item_name_for_log}' 的覆盖缓存-图片备份。")
             return True
         except Exception as e:
             logger.error(f"{log_prefix} 为 '{item_name_for_log}' 备份图片时发生未知错误: {e}", exc_info=True)

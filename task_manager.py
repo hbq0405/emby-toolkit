@@ -81,7 +81,7 @@ def _execute_task_with_lock(task_function: Callable, task_name: str, processor: 
                 current_progress = 100
             
             update_status_from_thread(current_progress, final_message)
-            logger.trace(f"--- 后台任务 '{task_name}' 结束，最终状态: {final_message} ---")
+            logger.info(f"  -> ✅ 后台任务 '{task_name}' 结束，最终状态: {final_message}")
 
             background_task_status.update({
                 "is_running": False, "current_action": "无", "progress": 0, "message": "等待任务"
