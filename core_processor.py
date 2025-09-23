@@ -2616,7 +2616,7 @@ class MediaProcessor:
         - 职责单一化：只负责执行备份。并发控制和冷却逻辑已移交至任务管理器和调用方。
         """
         log_prefix = f"实时覆盖缓存备份"
-        logger.info(f"--- {log_prefix} 开始执行 ---")
+        logger.trace(f"--- {log_prefix} 开始执行 ---")
 
         if not self.local_data_path:
             logger.warning(f"{log_prefix} 任务跳过，因为未配置本地数据源路径。")
@@ -2652,7 +2652,7 @@ class MediaProcessor:
                 )
                 conn.commit()
             
-            logger.info(f"--- {log_prefix} 成功完成 ---")
+            logger.trace(f"--- {log_prefix} 成功完成 ---")
 
         except Exception as e:
             logger.error(f"{log_prefix} 执行时发生错误: {e}", exc_info=True)
