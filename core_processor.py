@@ -217,6 +217,19 @@ class MediaProcessor:
         self.processed_items_cache = self._load_processed_log_from_db()
         self.manual_edit_cache = TTLCache(maxsize=10, ttl=600)
         logger.trace("核心处理器初始化完成。")
+    # --- 标记为已处理 ---
+    def _mark_item_as_processed(self, cursor: psycopg2.extensions.cursor, item_id: str, item_name: str, score: float = 10.0):
+        """
+        【重构】将一个项目标记为“已处理”的唯一官方方法。
+        它会同时更新数据库和内存缓存，确保数据一致性。
+        """
+        # 1. 更新数据库
+        self.log_db_manager.save_to_processed_log(cursor, item_id, item_name, score=score)
+        
+        # 2. 实时更新内存缓存
+        self.processed_items_cache[item_id] = item_name
+        
+        logger.debug(f"  -> 已将 '{item_name}' 标记为已处理 (数据库 & 内存)。")
     # --- 清除已处理记录 ---
     def clear_processed_log(self):
         """
@@ -946,7 +959,7 @@ class MediaProcessor:
                     self.log_db_manager.save_to_failed_log(cursor, item_id, item_name_for_log, reason, item_type, score=processing_score)
                     logger.info(f"  -> 评分低于阈值,已将 '{item_name_for_log}' 记录到待复核，请手动处理。")
                 else:
-                    self.log_db_manager.save_to_processed_log(cursor, item_id, item_name_for_log, score=processing_score)
+                    self._mark_item_as_processed(cursor, item_id, item_name_for_log, score=processing_score)
                     self.log_db_manager.remove_from_failed_log(cursor, item_id)
                     self.processed_items_cache[item_id] = item_name_for_log
                     logger.info(f"  -> 已将 '{item_name_for_log}' 添加到已处理，下次将跳过。")
