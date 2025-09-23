@@ -2355,7 +2355,7 @@ class MediaProcessor:
 
         try:
             # --- 准备工作 (目录、TMDb ID等) ---
-            log_prefix = "图片备份："
+            log_prefix = "覆盖缓存-图片备份："
             tmdb_id = item_details.get("ProviderIds", {}).get("Tmdb")
             if not tmdb_id:
                 logger.warning(f"  -> {log_prefix} 项目 '{item_name_for_log}' 缺少TMDb ID，无法确定覆盖目录，跳过。")
@@ -2376,7 +2376,7 @@ class MediaProcessor:
             
             # 模式一：精准同步 (当描述存在时)
             if update_description:
-                log_prefix = "[图片备份]"
+                log_prefix = "[覆盖缓存-图片备份]"
                 logger.trace(f"{log_prefix} 正在解析描述: '{update_description}'")
                 
                 # 定义关键词到Emby图片类型的映射 (使用小写以方便匹配)
@@ -2403,7 +2403,7 @@ class MediaProcessor:
             
             # 模式二：完全同步 (默认或回退)
             else:
-                log_prefix = "[图片备份]"
+                log_prefix = "[覆盖缓存-图片备份]"
                 logger.trace(f"  -> {log_prefix} 未提供更新描述，将同步所有类型的图片。")
                 images_to_sync = full_image_map
 
@@ -2433,7 +2433,7 @@ class MediaProcessor:
                         if season_number is not None and episode_number is not None:
                             emby_handler.download_emby_image(child_id, "Primary", os.path.join(image_override_dir, f"season-{season_number}-episode-{episode_number}.jpg"), self.emby_url, self.emby_api_key)
             
-            logger.info(f"  -> {log_prefix} ✅ 成功完成 '{item_name_for_log}' 的图片备份。")
+            logger.info(f"  -> {log_prefix} ✅ 成功完成 '{item_name_for_log}' 的覆盖缓存-图片备份。")
             return True
         except Exception as e:
             logger.error(f"{log_prefix} 为 '{item_name_for_log}' 备份图片时发生未知错误: {e}", exc_info=True)
@@ -2448,7 +2448,7 @@ class MediaProcessor:
         """
         item_id = item_details.get("Id")
         item_name_for_log = item_details.get("Name", f"未知项目(ID:{item_id})")
-        log_prefix = "[元数据备份]"
+        log_prefix = "[覆盖缓存-元数据备份]"
         logger.info(f"  -> {log_prefix} 开始为 '{item_name_for_log}' 执行元数据备份...")
 
         # ★★★ 核心修复：在这里重新获取一次完整的项目详情 ★★★
