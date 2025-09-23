@@ -109,7 +109,7 @@ class WatchlistProcessor:
 
         if not self.tmdb_api_key: return
             
-        tmdb_details = tmdb_handler.get_tv_details_tmdb(tmdb_id, self.tmdb_api_key)
+        tmdb_details = tmdb_handler.get_tv_details(tmdb_id, self.tmdb_api_key)
         if not tmdb_details: return
 
         tmdb_status = tmdb_details.get("status")
@@ -306,7 +306,7 @@ class WatchlistProcessor:
                 progress = 10 + int(((i + 1) / total) * 90)
                 self.progress_callback(progress, f"检查中: {series['item_name'][:20]}... ({i+1}/{total})")
 
-                tmdb_details = tmdb_handler.get_tv_details_tmdb(series['tmdb_id'], self.tmdb_api_key)
+                tmdb_details = tmdb_handler.get_tv_details(series['tmdb_id'], self.tmdb_api_key)
                 if not tmdb_details: continue
 
                 new_tmdb_status = tmdb_details.get('status')
@@ -504,7 +504,7 @@ class WatchlistProcessor:
 
         # 步骤2: 从TMDb获取权威数据
         logger.debug(f"  -> 正在从TMDb API获取 '{item_name}' 的最新详情...")
-        latest_series_data = tmdb_handler.get_tv_details_tmdb(tmdb_id, self.tmdb_api_key)
+        latest_series_data = tmdb_handler.get_tv_details(tmdb_id, self.tmdb_api_key)
         if not latest_series_data:
             logger.error(f"  -> 无法获取 '{item_name}' 的TMDb详情，本次处理中止。")
             return

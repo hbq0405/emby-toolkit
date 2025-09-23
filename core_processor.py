@@ -2726,7 +2726,7 @@ class MediaProcessor:
             if item_type == 'Movie':
                 tmdb_details = tmdb_handler.get_movie_details(tmdb_id, self.tmdb_api_key)
             elif item_type == 'Series':
-                tmdb_details = tmdb_handler.get_tv_details_tmdb(tmdb_id, self.tmdb_api_key)
+                tmdb_details = tmdb_handler.get_tv_details(tmdb_id, self.tmdb_api_key)
 
             # 4. 组装元数据
             actors = []

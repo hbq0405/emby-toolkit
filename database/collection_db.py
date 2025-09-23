@@ -2,10 +2,13 @@
 import psycopg2
 import logging
 import json
+from datetime import datetime
 from typing import Optional, Dict, Any, List
 
 from .connection import get_db_connection
-
+import config_manager
+import constants
+import tmdb_handler
 logger = logging.getLogger(__name__)
 
 # --- 状态中文翻译字典 ---
@@ -654,6 +657,105 @@ def update_single_media_status_in_custom_collection(collection_id: int, media_tm
         logger.error(f"DB: 更新自定义合集中媒体状态时发生数据库错误: {e}", exc_info=True)
         if conn and conn.in_transaction:
             conn.rollback()
+        raise
+
+# --- 应用并持久化媒体修正 ---
+def apply_and_persist_media_correction(collection_id: int, old_tmdb_id: str, new_tmdb_id: str) -> Optional[Dict[str, Any]]:
+    """
+    【新增】应用一个媒体修正，将其持久化到合集定义中，并立即更新当前的媒体列表状态。
+    """
+    try:
+        with get_db_connection() as conn:
+            cursor = conn.cursor()
+            cursor.execute("BEGIN TRANSACTION;")
+
+            # 1. 获取合集的当前定义和媒体列表
+            cursor.execute(
+                "SELECT definition_json, generated_media_info_json FROM custom_collections WHERE id = %s FOR UPDATE", 
+                (collection_id,)
+            )
+            row = cursor.fetchone()
+            if not row:
+                conn.rollback()
+                logger.error(f"修正失败：未找到合集 ID {collection_id}")
+                return None
+
+            definition = row.get('definition_json') or {}
+            media_list = row.get('generated_media_info_json') or []
+
+            # 2. 获取新 TMDb ID 的详细信息 (★ 关键：根据合集定义判断类型)
+            item_type = definition.get('item_type', ['Movie'])[0]
+            api_key = config_manager.APP_CONFIG.get(constants.CONFIG_OPTION_TMDB_API_KEY)
+            
+            new_details = None
+            if item_type == 'Series':
+                new_details = tmdb_handler.get_tv_details(int(new_tmdb_id), api_key)
+            else: # 默认为 Movie
+                new_details = tmdb_handler.get_movie_details(int(new_tmdb_id), api_key)
+
+            if not new_details:
+                conn.rollback()
+                logger.error(f"修正失败：无法从 TMDb 获取 ID {new_tmdb_id} 的详情。")
+                return None
+
+            # 3. 检查新媒体项在本地库的状态
+            cursor.execute("SELECT emby_item_id FROM media_metadata WHERE tmdb_id = %s", (new_tmdb_id,))
+            metadata_row = cursor.fetchone()
+            emby_id = metadata_row['emby_item_id'] if metadata_row else None
+            
+            today_str = datetime.now().strftime('%Y-%m-%d')
+            release_date = new_details.get("release_date") or new_details.get("first_air_date", '')
+            
+            status = "missing"
+            if emby_id:
+                status = "in_library"
+            elif release_date and release_date > today_str:
+                status = "unreleased"
+
+            # 4. 构建新的媒体项
+            corrected_media_item = {
+                "tmdb_id": new_tmdb_id,
+                "emby_id": emby_id,
+                "title": new_details.get("title") or new_details.get("name"),
+                "release_date": release_date,
+                "poster_path": new_details.get("poster_path"),
+                "status": status
+            }
+
+            # 5. 在媒体列表中替换旧项
+            item_found = False
+            for i, item in enumerate(media_list):
+                if str(item.get('tmdb_id')) == str(old_tmdb_id):
+                    media_list[i] = corrected_media_item
+                    item_found = True
+                    break
+            
+            if not item_found:
+                conn.rollback()
+                logger.warning(f"修正警告：在合集 {collection_id} 的当前列表中未找到旧 ID {old_tmdb_id}，但仍会保存修正规则。")
+
+            # 6. 更新并持久化修正规则到 definition
+            corrections = definition.get('corrections', {})
+            corrections[str(old_tmdb_id)] = str(new_tmdb_id)
+            definition['corrections'] = corrections
+            
+            # 7. 将更新后的 definition 和 media_list 写回数据库
+            new_definition_json = json.dumps(definition, ensure_ascii=False)
+            new_media_list_json = json.dumps(media_list, ensure_ascii=False)
+            
+            cursor.execute(
+                "UPDATE custom_collections SET definition_json = %s, generated_media_info_json = %s WHERE id = %s",
+                (new_definition_json, new_media_list_json, collection_id)
+            )
+            
+            conn.commit()
+            logger.info(f"成功为合集 {collection_id} 应用并保存修正：{old_tmdb_id} -> {new_tmdb_id}")
+            return corrected_media_item
+
+    except Exception as e:
+        if 'conn' in locals() and conn and conn.in_transaction:
+            conn.rollback()
+        logger.error(f"DB: 应用媒体修正时发生严重错误: {e}", exc_info=True)
         raise
 
 def match_and_update_list_collections_on_item_add(new_item_tmdb_id: str, new_item_emby_id: str, new_item_name: str) -> List[Dict[str, Any]]:

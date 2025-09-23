@@ -300,6 +300,18 @@ def task_process_all_custom_collections(processor):
                     else:
                         importer = ListImporter(processor.tmdb_api_key)
                         tmdb_items, source_type = importer.process(definition)
+
+                    # ▼▼▼ 入修正逻辑 ▼▼▼
+                    corrections = definition.get('corrections', {})
+                    if corrections:
+                        logger.info(f"  -> 检测到合集 '{collection_name}' 存在 {len(corrections)} 条修正规则，正在应用...")
+                        for item in tmdb_items:
+                            original_id_str = str(item.get('id'))
+                            if original_id_str in corrections:
+                                corrected_id = corrections[original_id_str]
+                                logger.info(f"    -> 应用修正: 将源 ID {original_id_str} 替换为 {corrected_id}")
+                                item['id'] = corrected_id
+
                 elif collection_type == 'filter':
                     engine = FilterEngine()
                     tmdb_items = engine.execute_filter(definition)
@@ -352,7 +364,7 @@ def task_process_all_custom_collections(processor):
                     
                     all_media_details_unordered = []
                     with ThreadPoolExecutor(max_workers=5) as executor:
-                        future_to_item = {executor.submit(tmdb_handler.get_movie_details if item['type'] != 'Series' else tmdb_handler.get_tv_details_tmdb, item['id'], processor.tmdb_api_key): item for item in tmdb_items}
+                        future_to_item = {executor.submit(tmdb_handler.get_movie_details if item['type'] != 'Series' else tmdb_handler.get_tv_details, item['id'], processor.tmdb_api_key): item for item in tmdb_items}
                         for future in as_completed(future_to_item):
                             try:
                                 detail = future.result()
@@ -489,6 +501,18 @@ def task_process_custom_collection(processor, custom_collection_id: int):
             else:
                 importer = ListImporter(processor.tmdb_api_key)
                 tmdb_items, source_type = importer.process(definition)
+
+            # ▼▼▼ 修正逻辑 ▼▼▼
+            corrections = definition.get('corrections', {})
+            if corrections:
+                logger.info(f"  -> 检测到合集 '{collection_name}' 存在 {len(corrections)} 条修正规则，正在应用...")
+                for item in tmdb_items:
+                    original_id_str = str(item.get('id'))
+                    if original_id_str in corrections:
+                        corrected_id = corrections[original_id_str]
+                        logger.info(f"    -> 应用修正: 将源 ID {original_id_str} 替换为 {corrected_id}")
+                        item['id'] = corrected_id
+
         elif collection_type == 'filter':
             engine = FilterEngine()
             tmdb_items = engine.execute_filter(definition)
@@ -545,7 +569,7 @@ def task_process_custom_collection(processor, custom_collection_id: int):
             
             all_media_details_unordered = []
             with ThreadPoolExecutor(max_workers=5) as executor:
-                future_to_item = {executor.submit(tmdb_handler.get_movie_details if item['type'] != 'Series' else tmdb_handler.get_tv_details_tmdb, item['id'], processor.tmdb_api_key): item for item in tmdb_items}
+                future_to_item = {executor.submit(tmdb_handler.get_movie_details if item['type'] != 'Series' else tmdb_handler.get_tv_details, item['id'], processor.tmdb_api_key): item for item in tmdb_items}
                 for future in as_completed(future_to_item):
                     try:
                         detail = future.result()

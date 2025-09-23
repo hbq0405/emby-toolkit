@@ -270,7 +270,7 @@ def task_populate_metadata_cache(processor, batch_size: int = 50, force_full_upd
                 if item_type == 'Movie':
                     details = tmdb_handler.get_movie_details(tmdb_id, processor.tmdb_api_key)
                 elif item_type == 'Series':
-                    details = tmdb_handler.get_tv_details_tmdb(tmdb_id, processor.tmdb_api_key)
+                    details = tmdb_handler.get_tv_details(tmdb_id, processor.tmdb_api_key)
                 return tmdb_id, details
 
             with concurrent.futures.ThreadPoolExecutor(max_workers=5) as executor:

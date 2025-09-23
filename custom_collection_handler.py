@@ -19,7 +19,7 @@ import emby_handler
 import config_manager
 from database import collection_db 
 from douban import DoubanApi
-from tmdb_handler import search_media, get_tv_details_tmdb
+from tmdb_handler import search_media, get_tv_details
 
 logger = logging.getLogger(__name__)
 
@@ -537,7 +537,7 @@ class ListImporter:
                 return series_id, 'Series'
             
             logger.debug(f"剧集 '{show_name}' (ID: {series_id}) 已找到，正在验证是否存在第 {season_number_to_validate} 季...")
-            series_details = get_tv_details_tmdb(int(series_id), self.tmdb_api_key, append_to_response="seasons")
+            series_details = get_tv_details(int(series_id), self.tmdb_api_key, append_to_response="seasons")
             if series_details and 'seasons' in series_details:
                 for season in series_details['seasons']:
                     if season.get('season_number') == season_number_to_validate:

@@ -335,6 +335,37 @@ def api_update_custom_collection_media_status(collection_id):
         logger.error(f"更新自定义合集 {collection_id} 中媒体状态时出错: {e}", exc_info=True)
         return jsonify({"error": "服务器内部错误"}), 500
     
+# --- 修正榜单合集中的媒体匹配 ---
+@custom_collections_bp.route('/<int:collection_id>/fix_match', methods=['POST'])
+@login_required
+def api_fix_media_match_in_custom_collection(collection_id):
+    """
+    【新增】修正榜单合集中一个错误的媒体匹配项。
+    """
+    data = request.json
+    old_tmdb_id = data.get('old_tmdb_id')
+    new_tmdb_id = data.get('new_tmdb_id')
+
+    if not all([old_tmdb_id, new_tmdb_id]):
+        return jsonify({"error": "请求无效: 缺少 old_tmdb_id 或 new_tmdb_id"}), 400
+
+    try:
+        corrected_item = collection_db.apply_and_persist_media_correction(
+            collection_id=collection_id,
+            old_tmdb_id=str(old_tmdb_id),
+            new_tmdb_id=str(new_tmdb_id)
+        )
+        if corrected_item:
+            return jsonify({
+                "message": "修正成功！",
+                "corrected_item": corrected_item
+            })
+        else:
+            return jsonify({"error": "修正失败，可能是TMDb ID无效或数据库错误"}), 404
+    except Exception as e:
+        logger.error(f"修正合集 {collection_id} 媒体匹配时出错: {e}", exc_info=True)
+        return jsonify({"error": "服务器内部错误"}), 500
+
 # --- 手动订阅 ---
 @custom_collections_bp.route('/subscribe', methods=['POST'])
 @login_required

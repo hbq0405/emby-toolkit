@@ -481,10 +481,24 @@
                   <template #cover><img :src="getTmdbImageUrl(media.poster_path)" class="movie-poster" /></template>
                   <div class="movie-info"><div class="movie-title">{{ media.title }}<br />({{ extractYear(media.release_date) || '未知年份' }})</div></div>
                   <template #action>
-                    <n-button @click="subscribeMedia(media)" type="primary" size="small" block :loading="subscribing[media.tmdb_id]">
-                      <template #icon><n-icon :component="CloudDownloadIcon" /></template>
-                      订阅
-                    </n-button>
+                    <n-button-group style="width: 100%;">
+                      <n-tooltip>
+                        <template #trigger>
+                          <n-button @click="subscribeMedia(media)" type="primary" size="small" style="width: 50%;" :loading="subscribing[media.tmdb_id]">
+                            <template #icon><n-icon :component="CloudDownloadIcon" /></template>
+                          </n-button>
+                        </template>
+                        订阅
+                      </n-tooltip>
+                      <n-tooltip>
+                        <template #trigger>
+                          <n-button @click="handleFixMatchClick(media)" size="small" style="width: 50%;">
+                            <template #icon><n-icon :component="FixIcon" /></template>
+                          </n-button>
+                        </template>
+                        修正匹配
+                      </n-tooltip>
+                    </n-button-group>
                   </template>
                 </n-card>
               </n-gi>
@@ -499,10 +513,24 @@
                   <template #cover><img :src="getTmdbImageUrl(media.poster_path)" class="movie-poster" /></template>
                   <div class="movie-info"><div class="movie-title">{{ media.title }}<br />({{ extractYear(media.release_date) || '未知年份' }})</div></div>
                    <template #action>
-                    <n-tag type="success" size="small" style="width: 100%; justify-content: center;">
-                      <template #icon><n-icon :component="CheckmarkCircle" /></template>
-                      已在库
-                    </n-tag>
+                    <n-button-group style="width: 100%;">
+                      <n-tooltip>
+                        <template #trigger>
+                          <n-button type="success" size="small" style="width: 50%;" disabled>
+                            <template #icon><n-icon :component="CheckmarkCircle" /></template>
+                          </n-button>
+                        </template>
+                        已在库
+                      </n-tooltip>
+                      <n-tooltip>
+                        <template #trigger>
+                          <n-button @click="handleFixMatchClick(media)" size="small" style="width: 50%;">
+                            <template #icon><n-icon :component="FixIcon" /></template>
+                          </n-button>
+                        </template>
+                        修正匹配
+                      </n-tooltip>
+                    </n-button-group>
                   </template>
                 </n-card>
               </n-gi>
@@ -514,8 +542,17 @@
             <n-grid v-else cols="2 s:3 m:4 l:5 xl:6" :x-gap="16" :y-gap="16" responsive="screen">
               <n-gi v-for="media in unreleasedMediaInModal" :key="media.tmdb_id">
                 <n-card class="movie-card" content-style="padding: 0;">
-                  <template #cover><img :src="getTmdbImageUrl(media.poster_path)" class="movie-poster"></template>
-                  <div class="movie-info"><div class="movie-title">{{ media.title }}<br />({{ extractYear(media.release_date) || '未知年份' }})</div></div>
+                  <template #action>
+                    <n-tooltip>
+                      <template #trigger>
+                        <n-button @click="handleFixMatchClick(media)" size="small" block>
+                          <template #icon><n-icon :component="FixIcon" /></template>
+                          修正匹配
+                        </n-button>
+                      </template>
+                      修正错误的媒体匹配
+                    </n-tooltip>
+                  </template>
                 </n-card>
               </n-gi>
             </n-grid>
@@ -529,10 +566,24 @@
                   <template #cover><img :src="getTmdbImageUrl(media.poster_path)" class="movie-poster" /></template>
                   <div class="movie-info"><div class="movie-title">{{ media.title }}<br />({{ extractYear(media.release_date) || '未知年份' }})</div></div>
                   <template #action>
-                    <n-button @click="updateMediaStatus(media, 'missing')" type="warning" size="small" block ghost>
-                      <template #icon><n-icon :component="CloseCircleIcon" /></template>
-                      取消订阅
-                    </n-button>
+                    <n-button-group style="width: 100%;">
+                      <n-tooltip>
+                        <template #trigger>
+                          <n-button @click="updateMediaStatus(media, 'missing')" type="warning" size="small" style="width: 50%;" ghost>
+                            <template #icon><n-icon :component="CloseCircleIcon" /></template>
+                          </n-button>
+                        </template>
+                        取消订阅
+                      </n-tooltip>
+                      <n-tooltip>
+                        <template #trigger>
+                          <n-button @click="handleFixMatchClick(media)" size="small" style="width: 50%;">
+                            <template #icon><n-icon :component="FixIcon" /></template>
+                          </n-button>
+                        </template>
+                        修正匹配
+                      </n-tooltip>
+                    </n-button-group>
                   </template>
                 </n-card>
               </n-gi>
@@ -698,7 +749,7 @@ import Sortable from 'sortablejs';
 import { 
   NLayout, NPageHeader, NButton, NIcon, NText, NDataTable, NTag, NSpace,
   useMessage, NPopconfirm, NModal, NForm, NFormItem, NInput, NSelect,
-  NAlert, NRadioGroup, NRadio, NTooltip, NSpin, NGrid, NGi, NCard, NEmpty, NTabs, NTabPane, NCheckboxGroup, NCheckbox, NInputNumber, NAutoComplete, NDynamicTags, NInputGroup, NRadioButton, NSlider, NAvatar
+  NAlert, NRadioGroup, NRadio, NTooltip, NSpin, NGrid, NGi, NCard, NEmpty, useDialog, NTabs, NTabPane, NCheckboxGroup, NCheckbox, NInputNumber, NAutoComplete, NDynamicTags, NInputGroup, NRadioButton, NSlider, NAvatar
 } from 'naive-ui';
 import { 
   AddOutline as AddIcon, 
@@ -713,6 +764,7 @@ import {
   ReorderFourOutline as DragHandleIcon,
   HelpCircleOutline as HelpIcon,
   ImageOutline as CoverIcon,
+  BuildOutline as FixIcon,
 } from '@vicons/ionicons5';
 
 // ===================================================================
@@ -746,6 +798,7 @@ const isLoadingLibraries = ref(false);
 const isGeneratingCovers = ref(false);
 const embyUserOptions = ref([]);
 const isLoadingEmbyUsers = ref(false);
+const dialog = useDialog();
 let sortableInstance = null;
 
 const showDiscoverHelper = ref(false);
@@ -776,6 +829,50 @@ const discoverParams = ref(getInitialDiscoverParams());
 // ===================================================================
 // ▼▼▼ 所有函数和计算属性 ▼▼▼
 // ===================================================================
+const handleFixMatchClick = (media) => {
+  let newTmdbId = '';
+  dialog.create({
+    title: `修正《${media.title}》的匹配`,
+    content: () => h('div', [
+      h('p', `当前错误的 TMDb ID 是 ${media.tmdb_id}。请输入正确的 ID：`),
+      h(NInput, {
+        placeholder: '请输入正确的 TMDb ID',
+        value: newTmdbId,
+        onInput: (value) => { newTmdbId = value; }
+      })
+    ]),
+    positiveText: '确认修正',
+    negativeText: '取消',
+    onPositiveClick: async () => {
+      if (!newTmdbId || !/^\d+$/.test(newTmdbId)) {
+        message.error('请输入一个有效的纯数字 TMDb ID。');
+        return false; // 阻止弹窗关闭
+      }
+      await submitFixMatch(media.tmdb_id, newTmdbId);
+    }
+  });
+};
+
+const submitFixMatch = async (oldTmdbId, newTmdbId) => {
+  if (!selectedCollectionDetails.value?.id) return;
+  try {
+    const response = await axios.post(`/api/custom_collections/${selectedCollectionDetails.value.id}/fix_match`, {
+      old_tmdb_id: oldTmdbId,
+      new_tmdb_id: newTmdbId,
+    });
+    
+    // 在前端列表中立即更新
+    const items = selectedCollectionDetails.value.media_items;
+    const index = items.findIndex(m => String(m.tmdb_id) === String(oldTmdbId));
+    if (index !== -1) {
+      items.splice(index, 1, response.data.corrected_item);
+    }
+    
+    message.success(response.data.message || '修正成功！');
+  } catch (error) {
+    message.error(error.response?.data?.error || '修正失败，请检查后端日志。');
+  }
+};
 
 const ruleConfig = {
   title: { label: '标题', type: 'text', operators: ['contains', 'does_not_contain', 'starts_with', 'ends_with'] },

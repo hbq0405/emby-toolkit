@@ -94,7 +94,7 @@ def get_movie_details(movie_id: int, api_key: str, append_to_response: Optional[
 
     return details
 # --- 获取电视剧的详细信息 ---
-def get_tv_details_tmdb(tv_id: int, api_key: str, append_to_response: Optional[str] = "credits,videos,images,keywords,external_ids,translations,content_ratings") -> Optional[Dict[str, Any]]:
+def get_tv_details(tv_id: int, api_key: str, append_to_response: Optional[str] = "credits,videos,images,keywords,external_ids,translations,content_ratings") -> Optional[Dict[str, Any]]:
     """
     【已升级】获取电视剧的详细信息。
     """
@@ -182,7 +182,7 @@ def aggregate_full_series_data_from_tmdb(
     logger.info(f"  -> 开始为剧集 ID {tv_id} 并发聚合 TMDB 数据 (并发数: {max_workers})...")
     
     # --- 步骤 1: 获取顶层剧集详情，这是所有后续操作的基础 ---
-    series_details = get_tv_details_tmdb(tv_id, api_key)
+    series_details = get_tv_details(tv_id, api_key)
     if not series_details:
         logger.error(f"  -> 聚合失败：无法获取顶层剧集 {tv_id} 的详情。")
         return None
