@@ -810,7 +810,7 @@ class MediaProcessor:
                         
                         # ★★★ 反查数据库，补全 emby_person_id ★★★
                         logger.debug("  -> [快速通道] 正在反查数据库以补全 emby_person_id...")
-                        tmdb_ids_from_cache = [actor['id'] for actor in cached_actors if actor.get('id')]
+                        tmdb_ids_from_cache = [int(actor['id']) for actor in cached_actors if actor.get('id')]
                         
                         # 构建一个从 TMDb ID 到 Emby Person ID 的映射
                         tmdb_to_emby_map = {}
