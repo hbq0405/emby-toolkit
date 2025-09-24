@@ -304,13 +304,36 @@ def task_process_all_custom_collections(processor):
                     # ▼▼▼ 入修正逻辑 ▼▼▼
                     corrections = definition.get('corrections', {})
                     if corrections:
-                        logger.info(f"  -> 检测到合集 '{collection_name}' 存在 {len(corrections)} 条修正规则，正在应用...")
+                        logger.debug(f"  -> 检测到 {len(corrections)} 条修正规则，开始应用...")
+                        corrected_tmdb_items = []
                         for item in tmdb_items:
-                            original_id_str = str(item.get('id'))
-                            if original_id_str in corrections:
-                                corrected_id = corrections[original_id_str]
-                                logger.info(f"    -> 应用修正: 将源 ID {original_id_str} 替换为 {corrected_id}")
-                                item['id'] = corrected_id
+                            original_id = str(item.get('id'))
+                            
+                            if original_id in corrections:
+                                correction_info = corrections[original_id]
+                                
+                                # 健壮性检查：处理新旧两种修正格式
+                                if isinstance(correction_info, dict):
+                                    # 新格式: {'tmdb_id': '...', 'season': ...}
+                                    new_id = correction_info.get('tmdb_id')
+                                    new_season = correction_info.get('season')
+                                    
+                                    if new_id:
+                                        logger.info(f"    -> 应用修正: {original_id} -> {new_id} (季号: {new_season})")
+                                        item['id'] = new_id # 只更新 ID
+                                        if new_season is not None:
+                                            item['season'] = new_season # 更新或添加 season
+                                        else:
+                                            item.pop('season', None) # 确保移除旧的 season
+                                    else:
+                                        logger.warning(f"    -> 修正规则格式错误，跳过: {correction_info}")
+
+                                elif isinstance(correction_info, str):
+                                    # 兼容旧格式: '新ID'
+                                    logger.info(f"    -> 应用修正 (旧格式): {original_id} -> {correction_info}")
+                                    item['id'] = correction_info
+                                
+                            corrected_tmdb_items.append(item)
 
                 elif collection_type == 'filter':
                     engine = FilterEngine()
@@ -505,13 +528,36 @@ def task_process_custom_collection(processor, custom_collection_id: int):
             # ▼▼▼ 修正逻辑 ▼▼▼
             corrections = definition.get('corrections', {})
             if corrections:
-                logger.info(f"  -> 检测到合集 '{collection_name}' 存在 {len(corrections)} 条修正规则，正在应用...")
+                logger.debug(f"  -> 检测到 {len(corrections)} 条修正规则，开始应用...")
+                corrected_tmdb_items = []
                 for item in tmdb_items:
-                    original_id_str = str(item.get('id'))
-                    if original_id_str in corrections:
-                        corrected_id = corrections[original_id_str]
-                        logger.info(f"    -> 应用修正: 将源 ID {original_id_str} 替换为 {corrected_id}")
-                        item['id'] = corrected_id
+                    original_id = str(item.get('id'))
+                    
+                    if original_id in corrections:
+                        correction_info = corrections[original_id]
+                        
+                        # 健壮性检查：处理新旧两种修正格式
+                        if isinstance(correction_info, dict):
+                            # 新格式: {'tmdb_id': '...', 'season': ...}
+                            new_id = correction_info.get('tmdb_id')
+                            new_season = correction_info.get('season')
+                            
+                            if new_id:
+                                logger.info(f"    -> 应用修正: {original_id} -> {new_id} (季号: {new_season})")
+                                item['id'] = new_id # 只更新 ID
+                                if new_season is not None:
+                                    item['season'] = new_season # 更新或添加 season
+                                else:
+                                    item.pop('season', None) # 确保移除旧的 season
+                            else:
+                                logger.warning(f"    -> 修正规则格式错误，跳过: {correction_info}")
+
+                        elif isinstance(correction_info, str):
+                            # 兼容旧格式: '新ID'
+                            logger.info(f"    -> 应用修正 (旧格式): {original_id} -> {correction_info}")
+                            item['id'] = correction_info
+                        
+                    corrected_tmdb_items.append(item)
 
         elif collection_type == 'filter':
             engine = FilterEngine()

@@ -662,7 +662,7 @@ def update_single_media_status_in_custom_collection(collection_id: int, media_tm
 # --- 应用并持久化媒体修正 ---
 def apply_and_persist_media_correction(collection_id: int, old_tmdb_id: str, new_tmdb_id: str, season_number: Optional[int] = None) -> Optional[Dict[str, Any]]:
     """
-    【V2 - 季号支持版】应用一个媒体修正，将其持久化到合集定义中，并立即更新当前的媒体列表状态。
+    【V3 - 统一修正结构版】应用一个媒体修正，并持久化。
     """
     try:
         with get_db_connection() as conn:
@@ -703,21 +703,16 @@ def apply_and_persist_media_correction(collection_id: int, old_tmdb_id: str, new
             if emby_id: status = "in_library"
             elif release_date and release_date > today_str: status = "unreleased"
 
-            # 4. 构建新的媒体项
             corrected_media_item = {
-                "tmdb_id": new_tmdb_id,
-                "emby_id": emby_id,
+                "tmdb_id": new_tmdb_id, "emby_id": emby_id,
                 "title": new_details.get("title") or new_details.get("name"),
-                "release_date": release_date,
-                "poster_path": new_details.get("poster_path"),
+                "release_date": release_date, "poster_path": new_details.get("poster_path"),
                 "status": status
             }
             
-            # ★★★ 核心修正：如果提供了季号，就附加到修正后的媒体项中 ★★★
-            if season_number is not None:
+            if item_type == 'Series' and season_number is not None:
                 corrected_media_item['season'] = int(season_number)
 
-            # ... 后续逻辑保持不变 ...
             item_found = False
             for i, item in enumerate(media_list):
                 if str(item.get('tmdb_id')) == str(old_tmdb_id):
@@ -729,10 +724,12 @@ def apply_and_persist_media_correction(collection_id: int, old_tmdb_id: str, new
                 logger.warning(f"修正警告：在合集 {collection_id} 的当前列表中未找到旧 ID {old_tmdb_id}，但仍会保存修正规则。")
 
             corrections = definition.get('corrections', {})
-            # ★★★ 修正规则也应包含季号，以备未来重建合集时使用 ★★★
+            
+            # ★★★ 核心优化：无论修正的是什么类型，都保存统一的字典结构 ★★★
+            final_season = int(season_number) if item_type == 'Series' and season_number is not None else None
             corrections[str(old_tmdb_id)] = {
                 "tmdb_id": str(new_tmdb_id),
-                "season": season_number if season_number is not None else None
+                "season": final_season
             }
             definition['corrections'] = corrections
             
@@ -745,7 +742,7 @@ def apply_and_persist_media_correction(collection_id: int, old_tmdb_id: str, new
             )
             
             conn.commit()
-            logger.info(f"成功为合集 {collection_id} 应用并保存修正：{old_tmdb_id} -> {new_tmdb_id} (季号: {season_number})")
+            logger.info(f"成功为合集 {collection_id} 应用并保存修正：{old_tmdb_id} -> {new_tmdb_id} (季号: {final_season})")
             return corrected_media_item
 
     except Exception as e:
