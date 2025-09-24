@@ -18,17 +18,12 @@ logger = logging.getLogger(__name__)
 # --- 同步演员映射表 ---
 def task_sync_person_map(processor):
     """
-    【最终兼容版】任务：同步演员映射表。
-    接收 processor 和 is_full_sync 以匹配通用任务执行器，
-    但内部逻辑已统一，不再使用 is_full_sync。
+    【V2 - 支持进度反馈】任务：同步演员映射表。
     """
     task_name = "同步演员映射"
-    # 我们不再需要根据 is_full_sync 来改变任务名了，因为逻辑已经统一
-    
     logger.trace(f"开始执行 '{task_name}'...")
     
     try:
-        # ★★★ 从传入的 processor 对象中获取 config 字典 ★★★
         config = processor.config
         
         sync_handler = UnifiedSyncHandler(
@@ -38,7 +33,7 @@ def task_sync_person_map(processor):
             tmdb_api_key=config.get("tmdb_api_key", "")
         )
         
-        # 调用同步方法，不再需要传递 is_full_sync
+        # ### 修改点：将任务管理器的回调函数传递给处理器 ###
         sync_handler.sync_emby_person_map_to_db(
             update_status_callback=task_manager.update_status_from_thread
         )

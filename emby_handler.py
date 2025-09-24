@@ -10,7 +10,7 @@ import threading
 # ★★★ 核心修改 1/3: 导入我们需要的配置管理器和常量 ★★★
 import config_manager
 import constants
-from typing import Optional, List, Dict, Any, Generator, Tuple, Set
+from typing import Optional, List, Dict, Any, Generator, Tuple, Set, Callable
 import logging
 logger = logging.getLogger(__name__)
 # (SimpleLogger 和 logger 的导入保持不变)
@@ -739,23 +739,37 @@ def get_all_persons_from_emby(
     api_key: str, 
     user_id: Optional[str], 
     stop_event: Optional[threading.Event] = None,
-    # ★★★ 核心修改：新增 batch_size 参数，并设置高效的默认值 ★★★
-    batch_size: int = 5000
+    batch_size: int = 500, # <-- 将默认值改小，以获得更平滑的进度更新
+    update_status_callback: Optional[Callable] = None # <-- 新增回调参数
 ) -> Generator[List[Dict[str, Any]], None, None]:
     """
-    【V3 - 参数化批次版】
+    【V4 - 支持进度反馈 & 精确扫描】
     分批次获取 Emby 中的 Person (演员) 项目。
-    - 新增 batch_size 参数，允许调用方根据任务需求自定义批次大小。
-    - 默认批次大小为 5000，以保证常规同步任务的效率。
     """
     if not user_id:
         logger.error("获取所有演员需要提供 User ID，但未提供。任务中止。")
         return
 
+    # --- 模式一：未配置媒体库，全量扫描 ---
     library_ids = config_manager.APP_CONFIG.get(constants.CONFIG_OPTION_EMBY_LIBRARIES_TO_PROCESS)
-
     if not library_ids:
         logger.info("  -> 未在配置中指定媒体库，将从整个 Emby 服务器分批获取所有演员数据...")
+        
+        # 1. 先获取总数，用于计算进度
+        total_count = 0
+        try:
+            count_url = f"{base_url.rstrip('/')}/Items"
+            count_params = {"api_key": api_key, "UserId": user_id, "IncludeItemTypes": "Person", "Recursive": "true", "Limit": 0}
+            api_timeout = config_manager.APP_CONFIG.get(constants.CONFIG_OPTION_EMBY_API_TIMEOUT, 60)
+            response = requests.get(count_url, params=count_params, timeout=api_timeout)
+            response.raise_for_status()
+            total_count = response.json().get("TotalRecordCount", 0)
+            logger.info(f"Emby Person 总数: {total_count}")
+        except Exception as e:
+            logger.error(f"获取 Emby Person 总数失败: {e}")
+            # 即使失败也继续，只是进度条不准确
+        
+        # 2. 分批获取数据
         api_url = f"{base_url.rstrip('/')}/Users/{user_id}/Items"
         headers = {"X-Emby-Token": api_key, "Accept": "application/json"}
         params = {
@@ -764,8 +778,6 @@ def get_all_persons_from_emby(
             "Fields": "ProviderIds,Name",
         }
         start_index = 0
-        # ★★★ 核心修改：使用传入的 batch_size 参数 ★★★
-        # batch_size = 5000  <-- 删除或注释掉这一行硬编码
         api_timeout = config_manager.APP_CONFIG.get(constants.CONFIG_OPTION_EMBY_API_TIMEOUT, 60)
 
         while True:
@@ -776,27 +788,31 @@ def get_all_persons_from_emby(
             request_params = params.copy()
             request_params["StartIndex"] = start_index
             request_params["Limit"] = batch_size
-            logger.debug(f"  -> 获取 Person 批次: StartIndex={start_index}, Limit={batch_size}")
-
+            
             try:
                 response = requests.get(api_url, headers=headers, params=request_params, timeout=api_timeout)
                 response.raise_for_status()
-                data = response.json()
-                items = data.get("Items", [])
+                items = response.json().get("Items", [])
                 
                 if not items:
-                    logger.trace("API 返回空列表，已获取所有 Person 数据。")
                     break
 
                 yield items
                 start_index += len(items)
-                time.sleep(0.1)
+
+                # ### 核心修改：在这里调用回调函数汇报进度 ###
+                if update_status_callback:
+                    # 扫描阶段的进度条我们让它从 0% 涨到 30%
+                    progress = int((start_index / total_count) * 30) if total_count > 0 else 5
+                    update_status_callback(progress, f"阶段 1/2: 已扫描 {start_index}/{total_count if total_count > 0 else '未知'} 名演员...")
+
             except requests.exceptions.RequestException as e:
                 logger.error(f"请求 Emby API 失败 (批次 StartIndex={start_index}): {e}", exc_info=True)
                 return
         return
 
     # --- 模式二：已配置特定媒体库，执行精确扫描 (此部分逻辑不变) ---
+    # ... (这部分代码保持不变) ...
     logger.info(f"  -> 检测到配置了 {len(library_ids)} 个媒体库，将只获取这些库中的演员数据...")
     media_items = get_emby_library_items(
         base_url=base_url, api_key=api_key, user_id=user_id,
@@ -819,9 +835,10 @@ def get_all_persons_from_emby(
         yield []
         return
 
-    # 对于精确扫描，批次大小固定为500是合理的
     precise_batch_size = 500
-    for i in range(0, len(person_ids_to_fetch), precise_batch_size):
+    total_precise = len(person_ids_to_fetch)
+    processed_precise = 0
+    for i in range(0, total_precise, precise_batch_size):
         if stop_event and stop_event.is_set(): return
         batch_ids = person_ids_to_fetch[i:i + precise_batch_size]
         person_details_batch = get_emby_items_by_id(
@@ -830,6 +847,10 @@ def get_all_persons_from_emby(
         )
         if person_details_batch:
             yield person_details_batch
+            processed_precise += len(person_details_batch)
+            if update_status_callback:
+                progress = int((processed_precise / total_precise) * 30)
+                update_status_callback(progress, f"阶段 1/2: 已扫描 {processed_precise}/{total_precise} 名演员...")
 # ✨✨✨ 获取剧集下所有剧集的函数 ✨✨✨
 def get_series_children(
     series_id: str,

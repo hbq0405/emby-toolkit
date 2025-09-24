@@ -400,8 +400,19 @@
                           确定要校准所有表的ID自增计数器吗？<br />
                           这是一个安全的操作，用于修复导入数据后无法新增条目的问题。
                         </n-popconfirm>
+                        <!-- ### 重置演员映射表 ### -->
+                        <n-button 
+                          type="warning" 
+                          ghost 
+                          :loading="isResettingMappings" 
+                          class="action-button"
+                          @click="showResetMappingsModal"
+                        >
+                          <template #icon><n-icon :component="SyncIcon" /></template>
+                          重置演员映射
+                        </n-button>
                       </n-space>
-                      <p class="description-text"><b>导出：</b>将数据库中的一个或多个表备份为 JSON 文件。<br><b>导入：</b>从 JSON 备份文件中恢复数据。<br><b>清空：</b>删除指定表中的所有数据，此操作不可逆。<br><b>校准：</b>修复导入数据可能引起的自增序号错乱的问题。</p>
+                      <p class="description-text"><b>导出：</b>将数据库中的一个或多个表备份为 JSON 文件。<br><b>导入：</b>从 JSON 备份文件中恢复数据。<br><b>清空：</b>删除指定表中的所有数据，此操作不可逆。<br><b>校准：</b>修复导入数据可能引起的自增序号错乱的问题。<br><b>重置：</b>在重建 Emby 媒体库后，使用此功能清空旧的 Emby 演员ID，然后执行一次“同步演员映射”任务即可重新建立关联。</p>
                     </n-space>
                   </n-card>
                 </n-gi>
@@ -538,6 +549,22 @@
       <n-button type="error" @click="handleClearTables" :disabled="tablesToClear.length === 0" :loading="isClearing">确认清空</n-button>
     </template>
   </n-modal>
+  <!-- 重置演员映射模态框 -->
+  <n-modal 
+    v-model:show="resetMappingsModalVisible" 
+    preset="dialog" 
+    title="确认重置演员映射表"
+  >
+    <n-alert title="高危操作警告" type="warning" style="margin-bottom: 15px;">
+      <p style="margin: 0 0 8px 0;">此操作将 <strong>清空所有演员的 Emby Person ID</strong>。</p>
+      <p style="margin: 0 0 8px 0;">它会保留宝贵的 TMDb/IMDb/Douban 映射关系，以便在全量扫描后自动重新关联。</p>
+      <p class="warning-text" style="margin: 0;"><strong>请仅在您已经或将要重建 Emby 媒体库时执行此操作。</strong></p>
+    </n-alert>
+    <template #action>
+      <n-button @click="resetMappingsModalVisible = false">取消</n-button>
+      <n-button type="warning" @click="handleResetActorMappings" :loading="isResettingMappings">确认重置</n-button>
+    </template>
+  </n-modal>
 </template>
 
 <script setup>
@@ -556,6 +583,7 @@ import {
   TrashOutline as ClearIcon,
   BuildOutline as BuildIcon,
   AlertCircleOutline as AlertIcon,
+  SyncOutline as SyncIcon
 } from '@vicons/ionicons5';
 import { useConfig } from '../../composables/useConfig.js';
 import axios from 'axios';
@@ -590,9 +618,12 @@ const tableInfo = {
 // 键 (key) 是父表，值 (value) 是必须随之一起勾选的子表数组
 // 定义表之间的依赖关系 (这个可以保留或重新添加)
 const tableDependencies = {
-  'person_identity_map': ['media_metadata', 'actor_metadata'],
+  // 演员订阅 -> 已追踪作品 (硬依赖)
   'actor_subscriptions': ['tracked_actor_media'],
-  'emby_users': ['user_media_data']
+  // Emby用户 -> 用户扩展信息 & 用户媒体数据 (硬依赖)
+  'emby_users': ['user_media_data', 'emby_users_extended'],
+  // 权限模板 -> 邀请链接 (硬依赖)
+  'user_templates': ['invitations']
 };
 
 // ★ 新增: 创建一个反向依赖映射，用于快速查找父表 (e.g., { 'media_metadata': 'person_identity_map' })
@@ -691,6 +722,8 @@ const formRules = {
 const { configModel, loadingConfig, savingConfig, configError, handleSaveConfig } = useConfig();
 const message = useMessage();
 const dialog = useDialog();
+const isResettingMappings = ref(false);
+const resetMappingsModalVisible = ref(false);
 
 // --- Emby 相关的 Refs ---
 const availableLibraries = ref([]);
@@ -721,6 +754,27 @@ const embyUserIdRule = {
       return new Error('ID格式不正确，应为32位。');
     }
     return true;
+  }
+};
+
+// 新增：显示重置映射表模态框的函数
+const showResetMappingsModal = () => {
+  resetMappingsModalVisible.value = true;
+};
+
+// 修改：原有的处理函数，现在需要增加关闭模态框的逻辑
+const handleResetActorMappings = async () => {
+  isResettingMappings.value = true;
+  try {
+    const response = await axios.post('/api/actions/reset_actor_mappings');
+    message.success(response.data.message || '演员映射已成功重置！');
+    // 成功后关闭模态框
+    resetMappingsModalVisible.value = false;
+  } catch (error) {
+    message.error(error.response?.data?.error || '重置失败，请检查后端日志。');
+    // 失败时保持模态框打开，方便用户重试
+  } finally {
+    isResettingMappings.value = false;
   }
 };
 

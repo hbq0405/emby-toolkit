@@ -433,3 +433,28 @@ def api_correct_all_sequences():
     except Exception as e:
         logger.error(f"API调用api_correct_all_sequences时发生错误: {e}", exc_info=True)
         return jsonify({"error": "服务器在处理时发生内部错误"}), 500
+    
+# --- 重置演员映射表 ---
+@db_admin_bp.route('/actions/reset_actor_mappings', methods=['POST'])
+@login_required
+def api_reset_actor_mappings():
+    """
+    清空 person_identity_map 表中所有记录的 emby_person_id 字段。
+    这是一个高级操作，用于 Emby 媒体库重建后的数据恢复流程。
+    """
+    logger.warning("接收到重置演员映射表的请求，这是一个重要操作。")
+    try:
+        with connection.get_db_connection() as conn:
+            with conn.cursor() as cursor:
+                # 执行核心的 SQL 更新命令
+                cursor.execute("UPDATE person_identity_map SET emby_person_id = NULL;")
+                # 获取受影响的行数，用于返回给前端
+                affected_rows = cursor.rowcount
+        
+        message = f"操作成功！已重置 {affected_rows} 条演员记录的 Emby Person ID。"
+        logger.info(message)
+        return jsonify({"message": message}), 200
+        
+    except Exception as e:
+        logger.error(f"API调用 api_reset_actor_mappings 时发生错误: {e}", exc_info=True)
+        return jsonify({"error": "服务器在处理时发生内部错误"}), 500

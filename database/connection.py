@@ -206,7 +206,7 @@ def init_db():
                     CREATE TABLE IF NOT EXISTS person_identity_map (
                         map_id SERIAL PRIMARY KEY, 
                         primary_name TEXT NOT NULL, 
-                        emby_person_id TEXT NOT NULL UNIQUE,
+                        emby_person_id TEXT UNIQUE,
                         tmdb_person_id INTEGER UNIQUE, 
                         imdb_id TEXT UNIQUE, 
                         douban_celebrity_id TEXT UNIQUE,
@@ -389,17 +389,53 @@ def init_db():
                 cursor.execute("CREATE INDEX IF NOT EXISTS idx_eue_expiration_date ON emby_users_extended (expiration_date);")
 
                 # --- 2. 执行平滑升级检查 ---
-                logger.info("  -> 开始执行数据库表结构平滑升级检查...")
+                logger.info("  -> 开始执行数据库表结构升级检查...")
+                
+                # --- 2.1 移除 actor_metadata 的外键约束 (如果存在) ---
                 try:
-                    # --- 2.1 检查所有表的列 ---
-                    # 查询 information_schema 获取所有表的列信息
+                    logger.trace("  -> [数据库升级] 正在检查并移除 'actor_metadata' 的外键约束...")
+                    cursor.execute("""
+                        SELECT conname FROM pg_constraint
+                        WHERE conrelid = 'actor_metadata'::regclass
+                          AND confrelid = 'person_identity_map'::regclass
+                          AND contype = 'f';
+                    """)
+                    constraint = cursor.fetchone()
+                    if constraint:
+                        constraint_name = constraint['conname']
+                        logger.info(f"    -> [数据库升级] 检测到旧的外键约束 '{constraint_name}'，正在移除...")
+                        cursor.execute(f"ALTER TABLE actor_metadata DROP CONSTRAINT IF EXISTS {constraint_name};")
+                        logger.info(f"    -> [数据库升级] 约束 '{constraint_name}' 移除成功。")
+                    else:
+                        logger.trace("    -> 'actor_metadata' 表无外键约束，无需升级。")
+                except Exception as e_fk:
+                    logger.error(f"  -> [数据库升级] 检查或移除外键时出错: {e_fk}", exc_info=True)
+
+                # --- 2.2 移除 person_identity_map.emby_person_id 的 NOT NULL 约束 (如果存在) ---
+                try:
+                    logger.trace("  -> [数据库升级] 正在检查 'person_identity_map.emby_person_id' 的 NOT NULL 约束...")
+                    cursor.execute("""
+                        SELECT is_nullable 
+                        FROM information_schema.columns 
+                        WHERE table_name = 'person_identity_map' AND column_name = 'emby_person_id';
+                    """)
+                    column_info = cursor.fetchone()
+                    if column_info and column_info['is_nullable'] == 'NO':
+                        logger.info("    -> [数据库升级] 检测到 'emby_person_id' 字段存在 NOT NULL 约束，正在移除...")
+                        cursor.execute("ALTER TABLE person_identity_map ALTER COLUMN emby_person_id DROP NOT NULL;")
+                        logger.info("    -> [数据库升级] 约束移除成功。")
+                    else:
+                        logger.trace("    -> 'emby_person_id' 字段已允许为空，无需升级。")
+                except Exception as e_not_null:
+                    logger.error(f"  -> [数据库升级] 检查或移除 NOT NULL 约束时出错: {e_not_null}", exc_info=True)
+
+                # --- 2.3 检查并添加所有缺失的列 ---
+                try:
                     cursor.execute("""
                         SELECT table_name, column_name
                         FROM information_schema.columns
                         WHERE table_schema = current_schema();
                     """)
-                    
-                    # 将结果组织成一个字典，方便查询: {'table_name': {'col1', 'col2'}, ...}
                     all_existing_columns = {}
                     for row in cursor.fetchall():
                         table = row['table_name']
@@ -407,8 +443,6 @@ def init_db():
                             all_existing_columns[table] = set()
                         all_existing_columns[table].add(row['column_name'])
 
-                    # --- 2.2 定义所有需要检查和添加的新列 ---
-                    # 格式: {'table_name': {'column_name': 'COLUMN_TYPE'}}
                     schema_upgrades = {
                         'media_metadata': {
                             "official_rating": "TEXT",
@@ -439,35 +473,30 @@ def init_db():
                         }
                     }
 
-                    # --- 2.3 遍历并执行升级 ---
                     for table, columns_to_add in schema_upgrades.items():
-                        # 检查表是否存在于我们查询到的信息中
                         if table in all_existing_columns:
                             existing_cols_for_table = all_existing_columns[table]
                             for col_name, col_type in columns_to_add.items():
-                                # 如果新列不存在，则添加它
                                 if col_name not in existing_cols_for_table:
                                     logger.info(f"    -> [数据库升级] 检测到 '{table}' 表缺少 '{col_name}' 字段，正在添加...")
-                                    # 使用 ALTER TABLE ... ADD COLUMN ... IF NOT EXISTS 语法，双重保险
                                     cursor.execute(f"ALTER TABLE {table} ADD COLUMN IF NOT EXISTS {col_name} {col_type};")
                                     logger.info(f"    -> [数据库升级] 字段 '{col_name}' 添加成功。")
                                 else:
                                     logger.trace(f"    -> 字段 '{table}.{col_name}' 已存在，跳过。")
                         else:
-                            # 这种情况理论上不会发生，因为前面的 CREATE TABLE IF NOT EXISTS 已经保证了表的存在
                             logger.warning(f"    -> [数据库升级] 检查表 '{table}' 时发现该表不存在，跳过升级。")
 
                 except Exception as e_alter:
                     logger.error(f"  -> [数据库升级] 检查或添加新字段时出错: {e_alter}", exc_info=True)
-                    # 即使升级失败，也继续执行，不中断主程序启动
                 
+                # --- 2.4 确保索引存在 ---
                 try:
                     logger.trace("  -> 正在为 'media_metadata.emby_item_id' 创建索引...")
                     cursor.execute("CREATE INDEX IF NOT EXISTS idx_mm_emby_item_id ON media_metadata (emby_item_id);")
                 except Exception as e_index:
                     logger.error(f"  -> 创建 'emby_item_id' 索引时出错: {e_index}", exc_info=True)
 
-                logger.info("  -> 数据库平滑升级检查完成。")
+                logger.info("  -> 数据库升级检查完成。")
 
             conn.commit()
             logger.info("✅ PostgreSQL 数据库初始化完成，所有表结构已创建/验证。")

@@ -6,6 +6,7 @@ from typing import Optional, Dict, Any, List, Tuple
 
 from .connection import get_db_connection
 from utils import contains_chinese
+from emby_handler import get_emby_item_details
 
 logger = logging.getLogger(__name__)
 
@@ -95,148 +96,101 @@ class ActorDBManager:
                 logger.error(f"查询 person_identity_map 时出错 ({column}={value}): {e}")
         return None
 
-    def upsert_person(self, cursor: psycopg2.extensions.cursor, person_data: Dict[str, Any], emby_config: Dict[str, str]) -> Tuple[int, str]:
-        """【V4.1 - 类型安全修复版】"""
-        
-        id_field_map = {
-            "tmdb_person_id": "Tmdb",
-            "imdb_id": "Imdb",
-            "douban_celebrity_id": "Douban"
-        }
+    def upsert_person(self, cursor: psycopg2.extensions.cursor, person_data: Dict[str, Any], emby_config: Dict[str, Any]) -> Tuple[int, str]:
+        """
+        【V5 - 智能重联最终版】
+        写入或更新一条名人身份映射记录。
+        - 优先使用 emby_id 查找。
+        - 如果找不到，则尝试使用 tmdb_id 查找（处理 Emby 重建后的重联场景）。
+        - 如果都找不到，则创建新记录。
+        - 确保所有 ID 类型正确。
+        """
+        emby_id = str(person_data.get("emby_id") or '').strip() or None
+        tmdb_id_raw = person_data.get("tmdb_id")
+        imdb_id = str(person_data.get("imdb_id") or '').strip() or None
+        douban_id = str(person_data.get("douban_id") or '').strip() or None
+        name = str(person_data.get("name") or '').strip()
 
-        cursor.execute("SAVEPOINT actor_upsert")
+        tmdb_id = None
+        if tmdb_id_raw and str(tmdb_id_raw).isdigit():
+            try:
+                tmdb_id = int(tmdb_id_raw)
+            except (ValueError, TypeError):
+                pass
+
+        if not emby_id:
+            logger.warning("upsert_person 调用缺少 emby_id，跳过。")
+            return -1, "SKIPPED"
 
         try:
-            tmdb_id_raw = person_data.get("tmdb_id")
-            tmdb_id_int = None
-            if tmdb_id_raw and str(tmdb_id_raw).isdigit():
-                try:
-                    tmdb_id_int = int(tmdb_id_raw)
-                except (ValueError, TypeError):
-                    pass 
-            
-            new_data = {
-                "primary_name": str(person_data.get("name") or '').strip(),
-                "emby_person_id": str(person_data.get("emby_id") or '').strip() or None,
-                "tmdb_person_id": tmdb_id_int,
-                "imdb_id": str(person_data.get("imdb_id") or '').strip() or None,
-                "douban_celebrity_id": str(person_data.get("douban_id") or '').strip() or None,
-            }
+            cursor.execute("SAVEPOINT actor_upsert")
 
-            if not new_data["emby_person_id"]:
-                logger.warning("缺失 emby_person_id，无法执行 upsert")
-                cursor.execute("RELEASE SAVEPOINT actor_upsert")
-                return -1, "SKIPPED"
-
-            conflict_detected = False
-            for db_column, emby_provider_key in id_field_map.items():
-                id_value = new_data.get(db_column)
-                if id_value is None:
-                    continue
-
-                cursor.execute(
-                    f"SELECT emby_person_id FROM person_identity_map WHERE {db_column} = %s",
-                    (id_value,)
-                )
-                conflicting_records = cursor.fetchall()
-                
-                if conflicting_records:
-                    conflicting_emby_pids = [rec['emby_person_id'] for rec in conflicting_records]
-                    if new_data["emby_person_id"] not in conflicting_emby_pids:
-                        conflicting_emby_pids.append(new_data["emby_person_id"])
-                    
-                    if len(conflicting_emby_pids) > 1:
-                        logger.warning(
-                            f"检测到ID冲突: {db_column} = '{id_value}' 被多个Emby PID共享: {conflicting_emby_pids}。"
-                            "将执行智能合并..."
-                        )
-                        
-                        target_emby_pid = conflicting_emby_pids[0]
-                        cursor.execute("SELECT * FROM person_identity_map WHERE emby_person_id = %s", (target_emby_pid,))
-                        target_actor = cursor.fetchone()
-                        
-                        if not target_actor:
-                            logger.error(f"合并失败：无法找到目标演员记录 (Emby PID: {target_emby_pid})。")
-                            continue
-
-                        target_map_id = target_actor['map_id']
-                        
-                        for source_emby_pid in conflicting_emby_pids[1:]:
-                            cursor.execute("SELECT * FROM person_identity_map WHERE emby_person_id = %s", (source_emby_pid,))
-                            source_actor = cursor.fetchone()
-                            
-                            if not source_actor or source_actor['map_id'] == target_map_id:
-                                continue
-
-                            source_map_id = source_actor['map_id']
-                            logger.info(f"  -> 正在将源记录 (Emby PID: {source_emby_pid}, map_id: {source_map_id}) 合并到目标记录 (Emby PID: {target_emby_pid}, map_id: {target_map_id})")
-
-                            if source_actor.get('tmdb_person_id') and not target_actor.get('tmdb_person_id'):
-                                cursor.execute("UPDATE person_identity_map SET tmdb_person_id = %s WHERE map_id = %s", (source_actor['tmdb_person_id'], target_map_id))
-                            if source_actor.get('imdb_id') and not target_actor.get('imdb_id'):
-                                cursor.execute("UPDATE person_identity_map SET imdb_id = %s WHERE map_id = %s", (source_actor['imdb_id'], target_map_id))
-                            if source_actor.get('douban_celebrity_id') and not target_actor.get('douban_celebrity_id'):
-                                cursor.execute("UPDATE person_identity_map SET douban_celebrity_id = %s WHERE map_id = %s", (source_actor['douban_celebrity_id'], target_map_id))
-
-                            cursor.execute("DELETE FROM person_identity_map WHERE map_id = %s", (source_map_id,))
-                            logger.info(f"  -> 合并完成，已删除多余的源记录 (map_id: {source_map_id})。")
-
-                        new_data["emby_person_id"] = target_emby_pid
-
-            if conflict_detected:
-                cursor.execute("RELEASE SAVEPOINT actor_upsert")
-                return -1, "SKIPPED"
-
-            cursor.execute("SELECT * FROM person_identity_map WHERE emby_person_id = %s", (new_data["emby_person_id"],))
+            # --- 步骤 1: 查找现有记录 ---
+            existing_record = None
+            # 路径 A: 正常流程，用 Emby ID 查找
+            cursor.execute("SELECT * FROM person_identity_map WHERE emby_person_id = %s", (emby_id,))
             existing_record = cursor.fetchone()
 
+            # 路径 B: 重建媒体库后的重联流程
+            if not existing_record and tmdb_id:
+                # 查找一个 tmdb_id 匹配但 emby_id 为空的记录
+                cursor.execute(
+                    "SELECT * FROM person_identity_map WHERE tmdb_person_id = %s AND (emby_person_id IS NULL OR emby_person_id = '')",
+                    (tmdb_id,)
+                )
+                record_to_relink = cursor.fetchone()
+                if record_to_relink:
+                    logger.trace(f"  -> [智能重联] 发现演员 '{name}' (TMDb: {tmdb_id}) 的记录，正在用新的 Emby ID '{emby_id}' 进行更新...")
+                    existing_record = record_to_relink
+
+            # --- 步骤 2: 根据查找结果，决定是 UPDATE 还是 INSERT ---
             if existing_record:
-                existing_record = dict(existing_record)
-                update_fields = {}
+                # --- UPDATE 现有记录 ---
+                map_id = existing_record['map_id']
+                updates = {}
                 
-                id_fields = id_field_map.keys()
-                for f in id_fields:
-                    new_val = new_data.get(f)
-                    if new_val is not None and not existing_record.get(f):
-                        update_fields[f] = new_val
+                # 核心：用新的 Emby ID 更新找到的记录
+                if existing_record.get('emby_person_id') != emby_id:
+                    updates['emby_person_id'] = emby_id
 
-                new_name = new_data["primary_name"]
-                old_name = existing_record.get("primary_name") or ""
-                if new_name and new_name != old_name:
-                    update_fields["primary_name"] = new_name
-
-                if update_fields:
-                    set_clauses = [f"{k} = %s" for k in update_fields.keys()]
+                # 补充缺失的 ID 信息
+                if tmdb_id and not existing_record.get('tmdb_person_id'):
+                    updates['tmdb_person_id'] = tmdb_id
+                if imdb_id and not existing_record.get('imdb_id'):
+                    updates['imdb_id'] = imdb_id
+                if douban_id and not existing_record.get('douban_celebrity_id'):
+                    updates['douban_celebrity_id'] = douban_id
+                
+                if updates:
+                    set_clauses = [f"{k} = %s" for k in updates.keys()]
                     set_clauses.append("last_updated_at = NOW()")
                     sql = f"UPDATE person_identity_map SET {', '.join(set_clauses)} WHERE map_id = %s"
-                    cursor.execute(sql, tuple(update_fields.values()) + (existing_record["map_id"],))
+                    cursor.execute(sql, tuple(updates.values()) + (map_id,))
                     cursor.execute("RELEASE SAVEPOINT actor_upsert")
-                    return existing_record["map_id"], "UPDATED"
+                    return map_id, "UPDATED"
                 else:
                     cursor.execute("RELEASE SAVEPOINT actor_upsert")
-                    return existing_record["map_id"], "UNCHANGED"
+                    return map_id, "UNCHANGED"
             else:
-                insert_fields = [k for k, v in new_data.items() if v is not None]
-                if not insert_fields:
-                    cursor.execute("RELEASE SAVEPOINT actor_upsert")
-                    return -1, "SKIPPED"
+                # --- INSERT 新记录 ---
+                if not name:
+                    details = get_emby_item_details(emby_id, emby_config['url'], emby_config['api_key'], emby_config['user_id'], fields="Name")
+                    name = details.get("Name") if details else "Unknown Actor"
 
-                insert_placeholders = ["%s"] * len(insert_fields)
-                insert_values = [new_data[k] for k in insert_fields]
-
-                sql_insert = f"""
-                    INSERT INTO person_identity_map ({', '.join(insert_fields)}, last_updated_at) 
-                    VALUES ({', '.join(insert_placeholders)}, NOW())
+                sql = """
+                    INSERT INTO person_identity_map 
+                    (primary_name, emby_person_id, tmdb_person_id, imdb_id, douban_celebrity_id, last_updated_at)
+                    VALUES (%s, %s, %s, %s, %s, NOW())
                     RETURNING map_id
                 """
-                cursor.execute(sql_insert, tuple(insert_values))
+                cursor.execute(sql, (name, emby_id, tmdb_id, imdb_id, douban_id))
                 result = cursor.fetchone()
                 cursor.execute("RELEASE SAVEPOINT actor_upsert")
                 return (result["map_id"], "INSERTED") if result else (-1, "ERROR")
 
         except Exception as e:
             cursor.execute("ROLLBACK TO SAVEPOINT actor_upsert")
-            logger.error(f"upsert_person 发生异常，emby_person_id={person_data.get('emby_id')}: {e}", exc_info=True)
+            logger.error(f"upsert_person 发生异常，emby_person_id={emby_id}: {e}", exc_info=True)
             cursor.execute("RELEASE SAVEPOINT actor_upsert")
             return -1, "ERROR"
 
