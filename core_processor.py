@@ -765,7 +765,7 @@ class MediaProcessor:
     def _process_item_core_logic_api_version(self, item_details_from_emby: Dict[str, Any], force_reprocess_this_item: bool, force_fetch_from_tmdb: bool = False):
         """
         【V-Final with Fast Path】
-        引入“快速通道”逻辑。如果非强制刷新，则优先从黄金缓存中直接加载最终结果，
+        引入“快速模式”逻辑。如果非强制刷新，则优先从元数据缓存中直接加载最终结果，
         极大提升“重新处理”任务的执行效率。
         """
         item_id = item_details_from_emby.get("Id")
@@ -783,21 +783,21 @@ class MediaProcessor:
             tmdb_details_for_extra = None
 
             # ======================================================================
-            # 阶段 0: 快速通道检查 (Fast Path)
+            # 阶段 0: 快速模式检查 (Fast Path)
             # ======================================================================
             if not force_fetch_from_tmdb:
-                logger.info(f"  -> [快速通道] 尝试从黄金缓存直接加载 '{item_name_for_log}' 的最终结果...")
+                logger.info(f"  -> [快速模式] 尝试从元数据缓存直接加载 '{item_name_for_log}' 的最终结果...")
                 with get_central_db_connection() as conn:
                     cursor = conn.cursor()
                     cursor.execute("SELECT actors_json, rating FROM media_metadata WHERE tmdb_id = %s AND item_type = %s", (tmdb_id, item_type))
                     cache_row = cursor.fetchone()
                     if cache_row and cache_row.get("actors_json"):
-                        logger.info(f"  -> [快速通道] 成功命中缓存！将跳过所有数据采集和处理步骤。")
+                        logger.info(f"  -> [快速模式] 成功命中缓存！将跳过所有数据采集和处理步骤。")
                         cached_actors = cache_row["actors_json"]
                         douban_rating = cache_row.get("rating") # 使用缓存中的评分
                         
                         # ★★★ 反查数据库，补全 emby_person_id ★★★
-                        logger.debug("  -> [快速通道] 正在反查数据库以补全 emby_person_id...")
+                        logger.debug("  -> [快速模式] 正在反查数据库以补全 emby_person_id...")
                         tmdb_ids_from_cache = [int(actor['id']) for actor in cached_actors if actor.get('id')]
                         
                         # 构建一个从 TMDb ID 到 Emby Person ID 的映射
@@ -824,13 +824,13 @@ class MediaProcessor:
                             }
                             final_processed_cast.append(actor_data)
                         
-                        logger.debug(f"  -> [快速通道] emby_person_id 补全完成，共找到 {len(tmdb_to_emby_map)} 个映射。")
+                        logger.debug(f"  -> [快速模式] emby_person_id 补全完成，共找到 {len(tmdb_to_emby_map)} 个映射。")
 
             # ======================================================================
-            # 如果快速通道失败，则执行完整的“慢速通道”
+            # 如果快速模式失败，则执行完整的“深度模式”
             # ======================================================================
             if final_processed_cast is None:
-                logger.info(f"  -> [慢速通道] 未命中缓存或强制刷新，开始执行完整处理流程...")
+                logger.info(f"  -> [深度模式] 未命中缓存或强制刷新，开始执行完整处理流程...")
                 # ======================================================================
                 # 阶段 1: Emby 现状数据准备
                 # ======================================================================
@@ -2386,7 +2386,7 @@ class MediaProcessor:
                     actors_from_cache = cache_row["actors_json"]
                     new_perfect_cast = self._build_cast_from_golden_cache(actors_from_cache)
 
-        # ★★★ 核心修改：如果没有任何黄金数据源，则中止备份 ★★★
+        # ★★★ 核心修改：如果没有任何数据源，则中止备份 ★★★
         if not new_perfect_cast:
             logger.info(f"  -> {log_prefix} 跳过 '{item_name_for_log}'，因为它尚未被主流程处理，无元数据缓存数据可供备份。")
             return
