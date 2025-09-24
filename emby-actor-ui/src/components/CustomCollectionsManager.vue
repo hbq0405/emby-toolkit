@@ -799,7 +799,8 @@ const isGeneratingCovers = ref(false);
 const embyUserOptions = ref([]);
 const isLoadingEmbyUsers = ref(false);
 const dialog = useDialog();
-const newTmdbId = ref(''); // ★★★ 新增：为修正匹配弹窗的输入框创建一个响应式 ref
+const newTmdbId = ref(''); 
+const newSeasonNumber = ref(null);
 let sortableInstance = null;
 
 const showDiscoverHelper = ref(false);
@@ -831,43 +832,74 @@ const discoverParams = ref(getInitialDiscoverParams());
 // ▼▼▼ 所有函数和计算属性 ▼▼▼
 // ===================================================================
 const handleFixMatchClick = (media) => {
-  newTmdbId.value = ''; // ★★★ 修正：每次打开弹窗时，重置 ref 的值
+  // 每次打开弹窗时，重置所有输入框的值，防止显示上次的内容
+  newTmdbId.value = '';
+  newSeasonNumber.value = null;
+
+  // 判断当前合集是电影还是电视剧类型，这将决定是否显示季号输入框
+  const isSeries = authoritativeCollectionType.value === 'Series';
+
   dialog.create({
     title: `修正《${media.title}》的匹配`,
-    content: () => h('div', [
-      h('p', `当前错误的 TMDb ID 是 ${media.tmdb_id}。请输入正确的 ID：`),
-      h(NInput, {
-        placeholder: '请输入正确的 TMDb ID',
-        // ★★★ 核心修正：绑定 ref 的值，并使用 'onUpdate:value' 实现双向数据绑定
-        value: newTmdbId.value,
-        'onUpdate:value': (value) => { newTmdbId.value = value; },
-        autofocus: true // 优化体验，自动聚焦
-      })
+    // 使用 NForm 和 NFormItem 优化弹窗布局和交互
+    content: () => h(NForm, { labelPlacement: 'left', labelWidth: 'auto' }, () => [
+      h(NFormItem, { label: '当前错误ID' }, () => h(NText, { code: true }, () => media.tmdb_id)),
+      
+      // TMDb ID 输入框 (现在绑定到我们创建的 ref)
+      h(NFormItem, { label: '正确TMDb ID', required: true }, () => 
+        h(NInput, {
+          placeholder: '请输入正确的 TMDb ID',
+          value: newTmdbId.value,
+          'onUpdate:value': (value) => { newTmdbId.value = value; },
+          autofocus: true
+        })
+      ),
+      
+      // ★★★ 核心增强：如果是剧集 (isSeries为true)，则渲染这个季号输入框 ★★★
+      isSeries && h(NFormItem, { label: '季号 (可选)' }, () => 
+        h(NInputNumber, {
+          placeholder: '输入季号，例如 2',
+          value: newSeasonNumber.value,
+          'onUpdate:value': (value) => { newSeasonNumber.value = value; },
+          min: 0, // 允许第0季（特别篇）
+          clearable: true,
+          style: { width: '100%' }
+        })
+      )
     ]),
     positiveText: '确认修正',
     negativeText: '取消',
     onPositiveClick: async () => {
-      // ★★★ 修正：从 ref 中读取最终的值
       if (!newTmdbId.value || !/^\d+$/.test(newTmdbId.value)) {
         message.error('请输入一个有效的纯数字 TMDb ID。');
         return false; // 阻止弹窗关闭
       }
-      await submitFixMatch(media.tmdb_id, newTmdbId.value);
+      
+      // ★★★ 构造一个包含所有信息的 payload 对象 ★★★
+      const payload = {
+        old_tmdb_id: media.tmdb_id,
+        new_tmdb_id: newTmdbId.value,
+      };
+      // 如果是剧集，并且用户输入了季号，就把它加到 payload 里
+      if (isSeries && newSeasonNumber.value !== null && newSeasonNumber.value !== '') {
+        payload.season_number = newSeasonNumber.value;
+      }
+
+      // 将完整的 payload 传给下一步的函数
+      await submitFixMatch(payload);
     }
   });
 };
 
-const submitFixMatch = async (oldTmdbId, newTmdbId) => {
+const submitFixMatch = async (payload) => {
   if (!selectedCollectionDetails.value?.id) return;
   try {
-    const response = await axios.post(`/api/custom_collections/${selectedCollectionDetails.value.id}/fix_match`, {
-      old_tmdb_id: oldTmdbId,
-      new_tmdb_id: newTmdbId,
-    });
+    // 直接将 payload 对象作为请求体发送给后端
+    const response = await axios.post(`/api/custom_collections/${selectedCollectionDetails.value.id}/fix_match`, payload);
     
-    // 在前端列表中立即更新
     const items = selectedCollectionDetails.value.media_items;
-    const index = items.findIndex(m => String(m.tmdb_id) === String(oldTmdbId));
+    // 使用 payload 里的 old_tmdb_id 来查找要替换的项
+    const index = items.findIndex(m => String(m.tmdb_id) === String(payload.old_tmdb_id));
     if (index !== -1) {
       items.splice(index, 1, response.data.corrected_item);
     }

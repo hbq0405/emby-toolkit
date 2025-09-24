@@ -340,20 +340,24 @@ def api_update_custom_collection_media_status(collection_id):
 @login_required
 def api_fix_media_match_in_custom_collection(collection_id):
     """
-    【新增】修正榜单合集中一个错误的媒体匹配项。
+    【V2 - 季号支持版】修正榜单合集中一个错误的媒体匹配项。
     """
     data = request.json
     old_tmdb_id = data.get('old_tmdb_id')
     new_tmdb_id = data.get('new_tmdb_id')
+    # ★★★ 新增：从请求中获取可选的季号 ★★★
+    season_number = data.get('season_number')
 
     if not all([old_tmdb_id, new_tmdb_id]):
         return jsonify({"error": "请求无效: 缺少 old_tmdb_id 或 new_tmdb_id"}), 400
 
     try:
+        # ★★★ 将季号传递给数据库处理函数 ★★★
         corrected_item = collection_db.apply_and_persist_media_correction(
             collection_id=collection_id,
             old_tmdb_id=str(old_tmdb_id),
-            new_tmdb_id=str(new_tmdb_id)
+            new_tmdb_id=str(new_tmdb_id),
+            season_number=season_number 
         )
         if corrected_item:
             return jsonify({

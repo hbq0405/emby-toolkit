@@ -174,21 +174,17 @@ def match_titles_to_tmdb(titles: List[Dict], item_type: str, tmdb_api_key: str) 
                 logger.warning(f"  -> 未能为 '{title}' 找到任何TMDb匹配项。")
         
         elif item_type == 'Series':
-            # --- 剧集的智能匹配逻辑 ---
             logger.info(f"正在为 Series '{title}' 搜索TMDb匹配...")
             
-            # 1. 预处理：解析出干净的剧名和季号
             show_name, season_number = parse_series_title(title)
             logger.debug(f"  -> 标题 '{title}' 解析为: 剧名='{show_name}', 季号='{season_number}'")
             
-            # 2. 搜索：使用干净的剧名进行搜索
             results = tmdb_handler.search_media(show_name, tmdb_api_key, 'Series')
             
             if not results:
                 logger.warning(f"  -> 使用搜索词 '{show_name}' 未能找到任何TMDb匹配项。")
                 continue
 
-            # 3. 验证：遍历结果，寻找精确匹配的基础剧集
             series_result = None
             norm_show_name = normalize_string(show_name)
             
@@ -199,13 +195,19 @@ def match_titles_to_tmdb(titles: List[Dict], item_type: str, tmdb_api_key: str) 
                     logger.info(f"  -> 通过【精确匹配】找到了基础剧集: {result.get('name')} (ID: {result.get('id')})")
                     break
             
-            # 4. 回退：如果找不到精确匹配，则使用最相关的第一个结果
             if not series_result:
                 series_result = results[0]
                 logger.warning(f"  -> 未找到精确匹配，【回退使用】最相关的结果: {series_result.get('name')} (ID: {series_result.get('id')})")
             
             tmdb_id = str(series_result.get('id'))
-            matched_items.append({'id': tmdb_id, 'type': 'Series'})
+            
+            # ★★★ 核心修正：在这里构建包含季号的结果 ★★★
+            item_to_add = {'id': tmdb_id, 'type': 'Series'}
+            if season_number is not None:
+                item_to_add['season'] = season_number
+                logger.info(f"  -> 已为剧集 '{show_name}' 附加季号: {season_number}")
+            
+            matched_items.append(item_to_add)
             
     return matched_items
 
