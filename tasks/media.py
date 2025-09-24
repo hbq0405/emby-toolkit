@@ -142,11 +142,12 @@ def task_reprocess_all_review_items(processor):
 # ★★★ 轻量级的元数据缓存填充任务 ★★★
 def task_populate_metadata_cache(processor, batch_size: int = 50, force_full_update: bool = False):
     """
-    【V4 - 增量与全量同步版】
+    【V5 - 增量与全量同步版 - 软删除兼容】
     - 移除了基于时间戳的差异对比逻辑。
     - 快速模式: 只同步 Emby 中新增的、本地数据库不存在的媒体项。
     - 深度模式: 强制同步 Emby 媒体库中的所有媒体项，覆盖本地数据。
     - 保留了高效的分批处理、并发获取和带 SAVEPOINT 的健壮数据库写入机制。
+    - ★★★ 新增：将删除逻辑改为“软删除”，更新 in_library 字段为 FALSE，并清空 emby_item_id。 ★★★
     """
     task_name = "同步媒体元数据"
     sync_mode = "深度同步 (全量)" if force_full_update else "快速同步 (增量)"
@@ -218,16 +219,16 @@ def task_populate_metadata_cache(processor, batch_size: int = 50, force_full_upd
             # 这会包含 Emby 中新增的，以及 Emby 中重新入库的（之前在DB中in_library=FALSE的）
             ids_to_process = emby_tmdb_ids - db_tmdb_ids
             
-            logger.info(f"  -> 计算差异完成：新增/恢复 {len(ids_to_process)} 项, 标记不在库 {len(items_to_delete_tmdb_ids)} 项。")
+            logger.info(f"  -> 计算差异完成：新增/恢复 {len(ids_to_process)} 项, 软删除 {len(items_to_delete_tmdb_ids)} 项。")
 
         if items_to_delete_tmdb_ids:
-            logger.info(f"  -> 正在从数据库中标记 {len(items_to_delete_tmdb_ids)} 个已不存在的媒体项...")
+            logger.info(f"  -> 正在从数据库中软删除 {len(items_to_delete_tmdb_ids)} 个已不存在的媒体项...")
             with connection.get_db_connection() as conn:
                 cursor = conn.cursor()
                 ids_to_delete_list = list(items_to_delete_tmdb_ids)
                 for i in range(0, len(ids_to_delete_list), 500):
                     if processor.is_stop_requested():
-                        logger.info("任务在标记不在库数据时被中止。")
+                        logger.info("任务在软删除冗余数据时被中止。")
                         break
                     batch_ids = ids_to_delete_list[i:i+500]
                     # ### 修改点：将 DELETE 改为 UPDATE，设置 in_library = FALSE 和 emby_item_id = NULL ###
@@ -237,7 +238,7 @@ def task_populate_metadata_cache(processor, batch_size: int = 50, force_full_upd
             logger.info("  -> 冗余数据清理完成。")
 
         if processor.is_stop_requested():
-            logger.info("  -> 任务在冗余数据清理后被中止。")
+            logger.info("任务在冗余数据清理后被中止。")
             return
 
         items_to_process = [emby_items_map[tmdb_id] for tmdb_id in ids_to_process]
@@ -355,6 +356,7 @@ def task_populate_metadata_cache(processor, batch_size: int = 50, force_full_upd
                     "studios_json": json.dumps(studios, ensure_ascii=False),
                     "countries_json": json.dumps(countries, ensure_ascii=False),
                     "tags_json": json.dumps(tags, ensure_ascii=False),
+                    "in_library": True
                 }
                 metadata_batch.append(metadata_to_save)
 
@@ -403,7 +405,7 @@ def task_populate_metadata_cache(processor, batch_size: int = 50, force_full_upd
             
             processed_count += len(batch_items)
 
-        final_message = f"同步完成！本次处理 {processed_count}/{total_to_process} 项, 删除 {len(items_to_delete_tmdb_ids)} 项。"
+        final_message = f"同步完成！本次处理 {processed_count}/{total_to_process} 项, 软删除 {len(items_to_delete_tmdb_ids)} 项。"
         if processor.is_stop_requested():
             final_message = "任务已中止，部分数据可能未处理。"
         task_manager.update_status_from_thread(100, final_message)

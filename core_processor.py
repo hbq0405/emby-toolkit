@@ -72,7 +72,8 @@ def _save_metadata_to_cache(
                 "original_name": p.get("original_name"),
                 "profile_path": p.get("profile_path"),
                 "gender": p.get("gender"),
-                "popularity": p.get("popularity")
+                "popularity": p.get("popularity"),
+                "order": p.get("order")
             })
 
         directors, countries = [], []
@@ -820,6 +821,9 @@ class MediaProcessor:
                         logger.info(f"  -> [快速模式] 成功命中缓存！将跳过所有数据采集和处理步骤。")
                         cached_actors = cache_row["actors_json"]
                         douban_rating = cache_row.get("rating") # 使用缓存中的评分
+
+                        # 为了健壮性，处理 order 字段可能不存在或为 None 的情况（兼容旧数据）
+                        cached_actors.sort(key=lambda x: x.get('order') if isinstance(x.get('order'), int) else 999)
                         
                         # ★★★ 反查数据库，补全 emby_person_id ★★★
                         logger.debug("  -> [快速模式] 正在反查数据库以补全 emby_person_id...")
