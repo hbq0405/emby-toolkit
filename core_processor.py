@@ -2434,18 +2434,40 @@ class MediaProcessor:
     # --- 备份元数据 ---
     def sync_item_metadata(self, item_details: Dict[str, Any], tmdb_id: str, final_cast_override: Optional[List[Dict[str, Any]]] = None):
         """
-        【V14 - 黄金标准版】
-        采用三级优先级数据源，确保备份的绝对健壮性：
-        1. 直通模式: 优先使用主流程传入的最终演员列表。
-        2. 黄金缓存模式: 其次使用 media_metadata 表中存储的上次成功处理的结果。
-        3. 回退模式: 最后才使用从Emby实时获取并匹配数据库的脆弱模式。
+        备份元数据到覆盖缓存
         """
         item_id = item_details.get("Id")
         item_name_for_log = item_details.get("Name", f"未知项目(ID:{item_id})")
         log_prefix = "[覆盖缓存-元数据备份]"
-        logger.info(f"  -> {log_prefix} 开始为 '{item_name_for_log}' 执行元数据备份...")
+        
+        # --- 核心：两级优先级获取演员数据，失败则直接中止 ---
+        new_perfect_cast = []
+        data_source_mode = "无"
 
-        # --- 路径定义和基础文件复制 (这部分逻辑不变) ---
+        with get_central_db_connection() as conn:
+            cursor = conn.cursor()
+
+            # 优先级 1: 直通模式
+            if final_cast_override:
+                data_source_mode = "模式1: 直通"
+                new_perfect_cast = self._build_cast_from_final_data(final_cast_override)
+            else:
+                # 优先级 2: 元数据缓存模式
+                cursor.execute("SELECT actors_json FROM media_metadata WHERE tmdb_id = %s AND item_type = %s", (tmdb_id, item_details.get("Type")))
+                cache_row = cursor.fetchone()
+                if cache_row and cache_row.get("actors_json") and isinstance(cache_row["actors_json"], list):
+                    data_source_mode = "模式2: 缓存"
+                    actors_from_cache = cache_row["actors_json"]
+                    new_perfect_cast = self._build_cast_from_golden_cache(actors_from_cache)
+
+        # ★★★ 核心修改：如果没有任何黄金数据源，则中止备份 ★★★
+        if not new_perfect_cast:
+            logger.info(f"  -> {log_prefix} 跳过 '{item_name_for_log}'，因为它尚未被主流程处理，无元数据缓存数据可供备份。")
+            return
+
+        logger.info(f"  -> {log_prefix} [{data_source_mode}] 开始为 '{item_name_for_log}' 执行元数据备份...")
+
+        # --- 路径定义和基础文件复制 ---
         item_type = item_details.get("Type")
         cache_folder_name = "tmdb-movies2" if item_type == "Movie" else "tmdb-tv"
         source_cache_dir = os.path.join(self.local_data_path, "cache", cache_folder_name, tmdb_id)
@@ -2456,97 +2478,11 @@ class MediaProcessor:
             return
         try:
             shutil.copytree(source_cache_dir, target_override_dir, dirs_exist_ok=True)
-            logger.trace(f"  -> {log_prefix} 成功将基础元数据复制到覆盖缓存。")
         except Exception as e:
             logger.error(f"  -> {log_prefix} 复制元数据时失败: {e}", exc_info=True)
             return
 
-        # --- 核心：三级优先级获取演员数据并重建列表 ---
-        new_perfect_cast = []
-        
-        with get_central_db_connection() as conn:
-            cursor = conn.cursor()
-
-            # 优先级 1: 直通模式
-            if final_cast_override:
-                logger.debug(f"  -> {log_prefix} [模式1: 直通] 使用传入的 {len(final_cast_override)} 位演员构建缓存。")
-                for i, actor in enumerate(final_cast_override):
-                    actor_tmdb_id = actor.get("id")
-                    if not actor_tmdb_id: continue
-                    rebuilt_actor = {
-                        "id": actor_tmdb_id, "name": actor.get("name"), "character": actor.get("character"),
-                        "original_name": actor.get("original_name"), "profile_path": actor.get("profile_path"),
-                        "adult": actor.get("adult", False), "gender": actor.get("gender", 0),
-                        "known_for_department": actor.get("known_for_department", "Acting"),
-                        "popularity": actor.get("popularity", 0.0), "cast_id": actor.get("cast_id"),
-                        "credit_id": actor.get("credit_id"), "order": actor.get("order", i)
-                    }
-                    new_perfect_cast.append(rebuilt_actor)
-                
-            else:
-                # 优先级 2: 黄金缓存模式
-                cursor.execute("SELECT actors_json FROM media_metadata WHERE tmdb_id = %s AND item_type = %s", (tmdb_id, item_type))
-                cache_row = cursor.fetchone()
-                if cache_row and cache_row.get("actors_json") and isinstance(cache_row["actors_json"], list):
-                    actors_from_cache = cache_row["actors_json"]
-                    logger.debug(f"  -> {log_prefix} [模式2: 黄金缓存] 使用 media_metadata 表中的 {len(actors_from_cache)} 位演员构建缓存。")
-                    
-                    # ★★★ 核心修正：现在 actors_from_cache 已经是黄金标准，直接用来构建 ★★★
-                    for i, actor_info in enumerate(actors_from_cache):
-                        actor_tmdb_id = actor_info.get("id")
-                        if not actor_tmdb_id: continue
-                        
-                        # 直接使用缓存中的数据，因为它现在是完整的
-                        rebuilt_actor = {
-                            "id": actor_tmdb_id,
-                            "name": actor_info.get("name"),
-                            "character": actor_info.get("character"), # <--- 现在这里有值了！
-                            "original_name": actor_info.get("original_name"),
-                            "profile_path": actor_info.get("profile_path"),
-                            "adult": actor_info.get("adult", False), # adult等字段可以保留默认值
-                            "gender": actor_info.get("gender", 0),
-                            "known_for_department": "Acting",
-                            "popularity": actor_info.get("popularity", 0.0),
-                            "cast_id": None,
-                            "credit_id": None,
-                            "order": i
-                        }
-                        new_perfect_cast.append(rebuilt_actor)
-
-                else:
-                    # 优先级 3: 回退模式
-                    logger.warning(f"  -> {log_prefix} [模式3: 回退] 未找到黄金缓存，将从Emby实时获取。此模式可能导致数据不一致！")
-                    full_item_details = emby_handler.get_emby_item_details(item_id, self.emby_url, self.emby_api_key, self.emby_user_id)
-                    if not full_item_details:
-                        logger.error(f"  -> {log_prefix} 无法获取项目 {item_id} 的完整详情，备份中止。")
-                        return
-
-                    emby_people = full_item_details.get("People", [])
-                    for person in emby_people:
-                        if person.get("Type") != "Actor": continue
-                        emby_person_id = person.get("Id")
-                        if not emby_person_id: continue
-                        
-                        cursor.execute("SELECT tmdb_person_id FROM person_identity_map WHERE emby_person_id = %s", (emby_person_id,))
-                        map_entry_row = cursor.fetchone()
-                        if not map_entry_row or not map_entry_row["tmdb_person_id"]: continue
-                        
-                        actor_tmdb_id = map_entry_row["tmdb_person_id"]
-                        full_metadata = self._get_actor_metadata_from_cache(actor_tmdb_id, cursor) or {}
-                        rebuilt_actor = {
-                            "id": actor_tmdb_id, "name": person.get("Name"), "character": person.get("Role"),
-                            "original_name": full_metadata.get("original_name"), "profile_path": full_metadata.get("profile_path"),
-                            "adult": full_metadata.get("adult", False), "gender": full_metadata.get("gender", 0),
-                            "known_for_department": "Acting", "popularity": full_metadata.get("popularity", 0.0),
-                            "cast_id": None, "credit_id": None, "order": len(new_perfect_cast)
-                        }
-                        new_perfect_cast.append(rebuilt_actor)
-
-        # --- 将重建好的新列表写回主 JSON 文件  ---
-        if not new_perfect_cast:
-            logger.info(f"  -> {log_prefix} 最终没有可供写入的演员信息，跳过文件更新。")
-            return
-
+        # --- 将重建好的新列表写回主 JSON 文件 ---
         main_json_filename = "all.json" if item_type == "Movie" else "series.json"
         json_path = os.path.join(target_override_dir, main_json_filename)
         if not os.path.exists(json_path): return
@@ -2554,13 +2490,11 @@ class MediaProcessor:
         try:
             with open(json_path, 'r+', encoding='utf-8') as f:
                 data = json.load(f)
-                # 兼容两种可能的TMDb JSON格式
                 if 'casts' in data and 'cast' in data['casts']:
                     data['casts']['cast'] = new_perfect_cast
                 elif 'credits' in data and 'cast' in data['credits']:
                     data['credits']['cast'] = new_perfect_cast
                 else:
-                    logger.warning(f"  -> {log_prefix} 在JSON文件中未找到 'casts' 或 'credits' 结构，无法写入演员表。")
                     return
                 
                 f.seek(0)
@@ -2571,64 +2505,83 @@ class MediaProcessor:
             logger.error(f"  -> {log_prefix} 重建并写入 '{main_json_filename}' 时失败: {e}", exc_info=True)
             return
 
-        # 5. 注入演员表到所有季/集文件
+        # --- 注入演员表到所有季/集文件 ---
         if item_type == "Series":
-            logger.info(f"  -> {log_prefix} 开始将演员表、剧集名和简介注入所有季/集备份文件...")
-            
-            # ★★★ 获取所有子项目的最新数据 ★★★
-            children_from_emby = emby_handler.get_series_children(
-                series_id=item_details.get("Id"),
-                base_url=self.emby_url,
-                api_key=self.emby_api_key,
-                user_id=self.emby_user_id,
-                series_name_for_log=item_name_for_log
-            ) or []
+            self._inject_cast_to_series_files(target_override_dir, new_perfect_cast, item_details)
 
-            # ★★★ 创建一个高效的查找映射表 ★★★
-            # key 的格式为 "season-1-episode-12"，与文件名完美对应
-            child_data_map = {}
-            for child in children_from_emby:
-                key = None
-                if child.get("Type") == "Season":
-                    key = f"season-{child.get('IndexNumber')}"
-                elif child.get("Type") == "Episode":
-                    key = f"season-{child.get('ParentIndexNumber')}-episode-{child.get('IndexNumber')}"
-                
-                if key:
-                    child_data_map[key] = child
+    # --- 辅助函数：从不同数据源构建演员列表 ---
+    def _build_cast_from_final_data(self, final_cast_data: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+        """辅助函数：从主流程的最终结果构建演员列表"""
+        cast_list = []
+        for i, actor_info in enumerate(final_cast_data):
+            if not actor_info.get("id"): continue
+            cast_list.append({
+                "id": actor_info.get("id"), "name": actor_info.get("name"), "character": actor_info.get("character"),
+                "original_name": actor_info.get("original_name"), "profile_path": actor_info.get("profile_path"),
+                "adult": actor_info.get("adult", False), "gender": actor_info.get("gender", 0),
+                "known_for_department": actor_info.get("known_for_department", "Acting"),
+                "popularity": actor_info.get("popularity", 0.0), "cast_id": actor_info.get("cast_id"),
+                "credit_id": actor_info.get("credit_id"), "order": actor_info.get("order", i)
+            })
+        return cast_list
 
-            updated_children_count = 0
-            try:
-                for filename in os.listdir(target_override_dir):
-                    if filename.startswith("season-") and filename.endswith(".json") and filename != "series.json":
-                        child_json_path = os.path.join(target_override_dir, filename)
-                        try:
-                            with open(child_json_path, 'r+', encoding='utf-8') as f_child:
-                                child_data = json.load(f_child)
-                                
-                                # 注入演员表 (原有逻辑)
-                                if 'credits' in child_data and 'cast' in child_data['credits']:
-                                    child_data['credits']['cast'] = new_perfect_cast
-                                
-                                # ★★★ 核心修改 3: 查找并更新 Name 和 Overview ★★★
-                                file_key = os.path.splitext(filename)[0]
-                                fresh_data = child_data_map.get(file_key)
-                                if fresh_data:
-                                    # 使用从 Emby 获取的最新数据覆盖 JSON 文件中的旧数据
-                                    child_data['name'] = fresh_data.get('Name', child_data.get('name'))
-                                    child_data['overview'] = fresh_data.get('Overview', child_data.get('overview'))
-                                    logger.trace(f"    -> 已为 '{filename}' 更新 Name 和 Overview。")
-                                
-                                # 写回文件
-                                f_child.seek(0)
-                                json.dump(child_data, f_child, ensure_ascii=False, indent=2)
-                                f_child.truncate()
-                                updated_children_count += 1
-                        except Exception as e_child:
-                            logger.warning(f"  -> 更新子文件 '{filename}' 时失败: {e_child}")
-                logger.info(f"  -> {log_prefix} 成功将元数据注入了 {updated_children_count} 个季/集文件。")
-            except Exception as e_list:
-                logger.error(f"  -> {log_prefix} 遍历并更新季/集文件时发生错误: {e_list}", exc_info=True)
+    def _build_cast_from_golden_cache(self, cached_actors: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+        """辅助函数：从数据库的元数据缓存构建演员列表"""
+        cast_list = []
+        for i, actor_info in enumerate(cached_actors):
+            if not actor_info.get("id"): continue
+            cast_list.append({
+                "id": actor_info.get("id"), "name": actor_info.get("name"), "character": actor_info.get("character"),
+                "original_name": actor_info.get("original_name"), "profile_path": actor_info.get("profile_path"),
+                "adult": False, "gender": actor_info.get("gender", 0), "known_for_department": "Acting",
+                "popularity": actor_info.get("popularity", 0.0), "cast_id": None, "credit_id": None, "order": i
+            })
+        return cast_list
+
+    def _inject_cast_to_series_files(self, target_dir: str, cast_list: List[Dict[str, Any]], series_details: Dict[str, Any]):
+        """辅助函数：将演员表注入剧集的季/集JSON文件"""
+        log_prefix = "[覆盖缓存-元数据备份]"
+        logger.info(f"  -> {log_prefix} 开始将元数据注入所有季/集备份文件...")
+        
+        children_from_emby = emby_handler.get_series_children(
+            series_id=series_details.get("Id"), base_url=self.emby_url,
+            api_key=self.emby_api_key, user_id=self.emby_user_id,
+            series_name_for_log=series_details.get("Name")
+        ) or []
+
+        child_data_map = {}
+        for child in children_from_emby:
+            key = None
+            if child.get("Type") == "Season": key = f"season-{child.get('IndexNumber')}"
+            elif child.get("Type") == "Episode": key = f"season-{child.get('ParentIndexNumber')}-episode-{child.get('IndexNumber')}"
+            if key: child_data_map[key] = child
+
+        updated_children_count = 0
+        try:
+            for filename in os.listdir(target_dir):
+                if filename.startswith("season-") and filename.endswith(".json") and filename != "series.json":
+                    child_json_path = os.path.join(target_dir, filename)
+                    try:
+                        with open(child_json_path, 'r+', encoding='utf-8') as f_child:
+                            child_data = json.load(f_child)
+                            if 'credits' in child_data and 'cast' in child_data['credits']:
+                                child_data['credits']['cast'] = cast_list
+                            
+                            file_key = os.path.splitext(filename)[0]
+                            fresh_data = child_data_map.get(file_key)
+                            if fresh_data:
+                                child_data['name'] = fresh_data.get('Name', child_data.get('name'))
+                                child_data['overview'] = fresh_data.get('Overview', child_data.get('overview'))
+                            
+                            f_child.seek(0)
+                            json.dump(child_data, f_child, ensure_ascii=False, indent=2)
+                            f_child.truncate()
+                            updated_children_count += 1
+                    except Exception as e_child:
+                        logger.warning(f"  -> 更新子文件 '{filename}' 时失败: {e_child}")
+            logger.info(f"  -> {log_prefix} 成功将元数据注入了 {updated_children_count} 个季/集文件。")
+        except Exception as e_list:
+            logger.error(f"  -> {log_prefix} 遍历并更新季/集文件时发生错误: {e_list}", exc_info=True)
 
     def sync_single_item_assets(self, item_id: str, 
                                 update_description: Optional[str] = None, 
