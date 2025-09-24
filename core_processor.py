@@ -629,7 +629,7 @@ class MediaProcessor:
             # ======================================================================
             # 阶段 4: 数据写回 (Data Write-back)
             # ======================================================================
-            # --- 步骤 4.0: [实时反哺] 更新演员映射表 ---
+            # --- 步骤 4.1: [实时反哺] 更新演员映射表 ---
             logger.info("  -> [实时反哺] 开始使用最权威的数据更新演员映射表...")
             emby_config_for_upsert = {"url": self.emby_url, "api_key": self.emby_api_key, "user_id": self.emby_user_id}
             for actor in final_processed_cast:
@@ -643,18 +643,6 @@ class MediaProcessor:
                     self.actor_db_manager.upsert_person(cursor=cursor, person_data=person_data_for_db, emby_config=emby_config_for_upsert)
             logger.info("  -> [实时反哺] 演员映射表更新完成。")
 
-            # --- 步骤 4.1: 更新演员(Person)自身的元数据 ---
-            logger.info("  -> 写回步骤 1/2: 检查并更新演员的元数据...")
-            for actor in final_processed_cast:
-                if self.is_stop_requested(): raise InterruptedError("任务在演员元数据更新阶段被中止。")
-                emby_pid = actor.get("emby_person_id")
-                if not emby_pid: continue
-                data_to_update = {"Name": actor.get("name"), "ProviderIds": actor.get("provider_ids", {})}
-                emby_handler.update_person_details(
-                    person_id=emby_pid, new_data=data_to_update,
-                    emby_server_url=self.emby_url, emby_api_key=self.emby_api_key, user_id=self.emby_user_id
-                )
-            logger.info("  -> 演员元数据更新完成。")
 
             # --- 步骤 4.2: 更新媒体项目自身的演员列表 ---
             logger.info("  -> 写回步骤 2/2: 准备将最终演员列表更新到媒体项目...")
@@ -2533,7 +2521,7 @@ class MediaProcessor:
         logger.trace(f"--- {log_prefix} 开始执行 ---")
 
         if not self.local_data_path:
-            logger.warning(f"{log_prefix} 任务跳过，因为未配置本地数据源路径。")
+            logger.warning(f"  -> {log_prefix} 任务跳过，因为未配置本地数据源路径。")
             return
 
         try:
