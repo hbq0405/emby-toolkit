@@ -2675,17 +2675,17 @@ class MediaProcessor:
 
     def sync_single_item_to_metadata_cache(self, item_id: str, item_name: Optional[str] = None):
         """
-        【新增】为单个媒体项同步元数据到 media_metadata 数据库表。
-        这是 task_populate_metadata_cache 的单点执行版本。
+        为单独媒体项同步元数据缓存
         """
         log_prefix = f"实时同步媒体数据 '{item_name}'"
         logger.info(f"  -> {log_prefix} 开始执行")
         
         try:
-            # 1. 获取完整的 Emby 详情
+            fields_to_get = "ProviderIds,Type,DateCreated,Name,ProductionYear,OriginalTitle,PremiereDate,CommunityRating,Genres,Studios,ProductionLocations,Tags,DateModified,OfficialRating"
+            
             full_details_emby = emby_handler.get_emby_item_details(
                 item_id, self.emby_url, self.emby_api_key, self.emby_user_id,
-                fields="ProviderIds,Type,DateCreated,Name,ProductionYear,OriginalTitle,PremiereDate,CommunityRating,Genres,Studios,ProductionLocations,People,Tags,DateModified,OfficialRating"
+                fields=fields_to_get
             )
             if not full_details_emby:
                 raise ValueError("在Emby中找不到该项目。")
@@ -2694,46 +2694,26 @@ class MediaProcessor:
             
             if item_type == "Episode":
                 series_id = emby_handler.get_series_id_from_child_id(
-                    item_id,
-                    self.emby_url,
-                    self.emby_api_key,
-                    self.emby_user_id,
-                    item_name=item_name,
+                    item_id, self.emby_url, self.emby_api_key, self.emby_user_id, item_name=item_name
                 )
                 if series_id:
-                    # 额外单独请求获取剧集名字，用于友好日志
-                    series_name = None
-                    try:
-                        series_basic = emby_handler.get_emby_item_details(
-                            series_id, self.emby_url, self.emby_api_key, self.emby_user_id,
-                            fields="Name"
-                        )
-                        if series_basic:
-                            series_name = series_basic.get("Name")
-                    except Exception as e:
-                        logger.warning(f"{log_prefix} 获取所属剧集名称失败: {e}")
-
-                    # 友好日志
-                    log_series_name = series_name or f"未知剧集(ID:{series_id})"
-                    logger.debug(f"  -> {log_prefix} 检测到剧集，获取到所属剧集: '{log_series_name}' ，将使用剧集信息进行缓存。")
-                    # Fetch details for the series instead of the episode
+                    logger.debug(f"  -> {log_prefix} 检测到剧集，将使用其父剧集信息进行缓存。")
+                    # 同样使用精简的字段列表获取父剧集信息
                     full_details_emby = emby_handler.get_emby_item_details(
                         series_id, self.emby_url, self.emby_api_key, self.emby_user_id,
-                        fields="ProviderIds,Type,DateCreated,Name,ProductionYear,OriginalTitle,PremiereDate,CommunityRating,Genres,Studios,ProductionLocations,People,Tags,DateModified,OfficialRating"
+                        fields=fields_to_get
                     )
                     if not full_details_emby:
                         logger.warning(f"  -> {log_prefix} 无法获取所属剧集 (ID: {series_id}) 的详情，跳过缓存。")
                         return
                 else:
-                    logger.warning(f"  -> {log_prefix} 无法获取剧集 '{full_details_emby.get('Name', item_id)}' 的所属剧集ID，将使用剧集ID进行缓存。")
+                    logger.warning(f"  -> {log_prefix} 无法获取剧集 '{full_details_emby.get('Name', item_id)}' 的所属剧集ID，跳过。")
+                    return
             
             tmdb_id = full_details_emby.get("ProviderIds", {}).get("Tmdb")
             if not tmdb_id:
                 logger.warning(f"{log_prefix} 项目 '{full_details_emby.get('Name')}' 缺少TMDb ID，无法缓存。")
                 return
-            # 2. 丰富演员信息
-            enriched_people_list = self._enrich_cast_from_db_and_api(full_details_emby.get("People", []))
-            enriched_people_map = {str(p.get("Id")): p for p in enriched_people_list}
 
             # 3. 获取 TMDB 补充信息 (导演/国家)
             tmdb_details = None
@@ -2742,13 +2722,6 @@ class MediaProcessor:
                 tmdb_details = tmdb_handler.get_movie_details(tmdb_id, self.tmdb_api_key)
             elif item_type == 'Series':
                 tmdb_details = tmdb_handler.get_tv_details(tmdb_id, self.tmdb_api_key)
-
-            # 4. 组装元数据
-            actors = []
-            for person in full_details_emby.get("People", []):
-                enriched_person = enriched_people_map.get(str(person.get("Id")))
-                if enriched_person and enriched_person.get("ProviderIds", {}).get("Tmdb"):
-                    actors.append({'id': enriched_person["ProviderIds"]["Tmdb"], 'name': enriched_person.get('Name')})
 
             directors, countries = [], []
             if tmdb_details:
@@ -2765,12 +2738,12 @@ class MediaProcessor:
                         directors = [{'id': c.get('id'), 'name': c.get('name')} for c in tmdb_details.get('created_by', [])]
                     countries = translate_country_list(tmdb_details.get('origin_country', []))
 
+            # 4. 组装元数据 (不含 actors_json)
             studios = [s['Name'] for s in full_details_emby.get('Studios', []) if s.get('Name')]
             tags = [tag['Name'] for tag in full_details_emby.get('TagItems', []) if tag.get('Name')]
             release_date_str = (full_details_emby.get('PremiereDate') or '0000-01-01T00:00:00.000Z').split('T')[0]
-
-            official_rating = full_details_emby.get('OfficialRating') # 获取原始分级，可能为 None
-            unified_rating = get_unified_rating(official_rating)    # 即使 official_rating 是 None，函数也能处理
+            official_rating = full_details_emby.get('OfficialRating')
+            unified_rating = get_unified_rating(official_rating)
 
             metadata = {
                 "tmdb_id": tmdb_id,
@@ -2782,7 +2755,6 @@ class MediaProcessor:
                 "unified_rating": unified_rating,
                 "release_date": release_date_str, "date_added": (full_details_emby.get("DateCreated") or '').split('T')[0] or None,
                 "genres_json": json.dumps(full_details_emby.get('Genres', []), ensure_ascii=False),
-                "actors_json": json.dumps(actors, ensure_ascii=False),
                 "directors_json": json.dumps(directors, ensure_ascii=False),
                 "studios_json": json.dumps(studios, ensure_ascii=False),
                 "countries_json": json.dumps(countries, ensure_ascii=False),
@@ -2805,7 +2777,7 @@ class MediaProcessor:
                 cursor.execute(sql, tuple(metadata.values()) + (sync_time,))
                 conn.commit()
             
-            logger.info(f"  -> {log_prefix} 成功完成")
+            logger.info(f"  -> {log_prefix} 成功完成。")
 
         except Exception as e:
             logger.error(f"{log_prefix} 执行时发生错误: {e}", exc_info=True)

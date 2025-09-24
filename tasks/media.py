@@ -165,7 +165,7 @@ def task_populate_metadata_cache(processor, batch_size: int = 50, force_full_upd
         emby_items_index = emby_handler.get_emby_library_items(
             base_url=processor.emby_url, api_key=processor.emby_api_key, user_id=processor.emby_user_id,
             media_type_filter="Movie,Series", library_ids=libs_to_process_ids,
-            fields="ProviderIds,Type,DateCreated,Name,ProductionYear,OriginalTitle,PremiereDate,CommunityRating,Genres,Studios,ProductionLocations,People,Tags,DateModified,OfficialRating"
+            fields="ProviderIds,Type,DateCreated,Name,ProductionYear,OriginalTitle,PremiereDate,CommunityRating,Genres,Studios,ProductionLocations,Tags,DateModified,OfficialRating"
         ) or []
         
         emby_items_map = {
@@ -251,10 +251,6 @@ def task_populate_metadata_cache(processor, batch_size: int = 50, force_full_upd
                 f"处理批次 {batch_number}/{total_batches}..."
             )
 
-            batch_people_to_enrich = [p for item in batch_items for p in item.get("People", [])]
-            enriched_people_list = processor._enrich_cast_from_db_and_api(batch_people_to_enrich)
-            enriched_people_map = {str(p.get("Id")): p for p in enriched_people_list}
-
             if processor.is_stop_requested():
                 logger.info("任务在演员数据补充后被中止。")
                 break
@@ -297,13 +293,6 @@ def task_populate_metadata_cache(processor, batch_size: int = 50, force_full_upd
                 full_details_emby = item
                 tmdb_details = tmdb_details_map.get(tmdb_id)
 
-                actors = []
-                for person in full_details_emby.get("People", []):
-                    person_id = str(person.get("Id"))
-                    enriched_person = enriched_people_map.get(person_id)
-                    if enriched_person and enriched_person.get("ProviderIds", {}).get("Tmdb"):
-                        actors.append({'id': enriched_person["ProviderIds"]["Tmdb"], 'name': enriched_person.get('Name')})
-                
                 directors, countries = [], []
                 if tmdb_details:
                     item_type = full_details_emby.get("Type")
@@ -344,7 +333,6 @@ def task_populate_metadata_cache(processor, batch_size: int = 50, force_full_upd
                     "release_date": release_date,
                     "date_added": date_added,
                     "genres_json": json.dumps(full_details_emby.get('Genres', []), ensure_ascii=False),
-                    "actors_json": json.dumps(actors, ensure_ascii=False),
                     "directors_json": json.dumps(directors, ensure_ascii=False),
                     "studios_json": json.dumps(studios, ensure_ascii=False),
                     "countries_json": json.dumps(countries, ensure_ascii=False),
