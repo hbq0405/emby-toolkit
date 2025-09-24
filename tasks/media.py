@@ -180,11 +180,12 @@ def task_populate_metadata_cache(processor, batch_size: int = 50, force_full_upd
             return
 
         db_tmdb_ids = set()
+        # ★★★ 修改点：查询时只获取 in_library = TRUE 的项目，这样才能正确识别“已删除”的项目 ★★★
         with connection.get_db_connection() as conn:
             cursor = conn.cursor()
-            cursor.execute("SELECT tmdb_id FROM media_metadata")
+            cursor.execute("SELECT tmdb_id FROM media_metadata WHERE in_library = TRUE") # <-- 增加条件
             db_tmdb_ids = {row["tmdb_id"] for row in cursor.fetchall()}
-        logger.info(f"  -> 从本地数据库 media_metadata 表中获取到 {len(db_tmdb_ids)} 个媒体项。")
+        logger.info(f"  -> 从本地数据库 media_metadata 表中获取到 {len(db_tmdb_ids)} 个【仍在库中】的媒体项。")
 
         if processor.is_stop_requested():
             logger.info("任务在获取本地数据库媒体项后被中止。")
@@ -192,34 +193,51 @@ def task_populate_metadata_cache(processor, batch_size: int = 50, force_full_upd
 
         # --- 核心逻辑修改 ---
         ids_to_process: set
+        # items_to_delete_tmdb_ids 仍然是那些在 DB 中标记为 TRUE 但在 Emby 中已不存在的
         items_to_delete_tmdb_ids = db_tmdb_ids - emby_tmdb_ids
         
         if force_full_update:
             logger.info("  -> 深度同步模式：将处理 Emby 中的所有项目。")
             ids_to_process = emby_tmdb_ids
-            logger.info(f"  -> 计算差异完成：处理 {len(ids_to_process)} 项, 删除 {len(items_to_delete_tmdb_ids)} 项。")
+            logger.info(f"  -> 计算差异完成：处理 {len(ids_to_process)} 项, 软删除 {len(items_to_delete_tmdb_ids)} 项。")
         else:
             logger.info("  -> 快速同步模式：仅处理 Emby 中新增的项目。")
+            # 新增的项目是 Emby 有，但 DB 中没有标记为 TRUE 的项目
+            # 注意：这里需要考虑那些在 DB 中 in_library=FALSE 的项目，它们也应该被“处理”
+            # 所以 ids_to_process 应该是 Emby 有，但 DB 中 in_library=TRUE 的项目没有的
+            # 最简单的做法是，先找出所有 Emby 中的项目，然后过滤掉那些在 DB 中 in_library=TRUE 的
+            
+            # 获取所有在 media_metadata 中，但 in_library=FALSE 的 tmdb_id
+            db_soft_deleted_tmdb_ids = set()
+            with connection.get_db_connection() as conn:
+                cursor = conn.cursor()
+                cursor.execute("SELECT tmdb_id FROM media_metadata WHERE in_library = FALSE")
+                db_soft_deleted_tmdb_ids = {row["tmdb_id"] for row in cursor.fetchall()}
+
+            # 需要处理的项目 = (Emby中所有项目) - (DB中in_library=TRUE的项目)
+            # 这会包含 Emby 中新增的，以及 Emby 中重新入库的（之前在DB中in_library=FALSE的）
             ids_to_process = emby_tmdb_ids - db_tmdb_ids
-            logger.info(f"  -> 计算差异完成：新增 {len(ids_to_process)} 项, 删除 {len(items_to_delete_tmdb_ids)} 项。")
+            
+            logger.info(f"  -> 计算差异完成：新增/恢复 {len(ids_to_process)} 项, 标记不在库 {len(items_to_delete_tmdb_ids)} 项。")
 
         if items_to_delete_tmdb_ids:
-            logger.info(f"  -> 正在从数据库中删除 {len(items_to_delete_tmdb_ids)} 个已不存在的媒体项...")
+            logger.info(f"  -> 正在从数据库中标记 {len(items_to_delete_tmdb_ids)} 个已不存在的媒体项...")
             with connection.get_db_connection() as conn:
                 cursor = conn.cursor()
                 ids_to_delete_list = list(items_to_delete_tmdb_ids)
                 for i in range(0, len(ids_to_delete_list), 500):
                     if processor.is_stop_requested():
-                        logger.info("任务在删除冗余数据时被中止。")
+                        logger.info("任务在标记不在库数据时被中止。")
                         break
                     batch_ids = ids_to_delete_list[i:i+500]
-                    sql = "DELETE FROM media_metadata WHERE tmdb_id = ANY(%s)"
+                    # ### 修改点：将 DELETE 改为 UPDATE，设置 in_library = FALSE 和 emby_item_id = NULL ###
+                    sql = "UPDATE media_metadata SET in_library = FALSE, emby_item_id = NULL WHERE tmdb_id = ANY(%s)"
                     cursor.execute(sql, (batch_ids,))
                 conn.commit()
             logger.info("  -> 冗余数据清理完成。")
 
         if processor.is_stop_requested():
-            logger.info("任务在冗余数据清理后被中止。")
+            logger.info("  -> 任务在冗余数据清理后被中止。")
             return
 
         items_to_process = [emby_items_map[tmdb_id] for tmdb_id in ids_to_process]
