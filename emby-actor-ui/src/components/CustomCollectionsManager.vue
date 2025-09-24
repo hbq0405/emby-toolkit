@@ -799,6 +799,7 @@ const isGeneratingCovers = ref(false);
 const embyUserOptions = ref([]);
 const isLoadingEmbyUsers = ref(false);
 const dialog = useDialog();
+const newTmdbId = ref(''); // ★★★ 新增：为修正匹配弹窗的输入框创建一个响应式 ref
 let sortableInstance = null;
 
 const showDiscoverHelper = ref(false);
@@ -830,25 +831,28 @@ const discoverParams = ref(getInitialDiscoverParams());
 // ▼▼▼ 所有函数和计算属性 ▼▼▼
 // ===================================================================
 const handleFixMatchClick = (media) => {
-  let newTmdbId = '';
+  newTmdbId.value = ''; // ★★★ 修正：每次打开弹窗时，重置 ref 的值
   dialog.create({
     title: `修正《${media.title}》的匹配`,
     content: () => h('div', [
       h('p', `当前错误的 TMDb ID 是 ${media.tmdb_id}。请输入正确的 ID：`),
       h(NInput, {
         placeholder: '请输入正确的 TMDb ID',
-        value: newTmdbId,
-        onInput: (value) => { newTmdbId = value; }
+        // ★★★ 核心修正：绑定 ref 的值，并使用 'onUpdate:value' 实现双向数据绑定
+        value: newTmdbId.value,
+        'onUpdate:value': (value) => { newTmdbId.value = value; },
+        autofocus: true // 优化体验，自动聚焦
       })
     ]),
     positiveText: '确认修正',
     negativeText: '取消',
     onPositiveClick: async () => {
-      if (!newTmdbId || !/^\d+$/.test(newTmdbId)) {
+      // ★★★ 修正：从 ref 中读取最终的值
+      if (!newTmdbId.value || !/^\d+$/.test(newTmdbId.value)) {
         message.error('请输入一个有效的纯数字 TMDb ID。');
         return false; // 阻止弹窗关闭
       }
-      await submitFixMatch(media.tmdb_id, newTmdbId);
+      await submitFixMatch(media.tmdb_id, newTmdbId.value);
     }
   });
 };
