@@ -311,11 +311,11 @@ def update_person_details(person_id: str, new_data: Dict[str, Any], emby_server_
 def update_emby_item_cast(item_id: str, new_cast_list_for_handler: List[Dict[str, Any]],
                           emby_server_url: str, emby_api_key: str, user_id: str,
                           new_rating: Optional[float] = None
-                          ) -> bool:
+                          ) -> Optional[List[Dict[str, Any]]]: # ★★★ 返回值类型已修正 ★★★
     if not all([item_id, emby_server_url, emby_api_key, user_id]):
         logger.error(
             "update_emby_item_cast: 参数不足：缺少ItemID、服务器URL、API Key或UserID。")
-        return False
+        return None # ★★★ 失败时返回 None ★★★
     if new_cast_list_for_handler is None:
         new_cast_list_for_handler = []
 
@@ -334,7 +334,7 @@ def update_emby_item_cast(item_id: str, new_cast_list_for_handler: List[Dict[str
     except requests.exceptions.RequestException as e:
         logger.error(
             f"update_emby_item_cast: 获取Emby项目 {item_name_for_log} (UserID: {user_id}) 失败: {e}", exc_info=True)
-        return False
+        return None
     
     if not item_to_update:
         return False
@@ -405,10 +405,18 @@ def update_emby_item_cast(item_id: str, new_cast_list_for_handler: List[Dict[str
             update_url, json=item_to_update, headers=headers, params=params_post, timeout=api_timeout)
         response_post.raise_for_status()
         logger.trace(f"成功更新Emby项目 {item_name_for_log} 的演员信息。")
-        return True
+        logger.trace("  -> 演员信息更新成功，正在获取最新的 People 列表以供返回...")
+        updated_details = get_emby_item_details(item_id, emby_server_url, emby_api_key, user_id, fields="People")
+        if updated_details and "People" in updated_details:
+            logger.trace(f"  -> 成功获取到 {len(updated_details['People'])} 条最新的 People 记录。")
+            return updated_details["People"] # ★★★ 返回列表 ★★★
+        else:
+            logger.warning("  -> 未能获取到更新后的 People 列表，将返回空列表。")
+            return [] # ★★★ 成功但无法获取详情时，返回空列表 ★★★
+
     except requests.exceptions.RequestException as e:
         logger.error(f"更新Emby项目 {item_name_for_log} 演员信息时发生错误: {e}", exc_info=True)
-        return False
+        return None # ★★★ 失败时返回 None ★★★
 # ✨✨✨ 获取 Emby 用户可见媒体库列表 ✨✨✨
 def get_emby_libraries(emby_server_url, emby_api_key, user_id):
     if not all([emby_server_url, emby_api_key, user_id]):

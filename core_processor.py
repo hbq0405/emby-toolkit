@@ -615,7 +615,10 @@ class MediaProcessor:
                                  douban_rating: Optional[float],
                                  tmdb_details_for_extra: Optional[Dict[str, Any]]):
         """
-        【辅助函数】负责将最终处理好的数据写回Emby、更新日志、备份缓存等。
+        【V7 - 老六终极版】
+        - 彻底移除对现有演员的“精准更新”循环，因为其功能已被反哺和靶向修复覆盖。
+        - 流程简化为：反哺数据库 -> 一步到位更新媒体项 -> 靶向修复新演员。
+        - 实现了性能和逻辑的极致简化。
         """
         item_id = item_details_from_emby.get("Id")
         item_name_for_log = item_details_from_emby.get("Name", f"未知项目(ID:{item_id})")
@@ -626,11 +629,8 @@ class MediaProcessor:
         with get_central_db_connection() as conn:
             cursor = conn.cursor()
             
-            # ======================================================================
-            # 阶段 4: 数据写回 (Data Write-back)
-            # ======================================================================
-            # --- 步骤 4.1: [实时反哺] 更新演员映射表 ---
-            logger.info("  -> [实时反哺] 开始使用最权威的数据更新演员映射表...")
+            # --- 步骤 1: [实时反哺] 更新演员映射表 (保留核心数据库操作) ---
+            logger.debug("  -> [实时反哺] 开始更新演员映射表...")
             emby_config_for_upsert = {"url": self.emby_url, "api_key": self.emby_api_key, "user_id": self.emby_user_id}
             for actor in final_processed_cast:
                 if actor.get("emby_person_id") and actor.get("id"):
@@ -641,22 +641,46 @@ class MediaProcessor:
                         "douban_id": provider_ids.get("Douban")
                     }
                     self.actor_db_manager.upsert_person(cursor=cursor, person_data=person_data_for_db, emby_config=emby_config_for_upsert)
-            logger.info("  -> [实时反哺] 演员映射表更新完成。")
+            logger.debug("  -> [实时反哺] 演员映射表更新完成。")
 
-
-            # --- 步骤 4.2: 更新媒体项目自身的演员列表 ---
-            logger.info("  -> 写回步骤 2/2: 准备将最终演员列表更新到媒体项目...")
-            cast_for_emby_handler = [
-                {"name": a.get("name"), "character": a.get("character"), "emby_person_id": a.get("emby_person_id"), "provider_ids": a.get("provider_ids")}
-                for a in final_processed_cast
-            ]
-            update_success = emby_handler.update_emby_item_cast(
-                item_id=item_id, new_cast_list_for_handler=cast_for_emby_handler,
-                emby_server_url=self.emby_url, emby_api_key=self.emby_api_key,
-                user_id=self.emby_user_id, new_rating=douban_rating
+            # --- 步骤 2: [一步到位] 将完整列表写入媒体项，这将创建“幽灵演员” ---
+            logger.debug(f"  -> 写回步骤 1/2: 准备将 {len(final_processed_cast)} 位演员的完整列表更新到媒体项目...")
+            cast_for_emby_handler = [{"name": a.get("name"), "character": a.get("character") or "", "emby_person_id": a.get("emby_person_id"), "provider_ids": a.get("provider_ids")} for a in final_processed_cast]
+            
+            updated_people_list = emby_handler.update_emby_item_cast(
+                item_id,
+                cast_for_emby_handler,
+                self.emby_url,
+                self.emby_api_key,
+                self.emby_user_id,
+                new_rating=douban_rating
             )
 
-            if item_type == "Series" and update_success:
+            if updated_people_list is None:
+                raise ValueError("更新媒体项演员列表失败")
+
+            # --- 步骤 3: [靶向修复] 为新创建的“幽灵演员”注入ProviderIds ---
+            new_actors = [a for a in final_processed_cast if not a.get("emby_person_id")]
+            if new_actors and updated_people_list:
+                logger.debug(f"  -> 写回步骤 2/2: 修复 {len(new_actors)} 位新演员丢失的外部ID...")
+                new_actor_tmdb_map = {a.get("name"): a.get("provider_ids") for a in new_actors}
+                
+                for person in updated_people_list:
+                    person_name = person.get("Name")
+                    if person_name in new_actor_tmdb_map and not person.get("ProviderIds"):
+                        new_emby_pid = person.get("Id")
+                        provider_ids_to_inject = new_actor_tmdb_map[person_name]
+                        logger.debug(f"  -> 为新演员 '{person_name}' (新ID: {new_emby_pid}) 注入TMDbID...")
+                        emby_handler.update_person_details(
+                            new_emby_pid,
+                            {"ProviderIds": provider_ids_to_inject},
+                            self.emby_url,
+                            self.emby_api_key,
+                            self.emby_user_id
+                        )
+
+            # --- 后续流程 ---
+            if item_type == "Series":
                 self._batch_update_episodes_cast(series_id=item_id, series_name=item_name_for_log, final_cast_list=final_processed_cast)
 
             # ======================================================================
@@ -1985,12 +2009,12 @@ class MediaProcessor:
 
             # 2.2: 更新媒体主项目的演员列表
             logger.info(f"  -> 手动处理：步骤 2/2: 准备将 {len(cast_for_emby_handler)} 位演员更新到媒体主项目...")
-            update_success = emby_handler.update_emby_item_cast(
-                item_id=item_id, new_cast_list_for_handler=cast_for_emby_handler,
-                emby_server_url=self.emby_url, emby_api_key=self.emby_api_key, user_id=self.emby_user_id
+            updated_people_list = emby_handler.update_emby_item_cast(
+                item_id, cast_for_emby_handler,
+                self.emby_url, self.emby_api_key, self.emby_user_id
             )
 
-            if not update_success:
+            if updated_people_list is None:
                 logger.error(f"  -> 手动处理失败：更新 Emby 项目 '{item_name}' 演员信息时失败。")
                 with get_central_db_connection() as conn:
                     self.log_db_manager.save_to_failed_log(conn.cursor(), item_id, item_name, "手动API更新演员信息失败", item_type)
