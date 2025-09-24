@@ -1,14 +1,14 @@
-# maoyan_fetcher.py (V3.0 - 无 Playwright 终极版)
+# maoyan_fetcher.py (V4.0 - 精确匹配版)
 import logging
 import requests
 import argparse
 import json
 import random
-from typing import List, Dict, Tuple
+from typing import List, Dict, Tuple, Optional
 import sys
 import os
 import time
-# ★★★ 不再需要 Playwright ★★★
+import re
 
 # -- 关键：确保可以导入项目中的其他模块 --
 sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
@@ -23,6 +23,50 @@ except ImportError as e:
 logging.basicConfig(level=logging.INFO, format='[%(asctime)s] [%(levelname)s] - %(message)s')
 logger = logging.getLogger(__name__)
 
+# ★★★ 新增 1/2: 从主处理器中引入完整的标题解析工具 ★★★
+SEASON_PATTERN = re.compile(r'(.*?)\s*[（(]?\s*(第?[一二三四五六七八九十百]+)\s*季\s*[)）]?')
+CHINESE_NUM_MAP = {
+    '一': 1, '二': 2, '三': 3, '四': 4, '五': 5, '六': 6, '七': 7, '八': 8, '九': 9, '十': 10,
+    '十一': 11, '十二': 12, '十三': 13, '十四': 14, '十五': 15, '十六': 16, '十七': 17, '十八': 18, '十九': 19, '二十': 20,
+    '第一': 1, '第二': 2, '第三': 3, '第四': 4, '第五': 5, '第六': 6, '第七': 7, '第八': 8, '第九': 9, '第十': 10,
+    '第十一': 11, '第十二': 12, '第十三': 13, '第十四': 14, '第十五': 15, '第十六': 16, '第十七': 17, '第十八': 18, '第十九': 19, '第二十': 20
+}
+
+def parse_series_title(title: str) -> Tuple[str, Optional[int]]:
+    """
+    (V4 - 兼容末尾数字版) 能够处理中英文季号混合及末尾数字的复杂标题。
+    """
+    show_name = title.strip()
+    season_number = None
+    SEASON_PATTERN_EN = re.compile(r'(.*?)\s+Season\s+(\d+)', re.IGNORECASE)
+    SEASON_PATTERN_CN = SEASON_PATTERN
+    SEASON_PATTERN_NUM = re.compile(r'^(.*?)\s*(\d+)$')
+
+    match_en = SEASON_PATTERN_EN.search(show_name)
+    if match_en:
+        show_name = match_en.group(1).strip()
+        season_number = int(match_en.group(2))
+
+    match_cn = SEASON_PATTERN_CN.search(show_name)
+    if match_cn:
+        show_name = match_cn.group(1).strip()
+        if season_number is None:
+            season_word = match_cn.group(2)
+            season_number_from_cn = CHINESE_NUM_MAP.get(season_word)
+            if season_number_from_cn:
+                season_number = season_number_from_cn
+
+    if season_number is None:
+        if not re.search(r'\b(19|20)\d{2}$', show_name):
+            match_num = SEASON_PATTERN_NUM.search(show_name)
+            if match_num:
+                potential_name = match_num.group(1).strip()
+                if potential_name:
+                    show_name = potential_name
+                    season_number = int(match_num.group(2))
+
+    return show_name, season_number
+
 def get_random_user_agent() -> str:
     user_agents = [
         "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/121.0.0.0 Safari/537.36 Edg/121.0.0.0",
@@ -31,15 +75,12 @@ def get_random_user_agent() -> str:
     ]
     return random.choice(user_agents)
 
-# ★★★ 核心修改：用一个空函数替换掉整个 Playwright 逻辑 ★★★
 def get_cookies() -> Dict[str, str]:
-    """
-    V3版：根据测试，API不需要Cookie即可访问。此函数保留为空，以备将来需要。
-    """
-    logger.debug("当前 API 无需 Cookie，跳过 Playwright 浏览器操作。")
+    logger.debug("当前 API 无需 Cookie，跳过浏览器操作。")
     return {}
 
 def get_maoyan_rank_titles(types_to_fetch: List[str], platform: str, num: int) -> Tuple[List[Dict], List[Dict]]:
+    # ... 此函数保持不变 ...
     movies_list = []
     tv_list = []
     
@@ -51,7 +92,6 @@ def get_maoyan_rank_titles(types_to_fetch: List[str], platform: str, num: int) -
     MAX_RETRIES = 3
     RETRY_DELAY_SECONDS = 3
 
-    # --- 1. 获取电影票房榜 (只保留重试逻辑) ---
     if 'movie' in types_to_fetch:
         url = f'{maoyan_url}/dashboard-ajax/movie'
         for attempt in range(MAX_RETRIES):
@@ -65,17 +105,16 @@ def get_maoyan_rank_titles(types_to_fetch: List[str], platform: str, num: int) -
                     for movie in data if movie.get('movieInfo', {}).get('movieName')
                 ][:num])
                 logger.info("电影票房榜获取成功。")
-                break # 成功后立即跳出重试循环
+                break
             except Exception as e:
                 logger.warning(f"获取电影票房榜失败 (第 {attempt + 1} 次尝试): {e}")
                 if attempt < MAX_RETRIES - 1:
                     delay = RETRY_DELAY_SECONDS * (attempt + 1)
                     logger.info(f"将在 {delay} 秒后重试...")
-                    time.sleep(delay) # 这个sleep只在失败后触发，必须保留
+                    time.sleep(delay)
                 else:
                     logger.error("获取电影票房榜在多次重试后彻底失败。")
 
-    # --- 2. 获取电视剧/综艺热度榜 (只保留重试逻辑) ---
     tv_heat_map = {'web-heat': '0', 'web-tv': '1', 'zongyi': '2'}
     platform_code_map = {'all': '', 'tencent': '3', 'iqiyi': '2', 'youku': '1', 'mango': '7'}
     platform_code = platform_code_map.get(platform, '')
@@ -96,37 +135,77 @@ def get_maoyan_rank_titles(types_to_fetch: List[str], platform: str, num: int) -
                         for item in data if item.get('seriesInfo', {}).get('name')
                     ][:num])
                     logger.info(f"热度榜 '{tv_type}' 获取成功。")
-                    break # 成功后立即跳出重试循环
+                    break
                 except Exception as e:
                     logger.warning(f"获取 {tv_type} 热度榜失败 (第 {attempt + 1} 次尝试): {e}")
                     if attempt < MAX_RETRIES - 1:
                         delay = RETRY_DELAY_SECONDS * (attempt + 1)
                         logger.info(f"将在 {delay} 秒后重试...")
-                        time.sleep(delay) # 这个sleep只在失败后触发，必须保留
+                        time.sleep(delay)
                     else:
                         logger.error(f"获取 {tv_type} 热度榜在多次重试后彻底失败。")
 
     unique_tv_list = list({item['title']: item for item in tv_list}.values())
     return movies_list, unique_tv_list
 
-# ... main() 和 match_titles_to_tmdb() 函数保持不变 ...
+# ★★★ 新增 2/2: 重构核心匹配函数，使其变得智能 ★★★
 def match_titles_to_tmdb(titles: List[Dict], item_type: str, tmdb_api_key: str) -> List[Dict[str, str]]:
     matched_items = []
+    
+    def normalize_string(s: str) -> str:
+        if not s: return ""
+        return re.sub(r'[\s:：·\-*\'!,?.。]+', '', s).lower()
+
     for item in titles:
         title = item.get('title')
         if not title:
             continue
         
-        logger.info(f"正在为 {item_type} '{title}' 搜索TMDb匹配...")
-        results = tmdb_handler.search_media(title, tmdb_api_key, item_type)
-        if results:
-            best_match = results[0]
-            tmdb_id = str(best_match.get('id'))
-            match_name = best_match.get('title') if item_type == 'Movie' else best_match.get('name')
-            logger.info(f"  -> 匹配成功: {match_name} (ID: {tmdb_id})")
-            matched_items.append({'id': tmdb_id, 'type': item_type})
-        else:
-            logger.warning(f"  -> 未能为 '{title}' 找到任何TMDb匹配项。")
+        if item_type == 'Movie':
+            logger.info(f"正在为 Movie '{title}' 搜索TMDb匹配...")
+            results = tmdb_handler.search_media(title, tmdb_api_key, 'Movie')
+            if results:
+                best_match = results[0]
+                tmdb_id = str(best_match.get('id'))
+                match_name = best_match.get('title')
+                logger.info(f"  -> 匹配成功: {match_name} (ID: {tmdb_id})")
+                matched_items.append({'id': tmdb_id, 'type': 'Movie'})
+            else:
+                logger.warning(f"  -> 未能为 '{title}' 找到任何TMDb匹配项。")
+        
+        elif item_type == 'Series':
+            # --- 剧集的智能匹配逻辑 ---
+            logger.info(f"正在为 Series '{title}' 搜索TMDb匹配...")
+            
+            # 1. 预处理：解析出干净的剧名和季号
+            show_name, season_number = parse_series_title(title)
+            logger.debug(f"  -> 标题 '{title}' 解析为: 剧名='{show_name}', 季号='{season_number}'")
+            
+            # 2. 搜索：使用干净的剧名进行搜索
+            results = tmdb_handler.search_media(show_name, tmdb_api_key, 'Series')
+            
+            if not results:
+                logger.warning(f"  -> 使用搜索词 '{show_name}' 未能找到任何TMDb匹配项。")
+                continue
+
+            # 3. 验证：遍历结果，寻找精确匹配的基础剧集
+            series_result = None
+            norm_show_name = normalize_string(show_name)
+            
+            for result in results:
+                result_name = result.get('name', '')
+                if normalize_string(result_name) == norm_show_name:
+                    series_result = result
+                    logger.info(f"  -> 通过【精确匹配】找到了基础剧集: {result.get('name')} (ID: {result.get('id')})")
+                    break
+            
+            # 4. 回退：如果找不到精确匹配，则使用最相关的第一个结果
+            if not series_result:
+                series_result = results[0]
+                logger.warning(f"  -> 未找到精确匹配，【回退使用】最相关的结果: {series_result.get('name')} (ID: {series_result.get('id')})")
+            
+            tmdb_id = str(series_result.get('id'))
+            matched_items.append({'id': tmdb_id, 'type': 'Series'})
             
     return matched_items
 
