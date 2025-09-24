@@ -432,6 +432,9 @@ def init_db():
                         },
                         'user_templates': {
                             "source_emby_user_id": "TEXT"
+                        },
+                        'emby_users_extended': {
+                            "template_id": "INTEGER"
                         }
                     }
 
