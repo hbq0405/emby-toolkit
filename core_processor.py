@@ -2486,50 +2486,77 @@ class MediaProcessor:
 
         # 3. 核心：以 Emby ID 为基准，重建全新的 cast 列表
         new_perfect_cast = []
-        with get_central_db_connection() as conn:
-            cursor = conn.cursor()
-            for person in emby_people:
-                if person.get("Type") != "Actor":
+        
+        # ★★★ 核心修正：判断是使用“数据直通”模式还是“重新获取”模式 ★★★
+        if final_cast_override:
+            # --- 模式A: 数据直通 ---
+            # 直接使用主流程处理好的、最完整的演员列表。
+            # 这个列表已经包含了所有TMDb元数据，无需任何查询。
+            logger.debug(f"  -> {log_prefix} [直通模式] 使用传入的 {len(final_cast_override)} 位演员构建缓存。")
+            for i, actor in enumerate(final_cast_override):
+                actor_tmdb_id = actor.get("id")
+                if not actor_tmdb_id:
+                    logger.warning(f"  -> 跳过演员 '{actor.get('name')}'，因为它缺少 TMDb ID。")
                     continue
 
-                # ★★★ 核心改动：获取 Emby Person ID 作为唯一标识符 ★★★
-                emby_person_id = person.get("Id")
-                person_name_cn = person.get("Name") # 用于日志和最终名字
-                role_cn = person.get("Role")
-
-                if not emby_person_id:
-                    logger.warning(f"  -> 演员 '{person_name_cn}' 缺少 Emby Person ID，无法进行精确匹配，已跳过。")
-                    continue
-
-                logger.trace(f"  -> 正在处理演员 '{person_name_cn}' (Emby ID: {emby_person_id})...")
-                
-                # 使用 Emby ID 去映射表里精确查找 TMDB ID
-                cursor.execute("SELECT tmdb_person_id FROM person_identity_map WHERE emby_person_id = %s", (emby_person_id,))
-                map_entry_row = cursor.fetchone()
-                
-                if not map_entry_row or not map_entry_row["tmdb_person_id"]:
-                    logger.warning(f"  -> 无法在数据库中为演员 '{person_name_cn}' (Emby ID: {emby_person_id}) 找到对应的 TMDB ID，已跳过。")
-                    continue
-                
-                actor_tmdb_id = map_entry_row["tmdb_person_id"]
-
-                logger.trace(f"  -> 精确匹配成功: Emby ID {emby_person_id} -> TMDB ID {actor_tmdb_id}")
-
-                # 用找到的 TMDB ID 去获取最详细的元数据
-                full_metadata = self._get_actor_metadata_from_cache(actor_tmdb_id, cursor)
-                if not full_metadata:
-                    logger.trace(f"  -> 无法在 actor_metadata 缓存中为 TMDB ID '{actor_tmdb_id}' 找到元数据，已跳过演员 '{person_name_cn}'。")
-                    continue
-
-                # 构建一个符合 JSON 格式的、信息完整的演员字典
+                # 直接从 actor 对象构建，这个对象是信息最全的
                 rebuilt_actor = {
-                    "adult": full_metadata.get("adult", False), "gender": full_metadata.get("gender", 0),
-                    "id": actor_tmdb_id, "known_for_department": full_metadata.get("known_for_department", "Acting"),
-                    "name": person_name_cn, "original_name": full_metadata.get("original_name"),
-                    "popularity": full_metadata.get("popularity", 0.0), "profile_path": full_metadata.get("profile_path"),
-                    "cast_id": None, "character": role_cn, "credit_id": None, "order": len(new_perfect_cast)
+                    "adult": actor.get("adult", False),
+                    "gender": actor.get("gender", 0),
+                    "id": actor_tmdb_id,
+                    "known_for_department": actor.get("known_for_department", "Acting"),
+                    "name": actor.get("name"),
+                    "original_name": actor.get("original_name"),
+                    "popularity": actor.get("popularity", 0.0),
+                    "profile_path": actor.get("profile_path"),
+                    "cast_id": actor.get("cast_id"),
+                    "character": actor.get("character"),
+                    "credit_id": actor.get("credit_id"),
+                    "order": actor.get("order", i) # 使用原始order，如果没有则用当前索引
                 }
                 new_perfect_cast.append(rebuilt_actor)
+        
+        else:
+            # --- 模式B: 重新获取 (用于非主流程的独立调用) ---
+            # 这里的逻辑保持原样，通过Emby ID去数据库反查
+            logger.debug(f"  -> {log_prefix} [回退模式] 将从Emby重新获取演员并匹配数据库。")
+            emby_people = full_item_details.get("People", [])
+            if not emby_people:
+                logger.debug(f"  -> {log_prefix} Emby中没有演员信息，无需重建。")
+                return
+
+            with get_central_db_connection() as conn:
+                cursor = conn.cursor()
+                for person in emby_people:
+                    if person.get("Type") != "Actor":
+                        continue
+
+                    emby_person_id = person.get("Id")
+                    if not emby_person_id:
+                        logger.warning(f"  -> 演员 '{person.get('Name')}' 缺少 Emby Person ID，已跳过。")
+                        continue
+                    
+                    cursor.execute("SELECT tmdb_person_id FROM person_identity_map WHERE emby_person_id = %s", (emby_person_id,))
+                    map_entry_row = cursor.fetchone()
+                    
+                    if not map_entry_row or not map_entry_row["tmdb_person_id"]:
+                        logger.warning(f"  -> 无法为演员 '{person.get('Name')}' (Emby ID: {emby_person_id}) 找到 TMDB ID，已跳过。")
+                        continue
+                    
+                    actor_tmdb_id = map_entry_row["tmdb_person_id"]
+                    full_metadata = self._get_actor_metadata_from_cache(actor_tmdb_id, cursor)
+                    if not full_metadata:
+                        logger.trace(f"  -> 无法为 TMDB ID '{actor_tmdb_id}' 找到元数据，已跳过。")
+                        continue
+
+                    rebuilt_actor = {
+                        "adult": full_metadata.get("adult", False), "gender": full_metadata.get("gender", 0),
+                        "id": actor_tmdb_id, "known_for_department": full_metadata.get("known_for_department", "Acting"),
+                        "name": person.get("Name"), "original_name": full_metadata.get("original_name"),
+                        "popularity": full_metadata.get("popularity", 0.0), "profile_path": full_metadata.get("profile_path"),
+                        "cast_id": None, "character": person.get("Role"), "credit_id": None, "order": len(new_perfect_cast)
+                    }
+                    new_perfect_cast.append(rebuilt_actor)
 
         # 4. 将重建好的新列表写回主 JSON 文件 (不变)
         main_json_filename = "all.json" if item_type == "Movie" else "series.json"
