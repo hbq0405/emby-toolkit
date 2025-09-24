@@ -455,14 +455,17 @@ class ListImporter:
 
     def _match_title_to_tmdb(self, title: str, item_type: str, year: Optional[str] = None) -> Optional[Tuple[str, str]]:
         """
-        【V2 - 返回值修正版】
-        现在返回一个元组 (tmdb_id, item_type)，以保持接口统一。
+        【V3 - 剧集精确匹配最终版】
+        - 增加了对剧集搜索结果的精确验证逻辑，避免因TMDb存在不规范条目（如 "剧名2"）时，错误地匹配到非基础剧集。
+        - 统一了返回值格式为元组 (tmdb_id, item_type)。
         """
         def normalize_string(s: str) -> str:
             if not s: return ""
-            return re.sub(r'[\s:：·\-*\'!,?.]+', '', s).lower()
+            # 移除了中文句号，增加了对更多分隔符的兼容
+            return re.sub(r'[\s:：·\-*\'!,?.。]+', '', s).lower()
 
         if item_type == 'Movie':
+            # --- 电影匹配逻辑保持不变 ---
             titles_to_try = set([title.strip()])
             match = re.match(r'([\u4e00-\u9fa5\s·0-9]+)[\s:：*]*(.*)', title.strip())
             if match:
@@ -506,7 +509,6 @@ class ListImporter:
                     if norm_variation == norm_title or norm_variation == norm_original_title:
                         tmdb_id = str(result.get('id'))
                         logger.info(f"电影标题 '{title}'{year_info} 通过【精确规范匹配】(使用'{title_variation}') 成功匹配到: {result.get('title')} (ID: {tmdb_id})")
-                        # ★★★ 核心修复：返回元组 ★★★
                         return tmdb_id, 'Movie'
                 
                 for result in results:
@@ -516,21 +518,23 @@ class ListImporter:
                     if norm_variation in norm_title or norm_variation in norm_original_title:
                         tmdb_id = str(result.get('id'))
                         logger.info(f"电影标题 '{title}'{year_info} 通过【包含匹配】(使用'{title_variation}') 成功匹配到: {result.get('title')} (ID: {tmdb_id})")
-                        # ★★★ 核心修复：返回元组 ★★★
                         return tmdb_id, 'Movie'
 
             if first_search_results:
                 first_result = first_search_results[0]
                 tmdb_id = str(first_result.get('id'))
                 logger.warning(f"电影标题 '{title}'{year_info} 所有精确匹配和包含匹配均失败。将【回退使用】最相关的搜索结果: {first_result.get('title')} (ID: {tmdb_id})")
-                # ★★★ 核心修复：返回元组 ★★★
                 return tmdb_id, 'Movie'
 
             logger.error(f"电影标题 '{title}'{year_info} 未能在TMDb上找到任何搜索结果。")
             return None
         
         elif item_type == 'Series':
+            # ★★★ 核心修正区域开始 ★★★
+            # 1. 无论如何，先解析标题，分离出基础剧名和可能的季号
             show_name, season_number_to_validate = self._parse_series_title(title)
+            
+            # 2. 使用解析出的干净剧名进行搜索
             results = search_media(show_name, self.tmdb_api_key, 'Series', year=year)
 
             if not results and year and season_number_to_validate is not None:
@@ -542,12 +546,28 @@ class ListImporter:
                 logger.warning(f"剧集标题 '{title}' (搜索词: '{show_name}'){year_info} 未能在TMDb上找到匹配项。")
                 return None
             
-            series_result = results[0]
+            # 3. 【关键】遍历搜索结果，寻找精确匹配项，而不是直接用第一个
+            series_result = None
+            norm_show_name = normalize_string(show_name)
+            
+            for result in results:
+                result_name = result.get('name', '')
+                # 优先寻找规范化后完全一致的
+                if normalize_string(result_name) == norm_show_name:
+                    series_result = result
+                    logger.debug(f"剧集 '{show_name}' 通过【精确规范匹配】找到了基础剧集: {result.get('name')} (ID: {result.get('id')})")
+                    break # 找到了最完美的匹配，停止遍历
+            
+            # 4. 如果没有找到精确匹配，则回退到使用第一个（最相关）的结果
+            if not series_result:
+                series_result = results[0]
+                logger.warning(f"剧集 '{show_name}' 未找到精确匹配项，将【回退使用】最相关的搜索结果: {series_result.get('name')} (ID: {series_result.get('id')})")
+
             series_id = str(series_result.get('id'))
             
+            # 5. 后续逻辑保持不变：验证季号
             if season_number_to_validate is None:
                 logger.debug(f"剧集标题 '{title}' 成功匹配到: {series_result.get('name')} (ID: {series_id})")
-                # ★★★ 核心修复：返回元组 ★★★
                 return series_id, 'Series'
             
             logger.debug(f"剧集 '{show_name}' (ID: {series_id}) 已找到，正在验证是否存在第 {season_number_to_validate} 季...")
@@ -556,11 +576,11 @@ class ListImporter:
                 for season in series_details['seasons']:
                     if season.get('season_number') == season_number_to_validate:
                         logger.info(f"  -> 剧集 '{show_name}' 存在第 {season_number_to_validate} 季。最终匹配ID为 {series_id}。")
-                        # ★★★ 核心修复：返回元组 ★★★
                         return series_id, 'Series'
             
             logger.warning(f"验证失败！剧集 '{show_name}' (ID: {series_id}) 存在，但未找到第 {season_number_to_validate} 季。")
             return None
+            # ★★★ 核心修正区域结束 ★★★
             
         return None
 
