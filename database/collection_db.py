@@ -358,7 +358,7 @@ def get_all_media_metadata(item_type: str = 'Movie') -> List[Dict[str, Any]]:
     try:
         with get_db_connection() as conn:
             cursor = conn.cursor()
-            cursor.execute("SELECT * FROM media_metadata WHERE item_type = %s", (item_type,))
+            cursor.execute("SELECT * FROM media_metadata WHERE item_type = %s AND in_library = TRUE", (item_type,))
             rows = cursor.fetchall()
             return [dict(row) for row in rows]
     except psycopg2.Error as e:
@@ -372,7 +372,7 @@ def get_unique_genres() -> List[str]:
     try:
         with get_db_connection() as conn:
             cursor = conn.cursor()
-            cursor.execute("SELECT genres_json FROM media_metadata WHERE item_type = 'Movie'")
+            cursor.execute("SELECT genres_json FROM media_metadata WHERE item_type = 'Movie' AND in_library = TRUE")
             rows = cursor.fetchall()
             
             for row in rows:
@@ -401,7 +401,7 @@ def get_unique_studios() -> List[str]:
     try:
         with get_db_connection() as conn:
             cursor = conn.cursor()
-            cursor.execute("SELECT studios_json FROM media_metadata")
+            cursor.execute("SELECT studios_json FROM media_metadata WHERE in_library = TRUE")
             rows = cursor.fetchall()
             
             for row in rows:
@@ -430,7 +430,7 @@ def get_unique_tags() -> List[str]:
     try:
         with get_db_connection() as conn:
             cursor = conn.cursor()
-            cursor.execute("SELECT tags_json FROM media_metadata")
+            cursor.execute("SELECT tags_json FROM media_metadata WHERE in_library = TRUE")
             rows = cursor.fetchall()
             
             for row in rows:
@@ -489,7 +489,7 @@ def search_unique_actors(search_term: str, limit: int = 20) -> List[str]:
     try:
         with get_db_connection() as conn:
             cursor = conn.cursor()
-            cursor.execute("SELECT actors_json FROM media_metadata")
+            cursor.execute("SELECT actors_json FROM media_metadata WHERE in_library = TRUE")
             rows = cursor.fetchall()
             
             for row in rows:
@@ -538,7 +538,7 @@ def get_unique_official_ratings():
         cursor.execute("""
             SELECT DISTINCT split_part(official_rating, '-', 2) as rating
             FROM media_metadata
-            WHERE official_rating IS NOT NULL AND official_rating LIKE '%-%'
+            WHERE official_rating IS NOT NULL AND official_rating LIKE '%-%' AND in_library = TRUE -- ### 修改 ###
             ORDER BY rating;
         """)
         return [row['rating'] for row in cursor.fetchall()]
@@ -846,7 +846,7 @@ def get_media_metadata_by_tmdb_ids(tmdb_ids: List[str], item_type: str) -> List[
     try:
         with get_db_connection() as conn:
             cursor = conn.cursor()
-            sql = "SELECT * FROM media_metadata WHERE item_type = %s AND tmdb_id = ANY(%s)"
+            sql = "SELECT * FROM media_metadata WHERE item_type = %s AND tmdb_id = ANY(%s) AND in_library = TRUE"
             cursor.execute(sql, (item_type, tmdb_ids))
             rows = cursor.fetchall()
             return [dict(row) for row in rows]

@@ -111,6 +111,7 @@ def _save_metadata_to_cache(
             "countries_json": json.dumps(countries, ensure_ascii=False),
             "date_added": (item_details_from_emby.get("DateCreated") or '').split('T')[0] or None,
             "release_date": release_date_str,
+            "in_library": True
         }
         
         columns = list(metadata.keys())

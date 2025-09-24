@@ -426,9 +426,12 @@ def emby_webhook():
                     logger.info(f"Webhook: 已从处理/失败日志中移除项目 {original_item_id}。")
 
                     # 2. 从 media_metadata 缓存中删除
-                    cursor.execute("DELETE FROM media_metadata WHERE emby_item_id = %s", (original_item_id,))
+                    cursor.execute(
+                        "UPDATE media_metadata SET in_library = FALSE, emby_item_id = NULL WHERE emby_item_id = %s",
+                        (original_item_id,)
+                    )
                     if cursor.rowcount > 0:
-                        logger.info(f"Webhook: 已从 media_metadata 缓存中移除 Emby ID 为 {original_item_id} 的媒体项。")
+                        logger.info(f"Webhook: 已在 media_metadata 缓存中将 Emby ID 为 {original_item_id} 的媒体项标记为“不在库中”。")
 
                     # 3. ★★★ 从智能追剧列表中删除 ★★★
                     cursor.execute("DELETE FROM watchlist WHERE item_id = %s", (original_item_id,))

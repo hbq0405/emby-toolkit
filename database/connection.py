@@ -413,7 +413,8 @@ def init_db():
                         'media_metadata': {
                             "official_rating": "TEXT",
                             "unified_rating": "TEXT",
-                            "emby_item_id": "TEXT"
+                            "emby_item_id": "TEXT",
+                            "in_library": "BOOLEAN DEFAULT TRUE NOT NULL"
                         },
                         'watchlist': {
                             "last_episode_to_air_json": "JSONB"
