@@ -258,7 +258,7 @@ class MediaProcessor:
     # --- 演员数据查询、反哺 ---
     def _enrich_cast_from_db_and_api(self, cast_list: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
         """
-        【最终完整版】集成了所有Bug修复，确保读取、写入、API调用全部正确。
+        演员数据查询、反哺
         """
         if not cast_list:
             return []
@@ -309,54 +309,10 @@ class MediaProcessor:
         ids_to_fetch_from_api = [pid for pid in original_actor_map.keys() if pid not in ids_found_in_db]
         
         if ids_to_fetch_from_api:
-            logger.trace(f"  -> 开始为 {len(ids_to_fetch_from_api)} 位新演员从Emby获取信息并【实时反哺】...")
+            logger.trace(f"  -> 开始为 {len(ids_to_fetch_from_api)} 位新演员从Emby获取信息...")
             
-            emby_config_for_upsert = {
-                "url": self.emby_url,
-                "api_key": self.emby_api_key,
-                "user_id": self.emby_user_id
-            }
-            
-            with get_central_db_connection() as conn_upsert:
-                cursor_upsert = conn_upsert.cursor()
-
-                for i, actor_id in enumerate(ids_to_fetch_from_api):
-                    
-                    full_detail = emby_handler.get_emby_item_details(
-                        item_id=actor_id,
-                        emby_server_url=self.emby_url,
-                        emby_api_key=self.emby_api_key,
-                        user_id=self.emby_user_id,
-                        fields="ProviderIds,Name"
-                    )
-
-                    if full_detail and full_detail.get("ProviderIds"):
-                        enriched_actor = original_actor_map[actor_id].copy()
-                        enriched_actor["ProviderIds"] = full_detail["ProviderIds"]
-                        enriched_actors_map[actor_id] = enriched_actor
-                        
-                        provider_ids = full_detail["ProviderIds"]
-                        
-                        person_data_for_db = {
-                            "emby_id": actor_id,                      
-                            "name": full_detail.get("Name"),          
-                            "tmdb_id": provider_ids.get("Tmdb"),      
-                            "imdb_id": provider_ids.get("Imdb")       
-                        }
-                        
-                        self.actor_db_manager.upsert_person(
-                            cursor=cursor_upsert,
-                            person_data=person_data_for_db,
-                            emby_config=emby_config_for_upsert
-                        )
-                        
-                        logger.trace(f"    -> [实时反哺] 已将演员 '{full_detail.get('Name')}' (ID: {actor_id}) 的新映射关系存入数据库。")
-                    else:
-                        logger.warning(f"    未能从 API 获取到演员 ID {actor_id} 的 ProviderIds。")
-                
-                conn_upsert.commit()
         else:
-            logger.info("  -> (API查询) 跳过：所有演员均在本地数据库中找到。")
+            logger.trace("  -> (API查询) 跳过：所有演员均在本地数据库中找到。")
 
         # --- 阶段三：合并最终结果 ---
         final_enriched_cast = []
@@ -834,6 +790,32 @@ class MediaProcessor:
                 # ======================================================================
                 if self.is_stop_requested():
                     raise InterruptedError("任务在演员列表处理后被中止。")
+                
+                # --- 步骤 4.0: [实时反哺] 使用最终结果更新演员映射表 ---
+                logger.info("  -> [实时反哺] 开始使用最权威的数据更新演员映射表...")
+                emby_config_for_upsert = {
+                    "url": self.emby_url,
+                    "api_key": self.emby_api_key,
+                    "user_id": self.emby_user_id
+                }
+                for actor in final_processed_cast:
+                    # 必须同时有 Emby ID 和 TMDb ID 才能构成有效的映射关系
+                    if actor.get("emby_person_id") and actor.get("id"):
+                        provider_ids = actor.get("provider_ids", {})
+                        person_data_for_db = {
+                            "emby_id": actor.get("emby_person_id"),
+                            "name": actor.get("name"),
+                            "tmdb_id": provider_ids.get("Tmdb"),
+                            "imdb_id": provider_ids.get("Imdb"),
+                            "douban_id": provider_ids.get("Douban")
+                        }
+                        self.actor_db_manager.upsert_person(
+                            cursor=cursor,
+                            person_data=person_data_for_db,
+                            emby_config=emby_config_for_upsert
+                        )
+                logger.info("  -> [实时反哺] 演员映射表更新完成。")
+
                 # --- 步骤 4.1: 前置更新 - 直接更新演员(Person)自身的外部ID和名字 ---
                 logger.info("  -> 写回步骤 1/2: 检查并更新演员的元数据...")
                 
@@ -969,8 +951,8 @@ class MediaProcessor:
                 # ======================================================================
                 # 阶段 8: 覆盖缓存备份
                 # ======================================================================
-                # logger.info(f"  -> 核心处理完成，开始为 '{item_name_for_log}' 同步到覆盖缓存...")
-                # self.sync_single_item_assets(item_id)
+                logger.info(f"  -> 核心处理完成，开始为 '{item_name_for_log}' 同步到覆盖缓存...")
+                self.sync_single_item_assets(item_id)
 
         except (ValueError, InterruptedError) as e:
             logger.warning(f"处理 '{item_name_for_log}' 的过程中断: {e}")
