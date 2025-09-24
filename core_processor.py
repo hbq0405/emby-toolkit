@@ -63,10 +63,17 @@ def _save_metadata_to_cache(
     try:
         logger.trace(f"【实时缓存】正在为 '{item_details_from_emby.get('Name')}' 组装元数据...")
         
-        actors = [
-            {"id": p.get("id"), "name": p.get("name"), "original_name": p.get("original_name")}
-            for p in final_processed_cast
-        ]
+        actors_for_cache = []
+        for p in final_processed_cast:
+            actors_for_cache.append({
+                "id": p.get("id"),
+                "name": p.get("name"),
+                "character": p.get("character"), # <--- 关键！保存角色名
+                "original_name": p.get("original_name"),
+                "profile_path": p.get("profile_path"),
+                "gender": p.get("gender"),
+                "popularity": p.get("popularity")
+            })
 
         directors, countries = [], []
         if tmdb_details_for_extra:
@@ -98,7 +105,7 @@ def _save_metadata_to_cache(
             "release_year": item_details_from_emby.get('ProductionYear'),
             "rating": item_details_from_emby.get('CommunityRating'),
             "genres_json": json.dumps(genres, ensure_ascii=False),
-            "actors_json": json.dumps(actors, ensure_ascii=False),
+            "actors_json": json.dumps(actors_for_cache, ensure_ascii=False),
             "directors_json": json.dumps(directors, ensure_ascii=False),
             "studios_json": json.dumps(studios, ensure_ascii=False),
             "countries_json": json.dumps(countries, ensure_ascii=False),
@@ -2480,31 +2487,31 @@ class MediaProcessor:
                 # 优先级 2: 黄金缓存模式
                 cursor.execute("SELECT actors_json FROM media_metadata WHERE tmdb_id = %s AND item_type = %s", (tmdb_id, item_type))
                 cache_row = cursor.fetchone()
-                
-                # ★★★ 核心修复：直接使用数据库驱动自动解析好的Python列表，不再调用json.loads() ★★★
-                if cache_row and cache_row.get("actors_json"):
+                if cache_row and cache_row.get("actors_json") and isinstance(cache_row["actors_json"], list):
                     actors_from_cache = cache_row["actors_json"]
+                    logger.debug(f"  -> {log_prefix} [模式2: 黄金缓存] 使用 media_metadata 表中的 {len(actors_from_cache)} 位演员构建缓存。")
                     
-                    # 增加一个健壮性检查，确保我们得到的是一个列表
-                    if isinstance(actors_from_cache, list):
-                        logger.debug(f"  -> {log_prefix} [模式2: 黄金缓存] 使用 media_metadata 表中的 {len(actors_from_cache)} 位演员构建缓存。")
-                        for i, actor_info in enumerate(actors_from_cache):
-                            actor_tmdb_id = actor_info.get("id")
-                            if not actor_tmdb_id: continue
-                            
-                            # 我们需要从 actor_metadata 获取更完整的元数据
-                            full_metadata = self._get_actor_metadata_from_cache(actor_tmdb_id, cursor) or {}
-                            rebuilt_actor = {
-                                "id": actor_tmdb_id, "name": actor_info.get("name"), "character": actor_info.get("character", ""),
-                                "original_name": full_metadata.get("original_name"), "profile_path": full_metadata.get("profile_path"),
-                                "adult": full_metadata.get("adult", False), "gender": full_metadata.get("gender", 0),
-                                "known_for_department": full_metadata.get("known_for_department", "Acting"),
-                                "popularity": full_metadata.get("popularity", 0.0), "cast_id": None,
-                                "credit_id": None, "order": i
-                            }
-                            new_perfect_cast.append(rebuilt_actor)
-                    else:
-                        logger.warning(f"  -> {log_prefix} [模式2: 黄金缓存] media_metadata 中的 actors_json 格式不正确（不是列表），将尝试回退。")
+                    # ★★★ 核心修正：现在 actors_from_cache 已经是黄金标准，直接用来构建 ★★★
+                    for i, actor_info in enumerate(actors_from_cache):
+                        actor_tmdb_id = actor_info.get("id")
+                        if not actor_tmdb_id: continue
+                        
+                        # 直接使用缓存中的数据，因为它现在是完整的
+                        rebuilt_actor = {
+                            "id": actor_tmdb_id,
+                            "name": actor_info.get("name"),
+                            "character": actor_info.get("character"), # <--- 现在这里有值了！
+                            "original_name": actor_info.get("original_name"),
+                            "profile_path": actor_info.get("profile_path"),
+                            "adult": actor_info.get("adult", False), # adult等字段可以保留默认值
+                            "gender": actor_info.get("gender", 0),
+                            "known_for_department": "Acting",
+                            "popularity": actor_info.get("popularity", 0.0),
+                            "cast_id": None,
+                            "credit_id": None,
+                            "order": i
+                        }
+                        new_perfect_cast.append(rebuilt_actor)
 
                 else:
                     # 优先级 3: 回退模式
