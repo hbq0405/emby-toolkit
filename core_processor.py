@@ -952,7 +952,10 @@ class MediaProcessor:
                 # 阶段 8: 覆盖缓存备份
                 # ======================================================================
                 logger.info(f"  -> 核心处理完成，开始为 '{item_name_for_log}' 同步到覆盖缓存...")
-                self.sync_single_item_assets(item_id)
+                self.sync_single_item_assets(
+                    item_id=item_id,
+                    final_cast_override=final_processed_cast  # ★★★ 将最终处理好的演员列表直接传进去 ★★★
+                )
 
         except (ValueError, InterruptedError) as e:
             logger.warning(f"处理 '{item_name_for_log}' 的过程中断: {e}")
@@ -2422,26 +2425,26 @@ class MediaProcessor:
             return False
     
     # --- 备份元数据 ---
-    def sync_item_metadata(self, item_details: Dict[str, Any], tmdb_id: str):
+    def sync_item_metadata(self, item_details: Dict[str, Any], tmdb_id: str, final_cast_override: Optional[List[Dict[str, Any]]] = None):
         """
-        【V12 - 健壮性修复版】
-        无论传入的 item_details 是轻量级还是重量级，都在内部重新获取一次完整的详情，
-        确保后续逻辑总能拿到包含 'People' 的重量级对象。
+        【V13 - 数据直通版】
+        可以接收一个可选的、已经处理好的最终演员列表，避免因时序问题获取到旧数据。
         """
         item_id = item_details.get("Id")
         item_name_for_log = item_details.get("Name", f"未知项目(ID:{item_id})")
         log_prefix = "[覆盖缓存-元数据备份]"
         logger.info(f"  -> {log_prefix} 开始为 '{item_name_for_log}' 执行元数据备份...")
 
-        # ★★★ 核心修复：在这里重新获取一次完整的项目详情 ★★★
-        logger.debug(f"  -> {log_prefix} 正在获取 '{item_name_for_log}' 的完整详情以确保演员信息存在...")
-        full_item_details = emby_handler.get_emby_item_details(
-            item_id, self.emby_url, self.emby_api_key, self.emby_user_id
-        )
-
-        if not full_item_details:
-            logger.error(f"  -> {log_prefix} 无法获取项目 {item_id} 的完整详情，元数据备份中止。")
-            return
+        # ★★★ 核心修改 1: 如果没有外部传入的演员表，才重新获取详情 ★★★
+        full_item_details = item_details
+        if not final_cast_override:
+            logger.debug(f"  -> {log_prefix} 未提供覆盖演员表，正在获取 '{item_name_for_log}' 的完整详情...")
+            full_item_details = emby_handler.get_emby_item_details(
+                item_id, self.emby_url, self.emby_api_key, self.emby_user_id
+            )
+            if not full_item_details:
+                logger.error(f"  -> {log_prefix} 无法获取项目 {item_id} 的完整详情，元数据备份中止。")
+                return
         
         # 从这里开始，所有对 item_details 的引用都应改为 full_item_details
         item_type = full_item_details.get("Type")
@@ -2462,7 +2465,21 @@ class MediaProcessor:
             return
 
         # 2. 获取 Emby 中的“完美演员表”作为我们的目标 (使用修复后的对象)
-        emby_people = full_item_details.get("People", []) # <--- 现在这里总能拿到数据了
+        emby_people = []
+        if final_cast_override:
+            logger.debug(f"  -> {log_prefix} 使用了从主流程直接传入的 {len(final_cast_override)} 位演员作为数据源。")
+            # 需要将 final_cast_override 的格式适配为 emby_people 的格式
+            for actor in final_cast_override:
+                emby_people.append({
+                    "Type": "Actor",
+                    "Id": actor.get("emby_person_id"),
+                    "Name": actor.get("name"),
+                    "Role": actor.get("character")
+                })
+        else:
+            emby_people = full_item_details.get("People", [])
+            logger.debug(f"  -> {log_prefix} 使用从Emby重新获取的 {len([p for p in emby_people if p.get('Type') == 'Actor'])} 位演员作为数据源。")
+
         if not emby_people:
             logger.debug(f"  -> {log_prefix} Emby中确实没有演员信息，无需重建演员表。")
             return
@@ -2592,7 +2609,10 @@ class MediaProcessor:
             except Exception as e_list:
                 logger.error(f"  -> {log_prefix} 遍历并更新季/集文件时发生错误: {e_list}", exc_info=True)
 
-    def sync_single_item_assets(self, item_id: str, update_description: Optional[str] = None, sync_timestamp_iso: Optional[str] = None):
+    def sync_single_item_assets(self, item_id: str, 
+                                update_description: Optional[str] = None, 
+                                sync_timestamp_iso: Optional[str] = None,
+                                final_cast_override: Optional[List[Dict[str, Any]]] = None):
         """
         【V1.5 - 任务队列版】为单个媒体项同步图片和元数据文件。
         - 职责单一化：只负责执行备份。并发控制和冷却逻辑已移交至任务管理器和调用方。
@@ -2621,7 +2641,7 @@ class MediaProcessor:
             self.sync_item_images(item_details, update_description)
             
             # 2. 同步元数据文件
-            self.sync_item_metadata(item_details, tmdb_id)
+            self.sync_item_metadata(item_details, tmdb_id, final_cast_override=final_cast_override)
 
             # 3. 记录本次同步的时间戳
             timestamp_to_log = sync_timestamp_iso or datetime.now(timezone.utc).isoformat()
