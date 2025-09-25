@@ -36,12 +36,14 @@ def get_all_templates():
 @user_management_bp.route('/api/admin/user_templates', methods=['POST'])
 @login_required
 def create_template():
-    """【V2 - 记录源用户】创建一个新的用户模板"""
+    """【V3 - 支持首选项】创建一个新的用户模板"""
     data = request.json
     name = data.get('name')
     description = data.get('description')
     default_expiration_days = data.get('default_expiration_days', 30)
     source_emby_user_id = data.get('source_emby_user_id')
+    # ★★★ 新增：接收是否包含首选项的标志 ★★★
+    include_configuration = data.get('include_configuration', False)
 
     if not name or not source_emby_user_id:
         return jsonify({"status": "error", "message": "模板名称和源用户ID不能为空"}), 400
@@ -55,16 +57,20 @@ def create_template():
             return jsonify({"status": "error", "message": "无法获取源用户的权限策略"}), 404
         
         policy_json = json.dumps(user_details['Policy'], ensure_ascii=False)
+        # ★★★ 新增：根据标志决定是否保存首选项 ★★★
+        configuration_json = None
+        if include_configuration and 'Configuration' in user_details:
+            configuration_json = json.dumps(user_details['Configuration'], ensure_ascii=False)
 
         with connection.get_db_connection() as conn:
             cursor = conn.cursor()
-            # ★★★ 核心修复：在 INSERT 语句中增加 source_emby_user_id ★★★
+            # ★★★ 核心修改：在 INSERT 语句中增加 emby_configuration_json ★★★
             cursor.execute(
                 """
-                INSERT INTO user_templates (name, description, emby_policy_json, default_expiration_days, source_emby_user_id)
-                VALUES (%s, %s, %s, %s, %s) RETURNING id
+                INSERT INTO user_templates (name, description, emby_policy_json, default_expiration_days, source_emby_user_id, emby_configuration_json)
+                VALUES (%s, %s, %s, %s, %s, %s) RETURNING id
                 """,
-                (name, description, policy_json, default_expiration_days, source_emby_user_id)
+                (name, description, policy_json, default_expiration_days, source_emby_user_id, configuration_json)
             )
             new_id = cursor.fetchone()['id']
             conn.commit()
@@ -76,80 +82,86 @@ def create_template():
 @user_management_bp.route('/api/admin/user_templates/<int:template_id>/sync', methods=['POST'])
 @login_required
 def sync_template(template_id):
-    """【V2 - 增加权限推送】从源用户同步并更新一个模板的权限策略，并将其应用到所有关联用户。"""
+    """【V3 - 修正版】从源用户同步并更新模板，并将其应用到所有关联用户。"""
     try:
         with connection.get_db_connection() as conn:
             cursor = conn.cursor()
             
-            # 1. 查找模板并获取其源用户ID (逻辑不变)
-            cursor.execute("SELECT source_emby_user_id, name FROM user_templates WHERE id = %s", (template_id,))
+            cursor.execute("SELECT source_emby_user_id, name, emby_configuration_json IS NOT NULL as has_config FROM user_templates WHERE id = %s", (template_id,))
             template = cursor.fetchone()
-            if not template:
-                return jsonify({"status": "error", "message": "模板不存在"}), 404
+            if not template: return jsonify({"status": "error", "message": "模板不存在"}), 404
             
             source_user_id = template.get('source_emby_user_id')
             template_name = template.get('name')
-            if not source_user_id:
-                return jsonify({"status": "error", "message": f"无法同步：模板 '{template_name}' 没有记录源用户信息。"}), 400
+            template_has_config = template.get('has_config')
+            if not source_user_id: return jsonify({"status": "error", "message": f"无法同步：模板 '{template_name}' 没有记录源用户信息。"}), 400
 
-            logger.info(f"正在为模板 '{template_name}' 从源用户 {source_user_id} 同步最新权限...")
+            logger.info(f"正在为模板 '{template_name}' 从源用户 {source_user_id} 同步最新权限和首选项...")
 
-            # 2. 从源用户获取最新的权限策略 (逻辑不变)
             config = config_manager.APP_CONFIG
             user_details = emby_handler.get_user_details(
                 source_user_id, config.get("emby_server_url"), config.get("emby_api_key")
             )
-            if not user_details or 'Policy' not in user_details:
-                return jsonify({"status": "error", "message": "无法获取源用户的最新权限策略。"}), 404
+            if not user_details or 'Policy' not in user_details: return jsonify({"status": "error", "message": "无法获取源用户的最新权限策略。"}), 404
             
             new_policy_json = json.dumps(user_details['Policy'], ensure_ascii=False)
-            new_policy_dict = user_details['Policy'] # 我们需要字典格式用于推送
+            new_policy_dict = user_details['Policy']
+            
+            new_config_json = None
+            new_config_dict = None
+            if template_has_config and 'Configuration' in user_details:
+                new_config_json = json.dumps(user_details['Configuration'], ensure_ascii=False)
+                new_config_dict = user_details['Configuration']
 
-            # 3. 更新数据库中的模板 (逻辑不变)
             cursor.execute(
-                "UPDATE user_templates SET emby_policy_json = %s WHERE id = %s",
-                (new_policy_json, template_id)
+                "UPDATE user_templates SET emby_policy_json = %s, emby_configuration_json = %s WHERE id = %s",
+                (new_policy_json, new_config_json, template_id)
             )
             logger.info(f"模板 '{template_name}' 的数据库记录已更新。")
 
-            # ★★★ 核心修复：增加权限推送逻辑 ★★★
-            # 4. 查找所有使用此模板的用户
             cursor.execute(
                 "SELECT u.id, u.name FROM emby_users_extended uex JOIN emby_users u ON uex.emby_user_id = u.id WHERE uex.template_id = %s",
                 (template_id,)
             )
             users_to_update = cursor.fetchall()
             
-            total_users = len(users_to_update)
-            if total_users > 0:
-                logger.warning(f"检测到 {total_users} 个用户正在使用此模板，将开始逐一推送新权限...")
-                
-                successful_pushes = 0
-                # 5. 循环为每个用户应用新策略
-                for i, user in enumerate(users_to_update):
+            successful_pushes = 0
+            if users_to_update:
+                logger.warning(f"检测到 {len(users_to_update)} 个用户正在使用此模板，将开始逐一推送新配置...")
+                for user in users_to_update:
                     user_id = user['id']
                     user_name = user['name']
-                    logger.info(f"  -> ({i+1}/{total_users}) 正在将新权限应用到用户 '{user_name}'...")
+                    logger.info(f"  -> 正在将新配置应用到用户 '{user_name}'...")
                     
+                    # ★★★ 核心修正：将 (...) 替换为完整的函数参数 ★★★
                     policy_applied = emby_handler.force_set_user_policy(
-                        user_id, new_policy_dict,
-                        config.get("emby_server_url"), config.get("emby_api_key")
+                        user_id, 
+                        new_policy_dict,
+                        config.get("emby_server_url"), 
+                        config.get("emby_api_key")
                     )
-                    if policy_applied:
+                    
+                    config_applied = True
+                    if new_config_dict:
+                        config_applied = emby_handler.force_set_user_configuration(
+                            user_id, new_config_dict,
+                            config.get("emby_server_url"), config.get("emby_api_key")
+                        )
+
+                    if policy_applied and config_applied:
                         successful_pushes += 1
                     else:
-                        logger.error(f"  -> 为用户 '{user_name}' (ID: {user_id}) 推送新权限失败！")
+                        logger.error(f"  -> 为用户 '{user_name}' (ID: {user_id}) 推送新配置失败！")
                     
-                    # 添加一个小延迟，避免瞬间大量API请求冲击Emby服务器
                     time.sleep(0.2)
                 
-                logger.info(f"权限推送完成！共成功更新了 {successful_pushes}/{total_users} 个用户。")
+                logger.info(f"配置推送完成！共成功更新了 {successful_pushes}/{len(users_to_update)} 个用户。")
             else:
-                logger.info("没有用户正在使用此模板，无需推送权限。")
+                logger.info("没有用户正在使用此模板，无需推送配置。")
 
             conn.commit()
             
-            return jsonify({"status": "ok", "message": f"模板权限已更新，并已成功应用到 {successful_pushes} 个用户！"}), 200
+            return jsonify({"status": "ok", "message": f"模板已更新，并已成功应用到 {successful_pushes} 个用户！"}), 200
 
     except Exception as e:
         logger.error(f"同步模板 {template_id} 时发生严重错误: {e}", exc_info=True)
@@ -294,8 +306,17 @@ def register_with_invite():
                 conn.rollback()
                 logger.error(f"用户 {username} (ID: {new_user_id}) 创建成功，但应用模板权限失败！已回滚。")
                 return jsonify({"status": "error", "message": "应用模板权限失败，请联系管理员"}), 500
+            
+            # ★★★ 3. 应用首选项配置 ★★★
+            template_config = template.get('emby_configuration_json')
+            if template_config:
+                logger.info(f"正在为新用户 {username} 应用模板中的个性化首选项...")
+                emby_handler.force_set_user_configuration(
+                    new_user_id, template_config,
+                    config.get("emby_server_url"), config.get("emby_api_key")
+                )
 
-            # 3. 后续的数据库操作保持不变
+            # 4. 后续的数据库操作保持不变
             cursor.execute(
                 "INSERT INTO emby_users (id, name, is_administrator) VALUES (%s, %s, %s)",
                 (new_user_id, username, False)
@@ -464,8 +485,7 @@ def get_all_managed_users():
 @login_required
 def change_user_template(user_id):
     """
-    【V5 - 职责分离最终版】为一个现有用户切换模板并应用新权限。
-    - 此操作只修改用户的权限策略和模板关联，不以任何方式影响其有效期。
+    【V6 - 支持首选项】为一个现有用户切换模板并应用新权限和首选项。
     """
     data = request.json
     new_template_id = data.get('template_id')
@@ -474,10 +494,13 @@ def change_user_template(user_id):
         return jsonify({"status": "error", "message": "必须提供新的模板ID"}), 400
 
     try:
+        # ★★★ 核心修正：在这里定义 config 变量 ★★★
+        config = config_manager.APP_CONFIG
+        
         with connection.get_db_connection() as conn:
             cursor = conn.cursor()
             
-            # --- 获取用户名和模板名用于日志 (保持不变) ---
+            # --- 获取用户名和模板名用于日志 ---
             user_name_for_log = user_id
             new_template_name = f"ID:{new_template_id}"
             try:
@@ -492,16 +515,14 @@ def change_user_template(user_id):
                 pass
             logger.info(f"准备为用户 '{user_name_for_log}' 切换模板至 '{new_template_name}'...")
 
-            # 1. 从新模板中获取权限策略
-            cursor.execute("SELECT emby_policy_json FROM user_templates WHERE id = %s", (new_template_id,))
+            # 1. 从新模板中获取权限策略和首选项
+            cursor.execute("SELECT emby_policy_json, emby_configuration_json FROM user_templates WHERE id = %s", (new_template_id,))
             template = cursor.fetchone()
             if not template:
                 return jsonify({"status": "error", "message": "模板不存在"}), 404
             
+            # 2. 应用权限
             template_policy = template['emby_policy_json']
-            
-            # 2. 调用 Emby Handler 将新策略应用到用户
-            config = config_manager.APP_CONFIG
             policy_applied = emby_handler.force_set_user_policy(
                 user_id, template_policy,
                 config.get("emby_server_url"), config.get("emby_api_key")
@@ -510,8 +531,15 @@ def change_user_template(user_id):
             if not policy_applied:
                 return jsonify({"status": "error", "message": "在 Emby 中应用新模板权限失败"}), 500
             
-            # 3. ★★★ 核心修复：执行智能 UPSERT，但只更新 template_id ★★★
-            # 这个操作现在不会再触碰任何与有效期相关的字段。
+            # 3. 应用首选项
+            template_config = template.get('emby_configuration_json')
+            if template_config:
+                emby_handler.force_set_user_configuration(
+                    user_id, template_config,
+                    config.get("emby_server_url"), config.get("emby_api_key")
+                )
+
+            # 4. 更新数据库中的模板关联
             upsert_sql = """
                 INSERT INTO emby_users_extended (emby_user_id, template_id, status, created_by)
                 VALUES (%s, %s, 'active', 'admin-assigned')
@@ -523,7 +551,7 @@ def change_user_template(user_id):
             conn.commit()
             logger.info(f"用户 '{user_name_for_log}' 的模板已成功切换，有效期保持不变。")
 
-        return jsonify({"status": "ok", "message": "用户模板已成功切换并应用新权限"}), 200
+        return jsonify({"status": "ok", "message": "用户模板已成功切换并应用新配置"}), 200
     except Exception as e:
         logger.error(f"切换用户 {user_id} 的模板时出错: {e}", exc_info=True)
         return jsonify({"status": "error", "message": "切换模板失败"}), 500

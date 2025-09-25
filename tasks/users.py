@@ -248,9 +248,18 @@ def task_auto_sync_template_on_policy_change(processor, updated_user_id: str):
                 new_policy_json = json.dumps(user_details['Policy'], ensure_ascii=False)
                 new_policy_dict = user_details['Policy']
 
+                # ★★★ 新增：同步首选项逻辑 ★★★
+                new_config_json = None
+                new_config_dict = None
+                # 检查模板是否原本就存了首选项，如果存了才更新
+                cursor.execute("SELECT emby_configuration_json IS NOT NULL as has_config FROM user_templates WHERE id = %s", (template_id,))
+                if cursor.fetchone()['has_config'] and 'Configuration' in user_details:
+                    new_config_json = json.dumps(user_details['Configuration'], ensure_ascii=False)
+                    new_config_dict = user_details['Configuration']
+
                 cursor.execute(
-                    "UPDATE user_templates SET emby_policy_json = %s WHERE id = %s",
-                    (new_policy_json, template_id)
+                    "UPDATE user_templates SET emby_policy_json = %s, emby_configuration_json = %s WHERE id = %s",
+                    (new_policy_json, new_config_json, template_id)
                 )
 
                 cursor.execute(

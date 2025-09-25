@@ -57,6 +57,13 @@
             重要：模板的权限将完全复制您在此选择的源用户的当前权限设置，后续更改了源用户的权限，模板以及模板绑定的用户会自动同步权限。
           </template>
         </n-form-item>
+        <!-- ★★★ 同步首选项的开关 ★★★ -->
+        <n-form-item label="同步首选项" path="include_configuration">
+          <n-switch v-model:value="formModel.include_configuration" />
+          <template #feedback>
+            开启后，模板将额外包含源用户的个性化设置（如主屏幕布局、播放和字幕偏好等）。
+          </template>
+        </n-form-item>
       </n-form>
       <template #footer>
         <n-button @click="isModalVisible = false">取消</n-button>
@@ -106,6 +113,7 @@ const formModel = ref({
   description: '',
   default_expiration_days: 30,
   source_emby_user_id: null,
+  include_configuration: true,
 });
 
 const rules = {
@@ -144,6 +152,7 @@ const handleCreate = () => {
     description: '',
     default_expiration_days: 30,
     source_emby_user_id: null,
+    include_configuration: true,
   };
   isModalVisible.value = true;
 };

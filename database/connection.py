@@ -466,7 +466,9 @@ def init_db():
                             "allowed_user_ids": "JSONB" 
                         },
                         'user_templates': {
-                            "source_emby_user_id": "TEXT"
+                            "source_emby_user_id": "TEXT",
+                            "emby_configuration_json": "JSONB",
+                            "emby_display_preferences_json": "JSONB"
                         },
                         'emby_users_extended': {
                             "template_id": "INTEGER"

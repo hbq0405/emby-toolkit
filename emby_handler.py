@@ -1742,27 +1742,89 @@ def set_user_disabled_status(
         return False
 def get_user_details(user_id: str, base_url: str, api_key: str) -> Optional[Dict[str, Any]]:
     """
-    【新增】专门用于获取单个 Emby 用户完整详情的函数。
-    
-    :param user_id: 目标用户的 ID。
-    :return: 包含用户详情的字典，如果失败则返回 None。
+    【V3 - 智能兼容最终版】获取用户的完整详情，同时包含 Policy 和 Configuration。
+    能够兼容不支持独立 /Configuration 接口的旧版 Emby。
     """
-    # ★★★ 核心：使用正确的 API 端点 /Users/{Id} ★★★
-    url = f"{base_url}/Users/{user_id}"
+    details = {}
     headers = {"X-Emby-Token": api_key, "Accept": "application/json"}
     
+    # 1. 总是先调用基础的用户信息接口
+    user_info_url = f"{base_url}/Users/{user_id}"
     try:
-        response = requests.get(url, headers=headers, timeout=10)
-        
-        if response.status_code == 200:
-            return response.json()
-        else:
-            logger.warning(f"获取 Emby 用户详情失败 (ID: {user_id})。状态码: {response.status_code}")
-            return None
-            
-    except requests.exceptions.RequestException as e:
-        logger.error(f"请求 Emby 用户详情时发生网络错误 (ID: {user_id}): {e}", exc_info=True)
+        response = requests.get(user_info_url, headers=headers, timeout=10)
+        response.raise_for_status()
+        user_data = response.json()
+        details.update(user_data)
+    except requests.RequestException as e:
+        logger.error(f"获取用户 {user_id} 的基础信息和 Policy 失败: {e}")
         return None
+
+    # ★★★ 核心修正：智能判断是否需要再次请求 ★★★
+    # 2. 如果基础信息中已经包含了 Configuration (旧版 Emby 的行为)，我们就不再需要额外请求。
+    if 'Configuration' in details:
+        logger.trace(f"  -> 已从主用户接口获取到 Configuration (旧版 Emby 模式)。")
+        return details
+
+    # 3. 如果基础信息中没有，再尝试请求专用的 Configuration 接口 (新版 Emby 的行为)。
+    logger.trace(f"  -> 主用户接口未返回 Configuration，尝试请求专用接口 (新版 Emby 模式)...")
+    config_url = f"{base_url}/Users/{user_id}/Configuration"
+    try:
+        response = requests.get(config_url, headers=headers, timeout=10)
+        response.raise_for_status()
+        details['Configuration'] = response.json()
+    except requests.RequestException as e:
+        # 如果专用接口不存在，这不是一个错误，只是版本差异。
+        if hasattr(e, 'response') and e.response is not None and e.response.status_code == 404:
+            logger.warning(f"  -> 专用 /Configuration 接口不存在，您的 Emby 版本可能较旧。将跳过首选项同步。")
+        else:
+            # 其他网络错误则需要记录
+            logger.error(f"请求专用 /Configuration 接口时发生未知错误: {e}")
+    
+    return details
+
+def force_set_user_configuration(user_id: str, configuration_dict: Dict[str, Any], base_url: str, api_key: str) -> bool:
+    """
+    【V3 - 智能兼容最终版】为一个用户强制设置首选项。
+    优先尝试新版专用接口，如果失败则回退到兼容旧版的完整更新模式。
+    """
+    # 策略1：优先尝试新版的、高效的专用接口
+    url = f"{base_url}/Users/{user_id}/Configuration"
+    headers = {"X-Emby-Token": api_key, "Content-Type": "application/json"}
+    try:
+        response = requests.post(url, headers=headers, json=configuration_dict, timeout=15)
+        response.raise_for_status()
+        logger.info(f"成功为用户 {user_id} 应用了个性化配置 (新版接口)。")
+        return True
+    except requests.RequestException as e:
+        # 如果是因为接口不存在 (404)，则启动备用策略
+        if hasattr(e, 'response') and e.response is not None and e.response.status_code == 404:
+            logger.warning(f"  -> 专用 /Configuration 接口不存在，将回退到兼容模式更新用户 {user_id} 的首选项...")
+            
+            # 策略2：回退到旧版的、兼容的完整更新模式
+            # a. 先获取当前用户的完整对象
+            full_user_object = get_user_details(user_id, base_url, api_key)
+            if not full_user_object:
+                logger.error(f"回退模式失败：无法获取用户 {user_id} 的当前完整信息。")
+                return False
+            
+            # b. 将新的首选项合并到这个完整对象中
+            full_user_object['Configuration'] = configuration_dict
+            
+            # c. 提交这个完整的对象进行更新
+            update_url = f"{base_url}/Users/{user_id}"
+            update_response = requests.post(update_url, headers=headers, json=full_user_object, timeout=15)
+            
+            try:
+                update_response.raise_for_status()
+                logger.info(f"成功为用户 {user_id} 应用了个性化配置 (兼容模式)。")
+                return True
+            except requests.RequestException as update_e:
+                logger.error(f"在兼容模式下更新用户 {user_id} 时失败: {update_e}")
+                return False
+        else:
+            # 如果是其他错误，则正常报错
+            logger.error(f"为用户 {user_id} 应用个性化配置时失败: {e}")
+            return False
 def check_if_user_exists(username: str, base_url: str, api_key: str) -> bool:
     """
     检查指定的用户名是否已在 Emby 中存在。
