@@ -16,7 +16,7 @@
           <span class="card-title">高频刷新任务链</span>
         </template>
         <template #header-extra>
-          <n-text depth="3">建议三小时执行一次，保证实时数据更新，及时订阅资源</n-text>
+          <n-text depth="3">建议白天两小时执行一次，保证实时数据更新，及时订阅资源</n-text>
         </template>
         
         <n-grid cols="1 l:3" :x-gap="24" :y-gap="16" responsive="screen">
@@ -30,7 +30,7 @@
               </n-space>
               <n-form :model="configModel" label-placement="left" label-width="auto" class="mt-3" :show-feedback="false">
                 <n-form-item label="定时执行 (CRON)">
-                  <n-input v-model:value="configModel.task_chain_cron" :disabled="!configModel.task_chain_enabled" placeholder="例如: 0 */3 * * *" />
+                  <n-input v-model:value="configModel.task_chain_cron" :disabled="!configModel.task_chain_enabled" placeholder="例如: 0 7-23/2 * * *" />
                 </n-form-item>
                 <n-form-item label="最大运行时长 (分钟)">
                   <n-input-number 
@@ -83,7 +83,7 @@
           <span class="card-title">低频维护任务链</span>
         </template>
         <template #header-extra>
-          <n-text depth="3">建议夜里空闲时间段，处理资源密集型任务</n-text>
+          <n-text depth="3">建议夜里空闲时间段执行并限制任务时长，处理资源密集型任务</n-text>
         </template>
         
         <n-grid cols="1 l:3" :x-gap="24" :y-gap="16" responsive="screen">
