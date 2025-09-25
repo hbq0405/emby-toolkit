@@ -1532,7 +1532,7 @@ def delete_person_custom_api(base_url: str, api_key: str, person_id: str) -> boo
         # 这个接口是 POST 请求
         response = requests.post(api_url, headers=headers, params=params, timeout=api_timeout)
         response.raise_for_status()
-        logger.info(f"  -> ✅ 成功使用临时令牌删除演员 ID: {person_id}。")
+        logger.info(f"  -> ✅ 成功删除演员 ID: {person_id}。")
         return True
     except requests.exceptions.HTTPError as e:
         # 404 Not Found 意味着这个专用接口在您的服务器上不存在

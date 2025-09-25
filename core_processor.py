@@ -1501,6 +1501,7 @@ class MediaProcessor:
             if not item_details:
                 raise ValueError(f"无法获取项目 {item_id} 的详情。")
             item_type = item_details.get("Type")
+            tmdb_id = item_details.get("ProviderIds", {}).get("Tmdb")
 
             # 1.2 将前端数据转换为 Emby Handler 需要的格式
             cast_for_emby_handler = []
@@ -1515,6 +1516,17 @@ class MediaProcessor:
                     "emby_person_id": emby_pid,
                     "provider_ids": {"Tmdb": actor.get("tmdbId")}
                 })
+
+            actors_for_cache = []
+            for i, actor in enumerate(manual_cast_list):
+                actors_for_cache.append({
+                    "id": actor.get("tmdbId"),
+                    "name": actor.get("name"),
+                    "character": actor.get("role"),
+                    "order": i # 使用循环索引作为排序依据
+                })
+            # 将列表转换为 JSON 字符串，准备写入数据库
+            new_actors_json = json.dumps(actors_for_cache, ensure_ascii=False)
 
             # ======================================================================
             # ★★★ 新增功能 1: 更新翻译缓存 ★★★
@@ -1626,6 +1638,19 @@ class MediaProcessor:
             # ======================================================================
             with get_central_db_connection() as conn:
                 cursor = conn.cursor()
+                if tmdb_id and item_type:
+                    try:
+                        logger.debug(f"  -> 正在为 TMDb ID {tmdb_id} 更新 media_metadata 缓存中的演员表...")
+                        sql_update_actors = """
+                            UPDATE media_metadata
+                            SET actors_json = %s, last_synced_at = NOW()
+                            WHERE tmdb_id = %s AND item_type = %s
+                        """
+                        cursor.execute(sql_update_actors, (new_actors_json, tmdb_id, item_type))
+                        logger.info("  -> 成功同步手动编辑的演员列表到 media_metadata 缓存。")
+                    except Exception as e_cache:
+                        # 只记录错误，不中断主流程
+                        logger.error(f"  -> 更新 media_metadata 缓存失败: {e_cache}", exc_info=True)
                 self.log_db_manager.save_to_processed_log(cursor, item_id, item_name, score=10.0)
                 self.log_db_manager.remove_from_failed_log(cursor, item_id)
 

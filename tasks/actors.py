@@ -466,9 +466,9 @@ def task_purge_ghost_actors(processor):
                             )
                             # 记录数据库操作结果
                             if cursor.rowcount > 0:
-                                logger.debug(f"  -> 同步成功: 已从 person_identity_map 中移除 ID '{person_id}'。")
+                                logger.info(f"  -> 同步成功: 已从 person_identity_map 中移除 ID '{person_id}'。")
                             else:
-                                logger.debug(f"  -> 同步提醒: 在 person_identity_map 中未找到 ID '{person_id}'，无需删除。")
+                                logger.info(f"  -> 同步提醒: 在 person_identity_map 中未找到 ID '{person_id}'，无需删除。")
                 except Exception as db_exc:
                     logger.error(f"      -> 同步失败: 尝试从 person_identity_map 删除 ID '{person_id}' 时出错: {db_exc}")
             
