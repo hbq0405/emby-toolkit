@@ -35,29 +35,41 @@ def json_datetime_serializer(obj):
 
 def _get_all_stats_in_one_query(cursor: psycopg2.extensions.cursor) -> dict:
     """
-    【V4 - 再次修复洗版统计】
-    - 确保能正确统计到所有需要洗版的项目。
+    【V10 - UI重构终版】
+    - 新增“已缓存媒体总数” (在库+缺失)。
+    - 新增“已禁用用户数”统计。
     """
     sql = """
     SELECT
-        -- 核心媒体库
-        (SELECT COUNT(*) FROM media_metadata) AS media_total,
-        COUNT(*) FILTER (WHERE item_type = 'Movie') AS media_movies,
-        COUNT(*) FILTER (WHERE item_type = 'Series') AS media_series,
-        (SELECT COUNT(*) FROM users) AS users_total,
+        -- 核心媒体库 (精确统计)
+        (SELECT COUNT(*) FROM media_metadata) AS media_cached_total, -- ★ 新增：缓存总数
+        (SELECT COUNT(*) FROM media_metadata WHERE in_library = TRUE) AS media_in_library_total,
+        COUNT(*) FILTER (WHERE item_type = 'Movie' AND in_library = TRUE) AS media_movies_in_library,
+        COUNT(*) FILTER (WHERE item_type = 'Series' AND in_library = TRUE) AS media_series_in_library,
+        (SELECT COUNT(*) FROM media_metadata WHERE in_library = FALSE) AS media_missing_total,
+        
+        -- 用户与邀请
+        (SELECT COUNT(*) FROM emby_users) AS emby_users_total,
+        (SELECT COUNT(*) FROM emby_users_extended WHERE status = 'active') AS emby_users_active,
+        (SELECT COUNT(*) FROM emby_users_extended WHERE status = 'disabled') AS emby_users_disabled, -- ★ 新增：已禁用用户
+        
+        -- 自动化维护
+        (SELECT COUNT(*) FROM media_cleanup_tasks WHERE status = 'pending') AS cleanup_tasks_pending,
+        (SELECT COUNT(*) FROM resubscribe_rules WHERE enabled = TRUE) AS resubscribe_rules_enabled,
+
         -- 合集管理
         (SELECT COUNT(*) FROM collections_info) AS collections_tmdb_total,
         (SELECT COUNT(*) FROM collections_info WHERE has_missing = TRUE) AS collections_with_missing,
         (SELECT COUNT(*) FROM custom_collections WHERE status = 'active') AS collections_custom_active,
-        -- 订阅服务: 追剧
+        
+        -- 订阅服务
         (SELECT COUNT(*) FROM watchlist WHERE status = 'Watching') AS watchlist_active,
         (SELECT COUNT(*) FROM watchlist WHERE status = 'Paused') AS watchlist_paused,
-        -- 订阅服务: 演员
         (SELECT COUNT(*) FROM actor_subscriptions WHERE status = 'active') AS actor_subscriptions_active,
         (SELECT COUNT(*) FROM tracked_actor_media) AS tracked_media_total,
         (SELECT COUNT(*) FROM tracked_actor_media WHERE status = 'IN_LIBRARY') AS tracked_media_in_library,
-        -- 洗版
         (SELECT COUNT(*) FROM resubscribe_cache WHERE status ILIKE 'needed') AS resubscribe_pending,
+        
         -- 系统与缓存
         (SELECT COUNT(*) FROM person_identity_map) AS actor_mappings_count,
         (SELECT COUNT(*) FROM translation_cache) AS translation_cache_count,
@@ -79,8 +91,8 @@ def _get_all_stats_in_one_query(cursor: psycopg2.extensions.cursor) -> dict:
 @login_required
 def api_get_database_stats():
     """
-    【V6 - 配额计算逻辑修复】
-    彻底修复因总配额下调导致的“已用”配额为负数的BUG。
+    【V10 - UI重构终版】
+    - 更新API数据结构以匹配前端UI的最新调整。
     """
     try:
         with connection.get_db_connection() as conn:
@@ -91,29 +103,38 @@ def api_get_database_stats():
             if not raw_stats:
                 raise RuntimeError("未能从数据库获取统计数据。")
 
-            # ★★★ 核心修复：采用全新的、更健壮的配额计算方法 ★★★
-            # 1. 获取当前可用的剩余配额
+            # 配额计算 (保持不变)
             available_quota = settings_db.get_subscription_quota()
-            # 2. 获取当前配置的总配额
             total_quota = config_manager.APP_CONFIG.get(constants.CONFIG_OPTION_RESUBSCRIBE_DAILY_CAP, 200)
-            # 3. 计算已用配额，并确保它永远不会是负数
-            #    即使 available_quota 因某种原因 > total_quota (例如刚下调总数)，已用也应视为0
             consumed_quota = max(0, total_quota - available_quota)
 
-            # 按照前端UI布局，将数据重新组织成更清晰的结构
+            # ★★★ 核心修改：更新数据结构以匹配前端UI重构 ★★★
             stats = {
-                # 卡片1: 核心媒体库
-                'media_metadata': {
-                    "total": raw_stats.get('media_total', 0),
-                    "movies": raw_stats.get('media_movies', 0),
-                    "series": raw_stats.get('media_series', 0),
+                # 卡片1: 核心媒体库 (数据更新)
+                'media_library': {
+                    "cached_total": raw_stats.get('media_cached_total', 0), # ★ 修改
+                    "in_library_total": raw_stats.get('media_in_library_total', 0),
+                    "movies_in_library": raw_stats.get('media_movies_in_library', 0),
+                    "series_in_library": raw_stats.get('media_series_in_library', 0),
+                    "missing_total": raw_stats.get('media_missing_total', 0),
                 },
-                # 卡片2: 合集管理 (简化)
+                # 卡片2: 合集管理
                 'collections_card': {
                     "total_tmdb_collections": raw_stats.get('collections_tmdb_total', 0),
                     "total_custom_collections": raw_stats.get('collections_custom_active', 0),
                 },
-                # 卡片3: 订阅中心 (重构)
+                # 卡片3: 用户与邀请 (数据更新)
+                'user_management_card': {
+                    "emby_users_total": raw_stats.get('emby_users_total', 0),
+                    "emby_users_active": raw_stats.get('emby_users_active', 0),
+                    "emby_users_disabled": raw_stats.get('emby_users_disabled', 0), # ★ 修改
+                },
+                # 卡片4: 自动化维护
+                'maintenance_card': {
+                    "cleanup_tasks_pending": raw_stats.get('cleanup_tasks_pending', 0),
+                    "resubscribe_rules_enabled": raw_stats.get('resubscribe_rules_enabled', 0),
+                },
+                # 卡片5: 订阅中心
                 'subscriptions_card': {
                     'watchlist': {
                         'watching': raw_stats.get('watchlist_active', 0),
@@ -135,7 +156,7 @@ def api_get_database_stats():
                         'consumed': consumed_quota,
                     }
                 },
-                # 卡片4: 系统与缓存
+                # 卡片6: 系统与缓存
                 'system': {
                     "actor_mappings_count": raw_stats.get('actor_mappings_count', 0),
                     "translation_cache_count": raw_stats.get('translation_cache_count', 0),
@@ -150,7 +171,6 @@ def api_get_database_stats():
         logger.error(f"获取数据库统计信息时发生严重错误: {e}", exc_info=True)
         return jsonify({"error": "获取数据库统计信息时发生服务器内部错误"}), 500
 
-# ... (文件其余部分保持不变) ...
 def _count_table_rows(cursor: psycopg2.extensions.cursor, table_name: str, condition: str = "") -> int:
     """一个通用的表行数计数辅助函数，增加错误处理。"""
     try:

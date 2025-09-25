@@ -1,8 +1,22 @@
-<!-- src/components/DatabaseStats.vue (精装修终版) -->
+<!-- src/components/DatabaseStats.vue (最终版 - 补全历史日志) -->
 <template>
  <n-layout content-style="padding: 24px;">
   <div>
-    <n-page-header class="card-title" title="数据看板" subtitle="了解您媒体库的核心数据统计" style="margin-bottom: 24px;"></n-page-header>
+    <!-- ★★★ 核心修改1: 增加“历史日志”按钮，并用按钮组美化 ★★★ -->
+    <n-page-header title="数据看板" subtitle="了解您媒体库的核心数据统计" style="margin-bottom: 24px;">
+      <template #extra>
+        <n-button-group>
+          <n-button @click="isRealtimeLogVisible = true">
+            <template #icon><n-icon :component="ReaderOutline" /></template>
+            实时日志
+          </n-button>
+          <n-button @click="isHistoryLogVisible = true">
+            <template #icon><n-icon :component="ArchiveOutline" /></template>
+            历史日志
+          </n-button>
+        </n-button-group>
+      </template>
+    </n-page-header>
     
     <div v-if="loading" class="loading-container">
       <n-spin size="large" />
@@ -14,15 +28,15 @@
     </div>
 
     <n-grid v-else :x-gap="24" :y-gap="24" :cols="4" responsive="screen" item-responsive>
-      <!-- 卡片1: 核心媒体库 -->
+      <!-- 核心媒体库卡片 -->
       <n-gi span="4 m:2 l:1">
         <n-card :bordered="false" class="dashboard-card">
           <template #header>
             <span class="card-title">核心媒体库</span>
           </template>
           <n-space vertical size="large" align="center">
-            <n-statistic label="已索引媒体总数" class="centered-statistic">
-              <span class="stat-value">{{ stats.media_metadata?.total }}</span>
+            <n-statistic label="已缓存媒体" class="centered-statistic">
+              <span class="stat-value">{{ stats.media_library?.cached_total }}</span>
             </n-statistic>
             <n-divider />
             <n-space justify="space-around" style="width: 100%;">
@@ -32,7 +46,7 @@
                     <n-icon :size="14" :component="FilmIcon" color="#3366FF" />
                   </n-icon-wrapper>
                 </template>
-                {{ stats.media_metadata?.movies }}
+                {{ stats.media_library?.movies_in_library }}
               </n-statistic>
               <n-statistic label="剧集" class="centered-statistic">
                 <template #prefix>
@@ -40,14 +54,22 @@
                     <n-icon :size="14" :component="TvIcon" color="#33CC99" />
                   </n-icon-wrapper>
                 </template>
-                {{ stats.media_metadata?.series }}
+                {{ stats.media_library?.series_in_library }}
+              </n-statistic>
+              <n-statistic label="缺失" class="centered-statistic">
+                <template #prefix>
+                  <n-icon-wrapper :size="20" :border-radius="5" color="#FFCC3344">
+                    <n-icon :size="14" :component="FolderOpenOutline" color="#FFCC33" />
+                  </n-icon-wrapper>
+                </template>
+                {{ stats.media_library?.missing_total }}
               </n-statistic>
             </n-space>
           </n-space>
         </n-card>
       </n-gi>
 
-      <!-- 卡片2: 合集管理 -->
+      <!-- 合集管理卡片 -->
       <n-gi span="4 m:2 l:1">
         <n-card :bordered="false" class="dashboard-card">
           <template #header>
@@ -62,15 +84,48 @@
           </n-space>
         </n-card>
       </n-gi>
+
+      <!-- 用户与邀请卡片 -->
+      <n-gi span="4 m:2 l:1">
+        <n-card :bordered="false" class="dashboard-card">
+          <template #header>
+            <span class="card-title">用户与邀请</span>
+          </template>
+          <n-space vertical size="large" align="center">
+             <n-statistic label="Emby用户总数" class="centered-statistic" :value="stats.user_management_card?.emby_users_total" />
+             <n-divider />
+             <n-space justify="space-around" style="width: 100%;">
+                <n-statistic label="已激活" :value="stats.user_management_card?.emby_users_active" />
+                <n-statistic label="已禁用" :value="stats.user_management_card?.emby_users_disabled" />
+             </n-space>
+          </n-space>
+        </n-card>
+      </n-gi>
+
+      <!-- 自动化维护卡片 -->
+      <n-gi span="4 m:2 l:1">
+        <n-card :bordered="false" class="dashboard-card">
+          <template #header>
+            <span class="card-title">自动化维护</span>
+          </template>
+          <n-space vertical size="large" align="center">
+            <n-statistic label="待处理清理任务" class="centered-statistic" :value="stats.maintenance_card?.cleanup_tasks_pending" />
+            <n-divider />
+            <n-statistic label="已启用的洗版规则" class="centered-statistic">
+              <span class="stat-value">{{ stats.maintenance_card?.resubscribe_rules_enabled }}</span>
+            </n-statistic>
+          </n-space>
+        </n-card>
+      </n-gi>
       
-      <!-- ★★★ 卡片3: 订阅中心 (全新精装修布局) ★★★ -->
-      <n-gi span="4 m:4 l:2">
+      <!-- 订阅中心卡片 -->
+      <n-gi span="4 l:2">
         <n-card :bordered="false" class="dashboard-card">
           <template #header>
             <span class="card-title">订阅中心</span>
           </template>
+          <!-- ... (内部结构保持不变) ... -->
           <n-space vertical :size="24" class="subscription-center-card">
-            <!-- 分组1: 媒体追踪 -->
             <div class="section-container">
               <div class="section-title">媒体追踪</div>
               <n-grid :cols="2" :x-gap="12">
@@ -104,8 +159,6 @@
                 </n-gi>
               </n-grid>
             </div>
-
-            <!-- 分组2: 自动化订阅 -->
             <div class="section-container">
               <div class="section-title">自动化订阅</div>
               <n-grid :cols="2" :x-gap="12">
@@ -125,10 +178,7 @@
                 </n-gi>
               </n-grid>
             </div>
-
             <n-divider />
-
-            <!-- 分组3: 今日配额 -->
             <n-grid :cols="3" :x-gap="12" class="quota-grid">
               <n-gi class="quota-label-container">
                 <span>订阅配额</span>
@@ -150,7 +200,7 @@
         </n-card>
       </n-gi>
 
-      <!-- 卡片4: 系统与缓存 -->
+      <!-- 系统与缓存卡片 -->
       <n-gi span="4 l:2">
         <n-card :bordered="false" class="dashboard-card">
           <template #header>
@@ -158,46 +208,29 @@
           </template>
           <n-grid :x-gap="12" :y-gap="16" :cols="4" item-responsive>
             <n-gi span="2 s:1">
-              <n-statistic label="演员映射条目" class="centered-statistic" :value="stats.system?.actor_mappings_count" />
+              <n-statistic label="演员映射" class="centered-statistic" :value="stats.system?.actor_mappings_count" />
             </n-gi>
             <n-gi span="2 s:1">
-              <n-statistic label="翻译缓存条目" class="centered-statistic" :value="stats.system?.translation_cache_count" />
+              <n-statistic label="翻译缓存" class="centered-statistic" :value="stats.system?.translation_cache_count" />
             </n-gi>
             <n-gi span="2 s:1">
-              <n-statistic label="已处理" class="centered-statistic" :value="stats.system?.processed_log_count" />
+              <n-statistic label="已处理日志" class="centered-statistic" :value="stats.system?.processed_log_count" />
             </n-gi>
             <n-gi span="2 s:1">
-              <n-statistic label="待复核" class="centered-statistic" :value="stats.system?.failed_log_count" />
+              <n-statistic label="待复核日志" class="centered-statistic" :value="stats.system?.failed_log_count" />
             </n-gi>
           </n-grid>
         </n-card>
       </n-gi>
-
-      <!-- 卡片5: 实时日志 -->
-      <n-gi span="4 l:2">
-        <n-card 
-          :bordered="false" 
-          class="content-card dashboard-card"
-          style="display: flex; flex-direction: column; height: 100%;" 
-          content-style="flex-grow: 1; display: flex; flex-direction: column; padding: 0 24px 24px 24px;"
-          header-style="padding-bottom: 12px;"
-        >
-        <template #header>
-            <span class="card-title">实时日志</span>
-          </template>
-          <template #header-extra>
-            <n-button text @click="isLogViewerVisible = true" title="查看历史归档日志">
-              <template #icon><n-icon :component="DocumentTextOutline" /></template>
-              历史日志
-            </n-button>
-          </template>
-          <n-log ref="logRef" :log="logContent" trim class="log-panel" style="flex-grow: 1;"/>
-        </n-card>
-      </n-gi>
     </n-grid>
 
-    <!-- 历史日志查看器模态框 -->
-    <LogViewer v-model:show="isLogViewerVisible" />
+    <!-- 实时日志查看器模态框 -->
+    <n-modal v-model:show="isRealtimeLogVisible" preset="card" style="width: 80%; max-width: 900px;" title="实时任务日志">
+       <n-log ref="logRef" :log="logContent" trim class="log-panel" style="height: 60vh;"/>
+    </n-modal>
+
+    <!-- ★★★ 核心修改2: 重新引入历史日志查看器组件 ★★★ -->
+    <LogViewer v-model:show="isHistoryLogVisible" />
   </div>
   </n-layout>
 </template>
@@ -207,9 +240,16 @@ import { ref, onMounted, computed, watch, nextTick } from 'vue';
 import axios from 'axios';
 import { 
   NPageHeader, NGrid, NGi, NCard, NStatistic, NSpin, NAlert, NIcon, NSpace, NDivider, NIconWrapper,
-  NLog, NButton
+  NLog, NButton, NModal, NButtonGroup
 } from 'naive-ui';
-import { FilmOutline as FilmIcon, TvOutline as TvIcon, DocumentTextOutline } from '@vicons/ionicons5';
+// ★★★ 核心修改3: 引入新图标和 LogViewer 组件 ★★★
+import { 
+  FilmOutline as FilmIcon, 
+  TvOutline as TvIcon, 
+  FolderOpenOutline, 
+  ReaderOutline, 
+  ArchiveOutline 
+} from '@vicons/ionicons5';
 import LogViewer from './LogViewer.vue';
 
 const props = defineProps({
@@ -228,13 +268,19 @@ const loading = ref(true);
 const error = ref(null);
 const stats = ref({});
 const logRef = ref(null);
-const isLogViewerVisible = ref(false);
+
+// ★★★ 核心修改4: 使用两个独立的 ref 变量来控制不同的模态框 ★★★
+const isRealtimeLogVisible = ref(false); // 控制实时日志模态框
+const isHistoryLogVisible = ref(false);  // 控制历史日志模态框
 
 const logContent = computed(() => props.taskStatus?.logs?.slice().reverse().join('\n') || '等待任务日志...');
 
-watch(() => props.taskStatus.logs, async () => {
-  await nextTick();
-  logRef.value?.scrollTo({ position: 'top', slient: true });
+// 当日志更新或实时日志模态框可见时，滚动到顶部
+watch([() => props.taskStatus.logs, isRealtimeLogVisible], async ([, isVisible]) => {
+  if (isVisible) {
+    await nextTick();
+    logRef.value?.scrollTo({ position: 'top', slient: true });
+  }
 }, { deep: true });
 
 const fetchStats = async () => {
@@ -261,6 +307,7 @@ onMounted(() => {
 </script>
 
 <style scoped>
+/* ... (样式部分保持不变) ... */
 .loading-container, .error-container {
   display: flex;
   flex-direction: column;
@@ -276,16 +323,11 @@ onMounted(() => {
   font-weight: 600;
   line-height: 1.2;
 }
-.content-card {
-  height: 100%;
-}
 .log-panel {
   font-size: 13px;
   line-height: 1.6;
   background-color: transparent;
 }
-
-/* --- 全新订阅中心样式 --- */
 .subscription-center-card {
   width: 100%;
 }
