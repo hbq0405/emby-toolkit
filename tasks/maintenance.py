@@ -140,6 +140,77 @@ def _share_import_table_data(cursor, table_name: str, columns: List[str], data: 
     logger.info(f"成功向表 '{db_table_name}' 合并 {inserted_count} 条新记录（总共尝试 {len(data)} 条）。")
     return inserted_count
 
+# ★★★ 辅助函数 4: 专门用于合并 person_identity_map 的智能函数 ★★★
+def _merge_person_identity_map_data(cursor, table_name: str, columns: List[str], data: List[tuple]) -> int:
+    """
+    为 person_identity_map 表提供一个更智能的合并策略。
+    它会逐行检查，并根据已存在的任何ID来合并数据，而不是简单地插入。
+    """
+    logger.info(f"执行智能合并模式：将合并数据到表 '{table_name}'...")
+    
+    inserted_count = 0
+    updated_count = 0
+    
+    # 将元组数据转换回字典列表，以便于访问
+    data_dicts = [dict(zip(columns, row)) for row in data]
+
+    for row_to_merge in data_dicts:
+        # 提取所有可能的ID
+        tmdb_id = row_to_merge.get('tmdb_person_id')
+        imdb_id = row_to_merge.get('imdb_id')
+        douban_id = row_to_merge.get('douban_celebrity_id')
+
+        # 构建查询条件，查找任何一个ID匹配的现有记录
+        query_parts = []
+        params = []
+        if tmdb_id:
+            query_parts.append("tmdb_person_id = %s")
+            params.append(tmdb_id)
+        if imdb_id:
+            query_parts.append("imdb_id = %s")
+            params.append(imdb_id)
+        if douban_id:
+            query_parts.append("douban_celebrity_id = %s")
+            params.append(douban_id)
+            
+        if not query_parts:
+            continue # 如果行中没有任何有效ID，跳过
+
+        # 查找现有记录
+        find_sql = f"SELECT * FROM person_identity_map WHERE {' OR '.join(query_parts)}"
+        cursor.execute(find_sql, tuple(params))
+        existing_record = cursor.fetchone()
+
+        if existing_record:
+            # --- 记录已存在，执行更新（合并） ---
+            updates = {}
+            # 遍历要合并的行，如果现有记录中缺少该ID，则添加
+            for key, value in row_to_merge.items():
+                # 只更新ID字段和名字，且仅当新值存在而旧值不存在时
+                if key in ['tmdb_person_id', 'imdb_id', 'douban_celebrity_id', 'primary_name'] and value and not existing_record.get(key):
+                    updates[key] = value
+            
+            if updates:
+                set_clauses = [sql.SQL("{} = %s").format(sql.Identifier(k)) for k in updates.keys()]
+                update_sql = sql.SQL("UPDATE person_identity_map SET {} WHERE map_id = %s").format(sql.SQL(', ').join(set_clauses))
+                cursor.execute(update_sql, tuple(updates.values()) + (existing_record['map_id'],))
+                updated_count += 1
+        else:
+            # --- 记录不存在，执行插入 ---
+            # 确保所有列都存在，缺失的用 None 填充
+            all_cols_in_order = [col for col in columns if col != 'map_id'] # 排除自增ID
+            values_to_insert = [row_to_merge.get(col) for col in all_cols_in_order]
+
+            insert_sql = sql.SQL("INSERT INTO person_identity_map ({}) VALUES ({})").format(
+                sql.SQL(', ').join(map(sql.Identifier, all_cols_in_order)),
+                sql.SQL(', ').join(sql.Placeholder() * len(all_cols_in_order))
+            )
+            cursor.execute(insert_sql, values_to_insert)
+            inserted_count += 1
+            
+    logger.info(f"智能合并完成：新增 {inserted_count} 条记录，更新 {updated_count} 条记录。")
+    return inserted_count + updated_count
+
 # --- 主任务函数 (V4 - 纯PG重构版) ---
 def task_import_database(processor, file_content: str, tables_to_import: List[str], import_strategy: str):
     """
@@ -259,8 +330,14 @@ def task_import_database(processor, file_content: str, tables_to_import: List[st
                         columns, prepared_data = _prepare_data_for_insert(table_name, cleaned_data)
                         if not prepared_data: continue
                         
-                        inserted_count = _share_import_table_data(cursor, table_name, columns, prepared_data)
-                        summary_lines.append(f"  - 表 '{cn_name}': 成功合并 {inserted_count} / {len(prepared_data)} 条新记录。")
+                        if table_name.lower() == 'person_identity_map':
+                            # 对 person_identity_map 使用新的智能合并函数
+                            merged_count = _merge_person_identity_map_data(cursor, table_name, columns, prepared_data)
+                            summary_lines.append(f"  - 表 '{cn_name}': 成功智能合并 {merged_count} / {len(prepared_data)} 条记录。")
+                        else:
+                            # 其他表使用原来的简单合并函数
+                            inserted_count = _share_import_table_data(cursor, table_name, columns, prepared_data)
+                            summary_lines.append(f"  - 表 '{cn_name}': 成功合并 {inserted_count} / {len(prepared_data)} 条新记录。")
 
                     else: # import_strategy == 'overwrite'
                         # --- 覆盖模式 (保持原有逻辑) ---
