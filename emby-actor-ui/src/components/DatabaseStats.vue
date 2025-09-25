@@ -89,7 +89,7 @@
       <n-gi span="4 m:2 l:1">
         <n-card :bordered="false" class="dashboard-card">
           <template #header>
-            <span class="card-title">用户与邀请</span>
+            <span class="card-title">用户管理</span>
           </template>
           <n-space vertical size="large" align="center">
              <n-statistic label="Emby用户总数" class="centered-statistic" :value="stats.user_management_card?.emby_users_total" />
@@ -122,7 +122,7 @@
       <n-gi span="4 l:2">
         <n-card :bordered="false" class="dashboard-card">
           <template #header>
-            <span class="card-title">订阅中心</span>
+            <span class="card-title">智能订阅</span>
           </template>
           <!-- ... (内部结构保持不变) ... -->
           <n-space vertical :size="24" class="subscription-center-card">

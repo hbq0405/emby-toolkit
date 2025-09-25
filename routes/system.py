@@ -278,141 +278,79 @@ def get_about_info():
 @task_lock_required
 def stream_update_progress():
     """
-    【V10 - 最终可行自更新版】
-    通过启动一个临时的“更新器容器”来执行更新操作，解决了“进程自杀”的悖论。
+    【V11 - 简化UI版】
+    通过启动一个临时的“更新器容器”来执行更新操作，并向前端提供简化的状态文本流。
     """
     def generate_progress():
         def send_event(data):
+            # 确保发送的是 JSON 格式的字符串
             yield f"data: {json.dumps(data)}\n\n"
 
         client = None
         proxies_config = config_manager.get_proxies_for_requests()
         old_env = os.environ.copy()
         try:
+            # 设置代理
             if proxies_config and proxies_config.get('https'):
                 proxy_url = proxies_config['https']
                 os.environ['HTTPS_PROXY'] = proxy_url
-                os.environ['HTTP_PROXY'] = proxy_url # 有些系统也需要设置 http_proxy
-                yield from send_event({"status": f"检测到代理配置，将通过 {proxy_url} 拉取镜像...", "layers": {}})
+                os.environ['HTTP_PROXY'] = proxy_url
+                yield from send_event({"status": f"检测到代理配置，将通过 {proxy_url} 拉取镜像..."})
+            
             client = docker.from_env()
             container_name = config_manager.APP_CONFIG.get('container_name', 'emby-toolkit')
             image_name_tag = config_manager.APP_CONFIG.get('docker_image_name', 'hbq0405/emby-toolkit:latest')
 
-
-            yield from send_event({"status": f"正在检查并拉取最新镜像: {image_name_tag}...", "layers": {}})
+            yield from send_event({"status": f"正在检查并拉取最新镜像: {image_name_tag}..."})
             
-            # 使用低级 API 获取流式输出
+            # 使用流式 API 以保持连接并提供基本反馈
             stream = client.api.pull(image_name_tag, stream=True, decode=True)
             
-            # ★★★ 2. 重新设计状态跟踪变量 ★★★
-            layers_status = {}
-            is_new_image_pulled = False
-            all_layer_ids = set()
-
+            last_line = {}
             for line in stream:
-                layer_id = line.get('id')
-                status = line.get('status')
+                # 保持循环以防止超时，但我们不再向前端发送每一层的细节
+                last_line = line
 
-                # ★ 1. 改进对全局状态行的处理，并用它来识别所有层
-                if not layer_id and status:
-                    # 当Docker说 "Pulling fs layer" 时，它正在注册一个新的层
-                    if 'Pulling fs layer' in status:
-                        # 这时事件流里还没有ID，我们暂时无法获取，但可以预见会有新层
-                        pass
-                    yield from send_event({"status": status, "layers": layers_status})
-                    continue
-
-                # ★ 2. 过滤掉无效的层ID，比如 'latest'
-                if not layer_id or len(layer_id) < 10: # 真实的层ID通常是一长串字符
-                    continue
-                
-                # 记录所有出现过的真实层ID
-                all_layer_ids.add(layer_id)
-
-                # 初始化或更新层的状态
-                if layer_id not in layers_status:
-                    layers_status[layer_id] = {"status": "", "progress": 0, "detail": ""}
-                
-                layers_status[layer_id]['status'] = status
-
-                # 处理进度详情
-                if 'progressDetail' in line:
-                    details = line['progressDetail']
-                    current = details.get('current', 0)
-                    total = details.get('total', 0)
-                    layers_status[layer_id]['current_bytes'] = current
-                    layers_status[layer_id]['total_bytes'] = total
-                    if total > 0:
-                        progress_percent = int((current / total) * 100)
-                        layers_status[layer_id]['progress'] = progress_percent
-                        # 将字节转换为易读的 MB
-                        current_mb = round(current / (1024 * 1024), 2)
-                        total_mb = round(total / (1024 * 1024), 2)
-                        layers_status[layer_id]['detail'] = f"{current_mb}MB / {total_mb}MB"
-                
-                # 处理非下载状态
-                if any(s in status for s in ["Pull complete", "Already exists", "Download complete"]):
-                    layers_status[layer_id]['progress'] = 100
-                    layers_status[layer_id]['detail'] = "" # 完成后清空详情
-
-                completed_layers = 0
-                for lid in all_layer_ids:
-                    # 检查这个层是否已经出现在状态字典中，并且状态是完成状态
-                    if lid in layers_status and layers_status[lid].get('progress') == 100:
-                        completed_layers += 1
-                
-                total_layers = len(all_layer_ids)
-                overall_progress = int((completed_layers / total_layers) * 100) if total_layers > 0 else 0
-                
-                # ★ 4. 每次循环都发送完整的状态对象
-                yield from send_event({
-                    "status": "正在拉取...", 
-                    "layers": layers_status, 
-                    "overall_progress": overall_progress
-                })
-
-                last_status_line = line
-                # 检查是否有新内容被拉取
-                if status == "Pull complete":
-                    is_new_image_pulled = True
-            
             # 检查最终状态
-            final_status_line = line.get('status', '')
-            if 'Status: Image is up to date' in final_status_line:
-                 yield from send_event({"status": "当前已是最新版本。", "progress": 100})
+            final_status = last_line.get('status', '')
+            if 'Status: Image is up to date' in final_status:
+                 yield from send_event({"status": "当前已是最新版本。"})
                  yield from send_event({"event": "DONE", "message": "无需更新。"})
                  return
+            
+            # 如果没有明确的“up to date”消息，并且没有错误，我们假设拉取成功
+            if 'errorDetail' in last_line:
+                error_msg = f"拉取镜像失败: {last_line['errorDetail']['message']}"
+                logger.error(error_msg)
+                yield from send_event({"status": error_msg, "event": "ERROR"})
+                return
 
-            # --- 2. ★★★ 核心：召唤并启动“更新器容器” ★★★ ---
-            yield from send_event({"status": "准备应用更新...", "progress": 70})
+            # --- 核心：召唤并启动“更新器容器” ---
+            yield from send_event({"status": "镜像拉取完成，准备应用更新..."})
 
             try:
-                # 获取旧容器的完整配置，以便新容器可以重建它
-                old_container = client.containers.get(container_name)
-                
-                # Watchtower 使用的官方工具镜像，非常小巧可靠
                 updater_image = "containrrr/watchtower"
                 
-                # 构建传递给更新器容器的命令
-                # --cleanup 会移除旧镜像，--run-once 会让它执行一次就退出
-                command = [
-                    "--cleanup",
-                    "--run-once",
-                    container_name # 明确告诉 watchtower 只更新我们自己
-                ]
+                # 确保 watchtower 镜像存在，如果不存在则拉取
+                try:
+                    client.images.get(updater_image)
+                except docker.errors.ImageNotFound:
+                    yield from send_event({"status": f"正在拉取更新器工具: {updater_image}..."})
+                    client.images.pull(updater_image)
 
-                # 启动更新器容器！
+                command = ["--cleanup", "--run-once", container_name]
+
                 logger.info(f"正在应用更新 '{container_name}'...")
                 client.containers.run(
                     image=updater_image,
                     command=command,
-                    remove=True,  # a.k.a. --rm，任务完成后自动删除自己
-                    detach=True,  # 在后台运行
+                    remove=True,
+                    detach=True,
                     volumes={'/var/run/docker.sock': {'bind': '/var/run/docker.sock', 'mode': 'rw'}}
                 )
                 
-                yield from send_event({"status": "更新任务已成功交接给临时更新器！本容器将在后台被重启。", "progress": 90})
-                yield from send_event({"status": "稍后手动刷新页面以访问新版本。", "progress": 100, "event": "DONE"})
+                yield from send_event({"status": "更新任务已成功交接给临时更新器！本容器将在后台被重启。"})
+                yield from send_event({"status": "稍后手动刷新页面以访问新版本。", "event": "DONE"})
 
             except docker.errors.NotFound:
                 yield from send_event({"status": f"错误：找不到名为 '{container_name}' 的容器来更新。", "event": "ERROR"})
@@ -426,7 +364,6 @@ def stream_update_progress():
             logger.error(f"[Update Stream]: {error_message}", exc_info=True)
             yield from send_event({"status": error_message, "event": "ERROR"})
         finally:
-            # ★★★ 3. 关键：无论成功还是失败，都恢复原始的环境变量 ★★★
             os.environ.clear()
             os.environ.update(old_env)
             logger.debug("已恢复原始环境变量。")
