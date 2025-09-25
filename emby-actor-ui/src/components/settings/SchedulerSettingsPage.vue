@@ -16,7 +16,7 @@
           <span class="card-title">高频核心任务链</span>
         </template>
         <template #header-extra>
-          <n-text depth="3">建议每日执行，保证核心功能更新</n-text>
+          <n-text depth="3">建议三小时执行一次，保证实时数据更新</n-text>
         </template>
         
         <n-grid cols="1 l:3" :x-gap="24" :y-gap="16" responsive="screen">
@@ -30,7 +30,7 @@
               </n-space>
               <n-form :model="configModel" label-placement="left" label-width="auto" class="mt-3" :show-feedback="false">
                 <n-form-item label="定时执行 (CRON)">
-                  <n-input v-model:value="configModel.task_chain_cron" :disabled="!configModel.task_chain_enabled" placeholder="例如: 0 2 * * *" />
+                  <n-input v-model:value="configModel.task_chain_cron" :disabled="!configModel.task_chain_enabled" placeholder="例如: 0 */3 * * *" />
                 </n-form-item>
                 <n-form-item label="最大运行时长 (分钟)">
                   <n-input-number 
@@ -71,7 +71,7 @@
         </n-grid>
         <n-alert title="任务建议" type="info" style="margin-top: 24px;">
           此任务链适合放置需要频繁更新的任务，以保证数据的时效性。<br/>
-          <b>建议顺序：</b> [同步媒体数据] -> [刷新智能追剧] -> [刷新演员订阅] -> [智能订阅缺失] -> [刷新自建合集]
+          <b>建议顺序：</b> [刷新智能追剧] -> [刷新演员订阅] -> [刷新自建合集] -> [智能订阅缺失] 
         </n-alert>
       </n-card>
 
@@ -83,7 +83,7 @@
           <span class="card-title">低频维护任务链</span>
         </template>
         <template #header-extra>
-          <n-text depth="3">建议每周或更长周期执行，处理资源密集型任务</n-text>
+          <n-text depth="3">建议夜里空闲时间段，处理资源密集型任务</n-text>
         </template>
         
         <n-grid cols="1 l:3" :x-gap="24" :y-gap="16" responsive="screen">
@@ -97,7 +97,7 @@
               </n-space>
               <n-form :model="configModel" label-placement="left" label-width="auto" class="mt-3" :show-feedback="false">
                 <n-form-item label="定时执行 (CRON)">
-                  <n-input v-model:value="configModel.task_chain_low_freq_cron" :disabled="!configModel.task_chain_low_freq_enabled" placeholder="例如: 0 5 * * 0" />
+                  <n-input v-model:value="configModel.task_chain_low_freq_cron" :disabled="!configModel.task_chain_low_freq_enabled" placeholder="例如: 0 1 * * *" />
                 </n-form-item>
                 <n-form-item label="最大运行时长 (分钟)">
                   <n-input-number 
@@ -135,8 +135,8 @@
           </n-gi>
         </n-grid>
         <n-alert title="任务建议" type="warning" style="margin-top: 24px;">
-          此任务链适合放置消耗资源较多、无需每日执行的任务，例如全量扫描、封面生成和数据清理等。<br/>
-          <b>建议任务：</b> [同步演员数据]、[演员数据补充]、[中文化角色名]、[媒体洗版订阅]、[生成原生封面]、[删除幽灵演员] 等。
+          此任务链适合放置消耗资源较多，例如全量扫描、封面生成和数据清理等。<br/>
+          <b>建议任务：</b> [同步媒体数据]、[同步演员数据]、[演员数据补充]、[中文化角色名]、[中文化演员名]、[生成原生封面]、[删除幽灵演员] 等。
         </n-alert>
       </n-card>
 
