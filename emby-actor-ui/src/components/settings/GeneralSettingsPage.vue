@@ -590,7 +590,7 @@ import axios from 'axios';
 
 const tableInfo = {
   'app_settings': { cn: '基础配置', isSharable: false },
-  'person_identity_map': { cn: '演员身份映射表', isSharable: true },
+  'person_identity_map': { cn: '演员映射表', isSharable: true },
   'actor_metadata': { cn: '演员元数据', isSharable: true },
   'translation_cache': { cn: '翻译缓存', isSharable: true },
   'watchlist': { cn: '追剧列表', isSharable: false },
