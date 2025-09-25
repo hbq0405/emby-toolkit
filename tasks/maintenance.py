@@ -141,64 +141,43 @@ def _share_import_table_data(cursor, table_name: str, columns: List[str], data: 
     return inserted_count
 
 # ★★★ 辅助函数 4: 专门用于合并 person_identity_map 的智能函数 ★★★
-def _merge_person_identity_map_data(cursor, table_name: str, columns: List[str], data: List[tuple]) -> int:
+def _merge_person_identity_map_data(cursor, table_name: str, columns: List[str], data: List[tuple]) -> dict:
     """
-    为 person_identity_map 表提供一个更智能的合并策略。
-    它会逐行检查，并根据已存在的任何ID来合并数据，而不是简单地插入。
+    为 person_identity_map 表提供一个健壮的合并策略。
+    它会查找所有相关的碎片化记录，将它们合并到一个主记录中，并删除多余的记录。
     """
     logger.info(f"执行智能合并模式：将合并数据到表 '{table_name}'...")
     
-    inserted_count = 0
-    updated_count = 0
+    stats = {'inserted': 0, 'updated': 0, 'merged_and_deleted': 0}
     
-    # 将元组数据转换回字典列表，以便于访问
     data_dicts = [dict(zip(columns, row)) for row in data]
 
     for row_to_merge in data_dicts:
         # 提取所有可能的ID
-        tmdb_id = row_to_merge.get('tmdb_person_id')
-        imdb_id = row_to_merge.get('imdb_id')
-        douban_id = row_to_merge.get('douban_celebrity_id')
-
-        # 构建查询条件，查找任何一个ID匹配的现有记录
+        ids_to_check = {
+            'tmdb_person_id': row_to_merge.get('tmdb_person_id'),
+            'imdb_id': row_to_merge.get('imdb_id'),
+            'douban_celebrity_id': row_to_merge.get('douban_celebrity_id')
+        }
+        
         query_parts = []
         params = []
-        if tmdb_id:
-            query_parts.append("tmdb_person_id = %s")
-            params.append(tmdb_id)
-        if imdb_id:
-            query_parts.append("imdb_id = %s")
-            params.append(imdb_id)
-        if douban_id:
-            query_parts.append("douban_celebrity_id = %s")
-            params.append(douban_id)
+        for key, value in ids_to_check.items():
+            if value:
+                query_parts.append(sql.SQL("{} = %s").format(sql.Identifier(key)))
+                params.append(value)
             
         if not query_parts:
-            continue # 如果行中没有任何有效ID，跳过
+            continue
 
-        # 查找现有记录
-        find_sql = f"SELECT * FROM person_identity_map WHERE {' OR '.join(query_parts)}"
+        # 步骤 1: 查找所有相关的记录，而不仅仅是一条
+        find_sql = sql.SQL("SELECT * FROM person_identity_map WHERE {}").format(sql.SQL(' OR ').join(query_parts))
         cursor.execute(find_sql, tuple(params))
-        existing_record = cursor.fetchone()
+        existing_records = cursor.fetchall()
 
-        if existing_record:
-            # --- 记录已存在，执行更新（合并） ---
-            updates = {}
-            # 遍历要合并的行，如果现有记录中缺少该ID，则添加
-            for key, value in row_to_merge.items():
-                # 只更新ID字段和名字，且仅当新值存在而旧值不存在时
-                if key in ['tmdb_person_id', 'imdb_id', 'douban_celebrity_id', 'primary_name'] and value and not existing_record.get(key):
-                    updates[key] = value
-            
-            if updates:
-                set_clauses = [sql.SQL("{} = %s").format(sql.Identifier(k)) for k in updates.keys()]
-                update_sql = sql.SQL("UPDATE person_identity_map SET {} WHERE map_id = %s").format(sql.SQL(', ').join(set_clauses))
-                cursor.execute(update_sql, tuple(updates.values()) + (existing_record['map_id'],))
-                updated_count += 1
-        else:
-            # --- 记录不存在，执行插入 ---
-            # 确保所有列都存在，缺失的用 None 填充
-            all_cols_in_order = [col for col in columns if col != 'map_id'] # 排除自增ID
+        if not existing_records:
+            # --- 场景 A: 记录完全不存在，直接插入 ---
+            all_cols_in_order = [col for col in columns if col != 'map_id']
             values_to_insert = [row_to_merge.get(col) for col in all_cols_in_order]
 
             insert_sql = sql.SQL("INSERT INTO person_identity_map ({}) VALUES ({})").format(
@@ -206,10 +185,42 @@ def _merge_person_identity_map_data(cursor, table_name: str, columns: List[str],
                 sql.SQL(', ').join(sql.Placeholder() * len(all_cols_in_order))
             )
             cursor.execute(insert_sql, values_to_insert)
-            inserted_count += 1
+            stats['inserted'] += 1
+        else:
+            # --- 场景 B: 找到一条或多条相关记录，执行合并 ---
             
-    logger.info(f"智能合并完成：新增 {inserted_count} 条记录，更新 {updated_count} 条记录。")
-    return inserted_count + updated_count
+            # 步骤 2: 确定主记录 (ID最小的) 和待删除记录
+            sorted_records = sorted(existing_records, key=lambda r: r['map_id'])
+            master_record = dict(sorted_records[0]) # 使用副本进行操作
+            records_to_delete = sorted_records[1:]
+            
+            # 步骤 3: 将所有源的数据合并到主记录中
+            all_sources = records_to_delete + [row_to_merge]
+            
+            for source in all_sources:
+                for key, value in source.items():
+                    # 只合并ID字段和名字，且仅当新值存在而主记录中不存在时
+                    if key in ['tmdb_person_id', 'imdb_id', 'douban_celebrity_id', 'primary_name'] and value and not master_record.get(key):
+                        master_record[key] = value
+
+            # 步骤 4: 更新主记录
+            updates = {k: v for k, v in master_record.items() if k != 'map_id' and v != sorted_records[0].get(k)}
+            
+            if updates:
+                set_clauses = [sql.SQL("{} = %s").format(sql.Identifier(k)) for k in updates.keys()]
+                update_sql = sql.SQL("UPDATE person_identity_map SET {} WHERE map_id = %s").format(sql.SQL(', ').join(set_clauses))
+                cursor.execute(update_sql, tuple(updates.values()) + (master_record['map_id'],))
+                stats['updated'] += 1
+
+            # 步骤 5: 删除被合并的冗余记录
+            if records_to_delete:
+                ids_to_delete = [r['map_id'] for r in records_to_delete]
+                delete_sql = sql.SQL("DELETE FROM person_identity_map WHERE map_id = ANY(%s)")
+                cursor.execute(delete_sql, (ids_to_delete,))
+                stats['merged_and_deleted'] += len(ids_to_delete)
+            
+    logger.info(f"智能合并完成：新增 {stats['inserted']} 条，更新 {stats['updated']} 条，合并删除 {stats['merged_and_deleted']} 条记录。")
+    return stats
 
 # --- 主任务函数 (V4 - 纯PG重构版) ---
 def task_import_database(processor, file_content: str, tables_to_import: List[str], import_strategy: str):
@@ -332,8 +343,8 @@ def task_import_database(processor, file_content: str, tables_to_import: List[st
                         
                         if table_name.lower() == 'person_identity_map':
                             # 对 person_identity_map 使用新的智能合并函数
-                            merged_count = _merge_person_identity_map_data(cursor, table_name, columns, prepared_data)
-                            summary_lines.append(f"  - 表 '{cn_name}': 成功智能合并 {merged_count} / {len(prepared_data)} 条记录。")
+                            merge_stats = _merge_person_identity_map_data(cursor, table_name, columns, prepared_data)
+                            summary_lines.append(f"  - 表 '{cn_name}': 智能合并完成 (新增 {merge_stats['inserted']}, 更新 {merge_stats['updated']}, 清理 {merge_stats['merged_and_deleted']})。")
                         else:
                             # 其他表使用原来的简单合并函数
                             inserted_count = _share_import_table_data(cursor, table_name, columns, prepared_data)
