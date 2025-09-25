@@ -7,6 +7,7 @@ from apscheduler.jobstores.base import JobLookupError
 import pytz
 from datetime import datetime
 from croniter import croniter
+import re
 
 # 导入我们的任务链执行器和任务注册表
 import tasks
@@ -27,7 +28,8 @@ REVIVAL_CHECK_JOB_ID = 'weekly_revival_check_job'
 # --- 友好的CRON日志翻译函数 (保持不变) ---
 def _get_next_run_time_str(cron_expression: str) -> str:
     """
-    【V3 - 口齿伶俐版】将 CRON 表达式转换为人类可读的、干净的执行计划字符串。
+    【V11 - 幼儿能懂版】将 CRON 表达式转换为人类可读的、极其友好的执行计划字符串。
+    能够处理范围、列表、步长等复杂组合，并生成流畅的自然语言描述。
     """
     try:
         parts = cron_expression.split()
@@ -36,45 +38,114 @@ def _get_next_run_time_str(cron_expression: str) -> str:
 
         minute, hour, day_of_month, month, day_of_week = parts
 
-        # --- 周期描述 ---
-        if minute.startswith('*/') and all(p == '*' for p in [hour, day_of_month, month, day_of_week]):
-            return f"每隔 {minute[2:]} 分钟"
-        
-        if hour.startswith('*/') and all(p == '*' for p in [day_of_month, month, day_of_week]):
-            if minute == '0':
-                return f"每隔 {hour[2:]} 小时的整点"
-            else:
-                return f"每隔 {hour[2:]} 小时的第 {minute} 分钟"
+        # --- 辅助函数：解析单个时间字段 ---
+        def parse_part(part: str, unit: str, labels: dict = None) -> str:
+            if part == '*':
+                return ""  # '*' 表示“每个”，在组合时处理
 
-        # --- 时间点描述 ---
-        time_str = f"{hour.zfill(2)}:{minute.zfill(2)}"
-        
-        if day_of_week != '*':
+            if part.isalnum() and labels:
+                return f"在{labels.get(part.lower(), part)}{unit}"
+
+            if ',' in part:
+                items = [labels.get(p.lower(), p) for p in part.split(',')]
+                return f"在 {','.join(items)} {unit}"
+
+            # 核心改进：处理范围和步长
+            match = re.match(r'(\d+)-(\d+)/(\d+)', part)
+            if match:
+                start, end, step = match.groups()
+                return f"从{start}{unit}到{end}{unit}，每隔{step}{unit}"
+
+            match = re.match(r'\*/(\d+)', part)
+            if match:
+                step = match.group(1)
+                return f"每隔{step}{unit}"
+            
+            match = re.match(r'(\d+)-(\d+)', part)
+            if match:
+                start, end = match.groups()
+                return f"从{start}{unit}到{end}{unit}"
+
+            return f"在第{part}{unit}"
+
+        # --- 辅助函数：解析星期字段 ---
+        def parse_day_of_week(part: str) -> str:
             day_map = {
-                '0': '周日', '1': '周一', '2': '周二', '3': '周三', 
+                '0': '周日', '1': '周一', '2': '周二', '3': '周三',
                 '4': '周四', '5': '周五', '6': '周六', '7': '周日',
                 'sun': '周日', 'mon': '周一', 'tue': '周二', 'wed': '周三',
                 'thu': '周四', 'fri': '周五', 'sat': '周六'
             }
-            days = [day_map.get(d.lower(), d) for d in day_of_week.split(',')]
-            return f"每周的 {','.join(days)} {time_str}"
-        
-        if day_of_month != '*':
-            if day_of_month.startswith('*/'):
-                 return f"每隔 {day_of_month[2:]} 天的 {time_str}"
-            else:
-                 return f"每月的 {day_of_month} 号 {time_str}"
+            if part == '*': return "每天"
+            
+            # 处理范围，例如 1-5 (周一到周五)
+            match = re.match(r'(\w+)-(\w+)', part)
+            if match:
+                start = day_map.get(match.group(1).lower(), match.group(1))
+                end = day_map.get(match.group(2).lower(), match.group(2))
+                return f"每周从{start}到{end}"
 
-        return f"每天 {time_str}"
+            days = [day_map.get(d.lower(), d) for d in part.split(',')]
+            return f"在每周的 {','.join(days)}"
+
+        # --- 开始组合描述 ---
+        time_desc = ""
+        # 1. 解析小时
+        hour_desc = parse_part(hour, "点")
+        if not hour_desc: # hour == '*'
+            hour_desc = "每小时"
+        
+        # 2. 解析分钟
+        minute_desc = parse_part(minute, "分钟")
+        if not minute_desc: # minute == '*'
+            minute_desc = "每分钟"
+        elif minute == '0':
+            minute_desc = "的整点"
+        else:
+            minute_desc = f"的第{minute}分钟"
+
+        # 组合时间和分钟
+        if "每隔" in hour_desc and minute == '0':
+             time_desc = hour_desc.replace("点", "小时") + "的整点"
+        elif "每隔" in minute_desc:
+             time_desc = f"{hour_desc}，{minute_desc}"
+        else:
+             time_desc = f"{hour_desc}{minute_desc}"
+
+
+        # 3. 解析日期和星期
+        day_desc = ""
+        if day_of_month != '*' and day_of_week != '*':
+            # 当同时指定了日期和星期时，cron的行为是“或”，这很难用一句话描述
+            # 我们选择更常用的星期，并提示用户
+            day_desc = f"{parse_day_of_week(day_of_week)} (注意：日期和星期同时设置，规则较复杂)"
+        elif day_of_week != '*':
+            day_desc = parse_day_of_week(day_of_week)
+        elif day_of_month != '*':
+            if day_of_month == '1':
+                day_desc = "每月的第一天"
+            else:
+                day_desc = parse_part(day_of_month, "号").replace("在", "每月的")
+        else:
+            day_desc = "每天"
+
+        # 最终拼接成一句话
+        # 修正一些口语化表达
+        final_str = f"{day_desc}的 {time_desc}".replace("每天的 ", "每天 ").replace("在 ", "")
+        final_str = re.sub(r'点(\d+)', r'点\1分', final_str) # 避免 "5点30分钟" -> "5点30分"
+        final_str = final_str.replace("分钟钟", "分钟")
+        
+        return final_str.strip()
 
     except Exception as e:
-        logger.warning(f"无法智能解析CRON表达式 '{cron_expression}': {e}，回退到简单模式。")
+        logger.warning(f"无法智能解析CRON表达式 '{cron_expression}': {e}，回退到备用模式。")
         try:
+            # 备用方案：使用 croniter 计算下一次执行时间
             tz = pytz.timezone(constants.TIMEZONE)
             now = datetime.now(tz)
             iterator = croniter(cron_expression, now)
             next_run = iterator.get_next(datetime)
-            return f"下一次将在 {next_run.strftime('%Y-%m-%d %H:%M')}"
+            return f"下一次将在 {next_run.strftime('%Y-%m-%d %H:%M:%S')}"
         except:
             return f"按计划 '{cron_expression}'"
 
