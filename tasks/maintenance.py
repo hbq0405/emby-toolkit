@@ -231,42 +231,28 @@ def _merge_person_identity_map_data(cursor, table_name: str, columns: List[str],
 def _resync_primary_key_sequence(cursor, table_name: str):
     """
     在执行插入前，同步表的主键序列生成器。
-    这可以防止因序列不同步而导致的 "duplicate key value violates unique constraint ..._pkey" 错误。
+    - 【V3修复】根据项目真实的 init_db.py 代码，构建了完全正确的 PRIMARY_KEY_COLUMNS 字典。
     """
-    # 定义每个表的主键列名
+    # ★★★ 核心修复：这个字典现在只包含那些在 init_db 中被定义为 SERIAL 的表 ★★★
     PRIMARY_KEY_COLUMNS = {
-        'person_identity_map': 'map_id',
-        'actor_metadata': 'id',
-        'translation_cache': 'id',
-        'watchlist': 'id',
-        'actor_subscriptions': 'id',
-        'tracked_actor_media': 'id',
-        'collections_info': 'id',
-        'processed_log': 'id',
-        'failed_log': 'id',
+        # --- 包含 SERIAL 主键的表 ---
         'users': 'id',
         'custom_collections': 'id',
-        'media_metadata': 'id',
-        'app_settings': 'id',
-        'emby_users': 'id',
-        'user_media_data': 'id',
+        'person_identity_map': 'map_id',
+        'actor_subscriptions': 'id',
+        'tracked_actor_media': 'id',
         'resubscribe_rules': 'id',
-        'resubscribe_cache': 'id',
         'media_cleanup_tasks': 'id',
         'user_templates': 'id',
         'invitations': 'id',
-        'emby_users_extended': 'id',
     }
     
     pk_column = PRIMARY_KEY_COLUMNS.get(table_name.lower())
     if not pk_column:
-        logger.debug(f"表 '{table_name}' 未定义主键列，跳过序列同步。")
+        logger.debug(f"表 '{table_name}' 未在主键序列同步列表中定义 (或其主键非SERIAL类型)，跳过。")
         return
 
     try:
-        # 构造 SQL 来获取序列名称并设置其下一个值
-        # pg_get_serial_sequence 会自动找到与列关联的序列
-        # COALESCE(MAX(...), 0) 确保即使表是空的，也能返回 0
         resync_sql = sql.SQL("""
             SELECT setval(
                 pg_get_serial_sequence({table}, {pk_col}),
@@ -282,7 +268,6 @@ def _resync_primary_key_sequence(cursor, table_name: str):
         cursor.execute(resync_sql)
         logger.info(f"  -> 已成功同步表 '{table_name}' 的主键序列。")
     except Exception as e:
-        # 如果表没有序列（理论上不应该发生），这个操作可能会失败，但我们不希望它中断整个流程
         logger.warning(f"同步表 '{table_name}' 的主键序列时发生非致命错误: {e}")
 
 # --- 主任务函数 (V4 - 纯PG重构版) ---

@@ -206,24 +206,38 @@
           <template #header>
             <span class="card-title">系统与缓存</span>
           </template>
-          <n-grid :x-gap="12" :y-gap="16" :cols="4" item-responsive>
-            <n-gi span="2 s:1">
-              <n-statistic label="演员映射" class="centered-statistic" :value="stats.system?.actor_mappings_count" />
+          <!-- ★★★ 核心修改：使用6列网格并重新排布统计项 ★★★ -->
+          <n-grid :x-gap="12" :y-gap="16" :cols="6" item-responsive>
+            
+            <!-- 新增：已关联映射 -->
+            <n-gi span="3 s:2">
+              <n-statistic label="已关联演员" class="centered-statistic" :value="stats.system?.actor_mappings_linked" />
             </n-gi>
-            <n-gi span="2 s:1">
+            
+            <!-- 新增：未关联映射 -->
+            <n-gi span="3 s:2">
+              <n-statistic label="未关联演员" class="centered-statistic" :value="stats.system?.actor_mappings_unlinked" />
+            </n-gi>
+            
+            <!-- 翻译缓存 (调整布局) -->
+            <n-gi span="6 s:2">
               <n-statistic label="翻译缓存" class="centered-statistic" :value="stats.system?.translation_cache_count" />
             </n-gi>
-            <n-gi span="2 s:1">
+            
+            <!-- 已处理日志 (调整布局) -->
+            <n-gi span="3 s:3">
               <n-statistic label="已处理日志" class="centered-statistic" :value="stats.system?.processed_log_count" />
             </n-gi>
-            <n-gi span="2 s:1">
+            
+            <!-- 待复核日志 (调整布局) -->
+            <n-gi span="3 s:3">
               <n-statistic label="待复核日志" class="centered-statistic" :value="stats.system?.failed_log_count" />
             </n-gi>
+
           </n-grid>
         </n-card>
       </n-gi>
     </n-grid>
-
     <!-- 实时日志查看器模态框 -->
     <n-modal v-model:show="isRealtimeLogVisible" preset="card" style="width: 80%; max-width: 900px;" title="实时任务日志">
        <n-log ref="logRef" :log="logContent" trim class="log-panel" style="height: 60vh;"/>

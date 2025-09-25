@@ -35,14 +35,13 @@ def json_datetime_serializer(obj):
 
 def _get_all_stats_in_one_query(cursor: psycopg2.extensions.cursor) -> dict:
     """
-    【V10 - UI重构终版】
-    - 新增“已缓存媒体总数” (在库+缺失)。
-    - 新增“已禁用用户数”统计。
+    【V11 - 演员映射细分】
+    - 将“演员映射”总数拆分为“已关联”和“未关联”两个指标。
     """
     sql = """
     SELECT
-        -- 核心媒体库 (精确统计)
-        (SELECT COUNT(*) FROM media_metadata) AS media_cached_total, -- ★ 新增：缓存总数
+        -- 核心媒体库
+        (SELECT COUNT(*) FROM media_metadata) AS media_cached_total,
         (SELECT COUNT(*) FROM media_metadata WHERE in_library = TRUE) AS media_in_library_total,
         COUNT(*) FILTER (WHERE item_type = 'Movie' AND in_library = TRUE) AS media_movies_in_library,
         COUNT(*) FILTER (WHERE item_type = 'Series' AND in_library = TRUE) AS media_series_in_library,
@@ -51,7 +50,7 @@ def _get_all_stats_in_one_query(cursor: psycopg2.extensions.cursor) -> dict:
         -- 用户与邀请
         (SELECT COUNT(*) FROM emby_users) AS emby_users_total,
         (SELECT COUNT(*) FROM emby_users_extended WHERE status = 'active') AS emby_users_active,
-        (SELECT COUNT(*) FROM emby_users_extended WHERE status = 'disabled') AS emby_users_disabled, -- ★ 新增：已禁用用户
+        (SELECT COUNT(*) FROM emby_users_extended WHERE status = 'disabled') AS emby_users_disabled,
         
         -- 自动化维护
         (SELECT COUNT(*) FROM media_cleanup_tasks WHERE status = 'pending') AS cleanup_tasks_pending,
@@ -70,8 +69,11 @@ def _get_all_stats_in_one_query(cursor: psycopg2.extensions.cursor) -> dict:
         (SELECT COUNT(*) FROM tracked_actor_media WHERE status = 'IN_LIBRARY') AS tracked_media_in_library,
         (SELECT COUNT(*) FROM resubscribe_cache WHERE status ILIKE 'needed') AS resubscribe_pending,
         
-        -- 系统与缓存
-        (SELECT COUNT(*) FROM person_identity_map) AS actor_mappings_count,
+        -- ★★★ 核心修改：细分演员映射统计 ★★★
+        (SELECT COUNT(*) FROM person_identity_map WHERE emby_person_id IS NOT NULL) AS actor_mappings_linked,
+        (SELECT COUNT(*) FROM person_identity_map WHERE emby_person_id IS NULL) AS actor_mappings_unlinked,
+        
+        -- 系统与缓存 (其余部分)
         (SELECT COUNT(*) FROM translation_cache) AS translation_cache_count,
         (SELECT COUNT(*) FROM processed_log) AS processed_log_count,
         (SELECT COUNT(*) FROM failed_log) AS failed_log_count
@@ -90,75 +92,53 @@ def _get_all_stats_in_one_query(cursor: psycopg2.extensions.cursor) -> dict:
 @db_admin_bp.route('/database/stats', methods=['GET'])
 @login_required
 def api_get_database_stats():
-    """
-    【V10 - UI重构终版】
-    - 更新API数据结构以匹配前端UI的最新调整。
-    """
+    # ... (函数前半部分保持不变) ...
     try:
         with connection.get_db_connection() as conn:
             cursor = conn.cursor()
-            
             raw_stats = _get_all_stats_in_one_query(cursor)
-
             if not raw_stats:
                 raise RuntimeError("未能从数据库获取统计数据。")
 
-            # 配额计算 (保持不变)
+            # ... (配额计算保持不变) ...
             available_quota = settings_db.get_subscription_quota()
             total_quota = config_manager.APP_CONFIG.get(constants.CONFIG_OPTION_RESUBSCRIBE_DAILY_CAP, 200)
             consumed_quota = max(0, total_quota - available_quota)
 
-            # ★★★ 核心修改：更新数据结构以匹配前端UI重构 ★★★
             stats = {
-                # 卡片1: 核心媒体库 (数据更新)
+                # ... (media_library, collections_card, user_management_card, maintenance_card, subscriptions_card 保持不变) ...
                 'media_library': {
-                    "cached_total": raw_stats.get('media_cached_total', 0), # ★ 修改
+                    "cached_total": raw_stats.get('media_cached_total', 0),
                     "in_library_total": raw_stats.get('media_in_library_total', 0),
                     "movies_in_library": raw_stats.get('media_movies_in_library', 0),
                     "series_in_library": raw_stats.get('media_series_in_library', 0),
                     "missing_total": raw_stats.get('media_missing_total', 0),
                 },
-                # 卡片2: 合集管理
                 'collections_card': {
                     "total_tmdb_collections": raw_stats.get('collections_tmdb_total', 0),
                     "total_custom_collections": raw_stats.get('collections_custom_active', 0),
                 },
-                # 卡片3: 用户与邀请 (数据更新)
                 'user_management_card': {
                     "emby_users_total": raw_stats.get('emby_users_total', 0),
                     "emby_users_active": raw_stats.get('emby_users_active', 0),
-                    "emby_users_disabled": raw_stats.get('emby_users_disabled', 0), # ★ 修改
+                    "emby_users_disabled": raw_stats.get('emby_users_disabled', 0),
                 },
-                # 卡片4: 自动化维护
                 'maintenance_card': {
                     "cleanup_tasks_pending": raw_stats.get('cleanup_tasks_pending', 0),
                     "resubscribe_rules_enabled": raw_stats.get('resubscribe_rules_enabled', 0),
                 },
-                # 卡片5: 订阅中心
                 'subscriptions_card': {
-                    'watchlist': {
-                        'watching': raw_stats.get('watchlist_active', 0),
-                        'paused': raw_stats.get('watchlist_paused', 0),
-                    },
-                    'actors': {
-                        'subscriptions': raw_stats.get('actor_subscriptions_active', 0),
-                        'tracked_total': raw_stats.get('tracked_media_total', 0),
-                        'tracked_in_library': raw_stats.get('tracked_media_in_library', 0),
-                    },
-                    'resubscribe': {
-                        'pending': raw_stats.get('resubscribe_pending', 0),
-                    },
-                    'collections': {
-                        'with_missing': raw_stats.get('collections_with_missing', 0),
-                    },
-                    'quota': {
-                        'available': available_quota,
-                        'consumed': consumed_quota,
-                    }
+                    'watchlist': {'watching': raw_stats.get('watchlist_active', 0), 'paused': raw_stats.get('watchlist_paused', 0)},
+                    'actors': {'subscriptions': raw_stats.get('actor_subscriptions_active', 0), 'tracked_total': raw_stats.get('tracked_media_total', 0), 'tracked_in_library': raw_stats.get('tracked_media_in_library', 0)},
+                    'resubscribe': {'pending': raw_stats.get('resubscribe_pending', 0)},
+                    'collections': {'with_missing': raw_stats.get('collections_with_missing', 0)},
+                    'quota': {'available': available_quota, 'consumed': consumed_quota}
                 },
-                # 卡片6: 系统与缓存
+                
+                # ★★★ 核心修改：更新 "系统与缓存" 的数据结构 ★★★
                 'system': {
-                    "actor_mappings_count": raw_stats.get('actor_mappings_count', 0),
+                    "actor_mappings_linked": raw_stats.get('actor_mappings_linked', 0),
+                    "actor_mappings_unlinked": raw_stats.get('actor_mappings_unlinked', 0),
                     "translation_cache_count": raw_stats.get('translation_cache_count', 0),
                     "processed_log_count": raw_stats.get('processed_log_count', 0),
                     "failed_log_count": raw_stats.get('failed_log_count', 0),
