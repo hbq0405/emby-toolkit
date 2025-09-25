@@ -17,12 +17,14 @@ import task_manager   # 导入 task_manager 以提交任务
 
 logger = logging.getLogger(__name__)
 
-# 自动化任务链
-CHAIN_JOB_ID = 'automated_task_chain_job'
-# 剧集复活检查
+# --- 【V10 - 任务ID拆分】 ---
+# 为每个独立的定时任务定义清晰的ID
+HIGH_FREQ_CHAIN_JOB_ID = 'high_freq_task_chain_job'
+LOW_FREQ_CHAIN_JOB_ID = 'low_freq_task_chain_job'
 REVIVAL_CHECK_JOB_ID = 'weekly_revival_check_job'
 
-# --- 友好的CRON日志翻译函数】 ---
+
+# --- 友好的CRON日志翻译函数 (保持不变) ---
 def _get_next_run_time_str(cron_expression: str) -> str:
     """
     【V3 - 口齿伶俐版】将 CRON 表达式转换为人类可读的、干净的执行计划字符串。
@@ -76,27 +78,25 @@ def _get_next_run_time_str(cron_expression: str) -> str:
         except:
             return f"按计划 '{cron_expression}'"
 
+
 class SchedulerManager:
     def __init__(self):
-        # 从 web_app.py 迁移过来的调度器实例
         self.scheduler = BackgroundScheduler(
             timezone=str(pytz.timezone(constants.TIMEZONE)),
             job_defaults={'misfire_grace_time': 60*5}
         )
-        # 获取共享的处理器实例
         self.processor = extensions.media_processor_instance
 
     def start(self):
-        """启动调度器并加载初始任务。"""
+        """启动调度器并加载所有初始任务。"""
         if self.scheduler.running:
             logger.info("定时任务调度器已在运行。")
             return
         try:
             self.scheduler.start()
             logger.info("定时任务调度器已启动。")
-            # 在启动时，就根据当前配置更新一次任务
-            self.update_task_chain_job()
-            self.update_revival_check_job()
+            # 在启动时，根据当前配置更新所有任务
+            self.update_all_scheduled_jobs()
         except Exception as e:
             logger.error(f"启动定时任务调度器失败: {e}", exc_info=True)
 
@@ -106,27 +106,124 @@ class SchedulerManager:
             self.scheduler.shutdown(wait=False)
             logger.info("定时任务调度器已关闭。")
 
-    # ★★★ 核心修改 4/4: 为复活检查任务创建一个专属的调度函数 ★★★
-    def update_revival_check_job(self):
+    def update_all_scheduled_jobs(self):
         """
-        【新增】根据硬编码的规则，设置每周的剧集复活检查任务。
+        【V10 - 主更新函数】
+        根据最新配置，更新所有类型的定时任务。
+        这个函数应该在程序启动和每次配置保存后被调用。
         """
         if not self.scheduler.running:
-            logger.warning("调度器未运行，无法更新'剧集复活检查'任务。")
+            logger.warning("调度器未运行，无法更新任务。将尝试启动...")
+            self.start()
+            if not self.scheduler.running: return
+
+        logger.info("正在根据最新配置更新所有定时任务...")
+        self.update_high_freq_task_chain_job()
+        self.update_low_freq_task_chain_job()
+        self.update_revival_check_job()
+
+    def _update_single_task_chain_job(self, job_id: str, job_name: str, task_key: str, enabled_key: str, cron_key: str, sequence_key: str, runtime_key: str):
+        """
+        【V10 - 内部通用任务链调度器】
+        一个通用的函数，用于更新单个任务链（高频或低频）。
+        """
+        try:
+            self.scheduler.remove_job(job_id)
+            logger.debug(f"已成功移除旧的 '{job_name}' 作业 (ID: {job_id})。")
+        except JobLookupError:
+            logger.debug(f"没有找到旧的 '{job_name}' 作业 (ID: {job_id})，无需移除。")
+        except Exception as e:
+            logger.error(f"尝试移除旧的 '{job_name}' 作业时发生意外错误: {e}", exc_info=True)
+
+        config = config_manager.APP_CONFIG
+        is_enabled = config.get(enabled_key, False)
+        cron_str = config.get(cron_key)
+        task_sequence = config.get(sequence_key, [])
+
+        if is_enabled and cron_str and task_sequence:
+            registry = tasks.get_task_registry()
+            task_info = registry.get(task_key)
+            if not task_info:
+                logger.error(f"设置 '{job_name}' 失败：在任务注册表中未找到任务键 '{task_key}'。")
+                return
+            
+            task_function, _, processor_type = task_info
+
+            def scheduled_chain_task_wrapper():
+                logger.info(f"定时任务触发：{job_name}。")
+                # 新的任务链函数会自己从配置中读取序列，无需再传递参数
+                task_manager.submit_task(
+                    task_function=task_function,
+                    task_name=job_name,
+                    processor_type=processor_type
+                )
+
+            try:
+                self.scheduler.add_job(
+                    func=scheduled_chain_task_wrapper,
+                    trigger=CronTrigger.from_crontab(cron_str, timezone=str(pytz.timezone(constants.TIMEZONE))),
+                    id=job_id,
+                    name=job_name,
+                    replace_existing=True
+                )
+                
+                friendly_cron_str = _get_next_run_time_str(cron_str)
+                chain_max_runtime_minutes = config.get(runtime_key, 0)
+                log_message = (
+                    f"已成功设置'{job_name}'，执行计划: {friendly_cron_str}，"
+                    f"包含 {len(task_sequence)} 个任务。"
+                )
+                if chain_max_runtime_minutes > 0:
+                    log_message += f" 最大运行时长: {chain_max_runtime_minutes} 分钟。"
+                else:
+                    log_message += " (无时长限制)。"
+                
+                logger.info(log_message)
+
+            except ValueError as e:
+                logger.error(f"设置 '{job_name}' 失败：CRON表达式 '{cron_str}' 无效。错误: {e}")
+            except Exception as e:
+                logger.error(f"添加新的 '{job_name}' 作业时发生未知错误: {e}", exc_info=True)
+        else:
+            logger.info(f"'{job_name}' 未启用或配置不完整，本次不设置定时任务。")
+
+    def update_high_freq_task_chain_job(self):
+        """更新高频核心任务链的定时作业。"""
+        self._update_single_task_chain_job(
+            job_id=HIGH_FREQ_CHAIN_JOB_ID,
+            job_name="高频核心任务链",
+            task_key='task-chain-high-freq',
+            enabled_key='task_chain_enabled',
+            cron_key='task_chain_cron',
+            sequence_key='task_chain_sequence',
+            runtime_key=constants.CONFIG_OPTION_TASK_CHAIN_MAX_RUNTIME_MINUTES
+        )
+
+    def update_low_freq_task_chain_job(self):
+        """更新低频维护任务链的定时作业。"""
+        self._update_single_task_chain_job(
+            job_id=LOW_FREQ_CHAIN_JOB_ID,
+            job_name="低频维护任务链",
+            task_key='task-chain-low-freq',
+            enabled_key='task_chain_low_freq_enabled',
+            cron_key='task_chain_low_freq_cron',
+            sequence_key='task_chain_low_freq_sequence',
+            runtime_key=constants.CONFIG_OPTION_TASK_CHAIN_LOW_FREQ_MAX_RUNTIME_MINUTES
+        )
+
+    def update_revival_check_job(self):
+        """根据硬编码的规则，设置每周的剧集复活检查任务。"""
+        if not self.scheduler.running:
             return
 
-        logger.trace("正在设置固定的'剧集复活检查'定时任务...")
+        logger.debug("正在更新固定的'剧集复活检查'定时任务...")
 
         try:
-            # 1. 同样，先移除旧的作业，防止重复
             self.scheduler.remove_job(REVIVAL_CHECK_JOB_ID)
         except JobLookupError:
-            pass # 没找到旧任务是正常的
+            pass 
 
-        # 2. 定义我们的固定调度规则
-        cron_str = '0 5 * * sun' # 每周日 (sun) 的 5点 (5) 0分 (0)
-
-        # 3. 从 tasks.py 的注册表里获取任务信息
+        cron_str = '0 5 * * sun' 
         registry = tasks.get_task_registry()
         task_info = registry.get('revival-check')
         
@@ -136,7 +233,6 @@ class SchedulerManager:
             
         task_function, task_description, processor_type = task_info
 
-        # 4. 创建一个包装函数，用于提交任务到 task_manager
         def scheduled_revival_check_wrapper():
             logger.info(f"定时任务触发：{task_description}。")
             task_manager.submit_task(
@@ -145,7 +241,6 @@ class SchedulerManager:
                 processor_type=processor_type
             )
 
-        # 5. 添加新的作业
         try:
             self.scheduler.add_job(
                 func=scheduled_revival_check_wrapper,
@@ -154,82 +249,9 @@ class SchedulerManager:
                 name=task_description,
                 replace_existing=True
             )
-            logger.trace(f"已成功设置'{task_description}'任务，执行计划: 每周日 05:00。")
+            logger.info(f"已成功设置'{task_description}'任务，执行计划: 每周日 05:00。")
         except ValueError as e:
             logger.error(f"设置'{task_description}'任务失败：CRON表达式 '{cron_str}' 无效。错误: {e}")
-    
-    def update_task_chain_job(self):
-        """
-        【核心函数】根据当前配置文件，更新任务链的定时作业。
-        这个函数应该在程序启动和每次配置保存后被调用。
-        """
-        if not self.scheduler.running:
-            logger.warning("调度器未运行，无法更新任务。")
-            # 即使未运行，也尝试启动它
-            self.start()
-            if not self.scheduler.running: return
-
-        logger.info("正在根据最新配置更新自动化任务链...")
-
-        try:
-            # 1. 无论如何，先尝试移除旧的作业，防止重复或配置残留
-            self.scheduler.remove_job(CHAIN_JOB_ID)
-            logger.debug(f"已成功移除旧的任务链作业 (ID: {CHAIN_JOB_ID})。")
-        except JobLookupError:
-            logger.debug(f"没有找到旧的任务链作业 (ID: {CHAIN_JOB_ID})，无需移除。")
-        except Exception as e:
-            logger.error(f"尝试移除旧任务作业时发生意外错误: {e}", exc_info=True)
-
-        # 2. 读取最新的配置
-        config = config_manager.APP_CONFIG
-        is_enabled = config.get('task_chain_enabled', False)
-        cron_str = config.get('task_chain_cron')
-        task_sequence = config.get('task_chain_sequence', [])
-        chain_max_runtime_minutes = config.get(constants.CONFIG_OPTION_TASK_CHAIN_MAX_RUNTIME_MINUTES, 0)
-
-        # 3. 如果启用且配置有效，则添加新的作业
-        if is_enabled and cron_str and task_sequence:
-            try:
-                # ★★★ 核心：我们不再直接调用 task_run_chain，而是通过 task_manager 提交 ★★★
-                # 这样做可以享受到任务锁、状态更新等所有 task_manager 的好处。
-                def scheduled_chain_task_wrapper():
-                    logger.info(f"定时任务触发：自动化任务链。")
-                    # 注意：这里我们传递 task_sequence 作为参数
-                    task_manager.submit_task(
-                        tasks.task_run_chain,
-                        "自动化任务链",
-                        task_sequence=task_sequence
-                    )
-
-                self.scheduler.add_job(
-                    func=scheduled_chain_task_wrapper, # 调用包装函数
-                    trigger=CronTrigger.from_crontab(cron_str, timezone=str(pytz.timezone(constants.TIMEZONE))),
-                    id=CHAIN_JOB_ID,
-                    name="自动化任务链",
-                    replace_existing=True
-                )
-                # 调用辅助函数来生成友好的日志
-                friendly_cron_str = _get_next_run_time_str(cron_str)
-                log_message = (
-                    f"已成功设置自动化任务链，执行计划: {friendly_cron_str}，"
-                    f"包含 {len(task_sequence)} 个任务。"
-                )
-                
-                if chain_max_runtime_minutes > 0:
-                    # 如果设置了时长，就追加时长信息
-                    log_message += f" 最大运行时长: {chain_max_runtime_minutes} 分钟。"
-                else:
-                    # 如果未设置，可以明确告知用户
-                    log_message += " (无时长限制)。"
-                
-                # ▼▼▼ 3. 使用新的日志字符串打印日志 ▼▼▼
-                logger.info(log_message)
-            except ValueError as e:
-                logger.error(f"设置任务链失败：CRON表达式 '{cron_str}' 无效。错误: {e}")
-            except Exception as e:
-                logger.error(f"添加新的任务链作业时发生未知错误: {e}", exc_info=True)
-        else:
-            logger.info("自动化任务链未启用或配置不完整，本次不设置定时任务。")
 
 # 创建一个全局单例，方便在其他地方调用
 scheduler_manager = SchedulerManager()

@@ -98,12 +98,13 @@ class ActorDBManager:
 
     def upsert_person(self, cursor: psycopg2.extensions.cursor, person_data: Dict[str, Any], emby_config: Dict[str, Any]) -> Tuple[int, str]:
         """
-        【V5 - 智能重联最终版】
+        【V6 - 终极防冲突重构版】
         写入或更新一条名人身份映射记录。
-        - 优先使用 emby_id 查找。
-        - 如果找不到，则尝试使用 tmdb_id 查找（处理 Emby 重建后的重联场景）。
-        - 如果都找不到，则创建新记录。
-        - 确保所有 ID 类型正确。
+        - 修复了因 Emby 重建媒体库导致 emby_id 变化而引发的 "duplicate key" 唯一性冲突错误。
+        - 查找逻辑现在更强大：
+          1. 优先使用 emby_id 查找。
+          2. 如果找不到，则使用 tmdb_id 查找（无论旧的 emby_id 是什么）。
+          3. 如果都找不到，才创建新记录。
         """
         emby_id = str(person_data.get("emby_id") or '').strip() or None
         tmdb_id_raw = person_data.get("tmdb_id")
@@ -125,23 +126,21 @@ class ActorDBManager:
         try:
             cursor.execute("SAVEPOINT actor_upsert")
 
-            # --- 步骤 1: 查找现有记录 ---
+            # --- 步骤 1: 查找现有记录 (更强大的查找逻辑) ---
             existing_record = None
+            
             # 路径 A: 正常流程，用 Emby ID 查找
             cursor.execute("SELECT * FROM person_identity_map WHERE emby_person_id = %s", (emby_id,))
             existing_record = cursor.fetchone()
 
-            # 路径 B: 重建媒体库后的重联流程
+            # ★★★ 核心修复：如果按 emby_id 找不到，就按 tmdb_id 找 ★★★
+            # 无论旧记录的 emby_id 是什么，只要 tmdb_id 匹配，就认为是同一个人
             if not existing_record and tmdb_id:
-                # 查找一个 tmdb_id 匹配但 emby_id 为空的记录
-                cursor.execute(
-                    "SELECT * FROM person_identity_map WHERE tmdb_person_id = %s AND (emby_person_id IS NULL OR emby_person_id = '')",
-                    (tmdb_id,)
-                )
-                record_to_relink = cursor.fetchone()
-                if record_to_relink:
-                    logger.trace(f"  -> [智能重联] 发现演员 '{name}' (TMDb: {tmdb_id}) 的记录，正在用新的 Emby ID '{emby_id}' 进行更新...")
-                    existing_record = record_to_relink
+                cursor.execute("SELECT * FROM person_identity_map WHERE tmdb_person_id = %s", (tmdb_id,))
+                existing_record = cursor.fetchone()
+                if existing_record:
+                    old_emby_id = existing_record.get('emby_person_id')
+                    logger.info(f"  -> [智能重联] 演员 '{name}' (TMDb: {tmdb_id}) 已存在于数据库 (旧 Emby ID: {old_emby_id})。将更新为新的 Emby ID '{emby_id}'。")
 
             # --- 步骤 2: 根据查找结果，决定是 UPDATE 还是 INSERT ---
             if existing_record:
@@ -172,7 +171,7 @@ class ActorDBManager:
                     cursor.execute("RELEASE SAVEPOINT actor_upsert")
                     return map_id, "UNCHANGED"
             else:
-                # --- INSERT 新记录 ---
+                # --- INSERT 新记录 (只有在绝对找不到时才执行) ---
                 if not name:
                     details = get_emby_item_details(emby_id, emby_config['url'], emby_config['api_key'], emby_config['user_id'], fields="Name")
                     name = details.get("Name") if details else "Unknown Actor"
@@ -188,6 +187,12 @@ class ActorDBManager:
                 cursor.execute("RELEASE SAVEPOINT actor_upsert")
                 return (result["map_id"], "INSERTED") if result else (-1, "ERROR")
 
+        except psycopg2.IntegrityError as ie:
+            # 添加一个额外的捕获，以防万一在高并发下出现竞争条件
+            cursor.execute("ROLLBACK TO SAVEPOINT actor_upsert")
+            logger.error(f"upsert_person 发生罕见的唯一性冲突，可能存在并发写入。emby_person_id={emby_id}, tmdb_id={tmdb_id}: {ie}")
+            cursor.execute("RELEASE SAVEPOINT actor_upsert")
+            return -1, "ERROR"
         except Exception as e:
             cursor.execute("ROLLBACK TO SAVEPOINT actor_upsert")
             logger.error(f"upsert_person 发生异常，emby_person_id={emby_id}: {e}", exc_info=True)

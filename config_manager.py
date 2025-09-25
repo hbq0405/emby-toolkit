@@ -117,11 +117,17 @@ constants.CONFIG_OPTION_EMBY_ADMIN_PASS: (constants.CONFIG_SECTION_EMBY, 'passwo
     constants.CONFIG_OPTION_AI_BASE_URL: (constants.CONFIG_SECTION_AI_TRANSLATION, 'string', "https://api.siliconflow.cn/v1"),
     constants.CONFIG_OPTION_AI_TRANSLATION_MODE: (constants.CONFIG_SECTION_AI_TRANSLATION, 'string', 'fast'),
 
-    # [Scheduler] - ★★★ 现在这里只剩下我们需要的任务链配置 ★★★
+    # [Scheduler]
+    # --- 高频任务链 ---
     constants.CONFIG_OPTION_TASK_CHAIN_ENABLED: (constants.CONFIG_SECTION_SCHEDULER, 'boolean', False),
     constants.CONFIG_OPTION_TASK_CHAIN_CRON: (constants.CONFIG_SECTION_SCHEDULER, 'string', "0 2 * * *"),
     constants.CONFIG_OPTION_TASK_CHAIN_SEQUENCE: (constants.CONFIG_SECTION_SCHEDULER, 'list', []),
     constants.CONFIG_OPTION_TASK_CHAIN_MAX_RUNTIME_MINUTES: (constants.CONFIG_SECTION_SCHEDULER, 'int', 0),
+    # --- 低频任务链 ---
+    constants.CONFIG_OPTION_TASK_CHAIN_LOW_FREQ_ENABLED: (constants.CONFIG_SECTION_SCHEDULER, 'boolean', False),
+    constants.CONFIG_OPTION_TASK_CHAIN_LOW_FREQ_CRON: (constants.CONFIG_SECTION_SCHEDULER, 'string', "0 5 * * 0"),
+    constants.CONFIG_OPTION_TASK_CHAIN_LOW_FREQ_SEQUENCE: (constants.CONFIG_SECTION_SCHEDULER, 'list', []),
+    constants.CONFIG_OPTION_TASK_CHAIN_LOW_FREQ_MAX_RUNTIME_MINUTES: (constants.CONFIG_SECTION_SCHEDULER, 'int', 0),
     
     # [Actor]
     constants.CONFIG_OPTION_ACTOR_ROLE_ADD_PREFIX: (constants.CONFIG_SECTION_ACTOR, 'boolean', False),

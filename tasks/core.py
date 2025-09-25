@@ -23,19 +23,23 @@ from .users import task_sync_all_user_data, task_check_expired_users
 logger = logging.getLogger(__name__)
 
 
-def task_run_chain(processor, task_sequence: list):
+def _task_run_chain_internal(processor, task_name: str, sequence_config_key: str, max_runtime_config_key: str):
     """
-    【V9 - 参数名修正最终版】
-    - 彻底修复了任务链的调用逻辑，能为不同任务传递正确的关键字参数。
-    - 确保所有子任务都能被正确调用，解决所有 'unexpected keyword argument' 错误。
+    【V10 - 内部通用任务链执行器】
+    - 将任务链的执行逻辑抽象出来，供高频和低频任务链调用。
+    - 通过传入不同的配置键来读取对应的任务序列和运行时长。
     """
-    task_name = "自动化任务链"
+    task_sequence = processor.config.get(sequence_config_key, [])
+    if not task_sequence:
+        logger.info(f"--- '{task_name}' 检测到任务序列为空，已自动跳过 ---")
+        return
+
     total_tasks = len(task_sequence)
     logger.info(f"--- '{task_name}' 已启动，共包含 {total_tasks} 个子任务 ---")
-    task_manager.update_status_from_thread(0, f"任务链启动，共 {total_tasks} 个任务。")
+    task_manager.update_status_from_thread(0, f"{task_name}启动，共 {total_tasks} 个任务。")
 
     # --- 准备计时器和停止信号 ---
-    max_runtime_minutes = processor.config.get(constants.CONFIG_OPTION_TASK_CHAIN_MAX_RUNTIME_MINUTES, 0)
+    max_runtime_minutes = processor.config.get(max_runtime_config_key, 0)
     timeout_seconds = max_runtime_minutes * 60 if max_runtime_minutes > 0 else None
     
     main_processor = extensions.media_processor_instance
@@ -44,11 +48,11 @@ def task_run_chain(processor, task_sequence: list):
 
     def timeout_watcher():
         if timeout_seconds:
-            logger.info(f"任务链运行时长限制为 {max_runtime_minutes} 分钟，计时器已启动。")
+            logger.info(f"'{task_name}' 运行时长限制为 {max_runtime_minutes} 分钟，计时器已启动。")
             time.sleep(timeout_seconds)
             
             if not main_processor.is_stop_requested():
-                logger.warning(f"任务链达到 {max_runtime_minutes} 分钟的运行时长限制，将发送停止信号...")
+                logger.warning(f"'{task_name}' 达到 {max_runtime_minutes} 分钟的运行时长限制，将发送停止信号...")
                 timeout_triggered.set()
                 main_processor.signal_stop()
 
@@ -96,13 +100,10 @@ def task_run_chain(processor, task_sequence: list):
 
                 # ★★★ 核心修复：根据任务键，使用正确的关键字参数调用 ★★★
                 if task_key == 'full-scan':
-                    # task_run_full_scan 需要 'force_reprocess'
                     task_function(target_processor, force_reprocess=False)
-                elif task_key in ['enrich-aliases', 'sync-images-map']:
-                    # 这两个任务需要 'force_full_update'
+                elif task_key in ['enrich-aliases', 'sync-images-map', 'populate-metadata']:
                     task_function(target_processor, force_full_update=False)
                 else:
-                    # 其他所有任务都不需要额外的布尔参数
                     task_function(target_processor)
 
                 time.sleep(1)
@@ -131,38 +132,59 @@ def task_run_chain(processor, task_sequence: list):
         
         main_processor.clear_stop_signal()
 
+
+def task_run_chain_high_freq(processor):
+    """高频核心任务链的入口点"""
+    _task_run_chain_internal(
+        processor,
+        task_name="高频核心任务链",
+        sequence_config_key=constants.CONFIG_OPTION_TASK_CHAIN_SEQUENCE,
+        max_runtime_config_key=constants.CONFIG_OPTION_TASK_CHAIN_MAX_RUNTIME_MINUTES
+    )
+
+def task_run_chain_low_freq(processor):
+    """低频维护任务链的入口点"""
+    _task_run_chain_internal(
+        processor,
+        task_name="低频维护任务链",
+        sequence_config_key=constants.CONFIG_OPTION_TASK_CHAIN_LOW_FREQ_SEQUENCE,
+        max_runtime_config_key=constants.CONFIG_OPTION_TASK_CHAIN_LOW_FREQ_MAX_RUNTIME_MINUTES
+    )
+
+
 def get_task_registry(context: str = 'all'):
     """
-    【V4 - 最终完整版】
+    【V10 - 拆分为高频/低频任务链】
     返回一个包含所有可执行任务的字典。
-    每个任务的定义现在是一个四元组：(函数, 描述, 处理器类型, 是否适合任务链)。
+    - 新增 'task-chain-high-freq' 和 'task-chain-low-freq' 两个独立的任务链入口。
     """
     # 完整的任务注册表
     # 格式: 任务Key: (任务函数, 任务描述, 处理器类型, 是否适合在任务链中运行)
     full_registry = {
-        'task-chain': (task_run_chain, "自动化任务链", 'media', False), # 任务链本身不能嵌套
+        # --- 任务链本身，不能嵌套 ---
+        'task-chain-high-freq': (task_run_chain_high_freq, "高频核心任务链", 'media', False),
+        'task-chain-low-freq': (task_run_chain_low_freq, "低频维护任务链", 'media', False),
 
         # --- 适合任务链的常规任务 ---
         'sync-person-map': (task_sync_person_map, "同步演员数据", 'media', True),
-        'enrich-aliases': (task_enrich_aliases, "演员数据补充", 'media', True),
         'populate-metadata': (task_populate_metadata_cache, "同步媒体数据", 'media', True),
-        'full-scan': (task_run_full_scan, "中文化角色名", 'media', True),
-        'actor-cleanup': (task_actor_translation_cleanup, "中文化演员名", 'media', True),
         'process-watchlist': (task_process_watchlist, "刷新智能追剧", 'watchlist', True),
-        'refresh-collections': (task_refresh_collections, "刷新原生合集", 'media', True),
-        'custom-collections': (task_process_all_custom_collections, "刷新自建合集", 'media', True),
-        'update-resubscribe-cache': (task_update_resubscribe_cache, "刷新洗版状态", 'media', True),
         'actor-tracking': (task_process_actor_subscriptions, "刷新演员订阅", 'actor', True),
         'auto-subscribe': (task_auto_subscribe, "智能订阅缺失", 'media', True),
+        'update-resubscribe-cache': (task_update_resubscribe_cache, "刷新洗版状态", 'media', True),
+        'sync-all-user-data': (task_sync_all_user_data, "同步用户数据", 'media', True),
+        'enrich-aliases': (task_enrich_aliases, "演员数据补充", 'media', True),
+        'full-scan': (task_run_full_scan, "中文化角色名", 'media', True),
+        'actor-cleanup': (task_actor_translation_cleanup, "中文化演员名", 'media', True),
+        'refresh-collections': (task_refresh_collections, "刷新原生合集", 'media', True),
+        'custom-collections': (task_process_all_custom_collections, "刷新自建合集", 'media', True),
         'sync-images-map': (task_full_image_sync, "覆盖缓存备份", 'media', True),
         'resubscribe-library': (task_resubscribe_library, "媒体洗版订阅", 'media', True),
         'generate-all-covers': (task_generate_all_covers, "生成原生封面", 'media', True),
         'generate-custom-collection-covers': (task_generate_all_custom_collection_covers, "生成合集封面", 'media', True),
         'purge-ghost-actors': (task_purge_ghost_actors, "删除幽灵演员", 'media', True),
-        'sync-all-user-data': (task_sync_all_user_data, "同步用户数据", 'media', True),
         'check-expired-users': (task_check_expired_users, "检查过期用户", 'media', True),
         
-
         # --- 不适合任务链的、需要特定参数的任务 ---
         'process_all_custom_collections': (task_process_all_custom_collections, "生成所有自建合集", 'media', False),
         'process-single-custom-collection': (task_process_custom_collection, "生成单个自建合集", 'media', False),
@@ -172,16 +194,12 @@ def get_task_registry(context: str = 'all'):
     }
 
     if context == 'chain':
-        # ★★★ 核心修复 1/2：使用第四个元素 (布尔值) 来进行过滤 ★★★
-        # 这将完美恢复您原来的功能
         return {
             key: (info[0], info[1]) 
             for key, info in full_registry.items() 
-            if info[3]  # info[3] 就是那个 True/False 标志
+            if info[3]
         }
     
-    # ★★★ 核心修复 2/2：默认情况下，返回前三个元素 ★★★
-    # 这确保了“万用插座”API (/api/tasks/run) 能够正确解包，无需修改
     return {
         key: (info[0], info[1], info[2]) 
         for key, info in full_registry.items()

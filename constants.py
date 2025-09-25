@@ -116,10 +116,18 @@ CONFIG_OPTION_NETWORK_HTTP_PROXY = "network_http_proxy_url"
 # ==============================================================================
 CONFIG_SECTION_SCHEDULER = "Scheduler"
 
+# --- 高频任务链 ---
 CONFIG_OPTION_TASK_CHAIN_ENABLED = "task_chain_enabled"
 CONFIG_OPTION_TASK_CHAIN_CRON = "task_chain_cron"
 CONFIG_OPTION_TASK_CHAIN_SEQUENCE = "task_chain_sequence"
 CONFIG_OPTION_TASK_CHAIN_MAX_RUNTIME_MINUTES = "task_chain_max_runtime_minutes"
+
+# --- 低频任务链配置 ---
+CONFIG_OPTION_TASK_CHAIN_LOW_FREQ_ENABLED = "task_chain_low_freq_enabled"
+CONFIG_OPTION_TASK_CHAIN_LOW_FREQ_CRON = "task_chain_low_freq_cron"
+CONFIG_OPTION_TASK_CHAIN_LOW_FREQ_SEQUENCE = "task_chain_low_freq_sequence"
+CONFIG_OPTION_TASK_CHAIN_LOW_FREQ_MAX_RUNTIME_MINUTES = "task_chain_low_freq_max_runtime_minutes"
+
 
 
 # --- 演员前缀 ---

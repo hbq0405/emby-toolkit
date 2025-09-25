@@ -143,8 +143,9 @@ def _share_import_table_data(cursor, table_name: str, columns: List[str], data: 
 # ★★★ 辅助函数 4: 专门用于合并 person_identity_map 的智能函数 ★★★
 def _merge_person_identity_map_data(cursor, table_name: str, columns: List[str], data: List[tuple]) -> dict:
     """
-    为 person_identity_map 表提供一个健壮的合并策略。
-    它会查找所有相关的碎片化记录，将它们合并到一个主记录中，并删除多余的记录。
+    【V2 - 终极修复版】为 person_identity_map 表提供一个健壮的合并策略。
+    - 采用 "先删除，后更新" 的策略，彻底解决因唯一性约束导致的 UPDATE 失败问题。
+    - 它会查找所有相关的碎片化记录，将它们合并到一个主记录中，并删除多余的记录。
     """
     logger.info(f"执行智能合并模式：将合并数据到表 '{table_name}'...")
     
@@ -170,7 +171,7 @@ def _merge_person_identity_map_data(cursor, table_name: str, columns: List[str],
         if not query_parts:
             continue
 
-        # 步骤 1: 查找所有相关的记录，而不仅仅是一条
+        # 步骤 1: 查找所有相关的记录
         find_sql = sql.SQL("SELECT * FROM person_identity_map WHERE {}").format(sql.SQL(' OR ').join(query_parts))
         cursor.execute(find_sql, tuple(params))
         existing_records = cursor.fetchall()
@@ -187,77 +188,122 @@ def _merge_person_identity_map_data(cursor, table_name: str, columns: List[str],
             cursor.execute(insert_sql, values_to_insert)
             stats['inserted'] += 1
         else:
-            # --- 场景 B: 找到一条或多条相关记录，执行合并 ---
+            # --- 场景 B: 找到一条或多条相关记录，执行 "先删除，后更新" 的合并 ---
             
             # 步骤 2: 确定主记录 (ID最小的) 和待删除记录
             sorted_records = sorted(existing_records, key=lambda r: r['map_id'])
-            master_record = dict(sorted_records[0]) # 使用副本进行操作
+            master_record_original = dict(sorted_records[0]) # 这是更新前的主记录
             records_to_delete = sorted_records[1:]
             
-            # 步骤 3: 将所有源的数据合并到主记录中
+            # 步骤 3: 在内存中构建最终的、完整的合并后数据
+            merged_data = master_record_original.copy()
             all_sources = records_to_delete + [row_to_merge]
             
             for source in all_sources:
                 for key, value in source.items():
                     # 只合并ID字段和名字，且仅当新值存在而主记录中不存在时
-                    if key in ['tmdb_person_id', 'imdb_id', 'douban_celebrity_id', 'primary_name'] and value and not master_record.get(key):
-                        master_record[key] = value
+                    if key in ['tmdb_person_id', 'imdb_id', 'douban_celebrity_id', 'primary_name'] and value and not merged_data.get(key):
+                        merged_data[key] = value
 
-            # 步骤 4: 更新主记录
-            updates = {k: v for k, v in master_record.items() if k != 'map_id' and v != sorted_records[0].get(k)}
-            
-            if updates:
-                set_clauses = [sql.SQL("{} = %s").format(sql.Identifier(k)) for k in updates.keys()]
-                update_sql = sql.SQL("UPDATE person_identity_map SET {} WHERE map_id = %s").format(sql.SQL(', ').join(set_clauses))
-                cursor.execute(update_sql, tuple(updates.values()) + (master_record['map_id'],))
-                stats['updated'] += 1
-
-            # 步骤 5: 删除被合并的冗余记录
+            # ★★★ 核心修复步骤 4: 先删除被合并的冗余记录 ★★★
             if records_to_delete:
                 ids_to_delete = [r['map_id'] for r in records_to_delete]
                 delete_sql = sql.SQL("DELETE FROM person_identity_map WHERE map_id = ANY(%s)")
                 cursor.execute(delete_sql, (ids_to_delete,))
                 stats['merged_and_deleted'] += len(ids_to_delete)
+
+            # ★★★ 核心修复步骤 5: 在唯一键被释放后，再更新主记录 ★★★
+            updates = {
+                k: v for k, v in merged_data.items() 
+                if k != 'map_id' and v != master_record_original.get(k)
+            }
+            
+            if updates:
+                set_clauses = [sql.SQL("{} = %s").format(sql.Identifier(k)) for k in updates.keys()]
+                update_sql = sql.SQL("UPDATE person_identity_map SET {} WHERE map_id = %s").format(sql.SQL(', ').join(set_clauses))
+                cursor.execute(update_sql, tuple(updates.values()) + (merged_data['map_id'],))
+                stats['updated'] += 1
             
     logger.info(f"智能合并完成：新增 {stats['inserted']} 条，更新 {stats['updated']} 条，合并删除 {stats['merged_and_deleted']} 条记录。")
     return stats
 
+# ★★★ 新增辅助函数 5: 同步主键序列 ★★★
+def _resync_primary_key_sequence(cursor, table_name: str):
+    """
+    在执行插入前，同步表的主键序列生成器。
+    这可以防止因序列不同步而导致的 "duplicate key value violates unique constraint ..._pkey" 错误。
+    """
+    # 定义每个表的主键列名
+    PRIMARY_KEY_COLUMNS = {
+        'person_identity_map': 'map_id',
+        'actor_metadata': 'id',
+        'translation_cache': 'id',
+        'watchlist': 'id',
+        'actor_subscriptions': 'id',
+        'tracked_actor_media': 'id',
+        'collections_info': 'id',
+        'processed_log': 'id',
+        'failed_log': 'id',
+        'users': 'id',
+        'custom_collections': 'id',
+        'media_metadata': 'id',
+        'app_settings': 'id',
+        'emby_users': 'id',
+        'user_media_data': 'id',
+        'resubscribe_rules': 'id',
+        'resubscribe_cache': 'id',
+        'media_cleanup_tasks': 'id',
+        'user_templates': 'id',
+        'invitations': 'id',
+        'emby_users_extended': 'id',
+    }
+    
+    pk_column = PRIMARY_KEY_COLUMNS.get(table_name.lower())
+    if not pk_column:
+        logger.debug(f"表 '{table_name}' 未定义主键列，跳过序列同步。")
+        return
+
+    try:
+        # 构造 SQL 来获取序列名称并设置其下一个值
+        # pg_get_serial_sequence 会自动找到与列关联的序列
+        # COALESCE(MAX(...), 0) 确保即使表是空的，也能返回 0
+        resync_sql = sql.SQL("""
+            SELECT setval(
+                pg_get_serial_sequence({table}, {pk_col}),
+                (SELECT COALESCE(MAX({pk_identifier}), 0) FROM {table_identifier})
+            );
+        """).format(
+            table=sql.Literal(table_name.lower()),
+            pk_col=sql.Literal(pk_column),
+            pk_identifier=sql.Identifier(pk_column),
+            table_identifier=sql.Identifier(table_name.lower())
+        )
+        
+        cursor.execute(resync_sql)
+        logger.info(f"  -> 已成功同步表 '{table_name}' 的主键序列。")
+    except Exception as e:
+        # 如果表没有序列（理论上不应该发生），这个操作可能会失败，但我们不希望它中断整个流程
+        logger.warning(f"同步表 '{table_name}' 的主键序列时发生非致命错误: {e}")
+
 # --- 主任务函数 (V4 - 纯PG重构版) ---
 def task_import_database(processor, file_content: str, tables_to_import: List[str], import_strategy: str):
     """
-    【V5 - 共享导入重构版】
-    - 根据 `import_strategy` ('overwrite' 或 'share') 决定导入行为。
-    - 'share' 模式下，仅导入可共享数据，并对特定表进行清洗。
-    - 使用 `ON CONFLICT DO NOTHING` 实现数据合并。
+    【V6 - 终极健壮版】
+    - 在所有操作开始前，为每个待处理的表调用 _resync_primary_key_sequence。
+    - 这将彻底解决因数据库序列（ID计数器）与实际数据不一致导致的主键冲突问题。
     """
     task_name = f"数据库恢复 ({'覆盖模式' if import_strategy == 'overwrite' else '共享模式'})"
     logger.info(f"后台任务开始：{task_name}，将恢复表: {tables_to_import}。")
     
-    # 定义哪些表是可共享的。在共享模式下，只有这些表会被处理。
     SHARABLE_TABLES = {'person_identity_map', 'actor_metadata', 'translation_cache', 'media_metadata'}
-    
     TABLE_TRANSLATIONS = {
-        'person_identity_map': '演员映射表',
-        'actor_metadata': '演员元数据',
-        'translation_cache': '翻译缓存',
-        'watchlist': '智能追剧列表',
-        'actor_subscriptions': '演员订阅配置',
-        'tracked_actor_media': '已追踪的演员作品',
-        'collections_info': '电影合集信息',
-        'processed_log': '已处理列表',
-        'failed_log': '待复核列表',
-        'users': '用户账户',
-        'custom_collections': '自建合集',
-        'media_metadata': '媒体元数据',
-        'app_settings': '应用设置',
-        'emby_users': 'Emby用户',
-        'user_media_data': '用户媒体数据',
-        'resubscribe_rules': '洗版规则',
-        'resubscribe_cache': '洗版缓存',
-        'media_cleanup_tasks': '媒体清理任务',
-        'user_templates': '用户权限模板',
-        'invitations': '邀请码',
-        'emby_users_extended': 'Emby用户扩展信息',
+        'person_identity_map': '演员映射表', 'actor_metadata': '演员元数据', 'translation_cache': '翻译缓存',
+        'watchlist': '智能追剧列表', 'actor_subscriptions': '演员订阅配置', 'tracked_actor_media': '已追踪的演员作品',
+        'collections_info': '电影合集信息', 'processed_log': '已处理列表', 'failed_log': '待复核列表',
+        'users': '用户账户', 'custom_collections': '自建合集', 'media_metadata': '媒体元数据',
+        'app_settings': '应用设置', 'emby_users': 'Emby用户', 'user_media_data': '用户媒体数据',
+        'resubscribe_rules': '洗版规则', 'resubscribe_cache': '洗版缓存', 'media_cleanup_tasks': '媒体清理任务',
+        'user_templates': '用户权限模板', 'invitations': '邀请码', 'emby_users_extended': 'Emby用户扩展信息',
     }
     summary_lines = []
     conn = None
@@ -265,49 +311,29 @@ def task_import_database(processor, file_content: str, tables_to_import: List[st
         backup = json.loads(file_content)
         backup_data = backup.get("data", {})
 
-        # --- 新增的逻辑: 强制排序 tables_to_import ---
-        # 定义表的依赖顺序。排在前面的表是父表或没有依赖的表。
-        # 这里只列出明确需要优先处理的表。
-        # 未列出的表将保持其在原始列表中的相对顺序，但会排在已定义依赖的表之后。
-        # 例如：person_identity_map 必须在 actor_metadata 之前
-        # 你可以根据实际情况添加更多依赖关系
-        
-        # 建立一个排序键函数
         def get_table_sort_key(table_name):
-            table_name_lower = table_name.lower()
-            if table_name_lower == 'person_identity_map':
-                return 0  # 演员身份映射表，是 actor_metadata 和 actor_subscriptions 的基础
-            elif table_name_lower == 'users':
-                return 1  # 用户表，通常也是基础
-            elif table_name_lower == 'actor_subscriptions':
-                return 10 # 演员订阅配置，依赖于 person_identity_map (语义上)，被 tracked_actor_media 依赖
-            elif table_name_lower == 'actor_metadata':
-                return 11 # 演员元数据，依赖于 person_identity_map (外键)
-            elif table_name_lower == 'tracked_actor_media':
-                return 20 # 已追踪的演员作品，依赖于 actor_subscriptions (外键)
-            # 其他表，目前没有明确的外键依赖，可以放在后面
-            # 它们的相对顺序将由原始 tables_to_import 列表决定，如果它们有相同的默认权重
-            elif table_name_lower in [
-                'processed_log', 'failed_log', 'translation_cache',
-                'collections_info', 'custom_collections', 'media_metadata', 'watchlist'
-            ]:
-                return 100 # 默认权重
-            else:
-                return 999 # 未知表，确保它排在最后，以防万一
+            order = {
+                'person_identity_map': 0, 'users': 1, 'actor_subscriptions': 10,
+                'actor_metadata': 11, 'tracked_actor_media': 20
+            }
+            return order.get(table_name.lower(), 100)
 
-        # 核心排序逻辑
-        actual_tables_to_import = [
-            t for t in tables_to_import if t in backup_data
-        ]
-        
+        actual_tables_to_import = [t for t in tables_to_import if t in backup_data]
         sorted_tables_to_import = sorted(actual_tables_to_import, key=get_table_sort_key)
         
         logger.info(f"调整后的导入顺序：{sorted_tables_to_import}")
-        # --- 结束更新逻辑 ---
 
         with connection.get_db_connection() as conn:
             with conn.cursor() as cursor:
                 logger.info("数据库事务已开始。")
+
+                # ★★★ 核心修复：在所有操作之前，为每个表同步主键序列 ★★★
+                logger.info("正在同步所有相关表的主键ID序列...")
+                for table_name in sorted_tables_to_import:
+                    _resync_primary_key_sequence(cursor, table_name)
+                logger.info("主键ID序列同步完成。")
+                # ★★★ 修复结束 ★★★
+
                 for table_name in sorted_tables_to_import:
                     cn_name = TABLE_TRANSLATIONS.get(table_name.lower(), table_name)
                     table_data = backup_data.get(table_name, [])
@@ -318,15 +344,12 @@ def task_import_database(processor, file_content: str, tables_to_import: List[st
 
                     logger.info(f"正在处理表: '{cn_name}'，共 {len(table_data)} 行。")
 
-                    # ★★★ 核心逻辑分支 ★★★
                     if import_strategy == 'share':
-                        # --- 共享模式 ---
                         if table_name.lower() not in SHARABLE_TABLES:
                             logger.warning(f"共享模式下跳过非共享表: '{cn_name}'")
                             summary_lines.append(f"  - 表 '{cn_name}': 跳过 (非共享数据)。")
                             continue
                         
-                        # ★ 数据清洗：根据表名移除或修改特定字段
                         cleaned_data = []
                         for row in table_data:
                             new_row = row.copy()
@@ -342,16 +365,13 @@ def task_import_database(processor, file_content: str, tables_to_import: List[st
                         if not prepared_data: continue
                         
                         if table_name.lower() == 'person_identity_map':
-                            # 对 person_identity_map 使用新的智能合并函数
                             merge_stats = _merge_person_identity_map_data(cursor, table_name, columns, prepared_data)
                             summary_lines.append(f"  - 表 '{cn_name}': 智能合并完成 (新增 {merge_stats['inserted']}, 更新 {merge_stats['updated']}, 清理 {merge_stats['merged_and_deleted']})。")
                         else:
-                            # 其他表使用原来的简单合并函数
                             inserted_count = _share_import_table_data(cursor, table_name, columns, prepared_data)
                             summary_lines.append(f"  - 表 '{cn_name}': 成功合并 {inserted_count} / {len(prepared_data)} 条新记录。")
 
                     else: # import_strategy == 'overwrite'
-                        # --- 覆盖模式 (保持原有逻辑) ---
                         columns, prepared_data = _prepare_data_for_insert(table_name, table_data)
                         if not prepared_data: continue
 

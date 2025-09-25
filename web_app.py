@@ -112,7 +112,7 @@ def save_config_and_reload(new_config: Dict[str, Any]):
         initialize_processors()
         init_auth_from_blueprint()
         
-        scheduler_manager.update_task_chain_job()
+        scheduler_manager.update_all_scheduled_jobs()
         
         logger.info("所有组件已根据新配置重新初始化完毕。")
         

@@ -8,20 +8,24 @@
     
     <n-space v-else-if="configModel" vertical :size="24" style="margin-top: 15px;">
       
-      <!-- 卡片 1: 自动化维护任务链 (V2 - 两列布局) -->
+      <!-- ======================================================================= -->
+      <!-- 卡片 1: 高频核心任务链 -->
+      <!-- ======================================================================= -->
       <n-card :bordered="false" class="dashboard-card">
         <template #header>
-          <span class="card-title">自动化任务链</span>
+          <span class="card-title">高频核心任务链</span>
+        </template>
+        <template #header-extra>
+          <n-text depth="3">建议每日执行，保证核心功能更新</n-text>
         </template>
         
-        <!-- --- 【【【 使用 Grid 组件实现两列布局 (宽度已调整) 】】】 --- -->
         <n-grid cols="1 l:3" :x-gap="24" :y-gap="16" responsive="screen">
           
-          <!-- 左侧列：配置区域 (占1/3) -->
+          <!-- 左侧列：配置区域 -->
           <n-gi span="1">
             <n-space vertical>
               <n-space align="center" justify="space-between">
-                <n-text strong>启用自动化任务链</n-text>
+                <n-text strong>启用高频任务链</n-text>
                 <n-switch v-model:value="configModel.task_chain_enabled" />
               </n-space>
               <n-form :model="configModel" label-placement="left" label-width="auto" class="mt-3" :show-feedback="false">
@@ -37,21 +41,12 @@
                     placeholder="0 代表不限制"
                     style="width: 100%;"
                   />
-                  <template #feedback>
-                    <n-text depth="3" style="font-size:0.8em;">
-                      设置任务链的最长运行时间。到达时限后，会自动停止当前任务以及后续任务，填 0 表示不限制。
-                    </n-text>
-                  </template>
                 </n-form-item>
                 <n-form-item label="任务序列">
                   <n-button-group>
-                    <n-button type="default" @click="showChainConfigModal = true" :disabled="!configModel.task_chain_enabled">
+                    <n-button type="default" @click="showHighFreqChainConfigModal = true" :disabled="!configModel.task_chain_enabled">
                       <template #icon><n-icon :component="Settings24Regular" /></template>
                       配置
-                    </n-button>
-                    <n-button type="primary" @click="savePageConfig" :loading="savingConfig">
-                      <template #icon><n-icon :component="Save24Regular" /></template>
-                      保存配置
                     </n-button>
                   </n-button-group>
                 </n-form-item>
@@ -59,12 +54,12 @@
             </n-space>
           </n-gi>
 
-          <!-- 右侧列：显示当前执行顺序 (占2/3) -->
+          <!-- 右侧列：显示当前执行顺序 -->
           <n-gi span="2">
             <n-text strong>当前执行流程</n-text>
             <div class="flowchart-wrapper">
-              <div v-if="enabledTaskChain.length > 0" class="flowchart-container">
-                <div v-for="task in enabledTaskChain" :key="task.key" class="flowchart-node">
+              <div v-if="enabledHighFreqTaskChain.length > 0" class="flowchart-container">
+                <div v-for="task in enabledHighFreqTaskChain" :key="task.key" class="flowchart-node">
                   {{ task.name }}
                 </div>
               </div>
@@ -73,18 +68,85 @@
               </div>
             </div>
           </n-gi>
-
         </n-grid>
-
-        <!-- "工作原理"提示信息，放在 Grid 下方，保持通栏显示 -->
-        <n-alert title="任务详情" type="info" style="margin-top: 24px;">
-          启用后，系统将只在指定时间执行一个总任务。该任务会严格按照“配置任务链”中设定好的顺序，一个接一个地执行选中的子任务，无需再为每个任务单独设置时间，彻底避免了任务冲突。<br />
-          建议顺序：[同步演员数据->同步媒体数据->演员数据补充->中文化角色名],其他任务随意。<br />
-          处理模式：快速模式是增量处理，会跳过已处理过的媒体项；深度模式是无视已处理记录全量重新处理一遍。自动化任务链默认采用快速模式，手动立即执行才可以选择深度模式。
+        <n-alert title="任务建议" type="info" style="margin-top: 24px;">
+          此任务链适合放置需要频繁更新的任务，以保证数据的时效性。<br/>
+          <b>建议顺序：</b> [同步媒体数据] -> [刷新智能追剧] -> [刷新演员订阅] -> [智能订阅缺失] -> [刷新自建合集]
         </n-alert>
       </n-card>
 
-      <!-- 卡片 2: 临时任务 -->
+      <!-- ======================================================================= -->
+      <!-- 卡片 2: 低频维护任务链 -->
+      <!-- ======================================================================= -->
+      <n-card :bordered="false" class="dashboard-card">
+        <template #header>
+          <span class="card-title">低频维护任务链</span>
+        </template>
+        <template #header-extra>
+          <n-text depth="3">建议每周或更长周期执行，处理资源密集型任务</n-text>
+        </template>
+        
+        <n-grid cols="1 l:3" :x-gap="24" :y-gap="16" responsive="screen">
+          
+          <!-- 左侧列：配置区域 -->
+          <n-gi span="1">
+            <n-space vertical>
+              <n-space align="center" justify="space-between">
+                <n-text strong>启用低频任务链</n-text>
+                <n-switch v-model:value="configModel.task_chain_low_freq_enabled" />
+              </n-space>
+              <n-form :model="configModel" label-placement="left" label-width="auto" class="mt-3" :show-feedback="false">
+                <n-form-item label="定时执行 (CRON)">
+                  <n-input v-model:value="configModel.task_chain_low_freq_cron" :disabled="!configModel.task_chain_low_freq_enabled" placeholder="例如: 0 5 * * 0" />
+                </n-form-item>
+                <n-form-item label="最大运行时长 (分钟)">
+                  <n-input-number 
+                    v-model:value="configModel.task_chain_low_freq_max_runtime_minutes" 
+                    :min="0" 
+                    :step="30" 
+                    :disabled="!configModel.task_chain_low_freq_enabled"
+                    placeholder="0 代表不限制"
+                    style="width: 100%;"
+                  />
+                </n-form-item>
+                <n-form-item label="任务序列">
+                   <n-button type="default" @click="showLowFreqChainConfigModal = true" :disabled="!configModel.task_chain_low_freq_enabled">
+                      <template #icon><n-icon :component="Settings24Regular" /></template>
+                      配置
+                    </n-button>
+                </n-form-item>
+              </n-form>
+            </n-space>
+          </n-gi>
+
+          <!-- 右侧列：显示当前执行顺序 -->
+          <n-gi span="2">
+            <n-text strong>当前执行流程</n-text>
+            <div class="flowchart-wrapper">
+              <div v-if="enabledLowFreqTaskChain.length > 0" class="flowchart-container">
+                <div v-for="task in enabledLowFreqTaskChain" :key="task.key" class="flowchart-node">
+                  {{ task.name }}
+                </div>
+              </div>
+              <div v-else class="flowchart-container empty">
+                <n-text depth="3">暂未配置任何任务...</n-text>
+              </div>
+            </div>
+          </n-gi>
+        </n-grid>
+        <n-alert title="任务建议" type="warning" style="margin-top: 24px;">
+          此任务链适合放置消耗资源较多、无需每日执行的任务，例如全量扫描、封面生成和数据清理等。<br/>
+          <b>建议任务：</b> [同步演员数据]、[演员数据补充]、[中文化角色名]、[媒体洗版订阅]、[生成原生封面]、[删除幽灵演员] 等。
+        </n-alert>
+      </n-card>
+
+      <!-- 保存按钮（通用） -->
+       <n-button type="primary" @click="savePageConfig" :loading="savingConfig" size="large" style="width: 100%;">
+          <template #icon><n-icon :component="Save24Regular" /></template>
+          保存所有配置
+        </n-button>
+
+      <!-- 卡片 3: 临时任务 -->
       <n-card :bordered="false" class="dashboard-card">
         <template #header>
           <span class="card-title">临时任务</span>
@@ -104,24 +166,27 @@
           </n-gi>
         </n-grid>
       </n-card>
-
       
     </n-space>
 
-    <!-- 任务链配置模态框 (保持不变) -->
+    <!-- ======================================================================= -->
+    <!-- 模态框 -->
+    <!-- ======================================================================= -->
+
+    <!-- 高频任务链配置模态框 -->
     <n-modal
-      v-model:show="showChainConfigModal"
+      v-model:show="showHighFreqChainConfigModal"
       class="custom-card"
       preset="card"
-      title="配置任务链执行顺序"
+      title="配置高频核心任务链"
       style="width: 90%; max-width: 600px;"
       :mask-closable="false"
     >
       <n-alert type="info" :show-icon="false" style="margin-bottom: 16px;">
-        请勾选需要定时执行的任务，并拖动任务调整它们的执行顺序。
+        请勾选需要定时执行的任务，并拖动调整顺序。
       </n-alert>
-      <div class="task-chain-list" ref="draggableContainer">
-        <div v-for="task in configuredTaskSequence" :key="task.key" class="task-chain-item" :data-key="task.key">
+      <div class="task-chain-list" ref="draggableContainerHighFreq">
+        <div v-for="task in configuredHighFreqTaskSequence" :key="task.key" class="task-chain-item" :data-key="task.key">
           <n-icon :component="Drag24Regular" class="drag-handle" />
           <n-checkbox v-model:checked="task.enabled" style="flex-grow: 1;">
             {{ task.name }}
@@ -130,11 +195,41 @@
       </div>
       <template #footer>
         <n-space justify="end">
-          <n-button @click="showChainConfigModal = false">取消</n-button>
-          <n-button type="primary" @click="saveTaskChainConfig">保存</n-button>
+          <n-button @click="showHighFreqChainConfigModal = false">取消</n-button>
+          <n-button type="primary" @click="saveHighFreqTaskChainConfig">保存</n-button>
         </n-space>
       </template>
     </n-modal>
+
+    <!-- 低频任务链配置模态框 -->
+    <n-modal
+      v-model:show="showLowFreqChainConfigModal"
+      class="custom-card"
+      preset="card"
+      title="配置低频维护任务链"
+      style="width: 90%; max-width: 600px;"
+      :mask-closable="false"
+    >
+      <n-alert type="info" :show-icon="false" style="margin-bottom: 16px;">
+        请勾选需要定时执行的任务，并拖动调整顺序。
+      </n-alert>
+      <div class="task-chain-list" ref="draggableContainerLowFreq">
+        <div v-for="task in configuredLowFreqTaskSequence" :key="task.key" class="task-chain-item" :data-key="task.key">
+          <n-icon :component="Drag24Regular" class="drag-handle" />
+          <n-checkbox v-model:checked="task.enabled" style="flex-grow: 1;">
+            {{ task.name }}
+          </n-checkbox>
+        </div>
+      </div>
+      <template #footer>
+        <n-space justify="end">
+          <n-button @click="showLowFreqChainConfigModal = false">取消</n-button>
+          <n-button type="primary" @click="saveLowFreqTaskChainConfig">保存</n-button>
+        </n-space>
+      </template>
+    </n-modal>
+
+    <!-- 通用模式选择模态框 -->
     <n-modal
       v-model:show="showSyncModeModal"
       preset="dialog"
@@ -157,8 +252,8 @@
 import { ref, onMounted, watch, nextTick, computed } from 'vue';
 import {
   NForm, NFormItem, NInput, NCheckbox, NGrid, NGi, NAlert,
-  NButton, NCard, NSpace, NSwitch, NIcon, NText,
-  useMessage, NLayout, NSpin, NModal
+  NButton, NCard, NSpace, NSwitch, NIcon, NText, NInputNumber,
+  useMessage, NLayout, NSpin, NModal, NButtonGroup
 } from 'naive-ui';
 import { Play24Regular, Settings24Regular, Drag24Regular, Save24Regular } from '@vicons/fluent';
 import { useConfig } from '../../composables/useConfig.js';
@@ -180,31 +275,44 @@ const {
 const { isBackgroundTaskRunning } = useTaskStatus();
 
 // --- State ---
-const showChainConfigModal = ref(false);
-const availableTasksForChain = ref([]); // 从后端获取的所有可用于任务链的任务
-const availableTasksForManualRun = ref([]); // 从后端获取的所有可用于手动运行的任务
-const configuredTaskSequence = ref([]); // 用于模态框中配置的任务列表
+const availableTasksForChain = ref([]); 
+const availableTasksForManualRun = ref([]);
 const isTriggeringTask = ref(null);
-const draggableContainer = ref(null);
-let sortableInstance = null;
-const showSyncModeModal = ref(false); // 新的、通用的模态框显示状态
-const taskToRunInModal = ref(null); // 用于存储当前点击的任务ID
-// ▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼
-// --- 【【【 核心修改：使用 computed 属性来动态计算已启用的任务列表 】】】 ---
-const enabledTaskChain = computed(() => {
-  if (!configuredTaskSequence.value) return [];
-  return configuredTaskSequence.value.filter(t => t.enabled);
+
+// 高频任务链状态
+const showHighFreqChainConfigModal = ref(false);
+const configuredHighFreqTaskSequence = ref([]);
+const draggableContainerHighFreq = ref(null);
+let sortableInstanceHighFreq = null;
+
+// 低频任务链状态
+const showLowFreqChainConfigModal = ref(false);
+const configuredLowFreqTaskSequence = ref([]);
+const draggableContainerLowFreq = ref(null);
+let sortableInstanceLowFreq = null;
+
+// 手动执行任务模态框状态
+const showSyncModeModal = ref(false);
+const taskToRunInModal = ref(null);
+
+// --- Computed Properties ---
+const enabledHighFreqTaskChain = computed(() => {
+  if (!configuredHighFreqTaskSequence.value) return [];
+  return configuredHighFreqTaskSequence.value.filter(t => t.enabled);
 });
-// ▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲
+
+const enabledLowFreqTaskChain = computed(() => {
+  if (!configuredLowFreqTaskSequence.value) return [];
+  return configuredLowFreqTaskSequence.value.filter(t => t.enabled);
+});
+
 
 // --- API Calls ---
 const fetchAvailableTasks = async () => {
   try {
-    // 获取用于任务链的、已筛选的任务
     const chainResponse = await axios.get('/api/tasks/available?context=chain');
     availableTasksForChain.value = chainResponse.data;
 
-    // 获取所有任务，用于“临时任务”区域的手动执行
     const allResponse = await axios.get('/api/tasks/available?context=all');
     availableTasksForManualRun.value = allResponse.data;
 
@@ -221,18 +329,11 @@ const runTaskFromModal = async (isDeepMode) => {
   isTriggeringTask.value = taskIdentifier;
 
   try {
-    const payload = {
-      task_name: taskIdentifier,
-    };
-    // ★★★ 核心修改：为所有需要模式选择的任务动态添加参数 ★★★
+    const payload = { task_name: taskIdentifier };
     if (taskIdentifier === 'full-scan') {
       payload.force_reprocess = isDeepMode;
     } 
-    else if (
-      taskIdentifier === 'populate-metadata' || 
-      taskIdentifier === 'sync-images-map' ||
-      taskIdentifier === 'enrich-aliases' 
-    ) {
+    else if (['populate-metadata', 'sync-images-map', 'enrich-aliases'].includes(taskIdentifier)) {
       payload.force_full_update = isDeepMode;
     }
 
@@ -253,19 +354,15 @@ const triggerTaskNow = async (taskIdentifier) => {
     return;
   }
 
-  // 如果是“全量处理和同步媒体数据”，则显示模态框，而不是直接执行
   if (['full-scan', 'populate-metadata', 'sync-images-map', 'enrich-aliases'].includes(taskIdentifier)) {
     taskToRunInModal.value = taskIdentifier; 
     showSyncModeModal.value = true;
     return; 
   }
 
-  // --- 对于所有其他普通任务，走原来的逻辑 ---
   isTriggeringTask.value = taskIdentifier;
   try {
-    const response = await axios.post('/api/tasks/run', {
-      task_name: taskIdentifier
-    });
+    const response = await axios.post('/api/tasks/run', { task_name: taskIdentifier });
     message.success(response.data.message || `任务已成功提交！`);
   } catch (error) {
     const errorMessage = error.response?.data?.error || '请求后端接口失败。';
@@ -275,28 +372,12 @@ const triggerTaskNow = async (taskIdentifier) => {
   }
 };
 
-const runFullScan = async (isForced) => {
-  showFullScanModal.value = false; // 首先关闭模态框
-  isTriggeringTask.value = 'full-scan'; // 设置加载状态
-
-  try {
-    const response = await axios.post('/api/tasks/run', {
-      task_name: 'full-scan',
-      force_reprocess: isForced // ★★★ 将用户的选择作为参数传递给后端
-    });
-    message.success(response.data.message || '全量处理任务已成功提交！');
-  } catch (error) {
-    const errorMessage = error.response?.data?.error || '请求后端接口失败。';
-    message.error(errorMessage);
-  } finally {
-    isTriggeringTask.value = null; // 清除加载状态
-  }
-};
-
 // --- Logic ---
 const savePageConfig = async () => {
   if (configModel.value) {
-    configModel.value.task_chain_sequence = enabledTaskChain.value.map(t => t.key);
+    // 保存高频和低频两个任务序列
+    configModel.value.task_chain_sequence = enabledHighFreqTaskChain.value.map(t => t.key);
+    configModel.value.task_chain_low_freq_sequence = enabledLowFreqTaskChain.value.map(t => t.key);
   }
   const success = await handleSaveConfig();
   if (success) {
@@ -306,18 +387,22 @@ const savePageConfig = async () => {
   }
 };
 
-const saveTaskChainConfig = () => {
-  showChainConfigModal.value = false;
-  message.info('任务链顺序已在页面上更新，请点击“保存配置”按钮以持久化更改。');
+const saveHighFreqTaskChainConfig = () => {
+  showHighFreqChainConfigModal.value = false;
+  message.info('高频任务链顺序已更新，请点击页面底部的“保存所有配置”按钮以生效。');
 };
 
-const initializeTaskSequence = () => {
-  if (!configModel.value || !availableTasksForChain.value.length) return;
+const saveLowFreqTaskChainConfig = () => {
+  showLowFreqChainConfigModal.value = false;
+  message.info('低频任务链顺序已更新，请点击页面底部的“保存所有配置”按钮以生效。');
+};
 
-  const savedSequence = configModel.value.task_chain_sequence || [];
-  const savedSequenceSet = new Set(savedSequence);
+const initializeSequence = (savedSequenceKeys, targetConfiguredSequence) => {
+  if (!availableTasksForChain.value.length) return;
 
-  const enabledTasks = savedSequence
+  const savedSequenceSet = new Set(savedSequenceKeys);
+
+  const enabledTasks = savedSequenceKeys
     .map(key => {
       const task = availableTasksForChain.value.find(t => t.key === key);
       return task ? { ...task, enabled: true } : null;
@@ -328,21 +413,23 @@ const initializeTaskSequence = () => {
     .filter(task => !savedSequenceSet.has(task.key))
     .map(task => ({ ...task, enabled: false }));
 
-  configuredTaskSequence.value = [...enabledTasks, ...disabledTasks];
+  targetConfiguredSequence.value = [...enabledTasks, ...disabledTasks];
 };
 
-const initializeSortable = () => {
-  if (draggableContainer.value) {
-    sortableInstance = Sortable.create(draggableContainer.value, {
+const initializeSortable = (container, sequenceRef, instanceRef) => {
+  if (container) {
+    instanceRef = Sortable.create(container, {
       animation: 150,
       handle: '.drag-handle',
       onEnd: (evt) => {
         const { oldIndex, newIndex } = evt;
-        const item = configuredTaskSequence.value.splice(oldIndex, 1)[0];
-        configuredTaskSequence.value.splice(newIndex, 0, item);
+        const item = sequenceRef.value.splice(oldIndex, 1)[0];
+        sequenceRef.value.splice(newIndex, 0, item);
       },
     });
+    return instanceRef;
   }
+  return null;
 };
 
 // --- Lifecycle and Watchers ---
@@ -350,24 +437,34 @@ onMounted(() => {
   fetchAvailableTasks();
 });
 
-watch(showChainConfigModal, (newValue) => {
+watch(showHighFreqChainConfigModal, (newValue) => {
   if (newValue) {
     nextTick(() => {
-      initializeSortable();
+      sortableInstanceHighFreq = initializeSortable(draggableContainerHighFreq.value, configuredHighFreqTaskSequence, sortableInstanceHighFreq);
     });
-  } else {
-    if (sortableInstance) {
-      sortableInstance.destroy();
-      sortableInstance = null;
-    }
+  } else if (sortableInstanceHighFreq) {
+    sortableInstanceHighFreq.destroy();
+    sortableInstanceHighFreq = null;
+  }
+});
+
+watch(showLowFreqChainConfigModal, (newValue) => {
+  if (newValue) {
+    nextTick(() => {
+      sortableInstanceLowFreq = initializeSortable(draggableContainerLowFreq.value, configuredLowFreqTaskSequence, sortableInstanceLowFreq);
+    });
+  } else if (sortableInstanceLowFreq) {
+    sortableInstanceLowFreq.destroy();
+    sortableInstanceLowFreq = null;
   }
 });
 
 watch([configModel, availableTasksForChain], ([newConfig, newTasks]) => {
   if (newConfig && newTasks.length > 0) {
-    initializeTaskSequence();
+    initializeSequence(newConfig.task_chain_sequence || [], configuredHighFreqTaskSequence);
+    initializeSequence(newConfig.task_chain_low_freq_sequence || [], configuredLowFreqTaskSequence);
   }
-}, { immediate: true });
+}, { immediate: true, deep: true });
 </script>
 
 <style scoped>
@@ -414,8 +511,7 @@ watch([configModel, availableTasksForChain], ([newConfig, newTasks]) => {
   cursor: grabbing;
 }
 
-/* ▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼ */
-/* --- 【【【 新增：流程图核心样式 】】】 --- */
+/* --- 流程图核心样式 --- */
 .flowchart-wrapper {
   margin-top: 12px;
   padding: 16px;
@@ -425,56 +521,55 @@ watch([configModel, availableTasksForChain], ([newConfig, newTasks]) => {
 }
 .flowchart-container {
   display: flex;
-  flex-wrap: wrap; /* 允许换行 */
+  flex-wrap: wrap;
   align-items: center;
-  gap: 8px 0; /* 垂直间隙8px，水平间隙0（由连接器控制） */
+  gap: 8px 28px; /* 垂直间隙8px，水平间隙28px为箭头留出空间 */
 }
 .flowchart-container.empty {
-  justify-content: center; /* 空状态时居中显示文字 */
+  justify-content: center;
+  align-items: center;
+  display: flex;
   height: 100%;
+  min-height: 80px;
 }
 .flowchart-node {
   background-color: var(--n-color);
   border: 1px solid var(--n-border-color);
   padding: 8px 16px;
-  border-radius: 20px; /* 圆角矩形 */
+  border-radius: 20px;
   text-align: center;
   white-space: nowrap;
-  position: relative; /* 为连接器定位 */
+  position: relative;
 }
-/* 使用 ::after 伪元素创建连接器（箭头） */
 .flowchart-node:not(:last-child)::after {
   content: '';
   position: absolute;
-  right: -20px; /* 将箭头定位在节点右侧 */
+  right: -24px;
   top: 50%;
   transform: translateY(-50%);
   width: 24px;
   height: 24px;
-  /* 使用内联SVG作为箭头，可以继承颜色 */
   background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='currentColor'%3E%3Cpath d='M16.172 11l-5.364-5.364 1.414-1.414L20 12l-7.778 7.778-1.414-1.414L16.172 13H4v-2z'/%3E%3C/svg%3E");
   background-repeat: no-repeat;
   background-position: center;
   opacity: 0.5;
 }
 
-/* --- 响应式设计：当屏幕变窄时，变为垂直流程图 --- */
-@media (max-width: 1200px) { /* 这个断点值可以根据实际情况调整 */
+/* 响应式设计 */
+@media (max-width: 1200px) {
   .flowchart-container {
-    flex-direction: column; /* 垂直排列 */
-    align-items: flex-start; /* 左对齐 */
-    gap: 0 8px; /* 水平间隙8px，垂直间隙0 */
+    flex-direction: column;
+    align-items: flex-start;
+    gap: 28px 8px;
   }
   .flowchart-node {
-    width: fit-content; /* 宽度自适应内容 */
+    width: fit-content;
   }
   .flowchart-node:not(:last-child)::after {
-    /* 调整箭头位置和方向 */
     right: auto;
     left: 50%;
     top: 100%;
-    transform: translateX(-50%);
-    /* 切换为向下的箭头SVG */
+    transform: translateX(-50%) translateY(4px);
     background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='currentColor'%3E%3Cpath d='M13 16.172l5.364-5.364 1.414 1.414L12 20l-7.778-7.778 1.414-1.414L11 16.172V4h2z'/%3E%3C/svg%3E");
   }
 }
