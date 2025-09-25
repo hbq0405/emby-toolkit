@@ -6,6 +6,7 @@ import logging
 from concurrent.futures import ThreadPoolExecutor, as_completed
 
 # 导入需要的底层模块和共享实例
+from database.connection import get_db_connection
 import constants
 import emby_handler
 import task_manager
@@ -132,23 +133,27 @@ def task_process_actor_subscriptions(processor):
 # --- 翻译演员任务 ---
 def task_actor_translation_cleanup(processor):
     """
-    【V3.2 - 并发写入版】
-    1.  第一阶段：完整扫描一次Emby，将所有需要翻译的演员名和信息聚合到内存中。
-    2.  第二阶段：将聚合好的列表按固定大小（50个）分批，依次进行“翻译 -> 并发写回”操作。
-    -   使用 ThreadPoolExecutor 并发更新 Emby 演员信息，大幅提升写回速度。
+    【V4.0 - 智能原料版】
+    - 扫描时，同时获取演员的TMDb ID。
+    - 翻译前，利用TMDb ID从本地数据库缓存的 actor_metadata 表中反查最权威的 original_name。
+    - 优先使用 original_name 进行翻译，大幅提升对非英语演员名的翻译准确率。
+    - 整个过程无新增API调用，性能卓越。
     """
-    task_name = "中文化演员名"
+    task_name = "中文化演员名 (智能版)"
     logger.info(f"--- 开始执行 '{task_name}' 任务 ---")
     
     try:
         # ======================================================================
-        # 阶段 1: 扫描并聚合所有需要翻译的演员 (此部分逻辑不变)
+        # 阶段 1: 扫描并聚合所有需要翻译的演员 (智能数据采集)
         # ======================================================================
-        task_manager.update_status_from_thread(0, "阶段 1/2: 正在扫描 Emby，收集所有待翻译演员...")
+        task_manager.update_status_from_thread(0, "阶段 1/3: 正在扫描 Emby，收集所有待翻译演员...")
         
-        names_to_translate = set()
+        # ★★★ 核心修改 1: 准备新的数据结构 ★★★
+        # 我们需要存储 Emby Name -> [Emby Person 列表] 的映射
         name_to_persons_map = {}
-        
+        # 同时，我们需要一个列表来存储需要获取 original_name 的演员信息
+        actors_to_enrich = []
+
         person_generator = emby_handler.get_all_persons_from_emby(
             base_url=processor.emby_url,
             api_key=processor.emby_api_key,
@@ -167,25 +172,72 @@ def task_actor_translation_cleanup(processor):
             for person in person_batch:
                 name = person.get("Name")
                 if name and not utils.contains_chinese(name):
-                    names_to_translate.add(name)
+                    tmdb_id = person.get("ProviderIds", {}).get("Tmdb")
+                    # 只有在有 TMDb ID 时，我们才有机会获取 original_name
+                    if tmdb_id:
+                        actors_to_enrich.append({"name": name, "tmdb_id": tmdb_id})
+                    
                     if name not in name_to_persons_map:
                         name_to_persons_map[name] = []
                     name_to_persons_map[name].append(person)
             
             total_scanned += len(person_batch)
-            task_manager.update_status_from_thread(5, f"阶段 1/2: 已扫描 {total_scanned} 名演员...")
+            task_manager.update_status_from_thread(5, f"阶段 1/3: 已扫描 {total_scanned} 名演员...")
 
-        if not names_to_translate:
+        if not name_to_persons_map:
             logger.info("扫描完成，没有发现需要翻译的演员名。")
             task_manager.update_status_from_thread(100, "任务完成，所有演员名都无需翻译。")
             return
 
-        logger.info(f"扫描完成！共发现 {len(names_to_translate)} 个外文名需要翻译。")
+        logger.info(f"扫描完成！共发现 {len(name_to_persons_map)} 个外文名需要翻译。")
 
         # ======================================================================
-        # 阶段 2: 将聚合列表分批，依次进行“翻译 -> 并发写回”
+        # ★★★ 新增阶段 2: 从本地数据库获取 Original Name ★★★
         # ======================================================================
-        all_names_list = list(names_to_translate)
+        task_manager.update_status_from_thread(10, "阶段 2/3: 正在从本地缓存获取演员原始名...")
+        
+        # original_name -> emby_name 的映射，用于后续回填
+        original_to_emby_name_map = {}
+        texts_to_translate = set()
+        
+        tmdb_ids_to_query = list(set([int(actor['tmdb_id']) for actor in actors_to_enrich if actor.get('tmdb_id')]))
+
+        if tmdb_ids_to_query:
+            tmdb_id_to_original_name = {}
+            with get_db_connection() as conn:
+                with conn.cursor() as cursor:
+                    # 使用 ANY(%s) 进行高效批量查询
+                    query = "SELECT tmdb_id, original_name FROM actor_metadata WHERE tmdb_id = ANY(%s)"
+                    cursor.execute(query, (tmdb_ids_to_query,))
+                    for row in cursor.fetchall():
+                        tmdb_id_to_original_name[str(row['tmdb_id'])] = row['original_name']
+            
+            logger.info(f"成功从本地数据库为 {len(tmdb_id_to_original_name)} 个TMDb ID找到了original_name。")
+
+            # 构建最终待翻译列表
+            for actor in actors_to_enrich:
+                emby_name = actor['name']
+                tmdb_id = actor['tmdb_id']
+                original_name = tmdb_id_to_original_name.get(str(tmdb_id))
+                
+                # 优先使用 original_name，如果没有，则用 emby_name 作为后备
+                text_for_translation = original_name if original_name and not utils.contains_chinese(original_name) else emby_name
+                
+                texts_to_translate.add(text_for_translation)
+                # 记录映射关系，以便翻译后能找到对应的 Emby 演员
+                original_to_emby_name_map[text_for_translation] = emby_name
+
+        # 对于那些没有 TMDb ID 的演员，直接将他们的 Emby Name 加入翻译列表
+        emby_names_with_tmdb_id = {actor['name'] for actor in actors_to_enrich}
+        for emby_name in name_to_persons_map.keys():
+            if emby_name not in emby_names_with_tmdb_id:
+                texts_to_translate.add(emby_name)
+                original_to_emby_name_map[emby_name] = emby_name
+
+        # ======================================================================
+        # 阶段 3: 分批翻译并并发写回 (逻辑与原版类似，但使用新的数据)
+        # ======================================================================
+        all_names_list = list(texts_to_translate)
         TRANSLATION_BATCH_SIZE = 50
         total_names_to_process = len(all_names_list)
         total_batches = (total_names_to_process + TRANSLATION_BATCH_SIZE - 1) // TRANSLATION_BATCH_SIZE
@@ -200,15 +252,16 @@ def task_actor_translation_cleanup(processor):
             current_batch_names = all_names_list[i:i + TRANSLATION_BATCH_SIZE]
             batch_num = (i // TRANSLATION_BATCH_SIZE) + 1
             
-            progress = int(10 + (i / total_names_to_process) * 90)
+            progress = int(20 + (i / total_names_to_process) * 80)
             task_manager.update_status_from_thread(
                 progress, 
-                f"阶段 2/2: 正在翻译批次 {batch_num}/{total_batches} (已成功 {total_updated_count} 个)"
+                f"阶段 3/3: 正在翻译批次 {batch_num}/{total_batches} (已成功 {total_updated_count} 个)"
             )
             
             try:
+                # 使用 "音译" 模式，因为它对人名更友好
                 translation_map = processor.ai_translator.batch_translate(
-                    texts=current_batch_names, mode="fast"
+                    texts=current_batch_names, mode="transliterate"
                 )
             except Exception as e_trans:
                 logger.error(f"翻译批次 {batch_num} 时发生错误: {e_trans}，将跳过此批次。")

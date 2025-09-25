@@ -98,10 +98,11 @@ You MUST return a single, valid JSON object mapping each original name to its Ch
 - The source language of the names can be anything (e.g., English, Japanese, Korean, Pinyin).
 - The target language MUST ALWAYS be Simplified Chinese.
 - If a name cannot be translated or is already in Chinese, use the original name as its value.
+- **Some names might be incomplete or contain initials (e.g., "Peter J."); provide the most likely standard transliteration based on the available parts.**
 - Do not add any explanations or text outside the JSON object.
 """
 
-# ★★★ 说明书二：给“音译专家”看的 ★★★
+# ★★★ 说明书二：给“音译专家”看的 - 已优化 ★★★
 FORCE_TRANSLITERATE_PROMPT = """
 You are a translation API that only returns JSON.
 Your task is to transliterate a list of proper nouns (personal names, locations, etc.) into **Simplified Chinese (简体中文)** based on their pronunciation.
@@ -109,6 +110,7 @@ Your task is to transliterate a list of proper nouns (personal names, locations,
 - The source language can be anything. Your goal is to find the most common Chinese phonetic translation.
 - The target language MUST ALWAYS be Simplified Chinese.
 - If a name absolutely cannot be transliterated (e.g., it's a random code), use the original name as its value.
+- **Some names might be incomplete or contain initials; do your best to transliterate the recognizable parts.**
 - Do not add any explanations or text outside the JSON object.
 """
 
