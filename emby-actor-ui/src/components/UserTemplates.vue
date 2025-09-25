@@ -61,7 +61,7 @@
         <n-form-item label="同步首选项" path="include_configuration">
           <n-switch v-model:value="formModel.include_configuration" />
           <template #feedback>
-            开启后，模板将额外包含源用户的个性化设置（如主屏幕布局、播放和字幕偏好等）。
+            开启后，模板将额外包含源用户的个性化设置（如媒体库顺序、音轨和字幕偏好设置）。
           </template>
         </n-form-item>
       </n-form>
