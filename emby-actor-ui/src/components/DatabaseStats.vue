@@ -56,7 +56,7 @@
                 </template>
                 {{ stats.media_library?.series_in_library }}
               </n-statistic>
-              <n-statistic label="缺失" class="centered-statistic">
+              <n-statistic label="预缓存" class="centered-statistic">
                 <template #prefix>
                   <n-icon-wrapper :size="20" :border-radius="5" color="#FFCC3344">
                     <n-icon :size="14" :component="FolderOpenOutline" color="#FFCC33" />
