@@ -249,6 +249,7 @@ def task_import_database(processor, file_content: str, tables_to_import: List[st
                         for row in table_data:
                             new_row = row.copy()
                             if table_name.lower() == 'person_identity_map':
+                                new_row.pop('map_id', None)
                                 new_row.pop('emby_person_id', None)
                             elif table_name.lower() == 'media_metadata':
                                 new_row.pop('emby_item_id', None)
