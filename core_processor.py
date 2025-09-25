@@ -1018,7 +1018,6 @@ class MediaProcessor:
                 elif douban_name_en and (douban_name_en == local_name or douban_name_en == local_original_name):
                     is_match = True
                 if is_match:
-                    l_actor["name"] = d_actor.get("Name")
                     cleaned_douban_character = utils.clean_character_name_static(d_actor.get("Role"))
                     l_actor["character"] = actor_utils.select_best_role(l_actor.get("character"), cleaned_douban_character)
                     if d_actor.get("DoubanCelebrityId"):

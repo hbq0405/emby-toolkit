@@ -204,7 +204,7 @@
       <n-gi span="4 l:2">
         <n-card :bordered="false" class="dashboard-card">
           <template #header>
-            <span class="card-title">系统与缓存</span>
+            <span class="card-title">演员与缓存</span>
           </template>
           <!-- ★★★ 核心修改：使用6列网格并重新排布统计项 ★★★ -->
           <n-grid :x-gap="12" :y-gap="16" :cols="6" item-responsive>
