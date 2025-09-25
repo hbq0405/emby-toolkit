@@ -351,12 +351,12 @@ def task_purge_ghost_actors(processor):
         library_ids_to_process = config.get(constants.CONFIG_OPTION_EMBY_LIBRARIES_TO_PROCESS, [])
 
         if not library_ids_to_process:
-            logger.error("任务中止：未在设置中选择任何要处理的媒体库。")
+            logger.error("  -> 任务中止：未在设置中选择任何要处理的媒体库。")
             task_manager.update_status_from_thread(-1, "任务失败：未选择媒体库")
             return
 
-        logger.info(f"将只扫描 {len(library_ids_to_process)} 个选定媒体库中的演员...")
-        task_manager.update_status_from_thread(10, f"正在从 {len(library_ids_to_process)} 个媒体库中获取所有媒体...")
+        logger.info(f"  -> 将只扫描 {len(library_ids_to_process)} 个选定媒体库中的演员...")
+        task_manager.update_status_from_thread(10, f"  -> 正在从 {len(library_ids_to_process)} 个媒体库中获取所有媒体...")
 
         # 2. 获取指定媒体库中的所有电影和剧集
         all_media_items = emby_handler.get_emby_library_items(
@@ -368,11 +368,11 @@ def task_purge_ghost_actors(processor):
             fields="People"
         )
         if not all_media_items:
-            task_manager.update_status_from_thread(100, "任务完成：在选定的媒体库中未找到任何媒体项。")
+            task_manager.update_status_from_thread(100, "  -> 任务完成：在选定的媒体库中未找到任何媒体项。")
             return
 
         # 3. 从媒体项中提取所有唯一的演员ID
-        task_manager.update_status_from_thread(30, "正在从媒体项中提取唯一的演员ID...")
+        task_manager.update_status_from_thread(30, "  -> 正在从媒体项中提取唯一的演员ID...")
         unique_person_ids = set()
         for item in all_media_items:
             for person in item.get("People", []):
@@ -380,19 +380,19 @@ def task_purge_ghost_actors(processor):
                     unique_person_ids.add(person_id)
         
         person_ids_to_fetch = list(unique_person_ids)
-        logger.info(f"在选定媒体库中，共识别出 {len(person_ids_to_fetch)} 位独立演员。")
+        logger.info(f"  -> 在选定媒体库中，共识别出 {len(person_ids_to_fetch)} 位独立演员。")
 
         if not person_ids_to_fetch:
-            task_manager.update_status_from_thread(100, "任务完成：未在媒体项中找到任何演员。")
+            task_manager.update_status_from_thread(100, "  -> 任务完成：未在媒体项中找到任何演员。")
             return
 
         # 4. 分批获取这些演员的完整详情
-        task_manager.update_status_from_thread(50, f"正在分批获取 {len(person_ids_to_fetch)} 位演员的完整详情...")
+        task_manager.update_status_from_thread(50, f"  -> 正在分批获取 {len(person_ids_to_fetch)} 位演员的完整详情...")
         all_people_in_scope_details = []
         batch_size = 500
         for i in range(0, len(person_ids_to_fetch), batch_size):
             if processor.is_stop_requested():
-                logger.info("在分批获取演员详情阶段，任务被中止。")
+                logger.info("  -> 在分批获取演员详情阶段，任务被中止。")
                 break
             
             batch_ids = person_ids_to_fetch[i:i + batch_size]
@@ -414,7 +414,7 @@ def task_purge_ghost_actors(processor):
             return
         
         # ★★★ 新增：详细的获取结果统计日志 ★★★
-        logger.info(f"详情获取完成：成功获取到 {len(all_people_in_scope_details)} 位演员的完整详情。")
+        logger.info(f"  -> 详情获取完成：成功获取到 {len(all_people_in_scope_details)} 位演员的完整详情。")
 
         # 5. 基于完整的详情，筛选出真正的“幽灵”演员
         ghosts_to_delete = [
@@ -424,15 +424,15 @@ def task_purge_ghost_actors(processor):
         total_to_delete = len(ghosts_to_delete)
 
         # ★★★ 新增：核心的筛选结果统计日志 ★★★
-        logger.info(f"筛选完成：在 {len(all_people_in_scope_details)} 位演员中，发现 {total_to_delete} 个没有TMDb ID的幽灵演员。")
+        logger.info(f"  -> 筛选完成：在 {len(all_people_in_scope_details)} 位演员中，发现 {total_to_delete} 个没有TMDb ID的幽灵演员。")
 
         if total_to_delete == 0:
             # ★★★ 优化：更清晰的完成日志 ★★★
-            logger.info("扫描完成，在选定媒体库中未发现需要清理的幽灵演员。")
-            task_manager.update_status_from_thread(100, "扫描完成，未发现无TMDb ID的演员。")
+            logger.info("  -> 扫描完成，在选定媒体库中未发现需要清理的幽灵演员。")
+            task_manager.update_status_from_thread(100, "  -> 扫描完成，未发现无TMDb ID的演员。")
             return
         
-        logger.warning(f"共发现 {total_to_delete} 个幽灵演员，即将开始删除...")
+        logger.warning(f"  -> 共发现 {total_to_delete} 个幽灵演员，即将开始删除...")
         deleted_count = 0
 
         # 6. 执行删除
@@ -455,6 +455,22 @@ def task_purge_ghost_actors(processor):
             
             if success:
                 deleted_count += 1
+
+                #  如果 Emby 删除成功，则从本地数据库同步删除 
+                try:
+                    with get_db_connection() as conn:
+                        with conn.cursor() as cursor:
+                            cursor.execute(
+                                "DELETE FROM person_identity_map WHERE emby_person_id = %s",
+                                (person_id,)
+                            )
+                            # 记录数据库操作结果
+                            if cursor.rowcount > 0:
+                                logger.debug(f"  -> 同步成功: 已从 person_identity_map 中移除 ID '{person_id}'。")
+                            else:
+                                logger.debug(f"  -> 同步提醒: 在 person_identity_map 中未找到 ID '{person_id}'，无需删除。")
+                except Exception as db_exc:
+                    logger.error(f"      -> 同步失败: 尝试从 person_identity_map 删除 ID '{person_id}' 时出错: {db_exc}")
             
             time.sleep(0.2)
 
