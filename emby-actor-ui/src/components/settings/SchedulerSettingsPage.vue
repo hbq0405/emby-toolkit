@@ -13,10 +13,10 @@
       <!-- ======================================================================= -->
       <n-card :bordered="false" class="dashboard-card">
         <template #header>
-          <span class="card-title">高频核心任务链</span>
+          <span class="card-title">高频刷新任务链</span>
         </template>
         <template #header-extra>
-          <n-text depth="3">建议三小时执行一次，保证实时数据更新</n-text>
+          <n-text depth="3">建议三小时执行一次，保证实时数据更新，及时订阅资源</n-text>
         </template>
         
         <n-grid cols="1 l:3" :x-gap="24" :y-gap="16" responsive="screen">
