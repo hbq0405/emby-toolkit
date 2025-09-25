@@ -100,23 +100,82 @@ def _overwrite_table_data(cursor, table_name: str, columns: List[str], data: Lis
     execute_values(cursor, insert_query, data, page_size=500)
     logger.info(f"成功向表 '{db_table_name}' 插入 {len(data)} 条记录。")
 
+# ★★★ 辅助函数 3: 数据库共享导入操作 ★★★
+def _share_import_table_data(cursor, table_name: str, columns: List[str], data: List[tuple]):
+    """
+    安全地合并数据，使用 ON CONFLICT DO NOTHING 策略。
+    这会尝试插入新行，如果主键或唯一约束冲突，则静默忽略。
+    """
+    # 定义每个表用于冲突检测的列（通常是主键或唯一键）
+    CONFLICT_TARGETS = {
+        'person_identity_map': 'tmdb_person_id',
+        'actor_metadata': 'tmdb_id',
+        'translation_cache': 'original_text',
+        # media_metadata 的主键是复合主键
+        'media_metadata': 'tmdb_id, item_type', 
+    }
+    
+    db_table_name = table_name.lower()
+    conflict_target = CONFLICT_TARGETS.get(db_table_name)
+
+    if not conflict_target:
+        logger.error(f"共享导入失败：表 '{db_table_name}' 未定义冲突目标，无法执行合并操作。")
+        raise ValueError(f"Conflict target not defined for table {db_table_name}")
+
+    logger.info(f"执行共享模式：将合并数据到表 '{db_table_name}'，冲突项将被忽略。")
+    
+    # 构造带有 ON CONFLICT 子句的 SQL
+    insert_query = sql.SQL("""
+        INSERT INTO {table} ({cols}) VALUES %s
+        ON CONFLICT ({conflict_cols}) DO NOTHING
+    """).format(
+        table=sql.Identifier(db_table_name),
+        cols=sql.SQL(', ').join(map(sql.Identifier, columns)),
+        conflict_cols=sql.SQL(', ').join(map(sql.Identifier, [c.strip() for c in conflict_target.split(',')]))
+    )
+
+    execute_values(cursor, insert_query, data, page_size=500)
+    # cursor.rowcount 在 ON CONFLICT DO NOTHING 后返回的是实际插入的行数
+    inserted_count = cursor.rowcount
+    logger.info(f"成功向表 '{db_table_name}' 合并 {inserted_count} 条新记录（总共尝试 {len(data)} 条）。")
+    return inserted_count
+
 # --- 主任务函数 (V4 - 纯PG重构版) ---
-def task_import_database(processor, file_content: str, tables_to_import: List[str]):
+def task_import_database(processor, file_content: str, tables_to_import: List[str], import_strategy: str):
     """
-    【V4 - 纯净重构版】
-    - 移除所有为兼容旧 SQLite 备份而设的数据清洗逻辑。
-    - 假设备份文件源自本系统的 PostgreSQL 数据库，数据类型是干净的。
-    - 使用 psycopg2.extras.Json 适配器专业地处理 JSONB 字段的插入。
+    【V5 - 共享导入重构版】
+    - 根据 `import_strategy` ('overwrite' 或 'share') 决定导入行为。
+    - 'share' 模式下，仅导入可共享数据，并对特定表进行清洗。
+    - 使用 `ON CONFLICT DO NOTHING` 实现数据合并。
     """
-    task_name = "数据库恢复 (覆盖模式)"
+    task_name = f"数据库恢复 ({'覆盖模式' if import_strategy == 'overwrite' else '共享模式'})"
     logger.info(f"后台任务开始：{task_name}，将恢复表: {tables_to_import}。")
+    
+    # 定义哪些表是可共享的。在共享模式下，只有这些表会被处理。
+    SHARABLE_TABLES = {'person_identity_map', 'actor_metadata', 'translation_cache', 'media_metadata'}
+    
     TABLE_TRANSLATIONS = {
-        'person_identity_map': '演员映射表', 'actor_metadata': '演员元数据',
-        'translation_cache': '翻译缓存', 'watchlist': '智能追剧列表',
-        'actor_subscriptions': '演员订阅配置', 'tracked_actor_media': '已追踪的演员作品',
-        'collections_info': '电影合集信息', 'processed_log': '已处理列表',
-        'failed_log': '待复核列表', 'users': '用户账户',
-        'custom_collections': '自建合集', 'media_metadata': '媒体元数据',
+        'person_identity_map': '演员映射表',
+        'actor_metadata': '演员元数据',
+        'translation_cache': '翻译缓存',
+        'watchlist': '智能追剧列表',
+        'actor_subscriptions': '演员订阅配置',
+        'tracked_actor_media': '已追踪的演员作品',
+        'collections_info': '电影合集信息',
+        'processed_log': '已处理列表',
+        'failed_log': '待复核列表',
+        'users': '用户账户',
+        'custom_collections': '自建合集',
+        'media_metadata': '媒体元数据',
+        'app_settings': '应用设置',
+        'emby_users': 'Emby用户',
+        'user_media_data': '用户媒体数据',
+        'resubscribe_rules': '洗版规则',
+        'resubscribe_cache': '洗版缓存',
+        'media_cleanup_tasks': '媒体清理任务',
+        'user_templates': '用户权限模板',
+        'invitations': '邀请码',
+        'emby_users_extended': 'Emby用户扩展信息',
     }
     summary_lines = []
     conn = None
@@ -167,7 +226,6 @@ def task_import_database(processor, file_content: str, tables_to_import: List[st
         with connection.get_db_connection() as conn:
             with conn.cursor() as cursor:
                 logger.info("数据库事务已开始。")
-                # 使用排序后的列表进行迭代
                 for table_name in sorted_tables_to_import:
                     cn_name = TABLE_TRANSLATIONS.get(table_name.lower(), table_name)
                     table_data = backup_data.get(table_name, [])
@@ -177,15 +235,45 @@ def task_import_database(processor, file_content: str, tables_to_import: List[st
                         continue
 
                     logger.info(f"正在处理表: '{cn_name}'，共 {len(table_data)} 行。")
-                    columns, prepared_data = _prepare_data_for_insert(table_name, table_data)
-                    _overwrite_table_data(cursor, table_name, columns, prepared_data)
-                    summary_lines.append(f"  - 表 '{cn_name}': 成功恢复 {len(prepared_data)} 条记录。")
+
+                    # ★★★ 核心逻辑分支 ★★★
+                    if import_strategy == 'share':
+                        # --- 共享模式 ---
+                        if table_name.lower() not in SHARABLE_TABLES:
+                            logger.warning(f"共享模式下跳过非共享表: '{cn_name}'")
+                            summary_lines.append(f"  - 表 '{cn_name}': 跳过 (非共享数据)。")
+                            continue
+                        
+                        # ★ 数据清洗：根据表名移除或修改特定字段
+                        cleaned_data = []
+                        for row in table_data:
+                            new_row = row.copy()
+                            if table_name.lower() == 'person_identity_map':
+                                new_row.pop('emby_person_id', None)
+                            elif table_name.lower() == 'media_metadata':
+                                new_row.pop('emby_item_id', None)
+                                new_row['in_library'] = False
+                            cleaned_data.append(new_row)
+                        
+                        columns, prepared_data = _prepare_data_for_insert(table_name, cleaned_data)
+                        if not prepared_data: continue
+                        
+                        inserted_count = _share_import_table_data(cursor, table_name, columns, prepared_data)
+                        summary_lines.append(f"  - 表 '{cn_name}': 成功合并 {inserted_count} / {len(prepared_data)} 条新记录。")
+
+                    else: # import_strategy == 'overwrite'
+                        # --- 覆盖模式 (保持原有逻辑) ---
+                        columns, prepared_data = _prepare_data_for_insert(table_name, table_data)
+                        if not prepared_data: continue
+
+                        _overwrite_table_data(cursor, table_name, columns, prepared_data)
+                        summary_lines.append(f"  - 表 '{cn_name}': 成功覆盖 {len(prepared_data)} 条记录。")
                 
                 logger.info("="*11 + " 数据库恢复摘要 " + "="*11)
                 for line in summary_lines: logger.info(line)
                 logger.info("="*36)
                 conn.commit()
-                logger.info("✅ 数据库事务已成功提交！所有选择的表已恢复。")
+                logger.info(f"✅ 数据库事务已成功提交！任务 '{task_name}' 完成。")
     except Exception as e:
         logger.error(f"数据库恢复任务发生严重错误，所有更改将回滚: {e}", exc_info=True)
         if conn:

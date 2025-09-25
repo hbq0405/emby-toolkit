@@ -247,8 +247,8 @@ def api_export_database():
 @login_required
 def api_import_database():
     """
-    【V3 - 简化版】接收备份文件和要导入的表名列表，
-    并提交一个后台任务来处理数据恢复（仅支持覆盖模式）。
+    【V4 - 共享导入终版】接收备份文件和要导入的表名列表，
+    并根据服务器ID是否匹配，自动决定采用“覆盖”或“共享”模式提交后台任务。
     """
     from tasks import task_import_database
     if 'file' not in request.files:
@@ -263,51 +263,49 @@ def api_import_database():
         return jsonify({"error": "必须通过 'tables' 字段指定要导入的表"}), 400
     tables_to_import = [table.strip() for table in tables_to_import_str.split(',')]
 
-    # ★ 简化: 不再需要从前端获取 mode，因为后端只支持一种模式
-    # 但我们仍然需要进行服务器ID校验
-    import_mode = 'overwrite' # 硬编码为 'overwrite' 以触发安全校验
-    task_name = "数据库恢复 (覆盖模式)"
-
     try:
         file_content = file.stream.read().decode("utf-8-sig")
         backup_json = json.loads(file_content)
         backup_metadata = backup_json.get("metadata", {})
         backup_server_id = backup_metadata.get("source_emby_server_id")
 
-        # 安全校验逻辑仍然至关重要
-        if import_mode == 'overwrite':
-            if not backup_server_id:
-                error_msg = "此备份文件缺少来源服务器ID，为安全起见，禁止恢复。这通常意味着它是一个旧版备份或非本系统导出的文件。"
-                logger.warning(f"禁止导入: {error_msg}")
-                return jsonify({"error": error_msg}), 403
+        # ★★★ 核心修改：在这里决定导入策略 ★★★
+        import_strategy = 'overwrite' # 默认为覆盖模式
+        
+        if not backup_server_id:
+            error_msg = "此备份文件缺少来源服务器ID，为安全起见，禁止恢复。这通常意味着它是一个旧版备份或非本系统导出的文件。"
+            logger.warning(f"禁止导入: {error_msg}")
+            return jsonify({"error": error_msg}), 403
 
-            current_server_id = extensions.EMBY_SERVER_ID
-            if not current_server_id:
-                error_msg = "无法获取当前Emby服务器的ID，可能连接已断开。为安全起见，暂时禁止恢复操作。"
-                logger.warning(f"禁止导入: {error_msg}")
-                return jsonify({"error": error_msg}), 503
+        current_server_id = extensions.EMBY_SERVER_ID
+        if not current_server_id:
+            error_msg = "无法获取当前Emby服务器的ID，可能连接已断开。为安全起见，暂时禁止恢复操作。"
+            logger.warning(f"禁止导入: {error_msg}")
+            return jsonify({"error": error_msg}), 503
 
-            if backup_server_id != current_server_id:
-                error_msg = (f"服务器ID不匹配！此备份来自另一个Emby服务器，"
-                           "直接恢复会造成数据严重混乱。操作已禁止。\n\n"
-                           f"备份来源ID: ...{backup_server_id[-12:]}\n"
-                           f"当前服务器ID: ...{current_server_id[-12:]}")
-                logger.warning(f"禁止导入: {error_msg}")
-                return jsonify({"error": error_msg}), 403
+        if backup_server_id != current_server_id:
+            # ID不匹配，自动切换到共享导入模式
+            import_strategy = 'share'
+            task_name = "数据库恢复 (共享模式)"
+            logger.info(f"服务器ID不匹配，将以共享模式导入可共享数据。备份源: ...{backup_server_id[-12:]}, 当前: ...{current_server_id[-12:]}")
+        else:
+            # ID匹配，使用标准的覆盖模式
+            task_name = "数据库恢复 (覆盖模式)"
+            logger.info("服务器ID匹配，将以覆盖模式导入。")
         
         logger.trace(f"已接收上传的备份文件 '{file.filename}'，将以 '{task_name}' 模式导入表: {tables_to_import}")
 
-        # ▼▼▼ 修复后的函数调用 ▼▼▼
         success = task_manager.submit_task(
             task_import_database,
-            task_name, # 使用简化的任务名
+            task_name,
             processor_type='media',
-            # 传递任务所需的所有参数，不再包含 import_mode
+            # 传递任务所需的所有参数，新增 import_strategy
             file_content=file_content,
-            tables_to_import=tables_to_import
+            tables_to_import=tables_to_import,
+            import_strategy=import_strategy
         )
         
-        return jsonify({"message": f"文件上传成功，已提交后台任务以恢复 {len(tables_to_import)} 个表。"}), 202
+        return jsonify({"message": f"文件上传成功，已提交后台任务以 '{task_name}' 模式恢复 {len(tables_to_import)} 个表。"}), 202
 
     except Exception as e:
         logger.error(f"处理数据库导入请求时发生错误: {e}", exc_info=True)

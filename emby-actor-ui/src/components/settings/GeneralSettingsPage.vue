@@ -590,9 +590,9 @@ import axios from 'axios';
 
 const tableInfo = {
   'app_settings': { cn: '基础配置', isSharable: false },
-  'person_identity_map': { cn: '演员身份映射表', isSharable: false },
-  'actor_metadata': { cn: '演员元数据', isSharable: false },
-  'translation_cache': { cn: '翻译缓存', isSharable: false },
+  'person_identity_map': { cn: '演员身份映射表', isSharable: true },
+  'actor_metadata': { cn: '演员元数据', isSharable: true },
+  'translation_cache': { cn: '翻译缓存', isSharable: true },
   'watchlist': { cn: '追剧列表', isSharable: false },
   'actor_subscriptions': { cn: '演员订阅配置', isSharable: false },
   'tracked_actor_media': { cn: '已追踪的演员作品', isSharable: false },
@@ -601,7 +601,7 @@ const tableInfo = {
   'failed_log': { cn: '待复核日志', isSharable: false },
   'users': { cn: '用户账户', isSharable: false },
   'custom_collections': { cn: '自建合集', isSharable: false },
-  'media_metadata': { cn: '媒体元数据', isSharable: false },
+  'media_metadata': { cn: '媒体元数据', isSharable: true },
   'resubscribe_rules': { cn: '媒体洗版规则', isSharable: false },
   'resubscribe_cache': { cn: '媒体洗版缓存', isSharable: false },
   'media_cleanup_tasks': { cn: '媒体去重缓存', isSharable: false },
