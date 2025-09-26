@@ -340,6 +340,36 @@ def handle_get_mimicked_library_items(user_id, mimicked_id, params):
                 sort_order = definition.get('default_sort_order', 'Ascending')
                 is_descending = (sort_order == 'Descending')
                 logger.trace(f"执行虚拟库排序劫持: '{sort_by_field}' ({sort_order})")
+
+                # --- START: 恢复丢失的排序核心逻辑 ---
+                def sort_key_func(item):
+                    """
+                    一个健壮的排序键获取函数。
+                    - 优雅地处理缺失的键。
+                    - 对特定字段进行类型转换以确保排序正确性。
+                    """
+                    value = item.get(sort_by_field)
+                    
+                    if value is None:
+                        # 为不同类型的字段提供安全的默认值
+                        if sort_by_field in ['CommunityRating', 'ProductionYear']: return 0
+                        if sort_by_field in ['PremiereDate', 'DateCreated']: return "1900-01-01T00:00:00.000Z"
+                        return ""
+
+                    # 确保数值和日期字段被正确比较
+                    try:
+                        if sort_by_field == 'CommunityRating': return float(value)
+                        if sort_by_field == 'ProductionYear': return int(value)
+                    except (ValueError, TypeError):
+                        return 0 # 如果转换失败，返回一个中性值
+                        
+                    return value
+
+                try:
+                    final_items.sort(key=sort_key_func, reverse=is_descending)
+                except Exception as e_sort:
+                    logger.error(f"在执行排序劫持 (sort_by='{sort_by_field}') 时发生错误: {e_sort}", exc_info=True)
+                # --- END: 恢复丢失的排序核心逻辑 ---
                 
             elif sort_by_field == 'original':
                  logger.trace("已应用 'original' (榜单原始顺序) 排序。")
