@@ -464,7 +464,8 @@ def task_apply_main_cast_to_episodes(processor, series_id: str, episode_ids: lis
         processor.sync_single_item_assets(
             item_id=series_id,
             update_description=f"轻量化同步演员表后自动备份",
-            sync_timestamp_iso=datetime.now(timezone.utc).isoformat()
+            sync_timestamp_iso=datetime.now(timezone.utc).isoformat(),
+            episode_ids_to_sync=episode_ids
         )
 
         # ★★★ 更新父剧集在元数据缓存中的 last_synced_at 时间戳 ★★★

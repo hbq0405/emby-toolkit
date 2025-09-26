@@ -1924,7 +1924,7 @@ class MediaProcessor:
             update_status_callback(100, final_message)
    
     # --- 备份图片 ---
-    def sync_item_images(self, item_details: Dict[str, Any], update_description: Optional[str] = None) -> bool:
+    def sync_item_images(self, item_details: Dict[str, Any], update_description: Optional[str] = None, episode_ids_to_sync: Optional[List[str]] = None) -> bool:
         """
         【新增-重构】这个方法负责同步一个媒体项目的所有相关图片。
         它从 _process_item_core_logic 中提取出来，以便复用。
@@ -1992,18 +1992,30 @@ class MediaProcessor:
                 images_to_sync = full_image_map
 
             # --- 执行下载 ---
-            logger.info(f"  -> {log_prefix} 开始为 '{item_name_for_log}' 下载 {len(images_to_sync)} 张图片至覆盖缓存")
-            for image_type, filename in images_to_sync.items():
-                if self.is_stop_requested():
-                    logger.warning(f"  -> {log_prefix} 收到停止信号，中止图片下载。")
-                    return False
-                emby_handler.download_emby_image(item_id, image_type, os.path.join(image_override_dir, filename), self.emby_url, self.emby_api_key)
+            if not episode_ids_to_sync:
+                logger.info(f"  -> {log_prefix} 开始为 '{item_name_for_log}' 下载 {len(images_to_sync)} 张主图片至覆盖缓存")
+                for image_type, filename in images_to_sync.items():
+                    if self.is_stop_requested():
+                        logger.warning(f"  -> {log_prefix} 收到停止信号，中止图片下载。")
+                        return False
+                    emby_handler.download_emby_image(item_id, image_type, os.path.join(image_override_dir, filename), self.emby_url, self.emby_api_key)
             
-            # --- 分集图片逻辑 (只有在完全同步时才考虑执行) ---
-            if images_to_sync == full_image_map and item_type == "Series":
-            
-                children = emby_handler.get_series_children(item_id, self.emby_url, self.emby_api_key, self.emby_user_id, series_name_for_log=item_name_for_log) or []
-                for child in children:
+            # --- 分集图片逻辑 ---
+            if item_type == "Series":
+                children_to_process = []
+                # 获取所有子项信息，用于查找
+                all_children = emby_handler.get_series_children(item_id, self.emby_url, self.emby_api_key, self.emby_user_id, series_name_for_log=item_name_for_log) or []
+                
+                if episode_ids_to_sync:
+                    # 模式一：只处理指定的分集
+                    logger.info(f"  -> {log_prefix} 将只同步 {len(episode_ids_to_sync)} 个指定分集的图片。")
+                    id_set = set(episode_ids_to_sync)
+                    children_to_process = [child for child in all_children if child.get("Id") in id_set]
+                elif images_to_sync == full_image_map:
+                    # 模式二：处理所有子项（原逻辑）
+                    children_to_process = all_children
+
+                for child in children_to_process:
                     if self.is_stop_requested():
                         logger.warning(f"  -> {log_prefix} 收到停止信号，中止子项目图片下载。")
                         return False
@@ -2024,7 +2036,7 @@ class MediaProcessor:
             return False
     
     # --- 备份元数据 ---
-    def sync_item_metadata(self, item_details: Dict[str, Any], tmdb_id: str, final_cast_override: Optional[List[Dict[str, Any]]] = None):
+    def sync_item_metadata(self, item_details: Dict[str, Any], tmdb_id: str, final_cast_override: Optional[List[Dict[str, Any]]] = None, episode_ids_to_sync: Optional[List[str]] = None):
         """
         备份元数据到覆盖缓存
         """
@@ -2065,41 +2077,44 @@ class MediaProcessor:
         source_cache_dir = os.path.join(self.local_data_path, "cache", cache_folder_name, tmdb_id)
         target_override_dir = os.path.join(self.local_data_path, "override", cache_folder_name, tmdb_id)
 
-        if not os.path.exists(source_cache_dir):
-            logger.warning(f"  -> {log_prefix} 跳过，因为源缓存目录不存在: {source_cache_dir}")
-            return
-        try:
-            shutil.copytree(source_cache_dir, target_override_dir, dirs_exist_ok=True)
-        except Exception as e:
-            logger.error(f"  -> {log_prefix} 复制元数据时失败: {e}", exc_info=True)
-            return
+        # 仅在非分集同步模式下执行全量复制
+        if not episode_ids_to_sync:
+            if not os.path.exists(source_cache_dir):
+                logger.warning(f"  -> {log_prefix} 跳过，因为源缓存目录不存在: {source_cache_dir}")
+                return
+            try:
+                shutil.copytree(source_cache_dir, target_override_dir, dirs_exist_ok=True)
+            except Exception as e:
+                logger.error(f"  -> {log_prefix} 复制元数据时失败: {e}", exc_info=True)
+                return
 
-        # --- 将重建好的新列表写回主 JSON 文件 ---
-        main_json_filename = "all.json" if item_type == "Movie" else "series.json"
-        json_path = os.path.join(target_override_dir, main_json_filename)
-        if not os.path.exists(json_path): return
+        # --- 将重建好的新列表写回主 JSON 文件 (仅在非分集同步模式下) ---
+        if not episode_ids_to_sync:
+            main_json_filename = "all.json" if item_type == "Movie" else "series.json"
+            json_path = os.path.join(target_override_dir, main_json_filename)
+            if not os.path.exists(json_path): return
 
-        try:
-            with open(json_path, 'r+', encoding='utf-8') as f:
-                data = json.load(f)
-                if 'casts' in data and 'cast' in data['casts']:
-                    data['casts']['cast'] = new_perfect_cast
-                elif 'credits' in data and 'cast' in data['credits']:
-                    data['credits']['cast'] = new_perfect_cast
-                else:
-                    return
-                
-                f.seek(0)
-                json.dump(data, f, ensure_ascii=False, indent=2)
-                f.truncate()
-                logger.info(f"  -> {log_prefix} 成功将 {len(new_perfect_cast)} 位演员信息写入覆盖缓存文件。")
-        except Exception as e:
-            logger.error(f"  -> {log_prefix} 重建并写入 '{main_json_filename}' 时失败: {e}", exc_info=True)
-            return
+            try:
+                with open(json_path, 'r+', encoding='utf-8') as f:
+                    data = json.load(f)
+                    if 'casts' in data and 'cast' in data['casts']:
+                        data['casts']['cast'] = new_perfect_cast
+                    elif 'credits' in data and 'cast' in data['credits']:
+                        data['credits']['cast'] = new_perfect_cast
+                    else:
+                        return
+                    
+                    f.seek(0)
+                    json.dump(data, f, ensure_ascii=False, indent=2)
+                    f.truncate()
+                    logger.info(f"  -> {log_prefix} 成功将 {len(new_perfect_cast)} 位演员信息写入覆盖缓存文件。")
+            except Exception as e:
+                logger.error(f"  -> {log_prefix} 重建并写入 '{main_json_filename}' 时失败: {e}", exc_info=True)
+                return
 
         # --- 注入演员表到所有季/集文件 ---
         if item_type == "Series":
-            self._inject_cast_to_series_files(target_override_dir, new_perfect_cast, item_details)
+            self._inject_cast_to_series_files(target_override_dir, new_perfect_cast, item_details, episode_ids_to_sync=episode_ids_to_sync)
 
     # --- 辅助函数：从不同数据源构建演员列表 ---
     def _build_cast_from_final_data(self, final_cast_data: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
@@ -2130,7 +2145,7 @@ class MediaProcessor:
             })
         return cast_list
 
-    def _inject_cast_to_series_files(self, target_dir: str, cast_list: List[Dict[str, Any]], series_details: Dict[str, Any]):
+    def _inject_cast_to_series_files(self, target_dir: str, cast_list: List[Dict[str, Any]], series_details: Dict[str, Any], episode_ids_to_sync: Optional[List[str]] = None):
         """辅助函数：将演员表注入剧集的季/集JSON文件"""
         log_prefix = "[覆盖缓存-元数据备份]"
         logger.info(f"  -> {log_prefix} 开始将元数据注入所有季/集备份文件...")
@@ -2150,27 +2165,46 @@ class MediaProcessor:
 
         updated_children_count = 0
         try:
-            for filename in os.listdir(target_dir):
-                if filename.startswith("season-") and filename.endswith(".json") and filename != "series.json":
-                    child_json_path = os.path.join(target_dir, filename)
-                    try:
-                        with open(child_json_path, 'r+', encoding='utf-8') as f_child:
-                            child_data = json.load(f_child)
-                            if 'credits' in child_data and 'cast' in child_data['credits']:
-                                child_data['credits']['cast'] = cast_list
-                            
-                            file_key = os.path.splitext(filename)[0]
-                            fresh_data = child_data_map.get(file_key)
-                            if fresh_data:
-                                child_data['name'] = fresh_data.get('Name', child_data.get('name'))
-                                child_data['overview'] = fresh_data.get('Overview', child_data.get('overview'))
-                            
-                            f_child.seek(0)
-                            json.dump(child_data, f_child, ensure_ascii=False, indent=2)
-                            f_child.truncate()
-                            updated_children_count += 1
-                    except Exception as e_child:
-                        logger.warning(f"  -> 更新子文件 '{filename}' 时失败: {e_child}")
+            files_to_process = []
+            if episode_ids_to_sync:
+                # 模式一：根据ID列表生成目标文件名
+                id_set = set(episode_ids_to_sync)
+                for child in children_from_emby:
+                    if child.get("Id") in id_set and child.get("Type") == "Episode":
+                        s_num = child.get('ParentIndexNumber')
+                        e_num = child.get('IndexNumber')
+                        if s_num is not None and e_num is not None:
+                            files_to_process.append(f"season-{s_num}-episode-{e_num}.json")
+            else:
+                # 模式二：遍历目录中的所有文件（原逻辑）
+                for filename in os.listdir(target_dir):
+                    if filename.startswith("season-") and filename.endswith(".json") and filename != "series.json":
+                        files_to_process.append(filename)
+
+            for filename in files_to_process:
+                child_json_path = os.path.join(target_dir, filename)
+                # 如果文件不存在，则跳过（主要针对分集模式）
+                if not os.path.exists(child_json_path):
+                    logger.warning(f"  -> 更新子文件时跳过，文件不存在: '{filename}'")
+                    continue
+                try:
+                    with open(child_json_path, 'r+', encoding='utf-8') as f_child:
+                        child_data = json.load(f_child)
+                        if 'credits' in child_data and 'cast' in child_data['credits']:
+                            child_data['credits']['cast'] = cast_list
+                        
+                        file_key = os.path.splitext(filename)[0]
+                        fresh_data = child_data_map.get(file_key)
+                        if fresh_data:
+                            child_data['name'] = fresh_data.get('Name', child_data.get('name'))
+                            child_data['overview'] = fresh_data.get('Overview', child_data.get('overview'))
+                        
+                        f_child.seek(0)
+                        json.dump(child_data, f_child, ensure_ascii=False, indent=2)
+                        f_child.truncate()
+                        updated_children_count += 1
+                except Exception as e_child:
+                    logger.warning(f"  -> 更新子文件 '{filename}' 时失败: {e_child}")
             logger.info(f"  -> {log_prefix} 成功将元数据注入了 {updated_children_count} 个季/集文件。")
         except Exception as e_list:
             logger.error(f"  -> {log_prefix} 遍历并更新季/集文件时发生错误: {e_list}", exc_info=True)
@@ -2178,7 +2212,8 @@ class MediaProcessor:
     def sync_single_item_assets(self, item_id: str, 
                                 update_description: Optional[str] = None, 
                                 sync_timestamp_iso: Optional[str] = None,
-                                final_cast_override: Optional[List[Dict[str, Any]]] = None):
+                                final_cast_override: Optional[List[Dict[str, Any]]] = None,
+                                episode_ids_to_sync: Optional[List[str]] = None):
         """
         【V1.5 - 任务队列版】为单个媒体项同步图片和元数据文件。
         - 职责单一化：只负责执行备份。并发控制和冷却逻辑已移交至任务管理器和调用方。
@@ -2204,10 +2239,10 @@ class MediaProcessor:
                 return
 
             # 1. 同步图片
-            self.sync_item_images(item_details, update_description)
+            self.sync_item_images(item_details, update_description, episode_ids_to_sync=episode_ids_to_sync)
             
             # 2. 同步元数据文件
-            self.sync_item_metadata(item_details, tmdb_id, final_cast_override=final_cast_override)
+            self.sync_item_metadata(item_details, tmdb_id, final_cast_override=final_cast_override, episode_ids_to_sync=episode_ids_to_sync)
 
             # 3. 记录本次同步的时间戳
             timestamp_to_log = sync_timestamp_iso or datetime.now(timezone.utc).isoformat()
