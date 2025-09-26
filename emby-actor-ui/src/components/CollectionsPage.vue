@@ -1,4 +1,4 @@
-<!-- src/components/CollectionsPage.vue (排序筛选 + 多选 + 批量标记完整版) -->
+<!-- src/components/CollectionsPage.vue (筛选功能优化最终版) -->
 <template>
   <n-layout content-style="padding: 24px;">
     <div class="collections-page">
@@ -70,7 +70,7 @@
         </n-alert>
       </n-page-header>
 
-      <!-- ★★★ 新增：排序和筛选控件 ★★★ -->
+      <!-- ★★★ 排序和筛选控件 ★★★ -->
       <n-space :wrap="true" :size="[20, 12]" style="margin-top: 24px; margin-bottom: 24px;">
         <n-input v-model:value="searchQuery" placeholder="按名称搜索..." clearable style="min-width: 200px;" />
         
@@ -264,18 +264,18 @@ let observer = null;
 const selectedCollectionIds = ref([]);
 const lastSelectedIndex = ref(null);
 
-// ★★★ 新增：排序和筛选的状态 ★★★
 const searchQuery = ref('');
 const filterStatus = ref('all');
 const sortKey = ref('missing_count');
 const sortOrder = ref('desc');
 
+// ★★★ 核心修改：更新筛选选项 ★★★
 const statusFilterOptions = [
   { label: '所有合集', value: 'all' },
   { label: '有缺失', value: 'has_missing' },
   { label: '已完整', value: 'complete' },
-  { label: '未关联TMDb', value: 'unlinked' },
-  { label: 'TMDb错误', value: 'tmdb_error' },
+  { label: '有已订阅', value: 'has_subscribed' },
+  { label: '有未上映', value: 'has_unreleased' },
 ];
 const sortKeyOptions = [
   { label: '按缺失数量', value: 'missing_count' },
@@ -355,6 +355,15 @@ const handleBatchAction = (key) => {
   }
 };
 
+// ★★★ 新增：辅助函数，用于计算已订阅和未上映的数量 ★★★
+const getSubscribedCount = (collection) => {
+  if (!collection || !Array.isArray(collection.missing_movies)) return 0;
+  return collection.missing_movies.filter(m => m.status === 'subscribed').length;
+};
+const getUnreleasedCount = (collection) => {
+  if (!collection || !Array.isArray(collection.missing_movies)) return 0;
+  return collection.missing_movies.filter(m => m.status === 'unreleased').length;
+};
 const getMissingCount = (collection) => {
   if (!collection || !Array.isArray(collection.missing_movies)) return 0;
   return collection.missing_movies.filter(m => m.status === 'missing').length;
@@ -369,20 +378,17 @@ const globalStats = computed(() => {
     totalSubscribed: 0,
   };
   for (const collection of collections.value) {
-    if (Array.isArray(collection.missing_movies)) {
-      const missingCount = collection.missing_movies.filter(m => m.status === 'missing').length;
-      if (missingCount > 0) {
-        stats.collectionsWithMissing++;
-        stats.totalMissingMovies += missingCount;
-      }
-      stats.totalUnreleased += collection.missing_movies.filter(m => m.status === 'unreleased').length;
-      stats.totalSubscribed += collection.missing_movies.filter(m => m.status === 'subscribed').length;
+    stats.totalMissingMovies += getMissingCount(collection);
+    stats.totalUnreleased += getUnreleasedCount(collection);
+    stats.totalSubscribed += getSubscribedCount(collection);
+    if (getMissingCount(collection) > 0) {
+      stats.collectionsWithMissing++;
     }
   }
   return stats;
 });
 
-// ★★★ 核心修改：重写计算属性以包含排序和筛选逻辑 ★★★
+// ★★★ 核心修改：更新筛选逻辑 ★★★
 const filteredAndSortedCollections = computed(() => {
   let list = [...collections.value];
 
@@ -400,11 +406,11 @@ const filteredAndSortedCollections = computed(() => {
     case 'complete':
       list = list.filter(item => getMissingCount(item) === 0 && item.status !== 'unlinked' && item.status !== 'tmdb_error');
       break;
-    case 'unlinked':
-      list = list.filter(item => item.status === 'unlinked');
+    case 'has_subscribed':
+      list = list.filter(item => getSubscribedCount(item) > 0);
       break;
-    case 'tmdb_error':
-      list = list.filter(item => item.status === 'tmdb_error');
+    case 'has_unreleased':
+      list = list.filter(item => getUnreleasedCount(item) > 0);
       break;
   }
 
@@ -520,10 +526,8 @@ watch(isTaskRunning, (isRunning, wasRunning) => {
   }
 });
 
-// ★★★ 新增：监听筛选/排序变化，重置无限滚动 ★★★
 watch([searchQuery, filterStatus, sortKey, sortOrder], () => {
   displayCount.value = 50;
-  // 清空多选，避免在看不见的卡片上保留选择
   selectedCollectionIds.value = [];
   lastSelectedIndex.value = null;
 });
@@ -599,12 +603,10 @@ const getFullStatusText = (collection) => {
   const parts = [];
   const inLibraryCount = collection.in_library_count || 0;
   if (inLibraryCount > 0) { parts.push(`已入库 ${inLibraryCount} 部`); }
-  if (Array.isArray(collection.missing_movies)) {
-      const unreleasedCount = collection.missing_movies.filter(m => m.status === 'unreleased').length;
-      const subscribedCount = collection.missing_movies.filter(m => m.status === 'subscribed').length;
-      if (unreleasedCount > 0) { parts.push(`未上映 ${unreleasedCount} 部`); }
-      if (subscribedCount > 0) { parts.push(`已订阅 ${subscribedCount} 部`); }
-  }
+  const unreleasedCount = getUnreleasedCount(collection);
+  const subscribedCount = getSubscribedCount(collection);
+  if (unreleasedCount > 0) { parts.push(`未上映 ${unreleasedCount} 部`); }
+  if (subscribedCount > 0) { parts.push(`已订阅 ${subscribedCount} 部`); }
   return parts.join(' | ') || '已入库';
 };
 
