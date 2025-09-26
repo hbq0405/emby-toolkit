@@ -1,4 +1,4 @@
-<!-- src/components/CollectionsPage.vue (主列表多选 + 批量标记状态完整版) -->
+<!-- src/components/CollectionsPage.vue (排序筛选 + 多选 + 批量标记完整版) -->
 <template>
   <n-layout content-style="padding: 24px;">
     <div class="collections-page">
@@ -70,10 +70,38 @@
         </n-alert>
       </n-page-header>
 
+      <!-- ★★★ 新增：排序和筛选控件 ★★★ -->
+      <n-space :wrap="true" :size="[20, 12]" style="margin-top: 24px; margin-bottom: 24px;">
+        <n-input v-model:value="searchQuery" placeholder="按名称搜索..." clearable style="min-width: 200px;" />
+        
+        <n-select
+          v-model:value="filterStatus"
+          :options="statusFilterOptions"
+          style="min-width: 160px;"
+        />
+        
+        <n-select
+          v-model:value="sortKey"
+          :options="sortKeyOptions"
+          style="min-width: 180px;"
+        />
+        
+        <n-button-group>
+          <n-button @click="sortOrder = 'asc'" :type="sortOrder === 'asc' ? 'primary' : 'default'" ghost>
+            <template #icon><n-icon :component="ArrowUpIcon" /></template>
+            升序
+          </n-button>
+          <n-button @click="sortOrder = 'desc'" :type="sortOrder === 'desc' ? 'primary' : 'default'" ghost>
+            <template #icon><n-icon :component="ArrowDownIcon" /></template>
+            降序
+          </n-button>
+        </n-button-group>
+      </n-space>
+
       <div v-if="isInitialLoading" class="center-container"><n-spin size="large" /></div>
       <div v-else-if="error" class="center-container"><n-alert title="加载错误" type="error" style="max-width: 500px;">{{ error }}</n-alert></div>
       
-      <div v-else-if="collections.length > 0" style="margin-top: 24px;">
+      <div v-else-if="filteredAndSortedCollections.length > 0">
         <n-grid cols="1 s:2 m:3 l:4 xl:5" :x-gap="20" :y-gap="20" responsive="screen">
           <n-gi v-for="(item, i) in renderedCollections" :key="item.emby_collection_id">
             <n-card 
@@ -127,7 +155,7 @@
         </div>
 
       </div>
-      <div v-else class="center-container"><n-empty description="没有找到任何电影合集。" size="huge" /></div>
+      <div v-else class="center-container"><n-empty :description="emptyStateDescription" size="huge" /></div>
     </div>
 
     <n-modal v-model:show="showModal" preset="card" style="width: 90%; max-width: 1200px;" :title="selectedCollection ? `详情 - ${selectedCollection.name}` : ''" :bordered="false" size="huge">
@@ -207,8 +235,8 @@
 <script setup>
 import { ref, onMounted, onBeforeUnmount, computed, watch, h } from 'vue';
 import axios from 'axios';
-import { NLayout, NPageHeader, NEmpty, NTag, NButton, NSpace, NIcon, useMessage, useDialog, NTooltip, NGrid, NGi, NCard, NImage, NEllipsis, NSpin, NAlert, NModal, NTabs, NTabPane, NPopconfirm, NCheckbox, NDropdown } from 'naive-ui';
-import { SyncOutline, AlbumsOutline as AlbumsIcon, EyeOutline as EyeIcon, CloudDownloadOutline as CloudDownloadIcon, CloseCircleOutline as CloseCircleIcon, CheckmarkCircleOutline as CheckmarkCircle, CaretDownOutline as CaretDownIcon } from '@vicons/ionicons5';
+import { NLayout, NPageHeader, NEmpty, NTag, NButton, NSpace, NIcon, useMessage, useDialog, NTooltip, NGrid, NGi, NCard, NImage, NEllipsis, NSpin, NAlert, NModal, NTabs, NTabPane, NPopconfirm, NCheckbox, NDropdown, NInput, NSelect, NButtonGroup } from 'naive-ui';
+import { SyncOutline, AlbumsOutline as AlbumsIcon, EyeOutline as EyeIcon, CloudDownloadOutline as CloudDownloadIcon, CloseCircleOutline as CloseCircleIcon, CheckmarkCircleOutline as CheckmarkCircle, CaretDownOutline as CaretDownIcon, ArrowUpOutline as ArrowUpIcon, ArrowDownOutline as ArrowDownIcon } from '@vicons/ionicons5';
 import { format } from 'date-fns';
 import { useConfig } from '../composables/useConfig.js';
 
@@ -235,6 +263,25 @@ let observer = null;
 
 const selectedCollectionIds = ref([]);
 const lastSelectedIndex = ref(null);
+
+// ★★★ 新增：排序和筛选的状态 ★★★
+const searchQuery = ref('');
+const filterStatus = ref('all');
+const sortKey = ref('missing_count');
+const sortOrder = ref('desc');
+
+const statusFilterOptions = [
+  { label: '所有合集', value: 'all' },
+  { label: '有缺失', value: 'has_missing' },
+  { label: '已完整', value: 'complete' },
+  { label: '未关联TMDb', value: 'unlinked' },
+  { label: 'TMDb错误', value: 'tmdb_error' },
+];
+const sortKeyOptions = [
+  { label: '按缺失数量', value: 'missing_count' },
+  { label: '按合集名称', value: 'name' },
+  { label: '按上次检查时间', value: 'last_checked_at' },
+];
 
 const toggleSelection = (collectionId, event, index) => {
   if (!event) return;
@@ -335,18 +382,70 @@ const globalStats = computed(() => {
   return stats;
 });
 
-const sortedCollections = computed(() => {
-  return [...collections.value].sort((a, b) => {
-    const missingCountA = getMissingCount(a);
-    const missingCountB = getMissingCount(b);
-    if (missingCountB !== missingCountA) return missingCountB - missingCountA;
-    return a.name.localeCompare(b.name);
+// ★★★ 核心修改：重写计算属性以包含排序和筛选逻辑 ★★★
+const filteredAndSortedCollections = computed(() => {
+  let list = [...collections.value];
+
+  // 1. 文本搜索
+  if (searchQuery.value) {
+    const query = searchQuery.value.toLowerCase();
+    list = list.filter(item => item.name.toLowerCase().includes(query));
+  }
+
+  // 2. 状态筛选
+  switch (filterStatus.value) {
+    case 'has_missing':
+      list = list.filter(item => getMissingCount(item) > 0);
+      break;
+    case 'complete':
+      list = list.filter(item => getMissingCount(item) === 0 && item.status !== 'unlinked' && item.status !== 'tmdb_error');
+      break;
+    case 'unlinked':
+      list = list.filter(item => item.status === 'unlinked');
+      break;
+    case 'tmdb_error':
+      list = list.filter(item => item.status === 'tmdb_error');
+      break;
+  }
+
+  // 3. 排序
+  list.sort((a, b) => {
+    let valA, valB;
+
+    switch (sortKey.value) {
+      case 'name':
+        valA = a.name || '';
+        valB = b.name || '';
+        return sortOrder.value === 'asc' ? valA.localeCompare(valB) : valB.localeCompare(valA);
+      
+      case 'last_checked_at':
+        valA = a.last_checked_at || 0;
+        valB = b.last_checked_at || 0;
+        break;
+
+      case 'missing_count':
+      default:
+        valA = getMissingCount(a);
+        valB = getMissingCount(b);
+        break;
+    }
+    
+    return sortOrder.value === 'asc' ? valA - valB : valB - valA;
   });
+
+  return list;
 });
 
-const renderedCollections = computed(() => sortedCollections.value.slice(0, displayCount.value));
-const hasMore = computed(() => displayCount.value < sortedCollections.value.length);
+const renderedCollections = computed(() => filteredAndSortedCollections.value.slice(0, displayCount.value));
+const hasMore = computed(() => displayCount.value < filteredAndSortedCollections.value.length);
 const loadMore = () => { if (hasMore.value) displayCount.value += INCREMENT; };
+
+const emptyStateDescription = computed(() => {
+  if (collections.value.length > 0 && filteredAndSortedCollections.value.length === 0) {
+    return '没有匹配当前筛选条件的合集。';
+  }
+  return '没有找到任何电影合集。';
+});
 
 const inLibraryMoviesInModal = computed(() => {
   if (!selectedCollection.value || !Array.isArray(selectedCollection.value.missing_movies)) return [];
@@ -419,6 +518,14 @@ watch(isTaskRunning, (isRunning, wasRunning) => {
       loadCachedData();
     }
   }
+});
+
+// ★★★ 新增：监听筛选/排序变化，重置无限滚动 ★★★
+watch([searchQuery, filterStatus, sortKey, sortOrder], () => {
+  displayCount.value = 50;
+  // 清空多选，避免在看不见的卡片上保留选择
+  selectedCollectionIds.value = [];
+  lastSelectedIndex.value = null;
 });
 
 const openMissingMoviesModal = (collection) => {
