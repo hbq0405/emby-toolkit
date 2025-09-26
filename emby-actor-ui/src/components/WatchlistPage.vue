@@ -1,4 +1,4 @@
-<!-- src/components/WatchlistPage.vue (无限滚动 + Shift 多选完整版) -->
+<!-- src/components/WatchlistPage.vue (排序筛选 + 无限滚动 + Shift 多选最终版) -->
 <template>
   <n-layout content-style="padding: 24px;">
     <div class="watchlist-page">
@@ -74,6 +74,42 @@
         </template>
       </n-page-header>
       <n-divider />
+
+      <!-- ★★★ 新增：排序和筛选控件 ★★★ -->
+      <n-space :wrap="true" :size="[20, 12]" style="margin-bottom: 20px;">
+        <n-input v-model:value="searchQuery" placeholder="按名称搜索..." clearable style="min-width: 200px;" />
+        
+        <n-select
+          v-if="currentView === 'inProgress'"
+          v-model:value="filterStatus"
+          :options="statusFilterOptions"
+          style="min-width: 140px;"
+        />
+        
+        <n-select
+          v-model:value="filterMissing"
+          :options="missingFilterOptions"
+          style="min-width: 140px;"
+        />
+        
+        <n-select
+          v-model:value="sortKey"
+          :options="sortKeyOptions"
+          style="min-width: 160px;"
+        />
+        
+        <n-button-group>
+          <n-button @click="sortOrder = 'asc'" :type="sortOrder === 'asc' ? 'primary' : 'default'" ghost>
+            <template #icon><n-icon :component="ArrowUpIcon" /></template>
+            升序
+          </n-button>
+          <n-button @click="sortOrder = 'desc'" :type="sortOrder === 'desc' ? 'primary' : 'default'" ghost>
+            <template #icon><n-icon :component="ArrowDownIcon" /></template>
+            降序
+          </n-button>
+        </n-button-group>
+      </n-space>
+
       <div v-if="isLoading" class="center-container"><n-spin size="large" /></div>
       <div v-else-if="error" class="center-container"><n-alert title="加载错误" type="error" style="max-width: 500px;">{{ error }}</n-alert></div>
       <div v-else-if="filteredWatchlist.length > 0">
@@ -198,8 +234,8 @@
 <script setup>
 import { ref, onMounted, onBeforeUnmount, h, computed, watch } from 'vue';
 import axios from 'axios';
-import { NLayout, NPageHeader, NDivider, NEmpty, NTag, NButton, NSpace, NIcon, useMessage, useDialog, NPopconfirm, NTooltip, NGrid, NGi, NCard, NImage, NEllipsis, NSpin, NAlert, NRadioGroup, NRadioButton, NModal, NTabs, NTabPane, NList, NListItem, NCheckbox, NDropdown } from 'naive-ui';
-import { SyncOutline, TvOutline as TvIcon, TrashOutline as TrashIcon, EyeOutline as EyeIcon, CalendarOutline as CalendarIcon, PlayCircleOutline as WatchingIcon, PauseCircleOutline as PausedIcon, CheckmarkCircleOutline as CompletedIcon, ScanCircleOutline as ScanIcon, CaretDownOutline as CaretDownIcon, FlashOffOutline as ForceEndIcon } from '@vicons/ionicons5';
+import { NLayout, NPageHeader, NDivider, NEmpty, NTag, NButton, NSpace, NIcon, useMessage, useDialog, NPopconfirm, NTooltip, NGrid, NGi, NCard, NImage, NEllipsis, NSpin, NAlert, NRadioGroup, NRadioButton, NModal, NTabs, NTabPane, NList, NListItem, NCheckbox, NDropdown, NInput, NSelect, NButtonGroup } from 'naive-ui';
+import { SyncOutline, TvOutline as TvIcon, TrashOutline as TrashIcon, EyeOutline as EyeIcon, CalendarOutline as CalendarIcon, PlayCircleOutline as WatchingIcon, PauseCircleOutline as PausedIcon, CheckmarkCircleOutline as CompletedIcon, ScanCircleOutline as ScanIcon, CaretDownOutline as CaretDownIcon, FlashOffOutline as ForceEndIcon, ArrowUpOutline as ArrowUpIcon, ArrowDownOutline as ArrowDownIcon } from '@vicons/ionicons5';
 import { format, parseISO } from 'date-fns';
 import { useConfig } from '../composables/useConfig.js';
 
@@ -234,6 +270,29 @@ let observer = null;
 
 const selectedItems = ref([]);
 const lastSelectedIndex = ref(null);
+
+// ★★★ 新增：排序和筛选的状态 ★★★
+const searchQuery = ref('');
+const filterStatus = ref('all');
+const filterMissing = ref('all');
+const sortKey = ref('last_checked_at');
+const sortOrder = ref('desc');
+
+const statusFilterOptions = [
+  { label: '所有状态', value: 'all' },
+  { label: '追剧中', value: 'Watching' },
+  { label: '已暂停', value: 'Paused' },
+];
+const missingFilterOptions = [
+  { label: '所有剧集', value: 'all' },
+  { label: '有缺失', value: 'yes' },
+  { label: '无缺失', value: 'no' },
+];
+const sortKeyOptions = [
+  { label: '按上次检查时间', value: 'last_checked_at' },
+  { label: '按剧集名称', value: 'item_name' },
+  { label: '按添加时间', value: 'added_at' },
+];
 
 // 支持 shift+多选
 const toggleSelection = (itemId, event, index) => {
@@ -378,38 +437,74 @@ const subscribeSeason = async (seasonNumber) => {
     subscribing.value[key] = false;
   }
 };
+
+// ★★★ 核心修改：重写 filteredWatchlist 以包含排序和筛选逻辑 ★★★
 const filteredWatchlist = computed(() => {
-  let list = [];
+  let list = rawWatchlist.value;
+
+  // 1. 基础视图筛选
   if (currentView.value === 'inProgress') {
-    list = rawWatchlist.value
-      .filter(item => item.status === 'Watching' || item.status === 'Paused')
-      .sort((a, b) => {
-        const statusOrder = { 'Watching': 0, 'Paused': 1 };
-        const aStatus = statusOrder[a.status] ?? 99;
-        const bStatus = statusOrder[b.status] ?? 99;
-        if (aStatus !== bStatus) {
-          return aStatus - bStatus;
-        }
-        const aDate = a.last_checked_at ? new Date(a.last_checked_at).getTime() : 0;
-        const bDate = b.last_checked_at ? new Date(b.last_checked_at).getTime() : 0;
-        return bDate - aDate;
-      });
+    list = list.filter(item => item.status === 'Watching' || item.status === 'Paused');
   } else if (currentView.value === 'completed') {
-    list = rawWatchlist.value
-      .filter(item => item.status === 'Completed')
-      .sort((a, b) => {
-        const aDate = a.last_checked_at ? new Date(a.last_checked_at).getTime() : 0;
-        const bDate = b.last_checked_at ? new Date(b.last_checked_at).getTime() : 0;
-        return bDate - aDate;
-      });
+    list = list.filter(item => item.status === 'Completed');
   }
+
+  // 2. 文本搜索
+  if (searchQuery.value) {
+    const query = searchQuery.value.toLowerCase();
+    list = list.filter(item => item.item_name.toLowerCase().includes(query));
+  }
+
+  // 3. 状态筛选 (仅追剧中视图)
+  if (currentView.value === 'inProgress' && filterStatus.value !== 'all') {
+    list = list.filter(item => item.status === filterStatus.value);
+  }
+
+  // 4. 缺失筛选
+  if (filterMissing.value !== 'all') {
+    const hasMissingValue = filterMissing.value === 'yes';
+    list = list.filter(item => hasMissing(item) === hasMissingValue);
+  }
+
+  // 5. 排序
+  list.sort((a, b) => {
+    let valA, valB;
+
+    switch (sortKey.value) {
+      case 'item_name':
+        valA = a.item_name || '';
+        valB = b.item_name || '';
+        return sortOrder.value === 'asc' ? valA.localeCompare(valB) : valB.localeCompare(valA);
+      
+      case 'added_at':
+        valA = a.added_at ? new Date(a.added_at).getTime() : 0;
+        valB = b.added_at ? new Date(b.added_at).getTime() : 0;
+        break;
+
+      case 'last_checked_at':
+      default:
+        valA = a.last_checked_at ? new Date(a.last_checked_at).getTime() : 0;
+        valB = b.last_checked_at ? new Date(b.last_checked_at).getTime() : 0;
+        break;
+    }
+    
+    return sortOrder.value === 'asc' ? valA - valB : valB - valA;
+  });
+
   return list;
 });
+
+// ★★★ 新增：监听视图切换，重置筛选和多选 ★★★
 watch(currentView, () => {
   displayCount.value = 30;
   selectedItems.value = [];
   lastSelectedIndex.value = null;
+  // 重置筛选条件
+  searchQuery.value = '';
+  filterStatus.value = 'all';
+  filterMissing.value = 'all';
 });
+
 const renderedWatchlist = computed(() => {
   return filteredWatchlist.value.slice(0, displayCount.value);
 });
@@ -422,6 +517,9 @@ const loadMore = () => {
   }
 };
 const emptyStateDescription = computed(() => {
+  if (rawWatchlist.value.length > 0 && filteredWatchlist.value.length === 0) {
+    return '没有匹配当前筛选条件的剧集。';
+  }
   if (currentView.value === 'inProgress') {
     return '追剧列表为空，快去“手动处理”页面搜索并添加你正在追的剧集吧！';
   }
