@@ -327,6 +327,9 @@ def handle_get_mimicked_library_items(user_id, mimicked_id, params):
                 logger.trace(f"执行虚拟库排序劫持: '{sort_by_field}' ({sort_order})")
                 
                 if sort_by_field == 'last_synced_at':
+                    # --- 新增日志，用于诊断 ---
+                    logger.trace(f"执行 'last_synced_at' 排序。接收到的 sort_order: '{sort_order}'，is_descending 变量为: {is_descending}，处理 {len(final_items)} 个项目。")
+
                     movie_tmdb_ids = [item.get('ProviderIds', {}).get('Tmdb') for item in final_items if item.get('Type') == 'Movie' and item.get('ProviderIds', {}).get('Tmdb')]
                     series_tmdb_ids = [item.get('ProviderIds', {}).get('Tmdb') for item in final_items if item.get('Type') == 'Series' and item.get('ProviderIds', {}).get('Tmdb')]
                     
@@ -343,22 +346,18 @@ def handle_get_mimicked_library_items(user_id, mimicked_id, params):
                             timestamp = meta.get('last_synced_at') or meta.get('date_added') or default_timestamp
                             timestamp_map[f"{meta['tmdb_id']}-Series"] = timestamp
 
-                    final_items.sort(
-                        key=lambda item: timestamp_map.get(f"{item.get('ProviderIds', {}).get('Tmdb')}-{item.get('Type')}", default_timestamp),
-                        reverse=is_descending
-                    )
-                else:
-                    default_sort_value = 0 if sort_by_field in ['CommunityRating', 'ProductionYear'] else "0"
-                    try:
-                        final_items.sort(
-                            key=lambda item: item.get(sort_by_field, default_sort_value),
-                            reverse=is_descending
-                        )
-                    except TypeError:
-                        final_items.sort(key=lambda item: str(item.get(sort_by_field, default_sort_value)), reverse=is_descending)
+                    # ★★★ 核心修改：使用明确的 if/else 替代 reverse=is_descending ★★★
+                    sort_key_func = lambda item: timestamp_map.get(f"{item.get('ProviderIds', {}).get('Tmdb')}-{item.get('Type')}", default_timestamp)
+                    
+                    if sort_order == 'Descending':
+                        final_items.sort(key=sort_key_func, reverse=True)
+                        logger.trace(" -> 已应用（降序）排序。")
+                    else: # 包含 'Ascending' 和任何其他意外情况
+                        final_items.sort(key=sort_key_func, reverse=False)
+                        logger.trace(" -> 已应用（升序）排序。")
 
             elif sort_by_field == 'original':
-                 logger.trace("已应用 'original' (榜单原始顺序) 排序。")
+                 logger.trace("已应用 (榜单原始顺序) 排序。")
         
         # --- 统一返回 ---
         final_response = {"Items": final_items, "TotalRecordCount": len(final_items)}
