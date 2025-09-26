@@ -240,10 +240,9 @@ def handle_mimicked_library_metadata_endpoint(path, mimicked_id, params):
     
 def handle_get_mimicked_library_items(user_id, mimicked_id, params):
     """
-    【V8.5 - 终极精准软劫持版】
-    - 修复了客户端默认发送 SortBy=SortName 导致劫持失效的问题。
-    - 新逻辑: 将 'SortName' 和 'Name' 视为客户端的“非主动”排序，在这种情况下依然强制应用库的默认设置。
-      只有当 SortBy 是其他值时，才认为是用户的主动选择并放行。
+    【V8.2 - DateLastContentAdded 排序增强版】
+    - 新增支持 `DateLastContentAdded` 排序模式，直接利用 Emby API 实现按“最后一集更新时间”排序。
+    - 将 `DateLastContentAdded` 和 `none` 两种模式合并为统一的“Emby原生排序”逻辑流，代码更清晰。
     """
     try:
         real_db_id = from_mimicked_id(mimicked_id)
@@ -254,7 +253,6 @@ def handle_get_mimicked_library_items(user_id, mimicked_id, params):
         definition = collection_info.get('definition_json') or {}
         
         # --- 阶段一 & 二 (过滤，获取最终ID列表) ---
-        # (这部分逻辑保持不变)
         db_media_list = collection_info.get('generated_media_info_json') or []
         base_ordered_emby_ids = [item.get('emby_id') for item in db_media_list if item.get('emby_id')]
         if not base_ordered_emby_ids:
@@ -277,24 +275,58 @@ def handle_get_mimicked_library_items(user_id, mimicked_id, params):
 
         # --- 阶段三 & 四: 数据获取与排序 (重构) ---
         final_items = []
+        sort_by_field = definition.get('default_sort_by')
         base_url, api_key = _get_real_emby_url_and_key()
-        
-        # ▼▼▼ 核心逻辑重构 V8.5 ▼▼▼
-        user_sort_by = params.get('SortBy')
-        library_default_sort = definition.get('default_sort_by')
-        
-        # 判断用户是否做出了一个“需要被尊重”的主动排序选择。
-        # 我们将客户端默认发送的 'SortName' 或 'Name' 排除在外。
-        user_made_active_choice = user_sort_by is not None and user_sort_by not in ['SortName', 'Name']
 
-        # 判断是否应该由我们自己（代理）来执行排序劫持。
-        # 条件：1. 用户没有做出主动选择。 2. 且库的默认排序方式是需要本地处理的类型。
-        should_hijack = not user_made_active_choice and library_default_sort not in ['none', 'DateLastContentAdded']
-
-        if should_hijack:
-            # --- 模式B: 强制劫持 (用户未主动排序 或 使用客户端默认排序) ---
-            logger.trace(f"进入排序劫持模式。原因: 用户未做主动排序选择 (收到SortBy='{user_sort_by}')，将强制应用库默认排序 '{library_default_sort}'。")
+        # ▼▼▼ 核心修改：判断是否使用Emby原生排序模式 ▼▼▼
+        if sort_by_field in ['none', 'DateLastContentAdded']:
+            # --- 模式A: Emby原生排序 (Pass-through 或 Enforced) ---
+            logger.trace(f"检测到Emby原生排序模式: '{sort_by_field}'，请求将转发给Emby处理。")
             
+            # 准备需要转发给Emby的参数
+            forward_params = {}
+            
+            # 1. 设置排序参数
+            if sort_by_field == 'DateLastContentAdded':
+                # 强制使用合集定义的排序规则
+                sort_order = definition.get('default_sort_order', 'Descending')
+                forward_params['SortBy'] = 'DateLastContentAdded'
+                forward_params['SortOrder'] = sort_order
+                logger.debug(f"  -> 已强制应用排序规则: SortBy=DateLastContentAdded, SortOrder={sort_order}")
+            else: # 'none' 模式
+                # 沿用客户端请求的排序参数
+                if 'SortBy' in params: forward_params['SortBy'] = params['SortBy']
+                if 'SortOrder' in params: forward_params['SortOrder'] = params['SortOrder']
+            
+            # 2. 白名单方式，传递其他必要的客户端参数
+            passthrough_params_whitelist = [
+                'StartIndex', 'Limit', 'Fields', 'IncludeItemTypes', 
+                'Recursive', 'EnableImageTypes', 'ImageTypeLimit'
+            ]
+            for param in passthrough_params_whitelist:
+                if param in params:
+                    forward_params[param] = params[param]
+
+            # 3. 附上媒体ID列表和API Key
+            forward_params['Ids'] = ",".join(final_emby_ids_to_fetch)
+            forward_params['api_key'] = api_key
+            
+            if 'Fields' not in forward_params:
+                forward_params['Fields'] = "PrimaryImageAspectRatio,ProviderIds,UserData,Name,ProductionYear,CommunityRating,DateCreated,PremiereDate,Type,RecursiveItemCount,SortName"
+
+            # 4. 发起请求
+            target_url = f"{base_url}/emby/Users/{user_id}/Items"
+            try:
+                resp = requests.get(target_url, params=forward_params, timeout=20)
+                resp.raise_for_status()
+                final_items = resp.json().get("Items", [])
+                logger.trace(f"Emby原生排序成功返回 {len(final_items)} 个项目。")
+            except Exception as e_pass:
+                logger.error(f"在Emby原生排序模式下请求失败: {e_pass}", exc_info=True)
+                final_items = []
+
+        else:
+            # --- 模式B: 排序劫持 (处理本地数据库字段的原始逻辑) ---
             live_items_unordered = emby_handler.get_emby_items_by_id(
                 base_url=base_url, api_key=api_key, user_id=user_id,
                 item_ids=final_emby_ids_to_fetch,
@@ -304,70 +336,43 @@ def handle_get_mimicked_library_items(user_id, mimicked_id, params):
             ordered_items = [live_items_map[emby_id] for emby_id in final_emby_ids_to_fetch if emby_id in live_items_map]
             final_items = ordered_items
 
-            if library_default_sort and library_default_sort != 'original':
+            if sort_by_field and sort_by_field != 'original':
                 sort_order = definition.get('default_sort_order', 'Ascending')
                 is_descending = (sort_order == 'Descending')
-                
+                logger.trace(f"执行虚拟库排序劫持: '{sort_by_field}' ({sort_order})")
+
+                # --- START: 恢复丢失的排序核心逻辑 ---
                 def sort_key_func(item):
-                    value = item.get(library_default_sort)
+                    """
+                    一个健壮的排序键获取函数。
+                    - 优雅地处理缺失的键。
+                    - 对特定字段进行类型转换以确保排序正确性。
+                    """
+                    value = item.get(sort_by_field)
+                    
                     if value is None:
-                        if library_default_sort in ['CommunityRating', 'ProductionYear']: return 0
-                        if library_default_sort in ['PremiereDate', 'DateCreated']: return "1900-01-01T00:00:00.000Z"
+                        # 为不同类型的字段提供安全的默认值
+                        if sort_by_field in ['CommunityRating', 'ProductionYear']: return 0
+                        if sort_by_field in ['PremiereDate', 'DateCreated']: return "1900-01-01T00:00:00.000Z"
                         return ""
+
+                    # 确保数值和日期字段被正确比较
                     try:
-                        if library_default_sort == 'CommunityRating': return float(value)
-                        if library_default_sort == 'ProductionYear': return int(value)
-                    except (ValueError, TypeError): return 0
+                        if sort_by_field == 'CommunityRating': return float(value)
+                        if sort_by_field == 'ProductionYear': return int(value)
+                    except (ValueError, TypeError):
+                        return 0 # 如果转换失败，返回一个中性值
+                        
                     return value
 
                 try:
                     final_items.sort(key=sort_key_func, reverse=is_descending)
                 except Exception as e_sort:
-                    logger.error(f"在执行排序劫持 (sort_by='{library_default_sort}') 时发生错误: {e_sort}", exc_info=True)
-            
-            elif library_default_sort == 'original':
+                    logger.error(f"在执行排序劫持 (sort_by='{sort_by_field}') 时发生错误: {e_sort}", exc_info=True)
+                # --- END: 恢复丢失的排序核心逻辑 ---
+                
+            elif sort_by_field == 'original':
                  logger.trace("已应用 'original' (榜单原始顺序) 排序。")
-        else:
-            # --- 模式A: 转发给 Emby 处理 (用户做出主动选择 或 库本身是原生排序) ---
-            logger.trace(f"进入Emby原生排序模式。原因: 用户主动选择排序='{user_made_active_choice}', 库默认排序='{library_default_sort}'")
-            
-            forward_params = {}
-            
-            # 优先使用用户的主动选择
-            if user_made_active_choice:
-                forward_params['SortBy'] = user_sort_by
-                if 'SortOrder' in params: forward_params['SortOrder'] = params['SortOrder']
-                logger.debug(f"  -> 尊重用户选择，应用排序: SortBy={forward_params.get('SortBy')}, SortOrder={forward_params.get('SortOrder')}")
-            # 否则，使用库定义的原生排序
-            elif library_default_sort == 'DateLastContentAdded':
-                sort_order = definition.get('default_sort_order', 'Descending')
-                forward_params['SortBy'] = 'DateLastContentAdded'
-                forward_params['SortOrder'] = sort_order
-                logger.debug(f"  -> 应用库定义的原生排序: SortBy=DateLastContentAdded, SortOrder={sort_order}")
-            # 如果是 'none' 或 客户端默认的 'SortName'，则按客户端的来
-            elif user_sort_by:
-                 forward_params['SortBy'] = user_sort_by
-                 if 'SortOrder' in params: forward_params['SortOrder'] = params['SortOrder']
-
-            # 传递其他必要参数
-            passthrough_params_whitelist = ['StartIndex', 'Limit', 'Fields', 'IncludeItemTypes', 'Recursive', 'EnableImageTypes', 'ImageTypeLimit']
-            for param in passthrough_params_whitelist:
-                if param in params: forward_params[param] = params[param]
-
-            forward_params['Ids'] = ",".join(final_emby_ids_to_fetch)
-            forward_params['api_key'] = api_key
-            if 'Fields' not in forward_params:
-                forward_params['Fields'] = "PrimaryImageAspectRatio,ProviderIds,UserData,Name,ProductionYear,CommunityRating,DateCreated,PremiereDate,Type,RecursiveItemCount,SortName"
-
-            # 发起请求
-            target_url = f"{base_url}/emby/Users/{user_id}/Items"
-            try:
-                resp = requests.get(target_url, params=forward_params, timeout=20)
-                resp.raise_for_status()
-                final_items = resp.json().get("Items", [])
-            except Exception as e_pass:
-                logger.error(f"在Emby原生排序模式下请求失败: {e_pass}", exc_info=True)
-                final_items = []
         
         # --- 统一返回 ---
         final_response = {"Items": final_items, "TotalRecordCount": len(final_items)}
