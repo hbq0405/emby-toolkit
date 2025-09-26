@@ -1,4 +1,4 @@
-<!-- src/components/CollectionsPage.vue (筛选功能优化最终版) -->
+<!-- src/components/CollectionsPage.vue (状态显示优化最终版) -->
 <template>
   <n-layout content-style="padding: 24px;">
     <div class="collections-page">
@@ -269,7 +269,6 @@ const filterStatus = ref('all');
 const sortKey = ref('missing_count');
 const sortOrder = ref('desc');
 
-// ★★★ 核心修改：更新筛选选项 ★★★
 const statusFilterOptions = [
   { label: '所有合集', value: 'all' },
   { label: '有缺失', value: 'has_missing' },
@@ -355,7 +354,6 @@ const handleBatchAction = (key) => {
   }
 };
 
-// ★★★ 新增：辅助函数，用于计算已订阅和未上映的数量 ★★★
 const getSubscribedCount = (collection) => {
   if (!collection || !Array.isArray(collection.missing_movies)) return 0;
   return collection.missing_movies.filter(m => m.status === 'subscribed').length;
@@ -388,17 +386,14 @@ const globalStats = computed(() => {
   return stats;
 });
 
-// ★★★ 核心修改：更新筛选逻辑 ★★★
 const filteredAndSortedCollections = computed(() => {
   let list = [...collections.value];
 
-  // 1. 文本搜索
   if (searchQuery.value) {
     const query = searchQuery.value.toLowerCase();
     list = list.filter(item => item.name.toLowerCase().includes(query));
   }
 
-  // 2. 状态筛选
   switch (filterStatus.value) {
     case 'has_missing':
       list = list.filter(item => getMissingCount(item) > 0);
@@ -414,28 +409,23 @@ const filteredAndSortedCollections = computed(() => {
       break;
   }
 
-  // 3. 排序
   list.sort((a, b) => {
     let valA, valB;
-
     switch (sortKey.value) {
       case 'name':
         valA = a.name || '';
         valB = b.name || '';
         return sortOrder.value === 'asc' ? valA.localeCompare(valB) : valB.localeCompare(valA);
-      
       case 'last_checked_at':
         valA = a.last_checked_at || 0;
         valB = b.last_checked_at || 0;
         break;
-
       case 'missing_count':
       default:
         valA = getMissingCount(a);
         valB = getMissingCount(b);
         break;
     }
-    
     return sortOrder.value === 'asc' ? valA - valB : valB - valA;
   });
 
@@ -589,32 +579,56 @@ const formatTimestamp = (timestamp) => {
 const getCollectionPosterUrl = (posterPath) => posterPath ? `/image_proxy${posterPath}` : '/img/poster-placeholder.png';
 const getTmdbImageUrl = (posterPath) => posterPath ? `https://image.tmdb.org/t/p/w300${posterPath}` : '/img/poster-placeholder.png';
 
+// ★★★ 核心修改：更新标签颜色逻辑 ★★★
 const getStatusTagType = (collection) => {
   if (collection.status === 'unlinked' || collection.status === 'tmdb_error') return 'error';
   if (getMissingCount(collection) > 0) return 'warning';
+  if (getSubscribedCount(collection) > 0) return 'default';
+  if (getUnreleasedCount(collection) > 0) return 'info';
   return 'success';
 };
 
 const getFullStatusText = (collection) => {
   if (collection.status === 'unlinked') return '未关联TMDb';
   if (collection.status === 'tmdb_error') return 'TMDb错误';
+  
   const missingCount = getMissingCount(collection);
-  if (missingCount > 0) { return `缺失 ${missingCount} 部`; }
+  if (missingCount > 0) {
+    return `缺失 ${missingCount} 部`;
+  }
+
   const parts = [];
   const inLibraryCount = collection.in_library_count || 0;
-  if (inLibraryCount > 0) { parts.push(`已入库 ${inLibraryCount} 部`); }
   const unreleasedCount = getUnreleasedCount(collection);
   const subscribedCount = getSubscribedCount(collection);
-  if (unreleasedCount > 0) { parts.push(`未上映 ${unreleasedCount} 部`); }
-  if (subscribedCount > 0) { parts.push(`已订阅 ${subscribedCount} 部`); }
-  return parts.join(' | ') || '已入库';
+  
+  if (inLibraryCount > 0) parts.push(`已入库 ${inLibraryCount} 部`);
+  if (unreleasedCount > 0) parts.push(`未上映 ${unreleasedCount} 部`);
+  if (subscribedCount > 0) parts.push(`已订阅 ${subscribedCount} 部`);
+  
+  return parts.join(' | ') || '已完整';
 };
 
+// ★★★ 核心修改：更新卡片主状态文本的显示逻辑 ★★★
 const getShortStatusText = (collection) => {
   if (collection.status === 'unlinked') return '未关联TMDb';
   if (collection.status === 'tmdb_error') return 'TMDb错误';
+
   const missingCount = getMissingCount(collection);
-  if (missingCount > 0) { return `缺失 ${missingCount} 部`; }
+  if (missingCount > 0) {
+    return `缺失 ${missingCount} 部`;
+  }
+
+  const subscribedCount = getSubscribedCount(collection);
+  if (subscribedCount > 0) {
+    return `已订阅 ${subscribedCount} 部`;
+  }
+
+  const unreleasedCount = getUnreleasedCount(collection);
+  if (unreleasedCount > 0) {
+    return `未上映 ${unreleasedCount} 部`;
+  }
+
   const inLibraryCount = collection.in_library_count || 0;
   return `已入库 ${inLibraryCount} 部`;
 };
