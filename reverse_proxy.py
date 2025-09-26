@@ -240,11 +240,10 @@ def handle_mimicked_library_metadata_endpoint(path, mimicked_id, params):
     
 def handle_get_mimicked_library_items(user_id, mimicked_id, params):
     """
-    【V8.4 - 精准软劫持 最终版】
-    - 修复了默认视图下排序失效，退化为 Emby 标题排序的问题。
-    - 逻辑修正：
-      1. 如果用户在客户端明确选择了排序方式 -> 优先使用用户的选择，转发给 Emby。
-      2. 如果用户未选择 (默认视图) -> 强制应用虚拟库中定义的默认排序。
+    【V8.5 - 终极精准软劫持版】
+    - 修复了客户端默认发送 SortBy=SortName 导致劫持失效的问题。
+    - 新逻辑: 将 'SortName' 和 'Name' 视为客户端的“非主动”排序，在这种情况下依然强制应用库的默认设置。
+      只有当 SortBy 是其他值时，才认为是用户的主动选择并放行。
     """
     try:
         real_db_id = from_mimicked_id(mimicked_id)
@@ -280,59 +279,21 @@ def handle_get_mimicked_library_items(user_id, mimicked_id, params):
         final_items = []
         base_url, api_key = _get_real_emby_url_and_key()
         
-        # ▼▼▼ 核心逻辑重构 ▼▼▼
-        user_has_specified_sort = 'SortBy' in params
+        # ▼▼▼ 核心逻辑重构 V8.5 ▼▼▼
+        user_sort_by = params.get('SortBy')
         library_default_sort = definition.get('default_sort_by')
         
-        # 决定是否将排序工作交给Emby。条件：
-        # 1. 用户在客户端主动选择了排序方式。
-        # 2. 或者，库的默认排序方式本身就是需要Emby处理的类型 ('none' 或 'DateLastContentAdded')。
-        should_pass_to_emby = user_has_specified_sort or library_default_sort in ['none', 'DateLastContentAdded']
+        # 判断用户是否做出了一个“需要被尊重”的主动排序选择。
+        # 我们将客户端默认发送的 'SortName' 或 'Name' 排除在外。
+        user_made_active_choice = user_sort_by is not None and user_sort_by not in ['SortName', 'Name']
 
-        if should_pass_to_emby:
-            # --- 模式A: 转发给 Emby 处理 (尊重用户选择 或 原生模式) ---
-            logger.trace(f"进入Emby原生排序模式。原因: 用户自定义排序={user_has_specified_sort}, 库默认排序='{library_default_sort}'")
-            
-            forward_params = {}
-            
-            # 设定排序参数
-            if user_has_specified_sort:
-                # 优先使用用户在客户端选择的排序
-                forward_params['SortBy'] = params['SortBy']
-                if 'SortOrder' in params: forward_params['SortOrder'] = params['SortOrder']
-                logger.debug(f"  -> 尊重用户选择，应用排序: SortBy={forward_params.get('SortBy')}, SortOrder={forward_params.get('SortOrder')}")
-            else:
-                # 用户未选择，但库的默认排序是原生模式
-                if library_default_sort == 'DateLastContentAdded':
-                    sort_order = definition.get('default_sort_order', 'Descending')
-                    forward_params['SortBy'] = 'DateLastContentAdded'
-                    forward_params['SortOrder'] = sort_order
-                    logger.debug(f"  -> 应用库定义的原生排序: SortBy=DateLastContentAdded, SortOrder={sort_order}")
-                # 如果是 'none', 则不添加任何排序参数，让Emby使用默认行为
+        # 判断是否应该由我们自己（代理）来执行排序劫持。
+        # 条件：1. 用户没有做出主动选择。 2. 且库的默认排序方式是需要本地处理的类型。
+        should_hijack = not user_made_active_choice and library_default_sort not in ['none', 'DateLastContentAdded']
 
-            # 传递其他必要参数
-            passthrough_params_whitelist = ['StartIndex', 'Limit', 'Fields', 'IncludeItemTypes', 'Recursive', 'EnableImageTypes', 'ImageTypeLimit']
-            for param in passthrough_params_whitelist:
-                if param in params: forward_params[param] = params[param]
-
-            forward_params['Ids'] = ",".join(final_emby_ids_to_fetch)
-            forward_params['api_key'] = api_key
-            if 'Fields' not in forward_params:
-                forward_params['Fields'] = "PrimaryImageAspectRatio,ProviderIds,UserData,Name,ProductionYear,CommunityRating,DateCreated,PremiereDate,Type,RecursiveItemCount,SortName"
-
-            # 发起请求
-            target_url = f"{base_url}/emby/Users/{user_id}/Items"
-            try:
-                resp = requests.get(target_url, params=forward_params, timeout=20)
-                resp.raise_for_status()
-                final_items = resp.json().get("Items", [])
-            except Exception as e_pass:
-                logger.error(f"在Emby原生排序模式下请求失败: {e_pass}", exc_info=True)
-                final_items = []
-
-        else:
-            # --- 模式B: 强制劫持 (用户未指定排序，且库默认排序需要本地处理) ---
-            logger.trace(f"进入排序劫持模式。原因: 用户未指定排序，将强制应用库默认排序 '{library_default_sort}'。")
+        if should_hijack:
+            # --- 模式B: 强制劫持 (用户未主动排序 或 使用客户端默认排序) ---
+            logger.trace(f"进入排序劫持模式。原因: 用户未做主动排序选择 (收到SortBy='{user_sort_by}')，将强制应用库默认排序 '{library_default_sort}'。")
             
             live_items_unordered = emby_handler.get_emby_items_by_id(
                 base_url=base_url, api_key=api_key, user_id=user_id,
@@ -366,6 +327,47 @@ def handle_get_mimicked_library_items(user_id, mimicked_id, params):
             
             elif library_default_sort == 'original':
                  logger.trace("已应用 'original' (榜单原始顺序) 排序。")
+        else:
+            # --- 模式A: 转发给 Emby 处理 (用户做出主动选择 或 库本身是原生排序) ---
+            logger.trace(f"进入Emby原生排序模式。原因: 用户主动选择排序='{user_made_active_choice}', 库默认排序='{library_default_sort}'")
+            
+            forward_params = {}
+            
+            # 优先使用用户的主动选择
+            if user_made_active_choice:
+                forward_params['SortBy'] = user_sort_by
+                if 'SortOrder' in params: forward_params['SortOrder'] = params['SortOrder']
+                logger.debug(f"  -> 尊重用户选择，应用排序: SortBy={forward_params.get('SortBy')}, SortOrder={forward_params.get('SortOrder')}")
+            # 否则，使用库定义的原生排序
+            elif library_default_sort == 'DateLastContentAdded':
+                sort_order = definition.get('default_sort_order', 'Descending')
+                forward_params['SortBy'] = 'DateLastContentAdded'
+                forward_params['SortOrder'] = sort_order
+                logger.debug(f"  -> 应用库定义的原生排序: SortBy=DateLastContentAdded, SortOrder={sort_order}")
+            # 如果是 'none' 或 客户端默认的 'SortName'，则按客户端的来
+            elif user_sort_by:
+                 forward_params['SortBy'] = user_sort_by
+                 if 'SortOrder' in params: forward_params['SortOrder'] = params['SortOrder']
+
+            # 传递其他必要参数
+            passthrough_params_whitelist = ['StartIndex', 'Limit', 'Fields', 'IncludeItemTypes', 'Recursive', 'EnableImageTypes', 'ImageTypeLimit']
+            for param in passthrough_params_whitelist:
+                if param in params: forward_params[param] = params[param]
+
+            forward_params['Ids'] = ",".join(final_emby_ids_to_fetch)
+            forward_params['api_key'] = api_key
+            if 'Fields' not in forward_params:
+                forward_params['Fields'] = "PrimaryImageAspectRatio,ProviderIds,UserData,Name,ProductionYear,CommunityRating,DateCreated,PremiereDate,Type,RecursiveItemCount,SortName"
+
+            # 发起请求
+            target_url = f"{base_url}/emby/Users/{user_id}/Items"
+            try:
+                resp = requests.get(target_url, params=forward_params, timeout=20)
+                resp.raise_for_status()
+                final_items = resp.json().get("Items", [])
+            except Exception as e_pass:
+                logger.error(f"在Emby原生排序模式下请求失败: {e_pass}", exc_info=True)
+                final_items = []
         
         # --- 统一返回 ---
         final_response = {"Items": final_items, "TotalRecordCount": len(final_items)}
