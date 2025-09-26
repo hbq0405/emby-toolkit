@@ -1086,7 +1086,8 @@ class MediaProcessor:
 
                 # --- 阶段 3.2: 用IMDb ID进行最终匹配 ---
                 logger.debug(f"  -> 匹配阶段 3: 用IMDb ID进行最终匹配和新增 ({len(unmatched_douban_actors)} 位演员)")
-                still_unmatched_final = []
+                newly_archived_actors = []
+                updated_archived_actors = []
                 # ★★★ 逻辑修改: 增加了 enumerate 以便记录日志 ★★★
                 for i, d_actor in enumerate(unmatched_douban_actors):
                     if self.is_stop_requested(): raise InterruptedError("任务中止")
@@ -1158,32 +1159,47 @@ class MediaProcessor:
                                         match_found = True
                     
                     if not match_found:
-                        # ★★★ 核心修改：在丢弃前，将演员信息存入映射表 ★★★
-                        # 此时我们已经尽力查找了所有ID，是保存的最佳时机。
-                        
-                        # 1. 尝试从TMDb反查结果中获取TMDb ID (如果路径B被执行过)
                         tmdb_id_to_save = None
-                        if 'person_from_tmdb' in locals() and person_from_tmdb and person_from_tmdb.get("id"):
+                        if 'person_from_tmdb' in locals() and isinstance(person_from_tmdb, dict) and person_from_tmdb.get("id"):
                              tmdb_id_to_save = person_from_tmdb.get("id")
 
-                        # 2. 准备要存入数据库的数据
-                        person_data_for_db = {
-                            "name": d_actor.get("Name"),
-                            "douban_id": d_actor.get("DoubanCelebrityId"),
-                            "imdb_id": d_imdb_id if 'd_imdb_id' in locals() and d_imdb_id else None,
-                            "tmdb_id": tmdb_id_to_save,
-                            "emby_id": None # 明确表示没有Emby ID
-                        }
-                        
-                        # 3. 调用数据库管理器进行存储 (emby_config=None 表示不与Emby交互)
-                        self.actor_db_manager.upsert_person(cursor=cursor, person_data=person_data_for_db, emby_config=None)
-                        
-                        still_unmatched_final.append(d_actor)
+                        if tmdb_id_to_save:
+                            person_data_for_db = {
+                                "name": d_actor.get("Name"),
+                                "douban_id": d_actor.get("DoubanCelebrityId"),
+                                "imdb_id": d_imdb_id if 'd_imdb_id' in locals() and d_imdb_id else None,
+                                "tmdb_id": tmdb_id_to_save,
+                                "emby_id": None
+                            }
+                            
+                            # ★★★ 核心修改 1/2: 捕获 upsert_person 的返回值 ★★★
+                            map_id, status = self.actor_db_manager.upsert_person(
+                                cursor=cursor, 
+                                person_data=person_data_for_db, 
+                                emby_config=None
+                            )
+                            
+                            # ★★★ 根据返回的状态，将演员放入不同的列表 ★★★
+                            if status == "INSERTED":
+                                newly_archived_actors.append(d_actor)
+                            elif status in ["UPDATED", "UNCHANGED"]:
+                                updated_archived_actors.append(d_actor)
 
-                if still_unmatched_final:
-                    # ★★★ 日志修改：更新日志措辞，反映新的逻辑 ★★★
-                    archived_names = [d.get('Name') for d in still_unmatched_final]
-                    logger.info(f"  -> [归档待用] 以下 {len(still_unmatched_final)} 位演员的身份ID已存入数据库，但本次不添加到媒体中: {', '.join(archived_names)}")
+                        else:
+                            logger.debug(f"  -> [丢弃] 豆瓣演员 '{d_actor.get('Name')}' 因无法关联到TMDb ID而被丢弃。")
+
+                # ★★★ 核心修改 2/2: 重写日志逻辑，使其更精确 ★★★
+                log_messages = []
+                if newly_archived_actors:
+                    names = [d.get('Name') for d in newly_archived_actors]
+                    log_messages.append(f"{len(names)} 位演员被新增归档: {', '.join(names)}")
+                
+                if updated_archived_actors:
+                    names = [d.get('Name') for d in updated_archived_actors]
+                    log_messages.append(f"{len(names)} 位已存在演员的信息被更新: {', '.join(names)}")
+
+                if log_messages:
+                    logger.info(f"  -> [归档处理完成] " + "；".join(log_messages))
         
         # ======================================================================
         # 步骤 4: ★★★ 整合、排序、翻译和格式化 ★★★

@@ -256,7 +256,10 @@ def _resync_primary_key_sequence(cursor, table_name: str):
         resync_sql = sql.SQL("""
             SELECT setval(
                 pg_get_serial_sequence({table}, {pk_col}),
-                (SELECT COALESCE(MAX({pk_identifier}), 0) FROM {table_identifier})
+                GREATEST(
+                    (SELECT COALESCE(MAX({pk_identifier}), 0) FROM {table_identifier}),
+                    1
+                )
             );
         """).format(
             table=sql.Literal(table_name.lower()),

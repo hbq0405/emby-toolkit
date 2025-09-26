@@ -99,12 +99,7 @@ class ActorDBManager:
     def upsert_person(self, cursor: psycopg2.extensions.cursor, person_data: Dict[str, Any], emby_config: Dict[str, Any]) -> Tuple[int, str]:
         """
         【V6 - 终极防冲突重构版】
-        写入或更新一条名人身份映射记录。
-        - 修复了因 Emby 重建媒体库导致 emby_id 变化而引发的 "duplicate key" 唯一性冲突错误。
-        - 查找逻辑现在更强大：
-          1. 优先使用 emby_id 查找。
-          2. 如果找不到，则使用 tmdb_id 查找（无论旧的 emby_id 是什么）。
-          3. 如果都找不到，才创建新记录。
+        ...
         """
         emby_id = str(person_data.get("emby_id") or '').strip() or None
         tmdb_id_raw = person_data.get("tmdb_id")
@@ -119,9 +114,14 @@ class ActorDBManager:
             except (ValueError, TypeError):
                 pass
 
-        if not emby_id:
-            logger.warning("upsert_person 调用缺少 emby_id，跳过。")
+        # ★★★ 核心修改：将检查条件从 emby_id 更改为 tmdb_id ★★★
+        if not tmdb_id:
+            logger.warning(f"upsert_person 调用缺少有效的 tmdb_person_id，跳过。 (原始值: {tmdb_id_raw})")
             return -1, "SKIPPED"
+
+        # 如果没有emby_id，这是“归档待用”模式，但仍需继续执行以保存其他ID
+        if not emby_id:
+            logger.debug(f"  -> [归档模式] upsert_person 缺少 emby_id，将仅处理外部ID映射。")
 
         try:
             cursor.execute("SAVEPOINT actor_upsert")
