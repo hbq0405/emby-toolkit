@@ -134,10 +134,10 @@ def _task_run_chain_internal(processor, task_name: str, sequence_config_key: str
 
 
 def task_run_chain_high_freq(processor):
-    """高频核心任务链的入口点"""
+    """高频刷新任务链的入口点"""
     _task_run_chain_internal(
         processor,
-        task_name="高频核心任务链",
+        task_name="高频刷新任务链",
         sequence_config_key=constants.CONFIG_OPTION_TASK_CHAIN_SEQUENCE,
         max_runtime_config_key=constants.CONFIG_OPTION_TASK_CHAIN_MAX_RUNTIME_MINUTES
     )
@@ -162,7 +162,7 @@ def get_task_registry(context: str = 'all'):
     # 格式: 任务Key: (任务函数, 任务描述, 处理器类型, 是否适合在任务链中运行)
     full_registry = {
         # --- 任务链本身，不能嵌套 ---
-        'task-chain-high-freq': (task_run_chain_high_freq, "高频核心任务链", 'media', False),
+        'task-chain-high-freq': (task_run_chain_high_freq, "高频刷新任务链", 'media', False),
         'task-chain-low-freq': (task_run_chain_low_freq, "低频维护任务链", 'media', False),
 
         # --- 适合任务链的常规任务 ---

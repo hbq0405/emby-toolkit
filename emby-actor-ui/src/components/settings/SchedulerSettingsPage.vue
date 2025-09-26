@@ -9,7 +9,7 @@
     <n-space v-else-if="configModel" vertical :size="24" style="margin-top: 15px;">
       
       <!-- ======================================================================= -->
-      <!-- 卡片 1: 高频核心任务链 -->
+      <!-- 卡片 1: 高频刷新任务链 -->
       <!-- ======================================================================= -->
       <n-card :bordered="false" class="dashboard-card">
         <template #header>
@@ -178,7 +178,7 @@
       v-model:show="showHighFreqChainConfigModal"
       class="custom-card"
       preset="card"
-      title="配置高频核心任务链"
+      title="配置高频刷新任务链"
       style="width: 90%; max-width: 600px;"
       :mask-closable="false"
     >

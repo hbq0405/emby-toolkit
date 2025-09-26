@@ -271,10 +271,10 @@ class SchedulerManager:
             logger.info(f"'{job_name}' 未启用或配置不完整，本次不设置定时任务。")
 
     def update_high_freq_task_chain_job(self):
-        """更新高频核心任务链的定时作业。"""
+        """更新高频刷新任务链的定时作业。"""
         self._update_single_task_chain_job(
             job_id=HIGH_FREQ_CHAIN_JOB_ID,
-            job_name="高频核心任务链",
+            job_name="高频刷新任务链",
             task_key='task-chain-high-freq',
             enabled_key='task_chain_enabled',
             cron_key='task_chain_cron',
