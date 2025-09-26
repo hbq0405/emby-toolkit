@@ -246,7 +246,7 @@ def handle_get_mimicked_library_items(user_id, mimicked_id, params):
     """
     try:
         real_db_id = from_mimicked_id(mimicked_id)
-        collection_info = db_handler.get_custom_collection_by_id(real_db_id)
+        collection_info = collection_db.get_custom_collection_by_id(real_db_id)
         if not collection_info:
             return Response(json.dumps({"Items": [], "TotalRecordCount": 0}), mimetype='application/json')
 
@@ -261,7 +261,7 @@ def handle_get_mimicked_library_items(user_id, mimicked_id, params):
         final_emby_ids_to_fetch = base_ordered_emby_ids
         if definition.get('dynamic_filter_enabled'):
             dynamic_rules = definition.get('dynamic_rules', [])
-            ids_from_local_db = db_handler.get_item_ids_by_dynamic_rules(user_id, dynamic_rules)
+            ids_from_local_db = user_db.get_item_ids_by_dynamic_rules(user_id, dynamic_rules)
             if ids_from_local_db is not None:
                 base_ids_set = set(base_ordered_emby_ids)
                 local_ids_set = set(ids_from_local_db)
