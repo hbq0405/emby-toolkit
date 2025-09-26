@@ -240,9 +240,9 @@ def handle_mimicked_library_metadata_endpoint(path, mimicked_id, params):
     
 def handle_get_mimicked_library_items(user_id, mimicked_id, params):
     """
-    【V8.2 - DateLastContentAdded 排序增强版】
-    - 新增支持 `DateLastContentAdded` 排序模式，直接利用 Emby API 实现按“最后一集更新时间”排序。
-    - 将 `DateLastContentAdded` 和 `none` 两种模式合并为统一的“Emby原生排序”逻辑流，代码更清晰。
+    【V8.3 - 智能软劫持版】
+    - 仅在客户端未指定任何排序方式时，才应用虚拟库的默认排序（劫持）。
+    - 如果客户端请求中包含 `SortBy` 参数，则优先尊重用户的选择，将排序请求转发给 Emby 处理。
     """
     try:
         real_db_id = from_mimicked_id(mimicked_id)
@@ -253,6 +253,7 @@ def handle_get_mimicked_library_items(user_id, mimicked_id, params):
         definition = collection_info.get('definition_json') or {}
         
         # --- 阶段一 & 二 (过滤，获取最终ID列表) ---
+        # (这部分逻辑保持不变)
         db_media_list = collection_info.get('generated_media_info_json') or []
         base_ordered_emby_ids = [item.get('emby_id') for item in db_media_list if item.get('emby_id')]
         if not base_ordered_emby_ids:
@@ -278,27 +279,31 @@ def handle_get_mimicked_library_items(user_id, mimicked_id, params):
         sort_by_field = definition.get('default_sort_by')
         base_url, api_key = _get_real_emby_url_and_key()
 
-        # ▼▼▼ 核心修改：判断是否使用Emby原生排序模式 ▼▼▼
-        if sort_by_field in ['none', 'DateLastContentAdded']:
-            # --- 模式A: Emby原生排序 (Pass-through 或 Enforced) ---
-            logger.trace(f"检测到Emby原生排序模式: '{sort_by_field}'，请求将转发给Emby处理。")
+        # ▼▼▼ 核心修改：在这里判断是否需要劫持 ▼▼▼
+        # 检查用户是否在客户端主动发起了排序请求
+        user_has_specified_sort = 'SortBy' in params
+
+        # 如果用户自定义了排序，或者库的默认排序本身就是“原生模式”，则进入模式A
+        if user_has_specified_sort or sort_by_field in ['none', 'DateLastContentAdded']:
+            # --- 模式A: 尊重用户选择 或 Emby原生排序 ---
+            if user_has_specified_sort:
+                logger.trace(f"检测到用户自定义排序: SortBy='{params.get('SortBy')}'，请求将直接转发给Emby。")
+            else:
+                logger.trace(f"检测到Emby原生排序模式: '{sort_by_field}'，请求将转发给Emby处理。")
             
-            # 准备需要转发给Emby的参数
             forward_params = {}
             
-            # 1. 设置排序参数
-            if sort_by_field == 'DateLastContentAdded':
-                # 强制使用合集定义的排序规则
+            if sort_by_field == 'DateLastContentAdded' and not user_has_specified_sort:
+                # 仅在用户未排序时，才强制应用库定义的 DateLastContentAdded
                 sort_order = definition.get('default_sort_order', 'Descending')
                 forward_params['SortBy'] = 'DateLastContentAdded'
                 forward_params['SortOrder'] = sort_order
-                logger.debug(f"  -> 已强制应用排序规则: SortBy=DateLastContentAdded, SortOrder={sort_order}")
-            else: # 'none' 模式
-                # 沿用客户端请求的排序参数
+                logger.debug(f"  -> 已强制应用库默认排序规则: SortBy=DateLastContentAdded, SortOrder={sort_order}")
+            else:
+                # 沿用客户端请求的排序参数 (如果有的话)
                 if 'SortBy' in params: forward_params['SortBy'] = params['SortBy']
                 if 'SortOrder' in params: forward_params['SortOrder'] = params['SortOrder']
             
-            # 2. 白名单方式，传递其他必要的客户端参数
             passthrough_params_whitelist = [
                 'StartIndex', 'Limit', 'Fields', 'IncludeItemTypes', 
                 'Recursive', 'EnableImageTypes', 'ImageTypeLimit'
@@ -307,14 +312,12 @@ def handle_get_mimicked_library_items(user_id, mimicked_id, params):
                 if param in params:
                     forward_params[param] = params[param]
 
-            # 3. 附上媒体ID列表和API Key
             forward_params['Ids'] = ",".join(final_emby_ids_to_fetch)
             forward_params['api_key'] = api_key
             
             if 'Fields' not in forward_params:
                 forward_params['Fields'] = "PrimaryImageAspectRatio,ProviderIds,UserData,Name,ProductionYear,CommunityRating,DateCreated,PremiereDate,Type,RecursiveItemCount,SortName"
 
-            # 4. 发起请求
             target_url = f"{base_url}/emby/Users/{user_id}/Items"
             try:
                 resp = requests.get(target_url, params=forward_params, timeout=20)
@@ -326,7 +329,9 @@ def handle_get_mimicked_library_items(user_id, mimicked_id, params):
                 final_items = []
 
         else:
-            # --- 模式B: 排序劫持 (处理本地数据库字段的原始逻辑) ---
+            # --- 模式B: 软劫持 - 仅在用户未指定排序时应用库的默认排序 ---
+            logger.trace("未检测到用户自定义排序，将应用虚拟库预设的默认排序。")
+            
             live_items_unordered = emby_handler.get_emby_items_by_id(
                 base_url=base_url, api_key=api_key, user_id=user_id,
                 item_ids=final_emby_ids_to_fetch,
@@ -341,36 +346,24 @@ def handle_get_mimicked_library_items(user_id, mimicked_id, params):
                 is_descending = (sort_order == 'Descending')
                 logger.trace(f"执行虚拟库排序劫持: '{sort_by_field}' ({sort_order})")
 
-                # --- START: 恢复丢失的排序核心逻辑 ---
                 def sort_key_func(item):
-                    """
-                    一个健壮的排序键获取函数。
-                    - 优雅地处理缺失的键。
-                    - 对特定字段进行类型转换以确保排序正确性。
-                    """
                     value = item.get(sort_by_field)
-                    
                     if value is None:
-                        # 为不同类型的字段提供安全的默认值
                         if sort_by_field in ['CommunityRating', 'ProductionYear']: return 0
                         if sort_by_field in ['PremiereDate', 'DateCreated']: return "1900-01-01T00:00:00.000Z"
                         return ""
-
-                    # 确保数值和日期字段被正确比较
                     try:
                         if sort_by_field == 'CommunityRating': return float(value)
                         if sort_by_field == 'ProductionYear': return int(value)
                     except (ValueError, TypeError):
-                        return 0 # 如果转换失败，返回一个中性值
-                        
+                        return 0
                     return value
 
                 try:
                     final_items.sort(key=sort_key_func, reverse=is_descending)
                 except Exception as e_sort:
                     logger.error(f"在执行排序劫持 (sort_by='{sort_by_field}') 时发生错误: {e_sort}", exc_info=True)
-                # --- END: 恢复丢失的排序核心逻辑 ---
-                
+            
             elif sort_by_field == 'original':
                  logger.trace("已应用 'original' (榜单原始顺序) 排序。")
         
