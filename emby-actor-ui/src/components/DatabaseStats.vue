@@ -1,8 +1,7 @@
-<!-- src/components/DatabaseStats.vue (最终版 - 补全历史日志) -->
+<!-- src/components/DatabaseStats.vue (最终修复版) -->
 <template>
  <n-layout content-style="padding: 24px;">
   <div>
-    <!-- ★★★ 核心修改1: 增加“历史日志”按钮，并用按钮组美化 ★★★ -->
     <n-page-header title="数据看板" subtitle="了解您媒体库的核心数据统计" style="margin-bottom: 24px;">
       <template #extra>
         <n-button-group>
@@ -28,103 +27,92 @@
     </div>
 
     <n-grid v-else :x-gap="24" :y-gap="24" :cols="4" responsive="screen" item-responsive>
-      <!-- 核心媒体库卡片 -->
-      <n-gi span="4 m:2 l:1">
+      
+      <!-- 核心卡片 1: 核心数据缓存 -->
+      <n-gi span="4 l:2">
         <n-card :bordered="false" class="dashboard-card">
           <template #header>
-            <span class="card-title">核心媒体库</span>
+            <span class="card-title">核心数据</span>
           </template>
-          <n-space vertical size="large" align="center">
-            <n-statistic label="已缓存媒体" class="centered-statistic">
-              <span class="stat-value">{{ stats.media_library?.cached_total }}</span>
-            </n-statistic>
-            <n-divider />
-            <n-space justify="space-around" style="width: 100%;">
-              <n-statistic label="电影" class="centered-statistic">
-                <template #prefix>
-                  <n-icon-wrapper :size="20" :border-radius="5" color="#3366FF44">
-                    <n-icon :size="14" :component="FilmIcon" color="#3366FF" />
-                  </n-icon-wrapper>
-                </template>
-                {{ stats.media_library?.movies_in_library }}
-              </n-statistic>
-              <n-statistic label="剧集" class="centered-statistic">
-                <template #prefix>
-                  <n-icon-wrapper :size="20" :border-radius="5" color="#33CC9944">
-                    <n-icon :size="14" :component="TvIcon" color="#33CC99" />
-                  </n-icon-wrapper>
-                </template>
-                {{ stats.media_library?.series_in_library }}
-              </n-statistic>
-              <n-statistic label="预缓存" class="centered-statistic">
-                <template #prefix>
-                  <n-icon-wrapper :size="20" :border-radius="5" color="#FFCC3344">
-                    <n-icon :size="14" :component="FolderOpenOutline" color="#FFCC33" />
-                  </n-icon-wrapper>
-                </template>
-                {{ stats.media_library?.missing_total }}
-              </n-statistic>
-            </n-space>
-          </n-space>
-        </n-card>
-      </n-gi>
+          <n-space vertical :size="20">
+            <!-- 顶部关键指标 -->
+            <n-grid :cols="2" :x-gap="12">
+              <n-gi>
+                <n-statistic label="已缓存媒体" class="centered-statistic">
+                  <span class="stat-value">{{ stats.media_library?.cached_total || 0 }}</span>
+                </n-statistic>
+              </n-gi>
+              <n-gi>
+                <n-statistic label="已归档演员" class="centered-statistic">
+                  <span class="stat-value">{{ (stats.system?.actor_mappings_total || 0) }}</span>
+                </n-statistic>
+              </n-gi>
+            </n-grid>
 
-      <!-- 合集管理卡片 -->
-      <n-gi span="4 m:2 l:1">
-        <n-card :bordered="false" class="dashboard-card">
-          <template #header>
-            <span class="card-title">合集管理</span>
-          </template>
-          <n-space vertical size="large" align="center">
-            <n-statistic label="已识别TMDB合集" class="centered-statistic" :value="stats.collections_card?.total_tmdb_collections" />
             <n-divider />
-            <n-statistic label="活跃的自建合集" class="centered-statistic">
-              <span class="stat-value">{{ stats.collections_card?.total_custom_collections }}</span>
-            </n-statistic>
-          </n-space>
-        </n-card>
-      </n-gi>
 
-      <!-- 用户与邀请卡片 -->
-      <n-gi span="4 m:2 l:1">
-        <n-card :bordered="false" class="dashboard-card">
-          <template #header>
-            <span class="card-title">用户管理</span>
-          </template>
-          <n-space vertical size="large" align="center">
-             <n-statistic label="Emby用户总数" class="centered-statistic" :value="stats.user_management_card?.emby_users_total" />
-             <n-divider />
-             <n-space justify="space-around" style="width: 100%;">
-                <n-statistic label="已激活" :value="stats.user_management_card?.emby_users_active" />
-                <n-statistic label="已禁用" :value="stats.user_management_card?.emby_users_disabled" />
-             </n-space>
-          </n-space>
-        </n-card>
-      </n-gi>
+            <!-- 媒体细分 -->
+            <div>
+              <div class="section-title">媒体</div>
+              <n-space justify="space-around" style="width: 100%; margin-top: 12px;">
+                <n-statistic label="电影" class="centered-statistic">
+                  <template #prefix>
+                    <n-icon-wrapper :size="20" :border-radius="5" color="#3366FF44">
+                      <n-icon :size="14" :component="FilmIcon" color="#3366FF" />
+                    </n-icon-wrapper>
+                  </template>
+                  {{ stats.media_library?.movies_in_library || 0 }}
+                </n-statistic>
+                <n-statistic label="剧集" class="centered-statistic">
+                  <template #prefix>
+                    <n-icon-wrapper :size="20" :border-radius="5" color="#33CC9944">
+                      <n-icon :size="14" :component="TvIcon" color="#33CC99" />
+                    </n-icon-wrapper>
+                  </template>
+                  {{ stats.media_library?.series_in_library || 0 }}
+                </n-statistic>
+                <n-statistic label="预缓存" class="centered-statistic">
+                  <template #prefix>
+                    <n-icon-wrapper :size="20" :border-radius="5" color="#FFCC3344">
+                      <n-icon :size="14" :component="FolderOpenOutline" color="#FFCC33" />
+                    </n-icon-wrapper>
+                  </template>
+                  {{ stats.media_library?.missing_total || 0 }}
+                </n-statistic>
+              </n-space>
+            </div>
 
-      <!-- 自动化维护卡片 -->
-      <n-gi span="4 m:2 l:1">
-        <n-card :bordered="false" class="dashboard-card">
-          <template #header>
-            <span class="card-title">自动化维护</span>
-          </template>
-          <n-space vertical size="large" align="center">
-            <n-statistic label="待处理清理任务" class="centered-statistic" :value="stats.maintenance_card?.cleanup_tasks_pending" />
+            <!-- 演员细分 -->
+            <div>
+              <div class="section-title">演员</div>
+              <n-space justify="space-around" style="width: 100%; margin-top: 12px;">
+                <n-statistic label="已关联" class="centered-statistic" :value="stats.system?.actor_mappings_linked || 0" />
+                <n-statistic label="未关联" class="centered-statistic" :value="stats.system?.actor_mappings_unlinked || 0" />
+              </n-space>
+            </div>
+
             <n-divider />
-            <n-statistic label="已启用的洗版规则" class="centered-statistic">
-              <span class="stat-value">{{ stats.maintenance_card?.resubscribe_rules_enabled }}</span>
-            </n-statistic>
+
+            <!-- 系统日志与缓存 -->
+            <div>
+              <div class="section-title">系统日志与缓存</div>
+              <!-- ★★★ 核心修复 2: 改为 n-space 布局 ★★★ -->
+              <n-space justify="space-around" style="width: 100%; margin-top: 12px;">
+                <n-statistic label="翻译缓存" class="centered-statistic" :value="stats.system?.translation_cache_count || 0" />
+                <n-statistic label="已处理" class="centered-statistic" :value="stats.system?.processed_log_count || 0" />
+                <n-statistic label="待复核" class="centered-statistic" :value="stats.system?.failed_log_count || 0" />
+              </n-space>
+            </div>
           </n-space>
         </n-card>
       </n-gi>
       
-      <!-- 订阅中心卡片 -->
+      <!-- 核心卡片 2: 智能订阅 -->
       <n-gi span="4 l:2">
         <n-card :bordered="false" class="dashboard-card">
           <template #header>
             <span class="card-title">智能订阅</span>
           </template>
-          <!-- ... (内部结构保持不变) ... -->
           <n-space vertical :size="24" class="subscription-center-card">
             <div class="section-container">
               <div class="section-title">媒体追踪</div>
@@ -134,11 +122,11 @@
                   <div class="stat-item-group">
                     <div class="stat-item">
                       <div class="stat-item-label">追剧中</div>
-                      <div class="stat-item-value">{{ stats.subscriptions_card?.watchlist.watching }}</div>
+                      <div class="stat-item-value">{{ stats.subscriptions_card?.watchlist.watching || 0 }}</div>
                     </div>
                     <div class="stat-item">
                       <div class="stat-item-label">已暂停</div>
-                      <div class="stat-item-value">{{ stats.subscriptions_card?.watchlist.paused }}</div>
+                      <div class="stat-item-value">{{ stats.subscriptions_card?.watchlist.paused || 0 }}</div>
                     </div>
                   </div>
                 </n-gi>
@@ -147,12 +135,12 @@
                   <div class="stat-item-group">
                     <div class="stat-item">
                       <div class="stat-item-label">已订阅</div>
-                      <div class="stat-item-value">{{ stats.subscriptions_card?.actors.subscriptions }}</div>
+                      <div class="stat-item-value">{{ stats.subscriptions_card?.actors.subscriptions || 0 }}</div>
                     </div>
                     <div class="stat-item">
                       <div class="stat-item-label">作品入库</div>
                       <div class="stat-item-value">
-                        {{ stats.subscriptions_card?.actors.tracked_in_library }} / {{ stats.subscriptions_card?.actors.tracked_total }}
+                        {{ stats.subscriptions_card?.actors.tracked_in_library || 0 }} / {{ stats.subscriptions_card?.actors.tracked_total || 0 }}
                       </div>
                     </div>
                   </div>
@@ -166,14 +154,14 @@
                   <div class="stat-block-title">洗版任务</div>
                   <div class="stat-item">
                     <div class="stat-item-label">待洗版</div>
-                    <div class="stat-item-value">{{ stats.subscriptions_card?.resubscribe.pending }}</div>
+                    <div class="stat-item-value">{{ stats.subscriptions_card?.resubscribe.pending || 0 }}</div>
                   </div>
                 </n-gi>
                 <n-gi class="stat-block">
                   <div class="stat-block-title">合集补全</div>
                   <div class="stat-item">
                     <div class="stat-item-label">待补全合集</div>
-                    <div class="stat-item-value">{{ stats.subscriptions_card?.collections.with_missing }}</div>
+                    <div class="stat-item-value">{{ stats.subscriptions_card?.collections.with_missing || 0 }}</div>
                   </div>
                 </n-gi>
               </n-grid>
@@ -186,13 +174,13 @@
               <n-gi class="stat-block">
                 <div class="stat-item">
                   <div class="stat-item-label">今日已用</div>
-                  <div class="stat-item-value">{{ stats.subscriptions_card?.quota.consumed }}</div>
+                  <div class="stat-item-value">{{ stats.subscriptions_card?.quota.consumed || 0 }}</div>
                 </div>
               </n-gi>
               <n-gi class="stat-block">
                 <div class="stat-item">
                   <div class="stat-item-label">今日剩余</div>
-                  <div class="stat-item-value">{{ stats.subscriptions_card?.quota.available }}</div>
+                  <div class="stat-item-value">{{ stats.subscriptions_card?.quota.available || 0 }}</div>
                 </div>
               </n-gi>
             </n-grid>
@@ -200,50 +188,13 @@
         </n-card>
       </n-gi>
 
-      <!-- 系统与缓存卡片 -->
-      <n-gi span="4 l:2">
-        <n-card :bordered="false" class="dashboard-card">
-          <template #header>
-            <span class="card-title">演员与缓存</span>
-          </template>
-          <!-- ★★★ 核心修改：使用6列网格并重新排布统计项 ★★★ -->
-          <n-grid :x-gap="12" :y-gap="16" :cols="6" item-responsive>
-            
-            <!-- 新增：已关联映射 -->
-            <n-gi span="3 s:2">
-              <n-statistic label="已关联演员" class="centered-statistic" :value="stats.system?.actor_mappings_linked" />
-            </n-gi>
-            
-            <!-- 新增：未关联映射 -->
-            <n-gi span="3 s:2">
-              <n-statistic label="未关联演员" class="centered-statistic" :value="stats.system?.actor_mappings_unlinked" />
-            </n-gi>
-            
-            <!-- 翻译缓存 (调整布局) -->
-            <n-gi span="6 s:2">
-              <n-statistic label="翻译缓存" class="centered-statistic" :value="stats.system?.translation_cache_count" />
-            </n-gi>
-            
-            <!-- 已处理日志 (调整布局) -->
-            <n-gi span="3 s:3">
-              <n-statistic label="已处理日志" class="centered-statistic" :value="stats.system?.processed_log_count" />
-            </n-gi>
-            
-            <!-- 待复核日志 (调整布局) -->
-            <n-gi span="3 s:3">
-              <n-statistic label="待复核日志" class="centered-statistic" :value="stats.system?.failed_log_count" />
-            </n-gi>
-
-          </n-grid>
-        </n-card>
-      </n-gi>
     </n-grid>
     <!-- 实时日志查看器模态框 -->
     <n-modal v-model:show="isRealtimeLogVisible" preset="card" style="width: 80%; max-width: 900px;" title="实时任务日志">
        <n-log ref="logRef" :log="logContent" trim class="log-panel" style="height: 60vh;"/>
     </n-modal>
 
-    <!-- ★★★ 核心修改2: 重新引入历史日志查看器组件 ★★★ -->
+    <!-- 历史日志查看器组件 -->
     <LogViewer v-model:show="isHistoryLogVisible" />
   </div>
   </n-layout>

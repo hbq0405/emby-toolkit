@@ -92,7 +92,6 @@ def _get_all_stats_in_one_query(cursor: psycopg2.extensions.cursor) -> dict:
 @db_admin_bp.route('/database/stats', methods=['GET'])
 @login_required
 def api_get_database_stats():
-    # ... (函数前半部分保持不变) ...
     try:
         with connection.get_db_connection() as conn:
             cursor = conn.cursor()
@@ -100,33 +99,31 @@ def api_get_database_stats():
             if not raw_stats:
                 raise RuntimeError("未能从数据库获取统计数据。")
 
-            # ... (配额计算保持不变) ...
+            # --- 配额计算 (保持不变) ---
             available_quota = settings_db.get_subscription_quota()
             total_quota = config_manager.APP_CONFIG.get(constants.CONFIG_OPTION_RESUBSCRIBE_DAILY_CAP, 200)
             consumed_quota = max(0, total_quota - available_quota)
 
+            # ★★★ 核心修改：只组装前端需要的数据 ★★★
             stats = {
-                # ... (media_library, collections_card, user_management_card, maintenance_card, subscriptions_card 保持不变) ...
+                # --- 卡片1: 核心数据缓存 ---
                 'media_library': {
                     "cached_total": raw_stats.get('media_cached_total', 0),
-                    "in_library_total": raw_stats.get('media_in_library_total', 0),
                     "movies_in_library": raw_stats.get('media_movies_in_library', 0),
                     "series_in_library": raw_stats.get('media_series_in_library', 0),
                     "missing_total": raw_stats.get('media_missing_total', 0),
                 },
-                'collections_card': {
-                    "total_tmdb_collections": raw_stats.get('collections_tmdb_total', 0),
-                    "total_custom_collections": raw_stats.get('collections_custom_active', 0),
+                'system': {
+                    # 新增 actor_mappings_total 用于前端直接显示，无需计算
+                    "actor_mappings_total": raw_stats.get('actor_mappings_linked', 0) + raw_stats.get('actor_mappings_unlinked', 0),
+                    "actor_mappings_linked": raw_stats.get('actor_mappings_linked', 0),
+                    "actor_mappings_unlinked": raw_stats.get('actor_mappings_unlinked', 0),
+                    "translation_cache_count": raw_stats.get('translation_cache_count', 0),
+                    "processed_log_count": raw_stats.get('processed_log_count', 0),
+                    "failed_log_count": raw_stats.get('failed_log_count', 0),
                 },
-                'user_management_card': {
-                    "emby_users_total": raw_stats.get('emby_users_total', 0),
-                    "emby_users_active": raw_stats.get('emby_users_active', 0),
-                    "emby_users_disabled": raw_stats.get('emby_users_disabled', 0),
-                },
-                'maintenance_card': {
-                    "cleanup_tasks_pending": raw_stats.get('cleanup_tasks_pending', 0),
-                    "resubscribe_rules_enabled": raw_stats.get('resubscribe_rules_enabled', 0),
-                },
+
+                # --- 卡片2: 智能订阅 ---
                 'subscriptions_card': {
                     'watchlist': {'watching': raw_stats.get('watchlist_active', 0), 'paused': raw_stats.get('watchlist_paused', 0)},
                     'actors': {'subscriptions': raw_stats.get('actor_subscriptions_active', 0), 'tracked_total': raw_stats.get('tracked_media_total', 0), 'tracked_in_library': raw_stats.get('tracked_media_in_library', 0)},
@@ -135,14 +132,7 @@ def api_get_database_stats():
                     'quota': {'available': available_quota, 'consumed': consumed_quota}
                 },
                 
-                # ★★★ 核心修改：更新 "系统与缓存" 的数据结构 ★★★
-                'system': {
-                    "actor_mappings_linked": raw_stats.get('actor_mappings_linked', 0),
-                    "actor_mappings_unlinked": raw_stats.get('actor_mappings_unlinked', 0),
-                    "translation_cache_count": raw_stats.get('translation_cache_count', 0),
-                    "processed_log_count": raw_stats.get('processed_log_count', 0),
-                    "failed_log_count": raw_stats.get('failed_log_count', 0),
-                }
+                # 'collections_card', 'user_management_card', 'maintenance_card' 已被移除
             }
 
         return jsonify({"status": "success", "data": stats})
