@@ -54,13 +54,15 @@ def _handle_full_processing_flow(processor: 'MediaProcessor', item_id: str, forc
     if not item_details:
         logger.error(f"  -> 无法获取项目 {item_id} 的详情，任务中止。")
         return
+    
+    item_name_for_log = item_details.get("Name", f"ID:{item_id}")
 
     processor.check_and_add_to_watchlist(item_details)
 
     processed_successfully = processor.process_single_item(item_id, force_reprocess_this_item=force_reprocess)
     
     if not processed_successfully:
-        logger.warning(f"  -> 项目 {item_id} 的元数据处理未成功完成，跳过自定义合集匹配。")
+        logger.warning(f"  -> 项目 '{item_name_for_log}' 的元数据处理未成功完成，跳过自定义合集匹配。")
         return
 
     try:
@@ -78,7 +80,7 @@ def _handle_full_processing_flow(processor: 'MediaProcessor', item_id: str, forc
         # ▼▼▼ 步骤 1: 将获取媒体库信息的逻辑提前 ▼▼▼
         library_info = emby_handler.get_library_root_for_item(item_id, processor.emby_url, processor.emby_api_key, processor.emby_user_id)
         if not library_info:
-            logger.warning(f"  -> 无法为项目 {item_id} 定位到其所属的媒体库根，将无法进行基于媒体库的合集匹配。")
+            logger.warning(f"  -> 无法为项目 '{item_name_for_log}' 定位到其所属的媒体库根，将无法进行基于媒体库的合集匹配。")
             # 注意：这里我们只记录警告，不中止任务，因为可能还有不限制媒体库的合集需要匹配
             media_library_id = None
         else:
@@ -132,7 +134,7 @@ def _handle_full_processing_flow(processor: 'MediaProcessor', item_id: str, forc
              logger.info(f"  -> 《{item_name}》没有匹配到任何需要更新状态的榜单类合集。")
 
     except Exception as e:
-        logger.error(f"  -> 为新入库项目 {item_id} 匹配自定义合集时发生意外错误: {e}", exc_info=True)
+        logger.error(f"  -> 为新入库项目 '{item_name_for_log}' 匹配自定义合集时发生意外错误: {e}", exc_info=True)
 
     # --- 封面生成逻辑 ---
     try:
@@ -143,7 +145,7 @@ def _handle_full_processing_flow(processor: 'MediaProcessor', item_id: str, forc
             
             # ▼▼▼ 步骤 2: 复用已获取的 library_info，无需重复获取 ▼▼▼
             if not library_info:
-                logger.warning(f"  -> (封面生成) 无法为项目 {item_id} 定位到其所属的媒体库根，跳过封面生成。")
+                logger.warning(f"  -> (封面生成) 无法为项目 '{item_name_for_log}' 定位到其所属的媒体库根，跳过封面生成。")
                 return
 
             library_id = library_info.get("Id") # library_id 变量在这里被重新赋值，但不影响上面的逻辑
@@ -176,7 +178,7 @@ def _handle_full_processing_flow(processor: 'MediaProcessor', item_id: str, forc
     except Exception as e:
         logger.error(f"  -> 在新入库后执行精准封面生成时发生错误: {e}", exc_info=True)
 
-    logger.trace(f"  -> Webhook 任务及所有后续流程完成: {item_id}")
+    logger.trace(f"  -> Webhook 任务及所有后续流程完成: '{item_name_for_log}'")
 
 # --- 辅助函数 ---
 def _process_batch_webhook_events():
@@ -390,7 +392,22 @@ def emby_webhook():
         try:
             if len(update_data) > 2:
                 user_db.upsert_user_media_data(update_data)
-                logger.trace(f"  -> Webhook: 已更新用户 '{user_id}' 对项目 '{id_to_update_in_db}' 的状态 ({event_type})。")
+                item_name_for_log = f"ID:{id_to_update_in_db}"
+                try:
+                    # 为了日志，只请求 Name 字段，提高效率
+                    item_details_for_log = emby_handler.get_emby_item_details(
+                        item_id=id_to_update_in_db,
+                        emby_server_url=config_manager.APP_CONFIG.get("emby_server_url"),
+                        emby_api_key=config_manager.APP_CONFIG.get("emby_api_key"),
+                        user_id=user_id,
+                        fields="Name"
+                    )
+                    if item_details_for_log and item_details_for_log.get("Name"):
+                        item_name_for_log = item_details_for_log.get("Name")
+                except Exception:
+                    # 如果获取失败，不影响主流程，日志中继续使用ID
+                    pass
+                logger.info(f"  -> Webhook: 已更新用户 '{user_id}' 对项目 '{item_name_for_log}' 的状态 ({event_type})。")
                 return jsonify({"status": "user_data_updated"}), 200
             else:
                 logger.debug(f"  -> Webhook '{event_type}' 未包含可更新的用户数据，已忽略。")
