@@ -564,7 +564,7 @@ def task_purge_ghost_actors(processor):
     - 精准打击在整个Emby服务器范围内，没有任何媒体项关联的“幽灵”演员。
     - 此任务无视用户在设置中选择的媒体库，始终对整个服务器进行操作。
     """
-    task_name = "清理幽灵演员" 
+    task_name = "删除幽灵演员" 
     logger.warning(f"--- !!! 开始执行高危任务: '{task_name}' !!! ---")
     logger.warning("  -> 此任务将扫描您整个服务器的媒体和演员，以找出并删除任何未被使用的演员条目。")
     
@@ -688,7 +688,7 @@ def task_purge_unregistered_actors(processor):
     - 清理那些有关联媒体，但没有TMDb ID的“黑户”演员。
     - 此任务只在你选定的媒体库范围内生效。
     """
-    task_name = "清理黑户演员" 
+    task_name = "删除黑户演员" 
     logger.warning(f"--- !!! 开始执行高危任务: '{task_name}' !!! ---")
 
     try:

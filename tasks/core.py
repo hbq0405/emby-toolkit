@@ -184,9 +184,9 @@ def get_task_registry(context: str = 'all'):
         'resubscribe-library': (task_resubscribe_library, "媒体洗版订阅", 'media', True),
         'generate-all-covers': (task_generate_all_covers, "生成原生封面", 'media', True),
         'generate-custom-collection-covers': (task_generate_all_custom_collection_covers, "生成合集封面", 'media', True),
-        'purge-unregistered-actors': (task_purge_unregistered_actors, "清理黑户演员", 'media', True),
         'merge-duplicate-actors': (task_merge_duplicate_actors, "合并分身演员", 'media', True),
-        'purge-ghost-actors': (task_purge_ghost_actors, "清理幽灵演员", 'media', True),
+        'purge-unregistered-actors': (task_purge_unregistered_actors, "删除黑户演员", 'media', True),
+        'purge-ghost-actors': (task_purge_ghost_actors, "删除幽灵演员", 'media', True),
         'check-expired-users': (task_check_expired_users, "检查过期用户", 'media', True),
         
         # --- 不适合任务链的、需要特定参数的任务 ---
