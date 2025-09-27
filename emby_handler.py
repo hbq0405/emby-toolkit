@@ -739,21 +739,28 @@ def get_all_persons_from_emby(
     api_key: str, 
     user_id: Optional[str], 
     stop_event: Optional[threading.Event] = None,
-    batch_size: int = 500, # <-- 将默认值改小，以获得更平滑的进度更新
-    update_status_callback: Optional[Callable] = None # <-- 新增回调参数
+    batch_size: int = 500,
+    update_status_callback: Optional[Callable] = None,
+    # ★★★ 核心修正 1/2: 增加一个强制全量扫描的开关 ★★★
+    force_full_scan: bool = False
 ) -> Generator[List[Dict[str, Any]], None, None]:
     """
-    【V4 - 支持进度反馈 & 精确扫描】
+    【V4.1 - 支持强制全量扫描】
     分批次获取 Emby 中的 Person (演员) 项目。
+    新增 force_full_scan 参数，为特定任务（如合并分身）提供全局扫描能力。
     """
     if not user_id:
         logger.error("获取所有演员需要提供 User ID，但未提供。任务中止。")
         return
 
-    # --- 模式一：未配置媒体库，全量扫描 ---
     library_ids = config_manager.APP_CONFIG.get(constants.CONFIG_OPTION_EMBY_LIBRARIES_TO_PROCESS)
-    if not library_ids:
-        logger.info("  -> 未在配置中指定媒体库，将从整个 Emby 服务器分批获取所有演员数据...")
+    
+    # ★★★ 核心修正 2/2: 如果强制全量扫描，则无视媒体库配置 ★★★
+    if not library_ids or force_full_scan:
+        if force_full_scan:
+            logger.info("  -> [强制全量扫描模式] 已激活，将扫描服务器上的所有演员...")
+        else:
+            logger.info("  -> 未在配置中指定媒体库，将从整个 Emby 服务器分批获取所有演员数据...")
         
         # 1. 先获取总数，用于计算进度
         total_count = 0
@@ -767,7 +774,6 @@ def get_all_persons_from_emby(
             logger.info(f"Emby Person 总数: {total_count}")
         except Exception as e:
             logger.error(f"获取 Emby Person 总数失败: {e}")
-            # 即使失败也继续，只是进度条不准确
         
         # 2. 分批获取数据
         api_url = f"{base_url.rstrip('/')}/Users/{user_id}/Items"
@@ -800,9 +806,7 @@ def get_all_persons_from_emby(
                 yield items
                 start_index += len(items)
 
-                # ### 核心修改：在这里调用回调函数汇报进度 ###
                 if update_status_callback:
-                    # 扫描阶段的进度条我们让它从 0% 涨到 30%
                     progress = int((start_index / total_count) * 30) if total_count > 0 else 5
                     update_status_callback(progress, f"阶段 1/2: 已扫描 {start_index}/{total_count if total_count > 0 else '未知'} 名演员...")
 
@@ -1494,7 +1498,7 @@ def delete_person_custom_api(base_url: str, api_key: str, person_id: str) -> boo
     通过模拟管理员登录获取临时 AccessToken 来删除演员。
     这个接口只在神医Pro版插件中存在。
     """
-    logger.warning(f"检测到删除演员请求，将尝试使用 [自动登录模式] 执行...")
+    logger.trace(f"检测到删除演员请求，将尝试使用 [自动登录模式] 执行...")
 
     # 从全局配置中获取管理员登录凭证
     cfg = config_manager.APP_CONFIG

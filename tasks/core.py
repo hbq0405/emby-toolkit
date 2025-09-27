@@ -10,7 +10,9 @@ import extensions
 import task_manager
 
 # 导入各个模块的任务函数
-from .actors import task_sync_person_map, task_enrich_aliases, task_actor_translation_cleanup, task_process_actor_subscriptions, task_purge_ghost_actors
+from .actors import (task_sync_person_map, task_enrich_aliases, task_actor_translation_cleanup, 
+                     task_process_actor_subscriptions, task_purge_ghost_actors, task_merge_duplicate_actors,
+                     task_purge_true_orphan_actors)
 from .media import task_run_full_scan, task_populate_metadata_cache, task_apply_main_cast_to_episodes 
 from .watchlist import task_process_watchlist, task_run_revival_check
 from .collections import task_refresh_collections, task_process_all_custom_collections, task_process_custom_collection
@@ -183,6 +185,8 @@ def get_task_registry(context: str = 'all'):
         'generate-all-covers': (task_generate_all_covers, "生成原生封面", 'media', True),
         'generate-custom-collection-covers': (task_generate_all_custom_collection_covers, "生成合集封面", 'media', True),
         'purge-ghost-actors': (task_purge_ghost_actors, "删除幽灵演员", 'media', True),
+        'purge-true-orphans': (task_purge_true_orphan_actors, "删除孤儿演员", 'media', True),
+        'merge-duplicate-actors': (task_merge_duplicate_actors, "合并分身演员", 'media', True),
         'check-expired-users': (task_check_expired_users, "检查过期用户", 'media', True),
         
         # --- 不适合任务链的、需要特定参数的任务 ---
