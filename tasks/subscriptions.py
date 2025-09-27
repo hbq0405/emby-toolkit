@@ -36,6 +36,19 @@ AUDIO_SUBTITLE_KEYWORD_MAP = {
     "sub_eng": ["ENG", "英字"],
 }
 
+# ★★★ 定义分辨率等级辅助函数 ★★★
+def _get_resolution_tier(width: int, height: int) -> tuple[int, str]:
+    """根据视频的宽或高，将其归类到对应的分辨率等级。"""
+    if width >= 3800 or height >= 2100:
+        return 4, "4K"
+    if width >= 1900 or height >= 1000:
+        return 3, "1080p"
+    if width >= 1200 or height >= 700:
+        return 2, "720p"
+    if height > 0:
+        return 1, f"{height}p"
+    return 0, "未知"
+
 # ★★★ 带智能预判的自动订阅任务 ★★★
 def task_auto_subscribe(processor):
     """
@@ -444,11 +457,23 @@ def _item_needs_resubscribe(item_details: dict, config: dict, media_metadata: Op
             if not video_stream:
                 reasons.append("无视频流信息")
             else:
-                threshold = int(config.get("resubscribe_resolution_threshold") or 1920)
+                # ★★★ 2. (修改) 使用等级系统进行判断 ★★★
+                
+                # 从配置中获取用户设置的宽度阈值 (例如 1920)
+                threshold_width = int(config.get("resubscribe_resolution_threshold") or 1920)
+                
+                # 获取用户要求的等级
+                required_tier, required_tier_name = _get_resolution_tier(threshold_width, 0)
+
+                # 获取当前视频的实际等级
                 current_width = int(video_stream.get('Width') or 0)
-                if 0 < current_width < threshold:
-                    threshold_name = {3840: "4K", 1920: "1080p", 1280: "720p"}.get(threshold, "未知")
-                    reasons.append(f"分辨率低于{threshold_name}")
+                current_height = int(video_stream.get('Height') or 0)
+                current_tier, _ = _get_resolution_tier(current_width, current_height)
+
+                # 只有当前等级严格小于要求等级时，才标记
+                if current_tier < required_tier:
+                    reasons.append(f"分辨率低于{required_tier_name}")
+
     except (ValueError, TypeError) as e:
         logger.warning(f"  -> [分辨率检查] 处理时发生类型错误: {e}")
 
@@ -863,11 +888,12 @@ def task_update_resubscribe_cache(processor):
                 effect_str = EFFECT_DISPLAY_MAP.get(raw_effect_tag, raw_effect_tag.upper())
 
                 resolution_str = "未知"
-                if video_stream and video_stream.get('Width'):
-                    width = video_stream.get('Width')
-                    if width >= 3840: resolution_str = "4K"
-                    elif width >= 1920: resolution_str = "1080p"
-                    else: resolution_str = f"{width}p"
+                if video_stream:
+                    # ★★★ 3. (修改) 使用等级系统生成显示名称 ★★★
+                    width = int(video_stream.get('Width') or 0)
+                    height = int(video_stream.get('Height') or 0)
+                    _ , resolution_str = _get_resolution_tier(width, height)
+                
                 quality_str = _extract_quality_tag_from_filename(file_name_lower, video_stream)
                 
                 AUDIO_LANG_MAP = {'chi': '国语', 'zho': '国语', 'yue': '粤语', 'eng': '英语'}
