@@ -42,84 +42,6 @@ UPDATE_DEBOUNCE_TIMERS = {}
 UPDATE_DEBOUNCE_LOCK = threading.Lock()
 UPDATE_DEBOUNCE_TIME = 15
 
-def _parse_episode_range_from_description(description: str, item_data: dict) -> tuple[list[str], str | None]:
-    """
-    【神医插件专用 V3 - 威力加强版】
-    - 能够解析 "S01 E05, E07-E08" 这种复杂的、非连续的剧集范围。
-    """
-    if not description or not item_data:
-        return [], None
-
-    # ▼▼▼ 核心重构：使用更强大的解析逻辑 ▼▼▼
-    try:
-        # 1. 提取季编号 (Season Number)
-        season_match = re.search(r'S(\d+)', description, re.IGNORECASE)
-        if not season_match:
-            return [], None
-        season_num = int(season_match.group(1))
-
-        # 2. 提取所有与分集相关的部分
-        # 这个正则表达式会找到所有 "E" 后面的数字、数字范围
-        episode_parts_str_match = re.search(r'S\d+\s*(.*)', description.split('\n')[0])
-        if not episode_parts_str_match:
-            return [], None
-        
-        episode_parts_str = episode_parts_str_match.group(1) # e.g., "E05, E07-E08"
-        
-        # 3. 解析所有分集号
-        episode_numbers = set()
-        # 按逗号分割，处理多个部分
-        parts = [p.strip() for p in episode_parts_str.split(',')]
-        
-        for part in parts:
-            # 去掉 'E' 前缀
-            part = re.sub(r'^E', '', part, flags=re.IGNORECASE).strip()
-            
-            # 检查是范围还是单个数字
-            if '-' in part:
-                start_str, end_str = part.split('-')
-                # 再次清理可能存在的 'E' 前缀，例如 "07-E08"
-                end_str = re.sub(r'^E', '', end_str, flags=re.IGNORECASE).strip()
-                start, end = int(start_str), int(end_str)
-                for i in range(start, end + 1):
-                    episode_numbers.add(i)
-            elif part.isdigit():
-                episode_numbers.add(int(part))
-
-        if not episode_numbers:
-            return [], None
-
-    except (ValueError, IndexError) as e:
-        logger.error(f"[神医解析器] 解析描述字符串时出错: {e}", exc_info=True)
-        return [], None
-    # ▲▲▲ 核心重构结束 ▲▲▲
-
-    series_id = item_data.get("Id")
-    series_name = item_data.get("Name")
-    if not series_id:
-        logger.warning(f"[神医解析器] 传入的 Item 数据中缺少剧集 ID。")
-        return [], None
-
-    all_episodes = emby_handler.get_series_children(
-        series_id=series_id,
-        base_url=extensions.media_processor_instance.emby_url,
-        api_key=extensions.media_processor_instance.emby_api_key,
-        user_id=extensions.media_processor_instance.emby_user_id,
-        include_item_types="Episode",
-        fields="Id,Name,ParentIndexNumber,IndexNumber"
-    )
-    if not all_episodes:
-        return [], series_id
-
-    episode_ids_found = []
-    for ep in all_episodes:
-        # 检查分集是否在我们解析出的季和集编号集合中
-        if ep.get("ParentIndexNumber") == season_num and ep.get("IndexNumber") in episode_numbers:
-            episode_ids_found.append(ep['Id'])
-            
-    logger.info(f"[神医解析器] 成功为剧集 '{series_name}' 解析出 {len(episode_ids_found)} 个新增分集。")
-    return episode_ids_found, series_id
-
 def _handle_full_processing_flow(processor: 'MediaProcessor', item_id: str, force_reprocess: bool):
     """
     【Webhook 专用】编排一个新入库媒体项的完整处理流程。
@@ -392,14 +314,14 @@ def emby_webhook():
     # ★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★
     # ★★★            魔法日志 - START            ★★★
     # ★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★
-    # try:
-    #     import json
-    #     # 使用 WARNING 级别和醒目的 emoji，让它在日志中脱颖而出
-    #     logger.warning("✨✨✨ [魔法日志] 收到原始 Emby Webhook 负载，内容如下: ✨✨✨")
-    #     # 将整个 JSON 数据格式化后打印出来
-    #     logger.warning(json.dumps(data, indent=2, ensure_ascii=False))
-    # except Exception as e:
-    #     logger.error(f"[魔法日志] 记录原始 Webhook 时出错: {e}")
+    try:
+        import json
+        # 使用 WARNING 级别和醒目的 emoji，让它在日志中脱颖而出
+        logger.warning("✨✨✨ [魔法日志] 收到原始 Emby Webhook 负载，内容如下: ✨✨✨")
+        # 将整个 JSON 数据格式化后打印出来
+        logger.warning(json.dumps(data, indent=2, ensure_ascii=False))
+    except Exception as e:
+        logger.error(f"[魔法日志] 记录原始 Webhook 时出错: {e}")
     # ★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★
     # ★★★             魔法日志 - END             ★★★
     # ★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★
@@ -565,27 +487,6 @@ def emby_webhook():
     
     if event_type in ["item.add", "library.new"]:
         description = data.get("Description", "")
-        # 通过特征词判断是否为神医的聚合通知
-        if event_type == "library.new" and "E0" in description and "TmdbId" in description:
-            logger.info("  -> 检测到神医插件聚合通知，将尝试使用专用解析器...")
-            
-            episode_ids, series_id = _parse_episode_range_from_description(description, data.get("Item", {}))
-            
-            if episode_ids and series_id:
-                series_details = emby_handler.get_emby_item_details(series_id, extensions.media_processor_instance.emby_url, extensions.media_processor_instance.emby_api_key, extensions.media_processor_instance.emby_user_id, fields="Name")
-                series_name = series_details.get("Name") if series_details else f"ID:{series_id}"
-
-                logger.info(f"  -> 为 '{series_name}' 分派【轻量化更新】任务 (原因: 神医聚合追更)，将处理 {len(episode_ids)} 个新分集。")
-                task_manager.submit_task(
-                    task_apply_main_cast_to_episodes,
-                    task_name=f"轻量化同步演员表: {series_name}",
-                    processor_type='media',
-                    series_id=series_id,
-                    episode_ids=episode_ids
-                )
-                return jsonify({"status": "shenyi_batch_update_task_submitted"}), 202
-            else:
-                logger.warning("  -> 神医插件聚合通知解析失败，将回退到标准处理流程...")
         global WEBHOOK_BATCH_DEBOUNCER
         with WEBHOOK_BATCH_LOCK:
             WEBHOOK_BATCH_QUEUE.append((original_item_id, original_item_name, original_item_type))
