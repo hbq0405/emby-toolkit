@@ -82,10 +82,25 @@ def _get_next_run_time_str(cron_expression: str) -> str:
                     return f"从{start_ch}至{end_ch}，每隔{step_ch}小时"
                 return f"从{start}{unit}到{end}{unit}，每隔{step}{unit}"
 
+            match = re.match(r'(\d+)-(\d+)/(\d+)', part)
+            if match:
+                start, end, step = match.groups()
+                # ▼▼▼ 修正点 1/2: 同样在这里修正单位问题 ▼▼▼
+                unit_map = {'点': '小时', '分钟': '分钟', '号': '天'}
+                unit_ch = unit_map.get(unit, unit)
+                if unit == '点':
+                    start_ch = _format_hour_to_chinese_time(start)
+                    end_ch = _format_hour_to_chinese_time(end)
+                    step_ch = _number_to_chinese(step)
+                    return f"从{start_ch}至{end_ch}，每隔{step_ch}小时"
+                return f"从{start}{unit}到{end}{unit}，每隔{step}{unit_ch}"
+
             match = re.match(r'\*/(\d+)', part)
             if match:
                 step = _number_to_chinese(match.group(1))
-                unit_ch = '小时' if unit == '点' else '分钟'
+                # ▼▼▼ 修正点 2/2: 使用字典来正确映射单位 ▼▼▼
+                unit_map = {'点': '小时', '分钟': '分钟', '号': '天'}
+                unit_ch = unit_map.get(unit, unit) # 如果找不到，就用原单位
                 return f"每隔{step}{unit_ch}"
 
             match = re.match(r'(\d+)-(\d+)', part)
