@@ -641,7 +641,7 @@ def task_purge_ghost_actors(processor):
         # 阶段 3: 执行删除
         # ======================================================================
         logger.warning(f"  -> 筛选完成：...发现 {total_to_delete} 个幽灵演员，即将开始删除...")
-        task_manager.update_status_from_thread(0, f"准备阶段: 识别完成，发现 {total_to_delete} 个目标。")
+        task_manager.update_status_from_thread(0, f"准备阶段: 识别完成，发现 {total_to_delete} 个幽灵演员。")
         deleted_count = 0
 
         for i, person in enumerate(orphans_to_delete):
