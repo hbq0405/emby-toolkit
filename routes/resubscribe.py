@@ -181,7 +181,7 @@ def resubscribe_single_item():
 
         # 3. 让“智能荷官”配牌
         # 注意：这里要从 tasks 模块导入 _build_resubscribe_payload 函数
-        payload = tasks._build_resubscribe_payload(item_details_for_payload, rule_to_check)
+        payload = tasks.build_resubscribe_payload(item_details_for_payload, rule_to_check)
 
         if not payload:
             return jsonify({"error": "构建订阅请求失败，请检查日志。"}), 500
