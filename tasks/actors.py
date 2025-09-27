@@ -558,13 +558,13 @@ def task_merge_duplicate_actors(processor):
         logger.error(f"执行 '{task_name}' 任务时发生严重错误: {e}", exc_info=True)
         task_manager.update_status_from_thread(-1, f"任务失败: {e}")
 
-def task_purge_true_orphan_actors(processor):
+def task_purge_ghost_actors(processor):
     """
-    【高危 V1 - 全局扫描版】
-    - 精准打击在整个Emby服务器范围内，没有任何媒体项关联的“真·孤儿”演员。
+    【高危 V2 - 命名修正版】
+    - 精准打击在整个Emby服务器范围内，没有任何媒体项关联的“幽灵”演员。
     - 此任务无视用户在设置中选择的媒体库，始终对整个服务器进行操作。
     """
-    task_name = "删除孤儿演员"
+    task_name = "清理幽灵演员" 
     logger.warning(f"--- !!! 开始执行高危任务: '{task_name}' !!! ---")
     logger.warning("  -> 此任务将扫描您整个服务器的媒体和演员，以找出并删除任何未被使用的演员条目。")
     
@@ -682,16 +682,14 @@ def task_purge_true_orphan_actors(processor):
         logger.error(f"执行 '{task_name}' 任务时发生严重错误: {e}", exc_info=True)
         task_manager.update_status_from_thread(-1, f"任务失败: {e}")
 
-def task_purge_ghost_actors(processor):
+def task_purge_unregistered_actors(processor):
     """
-    【高危 V4 - 增强日志版】
-    - 增加了更详细的统计日志，明确报告每一步处理了多少演员，以及最终筛选出多少幽灵演员。
-    - 修复了在没有发现幽灵演员时日志过于简单的问题。
+    【高危 V5 - 命名修正版】
+    - 清理那些有关联媒体，但没有TMDb ID的“黑户”演员。
+    - 此任务只在你选定的媒体库范围内生效。
     """
-    task_name = "清理幽灵演员"
+    task_name = "清理黑户演员" 
     logger.warning(f"--- !!! 开始执行高危任务: '{task_name}' !!! ---")
-    
-    task_manager.update_status_from_thread(0, "正在读取媒体库配置...")
 
     try:
         # 1. 读取并验证媒体库配置
