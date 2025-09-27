@@ -628,7 +628,7 @@ class MediaProcessor:
         logger.info(f"  -> 剧集 '{series_name}' 的分集批量更新完成。")
     
     # --- 负责将最终处理好的数据写回Emby、更新日志、备份缓存等 ---
-     def _write_data_and_finalize(self,
+    def _write_data_and_finalize(self,
                                  item_details_from_emby: Dict[str, Any],
                                  final_processed_cast: List[Dict[str, Any]],
                                  douban_rating: Optional[float],
