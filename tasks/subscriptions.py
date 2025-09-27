@@ -822,7 +822,15 @@ def task_update_resubscribe_cache(processor):
                 media_metadata = collection_db.get_media_metadata_by_tmdb_id(tmdb_id) if tmdb_id else None
                 item_type = item_details.get('Type')
                 if item_type == 'Series' and item_details.get('ChildCount', 0) > 0:
-                    first_episode_list = emby_handler.get_series_children(item_id, processor.emby_url, processor.emby_api_key, processor.emby_user_id, "Episode", "MediaStreams,Path")
+                    first_episode_list = emby_handler.get_series_children(
+                        series_id=item_id,
+                        base_url=processor.emby_url,
+                        api_key=processor.emby_api_key,
+                        user_id=processor.emby_user_id,
+                        series_name_for_log=item_name,      
+                        include_item_types="Episode",       
+                        fields="MediaStreams,Path"          
+                    )
                     if first_episode_list:
                         item_details['MediaStreams'] = first_episode_list[0].get('MediaStreams', [])
                         item_details['Path'] = first_episode_list[0].get('Path', '')
