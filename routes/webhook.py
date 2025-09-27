@@ -337,7 +337,10 @@ def emby_webhook():
             return jsonify({"status": "event_ignored_no_user_id"}), 200
 
     if event_type in USER_DATA_EVENTS:
-        user_id = data.get("User", {}).get("Id")
+        user_from_webhook = data.get("User", {})
+        user_id = user_from_webhook.get("Id")
+        user_name = user_from_webhook.get("Name")
+        user_name_for_log = user_name or user_id
         item_from_webhook = data.get("Item", {})
         item_id_from_webhook = item_from_webhook.get("Id")
         item_type_from_webhook = item_from_webhook.get("Type")
@@ -407,7 +410,7 @@ def emby_webhook():
                 except Exception:
                     # 如果获取失败，不影响主流程，日志中继续使用ID
                     pass
-                logger.info(f"  -> Webhook: 已更新用户 '{user_id}' 对项目 '{item_name_for_log}' 的状态 ({event_type})。")
+                logger.trace(f"  -> Webhook: 已更新用户 '{user_name_for_log}' 对项目 '{item_name_for_log}' 的播放状态 ({event_type})。")
                 return jsonify({"status": "user_data_updated"}), 200
             else:
                 logger.debug(f"  -> Webhook '{event_type}' 未包含可更新的用户数据，已忽略。")
