@@ -190,7 +190,7 @@ def resubscribe_single_item():
         success = moviepilot_handler.subscribe_with_custom_payload(payload, processor.config)
         
         if success:
-            resubscribe_db.decrement_subscription_quota()
+            settings_db.decrement_subscription_quota()
             
             message = f"《{item_name}》的洗版请求已成功提交！"
             
