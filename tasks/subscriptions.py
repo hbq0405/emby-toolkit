@@ -312,7 +312,7 @@ def task_auto_subscribe(processor):
         task_manager.update_status_from_thread(-1, f"错误: {e}")
 
 # ★★★ 媒体洗版任务 (基于精确API模型重构) ★★★
-def _build_resubscribe_payload(item_details: dict, rule: Optional[dict]) -> Optional[dict]:
+def build_resubscribe_payload(item_details: dict, rule: Optional[dict]) -> Optional[dict]:
     """
     【V4 - 实战命名·最终版】
     - 根据PT站点的实际命名约定，优化了杜比视界Profile 8的正则表达式。
@@ -581,7 +581,7 @@ def task_resubscribe_batch(processor, item_ids: List[str]):
             rule = next((r for r in all_rules if r['id'] == matched_rule_id), None) if matched_rule_id else None
 
             # 2. 让“智能荷官”配牌 (item 字典本身就包含了需要的信息)
-            payload = _build_resubscribe_payload(item, rule)
+            payload = build_resubscribe_payload(item, rule)
 
             if not payload:
                 logger.warning(f"为《{item.get('item_name')}》构建订阅Payload失败，已跳过。")
@@ -664,7 +664,7 @@ def task_resubscribe_library(processor):
             rule = next((r for r in all_rules if r['id'] == matched_rule_id), None) if matched_rule_id else None
 
             # 2. 让“智能荷官”配牌 (item 字典本身就包含了需要的信息)
-            payload = _build_resubscribe_payload(item, rule)
+            payload = build_resubscribe_payload(item, rule)
 
             if not payload:
                 logger.warning(f"为《{item.get('item_name')}》构建订阅Payload失败，已跳过。")
