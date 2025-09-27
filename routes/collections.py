@@ -39,7 +39,7 @@ def api_subscribe_moviepilot():
         return jsonify({"error": "请求中缺少 tmdb_id 或 title"}), 400
 
     # ★★★ 配额检查 ★★★
-    current_quota = collection_db.get_subscription_quota()
+    current_quota = settings_db.get_subscription_quota()
     if current_quota <= 0:
         logger.warning(f"API: 用户尝试订阅《{title}》，但每日配额已用尽。")
         return jsonify({"error": "今日订阅配额已用尽，请明天再试。"}), 429

@@ -10,7 +10,7 @@ import config_manager
 import extensions
 import emby_handler
 from extensions import login_required, task_lock_required
-from database import resubscribe_db
+from database import resubscribe_db, settings_db
 resubscribe_bp = Blueprint('resubscribe', __name__, url_prefix='/api/resubscribe')
 logger = logging.getLogger(__name__)
 
@@ -157,7 +157,7 @@ def resubscribe_single_item():
         return jsonify({"error": "请求中缺少必要的媒体项参数"}), 400
 
     try:
-        current_quota = resubscribe_db.get_subscription_quota()
+        current_quota = settings_db.get_subscription_quota()
         if current_quota <= 0:
             return jsonify({"error": "今日订阅配额已用尽，请明天再试。"}), 429
 
