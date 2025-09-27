@@ -628,16 +628,16 @@ class MediaProcessor:
         logger.info(f"  -> 剧集 '{series_name}' 的分集批量更新完成。")
     
     # --- 负责将最终处理好的数据写回Emby、更新日志、备份缓存等 ---
-    def _write_data_and_finalize(self,
+     def _write_data_and_finalize(self,
                                  item_details_from_emby: Dict[str, Any],
                                  final_processed_cast: List[Dict[str, Any]],
                                  douban_rating: Optional[float],
                                  tmdb_details_for_extra: Optional[Dict[str, Any]]):
         """
-        【V7 - 老六终极版】
-        - 彻底移除对现有演员的“精准更新”循环，因为其功能已被反哺和靶向修复覆盖。
-        - 流程简化为：反哺数据库 -> 一步到位更新媒体项 -> 靶向修复新演员。
-        - 实现了性能和逻辑的极致简化。
+        【V10 - 最终稳定版 - 兼容Emby Latest API】
+        - 针对稳定版Emby无法在创建演员时写入ProviderIds的限制，采用ID差集对比法来根治“幽灵/黑户”演员。
+        - 流程：记录更新前ID -> 提交更新(允许Emby创建幽灵) -> 获取更新后ID -> 计算差集得到新ID -> 为新ID精准注入外部ID。
+        - 此方法不再依赖脆弱的按名匹配，实现了在API限制下的最高可靠性。
         """
         item_id = item_details_from_emby.get("Id")
         item_name_for_log = item_details_from_emby.get("Name", f"未知项目(ID:{item_id})")
@@ -662,10 +662,15 @@ class MediaProcessor:
                     self.actor_db_manager.upsert_person(cursor=cursor, person_data=person_data_for_db, emby_config=emby_config_for_upsert)
             logger.debug("  -> [实时反哺] 演员映射表更新完成。")
 
-            # --- 步骤 2: [一步到位] 将完整列表写入媒体项，这将创建“幽灵演员” ---
-            logger.debug(f"  -> 写回步骤 1/2: 准备将 {len(final_processed_cast)} 位演员的完整列表更新到媒体项目...")
+            # 2.1 [快照] 获取更新前的演员ID集合
+            original_actor_ids = {p.get("Id") for p in item_details_from_emby.get("People", []) if p.get("Type") == "Actor" and p.get("Id")}
+            logger.debug(f"  -> [快照] 更新前媒体项包含 {len(original_actor_ids)} 个演员ID。")
+
+            # 2.2 [操作] 提交完整列表，允许Emby创建“幽灵”
+            logger.debug(f"  -> [操作] 准备将 {len(final_processed_cast)} 位演员的完整列表更新到媒体项目...")
             cast_for_emby_handler = [{"name": a.get("name"), "character": a.get("character") or "", "emby_person_id": a.get("emby_person_id"), "provider_ids": a.get("provider_ids")} for a in final_processed_cast]
             
+            # 这个函数现在会返回更新后的完整 People 列表
             updated_people_list = emby_handler.update_emby_item_cast(
                 item_id,
                 cast_for_emby_handler,
@@ -676,27 +681,45 @@ class MediaProcessor:
             )
 
             if updated_people_list is None:
-                raise ValueError("更新媒体项演员列表失败")
+                raise ValueError("更新媒体项演员列表失败，无法进行后续修复。")
 
-            # --- 步骤 3: [靶向修复] 为新创建的“幽灵演员”注入ProviderIds ---
-            new_actors = [a for a in final_processed_cast if not a.get("emby_person_id")]
-            if new_actors and updated_people_list:
-                logger.debug(f"  -> 写回步骤 2/2: 修复 {len(new_actors)} 位新演员丢失的外部ID...")
-                new_actor_tmdb_map = {a.get("name"): a.get("provider_ids") for a in new_actors}
-                
-                for person in updated_people_list:
-                    person_name = person.get("Name")
-                    if person_name in new_actor_tmdb_map and not person.get("ProviderIds"):
-                        new_emby_pid = person.get("Id")
-                        provider_ids_to_inject = new_actor_tmdb_map[person_name]
-                        logger.debug(f"  -> 为新演员 '{person_name}' (新ID: {new_emby_pid}) 注入TMDbID...")
+            # 2.3 [对比与识别] 计算ID差集，找出新创建的“幽灵”ID
+            new_actor_ids = {p.get("Id") for p in updated_people_list if p.get("Type") == "Actor" and p.get("Id")}
+            newly_created_ids = new_actor_ids - original_actor_ids
+            
+            if newly_created_ids:
+                logger.info(f"  -> [识别] 通过ID差集对比，成功识别出 {len(newly_created_ids)} 个新创建的演员。")
+
+                # 2.4 [修复] 为新ID精准注入ProviderIds
+                # 创建一个从“演员名”到“ProviderIds”的映射，用于查找
+                new_actors_without_id_map = {
+                    str(a.get("name")).strip(): a.get("provider_ids") 
+                    for a in final_processed_cast if not a.get("emby_person_id")
+                }
+
+                for new_id in newly_created_ids:
+                    # 从返回的最新列表中找到这个新ID对应的演员信息
+                    newly_created_person = next((p for p in updated_people_list if p.get("Id") == new_id), None)
+                    if not newly_created_person:
+                        continue
+
+                    person_name = str(newly_created_person.get("Name")).strip()
+                    # 用这个名字去我们自己的映射表里查找它应该拥有的ProviderIds
+                    provider_ids_to_inject = new_actors_without_id_map.get(person_name)
+
+                    if provider_ids_to_inject:
+                        logger.debug(f"  -> [修复] 为新演员 '{person_name}' (新ID: {new_id}) 注入ProviderIds: {provider_ids_to_inject}")
                         emby_handler.update_person_details(
-                            new_emby_pid,
+                            new_id,
                             {"ProviderIds": provider_ids_to_inject},
                             self.emby_url,
                             self.emby_api_key,
                             self.emby_user_id
                         )
+                    else:
+                        logger.warning(f"  -> [修复警告] 找到了新演员 '{person_name}' (ID: {new_id})，但在待处理列表中找不到其对应的ProviderIds。该演员可能成为'黑户'。")
+            else:
+                logger.debug("  -> [识别] ID差集为空，没有新演员被创建。")
 
             # --- 后续流程 ---
             if item_type == "Series":
