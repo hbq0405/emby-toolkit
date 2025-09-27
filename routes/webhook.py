@@ -314,14 +314,14 @@ def emby_webhook():
     # ★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★
     # ★★★            魔法日志 - START            ★★★
     # ★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★
-    try:
-        import json
-        # 使用 WARNING 级别和醒目的 emoji，让它在日志中脱颖而出
-        logger.warning("✨✨✨ [魔法日志] 收到原始 Emby Webhook 负载，内容如下: ✨✨✨")
-        # 将整个 JSON 数据格式化后打印出来
-        logger.warning(json.dumps(data, indent=2, ensure_ascii=False))
-    except Exception as e:
-        logger.error(f"[魔法日志] 记录原始 Webhook 时出错: {e}")
+    # try:
+    #     import json
+    #     # 使用 WARNING 级别和醒目的 emoji，让它在日志中脱颖而出
+    #     logger.warning("✨✨✨ [魔法日志] 收到原始 Emby Webhook 负载，内容如下: ✨✨✨")
+    #     # 将整个 JSON 数据格式化后打印出来
+    #     logger.warning(json.dumps(data, indent=2, ensure_ascii=False))
+    # except Exception as e:
+    #     logger.error(f"[魔法日志] 记录原始 Webhook 时出错: {e}")
     # ★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★
     # ★★★             魔法日志 - END             ★★★
     # ★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★
