@@ -574,7 +574,7 @@ def task_purge_ghost_actors(processor):
         # ======================================================================
         # 阶段 1: 全局扫描所有媒体库，获取所有关联的人物ID (白名单)
         # ======================================================================
-        task_manager.update_status_from_thread(5, "阶段 1/3: 全局扫描所有媒体库，建立白名单...")
+        task_manager.update_status_from_thread(0, "准备阶段: 正在扫描所有媒体库...")
         
         # 1.1 获取服务器上所有可见的媒体库ID
         all_libraries = emby_handler.get_emby_libraries(processor.emby_url, processor.emby_api_key, processor.emby_user_id)
@@ -609,7 +609,7 @@ def task_purge_ghost_actors(processor):
         # ======================================================================
         # 阶段 2: 全局扫描所有 Person 条目，并找出孤儿
         # ======================================================================
-        task_manager.update_status_from_thread(40, "阶段 2/3: 全局扫描所有演员，识别幽灵...")
+        task_manager.update_status_from_thread(0, "准备阶段: 白名单建立完成，正在扫描演员...")
         
         all_person_items = []
         person_generator = emby_handler.get_all_persons_from_emby(
@@ -624,7 +624,7 @@ def task_purge_ghost_actors(processor):
                 return
             all_person_items.extend(person_batch)
             total_scanned += len(person_batch)
-            task_manager.update_status_from_thread(40, f"阶段 2/3: 已扫描 {total_scanned} 名演员...")
+            task_manager.update_status_from_thread(0, f"准备阶段: 已扫描 {total_scanned} 名演员...")
 
         all_person_ids = {p['Id'] for p in all_person_items}
         orphan_person_ids = all_person_ids - whitelist_person_ids
@@ -640,7 +640,8 @@ def task_purge_ghost_actors(processor):
         # ======================================================================
         # 阶段 3: 执行删除
         # ======================================================================
-        logger.warning(f"  -> 筛选完成：在 {len(all_person_ids)} 位演员/职员中，发现 {total_to_delete} 个“幽灵演员”，即将开始删除...")
+        logger.warning(f"  -> 筛选完成：...发现 {total_to_delete} 个幽灵演员，即将开始删除...")
+        task_manager.update_status_from_thread(0, f"准备阶段: 识别完成，发现 {total_to_delete} 个目标。")
         deleted_count = 0
 
         for i, person in enumerate(orphans_to_delete):
@@ -651,8 +652,8 @@ def task_purge_ghost_actors(processor):
             person_id = person.get("Id")
             person_name = person.get("Name")
             
-            progress = 70 + int((i / total_to_delete) * 30)
-            task_manager.update_status_from_thread(progress, f"({i+1}/{total_to_delete}) 正在删除“幽灵演员”: {person_name}")
+            progress = int(((i + 1) / total_to_delete) * 100)
+            task_manager.update_status_from_thread(progress, f"({i+1}/{total_to_delete}) 正在删除幽灵: {person.get('Name')}")
 
             success = emby_handler.delete_person_custom_api(
                 base_url=processor.emby_url, api_key=processor.emby_api_key, person_id=person_id
