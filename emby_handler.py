@@ -161,6 +161,62 @@ def get_emby_item_details(item_id: str, emby_server_url: str, emby_api_key: str,
             f"获取Emby项目详情时发生未知错误 (ItemID: {item_id}, UserID: {user_id}): {e}\n{traceback.format_exc()}")
         return None
     
+# --- 通过 Provider ID (如 Tmdb, Imdb) 在 Emby 媒体库中查找一个媒体项 ---
+def find_emby_item_by_provider_id(provider_name: str, provider_id: str, base_url: str, api_key: str, user_id: str) -> Optional[Dict[str, Any]]:
+    """
+    通过 Provider ID (如 Tmdb, Imdb) 在 Emby 媒体库中查找一个媒体项。
+    
+    :param provider_name: Provider 的名称, e.g., 'Tmdb', 'Imdb'.
+    :param provider_id: Provider 的 ID 值.
+    :param base_url: Emby 服务器地址.
+    :param api_key: Emby API Key.
+    :param user_id: Emby 用户 ID.
+    :return: 如果找到，返回媒体项的详情字典；否则返回 None.
+    """
+    if not all([provider_name, provider_id, base_url, api_key, user_id]):
+        logger.error("find_emby_item_by_provider_id: 缺少必要的参数。")
+        return None
+
+    headers = {
+        'X-Emby-Token': api_key,
+        'Content-Type': 'application/json'
+    }
+    # 构造查询参数，格式为 ProviderName:ProviderId
+    provider_ids_query = f"{provider_name}:{provider_id}"
+    
+    # API 端点 /Users/{UserId}/Items 可以让我们在特定用户的视图下查找
+    url = f"{base_url.rstrip('/')}/Users/{user_id}/Items"
+    
+    params = {
+        'Recursive': 'true',
+        'IncludeItemTypes': 'Movie,Series', # 只关心电影和剧集
+        'ProviderIds': provider_ids_query,
+        'Fields': 'Id,Name,ProviderIds' # 请求最少的字段以提高效率
+    }
+
+    try:
+        api_timeout = config_manager.APP_CONFIG.get(constants.CONFIG_OPTION_EMBY_API_TIMEOUT, 60)
+        response = requests.get(url, headers=headers, params=params, timeout=api_timeout)
+        response.raise_for_status()
+        
+        data = response.json()
+        items = data.get("Items", [])
+        
+        if items:
+            # 通常只会有一个结果
+            logger.debug(f"通过 {provider_name}:{provider_id} 在 Emby 中找到了项目: {items[0].get('Name')}")
+            return items[0]
+        else:
+            logger.debug(f"通过 {provider_name}:{provider_id} 在 Emby 中未找到任何项目。")
+            return None
+            
+    except requests.exceptions.RequestException as e:
+        logger.error(f"通过 Provider ID ({provider_ids_query}) 查询 Emby 时发生网络错误: {e}")
+        return None
+    except Exception as e:
+        logger.error(f"解析 Emby Provider ID 查询结果时发生未知错误: {e}")
+        return None
+
 # ✨✨✨ 获取剧集详情，并聚合所有分集的演员 ✨✨✨
 def get_emby_series_details_with_full_cast(
     series_id: str,

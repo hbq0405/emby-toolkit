@@ -451,36 +451,78 @@ def emby_webhook():
 
     if event_type == "library.deleted":
         try:
-            # ★★★ 核心优化：在一个事务中，清理所有相关表的记录 ★★★
             with connection.get_db_connection() as conn:
                 with conn.cursor() as cursor:
-                    # 1. 从 processed_log 和 failed_log 中删除
                     log_manager = LogDBManager()
-                    log_manager.remove_from_processed_log(cursor, original_item_id)
-                    log_manager.remove_from_failed_log(cursor, original_item_id)
-                    logger.info(f"Webhook: 已从处理/失败日志中移除项目 {original_item_id}。")
-
-                    # 2. 从 media_metadata 缓存中删除
+                    
+                    # 步骤 1: 根据被删除的 Emby Item ID，从我们的数据库中查找其对应的 TMDb ID
                     cursor.execute(
-                        "UPDATE media_metadata SET in_library = FALSE, emby_item_id = NULL WHERE emby_item_id = %s",
+                        "SELECT tmdb_id FROM media_metadata WHERE emby_item_id = %s",
                         (original_item_id,)
                     )
-                    if cursor.rowcount > 0:
-                        logger.info(f"Webhook: 已在 media_metadata 缓存中将 Emby ID 为 {original_item_id} 的媒体项标记为“不在库中”。")
+                    result = cursor.fetchone()
+                    tmdb_id = result['tmdb_id'] if result else None
 
-                    # 3. ★★★ 从智能追剧列表中删除 ★★★
-                    cursor.execute("DELETE FROM watchlist WHERE item_id = %s", (original_item_id,))
-                    if cursor.rowcount > 0:
-                        logger.info(f"Webhook: 已从智能追剧列表中移除项目 {original_item_id}。")
+                    # 步骤 2: 检查这个 TMDb ID 是否仍然存在于 Emby 媒体库中
+                    # (这需要一个能够通过 Provider ID 查询 Emby 的辅助函数，假设它存在于 emby_handler)
+                    item_still_exists_in_emby = False
+                    if tmdb_id:
+                        # 使用一个假设的函数来检查，如果您的 emby_handler 中没有，需要添加
+                        # 这个函数会通过 /Items?ProviderIds=Tmdb:{tmdb_id} 来查询
+                        current_item = emby_handler.find_emby_item_by_provider_id(
+                            provider_name='Tmdb',
+                            provider_id=tmdb_id,
+                            base_url=extensions.media_processor_instance.emby_url,
+                            api_key=extensions.media_processor_instance.emby_api_key,
+                            user_id=extensions.media_processor_instance.emby_user_id
+                        )
+                        if current_item:
+                            item_still_exists_in_emby = True
+                            logger.info(f"Webhook: 检测到洗版操作。旧项目 {original_item_id} 已删除，但新项目 (ID: {current_item.get('Id')}) 仍然存在于 Emby (TMDb ID: {tmdb_id})。")
+
+                    # 步骤 3: 根据检查结果决定操作
+                    if item_still_exists_in_emby:
+                        # 洗版场景：只清理旧 ID 的日志，不执行任何破坏性操作
+                        logger.warning(f"Webhook: 将仅清理旧项目 {original_item_id} 的处理日志，并保持其在库状态。")
+                        log_manager.remove_from_processed_log(cursor, original_item_id)
+                        log_manager.remove_from_failed_log(cursor, original_item_id)
+                    else:
+                        # 真实删除场景：执行完整的清理流程
+                        logger.warning(f"Webhook: 项目 {original_item_id} (TMDb ID: {tmdb_id or '未知'}) 已从 Emby 彻底删除。将执行完整数据清理。")
                         
-                    # 4. ★★★ 从媒体洗版缓存中删除 ★★★
-                    cursor.execute("DELETE FROM resubscribe_cache WHERE item_id = %s", (original_item_id,))
-                    if cursor.rowcount > 0:
-                        logger.info(f"Webhook: 已从媒体洗版缓存中移除项目 {original_item_id}。")
+                        # 1. 从 processed_log 和 failed_log 中删除
+                        log_manager.remove_from_processed_log(cursor, original_item_id)
+                        log_manager.remove_from_failed_log(cursor, original_item_id)
+                        logger.info(f"Webhook: 已从处理/失败日志中移除项目 {original_item_id}。")
+
+                        # 2. 在 media_metadata 缓存中标记为“不在库中”
+                        #    优先使用 tmdb_id 更新，更准确；如果找不到，再用 emby_item_id 作为后备
+                        if tmdb_id:
+                            cursor.execute(
+                                "UPDATE media_metadata SET in_library = FALSE, emby_item_id = NULL WHERE tmdb_id = %s",
+                                (tmdb_id,)
+                            )
+                        else:
+                             cursor.execute(
+                                "UPDATE media_metadata SET in_library = FALSE, emby_item_id = NULL WHERE emby_item_id = %s",
+                                (original_item_id,)
+                            )
+                        if cursor.rowcount > 0:
+                            logger.info(f"Webhook: 已在 media_metadata 缓存中将项目标记为“不在库中”。")
+
+                        # 3. 从智能追剧列表中删除
+                        cursor.execute("DELETE FROM watchlist WHERE item_id = %s", (original_item_id,))
+                        if cursor.rowcount > 0:
+                            logger.info(f"Webhook: 已从智能追剧列表中移除项目 {original_item_id}。")
+                            
+                        # 4. 从媒体洗版缓存中删除
+                        cursor.execute("DELETE FROM resubscribe_cache WHERE item_id = %s", (original_item_id,))
+                        if cursor.rowcount > 0:
+                            logger.info(f"Webhook: 已从媒体洗版缓存中移除项目 {original_item_id}。")
 
                 conn.commit()
                 
-            return jsonify({"status": "all_related_data_removed", "item_id": original_item_id}), 200
+            return jsonify({"status": "delete_event_processed_intelligently", "item_id": original_item_id}), 200
         except Exception as e:
             logger.error(f"处理删除事件 for item {original_item_id} 时发生错误: {e}", exc_info=True)
             return jsonify({"status": "error_processing_remove_event", "error": str(e)}), 500
