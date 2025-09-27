@@ -822,18 +822,32 @@ def task_update_resubscribe_cache(processor):
                 media_metadata = collection_db.get_media_metadata_by_tmdb_id(tmdb_id) if tmdb_id else None
                 item_type = item_details.get('Type')
                 if item_type == 'Series' and item_details.get('ChildCount', 0) > 0:
+                    # 步骤 1: 仅获取第一集的 ID，这是高效且轻量的
                     first_episode_list = emby_handler.get_series_children(
                         series_id=item_id,
                         base_url=processor.emby_url,
                         api_key=processor.emby_api_key,
                         user_id=processor.emby_user_id,
-                        series_name_for_log=item_name,      
-                        include_item_types="Episode",       
-                        fields="MediaStreams,Path"          
+                        include_item_types="Episode",
+                        fields="Id"  # 只需要 ID
                     )
+                    
+                    # 步骤 2: 如果找到了分集，就用它的 ID 去获取完整详情
                     if first_episode_list:
-                        item_details['MediaStreams'] = first_episode_list[0].get('MediaStreams', [])
-                        item_details['Path'] = first_episode_list[0].get('Path', '')
+                        first_episode_id = first_episode_list[0].get('Id')
+                        if first_episode_id:
+                            # 这个调用会返回包含完整 MediaStreams 和 Path 的详细信息
+                            first_episode_details = emby_handler.get_emby_item_details(
+                                first_episode_id, 
+                                processor.emby_url, 
+                                processor.emby_api_key, 
+                                processor.emby_user_id
+                            )
+                            
+                            # 步骤 3: 用获取到的完整详情来代表整个剧集的质量
+                            if first_episode_details:
+                                item_details['MediaStreams'] = first_episode_details.get('MediaStreams', [])
+                                item_details['Path'] = first_episode_details.get('Path', '')
                 
                 needs_resubscribe, reason = _item_needs_resubscribe(item_details, applicable_rule, media_metadata)
                 old_status = current_db_status_map.get(item_id)
