@@ -32,7 +32,7 @@ INTERNAL_STATUS_TRANSLATION = {
     'Paused': '已暂停',
     'Completed': '已完结'
 }
-# ★★★ 新增：定义状态常量，便于维护 ★★★
+# ★★★ 定义状态常量，便于维护 ★★★
 STATUS_WATCHING = 'Watching'
 STATUS_PAUSED = 'Paused'
 STATUS_COMPLETED = 'Completed'
@@ -310,12 +310,36 @@ class WatchlistProcessor:
                 if not tmdb_details: continue
 
                 new_tmdb_status = tmdb_details.get('status')
-                # 判断复活的条件：TMDb状态不再是“已完结”或“已取消”
-                is_revived = new_tmdb_status not in ["Ended", "Canceled"]
+                # 基础条件：TMDb状态不再是“已完结”或“已取消”
+                is_status_revived = new_tmdb_status not in ["Ended", "Canceled"]
 
-                # ▼▼▼ 核心修改点 ▼▼▼
-                if is_revived:
-                    logger.warning(f"检测到剧集 '{series['item_name']}' 已复活！TMDb状态从 '{series.get('tmdb_status')}' 变为 '{new_tmdb_status}'。")
+                # ▼▼▼ 核心修正：增加新季检查，防止误判 ▼▼▼
+                has_new_season = False
+                if is_status_revived:
+                    try:
+                        # 从新获取的TMDb详情中拿到总季数
+                        new_total_seasons = tmdb_details.get('number_of_seasons', 0)
+                        
+                        # 从数据库中存储的“最后播出集信息”里解析出旧的季号
+                        last_episode_info = series.get('last_episode_to_air_json')
+                        old_season_number = 0
+                        if last_episode_info and isinstance(last_episode_info, dict):
+                            old_season_number = last_episode_info.get('season_number', 0)
+                        
+                        # 如果新的总季数 > 旧的最后一集季号，说明出了新的一季
+                        if new_total_seasons > old_season_number:
+                            has_new_season = True
+                            logger.info(f"  -> 检测到《{series['item_name']}》有新内容：TMDb总季数 ({new_total_seasons}) > 上次记录的最终季号 ({old_season_number})。")
+                        else:
+                            logger.info(f"  -> 《{series['item_name']}》TMDb状态为'{new_tmdb_status}'，但未发现新季（TMDb总季数 {new_total_seasons}，记录的最终季 {old_season_number}），不作复活处理。")
+
+                    except Exception as e:
+                        logger.error(f"  -> 解析《{series['item_name']}》的新旧季数时出错: {e}", exc_info=True)
+                        has_new_season = False # 出错则保守处理，不认为有新季
+
+                # 最终复活判断：状态符合 且 必须有新季
+                if is_status_revived and has_new_season:
+                    logger.warning(f"检测到剧集 '{series['item_name']}' 已复活！TMDb状态从 '{series.get('tmdb_status')}' 变为 '{new_tmdb_status}'，并发布了新季。")
                     revived_count += 1
                     
                     # 准备更新的数据
