@@ -609,7 +609,7 @@ def task_purge_ghost_actors(processor):
         # ======================================================================
         # 阶段 2: 全局扫描所有 Person 条目，并找出孤儿
         # ======================================================================
-        task_manager.update_status_from_thread(40, "阶段 2/3: 全局扫描所有演员，识别孤儿...")
+        task_manager.update_status_from_thread(40, "阶段 2/3: 全局扫描所有演员，识别幽灵...")
         
         all_person_items = []
         person_generator = emby_handler.get_all_persons_from_emby(
@@ -633,14 +633,14 @@ def task_purge_ghost_actors(processor):
         total_to_delete = len(orphans_to_delete)
 
         if total_to_delete == 0:
-            logger.info("  -> 扫描完成，未发现任何未被引用的“真·孤儿”演员。")
+            logger.info("  -> 扫描完成，未发现任何未被引用的“幽灵演员”。")
             task_manager.update_status_from_thread(100, "扫描完成，服务器演员数据很干净！")
             return
 
         # ======================================================================
         # 阶段 3: 执行删除
         # ======================================================================
-        logger.warning(f"  -> 筛选完成：在 {len(all_person_ids)} 位演员/职员中，发现 {total_to_delete} 个真·孤儿，即将开始删除...")
+        logger.warning(f"  -> 筛选完成：在 {len(all_person_ids)} 位演员/职员中，发现 {total_to_delete} 个“幽灵演员”，即将开始删除...")
         deleted_count = 0
 
         for i, person in enumerate(orphans_to_delete):
@@ -652,7 +652,7 @@ def task_purge_ghost_actors(processor):
             person_name = person.get("Name")
             
             progress = 70 + int((i / total_to_delete) * 30)
-            task_manager.update_status_from_thread(progress, f"({i+1}/{total_to_delete}) 正在删除孤儿: {person_name}")
+            task_manager.update_status_from_thread(progress, f"({i+1}/{total_to_delete}) 正在删除“幽灵演员”: {person_name}")
 
             success = emby_handler.delete_person_custom_api(
                 base_url=processor.emby_url, api_key=processor.emby_api_key, person_id=person_id
@@ -671,9 +671,9 @@ def task_purge_ghost_actors(processor):
             
             time.sleep(0.2)
 
-        final_message = f"孤儿清理完成！共找到 {total_to_delete} 个目标，成功删除了 {deleted_count} 个。"
+        final_message = f"“幽灵演员”清理完成！共找到 {total_to_delete} 个目标，成功删除了 {deleted_count} 个。"
         if processor.is_stop_requested():
-            final_message = f"任务已中止。本次运行成功删除了 {deleted_count} 个孤儿演员。"
+            final_message = f"任务已中止。本次运行成功删除了 {deleted_count} 个“幽灵演员”。"
         
         logger.info(final_message)
         task_manager.update_status_from_thread(100, final_message)
@@ -770,15 +770,15 @@ def task_purge_unregistered_actors(processor):
         total_to_delete = len(ghosts_to_delete)
 
         # ★★★ 新增：核心的筛选结果统计日志 ★★★
-        logger.info(f"  -> 筛选完成：在 {len(all_people_in_scope_details)} 位演员中，发现 {total_to_delete} 个没有TMDb ID的幽灵演员。")
+        logger.info(f"  -> 筛选完成：在 {len(all_people_in_scope_details)} 位演员中，发现 {total_to_delete} 个没有TMDb ID的“黑户演员”。")
 
         if total_to_delete == 0:
             # ★★★ 优化：更清晰的完成日志 ★★★
-            logger.info("  -> 扫描完成，在选定媒体库中未发现需要清理的幽灵演员。")
+            logger.info("  -> 扫描完成，在选定媒体库中未发现需要清理的“黑户演员”。")
             task_manager.update_status_from_thread(100, "  -> 扫描完成，未发现无TMDb ID的演员。")
             return
         
-        logger.warning(f"  -> 共发现 {total_to_delete} 个幽灵演员，即将开始删除...")
+        logger.warning(f"  -> 共发现 {total_to_delete} 个“黑户演员”，即将开始删除...")
         deleted_count = 0
 
         # 6. 执行删除
@@ -822,7 +822,7 @@ def task_purge_unregistered_actors(processor):
 
         final_message = f"清理完成！共找到 {total_to_delete} 个目标，成功删除了 {deleted_count} 个。"
         if processor.is_stop_requested():
-            final_message = f"任务已中止。共删除了 {deleted_count} 个演员。"
+            final_message = f"任务已中止。共删除了 {deleted_count} 个“黑户演员”。"
         
         logger.info(final_message)
         task_manager.update_status_from_thread(100, final_message)
