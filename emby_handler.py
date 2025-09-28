@@ -797,13 +797,12 @@ def get_all_persons_from_emby(
     stop_event: Optional[threading.Event] = None,
     batch_size: int = 500,
     update_status_callback: Optional[Callable] = None,
-    # ★★★ 核心修正 1/2: 增加一个强制全量扫描的开关 ★★★
     force_full_scan: bool = False
 ) -> Generator[List[Dict[str, Any]], None, None]:
     """
-    【V4.1 - 支持强制全量扫描】
-    分批次获取 Emby 中的 Person (演员) 项目。
-    新增 force_full_scan 参数，为特定任务（如合并分身）提供全局扫描能力。
+    【V4.2 - 进度反馈修正版】
+    - 将此阶段的进度条占比从 30% 提升到 95%，以更准确地反映实际耗时。
+    - 彻底移除了内部写死的 "阶段 1/2" 文本。
     """
     if not user_id:
         logger.error("获取所有演员需要提供 User ID，但未提供。任务中止。")
@@ -811,14 +810,12 @@ def get_all_persons_from_emby(
 
     library_ids = config_manager.APP_CONFIG.get(constants.CONFIG_OPTION_EMBY_LIBRARIES_TO_PROCESS)
     
-    # ★★★ 核心修正 2/2: 如果强制全量扫描，则无视媒体库配置 ★★★
     if not library_ids or force_full_scan:
         if force_full_scan:
             logger.info("  -> [强制全量扫描模式] 已激活，将扫描服务器上的所有演员...")
         else:
             logger.info("  -> 未在配置中指定媒体库，将从整个 Emby 服务器分批获取所有演员数据...")
         
-        # 1. 先获取总数，用于计算进度
         total_count = 0
         try:
             count_url = f"{base_url.rstrip('/')}/Items"
@@ -831,7 +828,6 @@ def get_all_persons_from_emby(
         except Exception as e:
             logger.error(f"获取 Emby Person 总数失败: {e}")
         
-        # 2. 分批获取数据
         api_url = f"{base_url.rstrip('/')}/Users/{user_id}/Items"
         headers = {"X-Emby-Token": api_key, "Accept": "application/json"}
         params = {
@@ -863,16 +859,17 @@ def get_all_persons_from_emby(
                 start_index += len(items)
 
                 if update_status_callback:
-                    progress = int((start_index / total_count) * 30) if total_count > 0 else 5
-                    update_status_callback(progress, f"阶段 1/2: 已扫描 {start_index}/{total_count if total_count > 0 else '未知'} 名演员...")
+                    # ★★★ 核心修改 1/4: 将进度条的主要部分 (95%) 分配给耗时最长的 Emby 数据获取阶段 ★★★
+                    progress = int((start_index / total_count) * 95) if total_count > 0 else 5
+                    # ★★★ 核心修改 2/4: 移除了 "阶段 1/2" 文本 ★★★
+                    update_status_callback(progress, f"已扫描 {start_index}/{total_count if total_count > 0 else '未知'} 名演员...")
 
             except requests.exceptions.RequestException as e:
                 logger.error(f"请求 Emby API 失败 (批次 StartIndex={start_index}): {e}", exc_info=True)
                 return
         return
 
-    # --- 模式二：已配置特定媒体库，执行精确扫描 (此部分逻辑不变) ---
-    # ... (这部分代码保持不变) ...
+    # --- 模式二：已配置特定媒体库，执行精确扫描 ---
     logger.info(f"  -> 检测到配置了 {len(library_ids)} 个媒体库，将只获取这些库中的演员数据...")
     media_items = get_emby_library_items(
         base_url=base_url, api_key=api_key, user_id=user_id,
@@ -909,8 +906,10 @@ def get_all_persons_from_emby(
             yield person_details_batch
             processed_precise += len(person_details_batch)
             if update_status_callback:
-                progress = int((processed_precise / total_precise) * 30)
-                update_status_callback(progress, f"阶段 1/2: 已扫描 {processed_precise}/{total_precise} 名演员...")
+                # ★★★ 核心修改 3/4: 将进度条的主要部分 (95%) 分配给耗时最长的 Emby 数据获取阶段 ★★★
+                progress = int((processed_precise / total_precise) * 95)
+                # ★★★ 核心修改 4/4: 移除了 "阶段 1/2" 文本 ★★★
+                update_status_callback(progress, f"已扫描 {processed_precise}/{total_precise} 名演员...")
 # ✨✨✨ 获取剧集下所有剧集的函数 ✨✨✨
 def get_series_children(
     series_id: str,
