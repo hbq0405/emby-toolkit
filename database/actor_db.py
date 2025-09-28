@@ -106,6 +106,7 @@ class ActorDBManager:
         imdb_id = str(person_data.get("imdb_id") or '').strip() or None
         douban_id = str(person_data.get("douban_id") or '').strip() or None
         name = str(person_data.get("name") or '').strip()
+        name_was_updated = False
 
         tmdb_id = None
         if tmdb_id_raw and str(tmdb_id_raw).isdigit():
@@ -152,6 +153,7 @@ class ActorDBManager:
                 # 如果传入的名字非空，并且与数据库中已有的名字不同，则更新它
                 if name and name != existing_record.get('primary_name'):
                     updates['primary_name'] = name
+                    name_was_updated = True
                 
                 # 核心：用新的 Emby ID 更新找到的记录
                 if emby_id and existing_record.get('emby_person_id') != emby_id:
@@ -171,10 +173,10 @@ class ActorDBManager:
                     sql = f"UPDATE person_identity_map SET {', '.join(set_clauses)} WHERE map_id = %s"
                     cursor.execute(sql, tuple(updates.values()) + (map_id,))
                     cursor.execute("RELEASE SAVEPOINT actor_upsert")
-                    return map_id, "UPDATED"
+                    return map_id, "UPDATED", name_was_updated
                 else:
                     cursor.execute("RELEASE SAVEPOINT actor_upsert")
-                    return map_id, "UNCHANGED"
+                    return map_id, "UNCHANGED", False
             else:
                 # --- INSERT 新记录 (只有在绝对找不到时才执行) ---
                 if not name:
@@ -190,19 +192,19 @@ class ActorDBManager:
                 cursor.execute(sql, (name, emby_id, tmdb_id, imdb_id, douban_id))
                 result = cursor.fetchone()
                 cursor.execute("RELEASE SAVEPOINT actor_upsert")
-                return (result["map_id"], "INSERTED") if result else (-1, "ERROR")
+                return (result["map_id"], "INSERTED", True) if result else (-1, "ERROR", False)
 
         except psycopg2.IntegrityError as ie:
             # 添加一个额外的捕获，以防万一在高并发下出现竞争条件
             cursor.execute("ROLLBACK TO SAVEPOINT actor_upsert")
             logger.error(f"upsert_person 发生罕见的唯一性冲突，可能存在并发写入。emby_person_id={emby_id}, tmdb_id={tmdb_id}: {ie}")
             cursor.execute("RELEASE SAVEPOINT actor_upsert")
-            return -1, "ERROR"
+            return -1, "ERROR", False
         except Exception as e:
             cursor.execute("ROLLBACK TO SAVEPOINT actor_upsert")
             logger.error(f"upsert_person 发生异常，emby_person_id={emby_id}: {e}", exc_info=True)
             cursor.execute("RELEASE SAVEPOINT actor_upsert")
-            return -1, "ERROR"
+            return -1, "ERROR", False
         
     def update_actor_name_in_media_metadata(self, cursor: psycopg2.extensions.cursor, tmdb_id: int, new_name: str) -> int:
         """

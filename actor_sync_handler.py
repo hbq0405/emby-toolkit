@@ -63,22 +63,23 @@ class UnifiedSyncHandler:
                             person_data_for_db = { "emby_id": emby_pid, "name": person_name, "tmdb_id": provider_ids.get("Tmdb"), "imdb_id": provider_ids.get("Imdb"), "douban_id": provider_ids.get("Douban"), }
                             
                             try:
-                                _, status = self.actor_db_manager.upsert_person(cursor, person_data_for_db, emby_config=emby_config_for_upsert)
+                                _, status, name_was_updated = self.actor_db_manager.upsert_person(cursor, person_data_for_db, emby_config=emby_config_for_upsert)
+                                
                                 if status == "INSERTED": stats['db_inserted'] += 1
                                 elif status == "UPDATED": stats['db_updated'] += 1
                                 elif status == "UNCHANGED": stats['unchanged'] += 1
                                 elif status == "SKIPPED": stats['skipped'] += 1
 
                                 # ★★★ 核心修改点 ★★★
-                                # 当演员是新增的(INSERTED)或被更新的(UPDATED)，且名字是中文时，触发同步
                                 tmdb_id = provider_ids.get("Tmdb")
-                                if status in ("INSERTED", "UPDATED") and contains_chinese(person_name) and tmdb_id:
+                                if name_was_updated and contains_chinese(person_name) and tmdb_id:
                                     try:
+                                        logger.info(f"  -> 检测到演员名变更: '{person_name}' (TMDb ID: {tmdb_id})，触发媒体库同步...")
                                         updated_media_count = self.actor_db_manager.update_actor_name_in_media_metadata(
                                             cursor, int(tmdb_id), person_name
                                         )
                                         if updated_media_count > 0:
-                                            logger.info(f"  -> 媒体库演员名同步: '{person_name}' (TMDb ID: {tmdb_id}) 的姓名已更新，影响了 {updated_media_count} 条媒体记录。")
+                                            logger.info(f"  -> 媒体库演员名同步成功: 影响了 {updated_media_count} 条媒体记录。")
                                     except Exception as e_media_update:
                                         logger.error(f"更新 media_metadata 中演员名 '{person_name}' (TMDb ID: {tmdb_id}) 时失败: {e_media_update}")
 
