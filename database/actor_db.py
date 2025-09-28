@@ -233,7 +233,7 @@ class ActorDBManager:
                     actors_json = (
                         SELECT jsonb_agg(
                             CASE
-                                -- 演员的 'Id' 在 JSON 中可能是字符串或数字，统一转为 text 比较
+                                -- 这里的 ->> 操作符会将 ID 值转为 text，进行无类型的比较，非常稳健
                                 WHEN actor->>'Id' = %s THEN
                                     jsonb_set(actor, '{Name}', to_jsonb(%s::text))
                                 ELSE
@@ -242,9 +242,11 @@ class ActorDBManager:
                         )
                         FROM jsonb_array_elements(actors_json) AS actor
                     )
-                WHERE
-                    -- 使用 @> 操作符和索引来高效地查找包含此演员ID的记录
-                    actors_json @> ('[{"Id": "' || %s || '"}]')::jsonb;
+                WHERE EXISTS (
+                    SELECT 1
+                    FROM jsonb_array_elements(actors_json) AS elem
+                    WHERE elem->>'Id' = %s
+                );
             """
             
             # 将 tmdb_id 转为字符串以匹配 JSON 内部的值
