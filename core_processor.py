@@ -759,6 +759,7 @@ class MediaProcessor:
                 emby_children_details=emby_children_details
             )
 
+
             # ======================================================================
             # 阶段 7: 后续处理 (Post-processing)
             # ======================================================================
@@ -870,9 +871,6 @@ class MediaProcessor:
                         logger.info(f"  -> [快速模式] 成功命中缓存！将跳过所有数据采集和处理步骤。")
                         cached_actors = cache_row["actors_json"]
                         douban_rating = cache_row.get("rating") # 使用缓存中的评分
-
-                        # 为了健壮性，处理 order 字段可能不存在或为 None 的情况（兼容旧数据）
-                        cached_actors.sort(key=lambda x: x.get('order') if isinstance(x.get('order'), int) else 999)
                         
                         # ★★★ 反查数据库，补全 emby_person_id ★★★
                         logger.debug("  -> [快速模式] 正在反查数据库以补全 emby_person_id...")
@@ -1067,6 +1065,7 @@ class MediaProcessor:
                 elif douban_name_en and (douban_name_en == local_name or douban_name_en == local_original_name):
                     is_match = True
                 if is_match:
+                    l_actor["name"] = d_actor.get("Name")
                     cleaned_douban_character = utils.clean_character_name_static(d_actor.get("Role"))
                     l_actor["character"] = actor_utils.select_best_role(l_actor.get("character"), cleaned_douban_character)
                     if d_actor.get("DoubanCelebrityId"):
@@ -1135,8 +1134,7 @@ class MediaProcessor:
 
                 # --- 阶段 3.2: 用IMDb ID进行最终匹配 ---
                 logger.debug(f"  -> 匹配阶段 3: 用IMDb ID进行最终匹配和新增 ({len(unmatched_douban_actors)} 位演员)")
-                newly_archived_actors = []
-                updated_archived_actors = []
+                still_unmatched_final = []
                 # ★★★ 逻辑修改: 增加了 enumerate 以便记录日志 ★★★
                 for i, d_actor in enumerate(unmatched_douban_actors):
                     if self.is_stop_requested(): raise InterruptedError("任务中止")
@@ -1208,47 +1206,11 @@ class MediaProcessor:
                                         match_found = True
                     
                     if not match_found:
-                        tmdb_id_to_save = None
-                        if 'person_from_tmdb' in locals() and isinstance(person_from_tmdb, dict) and person_from_tmdb.get("id"):
-                             tmdb_id_to_save = person_from_tmdb.get("id")
+                        still_unmatched_final.append(d_actor)
 
-                        if tmdb_id_to_save:
-                            person_data_for_db = {
-                                "name": d_actor.get("Name"),
-                                "douban_id": d_actor.get("DoubanCelebrityId"),
-                                "imdb_id": d_imdb_id if 'd_imdb_id' in locals() and d_imdb_id else None,
-                                "tmdb_id": tmdb_id_to_save,
-                                "emby_id": None
-                            }
-                            
-                            # ★★★ 核心修改 1/2: 捕获 upsert_person 的返回值 ★★★
-                            map_id, status = self.actor_db_manager.upsert_person(
-                                cursor=cursor, 
-                                person_data=person_data_for_db, 
-                                emby_config=None
-                            )
-                            
-                            # ★★★ 根据返回的状态，将演员放入不同的列表 ★★★
-                            if status == "INSERTED":
-                                newly_archived_actors.append(d_actor)
-                            elif status in ["UPDATED", "UNCHANGED"]:
-                                updated_archived_actors.append(d_actor)
-
-                        else:
-                            logger.debug(f"  -> [丢弃] 豆瓣演员 '{d_actor.get('Name')}' 因无法关联到TMDb ID而被丢弃。")
-
-                # ★★★ 核心修改 2/2: 重写日志逻辑，使其更精确 ★★★
-                log_messages = []
-                if newly_archived_actors:
-                    names = [d.get('Name') for d in newly_archived_actors]
-                    log_messages.append(f"{len(names)} 位演员被新增归档: {', '.join(names)}")
-                
-                if updated_archived_actors:
-                    names = [d.get('Name') for d in updated_archived_actors]
-                    log_messages.append(f"{len(names)} 位已存在演员的信息被更新: {', '.join(names)}")
-
-                if log_messages:
-                    logger.info(f"  -> [归档处理完成] " + "；".join(log_messages))
+                if still_unmatched_final:
+                    discarded_names = [d.get('Name') for d in still_unmatched_final]
+                    logger.info(f"  -> [丢弃新增] 以下 {len(still_unmatched_final)} 位豆瓣演员因在Emby中无匹配或已达数量上限而被丢弃: {', '.join(discarded_names)}")
         
         # ======================================================================
         # 步骤 4: ★★★ 整合、排序、翻译和格式化 ★★★
@@ -1260,7 +1222,7 @@ class MediaProcessor:
         logger.info(f"  -> 将对 {len(cast_to_process)} 位演员进行最终的翻译和格式化处理...")
 
         if not (self.ai_translator and self.config.get(constants.CONFIG_OPTION_AI_TRANSLATION_ENABLED, False)):
-            logger.info("  -> AI翻译未启用，将保留角色名原文。")
+            logger.info("  -> AI翻译未启用，将保留演员和角色名原文。")
         else:
             final_translation_map = {}
             terms_to_translate = set()
