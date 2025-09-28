@@ -5,6 +5,7 @@ import time
 import json
 import logging
 import psycopg2
+from typing import Optional, List
 from datetime import datetime, timezone
 import concurrent.futures
 
@@ -45,17 +46,18 @@ def task_manual_update(processor, item_id: str, manual_cast_list: list, item_nam
         item_name=item_name
     )
 
-def task_sync_metadata_cache(processor, item_id: str, item_name: str):
+def task_sync_metadata_cache(processor, item_id: str, item_name: str, episode_ids_to_add: Optional[List[str]] = None):
     """
     任务：为单个媒体项同步元数据到 media_metadata 数据库表。
+    可根据是否传入 episode_ids_to_add 来决定执行模式。
     """
-    logger.trace(f"  -> 任务开始：同步媒体元数据缓存 for '{item_name}' (ID: {item_id})")
+    sync_mode = "精准分集追加" if episode_ids_to_add else "常规元数据刷新"
+    logger.trace(f"  -> 任务开始：同步媒体元数据缓存 ({sync_mode}) for '{item_name}' (ID: {item_id})")
     try:
-        processor.sync_single_item_to_metadata_cache(item_id, item_name=item_name)
+        processor.sync_single_item_to_metadata_cache(item_id, item_name=item_name, episode_ids_to_add=episode_ids_to_add)
         logger.trace(f"  -> 任务成功：同步媒体元数据缓存 for '{item_name}'")
     except Exception as e:
         logger.error(f"  -> 任务失败：同步媒体元数据缓存 for '{item_name}' 时发生错误: {e}", exc_info=True)
-        # 根据需要，可以决定是否要重新抛出异常以标记任务失败
         raise
 
 def task_sync_assets(processor, item_id: str, update_description: str, sync_timestamp_iso: str):
@@ -358,6 +360,38 @@ def task_populate_metadata_cache(processor, batch_size: int = 50, force_full_upd
                     "tags_json": json.dumps(tags, ensure_ascii=False),
                     "in_library": True
                 }
+                if metadata_to_save["item_type"] == "Series":
+                    series_id = metadata_to_save["emby_item_id"]
+                    children = emby_handler.get_series_children(
+                        series_id=series_id,
+                        base_url=processor.emby_url,
+                        api_key=processor.emby_api_key,
+                        user_id=processor.emby_user_id,
+                        include_item_types="Season,Episode",
+                        fields="Id,Name,Type,Overview,ParentIndexNumber,IndexNumber" # 请求更丰富的字段
+                    )
+                    
+                    children_details = []
+                    if children is not None:
+                        for child in children:
+                            child_type = child.get("Type")
+                            detail = {
+                                "Id": child.get("Id"),
+                                "Type": child_type,
+                                "Name": child.get("Name")
+                            }
+                            if child_type == "Season":
+                                detail["SeasonNumber"] = child.get("IndexNumber")
+                            elif child_type == "Episode":
+                                detail["SeasonNumber"] = child.get("ParentIndexNumber")
+                                detail["EpisodeNumber"] = child.get("IndexNumber")
+                                detail["Overview"] = child.get("Overview")
+                            
+                            children_details.append(detail)
+                    else:
+                        logger.warning(f"  -> 无法获取剧集 '{metadata_to_save['title']}' (ID: {series_id}) 的子项目详情，将存入空列表。")
+                    
+                    metadata_to_save["emby_children_details_json"] = json.dumps(children_details, ensure_ascii=False)
                 metadata_batch.append(metadata_to_save)
 
             if processor.is_stop_requested():

@@ -271,6 +271,14 @@ def _process_batch_webhook_events():
                     series_id=parent_id,
                     episode_ids=episode_ids_to_update # <-- 现在传递的是具体的分集ID列表
                 )
+                task_manager.submit_task(
+                    task_sync_metadata_cache,
+                    task_name=f"Webhook增量元数据更新: {parent_name}",
+                    processor_type='media',
+                    item_id=parent_id,
+                    item_name=parent_name,
+                    episode_ids_to_add=episode_ids_to_update 
+                )
             else: # 电影等其他类型
                 logger.info(f"  -> 媒体项 '{parent_name}' 已处理过，将触发一次轻量元数据缓存更新。")
                 task_manager.submit_task(
@@ -450,83 +458,73 @@ def emby_webhook():
         return jsonify({"status": "event_ignored_no_id_or_wrong_type"}), 200
 
     if event_type == "library.deleted":
-        try:
-            id_to_lookup_in_db = original_item_id
-            
-            # ▼▼▼ 核心修正：不再进行API调用，直接从 item_from_webhook 读取 ▼▼▼
-            if original_item_type == "Episode":
-                series_id_from_payload = item_from_webhook.get("SeriesId")
-                if series_id_from_payload:
-                    logger.info(f"Webhook: 分集 '{original_item_name}' (ID: {original_item_id}) 被删除。从Webhook负载中直接获取到其所属剧集ID: {series_id_from_payload}")
-                    id_to_lookup_in_db = series_id_from_payload
-                else:
-                    # 这是一个异常情况，现代Emby版本通常总会提供SeriesId
-                    logger.warning(f"Webhook: 分集 {original_item_id} 被删除，但在Webhook负载中未找到 SeriesId。无法可靠处理此事件，将仅清理日志。")
-                    with connection.get_db_connection() as conn:
-                        with conn.cursor() as cursor:
-                            log_manager = LogDBManager()
-                            log_manager.remove_from_processed_log(cursor, original_item_id)
-                            log_manager.remove_from_failed_log(cursor, original_item_id)
-                        conn.commit()
-                    return jsonify({"status": "event_ignored_episode_no_seriesid_in_payload"}), 200
-            
-            # 后续逻辑与之前版本相同，但现在 id_to_lookup_in_db 始终是正确的剧集或电影ID
-            with connection.get_db_connection() as conn:
-                with conn.cursor() as cursor:
-                    log_manager = LogDBManager()
-                    
-                    cursor.execute(
-                        "SELECT tmdb_id FROM media_metadata WHERE emby_item_id = %s",
-                        (id_to_lookup_in_db,)
-                    )
-                    result = cursor.fetchone()
-                    tmdb_id = result['tmdb_id'] if result else None
-
-                    item_still_exists_in_emby = False
-                    if tmdb_id:
-                        current_item = emby_handler.find_emby_item_by_provider_id(
-                            provider_name='Tmdb',
-                            provider_id=tmdb_id,
-                            base_url=extensions.media_processor_instance.emby_url,
-                            api_key=extensions.media_processor_instance.emby_api_key,
-                            user_id=extensions.media_processor_instance.emby_user_id
-                        )
-                        if current_item:
-                            item_still_exists_in_emby = True
-                            logger.info(f"Webhook: 检测到洗版操作。旧项目/分集 {original_item_id} 已删除，但新项目 (ID: {current_item.get('Id')}) 仍然存在于 Emby (TMDb ID: {tmdb_id})。")
-
-                    if item_still_exists_in_emby:
-                        logger.warning(f"Webhook: 将仅清理旧项目/分集 {original_item_id} 的处理日志，并保持其在库状态。")
+            try:
+                with connection.get_db_connection() as conn:
+                    with conn.cursor() as cursor:
+                        log_manager = LogDBManager()
                         log_manager.remove_from_processed_log(cursor, original_item_id)
-                        log_manager.remove_from_failed_log(cursor, original_item_id)
-                    else:
-                        logger.warning(f"Webhook: 项目 {id_to_lookup_in_db} (TMDb ID: {tmdb_id or '未知'}) 已从 Emby 彻底删除。将执行完整数据清理。")
-                        
-                        log_manager.remove_from_processed_log(cursor, original_item_id)
-                        log_manager.remove_from_failed_log(cursor, original_item_id)
                         logger.info(f"Webhook: 已从处理/失败日志中移除原始项目 {original_item_id}。")
 
-                        cursor.execute(
-                            "UPDATE media_metadata SET in_library = FALSE, emby_item_id = NULL WHERE emby_item_id = %s",
-                            (id_to_lookup_in_db,)
-                        )
-                        if cursor.rowcount > 0:
-                            logger.info(f"Webhook: 已在 media_metadata 缓存中将项目 {id_to_lookup_in_db} 标记为“不在库中”。")
+                        id_to_cleanup = None
+                        if original_item_type == "Series":
+                            logger.warning(f"Webhook: 剧集 '{original_item_name}' (ID: {original_item_id}) 本身被删除，执行完整清理。")
+                            id_to_cleanup = original_item_id
+                        elif original_item_type == "Episode":
+                            series_id = item_from_webhook.get("SeriesId")
+                            if not series_id:
+                                logger.warning(f"Webhook: 分集 {original_item_id} 被删除，但负载中无SeriesId，无法处理。")
+                                conn.commit()
+                                return jsonify({"status": "event_ignored_episode_no_seriesid"}), 200
 
-                        cursor.execute("DELETE FROM watchlist WHERE item_id = %s", (id_to_lookup_in_db,))
-                        if cursor.rowcount > 0:
-                            logger.info(f"Webhook: 已从智能追剧列表中移除项目 {id_to_lookup_in_db}。")
+                            # 1. 获取当前的子项目详情列表
+                            cursor.execute("SELECT emby_children_details_json FROM media_metadata WHERE emby_item_id = %s", (series_id,))
+                            record = cursor.fetchone()
                             
-                        cursor.execute("DELETE FROM resubscribe_cache WHERE item_id = %s", (id_to_lookup_in_db,))
-                        if cursor.rowcount > 0:
-                            logger.info(f"Webhook: 已从媒体洗版缓存中移除项目 {id_to_lookup_in_db}。")
+                            if record and record['emby_children_details_json']:
+                                current_children = record['emby_children_details_json']
+                                
+                                # 2. 在Python中过滤掉被删除的分集
+                                remaining_children = [child for child in current_children if child.get("Id") != original_item_id]
+                                
+                                # 3. 将更新后的列表写回数据库
+                                import json
+                                remaining_children_json = json.dumps(remaining_children)
+                                cursor.execute(
+                                    "UPDATE media_metadata SET emby_children_details_json = %s::jsonb WHERE emby_item_id = %s",
+                                    (remaining_children_json, series_id)
+                                )
+                                
+                                # 4. 检查剩余的是否还有“分集”
+                                has_remaining_episodes = any(child.get("Type") == "Episode" for child in remaining_children)
+                                
+                                if not has_remaining_episodes:
+                                    logger.warning(f"Webhook: 剧集 {series_id} 的最后一个分集 {original_item_id} 已被删除，判断该剧集已离线，执行完整清理。")
+                                    id_to_cleanup = series_id
+                                else:
+                                    logger.info(f"Webhook: 已从剧集 {series_id} 的记录中移除分集 {original_item_id}。剩余子项目 {len(remaining_children)} 个，不执行清理。")
+                            else:
+                                logger.warning(f"  -> 未在数据库中找到剧集 {series_id} 的子项目记录，无法更新。")
+                        
+                        else: # 电影或其他
+                            id_to_cleanup = original_item_id
 
-                conn.commit()
-                
-            return jsonify({"status": "delete_event_processed_intelligently", "item_id": original_item_id}), 200
-        except Exception as e:
-            logger.error(f"处理删除事件 for item {original_item_id} 时发生错误: {e}", exc_info=True)
-            return jsonify({"status": "error_processing_remove_event", "error": str(e)}), 500
+                        # 如果需要，执行统一的清理操作
+                        if id_to_cleanup:
+                            cursor.execute(
+                                "UPDATE media_metadata SET in_library = FALSE, emby_item_id = NULL, emby_children_details_json = NULL WHERE emby_item_id = %s",
+                                (id_to_cleanup,)
+                            )
+                            if cursor.rowcount > 0: logger.info(f"Webhook: 已在 media_metadata 缓存中将项目 {id_to_cleanup} 标记为“不在库中”。")
+                            cursor.execute("DELETE FROM watchlist WHERE item_id = %s", (id_to_cleanup,))
+                            if cursor.rowcount > 0: logger.info(f"Webhook: 已从智能追剧列表中移除项目 {id_to_cleanup}。")
+                            cursor.execute("DELETE FROM resubscribe_cache WHERE item_id = %s", (id_to_cleanup,))
+                            if cursor.rowcount > 0: logger.info(f"Webhook: 已从媒体洗版缓存中移除项目 {id_to_cleanup}。")
+                    
+                    conn.commit()
+                return jsonify({"status": "delete_event_processed_from_db_state"}), 200
+            except Exception as e:
+                logger.error(f"处理删除事件 for item {original_item_id} 时发生数据库错误: {e}", exc_info=True)
+                return jsonify({"status": "error_processing_remove_event", "error": str(e)}), 500
     
     if event_type in ["item.add", "library.new"]:
         description = data.get("Description", "")

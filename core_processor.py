@@ -54,7 +54,8 @@ def _save_metadata_to_cache(
     item_type: str,
     item_details_from_emby: Dict[str, Any],
     final_processed_cast: List[Dict[str, Any]],
-    tmdb_details_for_extra: Optional[Dict[str, Any]]
+    tmdb_details_for_extra: Optional[Dict[str, Any]],
+    emby_children_details: Optional[List[Dict[str, Any]]] = None
 ):
     """
     【V-API-Native - PG 兼容版】
@@ -114,6 +115,8 @@ def _save_metadata_to_cache(
             "release_date": release_date_str,
             "in_library": True
         }
+        if item_type == 'Series' and emby_children_details is not None:
+            metadata["emby_children_details_json"] = json.dumps(emby_children_details, ensure_ascii=False)
         
         columns = list(metadata.keys())
         # ▼▼▼ 核心修复 1/2：在列清单中手动加入 last_synced_at ▼▼▼
@@ -2296,47 +2299,80 @@ class MediaProcessor:
         except Exception as e:
             logger.error(f"{log_prefix} 执行时发生错误: {e}", exc_info=True)
 
-    def sync_single_item_to_metadata_cache(self, item_id: str, item_name: Optional[str] = None):
+    def sync_single_item_to_metadata_cache(self, item_id: str, item_name: Optional[str] = None, episode_ids_to_add: Optional[List[str]] = None):
         """
-        为单独媒体项同步元数据缓存
+        【V5 - 精准增强版】
+        为一个媒体项同步元数据缓存。
+        - 增量模式 (当提供了 episode_ids_to_add): 只将新增的分集详情追加到现有记录中。
+        - 常规模式 (默认): 对媒体项（电影或剧集）进行一次轻量级的全量元数据刷新（不含演员和子项目）。
         """
         log_prefix = f"实时同步媒体数据 '{item_name}'"
-        logger.info(f"  -> {log_prefix} 开始执行")
+        sync_mode = "精准分集追加" if episode_ids_to_add else "常规元数据刷新"
+        logger.info(f"  -> {log_prefix} 开始执行 ({sync_mode}模式)")
         
         try:
-            fields_to_get = "ProviderIds,Type,DateCreated,Name,ProductionYear,OriginalTitle,PremiereDate,CommunityRating,Genres,Studios,ProductionLocations,Tags,DateModified,OfficialRating"
-            
-            full_details_emby = emby_handler.get_emby_item_details(
-                item_id, self.emby_url, self.emby_api_key, self.emby_user_id,
-                fields=fields_to_get
-            )
-            if not full_details_emby:
-                raise ValueError("在Emby中找不到该项目。")
+            with get_central_db_connection() as conn:
+                with conn.cursor() as cursor:
+                    
+                    # ▼▼▼ 核心修改：根据模式执行不同逻辑 ▼▼▼
+                    if episode_ids_to_add:
+                        # --- 模式一：精准分集追加 ---
+                        if not item_id: # 此时 item_id 就是 series_id
+                            logger.error(f"  -> {log_prefix} [增量模式] 缺少剧集ID，无法执行。")
+                            return
 
-            item_type = full_details_emby.get("Type")
-            
-            if item_type == "Episode":
-                series_id = emby_handler.get_series_id_from_child_id(
-                    item_id, self.emby_url, self.emby_api_key, self.emby_user_id, item_name=item_name
-                )
-                if series_id:
-                    logger.debug(f"  -> {log_prefix} 检测到剧集，将使用其父剧集信息进行缓存。")
-                    # 同样使用精简的字段列表获取父剧集信息
-                    full_details_emby = emby_handler.get_emby_item_details(
-                        series_id, self.emby_url, self.emby_api_key, self.emby_user_id,
-                        fields=fields_to_get
-                    )
-                    if not full_details_emby:
-                        logger.warning(f"  -> {log_prefix} 无法获取所属剧集 (ID: {series_id}) 的详情，跳过缓存。")
-                        return
-                else:
-                    logger.warning(f"  -> {log_prefix} 无法获取剧集 '{full_details_emby.get('Name', item_id)}' 的所属剧集ID，跳过。")
-                    return
-            
-            tmdb_id = full_details_emby.get("ProviderIds", {}).get("Tmdb")
-            if not tmdb_id:
-                logger.warning(f"{log_prefix} 项目 '{full_details_emby.get('Name')}' 缺少TMDb ID，无法缓存。")
-                return
+                        # 1. 批量获取新分集的详情
+                        new_episodes_details = emby_handler.get_emby_items_by_id(
+                            base_url=self.emby_url, api_key=self.emby_api_key, user_id=self.emby_user_id,
+                            item_ids=episode_ids_to_add, fields="Id,Name,Type,Overview,ParentIndexNumber,IndexNumber"
+                        )
+                        
+                        new_children_to_append = []
+                        if new_episodes_details:
+                            for child in new_episodes_details:
+                                detail = {"Id": child.get("Id"), "Type": "Episode", "Name": child.get("Name"),
+                                          "SeasonNumber": child.get("ParentIndexNumber"), "EpisodeNumber": child.get("IndexNumber"),
+                                          "Overview": child.get("Overview")}
+                                new_children_to_append.append(detail)
+                        
+                        if not new_children_to_append:
+                            logger.warning(f"  -> {log_prefix} [增量模式] 无法从Emby获取新分集的详情，任务中止。")
+                            return
+
+                        # 2. 使用 JSONB || 操作符将新分集追加到数据库
+                        update_query = """
+                            UPDATE media_metadata
+                            SET emby_children_details_json = COALESCE(emby_children_details_json, '[]'::jsonb) || %s::jsonb,
+                                last_synced_at = %s
+                            WHERE emby_item_id = %s
+                        """
+                        current_utc_time = datetime.now(timezone.utc)
+                        cursor.execute(update_query, (json.dumps(new_children_to_append, ensure_ascii=False), current_utc_time, item_id))
+                        logger.info(f"  -> {log_prefix} [增量模式] 成功追加 {len(new_children_to_append)} 个新分集详情到数据库。")
+
+                    else:
+                        # --- 模式二：常规元数据刷新 ---
+                        # (这里是您之前已经写好的全量刷新逻辑，保持不变)
+                        fields_to_get = "ProviderIds,Type,DateCreated,Name,ProductionYear,OriginalTitle,PremiereDate,CommunityRating,Genres,Studios,ProductionLocations,Tags,DateModified,OfficialRating"
+                        full_details_emby = emby_handler.get_emby_item_details(item_id, self.emby_url, self.emby_api_key, self.emby_user_id, fields=fields_to_get)
+                        if not full_details_emby: raise ValueError("在Emby中找不到该项目。")
+                        
+                        item_type = full_details_emby.get("Type")
+                        if item_type == "Episode":
+                            series_id = emby_handler.get_series_id_from_child_id(item_id, self.emby_url, self.emby_api_key, self.emby_user_id, item_name=item_name)
+                            if series_id:
+                                full_details_emby = emby_handler.get_emby_item_details(series_id, self.emby_url, self.emby_api_key, self.emby_user_id, fields=fields_to_get)
+                                if not full_details_emby:
+                                    logger.warning(f"  -> {log_prefix} 无法获取所属剧集 (ID: {series_id}) 的详情，跳过缓存。")
+                                    return
+                            else:
+                                logger.warning(f"  -> {log_prefix} 无法获取剧集 '{full_details_emby.get('Name', item_id)}' 的所属剧集ID，跳过。")
+                                return
+                        
+                        tmdb_id = full_details_emby.get("ProviderIds", {}).get("Tmdb")
+                        if not tmdb_id:
+                            logger.warning(f"{log_prefix} 项目 '{full_details_emby.get('Name')}' 缺少TMDb ID，无法缓存。")
+                            return
 
             # 3. 获取 TMDB 补充信息 (导演/国家)
             tmdb_details = None
@@ -2383,6 +2419,28 @@ class MediaProcessor:
                 "countries_json": json.dumps(countries, ensure_ascii=False),
                 "tags_json": json.dumps(tags, ensure_ascii=False),
             }
+
+            if item_type == 'Series':
+                logger.debug(f"  -> {log_prefix} 检测到剧集，正在获取其所有子项目详情...")
+                children = emby_handler.get_series_children(
+                    series_id=full_details_emby.get('Id'), base_url=self.emby_url, api_key=self.emby_api_key, user_id=self.emby_user_id,
+                    include_item_types="Season,Episode", fields="Id,Name,Type,Overview,ParentIndexNumber,IndexNumber"
+                )
+                if children is not None:
+                    children_details = []
+                    for child in children:
+                        child_type = child.get("Type")
+                        detail = {"Id": child.get("Id"), "Type": child_type, "Name": child.get("Name")}
+                        if child_type == "Season": detail["SeasonNumber"] = child.get("IndexNumber")
+                        elif child_type == "Episode":
+                            detail["SeasonNumber"] = child.get("ParentIndexNumber")
+                            detail["EpisodeNumber"] = child.get("IndexNumber")
+                            detail["Overview"] = child.get("Overview")
+                        children_details.append(detail)
+                    # 直接将 JSON 字符串添加到要写入的字典中
+                    metadata["emby_children_details_json"] = json.dumps(children_details, ensure_ascii=False)
+                else:
+                    logger.warning(f"  -> {log_prefix} 无法获取剧集 '{full_details_emby.get('Name')}' 的子项目详情。")
 
             # 5. 写入数据库
             with get_central_db_connection() as conn:

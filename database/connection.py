@@ -448,7 +448,8 @@ def init_db():
                             "official_rating": "TEXT",
                             "unified_rating": "TEXT",
                             "emby_item_id": "TEXT",
-                            "in_library": "BOOLEAN DEFAULT TRUE NOT NULL"
+                            "in_library": "BOOLEAN DEFAULT TRUE NOT NULL",
+                            "emby_children_details_json": "JSONB"
                         },
                         'watchlist': {
                             "last_episode_to_air_json": "JSONB"
