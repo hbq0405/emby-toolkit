@@ -198,6 +198,63 @@ class ActorDBManager:
             logger.error(f"upsert_person 发生异常，emby_person_id={emby_id}: {e}", exc_info=True)
             cursor.execute("RELEASE SAVEPOINT actor_upsert")
             return -1, "ERROR"
+        
+    def update_actor_name_in_media_metadata(self, cursor: psycopg2.extensions.cursor, tmdb_id: int, new_name: str) -> int:
+        """
+        【V1 - 新增功能】
+        根据演员的 TMDB ID，查找所有 media_metadata 表中 actors_json 包含该演员的记录，
+        并将其名字更新为新的中文名。
+
+        Args:
+            cursor: 数据库游标。
+            tmdb_id: 演员的 TMDB ID，这是最可靠的关联键。
+            new_name: 已经翻译好的中文名。
+
+        Returns:
+            成功更新的媒体记录数量。
+        """
+        if not tmdb_id or not new_name:
+            return 0
+
+        try:
+            # 这个 SQL 查询是核心。它利用 jsonb_array_elements 解构数组，
+            # 使用 CASE 语句替换匹配到的演员的名字，最后用 jsonb_agg 重新聚合为新数组。
+            # WHERE 子句使用 @> 操作符高效地查找包含该演员的 JSON 记录。
+            sql = """
+                UPDATE media_metadata
+                SET
+                    actors_json = (
+                        SELECT jsonb_agg(
+                            CASE
+                                -- 演员的 'Id' 在 JSON 中可能是字符串或数字，统一转为 text 比较
+                                WHEN actor->>'Id' = %s THEN
+                                    jsonb_set(actor, '{Name}', to_jsonb(%s::text))
+                                ELSE
+                                    actor
+                            END
+                        )
+                        FROM jsonb_array_elements(actors_json) AS actor
+                    )
+                WHERE
+                    -- 使用 @> 操作符和索引来高效地查找包含此演员ID的记录
+                    actors_json @> ('[{"Id": "' || %s || '"}]')::jsonb;
+            """
+            
+            # 将 tmdb_id 转为字符串以匹配 JSON 内部的值
+            tmdb_id_str = str(tmdb_id)
+            
+            cursor.execute(sql, (tmdb_id_str, new_name, tmdb_id_str))
+            
+            updated_count = cursor.rowcount
+            if updated_count > 0:
+                logger.debug(f"  -> 媒体库演员名同步: TMDB ID {tmdb_id} 的姓名更新为 '{new_name}'，影响了 {updated_count} 条记录。")
+            
+            return updated_count
+
+        except Exception as e:
+            logger.error(f"更新 media_metadata 中演员 (TMDB ID: {tmdb_id}) 姓名时失败: {e}", exc_info=True)
+            # 即使这里失败，也不应该中断整个同步流程，所以只记录错误并返回0
+            return 0
 
 def get_all_emby_person_ids_from_map() -> set:
     """从 person_identity_map 表中获取所有 emby_person_id 的集合。"""

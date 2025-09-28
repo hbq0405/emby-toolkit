@@ -65,6 +65,21 @@ class UnifiedSyncHandler:
                                 elif status == "UPDATED": stats['db_updated'] += 1
                                 elif status == "UNCHANGED": stats['unchanged'] += 1
                                 elif status == "SKIPPED": stats['skipped'] += 1
+                                if status in ("INSERTED", "UPDATED", "UNCHANGED"):
+                                    tmdb_id = person_data_for_db.get("tmdb_id")
+                                    
+                                    if tmdb_id and person_name:
+                                        # 从翻译缓存中查找这个演员的中文名
+                                        translated_info = self.actor_db_manager.get_translation_from_db(cursor, person_name)
+                                        
+                                        if translated_info and translated_info.get('translated_text'):
+                                            chinese_name = translated_info['translated_text']
+                                            
+                                            # 如果中文名和原始名不同，执行更新
+                                            if chinese_name != person_name:
+                                                logger.debug(f"发现演员 '{person_name}' 的中文翻译 '{chinese_name}'，开始同步到媒体库...")
+                                                # 调用我们刚刚在 actor_db.py 中创建的新函数
+                                                self.actor_db_manager.update_actor_name_in_media_metadata(cursor, tmdb_id, chinese_name)
                             except Exception as e_upsert:
                                 stats['errors'] += 1
                                 logger.error(f"处理演员 {person_name} (ID: {emby_pid}) 的 upsert 时失败: {e_upsert}")
