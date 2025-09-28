@@ -46,43 +46,60 @@ class UnifiedSyncHandler:
                         if stop_event and stop_event.is_set(): raise InterruptedError("任务在处理批次时被中止")
                         
                         for person_emby in person_batch:
+                            if stop_event and stop_event.is_set(): raise InterruptedError("任务在处理批次时被中止")
+                            
                             stats["total_from_emby"] += 1
                             emby_pid = str(person_emby.get("Id", "")).strip()
-                            if emby_pid:
-                                all_emby_pids_from_sync.add(emby_pid)
                             
-                            person_name = str(person_emby.get("Name", "")).strip()
-                            if not emby_pid or not person_name:
+                            # 从 Emby 获取的是原始英文名
+                            original_name = str(person_emby.get("Name", "")).strip()
+                            
+                            if not emby_pid or not original_name:
                                 stats["skipped"] += 1
                                 continue
                             
+                            # --- ★★★ 核心逻辑重构：预先确定最终姓名 ★★★ ---
+                            final_name = original_name
+                            is_chinese = False
+
+                            # 尝试从翻译缓存中获取中文名
+                            translated_info = self.actor_db_manager.get_translation_from_db(cursor, original_name)
+                            if translated_info and translated_info.get('translated_text'):
+                                chinese_name = translated_info['translated_text']
+                                # 确认中文名有效且与原名不同
+                                if chinese_name != original_name:
+                                    final_name = chinese_name # 优先使用中文名
+                                    is_chinese = True
+                                    logger.trace(f"演员 '{original_name}' 已找到中文翻译 '{final_name}'，将用于更新。")
+
+                            # --- 准备提交到数据库的数据 ---
                             provider_ids = person_emby.get("ProviderIds", {})
-                            person_data_for_db = { "emby_id": emby_pid, "name": person_name, "tmdb_id": provider_ids.get("Tmdb"), "imdb_id": provider_ids.get("Imdb"), "douban_id": provider_ids.get("Douban"), }
+                            tmdb_id = provider_ids.get("Tmdb")
+                            person_data_for_db = {
+                                "emby_id": emby_pid,
+                                "name": final_name,  # ★ 使用我们最终确定的名字
+                                "tmdb_id": tmdb_id,
+                                "imdb_id": provider_ids.get("Imdb"),
+                                "douban_id": provider_ids.get("Douban"),
+                            }
                             
                             try:
+                                # --- 步骤 1: 更新 person_identity_map ---
+                                # 现在 upsert_person 会正确更新名字了
                                 _, status = self.actor_db_manager.upsert_person(cursor, person_data_for_db, emby_config=emby_config_for_upsert)
                                 if status == "INSERTED": stats['db_inserted'] += 1
                                 elif status == "UPDATED": stats['db_updated'] += 1
                                 elif status == "UNCHANGED": stats['unchanged'] += 1
                                 elif status == "SKIPPED": stats['skipped'] += 1
-                                if status in ("INSERTED", "UPDATED", "UNCHANGED"):
-                                    tmdb_id = person_data_for_db.get("tmdb_id")
-                                    
-                                    if tmdb_id and person_name:
-                                        # 从翻译缓存中查找这个演员的中文名
-                                        translated_info = self.actor_db_manager.get_translation_from_db(cursor, person_name)
-                                        
-                                        if translated_info and translated_info.get('translated_text'):
-                                            chinese_name = translated_info['translated_text']
-                                            
-                                            # 如果中文名和原始名不同，执行更新
-                                            if chinese_name != person_name:
-                                                logger.debug(f"发现演员 '{person_name}' 的中文翻译 '{chinese_name}'，开始同步到媒体库...")
-                                                # 调用我们刚刚在 actor_db.py 中创建的新函数
-                                                self.actor_db_manager.update_actor_name_in_media_metadata(cursor, tmdb_id, chinese_name)
+
+                                # --- 步骤 2: 如果名字是中文，则同步更新 media_metadata ---
+                                # 只有在名字是中文且数据库操作成功时才执行
+                                if is_chinese and tmdb_id and status in ("INSERTED", "UPDATED", "UNCHANGED"):
+                                    self.actor_db_manager.update_actor_name_in_media_metadata(cursor, tmdb_id, final_name)
+
                             except Exception as e_upsert:
                                 stats['errors'] += 1
-                                logger.error(f"处理演员 {person_name} (ID: {emby_pid}) 的 upsert 时失败: {e_upsert}")
+                                logger.error(f"处理演员 {original_name} (ID: {emby_pid}) 的 upsert 时失败: {e_upsert}")
                 conn.commit()
 
             # --- 阶段二：清理本地数据库中多余的条目 ---

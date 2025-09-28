@@ -147,9 +147,14 @@ class ActorDBManager:
                 # --- UPDATE 现有记录 ---
                 map_id = existing_record['map_id']
                 updates = {}
+
+                # ★★★ 核心修正：增加对 primary_name 的更新逻辑 ★★★
+                # 如果传入的名字非空，并且与数据库中已有的名字不同，则更新它
+                if name and name != existing_record.get('primary_name'):
+                    updates['primary_name'] = name
                 
                 # 核心：用新的 Emby ID 更新找到的记录
-                if existing_record.get('emby_person_id') != emby_id:
+                if emby_id and existing_record.get('emby_person_id') != emby_id:
                     updates['emby_person_id'] = emby_id
 
                 # 补充缺失的 ID 信息
