@@ -723,11 +723,40 @@ class MediaProcessor:
             # ======================================================================
             # 阶段 6: 实时元数据缓存
             # ======================================================================
+            emby_children_details = None
+            if item_type == "Series":
+                logger.debug(f"  -> 正在为剧集 '{item_name_for_log}' 获取子项目详情以存入缓存...")
+                children = emby_handler.get_series_children(
+                    series_id=item_id,
+                    base_url=self.emby_url,
+                    api_key=self.emby_api_key,
+                    user_id=self.emby_user_id,
+                    include_item_types="Season,Episode",
+                    fields="Id,Name,Type,Overview,ParentIndexNumber,IndexNumber"
+                )
+                if children is not None:
+                    emby_children_details = []
+                    for child in children:
+                        child_type = child.get("Type")
+                        detail = {
+                            "Id": child.get("Id"),
+                            "Type": child_type,
+                            "Name": child.get("Name")
+                        }
+                        if child_type == "Season":
+                            detail["SeasonNumber"] = child.get("IndexNumber")
+                        elif child_type == "Episode":
+                            detail["SeasonNumber"] = child.get("ParentIndexNumber")
+                            detail["EpisodeNumber"] = child.get("IndexNumber")
+                            detail["Overview"] = child.get("Overview")
+                        emby_children_details.append(detail)
+
             _save_metadata_to_cache(
                 cursor=cursor, tmdb_id=tmdb_id, emby_item_id=item_id, item_type=item_type,
                 item_details_from_emby=item_details_from_emby,
                 final_processed_cast=final_processed_cast,
-                tmdb_details_for_extra=tmdb_details_for_extra
+                tmdb_details_for_extra=tmdb_details_for_extra,
+                emby_children_details=emby_children_details
             )
 
             # ======================================================================
