@@ -181,7 +181,6 @@ def init_db():
                         PRIMARY KEY (tmdb_id, item_type)
                     )
                 """)
-                
 
                 logger.trace("  -> 正在创建 'watchlist' 表...")
                 cursor.execute("""
@@ -496,8 +495,6 @@ def init_db():
                 try:
                     logger.trace("  -> 正在为 'media_metadata.emby_item_id' 创建索引...")
                     cursor.execute("CREATE INDEX IF NOT EXISTS idx_mm_emby_item_id ON media_metadata (emby_item_id);")
-                    logger.trace("  -> 正在为 'media_metadata.actors_json' 创建 GIN 索引...")
-                    cursor.execute("CREATE INDEX IF NOT EXISTS idx_media_metadata_actors_json ON media_metadata USING GIN (actors_json);")
                 except Exception as e_index:
                     logger.error(f"  -> 创建 'emby_item_id' 索引时出错: {e_index}", exc_info=True)
 
