@@ -23,10 +23,12 @@ class UnifiedSyncHandler:
         
     def sync_emby_person_map_to_db(self, update_status_callback: Optional[Callable] = None, stop_event: Optional[threading.Event] = None):
         """
-        【V4 - 性能优化版】
+        【V6 - 修正同步触发条件版】
         1. 移除了清理逻辑。
         2. 增加了中文名双重同步。
-        3. ★ 优化：仅在演员名实际发生变化时，才触发 media_metadata 的更新。
+        3. 优化：仅在演员名实际发生变化时，才触发 media_metadata 的更新。
+        4. 修正了任务状态的初始提示文本。
+        5. ★ 修正：允许在新增(INSERTED)演员时也触发 media_metadata 同步。
         """
         logger.info("--- 开始执行演员数据单向同步任务 (Emby -> 本地数据库) ---")
         
@@ -34,7 +36,7 @@ class UnifiedSyncHandler:
                   "unchanged": 0, "skipped": 0, "errors": 0 }
 
         try:
-            if update_status_callback: update_status_callback(0, "从 Emby 扫描并同步演员...")
+            if update_status_callback: update_status_callback(0, "正在从 Emby 扫描并同步演员...")
             
             person_generator = emby_handler.get_all_persons_from_emby(
                 self.emby_url, self.emby_api_key, self.emby_user_id, stop_event,
@@ -61,19 +63,17 @@ class UnifiedSyncHandler:
                             person_data_for_db = { "emby_id": emby_pid, "name": person_name, "tmdb_id": provider_ids.get("Tmdb"), "imdb_id": provider_ids.get("Imdb"), "douban_id": provider_ids.get("Douban"), }
                             
                             try:
-                                # 步骤 1: 更新或插入到 person_identity_map 表
                                 _, status = self.actor_db_manager.upsert_person(cursor, person_data_for_db, emby_config=emby_config_for_upsert)
                                 if status == "INSERTED": stats['db_inserted'] += 1
                                 elif status == "UPDATED": stats['db_updated'] += 1
                                 elif status == "UNCHANGED": stats['unchanged'] += 1
                                 elif status == "SKIPPED": stats['skipped'] += 1
 
-                                # ★★★ 性能优化核心 ★★★
-                                # 仅当名字被实际更新(status=='UPDATED')，且新名字是中文时，才触发媒体库更新
+                                # ★★★ 核心修改点 ★★★
+                                # 当演员是新增的(INSERTED)或被更新的(UPDATED)，且名字是中文时，触发同步
                                 tmdb_id = provider_ids.get("Tmdb")
-                                if status == "UPDATED" and contains_chinese(person_name) and tmdb_id:
+                                if status in ("INSERTED", "UPDATED") and contains_chinese(person_name) and tmdb_id:
                                     try:
-                                        # 步骤 2: 调用函数，将中文名同步到 media_metadata.actors_json
                                         updated_media_count = self.actor_db_manager.update_actor_name_in_media_metadata(
                                             cursor, int(tmdb_id), person_name
                                         )
@@ -88,6 +88,7 @@ class UnifiedSyncHandler:
                 conn.commit()
 
         except InterruptedError:
+            # ... (异常处理部分保持不变) ...
             if 'conn' in locals() and conn: conn.rollback()
             if update_status_callback: update_status_callback(100, "任务已中止")
             return
@@ -97,6 +98,7 @@ class UnifiedSyncHandler:
             if update_status_callback: update_status_callback(-1, "数据库操作失败")
             return
 
+        # ... (日志和最终回调部分保持不变) ...
         logger.info("--- 单向同步演员数据完成 ---")
         logger.info(f"📊 : 新增 {stats['db_inserted']}, 更新 {stats['db_updated']}。")
         logger.info("--------------------------")
