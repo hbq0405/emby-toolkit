@@ -106,7 +106,6 @@ class ActorDBManager:
         imdb_id = str(person_data.get("imdb_id") or '').strip() or None
         douban_id = str(person_data.get("douban_id") or '').strip() or None
         name = str(person_data.get("name") or '').strip()
-        name_was_updated = False
 
         tmdb_id = None
         if tmdb_id_raw and str(tmdb_id_raw).isdigit():
@@ -148,15 +147,9 @@ class ActorDBManager:
                 # --- UPDATE 现有记录 ---
                 map_id = existing_record['map_id']
                 updates = {}
-
-                # ★★★ 核心修正：增加对 primary_name 的更新逻辑 ★★★
-                # 如果传入的名字非空，并且与数据库中已有的名字不同，则更新它
-                if name and name != existing_record.get('primary_name'):
-                    updates['primary_name'] = name
-                    name_was_updated = True
                 
                 # 核心：用新的 Emby ID 更新找到的记录
-                if emby_id and existing_record.get('emby_person_id') != emby_id:
+                if existing_record.get('emby_person_id') != emby_id:
                     updates['emby_person_id'] = emby_id
 
                 # 补充缺失的 ID 信息
@@ -173,10 +166,10 @@ class ActorDBManager:
                     sql = f"UPDATE person_identity_map SET {', '.join(set_clauses)} WHERE map_id = %s"
                     cursor.execute(sql, tuple(updates.values()) + (map_id,))
                     cursor.execute("RELEASE SAVEPOINT actor_upsert")
-                    return map_id, "UPDATED", name_was_updated
+                    return map_id, "UPDATED"
                 else:
                     cursor.execute("RELEASE SAVEPOINT actor_upsert")
-                    return map_id, "UNCHANGED", False
+                    return map_id, "UNCHANGED"
             else:
                 # --- INSERT 新记录 (只有在绝对找不到时才执行) ---
                 if not name:
@@ -192,78 +185,19 @@ class ActorDBManager:
                 cursor.execute(sql, (name, emby_id, tmdb_id, imdb_id, douban_id))
                 result = cursor.fetchone()
                 cursor.execute("RELEASE SAVEPOINT actor_upsert")
-                return (result["map_id"], "INSERTED", True) if result else (-1, "ERROR", False)
+                return (result["map_id"], "INSERTED") if result else (-1, "ERROR")
 
         except psycopg2.IntegrityError as ie:
             # 添加一个额外的捕获，以防万一在高并发下出现竞争条件
             cursor.execute("ROLLBACK TO SAVEPOINT actor_upsert")
             logger.error(f"upsert_person 发生罕见的唯一性冲突，可能存在并发写入。emby_person_id={emby_id}, tmdb_id={tmdb_id}: {ie}")
             cursor.execute("RELEASE SAVEPOINT actor_upsert")
-            return -1, "ERROR", False
+            return -1, "ERROR"
         except Exception as e:
             cursor.execute("ROLLBACK TO SAVEPOINT actor_upsert")
             logger.error(f"upsert_person 发生异常，emby_person_id={emby_id}: {e}", exc_info=True)
             cursor.execute("RELEASE SAVEPOINT actor_upsert")
-            return -1, "ERROR", False
-        
-    def update_actor_name_in_media_metadata(self, cursor: psycopg2.extensions.cursor, tmdb_id: int, new_name: str) -> int:
-        """
-        【V1 - 新增功能】
-        根据演员的 TMDB ID，查找所有 media_metadata 表中 actors_json 包含该演员的记录，
-        并将其名字更新为新的中文名。
-
-        Args:
-            cursor: 数据库游标。
-            tmdb_id: 演员的 TMDB ID，这是最可靠的关联键。
-            new_name: 已经翻译好的中文名。
-
-        Returns:
-            成功更新的媒体记录数量。
-        """
-        if not tmdb_id or not new_name:
-            return 0
-
-        try:
-            # 这个 SQL 查询是核心。它利用 jsonb_array_elements 解构数组，
-            # 使用 CASE 语句替换匹配到的演员的名字，最后用 jsonb_agg 重新聚合为新数组。
-            # WHERE 子句使用 @> 操作符高效地查找包含该演员的 JSON 记录。
-            sql = """
-                UPDATE media_metadata
-                SET
-                    actors_json = (
-                        SELECT jsonb_agg(
-                            CASE
-                                -- 这里的 ->> 操作符会将 ID 值转为 text，进行无类型的比较，非常稳健
-                                WHEN actor->>'Id' = %s THEN
-                                    jsonb_set(actor, '{Name}', to_jsonb(%s::text))
-                                ELSE
-                                    actor
-                            END
-                        )
-                        FROM jsonb_array_elements(actors_json) AS actor
-                    )
-                WHERE EXISTS (
-                    SELECT 1
-                    FROM jsonb_array_elements(actors_json) AS elem
-                    WHERE elem->>'Id' = %s
-                );
-            """
-            
-            # 将 tmdb_id 转为字符串以匹配 JSON 内部的值
-            tmdb_id_str = str(tmdb_id)
-            
-            cursor.execute(sql, (tmdb_id_str, new_name, tmdb_id_str))
-            
-            updated_count = cursor.rowcount
-            if updated_count > 0:
-                logger.debug(f"  -> 媒体库演员名同步: TMDB ID {tmdb_id} 的姓名更新为 '{new_name}'，影响了 {updated_count} 条记录。")
-            
-            return updated_count
-
-        except Exception as e:
-            logger.error(f"更新 media_metadata 中演员 (TMDB ID: {tmdb_id}) 姓名时失败: {e}", exc_info=True)
-            # 即使这里失败，也不应该中断整个同步流程，所以只记录错误并返回0
-            return 0
+            return -1, "ERROR"
 
 def get_all_emby_person_ids_from_map() -> set:
     """从 person_identity_map 表中获取所有 emby_person_id 的集合。"""
@@ -279,6 +213,24 @@ def get_all_emby_person_ids_from_map() -> set:
         return ids
     except Exception as e:
         logger.error(f"DB: 获取所有演员映射Emby ID时失败: {e}", exc_info=True)
+        raise
+
+def delete_persons_by_emby_ids(emby_ids: list) -> int:
+    """根据 Emby Person ID 列表，从 person_identity_map 表中批量删除记录。"""
+    
+    if not emby_ids:
+        return 0
+    try:
+        with get_db_connection() as conn:
+            cursor = conn.cursor()
+            sql = "DELETE FROM person_identity_map WHERE emby_person_id = ANY(%s)"
+            cursor.execute(sql, (emby_ids,))
+            deleted_count = cursor.rowcount
+            conn.commit()
+            logger.info(f"  -> 从演员映射表中删除了 {deleted_count} 条陈旧记录。")
+            return deleted_count
+    except Exception as e:
+        logger.error(f"DB: 批量删除陈旧演员映射时失败: {e}", exc_info=True)
         raise
 
 # --- 演员订阅数据访问 ---
