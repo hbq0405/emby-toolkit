@@ -1000,7 +1000,7 @@ class MediaProcessor:
         logger.info(f"✨✨✨ 处理完成 '{item_name_for_log}' ✨✨✨")
         return True
 
-    # --- 核心处理器（暂时放弃新增演员） ---
+    # --- 核心处理器 ---
     def _process_cast_list_from_api(self, tmdb_cast_people: List[Dict[str, Any]],
                                     emby_cast_people: List[Dict[str, Any]],
                                     douban_cast_list: List[Dict[str, Any]],
@@ -1009,9 +1009,9 @@ class MediaProcessor:
                                     tmdb_api_key: Optional[str],
                                     stop_event: Optional[threading.Event]) -> List[Dict[str, Any]]:
         """
-        【V-Final with Discard Logic - Full Code】
-        在函数开头增加一个“数据适配层”，将API数据转换为你现有逻辑期望的格式，
-        并根据新规则丢弃无法在Emby中找到匹配的“真·新增”演员。
+        【V-Final with Truncation - Full Code】
+        - 在步骤4的开头，重新加入了对最终演员列表进行截断的逻辑。
+        - 确保在进行AI翻译等耗时操作前，将演员数量限制在配置的上限内。
         """
         # ======================================================================
         # 步骤 1: ★★★ 数据适配 ★★★
@@ -1106,7 +1106,6 @@ class MediaProcessor:
         else:
             logger.info(f"  -> 发现 {len(unmatched_douban_actors)} 位潜在的豆瓣补充演员，开始执行匹配与筛选...")
             
-            # ★★★ 新增逻辑 1/3: 从配置中读取上限值 ★★★
             limit = self.config.get(constants.CONFIG_OPTION_MAX_ACTORS_TO_PROCESS, 30)
             try:
                 limit = int(limit)
@@ -1114,16 +1113,13 @@ class MediaProcessor:
             except (ValueError, TypeError):
                 limit = 30
 
-            # ★★★ 新增逻辑 2/3: 在处理前进行前置检查 ★★★
             current_actor_count = len(final_cast_map)
             if current_actor_count >= limit:
                 logger.info(f"  -> 当前演员数 ({current_actor_count}) 已达上限 ({limit})，将跳过所有豆瓣补充演员的流程。")
-                # 由于已达上限，直接将所有未匹配的豆瓣演员标记为最终未匹配
                 still_unmatched_final = unmatched_douban_actors
             else:
                 logger.info(f"  -> 当前演员数 ({current_actor_count}) 低于上限 ({limit})，进入补充模式。")
                 
-                # --- 阶段 3.1: 用豆瓣ID查'演员映射表' ---
                 logger.debug(f"  -> 匹配阶段 2: 用豆瓣ID查'演员映射表' ({len(unmatched_douban_actors)} 位演员)")
                 still_unmatched = []
                 for d_actor in unmatched_douban_actors:
@@ -1151,7 +1147,6 @@ class MediaProcessor:
                         still_unmatched.append(d_actor)
                 unmatched_douban_actors = still_unmatched
 
-                # --- 阶段 3.2: 用IMDb ID进行最终匹配 ---
                 logger.debug(f"  -> 匹配阶段 3: 用IMDb ID进行最终匹配和新增 ({len(unmatched_douban_actors)} 位演员)")
                 still_unmatched_final = []
                 for i, d_actor in enumerate(unmatched_douban_actors):
@@ -1206,7 +1201,6 @@ class MediaProcessor:
                                 if person_from_tmdb and person_from_tmdb.get("id"):
                                     tmdb_id_from_find = str(person_from_tmdb.get("id"))
                                     
-                                    # ★★★ 核心修改 1/2: 无论是否匹配成功，都先将找到的ID暂存起来 ★★★
                                     d_actor['tmdb_id_from_api'] = tmdb_id_from_find
                                     d_actor['imdb_id_from_api'] = d_imdb_id
 
@@ -1227,28 +1221,19 @@ class MediaProcessor:
                     if not match_found:
                         still_unmatched_final.append(d_actor)
 
-                # ★★★ 核心修改 2/2: 在丢弃前，执行“数据回收”写入映射表 ★★★
                 if still_unmatched_final:
                     logger.info(f"  -> [演员归档] 检查 {len(still_unmatched_final)} 位未匹配演员，尝试预缓存其映射关系...")
                     emby_config_for_upsert = {"url": self.emby_url, "api_key": self.emby_api_key, "user_id": self.emby_user_id}
                     salvaged_count = 0
                     for d_actor in still_unmatched_final:
-                        # 检查是否有在API查询中暂存的TMDb ID
                         tmdb_id_to_save = d_actor.get('tmdb_id_from_api')
                         if tmdb_id_to_save:
                             person_data_for_db = {
-                                "emby_id": None, # 明确这是预缓存，没有Emby ID
-                                "name": d_actor.get("Name"),
-                                "tmdb_id": tmdb_id_to_save,
-                                "imdb_id": d_actor.get("imdb_id_from_api"),
+                                "emby_id": None, "name": d_actor.get("Name"),
+                                "tmdb_id": tmdb_id_to_save, "imdb_id": d_actor.get("imdb_id_from_api"),
                                 "douban_id": d_actor.get("DoubanCelebrityId")
                             }
-                            # 使用我们现成的 upsert 方法写入数据库
-                            self.actor_db_manager.upsert_person(
-                                cursor=cursor, 
-                                person_data=person_data_for_db, 
-                                emby_config=emby_config_for_upsert
-                            )
+                            self.actor_db_manager.upsert_person(cursor=cursor, person_data=person_data_for_db, emby_config=emby_config_for_upsert)
                             salvaged_count += 1
                     if salvaged_count > 0:
                         logger.info(f"  -> [演员归档] 成功为 {salvaged_count} 位演员预缓存了映射关系。")
@@ -1260,8 +1245,27 @@ class MediaProcessor:
         # 步骤 4: ★★★ 整合、排序、翻译和格式化 ★★★
         # ======================================================================
         current_cast_list = list(final_cast_map.values())
-        cast_to_process = current_cast_list
-        cast_to_process.sort(key=lambda x: x.get('order') if x.get('order') is not None and x.get('order') >= 0 else 999)
+        
+        # ★★★ 演员列表最终截断逻辑 (在翻译和格式化之前执行) ★★★
+        max_actors = self.config.get(constants.CONFIG_OPTION_MAX_ACTORS_TO_PROCESS, 30)
+        try:
+            limit = int(max_actors)
+            if limit <= 0:
+                limit = 30
+        except (ValueError, TypeError):
+            limit = 30
+
+        original_count = len(current_cast_list)
+        if original_count > limit:
+            logger.info(f"  -> 演员列表总数 ({original_count}) 超过上限 ({limit})，将在翻译前进行截断。")
+            # 按 order 排序，确保保留最重要的演员
+            current_cast_list.sort(key=lambda x: x.get('order') if x.get('order') is not None and x.get('order') >= 0 else 999)
+            cast_to_process = current_cast_list[:limit]
+        else:
+            cast_to_process = current_cast_list
+            # 即使不截断，也要排序
+            cast_to_process.sort(key=lambda x: x.get('order') if x.get('order') is not None and x.get('order') >= 0 else 999)
+
 
         logger.info(f"  -> 将对 {len(cast_to_process)} 位演员进行最终的翻译和格式化处理...")
 
@@ -1271,15 +1275,11 @@ class MediaProcessor:
             final_translation_map = {}
             terms_to_translate = set()
             for actor in cast_to_process:
-                # 【修正 1/4】同时收集演员名和角色名
-                # 收集角色名
                 character = actor.get('character')
                 if character:
                     cleaned_character = utils.clean_character_name_static(character)
                     if cleaned_character and not utils.contains_chinese(cleaned_character):
                         terms_to_translate.add(cleaned_character)
-                
-                # 收集演员名
                 name = actor.get('name')
                 if name and not utils.contains_chinese(name):
                     terms_to_translate.add(name)
@@ -1320,14 +1320,10 @@ class MediaProcessor:
                 quality_results = self.ai_translator.batch_translate(remaining_terms, mode='quality', title=item_title, year=item_year)
                 final_translation_map.update(quality_results)
             
-            # 【修正 2/4】回填翻译结果时，同时处理演员名和角色名
             for actor in cast_to_process:
-                # 回填演员名
                 original_name = actor.get('name')
                 if original_name and original_name in final_translation_map:
                     actor['name'] = final_translation_map[original_name]
-
-                # 回填角色名
                 original_character = actor.get('character')
                 if original_character:
                     cleaned_character = utils.clean_character_name_static(original_character)
@@ -1335,7 +1331,6 @@ class MediaProcessor:
                 else:
                     actor['character'] = ''
 
-        # 【修正 3/4 & 4/4】后面的逻辑保持不变，因为它们依赖的是修正后的 cast_to_process 列表
         tmdb_to_emby_id_map = {
             str(actor.get('id')): actor.get('emby_person_id')
             for actor in cast_to_process if actor.get('id') and actor.get('emby_person_id')
