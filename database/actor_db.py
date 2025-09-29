@@ -201,21 +201,21 @@ class ActorDBManager:
         
     def update_actor_metadata_from_tmdb(self, cursor: psycopg2.extensions.cursor, tmdb_id: int, tmdb_data: Dict[str, Any]):
         """
-        将从 TMDb API 获取的演员详情数据，更新或插入到 actor_metadata 表中。
-        这是一个标准的 UPSERT (Update or Insert) 操作。
+        【最终实现版】将从 TMDb API 获取的演员详情数据，更新或插入到 actor_metadata 表中。
+        此函数与 init_db() 中定义的表结构完全匹配。
         """
         if not tmdb_id or not tmdb_data:
             return
 
         try:
-            # 从 TMDb 数据中提取我们需要缓存的字段
+            # 从 TMDb 数据中精确提取 actor_metadata 表需要的字段
             metadata = {
                 "tmdb_id": tmdb_id,
-                "name": tmdb_data.get("name"),
-                "original_name": tmdb_data.get("original_name"),
                 "profile_path": tmdb_data.get("profile_path"),
                 "gender": tmdb_data.get("gender"),
-                "popularity": tmdb_data.get("popularity")
+                "adult": tmdb_data.get("adult", False),
+                "popularity": tmdb_data.get("popularity"),
+                "original_name": tmdb_data.get("original_name") # 演员的原始（通常是外文）姓名
             }
 
             # 准备 SQL 语句
@@ -225,11 +225,13 @@ class ActorDBManager:
             
             # ON CONFLICT 语句的核心：当 tmdb_id 冲突时，更新哪些字段
             update_clauses = [f"{col} = EXCLUDED.{col}" for col in columns if col != "tmdb_id"]
+            # 无论如何都更新时间戳
+            update_clauses.append("last_updated_at = NOW()")
             update_str = ', '.join(update_clauses)
 
             sql = f"""
-                INSERT INTO actor_metadata ({columns_str})
-                VALUES ({placeholders_str})
+                INSERT INTO actor_metadata ({columns_str}, last_updated_at)
+                VALUES ({placeholders_str}, NOW())
                 ON CONFLICT (tmdb_id) DO UPDATE SET {update_str}
             """
             
