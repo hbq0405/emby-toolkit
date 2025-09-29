@@ -1262,7 +1262,7 @@ class MediaProcessor:
                 
                 # 2. 缓存未命中，则调用 API
                 elif tmdb_api_key:
-                    person_details = tmdb_handler.get_person_details(tmdb_id, tmdb_api_key)
+                    person_details = tmdb_handler.get_person_details_tmdb(tmdb_id, tmdb_api_key)
                     if person_details and person_details.get("profile_path"):
                         profile_path = person_details["profile_path"]
                         # 将新获取的信息存入缓存，以便下次使用

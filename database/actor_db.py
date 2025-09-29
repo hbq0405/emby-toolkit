@@ -198,6 +198,47 @@ class ActorDBManager:
             logger.error(f"upsert_person 发生异常，emby_person_id={emby_id}: {e}", exc_info=True)
             cursor.execute("RELEASE SAVEPOINT actor_upsert")
             return -1, "ERROR"
+        
+    def update_actor_metadata_from_tmdb(self, cursor: psycopg2.extensions.cursor, tmdb_id: int, tmdb_data: Dict[str, Any]):
+        """
+        将从 TMDb API 获取的演员详情数据，更新或插入到 actor_metadata 表中。
+        这是一个标准的 UPSERT (Update or Insert) 操作。
+        """
+        if not tmdb_id or not tmdb_data:
+            return
+
+        try:
+            # 从 TMDb 数据中提取我们需要缓存的字段
+            metadata = {
+                "tmdb_id": tmdb_id,
+                "name": tmdb_data.get("name"),
+                "original_name": tmdb_data.get("original_name"),
+                "profile_path": tmdb_data.get("profile_path"),
+                "gender": tmdb_data.get("gender"),
+                "popularity": tmdb_data.get("popularity")
+            }
+
+            # 准备 SQL 语句
+            columns = list(metadata.keys())
+            columns_str = ', '.join(columns)
+            placeholders_str = ', '.join(['%s'] * len(columns))
+            
+            # ON CONFLICT 语句的核心：当 tmdb_id 冲突时，更新哪些字段
+            update_clauses = [f"{col} = EXCLUDED.{col}" for col in columns if col != "tmdb_id"]
+            update_str = ', '.join(update_clauses)
+
+            sql = f"""
+                INSERT INTO actor_metadata ({columns_str})
+                VALUES ({placeholders_str})
+                ON CONFLICT (tmdb_id) DO UPDATE SET {update_str}
+            """
+            
+            # 执行
+            cursor.execute(sql, tuple(metadata.values()))
+            logger.trace(f"  -> 成功将演员 (TMDb ID: {tmdb_id}) 的元数据缓存到数据库。")
+
+        except Exception as e:
+            logger.error(f"  -> 缓存演员 (TMDb ID: {tmdb_id}) 元数据到数据库时失败: {e}", exc_info=True)
 
 def get_all_emby_person_ids_from_map() -> set:
     """从 person_identity_map 表中获取所有 emby_person_id 的集合。"""
