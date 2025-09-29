@@ -215,24 +215,6 @@ def get_all_emby_person_ids_from_map() -> set:
         logger.error(f"DB: 获取所有演员映射Emby ID时失败: {e}", exc_info=True)
         raise
 
-def delete_persons_by_emby_ids(emby_ids: list) -> int:
-    """根据 Emby Person ID 列表，从 person_identity_map 表中批量删除记录。"""
-    
-    if not emby_ids:
-        return 0
-    try:
-        with get_db_connection() as conn:
-            cursor = conn.cursor()
-            sql = "DELETE FROM person_identity_map WHERE emby_person_id = ANY(%s)"
-            cursor.execute(sql, (emby_ids,))
-            deleted_count = cursor.rowcount
-            conn.commit()
-            logger.info(f"  -> 从演员映射表中删除了 {deleted_count} 条陈旧记录。")
-            return deleted_count
-    except Exception as e:
-        logger.error(f"DB: 批量删除陈旧演员映射时失败: {e}", exc_info=True)
-        raise
-
 # --- 演员订阅数据访问 ---
 
 def get_all_actor_subscriptions() -> List[Dict[str, Any]]:
