@@ -34,7 +34,7 @@
                     </n-form-item-grid-item>
                     <n-form-item-grid-item label="最大演员数" path="max_actors_to_process">
                       <n-input-number v-model:value="configModel.max_actors_to_process" :min="10" :step="10" placeholder="建议 30-100"/>
-                      <template #feedback><n-text depth="3" style="font-size:0.8em;">最大演员表数量。</n-text></template>
+                      <template #feedback><n-text depth="3" style="font-size:0.8em;">处理后最终演员表数量，超过会截断，优先保留有头像演员。</n-text></template>
                     </n-form-item-grid-item>
                     <n-form-item-grid-item label="为角色名添加前缀" path="actor_role_add_prefix">
                       <n-switch v-model:value="configModel.actor_role_add_prefix" />
