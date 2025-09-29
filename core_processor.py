@@ -1154,15 +1154,13 @@ class MediaProcessor:
                 # --- 阶段 3.2: 用IMDb ID进行最终匹配 ---
                 logger.debug(f"  -> 匹配阶段 3: 用IMDb ID进行最终匹配和新增 ({len(unmatched_douban_actors)} 位演员)")
                 still_unmatched_final = []
-                # ★★★ 逻辑修改: 增加了 enumerate 以便记录日志 ★★★
                 for i, d_actor in enumerate(unmatched_douban_actors):
                     if self.is_stop_requested(): raise InterruptedError("任务中止")
                     
-                    # ★★★ 新增逻辑 3/3: 在循环内部再次检查上限 ★★★
                     if len(final_cast_map) >= limit:
                         logger.info(f"  -> 演员数已达上限 ({limit})，跳过剩余 {len(unmatched_douban_actors) - i} 位演员的API查询。")
                         still_unmatched_final.extend(unmatched_douban_actors[i:])
-                        break # 跳出循环
+                        break
 
                     d_douban_id = d_actor.get("DoubanCelebrityId")
                     match_found = False
@@ -1185,7 +1183,6 @@ class MediaProcessor:
                         if d_imdb_id:
                             logger.debug(f"  -> 为 '{d_actor.get('Name')}' 获取到 IMDb ID: {d_imdb_id}，开始匹配...")
                             
-                            # 路径A: 通过IMDb ID在本地映射表查找
                             entry_row_from_map = self._find_person_in_map_by_imdb_id(d_imdb_id, cursor)
                             entry_from_map = dict(entry_row_from_map) if entry_row_from_map else None
                             if entry_from_map and entry_from_map.get("tmdb_person_id") and entry_from_map.get("emby_person_id"):
@@ -1200,7 +1197,6 @@ class MediaProcessor:
                                     final_cast_map[tmdb_id_from_map] = new_actor_entry
                                 match_found = True
                             
-                            # 路径B: 本地找不到，去TMDb API反查
                             if not match_found:
                                 logger.debug(f"  -> 数据库未找到 {d_imdb_id} 的映射，开始通过 TMDb API 反查...")
                                 if self.is_stop_requested(): raise InterruptedError("任务中止")
@@ -1209,7 +1205,11 @@ class MediaProcessor:
                                 )
                                 if person_from_tmdb and person_from_tmdb.get("id"):
                                     tmdb_id_from_find = str(person_from_tmdb.get("id"))
-                                    # 反查成功后，最关键的一步：用TMDb ID再查一次本地映射表
+                                    
+                                    # ★★★ 核心修改 1/2: 无论是否匹配成功，都先将找到的ID暂存起来 ★★★
+                                    d_actor['tmdb_id_from_api'] = tmdb_id_from_find
+                                    d_actor['imdb_id_from_api'] = d_imdb_id
+
                                     final_check_row = self._find_person_in_map_by_tmdb_id(tmdb_id_from_find, cursor)
                                     if final_check_row and dict(final_check_row).get("emby_person_id"):
                                         emby_pid_from_final_check = dict(final_check_row).get("emby_person_id")
@@ -1227,7 +1227,32 @@ class MediaProcessor:
                     if not match_found:
                         still_unmatched_final.append(d_actor)
 
+                # ★★★ 核心修改 2/2: 在丢弃前，执行“数据回收”写入映射表 ★★★
                 if still_unmatched_final:
+                    logger.info(f"  -> [数据回收] 检查 {len(still_unmatched_final)} 位未匹配演员，尝试预缓存其映射关系...")
+                    emby_config_for_upsert = {"url": self.emby_url, "api_key": self.emby_api_key, "user_id": self.emby_user_id}
+                    salvaged_count = 0
+                    for d_actor in still_unmatched_final:
+                        # 检查是否有在API查询中暂存的TMDb ID
+                        tmdb_id_to_save = d_actor.get('tmdb_id_from_api')
+                        if tmdb_id_to_save:
+                            person_data_for_db = {
+                                "emby_id": None, # 明确这是预缓存，没有Emby ID
+                                "name": d_actor.get("Name"),
+                                "tmdb_id": tmdb_id_to_save,
+                                "imdb_id": d_actor.get("imdb_id_from_api"),
+                                "douban_id": d_actor.get("DoubanCelebrityId")
+                            }
+                            # 使用我们现成的 upsert 方法写入数据库
+                            self.actor_db_manager.upsert_person(
+                                cursor=cursor, 
+                                person_data=person_data_for_db, 
+                                emby_config=emby_config_for_upsert
+                            )
+                            salvaged_count += 1
+                    if salvaged_count > 0:
+                        logger.info(f"  -> [演员归档] 成功为 {salvaged_count} 位演员预缓存了映射关系。")
+
                     discarded_names = [d.get('Name') for d in still_unmatched_final]
                     logger.info(f"  -> [丢弃新增] 以下 {len(still_unmatched_final)} 位豆瓣演员因在Emby中无匹配或已达数量上限而被丢弃: {', '.join(discarded_names)}")
         
