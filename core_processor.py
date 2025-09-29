@@ -1242,10 +1242,39 @@ class MediaProcessor:
                     logger.info(f"  -> [丢弃新增] 以下 {len(still_unmatched_final)} 位豆瓣演员因在Emby中无匹配或已达数量上限而被丢弃: {', '.join(discarded_names)}")
         
         # ======================================================================
-        # 步骤 4: ★★★ 截断、排序 ★★★
+        # 步骤 4: ★★★ 补全头像 ★★★
         # ======================================================================
         current_cast_list = list(final_cast_map.values())
-        
+        logger.info(f"  -> 开始为 {len(current_cast_list)} 位演员检查并补全头像信息...")
+        actors_needing_profile = [actor for actor in current_cast_list if not actor.get("profile_path") and actor.get("id")]
+        if actors_needing_profile:
+            logger.debug(f"  -> 发现 {len(actors_needing_profile)} 位演员缺少头像路径，开始补全...")
+            for actor in actors_needing_profile:
+                if stop_event and stop_event.is_set(): raise InterruptedError("任务中止")
+                
+                tmdb_id = actor.get("id")
+                profile_path = None
+                
+                # 1. 优先查本地缓存
+                cached_meta = self._get_actor_metadata_from_cache(tmdb_id, cursor)
+                if cached_meta and cached_meta.get("profile_path"):
+                    profile_path = cached_meta["profile_path"]
+                
+                # 2. 缓存未命中，则调用 API
+                elif tmdb_api_key:
+                    person_details = tmdb_handler.get_person_details(tmdb_id, tmdb_api_key)
+                    if person_details and person_details.get("profile_path"):
+                        profile_path = person_details["profile_path"]
+                        # 将新获取的信息存入缓存，以便下次使用
+                        self.actor_db_manager.update_actor_metadata_from_tmdb(cursor, tmdb_id, person_details)
+                
+                if profile_path:
+                    actor["profile_path"] = profile_path
+            logger.info("  -> 头像信息补全完成。")
+
+        # ★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★
+        # 步骤 5：智能截断逻辑 (Smart Truncation) ★★★
+        # ★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★
         max_actors = self.config.get(constants.CONFIG_OPTION_MAX_ACTORS_TO_PROCESS, 30)
         try:
             limit = int(max_actors)
@@ -1255,37 +1284,22 @@ class MediaProcessor:
 
         original_count = len(current_cast_list)
         
-        # 只有当总数超过上限时，才执行智能截断
         if original_count > limit:
             logger.info(f"  -> 演员列表总数 ({original_count}) 超过上限 ({limit})，将优先保留有头像的演员后进行截断。")
-
-            # 定义统一的排序函数
             sort_key = lambda x: x.get('order') if x.get('order') is not None and x.get('order') >= 0 else 999
-
-            # 1. 将演员分为“有头像”和“无头像”两组
             with_profile = [actor for actor in current_cast_list if actor.get("profile_path")]
             without_profile = [actor for actor in current_cast_list if not actor.get("profile_path")]
-
-            # 2. 分别对两个组按原始番位进行排序
             with_profile.sort(key=sort_key)
             without_profile.sort(key=sort_key)
-
-            # 3. 重新组合列表，有头像的在前
             prioritized_list = with_profile + without_profile
-
-            # 4. 对这个优化后的列表进行最终截断
             cast_to_process = prioritized_list[:limit]
-            
             logger.debug(f"  -> 截断后，保留了 {len(with_profile)} 位有头像演员中的 {len([a for a in cast_to_process if a.get('profile_path')])} 位。")
-
         else:
-            # 如果数量未超限，则保持原样，仅进行排序
             cast_to_process = current_cast_list
             cast_to_process.sort(key=lambda x: x.get('order') if x.get('order') is not None and x.get('order') >= 0 else 999)
 
-
         # ★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★
-        # ★★★ 步骤 5: ★★★ 翻译和格式化 ★★★
+        # 步骤 6: ★★★ 翻译和格式化 ★★★
         # ★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★
         logger.info(f"  -> 将对 {len(cast_to_process)} 位演员进行最终的翻译和格式化处理...")
 
