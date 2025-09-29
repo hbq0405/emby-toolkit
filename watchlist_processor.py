@@ -505,7 +505,7 @@ class WatchlistProcessor:
             
     # ★★★ 核心处理逻辑：单个剧集的所有操作在此完成 ★★★
     def _process_one_series(self, series_data: Dict[str, Any]):
-        item_id = series_data['item_id']
+        item_id = str(series_data['item_id']).strip()
         tmdb_id = series_data['tmdb_id']
         item_name = series_data['item_name']
         is_force_ended = bool(series_data.get('force_ended', 0))
