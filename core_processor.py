@@ -637,10 +637,10 @@ class MediaProcessor:
                                  douban_rating: Optional[float],
                                  tmdb_details_for_extra: Optional[Dict[str, Any]]):
         """
-        【V7 - 老六终极版】
-        - 彻底移除对现有演员的“精准更新”循环，因为其功能已被反哺和靶向修复覆盖。
-        - 流程简化为：反哺数据库 -> 一步到位更新媒体项 -> 靶向修复新演员。
-        - 实现了性能和逻辑的极致简化。
+        【V8 - 终极修复版】
+        - 增加了演员名字的“前置更新”逻辑，在更新媒体的演员列表前，先单独重命名发生变化的演员。
+        - 这可以彻底解决因翻译导致 Emby 创建新的“空白”演员，从而丢失 TMDb ID 的问题。
+        - 流程简化为：反哺数据库 -> 前置更新演员名 -> 一步到位更新媒体项 -> 靶向修复新演员。
         """
         item_id = item_details_from_emby.get("Id")
         item_name_for_log = item_details_from_emby.get("Name", f"未知项目(ID:{item_id})")
@@ -664,6 +664,25 @@ class MediaProcessor:
                     }
                     self.actor_db_manager.upsert_person(cursor=cursor, person_data=person_data_for_db, emby_config=emby_config_for_upsert)
             logger.debug("  -> [实时反哺] 演员映射表更新完成。")
+
+            # ★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★
+            # ★★★ 新增核心修复：演员名字前置更新 (Pre-update Actor Names) ★★★
+            # ★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★
+            logger.info("  -> 写回前置检查：检查并更新已存在演员的名字...")
+            original_names_map = {p.get("Id"): p.get("Name") for p in item_details_from_emby.get("People", []) if p.get("Id")}
+            for actor in final_processed_cast:
+                actor_id = actor.get("emby_person_id")
+                new_name = actor.get("name")
+                original_name = original_names_map.get(actor_id)
+                # 只有当演员已存在、新旧名字不同时，才执行更新
+                if actor_id and new_name and original_name and new_name != original_name:
+                    logger.info(f"  -> 检测到名字变更，正在更新 Person: '{original_name}' -> '{new_name}' (ID: {actor_id})")
+                    emby_handler.update_person_details(
+                        person_id=actor_id, new_data={"Name": new_name},
+                        emby_server_url=self.emby_url, emby_api_key=self.emby_api_key, user_id=self.emby_user_id
+                    )
+            logger.info("  -> 演员名字前置更新完成。")
+
 
             # --- 步骤 2: [一步到位] 将完整列表写入媒体项，这将创建“幽灵演员” ---
             logger.debug(f"  -> 写回步骤 1/2: 准备将 {len(final_processed_cast)} 位演员的完整列表更新到媒体项目...")
