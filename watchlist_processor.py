@@ -661,12 +661,12 @@ class WatchlistProcessor:
                         UPDATE media_metadata
                         SET emby_children_details_json = %s::jsonb,
                             last_synced_at = %s
-                        WHERE emby_item_id = %s AND item_type = 'Series'
+                        WHERE tmdb_id = %s AND item_type = 'Series'
                     """
                     details_json_str = json.dumps(children_details, ensure_ascii=False)
                     current_utc_time = datetime.now(timezone.utc)
                     
-                    cursor.execute(update_query, (details_json_str, current_utc_time, item_id))
+                    cursor.execute(update_query, (details_json_str, current_utc_time, tmdb_id))
                     
                     if cursor.rowcount > 0:
                         logger.info(f"  -> 成功刷新了 '{item_name}' 在 '媒体数据缓存' 中的子项目详情。")
