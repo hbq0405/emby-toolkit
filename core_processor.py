@@ -1013,6 +1013,8 @@ class MediaProcessor:
         - 在步骤4的开头，重新加入了对最终演员列表进行截断的逻辑。
         - 确保在进行AI翻译等耗时操作前，将演员数量限制在配置的上限内。
         """
+        # ★★★ 在流程开始时，记录下来自TMDb的原始演员ID ★★★
+        original_tmdb_ids = {str(actor.get("id")) for actor in tmdb_cast_people if actor.get("id")}
         # ======================================================================
         # 步骤 1: ★★★ 数据适配 ★★★
         # ======================================================================
@@ -1245,35 +1247,42 @@ class MediaProcessor:
         # 步骤 4: ★★★ 补全头像 ★★★
         # ======================================================================
         current_cast_list = list(final_cast_map.values())
-        logger.info(f"  -> 开始为 {len(current_cast_list)} 位演员检查并补全头像信息...")
-        actors_needing_profile = [actor for actor in current_cast_list if not actor.get("profile_path") and actor.get("id")]
-        if actors_needing_profile:
-            logger.debug(f"  -> 发现 {len(actors_needing_profile)} 位演员缺少头像路径，开始补全...")
-            for actor in actors_needing_profile:
+        
+        # ★★★ 核心修改 2/3: 筛选需要补全的演员时，排除掉原始TMDb列表中的演员 ★★★
+        actors_to_supplement = [
+            actor for actor in current_cast_list 
+            if str(actor.get("id")) not in original_tmdb_ids and actor.get("id")
+        ]
+        
+        if actors_to_supplement:
+            total_to_supplement = len(actors_to_supplement)
+            logger.info(f"  -> 开始为 {total_to_supplement} 位新增演员检查并补全头像信息...")
+            
+            supplemented_count = 0
+            for actor in actors_to_supplement:
                 if stop_event and stop_event.is_set(): raise InterruptedError("任务中止")
                 
                 tmdb_id = actor.get("id")
                 profile_path = None
                 
-                # 1. 优先查本地缓存
                 cached_meta = self._get_actor_metadata_from_cache(tmdb_id, cursor)
                 if cached_meta and cached_meta.get("profile_path"):
                     profile_path = cached_meta["profile_path"]
                 
-                # 2. 缓存未命中，则调用 API
                 elif tmdb_api_key:
                     person_details = tmdb_handler.get_person_details_tmdb(tmdb_id, tmdb_api_key)
                     if person_details:
-                        # 将新获取的信息存入缓存，以便下次使用（无论有无头像）
                         self.actor_db_manager.update_actor_metadata_from_tmdb(cursor, tmdb_id, person_details)
-                        
-                        # 如果有头像，则更新当前内存中的对象
                         if person_details.get("profile_path"):
                             profile_path = person_details["profile_path"]
                 
                 if profile_path:
                     actor["profile_path"] = profile_path
-            logger.info("  -> 头像信息补全完成。")
+                    supplemented_count += 1
+
+            logger.info(f"  -> 新增演员头像信息补全完成，成功为 {supplemented_count}/{total_to_supplement} 位演员补充了头像。")
+        else:
+            logger.info("  -> 没有需要补充头像的新增演员。")
 
         # ★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★
         # 步骤 5：智能截断逻辑 (Smart Truncation) ★★★
