@@ -1242,31 +1242,51 @@ class MediaProcessor:
                     logger.info(f"  -> [丢弃新增] 以下 {len(still_unmatched_final)} 位豆瓣演员因在Emby中无匹配或已达数量上限而被丢弃: {', '.join(discarded_names)}")
         
         # ======================================================================
-        # 步骤 4: ★★★ 整合、排序、翻译和格式化 ★★★
+        # 步骤 4: ★★★ 截断、排序 ★★★
         # ======================================================================
         current_cast_list = list(final_cast_map.values())
         
-        # ★★★ 演员列表最终截断逻辑 (在翻译和格式化之前执行) ★★★
         max_actors = self.config.get(constants.CONFIG_OPTION_MAX_ACTORS_TO_PROCESS, 30)
         try:
             limit = int(max_actors)
-            if limit <= 0:
-                limit = 30
+            if limit <= 0: limit = 30
         except (ValueError, TypeError):
             limit = 30
 
         original_count = len(current_cast_list)
+        
+        # 只有当总数超过上限时，才执行智能截断
         if original_count > limit:
-            logger.info(f"  -> 演员列表总数 ({original_count}) 超过上限 ({limit})，将在翻译前进行截断。")
-            # 按 order 排序，确保保留最重要的演员
-            current_cast_list.sort(key=lambda x: x.get('order') if x.get('order') is not None and x.get('order') >= 0 else 999)
-            cast_to_process = current_cast_list[:limit]
+            logger.info(f"  -> 演员列表总数 ({original_count}) 超过上限 ({limit})，将优先保留有头像的演员后进行截断。")
+
+            # 定义统一的排序函数
+            sort_key = lambda x: x.get('order') if x.get('order') is not None and x.get('order') >= 0 else 999
+
+            # 1. 将演员分为“有头像”和“无头像”两组
+            with_profile = [actor for actor in current_cast_list if actor.get("profile_path")]
+            without_profile = [actor for actor in current_cast_list if not actor.get("profile_path")]
+
+            # 2. 分别对两个组按原始番位进行排序
+            with_profile.sort(key=sort_key)
+            without_profile.sort(key=sort_key)
+
+            # 3. 重新组合列表，有头像的在前
+            prioritized_list = with_profile + without_profile
+
+            # 4. 对这个优化后的列表进行最终截断
+            cast_to_process = prioritized_list[:limit]
+            
+            logger.debug(f"  -> 截断后，保留了 {len(with_profile)} 位有头像演员中的 {len([a for a in cast_to_process if a.get('profile_path')])} 位。")
+
         else:
+            # 如果数量未超限，则保持原样，仅进行排序
             cast_to_process = current_cast_list
-            # 即使不截断，也要排序
             cast_to_process.sort(key=lambda x: x.get('order') if x.get('order') is not None and x.get('order') >= 0 else 999)
 
 
+        # ★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★
+        # ★★★ 步骤 5: ★★★ 翻译和格式化 ★★★
+        # ★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★
         logger.info(f"  -> 将对 {len(cast_to_process)} 位演员进行最终的翻译和格式化处理...")
 
         if not (self.ai_translator and self.config.get(constants.CONFIG_OPTION_AI_TRANSLATION_ENABLED, False)):
