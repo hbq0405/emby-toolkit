@@ -1227,11 +1227,19 @@ class MediaProcessor:
             final_translation_map = {}
             terms_to_translate = set()
             for actor in cast_to_process:
+                # 【修正 1/4】同时收集演员名和角色名
+                # 收集角色名
                 character = actor.get('character')
                 if character:
                     cleaned_character = utils.clean_character_name_static(character)
                     if cleaned_character and not utils.contains_chinese(cleaned_character):
                         terms_to_translate.add(cleaned_character)
+                
+                # 收集演员名
+                name = actor.get('name')
+                if name and not utils.contains_chinese(name):
+                    terms_to_translate.add(name)
+
             remaining_terms = list(terms_to_translate)
             if remaining_terms:
                 cached_results = {}
@@ -1267,7 +1275,15 @@ class MediaProcessor:
                 item_year = item_details_from_emby.get("ProductionYear")
                 quality_results = self.ai_translator.batch_translate(remaining_terms, mode='quality', title=item_title, year=item_year)
                 final_translation_map.update(quality_results)
+            
+            # 【修正 2/4】回填翻译结果时，同时处理演员名和角色名
             for actor in cast_to_process:
+                # 回填演员名
+                original_name = actor.get('name')
+                if original_name and original_name in final_translation_map:
+                    actor['name'] = final_translation_map[original_name]
+
+                # 回填角色名
                 original_character = actor.get('character')
                 if original_character:
                     cleaned_character = utils.clean_character_name_static(original_character)
@@ -1275,6 +1291,7 @@ class MediaProcessor:
                 else:
                     actor['character'] = ''
 
+        # 【修正 3/4 & 4/4】后面的逻辑保持不变，因为它们依赖的是修正后的 cast_to_process 列表
         tmdb_to_emby_id_map = {
             str(actor.get('id')): actor.get('emby_person_id')
             for actor in cast_to_process if actor.get('id') and actor.get('emby_person_id')
