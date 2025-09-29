@@ -1229,7 +1229,7 @@ class MediaProcessor:
 
                 # ★★★ 核心修改 2/2: 在丢弃前，执行“数据回收”写入映射表 ★★★
                 if still_unmatched_final:
-                    logger.info(f"  -> [数据回收] 检查 {len(still_unmatched_final)} 位未匹配演员，尝试预缓存其映射关系...")
+                    logger.info(f"  -> [演员归档] 检查 {len(still_unmatched_final)} 位未匹配演员，尝试预缓存其映射关系...")
                     emby_config_for_upsert = {"url": self.emby_url, "api_key": self.emby_api_key, "user_id": self.emby_user_id}
                     salvaged_count = 0
                     for d_actor in still_unmatched_final:
