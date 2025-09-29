@@ -633,52 +633,8 @@ class WatchlistProcessor:
         }
         self._update_watchlist_entry(item_id, item_name, updates_to_db)
 
-        # 步骤6：更新媒体数据缓存
-        try:
-            logger.debug(f"  -> 正在为 '{item_name}' 更新 '媒体数据缓存' 中的子项目详情...")
-            
-            # 复用已经获取的 emby_children 数据来构建详情列表
-            children_details = []
-            if emby_children:
-                for child in emby_children:
-                    child_type = child.get("Type")
-                    detail = {
-                        "Id": child.get("Id"),
-                        "Type": child_type,
-                        "Name": child.get("Name")
-                    }
-                    if child_type == "Season":
-                        detail["SeasonNumber"] = child.get("IndexNumber")
-                    elif child_type == "Episode":
-                        detail["SeasonNumber"] = child.get("ParentIndexNumber")
-                        detail["EpisodeNumber"] = child.get("IndexNumber")
-                        detail["Overview"] = child.get("Overview")
-                    children_details.append(detail)
-            
-            with connection.get_db_connection() as conn:
-                with conn.cursor() as cursor:
-                    update_query = """
-                        UPDATE media_metadata
-                        SET emby_children_details_json = %s::jsonb,
-                            last_synced_at = %s
-                        WHERE tmdb_id = %s AND item_type = 'Series'
-                    """
-                    details_json_str = json.dumps(children_details, ensure_ascii=False)
-                    current_utc_time = datetime.now(timezone.utc)
-                    
-                    cursor.execute(update_query, (details_json_str, current_utc_time, tmdb_id))
-                    
-                    if cursor.rowcount > 0:
-                        logger.info(f"  -> 成功刷新了 '{item_name}' 在 '媒体数据缓存' 中的子项目详情。")
-                    else:
-                        # 这种情况是正常的，可能该剧集还未被全量扫描过，所以 media_metadata 里没有记录
-                        logger.debug(f"  -> 在 '媒体数据缓存' 中未找到 '{item_name}' 的记录，本次不更新子项目详情。")
-                conn.commit()
-
-        except Exception as e_sync:
-            logger.error(f"  -> [追剧联动] 在同步 '{item_name}' 的子项目详情到 '媒体数据缓存' 时发生错误: {e_sync}", exc_info=True)
-
-        # 步骤7: 【最终动作】如果需要，命令Emby刷新自己
+        # 步骤6: 命令Emby刷新自己，并同步更新内存中的`emby_children`
+        logger.debug(f"  -> 开始检查并注入缺失的分集简介到 Emby...")
         tmdb_episodes_map = {
             f"S{ep.get('season_number')}E{ep.get('episode_number')}": ep
             for ep in all_tmdb_episodes
@@ -714,14 +670,66 @@ class WatchlistProcessor:
                             emby_api_key=self.emby_api_key,
                             user_id=self.emby_user_id
                         )
-                        if not success:
+
+                        if success:
+                            logger.info(f"  -> Emby 分集 '{ep_name_for_log}' (ID: {emby_episode_id}) 简介更新成功。")
+                            # ★★★ 核心修改：同步更新内存中的数据，为稍后的步骤6做准备 ★★★
+                            emby_episode['Overview'] = overview
+                            emby_episode['Name'] = data_to_inject.get("Name")
+                        else:
                             logger.error(f"  -> 更新 Emby 分集 '{ep_name_for_log}' (ID: {emby_episode_id}) 简介失败。")
                     else:
                         logger.info(f"  -> TMDb中分集 '{ep_name_for_log}' 尚无简介，跳过更新。")
                 else:
                     logger.warning(f"  -> Emby分集 '{ep_name_for_log}' 缺少简介，但在TMDb中未找到对应信息。")
         else:
-            logger.info(f"  -> 剧集状态为 '{translate_internal_status(final_status)}' 或本地文件完整，无需执行分集更新。")
+            # 这个else属于for循环，表示循环正常结束，没有被break
+            logger.info(f"  -> 分集简介检查与注入流程完成。")
+
+        # 步骤7：更新媒体数据缓存
+        try:
+            logger.debug(f"  -> 正在为 '{item_name}' 更新 '媒体数据缓存' 中的子项目详情...")
+            
+            # ★★★ 此处无需修改，因为它现在使用的是已经被步骤7更新过的 `emby_children` ★★★
+            children_details = []
+            if emby_children:
+                for child in emby_children:
+                    child_type = child.get("Type")
+                    detail = {
+                        "Id": child.get("Id"),
+                        "Type": child_type,
+                        "Name": child.get("Name")
+                    }
+                    if child_type == "Season":
+                        detail["SeasonNumber"] = child.get("IndexNumber")
+                    elif child_type == "Episode":
+                        detail["SeasonNumber"] = child.get("ParentIndexNumber")
+                        detail["EpisodeNumber"] = child.get("IndexNumber")
+                        detail["Overview"] = child.get("Overview")
+                    children_details.append(detail)
+            
+            with connection.get_db_connection() as conn:
+                with conn.cursor() as cursor:
+                    update_query = """
+                        UPDATE media_metadata
+                        SET emby_children_details_json = %s::jsonb,
+                            last_synced_at = %s
+                        WHERE tmdb_id = %s AND item_type = 'Series'
+                    """
+                    details_json_str = json.dumps(children_details, ensure_ascii=False)
+                    current_utc_time = datetime.now(timezone.utc)
+                    
+                    # 使用 tmdb_id 来定位剧集
+                    cursor.execute(update_query, (details_json_str, current_utc_time, tmdb_id))
+                    
+                    if cursor.rowcount > 0:
+                        logger.info(f"  -> 成功刷新了 '{item_name}' 在 '媒体数据缓存' 中的子项目详情。")
+                    else:
+                        logger.debug(f"  -> 在 '媒体数据缓存' 中未找到 TMDb ID 为 '{tmdb_id}' 的记录，本次不更新子项目详情。")
+                conn.commit()
+
+        except Exception as e_sync:
+            logger.error(f"  -> [追剧联动] 在同步 '{item_name}' 的子项目详情到 '媒体数据缓存' 时发生错误: {e_sync}", exc_info=True)
 
     # --- 统一的、公开的追剧处理入口 ★★★
     def process_watching_list(self, item_id: Optional[str] = None):
