@@ -362,7 +362,7 @@ def main_app_start():
     gevent.spawn(run_proxy_server)
 
     main_app_port = int(constants.WEB_APP_PORT)
-    logger.info(f"  -> ✅  主应用服务器启动完成，监听端口: {main_app_port}")
+    logger.info(f"  -> ✅ 主应用服务器启动完成，监听端口: {main_app_port}")
     
     class NullLogger:
         def write(self, data): pass
