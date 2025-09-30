@@ -347,7 +347,7 @@ class SchedulerManager:
                 name=task_description,
                 replace_existing=True
             )
-            logger.info(f"已成功设置'{task_description}'任务，执行计划: 每周日 05:00。")
+            logger.trace(f"已成功设置'{task_description}'任务，执行计划: 每周日 05:00。")
         except ValueError as e:
             logger.error(f"设置'{task_description}'任务失败：CRON表达式 '{cron_str}' 无效。错误: {e}")
 

@@ -100,7 +100,7 @@ def login():
     if user and check_password_hash(user['password_hash'], password):
         session['user_id'] = user['id']
         session['username'] = user['username']
-        logger.info(f"用户 '{user['username']}' 登录成功。")
+        logger.info(f"  -> 用户 '{user['username']}' 登录成功。")
         
         # 【修改5】: 核心逻辑 - 判断用户是否正在使用默认密码登录
         force_change_password = (password == DEFAULT_INITIAL_PASSWORD)
