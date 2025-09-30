@@ -94,7 +94,7 @@ def task_worker_function():
     【V2 - 精确调度版】
     通用工人线程，根据提交任务时指定的 processor_type 来精确选择处理器。
     """
-    logger.info("通用任务线程已启动，等待任务...")
+    logger.trace("  -> 通用任务线程已启动，等待任务...")
     while True:
         try:
             task_info = task_queue.get()

@@ -57,10 +57,10 @@ class DoubanApi:
         
         if cooldown_seconds is not None and cooldown_seconds > 0:
             DoubanApi._cooldown_seconds = cooldown_seconds
-            logger.info(f"豆瓣Api 已设置请求冷却时间为: {DoubanApi._cooldown_seconds} 秒。")
+            logger.trace(f"豆瓣Api 已设置请求冷却时间为: {DoubanApi._cooldown_seconds} 秒。")
         if user_cookie:
             DoubanApi._user_cookie = user_cookie
-            logger.info("DoubanApi 已加载用户登录 Cookie。")
+            logger.trace("DoubanApi 已加载用户登录 Cookie。")
     @classmethod
     def _apply_cooldown(cls):
         """在每次API请求前应用冷却等待，线程安全。"""

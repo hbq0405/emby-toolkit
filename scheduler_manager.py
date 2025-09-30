@@ -192,7 +192,7 @@ class SchedulerManager:
             return
         try:
             self.scheduler.start()
-            logger.info("定时任务调度器已启动。")
+            logger.debug("  -> 定时任务调度器已启动。")
             # 在启动时，根据当前配置更新所有任务
             self.update_all_scheduled_jobs()
         except Exception as e:
@@ -215,7 +215,7 @@ class SchedulerManager:
             self.start()
             if not self.scheduler.running: return
 
-        logger.info("正在根据最新配置更新所有定时任务...")
+        logger.info("  -> 正在根据最新配置更新所有定时任务...")
         self.update_high_freq_task_chain_job()
         self.update_low_freq_task_chain_job()
         self.update_revival_check_job()
@@ -268,7 +268,7 @@ class SchedulerManager:
                 friendly_cron_str = _get_next_run_time_str(cron_str)
                 chain_max_runtime_minutes = config.get(runtime_key, 0)
                 log_message = (
-                    f"已成功设置'{job_name}'，执行计划: {friendly_cron_str}，"
+                    f"  -> 已成功设置'{job_name}'，执行计划: {friendly_cron_str}，"
                     f"包含 {len(task_sequence)} 个任务。"
                 )
                 if chain_max_runtime_minutes > 0:

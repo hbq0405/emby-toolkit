@@ -37,12 +37,12 @@ def init_db():
     """
     【PostgreSQL版】初始化数据库，创建所有表的最终结构。
     """
-    logger.info("正在初始化 PostgreSQL 数据库，创建/验证所有表的结构...")
+    logger.debug("  -> 正在初始化 PostgreSQL 数据库，创建/验证所有表的结构...")
     
     try:
         with get_db_connection() as conn:
             with conn.cursor() as cursor:
-                logger.info("  -> 数据库连接成功，开始建表...")
+                logger.trace("  -> 数据库连接成功，开始建表...")
 
                 # --- 1. 创建基础表 (日志、缓存、用户) ---
                 logger.trace("  -> 正在创建基础表...")
@@ -389,7 +389,7 @@ def init_db():
                 cursor.execute("CREATE INDEX IF NOT EXISTS idx_eue_expiration_date ON emby_users_extended (expiration_date);")
 
                 # --- 2. 执行平滑升级检查 ---
-                logger.info("  -> 开始执行数据库表结构升级检查...")
+                logger.trace("  -> 开始执行数据库表结构升级检查...")
                 
                 # --- 2.1 移除 actor_metadata 的外键约束 (如果存在) ---
                 try:
@@ -421,9 +421,9 @@ def init_db():
                     """)
                     column_info = cursor.fetchone()
                     if column_info and column_info['is_nullable'] == 'NO':
-                        logger.info("    -> [数据库升级] 检测到 'emby_person_id' 字段存在 NOT NULL 约束，正在移除...")
+                        logger.trace("    -> [数据库升级] 检测到 'emby_person_id' 字段存在 NOT NULL 约束，正在移除...")
                         cursor.execute("ALTER TABLE person_identity_map ALTER COLUMN emby_person_id DROP NOT NULL;")
-                        logger.info("    -> [数据库升级] 约束移除成功。")
+                        logger.trace("    -> [数据库升级] 约束移除成功。")
                     else:
                         logger.trace("    -> 'emby_person_id' 字段已允许为空，无需升级。")
                 except Exception as e_not_null:
@@ -498,10 +498,10 @@ def init_db():
                 except Exception as e_index:
                     logger.error(f"  -> 创建 'emby_item_id' 索引时出错: {e_index}", exc_info=True)
 
-                logger.info("  -> 数据库升级检查完成。")
+                logger.trace("  -> 数据库升级检查完成。")
 
             conn.commit()
-            logger.info("✅ PostgreSQL 数据库初始化完成，所有表结构已创建/验证。")
+            logger.info("  -> PostgreSQL 数据库初始化完成，所有表结构已创建/验证。")
 
     except psycopg2.Error as e_pg:
         logger.error(f"数据库初始化时发生 PostgreSQL 错误: {e_pg}", exc_info=True)

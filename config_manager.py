@@ -187,7 +187,7 @@ def load_config():
             bootstrap_config[key] = config_parser.get(section, key, fallback=default)
 
     # --- 使用环境变量覆盖数据库连接信息 ---
-    logger.info("检查数据库环境变量...")
+    logger.info("  -> 检查数据库环境变量...")
     env_to_config_map = {
         constants.ENV_VAR_DB_HOST: constants.CONFIG_OPTION_DB_HOST,
         constants.ENV_VAR_DB_PORT: constants.CONFIG_OPTION_DB_PORT,
@@ -200,7 +200,7 @@ def load_config():
     for env_var, config_key in env_to_config_map.items():
         env_value = os.environ.get(env_var)
         if env_value:
-            logger.info(f"检测到环境变量 '{env_var}'，将覆盖配置 '{config_key}'。")
+            logger.trace(f"  -> 检测到环境变量 '{env_var}'，将覆盖配置 '{config_key}'。")
             if config_key == constants.CONFIG_OPTION_DB_PORT:
                 try:
                     bootstrap_config[config_key] = int(env_value)
@@ -211,7 +211,7 @@ def load_config():
 
     # 将加载好的启动配置更新到全局配置中
     APP_CONFIG.update(bootstrap_config)
-    logger.info("启动配置已加载。")
+    logger.trace("  -> 启动配置已加载。")
 
     # ======================================================================
     # 阶段 2: 加载动态应用配置 (从数据库)
@@ -229,7 +229,7 @@ def load_config():
 
         # 将加载好的动态配置也更新到全局配置中
         APP_CONFIG.update(final_dynamic_config)
-        logger.info("动态应用配置已从数据库加载。")
+        logger.trace("  -> 动态应用配置已从数据库加载。")
 
     except Exception as e:
         # 如果连接数据库或读取setting失败，程序不能崩溃，必须用默认值继续运行
@@ -237,7 +237,7 @@ def load_config():
         default_dynamic_config = {key: default for key, (section, type, default) in DYNAMIC_CONFIG_DEF.items()}
         APP_CONFIG.update(default_dynamic_config)
 
-    logger.info("所有配置已加载完成。")
+    logger.info("  -> 所有配置已加载完成。")
     # 函数现在不再需要返回 is_first_run，因为这个状态只在函数内部使用
     # 但为了保持函数签名不变，我们暂时保留它
     return APP_CONFIG, is_first_run

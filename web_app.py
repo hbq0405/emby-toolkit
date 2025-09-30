@@ -147,7 +147,7 @@ def initialize_processors():
     # 初始化 media_processor_instance_local
     try:
         media_processor_instance_local = MediaProcessor(config=current_config)
-        logger.info("核心处理器 实例已创建/更新。")
+        logger.trace("  ->核心处理器 实例已创建/更新。")
     except Exception as e:
         logger.error(f"创建 MediaProcessor 实例失败: {e}", exc_info=True)
         media_processor_instance_local = None
@@ -326,7 +326,7 @@ def main_app_start():
     from geventwebsocket.handler import WebSocketHandler
     import gevent
 
-    logger.info(f"应用程序启动... 版本: {constants.APP_VERSION}")
+    logger.info(f"  -> 应用程序启动... 版本: {constants.APP_VERSION}")
     
     config_manager.load_config()
     
@@ -362,7 +362,7 @@ def main_app_start():
     gevent.spawn(run_proxy_server)
 
     main_app_port = int(constants.WEB_APP_PORT)
-    logger.info(f"🚀 [GEVENT] 主应用服务器即将启动，监听端口: {main_app_port}")
+    logger.info(f"  -> ✅  主应用服务器启动完成，监听端口: {main_app_port}")
     
     class NullLogger:
         def write(self, data): pass
