@@ -800,87 +800,91 @@ def get_all_persons_from_emby(
     force_full_scan: bool = False
 ) -> Generator[List[Dict[str, Any]], None, None]:
     """
-    【V9.0 - 范例移植最终版】
-    - 采纳用户反馈，完全移植 task_purge_unregistered_actors 中的成功逻辑。
-    - 实现了真正的“精准按库扫描”与“实时进度汇报”的结合。
-    - 流程：1. 获取指定库的媒体项 -> 2. 提取演员ID -> 3. 分批获取演员详情并实时汇报进度。
+    【V10.0 - 并发重构最终版】
+    - 彻底修复因 Emby API 变更导致 get_emby_items_by_id 无法获取 Person 的问题。
+    - 精准扫描模式改为并发（多线程）逐个获取演员详情，确保数据获取的可靠性。
+    - 进度条与单个演员的获取绑定，提供最实时、最准确的进度反馈。
     """
     if not user_id:
         logger.error("获取所有演员需要提供 User ID，但未提供。任务中止。")
         return
 
-    # 检查是否配置了媒体库，如果没有，则直接进入全量扫描模式
     library_ids = config_manager.APP_CONFIG.get(constants.CONFIG_OPTION_EMBY_LIBRARIES_TO_PROCESS)
     
     # ======================================================================
-    # 模式一：精准按库扫描 (如果配置了媒体库)
+    # 模式一：精准按库扫描 (并发模型)
     # ======================================================================
     if library_ids and not force_full_scan:
         logger.info(f"  -> 检测到配置了 {len(library_ids)} 个媒体库，将执行精准扫描...")
         
         try:
-            # --- 步骤 1: 从指定媒体库获取所有媒体项 ---
-            if update_status_callback: update_status_callback(5, "步骤 1/3: 正在从媒体库获取项目...")
+            # --- 步骤 1: 分析媒体库，收集演员 Emby ID (此部分逻辑正确，保持不变) ---
+            if update_status_callback: update_status_callback(5, "步骤 1/2: 正在分析媒体库...")
             media_items = get_emby_library_items(
                 base_url=base_url, api_key=api_key, user_id=user_id,
                 library_ids=library_ids, media_type_filter="Movie,Series", 
                 fields="People", force_user_endpoint=True
             )
-
             if not media_items:
-                logger.warning("  -> 在所选媒体库中未找到任何媒体项，任务结束。")
-                if update_status_callback: update_status_callback(100, "媒体库为空，任务完成。")
+                if update_status_callback: update_status_callback(100, "媒体库为空。")
                 return
 
-            # --- 步骤 2: 从媒体项中提取所有唯一的演员ID ---
-            if update_status_callback: update_status_callback(25, "步骤 2/3: 正在分析项目，提取演员ID...")
-            unique_person_ids = set()
-            for item in media_items:
-                for person in item.get("People", []):
-                    if person_id := person.get("Id"):
-                        unique_person_ids.add(person_id)
-            
+            unique_person_ids = {p['Id'] for item in media_items for p in item.get("People", []) if p.get('Id')}
             person_ids_to_fetch = list(unique_person_ids)
             total_persons = len(person_ids_to_fetch)
-            logger.info(f"  -> 在选定媒体库中，共识别出 {total_persons} 位独立演员。")
-
-            if not person_ids_to_fetch:
-                if update_status_callback: update_status_callback(100, "未找到任何演员，任务完成。")
+            logger.info(f"  -> 分析完成，在媒体库中发现 {total_persons} 位独立演员。")
+            if not total_persons:
+                if update_status_callback: update_status_callback(100, "未找到演员。")
                 return
 
-            # --- 步骤 3: 分批获取这些演员的完整详情，并实时汇报进度 ---
-            if update_status_callback: update_status_callback(50, f"步骤 3/3: 准备获取 {total_persons} 位演员的详情...")
-            processed_persons = 0
+            # --- 步骤 2: 并发获取演员详情，并实时汇报进度 ---
+            if update_status_callback: update_status_callback(20, f"步骤 2/2: 准备并发获取 {total_persons} 位演员详情...")
             
-            for i in range(0, total_persons, batch_size):
-                if stop_event and stop_event.is_set(): return
-                
-                batch_ids = person_ids_to_fetch[i:i + batch_size]
-                person_details_batch = get_emby_items_by_id(
-                    base_url=base_url, api_key=api_key, user_id=user_id,
-                    item_ids=batch_ids, fields="ProviderIds,Name"
-                )
-                
-                if person_details_batch:
-                    # 先交出数据
-                    yield person_details_batch
+            all_person_details = []
+            processed_count = 0
+            lock = threading.Lock() # 线程锁，用于安全地更新计数和列表
 
-                    # 然后汇报进度
-                    processed_persons += len(person_details_batch)
-                    if update_status_callback:
-                        progress = 50 + int((processed_persons / total_persons) * 50) # 进度从50%开始
-                        update_status_callback(progress, f"已同步 {processed_persons}/{total_persons} 名演员...")
+            # 定义单个任务
+            def fetch_person_detail(person_id):
+                return get_emby_item_details(
+                    item_id=person_id, emby_server_url=base_url, emby_api_key=api_key, 
+                    user_id=user_id, fields="ProviderIds,Name"
+                )
+
+            # 使用线程池执行并发请求
+            with concurrent.futures.ThreadPoolExecutor(max_workers=8) as executor:
+                future_to_id = {executor.submit(fetch_person_detail, pid): pid for pid in person_ids_to_fetch}
+
+                for future in concurrent.futures.as_completed(future_to_id):
+                    if stop_event and stop_event.is_set():
+                        executor.shutdown(wait=False, cancel_futures=True)
+                        break
+                    
+                    result = future.result()
+                    with lock:
+                        processed_count += 1
+                        if result:
+                            all_person_details.append(result)
+                        
+                        if update_status_callback:
+                            progress = 20 + int((processed_count / total_persons) * 80) # 进度从20%开始
+                            update_status_callback(progress, f"已同步 {processed_count}/{total_persons} 名演员...")
             
+            if stop_event and stop_event.is_set(): return
+
+            # --- 步骤 3: 将获取到的所有数据分批次交出 ---
+            for i in range(0, len(all_person_details), batch_size):
+                yield all_person_details[i:i + batch_size]
+
             return # ★★★ 精准模式成功，任务结束 ★★★
 
         except Exception as e:
             logger.error(f"精准扫描模式执行失败: {e}", exc_info=True)
-            logger.warning("将自动降级为全量扫描模式...")
-            if update_status_callback: update_status_callback(0, "精准扫描失败，已降级为全量扫描...")
+            if update_status_callback: update_status_callback(0, "精准扫描失败，已降级...")
 
 
     # ======================================================================
-    # 模式二：全量扫描 (在未配置媒体库、强制扫描或精准扫描失败时)
+    # 模式二：全量扫描 (此模式工作正常，保持不变)
     # ======================================================================
     logger.info("  -> 开始从整个 Emby 服务器分批获取所有演员数据 (全量模式)...")
     
@@ -923,7 +927,7 @@ def get_all_persons_from_emby(
                 progress = int((start_index / total_count) * 100) if total_count > 0 else 100
                 update_status_callback(progress, f"已扫描 {start_index}/{total_count if total_count > 0 else '未知'} 名演员...")
 
-        except requests.requests.RequestException as e:
+        except requests.exceptions.RequestException as e:
             logger.error(f"请求 Emby API 失败 (批次 StartIndex={start_index}): {e}", exc_info=True)
             return
 # ✨✨✨ 获取剧集下所有剧集的函数 ✨✨✨
