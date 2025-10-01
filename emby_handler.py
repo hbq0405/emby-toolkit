@@ -800,9 +800,9 @@ def get_all_persons_from_emby(
     force_full_scan: bool = False
 ) -> Generator[List[Dict[str, Any]], None, None]:
     """
-    【V5.0 - 智能降级最终版】
-    - 新增“自动降级”机制，完美兼容不支持精准扫描的旧版或 Beta 版 Emby。
-    - 优先尝试按媒体库精准扫描，如果失败（未获取到任何演员），则自动切换到全量扫描模式。
+    【V6.0 - 4.9+ 终极兼容版】
+    - 修正了全量扫描模式，使其在 Emby 4.9+ 上能正常工作。
+    - 同样切换到 /Items 端点并移除了 UserId 参数。
     """
     if not user_id:
         logger.error("获取所有演员需要提供 User ID，但未提供。任务中止。")
@@ -868,8 +868,9 @@ def get_all_persons_from_emby(
     
     total_count = 0
     try:
+        # ★★★ 核心修正: 切换到 /Items 端点且不使用 UserId 获取总数 ★★★
         count_url = f"{base_url.rstrip('/')}/Items"
-        count_params = {"api_key": api_key, "UserId": user_id, "IncludeItemTypes": "Person", "Recursive": "true", "Limit": 0}
+        count_params = {"api_key": api_key, "IncludeItemTypes": "Person", "Recursive": "true", "Limit": 0}
         api_timeout = config_manager.APP_CONFIG.get(constants.CONFIG_OPTION_EMBY_API_TIMEOUT, 60)
         response = requests.get(count_url, params=count_params, timeout=api_timeout)
         response.raise_for_status()
@@ -878,12 +879,14 @@ def get_all_persons_from_emby(
     except Exception as e:
         logger.error(f"获取 Emby Person 总数失败: {e}")
     
-    api_url = f"{base_url.rstrip('/')}/Users/{user_id}/Items"
+    # ★★★ 核心修正: 切换到 /Items 端点 ★★★
+    api_url = f"{base_url.rstrip('/')}/Items"
     headers = {"X-Emby-Token": api_key, "Accept": "application/json"}
     params = {
         "Recursive": "true",
         "IncludeItemTypes": "Person",
         "Fields": "ProviderIds,Name",
+        # ★★★ 核心修正: 不再传递 UserId。演员是全局对象。 ★★★
     }
     start_index = 0
     api_timeout = config_manager.APP_CONFIG.get(constants.CONFIG_OPTION_EMBY_API_TIMEOUT, 60)
@@ -1316,17 +1319,18 @@ def create_or_update_collection_with_emby_ids(
 def get_emby_items_by_id(
     base_url: str,
     api_key: str,
-    user_id: str,
+    user_id: str, # 参数保留以兼容旧的调用，但内部不再使用
     item_ids: List[str],
     fields: Optional[str] = None
 ) -> List[Dict[str, Any]]:
     """
-    【V3 - 4.9+ 兼容版】
-    根据ID列表批量获取Emby项目，并自动分批处理超长ID列表以避免414错误。
-    - 核心变更: 适配 Emby 4.9+ (Beta) API 调整，将请求端点从 /Users/{UserId}/Items 切换到 /Items，
-      并通过 UserId 参数来获取特定用户的项目数据。这解决了在新版中无法通过旧接口获取 Person 类型详情的问题。
+    【V4 - 4.9+ 终极兼容版】
+    根据ID列表批量获取Emby项目。
+    - 核心变更: 适配 Emby 4.9+ API, 切换到 /Items 端点。
+    - 关键修正: 在查询 Person 等全局项目时，不能传递 UserId，否则新版API会返回空结果。
+      此函数现在不再将 UserId 传递给 API，以确保能获取到演员详情。
     """
-    if not all([base_url, api_key, user_id]) or not item_ids:
+    if not all([base_url, api_key]) or not item_ids: # UserId 不再是必须检查的参数
         return []
 
     all_items = []
@@ -1347,8 +1351,8 @@ def get_emby_items_by_id(
         params = {
             "api_key": api_key,
             "Ids": ",".join(batch_ids), # 只使用当前批次的ID
-            "Fields": fields or "ProviderIds,UserData,Name,ProductionYear,CommunityRating,DateCreated,PremiereDate,Type,RecursiveItemCount,SortName",
-            "UserId": user_id  # ★★★ 核心修改: 将 UserId 作为参数传递 ★★★
+            "Fields": fields or "ProviderIds,UserData,Name,ProductionYear,CommunityRating,DateCreated,PremiereDate,Type,RecursiveItemCount,SortName"
+            # ★★★ 核心修正: 不再传递 UserId。演员等Person对象是全局的，使用UserId会导致查询失败。★★★
         }
 
         try:
@@ -1356,7 +1360,6 @@ def get_emby_items_by_id(
             
             if len(id_chunks) > 1:
                 logger.trace(f"  -> 正在请求批次 {i+1}/{len(id_chunks)} (包含 {len(batch_ids)} 个ID)...")
-            
             response = requests.get(api_url, params=params, timeout=api_timeout)
             response.raise_for_status()
             
