@@ -691,8 +691,17 @@ class MediaProcessor:
 
             # --- 步骤 2: [一步到位] 将完整列表写入媒体项，这将创建“幽灵演员” ---
             logger.debug(f"  -> 写回步骤 1/2: 准备将 {len(final_processed_cast)} 位演员的完整列表更新到媒体项目...")
-            cast_for_emby_handler = [{"name": a.get("name"), "character": a.get("character") or "", "emby_person_id": a.get("emby_person_id"), "provider_ids": a.get("provider_ids")} for a in final_processed_cast]
-            
+            cast_for_emby_handler = []
+            for a in final_processed_cast:
+                entry = {
+                    "name": a.get("name"),
+                    "character": a.get("character") or "",
+                    "emby_person_id": a.get("emby_person_id")
+                }
+                # 只为已存在的演员传递 provider_ids，对新演员则不传，强制后续修复
+                if a.get("emby_person_id"):
+                    entry["provider_ids"] = a.get("provider_ids")
+                cast_for_emby_handler.append(entry)
             updated_people_list = emby_handler.update_emby_item_cast(
                 item_id,
                 cast_for_emby_handler,
@@ -709,14 +718,24 @@ class MediaProcessor:
             new_actors = [a for a in final_processed_cast if not a.get("emby_person_id")]
             if new_actors and updated_people_list:
                 logger.debug(f"  -> 写回步骤 2/2: 修复 {len(new_actors)} 位新演员丢失的外部ID...")
-                new_actor_tmdb_map = {a.get("name"): a.get("provider_ids") for a in new_actors}
+                new_actor_map = {
+                    (a.get("original_name") or a.get("name")): a.get("provider_ids") 
+                    for a in new_actors
+                }
                 
                 for person in updated_people_list:
+                    # 优先使用 person 自己的 ProviderIds 中的名字进行匹配，如果不行再用 Name
                     person_name = person.get("Name")
-                    if person_name in new_actor_tmdb_map and not person.get("ProviderIds"):
+                    original_name_from_provider = person.get("ProviderIds", {}).get("TmdbName") # 假设有这个字段
+                    
+                    # 构造一个更可靠的匹配逻辑
+                    provider_ids_to_inject = new_actor_map.get(person_name)
+                    if not provider_ids_to_inject and original_name_from_provider:
+                        provider_ids_to_inject = new_actor_map.get(original_name_from_provider)
+
+                    if provider_ids_to_inject and not person.get("ProviderIds"):
                         new_emby_pid = person.get("Id")
-                        provider_ids_to_inject = new_actor_tmdb_map[person_name]
-                        logger.debug(f"  -> 为新演员 '{person_name}' (新ID: {new_emby_pid}) 注入TMDbID...")
+                        logger.debug(f"  -> 为新演员 '{person_name}' (新ID: {new_emby_pid}) 注入ProviderIds...")
                         emby_handler.update_person_details(
                             new_emby_pid,
                             {"ProviderIds": provider_ids_to_inject},
@@ -1229,24 +1248,38 @@ class MediaProcessor:
                         still_unmatched_final.append(d_actor)
 
                 if still_unmatched_final:
-                    logger.info(f"  -> [演员归档] 检查 {len(still_unmatched_final)} 位未匹配演员，尝试预缓存其映射关系...")
+                    logger.info(f"  -> [演员归档与新增] 检查 {len(still_unmatched_final)} 位未匹配演员，尝试预缓存并加入最终列表...")
                     emby_config_for_upsert = {"url": self.emby_url, "api_key": self.emby_api_key, "user_id": self.emby_user_id}
-                    salvaged_count = 0
+                    added_count = 0
+                    
+                    # ▼▼▼ 核心修改区域 START ▼▼▼
                     for d_actor in still_unmatched_final:
                         tmdb_id_to_save = d_actor.get('tmdb_id_from_api')
-                        if tmdb_id_to_save:
+                        if tmdb_id_to_save and tmdb_id_to_save not in final_cast_map:
+                            # 1. 仍然执行归档，为未来做准备
                             person_data_for_db = {
                                 "emby_id": None, "name": d_actor.get("Name"),
                                 "tmdb_id": tmdb_id_to_save, "imdb_id": d_actor.get("imdb_id_from_api"),
                                 "douban_id": d_actor.get("DoubanCelebrityId")
                             }
                             self.actor_db_manager.upsert_person(cursor=cursor, person_data=person_data_for_db, emby_config=emby_config_for_upsert)
-                            salvaged_count += 1
-                    if salvaged_count > 0:
-                        logger.info(f"  -> [演员归档] 成功为 {salvaged_count} 位演员预缓存了映射关系。")
-
-                    discarded_names = [d.get('Name') for d in still_unmatched_final]
-                    logger.info(f"  -> [丢弃新增] 以下 {len(still_unmatched_final)} 位豆瓣演员因在Emby中无匹配或已达数量上限而被丢弃: {', '.join(discarded_names)}")
+                            
+                            # 2. 构建一个“纯新增”演员对象，并加入 final_cast_map
+                            new_actor_entry = {
+                                "id": tmdb_id_to_save,
+                                "name": d_actor.get("Name"),
+                                "character": d_actor.get("Role"),
+                                "order": 999,
+                                "imdb_id": d_actor.get("imdb_id_from_api"),
+                                "douban_id": d_actor.get("DoubanCelebrityId"),
+                                "emby_person_id": None  # <--- 关键！留空表示这是个新演员
+                            }
+                            final_cast_map[tmdb_id_to_save] = new_actor_entry
+                            added_count += 1
+                    
+                    # 3. 修改日志，反映新增操作而不是丢弃
+                    if added_count > 0:
+                        logger.info(f"  -> [演员归档与新增] 成功归档并新增了 {added_count} 位演员到最终列表。")
         
         # ======================================================================
         # 步骤 4: ★★★ 补全头像 ★★★
