@@ -24,7 +24,7 @@ class UnifiedSyncHandler:
         - 完全移除了清理本地陈旧数据的功能。
         - 这是一个纯粹的“添加与更新”任务，只将 Emby 中的演员信息同步到本地，不做任何删除操作。
         """
-        logger.info("--- 开始执行演员数据单向同步任务 (Emby -> 本地数据库) ---")
+        logger.trace("  -> 开始执行演员数据单向同步任务 (Emby -> 本地数据库) ")
         
         # 统计信息中移除了 'deleted'
         stats = { "total_from_emby": 0, "processed": 0, "db_inserted": 0, "db_updated": 0, 
@@ -76,8 +76,6 @@ class UnifiedSyncHandler:
                                 logger.error(f"处理演员 {person_name} (ID: {emby_pid}) 的 upsert 时失败: {e_upsert}")
                 conn.commit()
 
-            # --- 阶段二已被完全移除 ---
-
         except InterruptedError:
             # 使用 'conn' in locals() and conn 来安全地检查连接对象是否存在
             if 'conn' in locals() and conn: 
@@ -94,10 +92,9 @@ class UnifiedSyncHandler:
             return
 
         # --- 最终统计 ---
-        logger.info("--- 单向同步演员数据完成 ---")
+        logger.info("  -> 单向同步演员数据完成")
         # 日志输出中移除了 '清理'
-        logger.info(f"📊 : 新增 {stats['db_inserted']}, 更新 {stats['db_updated']}.")
-        logger.info("--------------------------")
+        logger.info(f"  📊 : 新增 {stats['db_inserted']}, 更新 {stats['db_updated']}.")
 
         if update_status_callback:
             # 最终消息中移除了 '清理'
