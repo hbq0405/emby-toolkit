@@ -800,102 +800,38 @@ def get_all_persons_from_emby(
     force_full_scan: bool = False
 ) -> Generator[List[Dict[str, Any]], None, None]:
     """
-    【V7.0 - 双进度最终正确版】
-    - 彻底修正了精准扫描模式的逻辑，回归正确的“两步走”数据获取策略。
-    - 在“分析媒体库”和“获取演员详情”两个阶段分别提供实时进度，解决进度条不动的问题。
+    【V8.0 - 最终简化版】
+    - 根据用户反馈，彻底移除有问题的“精准扫描”模式。
+    - 统一使用稳定、进度准确的“全量扫描”模式来获取所有演员数据。
+    - 这样可以保证在任何情况下，用户都能看到实时、准确的进度反馈。
     """
     if not user_id:
         logger.error("获取所有演员需要提供 User ID，但未提供。任务中止。")
         return
 
-    library_ids = config_manager.APP_CONFIG.get(constants.CONFIG_OPTION_EMBY_LIBRARIES_TO_PROCESS)
-    
-    # ======================================================================
-    # 模式一：尝试按媒体库进行精准扫描 (如果配置了媒体库且未强制全量)
-    # ======================================================================
-    if library_ids and not force_full_scan:
-        logger.info(f"  -> 检测到配置了 {len(library_ids)} 个媒体库，将优先尝试精准扫描...")
-        
-        # --- 步骤 1: 分析媒体库，收集演员 Emby ID ---
-        logger.info("  -> 步骤 1/2: 正在分析媒体库以收集所有演员 ID...")
-        media_items = get_emby_library_items(
-            base_url=base_url, api_key=api_key, user_id=user_id,
-            library_ids=library_ids, media_type_filter="Movie,Series", 
-            fields="People", force_user_endpoint=True
-        )
-
-        if media_items is None:
-            logger.error("  -> 精准扫描失败：无法从 Emby 获取媒体库项目。将尝试降级到全量扫描...")
-        else:
-            unique_person_ids = set()
-            total_media_items = len(media_items)
-            
-            for i, item in enumerate(media_items):
-                if stop_event and stop_event.is_set(): return
-
-                # ▼▼▼ 实时汇报“分析”进度 ▼▼▼
-                if update_status_callback and total_media_items > 0:
-                    # 分析阶段占总进度的前 50%
-                    progress = int(((i + 1) / total_media_items) * 50)
-                    update_status_callback(progress, f"分析媒体库: {i + 1}/{total_media_items}")
-                
-                for person in item.get("People", []):
-                    if person_id := person.get("Id"):
-                        unique_person_ids.add(person_id)
-
-            # --- 步骤 2: 根据收集到的 ID，批量获取演员完整详情 ---
-            if not unique_person_ids:
-                logger.warning("  -> 在所选媒体库中未分析出任何演员，任务结束。")
-                return
-
-            logger.info(f"  -> 步骤 2/2: 分析完成，发现 {len(unique_person_ids)} 位独立演员，正在分批获取其详细信息...")
-            
-            person_ids_to_fetch = list(unique_person_ids)
-            total_persons = len(person_ids_to_fetch)
-            processed_persons = 0
-            
-            for i in range(0, total_persons, batch_size):
-                if stop_event and stop_event.is_set(): return
-                
-                batch_ids = person_ids_to_fetch[i:i + batch_size]
-                person_details_batch = get_emby_items_by_id(
-                    base_url=base_url, api_key=api_key, user_id=user_id,
-                    item_ids=batch_ids, fields="ProviderIds,Name"
-                )
-                
-                if person_details_batch:
-                    # ▼▼▼ 实时汇报“获取”进度 ▼▼▼
-                    processed_persons += len(person_details_batch)
-                    if update_status_callback:
-                        # 获取阶段占总进度的后 50%
-                        progress = 50 + int((processed_persons / total_persons) * 50)
-                        update_status_callback(progress, f"同步演员数据: {processed_persons}/{total_persons}")
-
-                    yield person_details_batch
-            
-            return # ★★★ 精准模式成功，任务结束 ★★★
-
-    # ======================================================================
-    # 模式二：执行全量扫描 (降级时触发)
-    # ======================================================================
-    if force_full_scan:
-        logger.info("  -> [强制全量扫描模式] 已激活，将扫描服务器上的所有演员...")
-    else:
-        logger.info("  -> 开始从整个 Emby 服务器分批获取所有演员数据...")
+    # 不再区分模式，直接开始全量扫描
+    logger.info("  -> 开始从整个 Emby 服务器分批获取所有演员数据...")
     
     total_count = 0
     api_url = f"{base_url.rstrip('/')}/Users/{user_id}/Items"
     
     try:
+        # 首先获取总数，用于计算进度
         count_params = {"api_key": api_key, "IncludeItemTypes": "Person", "Recursive": "true", "Limit": 0}
         api_timeout = config_manager.APP_CONFIG.get(constants.CONFIG_OPTION_EMBY_API_TIMEOUT, 60)
         response = requests.get(api_url, params=count_params, timeout=api_timeout)
         response.raise_for_status()
         total_count = response.json().get("TotalRecordCount", 0)
-        logger.info(f"Emby Person 总数: {total_count}")
+        if total_count > 0:
+            logger.info(f"Emby Person 总数: {total_count}")
+        else:
+            logger.info("Emby 中未找到任何 Person 条目。")
+            return # 如果没有演员，直接结束
     except Exception as e:
         logger.error(f"获取 Emby Person 总数失败: {e}")
+        # 即使获取总数失败，也尝试继续，只是进度条可能不准
     
+    # 准备分批次获取数据
     headers = {"X-Emby-Token": api_key, "Accept": "application/json"}
     params = {"Recursive": "true", "IncludeItemTypes": "Person", "Fields": "ProviderIds,Name"}
     start_index = 0
@@ -916,14 +852,16 @@ def get_all_persons_from_emby(
             items = response.json().get("Items", [])
             
             if not items:
-                break
+                break # 没有更多数据了，正常结束循环
 
+            # 先交出数据
+            yield items
+            
+            # 然后更新进度
             start_index += len(items)
             if update_status_callback:
-                progress = int((start_index / total_count) * 100) if total_count > 0 else 5
+                progress = int((start_index / total_count) * 100) if total_count > 0 else 100
                 update_status_callback(progress, f"已扫描 {start_index}/{total_count if total_count > 0 else '未知'} 名演员...")
-
-            yield items
 
         except requests.exceptions.RequestException as e:
             logger.error(f"请求 Emby API 失败 (批次 StartIndex={start_index}): {e}", exc_info=True)
