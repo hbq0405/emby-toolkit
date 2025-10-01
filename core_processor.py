@@ -1247,23 +1247,14 @@ class MediaProcessor:
                         still_unmatched_final.append(d_actor)
 
                 if still_unmatched_final:
-                    logger.info(f"  -> [演员归档与新增] 检查 {len(still_unmatched_final)} 位未匹配演员，尝试预缓存并加入最终列表...")
+                    logger.info(f"  -> 检查 {len(still_unmatched_final)} 位未匹配演员，尝试加入最终列表...")
                     emby_config_for_upsert = {"url": self.emby_url, "api_key": self.emby_api_key, "user_id": self.emby_user_id}
                     added_count = 0
                     
-                    # ▼▼▼ 核心修改区域 START ▼▼▼
                     for d_actor in still_unmatched_final:
                         tmdb_id_to_save = d_actor.get('tmdb_id_from_api')
                         if tmdb_id_to_save and tmdb_id_to_save not in final_cast_map:
-                            # 1. 仍然执行归档，为未来做准备
-                            person_data_for_db = {
-                                "emby_id": None, "name": d_actor.get("Name"),
-                                "tmdb_id": tmdb_id_to_save, "imdb_id": d_actor.get("imdb_id_from_api"),
-                                "douban_id": d_actor.get("DoubanCelebrityId")
-                            }
-                            self.actor_db_manager.upsert_person(cursor=cursor, person_data=person_data_for_db, emby_config=emby_config_for_upsert)
                             
-                            # 2. 构建一个“纯新增”演员对象，并加入 final_cast_map
                             new_actor_entry = {
                                 "id": tmdb_id_to_save,
                                 "name": d_actor.get("Name"),
@@ -1271,14 +1262,13 @@ class MediaProcessor:
                                 "order": 999,
                                 "imdb_id": d_actor.get("imdb_id_from_api"),
                                 "douban_id": d_actor.get("DoubanCelebrityId"),
-                                "emby_person_id": None  # <--- 关键！留空表示这是个新演员
+                                "emby_person_id": None
                             }
                             final_cast_map[tmdb_id_to_save] = new_actor_entry
                             added_count += 1
                     
-                    # 3. 修改日志，反映新增操作而不是丢弃
                     if added_count > 0:
-                        logger.info(f"  -> [演员归档与新增] 成功归档并新增了 {added_count} 位演员到最终列表。")
+                        logger.info(f"  -> 成功新增了 {added_count} 位演员到最终列表。")
         
         # ======================================================================
         # 步骤 4: ★★★ 补全头像 ★★★
