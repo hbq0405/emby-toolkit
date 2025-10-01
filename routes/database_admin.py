@@ -141,22 +141,6 @@ def api_get_database_stats():
         logger.error(f"获取数据库统计信息时发生严重错误: {e}", exc_info=True)
         return jsonify({"error": "获取数据库统计信息时发生服务器内部错误"}), 500
 
-def _count_table_rows(cursor: psycopg2.extensions.cursor, table_name: str, condition: str = "") -> int:
-    """一个通用的表行数计数辅助函数，增加错误处理。"""
-    try:
-        # 使用参数化查询防止SQL注入，即使表名是内部控制的
-        query = f"SELECT COUNT(*) FROM {table_name}"
-        if condition:
-            # 注意：这里的condition仍然是直接拼接，因为它可能包含复杂的逻辑
-            # 但在调用此函数时，应确保condition的内容是安全的
-            query += f" WHERE {condition}"
-        cursor.execute(query)
-        result = cursor.fetchone()
-        return result['count'] if result else 0
-    except psycopg2.Error as e:
-        logger.error(f"计算表 '{table_name}' 行数时出错: {e}")
-        return -1 # 返回-1表示错误
-
 # 2. 定义路由
 
 # --- 数据库表管理 ---
