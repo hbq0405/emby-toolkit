@@ -846,11 +846,12 @@ def get_all_persons_from_emby(
                     item_ids=batch_ids, fields="ProviderIds,Name"
                 )
                 if person_details_batch:
-                    yield person_details_batch
                     processed_precise += len(person_details_batch)
                     if update_status_callback:
                         progress = int((processed_precise / total_precise) * 95)
                         update_status_callback(progress, f"已扫描 {processed_precise}/{total_precise} 名演员...")
+                    yield person_details_batch
+                    
             return # ★★★ 精准模式成功，任务结束 ★★★
 
         # ★★★ 自动降级触发点 ★★★
