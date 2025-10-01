@@ -96,7 +96,12 @@ def _save_metadata_to_cache(
         
         studios = [s['Name'] for s in item_details_from_emby.get('Studios', [])]
         genres = item_details_from_emby.get('Genres', [])
-        release_date_str = (item_details_from_emby.get('PremiereDate') or '0000-01-01T00:00:00.000Z').split('T')[0]
+        
+        # ▼▼▼ 核心修复 ▼▼▼
+        # 检查是否存在首映日期，如果不存在，则使用 None (会被数据库正确处理为 NULL)
+        premiere_date = item_details_from_emby.get('PremiereDate')
+        release_date_str = premiere_date.split('T')[0] if premiere_date else None
+        # ▲▲▲ 修复结束 ▲▲▲
         
         metadata = {
             "tmdb_id": tmdb_id,
@@ -112,7 +117,7 @@ def _save_metadata_to_cache(
             "studios_json": json.dumps(studios, ensure_ascii=False),
             "countries_json": json.dumps(countries, ensure_ascii=False),
             "date_added": (item_details_from_emby.get("DateCreated") or '').split('T')[0] or None,
-            "release_date": release_date_str,
+            "release_date": release_date_str, # <--- 这里现在会接收到 None 或者一个有效的日期
             "in_library": True
         }
         if item_type == 'Series' and emby_children_details is not None:
