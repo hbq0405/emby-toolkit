@@ -701,54 +701,44 @@ class MediaProcessor:
             # --- 步骤 3: [靶向修复] 为新创建的“幽灵演员”注入ProviderIds ---
             new_actors = [a for a in final_processed_cast if not a.get("emby_person_id")]
             if new_actors and updated_people_list:
-                logger.debug(f"  -> 写回步骤 2/2: 修复 {len(new_actors)} 位新演员丢失的外部ID...")
-                new_actor_map = {
-                    (a.get("original_name") or a.get("name")): a.get("provider_ids") 
-                    for a in new_actors
-                }
+                logger.debug(f"  -> 写回步骤 2/2: 修复并反哺 {len(new_actors)} 位新演员...")
+                new_actor_map = {a.get("name"): a for a in new_actors}
                 
-                for person in updated_people_list:
-                    # 优先使用 person 自己的 ProviderIds 中的名字进行匹配，如果不行再用 Name
-                    person_name = person.get("Name")
-                    original_name_from_provider = person.get("ProviderIds", {}).get("TmdbName") # 假设有这个字段
-                    
-                    # 构造一个更可靠的匹配逻辑
-                    provider_ids_to_inject = new_actor_map.get(person_name)
-                    if not provider_ids_to_inject and original_name_from_provider:
-                        provider_ids_to_inject = new_actor_map.get(original_name_from_provider)
+                # ▼▼▼ 核心修改区域 START ▼▼▼
+                emby_config_for_upsert = {"url": self.emby_url, "api_key": self.emby_api_key, "user_id": self.emby_user_id}
 
-                    if provider_ids_to_inject and not person.get("ProviderIds"):
+                for person in updated_people_list:
+                    person_name = person.get("Name")
+                    if person_name in new_actor_map and not person.get("ProviderIds"):
                         new_emby_pid = person.get("Id")
+                        actor_data_from_mem = new_actor_map[person_name]
+                        provider_ids_to_inject = actor_data_from_mem.get("provider_ids")
+                        
                         logger.debug(f"  -> 为新演员 '{person_name}' (新ID: {new_emby_pid}) 注入ProviderIds...")
-                        emby_handler.update_person_details(
+                        success = emby_handler.update_person_details(
                             new_emby_pid,
                             {"ProviderIds": provider_ids_to_inject},
-                            self.emby_url,
-                            self.emby_api_key,
-                            self.emby_user_id
+                            self.emby_url, self.emby_api_key, self.emby_user_id
                         )
+
+                        # 如果注入成功，立即执行数据库反哺
+                        if success:
+                            person_data_for_db = {
+                                "emby_id": new_emby_pid,
+                                "name": person_name,
+                                "tmdb_id": provider_ids_to_inject.get("Tmdb"),
+                                "imdb_id": provider_ids_to_inject.get("Imdb"),
+                                "douban_id": provider_ids_to_inject.get("Douban")
+                            }
+                            self.actor_db_manager.upsert_person(cursor=cursor, person_data=person_data_for_db, emby_config=emby_config_for_upsert)
+                            logger.trace(f"  -> 成功将新演员 '{person_name}' 的完整映射关系反哺到数据库。")
 
             # --- 后续流程 ---
             if item_type == "Series":
                 self._batch_update_episodes_cast(series_id=item_id, series_name=item_name_for_log, final_cast_list=final_processed_cast)
 
-            # --- 步骤 4: [实时反哺] 更新演员映射表 ---
-            logger.debug("  -> [实时反哺] 开始更新演员映射表...")
-            emby_config_for_upsert = {"url": self.emby_url, "api_key": self.emby_api_key, "user_id": self.emby_user_id}
-            for actor in final_processed_cast:
-                # 现在，对于新演员，actor.get("emby_person_id") 已经有值了！
-                if actor.get("emby_person_id") and actor.get("id"):
-                    provider_ids = actor.get("provider_ids", {})
-                    person_data_for_db = {
-                        "emby_id": actor.get("emby_person_id"), "name": actor.get("name"),
-                        "tmdb_id": provider_ids.get("Tmdb"), "imdb_id": provider_ids.get("Imdb"),
-                        "douban_id": provider_ids.get("Douban")
-                    }
-                    self.actor_db_manager.upsert_person(cursor=cursor, person_data=person_data_for_db, emby_config=emby_config_for_upsert)
-            logger.debug("  -> [实时反哺] 演员映射表更新完成。")
-
             # ======================================================================
-            # 阶段 5: 通知Emby刷新完成收尾
+            # 阶段 4: 通知Emby刷新完成收尾
             # ======================================================================
             auto_refresh_enabled = self.config.get(constants.CONFIG_OPTION_REFRESH_AFTER_UPDATE, True)
             if auto_refresh_enabled:
