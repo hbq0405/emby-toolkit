@@ -800,9 +800,9 @@ def get_all_persons_from_emby(
     force_full_scan: bool = False
 ) -> Generator[List[Dict[str, Any]], None, None]:
     """
-    【V5.0 - 智能降级最终版】
-    - 新增“自动降级”机制，完美兼容不支持精准扫描的旧版或 Beta 版 Emby。
-    - 优先尝试按媒体库精准扫描，如果失败（未获取到任何演员），则自动切换到全量扫描模式。
+    【V6.0 - 终极优化版】
+    - 精准扫描模式不再进行二次API请求，直接从媒体项中提取演员信息，极大提升效率。
+    - 进度条与媒体库项目分析过程绑定，提供真正实时的进度反馈。
     """
     if not user_id:
         logger.error("获取所有演员需要提供 User ID，但未提供。任务中止。")
@@ -816,48 +816,61 @@ def get_all_persons_from_emby(
     if library_ids and not force_full_scan:
         logger.info(f"  -> 检测到配置了 {len(library_ids)} 个媒体库，将优先尝试精准扫描...")
         
+        # 1. 一次性获取所有媒体项及其中的演员信息
         media_items = get_emby_library_items(
             base_url=base_url, api_key=api_key, user_id=user_id,
-            library_ids=library_ids, media_type_filter="Movie,Series", fields="People"
+            library_ids=library_ids, media_type_filter="Movie,Series", 
+            # ★ 核心：请求 People 字段，并带上 ProviderIds
+            fields="People",
+            force_user_endpoint=True # 确保能拿到 People
         )
 
-        unique_person_ids = set()
-        if media_items:
-            for item in media_items:
-                if stop_event and stop_event.is_set(): return
-                for person in item.get("People", []):
-                    if person_id := person.get("Id"):
-                        unique_person_ids.add(person_id)
-
-        # ★★★ 核心智能检测逻辑 ★★★
-        # 如果成功通过精准模式获取到了演员ID，则继续执行并返回
-        if unique_person_ids:
-            logger.info(f"  -> 精准扫描成功，发现 {len(unique_person_ids)} 位独立演员需要同步。")
-            person_ids_to_fetch = list(unique_person_ids)
+        # 如果获取失败，直接降级
+        if media_items is None:
+            logger.error("  -> 精准扫描前置步骤失败：无法从 Emby 获取媒体库项目。将尝试降级到全量扫描...")
+        else:
+            unique_persons_map = {}
+            total_media_items = len(media_items)
             
-            precise_batch_size = 500
-            total_precise = len(person_ids_to_fetch)
-            processed_precise = 0
-            for i in range(0, total_precise, precise_batch_size):
+            # 2. 遍历媒体项，提取演员，并实时汇报进度
+            logger.info(f"  -> 开始分析 {total_media_items} 个媒体项目以提取演员...")
+            for i, item in enumerate(media_items):
                 if stop_event and stop_event.is_set(): return
-                batch_ids = person_ids_to_fetch[i:i + precise_batch_size]
-                person_details_batch = get_emby_items_by_id(
-                    base_url=base_url, api_key=api_key, user_id=user_id,
-                    item_ids=batch_ids, fields="ProviderIds,Name"
-                )
-                if person_details_batch:
-                    processed_precise += len(person_details_batch)
-                    if update_status_callback:
-                        progress = int((processed_precise / total_precise) * 95)
-                        update_status_callback(progress, f"已扫描 {processed_precise}/{total_precise} 名演员...")
-                    yield person_details_batch
-                    
-            return # ★★★ 精准模式成功，任务结束 ★★★
 
-        # ★★★ 自动降级触发点 ★★★
-        # 如果代码执行到这里，说明精准模式没找到任何演员，需要降级
-        if media_items is not None: # 仅在API调用成功但结果为空时显示警告
-             logger.warning("  -> 精准扫描未返回任何演员（可能您是 beta 版本），将自动降级为全量扫描模式...")
+                # ▼▼▼ 核心修复：在这里汇报分析进度 ▼▼▼
+                if update_status_callback and total_media_items > 0:
+                    # 这里的进度最多只跑到 50%，因为后面还有数据处理
+                    progress = int(((i + 1) / total_media_items) * 50)
+                    update_status_callback(progress, f"正在分析媒体库项目 {i + 1}/{total_media_items}...")
+                
+                for person in item.get("People", []):
+                    person_id = person.get("Id")
+                    if person_id and person_id not in unique_persons_map:
+                        # 我们只需要 ProviderIds 和 Name，所以构造一个精简的对象
+                        unique_persons_map[person_id] = {
+                            "Id": person_id,
+                            "Name": person.get("Name"),
+                            "ProviderIds": person.get("ProviderIds", {})
+                        }
+
+            all_persons = list(unique_persons_map.values())
+            
+            # 3. 如果成功提取到演员，则分批次 yield 出去，任务完成
+            if all_persons:
+                logger.info(f"  -> 精准扫描成功，从媒体库中分析出 {len(all_persons)} 位独立演员。")
+                # 模拟后续处理进度
+                if update_status_callback: update_status_callback(60, f"分析完成，准备同步 {len(all_persons)} 名演员...")
+                
+                # 分批次交出数据
+                for i in range(0, len(all_persons), batch_size):
+                    if stop_event and stop_event.is_set(): return
+                    yield all_persons[i:i + batch_size]
+                
+                return # ★★★ 精准模式成功，任务结束 ★★★
+
+            # 如果代码执行到这里，说明精准模式没找到任何演员，需要降级
+            if media_items is not None:
+                 logger.warning("  -> 精准扫描未返回任何演员（可能媒体库为空或权限问题），将自动降级为全量扫描模式...")
     
     # ======================================================================
     # 模式二：执行全量扫描 (在未配置媒体库、强制全量或精准扫描失败时)
@@ -868,24 +881,20 @@ def get_all_persons_from_emby(
         logger.info("  -> 开始从整个 Emby 服务器分批获取所有演员数据...")
     
     total_count = 0
+    api_url = f"{base_url.rstrip('/')}/Users/{user_id}/Items"
+    
     try:
-        count_url = f"{base_url.rstrip('/')}/Items"
-        count_params = {"api_key": api_key, "UserId": user_id, "IncludeItemTypes": "Person", "Recursive": "true", "Limit": 0}
+        count_params = {"api_key": api_key, "IncludeItemTypes": "Person", "Recursive": "true", "Limit": 0}
         api_timeout = config_manager.APP_CONFIG.get(constants.CONFIG_OPTION_EMBY_API_TIMEOUT, 60)
-        response = requests.get(count_url, params=count_params, timeout=api_timeout)
+        response = requests.get(api_url, params=count_params, timeout=api_timeout)
         response.raise_for_status()
         total_count = response.json().get("TotalRecordCount", 0)
         logger.info(f"Emby Person 总数: {total_count}")
     except Exception as e:
         logger.error(f"获取 Emby Person 总数失败: {e}")
     
-    api_url = f"{base_url.rstrip('/')}/Users/{user_id}/Items"
     headers = {"X-Emby-Token": api_key, "Accept": "application/json"}
-    params = {
-        "Recursive": "true",
-        "IncludeItemTypes": "Person",
-        "Fields": "ProviderIds,Name",
-    }
+    params = {"Recursive": "true", "IncludeItemTypes": "Person", "Fields": "ProviderIds,Name"}
     start_index = 0
     api_timeout = config_manager.APP_CONFIG.get(constants.CONFIG_OPTION_EMBY_API_TIMEOUT, 60)
 
