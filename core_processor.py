@@ -655,24 +655,8 @@ class MediaProcessor:
 
         with get_central_db_connection() as conn:
             cursor = conn.cursor()
-            
-            # --- 步骤 1: [实时反哺] 更新演员映射表 (保留核心数据库操作) ---
-            logger.debug("  -> [实时反哺] 开始更新演员映射表...")
-            emby_config_for_upsert = {"url": self.emby_url, "api_key": self.emby_api_key, "user_id": self.emby_user_id}
-            for actor in final_processed_cast:
-                if actor.get("emby_person_id") and actor.get("id"):
-                    provider_ids = actor.get("provider_ids", {})
-                    person_data_for_db = {
-                        "emby_id": actor.get("emby_person_id"), "name": actor.get("name"),
-                        "tmdb_id": provider_ids.get("Tmdb"), "imdb_id": provider_ids.get("Imdb"),
-                        "douban_id": provider_ids.get("Douban")
-                    }
-                    self.actor_db_manager.upsert_person(cursor=cursor, person_data=person_data_for_db, emby_config=emby_config_for_upsert)
-            logger.debug("  -> [实时反哺] 演员映射表更新完成。")
 
-            # ★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★
-            # ★★★ 新增核心修复：演员名字前置更新 (Pre-update Actor Names) ★★★
-            # ★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★
+            # --- 步骤 1： 演员名字前置更新 ---
             logger.info("  -> 写回前置检查：检查并更新已存在演员的名字...")
             original_names_map = {p.get("Id"): p.get("Name") for p in item_details_from_emby.get("People", []) if p.get("Id")}
             for actor in final_processed_cast:
@@ -689,7 +673,7 @@ class MediaProcessor:
             logger.info("  -> 演员名字前置更新完成。")
 
 
-            # --- 步骤 2: [一步到位] 将完整列表写入媒体项，这将创建“幽灵演员” ---
+            # --- 步骤 2: 将完整列表写入媒体项，这将创建“幽灵演员” ---
             logger.debug(f"  -> 写回步骤 1/2: 准备将 {len(final_processed_cast)} 位演员的完整列表更新到媒体项目...")
             cast_for_emby_handler = []
             for a in final_processed_cast:
@@ -747,6 +731,21 @@ class MediaProcessor:
             # --- 后续流程 ---
             if item_type == "Series":
                 self._batch_update_episodes_cast(series_id=item_id, series_name=item_name_for_log, final_cast_list=final_processed_cast)
+
+            # --- 步骤 4: [实时反哺] 更新演员映射表 ---
+            logger.debug("  -> [实时反哺] 开始更新演员映射表...")
+            emby_config_for_upsert = {"url": self.emby_url, "api_key": self.emby_api_key, "user_id": self.emby_user_id}
+            for actor in final_processed_cast:
+                # 现在，对于新演员，actor.get("emby_person_id") 已经有值了！
+                if actor.get("emby_person_id") and actor.get("id"):
+                    provider_ids = actor.get("provider_ids", {})
+                    person_data_for_db = {
+                        "emby_id": actor.get("emby_person_id"), "name": actor.get("name"),
+                        "tmdb_id": provider_ids.get("Tmdb"), "imdb_id": provider_ids.get("Imdb"),
+                        "douban_id": provider_ids.get("Douban")
+                    }
+                    self.actor_db_manager.upsert_person(cursor=cursor, person_data=person_data_for_db, emby_config=emby_config_for_upsert)
+            logger.debug("  -> [实时反哺] 演员映射表更新完成。")
 
             # ======================================================================
             # 阶段 5: 通知Emby刷新完成收尾
