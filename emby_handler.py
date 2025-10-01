@@ -800,9 +800,9 @@ def get_all_persons_from_emby(
     force_full_scan: bool = False
 ) -> Generator[List[Dict[str, Any]], None, None]:
     """
-    【V6.0 - 终极优化版】
-    - 精准扫描模式不再进行二次API请求，直接从媒体项中提取演员信息，极大提升效率。
-    - 进度条与媒体库项目分析过程绑定，提供真正实时的进度反馈。
+    【V7.0 - 双进度最终正确版】
+    - 彻底修正了精准扫描模式的逻辑，回归正确的“两步走”数据获取策略。
+    - 在“分析媒体库”和“获取演员详情”两个阶段分别提供实时进度，解决进度条不动的问题。
     """
     if not user_id:
         logger.error("获取所有演员需要提供 User ID，但未提供。任务中止。")
@@ -816,64 +816,67 @@ def get_all_persons_from_emby(
     if library_ids and not force_full_scan:
         logger.info(f"  -> 检测到配置了 {len(library_ids)} 个媒体库，将优先尝试精准扫描...")
         
-        # 1. 一次性获取所有媒体项及其中的演员信息
+        # --- 步骤 1: 分析媒体库，收集演员 Emby ID ---
+        logger.info("  -> 步骤 1/2: 正在分析媒体库以收集所有演员 ID...")
         media_items = get_emby_library_items(
             base_url=base_url, api_key=api_key, user_id=user_id,
             library_ids=library_ids, media_type_filter="Movie,Series", 
-            # ★ 核心：请求 People 字段，并带上 ProviderIds
-            fields="People",
-            force_user_endpoint=True # 确保能拿到 People
+            fields="People", force_user_endpoint=True
         )
 
-        # 如果获取失败，直接降级
         if media_items is None:
-            logger.error("  -> 精准扫描前置步骤失败：无法从 Emby 获取媒体库项目。将尝试降级到全量扫描...")
+            logger.error("  -> 精准扫描失败：无法从 Emby 获取媒体库项目。将尝试降级到全量扫描...")
         else:
-            unique_persons_map = {}
+            unique_person_ids = set()
             total_media_items = len(media_items)
             
-            # 2. 遍历媒体项，提取演员，并实时汇报进度
-            logger.info(f"  -> 开始分析 {total_media_items} 个媒体项目以提取演员...")
             for i, item in enumerate(media_items):
                 if stop_event and stop_event.is_set(): return
 
-                # ▼▼▼ 核心修复：在这里汇报分析进度 ▼▼▼
+                # ▼▼▼ 实时汇报“分析”进度 ▼▼▼
                 if update_status_callback and total_media_items > 0:
-                    # 这里的进度最多只跑到 50%，因为后面还有数据处理
+                    # 分析阶段占总进度的前 50%
                     progress = int(((i + 1) / total_media_items) * 50)
-                    update_status_callback(progress, f"正在分析媒体库项目 {i + 1}/{total_media_items}...")
+                    update_status_callback(progress, f"分析媒体库: {i + 1}/{total_media_items}")
                 
                 for person in item.get("People", []):
-                    person_id = person.get("Id")
-                    if person_id and person_id not in unique_persons_map:
-                        # 我们只需要 ProviderIds 和 Name，所以构造一个精简的对象
-                        unique_persons_map[person_id] = {
-                            "Id": person_id,
-                            "Name": person.get("Name"),
-                            "ProviderIds": person.get("ProviderIds", {})
-                        }
+                    if person_id := person.get("Id"):
+                        unique_person_ids.add(person_id)
 
-            all_persons = list(unique_persons_map.values())
+            # --- 步骤 2: 根据收集到的 ID，批量获取演员完整详情 ---
+            if not unique_person_ids:
+                logger.warning("  -> 在所选媒体库中未分析出任何演员，任务结束。")
+                return
+
+            logger.info(f"  -> 步骤 2/2: 分析完成，发现 {len(unique_person_ids)} 位独立演员，正在分批获取其详细信息...")
             
-            # 3. 如果成功提取到演员，则分批次 yield 出去，任务完成
-            if all_persons:
-                logger.info(f"  -> 精准扫描成功，从媒体库中分析出 {len(all_persons)} 位独立演员。")
-                # 模拟后续处理进度
-                if update_status_callback: update_status_callback(60, f"分析完成，准备同步 {len(all_persons)} 名演员...")
+            person_ids_to_fetch = list(unique_person_ids)
+            total_persons = len(person_ids_to_fetch)
+            processed_persons = 0
+            
+            for i in range(0, total_persons, batch_size):
+                if stop_event and stop_event.is_set(): return
                 
-                # 分批次交出数据
-                for i in range(0, len(all_persons), batch_size):
-                    if stop_event and stop_event.is_set(): return
-                    yield all_persons[i:i + batch_size]
+                batch_ids = person_ids_to_fetch[i:i + batch_size]
+                person_details_batch = get_emby_items_by_id(
+                    base_url=base_url, api_key=api_key, user_id=user_id,
+                    item_ids=batch_ids, fields="ProviderIds,Name"
+                )
                 
-                return # ★★★ 精准模式成功，任务结束 ★★★
+                if person_details_batch:
+                    # ▼▼▼ 实时汇报“获取”进度 ▼▼▼
+                    processed_persons += len(person_details_batch)
+                    if update_status_callback:
+                        # 获取阶段占总进度的后 50%
+                        progress = 50 + int((processed_persons / total_persons) * 50)
+                        update_status_callback(progress, f"同步演员数据: {processed_persons}/{total_persons}")
 
-            # 如果代码执行到这里，说明精准模式没找到任何演员，需要降级
-            if media_items is not None:
-                 logger.warning("  -> 精准扫描未返回任何演员（可能媒体库为空或权限问题），将自动降级为全量扫描模式...")
-    
+                    yield person_details_batch
+            
+            return # ★★★ 精准模式成功，任务结束 ★★★
+
     # ======================================================================
-    # 模式二：执行全量扫描 (在未配置媒体库、强制全量或精准扫描失败时)
+    # 模式二：执行全量扫描 (降级时触发)
     # ======================================================================
     if force_full_scan:
         logger.info("  -> [强制全量扫描模式] 已激活，将扫描服务器上的所有演员...")
@@ -915,12 +918,12 @@ def get_all_persons_from_emby(
             if not items:
                 break
 
-            yield items
             start_index += len(items)
-
             if update_status_callback:
-                progress = int((start_index / total_count) * 95) if total_count > 0 else 5
+                progress = int((start_index / total_count) * 100) if total_count > 0 else 5
                 update_status_callback(progress, f"已扫描 {start_index}/{total_count if total_count > 0 else '未知'} 名演员...")
+
+            yield items
 
         except requests.exceptions.RequestException as e:
             logger.error(f"请求 Emby API 失败 (批次 StartIndex={start_index}): {e}", exc_info=True)
