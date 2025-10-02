@@ -404,45 +404,51 @@ def update_emby_item_cast(item_id: str, new_cast_list_for_handler: List[Dict[str
         except (ValueError, TypeError):
             pass
 
+    # 步骤 3: 准备最终要写入 Emby 的 People 列表
     formatted_people_for_emby: List[Dict[str, Any]] = []
+    
     for actor_entry in new_cast_list_for_handler:
         actor_name = actor_entry.get("name")
         if not actor_name or not str(actor_name).strip():
             continue
 
-        # 1. 准备一个基础的 person 对象
-        person_obj: Dict[str, Any] = {
-            "Name": str(actor_name).strip(),
-            "Role": str(actor_entry.get("character", "")).strip(),
-            "Type": "Actor"
-        }
-
         emby_person_id = actor_entry.get("emby_person_id")
 
-        # 2. 根据是“现有演员”还是“新演员”来决定如何构建
+        # 3.1 如果是【现有演员】，直接使用其 ID
         if emby_person_id and str(emby_person_id).strip():
-            # 对于【现有演员】，我们只需要提供 Id
-            person_obj["Id"] = str(emby_person_id).strip()
-            logger.trace(f"  -> 链接现有演员 '{person_obj['Name']}' (ID: {person_obj['Id']})")
+            logger.trace(f"  -> 链接现有演员 '{actor_name}' (ID: {emby_person_id})")
+            person_obj = {
+                "Id": str(emby_person_id).strip(),
+                "Name": str(actor_name).strip(),
+                "Role": str(actor_entry.get("character", "")).strip(),
+                "Type": "Actor"
+            }
+            formatted_people_for_emby.append(person_obj)
+        
+        # 3.2 如果是【新演员】，执行“预创建”
         else:
-            # 对于【新演员】，我们不提供 Id，而是提供 ProviderIds
-            logger.trace(f"  -> 添加新演员 '{person_obj['Name']}'")
-            provider_ids = actor_entry.get("provider_ids")
-            if isinstance(provider_ids, dict) and provider_ids:
-                # 清理掉值为 None 或空字符串的键
-                sanitized_ids = {k: str(v) for k, v in provider_ids.items() if v is not None and str(v).strip()}
-                if sanitized_ids:
-                    person_obj["ProviderIds"] = sanitized_ids
-                    logger.trace(f"    -> 为新演员 '{person_obj['Name']}' 设置初始 ProviderIds: {sanitized_ids}")
+            provider_ids = actor_entry.get("provider_ids", {})
+            sanitized_ids = {k: str(v) for k, v in provider_ids.items() if v is not None and str(v).strip()}
+            
+            # 调用专用函数创建 Person
+            new_id = create_person(actor_name, sanitized_ids, emby_server_url, emby_api_key)
+            
+            if new_id:
+                # 创建成功，使用返回的新 ID
+                person_obj = {
+                    "Id": new_id,
+                    "Name": str(actor_name).strip(),
+                    "Role": str(actor_entry.get("character", "")).strip(),
+                    "Type": "Actor"
+                }
+                formatted_people_for_emby.append(person_obj)
+            else:
+                # 创建失败，记录警告并跳过此演员，避免污染数据
+                logger.warning(f"  -> 演员 '{actor_name}' 创建失败，将不会被添加到媒体 '{item_name_for_log}' 中。")
 
-        formatted_people_for_emby.append(person_obj)
-
-    # 1. 从原始的 item_to_update 中筛选出所有非演员
+    # 步骤 4: 合并演员列表与非演员列表 (这部分和后面的代码保持不变)
     other_people = [person for person in item_to_update.get("People", []) if person.get("Type") != "Actor"]
-    
-    # 2. 将处理好的演员列表与非演员列表合并
-    item_to_update["People"] = other_people + formatted_people_for_emby
-    
+    item_to_update["People"] = other_people + formatted_people_for_emby    
     logger.debug(f"  -> 最终写回Emby的演职员列表包含 {len(other_people)} 位非演员和 {len(formatted_people_for_emby)} 位演员。")
 
     if "LockedFields" in item_to_update and "Cast" in item_to_update.get("LockedFields", []):
@@ -473,6 +479,53 @@ def update_emby_item_cast(item_id: str, new_cast_list_for_handler: List[Dict[str
     except requests.exceptions.RequestException as e:
         logger.error(f"更新Emby项目 {item_name_for_log} 演员信息时发生错误: {e}", exc_info=True)
         return None # ★★★ 失败时返回 None ★★★
+    
+# ★★★ 创建演员的专用函数 ★★★
+def create_person(
+    name: str, 
+    provider_ids: Dict[str, str], 
+    emby_server_url: str, 
+    emby_api_key: str
+) -> Optional[str]:
+    """
+    在 Emby 中显式创建一个新的 Person（演员）。
+    这是解决“同名异人”问题的关键。
+
+    :return: 成功则返回新创建的 Person 的 ID，失败则返回 None。
+    """
+    if not all([name, emby_server_url, emby_api_key]):
+        logger.error("create_person: 缺少必要的参数。")
+        return None
+
+    api_url = f"{emby_server_url.rstrip('/')}/Persons"
+    params = {"api_key": emby_api_key}
+    headers = {'Content-Type': 'application/json'}
+    
+    payload = {
+        "Name": name,
+        "ProviderIds": provider_ids
+    }
+    
+    logger.debug(f"  -> [预创建] 正在为 '{name}' 创建新的 Person 条目...")
+    try:
+        api_timeout = config_manager.APP_CONFIG.get(constants.CONFIG_OPTION_EMBY_API_TIMEOUT, 60)
+        response = requests.post(api_url, json=payload, headers=headers, params=params, timeout=api_timeout)
+        response.raise_for_status()
+        
+        new_person_data = response.json()
+        new_person_id = new_person_data.get("Id")
+        
+        if new_person_id:
+            logger.info(f"  -> [预创建] 成功创建新演员 '{name}'，获得新 ID: {new_person_id}")
+            return new_person_id
+        else:
+            logger.error(f"  -> [预创建] 创建演员 '{name}' 成功，但 Emby 未返回 ID。")
+            return None
+            
+    except requests.exceptions.RequestException as e:
+        logger.error(f"  -> [预创建] 创建演员 '{name}' 时发生 API 错误: {e}", exc_info=True)
+        return None
+
 # ✨✨✨ 获取 Emby 用户可见媒体库列表 ✨✨✨
 def get_emby_libraries(emby_server_url, emby_api_key, user_id):
     if not all([emby_server_url, emby_api_key, user_id]):
