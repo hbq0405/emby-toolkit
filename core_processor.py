@@ -708,15 +708,13 @@ class MediaProcessor:
             logger.debug(f"  -> 写回步骤 1/2: 准备将 {len(final_processed_cast)} 位演员的完整列表更新到媒体项目...")
             cast_for_emby_handler = []
             for a in final_processed_cast:
-                entry = {
+                cast_for_emby_handler.append({
                     "name": a.get("name"),
                     "character": a.get("character") or "",
-                    "emby_person_id": a.get("emby_person_id")
-                }
-                # 只为已存在的演员传递 provider_ids，对新演员则不传，强制后续修复
-                if a.get("emby_person_id"):
-                    entry["provider_ids"] = a.get("provider_ids")
-                cast_for_emby_handler.append(entry)
+                    "emby_person_id": a.get("emby_person_id"),
+                    "provider_ids": a.get("provider_ids") # <--- 关键！始终传递 provider_ids
+                })
+                
             updated_people_list = emby_handler.update_emby_item_cast(
                 item_id,
                 cast_for_emby_handler,
