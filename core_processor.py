@@ -1290,29 +1290,51 @@ class MediaProcessor:
                     if not match_found:
                         still_unmatched_final.append(d_actor)
 
+                # --- 纯归档 ---
                 if still_unmatched_final:
-                    logger.info(f"  -> 检查 {len(still_unmatched_final)} 位未匹配演员，尝试加入最终列表...")
+                    logger.info(f"  -> [演员归档] 检查 {len(still_unmatched_final)} 位未匹配演员，尝试预缓存其映射关系...")
                     emby_config_for_upsert = {"url": self.emby_url, "api_key": self.emby_api_key, "user_id": self.emby_user_id}
-                    added_count = 0
-                    
+                    salvaged_count = 0
                     for d_actor in still_unmatched_final:
                         tmdb_id_to_save = d_actor.get('tmdb_id_from_api')
-                        if tmdb_id_to_save and tmdb_id_to_save not in final_cast_map:
-                            
-                            new_actor_entry = {
-                                "id": tmdb_id_to_save,
-                                "name": d_actor.get("Name"),
-                                "character": d_actor.get("Role"),
-                                "order": 999,
-                                "imdb_id": d_actor.get("imdb_id_from_api"),
-                                "douban_id": d_actor.get("DoubanCelebrityId"),
-                                "emby_person_id": None
+                        if tmdb_id_to_save:
+                            person_data_for_db = {
+                                "emby_id": None, "name": d_actor.get("Name"),
+                                "tmdb_id": tmdb_id_to_save, "imdb_id": d_actor.get("imdb_id_from_api"),
+                                "douban_id": d_actor.get("DoubanCelebrityId")
                             }
-                            final_cast_map[tmdb_id_to_save] = new_actor_entry
-                            added_count += 1
+                            self.actor_db_manager.upsert_person(cursor=cursor, person_data=person_data_for_db, emby_config=emby_config_for_upsert)
+                            salvaged_count += 1
+                    if salvaged_count > 0:
+                        logger.info(f"  -> [演员归档] 成功为 {salvaged_count} 位演员预缓存了映射关系。")
+
+                    discarded_names = [d.get('Name') for d in still_unmatched_final]
+                    logger.info(f"  -> [丢弃新增] 以下 {len(still_unmatched_final)} 位豆瓣演员因在Emby中无匹配或已达数量上限而被丢弃: {', '.join(discarded_names)}")
+
+                # --- 归档+新增 ---
+                # if still_unmatched_final:
+                #     logger.info(f"  -> 检查 {len(still_unmatched_final)} 位未匹配演员，尝试加入最终列表...")
+                #     emby_config_for_upsert = {"url": self.emby_url, "api_key": self.emby_api_key, "user_id": self.emby_user_id}
+                #     added_count = 0
                     
-                    if added_count > 0:
-                        logger.info(f"  -> 成功新增了 {added_count} 位演员到最终列表。")
+                #     for d_actor in still_unmatched_final:
+                #         tmdb_id_to_save = d_actor.get('tmdb_id_from_api')
+                #         if tmdb_id_to_save and tmdb_id_to_save not in final_cast_map:
+                            
+                #             new_actor_entry = {
+                #                 "id": tmdb_id_to_save,
+                #                 "name": d_actor.get("Name"),
+                #                 "character": d_actor.get("Role"),
+                #                 "order": 999,
+                #                 "imdb_id": d_actor.get("imdb_id_from_api"),
+                #                 "douban_id": d_actor.get("DoubanCelebrityId"),
+                #                 "emby_person_id": None
+                #             }
+                #             final_cast_map[tmdb_id_to_save] = new_actor_entry
+                #             added_count += 1
+                    
+                #     if added_count > 0:
+                #         logger.info(f"  -> 成功新增了 {added_count} 位演员到最终列表。")
         
         # ======================================================================
         # 步骤 4: ★★★ 补全头像 ★★★
