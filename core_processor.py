@@ -768,7 +768,29 @@ class MediaProcessor:
 
             # --- 后续流程 ---
             if item_type == "Series":
-                self._batch_update_episodes_cast(series_id=item_id, series_name=item_name_for_log, final_cast_list=final_processed_cast)
+                # ▼▼▼ 核心修复 START ▼▼▼
+                # 此时，`updated_people_list` 是从 Emby 返回的最准确的演员列表，
+                # 它包含了所有演员（包括新创建的）的真实 Emby ID。
+                # 我们必须根据这个列表构建一个符合 `_batch_update_episodes_cast` 格式要求的新列表，
+                # 而不能再使用旧的 `final_processed_cast`，因为它缺少新演员的 ID。
+                
+                final_cast_for_episodes = []
+                if updated_people_list:
+                    for person in updated_people_list:
+                        # 只处理演员，过滤掉导演、编剧等非演员角色
+                        if person.get("Type") == "Actor":
+                            final_cast_for_episodes.append({
+                                "emby_person_id": person.get("Id"),
+                                "name": person.get("Name"),
+                                "character": person.get("Role")
+                            })
+                
+                # 使用这个包含了所有正确 Emby ID 的新列表来更新分集
+                self._batch_update_episodes_cast(
+                    series_id=item_id, 
+                    series_name=item_name_for_log, 
+                    final_cast_list=final_cast_for_episodes
+                )
 
             # ======================================================================
             # 阶段 5: 通知Emby刷新完成收尾
