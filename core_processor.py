@@ -584,14 +584,13 @@ class MediaProcessor:
         logger.info(f"  -> 开始为剧集 '{series_name}' (ID: {series_id}) 批量更新所有分集的演员表...")
         
         # 1. 获取所有分集的 ID
-        # 我们只需要 ID，所以可以请求更少的字段以提高效率
         episodes = emby_handler.get_series_children(
             series_id=series_id,
             base_url=self.emby_url,
             api_key=self.emby_api_key,
             user_id=self.emby_user_id,
             series_name_for_log=series_name,
-            include_item_types="Episode" # ★★★ 明确指定只获取分集
+            include_item_types="Episode" # 只获取分集
         )
         
         if not episodes:
@@ -601,19 +600,17 @@ class MediaProcessor:
         total_episodes = len(episodes)
         logger.info(f"  -> 共找到 {total_episodes} 个分集需要更新。")
         
-        # 2. 准备好要写入的数据 (所有分集都用同一份演员表)
+        # 2. 准备好要写入的数据。这里的关键是：所有演员都已有 emby_person_id
         cast_for_emby_handler = []
         for actor in final_cast_list:
             cast_for_emby_handler.append({
                 "name": actor.get("name"),
                 "character": actor.get("character"),
-                "emby_person_id": actor.get("emby_person_id"),
+                "emby_person_id": actor.get("emby_person_id"), # <-- 关键！
                 "provider_ids": actor.get("provider_ids")
             })
 
         # 3. 遍历并逐个更新分集
-        # 这里仍然需要逐个更新，因为 Emby API 不支持一次性更新多个项目的演员表
-        # 但我们已经把最耗时的数据处理放在了循环外面
         for i, episode in enumerate(episodes):
             if self.is_stop_requested():
                 logger.warning("分集批量更新任务被中止。")
@@ -623,6 +620,8 @@ class MediaProcessor:
             episode_name = episode.get("Name", f"分集 {i+1}")
             logger.debug(f"  ({i+1}/{total_episodes}) 正在更新分集 '{episode_name}' (ID: {episode_id})...")
             
+            # 调用 update_emby_item_cast。因为它收到的所有演员都有 emby_person_id，
+            # 所以它只会执行链接操作，不会创建新的幽灵演员，完美符合我们的需求。
             emby_handler.update_emby_item_cast(
                 item_id=episode_id,
                 new_cast_list_for_handler=cast_for_emby_handler,
@@ -630,8 +629,7 @@ class MediaProcessor:
                 emby_api_key=self.emby_api_key,
                 user_id=self.emby_user_id
             )
-            # 加入一个微小的延迟，避免请求过于密集
-            time_module.sleep(0.2)
+            time_module.sleep(0.2) # 避免请求过快
 
         logger.info(f"  -> 剧集 '{series_name}' 的分集批量更新完成。")
     
@@ -692,7 +690,7 @@ class MediaProcessor:
 
 
             # ======================================================================
-            # 阶段 3: 创建幽灵演员
+            # 阶段 3: 为主媒体项创建幽灵演员
             # ======================================================================
             logger.debug(f"  -> 写回步骤 1/2: 准备将 {len(final_processed_cast)} 位演员的完整列表更新到媒体项目...")
             cast_for_emby_handler = []
@@ -702,7 +700,6 @@ class MediaProcessor:
                     "character": a.get("character") or "",
                     "emby_person_id": a.get("emby_person_id")
                 }
-                # 只为已存在的演员传递 provider_ids，对新演员则不传，强制后续修复
                 if a.get("emby_person_id"):
                     entry["provider_ids"] = a.get("provider_ids")
                 cast_for_emby_handler.append(entry)
@@ -719,18 +716,19 @@ class MediaProcessor:
                 raise ValueError("更新媒体项演员列表失败")
 
             # ======================================================================
-            # 阶段 4: 为幽灵演员注入外部ID
+            # 阶段 4: 修正主媒体项的幽灵演员并更新内存列表
             # ======================================================================
-            new_actors = [a for a in final_processed_cast if not a.get("emby_person_id")]
-            if new_actors and updated_people_list:
-                logger.debug(f"  -> 写回步骤 2/2: 修复并反哺 {len(new_actors)} 位新演员...")
-                new_actor_map = {a.get("name"): a for a in new_actors}
+            new_actors_in_memory = [a for a in final_processed_cast if not a.get("emby_person_id")]
+            if new_actors_in_memory and updated_people_list:
+                logger.debug(f"  -> 写回步骤 2/2: 修复并反哺 {len(new_actors_in_memory)} 位新演员...")
+                # 创建一个从 ghost_name 到内存中演员对象的映射
+                new_actor_map = {a.get("name"): a for a in new_actors_in_memory}
                 
-                # ▼▼▼ 核心修改区域 START ▼▼▼
                 emby_config_for_upsert = {"url": self.emby_url, "api_key": self.emby_api_key, "user_id": self.emby_user_id}
 
                 for person in updated_people_list:
                     person_name = person.get("Name")
+                    # 找到刚刚创建的、还未修正名字的幽灵演员
                     if person_name in new_actor_map and not person.get("ProviderIds"):
                         new_emby_pid = person.get("Id")
                         actor_data_from_mem = new_actor_map[person_name]
@@ -743,11 +741,15 @@ class MediaProcessor:
                             self.emby_url, self.emby_api_key, self.emby_user_id
                         )
 
-                        # 如果注入成功，立即执行数据库反哺
                         if success:
+                            # ★★★ 关键步骤 ★★★
+                            # 将新获取的 emby_person_id 更新回内存中的 final_processed_cast 列表
+                            # 这样，这份列表就成了包含所有正确ID的“黄金标准”
+                            actor_data_from_mem['emby_person_id'] = new_emby_pid
+                            
+                            # ... (数据库反哺逻辑不变) ...
                             person_data_for_db = {
-                                "emby_id": new_emby_pid,
-                                "name": person_name,
+                                "emby_id": new_emby_pid, "name": person_name,
                                 "tmdb_id": provider_ids_to_inject.get("Tmdb"),
                                 "imdb_id": provider_ids_to_inject.get("Imdb"),
                                 "douban_id": provider_ids_to_inject.get("Douban")
@@ -755,9 +757,16 @@ class MediaProcessor:
                             self.actor_db_manager.upsert_person(cursor=cursor, person_data=person_data_for_db, emby_config=emby_config_for_upsert)
                             logger.trace(f"  -> 成功将新演员 '{person_name}' 的完整映射关系反哺到数据库。")
 
-            # --- 后续流程 ---
+            # ======================================================================
+            # ★★★ 新增的阶段 4.5: 为剧集批量注入分集演员表 ★★★
+            # ======================================================================
             if item_type == "Series":
-                self._batch_update_episodes_cast(series_id=item_id, series_name=item_name_for_log, final_cast_list=final_processed_cast)
+                # 此刻，final_processed_cast 已经是包含了所有正确 emby_person_id 的最终列表
+                self._batch_update_episodes_cast(
+                    series_id=item_id, 
+                    series_name=item_name_for_log, 
+                    final_cast_list=final_processed_cast
+                )
 
             # ======================================================================
             # 阶段 5: 通知Emby刷新完成收尾
