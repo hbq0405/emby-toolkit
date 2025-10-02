@@ -578,10 +578,10 @@ class MediaProcessor:
     # --- 批量注入分集演员表 ---
     def _batch_update_episodes_cast(self, series_id: str, series_name: str, final_cast_list: List[Dict[str, Any]]):
         """
-        【V1 - 批量写入模块】
-        将一个最终处理好的演员列表，高效地写入指定剧集下的所有分集。
+        【V2 - 无脑注入最终版】
+        将最终演员列表强制、完整地替换到所有分集中，避免使用任何复杂的幽灵演员逻辑。
         """
-        logger.info(f"  -> 开始为剧集 '{series_name}' (ID: {series_id}) 批量更新所有分集的演员表...")
+        logger.info(f"  -> [分集处理] 开始为剧集 '{series_name}' (ID: {series_id}) 批量注入最终演员表...")
         
         # 1. 获取所有分集的 ID
         episodes = emby_handler.get_series_children(
@@ -590,48 +590,75 @@ class MediaProcessor:
             api_key=self.emby_api_key,
             user_id=self.emby_user_id,
             series_name_for_log=series_name,
-            include_item_types="Episode" # 只获取分集
+            include_item_types="Episode",
+            fields="Id,Name,People" # 获取People以保留非演员角色
         )
         
         if not episodes:
-            logger.info("  -> 未找到任何分集，批量更新结束。")
+            logger.info("  -> [分集处理] 未找到任何分集，批量注入结束。")
             return
 
         total_episodes = len(episodes)
-        logger.info(f"  -> 共找到 {total_episodes} 个分集需要更新。")
+        logger.info(f"  -> [分集处理] 共找到 {total_episodes} 个分集需要更新。")
         
-        # 2. 准备好要写入的数据。这里的关键是：所有演员都已有 emby_person_id
-        cast_for_emby_handler = []
+        # 2. 准备好要写入的、符合Emby API格式的演员列表
+        # 这里的 final_cast_list 是我们的“黄金标准”，所有演员都已有正确的 emby_person_id
+        new_actors_for_api = []
         for actor in final_cast_list:
-            cast_for_emby_handler.append({
-                "name": actor.get("name"),
-                "character": actor.get("character"),
-                "emby_person_id": actor.get("emby_person_id"), # <-- 关键！
-                "provider_ids": actor.get("provider_ids")
+            if not actor.get("emby_person_id"):
+                logger.warning(f"  -> [分集处理] 严重警告：演员 '{actor.get('name')}' 在最终列表中缺少 emby_person_id，将跳过此演员！")
+                continue
+            new_actors_for_api.append({
+                "Id": actor.get("emby_person_id"),
+                "Name": actor.get("name"),
+                "Role": actor.get("character"),
+                "Type": "Actor"
             })
 
-        # 3. 遍历并逐个更新分集
+        # 3. 遍历并为每个分集执行“获取-替换-提交”的原子操作
         for i, episode in enumerate(episodes):
             if self.is_stop_requested():
-                logger.warning("分集批量更新任务被中止。")
+                logger.warning("[分集处理] 任务被中止。")
                 break
             
             episode_id = episode.get("Id")
             episode_name = episode.get("Name", f"分集 {i+1}")
-            logger.debug(f"  ({i+1}/{total_episodes}) 正在更新分集 '{episode_name}' (ID: {episode_id})...")
+            logger.debug(f"  ({i+1}/{total_episodes}) 正在为分集 '{episode_name}' (ID: {episode_id}) 构建新的人员列表...")
             
-            # 调用 update_emby_item_cast。因为它收到的所有演员都有 emby_person_id，
-            # 所以它只会执行链接操作，不会创建新的幽灵演员，完美符合我们的需求。
-            emby_handler.update_emby_item_cast(
-                item_id=episode_id,
-                new_cast_list_for_handler=cast_for_emby_handler,
-                emby_server_url=self.emby_url,
-                emby_api_key=self.emby_api_key,
-                user_id=self.emby_user_id
-            )
-            time_module.sleep(0.2) # 避免请求过快
+            # a. 保留原有的非演员人员 (导演、编剧等)
+            other_people = [p for p in episode.get("People", []) if p.get("Type") != "Actor"]
+            
+            # b. 构建最终的完整 People 列表
+            final_people_list = other_people + new_actors_for_api
+            
+            # c. 调用通用的更新函数，只更新 People 字段
+            update_payload = {"People": final_people_list}
+            
+            # d. 为了确保万无一失，我们直接POST完整的Item对象
+            # （这需要先GET一次，但能避免更多潜在的API问题）
+            full_episode_details = emby_handler.get_emby_item_details(episode_id, self.emby_url, self.emby_api_key, self.emby_user_id)
+            if not full_episode_details:
+                logger.error(f"  -> [分集处理] 无法获取分集 '{episode_name}' 的完整详情，跳过更新。")
+                continue
+                
+            full_episode_details["People"] = final_people_list
+            # 同时解锁Cast字段，以防万一
+            if "Cast" in full_episode_details.get("LockedFields", []):
+                full_episode_details["LockedFields"].remove("Cast")
 
-        logger.info(f"  -> 剧集 '{series_name}' 的分集批量更新完成。")
+            # e. 直接使用 requests 提交，完全绕开 emby_handler 中的复杂逻辑
+            update_url = f"{self.emby_url.rstrip('/')}/Items/{episode_id}"
+            params = {"api_key": self.emby_api_key}
+            headers = {'Content-Type': 'application/json'}
+            try:
+                response = requests.post(update_url, json=full_episode_details, headers=headers, params=params, timeout=60)
+                response.raise_for_status()
+            except Exception as e:
+                logger.error(f"  -> [分集处理] 更新分集 '{episode_name}' 时发生网络错误: {e}")
+
+            time_module.sleep(0.2)
+
+        logger.info(f"  -> [分集处理] 剧集 '{series_name}' 的分集批量注入完成。")
     
     # --- 负责将最终处理好的数据写回Emby、更新日志、备份缓存等 ---
     def _write_data_and_finalize(self,
