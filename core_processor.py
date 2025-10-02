@@ -732,39 +732,53 @@ class MediaProcessor:
             # ======================================================================
             # 阶段 4: 修复并反哺新演员的映射关系
             # ======================================================================
-            new_actors = [a for a in final_processed_cast if not a.get("emby_person_id")]
-            if new_actors and updated_people_list:
-                logger.debug(f"  -> 写回步骤 2/2: 修复并反哺 {len(new_actors)} 位新演员...")
-                new_actor_map = {a.get("name"): a for a in new_actors}
+            # 识别出在处理前没有Emby ID的演员
+            new_actors_before_update = [a for a in final_processed_cast if not a.get("emby_person_id")]
+            
+            if new_actors_before_update and updated_people_list:
+                logger.debug(f"  -> 写回步骤 2/2: 修复并反哺 {len(new_actors_before_update)} 位新演员...")
+
+                # 为新演员创建一个按名字索引的地图，以便快速查找其TMDB/IMDB等ID
+                new_actor_data_map = {a.get("name"): a for a in new_actors_before_update}
                 
-                # ▼▼▼ 核心修改区域 START ▼▼▼
+                # 创建一个包含更新前所有演员ID的集合，用于快速判断谁是新来的
+                existing_person_ids_before_update = {p.get("Id") for p in item_details_from_emby.get("People", []) if p.get("Id")}
+
                 emby_config_for_upsert = {"url": self.emby_url, "api_key": self.emby_api_key, "user_id": self.emby_user_id}
 
+                # 遍历从Emby返回的最新演员列表
                 for person in updated_people_list:
+                    new_emby_pid = person.get("Id")
                     person_name = person.get("Name")
-                    if person_name in new_actor_map and not person.get("ProviderIds"):
-                        new_emby_pid = person.get("Id")
-                        actor_data_from_mem = new_actor_map[person_name]
-                        provider_ids_to_inject = actor_data_from_mem.get("provider_ids")
-                        
-                        logger.debug(f"  -> 为新演员 '{person_name}' (新ID: {new_emby_pid}) 注入ProviderIds...")
-                        success = emby_handler.update_person_details(
-                            new_emby_pid,
-                            {"ProviderIds": provider_ids_to_inject},
-                            self.emby_url, self.emby_api_key, self.emby_user_id
-                        )
 
-                        # 如果注入成功，立即执行数据库反哺
-                        if success:
-                            person_data_for_db = {
-                                "emby_id": new_emby_pid,
-                                "name": person_name,
-                                "tmdb_id": provider_ids_to_inject.get("Tmdb"),
-                                "imdb_id": provider_ids_to_inject.get("Imdb"),
-                                "douban_id": provider_ids_to_inject.get("Douban")
-                            }
-                            self.actor_db_manager.upsert_person(cursor=cursor, person_data=person_data_for_db, emby_config=emby_config_for_upsert)
-                            logger.trace(f"  -> 成功将新演员 '{person_name}' 的完整映射关系反哺到数据库。")
+                    # 如果一个演员的ID不在旧的ID集合里，那他就是新创建的
+                    if new_emby_pid and new_emby_pid not in existing_person_ids_before_update:
+                        # 通过名字在我们的内存数据中找到这个新演员的完整信息
+                        if person_name in new_actor_data_map:
+                            actor_data_from_mem = new_actor_data_map[person_name]
+                            provider_ids_to_inject = actor_data_from_mem.get("provider_ids")
+                            
+                            # ▼▼▼ 核心恢复：修复 Emby 中新创建的演员，为其注入 ProviderIds ▼▼▼
+                            logger.debug(f"  -> 为新演员 '{person_name}' (新ID: {new_emby_pid}) 注入ProviderIds...")
+                            success = emby_handler.update_person_details(
+                                new_emby_pid,
+                                {"ProviderIds": provider_ids_to_inject},
+                                self.emby_url, self.emby_api_key, self.emby_user_id
+                            )
+
+                            # ▼▼▼ 核心优化：只有当ID注入成功后，才执行数据库反哺 ▼▼▼
+                            if success:
+                                person_data_for_db = {
+                                    "emby_id": new_emby_pid,
+                                    "name": person_name,
+                                    "tmdb_id": provider_ids_to_inject.get("Tmdb"),
+                                    "imdb_id": provider_ids_to_inject.get("Imdb"),
+                                    "douban_id": provider_ids_to_inject.get("Douban")
+                                }
+                                self.actor_db_manager.upsert_person(cursor=cursor, person_data=person_data_for_db, emby_config=emby_config_for_upsert)
+                                logger.trace(f"  -> 成功将新演员 '{person_name}' 的完整映射关系反哺到数据库。")
+                            else:
+                                logger.error(f"  -> 未能成功为新演员 '{person_name}' 注入ProviderIds，跳过数据库反哺。")
 
             # ======================================================================
             # 阶段 5: 为分集注入演员表

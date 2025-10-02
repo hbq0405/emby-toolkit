@@ -1494,7 +1494,7 @@ def update_emby_item_details(item_id: str, new_data: Dict[str, Any], emby_server
         
         item_name_for_log = current_item_details.get("Name", f"ID:{item_id}")
 
-        logger.trace(f"准备将以下新数据合并到 '{item_name_for_log}': {new_data}")
+        logger.debug(f"准备将以下新数据合并到 '{item_name_for_log}': {new_data}")
         item_to_update = current_item_details.copy()
         item_to_update.update(new_data)
         
