@@ -453,7 +453,7 @@ def update_emby_item_cast(item_id: str, new_cast_list_for_handler: List[Dict[str
 
     # 步骤 6: 第二次修正：修正幽灵演员的名字
     if ghost_name_map:
-        logger.debug("  -> 开始修正幽灵演员的名称...")
+        logger.debug("  -> 开始修正幽灵演员的临时名称...")
         # 获取刚刚更新后的最新演员列表
         updated_item_details = get_emby_item_details(item_id, emby_server_url, emby_api_key, user_id, fields="People")
         if not updated_item_details:
@@ -1494,7 +1494,7 @@ def update_emby_item_details(item_id: str, new_data: Dict[str, Any], emby_server
         
         item_name_for_log = current_item_details.get("Name", f"ID:{item_id}")
 
-        logger.debug(f"准备将以下新数据合并到 '{item_name_for_log}': {new_data}")
+        logger.trace(f"准备将以下新数据合并到 '{item_name_for_log}': {new_data}")
         item_to_update = current_item_details.copy()
         item_to_update.update(new_data)
         
