@@ -656,7 +656,25 @@ class MediaProcessor:
         with get_central_db_connection() as conn:
             cursor = conn.cursor()
 
-            # --- 步骤 1： 演员名字前置更新 ---
+            # ======================================================================
+            # 阶段 1: 实时反哺
+            # ======================================================================
+            logger.debug("  -> [实时反哺] 开始更新演员映射表...")
+            emby_config_for_upsert = {"url": self.emby_url, "api_key": self.emby_api_key, "user_id": self.emby_user_id}
+            for actor in final_processed_cast:
+                if actor.get("emby_person_id") and actor.get("id"):
+                    provider_ids = actor.get("provider_ids", {})
+                    person_data_for_db = {
+                        "emby_id": actor.get("emby_person_id"), "name": actor.get("name"),
+                        "tmdb_id": provider_ids.get("Tmdb"), "imdb_id": provider_ids.get("Imdb"),
+                        "douban_id": provider_ids.get("Douban")
+                    }
+                    self.actor_db_manager.upsert_person(cursor=cursor, person_data=person_data_for_db, emby_config=emby_config_for_upsert)
+            logger.debug("  -> [实时反哺] 演员映射表更新完成。")
+
+            # ======================================================================
+            # 阶段 2: 演员名前置更新
+            # ======================================================================
             logger.info("  -> 写回前置检查：检查并更新已存在演员的名字...")
             original_names_map = {p.get("Id"): p.get("Name") for p in item_details_from_emby.get("People", []) if p.get("Id")}
             for actor in final_processed_cast:
@@ -673,7 +691,9 @@ class MediaProcessor:
             logger.info("  -> 演员名字前置更新完成。")
 
 
-            # --- 步骤 2: 将完整列表写入媒体项，这将创建“幽灵演员” ---
+            # ======================================================================
+            # 阶段 3: 创建幽灵演员
+            # ======================================================================
             logger.debug(f"  -> 写回步骤 1/2: 准备将 {len(final_processed_cast)} 位演员的完整列表更新到媒体项目...")
             cast_for_emby_handler = []
             for a in final_processed_cast:
@@ -698,7 +718,9 @@ class MediaProcessor:
             if updated_people_list is None:
                 raise ValueError("更新媒体项演员列表失败")
 
-            # --- 步骤 3: [靶向修复] 为新创建的“幽灵演员”注入ProviderIds ---
+            # ======================================================================
+            # 阶段 4: 为幽灵演员注入外部ID
+            # ======================================================================
             new_actors = [a for a in final_processed_cast if not a.get("emby_person_id")]
             if new_actors and updated_people_list:
                 logger.debug(f"  -> 写回步骤 2/2: 修复并反哺 {len(new_actors)} 位新演员...")
@@ -738,7 +760,7 @@ class MediaProcessor:
                 self._batch_update_episodes_cast(series_id=item_id, series_name=item_name_for_log, final_cast_list=final_processed_cast)
 
             # ======================================================================
-            # 阶段 4: 通知Emby刷新完成收尾
+            # 阶段 5: 通知Emby刷新完成收尾
             # ======================================================================
             auto_refresh_enabled = self.config.get(constants.CONFIG_OPTION_REFRESH_AFTER_UPDATE, True)
             if auto_refresh_enabled:
