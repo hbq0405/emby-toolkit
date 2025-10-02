@@ -579,9 +579,10 @@ class MediaProcessor:
     # --- 批量注入分集演员表 ---
     def _batch_update_episodes_cast(self, series_id: str, series_name: str, final_cast_list: List[Dict[str, Any]]):
         """
-        【V3 - 无脑强制注入版】
+        【V5 - ID优先终极版】
         此函数接收一份完美的演员列表，并将其强制性地、完整地替换到所有分集中。
-        它不包含任何智能逻辑，只做最纯粹的替换操作，以确保结果的绝对一致性。
+        - 核心策略：在更新分集时，只向Emby API提供演员的 `Id` 和 `Role`，
+          不提供 `Name`，以强制Emby进行精确的ID链接，从根源上避免创建重复的“黑户”演员。
         """
         logger.info(f"  -> [分集处理] 开始为剧集 '{series_name}' (ID: {series_id}) 批量注入最终演员表...")
         
@@ -593,7 +594,7 @@ class MediaProcessor:
             user_id=self.emby_user_id,
             series_name_for_log=series_name,
             include_item_types="Episode",
-            fields="Id,Name,People" # 获取People以保留非演员角色
+            fields="Id,Name,People" # 仍然获取People以保留非演员角色
         )
         
         if not episodes:
@@ -608,13 +609,14 @@ class MediaProcessor:
         for actor in final_cast_list:
             if not actor.get("emby_person_id"):
                 logger.error(f"  -> [分集处理] 致命错误：演员 '{actor.get('name')}' 在最终列表中缺少 emby_person_id！无法注入分集。")
-                # 在这种严重错误下，中止整个分集处理，以防数据污染
                 return
+
+            # ▼▼▼ 核心修改：只传递ID和角色，不传递名字 ▼▼▼
             new_actors_for_api.append({
                 "Id": actor.get("emby_person_id"),
-                "Name": actor.get("name"),
                 "Role": actor.get("character"),
                 "Type": "Actor"
+                # "Name" 字段被故意省略
             })
 
         # 3. 遍历并为每个分集执行“获取-替换-提交”
@@ -714,7 +716,7 @@ class MediaProcessor:
                     "emby_person_id": a.get("emby_person_id"),
                     "provider_ids": a.get("provider_ids") # <--- 关键！始终传递 provider_ids
                 })
-                
+
             updated_people_list = emby_handler.update_emby_item_cast(
                 item_id,
                 cast_for_emby_handler,
