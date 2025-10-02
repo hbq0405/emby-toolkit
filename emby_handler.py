@@ -369,75 +369,55 @@ def update_emby_item_cast(item_id: str, new_cast_list_for_handler: List[Dict[str
                           new_rating: Optional[float] = None
                           ) -> Optional[List[Dict[str, Any]]]:
     """
-    【V3 - 幽灵演员兼容版】
-    采用“临时唯一名”策略，兼容不支持 /Persons 接口的老版本 Emby，解决同名异人问题。
+    【V4 - 纯粹执行版】
+    此版本被大幅简化，不再处理任何幽灵演员逻辑。
+    它只负责接收一个准备好的 People 列表，并将其提交给 Emby。
+    所有复杂的逻辑都由调用方 (core_processor) 处理。
     """
     if not all([item_id, emby_server_url, emby_api_key, user_id]):
         logger.error("update_emby_item_cast: 参数不足。")
         return None
     if new_cast_list_for_handler is None: new_cast_list_for_handler = []
 
-    # 步骤 1: 获取当前媒体项目的完整信息 (不变)
+    # 1. 获取当前媒体项目的完整信息
     current_item_details = get_emby_item_details(item_id, emby_server_url, emby_api_key, user_id)
     if not current_item_details:
         logger.error(f"update_emby_item_cast: 获取 Emby 项目 {item_id} 失败。")
         return None
     item_name_for_log = current_item_details.get("Name", f"ID:{item_id}")
 
-    # 步骤 2: 更新评分 (不变)
+    # 2. 如果需要，更新评分
     if new_rating is not None:
         try:
-            rating_float = float(new_rating)
-            if 0 <= rating_float <= 10:
-                current_item_details["CommunityRating"] = rating_float
+            current_item_details["CommunityRating"] = float(new_rating)
         except (ValueError, TypeError): pass
 
-    # ★★★ 核心改造：幽灵演员创建与修正流程 ★★★
-    
-    # 步骤 3: 分离现有演员、新演员和非演员
-    existing_actors_to_link = []
-    new_actors_to_create = []
-    
-    for actor in new_cast_list_for_handler:
-        if actor.get("emby_person_id"):
-            existing_actors_to_link.append(actor)
-        else:
-            new_actors_to_create.append(actor)
-
-    # 步骤 4: 为新演员生成临时唯一名称，并准备第一次更新
-    ghost_actors_for_creation = []
-    ghost_name_map = {} # 用于后续修正 {temp_name: real_name}
-    
-    for actor in new_actors_to_create:
-        real_name = actor.get("name")
-        provider_ids = actor.get("provider_ids", {})
-        tmdb_id = provider_ids.get("Tmdb")
-        
-        # 创建一个几乎不可能重复的临时名字
-        temp_name = f"{real_name} (tmdbid:{tmdb_id})" if tmdb_id else f"{real_name} (temp:{int(time.time())})"
-        ghost_name_map[temp_name] = real_name
-        
-        ghost_actors_for_creation.append({
-            "Name": temp_name, # ★ 使用临时名字
-            "Role": actor.get("character", ""),
-            "Type": "Actor",
-            "ProviderIds": provider_ids
-        })
-
-    # 步骤 5: 第一次提交：关联现有演员 + 创建幽灵演员
+    # 3. 保留非演员人员，并与新演员列表合并
     other_people = [p for p in current_item_details.get("People", []) if p.get("Type") != "Actor"]
     
-    final_people_list = other_people + [
-        {"Id": a.get("emby_person_id"), "Name": a.get("name"), "Role": a.get("character"), "Type": "Actor"}
-        for a in existing_actors_to_link
-    ] + ghost_actors_for_creation
-    
+    # new_cast_list_for_handler 现在应该是由 core_processor 准备好的、
+    # 包含临时名字或正确ID的演员列表
+    actors_to_submit = []
+    for actor in new_cast_list_for_handler:
+        entry = {
+            "Name": actor.get("name"),
+            "Role": actor.get("character", ""),
+            "Type": "Actor"
+        }
+        # 如果有ID，就用ID关联；如果没有，Emby会根据Name创建
+        if actor.get("emby_person_id"):
+            entry["Id"] = actor.get("emby_person_id")
+        
+        actors_to_submit.append(entry)
+
+    final_people_list = other_people + actors_to_submit
     current_item_details["People"] = final_people_list
     
     # 解锁 Cast 字段
     if "Cast" in current_item_details.get("LockedFields", []):
         current_item_details["LockedFields"].remove("Cast")
 
+    # 4. 提交更新
     update_url = f"{emby_server_url.rstrip('/')}/Items/{item_id}"
     headers = {'Content-Type': 'application/json'}
     params_post = {"api_key": emby_api_key}
@@ -446,37 +426,15 @@ def update_emby_item_cast(item_id: str, new_cast_list_for_handler: List[Dict[str
         api_timeout = config_manager.APP_CONFIG.get(constants.CONFIG_OPTION_EMBY_API_TIMEOUT, 60)
         response_post = requests.post(update_url, json=current_item_details, headers=headers, params=params_post, timeout=api_timeout)
         response_post.raise_for_status()
-        logger.debug(f"  -> 第一次更新成功：已关联现有演员并创建了 {len(ghost_actors_for_creation)} 个幽灵演员。")
-    except requests.exceptions.RequestException as e:
-        logger.error(f"更新 Emby 项目 {item_name_for_log} 演员信息时（第一次提交）发生错误: {e}", exc_info=True)
-        return None
-
-    # 步骤 6: 第二次修正：修正幽灵演员的名字
-    if ghost_name_map:
-        logger.debug("  -> 开始修正幽灵演员的名称...")
-        # 获取刚刚更新后的最新演员列表
+        logger.debug(f"  -> 成功向 Emby 提交了 '{item_name_for_log}' 的人员更新请求。")
+        
+        # 5. 返回更新后的完整人员列表，供调用方进行后续处理
         updated_item_details = get_emby_item_details(item_id, emby_server_url, emby_api_key, user_id, fields="People")
-        if not updated_item_details:
-            logger.error("无法获取更新后的演员列表，幽灵演员名称修正失败！")
-            return None # 或者可以返回部分成功的结果
+        return updated_item_details.get("People") if updated_item_details else []
 
-        for person in updated_item_details.get("People", []):
-            person_name = person.get("Name")
-            if person_name in ghost_name_map:
-                person_id = person.get("Id")
-                real_name = ghost_name_map[person_name]
-                logger.info(f"  -> 修正演员: '{person_name}' -> '{real_name}' (ID: {person_id})")
-                update_person_details(
-                    person_id=person_id,
-                    new_data={"Name": real_name},
-                    emby_server_url=emby_server_url,
-                    emby_api_key=emby_api_key,
-                    user_id=user_id
-                )
-    
-    # 步骤 7: 返回最终的、修正后的演员列表
-    final_people_details = get_emby_item_details(item_id, emby_server_url, emby_api_key, user_id, fields="People")
-    return final_people_details.get("People") if final_people_details else []
+    except requests.exceptions.RequestException as e:
+        logger.error(f"更新 Emby 项目 '{item_name_for_log}' 演员信息时发生错误: {e}", exc_info=True)
+        return None
 
 # ✨✨✨ 获取 Emby 用户可见媒体库列表 ✨✨✨
 def get_emby_libraries(emby_server_url, emby_api_key, user_id):
