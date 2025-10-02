@@ -730,56 +730,46 @@ class MediaProcessor:
                 raise ValueError("更新媒体项演员列表失败")
 
             # ======================================================================
-            # 阶段 4: 反哺新演员的映射关系
+            # 阶段 4: 修复并反哺新演员的映射关系
             # ======================================================================
-            # 识别出在处理前没有Emby ID的演员
-            new_actors_before_update = [a for a in final_processed_cast if not a.get("emby_person_id")]
-
-            if new_actors_before_update and updated_people_list:
-                logger.debug(f"  -> 写回步骤 2/2: 发现 {len(new_actors_before_update)} 位新演员，开始反哺其映射关系到数据库...")
-
-                # 为新演员创建一个按名字索引的地图，以便快速查找其TMDB/IMDB等ID
-                new_actor_data_map = {a.get("name"): a for a in new_actors_before_update}
+            new_actors = [a for a in final_processed_cast if not a.get("emby_person_id")]
+            if new_actors and updated_people_list:
+                logger.debug(f"  -> 写回步骤 2/2: 修复并反哺 {len(new_actors)} 位新演员...")
+                new_actor_map = {a.get("name"): a for a in new_actors}
                 
-                # 创建一个包含更新前所有演员ID的集合，用于快速判断谁是新来的
-                existing_person_ids_before_update = {p.get("Id") for p in item_details_from_emby.get("People", []) if p.get("Id")}
-
+                # ▼▼▼ 核心修改区域 START ▼▼▼
                 emby_config_for_upsert = {"url": self.emby_url, "api_key": self.emby_api_key, "user_id": self.emby_user_id}
 
-                # 遍历从Emby返回的最新演员列表
                 for person in updated_people_list:
-                    person_id = person.get("Id")
                     person_name = person.get("Name")
+                    if person_name in new_actor_map and not person.get("ProviderIds"):
+                        new_emby_pid = person.get("Id")
+                        actor_data_from_mem = new_actor_map[person_name]
+                        provider_ids_to_inject = actor_data_from_mem.get("provider_ids")
+                        
+                        logger.debug(f"  -> 为新演员 '{person_name}' (新ID: {new_emby_pid}) 注入ProviderIds...")
+                        success = emby_handler.update_person_details(
+                            new_emby_pid,
+                            {"ProviderIds": provider_ids_to_inject},
+                            self.emby_url, self.emby_api_key, self.emby_user_id
+                        )
 
-                    # 如果一个演员的ID不在旧的ID集合里，那他就是新创建的
-                    if person_id and person_id not in existing_person_ids_before_update:
-                        # 通过名字在我们的内存数据中找到这个新演员的完整信息
-                        if person_name in new_actor_data_map:
-                            actor_data_from_mem = new_actor_data_map[person_name]
-                            provider_ids = actor_data_from_mem.get("provider_ids", {})
-                            
-                            logger.debug(f"  -> 发现新创建的演员 '{person_name}' (新Emby ID: {person_id})，正在将其完整映射关系存入数据库...")
-                            
+                        # 如果注入成功，立即执行数据库反哺
+                        if success:
                             person_data_for_db = {
-                                "emby_id": person_id,
+                                "emby_id": new_emby_pid,
                                 "name": person_name,
-                                "tmdb_id": provider_ids.get("Tmdb"),
-                                "imdb_id": provider_ids.get("Imdb"),
-                                "douban_id": provider_ids.get("Douban")
+                                "tmdb_id": provider_ids_to_inject.get("Tmdb"),
+                                "imdb_id": provider_ids_to_inject.get("Imdb"),
+                                "douban_id": provider_ids_to_inject.get("Douban")
                             }
-                            # 执行数据库写入
                             self.actor_db_manager.upsert_person(cursor=cursor, person_data=person_data_for_db, emby_config=emby_config_for_upsert)
                             logger.trace(f"  -> 成功将新演员 '{person_name}' 的完整映射关系反哺到数据库。")
 
             # ======================================================================
-            # 阶段 5: 通知Emby刷新完成收尾
+            # 阶段 5: 为分集注入演员表
             # ======================================================================
             if item_type == "Series":
-                # ▼▼▼ 核心修复 START ▼▼▼
-                # 此时，`updated_people_list` 是从 Emby 返回的最准确的演员列表，
-                # 它包含了所有演员（包括新创建的）的真实 Emby ID。
-                # 我们必须根据这个列表构建一个符合 `_batch_update_episodes_cast` 格式要求的新列表，
-                # 而不能再使用旧的 `final_processed_cast`，因为它缺少新演员的 ID。
                 
                 final_cast_for_episodes = []
                 if updated_people_list:
@@ -800,7 +790,7 @@ class MediaProcessor:
                 )
 
             # ======================================================================
-            # 阶段 5: 通知Emby刷新完成收尾
+            # 阶段 6: 通知Emby刷新
             # ======================================================================
             auto_refresh_enabled = self.config.get(constants.CONFIG_OPTION_REFRESH_AFTER_UPDATE, True)
             if auto_refresh_enabled:
@@ -815,7 +805,7 @@ class MediaProcessor:
                 logger.info(f"  -> 没有启用自动刷新，跳过刷新和锁定步骤。")
 
             # ======================================================================
-            # 阶段 6: 实时元数据缓存
+            # 阶段 7: 实时元数据缓存
             # ======================================================================
             emby_children_details = None
             if item_type == "Series":
@@ -855,7 +845,7 @@ class MediaProcessor:
 
 
             # ======================================================================
-            # 阶段 7: 后续处理 (Post-processing)
+            # 阶段 8: 评分
             # ======================================================================
             genres = item_details_from_emby.get("Genres", [])
             is_animation = "Animation" in genres or "动画" in genres or "Documentary" in genres or "纪录" in genres
@@ -874,7 +864,7 @@ class MediaProcessor:
             conn.commit()
 
             # ======================================================================
-            # 阶段 8: 覆盖缓存备份
+            # 阶段 9: 覆盖缓存备份
             # ======================================================================
             self.sync_single_item_assets(item_id=item_id, final_cast_override=final_processed_cast)
 
