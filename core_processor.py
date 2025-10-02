@@ -703,12 +703,26 @@ class MediaProcessor:
 
 
             # ======================================================================
-            # 阶段 3: 调用强大的处理器，完成主媒体项的演员更新
+            # 阶段 3: 创建幽灵演员
             # ======================================================================
-            logger.debug(f"  -> 正在调用核心处理器为主媒体项 '{item_name_for_log}' 更新演员...")
+            logger.debug(f"  -> 写回步骤 1/2: 准备将 {len(final_processed_cast)} 位演员的完整列表更新到媒体项目...")
+            cast_for_emby_handler = []
+            for a in final_processed_cast:
+                entry = {
+                    "name": a.get("name"),
+                    "character": a.get("character") or "",
+                    "emby_person_id": a.get("emby_person_id")
+                }
+                # 只为已存在的演员传递 provider_ids，对新演员则不传，强制后续修复
+                if a.get("emby_person_id"):
+                    entry["provider_ids"] = a.get("provider_ids")
+                cast_for_emby_handler.append(entry)
             updated_people_list = emby_handler.update_emby_item_cast(
-                item_id, final_processed_cast,
-                self.emby_url, self.emby_api_key, self.emby_user_id,
+                item_id,
+                cast_for_emby_handler,
+                self.emby_url,
+                self.emby_api_key,
+                self.emby_user_id,
                 new_rating=douban_rating
             )
 
@@ -716,54 +730,45 @@ class MediaProcessor:
                 raise ValueError("更新媒体项演员列表失败")
 
             # ======================================================================
-            # 阶段 4: 从返回值中回写新ID到内存，并反哺数据库
+            # 阶段 4: 为幽灵演员注入外部ID
             # ======================================================================
-            new_actors_in_memory = [a for a in final_processed_cast if not a.get("emby_person_id")]
-            if new_actors_in_memory:
-                logger.info(f"  -> 开始为 {len(new_actors_in_memory)} 位新演员回写 Emby ID...")
+            new_actors = [a for a in final_processed_cast if not a.get("emby_person_id")]
+            if new_actors and updated_people_list:
+                logger.debug(f"  -> 写回步骤 2/2: 修复并反哺 {len(new_actors)} 位新演员...")
+                new_actor_map = {a.get("name"): a for a in new_actors}
                 
-                # 使用TMDb ID作为唯一Key，构建从内存中查找演员对象的映射
-                new_actor_map_by_tmdb_id = {
-                    str(a.get("id")): a for a in new_actors_in_memory if a.get("id")
-                }
+                # ▼▼▼ 核心修改区域 START ▼▼▼
+                emby_config_for_upsert = {"url": self.emby_url, "api_key": self.emby_api_key, "user_id": self.emby_user_id}
 
-                found_count = 0
                 for person in updated_people_list:
-                    person_tmdb_id = str(person.get("ProviderIds", {}).get("Tmdb", ""))
-                    
-                    # 如果这个人在我们的新演员TMDb ID映射表中，说明我们找到了刚刚创建的演员
-                    if person_tmdb_id in new_actor_map_by_tmdb_id:
-                        actor_data_from_mem = new_actor_map_by_tmdb_id[person_tmdb_id]
+                    person_name = person.get("Name")
+                    if person_name in new_actor_map and not person.get("ProviderIds"):
+                        new_emby_pid = person.get("Id")
+                        actor_data_from_mem = new_actor_map[person_name]
+                        provider_ids_to_inject = actor_data_from_mem.get("provider_ids")
                         
-                        # 确保只回写一次
-                        if not actor_data_from_mem.get('emby_person_id'):
-                            new_emby_pid = person.get("Id")
-                            found_count += 1
-                            logger.info(f"    -> 匹配成功: '{actor_data_from_mem.get('name')}' (TMDb:{person_tmdb_id}) -> 新Emby ID:{new_emby_pid}")
-                            
-                            # ★★★ 核心：更新内存列表 ★★★
-                            actor_data_from_mem['emby_person_id'] = new_emby_pid
-                            
-                            # 数据库反哺
-                            self.actor_db_manager.upsert_person(cursor=cursor, person_data={
-                                "emby_id": new_emby_pid, "name": person.get("Name"), "tmdb_id": person_tmdb_id,
-                                "imdb_id": actor_data_from_mem.get("provider_ids", {}).get("Imdb"),
-                                "douban_id": actor_data_from_mem.get("provider_ids", {}).get("Douban")
-                            }, emby_config={"url": self.emby_url, "api_key": self.emby_api_key, "user_id": self.emby_user_id})
-                
-                if found_count < len(new_actors_in_memory):
-                    logger.warning(f"  -> ID回写警告：期望为 {len(new_actors_in_memory)} 位新演员找到ID，但只成功匹配了 {found_count} 位。")
+                        logger.debug(f"  -> 为新演员 '{person_name}' (新ID: {new_emby_pid}) 注入ProviderIds...")
+                        success = emby_handler.update_person_details(
+                            new_emby_pid,
+                            {"ProviderIds": provider_ids_to_inject},
+                            self.emby_url, self.emby_api_key, self.emby_user_id
+                        )
 
+                        # 如果注入成功，立即执行数据库反哺
+                        if success:
+                            person_data_for_db = {
+                                "emby_id": new_emby_pid,
+                                "name": person_name,
+                                "tmdb_id": provider_ids_to_inject.get("Tmdb"),
+                                "imdb_id": provider_ids_to_inject.get("Imdb"),
+                                "douban_id": provider_ids_to_inject.get("Douban")
+                            }
+                            self.actor_db_manager.upsert_person(cursor=cursor, person_data=person_data_for_db, emby_config=emby_config_for_upsert)
+                            logger.trace(f"  -> 成功将新演员 '{person_name}' 的完整映射关系反哺到数据库。")
 
-            # ======================================================================
-            # 阶段 5: 为剧集批量注入分集演员表
-            # ======================================================================
+            # --- 后续流程 ---
             if item_type == "Series":
-                self._batch_update_episodes_cast(
-                    series_id=item_id, 
-                    series_name=item_name_for_log, 
-                    final_cast_list=final_processed_cast
-                )
+                self._batch_update_episodes_cast(series_id=item_id, series_name=item_name_for_log, final_cast_list=final_processed_cast)
 
             # ======================================================================
             # 阶段 5: 通知Emby刷新完成收尾
