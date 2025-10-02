@@ -2,6 +2,7 @@
 
 import os
 import json
+import time
 import concurrent.futures
 from typing import Dict, List, Optional, Any, Tuple, Set
 import shutil
@@ -655,8 +656,10 @@ class MediaProcessor:
 
         with get_central_db_connection() as conn:
             cursor = conn.cursor()
-            
-            # --- 步骤 1: [实时反哺] 更新演员映射表 (保留核心数据库操作) ---
+
+            # ======================================================================
+            # 阶段 1: 反哺老演员的映射关系
+            # ======================================================================
             logger.debug("  -> [实时反哺] 开始更新演员映射表...")
             emby_config_for_upsert = {"url": self.emby_url, "api_key": self.emby_api_key, "user_id": self.emby_user_id}
             for actor in final_processed_cast:
@@ -670,9 +673,9 @@ class MediaProcessor:
                     self.actor_db_manager.upsert_person(cursor=cursor, person_data=person_data_for_db, emby_config=emby_config_for_upsert)
             logger.debug("  -> [实时反哺] 演员映射表更新完成。")
 
-            # ★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★
-            # ★★★ 新增核心修复：演员名字前置更新 (Pre-update Actor Names) ★★★
-            # ★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★
+            # ======================================================================
+            # 阶段 2: 演员名前置更新
+            # ======================================================================
             logger.info("  -> 写回前置检查：检查并更新已存在演员的名字...")
             original_names_map = {p.get("Id"): p.get("Name") for p in item_details_from_emby.get("People", []) if p.get("Id")}
             for actor in final_processed_cast:
@@ -689,10 +692,19 @@ class MediaProcessor:
             logger.info("  -> 演员名字前置更新完成。")
 
 
-            # --- 步骤 2: [一步到位] 将完整列表写入媒体项，这将创建“幽灵演员” ---
+            # ======================================================================
+            # 阶段 3: 创建幽灵演员
+            # ======================================================================
             logger.debug(f"  -> 写回步骤 1/2: 准备将 {len(final_processed_cast)} 位演员的完整列表更新到媒体项目...")
-            cast_for_emby_handler = [{"name": a.get("name"), "character": a.get("character") or "", "emby_person_id": a.get("emby_person_id"), "provider_ids": a.get("provider_ids")} for a in final_processed_cast]
-            
+            cast_for_emby_handler = []
+            for a in final_processed_cast:
+                cast_for_emby_handler.append({
+                    "name": a.get("name"),
+                    "character": a.get("character") or "",
+                    "emby_person_id": a.get("emby_person_id"),
+                    "provider_ids": a.get("provider_ids") # <--- 关键！始终传递 provider_ids
+                })
+                
             updated_people_list = emby_handler.update_emby_item_cast(
                 item_id,
                 cast_for_emby_handler,
@@ -705,32 +717,82 @@ class MediaProcessor:
             if updated_people_list is None:
                 raise ValueError("更新媒体项演员列表失败")
 
-            # --- 步骤 3: [靶向修复] 为新创建的“幽灵演员”注入ProviderIds ---
-            new_actors = [a for a in final_processed_cast if not a.get("emby_person_id")]
-            if new_actors and updated_people_list:
-                logger.debug(f"  -> 写回步骤 2/2: 修复 {len(new_actors)} 位新演员丢失的外部ID...")
-                new_actor_tmdb_map = {a.get("name"): a.get("provider_ids") for a in new_actors}
-                
-                for person in updated_people_list:
-                    person_name = person.get("Name")
-                    if person_name in new_actor_tmdb_map and not person.get("ProviderIds"):
-                        new_emby_pid = person.get("Id")
-                        provider_ids_to_inject = new_actor_tmdb_map[person_name]
-                        logger.debug(f"  -> 为新演员 '{person_name}' (新ID: {new_emby_pid}) 注入TMDbID...")
-                        emby_handler.update_person_details(
-                            new_emby_pid,
-                            {"ProviderIds": provider_ids_to_inject},
-                            self.emby_url,
-                            self.emby_api_key,
-                            self.emby_user_id
-                        )
+            # ======================================================================
+            # 阶段 4: 修复并反哺新演员的映射关系
+            # ======================================================================
+            # 识别出在处理前没有Emby ID的演员
+            new_actors_before_update = [a for a in final_processed_cast if not a.get("emby_person_id")]
+            
+            if new_actors_before_update and updated_people_list:
+                logger.debug(f"  -> 写回步骤 2/2: 修复并反哺 {len(new_actors_before_update)} 位新演员...")
 
-            # --- 后续流程 ---
-            if item_type == "Series":
-                self._batch_update_episodes_cast(series_id=item_id, series_name=item_name_for_log, final_cast_list=final_processed_cast)
+                # 为新演员创建一个按名字索引的地图，以便快速查找其TMDB/IMDB等ID
+                new_actor_data_map = {a.get("name"): a for a in new_actors_before_update}
+                
+                # 创建一个包含更新前所有演员ID的集合，用于快速判断谁是新来的
+                existing_person_ids_before_update = {p.get("Id") for p in item_details_from_emby.get("People", []) if p.get("Id")}
+
+                emby_config_for_upsert = {"url": self.emby_url, "api_key": self.emby_api_key, "user_id": self.emby_user_id}
+
+                # 遍历从Emby返回的最新演员列表
+                for person in updated_people_list:
+                    new_emby_pid = person.get("Id")
+                    person_name = person.get("Name")
+
+                    # 如果一个演员的ID不在旧的ID集合里，那他就是新创建的
+                    if new_emby_pid and new_emby_pid not in existing_person_ids_before_update:
+                        # 通过名字在我们的内存数据中找到这个新演员的完整信息
+                        if person_name in new_actor_data_map:
+                            actor_data_from_mem = new_actor_data_map[person_name]
+                            provider_ids_to_inject = actor_data_from_mem.get("provider_ids")
+                            
+                            # ▼▼▼ 核心恢复：修复 Emby 中新创建的演员，为其注入 ProviderIds ▼▼▼
+                            logger.debug(f"  -> 为新演员 '{person_name}' (新ID: {new_emby_pid}) 注入ProviderIds...")
+                            success = emby_handler.update_person_details(
+                                new_emby_pid,
+                                {"ProviderIds": provider_ids_to_inject},
+                                self.emby_url, self.emby_api_key, self.emby_user_id
+                            )
+
+                            # ▼▼▼ 核心优化：只有当ID注入成功后，才执行数据库反哺 ▼▼▼
+                            if success:
+                                person_data_for_db = {
+                                    "emby_id": new_emby_pid,
+                                    "name": person_name,
+                                    "tmdb_id": provider_ids_to_inject.get("Tmdb"),
+                                    "imdb_id": provider_ids_to_inject.get("Imdb"),
+                                    "douban_id": provider_ids_to_inject.get("Douban")
+                                }
+                                self.actor_db_manager.upsert_person(cursor=cursor, person_data=person_data_for_db, emby_config=emby_config_for_upsert)
+                                logger.trace(f"  -> 成功将新演员 '{person_name}' 的完整映射关系反哺到数据库。")
+                            else:
+                                logger.error(f"  -> 未能成功为新演员 '{person_name}' 注入ProviderIds，跳过数据库反哺。")
 
             # ======================================================================
-            # 阶段 5: 通知Emby刷新完成收尾
+            # 阶段 5: 为分集注入演员表
+            # ======================================================================
+            if item_type == "Series":
+                
+                final_cast_for_episodes = []
+                if updated_people_list:
+                    for person in updated_people_list:
+                        # 只处理演员，过滤掉导演、编剧等非演员角色
+                        if person.get("Type") == "Actor":
+                            final_cast_for_episodes.append({
+                                "emby_person_id": person.get("Id"),
+                                "name": person.get("Name"),
+                                "character": person.get("Role")
+                            })
+                
+                # 使用这个包含了所有正确 Emby ID 的新列表来更新分集
+                self._batch_update_episodes_cast(
+                    series_id=item_id, 
+                    series_name=item_name_for_log, 
+                    final_cast_list=final_cast_for_episodes
+                )
+
+            # ======================================================================
+            # 阶段 6: 通知Emby刷新
             # ======================================================================
             auto_refresh_enabled = self.config.get(constants.CONFIG_OPTION_REFRESH_AFTER_UPDATE, True)
             if auto_refresh_enabled:
@@ -745,7 +807,7 @@ class MediaProcessor:
                 logger.info(f"  -> 没有启用自动刷新，跳过刷新和锁定步骤。")
 
             # ======================================================================
-            # 阶段 6: 实时元数据缓存
+            # 阶段 7: 实时元数据缓存
             # ======================================================================
             emby_children_details = None
             if item_type == "Series":
@@ -785,7 +847,7 @@ class MediaProcessor:
 
 
             # ======================================================================
-            # 阶段 7: 后续处理 (Post-processing)
+            # 阶段 8: 评分
             # ======================================================================
             genres = item_details_from_emby.get("Genres", [])
             is_animation = "Animation" in genres or "动画" in genres or "Documentary" in genres or "纪录" in genres
@@ -804,7 +866,7 @@ class MediaProcessor:
             conn.commit()
 
             # ======================================================================
-            # 阶段 8: 覆盖缓存备份
+            # 阶段 9: 覆盖缓存备份
             # ======================================================================
             self.sync_single_item_assets(item_id=item_id, final_cast_override=final_processed_cast)
 
@@ -1228,6 +1290,7 @@ class MediaProcessor:
                     if not match_found:
                         still_unmatched_final.append(d_actor)
 
+                # --- 纯归档 ---
                 if still_unmatched_final:
                     logger.info(f"  -> [演员归档] 检查 {len(still_unmatched_final)} 位未匹配演员，尝试预缓存其映射关系...")
                     emby_config_for_upsert = {"url": self.emby_url, "api_key": self.emby_api_key, "user_id": self.emby_user_id}
@@ -1247,6 +1310,31 @@ class MediaProcessor:
 
                     discarded_names = [d.get('Name') for d in still_unmatched_final]
                     logger.info(f"  -> [丢弃新增] 以下 {len(still_unmatched_final)} 位豆瓣演员因在Emby中无匹配或已达数量上限而被丢弃: {', '.join(discarded_names)}")
+
+                # --- 归档+新增 ---
+                # if still_unmatched_final:
+                #     logger.info(f"  -> 检查 {len(still_unmatched_final)} 位未匹配演员，尝试加入最终列表...")
+                #     emby_config_for_upsert = {"url": self.emby_url, "api_key": self.emby_api_key, "user_id": self.emby_user_id}
+                #     added_count = 0
+                    
+                #     for d_actor in still_unmatched_final:
+                #         tmdb_id_to_save = d_actor.get('tmdb_id_from_api')
+                #         if tmdb_id_to_save and tmdb_id_to_save not in final_cast_map:
+                            
+                #             new_actor_entry = {
+                #                 "id": tmdb_id_to_save,
+                #                 "name": d_actor.get("Name"),
+                #                 "character": d_actor.get("Role"),
+                #                 "order": 999,
+                #                 "imdb_id": d_actor.get("imdb_id_from_api"),
+                #                 "douban_id": d_actor.get("DoubanCelebrityId"),
+                #                 "emby_person_id": None
+                #             }
+                #             final_cast_map[tmdb_id_to_save] = new_actor_entry
+                #             added_count += 1
+                    
+                #     if added_count > 0:
+                #         logger.info(f"  -> 成功新增了 {added_count} 位演员到最终列表。")
         
         # ======================================================================
         # 步骤 4: ★★★ 补全头像 ★★★
