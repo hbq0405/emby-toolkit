@@ -1443,16 +1443,18 @@ class MediaProcessor:
                 raise FileNotFoundError(f"手动处理失败：找不到主元数据文件 '{main_json_path}'。请确保该项目已被至少处理过一次。")
 
             # ======================================================================
-            # 步骤 2: 更新翻译缓存
+            # ★★★ 新增功能 1: 更新翻译缓存 ★★★
             # ======================================================================
             try:
+                # 1. 从内存缓存中获取这个会话的完整原始演员列表
                 original_full_cast = self.manual_edit_cache.get(item_id)
                 if original_full_cast:
+                    # 构建一个以 emby_person_id 为键的原始数据映射表
                     original_cast_map = {str(actor.get('emby_person_id')): actor for actor in original_full_cast}
                     
                     with get_central_db_connection() as conn:
                         cursor = conn.cursor()
-                        cursor.execute("BEGIN;") # 开始事务
+                        cursor.execute("BEGIN TRANSACTION;")
                         try:
                             for actor_from_frontend in manual_cast_list:
                                 emby_pid = actor_from_frontend.get("emby_person_id")
@@ -1464,29 +1466,30 @@ class MediaProcessor:
                                 new_role = actor_from_frontend.get('role', '')
                                 original_role = original_actor_data.get('character', '')
                                 
-                                # 只有当角色名发生有意义的变化时，才更新缓存
-                                if new_role and new_role != original_role:
-                                    # 我们需要找到 original_role 对应的原始英文词条
-                                    # 注意：这里我们用清理前的 original_role 去反查，因为缓存里存的是原始形态
-                                    cache_entry = self.actor_db_manager.get_translation_from_db(
-                                        text=original_role, by_translated_text=True, cursor=cursor
-                                    )
-                                    if cache_entry and 'original_text' in cache_entry:
-                                        original_text_key = cache_entry['original_text']
-                                        # 用新的、人工校对过的中文名，去更新这个英文词条的翻译
-                                        self.actor_db_manager.save_translation_to_db(
-                                            cursor=cursor,
-                                            original_text=original_text_key,
-                                            translated_text=utils.clean_character_name_static(new_role), # 存入时用清理过的
-                                            engine_used="manual" # 标记为人工修正
+                                # 只有当角色名发生变化时才尝试更新缓存
+                                if new_role != original_role:
+                                    cleaned_original_role = utils.clean_character_name_static(original_role)
+                                    cleaned_new_role = utils.clean_character_name_static(new_role)
+                                    
+                                    if cleaned_new_role and cleaned_new_role != cleaned_original_role:
+                                        cache_entry = self.actor_db_manager.get_translation_from_db(
+                                            text=cleaned_original_role, by_translated_text=True, cursor=cursor
                                         )
-                                        logger.debug(f"  ➜ AI翻译缓存已通过手动编辑更新: '{original_text_key}' -> '{new_role}'")
-                            conn.commit() # 提交事务
+                                        if cache_entry and 'original_text' in cache_entry:
+                                            original_text_key = cache_entry['original_text']
+                                            self.actor_db_manager.save_translation_to_db(
+                                                cursor=cursor,
+                                                original_text=original_text_key,
+                                                translated_text=cleaned_new_role,
+                                                engine_used="manual"
+                                            )
+                                            logger.debug(f"  ➜ AI缓存通过反查更新: '{original_text_key}' -> '{cleaned_new_role}'")
+                            conn.commit()
                         except Exception as e_cache:
                             logger.error(f"更新翻译缓存事务中发生错误: {e_cache}", exc_info=True)
-                            conn.rollback() # 回滚事务
+                            conn.rollback()
                 else:
-                    logger.warning(f"无法更新翻译缓存，因为在内存中找不到 ItemID {item_id} 的原始演员数据会话。")
+                    logger.warning(f"无法更新翻译缓存，因为在内存中找不到 ItemID {item_id} 的原始演员数据。")
             except Exception as e:
                 logger.error(f"手动处理期间更新翻译缓存时发生顶层错误: {e}", exc_info=True)
             
