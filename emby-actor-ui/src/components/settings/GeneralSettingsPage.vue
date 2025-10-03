@@ -40,13 +40,6 @@
                       <n-switch v-model:value="configModel.actor_role_add_prefix" />
                       <template #feedback><n-text depth="3" style="font-size:0.8em;">开启后，角色名前会加上“饰 ”或“配 ”。关闭则直接显示角色名。</n-text></template>
                     </n-form-item-grid-item>
-                    <n-form-item-grid-item label="更新后刷新 Emby 媒体项">
-                      <n-switch v-model:value="configModel.refresh_emby_after_update" />
-                    </n-form-item-grid-item>
-                    <n-form-item-grid-item label="自动锁定演员表" path="auto_lock_cast_after_update">
-                      <n-switch v-model:value="configModel.auto_lock_cast_after_update" :disabled="!configModel.refresh_emby_after_update"/>
-                      <template #feedback>【酌情开启】开启后，处理完演员表后，会自动将该项目的“演员”字段锁定，防止被后续刷新操作覆盖。</template>
-                    </n-form-item-grid-item>
                   </n-card>
                 </n-gi>
                 <!-- 右侧列 -->

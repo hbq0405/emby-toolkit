@@ -710,64 +710,54 @@ def refresh_emby_item_metadata(item_emby_id: str,
                                emby_server_url: str,
                                emby_api_key: str,
                                user_id_for_ops: str,
-                               lock_fields: Optional[List[str]] = None,
                                replace_all_metadata_param: bool = False,
                                replace_all_images_param: bool = False,
                                item_name_for_log: Optional[str] = None
                                ) -> bool:
+    """
+    【V2 - 本地JSON模式专用版】
+    为媒体项触发一次刷新。在本地元数据工作流中，此函数的核心职责是：
+    在刷新前，无条件地检查并移除所有锁，确保 Emby 能够从 override 目录读取数据。
+    """
     if not all([item_emby_id, emby_server_url, emby_api_key, user_id_for_ops]):
         logger.error("刷新Emby元数据参数不足：缺少ItemID、服务器URL、API Key或UserID。")
         return False
     
     log_identifier = f"'{item_name_for_log}'" if item_name_for_log else f"ItemID: {item_emby_id}"
-    
-    # ★★★ 核心修改: 在函数开头一次性获取超时时间 ★★★
     api_timeout = config_manager.APP_CONFIG.get(constants.CONFIG_OPTION_EMBY_API_TIMEOUT, 60)
 
+    # --- 步骤 1: 检查并执行解锁 ---
     try:
-        logger.debug(f"  ➜ 正在为 {log_identifier} 获取当前详情...")
+        logger.debug(f"  ➜ 正在为 {log_identifier} 检查锁状态...")
         item_data = get_emby_item_details(item_emby_id, emby_server_url, emby_api_key, user_id_for_ops)
         if not item_data:
-            logger.error(f"  ➜ 无法获取 {log_identifier} 的详情，所有操作中止。")
+            logger.error(f"  ➜ 无法获取 {log_identifier} 的详情，刷新操作中止。")
             return False
 
-        item_needs_update = False
-        
-        if replace_all_metadata_param:
-            logger.debug(f"  ➜ 检测到 ReplaceAllMetadata=True，执行解锁...")
-            if item_data.get("LockData") is True:
-                item_data["LockData"] = False
-                item_needs_update = True
-            if item_data.get("LockedFields"):
-                item_data["LockedFields"] = []
-                item_needs_update = True
-        
-        if lock_fields:
-            logger.debug(f"  ➜ 检测到需要锁定字段: {lock_fields}...")
-            current_locked_fields = set(item_data.get("LockedFields", []))
-            original_lock_count = len(current_locked_fields)
-            
-            for field in lock_fields:
-                current_locked_fields.add(field)
-            
-            if len(current_locked_fields) > original_lock_count:
-                item_data["LockedFields"] = list(current_locked_fields)
-                item_needs_update = True
+        is_locked = item_data.get("LockData") is True or bool(item_data.get("LockedFields"))
 
-        if item_needs_update:
-            logger.debug(f"  ➜ 正在为 {log_identifier} 提交锁状态更新...")
+        if is_locked:
+            logger.info(f"  ➜ 项目 {log_identifier} 当前已锁定，将在刷新前执行无条件解锁。")
+            
+            # 准备解锁用的数据
+            item_data["LockData"] = False
+            item_data["LockedFields"] = []
+            
             update_url = f"{emby_server_url.rstrip('/')}/Items/{item_emby_id}"
             update_params = {"api_key": emby_api_key}
             headers = {'Content-Type': 'application/json'}
+            
             update_response = requests.post(update_url, json=item_data, headers=headers, params=update_params, timeout=api_timeout)
             update_response.raise_for_status()
-            logger.debug(f"  ➜ 成功更新 {log_identifier} 的锁状态。")
+            logger.debug(f"  ➜ 成功为 {log_identifier} 解锁。")
         else:
-            logger.debug(f"  ➜ 项目 {log_identifier} 的锁状态无需更新。")
+            logger.debug(f"  ➜ 项目 {log_identifier} 未锁定，直接进入刷新步骤。")
 
     except Exception as e:
-        logger.warning(f"  ➜ 在刷新前更新锁状态时失败: {e}。刷新将继续，但可能受影响。")
+        # 即使解锁失败，也应该继续尝试刷新，所以这里只记录警告
+        logger.warning(f"  ➜ 在刷新前检查或执行解锁时失败: {e}。刷新将继续，但可能受锁的影响。")
 
+    # --- 步骤 2: 发送最终的刷新请求 ---
     logger.debug(f"  ➜ 正在为 {log_identifier} 发送最终的刷新请求...")
     refresh_url = f"{emby_server_url.rstrip('/')}/Items/{item_emby_id}/Refresh"
     params = {

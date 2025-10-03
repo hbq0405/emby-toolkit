@@ -54,8 +54,6 @@ CONFIG_OPTION_EMBY_ADMIN_PASS = "emby_admin_pass"       # (可选) 用于自动�
 # ✨ 数据处理流程配置 (Processing Workflow)
 # ==============================================================================
 CONFIG_SECTION_PROCESSING = "Processing"
-CONFIG_OPTION_REFRESH_AFTER_UPDATE = "refresh_emby_after_update" # 处理完成后是否自动刷新Emby项目
-CONFIG_OPTION_AUTO_LOCK_CAST = "auto_lock_cast_after_update"     # 是否自动锁定元数据
 CONFIG_OPTION_MAX_ACTORS_TO_PROCESS = "max_actors_to_process"   # 每个媒体项目处理的演员数量上限
 DEFAULT_MAX_ACTORS_TO_PROCESS = 50                              # 默认的演员数量上限
 CONFIG_OPTION_MIN_SCORE_FOR_REVIEW = "min_score_for_review"     # 低于此评分的项目将进入手动处理列表
