@@ -190,7 +190,7 @@
 
     </n-grid>
     <!-- 实时日志查看器模态框 -->
-    <n-modal v-model:show="isRealtimeLogVisible" preset="card" style="width: 80%; max-width: 900px;" title="实时任务日志" class="dashboard-card">
+    <n-modal v-model:show="isRealtimeLogVisible" preset="card" style="width: 80%; max-width: 900px;" title="实时任务日志" class="modal-card-lite">
        <n-log ref="logRef" :log="logContent" trim class="log-panel" style="height: 60vh;"/>
     </n-modal>
 

@@ -5,9 +5,9 @@
   box-shadow: 0 4px 12px var(--card-shadow-color), 0 0 20px -5px var(--accent-glow-color) !important;
   color: var(--text-color) !important;
   border-radius: 12px !important;
-  backdrop-filter: blur(8px) !important;
-  -webkit-backdrop-filter: blur(8px) !important;
-  transition: transform 0.3s ease-in-out, opacity 0.3s ease-in-out !important;
+  backdrop-filter: blur(10px) !important;
+  -webkit-backdrop-filter: blur(10px) !important;
+  transition: all 0.3s ease-in-out !important;
   height: 100%;
   display: flex !important;
   flex-direction: column !important;
@@ -24,7 +24,6 @@
 .n-card.dashboard-card:hover {
   transform: translateY(-5px) !important;
   box-shadow: 0 8px 20px var(--card-shadow-color), 0 0 35px var(--accent-glow-color) !important;
-  transition: transform 0.3s ease-in-out, box-shadow 0.4s ease-in-out !important;
 }
 .dashboard-card .card-title {
   color: var(--accent-color) !important; /* ★★★ 灵魂归位！★★★ */
@@ -54,6 +53,14 @@
     2px 2px 1px #555,  /* 灰色柔和阴影 */
     0 0 5px #fff,     /* 白色光晕 */
     0 0 3px #ccc;    /* 更大范围光晕 */
+}
+/* ★★★ 为模态框准备的“轻量版”样式 ★★★ */
+.modal-card-lite {
+  background: var(--card-bg-color) !important;
+  border: 1px solid var(--card-border-color) !important;
+  color: var(--text-color) !important;
+  border-radius: 12px !important;
+  /* 放弃了最卡的 backdrop-filter 和 box-shadow */
 }
 @keyframes card-fade-in { to { opacity: 1; transform: translateY(0); } }
 .dashboard-card:nth-child(1) { animation-delay: 0.1s; }
