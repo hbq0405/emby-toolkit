@@ -419,21 +419,21 @@ def update_emby_item_cast(item_id: str, new_cast_list_for_handler: List[Dict[str
 
         emby_person_id = actor_entry.get("emby_person_id")
 
-        # 步骤 2.1: 始终设置 Emby ID (如果存在)
+        # 2. 根据是“现有演员”还是“新演员”来决定如何构建
         if emby_person_id and str(emby_person_id).strip():
+            # 对于【现有演员】，我们只需要提供 Id
             person_obj["Id"] = str(emby_person_id).strip()
             logger.trace(f"  ➜ 链接现有演员 '{person_obj['Name']}' (ID: {person_obj['Id']})")
         else:
+            # 对于【新演员】，我们不提供 Id，而是提供 ProviderIds
             logger.trace(f"  ➜ 添加新演员 '{person_obj['Name']}'")
-
-        # 步骤 2.2: 始终附加 ProviderIds (如果存在)，以消除歧义
-        provider_ids = actor_entry.get("provider_ids")
-        if isinstance(provider_ids, dict) and provider_ids:
-            # 清理掉值为 None 或空字符串的键
-            sanitized_ids = {k: str(v) for k, v in provider_ids.items() if v is not None and str(v).strip()}
-            if sanitized_ids:
-                person_obj["ProviderIds"] = sanitized_ids
-                logger.trace(f"    ➜ 为演员 '{person_obj['Name']}' 设置 ProviderIds: {sanitized_ids}")
+            provider_ids = actor_entry.get("provider_ids")
+            if isinstance(provider_ids, dict) and provider_ids:
+                # 清理掉值为 None 或空字符串的键
+                sanitized_ids = {k: str(v) for k, v in provider_ids.items() if v is not None and str(v).strip()}
+                if sanitized_ids:
+                    person_obj["ProviderIds"] = sanitized_ids
+                    logger.trace(f"    ➜ 为新演员 '{person_obj['Name']}' 设置初始 ProviderIds: {sanitized_ids}")
 
         formatted_people_for_emby.append(person_obj)
 
@@ -1998,43 +1998,3 @@ def delete_emby_user(user_id: str, base_url: str, api_key: str) -> bool:
     except Exception as e:
         logger.error(f"删除 Emby 用户 '{user_name_for_log}' 时发生未知错误: {e}")
         return False
-    
-# ✨✨✨ 根据名字搜索演员 ✨✨✨
-def search_emby_persons(
-    base_url: str,
-    api_key: str,
-    user_id: str,
-    search_term: str,
-    limit: int = 20
-) -> Optional[List[Dict[str, Any]]]:
-    """
-    在 Emby 中根据名字搜索“Person”类型的项目。
-    """
-    if not all([base_url, api_key, user_id, search_term]):
-        logger.error("search_emby_persons: 缺少必要的参数。")
-        return None
-
-    api_url = f"{base_url.rstrip('/')}/Users/{user_id}/Items"
-    params = {
-        "api_key": api_key,
-        "SearchTerm": search_term.strip(),
-        "IncludeItemTypes": "Person", # ★★★ 核心：只搜索演员 ★★★
-        "Recursive": "true",
-        "Fields": "ProductionYear,ProviderIds,ImageTags", # ★★★ 核心：获取纠错需要的信息 ★★★
-        "Limit": limit
-    }
-    
-    try:
-        api_timeout = config_manager.APP_CONFIG.get(constants.CONFIG_OPTION_EMBY_API_TIMEOUT, 60)
-        response = requests.get(api_url, params=params, timeout=api_timeout)
-        response.raise_for_status()
-        data = response.json()
-        items = data.get("Items", [])
-        logger.info(f"通过关键词 '{search_term}' 在 Emby 中搜索到 {len(items)} 位演员。")
-        return items
-    except requests.exceptions.RequestException as e:
-        logger.error(f"搜索 Emby 演员时发生网络错误: {e}")
-        return None
-    except Exception as e:
-        logger.error(f"解析 Emby 演员搜索结果时发生未知错误: {e}")
-        return None

@@ -134,10 +134,6 @@
                       </template>
                       <template #header-extra>
                         <n-space>
-                          <!-- ★★★ 新增纠错按钮 ★★★ -->
-                          <n-button text @click="startCorrection(actor, index)" title="纠错同名演员">
-                            <n-icon :component="SearchCircleIcon" />
-                          </n-button>
                           <n-button text class="drag-handle">
                             <n-icon :component="DragHandleIcon" />
                           </n-button>
@@ -201,65 +197,13 @@
       </n-alert>
     </div>
   </div>
-  
-  <!-- ★★★ 新增纠错模态框 ★★★ -->
-  <n-modal
-    v-model:show="showCorrectionModal"
-    preset="card"
-    style="width: 80%; max-width: 900px;"
-    :title="`为 “${actorToCorrectName}” 选择正确的演员`"
-    :bordered="false"
-    size="huge"
-  >
-    <div v-if="isCorrecting" class="loading-container" style="min-height: 200px;">
-      <n-spin size="medium" />
-      <p style="margin-top: 10px;">正在搜索同名演员...</p>
-    </div>
-    <div v-else-if="correctionResults.length > 0">
-      <n-alert type="info" :bordered="false" style="margin-bottom: 16px;">
-        点击下方的卡片以替换当前演员。
-      </n-alert>
-      <n-grid cols="2 m:3 l:4" :x-gap="12" :y-gap="12" responsive="screen">
-        <n-grid-item v-for="person in correctionResults" :key="person.emby_person_id">
-          <n-card
-            class="correction-card"
-            hoverable
-            @click="selectCorrectedActor(person)"
-            content-style="padding: 0;"
-          >
-            <template #cover>
-              <n-image :src="person.imageUrl" lazy object-fit="cover" class="correction-avatar">
-                 <template #placeholder>
-                    <div class="avatar-placeholder" style="aspect-ratio: 1 / 1;">
-                      <n-icon :component="PersonIcon" size="24" :depth="3" />
-                    </div>
-                  </template>
-              </n-image>
-            </template>
-            <n-thing content-style="text-align: center; padding: 8px;">
-              <template #header>
-                <n-ellipsis style="max-width: 100%;">{{ person.name }}</n-ellipsis>
-              </template>
-              <n-tag v-if="person.production_year" size="small" type="info" round>
-                {{ person.production_year }}
-              </n-tag>
-            </n-thing>
-          </n-card>
-        </n-grid-item>
-      </n-grid>
-    </div>
-    <div v-else>
-      <n-empty description="未在 Emby 中找到其他同名演员。" />
-    </div>
-  </n-modal>
-
   </n-layout>
 </template>
 
 <script setup>
 import { ref, onMounted, watch, computed, nextTick } from 'vue';
 import draggable from 'vuedraggable';
-import { NIcon, NInput, NInputGroup, NGrid, NGridItem, NFormItem, NTag, NAvatar, NPopconfirm, NImage, NModal, NEmpty, NThing, NEllipsis } from 'naive-ui';
+import { NIcon, NInput, NInputGroup, NGrid, NGridItem, NFormItem, NTag, NAvatar, NPopconfirm, NImage } from 'naive-ui';
 import { useRoute, useRouter } from 'vue-router';
 import axios from 'axios';
 import { NPageHeader, NDivider, NSpin, NCard, NDescriptions, NDescriptionsItem, NButton, NSpace, NAlert, useMessage } from 'naive-ui';
@@ -267,8 +211,7 @@ import {
   MoveOutline as DragHandleIcon,
   TrashOutline as TrashIcon,
   ImageOutline as ImageIcon,
-  PersonOutline as PersonIcon,
-  SearchCircleOutline as SearchCircleIcon // ★★★ 导入新图标 ★★★
+  PersonOutline as PersonIcon
 } from '@vicons/ionicons5';
 
 const route = useRoute();
@@ -285,13 +228,6 @@ const searchLinks = ref({ google_search_wiki: '' });
 const isParsingFromUrl = ref(false);
 const urlToParse = ref('');
 const isTranslating = ref(false);
-
-// ★★★ 新增纠错功能的状态变量 ★★★
-const showCorrectionModal = ref(false);
-const isCorrecting = ref(false);
-const correctionResults = ref([]);
-const actorToCorrectIndex = ref(null);
-const actorToCorrectName = ref('');
 
 const posterUrl = computed(() => {
   if (itemDetails.value?.item_id && itemDetails.value?.image_tag) {
@@ -394,8 +330,9 @@ const handleEnrich = async (newCastFromWeb) => {
 };
 
 const translateAllFields = async () => {
-  isTranslating.value = true;
+  // ...
   try {
+    // 【★★★ 构建包含所有上下文的最终 Payload ★★★】
     const payload = { 
       cast: editableCast.value,
       title: itemDetails.value.item_name,
@@ -420,64 +357,18 @@ const translateAllFields = async () => {
   }
 };
 
-// ★★★ 新增纠错功能函数 ★★★
-const startCorrection = async (actor, index) => {
-  if (!actor.name) {
-    message.warning("演员名为空，无法进行纠错搜索。");
-    return;
-  }
-  actorToCorrectIndex.value = index;
-  actorToCorrectName.value = actor.name;
-  showCorrectionModal.value = true;
-  isCorrecting.value = true;
-  correctionResults.value = [];
-
-  try {
-    const response = await axios.get('/api/correct_actor_search', {
-      params: { name: actor.name }
-    });
-    // 过滤掉当前正在编辑的演员本人
-    correctionResults.value = response.data.filter(p => p.emby_person_id !== actor.emby_person_id);
-  } catch (error) {
-    console.error("演员纠错搜索失败:", error);
-    message.error(error.response?.data?.error || "搜索演员失败。");
-    showCorrectionModal.value = false; // 出错时关闭弹窗
-  } finally {
-    isCorrecting.value = false;
-  }
-};
-
-// ★★★ 新增选择纠错结果函数 ★★★
-const selectCorrectedActor = (newActorData) => {
-  if (actorToCorrectIndex.value === null) return;
-
-  const index = actorToCorrectIndex.value;
-  // 创建一个新对象以确保响应式更新
-  const updatedActor = {
-    ...editableCast.value[index], // 保留角色等已有信息
-    name: newActorData.name,
-    tmdbId: newActorData.tmdbId,
-    imageUrl: newActorData.imageUrl,
-    emby_person_id: newActorData.emby_person_id,
-  };
-
-  editableCast.value[index] = updatedActor;
-
-  message.success(`已将演员 “${actorToCorrectName.value}” 替换为 “${newActorData.name}”。`);
-  showCorrectionModal.value = false;
-  actorToCorrectIndex.value = null;
-};
-
-
 const fetchMediaDetails = async () => {
   isLoading.value = true;
   try {
     const response = await axios.get(`/api/media_for_editing/${itemId.value}`);
     itemDetails.value = response.data;
 
+    // ★★★ 核心修复：在这里添加下面这行代码 ★★★
+    // 检查后端返回的数据中是否有 search_links，如果有，就更新它
     if (response.data && response.data.search_links) {
       searchLinks.value = response.data.search_links;
     }
+    // ★★★ 修复结束 ★★★
 
   } catch (error) {
     message.error(error.response?.data?.error || "获取媒体详情失败。");
@@ -491,6 +382,7 @@ onMounted(() => {
   itemId.value = route.params.itemId;
   
   if (itemId.value) {
+    console.log(`准备为 Item ID: ${itemId.value} 获取详情...`);
     fetchMediaDetails();
   } else {
     message.error("未提供媒体项ID！");
@@ -506,13 +398,16 @@ const handleSaveChanges = async () => {
   if (!itemDetails.value?.item_id) return;
   isSaving.value = true;
   try {
+    // 等待任何可能的输入框更新完成
     await nextTick();
 
+    // ★★★ 核心修复：明确构建发送到后端的演员对象结构 ★★★
     const castPayload = editableCast.value.map(actor => {
+      // 从前端的 actor 对象中提取需要的数据，并使用后端期望的键名
       return {
-        tmdbId: actor.tmdbId,
-        name: actor.name,
-        role: actor.role,
+        tmdbId: actor.tmdbId, // 确保发送 tmdbId
+        name: actor.name,     // 发送 name
+        role: actor.role,      // 发送 role
         emby_person_id: actor.emby_person_id
       };
     });
@@ -522,9 +417,14 @@ const handleSaveChanges = async () => {
       item_name: itemDetails.value.item_name,
     };
     
+    // (可选) 在发送前打印最终的 payload，用于调试
+    console.log("----------- [最终发送到后端的数据] -----------");
+    console.log(JSON.stringify(payload, null, 2));
+
     await axios.post(`/api/update_media_cast_sa/${itemDetails.value.item_id}`, payload);
     
     message.success("修改已保存，Emby将自动刷新。");
+    // 延迟一小段时间再返回，给用户反馈时间
     setTimeout(() => {
       goBack();
     }, 1500);
@@ -573,6 +473,7 @@ const handleSaveChanges = async () => {
   grid-template-columns: repeat(1, 1fr);
   gap: 16px;
 }
+/* ★★★ START: 核心修改 - 移除 2xl 的 5 列规则 ★★★ */
 @media (min-width: 640px) { /* s */
   .actor-grid-container { grid-template-columns: repeat(2, 1fr); }
 }
@@ -585,6 +486,8 @@ const handleSaveChanges = async () => {
 @media (min-width: 1280px) { /* xl */
   .actor-grid-container { grid-template-columns: repeat(4, 1fr); }
 }
+/* 移除了针对 1536px 以上屏幕的 5 列规则 */
+/* ★★★ END: 核心修改 ★★★ */
 
 .actor-edit-card:hover {
   transform: translateY(-4px);
@@ -662,21 +565,5 @@ const handleSaveChanges = async () => {
   transform: rotate(2deg);
   box-shadow: 0 10px 20px rgba(0,0,0,0.2);
   z-index: 99;
-}
-
-/* ★★★ 新增纠错弹窗样式 ★★★ */
-.correction-card {
-  cursor: pointer;
-  transition: all 0.2s ease-in-out;
-}
-.correction-card:hover {
-  transform: scale(1.05);
-  box-shadow: var(--n-box-shadow-hover);
-}
-.correction-avatar {
-  width: 100%;
-  height: auto;
-  aspect-ratio: 1 / 1;
-  background-color: var(--n-action-color);
 }
 </style>

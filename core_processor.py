@@ -1772,7 +1772,7 @@ class MediaProcessor:
             new_actors_json = json.dumps(actors_for_cache, ensure_ascii=False)
 
             # ======================================================================
-            # ★★★  更新翻译缓存 ★★★
+            # ★★★ 新增功能 1: 更新翻译缓存 ★★★
             # ======================================================================
             try:
                 # 1. 从内存缓存中获取这个会话的完整原始演员列表
@@ -1824,48 +1824,26 @@ class MediaProcessor:
 
 
             # ======================================================================
-            # 步骤 2: 执行“三步更新”到 Emby
+            # 步骤 2: 执行“两步更新”到 Emby
             # ======================================================================
             
-            # 2.1: 前置更新演员名 (保持不变)
-            logger.info("  ➜ 手动处理：步骤 1/3: 检查并更新演员名字...")
+            # 2.1: 前置更新演员名
+            logger.info("  ➜ 手动处理：步骤 1/2: 检查并更新演员名字...")
             original_names_map = {p.get("Id"): p.get("Name") for p in item_details.get("People", []) if p.get("Id")}
             for actor in cast_for_emby_handler:
                 actor_id = actor.get("emby_person_id")
                 new_name = actor.get("name")
                 original_name = original_names_map.get(actor_id)
                 if actor_id and new_name and original_name and new_name != original_name:
+                    logger.info(f"  ➜ 检测到手动名字变更，正在更新 Person: '{original_name}' -> '{new_name}' (ID: {actor_id})")
                     emby_handler.update_person_details(
                         person_id=actor_id, new_data={"Name": new_name},
                         emby_server_url=self.emby_url, emby_api_key=self.emby_api_key, user_id=self.emby_user_id
                     )
             logger.info("  ➜ 手动处理：演员名字前置更新完成。")
 
-            # ▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼
-            # ★★★ 2.2 : 强制清空演员列表 ★★★
-            # ▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼
-            logger.info("  ➜ 手动处理：步骤 2/3: 为消除缓存歧义，首先清空媒体现有演员列表...")
-            # emby_handler.update_emby_item_cast 足够智能，传空列表只会清空演员
-            clear_result = emby_handler.update_emby_item_cast(
-                item_id, 
-                [], # <--- 传递一个空列表来清空演员
-                self.emby_url, 
-                self.emby_api_key, 
-                self.emby_user_id
-            )
-            
-            if clear_result is None:
-                logger.error(f"  ➜ 手动处理失败：清空演员列表时发生错误。更新中止。")
-                with get_central_db_connection() as conn:
-                    self.log_db_manager.save_to_failed_log(conn.cursor(), item_id, item_name, "手动更新时清空演员列表失败", item_type)
-                return False
-            
-            # 给 Emby 一点反应时间
-            time.sleep(1) 
-            logger.info("  ➜ 演员列表清空成功。")
-
-            # ★★★ 核心修复 2.3 (奏): 写入最终的正确列表 ★★★
-            logger.info(f"  ➜ 手动处理：步骤 3/3: 准备将 {len(cast_for_emby_handler)} 位演员更新到媒体主项目...")
+            # 2.2: 更新媒体主项目的演员列表
+            logger.info(f"  ➜ 手动处理：步骤 2/2: 准备将 {len(cast_for_emby_handler)} 位演员更新到媒体主项目...")
             updated_people_list = emby_handler.update_emby_item_cast(
                 item_id, cast_for_emby_handler,
                 self.emby_url, self.emby_api_key, self.emby_user_id
