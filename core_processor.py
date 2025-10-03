@@ -1064,7 +1064,7 @@ class MediaProcessor:
                 logger.error(f"写入失败日志时再次发生错误: {log_e}")
             return False
 
-        logger.info(f"  ✅ 处理完成 '{item_name_for_log}'")
+        logger.trace(f"  ✅ 处理完成 '{item_name_for_log}'")
         return True
 
     # --- 核心处理器 ---
