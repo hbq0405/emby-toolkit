@@ -1459,20 +1459,22 @@ class MediaProcessor:
                             new_role = actor_from_frontend.get('role', '')
                             original_role = original_actor_data.get('character', '')
                             
-                            if new_role and new_role != original_role:
-                                # 在反查数据库前，必须先清理旧角色名！ 
-                                cleaned_original_role = utils.clean_character_name_static(original_role)
-                                
-                                # 用清理后的、与数据库格式一致的旧角色名去反查
+                            cleaned_new_role = utils.clean_character_name_static(new_role)
+                            cleaned_original_role = utils.clean_character_name_static(original_role)
+
+                            # 只有当两个“干净”的名字不同时，才说明用户真的修改了
+                            if cleaned_new_role and cleaned_new_role != cleaned_original_role:
+                                # 用清理后的旧名字去反查数据库
                                 cache_entry = self.actor_db_manager.get_translation_from_db(text=cleaned_original_role, by_translated_text=True, cursor=cursor)
                                 
                                 if cache_entry and 'original_text' in cache_entry:
                                     original_text_key = cache_entry['original_text']
+                                    # 用清理后的新名字去更新数据库
                                     self.actor_db_manager.save_translation_to_db(
                                         cursor=cursor, original_text=original_text_key,
-                                        translated_text=utils.clean_character_name_static(new_role), engine_used="manual"
+                                        translated_text=cleaned_new_role, engine_used="manual"
                                     )
-                                    logger.debug(f"  ➜ AI翻译缓存已更新: '{original_text_key}' -> '{new_role}'")
+                                    logger.debug(f"  ➜ AI翻译缓存已更新: '{original_text_key}' ('{cleaned_original_role}' -> '{cleaned_new_role}')")
                                     updated_count += 1
                         if updated_count > 0:
                             logger.info(f"  ➜ 成功更新了 {updated_count} 条翻译缓存。")
