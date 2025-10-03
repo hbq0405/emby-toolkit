@@ -419,21 +419,21 @@ def update_emby_item_cast(item_id: str, new_cast_list_for_handler: List[Dict[str
 
         emby_person_id = actor_entry.get("emby_person_id")
 
-        # 2. 根据是“现有演员”还是“新演员”来决定如何构建
+        # 步骤 2.1: 始终设置 Emby ID (如果存在)
         if emby_person_id and str(emby_person_id).strip():
-            # 对于【现有演员】，我们只需要提供 Id
             person_obj["Id"] = str(emby_person_id).strip()
             logger.trace(f"  ➜ 链接现有演员 '{person_obj['Name']}' (ID: {person_obj['Id']})")
         else:
-            # 对于【新演员】，我们不提供 Id，而是提供 ProviderIds
             logger.trace(f"  ➜ 添加新演员 '{person_obj['Name']}'")
-            provider_ids = actor_entry.get("provider_ids")
-            if isinstance(provider_ids, dict) and provider_ids:
-                # 清理掉值为 None 或空字符串的键
-                sanitized_ids = {k: str(v) for k, v in provider_ids.items() if v is not None and str(v).strip()}
-                if sanitized_ids:
-                    person_obj["ProviderIds"] = sanitized_ids
-                    logger.trace(f"    ➜ 为新演员 '{person_obj['Name']}' 设置初始 ProviderIds: {sanitized_ids}")
+
+        # 步骤 2.2: 始终附加 ProviderIds (如果存在)，以消除歧义
+        provider_ids = actor_entry.get("provider_ids")
+        if isinstance(provider_ids, dict) and provider_ids:
+            # 清理掉值为 None 或空字符串的键
+            sanitized_ids = {k: str(v) for k, v in provider_ids.items() if v is not None and str(v).strip()}
+            if sanitized_ids:
+                person_obj["ProviderIds"] = sanitized_ids
+                logger.trace(f"    ➜ 为演员 '{person_obj['Name']}' 设置 ProviderIds: {sanitized_ids}")
 
         formatted_people_for_emby.append(person_obj)
 
