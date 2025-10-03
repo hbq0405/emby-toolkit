@@ -1061,7 +1061,7 @@ class MediaProcessor:
             emby_handler.refresh_emby_item_metadata(
                 item_emby_id=item_id, emby_server_url=self.emby_url, emby_api_key=self.emby_api_key,
                 user_id_for_ops=self.emby_user_id, lock_fields=["Cast"] if self.auto_lock_cast_enabled else None,
-                replace_all_metadata_param=False, item_name_for_log=item_name_for_log
+                replace_all_metadata_param=True, item_name_for_log=item_name_for_log
             )
 
             # 步骤 3.3: 更新内部数据库和日志
@@ -1752,62 +1752,48 @@ class MediaProcessor:
     # ✨✨✨手动处理✨✨✨
     def process_item_with_manual_cast(self, item_id: str, manual_cast_list: List[Dict[str, Any]], item_name: str) -> bool:
         """
-        【V-API-Direct - 功能增强最终版】
-        完全信任前端提交的演员列表，直接写入Emby，并集成了翻译缓存更新和剧集分集处理功能。
+        【V2 - JSON中心化版】
+        将手动处理流程从“API直写”重构为“文件进，文件出”，与自动化流程保持逻辑统一。
+        - 读取 override 主JSON文件作为基础。
+        - 智能重建演员列表，保留完整元数据，仅更新手动修改的部分。
+        - 将新列表写回 override 主JSON及所有分集JSON。
+        - 最终通过 Emby 刷新触发神医插件加载。
         """
-        logger.info(f"  ➜ 手动处理流程启动：ItemID: {item_id} ('{item_name}')")
+        logger.info(f"  ➜ 手动处理流程启动 (文件中心化模式)：ItemID: {item_id} ('{item_name}')")
         
         try:
             # ======================================================================
-            # 步骤 1: 数据准备与转换
+            # 步骤 1: 数据准备与定位
             # ======================================================================
-            logger.debug(f"接收到前端提交的 {len(manual_cast_list)} 位演员数据，开始转换...")
-            
-            # 1.1 获取媒体详情，这是后续所有操作的基础
             item_details = emby_handler.get_emby_item_details(item_id, self.emby_url, self.emby_api_key, self.emby_user_id)
             if not item_details:
                 raise ValueError(f"无法获取项目 {item_id} 的详情。")
+            
             item_type = item_details.get("Type")
             tmdb_id = item_details.get("ProviderIds", {}).get("Tmdb")
+            if not tmdb_id:
+                raise ValueError(f"项目 {item_id} 缺少 TMDb ID，无法定位元数据文件。")
 
-            # 1.2 将前端数据转换为 Emby Handler 需要的格式
-            cast_for_emby_handler = []
-            for actor in manual_cast_list:
-                emby_pid = actor.get("emby_person_id")
-                if not emby_pid:
-                    logger.warning(f"跳过演员 '{actor.get('name')}'，因为缺少 emby_person_id。")
-                    continue
-                cast_for_emby_handler.append({
-                    "name": actor.get("name"),
-                    "character": actor.get("role"),
-                    "emby_person_id": emby_pid,
-                    "provider_ids": {"Tmdb": actor.get("tmdbId")}
-                })
+            # 定位 override 目录中的主JSON文件
+            cache_folder_name = "tmdb-movies2" if item_type == "Movie" else "tmdb-tv"
+            target_override_dir = os.path.join(self.local_data_path, "override", cache_folder_name, tmdb_id)
+            main_json_filename = "all.json" if item_type == "Movie" else "series.json"
+            main_json_path = os.path.join(target_override_dir, main_json_filename)
 
-            actors_for_cache = []
-            for i, actor in enumerate(manual_cast_list):
-                actors_for_cache.append({
-                    "id": actor.get("tmdbId"),
-                    "name": actor.get("name"),
-                    "character": actor.get("role"),
-                    "order": i # 使用循环索引作为排序依据
-                })
-            # 将列表转换为 JSON 字符串，准备写入数据库
-            new_actors_json = json.dumps(actors_for_cache, ensure_ascii=False)
+            if not os.path.exists(main_json_path):
+                raise FileNotFoundError(f"手动处理失败：找不到主元数据文件 '{main_json_path}'。请确保该项目已被至少处理过一次。")
 
             # ======================================================================
-            # ★★★ 新增功能 1: 更新翻译缓存 ★★★
+            # 步骤 2: 更新翻译缓存
             # ======================================================================
             try:
-                # 1. 从内存缓存中获取这个会话的完整原始演员列表
                 original_full_cast = self.manual_edit_cache.get(item_id)
                 if original_full_cast:
-                    # 构建一个以 emby_person_id 为键的原始数据映射表
                     original_cast_map = {str(actor.get('emby_person_id')): actor for actor in original_full_cast}
                     
                     with get_central_db_connection() as conn:
                         cursor = conn.cursor()
-                        cursor.execute("BEGIN TRANSACTION;")
+                        cursor.execute("BEGIN;") # 开始事务
                         try:
                             for actor_from_frontend in manual_cast_list:
                                 emby_pid = actor_from_frontend.get("emby_person_id")
@@ -1819,107 +1805,119 @@ class MediaProcessor:
                                 new_role = actor_from_frontend.get('role', '')
                                 original_role = original_actor_data.get('character', '')
                                 
-                                # 只有当角色名发生变化时才尝试更新缓存
-                                if new_role != original_role:
-                                    cleaned_original_role = utils.clean_character_name_static(original_role)
-                                    cleaned_new_role = utils.clean_character_name_static(new_role)
-                                    
-                                    if cleaned_new_role and cleaned_new_role != cleaned_original_role:
-                                        cache_entry = self.actor_db_manager.get_translation_from_db(
-                                            text=cleaned_original_role, by_translated_text=True, cursor=cursor
+                                # 只有当角色名发生有意义的变化时，才更新缓存
+                                if new_role and new_role != original_role:
+                                    # 我们需要找到 original_role 对应的原始英文词条
+                                    # 注意：这里我们用清理前的 original_role 去反查，因为缓存里存的是原始形态
+                                    cache_entry = self.actor_db_manager.get_translation_from_db(
+                                        text=original_role, by_translated_text=True, cursor=cursor
+                                    )
+                                    if cache_entry and 'original_text' in cache_entry:
+                                        original_text_key = cache_entry['original_text']
+                                        # 用新的、人工校对过的中文名，去更新这个英文词条的翻译
+                                        self.actor_db_manager.save_translation_to_db(
+                                            cursor=cursor,
+                                            original_text=original_text_key,
+                                            translated_text=utils.clean_character_name_static(new_role), # 存入时用清理过的
+                                            engine_used="manual" # 标记为人工修正
                                         )
-                                        if cache_entry and 'original_text' in cache_entry:
-                                            original_text_key = cache_entry['original_text']
-                                            self.actor_db_manager.save_translation_to_db(
-                                                cursor=cursor,
-                                                original_text=original_text_key,
-                                                translated_text=cleaned_new_role,
-                                                engine_used="manual"
-                                            )
-                                            logger.debug(f"  ➜ AI缓存通过反查更新: '{original_text_key}' -> '{cleaned_new_role}'")
-                            conn.commit()
+                                        logger.debug(f"  ➜ AI翻译缓存已通过手动编辑更新: '{original_text_key}' -> '{new_role}'")
+                            conn.commit() # 提交事务
                         except Exception as e_cache:
                             logger.error(f"更新翻译缓存事务中发生错误: {e_cache}", exc_info=True)
-                            conn.rollback()
+                            conn.rollback() # 回滚事务
                 else:
-                    logger.warning(f"无法更新翻译缓存，因为在内存中找不到 ItemID {item_id} 的原始演员数据。")
+                    logger.warning(f"无法更新翻译缓存，因为在内存中找不到 ItemID {item_id} 的原始演员数据会话。")
             except Exception as e:
                 logger.error(f"手动处理期间更新翻译缓存时发生顶层错误: {e}", exc_info=True)
-
-
-            # ======================================================================
-            # 步骤 2: 执行“两步更新”到 Emby
-            # ======================================================================
             
-            # 2.1: 前置更新演员名
-            logger.info("  ➜ 手动处理：步骤 1/2: 检查并更新演员名字...")
+            # ======================================================================
+            # 步骤 3: API前置操作 (更新演员名)
+            # ======================================================================
+            logger.info("  ➜ 手动处理：步骤 1/3: 检查并更新演员名字...")
             original_names_map = {p.get("Id"): p.get("Name") for p in item_details.get("People", []) if p.get("Id")}
-            for actor in cast_for_emby_handler:
+            for actor in manual_cast_list:
                 actor_id = actor.get("emby_person_id")
                 new_name = actor.get("name")
                 original_name = original_names_map.get(actor_id)
                 if actor_id and new_name and original_name and new_name != original_name:
-                    logger.info(f"  ➜ 检测到手动名字变更，正在更新 Person: '{original_name}' -> '{new_name}' (ID: {actor_id})")
                     emby_handler.update_person_details(
                         person_id=actor_id, new_data={"Name": new_name},
                         emby_server_url=self.emby_url, emby_api_key=self.emby_api_key, user_id=self.emby_user_id
                     )
-            logger.info("  ➜ 手动处理：演员名字前置更新完成。")
-
-            # 2.2: 更新媒体主项目的演员列表
-            logger.info(f"  ➜ 手动处理：步骤 2/2: 准备将 {len(cast_for_emby_handler)} 位演员更新到媒体主项目...")
-            updated_people_list = emby_handler.update_emby_item_cast(
-                item_id, cast_for_emby_handler,
-                self.emby_url, self.emby_api_key, self.emby_user_id
-            )
-
-            if updated_people_list is None:
-                logger.error(f"  ➜ 手动处理失败：更新 Emby 项目 '{item_name}' 演员信息时失败。")
-                with get_central_db_connection() as conn:
-                    self.log_db_manager.save_to_failed_log(conn.cursor(), item_id, item_name, "手动API更新演员信息失败", item_type)
-                return False
 
             # ======================================================================
-            # ★★★ 新增功能 2: 如果是剧集，则批量处理所有分集 ★★★
+            # ★★★ 核心修改: 文件读、改、写 ★★★
             # ======================================================================
+            logger.info(f"  ➜ 手动处理：步骤 2/3: 正在为 '{item_name}' 重建并写入 override 元数据文件...")
+            
+            # 2.1 读取原始JSON文件
+            with open(main_json_path, 'r', encoding='utf-8') as f:
+                data = json.load(f)
+            
+            original_cast_data = (data.get('casts', {}) or {}).get('cast', [])
+            original_cast_map = {str(actor.get('id')): actor for actor in original_cast_data if actor.get('id')}
+
+            # 2.2 智能重建演员列表
+            new_cast_for_json = []
+            for actor_from_frontend in manual_cast_list:
+                tmdb_id_str = str(actor_from_frontend.get("tmdbId"))
+                if not tmdb_id_str or tmdb_id_str not in original_cast_map:
+                    logger.warning(f"跳过演员 '{actor_from_frontend.get('name')}'，因为在原始元数据中找不到其TMDb ID {tmdb_id_str}。")
+                    continue
+                
+                # 从原始数据中复制一份完整的条目
+                new_actor_entry = original_cast_map[tmdb_id_str].copy()
+                # 用前端提交的新信息覆盖
+                new_actor_entry['name'] = actor_from_frontend.get('name')
+                new_actor_entry['character'] = actor_from_frontend.get('role')
+                
+                new_cast_for_json.append(new_actor_entry)
+
+            # 2.3 将新列表写回主JSON文件
+            if 'casts' in data and 'cast' in data['casts']:
+                data['casts']['cast'] = new_cast_for_json
+            elif 'credits' in data and 'cast' in data['credits']:
+                 data.setdefault('credits', {})['cast'] = new_cast_for_json
+            
+            with open(main_json_path, 'w', encoding='utf-8') as f:
+                json.dump(data, f, ensure_ascii=False, indent=2)
+
+            # 2.4 如果是剧集，则注入到所有分集
             if item_type == "Series":
-                self._batch_update_episodes_cast(
-                    series_id=item_id,
-                    series_name=item_name,
-                    final_cast_list=cast_for_emby_handler # 直接使用我们准备好的列表
+                source_cache_dir = os.path.join(self.local_data_path, "cache", cache_folder_name, tmdb_id)
+                self._inject_cast_to_series_files(
+                    target_dir=target_override_dir,
+                    cast_list=new_cast_for_json,
+                    series_details=item_details,
+                    source_dir=source_cache_dir
                 )
 
             # ======================================================================
-            # 步骤 3: 完成上锁和刷新
+            # 步骤 4: 触发刷新并更新日志
             # ======================================================================
-            logger.info("  ➜ 手动更新成功")
+            logger.info("  ➜ 手动处理：步骤 3/3: 触发 Emby 刷新并更新内部日志...")
             fields_to_lock = ["Cast"] if self.auto_lock_cast_enabled else None
             emby_handler.refresh_emby_item_metadata(
                 item_emby_id=item_id, emby_server_url=self.emby_url, emby_api_key=self.emby_api_key,
                 user_id_for_ops=self.emby_user_id, lock_fields=fields_to_lock,
-                replace_all_metadata_param=False, item_name_for_log=item_name
+                replace_all_metadata_param=True, item_name_for_log=item_name
             )
 
-            # ======================================================================
-            # 步骤 4: 更新处理日志
-            # ======================================================================
+            # 更新我们自己的数据库日志和缓存
             with get_central_db_connection() as conn:
                 cursor = conn.cursor()
-                if tmdb_id and item_type:
-                    try:
-                        logger.debug(f"  ➜ 正在为 TMDb ID {tmdb_id} 更新 media_metadata 缓存中的演员表...")
-                        sql_update_actors = """
-                            UPDATE media_metadata
-                            SET actors_json = %s, last_synced_at = NOW()
-                            WHERE tmdb_id = %s AND item_type = %s
-                        """
-                        cursor.execute(sql_update_actors, (new_actors_json, tmdb_id, item_type))
-                        logger.info("  ➜ 成功同步手动编辑的演员列表到 media_metadata 缓存。")
-                    except Exception as e_cache:
-                        # 只记录错误，不中断主流程
-                        logger.error(f"  ➜ 更新 media_metadata 缓存失败: {e_cache}", exc_info=True)
+                # 更新 media_metadata 缓存，使其与手动修改保持一致
+                actors_for_cache = [{"id": actor.get("id"), "name": actor.get("name"), "character": actor.get("character")} for actor in new_cast_for_json]
+                new_actors_json = json.dumps(actors_for_cache, ensure_ascii=False)
+                cursor.execute(
+                    "UPDATE media_metadata SET actors_json = %s, last_synced_at = NOW() WHERE tmdb_id = %s AND item_type = %s",
+                    (new_actors_json, tmdb_id, item_type)
+                )
+                
                 self.log_db_manager.save_to_processed_log(cursor, item_id, item_name, score=10.0)
                 self.log_db_manager.remove_from_failed_log(cursor, item_id)
+                conn.commit()
 
             logger.info(f"  ➜ 手动处理 '{item_name}' 流程完成。")
             return True
@@ -1935,77 +1933,90 @@ class MediaProcessor:
     # --- 为前端准备演员列表用于编辑 ---
     def get_cast_for_editing(self, item_id: str) -> Optional[Dict[str, Any]]:
         """
-        【V-API-Optimized - 性能与展示优化最终版】
-        1. 演员头像直接从本地数据库缓存的 TMDB 路径拼接，加载速度极快。
-        2. 角色名在返回给前端前进行清理，去除“饰 ”等前缀。
+        【V2 - Override文件中心化版】
+        重构数据源，确保前端获取和编辑的演员列表，与 override 文件中的“真理之源”完全一致。
+        - 演员表主体(名字, 角色, 顺序) 来自 override 主JSON文件。
+        - 通过一次 Emby API 调用来获取 emby_person_id 并进行映射。
         """
-        logger.info(f"  ➜ 为编辑页面准备数据：ItemID {item_id}")
+        logger.info(f"  ➜ 为编辑页面准备数据 (文件中心化模式)：ItemID {item_id}")
         
         try:
-            # 步骤 1: 获取 Emby 基础详情 (保持不变)
+            # 步骤 1: 获取 Emby 基础详情 和 用于ID映射的People列表
             emby_details = emby_handler.get_emby_item_details(item_id, self.emby_url, self.emby_api_key, self.emby_user_id)
             if not emby_details:
                 raise ValueError(f"在Emby中未找到项目 {item_id}")
 
             item_name_for_log = emby_details.get("Name", f"未知(ID:{item_id})")
-            
-            # 步骤 2: 获取演员列表 (保持不变)
-            logger.debug(f"  ➜ 正在为 '{item_name_for_log}' 获取演员列表...")
-            raw_emby_people = emby_details.get("People", [])
-            raw_emby_actors_only = [person for person in raw_emby_people if person.get("Type") == "Actor"]
-            logger.debug(f"  ➜ 从 {len(raw_emby_people)} 位演职员中筛选出 {len(raw_emby_actors_only)} 位演员进行编辑。")
-            
-            # 使用筛选后的列表进行后续处理
-            full_cast_enhanced = self._enrich_cast_from_db_and_api(raw_emby_actors_only)
-            
-            if not full_cast_enhanced:
-                logger.warning(f"项目 '{item_name_for_log}' 没有演员信息失败。")
+            tmdb_id = emby_details.get("ProviderIds", {}).get("Tmdb")
+            item_type = emby_details.get("Type")
+            if not tmdb_id:
+                raise ValueError(f"项目 '{item_name_for_log}' 缺少 TMDb ID，无法定位元数据文件。")
 
-            # 步骤 3: 缓存完整数据 (保持不变)
-            cast_for_cache = []
-            for actor in full_cast_enhanced:
-                actor_copy = actor.copy()
-                actor_copy['id'] = actor.get("ProviderIds", {}).get("Tmdb")
-                actor_copy['emby_person_id'] = actor.get("Id")
-                actor_copy['name'] = actor.get("Name")
-                actor_copy['character'] = actor.get("Role")
-                cast_for_cache.append(actor_copy)
-            self.manual_edit_cache[item_id] = cast_for_cache
-            logger.debug(f"已为 ItemID {item_id} 缓存了 {len(cast_for_cache)} 条完整演员数据。")
+            # 步骤 2: 读取 override 文件，获取权威演员表
+            cache_folder_name = "tmdb-movies2" if item_type == "Movie" else "tmdb-tv"
+            target_override_dir = os.path.join(self.local_data_path, "override", cache_folder_name, tmdb_id)
+            main_json_filename = "all.json" if item_type == "Movie" else "series.json"
+            main_json_path = os.path.join(target_override_dir, main_json_filename)
 
-            # ★★★★★★★★★★★★★★★ 步骤 4: 构建前端数据 (全新优化) ★★★★★★★★★★★★★★★
+            if not os.path.exists(main_json_path):
+                raise FileNotFoundError(f"无法为 '{item_name_for_log}' 准备编辑数据：找不到主元数据文件 '{main_json_path}'。请确保该项目已被至少处理过一次。")
+
+            with open(main_json_path, 'r', encoding='utf-8') as f:
+                override_data = json.load(f)
+            
+            cast_from_override = (override_data.get('casts', {}) or {}).get('cast', [])
+            logger.debug(f"  ➜ 成功从 override 文件为 '{item_name_for_log}' 加载了 {len(cast_from_override)} 位演员。")
+
+            # 步骤 3: 构建 TMDb ID -> emby_person_id 的映射
+            tmdb_to_emby_map = {}
+            for person in emby_details.get("People", []):
+                person_tmdb_id = (person.get("ProviderIds") or {}).get("Tmdb")
+                if person_tmdb_id:
+                    tmdb_to_emby_map[str(person_tmdb_id)] = person.get("Id")
+            
+            # 步骤 4: 组装最终数据 (合并 override 内容 和 emby_person_id)
             cast_for_frontend = []
+            cast_for_cache = [] # 同时准备用于更新翻译缓存的会话数据
             
-            # 为了从数据库获取头像路径，我们需要一个数据库连接
             with get_central_db_connection() as conn:
                 cursor = conn.cursor()
-                
-                for actor_data in cast_for_cache:
-                    tmdb_id = actor_data.get('id')
+                for actor_data in cast_from_override:
+                    actor_tmdb_id = actor_data.get('id')
+                    if not actor_tmdb_id: continue
+                    
+                    emby_person_id = tmdb_to_emby_map.get(str(actor_tmdb_id))
+                    
+                    # 从本地数据库获取头像
                     image_url = None
+                    actor_metadata = self._get_actor_metadata_from_cache(actor_tmdb_id, cursor)
+                    if actor_metadata and actor_metadata.get("profile_path"):
+                        image_url = f"https://image.tmdb.org/t/p/w185{actor_metadata['profile_path']}"
                     
-                    # --- 核心优化 1: 从数据库获取头像路径 ---
-                    if tmdb_id:
-                        # 调用我们已有的辅助函数
-                        actor_metadata = self._get_actor_metadata_from_cache(tmdb_id, cursor)
-                        if actor_metadata and actor_metadata.get("profile_path"):
-                            profile_path = actor_metadata["profile_path"]
-                            # 拼接 TMDB 小尺寸头像 URL，加载速度飞快
-                            image_url = f"https://image.tmdb.org/t/p/w185{profile_path}"
-                    
-                    # --- 核心优化 2: 清理角色名 ---
+                    # 清理角色名
                     original_role = actor_data.get('character', '')
                     cleaned_role_for_display = utils.clean_character_name_static(original_role)
 
+                    # 为前端准备的数据
                     cast_for_frontend.append({
-                        "tmdbId": tmdb_id,
+                        "tmdbId": actor_tmdb_id,
                         "name": actor_data.get('name'),
-                        "role": cleaned_role_for_display, # ★ 使用清理后的角色名
-                        "imageUrl": image_url,             # ★ 使用拼接的 TMDB 头像 URL
-                        "emby_person_id": actor_data.get('emby_person_id')
+                        "role": cleaned_role_for_display,
+                        "imageUrl": image_url,
+                        "emby_person_id": emby_person_id
                     })
-            
-            # 步骤 5: 准备并返回最终的响应数据 (保持不变)
+                    
+                    # 为手动保存后的翻译缓存更新做准备
+                    cast_for_cache.append({
+                        'id': actor_tmdb_id,
+                        'emby_person_id': emby_person_id,
+                        'name': actor_data.get('name'),
+                        'character': original_role # ★ 使用清理前的角色名
+                    })
+
+            # 步骤 5: 缓存会话数据并准备最终响应
+            self.manual_edit_cache[item_id] = cast_for_cache
+            logger.debug(f"已为 ItemID {item_id} 缓存了 {len(cast_for_cache)} 条用于手动编辑会话的演员数据。")
+
             failed_log_info = {}
             with get_central_db_connection() as conn:
                 cursor = conn.cursor()
