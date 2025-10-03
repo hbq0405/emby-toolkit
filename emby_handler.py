@@ -1998,3 +1998,43 @@ def delete_emby_user(user_id: str, base_url: str, api_key: str) -> bool:
     except Exception as e:
         logger.error(f"删除 Emby 用户 '{user_name_for_log}' 时发生未知错误: {e}")
         return False
+    
+# ✨✨✨ 根据名字搜索演员 ✨✨✨
+def search_emby_persons(
+    base_url: str,
+    api_key: str,
+    user_id: str,
+    search_term: str,
+    limit: int = 20
+) -> Optional[List[Dict[str, Any]]]:
+    """
+    在 Emby 中根据名字搜索“Person”类型的项目。
+    """
+    if not all([base_url, api_key, user_id, search_term]):
+        logger.error("search_emby_persons: 缺少必要的参数。")
+        return None
+
+    api_url = f"{base_url.rstrip('/')}/Users/{user_id}/Items"
+    params = {
+        "api_key": api_key,
+        "SearchTerm": search_term.strip(),
+        "IncludeItemTypes": "Person", # ★★★ 核心：只搜索演员 ★★★
+        "Recursive": "true",
+        "Fields": "ProductionYear,ProviderIds,ImageTags", # ★★★ 核心：获取纠错需要的信息 ★★★
+        "Limit": limit
+    }
+    
+    try:
+        api_timeout = config_manager.APP_CONFIG.get(constants.CONFIG_OPTION_EMBY_API_TIMEOUT, 60)
+        response = requests.get(api_url, params=params, timeout=api_timeout)
+        response.raise_for_status()
+        data = response.json()
+        items = data.get("Items", [])
+        logger.info(f"通过关键词 '{search_term}' 在 Emby 中搜索到 {len(items)} 位演员。")
+        return items
+    except requests.exceptions.RequestException as e:
+        logger.error(f"搜索 Emby 演员时发生网络错误: {e}")
+        return None
+    except Exception as e:
+        logger.error(f"解析 Emby 演员搜索结果时发生未知错误: {e}")
+        return None
