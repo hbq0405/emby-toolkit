@@ -145,7 +145,7 @@ class ActorDBManager:
             if result:
                 map_id = result['map_id']
                 action = result['action']
-                logger.debug(f"  -> [原子化操作] 演员 '{name}' (TMDb: {tmdb_id}) 处理完成。结果: {action} (map_id: {map_id})")
+                logger.debug(f"  -> 演员 '{name}' (TMDb: {tmdb_id}) 处理完成。结果: {action} (map_id: {map_id})")
                 return map_id, action
             else:
                 logger.error(f"upsert_person 原子化操作未能返回结果，emby_person_id={emby_id}, tmdb_id={tmdb_id}")
