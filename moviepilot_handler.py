@@ -44,7 +44,7 @@ def subscribe_movie_to_moviepilot(movie_info: dict, config: Dict[str, Any], best
         sub_response = requests.post(subscribe_url, headers=subscribe_headers, json=subscribe_payload, timeout=15)
         
         if sub_response.status_code in [200, 201, 204]:
-            logger.info(f"  ➜ ✅ MoviePilot 已接受订阅任务。")
+            logger.info(f"  ✅ MoviePilot 已接受订阅任务。")
             return True
         else:
             logger.error(f"  ➜ 失败！MoviePilot 返回错误: {sub_response.status_code} - {sub_response.text}")
@@ -99,7 +99,7 @@ def subscribe_series_to_moviepilot(series_info: dict, season_number: Optional[in
         sub_response = requests.post(subscribe_url, headers=subscribe_headers, json=subscribe_payload, timeout=15)
         
         if sub_response.status_code in [200, 201, 204]:
-            logger.info(f"  ➜ ✅ MoviePilot 已接受订阅任务。")
+            logger.info(f"  ✅ MoviePilot 已接受订阅任务。")
             return True
         else:
             logger.error(f"  ➜ 失败！MoviePilot 返回错误: {sub_response.status_code} - {sub_response.text}")
@@ -139,7 +139,7 @@ def subscribe_with_custom_payload(payload: dict, config: Dict[str, Any]) -> bool
         sub_response = requests.post(subscribe_url, headers=subscribe_headers, json=payload, timeout=15)
         
         if sub_response.status_code in [200, 201, 204]:
-            logger.info(f"  ➜ ✅ MoviePilot 已接受订阅任务。")
+            logger.info(f"  ✅ MoviePilot 已接受订阅任务。")
             return True
         else:
             logger.error(f"  ➜ 失败！MoviePilot 返回错误: {sub_response.status_code} - {sub_response.text}")

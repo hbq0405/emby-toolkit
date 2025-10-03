@@ -307,7 +307,7 @@ def delete_custom_collection(collection_id: int) -> bool:
             cursor.execute(sql, (collection_id,))
             conn.commit()
             if cursor.rowcount > 0:
-                logger.info(f"  ➜ ✅ 成功从数据库中删除了自定义合集定义 (ID: {collection_id})。")
+                logger.info(f"  ✅ 成功从数据库中删除了自定义合集定义 (ID: {collection_id})。")
                 return True
             else:
                 logger.warning(f"尝试删除自定义合集 (ID: {collection_id})，但在数据库中未找到该记录。")

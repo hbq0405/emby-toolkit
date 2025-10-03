@@ -1245,7 +1245,7 @@ def empty_collection_in_emby(collection_id: str, base_url: str, api_key: str, us
     success = remove_items_from_collection(collection_id, member_ids, base_url, api_key)
     
     if success:
-        logger.info(f"  ➜ ✅ 成功从Emby删除合集 {collection_id} 。")
+        logger.info(f"  ✅ 成功从Emby删除合集 {collection_id} 。")
     else:
         logger.error(f"❌ 发送清空合集 {collection_id} 的请求失败。")
         
@@ -1553,7 +1553,7 @@ def delete_item(item_id: str, emby_server_url: str, emby_api_key: str, user_id: 
     try:
         response = requests.post(api_url, headers=headers, params=params, timeout=api_timeout)
         response.raise_for_status()
-        logger.info(f"  ➜ ✅ 成功使用临时令牌删除 Emby 媒体项 ID: {item_id}。")
+        logger.info(f"  ✅ 成功使用临时令牌删除 Emby 媒体项 ID: {item_id}。")
         return True
     except requests.exceptions.HTTPError as e:
         logger.error(f"使用临时令牌删除 Emby 媒体项 ID: {item_id} 时发生HTTP错误: {e.response.status_code} - {e.response.text}")
@@ -1607,7 +1607,7 @@ def delete_person_custom_api(base_url: str, api_key: str, person_id: str) -> boo
         # 这个接口是 POST 请求
         response = requests.post(api_url, headers=headers, params=params, timeout=api_timeout)
         response.raise_for_status()
-        logger.info(f"  ➜ ✅ 成功删除演员 ID: {person_id}。")
+        logger.info(f"  ✅ 成功删除演员 ID: {person_id}。")
         return True
     except requests.exceptions.HTTPError as e:
         # 404 Not Found 意味着这个专用接口在您的服务器上不存在
@@ -1751,7 +1751,7 @@ def create_user_with_policy(
             pw_response = requests.post(password_url, headers=headers, json=password_payload, timeout=15)
             
             if pw_response.status_code == 204:
-                logger.info(f"  ➜ ✅ 成功为用户 '{username}' 设置密码。")
+                logger.info(f"  ✅ 成功为用户 '{username}' 设置密码。")
                 return new_user_id
             else:
                 logger.error(f"为用户 '{username}' 设置密码失败。状态码: {pw_response.status_code}, 响应: {pw_response.text}")
@@ -1990,7 +1990,7 @@ def delete_emby_user(user_id: str, base_url: str, api_key: str) -> bool:
     try:
         response = requests.delete(api_url, headers=headers, timeout=api_timeout)
         response.raise_for_status()
-        logger.info(f"  ➜ ✅ 成功使用临时令牌删除 Emby 用户 '{user_name_for_log}' (ID: {user_id})。")
+        logger.info(f"  ✅ 成功使用临时令牌删除 Emby 用户 '{user_name_for_log}' (ID: {user_id})。")
         return True
     except requests.exceptions.HTTPError as e:
         logger.error(f"删除 Emby 用户 '{user_name_for_log}' 时发生HTTP错误: {e.response.status_code} - {e.response.text}")

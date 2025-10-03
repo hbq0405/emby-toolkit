@@ -179,7 +179,7 @@ class ActorSubscriptionProcessor:
                 self._update_database_records(cursor, subscription_id, media_to_insert, media_to_update, media_ids_to_delete)
                 
                 conn.commit()
-                logger.info(f"  ➜ ✅ {sub['actor_name']} 的全量处理成功完成 ---")
+                logger.info(f"  ✅ {sub['actor_name']} 的全量处理成功完成 ---")
 
         except Exception as e:
             logger.error(f"为订阅ID {subscription_id} 执行扫描时发生严重错误: {e}", exc_info=True)

@@ -188,7 +188,7 @@ def task_refresh_collections(processor):
                     # 4. 使用 executemany 执行
                     cursor.executemany(sql, all_results)
                     conn.commit()
-                    logger.info("  ➜ ✅ 数据库写入成功！")
+                    logger.info("  ✅ 数据库写入成功！")
                 except Exception as e_db:
                     logger.error(f"数据库批量写入时发生错误: {e_db}", exc_info=True)
                     conn.rollback()
@@ -453,7 +453,7 @@ def task_process_all_custom_collections(processor):
                     })
                 
                 collection_db.update_custom_collection_after_sync(collection_id, update_data)
-                logger.info(f"  ➜ ✅ 合集 '{collection_name}' 处理完成，并已更新数据库状态。")
+                logger.info(f"  ✅ 合集 '{collection_name}' 处理完成，并已更新数据库状态。")
 
                 if cover_service and emby_collection_id:
                     logger.info(f"  ➜ 正在为合集 '{collection_name}' 生成封面...")

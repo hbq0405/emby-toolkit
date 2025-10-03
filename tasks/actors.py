@@ -319,7 +319,7 @@ def task_actor_translation_cleanup(processor):
             total_updated_count += batch_updated_count
             
             if batch_updated_count > 0:
-                logger.info(f"  ➜ ✅ 批次 {batch_num}/{total_batches} 并发写回完成，成功更新 {batch_updated_count} 个演员名。")
+                logger.info(f"  ✅ 批次 {batch_num}/{total_batches} 并发写回完成，成功更新 {batch_updated_count} 个演员名。")
         
         # ======================================================================
         # 阶段 3: 任务结束 (此部分逻辑不变)
