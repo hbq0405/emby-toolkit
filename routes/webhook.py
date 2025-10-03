@@ -291,7 +291,7 @@ def _process_batch_webhook_events():
                     item_name=parent_name
                 )
 
-    logger.info("  -> 所有 Webhook 批量任务已成功分派。")
+    logger.info("  ➜ 所有 Webhook 批量任务已成功分派。")
 
 def _trigger_metadata_update_task(item_id, item_name):
     """触发元数据缓存同步任务"""
