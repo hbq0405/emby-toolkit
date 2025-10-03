@@ -1442,34 +1442,32 @@ class MediaProcessor:
             # ======================================================================
             logger.info(f"  ➜ 手动处理：步骤 1/5: 检查并更新AI翻译缓存...")
             try:
-                original_full_cast = self.manual_edit_cache.get(item_id)
-                if original_full_cast:
-                    original_cast_map = {str(actor.get('emby_person_id')): actor for actor in original_full_cast}
-                    
+                # ★★★ 核心修复 ①: 从缓存获取的是 tmdbId -> 原始角色名 的字典 ★★★
+                original_roles_map = self.manual_edit_cache.get(item_id)
+                if original_roles_map:
                     with get_central_db_connection() as conn:
                         cursor = conn.cursor()
                         updated_count = 0
+                        
+                        # ★★★ 核心修复 ②: 遍历前端提交的列表 ★★★
                         for actor_from_frontend in manual_cast_list:
-                            emby_pid = actor_from_frontend.get("emby_person_id")
-                            if not emby_pid: continue
+                            tmdb_id_str = str(actor_from_frontend.get("tmdbId"))
+                            if not tmdb_id_str: continue
                             
-                            original_actor_data = original_cast_map.get(str(emby_pid))
-                            if not original_actor_data: continue
+                            # ★★★ 核心修复 ③: 用 tmdbId 精准找到修改前的角色名 ★★★
+                            original_role = original_roles_map.get(tmdb_id_str)
+                            if original_role is None: # 如果原始记录里就没有这个演员，就跳过
+                                continue
 
                             new_role = actor_from_frontend.get('role', '')
-                            original_role = original_actor_data.get('character', '')
                             
                             cleaned_new_role = utils.clean_character_name_static(new_role)
                             cleaned_original_role = utils.clean_character_name_static(original_role)
 
-                            # 只有当两个“干净”的名字不同时，才说明用户真的修改了
                             if cleaned_new_role and cleaned_new_role != cleaned_original_role:
-                                # 用清理后的旧名字去反查数据库
                                 cache_entry = self.actor_db_manager.get_translation_from_db(text=cleaned_original_role, by_translated_text=True, cursor=cursor)
-                                
                                 if cache_entry and 'original_text' in cache_entry:
                                     original_text_key = cache_entry['original_text']
-                                    # 用清理后的新名字去更新数据库
                                     self.actor_db_manager.save_translation_to_db(
                                         cursor=cursor, original_text=original_text_key,
                                         translated_text=cleaned_new_role, engine_used="manual"
@@ -1627,7 +1625,7 @@ class MediaProcessor:
             
             # 步骤 4: 组装最终数据 (合并 override 内容 和 emby_person_id)
             cast_for_frontend = []
-            cast_for_cache = [] # 同时准备用于更新翻译缓存的会话数据
+            session_cache_map = {}
             
             with get_central_db_connection() as conn:
                 cursor = conn.cursor()
@@ -1645,6 +1643,7 @@ class MediaProcessor:
                     
                     # 清理角色名
                     original_role = actor_data.get('character', '')
+                    session_cache_map[str(actor_tmdb_id)] = original_role
                     cleaned_role_for_display = utils.clean_character_name_static(original_role)
 
                     # 为前端准备的数据
@@ -1656,17 +1655,9 @@ class MediaProcessor:
                         "emby_person_id": emby_person_id
                     })
                     
-                    # 为手动保存后的翻译缓存更新做准备
-                    cast_for_cache.append({
-                        'id': actor_tmdb_id,
-                        'emby_person_id': emby_person_id,
-                        'name': actor_data.get('name'),
-                        'character': original_role # ★ 使用清理前的角色名
-                    })
-
             # 步骤 5: 缓存会话数据并准备最终响应
-            self.manual_edit_cache[item_id] = cast_for_cache
-            logger.debug(f"已为 ItemID {item_id} 缓存了 {len(cast_for_cache)} 条用于手动编辑会话的演员数据。")
+            self.manual_edit_cache[item_id] = session_cache_map
+            logger.debug(f"已为 ItemID {item_id} 缓存了 {len(session_cache_map)} 条用于手动编辑会话的演员数据。")
 
             failed_log_info = {}
             with get_central_db_connection() as conn:
