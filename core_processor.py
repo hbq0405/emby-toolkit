@@ -1472,12 +1472,12 @@ class MediaProcessor:
                                         cursor=cursor, original_text=original_text_key,
                                         translated_text=utils.clean_character_name_static(new_role), engine_used="manual"
                                     )
-                                    logger.debug(f"    ➜ AI翻译缓存已更新: '{original_text_key}' -> '{new_role}'")
+                                    logger.debug(f"  ➜ AI翻译缓存已更新: '{original_text_key}' -> '{new_role}'")
                                     updated_count += 1
                         if updated_count > 0:
-                            logger.info(f"    ➜ 成功更新了 {updated_count} 条翻译缓存。")
+                            logger.info(f"  ➜ 成功更新了 {updated_count} 条翻译缓存。")
                         else:
-                            logger.info(f"    ➜ 无需更新翻译缓存 (角色名未发生有效变更)。")
+                            logger.info(f"  ➜ 无需更新翻译缓存 (角色名未发生有效变更)。")
                         conn.commit()
                 else:
                     logger.warning(f"  ➜ 无法更新翻译缓存：内存中找不到 ItemID {item_id} 的原始演员数据会话。")
@@ -1487,7 +1487,7 @@ class MediaProcessor:
             # ======================================================================
             # 步骤 3: API前置操作 (更新演员名)
             # ======================================================================
-            logger.info("  ➜ 手动处理：步骤 1/3: 检查并更新演员名字...")
+            logger.info("  ➜ 手动处理：步骤 2/5: 检查并更新演员名字...")
             original_names_map = {p.get("Id"): p.get("Name") for p in item_details.get("People", []) if p.get("Id")}
             for actor in manual_cast_list:
                 actor_id = actor.get("emby_person_id")
