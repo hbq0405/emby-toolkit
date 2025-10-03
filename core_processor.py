@@ -1418,7 +1418,7 @@ class MediaProcessor:
         - 将新列表写回 override 主JSON及所有分集JSON。
         - 最终通过 Emby 刷新触发神医插件加载。
         """
-        logger.info(f"  ➜ 手动处理流程启动 (文件中心化模式)：ItemID: {item_id} ('{item_name}')")
+        logger.info(f"  ➜ 手动处理流程启动：ItemID: {item_id} ('{item_name}')")
         
         try:
             # ======================================================================
@@ -1600,7 +1600,7 @@ class MediaProcessor:
         - 演员表主体(名字, 角色, 顺序) 来自 override 主JSON文件。
         - 通过一次 Emby API 调用来获取 emby_person_id 并进行映射。
         """
-        logger.info(f"  ➜ 为编辑页面准备数据 (文件中心化模式)：ItemID {item_id}")
+        logger.info(f"  ➜ 为编辑页面准备数据：ItemID {item_id}")
         
         try:
             # 步骤 1: 获取 Emby 基础详情 和 用于ID映射的People列表
