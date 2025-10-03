@@ -1434,7 +1434,7 @@ class MediaProcessor:
                 person_tmdb_id = (person.get("ProviderIds") or {}).get("Tmdb")
                 if person_tmdb_id:
                     tmdb_to_emby_map[str(person_tmdb_id)] = person.get("Id")
-            logger.info(f"    ➜ 成功构建了 {len(tmdb_to_emby_map)} 条ID映射。")
+            logger.info(f"  ➜ 成功构建了 {len(tmdb_to_emby_map)} 条ID映射。")
             
             item_type = item_details.get("Type")
             tmdb_id = item_details.get("ProviderIds", {}).get("Tmdb")
