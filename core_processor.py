@@ -1460,7 +1460,12 @@ class MediaProcessor:
                             original_role = original_actor_data.get('character', '')
                             
                             if new_role and new_role != original_role:
-                                cache_entry = self.actor_db_manager.get_translation_from_db(text=original_role, by_translated_text=True, cursor=cursor)
+                                # 在反查数据库前，必须先清理旧角色名！ 
+                                cleaned_original_role = utils.clean_character_name_static(original_role)
+                                
+                                # 用清理后的、与数据库格式一致的旧角色名去反查
+                                cache_entry = self.actor_db_manager.get_translation_from_db(text=cleaned_original_role, by_translated_text=True, cursor=cursor)
+                                
                                 if cache_entry and 'original_text' in cache_entry:
                                     original_text_key = cache_entry['original_text']
                                     self.actor_db_manager.save_translation_to_db(
@@ -1472,7 +1477,7 @@ class MediaProcessor:
                         if updated_count > 0:
                             logger.info(f"    ➜ 成功更新了 {updated_count} 条翻译缓存。")
                         else:
-                            logger.info(f"    ➜ 无需更新翻译缓存。")
+                            logger.info(f"    ➜ 无需更新翻译缓存 (角色名未发生有效变更)。")
                         conn.commit()
                 else:
                     logger.warning(f"  ➜ 无法更新翻译缓存：内存中找不到 ItemID {item_id} 的原始演员数据会话。")
