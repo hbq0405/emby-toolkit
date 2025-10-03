@@ -1523,7 +1523,7 @@ class MediaProcessor:
             genres = item_details.get("Genres", [])
             is_animation = "Animation" in genres or "动画" in genres or "Documentary" in genres or "纪录" in genres
             final_formatted_cast = actor_utils.format_and_complete_cast_list(
-                new_cast_built, is_animation, self.config, mode='auto'
+                new_cast_built, is_animation, self.config, mode='manual'
             )
             final_cast_for_json = self._build_cast_from_final_data(final_formatted_cast)
 
