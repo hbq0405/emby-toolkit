@@ -1465,9 +1465,12 @@ class MediaProcessor:
 
                                 new_role = actor_from_frontend.get('role', '')
                                 original_role = original_actor_data.get('character', '')
+
+                                logger.info(f"  [调试] 正在检查演员 '{original_actor_data.get('name')}'。原始角色: '{original_role}', 新角色: '{new_role}'")
                                 
                                 # 只有当角色名发生变化时才尝试更新缓存
                                 if new_role != original_role:
+                                    logger.info(f"  [调试] 角色名已改变，准备更新缓存...")
                                     cleaned_original_role = utils.clean_character_name_static(original_role)
                                     cleaned_new_role = utils.clean_character_name_static(new_role)
                                     
@@ -1475,6 +1478,7 @@ class MediaProcessor:
                                         cache_entry = self.actor_db_manager.get_translation_from_db(
                                             text=cleaned_original_role, by_translated_text=True, cursor=cursor
                                         )
+                                        logger.info(f"  [调试] 反查数据库结果 cache_entry: {cache_entry}")
                                         if cache_entry and 'original_text' in cache_entry:
                                             original_text_key = cache_entry['original_text']
                                             self.actor_db_manager.save_translation_to_db(
@@ -1483,7 +1487,7 @@ class MediaProcessor:
                                                 translated_text=cleaned_new_role,
                                                 engine_used="manual"
                                             )
-                                            logger.debug(f"  ➜ AI缓存通过反查更新: '{original_text_key}' -> '{cleaned_new_role}'")
+                                            logger.info(f"  ➜ AI缓存通过反查更新: '{original_text_key}' -> '{cleaned_new_role}'")
                             conn.commit()
                         except Exception as e_cache:
                             logger.error(f"更新翻译缓存事务中发生错误: {e_cache}", exc_info=True)
