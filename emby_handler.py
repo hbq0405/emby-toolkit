@@ -772,13 +772,13 @@ def refresh_emby_item_metadata(item_emby_id: str,
     try:
         response = requests.post(refresh_url, params=params, timeout=api_timeout)
         if response.status_code == 204:
-            logger.info(f"  ➜ 刷新请求已成功发送给 {log_identifier}。")
+            logger.info(f"  ➜ 已成功为 {log_identifier} 刷新最新演员表。")
             return True
         else:
-            logger.error(f"  - 刷新请求失败: HTTP状态码 {response.status_code}")
+            logger.error(f"  ➜ 刷新请求失败: HTTP状态码 {response.status_code}")
             return False
     except requests.exceptions.RequestException as e:
-        logger.error(f"  - 刷新请求时发生网络错误: {e}")
+        logger.error(f"  ➜ 刷新请求时发生网络错误: {e}")
         return False
 # ✨✨✨ 分批次地从 Emby 获取所有 Person 条目 ✨✨✨
 def get_all_persons_from_emby(
