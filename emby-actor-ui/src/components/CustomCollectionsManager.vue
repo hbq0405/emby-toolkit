@@ -67,6 +67,7 @@
       :title="isEditing ? '编辑合集' : '创建新合集'"
       :bordered="false"
       size="huge"
+      class="modal-card-lite"
     >
       <n-form
         ref="formRef"

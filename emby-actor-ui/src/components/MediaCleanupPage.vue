@@ -65,7 +65,8 @@
         preset="card" 
         style="width: 90%; max-width: 700px;" 
         title="媒体去重决策规则"
-        :on-after-leave="fetchData" 
+        :on-after-leave="fetchData"
+        class="modal-card-lite" 
       >
         <MediaCleanupSettingsPage @on-close="showSettingsModal = false" />
       </n-modal>
