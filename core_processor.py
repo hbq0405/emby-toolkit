@@ -575,66 +575,6 @@ class MediaProcessor:
             return dict(metadata_row)  # 将其转换为字典，方便使用
         return None
     
-    # --- 批量注入分集演员表 ---
-    def _batch_update_episodes_cast(self, series_id: str, series_name: str, final_cast_list: List[Dict[str, Any]]):
-        """
-        【V1 - 批量写入模块】
-        将一个最终处理好的演员列表，高效地写入指定剧集下的所有分集。
-        """
-        logger.info(f"  ➜ 开始为剧集 '{series_name}' (ID: {series_id}) 批量更新所有分集的演员表...")
-        
-        # 1. 获取所有分集的 ID
-        # 我们只需要 ID，所以可以请求更少的字段以提高效率
-        episodes = emby_handler.get_series_children(
-            series_id=series_id,
-            base_url=self.emby_url,
-            api_key=self.emby_api_key,
-            user_id=self.emby_user_id,
-            series_name_for_log=series_name,
-            include_item_types="Episode" # ★★★ 明确指定只获取分集
-        )
-        
-        if not episodes:
-            logger.info("  ➜ 未找到任何分集，批量更新结束。")
-            return
-
-        total_episodes = len(episodes)
-        logger.info(f"  ➜ 共找到 {total_episodes} 个分集需要更新。")
-        
-        # 2. 准备好要写入的数据 (所有分集都用同一份演员表)
-        cast_for_emby_handler = []
-        for actor in final_cast_list:
-            cast_for_emby_handler.append({
-                "name": actor.get("name"),
-                "character": actor.get("character"),
-                "emby_person_id": actor.get("emby_person_id"),
-                "provider_ids": actor.get("provider_ids")
-            })
-
-        # 3. 遍历并逐个更新分集
-        # 这里仍然需要逐个更新，因为 Emby API 不支持一次性更新多个项目的演员表
-        # 但我们已经把最耗时的数据处理放在了循环外面
-        for i, episode in enumerate(episodes):
-            if self.is_stop_requested():
-                logger.warning("分集批量更新任务被中止。")
-                break
-            
-            episode_id = episode.get("Id")
-            episode_name = episode.get("Name", f"分集 {i+1}")
-            logger.debug(f"  ({i+1}/{total_episodes}) 正在更新分集 '{episode_name}' (ID: {episode_id})...")
-            
-            emby_handler.update_emby_item_cast(
-                item_id=episode_id,
-                new_cast_list_for_handler=cast_for_emby_handler,
-                emby_server_url=self.emby_url,
-                emby_api_key=self.emby_api_key,
-                user_id=self.emby_user_id
-            )
-            # 加入一个微小的延迟，避免请求过于密集
-            time_module.sleep(0.2)
-
-        logger.info(f"  ➜ 剧集 '{series_name}' 的分集批量更新完成。")
-    
     # --- 核心处理总管 ---
     def process_single_item(self, emby_item_id: str,
                             force_reprocess_this_item: bool = False,
@@ -680,7 +620,7 @@ class MediaProcessor:
             return False
 
         # 4. 将任务交给核心处理函数
-        return self._process_item_core_logic_api_version(
+        return self._process_item_core_logic(
             item_details_from_emby=item_details,
             force_reprocess_this_item=force_reprocess_this_item,
             force_fetch_from_tmdb=force_fetch_from_tmdb
@@ -689,13 +629,13 @@ class MediaProcessor:
         # --- 核心处理流程 ---
     
     # ---核心处理流程 ---
-    def _process_item_core_logic_api_version(self, item_details_from_emby: Dict[str, Any], force_reprocess_this_item: bool, force_fetch_from_tmdb: bool = False):
+    def _process_item_core_logic(self, item_details_from_emby: Dict[str, Any], force_reprocess_this_item: bool, force_fetch_from_tmdb: bool = False):
         """
         【V-Final-Architecture-Pro - “设计师”最终版】
         本函数作为“设计师”，只负责计算和思考，产出“设计图”和“物料清单”，然后全权委托给施工队。
         """
         # ======================================================================
-        # 阶段 1: 准备工作与备料
+        # 阶段 1: 准备工作
         # ======================================================================
         item_id = item_details_from_emby.get("Id")
         item_name_for_log = item_details_from_emby.get("Name", f"未知项目(ID:{item_id})")
@@ -715,7 +655,7 @@ class MediaProcessor:
 
             # 在API模式下，设计师需要自己去获取最新的材料
             if force_fetch_from_tmdb and self.tmdb_api_key:
-                logger.info(f"  ➜ [设计师备料 - API模式] 正在从 TMDB 获取最新演员表...")
+                logger.info(f"  ➜ 正在从 TMDB 获取最新演员表...")
                 if item_type == "Movie":
                     movie_details = tmdb_handler.get_movie_details(tmdb_id, self.tmdb_api_key)
                     if movie_details:
@@ -729,7 +669,7 @@ class MediaProcessor:
                         authoritative_cast_source = _aggregate_series_cast_from_tmdb_data(aggregated_tmdb_data["series_details"], all_episodes)
             else:
                 # 在文件模式下，设计师也需要知道原始材料是什么样的，以便做对比
-                logger.info(f"  ➜ [设计师备料 - 文件模式] 正在从 cache 文件中预读演员表...")
+                logger.info(f"  ➜ 正在从 cache 文件中预读演员表...")
                 cache_folder_name = "tmdb-movies2" if item_type == "Movie" else "tmdb-tv"
                 source_cache_dir = os.path.join(self.local_data_path, "cache", cache_folder_name, tmdb_id)
                 main_json_filename = "all.json" if item_type == "Movie" else "series.json"
@@ -741,7 +681,7 @@ class MediaProcessor:
                         authoritative_cast_source = (source_json_data.get("casts", {}) or source_json_data.get("credits", {})).get("cast", [])
 
             # ======================================================================
-            # 阶段 2: 核心计算 (生成设计图)
+            # 阶段 2: 演员表处理
             # ======================================================================
             with get_central_db_connection() as conn:
                 cursor = conn.cursor()
@@ -751,7 +691,7 @@ class MediaProcessor:
                 enriched_emby_cast = self._enrich_cast_from_db_and_api(current_emby_cast_raw)
                 douban_cast_raw, douban_rating = self._get_douban_data_with_local_cache(item_details_from_emby)
 
-                final_processed_cast = self._process_cast_list_from_api(
+                final_processed_cast = self._process_cast_list(
                     tmdb_cast_people=authoritative_cast_source,
                     emby_cast_people=enriched_emby_cast,
                     douban_cast_list=douban_cast_raw,
@@ -764,11 +704,11 @@ class MediaProcessor:
                     raise ValueError("未能生成有效的设计图 (final_processed_cast)。")
 
                 # ======================================================================
-                # 阶段 3: 委托施工
+                # 阶段 3: 写入演员表
                 # ======================================================================
-                logger.info("  ➜ 设计图制作完成，正在将所有材料和图纸打包委托给施工队...")
+                logger.info("  ➜ 正在更新演员名...")
 
-                # 3.1 API前置工作: 更新演员名 (这是设计师唯一需要和外界沟通的)
+                # 3.1 API前置工作: 更新演员名 
                 original_names_map = {p.get("Id"): p.get("Name") for p in all_emby_people if p.get("Id")}
                 for actor in final_processed_cast:
                     actor_id = actor.get("emby_person_id")
@@ -780,7 +720,7 @@ class MediaProcessor:
                             emby_server_url=self.emby_url, emby_api_key=self.emby_api_key, user_id=self.emby_user_id
                         )
 
-                # 3.2 打包委托: 调用施工队总管，把所有东西都交给他
+                # 3.2 调用json写入处理函数
                 self.sync_single_item_assets(
                     item_id=item_id,
                     update_description="主流程处理完成",
@@ -791,10 +731,10 @@ class MediaProcessor:
                 )
 
                 # ======================================================================
-                # 阶段 4: 竣工验收
+                # 阶段 4: 通知Emby刷新
                 # ======================================================================
                 # 4.1 API验收: 触发刷新
-                logger.info(f"  ➜ 施工完成，正在通知 Emby 验收 (无条件刷新)...")
+                logger.info(f"  ➜ 处理完成，正在通知 Emby 刷新...")
                 emby_handler.refresh_emby_item_metadata(
                     item_emby_id=item_id,
                     emby_server_url=self.emby_url,
@@ -811,6 +751,7 @@ class MediaProcessor:
                     final_processed_cast=final_processed_cast,
                     tmdb_details_for_extra=tmdb_details_for_extra
                 )
+                logger.info(f"  ➜ 正在将《{item_name_for_log}》写入已处理日志...")
                 self._mark_item_as_processed(cursor, item_id, item_name_for_log, score=10.0)
                 self.log_db_manager.remove_from_failed_log(cursor, item_id)
                 conn.commit()
@@ -819,7 +760,7 @@ class MediaProcessor:
             logger.warning(f"处理 '{item_name_for_log}' 的过程中断: {e}")
             return False
         except Exception as outer_e:
-            logger.error(f"设计师核心处理流程中发生未知严重错误 for '{item_name_for_log}': {outer_e}", exc_info=True)
+            logger.error(f"核心处理流程中发生未知严重错误 for '{item_name_for_log}': {outer_e}", exc_info=True)
             try:
                 with get_central_db_connection() as conn_fail:
                     self.log_db_manager.save_to_failed_log(conn_fail.cursor(), item_id, item_name_for_log, f"核心处理异常: {str(outer_e)}", item_type)
@@ -827,11 +768,11 @@ class MediaProcessor:
                 logger.error(f"写入失败日志时再次发生错误: {log_e}")
             return False
 
-        logger.trace(f"  ✅ 设计师工作完成 '{item_name_for_log}'")
+        logger.trace(f"  ✅ 处理完成 '{item_name_for_log}'")
         return True
 
     # --- 核心处理器 ---
-    def _process_cast_list_from_api(self, tmdb_cast_people: List[Dict[str, Any]],
+    def _process_cast_list(self, tmdb_cast_people: List[Dict[str, Any]],
                                     emby_cast_people: List[Dict[str, Any]],
                                     douban_cast_list: List[Dict[str, Any]],
                                     item_details_from_emby: Dict[str, Any],
@@ -1052,27 +993,6 @@ class MediaProcessor:
                     
                     if not match_found:
                         still_unmatched_final.append(d_actor)
-
-                # --- 纯归档 ---
-                # if still_unmatched_final:
-                #     logger.info(f"  ➜ [演员归档] 检查 {len(still_unmatched_final)} 位未匹配演员，尝试预缓存其映射关系...")
-                #     emby_config_for_upsert = {"url": self.emby_url, "api_key": self.emby_api_key, "user_id": self.emby_user_id}
-                #     salvaged_count = 0
-                #     for d_actor in still_unmatched_final:
-                #         tmdb_id_to_save = d_actor.get('tmdb_id_from_api')
-                #         if tmdb_id_to_save:
-                #             person_data_for_db = {
-                #                 "emby_id": None, "name": d_actor.get("Name"),
-                #                 "tmdb_id": tmdb_id_to_save, "imdb_id": d_actor.get("imdb_id_from_api"),
-                #                 "douban_id": d_actor.get("DoubanCelebrityId")
-                #             }
-                #             self.actor_db_manager.upsert_person(cursor=cursor, person_data=person_data_for_db, emby_config=emby_config_for_upsert)
-                #             salvaged_count += 1
-                #     if salvaged_count > 0:
-                #         logger.info(f"  ➜ [演员归档] 成功为 {salvaged_count} 位演员预缓存了映射关系。")
-
-                #     discarded_names = [d.get('Name') for d in still_unmatched_final]
-                #     logger.info(f"  ➜ [丢弃新增] 以下 {len(still_unmatched_final)} 位豆瓣演员因在Emby中无匹配或已达数量上限而被丢弃: {', '.join(discarded_names)}")
 
                 # --- 归档+新增 ---
                 if still_unmatched_final:
@@ -1656,7 +1576,7 @@ class MediaProcessor:
                     "UPDATE media_metadata SET actors_json = %s, last_synced_at = NOW() WHERE tmdb_id = %s AND item_type = %s",
                     (new_actors_json, tmdb_id, item_type)
                 )
-                
+                logger.info(f"  ➜ 正在将手动处理完成的《{item_name}》写入已处理日志...")
                 self.log_db_manager.save_to_processed_log(cursor, item_id, item_name, score=10.0)
                 self.log_db_manager.remove_from_failed_log(cursor, item_id)
                 conn.commit()
@@ -2048,14 +1968,14 @@ class MediaProcessor:
         # 步骤 1: 进场施工，打好基础 (复制毛坯房)
         # 只有在需要进行主体装修时（主流程调用），才需要复制。追更等零活不需要。
         if final_cast_override is not None:
-            logger.info(f"  ➜ {log_prefix} [模式1: 主体装修] 开始为 '{item_name_for_log}' 施工...")
+            logger.info(f"  ➜ {log_prefix} [完整处理] 开始为 '{item_name_for_log}' 写入覆盖缓存...")
             if not os.path.exists(source_cache_dir):
-                logger.error(f"  ➜ {log_prefix} 施工中止：找不到源缓存目录 (毛坯房)！路径: {source_cache_dir}")
+                logger.error(f"  ➜ {log_prefix} 找不到源缓存目录！路径: {source_cache_dir}")
                 return
             try:
                 shutil.copytree(source_cache_dir, target_override_dir, dirs_exist_ok=True)
             except Exception as e:
-                logger.error(f"  ➜ {log_prefix} 复制毛坯房时失败: {e}", exc_info=True)
+                logger.error(f"  ➜ {log_prefix} 复制元数据时失败: {e}", exc_info=True)
                 return
 
         perfect_cast_for_injection = []
@@ -2111,7 +2031,7 @@ class MediaProcessor:
                 f.truncate()
         else:
             # --- 角色二：零活处理 (追更) ---
-            logger.info(f"  ➜ {log_prefix} [模式2: 零活处理] 开始为 '{item_name_for_log}' 的新分集施工...")
+            logger.info(f"  ➜ {log_prefix} [追更模式] 开始为 '{item_name_for_log}' 的新分集写入覆盖缓存...")
             if not os.path.exists(main_json_path):
                 logger.error(f"  ➜ {log_prefix} 追更任务失败：找不到主元数据文件 '{main_json_path}'。")
                 return
@@ -2146,19 +2066,6 @@ class MediaProcessor:
                 "known_for_department": actor_info.get("known_for_department", "Acting"),
                 "popularity": actor_info.get("popularity", 0.0), "cast_id": actor_info.get("cast_id"),
                 "credit_id": actor_info.get("credit_id"), "order": actor_info.get("order", i)
-            })
-        return cast_list
-
-    def _build_cast_from_golden_cache(self, cached_actors: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
-        """辅助函数：从数据库的元数据缓存构建演员列表"""
-        cast_list = []
-        for i, actor_info in enumerate(cached_actors):
-            if not actor_info.get("id"): continue
-            cast_list.append({
-                "id": actor_info.get("id"), "name": actor_info.get("name"), "character": actor_info.get("character"),
-                "original_name": actor_info.get("original_name"), "profile_path": actor_info.get("profile_path"),
-                "adult": False, "gender": actor_info.get("gender", 0), "known_for_department": "Acting",
-                "popularity": actor_info.get("popularity", 0.0), "cast_id": None, "credit_id": None, "order": i
             })
         return cast_list
 
