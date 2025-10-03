@@ -1029,118 +1029,44 @@ class MediaProcessor:
                     raise ValueError("核心处理流程结束，但未能生成有效的最终演员列表。")
 
                 # ======================================================================
-                # 阶段 3: 数据写回 (文件中心化逻辑 + 反哺)
-                # ======================================================================
-                logger.info("  ➜ 处理完成，开始将最终数据写回到 override 目录和 Emby API...")
+            # 阶段 3: 成果交付与收尾
+            # ======================================================================
+            logger.info("  ➜ 数据处理完成，正在交付给资产同步模块进行持久化...")
 
-                # 步骤 3.1: 【API】更新发生变化的演员名
-                logger.info("  ➜ 写回步骤 1/4: 通过 API 更新已翻译或修改的演员名字...")
-                original_names_map = {p.get("Id"): p.get("Name") for p in all_emby_people if p.get("Id")}
-                for actor in final_processed_cast:
-                    actor_id = actor.get("emby_person_id")
-                    new_name = actor.get("name")
-                    original_name = original_names_map.get(actor_id)
-                    if actor_id and new_name and original_name and new_name != original_name:
-                        logger.info(f"    ➜ 检测到名字变更: '{original_name}' -> '{new_name}' (ID: {actor_id})")
-                        emby_handler.update_person_details(
-                            person_id=actor_id, new_data={"Name": new_name},
-                            emby_server_url=self.emby_url, emby_api_key=self.emby_api_key, user_id=self.emby_user_id
-                        )
-                
-                # 步骤 3.2: 【文件】智能重建演员列表 (包含反哺逻辑)
-                logger.info(f"  ➜ 写回步骤 2/4: 正在为JSON文件智能重建 {len(final_processed_cast)} 位演员的列表...")
-                new_cast_for_json = []
-                original_tmdb_actor_map = {str(a.get('id')): a for a in authoritative_cast_source if a.get('id')}
-
-                for actor in final_processed_cast:
-                    tmdb_id_str = str(actor.get("id"))
-                    if not tmdb_id_str or tmdb_id_str == 'None': continue
-
-                    if tmdb_id_str in original_tmdb_actor_map:
-                        # --- 更新现有演员 ---
-                        new_actor_entry = original_tmdb_actor_map[tmdb_id_str].copy()
-                        new_actor_entry['name'] = actor.get('name')
-                        new_actor_entry['character'] = actor.get('character')
-                    else:
-                        # --- ★★★ 新增演员（从豆瓣补充），执行“缓存优先，API后备+反哺”逻辑 ★★★ ---
-                        logger.debug(f"    ➜ 发现新增演员 '{actor.get('name')}'(TMDb ID: {tmdb_id_str})，正在补充其元数据...")
-                        
-                        metadata_source = None
-                        actor_tmdb_id_int = int(tmdb_id_str)
-                        
-                        # 1. 优先从本地数据库缓存获取
-                        cached_meta = self._get_actor_metadata_from_cache(actor_tmdb_id_int, cursor)
-                        if cached_meta and cached_meta.get("profile_path"):
-                            logger.trace("      -> 命中本地缓存，将使用缓存数据。")
-                            metadata_source = cached_meta
-                        
-                        # 2. 如果缓存没有或不完整，则从 TMDB API 获取并反哺
-                        if not metadata_source and self.tmdb_api_key:
-                            logger.trace("      -> 本地缓存未命中或不完整，正在从 TMDB API 获取...")
-                            person_details = tmdb_handler.get_person_details_tmdb(actor_tmdb_id_int, self.tmdb_api_key)
-                            if person_details:
-                                logger.trace("      -> TMDB API 获取成功，正在反哺到本地数据库...")
-                                self.actor_db_manager.update_actor_metadata_from_tmdb(cursor, actor_tmdb_id_int, person_details)
-                                metadata_source = person_details # 使用这份新鲜、完整的数据
-                            else:
-                                logger.warning(f"      -> TMDB API未能获取到演员 {tmdb_id_str} 的详情。")
-                        
-                        # 3. 使用最佳数据源构建条目 (API > Cache > Empty)
-                        final_meta = metadata_source or cached_meta or {}
-                        new_actor_entry = {
-                            "id": actor_tmdb_id_int,
-                            "name": actor.get("name"),
-                            "character": actor.get("character"),
-                            "original_name": final_meta.get("original_name", final_meta.get("name", "")),
-                            "profile_path": final_meta.get("profile_path"),
-                            "adult": final_meta.get("adult", False),
-                            "gender": final_meta.get("gender", 0),
-                            "known_for_department": final_meta.get("known_for_department", "Acting"),
-                            "popularity": final_meta.get("popularity", 0.0),
-                            "cast_id": None,
-                            "credit_id": None,
-                            "order": actor.get("order", 999)
-                        }
-                    new_cast_for_json.append(new_actor_entry)
-                
-                # 步骤 3.3: 【文件】将新列表和豆瓣评分写入 override 主JSON文件
-                logger.info(f"  ➜ 写回步骤 3/4: 正在将新演员列表和豆瓣评分写入 '{target_json_path}'...")
-                try:
-                    with open(target_json_path, 'r+', encoding='utf-8') as f:
-                        data = json.load(f)
-                        if douban_rating is not None:
-                            data['vote_average'] = douban_rating
-                            logger.debug(f"    ➜ 豆瓣评分 {douban_rating} 已写入 'vote_average' 字段。")
-                        
-                        if 'casts' in data and 'cast' in data['casts']:
-                            data['casts']['cast'] = new_cast_for_json
-                        else:
-                            data.setdefault('credits', {})['cast'] = new_cast_for_json
-                        
-                        f.seek(0)
-                        json.dump(data, f, ensure_ascii=False, indent=2)
-                        f.truncate()
-                except Exception as e:
-                    logger.error(f"  ➜ 重建并写入 '{main_json_filename}' 时失败: {e}", exc_info=True)
-                    raise
-
-                if item_type == "Series":
-                    self._inject_cast_to_series_files(
-                        target_dir=target_override_dir, cast_list=new_cast_for_json,
-                        series_details=item_details_from_emby, source_dir=source_cache_dir
+            # 步骤 3.1: 【API】更新演员名 (这是唯一需要保留的API写操作)
+            all_emby_people = item_details_from_emby.get("People", [])
+            original_names_map = {p.get("Id"): p.get("Name") for p in all_emby_people if p.get("Id")}
+            for actor in final_processed_cast:
+                actor_id = actor.get("emby_person_id")
+                new_name = actor.get("name")
+                original_name = original_names_map.get(actor_id)
+                if actor_id and new_name and original_name and new_name != original_name:
+                    emby_handler.update_person_details(
+                        person_id=actor_id, new_data={"Name": new_name},
+                        emby_server_url=self.emby_url, emby_api_key=self.emby_api_key, user_id=self.emby_user_id
                     )
+            
+            # ★★★ 核心修改：调用统一的资产同步函数来处理所有文件操作 ★★★
+            self.sync_single_item_assets(
+                item_id=item_id,
+                update_description="主流程处理完成",
+                final_cast_override=final_processed_cast,
+                douban_rating_override=douban_rating,
+                original_cast_for_build=authoritative_cast_source, # 传入原始素材
+                cursor_for_build=cursor # 传入数据库游标
+            )
 
-                # 步骤 3.4: 【API】触发Emby刷新
-                logger.info(f"  ➜ 写回步骤 4/4: 所有文件写入完成，正在通知 Emby 刷新...")
-                emby_handler.refresh_emby_item_metadata(
-                    item_emby_id=item_id, emby_server_url=self.emby_url, emby_api_key=self.emby_api_key,
-                    user_id_for_ops=self.emby_user_id, lock_fields=["Cast"] if self.auto_lock_cast_enabled else None,
-                    replace_all_metadata_param=False, item_name_for_log=item_name_for_log
-                )
+            # 步骤 3.2: 【API】触发Emby刷新
+            logger.info(f"  ➜ 持久化完成，正在通知 Emby 刷新...")
+            emby_handler.refresh_emby_item_metadata(
+                item_emby_id=item_id, emby_server_url=self.emby_url, emby_api_key=self.emby_api_key,
+                user_id_for_ops=self.emby_user_id, lock_fields=["Cast"] if self.auto_lock_cast_enabled else None,
+                replace_all_metadata_param=False, item_name_for_log=item_name_for_log
+            )
 
-                # ======================================================================
-                # 阶段 4: 收尾工作 (内部缓存与日志)
-                # ======================================================================
+            # 步骤 3.3: 更新内部数据库和日志
+            with get_central_db_connection() as conn:
+                cursor = conn.cursor()
                 _save_metadata_to_cache(
                     cursor=cursor, tmdb_id=tmdb_id, emby_item_id=item_id, item_type=item_type,
                     item_details_from_emby=item_details_from_emby, final_processed_cast=final_processed_cast,
@@ -2344,87 +2270,105 @@ class MediaProcessor:
             return False
     
     # --- 备份元数据 ---
-    def sync_item_metadata(self, item_details: Dict[str, Any], tmdb_id: str, final_cast_override: Optional[List[Dict[str, Any]]] = None, episode_ids_to_sync: Optional[List[str]] = None):
+    def sync_item_metadata(self, item_details: Dict[str, Any], tmdb_id: str, 
+                           final_cast_override: Optional[List[Dict[str, Any]]] = None, 
+                           episode_ids_to_sync: Optional[List[str]] = None,
+                           douban_rating_override: Optional[float] = None,
+                           original_cast_for_build: Optional[List[Dict[str, Any]]] = None,
+                           cursor_for_build: Optional[psycopg2.extensions.cursor] = None):
         """
-        备份元数据到覆盖缓存
+        【V3 - 建造大师版】
+        在双角色模式基础上，集成了完整的“智能演员列表建造”逻辑。
         """
         item_id = item_details.get("Id")
         item_name_for_log = item_details.get("Name", f"未知项目(ID:{item_id})")
-        log_prefix = "[覆盖缓存-元数据备份]"
-        
-        # --- 核心：两级优先级获取演员数据，失败则直接中止 ---
-        new_perfect_cast = []
-        data_source_mode = "无"
-
-        with get_central_db_connection() as conn:
-            cursor = conn.cursor()
-
-            # 优先级 1: 直通模式
-            if final_cast_override:
-                data_source_mode = "模式1: 直通"
-                new_perfect_cast = self._build_cast_from_final_data(final_cast_override)
-            else:
-                # 优先级 2: 元数据缓存模式
-                cursor.execute("SELECT actors_json FROM media_metadata WHERE tmdb_id = %s AND item_type = %s", (tmdb_id, item_details.get("Type")))
-                cache_row = cursor.fetchone()
-                if cache_row and cache_row.get("actors_json") and isinstance(cache_row["actors_json"], list):
-                    data_source_mode = "模式2: 缓存"
-                    actors_from_cache = cache_row["actors_json"]
-                    new_perfect_cast = self._build_cast_from_golden_cache(actors_from_cache)
-
-        # ★★★ 核心修改：如果没有任何数据源，则中止备份 ★★★
-        if not new_perfect_cast:
-            logger.info(f"  ➜ {log_prefix} 跳过 '{item_name_for_log}'，因为它尚未被主流程处理，无元数据缓存数据可供备份。")
-            return
-
-        logger.info(f"  ➜ {log_prefix} [{data_source_mode}] 开始为 '{item_name_for_log}' 执行元数据备份...")
-
-        # --- 路径定义和基础文件复制 ---
         item_type = item_details.get("Type")
+        log_prefix = "[覆盖缓存-元数据同步]"
+
+        # --- 路径定义 ---
         cache_folder_name = "tmdb-movies2" if item_type == "Movie" else "tmdb-tv"
         source_cache_dir = os.path.join(self.local_data_path, "cache", cache_folder_name, tmdb_id)
         target_override_dir = os.path.join(self.local_data_path, "override", cache_folder_name, tmdb_id)
+        main_json_filename = "all.json" if item_type == "Movie" else "series.json"
+        main_json_path = os.path.join(target_override_dir, main_json_filename)
 
-        # 仅在非分集同步模式下执行全量复制
-        if not episode_ids_to_sync:
-            if not os.path.exists(source_cache_dir):
-                logger.warning(f"  ➜ {log_prefix} 跳过，因为源缓存目录不存在: {source_cache_dir}")
+        # ★★★ 核心重构：根据 final_cast_override 是否存在，决定数据流向 ★★★
+        perfect_cast_for_injection = []
+        
+        if final_cast_override is not None:
+            # --- 角色一：备份员（现在也是建造大师） ---
+            logger.info(f"  ➜ {log_prefix} [模式1: 建造与备份] 开始为 '{item_name_for_log}' 智能建造并备份元数据...")
+            
+            # ★★★ 完整的智能建造逻辑，从主流程迁移至此 ★★★
+            if original_cast_for_build is not None and cursor_for_build is not None:
+                original_tmdb_actor_map = {str(a.get('id')): a for a in original_cast_for_build if a.get('id')}
+                for actor in final_cast_override:
+                    tmdb_id_str = str(actor.get("id"))
+                    if not tmdb_id_str or tmdb_id_str == 'None': continue
+
+                    if tmdb_id_str in original_tmdb_actor_map:
+                        # 更新现有演员
+                        new_actor_entry = original_tmdb_actor_map[tmdb_id_str].copy()
+                        new_actor_entry['name'] = actor.get('name')
+                        new_actor_entry['character'] = actor.get('character')
+                    else:
+                        # 新增演员，执行“缓存优先，API后备+反哺”
+                        actor_tmdb_id_int = int(tmdb_id_str)
+                        metadata_source = None
+                        cached_meta = self._get_actor_metadata_from_cache(actor_tmdb_id_int, cursor_for_build)
+                        if cached_meta and cached_meta.get("profile_path"):
+                            metadata_source = cached_meta
+                        
+                        if not metadata_source and self.tmdb_api_key:
+                            person_details = tmdb_handler.get_person_details_tmdb(actor_tmdb_id_int, self.tmdb_api_key)
+                            if person_details:
+                                self.actor_db_manager.update_actor_metadata_from_tmdb(cursor_for_build, actor_tmdb_id_int, person_details)
+                                metadata_source = person_details
+                        
+                        final_meta = metadata_source or cached_meta or {}
+                        new_actor_entry = {
+                            "id": actor_tmdb_id_int, "name": actor.get("name"), "character": actor.get("character"),
+                            "original_name": final_meta.get("original_name", final_meta.get("name", "")),
+                            "profile_path": final_meta.get("profile_path"), "adult": final_meta.get("adult", False),
+                            "gender": final_meta.get("gender", 0), "known_for_department": final_meta.get("known_for_department", "Acting"),
+                            "popularity": final_meta.get("popularity", 0.0), "cast_id": None, "credit_id": None,
+                            "order": actor.get("order", 999)
+                        }
+                    perfect_cast_for_injection.append(new_actor_entry)
+            else:
+                # 如果缺少原料，则退回简单模式
+                perfect_cast_for_injection = self._build_cast_from_final_data(final_cast_override)
+        else:
+            # --- 角色二：处理器 ---
+            # 数据源是 override 目录下的主JSON文件
+            data_source_mode = "模式2: 处理 (文件 -> 文件)"
+            logger.info(f"  ➜ {log_prefix} [{data_source_mode}] 开始为 '{item_name_for_log}' 的新分集处理元数据...")
+            
+            if not os.path.exists(main_json_path):
+                logger.error(f"  ➜ {log_prefix} 追更任务失败：找不到主元数据文件 '{main_json_path}'。请先对该剧集执行一次完整的处理。")
                 return
+            
             try:
-                shutil.copytree(source_cache_dir, target_override_dir, dirs_exist_ok=True)
-            except Exception as e:
-                logger.error(f"  ➜ {log_prefix} 复制元数据时失败: {e}", exc_info=True)
-                return
-
-        # --- 将重建好的新列表写回主 JSON 文件 (仅在非分集同步模式下) ---
-        if not episode_ids_to_sync:
-            main_json_filename = "all.json" if item_type == "Movie" else "series.json"
-            json_path = os.path.join(target_override_dir, main_json_filename)
-            if not os.path.exists(json_path): return
-
-            try:
-                with open(json_path, 'r+', encoding='utf-8') as f:
+                with open(main_json_path, 'r', encoding='utf-8') as f:
                     data = json.load(f)
                     if 'casts' in data and 'cast' in data['casts']:
-                        data['casts']['cast'] = new_perfect_cast
+                        perfect_cast_for_injection = data['casts']['cast']
                     elif 'credits' in data and 'cast' in data['credits']:
-                        data['credits']['cast'] = new_perfect_cast
-                    else:
-                        return
-                    
-                    f.seek(0)
-                    json.dump(data, f, ensure_ascii=False, indent=2)
-                    f.truncate()
-                    logger.info(f"  ➜ {log_prefix} 成功将 {len(new_perfect_cast)} 位演员信息写入覆盖缓存文件。")
+                        perfect_cast_for_injection = data['credits']['cast']
+                
+                if not perfect_cast_for_injection:
+                    logger.warning(f"  ➜ {log_prefix} 主元数据文件 '{main_json_path}' 中没有演员信息，无法为新分集注入。")
+                    return
+                logger.info(f"  ➜ {log_prefix} 成功从主文件加载 {len(perfect_cast_for_injection)} 位演员信息。")
             except Exception as e:
-                logger.error(f"  ➜ {log_prefix} 重建并写入 '{main_json_filename}' 时失败: {e}", exc_info=True)
+                logger.error(f"  ➜ {log_prefix} 读取主元数据文件 '{main_json_path}' 时失败: {e}", exc_info=True)
                 return
 
-        # --- 注入演员表到所有季/集文件 ---
-        if item_type == "Series":
+        # --- 公共逻辑：将最终确定的演员表注入到所有需要的季/集文件中 ---
+        if item_type == "Series" and perfect_cast_for_injection:
             self._inject_cast_to_series_files(
                 target_dir=target_override_dir, 
-                cast_list=new_perfect_cast, 
+                cast_list=perfect_cast_for_injection, 
                 series_details=item_details, 
                 source_dir=source_cache_dir,  
                 episode_ids_to_sync=episode_ids_to_sync
@@ -2540,38 +2484,50 @@ class MediaProcessor:
                                 update_description: Optional[str] = None, 
                                 sync_timestamp_iso: Optional[str] = None,
                                 final_cast_override: Optional[List[Dict[str, Any]]] = None,
-                                episode_ids_to_sync: Optional[List[str]] = None):
+                                episode_ids_to_sync: Optional[List[str]] = None,
+                                douban_rating_override: Optional[float] = None,
+                                original_cast_for_build: Optional[List[Dict[str, Any]]] = None,
+                                cursor_for_build: Optional[psycopg2.extensions.cursor] = None):
         """
-        【V1.5 - 任务队列版】为单个媒体项同步图片和元数据文件。
-        - 职责单一化：只负责执行备份。并发控制和冷却逻辑已移交至任务管理器和调用方。
+        【V2.2 - 建造参数版】
+        增加了建造所需的 original_cast_for_build 和 cursor_for_build 参数。
         """
-        log_prefix = f"实时覆盖缓存备份"
-        logger.trace(f"--- {log_prefix} 开始执行 ---")
+        log_prefix = f"实时覆盖缓存同步"
+        logger.trace(f"--- {log_prefix} 开始执行 (ItemID: {item_id}) ---")
 
         if not self.local_data_path:
             logger.warning(f"  ➜ {log_prefix} 任务跳过，因为未配置本地数据源路径。")
             return
 
         try:
+            # 仅获取执行所需的最少信息
             item_details = emby_handler.get_emby_item_details(
                 item_id, self.emby_url, self.emby_api_key, self.emby_user_id,
-                fields="ProviderIds,Type,Name,People,ImageTags,IndexNumber,ParentIndexNumber"
+                fields="ProviderIds,Type,Name,IndexNumber,ParentIndexNumber"
             )
             if not item_details:
                 raise ValueError("在Emby中找不到该项目。")
 
             tmdb_id = item_details.get("ProviderIds", {}).get("Tmdb")
             if not tmdb_id:
-                logger.warning(f"{log_prefix} 项目 '{item_details.get('Name')}' 缺少TMDb ID，无法备份。")
+                logger.warning(f"{log_prefix} 项目 '{item_details.get('Name')}' 缺少TMDb ID，无法同步。")
                 return
 
-            # 1. 同步图片
+            # 1. 同步图片 
             self.sync_item_images(item_details, update_description, episode_ids_to_sync=episode_ids_to_sync)
             
-            # 2. 同步元数据文件
-            self.sync_item_metadata(item_details, tmdb_id, final_cast_override=final_cast_override, episode_ids_to_sync=episode_ids_to_sync)
+            # 2. 同步元数据文件 (现在会根据参数智能选择模式)
+            self.sync_item_metadata(
+                item_details, 
+                tmdb_id, 
+                final_cast_override=final_cast_override, 
+                episode_ids_to_sync=episode_ids_to_sync,
+                douban_rating_override=douban_rating_override,
+                original_cast_for_build=original_cast_for_build,
+                cursor_for_build=cursor_for_build
+            )
 
-            # 3. 记录本次同步的时间戳
+            # 3. 记录同步时间戳 
             timestamp_to_log = sync_timestamp_iso or datetime.now(timezone.utc).isoformat()
             with get_central_db_connection() as conn:
                 cursor = conn.cursor()
@@ -2582,10 +2538,10 @@ class MediaProcessor:
                 )
                 conn.commit()
             
-            logger.trace(f"--- {log_prefix} 成功完成 ---")
+            logger.trace(f"--- {log_prefix} 成功完成 (ItemID: {item_id}) ---")
 
         except Exception as e:
-            logger.error(f"{log_prefix} 执行时发生错误: {e}", exc_info=True)
+            logger.error(f"{log_prefix} 执行时发生错误 (ItemID: {item_id}): {e}", exc_info=True)
 
     def sync_single_item_to_metadata_cache(self, item_id: str, item_name: Optional[str] = None, episode_ids_to_add: Optional[List[str]] = None):
         """

@@ -451,82 +451,33 @@ def task_populate_metadata_cache(processor, batch_size: int = 50, force_full_upd
 
 def task_apply_main_cast_to_episodes(processor, series_id: str, episode_ids: list):
     """
-    轻量级任务：将剧集主项目的演员表应用到【指定】的新增分集。
+    【V2 - 文件中心化重构版】
+    轻量级任务：当剧集追更新增分集时，将主项目的完美演员表注入到新分集的 override 元数据文件中。
+    此任务不再读写 Emby API，而是委托核心处理器的 sync_single_item_assets 方法执行精准的文件同步操作。
     """
     try:
-        series_details = emby_handler.get_emby_item_details(
-            series_id, processor.emby_url, processor.emby_api_key, processor.emby_user_id,
-            fields="People,Name,ProviderIds"
-        )
-        if not series_details:
-            logger.error(f"  ➜ 更新任务失败：无法获取剧集 {series_id} 的详情。")
-            return
-
-        series_name = series_details.get("Name", f"ID:{series_id}")
-        cast_for_handler = []
-        for person in series_details.get("People", []):
-             if person.get("Type") == "Actor":
-                cast_for_handler.append({
-                    "name": person.get("Name"),
-                    "character": person.get("Role"),
-                    "emby_person_id": person.get("Id")
-                })
-        
-        if not cast_for_handler:
-            logger.warning(f"  ➜ 剧集 '{series_name}' 主项目没有演员信息，无需更新。")
-        
-        # 直接使用传入的 episode_ids
         if not episode_ids:
-            logger.info(f"  ➜ 未提供需要更新的分集ID for 《{series_name}》。")
+            logger.info(f"  ➜ 剧集 {series_id} 追更任务跳过：未提供需要更新的分集ID。")
             return
 
-        logger.info(f"  ➜ 开始为《{series_name}》的 {len(episode_ids)} 个新分集更新演员表...")
-        for episode_id in episode_ids:
-            if processor.is_stop_requested():
-                logger.warning("  ➜ 更新任务被中止。")
-                break
-            emby_handler.update_emby_item_cast(
-                item_id=episode_id, new_cast_list_for_handler=cast_for_handler,
-                emby_server_url=processor.emby_url, emby_api_key=processor.emby_api_key,
-                user_id=processor.emby_user_id
-            )
-            time.sleep(0.2)
-        
-        logger.info(f"  ➜ 已为《{series_name}》的新分集更新了演员表。")
+        logger.info(f"  ➜ 追更任务启动：准备为剧集 {series_id} 的 {len(episode_ids)} 个新分集同步元数据...")
 
-        # --- 备份覆盖缓存 ---
+        # 核心：直接调用资产同步功能，并传入需要精准同步的分集ID列表
+        # sync_single_item_assets 内部会处理：
+        # 1. 从元数据缓存(即 override/series.json 的体现)读取完美的演员表
+        # 2. 将演员表注入到指定分集的 override/season-X-episode-Y.json 文件中
+        # 3. 同步指定分集的图片
+        # 4. 更新数据库中的同步时间戳
         processor.sync_single_item_assets(
             item_id=series_id,
-            update_description=f"轻量化同步演员表后自动备份",
+            update_description=f"追更新增 {len(episode_ids)} 个分集",
             sync_timestamp_iso=datetime.now(timezone.utc).isoformat(),
             episode_ids_to_sync=episode_ids
         )
 
-        # ★★★ 更新父剧集在元数据缓存中的 last_synced_at 时间戳 ★★★
-        tmdb_id = series_details.get("ProviderIds", {}).get("Tmdb")
-        if not tmdb_id:
-            logger.warning(f"  ➜ 无法为剧集 '{series_name}' 找到 TMDB ID，跳过 '最后更新时间戳' 更新。")
-            return
-
-        try:
-            with connection.get_db_connection() as conn:
-                with conn.cursor() as cursor:
-                    sql_update = """
-                        UPDATE media_metadata
-                        SET last_synced_at = %s
-                        WHERE tmdb_id = %s AND item_type = 'Series'
-                    """
-                    current_utc_time = datetime.now(timezone.utc)
-                    cursor.execute(sql_update, (current_utc_time, tmdb_id))
-                    
-                    if cursor.rowcount > 0:
-                        logger.info(f"  ➜ 成功更新剧集《{series_name}》在元数据缓存中的 '最后更新时间戳'。")
-                    else:
-                        # 这种情况可能发生在该剧集还未被完整处理过，所以缓存中没有记录。这是正常的。
-                        logger.debug(f"  ➜ 在元数据缓存中未找到剧集《{series_name}》(TMDb ID: {tmdb_id})，无需更新时间戳。")
-            # 'with' 语句会自动处理 conn.commit()
-        except Exception as db_e:
-            logger.error(f"  ➜ 更新剧集《{series_name}》的时间戳时发生数据库错误: {db_e}", exc_info=True)
+        logger.info(f"  ➜ 成功完成剧集 {series_id} 的新分集元数据同步任务。")
 
     except Exception as e:
-        logger.error(f"  ➜ 分集更新任务时发生错误: {e}", exc_info=True)
+        logger.error(f"  ➜ 为剧集 {series_id} 的新分集应用主演员表时发生错误: {e}", exc_info=True)
+        # 向上抛出异常，让任务管理器捕获并标记为失败
+        raise
