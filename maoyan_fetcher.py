@@ -168,21 +168,21 @@ def match_titles_to_tmdb(titles: List[Dict], item_type: str, tmdb_api_key: str) 
                 best_match = results[0]
                 tmdb_id = str(best_match.get('id'))
                 match_name = best_match.get('title')
-                logger.info(f"  -> 匹配成功: {match_name} (ID: {tmdb_id})")
+                logger.info(f"  ➜ 匹配成功: {match_name} (ID: {tmdb_id})")
                 matched_items.append({'id': tmdb_id, 'type': 'Movie'})
             else:
-                logger.warning(f"  -> 未能为 '{title}' 找到任何TMDb匹配项。")
+                logger.warning(f"  ➜ 未能为 '{title}' 找到任何TMDb匹配项。")
         
         elif item_type == 'Series':
             logger.info(f"正在为 Series '{title}' 搜索TMDb匹配...")
             
             show_name, season_number = parse_series_title(title)
-            logger.debug(f"  -> 标题 '{title}' 解析为: 剧名='{show_name}', 季号='{season_number}'")
+            logger.debug(f"  ➜ 标题 '{title}' 解析为: 剧名='{show_name}', 季号='{season_number}'")
             
             results = tmdb_handler.search_media(show_name, tmdb_api_key, 'Series')
             
             if not results:
-                logger.warning(f"  -> 使用搜索词 '{show_name}' 未能找到任何TMDb匹配项。")
+                logger.warning(f"  ➜ 使用搜索词 '{show_name}' 未能找到任何TMDb匹配项。")
                 continue
 
             series_result = None
@@ -192,12 +192,12 @@ def match_titles_to_tmdb(titles: List[Dict], item_type: str, tmdb_api_key: str) 
                 result_name = result.get('name', '')
                 if normalize_string(result_name) == norm_show_name:
                     series_result = result
-                    logger.info(f"  -> 通过【精确匹配】找到了基础剧集: {result.get('name')} (ID: {result.get('id')})")
+                    logger.info(f"  ➜ 通过【精确匹配】找到了基础剧集: {result.get('name')} (ID: {result.get('id')})")
                     break
             
             if not series_result:
                 series_result = results[0]
-                logger.warning(f"  -> 未找到精确匹配，【回退使用】最相关的结果: {series_result.get('name')} (ID: {series_result.get('id')})")
+                logger.warning(f"  ➜ 未找到精确匹配，【回退使用】最相关的结果: {series_result.get('name')} (ID: {series_result.get('id')})")
             
             tmdb_id = str(series_result.get('id'))
             
@@ -205,7 +205,7 @@ def match_titles_to_tmdb(titles: List[Dict], item_type: str, tmdb_api_key: str) 
             item_to_add = {'id': tmdb_id, 'type': 'Series'}
             if season_number is not None:
                 item_to_add['season'] = season_number
-                logger.info(f"  -> 已为剧集 '{show_name}' 附加季号: {season_number}")
+                logger.info(f"  ➜ 已为剧集 '{show_name}' 附加季号: {season_number}")
             
             matched_items.append(item_to_add)
             

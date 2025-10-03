@@ -163,7 +163,7 @@ def get_season_details_tmdb(tv_id: int, season_number: int, api_key: str, append
     }
     
     item_name_for_log = f"'{item_name}' " if item_name else ""
-    logger.debug(f"  -> TMDb API: 获取电视剧 {item_name_for_log}(ID: {tv_id}) 第 {season_number} 季的详情...")
+    logger.debug(f"  ➜ TMDb API: 获取电视剧 {item_name_for_log}(ID: {tv_id}) 第 {season_number} 季的详情...")
     
     return _tmdb_request(endpoint, api_key, params)
 # --- 并发获取剧集详情 ---
@@ -179,15 +179,15 @@ def aggregate_full_series_data_from_tmdb(
     if not tv_id or not api_key:
         return None
 
-    logger.info(f"  -> 开始为剧集 ID {tv_id} 并发聚合 TMDB 数据 (并发数: {max_workers})...")
+    logger.info(f"  ➜ 开始为剧集 ID {tv_id} 并发聚合 TMDB 数据 (并发数: {max_workers})...")
     
     # --- 步骤 1: 获取顶层剧集详情，这是所有后续操作的基础 ---
     series_details = get_tv_details(tv_id, api_key)
     if not series_details:
-        logger.error(f"  -> 聚合失败：无法获取顶层剧集 {tv_id} 的详情。")
+        logger.error(f"  ➜ 聚合失败：无法获取顶层剧集 {tv_id} 的详情。")
         return None
     
-    logger.info(f"  -> 成功获取剧集 '{series_details.get('name')}' 的顶层信息，共 {len(series_details.get('seasons', []))} 季。")
+    logger.info(f"  ➜ 成功获取剧集 '{series_details.get('name')}' 的顶层信息，共 {len(series_details.get('seasons', []))} 季。")
 
     # --- 步骤 2: 构建所有需要并发执行的“任务” ---
     tasks = []
@@ -205,10 +205,10 @@ def aggregate_full_series_data_from_tmdb(
                 tasks.append(("episode", tv_id, season_number, episode_number))
 
     if not tasks:
-        logger.warning("  -> 未找到任何季或集需要获取，聚合结束。")
+        logger.warning("  ➜ 未找到任何季或集需要获取，聚合结束。")
         return {"series_details": series_details, "seasons_details": {}, "episodes_details": {}}
 
-    logger.info(f"  -> 共构建了 {len(tasks)} 个并发任务 (获取所有季和集的详情)。")
+    logger.info(f"  ➜ 共构建了 {len(tasks)} 个并发任务 (获取所有季和集的详情)。")
 
     # --- 步骤 3: 使用线程池并发执行所有任务 ---
     results = {}
@@ -250,7 +250,7 @@ def aggregate_full_series_data_from_tmdb(
         elif key.startswith("S") and "E" in key: # 是集
             final_aggregated_data["episodes_details"][key] = data
             
-    logger.info(f"  -> 成功获取 {len(final_aggregated_data['seasons_details'])} 季和 {len(final_aggregated_data['episodes_details'])} 集的详情。")
+    logger.info(f"  ➜ 成功获取 {len(final_aggregated_data['seasons_details'])} 季和 {len(final_aggregated_data['episodes_details'])} 集的详情。")
     
     return final_aggregated_data
 # +++ 获取集详情 +++
@@ -263,7 +263,7 @@ def get_episode_details_tmdb(tv_id: int, season_number: int, episode_number: int
         "language": DEFAULT_LANGUAGE,
         "append_to_response": append_to_response
     }
-    logger.trace(f"  -> TMDb API: 获取电视剧 (ID: {tv_id}) S{season_number}E{episode_number} 的详情...")
+    logger.trace(f"  ➜ TMDb API: 获取电视剧 (ID: {tv_id}) S{season_number}E{episode_number} 的详情...")
     return _tmdb_request(endpoint, api_key, params)
 # --- 通过外部ID (如 IMDb ID) 在 TMDb 上查找人物 ---
 def find_person_by_external_id(external_id: str, api_key: str, source: str = "imdb_id",
@@ -285,12 +285,12 @@ def find_person_by_external_id(external_id: str, api_key: str, source: str = "im
         data = response.json()
         person_results = data.get("person_results", [])
         if not person_results:
-            logger.debug(f"  -> 未能通过 {source} '{external_id}' 找到任何人物。")
+            logger.debug(f"  ➜ 未能通过 {source} '{external_id}' 找到任何人物。")
             return None
 
         person_found = person_results[0]
         tmdb_name = person_found.get('name')
-        logger.debug(f"  -> 查找成功: 找到了 '{tmdb_name}' (TMDb ID: {person_found.get('id')})")
+        logger.debug(f"  ➜ 查找成功: 找到了 '{tmdb_name}' (TMDb ID: {person_found.get('id')})")
 
         # ★★★★★★★★★★★★★★★ 精简后的精确验证逻辑 ★★★★★★★★★★★★★★★
         if names_for_verification:
@@ -306,23 +306,23 @@ def find_person_by_external_id(external_id: str, api_key: str, source: str = "im
                 
                 # 4. 进行精确比较
                 if normalized_tmdb_name == normalized_expected_name:
-                    logger.debug(f"  -> [验证成功 - 精确匹配] TMDb name '{tmdb_name}' 与期望的 original_name '{expected_original_name}' 匹配。")
+                    logger.debug(f"  ➜ [验证成功 - 精确匹配] TMDb name '{tmdb_name}' 与期望的 original_name '{expected_original_name}' 匹配。")
                 else:
                     # 如果不匹配，检查一下姓和名颠倒的情况
                     parts = expected_original_name.split()
                     if len(parts) > 1:
                         reversed_name = " ".join(reversed(parts))
                         if normalize_name_for_matching(reversed_name) == normalized_tmdb_name:
-                            logger.debug(f"  -> [验证成功 - 精确匹配] 名字为颠倒顺序匹配。")
+                            logger.debug(f"  ➜ [验证成功 - 精确匹配] 名字为颠倒顺序匹配。")
                             return person_found # 颠倒匹配也算成功
 
                     # 如果精确匹配和颠倒匹配都失败，则拒绝
-                    logger.error(f"  -> [验证失败] TMDb返回的名字 '{tmdb_name}' 与期望的 '{expected_original_name}' 不符。拒绝此结果！")
+                    logger.error(f"  ➜ [验证失败] TMDb返回的名字 '{tmdb_name}' 与期望的 '{expected_original_name}' 不符。拒绝此结果！")
                     return None
             else:
                 # 如果豆瓣没有提供外文名，我们无法进行精确验证，可以选择信任或拒绝
                 # 当前选择信任，但打印一条警告
-                logger.warning(f"  -> [验证跳过] 未提供用于精确匹配的 original_name，将直接接受TMDb结果。")
+                logger.warning(f"  ➜ [验证跳过] 未提供用于精确匹配的 original_name，将直接接受TMDb结果。")
         
         return person_found
 

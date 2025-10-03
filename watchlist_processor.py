@@ -95,7 +95,7 @@ class WatchlistProcessor:
                     
                     cursor.execute(sql, tuple(values))
                 conn.commit()
-                logger.info(f"  -> 成功更新数据库中 '{item_name}' 的追剧信息。")
+                logger.info(f"  ➜ 成功更新数据库中 '{item_name}' 的追剧信息。")
         except Exception as e:
             logger.error(f"  更新 '{item_name}' 的追剧信息时数据库出错: {e}", exc_info=True)
     # --- 自动添加追剧列表的方法 ---
@@ -125,7 +125,7 @@ class WatchlistProcessor:
                         """, (item_id, tmdb_id, item_name, "Series"))
                         
                         if cursor.rowcount > 0:
-                            logger.info(f"  -> 剧集 '{item_name}' (TMDb状态: {translate_status(tmdb_status)}) 已自动加入追剧列表。")
+                            logger.info(f"  ➜ 剧集 '{item_name}' (TMDb状态: {translate_status(tmdb_status)}) 已自动加入追剧列表。")
                     conn.commit()
             except Exception as e:
                 logger.error(f"自动添加剧集 '{item_name}' 到追剧列表时发生数据库错误: {e}", exc_info=True)
@@ -329,12 +329,12 @@ class WatchlistProcessor:
                         # 如果新的总季数 > 旧的最后一集季号，说明出了新的一季
                         if new_total_seasons > old_season_number:
                             has_new_season = True
-                            logger.info(f"  -> 检测到《{series['item_name']}》有新内容：TMDb总季数 ({new_total_seasons}) > 上次记录的最终季号 ({old_season_number})。")
+                            logger.info(f"  ➜ 检测到《{series['item_name']}》有新内容：TMDb总季数 ({new_total_seasons}) > 上次记录的最终季号 ({old_season_number})。")
                         else:
-                            logger.info(f"  -> 《{series['item_name']}》TMDb状态为'{new_tmdb_status}'，但未发现新季（TMDb总季数 {new_total_seasons}，记录的最终季 {old_season_number}），不作复活处理。")
+                            logger.info(f"  ➜ 《{series['item_name']}》TMDb状态为'{new_tmdb_status}'，但未发现新季（TMDb总季数 {new_total_seasons}，记录的最终季 {old_season_number}），不作复活处理。")
 
                     except Exception as e:
-                        logger.error(f"  -> 解析《{series['item_name']}》的新旧季数时出错: {e}", exc_info=True)
+                        logger.error(f"  ➜ 解析《{series['item_name']}》的新旧季数时出错: {e}", exc_info=True)
                         has_new_season = False # 出错则保守处理，不认为有新季
 
                 # 最终复活判断：状态符合 且 必须有新季
@@ -376,7 +376,7 @@ class WatchlistProcessor:
             if progress_callback: progress_callback(100, "所有流程已完成（洗版功能未启用）。")
             return
 
-        logger.trace(f"  -> 后台任务 '{task_name}' 开始执行")
+        logger.trace(f"  ➜ 后台任务 '{task_name}' 开始执行")
         if progress_callback: progress_callback(0, "正在查找需要洗版的剧集...")
 
         try:
@@ -394,7 +394,7 @@ class WatchlistProcessor:
                       AND jsonb_typeof(missing_info_json) IN ('object', 'array')
                     """
                 )
-                logger.info(f"  -> 阶段1：发现 {len(stuck_series)} 部 TMDb已完结但卡在追剧中的剧集。")
+                logger.info(f"  ➜ 阶段1：发现 {len(stuck_series)} 部 TMDb已完结但卡在追剧中的剧集。")
 
                 # 阶段二：捕获“僵尸剧”
                 today_minus_365_days = (datetime.now(timezone.utc).date() - timedelta(days=365)).isoformat()
@@ -406,13 +406,13 @@ class WatchlistProcessor:
                       AND (last_episode_to_air_json->>'air_date')::date < '{today_minus_365_days}'
                     """
                 )
-                logger.info(f"  -> 阶段2：发现 {len(zombie_series)} 部Tmdb状态滞后的“僵尸剧”。")
+                logger.info(f"  ➜ 阶段2：发现 {len(zombie_series)} 部Tmdb状态滞后的“僵尸剧”。")
 
                 # 阶段三：捕获“已正常完结，但后来文件又被删除”的剧集
                 completed_missing_series = self._get_series_to_process(
                     f"WHERE status = '{STATUS_COMPLETED}' AND jsonb_typeof(missing_info_json) IN ('object', 'array')"
                 )
-                logger.info(f"  -> 阶段3：发现 {len(completed_missing_series)} 部已完结但文件缺失的剧集。")
+                logger.info(f"  ➜ 阶段3：发现 {len(completed_missing_series)} 部已完结但文件缺失的剧集。")
 
                 # 合并所有结果并去重
                 all_series_map = {s['item_id']: s for s in stuck_series}
@@ -425,7 +425,7 @@ class WatchlistProcessor:
                 if progress_callback: progress_callback(100, "所有流程已完成，未发现需洗版的剧集。")
                 return
 
-            logger.info(f"  -> 共发现 {total} 部剧集需要洗版，开始处理...")
+            logger.info(f"  ➜ 共发现 {total} 部剧集需要洗版，开始处理...")
             total_seasons_subscribed = 0
 
             # 循环内部的订阅逻辑是正确的，保持不变
@@ -443,7 +443,7 @@ class WatchlistProcessor:
                                 last_air_date = datetime.strptime(last_air_date_str, '%Y-%m-%d').date()
                                 days_since_airing = (datetime.now(timezone.utc).date() - last_air_date).days
                                 if days_since_airing < 7:
-                                    logger.info(f"  -> 《{item_name}》完结未满7天，跳过洗版。")
+                                    logger.info(f"  ➜ 《{item_name}》完结未满7天，跳过洗版。")
                                     continue
                             except ValueError: pass
                 
@@ -457,7 +457,7 @@ class WatchlistProcessor:
                 
                 if not seasons_to_resubscribe: continue
 
-                logger.warning(f"  -> 检测到剧集《{item_name}》存在缺集: {sorted(list(seasons_to_resubscribe))}，准备逐季触发洗版订阅。")
+                logger.warning(f"  ➜ 检测到剧集《{item_name}》存在缺集: {sorted(list(seasons_to_resubscribe))}，准备逐季触发洗版订阅。")
 
                 for season_num in sorted(list(seasons_to_resubscribe)):
                     success = moviepilot_handler.subscribe_series_to_moviepilot(
@@ -468,9 +468,9 @@ class WatchlistProcessor:
                     time.sleep(1)
                 time.sleep(1)
 
-            final_message = f"  -> 所有流程已完成！共为 {total_seasons_subscribed} 个缺失的季提交了洗版订阅。"
+            final_message = f"  ➜ 所有流程已完成！共为 {total_seasons_subscribed} 个缺失的季提交了洗版订阅。"
             if progress_callback: progress_callback(100, final_message)
-            logger.trace(f"  -> 后台任务 '{task_name}' 结束，最终状态: 处理完成")
+            logger.trace(f"  ➜ 后台任务 '{task_name}' 结束，最终状态: 处理完成")
 
         except Exception as e:
             logger.error(f"执行 '{task_name}' 时发生严重错误: {e}", exc_info=True)
@@ -518,7 +518,7 @@ class WatchlistProcessor:
             user_id=self.emby_user_id, fields="Id,Name"
         )
         if not item_details_for_check:
-            logger.warning(f"  -> 剧集 '{item_name}' (ID: {item_id}) 在 Emby 中已不存在。将从追剧列表移除。")
+            logger.warning(f"  ➜ 剧集 '{item_name}' (ID: {item_id}) 在 Emby 中已不存在。将从追剧列表移除。")
             watchlist_db.remove_item_from_watchlist(item_id=item_id)
             return 
 
@@ -527,10 +527,10 @@ class WatchlistProcessor:
             return
 
         # 步骤2: 从TMDb获取权威数据
-        logger.debug(f"  -> 正在从TMDb API获取 '{item_name}' 的最新详情...")
+        logger.debug(f"  ➜ 正在从TMDb API获取 '{item_name}' 的最新详情...")
         latest_series_data = tmdb_handler.get_tv_details(tmdb_id, self.tmdb_api_key)
         if not latest_series_data:
-            logger.error(f"  -> 无法获取 '{item_name}' 的TMDb详情，本次处理中止。")
+            logger.error(f"  ➜ 无法获取 '{item_name}' 的TMDb详情，本次处理中止。")
             return
         
         all_tmdb_episodes = []
@@ -574,9 +574,9 @@ class WatchlistProcessor:
                     last_air_date = datetime.strptime(last_air_date_str, '%Y-%m-%d').date()
                     if last_air_date <= datetime.now(timezone.utc).date():
                         is_season_finale = True
-                        logger.info("  -> 符合“本季大结局”条件：已播出最后一集，且无明确的待播集。")
+                        logger.info("  ➜ 符合“本季大结局”条件：已播出最后一集，且无明确的待播集。")
                 except ValueError:
-                    logger.warning(f"  -> 解析TMDb最后播出日期 '{last_air_date_str}' 失败。")
+                    logger.warning(f"  ➜ 解析TMDb最后播出日期 '{last_air_date_str}' 失败。")
 
         final_status = STATUS_WATCHING
         paused_until_date = None
@@ -588,9 +588,9 @@ class WatchlistProcessor:
         if can_be_completed and (is_ended_on_tmdb or is_season_finale):
             final_status = STATUS_COMPLETED
             if is_season_finale and not is_ended_on_tmdb:
-                logger.info(f"  -> 剧集因“本季大结局”且本地/元数据完整，状态变更为: {translate_internal_status(final_status)}")
+                logger.info(f"  ➜ 剧集因“本季大结局”且本地/元数据完整，状态变更为: {translate_internal_status(final_status)}")
             else:
-                logger.info(f"  -> 剧集已完结且本地/元数据完整，状态变更为: {translate_internal_status(final_status)}")
+                logger.info(f"  ➜ 剧集已完结且本地/元数据完整，状态变更为: {translate_internal_status(final_status)}")
         elif real_next_episode_to_air and real_next_episode_to_air.get('air_date'):
             air_date_str = real_next_episode_to_air['air_date']
             try:
@@ -599,12 +599,12 @@ class WatchlistProcessor:
                 if days_until_air > 3:
                     final_status = STATUS_PAUSED
                     paused_until_date = air_date - timedelta(days=1)
-                    logger.info(f"  -> 下一集在3天后播出，状态变更为: {translate_internal_status(final_status)}，暂停至 {paused_until_date}。")
+                    logger.info(f"  ➜ 下一集在3天后播出，状态变更为: {translate_internal_status(final_status)}，暂停至 {paused_until_date}。")
                 else:
                     final_status = STATUS_WATCHING
-                    logger.info(f"  -> 下一集即将在3天内播出或已播出，状态保持为: {translate_internal_status(final_status)}。")
+                    logger.info(f"  ➜ 下一集即将在3天内播出或已播出，状态保持为: {translate_internal_status(final_status)}。")
             except ValueError:
-                logger.warning(f"  -> 解析TMDb待播日期 '{air_date_str}' 失败，将临时暂停。")
+                logger.warning(f"  ➜ 解析TMDb待播日期 '{air_date_str}' 失败，将临时暂停。")
                 final_status = STATUS_PAUSED
                 paused_until_date = datetime.now(timezone.utc).date() + timedelta(days=1)
         else:
@@ -612,15 +612,15 @@ class WatchlistProcessor:
             paused_until_date = datetime.now(timezone.utc).date() + timedelta(days=7)
             # 对暂停原因进行更详细的日志记录
             if not has_complete_metadata and not has_missing_media:
-                 logger.info(f"  -> 剧集文件完整但元数据不全，状态变更为: {translate_internal_status(final_status)}，暂停7天以待元数据更新。")
+                 logger.info(f"  ➜ 剧集文件完整但元数据不全，状态变更为: {translate_internal_status(final_status)}，暂停7天以待元数据更新。")
             else:
-                 logger.info(f"  -> 暂无待播信息 (季歇期)，状态变更为: {translate_internal_status(final_status)}，暂停7天。")
+                 logger.info(f"  ➜ 暂无待播信息 (季歇期)，状态变更为: {translate_internal_status(final_status)}，暂停7天。")
 
 
         if is_force_ended and final_status != STATUS_COMPLETED:
             final_status = STATUS_COMPLETED
             paused_until_date = None
-            logger.warning(f"  -> [强制完结生效] 剧集 '{item_name}' 被标记为强制完结，即使系统判断为其他状态，也将强制变更为 '已完结'。")
+            logger.warning(f"  ➜ [强制完结生效] 剧集 '{item_name}' 被标记为强制完结，即使系统判断为其他状态，也将强制变更为 '已完结'。")
 
         # 步骤5: 更新追剧数据库
         updates_to_db = {
@@ -634,7 +634,7 @@ class WatchlistProcessor:
         self._update_watchlist_entry(item_id, item_name, updates_to_db)
 
         # 步骤6: 命令Emby刷新自己，并同步更新内存中的`emby_children`
-        logger.debug(f"  -> 开始检查并注入缺失的分集简介到 Emby...")
+        logger.debug(f"  ➜ 开始检查并注入缺失的分集简介到 Emby...")
         tmdb_episodes_map = {
             f"S{ep.get('season_number')}E{ep.get('episode_number')}": ep
             for ep in all_tmdb_episodes
@@ -657,7 +657,7 @@ class WatchlistProcessor:
                     overview = tmdb_data_for_episode.get("overview")
                     if overview and overview.strip():
                         emby_episode_id = emby_episode.get("Id")
-                        logger.info(f"  -> 发现分集 '{ep_name_for_log}' (ID: {emby_episode_id}) 缺少简介，准备从TMDb注入...")
+                        logger.info(f"  ➜ 发现分集 '{ep_name_for_log}' (ID: {emby_episode_id}) 缺少简介，准备从TMDb注入...")
                         data_to_inject = {
                             "Name": tmdb_data_for_episode.get("name"),
                             "Overview": overview
@@ -672,23 +672,23 @@ class WatchlistProcessor:
                         )
 
                         if success:
-                            logger.info(f"  -> Emby 分集 '{ep_name_for_log}' (ID: {emby_episode_id}) 简介更新成功。")
+                            logger.info(f"  ➜ Emby 分集 '{ep_name_for_log}' (ID: {emby_episode_id}) 简介更新成功。")
                             # ★★★ 核心修改：同步更新内存中的数据，为稍后的步骤6做准备 ★★★
                             emby_episode['Overview'] = overview
                             emby_episode['Name'] = data_to_inject.get("Name")
                         else:
-                            logger.error(f"  -> 更新 Emby 分集 '{ep_name_for_log}' (ID: {emby_episode_id}) 简介失败。")
+                            logger.error(f"  ➜ 更新 Emby 分集 '{ep_name_for_log}' (ID: {emby_episode_id}) 简介失败。")
                     else:
-                        logger.info(f"  -> TMDb中分集 '{ep_name_for_log}' 尚无简介，跳过更新。")
+                        logger.info(f"  ➜ TMDb中分集 '{ep_name_for_log}' 尚无简介，跳过更新。")
                 else:
-                    logger.warning(f"  -> Emby分集 '{ep_name_for_log}' 缺少简介，但在TMDb中未找到对应信息。")
+                    logger.warning(f"  ➜ Emby分集 '{ep_name_for_log}' 缺少简介，但在TMDb中未找到对应信息。")
         else:
             # 这个else属于for循环，表示循环正常结束，没有被break
-            logger.info(f"  -> 分集简介检查与注入流程完成。")
+            logger.info(f"  ➜ 分集简介检查与注入流程完成。")
 
         # 步骤7：更新媒体数据缓存
         try:
-            logger.debug(f"  -> 正在为 '{item_name}' 更新 '媒体数据缓存' 中的子项目详情...")
+            logger.debug(f"  ➜ 正在为 '{item_name}' 更新 '媒体数据缓存' 中的子项目详情...")
             
             # ★★★ 此处无需修改，因为它现在使用的是已经被步骤7更新过的 `emby_children` ★★★
             children_details = []
@@ -723,13 +723,13 @@ class WatchlistProcessor:
                     cursor.execute(update_query, (details_json_str, current_utc_time, tmdb_id))
                     
                     if cursor.rowcount > 0:
-                        logger.info(f"  -> 成功刷新了 '{item_name}' 在 '媒体数据缓存' 中的子项目详情。")
+                        logger.info(f"  ➜ 成功刷新了 '{item_name}' 在 '媒体数据缓存' 中的子项目详情。")
                     else:
-                        logger.debug(f"  -> 在 '媒体数据缓存' 中未找到 TMDb ID 为 '{tmdb_id}' 的记录，本次不更新子项目详情。")
+                        logger.debug(f"  ➜ 在 '媒体数据缓存' 中未找到 TMDb ID 为 '{tmdb_id}' 的记录，本次不更新子项目详情。")
                 conn.commit()
 
         except Exception as e_sync:
-            logger.error(f"  -> [追剧联动] 在同步 '{item_name}' 的子项目详情到 '媒体数据缓存' 时发生错误: {e_sync}", exc_info=True)
+            logger.error(f"  ➜ [追剧联动] 在同步 '{item_name}' 的子项目详情到 '媒体数据缓存' 时发生错误: {e_sync}", exc_info=True)
 
     # --- 统一的、公开的追剧处理入口 ★★★
     def process_watching_list(self, item_id: Optional[str] = None):
@@ -792,11 +792,11 @@ class WatchlistProcessor:
             
             if s_num not in emby_seasons or e_num not in emby_seasons.get(s_num, set()):
                 # 找到了！这无论是否播出，都是用户最关心的下一集
-                logger.info(f"  -> 找到本地缺失的第一集: S{s_num}E{e_num} ('{episode.get('name')}'), 将其设为待播集。")
+                logger.info(f"  ➜ 找到本地缺失的第一集: S{s_num}E{e_num} ('{episode.get('name')}'), 将其设为待播集。")
                 return episode
         
         # 3. 如果循环完成，说明本地拥有TMDb上所有的剧集
-        logger.info("  -> 本地媒体库已拥有TMDb上所有剧集，无待播信息。")
+        logger.info("  ➜ 本地媒体库已拥有TMDb上所有剧集，无待播信息。")
         return None
     # --- 计算缺失的季和集 ---
     def _calculate_missing_info(self, tmdb_seasons: List[Dict], all_tmdb_episodes: List[Dict], emby_seasons: Dict) -> Dict:
@@ -840,10 +840,10 @@ class WatchlistProcessor:
         ]
 
         if missing_overview_episodes:
-            logger.warning(f"  -> 元数据不完整，以下集缺少简介: {', '.join(missing_overview_episodes)}")
+            logger.warning(f"  ➜ 元数据不完整，以下集缺少简介: {', '.join(missing_overview_episodes)}")
             return False
         
-        logger.info("  -> 元数据完整性检查通过，所有集都有简介。")
+        logger.info("  ➜ 元数据完整性检查通过，所有集都有简介。")
         return True
 
     def _update_watchlist_status(self, item_id: str, status: str, item_name: str):

@@ -209,7 +209,7 @@ def delete_emby_users_by_ids(user_ids: List[str]) -> int:
             cursor.execute(sql, (user_ids,))
             deleted_count = cursor.rowcount
             conn.commit()
-            logger.info(f"  -> 从本地数据库中同步删除了 {deleted_count} 个陈旧的用户记录。")
+            logger.info(f"  ➜ 从本地数据库中同步删除了 {deleted_count} 个陈旧的用户记录。")
             return deleted_count
     except Exception as e:
         logger.error(f"DB: 批量删除陈旧用户时失败: {e}", exc_info=True)

@@ -50,13 +50,13 @@ def _get_emby_access_token(emby_url, username, password) -> tuple[Optional[str],
         access_token = data.get("AccessToken")
         user_id = data.get("User", {}).get("Id")
         if access_token and user_id:
-            logger.debug("  -> [自动登录] 成功，已获取到临时的 AccessToken。")
+            logger.debug("  ➜ [自动登录] 成功，已获取到临时的 AccessToken。")
             return access_token, user_id
         else:
-            logger.error("  -> [自动登录] 登录 Emby 成功，但响应中未找到 AccessToken 或 UserId。")
+            logger.error("  ➜ [自动登录] 登录 Emby 成功，但响应中未找到 AccessToken 或 UserId。")
             return None, None
     except Exception as e:
-        logger.error(f"  -> [自动登录] 模拟登录 Emby 失败: {e}")
+        logger.error(f"  ➜ [自动登录] 模拟登录 Emby 失败: {e}")
         return None, None
 # ✨✨✨ 快速获取指定类型的项目总数，不获取项目本身 ✨✨✨
 def get_item_count(base_url: str, api_key: str, user_id: Optional[str], item_type: str, parent_id: Optional[str] = None) -> Optional[int]:
@@ -229,7 +229,7 @@ def get_emby_series_details_with_full_cast(
     将所有分集中的演员聚合到主剧集的 'People' 列表中，
     返回一个包含“完整演员表”的剧集详情对象。
     """
-    logger.info(f"  -> [演员聚合模式] 开始为剧集 ID {series_id} 获取完整演员表...")
+    logger.info(f"  ➜ [演员聚合模式] 开始为剧集 ID {series_id} 获取完整演员表...")
 
     # 1. 首先，获取剧集本身的基础详情和主演列表
     main_series_details = get_emby_item_details(series_id, emby_server_url, emby_api_key, user_id)
@@ -247,7 +247,7 @@ def get_emby_series_details_with_full_cast(
         if person_id:
             aggregated_cast_map[person_id] = person
     
-    logger.info(f"  -> 从主剧集加载了 {len(aggregated_cast_map)} 位主要演职员。")
+    logger.info(f"  ➜ 从主剧集加载了 {len(aggregated_cast_map)} 位主要演职员。")
 
     # 3. 获取该剧集下的所有分集
     all_episodes = get_series_children(
@@ -261,10 +261,10 @@ def get_emby_series_details_with_full_cast(
     )
 
     if not all_episodes:
-        logger.info("  -> 未找到任何分集，直接使用主剧集演员表。")
+        logger.info("  ➜ 未找到任何分集，直接使用主剧集演员表。")
         return main_series_details
 
-    logger.info(f"  -> 发现 {len(all_episodes)} 个分集，开始遍历获取客串演员...")
+    logger.info(f"  ➜ 发现 {len(all_episodes)} 个分集，开始遍历获取客串演员...")
 
     # 4. 遍历所有分集，获取它们的详情，并将演员补充到Map中
     # (注意：这里会产生较多API请求，但这是获取完整信息的唯一方式)
@@ -284,13 +284,13 @@ def get_emby_series_details_with_full_cast(
                 # 如果这个演员不在我们的Map里，就加进去
                 if person_id and person_id not in aggregated_cast_map:
                     aggregated_cast_map[person_id] = person
-                    logger.debug(f"      -> 发现新演员: '{person.get('Name')}'")
+                    logger.debug(f"      ➜ 发现新演员: '{person.get('Name')}'")
     
     # 5. 将聚合好的完整演员列表替换掉原始剧集详情中的不完整列表
     full_cast_list = list(aggregated_cast_map.values())
     main_series_details["People"] = full_cast_list
     
-    logger.info(f"  -> [演员聚合模式] 完成！共为剧集 '{main_series_details.get('Name')}' 聚合了 {len(full_cast_list)} 位独立演职员。")
+    logger.info(f"  ➜ [演员聚合模式] 完成！共为剧集 '{main_series_details.get('Name')}' 聚合了 {len(full_cast_list)} 位独立演职员。")
 
     return main_series_details
 
@@ -313,7 +313,7 @@ def clear_emby_person_provider_id(person_id: str, provider_key_to_clear: str, em
             logger.trace(f"Person '{person_name}' ({person_id}) 已不包含 '{provider_key_to_clear}' ID，无需操作。")
             return True
 
-        logger.debug(f"  -> 正在从 Person '{person_name}' ({person_id}) 的 ProviderIds 中移除 '{provider_key_to_clear}'...")
+        logger.debug(f"  ➜ 正在从 Person '{person_name}' ({person_id}) 的 ProviderIds 中移除 '{provider_key_to_clear}'...")
         
         updated_provider_ids = current_provider_ids.copy()
         del updated_provider_ids[provider_key_to_clear]
@@ -351,16 +351,16 @@ def update_person_details(person_id: str, new_data: Dict[str, Any], emby_server_
     update_url = f"{emby_server_url.rstrip('/')}/Items/{person_id}"
     headers = {'Content-Type': 'application/json'}
 
-    logger.trace(f"  -> 准备更新 Person (ID: {person_id}) 的信息，新数据: {new_data}")
+    logger.trace(f"  ➜ 准备更新 Person (ID: {person_id}) 的信息，新数据: {new_data}")
     try:
         # ★★★ 核心修改: 动态获取超时时间 ★★★
         api_timeout = config_manager.APP_CONFIG.get(constants.CONFIG_OPTION_EMBY_API_TIMEOUT, 60)
         response_post = requests.post(update_url, json=person_to_update, headers=headers, params=params, timeout=api_timeout)
         response_post.raise_for_status()
-        logger.trace(f"  -> 成功更新 Person (ID: {person_id}) 的信息。")
+        logger.trace(f"  ➜ 成功更新 Person (ID: {person_id}) 的信息。")
         return True
     except requests.exceptions.RequestException as e:
-        logger.error(f"  -> 更新 Person (ID: {person_id}) 时发生错误: {e}")
+        logger.error(f"  ➜ 更新 Person (ID: {person_id}) 时发生错误: {e}")
         return False
 
 # ✨✨✨ 更新 Emby 媒体项目的演员列表 ✨✨✨
@@ -400,7 +400,7 @@ def update_emby_item_cast(item_id: str, new_cast_list_for_handler: List[Dict[str
             rating_float = float(new_rating)
             if 0 <= rating_float <= 10:
                 item_to_update["CommunityRating"] = rating_float
-                logger.info(f"  -> 将 '{item_name_for_log}' 的评分更新为豆瓣评分: {rating_float}")
+                logger.info(f"  ➜ 将 '{item_name_for_log}' 的评分更新为豆瓣评分: {rating_float}")
         except (ValueError, TypeError):
             pass
 
@@ -423,17 +423,17 @@ def update_emby_item_cast(item_id: str, new_cast_list_for_handler: List[Dict[str
         if emby_person_id and str(emby_person_id).strip():
             # 对于【现有演员】，我们只需要提供 Id
             person_obj["Id"] = str(emby_person_id).strip()
-            logger.trace(f"  -> 链接现有演员 '{person_obj['Name']}' (ID: {person_obj['Id']})")
+            logger.trace(f"  ➜ 链接现有演员 '{person_obj['Name']}' (ID: {person_obj['Id']})")
         else:
             # 对于【新演员】，我们不提供 Id，而是提供 ProviderIds
-            logger.trace(f"  -> 添加新演员 '{person_obj['Name']}'")
+            logger.trace(f"  ➜ 添加新演员 '{person_obj['Name']}'")
             provider_ids = actor_entry.get("provider_ids")
             if isinstance(provider_ids, dict) and provider_ids:
                 # 清理掉值为 None 或空字符串的键
                 sanitized_ids = {k: str(v) for k, v in provider_ids.items() if v is not None and str(v).strip()}
                 if sanitized_ids:
                     person_obj["ProviderIds"] = sanitized_ids
-                    logger.trace(f"    -> 为新演员 '{person_obj['Name']}' 设置初始 ProviderIds: {sanitized_ids}")
+                    logger.trace(f"    ➜ 为新演员 '{person_obj['Name']}' 设置初始 ProviderIds: {sanitized_ids}")
 
         formatted_people_for_emby.append(person_obj)
 
@@ -443,7 +443,7 @@ def update_emby_item_cast(item_id: str, new_cast_list_for_handler: List[Dict[str
     # 2. 将处理好的演员列表与非演员列表合并
     item_to_update["People"] = formatted_people_for_emby + other_people
     
-    logger.debug(f"  -> 最终写回Emby的演职员列表包含 {len(other_people)} 位非演员和 {len(formatted_people_for_emby)} 位演员。")
+    logger.debug(f"  ➜ 最终写回Emby的演职员列表包含 {len(other_people)} 位非演员和 {len(formatted_people_for_emby)} 位演员。")
 
     if "LockedFields" in item_to_update and "Cast" in item_to_update.get("LockedFields", []):
         current_locked_fields = set(item_to_update["LockedFields"])
@@ -461,13 +461,13 @@ def update_emby_item_cast(item_id: str, new_cast_list_for_handler: List[Dict[str
             update_url, json=item_to_update, headers=headers, params=params_post, timeout=api_timeout)
         response_post.raise_for_status()
         logger.trace(f"成功更新Emby项目 {item_name_for_log} 的演员信息。")
-        logger.trace("  -> 演员信息更新成功，正在获取最新的 People 列表以供返回...")
+        logger.trace("  ➜ 演员信息更新成功，正在获取最新的 People 列表以供返回...")
         updated_details = get_emby_item_details(item_id, emby_server_url, emby_api_key, user_id, fields="People")
         if updated_details and "People" in updated_details:
-            logger.trace(f"  -> 成功获取到 {len(updated_details['People'])} 条最新的 People 记录。")
+            logger.trace(f"  ➜ 成功获取到 {len(updated_details['People'])} 条最新的 People 记录。")
             return updated_details["People"] # ★★★ 返回列表 ★★★
         else:
-            logger.warning("  -> 未能获取到更新后的 People 列表，将返回空列表。")
+            logger.warning("  ➜ 未能获取到更新后的 People 列表，将返回空列表。")
             return [] # ★★★ 成功但无法获取详情时，返回空列表 ★★★
 
     except requests.exceptions.RequestException as e:
@@ -486,13 +486,13 @@ def get_emby_libraries(emby_server_url, emby_api_key, user_id):
     try:
         # ★★★ 核心修改: 动态获取超时时间 ★★★
         api_timeout = config_manager.APP_CONFIG.get(constants.CONFIG_OPTION_EMBY_API_TIMEOUT, 60)
-        logger.trace(f"  -> 正在从 {target_url} 获取媒体库和合集...")
+        logger.trace(f"  ➜ 正在从 {target_url} 获取媒体库和合集...")
         response = requests.get(target_url, params=params, timeout=api_timeout)
         response.raise_for_status()
         data = response.json()
         
         items = data.get('Items', [])
-        logger.trace(f"  -> 成功获取到 {len(items)} 个媒体库/合集。")
+        logger.trace(f"  ➜ 成功获取到 {len(items)} 个媒体库/合集。")
         return items
 
     except requests.exceptions.RequestException as e:
@@ -605,7 +605,7 @@ def get_emby_library_items(
     else:
         media_type_in_chinese = '所有'
 
-    logger.debug(f"  -> 总共从 {len(library_ids)} 个选定库中获取到 {len(all_items_from_selected_libraries)} 个 {media_type_in_chinese} 项目。")
+    logger.debug(f"  ➜ 总共从 {len(library_ids)} 个选定库中获取到 {len(all_items_from_selected_libraries)} 个 {media_type_in_chinese} 项目。")
     
     return all_items_from_selected_libraries
 # ✨✨✨ 备份覆盖缓存专用 ✨✨✨
@@ -702,7 +702,7 @@ def get_emby_library_items_old(
     else:
         media_type_in_chinese = '所有'
 
-    logger.debug(f"  -> 总共从 {len(library_ids)} 个选定库中获取到 {len(all_items_from_selected_libraries)} 个 {media_type_in_chinese} 项目。")
+    logger.debug(f"  ➜ 总共从 {len(library_ids)} 个选定库中获取到 {len(all_items_from_selected_libraries)} 个 {media_type_in_chinese} 项目。")
     
     return all_items_from_selected_libraries
 # ✨✨✨ 刷新Emby元数据 ✨✨✨
@@ -725,16 +725,16 @@ def refresh_emby_item_metadata(item_emby_id: str,
     api_timeout = config_manager.APP_CONFIG.get(constants.CONFIG_OPTION_EMBY_API_TIMEOUT, 60)
 
     try:
-        logger.debug(f"  -> 正在为 {log_identifier} 获取当前详情...")
+        logger.debug(f"  ➜ 正在为 {log_identifier} 获取当前详情...")
         item_data = get_emby_item_details(item_emby_id, emby_server_url, emby_api_key, user_id_for_ops)
         if not item_data:
-            logger.error(f"  -> 无法获取 {log_identifier} 的详情，所有操作中止。")
+            logger.error(f"  ➜ 无法获取 {log_identifier} 的详情，所有操作中止。")
             return False
 
         item_needs_update = False
         
         if replace_all_metadata_param:
-            logger.debug(f"  -> 检测到 ReplaceAllMetadata=True，执行解锁...")
+            logger.debug(f"  ➜ 检测到 ReplaceAllMetadata=True，执行解锁...")
             if item_data.get("LockData") is True:
                 item_data["LockData"] = False
                 item_needs_update = True
@@ -743,7 +743,7 @@ def refresh_emby_item_metadata(item_emby_id: str,
                 item_needs_update = True
         
         if lock_fields:
-            logger.debug(f"  -> 检测到需要锁定字段: {lock_fields}...")
+            logger.debug(f"  ➜ 检测到需要锁定字段: {lock_fields}...")
             current_locked_fields = set(item_data.get("LockedFields", []))
             original_lock_count = len(current_locked_fields)
             
@@ -755,20 +755,20 @@ def refresh_emby_item_metadata(item_emby_id: str,
                 item_needs_update = True
 
         if item_needs_update:
-            logger.debug(f"  -> 正在为 {log_identifier} 提交锁状态更新...")
+            logger.debug(f"  ➜ 正在为 {log_identifier} 提交锁状态更新...")
             update_url = f"{emby_server_url.rstrip('/')}/Items/{item_emby_id}"
             update_params = {"api_key": emby_api_key}
             headers = {'Content-Type': 'application/json'}
             update_response = requests.post(update_url, json=item_data, headers=headers, params=update_params, timeout=api_timeout)
             update_response.raise_for_status()
-            logger.debug(f"  -> 成功更新 {log_identifier} 的锁状态。")
+            logger.debug(f"  ➜ 成功更新 {log_identifier} 的锁状态。")
         else:
-            logger.debug(f"  -> 项目 {log_identifier} 的锁状态无需更新。")
+            logger.debug(f"  ➜ 项目 {log_identifier} 的锁状态无需更新。")
 
     except Exception as e:
-        logger.warning(f"  -> 在刷新前更新锁状态时失败: {e}。刷新将继续，但可能受影响。")
+        logger.warning(f"  ➜ 在刷新前更新锁状态时失败: {e}。刷新将继续，但可能受影响。")
 
-    logger.debug(f"  -> 正在为 {log_identifier} 发送最终的刷新请求...")
+    logger.debug(f"  ➜ 正在为 {log_identifier} 发送最终的刷新请求...")
     refresh_url = f"{emby_server_url.rstrip('/')}/Items/{item_emby_id}/Refresh"
     params = {
         "api_key": emby_api_key,
@@ -782,7 +782,7 @@ def refresh_emby_item_metadata(item_emby_id: str,
     try:
         response = requests.post(refresh_url, params=params, timeout=api_timeout)
         if response.status_code == 204:
-            logger.info(f"  -> 刷新请求已成功发送给 {log_identifier}。")
+            logger.info(f"  ➜ 刷新请求已成功发送给 {log_identifier}。")
             return True
         else:
             logger.error(f"  - 刷新请求失败: HTTP状态码 {response.status_code}")
@@ -815,7 +815,7 @@ def get_all_persons_from_emby(
     # 模式一：尝试按媒体库进行精准扫描 (如果配置了媒体库且未强制全量)
     # ======================================================================
     if library_ids and not force_full_scan:
-        logger.info(f"  -> 检测到配置了 {len(library_ids)} 个媒体库，将优先尝试精准扫描...")
+        logger.info(f"  ➜ 检测到配置了 {len(library_ids)} 个媒体库，将优先尝试精准扫描...")
         
         media_items = get_emby_library_items(
             base_url=base_url, api_key=api_key, user_id=user_id,
@@ -833,7 +833,7 @@ def get_all_persons_from_emby(
         # ★★★ 核心智能检测逻辑 ★★★
         # 如果成功通过精准模式获取到了演员ID，则继续执行并返回
         if unique_person_ids:
-            logger.info(f"  -> 精准扫描成功，发现 {len(unique_person_ids)} 位独立演员需要同步。")
+            logger.info(f"  ➜ 精准扫描成功，发现 {len(unique_person_ids)} 位独立演员需要同步。")
             person_ids_to_fetch = list(unique_person_ids)
             
             precise_batch_size = 500
@@ -857,15 +857,15 @@ def get_all_persons_from_emby(
         # ★★★ 自动降级触发点 ★★★
         # 如果代码执行到这里，说明精准模式没找到任何演员，需要降级
         if media_items is not None: # 仅在API调用成功但结果为空时显示警告
-             logger.warning("  -> 精准扫描未返回任何演员（可能您是 beta 版本），将自动降级为全量扫描模式...")
+             logger.warning("  ➜ 精准扫描未返回任何演员（可能您是 beta 版本），将自动降级为全量扫描模式...")
     
     # ======================================================================
     # 模式二：执行全量扫描 (在未配置媒体库、强制全量或精准扫描失败时)
     # ======================================================================
     if force_full_scan:
-        logger.info("  -> [强制全量扫描模式] 已激活，将扫描服务器上的所有演员...")
+        logger.info("  ➜ [强制全量扫描模式] 已激活，将扫描服务器上的所有演员...")
     else:
-        logger.info("  -> 开始从整个 Emby 服务器分批获取所有演员数据...")
+        logger.info("  ➜ 开始从整个 Emby 服务器分批获取所有演员数据...")
     
     total_count = 0
     try:
@@ -944,7 +944,7 @@ def get_series_children(
         "Fields": fields,
     }
     
-    logger.debug(f"  -> 准备获取剧集 {log_identifier} 的子项目 (类型: {include_item_types})...")
+    logger.debug(f"  ➜ 准备获取剧集 {log_identifier} 的子项目 (类型: {include_item_types})...")
     try:
         # ★★★ 核心修改: 动态获取超时时间 ★★★
         api_timeout = config_manager.APP_CONFIG.get(constants.CONFIG_OPTION_EMBY_API_TIMEOUT, 60)
@@ -952,7 +952,7 @@ def get_series_children(
         response.raise_for_status()
         data = response.json()
         children = data.get("Items", [])
-        logger.debug(f"  -> 成功为剧集 {log_identifier} 获取到 {len(children)} 个子项目。")
+        logger.debug(f"  ➜ 成功为剧集 {log_identifier} 获取到 {len(children)} 个子项目。")
         return children
     except requests.exceptions.RequestException as e:
         logger.error(f"获取剧集 {log_identifier} 的子项目列表时发生错误: {e}", exc_info=True)
@@ -985,7 +985,7 @@ def get_series_id_from_child_id(
     item_type = item_details.get("Type")
     
     if item_type == "Series":
-        logger.info(f"  -> 媒体项 '{name_for_log}' 本身就是剧集，直接返回其ID。")
+        logger.info(f"  ➜ 媒体项 '{name_for_log}' 本身就是剧集，直接返回其ID。")
         return item_id
     
     series_id = item_details.get("SeriesId")
@@ -999,10 +999,10 @@ def get_series_id_from_child_id(
         )
         series_name = series_details.get("Name") if series_details else None
         series_name_for_log = f"'{series_name}'" if series_name else "未知片名"
-        logger.info(f"  -> 媒体项 '{name_for_log}' 所属剧集为：{series_name_for_log}。")
+        logger.info(f"  ➜ 媒体项 '{name_for_log}' 所属剧集为：{series_name_for_log}。")
         return str(series_id)
     
-    logger.warning(f"  -> 媒体项 '{name_for_log}' (类型: {item_type}) 的详情中未找到 'SeriesId' 字段，无法确定所属剧集。")
+    logger.warning(f"  ➜ 媒体项 '{name_for_log}' (类型: {item_type}) 的详情中未找到 'SeriesId' 字段，无法确定所属剧集。")
     return None
 # ✨✨✨ 从 Emby 下载指定类型的图片并保存到本地 ✨✨✨
 def download_emby_image(
@@ -1068,7 +1068,7 @@ def get_all_collections_from_emby_generic(base_url: str, api_key: str, user_id: 
         response = requests.get(api_url, params=params, timeout=api_timeout)
         response.raise_for_status()
         all_collections = response.json().get("Items", [])
-        logger.debug(f"  -> 成功从 Emby 获取到 {len(all_collections)} 个合集。")
+        logger.debug(f"  ➜ 成功从 Emby 获取到 {len(all_collections)} 个合集。")
         return all_collections
     except Exception as e:
         logger.error(f"通用函数在获取所有Emby合集时发生错误: {e}", exc_info=True)
@@ -1079,7 +1079,7 @@ def get_all_collections_with_items(base_url: str, api_key: str, user_id: str) ->
         logger.error("get_all_collections_with_items: 缺少必要的参数。")
         return None
 
-    logger.info("  -> 正在从 Emby 获取所有合集...")
+    logger.info("  ➜ 正在从 Emby 获取所有合集...")
     
     api_url = f"{base_url.rstrip('/')}/Users/{user_id}/Items"
     params = {
@@ -1102,9 +1102,9 @@ def get_all_collections_with_items(base_url: str, api_key: str, user_id: str) ->
             if coll.get("ProviderIds", {}).get("Tmdb"):
                 regular_collections.append(coll)
             else:
-                logger.debug(f"  -> 已跳过自建合集: '{coll.get('Name')}' (ID: {coll.get('Id')})。")
+                logger.debug(f"  ➜ 已跳过自建合集: '{coll.get('Name')}' (ID: {coll.get('Id')})。")
 
-        logger.info(f"  -> 成功从 Emby 获取到 {len(regular_collections)} 个合集，准备获取其内容...")
+        logger.info(f"  ➜ 成功从 Emby 获取到 {len(regular_collections)} 个合集，准备获取其内容...")
 
         detailed_collections = []
         
@@ -1112,7 +1112,7 @@ def get_all_collections_with_items(base_url: str, api_key: str, user_id: str) ->
             collection_id = collection.get("Id")
             if not collection_id: return None
             
-            logger.debug(f"  -> 正在获取合集 '{collection.get('Name')}' (ID: {collection_id}) 的内容...")
+            logger.debug(f"  ➜ 正在获取合集 '{collection.get('Name')}' (ID: {collection_id}) 的内容...")
             children_url = f"{base_url.rstrip('/')}/Users/{user_id}/Items"
             children_params = {
                 "api_key": api_key, "ParentId": collection_id,
@@ -1131,7 +1131,7 @@ def get_all_collections_with_items(base_url: str, api_key: str, user_id: str) ->
                 collection['ExistingMovieTmdbIds'] = existing_media_tmdb_ids
                 return collection
             except requests.exceptions.RequestException as e:
-                logger.error(f"  -> 获取合集 '{collection.get('Name')}' 内容时失败: {e}")
+                logger.error(f"  ➜ 获取合集 '{collection.get('Name')}' 内容时失败: {e}")
                 collection['ExistingMovieTmdbIds'] = []
                 return collection
 
@@ -1147,7 +1147,7 @@ def get_all_collections_with_items(base_url: str, api_key: str, user_id: str) ->
                 if result:
                     detailed_collections.append(result)
 
-        logger.info(f"  -> 所有合集内容获取完成，共成功处理 {len(detailed_collections)} 个合集。")
+        logger.info(f"  ➜ 所有合集内容获取完成，共成功处理 {len(detailed_collections)} 个合集。")
         return detailed_collections
 
     except Exception as e:
@@ -1182,7 +1182,7 @@ def get_collection_by_name(name: str, base_url: str, api_key: str, user_id: str)
     
     for collection in all_collections:
         if collection.get('Name', '').lower() == name.lower():
-            logger.debug(f"  -> 根据名称 '{name}' 找到了已存在的合集 (ID: {collection.get('Id')})。")
+            logger.debug(f"  ➜ 根据名称 '{name}' 找到了已存在的合集 (ID: {collection.get('Id')})。")
             return collection
     
     logger.trace(f"未找到名为 '{name}' 的合集。")
@@ -1229,7 +1229,7 @@ def remove_items_from_collection(collection_id: str, item_ids: List[str], base_u
         return False
 
 def empty_collection_in_emby(collection_id: str, base_url: str, api_key: str, user_id: str) -> bool:
-    logger.trace(f"  -> 开始清空 Emby 合集 {collection_id} 的所有成员...")
+    logger.trace(f"  ➜ 开始清空 Emby 合集 {collection_id} 的所有成员...")
     
     member_ids = get_collection_members(collection_id, base_url, api_key, user_id)
     
@@ -1245,7 +1245,7 @@ def empty_collection_in_emby(collection_id: str, base_url: str, api_key: str, us
     success = remove_items_from_collection(collection_id, member_ids, base_url, api_key)
     
     if success:
-        logger.info(f"  -> ✅ 成功从Emby删除合集 {collection_id} 。")
+        logger.info(f"  ➜ ✅ 成功从Emby删除合集 {collection_id} 。")
     else:
         logger.error(f"❌ 发送清空合集 {collection_id} 的请求失败。")
         
@@ -1259,7 +1259,7 @@ def create_or_update_collection_with_emby_ids(
     user_id: str,
     prefetched_collection_map: Optional[dict] = None
 ) -> Optional[str]:
-    logger.info(f"  -> 开始在Emby中处理名为 '{collection_name}' 的合集 (基于 Emby ID)...")
+    logger.info(f"  ➜ 开始在Emby中处理名为 '{collection_name}' 的合集 (基于 Emby ID)...")
     
     try:
         desired_emby_ids = emby_ids_in_library
@@ -1270,7 +1270,7 @@ def create_or_update_collection_with_emby_ids(
 
         if collection:
             emby_collection_id = collection['Id']
-            logger.info(f"  -> 发现已存在的合集 '{collection_name}' (ID: {emby_collection_id})，开始同步...")
+            logger.info(f"  ➜ 发现已存在的合集 '{collection_name}' (ID: {emby_collection_id})，开始同步...")
             
             current_emby_ids = get_collection_members(emby_collection_id, base_url, api_key, user_id)
             if current_emby_ids is None:
@@ -1283,19 +1283,19 @@ def create_or_update_collection_with_emby_ids(
             ids_to_add = list(set_desired - set_current)
 
             if ids_to_remove:
-                logger.info(f"  -> 发现 {len(ids_to_remove)} 个项目需要移除...")
+                logger.info(f"  ➜ 发现 {len(ids_to_remove)} 个项目需要移除...")
                 remove_items_from_collection(emby_collection_id, ids_to_remove, base_url, api_key)
             
             if ids_to_add:
-                logger.info(f"  -> 发现 {len(ids_to_add)} 个新项目需要添加...")
+                logger.info(f"  ➜ 发现 {len(ids_to_add)} 个新项目需要添加...")
                 add_items_to_collection(emby_collection_id, ids_to_add, base_url, api_key)
 
             if not ids_to_remove and not ids_to_add:
-                logger.info("  -> 合集内容已是最新，无需改动。")
+                logger.info("  ➜ 合集内容已是最新，无需改动。")
 
             return emby_collection_id
         else:
-            logger.info(f"  -> 未找到合集 '{collection_name}'，将开始创建...")
+            logger.info(f"  ➜ 未找到合集 '{collection_name}'，将开始创建...")
             if not desired_emby_ids:
                 logger.warning(f"合集 '{collection_name}' 在媒体库中没有任何匹配项，跳过创建。")
                 return None
@@ -1342,7 +1342,7 @@ def get_emby_items_by_id(
     id_chunks = [item_ids[i:i + BATCH_SIZE] for i in range(0, len(item_ids), BATCH_SIZE)]
     
     if len(id_chunks) > 1:
-        logger.trace(f"  -> ID列表总数({len(item_ids)})过长，已切分为 {len(id_chunks)} 个批次进行请求。")
+        logger.trace(f"  ➜ ID列表总数({len(item_ids)})过长，已切分为 {len(id_chunks)} 个批次进行请求。")
 
     # ★★★ 核心修改: 切换到 /Items 端点以兼容 Emby 4.9+ ★★★
     api_url = f"{base_url.rstrip('/')}/Items"
@@ -1360,7 +1360,7 @@ def get_emby_items_by_id(
             api_timeout = config_manager.APP_CONFIG.get(constants.CONFIG_OPTION_EMBY_API_TIMEOUT, 60)
             
             if len(id_chunks) > 1:
-                logger.trace(f"  -> 正在请求批次 {i+1}/{len(id_chunks)} (包含 {len(batch_ids)} 个ID)...")
+                logger.trace(f"  ➜ 正在请求批次 {i+1}/{len(id_chunks)} (包含 {len(batch_ids)} 个ID)...")
             response = requests.get(api_url, params=params, timeout=api_timeout)
             response.raise_for_status()
             
@@ -1373,7 +1373,7 @@ def get_emby_items_by_id(
             logger.error(f"根据ID列表批量获取Emby项目时，处理批次 {i+1} 失败: {e}")
             continue
 
-    logger.trace(f"  -> 所有批次请求完成，共获取到 {len(all_items)} 个媒体项。")
+    logger.trace(f"  ➜ 所有批次请求完成，共获取到 {len(all_items)} 个媒体项。")
     return all_items
     
 def append_item_to_collection(collection_id: str, item_emby_id: str, base_url: str, api_key: str, user_id: str) -> bool:
@@ -1406,7 +1406,7 @@ def append_item_to_collection(collection_id: str, item_emby_id: str, base_url: s
         return False
     
 def get_all_libraries_with_paths(base_url: str, api_key: str) -> List[Dict[str, Any]]:
-    logger.debug("  -> 正在实时获取所有媒体库及其源文件夹路径...")
+    logger.debug("  ➜ 正在实时获取所有媒体库及其源文件夹路径...")
     try:
         folders_url = f"{base_url.rstrip('/')}/Library/VirtualFolders"
         params = {"api_key": api_key}
@@ -1435,7 +1435,7 @@ def get_all_libraries_with_paths(base_url: str, api_key: str) -> List[Dict[str, 
                     "paths": locations
                 })
         
-        logger.debug(f"  -> 实时获取到 {len(libraries_with_paths)} 个媒体库的路径信息。")
+        logger.debug(f"  ➜ 实时获取到 {len(libraries_with_paths)} 个媒体库的路径信息。")
         return libraries_with_paths
 
     except Exception as e:
@@ -1443,7 +1443,7 @@ def get_all_libraries_with_paths(base_url: str, api_key: str) -> List[Dict[str, 
         return []
 
 def get_library_root_for_item(item_id: str, base_url: str, api_key: str, user_id: str) -> Optional[Dict[str, Any]]:
-    logger.debug("  -> 正在为项目ID {item_id} 定位媒体库...")
+    logger.debug("  ➜ 正在为项目ID {item_id} 定位媒体库...")
     try:
         all_libraries_data = get_all_libraries_with_paths(base_url, api_key)
         if not all_libraries_data:
@@ -1467,14 +1467,14 @@ def get_library_root_for_item(item_id: str, base_url: str, api_key: str, user_id
                         best_match_library = lib_data["info"]
         
         if best_match_library:
-            logger.info(f"  -> 匹配到媒体库 '{best_match_library.get('Name')}'。")
+            logger.info(f"  ➜ 匹配到媒体库 '{best_match_library.get('Name')}'。")
             return best_match_library
         else:
             logger.error(f"项目路径 '{item_path}' 未能匹配任何媒体库的源文件夹。")
             return None
 
     except Exception as e:
-        logger.error(f"  -> 定位媒体库时发生未知严重错误: {e}", exc_info=True)
+        logger.error(f"  ➜ 定位媒体库时发生未知严重错误: {e}", exc_info=True)
         return None
     
 def update_emby_item_details(item_id: str, new_data: Dict[str, Any], emby_server_url: str, emby_api_key: str, user_id: str) -> bool:
@@ -1553,7 +1553,7 @@ def delete_item(item_id: str, emby_server_url: str, emby_api_key: str, user_id: 
     try:
         response = requests.post(api_url, headers=headers, params=params, timeout=api_timeout)
         response.raise_for_status()
-        logger.info(f"  -> ✅ 成功使用临时令牌删除 Emby 媒体项 ID: {item_id}。")
+        logger.info(f"  ➜ ✅ 成功使用临时令牌删除 Emby 媒体项 ID: {item_id}。")
         return True
     except requests.exceptions.HTTPError as e:
         logger.error(f"使用临时令牌删除 Emby 媒体项 ID: {item_id} 时发生HTTP错误: {e.response.status_code} - {e.response.text}")
@@ -1607,7 +1607,7 @@ def delete_person_custom_api(base_url: str, api_key: str, person_id: str) -> boo
         # 这个接口是 POST 请求
         response = requests.post(api_url, headers=headers, params=params, timeout=api_timeout)
         response.raise_for_status()
-        logger.info(f"  -> ✅ 成功删除演员 ID: {person_id}。")
+        logger.info(f"  ➜ ✅ 成功删除演员 ID: {person_id}。")
         return True
     except requests.exceptions.HTTPError as e:
         # 404 Not Found 意味着这个专用接口在您的服务器上不存在
@@ -1639,7 +1639,7 @@ def get_all_emby_users_from_server(base_url: str, api_key: str) -> Optional[List
         response = requests.get(api_url, params=params, timeout=api_timeout)
         response.raise_for_status()
         users = response.json()
-        logger.info(f"  -> 成功从 Emby 获取到 {len(users)} 个用户。")
+        logger.info(f"  ➜ 成功从 Emby 获取到 {len(users)} 个用户。")
         return users
     except Exception as e:
         logger.error(f"从 Emby 获取用户列表失败: {e}", exc_info=True)
@@ -1739,7 +1739,7 @@ def create_user_with_policy(
                 logger.error("Emby 用户创建成功，但响应中未返回用户 ID。")
                 return None
             
-            logger.info(f"  -> 用户 '{username}' 创建成功，新用户 ID: {new_user_id}。正在设置密码...")
+            logger.info(f"  ➜ 用户 '{username}' 创建成功，新用户 ID: {new_user_id}。正在设置密码...")
 
             password_url = f"{base_url}/Users/{new_user_id}/Password"
             password_payload = {
@@ -1751,7 +1751,7 @@ def create_user_with_policy(
             pw_response = requests.post(password_url, headers=headers, json=password_payload, timeout=15)
             
             if pw_response.status_code == 204:
-                logger.info(f"  -> ✅ 成功为用户 '{username}' 设置密码。")
+                logger.info(f"  ➜ ✅ 成功为用户 '{username}' 设置密码。")
                 return new_user_id
             else:
                 logger.error(f"为用户 '{username}' 设置密码失败。状态码: {pw_response.status_code}, 响应: {pw_response.text}")
@@ -1837,11 +1837,11 @@ def get_user_details(user_id: str, base_url: str, api_key: str) -> Optional[Dict
     # ★★★ 核心修正：智能判断是否需要再次请求 ★★★
     # 2. 如果基础信息中已经包含了 Configuration (旧版 Emby 的行为)，我们就不再需要额外请求。
     if 'Configuration' in details:
-        logger.trace(f"  -> 已从主用户接口获取到 Configuration (旧版 Emby 模式)。")
+        logger.trace(f"  ➜ 已从主用户接口获取到 Configuration (旧版 Emby 模式)。")
         return details
 
     # 3. 如果基础信息中没有，再尝试请求专用的 Configuration 接口 (新版 Emby 的行为)。
-    logger.trace(f"  -> 主用户接口未返回 Configuration，尝试请求专用接口 (新版 Emby 模式)...")
+    logger.trace(f"  ➜ 主用户接口未返回 Configuration，尝试请求专用接口 (新版 Emby 模式)...")
     config_url = f"{base_url}/Users/{user_id}/Configuration"
     try:
         response = requests.get(config_url, headers=headers, timeout=10)
@@ -1850,7 +1850,7 @@ def get_user_details(user_id: str, base_url: str, api_key: str) -> Optional[Dict
     except requests.RequestException as e:
         # 如果专用接口不存在，这不是一个错误，只是版本差异。
         if hasattr(e, 'response') and e.response is not None and e.response.status_code == 404:
-            logger.warning(f"  -> 专用 /Configuration 接口不存在，您的 Emby 版本可能较旧。将跳过首选项同步。")
+            logger.warning(f"  ➜ 专用 /Configuration 接口不存在，您的 Emby 版本可能较旧。将跳过首选项同步。")
         else:
             # 其他网络错误则需要记录
             logger.error(f"请求专用 /Configuration 接口时发生未知错误: {e}")
@@ -1873,7 +1873,7 @@ def force_set_user_configuration(user_id: str, configuration_dict: Dict[str, Any
     except requests.RequestException as e:
         # 如果是因为接口不存在 (404)，则启动备用策略
         if hasattr(e, 'response') and e.response is not None and e.response.status_code == 404:
-            logger.warning(f"  -> 专用 /Configuration 接口不存在，将回退到兼容模式更新用户 {user_id} 的首选项...")
+            logger.warning(f"  ➜ 专用 /Configuration 接口不存在，将回退到兼容模式更新用户 {user_id} 的首选项...")
             
             # 策略2：回退到旧版的、兼容的完整更新模式
             # a. 先获取当前用户的完整对象
@@ -1990,7 +1990,7 @@ def delete_emby_user(user_id: str, base_url: str, api_key: str) -> bool:
     try:
         response = requests.delete(api_url, headers=headers, timeout=api_timeout)
         response.raise_for_status()
-        logger.info(f"  -> ✅ 成功使用临时令牌删除 Emby 用户 '{user_name_for_log}' (ID: {user_id})。")
+        logger.info(f"  ➜ ✅ 成功使用临时令牌删除 Emby 用户 '{user_name_for_log}' (ID: {user_id})。")
         return True
     except requests.exceptions.HTTPError as e:
         logger.error(f"删除 Emby 用户 '{user_name_for_log}' 时发生HTTP错误: {e.response.status_code} - {e.response.text}")

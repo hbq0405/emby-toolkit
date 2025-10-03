@@ -69,14 +69,14 @@ def handle_get_views():
             # 1. 物理检查：库在Emby里有实体吗？
             real_emby_collection_id = coll.get('emby_collection_id')
             if not real_emby_collection_id:
-                logger.debug(f"  -> 虚拟库 '{coll['name']}' 被隐藏，原因: 无对应Emby实体")
+                logger.debug(f"  ➜ 虚拟库 '{coll['name']}' 被隐藏，原因: 无对应Emby实体")
                 continue
 
             # 2. 权限检查：用户在不在邀请函上？
             allowed_users = coll.get('allowed_user_ids')
             if allowed_users and isinstance(allowed_users, list):
                 if user_id not in allowed_users:
-                    logger.debug(f"  -> 虚拟库 '{coll['name']}' 被隐藏，原因: 用户不在可见列表中 (权限)。")
+                    logger.debug(f"  ➜ 虚拟库 '{coll['name']}' 被隐藏，原因: 用户不在可见列表中 (权限)。")
                     continue
             
             # --- 所有检查通过，直接生成虚拟库 ---
@@ -292,7 +292,7 @@ def handle_get_mimicked_library_items(user_id, mimicked_id, params):
                 sort_order = definition.get('default_sort_order', 'Descending')
                 forward_params['SortBy'] = 'DateLastContentAdded'
                 forward_params['SortOrder'] = sort_order
-                logger.debug(f"  -> 已强制应用排序规则: SortBy=DateLastContentAdded, SortOrder={sort_order}")
+                logger.debug(f"  ➜ 已强制应用排序规则: SortBy=DateLastContentAdded, SortOrder={sort_order}")
             else: # 'none' 模式
                 # 沿用客户端请求的排序参数
                 if 'SortBy' in params: forward_params['SortBy'] = params['SortBy']

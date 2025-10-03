@@ -42,7 +42,7 @@ class CoverGeneratorService:
 
     def generate_for_library(self, emby_server_id: str, library: Dict[str, Any], item_count: Optional[int] = None, content_types: Optional[List[str]] = None):
         sort_by_name = self.SORT_BY_DISPLAY_NAME.get(self._sort_by, self._sort_by)
-        logger.info(f"  -> 开始以排序方式: {sort_by_name} 为媒体库 '{library['Name']}' 生成封面...")
+        logger.info(f"  ➜ 开始以排序方式: {sort_by_name} 为媒体库 '{library['Name']}' 生成封面...")
         self.__get_fonts()
         image_data = self.__generate_image_data(emby_server_id, library, item_count, content_types)
         if not image_data:
@@ -50,7 +50,7 @@ class CoverGeneratorService:
             return False
         success = self.__set_library_image(emby_server_id, library, image_data)
         if success:
-            logger.info(f"  -> ✅ 成功更新媒体库 '{library['Name']}' 的封面！")
+            logger.info(f"  ➜ ✅ 成功更新媒体库 '{library['Name']}' 的封面！")
         else:
             logger.error(f"上传封面到媒体库 '{library['Name']}' 失败。")
         return success
@@ -115,7 +115,7 @@ class CoverGeneratorService:
         if library.get('Type') == 'BoxSet' or library.get('CollectionType') in ['boxsets', 'mixed']:
             original_types = media_type_to_fetch
             media_type_to_fetch = original_types.split(',')[0]
-            logger.trace(f"  -> 检测到合集 '{library_name}'，为提升性能，将仅使用类型 '{media_type_to_fetch}' 进行查询。")
+            logger.trace(f"  ➜ 检测到合集 '{library_name}'，为提升性能，将仅使用类型 '{media_type_to_fetch}' 进行查询。")
 
         # === 核心修改开始 ===
         sort_by_param = "Random"
@@ -248,12 +248,12 @@ class CoverGeneratorService:
         try:
             response = requests.post(upload_url, data=image_data, headers=headers, timeout=30)
             response.raise_for_status()
-            logger.debug(f"  -> 成功上传封面到媒体库 '{library['Name']}'。")
+            logger.debug(f"  ➜ 成功上传封面到媒体库 '{library['Name']}'。")
             return True
         except requests.exceptions.RequestException as e:
             logger.error(f"上传封面到媒体库 '{library['Name']}' 时发生网络错误: {e}")
             if e.response is not None:
-                logger.error(f"  -> 响应状态: {e.response.status_code}, 响应内容: {e.response.text[:200]}")
+                logger.error(f"  ➜ 响应状态: {e.response.status_code}, 响应内容: {e.response.text[:200]}")
             return False
 
     def __get_library_title_from_yaml(self, library_name: str) -> Tuple[str, str]:

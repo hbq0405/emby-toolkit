@@ -131,7 +131,7 @@ def sync_template(template_id):
                 for user in users_to_update:
                     user_id = user['id']
                     user_name = user['name']
-                    logger.info(f"  -> 正在将新配置应用到用户 '{user_name}'...")
+                    logger.info(f"  ➜ 正在将新配置应用到用户 '{user_name}'...")
                     
                     # ★★★ 核心修正：将 (...) 替换为完整的函数参数 ★★★
                     policy_applied = emby_handler.force_set_user_policy(
@@ -151,7 +151,7 @@ def sync_template(template_id):
                     if policy_applied and config_applied:
                         successful_pushes += 1
                     else:
-                        logger.error(f"  -> 为用户 '{user_name}' (ID: {user_id}) 推送新配置失败！")
+                        logger.error(f"  ➜ 为用户 '{user_name}' (ID: {user_id}) 推送新配置失败！")
                     
                     time.sleep(0.2)
                 

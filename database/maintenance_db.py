@@ -168,7 +168,7 @@ def correct_all_sequences() -> list:
                 )
                 
                 cursor.execute(query)
-                logger.info(f"  -> 已成功校准表 '{table_name}' 的序列。")
+                logger.info(f"  ➜ 已成功校准表 '{table_name}' 的序列。")
                 corrected_tables.append(table_name)
             
             conn.commit()

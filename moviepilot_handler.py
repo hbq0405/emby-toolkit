@@ -38,16 +38,16 @@ def subscribe_movie_to_moviepilot(movie_info: dict, config: Dict[str, Any], best
         
         if best_version is not None:
             subscribe_payload["best_version"] = best_version
-            logger.info(f"  -> 本次订阅为洗版订阅")
+            logger.info(f"  ➜ 本次订阅为洗版订阅")
         
-        logger.info(f"  -> 正在向 MoviePilot 提交订阅: '{movie_info['title']}'")
+        logger.info(f"  ➜ 正在向 MoviePilot 提交订阅: '{movie_info['title']}'")
         sub_response = requests.post(subscribe_url, headers=subscribe_headers, json=subscribe_payload, timeout=15)
         
         if sub_response.status_code in [200, 201, 204]:
-            logger.info(f"  -> ✅ MoviePilot 已接受订阅任务。")
+            logger.info(f"  ➜ ✅ MoviePilot 已接受订阅任务。")
             return True
         else:
-            logger.error(f"  -> 失败！MoviePilot 返回错误: {sub_response.status_code} - {sub_response.text}")
+            logger.error(f"  ➜ 失败！MoviePilot 返回错误: {sub_response.status_code} - {sub_response.text}")
             return False
     except Exception as e:
         logger.error(f"订阅电影到MoviePilot过程中发生网络或认证错误: {e}")
@@ -89,9 +89,9 @@ def subscribe_series_to_moviepilot(series_info: dict, season_number: Optional[in
         
         if best_version is not None:
             subscribe_payload["best_version"] = best_version
-            logger.info(f"  -> 本次订阅为洗版订阅")
+            logger.info(f"  ➜ 本次订阅为洗版订阅")
 
-        log_message = f"  -> 正在向 MoviePilot 提交订阅: '{series_title}'"
+        log_message = f"  ➜ 正在向 MoviePilot 提交订阅: '{series_title}'"
         if season_number is not None:
             log_message += f" 第 {season_number} 季"
         logger.info(log_message)
@@ -99,10 +99,10 @@ def subscribe_series_to_moviepilot(series_info: dict, season_number: Optional[in
         sub_response = requests.post(subscribe_url, headers=subscribe_headers, json=subscribe_payload, timeout=15)
         
         if sub_response.status_code in [200, 201, 204]:
-            logger.info(f"  -> ✅ MoviePilot 已接受订阅任务。")
+            logger.info(f"  ➜ ✅ MoviePilot 已接受订阅任务。")
             return True
         else:
-            logger.error(f"  -> 失败！MoviePilot 返回错误: {sub_response.status_code} - {sub_response.text}")
+            logger.error(f"  ➜ 失败！MoviePilot 返回错误: {sub_response.status_code} - {sub_response.text}")
             return False
             
     except KeyError as e:
@@ -139,10 +139,10 @@ def subscribe_with_custom_payload(payload: dict, config: Dict[str, Any]) -> bool
         sub_response = requests.post(subscribe_url, headers=subscribe_headers, json=payload, timeout=15)
         
         if sub_response.status_code in [200, 201, 204]:
-            logger.info(f"  -> ✅ MoviePilot 已接受订阅任务。")
+            logger.info(f"  ➜ ✅ MoviePilot 已接受订阅任务。")
             return True
         else:
-            logger.error(f"  -> 失败！MoviePilot 返回错误: {sub_response.status_code} - {sub_response.text}")
+            logger.error(f"  ➜ 失败！MoviePilot 返回错误: {sub_response.status_code} - {sub_response.text}")
             return False
     except Exception as e:
         logger.error(f"使用自定义Payload订阅到MoviePilot时发生错误: {e}", exc_info=True)

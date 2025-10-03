@@ -66,7 +66,7 @@ class LogDBManager:
     def mark_assets_as_synced(self, cursor, item_id: str, sync_timestamp_iso: str):
         """在 processed_log 中标记一个项目的资源文件已同步。"""
         
-        logger.trace(f"  -> 正在更新 Item ID {item_id} 的备份状态和时间戳...")
+        logger.trace(f"  ➜ 正在更新 Item ID {item_id} 的备份状态和时间戳...")
         sql = """
             INSERT INTO processed_log (item_id, assets_synced_at)
             VALUES (%s, %s)

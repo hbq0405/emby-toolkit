@@ -286,7 +286,7 @@ def task_actor_translation_cleanup(processor):
             if not update_tasks:
                 continue
 
-            logger.info(f"  -> 批次 {batch_num}/{total_batches}: 翻译完成，准备并发写入 {len(update_tasks)} 个更新...")
+            logger.info(f"  ➜ 批次 {batch_num}/{total_batches}: 翻译完成，准备并发写入 {len(update_tasks)} 个更新...")
             
             # 2. 使用 ThreadPoolExecutor 执行并发更新
             with ThreadPoolExecutor(max_workers=10) as executor:
@@ -319,7 +319,7 @@ def task_actor_translation_cleanup(processor):
             total_updated_count += batch_updated_count
             
             if batch_updated_count > 0:
-                logger.info(f"  -> ✅ 批次 {batch_num}/{total_batches} 并发写回完成，成功更新 {batch_updated_count} 个演员名。")
+                logger.info(f"  ➜ ✅ 批次 {batch_num}/{total_batches} 并发写回完成，成功更新 {batch_updated_count} 个演员名。")
         
         # ======================================================================
         # 阶段 3: 任务结束 (此部分逻辑不变)
@@ -354,14 +354,14 @@ def task_merge_duplicate_actors(processor):
         library_ids_to_process = config.get(constants.CONFIG_OPTION_EMBY_LIBRARIES_TO_PROCESS, [])
 
         if not library_ids_to_process:
-            logger.error("  -> 任务中止：未在设置中选择任何要处理的媒体库。")
+            logger.error("  ➜ 任务中止：未在设置中选择任何要处理的媒体库。")
             task_manager.update_status_from_thread(-1, "任务失败：未选择媒体库")
             return
 
         # ======================================================================
         # 阶段 1: 扫描媒体库，建立演员到媒体项的映射
         # ======================================================================
-        logger.info(f"  -> 将扫描 {len(library_ids_to_process)} 个选定媒体库来建立演员-媒体映射...")
+        logger.info(f"  ➜ 将扫描 {len(library_ids_to_process)} 个选定媒体库来建立演员-媒体映射...")
         task_manager.update_status_from_thread(5, f"阶段 1/4: 扫描媒体库，建立演员-媒体映射...")
 
         all_media_items = emby_handler.get_emby_library_items(
@@ -378,7 +378,7 @@ def task_merge_duplicate_actors(processor):
                 if person_id := person.get("Id"):
                     actor_media_map[person_id].add(item['Id'])
         
-        logger.info(f"  -> 演员-媒体映射建立完成，共统计了 {len(actor_media_map)} 位演员的媒体关联。")
+        logger.info(f"  ➜ 演员-媒体映射建立完成，共统计了 {len(actor_media_map)} 位演员的媒体关联。")
 
         # ======================================================================
         # 阶段 2: 扫描所有演员，并按 TMDb ID 分组
@@ -418,7 +418,7 @@ def task_merge_duplicate_actors(processor):
             task_manager.update_status_from_thread(100, "任务完成，未发现分身演员。")
             return
 
-        logger.warning(f"  -> 发现 {len(duplicate_groups)} 组共用TMDb ID的分身演员，开始应用“保大删小”策略...")
+        logger.warning(f"  ➜ 发现 {len(duplicate_groups)} 组共用TMDb ID的分身演员，开始应用“保大删小”策略...")
         
         merge_plan = []
         for tmdb_id, persons in duplicate_groups.items():
@@ -440,7 +440,7 @@ def task_merge_duplicate_actors(processor):
             if not keeper: keeper = persons[0]
 
             person_details_log = [f"'{p['Name']}' (ID: {p['Id']}, 作品数: {len(actor_media_map.get(p['Id'], set()))})" for p in persons]
-            logger.info(f"  -> [TMDb ID: {tmdb_id}] 决策:")
+            logger.info(f"  ➜ [TMDb ID: {tmdb_id}] 决策:")
             logger.info(f"     - 分身列表: {', '.join(person_details_log)}")
             logger.info(f"     - ✅ 保留 (主号): '{keeper['Name']}' (ID: {keeper['Id']})")
 
@@ -464,7 +464,7 @@ def task_merge_duplicate_actors(processor):
             task_manager.update_status_from_thread(100, "任务完成，无需操作。")
             return
 
-        logger.warning(f"  -> 合并计划制定完成，共需处理 {total_to_process} 个“小号”演员。")
+        logger.warning(f"  ➜ 合并计划制定完成，共需处理 {total_to_process} 个“小号”演员。")
         deleted_count = 0
         merged_item_count = 0
 
@@ -484,7 +484,7 @@ def task_merge_duplicate_actors(processor):
             all_media_updates_succeeded = True
 
             if media_ids_to_update:
-                logger.info(f"  -> 正在将 '{deletee['Name']}' 的 {len(media_ids_to_update)} 个作品转移给 '{keeper['Name']}'...")
+                logger.info(f"  ➜ 正在将 '{deletee['Name']}' 的 {len(media_ids_to_update)} 个作品转移给 '{keeper['Name']}'...")
                 for media_id in media_ids_to_update:
                     item_details = emby_handler.get_emby_item_details(media_id, processor.emby_url, processor.emby_api_key, processor.emby_user_id)
                     if not item_details:
@@ -522,7 +522,7 @@ def task_merge_duplicate_actors(processor):
                         logger.error(f"    - ❌ 更新媒体项 '{item_details.get('Name')}' 失败！")
 
             if all_media_updates_succeeded:
-                logger.info(f"  -> 所有媒体项已成功转移，准备删除“小号”演员 '{deletee['Name']}' (ID: {deletee['Id']})...")
+                logger.info(f"  ➜ 所有媒体项已成功转移，准备删除“小号”演员 '{deletee['Name']}' (ID: {deletee['Id']})...")
                 delete_success = emby_handler.delete_person_custom_api(
                     base_url=processor.emby_url, api_key=processor.emby_api_key, person_id=deletee['Id']
                 )
@@ -537,13 +537,13 @@ def task_merge_duplicate_actors(processor):
                                     (keeper['Id'], tmdb_id)
                                 )
                                 if cursor.rowcount > 0:
-                                    logger.info(f"  -> 同步成功: 已将数据库中 TMDb ID '{tmdb_id}' 的映射更新为 Emby ID '{keeper['Id']}'。")
+                                    logger.info(f"  ➜ 同步成功: 已将数据库中 TMDb ID '{tmdb_id}' 的映射更新为 Emby ID '{keeper['Id']}'。")
                                 else:
-                                    logger.warning(f"  -> 同步提醒: 在 person_identity_map 中未找到 TMDb ID '{tmdb_id}'，无法更新。")
+                                    logger.warning(f"  ➜ 同步提醒: 在 person_identity_map 中未找到 TMDb ID '{tmdb_id}'，无法更新。")
                     except Exception as db_exc:
-                        logger.error(f"  -> 同步失败: 尝试更新 TMDb ID '{tmdb_id}' 的映射时出错: {db_exc}")
+                        logger.error(f"  ➜ 同步失败: 尝试更新 TMDb ID '{tmdb_id}' 的映射时出错: {db_exc}")
             else:
-                logger.error(f"  -> 由于媒体项更新失败，演员 '{deletee['Name']}' (ID: {deletee['Id']}) 将被跳过，不予删除，以保证数据安全。")
+                logger.error(f"  ➜ 由于媒体项更新失败，演员 '{deletee['Name']}' (ID: {deletee['Id']}) 将被跳过，不予删除，以保证数据安全。")
             
             time.sleep(0.2)
         
@@ -566,7 +566,7 @@ def task_purge_ghost_actors(processor):
     """
     task_name = "删除幽灵演员" 
     logger.warning(f"--- !!! 开始执行高危任务: '{task_name}' !!! ---")
-    logger.warning("  -> 此任务将扫描您整个服务器的媒体和演员，以找出并删除任何未被使用的演员条目。")
+    logger.warning("  ➜ 此任务将扫描您整个服务器的媒体和演员，以找出并删除任何未被使用的演员条目。")
     
     task_manager.update_status_from_thread(0, "准备开始全局扫描...")
 
@@ -583,7 +583,7 @@ def task_purge_ghost_actors(processor):
             return
         
         all_library_ids = [lib['Id'] for lib in all_libraries if lib.get('CollectionType') in ['movies', 'tvshows', 'homevideos', 'musicvideos']]
-        logger.info(f"  -> 将扫描服务器上的 {len(all_library_ids)} 个媒体库...")
+        logger.info(f"  ➜ 将扫描服务器上的 {len(all_library_ids)} 个媒体库...")
 
         # 1.2 获取所有媒体项
         all_media_items = emby_handler.get_emby_library_items(
@@ -604,7 +604,7 @@ def task_purge_ghost_actors(processor):
                 if person_id := person.get("Id"):
                     whitelist_person_ids.add(person_id)
         
-        logger.info(f"  -> 白名单建立完成，服务器中共有 {len(whitelist_person_ids)} 位被引用的演员/职员。")
+        logger.info(f"  ➜ 白名单建立完成，服务器中共有 {len(whitelist_person_ids)} 位被引用的演员/职员。")
 
         # ======================================================================
         # 阶段 2: 全局扫描所有 Person 条目，并找出孤儿
@@ -633,14 +633,14 @@ def task_purge_ghost_actors(processor):
         total_to_delete = len(orphans_to_delete)
 
         if total_to_delete == 0:
-            logger.info("  -> 扫描完成，未发现任何未被引用的“幽灵演员”。")
+            logger.info("  ➜ 扫描完成，未发现任何未被引用的“幽灵演员”。")
             task_manager.update_status_from_thread(100, "扫描完成，服务器演员数据很干净！")
             return
 
         # ======================================================================
         # 阶段 3: 执行删除
         # ======================================================================
-        logger.warning(f"  -> 筛选完成：...发现 {total_to_delete} 个幽灵演员，即将开始删除...")
+        logger.warning(f"  ➜ 筛选完成：...发现 {total_to_delete} 个幽灵演员，即将开始删除...")
         task_manager.update_status_from_thread(0, f"准备阶段: 识别完成，发现 {total_to_delete} 个幽灵演员。")
         deleted_count = 0
 
@@ -666,9 +666,9 @@ def task_purge_ghost_actors(processor):
                         with conn.cursor() as cursor:
                             cursor.execute("DELETE FROM person_identity_map WHERE emby_person_id = %s", (person_id,))
                             if cursor.rowcount > 0:
-                                logger.info(f"  -> 同步成功: 已从本地数据库移除 ID '{person_id}'。")
+                                logger.info(f"  ➜ 同步成功: 已从本地数据库移除 ID '{person_id}'。")
                 except Exception as db_exc:
-                    logger.error(f"  -> 同步失败: 尝试从本地数据库删除 ID '{person_id}' 时出错: {db_exc}")
+                    logger.error(f"  ➜ 同步失败: 尝试从本地数据库删除 ID '{person_id}' 时出错: {db_exc}")
             
             time.sleep(0.2)
 
@@ -698,12 +698,12 @@ def task_purge_unregistered_actors(processor):
         library_ids_to_process = config.get(constants.CONFIG_OPTION_EMBY_LIBRARIES_TO_PROCESS, [])
 
         if not library_ids_to_process:
-            logger.error("  -> 任务中止：未在设置中选择任何要处理的媒体库。")
+            logger.error("  ➜ 任务中止：未在设置中选择任何要处理的媒体库。")
             task_manager.update_status_from_thread(-1, "任务失败：未选择媒体库")
             return
 
-        logger.info(f"  -> 将只扫描 {len(library_ids_to_process)} 个选定媒体库中的演员...")
-        task_manager.update_status_from_thread(10, f"  -> 正在从 {len(library_ids_to_process)} 个媒体库中获取所有媒体...")
+        logger.info(f"  ➜ 将只扫描 {len(library_ids_to_process)} 个选定媒体库中的演员...")
+        task_manager.update_status_from_thread(10, f"  ➜ 正在从 {len(library_ids_to_process)} 个媒体库中获取所有媒体...")
 
         # 2. 获取指定媒体库中的所有电影和剧集
         all_media_items = emby_handler.get_emby_library_items(
@@ -715,11 +715,11 @@ def task_purge_unregistered_actors(processor):
             fields="People"
         )
         if not all_media_items:
-            task_manager.update_status_from_thread(100, "  -> 任务完成：在选定的媒体库中未找到任何媒体项。")
+            task_manager.update_status_from_thread(100, "  ➜ 任务完成：在选定的媒体库中未找到任何媒体项。")
             return
 
         # 3. 从媒体项中提取所有唯一的演员ID
-        task_manager.update_status_from_thread(30, "  -> 正在从媒体项中提取唯一的演员ID...")
+        task_manager.update_status_from_thread(30, "  ➜ 正在从媒体项中提取唯一的演员ID...")
         unique_person_ids = set()
         for item in all_media_items:
             for person in item.get("People", []):
@@ -727,23 +727,23 @@ def task_purge_unregistered_actors(processor):
                     unique_person_ids.add(person_id)
         
         person_ids_to_fetch = list(unique_person_ids)
-        logger.info(f"  -> 在选定媒体库中，共识别出 {len(person_ids_to_fetch)} 位独立演员。")
+        logger.info(f"  ➜ 在选定媒体库中，共识别出 {len(person_ids_to_fetch)} 位独立演员。")
 
         if not person_ids_to_fetch:
-            task_manager.update_status_from_thread(100, "  -> 任务完成：未在媒体项中找到任何演员。")
+            task_manager.update_status_from_thread(100, "  ➜ 任务完成：未在媒体项中找到任何演员。")
             return
 
         # 4. 分批获取这些演员的完整详情
-        task_manager.update_status_from_thread(50, f"  -> 正在分批获取 {len(person_ids_to_fetch)} 位演员的完整详情...")
+        task_manager.update_status_from_thread(50, f"  ➜ 正在分批获取 {len(person_ids_to_fetch)} 位演员的完整详情...")
         all_people_in_scope_details = []
         batch_size = 500
         for i in range(0, len(person_ids_to_fetch), batch_size):
             if processor.is_stop_requested():
-                logger.info("  -> 在分批获取演员详情阶段，任务被中止。")
+                logger.info("  ➜ 在分批获取演员详情阶段，任务被中止。")
                 break
             
             batch_ids = person_ids_to_fetch[i:i + batch_size]
-            logger.debug(f"  -> 正在获取批次 {i//batch_size + 1} 的演员详情 ({len(batch_ids)} 个)...")
+            logger.debug(f"  ➜ 正在获取批次 {i//batch_size + 1} 的演员详情 ({len(batch_ids)} 个)...")
 
             person_details_batch = emby_handler.get_emby_items_by_id(
                 base_url=processor.emby_url,
@@ -761,7 +761,7 @@ def task_purge_unregistered_actors(processor):
             return
         
         # ★★★ 新增：详细的获取结果统计日志 ★★★
-        logger.info(f"  -> 详情获取完成：成功获取到 {len(all_people_in_scope_details)} 位演员的完整详情。")
+        logger.info(f"  ➜ 详情获取完成：成功获取到 {len(all_people_in_scope_details)} 位演员的完整详情。")
 
         # 5. 基于完整的详情，筛选出真正的“幽灵”演员
         ghosts_to_delete = [
@@ -771,15 +771,15 @@ def task_purge_unregistered_actors(processor):
         total_to_delete = len(ghosts_to_delete)
 
         # ★★★ 新增：核心的筛选结果统计日志 ★★★
-        logger.info(f"  -> 筛选完成：在 {len(all_people_in_scope_details)} 位演员中，发现 {total_to_delete} 个没有TMDb ID的“黑户演员”。")
+        logger.info(f"  ➜ 筛选完成：在 {len(all_people_in_scope_details)} 位演员中，发现 {total_to_delete} 个没有TMDb ID的“黑户演员”。")
 
         if total_to_delete == 0:
             # ★★★ 优化：更清晰的完成日志 ★★★
-            logger.info("  -> 扫描完成，在选定媒体库中未发现需要清理的“黑户演员”。")
-            task_manager.update_status_from_thread(100, "  -> 扫描完成，未发现无TMDb ID的演员。")
+            logger.info("  ➜ 扫描完成，在选定媒体库中未发现需要清理的“黑户演员”。")
+            task_manager.update_status_from_thread(100, "  ➜ 扫描完成，未发现无TMDb ID的演员。")
             return
         
-        logger.warning(f"  -> 共发现 {total_to_delete} 个“黑户演员”，即将开始删除...")
+        logger.warning(f"  ➜ 共发现 {total_to_delete} 个“黑户演员”，即将开始删除...")
         deleted_count = 0
 
         # 6. 执行删除
@@ -813,11 +813,11 @@ def task_purge_unregistered_actors(processor):
                             )
                             # 记录数据库操作结果
                             if cursor.rowcount > 0:
-                                logger.info(f"  -> 同步成功: 已从 person_identity_map 中移除 ID '{person_id}'。")
+                                logger.info(f"  ➜ 同步成功: 已从 person_identity_map 中移除 ID '{person_id}'。")
                             else:
-                                logger.info(f"  -> 同步提醒: 在 person_identity_map 中未找到 ID '{person_id}'，无需删除。")
+                                logger.info(f"  ➜ 同步提醒: 在 person_identity_map 中未找到 ID '{person_id}'，无需删除。")
                 except Exception as db_exc:
-                    logger.error(f"      -> 同步失败: 尝试从 person_identity_map 删除 ID '{person_id}' 时出错: {db_exc}")
+                    logger.error(f"      ➜ 同步失败: 尝试从 person_identity_map 删除 ID '{person_id}' 时出错: {db_exc}")
             
             time.sleep(0.2)
 

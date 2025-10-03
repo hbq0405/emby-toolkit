@@ -59,7 +59,7 @@ def _execute_task_with_lock(task_function: Callable, task_name: str, processor: 
             "is_running": True, "current_action": task_name, "last_action": task_name,
             "progress": 0, "message": f"{task_name} 初始化..."
         })
-        logger.info(f"  -> 后台任务 '{task_name}' 开始执行")
+        logger.info(f"  ➜ 后台任务 '{task_name}' 开始执行")
 
         task_completed_normally = False
         try:
@@ -94,7 +94,7 @@ def task_worker_function():
     【V2 - 精确调度版】
     通用工人线程，根据提交任务时指定的 processor_type 来精确选择处理器。
     """
-    logger.trace("  -> 通用任务线程已启动，等待任务...")
+    logger.trace("  ➜ 通用任务线程已启动，等待任务...")
     while True:
         try:
             task_info = task_queue.get()
@@ -148,7 +148,7 @@ def submit_task(task_function: Callable, task_name: str, processor_type: Process
             return False
 
         frontend_log_queue.clear()
-        logger.trace(f"  -> 任务 '{task_name}' 已提交到队列，并已清空前端日志。")
+        logger.trace(f"  ➜ 任务 '{task_name}' 已提交到队列，并已清空前端日志。")
         
         # ★★★ 核心修复：将 processor_type 加入任务信息元组 ★★★
         task_info = (task_function, task_name, processor_type, args, kwargs)

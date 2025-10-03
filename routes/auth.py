@@ -35,7 +35,7 @@ def init_auth():
 
             # 【修改2】: 只有在没有任何用户时，才执行创建逻辑
             if user_exists:
-                logger.info("  -> 数据库中已存在用户，跳过初始用户创建。")
+                logger.info("  ➜ 数据库中已存在用户，跳过初始用户创建。")
                 return
 
             # 如果数据库为空，则继续创建第一个用户
@@ -100,7 +100,7 @@ def login():
     if user and check_password_hash(user['password_hash'], password):
         session['user_id'] = user['id']
         session['username'] = user['username']
-        logger.info(f"  -> 用户 '{user['username']}' 登录成功。")
+        logger.info(f"  ➜ 用户 '{user['username']}' 登录成功。")
         
         # 【修改5】: 核心逻辑 - 判断用户是否正在使用默认密码登录
         force_change_password = (password == DEFAULT_INITIAL_PASSWORD)

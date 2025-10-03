@@ -235,7 +235,7 @@ def api_delete_custom_collection(collection_id):
 
         # 步骤 2: 如果存在关联的Emby ID，则调用Emby Handler，清空其内容
         if emby_id_to_empty:
-            logger.info(f"  -> 正在删除合集 '{collection_name}' (Emby ID: {emby_id_to_empty})...")
+            logger.info(f"  ➜ 正在删除合集 '{collection_name}' (Emby ID: {emby_id_to_empty})...")
             
             # ★★★ 调用我们全新的、真正有效的清空函数 ★★★
             emby_handler.empty_collection_in_emby(
@@ -423,7 +423,7 @@ def api_subscribe_media_from_custom_collection():
         log_message_detail = ""
         if authoritative_type == 'Series' and season_to_subscribe is not None:
             log_message_detail = f" 第 {season_to_subscribe} 季"
-        logger.info(f"  -> 依据合集定义，使用类型 '{type_map.get(authoritative_type, authoritative_type)}' 为《{authoritative_title}》{log_message_detail}(TMDb ID: {tmdb_id}) 发起订阅...")
+        logger.info(f"  ➜ 依据合集定义，使用类型 '{type_map.get(authoritative_type, authoritative_type)}' 为《{authoritative_title}》{log_message_detail}(TMDb ID: {tmdb_id}) 发起订阅...")
         
         success = False
         if authoritative_type == 'Movie':
@@ -450,7 +450,7 @@ def api_subscribe_media_from_custom_collection():
                 (new_media_info_json, new_health_status, new_missing_count, collection_id)
             )
             conn.commit()
-            logger.info(f"  -> 已成功更新合集 {collection_id} 中《{authoritative_title}》的状态为 '订阅中'。")
+            logger.info(f"  ➜ 已成功更新合集 {collection_id} 中《{authoritative_title}》的状态为 '订阅中'。")
 
         return jsonify({"message": f"《{authoritative_title}》已成功提交订阅，并已更新本地状态。"}), 200
     except Exception as e:

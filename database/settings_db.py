@@ -128,7 +128,7 @@ def decrement_subscription_quota() -> bool:
                 if current_quota > 0:
                     state['current_quota'] = current_quota - 1
                     _save_setting_with_cursor(cursor, 'subscription_quota_state', state)
-                    logger.debug(f"  -> 配额已消耗，剩余: {state['current_quota']}")
+                    logger.debug(f"  ➜ 配额已消耗，剩余: {state['current_quota']}")
                 
                 conn.commit()
                 return True

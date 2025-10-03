@@ -163,7 +163,7 @@ def task_refresh_collections(processor):
             logger.warning("任务被用户中断，部分数据可能未被处理。")
         
         if all_results:
-            logger.info(f"  -> 并发处理完成，准备将 {len(all_results)} 条结果写入数据库...")
+            logger.info(f"  ➜ 并发处理完成，准备将 {len(all_results)} 条结果写入数据库...")
             with connection.get_db_connection() as conn:
                 cursor = conn.cursor()
                 cursor.execute("BEGIN TRANSACTION;")
@@ -188,7 +188,7 @@ def task_refresh_collections(processor):
                     # 4. 使用 executemany 执行
                     cursor.executemany(sql, all_results)
                     conn.commit()
-                    logger.info("  -> ✅ 数据库写入成功！")
+                    logger.info("  ➜ ✅ 数据库写入成功！")
                 except Exception as e_db:
                     logger.error(f"数据库批量写入时发生错误: {e_db}", exc_info=True)
                     conn.rollback()
@@ -240,12 +240,12 @@ def task_process_all_custom_collections(processor):
         task_manager.update_status_from_thread(0, "正在获取所有启用的合集定义...")
         active_collections = collection_db.get_all_active_custom_collections()
         if not active_collections:
-            logger.info("  -> 没有找到任何已启用的自定义合集，任务结束。")
+            logger.info("  ➜ 没有找到任何已启用的自定义合集，任务结束。")
             task_manager.update_status_from_thread(100, "没有已启用的合集。")
             return
         
         total = len(active_collections)
-        logger.info(f"  -> 共找到 {total} 个已启用的自定义合集需要处理。")
+        logger.info(f"  ➜ 共找到 {total} 个已启用的自定义合集需要处理。")
 
         task_manager.update_status_from_thread(2, "正在从Emby获取全库媒体数据...")
         libs_to_process_ids = processor.config.get("libraries_to_process", [])
@@ -253,12 +253,12 @@ def task_process_all_custom_collections(processor):
         
         all_emby_items = emby_handler.get_emby_library_items(base_url=processor.emby_url, api_key=processor.emby_api_key, user_id=processor.emby_user_id, media_type_filter="Movie,Series", library_ids=libs_to_process_ids) or []
         tmdb_to_emby_item_map = {item['ProviderIds']['Tmdb']: item for item in all_emby_items if item.get('ProviderIds', {}).get('Tmdb')}
-        logger.info(f"  -> 已从Emby获取 {len(all_emby_items)} 个媒体项目，并创建了TMDB->Emby映射。")
+        logger.info(f"  ➜ 已从Emby获取 {len(all_emby_items)} 个媒体项目，并创建了TMDB->Emby映射。")
 
         task_manager.update_status_from_thread(5, "正在从Emby获取现有合集列表...")
         all_emby_collections = emby_handler.get_all_collections_from_emby_generic(base_url=processor.emby_url, api_key=processor.emby_api_key, user_id=processor.emby_user_id) or []
         prefetched_collection_map = {coll.get('Name', '').lower(): coll for coll in all_emby_collections}
-        logger.info(f"  -> 已预加载 {len(prefetched_collection_map)} 个现有合集的信息。")
+        logger.info(f"  ➜ 已预加载 {len(prefetched_collection_map)} 个现有合集的信息。")
 
         cover_service = None
         cover_config = {}
@@ -267,7 +267,7 @@ def task_process_all_custom_collections(processor):
             
             if cover_config.get("enabled"):
                 cover_service = CoverGeneratorService(config=cover_config)
-                logger.info("  -> 封面生成器已启用，将在每个合集处理后尝试生成封面。")
+                logger.info("  ➜ 封面生成器已启用，将在每个合集处理后尝试生成封面。")
         except Exception as e_cover_init:
             logger.error(f"初始化封面生成器时失败: {e_cover_init}", exc_info=True)
 
@@ -304,7 +304,7 @@ def task_process_all_custom_collections(processor):
                     # ▼▼▼ 入修正逻辑 ▼▼▼
                     corrections = definition.get('corrections', {})
                     if corrections:
-                        logger.debug(f"  -> 检测到 {len(corrections)} 条修正规则，开始应用...")
+                        logger.debug(f"  ➜ 检测到 {len(corrections)} 条修正规则，开始应用...")
                         corrected_tmdb_items = []
                         for item in tmdb_items:
                             original_id = str(item.get('id'))
@@ -319,18 +319,18 @@ def task_process_all_custom_collections(processor):
                                     new_season = correction_info.get('season')
                                     
                                     if new_id:
-                                        logger.info(f"    -> 应用修正: {original_id} -> {new_id} (季号: {new_season})")
+                                        logger.info(f"    ➜ 应用修正: {original_id} -> {new_id} (季号: {new_season})")
                                         item['id'] = new_id # 只更新 ID
                                         if new_season is not None:
                                             item['season'] = new_season # 更新或添加 season
                                         else:
                                             item.pop('season', None) # 确保移除旧的 season
                                     else:
-                                        logger.warning(f"    -> 修正规则格式错误，跳过: {correction_info}")
+                                        logger.warning(f"    ➜ 修正规则格式错误，跳过: {correction_info}")
 
                                 elif isinstance(correction_info, str):
                                     # 兼容旧格式: '新ID'
-                                    logger.info(f"    -> 应用修正 (旧格式): {original_id} -> {correction_info}")
+                                    logger.info(f"    ➜ 应用修正 (旧格式): {original_id} -> {correction_info}")
                                     item['id'] = correction_info
                                 
                             corrected_tmdb_items.append(item)
@@ -453,10 +453,10 @@ def task_process_all_custom_collections(processor):
                     })
                 
                 collection_db.update_custom_collection_after_sync(collection_id, update_data)
-                logger.info(f"  -> ✅ 合集 '{collection_name}' 处理完成，并已更新数据库状态。")
+                logger.info(f"  ➜ ✅ 合集 '{collection_name}' 处理完成，并已更新数据库状态。")
 
                 if cover_service and emby_collection_id:
-                    logger.info(f"  -> 正在为合集 '{collection_name}' 生成封面...")
+                    logger.info(f"  ➜ 正在为合集 '{collection_name}' 生成封面...")
                     # 1. 获取最新的 Emby 合集详情
                     library_info = emby_handler.get_emby_item_details(emby_collection_id, processor.emby_url, processor.emby_api_key, processor.emby_user_id)
                     if library_info:
@@ -528,7 +528,7 @@ def task_process_custom_collection(processor, custom_collection_id: int):
             # ▼▼▼ 修正逻辑 ▼▼▼
             corrections = definition.get('corrections', {})
             if corrections:
-                logger.debug(f"  -> 检测到 {len(corrections)} 条修正规则，开始应用...")
+                logger.debug(f"  ➜ 检测到 {len(corrections)} 条修正规则，开始应用...")
                 corrected_tmdb_items = []
                 for item in tmdb_items:
                     original_id = str(item.get('id'))
@@ -543,18 +543,18 @@ def task_process_custom_collection(processor, custom_collection_id: int):
                             new_season = correction_info.get('season')
                             
                             if new_id:
-                                logger.info(f"    -> 应用修正: {original_id} -> {new_id} (季号: {new_season})")
+                                logger.info(f"    ➜ 应用修正: {original_id} -> {new_id} (季号: {new_season})")
                                 item['id'] = new_id # 只更新 ID
                                 if new_season is not None:
                                     item['season'] = new_season # 更新或添加 season
                                 else:
                                     item.pop('season', None) # 确保移除旧的 season
                             else:
-                                logger.warning(f"    -> 修正规则格式错误，跳过: {correction_info}")
+                                logger.warning(f"    ➜ 修正规则格式错误，跳过: {correction_info}")
 
                         elif isinstance(correction_info, str):
                             # 兼容旧格式: '新ID'
-                            logger.info(f"    -> 应用修正 (旧格式): {original_id} -> {correction_info}")
+                            logger.info(f"    ➜ 应用修正 (旧格式): {original_id} -> {correction_info}")
                             item['id'] = correction_info
                         
                     corrected_tmdb_items.append(item)
@@ -664,7 +664,7 @@ def task_process_custom_collection(processor, custom_collection_id: int):
                 "generated_media_info_json": json.dumps(all_media_with_status, ensure_ascii=False),
                 "poster_path": f"/Items/{emby_collection_id}/Images/Primary?tag={image_tag}" if image_tag and emby_collection_id else None
             })
-            logger.info(f"  -> 已为RSS合集 '{collection_name}' 分析健康状态。")
+            logger.info(f"  ➜ 已为RSS合集 '{collection_name}' 分析健康状态。")
         else: 
             task_manager.update_status_from_thread(95, "筛选合集已生成，跳过缺失分析。")
             all_media_with_status = [{'tmdb_id': item['id'], 'emby_id': tmdb_to_emby_item_map.get(item['id'], {}).get('Id')} for item in tmdb_items]
@@ -676,13 +676,13 @@ def task_process_custom_collection(processor, custom_collection_id: int):
             })
 
         collection_db.update_custom_collection_after_sync(custom_collection_id, update_data)
-        logger.info(f"  -> 已更新自定义合集 '{collection_name}' (ID: {custom_collection_id}) 的同步状态和健康信息。")
+        logger.info(f"  ➜ 已更新自定义合集 '{collection_name}' (ID: {custom_collection_id}) 的同步状态和健康信息。")
 
         try:
             cover_config = settings_db.get_setting('cover_generator_config') or {}
 
             if cover_config.get("enabled") and emby_collection_id:
-                logger.info(f"  -> 检测到封面生成器已启用，将为合集 '{collection_name}' 生成封面...")
+                logger.info(f"  ➜ 检测到封面生成器已启用，将为合集 '{collection_name}' 生成封面...")
                 cover_service = CoverGeneratorService(config=cover_config)
                 library_info = emby_handler.get_emby_item_details(emby_collection_id, processor.emby_url, processor.emby_api_key, processor.emby_user_id)
                 if library_info:

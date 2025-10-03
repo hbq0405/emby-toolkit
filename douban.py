@@ -208,7 +208,7 @@ class DoubanApi:
         if url_key not in DoubanApi._urls:
             return self._make_error_dict("invalid_param", f"未知的 subject_type for detail: {subject_type}")
         detail_url = DoubanApi._urls[url_key] + subject_id
-        logger.info(f"  -> 通过豆瓣ID获取详情: {detail_url}")
+        logger.info(f"  ➜ 通过豆瓣ID获取详情: {detail_url}")
         details = self.__invoke(detail_url)
         if details.get("error"): # __invoke 返回了错误
             logger.warning(f"获取豆瓣ID {subject_id} ({subject_type}) 详情失败: {details.get('message')}")
@@ -249,18 +249,18 @@ class DoubanApi:
                 logger.warning(f"IMDBID {actual_imdbid} 查询结果无效或无ID。")
 
         # 如果IMDb查询失败或无IMDbID，则进行名称搜索
-        logger.info(f"  -> IMDb查询失败或未提供ID，回退到名称搜索: '{name}'")
+        logger.info(f"  ➜ IMDb查询失败或未提供ID，回退到名称搜索: '{name}'")
         return self._search_by_name_for_match_info(name, mtype, year, season)
 
     def _search_by_name_for_match_info(self, name: str, mtype: Optional[str],
                                        year: Optional[str] = None, season: Optional[int] = None) -> Dict[str, Any]:
-        logger.info(f"  -> 开始使用名称 '{name}'{(', 年份: '+year) if year else ''}{(', 类型: '+mtype) if mtype else ''} 匹配豆瓣信息 ...")
+        logger.info(f"  ➜ 开始使用名称 '{name}'{(', 年份: '+year) if year else ''}{(', 类型: '+mtype) if mtype else ''} 匹配豆瓣信息 ...")
         
         # 规范化 mtype，将 'Series' 视为 'tv'
         normalized_mtype = mtype
         if mtype and mtype.lower() == 'series':
             normalized_mtype = 'tv'
-            logger.trace(f"  -> 将传入的媒体类型 'Series' 规范化为 'tv'。")
+            logger.trace(f"  ➜ 将传入的媒体类型 'Series' 规范化为 'tv'。")
 
         # 改进 search_query 的构建，避免重复年份
         effective_year_in_query = year
@@ -270,44 +270,44 @@ class DoubanApi:
             match = year_pattern.search(name)
             if match and match.group(1) == year:
                 effective_year_in_query = '' # 如果 name 中已包含年份，则不在 query 中重复
-                logger.debug(f"  -> 名称 '{name}' 中已包含年份 '{year}'，搜索查询中将不重复年份。")
+                logger.debug(f"  ➜ 名称 '{name}' 中已包含年份 '{year}'，搜索查询中将不重复年份。")
 
         search_query = f"{name} {effective_year_in_query or ''}".strip()
         
         if not search_query: return self._make_error_dict("invalid_param", "搜索关键词为空")
 
-        logger.trace(f"  -> 最终豆瓣搜索查询: '{search_query}'")
+        logger.trace(f"  ➜ 最终豆瓣搜索查询: '{search_query}'")
         search_result = self.search(search_query)
-        logger.trace(f"  -> 名称搜索 '{search_query}' 原始结果: {search_result}")
+        logger.trace(f"  ➜ 名称搜索 '{search_query}' 原始结果: {search_result}")
 
         if search_result.get("error"):
-            logger.warning(f"  -> 豆瓣名称搜索 '{search_query}' 返回错误: {search_result.get('message')}")
+            logger.warning(f"  ➜ 豆瓣名称搜索 '{search_query}' 返回错误: {search_result.get('message')}")
             return search_result # 直接返回搜索的错误
 
         items = search_result.get("items")
         if not items or not isinstance(items, list):
-            logger.warning(f"  -> 豆瓣名称搜索 '{search_query}' 未找到条目或格式错误。")
+            logger.warning(f"  ➜ 豆瓣名称搜索 '{search_query}' 未找到条目或格式错误。")
             return self._make_error_dict("no_items_found", f"豆瓣名称搜索 '{search_query}' 未找到条目或格式错误。")
 
         candidates = []
         exact_match = None
         for item_obj in items:
             if not isinstance(item_obj, dict):
-                logger.debug(f"  -> 跳过无效的搜索结果条目 (非字典): {item_obj}")
+                logger.debug(f"  ➜ 跳过无效的搜索结果条目 (非字典): {item_obj}")
                 continue
             target = item_obj.get("target", {})
             if not isinstance(target, dict):
-                logger.debug(f"  -> 跳过无效的搜索结果条目 (target 非字典): {item_obj}")
+                logger.debug(f"  ➜ 跳过无效的搜索结果条目 (target 非字典): {item_obj}")
                 continue
 
             api_item_type = item_obj.get("target_type") # 从 item_obj 中获取 target_type
             if api_item_type not in ["movie", "tv"]:
-                logger.debug(f"  -> 跳过不相关的类型 '{api_item_type}' for item: {target.get('title')}")
+                logger.debug(f"  ➜ 跳过不相关的类型 '{api_item_type}' for item: {target.get('title')}")
                 continue
             
             # 使用规范化后的类型进行比较
             if normalized_mtype and normalized_mtype != api_item_type:
-                logger.debug(f"  -> 跳过类型不匹配的条目。请求类型: '{normalized_mtype}', API类型: '{api_item_type}' for item: {target.get('title')}")
+                logger.debug(f"  ➜ 跳过类型不匹配的条目。请求类型: '{normalized_mtype}', API类型: '{api_item_type}' for item: {target.get('title')}")
                 continue
 
             title_from_api = target.get("title")
@@ -348,15 +348,15 @@ class DoubanApi:
                 if title_str.lower().strip() == name_to_compare.lower() and (not year or api_item_year == year):
                     exact_match = candidate_info
                     exact_match["source"] = "name_search_exact"
-                    logger.debug(f"  -> 找到精确匹配: {exact_match}")
+                    logger.debug(f"  ➜ 找到精确匹配: {exact_match}")
                     break
                 candidates.append(candidate_info)
-                logger.debug(f"  -> 添加候选匹配项: {candidate_info}")
+                logger.debug(f"  ➜ 添加候选匹配项: {candidate_info}")
 
         if exact_match: return exact_match
         if candidates:
             if len(candidates) == 1:
-                logger.info(f"  -> 找到唯一候选匹配项: {candidates[0]}")
+                logger.info(f"  ➜ 找到唯一候选匹配项: {candidates[0]}")
                 return candidates[0]
             
             # 多个候选，尝试根据年份精确度排序
@@ -364,13 +364,13 @@ class DoubanApi:
                 # 优先选择年份完全匹配的
                 year_exact_candidates = [c for c in candidates if c.get("year") == year]
                 if year_exact_candidates:
-                    logger.info(f"  -> 找到多个年份精确匹配的候选，返回第一个。Candidates: {year_exact_candidates}")
+                    logger.info(f"  ➜ 找到多个年份精确匹配的候选，返回第一个。Candidates: {year_exact_candidates}")
                     return year_exact_candidates[0]
             
-            logger.info(f"  -> 找到多个候选匹配项 for '{name}', 返回第一个。 Candidates: {candidates}")
+            logger.info(f"  ➜ 找到多个候选匹配项 for '{name}', 返回第一个。 Candidates: {candidates}")
             return candidates[0]
 
-        logger.warning(f"  -> 豆瓣名称搜索未能为 '{name}' 找到合适的匹配项。")
+        logger.warning(f"  ➜ 豆瓣名称搜索未能为 '{name}' 找到合适的匹配项。")
         return self._make_error_dict("no_suitable_match", f"豆瓣名称搜索未能为 '{name}' 找到合适的匹配项。")
 
     def get_acting(self, name: str, imdbid: Optional[str] = None, mtype: Optional[str] = None,
@@ -381,7 +381,7 @@ class DoubanApi:
 
         if douban_id_override and str(douban_id_override).isdigit():
             douban_subject_id = str(douban_id_override)
-            logger.info(f"  -> 使用提供的豆瓣ID覆盖: {douban_subject_id}")
+            logger.info(f"  ➜ 使用提供的豆瓣ID覆盖: {douban_subject_id}")
             if not final_mtype: # 尝试推断类型
                 details_movie = self._get_subject_details(douban_subject_id, "movie")
                 if details_movie and not details_movie.get("error") and details_movie.get("type"): final_mtype = details_movie.get("type")
@@ -405,7 +405,7 @@ class DoubanApi:
         if not douban_subject_id or not final_mtype:
             return self._make_error_dict("missing_id_or_type", f"获取演职员信息前豆瓣ID或类型无效 (ID: {douban_subject_id}, Type: {final_mtype})", {"cast": []})
 
-        logger.info(f"  -> 获取豆瓣ID '{douban_subject_id}' (类型: {final_mtype}) 的演职员信息...")
+        logger.info(f"  ➜ 获取豆瓣ID '{douban_subject_id}' (类型: {final_mtype}) 的演职员信息...")
         response = None
         if final_mtype == "tv": response = self.tv_celebrities(douban_subject_id)
         elif final_mtype == "movie": response = self.movie_celebrities(douban_subject_id)
@@ -471,10 +471,10 @@ class DoubanApi:
         """
         【V3 - 增强版】专门通过豆瓣链接获取其完整的详情信息字典。
         """
-        logger.debug(f"  -> 专用函数：尝试从豆瓣链接 '{douban_link}' 获取完整详情...")
+        logger.debug(f"  ➜ 专用函数：尝试从豆瓣链接 '{douban_link}' 获取完整详情...")
         match = re.search(r'/(?:movie|tv|subject)/(\d+)', douban_link)
         if not match:
-            logger.warning(f"  -> 无法从链接中解析出豆瓣ID。")
+            logger.warning(f"  ➜ 无法从链接中解析出豆瓣ID。")
             return None
 
         douban_id = match.group(1)
@@ -484,11 +484,11 @@ class DoubanApi:
 
         details = self._get_subject_details(douban_id, primary_type)
         if details.get("error"):
-            logger.trace(f"  -> 使用主类型 '{primary_type}' 获取详情失败，尝试备用类型 '{secondary_type}'...")
+            logger.trace(f"  ➜ 使用主类型 '{primary_type}' 获取详情失败，尝试备用类型 '{secondary_type}'...")
             details = self._get_subject_details(douban_id, secondary_type)
 
         if details.get("error"):
-            logger.error(f"  -> 无法获取豆瓣ID '{douban_id}' 的详情: {details.get('message')}")
+            logger.error(f"  ➜ 无法获取豆瓣ID '{douban_id}' 的详情: {details.get('message')}")
             return None # 如果有错误，返回 None
         return details # 成功时返回完整的 details 字典
 

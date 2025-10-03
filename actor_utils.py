@@ -42,7 +42,7 @@ def select_best_role(current_role: str, candidate_role: str) -> str:
     candidate_role = str(candidate_role or '').strip()
 
     # --- 步骤 2: 准备日志和判断标志 ---
-    logger.debug(f"  -> 备选角色名: 当前='{current_role}', 豆瓣='{candidate_role}'")
+    logger.debug(f"  ➜ 备选角色名: 当前='{current_role}', 豆瓣='{candidate_role}'")
 
     current_is_chinese = utils.contains_chinese(current_role)
     candidate_is_chinese = utils.contains_chinese(candidate_role)
@@ -56,41 +56,41 @@ def select_best_role(current_role: str, candidate_role: str) -> str:
 
     # 优先级 1: 豆瓣角色是有效的中文名
     if candidate_is_chinese and not candidate_is_placeholder:
-        logger.trace(f"  -> 决策: [优先级1] 豆瓣角色是有效中文名。选择豆瓣角色。")
-        logger.debug(f"  -> 选择: '{candidate_role}'")
+        logger.trace(f"  ➜ 决策: [优先级1] 豆瓣角色是有效中文名。选择豆瓣角色。")
+        logger.debug(f"  ➜ 选择: '{candidate_role}'")
         return candidate_role
 
     # 优先级 2: 当前角色是有效的中文名，而豆瓣角色不是。必须保留当前角色！
     if current_is_chinese and not current_is_placeholder and not candidate_is_chinese:
-        logger.trace(f"  -> 决策: [优先级2] 当前角色是有效中文名，而豆瓣不是。保留当前角色。")
-        logger.debug(f"  -> 选择: '{current_role}'")
+        logger.trace(f"  ➜ 决策: [优先级2] 当前角色是有效中文名，而豆瓣不是。保留当前角色。")
+        logger.debug(f"  ➜ 选择: '{current_role}'")
         return current_role
 
     # 优先级 3: 两者都不是有效的中文名（或都是）。选择一个非占位符的，豆瓣者优先。
     if candidate_role and not candidate_is_placeholder:
-        logger.trace(f"  -> 决策: [优先级3] 豆瓣角色是有效的非中文名/占位符。选择豆瓣角色。")
-        logger.debug(f"  -> 选择: '{candidate_role}'")
+        logger.trace(f"  ➜ 决策: [优先级3] 豆瓣角色是有效的非中文名/占位符。选择豆瓣角色。")
+        logger.debug(f"  ➜ 选择: '{candidate_role}'")
         return candidate_role
     
     if current_role and not current_is_placeholder:
-        logger.trace(f"  -> 决策: [优先级4] 当前角色是有效的非中文名/占位符，而豆瓣角色是无效的。保留当前角色。")
-        logger.debug(f"  -> 选择: '{current_role}'")
+        logger.trace(f"  ➜ 决策: [优先级4] 当前角色是有效的非中文名/占位符，而豆瓣角色是无效的。保留当前角色。")
+        logger.debug(f"  ➜ 选择: '{current_role}'")
         return current_role
 
     # 优先级 4: 处理占位符。如果两者之一是占位符，则返回一个（豆瓣优先）。
     if candidate_role: # 如果豆瓣有内容（此时只能是占位符）
-        logger.trace(f"  -> 决策: [优先级5] 豆瓣角色是占位符。选择豆瓣角色。")
-        logger.debug(f"  -> 选择: '{candidate_role}'")
+        logger.trace(f"  ➜ 决策: [优先级5] 豆瓣角色是占位符。选择豆瓣角色。")
+        logger.debug(f"  ➜ 选择: '{candidate_role}'")
         return candidate_role
         
     if current_role: # 如果当前有内容（此时只能是占位符）
-        logger.trace(f"  -> 决策: [优先级6] 当前角色是占位符，豆瓣为空。保留当前角色。")
-        logger.debug(f"  -> 选择: '{current_role}'")
+        logger.trace(f"  ➜ 决策: [优先级6] 当前角色是占位符，豆瓣为空。保留当前角色。")
+        logger.debug(f"  ➜ 选择: '{current_role}'")
         return current_role
 
     # 优先级 5: 所有情况都处理完，只剩下两者都为空。
-    logger.trace(f"  -> 决策: [优先级7] 所有输入均为空或无效。返回空字符串。")
-    logger.debug(f"  -> 选择: ''")
+    logger.trace(f"  ➜ 决策: [优先级7] 所有输入均为空或无效。返回空字符串。")
+    logger.debug(f"  ➜ 选择: ''")
     return ""
 # --- 质量评估 ---
 def evaluate_cast_processing_quality(
@@ -107,10 +107,10 @@ def evaluate_cast_processing_quality(
     if not final_cast:
         # ✨ 如果是动画片且演员列表为空，可以给一个基础通过分，避免进手动列表
         if is_animation:
-            logger.info("  -> 质量评估：动画片/纪录片演员列表为空，属于正常情况，给予基础通过分 7.0。")
+            logger.info("  ➜ 质量评估：动画片/纪录片演员列表为空，属于正常情况，给予基础通过分 7.0。")
             return 7.0
         else:
-            logger.warning("  -> 处理后演员列表为空！评为 0.0 分。")
+            logger.warning("  ➜ 处理后演员列表为空！评为 0.0 分。")
             return 0.0
         
     total_actors = len(final_cast)
@@ -149,37 +149,37 @@ def evaluate_cast_processing_quality(
         final_actor_score = min(10.0, score)
         accumulated_score += final_actor_score
         
-        logger.debug(f"  -> [{i+1}/{total_actors}] 演员: '{actor_name}' (角色: '{actor_role}') | 单项评分: {final_actor_score:.1f}")
+        logger.debug(f"  ➜ [{i+1}/{total_actors}] 演员: '{actor_name}' (角色: '{actor_role}') | 单项评分: {final_actor_score:.1f}")
 
     avg_score = accumulated_score / total_actors if total_actors > 0 else 0.0
     
     # --- ✨✨✨ 核心修改：条件化的数量惩罚逻辑 ✨✨✨ ---
     logger.debug(f"------------------------------------")
-    logger.debug(f"  -> 基础平均分 (惩罚前): {avg_score:.2f}")
+    logger.debug(f"  ➜ 基础平均分 (惩罚前): {avg_score:.2f}")
 
     if is_animation:
-        logger.debug("  -> 惩罚: 检测到为动画片/纪录片，跳过所有数量相关的惩罚。")
+        logger.debug("  ➜ 惩罚: 检测到为动画片/纪录片，跳过所有数量相关的惩罚。")
     else:
         # 只有在不是动画片时，才执行原来的数量惩罚逻辑
         if total_actors < 10:
             penalty_factor = total_actors / 10.0
-            logger.warning(f"  -> 惩罚: 最终演员数({total_actors})少于10个，乘以惩罚因子 {penalty_factor:.2f}")
+            logger.warning(f"  ➜ 惩罚: 最终演员数({total_actors})少于10个，乘以惩罚因子 {penalty_factor:.2f}")
             avg_score *= penalty_factor
             
         elif expected_final_count is not None:
             if total_actors < expected_final_count * 0.8:
                 penalty_factor = total_actors / expected_final_count
-                logger.warning(f"  -> 惩罚: 数量({total_actors})远少于预期({expected_final_count})，乘以惩罚因子 {penalty_factor:.2f}")
+                logger.warning(f"  ➜ 惩罚: 数量({total_actors})远少于预期({expected_final_count})，乘以惩罚因子 {penalty_factor:.2f}")
                 avg_score *= penalty_factor
         elif total_actors < original_cast_count * 0.8:
             penalty_factor = total_actors / original_cast_count
-            logger.warning(f"  -> 惩罚: 数量从{original_cast_count}大幅减少到{total_actors}，乘以惩罚因子 {penalty_factor:.2f}")
+            logger.warning(f"  ➜ 惩罚: 数量从{original_cast_count}大幅减少到{total_actors}，乘以惩罚因子 {penalty_factor:.2f}")
             avg_score *= penalty_factor
         else:
-            logger.debug(f"  -> 惩罚: 数量正常，不进行惩罚。")
+            logger.debug(f"  ➜ 惩罚: 数量正常，不进行惩罚。")
     
     final_score_rounded = round(avg_score, 1)
-    logger.info(f"  -> 最终评分: {final_score_rounded:.1f} ---")
+    logger.info(f"  ➜ 最终评分: {final_score_rounded:.1f} ---")
     return final_score_rounded
 
 
@@ -315,7 +315,7 @@ def format_and_complete_cast_list(
     add_role_prefix = config.get(constants.CONFIG_OPTION_ACTOR_ROLE_ADD_PREFIX, False)
     generic_roles = {"演员", "配音"}
 
-    logger.debug(f"  -> 格式化演员列表，调用模式: '{mode}' (前缀开关: {'开' if add_role_prefix else '关'})")
+    logger.debug(f"  ➜ 格式化演员列表，调用模式: '{mode}' (前缀开关: {'开' if add_role_prefix else '关'})")
 
     # --- 阶段1: 统一的角色名格式化 (所有模式通用) ---
     for idx, actor in enumerate(cast_list):
@@ -345,14 +345,14 @@ def format_and_complete_cast_list(
     # --- 阶段2: 根据模式执行不同的排序策略 ---
     if mode == 'manual':
         # 【手动模式】：以用户自定义顺序为基础，并增强（通用角色后置）
-        logger.debug("  -> 应用 'manual' 排序策略：保留用户自定义顺序，并将通用角色后置。")
+        logger.debug("  ➜ 应用 'manual' 排序策略：保留用户自定义顺序，并将通用角色后置。")
         processed_cast.sort(key=lambda actor: (
             1 if actor.get("character") in generic_roles else 0,  # 1. 通用角色排在后面
             actor.get("original_index")                          # 2. 在此基础上，保持原始手动顺序
         ))
     else: # mode == 'auto' 或其他任何默认情况
         # 【自动模式】：严格按照TMDb原始的 'order' 字段排序
-        logger.debug("  -> 应用 'auto' 排序策略：严格按原始TMDb 'order' 字段排序。")
+        logger.debug("  ➜ 应用 'auto' 排序策略：严格按原始TMDb 'order' 字段排序。")
         processed_cast.sort(key=lambda actor: actor.get('order', 999))
         
     # --- 阶段3: 最终重置 order 索引 (所有模式通用) ---
@@ -415,18 +415,18 @@ def enrich_all_actor_aliases_task(
         logger.info(f"任务将运行 {run_duration_minutes} 分钟，预计在 {end_time_str} 左右自动停止。")
 
     SYNC_INTERVAL_DAYS = sync_interval_days
-    logger.info(f"  -> 同步冷却时间为 {SYNC_INTERVAL_DAYS} 天。")
+    logger.info(f"  ➜ 同步冷却时间为 {SYNC_INTERVAL_DAYS} 天。")
 
     conn = None
     try:
         with connection.get_db_connection() as conn:
             # --- 阶段一：从 TMDb 补充元数据 (并发执行) ---
-            logger.info("  -> 阶段一：从 TMDb 补充演员元数据 (IMDb ID, 头像等) ---")
+            logger.info("  ➜ 阶段一：从 TMDb 补充演员元数据 (IMDb ID, 头像等) ---")
             cursor = conn.cursor()
             
             # ▼▼▼ 2. 根据 force_full_update 选择不同的SQL查询语句 ▼▼▼
             if force_full_update:
-                logger.info("  -> 深度模式已激活：将扫描所有演员，无视现有数据。")
+                logger.info("  ➜ 深度模式已激活：将扫描所有演员，无视现有数据。")
                 # 【深度模式查询】：获取所有带TMDb ID的演员，按最近更新时间排序，优先处理最久未更新的
                 sql_find_actors = f"""
                     SELECT p.* FROM person_identity_map p
@@ -435,7 +435,7 @@ def enrich_all_actor_aliases_task(
                     ORDER BY m.last_updated_at ASC NULLS FIRST
                 """
             else:
-                logger.info(f"  -> 标准模式：将仅扫描需要补充数据且冷却期已过的演员 (冷却期: {sync_interval_days} 天)。")
+                logger.info(f"  ➜ 标准模式：将仅扫描需要补充数据且冷却期已过的演员 (冷却期: {sync_interval_days} 天)。")
                 # 【标准模式查询】：只找那些缺少关键信息，并且过了冷却期的演员
                 sql_find_actors = f"""
                     SELECT p.* FROM person_identity_map p
@@ -450,7 +450,7 @@ def enrich_all_actor_aliases_task(
             
             if actors_for_tmdb:
                 total_tmdb = len(actors_for_tmdb)
-                logger.info(f"  -> 找到 {total_tmdb} 位演员需要从 TMDb 补充元数据。")
+                logger.info(f"  ➜ 找到 {total_tmdb} 位演员需要从 TMDb 补充元数据。")
                 
                 CHUNK_SIZE = 200
                 MAX_TMDB_WORKERS = 5
@@ -467,7 +467,7 @@ def enrich_all_actor_aliases_task(
                         update_status_callback(progress, f"阶段1/2 (TMDb): 处理批次 {chunk_num}/{total_chunks}")
 
                     chunk = actors_for_tmdb[i:i + CHUNK_SIZE]
-                    logger.info(f"  -> 开始处理 TMDb 第 {chunk_num} 批次，共 {len(chunk)} 个演员 ---")
+                    logger.info(f"  ➜ 开始处理 TMDb 第 {chunk_num} 批次，共 {len(chunk)} 个演员 ---")
 
                     imdb_updates_to_commit = []
                     metadata_to_commit = []
@@ -519,14 +519,14 @@ def enrich_all_actor_aliases_task(
                                 invalid_tmdb_ids.append(tmdb_id)
 
                     logger.info(
-                        f"  -> 批次处理完成。摘要: "
+                        f"  ➜ 批次处理完成。摘要: "
                         f"成功获取({tmdb_success_count}), 新增IMDb({imdb_found_count}), "
                         f"新增元数据({metadata_added_count}), 未找到({not_found_count})."
                     )
                     
                     if imdb_updates_to_commit or metadata_to_commit or invalid_tmdb_ids:
                         try:
-                            logger.info(f"  -> 批次完成，准备写入数据库...")
+                            logger.info(f"  ➜ 批次完成，准备写入数据库...")
 
                             if metadata_to_commit:
                                 # ★★★ 核心修复 3/5：使用 ON CONFLICT 语法替代 INSERT OR REPLACE ★★★
@@ -554,23 +554,23 @@ def enrich_all_actor_aliases_task(
                                     if "violates unique constraint" in str(ie):
                                         # ▼▼▼ 3. 修改冲突处理逻辑 ▼▼▼
                                         if force_full_update:
-                                            logger.warning(f"  -> [深度模式] 检测到 IMDb ID '{imdb_id}' 冲突。将强制以TMDb数据为准。")
+                                            logger.warning(f"  ➜ [深度模式] 检测到 IMDb ID '{imdb_id}' 冲突。将强制以TMDb数据为准。")
                                             # 找到当前占用该IMDb ID的旧记录
                                             cursor.execute("SELECT map_id, primary_name FROM person_identity_map WHERE imdb_id = %s", (imdb_id,))
                                             conflicting_actor = cursor.fetchone()
                                             if conflicting_actor:
-                                                logger.warning(f"  -> 正在解除演员 '{conflicting_actor['primary_name']}' (map_id: {conflicting_actor['map_id']}) 与 IMDb ID '{imdb_id}' 的旧关联。")
+                                                logger.warning(f"  ➜ 正在解除演员 '{conflicting_actor['primary_name']}' (map_id: {conflicting_actor['map_id']}) 与 IMDb ID '{imdb_id}' 的旧关联。")
                                                 # 将旧记录的IMDb ID设为NULL，以解除占用
                                                 cursor.execute("UPDATE person_identity_map SET imdb_id = NULL WHERE map_id = %s", (conflicting_actor['map_id'],))
                                                 
                                                 # 再次尝试为当前演员更新IMDb ID
-                                                logger.info(f"  -> 正在为当前演员 (TMDb: {tmdb_id}) 设置新的 IMDb ID '{imdb_id}'。")
+                                                logger.info(f"  ➜ 正在为当前演员 (TMDb: {tmdb_id}) 设置新的 IMDb ID '{imdb_id}'。")
                                                 cursor.execute("UPDATE person_identity_map SET imdb_id = %s WHERE tmdb_person_id = %s", (imdb_id, tmdb_id))
                                             else:
-                                                logger.error(f"  -> 发生冲突但未能找到 IMDb ID '{imdb_id}' 的冲突记录，更新失败。")
+                                                logger.error(f"  ➜ 发生冲突但未能找到 IMDb ID '{imdb_id}' 的冲突记录，更新失败。")
                                         else:
                                             # 【标准模式下的合并逻辑保持不变】
-                                            logger.warning(f"  -> [标准模式] 检测到 IMDb ID '{imdb_id}' (来自TMDb: {tmdb_id}) 冲突。将执行合并逻辑。")
+                                            logger.warning(f"  ➜ [标准模式] 检测到 IMDb ID '{imdb_id}' (来自TMDb: {tmdb_id}) 冲突。将执行合并逻辑。")
                                         sql_find_target = "SELECT * FROM person_identity_map WHERE imdb_id = %s"
                                         cursor.execute(sql_find_target, (imdb_id,))
                                         target_actor = cursor.fetchone()
@@ -593,12 +593,12 @@ def enrich_all_actor_aliases_task(
 
                                             # 删除现在多余的源记录
                                             cursor.execute("DELETE FROM person_identity_map WHERE map_id = %s", (source_map_id,))
-                                            logger.info(f"  -> 成功将记录 (map_id:{source_map_id}) 合并到 (map_id:{target_map_id}) 并删除原记录。")
+                                            logger.info(f"  ➜ 成功将记录 (map_id:{source_map_id}) 合并到 (map_id:{target_map_id}) 并删除原记录。")
                                         
                                         elif not target_actor:
-                                            logger.error(f"  -> 发生冲突但未能找到 IMDb ID '{imdb_id}' 的目标记录，合并失败。")
+                                            logger.error(f"  ➜ 发生冲突但未能找到 IMDb ID '{imdb_id}' 的目标记录，合并失败。")
                                         elif not source_actor:
-                                            logger.error(f"  -> 发生冲突但未能找到 TMDb ID '{tmdb_id}' 的源记录，合并失败。")
+                                            logger.error(f"  ➜ 发生冲突但未能找到 TMDb ID '{tmdb_id}' 的源记录，合并失败。")
                                     else:
                                         raise ie
 
@@ -612,13 +612,13 @@ def enrich_all_actor_aliases_task(
                             logger.error(f"数据库操作失败: {db_e}", exc_info=True)
                             conn.rollback()
             else:
-                logger.info("  -> 没有需要从 TMDb 补充或清理的演员。")
+                logger.info("  ➜ 没有需要从 TMDb 补充或清理的演员。")
 
             # --- 阶段二：从 豆瓣 补充 IMDb ID (串行执行) ---
             if (stop_event and stop_event.is_set()) or (time.time() >= end_time): raise InterruptedError("任务中止")
             
             douban_api = DoubanApi()
-            logger.info("  -> 阶段二：从 豆瓣 补充 IMDb ID ---")
+            logger.info("  ➜ 阶段二：从 豆瓣 补充 IMDb ID ---")
             cursor = conn.cursor()
             sql_find_douban_needy = f"""
                 SELECT * FROM person_identity_map 
@@ -631,7 +631,7 @@ def enrich_all_actor_aliases_task(
 
             if actors_for_douban:
                 total_douban = len(actors_for_douban)
-                logger.info(f"  -> 找到 {total_douban} 位演员需要从豆瓣补充 IMDb ID。")
+                logger.info(f"  ➜ 找到 {total_douban} 位演员需要从豆瓣补充 IMDb ID。")
                 
                 processed_count = 0
                 for i, actor in enumerate(actors_for_douban):
@@ -671,7 +671,7 @@ def enrich_all_actor_aliases_task(
                                 except psycopg2.IntegrityError as ie:
                                     cursor.execute("ROLLBACK TO SAVEPOINT douban_update_savepoint")
                                     if "violates unique constraint" in str(ie):
-                                        logger.warning(f"  -> 检测到 IMDb ID '{new_imdb_id}' 冲突。将尝试合并记录。")
+                                        logger.warning(f"  ➜ 检测到 IMDb ID '{new_imdb_id}' 冲突。将尝试合并记录。")
                                         
                                         sql_find_target = "SELECT map_id FROM person_identity_map WHERE imdb_id = %s"
                                         cursor.execute(sql_find_target, (new_imdb_id,))
@@ -683,14 +683,14 @@ def enrich_all_actor_aliases_task(
                                             cursor.execute(sql_merge_douban, (actor_douban_id, target_map_id))
                                             sql_delete_source = "DELETE FROM person_identity_map WHERE map_id = %s"
                                             cursor.execute(sql_delete_source, (actor_map_id,))
-                                            logger.info(f"  -> 成功将 '{actor_primary_name}' (map_id: {actor_map_id}) 的豆瓣ID合并到记录 (map_id: {target_map_id}) 并删除原记录。")
+                                            logger.info(f"  ➜ 成功将 '{actor_primary_name}' (map_id: {actor_map_id}) 的豆瓣ID合并到记录 (map_id: {target_map_id}) 并删除原记录。")
                                         else:
-                                            logger.error(f"  -> 发生冲突但未能找到 IMDb ID '{new_imdb_id}' 的目标记录，合并失败。")
+                                            logger.error(f"  ➜ 发生冲突但未能找到 IMDb ID '{new_imdb_id}' 的目标记录，合并失败。")
                                     else:
                                         raise ie
 
                         if (i + 1) % 50 == 0:
-                            logger.info(f"  -> 已处理50条，提交数据库事务...")
+                            logger.info(f"  ➜ 已处理50条，提交数据库事务...")
                             conn.commit()
 
                     except Exception as e:
@@ -700,7 +700,7 @@ def enrich_all_actor_aliases_task(
                 conn.commit()
                 logger.info(f"豆瓣信息补充完成，本轮共处理 {processed_count} 个。")
             else:
-                logger.info("  -> 没有需要从豆瓣补充 IMDb ID 的演员。")
+                logger.info("  ➜ 没有需要从豆瓣补充 IMDb ID 的演员。")
             
             if douban_api:
                 douban_api.close()

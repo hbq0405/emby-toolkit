@@ -326,7 +326,7 @@ def main_app_start():
     from geventwebsocket.handler import WebSocketHandler
     import gevent
 
-    logger.info(f"  -> 应用程序启动... 版本: {constants.APP_VERSION}")
+    logger.info(f"  ➜ 应用程序启动... 版本: {constants.APP_VERSION}")
     
     config_manager.load_config()
     

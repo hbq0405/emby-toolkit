@@ -82,7 +82,7 @@ def task_auto_subscribe(processor):
                 sql_query_native_movies = "SELECT * FROM collections_info WHERE status = 'has_missing' AND missing_movies_json IS NOT NULL AND missing_movies_json != '[]'"
                 cursor.execute(sql_query_native_movies)
                 native_collections_to_check = cursor.fetchall()
-                logger.info(f"  -> 找到 {len(native_collections_to_check)} 个有缺失影片的原生合集。")
+                logger.info(f"  ➜ 找到 {len(native_collections_to_check)} 个有缺失影片的原生合集。")
                 
                 for collection in native_collections_to_check:
                     if processor.is_stop_requested() or quota_exhausted: break
@@ -140,7 +140,7 @@ def task_auto_subscribe(processor):
                 for series in series_to_check:
                     if processor.is_stop_requested() or quota_exhausted: break
                     series_name = series['item_name']
-                    logger.info(f"  -> 正在检查: 《{series_name}》")
+                    logger.info(f"  ➜ 正在检查: 《{series_name}》")
                     try:
                         missing_info = series['missing_info_json']
                         missing_seasons = missing_info.get('missing_seasons', [])
@@ -263,7 +263,7 @@ def task_auto_subscribe(processor):
                                 (new_missing_json, new_health_status, new_missing_count, collection_id)
                             )
                     except Exception as e_coll:
-                        logger.error(f"  -> 处理自定义合集 '{collection_name}' 时发生错误: {e_coll}", exc_info=True)
+                        logger.error(f"  ➜ 处理自定义合集 '{collection_name}' 时发生错误: {e_coll}", exc_info=True)
 
             # ★★★ 4. 处理演员订阅 (tracked_actor_media) ★★★
             if not processor.is_stop_requested() and not quota_exhausted:
@@ -272,7 +272,7 @@ def task_auto_subscribe(processor):
                 cursor.execute(sql_query_actors)
                 actor_media_to_check = cursor.fetchall()
                 
-                logger.info(f"  -> 找到 {len(actor_media_to_check)} 个来自演员订阅的缺失作品。")
+                logger.info(f"  ➜ 找到 {len(actor_media_to_check)} 个来自演员订阅的缺失作品。")
 
                 for media_item in actor_media_to_check:
                     if processor.is_stop_requested() or quota_exhausted: break
@@ -349,7 +349,7 @@ def build_resubscribe_payload(item_details: dict, rule: Optional[dict]) -> Optio
     use_custom_subscribe = config_manager.APP_CONFIG.get(constants.CONFIG_OPTION_USE_CUSTOM_RESUBSCRIBE, False)
     if not use_custom_subscribe or not rule:
         log_reason = "自定义洗版未开启" if not use_custom_subscribe else "未匹配到规则"
-        logger.info(f"  -> 《{item_name}》将使用全局洗版 ({log_reason})。")
+        logger.info(f"  ➜ 《{item_name}》将使用全局洗版 ({log_reason})。")
         return payload
 
     rule_name = rule.get('name', '未知规则')
@@ -363,12 +363,12 @@ def build_resubscribe_payload(item_details: dict, rule: Optional[dict]) -> Optio
         elif threshold == 1920: target_resolution = "1080p"
         if target_resolution:
             payload['resolution'] = target_resolution
-            logger.info(f"  -> 《{item_name}》按规则 '{rule_name}' 追加过滤器 - 分辨率: {target_resolution}")
+            logger.info(f"  ➜ 《{item_name}》按规则 '{rule_name}' 追加过滤器 - 分辨率: {target_resolution}")
     if rule.get("resubscribe_quality_enabled"):
         quality_list = rule.get("resubscribe_quality_include")
         if isinstance(quality_list, list) and quality_list:
             payload['quality'] = ",".join(quality_list)
-            logger.info(f"  -> 《{item_name}》按规则 '{rule_name}' 追加过滤器 - 质量: {payload['quality']}")
+            logger.info(f"  ➜ 《{item_name}》按规则 '{rule_name}' 追加过滤器 - 质量: {payload['quality']}")
     
     # --- 特效订阅逻辑 (实战优化) ---
     if rule.get("resubscribe_effect_enabled"):
@@ -428,7 +428,7 @@ def build_resubscribe_payload(item_details: dict, rule: Optional[dict]) -> Optio
 
     if final_include_lookaheads:
         payload['include'] = "".join(final_include_lookaheads)
-        logger.info(f"  -> 《{item_name}》按规则 '{rule_name}' 生成的 AND 正则过滤器(精筛): {payload['include']}")
+        logger.info(f"  ➜ 《{item_name}》按规则 '{rule_name}' 生成的 AND 正则过滤器(精筛): {payload['include']}")
 
     return payload
 
@@ -439,7 +439,7 @@ def _item_needs_resubscribe(item_details: dict, config: dict, media_metadata: Op
     - 此版本调用全局的、最新的 _get_standardized_effect 函数来做决策。
     """
     item_name = item_details.get('Name', '未知项目')
-    logger.trace(f"  -> 开始为《{item_name}》检查洗版需求 ---")
+    logger.trace(f"  ➜ 开始为《{item_name}》检查洗版需求 ---")
     
     media_streams = item_details.get('MediaStreams', [])
     file_path = item_details.get('Path', '')
@@ -475,7 +475,7 @@ def _item_needs_resubscribe(item_details: dict, config: dict, media_metadata: Op
                     reasons.append(f"分辨率低于{required_tier_name}")
 
     except (ValueError, TypeError) as e:
-        logger.warning(f"  -> [分辨率检查] 处理时发生类型错误: {e}")
+        logger.warning(f"  ➜ [分辨率检查] 处理时发生类型错误: {e}")
 
     # 2. 质量检查
     try:
@@ -486,7 +486,7 @@ def _item_needs_resubscribe(item_details: dict, config: dict, media_metadata: Op
                 if not any(term in file_name_lower for term in required_list_lower):
                     reasons.append("质量不达标")
     except Exception as e:
-        logger.warning(f"  -> [质量检查] 处理时发生未知错误: {e}")
+        logger.warning(f"  ➜ [质量检查] 处理时发生未知错误: {e}")
 
     # 3. 特效检查 (调用最新的全局函数)
     try:
@@ -511,7 +511,7 @@ def _item_needs_resubscribe(item_details: dict, config: dict, media_metadata: Op
                     if current_priority > highest_req_priority:
                         reasons.append("特效不达标")
     except Exception as e:
-        logger.warning(f"  -> [特效检查] 处理时发生未知错误: {e}")
+        logger.warning(f"  ➜ [特效检查] 处理时发生未知错误: {e}")
 
     # 4. & 5. 音轨和字幕检查
     def _is_exempted_from_chinese_check() -> bool:
@@ -534,7 +534,7 @@ def _item_needs_resubscribe(item_details: dict, config: dict, media_metadata: Op
                 if present_langs.isdisjoint(CHINESE_LANG_CODES):
                     reasons.append("缺中文音轨")
     except Exception as e:
-        logger.warning(f"  -> [音轨检查] 处理时发生未知错误: {e}")
+        logger.warning(f"  ➜ [音轨检查] 处理时发生未知错误: {e}")
 
     try:
         if config.get("resubscribe_subtitle_enabled") and not is_exempted:
@@ -544,14 +544,14 @@ def _item_needs_resubscribe(item_details: dict, config: dict, media_metadata: Op
                 if present_sub_langs.isdisjoint(CHINESE_LANG_CODES):
                     reasons.append("缺中文字幕")
     except Exception as e:
-        logger.warning(f"  -> [字幕检查] 处理时发生未知错误: {e}")
+        logger.warning(f"  ➜ [字幕检查] 处理时发生未知错误: {e}")
                  
     if reasons:
         final_reason = "; ".join(sorted(list(set(reasons))))
-        logger.info(f"  -> 《{item_name}》需要洗版。原因: {final_reason}")
+        logger.info(f"  ➜ 《{item_name}》需要洗版。原因: {final_reason}")
         return True, final_reason
     else:
-        logger.debug(f"  -> 《{item_name}》质量达标。")
+        logger.debug(f"  ➜ 《{item_name}》质量达标。")
         return False, ""
 
 # ★★★ 精准批量订阅的后台任务 ★★★
@@ -575,7 +575,7 @@ def task_resubscribe_batch(processor, item_ids: List[str]):
             task_manager.update_status_from_thread(100, "任务完成：选中的项目中没有需要订阅的项。")
             return
 
-        logger.info(f"  -> 精准任务：共找到 {total_to_process} 个项目待处理，将开始订阅...")
+        logger.info(f"  ➜ 精准任务：共找到 {total_to_process} 个项目待处理，将开始订阅...")
         
         # 2. 后续的订阅、删除、配额检查逻辑和“一键洗版”完全一致
         all_rules = resubscribe_db.get_all_resubscribe_rules()
@@ -586,12 +586,12 @@ def task_resubscribe_batch(processor, item_ids: List[str]):
 
         for i, item in enumerate(items_to_subscribe):
             if processor.is_stop_requested():
-                logger.info("  -> 任务被用户中止。")
+                logger.info("  ➜ 任务被用户中止。")
                 break
             
             current_quota = settings_db.get_subscription_quota()
             if current_quota <= 0:
-                logger.warning("  -> 每日订阅配额已用尽，任务提前结束。")
+                logger.warning("  ➜ 每日订阅配额已用尽，任务提前结束。")
                 break
 
             item_id = item.get('item_id')
@@ -665,7 +665,7 @@ def task_resubscribe_library(processor):
             task_manager.update_status_from_thread(100, "任务完成：没有发现需要洗版的项目。")
             return
 
-        logger.info(f"  -> 共找到 {total_needed} 个项目待处理，将开始订阅...")
+        logger.info(f"  ➜ 共找到 {total_needed} 个项目待处理，将开始订阅...")
         resubscribed_count = 0
         deleted_count = 0
 
@@ -674,7 +674,7 @@ def task_resubscribe_library(processor):
             
             current_quota = settings_db.get_subscription_quota()
             if current_quota <= 0:
-                logger.warning("  -> 每日订阅配额已用尽，任务提前结束。")
+                logger.warning("  ➜ 每日订阅配额已用尽，任务提前结束。")
                 break
 
             item_name = item.get('item_name')
@@ -753,7 +753,7 @@ def task_delete_batch(processor, item_ids: List[str]):
             task_manager.update_status_from_thread(100, "任务完成：选中的项目中没有可删除的项。")
             return
 
-        logger.info(f"  -> 精准删除：共找到 {total_to_process} 个项目待处理...")
+        logger.info(f"  ➜ 精准删除：共找到 {total_to_process} 个项目待处理...")
         deleted_count = 0
 
         for i, item in enumerate(items_to_delete):
@@ -818,7 +818,7 @@ def task_update_resubscribe_cache(processor):
             task_manager.update_status_from_thread(100, "任务完成：在目标媒体库中未找到任何项目。")
             return
 
-        logger.info(f"  -> 将为 {total} 个媒体项目获取详情并按规则检查洗版状态...")
+        logger.info(f"  ➜ 将为 {total} 个媒体项目获取详情并按规则检查洗版状态...")
         cache_update_batch = []
         processed_count = 0
         library_to_rule_map = {}

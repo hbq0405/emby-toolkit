@@ -252,7 +252,7 @@ def get_all_active_custom_collections() -> List[Dict[str, Any]]:
             cursor = conn.cursor()
             cursor.execute("SELECT * FROM custom_collections WHERE status = 'active' ORDER BY sort_order ASC, id ASC")
             rows = cursor.fetchall()
-            logger.trace(f"  -> 从数据库找到 {len(rows)} 个已启用的自定义合集。")
+            logger.trace(f"  ➜ 从数据库找到 {len(rows)} 个已启用的自定义合集。")
             return [dict(row) for row in rows]
     except psycopg2.Error as e:
         logger.error(f"获取所有已启用的自定义合集时发生数据库错误: {e}", exc_info=True)
@@ -307,7 +307,7 @@ def delete_custom_collection(collection_id: int) -> bool:
             cursor.execute(sql, (collection_id,))
             conn.commit()
             if cursor.rowcount > 0:
-                logger.info(f"  -> ✅ 成功从数据库中删除了自定义合集定义 (ID: {collection_id})。")
+                logger.info(f"  ➜ ✅ 成功从数据库中删除了自定义合集定义 (ID: {collection_id})。")
                 return True
             else:
                 logger.warning(f"尝试删除自定义合集 (ID: {collection_id})，但在数据库中未找到该记录。")
@@ -772,7 +772,7 @@ def match_and_update_list_collections_on_item_add(new_item_tmdb_id: str, new_ite
             candidate_collections = cursor.fetchall()
 
             if not candidate_collections:
-                logger.debug(f"  -> 未在任何榜单合集中找到 TMDb ID: {new_item_tmdb_id}。")
+                logger.debug(f"  ➜ 未在任何榜单合集中找到 TMDb ID: {new_item_tmdb_id}。")
                 return []
 
             cursor.execute("BEGIN TRANSACTION;")
@@ -793,7 +793,7 @@ def match_and_update_list_collections_on_item_add(new_item_tmdb_id: str, new_ite
                                 old_status_cn = STATUS_TRANSLATION_MAP.get(old_status_key, old_status_key)
                                 new_status_cn = STATUS_TRANSLATION_MAP.get(new_status_key, new_status_key)
 
-                                logger.info(f"  -> 数据库状态更新：项目《{new_item_name}》在合集《{collection_name}》中的状态将从【{old_status_cn}】更新为【{new_status_cn}】。")
+                                logger.info(f"  ➜ 数据库状态更新：项目《{new_item_name}》在合集《{collection_name}》中的状态将从【{old_status_cn}】更新为【{new_status_cn}】。")
                                 
                                 media_item['status'] = new_status_key
                                 media_item['emby_id'] = new_item_emby_id 
@@ -890,7 +890,7 @@ def append_item_to_filter_collection_db(collection_id: int, new_item_tmdb_id: st
                 (new_json_data, new_in_library_count, collection_id)
             )
             conn.commit()
-            logger.info(f"  -> 数据库状态同步：已将新媒体项 {new_item_emby_id} 追加到规则合集 (DB ID: {collection_id}) 的JSON缓存中。")
+            logger.info(f"  ➜ 数据库状态同步：已将新媒体项 {new_item_emby_id} 追加到规则合集 (DB ID: {collection_id}) 的JSON缓存中。")
             return True
 
     except Exception as e:

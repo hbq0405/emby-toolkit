@@ -269,7 +269,7 @@ def _resync_primary_key_sequence(cursor, table_name: str):
         )
         
         cursor.execute(resync_sql)
-        logger.info(f"  -> 已成功同步表 '{table_name}' 的主键序列。")
+        logger.info(f"  ➜ 已成功同步表 '{table_name}' 的主键序列。")
     except Exception as e:
         logger.warning(f"同步表 '{table_name}' 的主键序列时发生非致命错误: {e}")
 
@@ -533,7 +533,7 @@ def task_scan_for_cleanup_issues(processor):
         duplicate_tasks = []
         for (tmdb_id, item_type), items in media_map.items():
             if len(items) > 1:
-                logger.info(f"  -> [发现重复] TMDB ID {tmdb_id} (类型: {item_type}) 关联了 {len(items)} 个独立的媒体项。")
+                logger.info(f"  ➜ [发现重复] TMDB ID {tmdb_id} (类型: {item_type}) 关联了 {len(items)} 个独立的媒体项。")
                 versions_info = []
                 for item in items:
                     source = item.get("MediaSources", [{}])[0]
@@ -608,7 +608,7 @@ def task_execute_cleanup(processor, task_ids: List[int], **kwargs):
             for version in versions:
                 version_id_to_check = version.get('id')
                 if version_id_to_check != best_version_id:
-                    logger.warning(f"  -> 准备删除劣质版本: {version.get('path')}")
+                    logger.warning(f"  ➜ 准备删除劣质版本: {version.get('path')}")
                     
                     id_to_delete = version_id_to_check
                     
@@ -620,9 +620,9 @@ def task_execute_cleanup(processor, task_ids: List[int], **kwargs):
                     )
                     if success:
                         deleted_count += 1
-                        logger.info(f"    -> 成功删除 ID: {id_to_delete}")
+                        logger.info(f"    ➜ 成功删除 ID: {id_to_delete}")
                     else:
-                        logger.error(f"    -> 删除 ID: {id_to_delete} 失败！")
+                        logger.error(f"    ➜ 删除 ID: {id_to_delete} 失败！")
             
             maintenance_db.batch_update_cleanup_task_status([task_id], 'processed')
 

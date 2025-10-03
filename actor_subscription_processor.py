@@ -74,15 +74,15 @@ class ActorSubscriptionProcessor:
             return
             
         if not subs_to_process:
-            logger.info("  -> 没有找到需要处理的演员订阅，任务结束。")
+            logger.info("  ➜ 没有找到需要处理的演员订阅，任务结束。")
             _update_status(100, "没有需要处理的演员订阅。")
             return
             
         total_subs = len(subs_to_process)
-        logger.info(f"  -> 共找到 {total_subs} 个启用的订阅需要处理。")
+        logger.info(f"  ➜ 共找到 {total_subs} 个启用的订阅需要处理。")
         
-        _update_status(5, "  -> 正在从 Emby 获取媒体库信息...")
-        logger.info("  -> 正在从 Emby 一次性获取全量媒体库数据...")
+        _update_status(5, "  ➜ 正在从 Emby 获取媒体库信息...")
+        logger.info("  ➜ 正在从 Emby 一次性获取全量媒体库数据...")
         emby_tmdb_ids: Set[str] = set()
         try:
             all_libraries = emby_handler.get_emby_libraries(self.emby_url, self.emby_api_key, self.emby_user_id)
@@ -94,9 +94,9 @@ class ActorSubscriptionProcessor:
                 return
 
             emby_tmdb_ids = {item['ProviderIds'].get('Tmdb') for item in emby_items if item.get('ProviderIds', {}).get('Tmdb')}
-            logger.debug(f"  -> 已从 Emby 获取 {len(emby_tmdb_ids)} 个已入库媒体的 TMDb ID 用于后续对比。")
+            logger.debug(f"  ➜ 已从 Emby 获取 {len(emby_tmdb_ids)} 个已入库媒体的 TMDb ID 用于后续对比。")
         except Exception as e:
-            logger.error(f"  -> 从 Emby 获取媒体库信息时发生严重错误: {e}", exc_info=True)
+            logger.error(f"  ➜ 从 Emby 获取媒体库信息时发生严重错误: {e}", exc_info=True)
             _update_status(-1, "错误：连接 Emby 或获取数据失败。")
             return
 
@@ -108,7 +108,7 @@ class ActorSubscriptionProcessor:
                 break
             
             progress = int(5 + ((i + 1) / total_subs) * 95)
-            message = f"  -> ({i+1}/{total_subs}) 正在扫描演员: {sub['actor_name']}"
+            message = f"  ➜ ({i+1}/{total_subs}) 正在扫描演员: {sub['actor_name']}"
             _update_status(progress, message)
             logger.info(message)
             
@@ -119,7 +119,7 @@ class ActorSubscriptionProcessor:
                 
         if not self.is_stop_requested():
             logger.trace("--- 定时刷新演员订阅任务执行完毕 ---")
-            _update_status(100, "  -> 所有订阅扫描完成。")
+            _update_status(100, "  ➜ 所有订阅扫描完成。")
 
 
     def run_full_scan_for_actor(self, subscription_id: int, emby_tmdb_ids: Set[str], session_subscribed_ids: Optional[Set[str]] = None):
@@ -137,7 +137,7 @@ class ActorSubscriptionProcessor:
                 sub = cursor.fetchone()
                 if not sub: return
                 
-                logger.trace(f"  -> 正在处理演员: {sub['actor_name']} (TMDb ID: {sub['tmdb_person_id']})")
+                logger.trace(f"  ➜ 正在处理演员: {sub['actor_name']} (TMDb ID: {sub['tmdb_person_id']})")
 
                 old_tracked_media = self._get_existing_tracked_media(cursor, subscription_id)
                 
@@ -145,10 +145,10 @@ class ActorSubscriptionProcessor:
                 if self.is_stop_requested() or not credits: return
                 
                 all_works = credits.get('movie_credits', {}).get('cast', []) + credits.get('tv_credits', {}).get('cast', [])
-                logger.info(f"  -> 从TMDb获取到演员 {sub['actor_name']} 的 {len(all_works)} 部原始作品记录。")
+                logger.info(f"  ➜ 从TMDb获取到演员 {sub['actor_name']} 的 {len(all_works)} 部原始作品记录。")
 
                 filtered_works = self._filter_works(all_works, sub)
-                logger.info(f"  -> 根据规则筛选后，有 {len(filtered_works)} 部作品需要处理。")
+                logger.info(f"  ➜ 根据规则筛选后，有 {len(filtered_works)} 部作品需要处理。")
 
                 media_to_insert = []
                 media_to_update = []
@@ -179,7 +179,7 @@ class ActorSubscriptionProcessor:
                 self._update_database_records(cursor, subscription_id, media_to_insert, media_to_update, media_ids_to_delete)
                 
                 conn.commit()
-                logger.info(f"  -> ✅ {sub['actor_name']} 的全量处理成功完成 ---")
+                logger.info(f"  ➜ ✅ {sub['actor_name']} 的全量处理成功完成 ---")
 
         except Exception as e:
             logger.error(f"为订阅ID {subscription_id} 执行扫描时发生严重错误: {e}", exc_info=True)
@@ -242,12 +242,12 @@ class ActorSubscriptionProcessor:
                 if not is_new_movie:
                     # 对于老片，只根据评分进行过滤，不再考虑投票数
                     if vote_average < config_min_rating:
-                        logger.trace(f"  -> 过滤老片: '{work.get('title') or work.get('name')}' (评分 {vote_average} < {config_min_rating})")
+                        logger.trace(f"  ➜ 过滤老片: '{work.get('title') or work.get('name')}' (评分 {vote_average} < {config_min_rating})")
                         continue
             
             title = work.get('title') or work.get('name', '')
             if not chinese_char_regex.search(title):
-                logger.trace(f"  -> 过滤作品: '{title}' (排除无中文片名)。")
+                logger.trace(f"  ➜ 过滤作品: '{title}' (排除无中文片名)。")
                 continue
             
             handled_media_ids.add(media_id)
@@ -298,7 +298,7 @@ class ActorSubscriptionProcessor:
     def _update_database_records(self, cursor, subscription_id: int, to_insert: List[Dict], to_update: List[Dict], to_delete_ids: List[int]):
         """执行数据库的增、删、改操作。"""
         if to_insert:
-            logger.info(f"  -> 新增 {len(to_insert)} 条作品记录。")
+            logger.info(f"  ➜ 新增 {len(to_insert)} 条作品记录。")
             # ★★★ 核心修改：SQL占位符从 :name 改为 %s
             sql_insert = (
                 "INSERT INTO tracked_actor_media (subscription_id, tmdb_media_id, media_type, title, release_date, poster_path, status, emby_item_id, last_updated_at) "
@@ -312,7 +312,7 @@ class ActorSubscriptionProcessor:
             cursor.executemany(sql_insert, insert_data)
         
         if to_update:
-            logger.info(f"  -> 更新 {len(to_update)} 条作品记录的状态。")
+            logger.info(f"  ➜ 更新 {len(to_update)} 条作品记录的状态。")
             # ★★★ 核心修改：SQL占位符从 :name 改为 %s
             sql_update = (
                 "UPDATE tracked_actor_media SET status = %s, last_updated_at = CURRENT_TIMESTAMP "
@@ -326,7 +326,7 @@ class ActorSubscriptionProcessor:
             cursor.executemany(sql_update, update_data)
 
         if to_delete_ids:
-            logger.info(f"  -> 删除 {len(to_delete_ids)} 条过时的作品记录。")
+            logger.info(f"  ➜ 删除 {len(to_delete_ids)} 条过时的作品记录。")
             delete_params = [(subscription_id, media_id) for media_id in to_delete_ids]
             # ★★★ 核心修改：SQL占位符从 ? 改为 %s
             cursor.executemany(

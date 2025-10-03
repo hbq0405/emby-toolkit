@@ -78,7 +78,7 @@ def task_generate_all_covers(processor):
             task_manager.update_status_from_thread(100, "任务完成：没有需要处理的媒体库。")
             return
             
-        logger.info(f"  -> 将为 {total} 个媒体库生成封面: {[lib['Name'] for lib in libraries_to_process]}")
+        logger.info(f"  ➜ 将为 {total} 个媒体库生成封面: {[lib['Name'] for lib in libraries_to_process]}")
         
         # 4. 实例化服务并循环处理
         cover_service = CoverGeneratorService(config=cover_config)
@@ -171,7 +171,7 @@ def task_generate_all_custom_collection_covers(processor):
             task_manager.update_status_from_thread(100, "任务完成：没有找到已在Emby中创建的自建合集。")
             return
             
-        logger.info(f"  -> 将为 {total} 个自建合集生成封面。")
+        logger.info(f"  ➜ 将为 {total} 个自建合集生成封面。")
         
         # 4. 实例化服务并循环处理
         cover_service = CoverGeneratorService(config=cover_config)

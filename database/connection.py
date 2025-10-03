@@ -37,15 +37,15 @@ def init_db():
     """
     【PostgreSQL版】初始化数据库，创建所有表的最终结构。
     """
-    logger.debug("  -> 正在初始化 PostgreSQL 数据库，创建/验证所有表的结构...")
+    logger.debug("  ➜ 正在初始化 PostgreSQL 数据库，创建/验证所有表的结构...")
     
     try:
         with get_db_connection() as conn:
             with conn.cursor() as cursor:
-                logger.trace("  -> 数据库连接成功，开始建表...")
+                logger.trace("  ➜ 数据库连接成功，开始建表...")
 
                 # --- 1. 创建基础表 (日志、缓存、用户) ---
-                logger.trace("  -> 正在创建基础表...")
+                logger.trace("  ➜ 正在创建基础表...")
                 cursor.execute("""
                     CREATE TABLE IF NOT EXISTS processed_log (
                         item_id TEXT PRIMARY KEY, 
@@ -92,7 +92,7 @@ def init_db():
                     )
                 """)
 
-                logger.trace("  -> 正在创建 'emby_users' 表...")
+                logger.trace("  ➜ 正在创建 'emby_users' 表...")
                 cursor.execute("""
                     CREATE TABLE IF NOT EXISTS emby_users (
                         id TEXT PRIMARY KEY, name TEXT NOT NULL, is_administrator BOOLEAN,
@@ -101,7 +101,7 @@ def init_db():
                     )
                 """)
 
-                logger.trace("  -> 正在创建 'user_media_data' 表...")
+                logger.trace("  ➜ 正在创建 'user_media_data' 表...")
                 cursor.execute("""
                     CREATE TABLE IF NOT EXISTS user_media_data (
                         user_id TEXT NOT NULL,
@@ -119,7 +119,7 @@ def init_db():
                 cursor.execute("CREATE INDEX IF NOT EXISTS idx_umd_user_id ON user_media_data (user_id);")
                 cursor.execute("CREATE INDEX IF NOT EXISTS idx_umd_last_updated ON user_media_data (last_updated_at);")
 
-                logger.trace("  -> 正在创建 'collections_info' 表...")
+                logger.trace("  ➜ 正在创建 'collections_info' 表...")
                 cursor.execute("""
                     CREATE TABLE IF NOT EXISTS collections_info (
                         emby_collection_id TEXT PRIMARY KEY,
@@ -135,7 +135,7 @@ def init_db():
                     )
                 """)
 
-                logger.trace("  -> 正在创建 'custom_collections' 表...")
+                logger.trace("  ➜ 正在创建 'custom_collections' 表...")
                 cursor.execute("""
                     CREATE TABLE IF NOT EXISTS custom_collections (
                         id SERIAL PRIMARY KEY,
@@ -158,7 +158,7 @@ def init_db():
                 cursor.execute("CREATE INDEX IF NOT EXISTS idx_cc_type ON custom_collections (type)")
                 cursor.execute("CREATE INDEX IF NOT EXISTS idx_cc_status ON custom_collections (status)")
 
-                logger.trace("  -> 正在创建 'media_metadata' 表...")
+                logger.trace("  ➜ 正在创建 'media_metadata' 表...")
                 cursor.execute("""
                     CREATE TABLE IF NOT EXISTS media_metadata (
                         tmdb_id TEXT,
@@ -182,7 +182,7 @@ def init_db():
                     )
                 """)
 
-                logger.trace("  -> 正在创建 'watchlist' 表...")
+                logger.trace("  ➜ 正在创建 'watchlist' 表...")
                 cursor.execute("""
                     CREATE TABLE IF NOT EXISTS watchlist (
                         item_id TEXT PRIMARY KEY,
@@ -201,7 +201,7 @@ def init_db():
                 """)
                 cursor.execute("CREATE INDEX IF NOT EXISTS idx_watchlist_status ON watchlist (status)")
 
-                logger.trace("  -> 正在创建 'person_identity_map' 表...")
+                logger.trace("  ➜ 正在创建 'person_identity_map' 表...")
                 cursor.execute("""
                     CREATE TABLE IF NOT EXISTS person_identity_map (
                         map_id SERIAL PRIMARY KEY, 
@@ -215,7 +215,7 @@ def init_db():
                     )
                 """)
 
-                logger.trace("  -> 正在创建 'actor_metadata' 表...")
+                logger.trace("  ➜ 正在创建 'actor_metadata' 表...")
                 cursor.execute("""
                     CREATE TABLE IF NOT EXISTS actor_metadata (
                         tmdb_id INTEGER PRIMARY KEY, 
@@ -229,7 +229,7 @@ def init_db():
                     )
                 """)
 
-                logger.trace("  -> 正在创建 'actor_subscriptions' 表...")
+                logger.trace("  ➜ 正在创建 'actor_subscriptions' 表...")
                 cursor.execute("""
                     CREATE TABLE IF NOT EXISTS actor_subscriptions (
                         id SERIAL PRIMARY KEY,
@@ -248,7 +248,7 @@ def init_db():
                 """)
                 cursor.execute("CREATE INDEX IF NOT EXISTS idx_as_status ON actor_subscriptions (status)")
 
-                logger.trace("  -> 正在创建 'tracked_actor_media' 表...")
+                logger.trace("  ➜ 正在创建 'tracked_actor_media' 表...")
                 cursor.execute("""
                     CREATE TABLE IF NOT EXISTS tracked_actor_media (
                         id SERIAL PRIMARY KEY,
@@ -268,7 +268,7 @@ def init_db():
                 cursor.execute("CREATE INDEX IF NOT EXISTS idx_tam_subscription_id ON tracked_actor_media (subscription_id)")
                 cursor.execute("CREATE INDEX IF NOT EXISTS idx_tam_status ON tracked_actor_media (status)")
 
-                logger.trace("  -> 正在创建 'resubscribe_rules' 表 (多规则洗版)...")
+                logger.trace("  ➜ 正在创建 'resubscribe_rules' 表 (多规则洗版)...")
                 cursor.execute("""
                     CREATE TABLE IF NOT EXISTS resubscribe_rules (
                         id SERIAL PRIMARY KEY,
@@ -298,7 +298,7 @@ def init_db():
                     )
                 """)
 
-                logger.trace("  -> 正在创建 'resubscribe_cache' 表...")
+                logger.trace("  ➜ 正在创建 'resubscribe_cache' 表...")
                 cursor.execute("""
                     CREATE TABLE IF NOT EXISTS resubscribe_cache (
                         item_id TEXT PRIMARY KEY,
@@ -320,7 +320,7 @@ def init_db():
                 """)
                 cursor.execute("CREATE INDEX IF NOT EXISTS idx_resubscribe_cache_status ON resubscribe_cache (status);")
 
-                logger.trace("  -> 正在创建 'media_cleanup_tasks' 表...")
+                logger.trace("  ➜ 正在创建 'media_cleanup_tasks' 表...")
                 cursor.execute("""
                     CREATE TABLE IF NOT EXISTS media_cleanup_tasks (
                         id SERIAL PRIMARY KEY,
@@ -336,7 +336,7 @@ def init_db():
                 cursor.execute("CREATE INDEX IF NOT EXISTS idx_cleanup_task_type ON media_cleanup_tasks (task_type);")
                 cursor.execute("CREATE INDEX IF NOT EXISTS idx_cleanup_task_status ON media_cleanup_tasks (status);")
 
-                logger.trace("  -> 正在创建 'user_templates' 表 (用户权限模板)...")
+                logger.trace("  ➜ 正在创建 'user_templates' 表 (用户权限模板)...")
                 cursor.execute("""
                     CREATE TABLE IF NOT EXISTS user_templates (
                         id SERIAL PRIMARY KEY,
@@ -350,7 +350,7 @@ def init_db():
                     )
                 """)
 
-                logger.trace("  -> 正在创建 'invitations' 表 (邀请码)...")
+                logger.trace("  ➜ 正在创建 'invitations' 表 (邀请码)...")
                 cursor.execute("""
                     CREATE TABLE IF NOT EXISTS invitations (
                         id SERIAL PRIMARY KEY,
@@ -371,7 +371,7 @@ def init_db():
                 """)
                 cursor.execute("CREATE INDEX IF NOT EXISTS idx_invitations_token ON invitations (token);")
 
-                logger.trace("  -> 正在创建 'emby_users_extended' 表 (用户扩展信息)...")
+                logger.trace("  ➜ 正在创建 'emby_users_extended' 表 (用户扩展信息)...")
                 cursor.execute("""
                     CREATE TABLE IF NOT EXISTS emby_users_extended (
                         emby_user_id TEXT PRIMARY KEY,
@@ -389,11 +389,11 @@ def init_db():
                 cursor.execute("CREATE INDEX IF NOT EXISTS idx_eue_expiration_date ON emby_users_extended (expiration_date);")
 
                 # --- 2. 执行平滑升级检查 ---
-                logger.trace("  -> 开始执行数据库表结构升级检查...")
+                logger.trace("  ➜ 开始执行数据库表结构升级检查...")
                 
                 # --- 2.1 移除 actor_metadata 的外键约束 (如果存在) ---
                 try:
-                    logger.trace("  -> [数据库升级] 正在检查并移除 'actor_metadata' 的外键约束...")
+                    logger.trace("  ➜ [数据库升级] 正在检查并移除 'actor_metadata' 的外键约束...")
                     cursor.execute("""
                         SELECT conname FROM pg_constraint
                         WHERE conrelid = 'actor_metadata'::regclass
@@ -403,17 +403,17 @@ def init_db():
                     constraint = cursor.fetchone()
                     if constraint:
                         constraint_name = constraint['conname']
-                        logger.info(f"    -> [数据库升级] 检测到旧的外键约束 '{constraint_name}'，正在移除...")
+                        logger.info(f"    ➜ [数据库升级] 检测到旧的外键约束 '{constraint_name}'，正在移除...")
                         cursor.execute(f"ALTER TABLE actor_metadata DROP CONSTRAINT IF EXISTS {constraint_name};")
-                        logger.info(f"    -> [数据库升级] 约束 '{constraint_name}' 移除成功。")
+                        logger.info(f"    ➜ [数据库升级] 约束 '{constraint_name}' 移除成功。")
                     else:
-                        logger.trace("    -> 'actor_metadata' 表无外键约束，无需升级。")
+                        logger.trace("    ➜ 'actor_metadata' 表无外键约束，无需升级。")
                 except Exception as e_fk:
-                    logger.error(f"  -> [数据库升级] 检查或移除外键时出错: {e_fk}", exc_info=True)
+                    logger.error(f"  ➜ [数据库升级] 检查或移除外键时出错: {e_fk}", exc_info=True)
 
                 # --- 2.2 移除 person_identity_map.emby_person_id 的 NOT NULL 约束 (如果存在) ---
                 try:
-                    logger.trace("  -> [数据库升级] 正在检查 'person_identity_map.emby_person_id' 的 NOT NULL 约束...")
+                    logger.trace("  ➜ [数据库升级] 正在检查 'person_identity_map.emby_person_id' 的 NOT NULL 约束...")
                     cursor.execute("""
                         SELECT is_nullable 
                         FROM information_schema.columns 
@@ -421,13 +421,13 @@ def init_db():
                     """)
                     column_info = cursor.fetchone()
                     if column_info and column_info['is_nullable'] == 'NO':
-                        logger.trace("    -> [数据库升级] 检测到 'emby_person_id' 字段存在 NOT NULL 约束，正在移除...")
+                        logger.trace("    ➜ [数据库升级] 检测到 'emby_person_id' 字段存在 NOT NULL 约束，正在移除...")
                         cursor.execute("ALTER TABLE person_identity_map ALTER COLUMN emby_person_id DROP NOT NULL;")
-                        logger.trace("    -> [数据库升级] 约束移除成功。")
+                        logger.trace("    ➜ [数据库升级] 约束移除成功。")
                     else:
-                        logger.trace("    -> 'emby_person_id' 字段已允许为空，无需升级。")
+                        logger.trace("    ➜ 'emby_person_id' 字段已允许为空，无需升级。")
                 except Exception as e_not_null:
-                    logger.error(f"  -> [数据库升级] 检查或移除 NOT NULL 约束时出错: {e_not_null}", exc_info=True)
+                    logger.error(f"  ➜ [数据库升级] 检查或移除 NOT NULL 约束时出错: {e_not_null}", exc_info=True)
 
                 # --- 2.3 检查并添加所有缺失的列 ---
                 try:
@@ -480,28 +480,28 @@ def init_db():
                             existing_cols_for_table = all_existing_columns[table]
                             for col_name, col_type in columns_to_add.items():
                                 if col_name not in existing_cols_for_table:
-                                    logger.info(f"    -> [数据库升级] 检测到 '{table}' 表缺少 '{col_name}' 字段，正在添加...")
+                                    logger.info(f"    ➜ [数据库升级] 检测到 '{table}' 表缺少 '{col_name}' 字段，正在添加...")
                                     cursor.execute(f"ALTER TABLE {table} ADD COLUMN IF NOT EXISTS {col_name} {col_type};")
-                                    logger.info(f"    -> [数据库升级] 字段 '{col_name}' 添加成功。")
+                                    logger.info(f"    ➜ [数据库升级] 字段 '{col_name}' 添加成功。")
                                 else:
-                                    logger.trace(f"    -> 字段 '{table}.{col_name}' 已存在，跳过。")
+                                    logger.trace(f"    ➜ 字段 '{table}.{col_name}' 已存在，跳过。")
                         else:
-                            logger.warning(f"    -> [数据库升级] 检查表 '{table}' 时发现该表不存在，跳过升级。")
+                            logger.warning(f"    ➜ [数据库升级] 检查表 '{table}' 时发现该表不存在，跳过升级。")
 
                 except Exception as e_alter:
-                    logger.error(f"  -> [数据库升级] 检查或添加新字段时出错: {e_alter}", exc_info=True)
+                    logger.error(f"  ➜ [数据库升级] 检查或添加新字段时出错: {e_alter}", exc_info=True)
                 
                 # --- 2.4 确保索引存在 ---
                 try:
-                    logger.trace("  -> 正在为 'media_metadata.emby_item_id' 创建索引...")
+                    logger.trace("  ➜ 正在为 'media_metadata.emby_item_id' 创建索引...")
                     cursor.execute("CREATE INDEX IF NOT EXISTS idx_mm_emby_item_id ON media_metadata (emby_item_id);")
                 except Exception as e_index:
-                    logger.error(f"  -> 创建 'emby_item_id' 索引时出错: {e_index}", exc_info=True)
+                    logger.error(f"  ➜ 创建 'emby_item_id' 索引时出错: {e_index}", exc_info=True)
 
-                logger.trace("  -> 数据库升级检查完成。")
+                logger.trace("  ➜ 数据库升级检查完成。")
 
             conn.commit()
-            logger.info("  -> PostgreSQL 数据库初始化完成，所有表结构已创建/验证。")
+            logger.info("  ➜ PostgreSQL 数据库初始化完成，所有表结构已创建/验证。")
 
     except psycopg2.Error as e_pg:
         logger.error(f"数据库初始化时发生 PostgreSQL 错误: {e_pg}", exc_info=True)

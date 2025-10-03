@@ -40,7 +40,7 @@ class ActorDBManager:
             
             if translated_text and not contains_chinese(translated_text):
                 original_text_key = row['original_text']
-                logger.warning(f"  -> 发现无效的历史翻译缓存: '{original_text_key}' -> '{translated_text}'。将自动销毁此记录。")
+                logger.warning(f"  ➜ 发现无效的历史翻译缓存: '{original_text_key}' -> '{translated_text}'。将自动销毁此记录。")
                 try:
                     cursor.execute("DELETE FROM translation_cache WHERE original_text = %s", (original_text_key,))
                 except Exception as e_delete:
@@ -145,7 +145,7 @@ class ActorDBManager:
             if result:
                 map_id = result['map_id']
                 action = result['action']
-                logger.debug(f"  -> 演员 '{name}' (TMDb: {tmdb_id}) 处理完成。结果: {action} (map_id: {map_id})")
+                logger.debug(f"  ➜ 演员 '{name}' (TMDb: {tmdb_id}) 处理完成。结果: {action} (map_id: {map_id})")
                 return map_id, action
             else:
                 logger.error(f"upsert_person 原子化操作未能返回结果，emby_person_id={emby_id}, tmdb_id={tmdb_id}")
@@ -202,10 +202,10 @@ class ActorDBManager:
             
             # 执行
             cursor.execute(sql, tuple(metadata.values()))
-            logger.trace(f"  -> 成功将演员 (TMDb ID: {tmdb_id}) 的元数据缓存到数据库。")
+            logger.trace(f"  ➜ 成功将演员 (TMDb ID: {tmdb_id}) 的元数据缓存到数据库。")
 
         except Exception as e:
-            logger.error(f"  -> 缓存演员 (TMDb ID: {tmdb_id}) 元数据到数据库时失败: {e}", exc_info=True)
+            logger.error(f"  ➜ 缓存演员 (TMDb ID: {tmdb_id}) 元数据到数据库时失败: {e}", exc_info=True)
 
 def get_all_emby_person_ids_from_map() -> set:
     """从 person_identity_map 表中获取所有 emby_person_id 的集合。"""
