@@ -44,13 +44,13 @@ class ActorDBManager:
                 try:
                     cursor.execute("DELETE FROM translation_cache WHERE original_text = %s", (original_text_key,))
                 except Exception as e_delete:
-                    logger.error(f"销毁无效缓存 '{original_text_key}' 时失败: {e_delete}")
+                    logger.error(f"  ➜ 销毁无效缓存 '{original_text_key}' 时失败: {e_delete}")
                 return None
             
             return dict(row)
 
         except Exception as e:
-            logger.error(f"DB读取翻译缓存时发生错误 for '{text}': {e}", exc_info=True)
+            logger.error(f"  ➜ 读取翻译缓存时发生错误 for '{text}': {e}", exc_info=True)
             return None
 
 
@@ -58,7 +58,7 @@ class ActorDBManager:
         """【PostgreSQL版】将翻译结果保存到数据库，增加中文校验。"""
         
         if translated_text and translated_text.strip() and not contains_chinese(translated_text):
-            logger.warning(f"翻译结果 '{translated_text}' 不含中文，已丢弃。原文: '{original_text}'")
+            logger.warning(f"  ➜ 翻译结果 '{translated_text}' 不含中文，已丢弃。原文: '{original_text}'")
             return
 
         try:
@@ -71,9 +71,9 @@ class ActorDBManager:
                     last_updated_at = NOW();
             """
             cursor.execute(sql, (original_text, translated_text, engine_used))
-            logger.trace(f"翻译缓存存DB: '{original_text}' -> '{translated_text}' (引擎: {engine_used})")
+            logger.trace(f"  ➜ 翻译缓存存DB: '{original_text}' -> '{translated_text}' (引擎: {engine_used})")
         except Exception as e:
-            logger.error(f"DB保存翻译缓存失败 for '{original_text}': {e}", exc_info=True)
+            logger.error(f"  ➜ DB保存翻译缓存失败 for '{original_text}': {e}", exc_info=True)
 
 
     def find_person_by_any_id(self, cursor: psycopg2.extensions.cursor, **kwargs) -> Optional[dict]:
@@ -90,10 +90,10 @@ class ActorDBManager:
                 cursor.execute(f"SELECT * FROM person_identity_map WHERE {column} = %s", (value,))
                 result = cursor.fetchone()
                 if result:
-                    logger.debug(f"通过 {column}='{value}' 找到了演员记录 (map_id: {result['map_id']})。")
+                    logger.debug(f"  ➜ 通过 {column}='{value}' 找到了演员记录 (map_id: {result['map_id']})。")
                     return result
             except psycopg2.Error as e:
-                logger.error(f"查询 person_identity_map 时出错 ({column}={value}): {e}")
+                logger.error(f"  ➜ 查询 person_identity_map 时出错 ({column}={value}): {e}")
         return None
 
     def upsert_person(self, cursor: psycopg2.extensions.cursor, person_data: Dict[str, Any], emby_config: Dict[str, Any]) -> Tuple[int, str]:
@@ -220,7 +220,7 @@ def get_all_emby_person_ids_from_map() -> set:
                 ids.add(row['emby_person_id'])
         return ids
     except Exception as e:
-        logger.error(f"DB: 获取所有演员映射Emby ID时失败: {e}", exc_info=True)
+        logger.error(f"  ➜ 获取所有演员映射Emby ID时失败: {e}", exc_info=True)
         raise
 
 # --- 演员订阅数据访问 ---
@@ -234,7 +234,7 @@ def get_all_actor_subscriptions() -> List[Dict[str, Any]]:
             cursor.execute("SELECT id, tmdb_person_id, actor_name, profile_path, status, last_checked_at FROM actor_subscriptions ORDER BY added_at DESC")
             return [dict(row) for row in cursor.fetchall()]
     except Exception as e:
-        logger.error(f"DB: 获取演员订阅列表失败: {e}", exc_info=True)
+        logger.error(f"  ➜ 获取演员订阅列表失败: {e}", exc_info=True)
         raise
 
 def get_single_subscription_details(subscription_id: int) -> Optional[Dict[str, Any]]:
@@ -335,12 +335,12 @@ def add_actor_subscription(tmdb_person_id: int, actor_name: str, profile_path: s
             new_id = result['id']
             conn.commit()
             
-            logger.info(f"DB: 成功添加演员订阅 '{actor_name}' (ID: {new_id})。")
+            logger.info(f"  ➜ 成功添加演员订阅 '{actor_name}'。")
             return new_id
     except psycopg2.IntegrityError:
         raise
     except Exception as e:
-        logger.error(f"DB: 添加演员订阅 '{actor_name}' 时失败: {e}", exc_info=True)
+        logger.error(f"  ➜ 添加演员订阅 '{actor_name}' 时失败: {e}", exc_info=True)
         raise
 
 def update_actor_subscription(subscription_id: int, data: dict) -> bool:
@@ -386,11 +386,11 @@ def update_actor_subscription(subscription_id: int, data: dict) -> bool:
             """, (new_status, new_start_year, final_media_types_str, final_genres_include_json, final_genres_exclude_json, new_min_rating, subscription_id))
             
             conn.commit()
-            logger.info(f"DB: 成功更新订阅ID {subscription_id}。")
+            logger.info(f"  ➜ 成功更新订阅ID {subscription_id}。")
             return True
             
     except Exception as e:
-        logger.error(f"DB: 更新订阅 {subscription_id} 失败: {e}", exc_info=True)
+        logger.error(f"  ➜ 更新订阅 {subscription_id} 失败: {e}", exc_info=True)
         raise
 
 def delete_actor_subscription(subscription_id: int) -> bool:
@@ -401,10 +401,10 @@ def delete_actor_subscription(subscription_id: int) -> bool:
             cursor = conn.cursor()
             cursor.execute("DELETE FROM actor_subscriptions WHERE id = %s", (subscription_id,))
             conn.commit()
-            logger.info(f"DB: 成功删除订阅ID {subscription_id}。")
+            logger.info(f"  ➜ 成功删除订阅ID {subscription_id}。")
             return True
     except Exception as e:
-        logger.error(f"DB: 删除订阅 {subscription_id} 失败: {e}", exc_info=True)
+        logger.error(f"  ➜ 删除订阅 {subscription_id} 失败: {e}", exc_info=True)
         raise
 
 def get_tracked_media_by_id(media_id: int) -> Optional[Dict[str, Any]]:
@@ -417,7 +417,7 @@ def get_tracked_media_by_id(media_id: int) -> Optional[Dict[str, Any]]:
             row = cursor.fetchone()
             return dict(row) if row else None
     except Exception as e:
-        logger.error(f"DB: 获取已追踪媒体项 {media_id} 失败: {e}", exc_info=True)
+        logger.error(f"  ➜ 获取已追踪媒体项 {media_id} 失败: {e}", exc_info=True)
         raise
 
 def update_tracked_media_status(media_id: int, new_status: str) -> bool:
@@ -433,5 +433,5 @@ def update_tracked_media_status(media_id: int, new_status: str) -> bool:
             conn.commit()
             return cursor.rowcount > 0
     except Exception as e:
-        logger.error(f"DB: 更新已追踪媒体项 {media_id} 状态失败: {e}", exc_info=True)
+        logger.error(f"  ➜ 更新已追踪媒体项 {media_id} 状态失败: {e}", exc_info=True)
         raise
