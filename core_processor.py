@@ -1928,7 +1928,11 @@ class MediaProcessor:
             # 步骤 2: 获取演员列表 (保持不变)
             logger.debug(f"  ➜ 正在为 '{item_name_for_log}' 获取演员列表...")
             raw_emby_people = emby_details.get("People", [])
-            full_cast_enhanced = self._enrich_cast_from_db_and_api(raw_emby_people)
+            raw_emby_actors_only = [person for person in raw_emby_people if person.get("Type") == "Actor"]
+            logger.debug(f"  ➜ 从 {len(raw_emby_people)} 位演职员中筛选出 {len(raw_emby_actors_only)} 位演员进行编辑。")
+            
+            # 使用筛选后的列表进行后续处理
+            full_cast_enhanced = self._enrich_cast_from_db_and_api(raw_emby_actors_only)
             
             if not full_cast_enhanced:
                 logger.warning(f"项目 '{item_name_for_log}' 没有演员信息失败。")
