@@ -1425,6 +1425,17 @@ class MediaProcessor:
             item_details = emby_handler.get_emby_item_details(item_id, self.emby_url, self.emby_api_key, self.emby_user_id)
             if not item_details: raise ValueError(f"无法获取项目 {item_id} 的详情。")
             
+            logger.info(f"  ➜ 手动处理：步骤 1/5: 构建TMDb与Emby演员的ID映射...")
+            raw_emby_actors = [p for p in item_details.get("People", []) if p.get("Type") == "Actor"]
+            enriched_actors = self._enrich_cast_from_db_and_api(raw_emby_actors)
+            
+            tmdb_to_emby_map = {}
+            for person in enriched_actors:
+                person_tmdb_id = (person.get("ProviderIds") or {}).get("Tmdb")
+                if person_tmdb_id:
+                    tmdb_to_emby_map[str(person_tmdb_id)] = person.get("Id")
+            logger.info(f"    ➜ 成功构建了 {len(tmdb_to_emby_map)} 条ID映射。")
+            
             item_type = item_details.get("Type")
             tmdb_id = item_details.get("ProviderIds", {}).get("Tmdb")
             if not tmdb_id: raise ValueError(f"项目 {item_id} 缺少 TMDb ID。")
@@ -1487,13 +1498,18 @@ class MediaProcessor:
             # ======================================================================
             # 步骤 3: API前置操作 (更新演员名)
             # ======================================================================
-            logger.info("  ➜ 手动处理：步骤 2/5: 检查并更新演员名字...")
+            logger.info(f"  ➜ 手动处理：步骤 2/5: 通过API更新演员名字...")
             original_names_map = {p.get("Id"): p.get("Name") for p in item_details.get("People", []) if p.get("Id")}
-            for actor in manual_cast_list:
-                actor_id = actor.get("emby_person_id")
-                new_name = actor.get("name")
+            for actor_from_frontend in manual_cast_list:
+                tmdb_id_str = str(actor_from_frontend.get("tmdbId"))
+                
+                # ★ 使用我们新建的权威映射表来查找 emby_person_id ★
+                actor_id = tmdb_to_emby_map.get(tmdb_id_str)
+                if not actor_id: continue
+
+                new_name = actor_from_frontend.get("name")
                 original_name = original_names_map.get(actor_id)
-                if actor_id and new_name and original_name and new_name != original_name:
+                if new_name and original_name and new_name != original_name:
                     emby_handler.update_person_details(
                         person_id=actor_id, new_data={"Name": new_name},
                         emby_server_url=self.emby_url, emby_api_key=self.emby_api_key, user_id=self.emby_user_id
