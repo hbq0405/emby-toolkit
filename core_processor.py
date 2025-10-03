@@ -1411,91 +1411,73 @@ class MediaProcessor:
     # ✨✨✨手动处理✨✨✨
     def process_item_with_manual_cast(self, item_id: str, manual_cast_list: List[Dict[str, Any]], item_name: str) -> bool:
         """
-        【V2 - JSON中心化版】
-        将手动处理流程从“API直写”重构为“文件进，文件出”，与自动化流程保持逻辑统一。
-        - 读取 override 主JSON文件作为基础。
-        - 智能重建演员列表，保留完整元数据，仅更新手动修改的部分。
-        - 将新列表写回 override 主JSON及所有分集JSON。
-        - 最终通过 Emby 刷新触发神医插件加载。
+        【V2.5 - 终极修复版】
+        1. 增加了完整的日志记录，让每一步操作都清晰可见。
+        2. 修复并强化了“翻译缓存反哺”功能。
+        3. 增加了在写入文件前的强制“最终格式化”步骤，确保前缀永远正确。
         """
-        logger.info(f"  ➜ 手动处理流程启动：ItemID: {item_id} ('{item_name}')")
+        logger.info(f"  ➜ 手动处理流程启动 (文件中心化模式)：ItemID: {item_id} ('{item_name}')")
         
         try:
             # ======================================================================
             # 步骤 1: 数据准备与定位
             # ======================================================================
             item_details = emby_handler.get_emby_item_details(item_id, self.emby_url, self.emby_api_key, self.emby_user_id)
-            if not item_details:
-                raise ValueError(f"无法获取项目 {item_id} 的详情。")
+            if not item_details: raise ValueError(f"无法获取项目 {item_id} 的详情。")
             
             item_type = item_details.get("Type")
             tmdb_id = item_details.get("ProviderIds", {}).get("Tmdb")
-            if not tmdb_id:
-                raise ValueError(f"项目 {item_id} 缺少 TMDb ID，无法定位元数据文件。")
+            if not tmdb_id: raise ValueError(f"项目 {item_id} 缺少 TMDb ID。")
 
-            # 定位 override 目录中的主JSON文件
             cache_folder_name = "tmdb-movies2" if item_type == "Movie" else "tmdb-tv"
             target_override_dir = os.path.join(self.local_data_path, "override", cache_folder_name, tmdb_id)
             main_json_filename = "all.json" if item_type == "Movie" else "series.json"
             main_json_path = os.path.join(target_override_dir, main_json_filename)
 
             if not os.path.exists(main_json_path):
-                raise FileNotFoundError(f"手动处理失败：找不到主元数据文件 '{main_json_path}'。请确保该项目已被至少处理过一次。")
+                raise FileNotFoundError(f"手动处理失败：找不到主元数据文件 '{main_json_path}'。")
 
             # ======================================================================
-            # ★★★ 新增功能 1: 更新翻译缓存 ★★★
+            # 步骤 2: 更新AI翻译缓存
             # ======================================================================
+            logger.info(f"  ➜ 手动处理：步骤 1/5: 检查并更新AI翻译缓存...")
             try:
-                # 1. 从内存缓存中获取这个会话的完整原始演员列表
                 original_full_cast = self.manual_edit_cache.get(item_id)
                 if original_full_cast:
-                    # 构建一个以 emby_person_id 为键的原始数据映射表
                     original_cast_map = {str(actor.get('emby_person_id')): actor for actor in original_full_cast}
                     
                     with get_central_db_connection() as conn:
                         cursor = conn.cursor()
-                        cursor.execute("BEGIN TRANSACTION;")
-                        try:
-                            for actor_from_frontend in manual_cast_list:
-                                emby_pid = actor_from_frontend.get("emby_person_id")
-                                if not emby_pid: continue
-                                
-                                original_actor_data = original_cast_map.get(str(emby_pid))
-                                if not original_actor_data: continue
+                        updated_count = 0
+                        for actor_from_frontend in manual_cast_list:
+                            emby_pid = actor_from_frontend.get("emby_person_id")
+                            if not emby_pid: continue
+                            
+                            original_actor_data = original_cast_map.get(str(emby_pid))
+                            if not original_actor_data: continue
 
-                                new_role = actor_from_frontend.get('role', '')
-                                original_role = original_actor_data.get('character', '')
-
-                                logger.info(f"  [调试] 正在检查演员 '{original_actor_data.get('name')}'。原始角色: '{original_role}', 新角色: '{new_role}'")
-                                
-                                # 只有当角色名发生变化时才尝试更新缓存
-                                if new_role != original_role:
-                                    logger.info(f"  [调试] 角色名已改变，准备更新缓存...")
-                                    cleaned_original_role = utils.clean_character_name_static(original_role)
-                                    cleaned_new_role = utils.clean_character_name_static(new_role)
-                                    
-                                    if cleaned_new_role and cleaned_new_role != cleaned_original_role:
-                                        cache_entry = self.actor_db_manager.get_translation_from_db(
-                                            text=cleaned_original_role, by_translated_text=True, cursor=cursor
-                                        )
-                                        logger.info(f"  [调试] 反查数据库结果 cache_entry: {cache_entry}")
-                                        if cache_entry and 'original_text' in cache_entry:
-                                            original_text_key = cache_entry['original_text']
-                                            self.actor_db_manager.save_translation_to_db(
-                                                cursor=cursor,
-                                                original_text=original_text_key,
-                                                translated_text=cleaned_new_role,
-                                                engine_used="manual"
-                                            )
-                                            logger.info(f"  ➜ AI缓存通过反查更新: '{original_text_key}' -> '{cleaned_new_role}'")
-                            conn.commit()
-                        except Exception as e_cache:
-                            logger.error(f"更新翻译缓存事务中发生错误: {e_cache}", exc_info=True)
-                            conn.rollback()
+                            new_role = actor_from_frontend.get('role', '')
+                            original_role = original_actor_data.get('character', '')
+                            
+                            if new_role and new_role != original_role:
+                                cache_entry = self.actor_db_manager.get_translation_from_db(text=original_role, by_translated_text=True, cursor=cursor)
+                                if cache_entry and 'original_text' in cache_entry:
+                                    original_text_key = cache_entry['original_text']
+                                    self.actor_db_manager.save_translation_to_db(
+                                        cursor=cursor, original_text=original_text_key,
+                                        translated_text=utils.clean_character_name_static(new_role), engine_used="manual"
+                                    )
+                                    logger.debug(f"    ➜ AI翻译缓存已更新: '{original_text_key}' -> '{new_role}'")
+                                    updated_count += 1
+                        if updated_count > 0:
+                            logger.info(f"    ➜ 成功更新了 {updated_count} 条翻译缓存。")
+                        else:
+                            logger.info(f"    ➜ 无需更新翻译缓存。")
+                        conn.commit()
                 else:
-                    logger.warning(f"无法更新翻译缓存，因为在内存中找不到 ItemID {item_id} 的原始演员数据。")
+                    logger.warning(f"  ➜ 无法更新翻译缓存：内存中找不到 ItemID {item_id} 的原始演员数据会话。")
             except Exception as e:
-                logger.error(f"手动处理期间更新翻译缓存时发生顶层错误: {e}", exc_info=True)
+                logger.error(f"  ➜ 手动处理期间更新翻译缓存时发生顶层错误: {e}", exc_info=True)
             
             # ======================================================================
             # 步骤 3: API前置操作 (更新演员名)
@@ -1513,50 +1495,43 @@ class MediaProcessor:
                     )
 
             # ======================================================================
-            # ★★★ 核心修改: 文件读、改、写 ★★★
+            # 步骤 4: 文件读、改、写 (包含最终格式化)
             # ======================================================================
-            logger.info(f"  ➜ 手动处理：步骤 2/3: 正在为 '{item_name}' 重建并写入 override 元数据文件...")
-            
-            # 2.1 读取原始JSON文件
+            logger.info(f"  ➜ 手动处理：步骤 3/5: 从override文件加载原始数据...")
             with open(main_json_path, 'r', encoding='utf-8') as f:
                 data = json.load(f)
             
             original_cast_data = (data.get('casts', {}) or {}).get('cast', [])
             original_cast_map = {str(actor.get('id')): actor for actor in original_cast_data if actor.get('id')}
 
-            # 2.2 智能重建演员列表
-            new_cast_for_json = []
+            logger.info(f"  ➜ 手动处理：步骤 4/5: 重建演员列表并执行最终格式化(添加前缀)...")
+            new_cast_built = []
             for actor_from_frontend in manual_cast_list:
                 tmdb_id_str = str(actor_from_frontend.get("tmdbId"))
-                if not tmdb_id_str or tmdb_id_str not in original_cast_map:
-                    logger.warning(f"跳过演员 '{actor_from_frontend.get('name')}'，因为在原始元数据中找不到其TMDb ID {tmdb_id_str}。")
-                    continue
+                if not tmdb_id_str or tmdb_id_str not in original_cast_map: continue
                 
-                # 从原始数据中复制一份完整的条目
                 new_actor_entry = original_cast_map[tmdb_id_str].copy()
-                # 用前端提交的新信息覆盖
                 new_actor_entry['name'] = actor_from_frontend.get('name')
-                new_actor_entry['character'] = actor_from_frontend.get('role')
-                
-                new_cast_for_json.append(new_actor_entry)
+                new_actor_entry['character'] = actor_from_frontend.get('role') # 先用用户输入的原值
+                new_cast_built.append(new_actor_entry)
 
-            # 2.3 将新列表写回主JSON文件
-            if 'casts' in data and 'cast' in data['casts']:
-                data['casts']['cast'] = new_cast_for_json
-            elif 'credits' in data and 'cast' in data['credits']:
-                 data.setdefault('credits', {})['cast'] = new_cast_for_json
+            genres = item_details.get("Genres", [])
+            is_animation = "Animation" in genres or "动画" in genres or "Documentary" in genres or "纪录" in genres
+            final_formatted_cast = actor_utils.format_and_complete_cast_list(
+                new_cast_built, is_animation, self.config, mode='auto'
+            )
+            final_cast_for_json = self._build_cast_from_final_data(final_formatted_cast)
+
+            if 'casts' in data: data['casts']['cast'] = final_cast_for_json
+            else: data.setdefault('credits', {})['cast'] = final_cast_for_json
             
             with open(main_json_path, 'w', encoding='utf-8') as f:
                 json.dump(data, f, ensure_ascii=False, indent=2)
 
-            # 2.4 如果是剧集，则注入到所有分集
             if item_type == "Series":
-                source_cache_dir = os.path.join(self.local_data_path, "cache", cache_folder_name, tmdb_id)
                 self._inject_cast_to_series_files(
-                    target_dir=target_override_dir,
-                    cast_list=new_cast_for_json,
-                    series_details=item_details,
-                    source_dir=source_cache_dir
+                    target_dir=target_override_dir, cast_list=final_cast_for_json,
+                    series_details=item_details, source_dir=os.path.join(self.local_data_path, "cache", cache_folder_name, tmdb_id)
                 )
 
             # ======================================================================
@@ -1577,7 +1552,7 @@ class MediaProcessor:
             with get_central_db_connection() as conn:
                 cursor = conn.cursor()
                 # 更新 media_metadata 缓存，使其与手动修改保持一致
-                actors_for_cache = [{"id": actor.get("id"), "name": actor.get("name"), "character": actor.get("character")} for actor in new_cast_for_json]
+                actors_for_cache = [{"id": actor.get("id"), "name": actor.get("name"), "character": actor.get("character")} for actor in new_cast_built]
                 new_actors_json = json.dumps(actors_for_cache, ensure_ascii=False)
                 cursor.execute(
                     "UPDATE media_metadata SET actors_json = %s, last_synced_at = NOW() WHERE tmdb_id = %s AND item_type = %s",
