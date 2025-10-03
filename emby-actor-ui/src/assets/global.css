@@ -56,11 +56,11 @@
 }
 /* ★★★ 为模态框准备的“轻量版”样式 ★★★ */
 .modal-card-lite {
-  /* 自动使用 Naive UI 主题中的“实心”卡片背景色 */
-  background-color: var(--n-card-color) !important;
+  /* 使用我们新定义的、绝对不透明的背景色变量！ */
+  background-color: var(--modal-solid-bg-color) !important;
 
-  /* 自动使用 Naive UI 主题中的边框色 */
-  border: 1px solid var(--n-card-border-color) !important;
+  /* 边框还是用原来的，保持风格统一 */
+  border: 1px solid var(--card-border-color) !important;
   
   /* 继承我们自定义的圆角 */
   border-radius: 12px !important;
