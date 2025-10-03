@@ -926,21 +926,11 @@ class MediaProcessor:
     # ---核心处理流程 ---
     def _process_item_core_logic_api_version(self, item_details_from_emby: Dict[str, Any], force_reprocess_this_item: bool, force_fetch_from_tmdb: bool = False):
         """
-        【V-Final-Pro - 带反哺功能的 Override 文件中心化工作流】
-        在 V3 的基础上，为新增演员加入了“实时查询-反哺缓存”机制，使系统具备自学习能力。
-        - 起点: 从 cache 文件或 TMDB API 加载权威数据。
-        - 核心: 复用 _process_cast_list_from_api 进行演员数据融合与翻译。
-        - 终点:
-          1. 【API】仅用于更新发生变化的演员名。
-          2. 【文件】将豆瓣评分直接写入 override JSON 的 'vote_average' 字段。
-          3. 【文件】智能重建演员列表：
-             - 对已有演员：保留全部元数据，仅更新名字和角色。
-             - 对新增演员：优先查本地缓存，若无则通过 TMDB API 查询，并将结果【反哺】回本地数据库，再构建完整条目。
-          4. 【文件】将重建后的演员列表写回 override 的主JSON及所有分集JSON。
-          5. 【API】触发 Emby 刷新，由神医插件接管。
+        【V-Final-Architecture-Pro - “设计师”最终版】
+        本函数作为“设计师”，只负责计算和思考，产出“设计图”和“物料清单”，然后全权委托给施工队。
         """
         # ======================================================================
-        # 阶段 0: 基础信息准备和路径定义
+        # 阶段 1: 准备工作与备料
         # ======================================================================
         item_id = item_details_from_emby.get("Id")
         item_name_for_log = item_details_from_emby.get("Name", f"未知项目(ID:{item_id})")
@@ -953,123 +943,104 @@ class MediaProcessor:
         if not self.local_data_path:
             logger.error(f"项目 '{item_name_for_log}' 处理失败：未在配置中设置“本地数据源路径”。")
             return False
-
-        cache_folder_name = "tmdb-movies2" if item_type == "Movie" else "tmdb-tv"
-        source_cache_dir = os.path.join(self.local_data_path, "cache", cache_folder_name, tmdb_id)
-        target_override_dir = os.path.join(self.local_data_path, "override", cache_folder_name, tmdb_id)
-        main_json_filename = "all.json" if item_type == "Movie" else "series.json"
-        source_json_path = os.path.join(source_cache_dir, main_json_filename)
-        target_json_path = os.path.join(target_override_dir, main_json_filename)
-
+        
         try:
             authoritative_cast_source = []
-            tmdb_details_for_extra = None
-            
-            # ======================================================================
-            # 阶段 1: 数据源获取
-            # ======================================================================
-            if force_fetch_from_tmdb:
-                logger.info(f"  ➜ [API模式] 已激活，将直接从 TMDB API 获取 '{item_name_for_log}' 的数据。")
-                if self.tmdb_api_key:
-                    if item_type == "Movie":
-                        movie_details = tmdb_handler.get_movie_details(tmdb_id, self.tmdb_api_key)
-                        if movie_details:
-                            tmdb_details_for_extra = movie_details
-                            credits_data = movie_details.get("credits") or movie_details.get("casts")
-                            if credits_data: authoritative_cast_source = credits_data.get("cast", [])
-                    elif item_type == "Series":
-                        aggregated_tmdb_data = tmdb_handler.aggregate_full_series_data_from_tmdb(int(tmdb_id), self.tmdb_api_key)
-                        if aggregated_tmdb_data:
-                            tmdb_details_for_extra = aggregated_tmdb_data.get("series_details")
-                            all_episodes = list(aggregated_tmdb_data.get("episodes_details", {}).values())
-                            authoritative_cast_source = _aggregate_series_cast_from_tmdb_data(aggregated_tmdb_data["series_details"], all_episodes)
-                if not authoritative_cast_source:
-                    logger.error(f"  ➜ [API模式] 从 TMDB API 获取演员列表失败，处理中止。")
-                    return False
+            tmdb_details_for_extra = None # 用于内部缓存
+
+            # 在API模式下，设计师需要自己去获取最新的材料
+            if force_fetch_from_tmdb and self.tmdb_api_key:
+                logger.info(f"  ➜ [设计师备料 - API模式] 正在从 TMDB 获取最新演员表...")
+                if item_type == "Movie":
+                    movie_details = tmdb_handler.get_movie_details(tmdb_id, self.tmdb_api_key)
+                    if movie_details:
+                        tmdb_details_for_extra = movie_details
+                        authoritative_cast_source = (movie_details.get("credits") or movie_details.get("casts", {})).get("cast", [])
+                elif item_type == "Series":
+                    aggregated_tmdb_data = tmdb_handler.aggregate_full_series_data_from_tmdb(int(tmdb_id), self.tmdb_api_key)
+                    if aggregated_tmdb_data:
+                        tmdb_details_for_extra = aggregated_tmdb_data.get("series_details")
+                        all_episodes = list(aggregated_tmdb_data.get("episodes_details", {}).values())
+                        authoritative_cast_source = _aggregate_series_cast_from_tmdb_data(aggregated_tmdb_data["series_details"], all_episodes)
             else:
-                logger.info(f"  ➜ [文件模式] 开始为 '{item_name_for_log}' 处理本地缓存文件。")
-                if not os.path.exists(source_json_path):
-                    logger.error(f"  ➜ [文件模式] 源缓存文件不存在，无法处理: {source_json_path}")
-                    return False
-                
-                logger.debug(f"  ➜ 正在将源缓存从 '{source_cache_dir}' 复制到 '{target_override_dir}'...")
-                try:
-                    shutil.copytree(source_cache_dir, target_override_dir, dirs_exist_ok=True)
-                except Exception as e:
-                    logger.error(f"  ➜ 复制缓存目录时失败: {e}", exc_info=True)
-                    return False
-
-                local_json_data = _read_local_json(target_json_path)
-                if not local_json_data:
-                    logger.error(f"  ➜ 读取 override 目录中的JSON文件失败: {target_json_path}")
-                    return False
-                
-                tmdb_details_for_extra = local_json_data
-                credits_data = local_json_data.get("casts", {})
-                authoritative_cast_source = credits_data.get("cast", [])
-                logger.info(f"  ➜ 成功从本地JSON加载了 {len(authoritative_cast_source)} 位演员作为数据基础。")
+                # 在文件模式下，设计师也需要知道原始材料是什么样的，以便做对比
+                logger.info(f"  ➜ [设计师备料 - 文件模式] 正在从 cache 文件中预读演员表...")
+                cache_folder_name = "tmdb-movies2" if item_type == "Movie" else "tmdb-tv"
+                source_cache_dir = os.path.join(self.local_data_path, "cache", cache_folder_name, tmdb_id)
+                main_json_filename = "all.json" if item_type == "Movie" else "series.json"
+                source_json_path = os.path.join(source_cache_dir, main_json_filename)
+                if os.path.exists(source_json_path):
+                    source_json_data = _read_local_json(source_json_path)
+                    if source_json_data:
+                        tmdb_details_for_extra = source_json_data
+                        authoritative_cast_source = (source_json_data.get("casts", {}) or source_json_data.get("credits", {})).get("cast", [])
 
             # ======================================================================
-            # 阶段 2: 核心处理 (复用)
+            # 阶段 2: 核心计算 (生成设计图)
             # ======================================================================
-            all_emby_people = item_details_from_emby.get("People", [])
-            current_emby_cast_raw = [p for p in all_emby_people if p.get("Type") == "Actor"]
-            enriched_emby_cast = self._enrich_cast_from_db_and_api(current_emby_cast_raw)
-            douban_cast_raw, douban_rating = self._get_douban_data_with_local_cache(item_details_from_emby)
-
             with get_central_db_connection() as conn:
                 cursor = conn.cursor()
-                final_processed_cast = self._process_cast_list_from_api(
-                    tmdb_cast_people=authoritative_cast_source, emby_cast_people=enriched_emby_cast,
-                    douban_cast_list=douban_cast_raw, item_details_from_emby=item_details_from_emby,
-                    cursor=cursor, tmdb_api_key=self.tmdb_api_key, stop_event=self.get_stop_event()
-                )
+                
+                all_emby_people = item_details_from_emby.get("People", [])
+                current_emby_cast_raw = [p for p in all_emby_people if p.get("Type") == "Actor"]
+                enriched_emby_cast = self._enrich_cast_from_db_and_api(current_emby_cast_raw)
+                douban_cast_raw, douban_rating = self._get_douban_data_with_local_cache(item_details_from_emby)
 
+                final_processed_cast = self._process_cast_list_from_api(
+                    tmdb_cast_people=authoritative_cast_source,
+                    emby_cast_people=enriched_emby_cast,
+                    douban_cast_list=douban_cast_raw,
+                    item_details_from_emby=item_details_from_emby,
+                    cursor=cursor,
+                    tmdb_api_key=self.tmdb_api_key,
+                    stop_event=self.get_stop_event()
+                )
                 if final_processed_cast is None:
-                    raise ValueError("核心处理流程结束，但未能生成有效的最终演员列表。")
+                    raise ValueError("未能生成有效的设计图 (final_processed_cast)。")
 
                 # ======================================================================
-            # 阶段 3: 成果交付与收尾
-            # ======================================================================
-            logger.info("  ➜ 数据处理完成，正在交付给资产同步模块进行持久化...")
+                # 阶段 3: 委托施工
+                # ======================================================================
+                logger.info("  ➜ 设计图制作完成，正在将所有材料和图纸打包委托给施工队...")
 
-            # 步骤 3.1: 【API】更新演员名 (这是唯一需要保留的API写操作)
-            all_emby_people = item_details_from_emby.get("People", [])
-            original_names_map = {p.get("Id"): p.get("Name") for p in all_emby_people if p.get("Id")}
-            for actor in final_processed_cast:
-                actor_id = actor.get("emby_person_id")
-                new_name = actor.get("name")
-                original_name = original_names_map.get(actor_id)
-                if actor_id and new_name and original_name and new_name != original_name:
-                    emby_handler.update_person_details(
-                        person_id=actor_id, new_data={"Name": new_name},
-                        emby_server_url=self.emby_url, emby_api_key=self.emby_api_key, user_id=self.emby_user_id
-                    )
-            
-            # ★★★ 核心修改：调用统一的资产同步函数来处理所有文件操作 ★★★
-            self.sync_single_item_assets(
-                item_id=item_id,
-                update_description="主流程处理完成",
-                final_cast_override=final_processed_cast,
-                douban_rating_override=douban_rating,
-                original_cast_for_build=authoritative_cast_source, # 传入原始素材
-                cursor_for_build=cursor # 传入数据库游标
-            )
+                # 3.1 API前置工作: 更新演员名 (这是设计师唯一需要和外界沟通的)
+                original_names_map = {p.get("Id"): p.get("Name") for p in all_emby_people if p.get("Id")}
+                for actor in final_processed_cast:
+                    actor_id = actor.get("emby_person_id")
+                    new_name = actor.get("name")
+                    original_name = original_names_map.get(actor_id)
+                    if actor_id and new_name and original_name and new_name != original_name:
+                        emby_handler.update_person_details(
+                            person_id=actor_id, new_data={"Name": new_name},
+                            emby_server_url=self.emby_url, emby_api_key=self.emby_api_key, user_id=self.emby_user_id
+                        )
 
-            # 步骤 3.2: 【API】触发Emby刷新
-            logger.info(f"  ➜ 持久化完成，正在通知 Emby 刷新...")
-            emby_handler.refresh_emby_item_metadata(
-                item_emby_id=item_id, emby_server_url=self.emby_url, emby_api_key=self.emby_api_key,
-                user_id_for_ops=self.emby_user_id, lock_fields=["Cast"] if self.auto_lock_cast_enabled else None,
-                replace_all_metadata_param=True, item_name_for_log=item_name_for_log
-            )
+                # 3.2 打包委托: 调用施工队总管，把所有东西都交给他
+                self.sync_single_item_assets(
+                    item_id=item_id,
+                    update_description="主流程处理完成",
+                    final_cast_override=final_processed_cast,
+                    douban_rating_override=douban_rating,
+                    original_cast_for_build=authoritative_cast_source,
+                    cursor_for_build=cursor
+                )
 
-            # 步骤 3.3: 更新内部数据库和日志
-            with get_central_db_connection() as conn:
-                cursor = conn.cursor()
+                # ======================================================================
+                # 阶段 4: 竣工验收
+                # ======================================================================
+                # 4.1 API验收: 触发刷新
+                logger.info(f"  ➜ 施工完成，正在通知 Emby 验收...")
+                emby_handler.refresh_emby_item_metadata(
+                    item_emby_id=item_id, emby_server_url=self.emby_url, emby_api_key=self.emby_api_key,
+                    user_id_for_ops=self.emby_user_id, lock_fields=["Cast"] if self.auto_lock_cast_enabled else None,
+                    replace_all_metadata_param=True, item_name_for_log=item_name_for_log
+                )
+
+                # 4.2 内部验收: 更新数据库日志和缓存
                 _save_metadata_to_cache(
                     cursor=cursor, tmdb_id=tmdb_id, emby_item_id=item_id, item_type=item_type,
-                    item_details_from_emby=item_details_from_emby, final_processed_cast=final_processed_cast,
+                    item_details_from_emby=item_details_from_emby,
+                    final_processed_cast=final_processed_cast,
                     tmdb_details_for_extra=tmdb_details_for_extra
                 )
                 self._mark_item_as_processed(cursor, item_id, item_name_for_log, score=10.0)
@@ -1080,7 +1051,7 @@ class MediaProcessor:
             logger.warning(f"处理 '{item_name_for_log}' 的过程中断: {e}")
             return False
         except Exception as outer_e:
-            logger.error(f"Override文件中心化处理流程中发生未知严重错误 for '{item_name_for_log}': {outer_e}", exc_info=True)
+            logger.error(f"设计师核心处理流程中发生未知严重错误 for '{item_name_for_log}': {outer_e}", exc_info=True)
             try:
                 with get_central_db_connection() as conn_fail:
                     self.log_db_manager.save_to_failed_log(conn_fail.cursor(), item_id, item_name_for_log, f"核心处理异常: {str(outer_e)}", item_type)
@@ -1088,7 +1059,7 @@ class MediaProcessor:
                 logger.error(f"写入失败日志时再次发生错误: {log_e}")
             return False
 
-        logger.trace(f"  ✅ 处理完成 '{item_name_for_log}'")
+        logger.trace(f"  ✅ 设计师工作完成 '{item_name_for_log}'")
         return True
 
     # --- 核心处理器 ---
@@ -2288,29 +2259,38 @@ class MediaProcessor:
                            original_cast_for_build: Optional[List[Dict[str, Any]]] = None,
                            cursor_for_build: Optional[psycopg2.extensions.cursor] = None):
         """
-        【V3 - 建造大师版】
-        在双角色模式基础上，集成了完整的“智能演员列表建造”逻辑。
+        【V4 - 精装修施工队最终版】
+        本函数是唯一的施工队，负责所有 override 文件的读写操作。
         """
         item_id = item_details.get("Id")
         item_name_for_log = item_details.get("Name", f"未知项目(ID:{item_id})")
         item_type = item_details.get("Type")
         log_prefix = "[覆盖缓存-元数据同步]"
 
-        # --- 路径定义 ---
+        # 定义核心路径
         cache_folder_name = "tmdb-movies2" if item_type == "Movie" else "tmdb-tv"
         source_cache_dir = os.path.join(self.local_data_path, "cache", cache_folder_name, tmdb_id)
         target_override_dir = os.path.join(self.local_data_path, "override", cache_folder_name, tmdb_id)
         main_json_filename = "all.json" if item_type == "Movie" else "series.json"
         main_json_path = os.path.join(target_override_dir, main_json_filename)
 
-        # ★★★ 核心重构：根据 final_cast_override 是否存在，决定数据流向 ★★★
-        perfect_cast_for_injection = []
-        
+        # 步骤 1: 进场施工，打好基础 (复制毛坯房)
+        # 只有在需要进行主体装修时（主流程调用），才需要复制。追更等零活不需要。
         if final_cast_override is not None:
-            # --- 角色一：备份员（现在也是建造大师） ---
-            logger.info(f"  ➜ {log_prefix} [模式1: 建造与备份] 开始为 '{item_name_for_log}' 智能建造并备份元数据...")
-            
-            # ★★★ 完整的智能建造逻辑，从主流程迁移至此 ★★★
+            logger.info(f"  ➜ {log_prefix} [模式1: 主体装修] 开始为 '{item_name_for_log}' 施工...")
+            if not os.path.exists(source_cache_dir):
+                logger.error(f"  ➜ {log_prefix} 施工中止：找不到源缓存目录 (毛坯房)！路径: {source_cache_dir}")
+                return
+            try:
+                shutil.copytree(source_cache_dir, target_override_dir, dirs_exist_ok=True)
+            except Exception as e:
+                logger.error(f"  ➜ {log_prefix} 复制毛坯房时失败: {e}", exc_info=True)
+                return
+
+        perfect_cast_for_injection = []
+        if final_cast_override is not None:
+            # --- 角色一：主体精装修 ---
+            new_cast_for_json = []
             if original_cast_for_build is not None and cursor_for_build is not None:
                 original_tmdb_actor_map = {str(a.get('id')): a for a in original_cast_for_build if a.get('id')}
                 for actor in final_cast_override:
@@ -2318,17 +2298,14 @@ class MediaProcessor:
                     if not tmdb_id_str or tmdb_id_str == 'None': continue
 
                     if tmdb_id_str in original_tmdb_actor_map:
-                        # 更新现有演员
                         new_actor_entry = original_tmdb_actor_map[tmdb_id_str].copy()
                         new_actor_entry['name'] = actor.get('name')
                         new_actor_entry['character'] = actor.get('character')
                     else:
-                        # 新增演员，执行“缓存优先，API后备+反哺”
                         actor_tmdb_id_int = int(tmdb_id_str)
                         metadata_source = None
                         cached_meta = self._get_actor_metadata_from_cache(actor_tmdb_id_int, cursor_for_build)
-                        if cached_meta and cached_meta.get("profile_path"):
-                            metadata_source = cached_meta
+                        if cached_meta and cached_meta.get("profile_path"): metadata_source = cached_meta
                         
                         if not metadata_source and self.tmdb_api_key:
                             person_details = tmdb_handler.get_person_details_tmdb(actor_tmdb_id_int, self.tmdb_api_key)
@@ -2345,37 +2322,37 @@ class MediaProcessor:
                             "popularity": final_meta.get("popularity", 0.0), "cast_id": None, "credit_id": None,
                             "order": actor.get("order", 999)
                         }
-                    perfect_cast_for_injection.append(new_actor_entry)
+                    new_cast_for_json.append(new_actor_entry)
             else:
-                # 如果缺少原料，则退回简单模式
-                perfect_cast_for_injection = self._build_cast_from_final_data(final_cast_override)
+                new_cast_for_json = self._build_cast_from_final_data(final_cast_override)
+            
+            perfect_cast_for_injection = new_cast_for_json
+
+            # 步骤 2: 修改主文件
+            with open(main_json_path, 'r+', encoding='utf-8') as f:
+                data = json.load(f)
+                if douban_rating_override is not None: data['vote_average'] = douban_rating_override
+                if 'casts' in data: data['casts']['cast'] = perfect_cast_for_injection
+                else: data.setdefault('credits', {})['cast'] = perfect_cast_for_injection
+                
+                f.seek(0)
+                json.dump(data, f, ensure_ascii=False, indent=2)
+                f.truncate()
         else:
-            # --- 角色二：处理器 ---
-            # 数据源是 override 目录下的主JSON文件
-            data_source_mode = "模式2: 处理 (文件 -> 文件)"
-            logger.info(f"  ➜ {log_prefix} [{data_source_mode}] 开始为 '{item_name_for_log}' 的新分集处理元数据...")
-            
+            # --- 角色二：零活处理 (追更) ---
+            logger.info(f"  ➜ {log_prefix} [模式2: 零活处理] 开始为 '{item_name_for_log}' 的新分集施工...")
             if not os.path.exists(main_json_path):
-                logger.error(f"  ➜ {log_prefix} 追更任务失败：找不到主元数据文件 '{main_json_path}'。请先对该剧集执行一次完整的处理。")
+                logger.error(f"  ➜ {log_prefix} 追更任务失败：找不到主元数据文件 '{main_json_path}'。")
                 return
-            
             try:
                 with open(main_json_path, 'r', encoding='utf-8') as f:
                     data = json.load(f)
-                    if 'casts' in data and 'cast' in data['casts']:
-                        perfect_cast_for_injection = data['casts']['cast']
-                    elif 'credits' in data and 'cast' in data['credits']:
-                        perfect_cast_for_injection = data['credits']['cast']
-                
-                if not perfect_cast_for_injection:
-                    logger.warning(f"  ➜ {log_prefix} 主元数据文件 '{main_json_path}' 中没有演员信息，无法为新分集注入。")
-                    return
-                logger.info(f"  ➜ {log_prefix} 成功从主文件加载 {len(perfect_cast_for_injection)} 位演员信息。")
+                    perfect_cast_for_injection = (data.get('casts', {}) or data.get('credits', {})).get('cast', [])
             except Exception as e:
                 logger.error(f"  ➜ {log_prefix} 读取主元数据文件 '{main_json_path}' 时失败: {e}", exc_info=True)
                 return
 
-        # --- 公共逻辑：将最终确定的演员表注入到所有需要的季/集文件中 ---
+        # 步骤 3: 公共施工 - 注入分集文件
         if item_type == "Series" and perfect_cast_for_injection:
             self._inject_cast_to_series_files(
                 target_dir=target_override_dir, 
@@ -2500,8 +2477,8 @@ class MediaProcessor:
                                 original_cast_for_build: Optional[List[Dict[str, Any]]] = None,
                                 cursor_for_build: Optional[psycopg2.extensions.cursor] = None):
         """
-        【V2.2 - 建造参数版】
-        增加了建造所需的 original_cast_for_build 和 cursor_for_build 参数。
+        【V2.4 - 项目经理最终版】
+        纯粹的项目经理，负责接收设计师的所有材料，并分发给施工队。
         """
         log_prefix = f"实时覆盖缓存同步"
         logger.trace(f"--- {log_prefix} 开始执行 (ItemID: {item_id}) ---")
@@ -2511,7 +2488,6 @@ class MediaProcessor:
             return
 
         try:
-            # 仅获取执行所需的最少信息
             item_details = emby_handler.get_emby_item_details(
                 item_id, self.emby_url, self.emby_api_key, self.emby_user_id,
                 fields="ProviderIds,Type,Name,IndexNumber,ParentIndexNumber"
@@ -2524,10 +2500,10 @@ class MediaProcessor:
                 logger.warning(f"{log_prefix} 项目 '{item_details.get('Name')}' 缺少TMDb ID，无法同步。")
                 return
 
-            # 1. 同步图片 
+            # 1. 调度外墙施工队
             self.sync_item_images(item_details, update_description, episode_ids_to_sync=episode_ids_to_sync)
             
-            # 2. 同步元数据文件 (现在会根据参数智能选择模式)
+            # 2. 调度精装修施工队，并把所有图纸和材料都给他
             self.sync_item_metadata(
                 item_details, 
                 tmdb_id, 
@@ -2538,7 +2514,7 @@ class MediaProcessor:
                 cursor_for_build=cursor_for_build
             )
 
-            # 3. 记录同步时间戳 
+            # 3. 记录工时
             timestamp_to_log = sync_timestamp_iso or datetime.now(timezone.utc).isoformat()
             with get_central_db_connection() as conn:
                 cursor = conn.cursor()
