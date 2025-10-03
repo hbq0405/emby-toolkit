@@ -56,11 +56,27 @@
 }
 /* ★★★ 为模态框准备的“轻量版”样式 ★★★ */
 .modal-card-lite {
-  background: var(--card-bg-color) !important;
-  border: 1px solid var(--card-border-color) !important;
-  color: var(--text-color) !important;
+  /* 自动使用 Naive UI 主题中的“实心”卡片背景色 */
+  background-color: var(--n-card-color) !important;
+
+  /* 自动使用 Naive UI 主题中的边框色 */
+  border: 1px solid var(--n-card-border-color) !important;
+  
+  /* 继承我们自定义的圆角 */
   border-radius: 12px !important;
-  /* 放弃了最卡的 backdrop-filter 和 box-shadow */
+
+  /* 给一个简单、不卡顿的阴影，让它有点立体感 */
+  box-shadow: 0 6px 16px -8px rgba(0, 0, 0, 0.32) !important;
+
+  /* 确保动画效果被彻底禁用，保证丝滑 */
+  animation: none !important;
+  transition: none !important;
+}
+
+/* 顺便把 hover 效果也干掉，防止意外的性能问题 */
+.modal-card-lite:hover {
+  transform: none !important;
+  box-shadow: 0 6px 16px -8px rgba(0, 0, 0, 0.32) !important;
 }
 @keyframes card-fade-in { to { opacity: 1; transform: translateY(0); } }
 .dashboard-card:nth-child(1) { animation-delay: 0.1s; }
