@@ -890,7 +890,7 @@ def append_item_to_filter_collection_db(collection_id: int, new_item_tmdb_id: st
                 (new_json_data, new_in_library_count, collection_id)
             )
             conn.commit()
-            logger.info(f"  ➜ 数据库状态同步：已将新媒体项 '{item_name}' 追加到规则合集 '{collection_name}'")
+            logger.info(f"  ➜ 数据库状态同步：已将新媒体项 《{item_name}》 追加到规则合集 《{collection_name}》。")
             return True
 
     except Exception as e:
