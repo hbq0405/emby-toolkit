@@ -286,7 +286,7 @@ def update_custom_collection(collection_id: int, name: str, type: str, definitio
             
             if cursor.rowcount > 0:
                 conn.commit()
-                logger.info(f"  ✅ 成功更新自定义合集 ID: {name}。")
+                logger.info(f"  ✅ 成功更新自定义合集: {name}。")
                 return True
             else:
                 logger.warning(f"尝试更新自定义合集 ID {collection_id}，但在数据库中未找到该记录。")
