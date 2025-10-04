@@ -2146,7 +2146,7 @@ class MediaProcessor:
                 return
 
             # 1. 调度外墙施工队
-            self.sync_item_images(item_details, update_description, episode_ids_to_sync=episode_ids_to_sync)
+            #self.sync_item_images(item_details, update_description, episode_ids_to_sync=episode_ids_to_sync)
             
             # 2. 调度精装修施工队，并把所有图纸和材料都给他
             self.sync_item_metadata(
