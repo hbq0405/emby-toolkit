@@ -827,19 +827,15 @@ class MediaProcessor:
                 )
 
                 # 步骤 3.2: 通知 Emby 刷新
-                logger.info(f"  ➜ 处理完成，正在向 Emby 提交刷新请求...")
-                refresh_thread = threading.Thread(
-                    target=emby_handler.refresh_emby_item_metadata,
-                    kwargs={
-                        "item_emby_id": item_id,
-                        "emby_server_url": self.emby_url,
-                        "emby_api_key": self.emby_api_key,
-                        "user_id_for_ops": self.emby_user_id,
-                        "replace_all_metadata_param": True,
-                        "item_name_for_log": f"{item_name_for_log} (异步)"
-                    }
+                logger.info(f"  ➜ 处理完成，正在通知 Emby 刷新...")
+                emby_handler.refresh_emby_item_metadata(
+                    item_emby_id=item_id,
+                    emby_server_url=self.emby_url,
+                    emby_api_key=self.emby_api_key,
+                    user_id_for_ops=self.emby_user_id,
+                    replace_all_metadata_param=True, 
+                    item_name_for_log=item_name_for_log
                 )
-                refresh_thread.start()
 
                 # 步骤 3.3: 更新我们自己的数据库缓存和日志
                 _save_metadata_to_cache(
