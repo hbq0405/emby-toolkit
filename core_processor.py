@@ -653,7 +653,42 @@ class MediaProcessor:
             authoritative_cast_source = []
             tmdb_details_for_extra = None # 用于内部缓存
 
-            # 在API模式下，设计师需要自己去获取最新的材料
+            # 步骤1:检查json是否缺失
+            cache_folder_name = "tmdb-movies2" if item_type == "Movie" else "tmdb-tv"
+            source_cache_dir = os.path.join(self.local_data_path, "cache", cache_folder_name, tmdb_id)
+            main_json_filename = "all.json" if item_type == "Movie" else "series.json"
+            source_json_path = os.path.join(source_cache_dir, main_json_filename)
+
+            # 步骤2：如果不存在则通知Emby刷新生成json
+            if not os.path.exists(source_json_path):
+                logger.warning(f"  ➜ 核心处理前置检查：本地元数据文件 '{source_json_path}' 不存在。启动备用方案...")
+                logger.info(f"  ➜ 正在通知 Emby 为 '{item_name_for_log}' 刷新元数据以生成缓存文件...")
+                
+                emby_handler.refresh_emby_item_metadata(
+                    item_emby_id=item_id,
+                    emby_server_url=self.emby_url,
+                    emby_api_key=self.emby_api_key,
+                    user_id_for_ops=self.emby_user_id,
+                    replace_all_metadata_param=False, 
+                    item_name_for_log=item_name_for_log
+                )
+
+                # 循环等待文件生成
+                for attempt in range(10):
+                    logger.info(f"  ➜ 等待3秒后检查文件... (第 {attempt + 1}/10 次尝试)")
+                    time_module.sleep(3)
+                    if os.path.exists(source_json_path):
+                        logger.info(f"  ➜ 文件已成功生成！")
+                        break
+            
+            # 在所有尝试后，最终确认文件是否存在，如果还不存在就直接跳过
+            if not os.path.exists(source_json_path):
+                logger.error(f"  ➜ 尝试10次后，元数据文件仍未生成。无法继续处理 '{item_name_for_log}'，已跳过。")
+                return False
+            # ▲▲▲ 前置检查和Plan B结束 ▲▲▲
+
+
+            # 步骤3：如果是强制重处理就从TMDb拉取最新元数据，否则直接用本地的元数据。
             if force_fetch_from_tmdb and self.tmdb_api_key:
                 logger.info(f"  ➜ 正在从 TMDB 获取最新演员表...")
                 if item_type == "Movie":
@@ -668,49 +703,14 @@ class MediaProcessor:
                         all_episodes = list(aggregated_tmdb_data.get("episodes_details", {}).values())
                         authoritative_cast_source = _aggregate_series_cast_from_tmdb_data(aggregated_tmdb_data["series_details"], all_episodes)
             else:
-                # 在文件模式下，设计师也需要知道原始材料是什么样的，以便做对比
+                # 在文件模式下，直接读取我们已经确认存在的文件
                 logger.info(f"  ➜ 正在从 cache 文件中预读演员表...")
-                cache_folder_name = "tmdb-movies2" if item_type == "Movie" else "tmdb-tv"
-                source_cache_dir = os.path.join(self.local_data_path, "cache", cache_folder_name, tmdb_id)
-                main_json_filename = "all.json" if item_type == "Movie" else "series.json"
-                source_json_path = os.path.join(source_cache_dir, main_json_filename)
-
-                # ▼▼▼ 应急方案 ▼▼▼
-                if not os.path.exists(source_json_path):
-                    logger.warning(f"  ➜ 本地元数据文件 '{source_json_path}' 不存在。启动备用方案...")
-                    logger.info(f"  ➜ 正在通知 Emby 为 '{item_name_for_log}' 刷新元数据以生成缓存文件...")
-                    
-                    # 触发一次刷新，但不替换所有元数据，目的是让神医插件生成文件
-                    emby_handler.refresh_emby_item_metadata(
-                        item_emby_id=item_id,
-                        emby_server_url=self.emby_url,
-                        emby_api_key=self.emby_api_key,
-                        user_id_for_ops=self.emby_user_id,
-                        replace_all_metadata_param=False, 
-                        item_name_for_log=item_name_for_log
-                    )
-
-                    # 循环等待文件生成
-                    for attempt in range(10):
-                        logger.info(f"  ➜ 等待3秒后检查文件... (第 {attempt + 1}/10 次尝试)")
-                        time_module.sleep(3)
-                        if os.path.exists(source_json_path):
-                            logger.info(f"  ➜ 文件已成功生成！")
-                            break
-                
-                # 在尝试后，最终检查文件是否存在
-                if os.path.exists(source_json_path):
-                    source_json_data = _read_local_json(source_json_path)
-                    if source_json_data:
-                        tmdb_details_for_extra = source_json_data
-                        authoritative_cast_source = (source_json_data.get("casts", {}) or source_json_data.get("credits", {})).get("cast", [])
-                    else:
-                        # 文件存在但内容为空或无效
-                        logger.error(f"  ➜ 元数据文件 '{source_json_path}' 无效或为空，无法处理 '{item_name_for_log}'。")
-                        return False
+                source_json_data = _read_local_json(source_json_path)
+                if source_json_data:
+                    tmdb_details_for_extra = source_json_data
+                    authoritative_cast_source = (source_json_data.get("casts", {}) or source_json_data.get("credits", {})).get("cast", [])
                 else:
-                    # 如果10次尝试后文件仍然不存在
-                    logger.error(f"  ➜ 尝试10次后，元数据文件仍未生成。跳过处理 '{item_name_for_log}'。")
+                    logger.error(f"  ➜ 元数据文件 '{source_json_path}' 无效或为空，无法处理 '{item_name_for_log}'。")
                     return False
 
             # ======================================================================
