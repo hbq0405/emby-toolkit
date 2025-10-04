@@ -1721,7 +1721,7 @@ class MediaProcessor:
             # --- 步骤 1: 获取 Emby 媒体库中的所有项目 ---
             if update_status_callback: update_status_callback(5, "正在获取 Emby 媒体库项目...")
             
-            all_emby_items = emby_handler.get_emby_library_items_old(
+            all_emby_items = emby_handler.get_emby_library_items(
                 base_url=self.emby_url,
                 api_key=self.emby_api_key,
                 user_id=self.emby_user_id,
