@@ -1968,7 +1968,7 @@ class MediaProcessor:
                         if season_number is not None and episode_number is not None:
                             emby_handler.download_emby_image(child_id, "Primary", os.path.join(image_override_dir, f"season-{season_number}-episode-{episode_number}.jpg"), self.emby_url, self.emby_api_key)
             
-            logger.info(f"  ➜ {log_prefix} 成功完成 '{item_name_for_log}' 的覆盖缓存-图片备份。")
+            logger.trace(f"  ➜ {log_prefix} 成功完成 '{item_name_for_log}' 的覆盖缓存-图片备份。")
             return True
         except Exception as e:
             logger.error(f"{log_prefix} 为 '{item_name_for_log}' 备份图片时发生未知错误: {e}", exc_info=True)
@@ -1986,7 +1986,7 @@ class MediaProcessor:
         item_id = item_details.get("Id")
         item_name_for_log = item_details.get("Name", f"未知项目(ID:{item_id})")
         item_type = item_details.get("Type")
-        log_prefix = "[覆盖缓存-元数据同步]"
+        log_prefix = "[覆盖缓存-元数据写入]"
 
         # 定义核心路径
         cache_folder_name = "tmdb-movies2" if item_type == "Movie" else "tmdb-tv"
@@ -1998,7 +1998,7 @@ class MediaProcessor:
         # 步骤 1: 进场施工，打好基础 (复制毛坯房)
         # 只有在需要进行主体装修时（主流程调用），才需要复制。追更等零活不需要。
         if final_cast_override is not None:
-            logger.info(f"  ➜ {log_prefix} [完整处理] 开始为 '{item_name_for_log}' 写入覆盖缓存...")
+            logger.info(f"  ➜ {log_prefix} 开始为 '{item_name_for_log}' 写入覆盖缓存...")
             if not os.path.exists(source_cache_dir):
                 logger.error(f"  ➜ {log_prefix} 找不到源缓存目录！路径: {source_cache_dir}")
                 return
@@ -2027,7 +2027,7 @@ class MediaProcessor:
                 f.truncate()
         else:
             # --- 角色二：零活处理 (追更) ---
-            logger.info(f"  ➜ {log_prefix} [追更模式] 开始为 '{item_name_for_log}' 的新分集写入覆盖缓存...")
+            logger.info(f"  ➜ {log_prefix} [追更] 开始为 '{item_name_for_log}' 的新分集写入覆盖缓存...")
             if not os.path.exists(main_json_path):
                 logger.error(f"  ➜ {log_prefix} 追更任务失败：找不到主元数据文件 '{main_json_path}'。")
                 return
