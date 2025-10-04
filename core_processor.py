@@ -1797,17 +1797,16 @@ class MediaProcessor:
             logger.error(f"  ➜ 获取编辑数据失败 for ItemID {item_id}: {e}", exc_info=True)
             return None
     
-    # ★★★ 全量图片备份到覆盖缓存 (魔改版) ★★★
+    # ★★★ 全量备份到覆盖缓存 ★★★
     def sync_all_media_images(self, update_status_callback: Optional[callable] = None, force_full_update: bool = False):
         """
-        【V5 - 纯图片备份版】
-        - 本函数被改造为专门的图片备份工具。
-        - 增量模式 (默认): 只处理主流程尚未处理过的新媒体项的图片。
-        - 全量模式 (force_full_update=True): 强制重新下载所有媒体项的图片。
-        - 采用并发处理，大幅提升图片下载效率。
+        【V4 - 增量与全量融合版】
+        - 快速模式 (默认): 高效找出并并发处理 Emby 中的新增媒体项。
+        - 深度模式 (force_full_update=True): 强制并发处理 Emby 中的所有媒体项。
+        - 两种模式均采用并发处理，大幅提升执行效率。
         """
         sync_mode = "(全量)" if force_full_update else "(增量)"
-        task_name = f"全量图片备份 ({sync_mode})" # <--- 日志更清晰
+        task_name = f"媒体图片备份 ({sync_mode})"
         logger.info(f"--- 开始执行 '{task_name}' 任务 ---")
 
         if not self.local_data_path:
@@ -1836,34 +1835,35 @@ class MediaProcessor:
             items_to_process_ids: Set[str]
             
             if force_full_update:
-                logger.info(f"  ➜ 全量模式已激活，将处理所有 {len(all_emby_ids)} 个 Emby 项目的图片。")
+                # 深度模式：处理所有 Emby 项目
+                logger.info(f"  ➜ 全量模式已激活，将处理所有 {len(all_emby_ids)} 个 Emby 项目。")
                 items_to_process_ids = all_emby_ids
             else:
+                # 快速模式：计算差集，只处理新项目
                 if update_status_callback: update_status_callback(15, "正在获取本地已处理日志...")
                 with get_central_db_connection() as conn:
                     cursor = conn.cursor()
-                    # 我们以主流程的 processed_log 为准，只为新项目补全图片
                     cursor.execute("SELECT item_id FROM processed_log")
                     processed_ids = {row['item_id'] for row in cursor.fetchall()}
                 
                 items_to_process_ids = all_emby_ids - processed_ids
-                logger.info(f"  ➜ 增量模式：从 {len(all_emby_ids)} 个 Emby 项目中发现 {len(items_to_process_ids)} 个新项目需要备份图片。")
+                logger.info(f"  ➜ 增量模式：从 {len(all_emby_ids)} 个 Emby 项目中发现 {len(items_to_process_ids)} 个新项目。")
 
             total_to_process = len(items_to_process_ids)
             if total_to_process == 0:
-                message = "媒体库为空。" if force_full_update else "没有发现新项目需要备份图片。"
-                logger.info(f"  ➜ {message}")
+                message = "  ➜ 全量模式检查完成，媒体库为空。" if force_full_update else "  ➜ 增量模式检查完成，没有发现新项目。"
+                logger.info(message)
                 if update_status_callback: update_status_callback(100, message)
                 return
 
-            if update_status_callback: update_status_callback(30, f"准备处理 {total_to_process} 个项目的图片...")
+            if update_status_callback: update_status_callback(30, f"准备处理 {total_to_process} 个项目...")
 
-            # --- 步骤 3: 并发处理目标项目 ---
+            # --- 步骤 3: 并发处理目标项目 (无论来源是全量还是增量) ---
             stats = {"success": 0, "skipped": 0, "failed": 0}
             lock = threading.Lock()
 
             def worker_process_item(item_id: str):
-                """线程工作单元：只处理单个项目的图片同步"""
+                """线程工作单元：处理单个项目"""
                 if self.is_stop_requested():
                     return "stopped"
                 try:
@@ -1873,13 +1873,11 @@ class MediaProcessor:
 
                     tmdb_id = item_details.get("ProviderIds", {}).get("Tmdb")
                     if not tmdb_id:
-                        logger.warning(f"项目 '{item_details.get('Name')}' (ID: {item_id}) 缺少 TMDb ID，跳过图片备份。")
+                        logger.warning(f"项目 '{item_details.get('Name')}' (ID: {item_id}) 缺少 TMDb ID，跳过。")
                         return "skipped"
 
-                    # ★★★ 核心改造：只保留图片同步 ★★★
                     self.sync_item_images(item_details)
-                    
-                    # 注意：我们不再动主流程的 processed_log，这个任务有自己的日志
+
                     with get_central_db_connection() as conn_thread:
                         cursor_thread = conn_thread.cursor()
                         self.log_db_manager.mark_assets_as_synced(
@@ -1889,7 +1887,7 @@ class MediaProcessor:
                     
                     return "success"
                 except Exception as e:
-                    logger.error(f"处理项目图片 (ID: {item_id}) 时发生错误: {e}", exc_info=True)
+                    logger.error(f"处理项目 (ID: {item_id}) 时发生错误: {e}", exc_info=True)
                     return "failed"
 
             with concurrent.futures.ThreadPoolExecutor(max_workers=5) as executor:
@@ -1902,21 +1900,24 @@ class MediaProcessor:
                     
                     result = future.result()
                     with lock:
-                        if result == "success": stats["success"] += 1
-                        elif result == "skipped": stats["skipped"] += 1
-                        elif result == "failed": stats["failed"] += 1
+                        if result == "success":
+                            stats["success"] += 1
+                        elif result == "skipped":
+                            stats["skipped"] += 1
+                        elif result == "failed":
+                            stats["failed"] += 1
                         
                         processed_count = sum(stats.values())
                         progress = 30 + int((processed_count / total_to_process) * 70)
                         if update_status_callback:
-                            update_status_callback(progress, f"图片备份进度: {processed_count}/{total_to_process}")
+                            update_status_callback(progress, f"进度: {processed_count}/{total_to_process}")
 
         except Exception as e:
             logger.error(f"执行 '{task_name}' 时发生严重错误: {e}", exc_info=True)
             if update_status_callback: update_status_callback(-1, f"任务失败: {e}")
             return
 
-        final_message = f"✅ 图片备份完成。成功: {stats['success']}, 跳过: {stats['skipped']}, 失败: {stats['failed']}。"
+        final_message = f"✅ 成功: {stats['success']}, 跳过: {stats['skipped']}, 失败: {stats['failed']}。"
         logger.info(f"'{task_name}' 完成。{final_message}")
         if update_status_callback:
             update_status_callback(100, final_message)
