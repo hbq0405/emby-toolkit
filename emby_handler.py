@@ -658,7 +658,7 @@ def refresh_emby_item_metadata(item_emby_id: str,
     try:
         response = requests.post(refresh_url, params=params, timeout=api_timeout)
         if response.status_code == 204:
-            logger.info(f"  ➜ 已成功为 {log_identifier} 刷新最新演员表。")
+            logger.info(f"  ➜ 已成功为 {log_identifier} 刷新演员表。")
             return True
         else:
             logger.error(f"  - 刷新请求失败: HTTP状态码 {response.status_code}")
