@@ -752,29 +752,62 @@ class MediaProcessor:
                 else:
                     logger.error(f"  ➜ 元数据文件 '{source_json_path}' 无效或为空，无法处理 '{item_name_for_log}'。")
                     return False
-
-            # ======================================================================
-            # 阶段 2: 演员表处理
-            # ======================================================================
-            with get_central_db_connection() as conn:
-                cursor = conn.cursor()
                 
-                all_emby_people = item_details_from_emby.get("People", [])
-                current_emby_cast_raw = [p for p in all_emby_people if p.get("Type") == "Actor"]
-                enriched_emby_cast = self._enrich_cast_from_db_and_api(current_emby_cast_raw)
-                douban_cast_raw, douban_rating = self._get_douban_data_with_local_cache(item_details_from_emby)
+            # ======================================================================
+            # 阶段 2: 快速模式检查 
+            # ======================================================================
+            final_processed_cast_from_cache = None
+            douban_rating_from_cache = None
 
-                final_processed_cast = self._process_cast_list(
-                    tmdb_cast_people=authoritative_cast_source,
-                    emby_cast_people=enriched_emby_cast,
-                    douban_cast_list=douban_cast_raw,
-                    item_details_from_emby=item_details_from_emby,
-                    cursor=cursor,
-                    tmdb_api_key=self.tmdb_api_key,
-                    stop_event=self.get_stop_event()
-                )
-                if final_processed_cast is None:
-                    raise ValueError("未能生成有效的设计图 (final_processed_cast)。")
+            if not force_fetch_from_tmdb:
+                logger.info(f"  ➜ [快速模式] 尝试从元数据缓存直接加载 '{item_name_for_log}' 的最终结果...")
+                try:
+                    with get_central_db_connection() as conn:
+                        cursor = conn.cursor()
+                        # 同时获取演员和评分
+                        cursor.execute("SELECT actors_json, rating FROM media_metadata WHERE tmdb_id = %s AND item_type = %s", (tmdb_id, item_type))
+                        cache_row = cursor.fetchone()
+                        
+                        if cache_row and cache_row.get("actors_json"):
+                            logger.info(f"  ➜ [快速模式] 成功命中缓存！将跳过所有数据采集和处理步骤。")
+                            cached_actors = cache_row["actors_json"]
+                            douban_rating_from_cache = cache_row.get("rating") # 使用缓存中的评分
+                            
+                            # 缓存中的 actors_json 已经是我们需要的最终格式，直接使用即可
+                            final_processed_cast_from_cache = cached_actors
+                            logger.debug(f"  ➜ [快速模式] 直接使用缓存中的 {len(cached_actors)} 条演员数据。")
+                except Exception as e_cache:
+                    logger.warning(f"  ➜ [快速模式] 从缓存加载数据时发生错误: {e_cache}。将回退到完整处理模式。")
+                    final_processed_cast_from_cache = None # 出错则清空，确保走完整流程
+
+            # ======================================================================
+            # 阶段 3: 演员表处理
+            # ======================================================================
+            if final_processed_cast_from_cache is not None:
+                # 如果快速模式成功，直接跳到阶段3
+                logger.info("  ➜ [快速模式] 跳过演员表处理阶段。")
+                final_processed_cast = final_processed_cast_from_cache
+                douban_rating = douban_rating_from_cache # 把缓存的评分也带过去
+            else:
+                # 否则，执行完整的深度处理模式
+                logger.info(f"  ➜ [深度模式] 未命中缓存或强制刷新，开始执行完整处理流程...")
+                with get_central_db_connection() as conn:
+                    cursor = conn.cursor()
+                    
+                    all_emby_people = item_details_from_emby.get("People", [])
+                    current_emby_cast_raw = [p for p in all_emby_people if p.get("Type") == "Actor"]
+                    enriched_emby_cast = self._enrich_cast_from_db_and_api(current_emby_cast_raw)
+                    douban_cast_raw, douban_rating = self._get_douban_data_with_local_cache(item_details_from_emby)
+
+                    final_processed_cast = self._process_cast_list(
+                        tmdb_cast_people=authoritative_cast_source,
+                        emby_cast_people=enriched_emby_cast,
+                        douban_cast_list=douban_cast_raw,
+                        item_details_from_emby=item_details_from_emby,
+                        cursor=cursor,
+                        tmdb_api_key=self.tmdb_api_key,
+                        stop_event=self.get_stop_event()
+                    )
 
                 # ======================================================================
                 # 阶段 3: 写入演员表
