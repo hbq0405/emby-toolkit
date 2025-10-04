@@ -613,7 +613,7 @@ def refresh_emby_item_metadata(item_emby_id: str,
     api_timeout = config_manager.APP_CONFIG.get(constants.CONFIG_OPTION_EMBY_API_TIMEOUT, 60)
 
     try:
-        logger.debug(f"  ➜ 正在为 {log_identifier} 获取当前详情...")
+        logger.trace(f"  ➜ 正在为 {log_identifier} 获取当前详情...")
         item_data = get_emby_item_details(item_emby_id, emby_server_url, emby_api_key, user_id_for_ops)
         if not item_data:
             logger.error(f"  ➜ 无法获取 {log_identifier} 的详情，所有操作中止。")
@@ -622,7 +622,7 @@ def refresh_emby_item_metadata(item_emby_id: str,
         item_needs_update = False
         
         if replace_all_metadata_param:
-            logger.debug(f"  ➜ 检测到 ReplaceAllMetadata=True，执行解锁...")
+            logger.trace(f"  ➜ 检测到 ReplaceAllMetadata=True，执行解锁...")
             if item_data.get("LockData") is True:
                 item_data["LockData"] = False
                 item_needs_update = True
@@ -631,15 +631,15 @@ def refresh_emby_item_metadata(item_emby_id: str,
                 item_needs_update = True
         
         if item_needs_update:
-            logger.debug(f"  ➜ 正在为 {log_identifier} 提交锁状态更新...")
+            logger.trace(f"  ➜ 正在为 {log_identifier} 提交锁状态更新...")
             update_url = f"{emby_server_url.rstrip('/')}/Items/{item_emby_id}"
             update_params = {"api_key": emby_api_key}
             headers = {'Content-Type': 'application/json'}
             update_response = requests.post(update_url, json=item_data, headers=headers, params=update_params, timeout=api_timeout)
             update_response.raise_for_status()
-            logger.debug(f"  ➜ 成功更新 {log_identifier} 的锁状态。")
+            logger.trace(f"  ➜ 成功更新 {log_identifier} 的锁状态。")
         else:
-            logger.debug(f"  ➜ 项目 {log_identifier} 的锁状态无需更新。")
+            logger.trace(f"  ➜ 项目 {log_identifier} 的锁状态无需更新。")
 
     except Exception as e:
         logger.warning(f"  ➜ 在刷新前更新锁状态时失败: {e}。刷新将继续，但可能受影响。")
@@ -658,7 +658,7 @@ def refresh_emby_item_metadata(item_emby_id: str,
     try:
         response = requests.post(refresh_url, params=params, timeout=api_timeout)
         if response.status_code == 204:
-            logger.info(f"  ➜ 刷新请求已成功发送给 {log_identifier}。")
+            logger.info(f"  ➜ 已成功为 {log_identifier} 刷新最新演员表。")
             return True
         else:
             logger.error(f"  - 刷新请求失败: HTTP状态码 {response.status_code}")
