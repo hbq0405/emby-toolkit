@@ -180,7 +180,6 @@ def get_task_registry(context: str = 'all'):
         'actor-cleanup': (task_actor_translation_cleanup, "中文化演员名", 'media', True),
         'refresh-collections': (task_refresh_collections, "刷新原生合集", 'media', True),
         'custom-collections': (task_process_all_custom_collections, "刷新自建合集", 'media', True),
-        'sync-images-map': (task_full_image_sync, "覆盖缓存备份", 'media', True),
         'resubscribe-library': (task_resubscribe_library, "媒体洗版订阅", 'media', True),
         'generate-all-covers': (task_generate_all_covers, "生成原生封面", 'media', True),
         'generate-custom-collection-covers': (task_generate_all_custom_collection_covers, "生成合集封面", 'media', True),
