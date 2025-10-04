@@ -669,7 +669,7 @@ class MediaProcessor:
                     emby_server_url=self.emby_url,
                     emby_api_key=self.emby_api_key,
                     user_id_for_ops=self.emby_user_id,
-                    replace_all_metadata_param=False, 
+                    replace_all_metadata_param=True, 
                     item_name_for_log=item_name_for_log
                 )
 
