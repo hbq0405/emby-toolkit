@@ -631,7 +631,7 @@ class MediaProcessor:
     # ---核心处理流程 ---
     def _process_item_core_logic(self, item_details_from_emby: Dict[str, Any], force_reprocess_this_item: bool, force_fetch_from_tmdb: bool = False):
         """
-        【V-Final-Architecture-Pro - “设计师”最终版】
+        【V-Final-Architecture-Pro - “设计师”最终版 + 评分机制】
         本函数作为“设计师”，只负责计算和思考，产出“设计图”和“物料清单”，然后全权委托给施工队。
         """
         # ======================================================================
@@ -641,6 +641,9 @@ class MediaProcessor:
         item_name_for_log = item_details_from_emby.get("Name", f"未知项目(ID:{item_id})")
         tmdb_id = item_details_from_emby.get("ProviderIds", {}).get("Tmdb")
         item_type = item_details_from_emby.get("Type")
+
+        all_emby_people_for_count = item_details_from_emby.get("People", [])
+        original_emby_actor_count = len([p for p in all_emby_people_for_count if p.get("Type") == "Actor"])
 
         if not tmdb_id:
             logger.error(f"项目 '{item_name_for_log}' 缺少 TMDb ID，无法处理。")
@@ -760,6 +763,7 @@ class MediaProcessor:
             douban_rating = None
             tmdb_details_for_extra = None
             authoritative_cast_source = [] # 预定义
+            cache_row = None # 用于后续判断是否走了快速模式
 
             # 1.尝试快速模式
             if not force_fetch_from_tmdb:
@@ -767,7 +771,6 @@ class MediaProcessor:
                 try:
                     with get_central_db_connection() as conn:
                         cursor = conn.cursor()
-                        # ▼▼▼ 核心修复：在SQL查询中直接过滤掉没有有效演员表的缓存 ▼▼▼
                         # 只有当 actors_json 存在 (NOT NULL) 且不是一个空的JSON数组时，才认为缓存有效
                         cursor.execute("""
                             SELECT actors_json, rating 
@@ -776,23 +779,17 @@ class MediaProcessor:
                               AND actors_json IS NOT NULL AND actors_json::text != '[]'
                         """, (tmdb_id, item_type))
                         cache_row = cursor.fetchone()
-                        
-                        # ▼▼▼ 核心修复：简化Python端的判断逻辑 ▼▼▼
-                        # 如果上面的查询能返回结果，就说明缓存是100%有效的
                         if cache_row:
                             logger.info(f"  ➜ 成功命中有效缓存！将跳过演员表深度处理。")
                             final_processed_cast = cache_row["actors_json"]
                             douban_rating = cache_row.get("rating")
-                        else:
-                            # 如果查询没有返回结果，说明缓存无效或不存在，必须走完整模式
-                            final_processed_cast = None
                 except Exception as e_cache:
                     logger.warning(f"  ➜ 加载缓存失败: {e_cache}。将回退到深度模式。")
                     final_processed_cast = None
 
             # 2.完整模式
             if final_processed_cast is None:
-                logger.info(f"  ➜ 未命中缓存或强制刷新，开始处理演员表...")
+                logger.info(f"  ➜ 未命中缓存或强制重处理，开始处理演员表...")
                 
                 # 预读本地JSON文件以获取原始TMDb演员表
                 source_json_data = _read_local_json(source_json_path)
@@ -848,16 +845,43 @@ class MediaProcessor:
                     item_name_for_log=item_name_for_log
                 )
 
-                # 步骤 3.3: 更新我们自己的数据库缓存和日志
+                # 步骤 3.3: 更新我们自己的数据库缓存
                 _save_metadata_to_cache(
                     cursor=cursor, tmdb_id=tmdb_id, emby_item_id=item_id, item_type=item_type,
                     item_details_from_emby=item_details_from_emby,
                     final_processed_cast=final_processed_cast,
                     tmdb_details_for_extra=tmdb_details_for_extra
                 )
-                logger.info(f"  ➜ 正在将《{item_name_for_log}》写入已处理日志...")
-                self._mark_item_as_processed(cursor, item_id, item_name_for_log, score=10.0)
-                self.log_db_manager.remove_from_failed_log(cursor, item_id)
+                
+                # 步骤 3.4: 根据处理质量评分，决定写入“已处理”或“失败”日志
+                logger.info(f"  ➜ 正在评估《{item_name_for_log}》的处理质量...")
+                genres = item_details_from_emby.get("Genres", [])
+                is_animation = "Animation" in genres or "动画" in genres or "Documentary" in genres or "纪录" in genres
+                
+                # 如果走了快速模式，我们认为处理质量是完美的
+                if cache_row:
+                    processing_score = 10.0
+                    logger.info(f"  ➜ [快速模式] 处理质量评分为 10.0 (完美)")
+                else:
+                    # 否则，调用工具函数进行实际评估
+                    processing_score = actor_utils.evaluate_cast_processing_quality(
+                        final_cast=final_processed_cast, 
+                        original_cast_count=original_emby_actor_count,
+                        expected_final_count=len(final_processed_cast), 
+                        is_animation=is_animation
+                    )
+                
+                min_score_for_review = float(self.config.get("min_score_for_review", constants.DEFAULT_MIN_SCORE_FOR_REVIEW))
+                
+                if processing_score < min_score_for_review:
+                    reason = f"处理评分 ({processing_score:.2f}) 低于阈值 ({min_score_for_review})。"
+                    logger.warning(f"  ➜ 《{item_name_for_log}》处理质量不佳，已标记待复核。原因: {reason}")
+                    self.log_db_manager.save_to_failed_log(cursor, item_id, item_name_for_log, reason, item_type, score=processing_score)
+                else:
+                    logger.info(f"  ➜ 《{item_name_for_log}》处理质量良好 (评分: {processing_score:.2f})，已标记已处理。")
+                    self._mark_item_as_processed(cursor, item_id, item_name_for_log, score=processing_score)
+                    self.log_db_manager.remove_from_failed_log(cursor, item_id)
+                
                 conn.commit()
 
         except (ValueError, InterruptedError) as e:
@@ -869,7 +893,7 @@ class MediaProcessor:
                 with get_central_db_connection() as conn_fail:
                     self.log_db_manager.save_to_failed_log(conn_fail.cursor(), item_id, item_name_for_log, f"核心处理异常: {str(outer_e)}", item_type)
             except Exception as log_e:
-                logger.error(f"写入失败日志时再次发生错误: {log_e}")
+                logger.error(f"写入待复核日志时再次发生错误: {log_e}")
             return False
 
         logger.trace(f"  ✅ 处理完成 '{item_name_for_log}'")
