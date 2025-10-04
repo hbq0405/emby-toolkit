@@ -1986,7 +1986,7 @@ class MediaProcessor:
                 if not os.path.exists(child_json_path):
                     source_json_path = os.path.join(source_dir, filename)
                     if os.path.exists(source_json_path):
-                        logger.debug(f"  ➜ 文件 '{filename}' 在覆盖目录中不存在，正在从源缓存复制...")
+                        logger.debug(f"  ➜ 正在复制元数据文件 '{filename}'")
                         # 确保目标目录存在
                         os.makedirs(os.path.dirname(child_json_path), exist_ok=True)
                         shutil.copy2(source_json_path, child_json_path)

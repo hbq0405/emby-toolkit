@@ -472,8 +472,7 @@ def task_apply_main_cast_to_episodes(processor, series_id: str, episode_ids: lis
             episode_ids_to_sync=episode_ids
         )
 
-        logger.info(f"  ➜ 成功完成剧集 {series_id} 的新分集元数据同步任务。")
-        logger.info(f"  ➜ 正在为剧集《{series_name}》触发刷新，以应用追更...")
+        logger.info(f"  ➜ 处理完成，正在通知 Emby 刷新...")
         emby_handler.refresh_emby_item_metadata(
             item_emby_id=series_id,
             emby_server_url=processor.emby_url,
