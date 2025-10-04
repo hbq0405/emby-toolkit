@@ -659,9 +659,8 @@ class MediaProcessor:
             main_json_filename = "all.json" if item_type == "Movie" else "series.json"
             source_json_path = os.path.join(source_cache_dir, main_json_filename)
 
-            # 步骤2：如果不存在则通知Emby刷新生成json
             if not os.path.exists(source_json_path):
-                logger.warning(f"  ➜ 核心处理前置检查：本地元数据文件 '{source_json_path}' 不存在。启动应急方案...")
+                logger.warning(f"  ➜ 核心处理前置检查：本地元数据文件 '{source_json_path}' 不存在。启动备用方案...")
                 logger.info(f"  ➜ 正在通知 Emby 为 '{item_name_for_log}' 刷新元数据以生成缓存文件...")
                 
                 emby_handler.refresh_emby_item_metadata(
@@ -669,23 +668,64 @@ class MediaProcessor:
                     emby_server_url=self.emby_url,
                     emby_api_key=self.emby_api_key,
                     user_id_for_ops=self.emby_user_id,
-                    replace_all_metadata_param=True, 
+                    replace_all_metadata_param=True,
                     item_name_for_log=item_name_for_log
                 )
 
-                # 循环等待文件生成
-                for attempt in range(10):
-                    logger.info(f"  ➜ 等待3秒后检查文件... (第 {attempt + 1}/10 次尝试)")
-                    time_module.sleep(3)
-                    if os.path.exists(source_json_path):
-                        logger.info(f"  ➜ 文件已成功生成！")
-                        break
+                # --- 根据媒体类型选择不同的等待策略 ---
+                if item_type == "Series":
+                    # 电视剧：智能等待模式
+                    logger.info("  ➜ 检测到为电视剧，启动智能等待模式...")
+                    total_wait_time = 0
+                    idle_time = 0
+                    last_file_count = 0
+                    CHECK_INTERVAL = 10  # 每10秒检查一次
+                    MAX_IDLE_TIME = 60   # 连续60秒没动静则超时
+                    MAX_TOTAL_WAIT_MINUTES = 15 # 总最长等待时间15分钟
+
+                    while total_wait_time < MAX_TOTAL_WAIT_MINUTES * 60:
+                        time_module.sleep(CHECK_INTERVAL)
+                        total_wait_time += CHECK_INTERVAL
+
+                        # 检查主文件是否已生成
+                        if os.path.exists(source_json_path):
+                            logger.info(f"  ➜ 主文件 '{main_json_filename}' 已生成！等待结束。")
+                            break
+                        
+                        # 检查目录内文件数量变化
+                        try:
+                            current_file_count = len(os.listdir(source_cache_dir))
+                        except FileNotFoundError:
+                            current_file_count = 0
+
+                        if current_file_count > last_file_count:
+                            logger.info(f"  ➜ 缓存目录有活动，检测到 {current_file_count - last_file_count} 个新文件。重置空闲计时器。")
+                            idle_time = 0 # 有新文件，重置空闲计时
+                            last_file_count = current_file_count
+                        else:
+                            idle_time += CHECK_INTERVAL
+                            logger.info(f"  ➜ 缓存目录无新文件，空闲时间累计: {idle_time}/{MAX_IDLE_TIME}秒。")
+
+                        if idle_time >= MAX_IDLE_TIME:
+                            logger.warning(f"  ➜ 缓存目录连续 {MAX_IDLE_TIME} 秒无活动，判定任务完成或超时。")
+                            break
+                    else: # while循环正常结束（达到总时长）
+                        logger.warning(f"  ➜ 已达到总最长等待时间 {MAX_TOTAL_WAIT_MINUTES} 分钟，停止等待。")
+
+                else:
+                    # 电影：简单定时等待
+                    logger.info("  ➜ 检测到为电影，启动简单等待模式...")
+                    for attempt in range(10):
+                        logger.info(f"  ➜ 等待3秒后检查文件... (第 {attempt + 1}/10 次尝试)")
+                        time_module.sleep(3)
+                        if os.path.exists(source_json_path):
+                            logger.info(f"  ➜ 文件已成功生成！")
+                            break
             
-            # 在所有尝试后，最终确认文件是否存在，如果还不存在就直接跳过
+            # 在所有尝试后，最终确认文件是否存在
             if not os.path.exists(source_json_path):
-                logger.error(f"  ➜ 尝试10次后，元数据文件仍未生成。无法继续处理 '{item_name_for_log}'，已跳过。")
+                logger.error(f"  ➜ 等待超时，元数据文件仍未生成。无法继续处理 '{item_name_for_log}'，已跳过。")
                 return False
-            # ▲▲▲ 前置检查和Plan B结束 ▲▲▲
 
 
             # 步骤3：如果是强制重处理就从TMDb拉取最新元数据，否则直接用本地的元数据。
