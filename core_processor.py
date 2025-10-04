@@ -1997,8 +1997,16 @@ class MediaProcessor:
                 try:
                     with open(child_json_path, 'r+', encoding='utf-8') as f_child:
                         child_data = json.load(f_child)
-                        if 'credits' in child_data and 'cast' in child_data['credits']:
+                        cast_updated = False
+                        if 'casts' in child_data and 'cast' in child_data['casts']:
+                            child_data['casts']['cast'] = cast_list
+                            cast_updated = True
+                        elif 'credits' in child_data and 'cast' in child_data['credits']:
                             child_data['credits']['cast'] = cast_list
+                            cast_updated = True
+                        
+                        if not cast_updated:
+                            logger.warning(f"    ➜ 在文件 '{filename}' 中未找到可识别的 cast 结构，跳过演员表注入。")
                         
                         file_key = os.path.splitext(filename)[0]
                         fresh_data = child_data_map.get(file_key)
