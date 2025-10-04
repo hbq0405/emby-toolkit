@@ -2069,41 +2069,7 @@ class MediaProcessor:
         perfect_cast_for_injection = []
         if final_cast_override is not None:
             # --- 角色一：主体精装修 ---
-            new_cast_for_json = []
-            if original_cast_for_build is not None and cursor_for_build is not None:
-                original_tmdb_actor_map = {str(a.get('id')): a for a in original_cast_for_build if a.get('id')}
-                for actor in final_cast_override:
-                    tmdb_id_str = str(actor.get("id"))
-                    if not tmdb_id_str or tmdb_id_str == 'None': continue
-
-                    if tmdb_id_str in original_tmdb_actor_map:
-                        new_actor_entry = original_tmdb_actor_map[tmdb_id_str].copy()
-                        new_actor_entry['name'] = actor.get('name')
-                        new_actor_entry['character'] = actor.get('character')
-                    else:
-                        actor_tmdb_id_int = int(tmdb_id_str)
-                        metadata_source = None
-                        cached_meta = self._get_actor_metadata_from_cache(actor_tmdb_id_int, cursor_for_build)
-                        if cached_meta and cached_meta.get("profile_path"): metadata_source = cached_meta
-                        
-                        if not metadata_source and self.tmdb_api_key:
-                            person_details = tmdb_handler.get_person_details_tmdb(actor_tmdb_id_int, self.tmdb_api_key)
-                            if person_details:
-                                self.actor_db_manager.update_actor_metadata_from_tmdb(cursor_for_build, actor_tmdb_id_int, person_details)
-                                metadata_source = person_details
-                        
-                        final_meta = metadata_source or cached_meta or {}
-                        new_actor_entry = {
-                            "id": actor_tmdb_id_int, "name": actor.get("name"), "character": actor.get("character"),
-                            "original_name": final_meta.get("original_name", final_meta.get("name", "")),
-                            "profile_path": final_meta.get("profile_path"), "adult": final_meta.get("adult", False),
-                            "gender": final_meta.get("gender", 0), "known_for_department": final_meta.get("known_for_department", "Acting"),
-                            "popularity": final_meta.get("popularity", 0.0), "cast_id": None, "credit_id": None,
-                            "order": actor.get("order", 999)
-                        }
-                    new_cast_for_json.append(new_actor_entry)
-            else:
-                new_cast_for_json = self._build_cast_from_final_data(final_cast_override)
+            new_cast_for_json = self._build_cast_from_final_data(final_cast_override)
             
             perfect_cast_for_injection = new_cast_for_json
 
