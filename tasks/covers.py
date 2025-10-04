@@ -12,6 +12,18 @@ from .collections import _get_cover_badge_text_for_collection
 
 logger = logging.getLogger(__name__)
 
+# ★★★ 同步覆盖缓存的任务函数 ★★★
+def task_full_image_sync(processor, force_full_update: bool = False):
+    """
+    后台任务：调用 processor 的方法来同步所有图片。
+    新增 force_full_update 参数以支持深度模式。
+    """
+    # 直接把回调函数和新参数传进去
+    processor.sync_all_media_images(
+        update_status_callback=task_manager.update_status_from_thread,
+        force_full_update=force_full_update
+    )
+
 # ★★★ 立即生成所有媒体库封面的后台任务 ★★★
 def task_generate_all_covers(processor):
     """
