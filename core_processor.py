@@ -821,9 +821,7 @@ class MediaProcessor:
                     item_id=item_id,
                     update_description="主流程处理完成",
                     final_cast_override=final_processed_cast,
-                    douban_rating_override=douban_rating,
-                    original_cast_for_build=authoritative_cast_source,
-                    cursor_for_build=cursor
+                    douban_rating_override=douban_rating
                 )
 
                 # 步骤 3.2: 通知 Emby 刷新
@@ -1793,131 +1791,64 @@ class MediaProcessor:
             logger.error(f"  ➜ 获取编辑数据失败 for ItemID {item_id}: {e}", exc_info=True)
             return None
     
-    # ★★★ 全量备份到覆盖缓存 ★★★
-    def sync_all_media_images(self, update_status_callback: Optional[callable] = None, force_full_update: bool = False):
+    def sync_single_item_assets(self, item_id: str, 
+                                update_description: Optional[str] = None, 
+                                sync_timestamp_iso: Optional[str] = None,
+                                final_cast_override: Optional[List[Dict[str, Any]]] = None,
+                                episode_ids_to_sync: Optional[List[str]] = None,
+                                douban_rating_override: Optional[float] = None):
         """
-        【V4 - 增量与全量融合版】
-        - 快速模式 (默认): 高效找出并并发处理 Emby 中的新增媒体项。
-        - 深度模式 (force_full_update=True): 强制并发处理 Emby 中的所有媒体项。
-        - 两种模式均采用并发处理，大幅提升执行效率。
+        【V2.4 - 项目经理最终版】
+        纯粹的项目经理，负责接收设计师的所有材料，并分发给施工队。
         """
-        sync_mode = "(全量)" if force_full_update else "(增量)"
-        task_name = f"媒体图片备份 ({sync_mode})"
-        logger.info(f"--- 开始执行 '{task_name}' 任务 ---")
+        log_prefix = f"实时覆盖缓存同步"
+        logger.trace(f"--- {log_prefix} 开始执行 (ItemID: {item_id}) ---")
 
         if not self.local_data_path:
-            logger.error(f"'{task_name}' 失败：未在配置中设置“本地数据源路径”。")
-            if update_status_callback: update_status_callback(-1, "未配置本地数据源路径")
+            logger.warning(f"  ➜ {log_prefix} 任务跳过，因为未配置本地数据源路径。")
             return
 
         try:
-            # --- 步骤 1: 获取 Emby 媒体库中的所有项目 ---
-            if update_status_callback: update_status_callback(5, "正在获取 Emby 媒体库项目...")
-            
-            all_emby_items = emby_handler.get_emby_library_items(
-                base_url=self.emby_url,
-                api_key=self.emby_api_key,
-                user_id=self.emby_user_id,
-                library_ids=self.config.get('libraries_to_process', []),
-                fields="ProviderIds,Type,DateModified,Name"
+            item_details = emby_handler.get_emby_item_details(
+                item_id, self.emby_url, self.emby_api_key, self.emby_user_id,
+                fields="ProviderIds,Type,Name,IndexNumber,ParentIndexNumber"
             )
-            if all_emby_items is None:
-                raise RuntimeError("从 Emby 获取媒体项列表失败。")
+            if not item_details:
+                raise ValueError("在Emby中找不到该项目。")
 
-            emby_item_map = {item['Id']: item for item in all_emby_items}
-            all_emby_ids = set(emby_item_map.keys())
-
-            # --- 步骤 2: 根据模式确定需要处理的项目列表 ---
-            items_to_process_ids: Set[str]
-            
-            if force_full_update:
-                # 深度模式：处理所有 Emby 项目
-                logger.info(f"  ➜ 全量模式已激活，将处理所有 {len(all_emby_ids)} 个 Emby 项目。")
-                items_to_process_ids = all_emby_ids
-            else:
-                # 快速模式：计算差集，只处理新项目
-                if update_status_callback: update_status_callback(15, "正在获取本地已处理日志...")
-                with get_central_db_connection() as conn:
-                    cursor = conn.cursor()
-                    cursor.execute("SELECT item_id FROM processed_log")
-                    processed_ids = {row['item_id'] for row in cursor.fetchall()}
-                
-                items_to_process_ids = all_emby_ids - processed_ids
-                logger.info(f"  ➜ 增量模式：从 {len(all_emby_ids)} 个 Emby 项目中发现 {len(items_to_process_ids)} 个新项目。")
-
-            total_to_process = len(items_to_process_ids)
-            if total_to_process == 0:
-                message = "  ➜ 全量模式检查完成，媒体库为空。" if force_full_update else "  ➜ 增量模式检查完成，没有发现新项目。"
-                logger.info(message)
-                if update_status_callback: update_status_callback(100, message)
+            tmdb_id = item_details.get("ProviderIds", {}).get("Tmdb")
+            if not tmdb_id:
+                logger.warning(f"{log_prefix} 项目 '{item_details.get('Name')}' 缺少TMDb ID，无法同步。")
                 return
 
-            if update_status_callback: update_status_callback(30, f"准备处理 {total_to_process} 个项目...")
+            # 1. 调度外墙施工队
+            self.sync_item_images(item_details, update_description, episode_ids_to_sync=episode_ids_to_sync)
+            
+            # 2. 调度精装修施工队，并把所有图纸和材料都给他
+            self.sync_item_metadata(
+                item_details, 
+                tmdb_id, 
+                final_cast_override=final_cast_override, 
+                episode_ids_to_sync=episode_ids_to_sync,
+                douban_rating_override=douban_rating_override
+            )
 
-            # --- 步骤 3: 并发处理目标项目 (无论来源是全量还是增量) ---
-            stats = {"success": 0, "skipped": 0, "failed": 0}
-            lock = threading.Lock()
-
-            def worker_process_item(item_id: str):
-                """线程工作单元：处理单个项目"""
-                if self.is_stop_requested():
-                    return "stopped"
-                try:
-                    item_details = emby_item_map.get(item_id)
-                    if not item_details:
-                        raise ValueError("无法在 Emby 映射中找到项目详情")
-
-                    tmdb_id = item_details.get("ProviderIds", {}).get("Tmdb")
-                    if not tmdb_id:
-                        logger.warning(f"项目 '{item_details.get('Name')}' (ID: {item_id}) 缺少 TMDb ID，跳过。")
-                        return "skipped"
-
-                    self.sync_item_images(item_details)
-
-                    with get_central_db_connection() as conn_thread:
-                        cursor_thread = conn_thread.cursor()
-                        self.log_db_manager.mark_assets_as_synced(
-                            cursor_thread, item_id, item_details.get("DateModified")
-                        )
-                        conn_thread.commit()
-                    
-                    return "success"
-                except Exception as e:
-                    logger.error(f"处理项目 (ID: {item_id}) 时发生错误: {e}", exc_info=True)
-                    return "failed"
-
-            with concurrent.futures.ThreadPoolExecutor(max_workers=5) as executor:
-                future_to_id = {executor.submit(worker_process_item, item_id): item_id for item_id in items_to_process_ids}
-
-                for future in concurrent.futures.as_completed(future_to_id):
-                    if self.is_stop_requested():
-                        executor.shutdown(wait=False, cancel_futures=True)
-                        break
-                    
-                    result = future.result()
-                    with lock:
-                        if result == "success":
-                            stats["success"] += 1
-                        elif result == "skipped":
-                            stats["skipped"] += 1
-                        elif result == "failed":
-                            stats["failed"] += 1
-                        
-                        processed_count = sum(stats.values())
-                        progress = 30 + int((processed_count / total_to_process) * 70)
-                        if update_status_callback:
-                            update_status_callback(progress, f"进度: {processed_count}/{total_to_process}")
+            # 3. 记录工时
+            timestamp_to_log = sync_timestamp_iso or datetime.now(timezone.utc).isoformat()
+            with get_central_db_connection() as conn:
+                cursor = conn.cursor()
+                self.log_db_manager.mark_assets_as_synced(
+                    cursor, 
+                    item_id, 
+                    timestamp_to_log
+                )
+                conn.commit()
+            
+            logger.trace(f"--- {log_prefix} 成功完成 (ItemID: {item_id}) ---")
 
         except Exception as e:
-            logger.error(f"执行 '{task_name}' 时发生严重错误: {e}", exc_info=True)
-            if update_status_callback: update_status_callback(-1, f"任务失败: {e}")
-            return
+            logger.error(f"{log_prefix} 执行时发生错误 (ItemID: {item_id}): {e}", exc_info=True)
 
-        final_message = f"✅ 成功: {stats['success']}, 跳过: {stats['skipped']}, 失败: {stats['failed']}。"
-        logger.info(f"'{task_name}' 完成。{final_message}")
-        if update_status_callback:
-            update_status_callback(100, final_message)
-    
     # --- 备份图片 ---
     def sync_item_images(self, item_details: Dict[str, Any], update_description: Optional[str] = None, episode_ids_to_sync: Optional[List[str]] = None) -> bool:
         """
@@ -2031,12 +1962,10 @@ class MediaProcessor:
             return False
     
     # --- 备份元数据 ---
-    def sync_item_metadata(self, item_details: Dict[str, Any], tmdb_id: str, 
-                           final_cast_override: Optional[List[Dict[str, Any]]] = None, 
-                           episode_ids_to_sync: Optional[List[str]] = None,
-                           douban_rating_override: Optional[float] = None,
-                           original_cast_for_build: Optional[List[Dict[str, Any]]] = None,
-                           cursor_for_build: Optional[psycopg2.extensions.cursor] = None):
+    def sync_item_metadata(self, item_details: Dict[str, Any], tmdb_id: str,
+                       final_cast_override: Optional[List[Dict[str, Any]]] = None,
+                       episode_ids_to_sync: Optional[List[str]] = None,
+                       douban_rating_override: Optional[float] = None):
         """
         【V4 - 精装修施工队最终版】
         本函数是唯一的施工队，负责所有 override 文件的读写操作。
@@ -2199,68 +2128,6 @@ class MediaProcessor:
             logger.info(f"  ➜ {log_prefix} 成功将元数据注入了 {updated_children_count} 个季/集文件。")
         except Exception as e_list:
             logger.error(f"  ➜ {log_prefix} 遍历并更新季/集文件时发生错误: {e_list}", exc_info=True)
-
-    def sync_single_item_assets(self, item_id: str, 
-                                update_description: Optional[str] = None, 
-                                sync_timestamp_iso: Optional[str] = None,
-                                final_cast_override: Optional[List[Dict[str, Any]]] = None,
-                                episode_ids_to_sync: Optional[List[str]] = None,
-                                douban_rating_override: Optional[float] = None,
-                                original_cast_for_build: Optional[List[Dict[str, Any]]] = None,
-                                cursor_for_build: Optional[psycopg2.extensions.cursor] = None):
-        """
-        【V2.4 - 项目经理最终版】
-        纯粹的项目经理，负责接收设计师的所有材料，并分发给施工队。
-        """
-        log_prefix = f"实时覆盖缓存同步"
-        logger.trace(f"--- {log_prefix} 开始执行 (ItemID: {item_id}) ---")
-
-        if not self.local_data_path:
-            logger.warning(f"  ➜ {log_prefix} 任务跳过，因为未配置本地数据源路径。")
-            return
-
-        try:
-            item_details = emby_handler.get_emby_item_details(
-                item_id, self.emby_url, self.emby_api_key, self.emby_user_id,
-                fields="ProviderIds,Type,Name,IndexNumber,ParentIndexNumber"
-            )
-            if not item_details:
-                raise ValueError("在Emby中找不到该项目。")
-
-            tmdb_id = item_details.get("ProviderIds", {}).get("Tmdb")
-            if not tmdb_id:
-                logger.warning(f"{log_prefix} 项目 '{item_details.get('Name')}' 缺少TMDb ID，无法同步。")
-                return
-
-            # 1. 调度外墙施工队
-            #self.sync_item_images(item_details, update_description, episode_ids_to_sync=episode_ids_to_sync)
-            
-            # 2. 调度精装修施工队，并把所有图纸和材料都给他
-            self.sync_item_metadata(
-                item_details, 
-                tmdb_id, 
-                final_cast_override=final_cast_override, 
-                episode_ids_to_sync=episode_ids_to_sync,
-                douban_rating_override=douban_rating_override,
-                original_cast_for_build=original_cast_for_build,
-                cursor_for_build=cursor_for_build
-            )
-
-            # 3. 记录工时
-            timestamp_to_log = sync_timestamp_iso or datetime.now(timezone.utc).isoformat()
-            with get_central_db_connection() as conn:
-                cursor = conn.cursor()
-                self.log_db_manager.mark_assets_as_synced(
-                    cursor, 
-                    item_id, 
-                    timestamp_to_log
-                )
-                conn.commit()
-            
-            logger.trace(f"--- {log_prefix} 成功完成 (ItemID: {item_id}) ---")
-
-        except Exception as e:
-            logger.error(f"{log_prefix} 执行时发生错误 (ItemID: {item_id}): {e}", exc_info=True)
 
     def sync_single_item_to_metadata_cache(self, item_id: str, item_name: Optional[str] = None, episode_ids_to_add: Optional[List[str]] = None):
         """

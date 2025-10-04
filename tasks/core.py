@@ -17,7 +17,7 @@ from .media import task_run_full_scan, task_populate_metadata_cache, task_apply_
 from .watchlist import task_process_watchlist, task_run_revival_check
 from .collections import task_refresh_collections, task_process_all_custom_collections, task_process_custom_collection
 from .subscriptions import task_auto_subscribe, task_update_resubscribe_cache, task_resubscribe_library
-from .covers import task_full_image_sync, task_generate_all_covers, task_generate_all_custom_collection_covers
+from .covers import task_generate_all_covers, task_generate_all_custom_collection_covers
 from .maintenance import task_scan_for_cleanup_issues 
 from .users import task_sync_all_user_data, task_check_expired_users
 
@@ -181,7 +181,6 @@ def get_task_registry(context: str = 'all'):
         'refresh-collections': (task_refresh_collections, "刷新原生合集", 'media', True),
         'custom-collections': (task_process_all_custom_collections, "刷新自建合集", 'media', True),
         'resubscribe-library': (task_resubscribe_library, "媒体洗版订阅", 'media', True),
-        'sync-images-map': (task_full_image_sync, "媒体图片备份", 'media', True),
         'generate-all-covers': (task_generate_all_covers, "生成原生封面", 'media', True),
         'generate-custom-collection-covers': (task_generate_all_custom_collection_covers, "生成合集封面", 'media', True),
         'merge-duplicate-actors': (task_merge_duplicate_actors, "合并分身演员", 'media', True),
