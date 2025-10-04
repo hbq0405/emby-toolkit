@@ -661,7 +661,7 @@ class MediaProcessor:
 
             # 步骤2：如果不存在则通知Emby刷新生成json
             if not os.path.exists(source_json_path):
-                logger.warning(f"  ➜ 核心处理前置检查：本地元数据文件 '{source_json_path}' 不存在。启动备用方案...")
+                logger.warning(f"  ➜ 核心处理前置检查：本地元数据文件 '{source_json_path}' 不存在。启动应急方案...")
                 logger.info(f"  ➜ 正在通知 Emby 为 '{item_name_for_log}' 刷新元数据以生成缓存文件...")
                 
                 emby_handler.refresh_emby_item_metadata(
