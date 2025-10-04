@@ -674,11 +674,44 @@ class MediaProcessor:
                 source_cache_dir = os.path.join(self.local_data_path, "cache", cache_folder_name, tmdb_id)
                 main_json_filename = "all.json" if item_type == "Movie" else "series.json"
                 source_json_path = os.path.join(source_cache_dir, main_json_filename)
+
+                # ▼▼▼ 应急方案 ▼▼▼
+                if not os.path.exists(source_json_path):
+                    logger.warning(f"  ➜ 本地元数据文件 '{source_json_path}' 不存在。启动备用方案...")
+                    logger.info(f"  ➜ 正在通知 Emby 为 '{item_name_for_log}' 刷新元数据以生成缓存文件...")
+                    
+                    # 触发一次刷新，但不替换所有元数据，目的是让神医插件生成文件
+                    emby_handler.refresh_emby_item_metadata(
+                        item_emby_id=item_id,
+                        emby_server_url=self.emby_url,
+                        emby_api_key=self.emby_api_key,
+                        user_id_for_ops=self.emby_user_id,
+                        replace_all_metadata_param=False, 
+                        item_name_for_log=item_name_for_log
+                    )
+
+                    # 循环等待文件生成
+                    for attempt in range(10):
+                        logger.info(f"  ➜ 等待3秒后检查文件... (第 {attempt + 1}/10 次尝试)")
+                        time_module.sleep(3)
+                        if os.path.exists(source_json_path):
+                            logger.info(f"  ➜ 文件已成功生成！")
+                            break
+                
+                # 在尝试后，最终检查文件是否存在
                 if os.path.exists(source_json_path):
                     source_json_data = _read_local_json(source_json_path)
                     if source_json_data:
                         tmdb_details_for_extra = source_json_data
                         authoritative_cast_source = (source_json_data.get("casts", {}) or source_json_data.get("credits", {})).get("cast", [])
+                    else:
+                        # 文件存在但内容为空或无效
+                        logger.error(f"  ➜ 元数据文件 '{source_json_path}' 无效或为空，无法处理 '{item_name_for_log}'。")
+                        return False
+                else:
+                    # 如果10次尝试后文件仍然不存在
+                    logger.error(f"  ➜ 尝试10次后，元数据文件仍未生成。跳过处理 '{item_name_for_log}'。")
+                    return False
 
             # ======================================================================
             # 阶段 2: 演员表处理
