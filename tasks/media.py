@@ -459,15 +459,12 @@ def task_apply_main_cast_to_episodes(processor, series_id: str, episode_ids: lis
         if not episode_ids:
             logger.info(f"  ➜ 剧集 {series_id} 追更任务跳过：未提供需要更新的分集ID。")
             return
+        
+        series_details_for_log = emby_handler.get_emby_item_details(series_id, processor.emby_url, processor.emby_api_key, processor.emby_user_id, fields="Name,ProviderIds")
+        series_name = series_details_for_log.get("Name", f"ID:{series_id}") if series_details_for_log else f"ID:{series_id}"
 
         logger.info(f"  ➜ 追更任务启动：准备为剧集 {series_id} 的 {len(episode_ids)} 个新分集同步元数据...")
 
-        # 核心：直接调用资产同步功能，并传入需要精准同步的分集ID列表
-        # sync_single_item_assets 内部会处理：
-        # 1. 从元数据缓存(即 override/series.json 的体现)读取完美的演员表
-        # 2. 将演员表注入到指定分集的 override/season-X-episode-Y.json 文件中
-        # 3. 同步指定分集的图片
-        # 4. 更新数据库中的同步时间戳
         processor.sync_single_item_assets(
             item_id=series_id,
             update_description=f"追更新增 {len(episode_ids)} 个分集",
@@ -476,8 +473,30 @@ def task_apply_main_cast_to_episodes(processor, series_id: str, episode_ids: lis
         )
 
         logger.info(f"  ➜ 成功完成剧集 {series_id} 的新分集元数据同步任务。")
+        logger.info(f"  ➜ 正在为剧集《{series_name}》触发刷新，以应用追更...")
+        emby_handler.refresh_emby_item_metadata(
+            item_emby_id=series_id,
+            emby_server_url=processor.emby_url,
+            emby_api_key=processor.emby_api_key,
+            user_id_for_ops=processor.emby_user_id,
+            replace_all_metadata_param=True,
+            item_name_for_log=series_name
+        )
+
+        # 步骤 3: 更新父剧集在元数据缓存中的 last_synced_at 时间戳 (这个逻辑可以保留)
+        if series_details_for_log:
+            tmdb_id = series_details_for_log.get("ProviderIds", {}).get("Tmdb")
+            if tmdb_id:
+                try:
+                    with connection.get_db_connection() as conn:
+                        with conn.cursor() as cursor:
+                            cursor.execute(
+                                "UPDATE media_metadata SET last_synced_at = %s WHERE tmdb_id = %s AND item_type = 'Series'",
+                                (datetime.now(timezone.utc), tmdb_id)
+                            )
+                except Exception as db_e:
+                    logger.error(f"  ➜ 更新剧集《{series_name}》的时间戳时发生数据库错误: {db_e}", exc_info=True)
 
     except Exception as e:
         logger.error(f"  ➜ 为剧集 {series_id} 的新分集应用主演员表时发生错误: {e}", exc_info=True)
-        # 向上抛出异常，让任务管理器捕获并标记为失败
         raise
