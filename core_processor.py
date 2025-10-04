@@ -754,14 +754,14 @@ class MediaProcessor:
                     return False
                 
             # ======================================================================
-            # 阶段 1: 数据来源二选一
+            # 阶段 2: 数据来源二选一
             # ======================================================================
             final_processed_cast = None
             douban_rating = None
             tmdb_details_for_extra = None
             authoritative_cast_source = [] # 预定义
 
-            # 尝试快速模式
+            # 1.尝试快速模式
             if not force_fetch_from_tmdb:
                 logger.info(f"  ➜ [快速模式] 尝试从元数据缓存加载 '{item_name_for_log}'...")
                 try:
@@ -777,9 +777,9 @@ class MediaProcessor:
                     logger.warning(f"  ➜ [快速模式] 加载缓存失败: {e_cache}。将回退到深度模式。")
                     final_processed_cast = None
 
-            # 如果快速模式失败或未执行，则进入深度模式
+            # 2.完整模式
             if final_processed_cast is None:
-                logger.info(f"  ➜ [深度模式] 未命中缓存或强制刷新，开始完整处理...")
+                logger.info(f"  ➜ [完整模式] 未命中缓存或强制刷新，开始完整处理...")
                 
                 # 预读本地JSON文件以获取原始TMDb演员表
                 source_json_data = _read_local_json(source_json_path)
@@ -796,7 +796,7 @@ class MediaProcessor:
                     douban_cast_raw, douban_rating_deep = self._get_douban_data_with_local_cache(item_details_from_emby)
                     douban_rating = douban_rating_deep # 覆盖评分
 
-                    # 这是唯一被跳过的核心步骤
+                    # 调用核心处理器处理演员表
                     final_processed_cast = self._process_cast_list(
                         tmdb_cast_people=authoritative_cast_source,
                         emby_cast_people=enriched_emby_cast,
@@ -808,7 +808,7 @@ class MediaProcessor:
                     )
 
             # ======================================================================
-            # 阶段 2: 统一的收尾流程 (无论来源，必须执行)
+            # 阶段 3: 统一的收尾流程 (无论来源，必须执行)
             # ======================================================================
             if final_processed_cast is None:
                 raise ValueError("未能生成有效的最终演员列表。")
@@ -816,7 +816,7 @@ class MediaProcessor:
             with get_central_db_connection() as conn:
                 cursor = conn.cursor()
 
-                # 步骤 2.1: 写入 override 文件
+                # 步骤 3.1: 写入 override 文件
                 self.sync_single_item_assets(
                     item_id=item_id,
                     update_description="主流程处理完成",
@@ -826,7 +826,7 @@ class MediaProcessor:
                     cursor_for_build=cursor
                 )
 
-                # 步骤 2.2: 通知 Emby 刷新
+                # 步骤 3.2: 通知 Emby 刷新
                 logger.info(f"  ➜ 处理完成，正在通知 Emby 刷新...")
                 emby_handler.refresh_emby_item_metadata(
                     item_emby_id=item_id,
@@ -837,7 +837,7 @@ class MediaProcessor:
                     item_name_for_log=item_name_for_log
                 )
 
-                # 步骤 2.3: 更新我们自己的数据库缓存和日志
+                # 步骤 3.3: 更新我们自己的数据库缓存和日志
                 _save_metadata_to_cache(
                     cursor=cursor, tmdb_id=tmdb_id, emby_item_id=item_id, item_type=item_type,
                     item_details_from_emby=item_details_from_emby,
