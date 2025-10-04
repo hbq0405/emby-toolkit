@@ -754,51 +754,49 @@ class MediaProcessor:
                     return False
                 
             # ======================================================================
-            # 阶段 2: 快速模式检查 
+            # 阶段 1: 数据来源二选一
             # ======================================================================
-            final_processed_cast_from_cache = None
-            douban_rating_from_cache = None
+            final_processed_cast = None
+            douban_rating = None
+            tmdb_details_for_extra = None
+            authoritative_cast_source = [] # 预定义
 
+            # 尝试快速模式
             if not force_fetch_from_tmdb:
-                logger.info(f"  ➜ [快速模式] 尝试从元数据缓存直接加载 '{item_name_for_log}' 的最终结果...")
+                logger.info(f"  ➜ [快速模式] 尝试从元数据缓存加载 '{item_name_for_log}'...")
                 try:
                     with get_central_db_connection() as conn:
                         cursor = conn.cursor()
-                        # 同时获取演员和评分
                         cursor.execute("SELECT actors_json, rating FROM media_metadata WHERE tmdb_id = %s AND item_type = %s", (tmdb_id, item_type))
                         cache_row = cursor.fetchone()
-                        
                         if cache_row and cache_row.get("actors_json"):
-                            logger.info(f"  ➜ [快速模式] 成功命中缓存！将跳过所有数据采集和处理步骤。")
-                            cached_actors = cache_row["actors_json"]
-                            douban_rating_from_cache = cache_row.get("rating") # 使用缓存中的评分
-                            
-                            # 缓存中的 actors_json 已经是我们需要的最终格式，直接使用即可
-                            final_processed_cast_from_cache = cached_actors
-                            logger.debug(f"  ➜ [快速模式] 直接使用缓存中的 {len(cached_actors)} 条演员数据。")
+                            logger.info(f"  ➜ [快速模式] 成功命中缓存！将跳过演员表深度处理。")
+                            final_processed_cast = cache_row["actors_json"]
+                            douban_rating = cache_row.get("rating")
                 except Exception as e_cache:
-                    logger.warning(f"  ➜ [快速模式] 从缓存加载数据时发生错误: {e_cache}。将回退到完整处理模式。")
-                    final_processed_cast_from_cache = None # 出错则清空，确保走完整流程
+                    logger.warning(f"  ➜ [快速模式] 加载缓存失败: {e_cache}。将回退到深度模式。")
+                    final_processed_cast = None
 
-            # ======================================================================
-            # 阶段 3: 演员表处理
-            # ======================================================================
-            if final_processed_cast_from_cache is not None:
-                # 如果快速模式成功，直接跳到阶段3
-                logger.info("  ➜ [快速模式] 跳过演员表处理阶段。")
-                final_processed_cast = final_processed_cast_from_cache
-                douban_rating = douban_rating_from_cache # 把缓存的评分也带过去
-            else:
-                # 否则，执行完整的深度处理模式
-                logger.info(f"  ➜ [深度模式] 未命中缓存或强制刷新，开始执行完整处理流程...")
+            # 如果快速模式失败或未执行，则进入深度模式
+            if final_processed_cast is None:
+                logger.info(f"  ➜ [深度模式] 未命中缓存或强制刷新，开始完整处理...")
+                
+                # 预读本地JSON文件以获取原始TMDb演员表
+                source_json_data = _read_local_json(source_json_path)
+                if source_json_data:
+                    tmdb_details_for_extra = source_json_data
+                    authoritative_cast_source = (source_json_data.get("casts", {}) or source_json_data.get("credits", {})).get("cast", [])
+
                 with get_central_db_connection() as conn:
                     cursor = conn.cursor()
                     
                     all_emby_people = item_details_from_emby.get("People", [])
                     current_emby_cast_raw = [p for p in all_emby_people if p.get("Type") == "Actor"]
                     enriched_emby_cast = self._enrich_cast_from_db_and_api(current_emby_cast_raw)
-                    douban_cast_raw, douban_rating = self._get_douban_data_with_local_cache(item_details_from_emby)
+                    douban_cast_raw, douban_rating_deep = self._get_douban_data_with_local_cache(item_details_from_emby)
+                    douban_rating = douban_rating_deep # 覆盖评分
 
+                    # 这是唯一被跳过的核心步骤
                     final_processed_cast = self._process_cast_list(
                         tmdb_cast_people=authoritative_cast_source,
                         emby_cast_people=enriched_emby_cast,
@@ -809,24 +807,16 @@ class MediaProcessor:
                         stop_event=self.get_stop_event()
                     )
 
-                # ======================================================================
-                # 阶段 3: 写入演员表
-                # ======================================================================
-                logger.info("  ➜ 正在更新演员名...")
+            # ======================================================================
+            # 阶段 2: 统一的收尾流程 (无论来源，必须执行)
+            # ======================================================================
+            if final_processed_cast is None:
+                raise ValueError("未能生成有效的最终演员列表。")
 
-                # 3.1 API前置工作: 更新演员名 
-                original_names_map = {p.get("Id"): p.get("Name") for p in all_emby_people if p.get("Id")}
-                for actor in final_processed_cast:
-                    actor_id = actor.get("emby_person_id")
-                    new_name = actor.get("name")
-                    original_name = original_names_map.get(actor_id)
-                    if actor_id and new_name and original_name and new_name != original_name:
-                        emby_handler.update_person_details(
-                            person_id=actor_id, new_data={"Name": new_name},
-                            emby_server_url=self.emby_url, emby_api_key=self.emby_api_key, user_id=self.emby_user_id
-                        )
+            with get_central_db_connection() as conn:
+                cursor = conn.cursor()
 
-                # 3.2 调用json写入处理函数
+                # 步骤 2.1: 写入 override 文件
                 self.sync_single_item_assets(
                     item_id=item_id,
                     update_description="主流程处理完成",
@@ -836,10 +826,7 @@ class MediaProcessor:
                     cursor_for_build=cursor
                 )
 
-                # ======================================================================
-                # 阶段 4: 通知Emby刷新
-                # ======================================================================
-                # 4.1 API验收: 触发刷新
+                # 步骤 2.2: 通知 Emby 刷新
                 logger.info(f"  ➜ 处理完成，正在通知 Emby 刷新...")
                 emby_handler.refresh_emby_item_metadata(
                     item_emby_id=item_id,
@@ -850,7 +837,7 @@ class MediaProcessor:
                     item_name_for_log=item_name_for_log
                 )
 
-                # 4.2 内部验收: 更新数据库日志和缓存
+                # 步骤 2.3: 更新我们自己的数据库缓存和日志
                 _save_metadata_to_cache(
                     cursor=cursor, tmdb_id=tmdb_id, emby_item_id=item_id, item_type=item_type,
                     item_details_from_emby=item_details_from_emby,
