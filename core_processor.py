@@ -763,23 +763,36 @@ class MediaProcessor:
 
             # 1.尝试快速模式
             if not force_fetch_from_tmdb:
-                logger.info(f"  ➜ [快速模式] 尝试从元数据缓存加载 '{item_name_for_log}'...")
+                logger.info(f"  ➜ 尝试从元数据缓存加载 '{item_name_for_log}'...")
                 try:
                     with get_central_db_connection() as conn:
                         cursor = conn.cursor()
-                        cursor.execute("SELECT actors_json, rating FROM media_metadata WHERE tmdb_id = %s AND item_type = %s", (tmdb_id, item_type))
+                        # ▼▼▼ 核心修复：在SQL查询中直接过滤掉没有有效演员表的缓存 ▼▼▼
+                        # 只有当 actors_json 存在 (NOT NULL) 且不是一个空的JSON数组时，才认为缓存有效
+                        cursor.execute("""
+                            SELECT actors_json, rating 
+                            FROM media_metadata 
+                            WHERE tmdb_id = %s AND item_type = %s
+                              AND actors_json IS NOT NULL AND actors_json::text != '[]'
+                        """, (tmdb_id, item_type))
                         cache_row = cursor.fetchone()
-                        if cache_row and cache_row.get("actors_json"):
-                            logger.info(f"  ➜ [快速模式] 成功命中缓存！将跳过演员表深度处理。")
+                        
+                        # ▼▼▼ 核心修复：简化Python端的判断逻辑 ▼▼▼
+                        # 如果上面的查询能返回结果，就说明缓存是100%有效的
+                        if cache_row:
+                            logger.info(f"  ➜ 成功命中有效缓存！将跳过演员表深度处理。")
                             final_processed_cast = cache_row["actors_json"]
                             douban_rating = cache_row.get("rating")
+                        else:
+                            # 如果查询没有返回结果，说明缓存无效或不存在，必须走完整模式
+                            final_processed_cast = None
                 except Exception as e_cache:
-                    logger.warning(f"  ➜ [快速模式] 加载缓存失败: {e_cache}。将回退到深度模式。")
+                    logger.warning(f"  ➜ 加载缓存失败: {e_cache}。将回退到深度模式。")
                     final_processed_cast = None
 
             # 2.完整模式
             if final_processed_cast is None:
-                logger.info(f"  ➜ [完整模式] 未命中缓存或强制刷新，开始完整处理...")
+                logger.info(f"  ➜ 未命中缓存或强制刷新，开始处理演员表...")
                 
                 # 预读本地JSON文件以获取原始TMDb演员表
                 source_json_data = _read_local_json(source_json_path)
