@@ -181,3 +181,27 @@ def get_watching_tmdb_ids() -> set:
     except Exception as e:
         logger.error(f"从数据库获取正在追看的TMDB ID时出错: {e}", exc_info=True)
     return watching_ids
+
+def update_resubscribe_info(item_id: str, season_number: int, timestamp: str):
+    """
+    更新或插入特定季的最后一次洗版订阅时间。
+    """
+    try:
+        with get_db_connection() as conn:
+            with conn.cursor() as cursor:
+                # 使用 PostgreSQL 的 jsonb_set 函数来更新 JSONB 字段
+                update_query = """
+                    UPDATE watchlist
+                    SET resubscribe_info_json = jsonb_set(
+                        COALESCE(resubscribe_info_json, '{}'::jsonb),
+                        '{%s}',
+                        %s::jsonb,
+                        true
+                    )
+                    WHERE item_id = %s
+                """
+                cursor.execute(update_query, (str(season_number), f'"{timestamp}"', item_id))
+            conn.commit()
+            logger.info(f"  ➜ 已记录 ItemID {item_id} 第 {season_number} 季的洗版订阅时间。")
+    except Exception as e:
+        logger.error(f"更新 ItemID {item_id} 第 {season_number} 季的洗版订阅时间时出错: {e}", exc_info=True)
