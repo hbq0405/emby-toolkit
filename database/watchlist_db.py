@@ -194,13 +194,13 @@ def update_resubscribe_info(item_id: str, season_number: int, timestamp: str):
                     UPDATE watchlist
                     SET resubscribe_info_json = jsonb_set(
                         COALESCE(resubscribe_info_json, '{}'::jsonb),
-                        '{%s}',
+                        %s,
                         %s::jsonb,
                         true
                     )
                     WHERE item_id = %s
                 """
-                cursor.execute(update_query, (str(season_number), f'"{timestamp}"', item_id))
+                cursor.execute(update_query, ([str(season_number)], f'"{timestamp}"', item_id))
             conn.commit()
             logger.info(f"  ➜ 已记录 ItemID {item_id} 第 {season_number} 季的洗版订阅时间。")
     except Exception as e:
