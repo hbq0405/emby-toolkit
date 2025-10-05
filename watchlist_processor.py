@@ -423,6 +423,7 @@ class WatchlistProcessor:
 
                 logger.warning(f"  ➜ 最终确认剧集《{item_name}》存在中间缺集的季: {sorted(list(seasons_with_real_gaps))}，准备逐季触发洗版订阅。")
 
+                quota_exhausted = False
                 for season_num in sorted(list(seasons_with_real_gaps)):
                     if quota_exhausted: break
                     
