@@ -132,150 +132,80 @@ class WatchlistProcessor:
 
     # --- 核心任务启动器 ---
     def run_regular_processing_task_concurrent(self, progress_callback: callable, item_id: Optional[str] = None):
-        """【高铁版 - 并发追剧更新】处理所有活跃的剧集。"""
+        """【V2 - 流程修复版】修复因没有活跃剧集而导致洗版检查被跳过的流程缺陷。"""
         self.progress_callback = progress_callback
         task_name = "并发追剧更新"
         if item_id: task_name = f"单项追剧更新 (ID: {item_id})"
         
         self.progress_callback(0, "准备检查待更新剧集...")
         try:
+            # ======================================================================
+            # 阶段一：处理活跃剧集 (Watching 或 Paused到期的)
+            # ======================================================================
             today_str = datetime.now(timezone.utc).date().isoformat()
             active_series = self._get_series_to_process(
                 f"WHERE status = '{STATUS_WATCHING}' OR (status = '{STATUS_PAUSED}' AND paused_until <= '{today_str}')",
                 item_id
             )
-            # --- 新增：检测 Emby 中已删除的剧集并从追剧列表移除 ---
-            if not item_id: # 只在全量处理时执行此检查
-                self.progress_callback(0, "正在检测 Emby 中已删除的剧集...")
+            
+            # ▼▼▼ 核心流程修正：即使没有活跃剧集，也不再提前退出 ▼▼▼
+            if active_series:
+                total = len(active_series)
+                self.progress_callback(5, f"开始并发处理 {total} 部活跃剧集...")
                 
-                # 1. 获取 Emby 媒体库中所有剧集的 ID
-                emby_series_ids = set()
-                try:
-                    all_libraries = emby_handler.get_emby_libraries(self.emby_url, self.emby_api_key, self.emby_user_id)
-                    if all_libraries:
-                        library_ids_to_scan = [lib['Id'] for lib in all_libraries if lib.get('CollectionType') in ['tvshows', 'mixed']]
-                        
-                        # 使用并发获取所有剧集
-                        all_emby_series_items = []
-                        with concurrent.futures.ThreadPoolExecutor(max_workers=5) as executor:
-                            future_to_library = {
-                                executor.submit(emby_handler.get_emby_library_items, 
-                                                self.emby_url, self.emby_api_key, "Series", self.emby_user_id, [lib_id]): lib_id
-                                for lib_id in library_ids_to_scan
-                            }
-                            for future in concurrent.futures.as_completed(future_to_library):
-                                try:
-                                    result = future.result()
-                                    if result:
-                                        all_emby_series_items.extend(result)
-                                except Exception as exc:
-                                    logger.error(f"从媒体库 {future_to_library[future]} 获取剧集时发生异常: {exc}")
-                        
-                        emby_series_ids = {item['Id'] for item in all_emby_series_items if item.get('Id')}
-                        logger.info(f"已从 Emby 获取到 {len(emby_series_ids)} 个剧集ID。")
-                    else:
-                        logger.warning("未能从 Emby 获取到任何媒体库，跳过已删除剧集检测。")
-                except Exception as e:
-                    logger.error(f"获取 Emby 剧集列表时发生错误: {e}", exc_info=True)
-                    # 即使出错也继续，避免阻塞主任务
-                
-                # 2. 获取当前追剧列表中的所有剧集 ID
-                watchlist_series_ids = set()
-                try:
-                    with connection.get_db_connection() as conn:
-                        cursor = conn.cursor()
-                        cursor.execute("SELECT item_id FROM watchlist WHERE item_type = 'Series'")
-                        watchlist_series_ids = {row['item_id'] for row in cursor.fetchall()}
-                    logger.info(f"追剧列表中有 {len(watchlist_series_ids)} 个剧集ID。")
-                except Exception as e:
-                    logger.error(f"获取追剧列表剧集ID时发生数据库错误: {e}", exc_info=True)
-                    # 即使出错也继续
-                
-                # 3. 比较并找出已删除的剧集
-                deleted_series_ids = watchlist_series_ids - emby_series_ids
-                if deleted_series_ids:
-                    logger.warning(f"检测到 {len(deleted_series_ids)} 部剧集已从 Emby 删除，将从追剧列表移除。")
-                    for deleted_id in deleted_series_ids:
-                        watchlist_db.remove_item_from_watchlist(item_id=deleted_id)
-                else:
-                    logger.info("未检测到 Emby 中有剧集被删除。")
-            # --- 新增逻辑结束 ---
+                processed_count = 0
+                lock = threading.Lock()
 
-            today_str = datetime.now(timezone.utc).date().isoformat()
-            active_series = self._get_series_to_process(
-                f"WHERE status = '{STATUS_WATCHING}' OR (status = '{STATUS_PAUSED}' AND paused_until <= '{today_str}')",
-                item_id
-            )
-            total = len(active_series)
-            if total == 0:
-                self.progress_callback(100, "没有需要立即处理的剧集。")
+                def worker_process_series(series: dict):
+                    if self.is_stop_requested(): return "任务已停止"
+                    try:
+                        self._process_one_series(series)
+                        return "处理成功"
+                    except Exception as e:
+                        logger.error(f"处理剧集 {series.get('item_name')} 时发生错误: {e}", exc_info=False)
+                        return f"处理失败: {e}"
+
+                with concurrent.futures.ThreadPoolExecutor(max_workers=5) as executor:
+                    future_to_series = {executor.submit(worker_process_series, series): series for series in active_series}
+                    
+                    for future in concurrent.futures.as_completed(future_to_series):
+                        if self.is_stop_requested():
+                            executor.shutdown(wait=False, cancel_futures=True)
+                            break
+
+                        series_info = future_to_series[future]
+                        try:
+                            result = future.result()
+                            logger.trace(f"'{series_info['item_name']}' - {result}")
+                        except Exception as exc:
+                            logger.error(f"任务 '{series_info['item_name']}' 执行时产生未捕获的异常: {exc}")
+
+                        with lock:
+                            processed_count += 1
+                        
+                        # 进度条只占前50%
+                        progress = 5 + int((processed_count / total) * 45)
+                        self.progress_callback(progress, f"活跃剧集: {processed_count}/{total} - {series_info['item_name'][:15]}...")
+                
+                if not self.is_stop_requested():
+                    self.progress_callback(50, "常规追剧检查完成，即将开始洗版检查...")
+            else:
+                # 如果没有活跃剧集，直接进入下一阶段
+                self.progress_callback(50, "没有需要立即处理的活跃剧集，直接开始洗版检查...")
+            
+            time.sleep(2) # 给用户一点时间看消息
+
+            # ======================================================================
+            # 阶段二：处理洗版检查 (无论阶段一结果如何，都必须执行)
+            # ======================================================================
+            if self.is_stop_requested():
+                self.progress_callback(100, "任务已停止。")
                 return
 
-            self.progress_callback(5, f"开始并发处理 {total} 部剧集 (5个并发)...")
-            
-            processed_count = 0
-            # 使用线程锁来安全地更新共享变量 processed_count
-            lock = threading.Lock()
-
-            def worker_process_series(series: dict):
-                """
-                线程工作单元：处理单部剧集。
-                这个函数将在独立的线程中被执行。
-                """
-                # 检查任务是否在开始处理前就被取消了
-                if self.is_stop_requested():
-                    return "任务已停止"
-                
-                try:
-                    # ★ 核心耗时操作在这里
-                    self._process_one_series(series)
-                    return "处理成功"
-                except Exception as e:
-                    logger.error(f"处理剧集 {series.get('item_name')} (ID: {series.get('item_id')}) 时发生错误: {e}", exc_info=False)
-                    return f"处理失败: {e}"
-
-            # ★★★ 核心改造：使用5个并发的线程池 ★★★
-            with concurrent.futures.ThreadPoolExecutor(max_workers=5) as executor:
-                # 创建一个 future 到 series 的映射，方便后续获取信息
-                future_to_series = {executor.submit(worker_process_series, series): series for series in active_series}
-                
-                for future in concurrent.futures.as_completed(future_to_series):
-                    if self.is_stop_requested():
-                        # 如果在处理过程中请求停止，我们可以尝试取消未开始的任务
-                        executor.shutdown(wait=False, cancel_futures=True)
-                        break
-
-                    series_info = future_to_series[future]
-                    try:
-                        # 获取线程执行的结果（成功或失败信息）
-                        result = future.result()
-                        logger.trace(f"'{series_info['item_name']}' - {result}")
-                    except Exception as exc:
-                        logger.error(f"任务 '{series_info['item_name']}' 执行时产生未捕获的异常: {exc}")
-
-                    # 使用锁来安全地更新进度计数器
-                    with lock:
-                        processed_count += 1
-                    
-                    # 实时计算并回调进度
-                    progress = 5 + int((processed_count / total) * 95)
-                    self.progress_callback(progress, f"进度: {processed_count}/{total} - {series_info['item_name'][:15]}...")
-
-            if not self.is_stop_requested():
-                # 根据是全量刷新还是单项刷新，显示不同的过渡消息
-                if not item_id:
-                    self.progress_callback(100, "常规追剧检查完成，即将开始洗版检查...")
-                else:
-                    self.progress_callback(100, f"项目 {item_id} 常规检查完成，即将为其单独检查洗版...")
-                
-                time.sleep(2) # 给用户一点时间看消息
-
-                # 调用我们新的、可复用的洗版检查函数
-                # 如果是单项刷新，把 item_id 也传过去
-                self._run_wash_plate_check_logic(progress_callback=self.progress_callback, item_id=item_id)
-            else:
-                # 如果任务被中止，直接结束
-                self.progress_callback(100, "任务已停止。")
+            # 调用我们新的、可复用的洗版检查函数
+            # 如果是单项刷新，把 item_id 也传过去
+            self._run_wash_plate_check_logic(progress_callback=self.progress_callback, item_id=item_id)
+            # ▲▲▲ 核心流程修正结束 ▲▲▲
 
         except Exception as e:
             logger.error(f"执行 '{task_name}' 时发生严重错误: {e}", exc_info=True)
