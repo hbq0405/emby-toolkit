@@ -599,26 +599,36 @@ def emby_webhook():
         return jsonify({"status": "metadata_update_task_debounced", "item_id": id_to_process}), 202
 
     elif event_type == "image.update":
-        update_description = data.get("Description", "Webhook Image Update")
+        
+        # 1. 先获取原始的描述
+        original_update_description = data.get("Description", "Webhook Image Update")
         webhook_received_at_iso = datetime.now(timezone.utc).isoformat()
 
+        # 2. 准备一个变量来存放最终要执行的描述
+        final_update_description = original_update_description
+
         with UPDATE_DEBOUNCE_LOCK:
-            # 注意：计时器键仍然使用 item_id，以便元数据和图像更新可以相互覆盖，通常以最后的操作为准
+            # 3. 检查是否已有计时器
             if id_to_process in UPDATE_DEBOUNCE_TIMERS:
                 old_timer = UPDATE_DEBOUNCE_TIMERS[id_to_process]
                 old_timer.kill()
                 logger.debug(f"  ➜ 已为 '{name_for_task}' 取消了旧的同步计时器，将以最新的封面更新事件为准。")
+                
+                # ★★★ 关键逻辑：如果取消了旧的，说明发生了合并，我们不再相信单一描述 ★★★
+                logger.info(f"  ➜ 检测到图片更新事件合并，将任务升级为“完全同步”。")
+                final_update_description = "Multiple image updates detected" # 给一个通用描述
 
-            logger.info(f"  ➜ 为 '{name_for_task}' 设置了 {UPDATE_DEBOUNCE_TIME} 秒的封面备份延迟，以合并连续的更新事件。")
+            logger.info(f"  ➜ 为 '{name_for_task}' 设置了 {UPDATE_DEBOUNCE_TIME} 秒的封面备份延迟...")
             new_timer = spawn_later(
                 UPDATE_DEBOUNCE_TIME,
                 _trigger_images_update_task,
                 item_id=id_to_process,
                 item_name=name_for_task,
-                update_description=update_description,
+                update_description=final_update_description, # <-- 使用我们最终决定的描述
                 sync_timestamp_iso=webhook_received_at_iso
             )
             UPDATE_DEBOUNCE_TIMERS[id_to_process] = new_timer
+        
         return jsonify({"status": "asset_update_task_debounced", "item_id": id_to_process}), 202
 
     return jsonify({"status": "event_unhandled"}), 500
