@@ -642,6 +642,8 @@ class MediaProcessor:
         tmdb_id = item_details_from_emby.get("ProviderIds", {}).get("Tmdb")
         item_type = item_details_from_emby.get("Type")
 
+        logger.info(f"--- 开始处理 '{item_name_for_log}' (TMDb ID: {tmdb_id}) ---")
+
         all_emby_people_for_count = item_details_from_emby.get("People", [])
         original_emby_actor_count = len([p for p in all_emby_people_for_count if p.get("Type") == "Actor"])
 
@@ -883,6 +885,8 @@ class MediaProcessor:
                     self.log_db_manager.remove_from_failed_log(cursor, item_id)
                 
                 conn.commit()
+
+            logger.info(f"--- 处理完成 '{item_name_for_log}' ---")
 
         except (ValueError, InterruptedError) as e:
             logger.warning(f"处理 '{item_name_for_log}' 的过程中断: {e}")
