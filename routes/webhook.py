@@ -305,11 +305,11 @@ def _trigger_metadata_update_task(item_id, item_name):
     )
 
 def _trigger_images_update_task(item_id, item_name, update_description, sync_timestamp_iso):
-    """触发覆盖缓存备份任务"""
-    logger.info(f"  ➜ 防抖计时器到期，为 '{item_name}' (ID: {item_id}) 执行覆盖缓存备份任务。")
+    """触发图片备份任务"""
+    logger.info(f"  ➜ 防抖计时器到期，为 '{item_name}' (ID: {item_id}) 执行图片备份任务。")
     task_manager.submit_task(
         task_sync_images,
-        task_name=f"覆盖缓存备份: {item_name}",
+        task_name=f"图片备份: {item_name}",
         processor_type='media',
         item_id=item_id,
         update_description=update_description,

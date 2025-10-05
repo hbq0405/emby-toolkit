@@ -66,7 +66,26 @@ def task_sync_images(processor, item_id: str, update_description: str, sync_time
     """
     logger.trace(f"任务开始：图片备份 for ID: {item_id} (原因: {update_description})")
     try:
-        processor.sync_item_images(item_id, update_description, sync_timestamp_iso)
+        # --- ▼▼▼ 核心修复 ▼▼▼ ---
+        # 1. 根据 item_id 获取完整的媒体详情
+        item_details = emby_handler.get_emby_item_details(
+            item_id, 
+            processor.emby_url, 
+            processor.emby_api_key, 
+            processor.emby_user_id
+        )
+        if not item_details:
+            logger.error(f"任务失败：无法获取 ID: {item_id} 的媒体详情，跳过图片备份。")
+            return
+
+        # 2. 使用获取到的 item_details 字典来调用
+        processor.sync_item_images(
+            item_details=item_details, 
+            update_description=update_description
+            # episode_ids_to_sync 参数这里不需要，sync_item_images 会自己处理
+        )
+        # --- ▲▲▲ 修复结束 ▲▲▲ ---
+
         logger.trace(f"任务成功：图片备份 for ID: {item_id}")
     except Exception as e:
         logger.error(f"任务失败：图片备份 for ID: {item_id} 时发生错误: {e}", exc_info=True)
