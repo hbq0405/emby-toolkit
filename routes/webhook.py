@@ -19,7 +19,7 @@ from core_processor import MediaProcessor
 from tasks import (
     task_auto_sync_template_on_policy_change, 
     task_sync_metadata_cache,
-    task_sync_assets,
+    task_sync_images,
     task_apply_main_cast_to_episodes
 )
 from custom_collection_handler import FilterEngine
@@ -304,11 +304,11 @@ def _trigger_metadata_update_task(item_id, item_name):
         item_name=item_name
     )
 
-def _trigger_asset_update_task(item_id, item_name, update_description, sync_timestamp_iso):
+def _trigger_images_update_task(item_id, item_name, update_description, sync_timestamp_iso):
     """触发覆盖缓存备份任务"""
     logger.info(f"  ➜ 防抖计时器到期，为 '{item_name}' (ID: {item_id}) 执行覆盖缓存备份任务。")
     task_manager.submit_task(
-        task_sync_assets,
+        task_sync_images,
         task_name=f"覆盖缓存备份: {item_name}",
         processor_type='media',
         item_id=item_id,
@@ -611,7 +611,7 @@ def emby_webhook():
             logger.info(f"  ➜ 为 '{name_for_task}' 设置了 {UPDATE_DEBOUNCE_TIME} 秒的封面备份延迟，以合并连续的更新事件。")
             new_timer = spawn_later(
                 UPDATE_DEBOUNCE_TIME,
-                _trigger_asset_update_task,
+                _trigger_images_update_task,
                 item_id=id_to_process,
                 item_name=name_for_task,
                 update_description=update_description,

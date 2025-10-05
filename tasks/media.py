@@ -60,16 +60,16 @@ def task_sync_metadata_cache(processor, item_id: str, item_name: str, episode_id
         logger.error(f"  ➜ 任务失败：同步媒体元数据缓存 for '{item_name}' 时发生错误: {e}", exc_info=True)
         raise
 
-def task_sync_assets(processor, item_id: str, update_description: str, sync_timestamp_iso: str):
+def task_sync_images(processor, item_id: str, update_description: str, sync_timestamp_iso: str):
     """
     任务：为单个媒体项同步图片和元数据文件到本地 override 目录。
     """
-    logger.trace(f"任务开始：覆盖缓存备份 for ID: {item_id} (原因: {update_description})")
+    logger.trace(f"任务开始：图片备份 for ID: {item_id} (原因: {update_description})")
     try:
-        processor.sync_single_item_assets(item_id, update_description, sync_timestamp_iso)
-        logger.trace(f"任务成功：覆盖缓存备份 for ID: {item_id}")
+        processor.sync_item_images(item_id, update_description, sync_timestamp_iso)
+        logger.trace(f"任务成功：图片备份 for ID: {item_id}")
     except Exception as e:
-        logger.error(f"任务失败：覆盖缓存备份 for ID: {item_id} 时发生错误: {e}", exc_info=True)
+        logger.error(f"任务失败：图片备份 for ID: {item_id} 时发生错误: {e}", exc_info=True)
         raise
 
 # ★★★ 重新处理单个项目 ★★★

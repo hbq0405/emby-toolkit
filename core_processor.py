@@ -1832,6 +1832,7 @@ class MediaProcessor:
             logger.error(f"  ➜ 获取编辑数据失败 for ItemID {item_id}: {e}", exc_info=True)
             return None
     
+    # --- 实时覆盖缓存同步 ---
     def sync_single_item_assets(self, item_id: str, 
                                 update_description: Optional[str] = None, 
                                 sync_timestamp_iso: Optional[str] = None,
@@ -1839,7 +1840,6 @@ class MediaProcessor:
                                 episode_ids_to_sync: Optional[List[str]] = None,
                                 douban_rating_override: Optional[float] = None):
         """
-        【V2.4 - 项目经理最终版】
         纯粹的项目经理，负责接收设计师的所有材料，并分发给施工队。
         """
         log_prefix = f"实时覆盖缓存同步"
