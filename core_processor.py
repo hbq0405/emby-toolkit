@@ -675,8 +675,6 @@ class MediaProcessor:
             force_fetch_from_tmdb=force_fetch_from_tmdb
         )
 
-        # --- 核心处理流程 ---
-    
     # ---核心处理流程 ---
     def _process_item_core_logic(self, item_details_from_emby: Dict[str, Any], force_reprocess_this_item: bool, force_fetch_from_tmdb: bool = False):
         """
