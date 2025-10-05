@@ -2102,7 +2102,10 @@ class MediaProcessor:
         - 新增逻辑：在修改文件前，如果文件在目标目录不存在，则从源目录复制。
         """
         log_prefix = "[覆盖缓存-元数据备份]"
-        logger.info(f"  ➜ {log_prefix} 开始将元数据注入所有季/集备份文件...")
+        if cast_list is not None:
+            logger.info(f"  ➜ {log_prefix} 开始将演员表注入所有季/集备份文件...")
+        else:
+            logger.info(f"  ➜ {log_prefix} 开始将实时元数据（标题/简介）同步到所有季/集备份文件...")
         
         children_from_emby = emby_handler.get_series_children(
             series_id=series_details.get("Id"), base_url=self.emby_url,
@@ -2151,9 +2154,12 @@ class MediaProcessor:
                 try:
                     with open(child_json_path, 'r+', encoding='utf-8') as f_child:
                         child_data = json.load(f_child)
-                        if 'credits' in child_data and 'cast' in child_data['credits']:
+                        
+                        # ★★★ 核心修改：条件性地更新演员表 ★★★
+                        if cast_list is not None and 'credits' in child_data and 'cast' in child_data['credits']:
                             child_data['credits']['cast'] = cast_list
                         
+                        # 无论如何都更新元数据
                         file_key = os.path.splitext(filename)[0]
                         fresh_data = child_data_map.get(file_key)
                         if fresh_data:
@@ -2304,6 +2310,95 @@ class MediaProcessor:
 
         except Exception as e:
             logger.error(f"{log_prefix} 执行时发生错误: {e}", exc_info=True)
+
+    def sync_emby_updates_to_override_files(self, item_details: Dict[str, Any]):
+        """
+        将来自 Emby 的实时元数据更新同步到 override 缓存文件。
+        这是一个 "读-改-写" 操作，用于持久化用户在 Emby UI 上的修改。
+        """
+        item_id = item_details.get("Id")
+        item_name_for_log = item_details.get("Name", f"未知项目(ID:{item_id})")
+        item_type = item_details.get("Type")
+        tmdb_id = item_details.get("ProviderIds", {}).get("Tmdb")
+        log_prefix = "[覆盖缓存-元数据持久化]"
+
+        if not all([item_id, item_type, tmdb_id, self.local_data_path]):
+            logger.warning(f"  ➜ {log_prefix} 跳过 '{item_name_for_log}'，缺少关键ID或路径配置。")
+            return
+
+        logger.info(f"  ➜ {log_prefix} 开始为 '{item_name_for_log}' 更新覆盖缓存文件...")
+
+        # --- 定位主文件 ---
+        cache_folder_name = "tmdb-movies2" if item_type == "Movie" else "tmdb-tv"
+        target_override_dir = os.path.join(self.local_data_path, "override", cache_folder_name, tmdb_id)
+        main_json_filename = "all.json" if item_type == "Movie" else "series.json"
+        main_json_path = os.path.join(target_override_dir, main_json_filename)
+
+        # --- 安全检查：如果 override 文件不存在，说明从未被完整处理过，不应继续 ---
+        if not os.path.exists(main_json_path):
+            logger.warning(f"  ➜ {log_prefix} 无法持久化修改：主覆盖文件 '{main_json_path}' 不存在。请先对该项目进行一次完整处理。")
+            return
+
+        try:
+            # --- 核心的 "读-改-写" 逻辑 ---
+            with open(main_json_path, 'r+', encoding='utf-8') as f:
+                data = json.load(f)
+
+                # 定义要从 Emby 同步的字段
+                fields_to_update = {
+                    "Name": "title",
+                    "OriginalTitle": "original_title",
+                    "Overview": "overview",
+                    "Tagline": "tagline",
+                    "CommunityRating": "vote_average", # 用户评分
+                    "OfficialRating": "official_rating",
+                    "Genres": "genres",
+                    "Studios": "production_companies",
+                    "Tags": "keywords"
+                }
+                
+                updated_count = 0
+                for emby_key, json_key in fields_to_update.items():
+                    if emby_key in item_details:
+                        new_value = item_details[emby_key]
+                        # 特殊处理 Studios 和 Genres
+                        if emby_key in ["Studios", "Genres"]:
+                            # 假设源数据是 [{ "Name": "Studio A" }] 或 ["Action"]
+                            if isinstance(new_value, list):
+                                if emby_key == "Studios":
+                                     data[json_key] = [{"name": s.get("Name")} for s in new_value if s.get("Name")]
+                                else: # Genres
+                                     data[json_key] = new_value
+                                updated_count += 1
+                        else:
+                            data[json_key] = new_value
+                            updated_count += 1
+                
+                # 处理日期
+                if 'PremiereDate' in item_details:
+                    data['release_date'] = (item_details['PremiereDate'] or '').split('T')[0]
+                    updated_count += 1
+
+                logger.info(f"  ➜ {log_prefix} 准备将 {updated_count} 项更新写入 '{main_json_filename}'。")
+
+                f.seek(0)
+                json.dump(data, f, ensure_ascii=False, indent=2)
+                f.truncate()
+
+            # 如果是剧集，还需要更新所有子文件的 name 和 overview
+            if item_type == "Series":
+                logger.info(f"  ➜ {log_prefix} 检测到为剧集，开始同步更新子项（季/集）的元数据...")
+                self._inject_cast_to_series_files(
+                    target_dir=target_override_dir,
+                    cast_list=None, # ★★★ 关键：传入 None 表示我们只更新元数据，不碰演员表 ★★★
+                    series_details=item_details,
+                    source_dir=os.path.join(self.local_data_path, "cache", cache_folder_name, tmdb_id)
+                )
+
+            logger.info(f"  ➜ {log_prefix} 成功为 '{item_name_for_log}' 持久化了元数据修改。")
+
+        except Exception as e:
+            logger.error(f"  ➜ {log_prefix} 为 '{item_name_for_log}' 更新覆盖缓存文件时发生错误: {e}", exc_info=True)
 
     def close(self):
         if self.douban_api: self.douban_api.close()

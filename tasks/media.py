@@ -91,6 +91,42 @@ def task_sync_images(processor, item_id: str, update_description: str, sync_time
         logger.error(f"任务失败：图片备份 for ID: {item_id} 时发生错误: {e}", exc_info=True)
         raise
 
+def task_sync_all_metadata(processor, item_id: str, item_name: str):
+    """
+    【任务：全能元数据同步器。
+    当收到 metadata.update Webhook 时，此任务会：
+    1. 从 Emby 获取最新数据。
+    2. 将更新持久化到 override 覆盖缓存文件。
+    3. 将更新同步到 media_metadata 数据库缓存。
+    """
+    log_prefix = f"全能元数据同步 for '{item_name}'"
+    logger.trace(f"  ➜ 任务开始：{log_prefix}")
+    try:
+        # 步骤 1: 获取包含了用户修改的、最新的完整媒体详情
+        item_details = emby_handler.get_emby_item_details(
+            item_id, 
+            processor.emby_url, 
+            processor.emby_api_key, 
+            processor.emby_user_id,
+            # 请求所有可能被用户修改的字段
+            fields="ProviderIds,Type,Name,OriginalTitle,Overview,Tagline,CommunityRating,OfficialRating,Genres,Studios,Tags,PremiereDate"
+        )
+        if not item_details:
+            logger.error(f"  ➜ {log_prefix} 失败：无法获取项目 {item_id} 的最新详情。")
+            return
+
+        # 步骤 2: 调用施工队，更新 override 文件
+        processor.sync_emby_updates_to_override_files(item_details)
+
+        # 步骤 3: 调用另一个施工队，更新数据库缓存
+        # 注意：这里我们复用现有的 task_sync_metadata_cache 逻辑
+        processor.sync_single_item_to_metadata_cache(item_id, item_name=item_name)
+
+        logger.trace(f"  ➜ 任务成功：{log_prefix}")
+    except Exception as e:
+        logger.error(f"  ➜ 任务失败：{log_prefix} 时发生错误: {e}", exc_info=True)
+        raise
+
 # ★★★ 重新处理单个项目 ★★★
 def task_reprocess_single_item(processor, item_id: str, item_name_for_ui: str):
     """

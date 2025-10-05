@@ -19,6 +19,7 @@ from core_processor import MediaProcessor
 from tasks import (
     task_auto_sync_template_on_policy_change, 
     task_sync_metadata_cache,
+    task_sync_all_metadata,
     task_sync_images,
     task_apply_main_cast_to_episodes
 )
@@ -294,11 +295,11 @@ def _process_batch_webhook_events():
     logger.info("  ➜ 所有 Webhook 批量任务已成功分派。")
 
 def _trigger_metadata_update_task(item_id, item_name):
-    """触发元数据缓存同步任务"""
+    """触发元数据同步任务"""
     logger.info(f"  ➜ 防抖计时器到期，为 '{item_name}' (ID: {item_id}) 执行元数据缓存同步任务。")
     task_manager.submit_task(
-        task_sync_metadata_cache,
-        task_name=f"元数据缓存同步: {item_name}",
+        task_sync_all_metadata,
+        task_name=f"元数据同步: {item_name}",
         processor_type='media',
         item_id=item_id,
         item_name=item_name
