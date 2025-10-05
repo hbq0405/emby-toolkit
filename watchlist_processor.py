@@ -348,6 +348,7 @@ class WatchlistProcessor:
             logger.info(f"  ➜ 共发现 {total} 部潜在的缺集剧集，开始进行精准订阅分析...")
             total_seasons_subscribed = 0
 
+            quota_exhausted = False
             for i, series in enumerate(series_to_check):
                 if self.is_stop_requested(): break
                 item_name = series.get('item_name', '未知剧集')
@@ -423,7 +424,6 @@ class WatchlistProcessor:
 
                 logger.warning(f"  ➜ 最终确认剧集《{item_name}》存在中间缺集的季: {sorted(list(seasons_with_real_gaps))}，准备逐季触发洗版订阅。")
 
-                quota_exhausted = False
                 for season_num in sorted(list(seasons_with_real_gaps)):
                     if quota_exhausted: break
                     
