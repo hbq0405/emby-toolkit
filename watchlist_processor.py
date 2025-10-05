@@ -463,6 +463,17 @@ class WatchlistProcessor:
                             season_number=season_num,
                             timestamp=datetime.now(timezone.utc).isoformat()
                         )
+
+                        # --- 订阅成功后，将状态重置为“追剧中”，以触发下一次的完整状态刷新 ---
+                        logger.info(f"  ➜ 《{item_name}》洗版订阅成功，状态将重置为“追剧中”以待系统自动刷新校准。")
+                        self._update_watchlist_entry(
+                            item_id=series['item_id'],
+                            item_name=item_name,
+                            updates={
+                                "status": STATUS_WATCHING,
+                                "paused_until": None  # 清除暂停状态
+                            }
+                        )
                     
                     time.sleep(1)
                 time.sleep(1)
