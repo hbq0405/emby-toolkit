@@ -9,8 +9,7 @@ from datetime import datetime, timedelta, timezone
 import threading
 
 # 导入我们需要的辅助模块
-from database import connection
-from database import watchlist_db
+from database import connection, settings_db, watchlist_db
 import moviepilot_handler
 import constants
 import tmdb_handler
@@ -425,11 +424,23 @@ class WatchlistProcessor:
                 logger.warning(f"  ➜ 最终确认剧集《{item_name}》存在中间缺集的季: {sorted(list(seasons_with_real_gaps))}，准备逐季触发洗版订阅。")
 
                 for season_num in sorted(list(seasons_with_real_gaps)):
+                    # ▼▼▼ 核心修改：在这里加入配额检查 ▼▼▼
+                    current_quota = settings_db.get_subscription_quota()
+                    if current_quota <= 0:
+                        logger.warning(f"  ➜ [洗版订阅] 尝试订阅《{item_name}》第 {season_num} 季，但每日配额已用尽。停止本次所有剩余的洗版任务。")
+                        quota_exhausted = True  # 设置标志，用于跳出最外层循环
+                        break  # 跳出当前剧集的季循环
+
                     success = moviepilot_handler.subscribe_series_to_moviepilot(
                         series_info=series, season_number=season_num,
                         config=self.config, best_version=1
                     )
-                    if success: total_seasons_subscribed += 1
+                    
+                    if success:
+                        # 订阅成功后才扣减配额
+                        settings_db.decrement_subscription_quota()
+                        total_seasons_subscribed += 1
+                    
                     time.sleep(1)
                 time.sleep(1)
 
