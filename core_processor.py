@@ -575,6 +575,55 @@ class MediaProcessor:
             return dict(metadata_row)  # 将其转换为字典，方便使用
         return None
     
+    # --- 通过 API 更新 Emby 中演员名字 ---
+    def _update_emby_person_names_from_final_cast(self, final_cast: List[Dict[str, Any]], item_name_for_log: str):
+        """
+        根据最终处理好的演员列表，通过 API 更新 Emby 中“演员”项目的名字。
+        """
+        actors_to_update = [
+            actor for actor in final_cast 
+            if actor.get("emby_person_id") and utils.contains_chinese(actor.get("name"))
+        ]
+
+        if not actors_to_update:
+            logger.info(f"  ➜ 无需通过 API 更新演员名字 (没有找到需要翻译的 Emby 演员)。")
+            return
+
+        logger.info(f"  ➜ 开始为《{item_name_for_log}》的 {len(actors_to_update)} 位演员通过 API 更新名字...")
+        
+        # 批量获取这些演员在 Emby 中的当前信息，以减少 API 请求
+        person_ids = [actor["emby_person_id"] for actor in actors_to_update]
+        current_person_details = emby_handler.get_emby_items_by_id(
+            base_url=self.emby_url,
+            api_key=self.emby_api_key,
+            user_id=self.emby_user_id,
+            item_ids=person_ids,
+            fields="Name"
+        )
+        
+        current_names_map = {p["Id"]: p.get("Name") for p in current_person_details} if current_person_details else {}
+
+        updated_count = 0
+        for actor in actors_to_update:
+            person_id = actor["emby_person_id"]
+            new_name = actor["name"]
+            current_name = current_names_map.get(person_id)
+
+            # 只有当新名字和当前名字不同时，才执行更新
+            if new_name != current_name:
+                emby_handler.update_person_details(
+                    person_id=person_id,
+                    new_data={"Name": new_name},
+                    emby_server_url=self.emby_url,
+                    emby_api_key=self.emby_api_key,
+                    user_id=self.emby_user_id
+                )
+                updated_count += 1
+                # 加个小延迟避免请求过快
+                time.sleep(0.2) 
+
+        logger.info(f"  ➜ 成功通过 API 更新了 {updated_count} 位演员的名字。")
+    
     # --- 核心处理总管 ---
     def process_single_item(self, emby_item_id: str,
                             force_reprocess_this_item: bool = False,
@@ -836,7 +885,10 @@ class MediaProcessor:
                     douban_rating_override=douban_rating
                 )
 
-                # 步骤 3.2: 通知 Emby 刷新
+                # 步骤 3.2: 通过 API 实时更新 Emby 演员库中的名字
+                self._update_emby_person_names_from_final_cast(final_processed_cast, item_name_for_log)
+
+                # 步骤 3.3: 通知 Emby 刷新
                 logger.info(f"  ➜ 处理完成，正在通知 Emby 刷新...")
                 emby_handler.refresh_emby_item_metadata(
                     item_emby_id=item_id,
@@ -847,7 +899,7 @@ class MediaProcessor:
                     item_name_for_log=item_name_for_log
                 )
 
-                # 步骤 3.3: 更新我们自己的数据库缓存
+                # 步骤 3.4: 更新我们自己的数据库缓存
                 _save_metadata_to_cache(
                     cursor=cursor, tmdb_id=tmdb_id, emby_item_id=item_id, item_type=item_type,
                     item_details_from_emby=item_details_from_emby,
@@ -855,7 +907,7 @@ class MediaProcessor:
                     tmdb_details_for_extra=tmdb_details_for_extra
                 )
                 
-                # 步骤 3.4: 根据处理质量评分，决定写入“已处理”或“失败”日志
+                # 步骤 3.5: 根据处理质量评分，决定写入“已处理”或“失败”日志
                 logger.info(f"  ➜ 正在评估《{item_name_for_log}》的处理质量...")
                 genres = item_details_from_emby.get("Genres", [])
                 is_animation = "Animation" in genres or "动画" in genres or "Documentary" in genres or "纪录" in genres
