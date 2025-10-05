@@ -366,9 +366,10 @@ class WatchlistProcessor:
     # ★★★ 已完结剧集缺集洗版检查 ★★★
     def _run_wash_plate_check_logic(self, progress_callback: callable, item_id: Optional[str] = None):
         """
-        【V12 - 智能防误判版】
-        重构洗版逻辑，只对“中间缺集”的季进行订阅，忽略因TMDb数据不准导致的“末尾缺集”，
-        从而大幅提升洗版功能的准确性。
+        【V13 - 精准订阅最终版】
+        彻底重构洗版逻辑，使其专注处理“中间缺集”的核心职责。
+        本函数将不再处理任何“整季缺失”的情况（特别是未播出的新季），
+        从而避免了对MoviePilot的无效洗版订阅。
         """
         task_name = "洗版缺集的季"
         
@@ -415,7 +416,7 @@ class WatchlistProcessor:
                 if progress_callback: progress_callback(100, "所有流程已完成，未发现需洗版的剧集。")
                 return
 
-            logger.info(f"  ➜ 共发现 {total} 部潜在的缺集剧集，开始进行智能分析...")
+            logger.info(f"  ➜ 共发现 {total} 部潜在的缺集剧集，开始进行精准订阅分析...")
             total_seasons_subscribed = 0
 
             for i, series in enumerate(series_to_check):
@@ -432,15 +433,15 @@ class WatchlistProcessor:
                                 last_air_date = datetime.strptime(last_air_date_str, '%Y-%m-%d').date()
                                 days_since_airing = (datetime.now(timezone.utc).date() - last_air_date).days
                                 if days_since_airing < 7:
-                                    logger.info(f"  ➜ 《{item_name}》完结未满7天，跳过洗版。")
+                                    logger.info(f"  ➜ 《{item_name}》完结未满7天，跳过洗版分析。")
                                     continue
                             except ValueError: pass
                 
                 missing_info = series.get('missing_info_json')
                 if not missing_info: continue
 
-                # ▼▼▼ 核心优化：智能分析缺集类型 ▼▼▼
-                logger.info(f"  ➜ 开始为《{item_name}》进行精准缺集分析...")
+                # ▼▼▼ 核心逻辑修正：只分析“中间缺集”，彻底忽略“整季缺失” ▼▼▼
+                logger.info(f"  ➜ 开始为《{item_name}》进行精准的“中间缺集”分析...")
                 seasons_with_real_gaps = set()
 
                 # 1. 实时获取 Emby 本地分集数据，用于对比
@@ -453,27 +454,25 @@ class WatchlistProcessor:
                             if s_num is not None and e_num is not None:
                                 emby_seasons.setdefault(s_num, set()).add(e_num)
                 
-                # 2. 分析完全缺失的季 (这肯定是真缺)
-                for season in missing_info.get("missing_seasons", []):
-                    season_num = season.get('season_number')
-                    if season_num is not None:
-                        logger.info(f"  ➜ 分析 S{season_num}: 整季缺失，确认为需要洗版。")
-                        seasons_with_real_gaps.add(season_num)
-
-                # 3. 分析缺失的集，判断是“中间”还是“末尾”
+                # 2. 忽略完全缺失的季。洗版功能只负责填补“中间”的窟窿，
+                #    对于尚未播出的新季或完全没有的旧季，应由常规订阅逻辑处理。
+                if missing_info.get("missing_seasons"):
+                    missing_season_nums = [s.get('season_number') for s in missing_info.get("missing_seasons", []) if s.get('season_number') is not None]
+                    if missing_season_nums:
+                        logger.info(f"  ➜ 分析：检测到整季缺失 S{missing_season_nums}，根据精准订阅策略，洗版功能将【忽略】此情况。")
+                
+                # 3. 分析缺失的集，判断是否为“中间”缺失
                 for episode in missing_info.get("missing_episodes", []):
                     s_num = episode.get('season_number')
                     e_num = episode.get('episode_number')
                     
                     if s_num is None or e_num is None or s_num in seasons_with_real_gaps:
-                        continue # 如果季号无效，或该季已确认要洗版，则跳过
+                        continue
 
                     local_episodes_for_season = emby_seasons.get(s_num, set())
+                    # 如果本地根本没有这一季的任何文件，那它本质上就是“整季缺失”，不归洗版管
                     if not local_episodes_for_season:
-                        # 如果本地没有任何这一季的集，但记录又显示是缺集而不是缺季，说明数据可能存在矛盾
-                        # 为保险起见，也视为需要洗版
-                        logger.warning(f"  ➜ 分析 S{s_num}: 发现数据矛盾（记录为缺集但本地无该季任何文件），确认为需要洗版。")
-                        seasons_with_real_gaps.add(s_num)
+                        logger.info(f"  ➜ 分析 S{s_num}E{e_num}: 本地不存在该季的任何文件，视为整季缺失，【忽略】。")
                         continue
 
                     # 关键判断：本地是否存在比当前缺失集集号更大的集
@@ -481,13 +480,13 @@ class WatchlistProcessor:
 
                     if has_later_episode_locally:
                         max_local_episode = max(local_episodes_for_season)
-                        logger.info(f"  ➜ 分析 S{s_num}E{e_num}: 本地存在更高集号 {max_local_episode}，确认为【中间缺失】，需要洗版。")
+                        logger.info(f"  ➜ 分析 S{s_num}E{e_num}: 本地存在更高集号 S{s_num}E{max_local_episode}，确认为【中间缺失】，需要洗版。")
                         seasons_with_real_gaps.add(s_num)
                     else:
                         max_local_episode = max(local_episodes_for_season) if local_episodes_for_season else '无'
-                        logger.info(f"  ➜ 分析 S{s_num}E{e_num}: 本地不存在更高集号 (最高为 {max_local_episode})，判定为【末尾缺失】，忽略。")
+                        logger.info(f"  ➜ 分析 S{s_num}E{e_num}: 本地不存在更高集号 (最高为 E{max_local_episode})，判定为【末尾缺失】，【忽略】。")
                 
-                # ▲▲▲ 核心优化结束 ▲▲▲
+                # ▲▲▲ 核心逻辑修正结束 ▲▲▲
 
                 if not seasons_with_real_gaps:
                     logger.info(f"  ➜ 《{item_name}》分析完成，未发现需要洗版的中间缺失季。")
@@ -504,7 +503,7 @@ class WatchlistProcessor:
                     time.sleep(1)
                 time.sleep(1)
 
-            final_message = f"所有流程已完成！共为 {total_seasons_subscribed} 个确认存在中间缺失的季提交了洗版订阅。"
+            final_message = f"所有流程已完成！共为 {total_seasons_subscribed} 个确认存在中间缺失的季提交了精准洗版订阅。"
             if progress_callback: progress_callback(100, final_message)
             logger.trace(f"  ➜ 后台任务 '{task_name}' 结束，最终状态: 处理完成")
 
