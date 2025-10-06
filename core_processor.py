@@ -2159,7 +2159,7 @@ class MediaProcessor:
         【修复版】辅助函数：将演员表注入剧集的季/集JSON文件。
         - 新增逻辑：在修改文件前，如果文件在目标目录不存在，则从源目录复制。
         """
-        log_prefix = "[覆盖缓存-元数据备份]"
+        log_prefix = "[覆盖缓存-元数据写入]"
         if cast_list is not None:
             logger.info(f"  ➜ {log_prefix} 开始将演员表注入所有季/集备份文件...")
         else:
