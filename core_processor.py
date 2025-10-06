@@ -1725,8 +1725,16 @@ class MediaProcessor:
             )
             final_cast_for_json = self._build_cast_from_final_data(final_formatted_cast)
 
-            if 'casts' in data: data['casts']['cast'] = final_cast_for_json
-            else: data.setdefault('credits', {})['cast'] = final_cast_for_json
+            if 'casts' in data:
+                data['casts']['cast'] = final_cast_for_json
+                logger.debug("  ➜ 正在将演员表写回 'casts' (电影模式)。")
+            elif 'credits' in data:
+                data['credits']['cast'] = final_cast_for_json
+                logger.debug("  ➜ 正在将演员表写回 'credits' (剧集模式)。")
+            else:
+                # 作为备用方案，如果两者都不存在，则默认创建 'credits'
+                data.setdefault('credits', {})['cast'] = final_cast_for_json
+                logger.warning("  ➜ 'casts' 和 'credits' 键均未找到，已默认创建 'credits'。")
             
             with open(main_json_path, 'w', encoding='utf-8') as f:
                 json.dump(data, f, ensure_ascii=False, indent=2)
@@ -1811,7 +1819,7 @@ class MediaProcessor:
             with open(main_json_path, 'r', encoding='utf-8') as f:
                 override_data = json.load(f)
             
-            cast_from_override = (override_data.get('casts', {}) or {}).get('cast', [])
+            cast_from_override = (override_data.get('casts', {}) or override_data.get('credits', {})).get('cast', [])
             logger.debug(f"  ➜ 成功从 override 文件为 '{item_name_for_log}' 加载了 {len(cast_from_override)} 位演员。")
 
             # 步骤 3: 构建 TMDb ID -> emby_person_id 的映射
