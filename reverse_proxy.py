@@ -300,19 +300,37 @@ def handle_get_mimicked_library_items(user_id, mimicked_id, params):
             
             # 2. 白名单方式，传递其他必要的客户端参数
             passthrough_params_whitelist = [
-                'StartIndex', 'Limit', 'Fields', 'IncludeItemTypes', 
+                'StartIndex', 'Limit', 'IncludeItemTypes', 
                 'Recursive', 'EnableImageTypes', 'ImageTypeLimit'
-            ]
+            ] # 注意：'Fields' 已从此列表中移除
             for param in passthrough_params_whitelist:
                 if param in params:
                     forward_params[param] = params[param]
 
+            # 2.1 ★★★ 核心修复：强制注入关键字段 ★★★
+            # 定义我们必须获取的字段，以确保角标等功能正常
+            required_fields = {'RecursiveItemCount', 'ChildCount', 'UserData'}
+
+            # 获取客户端请求的字段（如果有的话）
+            client_fields_str = params.get('Fields', '')
+            if client_fields_str:
+                # 将客户端请求的字段字符串转为集合
+                client_fields_set = set(field.strip() for field in client_fields_str.split(','))
+                # 合并我们的必填字段和客户端的字段
+                required_fields.update(client_fields_set)
+            else:
+                # 如果客户端没有指定字段，使用一个较为完整的默认列表
+                default_fields = "PrimaryImageAspectRatio,ProviderIds,Name,ProductionYear,CommunityRating,DateCreated,PremiereDate,Type,SortName"
+                required_fields.update(set(field.strip() for field in default_fields.split(',')))
+
+            # 将最终的字段集合转回为逗号分隔的字符串
+            final_fields_str = ",".join(sorted(list(required_fields))) # sorted只是为了日志好看
+            forward_params['Fields'] = final_fields_str
+            logger.debug(f"  ➜ 已为请求强制合并 Fields: {final_fields_str}")
+
             # 3. 附上媒体ID列表和API Key
             forward_params['Ids'] = ",".join(final_emby_ids_to_fetch)
             forward_params['api_key'] = api_key
-            
-            if 'Fields' not in forward_params:
-                forward_params['Fields'] = "PrimaryImageAspectRatio,ProviderIds,UserData,Name,ProductionYear,CommunityRating,DateCreated,PremiereDate,Type,RecursiveItemCount,SortName"
 
             # 4. 发起请求
             target_url = f"{base_url}/emby/Users/{user_id}/Items"
@@ -330,7 +348,7 @@ def handle_get_mimicked_library_items(user_id, mimicked_id, params):
             live_items_unordered = emby_handler.get_emby_items_by_id(
                 base_url=base_url, api_key=api_key, user_id=user_id,
                 item_ids=final_emby_ids_to_fetch,
-                fields="PrimaryImageAspectRatio,ProviderIds,UserData,Name,ProductionYear,CommunityRating,DateCreated,PremiereDate,Type,RecursiveItemCount,SortName"
+                fields="PrimaryImageAspectRatio,ProviderIds,UserData,Name,ProductionYear,CommunityRating,DateCreated,PremiereDate,Type,RecursiveItemCount,SortName,ChildCount"
             )
             live_items_map = {item['Id']: item for item in live_items_unordered}
             ordered_items = [live_items_map[emby_id] for emby_id in final_emby_ids_to_fetch if emby_id in live_items_map]
