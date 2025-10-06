@@ -1704,7 +1704,7 @@ class MediaProcessor:
             with open(main_json_path, 'r', encoding='utf-8') as f:
                 data = json.load(f)
             
-            original_cast_data = (data.get('casts', {}) or {}).get('cast', [])
+            original_cast_data = (data.get('casts', {}) or data.get('credits', {})).get('cast', [])
             original_cast_map = {str(actor.get('id')): actor for actor in original_cast_data if actor.get('id')}
 
             logger.info(f"  ➜ 手动处理：步骤 4/5: 重建演员列表并执行最终格式化(添加前缀)...")
