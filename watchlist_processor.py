@@ -99,7 +99,10 @@ class WatchlistProcessor:
             logger.error(f"  更新 '{item_name}' 的追剧信息时数据库出错: {e}", exc_info=True)
     # --- 自动添加追剧列表的方法 ---
     def add_series_to_watchlist(self, item_details: Dict[str, Any]):
-        """检查剧集状态，如果是“在播中”，则添加到追剧列表。"""
+        """
+        【V13 - 逻辑修改版】
+        检查剧集状态，将在播剧以“追剧中”状态、非在播剧（已完结/已取消）以“已完结”状态自动加入追剧列表。
+        """
         if item_details.get("Type") != "Series": return
         tmdb_id = item_details.get("ProviderIds", {}).get("Tmdb")
         item_name = item_details.get("Name")
@@ -112,22 +115,36 @@ class WatchlistProcessor:
         if not tmdb_details: return
 
         tmdb_status = tmdb_details.get("status")
+        
+        # 如果无法获取TMDb状态，则不进行任何操作
+        if not tmdb_status:
+            logger.warning(f"无法确定剧集 '{item_name}' 的TMDb状态，跳过自动添加。")
+            return
+
+        # 根据TMDb状态决定内部追剧状态
+        internal_status = ""
         if tmdb_status in ["Returning Series", "In Production", "Planned"]:
-            try:
-                with connection.get_db_connection() as conn:
-                    with conn.cursor() as cursor:
-                        # ★★★ 核心修复: 改为 PostgreSQL 语法 ★★★
-                        cursor.execute("""
-                            INSERT INTO watchlist (item_id, tmdb_id, item_name, item_type, status)
-                            VALUES (%s, %s, %s, %s, 'Watching')
-                            ON CONFLICT (item_id) DO NOTHING
-                        """, (item_id, tmdb_id, item_name, "Series"))
-                        
-                        if cursor.rowcount > 0:
-                            logger.info(f"  ➜ 剧集 '{item_name}' (TMDb状态: {translate_status(tmdb_status)}) 已自动加入追剧列表。")
-                    conn.commit()
-            except Exception as e:
-                logger.error(f"自动添加剧集 '{item_name}' 到追剧列表时发生数据库错误: {e}", exc_info=True)
+            internal_status = STATUS_WATCHING
+        else: # 包括 "Ended", "Canceled" 以及其他任何未知状态
+            internal_status = STATUS_COMPLETED
+
+        try:
+            with connection.get_db_connection() as conn:
+                with conn.cursor() as cursor:
+                    # ★★★ 核心逻辑修改: 插入时使用动态确定的 internal_status ★★★
+                    cursor.execute("""
+                        INSERT INTO watchlist (item_id, tmdb_id, item_name, item_type, status)
+                        VALUES (%s, %s, %s, %s, %s)
+                        ON CONFLICT (item_id) DO NOTHING
+                    """, (item_id, tmdb_id, item_name, "Series", internal_status))
+                    
+                    if cursor.rowcount > 0:
+                        # 使用辅助函数翻译内部状态，使日志更友好
+                        log_status_translated = translate_internal_status(internal_status)
+                        logger.info(f"  ➜ 剧集 '{item_name}' (TMDb状态: {translate_status(tmdb_status)}) 已自动加入追剧列表，初始状态为: {log_status_translated}。")
+                conn.commit()
+        except Exception as e:
+            logger.error(f"自动添加剧集 '{item_name}' 到追剧列表时发生数据库错误: {e}", exc_info=True)
 
     # --- 核心任务启动器 ---
     def run_regular_processing_task_concurrent(self, progress_callback: callable, item_id: Optional[str] = None):
