@@ -518,7 +518,7 @@ def task_apply_main_cast_to_episodes(processor, series_id: str, episode_ids: lis
         series_details_for_log = emby_handler.get_emby_item_details(series_id, processor.emby_url, processor.emby_api_key, processor.emby_user_id, fields="Name,ProviderIds")
         series_name = series_details_for_log.get("Name", f"ID:{series_id}") if series_details_for_log else f"ID:{series_id}"
 
-        logger.info(f"  ➜ 追更任务启动：准备为剧集 {series_id} 的 {len(episode_ids)} 个新分集同步元数据...")
+        logger.info(f"  ➜ 追更任务启动：准备为剧集 《{series_name}》 的 {len(episode_ids)} 个新分集同步元数据...")
 
         processor.sync_single_item_assets(
             item_id=series_id,
