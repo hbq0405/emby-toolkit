@@ -94,6 +94,7 @@ def handle_get_views():
                  authoritative_type = item_type_from_db[0] if isinstance(item_type_from_db, list) and item_type_from_db else item_type_from_db if isinstance(item_type_from_db, str) else 'Movie'
                  collection_type = "tvshows" if authoritative_type == 'Series' else "movies"
 
+            child_count = coll.get('in_library_count', 1) # 将数量提取到一个变量中，方便复用
             fake_view = {
                 "Name": coll['name'] + name_suffix, "ServerId": real_server_id, "Id": mimicked_id,
                 "Guid": str(uuid.uuid4()), "Etag": f"{db_id}{int(time.time())}",
@@ -102,8 +103,13 @@ def handle_get_views():
                 "ParentId": "2", "Type": "CollectionFolder", "PresentationUniqueKey": str(uuid.uuid4()),
                 "DisplayPreferencesId": f"custom-{db_id}", "ForcedSortName": coll['name'],
                 "Taglines": [], "RemoteTrailers": [],
-                "UserData": {"PlaybackPositionTicks": 0, "IsFavorite": False, "Played": False},
-                "ChildCount": coll.get('in_library_count', 1), # 给个默认值，避免显示为0
+                "UserData": {
+                    "PlaybackPositionTicks": 0, 
+                    "IsFavorite": False, 
+                    "Played": False,
+                    "UnplayedItemCount": child_count  # <--- 核心修改：在这里添加缺失的字段
+                },
+                "ChildCount": child_count, # 继续保留 ChildCount 字段以兼容其他情况
                 "PrimaryImageAspectRatio": 1.7777777777777777, 
                 "CollectionType": collection_type, "ImageTags": image_tags, "BackdropImageTags": [], 
                 "LockedFields": [], "LockData": False
