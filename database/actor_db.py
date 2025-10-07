@@ -98,9 +98,9 @@ class ActorDBManager:
 
     def upsert_person(self, cursor: psycopg2.extensions.cursor, person_data: Dict[str, Any], emby_config: Dict[str, Any]) -> Tuple[int, str]:
         """
-        【V7 - 原子化重构版，彻底解决并发冲突】
-        使用 INSERT ... ON CONFLICT DO UPDATE 语句，将插入和更新操作合并为
-        一个数据库原子操作，从根本上避免因并发写入导致的唯一性冲突。
+        【V8 - 精准统计修复版】
+        通过为 ON CONFLICT DO UPDATE 增加 WHERE 条件，实现真正的条件更新。
+        这能准确区分数据实际被“更新”和数据因无变化而“未变”的情况，从而解决统计不准的问题。
         """
         emby_id = str(person_data.get("emby_id") or '').strip() or None
         tmdb_id_raw = person_data.get("id") or person_data.get("tmdb_id")
@@ -125,44 +125,62 @@ class ActorDBManager:
         elif not name:
             name = "Unknown Actor"
 
-        # ▼▼▼▼▼ 修复从这里开始 ▼▼▼▼▼
         try:
+            # SQL 语句增加了 WHERE 子句，只有在数据不同时才执行 UPDATE
             sql = """
                 INSERT INTO person_identity_map 
                 (primary_name, emby_person_id, tmdb_person_id, imdb_id, douban_celebrity_id, last_updated_at)
                 VALUES (%s, %s, %s, %s, %s, NOW())
                 ON CONFLICT (tmdb_person_id) DO UPDATE SET
+                    primary_name = EXCLUDED.primary_name,
                     emby_person_id = EXCLUDED.emby_person_id,
                     imdb_id = COALESCE(person_identity_map.imdb_id, EXCLUDED.imdb_id),
                     douban_celebrity_id = COALESCE(person_identity_map.douban_celebrity_id, EXCLUDED.douban_celebrity_id),
                     last_updated_at = NOW()
+                WHERE
+                    -- 使用 IS DISTINCT FROM 来正确处理 NULL 值
+                    person_identity_map.primary_name IS DISTINCT FROM EXCLUDED.primary_name OR
+                    person_identity_map.emby_person_id IS DISTINCT FROM EXCLUDED.emby_person_id OR
+                    -- 仅当数据库中 ID 为空，且新 ID 不为空时，才认为需要更新
+                    (person_identity_map.imdb_id IS NULL AND EXCLUDED.imdb_id IS NOT NULL) OR
+                    (person_identity_map.douban_celebrity_id IS NULL AND EXCLUDED.douban_celebrity_id IS NOT NULL)
                 RETURNING map_id, (CASE xmax WHEN 0 THEN 'INSERTED' ELSE 'UPDATED' END) as action;
             """
             
             cursor.execute(sql, (name, emby_id, tmdb_id, imdb_id, douban_id))
             result = cursor.fetchone()
 
+            action: str
+            map_id: int
+
             if result:
+                # 如果有返回结果，说明发生了 INSERT 或 UPDATE
                 map_id = result['map_id']
                 action = result['action']
                 logger.debug(f"  ➜ 演员 '{name}' (TMDb: {tmdb_id}) 处理完成。结果: {action} (map_id: {map_id})")
-
-                # 如果 person_data 包含 profile_path 或 gender 等元数据字段，就更新到actor_metadata
-                if 'profile_path' in person_data or 'gender' in person_data or 'popularity' in person_data:
-                    self.update_actor_metadata_from_tmdb(cursor, tmdb_id, person_data)
-
-                return map_id, action
             else:
-                logger.error(f"upsert_person 原子化操作未能返回结果，emby_person_id={emby_id}, tmdb_id={tmdb_id}")
-                return -1, "ERROR"
+                # 如果没有返回结果，说明存在冲突但 WHERE 条件不满足，数据未发生变化
+                action = "UNCHANGED"
+                # 需要手动查询一下 map_id，以便后续流程使用
+                cursor.execute("SELECT map_id FROM person_identity_map WHERE tmdb_person_id = %s", (tmdb_id,))
+                existing_record = cursor.fetchone()
+                if not existing_record:
+                    logger.error(f"upsert_person 逻辑错误: 未能更新也未能找到现有演员记录 for tmdb_id={tmdb_id}")
+                    return -1, "ERROR"
+                map_id = existing_record['map_id']
+                logger.trace(f"  ➜ 演员 '{name}' (TMDb: {tmdb_id}) 数据无变化，标记为 UNCHANGED。")
 
-        # 注意这里的 except 和上面的 try 是对齐的
+            # 统一处理元数据更新
+            if 'profile_path' in person_data or 'gender' in person_data or 'popularity' in person_data:
+                self.update_actor_metadata_from_tmdb(cursor, tmdb_id, person_data)
+
+            return map_id, action
+
         except psycopg2.IntegrityError as ie:
             conn = cursor.connection
             conn.rollback()
             logger.error(f"upsert_person 发生数据库完整性冲突，可能是 emby_id 或其他唯一键重复。emby_id={emby_id}, tmdb_id={tmdb_id}: {ie}")
             return -1, "ERROR"
-        # 这个 except 也和 try 对齐
         except Exception as e:
             conn = cursor.connection
             conn.rollback()
