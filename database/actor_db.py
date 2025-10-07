@@ -146,6 +146,11 @@ class ActorDBManager:
                 map_id = result['map_id']
                 action = result['action']
                 logger.debug(f"  ➜ 演员 '{name}' (TMDb: {tmdb_id}) 处理完成。结果: {action} (map_id: {map_id})")
+
+                # 如果 person_data 包含 profile_path 或 gender 等元数据字段，就更新到actor_metadata
+                if 'profile_path' in person_data or 'gender' in person_data or 'popularity' in person_data:
+                    self.update_actor_metadata_from_tmdb(cursor, tmdb_id, person_data)
+
                 return map_id, action
             else:
                 logger.error(f"upsert_person 原子化操作未能返回结果，emby_person_id={emby_id}, tmdb_id={tmdb_id}")
