@@ -39,8 +39,7 @@ class UnifiedSyncHandler:
             person_generator = emby_handler.get_all_persons_from_emby(
                 self.emby_url, self.emby_api_key, self.emby_user_id, stop_event,
                 update_status_callback=update_status_callback,
-                force_full_scan=True, # 强制全局扫描，不错过任何“休假”员工
-                start_progress=5
+                force_full_scan=True 
             )
             
             for person_batch in person_generator:
