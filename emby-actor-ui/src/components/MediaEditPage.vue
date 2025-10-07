@@ -237,7 +237,13 @@ const posterUrl = computed(() => {
 });
 
 const getActorImageUrl = (actor) => {
-  return actor.imageUrl || ''; 
+  // 如果 actor.imageUrl 存在
+  if (actor.imageUrl) {
+    // 将完整的外部图片URL进行编码，并作为参数传递给我们的新后端代理
+    return `/api/image_proxy?url=${encodeURIComponent(actor.imageUrl)}`;
+  }
+  // 如果不存在，返回空字符串
+  return ''; 
 };
 
 const itemTypeInChinese = computed(() => {

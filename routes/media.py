@@ -109,6 +109,43 @@ def api_update_edited_cast_sa(item_id):
     
     return jsonify({"message": "手动更新任务已在后台启动。"}), 202
 
+# ▼▼▼ 通用外部图片代理接口 ▼▼▼
+@media_api_bp.route('/image_proxy', methods=['GET'])
+def proxy_external_image():
+    """
+    一个安全的通用外部图片代理。
+    接收一个 'url' 参数，从该URL获取图片并将其流式传输回客户端。
+    """
+    external_url = request.args.get('url')
+    if not external_url:
+        return jsonify({"error": "缺少 'url' 参数"}), 400
+
+    try:
+        # 使用 stream=True 进行流式请求，这对于大文件更高效
+        response = requests.get(external_url, stream=True, timeout=10)
+
+        # 检查请求是否成功
+        response.raise_for_status()
+
+        # 将外部服务器的响应流式传输回客户端
+        # stream_with_context 确保请求上下文在流式传输期间保持活动状态
+        return Response(
+            stream_with_context(response.iter_content(chunk_size=8192)),
+            content_type=response.headers.get('Content-Type'),
+            status=response.status_code
+        )
+    except requests.exceptions.RequestException as e:
+        logger.error(f"通用图片代理错误: 无法获取 URL '{external_url}'. 错误: {e}")
+        # 返回一个1x1的透明像素点作为占位符
+        return Response(
+            b'\x89PNG\r\n\x1a\n\x00\x00\x00\rIHDR\x00\x00\x00\x01\x00\x00\x00\x01\x08\x06\x00\x00\x00\x1f\x15\xc4\x89\x00\x00\x00\nIDATx\x9cc\x00\x01\x00\x00\x05\x00\x01\r\n-\xb4\x00\x00\x00\x00IEND\xaeB`\x82',
+            mimetype='image/png',
+            status=404
+        )
+    except Exception as e:
+        logger.error(f"通用图片代理发生未知错误 for URL '{external_url}'. 错误: {e}", exc_info=True)
+        return jsonify({"error": "代理图片时发生内部错误"}), 500
+
 # 图片代理路由
 @media_proxy_bp.route('/image_proxy/<path:image_path>')
 @processor_ready_required
