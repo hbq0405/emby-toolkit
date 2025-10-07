@@ -98,12 +98,12 @@ class ActorDBManager:
 
     def upsert_person(self, cursor: psycopg2.extensions.cursor, person_data: Dict[str, Any], emby_config: Dict[str, Any]) -> Tuple[int, str]:
         """
-        【V8 - 增加元数据缓存】
-        在完成 person_identity_map 的更新/插入后，如果传入的数据包含额外元数据
-        （如头像、性别等），则会一并更新 actor_metadata 缓存表。
+        【V7 - 原子化重构版，彻底解决并发冲突】
+        使用 INSERT ... ON CONFLICT DO UPDATE 语句，将插入和更新操作合并为
+        一个数据库原子操作，从根本上避免因并发写入导致的唯一性冲突。
         """
-        emby_id = str(person_data.get("emby_person_id") or '').strip() or None
-        tmdb_id_raw = person_data.get("id") or person_data.get("tmdb_id")
+        emby_id = str(person_data.get("emby_id") or '').strip() or None
+        tmdb_id_raw = person_data.get("tmdb_id")
         imdb_id = str(person_data.get("imdb_id") or '').strip() or None
         douban_id = str(person_data.get("douban_id") or '').strip() or None
         name = str(person_data.get("name") or '').strip()
@@ -125,15 +125,14 @@ class ActorDBManager:
         elif not name:
             name = "Unknown Actor"
 
+        # ▼▼▼▼▼ 修复从这里开始 ▼▼▼▼▼
         try:
-            # 更加健壮的 ON CONFLICT 语句，确保数据只增不减，并且更新名字
             sql = """
                 INSERT INTO person_identity_map 
                 (primary_name, emby_person_id, tmdb_person_id, imdb_id, douban_celebrity_id, last_updated_at)
                 VALUES (%s, %s, %s, %s, %s, NOW())
                 ON CONFLICT (tmdb_person_id) DO UPDATE SET
-                    primary_name = EXCLUDED.primary_name,
-                    emby_person_id = COALESCE(EXCLUDED.emby_person_id, person_identity_map.emby_person_id),
+                    emby_person_id = EXCLUDED.emby_person_id,
                     imdb_id = COALESCE(person_identity_map.imdb_id, EXCLUDED.imdb_id),
                     douban_celebrity_id = COALESCE(person_identity_map.douban_celebrity_id, EXCLUDED.douban_celebrity_id),
                     last_updated_at = NOW()
@@ -146,23 +145,19 @@ class ActorDBManager:
             if result:
                 map_id = result['map_id']
                 action = result['action']
-                logger.debug(f"  ➜ 演员 '{name}' (TMDb: {tmdb_id}) 身份映射处理完成。结果: {action} (map_id: {map_id})")
-
-                # ★★★ 新增逻辑：检查并更新演员元数据缓存 ★★★
-                # 如果 person_data 包含 profile_path 或 gender 等元数据字段，就认为可以更新
-                if 'profile_path' in person_data or 'gender' in person_data or 'popularity' in person_data:
-                    self.update_actor_metadata_from_tmdb(cursor, tmdb_id, person_data)
-
+                logger.debug(f"  ➜ 演员 '{name}' (TMDb: {tmdb_id}) 处理完成。结果: {action} (map_id: {map_id})")
                 return map_id, action
             else:
                 logger.error(f"upsert_person 原子化操作未能返回结果，emby_person_id={emby_id}, tmdb_id={tmdb_id}")
                 return -1, "ERROR"
 
+        # 注意这里的 except 和上面的 try 是对齐的
         except psycopg2.IntegrityError as ie:
             conn = cursor.connection
             conn.rollback()
             logger.error(f"upsert_person 发生数据库完整性冲突，可能是 emby_id 或其他唯一键重复。emby_id={emby_id}, tmdb_id={tmdb_id}: {ie}")
             return -1, "ERROR"
+        # 这个 except 也和 try 对齐
         except Exception as e:
             conn = cursor.connection
             conn.rollback()
