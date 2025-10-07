@@ -356,7 +356,7 @@ class MediaProcessor:
         return None
 
     # --- 演员数据查询、反哺 ---
-    def enrich_cast_from_db_and_api(self, cast_list: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+    def _enrich_cast_from_db_and_api(self, cast_list: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
         """
         演员数据查询、反哺
         """
@@ -962,7 +962,7 @@ class MediaProcessor:
                     
                     all_emby_people = item_details_from_emby.get("People", [])
                     current_emby_cast_raw = [p for p in all_emby_people if p.get("Type") == "Actor"]
-                    enriched_emby_cast = actor_utils.enrich_cast_from_db_and_api(current_emby_cast_raw)
+                    enriched_emby_cast = self._enrich_cast_from_db_and_api(current_emby_cast_raw)
                     douban_cast_raw, douban_rating_deep = self._get_douban_data_with_local_cache(item_details_from_emby)
                     douban_rating = douban_rating_deep # 覆盖评分
 
@@ -1676,7 +1676,7 @@ class MediaProcessor:
             
             logger.info(f"  ➜ 手动处理：步骤 1/6: 构建TMDb与Emby演员的ID映射...")
             raw_emby_actors = [p for p in item_details.get("People", []) if p.get("Type") == "Actor"]
-            enriched_actors = actor_utils.enrich_cast_from_db_and_api(raw_emby_actors)
+            enriched_actors = self._enrich_cast_from_db_and_api(raw_emby_actors)
             
             tmdb_to_emby_map = {}
             for person in enriched_actors:
@@ -1750,7 +1750,7 @@ class MediaProcessor:
             logger.info(f"  ➜ 手动处理：步骤 3/6: 通过API更新现有演员的名字...")
             # 构建 TMDb ID -> Emby Person ID 和 Emby Person ID -> 当前名字的映射
             raw_emby_actors = [p for p in item_details.get("People", []) if p.get("Type") == "Actor"]
-            enriched_actors = actor_utils.enrich_cast_from_db_and_api(raw_emby_actors)
+            enriched_actors = self._enrich_cast_from_db_and_api(raw_emby_actors)
             
             tmdb_to_emby_map = {}
             emby_id_to_name_map = {}
