@@ -1437,60 +1437,20 @@ class MediaProcessor:
 
         # ▼▼▼ 步骤 8: ★★★ 最终数据回写/反哺 ★★★ ▼▼▼
         logger.info(f"  ➜ 开始将 {len(final_cast_perfect)} 位最终演员的完整信息同步回数据库...")
-        upserted_count = 0
+        processed_count = 0
         for actor in final_cast_perfect:
-            try:
-                actor_data_for_db = {
-                    'primary_name': actor.get('name'),
-                    'tmdb_person_id': actor.get('id'),
-                    'emby_person_id': actor.get('emby_person_id'),
-                    'douban_celebrity_id': actor.get('douban_id'),
-                    'imdb_id': actor.get('imdb_id')
-                }
-                
-                # 过滤掉没有有效ID的条目
-                if not actor_data_for_db['tmdb_person_id'] and not actor_data_for_db['douban_celebrity_id']:
-                    continue
-
-                # 优先使用 TMDb ID 作为冲突键
-                conflict_key = "tmdb_person_id"
-                conflict_value = actor_data_for_db[conflict_key]
-                
-                if not conflict_value:
-                    conflict_key = "douban_celebrity_id"
-                
-                # 构建要更新的字段，使用正确的 EXCLUDED 语法
-                update_clauses = []
-                for key in actor_data_for_db.keys():
-                    if key != conflict_key:
-                        # 正确语法：COALESCE(table.column, EXCLUDED.column)
-                        # 意思是：将此字段更新为它现在的值，但如果现在的值是NULL，就用新插入行的值
-                        update_clauses.append(f"{key} = COALESCE(person_identity_map.{key}, EXCLUDED.{key})")
-                
-                update_str = ", ".join(update_clauses)
-                
-                # 构建最终的 UPSERT SQL
-                sql = f"""
-                    INSERT INTO person_identity_map ({', '.join(actor_data_for_db.keys())})
-                    VALUES ({', '.join(['%s'] * len(actor_data_for_db))})
-                    ON CONFLICT ({conflict_key}) DO UPDATE SET {update_str}
-                """
-                
-                # 参数只需要 INSERT 部分的值
-                params = tuple(actor_data_for_db.values())
-                
-                cursor.execute(sql, params)
-                upserted_count += 1
-
-            except Exception as e_backfill:
-                logger.error(f"  ➜ 回写演员 '{actor.get('name')}' 的数据到数据库时失败: {e_backfill}")
-                # 发生错误时，必须回滚事务，否则后续所有操作都会失败
-                cursor.execute("ROLLBACK")
-                # 重新开始一个新的事务
+            # 直接将 actor 字典传递给 upsert_person 函数
+            map_id, action = self.actor_db_manager.upsert_person(cursor, actor)
+            
+            if action not in ["ERROR", "SKIPPED", "CONFLICT_ERROR", "UNKNOWN_ERROR"]:
+                processed_count += 1
+            else:
+                # 如果发生错误，回滚当前演员的操作，并为下一个演员开启新事务
+                # 这是为了防止一个演员的错误导致整个批次失败
+                cursor.connection.rollback()
                 cursor.execute("BEGIN")
 
-        if upserted_count > 0:
-            logger.info(f"  ➜ 成功回写/更新了 {upserted_count} 位演员的数据库记录。")
+        logger.info(f"  ➜ 成功处理了 {processed_count} 位演员的数据库回写/更新。")
 
         return final_cast_perfect
 

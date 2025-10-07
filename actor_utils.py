@@ -18,9 +18,6 @@ from utils import contains_chinese
 
 logger = logging.getLogger(__name__)
 
-# ======================================================================
-# 模块 2: 通用的业务逻辑函数 (Business Logic Helpers)
-# ======================================================================
 # --- 演员选择 ---
 def select_best_role(current_role: str, candidate_role: str) -> str:
     """
