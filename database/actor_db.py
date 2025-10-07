@@ -103,7 +103,7 @@ class ActorDBManager:
         一个数据库原子操作，从根本上避免因并发写入导致的唯一性冲突。
         """
         emby_id = str(person_data.get("emby_id") or '').strip() or None
-        tmdb_id_raw = person_data.get("tmdb_id")
+        tmdb_id_raw = person_data.get("id") or person_data.get("tmdb_id")
         imdb_id = str(person_data.get("imdb_id") or '').strip() or None
         douban_id = str(person_data.get("douban_id") or '').strip() or None
         name = str(person_data.get("name") or '').strip()
