@@ -1047,12 +1047,27 @@ class MediaProcessor:
                     if douban_id_to_add:
                         l_actor["douban_id"] = douban_id_to_add
                     
-                    # ▼▼▼ 核心新增：如果TMDb没头像，就用豆瓣缓存里的头像 ▼▼▼
                     douban_avatar = d_actor.get("DoubanAvatarUrl")
                     if not l_actor.get("profile_path") and douban_avatar:
+                        # 1. 更新内存对象，供本次运行使用
                         l_actor["profile_path"] = douban_avatar
                         logger.debug(f"    ➜ 演员 '{l_actor.get('name')}' 缺少TMDb头像，已从豆瓣缓存补充。")
-                    # ▲▲▲ 新增结束 ▲▲▲
+                        
+                        # 2. 立刻将这个发现同步回 actor_metadata 表
+                        try:
+                            actor_tmdb_id = l_actor.get("id")
+                            if actor_tmdb_id:
+                                # 使用 UPSERT 语句，确保记录存在并更新 profile_path
+                                sql_upsert_avatar = """
+                                    INSERT INTO actor_metadata (tmdb_id, profile_path)
+                                    VALUES (%s, %s)
+                                    ON CONFLICT (tmdb_id) DO UPDATE SET
+                                        profile_path = COALESCE(actor_metadata.profile_path, EXCLUDED.profile_path);
+                                """
+                                cursor.execute(sql_upsert_avatar, (actor_tmdb_id, douban_avatar))
+                                logger.debug(f"      ➜ 已将演员 '{l_actor.get('name')}' 的豆瓣头像链接持久化到数据库。")
+                        except Exception as e_db_sync:
+                            logger.error(f"      ➜ 持久化演员 '{l_actor.get('name')}' 的豆瓣头像到数据库时失败: {e_db_sync}")
                         
                     merged_actors.append(unmatched_local_actors.pop(i))
                     match_found_for_this_douban_actor = True
