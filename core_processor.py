@@ -1053,22 +1053,6 @@ class MediaProcessor:
                         l_actor["profile_path"] = douban_avatar
                         logger.debug(f"    ➜ 演员 '{l_actor.get('name')}' 缺少TMDb头像，已从豆瓣缓存补充。")
                         
-                        # 2. 立刻将这个发现同步回 actor_metadata 表
-                        try:
-                            actor_tmdb_id = l_actor.get("id")
-                            if actor_tmdb_id:
-                                # 使用 UPSERT 语句，确保记录存在并更新 profile_path
-                                sql_upsert_avatar = """
-                                    INSERT INTO actor_metadata (tmdb_id, profile_path)
-                                    VALUES (%s, %s)
-                                    ON CONFLICT (tmdb_id) DO UPDATE SET
-                                        profile_path = COALESCE(actor_metadata.profile_path, EXCLUDED.profile_path);
-                                """
-                                cursor.execute(sql_upsert_avatar, (actor_tmdb_id, douban_avatar))
-                                logger.debug(f"      ➜ 已将演员 '{l_actor.get('name')}' 的豆瓣头像链接持久化到数据库。")
-                        except Exception as e_db_sync:
-                            logger.error(f"      ➜ 持久化演员 '{l_actor.get('name')}' 的豆瓣头像到数据库时失败: {e_db_sync}")
-                        
                     merged_actors.append(unmatched_local_actors.pop(i))
                     match_found_for_this_douban_actor = True
                     break
@@ -1201,7 +1185,7 @@ class MediaProcessor:
                     if not match_found:
                         still_unmatched_final.append(d_actor)
 
-                # --- 归档+新增 ---
+                # --- 处理新增 ---
                 if still_unmatched_final:
                     logger.info(f"  ➜ 检查 {len(still_unmatched_final)} 位未匹配演员，尝试加入最终列表...")
                     emby_config_for_upsert = {"url": self.emby_url, "api_key": self.emby_api_key, "user_id": self.emby_user_id}
@@ -1227,7 +1211,7 @@ class MediaProcessor:
                         logger.info(f"  ➜ 成功新增了 {added_count} 位演员到最终列表。")
         
         # ======================================================================
-        # 步骤 4: ★★★ 补全头像 ★★★
+        # 步骤 4: ★★★ 头像补全 ★★★
         # ======================================================================
         current_cast_list = list(final_cast_map.values())
         
@@ -1255,7 +1239,6 @@ class MediaProcessor:
                 elif tmdb_api_key:
                     person_details = tmdb_handler.get_person_details_tmdb(tmdb_id, tmdb_api_key)
                     if person_details:
-                        self.actor_db_manager.update_actor_metadata_from_tmdb(cursor, tmdb_id, person_details)
                         if person_details.get("profile_path"):
                             profile_path = person_details["profile_path"]
                 
@@ -1267,35 +1250,9 @@ class MediaProcessor:
         else:
             logger.info("  ➜ 没有需要补充头像的新增演员。")
 
-        # ★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★
-        # 步骤 5：智能截断逻辑 (Smart Truncation) ★★★
-        # ★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★
-        max_actors = self.config.get(constants.CONFIG_OPTION_MAX_ACTORS_TO_PROCESS, 30)
-        try:
-            limit = int(max_actors)
-            if limit <= 0: limit = 30
-        except (ValueError, TypeError):
-            limit = 30
-
-        original_count = len(current_cast_list)
-        
-        if original_count > limit:
-            logger.info(f"  ➜ 演员列表总数 ({original_count}) 超过上限 ({limit})，将优先保留有头像的演员后进行截断。")
-            sort_key = lambda x: x.get('order') if x.get('order') is not None and x.get('order') >= 0 else 999
-            with_profile = [actor for actor in current_cast_list if actor.get("profile_path")]
-            without_profile = [actor for actor in current_cast_list if not actor.get("profile_path")]
-            with_profile.sort(key=sort_key)
-            without_profile.sort(key=sort_key)
-            prioritized_list = with_profile + without_profile
-            cast_to_process = prioritized_list[:limit]
-            logger.debug(f"  ➜ 截断后，保留了 {len(with_profile)} 位有头像演员中的 {len([a for a in cast_to_process if a.get('profile_path')])} 位。")
-        else:
-            cast_to_process = current_cast_list
-            cast_to_process.sort(key=lambda x: x.get('order') if x.get('order') is not None and x.get('order') >= 0 else 999)
-
-        # ★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★
-        # 步骤 6: ★★★ 豆瓣头像备用方案 (带数据库缓存) ★★★
-        # ★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★
+        # ======================================================================
+        # 步骤 5: ★★★ 豆瓣头像备用方案 (带数据库缓存) ★★★
+        # ======================================================================
         if self.douban_api:
             actors_needing_douban_avatar = [
                 actor for actor in cast_to_process
@@ -1323,21 +1280,6 @@ class MediaProcessor:
                                 # 1. 更新内存中的演员对象
                                 actor["profile_path"] = avatar_url
                                 
-                                # ▼▼▼ 新增：将头像链接同步到数据库 ▼▼▼
-                                try:
-                                    # 使用 UPSERT 语句，如果演员已存在则更新，不存在则插入
-                                    upsert_sql = """
-                                        INSERT INTO actor_metadata (tmdb_id, profile_path)
-                                        VALUES (%s, %s)
-                                        ON CONFLICT (tmdb_id) DO UPDATE SET
-                                            profile_path = EXCLUDED.profile_path;
-                                    """
-                                    cursor.execute(upsert_sql, (tmdb_id, avatar_url))
-                                    logger.debug(f"    ➜ 成功将演员 '{actor.get('name')}' (TMDb ID: {tmdb_id}) 的豆瓣头像链接缓存至数据库。")
-                                except Exception as e_db:
-                                    logger.error(f"    ➜ 缓存演员 (TMDb ID: {tmdb_id}) 的豆瓣头像到数据库时失败: {e_db}")
-                                # ▲▲▲ 新增结束 ▲▲▲
-
                                 douban_avatars_found += 1
                                 
                     except Exception as e_douban_avatar:
@@ -1348,9 +1290,35 @@ class MediaProcessor:
             else:
                 logger.info("  ➜ 无需从豆瓣补充备用头像。")
 
-        # ★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★
+        # ======================================================================
+        # 步骤 6：智能截断逻辑 (Smart Truncation) ★★★
+        # ======================================================================
+        max_actors = self.config.get(constants.CONFIG_OPTION_MAX_ACTORS_TO_PROCESS, 30)
+        try:
+            limit = int(max_actors)
+            if limit <= 0: limit = 30
+        except (ValueError, TypeError):
+            limit = 30
+
+        original_count = len(current_cast_list)
+        
+        if original_count > limit:
+            logger.info(f"  ➜ 演员列表总数 ({original_count}) 超过上限 ({limit})，将优先保留有头像的演员后进行截断。")
+            sort_key = lambda x: x.get('order') if x.get('order') is not None and x.get('order') >= 0 else 999
+            with_profile = [actor for actor in current_cast_list if actor.get("profile_path")]
+            without_profile = [actor for actor in current_cast_list if not actor.get("profile_path")]
+            with_profile.sort(key=sort_key)
+            without_profile.sort(key=sort_key)
+            prioritized_list = with_profile + without_profile
+            cast_to_process = prioritized_list[:limit]
+            logger.debug(f"  ➜ 截断后，保留了 {len(with_profile)} 位有头像演员中的 {len([a for a in cast_to_process if a.get('profile_path')])} 位。")
+        else:
+            cast_to_process = current_cast_list
+            cast_to_process.sort(key=lambda x: x.get('order') if x.get('order') is not None and x.get('order') >= 0 else 999)
+
+        # ======================================================================
         # 步骤 7: ★★★ 翻译和格式化 ★★★
-        # ★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★
+        # ======================================================================
         logger.info(f"  ➜ 将对 {len(cast_to_process)} 位演员进行最终的翻译和格式化处理...")
 
         if not (self.ai_translator and self.config.get(constants.CONFIG_OPTION_AI_TRANSLATION_ENABLED, False)):
@@ -1435,7 +1403,9 @@ class MediaProcessor:
                 "Douban": actor.get("douban_id")
             }
 
-        # ▼▼▼ 步骤 8: ★★★ 最终数据回写/反哺 ★★★ ▼▼▼
+        # ======================================================================
+        # 步骤 8: ★★★ 最终数据回写/反哺 ★★★ 
+        # ======================================================================
         logger.info(f"  ➜ 开始将 {len(final_cast_perfect)} 位最终演员的完整信息同步回数据库...")
         processed_count = 0
         for actor in final_cast_perfect:
