@@ -1744,7 +1744,7 @@ class MediaProcessor:
             item_details = emby_handler.get_emby_item_details(item_id, self.emby_url, self.emby_api_key, self.emby_user_id)
             if not item_details: raise ValueError(f"无法获取项目 {item_id} 的详情。")
             
-            logger.info(f"  ➜ 手动处理：步骤 1/5: 构建TMDb与Emby演员的ID映射...")
+            logger.info(f"  ➜ 手动处理：步骤 1/6: 构建TMDb与Emby演员的ID映射...")
             raw_emby_actors = [p for p in item_details.get("People", []) if p.get("Type") == "Actor"]
             enriched_actors = self._enrich_cast_from_db_and_api(raw_emby_actors)
             
@@ -1770,7 +1770,7 @@ class MediaProcessor:
             # ======================================================================
             # 步骤 2: 更新AI翻译缓存
             # ======================================================================
-            logger.info(f"  ➜ 手动处理：步骤 1/5: 检查并更新AI翻译缓存...")
+            logger.info(f"  ➜ 手动处理：步骤 2/5: 检查并更新AI翻译缓存...")
             try:
                 # ★★★ 核心修复 ①: 从缓存获取的是 tmdbId -> 原始角色名 的字典 ★★★
                 original_roles_map = self.manual_edit_cache.get(item_id)
@@ -1817,61 +1817,124 @@ class MediaProcessor:
             # ======================================================================
             # 步骤 3: API前置操作 (更新演员名)
             # ======================================================================
-            logger.info(f"  ➜ 手动处理：步骤 2/5: 通过API更新演员名字...")
-            original_names_map = {p.get("Id"): p.get("Name") for p in item_details.get("People", []) if p.get("Id")}
+            logger.info(f"  ➜ 手动处理：步骤 3/6: 通过API更新现有演员的名字...")
+            # 构建 TMDb ID -> Emby Person ID 和 Emby Person ID -> 当前名字的映射
+            raw_emby_actors = [p for p in item_details.get("People", []) if p.get("Type") == "Actor"]
+            enriched_actors = self._enrich_cast_from_db_and_api(raw_emby_actors)
+            
+            tmdb_to_emby_map = {}
+            emby_id_to_name_map = {}
+            for person in enriched_actors:
+                person_tmdb_id = (person.get("ProviderIds") or {}).get("Tmdb")
+                person_emby_id = person.get("Id")
+                if person_tmdb_id and person_emby_id:
+                    tmdb_to_emby_map[str(person_tmdb_id)] = person_emby_id
+                    emby_id_to_name_map[person_emby_id] = person.get("Name")
+
+            updated_names_count = 0
             for actor_from_frontend in manual_cast_list:
                 tmdb_id_str = str(actor_from_frontend.get("tmdbId"))
                 
-                # ★ 使用我们新建的权威映射表来查找 emby_person_id ★
-                actor_id = tmdb_to_emby_map.get(tmdb_id_str)
-                if not actor_id: continue
+                # 只处理在映射中能找到的、已存在的演员
+                actor_emby_id = tmdb_to_emby_map.get(tmdb_id_str)
+                if not actor_emby_id: continue
 
                 new_name = actor_from_frontend.get("name")
-                original_name = original_names_map.get(actor_id)
+                original_name = emby_id_to_name_map.get(actor_emby_id)
+                
                 if new_name and original_name and new_name != original_name:
                     emby_handler.update_person_details(
-                        person_id=actor_id, new_data={"Name": new_name},
+                        person_id=actor_emby_id, new_data={"Name": new_name},
                         emby_server_url=self.emby_url, emby_api_key=self.emby_api_key, user_id=self.emby_user_id
                     )
+                    updated_names_count += 1
+            
+            if updated_names_count > 0:
+                logger.info(f"    ➜ 成功通过 API 更新了 {updated_names_count} 位演员的名字。")
 
             # ======================================================================
             # 步骤 4: 文件读、改、写 (包含最终格式化)
             # ======================================================================
-            logger.info(f"  ➜ 手动处理：步骤 3/5: 从override文件加载原始数据...")
+            logger.info(f"  ➜ 手动处理：步骤 4/6: 读取原始数据，识别并补全新增演员的元数据...")
             with open(main_json_path, 'r', encoding='utf-8') as f:
                 data = json.load(f)
             
             original_cast_data = (data.get('casts', {}) or data.get('credits', {})).get('cast', [])
             original_cast_map = {str(actor.get('id')): actor for actor in original_cast_data if actor.get('id')}
 
-            logger.info(f"  ➜ 手动处理：步骤 4/5: 重建演员列表并执行最终格式化(添加前缀)...")
             new_cast_built = []
-            for actor_from_frontend in manual_cast_list:
-                tmdb_id_str = str(actor_from_frontend.get("tmdbId"))
-                if not tmdb_id_str or tmdb_id_str not in original_cast_map: continue
-                
-                new_actor_entry = original_cast_map[tmdb_id_str].copy()
-                new_actor_entry['name'] = actor_from_frontend.get('name')
-                new_actor_entry['character'] = actor_from_frontend.get('role') # 先用用户输入的原值
-                new_cast_built.append(new_actor_entry)
+            
+            with get_central_db_connection() as conn:
+                cursor = conn.cursor()
 
+                for actor_from_frontend in manual_cast_list:
+                    tmdb_id_str = str(actor_from_frontend.get("tmdbId"))
+                    if not tmdb_id_str: continue
+                    
+                    # --- A. 处理现有演员 ---
+                    if tmdb_id_str in original_cast_map:
+                        updated_actor_entry = original_cast_map[tmdb_id_str].copy()
+                        updated_actor_entry['name'] = actor_from_frontend.get('name')
+                        updated_actor_entry['character'] = actor_from_frontend.get('role')
+                        new_cast_built.append(updated_actor_entry)
+                    
+                    # --- B. 处理新增演员 ---
+                    else:
+                        logger.info(f"    ➜ 发现新演员: '{actor_from_frontend.get('name')}' (TMDb ID: {tmdb_id_str})，开始补全元数据...")
+                        
+                        # B1: 优先从 actor_metadata 缓存获取
+                        person_details = self._get_actor_metadata_from_cache(tmdb_id_str, cursor)
+                        
+                        # B2: 如果缓存没有，则从 TMDb API 获取并反哺
+                        if not person_details:
+                            logger.debug(f"      ➜ 缓存未命中，从 TMDb API 获取详情...")
+                            person_details_from_api = tmdb_handler.get_person_details_tmdb(tmdb_id_str, self.tmdb_api_key)
+                            if person_details_from_api:
+                                self.actor_db_manager.update_actor_metadata_from_tmdb(cursor, tmdb_id_str, person_details_from_api)
+                                person_details = person_details_from_api # 使用API返回的数据
+                            else:
+                                logger.warning(f"      ➜ 无法获取TMDb ID {tmdb_id_str} 的详情，将使用基础信息跳过。")
+                                # 即使失败，也创建一个基础对象，避免丢失
+                                person_details = {} 
+                        else:
+                            logger.debug(f"      ➜ 成功从数据库缓存命中元数据。")
+
+                        # B3: 构建一个与 override 文件格式一致的新演员对象
+                        new_actor_entry = {
+                            "id": int(tmdb_id_str),
+                            "name": actor_from_frontend.get('name'),
+                            "character": actor_from_frontend.get('role'),
+                            "original_name": person_details.get("original_name"),
+                            "profile_path": person_details.get("profile_path"),
+                            "adult": person_details.get("adult", False),
+                            "gender": person_details.get("gender", 0),
+                            "known_for_department": person_details.get("known_for_department", "Acting"),
+                            "popularity": person_details.get("popularity", 0.0),
+                            # 新增演员没有这些电影特定的ID，设为None
+                            "cast_id": None, 
+                            "credit_id": None,
+                            "order": 999 # 放到最后，后续格式化步骤会重新排序
+                        }
+                        new_cast_built.append(new_actor_entry)
+
+            # ======================================================================
+            # 步骤 5: 最终格式化并写入文件 (逻辑不变)
+            # ======================================================================
+            logger.info(f"  ➜ 手动处理：步骤 5/6: 重建演员列表并执行最终格式化...")
             genres = item_details.get("Genres", [])
             is_animation = "Animation" in genres or "动画" in genres or "Documentary" in genres or "纪录" in genres
             final_formatted_cast = actor_utils.format_and_complete_cast_list(
                 new_cast_built, is_animation, self.config, mode='manual'
             )
+            # _build_cast_from_final_data 确保了所有字段都存在，即使是None
             final_cast_for_json = self._build_cast_from_final_data(final_formatted_cast)
 
             if 'casts' in data:
                 data['casts']['cast'] = final_cast_for_json
-                logger.debug("  ➜ 正在将演员表写回 'casts' (电影模式)。")
             elif 'credits' in data:
                 data['credits']['cast'] = final_cast_for_json
-                logger.debug("  ➜ 正在将演员表写回 'credits' (剧集模式)。")
             else:
-                # 作为备用方案，如果两者都不存在，则默认创建 'credits'
                 data.setdefault('credits', {})['cast'] = final_cast_for_json
-                logger.warning("  ➜ 'casts' 和 'credits' 键均未找到，已默认创建 'credits'。")
             
             with open(main_json_path, 'w', encoding='utf-8') as f:
                 json.dump(data, f, ensure_ascii=False, indent=2)
@@ -1883,9 +1946,9 @@ class MediaProcessor:
                 )
 
             # ======================================================================
-            # 步骤 4: 触发刷新并更新日志
+            # 步骤 6: 触发刷新并更新日志
             # ======================================================================
-            logger.info("  ➜ 手动处理：步骤 3/3: 触发 Emby 刷新并更新内部日志...")
+            logger.info("  ➜ 手动处理：步骤 6/6: 触发 Emby 刷新并更新内部日志...")
             
             emby_handler.refresh_emby_item_metadata(
                 item_emby_id=item_id,
