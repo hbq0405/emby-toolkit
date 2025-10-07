@@ -187,6 +187,34 @@ class ActorDBManager:
             logger.error(f"upsert_person 发生未知异常，emby_person_id={emby_id}: {e}", exc_info=True)
             return -1, "ERROR"
         
+    def disassociate_emby_ids(self, cursor: psycopg2.extensions.cursor, emby_ids: set) -> int:
+        """
+        将一组给定的 emby_person_id 在数据库中设为 NULL。
+        这用于清理那些在 Emby 中已被删除的演员的关联关系。
+
+        :param cursor: 数据库游标。
+        :param emby_ids: 需要被清理的 Emby Person ID 集合。
+        :return: 成功更新的行数。
+        """
+        if not emby_ids:
+            return 0
+        
+        try:
+            # 使用元组(tuple)作为IN子句的参数
+            sql = """
+                UPDATE person_identity_map 
+                SET emby_person_id = NULL, last_updated_at = NOW() 
+                WHERE emby_person_id IN %s
+            """
+            cursor.execute(sql, (tuple(emby_ids),))
+            updated_rows = cursor.rowcount
+            logger.info(f"  ➜ 数据库操作：成功将 {updated_rows} 个演员的 emby_id 置为 NULL。")
+            return updated_rows
+        except Exception as e:
+            logger.error(f"  ➜ 批量清理 Emby ID 关联时失败: {e}", exc_info=True)
+            # 即使失败也应该抛出异常，让上层事务回滚
+            raise
+        
     def update_actor_metadata_from_tmdb(self, cursor: psycopg2.extensions.cursor, tmdb_id: int, tmdb_data: Dict[str, Any]):
         """
         【最终实现版】将从 TMDb API 获取的演员详情数据，更新或插入到 actor_metadata 表中。
