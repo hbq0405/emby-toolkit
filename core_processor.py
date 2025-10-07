@@ -1909,8 +1909,15 @@ class MediaProcessor:
                     # 从本地数据库获取头像
                     image_url = None
                     actor_metadata = self._get_actor_metadata_from_cache(actor_tmdb_id, cursor)
-                    if actor_metadata and actor_metadata.get("profile_path"):
-                        image_url = f"https://image.tmdb.org/t/p/w185{actor_metadata['profile_path']}"
+                    if actor_metadata:
+                        profile_path = actor_metadata.get("profile_path")
+                        if profile_path:
+                            # 如果是完整的 URL (来自豆瓣)，则直接使用
+                            if profile_path.startswith('http'):
+                                image_url = profile_path
+                            # 否则，认为是 TMDb 的相对路径，进行拼接
+                            else:
+                                image_url = f"https://image.tmdb.org/t/p/w185{profile_path}"
                     
                     # 清理角色名
                     original_role = actor_data.get('character', '')
