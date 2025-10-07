@@ -103,7 +103,7 @@ class ActorDBManager:
         （如头像、性别等），则会一并更新 actor_metadata 缓存表。
         """
         emby_id = str(person_data.get("emby_person_id") or '').strip() or None
-        tmdb_id_raw = person_data.get("id") # 修正：TMDb ID 在主流程数据中键名为 "id"
+        tmdb_id_raw = person_data.get("id") or person_data.get("tmdb_id")
         imdb_id = str(person_data.get("imdb_id") or '').strip() or None
         douban_id = str(person_data.get("douban_id") or '').strip() or None
         name = str(person_data.get("name") or '').strip()
