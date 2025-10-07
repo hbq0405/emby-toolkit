@@ -144,9 +144,9 @@ class UnifiedSyncHandler:
             return
 
         # --- 最终统计 ---
-        logger.info("  ➜ 演员数据人事审计完成")
+        logger.info("  ➜ 演员数据同步完成")
         logger.info(f"  📊 : 清理 {stats['db_cleaned']}, 重链 {stats['db_relinked']}, 新增 {stats['db_inserted']}, 更新 {stats['db_updated']}.")
 
         if update_status_callback:
-            final_message = f"审计完成！清理 {stats['db_cleaned']}, 重链 {stats['db_relinked']}, 新增 {stats['db_inserted']}, 更新 {stats['db_updated']}。"
+            final_message = f"同步完成！清理 {stats['db_cleaned']}, 重链 {stats['db_relinked']}, 新增 {stats['db_inserted']}, 更新 {stats['db_updated']}。"
             update_status_callback(100, final_message)
