@@ -264,11 +264,18 @@ def find_douban_cast(douban_api: DoubanApi, media_info: Dict[str, Any]) -> List[
         return []
 # ✨✨✨格式化从豆瓣获取的原始演员数据，进行初步清理和去重，使其符合内部处理格式✨✨✨
 def format_douban_cast(douban_api_actors_raw: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
-    """格式化豆瓣原始演员数据并进行初步去重。"""
+    """
+    【修复版】
+    格式化豆瓣原始演员数据并进行初步去重。
+    - 新增：提取并保留豆瓣提供的现成头像链接。
+    """
     formatted_candidates = []
     seen_douban_ids = set()
-    seen_name_sigs = set()
     seen_names = set()
+
+    if not douban_api_actors_raw:
+        return formatted_candidates
+
     for item in douban_api_actors_raw:
         name_zh = str(item.get("name", "")).strip()
         if not name_zh: 
@@ -276,26 +283,29 @@ def format_douban_cast(douban_api_actors_raw: List[Dict[str, Any]]) -> List[Dict
             
         douban_id = str(item.get("id", "")).strip() or None
 
-        # 【★★★ 核心修复：严格的去重逻辑 ★★★】
-        # 1. 如果有豆瓣ID，且ID已存在，则跳过。
+        # 【严格的去重逻辑】
         if douban_id and douban_id in seen_douban_ids:
             continue
-        
-        # 2. 如果名字已存在，则跳过。
         if name_zh in seen_names:
             continue
 
-        # 如果能走到这里，说明是唯一的演员，记录下来
         if douban_id:
             seen_douban_ids.add(douban_id)
         seen_names.add(name_zh)
         
+        # ▼▼▼ 核心新增：从缓存中安全地提取头像链接 ▼▼▼
+        avatar_url = (item.get("avatar", {}) or {}).get("large")
+        # ▲▲▲ 新增结束 ▲▲▲
+
         formatted_candidates.append({
             "Name": name_zh,
-            "OriginalName": str(item.get("original_name", "")).strip(),
+            # 修正：根据你提供的JSON，字段应为 latin_name
+            "OriginalName": str(item.get("latin_name", "")).strip(), 
             "Role": str(item.get("character", "")).strip(),
             "DoubanCelebrityId": douban_id,
             "ProviderIds": {"Douban": douban_id} if douban_id else {},
+            # 新增字段，将头像链接传递下去
+            "DoubanAvatarUrl": avatar_url 
         })
         
     return formatted_candidates

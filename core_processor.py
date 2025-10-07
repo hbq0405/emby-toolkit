@@ -1042,8 +1042,18 @@ class MediaProcessor:
                     l_actor["name"] = d_actor.get("Name")
                     cleaned_douban_character = utils.clean_character_name_static(d_actor.get("Role"))
                     l_actor["character"] = actor_utils.select_best_role(l_actor.get("character"), cleaned_douban_character)
-                    if d_actor.get("DoubanCelebrityId"):
-                        l_actor["douban_id"] = d_actor.get("DoubanCelebrityId")
+                    
+                    douban_id_to_add = d_actor.get("DoubanCelebrityId")
+                    if douban_id_to_add:
+                        l_actor["douban_id"] = douban_id_to_add
+                    
+                    # ▼▼▼ 核心新增：如果TMDb没头像，就用豆瓣缓存里的头像 ▼▼▼
+                    douban_avatar = d_actor.get("DoubanAvatarUrl")
+                    if not l_actor.get("profile_path") and douban_avatar:
+                        l_actor["profile_path"] = douban_avatar
+                        logger.debug(f"    ➜ 演员 '{l_actor.get('name')}' 缺少TMDb头像，已从豆瓣缓存补充。")
+                    # ▲▲▲ 新增结束 ▲▲▲
+                        
                     merged_actors.append(unmatched_local_actors.pop(i))
                     match_found_for_this_douban_actor = True
                     break
