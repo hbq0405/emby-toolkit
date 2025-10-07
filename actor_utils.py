@@ -90,6 +90,7 @@ def select_best_role(current_role: str, candidate_role: str) -> str:
     logger.trace(f"  ➜ 决策: [优先级7] 所有输入均为空或无效。返回空字符串。")
     logger.debug(f"  ➜ 选择: ''")
     return ""
+
 # --- 质量评估 ---
 def evaluate_cast_processing_quality(
     final_cast: List[Dict[str, Any]], 
@@ -240,6 +241,7 @@ def translate_actor_field(text: Optional[str], db_manager: ActorDBManager, db_cu
         logger.warning(f"在线翻译未能翻译 '{text_stripped}' 或返回了原文 (使用引擎: {final_engine})。")
         db_manager.save_translation_to_db(db_cursor, text_stripped, None, f"failed_or_same_via_{final_engine}")
         return text
+
 # ✨✨✨从豆瓣API获取指定媒体的演员原始数据列表✨✨✨
 def find_douban_cast(douban_api: DoubanApi, media_info: Dict[str, Any]) -> List[Dict[str, Any]]:
         """从豆瓣API获取演员原始数据。"""
@@ -260,6 +262,7 @@ def find_douban_cast(douban_api: DoubanApi, media_info: Dict[str, Any]) -> List[
         if douban_data and not douban_data.get("error") and isinstance(douban_data.get("cast"), list):
             return douban_data["cast"]
         return []
+
 # ✨✨✨格式化从豆瓣获取的原始演员数据，进行初步清理和去重，使其符合内部处理格式✨✨✨
 def format_douban_cast(douban_api_actors_raw: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
     """
@@ -307,6 +310,7 @@ def format_douban_cast(douban_api_actors_raw: List[Dict[str, Any]]) -> List[Dict
         })
         
     return formatted_candidates
+
 # ✨✨✨格式化演员表✨✨✨
 def format_and_complete_cast_list(
     cast_list: List[Dict[str, Any]], 
@@ -370,6 +374,7 @@ def format_and_complete_cast_list(
             del actor['original_index'] # 清理临时key
             
     return processed_cast
+
 # --- 用于获取单个演员的TMDb详情 ---
 def fetch_tmdb_details_for_actor(actor_info: Dict, tmdb_api_key: str) -> Optional[Dict]:
     """一个独立的、可在线程中运行的函数，用于获取单个演员的TMDb详情。"""
@@ -397,6 +402,7 @@ def fetch_tmdb_details_for_actor(actor_info: Dict, tmdb_api_key: str) -> Optiona
         # 其他API错误（如网络问题），记录日志并返回失败状态
         logger.warning(f"获取演员 {tmdb_id} 详情时遇到API错误: {e}")
         return {"tmdb_id": tmdb_id, "status": "failed"}
+
 # --- 演员数据补充 ---
 def enrich_all_actor_aliases_task(
     tmdb_api_key: str, 
