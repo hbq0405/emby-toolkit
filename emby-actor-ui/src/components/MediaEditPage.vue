@@ -58,9 +58,9 @@
                   <n-space>
                     <n-button 
                       tag="a" 
-                      :href="searchLinks.google_search_wiki"
+                      :href="searchLinks.baidu_baike_search"
                       target="_blank" 
-                      :disabled="!searchLinks.google_search_wiki"
+                      :disabled="!searchLinks.baidu_baike_search"
                       :loading="isLoading"
                     >
                       Google搜索
@@ -74,28 +74,6 @@
                       一键翻译
                     </n-button>
                   </n-space>
-                </n-form-item>
-                <n-form-item label="从URL提取" label-placement="top">
-                  <n-input-group>
-                    <n-input 
-                      v-model:value="urlToParse" 
-                      placeholder="粘贴维基百科演员表URL"
-                      clearable
-                    />
-                    <n-button 
-                      type="primary" 
-                      @click="parseCastFromUrl" 
-                      :loading="isParsingFromUrl"
-                      :disabled="!urlToParse"
-                    >
-                      提取
-                    </n-button>
-                  </n-input-group>
-                  <template #feedback>
-                    <n-text depth="3" style="font-size: 0.85em;">
-                      提取后将自动与右方列表进行匹配更新。
-                    </n-text>
-                  </template>
                 </n-form-item>
               </n-space>
             </n-card>
@@ -276,9 +254,7 @@ const itemDetails = ref(null);
 const editableCast = ref([]);
 const isSaving = ref(false);
 
-const searchLinks = ref({ google_search_wiki: '' });
-const isParsingFromUrl = ref(false);
-const urlToParse = ref('');
+const searchLinks = ref({ baidu_baike_search: '' });
 const isTranslating = ref(false);
 
 const showAddActorModal = ref(false);
@@ -399,53 +375,6 @@ const selectActor = (actor) => {
   showAddActorModal.value = false;
   actorSearchQuery.value = '';
   actorSearchResults.value = [];
-};
-
-const parseCastFromUrl = async () => {
-  if (!urlToParse.value.trim()) {
-    message.warning("请输入要解析的URL。");
-    return;
-  }
-  isParsingFromUrl.value = true;
-  try {
-    const response = await axios.post('/api/parse_cast_from_url', { url: urlToParse.value });
-    const newCastFromWeb = response.data;
-
-    if (newCastFromWeb && Array.isArray(newCastFromWeb) && newCastFromWeb.length > 0) {
-      message.success(`成功提取 ${newCastFromWeb.length} 位演员信息，正在与当前列表进行匹配更新...`);
-      handleEnrich(newCastFromWeb);
-    } else {
-      message.info(response.data.message || "未从该URL中找到有效的演员信息。");
-    }
-  } catch (error) {
-    console.error("从URL解析演员失败:", error);
-    message.error(error.response?.data?.error || "解析失败，请检查URL或后端日志。");
-  } finally {
-    isParsingFromUrl.value = false;
-  }
-};
-
-const handleEnrich = async (newCastFromWeb) => {
-  try {
-    const payload = {
-      current_cast: editableCast.value,
-      new_cast_from_web: newCastFromWeb
-    };
-    const response = await axios.post('/api/actions/enrich_cast_list', payload);
-    const enrichedList = response.data;
-
-    editableCast.value = enrichedList.map((actor, index) => ({
-      ...actor,
-      _temp_id: `enriched-actor-${Date.now()}-${index}`
-    }));
-    
-    message.success("列表已更新！请检查匹配结果并保存。");
-    urlToParse.value = '';
-
-  } catch (error) {
-    console.error("补充列表失败:", error);
-    message.error(error.response?.data?.error || "更新列表时发生错误，请检查后端日志。");
-  }
 };
 
 const translateAllFields = async () => {

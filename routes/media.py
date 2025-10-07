@@ -21,15 +21,6 @@ media_proxy_bp = Blueprint('media_proxy', __name__)
 
 logger = logging.getLogger(__name__)
 
-# ✨✨✨ 导入网页解析器 ✨✨✨
-try:
-    from web_parser import parse_cast_from_url, ParserError
-    WEB_PARSER_AVAILABLE = True
-except ImportError:
-    logger.error("web_parser.py 未找到或无法导入，从URL提取功能将不可用。")
-    WEB_PARSER_AVAILABLE = False
-
-
 @media_api_bp.route('/search_emby_library', methods=['GET'])
 @processor_ready_required
 def api_search_emby_library():
@@ -197,34 +188,6 @@ def proxy_emby_image(image_path):
             b'\x89PNG\r\n\x1a\n\x00\x00\x00\rIHDR\x00\x00\x00\x01\x00\x00\x00\x01\x08\x06\x00\x00\x00\x1f\x15\xc4\x89\x00\x00\x00\nIDATx\x9cc\x00\x01\x00\x00\x05\x00\x01\r\n-\xb4\x00\x00\x00\x00IEND\xaeB`\x82',
             mimetype='image/png'
         )
-    
-# ✨✨✨   生成外部搜索链接 ✨✨✨
-@media_api_bp.route('/parse_cast_from_url', methods=['POST'])
-def api_parse_cast_from_url():
-    # 检查 web_parser 是否可用
-    try:
-        from web_parser import parse_cast_from_url, ParserError
-    except ImportError:
-        return jsonify({"error": "网页解析功能在服务器端不可用。"}), 501
-
-    data = request.json
-    url_to_parse = data.get('url')
-    if not url_to_parse:
-        return jsonify({"error": "请求中未提供 'url' 参数"}), 400
-
-    try:
-        current_config = config_manager.APP_CONFIG
-        headers = {'User-Agent': current_config.get('user_agent', '')}
-        parsed_cast = parse_cast_from_url(url_to_parse, custom_headers=headers)
-        
-        frontend_cast = [{"name": item['actor'], "role": item['character']} for item in parsed_cast]
-        return jsonify(frontend_cast)
-
-    except ParserError as e:
-        return jsonify({"error": str(e)}), 400
-    except Exception as e:
-        logger.error(f"解析 URL '{url_to_parse}' 时发生未知错误: {e}", exc_info=True)
-        return jsonify({"error": "解析时发生未知的服务器错误"}), 500
     
 # ✨✨✨ 一键翻译 ✨✨✨
 @media_api_bp.route('/actions/translate_cast_sa', methods=['POST']) # 注意路径不同

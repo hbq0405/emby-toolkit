@@ -80,12 +80,22 @@ def clean_character_name_static(character_name: Optional[str]) -> str:
     # 如果只有外文，或清理后是英文，保留原值，等待后续翻译流程
     return name.strip()
 
-def generate_search_url(site: str, title: str, year: Optional[int] = None) -> str:
-    """为指定网站生成搜索链接。"""
-    query = f'"{title}"'
-    if year: query += f' {year}'
-    final_query = f'site:zh.wikipedia.org {query} 演员表' if site == 'wikipedia' else query + " 演员表 cast"
-    return f"https://www.google.com/search?q={quote_plus(final_query)}"
+def generate_search_url(provider: str, title: str, year: Optional[int] = None) -> str:
+    """根据提供者、标题和年份生成搜索URL。"""
+    if not title:
+        return ""
+    
+    search_term = f"{title} {year}" if year else title
+    encoded_term = quote_plus(search_term)
+
+    if provider == 'baike':
+        # ▼▼▼ 核心修改：返回百度百科的搜索链接 ▼▼▼
+        return f"https://baike.baidu.com/search/word?word={encoded_term}"
+    elif provider == 'wikipedia':
+        return f"https://www.google.com/search?q={encoded_term}+site%3Azh.wikipedia.org"
+    else:
+        # 默认回退到 Google
+        return f"https://www.google.com/search?q={encoded_term}"
 
 # --- ★★★ 全新的智能名字匹配核心逻辑 ★★★ ---
 def normalize_name_for_matching(name: Optional[str]) -> str:

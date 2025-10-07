@@ -53,7 +53,6 @@ COPY web_app.py \
      utils.py \
      logger_setup.py \
      constants.py \
-     web_parser.py \
      ai_translator.py \
      watchlist_processor.py \
      actor_sync_handler.py \

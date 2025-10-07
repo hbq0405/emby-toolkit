@@ -2087,7 +2087,7 @@ class MediaProcessor:
                 "review_reason": failed_log_info.get("error_message"),
                 "current_emby_cast": cast_for_frontend,
                 "search_links": {
-                    "google_search_wiki": utils.generate_search_url('wikipedia', emby_details.get("Name"), emby_details.get("ProductionYear"))
+                    "baidu_baike_search": utils.generate_search_url('baike', emby_details.get("Name"), emby_details.get("ProductionYear"))
                 }
             }
             return response_data
