@@ -680,7 +680,7 @@
           <n-input
             v-model:value="actorSearchText"
             placeholder="搜索演员，例如：周星驰"
-            @update:value="handleActorSearch" 
+            @update:value="handleActorSearchForDiscover" 
             clearable
           />
           <div v-if="isSearchingActors || actorOptions.length > 0" class="search-results-box person-results">
