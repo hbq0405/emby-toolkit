@@ -82,26 +82,29 @@ def clean_character_name_static(character_name: Optional[str]) -> str:
 
 def generate_search_url(provider: str, title: str, year: Optional[int] = None) -> str:
     """
-    【修复版】根据提供者、标题和年份生成搜索URL。
-    - 针对百度百科，优化搜索词，只使用标题以提高命中率。
+    【V5 - 语法修复最终版】
+    - 修复了 UnboundLocalError，确保变量在使用前被正确定义。
+    - 统一了搜索词的生成逻辑，使其更加健壮。
     """
     if not title:
         return ""
     
-    # 为其他搜索引擎准备一个带年份的、更精确的搜索词
-    search_term_with_year = f"{title} {year}" if year else title
+    # 1. 统一准备搜索词和编码，确保变量在所有分支中都可用
+    # 对于网页搜索，带上年份有助于消除歧义
+    search_term = f"{title} {year}" if year else title
+    encoded_term = quote_plus(search_term)
     
+    # 2. 现在，可以安全地根据 provider 选择返回不同的 URL 格式
     if provider == 'baike':
+        # 使用百度网页搜索
         return f"https://www.baidu.com/s?wd={encoded_term}"
     
     elif provider == 'wikipedia':
-        # 维基百科使用带年份的搜索词效果更好
-        encoded_term = quote_plus(search_term_with_year)
+        # 使用 Google 站内搜索维基百科
         return f"https://www.google.com/search?q={encoded_term}+site%3Azh.wikipedia.org"
         
     else:
-        # 默认回退到 Google，也使用带年份的搜索词
-        encoded_term = quote_plus(search_term_with_year)
+        # 默认回退到 Google 网页搜索
         return f"https://www.google.com/search?q={encoded_term}"
 
 # --- ★★★ 全新的智能名字匹配核心逻辑 ★★★ ---
