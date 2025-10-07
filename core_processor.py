@@ -355,6 +355,90 @@ class MediaProcessor:
                             return os.path.join(dir_path, filename)
         return None
 
+    # --- 演员数据查询、反哺 ---
+    def enrich_cast_from_db_and_api(self, cast_list: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+        """
+        演员数据查询、反哺
+        """
+        if not cast_list:
+            return []
+        
+        logger.info(f"  ➜ 正在为 {len(cast_list)} 位演员丰富数据...")
+
+        original_actor_map = {str(actor.get("Id")): actor for actor in cast_list if actor.get("Id")}
+        
+        # --- 阶段一：从本地数据库获取数据 ---
+        enriched_actors_map = {}
+        ids_found_in_db = set()
+        
+        try:
+            db_results = []
+            
+            with get_central_db_connection() as conn:
+                cursor = conn.cursor()
+                person_ids = list(original_actor_map.keys())
+                
+                if person_ids:
+                    query = "SELECT * FROM person_identity_map WHERE emby_person_id = ANY(%s)"
+                    cursor.execute(query, (person_ids,))
+                    db_results = cursor.fetchall()
+
+            for row in db_results:
+                db_data = dict(row)
+                actor_id = str(db_data["emby_person_id"])
+                ids_found_in_db.add(actor_id)
+                
+                provider_ids = {}
+                if db_data.get("tmdb_person_id"):
+                    provider_ids["Tmdb"] = str(db_data.get("tmdb_person_id"))
+                if db_data.get("imdb_id"):
+                    provider_ids["Imdb"] = db_data.get("imdb_id")
+                if db_data.get("douban_celebrity_id"):
+                    provider_ids["Douban"] = str(db_data.get("douban_celebrity_id"))
+                
+                enriched_actor = original_actor_map[actor_id].copy()
+                enriched_actor["ProviderIds"] = provider_ids
+                enriched_actors_map[actor_id] = enriched_actor
+                
+        except Exception as e:
+            logger.error(f"  ➜ 数据库查询阶段失败: {e}", exc_info=True)
+
+        logger.info(f"  ➜ 从演员映射表找到了 {len(ids_found_in_db)} 位演员的信息。")
+
+        # --- 阶段二：为未找到的演员实时查询 Emby API ---
+        ids_to_fetch_from_api = [pid for pid in original_actor_map.keys() if pid not in ids_found_in_db]
+
+        if ids_to_fetch_from_api:
+            logger.trace(f"  ➜ 开始为 {len(ids_to_fetch_from_api)} 位新演员从Emby获取信息...")
+            
+            for person_id in ids_to_fetch_from_api:
+                if self.is_stop_requested():
+                    break
+                
+                person_details = emby_handler.get_emby_item_details(
+                    item_id=person_id, 
+                    emby_server_url=self.emby_url, 
+                    emby_api_key=self.emby_api_key, 
+                    user_id=self.emby_user_id,
+                    fields="ProviderIds,Name" # 我们只需要这两个字段
+                )
+                
+                if person_details and person_details.get("ProviderIds"):
+                    enriched_actor = original_actor_map[person_id].copy()
+                    enriched_actor["ProviderIds"] = person_details.get("ProviderIds")
+                    enriched_actors_map[person_id] = enriched_actor
+                    time_module.sleep(0.1) # 加个小延迟避免请求过快
+        else:
+            logger.trace("  ➜ (API查询) 跳过：所有演员均在本地数据库中找到。")
+
+        # --- 阶段三：合并最终结果 ---
+        final_enriched_cast = []
+        for original_actor in cast_list:
+            actor_id = str(original_actor.get("Id"))
+            final_enriched_cast.append(enriched_actors_map.get(actor_id, original_actor))
+
+        return final_enriched_cast
+    
     # ✨ 封装了“优先本地缓存，失败则在线获取”的逻辑
     def _get_douban_data_with_local_cache(self, media_info: Dict[str, Any]) -> Tuple[List[Dict[str, Any]], Optional[float]]:
         """
