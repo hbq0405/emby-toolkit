@@ -63,7 +63,7 @@
                       :disabled="!searchLinks.baidu_baike_search"
                       :loading="isLoading"
                     >
-                      Google搜索
+                      百度百科
                     </n-button>
                     <n-button
                       type="info"
