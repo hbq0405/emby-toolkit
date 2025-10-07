@@ -1269,7 +1269,62 @@ class MediaProcessor:
             cast_to_process.sort(key=lambda x: x.get('order') if x.get('order') is not None and x.get('order') >= 0 else 999)
 
         # ★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★
-        # 步骤 6: ★★★ 翻译和格式化 ★★★
+        # 步骤 6: ★★★ 豆瓣头像备用方案 (带数据库缓存) ★★★
+        # ★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★
+        if self.douban_api:
+            actors_needing_douban_avatar = [
+                actor for actor in cast_to_process
+                if not actor.get("profile_path") and actor.get("douban_id") and actor.get("id") # 确保有TMDb ID用于关联
+            ]
+            
+            if actors_needing_douban_avatar:
+                logger.info(f"  ➜ 发现 {len(actors_needing_douban_avatar)} 位无头像演员有关联的豆瓣ID，尝试获取豆瓣头像作为备用...")
+                douban_avatars_found = 0
+                for actor in actors_needing_douban_avatar:
+                    if stop_event and stop_event.is_set(): raise InterruptedError("任务中止")
+                    
+                    douban_id = actor.get("douban_id")
+                    tmdb_id = actor.get("id") # 获取TMDb ID用于数据库操作
+                    
+                    try:
+                        # 调用豆瓣API获取名人详情
+                        details = self.douban_api.celebrity_details(douban_id)
+                        time_module.sleep(0.3) # 尊重API冷却时间
+                        
+                        if details and not details.get("error"):
+                            # 从详情中提取头像链接，优先大图
+                            avatar_url = (details.get("avatars", {}) or {}).get("large")
+                            if avatar_url:
+                                # 1. 更新内存中的演员对象
+                                actor["profile_path"] = avatar_url
+                                
+                                # ▼▼▼ 新增：将头像链接同步到数据库 ▼▼▼
+                                try:
+                                    # 使用 UPSERT 语句，如果演员已存在则更新，不存在则插入
+                                    upsert_sql = """
+                                        INSERT INTO actor_metadata (tmdb_id, profile_path)
+                                        VALUES (%s, %s)
+                                        ON CONFLICT (tmdb_id) DO UPDATE SET
+                                            profile_path = EXCLUDED.profile_path;
+                                    """
+                                    cursor.execute(upsert_sql, (tmdb_id, avatar_url))
+                                    logger.debug(f"    ➜ 成功将演员 '{actor.get('name')}' (TMDb ID: {tmdb_id}) 的豆瓣头像链接缓存至数据库。")
+                                except Exception as e_db:
+                                    logger.error(f"    ➜ 缓存演员 (TMDb ID: {tmdb_id}) 的豆瓣头像到数据库时失败: {e_db}")
+                                # ▲▲▲ 新增结束 ▲▲▲
+
+                                douban_avatars_found += 1
+                                
+                    except Exception as e_douban_avatar:
+                        logger.warning(f"    ➜ 为演员 (豆瓣ID: {douban_id}) 获取豆瓣头像时发生错误: {e_douban_avatar}")
+
+                if douban_avatars_found > 0:
+                    logger.info(f"  ➜ 成功为 {douban_avatars_found} 位演员补充并缓存了豆瓣头像。")
+            else:
+                logger.info("  ➜ 无需从豆瓣补充备用头像。")
+
+        # ★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★
+        # 步骤 7: ★★★ 翻译和格式化 ★★★
         # ★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★
         logger.info(f"  ➜ 将对 {len(cast_to_process)} 位演员进行最终的翻译和格式化处理...")
 
