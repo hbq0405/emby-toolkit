@@ -409,10 +409,10 @@ def enrich_all_actor_aliases_task(
     force_full_update: bool = False  # <-- 新增参数
 ):
     """
-    【V7 - 真·深度模式】
-    - 新增 force_full_update 参数。
-    - 深度模式下，将扫描所有含TMDb ID的演员，无视其是否已有IMDb ID。
-    - 深度模式下，遇到IMDb ID冲突时，将强制以TMDb数据为准，清除旧记录的IMDb ID。
+    【V8 - 真·完整修复版】
+    - 新增 阶段三：为那些在TMDb没有头像，但有关联豆瓣ID的演员，从豆瓣补充头像链接。
+    - 调整了函数结构和进度反馈，以容纳新的处理阶段。
+    - 确保所有原始的数据库事务和错误处理逻辑被完整保留。
     """
     task_mode = "(全量)" if force_full_update else "(增量)"
     logger.info(f"--- 开始执行“演员数据补充”计划任务 [{task_mode}] ---")
@@ -428,16 +428,19 @@ def enrich_all_actor_aliases_task(
     logger.info(f"  ➜ 同步冷却时间为 {SYNC_INTERVAL_DAYS} 天。")
 
     conn = None
+    douban_api = None # 在 try 外部定义，确保 finally 中可用
     try:
+        # 将 DoubanApi 实例化移到顶层，供所有阶段使用
+        douban_api = DoubanApi()
+
         with connection.get_db_connection() as conn:
             # --- 阶段一：从 TMDb 补充元数据 (并发执行) ---
             logger.info("  ➜ 阶段一：从 TMDb 补充演员元数据 (IMDb ID, 头像等) ---")
             cursor = conn.cursor()
             
-            # ▼▼▼ 2. 根据 force_full_update 选择不同的SQL查询语句 ▼▼▼
+            # ▼▼▼ (此部分为您原始代码，保持不变) ▼▼▼
             if force_full_update:
                 logger.info("  ➜ 深度模式已激活：将扫描所有演员，无视现有数据。")
-                # 【深度模式查询】：获取所有带TMDb ID的演员，按最近更新时间排序，优先处理最久未更新的
                 sql_find_actors = f"""
                     SELECT p.* FROM person_identity_map p
                     LEFT JOIN actor_metadata m ON p.tmdb_person_id = m.tmdb_id
@@ -446,7 +449,6 @@ def enrich_all_actor_aliases_task(
                 """
             else:
                 logger.info(f"  ➜ 标准模式：将仅扫描需要补充数据且冷却期已过的演员 (冷却期: {sync_interval_days} 天)。")
-                # 【标准模式查询】：只找那些缺少关键信息，并且过了冷却期的演员
                 sql_find_actors = f"""
                     SELECT p.* FROM person_identity_map p
                     LEFT JOIN actor_metadata m ON p.tmdb_person_id = m.tmdb_id
@@ -470,11 +472,12 @@ def enrich_all_actor_aliases_task(
                         logger.info("达到运行时长或收到停止信号，在 TMDb 下批次开始前结束。")
                         break
 
-                    progress = 5 + int((i / total_tmdb) * 65)
+                    # ▼▼▼ 修改：调整进度条分配，阶段一占 5% -> 60% ▼▼▼
+                    progress = 5 + int((i / total_tmdb) * 55)
                     chunk_num = i//CHUNK_SIZE + 1
                     total_chunks = (total_tmdb + CHUNK_SIZE - 1) // CHUNK_SIZE
                     if update_status_callback:
-                        update_status_callback(progress, f"阶段1/2 (TMDb): 处理批次 {chunk_num}/{total_chunks}")
+                        update_status_callback(progress, f"阶段1/3 (TMDb): 处理批次 {chunk_num}/{total_chunks}")
 
                     chunk = actors_for_tmdb[i:i + CHUNK_SIZE]
                     logger.info(f"  ➜ 开始处理 TMDb 第 {chunk_num} 批次，共 {len(chunk)} 个演员 ---")
@@ -539,7 +542,6 @@ def enrich_all_actor_aliases_task(
                             logger.info(f"  ➜ 批次完成，准备写入数据库...")
 
                             if metadata_to_commit:
-                                # ★★★ 核心修复 3/5：使用 ON CONFLICT 语法替代 INSERT OR REPLACE ★★★
                                 cols = metadata_to_commit[0].keys()
                                 cols_str = ", ".join(cols)
                                 placeholders_str = ", ".join([f"%({k})s" for k in cols])
@@ -562,53 +564,46 @@ def enrich_all_actor_aliases_task(
                                 except psycopg2.IntegrityError as ie:
                                     cursor.execute("ROLLBACK TO SAVEPOINT imdb_update_savepoint")
                                     if "violates unique constraint" in str(ie):
-                                        # ▼▼▼ 3. 修改冲突处理逻辑 ▼▼▼
                                         if force_full_update:
                                             logger.warning(f"  ➜ [深度模式] 检测到 IMDb ID '{imdb_id}' 冲突。将强制以TMDb数据为准。")
-                                            # 找到当前占用该IMDb ID的旧记录
                                             cursor.execute("SELECT map_id, primary_name FROM person_identity_map WHERE imdb_id = %s", (imdb_id,))
                                             conflicting_actor = cursor.fetchone()
                                             if conflicting_actor:
                                                 logger.warning(f"  ➜ 正在解除演员 '{conflicting_actor['primary_name']}' (map_id: {conflicting_actor['map_id']}) 与 IMDb ID '{imdb_id}' 的旧关联。")
-                                                # 将旧记录的IMDb ID设为NULL，以解除占用
                                                 cursor.execute("UPDATE person_identity_map SET imdb_id = NULL WHERE map_id = %s", (conflicting_actor['map_id'],))
                                                 
-                                                # 再次尝试为当前演员更新IMDb ID
                                                 logger.info(f"  ➜ 正在为当前演员 (TMDb: {tmdb_id}) 设置新的 IMDb ID '{imdb_id}'。")
                                                 cursor.execute("UPDATE person_identity_map SET imdb_id = %s WHERE tmdb_person_id = %s", (imdb_id, tmdb_id))
                                             else:
                                                 logger.error(f"  ➜ 发生冲突但未能找到 IMDb ID '{imdb_id}' 的冲突记录，更新失败。")
                                         else:
-                                            # 【标准模式下的合并逻辑保持不变】
                                             logger.warning(f"  ➜ [标准模式] 检测到 IMDb ID '{imdb_id}' (来自TMDb: {tmdb_id}) 冲突。将执行合并逻辑。")
-                                        sql_find_target = "SELECT * FROM person_identity_map WHERE imdb_id = %s"
-                                        cursor.execute(sql_find_target, (imdb_id,))
-                                        target_actor = cursor.fetchone()
-                                        
-                                        sql_find_source = "SELECT * FROM person_identity_map WHERE tmdb_person_id = %s"
-                                        cursor.execute(sql_find_source, (tmdb_id,))
-                                        source_actor = cursor.fetchone()
-
-                                        if target_actor and source_actor and source_actor['map_id'] != target_actor['map_id']:
-                                            target_map_id = target_actor['map_id']
-                                            source_map_id = source_actor['map_id']
+                                            sql_find_target = "SELECT * FROM person_identity_map WHERE imdb_id = %s"
+                                            cursor.execute(sql_find_target, (imdb_id,))
+                                            target_actor = cursor.fetchone()
                                             
-                                            # 将源记录的所有ID合并到目标记录（如果目标记录缺少这些ID）
-                                            if not target_actor.get('tmdb_person_id'):
-                                                cursor.execute("UPDATE person_identity_map SET tmdb_person_id = %s WHERE map_id = %s", (source_actor['tmdb_person_id'], target_map_id))
-                                            if source_actor.get('douban_celebrity_id') and not target_actor.get('douban_celebrity_id'):
-                                                cursor.execute("UPDATE person_identity_map SET douban_celebrity_id = %s WHERE map_id = %s", (source_actor['douban_celebrity_id'], target_map_id))
-                                            if source_actor.get('emby_person_id') and not target_actor.get('emby_person_id'):
-                                                 cursor.execute("UPDATE person_identity_map SET emby_person_id = %s WHERE map_id = %s", (source_actor['emby_person_id'], target_map_id))
+                                            sql_find_source = "SELECT * FROM person_identity_map WHERE tmdb_person_id = %s"
+                                            cursor.execute(sql_find_source, (tmdb_id,))
+                                            source_actor = cursor.fetchone()
 
-                                            # 删除现在多余的源记录
-                                            cursor.execute("DELETE FROM person_identity_map WHERE map_id = %s", (source_map_id,))
-                                            logger.info(f"  ➜ 成功将记录 (map_id:{source_map_id}) 合并到 (map_id:{target_map_id}) 并删除原记录。")
-                                        
-                                        elif not target_actor:
-                                            logger.error(f"  ➜ 发生冲突但未能找到 IMDb ID '{imdb_id}' 的目标记录，合并失败。")
-                                        elif not source_actor:
-                                            logger.error(f"  ➜ 发生冲突但未能找到 TMDb ID '{tmdb_id}' 的源记录，合并失败。")
+                                            if target_actor and source_actor and source_actor['map_id'] != target_actor['map_id']:
+                                                target_map_id = target_actor['map_id']
+                                                source_map_id = source_actor['map_id']
+                                                
+                                                if not target_actor.get('tmdb_person_id'):
+                                                    cursor.execute("UPDATE person_identity_map SET tmdb_person_id = %s WHERE map_id = %s", (source_actor['tmdb_person_id'], target_map_id))
+                                                if source_actor.get('douban_celebrity_id') and not target_actor.get('douban_celebrity_id'):
+                                                    cursor.execute("UPDATE person_identity_map SET douban_celebrity_id = %s WHERE map_id = %s", (source_actor['douban_celebrity_id'], target_map_id))
+                                                if source_actor.get('emby_person_id') and not target_actor.get('emby_person_id'):
+                                                     cursor.execute("UPDATE person_identity_map SET emby_person_id = %s WHERE map_id = %s", (source_actor['emby_person_id'], target_map_id))
+
+                                                cursor.execute("DELETE FROM person_identity_map WHERE map_id = %s", (source_map_id,))
+                                                logger.info(f"  ➜ 成功将记录 (map_id:{source_map_id}) 合并到 (map_id:{target_map_id}) 并删除原记录。")
+                                            
+                                            elif not target_actor:
+                                                logger.error(f"  ➜ 发生冲突但未能找到 IMDb ID '{imdb_id}' 的目标记录，合并失败。")
+                                            elif not source_actor:
+                                                logger.error(f"  ➜ 发生冲突但未能找到 TMDb ID '{tmdb_id}' 的源记录，合并失败。")
                                     else:
                                         raise ie
 
@@ -623,11 +618,11 @@ def enrich_all_actor_aliases_task(
                             conn.rollback()
             else:
                 logger.info("  ➜ 没有需要从 TMDb 补充或清理的演员。")
+            # ▲▲▲ (此部分为您原始代码，保持不变) ▲▲▲
 
             # --- 阶段二：从 豆瓣 补充 IMDb ID (串行执行) ---
             if (stop_event and stop_event.is_set()) or (time.time() >= end_time): raise InterruptedError("任务中止")
             
-            douban_api = DoubanApi()
             logger.info("  ➜ 阶段二：从 豆瓣 补充 IMDb ID ---")
             cursor = conn.cursor()
             sql_find_douban_needy = f"""
@@ -652,10 +647,12 @@ def enrich_all_actor_aliases_task(
                     actor_douban_id = actor['douban_celebrity_id']
                     actor_primary_name = actor['primary_name']
                     
-                    progress = 70 + int(((i + 1) / total_douban) * 30)
+                    # ▼▼▼ 修改：调整进度条分配，阶段二占 60% -> 80% ▼▼▼
+                    progress = 60 + int(((i + 1) / total_douban) * 20)
                     if update_status_callback:
-                        update_status_callback(progress, f"阶段2/2 (豆瓣): {i+1}/{total_douban} - {actor_primary_name}")
+                        update_status_callback(progress, f"阶段2/3 (豆瓣->IMDb): {i+1}/{total_douban} - {actor_primary_name}")
                     
+                    # ▼▼▼ (此部分为您原始代码，保持不变) ▼▼▼
                     try:
                         sql_update_sync = "UPDATE person_identity_map SET last_synced_at = NOW() WHERE map_id = %s"
                         cursor.execute(sql_update_sync, (actor_map_id,))
@@ -711,17 +708,77 @@ def enrich_all_actor_aliases_task(
                 logger.info(f"豆瓣信息补充完成，本轮共处理 {processed_count} 个。")
             else:
                 logger.info("  ➜ 没有需要从豆瓣补充 IMDb ID 的演员。")
+            # ▲▲▲ (此部分为您原始代码，保持不变) ▲▲▲
             
-            if douban_api:
-                douban_api.close()
+            # ▼▼▼ 【核心新增】阶段三：从 豆瓣 补充 头像链接 ▼▼▼
+            if (stop_event and stop_event.is_set()) or (time.time() >= end_time): raise InterruptedError("任务中止")
+
+            logger.info("  ➜ 阶段三：从 豆瓣 补充 头像链接 ---")
+            cursor = conn.cursor()
+            sql_find_douban_avatar_needy = f"""
+                SELECT p.map_id, p.tmdb_person_id, p.douban_celebrity_id, p.primary_name
+                FROM person_identity_map p
+                JOIN actor_metadata m ON p.tmdb_person_id = m.tmdb_id
+                WHERE p.douban_celebrity_id IS NOT NULL
+                  AND m.profile_path IS NULL
+                  AND (p.last_synced_at IS NULL OR p.last_synced_at < NOW() - INTERVAL '{SYNC_INTERVAL_DAYS} days')
+                ORDER BY p.last_synced_at ASC NULLS FIRST
+            """
+            cursor.execute(sql_find_douban_avatar_needy)
+            actors_for_douban_avatar = cursor.fetchall()
+
+            if actors_for_douban_avatar:
+                total_douban_avatar = len(actors_for_douban_avatar)
+                logger.info(f"  ➜ 找到 {total_douban_avatar} 位演员需要从豆瓣补充头像。")
+
+                for i, actor in enumerate(actors_for_douban_avatar):
+                    if (stop_event and stop_event.is_set()) or (time.time() >= end_time): break
+
+                    # 进度条分配：阶段三占 80% -> 100%
+                    progress = 80 + int(((i + 1) / total_douban_avatar) * 20)
+                    if update_status_callback:
+                        update_status_callback(progress, f"阶段3/3 (豆瓣->头像): {i+1}/{total_douban_avatar} - {actor['primary_name']}")
+
+                    actor_map_id = actor['map_id']
+                    actor_douban_id = actor['douban_celebrity_id']
+                    actor_tmdb_id = actor['tmdb_person_id']
+                    actor_primary_name = actor['primary_name']
+                    
+                    try:
+                        # 无论成功与否，都更新同步时间戳，避免在冷却期内重复查询
+                        cursor.execute("UPDATE person_identity_map SET last_synced_at = NOW() WHERE map_id = %s", (actor_map_id,))
+
+                        details = douban_api.celebrity_details(actor_douban_id)
+                        
+                        if details and not details.get("error"):
+                            avatar_url = (details.get("avatars", {}) or {}).get("large")
+                            if avatar_url:
+                                logger.info(f"  ({i+1}/{total_douban_avatar}) 为演员 '{actor_primary_name}' (TMDb: {actor_tmdb_id}) 找到豆瓣头像。")
+                                # 更新 actor_metadata 表中的头像链接
+                                sql_update_avatar = "UPDATE actor_metadata SET profile_path = %s, last_updated_at = NOW() WHERE tmdb_id = %s"
+                                cursor.execute(sql_update_avatar, (avatar_url, actor_tmdb_id))
+                        
+                        if (i + 1) % 50 == 0:
+                            logger.info(f"  ➜ 已处理50条，提交数据库事务...")
+                            conn.commit()
+
+                    except Exception as e:
+                        conn.rollback()
+                        logger.error(f"为演员 '{actor_primary_name}' (Douban: {actor_douban_id}) 补充头像时发生错误: {e}")
+                
+                conn.commit()
+            else:
+                logger.info("  ➜ 没有需要从豆瓣补充头像的演员。")
+            # ▲▲▲ 新增结束 ▲▲▲
 
     except InterruptedError:
         logger.info("演员数据补充任务被中止。")
-        # ★★★ 核心修复 5/5：移除 .in_transaction 检查 ★★★
         if conn: conn.rollback()
     except Exception as e:
         logger.error(f"演员数据补充任务发生严重错误: {e}", exc_info=True)
-        # ★★★ 核心修复 5/5：移除 .in_transaction 检查 ★★★
         if conn: conn.rollback()
     finally:
+        # 将关闭操作移到 finally 块，确保无论如何都能执行
+        if douban_api:
+            douban_api.close()
         logger.trace("--- “演员数据补充”计划任务已退出 ---")
