@@ -179,6 +179,12 @@
             
             <div class="sticky-actions">
               <n-space>
+                <n-button @click="showAddActorModal = true" type="default" secondary>
+                  <template #icon>
+                    <n-icon :component="AddIcon" />
+                  </template>
+                  添加演员
+                </n-button>
                 <n-button @click="goBack">返回列表</n-button>
                 <n-button type="primary" @click="handleSaveChanges" :loading="isSaving">
                   保存修改
@@ -197,13 +203,57 @@
       </n-alert>
     </div>
   </div>
+  <n-modal
+    v-model:show="showAddActorModal"
+    preset="card"
+    style="width: 600px"
+    title="搜索并添加演员"
+    :bordered="false"
+    size="huge"
+    :segmented="{ content: 'soft', footer: 'soft' }"
+  >
+    <n-input
+      v-model:value="actorSearchQuery"
+      placeholder="输入演员名进行搜索..."
+      clearable
+      @update:value="debouncedSearchActors"
+    />
+    <n-spin :show="isSearchingActors" style="margin-top: 20px; min-height: 150px;">
+      <n-list hoverable clickable>
+        <n-list-item v-for="actor in actorSearchResults" :key="actor.id" @click="selectActor(actor)">
+          <template #prefix>
+            <n-avatar
+              :src="getTMDbImageUrl(actor.profile_path, 'w92')"
+              :fallback-src="fallbackAvatar"
+              size="large"
+              object-fit="cover"
+            />
+          </template>
+          <n-thing :title="actor.name">
+            <template #description>
+              <n-text depth="3" v-if="actor.known_for">
+                代表作: {{ actor.known_for }}
+              </n-text>
+              <n-text depth="3" v-else>
+                {{ actor.department || '表演' }}
+              </n-text>
+            </template>
+          </n-thing>
+          <template #suffix>
+            <n-button size="small" type="primary">选择</n-button>
+          </template>
+        </n-list-item>
+      </n-list>
+      <n-empty v-if="!isSearchingActors && actorSearchResults.length === 0 && actorSearchQuery" description="未找到相关人物" style="padding: 20px 0;" />
+    </n-spin>
+  </n-modal>
   </n-layout>
 </template>
 
 <script setup>
 import { ref, onMounted, watch, computed, nextTick } from 'vue';
 import draggable from 'vuedraggable';
-import { NIcon, NInput, NInputGroup, NGrid, NGridItem, NFormItem, NTag, NAvatar, NPopconfirm, NImage } from 'naive-ui';
+import { NIcon, NInput, NInputGroup, NGrid, NGridItem, NFormItem, NTag, NAvatar, NPopconfirm, NImage, NModal, NList, NListItem, NThing, NEmpty } from 'naive-ui';
 import { useRoute, useRouter } from 'vue-router';
 import axios from 'axios';
 import { NPageHeader, NDivider, NSpin, NCard, NDescriptions, NDescriptionsItem, NButton, NSpace, NAlert, useMessage } from 'naive-ui';
@@ -211,8 +261,10 @@ import {
   MoveOutline as DragHandleIcon,
   TrashOutline as TrashIcon,
   ImageOutline as ImageIcon,
-  PersonOutline as PersonIcon
+  PersonOutline as PersonIcon,
+  AddOutline as AddIcon 
 } from '@vicons/ionicons5';
+import { debounce } from 'lodash-es';
 
 const route = useRoute();
 const router = useRouter();
@@ -228,6 +280,12 @@ const searchLinks = ref({ google_search_wiki: '' });
 const isParsingFromUrl = ref(false);
 const urlToParse = ref('');
 const isTranslating = ref(false);
+
+const showAddActorModal = ref(false);
+const actorSearchQuery = ref('');
+const actorSearchResults = ref([]);
+const isSearchingActors = ref(false);
+const fallbackAvatar = 'data:image/gif;base64,R0lGODlhAQABAIAAAAAAAP///yH5BAEAAAAALAAAAAABAAEAAAIBRAA7';
 
 const posterUrl = computed(() => {
   if (itemDetails.value?.item_id && itemDetails.value?.image_tag) {
@@ -271,6 +329,11 @@ const getAvatarColor = (name) => {
   return colors[index];
 };
 
+const getTMDbImageUrl = (path, size = 'w185') => {
+  if (!path) return '';
+  return `https://image.tmdb.org/t/p/${size}${path}`;
+};
+
 watch(() => itemDetails.value, (newItemDetails) => {
   if (newItemDetails?.current_emby_cast) {
     editableCast.value = newItemDetails.current_emby_cast.map((actor, index) => ({
@@ -287,6 +350,56 @@ const removeActor = (index) => {
   message.info("已从编辑列表移除一个演员（尚未保存）。");
 };
 
+const searchActors = async () => {
+  if (actorSearchQuery.value.length < 1) {
+    actorSearchResults.value = [];
+    return;
+  }
+  isSearchingActors.value = true;
+  try {
+    // 调用后端 /api/custom_collections/config/tmdb_search_persons 接口
+    const response = await axios.get('/api/custom_collections/config/tmdb_search_persons', {
+      params: { q: actorSearchQuery.value }
+    });
+    actorSearchResults.value = response.data;
+  } catch (error) {
+    console.error("搜索演员失败:", error);
+    message.error("搜索演员时出错，请检查后端日志。");
+  } finally {
+    isSearchingActors.value = false;
+  }
+};
+
+// 使用防抖来避免过于频繁的API请求
+const debouncedSearchActors = debounce(searchActors, 300);
+
+// ▼▼▼ 新增：选择一个演员并添加到列表的逻辑 ▼▼▼
+const selectActor = (actor) => {
+  // 检查演员是否已存在
+  if (editableCast.value.some(a => a.tmdbId === actor.id)) {
+    message.warning(`演员 "${actor.name}" 已经在列表中了。`);
+    return;
+  }
+
+  // 构建新的演员对象
+  const newActor = {
+    tmdbId: actor.id,
+    name: actor.name,
+    role: '', // 角色名留空让用户填写
+    imageUrl: getTMDbImageUrl(actor.profile_path), // 直接使用TMDb的图片
+    emby_person_id: null, // 新增的演员没有emby person id
+    _temp_id: `new-actor-${Date.now()}`
+  };
+
+  // 添加到列表
+  editableCast.value.push(newActor);
+  message.success(`已添加演员 "${actor.name}"，请为他/她填写角色名。`);
+
+  // 关闭模态框并清空搜索
+  showAddActorModal.value = false;
+  actorSearchQuery.value = '';
+  actorSearchResults.value = [];
+};
 
 const parseCastFromUrl = async () => {
   if (!urlToParse.value.trim()) {
