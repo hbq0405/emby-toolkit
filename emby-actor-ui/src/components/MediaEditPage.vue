@@ -56,15 +56,28 @@
               <n-space vertical>
                 <n-form-item label="数据操作" label-placement="top">
                   <n-space>
+                    <n-button-group>
                     <n-button 
                       tag="a" 
-                      :href="searchLinks.baidu_baike_search"
+                      :href="searchLinks.baidu"
                       target="_blank" 
-                      :disabled="!searchLinks.baidu_baike_search"
+                      :disabled="!searchLinks.baidu"
                       :loading="isLoading"
                     >
-                      百度百科
+                      百度搜索
                     </n-button>
+                    <n-dropdown
+                      trigger="click"
+                      :options="searchDropdownOptions"
+                      @select="handleSearchDropdownSelect"
+                    >
+                      <n-button :disabled="searchDropdownOptions.length === 0">
+                        <template #icon>
+                          <n-icon :component="ChevronDownIcon" />
+                        </template>
+                      </n-button>
+                    </n-dropdown>
+                  </n-button-group>
                     <n-button
                       type="info"
                       @click="translateAllFields" 
@@ -231,7 +244,7 @@
 <script setup>
 import { ref, onMounted, watch, computed, nextTick } from 'vue';
 import draggable from 'vuedraggable';
-import { NIcon, NInput, NInputGroup, NGrid, NGridItem, NFormItem, NTag, NAvatar, NPopconfirm, NImage, NModal, NList, NListItem, NThing, NEmpty } from 'naive-ui';
+import { NIcon, NInput, NGrid, NGridItem, NFormItem, NTag, NAvatar, NPopconfirm, NImage, NModal, NList, NListItem, NThing, NEmpty, NButtonGroup, NDropdown } from 'naive-ui';
 import { useRoute, useRouter } from 'vue-router';
 import axios from 'axios';
 import { NPageHeader, NDivider, NSpin, NCard, NDescriptions, NDescriptionsItem, NButton, NSpace, NAlert, useMessage } from 'naive-ui';
@@ -240,7 +253,8 @@ import {
   TrashOutline as TrashIcon,
   ImageOutline as ImageIcon,
   PersonOutline as PersonIcon,
-  AddOutline as AddIcon 
+  AddOutline as AddIcon,
+  ChevronDownOutline as ChevronDownIcon 
 } from '@vicons/ionicons5';
 import { debounce } from 'lodash-es';
 
@@ -254,7 +268,7 @@ const itemDetails = ref(null);
 const editableCast = ref([]);
 const isSaving = ref(false);
 
-const searchLinks = ref({ baidu_baike_search: '' });
+const searchLinks = ref({});
 const isTranslating = ref(false);
 
 const showAddActorModal = ref(false);
@@ -269,6 +283,34 @@ const posterUrl = computed(() => {
   }
   return '';
 });
+
+const searchDropdownOptions = computed(() => {
+  const options = [];
+  if (searchLinks.value.wikipedia) {
+    options.push({
+      label: 'Google (维基百科)',
+      key: 'wikipedia' // key 用于区分选项
+    });
+  }
+  if (searchLinks.value.google) {
+    options.push({
+      label: 'Google 搜索',
+      key: 'google'
+    });
+  }
+  // 你可以在这里添加更多选项，比如豆瓣搜索等
+  return options;
+});
+
+// ▼▼▼ 【核心新增】处理下拉菜单点击事件的函数 ▼▼▼
+const handleSearchDropdownSelect = (key) => {
+  const url = searchLinks.value[key];
+  if (url) {
+    window.open(url, '_blank');
+  }
+};
+
+
 
 const getActorImageUrl = (actor) => {
   // 如果 actor.imageUrl 存在
@@ -411,12 +453,10 @@ const fetchMediaDetails = async () => {
     const response = await axios.get(`/api/media_for_editing/${itemId.value}`);
     itemDetails.value = response.data;
 
-    // ★★★ 核心修复：在这里添加下面这行代码 ★★★
-    // 检查后端返回的数据中是否有 search_links，如果有，就更新它
+    // ▼▼▼ 现在会接收一个包含多个链接的对象 ▼▼▼
     if (response.data && response.data.search_links) {
       searchLinks.value = response.data.search_links;
     }
-    // ★★★ 修复结束 ★★★
 
   } catch (error) {
     message.error(error.response?.data?.error || "获取媒体详情失败。");
