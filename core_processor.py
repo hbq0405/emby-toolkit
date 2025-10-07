@@ -1519,9 +1519,13 @@ class MediaProcessor:
         # ======================================================================
         logger.info(f"  ➜ 开始将 {len(final_cast_perfect)} 位最终演员的完整信息同步回数据库...")
         processed_count = 0
+        
+        # 在循环外准备 emby_config，避免重复创建
+        emby_config_for_upsert = {"url": self.emby_url, "api_key": self.emby_api_key, "user_id": self.emby_user_id}
+
         for actor in final_cast_perfect:
-            # 直接将 actor 字典传递给 upsert_person 函数
-            map_id, action = self.actor_db_manager.upsert_person(cursor, actor)
+            # 直接将 actor 字典和 emby_config 传递给 upsert_person 函数
+            map_id, action = self.actor_db_manager.upsert_person(cursor, actor, emby_config_for_upsert)
             
             if action not in ["ERROR", "SKIPPED", "CONFLICT_ERROR", "UNKNOWN_ERROR"]:
                 processed_count += 1

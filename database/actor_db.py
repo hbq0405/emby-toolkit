@@ -96,91 +96,78 @@ class ActorDBManager:
                 logger.error(f"  ➜ 查询 person_identity_map 时出错 ({column}={value}): {e}")
         return None
 
-    def upsert_person(self, cursor: psycopg2.extensions.cursor, person_data: Dict[str, Any]) -> Tuple[int, str]:
+    def upsert_person(self, cursor: psycopg2.extensions.cursor, person_data: Dict[str, Any], emby_config: Dict[str, Any]) -> Tuple[int, str]:
         """
-        【V10 - 终极安全版，防止同名异人合并】
-        以 TMDb ID 为身份的唯一锚点，安全地补充其他ID，并能检测和报告冲突。
+        【V8 - 增加元数据缓存】
+        在完成 person_identity_map 的更新/插入后，如果传入的数据包含额外元数据
+        （如头像、性别等），则会一并更新 actor_metadata 缓存表。
         """
-        # 1. 清理和准备所有传入的ID
-        primary_name = str(person_data.get("primary_name") or person_data.get("name") or '').strip() or "Unknown Actor"
-        tmdb_id = str(person_data.get("tmdb_person_id") or person_data.get("id") or '').strip() or None
-        
-        # 如果没有 TMDb ID，则无法确定唯一身份，直接跳过
-        if not tmdb_id:
-            logger.warning(f"  ➜ upsert_person 跳过 '{primary_name}'，因为缺少作为身份锚点的 TMDb ID。")
-            return -1, "SKIPPED_NO_TMDB_ID"
-
-        emby_id = str(person_data.get("emby_person_id") or person_data.get("emby_id") or '').strip() or None
+        emby_id = str(person_data.get("emby_person_id") or '').strip() or None
+        tmdb_id_raw = person_data.get("id") # 修正：TMDb ID 在主流程数据中键名为 "id"
         imdb_id = str(person_data.get("imdb_id") or '').strip() or None
-        douban_id = str(person_data.get("douban_celebrity_id") or person_data.get("douban_id") or '').strip() or None
+        douban_id = str(person_data.get("douban_id") or '').strip() or None
+        name = str(person_data.get("name") or '').strip()
+
+        tmdb_id = None
+        if tmdb_id_raw and str(tmdb_id_raw).isdigit():
+            try:
+                tmdb_id = int(tmdb_id_raw)
+            except (ValueError, TypeError):
+                pass
+
+        if not tmdb_id:
+            logger.warning(f"upsert_person 调用缺少有效的 tmdb_person_id，跳过。 (原始值: {tmdb_id_raw})")
+            return -1, "SKIPPED"
+
+        if not name and emby_id:
+            details = get_emby_item_details(emby_id, emby_config['url'], emby_config['api_key'], emby_config['user_id'], fields="Name")
+            name = details.get("Name") if details else "Unknown Actor"
+        elif not name:
+            name = "Unknown Actor"
 
         try:
-            # 2. 【锚点操作】使用 TMDb ID 查找或创建主记录
-            # ON CONFLICT DO NOTHING 确保如果记录已存在，我们不会做任何修改，只是安全地取回它的 map_id
-            sql_anchor = """
-                INSERT INTO person_identity_map (tmdb_person_id, primary_name, last_updated_at)
-                VALUES (%s, %s, NOW())
-                ON CONFLICT (tmdb_person_id) DO NOTHING
-                RETURNING map_id;
+            # 更加健壮的 ON CONFLICT 语句，确保数据只增不减，并且更新名字
+            sql = """
+                INSERT INTO person_identity_map 
+                (primary_name, emby_person_id, tmdb_person_id, imdb_id, douban_celebrity_id, last_updated_at)
+                VALUES (%s, %s, %s, %s, %s, NOW())
+                ON CONFLICT (tmdb_person_id) DO UPDATE SET
+                    primary_name = EXCLUDED.primary_name,
+                    emby_person_id = COALESCE(EXCLUDED.emby_person_id, person_identity_map.emby_person_id),
+                    imdb_id = COALESCE(person_identity_map.imdb_id, EXCLUDED.imdb_id),
+                    douban_celebrity_id = COALESCE(person_identity_map.douban_celebrity_id, EXCLUDED.douban_celebrity_id),
+                    last_updated_at = NOW()
+                RETURNING map_id, (CASE xmax WHEN 0 THEN 'INSERTED' ELSE 'UPDATED' END) as action;
             """
-            cursor.execute(sql_anchor, (tmdb_id, primary_name))
-            result = cursor.fetchone()
             
-            action = "UPDATED" # 默认为更新
+            cursor.execute(sql, (name, emby_id, tmdb_id, imdb_id, douban_id))
+            result = cursor.fetchone()
+
             if result:
                 map_id = result['map_id']
-                action = "INSERTED"
+                action = result['action']
+                logger.debug(f"  ➜ 演员 '{name}' (TMDb: {tmdb_id}) 身份映射处理完成。结果: {action} (map_id: {map_id})")
+
+                # ★★★ 新增逻辑：检查并更新演员元数据缓存 ★★★
+                # 如果 person_data 包含 profile_path 或 gender 等元数据字段，就认为可以更新
+                if 'profile_path' in person_data or 'gender' in person_data or 'popularity' in person_data:
+                    self.update_actor_metadata_from_tmdb(cursor, tmdb_id, person_data)
+
+                return map_id, action
             else:
-                # 如果没有返回，说明已存在，需要重新查询 map_id
-                cursor.execute("SELECT map_id FROM person_identity_map WHERE tmdb_person_id = %s", (tmdb_id,))
-                map_id = cursor.fetchone()['map_id']
+                logger.error(f"upsert_person 原子化操作未能返回结果，emby_person_id={emby_id}, tmdb_id={tmdb_id}")
+                return -1, "ERROR"
 
-            # 3. 【安全补充】逐个检查并补充其他ID
-            other_ids = {
-                'emby_person_id': emby_id,
-                'imdb_id': imdb_id,
-                'douban_celebrity_id': douban_id
-            }
-            
-            update_clauses = []
-            update_values = []
-
-            for key, value in other_ids.items():
-                if value:
-                    # 检查这个ID是否已被其他记录占用
-                    cursor.execute(f"SELECT map_id, tmdb_person_id FROM person_identity_map WHERE {key} = %s AND map_id != %s", (value, map_id))
-                    conflict_record = cursor.fetchone()
-                    
-                    if conflict_record:
-                        # 发现冲突！记录日志，并放弃补充这个ID
-                        logger.warning(f"  ➜ 数据冲突！演员 '{primary_name}' (TMDb: {tmdb_id}) 尝试关联 {key} '{value}'，"
-                                     f"但该ID已被另一位演员 (TMDb: {conflict_record['tmdb_person_id']}) 占用。已跳过此关联。")
-                    else:
-                        # 没有冲突，安全地加入更新列表
-                        update_clauses.append(f"{key} = COALESCE({key}, %s)")
-                        update_values.append(value)
-            
-            # 补充主名称
-            update_clauses.append("primary_name = COALESCE(primary_name, %s)")
-            update_values.append(primary_name)
-
-            # 4. 执行最终的更新操作
-            if update_clauses:
-                sql_update = f"UPDATE person_identity_map SET {', '.join(update_clauses)}, last_updated_at = NOW() WHERE map_id = %s"
-                cursor.execute(sql_update, tuple(update_values + [map_id]))
-
-            # 检查 person_data 中是否包含元数据
-            if "profile_path" in person_data or "gender" in person_data:
-                # 直接将 person_data 传递给元数据更新函数
-                self.update_actor_metadata_from_tmdb(cursor, int(tmdb_id), person_data)
-
-            logger.debug(f"  ➜ 演员 '{primary_name}' (TMDb: {tmdb_id}) 处理完成。结果: {action} (map_id: {map_id})")
-            return map_id, action
-
+        except psycopg2.IntegrityError as ie:
+            conn = cursor.connection
+            conn.rollback()
+            logger.error(f"upsert_person 发生数据库完整性冲突，可能是 emby_id 或其他唯一键重复。emby_id={emby_id}, tmdb_id={tmdb_id}: {ie}")
+            return -1, "ERROR"
         except Exception as e:
-            cursor.connection.rollback()
-            logger.error(f"upsert_person 发生未知异常 for '{primary_name}' (TMDb: {tmdb_id}): {e}", exc_info=True)
-            return -1, "UNKNOWN_ERROR"
+            conn = cursor.connection
+            conn.rollback()
+            logger.error(f"upsert_person 发生未知异常，emby_person_id={emby_id}: {e}", exc_info=True)
+            return -1, "ERROR"
         
     def update_actor_metadata_from_tmdb(self, cursor: psycopg2.extensions.cursor, tmdb_id: int, tmdb_data: Dict[str, Any]):
         """

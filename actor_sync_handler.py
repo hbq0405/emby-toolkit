@@ -20,52 +20,43 @@ class UnifiedSyncHandler:
         
     def sync_emby_person_map_to_db(self, update_status_callback: Optional[Callable] = None, stop_event: Optional[threading.Event] = None):
         """
-        【V4 - 数据补全修复版】
-        - 在将数据发送到 upsert_person 之前，主动获取每个演员的完整详情，确保 TMDb ID 不会丢失。
+        【V3 - 纯增量更新版】
+        - 完全移除了清理本地陈旧数据的功能。
+        - 这是一个纯粹的“添加与更新”任务，只将 Emby 中的演员信息同步到本地，不做任何删除操作。
         """
         logger.trace("  ➜ 开始执行演员数据单向同步任务 (Emby -> 本地数据库) ")
         
+        # 统计信息中移除了 'deleted'
         stats = { "total_from_emby": 0, "processed": 0, "db_inserted": 0, "db_updated": 0, 
                   "unchanged": 0, "skipped": 0, "errors": 0 }
 
         try:
+            # --- 只有一个阶段：流式处理 Emby 数据并同步到数据库 ---
             if update_status_callback: update_status_callback(0, "正在从 Emby 扫描并同步演员...")
             
             person_generator = emby_handler.get_all_persons_from_emby(
                 self.emby_url, self.emby_api_key, self.emby_user_id, stop_event,
-                update_status_callback=update_status_callback
+                update_status_callback=update_status_callback # 传递回调
             )
             
             with connection.get_db_connection() as conn:
                 with conn.cursor() as cursor:
+                    emby_config_for_upsert = {"url": self.emby_url, "api_key": self.emby_api_key, "user_id": self.emby_user_id}
+                    
                     for person_batch in person_generator:
                         if stop_event and stop_event.is_set(): 
                             raise InterruptedError("任务在处理批次时被中止")
                         
-                        for person_emby_basic in person_batch:
+                        for person_emby in person_batch:
                             stats["total_from_emby"] += 1
-                            emby_pid = str(person_emby_basic.get("Id", "")).strip()
+                            emby_pid = str(person_emby.get("Id", "")).strip()
+                            person_name = str(person_emby.get("Name", "")).strip()
 
-                            if not emby_pid:
+                            if not emby_pid or not person_name:
                                 stats["skipped"] += 1
                                 continue
                             
-                            person_emby_full = emby_handler.get_emby_item_details(
-                                item_id=emby_pid,
-                                emby_server_url=self.emby_url,
-                                emby_api_key=self.emby_api_key,
-                                user_id=self.emby_user_id,
-                                fields="ProviderIds,Name" 
-                            )
-
-                            if not person_emby_full:
-                                stats["skipped"] += 1
-                                logger.warning(f"无法获取演员 (ID: {emby_pid}) 的完整详情，已跳过。")
-                                continue
-
-                            person_name = str(person_emby_full.get("Name", "")).strip()
-                            provider_ids = person_emby_full.get("ProviderIds", {})
-                            
+                            provider_ids = person_emby.get("ProviderIds", {})
                             person_data_for_db = { 
                                 "emby_id": emby_pid, 
                                 "name": person_name, 
@@ -75,11 +66,11 @@ class UnifiedSyncHandler:
                             }
                             
                             try:
-                                _, status = self.actor_db_manager.upsert_person(cursor, person_data_for_db)
+                                _, status = self.actor_db_manager.upsert_person(cursor, person_data_for_db, emby_config=emby_config_for_upsert)
                                 if status == "INSERTED": stats['db_inserted'] += 1
                                 elif status == "UPDATED": stats['db_updated'] += 1
-                                elif status == "SKIPPED_NO_TMDB_ID": stats['skipped'] += 1 # 明确统计被跳过的
-                                else: stats['unchanged'] += 1
+                                elif status == "UNCHANGED": stats['unchanged'] += 1
+                                elif status == "SKIPPED": stats['skipped'] += 1
                             except Exception as e_upsert:
                                 stats['errors'] += 1
                                 logger.error(f"处理演员 {person_name} (ID: {emby_pid}) 的 upsert 时失败: {e_upsert}")
