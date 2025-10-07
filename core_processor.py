@@ -1255,7 +1255,7 @@ class MediaProcessor:
         # ======================================================================
         if self.douban_api:
             actors_needing_douban_avatar = [
-                actor for actor in cast_to_process
+                actor for actor in current_cast_list
                 if not actor.get("profile_path") and actor.get("douban_id") and actor.get("id") # 确保有TMDb ID用于关联
             ]
             
@@ -1310,23 +1310,23 @@ class MediaProcessor:
             with_profile.sort(key=sort_key)
             without_profile.sort(key=sort_key)
             prioritized_list = with_profile + without_profile
-            cast_to_process = prioritized_list[:limit]
-            logger.debug(f"  ➜ 截断后，保留了 {len(with_profile)} 位有头像演员中的 {len([a for a in cast_to_process if a.get('profile_path')])} 位。")
+            current_cast_list = prioritized_list[:limit]
+            logger.debug(f"  ➜ 截断后，保留了 {len(with_profile)} 位有头像演员中的 {len([a for a in current_cast_list if a.get('profile_path')])} 位。")
         else:
-            cast_to_process = current_cast_list
-            cast_to_process.sort(key=lambda x: x.get('order') if x.get('order') is not None and x.get('order') >= 0 else 999)
+            # ▼▼▼ 核心修改：直接在 current_cast_list 上排序 ▼▼▼
+            current_cast_list.sort(key=lambda x: x.get('order') if x.get('order') is not None and x.get('order') >= 0 else 999)
 
         # ======================================================================
         # 步骤 7: ★★★ 翻译和格式化 ★★★
         # ======================================================================
-        logger.info(f"  ➜ 将对 {len(cast_to_process)} 位演员进行最终的翻译和格式化处理...")
+        logger.info(f"  ➜ 将对 {len(current_cast_list)} 位演员进行最终的翻译和格式化处理...")
 
         if not (self.ai_translator and self.config.get(constants.CONFIG_OPTION_AI_TRANSLATION_ENABLED, False)):
             logger.info("  ➜ AI翻译未启用，将保留演员和角色名原文。")
         else:
             final_translation_map = {}
             terms_to_translate = set()
-            for actor in cast_to_process:
+            for actor in current_cast_list:
                 character = actor.get('character')
                 if character:
                     cleaned_character = utils.clean_character_name_static(character)
@@ -1372,7 +1372,7 @@ class MediaProcessor:
                 quality_results = self.ai_translator.batch_translate(remaining_terms, mode='quality', title=item_title, year=item_year)
                 final_translation_map.update(quality_results)
             
-            for actor in cast_to_process:
+            for actor in current_cast_list:
                 original_name = actor.get('name')
                 if original_name and original_name in final_translation_map:
                     actor['name'] = final_translation_map[original_name]
@@ -1385,12 +1385,12 @@ class MediaProcessor:
 
         tmdb_to_emby_id_map = {
             str(actor.get('id')): actor.get('emby_person_id')
-            for actor in cast_to_process if actor.get('id') and actor.get('emby_person_id')
+            for actor in current_cast_list if actor.get('id') and actor.get('emby_person_id')
         }
         genres = item_details_from_emby.get("Genres", [])
         is_animation = "Animation" in genres or "动画" in genres or "Documentary" in genres or "纪录" in genres
         final_cast_perfect = actor_utils.format_and_complete_cast_list(
-            cast_to_process, is_animation, self.config, mode='auto'
+            current_cast_list, is_animation, self.config, mode='auto'
         )
         for actor in final_cast_perfect:
             tmdb_id_str = str(actor.get("id"))
