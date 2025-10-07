@@ -272,89 +272,7 @@ class MediaProcessor:
             logger.error(f"清除数据库或内存已处理记录时失败: {e}", exc_info=True)
             # 3. ★★★ 重新抛出异常，通知上游调用者操作失败 ★★★
             raise
-    # --- 演员数据查询、反哺 ---
-    def _enrich_cast_from_db_and_api(self, cast_list: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
-        """
-        演员数据查询、反哺
-        """
-        if not cast_list:
-            return []
-        
-        logger.info(f"  ➜ 正在为 {len(cast_list)} 位演员丰富数据...")
-
-        original_actor_map = {str(actor.get("Id")): actor for actor in cast_list if actor.get("Id")}
-        
-        # --- 阶段一：从本地数据库获取数据 ---
-        enriched_actors_map = {}
-        ids_found_in_db = set()
-        
-        try:
-            db_results = []
-            
-            with get_central_db_connection() as conn:
-                cursor = conn.cursor()
-                person_ids = list(original_actor_map.keys())
-                
-                if person_ids:
-                    query = "SELECT * FROM person_identity_map WHERE emby_person_id = ANY(%s)"
-                    cursor.execute(query, (person_ids,))
-                    db_results = cursor.fetchall()
-
-            for row in db_results:
-                db_data = dict(row)
-                actor_id = str(db_data["emby_person_id"])
-                ids_found_in_db.add(actor_id)
-                
-                provider_ids = {}
-                if db_data.get("tmdb_person_id"):
-                    provider_ids["Tmdb"] = str(db_data.get("tmdb_person_id"))
-                if db_data.get("imdb_id"):
-                    provider_ids["Imdb"] = db_data.get("imdb_id")
-                if db_data.get("douban_celebrity_id"):
-                    provider_ids["Douban"] = str(db_data.get("douban_celebrity_id"))
-                
-                enriched_actor = original_actor_map[actor_id].copy()
-                enriched_actor["ProviderIds"] = provider_ids
-                enriched_actors_map[actor_id] = enriched_actor
-                
-        except Exception as e:
-            logger.error(f"  ➜ 数据库查询阶段失败: {e}", exc_info=True)
-
-        logger.info(f"  ➜ 从演员映射表找到了 {len(ids_found_in_db)} 位演员的信息。")
-
-        # --- 阶段二：为未找到的演员实时查询 Emby API ---
-        ids_to_fetch_from_api = [pid for pid in original_actor_map.keys() if pid not in ids_found_in_db]
-
-        if ids_to_fetch_from_api:
-            logger.trace(f"  ➜ 开始为 {len(ids_to_fetch_from_api)} 位新演员从Emby获取信息...")
-            
-            for person_id in ids_to_fetch_from_api:
-                if self.is_stop_requested():
-                    break
-                
-                person_details = emby_handler.get_emby_item_details(
-                    item_id=person_id, 
-                    emby_server_url=self.emby_url, 
-                    emby_api_key=self.emby_api_key, 
-                    user_id=self.emby_user_id,
-                    fields="ProviderIds,Name" # 我们只需要这两个字段
-                )
-                
-                if person_details and person_details.get("ProviderIds"):
-                    enriched_actor = original_actor_map[person_id].copy()
-                    enriched_actor["ProviderIds"] = person_details.get("ProviderIds")
-                    enriched_actors_map[person_id] = enriched_actor
-                    time_module.sleep(0.1) # 加个小延迟避免请求过快
-        else:
-            logger.trace("  ➜ (API查询) 跳过：所有演员均在本地数据库中找到。")
-
-        # --- 阶段三：合并最终结果 ---
-        final_enriched_cast = []
-        for original_actor in cast_list:
-            actor_id = str(original_actor.get("Id"))
-            final_enriched_cast.append(enriched_actors_map.get(actor_id, original_actor))
-
-        return final_enriched_cast
+    
     # ★★★ 公开的、独立的追剧判断方法 ★★★
     def check_and_add_to_watchlist(self, item_details: Dict[str, Any]):
         """
@@ -624,6 +542,115 @@ class MediaProcessor:
 
         logger.info(f"  ➜ 成功通过 API 更新了 {updated_count} 位演员的名字。")
     
+    # --- 全量处理的入口 ---
+    def process_full_library(self, update_status_callback: Optional[callable] = None, force_reprocess_all: bool = False, force_fetch_from_tmdb: bool = False):
+        """
+        这是所有全量处理的唯一入口，它自己处理所有与“强制”相关的逻辑。
+        """
+        self.clear_stop_signal()
+        
+        logger.trace(f"进入核心执行层: process_full_library, 接收到的 force_reprocess_all = {force_reprocess_all}, force_fetch_from_tmdb = {force_fetch_from_tmdb}")
+
+        if force_reprocess_all:
+            logger.info("  ➜ 检测到“强制重处理”选项，正在清空已处理日志...")
+            try:
+                self.clear_processed_log()
+            except Exception as e:
+                logger.error(f"在 process_full_library 中清空日志失败: {e}", exc_info=True)
+                if update_status_callback: update_status_callback(-1, "清空日志失败")
+                return
+
+        libs_to_process_ids = self.config.get("libraries_to_process", [])
+        if not libs_to_process_ids:
+            logger.warning("  ➜ 未在配置中指定要处理的媒体库。")
+            return
+
+        logger.info("  ➜ 正在尝试从Emby获取媒体项目...")
+        all_emby_libraries = emby_handler.get_emby_libraries(self.emby_url, self.emby_api_key, self.emby_user_id) or []
+        library_name_map = {lib.get('Id'): lib.get('Name', '未知库名') for lib in all_emby_libraries}
+        
+        movies = emby_handler.get_emby_library_items(self.emby_url, self.emby_api_key, "Movie", self.emby_user_id, libs_to_process_ids, library_name_map=library_name_map) or []
+        series = emby_handler.get_emby_library_items(self.emby_url, self.emby_api_key, "Series", self.emby_user_id, libs_to_process_ids, library_name_map=library_name_map) or []
+        
+        if movies:
+            source_movie_lib_names = sorted(list({library_name_map.get(item.get('_SourceLibraryId')) for item in movies if item.get('_SourceLibraryId')}))
+            logger.info(f"  ➜ 从媒体库【{', '.join(source_movie_lib_names)}】获取到 {len(movies)} 个电影项目。")
+
+        if series:
+            source_series_lib_names = sorted(list({library_name_map.get(item.get('_SourceLibraryId')) for item in series if item.get('_SourceLibraryId')}))
+            logger.info(f"  ➜ 从媒体库【{', '.join(source_series_lib_names)}】获取到 {len(series)} 个电视剧项目。")
+
+        all_items = movies + series
+        total = len(all_items)
+        
+        if total == 0:
+            logger.info("  ➜ 在所有选定的库中未找到任何可处理的项目。")
+            if update_status_callback: update_status_callback(100, "未找到可处理的项目。")
+            return
+
+        # --- 新增：清理已删除的媒体项 ---
+        if update_status_callback: update_status_callback(20, "正在检查并清理已删除的媒体项...")
+        
+        with get_central_db_connection() as conn:
+            cursor = conn.cursor()
+            cursor.execute("SELECT item_id, item_name FROM processed_log")
+            processed_log_entries = cursor.fetchall()
+            
+            processed_ids_in_db = {entry['item_id'] for entry in processed_log_entries}
+            emby_ids_in_library = {item.get('Id') for item in all_items if item.get('Id')}
+            
+            # 找出在 processed_log 中但不在 Emby 媒体库中的项目
+            deleted_items_to_clean = processed_ids_in_db - emby_ids_in_library
+            
+            if deleted_items_to_clean:
+                logger.info(f"  ➜ 发现 {len(deleted_items_to_clean)} 个已从 Emby 媒体库删除的项目，正在从 '已处理' 中移除...")
+                for deleted_item_id in deleted_items_to_clean:
+                    self.log_db_manager.remove_from_processed_log(cursor, deleted_item_id)
+                    # 同时从内存缓存中移除
+                    if deleted_item_id in self.processed_items_cache:
+                        del self.processed_items_cache[deleted_item_id]
+                    logger.debug(f"  ➜ 已从 '已处理' 中移除 ItemID: {deleted_item_id}")
+                conn.commit()
+                logger.info("  ➜ 已删除媒体项的清理工作完成。")
+            else:
+                logger.info("  ➜ 未发现需要从 '已处理' 中清理的已删除媒体项。")
+        
+        if update_status_callback: update_status_callback(30, "已删除媒体项清理完成，开始处理现有媒体...")
+
+        # --- 现有媒体项处理循环 ---
+        for i, item in enumerate(all_items):
+            if self.is_stop_requested():
+                logger.warning("全库扫描任务已被用户中止。")
+                break # 使用 break 优雅地退出循环
+            
+            item_id = item.get('Id')
+            item_name = item.get('Name', f"ID:{item_id}")
+
+            if not force_reprocess_all and item_id in self.processed_items_cache:
+                logger.info(f"  ➜ 正在跳过已处理的项目: {item_name}")
+                if update_status_callback:
+                    # 调整进度条的起始点，使其在清理后从 30% 开始
+                    progress_after_cleanup = 30
+                    current_progress = progress_after_cleanup + int(((i + 1) / total) * (100 - progress_after_cleanup))
+                    update_status_callback(current_progress, f"跳过: {item_name}")
+                continue
+
+            if update_status_callback:
+                progress_after_cleanup = 30
+                current_progress = progress_after_cleanup + int(((i + 1) / total) * (100 - progress_after_cleanup))
+                update_status_callback(current_progress, f"处理中 ({i+1}/{total}): {item_name}")
+            
+            self.process_single_item(
+                item_id, 
+                force_reprocess_this_item=force_reprocess_all,
+                force_fetch_from_tmdb=force_fetch_from_tmdb
+            )
+            
+            time_module.sleep(float(self.config.get("delay_between_items_sec", 0.5)))
+        
+        if not self.is_stop_requested() and update_status_callback:
+            update_status_callback(100, "全量处理完成")
+    
     # --- 核心处理总管 ---
     def process_single_item(self, emby_item_id: str,
                             force_reprocess_this_item: bool = False,
@@ -851,7 +878,7 @@ class MediaProcessor:
                     
                     all_emby_people = item_details_from_emby.get("People", [])
                     current_emby_cast_raw = [p for p in all_emby_people if p.get("Type") == "Actor"]
-                    enriched_emby_cast = self._enrich_cast_from_db_and_api(current_emby_cast_raw)
+                    enriched_emby_cast = actor_utils.enrich_cast_from_db_and_api(current_emby_cast_raw)
                     douban_cast_raw, douban_rating_deep = self._get_douban_data_with_local_cache(item_details_from_emby)
                     douban_rating = douban_rating_deep # 覆盖评分
 
@@ -1423,118 +1450,7 @@ class MediaProcessor:
         logger.info(f"  ➜ 成功处理了 {processed_count} 位演员的数据库回写/更新。")
 
         return final_cast_perfect
-
-
-    def process_full_library(self, update_status_callback: Optional[callable] = None, force_reprocess_all: bool = False, force_fetch_from_tmdb: bool = False):
-        """
-        【V3 - 最终完整版】
-        这是所有全量处理的唯一入口，它自己处理所有与“强制”相关的逻辑。
-        """
-        self.clear_stop_signal()
-        
-        logger.trace(f"进入核心执行层: process_full_library, 接收到的 force_reprocess_all = {force_reprocess_all}, force_fetch_from_tmdb = {force_fetch_from_tmdb}")
-
-        if force_reprocess_all:
-            logger.info("  ➜ 检测到“强制重处理”选项，正在清空已处理日志...")
-            try:
-                self.clear_processed_log()
-            except Exception as e:
-                logger.error(f"在 process_full_library 中清空日志失败: {e}", exc_info=True)
-                if update_status_callback: update_status_callback(-1, "清空日志失败")
-                return
-
-        # --- ★★★ 补全了这部分代码 ★★★ ---
-        libs_to_process_ids = self.config.get("libraries_to_process", [])
-        if not libs_to_process_ids:
-            logger.warning("  ➜ 未在配置中指定要处理的媒体库。")
-            return
-
-        logger.info("  ➜ 正在尝试从Emby获取媒体项目...")
-        all_emby_libraries = emby_handler.get_emby_libraries(self.emby_url, self.emby_api_key, self.emby_user_id) or []
-        library_name_map = {lib.get('Id'): lib.get('Name', '未知库名') for lib in all_emby_libraries}
-        
-        movies = emby_handler.get_emby_library_items(self.emby_url, self.emby_api_key, "Movie", self.emby_user_id, libs_to_process_ids, library_name_map=library_name_map) or []
-        series = emby_handler.get_emby_library_items(self.emby_url, self.emby_api_key, "Series", self.emby_user_id, libs_to_process_ids, library_name_map=library_name_map) or []
-        
-        if movies:
-            source_movie_lib_names = sorted(list({library_name_map.get(item.get('_SourceLibraryId')) for item in movies if item.get('_SourceLibraryId')}))
-            logger.info(f"  ➜ 从媒体库【{', '.join(source_movie_lib_names)}】获取到 {len(movies)} 个电影项目。")
-
-        if series:
-            source_series_lib_names = sorted(list({library_name_map.get(item.get('_SourceLibraryId')) for item in series if item.get('_SourceLibraryId')}))
-            logger.info(f"  ➜ 从媒体库【{', '.join(source_series_lib_names)}】获取到 {len(series)} 个电视剧项目。")
-
-        all_items = movies + series
-        total = len(all_items)
-        # --- ★★★ 补全结束 ★★★ ---
-        
-        if total == 0:
-            logger.info("  ➜ 在所有选定的库中未找到任何可处理的项目。")
-            if update_status_callback: update_status_callback(100, "未找到可处理的项目。")
-            return
-
-        # --- 新增：清理已删除的媒体项 ---
-        if update_status_callback: update_status_callback(20, "正在检查并清理已删除的媒体项...")
-        
-        with get_central_db_connection() as conn:
-            cursor = conn.cursor()
-            cursor.execute("SELECT item_id, item_name FROM processed_log")
-            processed_log_entries = cursor.fetchall()
-            
-            processed_ids_in_db = {entry['item_id'] for entry in processed_log_entries}
-            emby_ids_in_library = {item.get('Id') for item in all_items if item.get('Id')}
-            
-            # 找出在 processed_log 中但不在 Emby 媒体库中的项目
-            deleted_items_to_clean = processed_ids_in_db - emby_ids_in_library
-            
-            if deleted_items_to_clean:
-                logger.info(f"  ➜ 发现 {len(deleted_items_to_clean)} 个已从 Emby 媒体库删除的项目，正在从 '已处理' 中移除...")
-                for deleted_item_id in deleted_items_to_clean:
-                    self.log_db_manager.remove_from_processed_log(cursor, deleted_item_id)
-                    # 同时从内存缓存中移除
-                    if deleted_item_id in self.processed_items_cache:
-                        del self.processed_items_cache[deleted_item_id]
-                    logger.debug(f"  ➜ 已从 '已处理' 中移除 ItemID: {deleted_item_id}")
-                conn.commit()
-                logger.info("  ➜ 已删除媒体项的清理工作完成。")
-            else:
-                logger.info("  ➜ 未发现需要从 '已处理' 中清理的已删除媒体项。")
-        
-        if update_status_callback: update_status_callback(30, "已删除媒体项清理完成，开始处理现有媒体...")
-
-        # --- 现有媒体项处理循环 ---
-        for i, item in enumerate(all_items):
-            if self.is_stop_requested():
-                logger.warning("全库扫描任务已被用户中止。")
-                break # 使用 break 优雅地退出循环
-            
-            item_id = item.get('Id')
-            item_name = item.get('Name', f"ID:{item_id}")
-
-            if not force_reprocess_all and item_id in self.processed_items_cache:
-                logger.info(f"  ➜ 正在跳过已处理的项目: {item_name}")
-                if update_status_callback:
-                    # 调整进度条的起始点，使其在清理后从 30% 开始
-                    progress_after_cleanup = 30
-                    current_progress = progress_after_cleanup + int(((i + 1) / total) * (100 - progress_after_cleanup))
-                    update_status_callback(current_progress, f"跳过: {item_name}")
-                continue
-
-            if update_status_callback:
-                progress_after_cleanup = 30
-                current_progress = progress_after_cleanup + int(((i + 1) / total) * (100 - progress_after_cleanup))
-                update_status_callback(current_progress, f"处理中 ({i+1}/{total}): {item_name}")
-            
-            self.process_single_item(
-                item_id, 
-                force_reprocess_this_item=force_reprocess_all,
-                force_fetch_from_tmdb=force_fetch_from_tmdb
-            )
-            
-            time_module.sleep(float(self.config.get("delay_between_items_sec", 0.5)))
-        
-        if not self.is_stop_requested() and update_status_callback:
-            update_status_callback(100, "全量处理完成")
+    
     # --- 一键翻译 ---
     def translate_cast_list_for_editing(self, 
                                     cast_list: List[Dict[str, Any]], 
@@ -1676,7 +1592,7 @@ class MediaProcessor:
             
             logger.info(f"  ➜ 手动处理：步骤 1/6: 构建TMDb与Emby演员的ID映射...")
             raw_emby_actors = [p for p in item_details.get("People", []) if p.get("Type") == "Actor"]
-            enriched_actors = self._enrich_cast_from_db_and_api(raw_emby_actors)
+            enriched_actors = actor_utils.enrich_cast_from_db_and_api(raw_emby_actors)
             
             tmdb_to_emby_map = {}
             for person in enriched_actors:
@@ -1750,7 +1666,7 @@ class MediaProcessor:
             logger.info(f"  ➜ 手动处理：步骤 3/6: 通过API更新现有演员的名字...")
             # 构建 TMDb ID -> Emby Person ID 和 Emby Person ID -> 当前名字的映射
             raw_emby_actors = [p for p in item_details.get("People", []) if p.get("Type") == "Actor"]
-            enriched_actors = self._enrich_cast_from_db_and_api(raw_emby_actors)
+            enriched_actors = actor_utils.enrich_cast_from_db_and_api(raw_emby_actors)
             
             tmdb_to_emby_map = {}
             emby_id_to_name_map = {}
@@ -2306,13 +2222,13 @@ class MediaProcessor:
             })
         return cast_list
 
+    # --- 辅助函数：将演员表注入剧集的季/集JSON文件 ---
     def _inject_cast_to_series_files(self, target_dir: str, cast_list: List[Dict[str, Any]], series_details: Dict[str, Any], 
                                      # ▼▼▼ 核心修改 1/3: 增加 source_dir 参数 ▼▼▼
                                      source_dir: str, 
                                      episode_ids_to_sync: Optional[List[str]] = None):
         """
-        【修复版】辅助函数：将演员表注入剧集的季/集JSON文件。
-        - 新增逻辑：在修改文件前，如果文件在目标目录不存在，则从源目录复制。
+        辅助函数：将演员表注入剧集的季/集JSON文件。
         """
         log_prefix = "[覆盖缓存-元数据写入]"
         if cast_list is not None:
@@ -2389,9 +2305,9 @@ class MediaProcessor:
         except Exception as e_list:
             logger.error(f"  ➜ {log_prefix} 遍历并更新季/集文件时发生错误: {e_list}", exc_info=True)
 
+    # --- 为一个媒体项同步元数据缓存 ---
     def sync_single_item_to_metadata_cache(self, item_id: str, item_name: Optional[str] = None, episode_ids_to_add: Optional[List[str]] = None):
         """
-        【V6 - 职责分离最终版】
         为一个媒体项同步元数据缓存。
         - 增量模式 (当提供了 episode_ids_to_add): 只将新增的分集详情追加到现有记录中，然后任务结束。
         - 常规模式 (默认): 对媒体项（电影或剧集）进行一次轻量级的全量元数据刷新（不含演员和子项目），然后任务结束。
@@ -2524,6 +2440,7 @@ class MediaProcessor:
         except Exception as e:
             logger.error(f"{log_prefix} 执行时发生错误: {e}", exc_info=True)
 
+    # --- 将来自 Emby 的实时元数据更新同步到 override 缓存文件 ---
     def sync_emby_updates_to_override_files(self, item_details: Dict[str, Any]):
         """
         将来自 Emby 的实时元数据更新同步到 override 缓存文件。
