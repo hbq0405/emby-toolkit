@@ -1962,13 +1962,30 @@ class MediaProcessor:
             # 更新我们自己的数据库日志和缓存
             with get_central_db_connection() as conn:
                 cursor = conn.cursor()
-                # 更新 media_metadata 缓存，使其与手动修改保持一致
-                actors_for_cache = [{"id": actor.get("id"), "name": actor.get("name"), "character": actor.get("character")} for actor in new_cast_built]
+                
+                # 构建包含完整元数据的演员列表用于缓存
+                actors_for_cache = []
+                # 使用 final_formatted_cast，因为它包含了最完整和排序后的信息
+                for actor in final_formatted_cast:
+                    actors_for_cache.append({
+                        "id": actor.get("id"),
+                        "name": actor.get("name"),
+                        "character": actor.get("character"),
+                        "original_name": actor.get("original_name"),
+                        "profile_path": actor.get("profile_path"),
+                        "gender": actor.get("gender"),
+                        "popularity": actor.get("popularity"),
+                        "order": actor.get("order")
+                    })
+
                 new_actors_json = json.dumps(actors_for_cache, ensure_ascii=False)
+                
+                # 更新 media_metadata 表
                 cursor.execute(
                     "UPDATE media_metadata SET actors_json = %s, last_synced_at = NOW() WHERE tmdb_id = %s AND item_type = %s",
                     (new_actors_json, tmdb_id, item_type)
                 )
+                
                 logger.info(f"  ➜ 正在将手动处理完成的《{item_name}》写入已处理日志...")
                 self.log_db_manager.save_to_processed_log(cursor, item_id, item_name, score=10.0)
                 self.log_db_manager.remove_from_failed_log(cursor, item_id)
