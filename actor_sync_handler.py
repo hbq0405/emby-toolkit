@@ -41,7 +41,6 @@ class UnifiedSyncHandler:
             
             with connection.get_db_connection() as conn:
                 with conn.cursor() as cursor:
-                    emby_config_for_upsert = {"url": self.emby_url, "api_key": self.emby_api_key, "user_id": self.emby_user_id}
                     
                     for person_batch in person_generator:
                         if stop_event and stop_event.is_set(): 
@@ -66,7 +65,7 @@ class UnifiedSyncHandler:
                             }
                             
                             try:
-                                _, status = self.actor_db_manager.upsert_person(cursor, person_data_for_db, emby_config=emby_config_for_upsert)
+                                _, status = self.actor_db_manager.upsert_person(cursor, person_data_for_db)
                                 if status == "INSERTED": stats['db_inserted'] += 1
                                 elif status == "UPDATED": stats['db_updated'] += 1
                                 elif status == "UNCHANGED": stats['unchanged'] += 1
