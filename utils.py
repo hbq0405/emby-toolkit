@@ -92,10 +92,7 @@ def generate_search_url(provider: str, title: str, year: Optional[int] = None) -
     search_term_with_year = f"{title} {year}" if year else title
     
     if provider == 'baike':
-        # ▼▼▼ 核心修复：在标题后加上“电影”来消除歧义 ▼▼▼
-        search_term = f"{title} 电影"
-        encoded_term = quote_plus(search_term)
-        return f"https://baike.baidu.com/search/word?word={encoded_term}"
+        return f"https://www.baidu.com/s?wd={encoded_term}"
     
     elif provider == 'wikipedia':
         # 维基百科使用带年份的搜索词效果更好
