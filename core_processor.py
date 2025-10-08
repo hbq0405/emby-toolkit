@@ -1463,14 +1463,12 @@ class MediaProcessor:
                     else:
                         terms_for_api.append(term)
                 
-                # --- ▼▼▼ 典藏版详细日志 START ▼▼▼ ---
                 cached_count = len(cached_results)
                 logger.info(f"  ➜ [翻译统计] 2. 缓存检查: 命中数据库缓存 {cached_count} 条。")
                 if cached_count > 0:
-                    # ★★★ 核心修改 1: 格式化缓存结果 ★★★
-                    cached_pairs = [f"'{k}' ➜ '{v}'" for k, v in cached_results.items()]
-                    logger.debug(f"    ➜ 命中缓存的词条与译文: {cached_pairs}")
-                # --- ▲▲▲ 典藏版详细日志 END ▲▲▲ ---
+                    logger.debug("    ➜ 命中缓存的词条与译文:")
+                    for k, v in sorted(cached_results.items()):
+                        logger.debug(f"        {k} ➜ {v}")
 
                 if cached_results:
                     final_translation_map.update(cached_results)
@@ -1507,18 +1505,17 @@ class MediaProcessor:
                 quality_results = self.ai_translator.batch_translate(remaining_terms, mode='quality', title=item_title, year=item_year)
                 final_translation_map.update(quality_results)
             
-            # --- ▼▼▼ 典藏版详细日志 START ▼▼▼ ---
             successfully_translated_terms = {term for term in terms_to_translate if utils.contains_chinese(final_translation_map.get(term, ''))}
             failed_to_translate_terms = terms_to_translate - successfully_translated_terms
             
             logger.info(f"  ➜ [翻译统计] 6. 结果总结: 成功翻译 {len(successfully_translated_terms)}/{total_terms_count} 个词条。")
             if successfully_translated_terms:
-                # ★★★ 核心修改 2: 格式化最终成功的结果 ★★★
-                successful_pairs = [f"'{term}' ➜ '{final_translation_map.get(term)}'" for term in successfully_translated_terms]
-                logger.debug(f"    ➜ 翻译成功列表 (原文 ➜ 译文): {successful_pairs}")
+                logger.debug("    ➜ 翻译成功列表 (原文 ➜ 译文):")
+                for term in sorted(list(successfully_translated_terms)):
+                    translation = final_translation_map.get(term)
+                    logger.debug(f"        {term} ➜ {translation}")
             if failed_to_translate_terms:
                 logger.warning(f"    ➜ 翻译失败列表 ({len(failed_to_translate_terms)}条): {list(failed_to_translate_terms)}")
-            # --- ▲▲▲ 典藏版详细日志 END ▲▲▲ ---
 
             for actor in current_cast_list:
                 original_name = actor.get('name')
