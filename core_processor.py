@@ -1447,12 +1447,10 @@ class MediaProcessor:
                 if name and not utils.contains_chinese(name):
                     terms_to_translate.add(name)
             
-            # --- ▼▼▼ 终极详细日志 START ▼▼▼ ---
             total_terms_count = len(terms_to_translate)
             logger.info(f"  ➜ [翻译统计] 1. 任务概览: 共收集到 {total_terms_count} 个独立词条需要翻译。")
             if total_terms_count > 0:
                 logger.debug(f"    ➜ 待处理词条列表: {list(terms_to_translate)}")
-            # --- ▲▲▲ 终极详细日志 END ▲▲▲ ---
 
             remaining_terms = list(terms_to_translate)
             if remaining_terms:
@@ -1465,21 +1463,21 @@ class MediaProcessor:
                     else:
                         terms_for_api.append(term)
                 
-                # --- ▼▼▼ 终极详细日志 START ▼▼▼ ---
+                # --- ▼▼▼ 典藏版详细日志 START ▼▼▼ ---
                 cached_count = len(cached_results)
                 logger.info(f"  ➜ [翻译统计] 2. 缓存检查: 命中数据库缓存 {cached_count} 条。")
                 if cached_count > 0:
-                    logger.debug(f"    ➜ 命中缓存的词条: {list(cached_results.keys())}")
-                # --- ▲▲▲ 终极详细日志 END ▲▲▲ ---
+                    # ★★★ 核心修改 1: 格式化缓存结果 ★★★
+                    cached_pairs = [f"'{k}' ➜ '{v}'" for k, v in cached_results.items()]
+                    logger.debug(f"    ➜ 命中缓存的词条与译文: {cached_pairs}")
+                # --- ▲▲▲ 典藏版详细日志 END ▲▲▲ ---
 
                 if cached_results:
                     final_translation_map.update(cached_results)
                 if terms_for_api:
-                    # --- ▼▼▼ 终极详细日志 START ▼▼▼ ---
                     logger.info(f"  ➜ [翻译统计] 3. AI处理 (快速模式): 提交 {len(terms_for_api)} 条。")
                     if terms_for_api:
                         logger.debug(f"    ➜ 提交给[快速模式]的词条: {terms_for_api}")
-                    # --- ▲▲▲ 终极详细日志 END ▲▲▲ ---
                     fast_api_results = self.ai_translator.batch_translate(terms_for_api, mode='fast')
                     for term, translation in fast_api_results.items():
                         final_translation_map[term] = translation
@@ -1490,11 +1488,9 @@ class MediaProcessor:
                         failed_terms.append(term)
                 remaining_terms = failed_terms
             if remaining_terms:
-                # --- ▼▼▼ 终极详细日志 START ▼▼▼ ---
                 logger.info(f"  ➜ [翻译统计] 4. AI处理 (音译模式): 提交 {len(remaining_terms)} 条。")
                 if remaining_terms:
                     logger.debug(f"    ➜ 提交给[音译模式]的词条: {remaining_terms}")
-                # --- ▲▲▲ 终极详细日志 END ▲▲▲ ---
                 transliterate_results = self.ai_translator.batch_translate(remaining_terms, mode='transliterate')
                 final_translation_map.update(transliterate_results)
                 still_failed_terms = []
@@ -1511,14 +1507,18 @@ class MediaProcessor:
                 quality_results = self.ai_translator.batch_translate(remaining_terms, mode='quality', title=item_title, year=item_year)
                 final_translation_map.update(quality_results)
             
+            # --- ▼▼▼ 典藏版详细日志 START ▼▼▼ ---
             successfully_translated_terms = {term for term in terms_to_translate if utils.contains_chinese(final_translation_map.get(term, ''))}
             failed_to_translate_terms = terms_to_translate - successfully_translated_terms
             
             logger.info(f"  ➜ [翻译统计] 6. 结果总结: 成功翻译 {len(successfully_translated_terms)}/{total_terms_count} 个词条。")
             if successfully_translated_terms:
-                logger.debug(f"    ➜ 翻译成功列表: {list(successfully_translated_terms)}")
+                # ★★★ 核心修改 2: 格式化最终成功的结果 ★★★
+                successful_pairs = [f"'{term}' ➜ '{final_translation_map.get(term)}'" for term in successfully_translated_terms]
+                logger.debug(f"    ➜ 翻译成功列表 (原文 ➜ 译文): {successful_pairs}")
             if failed_to_translate_terms:
                 logger.warning(f"    ➜ 翻译失败列表 ({len(failed_to_translate_terms)}条): {list(failed_to_translate_terms)}")
+            # --- ▲▲▲ 典藏版详细日志 END ▲▲▲ ---
 
             for actor in current_cast_list:
                 original_name = actor.get('name')
