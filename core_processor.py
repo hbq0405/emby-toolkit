@@ -1298,26 +1298,41 @@ class MediaProcessor:
 
                 # --- 处理新增 ---
                 if still_unmatched_final:
-                    logger.info(f"  ➜ 检查 {len(still_unmatched_final)} 位未匹配演员，尝试加入最终列表...")
-                    emby_config_for_upsert = {"url": self.emby_url, "api_key": self.emby_api_key, "user_id": self.emby_user_id}
+                    logger.info(f"  ➜ 检查 {len(still_unmatched_final)} 位未匹配演员，尝试合并或加入最终列表...")
                     added_count = 0
+                    merged_count = 0
                     
                     for d_actor in still_unmatched_final:
-                        tmdb_id_to_save = d_actor.get('tmdb_id_from_api')
-                        if tmdb_id_to_save and tmdb_id_to_save not in final_cast_map:
+                        tmdb_id_to_process = d_actor.get('tmdb_id_from_api')
+                        if tmdb_id_to_process:
+                            # 情况一：演员已存在，执行合并/更新
+                            if tmdb_id_to_process in final_cast_map:
+                                existing_actor = final_cast_map[tmdb_id_to_process]
+                                original_name = existing_actor.get("name")
+                                new_name = d_actor.get("Name")
+                                
+                                # 仅当豆瓣提供了更优的名字（如中文名）时才更新
+                                if new_name and new_name != original_name and utils.contains_chinese(new_name):
+                                    existing_actor["name"] = new_name
+                                    logger.debug(f"    ➜ [合并] 已将演员 (TMDb ID: {tmdb_id_to_process}) 的名字从 '{original_name}' 更新为 '{new_name}'")
+                                    merged_count += 1
                             
-                            new_actor_entry = {
-                                "id": tmdb_id_to_save,
-                                "name": d_actor.get("Name"),
-                                "character": d_actor.get("Role"),
-                                "order": 999,
-                                "imdb_id": d_actor.get("imdb_id_from_api"),
-                                "douban_id": d_actor.get("DoubanCelebrityId"),
-                                "emby_person_id": None
-                            }
-                            final_cast_map[tmdb_id_to_save] = new_actor_entry
-                            added_count += 1
+                            # 情况二：演员不存在，执行新增
+                            else:
+                                new_actor_entry = {
+                                    "id": tmdb_id_to_process,
+                                    "name": d_actor.get("Name"),
+                                    "character": d_actor.get("Role"),
+                                    "order": 999,
+                                    "imdb_id": d_actor.get("imdb_id_from_api"),
+                                    "douban_id": d_actor.get("DoubanCelebrityId"),
+                                    "emby_person_id": None
+                                }
+                                final_cast_map[tmdb_id_to_process] = new_actor_entry
+                                added_count += 1
                     
+                    if merged_count > 0:
+                        logger.info(f"  ➜ 成功合并了 {merged_count} 位现有演员的豆瓣信息。")
                     if added_count > 0:
                         logger.info(f"  ➜ 成功新增了 {added_count} 位演员到最终列表。")
         
