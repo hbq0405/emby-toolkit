@@ -1380,39 +1380,35 @@ class MediaProcessor:
         # 步骤 5: ★★★ 豆瓣头像备用方案 (带数据库缓存) ★★★
         # ======================================================================
         if self.douban_api:
+            # 这个步骤现在是最终保障，会检查所有人
             actors_needing_douban_avatar = [
                 actor for actor in current_cast_list
-                if not actor.get("profile_path") and actor.get("douban_id") and actor.get("id") # 确保有TMDb ID用于关联
+                if not actor.get("profile_path") and actor.get("douban_id") and actor.get("id")
             ]
             
             if actors_needing_douban_avatar:
-                logger.info(f"  ➜ 发现 {len(actors_needing_douban_avatar)} 位无头像演员有关联的豆瓣ID，尝试获取豆瓣头像作为备用...")
+                logger.info(f"  ➜ 发现 {len(actors_needing_douban_avatar)} 位演员仍无头像，尝试获取豆瓣头像作为最终备用...")
                 douban_avatars_found = 0
                 for actor in actors_needing_douban_avatar:
                     if stop_event and stop_event.is_set(): raise InterruptedError("任务中止")
                     
                     douban_id = actor.get("douban_id")
-                    tmdb_id = actor.get("id") # 获取TMDb ID用于数据库操作
                     
                     try:
-                        # 调用豆瓣API获取名人详情
                         details = self.douban_api.celebrity_details(douban_id)
-                        time_module.sleep(0.3) # 尊重API冷却时间
+                        time_module.sleep(0.3)
                         
                         if details and not details.get("error"):
-                            # 从详情中提取头像链接，优先大图
                             avatar_url = (details.get("avatars", {}) or {}).get("large")
                             if avatar_url:
-                                # 1. 更新内存中的演员对象
                                 actor["profile_path"] = avatar_url
-                                
                                 douban_avatars_found += 1
                                 
                     except Exception as e_douban_avatar:
                         logger.warning(f"    ➜ 为演员 (豆瓣ID: {douban_id}) 获取豆瓣头像时发生错误: {e_douban_avatar}")
 
                 if douban_avatars_found > 0:
-                    logger.info(f"  ➜ 成功为 {douban_avatars_found} 位演员补充并缓存了豆瓣头像。")
+                    logger.info(f"  ➜ 成功为 {douban_avatars_found} 位演员补充并缓存了豆瓣备用头像。")
             else:
                 logger.info("  ➜ 无需从豆瓣补充备用头像。")
 
