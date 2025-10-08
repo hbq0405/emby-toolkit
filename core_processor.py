@@ -1426,7 +1426,7 @@ class MediaProcessor:
 
         if actors_without_avatars:
             removed_names = [a.get('name', f"TMDbID:{a.get('id')}") for a in actors_without_avatars]
-            logger.info(f"  ➜ [大清洗] 将移除 {len(actors_without_avatars)} 位无头像的演员: {removed_names}")
+            logger.info(f"  ➜ 将移除 {len(actors_without_avatars)} 位无头像的演员: {removed_names}")
             current_cast_list = actors_with_avatars
 
         # ======================================================================
