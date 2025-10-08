@@ -1380,32 +1380,38 @@ class MediaProcessor:
         # 步骤 5: ★★★ 豆瓣头像备用方案 (带数据库缓存) ★★★
         # ======================================================================
         if self.douban_api:
-            # 这个步骤现在是最终保障，会检查所有人
-            actors_needing_douban_avatar = [
+            actors_needing_avatar_check = [
                 actor for actor in current_cast_list
-                if not actor.get("profile_path") and actor.get("douban_id") and actor.get("id")
+                if not actor.get("profile_path") and actor.get("id")
             ]
             
-            if actors_needing_douban_avatar:
-                logger.info(f"  ➜ 发现 {len(actors_needing_douban_avatar)} 位演员仍无头像，尝试获取豆瓣头像作为最终备用...")
+            if actors_needing_avatar_check:
+                logger.info(f"  ➜ 发现 {len(actors_needing_avatar_check)} 位演员仍无头像，启动最终检查...")
                 douban_avatars_found = 0
-                for actor in actors_needing_douban_avatar:
+                for actor in actors_needing_avatar_check:
                     if stop_event and stop_event.is_set(): raise InterruptedError("任务中止")
                     
                     douban_id = actor.get("douban_id")
-                    
-                    try:
-                        details = self.douban_api.celebrity_details(douban_id)
-                        time_module.sleep(0.3)
-                        
-                        if details and not details.get("error"):
-                            avatar_url = (details.get("avatars", {}) or {}).get("large")
-                            if avatar_url:
-                                actor["profile_path"] = avatar_url
-                                douban_avatars_found += 1
-                                
-                    except Exception as e_douban_avatar:
-                        logger.warning(f"    ➜ 为演员 (豆瓣ID: {douban_id}) 获取豆瓣头像时发生错误: {e_douban_avatar}")
+                    # 如果演员身上没有预先关联的豆瓣ID，就去映射表里查一次
+                    if not douban_id:
+                        map_entry = self._find_person_in_map_by_tmdb_id(str(actor.get("id")), cursor)
+                        if map_entry and map_entry.get("douban_celebrity_id"):
+                            douban_id = map_entry.get("douban_celebrity_id")
+                            logger.debug(f"    ➜ 为演员 '{actor.get('name')}' (TMDb ID: {actor.get('id')}) 从映射表找到豆瓣ID: {douban_id}")
+
+                    if douban_id:
+                        try:
+                            details = self.douban_api.celebrity_details(douban_id)
+                            time_module.sleep(0.3)
+                            
+                            if details and not details.get("error"):
+                                avatar_url = (details.get("avatars", {}) or {}).get("large")
+                                if avatar_url:
+                                    actor["profile_path"] = avatar_url
+                                    douban_avatars_found += 1
+                                    
+                        except Exception as e_douban_avatar:
+                            logger.warning(f"    ➜ 为演员 (豆瓣ID: {douban_id}) 获取豆瓣头像时发生错误: {e_douban_avatar}")
 
                 if douban_avatars_found > 0:
                     logger.info(f"  ➜ 成功为 {douban_avatars_found} 位演员补充并缓存了豆瓣备用头像。")
@@ -1413,7 +1419,18 @@ class MediaProcessor:
                 logger.info("  ➜ 无需从豆瓣补充备用头像。")
 
         # ======================================================================
-        # 步骤 6：智能截断逻辑 (Smart Truncation) ★★★
+        # 步骤 6: ★★★ 从演员表移除无头像演员 ★★★
+        # ======================================================================
+        actors_with_avatars = [actor for actor in current_cast_list if actor.get("profile_path")]
+        actors_without_avatars = [actor for actor in current_cast_list if not actor.get("profile_path")]
+
+        if actors_without_avatars:
+            removed_names = [a.get('name', f"TMDbID:{a.get('id')}") for a in actors_without_avatars]
+            logger.info(f"  ➜ [大清洗] 将移除 {len(actors_without_avatars)} 位无头像的演员: {removed_names}")
+            current_cast_list = actors_with_avatars
+
+        # ======================================================================
+        # 步骤 7：智能截断逻辑 (Smart Truncation) ★★★
         # ======================================================================
         max_actors = self.config.get(constants.CONFIG_OPTION_MAX_ACTORS_TO_PROCESS, 30)
         try:
@@ -1439,7 +1456,7 @@ class MediaProcessor:
             current_cast_list.sort(key=lambda x: x.get('order') if x.get('order') is not None and x.get('order') >= 0 else 999)
 
         # ======================================================================
-        # 步骤 7: ★★★ 翻译和格式化 ★★★
+        # 步骤 8: ★★★ 翻译和格式化 ★★★
         # ======================================================================
         logger.info(f"  ➜ 将对 {len(current_cast_list)} 位演员进行最终的翻译和格式化处理...")
 
@@ -1560,7 +1577,7 @@ class MediaProcessor:
             }
 
         # ======================================================================
-        # 步骤 8: ★★★ 最终数据回写/反哺 ★★★ 
+        # 步骤 9: ★★★ 最终数据回写/反哺 ★★★ 
         # ======================================================================
         logger.info(f"  ➜ 开始将 {len(final_cast_perfect)} 位最终演员的完整信息同步回数据库...")
         processed_count = 0
