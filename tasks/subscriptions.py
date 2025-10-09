@@ -110,7 +110,7 @@ def task_auto_subscribe(processor):
                                 current_quota = settings_db.get_subscription_quota()
                                 if current_quota <= 0:
                                     quota_exhausted = True
-                                    logger.warning("每日订阅配额已用尽，原生合集检查提前结束。")
+                                    logger.warning("  ➜ 每日订阅配额已用尽，原生合集检查提前结束。")
                                     movies_to_keep.append(movie) # 把当前未处理的电影加回去
                                     break # 跳出内层循环
 
@@ -166,7 +166,7 @@ def task_auto_subscribe(processor):
                                 current_quota = settings_db.get_subscription_quota()
                                 if current_quota <= 0:
                                     quota_exhausted = True
-                                    logger.warning("每日订阅配额已用尽，追剧检查提前结束。")
+                                    logger.warning("  ➜ 每日订阅配额已用尽，追剧检查提前结束。")
                                     seasons_to_keep.append(season)
                                     break
 
@@ -231,7 +231,7 @@ def task_auto_subscribe(processor):
                                     current_quota = settings_db.get_subscription_quota()
                                     if current_quota <= 0:
                                         quota_exhausted = True
-                                        logger.warning("每日订阅配额已用尽，自定义合集检查提前结束。")
+                                        logger.warning("  ➜ 每日订阅配额已用尽，自定义合集检查提前结束。")
                                         media_to_keep.append(media_item)
                                         break
                                         
@@ -286,7 +286,7 @@ def task_auto_subscribe(processor):
                     current_quota = settings_db.get_subscription_quota()
                     if current_quota <= 0:
                         quota_exhausted = True
-                        logger.warning("每日订阅配额已用尽，演员订阅检查提前结束。")
+                        logger.warning("  ➜ 每日订阅配额已用尽，演员订阅检查提前结束。")
                         break
                     
                     success = False
@@ -312,10 +312,10 @@ def task_auto_subscribe(processor):
         if successfully_subscribed_items:
             summary = "  ✅ 任务完成！已自动订阅: " + ", ".join(successfully_subscribed_items)
         else:
-            summary = "任务完成：本次运行没有发现符合自动订阅条件的媒体。"
+            summary = "  ➜ 任务完成：本次运行没有发现符合自动订阅条件的媒体。"
         
         if quota_exhausted:
-            summary += " (注意：每日订阅配额已用尽，部分项目可能未处理)"
+            summary += "  ➜ 每日订阅配额已用尽，部分项目可能未处理"
 
         logger.info(summary)
         task_manager.update_status_from_thread(100, summary)
