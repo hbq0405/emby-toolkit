@@ -310,7 +310,7 @@ def task_auto_subscribe(processor):
 
         summary = ""
         if successfully_subscribed_items:
-            summary = "✅ 任务完成！已自动订阅: " + ", ".join(successfully_subscribed_items)
+            summary = "  ✅ 任务完成！已自动订阅: " + ", ".join(successfully_subscribed_items)
         else:
             summary = "任务完成：本次运行没有发现符合自动订阅条件的媒体。"
         
