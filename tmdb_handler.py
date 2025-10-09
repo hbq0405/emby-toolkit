@@ -93,33 +93,6 @@ def get_movie_details(movie_id: int, api_key: str, append_to_response: Optional[
         details["english_title"] = details.get("original_title")
 
     return details
-
-# --- 获取电影完整演员表 ---
-def get_full_movie_credits(movie_id: str, api_key: str) -> Optional[List[Dict[str, Any]]]:
-    """
-    通过专门的 credits 端点获取一部电影的完整演员列表。
-    """
-    if not all([movie_id, api_key]):
-        return None
-    
-    url = f"https://api.themoviedb.org/3/movie/{movie_id}/credits"
-    params = {
-        'api_key': api_key,
-        'language': 'zh-CN'  # 或者你需要的语言
-    }
-    
-    try:
-        response = requests.get(url, params=params)
-        response.raise_for_status()  # 如果请求失败则抛出异常
-        credits_data = response.json()
-        
-        # 直接返回 cast 列表
-        return credits_data.get("cast", [])
-        
-    except requests.exceptions.RequestException as e:
-        logger.error(f"从 TMDb 获取完整演员表失败 (Movie ID: {movie_id}): {e}")
-        return None
-
 # --- 获取电视剧的详细信息 ---
 def get_tv_details(tv_id: int, api_key: str, append_to_response: Optional[str] = "credits,videos,images,keywords,external_ids,translations,content_ratings") -> Optional[Dict[str, Any]]:
     """

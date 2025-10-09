@@ -895,23 +895,16 @@ class MediaProcessor:
             if force_fetch_from_tmdb and self.tmdb_api_key:
                 logger.info(f"  ➜ 正在从 TMDB 获取最新演员表...")
                 if item_type == "Movie":
-                    # 先获取电影详情，用于后续缓存（不含演员表）
-                    tmdb_details_for_extra = tmdb_handler.get_movie_details(tmdb_id, self.tmdb_api_key)
-                    
-                    # ★★★ 调用新函数，获取完整的 395 位演员 ★★★
-                    logger.info(f"  ➜ 正在从 TMDB 获取完整演员表...")
-                    full_cast_list = tmdb_handler.get_full_movie_credits(tmdb_id, self.tmdb_api_key)
-                    
-                    if full_cast_list is not None:
-                        authoritative_cast_source = full_cast_list
-                        logger.info(f"  ➜ 成功获取到 {len(authoritative_cast_source)} 位完整演员。")
-                    else:
-                        # 如果获取失败，可以做一个降级处理，使用详情里自带的少量演员
-                        logger.warning("  ➜ 获取完整演员表失败，将回退到使用概要演员表。")
-                        if tmdb_details_for_extra:
-                            authoritative_cast_source = (tmdb_details_for_extra.get("credits") or tmdb_details_for_extra.get("casts", {})).get("cast", [])
-                        else:
-                            authoritative_cast_source = []
+                    movie_details = tmdb_handler.get_movie_details(tmdb_id, self.tmdb_api_key)
+                    if movie_details:
+                        tmdb_details_for_extra = movie_details
+                        authoritative_cast_source = (movie_details.get("credits") or movie_details.get("casts", {})).get("cast", [])
+                elif item_type == "Series":
+                    aggregated_tmdb_data = tmdb_handler.aggregate_full_series_data_from_tmdb(int(tmdb_id), self.tmdb_api_key)
+                    if aggregated_tmdb_data:
+                        tmdb_details_for_extra = aggregated_tmdb_data.get("series_details")
+                        all_episodes = list(aggregated_tmdb_data.get("episodes_details", {}).values())
+                        authoritative_cast_source = _aggregate_series_cast_from_tmdb_data(aggregated_tmdb_data["series_details"], all_episodes)
             else:
                 # 在文件模式下，直接读取我们已经确认存在的文件
                 logger.info(f"  ➜ 正在从 cache 文件中预读演员表...")
@@ -959,10 +952,14 @@ class MediaProcessor:
                 logger.info(f"  ➜ 未命中缓存或强制重处理，开始处理演员表...")
                 
                 # 预读本地JSON文件以获取原始TMDb演员表
-                source_json_data = _read_local_json(source_json_path)
-                if source_json_data:
-                    tmdb_details_for_extra = source_json_data
-                    authoritative_cast_source = (source_json_data.get("casts", {}) or source_json_data.get("credits", {})).get("cast", [])
+                if not authoritative_cast_source:
+                    logger.debug("  ➜ [阶段2] 权威数据源为空，将从本地JSON文件加载。")
+                    source_json_data = _read_local_json(source_json_path)
+                    if source_json_data:
+                        tmdb_details_for_extra = source_json_data
+                        authoritative_cast_source = (source_json_data.get("casts", {}) or source_json_data.get("credits", {})).get("cast", [])
+                else:
+                    logger.debug("  ➜ [阶段2] 检测到权威数据源已被填充 (来自TMDb在线数据)，跳过本地文件读取。")
 
                 with get_central_db_connection() as conn:
                     cursor = conn.cursor()
@@ -1089,59 +1086,50 @@ class MediaProcessor:
         # ======================================================================
         # 步骤 1: ★★★ 数据适配 ★★★
         # ======================================================================
-        logger.debug("  ➜ 开始演员数据适配 (TMDB优先合并模式)...")
-
-        # 预先构建Emby演员的查找字典，提高效率
-        emby_actor_map_by_tmdb_id = {
-            str(p.get("ProviderIds", {}).get("Tmdb")): p
-            for p in emby_cast_people if p.get("ProviderIds", {}).get("Tmdb")
-        }
-        emby_actor_map_by_name = {
-            str(p.get("Name") or "").lower().strip(): p
-            for p in emby_cast_people
-        }
+        logger.debug("  ➜ 开始演员数据适配 (反查缓存模式)...")
+        
+        tmdb_actor_map_by_id = {str(actor.get("id")): actor for actor in tmdb_cast_people}
+        tmdb_actor_map_by_en_name = {str(actor.get("name") or "").lower().strip(): actor for actor in tmdb_cast_people}
 
         final_cast_list = []
-        
-        # ★★★ 核心修改：主循环遍历权威的TMDB演员列表 ★★★
-        for tmdb_actor in tmdb_cast_people:
-            tmdb_id_str = str(tmdb_actor.get("id"))
-            if not tmdb_id_str:
-                continue
+        used_tmdb_ids = set()
 
-            merged_actor = tmdb_actor.copy()
-            emby_person_id = None
-            emby_actor_match = None
+        for emby_actor in emby_cast_people:
+            emby_person_id = emby_actor.get("Id")
+            emby_tmdb_id = emby_actor.get("ProviderIds", {}).get("Tmdb")
+            emby_name_lower = str(emby_actor.get("Name") or "").lower().strip()
 
-            # 1. 优先通过数据库映射表查找 emby_person_id
-            map_entry_row = self._find_person_in_map_by_tmdb_id(tmdb_id_str, cursor)
-            if map_entry_row and map_entry_row.get("emby_person_id"):
-                emby_person_id = map_entry_row["emby_person_id"]
-            
-            # 2. 如果数据库没有，则在当前影片的Emby演员列表中查找
-            if not emby_person_id:
-                if tmdb_id_str in emby_actor_map_by_tmdb_id:
-                    emby_actor_match = emby_actor_map_by_tmdb_id[tmdb_id_str]
+            tmdb_match = None
+
+            if emby_tmdb_id and str(emby_tmdb_id) in tmdb_actor_map_by_id:
+                tmdb_match = tmdb_actor_map_by_id[str(emby_tmdb_id)]
+            else:
+                if emby_name_lower in tmdb_actor_map_by_en_name:
+                    tmdb_match = tmdb_actor_map_by_en_name[emby_name_lower]
                 else:
-                    tmdb_name_lower = str(tmdb_actor.get("name") or "").lower().strip()
-                    if tmdb_name_lower in emby_actor_map_by_name:
-                        emby_actor_match = emby_actor_map_by_name[tmdb_name_lower]
-                
-                if emby_actor_match:
-                    emby_person_id = emby_actor_match.get("Id")
+                    cache_entry = self.actor_db_manager.get_translation_from_db(cursor, emby_actor.get("Name"), by_translated_text=True)
+                    if cache_entry and cache_entry.get('original_text'):
+                        original_en_name = str(cache_entry['original_text']).lower().strip()
+                        if original_en_name in tmdb_actor_map_by_en_name:
+                            tmdb_match = tmdb_actor_map_by_en_name[original_en_name]
 
-            # 3. 合并信息
-            merged_actor["emby_person_id"] = emby_person_id
-            
-            # 如果找到了匹配的Emby演员，进行智能合并（比如保留已有的中文名和角色名）
-            if emby_actor_match:
-                # 如果Emby中的名字是中文，而TMDb是英文，则优先保留中文名
-                if utils.contains_chinese(emby_actor_match.get("Name")):
-                    merged_actor["name"] = emby_actor_match.get("Name")
-                # Emby的角色名通常更准确，优先使用
-                merged_actor["character"] = emby_actor_match.get("Role")
+            if tmdb_match:
+                tmdb_id_str = str(tmdb_match.get("id"))
+                merged_actor = tmdb_match.copy()
+                merged_actor["emby_person_id"] = emby_person_id
+                if utils.contains_chinese(emby_actor.get("Name")):
+                    merged_actor["name"] = emby_actor.get("Name")
+                else:
+                    merged_actor["name"] = tmdb_match.get("name")
+                merged_actor["character"] = emby_actor.get("Role")
+                final_cast_list.append(merged_actor)
+                used_tmdb_ids.add(tmdb_id_str)
 
-            final_cast_list.append(merged_actor)
+        for tmdb_id, tmdb_actor_data in tmdb_actor_map_by_id.items():
+            if tmdb_id not in used_tmdb_ids:
+                new_actor = tmdb_actor_data.copy()
+                new_actor["emby_person_id"] = None
+                final_cast_list.append(new_actor)
 
         logger.debug(f"  ➜ 数据适配完成，生成了 {len(final_cast_list)} 条基准演员数据。")
         
