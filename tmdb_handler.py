@@ -60,22 +60,29 @@ def _tmdb_request(endpoint: str, api_key: str, params: Optional[Dict[str, Any]] 
         logger.error(f"TMDb API JSON Decode Error: {e}. URL: {full_url}. Response: {response.text[:200] if response else 'N/A'}", exc_info=False)
         return None
 # --- 获取电影的详细信息 ---
-def get_movie_details(movie_id: int, api_key: str, append_to_response: Optional[str] = "credits,videos,images,keywords,external_ids,translations,release_dates") -> Optional[Dict[str, Any]]:
+def get_movie_details(movie_id: int, api_key: str) -> Optional[Dict[str, Any]]:
     """
-    【新增】获取电影的详细信息。
+    【V2 - 强制获取完整演职员版】获取电影的详细信息。
+    通过硬编码 append_to_response 来强制请求 credits，确保获取到完整数据。
     """
     endpoint = f"/movie/{movie_id}"
+    
+    # ★★★ 核心修改：移除函数签名中的 append_to_response 参数，并在此处硬编码。★★★
+    # 这可以防止其他地方的调用意外地覆盖此参数，从而导致 credits 丢失。
+    # 这是确保获取完整演员表的最稳健方法。
     params = {
         "language": DEFAULT_LANGUAGE,
-        "append_to_response": append_to_response or ""
+        "append_to_response": "credits,videos,images,keywords,external_ids,translations,release_dates"
     }
+    
     logger.trace(f"TMDb: 获取电影详情 (ID: {movie_id})")
     details = _tmdb_request(endpoint, api_key, params)
     
     # 同样为电影补充英文标题，保持逻辑一致性
     if details and details.get("original_language") != "en" and DEFAULT_LANGUAGE.startswith("zh"):
         # 优先从 translations 获取
-        if "translations" in (append_to_response or "") and details.get("translations", {}).get("translations"):
+        # 注意：因为我们硬编码了 append_to_response，所以可以安全地假设 translations 存在
+        if details.get("translations", {}).get("translations"):
             for trans in details["translations"]["translations"]:
                 if trans.get("iso_639_1") == "en" and trans.get("data", {}).get("title"):
                     details["english_title"] = trans["data"]["title"]
