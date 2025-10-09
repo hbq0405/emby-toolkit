@@ -100,6 +100,7 @@ DYNAMIC_CONFIG_DEF = {
     "delay_between_items_sec": ("General", 'float', 0.5),
     constants.CONFIG_OPTION_MIN_SCORE_FOR_REVIEW: ("General", 'float', constants.DEFAULT_MIN_SCORE_FOR_REVIEW),
     constants.CONFIG_OPTION_MAX_ACTORS_TO_PROCESS: ("General", 'int', constants.DEFAULT_MAX_ACTORS_TO_PROCESS),
+    constants.CONFIG_OPTION_REMOVE_ACTORS_WITHOUT_AVATARS: ("General", 'boolean', True),
 
     # [Network] 
     constants.CONFIG_OPTION_NETWORK_PROXY_ENABLED: (constants.CONFIG_SECTION_NETWORK, 'boolean', False),

@@ -1421,13 +1421,16 @@ class MediaProcessor:
         # ======================================================================
         # 步骤 6: ★★★ 从演员表移除无头像演员 ★★★
         # ======================================================================
-        actors_with_avatars = [actor for actor in current_cast_list if actor.get("profile_path")]
-        actors_without_avatars = [actor for actor in current_cast_list if not actor.get("profile_path")]
+        if self.config.get(constants.CONFIG_OPTION_REMOVE_ACTORS_WITHOUT_AVATARS, True):
+            actors_with_avatars = [actor for actor in current_cast_list if actor.get("profile_path")]
+            actors_without_avatars = [actor for actor in current_cast_list if not actor.get("profile_path")]
 
-        if actors_without_avatars:
-            removed_names = [a.get('name', f"TMDbID:{a.get('id')}") for a in actors_without_avatars]
-            logger.info(f"  ➜ 将移除 {len(actors_without_avatars)} 位无头像的演员: {removed_names}")
-            current_cast_list = actors_with_avatars
+            if actors_without_avatars:
+                removed_names = [a.get('name', f"TMDbID:{a.get('id')}") for a in actors_without_avatars]
+                logger.info(f"  ➜ 将移除 {len(actors_without_avatars)} 位无头像的演员: {removed_names}")
+                current_cast_list = actors_with_avatars
+        else:
+            logger.info("  ➜ 未启用移除无头像演员。")
 
         # ======================================================================
         # 步骤 7：智能截断逻辑 (Smart Truncation) ★★★

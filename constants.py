@@ -58,6 +58,7 @@ CONFIG_OPTION_MAX_ACTORS_TO_PROCESS = "max_actors_to_process"   # 每个媒体�
 DEFAULT_MAX_ACTORS_TO_PROCESS = 50                              # 默认的演员数量上限
 CONFIG_OPTION_MIN_SCORE_FOR_REVIEW = "min_score_for_review"     # 低于此评分的项目将进入手动处理列表
 DEFAULT_MIN_SCORE_FOR_REVIEW = 6.0                              # 默认的最低分
+CONFIG_OPTION_REMOVE_ACTORS_WITHOUT_AVATARS = "remove_actors_without_avatars" # 是否移除无头像的演员
 
 # ==============================================================================
 # ✨ 外部API与数据源配置 (External APIs & Data Sources)

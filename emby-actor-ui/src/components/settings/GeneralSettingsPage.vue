@@ -40,6 +40,14 @@
                       <n-switch v-model:value="configModel.actor_role_add_prefix" />
                       <template #feedback><n-text depth="3" style="font-size:0.8em;">开启后，角色名前会加上“饰 ”或“配 ”。关闭则直接显示角色名。</n-text></template>
                     </n-form-item-grid-item>
+                    <n-form-item-grid-item label="移除无头像的演员" path="remove_actors_without_avatars">
+                      <n-switch v-model:value="configModel.remove_actors_without_avatars" />
+                      <template #feedback>
+                        <n-text depth="3" style="font-size:0.8em;">
+                          开启后，在最终演员表移除那些找不到任何可用头像的演员。
+                        </n-text>
+                      </template>
+                    </n-form-item-grid-item>
                   </n-card>
                 </n-gi>
                 <!-- 右侧列 -->
