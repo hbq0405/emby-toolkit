@@ -896,9 +896,12 @@ class MediaProcessor:
                 logger.info(f"  ➜ 正在从 TMDB 获取最新演员表...")
                 if item_type == "Movie":
                     movie_details = tmdb_handler.get_movie_details(tmdb_id, self.tmdb_api_key)
-                    if movie_details:
+                    if movie_details and movie_details.get("credits", {}).get("cast"):
                         tmdb_details_for_extra = movie_details
-                        authoritative_cast_source = (movie_details.get("credits") or movie_details.get("casts", {})).get("cast", [])
+                        authoritative_cast_source = movie_details["credits"]["cast"]
+                        logger.info(f"  ➜ 成功从 TMDb 获取到 {len(authoritative_cast_source)} 位演员的最新数据。")
+                    else:
+                        logger.warning(f"  ➜ 从 TMDb 获取演员数据失败或返回为空，将回退到本地数据。")
                 elif item_type == "Series":
                     aggregated_tmdb_data = tmdb_handler.aggregate_full_series_data_from_tmdb(int(tmdb_id), self.tmdb_api_key)
                     if aggregated_tmdb_data:
