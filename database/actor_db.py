@@ -126,24 +126,26 @@ class ActorDBManager:
             name = "Unknown Actor"
 
         try:
-            # SQL 语句增加了 WHERE 子句，只有在数据不同时才执行 UPDATE
             sql = """
                 INSERT INTO person_identity_map 
                 (primary_name, emby_person_id, tmdb_person_id, imdb_id, douban_celebrity_id, last_updated_at)
                 VALUES (%s, %s, %s, %s, %s, NOW())
                 ON CONFLICT (tmdb_person_id) DO UPDATE SET
+                    -- 名字总是更新为最新的
                     primary_name = EXCLUDED.primary_name,
-                    emby_person_id = EXCLUDED.emby_person_id,
-                    imdb_id = COALESCE(person_identity_map.imdb_id, EXCLUDED.imdb_id),
-                    douban_celebrity_id = COALESCE(person_identity_map.douban_celebrity_id, EXCLUDED.douban_celebrity_id),
+                    
+                    -- ID字段：优先使用新传入的非空值，否则保留数据库中已有的值
+                    emby_person_id = COALESCE(EXCLUDED.emby_person_id, person_identity_map.emby_person_id),
+                    imdb_id = COALESCE(EXCLUDED.imdb_id, person_identity_map.imdb_id),
+                    douban_celebrity_id = COALESCE(EXCLUDED.douban_celebrity_id, person_identity_map.douban_celebrity_id),
+                    
                     last_updated_at = NOW()
                 WHERE
-                    -- 使用 IS DISTINCT FROM 来正确处理 NULL 值
+                    -- 使用 IS DISTINCT FROM 来正确处理 NULL 值，确保只有在数据实际变化时才更新
                     person_identity_map.primary_name IS DISTINCT FROM EXCLUDED.primary_name OR
-                    person_identity_map.emby_person_id IS DISTINCT FROM EXCLUDED.emby_person_id OR
-                    -- 仅当数据库中 ID 为空，且新 ID 不为空时，才认为需要更新
-                    (person_identity_map.imdb_id IS NULL AND EXCLUDED.imdb_id IS NOT NULL) OR
-                    (person_identity_map.douban_celebrity_id IS NULL AND EXCLUDED.douban_celebrity_id IS NOT NULL)
+                    person_identity_map.emby_person_id IS DISTINCT FROM COALESCE(EXCLUDED.emby_person_id, person_identity_map.emby_person_id) OR
+                    person_identity_map.imdb_id IS DISTINCT FROM COALESCE(EXCLUDED.imdb_id, person_identity_map.imdb_id) OR
+                    person_identity_map.douban_celebrity_id IS DISTINCT FROM COALESCE(EXCLUDED.douban_celebrity_id, person_identity_map.douban_celebrity_id)
                 RETURNING map_id, (CASE xmax WHEN 0 THEN 'INSERTED' ELSE 'UPDATED' END) as action;
             """
             
