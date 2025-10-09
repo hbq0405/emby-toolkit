@@ -379,8 +379,15 @@ class MediaProcessor:
                 person_ids = list(original_actor_map.keys())
                 
                 if person_ids:
-                    query = "SELECT * FROM person_identity_map WHERE emby_person_id = ANY(%s)"
-                    cursor.execute(query, (person_ids,))
+                    # ▼▼▼ 核心修正：将查询语法从 ANY(%s) 改回更健壮的 IN %s ▼▼▼
+                    # 1. 构建查询语句
+                    query = "SELECT * FROM person_identity_map WHERE emby_person_id IN %s"
+                    
+                    # 2. 将 person_ids 列表转换为元组(tuple)，这是 IN %s 语法所要求的格式
+                    params = (tuple(person_ids),)
+                    
+                    # 3. 执行查询
+                    cursor.execute(query, params)
                     db_results = cursor.fetchall()
 
             for row in db_results:
@@ -1082,51 +1089,41 @@ class MediaProcessor:
         # ======================================================================
         # 步骤 1: ★★★ 数据适配 ★★★
         # ======================================================================
-        logger.debug("  ➜ 开始演员数据适配 (反查缓存模式)...")
-        
-        tmdb_actor_map_by_id = {str(actor.get("id")): actor for actor in tmdb_cast_people}
-        tmdb_actor_map_by_en_name = {str(actor.get("name") or "").lower().strip(): actor for actor in tmdb_cast_people}
+        logger.debug("  ➜ 开始演员数据适配 (TMDb优先合并模式)...")
 
-        final_cast_list = []
-        used_tmdb_ids = set()
+        # 1. 以从 TMDb 获取的完整列表为权威数据源，构建一个以 TMDb ID 为键的字典。
+        #    这是我们操作的基础，确保了所有 TMDb 演员都在候选名单中。
+        final_cast_map = {str(actor.get("id")): actor.copy() for actor in tmdb_cast_people if actor.get("id")}
 
+        # 2. 为了高效查找，创建一个 Emby 演员的映射字典，键是 TMDb ID。
+        emby_actor_map_by_tmdb_id = {}
         for emby_actor in emby_cast_people:
-            emby_person_id = emby_actor.get("Id")
-            emby_tmdb_id = emby_actor.get("ProviderIds", {}).get("Tmdb")
-            emby_name_lower = str(emby_actor.get("Name") or "").lower().strip()
+            emby_tmdb_id = (emby_actor.get("ProviderIds") or {}).get("Tmdb")
+            if emby_tmdb_id:
+                emby_actor_map_by_tmdb_id[str(emby_tmdb_id)] = emby_actor
 
-            tmdb_match = None
-
-            if emby_tmdb_id and str(emby_tmdb_id) in tmdb_actor_map_by_id:
-                tmdb_match = tmdb_actor_map_by_id[str(emby_tmdb_id)]
-            else:
-                if emby_name_lower in tmdb_actor_map_by_en_name:
-                    tmdb_match = tmdb_actor_map_by_en_name[emby_name_lower]
-                else:
-                    cache_entry = self.actor_db_manager.get_translation_from_db(cursor, emby_actor.get("Name"), by_translated_text=True)
-                    if cache_entry and cache_entry.get('original_text'):
-                        original_en_name = str(cache_entry['original_text']).lower().strip()
-                        if original_en_name in tmdb_actor_map_by_en_name:
-                            tmdb_match = tmdb_actor_map_by_en_name[original_en_name]
-
-            if tmdb_match:
-                tmdb_id_str = str(tmdb_match.get("id"))
-                merged_actor = tmdb_match.copy()
-                merged_actor["emby_person_id"] = emby_person_id
+        # 3. 遍历权威的 final_cast_map，用 Emby 中的数据来“增强”它。
+        #    这样既保留了 TMDb 的全量演员，又补充了 Emby 的精确信息（如 Person ID 和可能更佳的角色名）。
+        for tmdb_id, actor_in_map in final_cast_map.items():
+            actor_in_map["emby_person_id"] = None  # 首先确保所有演员都有一个默认的 emby_person_id
+            
+            # 如果这个演员在 Emby 的列表中也存在
+            if tmdb_id in emby_actor_map_by_tmdb_id:
+                emby_actor = emby_actor_map_by_tmdb_id[tmdb_id]
+                
+                # 用 Emby 的 Person ID 丰富我们的数据
+                actor_in_map["emby_person_id"] = emby_actor.get("Id")
+                
+                # Emby 提供的角色名通常更准确（因为它来自媒体文件或用户编辑），所以优先使用它。
+                actor_in_map["character"] = emby_actor.get("Role")
+                
+                # 如果 Emby 的演员名包含中文，而 TMDb 的是英文，优先使用 Emby 的名字。
                 if utils.contains_chinese(emby_actor.get("Name")):
-                    merged_actor["name"] = emby_actor.get("Name")
-                else:
-                    merged_actor["name"] = tmdb_match.get("name")
-                merged_actor["character"] = emby_actor.get("Role")
-                final_cast_list.append(merged_actor)
-                used_tmdb_ids.add(tmdb_id_str)
+                    actor_in_map["name"] = emby_actor.get("Name")
 
-        for tmdb_id, tmdb_actor_data in tmdb_actor_map_by_id.items():
-            if tmdb_id not in used_tmdb_ids:
-                new_actor = tmdb_actor_data.copy()
-                new_actor["emby_person_id"] = None
-                final_cast_list.append(new_actor)
-
+        # 4. 将增强后的 map 转换回列表，这就是我们修正后的、完整的基准演员列表。
+        final_cast_list = list(final_cast_map.values())
+        
         logger.debug(f"  ➜ 数据适配完成，生成了 {len(final_cast_list)} 条基准演员数据。")
         
         # ======================================================================
