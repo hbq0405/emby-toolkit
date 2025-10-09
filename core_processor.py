@@ -924,8 +924,6 @@ class MediaProcessor:
             # ======================================================================
             final_processed_cast = None
             douban_rating = None
-            tmdb_details_for_extra = None
-            authoritative_cast_source = [] # 预定义
             cache_row = None # 用于后续判断是否走了快速模式
 
             # 1.尝试快速模式
