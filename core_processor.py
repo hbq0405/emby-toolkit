@@ -895,16 +895,23 @@ class MediaProcessor:
             if force_fetch_from_tmdb and self.tmdb_api_key:
                 logger.info(f"  ➜ 正在从 TMDB 获取最新演员表...")
                 if item_type == "Movie":
-                    movie_details = tmdb_handler.get_movie_details(tmdb_id, self.tmdb_api_key)
-                    if movie_details:
-                        tmdb_details_for_extra = movie_details
-                        authoritative_cast_source = (movie_details.get("credits") or movie_details.get("casts", {})).get("cast", [])
-                elif item_type == "Series":
-                    aggregated_tmdb_data = tmdb_handler.aggregate_full_series_data_from_tmdb(int(tmdb_id), self.tmdb_api_key)
-                    if aggregated_tmdb_data:
-                        tmdb_details_for_extra = aggregated_tmdb_data.get("series_details")
-                        all_episodes = list(aggregated_tmdb_data.get("episodes_details", {}).values())
-                        authoritative_cast_source = _aggregate_series_cast_from_tmdb_data(aggregated_tmdb_data["series_details"], all_episodes)
+                    # 先获取电影详情，用于后续缓存（不含演员表）
+                    tmdb_details_for_extra = tmdb_handler.get_movie_details(tmdb_id, self.tmdb_api_key)
+                    
+                    # ★★★ 调用新函数，获取完整的 395 位演员 ★★★
+                    logger.info(f"  ➜ 正在从 TMDB 获取完整演员表...")
+                    full_cast_list = tmdb_handler.get_full_movie_credits(tmdb_id, self.tmdb_api_key)
+                    
+                    if full_cast_list is not None:
+                        authoritative_cast_source = full_cast_list
+                        logger.info(f"  ➜ 成功获取到 {len(authoritative_cast_source)} 位完整演员。")
+                    else:
+                        # 如果获取失败，可以做一个降级处理，使用详情里自带的少量演员
+                        logger.warning("  ➜ 获取完整演员表失败，将回退到使用概要演员表。")
+                        if tmdb_details_for_extra:
+                            authoritative_cast_source = (tmdb_details_for_extra.get("credits") or tmdb_details_for_extra.get("casts", {})).get("cast", [])
+                        else:
+                            authoritative_cast_source = []
             else:
                 # 在文件模式下，直接读取我们已经确认存在的文件
                 logger.info(f"  ➜ 正在从 cache 文件中预读演员表...")
