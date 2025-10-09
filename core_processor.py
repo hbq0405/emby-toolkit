@@ -953,13 +953,13 @@ class MediaProcessor:
                 
                 # 预读本地JSON文件以获取原始TMDb演员表
                 if not authoritative_cast_source:
-                    logger.debug("  ➜ [阶段2] 权威数据源为空，将从本地JSON文件加载。")
+                    logger.debug("  ➜ 权威数据源为空，将从本地JSON文件加载。")
                     source_json_data = _read_local_json(source_json_path)
                     if source_json_data:
                         tmdb_details_for_extra = source_json_data
                         authoritative_cast_source = (source_json_data.get("casts", {}) or source_json_data.get("credits", {})).get("cast", [])
                 else:
-                    logger.debug("  ➜ [阶段2] 检测到权威数据源已被填充 (来自TMDb在线数据)，跳过本地文件读取。")
+                    logger.debug("  ➜ 检测到权威数据源已被填充 (来自TMDb在线数据)，跳过本地文件读取。")
 
                 with get_central_db_connection() as conn:
                     cursor = conn.cursor()
