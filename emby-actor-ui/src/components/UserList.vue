@@ -199,15 +199,35 @@ const filteredAndSortedUsers = computed(() => {
 
   // 2. 排序
   if (sorter.value && sorter.value.order) {
-    const { key, order } = sorter.value;
+    // ★★★ 核心修正：使用 columnKey 并重命名为 key ★★★
+    const { columnKey: key, order } = sorter.value;
     const multiplier = order === 'ascend' ? 1 : -1;
+
     data.sort((a, b) => {
       const valA = a[key];
       const valB = b[key];
-      if (valA === valB) return 0;
-      if (valA === null || valA === undefined) return 1 * multiplier;
-      if (valB === null || valB === undefined) return -1 * multiplier;
-      return valA > valB ? 1 * multiplier : -1 * multiplier;
+
+      // --- 开始使用健壮的排序逻辑 ---
+
+      // 规则1: null 或 undefined 的值总是排在最后面
+      if (valA === null || typeof valA === 'undefined') return 1;
+      if (valB === null || typeof valB === 'undefined') return -1;
+
+      // 规则2: 如果是日期字段，按时间戳比较
+      if (key === 'expiration_date' || key === 'LastActivityDate') {
+        // 确保即使值不是有效日期也不会导致程序崩溃
+        const dateA = new Date(valA).getTime() || 0;
+        const dateB = new Date(valB).getTime() || 0;
+        return (dateA - dateB) * multiplier;
+      }
+
+      // 规则3: 如果是字符串，使用 localeCompare 进行准确比较
+      if (typeof valA === 'string') {
+        return valA.localeCompare(valB) * multiplier;
+      }
+
+      // 规则4: 默认按数字进行比较
+      return (valA - valB) * multiplier;
     });
   }
   return data;
