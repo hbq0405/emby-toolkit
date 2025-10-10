@@ -5,7 +5,7 @@ from database.connection import get_db_connection
 
 logger = logging.getLogger(__name__)
 
-def task_cleanup_stale_sessions():
+def task_cleanup_stale_sessions(processor):
     """
     【后台任务】定期清理陈旧的、卡住的播放会话。
     这是一个保证并发控制系统健壮性的保险丝。
