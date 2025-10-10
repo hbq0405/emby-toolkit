@@ -367,7 +367,7 @@ def emby_webhook():
                 session_db.start_session(session_data_cleaned)
 
                 # 2. 立即执行检查与追惩
-                limit = user_db.get_user_stream_limit(user_id)
+                limit = session_db.get_user_stream_limit(user_id)
                 if limit is not None and limit > 0:
                     active_sessions = session_db.get_active_sessions(user_id)
                     
