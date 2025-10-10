@@ -437,233 +437,74 @@ proxy_app = Flask(__name__)
 @proxy_app.route('/', defaults={'path': ''})
 @proxy_app.route('/<path:path>', methods=['GET', 'POST', 'PUT', 'DELETE', 'HEAD', 'OPTIONS'])
 def proxy_all(path):
-    # ★★★ 并发控制逻辑 ★★★
+    def proxy_all(path):
+    # ★★★ 规则 A：并发检查 (现在它终于有机会执行了) ★★★
     if 'PlaybackInfo' in path and '/Items/' in path:
         try:
-            # --- 步骤一：执行并发控制检查 (作为前置守卫) ---
-            
-            # ★★★ 核心修正：从路径和参数中双重查找 UserId，确保万无一失 ★★★
             user_id = None
             user_id_match = re.search(r'/Users/([^/]+)/', path)
             if user_id_match:
                 user_id = user_id_match.group(1)
             else:
-                # 如果路径中没有，就尝试从 URL 的查询参数中获取
                 user_id = request.args.get('UserId')
 
             if user_id:
                 limit = session_db.get_user_stream_limit(user_id)
+                if limit is None:
+                    logger.warning(f"  ➜ [门禁] 用户 {user_id} 未关联模板，应用默认并发限制 [1]。")
+                    limit = 1
                 
-                if limit is not None and limit > 0:
+                if limit > 0: # 只有当限制大于0时才检查
                     current_streams = session_db.get_active_session_count(user_id)
                     if current_streams >= limit:
-                        logger.warning(f"  ➜ 并发超限！用户 {user_id} (限制: {limit}, 当前: {current_streams}) 的播放请求被拒绝。")
-                        error_response = {
-                            "MediaSources": [],
-                            "PlaySessionId": None,
-                            "ErrorCode": "PlaybackLimitReached",
-                            "Response": "Error",
-                            "Message": f"同时观看的设备数量已达到上限 ({limit}个)！"
-                        }
+                        logger.warning(f"  ➜ [门禁] 并发超限！用户 {user_id} (限制: {limit}, 当前: {current_streams}) 的播放请求被拒绝。")
+                        error_response = {"MediaSources": [], "PlaySessionId": None, "ErrorCode": "PlaybackLimitReached"}
                         return Response(json.dumps(error_response), status=200, mimetype='application/json')
                     else:
-                        logger.info(f"  ➜ 并发检查通过。用户 {user_id} (限制: {limit}, 当前: {current_streams})，请求放行。")
+                        logger.info(f"  ➜ [门禁] 并发检查通过。用户 {user_id} (限制: {limit}, 当前: {current_streams})，请求放行。")
                 else:
-                    logger.info(f"  ➜ 用户 {user_id} 无并发限制，请求放行。")
+                    logger.info(f"  ➜ [门禁] 用户 {user_id} 并发限制为 0 (无限制)，请求放行。")
             else:
-                # 这是一个异常情况，记录下来以备排查
-                logger.warning(f"  ➜ 警告：在 PlaybackInfo 请求中未能找到用户ID，无法执行并发检查。路径: {path}, 参数: {request.args}")
-
-            # --- 步骤二：如果并发检查通过，则继续执行智能劫持逻辑 ---
-            item_id_match = re.search(r'/Items/(\d+)/PlaybackInfo', path)
-            if item_id_match:
-                real_emby_id = item_id_match.group(1)
-                logger.info(f"截获到针对真实项目 '{real_emby_id}' 的 PlaybackInfo 请求（可能来自虚拟库上下文）。")
-                
-                # ... (后续的智能劫持逻辑保持不变) ...
-                base_url, api_key = _get_real_emby_url_and_key()
-                
-                # 确保 user_id 存在，以便转发请求
-                if not user_id:
-                    user_id = request.args.get('UserId', '') # 再次获取以防万一
-
-                real_playback_info_url = f"{base_url}/Items/{real_emby_id}/PlaybackInfo"
-                
-                forward_params = request.args.copy()
-                forward_params['api_key'] = api_key
-                forward_params['UserId'] = user_id
-
-                headers = {'Accept': 'application/json'}
-                
-                logger.debug(f"正在向真实Emby请求PlaybackInfo: {real_playback_info_url} with params {forward_params}")
-                resp = requests.get(real_playback_info_url, params=forward_params, headers=headers)
-                resp.raise_for_status()
-                
-                playback_info_data = resp.json()
-                
-                if 'MediaSources' in playback_info_data and len(playback_info_data['MediaSources']) > 0:
-                    logger.info("成功获取真实PlaybackInfo，正在修改播放路径...")
-                    
-                    original_path = playback_info_data['MediaSources'][0].get('Path')
-                    file_name = original_path.split('/')[-1] if original_path else f"stream.mkv"
-                    
-                    playback_info_data['MediaSources'][0]['Path'] = f"/emby/videos/{real_emby_id}/{file_name}"
-                    playback_info_data['MediaSources'][0]['Protocol'] = 'Http' 
-                    
-                    playback_info_data['MediaSources'][0].pop('PathType', None)
-                    playback_info_data['MediaSources'][0].pop('SupportsDirectStream', None)
-                    playback_info_data['MediaSources'][0].pop('SupportsTranscoding', None)
-
-                    logger.debug(f"修改后的PlaybackInfo: {json.dumps(playback_info_data, indent=2)}")
-                    
-                    return Response(json.dumps(playback_info_data), mimetype='application/json')
-                else:
-                    logger.warning(f"获取到的PlaybackInfo中不包含MediaSources，无法修改路径。")
-                    return Response(json.dumps(playback_info_data), mimetype='application/json')
+                logger.warning(f"  ➜ 警告：在 PlaybackInfo 请求中未能找到用户ID，无法执行并发检查。路径: {path}")
 
         except Exception as e:
-            logger.error(f"处理PlaybackInfo劫持或并发控制时出错: {e}", exc_info=True)
-            return Response("Proxy error during PlaybackInfo handling.", status=500, mimetype='text/plain')
-    # --- 1. WebSocket 代理逻辑 (已添加超详细日志) ---
-    if 'Upgrade' in request.headers and request.headers.get('Upgrade', '').lower() == 'websocket':
-        logger.info("--- 收到一个新的 WebSocket 连接请求 ---")
-        ws_client = request.environ.get('wsgi.websocket')
-        if not ws_client:
-            logger.error("!!! WebSocket请求，但未找到 wsgi.websocket 对象。请确保以正确的 handler_class 运行。")
-            return "WebSocket upgrade failed", 400
+            logger.error(f"执行并发控制检查时发生严重错误: {e}", exc_info=True)
+            return Response("Error during concurrency check.", status=500)
+    
+    # ★★★ 规则 B：虚拟库主页 ★★★
+    if path.endswith('/Views') and path.startswith('emby/Users/'):
+        return handle_get_views()
 
-        try:
-            # 1. 记录客户端信息
-            logger.debug(f"  [C->P] 客户端路径: /{path}")
-            logger.debug(f"  [C->P] 客户端查询参数: {request.query_string.decode()}")
-            logger.debug(f"  [C->P] 客户端 Headers: {dict(request.headers)}")
+    # ★★★ 规则 C：虚拟库内容 ★★★
+    if 'Items' in path and request.args.get("ParentId") and is_mimicked_id(request.args.get("ParentId")):
+         user_id_match = re.search(r'/emby/Users/([^/]+)/Items', request.path)
+         if user_id_match:
+             user_id = user_id_match.group(1)
+             return handle_get_mimicked_library_items(user_id, request.args.get("ParentId"), request.args)
 
-            # 2. 构造目标 URL
-            base_url, _ = _get_real_emby_url_and_key()
-            parsed_url = urlparse(base_url)
-            ws_scheme = 'wss' if parsed_url.scheme == 'https' else 'ws'
-            target_ws_url = urlunparse((ws_scheme, parsed_url.netloc, f'/{path}', '', request.query_string.decode(), ''))
-            logger.info(f"  [P->S] 准备连接到目标 Emby WebSocket: {target_ws_url}")
-
-            # 3. 提取 Headers 并尝试连接
-            headers_to_server = {k: v for k, v in request.headers.items() if k.lower() not in ['host', 'upgrade', 'connection', 'sec-websocket-key', 'sec-websocket-version']}
-            logger.debug(f"  [P->S] 转发给服务器的 Headers: {headers_to_server}")
-            
-            ws_server = None
-            try:
-                ws_server = create_connection(target_ws_url, header=headers_to_server, timeout=10)
-                logger.info("  [P<->S] ✅ 成功连接到远程 Emby WebSocket 服务器。")
-            except Exception as e_connect:
-                logger.error(f"  [P<->S] ❌ 连接到远程 Emby WebSocket 失败! 错误: {e_connect}", exc_info=True)
-                ws_client.close()
-                return Response()
-
-            # 4. 创建双向转发协程
-            def forward_to_server():
-                try:
-                    while not ws_client.closed and ws_server.connected:
-                        message = ws_client.receive()
-                        if message is not None:
-                            logger.trace(f"  [C->S] 转发消息: {message[:200] if message else 'None'}") # 只记录前200字符
-                            ws_server.send(message)
-                        else:
-                            logger.info("  [C->P] 客户端连接已关闭 (receive返回None)。")
-                            break
-                except Exception as e_fwd_s:
-                    logger.warning(f"  [C->S] 转发到服务器时出错: {e_fwd_s}")
-                finally:
-                    if ws_server.connected:
-                        ws_server.close()
-                        logger.info("  [P->S] 已关闭到服务器的连接。")
-
-            def forward_to_client():
-                try:
-                    while ws_server.connected and not ws_client.closed:
-                        message = ws_server.recv()
-                        if message is not None:
-                            logger.trace(f"  [S->C] 转发消息: {message[:200] if message else 'None'}") # 只记录前200字符
-                            ws_client.send(message)
-                        else:
-                            logger.info("  [P<-S] 服务器连接已关闭 (recv返回None)。")
-                            break
-                except Exception as e_fwd_c:
-                    logger.warning(f"  [S->C] 转发到客户端时出错: {e_fwd_c}")
-                finally:
-                    if not ws_client.closed:
-                        ws_client.close()
-                        logger.info("  [P->C] 已关闭到客户端的连接。")
-            
-            greenlets = [spawn(forward_to_server), spawn(forward_to_client)]
-            from gevent.event import Event
-            exit_event = Event()
-            def on_exit(g): exit_event.set()
-            for g in greenlets: g.link(on_exit)
-            
-            logger.info("  [P<->S] WebSocket 双向转发已启动。等待连接关闭...")
-            exit_event.wait()
-            logger.info("--- WebSocket 会话结束 ---")
-
-        except Exception as e:
-            logger.error(f"WebSocket 代理主逻辑发生严重错误: {e}", exc_info=True)
-        
-        return Response()
-
-    # --- 2. HTTP 代理逻辑 (保持不变) ---
+    # ★★★ 终极规则 D：通用转发 (所有未被上面捕获的请求) ★★★
+    base_url, api_key = _get_real_emby_url_and_key()
+    target_url = f"{base_url}/{path}"
+    headers = {k: v for k, v in request.headers if k.lower() != 'host'}
+    headers['Host'] = urlparse(base_url).netloc
+    params = request.args.copy()
+    params['api_key'] = api_key
+    
+    logger.trace(f"  ➜ [通用转发] 正在将请求 {path} 转发到 {target_url}")
+    
     try:
-        # 1. 定义所有需要“翻译”ParentId的元数据端点
-        METADATA_ENDPOINTS = [
-            '/Items/Prefixes', '/Genres', '/Studios', 
-            '/Tags', '/OfficialRatings', '/Years'
-        ]
-
-        # 2. 优先处理所有元数据请求
-        if any(path.endswith(endpoint) for endpoint in METADATA_ENDPOINTS):
-            parent_id = request.args.get("ParentId")
-            if parent_id and is_mimicked_id(parent_id):
-                # 所有这类请求，都交给我们的“万能翻译”函数处理
-                return handle_mimicked_library_metadata_endpoint(path, parent_id, request.args)
-
-        # 3. 其次，处理获取库“内容”的请求 (这个逻辑我们之前已经修复好了)
-        parent_id = request.args.get("ParentId")
-        if parent_id and is_mimicked_id(parent_id):
-            user_id_match = re.search(r'/emby/Users/([^/]+)/Items', request.path)
-            if user_id_match:
-                user_id = user_id_match.group(1)
-                return handle_get_mimicked_library_items(user_id, parent_id, request.args)
-            else:
-                # 这条日志现在只会在极少数未知情况下出现，是我们的最后防线
-                logger.warning(f"无法从路径 '{request.path}' 中为虚拟库请求提取user_id。")
-
-        if path.startswith('emby/Items/') and '/Images/' in path and is_mimicked_id(path.split('/')[2]):
-             return handle_get_mimicked_library_image(path)
-        
-        # 检查是否是请求主页媒体库列表
-        if path.endswith('/Views') and path.startswith('emby/Users/'):
-            return handle_get_views()
-
-        # 检查是否是请求虚拟库的详情
-        details_match = MIMICKED_ITEM_DETAILS_RE.search(f'/{path}')
-        if details_match:
-            user_id = details_match.group(1)
-            mimicked_id = details_match.group(2) # 注意，这里是 group(2)
-            return handle_get_mimicked_library_details(user_id, mimicked_id)
-
-        # 检查是否是请求最新项目
-        if path.endswith('/Items/Latest'):
-            user_id_match = re.search(r'/emby/Users/([^/]+)/', f'/{path}')
-            if user_id_match:
-                return handle_get_latest_items(user_id_match.group(1), request.args)
-
-        # 捕获所有对虚拟库内容的请求
-        items_match = MIMICKED_ITEMS_RE.match(f'/{path}')
-        if items_match:
-            user_id = items_match.group(1)
-            mimicked_id = items_match.group(2) # 注意，这里是 group(2)
-            return handle_get_mimicked_library_items(user_id, mimicked_id, request.args)
-
-        # --- 默认转发逻辑 (保持不变) ---
-        logger.warning(f"反代服务收到了一个未处理的请求: '{path}'。这通常意味着Nginx配置有误，请检查路由规则。")
-        return Response("Path not handled by virtual library proxy.", status=404, mimetype='text/plain')
+        resp = requests.request(
+            method=request.method,
+            url=target_url,
+            headers=headers,
+            params=params,
+            data=request.get_data(),
+            stream=True,
+            timeout=30.0
+        )
+        excluded_headers = ['content-encoding', 'content-length', 'transfer-encoding', 'connection']
+        response_headers = [(name, value) for name, value in resp.raw.headers.items() if name.lower() not in excluded_headers]
+        return Response(resp.iter_content(chunk_size=8192), resp.status_code, response_headers)
     except Exception as e:
         logger.error(f"[PROXY] HTTP 代理时发生未知错误: {e}", exc_info=True)
         return "Internal Server Error", 500
