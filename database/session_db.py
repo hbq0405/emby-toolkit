@@ -83,6 +83,26 @@ def get_active_session_count(user_id: str) -> int:
         logger.error(f"DB: 查询用户 {user_id} 的活跃会话数时失败: {e}", exc_info=True)
         # 在出错的情况下，返回一个很大的数，倾向于阻止播放，更安全
         return 999
+    
+def get_active_sessions(user_id: str) -> list:
+    """
+    获取指定用户的所有活动会话的详细列表。
+    返回一个字典列表，每个字典包含会话信息，主要用于检查 device_id。
+    """
+    # 我们只需要 device_id 字段来进行判断
+    sql = "SELECT device_id FROM active_sessions WHERE emby_user_id = %s"
+    try:
+        with get_db_connection() as conn:
+            # 假设 get_db_connection 返回的连接使用了 DictCursor，这样 fetchall() 就会返回字典列表
+            cursor = conn.cursor()
+            cursor.execute(sql, (user_id,))
+            results = cursor.fetchall()
+            # cursor.fetchall() 在 psycopg2 的 DictCursor 模式下会返回一个字典列表
+            return results if results else []
+    except Exception as e:
+        logger.error(f"DB: 查询用户 {user_id} 的活跃会话列表时失败: {e}", exc_info=True)
+        # 在出错的情况下，返回一个空列表。这会倾向于放行播放，避免因数据库问题导致所有用户无法播放。
+        return []
 
 def get_user_stream_limit(user_id: str) -> Optional[int]:
     """

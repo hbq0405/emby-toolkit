@@ -448,28 +448,42 @@ def proxy_all(path):
             if user_id_match:
                 user_id = user_id_match.group(1)
             else:
-                # 如果路径中没有，就尝试从 URL 的查询参数中获取
                 user_id = request.args.get('UserId')
+
+            # ★★★ 新增：获取设备ID，这是智能判断的关键 ★★★
+            device_id = request.args.get('DeviceId')
 
             if user_id:
                 limit = session_db.get_user_stream_limit(user_id)
                 
+                # limit > 0 表示有限制, limit == 0 表示无限制
                 if limit is not None and limit > 0:
-                    current_streams = session_db.get_active_session_count(user_id)
+                    # ★★★ 核心逻辑修改：获取完整的会话列表，而不仅仅是数量 ★★★
+                    active_sessions = session_db.get_active_sessions(user_id)
+                    current_streams = len(active_sessions)
+
                     if current_streams >= limit:
-                        logger.warning(f"  ➜ 并发超限！用户 {user_id} (限制: {limit}, 当前: {current_streams}) 的播放请求被拒绝。")
-                        error_response = {
-                            "MediaSources": [],
-                            "PlaySessionId": None,
-                            "ErrorCode": "PlaybackLimitReached",
-                            "Response": "Error",
-                            "Message": f"同时观看的设备数量已达到上限 ({limit}个)！"
-                        }
-                        return Response(json.dumps(error_response), status=200, mimetype='application/json')
+                        # 检查当前请求的设备是否已经在活动会话中
+                        is_same_device = any(s.get('device_id') == device_id for s in active_sessions) if device_id else False
+                        
+                        if is_same_device:
+                            # 如果是同一个设备，说明是切换剧集或重试，应该放行
+                            logger.info(f"  ➜ 并发检查：同设备切换播放，请求放行。用户 {user_id} (设备: {device_id})")
+                        else:
+                            # 如果是新设备，并且已达上限，则拒绝
+                            logger.warning(f"  ➜ 并发超限！用户 {user_id} (限制: {limit}, 当前: {current_streams}) 的播放请求被拒绝 (新设备: {device_id})。")
+                            error_response = {
+                                "MediaSources": [],
+                                "PlaySessionId": None,
+                                "ErrorCode": "PlaybackLimitReached",
+                                "Response": "Error",
+                                "Message": f"同时观看的设备数量已达到上限 ({limit}个)！"
+                            }
+                            return Response(json.dumps(error_response), status=200, mimetype='application/json')
                     else:
                         logger.info(f"  ➜ 并发检查通过。用户 {user_id} (限制: {limit}, 当前: {current_streams})，请求放行。")
                 else:
-                    logger.info(f"  ➜ 用户 {user_id} 无并发限制，请求放行。")
+                    logger.info(f"  ➜ 用户 {user_id} 无并发限制或为管理员，请求放行。")
             else:
                 # 这是一个异常情况，记录下来以备排查
                 logger.warning(f"  ➜ 警告：在 PlaybackInfo 请求中未能找到用户ID，无法执行并发检查。路径: {path}, 参数: {request.args}")
