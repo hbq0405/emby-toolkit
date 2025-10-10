@@ -362,8 +362,17 @@ def register_with_invite():
             # 格式化日期为 YYYY-MM-DD
             expiration_info = f"至 {expiration_date.strftime('%Y-%m-%d')}"
 
-        # ★★★ 新增逻辑：获取模板描述 ★★★
+        # ★★★ 获取模板描述 ★★★
         template_description = template.get('description') or template.get('name') # 如果描述为空，用模板名作为备用
+
+        # ★★★ 准备并发数显示信息 ★★★
+        stream_limit = template.get('max_concurrent_streams')
+        concurrent_streams_info = "未设置" # 默认值
+        if stream_limit is not None: # 健壮性检查
+            if stream_limit == 0:
+                concurrent_streams_info = "无限制"
+            else:
+                concurrent_streams_info = f"{stream_limit} 个设备"
 
         # 3. 将所有信息打包返回
         return jsonify({
@@ -373,7 +382,8 @@ def register_with_invite():
                 "username": username,
                 "expiration_info": expiration_info,
                 "redirect_url": final_redirect_url,
-                "template_description": template_description # <-- 新增返回字段
+                "template_description": template_description,
+                "concurrent_streams_info": concurrent_streams_info
             }
         }), 201
     except Exception as e:
