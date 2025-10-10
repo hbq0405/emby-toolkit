@@ -343,10 +343,9 @@ def init_db():
                         id SERIAL PRIMARY KEY,
                         name TEXT NOT NULL UNIQUE,
                         description TEXT,
-                        -- 核心字段：存储一个完整的 Emby 用户策略 JSON 对象
                         emby_policy_json JSONB NOT NULL,
-                        -- 模板默认的有效期（天数），0 表示永久
                         default_expiration_days INTEGER DEFAULT 30,
+                        max_concurrent_streams INTEGER DEFAULT 1,
                         created_at TIMESTAMP WITH TIME ZONE DEFAULT NOW()
                     )
                 """)
@@ -388,6 +387,24 @@ def init_db():
                 """)
                 cursor.execute("CREATE INDEX IF NOT EXISTS idx_eue_status ON emby_users_extended (status);")
                 cursor.execute("CREATE INDEX IF NOT EXISTS idx_eue_expiration_date ON emby_users_extended (expiration_date);")
+
+                logger.trace("  ➜ 正在创建 'active_sessions' 表 (并发流控)...")
+                cursor.execute("""
+                    CREATE TABLE IF NOT EXISTS active_sessions (
+                        session_id TEXT PRIMARY KEY,
+                        emby_user_id TEXT NOT NULL,
+                        device_name TEXT,
+                        client_name TEXT,
+                        item_id TEXT,
+                        item_name TEXT,
+                        status TEXT DEFAULT 'playing', -- 'playing', 'paused'
+                        started_at TIMESTAMP WITH TIME ZONE DEFAULT NOW(),
+                        last_updated_at TIMESTAMP WITH TIME ZONE DEFAULT NOW()
+                    );
+                """)
+                # 为常用查询创建索引
+                cursor.execute("CREATE INDEX IF NOT EXISTS idx_as_user_id ON active_sessions (emby_user_id);")
+                cursor.execute("CREATE INDEX IF NOT EXISTS idx_as_last_updated ON active_sessions (last_updated_at);")
 
                 # --- 2. 执行平滑升级检查 ---
                 logger.trace("  ➜ 开始执行数据库表结构升级检查...")
@@ -469,6 +486,7 @@ def init_db():
                             "allowed_user_ids": "JSONB" 
                         },
                         'user_templates': {
+                            "max_concurrent_streams": "INTEGER DEFAULT 1",
                             "source_emby_user_id": "TEXT",
                             "emby_configuration_json": "JSONB"
                         },

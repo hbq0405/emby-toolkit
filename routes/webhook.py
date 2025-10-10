@@ -25,7 +25,7 @@ from tasks import (
 )
 from custom_collection_handler import FilterEngine
 from services.cover_generator import CoverGeneratorService
-from database import collection_db, connection, settings_db, user_db
+from database import collection_db, connection, settings_db, user_db, session_db
 from database.log_db import LogDBManager
 import logging
 logger = logging.getLogger(__name__)
@@ -338,6 +338,35 @@ def emby_webhook():
     # ★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★
     event_type = data.get("Event") if data else "未知事件"
     logger.info(f"  ➜ 收到Emby Webhook: {event_type}")
+
+    # ★★★ 并发控制事件处理逻辑 ★★★
+    if event_type in ["playback.start", "playback.stop"]:
+        session_info = data.get("Session")
+        if not session_info or not session_info.get("Id"):
+            logger.warning(f"  ➜ Webhook '{event_type}' 缺少有效的 Session 信息，已忽略。")
+            # 即使缺少会话信息，我们仍然让它向下传递给用户数据更新逻辑
+        else:
+            session_id = session_info.get("Id")
+            
+            if event_type == "playback.start":
+                user_info = data.get("User", {})
+                item_info = data.get("Item", {})
+                
+                session_data = {
+                    "session_id": session_id,
+                    "emby_user_id": user_info.get("Id"),
+                    "device_name": session_info.get("DeviceName"),
+                    "client_name": session_info.get("Client"),
+                    "item_id": item_info.get("Id"),
+                    "item_name": item_info.get("Name")
+                }
+                # 过滤掉 None 值的字段
+                session_data_cleaned = {k: v for k, v in session_data.items() if v is not None}
+                
+                session_db.start_session(session_data_cleaned)
+
+            elif event_type == "playback.stop":
+                session_db.stop_session(session_id)
 
     USER_DATA_EVENTS = [
         "item.markfavorite", "item.unmarkfavorite",

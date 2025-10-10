@@ -12,8 +12,7 @@ from datetime import datetime, timezone
 from gevent import spawn
 from geventwebsocket.websocket import WebSocket
 from websocket import create_connection
-from database import collection_db
-from database import user_db
+from database import collection_db, user_db, session_db
 from custom_collection_handler import FilterEngine
 import config_manager
 
@@ -438,6 +437,48 @@ proxy_app = Flask(__name__)
 @proxy_app.route('/', defaults={'path': ''})
 @proxy_app.route('/<path:path>', methods=['GET', 'POST', 'PUT', 'DELETE', 'HEAD', 'OPTIONS'])
 def proxy_all(path):
+    # ★★★ 并发控制逻辑 ★★★
+    if 'PlaybackInfo' in path and '/Items/' in path:
+        try:
+            # 从路径中提取 UserId
+            user_id_match = re.search(r'/Users/([^/]+)/', path)
+            if user_id_match:
+                user_id = user_id_match.group(1)
+                
+                # a. 查询用户的并发上限
+                limit = session_db.get_user_stream_limit(user_id)
+                
+                # b. 如果 limit 是 None (未设置模板) 或 0 (管理员设为无限)，则直接放行
+                if limit is None or limit == 0:
+                    logger.info(f"  ➜ 用户 {user_id} 无并发限制，请求放行。")
+                    # 注意：这里不能直接 return，要让请求继续往下走，进入后续的代理逻辑
+                else:
+                    # c. 查询当前活跃的会话数
+                    current_streams = session_db.get_active_session_count(user_id)
+                    
+                    # d. 核心判断：当前会话数是否已达到或超过上限
+                    if current_streams >= limit:
+                        logger.warning(f"  ➜ 并发超限！用户 {user_id} (限制: {limit}, 当前: {current_streams}) 的播放请求被拒绝。")
+                        
+                        # e. ★★★ 构造一个“欺骗”客户端的响应 ★★★
+                        # 我们不能返回 403 Forbidden，那会导致客户端报错或崩溃。
+                        # 而是返回一个 200 OK，但内容是一个空的、无法播放的 PlaybackInfo。
+                        # 客户端会优雅地处理这个响应，通常是弹出一个“无法播放”的提示。
+                        error_response = {
+                            "MediaSources": [],
+                            "PlaySessionId": None,
+                            "ErrorCode": "PlaybackLimitReached",
+                            "Response": "Error",
+                            "Message": f"同时观看的设备数量已达到上限 ({limit}个)！"
+                        }
+                        return Response(json.dumps(error_response), status=200, mimetype='application/json')
+                    else:
+                        logger.info(f"  ➜ 并发检查通过。用户 {user_id} (限制: {limit}, 当前: {current_streams})，请求放行。")
+
+        except Exception as e:
+            logger.error(f"执行并发控制检查时发生严重错误: {e}", exc_info=True)
+            # 如果检查逻辑本身出错了，为安全起见，先阻止播放
+            return Response("Error during concurrency check.", status=500, mimetype='text/plain')
     # --- ★★★ 新增：PlaybackInfo 智能劫持逻辑 (最终简化版) ★★★ ---
     # 这个逻辑块专门处理对“虚拟库内真实媒体项”的播放前问询
     if 'PlaybackInfo' in path and '/Items/' in path:

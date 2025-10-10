@@ -42,8 +42,8 @@ def create_template():
     description = data.get('description')
     default_expiration_days = data.get('default_expiration_days', 30)
     source_emby_user_id = data.get('source_emby_user_id')
-    # ★★★ 新增：接收是否包含首选项的标志 ★★★
     include_configuration = data.get('include_configuration', False)
+    max_concurrent_streams = data.get('max_concurrent_streams', 1)
 
     if not name or not source_emby_user_id:
         return jsonify({"status": "error", "message": "模板名称和源用户ID不能为空"}), 400
@@ -67,10 +67,10 @@ def create_template():
             # ★★★ 核心修改：在 INSERT 语句中增加 emby_configuration_json ★★★
             cursor.execute(
                 """
-                INSERT INTO user_templates (name, description, emby_policy_json, default_expiration_days, source_emby_user_id, emby_configuration_json)
-                VALUES (%s, %s, %s, %s, %s, %s) RETURNING id
+                INSERT INTO user_templates (name, description, emby_policy_json, default_expiration_days, source_emby_user_id, emby_configuration_json, max_concurrent_streams)
+                VALUES (%s, %s, %s, %s, %s, %s, %s) RETURNING id
                 """,
-                (name, description, policy_json, default_expiration_days, source_emby_user_id, configuration_json)
+                (name, description, policy_json, default_expiration_days, source_emby_user_id, configuration_json, max_concurrent_streams)
             )
             new_id = cursor.fetchone()['id']
             conn.commit()

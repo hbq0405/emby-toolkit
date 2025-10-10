@@ -20,6 +20,7 @@ from .subscriptions import task_auto_subscribe, task_update_resubscribe_cache, t
 from .covers import task_generate_all_covers, task_generate_all_custom_collection_covers
 from .maintenance import task_scan_for_cleanup_issues 
 from .users import task_sync_all_user_data, task_check_expired_users
+from .session_tasks import task_cleanup_stale_sessions
 
 
 logger = logging.getLogger(__name__)
@@ -187,6 +188,7 @@ def get_task_registry(context: str = 'all'):
         'purge-unregistered-actors': (task_purge_unregistered_actors, "删除黑户演员", 'media', True),
         'purge-ghost-actors': (task_purge_ghost_actors, "删除幽灵演员", 'media', True),
         'check-expired-users': (task_check_expired_users, "检查过期用户", 'media', True),
+        'cleanup-stale-sessions': (task_cleanup_stale_sessions, "清理播放会话", 'media', True),
         
         # --- 不适合任务链的、需要特定参数的任务 ---
         'process_all_custom_collections': (task_process_all_custom_collections, "生成所有自建合集", 'media', False),
