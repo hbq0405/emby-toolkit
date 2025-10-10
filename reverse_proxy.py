@@ -440,30 +440,16 @@ def proxy_all(path):
     # ★★★ 并发控制逻辑 ★★★
     if 'PlaybackInfo' in path and '/Items/' in path:
         try:
-            # 从路径中提取 UserId
+            # --- 步骤一：执行并发控制检查 (作为前置守卫) ---
             user_id_match = re.search(r'/Users/([^/]+)/', path)
             if user_id_match:
                 user_id = user_id_match.group(1)
-                
-                # a. 查询用户的并发上限
                 limit = session_db.get_user_stream_limit(user_id)
                 
-                # b. 如果 limit 是 None (未设置模板) 或 0 (管理员设为无限)，则直接放行
-                if limit is None or limit == 0:
-                    logger.info(f"  ➜ 用户 {user_id} 无并发限制，请求放行。")
-                    # 注意：这里不能直接 return，要让请求继续往下走，进入后续的代理逻辑
-                else:
-                    # c. 查询当前活跃的会话数
+                if limit is not None and limit > 0:
                     current_streams = session_db.get_active_session_count(user_id)
-                    
-                    # d. 核心判断：当前会话数是否已达到或超过上限
                     if current_streams >= limit:
                         logger.warning(f"  ➜ 并发超限！用户 {user_id} (限制: {limit}, 当前: {current_streams}) 的播放请求被拒绝。")
-                        
-                        # e. ★★★ 构造一个“欺骗”客户端的响应 ★★★
-                        # 我们不能返回 403 Forbidden，那会导致客户端报错或崩溃。
-                        # 而是返回一个 200 OK，但内容是一个空的、无法播放的 PlaybackInfo。
-                        # 客户端会优雅地处理这个响应，通常是弹出一个“无法播放”的提示。
                         error_response = {
                             "MediaSources": [],
                             "PlaySessionId": None,
@@ -471,42 +457,28 @@ def proxy_all(path):
                             "Response": "Error",
                             "Message": f"同时观看的设备数量已达到上限 ({limit}个)！"
                         }
+                        # 并发超限，直接返回错误，终止后续所有逻辑
                         return Response(json.dumps(error_response), status=200, mimetype='application/json')
                     else:
                         logger.info(f"  ➜ 并发检查通过。用户 {user_id} (限制: {limit}, 当前: {current_streams})，请求放行。")
-
-        except Exception as e:
-            logger.error(f"执行并发控制检查时发生严重错误: {e}", exc_info=True)
-            # 如果检查逻辑本身出错了，为安全起见，先阻止播放
-            return Response("Error during concurrency check.", status=500, mimetype='text/plain')
-    # --- ★★★ 新增：PlaybackInfo 智能劫持逻辑 (最终简化版) ★★★ ---
-    # 这个逻辑块专门处理对“虚拟库内真实媒体项”的播放前问询
-    if 'PlaybackInfo' in path and '/Items/' in path:
-        # 1. 从路径中提取媒体项的ID。根据您的描述，这已经是“真实ID”。
-        item_id_match = re.search(r'/Items/(\d+)/PlaybackInfo', path) # 注意：正则表达式改为了 \d+，只匹配纯数字的真实ID
-        
-        # 我们还需要检查这个请求是否来自一个虚拟库的上下文。
-        # Emby客户端在请求PlaybackInfo时，通常会带上ParentId或类似的参数。
-        # 但更可靠的方法是检查Referer头，或者依赖Nginx路由。
-        # 既然Nginx已经把所有虚拟库的请求都发过来了，我们可以假设在这里处理是安全的。
-        
-        if item_id_match:
-            real_emby_id = item_id_match.group(1)
-            logger.info(f"截获到针对真实项目 '{real_emby_id}' 的 PlaybackInfo 请求（可能来自虚拟库上下文）。")
+                else:
+                    logger.info(f"  ➜ 用户 {user_id} 无并发限制，请求放行。")
             
-            try:
-                # 2. 幕后请求：用这个真实ID向Emby索要完整的PlaybackInfo
+            # --- 步骤二：如果并发检查通过，则继续执行智能劫持逻辑 ---
+            item_id_match = re.search(r'/Items/(\d+)/PlaybackInfo', path)
+            if item_id_match:
+                real_emby_id = item_id_match.group(1)
+                logger.info(f"截获到针对真实项目 '{real_emby_id}' 的 PlaybackInfo 请求（可能来自虚拟库上下文）。")
+                
                 base_url, api_key = _get_real_emby_url_and_key()
-                user_id_match = re.search(r'/Users/([^/]+)/', path)
+                # 重新获取 user_id，确保安全
                 user_id = user_id_match.group(1) if user_id_match else ''
                 
                 real_playback_info_url = f"{base_url}/Items/{real_emby_id}/PlaybackInfo"
                 
-                # 转发原始请求的参数和部分头
                 forward_params = request.args.copy()
                 forward_params['api_key'] = api_key
                 forward_params['UserId'] = user_id
-
                 headers = {'Accept': 'application/json'}
                 
                 logger.debug(f"正在向真实Emby请求PlaybackInfo: {real_playback_info_url} with params {forward_params}")
@@ -515,41 +487,29 @@ def proxy_all(path):
                 
                 playback_info_data = resp.json()
                 
-                # 3. 偷梁换柱：修改Path，指向我们的302重定向服务
                 if 'MediaSources' in playback_info_data and len(playback_info_data['MediaSources']) > 0:
                     logger.info("成功获取真实PlaybackInfo，正在修改播放路径...")
                     
                     original_path = playback_info_data['MediaSources'][0].get('Path')
                     file_name = original_path.split('/')[-1] if original_path else f"stream.mkv"
                     
-                    # ★★★ 核心修改点 ★★★
-                    # 将路径指向一个能被Nginx的“直接播放拦截规则”捕获的URL格式。
-                    # 这个URL需要包含真实ID，以便302服务知道要为哪个项目获取直链。
-                    # 格式: /emby/videos/{real_emby_id}/{filename}?....
-                    # 我们的Nginx规则 `~* (?i)(/videos/.*stream|(\.strm|\.mkv...))` 会匹配到这个。
                     playback_info_data['MediaSources'][0]['Path'] = f"/emby/videos/{real_emby_id}/{file_name}"
-                    
-                    # 强制协议为Http，因为这是Emby内部识别的协议类型
                     playback_info_data['MediaSources'][0]['Protocol'] = 'Http' 
                     
-                    # 清理掉可能引起问题的字段，让Emby客户端只认我们给的Path
                     playback_info_data['MediaSources'][0].pop('PathType', None)
                     playback_info_data['MediaSources'][0].pop('SupportsDirectStream', None)
                     playback_info_data['MediaSources'][0].pop('SupportsTranscoding', None)
 
                     logger.debug(f"修改后的PlaybackInfo: {json.dumps(playback_info_data, indent=2)}")
                     
-                    # 4. 返回修改后的完整信息
                     return Response(json.dumps(playback_info_data), mimetype='application/json')
                 else:
-                    # 如果原始PlaybackInfo没有MediaSources，我们也无能为力，直接转发
                     logger.warning(f"获取到的PlaybackInfo中不包含MediaSources，无法修改路径。")
                     return Response(json.dumps(playback_info_data), mimetype='application/json')
 
-            except Exception as e:
-                logger.error(f"处理PlaybackInfo劫持时出错: {e}", exc_info=True)
-                # 如果出错，返回一个错误，让客户端走标准流程
-                return Response("Proxy error during PlaybackInfo handling.", status=500, mimetype='text/plain')
+        except Exception as e:
+            logger.error(f"处理PlaybackInfo劫持或并发控制时出错: {e}", exc_info=True)
+            return Response("Proxy error during PlaybackInfo handling.", status=500, mimetype='text/plain')
     # --- 1. WebSocket 代理逻辑 (已添加超详细日志) ---
     if 'Upgrade' in request.headers and request.headers.get('Upgrade', '').lower() == 'websocket':
         logger.info("--- 收到一个新的 WebSocket 连接请求 ---")
