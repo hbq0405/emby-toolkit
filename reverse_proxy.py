@@ -437,74 +437,94 @@ proxy_app = Flask(__name__)
 @proxy_app.route('/', defaults={'path': ''})
 @proxy_app.route('/<path:path>', methods=['GET', 'POST', 'PUT', 'DELETE', 'HEAD', 'OPTIONS'])
 def proxy_all(path):
-    def proxy_all(path):
-    # ★★★ 规则 A：并发检查 (现在它终于有机会执行了) ★★★
-    if 'PlaybackInfo' in path and '/Items/' in path:
-        try:
-            user_id = None
-            user_id_match = re.search(r'/Users/([^/]+)/', path)
-            if user_id_match:
-                user_id = user_id_match.group(1)
-            else:
-                user_id = request.args.get('UserId')
-
-            if user_id:
-                limit = session_db.get_user_stream_limit(user_id)
-                if limit is None:
-                    logger.warning(f"  ➜ [门禁] 用户 {user_id} 未关联模板，应用默认并发限制 [1]。")
-                    limit = 1
-                
-                if limit > 0: # 只有当限制大于0时才检查
-                    current_streams = session_db.get_active_session_count(user_id)
-                    if current_streams >= limit:
-                        logger.warning(f"  ➜ [门禁] 并发超限！用户 {user_id} (限制: {limit}, 当前: {current_streams}) 的播放请求被拒绝。")
-                        error_response = {"MediaSources": [], "PlaySessionId": None, "ErrorCode": "PlaybackLimitReached"}
-                        return Response(json.dumps(error_response), status=200, mimetype='application/json')
-                    else:
-                        logger.info(f"  ➜ [门禁] 并发检查通过。用户 {user_id} (限制: {limit}, 当前: {current_streams})，请求放行。")
-                else:
-                    logger.info(f"  ➜ [门禁] 用户 {user_id} 并发限制为 0 (无限制)，请求放行。")
-            else:
-                logger.warning(f"  ➜ 警告：在 PlaybackInfo 请求中未能找到用户ID，无法执行并发检查。路径: {path}")
-
-        except Exception as e:
-            logger.error(f"执行并发控制检查时发生严重错误: {e}", exc_info=True)
-            return Response("Error during concurrency check.", status=500)
-    
-    # ★★★ 规则 B：虚拟库主页 ★★★
-    if path.endswith('/Views') and path.startswith('emby/Users/'):
-        return handle_get_views()
-
-    # ★★★ 规则 C：虚拟库内容 ★★★
-    if 'Items' in path and request.args.get("ParentId") and is_mimicked_id(request.args.get("ParentId")):
-         user_id_match = re.search(r'/emby/Users/([^/]+)/Items', request.path)
-         if user_id_match:
-             user_id = user_id_match.group(1)
-             return handle_get_mimicked_library_items(user_id, request.args.get("ParentId"), request.args)
-
-    # ★★★ 终极规则 D：通用转发 (所有未被上面捕获的请求) ★★★
-    base_url, api_key = _get_real_emby_url_and_key()
-    target_url = f"{base_url}/{path}"
-    headers = {k: v for k, v in request.headers if k.lower() != 'host'}
-    headers['Host'] = urlparse(base_url).netloc
-    params = request.args.copy()
-    params['api_key'] = api_key
-    
-    logger.trace(f"  ➜ [通用转发] 正在将请求 {path} 转发到 {target_url}")
-    
+    # ★★★ 核心修正：整个函数体都需要一个缩进 ★★★
     try:
-        resp = requests.request(
-            method=request.method,
-            url=target_url,
-            headers=headers,
-            params=params,
-            data=request.get_data(),
-            stream=True,
-            timeout=30.0
-        )
-        excluded_headers = ['content-encoding', 'content-length', 'transfer-encoding', 'connection']
-        response_headers = [(name, value) for name, value in resp.raw.headers.items() if name.lower() not in excluded_headers]
-        return Response(resp.iter_content(chunk_size=8192), resp.status_code, response_headers)
+        # --- 规则 A：并发检查 ---
+        if 'PlaybackInfo' in path and '/Items/' in path:
+            try:
+                user_id = None
+                user_id_match = re.search(r'/Users/([^/]+)/', path)
+                if user_id_match:
+                    user_id = user_id_match.group(1)
+                else:
+                    user_id = request.args.get('UserId')
+
+                if user_id:
+                    limit = session_db.get_user_stream_limit(user_id)
+                    if limit is None:
+                        logger.warning(f"  ➜ [门禁] 用户 {user_id} 未关联模板，应用默认并发限制 [1]。")
+                        limit = 1
+                    
+                    if limit > 0:
+                        current_streams = session_db.get_active_session_count(user_id)
+                        if current_streams >= limit:
+                            logger.warning(f"  ➜ [门禁] 并发超限！用户 {user_id} (限制: {limit}, 当前: {current_streams}) 的播放请求被拒绝。")
+                            error_response = {"MediaSources": [], "PlaySessionId": None, "ErrorCode": "PlaybackLimitReached"}
+                            return Response(json.dumps(error_response), status=200, mimetype='application/json')
+                        else:
+                            logger.info(f"  ➜ [门禁] 并发检查通过。用户 {user_id} (限制: {limit}, 当前: {current_streams})，请求放行。")
+                    else:
+                        logger.info(f"  ➜ [门禁] 用户 {user_id} 并发限制为 0 (无限制)，请求放行。")
+                else:
+                    logger.warning(f"  ➜ 警告：在 PlaybackInfo 请求中未能找到用户ID，无法执行并发检查。路径: {path}")
+
+            except Exception as e:
+                logger.error(f"执行并发控制检查时发生严重错误: {e}", exc_info=True)
+                return Response("Error during concurrency check.", status=500)
+        
+        # --- 规则 B：虚拟库主页 ---
+        if path.endswith('/Views') and path.startswith('emby/Users/'):
+            return handle_get_views()
+
+        # --- 规则 C：虚拟库内容 ---
+        if 'Items' in path and request.args.get("ParentId") and is_mimicked_id(request.args.get("ParentId")):
+             user_id_match = re.search(r'/emby/Users/([^/]+)/Items', request.path)
+             if user_id_match:
+                 user_id = user_id_match.group(1)
+                 return handle_get_mimicked_library_items(user_id, request.args.get("ParentId"), request.args)
+
+        # (为了代码完整性，我把之前省略的函数调用补回来)
+        details_match = MIMICKED_ITEM_DETAILS_RE.search(f'/{path}')
+        if details_match:
+            user_id = details_match.group(1)
+            mimicked_id = details_match.group(2)
+            return handle_get_mimicked_library_details(user_id, mimicked_id)
+
+        if path.startswith('emby/Items/') and '/Images/' in path and is_mimicked_id(path.split('/')[2]):
+             return handle_get_mimicked_library_image(path)
+
+        if path.endswith('/Items/Latest'):
+            user_id_match = re.search(r'/emby/Users/([^/]+)/', f'/{path}')
+            if user_id_match:
+                return handle_get_latest_items(user_id_match.group(1), request.args)
+
+        # --- 终极规则 D：通用转发 ---
+        base_url, api_key = _get_real_emby_url_and_key()
+        target_url = f"{base_url}/{path}"
+        headers = {k: v for k, v in request.headers if k.lower() != 'host'}
+        headers['Host'] = urlparse(base_url).netloc
+        params = request.args.copy()
+        params['api_key'] = api_key
+        
+        logger.trace(f"  ➜ [通用转发] 正在将请求 {path} 转发到 {target_url}")
+        
+        try:
+            resp = requests.request(
+                method=request.method,
+                url=target_url,
+                headers=headers,
+                params=params,
+                data=request.get_data(),
+                stream=True,
+                timeout=30.0
+            )
+            excluded_headers = ['content-encoding', 'content-length', 'transfer-encoding', 'connection']
+            response_headers = [(name, value) for name, value in resp.raw.headers.items() if name.lower() not in excluded_headers]
+            return Response(resp.iter_content(chunk_size=8192), resp.status_code, response_headers)
+        except Exception as e_req:
+            logger.error(f"[通用转发] 转发请求时发生错误: {e_req}", exc_info=True)
+            return "Proxy request failed", 502
+
     except Exception as e:
-        logger.error(f"[PROXY] HTTP 代理时发生未知错误: {e}", exc_info=True)
+        logger.error(f"[PROXY] 代理主逻辑发生未知错误: {e}", exc_info=True)
         return "Internal Server Error", 500
