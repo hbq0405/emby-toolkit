@@ -440,15 +440,12 @@ def proxy_all(path):
     # ★★★ 并发控制逻辑 ★★★
     if 'PlaybackInfo' in path and '/Items/' in path:
         try:
-            # --- 步骤一：执行并发控制检查 (作为前置守卫) ---
-            
-            # ★★★ 核心修正：从路径和参数中双重查找 UserId，确保万无一失 ★★★
+            # --- 步骤一：执行并发控制检查 ---
             user_id = None
             user_id_match = re.search(r'/Users/([^/]+)/', path)
             if user_id_match:
                 user_id = user_id_match.group(1)
             else:
-                # 如果路径中没有，就尝试从 URL 的查询参数中获取
                 user_id = request.args.get('UserId')
 
             if user_id:
@@ -471,58 +468,42 @@ def proxy_all(path):
                 else:
                     logger.info(f"  ➜ 用户 {user_id} 无并发限制，请求放行。")
             else:
-                # 这是一个异常情况，记录下来以备排查
                 logger.warning(f"  ➜ 警告：在 PlaybackInfo 请求中未能找到用户ID，无法执行并发检查。路径: {path}, 参数: {request.args}")
 
-            # --- 步骤二：如果并发检查通过，则继续执行智能劫持逻辑 ---
-            item_id_match = re.search(r'/Items/(\d+)/PlaybackInfo', path)
-            if item_id_match:
-                real_emby_id = item_id_match.group(1)
-                logger.info(f"截获到针对真实项目 '{real_emby_id}' 的 PlaybackInfo 请求（可能来自虚拟库上下文）。")
-                
-                # ... (后续的智能劫持逻辑保持不变) ...
-                base_url, api_key = _get_real_emby_url_and_key()
-                
-                # 确保 user_id 存在，以便转发请求
-                if not user_id:
-                    user_id = request.args.get('UserId', '') # 再次获取以防万一
-
-                real_playback_info_url = f"{base_url}/Items/{real_emby_id}/PlaybackInfo"
-                
-                forward_params = request.args.copy()
-                forward_params['api_key'] = api_key
-                forward_params['UserId'] = user_id
-
-                headers = {'Accept': 'application/json'}
-                
-                logger.debug(f"正在向真实Emby请求PlaybackInfo: {real_playback_info_url} with params {forward_params}")
-                resp = requests.get(real_playback_info_url, params=forward_params, headers=headers)
-                resp.raise_for_status()
-                
-                playback_info_data = resp.json()
-                
-                if 'MediaSources' in playback_info_data and len(playback_info_data['MediaSources']) > 0:
-                    logger.info("成功获取真实PlaybackInfo，正在修改播放路径...")
-                    
-                    original_path = playback_info_data['MediaSources'][0].get('Path')
-                    file_name = original_path.split('/')[-1] if original_path else f"stream.mkv"
-                    
-                    playback_info_data['MediaSources'][0]['Path'] = f"/emby/videos/{real_emby_id}/{file_name}"
-                    playback_info_data['MediaSources'][0]['Protocol'] = 'Http' 
-                    
-                    playback_info_data['MediaSources'][0].pop('PathType', None)
-                    playback_info_data['MediaSources'][0].pop('SupportsDirectStream', None)
-                    playback_info_data['MediaSources'][0].pop('SupportsTranscoding', None)
-
-                    logger.debug(f"修改后的PlaybackInfo: {json.dumps(playback_info_data, indent=2)}")
-                    
-                    return Response(json.dumps(playback_info_data), mimetype='application/json')
-                else:
-                    logger.warning(f"获取到的PlaybackInfo中不包含MediaSources，无法修改路径。")
-                    return Response(json.dumps(playback_info_data), mimetype='application/json')
+            # --- 步骤二：(已移除智能劫持) 直接将请求转发给真实 Emby ---
+            logger.debug(f"并发检查通过，正在将 PlaybackInfo 请求转发至真实 Emby...")
+            
+            base_url, api_key = _get_real_emby_url_and_key()
+            
+            # 构造完整的真实 Emby URL
+            target_url = f"{base_url}/{path.lstrip('/')}"
+            
+            # 准备要转发的头和参数
+            forward_headers = {k: v for k, v in request.headers if k.lower() not in ['host', 'accept-encoding']}
+            forward_headers['Host'] = urlparse(base_url).netloc
+            
+            forward_params = request.args.copy()
+            forward_params['api_key'] = api_key
+            
+            # 发起请求
+            resp = requests.request(
+                method=request.method,
+                url=target_url,
+                headers=forward_headers,
+                params=forward_params,
+                data=request.get_data(),
+                stream=True,
+                timeout=30.0
+            )
+            
+            # 将 Emby 的原始响应返回给客户端
+            excluded_resp_headers = ['content-encoding', 'content-length', 'transfer-encoding', 'connection']
+            response_headers = [(name, value) for name, value in resp.raw.headers.items() if name.lower() not in excluded_resp_headers]
+            
+            return Response(resp.iter_content(chunk_size=8192), resp.status_code, response_headers)
 
         except Exception as e:
-            logger.error(f"处理PlaybackInfo劫持或并发控制时出错: {e}", exc_info=True)
+            logger.error(f"处理 PlaybackInfo 转发或并发控制时出错: {e}", exc_info=True)
             return Response("Proxy error during PlaybackInfo handling.", status=500, mimetype='text/plain')
     # --- 1. WebSocket 代理逻辑 (已添加超详细日志) ---
     if 'Upgrade' in request.headers and request.headers.get('Upgrade', '').lower() == 'websocket':
