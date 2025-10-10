@@ -453,8 +453,9 @@ def proxy_all(path):
             user_id_match = re.search(r'/Users/([^/]+)/', path)
             user_id = user_id_match.group(1) if user_id_match else get_request_param('UserId')
 
-            # ★★★ 核心修正：使用新函数获取 DeviceId ★★★
+            # ★★★ 核心修正：同时获取 DeviceId 和 PlaySessionId ★★★
             device_id = get_request_param('DeviceId')
+            play_session_id = get_request_param('PlaySessionId')
 
             if user_id:
                 limit = session_db.get_user_stream_limit(user_id)
@@ -464,12 +465,16 @@ def proxy_all(path):
                     current_streams = len(active_sessions)
 
                     if current_streams >= limit:
+                        # ★★★ 终极判断逻辑：优先使用 PlaySessionId ★★★
+                        is_same_session = any(s.get('session_id') == play_session_id for s in active_sessions) if play_session_id else False
                         is_same_device = any(s.get('device_id') == device_id for s in active_sessions) if device_id else False
                         
-                        if is_same_device:
-                            logger.info(f"  ➜ 并发检查：同设备切换播放，请求放行。用户 {user_id} (设备: {device_id})")
+                        if is_same_session:
+                            logger.info(f"  ➜ 并发检查：同一播放会话切换(下一集)，请求放行。用户 {user_id} (SessionId: {play_session_id})")
+                        elif is_same_device:
+                            logger.info(f"  ➜ 并发检查：同设备重连/切换，请求放行。用户 {user_id} (设备: {device_id})")
                         else:
-                            logger.warning(f"  ➜ 并发超限！用户 {user_id} (限制: {limit}, 当前: {current_streams}) 的播放请求被拒绝 (新设备: {device_id})。")
+                            logger.warning(f"  ➜ 并发超限！用户 {user_id} (限制: {limit}, 当前: {current_streams}) 的播放请求被拒绝 (新会话/设备)。")
                             error_response = {
                                 "MediaSources": [],
                                 "PlaySessionId": None,
