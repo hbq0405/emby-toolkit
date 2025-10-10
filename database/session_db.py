@@ -89,8 +89,8 @@ def get_active_sessions(user_id: str) -> list:
     获取指定用户的所有活动会话的详细列表。
     返回一个字典列表，每个字典包含会话信息，用于并发检查。
     """
-    # ★★★ 核心修正：同时查询 device_id 和 session_id ★★★
-    sql = "SELECT device_id, session_id FROM active_sessions WHERE emby_user_id = %s"
+    # ★★★ 核心修正：查询 last_updated_at 以实现宽限期逻辑 ★★★
+    sql = "SELECT device_id, session_id, last_updated_at FROM active_sessions WHERE emby_user_id = %s"
     try:
         with get_db_connection() as conn:
             cursor = conn.cursor()
