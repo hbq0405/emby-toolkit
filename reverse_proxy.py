@@ -441,9 +441,17 @@ def proxy_all(path):
     if 'PlaybackInfo' in path and '/Items/' in path:
         try:
             # --- 步骤一：执行并发控制检查 (作为前置守卫) ---
+            
+            # ★★★ 核心修正：从路径和参数中双重查找 UserId，确保万无一失 ★★★
+            user_id = None
             user_id_match = re.search(r'/Users/([^/]+)/', path)
             if user_id_match:
                 user_id = user_id_match.group(1)
+            else:
+                # 如果路径中没有，就尝试从 URL 的查询参数中获取
+                user_id = request.args.get('UserId')
+
+            if user_id:
                 limit = session_db.get_user_stream_limit(user_id)
                 
                 if limit is not None and limit > 0:
@@ -457,28 +465,34 @@ def proxy_all(path):
                             "Response": "Error",
                             "Message": f"同时观看的设备数量已达到上限 ({limit}个)！"
                         }
-                        # 并发超限，直接返回错误，终止后续所有逻辑
                         return Response(json.dumps(error_response), status=200, mimetype='application/json')
                     else:
                         logger.info(f"  ➜ 并发检查通过。用户 {user_id} (限制: {limit}, 当前: {current_streams})，请求放行。")
                 else:
                     logger.info(f"  ➜ 用户 {user_id} 无并发限制，请求放行。")
-            
+            else:
+                # 这是一个异常情况，记录下来以备排查
+                logger.warning(f"  ➜ 警告：在 PlaybackInfo 请求中未能找到用户ID，无法执行并发检查。路径: {path}, 参数: {request.args}")
+
             # --- 步骤二：如果并发检查通过，则继续执行智能劫持逻辑 ---
             item_id_match = re.search(r'/Items/(\d+)/PlaybackInfo', path)
             if item_id_match:
                 real_emby_id = item_id_match.group(1)
                 logger.info(f"截获到针对真实项目 '{real_emby_id}' 的 PlaybackInfo 请求（可能来自虚拟库上下文）。")
                 
+                # ... (后续的智能劫持逻辑保持不变) ...
                 base_url, api_key = _get_real_emby_url_and_key()
-                # 重新获取 user_id，确保安全
-                user_id = user_id_match.group(1) if user_id_match else ''
                 
+                # 确保 user_id 存在，以便转发请求
+                if not user_id:
+                    user_id = request.args.get('UserId', '') # 再次获取以防万一
+
                 real_playback_info_url = f"{base_url}/Items/{real_emby_id}/PlaybackInfo"
                 
                 forward_params = request.args.copy()
                 forward_params['api_key'] = api_key
                 forward_params['UserId'] = user_id
+
                 headers = {'Accept': 'application/json'}
                 
                 logger.debug(f"正在向真实Emby请求PlaybackInfo: {real_playback_info_url} with params {forward_params}")
