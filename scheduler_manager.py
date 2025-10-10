@@ -23,6 +23,7 @@ logger = logging.getLogger(__name__)
 HIGH_FREQ_CHAIN_JOB_ID = 'high_freq_task_chain_job'
 LOW_FREQ_CHAIN_JOB_ID = 'low_freq_task_chain_job'
 REVIVAL_CHECK_JOB_ID = 'weekly_revival_check_job'
+CLEANUP_SESSIONS_JOB_ID = 'cleanup_stale_sessions_job'
 
 
 # --- 友好的CRON日志翻译函数 (保持不变) ---
@@ -219,6 +220,7 @@ class SchedulerManager:
         self.update_high_freq_task_chain_job()
         self.update_low_freq_task_chain_job()
         self.update_revival_check_job()
+        self.update_session_cleanup_job()
 
     def _update_single_task_chain_job(self, job_id: str, job_name: str, task_key: str, enabled_key: str, cron_key: str, sequence_key: str, runtime_key: str):
         """
@@ -350,6 +352,54 @@ class SchedulerManager:
             logger.trace(f"已成功设置'{task_description}'任务，执行计划: 每周日 05:00。")
         except ValueError as e:
             logger.error(f"设置'{task_description}'任务失败：CRON表达式 '{cron_str}' 无效。错误: {e}")
+
+    # --- 清理播放会话
+    def update_session_cleanup_job(self):
+        """
+        硬编码设置系统级的“陈旧播放会话清理”守护任务。
+        通过任务注册表获取任务函数，保持架构一致性。
+        """
+        if not self.scheduler.running:
+            return
+
+        logger.debug("正在更新固定的'陈旧播放会话清理'守护任务...")
+
+        try:
+            self.scheduler.remove_job(CLEANUP_SESSIONS_JOB_ID)
+        except JobLookupError:
+            pass
+
+        # 从注册表获取任务信息
+        registry = tasks.get_task_registry()
+        task_info = registry.get('cleanup-stale-sessions')
+        
+        if not task_info:
+            logger.error("设置'陈旧播放会话清理'任务失败：在任务注册表中未找到 'cleanup-stale-sessions'。")
+            return
+            
+        task_function, task_description, processor_type = task_info
+
+        def scheduled_cleanup_wrapper():
+            logger.info(f"定时任务触发：{task_description}。")
+            # 走标准的任务提交流程，更规范
+            task_manager.submit_task(
+                task_function=task_function,
+                task_name=task_description,
+                processor_type=processor_type
+            )
+
+        try:
+            self.scheduler.add_job(
+                func=scheduled_cleanup_wrapper,
+                trigger='interval',
+                minutes=10, # 每10分钟执行一次
+                id=CLEANUP_SESSIONS_JOB_ID,
+                name=task_description,
+                replace_existing=True
+            )
+            logger.info(f"  ➜ 已成功设置'{task_description}'守护任务，将每 10 分钟运行一次。")
+        except Exception as e:
+            logger.error(f"设置'{task_description}'守护任务失败: {e}", exc_info=True)
 
 # 创建一个全局单例，方便在其他地方调用
 scheduler_manager = SchedulerManager()

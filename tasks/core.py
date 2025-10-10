@@ -188,7 +188,6 @@ def get_task_registry(context: str = 'all'):
         'purge-unregistered-actors': (task_purge_unregistered_actors, "删除黑户演员", 'media', True),
         'purge-ghost-actors': (task_purge_ghost_actors, "删除幽灵演员", 'media', True),
         'check-expired-users': (task_check_expired_users, "检查过期用户", 'media', True),
-        'cleanup-stale-sessions': (task_cleanup_stale_sessions, "清理播放会话", 'media', True),
         
         # --- 不适合任务链的、需要特定参数的任务 ---
         'process_all_custom_collections': (task_process_all_custom_collections, "生成所有自建合集", 'media', False),
@@ -196,6 +195,7 @@ def get_task_registry(context: str = 'all'):
         'scan-cleanup-issues': (task_scan_for_cleanup_issues, "扫描媒体重复项", 'media', False),
         'revival-check': (task_run_revival_check, "检查剧集复活", 'watchlist', False),
         'task_apply_main_cast_to_episodes': (task_apply_main_cast_to_episodes, "轻量化同步分集演员表", 'media', False),
+        'cleanup-stale-sessions': (task_cleanup_stale_sessions, "清理播放会话", 'media', False),
     }
 
     if context == 'chain':

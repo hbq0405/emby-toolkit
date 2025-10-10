@@ -440,7 +440,7 @@ def proxy_all(path):
     # ★★★ 并发控制逻辑 ★★★
     if 'PlaybackInfo' in path and '/Items/' in path:
         try:
-            # --- 步骤一：执行并发控制检查 ---
+            # --- 步骤一：执行并发控制检查 (保持不变) ---
             user_id = None
             user_id_match = re.search(r'/Users/([^/]+)/', path)
             if user_id_match:
@@ -477,34 +477,36 @@ def proxy_all(path):
             item_id_match = re.search(r'/Items/(\d+)/PlaybackInfo', path)
             
             if not item_id_match:
-                # 如果路径不规范，返回错误避免崩溃
                 return Response("Invalid PlaybackInfo path.", status=400, mimetype='text/plain')
             
             real_emby_id = item_id_match.group(1)
             real_playback_info_url = f"{base_url}/Items/{real_emby_id}/PlaybackInfo"
             
-            # 转发原始请求的参数和部分头
             forward_params = request.args.copy()
             forward_params['api_key'] = api_key
             if user_id:
                 forward_params['UserId'] = user_id
 
-            # Emby 客户端有时会用 POST 请求 PlaybackInfo，所以要兼容
-            headers = {'Accept': 'application/json'}
-            
+            # ★★★ 核心修正：灵活处理 POST 请求，不再强制要求 JSON ★★★
+            headers = {k: v for k, v in request.headers if k.lower() in ['accept', 'content-type']}
+
             if request.method == 'POST':
-                resp = requests.post(real_playback_info_url, params=forward_params, headers=headers, json=request.get_json())
-            else: # 默认是 GET
+                # 使用 get_data() 获取原始请求体，并用 data 参数转发
+                resp = requests.post(
+                    real_playback_info_url,
+                    params=forward_params,
+                    headers=headers,
+                    data=request.get_data() # <--- 使用 data 而不是 json
+                )
+            else: # GET 请求
                 resp = requests.get(real_playback_info_url, params=forward_params, headers=headers)
             
             resp.raise_for_status()
             
-            # 获取 Emby 返回的原始 JSON 数据
             playback_info_data = resp.json()
             
             logger.debug("成功获取原始 PlaybackInfo，正在将其直接返回给客户端。")
             
-            # 将原始、未经修改的 JSON 返回给客户端
             return Response(json.dumps(playback_info_data), mimetype='application/json')
 
         except Exception as e:
