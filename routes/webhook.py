@@ -342,31 +342,30 @@ def emby_webhook():
     # ★★★ 并发控制事件处理逻辑 ★★★
     if event_type in ["playback.start", "playback.stop"]:
         session_info = data.get("Session")
-        if not session_info or not session_info.get("Id"):
-            logger.warning(f"  ➜ Webhook '{event_type}' 缺少有效的 Session 信息，已忽略。")
-            # 即使缺少会话信息，我们仍然让它向下传递给用户数据更新逻辑
+        # ★★★ 核心修改：现在我们检查 DeviceId ★★★
+        if not session_info or not session_info.get("DeviceId"):
+            logger.warning(f"  ➜ Webhook '{event_type}' 缺少有效的 DeviceId，并发控制已忽略。")
         else:
-            session_id = session_info.get("Id")
+            device_id = session_info.get("DeviceId")
             
             if event_type == "playback.start":
                 user_info = data.get("User", {})
                 item_info = data.get("Item", {})
                 
                 session_data = {
-                    "session_id": session_id,
+                    "device_id": device_id, # <-- 使用 device_id
+                    "session_id": session_info.get("Id"), # session_id 依然记录
                     "emby_user_id": user_info.get("Id"),
                     "device_name": session_info.get("DeviceName"),
                     "client_name": session_info.get("Client"),
                     "item_id": item_info.get("Id"),
                     "item_name": item_info.get("Name")
                 }
-                # 过滤掉 None 值的字段
                 session_data_cleaned = {k: v for k, v in session_data.items() if v is not None}
-                
                 session_db.start_session(session_data_cleaned)
 
             elif event_type == "playback.stop":
-                session_db.stop_session(session_id)
+                session_db.stop_session(device_id)
 
     USER_DATA_EVENTS = [
         "item.markfavorite", "item.unmarkfavorite",

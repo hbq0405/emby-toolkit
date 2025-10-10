@@ -391,18 +391,19 @@ def init_db():
                 logger.trace("  ➜ 正在创建 'active_sessions' 表 (并发流控)...")
                 cursor.execute("""
                     CREATE TABLE IF NOT EXISTS active_sessions (
-                        session_id TEXT PRIMARY KEY,
+                        device_id TEXT PRIMARY KEY,
+                        session_id TEXT, -- session_id 降级为普通字段，用于调试
                         emby_user_id TEXT NOT NULL,
                         device_name TEXT,
                         client_name TEXT,
                         item_id TEXT,
                         item_name TEXT,
-                        status TEXT DEFAULT 'playing', -- 'playing', 'paused'
+                        status TEXT DEFAULT 'playing',
                         started_at TIMESTAMP WITH TIME ZONE DEFAULT NOW(),
                         last_updated_at TIMESTAMP WITH TIME ZONE DEFAULT NOW()
                     );
                 """)
-                # 为常用查询创建索引
+                # 索引保持不变
                 cursor.execute("CREATE INDEX IF NOT EXISTS idx_as_user_id ON active_sessions (emby_user_id);")
                 cursor.execute("CREATE INDEX IF NOT EXISTS idx_as_last_updated ON active_sessions (last_updated_at);")
 

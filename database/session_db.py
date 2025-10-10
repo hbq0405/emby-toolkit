@@ -12,13 +12,10 @@ logger = logging.getLogger(__name__)
 # ======================================================================
 
 def start_session(session_data: Dict[str, Any]) -> bool:
-    """
-    记录一个新的播放会话开始。
-    使用 ON CONFLICT DO UPDATE 来处理Emby可能重复发送start事件的极端情况。
-    """
-    session_id = session_data.get("session_id")
-    if not session_id:
-        logger.error("DB: 尝试开始一个没有 session_id 的会话，已忽略。")
+    """【V2】记录一个新的播放会话开始，使用 device_id 作为主键。"""
+    device_id = session_data.get("device_id")
+    if not device_id:
+        logger.error("DB: 尝试开始一个没有 device_id 的会话，已忽略。")
         return False
 
     now = datetime.now(timezone.utc)
@@ -29,11 +26,14 @@ def start_session(session_data: Dict[str, Any]) -> bool:
     columns_str = ', '.join(columns)
     placeholders_str = ', '.join([f"%({key})s" for key in columns])
     
-    # 如果冲突，只更新心跳时间
+    # ON CONFLICT 的目标改为 device_id
     sql = f"""
         INSERT INTO active_sessions ({columns_str})
         VALUES ({placeholders_str})
-        ON CONFLICT (session_id) DO UPDATE SET
+        ON CONFLICT (device_id) DO UPDATE SET
+            session_id = EXCLUDED.session_id,
+            item_id = EXCLUDED.item_id,
+            item_name = EXCLUDED.item_name,
             last_updated_at = EXCLUDED.last_updated_at;
     """
     
@@ -42,31 +42,29 @@ def start_session(session_data: Dict[str, Any]) -> bool:
             cursor = conn.cursor()
             cursor.execute(sql, session_data)
             conn.commit()
-            logger.info(f"  ➜ DB: 已记录用户 '{session_data.get('emby_user_id')}' 的新播放会话 (ID: {session_id})。")
+            logger.info(f"  ➜ DB: 已记录/更新 用户 '{session_data.get('emby_user_id')}' 在设备 '{device_id}' 上的播放会话。")
             return True
     except Exception as e:
-        logger.error(f"DB: 记录新播放会话 {session_id} 时失败: {e}", exc_info=True)
+        logger.error(f"DB: 记录播放会话 (设备ID: {device_id}) 时失败: {e}", exc_info=True)
         return False
 
-def stop_session(session_id: str) -> bool:
-    """
-    根据 session_id 删除一个已结束的播放会话。
-    """
-    if not session_id:
+def stop_session(device_id: str) -> bool:
+    """【V2】根据 device_id 删除一个已结束的播放会话。"""
+    if not device_id:
         return False
         
-    sql = "DELETE FROM active_sessions WHERE session_id = %s"
+    sql = "DELETE FROM active_sessions WHERE device_id = %s"
     
     try:
         with get_db_connection() as conn:
             cursor = conn.cursor()
-            cursor.execute(sql, (session_id,))
+            cursor.execute(sql, (device_id,))
             conn.commit()
             if cursor.rowcount > 0:
-                logger.info(f"  ➜ DB: 已移除播放会话 (ID: {session_id})。")
+                logger.info(f"  ➜ DB: 已移除播放会话 (设备ID: {device_id})。")
             return True
     except Exception as e:
-        logger.error(f"DB: 移除播放会话 {session_id} 时失败: {e}", exc_info=True)
+        logger.error(f"DB: 移除播放会话 (设备ID: {device_id}) 时失败: {e}", exc_info=True)
         return False
 
 def get_active_session_count(user_id: str) -> int:
