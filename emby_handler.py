@@ -1874,3 +1874,26 @@ def delete_emby_user(user_id: str, base_url: str, api_key: str) -> bool:
     except Exception as e:
         logger.error(f"删除 Emby 用户 '{user_name_for_log}' 时发生未知错误: {e}")
         return False
+    
+def terminate_emby_session(session_id: str):
+    """调用 Emby API 强制终止一个播放会话。"""
+    base_url = config_manager.APP_CONFIG.get("emby_server_url", "").rstrip('/')
+    api_key = config_manager.APP_CONFIG.get("emby_api_key", "")
+    if not base_url or not api_key or not session_id:
+        return
+
+    # 这是 Emby 用来停止播放的官方 API 端点
+    target_url = f"{base_url}/emby/Sessions/{session_id}/Playing/Stop"
+    
+    headers = {
+        "X-Emby-Token": api_key,
+        "Content-Type": "application/json"
+    }
+    
+    try:
+        # 使用 POST 请求
+        resp = requests.post(target_url, headers=headers, timeout=10)
+        resp.raise_for_status()
+        logger.info(f"  ➜ API ENFORCE: 成功发送终止命令到会话 {session_id}。")
+    except Exception as e:
+        logger.error(f"  ➜ API ENFORCE: 终止会话 {session_id} 时失败: {e}")
