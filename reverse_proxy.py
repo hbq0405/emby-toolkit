@@ -440,37 +440,35 @@ def proxy_all(path):
     # ★★★ 并发控制逻辑 ★★★
     if 'PlaybackInfo' in path and '/Items/' in path:
         try:
-            # --- 步骤一：执行并发控制检查 (作为前置守卫) ---
-            
-            # ★★★ 核心修正：从路径和参数中双重查找 UserId，确保万无一失 ★★★
-            user_id = None
-            user_id_match = re.search(r'/Users/([^/]+)/', path)
-            if user_id_match:
-                user_id = user_id_match.group(1)
-            else:
-                user_id = request.args.get('UserId')
+            def get_request_param(param_name):
+                """智能获取参数函数，兼容 GET (args) 和 POST (json body)"""
+                value = request.args.get(param_name)
+                if value is None and request.is_json:
+                    json_body = request.get_json(silent=True)
+                    if json_body:
+                        value = json_body.get(param_name)
+                return value
 
-            # ★★★ 新增：获取设备ID，这是智能判断的关键 ★★★
-            device_id = request.args.get('DeviceId')
+            # 从路径和智能参数中查找 UserId
+            user_id_match = re.search(r'/Users/([^/]+)/', path)
+            user_id = user_id_match.group(1) if user_id_match else get_request_param('UserId')
+
+            # ★★★ 核心修正：使用新函数获取 DeviceId ★★★
+            device_id = get_request_param('DeviceId')
 
             if user_id:
                 limit = session_db.get_user_stream_limit(user_id)
                 
-                # limit > 0 表示有限制, limit == 0 表示无限制
                 if limit is not None and limit > 0:
-                    # ★★★ 核心逻辑修改：获取完整的会话列表，而不仅仅是数量 ★★★
                     active_sessions = session_db.get_active_sessions(user_id)
                     current_streams = len(active_sessions)
 
                     if current_streams >= limit:
-                        # 检查当前请求的设备是否已经在活动会话中
                         is_same_device = any(s.get('device_id') == device_id for s in active_sessions) if device_id else False
                         
                         if is_same_device:
-                            # 如果是同一个设备，说明是切换剧集或重试，应该放行
                             logger.info(f"  ➜ 并发检查：同设备切换播放，请求放行。用户 {user_id} (设备: {device_id})")
                         else:
-                            # 如果是新设备，并且已达上限，则拒绝
                             logger.warning(f"  ➜ 并发超限！用户 {user_id} (限制: {limit}, 当前: {current_streams}) 的播放请求被拒绝 (新设备: {device_id})。")
                             error_response = {
                                 "MediaSources": [],
@@ -485,7 +483,6 @@ def proxy_all(path):
                 else:
                     logger.info(f"  ➜ 用户 {user_id} 无并发限制或为管理员，请求放行。")
             else:
-                # 这是一个异常情况，记录下来以备排查
                 logger.warning(f"  ➜ 警告：在 PlaybackInfo 请求中未能找到用户ID，无法执行并发检查。路径: {path}, 参数: {request.args}")
 
             # --- 步骤二：如果并发检查通过，则继续执行智能劫持逻辑 ---
