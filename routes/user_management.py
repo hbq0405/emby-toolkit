@@ -24,9 +24,18 @@ def get_all_templates():
     try:
         with connection.get_db_connection() as conn:
             cursor = conn.cursor()
-            # ★★★ 核心修复：在 SELECT 语句中添加 source_emby_user_id ★★★
             cursor.execute(
-                "SELECT id, name, description, default_expiration_days, source_emby_user_id FROM user_templates ORDER BY name"
+                """
+                SELECT 
+                    id, 
+                    name, 
+                    description, 
+                    default_expiration_days, 
+                    source_emby_user_id,
+                    COALESCE(max_concurrent_streams, 1) as max_concurrent_streams
+                FROM user_templates 
+                ORDER BY name
+                """
             )
             templates = [dict(row) for row in cursor.fetchall()]
         return jsonify(templates), 200
