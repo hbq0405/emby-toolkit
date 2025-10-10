@@ -508,11 +508,11 @@ def proxy_all(path):
                     file_name = original_path.split('/')[-1] if original_path else f"stream.mkv"
                     
                     playback_info_data['MediaSources'][0]['Path'] = f"/emby/videos/{real_emby_id}/{file_name}"
-                    playback_info_data['MediaSources'][0]['Protocol'] = 'Http' 
+                    # playback_info_data['MediaSources'][0]['Protocol'] = 'Http' 
                     
-                    playback_info_data['MediaSources'][0].pop('PathType', None)
-                    playback_info_data['MediaSources'][0].pop('SupportsDirectStream', None)
-                    playback_info_data['MediaSources'][0].pop('SupportsTranscoding', None)
+                    # playback_info_data['MediaSources'][0].pop('PathType', None)
+                    # playback_info_data['MediaSources'][0].pop('SupportsDirectStream', None)
+                    # playback_info_data['MediaSources'][0].pop('SupportsTranscoding', None)
 
                     logger.debug(f"修改后的PlaybackInfo: {json.dumps(playback_info_data, indent=2)}")
                     
