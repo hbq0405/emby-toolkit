@@ -32,7 +32,13 @@ server {
     #  核心路由规则 (V4)
     # ====================================================================
 
-    # ★★★ 规则 1：【条件化】转发所有视频流请求 ★★★
+    # ★★★ 规则 1：拦截所有 PlaybackInfo 请求 ★★★
+    # 无论这个请求来自哪里，只要是索要播放信息的，都必须先交给我们的Python代理进行审查。
+    location ~ /emby/Users/([a-f0-9]+)/Items/(\d+)/PlaybackInfo {
+        proxy_pass http://virtual_library_proxy;
+    }
+    
+    # ★★★ 规则 2：【条件化】转发所有视频流请求 ★★★
     # 如果设置了 REDIRECT_UPSTREAM，此规则块将生效。
     # 它会捕获所有主流视频格式、转码流和 .strm 文件，并因为位置靠前而被优先匹配。
     {% if REDIRECT_UPSTREAM %}
@@ -47,7 +53,7 @@ server {
         proxy_pass http://virtual_library_proxy;
     }
 
-    # ★★★ 规则 2：【新增的关键规则】拦截“获取库内容”的请求 ★★★
+    # ★★★ 规则 3：【新增的关键规则】拦截“获取库内容”的请求 ★★★
     # 这是我们之前一直缺失的规则！
     location ~ /emby/Users/([a-f0-9]+)/Items$ {
         # 检查 URL 参数中是否包含 ParentId=-xxxxx
@@ -59,7 +65,7 @@ server {
         proxy_pass http://emby_server;
     }
 
-    # 规则 3：拦截所有路径中包含虚拟ID的请求 (例如获取图片)
+    # 规则 4：拦截所有路径中包含虚拟ID的请求 (例如获取图片)
     location ~ /(emby/Users/[^/]+/Items|emby/Items)/-(\d+) {
         proxy_pass http://virtual_library_proxy;
     }
