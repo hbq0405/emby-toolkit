@@ -88,24 +88,43 @@ def get_active_session_count(user_id: str) -> int:
 
 def get_user_stream_limit(user_id: str) -> Optional[int]:
     """
-    获取用户的最大并发流限制。
-    数据源自用户关联的模板。
+    【V2 - 健壮版】获取用户的最大并发流限制。
+    - 优先处理管理员，直接给予无限制。
+    - 使用 LEFT JOIN 保证即使没有模板信息也能查询到用户。
     """
-    # 这个查询稍微复杂，需要 JOIN emby_users_extended 和 user_templates
+    # 这个查询会同时获取用户的管理员状态和模板并发数
     sql = """
-        SELECT t.max_concurrent_streams
-        FROM emby_users_extended e
-        JOIN user_templates t ON e.template_id = t.id
-        WHERE e.emby_user_id = %s;
+        SELECT 
+            u.is_administrator,
+            t.max_concurrent_streams
+        FROM emby_users u
+        LEFT JOIN emby_users_extended e ON u.id = e.emby_user_id
+        LEFT JOIN user_templates t ON e.template_id = t.id
+        WHERE u.id = %s;
     """
     try:
         with get_db_connection() as conn:
             cursor = conn.cursor()
             cursor.execute(sql, (user_id,))
             result = cursor.fetchone()
-            # 如果用户没有模板或模板没有设置，返回 None 代表“无限制”
-            return result['max_concurrent_streams'] if result else None
+
+            if not result:
+                # 如果连 emby_users 表里都找不到，说明是幽灵用户，直接禁止
+                logger.warning(f"DB: 尝试查询一个不存在的用户 {user_id} 的并发限制。")
+                return 1 # 返回一个严格的限制
+
+            # 1. 首先判断是不是管理员
+            if result.get('is_administrator'):
+                logger.trace(f"用户 {user_id} 是管理员，并发无限制。")
+                return 0  # 0 代表无限制
+
+            # 2. 如果不是管理员，再看模板的设置
+            limit = result.get('max_concurrent_streams')
+            
+            # 如果 limit 是 NULL (比如用户有扩展信息但没绑模板)，也返回 None
+            return limit
+
     except Exception as e:
         logger.error(f"DB: 查询用户 {user_id} 的并发限制时失败: {e}", exc_info=True)
-        # 出错时返回 0，也会阻止播放
-        return 0
+        # 出错时返回 1，倾向于阻止播放，更安全
+        return 1
