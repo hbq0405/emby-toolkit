@@ -470,40 +470,45 @@ def proxy_all(path):
             else:
                 logger.warning(f"  ➜ 警告：在 PlaybackInfo 请求中未能找到用户ID，无法执行并发检查。路径: {path}, 参数: {request.args}")
 
-            # --- 步骤二：(已移除智能劫持) 直接将请求转发给真实 Emby ---
-            logger.debug(f"并发检查通过，正在将 PlaybackInfo 请求转发至真实 Emby...")
+            # --- 步骤二：在检查通过后，向真实 Emby 请求 PlaybackInfo 并直接返回 ---
+            logger.debug(f"并发检查通过，正在从真实 Emby 获取原始 PlaybackInfo...")
             
             base_url, api_key = _get_real_emby_url_and_key()
+            item_id_match = re.search(r'/Items/(\d+)/PlaybackInfo', path)
             
-            # 构造完整的真实 Emby URL
-            target_url = f"{base_url}/{path.lstrip('/')}"
+            if not item_id_match:
+                # 如果路径不规范，返回错误避免崩溃
+                return Response("Invalid PlaybackInfo path.", status=400, mimetype='text/plain')
             
-            # 准备要转发的头和参数
-            forward_headers = {k: v for k, v in request.headers if k.lower() not in ['host', 'accept-encoding']}
-            forward_headers['Host'] = urlparse(base_url).netloc
+            real_emby_id = item_id_match.group(1)
+            real_playback_info_url = f"{base_url}/Items/{real_emby_id}/PlaybackInfo"
             
+            # 转发原始请求的参数和部分头
             forward_params = request.args.copy()
             forward_params['api_key'] = api_key
+            if user_id:
+                forward_params['UserId'] = user_id
+
+            # Emby 客户端有时会用 POST 请求 PlaybackInfo，所以要兼容
+            headers = {'Accept': 'application/json'}
             
-            # 发起请求
-            resp = requests.request(
-                method=request.method,
-                url=target_url,
-                headers=forward_headers,
-                params=forward_params,
-                data=request.get_data(),
-                stream=True,
-                timeout=30.0
-            )
+            if request.method == 'POST':
+                resp = requests.post(real_playback_info_url, params=forward_params, headers=headers, json=request.get_json())
+            else: # 默认是 GET
+                resp = requests.get(real_playback_info_url, params=forward_params, headers=headers)
             
-            # 将 Emby 的原始响应返回给客户端
-            excluded_resp_headers = ['content-encoding', 'content-length', 'transfer-encoding', 'connection']
-            response_headers = [(name, value) for name, value in resp.raw.headers.items() if name.lower() not in excluded_resp_headers]
+            resp.raise_for_status()
             
-            return Response(resp.iter_content(chunk_size=8192), resp.status_code, response_headers)
+            # 获取 Emby 返回的原始 JSON 数据
+            playback_info_data = resp.json()
+            
+            logger.debug("成功获取原始 PlaybackInfo，正在将其直接返回给客户端。")
+            
+            # 将原始、未经修改的 JSON 返回给客户端
+            return Response(json.dumps(playback_info_data), mimetype='application/json')
 
         except Exception as e:
-            logger.error(f"处理 PlaybackInfo 转发或并发控制时出错: {e}", exc_info=True)
+            logger.error(f"处理 PlaybackInfo 或并发控制时出错: {e}", exc_info=True)
             return Response("Proxy error during PlaybackInfo handling.", status=500, mimetype='text/plain')
     # --- 1. WebSocket 代理逻辑 (已添加超详细日志) ---
     if 'Upgrade' in request.headers and request.headers.get('Upgrade', '').lower() == 'websocket':
