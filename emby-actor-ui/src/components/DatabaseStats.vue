@@ -1,4 +1,4 @@
-<!-- src/components/DatabaseStats.vue (最终修复版) -->
+<!-- src/components/DatabaseStats.vue (最终修复版 - 正序日志) -->
 <template>
  <n-layout content-style="padding: 24px;">
   <div>
@@ -96,7 +96,6 @@
             <!-- 系统日志与缓存 -->
             <div>
               <div class="section-title">系统日志与缓存</div>
-              <!-- ★★★ 核心修复 2: 改为 n-space 布局 ★★★ -->
               <n-space justify="space-around" style="width: 100%; margin-top: 12px;">
                 <n-statistic label="翻译缓存" class="centered-statistic" :value="stats.system?.translation_cache_count || 0" />
                 <n-statistic label="已处理" class="centered-statistic" :value="stats.system?.processed_log_count || 0" />
@@ -207,7 +206,6 @@ import {
   NPageHeader, NGrid, NGi, NCard, NStatistic, NSpin, NAlert, NIcon, NSpace, NDivider, NIconWrapper,
   NLog, NButton, NModal, NButtonGroup
 } from 'naive-ui';
-// ★★★ 核心修改3: 引入新图标和 LogViewer 组件 ★★★
 import { 
   FilmOutline as FilmIcon, 
   TvOutline as TvIcon, 
@@ -234,17 +232,19 @@ const error = ref(null);
 const stats = ref({});
 const logRef = ref(null);
 
-// ★★★ 核心修改4: 使用两个独立的 ref 变量来控制不同的模态框 ★★★
-const isRealtimeLogVisible = ref(false); // 控制实时日志模态框
-const isHistoryLogVisible = ref(false);  // 控制历史日志模态框
+const isRealtimeLogVisible = ref(false);
+const isHistoryLogVisible = ref(false);
 
-const logContent = computed(() => props.taskStatus?.logs?.slice().reverse().join('\n') || '等待任务日志...');
+// ★★★ 核心修改 1/2: 移除 .reverse()，让日志正序显示 ★★★
+const logContent = computed(() => props.taskStatus?.logs?.join('\n') || '等待任务日志...');
 
-// 当日志更新或实时日志模态框可见时，滚动到顶部
+// ★★★ 核心修改 2/2: 将滚动位置从 'top' 改为 'bottom' ★★★
+// 当日志更新或实时日志模态框可见时，滚动到底部以查看最新日志
 watch([() => props.taskStatus.logs, isRealtimeLogVisible], async ([, isVisible]) => {
   if (isVisible) {
     await nextTick();
-    logRef.value?.scrollTo({ position: 'top', slient: true });
+    // 滚动到底部，而不是顶部
+    logRef.value?.scrollTo({ position: 'bottom', slient: true });
   }
 }, { deep: true });
 

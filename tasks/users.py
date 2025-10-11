@@ -20,7 +20,7 @@ def task_sync_all_user_data(processor):
     - 新增逻辑：在同步开始时，清理掉本地数据库中存在、但 Emby 服务器上已不存在的用户。
     """
     task_name = "同步用户数据"
-    logger.info(f"--- 开始执行 '{task_name}' 任务 ---")
+    logger.trace(f"--- 开始执行 '{task_name}' 任务 ---")
     
     try:
         task_manager.update_status_from_thread(0, "正在获取所有Emby用户...")
@@ -211,7 +211,7 @@ def task_auto_sync_template_on_policy_change(processor, updated_user_id: str):
         pass 
 
     task_name = f"自动同步权限 (源用户: '{user_name_for_log}')"
-    logger.info(f"--- 开始执行 '{task_name}' 任务 ---")
+    logger.trace(f"--- 开始执行 '{task_name}' 任务 ---")
     
     try:
         with connection.get_db_connection() as conn:
@@ -292,7 +292,7 @@ def task_auto_sync_template_on_policy_change(processor, updated_user_id: str):
                         time.sleep(0.2)
             
             conn.commit()
-            logger.info(f"--- '{task_name}' 任务成功完成 ---")
+            logger.trace(f"--- '{task_name}' 任务成功完成 ---")
 
     except Exception as e:
         logger.error(f"执行 '{task_name}' 任务时发生严重错误: {e}", exc_info=True)
