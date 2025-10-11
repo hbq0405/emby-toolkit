@@ -10,7 +10,6 @@ import time
 import uuid 
 from datetime import datetime, timezone
 from gevent import spawn
-import gevent
 from geventwebsocket.websocket import WebSocket
 from websocket import create_connection
 from database import collection_db, user_db, session_db
@@ -441,44 +440,53 @@ def proxy_all(path):
     # ★★★ 并发控制逻辑 ★★★
     if 'PlaybackInfo' in path and '/Items/' in path:
         try:
-            # --- 步骤一：执行最终的并发裁决 ---
-            
+            # --- 步骤一：检查并发
             user_id_match = re.search(r'/Users/([^/]+)/', path)
             user_id = user_id_match.group(1) if user_id_match else request.args.get('UserId')
 
             if user_id:
-                limit = user_db.get_user_stream_limit(user_id)
+                limit = session_db.get_user_stream_limit(user_id)
                 
                 if limit is not None and limit > 0:
-                    current_streams = session_db.get_active_session_count(user_id)
-                    
-                    # 场景一：并发数未达到上限，直接放行
-                    if current_streams < limit:
-                        logger.info(f"  ➜ Concurrency check PASSED for user {user_id} ({current_streams}/{limit}). Request proceeds immediately.")
-                    
-                    # 场景二：并发数达到或超过上限，进入延迟裁决
-                    else:
-                        logger.warning(f"  ➜ Concurrency limit reached for user {user_id} ({current_streams}/{limit}). Entering 5-second confirmation delay...")
-                        
-                        # ★★★ 核心逻辑：阻塞当前请求，等待5秒 ★★★
-                        gevent.sleep(5)
-                        
-                        # ★★★ 重新检查数据库，确认最终状态 ★★★
-                        streams_after_wait = session_db.get_active_session_count(user_id)
-                        logger.info(f"  ➜ Delay finished. Re-checking streams for user {user_id}: {streams_after_wait}/{limit}.")
+                    active_sessions = session_db.get_active_sessions(user_id)
+                    current_streams = len(active_sessions)
 
-                        # 如果5秒后，并发数依然超限，说明是真正的违规
-                        if streams_after_wait >= limit:
-                            logger.warning(f"    ➜ VIOLATION CONFIRMED. Rejecting new playback request for user {user_id}.")
+                    if current_streams >= limit:
+                        # ★★★ 宽限期核心逻辑 ★★★
+                        # 检查最近的活动时间，如果小于15秒，就认为是换集，直接放行
+                        
+                        # 定义一个宽限期，单位：秒。15秒足够覆盖绝大多数网络延迟
+                        GRACE_PERIOD_SECONDS = 15 
+                        
+                        now = datetime.now(timezone.utc)
+                        is_in_grace_period = False
+
+                        if active_sessions:
+                            # 找到所有活动会话中，最近的那一个时间戳
+                            most_recent_activity_time = max(s['last_updated_at'] for s in active_sessions)
+                            seconds_since_last_activity = (now - most_recent_activity_time).total_seconds()
+                            
+                            if seconds_since_last_activity < GRACE_PERIOD_SECONDS:
+                                is_in_grace_period = True
+
+                        if is_in_grace_period:
+                            logger.info(f"  ➜ 并发检查：用户 {user_id} 已达上限，但检测到 {seconds_since_last_activity:.1f} 秒内的近期活动，进入 {GRACE_PERIOD_SECONDS} 秒宽限期，临时放行。")
+                        else:
+                            logger.warning(f"  ➜ 并发超限！用户 {user_id} (限制: {limit}, 当前: {current_streams}) 的播放请求被拒绝 (无近期活动)。")
                             error_response = {
-                                "MediaSources": [], "PlaySessionId": None, "ErrorCode": "NoCompatibleStream",
-                                "Response": "Error", "Message": f"同时观看的设备数量已达到上限 ({limit}个)！"
+                                "MediaSources": [],
+                                "PlaySessionId": None,
+                                "ErrorCode": "PlaybackLimitReached",
+                                "Response": "Error",
+                                "Message": f"同时观看的设备数量已达到上限 ({limit}个)！"
                             }
                             return Response(json.dumps(error_response), status=200, mimetype='application/json')
-                        
-                        # 如果5秒后，并发数已恢复正常，说明是换集
-                        else:
-                            logger.info(f"    ➜ False alarm. Determined to be a session switch. Allowing new playback for user {user_id}.")
+                    else:
+                        logger.info(f"  ➜ 并发检查通过。用户 {user_id} (限制: {limit}, 当前: {current_streams})，请求放行。")
+                else:
+                    logger.info(f"  ➜ 用户 {user_id} 无并发限制或为管理员，请求放行。")
+            else:
+                logger.warning(f"  ➜ 警告：在 PlaybackInfo 请求中未能找到用户ID，无法执行并发检查。路径: {path}, 参数: {request.args}")
 
             # --- 步骤二：如果并发检查通过，则继续执行智能劫持逻辑 ---
             item_id_match = re.search(r'/Items/(\d+)/PlaybackInfo', path)
