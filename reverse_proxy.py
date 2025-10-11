@@ -460,25 +460,28 @@ def proxy_all(path):
                     
                     # 场景二：并发数达到或超过上限，进入延迟裁决
                     else:
-                        logger.warning(f"  ➜ 并发达到上限！用户 '{user_name}' (当前: {current_streams}, 限制: {limit})，进入5秒延迟确认...")
+                        logger.warning(f"  ➜ 并发达到上限！用户 '{user_name}' (当前: {current_streams}, 限制: {limit})，进入循环延迟确认 (1秒/次，共5次)...")
                         
-                        # 使用 gevent.sleep 避免阻塞
-                        time.sleep(5)
+                        # 使用循环和 gevent.sleep 避免阻塞，并进行多次检查
+                        delay_passed = False
+                        for i in range(5): # 循环5次
+                            time.sleep(1) # 每次延迟1秒
+                            streams_after_wait = session_db.get_active_session_count(user_id)
+                            logger.info(f"  ➜ 第 {i+1} 次检查用户 '{user_name}' 的并发数: {streams_after_wait}/{limit}。")
+                            
+                            if streams_after_wait < limit:
+                                logger.info(f"    ➜ 并发已恢复正常。允许用户 '{user_name}' 的新播放请求。")
+                                delay_passed = True
+                                break # 并发恢复正常，跳出循环
                         
-                        streams_after_wait = session_db.get_active_session_count(user_id)
-                        logger.info(f"  ➜ 延迟结束，再次检查用户 '{user_name}' 的并发数: {streams_after_wait}/{limit}。")
-
-                        # 如果5秒后，并发数依然超限，说明是真正的违规
-                        if streams_after_wait >= limit:
+                        if not delay_passed: # 如果循环结束后，并发依然超限
                             logger.warning(f"    ➜ 确认违规！正在拒绝用户 '{user_name}' 的新播放请求。")
                             error_response = {
                                 "MediaSources": [], "PlaySessionId": None, "ErrorCode": "NoCompatibleStream",
                                 "Response": "Error", "Message": f"同时观看的设备数量已达到上限 ({limit}个)！"
                             }
                             return Response(json.dumps(error_response), status=200, mimetype='application/json')
-                        
-                        # 如果5秒后，并发数已恢复正常，说明是换集
-                        else:
+                        else: # 如果循环中途跳出，说明并发已恢复正常，继续执行后续逻辑
                             logger.info(f"    ➜ 虚惊一场，判定为换集操作。允许用户 '{user_name}' 的新播放请求。")
 
             # --- 步骤二：如果并发检查通过，则继续执行智能劫持逻辑 ---
