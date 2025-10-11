@@ -148,7 +148,7 @@ def evaluate_cast_processing_quality(
         final_actor_score = min(10.0, score)
         accumulated_score += final_actor_score
         
-        logger.debug(f"  ➜ [{i+1}/{total_actors}] 演员: '{actor_name}' (角色: '{actor_role}') | 单项评分: {final_actor_score:.1f}")
+        logger.debug(f"    └─ [{i+1}/{total_actors}] 演员: '{actor_name}' (角色: '{actor_role}') | 单项评分: {final_actor_score:.1f}")
 
     avg_score = accumulated_score / total_actors if total_actors > 0 else 0.0
     
