@@ -482,7 +482,7 @@ def proxy_all(path):
                             }
                             return Response(json.dumps(error_response), status=200, mimetype='application/json')
                         else: # 如果循环中途跳出，说明并发已恢复正常，继续执行后续逻辑
-                            logger.info(f"    ➜ 虚惊一场，判定为换集操作。允许用户 '{user_name}' 的新播放请求。")
+                            logger.info(f"    ➜ 判定为换集操作。允许用户 '{user_name}' 的新播放请求。")
 
             # --- 步骤二：如果并发检查通过，则继续执行智能劫持逻辑 ---
             item_id_match = re.search(r'/Items/(\d+)/PlaybackInfo', path)
