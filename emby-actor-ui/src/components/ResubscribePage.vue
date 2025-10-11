@@ -46,12 +46,41 @@
           </n-space>
         </template>
       </n-page-header>
+
+      <!-- ★★★ START: 新增的筛选和排序控件 ★★★ -->
+      <n-space justify="space-between" align="center" style="margin-top: 24px; margin-bottom: -12px;">
+        <n-input
+          v-model:value="searchQuery"
+          placeholder="按名称搜索..."
+          clearable
+          style="width: 240px;"
+        />
+        <n-space align="center">
+          <n-select
+            v-model:value="sortBy"
+            :options="sortOptions"
+            style="width: 150px;"
+          />
+          <n-button-group>
+            <n-button @click="sortOrder = 'asc'" :type="sortOrder === 'asc' ? 'primary' : 'default'">
+              <template #icon><n-icon :component="ArrowUpIcon" /></template>
+              升序
+            </n-button>
+            <n-button @click="sortOrder = 'desc'" :type="sortOrder === 'desc' ? 'primary' : 'default'">
+              <template #icon><n-icon :component="ArrowDownIcon" /></template>
+              降序
+            </n-button>
+          </n-button-group>
+        </n-space>
+      </n-space>
+      <!-- ★★★ END: 新增的筛选和排序控件 ★★★ -->
+
       <n-divider />
 
       <div v-if="isLoading" class="center-container"><n-spin size="large" /></div>
       <div v-else-if="error" class="center-container"><n-alert title="加载错误" type="error">{{ error }}</n-alert></div>
       <div v-else-if="displayedItems.length > 0">
-        <n-grid cols="1 s:1 m:2 l:3 xl:4" :x-gap="20" :y-gap="20" responsive="screen">
+        <n-grid cols="1 s:2 m:2 l:3 xl:4 2xl:5" :x-gap="20" :y-gap="20" responsive="screen">
           <n-gi v-for="(item, index) in displayedItems" :key="item.item_id">
             <n-card 
               class="dashboard-card series-card" 
@@ -65,7 +94,7 @@
               />
               
               <div class="card-body-wrapper">
-                <div class="card-poster-container" @click="handleCardClick($event, item, index)">
+                <div class="card-poster-container" @click.stop="handleCardClick($event, item, index)">
                   <n-image lazy :src="getPosterUrl(item.item_id)" class="card-poster" object-fit="cover" />
                 </div>
 
@@ -138,8 +167,10 @@
 <script setup>
 import { ref, onMounted, onUnmounted, computed, h, watch, nextTick } from 'vue';
 import axios from 'axios';
-import { NLayout, NPageHeader, NDivider, NEmpty, NTag, NButton, NSpace, NIcon, useMessage, NGrid, NGi, NCard, NImage, NEllipsis, NSpin, NAlert, NRadioGroup, NRadioButton, NModal, NTooltip, NText, NDropdown, useDialog, NCheckbox } from 'naive-ui';
-import { SyncOutline, TrashOutline } from '@vicons/ionicons5';
+// ★★★ 1/4: 导入新增的 Naive UI 组件 ★★★
+import { NLayout, NPageHeader, NDivider, NEmpty, NTag, NButton, NSpace, NIcon, useMessage, NGrid, NGi, NCard, NImage, NEllipsis, NSpin, NAlert, NRadioGroup, NRadioButton, NModal, NTooltip, NText, NDropdown, useDialog, NCheckbox, NInput, NSelect, NButtonGroup } from 'naive-ui';
+// ★★★ 2/4: 导入新增的图标 ★★★
+import { SyncOutline, TrashOutline, ArrowUpOutline as ArrowUpIcon, ArrowDownOutline as ArrowDownIcon } from '@vicons/ionicons5';
 import { useConfig } from '../composables/useConfig.js';
 import ResubscribeSettingsPage from './settings/ResubscribeSettingsPage.vue';
 
@@ -164,12 +195,53 @@ const PAGE_SIZE = 24;
 const selectedItems = ref(new Set());
 const lastSelectedIndex = ref(-1);
 
+// ★★★ 3/4: 新增用于筛选和排序的状态 ★★★
+const searchQuery = ref('');
+const sortBy = ref('item_name');
+const sortOrder = ref('asc');
+const sortOptions = ref([
+  { label: '按名称', value: 'item_name' },
+  // 未来可以添加更多排序选项，例如按添加日期等
+]);
+
 const isTaskRunning = (taskName) => props.taskStatus.is_running && props.taskStatus.current_action.includes(taskName);
 
+// ★★★ 4/4: 核心修改 - 增强 filteredItems 计算属性，集成所有筛选和排序逻辑 ★★★
 const filteredItems = computed(() => {
-  if (filter.value === 'needed') return allItems.value.filter(item => item.status === 'needed');
-  if (filter.value === 'ignored') return allItems.value.filter(item => item.status === 'ignored');
-  return allItems.value;
+  let items = [...allItems.value];
+
+  // 1. 按状态筛选 (原有逻辑)
+  if (filter.value === 'needed') {
+    items = items.filter(item => item.status === 'needed');
+  } else if (filter.value === 'ignored') {
+    items = items.filter(item => item.status === 'ignored');
+  }
+
+  // 2. 按名称搜索 (新增逻辑)
+  if (searchQuery.value) {
+    const query = searchQuery.value.toLowerCase();
+    items = items.filter(item => item.item_name.toLowerCase().includes(query));
+  }
+
+  // 3. 排序 (新增逻辑)
+  items.sort((a, b) => {
+    const valA = a[sortBy.value];
+    const valB = b[sortBy.value];
+    
+    let comparison = 0;
+    // 优先处理中文字符串排序
+    if (typeof valA === 'string' && typeof valB === 'string') {
+      comparison = valA.localeCompare(valB, 'zh-Hans-CN');
+    } else {
+      // 其他类型的备用排序
+      comparison = valA > valB ? 1 : (valA < valB ? -1 : 0);
+    }
+    
+    // 根据升序或降序返回结果
+    return sortOrder.value === 'desc' ? -comparison : comparison;
+  });
+
+  return items;
 });
 
 const getStatusInfo = (status) => {
@@ -189,7 +261,8 @@ const fetchData = async () => {
   try {
     const response = await axios.get('/api/resubscribe/library_status');
     allItems.value = response.data;
-  } catch (err) {
+  } catch (err)
+ {
     error.value = err.response?.data?.error || '获取洗版状态失败。';
   } finally {
     isLoading.value = false;
@@ -216,8 +289,12 @@ const setupObserver = () => {
   });
 };
 
+// 监听 filteredItems 的变化，当筛选或排序条件改变时，重置 displayedItems 并重新设置观察者
 watch(filteredItems, (newFilteredItems) => {
   displayedItems.value = newFilteredItems.slice(0, PAGE_SIZE);
+  // 重置多选状态
+  selectedItems.value.clear();
+  lastSelectedIndex.value = -1;
   setupObserver();
 }, { immediate: true });
 
@@ -228,9 +305,12 @@ const handleCardClick = (event, item, index) => {
   const itemId = item.item_id;
   const isSelected = selectedItems.value.has(itemId);
 
+  // 查找当前 item 在 displayedItems 中的实际索引
+  const displayedIndex = displayedItems.value.findIndex(d => d.item_id === itemId);
+
   if (event.shiftKey && lastSelectedIndex.value !== -1) {
-    const start = Math.min(lastSelectedIndex.value, index);
-    const end = Math.max(lastSelectedIndex.value, index);
+    const start = Math.min(lastSelectedIndex.value, displayedIndex);
+    const end = Math.max(lastSelectedIndex.value, displayedIndex);
     for (let i = start; i <= end; i++) {
       const idInRange = displayedItems.value[i].item_id;
       selectedItems.value.add(idInRange);
@@ -242,7 +322,7 @@ const handleCardClick = (event, item, index) => {
       selectedItems.value.add(itemId);
     }
   }
-  lastSelectedIndex.value = index;
+  lastSelectedIndex.value = displayedIndex;
 };
 
 const batchActions = computed(() => {
@@ -444,17 +524,22 @@ watch(() => props.taskStatus, (newStatus, oldStatus) => {
 .series-card {
   cursor: pointer;
   transition: transform 0.2s ease-in-out;
+  display: flex; /* 使用flex布局 */
+  flex-direction: column; /* 垂直排列 */
+  height: 100%; /* 确保卡片填满网格单元 */
 }
 .series-card:hover {
   transform: translateY(-4px);
 }
-.center-container { display: flex; justify-content: center; align-items: center; height: calc(100vh - 200px); }
+.center-container { display: flex; justify-content: center; align-items: center; height: calc(100vh - 250px); }
 
 .card-body-wrapper {
   display: flex;
   gap: 12px;
+  flex-grow: 1; /* 让内容区占据剩余空间 */
+  min-height: 0;
 }
-.card-poster-container { flex-shrink: 0; width: 160px; height: 240px; overflow: hidden; }
+.card-poster-container { flex-shrink: 0; width: 120px; height: 180px; overflow: hidden; border-radius: 4px; }
 .card-poster { width: 100%; height: 100%; }
 .card-content-container { 
   flex-grow: 1; 
@@ -464,27 +549,44 @@ watch(() => props.taskStatus, (newStatus, oldStatus) => {
   min-width: 0; 
 }
 .card-header { display: flex; justify-content: space-between; align-items: flex-start; gap: 8px; flex-shrink: 0; }
-.card-title { font-weight: 600; font-size: 1.1em; line-height: 1.3; }
+.card-title { font-weight: 600; font-size: 1.05em; line-height: 1.3; }
 .card-status-area { flex-grow: 1; padding-top: 8px; }
 .reason-text { font-size: 0.85em; }
 .info-text { font-size: 0.85em; }
 .loader-trigger { height: 50px; display: flex; justify-content: center; align-items: center; }
 
-/* ★★★ START: 调整卡片操作区样式 - 居中对齐 ★★★ */
 .card-actions { 
   border-top: 1px solid var(--n-border-color); 
   padding-top: 12px; 
-  margin-top: 12px; 
+  margin-top: auto; /* 关键：将操作区推到底部 */
   flex-shrink: 0; 
   display: flex;
   justify-content: center;
 }
-/* ★★★ END: 调整卡片操作区样式 ★★★ */
 
 .series-card.dashboard-card > :deep(.n-card__content) { 
+  display: flex; /* 确保内容区也是flex */
   flex-direction: column !important;
   justify-content: flex-start !important; 
   padding: 12px !important; 
-  gap: 0 !important;
+  gap: 12px !important; /* 调整内部间距 */
+  height: 100%; /* 继承高度 */
+}
+
+/* 响应式调整，让小屏幕下卡片更好看 */
+@media (max-width: 640px) {
+  .card-body-wrapper {
+    flex-direction: column;
+    align-items: center;
+  }
+  .card-poster-container {
+    width: 160px;
+    height: 240px;
+  }
+  .card-content-container {
+    width: 100%;
+    align-items: center;
+    text-align: center;
+  }
 }
 </style>
