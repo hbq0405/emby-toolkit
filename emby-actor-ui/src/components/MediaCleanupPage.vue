@@ -43,14 +43,59 @@
           </n-space>
         </template>
       </n-page-header>
+      
+      <!-- ★★★ START: 新增的筛选和排序控件 ★★★ -->
+      <n-space justify="space-between" align="center" style="margin-top: 24px;">
+        <n-space align="center">
+          <n-input
+            v-model:value="searchQuery"
+            placeholder="按名称搜索..."
+            clearable
+            style="width: 200px;"
+          />
+          <n-select
+            v-model:value="filterStatus"
+            :options="statusOptions"
+            style="width: 140px;"
+          />
+          <n-select
+            v-model:value="filterSeries"
+            :options="seriesOptions"
+            placeholder="所有剧集"
+            filterable
+            clearable
+            style="width: 220px;"
+          />
+        </n-space>
+        <n-space align="center">
+          <n-select
+            v-model:value="sortBy"
+            :options="sortOptions"
+            style="width: 180px;"
+          />
+          <n-button-group>
+            <n-button @click="sortOrder = 'asc'" :type="sortOrder === 'asc' ? 'primary' : 'default'">
+              <template #icon><n-icon :component="ArrowUpIcon" /></template>
+              升序
+            </n-button>
+            <n-button @click="sortOrder = 'desc'" :type="sortOrder === 'desc' ? 'primary' : 'default'">
+              <template #icon><n-icon :component="ArrowDownIcon" /></template>
+              降序
+            </n-button>
+          </n-button-group>
+        </n-space>
+      </n-space>
+      <!-- ★★★ END: 新增的筛选和排序控件 ★★★ -->
+
       <n-divider />
 
       <div v-if="isLoading" class="center-container"><n-spin size="large" /></div>
       <div v-else-if="error" class="center-container"><n-alert title="加载错误" type="error">{{ error }}</n-alert></div>
-      <div v-else-if="allTasks.length > 0">
+      <!-- ★★★ 修改点: 将 :data 绑定到新的计算属性 displayedTasks ★★★ -->
+      <div v-else-if="displayedTasks.length > 0">
         <n-data-table
           :columns="columns"
-          :data="allTasks"
+          :data="displayedTasks"
           :pagination="pagination"
           :row-key="row => row.id"
           v-model:checked-row-keys="selectedTaskIds"
@@ -81,13 +126,16 @@ import axios from 'axios';
 import { 
   NLayout, NPageHeader, NDivider, NEmpty, NTag, NButton, NSpace, NIcon, 
   useMessage, NSpin, NAlert, NDataTable, NDropdown, useDialog, 
-  NTooltip, NText, NModal
+  NTooltip, NText, NModal, NInput, NSelect, NButtonGroup
 } from 'naive-ui';
 import { 
   ScanCircleOutline as ScanIcon, 
   TrashBinOutline as DeleteIcon, 
   CheckmarkCircleOutline as KeepIcon,
-  SettingsOutline as SettingsIcon
+  SettingsOutline as SettingsIcon,
+  // ★★★ 新增图标导入 ★★★
+  ArrowUpOutline as ArrowUpIcon,
+  ArrowDownOutline as ArrowDownIcon
 } from '@vicons/ionicons5';
 import MediaCleanupSettingsPage from './settings/MediaCleanupSettingsPage.vue';
 
@@ -100,6 +148,68 @@ const isLoading = ref(true);
 const error = ref(null);
 const selectedTasks = ref(new Set());
 const showSettingsModal = ref(false);
+
+// ★★★ START: 新增用于筛选和排序的状态 ★★★
+const searchQuery = ref('');
+const filterStatus = ref('all');
+const filterSeries = ref(null);
+const sortBy = ref('id'); // 默认按检查时间（用ID代替）降序
+const sortOrder = ref('desc');
+
+// 筛选和排序的选项
+const statusOptions = ref([
+  { label: '所有状态', value: 'all' },
+]);
+
+const seriesOptions = computed(() => {
+  const series = new Set(allTasks.value.map(task => task.item_name));
+  const options = Array.from(series).map(name => ({ label: name, value: name }));
+  // 按名称排序
+  return options.sort((a, b) => a.label.localeCompare(b.label));
+});
+
+const sortOptions = ref([
+  { label: '按上次检查时间', value: 'id' }, // 使用 ID 作为检查时间的代理
+  { label: '按名称', value: 'item_name' },
+]);
+
+// ★★★ 核心逻辑: 创建一个计算属性来处理筛选和排序后的数据 ★★★
+const displayedTasks = computed(() => {
+  let tasks = [...allTasks.value];
+
+  // 1. 按名称搜索
+  if (searchQuery.value) {
+    const query = searchQuery.value.toLowerCase();
+    tasks = tasks.filter(task => task.item_name.toLowerCase().includes(query));
+  }
+
+  // 2. 按剧集筛选
+  if (filterSeries.value) {
+    tasks = tasks.filter(task => task.item_name === filterSeries.value);
+  }
+  
+  // 3. 按状态筛选 (未来可扩展)
+  // if (filterStatus.value !== 'all') { ... }
+
+  // 4. 排序
+  tasks.sort((a, b) => {
+    const valA = a[sortBy.value];
+    const valB = b[sortBy.value];
+    
+    let comparison = 0;
+    if (typeof valA === 'string') {
+      comparison = valA.localeCompare(valB);
+    } else {
+      comparison = valA > valB ? 1 : (valA < valB ? -1 : 0);
+    }
+    
+    return sortOrder.value === 'desc' ? -comparison : comparison;
+  });
+
+  return tasks;
+});
+// ★★★ END: 新增逻辑 ★★★
+
 
 const selectedTaskIds = computed({
   get: () => Array.from(selectedTasks.value),
@@ -170,8 +280,7 @@ const executeCleanup = async (ids) => {
   try {
     await axios.post('/api/cleanup/execute', { task_ids: ids });
     message.success('清理任务已提交到后台执行。');
-    allTasks.value = allTasks.value.filter(task => !ids.includes(task.id));
-    selectedTasks.value.clear();
+    fetchData(); // 重新加载数据
   } catch (err) {
     message.error(err.response?.data?.error || '提交清理任务失败。');
   }
@@ -181,8 +290,7 @@ const ignoreTasks = async (ids) => {
   try {
     const response = await axios.post('/api/cleanup/ignore', { task_ids: ids });
     message.success(response.data.message);
-    allTasks.value = allTasks.value.filter(task => !ids.includes(task.id));
-    selectedTasks.value.clear();
+    fetchData(); // 重新加载数据
   } catch (err) {
     message.error(err.response?.data?.error || '忽略任务失败。');
   }
@@ -192,8 +300,7 @@ const deleteTasks = async (ids) => {
   try {
     const response = await axios.post('/api/cleanup/delete', { task_ids: ids });
     message.success(response.data.message);
-    allTasks.value = allTasks.value.filter(task => !ids.includes(task.id));
-    selectedTasks.value.clear();
+    fetchData(); // 重新加载数据
   } catch (err) {
     message.error(err.response?.data?.error || '删除任务失败。');
   }
@@ -208,7 +315,6 @@ const formatBytes = (bytes, decimals = 2) => {
   return parseFloat((bytes / Math.pow(k, i)).toFixed(dm)) + ' ' + sizes[i];
 };
 
-// ★★★ 核心修改 1/3: 新增一个特效标签的“翻译”函数 ★★★
 const formatEffectTagForDisplay = (tag) => {
   if (!tag) return 'SDR';
   const tag_lower = String(tag).toLowerCase();
@@ -238,13 +344,10 @@ const columns = computed(() => [
     render(row) {
       const versions = row.versions_info_json || [];
       
-      // ★★★ 核心修改 2/3: 简化 getVersionDisplayInfo 函数 ★★★
       const getVersionDisplayInfo = (v) => {
-        // 后端已经计算好了所有标准化属性，前端只负责展示
         return {
           resolution: v.resolution || 'Unknown',
           quality: (v.quality || 'Unknown').toUpperCase(),
-          // 调用新的翻译函数来显示特效
           effect: formatEffectTagForDisplay(v.effect),
           size: formatBytes(v.filesize || 0)
         };
@@ -269,7 +372,6 @@ const columns = computed(() => [
               h(NIcon, { component: icon, color: iconColor, size: 16 }),
               h(NSpace, { size: 'small' }, {
                 default: () => [
-                  // ★★★ 核心修改 3/3: 直接使用 displayInfo 中的值 ★★★
                   h(NTag, { size: 'small', bordered: false }, { default: () => displayInfo.resolution }),
                   h(NTag, { size: 'small', bordered: false, type: 'info' }, { default: () => displayInfo.quality }),
                   h(NTag, { size: 'small', bordered: false, type: 'warning' }, { default: () => displayInfo.effect }),
@@ -288,11 +390,12 @@ const columns = computed(() => [
   }
 ]);
 
+// ★★★ 修改点: 让分页基于筛选后的数据 ★★★
 const pagination = computed(() => {
-  if (allTasks.value.length > 20) {
+  if (displayedTasks.value.length > 20) {
     return {
       pageSize: 20,
-      pageSizes: [20, 50, 100, { label: '全部', value: allTasks.value.length }],
+      pageSizes: [20, 50, 100, { label: '全部', value: displayedTasks.value.length }],
       showSizePicker: true,
     };
   }
@@ -307,6 +410,6 @@ onMounted(fetchData);
   display: flex;
   justify-content: center;
   align-items: center;
-  height: calc(100vh - 300px);
+  height: calc(100vh - 350px); /* 增加了筛选条的高度 */
 }
 </style>
