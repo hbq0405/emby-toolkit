@@ -55,40 +55,40 @@ def select_best_role(current_role: str, candidate_role: str) -> str:
     # 优先级 1: 豆瓣角色是有效的中文名
     if candidate_is_chinese and not candidate_is_placeholder:
         logger.trace(f"  ➜ 决策: [优先级1] 豆瓣角色是有效中文名。选择豆瓣角色。")
-        logger.debug(f"  ➜ 选择: '{candidate_role}'")
+        logger.debug(f"    └─ 选择: '{candidate_role}'")
         return candidate_role
 
     # 优先级 2: 当前角色是有效的中文名，而豆瓣角色不是。必须保留当前角色！
     if current_is_chinese and not current_is_placeholder and not candidate_is_chinese:
         logger.trace(f"  ➜ 决策: [优先级2] 当前角色是有效中文名，而豆瓣不是。保留当前角色。")
-        logger.debug(f"  ➜ 选择: '{current_role}'")
+        logger.debug(f"    └─ 选择: '{current_role}'")
         return current_role
 
     # 优先级 3: 两者都不是有效的中文名（或都是）。选择一个非占位符的，豆瓣者优先。
     if candidate_role and not candidate_is_placeholder:
         logger.trace(f"  ➜ 决策: [优先级3] 豆瓣角色是有效的非中文名/占位符。选择豆瓣角色。")
-        logger.debug(f"  ➜ 选择: '{candidate_role}'")
+        logger.debug(f"    └─ 选择: '{candidate_role}'")
         return candidate_role
     
     if current_role and not current_is_placeholder:
         logger.trace(f"  ➜ 决策: [优先级4] 当前角色是有效的非中文名/占位符，而豆瓣角色是无效的。保留当前角色。")
-        logger.debug(f"  ➜ 选择: '{current_role}'")
+        logger.debug(f"    └─ 选择: '{current_role}'")
         return current_role
 
     # 优先级 4: 处理占位符。如果两者之一是占位符，则返回一个（豆瓣优先）。
     if candidate_role: # 如果豆瓣有内容（此时只能是占位符）
         logger.trace(f"  ➜ 决策: [优先级5] 豆瓣角色是占位符。选择豆瓣角色。")
-        logger.debug(f"  ➜ 选择: '{candidate_role}'")
+        logger.debug(f"    └─ 选择: '{candidate_role}'")
         return candidate_role
         
     if current_role: # 如果当前有内容（此时只能是占位符）
         logger.trace(f"  ➜ 决策: [优先级6] 当前角色是占位符，豆瓣为空。保留当前角色。")
-        logger.debug(f"  ➜ 选择: '{current_role}'")
+        logger.debug(f"    └─ 选择: '{current_role}'")
         return current_role
 
     # 优先级 5: 所有情况都处理完，只剩下两者都为空。
     logger.trace(f"  ➜ 决策: [优先级7] 所有输入均为空或无效。返回空字符串。")
-    logger.debug(f"  ➜ 选择: ''")
+    logger.debug(f"    └─ 选择: ''")
     return ""
 
 # --- 质量评估 ---

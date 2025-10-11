@@ -1504,7 +1504,7 @@ class MediaProcessor:
                 if cached_count > 0:
                     logger.debug("    ➜ 命中缓存的词条与译文:")
                     for k, v in sorted(cached_results.items()):
-                        logger.debug(f"    └─{k} ➜ {v}")
+                        logger.debug(f"    └─ {k} ➜ {v}")
 
                 if cached_results:
                     final_translation_map.update(cached_results)
