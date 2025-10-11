@@ -32,14 +32,23 @@ server {
     #  核心路由规则 (V4)
     # ====================================================================
 
-    # ★★★ 规则 1：【条件化】转发所有视频流请求 ★★★
-    # 如果设置了 REDIRECT_UPSTREAM，此规则块将生效。
-    # 它会捕获所有主流视频格式、转码流和 .strm 文件，并因为位置靠前而被优先匹配。
-    {% if REDIRECT_UPSTREAM %}
-    location ~* (\.strm$|\.(mkv|mp4|ts|avi|iso|mov|webm|flv)$|/videos/.*stream) {
-        proxy_pass http://redirect_service;
+    location ~ /Items/(\d+)/PlaybackInfo {
+        proxy_pass http://virtual_library_proxy;
     }
-    {% endif %}
+
+    # ★★★ 规则 1 (已修正)：转发所有由 Python 代理生成的虚拟视频路径 ★★★
+    # 这个规则现在可以正确捕获所有 /emby/videos/ 开头的请求，无论后面是否带参数。
+    location /emby/videos/ {
+        # 如果您使用了 REDIRECT_UPSTREAM，就用下面这行
+        {% if REDIRECT_UPSTREAM %}
+        proxy_pass http://redirect_service;
+        
+        # 如果您没有使用 REDIRECT_UPSTREAM，而是希望真实 Emby 处理视频流
+        # 那么应该注释掉上面一行，并使用下面这行
+        {% else %}
+        proxy_pass http://emby_server;
+        {% endif %}
+    }
 
     # --- 以下是虚拟库路由规则 ---
 
@@ -73,10 +82,6 @@ server {
             proxy_pass http://virtual_library_proxy;
         }
         proxy_pass http://emby_server;
-    }
-
-    location ~ /Items/(\d+)/PlaybackInfo {
-        proxy_pass http://virtual_library_proxy;
     }
 
     # 规则 5: WebSocket (保持不变)
