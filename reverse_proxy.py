@@ -10,6 +10,7 @@ import time
 import uuid 
 from datetime import datetime, timezone
 from gevent import spawn
+import gevent
 from geventwebsocket.websocket import WebSocket
 from websocket import create_connection
 from database import collection_db, user_db, session_db
@@ -460,7 +461,7 @@ def proxy_all(path):
                         logger.warning(f"  ➜ Concurrency limit reached for user {user_id} ({current_streams}/{limit}). Entering 5-second confirmation delay...")
                         
                         # ★★★ 核心逻辑：阻塞当前请求，等待5秒 ★★★
-                        time.sleep(5)
+                        gevent.sleep(5)
                         
                         # ★★★ 重新检查数据库，确认最终状态 ★★★
                         streams_after_wait = session_db.get_active_session_count(user_id)

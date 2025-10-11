@@ -32,10 +32,6 @@ server {
     #  核心路由规则 (V4)
     # ====================================================================
 
-    location ~ /Items/(\d+)/PlaybackInfo {
-        proxy_pass http://virtual_library_proxy;
-    }
-
     # ★★★ 规则 1 (已修正)：转发所有由 Python 代理生成的虚拟视频路径 ★★★
     # 这个规则现在可以正确捕获所有 /emby/videos/ 开头的请求，无论后面是否带参数。
     location /emby/videos/ {
@@ -82,6 +78,10 @@ server {
             proxy_pass http://virtual_library_proxy;
         }
         proxy_pass http://emby_server;
+    }
+
+    location ~ /Items/(\d+)/PlaybackInfo {
+        proxy_pass http://virtual_library_proxy;
     }
 
     # 规则 5: WebSocket (保持不变)
