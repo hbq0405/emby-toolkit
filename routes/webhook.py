@@ -339,7 +339,7 @@ def emby_webhook():
     # ★★★             魔法日志 - END             ★★★
     # ★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★
     event_type = data.get("Event") if data else "未知事件"
-    logger.info(f"  ➜ 收到Emby Webhook: {event_type}")
+    logger.debug(f"  ➜ 收到Emby Webhook: {event_type}")
 
     USER_DATA_EVENTS = [
         "item.markfavorite", "item.unmarkfavorite",
@@ -361,7 +361,7 @@ def emby_webhook():
             last_update_time = SYSTEM_UPDATE_MARKERS.get(updated_user_id)
             # 如果找到了标记，并且时间戳在我们的抑制窗口期内
             if last_update_time and (time.time() - last_update_time) < RECURSION_SUPPRESSION_WINDOW:
-                logger.info(f"  ➜ 忽略由系统内部同步触发的用户 '{updated_user_name}' 的权限更新 Webhook。")
+                logger.debug(f"  ➜ 忽略由系统内部同步触发的用户 '{updated_user_name}' 的权限更新 Webhook。")
                 # 为了保险起见，用完就删掉这个标记
                 del SYSTEM_UPDATE_MARKERS[updated_user_id]
                 # 直接返回成功，不再创建任何后台任务

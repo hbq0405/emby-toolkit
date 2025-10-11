@@ -1537,7 +1537,7 @@ class MediaProcessor:
                 item_year = item_details_from_emby.get("ProductionYear")
                 logger.info(f"  ➜ [翻译统计] 5. AI处理 (顾问模式): 提交 {len(remaining_terms)} 条。")
                 if remaining_terms:
-                    logger.debug(f"    ➜ 提交给[顾问模式]的词条: {remaining_terms}")
+                    logger.debug(f"  ➜ 提交给[顾问模式]的词条: {remaining_terms}")
                 quality_results = self.ai_translator.batch_translate(remaining_terms, mode='quality', title=item_title, year=item_year)
                 final_translation_map.update(quality_results)
             
@@ -1546,10 +1546,10 @@ class MediaProcessor:
             
             logger.info(f"  ➜ [翻译统计] 6. 结果总结: 成功翻译 {len(successfully_translated_terms)}/{total_terms_count} 个词条。")
             if successfully_translated_terms:
-                logger.debug("    ➜ 翻译成功列表 (原文 ➜ 译文):")
+                logger.debug("  ➜ 翻译成功列表 (原文 ➜ 译文):")
                 for term in sorted(list(successfully_translated_terms)):
                     translation = final_translation_map.get(term)
-                    logger.debug(f"        {term} ➜ {translation}")
+                    logger.debug(f"    └─ {term} ➜ {translation}")
             if failed_to_translate_terms:
                 logger.warning(f"    ➜ 翻译失败列表 ({len(failed_to_translate_terms)}条): {list(failed_to_translate_terms)}")
 

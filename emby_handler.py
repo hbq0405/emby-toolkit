@@ -1808,7 +1808,7 @@ def force_set_user_policy(user_id: str, policy: Dict[str, Any], base_url: str, a
     except Exception:
         pass # 获取失败则继续使用ID
 
-    logger.info(f"正在为用户 '{user_name_for_log}' (ID: {user_id}) 强制应用新的权限策略...")
+    logger.trace(f"  ➜ 正在为用户 '{user_name_for_log}' (ID: {user_id}) 强制应用新的权限策略...")
     
     policy_update_url = f"{base_url}/Users/{user_id}/Policy"
     headers = {
@@ -1820,14 +1820,14 @@ def force_set_user_policy(user_id: str, policy: Dict[str, Any], base_url: str, a
         response = requests.post(policy_update_url, headers=headers, json=policy, timeout=15)
         
         if response.status_code == 204: # 204 No Content 表示成功
-            logger.info(f"✅ 成功为用户 '{user_name_for_log}' 应用了新的权限策略。")
+            logger.info(f"  ✅ 成功为用户 '{user_name_for_log}' 应用了新的权限策略。")
             return True
         else:
-            logger.error(f"为用户 '{user_name_for_log}' 应用新策略失败。状态码: {response.status_code}, 响应: {response.text}")
+            logger.error(f"  ➜ 为用户 '{user_name_for_log}' 应用新策略失败。状态码: {response.status_code}, 响应: {response.text}")
             return False
             
     except Exception as e:
-        logger.error(f"为用户 '{user_name_for_log}' 应用新策略时发生严重错误: {e}", exc_info=True)
+        logger.error(f"  ➜ 为用户 '{user_name_for_log}' 应用新策略时发生严重错误: {e}", exc_info=True)
         return False
 def delete_emby_user(user_id: str, base_url: str, api_key: str) -> bool:
     """
@@ -1842,20 +1842,20 @@ def delete_emby_user(user_id: str, base_url: str, api_key: str) -> bool:
     except Exception:
         pass
 
-    logger.warning(f"检测到删除用户 '{user_name_for_log}' 的请求，将使用 [自动登录模式] 执行...")
+    logger.warning(f"  ➜ 检测到删除用户 '{user_name_for_log}' 的请求，将使用 [自动登录模式] 执行...")
     
     cfg = config_manager.APP_CONFIG
     admin_user = cfg.get(constants.CONFIG_OPTION_EMBY_ADMIN_USER)
     admin_pass = cfg.get(constants.CONFIG_OPTION_EMBY_ADMIN_PASS)
 
     if not all([admin_user, admin_pass]):
-        logger.error("删除用户操作失败：未配置 Emby 管理员账密。")
+        logger.error("  ➜ 删除用户操作失败：未配置 Emby 管理员账密。")
         return False
 
     access_token, logged_in_user_id = _get_emby_access_token(base_url, admin_user, admin_pass)
     
     if not access_token:
-        logger.error("无法获取临时 AccessToken，删除用户操作中止。")
+        logger.error("  ➜ 无法获取临时 AccessToken，删除用户操作中止。")
         return False
 
     api_url = f"{base_url.rstrip('/')}/Users/{user_id}"
@@ -1869,8 +1869,8 @@ def delete_emby_user(user_id: str, base_url: str, api_key: str) -> bool:
         logger.info(f"  ✅ 成功使用临时令牌删除 Emby 用户 '{user_name_for_log}' (ID: {user_id})。")
         return True
     except requests.exceptions.HTTPError as e:
-        logger.error(f"删除 Emby 用户 '{user_name_for_log}' 时发生HTTP错误: {e.response.status_code} - {e.response.text}")
+        logger.error(f"  ➜ 删除 Emby 用户 '{user_name_for_log}' 时发生HTTP错误: {e.response.status_code} - {e.response.text}")
         return False
     except Exception as e:
-        logger.error(f"删除 Emby 用户 '{user_name_for_log}' 时发生未知错误: {e}")
+        logger.error(f"  ➜ 删除 Emby 用户 '{user_name_for_log}' 时发生未知错误: {e}")
         return False
