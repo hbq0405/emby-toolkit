@@ -2562,7 +2562,8 @@ class MediaProcessor:
                     countries = translate_country_list(tmdb_details.get('origin_country', []))
             studios = [s['Name'] for s in full_details_emby.get('Studios', []) if s.get('Name')]
             tags = [tag['Name'] for tag in full_details_emby.get('TagItems', []) if tag.get('Name')]
-            release_date_str = (full_details_emby.get('PremiereDate') or '0000-01-01T00:00:00.000Z').split('T')[0]
+            premiere_date_raw = full_details_emby.get('PremiereDate')
+            release_date_str = premiere_date_raw.split('T')[0] if premiere_date_raw else None
             official_rating = full_details_emby.get('OfficialRating')
             unified_rating = get_unified_rating(official_rating)
             metadata = {
