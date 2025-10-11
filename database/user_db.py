@@ -256,3 +256,19 @@ def upsert_user_media_data_batch_no_date(user_id: str, items_data: List[Dict[str
     except Exception as e:
         logger.error(f"DB: 批量更新用户 {user_id} 的媒体数据时失败 (no_date): {e}", exc_info=True)
         raise
+
+def get_user_display_name(user_id: str) -> str:
+    """
+    根据用户ID，从数据库中快速获取其显示名称。
+    """
+    sql = "SELECT name FROM emby_users WHERE id = %s"
+    try:
+        from .connection import get_db_connection
+        with get_db_connection() as conn:
+            cursor = conn.cursor()
+            cursor.execute(sql, (user_id,))
+            result = cursor.fetchone()
+            return result['name'] if result else None
+    except Exception:
+        # 如果查询失败，静默处理，返回 None
+        return None

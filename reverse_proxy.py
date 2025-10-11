@@ -446,6 +446,9 @@ def proxy_all(path):
             user_id = user_id_match.group(1) if user_id_match else request.args.get('UserId')
 
             if user_id:
+                # ★★★ 新增：获取用户名用于日志 ★★★
+                user_name = user_db.get_user_display_name(user_id) or user_id
+
                 limit = session_db.get_user_stream_limit(user_id)
                 
                 if limit is not None and limit > 0:
@@ -453,22 +456,21 @@ def proxy_all(path):
                     
                     # 场景一：并发数未达到上限，直接放行
                     if current_streams < limit:
-                        logger.info(f"  ➜ Concurrency check PASSED for user {user_id} ({current_streams}/{limit}). Request proceeds immediately.")
+                        logger.info(f"  ➜ 并发检查通过。用户 '{user_name}' (当前: {current_streams}, 限制: {limit})，请求立即放行。")
                     
                     # 场景二：并发数达到或超过上限，进入延迟裁决
                     else:
-                        logger.warning(f"  ➜ Concurrency limit reached for user {user_id} ({current_streams}/{limit}). Entering 5-second confirmation delay...")
+                        logger.warning(f"  ➜ 并发达到上限！用户 '{user_name}' (当前: {current_streams}, 限制: {limit})，进入5秒延迟确认...")
                         
-                        # ★★★ 核心逻辑：阻塞当前请求，等待5秒 ★★★
+                        # 使用 gevent.sleep 避免阻塞
                         time.sleep(5)
                         
-                        # ★★★ 重新检查数据库，确认最终状态 ★★★
                         streams_after_wait = session_db.get_active_session_count(user_id)
-                        logger.info(f"  ➜ Delay finished. Re-checking streams for user {user_id}: {streams_after_wait}/{limit}.")
+                        logger.info(f"  ➜ 延迟结束，再次检查用户 '{user_name}' 的并发数: {streams_after_wait}/{limit}。")
 
                         # 如果5秒后，并发数依然超限，说明是真正的违规
                         if streams_after_wait >= limit:
-                            logger.warning(f"    ➜ VIOLATION CONFIRMED. Rejecting new playback request for user {user_id}.")
+                            logger.warning(f"    ➜ 确认违规！正在拒绝用户 '{user_name}' 的新播放请求。")
                             error_response = {
                                 "MediaSources": [], "PlaySessionId": None, "ErrorCode": "NoCompatibleStream",
                                 "Response": "Error", "Message": f"同时观看的设备数量已达到上限 ({limit}个)！"
@@ -477,7 +479,7 @@ def proxy_all(path):
                         
                         # 如果5秒后，并发数已恢复正常，说明是换集
                         else:
-                            logger.info(f"    ➜ False alarm. Determined to be a session switch. Allowing new playback for user {user_id}.")
+                            logger.info(f"    ➜ 虚惊一场，判定为换集操作。允许用户 '{user_name}' 的新播放请求。")
 
             # --- 步骤二：如果并发检查通过，则继续执行智能劫持逻辑 ---
             item_id_match = re.search(r'/Items/(\d+)/PlaybackInfo', path)
