@@ -437,6 +437,98 @@ proxy_app = Flask(__name__)
 @proxy_app.route('/', defaults={'path': ''})
 @proxy_app.route('/<path:path>', methods=['GET', 'POST', 'PUT', 'DELETE', 'HEAD', 'OPTIONS'])
 def proxy_all(path):
+    # ★★★ 并发控制逻辑 ★★★
+    if 'PlaybackInfo' in path and '/Items/' in path:
+        try:
+            # --- 步骤一：执行最终的并发裁决 ---
+            
+            user_id_match = re.search(r'/Users/([^/]+)/', path)
+            user_id = user_id_match.group(1) if user_id_match else request.args.get('UserId')
+
+            if user_id:
+                limit = user_db.get_user_stream_limit(user_id)
+                
+                if limit is not None and limit > 0:
+                    current_streams = session_db.get_active_session_count(user_id)
+                    
+                    # 场景一：并发数未达到上限，直接放行
+                    if current_streams < limit:
+                        logger.info(f"  ➜ Concurrency check PASSED for user {user_id} ({current_streams}/{limit}). Request proceeds immediately.")
+                    
+                    # 场景二：并发数达到或超过上限，进入延迟裁决
+                    else:
+                        logger.warning(f"  ➜ Concurrency limit reached for user {user_id} ({current_streams}/{limit}). Entering 5-second confirmation delay...")
+                        
+                        # ★★★ 核心逻辑：阻塞当前请求，等待5秒 ★★★
+                        time.sleep(5)
+                        
+                        # ★★★ 重新检查数据库，确认最终状态 ★★★
+                        streams_after_wait = session_db.get_active_session_count(user_id)
+                        logger.info(f"  ➜ Delay finished. Re-checking streams for user {user_id}: {streams_after_wait}/{limit}.")
+
+                        # 如果5秒后，并发数依然超限，说明是真正的违规
+                        if streams_after_wait >= limit:
+                            logger.warning(f"    ➜ VIOLATION CONFIRMED. Rejecting new playback request for user {user_id}.")
+                            error_response = {
+                                "MediaSources": [], "PlaySessionId": None, "ErrorCode": "NoCompatibleStream",
+                                "Response": "Error", "Message": f"同时观看的设备数量已达到上限 ({limit}个)！"
+                            }
+                            return Response(json.dumps(error_response), status=200, mimetype='application/json')
+                        
+                        # 如果5秒后，并发数已恢复正常，说明是换集
+                        else:
+                            logger.info(f"    ➜ False alarm. Determined to be a session switch. Allowing new playback for user {user_id}.")
+
+            # --- 步骤二：如果并发检查通过，则继续执行智能劫持逻辑 ---
+            item_id_match = re.search(r'/Items/(\d+)/PlaybackInfo', path)
+            if item_id_match:
+                real_emby_id = item_id_match.group(1)
+                logger.info(f"截获到针对真实项目 '{real_emby_id}' 的 PlaybackInfo 请求（可能来自虚拟库上下文）。")
+                
+                # ... (后续的智能劫持逻辑保持不变) ...
+                base_url, api_key = _get_real_emby_url_and_key()
+                
+                # 确保 user_id 存在，以便转发请求
+                if not user_id:
+                    user_id = request.args.get('UserId', '') # 再次获取以防万一
+
+                real_playback_info_url = f"{base_url}/Items/{real_emby_id}/PlaybackInfo"
+                
+                forward_params = request.args.copy()
+                forward_params['api_key'] = api_key
+                forward_params['UserId'] = user_id
+
+                headers = {'Accept': 'application/json'}
+                
+                logger.debug(f"正在向真实Emby请求PlaybackInfo: {real_playback_info_url} with params {forward_params}")
+                resp = requests.get(real_playback_info_url, params=forward_params, headers=headers)
+                resp.raise_for_status()
+                
+                playback_info_data = resp.json()
+                
+                if 'MediaSources' in playback_info_data and len(playback_info_data['MediaSources']) > 0:
+                    logger.info("成功获取真实PlaybackInfo，正在修改播放路径...")
+                    
+                    original_path = playback_info_data['MediaSources'][0].get('Path')
+                    file_name = original_path.split('/')[-1] if original_path else f"stream.mkv"
+                    
+                    playback_info_data['MediaSources'][0]['Path'] = f"/emby/videos/{real_emby_id}/{file_name}"
+                    # playback_info_data['MediaSources'][0]['Protocol'] = 'Http' 
+                    
+                    # playback_info_data['MediaSources'][0].pop('PathType', None)
+                    # playback_info_data['MediaSources'][0].pop('SupportsDirectStream', None)
+                    # playback_info_data['MediaSources'][0].pop('SupportsTranscoding', None)
+
+                    logger.debug(f"修改后的PlaybackInfo: {json.dumps(playback_info_data, indent=2)}")
+                    
+                    return Response(json.dumps(playback_info_data), mimetype='application/json')
+                else:
+                    logger.warning(f"获取到的PlaybackInfo中不包含MediaSources，无法修改路径。")
+                    return Response(json.dumps(playback_info_data), mimetype='application/json')
+
+        except Exception as e:
+            logger.error(f"处理PlaybackInfo劫持或并发控制时出错: {e}", exc_info=True)
+            return Response("Proxy error during PlaybackInfo handling.", status=500, mimetype='text/plain')
     # --- 1. WebSocket 代理逻辑 (已添加超详细日志) ---
     if 'Upgrade' in request.headers and request.headers.get('Upgrade', '').lower() == 'websocket':
         logger.info("--- 收到一个新的 WebSocket 连接请求 ---")
