@@ -9,6 +9,7 @@ import logging
 import emby_handler
 import task_manager
 from database import connection, user_db
+from extensions import SYSTEM_UPDATE_MARKERS, SYSTEM_UPDATE_LOCK
 
 logger = logging.getLogger(__name__)
 
@@ -207,7 +208,7 @@ def task_auto_sync_template_on_policy_change(processor, updated_user_id: str):
             user_record = cursor.fetchone()
             if user_record: user_name_for_log = user_record['name']
     except Exception:
-        pass # 获取失败不影响主流程
+        pass 
 
     task_name = f"自动同步权限 (源用户: '{user_name_for_log}')"
     logger.info(f"--- 开始执行 '{task_name}' 任务 ---")
@@ -223,7 +224,7 @@ def task_auto_sync_template_on_policy_change(processor, updated_user_id: str):
             templates_to_sync = cursor.fetchall()
             
             if not templates_to_sync:
-                logger.info(f"  ➜ 用户 '{user_name_for_log}' 的权限已更新，但他不是任何模板的源用户，无需同步。")
+                logger.debug(f"  ➜ 用户 '{user_name_for_log}' 的权限已更新，但他不是任何模板的源用户，无需同步。")
                 return
 
             total_templates = len(templates_to_sync)
@@ -248,10 +249,8 @@ def task_auto_sync_template_on_policy_change(processor, updated_user_id: str):
                 new_policy_json = json.dumps(user_details['Policy'], ensure_ascii=False)
                 new_policy_dict = user_details['Policy']
 
-                # ★★★ 新增：同步首选项逻辑 ★★★
                 new_config_json = None
                 new_config_dict = None
-                # 检查模板是否原本就存了首选项，如果存了才更新
                 cursor.execute("SELECT emby_configuration_json IS NOT NULL as has_config FROM user_templates WHERE id = %s", (template_id,))
                 if cursor.fetchone()['has_config'] and 'Configuration' in user_details:
                     new_config_json = json.dumps(user_details['Configuration'], ensure_ascii=False)
@@ -278,6 +277,14 @@ def task_auto_sync_template_on_policy_change(processor, updated_user_id: str):
                             logger.warning(f"  ➜ 跳过用户 '{user_name_to_push}'，因为他就是本次同步的触发源，以避免无限循环。")
                             continue
 
+                        logger.info(f"    └─ 正在将 '{template_name}' 的新策略应用到用户 '{user_name_to_push}'...")
+                        
+                        # ★★★ 核心修改 2/3: 在调用API前，先“插旗” ★★★
+                        # 记录下我们即将要更新这个用户，时间精确到当前
+                        with SYSTEM_UPDATE_LOCK:
+                            SYSTEM_UPDATE_MARKERS[user_id_to_push] = time.time()
+                        
+                        # 现在才真正去调用 Emby API
                         emby_handler.force_set_user_policy(
                             user_id_to_push, new_policy_dict,
                             config.get("emby_server_url"), config.get("emby_api_key")

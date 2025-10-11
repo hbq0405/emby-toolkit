@@ -3,6 +3,8 @@
 from flask import session, jsonify
 from functools import wraps
 from typing import Optional
+import threading
+import time
 
 # ======================================================================
 # 共享装饰器
@@ -52,3 +54,13 @@ if TYPE_CHECKING:
     from core_processor import MediaProcessor
     from watchlist_processor import WatchlistProcessor
     from actor_subscription_processor import ActorSubscriptionProcessor
+    
+# ======================================================================
+# --- Webhook 递归抑制机制 ---
+# 这个字典用来存放系统刚刚通过API更新过的用户ID和时间戳
+# 结构: {'user_id': timestamp}
+# ======================================================================
+SYSTEM_UPDATE_MARKERS = {}
+SYSTEM_UPDATE_LOCK = threading.Lock()
+# 抑制窗口期（秒），在这个时间内收到的相同用户的 policyupdated Webhook 将被忽略
+RECURSION_SUPPRESSION_WINDOW = 10

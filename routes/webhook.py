@@ -4,6 +4,7 @@ import collections
 import threading
 import json
 import re
+import time
 from datetime import datetime, timezone
 from flask import Blueprint, request, jsonify
 from gevent import spawn_later
@@ -15,6 +16,7 @@ import emby_handler
 import config_manager
 import constants
 import extensions
+from extensions import SYSTEM_UPDATE_MARKERS, SYSTEM_UPDATE_LOCK, RECURSION_SUPPRESSION_WINDOW
 from core_processor import MediaProcessor
 from tasks import (
     task_auto_sync_template_on_policy_change, 
@@ -349,18 +351,31 @@ def emby_webhook():
     if event_type == "user.policyupdated":
         updated_user = data.get("User", {})
         updated_user_id = updated_user.get("Id")
+        updated_user_name = updated_user.get("Name", "未知用户")
         
-        if updated_user_id:
-            logger.info(f"  ➜ 检测到用户 '{updated_user.get('Name')}' 的权限策略已更新，将分派后台任务以检查是否需要同步模板。")
-            task_manager.submit_task(
-                task_auto_sync_template_on_policy_change,
-                task_name=f"自动同步权限 (源: {updated_user.get('Name')})",
-                processor_type='media',
-                updated_user_id=updated_user_id
-            )
-            return jsonify({"status": "auto_sync_task_submitted"}), 202
-        else:
+        if not updated_user_id:
             return jsonify({"status": "event_ignored_no_user_id"}), 200
+
+        # ★★★ 核心逻辑: 在处理前，先检查信号旗 ★★★
+        with SYSTEM_UPDATE_LOCK:
+            last_update_time = SYSTEM_UPDATE_MARKERS.get(updated_user_id)
+            # 如果找到了标记，并且时间戳在我们的抑制窗口期内
+            if last_update_time and (time.time() - last_update_time) < RECURSION_SUPPRESSION_WINDOW:
+                logger.info(f"  ➜ 忽略由系统内部同步触发的用户 '{updated_user_name}' 的权限更新 Webhook。")
+                # 为了保险起见，用完就删掉这个标记
+                del SYSTEM_UPDATE_MARKERS[updated_user_id]
+                # 直接返回成功，不再创建任何后台任务
+                return jsonify({"status": "event_ignored_system_triggered"}), 200
+        
+        # 如果上面的检查通过了（即这是一个正常的手动操作），才继续执行原来的逻辑
+        logger.info(f"  ➜ 检测到用户 '{updated_user_name}' 的权限策略已更新，将分派后台任务检查模板同步。")
+        task_manager.submit_task(
+            task_auto_sync_template_on_policy_change,
+            task_name=f"自动同步权限 (源: {updated_user_name})",
+            processor_type='media',
+            updated_user_id=updated_user_id
+        )
+        return jsonify({"status": "auto_sync_task_submitted"}), 202
 
     if event_type in USER_DATA_EVENTS:
         user_from_webhook = data.get("User", {})
