@@ -277,7 +277,7 @@ def task_auto_sync_template_on_policy_change(processor, updated_user_id: str):
                             logger.warning(f"  ➜ 跳过用户 '{user_name_to_push}'，因为他就是本次同步的触发源，以避免无限循环。")
                             continue
 
-                        logger.info(f"    └─ 正在将 '{template_name}' 的新策略应用到用户 '{user_name_to_push}'...")
+                        logger.info(f"    ├─ 正在将 '{template_name}' 的新策略应用到用户 '{user_name_to_push}'...")
                         
                         # ★★★ 核心修改 2/3: 在调用API前，先“插旗” ★★★
                         # 记录下我们即将要更新这个用户，时间精确到当前

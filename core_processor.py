@@ -1504,7 +1504,7 @@ class MediaProcessor:
                 if cached_count > 0:
                     logger.debug("    ➜ 命中缓存的词条与译文:")
                     for k, v in sorted(cached_results.items()):
-                        logger.debug(f"    └─ {k} ➜ {v}")
+                        logger.debug(f"    ├─ {k} ➜ {v}")
 
                 if cached_results:
                     final_translation_map.update(cached_results)
@@ -1549,7 +1549,7 @@ class MediaProcessor:
                 logger.debug("  ➜ 翻译成功列表 (原文 ➜ 译文):")
                 for term in sorted(list(successfully_translated_terms)):
                     translation = final_translation_map.get(term)
-                    logger.debug(f"    └─ {term} ➜ {translation}")
+                    logger.debug(f"    ├─ {term} ➜ {translation}")
             if failed_to_translate_terms:
                 logger.warning(f"    ➜ 翻译失败列表 ({len(failed_to_translate_terms)}条): {list(failed_to_translate_terms)}")
 
