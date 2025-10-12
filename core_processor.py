@@ -919,6 +919,23 @@ class MediaProcessor:
                     logger.error(f"  ➜ 元数据文件 '{source_json_path}' 无效或为空，无法处理 '{item_name_for_log}'。")
                     return False
                 
+            # 移除无头像演员
+            if self.config.get(constants.CONFIG_OPTION_REMOVE_ACTORS_WITHOUT_AVATARS, True) and authoritative_cast_source:
+                original_count = len(authoritative_cast_source)
+                
+                # 使用 'profile_path' 作为判断依据
+                actors_with_avatars = [
+                    actor for actor in authoritative_cast_source if actor.get("profile_path")
+                ]
+                
+                if len(actors_with_avatars) < original_count:
+                    removed_count = original_count - len(actors_with_avatars)
+                    logger.info(f"  ➜ 根据配置，在核心处理前，已从源数据中预先移除 {removed_count} 位无头像的演员。")
+                    # 用筛选后的列表覆盖原始列表
+                    authoritative_cast_source = actors_with_avatars
+                else:
+                    logger.debug("  ➜ (预检查) 所有源数据中的演员均有头像，无需预先移除。")
+                
             # ======================================================================
             # 阶段 2: 数据来源二选一
             # ======================================================================
@@ -967,21 +984,6 @@ class MediaProcessor:
                     
                     all_emby_people = item_details_from_emby.get("People", [])
                     current_emby_cast_raw = [p for p in all_emby_people if p.get("Type") == "Actor"]
-                    # ▼▼▼ 老六帮你加的代码 START ▼▼▼
-                    if self.config.get(constants.CONFIG_OPTION_REMOVE_ACTORS_WITHOUT_AVATARS, True):
-                        original_count = len(current_emby_cast_raw)
-                        actors_with_avatars = [
-                            actor for actor in current_emby_cast_raw
-                            if actor.get("ImageTags", {}).get("Primary")
-                        ]
-                        
-                        if len(actors_with_avatars) < original_count:
-                            removed_count = original_count - len(actors_with_avatars)
-                            logger.info(f"  ➜ 根据配置，在丰富数据前，已预先移除 {removed_count} 位在 Emby 中无头像的演员。")
-                            current_emby_cast_raw = actors_with_avatars
-                        else:
-                            logger.debug("  ➜ (预检查) 所有 Emby 演员均有头像，无需预先移除。")
-                    # ▲▲▲ 老六帮你加的代码 END ▲▲▲
                     enriched_emby_cast = self._enrich_cast_from_db_and_api(current_emby_cast_raw)
                     douban_cast_raw, douban_rating_deep = self._get_douban_data_with_local_cache(item_details_from_emby)
                     douban_rating = douban_rating_deep # 覆盖评分
