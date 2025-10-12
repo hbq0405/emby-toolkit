@@ -140,7 +140,7 @@ def task_auto_subscribe(processor):
                 for series in series_to_check:
                     if processor.is_stop_requested() or quota_exhausted: break
                     series_name = series['item_name']
-                    logger.info(f"  ➜ 正在检查: 《{series_name}》")
+                    logger.info(f"    └─ 正在检查: 《{series_name}》")
                     try:
                         missing_info = series['missing_info_json']
                         missing_seasons = missing_info.get('missing_seasons', [])
