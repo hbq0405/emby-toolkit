@@ -967,7 +967,31 @@ class MediaProcessor:
                     
                     all_emby_people = item_details_from_emby.get("People", [])
                     current_emby_cast_raw = [p for p in all_emby_people if p.get("Type") == "Actor"]
-                    enriched_emby_cast = self._enrich_cast_from_db_and_api(current_emby_cast_raw)
+                    # --- 在丰富数据前，先进行高效的前置筛选 ---
+                    if self.config.get(constants.CONFIG_OPTION_REMOVE_ACTORS_WITHOUT_AVATARS, True):
+                        logger.info("  ➜ 正在根据TMDb数据预筛选Emby演员列表 (移除无头像)...")
+                        # 创建一个包含所有有头像TMDb演员ID的集合，用于快速查找
+                        tmdb_actors_with_avatars = {
+                            str(actor['id']) for actor in authoritative_cast_source if actor.get('profile_path')
+                        }
+                        
+                        original_emby_count = len(current_emby_cast_raw)
+                        # 只保留那些在Emby中存在，且其对应的TMDb演员有头像的演员
+                        emby_cast_to_process = []
+                        for emby_actor in current_emby_cast_raw:
+                            emby_tmdb_id = (emby_actor.get("ProviderIds") or {}).get("Tmdb")
+                            if emby_tmdb_id and str(emby_tmdb_id) in tmdb_actors_with_avatars:
+                                emby_cast_to_process.append(emby_actor)
+                        
+                        removed_count = original_emby_count - len(emby_cast_to_process)
+                        if removed_count > 0:
+                            logger.info(f"  ➜ 已移除 {removed_count} 位无头像的演员，将不再为他们查询详情，预计可节省约 {removed_count * 0.8:.1f} 秒。")
+                        
+                        # 使用筛选后的列表进行耗时操作
+                        enriched_emby_cast = self._enrich_cast_from_db_and_api(emby_cast_to_process)
+                    else:
+                        # 如果配置未开启，则按原流程处理所有演员
+                        enriched_emby_cast = self._enrich_cast_from_db_and_api(current_emby_cast_raw)
                     douban_cast_raw, douban_rating_deep = self._get_douban_data_with_local_cache(item_details_from_emby)
                     douban_rating = douban_rating_deep # 覆盖评分
 
