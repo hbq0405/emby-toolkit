@@ -1141,7 +1141,7 @@ class MediaProcessor:
         unmatched_local_actors = list(final_cast_list)
         merged_actors = []
         unmatched_douban_actors = []
-        logger.debug(f"  ➜ 匹配阶段 1: 对号入座")
+        logger.info(f"  ➜ 匹配阶段 1: 对号入座")
         for d_actor in douban_candidates:
             douban_name_zh = d_actor.get("Name", "").lower().strip()
             douban_name_en = d_actor.get("OriginalName", "").lower().strip()
@@ -1200,7 +1200,7 @@ class MediaProcessor:
             else:
                 logger.info(f"  ➜ 当前演员数 ({current_actor_count}) 低于上限 ({limit})，进入补充模式。")
                 
-                logger.debug(f"  ➜ 匹配阶段 2: 用豆瓣ID查'演员映射表' ({len(unmatched_douban_actors)} 位演员)")
+                logger.info(f"  ➜ 匹配阶段 2: 用豆瓣ID查'演员映射表' ({len(unmatched_douban_actors)} 位演员)")
                 still_unmatched = []
                 for d_actor in unmatched_douban_actors:
                     if self.is_stop_requested(): raise InterruptedError("任务中止")
@@ -1212,7 +1212,7 @@ class MediaProcessor:
                         if entry and entry.get("tmdb_person_id") and entry.get("emby_person_id"):
                             tmdb_id_from_map = str(entry.get("tmdb_person_id"))
                             if tmdb_id_from_map not in final_cast_map:
-                                logger.debug(f"  ➜ 匹配成功 (通过 豆瓣ID映射): 豆瓣演员 '{d_actor.get('Name')}' -> 加入最终演员表")
+                                logger.info(f"    ├─ 匹配成功 (通过 豆瓣ID映射): 豆瓣演员 '{d_actor.get('Name')}' -> 加入最终演员表")
                                 cached_metadata = self._get_actor_metadata_from_cache(tmdb_id_from_map, cursor) or {}
                                 new_actor_entry = {
                                     "id": tmdb_id_from_map, "name": d_actor.get("Name"),
@@ -1227,7 +1227,7 @@ class MediaProcessor:
                         still_unmatched.append(d_actor)
                 unmatched_douban_actors = still_unmatched
 
-                logger.debug(f"  ➜ 匹配阶段 3: 用IMDb ID进行最终匹配和新增 ({len(unmatched_douban_actors)} 位演员)")
+                logger.info(f"  ➜ 匹配阶段 3: 用IMDb ID进行最终匹配和新增 ({len(unmatched_douban_actors)} 位演员)")
                 still_unmatched_final = []
                 for i, d_actor in enumerate(unmatched_douban_actors):
                     if self.is_stop_requested(): raise InterruptedError("任务中止")
@@ -1263,7 +1263,7 @@ class MediaProcessor:
                             if entry_from_map and entry_from_map.get("tmdb_person_id") and entry_from_map.get("emby_person_id"):
                                 tmdb_id_from_map = str(entry_from_map.get("tmdb_person_id"))
                                 if tmdb_id_from_map not in final_cast_map:
-                                    logger.debug(f"  ➜ 匹配成功 (通过 IMDb映射): 豆瓣演员 '{d_actor.get('Name')}' -> 加入最终演员表")
+                                    logger.debug(f"    ├─ 匹配成功 (通过 IMDb映射): 豆瓣演员 '{d_actor.get('Name')}' -> 加入最终演员表")
                                     new_actor_entry = {
                                         "id": tmdb_id_from_map, "name": d_actor.get("Name"),
                                         "character": d_actor.get("Role"), "order": 999, "imdb_id": d_imdb_id,
@@ -1288,7 +1288,7 @@ class MediaProcessor:
                                     if final_check_row and dict(final_check_row).get("emby_person_id"):
                                         emby_pid_from_final_check = dict(final_check_row).get("emby_person_id")
                                         if tmdb_id_from_find not in final_cast_map:
-                                            logger.debug(f"  ➜ 匹配成功 (通过 TMDb反查): 豆瓣演员 '{d_actor.get('Name')}' -> 加入最终演员表")
+                                            logger.info(f"    ├─ 匹配成功 (通过 TMDb反查): 豆瓣演员 '{d_actor.get('Name')}' -> 加入最终演员表")
                                             new_actor_entry = {
                                                 "id": tmdb_id_from_find, "name": d_actor.get("Name"),
                                                 "character": d_actor.get("Role"), "order": 999,
