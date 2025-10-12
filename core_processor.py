@@ -930,7 +930,7 @@ class MediaProcessor:
                 
                 if len(actors_with_avatars) < original_count:
                     removed_count = original_count - len(actors_with_avatars)
-                    logger.info(f"  ➜ 根据配置，在核心处理前，已从源数据中预先移除 {removed_count} 位无头像的演员。")
+                    logger.info(f"  ➜ 在核心处理前，已从源数据中移除 {removed_count} 位无头像的演员。")
                     # 用筛选后的列表覆盖原始列表
                     authoritative_cast_source = actors_with_avatars
                 else:
@@ -969,16 +969,6 @@ class MediaProcessor:
             if final_processed_cast is None:
                 logger.info(f"  ➜ 未命中缓存或强制重处理，开始处理演员表...")
                 
-                # 预读本地JSON文件以获取原始TMDb演员表
-                if not authoritative_cast_source:
-                    logger.debug("  ➜ 权威数据源为空，将从本地JSON文件加载。")
-                    source_json_data = _read_local_json(source_json_path)
-                    if source_json_data:
-                        tmdb_details_for_extra = source_json_data
-                        authoritative_cast_source = (source_json_data.get("casts", {}) or source_json_data.get("credits", {})).get("cast", [])
-                else:
-                    logger.debug("  ➜ 检测到权威数据源已被填充 (来自TMDb在线数据)，跳过本地文件读取。")
-
                 with get_central_db_connection() as conn:
                     cursor = conn.cursor()
                     
