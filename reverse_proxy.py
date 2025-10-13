@@ -437,30 +437,36 @@ proxy_app = Flask(__name__)
 @proxy_app.route('/auth-playback', methods=['GET'])
 def handle_auth_playback():
     """
-    【超级调试版】
+    【健壮最终版】
     处理来自 Nginx auth_request 的内部授权请求。
-    会打印出所有收到的 Header，以便我们诊断问题。
+    能智能地从请求路径、URL参数等多个来源提取用户ID。
     """
     try:
-        # --- 打印所有收到的 Header ---
-        headers_dict = dict(request.headers)
-        logger.info("--- [授权请求头 DEBUG] ---")
-        logger.info(json.dumps(headers_dict, indent=2))
-        logger.info("--- [DEBUG 结束] ---")
-        # ---------------------------
-
         user_id = None
-        original_uri = request.headers.get('X-Original-Uri') # 注意: HTTP头会自动转为首字母大写
-        if original_uri:
-            match = re.search(r'/Users/([a-f0-9]+)/', original_uri)
-            if match:
-                user_id = match.group(1)
         
+        # 1. 优先从 Nginx 转发过来的完整原始 URI 中寻找 UserID
+        original_uri = request.headers.get('X-Original-Uri')
+        if original_uri:
+            # 1a. 尝试从 URL 参数中提取 (最常见的情况，例如 ?UserId=xxx)
+            query_match = re.search(r'[?&]UserId=([a-f0-9]+)', original_uri)
+            if query_match:
+                user_id = query_match.group(1)
+            
+            # 1b. 如果参数中没有，再尝试从路径中提取 (例如 /Users/xxx/)
+            if not user_id:
+                path_match = re.search(r'/Users/([a-f0-9]+)/', original_uri)
+                if path_match:
+                    user_id = path_match.group(1)
+        
+        # 2. 如果上述方法都失败，最后尝试直接从 Header 中获取 (作为备用方案)
         if not user_id:
-            user_id = request.headers.get('X-Emby-Userid') or request.args.get('UserId')
+            user_id = request.headers.get('X-Emby-Userid')
 
+        # --- 最终裁决 ---
         if not user_id:
-            logger.warning("授权请求中未能定位到用户ID，已拒绝。")
+            logger.warning("授权请求中最终未能定位到用户ID，已拒绝。")
+            # 打印出原始URI，帮助未来调试
+            logger.debug(f"  ➜ 导致失败的原始URI: {original_uri}")
             return Response(status=403)
 
         # --- 后续的并发检查逻辑保持不变 ---
@@ -477,14 +483,14 @@ def handle_auth_playback():
             time.sleep(1)
             streams_after_wait = session_db.get_active_session_count(user_id)
             if streams_after_wait < limit:
-                logger.info(f"    ➜ 判定为换集，授权通过 | 用户: {display_name} ({streams_after_wait}/{limit})。")
+                logger.info(f"  ➜ 判定为换集，授权通过 | 用户: {display_name} ({streams_after_wait}/{limit})。")
                 return Response(status=204)
         final_streams = session_db.get_active_session_count(user_id)
-        logger.warning(f"    ➜ 确认违规，授权拒绝 | 用户: '{display_name}' (最终检查: {final_streams}/{limit})。")
+        logger.warning(f"  ➜ 确认违规，授权拒绝 | 用户: '{display_name}' (最终检查: {final_streams}/{limit})。")
         return Response(status=403)
 
     except Exception as e:
-        logger.error(f"并发授权检查时发生内部错误: {e}", exc_info=True)
+        logger.error(f"  ➜ 并发授权检查时发生内部错误: {e}", exc_info=True)
         return Response(status=500)
 
 @proxy_app.route('/playback-error', methods=['GET'])
