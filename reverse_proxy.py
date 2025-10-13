@@ -479,37 +479,58 @@ def proxy_all(path):
                         return Response(json.dumps(error_response), status=403, mimetype='application/json')
 
             # --- 步骤二：如果并发检查通过，则完全透传请求 ---
-            logger.debug(f"  ➜ 并发检查通过，正在透传 PlaybackInfo 请求...")
+            logger.debug(f"  ➜ 并发检查通过，正在请求并准备修改 PlaybackInfo...")
             base_url, api_key = _get_real_emby_url_and_key()
             target_url = f"{base_url}/{path}"
             
-            forward_headers = {k: v for k, v in request.headers if k.lower() != 'host'}
+            forward_headers = {k: v for k, v in request.headers if k.lower() not in ['host', 'accept-encoding']}
             forward_headers['Host'] = urlparse(base_url).netloc
             
             forward_params = request.args.copy()
             forward_params['api_key'] = api_key
 
             resp = requests.request(
-                method=request.method,
-                url=target_url,
-                headers=forward_headers,
-                params=forward_params,
-                data=request.get_data(),
-                stream=True, # 开启流模式，以便处理各种响应
-                timeout=30.0
+                method=request.method, url=target_url, headers=forward_headers,
+                params=forward_params, data=request.get_data(), timeout=30.0
             )
+            resp.raise_for_status()
 
-            # --- 步骤三：原封不动地返回 Emby 的响应 ---
-            # 排除一些逐跳头，避免 Nginx/客户端出错
-            excluded_resp_headers = ['content-encoding', 'content-length', 'transfer-encoding', 'connection']
-            response_headers = [(name, value) for name, value in resp.raw.headers.items() if name.lower() not in excluded_resp_headers]
+            # --- 步骤三：智能处理响应 ---
+            content_type = resp.headers.get('Content-Type', '')
+
+            # 3a. 如果是 JSON 响应，则修改路径
+            if 'application/json' in content_type:
+                playback_info_data = resp.json()
+                
+                if 'MediaSources' in playback_info_data and len(playback_info_data['MediaSources']) > 0:
+                    logger.info("  ➜ 成功获取真实 PlaybackInfo，正在修改播放路径...")
+                    
+                    # 提取 Item ID 用于构造虚拟路径
+                    item_id_match = re.search(r'/Items/(\d+)/PlaybackInfo', path)
+                    real_emby_id = item_id_match.group(1) if item_id_match else "unknown"
+
+                    original_path = playback_info_data['MediaSources'][0].get('Path')
+                    file_name = original_path.split('/')[-1] if original_path else f"stream.mkv"
+                    
+                    # ★★★ 核心：将路径修改为我们自定义的、能被 Nginx 规则1捕获的虚拟路径 ★★★
+                    playback_info_data['MediaSources'][0]['Path'] = f"/emby/videos/{real_emby_id}/{file_name}"
+                    
+                    logger.debug(f"  ➜ 修改后的 PlaybackInfo: {json.dumps(playback_info_data, indent=2)}")
+                    return Response(json.dumps(playback_info_data), status=resp.status_code, mimetype='application/json')
+                else:
+                    logger.warning(f"  ➜ 获取到的 PlaybackInfo 中不包含 MediaSources，无法修改路径，将直接透传。")
+                    return Response(resp.content, resp.status_code, content_type=content_type)
             
-            # 直接将 Emby 的响应流、状态码和头信息返回给客户端
-            return Response(resp.iter_content(chunk_size=8192), resp.status_code, response_headers)
+            # 3b. 如果不是 JSON (例如 302 跳转)，则原封不动地透传
+            else:
+                logger.info(f"  ➜ PlaybackInfo 响应不是 JSON (可能是302跳转)，将直接透传。")
+                excluded_resp_headers = ['content-encoding', 'content-length', 'transfer-encoding', 'connection']
+                response_headers = [(name, value) for name, value in resp.headers.items() if name.lower() not in excluded_resp_headers]
+                # 注意：这里我们不能用 stream=True 的方式，因为 resp.content 已经读取了内容
+                return Response(resp.content, resp.status_code, response_headers)
 
         except Exception as e:
             logger.error(f"处理 PlaybackInfo 请求时出错: {e}", exc_info=True)
-            # 返回一个通用的错误，避免让客户端卡住
             return Response("Proxy error during PlaybackInfo handling.", status=500, mimetype='text/plain')
     # --- 1. WebSocket 代理逻辑 (已添加超详细日志) ---
     if 'Upgrade' in request.headers and request.headers.get('Upgrade', '').lower() == 'websocket':
