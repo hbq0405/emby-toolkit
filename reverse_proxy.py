@@ -434,96 +434,107 @@ def handle_get_latest_items(user_id, params):
 
 proxy_app = Flask(__name__)
 
-@proxy_app.route('/auth-playback', methods=['GET'])
-def handle_auth_playback():
-    """
-    【最终架构版】
-    通过多种方式（路径、参数、Token反查）来确定用户ID，进行并发检查。
-    """
-    try:
-        user_id = None
-        
-        # --- 策略一：尝试从已知的明确来源获取 UserID ---
-        original_uri = request.headers.get('X-Original-Uri')
-        if original_uri:
-            query_match = re.search(r'[?&]UserId=([a-f0-9]+)', original_uri)
-            if query_match: user_id = query_match.group(1)
-            if not user_id:
-                path_match = re.search(r'/Users/([a-f0-9]+)/', original_uri)
-                if path_match: user_id = path_match.group(1)
-        if not user_id:
-            user_id = request.headers.get('X-Emby-Userid')
-
-        # --- 策略二：如果上面都失败了，启用最终武器：Token 反查 ---
-        if not user_id:
-            logger.warning("  ➜ 未能从常规渠道定位用户ID，正在尝试 Token 反查...")
-            token = request.headers.get('X-Emby-Token')
-            if token:
-                user_info = emby_handler.get_user_by_token(token)
-                if user_info and user_info.get('Id'):
-                    user_id = user_info['Id']
-            else:
-                logger.warning("  ➜ Token 反查失败：请求中未找到 api_key。")
-
-        # --- 最终裁决 ---
-        if not user_id:
-            logger.error("授权请求中最终未能定位到用户ID，已拒绝。")
-            return Response(status=403)
-
-        user_name = user_db.get_username_by_id(user_id)
-        display_name = user_name if user_name else f"ID:{user_id}"
-        limit = session_db.get_user_stream_limit(user_id)
-        
-        if limit is None or limit <= 0:
-            return Response(status=204)
-
-        current_streams_in_db = session_db.get_active_session_count(user_id)
-        
-        # --- 核心修改点 ---
-        # 1. 如果数据库记录的并发数还没到上限，直接放行，这是最高效的路径。
-        if current_streams_in_db < limit:
-            logger.info(f"  ➜ 授权通过 | 用户: {display_name} ({current_streams_in_db}/{limit})。")
-            return Response(status=204)
-        
-        # 2. 如果数据库记录达到上限，启动“实时主动验证”
-        logger.warning(f"  ➜ 并发达到上限 | 用户: {display_name} ({current_streams_in_db}/{limit})。启动实时验证...")
-        
-        # 2a. 从 Emby 获取“真正活着”的会话ID列表
-        live_session_ids_from_emby = emby_handler.get_live_emby_sessions()
-        
-        # 2b. 从我们的数据库获取该用户“待验证”的会话列表
-        sessions_from_db = session_db.get_active_session_details(user_id)
-        
-        truly_live_count = 0
-        dead_session_ids = []
-        for session in sessions_from_db:
-            session_id = session.get('session_id')
-            if session_id in live_session_ids_from_emby:
-                truly_live_count += 1
-            else:
-                dead_session_ids.append(session_id)
-        
-        logger.info(f"  ➜ [实时验证] 完成：数据库记录 {len(sessions_from_db)} 个，其中 {truly_live_count} 个确认存活。")
-
-        # 2c. 在后台异步清理我们发现的“僵尸”会话，不阻塞当前用户的请求
-        if dead_session_ids:
-            spawn(session_db.delete_sessions_by_ids, dead_session_ids)
-
-        # 3. 最终裁决
-        if truly_live_count < limit:
-            logger.info(f"  ➜ 授权通过 (实时) | 用户: {display_name} (实际活跃: {truly_live_count}/{limit})。判定为换集或有僵尸会话。")
-            return Response(status=204) # 成功，放行
-        else:
-            logger.warning(f"  ➜ 确认违规，授权拒绝 | 用户: '{display_name}' (实际活跃: {truly_live_count}/{limit})。")
-            return Response(status=403) # 失败，拒绝
-
-    except Exception as e:
-        logger.error(f"并发授权检查时发生内部错误: {e}", exc_info=True)
-        return Response(status=500)
-
 @proxy_app.route('/', defaults={'path': ''})
 @proxy_app.route('/<path:path>', methods=['GET', 'POST', 'PUT', 'DELETE', 'HEAD', 'OPTIONS'])
 def proxy_all(path):
+    # ★★★ 并发控制逻辑 ★★★
+    if 'PlaybackInfo' in path and '/Items/' in path:
+        try:
+            # --- 步骤一：执行最终的并发裁决 ---
+            
+            user_id_match = re.search(r'/Users/([^/]+)/', path)
+            user_id = user_id_match.group(1) if user_id_match else request.args.get('UserId')
+
+            if user_id:
+                # ★★★ 新增：获取用户名用于日志 ★★★
+                user_name = user_db.get_user_display_name(user_id) or user_id
+
+                limit = session_db.get_user_stream_limit(user_id)
+                
+                if limit is not None and limit > 0:
+                    current_streams = session_db.get_active_session_count(user_id)
+                    
+                    # 场景一：并发数未达到上限，直接放行
+                    if current_streams < limit:
+                        logger.info(f"  ➜ 并发检查通过。用户 '{user_name}' (当前: {current_streams}, 限制: {limit})，请求立即放行。")
+                    
+                    # 场景二：并发数达到或超过上限，进入延迟裁决
+                    else:
+                        logger.warning(f"  ➜ 并发达到上限！用户 '{user_name}' (当前: {current_streams}, 限制: {limit})，进入循环延迟确认 (1秒/次，共5次)...")
+                        
+                        # 使用循环和 gevent.sleep 避免阻塞，并进行多次检查
+                        delay_passed = False
+                        for i in range(5): # 循环5次
+                            time.sleep(1) # 每次延迟1秒
+                            streams_after_wait = session_db.get_active_session_count(user_id)
+                            logger.info(f"  ➜ 第 {i+1} 次检查用户 '{user_name}' 的并发数: {streams_after_wait}/{limit}。")
+                            
+                            if streams_after_wait < limit:
+                                logger.info(f"    ➜ 并发已恢复正常。允许用户 '{user_name}' 的新播放请求。")
+                                delay_passed = True
+                                break # 并发恢复正常，跳出循环
+                        
+                        if not delay_passed: # 如果循环结束后，并发依然超限
+                            logger.warning(f"    ➜ 确认违规！正在拒绝用户 '{user_name}' 的新播放请求。")
+                            error_response = {
+                                "MediaSources": [], "PlaySessionId": None, "ErrorCode": "NoCompatibleStream",
+                                "Response": "Error", "Message": f"同时观看的设备数量已达到上限 ({limit}个)！"
+                            }
+                            return Response(json.dumps(error_response), status=200, mimetype='application/json')
+                        else: # 如果循环中途跳出，说明并发已恢复正常，继续执行后续逻辑
+                            logger.info(f"    ➜ 判定为换集操作。允许用户 '{user_name}' 的新播放请求。")
+
+            # --- 步骤二：如果并发检查通过，则继续执行智能劫持逻辑 ---
+            item_id_match = re.search(r'/Items/(\d+)/PlaybackInfo', path)
+            if item_id_match:
+                real_emby_id = item_id_match.group(1)
+                logger.info(f"截获到项目 '{real_emby_id}' 的 PlaybackInfo 请求，开始智能决策...")
+                
+                base_url, api_key = _get_real_emby_url_and_key()
+                
+                if not user_id:
+                    user_id = request.args.get('UserId', '')
+
+                real_playback_info_url = f"{base_url}/Items/{real_emby_id}/PlaybackInfo"
+                
+                forward_params = request.args.copy()
+                forward_params['api_key'] = api_key
+                forward_params['UserId'] = user_id
+
+                headers = {'Accept': 'application/json'}
+                
+                resp = requests.get(real_playback_info_url, params=forward_params, headers=headers)
+                resp.raise_for_status()
+                
+                playback_info_data = resp.json()
+                
+                if 'MediaSources' in playback_info_data and len(playback_info_data['MediaSources']) > 0:
+                    media_source = playback_info_data['MediaSources'][0]
+                    original_path = media_source.get('Path', '')
+
+                    # 检查Emby返回的路径是否是我们的302服务路径 (以 /d/ 为标志)
+                    if '/d/' in original_path:
+                        # 是直连路径，执行302劫持
+                        logger.info(f"  ➜ 决策: 直连播放。执行302重定向劫持。原始路径: {original_path}")
+                        
+                        # 从原始URL中解析出真正的路径
+                        real_redirect_path = urlparse(original_path).path
+                        
+                        # 构建一个新的、Nginx可以捕获的路径
+                        new_path = f"/emby/videos{real_redirect_path}"
+                        
+                        playback_info_data['MediaSources'][0]['Path'] = new_path
+                        logger.debug(f"路径已修改为: {new_path}")
+                        
+                        return Response(json.dumps(playback_info_data), mimetype='application/json')
+                    else:
+                        # 不是直连路径，判定为转码，直接返回Emby的原始响应
+                        logger.info(f"  ➜ 决策: 转码播放。跳过劫持，直接透传Emby响应。转码路径: {original_path}")
+                        return Response(json.dumps(playback_info_data), mimetype='application/json')
+
+        except Exception as e:
+            logger.error(f"处理PlaybackInfo劫持或并发控制时出错: {e}", exc_info=True)
+            return Response("Proxy error during PlaybackInfo handling.", status=500, mimetype='text/plain')
     # --- 1. WebSocket 代理逻辑 (已添加超详细日志) ---
     if 'Upgrade' in request.headers and request.headers.get('Upgrade', '').lower() == 'websocket':
         logger.info("--- 收到一个新的 WebSocket 连接请求 ---")
@@ -667,4 +678,3 @@ def proxy_all(path):
     except Exception as e:
         logger.error(f"[PROXY] HTTP 代理时发生未知错误: {e}", exc_info=True)
         return "Internal Server Error", 500
-    

@@ -1,4 +1,4 @@
-# /etc/nginx/conf.d/emby_proxy.conf (V5 - auth_request 优雅并发版)
+# /etc/nginx/conf.d/emby_proxy.conf (V4 - .strm 精准捕获最终版)
 
 upstream emby_server {
     server {{ EMBY_UPSTREAM }};
@@ -29,56 +29,18 @@ server {
     proxy_buffering off;
 
     # ====================================================================
-    #  核心路由规则 (V5)
+    #  核心路由规则 (V4)
     # ====================================================================
 
-    # 捕获所有视频流请求 (包括 /d/ 路径)，并在这里执行并发检查
-    location ~* (\.strm$|\.(mkv|mp4|ts|avi|iso|mov|webm|flv)$|/videos/.*stream|/d/) {
-        # 1. 发起授权请求
-        auth_request /auth-playback;
-        
-        # 2. 如果授权失败，返回一个自定义的 403 错误页面
-        #    这里我们直接返回一个简单的文本错误，避免再次代理失败
-        error_page 403 = @stream_error;
-
-        # 3. 如果授权成功，则将请求转发给 302 服务
-        proxy_pass http://redirect_service;
+    # ★★★ 规则 1 (已修正)：转发所有由 Python 代理生成的虚拟视频路径 ★★★
+    {% if REDIRECT_UPSTREAM %}
+    location ~* ^/emby/videos/(.*)$ {
+        # $1 会捕获到 "300600/stream.mkv"
+        # proxy_pass 会将请求转发到 http://redirect_service/300600/stream.mkv
+        # 注意：这里我们不再需要原始路径中的 /emby/videos/ 部分，因为302服务器的成功案例（图一）表明它需要的就是这个格式
+        proxy_pass http://redirect_service/emby/videos/$1;
     }
-
-    # 定义一个内部 location，用于返回流错误
-    location @stream_error {
-        # 直接返回一个 403 Forbidden 状态码和简单的文本提示
-        # 客户端通常不会显示这个文本，但会知道请求被拒绝了
-        return 403 "Concurrency limit reached.";
-    }
-
-    # 定义内部授权请求的端点 (保持不变)
-    location = /auth-playback {
-        internal;
-
-        # ▼▼▼ 使用 if 语句来捕获 token ▼▼▼
-        set $emby_token ""; # 初始化变量
-        if ($arg_api_key) {
-            set $emby_token $arg_api_key;
-        }
-        if ($arg_ApiKey) {
-            set $emby_token $arg_ApiKey;
-        }
-        if ($arg_Token) {
-            set $emby_token $arg_Token;
-        }
-        if ($arg_token) {
-            set $emby_token $arg_token;
-        }
-        # ▲▲▲ 捕获结束 ▲▲▲
-
-        proxy_pass http://virtual_library_proxy;
-        proxy_pass_request_body off;
-        proxy_set_header Content-Length "";
-        proxy_set_header X-Emby-UserId $arg_UserId;
-        proxy_set_header X-Original-URI $request_uri;
-        proxy_set_header X-Emby-Token $emby_token;
-    }
+    {% endif %}
 
     # --- 以下是虚拟库路由规则 ---
 
@@ -86,17 +48,24 @@ server {
         proxy_pass http://virtual_library_proxy;
     }
 
+    # ★★★ 规则 2：【新增的关键规则】拦截“获取库内容”的请求 ★★★
+    # 这是我们之前一直缺失的规则！
     location ~ /emby/Users/([a-f0-9]+)/Items$ {
+        # 检查 URL 参数中是否包含 ParentId=-xxxxx
         if ($arg_ParentId ~ ^-\d+$) {
+            # 如果是，就转发给 Python 代理
             proxy_pass http://virtual_library_proxy;
         }
+        # 如果不是，就执行默认行为，转发给真实 Emby
         proxy_pass http://emby_server;
     }
 
+    # 规则 3：拦截所有路径中包含虚拟ID的请求 (例如获取图片)
     location ~ /(emby/Users/[^/]+/Items|emby/Items)/-(\d+) {
         proxy_pass http://virtual_library_proxy;
     }
 
+    # 规则 4：拦截虚拟库内的“元数据筛选”和“最新添加”请求
     location ~ /Items/(Prefixes|Genres|Studios|Tags|OfficialRatings|Years|Latest)$ {
         if ($arg_ParentId ~ ^-\d+$) {
             proxy_pass http://virtual_library_proxy;
@@ -107,10 +76,16 @@ server {
         proxy_pass http://emby_server;
     }
 
+    location ~ /Items/(\d+)/PlaybackInfo {
+        proxy_pass http://virtual_library_proxy;
+    }
+
+    # 规则 5: WebSocket (保持不变)
     location /embywebsocket {
         proxy_pass http://emby_server;
     }
 
+    # 兜底规则：转发所有其他请求到真实 Emby
     location / {
         proxy_pass http://emby_server;
     }
