@@ -42,7 +42,7 @@ def start_session(session_data: Dict[str, Any]) -> bool:
             cursor = conn.cursor()
             cursor.execute(sql, session_data)
             conn.commit()
-            logger.info(f"  ➜ DB: 已记录/更新 用户 '{session_data.get('emby_user_id')}' 在设备 '{device_id}' 上的播放会话。")
+            logger.debug(f"  ➜ 已记录/更新 用户 '{session_data.get('emby_user_id')}' 在设备 '{device_id}' 上的播放会话。")
             return True
     except Exception as e:
         logger.error(f"DB: 记录播放会话 (设备ID: {device_id}) 时失败: {e}", exc_info=True)
@@ -61,7 +61,7 @@ def stop_session(device_id: str) -> bool:
             cursor.execute(sql, (device_id,))
             conn.commit()
             if cursor.rowcount > 0:
-                logger.info(f"  ➜ DB: 已移除播放会话 (设备ID: {device_id})。")
+                logger.debug(f"  ➜ 已移除播放会话 (设备ID: {device_id})。")
             return True
     except Exception as e:
         logger.error(f"DB: 移除播放会话 (设备ID: {device_id}) 时失败: {e}", exc_info=True)
@@ -167,6 +167,6 @@ def delete_sessions_by_ids(session_ids: List[str]):
             cursor = conn.cursor()
             cursor.execute(sql, (session_ids,))
             conn.commit()
-            logger.info(f"  ➜ [实时清理] 成功从数据库中清除了 {cursor.rowcount} 个僵尸会话。")
+            logger.debug(f"  ➜ [实时清理] 成功从数据库中清除了 {cursor.rowcount} 个僵尸会话。")
     except Exception as e:
         logger.error(f"DB: 批量删除会话失败: {e}", exc_info=True)

@@ -20,7 +20,6 @@ from .subscriptions import task_auto_subscribe, task_update_resubscribe_cache, t
 from .covers import task_generate_all_covers, task_generate_all_custom_collection_covers
 from .maintenance import task_scan_for_cleanup_issues 
 from .users import task_sync_all_user_data, task_check_expired_users
-from .session_tasks import task_cleanup_stale_sessions
 
 
 logger = logging.getLogger(__name__)
@@ -195,7 +194,6 @@ def get_task_registry(context: str = 'all'):
         'scan-cleanup-issues': (task_scan_for_cleanup_issues, "扫描媒体重复项", 'media', False),
         'revival-check': (task_run_revival_check, "检查剧集复活", 'watchlist', False),
         'task_apply_main_cast_to_episodes': (task_apply_main_cast_to_episodes, "轻量化同步分集演员表", 'media', False),
-        'cleanup-stale-sessions': (task_cleanup_stale_sessions, "清理播放会话", 'media', False),
     }
 
     if context == 'chain':
