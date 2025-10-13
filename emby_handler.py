@@ -1886,8 +1886,9 @@ def delete_emby_user(user_id: str) -> bool:
     
 def get_live_emby_sessions() -> set:
     """
-    【超级调试版】从 Emby 服务器实时获取所有活跃的播放会话 ID。
-    会打印出从 Emby 收到的原始数据，用于诊断问题。
+    【V2 - 最终修正版】从 Emby 服务器实时获取所有活跃的播放会话 ID。
+    - 修正了判断逻辑：不再依赖 PlaySessionId，而是通过是否存在 NowPlayingItem 来判断会话是否活跃。
+    - 修正了收集目标：不再收集 PlaySessionId，而是收集会话本身的 Id。
     """
     config = config_manager.APP_CONFIG
     base_url = config.get("emby_server_url")
@@ -1906,17 +1907,14 @@ def get_live_emby_sessions() -> set:
         response.raise_for_status()
         sessions = response.json()
         
-        # ▼▼▼ 核心调试代码 ▼▼▼
-        logger.info("--- [实时会话 DEBUG - 原始 Emby 响应] ---")
-        logger.info(json.dumps(sessions, indent=2, ensure_ascii=False))
-        logger.info("--- [DEBUG 结束] ---")
-        # ▲▲▲ 调试代码结束 ▲▲▲
-
+        # ▼▼▼ 核心修正：更换判断逻辑和收集目标 ▼▼▼
         live_session_ids = {
-            s['PlayState']['PlaySessionId'] 
+            s['Id']  # 收集会话本身的 'Id'
             for s in sessions 
-            if 'PlayState' in s and s['PlayState'].get('PlaySessionId')
+            if 'NowPlayingItem' in s  # 判断依据是是否存在 'NowPlayingItem'
         }
+        # ▲▲▲ 修正结束 ▲▲▲
+        
         logger.trace(f"  ➜ [实时验证] 从 Emby 原始数据中解析出 {len(live_session_ids)} 个活跃的播放会话。")
         return live_session_ids
     except Exception as e:
