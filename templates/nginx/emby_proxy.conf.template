@@ -32,15 +32,35 @@ server {
     #  核心路由规则 (V5)
     # ====================================================================
 
-    # ★★★ 规则 1：【条件化】转发所有视频流请求 (保持不变) ★★★
-    {% if REDIRECT_UPSTREAM %}
+    # 捕获所有视频流请求 (包括 /d/ 路径)，并在这里执行并发检查
     location ~* (\.strm$|\.(mkv|mp4|ts|avi|iso|mov|webm|flv)$|/videos/.*stream|/d/) {
+        # 1. 发起授权请求
+        auth_request /auth-playback;
+        
+        # 2. 如果授权失败，返回一个自定义的 403 错误页面
+        #    这里我们直接返回一个简单的文本错误，避免再次代理失败
+        error_page 403 = @stream_error;
+
+        # 3. 如果授权成功，则将请求转发给 302 服务
         proxy_pass http://redirect_service;
     }
-    {% endif %}
 
-    location ~ /Items/(\d+)/PlaybackInfo {
+    # 定义一个内部 location，用于返回流错误
+    location @stream_error {
+        # 直接返回一个 403 Forbidden 状态码和简单的文本提示
+        # 客户端通常不会显示这个文本，但会知道请求被拒绝了
+        return 403 "Concurrency limit reached.";
+    }
+
+    # 定义内部授权请求的端点 (保持不变)
+    location = /auth-playback {
+        internal;
         proxy_pass http://virtual_library_proxy;
+        proxy_pass_request_body off;
+        proxy_set_header Content-Length "";
+        # ★★★ 关键：我们需要从视频流请求的 URL 参数中获取 UserId ★★★
+        proxy_set_header X-Emby-UserId $arg_UserId;
+        proxy_set_header X-Original-URI $request_uri;
     }
 
     # --- 以下是虚拟库路由规则 ---
