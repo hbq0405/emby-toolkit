@@ -32,32 +32,12 @@ server {
     #  核心路由规则 (V4)
     # ====================================================================
 
-    # ★★★ 规则 1 (已修正)：转发所有由 Python 代理生成的虚拟视频路径 ★★★
+    # ★★★ 规则 1：【条件化】转发所有视频流请求 ★★★
+    # 如果设置了 REDIRECT_UPSTREAM，此规则块将生效。
+    # 它会捕获所有主流视频格式、转码流和 .strm 文件，并因为位置靠前而被优先匹配。
     {% if REDIRECT_UPSTREAM %}
-    location ~* ^/emby/videos/(.*)$ {
-        # --- CORS 解决代码 ---
-        # 允许来自任何源的请求
-        add_header 'Access-Control-Allow-Origin' '*' always;
-        # 允许的 HTTP 方法
-        add_header 'Access-Control-Allow-Methods' 'GET, POST, OPTIONS' always;
-        # 允许客户端发送的请求头
-        add_header 'Access-Control-Allow-Headers' 'DNT,User-Agent,X-Requested-With,If-Modified-Since,Cache-Control,Content-Type,Range' always;
-        # 允许客户端访问的响应头
-        add_header 'Access-Control-Expose-Headers' 'Content-Length,Content-Range' always;
-        
-        # 处理浏览器的 OPTIONS 预检请求
-        if ($request_method = 'OPTIONS') {
-            add_header 'Access-Control-Max-Age' 1728000;
-            add_header 'Content-Type' 'text/plain; charset=utf-8';
-            add_header 'Content-Length' 0;
-            return 204;
-        }
-        # --- CORS 解决代码结束 ---
-
-        # ★★★ 路径修正 ★★★
-        # 您的旧配置 proxy_pass http://redirect_service/emby/videos/$1; 是正确的
-        # 它会将 /emby/videos/xxxx 转发到 redirect_service/emby/videos/xxxx
-        proxy_pass http://redirect_service/emby/videos/$1$is_args$args;
+    location ~* (\.strm$|\.(mkv|mp4|ts|avi|iso|mov|webm|flv)$|/videos/.*stream) {
+        proxy_pass http://redirect_service;
     }
     {% endif %}
 
@@ -93,10 +73,6 @@ server {
             proxy_pass http://virtual_library_proxy;
         }
         proxy_pass http://emby_server;
-    }
-
-    location ~ /Items/(\d+)/PlaybackInfo {
-        proxy_pass http://virtual_library_proxy;
     }
 
     # 规则 5: WebSocket (保持不变)

@@ -1,4 +1,4 @@
-<!-- src/components/UserTemplates.vue (最终并发控制版) -->
+<!-- src/components/UserTemplates.vue (已增加同步功能) -->
 <template>
   <div>
     <n-button
@@ -21,7 +21,7 @@
       v-model:show="isModalVisible"
       preset="card"
       style="width: 600px"
-      :title="editMode ? '编辑用户模板' : '创建新的用户模板'"
+      title="创建新的用户模板"
       :bordered="false"
       size="huge"
     >
@@ -46,36 +46,20 @@
             设置为 0 表示永久有效。
           </template>
         </n-form-item>
-
-        <!-- ★★★ 1. 新增：并发数量控制输入框 ★★★ -->
-        <n-form-item label="最大并发数" path="max_concurrent_streams">
-          <n-input-number
-            v-model:value="formModel.max_concurrent_streams"
-            :min="0"
-            style="width: 100%"
-          />
-          <template #feedback>
-            允许该模板下的用户同时在多少个设备上播放。设置为 0 表示不限制。
-          </template>
-        </n-form-item>
-
         <n-form-item label="源 Emby 用户" path="source_emby_user_id">
           <n-select
             v-model:value="formModel.source_emby_user_id"
             placeholder="选择一个用户作为权限样板"
             :options="embyUserOptions"
             filterable
-            :disabled="editMode"
           />
            <template #feedback>
-            重要：模板的权限将完全复制您在此选择的源用户的当前权限设置。
+            重要：模板的权限将完全复制您在此选择的源用户的当前权限设置，后续更改了源用户的权限，模板以及模板绑定的用户会自动同步权限。
           </template>
         </n-form-item>
+        <!-- ★★★ 同步首选项的开关 ★★★ -->
         <n-form-item label="同步首选项" path="include_configuration">
-          <n-switch 
-            v-model:value="formModel.include_configuration" 
-            :disabled="editMode"
-          />
+          <n-switch v-model:value="formModel.include_configuration" />
           <template #feedback>
             开启后，模板将额外包含源用户的个性化设置（如媒体库顺序、音轨和字幕偏好设置）。
           </template>
@@ -83,7 +67,7 @@
       </n-form>
       <template #footer>
         <n-button @click="isModalVisible = false">取消</n-button>
-        <n-button type="primary" @click="handleOk" :loading="isSubmitting">{{ editMode ? '更新' : '创建' }}</n-button>
+        <n-button type="primary" @click="handleOk" :loading="isSubmitting">创建</n-button>
       </template>
     </n-modal>
   </div>
@@ -93,8 +77,9 @@
 import { ref, onMounted, h, computed } from 'vue';
 import {
   NButton, NDataTable, NModal, NForm, NFormItem, NSelect, NInputNumber,
-  NIcon, NInput, useMessage, NPopconfirm, NSpace, NSwitch, NTag
+  NIcon, NInput, useMessage, NPopconfirm, NSpace
 } from 'naive-ui';
+// ★★★ 1. 导入新的图标 ★★★
 import { Add as AddIcon, TrashOutline as DeleteIcon, SyncOutline as SyncIcon } from '@vicons/ionicons5';
 
 // --- API ---
@@ -105,14 +90,9 @@ const api = {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify(data),
-  }),
-  updateTemplate: (templateId, data) => fetch(`/api/admin/user_templates/${templateId}`, {
-    method: 'PUT',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify(data),
-  }),
+  }).then(res => res.json()),
   deleteTemplate: (templateId) => fetch(`/api/admin/user_templates/${templateId}`, { method: 'DELETE' }),
-  // ▲▲▲ 修改结束 ▲▲▲
+  // ★★★ 2. 新增 syncTemplate API 调用函数 ★★★
   syncTemplate: (templateId) => fetch(`/api/admin/user_templates/${templateId}/sync`, {
     method: 'POST',
   }),
@@ -125,27 +105,20 @@ const embyUsers = ref([]);
 const loading = ref(false);
 const isModalVisible = ref(false);
 const isSubmitting = ref(false);
+// ★★★ 新增：用于跟踪哪个模板正在同步的状态 ★★★
 const syncingTemplateId = ref(null);
 const formRef = ref(null);
-const editMode = ref(false);
-
-// ★★★ 2. 更新：初始化表单模型，加入并发数字段 ★★★
-const getInitialFormModel = () => ({
+const formModel = ref({
   name: '',
   description: '',
   default_expiration_days: 30,
-  max_concurrent_streams: 1, // 默认值为1
   source_emby_user_id: null,
   include_configuration: true,
 });
 
-const formModel = ref(getInitialFormModel());
-
-// ★★★ 3. 更新：表单验证规则，加入并发数字段 ★★★
 const rules = {
   name: { required: true, message: '请输入模板名称', trigger: 'blur' },
   default_expiration_days: { type: 'number', required: true, message: '请输入默认有效期' },
-  max_concurrent_streams: { type: 'number', required: true, message: '请输入最大并发数' },
   source_emby_user_id: { required: true, message: '请选择一个源用户', trigger: 'change' },
 };
 
@@ -174,23 +147,12 @@ onMounted(fetchData);
 
 // --- 事件处理 ---
 const handleCreate = () => {
-  editMode.value = false;
-  formModel.value = getInitialFormModel(); // 使用函数重置表单
-  isModalVisible.value = true;
-};
-
-const handleEdit = (template) => {
-  editMode.value = true;
   formModel.value = {
-    id: template.id,
-    name: template.name,
-    description: template.description,
-    default_expiration_days: template.default_expiration_days,
-    max_concurrent_streams: template.max_concurrent_streams,
-    // 核心：确保这里赋的是正确的用户ID
-    source_emby_user_id: template.source_emby_user_id, 
-    // 这个字段在编辑时被禁用，它的值不影响显示，但保持为true
-    include_configuration: true, 
+    name: '',
+    description: '',
+    default_expiration_days: 30,
+    source_emby_user_id: null,
+    include_configuration: true,
   };
   isModalVisible.value = true;
 };
@@ -201,23 +163,16 @@ const handleOk = (e) => {
     if (!errors) {
       isSubmitting.value = true;
       try {
-        let response;
-        if (editMode.value) {
-          response = await api.updateTemplate(formModel.value.id, formModel.value);
-        } else {
-          response = await api.createTemplate(formModel.value);
-        }
-        
-        const data = await response.json(); // 现在 response 是一个 Response 对象，可以调用 .json()
-        if (response.ok) {
-          message.success(editMode.value ? '模板更新成功！' : '模板创建成功！');
+        const response = await api.createTemplate(formModel.value);
+        if (response.status === 'ok') {
+          message.success('模板创建成功！');
           isModalVisible.value = false;
           fetchData();
         } else {
-          throw new Error(data.message || (editMode.value ? '更新失败' : '创建失败'));
+          throw new Error(response.message || '创建失败');
         }
       } catch (error) {
-        message.error(`${editMode.value ? '更新' : '创建'}失败: ${error.message}`);
+        message.error(`创建失败: ${error.message}`);
       } finally {
         isSubmitting.value = false;
       }
@@ -240,13 +195,15 @@ const handleDelete = async (templateId) => {
   }
 };
 
+// ★★★ 3. 新增 handleSyncTemplate 事件处理函数 ★★★
 const handleSyncTemplate = async (template) => {
-  syncingTemplateId.value = template.id;
+  syncingTemplateId.value = template.id; // 设置当前正在同步的模板ID，用于显示加载状态
   try {
     const response = await api.syncTemplate(template.id);
     const data = await response.json();
     if (response.ok) {
       message.success(`模板 “${template.name}” 已成功同步最新权限！`);
+      // 同步成功后，可以重新获取一次数据以防万一有其他信息变更
       fetchData();
     } else {
       throw new Error(data.message || '同步失败');
@@ -254,7 +211,7 @@ const handleSyncTemplate = async (template) => {
   } catch (error) {
     message.error(`同步失败: ${error.message}`);
   } finally {
-    syncingTemplateId.value = null;
+    syncingTemplateId.value = null; // 清除加载状态
   }
 };
 
@@ -270,37 +227,20 @@ const columns = [
         return row.default_expiration_days === 0 ? '永久' : row.default_expiration_days;
     }
   },
-  // ★★★ 5. 新增：在表格中显示并发数列 ★★★
-  {
-    title: '最大并发数',
-    key: 'max_concurrent_streams',
-    render(row) {
-      if (row.max_concurrent_streams === 0) {
-        return h(NTag, { type: 'success', size: 'small' }, () => '无限制');
-      }
-      // 检查字段是否存在，兼容旧数据
-      if (typeof row.max_concurrent_streams === 'number') {
-        return row.max_concurrent_streams;
-      }
-      return h(NTag, { type: 'warning', size: 'small' }, () => '未设置');
-    }
-  },
   {
     title: '操作',
     key: 'actions',
     render(row) {
+      // ★★★ 4. 在操作列中增加“同步权限”按钮 ★★★
       return h(NSpace, null, () => [
-        h(NButton, {
-          size: 'small',
-          type: 'primary',
-          ghost: true,
-          onClick: () => handleEdit(row)
-        }, { default: () => '编辑' }),
+        // 同步按钮
         h(NButton, {
           size: 'small',
           type: 'info',
           ghost: true,
+          // 只有记录了源用户的模板才能同步
           disabled: !row.source_emby_user_id,
+          // 显示加载状态
           loading: syncingTemplateId.value === row.id,
           onClick: () => handleSyncTemplate(row),
           title: row.source_emby_user_id ? '从源用户更新权限' : '旧版模板，无法同步'
@@ -308,6 +248,8 @@ const columns = [
           default: () => '同步权限',
           icon: () => h(NIcon, { component: SyncIcon })
         }),
+        
+        // 删除按钮 (使用 Popconfirm 包裹)
         h(NPopconfirm, {
             onPositiveClick: () => handleDelete(row.id),
             positiveText: '确认删除',

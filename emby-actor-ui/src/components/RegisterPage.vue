@@ -50,9 +50,6 @@
               <!-- 将模板描述作为“账号类型”或“权限说明”来显示 -->
               {{ registrationResult?.template_description }}
             </n-descriptions-item>
-            <n-descriptions-item label="播放并发">
-              {{ registrationResult?.concurrent_streams_info }}
-            </n-descriptions-item>
             <n-descriptions-item label="账号有效期">
               {{ registrationResult?.expiration_info }}
             </n-descriptions-item>

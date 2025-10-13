@@ -24,18 +24,9 @@ def get_all_templates():
     try:
         with connection.get_db_connection() as conn:
             cursor = conn.cursor()
+            # ★★★ 核心修复：在 SELECT 语句中添加 source_emby_user_id ★★★
             cursor.execute(
-                """
-                SELECT 
-                    id, 
-                    name, 
-                    description, 
-                    default_expiration_days, 
-                    source_emby_user_id,
-                    COALESCE(max_concurrent_streams, 1) as max_concurrent_streams
-                FROM user_templates 
-                ORDER BY name
-                """
+                "SELECT id, name, description, default_expiration_days, source_emby_user_id FROM user_templates ORDER BY name"
             )
             templates = [dict(row) for row in cursor.fetchall()]
         return jsonify(templates), 200
@@ -51,8 +42,8 @@ def create_template():
     description = data.get('description')
     default_expiration_days = data.get('default_expiration_days', 30)
     source_emby_user_id = data.get('source_emby_user_id')
+    # ★★★ 新增：接收是否包含首选项的标志 ★★★
     include_configuration = data.get('include_configuration', False)
-    max_concurrent_streams = data.get('max_concurrent_streams', 1)
 
     if not name or not source_emby_user_id:
         return jsonify({"status": "error", "message": "模板名称和源用户ID不能为空"}), 400
@@ -76,55 +67,16 @@ def create_template():
             # ★★★ 核心修改：在 INSERT 语句中增加 emby_configuration_json ★★★
             cursor.execute(
                 """
-                INSERT INTO user_templates (name, description, emby_policy_json, default_expiration_days, source_emby_user_id, emby_configuration_json, max_concurrent_streams)
-                VALUES (%s, %s, %s, %s, %s, %s, %s) RETURNING id
+                INSERT INTO user_templates (name, description, emby_policy_json, default_expiration_days, source_emby_user_id, emby_configuration_json)
+                VALUES (%s, %s, %s, %s, %s, %s) RETURNING id
                 """,
-                (name, description, policy_json, default_expiration_days, source_emby_user_id, configuration_json, max_concurrent_streams)
+                (name, description, policy_json, default_expiration_days, source_emby_user_id, configuration_json)
             )
             new_id = cursor.fetchone()['id']
             conn.commit()
         
         return jsonify({"status": "ok", "message": "模板创建成功", "id": new_id}), 201
     except Exception as e:
-        return jsonify({"status": "error", "message": str(e)}), 500
-    
-@user_management_bp.route('/api/admin/user_templates/<int:template_id>', methods=['PUT'])
-@login_required
-def update_template(template_id):
-    """更新一个现有的用户模板"""
-    data = request.json
-    name = data.get('name')
-    description = data.get('description')
-    default_expiration_days = data.get('default_expiration_days', 30)
-    max_concurrent_streams = data.get('max_concurrent_streams', 1)
-    # 注意：在编辑时，我们不允许更改源用户和是否同步首选项的设置，以简化逻辑
-
-    if not name:
-        return jsonify({"status": "error", "message": "模板名称不能为空"}), 400
-
-    try:
-        with connection.get_db_connection() as conn:
-            cursor = conn.cursor()
-            cursor.execute(
-                """
-                UPDATE user_templates 
-                SET 
-                    name = %s, 
-                    description = %s, 
-                    default_expiration_days = %s, 
-                    max_concurrent_streams = %s
-                WHERE id = %s
-                """,
-                (name, description, default_expiration_days, max_concurrent_streams, template_id)
-            )
-            conn.commit()
-            
-            if cursor.rowcount == 0:
-                return jsonify({"status": "error", "message": "模板不存在"}), 404
-        
-        return jsonify({"status": "ok", "message": "模板更新成功"}), 200
-    except Exception as e:
-        logger.error(f"更新模板 {template_id} 时出错: {e}", exc_info=True)
         return jsonify({"status": "error", "message": str(e)}), 500
 
 @user_management_bp.route('/api/admin/user_templates/<int:template_id>/sync', methods=['POST'])
@@ -401,17 +353,8 @@ def register_with_invite():
             # 格式化日期为 YYYY-MM-DD
             expiration_info = f"至 {expiration_date.strftime('%Y-%m-%d')}"
 
-        # ★★★ 获取模板描述 ★★★
+        # ★★★ 新增逻辑：获取模板描述 ★★★
         template_description = template.get('description') or template.get('name') # 如果描述为空，用模板名作为备用
-
-        # ★★★ 准备并发数显示信息 ★★★
-        stream_limit = template.get('max_concurrent_streams')
-        concurrent_streams_info = "未设置" # 默认值
-        if stream_limit is not None: # 健壮性检查
-            if stream_limit == 0:
-                concurrent_streams_info = "无限制"
-            else:
-                concurrent_streams_info = f"{stream_limit} 个设备"
 
         # 3. 将所有信息打包返回
         return jsonify({
@@ -421,8 +364,7 @@ def register_with_invite():
                 "username": username,
                 "expiration_info": expiration_info,
                 "redirect_url": final_redirect_url,
-                "template_description": template_description,
-                "concurrent_streams_info": concurrent_streams_info
+                "template_description": template_description # <-- 新增返回字段
             }
         }), 201
     except Exception as e:
