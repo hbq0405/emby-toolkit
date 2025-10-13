@@ -440,49 +440,50 @@ def proxy_all(path):
     # ★★★ 并发控制逻辑 ★★★
     if 'PlaybackInfo' in path and '/Items/' in path:
         try:
-            # --- 步骤一：执行最终的并发裁决 ---
+            # --- 步骤一：执行优雅的并发裁决 (实时验证版) ---
+            user_id = request.args.get('UserId')
+            if not user_id:
+                match = re.search(r'/Users/([a-f0-9]+)/', path)
+                if match: user_id = match.group(1)
+            if not user_id: raise ValueError("无法从请求中确定用户ID")
+
+            user_name = user_db.get_username_by_id(user_id)
+            display_name = user_name if user_name else f"ID:{user_id}"
+            limit = session_db.get_user_stream_limit(user_id)
             
-            user_id_match = re.search(r'/Users/([^/]+)/', path)
-            user_id = user_id_match.group(1) if user_id_match else request.args.get('UserId')
-
-            if user_id:
-                # ★★★ 新增：获取用户名用于日志 ★★★
-                user_name = user_db.get_username_by_id(user_id) or user_id
-
-                limit = session_db.get_user_stream_limit(user_id)
+            if limit is not None and limit > 0:
+                current_db_streams = session_db.get_active_session_count(user_id)
                 
-                if limit is not None and limit > 0:
-                    current_streams = session_db.get_active_session_count(user_id)
+                if current_db_streams >= limit:
+                    logger.warning(f"  ➜ 并发达到上限 | 用户: {display_name} ({current_db_streams}/{limit})。启动实时验证...")
                     
-                    # 场景一：并发数未达到上限，直接放行
-                    if current_streams < limit:
-                        logger.info(f"  ➜ 并发检查通过。用户 '{user_name}' (当前: {current_streams}, 限制: {limit})，请求立即放行。")
+                    live_sessions = emby_handler.get_live_emby_sessions()
+                    db_sessions = session_db.get_active_session_details(user_id)
                     
-                    # 场景二：并发数达到或超过上限，进入延迟裁决
-                    else:
-                        logger.warning(f"  ➜ 并发达到上限！用户 '{user_name}' (当前: {current_streams}, 限制: {limit})，进入循环延迟确认 (1秒/次，共5次)...")
-                        
-                        # 使用循环和 gevent.sleep 避免阻塞，并进行多次检查
-                        delay_passed = False
-                        for i in range(5): # 循环5次
-                            time.sleep(1) # 每次延迟1秒
-                            streams_after_wait = session_db.get_active_session_count(user_id)
-                            logger.info(f"  ➜ 第 {i+1} 次检查用户 '{user_name}' 的并发数: {streams_after_wait}/{limit}。")
-                            
-                            if streams_after_wait < limit:
-                                logger.info(f"    ➜ 并发已恢复正常。允许用户 '{user_name}' 的新播放请求。")
-                                delay_passed = True
-                                break # 并发恢复正常，跳出循环
-                        
-                        if not delay_passed: # 如果循环结束后，并发依然超限
-                            logger.warning(f"    ➜ 确认违规！正在拒绝用户 '{user_name}' 的新播放请求。")
-                            error_response = {
-                                "MediaSources": [], "PlaySessionId": None, "ErrorCode": "NoCompatibleStream",
-                                "Response": "Error", "Message": f"同时观看的设备数量已达到上限 ({limit}个)！"
-                            }
-                            return Response(json.dumps(error_response), status=200, mimetype='application/json')
-                        else: # 如果循环中途跳出，说明并发已恢复正常，继续执行后续逻辑
-                            logger.info(f"    ➜ 判定为换集操作。允许用户 '{user_name}' 的新播放请求。")
+                    live_count = 0
+                    dead_sessions = []
+                    for s in db_sessions:
+                        session_id = s.get('session_id')
+                        if session_id in live_sessions:
+                            live_count += 1
+                        else:
+                            dead_sessions.append(session_id)
+                    
+                    logger.info(f"  ➜ [实时验证] 完成：数据库记录 {len(db_sessions)} 个，其中 {live_count} 个确认存活。")
+
+                    if dead_sessions:
+                        spawn(session_db.delete_sessions_by_ids, dead_sessions)
+
+                    if live_count >= limit:
+                        logger.warning(f"  ➜ 确认违规，拒绝播放 | 用户: '{display_name}' (实际活跃: {live_count}/{limit})。")
+                        error_response = {
+                            "ErrorCode": "ConcurrencyLimitReached", # 使用自定义错误码
+                            "Message": f"播放设备数量已达上限 ({limit}个)，请先停止其他设备的播放。"
+                        }
+                        # ★★★ 注意：这里返回 403 Forbidden，让客户端知道请求被拒绝了 ★★★
+                        return Response(json.dumps(error_response), status=403, mimetype='application/json')
+            
+            logger.info(f"  ➜ 并发检查通过 | 用户: {display_name}。继续处理 PlaybackInfo...")
 
             # --- 步骤二：如果并发检查通过，则继续执行智能劫持逻辑 ---
             item_id_match = re.search(r'/Items/(\d+)/PlaybackInfo', path)

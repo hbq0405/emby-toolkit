@@ -35,10 +35,29 @@ server {
     # ★★★ 规则 1 (已修正)：转发所有由 Python 代理生成的虚拟视频路径 ★★★
     {% if REDIRECT_UPSTREAM %}
     location ~* ^/emby/videos/(.*)$ {
-        # $1 会捕获到 "300600/stream.mkv"
-        # proxy_pass 会将请求转发到 http://redirect_service/300600/stream.mkv
-        # 注意：这里我们不再需要原始路径中的 /emby/videos/ 部分，因为302服务器的成功案例（图一）表明它需要的就是这个格式
-        proxy_pass http://redirect_service/emby/videos/$1;
+        # --- CORS 解决代码 ---
+        # 允许来自任何源的请求
+        add_header 'Access-Control-Allow-Origin' '*' always;
+        # 允许的 HTTP 方法
+        add_header 'Access-Control-Allow-Methods' 'GET, POST, OPTIONS' always;
+        # 允许客户端发送的请求头
+        add_header 'Access-Control-Allow-Headers' 'DNT,User-Agent,X-Requested-With,If-Modified-Since,Cache-Control,Content-Type,Range' always;
+        # 允许客户端访问的响应头
+        add_header 'Access-Control-Expose-Headers' 'Content-Length,Content-Range' always;
+        
+        # 处理浏览器的 OPTIONS 预检请求
+        if ($request_method = 'OPTIONS') {
+            add_header 'Access-Control-Max-Age' 1728000;
+            add_header 'Content-Type' 'text/plain; charset=utf-8';
+            add_header 'Content-Length' 0;
+            return 204;
+        }
+        # --- CORS 解决代码结束 ---
+
+        # ★★★ 路径修正 ★★★
+        # 您的旧配置 proxy_pass http://redirect_service/emby/videos/$1; 是正确的
+        # 它会将 /emby/videos/xxxx 转发到 redirect_service/emby/videos/xxxx
+        proxy_pass http://redirect_service/emby/videos/$1$is_args$args;
     }
     {% endif %}
 
