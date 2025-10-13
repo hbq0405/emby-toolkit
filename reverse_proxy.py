@@ -437,12 +437,13 @@ proxy_app = Flask(__name__)
 @proxy_app.route('/auth-playback', methods=['GET'])
 def handle_auth_playback():
     """
-    【V3 - 实时主动验证版】
-    处理来自 Nginx 的授权请求。当并发达到上限时，会主动向 Emby 查询
-    数据库中的会话是否真的处于播放状态，从而实现精准的并发控制。
+    【最终架构版】
+    通过多种方式（路径、参数、Token反查）来确定用户ID，进行并发检查。
     """
     try:
         user_id = None
+        
+        # --- 策略一：尝试从已知的明确来源获取 UserID ---
         original_uri = request.headers.get('X-Original-Uri')
         if original_uri:
             query_match = re.search(r'[?&]UserId=([a-f0-9]+)', original_uri)
@@ -452,8 +453,21 @@ def handle_auth_playback():
                 if path_match: user_id = path_match.group(1)
         if not user_id:
             user_id = request.headers.get('X-Emby-Userid')
+
+        # --- 策略二：如果上面都失败了，启用最终武器：Token 反查 ---
         if not user_id:
-            logger.warning("授权请求中最终未能定位到用户ID，已拒绝。")
+            logger.warning("  ➜ 未能从常规渠道定位用户ID，正在尝试 Token 反查...")
+            token = request.headers.get('X-Emby-Token')
+            if token:
+                user_info = emby_handler.get_user_by_token(token)
+                if user_info and user_info.get('Id'):
+                    user_id = user_info['Id']
+            else:
+                logger.warning("  ➜ Token 反查失败：请求中未找到 api_key。")
+
+        # --- 最终裁决 ---
+        if not user_id:
+            logger.error("授权请求中最终未能定位到用户ID，已拒绝。")
             return Response(status=403)
 
         user_name = user_db.get_username_by_id(user_id)

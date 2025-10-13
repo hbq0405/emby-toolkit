@@ -1920,3 +1920,45 @@ def get_live_emby_sessions() -> set:
     except Exception as e:
         logger.error(f"  ➜ [实时验证] 从 Emby 获取实时会话列表时失败: {e}", exc_info=True)
         return set()
+    
+def get_user_by_token(token: str) -> Optional[Dict[str, Any]]:
+    """
+    【新增】根据 AccessToken (api_key) 获取当前会话的用户信息。
+    """
+    config = config_manager.APP_CONFIG
+    base_url = config.get("emby_server_url")
+    if not base_url or not token:
+        return None
+
+    # Emby 有一个非官方但常用的端点来验证 Token
+    api_url = f"{base_url.rstrip('/')}/System/Info"
+    headers = {"X-Emby-Token": token}
+    
+    try:
+        # 这个请求应该很快
+        response = requests.get(api_url, headers=headers, timeout=5)
+        response.raise_for_status()
+        # 如果 Token 有效，这个请求会成功。但它不直接返回用户信息。
+        # 我们需要调用另一个接口 /Sessions
+        
+        sessions_url = f"{base_url.rstrip('/')}/Sessions"
+        params = {"api_key": token} # 用 token 作为 api_key
+        sessions_response = requests.get(sessions_url, params=params, timeout=5)
+        sessions_response.raise_for_status()
+        sessions = sessions_response.json()
+
+        # 遍历会话，找到与此 Token 匹配的那个
+        for session in sessions:
+            if session.get('AccessToken') == token:
+                logger.trace(f"  ➜ [Token反查] 成功通过 Token 找到用户 '{session.get('UserName')}'。")
+                return {
+                    "Id": session.get('UserId'),
+                    "Name": session.get('UserName')
+                }
+        
+        logger.warning(f"  ➜ [Token反查] Token 有效，但在当前会话中未找到匹配的用户。")
+        return None
+
+    except Exception as e:
+        logger.error(f"  ➜ [Token反查] 通过 Token 获取用户信息时失败: {e}")
+        return None

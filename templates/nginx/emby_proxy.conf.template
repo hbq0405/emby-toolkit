@@ -61,6 +61,7 @@ server {
         # ★★★ 关键：我们需要从视频流请求的 URL 参数中获取 UserId ★★★
         proxy_set_header X-Emby-UserId $arg_UserId;
         proxy_set_header X-Original-URI $request_uri;
+        proxy_set_header X-Emby-Token $arg_api_key;
     }
 
     # --- 以下是虚拟库路由规则 ---
