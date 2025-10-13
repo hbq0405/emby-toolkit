@@ -147,7 +147,7 @@ def get_active_session_details(user_id: str) -> List[Dict[str, Any]]:
     """获取指定用户所有活跃会话的详细信息。"""
     if not user_id:
         return []
-    sql = "SELECT session_id, device_id, client_name FROM sessions WHERE user_id = %s"
+    sql = "SELECT session_id, device_id, client_name FROM active_sessions WHERE emby_user_id = %s"
     try:
         with get_db_connection() as conn:
             cursor = conn.cursor()
@@ -161,7 +161,7 @@ def delete_sessions_by_ids(session_ids: List[str]):
     """根据会话ID列表，批量删除会话记录。"""
     if not session_ids:
         return
-    sql = "DELETE FROM sessions WHERE session_id = ANY(%s)"
+    sql = "DELETE FROM active_sessions WHERE session_id = ANY(%s)"
     try:
         with get_db_connection() as conn:
             cursor = conn.cursor()
