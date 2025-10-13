@@ -75,6 +75,10 @@ server {
         proxy_pass http://emby_server;
     }
 
+    location ~ /Items/(\d+)/PlaybackInfo {
+        proxy_pass http://virtual_library_proxy;
+    }
+
     # 规则 5: WebSocket (保持不变)
     location /embywebsocket {
         proxy_pass http://emby_server;

@@ -27,7 +27,7 @@ from tasks import (
 )
 from custom_collection_handler import FilterEngine
 from services.cover_generator import CoverGeneratorService
-from database import collection_db, connection, settings_db, user_db
+from database import collection_db, connection, settings_db, user_db, session_db
 from database.log_db import LogDBManager
 import logging
 logger = logging.getLogger(__name__)
@@ -340,6 +340,60 @@ def emby_webhook():
     # ★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★
     event_type = data.get("Event") if data else "未知事件"
     logger.debug(f"  ➜ 收到Emby Webhook: {event_type}")
+
+    # ★★★ 并发控制事件处理逻辑 ★★★
+    if event_type in ["playback.start", "playback.stop"]:
+        session_info = data.get("Session", {})
+        user_info = data.get("User", {})
+        item_info = data.get("Item", {})
+
+        user_id = user_info.get("Id")
+        device_id = session_info.get("DeviceId")
+        session_id = session_info.get("Id")
+
+        if event_type == "playback.start":
+            if not all([user_id, device_id, session_id]):
+                logger.warning(f"  ➜ Webhook 'playback.start' 缺少关键信息 (UserId, DeviceId, or SessionId)，并发控制已忽略。")
+            else:
+                # 1. 照常记录新会话
+                session_data = {
+                    "emby_user_id": user_id,
+                    "device_id": device_id,
+                    "session_id": session_id,
+                    "device_name": session_info.get("DeviceName"),
+                    "client_name": session_info.get("Client"),
+                    "item_id": item_info.get("Id"),
+                    "item_name": item_info.get("Name")
+                }
+                session_data_cleaned = {k: v for k, v in session_data.items() if v is not None}
+                session_db.start_session(session_data_cleaned)
+
+                # 2. 立即执行检查与追惩
+                limit = session_db.get_user_stream_limit(user_id)
+                if limit is not None and limit > 0:
+                    active_sessions = session_db.get_active_sessions(user_id)
+                    
+                    # 如果当前会话数 > 限制数，则开始执法
+                    if len(active_sessions) > limit:
+                        # active_sessions 已按时间升序排序，第一个就是最旧的
+                        sessions_to_terminate = active_sessions[:len(active_sessions) - limit]
+                        
+                        logger.warning(f"  ➜ ENFORCEMENT: 用户 {user_info.get('Name', user_id)} 违规！(当前: {len(active_sessions)}, 限制: {limit})。准备终止 {len(sessions_to_terminate)} 个最旧的会话...")
+                        
+                        for oldest_session in sessions_to_terminate:
+                            oldest_session_id = oldest_session.get("session_id")
+                            if oldest_session_id:
+                                # 调用 API 强制终止最旧的会话
+                                emby_handler.terminate_emby_session(oldest_session_id)
+                                # Emby 在被终止后，会自动发送一个 playback.stop 事件，
+                                # 我们的 stop 处理器会接收到并清理数据库，形成完美闭环。
+
+        elif event_type == "playback.stop":
+            if not device_id:
+                logger.warning(f"  ➜ Webhook 'playback.stop' 缺少 DeviceId，无法清理会话。")
+            else:
+                # stop 逻辑保持不变，它现在也负责处理被我们强制终止的会话
+                session_db.stop_session(device_id)
 
     USER_DATA_EVENTS = [
         "item.markfavorite", "item.unmarkfavorite",
