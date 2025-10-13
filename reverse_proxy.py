@@ -446,7 +446,7 @@ def proxy_all(path):
             user_id = user_id_match.group(1) if user_id_match else request.args.get('UserId')
 
             if user_id:
-                limit = user_db.get_user_stream_limit(user_id)
+                limit = session_db.get_user_stream_limit(user_id)
                 
                 if limit is not None and limit > 0:
                     current_streams = session_db.get_active_session_count(user_id)
