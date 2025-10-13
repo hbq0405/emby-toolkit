@@ -58,12 +58,12 @@ server {
     # ★★★ 新增：定义内部授权请求的端点 ★★★
     # 这个位置只能被 Nginx 内部的 auth_request 调用
     location = /auth-playback {
-        internal; # 关键！禁止外部直接访问
+        internal;
         proxy_pass http://virtual_library_proxy;
-        proxy_pass_request_body off; # 我们不需要请求体
+        proxy_pass_request_body off;
         proxy_set_header Content-Length "";
-        # 将从原始请求中捕获的用户ID，作为Header传给Python
         proxy_set_header X-Emby-UserId $arg_UserId;
+        proxy_set_header X-Original-URI $request_uri;
     }
 
     # ★★★ 核心修改：重构 PlaybackInfo 规则 ★★★
