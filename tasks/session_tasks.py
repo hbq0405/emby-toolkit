@@ -16,7 +16,7 @@ def task_cleanup_stale_sessions(processor):
     
     threshold_time = datetime.now(timezone.utc) - timedelta(minutes=STALE_THRESHOLD_MINUTES)
     
-    logger.info("  ➜ 正在执行陈旧播放会话清理任务...")
+    logger.trace("  ➜ 正在执行陈旧播放会话清理任务...")
     
     try:
         with get_db_connection() as conn:
@@ -30,7 +30,7 @@ def task_cleanup_stale_sessions(processor):
             if deleted_count > 0:
                 logger.warning(f"  ➜ 清理任务完成：移除了 {deleted_count} 个陈旧的播放会话。")
             else:
-                logger.info("  ➜ 清理任务完成：未发现需要清理的陈旧会话。")
+                logger.trace("  ➜ 清理任务完成：未发现需要清理的陈旧会话。")
                 
     except Exception as e:
         logger.error(f"执行陈旧会话清理任务时发生数据库错误: {e}", exc_info=True)

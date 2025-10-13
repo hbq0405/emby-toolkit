@@ -142,3 +142,31 @@ def get_user_stream_limit(user_id: str) -> Optional[int]:
         logger.error(f"DB: 查询用户 {user_id} 的并发限制时失败: {e}", exc_info=True)
         # 出错时返回 1，倾向于阻止播放，更安全
         return 1
+    
+def get_active_session_details(user_id: str) -> List[Dict[str, Any]]:
+    """获取指定用户所有活跃会话的详细信息。"""
+    if not user_id:
+        return []
+    sql = "SELECT session_id, device_id, client_name FROM sessions WHERE user_id = %s"
+    try:
+        with get_db_connection() as conn:
+            cursor = conn.cursor()
+            cursor.execute(sql, (user_id,))
+            return [dict(row) for row in cursor.fetchall()]
+    except Exception as e:
+        logger.error(f"DB: 获取用户 {user_id} 的活跃会话详情失败: {e}", exc_info=True)
+        return []
+
+def delete_sessions_by_ids(session_ids: List[str]):
+    """根据会话ID列表，批量删除会话记录。"""
+    if not session_ids:
+        return
+    sql = "DELETE FROM sessions WHERE session_id = ANY(%s)"
+    try:
+        with get_db_connection() as conn:
+            cursor = conn.cursor()
+            cursor.execute(sql, (session_ids,))
+            conn.commit()
+            logger.info(f"  ➜ [实时清理] 成功从数据库中清除了 {cursor.rowcount} 个僵尸会话。")
+    except Exception as e:
+        logger.error(f"DB: 批量删除会话失败: {e}", exc_info=True)

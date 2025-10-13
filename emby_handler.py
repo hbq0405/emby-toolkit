@@ -1882,3 +1882,37 @@ def delete_emby_user(user_id: str) -> bool:
     except Exception as e:
         logger.error(f"  ➜ 删除 Emby 用户 '{user_name_for_log}' 时发生未知错误: {e}")
         return False
+    
+def get_live_emby_sessions() -> set:
+    """
+    【新增】从 Emby 服务器实时获取所有活跃的播放会話 ID。
+    返回一个包含所有活跃 PlaySessionId 的集合(set)，用于快速查找。
+    """
+    config = config_manager.APP_CONFIG
+    base_url = config.get("emby_server_url")
+    api_key = config.get("emby_api_key")
+
+    if not base_url or not api_key:
+        logger.error("实时获取 Emby 会话失败：未配置服务器地址或 API Key。")
+        return set()
+
+    api_url = f"{base_url.rstrip('/')}/Sessions"
+    params = {"api_key": api_key, "ControllableByUserId": ""} # 获取所有会话
+    
+    try:
+        api_timeout = config.get(constants.CONFIG_OPTION_EMBY_API_TIMEOUT, 10) # 这个请求应该很快
+        response = requests.get(api_url, params=params, timeout=api_timeout)
+        response.raise_for_status()
+        sessions = response.json()
+        
+        # 我们只关心那些正在播放的会话的 PlaySessionId
+        live_session_ids = {
+            s['PlayState']['PlaySessionId'] 
+            for s in sessions 
+            if 'PlayState' in s and s['PlayState'].get('PlaySessionId')
+        }
+        logger.trace(f"  ➜ [实时验证] 从 Emby 获取到 {len(live_session_ids)} 个活跃的播放会话。")
+        return live_session_ids
+    except Exception as e:
+        logger.error(f"  ➜ [实时验证] 从 Emby 获取实时会话列表时失败: {e}")
+        return set()

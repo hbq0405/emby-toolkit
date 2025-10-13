@@ -437,60 +437,74 @@ proxy_app = Flask(__name__)
 @proxy_app.route('/auth-playback', methods=['GET'])
 def handle_auth_playback():
     """
-    【健壮最终版】
-    处理来自 Nginx auth_request 的内部授权请求。
-    能智能地从请求路径、URL参数等多个来源提取用户ID。
+    【V3 - 实时主动验证版】
+    处理来自 Nginx 的授权请求。当并发达到上限时，会主动向 Emby 查询
+    数据库中的会话是否真的处于播放状态，从而实现精准的并发控制。
     """
     try:
         user_id = None
-        
-        # 1. 优先从 Nginx 转发过来的完整原始 URI 中寻找 UserID
         original_uri = request.headers.get('X-Original-Uri')
         if original_uri:
-            # 1a. 尝试从 URL 参数中提取 (最常见的情况，例如 ?UserId=xxx)
             query_match = re.search(r'[?&]UserId=([a-f0-9]+)', original_uri)
-            if query_match:
-                user_id = query_match.group(1)
-            
-            # 1b. 如果参数中没有，再尝试从路径中提取 (例如 /Users/xxx/)
+            if query_match: user_id = query_match.group(1)
             if not user_id:
                 path_match = re.search(r'/Users/([a-f0-9]+)/', original_uri)
-                if path_match:
-                    user_id = path_match.group(1)
-        
-        # 2. 如果上述方法都失败，最后尝试直接从 Header 中获取 (作为备用方案)
+                if path_match: user_id = path_match.group(1)
         if not user_id:
             user_id = request.headers.get('X-Emby-Userid')
-
-        # --- 最终裁决 ---
         if not user_id:
             logger.warning("授权请求中最终未能定位到用户ID，已拒绝。")
-            # 打印出原始URI，帮助未来调试
-            logger.debug(f"  ➜ 导致失败的原始URI: {original_uri}")
             return Response(status=403)
 
-        # --- 后续的并发检查逻辑保持不变 ---
         user_name = user_db.get_username_by_id(user_id)
         display_name = user_name if user_name else f"ID:{user_id}"
         limit = session_db.get_user_stream_limit(user_id)
-        if limit is None or limit <= 0: return Response(status=204)
-        current_streams = session_db.get_active_session_count(user_id)
-        if current_streams < limit:
-            logger.info(f"  ➜ 授权通过 | 用户: {display_name} ({current_streams}/{limit})。")
+        
+        if limit is None or limit <= 0:
             return Response(status=204)
-        logger.warning(f"  ➜ 并发达到上限 | 用户: {display_name} ({current_streams}/{limit})。进入循环检查...")
-        for i in range(5):
-            time.sleep(1)
-            streams_after_wait = session_db.get_active_session_count(user_id)
-            if streams_after_wait < limit:
-                logger.info(f"  ➜ 判定为换集，授权通过 | 用户: {display_name} ({streams_after_wait}/{limit})。")
-                return Response(status=204)
-        final_streams = session_db.get_active_session_count(user_id)
-        logger.warning(f"  ➜ 确认违规，授权拒绝 | 用户: '{display_name}' (最终检查: {final_streams}/{limit})。")
-        return Response(status=403)
+
+        current_streams_in_db = session_db.get_active_session_count(user_id)
+        
+        # --- 核心修改点 ---
+        # 1. 如果数据库记录的并发数还没到上限，直接放行，这是最高效的路径。
+        if current_streams_in_db < limit:
+            logger.info(f"  ➜ 授权通过 (DB) | 用户: {display_name} ({current_streams_in_db}/{limit})。")
+            return Response(status=204)
+        
+        # 2. 如果数据库记录达到上限，启动“实时主动验证”
+        logger.warning(f"  ➜ 并发达到上限 | 用户: {display_name} ({current_streams_in_db}/{limit})。启动实时验证...")
+        
+        # 2a. 从 Emby 获取“真正活着”的会话ID列表
+        live_session_ids_from_emby = emby_handler.get_live_emby_sessions()
+        
+        # 2b. 从我们的数据库获取该用户“待验证”的会话列表
+        sessions_from_db = session_db.get_active_session_details(user_id)
+        
+        truly_live_count = 0
+        dead_session_ids = []
+        for session in sessions_from_db:
+            session_id = session.get('session_id')
+            if session_id in live_session_ids_from_emby:
+                truly_live_count += 1
+            else:
+                dead_session_ids.append(session_id)
+        
+        logger.info(f"  ➜ [实时验证] 完成：数据库记录 {len(sessions_from_db)} 个，其中 {truly_live_count} 个确认存活。")
+
+        # 2c. 在后台异步清理我们发现的“僵尸”会话，不阻塞当前用户的请求
+        if dead_session_ids:
+            spawn(session_db.delete_sessions_by_ids, dead_session_ids)
+
+        # 3. 最终裁决
+        if truly_live_count < limit:
+            logger.info(f"  ➜ 授权通过 (实时) | 用户: {display_name} (实际活跃: {truly_live_count}/{limit})。判定为换集或有僵尸会话。")
+            return Response(status=204) # 成功，放行
+        else:
+            logger.warning(f"  ➜ 确认违规，授权拒绝 | 用户: '{display_name}' (实际活跃: {truly_live_count}/{limit})。")
+            return Response(status=403) # 失败，拒绝
 
     except Exception as e:
-        logger.error(f"  ➜ 并发授权检查时发生内部错误: {e}", exc_info=True)
+        logger.error(f"并发授权检查时发生内部错误: {e}", exc_info=True)
         return Response(status=500)
 
 @proxy_app.route('/playback-error', methods=['GET'])
