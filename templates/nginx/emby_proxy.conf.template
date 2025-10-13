@@ -14,14 +14,12 @@ upstream redirect_service {
 }
 {% endif %}
 
-# ★★★ 新增：定义一个处理自定义错误响应的位置 ★★★
-# 当 auth_request 失败时，我们会跳转到这里，由 Python 返回一个格式化的 JSON 错误
-location @playback_error {
-    proxy_pass http://virtual_library_proxy/playback-error;
-    proxy_set_header Content-Type "application/json";
-}
-
 server {
+    # 当 auth_request 失败时，我们会跳转到这里...
+    location @playback_error {
+        proxy_pass http://virtual_library_proxy/playback-error;
+        proxy_set_header Content-Type "application/json";
+    }
     listen {{ NGINX_LISTEN_PORT }};
     server_name your.domain.com;
 
