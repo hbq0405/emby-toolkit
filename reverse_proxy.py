@@ -434,99 +434,83 @@ def handle_get_latest_items(user_id, params):
 
 proxy_app = Flask(__name__)
 
-@proxy_app.route('/auth-playback', methods=['GET'])
-def handle_auth_playback():
-    """
-    【V3 - 实时主动验证版】
-    处理来自 Nginx 的授权请求。当并发达到上限时，会主动向 Emby 查询
-    数据库中的会话是否真的处于播放状态，从而实现精准的并发控制。
-    """
-    try:
-        user_id = None
-        original_uri = request.headers.get('X-Original-Uri')
-        if original_uri:
-            query_match = re.search(r'[?&]UserId=([a-f0-9]+)', original_uri)
-            if query_match: user_id = query_match.group(1)
-            if not user_id:
-                path_match = re.search(r'/Users/([a-f0-9]+)/', original_uri)
-                if path_match: user_id = path_match.group(1)
-        if not user_id:
-            user_id = request.headers.get('X-Emby-Userid')
-        if not user_id:
-            logger.warning("授权请求中最终未能定位到用户ID，已拒绝。")
-            return Response(status=403)
-
-        user_name = user_db.get_username_by_id(user_id)
-        display_name = user_name if user_name else f"ID:{user_id}"
-        limit = session_db.get_user_stream_limit(user_id)
-        
-        if limit is None or limit <= 0:
-            return Response(status=204)
-
-        current_streams_in_db = session_db.get_active_session_count(user_id)
-        
-        # --- 核心修改点 ---
-        # 1. 如果数据库记录的并发数还没到上限，直接放行，这是最高效的路径。
-        if current_streams_in_db < limit:
-            logger.info(f"  ➜ 授权通过 | 用户: {display_name} ({current_streams_in_db}/{limit})。")
-            return Response(status=204)
-        
-        # 2. 如果数据库记录达到上限，启动“实时主动验证”
-        logger.warning(f"  ➜ 并发达到上限 | 用户: {display_name} ({current_streams_in_db}/{limit})。启动实时验证...")
-        
-        # 2a. 从 Emby 获取“真正活着”的会话ID列表
-        live_session_ids_from_emby = emby_handler.get_live_emby_sessions()
-        
-        # 2b. 从我们的数据库获取该用户“待验证”的会话列表
-        sessions_from_db = session_db.get_active_session_details(user_id)
-        
-        truly_live_count = 0
-        dead_session_ids = []
-        for session in sessions_from_db:
-            session_id = session.get('session_id')
-            if session_id in live_session_ids_from_emby:
-                truly_live_count += 1
-            else:
-                dead_session_ids.append(session_id)
-        
-        logger.info(f"  ➜ [实时验证] 完成：数据库记录 {len(sessions_from_db)} 个，其中 {truly_live_count} 个确认存活。")
-
-        # 2c. 在后台异步清理我们发现的“僵尸”会话，不阻塞当前用户的请求
-        if dead_session_ids:
-            spawn(session_db.delete_sessions_by_ids, dead_session_ids)
-
-        # 3. 最终裁决
-        if truly_live_count < limit:
-            logger.info(f"  ➜ 授权通过 (实时) | 用户: {display_name} (实际活跃: {truly_live_count}/{limit})。判定为换集或有僵尸会话。")
-            return Response(status=204) # 成功，放行
-        else:
-            logger.warning(f"  ➜ 确认违规，授权拒绝 | 用户: '{display_name}' (实际活跃: {truly_live_count}/{limit})。")
-            return Response(status=403) # 失败，拒绝
-
-    except Exception as e:
-        logger.error(f"并发授权检查时发生内部错误: {e}", exc_info=True)
-        return Response(status=500)
-
-@proxy_app.route('/playback-error', methods=['GET'])
-def handle_playback_error():
-    """
-    当 Nginx 授权失败时，返回一个格式化的 JSON 错误信息给客户端。
-    """
-    user_id = request.headers.get('X-Emby-UserId') or request.args.get('UserId')
-    limit = session_db.get_user_stream_limit(user_id) if user_id else 'N/A'
-    
-    error_response = {
-        "MediaSources": [],
-        "PlaySessionId": None,
-        "ErrorCode": "NoCompatibleStream",
-        "Response": "Error",
-        "Message": f"播放设备数量已达上限 ({limit}个)，请先停止其他设备的播放。"
-    }
-    return Response(json.dumps(error_response), status=200, mimetype='application/json')
-
 @proxy_app.route('/', defaults={'path': ''})
 @proxy_app.route('/<path:path>', methods=['GET', 'POST', 'PUT', 'DELETE', 'HEAD', 'OPTIONS'])
 def proxy_all(path):
+    # 并发检查
+    if 'PlaybackInfo' in path and '/Items/' in path:
+        try:
+            # --- 步骤一：执行并发检查 ---
+            user_id = request.args.get('UserId')
+            if not user_id: # 如果参数里没有，尝试从路径里再找一次
+                match = re.search(r'/Users/([a-f0-9]+)/', path)
+                if match: user_id = match.group(1)
+
+            if not user_id:
+                raise ValueError("无法从请求中确定用户ID")
+
+            user_name = user_db.get_username_by_id(user_id)
+            display_name = user_name if user_name else f"ID:{user_id}"
+            limit = session_db.get_user_stream_limit(user_id)
+
+            if limit is not None and limit > 0:
+                current_db_streams = session_db.get_active_session_count(user_id)
+                if current_db_streams >= limit:
+                    live_sessions = emby_handler.get_live_emby_sessions()
+                    db_sessions = session_db.get_active_session_details(user_id)
+                    
+                    live_count = 0
+                    dead_sessions = []
+                    for s in db_sessions:
+                        if s.get('session_id') in live_sessions:
+                            live_count += 1
+                        else:
+                            dead_sessions.append(s.get('session_id'))
+                    
+                    if dead_sessions:
+                        spawn(session_db.delete_sessions_by_ids, dead_sessions)
+
+                    if live_count >= limit:
+                        logger.warning(f"  ➜ 确认违规，拒绝播放 | 用户: '{display_name}' (实际活跃: {live_count}/{limit})。")
+                        error_response = {
+                            "ErrorCode": "ConcurrencyLimitReached", # 使用自定义错误码
+                            "Message": f"播放设备数量已达上限 ({limit}个)，请先停止其他设备的播放。"
+                        }
+                        return Response(json.dumps(error_response), status=403, mimetype='application/json')
+
+            # --- 步骤二：如果并发检查通过，则完全透传请求 ---
+            logger.debug(f"  ➜ 并发检查通过，正在透传 PlaybackInfo 请求...")
+            base_url, api_key = _get_real_emby_url_and_key()
+            target_url = f"{base_url}/{path}"
+            
+            forward_headers = {k: v for k, v in request.headers if k.lower() != 'host'}
+            forward_headers['Host'] = urlparse(base_url).netloc
+            
+            forward_params = request.args.copy()
+            forward_params['api_key'] = api_key
+
+            resp = requests.request(
+                method=request.method,
+                url=target_url,
+                headers=forward_headers,
+                params=forward_params,
+                data=request.get_data(),
+                stream=True, # 开启流模式，以便处理各种响应
+                timeout=30.0
+            )
+
+            # --- 步骤三：原封不动地返回 Emby 的响应 ---
+            # 排除一些逐跳头，避免 Nginx/客户端出错
+            excluded_resp_headers = ['content-encoding', 'content-length', 'transfer-encoding', 'connection']
+            response_headers = [(name, value) for name, value in resp.raw.headers.items() if name.lower() not in excluded_resp_headers]
+            
+            # 直接将 Emby 的响应流、状态码和头信息返回给客户端
+            return Response(resp.iter_content(chunk_size=8192), resp.status_code, response_headers)
+
+        except Exception as e:
+            logger.error(f"处理 PlaybackInfo 请求时出错: {e}", exc_info=True)
+            # 返回一个通用的错误，避免让客户端卡住
+            return Response("Proxy error during PlaybackInfo handling.", status=500, mimetype='text/plain')
     # --- 1. WebSocket 代理逻辑 (已添加超详细日志) ---
     if 'Upgrade' in request.headers and request.headers.get('Upgrade', '').lower() == 'websocket':
         logger.info("--- 收到一个新的 WebSocket 连接请求 ---")

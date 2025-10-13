@@ -39,38 +39,11 @@ server {
     }
     {% endif %}
 
-    # ★★★ 新增：定义内部授权请求的端点 ★★★
-    # 这个位置只能被 Nginx 内部的 auth_request 调用
-    location = /auth-playback {
-        internal;
-        proxy_pass http://virtual_library_proxy;
-        proxy_pass_request_body off;
-        proxy_set_header Content-Length "";
-        proxy_set_header X-Emby-UserId $arg_UserId;
-        proxy_set_header X-Original-URI $request_uri;
-    }
-
-    # ★★★ 核心修改：重构 PlaybackInfo 规则 ★★★
     location ~ /Items/(\d+)/PlaybackInfo {
-        auth_request /auth-playback;
-        
-        # 当 auth_request 失败 (返回 403) 时，执行下面的操作
-        error_page 403 = @json_error;
-
-        # 如果授权成功，则正常转发给 Emby
-        proxy_pass http://emby_server;
+        proxy_pass http://virtual_library_proxy;
     }
 
-    # 定义一个内部 location，专门用于生成 JSON 错误响应
-    location @json_error {
-        # 设置正确的 Content-Type
-        default_type application/json;
-        # 直接返回 200 OK 状态码，并附带我们想要的 JSON 内容
-        # 注意：这里的 JSON 字符串需要遵循 Nginx 的语法，不能换行
-        return 200 '{"MediaSources":[],"PlaySessionId":null,"ErrorCode":"NoCompatibleStream","Response":"Error","Message":"播放设备数量已达上限，请先停止其他设备的播放。"}';
-    }
-
-    # --- 以下是虚拟库路由规则 (保持不变) ---
+    # --- 以下是虚拟库路由规则 ---
 
     location ~ /emby/Users/([a-f0-9]+)/Views {
         proxy_pass http://virtual_library_proxy;
