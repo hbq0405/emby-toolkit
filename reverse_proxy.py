@@ -447,7 +447,7 @@ def proxy_all(path):
 
             if user_id:
                 # ★★★ 新增：获取用户名用于日志 ★★★
-                user_name = user_db.get_user_display_name(user_id) or user_id
+                user_name = user_db.get_username_by_id(user_id) or user_id
 
                 limit = session_db.get_user_stream_limit(user_id)
                 
