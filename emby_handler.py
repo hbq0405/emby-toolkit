@@ -15,8 +15,8 @@ import logging
 logger = logging.getLogger(__name__)
 # (SimpleLogger 和 logger 的导入保持不变)
 
-# ★★★ 核心修改 2/3: 删除之前硬编码的超时常量 (如果存在) ★★★
-# EMBY_API_TIMEOUT = 60  <-- 删除这一行
+# 获取管理员令牌
+_admin_token_cache = {}
 
 class SimpleLogger:
     def info(self, msg): print(f"[EMBY_INFO] {msg}")
@@ -28,20 +28,28 @@ _emby_id_cache = {}
 _emby_season_cache = {}
 _emby_episode_cache = {}
 # ★★★ 模拟用户登录以获取临时 AccessToken 的辅助函数 ★★★
-def _get_emby_access_token(emby_url, username, password) -> tuple[Optional[str], Optional[str]]:
-    """通过用户名和密码登录，获取临时的 AccessToken 和 UserId。"""
-    auth_url = f"{emby_url.rstrip('/')}/Users/AuthenticateByName"
+def _login_and_get_token() -> tuple[Optional[str], Optional[str]]:
+    """
+    【私有】执行实际的 Emby 登录操作来获取新的 Token。
+    这个函数不应被外部直接调用。
+    """
+    global _admin_token_cache
     
-    # Emby 登录需要特定的请求头来表明自己是哪个应用
+    cfg = config_manager.APP_CONFIG
+    emby_url = cfg.get(constants.CONFIG_OPTION_EMBY_SERVER_URL)
+    admin_user = cfg.get(constants.CONFIG_OPTION_EMBY_ADMIN_USER)
+    admin_pass = cfg.get(constants.CONFIG_OPTION_EMBY_ADMIN_PASS)
+
+    if not all([emby_url, admin_user, admin_pass]):
+        logger.error("  ➜ [自动登录] 失败：未在设置中完整配置 Emby 服务器地址和管理员账密。")
+        return None, None
+
+    auth_url = f"{emby_url.rstrip('/')}/Users/AuthenticateByName"
     headers = {
         'Content-Type': 'application/json',
         'X-Emby-Authorization': 'Emby Client="Emby Toolkit", Device="Toolkit", DeviceId="d4f3e4b4-9f5b-4b8f-8b8a-5c5c5c5c5c5c", Version="1.0.0"'
     }
-    
-    payload = {
-        "Username": username,
-        "Pw": password
-    }
+    payload = {"Username": admin_user, "Pw": admin_pass}
     
     try:
         response = requests.post(auth_url, headers=headers, json=payload, timeout=15)
@@ -49,8 +57,12 @@ def _get_emby_access_token(emby_url, username, password) -> tuple[Optional[str],
         data = response.json()
         access_token = data.get("AccessToken")
         user_id = data.get("User", {}).get("Id")
+        
         if access_token and user_id:
-            logger.debug("  ➜ [自动登录] 成功，已获取到临时的 AccessToken。")
+            logger.info("  ➜ [自动登录] 成功，已获取并缓存了新的管理员 AccessToken。")
+            # 成功获取后，存入缓存
+            _admin_token_cache['access_token'] = access_token
+            _admin_token_cache['user_id'] = user_id
             return access_token, user_id
         else:
             logger.error("  ➜ [自动登录] 登录 Emby 成功，但响应中未找到 AccessToken 或 UserId。")
@@ -58,6 +70,20 @@ def _get_emby_access_token(emby_url, username, password) -> tuple[Optional[str],
     except Exception as e:
         logger.error(f"  ➜ [自动登录] 模拟登录 Emby 失败: {e}")
         return None, None
+
+def get_admin_access_token() -> tuple[Optional[str], Optional[str]]:
+    """
+    【V2 - 缓存版】获取管理员的 AccessToken 和 UserId。
+    优先从内存缓存中读取，如果缓存为空，则自动执行登录并填充缓存。
+    """
+    # 1. 先检查缓存
+    if 'access_token' in _admin_token_cache and 'user_id' in _admin_token_cache:
+        logger.trace("  ➜ [自动登录] 从缓存中成功获取 AccessToken。")
+        return _admin_token_cache['access_token'], _admin_token_cache['user_id']
+    
+    # 2. 缓存未命中，执行登录
+    logger.info("  ➜ [自动登录] 缓存未命中，正在执行首次登录以获取 AccessToken...")
+    return _login_and_get_token()
 # ✨✨✨ 快速获取指定类型的项目总数，不获取项目本身 ✨✨✨
 def get_item_count(base_url: str, api_key: str, user_id: Optional[str], item_type: str, parent_id: Optional[str] = None) -> Optional[int]:
     """
@@ -1395,18 +1421,9 @@ def delete_item(item_id: str, emby_server_url: str, emby_api_key: str, user_id: 
     通过模拟管理员登录获取临时 AccessToken 来执行删除，绕过永久 API Key 的权限问题。
     """
     logger.warning(f"检测到删除请求，将尝试使用 [自动登录模式] 执行...")
-    
-    # 从全局配置中获取管理员登录凭证
-    cfg = config_manager.APP_CONFIG
-    admin_user = cfg.get(constants.CONFIG_OPTION_EMBY_ADMIN_USER)
-    admin_pass = cfg.get(constants.CONFIG_OPTION_EMBY_ADMIN_PASS)
-
-    if not all([admin_user, admin_pass]):
-        logger.error("删除操作失败：未在设置中配置 [Emby 管理员用户名] 和 [Emby 管理员密码]。")
-        return False
 
     # 1. 登录获取临时令牌
-    access_token, logged_in_user_id = _get_emby_access_token(emby_server_url, admin_user, admin_pass)
+    access_token, logged_in_user_id = get_admin_access_token()
     
     if not access_token:
         logger.error("无法获取临时 AccessToken，删除操作中止。请检查管理员账号密码是否正确。")
@@ -1447,17 +1464,8 @@ def delete_person_custom_api(base_url: str, api_key: str, person_id: str) -> boo
     """
     logger.trace(f"检测到删除演员请求，将尝试使用 [自动登录模式] 执行...")
 
-    # 从全局配置中获取管理员登录凭证
-    cfg = config_manager.APP_CONFIG
-    admin_user = cfg.get(constants.CONFIG_OPTION_EMBY_ADMIN_USER)
-    admin_pass = cfg.get(constants.CONFIG_OPTION_EMBY_ADMIN_PASS)
-
-    if not all([admin_user, admin_pass]):
-        logger.error("删除演员操作失败：未在设置中配置 [Emby 管理员用户名] 和 [Emby 管理员密码]。")
-        return False
-
     # 1. 登录获取临时令牌
-    access_token, logged_in_user_id = _get_emby_access_token(base_url, admin_user, admin_pass)
+    access_token, logged_in_user_id = get_admin_access_token()
     
     if not access_token:
         logger.error("无法获取临时 AccessToken，删除演员操作中止。请检查管理员账号密码是否正确。")
@@ -1829,13 +1837,20 @@ def force_set_user_policy(user_id: str, policy: Dict[str, Any], base_url: str, a
     except Exception as e:
         logger.error(f"  ➜ 为用户 '{user_name_for_log}' 应用新策略时发生严重错误: {e}", exc_info=True)
         return False
-def delete_emby_user(user_id: str, base_url: str, api_key: str) -> bool:
+def delete_emby_user(user_id: str) -> bool:
     """
-    【V2 - 增加日志用户名】专门用于删除一个 Emby 用户的函数。
+    【V3 - 配置统一版】专门用于删除一个 Emby 用户的函数。
+    不再接收 base_url 和 api_key 参数，而是直接从全局配置读取。
     """
+    # 1. 在函数开头，从全局配置获取所需信息
+    config = config_manager.APP_CONFIG
+    base_url = config.get("emby_server_url")
+    api_key = config.get("emby_api_key")
+
     # 在删除操作前先获取用户名，因为删除后就获取不到了
     user_name_for_log = user_id
     try:
+        # 使用我们刚刚从配置中获取的 base_url 和 api_key
         user_details = get_user_details(user_id, base_url, api_key)
         if user_details and user_details.get('Name'):
             user_name_for_log = user_details['Name']
@@ -1844,24 +1859,17 @@ def delete_emby_user(user_id: str, base_url: str, api_key: str) -> bool:
 
     logger.warning(f"  ➜ 检测到删除用户 '{user_name_for_log}' 的请求，将使用 [自动登录模式] 执行...")
     
-    cfg = config_manager.APP_CONFIG
-    admin_user = cfg.get(constants.CONFIG_OPTION_EMBY_ADMIN_USER)
-    admin_pass = cfg.get(constants.CONFIG_OPTION_EMBY_ADMIN_PASS)
-
-    if not all([admin_user, admin_pass]):
-        logger.error("  ➜ 删除用户操作失败：未配置 Emby 管理员账密。")
-        return False
-
-    access_token, logged_in_user_id = _get_emby_access_token(base_url, admin_user, admin_pass)
+    # 2. 直接调用新的、无参数的令牌获取函数
+    access_token, _ = get_admin_access_token()
     
     if not access_token:
-        logger.error("  ➜ 无法获取临时 AccessToken，删除用户操作中止。")
+        logger.error("  ➜ 无法获取管理员 AccessToken，删除用户操作中止。")
         return False
 
     api_url = f"{base_url.rstrip('/')}/Users/{user_id}"
     
     headers = { 'X-Emby-Token': access_token }
-    api_timeout = cfg.get(constants.CONFIG_OPTION_EMBY_API_TIMEOUT, 60)
+    api_timeout = config.get(constants.CONFIG_OPTION_EMBY_API_TIMEOUT, 60)
     
     try:
         response = requests.delete(api_url, headers=headers, timeout=api_timeout)

@@ -717,11 +717,7 @@ def delete_user(user_id):
     except Exception:
         pass # 获取失败则继续使用ID
 
-    emby_delete_success = emby_handler.delete_emby_user(
-        user_id, 
-        config.get("emby_server_url"), 
-        config.get("emby_api_key")
-    )
+    emby_delete_success = emby_handler.delete_emby_user(user_id)
     
     if emby_delete_success:
         try:
