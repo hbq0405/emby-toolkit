@@ -87,6 +87,45 @@ def create_template():
         return jsonify({"status": "ok", "message": "模板创建成功", "id": new_id}), 201
     except Exception as e:
         return jsonify({"status": "error", "message": str(e)}), 500
+    
+@user_management_bp.route('/api/admin/user_templates/<int:template_id>', methods=['PUT'])
+@login_required
+def update_template(template_id):
+    """更新一个现有的用户模板"""
+    data = request.json
+    name = data.get('name')
+    description = data.get('description')
+    default_expiration_days = data.get('default_expiration_days', 30)
+    max_concurrent_streams = data.get('max_concurrent_streams', 1)
+    # 注意：在编辑时，我们不允许更改源用户和是否同步首选项的设置，以简化逻辑
+
+    if not name:
+        return jsonify({"status": "error", "message": "模板名称不能为空"}), 400
+
+    try:
+        with connection.get_db_connection() as conn:
+            cursor = conn.cursor()
+            cursor.execute(
+                """
+                UPDATE user_templates 
+                SET 
+                    name = %s, 
+                    description = %s, 
+                    default_expiration_days = %s, 
+                    max_concurrent_streams = %s
+                WHERE id = %s
+                """,
+                (name, description, default_expiration_days, max_concurrent_streams, template_id)
+            )
+            conn.commit()
+            
+            if cursor.rowcount == 0:
+                return jsonify({"status": "error", "message": "模板不存在"}), 404
+        
+        return jsonify({"status": "ok", "message": "模板更新成功"}), 200
+    except Exception as e:
+        logger.error(f"更新模板 {template_id} 时出错: {e}", exc_info=True)
+        return jsonify({"status": "error", "message": str(e)}), 500
 
 @user_management_bp.route('/api/admin/user_templates/<int:template_id>/sync', methods=['POST'])
 @login_required

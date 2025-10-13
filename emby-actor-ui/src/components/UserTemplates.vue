@@ -79,7 +79,7 @@
       </n-form>
       <template #footer>
         <n-button @click="isModalVisible = false">取消</n-button>
-        <n-button type="primary" @click="handleOk" :loading="isSubmitting">创建</n-button>
+        <n-button type="primary" @click="handleOk" :loading="isSubmitting">{{ editMode ? '更新' : '创建' }}</n-button>
       </template>
     </n-modal>
   </div>
@@ -102,6 +102,11 @@ const api = {
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify(data),
   }).then(res => res.json()),
+  updateTemplate: (templateId, data) => fetch(`/api/admin/user_templates/${templateId}`, {
+    method: 'PUT',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(data),
+  }),
   deleteTemplate: (templateId) => fetch(`/api/admin/user_templates/${templateId}`, { method: 'DELETE' }),
   syncTemplate: (templateId) => fetch(`/api/admin/user_templates/${templateId}/sync`, {
     method: 'POST',
@@ -117,6 +122,7 @@ const isModalVisible = ref(false);
 const isSubmitting = ref(false);
 const syncingTemplateId = ref(null);
 const formRef = ref(null);
+const editMode = ref(false);
 
 // ★★★ 2. 更新：初始化表单模型，加入并发数字段 ★★★
 const getInitialFormModel = () => ({
@@ -163,7 +169,24 @@ onMounted(fetchData);
 
 // --- 事件处理 ---
 const handleCreate = () => {
+  editMode.value = false;
   formModel.value = getInitialFormModel(); // 使用函数重置表单
+  isModalVisible.value = true;
+};
+
+const handleEdit = (template) => {
+  editMode.value = true; // 切换到编辑模式
+  // 将当前行的数据填充到表单模型中
+  formModel.value = {
+    id: template.id,
+    name: template.name,
+    description: template.description,
+    default_expiration_days: template.default_expiration_days,
+    max_concurrent_streams: template.max_concurrent_streams,
+    // 这两个字段虽然被禁用，但我们仍然填充它们以保持数据完整性
+    source_emby_user_id: template.source_emby_user_id,
+    include_configuration: true, // 假设编辑时总是true，因为它不可更改
+  };
   isModalVisible.value = true;
 };
 
@@ -173,17 +196,26 @@ const handleOk = (e) => {
     if (!errors) {
       isSubmitting.value = true;
       try {
-        // ★★★ 4. 确认：API调用时，formModel中已自动包含 max_concurrent_streams ★★★
-        const response = await api.createTemplate(formModel.value);
-        if (response.status === 'ok') {
-          message.success('模板创建成功！');
+        let response;
+        if (editMode.value) {
+          // 编辑模式：调用更新 API
+          response = await api.updateTemplate(formModel.value.id, formModel.value);
+        } else {
+          // 创建模式：调用创建 API
+          response = await api.createTemplate(formModel.value);
+        }
+        
+        // 统一处理返回结果
+        const data = await response.json();
+        if (response.ok) {
+          message.success(editMode.value ? '模板更新成功！' : '模板创建成功！');
           isModalVisible.value = false;
           fetchData();
         } else {
-          throw new Error(response.message || '创建失败');
+          throw new Error(data.message || (editMode.value ? '更新失败' : '创建失败'));
         }
       } catch (error) {
-        message.error(`创建失败: ${error.message}`);
+        message.error(`${editMode.value ? '更新' : '创建'}失败: ${error.message}`);
       } finally {
         isSubmitting.value = false;
       }
@@ -256,6 +288,12 @@ const columns = [
     key: 'actions',
     render(row) {
       return h(NSpace, null, () => [
+        h(NButton, {
+          size: 'small',
+          type: 'primary',
+          ghost: true,
+          onClick: () => handleEdit(row)
+        }, { default: () => '编辑' }),
         h(NButton, {
           size: 'small',
           type: 'info',
