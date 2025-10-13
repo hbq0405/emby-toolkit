@@ -1,7 +1,7 @@
 # database/session_db.py
 import logging
 from datetime import datetime, timezone
-from typing import Optional, Dict, Any
+from typing import Optional, Dict, Any, List
 
 from .connection import get_db_connection
 
