@@ -434,6 +434,76 @@ def handle_get_latest_items(user_id, params):
 
 proxy_app = Flask(__name__)
 
+@proxy_app.route('/auth-playback', methods=['GET'])
+def handle_auth_playback():
+    """
+    【超级调试版】
+    处理来自 Nginx auth_request 的内部授权请求。
+    会打印出所有收到的 Header，以便我们诊断问题。
+    """
+    try:
+        # --- 打印所有收到的 Header ---
+        headers_dict = dict(request.headers)
+        logger.info("--- [授权请求头 DEBUG] ---")
+        logger.info(json.dumps(headers_dict, indent=2))
+        logger.info("--- [DEBUG 结束] ---")
+        # ---------------------------
+
+        user_id = None
+        original_uri = request.headers.get('X-Original-Uri') # 注意: HTTP头会自动转为首字母大写
+        if original_uri:
+            match = re.search(r'/Users/([a-f0-9]+)/', original_uri)
+            if match:
+                user_id = match.group(1)
+        
+        if not user_id:
+            user_id = request.headers.get('X-Emby-Userid') or request.args.get('UserId')
+
+        if not user_id:
+            logger.warning("授权请求中未能定位到用户ID，已拒绝。")
+            return Response(status=403)
+
+        # --- 后续的并发检查逻辑保持不变 ---
+        user_name = user_db.get_username_by_id(user_id)
+        display_name = user_name if user_name else f"ID:{user_id}"
+        limit = session_db.get_user_stream_limit(user_id)
+        if limit is None or limit <= 0: return Response(status=204)
+        current_streams = session_db.get_active_session_count(user_id)
+        if current_streams < limit:
+            logger.info(f"  ➜ 授权通过 | 用户: {display_name} ({current_streams}/{limit})。")
+            return Response(status=204)
+        logger.warning(f"  ➜ 并发达到上限 | 用户: {display_name} ({current_streams}/{limit})。进入循环检查...")
+        for i in range(5):
+            time.sleep(1)
+            streams_after_wait = session_db.get_active_session_count(user_id)
+            if streams_after_wait < limit:
+                logger.info(f"    ➜ 判定为换集，授权通过 | 用户: {display_name} ({streams_after_wait}/{limit})。")
+                return Response(status=204)
+        final_streams = session_db.get_active_session_count(user_id)
+        logger.warning(f"    ➜ 确认违规，授权拒绝 | 用户: '{display_name}' (最终检查: {final_streams}/{limit})。")
+        return Response(status=403)
+
+    except Exception as e:
+        logger.error(f"并发授权检查时发生内部错误: {e}", exc_info=True)
+        return Response(status=500)
+
+@proxy_app.route('/playback-error', methods=['GET'])
+def handle_playback_error():
+    """
+    当 Nginx 授权失败时，返回一个格式化的 JSON 错误信息给客户端。
+    """
+    user_id = request.headers.get('X-Emby-UserId') or request.args.get('UserId')
+    limit = session_db.get_user_stream_limit(user_id) if user_id else 'N/A'
+    
+    error_response = {
+        "MediaSources": [],
+        "PlaySessionId": None,
+        "ErrorCode": "NoCompatibleStream",
+        "Response": "Error",
+        "Message": f"同时观看的设备数量已达到上限 ({limit}个)！"
+    }
+    return Response(json.dumps(error_response), status=200, mimetype='application/json')
+
 @proxy_app.route('/', defaults={'path': ''})
 @proxy_app.route('/<path:path>', methods=['GET', 'POST', 'PUT', 'DELETE', 'HEAD', 'OPTIONS'])
 def proxy_all(path):
@@ -581,74 +651,3 @@ def proxy_all(path):
         logger.error(f"[PROXY] HTTP 代理时发生未知错误: {e}", exc_info=True)
         return "Internal Server Error", 500
     
-@proxy_app.route('/auth-playback', methods=['GET'])
-def handle_auth_playback():
-    """
-    处理来自 Nginx auth_request 的内部授权请求。
-    【V2 - 健壮版】能同时从请求路径和URL参数中提取用户ID。
-    """
-    try:
-        user_id = None
-        # 1. 优先尝试从 Nginx 转发过来的原始请求路径中提取 User ID
-        original_uri = request.headers.get('X-Original-URI')
-        if original_uri:
-            match = re.search(r'/Users/([a-f0-9]+)/', original_uri)
-            if match:
-                user_id = match.group(1)
-        
-        # 2. 如果路径中没有，再尝试从 URL 参数中获取 (兼容老客户端)
-        if not user_id:
-            user_id = request.headers.get('X-Emby-UserId') or request.args.get('UserId')
-
-        if not user_id:
-            logger.warning("授权请求中未能定位到用户ID，已拒绝。")
-            return Response(status=403) # Forbidden
-
-        # --- 后续的并发检查逻辑保持不变 ---
-        user_name = user_db.get_username_by_id(user_id)
-        display_name = user_name if user_name else f"ID:{user_id}"
-        
-        limit = session_db.get_user_stream_limit(user_id)
-        
-        if limit is None or limit <= 0:
-            return Response(status=204)
-
-        current_streams = session_db.get_active_session_count(user_id)
-        
-        if current_streams < limit:
-            logger.info(f"  ➜ 授权通过 | 用户: {display_name} ({current_streams}/{limit})。")
-            return Response(status=204)
-        
-        logger.warning(f"  ➜ 并发达到上限 | 用户: {display_name} ({current_streams}/{limit})。进入循环检查...")
-        
-        for i in range(5):
-            time.sleep(1)
-            streams_after_wait = session_db.get_active_session_count(user_id)
-            if streams_after_wait < limit:
-                logger.info(f"    ➜ 判定为换集，授权通过 | 用户: {display_name} ({streams_after_wait}/{limit})。")
-                return Response(status=204)
-        
-        final_streams = session_db.get_active_session_count(user_id)
-        logger.warning(f"    ➜ 确认违规，授权拒绝 | 用户: '{display_name}' (最终检查: {final_streams}/{limit})。")
-        return Response(status=403)
-
-    except Exception as e:
-        logger.error(f"并发授权检查时发生内部错误: {e}", exc_info=True)
-        return Response(status=500)
-
-@proxy_app.route('/playback-error', methods=['GET'])
-def handle_playback_error():
-    """
-    当 Nginx 授权失败时，返回一个格式化的 JSON 错误信息给客户端。
-    """
-    user_id = request.headers.get('X-Emby-UserId') or request.args.get('UserId')
-    limit = session_db.get_user_stream_limit(user_id) if user_id else 'N/A'
-    
-    error_response = {
-        "MediaSources": [],
-        "PlaySessionId": None,
-        "ErrorCode": "NoCompatibleStream",
-        "Response": "Error",
-        "Message": f"同时观看的设备数量已达到上限 ({limit}个)！"
-    }
-    return Response(json.dumps(error_response), status=200, mimetype='application/json')
