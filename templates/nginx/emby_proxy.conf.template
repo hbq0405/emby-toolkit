@@ -67,7 +67,7 @@ server {
         default_type application/json;
         # 直接返回 200 OK 状态码，并附带我们想要的 JSON 内容
         # 注意：这里的 JSON 字符串需要遵循 Nginx 的语法，不能换行
-        return 200 '{"MediaSources":[],"PlaySessionId":null,"ErrorCode":"ConcurrencyLimitReached","Response":"Error","Message":"播放设备数量已达上限，请先停止其他设备的播放。"}';
+        return 200 '{"MediaSources":[],"PlaySessionId":null,"ErrorCode":"NoCompatibleStream","Response":"Error","Message":"播放设备数量已达上限，请先停止其他设备的播放。"}';
     }
 
     # --- 以下是虚拟库路由规则 (保持不变) ---
