@@ -527,9 +527,6 @@ def handle_playback_error():
 @proxy_app.route('/', defaults={'path': ''})
 @proxy_app.route('/<path:path>', methods=['GET', 'POST', 'PUT', 'DELETE', 'HEAD', 'OPTIONS'])
 def proxy_all(path):
-    # ▼▼▼ 在这里加入调试日志 ▼▼▼
-    logger.info(f"--- [PROXY_ALL DEBUG] --- Path received: '{path}'")
-    # ▲▲▲ 调试日志结束 ▲▲▲
     # --- 1. WebSocket 代理逻辑 (已添加超详细日志) ---
     if 'Upgrade' in request.headers and request.headers.get('Upgrade', '').lower() == 'websocket':
         logger.info("--- 收到一个新的 WebSocket 连接请求 ---")

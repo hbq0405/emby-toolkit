@@ -15,22 +15,6 @@ upstream redirect_service {
 {% endif %}
 
 server {
-    # 当 auth_request 失败时，我们会跳转到这里...
-    location @playback_error {
-        # 1. 首先，使用 rewrite 将内部 URI 重写为 /playback-error。
-        #    'break' 参数很重要，它告诉 Nginx 完成重写后就停在这里，不要再匹配其他 location。
-        rewrite ^ /playback-error break;
-
-        # 2. 然后，使用不带路径的 proxy_pass。
-        #    Nginx 会自动将上面重写后的路径 (/playback-error) 用于请求。
-        proxy_pass http://virtual_library_proxy;
-
-        # 3. （最佳实践）为了确保 Python 能正确处理请求，我们最好也把关键的 Header 传过去。
-        proxy_set_header Host $host;
-        proxy_set_header X-Real-IP $remote_addr;
-        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
-        proxy_set_header X-Forwarded-Proto $scheme;
-    }
     listen {{ NGINX_LISTEN_PORT }};
     server_name your.domain.com;
 
@@ -68,15 +52,22 @@ server {
 
     # ★★★ 核心修改：重构 PlaybackInfo 规则 ★★★
     location ~ /Items/(\d+)/PlaybackInfo {
-        # 1. 发起授权请求
         auth_request /auth-playback;
         
-        # 2. 如果授权失败 (Python返回403)，则执行自定义错误处理
-        error_page 403 = @playback_error;
+        # 当 auth_request 失败 (返回 403) 时，执行下面的操作
+        error_page 403 = @json_error;
 
-        # 3. 如果授权成功 (Python返回2xx)，则将请求转发给真实的Emby服务器
-        #    这样客户端就能收到包含正确 302 跳转的原始响应！
+        # 如果授权成功，则正常转发给 Emby
         proxy_pass http://emby_server;
+    }
+
+    # 定义一个内部 location，专门用于生成 JSON 错误响应
+    location @json_error {
+        # 设置正确的 Content-Type
+        default_type application/json;
+        # 直接返回 200 OK 状态码，并附带我们想要的 JSON 内容
+        # 注意：这里的 JSON 字符串需要遵循 Nginx 的语法，不能换行
+        return 200 '{"MediaSources":[],"PlaySessionId":null,"ErrorCode":"NoCompatibleStream","Response":"Error","Message":"播放设备数量已达上限，请先停止其他设备的播放。"}';
     }
 
     # --- 以下是虚拟库路由规则 (保持不变) ---
