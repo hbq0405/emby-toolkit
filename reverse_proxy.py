@@ -468,7 +468,7 @@ def handle_auth_playback():
         # --- 核心修改点 ---
         # 1. 如果数据库记录的并发数还没到上限，直接放行，这是最高效的路径。
         if current_streams_in_db < limit:
-            logger.info(f"  ➜ 授权通过 (DB) | 用户: {display_name} ({current_streams_in_db}/{limit})。")
+            logger.info(f"  ➜ 授权通过 | 用户: {display_name} ({current_streams_in_db}/{limit})。")
             return Response(status=204)
         
         # 2. 如果数据库记录达到上限，启动“实时主动验证”
