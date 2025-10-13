@@ -437,102 +437,6 @@ proxy_app = Flask(__name__)
 @proxy_app.route('/', defaults={'path': ''})
 @proxy_app.route('/<path:path>', methods=['GET', 'POST', 'PUT', 'DELETE', 'HEAD', 'OPTIONS'])
 def proxy_all(path):
-    # ★★★ 并发控制逻辑 ★★★
-    if 'PlaybackInfo' in path and '/Items/' in path:
-        try:
-            # --- 步骤一：执行最终的并发裁决 ---
-            
-            user_id_match = re.search(r'/Users/([^/]+)/', path)
-            user_id = user_id_match.group(1) if user_id_match else request.args.get('UserId')
-
-            if user_id:
-                user_name = user_db.get_username_by_id(user_id)
-                display_name = user_name if user_name else f"ID:{user_id}"
-                limit = session_db.get_user_stream_limit(user_id)
-                
-                if limit is not None and limit > 0:
-                    current_streams = session_db.get_active_session_count(user_id)
-                    
-                    # 如果当前播放数已经超限，则进入循环裁决逻辑
-                    if current_streams >= limit:
-                        logger.warning(f"  ➜ 并发达到上限 | 用户: {display_name} ({current_streams}/{limit})。进入循环检查...")
-                        
-                        is_violation = True  # 先假设是违规
-                        for i in range(5): # 循环5次
-                            logger.info(f"  ➜ [第 {i+1}/5 次检查] 等待1秒后重新确认...")
-                            time.sleep(1)
-                            
-                            streams_after_wait = session_db.get_active_session_count(user_id)
-                            
-                            # 如果在等待期间，播放数降下来了，说明是换集
-                            if streams_after_wait < limit:
-                                logger.info(f"  ➜ 判定为换集 | 用户: {display_name}，当前播放: {streams_after_wait}/{limit}。")
-                                is_violation = False # 标记为非违规
-                                break # 立刻跳出循环，放行请求
-                        
-                        # 如果循环5次后，依然判定为违规
-                        if is_violation:
-                            final_streams = session_db.get_active_session_count(user_id)
-                            logger.warning(f"  ➜ 确认违规！(最终检查: {final_streams}/{limit}) | 已拒绝用户 '{display_name}' 的新播放请求。")
-                            error_response = {
-                                "MediaSources": [], "PlaySessionId": None, "ErrorCode": "NoCompatibleStream",
-                                "Response": "Error", "Message": f"同时观看的设备数量已达到上限 ({limit}个)！"
-                            }
-                            return Response(json.dumps(error_response), status=200, mimetype='application/json')
-                    
-                    else:
-                        logger.info(f"  ➜ 并发检查通过 | 用户: {display_name} ({current_streams}/{limit})。请求将立即处理。")
-
-            # --- 步骤二：如果并发检查通过，则继续执行智能劫持逻辑 ---
-            item_id_match = re.search(r'/Items/(\d+)/PlaybackInfo', path)
-            if item_id_match:
-                real_emby_id = item_id_match.group(1)
-                logger.info(f"  ➜ 截获到针对真实项目 '{real_emby_id}' 的 PlaybackInfo 请求（可能来自虚拟库上下文）。")
-                
-                # ... (后续的智能劫持逻辑保持不变) ...
-                base_url, api_key = _get_real_emby_url_and_key()
-                
-                # 确保 user_id 存在，以便转发请求
-                if not user_id:
-                    user_id = request.args.get('UserId', '') # 再次获取以防万一
-
-                real_playback_info_url = f"{base_url}/Items/{real_emby_id}/PlaybackInfo"
-                
-                forward_params = request.args.copy()
-                forward_params['api_key'] = api_key
-                forward_params['UserId'] = user_id
-
-                headers = {'Accept': 'application/json'}
-                
-                logger.debug(f"  ➜ 正在向真实Emby请求PlaybackInfo: {real_playback_info_url} with params {forward_params}")
-                resp = requests.get(real_playback_info_url, params=forward_params, headers=headers)
-                resp.raise_for_status()
-                
-                playback_info_data = resp.json()
-                
-                if 'MediaSources' in playback_info_data and len(playback_info_data['MediaSources']) > 0:
-                    logger.info("  ➜ 成功获取真实PlaybackInfo，正在修改播放路径...")
-                    
-                    original_path = playback_info_data['MediaSources'][0].get('Path')
-                    file_name = original_path.split('/')[-1] if original_path else f"stream.mkv"
-                    
-                    playback_info_data['MediaSources'][0]['Path'] = f"/emby/videos/{real_emby_id}/{file_name}"
-                    # playback_info_data['MediaSources'][0]['Protocol'] = 'Http' 
-                    
-                    # playback_info_data['MediaSources'][0].pop('PathType', None)
-                    # playback_info_data['MediaSources'][0].pop('SupportsDirectStream', None)
-                    # playback_info_data['MediaSources'][0].pop('SupportsTranscoding', None)
-
-                    logger.debug(f"  ➜ 修改后的PlaybackInfo: {json.dumps(playback_info_data, indent=2)}")
-                    
-                    return Response(json.dumps(playback_info_data), mimetype='application/json')
-                else:
-                    logger.warning(f"  ➜ 获取到的PlaybackInfo中不包含MediaSources，无法修改路径。")
-                    return Response(json.dumps(playback_info_data), mimetype='application/json')
-
-        except Exception as e:
-            logger.error(f"  ➜ 处理PlaybackInfo劫持或并发控制时出错: {e}", exc_info=True)
-            return Response("Proxy error during PlaybackInfo handling.", status=500, mimetype='text/plain')
     # --- 1. WebSocket 代理逻辑 (已添加超详细日志) ---
     if 'Upgrade' in request.headers and request.headers.get('Upgrade', '').lower() == 'websocket':
         logger.info("--- 收到一个新的 WebSocket 连接请求 ---")
@@ -676,3 +580,66 @@ def proxy_all(path):
     except Exception as e:
         logger.error(f"[PROXY] HTTP 代理时发生未知错误: {e}", exc_info=True)
         return "Internal Server Error", 500
+    
+@proxy_app.route('/auth-playback', methods=['GET'])
+def handle_auth_playback():
+    """
+    处理来自 Nginx auth_request 的内部授权请求。
+    只做决策，返回 204 (成功) 或 403 (失败)。
+    """
+    try:
+        user_id = request.headers.get('X-Emby-UserId') or request.args.get('UserId')
+        if not user_id:
+            logger.warning("授权请求中未找到用户ID，已拒绝。")
+            return Response(status=403) # Forbidden
+
+        user_name = user_db.get_username_by_id(user_id)
+        display_name = user_name if user_name else f"ID:{user_id}"
+        
+        limit = session_db.get_user_stream_limit(user_id)
+        
+        # 如果用户没有限制，或者限制为0，直接通过
+        if limit is None or limit <= 0:
+            return Response(status=204) # No Content, 表示成功
+
+        current_streams = session_db.get_active_session_count(user_id)
+        
+        if current_streams < limit:
+            logger.info(f"  ➜ 授权通过 | 用户: {display_name} ({current_streams}/{limit})。")
+            return Response(status=204) # 成功，放行
+        
+        # --- 进入循环裁决逻辑 ---
+        logger.warning(f"  ➜ 并发达到上限 | 用户: {display_name} ({current_streams}/{limit})。进入循环检查...")
+        
+        for i in range(5):
+            time.sleep(1)
+            streams_after_wait = session_db.get_active_session_count(user_id)
+            if streams_after_wait < limit:
+                logger.info(f"    ➜ 判定为换集，授权通过 | 用户: {display_name} ({streams_after_wait}/{limit})。")
+                return Response(status=204) # 成功，放行
+        
+        # 循环结束后仍然超限，最终拒绝
+        final_streams = session_db.get_active_session_count(user_id)
+        logger.warning(f"    ➜ 确认违规，授权拒绝 | 用户: '{display_name}' (最终检查: {final_streams}/{limit})。")
+        return Response(status=403) # 失败，拒绝
+
+    except Exception as e:
+        logger.error(f"并发授权检查时发生内部错误: {e}", exc_info=True)
+        return Response(status=500) # 服务器内部错误
+
+@proxy_app.route('/playback-error', methods=['GET'])
+def handle_playback_error():
+    """
+    当 Nginx 授权失败时，返回一个格式化的 JSON 错误信息给客户端。
+    """
+    user_id = request.headers.get('X-Emby-UserId') or request.args.get('UserId')
+    limit = session_db.get_user_stream_limit(user_id) if user_id else 'N/A'
+    
+    error_response = {
+        "MediaSources": [],
+        "PlaySessionId": None,
+        "ErrorCode": "NoCompatibleStream",
+        "Response": "Error",
+        "Message": f"同时观看的设备数量已达到上限 ({limit}个)！"
+    }
+    return Response(json.dumps(error_response), status=200, mimetype='application/json')

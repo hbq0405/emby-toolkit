@@ -1,4 +1,4 @@
-# /etc/nginx/conf.d/emby_proxy.conf (V4 - .strm 精准捕获最终版)
+# /etc/nginx/conf.d/emby_proxy.conf (V5 - auth_request 优雅并发版)
 
 upstream emby_server {
     server {{ EMBY_UPSTREAM }};
@@ -13,6 +13,13 @@ upstream redirect_service {
     server {{ REDIRECT_UPSTREAM }};
 }
 {% endif %}
+
+# ★★★ 新增：定义一个处理自定义错误响应的位置 ★★★
+# 当 auth_request 失败时，我们会跳转到这里，由 Python 返回一个格式化的 JSON 错误
+location @playback_error {
+    proxy_pass http://virtual_library_proxy/playback-error;
+    proxy_set_header Content-Type "application/json";
+}
 
 server {
     listen {{ NGINX_LISTEN_PORT }};
@@ -29,42 +36,57 @@ server {
     proxy_buffering off;
 
     # ====================================================================
-    #  核心路由规则 (V4)
+    #  核心路由规则 (V5)
     # ====================================================================
 
-    # ★★★ 规则 1：【条件化】转发所有视频流请求 ★★★
-    # 如果设置了 REDIRECT_UPSTREAM，此规则块将生效。
-    # 它会捕获所有主流视频格式、转码流和 .strm 文件，并因为位置靠前而被优先匹配。
+    # ★★★ 规则 1：【条件化】转发所有视频流请求 (保持不变) ★★★
     {% if REDIRECT_UPSTREAM %}
     location ~* (\.strm$|\.(mkv|mp4|ts|avi|iso|mov|webm|flv)$|/videos/.*stream) {
         proxy_pass http://redirect_service;
     }
     {% endif %}
 
-    # --- 以下是虚拟库路由规则 ---
+    # ★★★ 新增：定义内部授权请求的端点 ★★★
+    # 这个位置只能被 Nginx 内部的 auth_request 调用
+    location = /auth-playback {
+        internal; # 关键！禁止外部直接访问
+        proxy_pass http://virtual_library_proxy;
+        proxy_pass_request_body off; # 我们不需要请求体
+        proxy_set_header Content-Length "";
+        # 将从原始请求中捕获的用户ID，作为Header传给Python
+        proxy_set_header X-Emby-UserId $arg_UserId;
+    }
+
+    # ★★★ 核心修改：重构 PlaybackInfo 规则 ★★★
+    location ~ /Items/(\d+)/PlaybackInfo {
+        # 1. 发起授权请求
+        auth_request /auth-playback;
+        
+        # 2. 如果授权失败 (Python返回403)，则执行自定义错误处理
+        error_page 403 = @playback_error;
+
+        # 3. 如果授权成功 (Python返回2xx)，则将请求转发给真实的Emby服务器
+        #    这样客户端就能收到包含正确 302 跳转的原始响应！
+        proxy_pass http://emby_server;
+    }
+
+    # --- 以下是虚拟库路由规则 (保持不变) ---
 
     location ~ /emby/Users/([a-f0-9]+)/Views {
         proxy_pass http://virtual_library_proxy;
     }
 
-    # ★★★ 规则 2：【新增的关键规则】拦截“获取库内容”的请求 ★★★
-    # 这是我们之前一直缺失的规则！
     location ~ /emby/Users/([a-f0-9]+)/Items$ {
-        # 检查 URL 参数中是否包含 ParentId=-xxxxx
         if ($arg_ParentId ~ ^-\d+$) {
-            # 如果是，就转发给 Python 代理
             proxy_pass http://virtual_library_proxy;
         }
-        # 如果不是，就执行默认行为，转发给真实 Emby
         proxy_pass http://emby_server;
     }
 
-    # 规则 3：拦截所有路径中包含虚拟ID的请求 (例如获取图片)
     location ~ /(emby/Users/[^/]+/Items|emby/Items)/-(\d+) {
         proxy_pass http://virtual_library_proxy;
     }
 
-    # 规则 4：拦截虚拟库内的“元数据筛选”和“最新添加”请求
     location ~ /Items/(Prefixes|Genres|Studios|Tags|OfficialRatings|Years|Latest)$ {
         if ($arg_ParentId ~ ^-\d+$) {
             proxy_pass http://virtual_library_proxy;
@@ -75,16 +97,10 @@ server {
         proxy_pass http://emby_server;
     }
 
-    location ~ /Items/(\d+)/PlaybackInfo {
-        proxy_pass http://virtual_library_proxy;
-    }
-
-    # 规则 5: WebSocket (保持不变)
     location /embywebsocket {
         proxy_pass http://emby_server;
     }
 
-    # 兜底规则：转发所有其他请求到真实 Emby
     location / {
         proxy_pass http://emby_server;
     }
