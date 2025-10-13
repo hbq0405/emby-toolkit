@@ -21,7 +21,7 @@
       v-model:show="isModalVisible"
       preset="card"
       style="width: 600px"
-      title="创建新的用户模板"
+      :title="editMode ? '编辑用户模板' : '创建新的用户模板'"
       :bordered="false"
       size="huge"
     >
@@ -65,13 +65,17 @@
             placeholder="选择一个用户作为权限样板"
             :options="embyUserOptions"
             filterable
+            :disabled="editMode"
           />
            <template #feedback>
             重要：模板的权限将完全复制您在此选择的源用户的当前权限设置。
           </template>
         </n-form-item>
         <n-form-item label="同步首选项" path="include_configuration">
-          <n-switch v-model:value="formModel.include_configuration" />
+          <n-switch 
+            v-model:value="formModel.include_configuration" 
+            :disabled="editMode"
+          />
           <template #feedback>
             开启后，模板将额外包含源用户的个性化设置（如媒体库顺序、音轨和字幕偏好设置）。
           </template>
