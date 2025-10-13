@@ -459,21 +459,21 @@ def proxy_all(path):
                         
                         is_violation = True  # 先假设是违规
                         for i in range(5): # 循环5次
-                            logger.info(f"    [第 {i+1}/5 次检查] 等待1秒后重新确认...")
+                            logger.info(f"  ➜ [第 {i+1}/5 次检查] 等待1秒后重新确认...")
                             time.sleep(1)
                             
                             streams_after_wait = session_db.get_active_session_count(user_id)
                             
                             # 如果在等待期间，播放数降下来了，说明是换集
                             if streams_after_wait < limit:
-                                logger.info(f"    ➜ 判定为换集 | 用户: {display_name}，当前播放: {streams_after_wait}/{limit}。")
+                                logger.info(f"  ➜ 判定为换集 | 用户: {display_name}，当前播放: {streams_after_wait}/{limit}。")
                                 is_violation = False # 标记为非违规
                                 break # 立刻跳出循环，放行请求
                         
                         # 如果循环5次后，依然判定为违规
                         if is_violation:
                             final_streams = session_db.get_active_session_count(user_id)
-                            logger.warning(f"    ➜ 确认违规！(最终检查: {final_streams}/{limit}) | 已拒绝用户 '{display_name}' 的新播放请求。")
+                            logger.warning(f"  ➜ 确认违规！(最终检查: {final_streams}/{limit}) | 已拒绝用户 '{display_name}' 的新播放请求。")
                             error_response = {
                                 "MediaSources": [], "PlaySessionId": None, "ErrorCode": "NoCompatibleStream",
                                 "Response": "Error", "Message": f"同时观看的设备数量已达到上限 ({limit}个)！"
@@ -487,7 +487,7 @@ def proxy_all(path):
             item_id_match = re.search(r'/Items/(\d+)/PlaybackInfo', path)
             if item_id_match:
                 real_emby_id = item_id_match.group(1)
-                logger.info(f"截获到针对真实项目 '{real_emby_id}' 的 PlaybackInfo 请求（可能来自虚拟库上下文）。")
+                logger.info(f"  ➜ 截获到针对真实项目 '{real_emby_id}' 的 PlaybackInfo 请求（可能来自虚拟库上下文）。")
                 
                 # ... (后续的智能劫持逻辑保持不变) ...
                 base_url, api_key = _get_real_emby_url_and_key()
@@ -504,14 +504,14 @@ def proxy_all(path):
 
                 headers = {'Accept': 'application/json'}
                 
-                logger.debug(f"正在向真实Emby请求PlaybackInfo: {real_playback_info_url} with params {forward_params}")
+                logger.debug(f"  ➜ 正在向真实Emby请求PlaybackInfo: {real_playback_info_url} with params {forward_params}")
                 resp = requests.get(real_playback_info_url, params=forward_params, headers=headers)
                 resp.raise_for_status()
                 
                 playback_info_data = resp.json()
                 
                 if 'MediaSources' in playback_info_data and len(playback_info_data['MediaSources']) > 0:
-                    logger.info("成功获取真实PlaybackInfo，正在修改播放路径...")
+                    logger.info("  ➜ 成功获取真实PlaybackInfo，正在修改播放路径...")
                     
                     original_path = playback_info_data['MediaSources'][0].get('Path')
                     file_name = original_path.split('/')[-1] if original_path else f"stream.mkv"
@@ -523,15 +523,15 @@ def proxy_all(path):
                     # playback_info_data['MediaSources'][0].pop('SupportsDirectStream', None)
                     # playback_info_data['MediaSources'][0].pop('SupportsTranscoding', None)
 
-                    logger.debug(f"修改后的PlaybackInfo: {json.dumps(playback_info_data, indent=2)}")
+                    logger.debug(f"  ➜ 修改后的PlaybackInfo: {json.dumps(playback_info_data, indent=2)}")
                     
                     return Response(json.dumps(playback_info_data), mimetype='application/json')
                 else:
-                    logger.warning(f"获取到的PlaybackInfo中不包含MediaSources，无法修改路径。")
+                    logger.warning(f"  ➜ 获取到的PlaybackInfo中不包含MediaSources，无法修改路径。")
                     return Response(json.dumps(playback_info_data), mimetype='application/json')
 
         except Exception as e:
-            logger.error(f"处理PlaybackInfo劫持或并发控制时出错: {e}", exc_info=True)
+            logger.error(f"  ➜ 处理PlaybackInfo劫持或并发控制时出错: {e}", exc_info=True)
             return Response("Proxy error during PlaybackInfo handling.", status=500, mimetype='text/plain')
     # --- 1. WebSocket 代理逻辑 (已添加超详细日志) ---
     if 'Upgrade' in request.headers and request.headers.get('Upgrade', '').lower() == 'websocket':
