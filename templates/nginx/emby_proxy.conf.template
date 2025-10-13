@@ -34,7 +34,7 @@ server {
 
     # ★★★ 规则 1：【条件化】转发所有视频流请求 (保持不变) ★★★
     {% if REDIRECT_UPSTREAM %}
-    location ~* (\.strm$|\.(mkv|mp4|ts|avi|iso|mov|webm|flv)$|/videos/.*stream) {
+    location ~* (\.strm$|\.(mkv|mp4|ts|avi|iso|mov|webm|flv)$|/videos/.*stream|/d/) {
         proxy_pass http://redirect_service;
     }
     {% endif %}
