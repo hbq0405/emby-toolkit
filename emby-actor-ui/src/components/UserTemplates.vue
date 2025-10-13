@@ -101,13 +101,14 @@ const api = {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify(data),
-  }).then(res => res.json()),
+  }),
   updateTemplate: (templateId, data) => fetch(`/api/admin/user_templates/${templateId}`, {
     method: 'PUT',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify(data),
   }),
   deleteTemplate: (templateId) => fetch(`/api/admin/user_templates/${templateId}`, { method: 'DELETE' }),
+  // ▲▲▲ 修改结束 ▲▲▲
   syncTemplate: (templateId) => fetch(`/api/admin/user_templates/${templateId}/sync`, {
     method: 'POST',
   }),
@@ -175,17 +176,17 @@ const handleCreate = () => {
 };
 
 const handleEdit = (template) => {
-  editMode.value = true; // 切换到编辑模式
-  // 将当前行的数据填充到表单模型中
+  editMode.value = true;
   formModel.value = {
     id: template.id,
     name: template.name,
     description: template.description,
     default_expiration_days: template.default_expiration_days,
     max_concurrent_streams: template.max_concurrent_streams,
-    // 这两个字段虽然被禁用，但我们仍然填充它们以保持数据完整性
-    source_emby_user_id: template.source_emby_user_id,
-    include_configuration: true, // 假设编辑时总是true，因为它不可更改
+    // 核心：确保这里赋的是正确的用户ID
+    source_emby_user_id: template.source_emby_user_id, 
+    // 这个字段在编辑时被禁用，它的值不影响显示，但保持为true
+    include_configuration: true, 
   };
   isModalVisible.value = true;
 };
@@ -198,15 +199,12 @@ const handleOk = (e) => {
       try {
         let response;
         if (editMode.value) {
-          // 编辑模式：调用更新 API
           response = await api.updateTemplate(formModel.value.id, formModel.value);
         } else {
-          // 创建模式：调用创建 API
           response = await api.createTemplate(formModel.value);
         }
         
-        // 统一处理返回结果
-        const data = await response.json();
+        const data = await response.json(); // 现在 response 是一个 Response 对象，可以调用 .json()
         if (response.ok) {
           message.success(editMode.value ? '模板更新成功！' : '模板创建成功！');
           isModalVisible.value = false;
