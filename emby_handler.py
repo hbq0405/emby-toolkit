@@ -1441,7 +1441,7 @@ def delete_item(item_id: str, emby_server_url: str, emby_api_key: str, user_id: 
         'UserId': logged_in_user_id # ★ 使用登录后返回的 UserId
     }
     
-    api_timeout = cfg.get(constants.CONFIG_OPTION_EMBY_API_TIMEOUT, 60)
+    api_timeout = config_manager.APP_CONFIG.get(constants.CONFIG_OPTION_EMBY_API_TIMEOUT, 60)
     
     try:
         response = requests.post(api_url, headers=headers, params=params, timeout=api_timeout)
@@ -1485,7 +1485,7 @@ def delete_person_custom_api(base_url: str, api_key: str, person_id: str) -> boo
         'UserId': logged_in_user_id # ★ 使用登录后返回的 UserId
     }
     
-    api_timeout = cfg.get(constants.CONFIG_OPTION_EMBY_API_TIMEOUT, 60)
+    api_timeout = config_manager.APP_CONFIG.get(constants.CONFIG_OPTION_EMBY_API_TIMEOUT, 60)
     
     try:
         # 这个接口是 POST 请求
