@@ -55,13 +55,29 @@ server {
     # 定义内部授权请求的端点 (保持不变)
     location = /auth-playback {
         internal;
+
+        # ▼▼▼ 使用 if 语句来捕获 token ▼▼▼
+        set $emby_token ""; # 初始化变量
+        if ($arg_api_key) {
+            set $emby_token $arg_api_key;
+        }
+        if ($arg_ApiKey) {
+            set $emby_token $arg_ApiKey;
+        }
+        if ($arg_Token) {
+            set $emby_token $arg_Token;
+        }
+        if ($arg_token) {
+            set $emby_token $arg_token;
+        }
+        # ▲▲▲ 捕获结束 ▲▲▲
+
         proxy_pass http://virtual_library_proxy;
         proxy_pass_request_body off;
         proxy_set_header Content-Length "";
-        # ★★★ 关键：我们需要从视频流请求的 URL 参数中获取 UserId ★★★
         proxy_set_header X-Emby-UserId $arg_UserId;
         proxy_set_header X-Original-URI $request_uri;
-        proxy_set_header X-Emby-Token $arg_api_key;
+        proxy_set_header X-Emby-Token $emby_token;
     }
 
     # --- 以下是虚拟库路由规则 ---
