@@ -5,6 +5,7 @@ import concurrent.futures
 import os
 import shutil
 import time
+import json
 import utils
 import threading
 # ★★★ 核心修改 1/3: 导入我们需要的配置管理器和常量 ★★★
@@ -1885,8 +1886,8 @@ def delete_emby_user(user_id: str) -> bool:
     
 def get_live_emby_sessions() -> set:
     """
-    【新增】从 Emby 服务器实时获取所有活跃的播放会話 ID。
-    返回一个包含所有活跃 PlaySessionId 的集合(set)，用于快速查找。
+    【超级调试版】从 Emby 服务器实时获取所有活跃的播放会话 ID。
+    会打印出从 Emby 收到的原始数据，用于诊断问题。
     """
     config = config_manager.APP_CONFIG
     base_url = config.get("emby_server_url")
@@ -1897,22 +1898,27 @@ def get_live_emby_sessions() -> set:
         return set()
 
     api_url = f"{base_url.rstrip('/')}/Sessions"
-    params = {"api_key": api_key, "ControllableByUserId": ""} # 获取所有会话
+    params = {"api_key": api_key, "ControllableByUserId": ""}
     
     try:
-        api_timeout = config.get(constants.CONFIG_OPTION_EMBY_API_TIMEOUT, 10) # 这个请求应该很快
+        api_timeout = config.get(constants.CONFIG_OPTION_EMBY_API_TIMEOUT, 10)
         response = requests.get(api_url, params=params, timeout=api_timeout)
         response.raise_for_status()
         sessions = response.json()
         
-        # 我们只关心那些正在播放的会话的 PlaySessionId
+        # ▼▼▼ 核心调试代码 ▼▼▼
+        logger.info("--- [实时会话 DEBUG - 原始 Emby 响应] ---")
+        logger.info(json.dumps(sessions, indent=2, ensure_ascii=False))
+        logger.info("--- [DEBUG 结束] ---")
+        # ▲▲▲ 调试代码结束 ▲▲▲
+
         live_session_ids = {
             s['PlayState']['PlaySessionId'] 
             for s in sessions 
             if 'PlayState' in s and s['PlayState'].get('PlaySessionId')
         }
-        logger.trace(f"  ➜ [实时验证] 从 Emby 获取到 {len(live_session_ids)} 个活跃的播放会话。")
+        logger.trace(f"  ➜ [实时验证] 从 Emby 原始数据中解析出 {len(live_session_ids)} 个活跃的播放会话。")
         return live_session_ids
     except Exception as e:
-        logger.error(f"  ➜ [实时验证] 从 Emby 获取实时会话列表时失败: {e}")
+        logger.error(f"  ➜ [实时验证] 从 Emby 获取实时会话列表时失败: {e}", exc_info=True)
         return set()
