@@ -1097,7 +1097,13 @@ class MediaProcessor:
         logger.debug("  ➜ 开始演员数据适配 (反查缓存模式)...")
         
         tmdb_actor_map_by_id = {str(actor.get("id")): actor for actor in tmdb_cast_people}
-        tmdb_actor_map_by_en_name = {str(actor.get("name") or "").lower().strip(): actor for actor in tmdb_cast_people}
+        tmdb_actor_map_by_en_name = {}
+        for actor in tmdb_cast_people:
+            name_key = str(actor.get("name") or "").lower().strip()
+            if name_key:
+                if name_key not in tmdb_actor_map_by_en_name:
+                    tmdb_actor_map_by_en_name[name_key] = []
+                tmdb_actor_map_by_en_name[name_key].append(actor)
 
         final_cast_list = []
         used_tmdb_ids = set()
@@ -1113,13 +1119,27 @@ class MediaProcessor:
                 tmdb_match = tmdb_actor_map_by_id[str(emby_tmdb_id)]
             else:
                 if emby_name_lower in tmdb_actor_map_by_en_name:
-                    tmdb_match = tmdb_actor_map_by_en_name[emby_name_lower]
-                else:
-                    cache_entry = self.actor_db_manager.get_translation_from_db(cursor, emby_actor.get("Name"), by_translated_text=True)
-                    if cache_entry and cache_entry.get('original_text'):
-                        original_en_name = str(cache_entry['original_text']).lower().strip()
-                        if original_en_name in tmdb_actor_map_by_en_name:
-                            tmdb_match = tmdb_actor_map_by_en_name[original_en_name]
+                    candidate_actors = tmdb_actor_map_by_en_name[emby_name_lower]
+                    if len(candidate_actors) == 1:
+                        # 如果只有一个同名演员，直接匹配
+                        tmdb_match = candidate_actors[0]
+                    else:
+                        # 如果有多个同名演员，尝试用角色名进行二次匹配
+                        emby_role = str(emby_actor.get("Role") or "").lower().strip()
+                        if emby_role:
+                            best_match = None
+                            for candidate in candidate_actors:
+                                tmdb_role = str(candidate.get("character") or "").lower().strip()
+                                # 优先寻找完全匹配或包含关系的
+                                if emby_role == tmdb_role or emby_role in tmdb_role or tmdb_role in emby_role:
+                                    best_match = candidate
+                                    break # 找到第一个最可能的就停止
+                            if best_match:
+                                tmdb_match = best_match
+                            else:
+                                # 如果角色名也无法匹配，作为最后手段，选择 order 最小的那个
+                                candidate_actors.sort(key=lambda x: x.get('order', 999))
+                                tmdb_match = candidate_actors[0]
 
             if tmdb_match:
                 tmdb_id_str = str(tmdb_match.get("id"))
