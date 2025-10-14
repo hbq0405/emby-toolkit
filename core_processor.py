@@ -2518,15 +2518,14 @@ class MediaProcessor:
                 # 1. 批量获取新分集的详情
                 new_episodes_details = emby_handler.get_emby_items_by_id(
                     base_url=self.emby_url, api_key=self.emby_api_key, user_id=self.emby_user_id,
-                    item_ids=episode_ids_to_add, fields="Id,Name,Type,Overview,ParentIndexNumber,IndexNumber"
+                    item_ids=episode_ids_to_add, fields="Id,Type,ParentIndexNumber,IndexNumber"
                 )
                 
                 new_children_to_append = []
                 if new_episodes_details:
                     for child in new_episodes_details:
-                        detail = {"Id": child.get("Id"), "Type": "Episode", "Name": child.get("Name"),
-                                  "SeasonNumber": child.get("ParentIndexNumber"), "EpisodeNumber": child.get("IndexNumber"),
-                                  "Overview": child.get("Overview")}
+                        detail = {"Id": child.get("Id"), "Type": "Episode",
+                                  "SeasonNumber": child.get("ParentIndexNumber"), "EpisodeNumber": child.get("IndexNumber")}
                         new_children_to_append.append(detail)
                 
                 if not new_children_to_append:
