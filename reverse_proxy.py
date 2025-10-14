@@ -374,6 +374,18 @@ def handle_get_mimicked_library_items(user_id, mimicked_id, params):
             elif sort_by_field == 'original':
                  logger.trace("已应用 'original' (榜单原始顺序) 排序。")
         
+        # --- START: 关键修复代码 ---
+        # 针对 Emby 4.9+ 版本，手动检查并补充剧集的集数角标字段
+        for item in final_items:
+            # 如果项目是剧集 (Series) 并且缺少 RecursiveItemCount 字段
+            if item.get("Type") == "Series" and "RecursiveItemCount" not in item:
+                # 尝试从其他可能的字段获取，ChildCount 是一个常见的备用字段
+                child_count = item.get("ChildCount") 
+                if child_count is not None:
+                    item["RecursiveItemCount"] = child_count
+                    logger.trace(f"为剧集 '{item.get('Name')}' (ID: {item.get('Id')}) 补全了 RecursiveItemCount 字段，值为: {child_count}")
+        # --- END: 关键修复代码 ---
+        
         # --- 统一返回 ---
         final_response = {"Items": final_items, "TotalRecordCount": len(final_items)}
         return Response(json.dumps(final_response), mimetype='application/json')
