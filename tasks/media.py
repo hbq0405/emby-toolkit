@@ -423,7 +423,7 @@ def task_populate_metadata_cache(processor, batch_size: int = 50, force_full_upd
                         api_key=processor.emby_api_key,
                         user_id=processor.emby_user_id,
                         include_item_types="Season,Episode",
-                        fields="Id,Name,Type,Overview,ParentIndexNumber,IndexNumber" # 请求更丰富的字段
+                        fields="Id,Type,ParentIndexNumber,IndexNumber" # 请求更丰富的字段
                     )
                     
                     children_details = []
@@ -432,15 +432,13 @@ def task_populate_metadata_cache(processor, batch_size: int = 50, force_full_upd
                             child_type = child.get("Type")
                             detail = {
                                 "Id": child.get("Id"),
-                                "Type": child_type,
-                                "Name": child.get("Name")
+                                "Type": child_type
                             }
                             if child_type == "Season":
                                 detail["SeasonNumber"] = child.get("IndexNumber")
                             elif child_type == "Episode":
                                 detail["SeasonNumber"] = child.get("ParentIndexNumber")
                                 detail["EpisodeNumber"] = child.get("IndexNumber")
-                                detail["Overview"] = child.get("Overview")
                             
                             children_details.append(detail)
                     else:
