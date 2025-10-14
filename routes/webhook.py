@@ -492,13 +492,13 @@ def emby_webhook():
                             db_record = cursor.fetchone()
                             if db_record and db_record['title']:
                                 cleanup_item_name = db_record['title']
-                            logger.warning(f"Webhook: 媒体项 '{cleanup_item_name}' (ID: {id_to_cleanup}) 本身被删除，将执行完整清理。")
+                            logger.warning(f"  ➜ Webhook: 媒体项 '{cleanup_item_name}' (ID: {id_to_cleanup}) 本身被删除，将执行完整清理。")
 
                         elif original_item_type == "Episode":
                             # --- 场景二：删除的是分集 ---
                             series_id = item_from_webhook.get("SeriesId")
                             if not series_id:
-                                logger.warning(f"Webhook: 分集 {original_item_id} 被删除，但负载中无SeriesId，无法处理。")
+                                logger.warning(f"  ➜ Webhook: 分集 {original_item_id} 被删除，但负载中无SeriesId，无法处理。")
                                 conn.commit()
                                 return jsonify({"status": "event_ignored_episode_no_seriesid"}), 200
 
@@ -547,11 +547,11 @@ def emby_webhook():
                                 "UPDATE media_metadata SET in_library = FALSE, emby_item_id = NULL, emby_children_details_json = NULL WHERE emby_item_id = %s",
                                 (id_to_cleanup,)
                             )
-                            if cursor.rowcount > 0: logger.info(f"Webhook: 已在 media_metadata 缓存中将项目 '{cleanup_item_name}' 标记为“不在库中”。")
+                            if cursor.rowcount > 0: logger.info(f"  ➜ Webhook: 已在 media_metadata 缓存中将项目 '{cleanup_item_name}' 标记为“不在库中”。")
                             cursor.execute("DELETE FROM watchlist WHERE item_id = %s", (id_to_cleanup,))
-                            if cursor.rowcount > 0: logger.info(f"Webhook: 已从智能追剧列表中移除项目 '{cleanup_item_name}'。")
+                            if cursor.rowcount > 0: logger.info(f"  ➜ Webhook: 已从智能追剧列表中移除项目 '{cleanup_item_name}'。")
                             cursor.execute("DELETE FROM resubscribe_cache WHERE item_id = %s", (id_to_cleanup,))
-                            if cursor.rowcount > 0: logger.info(f"Webhook: 已从媒体洗版缓存中移除项目 '{cleanup_item_name}'。")
+                            if cursor.rowcount > 0: logger.info(f"  ➜ Webhook: 已从媒体洗版缓存中移除项目 '{cleanup_item_name}'。")
                     
                     conn.commit()
                 return jsonify({"status": "delete_event_processed_from_db_state"}), 200
