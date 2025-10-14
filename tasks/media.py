@@ -257,7 +257,7 @@ def task_populate_metadata_cache(processor, batch_size: int = 50, force_full_upd
         if force_full_update:
             logger.info("  ➜ 深度同步模式：将处理 Emby 中的所有项目。")
             ids_to_process = emby_tmdb_ids
-            logger.info(f"  ➜ 计算差异完成：处理 {len(ids_to_process)} 项, 软删除 {len(items_to_delete_tmdb_ids)} 项。")
+            logger.info(f"  ➜ 计算差异完成：处理 {len(ids_to_process)} 项, 标记离线 {len(items_to_delete_tmdb_ids)} 项。")
         else:
             logger.info("  ➜ 快速同步模式：仅处理 Emby 中新增的项目。")
             # 新增的项目是 Emby 有，但 DB 中没有标记为 TRUE 的项目
@@ -276,10 +276,10 @@ def task_populate_metadata_cache(processor, batch_size: int = 50, force_full_upd
             # 这会包含 Emby 中新增的，以及 Emby 中重新入库的（之前在DB中in_library=FALSE的）
             ids_to_process = emby_tmdb_ids - db_tmdb_ids
             
-            logger.info(f"  ➜ 计算差异完成：新增/恢复 {len(ids_to_process)} 项, 软删除 {len(items_to_delete_tmdb_ids)} 项。")
+            logger.info(f"  ➜ 计算差异完成：新增/恢复 {len(ids_to_process)} 项, 标记离线 {len(items_to_delete_tmdb_ids)} 项。")
 
         if items_to_delete_tmdb_ids:
-            logger.info(f"  ➜ 正在从数据库中软删除 {len(items_to_delete_tmdb_ids)} 个已不存在的媒体项...")
+            logger.info(f"  ➜ 正在从数据库中标记 {len(items_to_delete_tmdb_ids)} 个已不存在的媒体项...")
             with connection.get_db_connection() as conn:
                 cursor = conn.cursor()
                 ids_to_delete_list = list(items_to_delete_tmdb_ids)
@@ -492,7 +492,7 @@ def task_populate_metadata_cache(processor, batch_size: int = 50, force_full_upd
             
             processed_count += len(batch_items)
 
-        final_message = f"同步完成！本次处理 {processed_count}/{total_to_process} 项, 软删除 {len(items_to_delete_tmdb_ids)} 项。"
+        final_message = f"同步完成！本次处理 {processed_count}/{total_to_process} 项, 标记离线 {len(items_to_delete_tmdb_ids)} 项。"
         if processor.is_stop_requested():
             final_message = "任务已中止，部分数据可能未处理。"
         task_manager.update_status_from_thread(100, final_message)
