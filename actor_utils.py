@@ -329,6 +329,25 @@ def format_and_complete_cast_list(
 
     logger.debug(f"  ➜ 格式化演员列表，调用模式: '{mode}' (前缀开关: {'开' if add_role_prefix else '关'})")
 
+    # --- 同名演员去重逻辑  ---
+    unique_cast_list = []
+    seen_names = set()
+    original_count = len(cast_list)
+
+    for actor in cast_list:
+        # 优先使用中文名进行判断，如果没有则使用原始/英文名
+        name_to_check = actor.get("name") or actor.get("original_name")
+        if not name_to_check:
+            continue # 如果连名字都没有，直接跳过
+
+        if name_to_check not in seen_names:
+            unique_cast_list.append(actor)
+            seen_names.add(name_to_check)
+    
+    removed_count = original_count - len(unique_cast_list)
+    if removed_count > 0:
+        logger.info(f"  ➜ 在格式化前，已移除 {removed_count} 位同名演员，只保留第一个出现的。")
+    
     # --- 阶段1: 统一的角色名格式化 (所有模式通用) ---
     for idx, actor in enumerate(cast_list):
         new_actor = actor.copy()
