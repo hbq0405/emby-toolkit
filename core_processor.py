@@ -1089,6 +1089,32 @@ class MediaProcessor:
         - 在步骤4的开头，重新加入了对最终演员列表进行截断的逻辑。
         - 确保在进行AI翻译等耗时操作前，将演员数量限制在配置的上限内。
         """
+        # --- ▼▼▼ 终极修复：在所有处理开始前，从源头清洗同名演员 START ▼▼▼ ---
+        logger.debug("  ➜ 预处理：清洗源数据中的同名演员，只保留order最小的一个。")
+        cleaned_tmdb_cast = []
+        seen_names = {} # 使用字典来存储见过的名字及其order
+        
+        # 首先按 order 排序，确保第一个遇到的是 order 最小的
+        tmdb_cast_people.sort(key=lambda x: x.get('order', 999))
+
+        for actor in tmdb_cast_people:
+            name = actor.get("name")
+            if not name or not isinstance(name, str):
+                continue
+            
+            cleaned_name = name.strip()
+            
+            if cleaned_name not in seen_names:
+                cleaned_tmdb_cast.append(actor)
+                seen_names[cleaned_name] = actor.get('order', 999)
+            else:
+                # 记录被丢弃的演员
+                role = actor.get("character", "未知角色")
+                logger.info(f"  ➜ 预处理阶段丢弃同名演员: '{cleaned_name}' (角色: {role}, order: {actor.get('order', 999)})")
+
+        # 使用清洗后的列表进行后续所有操作
+        tmdb_cast_people = cleaned_tmdb_cast
+
         # ★★★ 在流程开始时，记录下来自TMDb的原始演员ID ★★★
         original_tmdb_ids = {str(actor.get("id")) for actor in tmdb_cast_people if actor.get("id")}
         # ======================================================================

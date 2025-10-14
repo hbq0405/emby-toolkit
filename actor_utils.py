@@ -328,34 +328,6 @@ def format_and_complete_cast_list(
     generic_roles = {"演员", "配音"}
 
     logger.debug(f"  ➜ 格式化演员列表，调用模式: '{mode}' (前缀开关: {'开' if add_role_prefix else '关'})")
-
-    # --- 同名演员去重逻辑  ---
-    unique_cast_list = []
-    seen_names = set()
-    removed_actors_log = [] # 用于记录被删除演员的信息
-
-    for actor in cast_list:
-        name_to_check = actor.get("name") or actor.get("original_name")
-        if not name_to_check or not isinstance(name_to_check, str):
-            continue
-
-        cleaned_name = name_to_check.strip()
-        
-        if cleaned_name and cleaned_name not in seen_names:
-            actor["name"] = cleaned_name 
-            unique_cast_list.append(actor)
-            seen_names.add(cleaned_name)
-        elif cleaned_name:
-            # 如果名字存在但已经被见过，则判定为重复，记录日志
-            role = actor.get("character", "未知角色")
-            removed_actors_log.append(f"'{cleaned_name}' (角色: {role})")
-    
-    # 在循环结束后，根据记录生成最终的日志信息
-    if removed_actors_log:
-        removed_count = len(removed_actors_log)
-        removed_names_str = ", ".join(removed_actors_log)
-        logger.info(f"  ➜ 在格式化前，已移除 {removed_count} 位同名演员: {removed_names_str}")
-    
     # --- 阶段1: 统一的角色名格式化 (所有模式通用) ---
     for idx, actor in enumerate(cast_list):
         new_actor = actor.copy()
