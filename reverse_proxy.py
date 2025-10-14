@@ -326,69 +326,74 @@ def handle_get_mimicked_library_items(user_id, mimicked_id, params):
                 final_items = []
 
         else:
-            # --- 模式B: 排序劫持 (处理本地数据库字段的原始逻辑) ---
-            live_items_unordered = emby_handler.get_emby_items_by_id(
-                base_url=base_url, api_key=api_key, user_id=user_id,
-                item_ids=final_emby_ids_to_fetch,
-                fields="PrimaryImageAspectRatio,ProviderIds,UserData,Name,ProductionYear,CommunityRating,DateCreated,PremiereDate,Type,RecursiveItemCount,SortName"
-            )
-            live_items_map = {item['Id']: item for item in live_items_unordered}
-            ordered_items = [live_items_map[emby_id] for emby_id in final_emby_ids_to_fetch if emby_id in live_items_map]
-            final_items = ordered_items
+            # --- 模式B: 排序劫持 (V4.1 修复版) ---
+            # 核心变更：不再使用旧的 get_emby_items_by_id，而是像模式A一样，
+            # 调用能返回完整数据结构的 /Items 接口，但获取所有数据，以便在本地排序。
+            logger.trace(f"执行排序劫持模式: '{sort_by_field}'。准备获取全量完整数据...")
 
-            if sort_by_field and sort_by_field != 'original':
+            # 1. 准备获取全量数据的参数
+            full_fetch_params = {
+                'Ids': ",".join(final_emby_ids_to_fetch),
+                'api_key': api_key,
+                'Fields': "PrimaryImageAspectRatio,ProviderIds,UserData,Name,ProductionYear,CommunityRating,DateCreated,PremiereDate,Type,RecursiveItemCount,SortName,ChildCount"
+            }
+            
+            # 2. 发起请求获取所有项目的完整信息
+            target_url = f"{base_url}/emby/Users/{user_id}/Items"
+            live_items_unordered = []
+            try:
+                resp = requests.get(target_url, params=full_fetch_params, timeout=30)
+                resp.raise_for_status()
+                live_items_unordered = resp.json().get("Items", [])
+                logger.trace(f"排序劫持：成功获取到 {len(live_items_unordered)} 个项目的完整数据。")
+            except Exception as e_fetch:
+                logger.error(f"在排序劫持模式下获取全量数据失败: {e_fetch}", exc_info=True)
+                # 即使失败也返回空列表，避免崩溃
+                live_items_unordered = []
+
+            # 3. 执行排序
+            if sort_by_field == 'original':
+                # 榜单原始顺序：根据最初的 ID 顺序重新排列获取到的完整项目
+                live_items_map = {item['Id']: item for item in live_items_unordered}
+                final_items_sorted = [live_items_map[emby_id] for emby_id in final_emby_ids_to_fetch if emby_id in live_items_map]
+                logger.trace("已应用 'original' (榜单原始顺序) 排序。")
+            else:
+                # 其他字段排序
                 sort_order = definition.get('default_sort_order', 'Ascending')
                 is_descending = (sort_order == 'Descending')
                 logger.trace(f"执行虚拟库排序劫持: '{sort_by_field}' ({sort_order})")
 
-                # --- START: 恢复丢失的排序核心逻辑 ---
                 def sort_key_func(item):
-                    """
-                    一个健壮的排序键获取函数。
-                    - 优雅地处理缺失的键。
-                    - 对特定字段进行类型转换以确保排序正确性。
-                    """
                     value = item.get(sort_by_field)
-                    
                     if value is None:
-                        # 为不同类型的字段提供安全的默认值
                         if sort_by_field in ['CommunityRating', 'ProductionYear']: return 0
                         if sort_by_field in ['PremiereDate', 'DateCreated']: return "1900-01-01T00:00:00.000Z"
                         return ""
-
-                    # 确保数值和日期字段被正确比较
                     try:
                         if sort_by_field == 'CommunityRating': return float(value)
                         if sort_by_field == 'ProductionYear': return int(value)
                     except (ValueError, TypeError):
-                        return 0 # 如果转换失败，返回一个中性值
-                        
+                        return 0
                     return value
 
-                try:
-                    final_items.sort(key=sort_key_func, reverse=is_descending)
-                except Exception as e_sort:
-                    logger.error(f"在执行排序劫持 (sort_by='{sort_by_field}') 时发生错误: {e_sort}", exc_info=True)
-                # --- END: 恢复丢失的排序核心逻辑 ---
-                
-            elif sort_by_field == 'original':
-                 logger.trace("已应用 'original' (榜单原始顺序) 排序。")
-        
-        # --- START: 关键修复代码 ---
-        # 针对 Emby 4.9+ 版本，手动检查并补充剧集的集数角标字段
-        for item in final_items:
-            # 如果项目是剧集 (Series) 并且缺少 RecursiveItemCount 字段
-            if item.get("Type") == "Series" and "RecursiveItemCount" not in item:
-                # 尝试从其他可能的字段获取，ChildCount 是一个常见的备用字段
-                child_count = item.get("ChildCount") 
-                if child_count is not None:
-                    item["RecursiveItemCount"] = child_count
-                    logger.trace(f"为剧集 '{item.get('Name')}' (ID: {item.get('Id')}) 补全了 RecursiveItemCount 字段，值为: {child_count}")
-        # --- END: 关键修复代码 ---
-        
+                final_items_sorted = sorted(live_items_unordered, key=sort_key_func, reverse=is_descending)
+
+            # 4. 新增：手动应用分页
+            total_record_count = len(final_items_sorted)
+            start_index = int(params.get('StartIndex', 0))
+            limit = params.get('Limit')
+            
+            if limit:
+                limit = int(limit)
+                final_items = final_items_sorted[start_index : start_index + limit]
+                logger.trace(f"手动分页已应用: StartIndex={start_index}, Limit={limit}。返回 {len(final_items)} 项。")
+            else:
+                final_items = final_items_sorted[start_index:]
+                logger.trace(f"手动分页已应用: StartIndex={start_index} (无Limit)。返回 {len(final_items)} 项。")
+
         # --- 统一返回 ---
-        final_response = {"Items": final_items, "TotalRecordCount": len(final_items)}
-        return Response(json.dumps(final_response), mimetype='application/json')
+        # 核心变更：TotalRecordCount 现在反映的是排序和分页前的总数
+        final_response = {"Items": final_items, "TotalRecordCount": total_record_count if 'total_record_count' in locals() else len(final_items)}
 
     except Exception as e:
         logger.error(f"处理混合虚拟库时发生严重错误: {e}", exc_info=True)
