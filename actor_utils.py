@@ -332,21 +332,29 @@ def format_and_complete_cast_list(
     # --- 同名演员去重逻辑  ---
     unique_cast_list = []
     seen_names = set()
-    original_count = len(cast_list)
+    removed_actors_log = [] # 用于记录被删除演员的信息
 
     for actor in cast_list:
-        # 优先使用中文名进行判断，如果没有则使用原始/英文名
         name_to_check = actor.get("name") or actor.get("original_name")
-        if not name_to_check:
-            continue # 如果连名字都没有，直接跳过
+        if not name_to_check or not isinstance(name_to_check, str):
+            continue
 
-        if name_to_check not in seen_names:
+        cleaned_name = name_to_check.strip()
+        
+        if cleaned_name and cleaned_name not in seen_names:
+            actor["name"] = cleaned_name 
             unique_cast_list.append(actor)
-            seen_names.add(name_to_check)
+            seen_names.add(cleaned_name)
+        elif cleaned_name:
+            # 如果名字存在但已经被见过，则判定为重复，记录日志
+            role = actor.get("character", "未知角色")
+            removed_actors_log.append(f"'{cleaned_name}' (角色: {role})")
     
-    removed_count = original_count - len(unique_cast_list)
-    if removed_count > 0:
-        logger.info(f"  ➜ 在格式化前，已移除 {removed_count} 位同名演员，只保留第一个出现的。")
+    # 在循环结束后，根据记录生成最终的日志信息
+    if removed_actors_log:
+        removed_count = len(removed_actors_log)
+        removed_names_str = ", ".join(removed_actors_log)
+        logger.info(f"  ➜ 在格式化前，已移除 {removed_count} 位同名演员: {removed_names_str}")
     
     # --- 阶段1: 统一的角色名格式化 (所有模式通用) ---
     for idx, actor in enumerate(cast_list):
