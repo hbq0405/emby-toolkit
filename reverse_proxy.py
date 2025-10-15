@@ -368,40 +368,84 @@ def handle_get_mimicked_library_items(user_id, mimicked_id, params):
         return Response(json.dumps({"Items": [], "TotalRecordCount": 0}), mimetype='application/json')
 
 def handle_get_latest_items(user_id, params):
+    """
+    【V4.3 - 最新项目逻辑重构版】
+    - 彻底修复“最新”栏目内容不正确，未遵守虚拟库规则的问题。
+    - 新逻辑会先计算出虚拟库的准确项目列表，再请求Emby对这个列表进行排序和筛选。
+    """
     try:
         base_url, api_key = _get_real_emby_url_and_key()
         virtual_library_id = params.get('ParentId') or params.get('customViewId')
 
-        if virtual_library_id and is_mimicked_id(virtual_library_id): # <-- 【核心修改】
-            logger.trace(f"处理针对虚拟库 '{virtual_library_id}' 的最新媒体请求...")
+        # --- 核心修改：判断是否为虚拟库的“最新”请求 ---
+        if virtual_library_id and is_mimicked_id(virtual_library_id):
+            logger.trace(f"处理针对虚拟库 '{virtual_library_id}' 的最新媒体请求 (V4.3 新逻辑)...")
+            
+            # 步骤 1: 像访问库一样，获取此虚拟库对当前用户可见的、完整的媒体ID列表
             try:
-                virtual_library_db_id = from_mimicked_id(virtual_library_id) # <-- 【核心修改】
+                real_db_id = from_mimicked_id(virtual_library_id)
             except (ValueError, TypeError):
                 return Response(json.dumps([]), mimetype='application/json')
 
-            collection_info = collection_db.get_custom_collection_by_id(virtual_library_db_id)
-            if not collection_info or not collection_info.get('emby_collection_id'):
+            collection_info = collection_db.get_custom_collection_by_id(real_db_id)
+            if not collection_info:
                 return Response(json.dumps([]), mimetype='application/json')
 
-            real_emby_collection_id = collection_info.get('emby_collection_id')
-            limit_value = params.get('Limit') or params.get('limit') or '20'
+            db_media_list = collection_info.get('generated_media_info_json') or []
+            base_ordered_emby_ids = [item.get('emby_id') for item in db_media_list if item.get('emby_id')]
+            
+            if not base_ordered_emby_ids:
+                return Response(json.dumps([]), mimetype='application/json')
+
+            definition = collection_info.get('definition_json') or {}
+            final_emby_ids_to_fetch = base_ordered_emby_ids
+            if definition.get('dynamic_filter_enabled'):
+                dynamic_rules = definition.get('dynamic_rules', [])
+                ids_from_local_db = user_db.get_item_ids_by_dynamic_rules(user_id, dynamic_rules)
+                if ids_from_local_db is not None:
+                    base_ids_set = set(base_ordered_emby_ids)
+                    local_ids_set = set(ids_from_local_db)
+                    final_emby_ids_set = base_ids_set.intersection(local_ids_set)
+                    final_emby_ids_to_fetch = [emby_id for emby_id in base_ordered_emby_ids if emby_id in final_emby_ids_set]
+                else:
+                    final_emby_ids_to_fetch = []
+
+            if not final_emby_ids_to_fetch:
+                return Response(json.dumps([]), mimetype='application/json')
+
+            # 步骤 2: 让 Emby 在这个准确的 ID 列表范围内，执行排序和限制
+            limit_value = params.get('Limit', '24') # 首页通常数量不多，给个默认值
             
             latest_params = {
-                "ParentId": real_emby_collection_id,
-                "Limit": int(limit_value), # 使用我们兼容处理后的值
-                "Fields": "PrimaryImageAspectRatio,BasicSyncInfo,DateCreated",
-                "SortBy": "DateCreated", 
-                "SortOrder": "Descending",
-                "Recursive": "true",
-                "IncludeItemTypes": "Movie,Series",
                 'api_key': api_key,
+                'Ids': ",".join(final_emby_ids_to_fetch),
+                'SortBy': "DateCreated", 
+                'SortOrder': "Descending",
+                'Limit': limit_value,
+                'Recursive': "true",
             }
+            
+            # 智能传递客户端请求的字段和类型，如果不存在则使用虚拟库的定义
+            latest_params['Fields'] = params.get('Fields', "PrimaryImageAspectRatio,BasicSyncInfo,DateCreated,UserData")
+            if 'IncludeItemTypes' in params:
+                latest_params['IncludeItemTypes'] = params['IncludeItemTypes']
+            else:
+                item_type_from_db = definition.get('item_type', ['Movie', 'Series'])
+                item_types_str = ",".join(item_type_from_db) if isinstance(item_type_from_db, list) else item_type_from_db
+                latest_params['IncludeItemTypes'] = item_types_str
+
+            # 使用 /Items 接口，因为它支持强大的 Ids 过滤
             target_url = f"{base_url}/emby/Users/{user_id}/Items"
+            
             resp = requests.get(target_url, params=latest_params, timeout=15)
             resp.raise_for_status()
             items_data = resp.json()
+            
+            # /Latest 接口期望一个纯粹的列表，而不是像 /Items 那样复杂的对象
             return Response(json.dumps(items_data.get("Items", [])), mimetype='application/json')
+        
         else:
+            # 对于原生库，保持原有的直接转发逻辑
             target_url = f"{base_url}/{request.path.lstrip('/')}"
             forward_headers = {k: v for k, v in request.headers if k.lower() not in ['host', 'accept-encoding']}
             forward_headers['Host'] = urlparse(base_url).netloc
@@ -414,6 +458,7 @@ def handle_get_latest_items(user_id, params):
             excluded_resp_headers = ['content-encoding', 'content-length', 'transfer-encoding', 'connection']
             response_headers = [(name, value) for name, value in resp.raw.headers.items() if name.lower() not in excluded_resp_headers]
             return Response(resp.iter_content(chunk_size=8192), resp.status_code, response_headers)
+            
     except Exception as e:
         logger.error(f"处理最新媒体时发生未知错误: {e}", exc_info=True)
         return Response(json.dumps([]), mimetype='application/json')
