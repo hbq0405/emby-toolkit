@@ -1,6 +1,8 @@
 # tmdb_handler.py
 
 import requests
+from requests.adapters import HTTPAdapter
+from urllib3.util.retry import Retry
 import json
 import concurrent.futures
 from utils import contains_chinese, normalize_name_for_matching
@@ -9,6 +11,31 @@ import logging
 import config_manager
 import constants
 logger = logging.getLogger(__name__)
+
+# ★★★ 创建带重试功能的 Session ★★★
+def requests_retry_session(
+    retries=3,
+    backoff_factor=0.5,  # 每次重试的等待时间会增加 (e.g., 0.5s, 1s, 2s)
+    status_forcelist=(500, 502, 503, 504), # 遇到这些服务器错误码时，自动重试
+    session=None,
+):
+    """创建一个配置了重试策略的 requests.Session 对象"""
+    session = session or requests.Session()
+    retry = Retry(
+        total=retries,
+        read=retries,
+        connect=retries,
+        backoff_factor=backoff_factor,
+        status_forcelist=status_forcelist,
+    )
+    adapter = HTTPAdapter(max_retries=retry)
+    session.mount('http://', adapter)
+    session.mount('https://', adapter)
+    return session
+
+# 创建一个全局的、可复用的、带重试功能的 session 实例
+# 整个程序将通过这个实例来请求 TMDB API
+tmdb_session = requests_retry_session()
 
 def get_tmdb_api_base_url() -> str:
     """
@@ -40,7 +67,7 @@ def _tmdb_request(endpoint: str, api_key: str, params: Optional[Dict[str, Any]] 
 
     try:
         proxies = config_manager.get_proxies_for_requests()
-        response = requests.get(full_url, params=base_params, timeout=15, proxies=proxies)
+        response = tmdb_session.get(full_url, params=base_params, timeout=15, proxies=proxies)
         response.raise_for_status()
         data = response.json()
         return data
