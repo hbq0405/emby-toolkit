@@ -344,7 +344,8 @@ def handle_get_mimicked_library_items(user_id, mimicked_id, params):
 
 def _fetch_items_in_chunks(base_url, api_key, user_id, item_ids, fields):
     """
-    辅助函数：通过分块GET请求安全地获取大量媒体项的完整信息。
+    【V4.8 - 并发性能优化版】
+    辅助函数：通过 gevent 并发执行分块GET请求，极大地提升了超大虚拟库的加载速度。
     """
     if not item_ids:
         return []
@@ -356,24 +357,37 @@ def _fetch_items_in_chunks(base_url, api_key, user_id, item_ids, fields):
     id_chunks = list(chunk_list(item_ids, 150))
     all_items = []
     target_url = f"{base_url}/emby/Users/{user_id}/Items"
-    logger.trace(f"[_fetch_items_in_chunks] ID列表已分为 {len(id_chunks)} 块。")
+    logger.trace(f"[_fetch_items_in_chunks] ID列表已分为 {len(id_chunks)} 块，准备并发请求...")
 
-    for i, chunk in enumerate(id_chunks):
+    # --- 核心修改：从串行循环改为 gevent 并发 ---
+    def fetch_chunk(chunk):
+        """定义单个请求的任务"""
         get_params = {
             'api_key': api_key,
             'Ids': ",".join(chunk),
             'Fields': fields
         }
         try:
-            logger.trace(f"[_fetch_items_in_chunks] 正在请求第 {i+1}/{len(id_chunks)} 块数据...")
             resp = requests.get(target_url, params=get_params, timeout=20)
             resp.raise_for_status()
-            chunk_items = resp.json().get("Items", [])
-            all_items.extend(chunk_items)
+            return resp.json().get("Items", [])
         except Exception as e_chunk:
-            logger.error(f"[_fetch_items_in_chunks] 获取第 {i+1} 块数据时失败: {e_chunk}")
-            continue
+            logger.error(f"[_fetch_items_in_chunks] 并发获取某分块数据时失败: {e_chunk}")
+            return None # 失败时返回 None
+
+    # 创建所有并发任务
+    greenlets = [spawn(fetch_chunk, chunk) for chunk in id_chunks]
     
+    # 等待所有任务完成
+    from gevent import joinall
+    joinall(greenlets)
+
+    # 收集所有成功任务的结果
+    for g in greenlets:
+        if g.value: # g.value 就是 fetch_chunk 函数的返回值
+            all_items.extend(g.value)
+            
+    logger.trace(f"[_fetch_items_in_chunks] 并发请求完成，共获取到 {len(all_items)} 个项目。")
     return all_items
 
 def handle_get_latest_items(user_id, params):
@@ -453,9 +467,8 @@ proxy_app = Flask(__name__)
 @proxy_app.route('/', defaults={'path': ''})
 @proxy_app.route('/<path:path>', methods=['GET', 'POST', 'PUT', 'DELETE', 'HEAD', 'OPTIONS'])
 def proxy_all(path):
-    # --- 1. WebSocket 代理逻辑 ---
+    # --- 1. WebSocket 代理逻辑 (已添加超详细日志) ---
     if 'Upgrade' in request.headers and request.headers.get('Upgrade', '').lower() == 'websocket':
-        # ... (WebSocket 代码保持不变, 这里省略以保持简洁) ...
         logger.info("--- 收到一个新的 WebSocket 连接请求 ---")
         ws_client = request.environ.get('wsgi.websocket')
         if not ws_client:
@@ -463,13 +476,21 @@ def proxy_all(path):
             return "WebSocket upgrade failed", 400
 
         try:
+            # 1. 记录客户端信息
             logger.debug(f"  [C->P] 客户端路径: /{path}")
+            logger.debug(f"  [C->P] 客户端查询参数: {request.query_string.decode()}")
+            logger.debug(f"  [C->P] 客户端 Headers: {dict(request.headers)}")
+
+            # 2. 构造目标 URL
             base_url, _ = _get_real_emby_url_and_key()
             parsed_url = urlparse(base_url)
             ws_scheme = 'wss' if parsed_url.scheme == 'https' else 'ws'
             target_ws_url = urlunparse((ws_scheme, parsed_url.netloc, f'/{path}', '', request.query_string.decode(), ''))
             logger.info(f"  [P->S] 准备连接到目标 Emby WebSocket: {target_ws_url}")
+
+            # 3. 提取 Headers 并尝试连接
             headers_to_server = {k: v for k, v in request.headers.items() if k.lower() not in ['host', 'upgrade', 'connection', 'sec-websocket-key', 'sec-websocket-version']}
+            logger.debug(f"  [P->S] 转发给服务器的 Headers: {headers_to_server}")
             
             ws_server = None
             try:
@@ -480,33 +501,48 @@ def proxy_all(path):
                 ws_client.close()
                 return Response()
 
+            # 4. 创建双向转发协程
             def forward_to_server():
                 try:
                     while not ws_client.closed and ws_server.connected:
                         message = ws_client.receive()
                         if message is not None:
+                            logger.trace(f"  [C->S] 转发消息: {message[:200] if message else 'None'}") # 只记录前200字符
                             ws_server.send(message)
                         else:
+                            logger.info("  [C->P] 客户端连接已关闭 (receive返回None)。")
                             break
+                except Exception as e_fwd_s:
+                    logger.warning(f"  [C->S] 转发到服务器时出错: {e_fwd_s}")
                 finally:
-                    if ws_server.connected: ws_server.close()
+                    if ws_server.connected:
+                        ws_server.close()
+                        logger.info("  [P->S] 已关闭到服务器的连接。")
 
             def forward_to_client():
                 try:
                     while ws_server.connected and not ws_client.closed:
                         message = ws_server.recv()
                         if message is not None:
+                            logger.trace(f"  [S->C] 转发消息: {message[:200] if message else 'None'}") # 只记录前200字符
                             ws_client.send(message)
                         else:
+                            logger.info("  [P<-S] 服务器连接已关闭 (recv返回None)。")
                             break
+                except Exception as e_fwd_c:
+                    logger.warning(f"  [S->C] 转发到客户端时出错: {e_fwd_c}")
                 finally:
-                    if not ws_client.closed: ws_client.close()
+                    if not ws_client.closed:
+                        ws_client.close()
+                        logger.info("  [P->C] 已关闭到客户端的连接。")
             
             greenlets = [spawn(forward_to_server), spawn(forward_to_client)]
             from gevent.event import Event
             exit_event = Event()
             def on_exit(g): exit_event.set()
             for g in greenlets: g.link(on_exit)
+            
+            logger.info("  [P<->S] WebSocket 双向转发已启动。等待连接关闭...")
             exit_event.wait()
             logger.info("--- WebSocket 会话结束 ---")
 
