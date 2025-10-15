@@ -1465,7 +1465,11 @@ const handleEditClick = (row) => {
   isEditing.value = true;
   const rowCopy = JSON.parse(JSON.stringify(row));
 
-  if (!Array.isArray(rowCopy.allowed_user_ids)) {
+  if (Array.isArray(rowCopy.allowed_user_ids)) {
+    const availableOptionsSet = new Set(embyUserOptions.value.map(opt => opt.value));
+    
+    rowCopy.allowed_user_ids = rowCopy.allowed_user_ids.filter(id => availableOptionsSet.has(id));
+  } else {
     rowCopy.allowed_user_ids = [];
   }
 
