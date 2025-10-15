@@ -87,7 +87,7 @@
               <template #trigger>
                 <n-icon :component="HelpIcon" style="margin-left: 4px;" />
               </template>
-              指定哪些Emby用户可以在首页看到这个虚拟库。如果留空，则默认对所有用户可见。
+              指定哪些Emby用户可以看到此虚拟库。选择“模板源”用户将自动包含其所有绑定用户。
             </n-tooltip>
           </template>
           <n-select
@@ -98,15 +98,8 @@
             placeholder="留空则对所有用户可见"
             :options="embyUserOptions"
             :loading="isLoadingEmbyUsers"
+            :render-label="renderSelectOptionWithTag"
           />
-          <template #option="{ node, option }">
-            <div style="display: flex; justify-content: space-between; align-items: center; width: 100%;">
-              <span>{{ option.label }}</span>
-              <n-tag v-if="option.is_template_source" type="success" size="small" :bordered="false">
-                模板源
-              </n-tag>
-            </div>
-          </template>
         </n-form-item>
         
         <n-form-item label="合集类型" path="type">
@@ -987,6 +980,24 @@ const handleGenerateAllCovers = async () => {
   } finally {
     isGeneratingCovers.value = false;
   }
+};
+
+// ★★★ 自定义 Select 选项的渲染函数 ★★★
+const renderSelectOptionWithTag = (option) => {
+  // option 对象就是我们从后端接收到的 { label, value, is_template_source }
+  if (option.is_template_source) {
+    // 如果是模板源，我们返回一个包含标签的 VNode
+    return h(
+      'div', 
+      { style: 'display: flex; justify-content: space-between; align-items: center; width: 100%;' },
+      [
+        h('span', null, option.label), // 用户名
+        h(NTag, { type: 'success', size: 'small', bordered: false }, { default: () => '模板源' }) // 标签
+      ]
+    );
+  }
+  // 如果不是模板源，就只渲染用户名
+  return option.label;
 };
 
 const fetchEmbyUsers = async () => {
