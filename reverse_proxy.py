@@ -289,8 +289,8 @@ def handle_mimicked_library_metadata_endpoint(path, mimicked_id, params):
     
 def handle_get_mimicked_library_items(user_id, mimicked_id, params):
     """
-    【V5.3 - 混合模式最终版】
-    - 智能判断排序字段，优先使用本地数据库秒开，对不支持的字段则优雅降级，交由Emby处理。
+    【V5.4 - 原始排序修正最终版】
+    - 修正了 V5.3 中错误地将 'original' 排序转发给 Emby 的问题。
     """
     try:
         real_db_id = from_mimicked_id(mimicked_id)
@@ -311,54 +311,52 @@ def handle_get_mimicked_library_items(user_id, mimicked_id, params):
             sort_by_str = params.get('SortBy', 'SortName')
             sort_order = params.get('SortOrder', 'Ascending')
 
-        # ★★★ V5.3 核心修改：智能判断与降级 ★★★
         primary_sort_by = sort_by_str.split(',')[0]
-        unsupported_local_sort_fields = ['DateLastContentAdded', 'Director'] # 无法在本地高效排序的字段列表
+        unsupported_local_sort_fields = ['DateLastContentAdded', 'Director']
 
         base_url, api_key = _get_real_emby_url_and_key()
         fields = "PrimaryImageAspectRatio,ProviderIds,UserData,Name,ProductionYear,CommunityRating,DateCreated,PremiereDate,Type,RecursiveItemCount,SortName,ChildCount"
 
-        # --- 模式A：Emby原生处理 (当遇到不支持的排序时) ---
-        if primary_sort_by in unsupported_local_sort_fields or sort_by_str == 'original':
+        # ★★★ V5.4 核心修正：将 'original' 从 Emby 处理分支中移除 ★★★
+        if primary_sort_by in unsupported_local_sort_fields:
             logger.trace(f"检测到不支持本地排序的字段 '{primary_sort_by}'，将请求转发给Emby处理排序和分页。")
-            
             forward_params = params.copy()
             forward_params['api_key'] = api_key
             forward_params['Ids'] = ",".join(all_visible_ids)
-            if 'Fields' not in forward_params:
-                forward_params['Fields'] = fields
-            
+            if 'Fields' not in forward_params: forward_params['Fields'] = fields
             target_url = f"{base_url}/emby/Users/{user_id}/Items"
             try:
                 resp = requests.get(target_url, params=forward_params, timeout=30)
                 resp.raise_for_status()
-                # 直接将Emby的完整响应（包含Items和TotalRecordCount）返回
                 return Response(resp.content, resp.status_code, content_type=resp.headers.get('Content-Type'))
             except Exception as e_emby:
                 logger.error(f"转发给Emby处理排序时失败: {e_emby}")
                 return Response(json.dumps({"Items": [], "TotalRecordCount": 0}), mimetype='application/json')
-
-        # --- 模式B：本地数据库秒开 (默认模式) ---
         else:
             limit = int(params.get('Limit', 50))
             offset = int(params.get('StartIndex', 0))
             
-            paginated_ids = queries_db.get_sorted_and_paginated_ids(
-                all_visible_ids, primary_sort_by, sort_order, limit, offset
-            )
+            paginated_ids = []
+            # ★★★ V5.4 核心修正：在本地处理分支中，正确处理 'original' 排序 ★★★
+            if sort_by_str == 'original':
+                logger.trace("检测到 'original' 排序，将直接在内存中分页。")
+                paginated_ids = all_visible_ids[offset : offset + limit]
+            else:
+                paginated_ids = queries_db.get_sorted_and_paginated_ids(
+                    all_visible_ids, primary_sort_by, sort_order, limit, offset
+                )
 
             if not paginated_ids:
                 return Response(json.dumps({"Items": [], "TotalRecordCount": total_record_count}), mimetype='application/json')
 
             items_from_emby = _fetch_items_from_emby(base_url, api_key, user_id, paginated_ids, fields)
-            
             items_map = {item['Id']: item for item in items_from_emby}
             final_items = [items_map[id] for id in paginated_ids if id in items_map]
 
             return Response(json.dumps({"Items": final_items, "TotalRecordCount": total_record_count}), mimetype='application/json')
 
     except Exception as e:
-        logger.error(f"处理混合虚拟库时发生严重错误 (V5.3): {e}", exc_info=True)
+        logger.error(f"处理混合虚拟库时发生严重错误 (V5.4): {e}", exc_info=True)
         return Response(json.dumps({"Items": [], "TotalRecordCount": 0}), mimetype='application/json')
 
 def handle_get_latest_items(user_id, params):
