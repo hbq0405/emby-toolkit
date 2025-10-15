@@ -403,44 +403,36 @@ def handle_get_mimicked_library_items(user_id, mimicked_id, params):
 
 def handle_get_latest_items(user_id, params):
     """
-    【V5.2 - 战术缓存秒开最终版】
+    【V5.8 - 首页纯净最终版】
+    - 根据最终决定，此函数不再处理虚拟库的“最新”请求，直接返回空列表。
+    - 只为原生库（Native Libraries）提供“最新”项目。
     """
     try:
         base_url, api_key = _get_real_emby_url_and_key()
-        virtual_library_id = params.get('ParentId') or params.get('customViewId')
+        parent_id = params.get('ParentId') or params.get('customViewId')
 
-        if virtual_library_id and is_mimicked_id(virtual_library_id):
-            real_db_id = from_mimicked_id(virtual_library_id)
-            collection_info = collection_db.get_custom_collection_by_id(real_db_id)
-            if not collection_info: return Response(json.dumps([]), mimetype='application/json')
-
-            # ★★★ 核心修改：调用带缓存的函数获取ID ★★★
-            all_visible_ids = _get_final_item_ids_for_view(user_id, collection_info)
-            if not all_visible_ids: return Response(json.dumps([]), mimetype='application/json')
-
-            limit = int(params.get('Limit', 24))
-            latest_ids = queries_db.get_sorted_ids(
-                all_visible_ids, 'DateCreated', 'Descending', limit, 0
-            )
-
-            if not latest_ids: return Response(json.dumps([]), mimetype='application/json')
-            
-            fields = params.get('Fields', "PrimaryImageAspectRatio,BasicSyncInfo,DateCreated,UserData")
-            items_from_emby = _fetch_items_from_emby(base_url, api_key, user_id, latest_ids, fields)
-
-            items_map = {item['Id']: item for item in items_from_emby}
-            final_items = [items_map[id] for id in latest_ids if id in items_map]
-
-            return Response(json.dumps(final_items), mimetype='application/json')
+        # ★★★ 核心修改：如果是虚拟库，直接返回空，不做任何处理 ★★★
+        if parent_id and is_mimicked_id(parent_id):
+            logger.trace(f"根据 V5.8 架构决定，忽略对虚拟库 '{parent_id}' 的最新媒体请求。")
+            return Response(json.dumps([]), mimetype='application/json')
         
+        # --- 对于原生库，保持原有的直接转发逻辑 ---
         else:
-            # 原生库逻辑不变
+            logger.trace(f"正在为原生库 '{parent_id}' 转发最新媒体请求。")
             target_url = f"{base_url}/{request.path.lstrip('/')}"
             forward_headers = {k: v for k, v in request.headers if k.lower() not in ['host', 'accept-encoding']}
             forward_headers['Host'] = urlparse(base_url).netloc
             forward_params = request.args.copy()
             forward_params['api_key'] = api_key
-            resp = requests.request(method=request.method, url=target_url, headers=forward_headers, params=forward_params, data=request.get_data(), stream=True, timeout=30.0)
+            resp = requests.request(
+                method=request.method,
+                url=target_url,
+                headers=forward_headers,
+                params=forward_params,
+                data=request.get_data(),
+                stream=True,
+                timeout=30.0
+            )
             excluded_resp_headers = ['content-encoding', 'content-length', 'transfer-encoding', 'connection']
             response_headers = [(name, value) for name, value in resp.raw.headers.items() if name.lower() not in excluded_resp_headers]
             return Response(resp.iter_content(chunk_size=8192), resp.status_code, response_headers)
