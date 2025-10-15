@@ -240,10 +240,10 @@ def handle_mimicked_library_metadata_endpoint(path, mimicked_id, params):
     
 def handle_get_mimicked_library_items(user_id, mimicked_id, params):
     """
-    【V8.2 - DateLastContentAdded 排序增强版】+ V4.5 正确POST端点修复
-    - 修复了 V4.4 中因使用了错误的 POST 接口导致的 404 错误。
-    - 排序劫持模式现在使用正确的 /Items 接口并通过 POST 请求体发送ID列表，
-      这彻底解决了超大虚拟库的 "414 URL Too Long" 问题。
+    【V8.2 - DateLastContentAdded 排序增强版】+ V4.6 分块请求修复
+    - 彻底修复了因 Emby API 不支持 POST 批量获取媒体项而导致的 404 错误。
+    - 排序劫持模式现在通过将海量 ID 列表分块，使用多次、短小的 GET 请求来安全地获取
+      全量数据，从根本上解决了 "414 URL Too Long" 问题，保证了超大虚拟库的稳定运行。
     """
     try:
         real_db_id = from_mimicked_id(mimicked_id)
@@ -311,36 +311,38 @@ def handle_get_mimicked_library_items(user_id, mimicked_id, params):
                 final_items = []
                 total_record_count = 0
         else:
-            # --- 模式B: 排序劫持 (V4.5 正确POST端点修复版) ---
-            logger.trace(f"执行排序劫持模式: '{sort_by_field}'。准备使用POST到/Items接口获取全量数据...")
-            
-            # 1. 准备POST请求的URL和Body
-            # ★★★ 核心修复 #1: 使用正确的 /Items 接口 ★★★
-            target_url = f"{base_url}/emby/Items"
-            
-            # ★★★ 核心修复 #2: 将 UserId 和 api_key 作为URL参数 ★★★
-            post_params = {
-                'api_key': api_key,
-                'UserId': user_id
-            }
-            
-            # Body中依然放入ID列表和所需字段
-            post_data = {
-                'Ids': ",".join(final_emby_ids_to_fetch),
-                'Fields': "PrimaryImageAspectRatio,ProviderIds,UserData,Name,ProductionYear,CommunityRating,DateCreated,PremiereDate,Type,RecursiveItemCount,SortName,ChildCount"
-            }
-            
-            # 2. 发起POST请求获取所有项目的完整信息
+            # --- 模式B: 排序劫持 (V4.6 分块请求修复版) ---
+            logger.trace(f"执行排序劫持模式: '{sort_by_field}'。准备使用分块GET请求获取全量数据...")
+
+            # 1. 将ID列表分块以避免URL过长
+            def chunk_list(lst, n):
+                for i in range(0, len(lst), n):
+                    yield lst[i:i + n]
+
+            # Emby通常能处理200个左右的ID，我们保守使用150个作为一块
+            id_chunks = list(chunk_list(final_emby_ids_to_fetch, 150))
             live_items_unordered = []
-            try:
-                resp = requests.post(target_url, params=post_params, json=post_data, timeout=45)
-                resp.raise_for_status()
-                # 注意：/Items 接口返回的数据结构可能略有不同，但通常也包含 Items 键
-                live_items_unordered = resp.json().get("Items", [])
-                logger.trace(f"排序劫持(POST)：成功获取到 {len(live_items_unordered)} 个项目的完整数据。")
-            except Exception as e_fetch:
-                logger.error(f"在排序劫持模式下获取全量数据失败: {e_fetch}", exc_info=True)
-                live_items_unordered = []
+            target_url = f"{base_url}/emby/Users/{user_id}/Items"
+            logger.trace(f"ID列表已分为 {len(id_chunks)} 块，每块最多150个ID。")
+
+            # 2. 循环对每一块ID发起GET请求
+            for i, chunk in enumerate(id_chunks):
+                get_params = {
+                    'api_key': api_key,
+                    'Ids': ",".join(chunk),
+                    'Fields': "PrimaryImageAspectRatio,ProviderIds,UserData,Name,ProductionYear,CommunityRating,DateCreated,PremiereDate,Type,RecursiveItemCount,SortName,ChildCount"
+                }
+                try:
+                    logger.trace(f"正在请求第 {i+1}/{len(id_chunks)} 块数据...")
+                    resp = requests.get(target_url, params=get_params, timeout=20)
+                    resp.raise_for_status()
+                    chunk_items = resp.json().get("Items", [])
+                    live_items_unordered.extend(chunk_items)
+                except Exception as e_fetch_chunk:
+                    logger.error(f"在排序劫持模式下获取第 {i+1} 块数据时失败: {e_fetch_chunk}")
+                    continue # 即使一块失败，也继续尝试获取其他块
+
+            logger.trace(f"排序劫持(分块GET)：成功获取到 {len(live_items_unordered)} 个项目的完整数据。")
 
             # 3. 执行排序 (逻辑不变)
             if sort_by_field == 'original':
