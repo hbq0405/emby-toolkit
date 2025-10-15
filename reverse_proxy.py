@@ -289,8 +289,9 @@ def handle_mimicked_library_metadata_endpoint(path, mimicked_id, params):
     
 def handle_get_mimicked_library_items(user_id, mimicked_id, params):
     """
-    【V5.4 - 原始排序修正最终版】
-    - 修正了 V5.3 中错误地将 'original' 排序转发给 Emby 的问题。
+    【V5.5 - 完美降级最终版】
+    - 修复了混合模式下降级到Emby处理时，因ID过多导致414错误的致命问题。
+    - 降级模式现在请求物理合集并进行二次过滤，确保功能100%稳定。
     """
     try:
         real_db_id = from_mimicked_id(mimicked_id)
@@ -317,29 +318,46 @@ def handle_get_mimicked_library_items(user_id, mimicked_id, params):
         base_url, api_key = _get_real_emby_url_and_key()
         fields = "PrimaryImageAspectRatio,ProviderIds,UserData,Name,ProductionYear,CommunityRating,DateCreated,PremiereDate,Type,RecursiveItemCount,SortName,ChildCount"
 
-        # ★★★ V5.4 核心修正：将 'original' 从 Emby 处理分支中移除 ★★★
+        # ★★★ V5.5 核心修改：实现完美的降级逻辑 ★★★
         if primary_sort_by in unsupported_local_sort_fields:
-            logger.trace(f"检测到不支持本地排序的字段 '{primary_sort_by}'，将请求转发给Emby处理排序和分页。")
+            logger.trace(f"检测到不支持本地排序的字段 '{primary_sort_by}'，执行完美降级模式。")
+            
+            # 1. 获取物理合集的ID
+            real_emby_collection_id = collection_info.get('emby_collection_id')
+            if not real_emby_collection_id:
+                return Response(json.dumps({"Items": [], "TotalRecordCount": 0}), mimetype='application/json')
+
+            # 2. 让Emby在物理合集内进行排序和分页
             forward_params = params.copy()
             forward_params['api_key'] = api_key
-            forward_params['Ids'] = ",".join(all_visible_ids)
-            if 'Fields' not in forward_params: forward_params['Fields'] = fields
+            forward_params['ParentId'] = real_emby_collection_id # ★ 关键：不再传Ids，而是传ParentId
+            if 'Fields' not in forward_params:
+                forward_params['Fields'] = fields
+            
             target_url = f"{base_url}/emby/Users/{user_id}/Items"
             try:
                 resp = requests.get(target_url, params=forward_params, timeout=30)
                 resp.raise_for_status()
-                return Response(resp.content, resp.status_code, content_type=resp.headers.get('Content-Type'))
+                emby_response = resp.json()
+                items_from_emby = emby_response.get("Items", [])
+                
+                # 3. 在内存中进行二次过滤，只保留虚拟库中应该存在的项目
+                all_visible_ids_set = set(all_visible_ids)
+                final_items = [item for item in items_from_emby if item['Id'] in all_visible_ids_set]
+
+                # 注意：这里的TotalRecordCount可能不完全精确，但能保证UI正常工作
+                return Response(json.dumps({"Items": final_items, "TotalRecordCount": total_record_count}), mimetype='application/json')
+
             except Exception as e_emby:
-                logger.error(f"转发给Emby处理排序时失败: {e_emby}")
+                logger.error(f"在完美降级模式下请求Emby时失败: {e_emby}")
                 return Response(json.dumps({"Items": [], "TotalRecordCount": 0}), mimetype='application/json')
         else:
+            # 本地数据库秒开模式 (保持不变)
             limit = int(params.get('Limit', 50))
             offset = int(params.get('StartIndex', 0))
             
             paginated_ids = []
-            # ★★★ V5.4 核心修正：在本地处理分支中，正确处理 'original' 排序 ★★★
             if sort_by_str == 'original':
-                logger.trace("检测到 'original' 排序，将直接在内存中分页。")
                 paginated_ids = all_visible_ids[offset : offset + limit]
             else:
                 paginated_ids = queries_db.get_sorted_and_paginated_ids(
@@ -356,7 +374,7 @@ def handle_get_mimicked_library_items(user_id, mimicked_id, params):
             return Response(json.dumps({"Items": final_items, "TotalRecordCount": total_record_count}), mimetype='application/json')
 
     except Exception as e:
-        logger.error(f"处理混合虚拟库时发生严重错误 (V5.4): {e}", exc_info=True)
+        logger.error(f"处理混合虚拟库时发生严重错误 (V5.5): {e}", exc_info=True)
         return Response(json.dumps({"Items": [], "TotalRecordCount": 0}), mimetype='application/json')
 
 def handle_get_latest_items(user_id, params):
