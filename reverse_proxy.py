@@ -240,9 +240,10 @@ def handle_mimicked_library_metadata_endpoint(path, mimicked_id, params):
     
 def handle_get_mimicked_library_items(user_id, mimicked_id, params):
     """
-    【V8.2 - DateLastContentAdded 排序增强版】
+    【V8.2 - DateLastContentAdded 排序增强版】+ V4.2 分页修复
     - 新增支持 `DateLastContentAdded` 排序模式，直接利用 Emby API 实现按“最后一集更新时间”排序。
     - 将 `DateLastContentAdded` 和 `none` 两种模式合并为统一的“Emby原生排序”逻辑流，代码更清晰。
+    - 修复了排序劫持模式下 TotalRecordCount 不正确的问题。
     """
     try:
         real_db_id = from_mimicked_id(mimicked_id)
@@ -252,7 +253,6 @@ def handle_get_mimicked_library_items(user_id, mimicked_id, params):
 
         definition = collection_info.get('definition_json') or {}
         
-        # --- 阶段一 & 二 (过滤，获取最终ID列表) ---
         db_media_list = collection_info.get('generated_media_info_json') or []
         base_ordered_emby_ids = [item.get('emby_id') for item in db_media_list if item.get('emby_id')]
         if not base_ordered_emby_ids:
@@ -273,72 +273,50 @@ def handle_get_mimicked_library_items(user_id, mimicked_id, params):
         if not final_emby_ids_to_fetch:
             return Response(json.dumps({"Items": [], "TotalRecordCount": 0}), mimetype='application/json')
 
-        # --- 阶段三 & 四: 数据获取与排序 (重构) ---
         final_items = []
+        total_record_count = 0
         sort_by_field = definition.get('default_sort_by')
         base_url, api_key = _get_real_emby_url_and_key()
 
-        # ▼▼▼ 核心修改：判断是否使用Emby原生排序模式 ▼▼▼
         if sort_by_field in ['none', 'DateLastContentAdded']:
-            # --- 模式A: Emby原生排序 (Pass-through 或 Enforced) ---
             logger.trace(f"检测到Emby原生排序模式: '{sort_by_field}'，请求将转发给Emby处理。")
-            
-            # 准备需要转发给Emby的参数
             forward_params = {}
-            
-            # 1. 设置排序参数
             if sort_by_field == 'DateLastContentAdded':
-                # 强制使用合集定义的排序规则
                 sort_order = definition.get('default_sort_order', 'Descending')
                 forward_params['SortBy'] = 'DateLastContentAdded'
                 forward_params['SortOrder'] = sort_order
                 logger.debug(f"  ➜ 已强制应用排序规则: SortBy=DateLastContentAdded, SortOrder={sort_order}")
-            else: # 'none' 模式
-                # 沿用客户端请求的排序参数
+            else:
                 if 'SortBy' in params: forward_params['SortBy'] = params['SortBy']
                 if 'SortOrder' in params: forward_params['SortOrder'] = params['SortOrder']
             
-            # 2. 白名单方式，传递其他必要的客户端参数
-            passthrough_params_whitelist = [
-                'StartIndex', 'Limit', 'Fields', 'IncludeItemTypes', 
-                'Recursive', 'EnableImageTypes', 'ImageTypeLimit'
-            ]
+            passthrough_params_whitelist = ['StartIndex', 'Limit', 'Fields', 'IncludeItemTypes', 'Recursive', 'EnableImageTypes', 'ImageTypeLimit']
             for param in passthrough_params_whitelist:
-                if param in params:
-                    forward_params[param] = params[param]
+                if param in params: forward_params[param] = params[param]
 
-            # 3. 附上媒体ID列表和API Key
             forward_params['Ids'] = ",".join(final_emby_ids_to_fetch)
             forward_params['api_key'] = api_key
-            
             if 'Fields' not in forward_params:
-                forward_params['Fields'] = "PrimaryImageAspectRatio,ProviderIds,UserData,Name,ProductionYear,CommunityRating,DateCreated,PremiereDate,Type,RecursiveItemCount,SortName"
+                forward_params['Fields'] = "PrimaryImageAspectRatio,ProviderIds,UserData,Name,ProductionYear,CommunityRating,DateCreated,PremiereDate,Type,RecursiveItemCount,SortName,ChildCount"
 
-            # 4. 发起请求
             target_url = f"{base_url}/emby/Users/{user_id}/Items"
             try:
                 resp = requests.get(target_url, params=forward_params, timeout=20)
                 resp.raise_for_status()
-                final_items = resp.json().get("Items", [])
+                response_data = resp.json()
+                final_items = response_data.get("Items", [])
+                total_record_count = response_data.get("TotalRecordCount", len(final_items))
                 logger.trace(f"Emby原生排序成功返回 {len(final_items)} 个项目。")
             except Exception as e_pass:
                 logger.error(f"在Emby原生排序模式下请求失败: {e_pass}", exc_info=True)
                 final_items = []
-
+                total_record_count = 0
         else:
-            # --- 模式B: 排序劫持 (V4.1 修复版) ---
-            # 核心变更：不再使用旧的 get_emby_items_by_id，而是像模式A一样，
-            # 调用能返回完整数据结构的 /Items 接口，但获取所有数据，以便在本地排序。
             logger.trace(f"执行排序劫持模式: '{sort_by_field}'。准备获取全量完整数据...")
-
-            # 1. 准备获取全量数据的参数
             full_fetch_params = {
-                'Ids': ",".join(final_emby_ids_to_fetch),
-                'api_key': api_key,
+                'Ids': ",".join(final_emby_ids_to_fetch), 'api_key': api_key,
                 'Fields': "PrimaryImageAspectRatio,ProviderIds,UserData,Name,ProductionYear,CommunityRating,DateCreated,PremiereDate,Type,RecursiveItemCount,SortName,ChildCount"
             }
-            
-            # 2. 发起请求获取所有项目的完整信息
             target_url = f"{base_url}/emby/Users/{user_id}/Items"
             live_items_unordered = []
             try:
@@ -348,21 +326,16 @@ def handle_get_mimicked_library_items(user_id, mimicked_id, params):
                 logger.trace(f"排序劫持：成功获取到 {len(live_items_unordered)} 个项目的完整数据。")
             except Exception as e_fetch:
                 logger.error(f"在排序劫持模式下获取全量数据失败: {e_fetch}", exc_info=True)
-                # 即使失败也返回空列表，避免崩溃
                 live_items_unordered = []
 
-            # 3. 执行排序
             if sort_by_field == 'original':
-                # 榜单原始顺序：根据最初的 ID 顺序重新排列获取到的完整项目
                 live_items_map = {item['Id']: item for item in live_items_unordered}
                 final_items_sorted = [live_items_map[emby_id] for emby_id in final_emby_ids_to_fetch if emby_id in live_items_map]
                 logger.trace("已应用 'original' (榜单原始顺序) 排序。")
             else:
-                # 其他字段排序
                 sort_order = definition.get('default_sort_order', 'Ascending')
                 is_descending = (sort_order == 'Descending')
                 logger.trace(f"执行虚拟库排序劫持: '{sort_by_field}' ({sort_order})")
-
                 def sort_key_func(item):
                     value = item.get(sort_by_field)
                     if value is None:
@@ -372,17 +345,13 @@ def handle_get_mimicked_library_items(user_id, mimicked_id, params):
                     try:
                         if sort_by_field == 'CommunityRating': return float(value)
                         if sort_by_field == 'ProductionYear': return int(value)
-                    except (ValueError, TypeError):
-                        return 0
+                    except (ValueError, TypeError): return 0
                     return value
-
                 final_items_sorted = sorted(live_items_unordered, key=sort_key_func, reverse=is_descending)
 
-            # 4. 新增：手动应用分页
             total_record_count = len(final_items_sorted)
             start_index = int(params.get('StartIndex', 0))
             limit = params.get('Limit')
-            
             if limit:
                 limit = int(limit)
                 final_items = final_items_sorted[start_index : start_index + limit]
@@ -390,10 +359,9 @@ def handle_get_mimicked_library_items(user_id, mimicked_id, params):
             else:
                 final_items = final_items_sorted[start_index:]
                 logger.trace(f"手动分页已应用: StartIndex={start_index} (无Limit)。返回 {len(final_items)} 项。")
-
-        # --- 统一返回 ---
-        # 核心变更：TotalRecordCount 现在反映的是排序和分页前的总数
-        final_response = {"Items": final_items, "TotalRecordCount": total_record_count if 'total_record_count' in locals() else len(final_items)}
+        
+        final_response = {"Items": final_items, "TotalRecordCount": total_record_count}
+        return Response(json.dumps(final_response), mimetype='application/json')
 
     except Exception as e:
         logger.error(f"处理混合虚拟库时发生严重错误: {e}", exc_info=True)
@@ -455,8 +423,9 @@ proxy_app = Flask(__name__)
 @proxy_app.route('/', defaults={'path': ''})
 @proxy_app.route('/<path:path>', methods=['GET', 'POST', 'PUT', 'DELETE', 'HEAD', 'OPTIONS'])
 def proxy_all(path):
-    # --- 1. WebSocket 代理逻辑 (已添加超详细日志) ---
+    # --- 1. WebSocket 代理逻辑 ---
     if 'Upgrade' in request.headers and request.headers.get('Upgrade', '').lower() == 'websocket':
+        # ... (WebSocket 代码保持不变, 这里省略以保持简洁) ...
         logger.info("--- 收到一个新的 WebSocket 连接请求 ---")
         ws_client = request.environ.get('wsgi.websocket')
         if not ws_client:
@@ -464,21 +433,13 @@ def proxy_all(path):
             return "WebSocket upgrade failed", 400
 
         try:
-            # 1. 记录客户端信息
             logger.debug(f"  [C->P] 客户端路径: /{path}")
-            logger.debug(f"  [C->P] 客户端查询参数: {request.query_string.decode()}")
-            logger.debug(f"  [C->P] 客户端 Headers: {dict(request.headers)}")
-
-            # 2. 构造目标 URL
             base_url, _ = _get_real_emby_url_and_key()
             parsed_url = urlparse(base_url)
             ws_scheme = 'wss' if parsed_url.scheme == 'https' else 'ws'
             target_ws_url = urlunparse((ws_scheme, parsed_url.netloc, f'/{path}', '', request.query_string.decode(), ''))
             logger.info(f"  [P->S] 准备连接到目标 Emby WebSocket: {target_ws_url}")
-
-            # 3. 提取 Headers 并尝试连接
             headers_to_server = {k: v for k, v in request.headers.items() if k.lower() not in ['host', 'upgrade', 'connection', 'sec-websocket-key', 'sec-websocket-version']}
-            logger.debug(f"  [P->S] 转发给服务器的 Headers: {headers_to_server}")
             
             ws_server = None
             try:
@@ -489,48 +450,33 @@ def proxy_all(path):
                 ws_client.close()
                 return Response()
 
-            # 4. 创建双向转发协程
             def forward_to_server():
                 try:
                     while not ws_client.closed and ws_server.connected:
                         message = ws_client.receive()
                         if message is not None:
-                            logger.trace(f"  [C->S] 转发消息: {message[:200] if message else 'None'}") # 只记录前200字符
                             ws_server.send(message)
                         else:
-                            logger.info("  [C->P] 客户端连接已关闭 (receive返回None)。")
                             break
-                except Exception as e_fwd_s:
-                    logger.warning(f"  [C->S] 转发到服务器时出错: {e_fwd_s}")
                 finally:
-                    if ws_server.connected:
-                        ws_server.close()
-                        logger.info("  [P->S] 已关闭到服务器的连接。")
+                    if ws_server.connected: ws_server.close()
 
             def forward_to_client():
                 try:
                     while ws_server.connected and not ws_client.closed:
                         message = ws_server.recv()
                         if message is not None:
-                            logger.trace(f"  [S->C] 转发消息: {message[:200] if message else 'None'}") # 只记录前200字符
                             ws_client.send(message)
                         else:
-                            logger.info("  [P<-S] 服务器连接已关闭 (recv返回None)。")
                             break
-                except Exception as e_fwd_c:
-                    logger.warning(f"  [S->C] 转发到客户端时出错: {e_fwd_c}")
                 finally:
-                    if not ws_client.closed:
-                        ws_client.close()
-                        logger.info("  [P->C] 已关闭到客户端的连接。")
+                    if not ws_client.closed: ws_client.close()
             
             greenlets = [spawn(forward_to_server), spawn(forward_to_client)]
             from gevent.event import Event
             exit_event = Event()
             def on_exit(g): exit_event.set()
             for g in greenlets: g.link(on_exit)
-            
-            logger.info("  [P<->S] WebSocket 双向转发已启动。等待连接关闭...")
             exit_event.wait()
             logger.info("--- WebSocket 会话结束 ---")
 
@@ -539,62 +485,50 @@ def proxy_all(path):
         
         return Response()
 
-    # --- 2. HTTP 代理逻辑 (保持不变) ---
+    # --- 2. HTTP 代理逻辑 (V4.2 路由修复版) ---
     try:
-        # 1. 定义所有需要“翻译”ParentId的元数据端点
-        METADATA_ENDPOINTS = [
-            '/Items/Prefixes', '/Genres', '/Studios', 
-            '/Tags', '/OfficialRatings', '/Years'
-        ]
+        full_path = f'/{path}'
 
-        # 2. 优先处理所有元数据请求
-        if any(path.endswith(endpoint) for endpoint in METADATA_ENDPOINTS):
-            parent_id = request.args.get("ParentId")
-            if parent_id and is_mimicked_id(parent_id):
-                # 所有这类请求，都交给我们的“万能翻译”函数处理
-                return handle_mimicked_library_metadata_endpoint(path, parent_id, request.args)
-
-        # 3. 其次，处理获取库“内容”的请求 (这个逻辑我们之前已经修复好了)
-        parent_id = request.args.get("ParentId")
-        if parent_id and is_mimicked_id(parent_id):
-            user_id_match = re.search(r'/emby/Users/([^/]+)/Items', request.path)
-            if user_id_match:
-                user_id = user_id_match.group(1)
-                return handle_get_mimicked_library_items(user_id, parent_id, request.args)
-            else:
-                # 这条日志现在只会在极少数未知情况下出现，是我们的最后防线
-                logger.warning(f"无法从路径 '{request.path}' 中为虚拟库请求提取user_id。")
-
-        if path.startswith('emby/Items/') and '/Images/' in path and is_mimicked_id(path.split('/')[2]):
-             return handle_get_mimicked_library_image(path)
-        
-        # 检查是否是请求主页媒体库列表
+        # 规则 1: 获取主页媒体库列表 (/Views)
         if path.endswith('/Views') and path.startswith('emby/Users/'):
             return handle_get_views()
 
-        # 检查是否是请求虚拟库的详情
-        details_match = MIMICKED_ITEM_DETAILS_RE.search(f'/{path}')
-        if details_match:
-            user_id = details_match.group(1)
-            mimicked_id = details_match.group(2) # 注意，这里是 group(2)
-            return handle_get_mimicked_library_details(user_id, mimicked_id)
-
-        # 检查是否是请求最新项目
+        # 规则 2: 获取最新项目 (/Items/Latest) - **最重要**的修复
         if path.endswith('/Items/Latest'):
-            user_id_match = re.search(r'/emby/Users/([^/]+)/', f'/{path}')
+            user_id_match = re.search(r'/emby/Users/([^/]+)/', full_path)
             if user_id_match:
                 return handle_get_latest_items(user_id_match.group(1), request.args)
 
-        # 捕获所有对虚拟库内容的请求
-        items_match = MIMICKED_ITEMS_RE.match(f'/{path}')
-        if items_match:
-            user_id = items_match.group(1)
-            mimicked_id = items_match.group(2) # 注意，这里是 group(2)
-            return handle_get_mimicked_library_items(user_id, mimicked_id, request.args)
+        # 规则 3: 获取虚拟库详情 (e.g., /Items/-900001)
+        details_match = MIMICKED_ITEM_DETAILS_RE.search(full_path)
+        if details_match:
+            user_id = details_match.group(1)
+            mimicked_id = details_match.group(2)
+            return handle_get_mimicked_library_details(user_id, mimicked_id)
 
-        # --- 默认转发逻辑 (保持不变) ---
+        # 规则 4: 获取虚拟库图片
+        if path.startswith('emby/Items/') and '/Images/' in path:
+            item_id = path.split('/')[2]
+            if is_mimicked_id(item_id):
+                return handle_get_mimicked_library_image(path)
+        
+        # 规则 5: 获取虚拟库的元数据筛选信息 (如类型、年代等)
+        parent_id = request.args.get("ParentId")
+        if parent_id and is_mimicked_id(parent_id):
+            # 检查是否是元数据端点
+            if any(path.endswith(endpoint) for endpoint in UNSUPPORTED_METADATA_ENDPOINTS + ['/Items/Prefixes', '/Genres', '/Studios', '/Tags', '/OfficialRatings', '/Years']):
+                return handle_mimicked_library_metadata_endpoint(path, parent_id, request.args)
+            
+            # 规则 6: 获取虚拟库的内容 (最通用的规则，放在后面)
+            user_id_match = re.search(r'emby/Users/([^/]+)/Items', path)
+            if user_id_match:
+                user_id = user_id_match.group(1)
+                return handle_get_mimicked_library_items(user_id, parent_id, request.args)
+
+        # --- 默认转发逻辑 ---
         logger.warning(f"反代服务收到了一个未处理的请求: '{path}'。这通常意味着Nginx配置有误，请检查路由规则。")
         return Response("Path not handled by virtual library proxy.", status=404, mimetype='text/plain')
+        
     except Exception as e:
         logger.error(f"[PROXY] HTTP 代理时发生未知错误: {e}", exc_info=True)
         return "Internal Server Error", 500
