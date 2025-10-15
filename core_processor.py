@@ -23,7 +23,7 @@ from database.log_db import LogDBManager
 from database.connection import get_db_connection as get_central_db_connection
 from cachetools import TTLCache
 from ai_translator import AITranslator
-from utils import get_override_path_for_item, translate_country_list, get_unified_rating
+from utils import get_override_path_for_item, translate_country_list, get_unified_rating, determine_primary_country
 from watchlist_processor import WatchlistProcessor
 from douban import DoubanApi
 
@@ -84,55 +84,10 @@ def _save_metadata_to_cache(
                 credits_data = tmdb_details_for_extra.get("credits", {}) or tmdb_details_for_extra.get("casts", {})
                 if credits_data:
                     directors = [{'id': p.get('id'), 'name': p.get('name')} for p in credits_data.get('crew', []) if p.get('job') == 'Director']
-                # --- 【核心修改 V3：语言优先终极策略】 ---
-                prod_countries_list = tmdb_details_for_extra.get('production_countries', [])
-                country_names = []
-                
-                if prod_countries_list:
-                    # 1. 定义语言到首选国家的映射 (使用 TMDB 的英文全名)
-                    LANGUAGE_TO_COUNTRY_MAP = {
-                        'en': ['United States of America', 'United Kingdom', 'Canada', 'Australia'],
-                        'cn': ['China', 'Hong Kong', 'Taiwan'],
-                        'yue': ['Hong Kong', 'China'],
-                        'ja': ['Japan'],
-                        'ko': ['South Korea'],
-                        'fr': ['France'],
-                        'de': ['Germany'],
-                        'hi': ['India']
-                    }
-                    
-                    # 2. 根据原始语言进行初步猜测
-                    original_language = tmdb_details_for_extra.get('original_language')
-                    prod_country_names = [c.get('name') for c in prod_countries_list]
-                    selected_country_name = None
-
-                    if original_language in LANGUAGE_TO_COUNTRY_MAP:
-                        preferred_countries = LANGUAGE_TO_COUNTRY_MAP[original_language]
-                        for preferred_country in preferred_countries:
-                            if preferred_country in prod_country_names:
-                                selected_country_name = preferred_country
-                                break # 找到第一个匹配的就确定下来
-                    
-                    # 3. 如果语言判断失败，降级到 V2 的国家优先级方案
-                    if not selected_country_name:
-                        PRIORITY_COUNTRIES = [
-                            'United States of America', 'China', 'United Kingdom', 
-                            'Japan', 'France', 'Germany', 'South Korea', 'India', 'Canada'
-                        ]
-                        for country_name in prod_country_names:
-                            if country_name in PRIORITY_COUNTRIES:
-                                selected_country_name = country_name
-                                break
-                    
-                    # 4. 如果所有智能判断都失败，降级到默认方案
-                    if not selected_country_name:
-                        selected_country_name = prod_country_names[0] if prod_country_names else None
-
-                    if selected_country_name:
-                        country_names.append(selected_country_name)
-
+                # --- 智能化判断所属国家/地区 ---
+                primary_country = determine_primary_country(tmdb_details_for_extra)
+                country_names = [primary_country] if primary_country else []
                 countries = translate_country_list(country_names)
-                # --- 修改结束 ---
             elif item_type == 'Series':
                 credits_data = tmdb_details_for_extra.get("credits", {})
                 if credits_data:

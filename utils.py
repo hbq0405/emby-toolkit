@@ -4,7 +4,7 @@ import re
 import os
 import psycopg2
 from datetime import datetime
-from typing import Optional, List, Dict
+from typing import Optional, List, Dict, Any
 from urllib.parse import quote_plus
 import unicodedata
 import logging
@@ -342,6 +342,65 @@ def translate_country_list(country_names_or_codes: list) -> list:
         translated_list.append(translated)
         
     return list(dict.fromkeys(translated_list))
+
+def determine_primary_country(tmdb_details: Optional[Dict[str, Any]]) -> Optional[str]:
+    """
+    【V3 - 语言优先终极策略】
+    根据 TMDB 提供的电影详情，智能判断其最主要的“原始国家”。
+    这是一个分层降级的健壮策略：
+    1. 最高优先级：根据 `original_language` (原始语言) 进行判断。
+    2. 第二优先级：如果语言判断失败，则根据预设的“主要电影制作国”列表进行判断。
+    3. 最低优先级：如果以上都失败，则默认返回 `production_countries` 列表中的第一个国家。
+
+    :param tmdb_details: 从 TMDB API 获取的完整电影详情字典。
+    :return: 判断出的单一国家英文全名 (e.g., "United States of America")，如果无法判断则返回 None。
+    """
+    if not tmdb_details:
+        return None
+
+    prod_countries_list = tmdb_details.get('production_countries', [])
+    if not prod_countries_list:
+        return None
+
+    # 1. 定义语言到首选国家的映射 (使用 TMDB 的英文全名)
+    LANGUAGE_TO_COUNTRY_MAP = {
+        'en': ['United States of America', 'United Kingdom', 'Canada', 'Australia'],
+        'cn': ['China', 'Hong Kong', 'Taiwan'],
+        'yue': ['Hong Kong', 'China'],
+        'ja': ['Japan'],
+        'ko': ['South Korea'],
+        'fr': ['France'],
+        'de': ['Germany'],
+        'hi': ['India']
+    }
+    
+    # 2. 根据原始语言进行初步猜测
+    original_language = tmdb_details.get('original_language')
+    prod_country_names = [c.get('name') for c in prod_countries_list if c.get('name')]
+    selected_country_name = None
+
+    if original_language in LANGUAGE_TO_COUNTRY_MAP:
+        preferred_countries = LANGUAGE_TO_COUNTRY_MAP[original_language]
+        for preferred_country in preferred_countries:
+            if preferred_country in prod_country_names:
+                selected_country_name = preferred_country
+                # 找到第一个匹配的就确定下来，并返回
+                return selected_country_name
+    
+    # 3. 如果语言判断失败，降级到 V2 的国家优先级方案
+    PRIORITY_COUNTRIES = [
+        'United States of America', 'China', 'United Kingdom', 
+        'Japan', 'France', 'Germany', 'South Korea', 'India', 'Canada'
+    ]
+    for country_name in prod_country_names:
+        if country_name in PRIORITY_COUNTRIES:
+            selected_country_name = country_name
+            # 找到第一个匹配的就确定下来，并返回
+            return selected_country_name
+    
+    # 4. 如果所有智能判断都失败，降级到默认方案
+    # 返回列表中的第一个国家
+    return prod_country_names[0]
 
 def get_tmdb_country_options():
     """

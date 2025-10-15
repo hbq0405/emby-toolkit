@@ -14,7 +14,7 @@ import task_manager
 import tmdb_handler
 import emby_handler
 from database import connection
-from utils import translate_country_list, get_unified_rating
+from utils import translate_country_list, get_unified_rating, determine_primary_country
 
 logger = logging.getLogger(__name__)
 
@@ -376,7 +376,10 @@ def task_populate_metadata_cache(processor, batch_size: int = 50, force_full_upd
                         credits_data = tmdb_details.get("credits", {}) or tmdb_details.get("casts", {})
                         if credits_data:
                             directors = [{'id': p.get('id'), 'name': p.get('name')} for p in credits_data.get('crew', []) if p.get('job') == 'Director']
-                        countries = translate_country_list([c['name'] for c in tmdb_details.get('production_countries', [])])
+                        # --- 智能化判断所属国家/地区 ---
+                        primary_country = determine_primary_country(tmdb_details)
+                        country_names = [primary_country] if primary_country else []
+                        countries = translate_country_list(country_names)
                     elif item_type == 'Series':
                         credits_data = tmdb_details.get("credits", {})
                         if credits_data:
