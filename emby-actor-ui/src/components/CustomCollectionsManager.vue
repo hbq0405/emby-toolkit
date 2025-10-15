@@ -99,6 +99,14 @@
             :options="embyUserOptions"
             :loading="isLoadingEmbyUsers"
           />
+          <template #option="{ node, option }">
+            <div style="display: flex; justify-content: space-between; align-items: center; width: 100%;">
+              <span>{{ option.label }}</span>
+              <n-tag v-if="option.is_template_source" type="success" size="small" :bordered="false">
+                模板源
+              </n-tag>
+            </div>
+          </template>
         </n-form-item>
         
         <n-form-item label="合集类型" path="type">

@@ -38,11 +38,8 @@ GENRE_TRANSLATION_PATCH = {
 def api_get_emby_users():
     """为权限设置提供一个可选的 Emby 用户列表。"""
     try:
-        # 1. 尝试从我们的本地缓存读取
-        cached_users = user_db.get_all_emby_users()
-        
-        # 2. 如果缓存为空，则实时从 Emby 获取并更新缓存
-        if not cached_users:
+        all_users = user_db.get_all_emby_users_with_template_info()
+        if not all_users:
             logger.info("本地Emby用户缓存为空，正在从Emby实时获取...")
             emby_url = config_manager.APP_CONFIG.get('emby_server_url')
             emby_key = config_manager.APP_CONFIG.get('emby_api_key')
@@ -59,14 +56,28 @@ def api_get_emby_users():
             # 更新缓存
             user_db.upsert_emby_users_batch(live_users)
             cached_users = live_users
+            all_users = user_db.get_all_emby_users_with_template_info()
 
-        # 3. 格式化为前端需要的格式
-        user_options = [{
-            "label": user.get('name'),
-            "value": user.get('id')
-        } for user in cached_users]
+        # ★★★ 2. 智能过滤和标记 ★★★
+        # a. 找出所有被用作模板的“源用户”ID
+        template_source_ids = {user['template_user_id'] for user in all_users if user['template_user_id']}
         
-        return jsonify(user_options)
+        filtered_users = []
+        for user in all_users:
+            is_source_user = user['id'] in template_source_ids
+            is_bound_to_template = user['template_user_id'] is not None
+            
+            # b. 筛选条件：要么是源用户，要么是未绑定任何模板的独立用户
+            if is_source_user or not is_bound_to_template:
+                option = {
+                    "label": user.get('name'),
+                    "value": user.get('id'),
+                    # c. 为前端添加一个清晰的标识
+                    "is_template_source": is_source_user 
+                }
+                filtered_users.append(option)
+        
+        return jsonify(filtered_users)
     except Exception as e:
         logger.error(f"获取 Emby 用户列表时出错: {e}", exc_info=True)
         return jsonify({"error": "服务器内部错误"}), 500
@@ -150,8 +161,9 @@ def api_create_custom_collection():
         return jsonify({"error": "请求无效: 缺少 name, type, 或 definition"}), 400
     
     definition_json = json.dumps(definition, ensure_ascii=False)
-    # ★★★ 新增：处理权限列表 ★★★
-    allowed_user_ids_json = json.dumps(allowed_user_ids) if isinstance(allowed_user_ids, list) else None
+    # ★★★ 核心修改：在保存前展开模板用户 ★★★
+    expanded_user_ids = user_db.expand_template_user_ids(allowed_user_ids)
+    allowed_user_ids_json = json.dumps(expanded_user_ids) if isinstance(expanded_user_ids, list) else None
     
     try:
         collection_id = collection_db.create_custom_collection(name, type, definition_json, allowed_user_ids_json)
@@ -181,8 +193,9 @@ def api_update_custom_collection(collection_id):
             return jsonify({"error": "请求无效: 缺少必要参数"}), 400
         
         definition_json = json.dumps(definition, ensure_ascii=False)
-        # ★★★ 新增：处理权限列表 ★★★
-        allowed_user_ids_json = json.dumps(allowed_user_ids) if isinstance(allowed_user_ids, list) else None
+        # ★★★ 核心修改：在保存前展开模板用户 ★★★
+        expanded_user_ids = user_db.expand_template_user_ids(allowed_user_ids)
+        allowed_user_ids_json = json.dumps(expanded_user_ids) if isinstance(expanded_user_ids, list) else None
         
         success = collection_db.update_custom_collection(
             collection_id, name, type, definition_json, status, allowed_user_ids_json

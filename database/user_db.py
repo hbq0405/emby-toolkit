@@ -276,3 +276,40 @@ def get_username_by_id(user_id: str) -> Optional[str]:
     except Exception as e:
         logger.error(f"DB: 根据ID '{user_id}' 获取用户名失败: {e}", exc_info=True)
         return None
+    
+def get_all_emby_users_with_template_info() -> List[Dict[str, Any]]:
+    """【新增】获取所有Emby用户信息，并包含他们的模板绑定关系。"""
+    try:
+        with get_db_connection() as conn:
+            cursor = conn.cursor()
+            # ★★★ 核心修改：同时查询 template_user_id 字段 ★★★
+            cursor.execute("SELECT id, name, template_user_id FROM emby_users ORDER BY name")
+            return [dict(row) for row in cursor.fetchall()]
+    except Exception as e:
+        logger.error(f"DB: 获取带模板信息的Emby用户列表失败: {e}", exc_info=True)
+        return []
+
+def expand_template_user_ids(selected_user_ids: List[str]) -> List[str]:
+    """
+    【新增】接收一个用户ID列表，自动展开其中的模板源用户，返回最终完整的用户ID列表。
+    """
+    if not selected_user_ids:
+        return []
+    
+    try:
+        with get_db_connection() as conn:
+            cursor = conn.cursor()
+            # 查询所有以 selected_user_ids 中任一ID为模板的用户
+            sql = "SELECT id FROM emby_users WHERE template_user_id = ANY(%s)"
+            cursor.execute(sql, (selected_user_ids,))
+            
+            # 将查询到的“子用户”ID和原始选择的ID合并
+            child_user_ids = {row['id'] for row in cursor.fetchall()}
+            final_user_ids = set(selected_user_ids).union(child_user_ids)
+            
+            logger.debug(f"模板用户展开： 原始选择 {len(selected_user_ids)} 人, 展开后共 {len(final_user_ids)} 人。")
+            return list(final_user_ids)
+    except Exception as e:
+        logger.error(f"DB: 展开模板用户ID时失败: {e}", exc_info=True)
+        # 出错时，保守地返回原始列表
+        return selected_user_ids
