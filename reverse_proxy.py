@@ -240,10 +240,9 @@ def handle_mimicked_library_metadata_endpoint(path, mimicked_id, params):
     
 def handle_get_mimicked_library_items(user_id, mimicked_id, params):
     """
-    【V8.2 - DateLastContentAdded 排序增强版】+ V4.2 分页修复
-    - 新增支持 `DateLastContentAdded` 排序模式，直接利用 Emby API 实现按“最后一集更新时间”排序。
-    - 将 `DateLastContentAdded` 和 `none` 两种模式合并为统一的“Emby原生排序”逻辑流，代码更清晰。
-    - 修复了排序劫持模式下 TotalRecordCount 不正确的问题。
+    【V8.2 - DateLastContentAdded 排序增强版】+ V4.4 POST请求修复
+    - 修复了当虚拟库项目过多时，因GET请求URL过长导致414错误的问题。
+    - 排序劫持模式现在使用POST请求来获取全量数据，无ID数量限制。
     """
     try:
         real_db_id = from_mimicked_id(mimicked_id)
@@ -279,13 +278,13 @@ def handle_get_mimicked_library_items(user_id, mimicked_id, params):
         base_url, api_key = _get_real_emby_url_and_key()
 
         if sort_by_field in ['none', 'DateLastContentAdded']:
+            # ... [原生排序模式代码保持不变] ...
             logger.trace(f"检测到Emby原生排序模式: '{sort_by_field}'，请求将转发给Emby处理。")
             forward_params = {}
             if sort_by_field == 'DateLastContentAdded':
                 sort_order = definition.get('default_sort_order', 'Descending')
                 forward_params['SortBy'] = 'DateLastContentAdded'
                 forward_params['SortOrder'] = sort_order
-                logger.debug(f"  ➜ 已强制应用排序规则: SortBy=DateLastContentAdded, SortOrder={sort_order}")
             else:
                 if 'SortBy' in params: forward_params['SortBy'] = params['SortBy']
                 if 'SortOrder' in params: forward_params['SortOrder'] = params['SortOrder']
@@ -306,36 +305,44 @@ def handle_get_mimicked_library_items(user_id, mimicked_id, params):
                 response_data = resp.json()
                 final_items = response_data.get("Items", [])
                 total_record_count = response_data.get("TotalRecordCount", len(final_items))
-                logger.trace(f"Emby原生排序成功返回 {len(final_items)} 个项目。")
             except Exception as e_pass:
                 logger.error(f"在Emby原生排序模式下请求失败: {e_pass}", exc_info=True)
                 final_items = []
                 total_record_count = 0
         else:
-            logger.trace(f"执行排序劫持模式: '{sort_by_field}'。准备获取全量完整数据...")
-            full_fetch_params = {
-                'Ids': ",".join(final_emby_ids_to_fetch), 'api_key': api_key,
+            # --- 模式B: 排序劫持 (V4.4 POST请求修复版) ---
+            logger.trace(f"执行排序劫持模式: '{sort_by_field}'。准备使用POST请求获取全量数据...")
+            
+            # 1. 准备POST请求的URL和Body
+            # URL中只保留API Key作为参数
+            target_url = f"{base_url}/emby/Users/{user_id}/Items"
+            post_params = {'api_key': api_key}
+            
+            # Body中放入ID列表和所需字段
+            post_data = {
+                'Ids': ",".join(final_emby_ids_to_fetch),
                 'Fields': "PrimaryImageAspectRatio,ProviderIds,UserData,Name,ProductionYear,CommunityRating,DateCreated,PremiereDate,Type,RecursiveItemCount,SortName,ChildCount"
             }
-            target_url = f"{base_url}/emby/Users/{user_id}/Items"
+            
+            # 2. 发起POST请求获取所有项目的完整信息
             live_items_unordered = []
             try:
-                resp = requests.get(target_url, params=full_fetch_params, timeout=30)
+                # ★★★ 核心修改：使用 requests.post 并传入 json=post_data ★★★
+                resp = requests.post(target_url, params=post_params, json=post_data, timeout=45)
                 resp.raise_for_status()
                 live_items_unordered = resp.json().get("Items", [])
-                logger.trace(f"排序劫持：成功获取到 {len(live_items_unordered)} 个项目的完整数据。")
+                logger.trace(f"排序劫持(POST)：成功获取到 {len(live_items_unordered)} 个项目的完整数据。")
             except Exception as e_fetch:
                 logger.error(f"在排序劫持模式下获取全量数据失败: {e_fetch}", exc_info=True)
                 live_items_unordered = []
 
+            # 3. 执行排序 (逻辑不变)
             if sort_by_field == 'original':
                 live_items_map = {item['Id']: item for item in live_items_unordered}
                 final_items_sorted = [live_items_map[emby_id] for emby_id in final_emby_ids_to_fetch if emby_id in live_items_map]
-                logger.trace("已应用 'original' (榜单原始顺序) 排序。")
             else:
                 sort_order = definition.get('default_sort_order', 'Ascending')
                 is_descending = (sort_order == 'Descending')
-                logger.trace(f"执行虚拟库排序劫持: '{sort_by_field}' ({sort_order})")
                 def sort_key_func(item):
                     value = item.get(sort_by_field)
                     if value is None:
@@ -349,16 +356,14 @@ def handle_get_mimicked_library_items(user_id, mimicked_id, params):
                     return value
                 final_items_sorted = sorted(live_items_unordered, key=sort_key_func, reverse=is_descending)
 
+            # 4. 手动应用分页 (逻辑不变)
             total_record_count = len(final_items_sorted)
             start_index = int(params.get('StartIndex', 0))
             limit = params.get('Limit')
             if limit:
-                limit = int(limit)
-                final_items = final_items_sorted[start_index : start_index + limit]
-                logger.trace(f"手动分页已应用: StartIndex={start_index}, Limit={limit}。返回 {len(final_items)} 项。")
+                final_items = final_items_sorted[start_index : start_index + int(limit)]
             else:
                 final_items = final_items_sorted[start_index:]
-                logger.trace(f"手动分页已应用: StartIndex={start_index} (无Limit)。返回 {len(final_items)} 项。")
         
         final_response = {"Items": final_items, "TotalRecordCount": total_record_count}
         return Response(json.dumps(final_response), mimetype='application/json')
