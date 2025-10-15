@@ -15,6 +15,7 @@ from websocket import create_connection
 from database import collection_db, user_db, queries_db
 from custom_collection_handler import FilterEngine
 import config_manager
+from cachetools import TTLCache
 
 import extensions
 import emby_handler
@@ -33,17 +34,29 @@ def is_mimicked_id(item_id):
     except: return False
 MIMICKED_ITEMS_RE = re.compile(r'/emby/Users/([^/]+)/Items/(-(\d+))')
 MIMICKED_ITEM_DETAILS_RE = re.compile(r'emby/Users/([^/]+)/Items/(-(\d+))$')
+
+id_cache = TTLCache(maxsize=100, ttl=60)
+
 def _get_real_emby_url_and_key():
     base_url = config_manager.APP_CONFIG.get("emby_server_url", "").rstrip('/')
     api_key = config_manager.APP_CONFIG.get("emby_api_key", "")
     if not base_url or not api_key: raise ValueError("Emby服务器地址或API Key未配置")
     return base_url, api_key
 
-def _get_final_item_ids_for_view_realtime(user_id, collection_info):
+def _get_final_item_ids_for_view(user_id, collection_info):
     """
-    【V5.1 新增】
-    一个无缓存的实时计算函数，用于获取虚拟库对特定用户可见的最终媒体ID列表。
+    【V5.2 核心】
+    带短生命周期缓存的函数，用于计算并返回虚拟库对特定用户可见的最终媒体ID列表。
+    专门用于吸收首页加载时的并发计算压力。
     """
+    collection_id = collection_info['id']
+    cache_key = f"vlib_ids_{user_id}_{collection_id}"
+
+    if cache_key in id_cache:
+        logger.trace(f"战术缓存命中！直接为虚拟库 {collection_id} 返回ID列表。")
+        return id_cache[cache_key]
+
+    logger.trace(f"战术缓存未命中，为虚拟库 {collection_id} 实时计算ID列表...")
     db_media_list = collection_info.get('generated_media_info_json') or []
     base_ordered_emby_ids = [item.get('emby_id') for item in db_media_list if item.get('emby_id')]
     
@@ -61,22 +74,13 @@ def _get_final_item_ids_for_view_realtime(user_id, collection_info):
         else:
             final_emby_ids_to_fetch = []
     
+    id_cache[cache_key] = final_emby_ids_to_fetch
     return final_emby_ids_to_fetch
 
 def _fetch_items_from_emby(base_url, api_key, user_id, item_ids, fields):
-    """
-    【V5.1 重命名】
-    只负责向Emby请求少量ID的数据，不再需要并发或分块。
-    """
-    if not item_ids:
-        return []
-    
+    if not item_ids: return []
     target_url = f"{base_url}/emby/Users/{user_id}/Items"
-    params = {
-        'api_key': api_key,
-        'Ids': ",".join(item_ids),
-        'Fields': fields
-    }
+    params = {'api_key': api_key, 'Ids': ",".join(item_ids), 'Fields': fields}
     try:
         resp = requests.get(target_url, params=params, timeout=15)
         resp.raise_for_status()
@@ -285,7 +289,7 @@ def handle_mimicked_library_metadata_endpoint(path, mimicked_id, params):
     
 def handle_get_mimicked_library_items(user_id, mimicked_id, params):
     """
-    【V5.1 - 实时数据库秒开最终版】
+    【V5.2 - 战术缓存秒开最终版】
     """
     try:
         real_db_id = from_mimicked_id(mimicked_id)
@@ -293,8 +297,8 @@ def handle_get_mimicked_library_items(user_id, mimicked_id, params):
         if not collection_info:
             return Response(json.dumps({"Items": [], "TotalRecordCount": 0}), mimetype='application/json')
 
-        # 步骤 1: 实时计算当前视图对用户可见的所有ID
-        all_visible_ids = _get_final_item_ids_for_view_realtime(user_id, collection_info)
+        # ★★★ 核心修改：调用带缓存的函数获取ID ★★★
+        all_visible_ids = _get_final_item_ids_for_view(user_id, collection_info)
         total_record_count = len(all_visible_ids)
         
         if not all_visible_ids:
@@ -311,7 +315,6 @@ def handle_get_mimicked_library_items(user_id, mimicked_id, params):
         limit = int(params.get('Limit', 50))
         offset = int(params.get('StartIndex', 0))
         
-        # 步骤 2: 在本地执行排序和分页
         if sort_by in ['original', 'DateLastContentAdded']:
             paginated_ids = all_visible_ids[offset : offset + limit]
         else:
@@ -322,24 +325,22 @@ def handle_get_mimicked_library_items(user_id, mimicked_id, params):
         if not paginated_ids:
             return Response(json.dumps({"Items": [], "TotalRecordCount": total_record_count}), mimetype='application/json')
 
-        # 步骤 3: 只向Emby请求当前页的媒体数据
         base_url, api_key = _get_real_emby_url_and_key()
         fields = "PrimaryImageAspectRatio,ProviderIds,UserData,Name,ProductionYear,CommunityRating,DateCreated,PremiereDate,Type,RecursiveItemCount,SortName,ChildCount"
         items_from_emby = _fetch_items_from_emby(base_url, api_key, user_id, paginated_ids, fields)
         
-        # 步骤 4: 按分页后的ID顺序，整理从Emby返回的乱序结果
         items_map = {item['Id']: item for item in items_from_emby}
         final_items = [items_map[id] for id in paginated_ids if id in items_map]
 
         return Response(json.dumps({"Items": final_items, "TotalRecordCount": total_record_count}), mimetype='application/json')
 
     except Exception as e:
-        logger.error(f"处理混合虚拟库时发生严重错误 (V5.1): {e}", exc_info=True)
+        logger.error(f"处理混合虚拟库时发生严重错误 (V5.2): {e}", exc_info=True)
         return Response(json.dumps({"Items": [], "TotalRecordCount": 0}), mimetype='application/json')
 
 def handle_get_latest_items(user_id, params):
     """
-    【V5.1 - 实时数据库秒开最终版】
+    【V5.2 - 战术缓存秒开最终版】
     """
     try:
         base_url, api_key = _get_real_emby_url_and_key()
@@ -350,11 +351,10 @@ def handle_get_latest_items(user_id, params):
             collection_info = collection_db.get_custom_collection_by_id(real_db_id)
             if not collection_info: return Response(json.dumps([]), mimetype='application/json')
 
-            # 步骤 1: 实时计算所有可见ID
-            all_visible_ids = _get_final_item_ids_for_view_realtime(user_id, collection_info)
+            # ★★★ 核心修改：调用带缓存的函数获取ID ★★★
+            all_visible_ids = _get_final_item_ids_for_view(user_id, collection_info)
             if not all_visible_ids: return Response(json.dumps([]), mimetype='application/json')
 
-            # 步骤 2: 在本地数据库按“添加日期”排序，并取出第一页
             limit = int(params.get('Limit', 24))
             latest_ids = queries_db.get_sorted_and_paginated_ids(
                 all_visible_ids, 'DateCreated', 'Descending', limit, 0
@@ -362,11 +362,9 @@ def handle_get_latest_items(user_id, params):
 
             if not latest_ids: return Response(json.dumps([]), mimetype='application/json')
             
-            # 步骤 3: 向Emby请求这一页的数据
             fields = params.get('Fields', "PrimaryImageAspectRatio,BasicSyncInfo,DateCreated,UserData")
             items_from_emby = _fetch_items_from_emby(base_url, api_key, user_id, latest_ids, fields)
 
-            # 步骤 4: 按ID顺序整理
             items_map = {item['Id']: item for item in items_from_emby}
             final_items = [items_map[id] for id in latest_ids if id in items_map]
 
