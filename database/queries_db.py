@@ -5,10 +5,11 @@ from .connection import get_db_connection
 
 logger = logging.getLogger(__name__)
 
-def get_sorted_and_paginated_ids(all_emby_ids, sort_by, sort_order, limit, offset):
+def get_sorted_ids(all_emby_ids, sort_by, sort_order):
     """
-    在本地 media_metadata 表中执行排序和分页，只返回一页的 emby_id。
-    V5.6 版：增加了对 in_library = TRUE 的强制筛选，确保不返回“幽灵ID”。
+    【V5.7 新增】
+    在本地 media_metadata 表中执行完整排序，返回所有排序后的 emby_id。
+    增加了对 in_library = TRUE 的强制筛选。
     """
     if not all_emby_ids:
         return []
@@ -22,30 +23,26 @@ def get_sorted_and_paginated_ids(all_emby_ids, sort_by, sort_order, limit, offse
     }
 
     if sort_by not in sort_column_map:
-        logger.warning(f"不支持的本地排序字段: '{sort_by}'，将返回原始顺序分页。")
-        # 即使是原始分页，也需要过滤掉不在库中的项目
-        # (这一步其实上层已经保证了，但作为兜底更安全)
-        return all_emby_ids[offset : offset + limit]
+        logger.warning(f"不支持的本地排序字段: '{sort_by}'，将返回原始ID顺序。")
+        return all_emby_ids
 
     sort_column = sort_column_map[sort_by]
     order_direction = 'DESC' if sort_order.lower() == 'descending' else 'ASC'
     nulls_order = 'NULLS LAST' if order_direction == 'DESC' else 'NULLS FIRST'
     
-    # ★★★ 核心修正：在 WHERE 子句中，强制要求 in_library = TRUE ★★★
     query = f"""
         SELECT emby_item_id
         FROM media_metadata
         WHERE emby_item_id IN %s AND in_library = TRUE
-        ORDER BY {sort_column} {order_direction} {nulls_order}, title ASC
-        LIMIT %s OFFSET %s;
+        ORDER BY {sort_column} {order_direction} {nulls_order}, title ASC;
     """
     
     try:
         with get_db_connection() as conn:
             with conn.cursor() as cursor:
-                cursor.execute(query, (tuple(all_emby_ids), limit, offset))
+                cursor.execute(query, (tuple(all_emby_ids),))
                 results = cursor.fetchall()
                 return [row['emby_item_id'] for row in results]
     except Exception as e:
-        logger.error(f"在本地数据库排序分页时出错: {e}", exc_info=True)
+        logger.error(f"在本地数据库进行完整排序时出错: {e}", exc_info=True)
         return []

@@ -76,28 +76,28 @@ def _get_final_item_ids_for_view(user_id, collection_info):
     id_cache[cache_key] = final_emby_ids_to_fetch
     return final_emby_ids_to_fetch
 
-# def _fetch_items_in_chunks(base_url, api_key, user_id, item_ids, fields):
-#     # ... V4.8 的并发版本，现在重新变得重要 ...
-#     if not item_ids: return []
-#     def chunk_list(lst, n):
-#         for i in range(0, len(lst), n): yield lst[i:i + n]
-#     id_chunks = list(chunk_list(item_ids, 150))
-#     target_url = f"{base_url}/emby/Users/{user_id}/Items"
-#     def fetch_chunk(chunk):
-#         params = {'api_key': api_key, 'Ids': ",".join(chunk), 'Fields': fields}
-#         try:
-#             resp = requests.get(target_url, params=params, timeout=20)
-#             resp.raise_for_status()
-#             return resp.json().get("Items", [])
-#         except Exception as e:
-#             logger.error(f"并发获取某分块数据时失败: {e}")
-#             return None
-#     greenlets = [spawn(fetch_chunk, chunk) for chunk in id_chunks]
-#     joinall(greenlets)
-#     all_items = []
-#     for g in greenlets:
-#         if g.value: all_items.extend(g.value)
-#     return all_items
+def _fetch_items_in_chunks(base_url, api_key, user_id, item_ids, fields):
+    # ... V4.8 的并发版本，现在重新变得重要 ...
+    if not item_ids: return []
+    def chunk_list(lst, n):
+        for i in range(0, len(lst), n): yield lst[i:i + n]
+    id_chunks = list(chunk_list(item_ids, 150))
+    target_url = f"{base_url}/emby/Users/{user_id}/Items"
+    def fetch_chunk(chunk):
+        params = {'api_key': api_key, 'Ids': ",".join(chunk), 'Fields': fields}
+        try:
+            resp = requests.get(target_url, params=params, timeout=20)
+            resp.raise_for_status()
+            return resp.json().get("Items", [])
+        except Exception as e:
+            logger.error(f"并发获取某分块数据时失败: {e}")
+            return None
+    greenlets = [spawn(fetch_chunk, chunk) for chunk in id_chunks]
+    joinall(greenlets)
+    all_items = []
+    for g in greenlets:
+        if g.value: all_items.extend(g.value)
+    return all_items
 
 def _fetch_items_from_emby(base_url, api_key, user_id, item_ids, fields):
     if not item_ids: return []
@@ -311,9 +311,8 @@ def handle_mimicked_library_metadata_endpoint(path, mimicked_id, params):
     
 def handle_get_mimicked_library_items(user_id, mimicked_id, params):
     """
-    【V5.5 - 完美降级最终版】
-    - 修复了混合模式下降级到Emby处理时，因ID过多导致414错误的致命问题。
-    - 降级模式现在请求物理合集并进行二次过滤，确保功能100%稳定。
+    【V5.7 - 权限感知最终版】
+    - 实现了本地排序、Emby权限过滤、本地分页的完美结合，彻底杜绝灰色占位符。
     """
     try:
         real_db_id = from_mimicked_id(mimicked_id)
@@ -321,9 +320,8 @@ def handle_get_mimicked_library_items(user_id, mimicked_id, params):
         if not collection_info:
             return Response(json.dumps({"Items": [], "TotalRecordCount": 0}), mimetype='application/json')
 
-        all_visible_ids = _get_final_item_ids_for_view(user_id, collection_info)
-        total_record_count = len(all_visible_ids)
-        if not all_visible_ids:
+        all_candidate_ids = _get_final_item_ids_for_view(user_id, collection_info)
+        if not all_candidate_ids:
             return Response(json.dumps({"Items": [], "TotalRecordCount": 0}), mimetype='application/json')
 
         definition = collection_info.get('definition_json') or {}
@@ -336,101 +334,113 @@ def handle_get_mimicked_library_items(user_id, mimicked_id, params):
 
         primary_sort_by = sort_by_str.split(',')[0]
         unsupported_local_sort_fields = ['DateLastContentAdded', 'Director']
-
         base_url, api_key = _get_real_emby_url_and_key()
-        fields = "PrimaryImageAspectRatio,ProviderIds,UserData,Name,ProductionYear,CommunityRating,DateCreated,PremiereDate,Type,RecursiveItemCount,SortName,ChildCount"
-
-        # ★★★ V5.5 核心修改：实现完美的降级逻辑 ★★★
+        
+        # --- 降级模式 (保持V5.5的逻辑不变) ---
         if primary_sort_by in unsupported_local_sort_fields:
+            # ... 此处逻辑省略，保持V5.5的完美降级逻辑 ...
             logger.trace(f"检测到不支持本地排序的字段 '{primary_sort_by}'，执行完美降级模式。")
-            
-            # 1. 获取物理合集的ID
             real_emby_collection_id = collection_info.get('emby_collection_id')
-            if not real_emby_collection_id:
-                return Response(json.dumps({"Items": [], "TotalRecordCount": 0}), mimetype='application/json')
-
-            # 2. 让Emby在物理合集内进行排序和分页
+            if not real_emby_collection_id: return Response(json.dumps({"Items": [], "TotalRecordCount": 0}), mimetype='application/json')
             forward_params = params.copy()
             forward_params['api_key'] = api_key
-            forward_params['ParentId'] = real_emby_collection_id # ★ 关键：不再传Ids，而是传ParentId
-            if 'Fields' not in forward_params:
-                forward_params['Fields'] = fields
-            
+            forward_params['ParentId'] = real_emby_collection_id
+            if 'Fields' not in forward_params: forward_params['Fields'] = "PrimaryImageAspectRatio,ProviderIds,UserData,Name,ProductionYear,CommunityRating,DateCreated,PremiereDate,Type,RecursiveItemCount,SortName,ChildCount"
             target_url = f"{base_url}/emby/Users/{user_id}/Items"
             try:
                 resp = requests.get(target_url, params=forward_params, timeout=30)
                 resp.raise_for_status()
                 emby_response = resp.json()
                 items_from_emby = emby_response.get("Items", [])
-                
-                # 3. 在内存中进行二次过滤，只保留虚拟库中应该存在的项目
-                all_visible_ids_set = set(all_visible_ids)
+                all_visible_ids_set = set(all_candidate_ids)
                 final_items = [item for item in items_from_emby if item['Id'] in all_visible_ids_set]
-
-                # 注意：这里的TotalRecordCount可能不完全精确，但能保证UI正常工作
-                return Response(json.dumps({"Items": final_items, "TotalRecordCount": total_record_count}), mimetype='application/json')
-
+                return Response(json.dumps({"Items": final_items, "TotalRecordCount": len(all_candidate_ids)}), mimetype='application/json')
             except Exception as e_emby:
                 logger.error(f"在完美降级模式下请求Emby时失败: {e_emby}")
                 return Response(json.dumps({"Items": [], "TotalRecordCount": 0}), mimetype='application/json')
+
+        # --- ★★★ V5.7 核心逻辑：本地排序 + Emby权限过滤 + 本地分页 ★★★ ---
         else:
-            # 本地数据库秒开模式 (保持不变)
+            # 步骤 1: 在本地数据库获取完整的、有序的ID列表
+            fully_sorted_ids = []
+            if sort_by_str == 'original':
+                fully_sorted_ids = all_candidate_ids
+            else:
+                fully_sorted_ids = queries_db.get_sorted_ids(
+                    all_candidate_ids, primary_sort_by, sort_order
+                )
+
+            # 步骤 2: 向Emby并发请求所有这些ID，让Emby进行权限过滤
+            fields = "Id" # 我们只需要ID来进行权限验证
+            accessible_items = _fetch_items_in_chunks(base_url, api_key, user_id, fully_sorted_ids, fields)
+            accessible_ids_set = {item['Id'] for item in accessible_items}
+
+            # 步骤 3: 根据Emby返回的有权ID，过滤我们完整的有序列表
+            final_sorted_accessible_ids = [id for id in fully_sorted_ids if id in accessible_ids_set]
+            total_record_count = len(final_sorted_accessible_ids)
+
+            # 步骤 4: 在内存中对最终的、正确的列表进行分页
             limit = int(params.get('Limit', 50))
             offset = int(params.get('StartIndex', 0))
-            
-            paginated_ids = []
-            if sort_by_str == 'original':
-                paginated_ids = all_visible_ids[offset : offset + limit]
-            else:
-                paginated_ids = queries_db.get_sorted_and_paginated_ids(
-                    all_visible_ids, primary_sort_by, sort_order, limit, offset
-                )
+            paginated_ids = final_sorted_accessible_ids[offset : offset + limit]
 
             if not paginated_ids:
                 return Response(json.dumps({"Items": [], "TotalRecordCount": total_record_count}), mimetype='application/json')
 
-            items_from_emby = _fetch_items_from_emby(base_url, api_key, user_id, paginated_ids, fields)
+            # 步骤 5: 只为当前页的ID，向Emby请求完整的媒体信息
+            full_fields = "PrimaryImageAspectRatio,ProviderIds,UserData,Name,ProductionYear,CommunityRating,DateCreated,PremiereDate,Type,RecursiveItemCount,SortName,ChildCount"
+            items_from_emby = _fetch_items_in_chunks(base_url, api_key, user_id, paginated_ids, full_fields)
+            
+            # 步骤 6: 按分页后的ID顺序整理结果并返回
             items_map = {item['Id']: item for item in items_from_emby}
             final_items = [items_map[id] for id in paginated_ids if id in items_map]
 
             return Response(json.dumps({"Items": final_items, "TotalRecordCount": total_record_count}), mimetype='application/json')
 
     except Exception as e:
-        logger.error(f"处理混合虚拟库时发生严重错误 (V5.5): {e}", exc_info=True)
+        logger.error(f"处理混合虚拟库时发生严重错误 (V5.7): {e}", exc_info=True)
         return Response(json.dumps({"Items": [], "TotalRecordCount": 0}), mimetype='application/json')
 
 def handle_get_latest_items(user_id, params):
     """
-    【V5.8 - 首页纯净最终版】
-    - 根据最终决定，此函数不再处理虚拟库的“最新”请求，直接返回空列表。
-    - 只为原生库（Native Libraries）提供“最新”项目。
+    【V5.2 - 战术缓存秒开最终版】
     """
     try:
         base_url, api_key = _get_real_emby_url_and_key()
-        parent_id = params.get('ParentId') or params.get('customViewId')
+        virtual_library_id = params.get('ParentId') or params.get('customViewId')
 
-        # ★★★ 核心修改：如果是虚拟库，直接返回空，不做任何处理 ★★★
-        if parent_id and is_mimicked_id(parent_id):
-            logger.trace(f"根据 V5.8 架构决定，忽略对虚拟库 '{parent_id}' 的最新媒体请求。")
-            return Response(json.dumps([]), mimetype='application/json')
+        if virtual_library_id and is_mimicked_id(virtual_library_id):
+            real_db_id = from_mimicked_id(virtual_library_id)
+            collection_info = collection_db.get_custom_collection_by_id(real_db_id)
+            if not collection_info: return Response(json.dumps([]), mimetype='application/json')
+
+            # ★★★ 核心修改：调用带缓存的函数获取ID ★★★
+            all_visible_ids = _get_final_item_ids_for_view(user_id, collection_info)
+            if not all_visible_ids: return Response(json.dumps([]), mimetype='application/json')
+
+            limit = int(params.get('Limit', 24))
+            latest_ids = queries_db.get_sorted_and_paginated_ids(
+                all_visible_ids, 'DateCreated', 'Descending', limit, 0
+            )
+
+            if not latest_ids: return Response(json.dumps([]), mimetype='application/json')
+            
+            fields = params.get('Fields', "PrimaryImageAspectRatio,BasicSyncInfo,DateCreated,UserData")
+            items_from_emby = _fetch_items_from_emby(base_url, api_key, user_id, latest_ids, fields)
+
+            items_map = {item['Id']: item for item in items_from_emby}
+            final_items = [items_map[id] for id in latest_ids if id in items_map]
+
+            return Response(json.dumps(final_items), mimetype='application/json')
         
-        # --- 对于原生库，保持原有的直接转发逻辑 ---
         else:
-            logger.trace(f"正在为原生库 '{parent_id}' 转发最新媒体请求。")
+            # 原生库逻辑不变
             target_url = f"{base_url}/{request.path.lstrip('/')}"
             forward_headers = {k: v for k, v in request.headers if k.lower() not in ['host', 'accept-encoding']}
             forward_headers['Host'] = urlparse(base_url).netloc
             forward_params = request.args.copy()
             forward_params['api_key'] = api_key
-            resp = requests.request(
-                method=request.method,
-                url=target_url,
-                headers=forward_headers,
-                params=forward_params,
-                data=request.get_data(),
-                stream=True,
-                timeout=30.0
-            )
+            resp = requests.request(method=request.method, url=target_url, headers=forward_headers, params=forward_params, data=request.get_data(), stream=True, timeout=30.0)
             excluded_resp_headers = ['content-encoding', 'content-length', 'transfer-encoding', 'connection']
             response_headers = [(name, value) for name, value in resp.raw.headers.items() if name.lower() not in excluded_resp_headers]
             return Response(resp.iter_content(chunk_size=8192), resp.status_code, response_headers)
