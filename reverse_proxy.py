@@ -382,7 +382,7 @@ def handle_get_mimicked_library_items(user_id, mimicked_id, params):
             if sort_by_str == 'original':
                 paginated_ids = all_visible_ids[offset : offset + limit]
             else:
-                paginated_ids = queries_db.get_sorted_and_paginated_ids(
+                paginated_ids = queries_db.get_sorted_ids(
                     all_visible_ids, primary_sort_by, sort_order, limit, offset
                 )
 
