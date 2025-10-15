@@ -12,8 +12,7 @@ from datetime import datetime, timezone
 from gevent import spawn
 from geventwebsocket.websocket import WebSocket
 from websocket import create_connection
-from database import collection_db
-from database import user_db
+from database import collection_db, user_db, queries_db
 from custom_collection_handler import FilterEngine
 import config_manager
 
@@ -39,6 +38,52 @@ def _get_real_emby_url_and_key():
     api_key = config_manager.APP_CONFIG.get("emby_api_key", "")
     if not base_url or not api_key: raise ValueError("Emby服务器地址或API Key未配置")
     return base_url, api_key
+
+def _get_final_item_ids_for_view_realtime(user_id, collection_info):
+    """
+    【V5.1 新增】
+    一个无缓存的实时计算函数，用于获取虚拟库对特定用户可见的最终媒体ID列表。
+    """
+    db_media_list = collection_info.get('generated_media_info_json') or []
+    base_ordered_emby_ids = [item.get('emby_id') for item in db_media_list if item.get('emby_id')]
+    
+    if not base_ordered_emby_ids:
+        return []
+
+    final_emby_ids_to_fetch = base_ordered_emby_ids
+    definition = collection_info.get('definition_json') or {}
+    if definition.get('dynamic_filter_enabled'):
+        dynamic_rules = definition.get('dynamic_rules', [])
+        ids_from_local_db = user_db.get_item_ids_by_dynamic_rules(user_id, dynamic_rules)
+        if ids_from_local_db is not None:
+            final_emby_ids_set = set(base_ordered_emby_ids).intersection(set(ids_from_local_db))
+            final_emby_ids_to_fetch = [emby_id for emby_id in base_ordered_emby_ids if emby_id in final_emby_ids_set]
+        else:
+            final_emby_ids_to_fetch = []
+    
+    return final_emby_ids_to_fetch
+
+def _fetch_items_from_emby(base_url, api_key, user_id, item_ids, fields):
+    """
+    【V5.1 重命名】
+    只负责向Emby请求少量ID的数据，不再需要并发或分块。
+    """
+    if not item_ids:
+        return []
+    
+    target_url = f"{base_url}/emby/Users/{user_id}/Items"
+    params = {
+        'api_key': api_key,
+        'Ids': ",".join(item_ids),
+        'Fields': fields
+    }
+    try:
+        resp = requests.get(target_url, params=params, timeout=15)
+        resp.raise_for_status()
+        return resp.json().get("Items", [])
+    except Exception as e:
+        logger.error(f"向Emby请求媒体信息时失败: {e}")
+        return []
 
 def handle_get_views():
     """
@@ -240,220 +285,101 @@ def handle_mimicked_library_metadata_endpoint(path, mimicked_id, params):
     
 def handle_get_mimicked_library_items(user_id, mimicked_id, params):
     """
-    【V8.2 - DateLastContentAdded 排序增强版】+ V4.7 全局分块修复
-    - 使用 _fetch_items_in_chunks 辅助函数来获取数据，代码更整洁。
+    【V5.1 - 实时数据库秒开最终版】
     """
     try:
-        # ... [获取 final_emby_ids_to_fetch 的逻辑保持不变，这里省略] ...
         real_db_id = from_mimicked_id(mimicked_id)
         collection_info = collection_db.get_custom_collection_by_id(real_db_id)
         if not collection_info:
             return Response(json.dumps({"Items": [], "TotalRecordCount": 0}), mimetype='application/json')
-        definition = collection_info.get('definition_json') or {}
-        db_media_list = collection_info.get('generated_media_info_json') or []
-        base_ordered_emby_ids = [item.get('emby_id') for item in db_media_list if item.get('emby_id')]
-        if not base_ordered_emby_ids:
-            return Response(json.dumps({"Items": [], "TotalRecordCount": 0}), mimetype='application/json')
-        final_emby_ids_to_fetch = base_ordered_emby_ids
-        if definition.get('dynamic_filter_enabled'):
-            dynamic_rules = definition.get('dynamic_rules', [])
-            ids_from_local_db = user_db.get_item_ids_by_dynamic_rules(user_id, dynamic_rules)
-            if ids_from_local_db is not None:
-                final_emby_ids_set = set(base_ordered_emby_ids).intersection(set(ids_from_local_db))
-                final_emby_ids_to_fetch = [emby_id for emby_id in base_ordered_emby_ids if emby_id in final_emby_ids_set]
-            else:
-                final_emby_ids_to_fetch = []
-        if not final_emby_ids_to_fetch:
-            return Response(json.dumps({"Items": [], "TotalRecordCount": 0}), mimetype='application/json')
 
-        final_items = []
-        total_record_count = 0
-        sort_by_field = definition.get('default_sort_by')
-        base_url, api_key = _get_real_emby_url_and_key()
-
-        if sort_by_field in ['none', 'DateLastContentAdded']:
-            # ... [原生排序模式代码保持不变] ...
-            logger.trace(f"检测到Emby原生排序模式: '{sort_by_field}'，请求将转发给Emby处理。")
-            forward_params = {}
-            if sort_by_field == 'DateLastContentAdded':
-                sort_order = definition.get('default_sort_order', 'Descending')
-                forward_params['SortBy'] = 'DateLastContentAdded'
-                forward_params['SortOrder'] = sort_order
-            else:
-                if 'SortBy' in params: forward_params['SortBy'] = params['SortBy']
-                if 'SortOrder' in params: forward_params['SortOrder'] = params['SortOrder']
-            passthrough_params_whitelist = ['StartIndex', 'Limit', 'Fields', 'IncludeItemTypes', 'Recursive', 'EnableImageTypes', 'ImageTypeLimit']
-            for param in passthrough_params_whitelist:
-                if param in params: forward_params[param] = params[param]
-            forward_params['Ids'] = ",".join(final_emby_ids_to_fetch)
-            forward_params['api_key'] = api_key
-            if 'Fields' not in forward_params:
-                forward_params['Fields'] = "PrimaryImageAspectRatio,ProviderIds,UserData,Name,ProductionYear,CommunityRating,DateCreated,PremiereDate,Type,RecursiveItemCount,SortName,ChildCount"
-            target_url = f"{base_url}/emby/Users/{user_id}/Items"
-            try:
-                resp = requests.get(target_url, params=forward_params, timeout=30)
-                resp.raise_for_status()
-                response_data = resp.json()
-                final_items = response_data.get("Items", [])
-                total_record_count = response_data.get("TotalRecordCount", len(final_items))
-            except Exception as e_pass:
-                logger.error(f"在Emby原生排序模式下请求失败: {e_pass}", exc_info=True)
-                final_items, total_record_count = [], 0
-        else:
-            # --- 模式B: 排序劫持 (V4.7 使用辅助函数) ---
-            logger.trace(f"执行排序劫持模式: '{sort_by_field}'。调用分块请求辅助函数...")
-            
-            fields_to_fetch = "PrimaryImageAspectRatio,ProviderIds,UserData,Name,ProductionYear,CommunityRating,DateCreated,PremiereDate,Type,RecursiveItemCount,SortName,ChildCount"
-            live_items_unordered = _fetch_items_in_chunks(base_url, api_key, user_id, final_emby_ids_to_fetch, fields_to_fetch)
-            
-            logger.trace(f"排序劫持(分块GET)：成功获取到 {len(live_items_unordered)} 个项目的完整数据。")
-
-            # ... [排序和分页逻辑保持不变] ...
-            if sort_by_field == 'original':
-                live_items_map = {item['Id']: item for item in live_items_unordered}
-                final_items_sorted = [live_items_map[emby_id] for emby_id in final_emby_ids_to_fetch if emby_id in live_items_map]
-            else:
-                sort_order = definition.get('default_sort_order', 'Ascending')
-                is_descending = (sort_order == 'Descending')
-                def sort_key_func(item):
-                    value = item.get(sort_by_field)
-                    if value is None:
-                        if sort_by_field in ['CommunityRating', 'ProductionYear']: return 0
-                        if sort_by_field in ['PremiereDate', 'DateCreated']: return "1900-01-01T00:00:00.000Z"
-                        return ""
-                    try:
-                        if sort_by_field == 'CommunityRating': return float(value)
-                        if sort_by_field == 'ProductionYear': return int(value)
-                    except (ValueError, TypeError): return 0
-                    return value
-                final_items_sorted = sorted(live_items_unordered, key=sort_key_func, reverse=is_descending)
-            total_record_count = len(final_items_sorted)
-            start_index = int(params.get('StartIndex', 0))
-            limit = params.get('Limit')
-            if limit:
-                final_items = final_items_sorted[start_index : start_index + int(limit)]
-            else:
-                final_items = final_items_sorted[start_index:]
+        # 步骤 1: 实时计算当前视图对用户可见的所有ID
+        all_visible_ids = _get_final_item_ids_for_view_realtime(user_id, collection_info)
+        total_record_count = len(all_visible_ids)
         
-        final_response = {"Items": final_items, "TotalRecordCount": total_record_count}
-        return Response(json.dumps(final_response), mimetype='application/json')
+        if not all_visible_ids:
+            return Response(json.dumps({"Items": [], "TotalRecordCount": 0}), mimetype='application/json')
+
+        definition = collection_info.get('definition_json') or {}
+        sort_by = definition.get('default_sort_by', 'none')
+        sort_order = definition.get('default_sort_order', 'Ascending')
+        
+        if sort_by == 'none':
+            sort_by = params.get('SortBy', 'SortName')
+            sort_order = params.get('SortOrder', 'Ascending')
+
+        limit = int(params.get('Limit', 50))
+        offset = int(params.get('StartIndex', 0))
+        
+        # 步骤 2: 在本地执行排序和分页
+        if sort_by in ['original', 'DateLastContentAdded']:
+            paginated_ids = all_visible_ids[offset : offset + limit]
+        else:
+            paginated_ids = queries_db.get_sorted_and_paginated_ids(
+                all_visible_ids, sort_by, sort_order, limit, offset
+            )
+
+        if not paginated_ids:
+            return Response(json.dumps({"Items": [], "TotalRecordCount": total_record_count}), mimetype='application/json')
+
+        # 步骤 3: 只向Emby请求当前页的媒体数据
+        base_url, api_key = _get_real_emby_url_and_key()
+        fields = "PrimaryImageAspectRatio,ProviderIds,UserData,Name,ProductionYear,CommunityRating,DateCreated,PremiereDate,Type,RecursiveItemCount,SortName,ChildCount"
+        items_from_emby = _fetch_items_from_emby(base_url, api_key, user_id, paginated_ids, fields)
+        
+        # 步骤 4: 按分页后的ID顺序，整理从Emby返回的乱序结果
+        items_map = {item['Id']: item for item in items_from_emby}
+        final_items = [items_map[id] for id in paginated_ids if id in items_map]
+
+        return Response(json.dumps({"Items": final_items, "TotalRecordCount": total_record_count}), mimetype='application/json')
 
     except Exception as e:
-        logger.error(f"处理混合虚拟库时发生严重错误: {e}", exc_info=True)
+        logger.error(f"处理混合虚拟库时发生严重错误 (V5.1): {e}", exc_info=True)
         return Response(json.dumps({"Items": [], "TotalRecordCount": 0}), mimetype='application/json')
-
-def _fetch_items_in_chunks(base_url, api_key, user_id, item_ids, fields):
-    """
-    【V4.8 - 并发性能优化版】
-    辅助函数：通过 gevent 并发执行分块GET请求，极大地提升了超大虚拟库的加载速度。
-    """
-    if not item_ids:
-        return []
-
-    def chunk_list(lst, n):
-        for i in range(0, len(lst), n):
-            yield lst[i:i + n]
-
-    id_chunks = list(chunk_list(item_ids, 150))
-    all_items = []
-    target_url = f"{base_url}/emby/Users/{user_id}/Items"
-    logger.trace(f"[_fetch_items_in_chunks] ID列表已分为 {len(id_chunks)} 块，准备并发请求...")
-
-    # --- 核心修改：从串行循环改为 gevent 并发 ---
-    def fetch_chunk(chunk):
-        """定义单个请求的任务"""
-        get_params = {
-            'api_key': api_key,
-            'Ids': ",".join(chunk),
-            'Fields': fields
-        }
-        try:
-            resp = requests.get(target_url, params=get_params, timeout=20)
-            resp.raise_for_status()
-            return resp.json().get("Items", [])
-        except Exception as e_chunk:
-            logger.error(f"[_fetch_items_in_chunks] 并发获取某分块数据时失败: {e_chunk}")
-            return None # 失败时返回 None
-
-    # 创建所有并发任务
-    greenlets = [spawn(fetch_chunk, chunk) for chunk in id_chunks]
-    
-    # 等待所有任务完成
-    from gevent import joinall
-    joinall(greenlets)
-
-    # 收集所有成功任务的结果
-    for g in greenlets:
-        if g.value: # g.value 就是 fetch_chunk 函数的返回值
-            all_items.extend(g.value)
-            
-    logger.trace(f"[_fetch_items_in_chunks] 并发请求完成，共获取到 {len(all_items)} 个项目。")
-    return all_items
 
 def handle_get_latest_items(user_id, params):
     """
-    【V4.7 - 全局分块修复版】
-    - 修复了“最新”栏目在虚拟库项目过多时因URL过长导致的 414 错误。
-    - 现在也使用 _fetch_items_in_chunks 辅助函数来安全地获取数据。
+    【V5.1 - 实时数据库秒开最终版】
     """
     try:
         base_url, api_key = _get_real_emby_url_and_key()
         virtual_library_id = params.get('ParentId') or params.get('customViewId')
 
         if virtual_library_id and is_mimicked_id(virtual_library_id):
-            logger.trace(f"处理针对虚拟库 '{virtual_library_id}' 的最新媒体请求 (V4.7 新逻辑)...")
-            
-            # 步骤 1: 获取此虚拟库对当前用户可见的、完整的媒体ID列表 (逻辑同上)
-            try:
-                real_db_id = from_mimicked_id(virtual_library_id)
-            except (ValueError, TypeError):
-                return Response(json.dumps([]), mimetype='application/json')
-
+            real_db_id = from_mimicked_id(virtual_library_id)
             collection_info = collection_db.get_custom_collection_by_id(real_db_id)
             if not collection_info: return Response(json.dumps([]), mimetype='application/json')
 
-            db_media_list = collection_info.get('generated_media_info_json') or []
-            base_ordered_emby_ids = [item.get('emby_id') for item in db_media_list if item.get('emby_id')]
-            if not base_ordered_emby_ids: return Response(json.dumps([]), mimetype='application/json')
+            # 步骤 1: 实时计算所有可见ID
+            all_visible_ids = _get_final_item_ids_for_view_realtime(user_id, collection_info)
+            if not all_visible_ids: return Response(json.dumps([]), mimetype='application/json')
 
-            definition = collection_info.get('definition_json') or {}
-            final_emby_ids_to_fetch = base_ordered_emby_ids
-            if definition.get('dynamic_filter_enabled'):
-                dynamic_rules = definition.get('dynamic_rules', [])
-                ids_from_local_db = user_db.get_item_ids_by_dynamic_rules(user_id, dynamic_rules)
-                if ids_from_local_db is not None:
-                    final_emby_ids_set = set(base_ordered_emby_ids).intersection(set(ids_from_local_db))
-                    final_emby_ids_to_fetch = [emby_id for emby_id in base_ordered_emby_ids if emby_id in final_emby_ids_set]
-                else:
-                    final_emby_ids_to_fetch = []
+            # 步骤 2: 在本地数据库按“添加日期”排序，并取出第一页
+            limit = int(params.get('Limit', 24))
+            latest_ids = queries_db.get_sorted_and_paginated_ids(
+                all_visible_ids, 'DateCreated', 'Descending', limit, 0
+            )
 
-            if not final_emby_ids_to_fetch: return Response(json.dumps([]), mimetype='application/json')
-
-            # 步骤 2: ★★★ 核心修复：调用分块函数获取所有项目的基本信息 ★★★
-            fields_to_fetch = params.get('Fields', "PrimaryImageAspectRatio,BasicSyncInfo,DateCreated,UserData")
-            all_items = _fetch_items_in_chunks(base_url, api_key, user_id, final_emby_ids_to_fetch, fields_to_fetch)
-
-            # 步骤 3: 在内存中对获取到的完整数据进行排序和切片
-            # Emby 的 /Latest 接口本质上就是按 DateCreated 降序排序
-            all_items.sort(key=lambda x: x.get('DateCreated', ''), reverse=True)
+            if not latest_ids: return Response(json.dumps([]), mimetype='application/json')
             
-            limit = int(params.get('Limit', '24'))
-            final_items = all_items[:limit]
-            
+            # 步骤 3: 向Emby请求这一页的数据
+            fields = params.get('Fields', "PrimaryImageAspectRatio,BasicSyncInfo,DateCreated,UserData")
+            items_from_emby = _fetch_items_from_emby(base_url, api_key, user_id, latest_ids, fields)
+
+            # 步骤 4: 按ID顺序整理
+            items_map = {item['Id']: item for item in items_from_emby}
+            final_items = [items_map[id] for id in latest_ids if id in items_map]
+
             return Response(json.dumps(final_items), mimetype='application/json')
         
         else:
-            # 对于原生库，保持原有的直接转发逻辑
-            # ... [这部分代码保持不变] ...
+            # 原生库逻辑不变
             target_url = f"{base_url}/{request.path.lstrip('/')}"
             forward_headers = {k: v for k, v in request.headers if k.lower() not in ['host', 'accept-encoding']}
             forward_headers['Host'] = urlparse(base_url).netloc
             forward_params = request.args.copy()
             forward_params['api_key'] = api_key
-            resp = requests.request(
-                method=request.method, url=target_url, headers=forward_headers, params=forward_params,
-                data=request.get_data(), stream=True, timeout=30.0
-            )
+            resp = requests.request(method=request.method, url=target_url, headers=forward_headers, params=forward_params, data=request.get_data(), stream=True, timeout=30.0)
             excluded_resp_headers = ['content-encoding', 'content-length', 'transfer-encoding', 'connection']
             response_headers = [(name, value) for name, value in resp.raw.headers.items() if name.lower() not in excluded_resp_headers]
             return Response(resp.iter_content(chunk_size=8192), resp.status_code, response_headers)
