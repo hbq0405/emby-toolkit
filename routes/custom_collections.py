@@ -58,21 +58,24 @@ def api_get_emby_users():
             cached_users = live_users
             all_users = user_db.get_all_emby_users_with_template_info()
 
-        # ★★★ 2. 智能过滤和标记 ★★★
-        # a. 找出所有被用作模板的“源用户”ID
-        template_source_ids = {user['template_user_id'] for user in all_users if user['template_user_id']}
+        # 1. 找出所有被用作模板的“源用户”ID
+        # ★★★ 修改点：现在我们通过查询 user_templates 表来获取源用户ID ★★★
+        with connection.get_db_connection() as conn:
+            cursor = conn.cursor()
+            cursor.execute("SELECT source_emby_user_id FROM user_templates WHERE source_emby_user_id IS NOT NULL")
+            template_source_ids = {row['source_emby_user_id'] for row in cursor.fetchall()}
         
         filtered_users = []
         for user in all_users:
             is_source_user = user['id'] in template_source_ids
-            is_bound_to_template = user['template_user_id'] is not None
+            # ★★★ 修改点：判断用户是否绑定模板，现在看 template_id 是否存在 ★★★
+            is_bound_to_template = user['template_id'] is not None
             
-            # b. 筛选条件：要么是源用户，要么是未绑定任何模板的独立用户
+            # 筛选条件：要么是源用户，要么是未绑定任何模板的独立用户
             if is_source_user or not is_bound_to_template:
                 option = {
                     "label": user.get('name'),
                     "value": user.get('id'),
-                    # c. 为前端添加一个清晰的标识
                     "is_template_source": is_source_user 
                 }
                 filtered_users.append(option)
