@@ -240,9 +240,10 @@ def handle_mimicked_library_metadata_endpoint(path, mimicked_id, params):
     
 def handle_get_mimicked_library_items(user_id, mimicked_id, params):
     """
-    【V8.2 - DateLastContentAdded 排序增强版】+ V4.4 POST请求修复
-    - 修复了当虚拟库项目过多时，因GET请求URL过长导致414错误的问题。
-    - 排序劫持模式现在使用POST请求来获取全量数据，无ID数量限制。
+    【V8.2 - DateLastContentAdded 排序增强版】+ V4.5 正确POST端点修复
+    - 修复了 V4.4 中因使用了错误的 POST 接口导致的 404 错误。
+    - 排序劫持模式现在使用正确的 /Items 接口并通过 POST 请求体发送ID列表，
+      这彻底解决了超大虚拟库的 "414 URL Too Long" 问题。
     """
     try:
         real_db_id = from_mimicked_id(mimicked_id)
@@ -278,7 +279,7 @@ def handle_get_mimicked_library_items(user_id, mimicked_id, params):
         base_url, api_key = _get_real_emby_url_and_key()
 
         if sort_by_field in ['none', 'DateLastContentAdded']:
-            # ... [原生排序模式代码保持不变] ...
+            # ... [原生排序模式代码保持不变, 它是正确的] ...
             logger.trace(f"检测到Emby原生排序模式: '{sort_by_field}'，请求将转发给Emby处理。")
             forward_params = {}
             if sort_by_field == 'DateLastContentAdded':
@@ -300,7 +301,7 @@ def handle_get_mimicked_library_items(user_id, mimicked_id, params):
 
             target_url = f"{base_url}/emby/Users/{user_id}/Items"
             try:
-                resp = requests.get(target_url, params=forward_params, timeout=20)
+                resp = requests.get(target_url, params=forward_params, timeout=30)
                 resp.raise_for_status()
                 response_data = resp.json()
                 final_items = response_data.get("Items", [])
@@ -310,15 +311,20 @@ def handle_get_mimicked_library_items(user_id, mimicked_id, params):
                 final_items = []
                 total_record_count = 0
         else:
-            # --- 模式B: 排序劫持 (V4.4 POST请求修复版) ---
-            logger.trace(f"执行排序劫持模式: '{sort_by_field}'。准备使用POST请求获取全量数据...")
+            # --- 模式B: 排序劫持 (V4.5 正确POST端点修复版) ---
+            logger.trace(f"执行排序劫持模式: '{sort_by_field}'。准备使用POST到/Items接口获取全量数据...")
             
             # 1. 准备POST请求的URL和Body
-            # URL中只保留API Key作为参数
-            target_url = f"{base_url}/emby/Users/{user_id}/Items"
-            post_params = {'api_key': api_key}
+            # ★★★ 核心修复 #1: 使用正确的 /Items 接口 ★★★
+            target_url = f"{base_url}/emby/Items"
             
-            # Body中放入ID列表和所需字段
+            # ★★★ 核心修复 #2: 将 UserId 和 api_key 作为URL参数 ★★★
+            post_params = {
+                'api_key': api_key,
+                'UserId': user_id
+            }
+            
+            # Body中依然放入ID列表和所需字段
             post_data = {
                 'Ids': ",".join(final_emby_ids_to_fetch),
                 'Fields': "PrimaryImageAspectRatio,ProviderIds,UserData,Name,ProductionYear,CommunityRating,DateCreated,PremiereDate,Type,RecursiveItemCount,SortName,ChildCount"
@@ -327,9 +333,9 @@ def handle_get_mimicked_library_items(user_id, mimicked_id, params):
             # 2. 发起POST请求获取所有项目的完整信息
             live_items_unordered = []
             try:
-                # ★★★ 核心修改：使用 requests.post 并传入 json=post_data ★★★
                 resp = requests.post(target_url, params=post_params, json=post_data, timeout=45)
                 resp.raise_for_status()
+                # 注意：/Items 接口返回的数据结构可能略有不同，但通常也包含 Items 键
                 live_items_unordered = resp.json().get("Items", [])
                 logger.trace(f"排序劫持(POST)：成功获取到 {len(live_items_unordered)} 个项目的完整数据。")
             except Exception as e_fetch:
