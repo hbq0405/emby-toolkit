@@ -419,9 +419,11 @@ def handle_get_latest_items(user_id, params):
             if not all_visible_ids: return Response(json.dumps([]), mimetype='application/json')
 
             limit = int(params.get('Limit', 24))
-            latest_ids = queries_db.get_sorted_ids(
-                all_visible_ids, 'DateCreated', 'Descending', limit, 0
+            all_sorted_ids = queries_db.get_sorted_ids(
+                all_visible_ids, 'DateCreated', 'Descending'
             )
+
+            latest_ids = all_sorted_ids[:limit]
 
             if not latest_ids: return Response(json.dumps([]), mimetype='application/json')
             
