@@ -1650,7 +1650,7 @@ def get_all_accessible_item_ids_for_user_optimized(base_url: str, api_key: str, 
             # 如果在任何批次失败，返回None表示整个操作失败
             return None
             
-    logger.info(f"  ➜ 成功为用户 {user_id} 获取到 {len(accessible_ids)} 个原生可访问的媒体项ID。")
+    logger.trace(f"  ➜ 成功为用户 {user_id} 获取到 {len(accessible_ids)} 个原生可访问的媒体项ID。")
     return accessible_ids
 
 # --- 用户管理模块 ---
@@ -1816,7 +1816,7 @@ def force_set_user_configuration(user_id: str, configuration_dict: Dict[str, Any
     try:
         response = requests.post(url, headers=headers, json=configuration_dict, timeout=15)
         response.raise_for_status()
-        logger.info(f"成功为用户 {user_id} 应用了个性化配置 (新版接口)。")
+        logger.info(f"  ➜ 成功为用户 {user_id} 应用了个性化配置 (新版接口)。")
         return True
     except requests.RequestException as e:
         # 如果是因为接口不存在 (404)，则启动备用策略
@@ -1827,7 +1827,7 @@ def force_set_user_configuration(user_id: str, configuration_dict: Dict[str, Any
             # a. 先获取当前用户的完整对象
             full_user_object = get_user_details(user_id, base_url, api_key)
             if not full_user_object:
-                logger.error(f"回退模式失败：无法获取用户 {user_id} 的当前完整信息。")
+                logger.error(f"  ➜ 回退模式失败：无法获取用户 {user_id} 的当前完整信息。")
                 return False
             
             # b. 将新的首选项合并到这个完整对象中
@@ -1839,14 +1839,14 @@ def force_set_user_configuration(user_id: str, configuration_dict: Dict[str, Any
             
             try:
                 update_response.raise_for_status()
-                logger.info(f"成功为用户 {user_id} 应用了个性化配置 (兼容模式)。")
+                logger.info(f"  ➜ 成功为用户 {user_id} 应用了个性化配置 (兼容模式)。")
                 return True
             except requests.RequestException as update_e:
-                logger.error(f"在兼容模式下更新用户 {user_id} 时失败: {update_e}")
+                logger.error(f"  ➜ 在兼容模式下更新用户 {user_id} 时失败: {update_e}")
                 return False
         else:
             # 如果是其他错误，则正常报错
-            logger.error(f"为用户 {user_id} 应用个性化配置时失败: {e}")
+            logger.error(f"  ➜ 为用户 {user_id} 应用个性化配置时失败: {e}")
             return False
 def check_if_user_exists(username: str, base_url: str, api_key: str) -> bool:
     """
