@@ -76,29 +76,6 @@ def _get_final_item_ids_for_view(user_id, collection_info):
     id_cache[cache_key] = final_emby_ids_to_fetch
     return final_emby_ids_to_fetch
 
-def _fetch_items_in_chunks(base_url, api_key, user_id, item_ids, fields):
-    # ... V4.8 的并发版本，现在重新变得重要 ...
-    if not item_ids: return []
-    def chunk_list(lst, n):
-        for i in range(0, len(lst), n): yield lst[i:i + n]
-    id_chunks = list(chunk_list(item_ids, 150))
-    target_url = f"{base_url}/emby/Users/{user_id}/Items"
-    def fetch_chunk(chunk):
-        params = {'api_key': api_key, 'Ids': ",".join(chunk), 'Fields': fields}
-        try:
-            resp = requests.get(target_url, params=params, timeout=20)
-            resp.raise_for_status()
-            return resp.json().get("Items", [])
-        except Exception as e:
-            logger.error(f"并发获取某分块数据时失败: {e}")
-            return None
-    greenlets = [spawn(fetch_chunk, chunk) for chunk in id_chunks]
-    joinall(greenlets)
-    all_items = []
-    for g in greenlets:
-        if g.value: all_items.extend(g.value)
-    return all_items
-
 def _fetch_items_from_emby(base_url, api_key, user_id, item_ids, fields):
     if not item_ids: return []
     target_url = f"{base_url}/emby/Users/{user_id}/Items"
