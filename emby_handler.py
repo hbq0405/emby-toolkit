@@ -1590,6 +1590,69 @@ def get_all_user_view_data(user_id: str, base_url: str, api_key: str) -> Optiona
             
     logger.debug(f"为用户 {user_id} 的全量同步完成，共找到 {len(all_items_with_data)} 个有状态的媒体项。")
     return all_items_with_data
+
+def get_all_accessible_item_ids_for_user_optimized(base_url: str, api_key: str, user_id: str) -> Optional[Set[str]]:
+    """
+    【V5.8 优化版 - 基于已有逻辑】
+    高效获取指定用户在Emby中拥有原生访问权限的所有媒体项的ID集合。
+    此函数基于 get_all_user_view_data 的核心逻辑，但为权限检查进行了优化：
+    - 只请求 'Id' 字段，最小化网络传输。
+    - 不进行任何 UserData 过滤，返回所有可见项。
+    - 使用 set 数据结构以便于进行高效的交集运算。
+    """
+    if not all([user_id, base_url, api_key]):
+        logger.error("get_all_accessible_item_ids_for_user_optimized: 缺少必要参数。")
+        return None
+
+    accessible_ids = set()
+    
+    # 使用和 get_all_user_view_data 相同的强大API端点
+    api_url = f"{base_url.rstrip('/')}/Items"
+    
+    params = {
+        "api_key": api_key,
+        "Recursive": "true",
+        "IncludeItemTypes": "Movie,Series,Video", # 您可以根据需要调整
+        "Fields": "Id",  # ★★★ 优化点：只请求ID，速度最快
+        "UserId": user_id 
+    }
+    
+    start_index = 0
+    batch_size = 5000 # 可以适当调大批次大小，因为数据量很小
+    api_timeout = config_manager.APP_CONFIG.get(constants.CONFIG_OPTION_EMBY_API_TIMEOUT, 120)
+
+    logger.debug(f"开始为用户 {user_id} 高效获取所有可访问媒体的ID...")
+    while True:
+        try:
+            request_params = params.copy()
+            request_params["StartIndex"] = start_index
+            request_params["Limit"] = batch_size
+            
+            response = requests.get(api_url, params=request_params, timeout=api_timeout)
+            response.raise_for_status()
+            data = response.json()
+            items = data.get("Items", [])
+            
+            if not items:
+                break
+
+            # 将获取到的ID添加到集合中
+            for item in items:
+                if item_id := item.get("Id"):
+                    accessible_ids.add(item_id)
+            
+            start_index += len(items)
+            if len(items) < batch_size:
+                break
+
+        except Exception as e:
+            logger.error(f"为用户 {user_id} 高效获取媒体ID时，处理批次 StartIndex={start_index} 失败: {e}", exc_info=True)
+            # 如果在任何批次失败，返回None表示整个操作失败
+            return None
+            
+    logger.info(f"  ➜ 成功为用户 {user_id} 获取到 {len(accessible_ids)} 个原生可访问的媒体项ID。")
+    return accessible_ids
+
 # --- 用户管理模块 ---
 def create_user_with_policy(
     username: str, 

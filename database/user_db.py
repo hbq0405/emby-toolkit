@@ -139,10 +139,15 @@ def upsert_emby_users_batch(users_data: List[Dict[str, Any]]):
         raise
 
 def get_item_ids_by_dynamic_rules(user_id: str, rules: List[Dict[str, Any]]) -> Optional[List[str]]:
-    """【V2 - 时间维度版】根据动态筛选规则获取匹配的媒体项ID列表。"""
+    """
+    【V3 - 健壮修复版】根据动态筛选规则获取匹配的媒体项ID列表。
+    - 修复了当规则为空时，错误地返回空列表导致虚拟库变空的问题。
+    - 增强了日志，便于问题排查。
+    """
     
+    # --- 核心修复 #1: 如果没有提供规则，应返回 None 来告知调用方“跳过筛选” ---
     if not user_id or not rules:
-        return []
+        return None
 
     base_sql = "SELECT item_id FROM user_media_data WHERE user_id = %s"
     where_clauses = []
@@ -150,12 +155,22 @@ def get_item_ids_by_dynamic_rules(user_id: str, rules: List[Dict[str, Any]]) -> 
 
     for rule in rules:
         field = rule.get("field")
-        op = rule.get("operator", "is")
+        op = rule.get("operator")
         value = rule.get("value")
 
+        # 跳过不完整的规则
+        if not all([field, op]):
+            continue
+
         if field == 'is_favorite':
+            # is_favorite 的值必须是布尔值
+            if not isinstance(value, bool):
+                logger.warning(f"动态筛选规则'is_favorite'的值不是布尔值，已跳过: {rule}")
+                continue
+            
             if op == 'is': where_clauses.append("is_favorite = %s")
             elif op == 'is_not': where_clauses.append("is_favorite != %s")
+            else: continue # 无效的操作符
             params.append(value)
         
         elif field == 'playback_status':
@@ -163,27 +178,33 @@ def get_item_ids_by_dynamic_rules(user_id: str, rules: List[Dict[str, Any]]) -> 
             if value == 'played': condition = "played = TRUE"
             elif value == 'in_progress': condition = "(played = FALSE AND playback_position_ticks > 0)"
             elif value == 'unplayed': condition = "(played = FALSE AND (playback_position_ticks = 0 OR playback_position_ticks IS NULL))"
-            else: continue
+            else:
+                logger.warning(f"动态筛选规则'playback_status'的值无效，已跳过: {rule}")
+                continue
             
             if op == 'is': where_clauses.append(condition)
             elif op == 'is_not': where_clauses.append(f"NOT ({condition})")
 
+    # --- 核心修复 #2: 如果所有规则都无效，也应返回 None 来“跳过筛选” ---
     if not where_clauses:
-        return []
+        logger.warning(f"为用户 {user_id} 提供了动态规则，但无法解析为有效的SQL条件。规则: {rules}")
+        return None
 
     final_sql = f"{base_sql} AND {' AND '.join(where_clauses)}"
     
-    logger.trace(f"执行动态筛选SQL: {final_sql} with params: {params}")
+    logger.debug(f"执行动态筛选SQL: {final_sql} with params: {params}")
 
     try:
         with get_db_connection() as conn:
             cursor = conn.cursor()
             cursor.execute(final_sql, tuple(params))
             rows = cursor.fetchall()
-            return [row['item_id'] for row in rows]
+            item_ids = [row['item_id'] for row in rows]
+            logger.debug(f"动态筛选为用户 {user_id} 找到了 {len(item_ids)} 个匹配的媒体项。")
+            return item_ids
     except Exception as e:
         logger.error(f"DB: 根据动态规则获取媒体ID时失败 for user {user_id}: {e}", exc_info=True)
-        return None
+        return None # 发生错误时返回 None
     
 def get_all_local_emby_user_ids() -> set:
     """获取本地数据库中所有 emby_users 的 ID 集合。"""

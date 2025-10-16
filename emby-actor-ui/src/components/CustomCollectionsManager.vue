@@ -399,6 +399,21 @@
           <n-form-item>
             <template #label>
               <n-space align="center">
+                <span>强制检查Emby原生权限</span>
+                <n-tooltip trigger="hover">
+                  <template #trigger>
+                    <n-icon :component="HelpIcon" />
+                  </template>
+                  强烈推荐！开启后，此虚拟库将自动隐藏当前用户在Emby原生媒体库中无权访问的项目。
+                </n-tooltip>
+              </n-space>
+            </template>
+            <n-switch v-model:value="currentCollection.definition.enforce_emby_permissions" />
+          </n-form-item>
+
+          <n-form-item>
+            <template #label>
+              <n-space align="center">
                 <span>启用实时用户数据筛选</span>
                 <n-tooltip trigger="hover">
                   <template #trigger>
@@ -1105,6 +1120,7 @@ const getInitialFormModel = () => ({
     target_library_ids: [],
     default_sort_by: 'original',
     default_sort_order: 'Ascending',
+    enforce_emby_permissions: true,
     dynamic_filter_enabled: false,
     dynamic_logic: 'AND',
     dynamic_rules: []

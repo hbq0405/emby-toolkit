@@ -44,35 +44,57 @@ def _get_real_emby_url_and_key():
 
 def _get_final_item_ids_for_view(user_id, collection_info):
     """
-    【V5.2 核心】
-    带短生命周期缓存的函数，用于计算并返回虚拟库对特定用户可见的最终媒体ID列表。
-    专门用于吸收首页加载时的并发计算压力。
+    【V5.8 核心重构 - 原生权限版】
+    ... (docstring 不变) ...
     """
     collection_id = collection_info['id']
     cache_key = f"vlib_ids_{user_id}_{collection_id}"
 
     if cache_key in id_cache:
-        logger.trace(f"战术缓存命中！直接为虚拟库 {collection_id} 返回ID列表。")
+        logger.trace(f"战术缓存命中！直接为虚拟库 {collection_id} (用户: {user_id}) 返回ID列表。")
         return id_cache[cache_key]
 
-    logger.trace(f"战术缓存未命中，为虚拟库 {collection_id} 实时计算ID列表...")
+    logger.trace(f"战术缓存未命中，为虚拟库 {collection_id} (用户: {user_id}) 实时计算ID列表...")
+    
     db_media_list = collection_info.get('generated_media_info_json') or []
     base_ordered_emby_ids = [item.get('emby_id') for item in db_media_list if item.get('emby_id')]
     
     if not base_ordered_emby_ids:
+        id_cache[cache_key] = []
         return []
 
     final_emby_ids_to_fetch = base_ordered_emby_ids
     definition = collection_info.get('definition_json') or {}
+
+    if definition.get('enforce_emby_permissions'):
+        logger.debug(f"虚拟库 '{collection_info['name']}' 已开启Emby原生权限检查。")
+        base_url, api_key = _get_real_emby_url_and_key()
+        
+        # ★★★ 核心调用点：调用我们新的、优化的函数 ★★★
+        user_accessible_ids = emby_handler.get_all_accessible_item_ids_for_user_optimized(base_url, api_key, user_id)
+        
+        if user_accessible_ids is not None:
+            base_set = set(final_emby_ids_to_fetch)
+            final_emby_ids_set = base_set.intersection(user_accessible_ids)
+            
+            final_emby_ids_to_fetch = [emby_id for emby_id in base_ordered_emby_ids if emby_id in final_emby_ids_set]
+            logger.debug(f"Emby原生权限过滤后，媒体项数量从 {len(base_set)} 减少到 {len(final_emby_ids_to_fetch)}。")
+        else:
+            logger.error(f"无法获取用户 {user_id} 的Emby原生权限，将清空虚拟库 '{collection_info['name']}' 的内容。")
+            final_emby_ids_to_fetch = []
+
     if definition.get('dynamic_filter_enabled'):
+        # ... (这部分逻辑保持不变) ...
+        logger.debug(f"虚拟库 '{collection_info['name']}' 已开启用户个人行为数据筛选。")
         dynamic_rules = definition.get('dynamic_rules', [])
         ids_from_local_db = user_db.get_item_ids_by_dynamic_rules(user_id, dynamic_rules)
         if ids_from_local_db is not None:
-            final_emby_ids_set = set(base_ordered_emby_ids).intersection(set(ids_from_local_db))
+            current_ids_set = set(final_emby_ids_to_fetch)
+            dynamic_ids_set = set(ids_from_local_db)
+            final_emby_ids_set = current_ids_set.intersection(dynamic_ids_set)
             final_emby_ids_to_fetch = [emby_id for emby_id in base_ordered_emby_ids if emby_id in final_emby_ids_set]
-        else:
-            final_emby_ids_to_fetch = []
-    
+            logger.debug(f"用户个人行为数据过滤后，媒体项数量变为 {len(final_emby_ids_to_fetch)}。")
+
     id_cache[cache_key] = final_emby_ids_to_fetch
     return final_emby_ids_to_fetch
 
