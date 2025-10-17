@@ -1447,13 +1447,13 @@ def delete_item(item_id: str, emby_server_url: str, emby_api_key: str, user_id: 
     try:
         response = requests.post(api_url, headers=headers, params=params, timeout=api_timeout)
         response.raise_for_status()
-        logger.info(f"  ✅ 成功使用临时令牌删除 Emby 媒体项 ID: {item_id}。")
+        logger.info(f"  ✅ 成功删除 Emby 媒体项 ID: {item_id}。")
         return True
     except requests.exceptions.HTTPError as e:
-        logger.error(f"使用临时令牌删除 Emby 媒体项 ID: {item_id} 时发生HTTP错误: {e.response.status_code} - {e.response.text}")
+        logger.error(f"  ✅ 使用临时令牌删除 Emby 媒体项 ID: {item_id} 时发生HTTP错误: {e.response.status_code} - {e.response.text}")
         return False
     except Exception as e:
-        logger.error(f"使用临时令牌删除 Emby 媒体项 ID: {item_id} 时发生未知错误: {e}")
+        logger.error(f"  ✅ 使用临时令牌删除 Emby 媒体项 ID: {item_id} 时发生未知错误: {e}")
         return False
     
 # --- 清理幽灵演员 ---
@@ -1938,7 +1938,7 @@ def delete_emby_user(user_id: str) -> bool:
     try:
         response = requests.delete(api_url, headers=headers, timeout=api_timeout)
         response.raise_for_status()
-        logger.info(f"  ✅ 成功使用临时令牌删除 Emby 用户 '{user_name_for_log}' (ID: {user_id})。")
+        logger.info(f"  ✅ 成功删除 Emby 用户 '{user_name_for_log}' (ID: {user_id})。")
         return True
     except requests.exceptions.HTTPError as e:
         logger.error(f"  ➜ 删除 Emby 用户 '{user_name_for_log}' 时发生HTTP错误: {e.response.status_code} - {e.response.text}")

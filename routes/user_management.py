@@ -444,7 +444,7 @@ def get_all_managed_users():
             # ★★★ 核心修复 1/2：在开始时就获取所有源用户的ID ★★★
             source_user_ids = _get_all_source_user_ids(cursor)
             if source_user_ids:
-                logger.debug(f"将从用户列表中隐藏 {len(source_user_ids)} 个源用户。")
+                logger.debug(f"  ➜ 将从用户列表中隐藏 {len(source_user_ids)} 个源用户。")
 
             cursor.execute("""
                 SELECT eue.*, ut.name as template_name 
@@ -513,7 +513,7 @@ def change_user_template(user_id):
                 if template_record: new_template_name = template_record['name']
             except Exception:
                 pass
-            logger.info(f"准备为用户 '{user_name_for_log}' 切换模板至 '{new_template_name}'...")
+            logger.info(f"  ➜ 准备为用户 '{user_name_for_log}' 切换模板至 '{new_template_name}'...")
 
             # 1. 从新模板中获取权限策略和首选项
             cursor.execute("SELECT emby_policy_json, emby_configuration_json FROM user_templates WHERE id = %s", (new_template_id,))
@@ -549,11 +549,11 @@ def change_user_template(user_id):
             cursor.execute(upsert_sql, (user_id, new_template_id))
             
             conn.commit()
-            logger.info(f"用户 '{user_name_for_log}' 的模板已成功切换，有效期保持不变。")
+            logger.info(f"  ➜ 用户 '{user_name_for_log}' 的模板已成功切换，有效期保持不变。")
 
         return jsonify({"status": "ok", "message": "用户模板已成功切换并应用新配置"}), 200
     except Exception as e:
-        logger.error(f"切换用户 {user_id} 的模板时出错: {e}", exc_info=True)
+        logger.error(f"  ➜ 切换用户 {user_id} 的模板时出错: {e}", exc_info=True)
         return jsonify({"status": "error", "message": "切换模板失败"}), 500
 
 @user_management_bp.route('/api/admin/users/<string:user_id>/status', methods=['POST'])
@@ -575,7 +575,7 @@ def set_user_status(user_id):
     except Exception:
         pass
 
-    logger.info(f"准备为用户 '{user_name_for_log}' 执行 '{action_text}' 操作...")
+    logger.info(f"  ➜ 准备为用户 '{user_name_for_log}' 执行 '{action_text}' 操作...")
     
     config = config_manager.APP_CONFIG
     success = emby_handler.set_user_disabled_status(
@@ -591,10 +591,10 @@ def set_user_status(user_id):
                 (new_status, user_id)
             )
             conn.commit()
-        logger.info(f"用户 '{user_name_for_log}' 状态更新成功。")
+        logger.info(f"  ➜ 用户 '{user_name_for_log}' 状态更新成功。")
         return jsonify({"status": "ok", "message": "用户状态已更新"}), 200
     else:
-        logger.error(f"为用户 '{user_name_for_log}' 更新状态失败。")
+        logger.error(f"  ➜ 为用户 '{user_name_for_log}' 更新状态失败。")
         return jsonify({"status": "error", "message": "更新用户状态失败"}), 500
 
 @user_management_bp.route('/api/admin/users/<string:user_id>/expiration', methods=['POST'])
@@ -635,10 +635,10 @@ def set_user_expiration(user_id):
                 (expiration_date, user_id)
             )
             conn.commit()
-        logger.info(f"用户 '{user_name_for_log}' 的有效期更新成功。")
+        logger.info(f"  ➜ 用户 '{user_name_for_log}' 的有效期更新成功。")
         return jsonify({"status": "ok", "message": "用户有效期已更新"}), 200
     except Exception as e:
-        logger.error(f"更新用户 '{user_name_for_log}' 有效期时出错: {e}", exc_info=True)
+        logger.error(f"  ➜ 更新用户 '{user_name_for_log}' 有效期时出错: {e}", exc_info=True)
         return jsonify({"status": "error", "message": "更新有效期失败"}), 500
 
 @user_management_bp.route('/api/admin/users/<string:user_id>', methods=['DELETE'])
@@ -669,14 +669,14 @@ def delete_user(user_id):
                 conn.commit()
                 
                 if cursor.rowcount > 0:
-                    logger.info(f"成功从本地数据库中删除了用户 '{user_name_for_log}' (ID: {user_id}) 的记录。")
+                    logger.info(f"  ✅ 成功从本地数据库中删除了用户 '{user_name_for_log}' (ID: {user_id}) 的记录。")
                 else:
-                    logger.warning(f"用户 '{user_name_for_log}' 已从 Emby 删除，但在本地数据库中未找到其主记录。")
+                    logger.warning(f"  ➜ 用户 '{user_name_for_log}' 已从 Emby 删除，但在本地数据库中未找到其主记录。")
 
             return jsonify({"status": "ok", "message": "用户已彻底删除"}), 200
             
         except Exception as e:
-            logger.error(f"用户 '{user_name_for_log}' 已从 Emby 删除，但在清理本地数据库时出错: {e}", exc_info=True)
+            logger.error(f"  ➜ 用户 '{user_name_for_log}' 已从 Emby 删除，但在清理本地数据库时出错: {e}", exc_info=True)
             return jsonify({"status": "error", "message": "用户已从 Emby 删除，但清理本地数据时发生错误，请联系管理员。"}), 500
     else:
         return jsonify({"status": "error", "message": f"在 Emby 中删除用户 '{user_name_for_log}' 失败"}), 500
