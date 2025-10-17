@@ -593,13 +593,22 @@ def enrich_all_actor_aliases_task(
                                                 target_map_id = target_actor['map_id']
                                                 source_map_id = source_actor['map_id']
                                                 
+                                                logger.info(f"  ➜ 准备合并：源(map_id:{source_map_id}, tmdb:{tmdb_id}) -> 目标(map_id:{target_map_id}, imdb:{imdb_id})")
+
+                                                # 1. 先从源记录中移除导致冲突的 tmdb_person_id，避免后续更新失败
+                                                cursor.execute("UPDATE person_identity_map SET tmdb_person_id = NULL WHERE map_id = %s", (source_map_id,))
+
+                                                # 2. 现在可以安全地将 tmdb_person_id 更新到目标记录
                                                 if not target_actor.get('tmdb_person_id'):
                                                     cursor.execute("UPDATE person_identity_map SET tmdb_person_id = %s WHERE map_id = %s", (source_actor['tmdb_person_id'], target_map_id))
+                                                
+                                                # 3. 合并其他可能存在于源记录但目标记录没有的信息
                                                 if source_actor.get('douban_celebrity_id') and not target_actor.get('douban_celebrity_id'):
                                                     cursor.execute("UPDATE person_identity_map SET douban_celebrity_id = %s WHERE map_id = %s", (source_actor['douban_celebrity_id'], target_map_id))
                                                 if source_actor.get('emby_person_id') and not target_actor.get('emby_person_id'):
-                                                     cursor.execute("UPDATE person_identity_map SET emby_person_id = %s WHERE map_id = %s", (source_actor['emby_person_id'], target_map_id))
+                                                    cursor.execute("UPDATE person_identity_map SET emby_person_id = %s WHERE map_id = %s", (source_actor['emby_person_id'], target_map_id))
 
+                                                # 4. 最后，删除现在已经为空壳的源记录
                                                 cursor.execute("DELETE FROM person_identity_map WHERE map_id = %s", (source_map_id,))
                                                 logger.info(f"  ➜ 成功将记录 (map_id:{source_map_id}) 合并到 (map_id:{target_map_id}) 并删除原记录。")
                                             
