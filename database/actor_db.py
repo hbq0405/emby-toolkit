@@ -159,7 +159,7 @@ class ActorDBManager:
                 # 如果有返回结果，说明发生了 INSERT 或 UPDATE
                 map_id = result['map_id']
                 action = result['action']
-                logger.debug(f"  ➜ 演员 '{name}' (TMDb: {tmdb_id}) 处理完成。结果: {action} (map_id: {map_id})")
+                logger.debug(f"  ├─ 演员 '{name}' (TMDb: {tmdb_id}) 处理完成。结果: {action} (map_id: {map_id})")
             else:
                 # 如果没有返回结果，说明存在冲突但 WHERE 条件不满足，数据未发生变化
                 action = "UNCHANGED"
