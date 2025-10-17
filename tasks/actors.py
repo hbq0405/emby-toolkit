@@ -344,7 +344,7 @@ def task_merge_duplicate_actors(processor):
     - 【核心】在删除“小号”前，将其参演的所有媒体项中的演员替换为“主号”，实现无缝合并。
     - 最后才删除“小号”演员，并【修正】数据库映射关系。
     """
-    task_name = "合并分身演员 (优雅合并版)"
+    task_name = "合并分身演员"
     logger.warning(f"--- !!! 开始执行高危任务: '{task_name}' !!! ---")
     
     task_manager.update_status_from_thread(0, "准备开始...")
