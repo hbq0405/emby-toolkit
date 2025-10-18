@@ -392,87 +392,131 @@ def handle_get_mimicked_library_items(user_id, mimicked_id, params):
 
 def handle_get_latest_items(user_id, params):
     """
-    【V5.3 - 终极秒开版】
-    - 彻底重构“最近添加”逻辑，与 queries_db.py 联动，解决因全量ID排序导致的速度瓶颈。
-    - 将排序和分页操作前置到数据库查询阶段，实现真正的秒级响应。
+    【V5.4 - 全局秒开最终版】
+    - 识别出首页加载慢的根源是“请求风暴”，而非单个请求慢。
+    - 核心逻辑变更为：拦截不带 ParentId 的全局“最新项目”请求。
+    - 在一次处理中，完成所有可见虚拟库的权限计算和ID合并，然后通过一次数据库查询获取所有最新项目。
+    - 将 N 次低效请求合并为 1 次高效请求，从根本上解决首页加载慢的问题。
     """
     try:
         base_url, api_key = _get_real_emby_url_and_key()
         virtual_library_id = params.get('ParentId') or params.get('customViewId')
 
-        # --- 虚拟库的“最近添加”逻辑 ---
+        # --- 情况一：处理针对【单个】虚拟库的“最近添加”请求 (保留V5.3的高效逻辑) ---
         if virtual_library_id and is_mimicked_id(virtual_library_id):
+            # 这部分逻辑与 V5.3 完全相同，用于处理进入单个虚拟库页面时的请求
             real_db_id = from_mimicked_id(virtual_library_id)
             collection_info = collection_db.get_custom_collection_by_id(real_db_id)
-            if not collection_info: 
-                return Response(json.dumps([]), mimetype='application/json')
+            if not collection_info: return Response(json.dumps([]), mimetype='application/json')
 
-            # --- 步骤 1: 在内存中高效准备用于过滤的ID集合 ---
-            
-            # 1.1 获取虚拟库的“全局”媒体ID列表
             db_media_list = collection_info.get('generated_media_info_json') or []
             base_emby_ids_set = {item.get('emby_id') for item in db_media_list if item.get('emby_id')}
-            if not base_emby_ids_set:
-                return Response(json.dumps([]), mimetype='application/json')
+            if not base_emby_ids_set: return Response(json.dumps([]), mimetype='application/json')
 
             definition = collection_info.get('definition_json') or {}
-            
-            # 1.2 根据需要，获取Emby原生权限ID (从缓存或实时获取)
             if definition.get('enforce_emby_permissions'):
-                perm_cache_key = f"user_perms_{user_id}"
-                user_accessible_ids = user_permission_cache.get(perm_cache_key)
-                
+                user_accessible_ids = user_permission_cache.get(f"user_perms_{user_id}")
                 if user_accessible_ids is None:
                     user_accessible_ids = emby_handler.get_all_accessible_item_ids_for_user_optimized(base_url, api_key, user_id)
-                    if user_accessible_ids is not None:
-                        user_permission_cache[perm_cache_key] = user_accessible_ids
-                    else:
-                        logger.error(f"无法获取用户 {user_id} 的Emby原生权限，无法生成最近添加列表。")
-                        return Response(json.dumps([]), mimetype='application/json')
-                
-                # 使用集合交集进行高效过滤
-                base_emby_ids_set.intersection_update(user_accessible_ids)
+                    if user_accessible_ids is not None: user_permission_cache[f"user_perms_{user_id}"] = user_accessible_ids
+                if user_accessible_ids is not None: base_emby_ids_set.intersection_update(user_accessible_ids)
+                else: return Response(json.dumps([]), mimetype='application/json')
 
-            # 1.3 根据需要，获取用户个人行为数据过滤ID
             if definition.get('dynamic_filter_enabled'):
                 dynamic_rules = definition.get('dynamic_rules', [])
                 ids_from_local_db = user_db.get_item_ids_by_dynamic_rules(user_id, dynamic_rules)
-                if ids_from_local_db is not None:
-                    # 使用集合交集进行高效过滤
-                    base_emby_ids_set.intersection_update(ids_from_local_db)
+                if ids_from_local_db is not None: base_emby_ids_set.intersection_update(ids_from_local_db)
 
-            # 经过滤后最终对用户可见的所有ID
-            final_visible_ids = list(base_emby_ids_set)
-            if not final_visible_ids:
-                return Response(json.dumps([]), mimetype='application/json')
+            if not base_emby_ids_set: return Response(json.dumps([]), mimetype='application/json')
 
-            # --- 步骤 2: 【核心优化】调用现有的数据库函数，直接获取排序和分页后的ID ---
             limit = int(params.get('Limit', 24))
-            
-            # 我们直接复用您已有的、高效的 get_sorted_and_paginated_ids 函数
-            # 它会将过滤后的 final_visible_ids 列表传递给数据库，进行最高效的排序和分页
-            latest_ids = queries_db.get_sorted_and_paginated_ids(
-                all_emby_ids=final_visible_ids,
-                sort_by='DateCreated',      # “最近添加”固定按 DateCreated 排序
-                sort_order='Descending',    # 降序
-                limit=limit,
-                offset=0                    # 从第一条开始
-            )
+            latest_ids = queries_db.get_sorted_and_paginated_ids(list(base_emby_ids_set), 'DateCreated', 'Descending', limit, 0)
 
-            if not latest_ids: 
-                return Response(json.dumps([]), mimetype='application/json')
+            if not latest_ids: return Response(json.dumps([]), mimetype='application/json')
             
-            # --- 步骤 3: 只为最终的少量ID获取完整信息 (逻辑不变) ---
             fields = params.get('Fields', "PrimaryImageAspectRatio,BasicSyncInfo,DateCreated,UserData")
             items_from_emby = _fetch_items_from_emby(base_url, api_key, user_id, latest_ids, fields)
-
-            # 按数据库返回的顺序进行最后整理
             items_map = {item['Id']: item for item in items_from_emby}
             final_items = [items_map[id] for id in latest_ids if id in items_map]
-
             return Response(json.dumps(final_items), mimetype='application/json')
-        
-        # --- 原生库的“最近添加”逻辑 (保持不变) ---
+
+        # --- 情况二：处理【全局】“最近添加”请求 (首页加载的核心) ---
+        elif not virtual_library_id:
+            logger.debug(f"正在为用户 {user_id} 处理全局“最新媒体”请求...")
+            
+            # 步骤 1: 找出该用户可见的所有虚拟库
+            all_collections = collection_db.get_all_active_custom_collections()
+            visible_collections = []
+            for coll in all_collections:
+                allowed_users = coll.get('allowed_user_ids')
+                if not allowed_users or user_id in allowed_users:
+                    visible_collections.append(coll)
+            
+            if not visible_collections:
+                logger.debug("该用户没有任何可见的虚拟库，返回空列表。")
+                return Response(json.dumps([]), mimetype='application/json')
+
+            # 步骤 2: 【一次性】获取所有需要的权限/过滤ID
+            # 2.1 Emby原生权限ID (只需获取一次)
+            user_accessible_ids = None
+            needs_emby_permission_check = any(c.get('definition_json', {}).get('enforce_emby_permissions') for c in visible_collections)
+            if needs_emby_permission_check:
+                user_accessible_ids = user_permission_cache.get(f"user_perms_{user_id}")
+                if user_accessible_ids is None:
+                    user_accessible_ids = emby_handler.get_all_accessible_item_ids_for_user_optimized(base_url, api_key, user_id)
+                    if user_accessible_ids is not None: user_permission_cache[f"user_perms_{user_id}"] = user_accessible_ids
+            
+            # 2.2 动态规则ID (也只需获取一次)
+            # 注意：这里简化处理，获取所有可能用到的规则ID。更精细的优化可以按需获取，但通常开销不大。
+            all_dynamic_rules = []
+            for coll in visible_collections:
+                definition = coll.get('definition_json', {})
+                if definition.get('dynamic_filter_enabled'):
+                    all_dynamic_rules.extend(definition.get('dynamic_rules', []))
+            
+            dynamic_ids_set = None
+            if all_dynamic_rules:
+                # 去重，避免重复查询
+                unique_rules = [dict(t) for t in {tuple(d.items()) for d in all_dynamic_rules}]
+                ids_from_local_db = user_db.get_item_ids_by_dynamic_rules(user_id, unique_rules)
+                if ids_from_local_db:
+                    dynamic_ids_set = set(ids_from_local_db)
+
+            # 步骤 3: 合并所有可见库中、经过过滤的媒体ID
+            all_possible_ids = set()
+            for coll in visible_collections:
+                db_media_list = coll.get('generated_media_info_json') or []
+                coll_ids = {item.get('emby_id') for item in db_media_list if item.get('emby_id')}
+                
+                definition = coll.get('definition_json', {})
+                # 应用Emby权限过滤
+                if definition.get('enforce_emby_permissions') and user_accessible_ids is not None:
+                    coll_ids.intersection_update(user_accessible_ids)
+                # 应用动态规则过滤
+                if definition.get('dynamic_filter_enabled') and dynamic_ids_set is not None:
+                    coll_ids.intersection_update(dynamic_ids_set)
+                
+                all_possible_ids.update(coll_ids)
+
+            if not all_possible_ids:
+                return Response(json.dumps([]), mimetype='application/json')
+
+            # 步骤 4: 【一次数据库查询】从合并后的总ID池中，获取最终的最新项目
+            limit = int(params.get('Limit', 100)) # 首页通常会请求更多数量
+            latest_ids = queries_db.get_sorted_and_paginated_ids(list(all_possible_ids), 'DateCreated', 'Descending', limit, 0)
+
+            if not latest_ids: return Response(json.dumps([]), mimetype='application/json')
+
+            # 步骤 5: 获取详情并返回
+            fields = params.get('Fields', "PrimaryImageAspectRatio,BasicSyncInfo,DateCreated,UserData")
+            items_from_emby = _fetch_items_from_emby(base_url, api_key, user_id, latest_ids, fields)
+            items_map = {item['Id']: item for item in items_from_emby}
+            final_items = [items_map[id] for id in latest_ids if id in items_map]
+            
+            logger.debug(f"为用户 {user_id} 的全局“最新媒体”请求成功返回 {len(final_items)} 个项目。")
+            return Response(json.dumps(final_items), mimetype='application/json')
+            
+        # --- 情况三：原生库的请求，直接转发 ---
         else:
             target_url = f"{base_url}/{request.path.lstrip('/')}"
             forward_headers = {k: v for k, v in request.headers if k.lower() not in ['host', 'accept-encoding']}
@@ -485,7 +529,7 @@ def handle_get_latest_items(user_id, params):
             return Response(resp.iter_content(chunk_size=8192), resp.status_code, response_headers)
             
     except Exception as e:
-        logger.error(f"处理最新媒体时发生未知错误 (V5.3): {e}", exc_info=True)
+        logger.error(f"处理最新媒体时发生未知错误 (V5.4): {e}", exc_info=True)
         return Response(json.dumps([]), mimetype='application/json')
 
 proxy_app = Flask(__name__)
