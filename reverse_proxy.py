@@ -15,7 +15,7 @@ from geventwebsocket.websocket import WebSocket
 from websocket import create_connection
 from database import collection_db, user_db, queries_db
 import config_manager
-from cachetools import TLRUCache
+from cachetools import TTLCache
 
 import extensions
 import emby_handler
@@ -32,7 +32,25 @@ def is_mimicked_id(item_id):
 MIMICKED_ITEMS_RE = re.compile(r'/emby/Users/([^/]+)/Items/(-(\d+))')
 MIMICKED_ITEM_DETAILS_RE = re.compile(r'emby/Users/([^/]+)/Items/(-(\d+))$')
 
-user_permission_cache = TLRUCache(maxsize=50, ttl=300) # 缓存5分钟
+class SlidingTTLCache(TTLCache):
+    """
+    一个自定义的 TTLCache，它会在每次访问（get）一个项目时，
+    自动重置该项目的存活时间（TTL）。
+    这实现了真正的“滑动窗口”缓存，完美解决了“定时过期”导致的不良体验。
+    """
+    def __getitem__(self, key, cache_getitem=TTLCache.__getitem__):
+        # 首先，使用父类的方法获取项目。
+        # 如果项目不存在或已过期，这里会像预期的那样抛出 KeyError。
+        item = cache_getitem(self, key)
+        
+        # 如果代码能执行到这里，说明项目存在且有效。
+        # 我们通过重新设置该项目的值来巧妙地更新它的过期时间。
+        # 这利用了 TTLCache 在 __setitem__ 时会自动刷新计时器的特性。
+        self[key] = item
+        
+        return item
+
+user_permission_cache = SlidingTTLCache(maxsize=50, ttl=300) # 缓存5分钟
 
 def _get_real_emby_url_and_key():
     base_url = config_manager.APP_CONFIG.get("emby_server_url", "").rstrip('/')
