@@ -15,7 +15,7 @@ from geventwebsocket.websocket import WebSocket
 from websocket import create_connection
 from database import collection_db, user_db, queries_db
 import config_manager
-from cachetools import TTLCache
+from cachetools import TLRUCache
 
 import extensions
 import emby_handler
@@ -32,8 +32,7 @@ def is_mimicked_id(item_id):
 MIMICKED_ITEMS_RE = re.compile(r'/emby/Users/([^/]+)/Items/(-(\d+))')
 MIMICKED_ITEM_DETAILS_RE = re.compile(r'emby/Users/([^/]+)/Items/(-(\d+))$')
 
-id_cache = TTLCache(maxsize=100, ttl=60)
-user_permission_cache = TTLCache(maxsize=50, ttl=300) # 缓存5分钟
+user_permission_cache = TLRUCache(maxsize=50, ttl=300) # 缓存5分钟
 
 def _get_real_emby_url_and_key():
     base_url = config_manager.APP_CONFIG.get("emby_server_url", "").rstrip('/')
