@@ -158,9 +158,17 @@ class CoverGeneratorService:
         backdrop_tags = item.get("BackdropImageTags")
         if backdrop_tags:
             backdrop_url = f'/emby/Items/{item_id}/Images/Backdrop/0?tag={backdrop_tags[0]}'
-        if self._cover_style.startswith('single') and self._single_use_primary:
+        
+        # 1. 是单图模式，且“单图使用海报”开关已打开
+        # 2. 是多图模式，且“多图使用海报”开关已打开
+        should_use_primary = (self._cover_style.startswith('single') and self._single_use_primary) or \
+                             (self._cover_style.startswith('multi') and self._multi_1_use_primary)
+
+        if should_use_primary:
+            # 如果应该优先用海报，则返回海报URL，如果海报不存在，再用横幅URL保底
             return primary_url or backdrop_url
         else:
+            # 否则，按默认逻辑，优先用横幅，横幅不存在再用海报保底
             return backdrop_url or primary_url
 
     def __download_image(self, server_id: str, api_path: str, library_name: str, count: int) -> Path:
