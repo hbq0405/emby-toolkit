@@ -10,6 +10,7 @@ import time
 import uuid 
 from datetime import datetime, timezone
 from gevent import spawn, joinall
+from gevent.lock import RLock
 from geventwebsocket.websocket import WebSocket
 from websocket import create_connection
 from database import collection_db, user_db, queries_db
@@ -20,10 +21,7 @@ import extensions
 import emby_handler
 logger = logging.getLogger(__name__)
 
-# --- 【核心修改】---
-# 不再使用字符串前缀，而是定义一个数字转换基数
-# 这将把数据库ID (例如 7) 转换为一个唯一的、负数的、看起来像原生ID的数字 (例如 -900007)
-MIMICKED_ID_BASE = 900000
+permission_fetch_lock = RLock()
 
 MIMICKED_ID_BASE = 900000
 def to_mimicked_id(db_id): return str(-(MIMICKED_ID_BASE + db_id))
@@ -42,6 +40,37 @@ def _get_real_emby_url_and_key():
     api_key = config_manager.APP_CONFIG.get("emby_api_key", "")
     if not base_url or not api_key: raise ValueError("Emby服务器地址或API Key未配置")
     return base_url, api_key
+
+def _get_user_accessible_ids_with_lock(user_id):
+    """
+    【V5.5 - 防惊群版】
+    一个带锁的辅助函数，用于安全地获取用户的Emby原生权限ID。
+    它通过“检查-锁定-再检查”模式，可以完美防止在高并发下对Emby API的重复请求。
+    """
+    # 第一次检查：这是最快的路径，99%的请求应该在这里命中缓存并立即返回
+    cached_ids = user_permission_cache.get(f"user_perms_{user_id}")
+    if cached_ids is not None:
+        return cached_ids
+
+    # 如果缓存未命中，则进入锁定流程
+    with permission_fetch_lock:
+        # 第二次检查：至关重要！
+        # 在当前线程获得锁时，可能已经有另一个线程完成了数据获取和缓存填充。
+        # 再次检查可以避免不必要的API调用。
+        cached_ids = user_permission_cache.get(f"user_perms_{user_id}")
+        if cached_ids is not None:
+            return cached_ids
+
+        # 如果真的没有缓存，那么只有获得锁的这个线程会执行以下代码
+        logger.debug(f"用户 {user_id} 的权限缓存未命中且无其他线程正在获取，现在开始从Emby实时获取...")
+        base_url, api_key = _get_real_emby_url_and_key()
+        
+        live_ids = emby_handler.get_all_accessible_item_ids_for_user_optimized(base_url, api_key, user_id)
+        
+        if live_ids is not None:
+            user_permission_cache[f"user_perms_{user_id}"] = live_ids
+        
+        return live_ids
 
 def _fetch_items_in_chunks(base_url, api_key, user_id, item_ids, fields):
     # ... V4.8 的并发版本，现在重新变得重要 ...
@@ -415,10 +444,7 @@ def handle_get_latest_items(user_id, params):
 
             definition = collection_info.get('definition_json') or {}
             if definition.get('enforce_emby_permissions'):
-                user_accessible_ids = user_permission_cache.get(f"user_perms_{user_id}")
-                if user_accessible_ids is None:
-                    user_accessible_ids = emby_handler.get_all_accessible_item_ids_for_user_optimized(base_url, api_key, user_id)
-                    if user_accessible_ids is not None: user_permission_cache[f"user_perms_{user_id}"] = user_accessible_ids
+                user_accessible_ids = _get_user_accessible_ids_with_lock(user_id)
                 if user_accessible_ids is not None: base_emby_ids_set.intersection_update(user_accessible_ids)
                 else: return Response(json.dumps([]), mimetype='application/json')
 
@@ -459,12 +485,9 @@ def handle_get_latest_items(user_id, params):
             # 步骤 2: 【一次性】获取所有需要的权限/过滤ID
             # 2.1 Emby原生权限ID (只需获取一次)
             user_accessible_ids = None
-            needs_emby_permission_check = any(c.get('definition_json', {}).get('enforce_emby_permissions') for c in visible_collections)
-            if needs_emby_permission_check:
-                user_accessible_ids = user_permission_cache.get(f"user_perms_{user_id}")
-                if user_accessible_ids is None:
-                    user_accessible_ids = emby_handler.get_all_accessible_item_ids_for_user_optimized(base_url, api_key, user_id)
-                    if user_accessible_ids is not None: user_permission_cache[f"user_perms_{user_id}"] = user_accessible_ids
+            if any(c.get('definition_json', {}).get('enforce_emby_permissions') for c in visible_collections):
+                # ★★★ 修改点 ★★★
+                user_accessible_ids = _get_user_accessible_ids_with_lock(user_id)
             
             # 2.2 动态规则ID (也只需获取一次)
             # 注意：这里简化处理，获取所有可能用到的规则ID。更精细的优化可以按需获取，但通常开销不大。
