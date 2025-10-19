@@ -226,11 +226,12 @@ def get_in_progress_series_tmdb_ids() -> set:
             sql = """
                 SELECT tmdb_id FROM watchlist
                 WHERE
-                    status IN ('Watching', 'Paused')  
+                    status IN ('Watching', 'Paused')
                     AND force_ended = FALSE
                     AND (
-                        tmdb_status NOT IN ('Ended', 'Canceled')
-                        OR next_episode_to_air_json IS NOT NULL
+                        -- 条件1：明确还有下一集待播出 (官方未完结)
+                        next_episode_to_air_json IS NOT NULL
+                        -- OR 条件2：官方季终了，但本地文件有缺失
                         OR (missing_info_json IS NOT NULL AND missing_info_json::text != '{}' AND missing_info_json::text != '[]')
                     );
             """
