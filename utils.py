@@ -19,15 +19,6 @@ except ImportError:
         # 如果库不存在，这个模拟函数将导致中文名无法转换为拼音进行匹配
         return []
 
-# 尝试导入 translators
-try:
-    from translators import translate_text as translators_translate_text
-    TRANSLATORS_LIB_AVAILABLE = True
-except ImportError:
-    TRANSLATORS_LIB_AVAILABLE = False
-    def translators_translate_text(*args, **kwargs):
-        raise NotImplementedError("translators 库未安装")
-
 def contains_chinese(text: Optional[str]) -> bool:
     """检查字符串是否包含中文字符。"""
     if not text:
