@@ -660,7 +660,8 @@ class WatchlistProcessor:
             "tmdb_status": new_tmdb_status,
             "next_episode_to_air_json": json.dumps(real_next_episode_to_air) if real_next_episode_to_air else None,
             "missing_info_json": json.dumps(missing_info),
-            "last_episode_to_air_json": json.dumps(last_episode_to_air) if last_episode_to_air else None
+            "last_episode_to_air_json": json.dumps(last_episode_to_air) if last_episode_to_air else None,
+            "is_airing": is_truly_airing
         }
         self._update_watchlist_entry(item_id, item_name, updates_to_db)
 
