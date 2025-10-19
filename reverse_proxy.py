@@ -376,10 +376,7 @@ def handle_mimicked_library_metadata_endpoint(path, mimicked_id, params):
     
 def handle_get_mimicked_library_items(user_id, mimicked_id, params):
     """
-    【V5.9 - 混合排序最终完美版】
-    - 修正了因客户端首次加载时发送空的SortBy参数，导致默认排序失效并回退到标题排序的问题。
-    - 强制使用虚拟库中配置的默认排序，忽略客户端因“粘性排序”而发送的排序参数。
-    - 修正了原生排序模式下，会错误地将虚拟ParentId传递给Emby导致返回为空的问题。
+    - 使用“强制劫持”策略，无条件使用虚拟库的默认排序设置。
     """
     try:
         real_db_id = from_mimicked_id(mimicked_id)
@@ -395,18 +392,9 @@ def handle_get_mimicked_library_items(user_id, mimicked_id, params):
 
         definition = collection_info.get('definition_json') or {}
         
-        # --- ★★★ 核心修正：升级“交通警察”逻辑！ ★★★ ---
-        # 我们现在不仅检查 'SortBy' 是否存在，还检查它是否有非空的值。
-        # params.get('SortBy') 会获取值，如果键不存在则返回None，如果是空字符串则返回''。
-        # 在Python中，None和''都被视为False，所以这个判断非常稳健。
-        if params.get('SortBy'):
-             # 只有当客户端发来了真实、有内容的排序指令时，才听它的
-             sort_by_str = params.get('SortBy')
-             sort_order = params.get('SortOrder', 'Ascending')
-        else:
-             # 对于首次加载（SortBy为空或不存在），强制使用我们自己的默认设置
-             sort_by_str = definition.get('default_sort_by', 'SortName')
-             sort_order = definition.get('default_sort_order', 'Ascending')
+        # 强制、唯一地使用在虚拟库定义(definition)中设置的默认排序。
+        sort_by_str = definition.get('default_sort_by', 'SortName')
+        sort_order = definition.get('default_sort_order', 'Ascending')
 
 
         SUPPORTED_LOCAL_SORT_FIELDS = ['PremiereDate', 'DateCreated', 'CommunityRating', 'ProductionYear', 'SortName', 'original']
@@ -415,15 +403,17 @@ def handle_get_mimicked_library_items(user_id, mimicked_id, params):
 
         if use_emby_native_sort:
             # --- 分支 A: Emby 原生排序路径 ---
-            logger.info(f"虚拟库 '{collection_info['name']}' 正在使用 Emby 原生排序 (SortBy={sort_by_str})。")
+            logger.debug(f"  ➜ 虚拟库 '{collection_info['name']}' 正在强制使用Emby原生排序 (SortBy={sort_by_str})。")
             
             base_url, api_key = _get_real_emby_url_and_key()
             target_url = f"{base_url}/emby/Users/{user_id}/Items"
             
-            emby_params = params.copy()
+            # 我们依然复制params，是为了保留Limit, StartIndex等分页参数
+            emby_params = params.copy() 
             emby_params['api_key'] = api_key
             emby_params['Ids'] = ",".join(map(str, final_visible_ids))
 
+            # 强制写入我们决定的排序方式
             emby_params['SortBy'] = sort_by_str
             emby_params['SortOrder'] = sort_order
             
@@ -443,12 +433,12 @@ def handle_get_mimicked_library_items(user_id, mimicked_id, params):
                 return Response(json.dumps(emby_response_data), mimetype='application/json')
 
             except Exception as e:
-                logger.error(f"请求 Emby 原生排序时失败: {e}", exc_info=True)
+                logger.error(f"  ➜ 请求 Emby 原生排序时失败: {e}", exc_info=True)
                 return Response(json.dumps({"Items": [], "TotalRecordCount": total_record_count}), mimetype='application/json')
 
         else:
-            # --- 分支 B: 本地高性能排序路径 (保持不变) ---
-            logger.debug(f"虚拟库 '{collection_info['name']}' 正在使用高性能本地排序 (SortBy={sort_by_str})。")
+            # --- 分支 B: 本地高性能排序路径 ---
+            logger.debug(f"  ➜ 虚拟库 '{collection_info['name']}' 正在强制使用本地排序 (SortBy={sort_by_str})。")
             
             primary_sort_by = sort_by_str.split(',')[0]
             limit = int(params.get('Limit', 50))
@@ -475,12 +465,11 @@ def handle_get_mimicked_library_items(user_id, mimicked_id, params):
             return Response(json.dumps({"Items": final_items, "TotalRecordCount": total_record_count}), mimetype='application/json')
 
     except Exception as e:
-        logger.error(f"处理混合虚拟库时发生严重错误 (V5.9 混合排序强制默认版): {e}", exc_info=True)
+        logger.error(f"  ➜ 处理混合虚拟库时发生严重错误: {e}", exc_info=True)
         return Response(json.dumps({"Items": [], "TotalRecordCount": 0}), mimetype='application/json')
 
 def handle_get_latest_items(user_id, params):
     """
-    【V5.4 - 混合排序最终同步版】
     - 将 handle_get_mimicked_library_items 中的智能排序逻辑同步至此，
       使得首页的“最新项目”也能正确响应虚拟库的默认排序设置（如 DateLastContentAdded）。
     - 解决了首页最新项目排序固定为 DateCreated 的问题。
@@ -514,8 +503,6 @@ def handle_get_latest_items(user_id, params):
             final_visible_ids = list(base_emby_ids_set)
             if not final_visible_ids: return Response(json.dumps([]), mimetype='application/json')
 
-            # --- ★★★ 核心修正：从这里开始，引入我们新的智能排序逻辑 ★★★ ---
-            
             # 1. 确定排序方式：首页的“最新”永远使用库的默认设置
             sort_by_str = definition.get('default_sort_by', 'DateCreated')
             sort_order = definition.get('default_sort_order', 'Descending') # “最新”永远是降序
