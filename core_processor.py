@@ -740,7 +740,7 @@ class MediaProcessor:
     def process_single_item(self, emby_item_id: str, force_full_update: bool = False):
         """
         【V-API-Ready 最终版 - 带跳过功能】
-        这个函数是API模式的入口，它会先检查是否需要跳过已处理的项目。
+        入口函数，它会先检查是否需要跳过已处理的项目。
         """
         # 1. 除非强制，否则跳过已处理的
         if not force_full_update and emby_item_id in self.processed_items_cache:

@@ -244,12 +244,21 @@ def _process_batch_webhook_events():
         is_already_processed = parent_id in extensions.media_processor_instance.processed_items_cache
 
         if not is_already_processed:
+            
+            # 默认情况下，不强制深度更新
+            force_full_update_for_new_item = False
+            
+            # 如果是首次入库的剧集，则启用深度更新以从TMDb获取最全的演员表
+            if parent_type == 'Series':
+                force_full_update_for_new_item = True
+                logger.info(f"  ➜ 检测到新入库剧集 '{parent_name}'，将从TMDb获取完整演员表。")
+            
             logger.info(f"  ➜ 为 '{parent_name}' 分派【完整处理】任务 (原因: 首次入库)。")
             task_manager.submit_task(
                 _handle_full_processing_flow,
                 task_name=f"Webhook完整处理: {parent_name}",
                 item_id=parent_id,
-                force_full_update=False
+                force_full_update=force_full_update_for_new_item 
             )
         else:
             # ★★★ 核心修复：恢复正确的追更处理逻辑 ★★★
