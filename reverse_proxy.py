@@ -470,9 +470,11 @@ def handle_get_mimicked_library_items(user_id, mimicked_id, params):
 
 def handle_get_latest_items(user_id, params):
     """
-    - 将 handle_get_mimicked_library_items 中的智能排序逻辑同步至此，
-      使得首页的“最新项目”也能正确响应虚拟库的默认排序设置（如 DateLastContentAdded）。
-    - 解决了首页最新项目排序固定为 DateCreated 的问题。
+    【V5.4 - 综合排序最终完美版】
+    - 采纳用户建议，为混合库的“最新项目”实现最强的综合排序逻辑。
+    - 如果虚拟库包含剧集（纯剧集或混合库），则强制按“最后一集更新,添加入库”(DateLastContentAdded,DateCreated)的多重标准排序。
+    - 如果是纯电影库，则强制按“添加时间”(DateCreated)排序。
+    - 此逻辑将完美、优雅地处理所有类型的虚拟库的“最新”排序。
     """
     try:
         base_url, api_key = _get_real_emby_url_and_key()
@@ -484,7 +486,7 @@ def handle_get_latest_items(user_id, params):
             collection_info = collection_db.get_custom_collection_by_id(real_db_id)
             if not collection_info: return Response(json.dumps([]), mimetype='application/json')
 
-            # 步骤 1: 获取该库所有可见的媒体ID (旧逻辑)
+            # 步骤 1: 获取该库所有可见的媒体ID (这部分逻辑不变)
             db_media_list = collection_info.get('generated_media_info_json') or []
             base_emby_ids_set = {item.get('emby_id') for item in db_media_list if item.get('emby_id')}
             if not base_emby_ids_set: return Response(json.dumps([]), mimetype='application/json')
@@ -503,9 +505,25 @@ def handle_get_latest_items(user_id, params):
             final_visible_ids = list(base_emby_ids_set)
             if not final_visible_ids: return Response(json.dumps([]), mimetype='application/json')
 
-            # 1. 确定排序方式：首页的“最新”永远使用库的默认设置
-            sort_by_str = definition.get('default_sort_by', 'DateCreated')
-            sort_order = definition.get('default_sort_order', 'Descending') # “最新”永远是降序
+            # --- ★★★ 核心修正：实现全新的“综合排序”决策逻辑 ★★★ ---
+            
+            # 1. 判断库的内容类型
+            item_type_from_db = definition.get('item_type', 'Movie')
+            is_series_focused = False
+            if isinstance(item_type_from_db, list) and 'Series' in item_type_from_db:
+                is_series_focused = True
+            elif isinstance(item_type_from_db, str) and item_type_from_db == 'Series':
+                is_series_focused = True
+
+            # 2. 根据内容类型，强制应用最强的“最新”排序规则
+            if is_series_focused:
+                # 对于任何包含剧集的库（纯剧集或混合库），使用“综合排名”
+                sort_by_str = 'DateLastContentAdded,DateCreated'
+            else:
+                # 对于纯电影库，简单按入库时间即可
+                sort_by_str = 'DateCreated'
+            
+            sort_order = 'Descending' # “最新”永远是降序
 
             # 2. 判断走本地排序还是Emby原生排序
             SUPPORTED_LOCAL_SORT_FIELDS = ['PremiereDate', 'DateCreated', 'CommunityRating', 'ProductionYear', 'SortName', 'original']
