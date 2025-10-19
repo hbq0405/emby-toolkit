@@ -22,7 +22,7 @@ def get_sorted_and_paginated_ids(all_emby_ids, sort_by, sort_order, limit, offse
     }
 
     if sort_by not in sort_column_map:
-        logger.warning(f"不支持的本地排序字段: '{sort_by}'，将返回原始顺序分页。")
+        logger.trace(f"  ➜ 不支持的本地排序字段: '{sort_by}'，将返回原始顺序分页。")
         # 即使是原始分页，也需要过滤掉不在库中的项目
         # (这一步其实上层已经保证了，但作为兜底更安全)
         return all_emby_ids[offset : offset + limit]
