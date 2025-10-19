@@ -353,8 +353,8 @@
                     @update:value="rule.operator = 'is'"
                     placeholder="选择状态"
                     :options="[
-                      { label: '是 连载中', value: true },
-                      { label: '是 已完结', value: false }
+                      { label: '连载中', value: true },
+                      { label: '已完结', value: false }
                     ]"
                     :disabled="!rule.field"
                     style="flex-grow: 1; min-width: 180px;"
