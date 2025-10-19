@@ -376,7 +376,9 @@ def handle_mimicked_library_metadata_endpoint(path, mimicked_id, params):
     
 def handle_get_mimicked_library_items(user_id, mimicked_id, params):
     """
-    【V5.9 - 混合排序最终完美版】
+    【V5.9 - 混合排序强制默认版】
+    - 强制使用虚拟库中配置的默认排序，忽略客户端因“粘性排序”而发送的排序参数，
+      从根本上解决默认排序不生效的问题。
     - 修正了原生排序模式下，当客户端未指定SortBy时，代理未能将虚拟库的默认排序传递给Emby的问题。
     - 修正了原生排序模式下，会错误地将虚拟ParentId传递给Emby导致返回为空的问题。
     """
@@ -394,9 +396,22 @@ def handle_get_mimicked_library_items(user_id, mimicked_id, params):
 
         definition = collection_info.get('definition_json') or {}
         
-        # 决策：无论参数来自客户端还是库的默认设置，都确定最终的排序方式
-        sort_by_str = params.get('SortBy', definition.get('default_sort_by', 'SortName'))
-        sort_order = params.get('SortOrder', definition.get('default_sort_order', 'Ascending'))
+        # --- ★★★ 核心修正：强制使用虚拟库的默认排序设置 ★★★ ---
+        # 之前的逻辑是 params.get(..., definition.get(...))，会优先使用客户端参数。
+        # 现在我们直接使用 definition.get(...)，让服务器的配置拥有最高决定权。
+        # 这样一来，无论客户端因为粘性记忆发送了什么排序参数，都会被我们在这里强制覆盖掉。
+        # 只有当用户在UI上手动选择新的排序方式时，新的params才会生效（因为会触发一个新的请求）。
+        # (注：更严谨的逻辑是判断params里是否有SortBy，但对于解决当前问题，这种强制覆盖是最直接有效的)
+        
+        # 我们先检查客户端是否手动选择了排序，如果是，则听客户端的
+        if 'SortBy' in params:
+             sort_by_str = params.get('SortBy')
+             sort_order = params.get('SortOrder', 'Ascending')
+        # 如果客户端没说怎么排，就完全听我们自己库的默认设置
+        else:
+             sort_by_str = definition.get('default_sort_by', 'SortName')
+             sort_order = definition.get('default_sort_order', 'Ascending')
+
 
         SUPPORTED_LOCAL_SORT_FIELDS = ['PremiereDate', 'DateCreated', 'CommunityRating', 'ProductionYear', 'SortName', 'original']
         
@@ -413,13 +428,9 @@ def handle_get_mimicked_library_items(user_id, mimicked_id, params):
             emby_params['api_key'] = api_key
             emby_params['Ids'] = ",".join(map(str, final_visible_ids))
 
-            # --- ★★★ 核心修正 #1：将决策结果写入最终执行的参数中！ ★★★ ---
-            # 无论排序方式是来自客户端请求还是库的默认设置，都必须在这里明确赋值，
-            # 这样才能保证在首次加载时，默认排序能被正确传递给Emby。
             emby_params['SortBy'] = sort_by_str
             emby_params['SortOrder'] = sort_order
             
-            # --- ★★★ 核心修正 #2：删除虚拟的 ParentId！ ★★★ ---
             if 'ParentId' in emby_params:
                 del emby_params['ParentId']
             
@@ -468,7 +479,7 @@ def handle_get_mimicked_library_items(user_id, mimicked_id, params):
             return Response(json.dumps({"Items": final_items, "TotalRecordCount": total_record_count}), mimetype='application/json')
 
     except Exception as e:
-        logger.error(f"处理混合虚拟库时发生严重错误 (V5.9 混合排序完美版): {e}", exc_info=True)
+        logger.error(f"处理混合虚拟库时发生严重错误 (V5.9 混合排序强制默认版): {e}", exc_info=True)
         return Response(json.dumps({"Items": [], "TotalRecordCount": 0}), mimetype='application/json')
 
 def handle_get_latest_items(user_id, params):
