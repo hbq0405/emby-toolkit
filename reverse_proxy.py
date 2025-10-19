@@ -376,10 +376,9 @@ def handle_mimicked_library_metadata_endpoint(path, mimicked_id, params):
     
 def handle_get_mimicked_library_items(user_id, mimicked_id, params):
     """
-    【V5.9 - 混合排序强制默认版】
-    - 强制使用虚拟库中配置的默认排序，忽略客户端因“粘性排序”而发送的排序参数，
-      从根本上解决默认排序不生效的问题。
-    - 修正了原生排序模式下，当客户端未指定SortBy时，代理未能将虚拟库的默认排序传递给Emby的问题。
+    【V5.9 - 混合排序最终完美版】
+    - 修正了因客户端首次加载时发送空的SortBy参数，导致默认排序失效并回退到标题排序的问题。
+    - 强制使用虚拟库中配置的默认排序，忽略客户端因“粘性排序”而发送的排序参数。
     - 修正了原生排序模式下，会错误地将虚拟ParentId传递给Emby导致返回为空的问题。
     """
     try:
@@ -396,19 +395,16 @@ def handle_get_mimicked_library_items(user_id, mimicked_id, params):
 
         definition = collection_info.get('definition_json') or {}
         
-        # --- ★★★ 核心修正：强制使用虚拟库的默认排序设置 ★★★ ---
-        # 之前的逻辑是 params.get(..., definition.get(...))，会优先使用客户端参数。
-        # 现在我们直接使用 definition.get(...)，让服务器的配置拥有最高决定权。
-        # 这样一来，无论客户端因为粘性记忆发送了什么排序参数，都会被我们在这里强制覆盖掉。
-        # 只有当用户在UI上手动选择新的排序方式时，新的params才会生效（因为会触发一个新的请求）。
-        # (注：更严谨的逻辑是判断params里是否有SortBy，但对于解决当前问题，这种强制覆盖是最直接有效的)
-        
-        # 我们先检查客户端是否手动选择了排序，如果是，则听客户端的
-        if 'SortBy' in params:
+        # --- ★★★ 核心修正：升级“交通警察”逻辑！ ★★★ ---
+        # 我们现在不仅检查 'SortBy' 是否存在，还检查它是否有非空的值。
+        # params.get('SortBy') 会获取值，如果键不存在则返回None，如果是空字符串则返回''。
+        # 在Python中，None和''都被视为False，所以这个判断非常稳健。
+        if params.get('SortBy'):
+             # 只有当客户端发来了真实、有内容的排序指令时，才听它的
              sort_by_str = params.get('SortBy')
              sort_order = params.get('SortOrder', 'Ascending')
-        # 如果客户端没说怎么排，就完全听我们自己库的默认设置
         else:
+             # 对于首次加载（SortBy为空或不存在），强制使用我们自己的默认设置
              sort_by_str = definition.get('default_sort_by', 'SortName')
              sort_order = definition.get('default_sort_order', 'Ascending')
 
