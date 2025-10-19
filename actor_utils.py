@@ -620,7 +620,7 @@ def enrich_all_actor_aliases_task(
                                 cursor.executemany("UPDATE person_identity_map SET tmdb_person_id = NULL WHERE tmdb_person_id = %s", [(tid,) for tid in invalid_tmdb_ids])
 
                             conn.commit()
-                            logger.info("✅ 数据库更改已成功提交。")
+                            logger.info("  ✅ 数据库更改已成功提交。")
 
                         except Exception as db_e:
                             logger.error(f"数据库操作失败: {db_e}", exc_info=True)
