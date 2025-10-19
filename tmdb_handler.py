@@ -41,8 +41,7 @@ class LoggedRetry(Retry):
         
         # 记录一条警告级别的日志，这样既能引起注意又不会像错误一样吓人
         logger.warning(
-            f"  ➜ TMDb API 请求失败 ({reason})。将在 {backoff_time:.2f} 秒后重试... "
-            f"   └─ (第 {attempt_number} 次 / 共 {self.total} 次)"
+            f"  ➜ TMDb API 请求失败 ({reason})。将在 {backoff_time:.2f} 秒后重试... (第 {attempt_number}/{self.total} 次)"
         )
 
         return new_retry
