@@ -899,11 +899,12 @@ def append_item_to_filter_collection_db(collection_id: int, new_item_tmdb_id: st
         logger.error(f"向规则合集 {collection_id} 的JSON缓存追加媒体项时发生数据库错误: {e}", exc_info=True)
         return False
     
-def remove_emby_id_from_all_collections(emby_id_to_remove: str):
+def remove_emby_id_from_all_collections(emby_id_to_remove: str, item_name: Optional[str] = None):
     """
-    【V5.7 新增】
+    【V5.8 - 日志增强版】
     从所有 custom_collections 的 generated_media_info_json 字段中，
     移除一个指定的 emby_id。这是保证数据一致性的关键。
+    增加了对片名的日志记录支持。
     """
     if not emby_id_to_remove:
         return
@@ -916,7 +917,8 @@ def remove_emby_id_from_all_collections(emby_id_to_remove: str):
             SELECT jsonb_agg(elem)
             FROM jsonb_array_elements(generated_media_info_json) AS elem
             WHERE elem ->> 'emby_id' != %s
-        )
+        ),
+        in_library_count = in_library_count - 1
         WHERE generated_media_info_json @> %s::jsonb;
     """
     
@@ -927,10 +929,14 @@ def remove_emby_id_from_all_collections(emby_id_to_remove: str):
                 jsonb_match_str = f'[{{"emby_id": "{emby_id_to_remove}"}}]'
                 cursor.execute(sql, (emby_id_to_remove, jsonb_match_str))
                 
+                # ▼▼▼ 核心修改：根据是否提供了 item_name，生成更友好的日志信息 ▼▼▼
+                log_item_identifier = f"'{item_name}'" if item_name else f"ID: {emby_id_to_remove}"
+
                 if cursor.rowcount > 0:
-                    logger.info(f"  ➜ 已从 {cursor.rowcount} 个自定义合集的缓存中，成功移除了媒体项 ID: {emby_id_to_remove}。")
+                    logger.info(f"  ➜ 已从 {cursor.rowcount} 个自定义合集的缓存中，成功移除了媒体项 {log_item_identifier}。")
                 else:
-                    logger.debug(f"  ➜ 在所有自定义合集的缓存中未找到媒体项 ID: {emby_id_to_remove}，无需清理。")
+                    logger.debug(f"  ➜ 在所有自定义合集的缓存中未找到媒体项 {log_item_identifier}，无需清理。")
             conn.commit()
     except Exception as e:
-        logger.error(f"从所有自定义合集中移除 emby_id '{emby_id_to_remove}' 时失败: {e}", exc_info=True)
+        log_item_identifier_err = f"'{item_name}' (ID: {emby_id_to_remove})" if item_name else f"ID '{emby_id_to_remove}'"
+        logger.error(f"从所有自定义合集中移除 emby_id {log_item_identifier_err} 时失败: {e}", exc_info=True)

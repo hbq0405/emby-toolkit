@@ -561,7 +561,7 @@ def emby_webhook():
                             if cursor.rowcount > 0: logger.info(f"  ➜ Webhook: 已从智能追剧列表中移除项目 '{cleanup_item_name}'。")
                             cursor.execute("DELETE FROM resubscribe_cache WHERE item_id = %s", (id_to_cleanup,))
                             if cursor.rowcount > 0: logger.info(f"  ➜ Webhook: 已从媒体洗版缓存中移除项目 '{cleanup_item_name}'。")
-                            collection_db.remove_emby_id_from_all_collections(id_to_cleanup)
+                            collection_db.remove_emby_id_from_all_collections(id_to_cleanup, cleanup_item_name)
                     
                     conn.commit()
                 return jsonify({"status": "delete_event_processed_from_db_state"}), 200
