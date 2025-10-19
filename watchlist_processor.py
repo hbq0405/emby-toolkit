@@ -123,25 +123,28 @@ class WatchlistProcessor:
 
         # 根据TMDb状态决定内部追剧状态
         internal_status = ""
+        is_airing_flag = False
         if tmdb_status in ["Returning Series", "In Production", "Planned"]:
             internal_status = STATUS_WATCHING
+            is_airing_flag = True  # 连载中、制作中、计划中的剧集，都视为“在播”
         else: # 包括 "Ended", "Canceled" 以及其他任何未知状态
             internal_status = STATUS_COMPLETED
+            is_airing_flag = False # 已完结或取消的剧集，明确标记为“不在播”
 
         try:
             with connection.get_db_connection() as conn:
                 with conn.cursor() as cursor:
-                    # ★★★ 核心逻辑修改: 插入时使用动态确定的 internal_status ★★★
+                    # ★★★ 核心逻辑修改: 插入时同时写入 is_airing 字段 ★★★
                     cursor.execute("""
-                        INSERT INTO watchlist (item_id, tmdb_id, item_name, item_type, status)
-                        VALUES (%s, %s, %s, %s, %s)
+                        INSERT INTO watchlist (item_id, tmdb_id, item_name, item_type, status, is_airing)
+                        VALUES (%s, %s, %s, %s, %s, %s)
                         ON CONFLICT (item_id) DO NOTHING
-                    """, (item_id, tmdb_id, item_name, "Series", internal_status))
+                    """, (item_id, tmdb_id, item_name, "Series", internal_status, is_airing_flag))
                     
                     if cursor.rowcount > 0:
                         # 使用辅助函数翻译内部状态，使日志更友好
                         log_status_translated = translate_internal_status(internal_status)
-                        logger.info(f"  ➜ 剧集 '{item_name}' (TMDb状态: {translate_status(tmdb_status)}) 已自动加入追剧列表，初始状态为: {log_status_translated}。")
+                        logger.info(f"  ➜ 剧集 '{item_name}' (TMDb状态: {translate_status(tmdb_status)}) 已自动加入追剧列表，初始状态为: {log_status_translated}，在播状态: {is_airing_flag}。")
                 conn.commit()
         except Exception as e:
             logger.error(f"自动添加剧集 '{item_name}' 到追剧列表时发生数据库错误: {e}", exc_info=True)
