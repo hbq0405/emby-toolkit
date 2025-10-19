@@ -414,40 +414,45 @@ def handle_get_mimicked_library_items(user_id, mimicked_id, params):
 
         # 4. 根据判断结果，进入不同的处理分支
         if use_emby_native_sort:
-            # --- 分支 A: Emby 原生排序路径 (功能全，性能稍低) ---
-            logger.info(f"虚拟库 '{collection_info['name']}' 正在使用 Emby 原生排序 (SortBy={sort_by_str})。")
+            logger.debug(f"  ➜ 虚拟库 '{collection_info['name']}' 正在使用 Emby 原生排序 (SortBy={sort_by_str})。")
             
             base_url, api_key = _get_real_emby_url_and_key()
             target_url = f"{base_url}/emby/Users/{user_id}/Items"
             
-            # 构造发往 Emby 的请求参数
-            emby_params = params.copy()  # 继承客户端所有请求参数 (Limit, StartIndex, Fields等)
+            emby_params = params.copy()
             emby_params['api_key'] = api_key
-            
-            # 关键一步：将我们过滤好的ID列表作为 'Ids' 参数传给 Emby
-            # 告诉 Emby：“请只在这些ID的范围内，为我执行排序和分页”
-            emby_params['Ids'] = ",".join(final_visible_ids)
+            emby_params['Ids'] = ",".join(map(str, final_visible_ids)) # 使用 map(str, ...) 确保所有ID都是字符串
+
+            # --- ★★★ 核心修正：删除虚拟的 ParentId！ ★★★ ---
+            # 这个ID是代理自己用的，真实Emby服务器不认识它。
+            # 删掉它之后，Emby就会只根据我们提供的 'Ids' 列表来工作。
+            if 'ParentId' in emby_params:
+                del emby_params['ParentId']
             
             try:
-                # 直接请求 Emby
                 resp = requests.get(target_url, params=emby_params, timeout=25)
                 resp.raise_for_status()
-                
-                # Emby 返回的已经是排好序、分好页的当前页数据
                 emby_response_data = resp.json()
                 
-                # 重要：用我们自己计算的总数覆盖 Emby 返回的总数，因为 Emby 只知道当前页
+                # 如果Emby因为某些原因没有返回Items，我们给个默认值
+                if 'Items' not in emby_response_data:
+                    emby_response_data['Items'] = []
+
                 emby_response_data['TotalRecordCount'] = total_record_count
                 
                 return Response(json.dumps(emby_response_data), mimetype='application/json')
 
             except Exception as e:
-                logger.error(f"请求 Emby 原生排序时失败: {e}", exc_info=True)
+                logger.error(f"  ➜ 请求 Emby 原生排序时失败: {e}", exc_info=True)
+                return Response(json.dumps({"Items": [], "TotalRecordCount": total_record_count}), mimetype='application/json')
+
+            except Exception as e:
+                logger.error(f"  ➜ 请求 Emby 原生排序时失败: {e}", exc_info=True)
                 return Response(json.dumps({"Items": [], "TotalRecordCount": 0}), mimetype='application/json')
 
         else:
             # --- 分支 B: 本地高性能排序路径 (功能有限，速度极快，即原版逻辑) ---
-            logger.debug(f"虚拟库 '{collection_info['name']}' 正在使用高性能本地排序 (SortBy={sort_by_str})。")
+            logger.debug(f"  ➜ 虚拟库 '{collection_info['name']}' 正在使用高性能本地排序 (SortBy={sort_by_str})。")
             
             primary_sort_by = sort_by_str.split(',')[0]
             limit = int(params.get('Limit', 50))
