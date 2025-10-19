@@ -276,7 +276,7 @@ watch(() => props.subscriptionId, (newId) => {
 
 watch(() => props.show, (newVal) => {
   if (newVal && props.subscriptionId) {
-    fetchDetails(newVal);
+    fetchDetails(props.subscriptionId);
   }
 });
 </script>

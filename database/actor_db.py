@@ -305,16 +305,6 @@ def get_single_subscription_details(subscription_id: int) -> Optional[Dict[str, 
             cursor.execute("SELECT * FROM tracked_actor_media WHERE subscription_id = %s ORDER BY release_date DESC", (subscription_id,))
             tracked_media = [dict(row) for row in cursor.fetchall()]
             
-            def _safe_json_loads(json_string, default_value=None):
-                if default_value is None:
-                    default_value = []
-                if isinstance(json_string, str):
-                    try:
-                        return json.loads(json_string)
-                    except json.JSONDecodeError:
-                        return default_value
-                return json_string if json_string is not None else default_value
-
             response_data = {
                 "id": sub_row['id'],
                 "tmdb_person_id": sub_row['tmdb_person_id'],
