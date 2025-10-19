@@ -17,22 +17,27 @@ from psycopg2.extras import execute_values
 logger = logging.getLogger(__name__)
 
 # --- 追剧 ---    
-def task_process_watchlist(processor, item_id: Optional[str] = None):
+def task_process_watchlist(processor, item_id: Optional[str] = None, deep_mode: bool = False):
     """
     【V9 - 启动器】
     调用处理器实例来执行追剧任务，并处理UI状态更新。
+    现在支持 deep_mode 参数。
     """
-    # 定义一个可以传递给处理器的回调函数
     def progress_updater(progress, message):
-        # 这里的 task_manager.update_status_from_thread 是你项目中用于更新UI的函数
         task_manager.update_status_from_thread(progress, message)
 
     try:
-        # 直接调用 processor 实例的方法，并将回调函数传入
-        processor.run_regular_processing_task_concurrent(progress_callback=progress_updater, item_id=item_id)
+        # ★★★ 核心修改：把 deep_mode 参数传递给处理器 ★★★
+        processor.run_regular_processing_task_concurrent(
+            progress_callback=progress_updater, 
+            item_id=item_id,
+            deep_mode=deep_mode
+        )
 
     except Exception as e:
         task_name = "追剧列表更新"
+        if deep_mode:
+            task_name += " (深度模式)"
         if item_id:
             task_name = f"单项追剧更新 (ID: {item_id})"
         logger.error(f"执行 '{task_name}' 时发生顶层错误: {e}", exc_info=True)

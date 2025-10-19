@@ -336,6 +336,9 @@ const runTaskFromModal = async (isDeepMode) => {
     else if (['populate-metadata', 'sync-images-map', 'enrich-aliases'].includes(taskIdentifier)) {
       payload.force_full_update = isDeepMode;
     }
+    else if (taskIdentifier === 'process-watchlist') {
+      payload.deep_mode = isDeepMode;
+    }
 
     const response = await axios.post('/api/tasks/run', payload);
     message.success(response.data.message || '任务已成功提交！');
@@ -354,7 +357,7 @@ const triggerTaskNow = async (taskIdentifier) => {
     return;
   }
 
-  if (['full-scan', 'populate-metadata', 'sync-images-map', 'enrich-aliases'].includes(taskIdentifier)) {
+  if (['full-scan', 'populate-metadata', 'sync-images-map', 'enrich-aliases', 'process-watchlist'].includes(taskIdentifier)) {
     taskToRunInModal.value = taskIdentifier; 
     showSyncModeModal.value = true;
     return; 
