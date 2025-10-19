@@ -12,21 +12,58 @@ import config_manager
 import constants
 logger = logging.getLogger(__name__)
 
-# ★★★ 创建带重试功能的 Session ★★★
+# ★★★ 自定义的重试类，用于输出更友好的日志 ★★★
+class LoggedRetry(Retry):
+    """
+    一个继承自 urllib3.Retry 的自定义类，
+    用于在每次重试时记录一条更清晰、更友好的日志消息。
+    """
+    def increment(self, method, url, response=None, error=None, _pool=None, _stacktrace=None):
+        # 首先，调用父类的 increment 方法。
+        # 如果不应该重试了（例如，达到最大次数），它会抛出异常，
+        # 这样我们的日志代码就不会执行。
+        new_retry = super().increment(method, url, response, error, _pool, _stacktrace)
+
+        # 如果代码能执行到这里，说明即将进行一次重试。
+        
+        # 确定失败原因
+        if response:
+            reason = f"不成功的状态码: {response.status}"
+        elif error:
+            reason = f"连接错误: {error.__class__.__name__}"
+        else:
+            reason = "未知错误"
+
+        # 获取下一次重试的等待时间
+        backoff_time = self.get_backoff_time()
+        # 计算当前是第几次重试
+        attempt_number = len(self.history) + 1
+        
+        # 记录一条警告级别的日志，这样既能引起注意又不会像错误一样吓人
+        logger.warning(
+            f"  ➜ TMDb API 请求失败 ({reason})。将在 {backoff_time:.2f} 秒后重试... "
+            f"   └─ (第 {attempt_number} 次 / 共 {self.total} 次)"
+        )
+
+        return new_retry
+
+
+# ★★★ 创建带重试功能的 Session (已修改为使用 LoggedRetry) ★★★
 def requests_retry_session(
     retries=3,
-    backoff_factor=0.5,  # 每次重试的等待时间会增加 (e.g., 0.5s, 1s, 2s)
-    status_forcelist=(500, 502, 503, 504), # 遇到这些服务器错误码时，自动重试
+    backoff_factor=0.5,
+    status_forcelist=(500, 502, 503, 504),
     session=None,
 ):
     """创建一个配置了重试策略的 requests.Session 对象"""
     session = session or requests.Session()
-    retry = Retry(
+    retry = LoggedRetry(
         total=retries,
         read=retries,
         connect=retries,
         backoff_factor=backoff_factor,
         status_forcelist=status_forcelist,
+        allowed_methods=frozenset(['HEAD', 'GET', 'PUT', 'DELETE', 'OPTIONS', 'TRACE', 'POST']),
     )
     adapter = HTTPAdapter(max_retries=retry)
     session.mount('http://', adapter)
@@ -78,13 +115,13 @@ def _tmdb_request(endpoint: str, api_key: str, params: Optional[Dict[str, Any]] 
             error_details = error_data.get("status_message", str(e))
         except json.JSONDecodeError:
             error_details = str(e)
-        logger.error(f"TMDb API HTTP Error: {e.response.status_code} - {error_details}. URL: {full_url}", exc_info=False)
+        logger.error(f"  ➜ 所有重试后 TMDb API HTTP 出现错误: {e.response.status_code} - {error_details}. URL: {full_url}", exc_info=False)
         return None
     except requests.exceptions.RequestException as e:
-        logger.error(f"TMDb API Request Error: {e}. URL: {full_url}", exc_info=False)
+        logger.error(f"  ➜ 所有重试后 TMDb API 请求均出现错误: {e}. URL: {full_url}", exc_info=False)
         return None
     except json.JSONDecodeError as e:
-        logger.error(f"TMDb API JSON Decode Error: {e}. URL: {full_url}. Response: {response.text[:200] if response else 'N/A'}", exc_info=False)
+        logger.error(f"  ➜ TMDb API JSON 解码错误: {e}. URL: {full_url}. Response: {response.text[:200] if response else 'N/A'}", exc_info=False)
         return None
 # --- 获取电影的详细信息 ---
 def get_movie_details(movie_id: int, api_key: str, append_to_response: Optional[str] = "credits,videos,images,keywords,external_ids,translations,release_dates") -> Optional[Dict[str, Any]]:
