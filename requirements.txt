@@ -13,7 +13,6 @@ psycopg2-binary  # ★★★ 新增：PostgreSQL 数据库驱动 ★★★
 requests         # 用于发送所有HTTP请求
 beautifulsoup4   # 用于解析网页HTML
 lxml             # [必须] beautifulsoup4 的高性能解析器
-translators      # 用于翻译演员名和角色名
 pypinyin         # 用于处理人名拼音
 concurrent-log-handler # 并发日志处理器
 Jinja2
