@@ -376,10 +376,9 @@ def handle_mimicked_library_metadata_endpoint(path, mimicked_id, params):
     
 def handle_get_mimicked_library_items(user_id, mimicked_id, params):
     """
-    【V5.9 - 混合排序增强版】
-    - 增加了智能判断，当遇到本地不支持的排序字段或配置为原生排序时，
-      会将排序任务交还给 Emby 处理，以支持 DateLastContentAdded 等动态排序。
-    - 保留了对本地支持字段的高性能排序路径。
+    【V5.9 - 混合排序最终完美版】
+    - 修正了原生排序模式下，当客户端未指定SortBy时，代理未能将虚拟库的默认排序传递给Emby的问题。
+    - 修正了原生排序模式下，会错误地将虚拟ParentId传递给Emby导致返回为空的问题。
     """
     try:
         real_db_id = from_mimicked_id(mimicked_id)
@@ -387,7 +386,6 @@ def handle_get_mimicked_library_items(user_id, mimicked_id, params):
         if not collection_info:
             return Response(json.dumps({"Items": [], "TotalRecordCount": 0}), mimetype='application/json')
 
-        # 步骤 1-4: 获取用户最终可见的、经过所有过滤的媒体ID列表 (这部分逻辑不变)
         final_visible_ids = _get_final_item_ids_for_view(user_id, collection_info)
         total_record_count = len(final_visible_ids)
         
@@ -396,36 +394,32 @@ def handle_get_mimicked_library_items(user_id, mimicked_id, params):
 
         definition = collection_info.get('definition_json') or {}
         
-        # --- ★★★ 核心修改开始 ★★★ ---
-
-        # 1. 确定最终要使用的排序方式
-        # 如果前端请求中没有指定SortBy，则使用虚拟库定义中的默认设置
+        # 决策：无论参数来自客户端还是库的默认设置，都确定最终的排序方式
         sort_by_str = params.get('SortBy', definition.get('default_sort_by', 'SortName'))
         sort_order = params.get('SortOrder', definition.get('default_sort_order', 'Ascending'))
 
-        # 2. 定义本地数据库支持的排序字段列表
         SUPPORTED_LOCAL_SORT_FIELDS = ['PremiereDate', 'DateCreated', 'CommunityRating', 'ProductionYear', 'SortName', 'original']
         
-        # 3. 智能判断：是否应该使用 Emby 原生排序
-        # 触发条件：
-        #   a) 请求的排序字段不在我们的本地支持列表里 (例如 DateLastContentAdded)
-        #   b) 或者，虚拟库的默认排序设置为 'none' (对应UI上的“不设置(使用Emby原生排序)”)
         use_emby_native_sort = (sort_by_str not in SUPPORTED_LOCAL_SORT_FIELDS) or (definition.get('default_sort_by') == 'none')
 
-        # 4. 根据判断结果，进入不同的处理分支
         if use_emby_native_sort:
-            logger.debug(f"  ➜ 虚拟库 '{collection_info['name']}' 正在使用 Emby 原生排序 (SortBy={sort_by_str})。")
+            # --- 分支 A: Emby 原生排序路径 ---
+            logger.info(f"虚拟库 '{collection_info['name']}' 正在使用 Emby 原生排序 (SortBy={sort_by_str})。")
             
             base_url, api_key = _get_real_emby_url_and_key()
             target_url = f"{base_url}/emby/Users/{user_id}/Items"
             
             emby_params = params.copy()
             emby_params['api_key'] = api_key
-            emby_params['Ids'] = ",".join(map(str, final_visible_ids)) # 使用 map(str, ...) 确保所有ID都是字符串
+            emby_params['Ids'] = ",".join(map(str, final_visible_ids))
 
-            # --- ★★★ 核心修正：删除虚拟的 ParentId！ ★★★ ---
-            # 这个ID是代理自己用的，真实Emby服务器不认识它。
-            # 删掉它之后，Emby就会只根据我们提供的 'Ids' 列表来工作。
+            # --- ★★★ 核心修正 #1：将决策结果写入最终执行的参数中！ ★★★ ---
+            # 无论排序方式是来自客户端请求还是库的默认设置，都必须在这里明确赋值，
+            # 这样才能保证在首次加载时，默认排序能被正确传递给Emby。
+            emby_params['SortBy'] = sort_by_str
+            emby_params['SortOrder'] = sort_order
+            
+            # --- ★★★ 核心修正 #2：删除虚拟的 ParentId！ ★★★ ---
             if 'ParentId' in emby_params:
                 del emby_params['ParentId']
             
@@ -434,7 +428,6 @@ def handle_get_mimicked_library_items(user_id, mimicked_id, params):
                 resp.raise_for_status()
                 emby_response_data = resp.json()
                 
-                # 如果Emby因为某些原因没有返回Items，我们给个默认值
                 if 'Items' not in emby_response_data:
                     emby_response_data['Items'] = []
 
@@ -443,16 +436,12 @@ def handle_get_mimicked_library_items(user_id, mimicked_id, params):
                 return Response(json.dumps(emby_response_data), mimetype='application/json')
 
             except Exception as e:
-                logger.error(f"  ➜ 请求 Emby 原生排序时失败: {e}", exc_info=True)
+                logger.error(f"请求 Emby 原生排序时失败: {e}", exc_info=True)
                 return Response(json.dumps({"Items": [], "TotalRecordCount": total_record_count}), mimetype='application/json')
 
-            except Exception as e:
-                logger.error(f"  ➜ 请求 Emby 原生排序时失败: {e}", exc_info=True)
-                return Response(json.dumps({"Items": [], "TotalRecordCount": 0}), mimetype='application/json')
-
         else:
-            # --- 分支 B: 本地高性能排序路径 (功能有限，速度极快，即原版逻辑) ---
-            logger.debug(f"  ➜ 虚拟库 '{collection_info['name']}' 正在使用高性能本地排序 (SortBy={sort_by_str})。")
+            # --- 分支 B: 本地高性能排序路径 (保持不变) ---
+            logger.debug(f"虚拟库 '{collection_info['name']}' 正在使用高性能本地排序 (SortBy={sort_by_str})。")
             
             primary_sort_by = sort_by_str.split(',')[0]
             limit = int(params.get('Limit', 50))
@@ -479,7 +468,7 @@ def handle_get_mimicked_library_items(user_id, mimicked_id, params):
             return Response(json.dumps({"Items": final_items, "TotalRecordCount": total_record_count}), mimetype='application/json')
 
     except Exception as e:
-        logger.error(f"处理混合虚拟库时发生严重错误 (V5.9 混合排序版): {e}", exc_info=True)
+        logger.error(f"处理混合虚拟库时发生严重错误 (V5.9 混合排序完美版): {e}", exc_info=True)
         return Response(json.dumps({"Items": [], "TotalRecordCount": 0}), mimetype='application/json')
 
 def handle_get_latest_items(user_id, params):
