@@ -147,12 +147,12 @@ class WatchlistProcessor:
             logger.error(f"自动添加剧集 '{item_name}' 到追剧列表时发生数据库错误: {e}", exc_info=True)
 
     # --- 核心任务启动器 ---
-    def run_regular_processing_task_concurrent(self, progress_callback: callable, item_id: Optional[str] = None, deep_mode: bool = False):
+    def run_regular_processing_task_concurrent(self, progress_callback: callable, item_id: Optional[str] = None, force_full_update: bool = False):
         """【V2 - 流程修复版】修复因没有活跃剧集而导致洗版检查被跳过的流程缺陷。"""
         self.progress_callback = progress_callback
         task_name = "并发追剧更新"
         # ▼▼▼ 根据模式更新日志里的任务名 ▼▼▼
-        if deep_mode:
+        if force_full_update:
             task_name = "并发追剧更新 (深度模式)"
         if item_id: 
             task_name = f"单项追剧更新 (ID: {item_id})"
@@ -165,7 +165,7 @@ class WatchlistProcessor:
             
             # ▼▼▼ 核心修改：根据 deep_mode 动态决定要查哪些剧 ▼▼▼
             where_clause = ""
-            if deep_mode:
+            if force_full_update:
                 # 深度模式：查询所有剧集 (除了手动强制完结的)
                 where_clause = "WHERE force_ended = FALSE"
                 logger.info("  ➜ 已启用【深度模式】，将刷新所有追剧列表中的项目。")

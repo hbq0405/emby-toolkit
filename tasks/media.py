@@ -18,23 +18,22 @@ from utils import translate_country_list, get_unified_rating, determine_primary_
 
 logger = logging.getLogger(__name__)
 
-# ★★★ 全量处理任务 ★★★
-def task_run_full_scan(processor, force_reprocess: bool = False):
+# ★★★ 中文化角色名 ★★★
+def task_role_translation(processor, force_full_update: bool = False):
     """
-    根据传入的 force_reprocess 参数，决定是执行标准扫描还是强制扫描。
+    根据传入的 force_full_update 参数，决定是执行标准扫描还是深度更新。
     """
     # 1. 根据参数决定日志信息
-    if force_reprocess:
-        logger.info("即将执行全量处理，将处理所有媒体项...")
+    if force_full_update:
+        logger.info("  ➜ 即将执行深度模式，将处理所有媒体项并从TMDb获取最新数据...")
     else:
-        logger.info("即将执行增量处理，将跳过已处理项...")
+        logger.info("  ➜ 即将执行快速模式，将跳过已处理项...")
 
 
-    # 3. 调用核心处理函数，并将 force_reprocess 参数透传下去
+    # 3. 调用核心处理函数，并将 force_full_update 参数透传下去
     processor.process_full_library(
         update_status_callback=task_manager.update_status_from_thread,
-        force_reprocess_all=force_reprocess,
-        force_fetch_from_tmdb=force_reprocess
+        force_full_update=force_full_update 
     )
 
 # --- 使用手动编辑的结果处理媒体项 ---
@@ -142,8 +141,7 @@ def task_reprocess_single_item(processor, item_id: str, item_name_for_ui: str):
         # 现在才开始真正的工作
         processor.process_single_item(
             item_id, 
-            force_reprocess_this_item=True,
-            force_fetch_from_tmdb=True
+            force_full_update=True
         )
         # 任务成功完成后的状态更新会自动由任务队列处理，我们无需关心
         logger.trace(f"  ➜ 后台任务完成 ({item_name_for_ui})")

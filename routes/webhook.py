@@ -45,7 +45,7 @@ UPDATE_DEBOUNCE_TIMERS = {}
 UPDATE_DEBOUNCE_LOCK = threading.Lock()
 UPDATE_DEBOUNCE_TIME = 15
 
-def _handle_full_processing_flow(processor: 'MediaProcessor', item_id: str, force_reprocess: bool):
+def _handle_full_processing_flow(processor: 'MediaProcessor', item_id: str, force_full_update: bool):
     """
     【Webhook 专用】编排一个新入库媒体项的完整处理流程。
     包括：元数据处理 -> 自定义合集匹配 -> 封面生成。
@@ -63,7 +63,7 @@ def _handle_full_processing_flow(processor: 'MediaProcessor', item_id: str, forc
 
     processor.check_and_add_to_watchlist(item_details)
 
-    processed_successfully = processor.process_single_item(item_id, force_reprocess_this_item=force_reprocess)
+    processed_successfully = processor.process_single_item(item_id, force_full_update=force_full_update)
     
     if not processed_successfully:
         logger.warning(f"  ➜ 项目 '{item_name_for_log}' 的元数据处理未成功完成，跳过自定义合集匹配。")
@@ -249,7 +249,7 @@ def _process_batch_webhook_events():
                 _handle_full_processing_flow,
                 task_name=f"Webhook完整处理: {parent_name}",
                 item_id=parent_id,
-                force_reprocess=True
+                force_full_update=False
             )
         else:
             # ★★★ 核心修复：恢复正确的追更处理逻辑 ★★★

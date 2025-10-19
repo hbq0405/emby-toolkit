@@ -132,7 +132,7 @@ def task_process_actor_subscriptions(processor):
     processor.run_scheduled_task(update_status_callback=task_manager.update_status_from_thread)
 
 # --- 翻译演员任务 ---
-def task_actor_translation_cleanup(processor):
+def task_actor_translation(processor):
     """
     【V4.0 - 智能原料版】
     - 扫描时，同时获取演员的TMDb ID。

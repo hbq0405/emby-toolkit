@@ -629,16 +629,16 @@ class MediaProcessor:
         logger.info(f"  ➜ 成功通过 API 更新了 {updated_count} 位演员的名字。")
     
     # --- 全量处理的入口 ---
-    def process_full_library(self, update_status_callback: Optional[callable] = None, force_reprocess_all: bool = False, force_fetch_from_tmdb: bool = False):
+    def process_full_library(self, update_status_callback: Optional[callable] = None, force_full_update: bool = False):
         """
-        这是所有全量处理的唯一入口，它自己处理所有与“强制”相关的逻辑。
+        这是所有全量处理的唯一入口。
         """
         self.clear_stop_signal()
         
-        logger.trace(f"进入核心执行层: process_full_library, 接收到的 force_reprocess_all = {force_reprocess_all}, force_fetch_from_tmdb = {force_fetch_from_tmdb}")
+        logger.trace(f"进入核心执行层: process_full_library, 接收到的 force_full_update = {force_full_update}")
 
-        if force_reprocess_all:
-            logger.info("  ➜ 检测到“强制重处理”选项，正在清空已处理日志...")
+        if force_full_update:
+            logger.info("  ➜ 检测到“深度更新”模式，正在清空已处理日志...")
             try:
                 self.clear_processed_log()
             except Exception as e:
@@ -712,7 +712,7 @@ class MediaProcessor:
             item_id = item.get('Id')
             item_name = item.get('Name', f"ID:{item_id}")
 
-            if not force_reprocess_all and item_id in self.processed_items_cache:
+            if not force_full_update and item_id in self.processed_items_cache:
                 logger.info(f"  ➜ 正在跳过已处理的项目: {item_name}")
                 if update_status_callback:
                     # 调整进度条的起始点，使其在清理后从 30% 开始
@@ -728,8 +728,7 @@ class MediaProcessor:
             
             self.process_single_item(
                 item_id, 
-                force_reprocess_this_item=force_reprocess_all,
-                force_fetch_from_tmdb=force_fetch_from_tmdb
+                force_full_update=force_full_update
             )
             
             time_module.sleep(float(self.config.get("delay_between_items_sec", 0.5)))
@@ -738,15 +737,13 @@ class MediaProcessor:
             update_status_callback(100, "全量处理完成")
     
     # --- 核心处理总管 ---
-    def process_single_item(self, emby_item_id: str,
-                            force_reprocess_this_item: bool = False,
-                            force_fetch_from_tmdb: bool = False):
+    def process_single_item(self, emby_item_id: str, force_full_update: bool = False):
         """
         【V-API-Ready 最终版 - 带跳过功能】
         这个函数是API模式的入口，它会先检查是否需要跳过已处理的项目。
         """
         # 1. 除非强制，否则跳过已处理的
-        if not force_reprocess_this_item and emby_item_id in self.processed_items_cache:
+        if not force_full_update and emby_item_id in self.processed_items_cache:
             item_name_from_cache = self.processed_items_cache.get(emby_item_id, f"ID:{emby_item_id}")
             logger.info(f"媒体 '{item_name_from_cache}' 跳过已处理记录。")
             return True
@@ -784,12 +781,11 @@ class MediaProcessor:
         # 4. 将任务交给核心处理函数
         return self._process_item_core_logic(
             item_details_from_emby=item_details,
-            force_reprocess_this_item=force_reprocess_this_item,
-            force_fetch_from_tmdb=force_fetch_from_tmdb
+            force_full_update=force_full_update
         )
 
     # ---核心处理流程 ---
-    def _process_item_core_logic(self, item_details_from_emby: Dict[str, Any], force_reprocess_this_item: bool, force_fetch_from_tmdb: bool = False):
+    def _process_item_core_logic(self, item_details_from_emby: Dict[str, Any], force_full_update: bool = False):
         """
         【V-Final-Architecture-Pro - “设计师”最终版 + 评分机制】
         本函数作为“设计师”，只负责计算和思考，产出“设计图”和“物料清单”，然后全权委托给施工队。
@@ -808,10 +804,10 @@ class MediaProcessor:
         original_emby_actor_count = len([p for p in all_emby_people_for_count if p.get("Type") == "Actor"])
 
         if not tmdb_id:
-            logger.error(f"项目 '{item_name_for_log}' 缺少 TMDb ID，无法处理。")
+            logger.error(f"  ➜ '{item_name_for_log}' 缺少 TMDb ID，无法处理。")
             return False
         if not self.local_data_path:
-            logger.error(f"项目 '{item_name_for_log}' 处理失败：未在配置中设置“本地数据源路径”。")
+            logger.error(f"  ➜ '{item_name_for_log}' 处理失败：未在配置中设置“本地数据源路径”。")
             return False
         
         try:
@@ -894,8 +890,8 @@ class MediaProcessor:
 
 
             # 步骤3：如果是强制重处理就从TMDb拉取最新元数据，否则直接用本地的元数据。
-            if force_fetch_from_tmdb and self.tmdb_api_key:
-                logger.info(f"  ➜ 正在从 TMDB 获取最新演员表...")
+            if force_full_update and self.tmdb_api_key:
+                logger.info(f"  ➜ [深度更新模式] 正在从 TMDB 获取最新演员表...")
                 if item_type == "Movie":
                     movie_details = tmdb_handler.get_movie_details(tmdb_id, self.tmdb_api_key)
                     if movie_details and movie_details.get("credits", {}).get("cast"):
@@ -946,7 +942,7 @@ class MediaProcessor:
             cache_row = None # 用于后续判断是否走了快速模式
 
             # 1.尝试快速模式
-            if not force_fetch_from_tmdb:
+            if not force_full_update:
                 logger.info(f"  ➜ 尝试从元数据缓存加载 '{item_name_for_log}'...")
                 try:
                     with get_central_db_connection() as conn:

@@ -233,7 +233,7 @@
     <n-modal
       v-model:show="showSyncModeModal"
       preset="dialog"
-      title="选择同步模式"
+      title="选择处理模式"
       :mask-closable="false"
     >
       <n-text>您希望如何执行此任务？</n-text>
@@ -330,14 +330,18 @@ const runTaskFromModal = async (isDeepMode) => {
 
   try {
     const payload = { task_name: taskIdentifier };
-    if (taskIdentifier === 'full-scan') {
-      payload.force_reprocess = isDeepMode;
-    } 
-    else if (['populate-metadata', 'sync-images-map', 'enrich-aliases'].includes(taskIdentifier)) {
+
+    // ▼▼▼ 核心修改：将所有支持双模的任务统一管理 ▼▼▼
+    const dualModeTasks = [
+      'role-translation',    
+      'populate-metadata',
+      'enrich-aliases',
+      'process-watchlist'
+    ];
+
+    if (dualModeTasks.includes(taskIdentifier)) {
+      // 对所有在列表中的任务，统一使用 force_full_update 参数
       payload.force_full_update = isDeepMode;
-    }
-    else if (taskIdentifier === 'process-watchlist') {
-      payload.deep_mode = isDeepMode;
     }
 
     const response = await axios.post('/api/tasks/run', payload);
@@ -357,7 +361,7 @@ const triggerTaskNow = async (taskIdentifier) => {
     return;
   }
 
-  if (['full-scan', 'populate-metadata', 'sync-images-map', 'enrich-aliases', 'process-watchlist'].includes(taskIdentifier)) {
+  if (['role-translation', 'populate-metadata', 'enrich-aliases', 'process-watchlist'].includes(taskIdentifier)) {
     taskToRunInModal.value = taskIdentifier; 
     showSyncModeModal.value = true;
     return; 

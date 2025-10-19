@@ -95,9 +95,9 @@ JOB_ID_PROCESS_WATCHLIST = "scheduled_process_watchlist"
 JOB_ID_REVIVAL_CHECK = "scheduled_revival_check"
 
 # --- 数据库辅助函数 ---
-def task_process_single_item(processor: MediaProcessor, item_id: str, force_reprocess: bool):
+def task_process_single_item(processor: MediaProcessor, item_id: str, force_full_update: bool):
     """任务：处理单个媒体项"""
-    processor.process_single_item(item_id, force_reprocess)
+    processor.process_single_item(item_id, force_full_update)
 
 # --- 保存配置并重新加载的函数 ---
 def save_config_and_reload(new_config: Dict[str, Any]):

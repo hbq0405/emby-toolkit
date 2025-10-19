@@ -10,10 +10,10 @@ import extensions
 import task_manager
 
 # 导入各个模块的任务函数
-from .actors import (task_sync_person_map, task_enrich_aliases, task_actor_translation_cleanup, 
+from .actors import (task_sync_person_map, task_enrich_aliases, task_actor_translation, 
                      task_process_actor_subscriptions, task_purge_unregistered_actors, task_merge_duplicate_actors,
                      task_purge_ghost_actors)
-from .media import task_run_full_scan, task_populate_metadata_cache, task_apply_main_cast_to_episodes 
+from .media import task_role_translation, task_populate_metadata_cache, task_apply_main_cast_to_episodes 
 from .watchlist import task_process_watchlist, task_run_revival_check
 from .collections import task_refresh_collections, task_process_all_custom_collections, task_process_custom_collection
 from .subscriptions import task_auto_subscribe, task_update_resubscribe_cache, task_resubscribe_library
@@ -101,11 +101,18 @@ def _task_run_chain_internal(processor, task_name: str, sequence_config_key: str
                     continue
 
                 # ★★★ 核心修复：根据任务键，使用正确的关键字参数调用 ★★★
-                if task_key == 'full-scan':
-                    task_function(target_processor, force_reprocess=False)
-                elif task_key in ['enrich-aliases', 'sync-images-map', 'populate-metadata']:
+                tasks_requiring_force_flag = [
+                    'role-translation', 
+                    'enrich-aliases', 
+                    'process-watchlist', 
+                    'populate-metadata'
+                ]
+                
+                if task_key in tasks_requiring_force_flag:
+                    # 所有在列表中的任务，都以增量模式调用
                     task_function(target_processor, force_full_update=False)
                 else:
+                    # 其他任务，正常调用
                     task_function(target_processor)
 
                 time.sleep(1)
@@ -176,8 +183,8 @@ def get_task_registry(context: str = 'all'):
         'update-resubscribe-cache': (task_update_resubscribe_cache, "刷新洗版状态", 'media', True),
         'sync-all-user-data': (task_sync_all_user_data, "同步用户数据", 'media', True),
         'enrich-aliases': (task_enrich_aliases, "演员数据补充", 'media', True),
-        'full-scan': (task_run_full_scan, "中文化角色名", 'media', True),
-        'actor-cleanup': (task_actor_translation_cleanup, "中文化演员名", 'media', True),
+        'role-translation': (task_role_translation, "中文化角色名", 'media', True),
+        'actor-translation': (task_actor_translation, "中文化演员名", 'media', True),
         'refresh-collections': (task_refresh_collections, "刷新原生合集", 'media', True),
         'custom-collections': (task_process_all_custom_collections, "刷新自建合集", 'media', True),
         'resubscribe-library': (task_resubscribe_library, "媒体洗版订阅", 'media', True),
