@@ -586,6 +586,10 @@ class WatchlistProcessor:
         missing_info = self._calculate_missing_info(latest_series_data.get('seasons', []), all_tmdb_episodes, emby_seasons)
         has_missing_media = bool(missing_info["missing_seasons"] or missing_info["missing_episodes"])
 
+        # 只要“还有下一集要等”或者“已经播出的集没下全”，就视为连载中
+        is_truly_airing = bool(real_next_episode_to_air or has_missing_media)
+        logger.info(f"  ➜ 最终判定 '{item_name}' 的真实连载状态为: {is_truly_airing}")
+
         # ★★★ 新增：元数据完整性检查 ★★★
         has_complete_metadata = self._check_all_episodes_have_overview(all_tmdb_episodes)
 

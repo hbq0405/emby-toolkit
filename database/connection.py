@@ -197,7 +197,8 @@ def init_db():
                         missing_info_json JSONB,
                         paused_until DATE DEFAULT NULL,
                         force_ended BOOLEAN DEFAULT FALSE NOT NULL,
-                        resubscribe_info_json JSONB
+                        resubscribe_info_json JSONB,
+                        is_airing BOOLEAN DEFAULT FALSE NOT NULL
                     )
                 """)
                 cursor.execute("CREATE INDEX IF NOT EXISTS idx_watchlist_status ON watchlist (status)")
@@ -454,7 +455,8 @@ def init_db():
                         },
                         'watchlist': {
                             "last_episode_to_air_json": "JSONB",
-                            "resubscribe_info_json": "JSONB"
+                            "resubscribe_info_json": "JSONB",
+                            "is_airing": "BOOLEAN DEFAULT FALSE NOT NULL"
                         },
                         'resubscribe_cache': {
                             "matched_rule_id": "INTEGER",

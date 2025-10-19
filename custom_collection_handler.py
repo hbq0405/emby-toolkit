@@ -707,16 +707,15 @@ class FilterEngine:
     """
     def __init__(self):
         # ★ 新增：为“连载中”规则缓存TMDb ID，避免在单次执行中重复查询数据库
-        self.in_progress_series_ids = None
+        self.airing_series_ids = None
 
-    def _get_in_progress_ids(self):
+    def _get_airing_ids(self): # ◀◀◀ 函数名也改了
         """辅助函数，带缓存地获取连载中ID"""
-        if self.in_progress_series_ids is None:
+        if self.airing_series_ids is None:
             logger.debug("  ➜ 筛选引擎：首次需要“连载中”数据，正在从数据库查询...")
-            # 调用我们之前约定好的 watchlist_db 中的函数
-            self.in_progress_series_ids = watchlist_db.get_in_progress_series_tmdb_ids()
-            logger.debug(f"  ➜ 缓存了 {len(self.in_progress_series_ids)} 个“连载中”剧集ID。")
-        return self.in_progress_series_ids
+            self.airing_series_ids = watchlist_db.get_airing_series_tmdb_ids()
+            logger.debug(f"  ➜ 缓存了 {len(self.airing_series_ids)} 个“连载中”剧集ID。")
+        return self.airing_series_ids
 
     def _item_matches_rules(self, item_metadata: Dict[str, Any], rules: List[Dict[str, Any]], logic: str) -> bool:
         if not rules: return True
@@ -809,18 +808,15 @@ class FilterEngine:
 
             # 5. 处理连载剧集
             elif field == 'is_in_progress':
-                # 这个规则只对电视剧生效
                 if item_metadata.get('item_type') == 'Series':
-                    in_progress_ids = self._get_in_progress_ids()
-                    is_item_in_progress = str(item_metadata.get('tmdb_id')) in in_progress_ids
+                    airing_ids = self._get_airing_ids()
+                    is_item_airing = str(item_metadata.get('tmdb_id')) in airing_ids
 
-                    # 规则是 "is True" 或 "is_not False" -> 必须是连载中
                     if (op == 'is' and value is True) or (op == 'is_not' and value is False):
-                        if is_item_in_progress:
+                        if is_item_airing:
                             match = True
-                    # 规则是 "is False" 或 "is_not True" -> 必须不是连载中
                     elif (op == 'is' and value is False) or (op == 'is_not' and value is True):
-                        if not is_item_in_progress:
+                        if not is_item_airing:
                             match = True
 
             elif field == 'title':
