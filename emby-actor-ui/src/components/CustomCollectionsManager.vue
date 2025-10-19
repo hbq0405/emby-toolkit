@@ -347,6 +347,18 @@
                     clearable
                   />
                 </template>
+                <template v-else-if="ruleConfig[rule.field]?.type === 'boolean_select'">
+                  <n-select
+                    v-model:value="rule.value"
+                    placeholder="选择状态"
+                    :options="[
+                      { label: '是', value: true },
+                      { label: '不是', value: false }
+                    ]"
+                    :disabled="!rule.operator"
+                    style="flex-grow: 1; min-width: 180px;"
+                  />
+                </template>
                 <n-input-number
                   v-else-if="['release_date', 'date_added'].includes(rule.field)"
                   v-model:value="rule.value"
@@ -933,6 +945,7 @@ const ruleConfig = {
   unified_rating: { label: '家长分级', type: 'select', operators: ['is_one_of', 'is_none_of', 'eq'] },
   release_date: { label: '上映于', type: 'date', operators: ['in_last_days', 'not_in_last_days'] },
   date_added: { label: '入库于', type: 'date', operators: ['in_last_days', 'not_in_last_days'] },
+  is_in_progress: { label: '是否连载中', type: 'boolean_select', operators: ['is', 'is_not'] },
   playback_status: { label: '播放状态', type: 'user_data_select', operators: ['is', 'is_not'] },
   is_favorite: { label: '是否收藏', type: 'user_data_bool', operators: ['is', 'is_not'] },
 };

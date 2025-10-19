@@ -205,3 +205,41 @@ def update_resubscribe_info(item_id: str, season_number: int, timestamp: str):
             logger.info(f"  ➜ 已记录 ItemID {item_id} 第 {season_number} 季的洗版订阅时间。")
     except Exception as e:
         logger.error(f"更新 ItemID {item_id} 第 {season_number} 季的洗版订阅时间时出错: {e}", exc_info=True)
+
+def get_in_progress_series_tmdb_ids() -> set:
+    """
+    【新增】获取所有“连载中”剧集的 TMDb ID 集合。
+    “连载中”定义：
+    1. 在追剧列表 (watchlist) 中，且状态为 'Watching'。
+    2. 并且不满足以下任一“完结”条件：
+        a. TMDb 剧集状态已是 'Ended' 或 'Canceled'。
+        b. 最新一季已无“下一集待播出”信息 (next_episode_to_air_json IS NULL) 
+           且 本地没有缺失集 (missing_info_json IS NULL 或 '{}')。
+    
+    这个逻辑完美复刻了你的需求，且忽略了对元数据（简介）的检查。
+    """
+    in_progress_ids = set()
+    try:
+        with get_db_connection() as conn:
+            cursor = conn.cursor()
+            # ★★★ 核心查询逻辑 ★★★
+            sql = """
+                SELECT tmdb_id FROM watchlist
+                WHERE
+                    status = 'Watching'
+                    AND force_ended = FALSE
+                    AND (
+                        tmdb_status NOT IN ('Ended', 'Canceled')
+                        OR next_episode_to_air_json IS NOT NULL
+                        OR (missing_info_json IS NOT NULL AND missing_info_json::text != '{}' AND missing_info_json::text != '[]')
+                    );
+            """
+            cursor.execute(sql)
+            rows = cursor.fetchall()
+            for row in rows:
+                in_progress_ids.add(str(row['tmdb_id']))
+        logger.debug(f"DB: 查询到 {len(in_progress_ids)} 个“连载中”的剧集TMDb ID。")
+        return in_progress_ids
+    except Exception as e:
+        logger.error(f"从数据库获取“连载中”剧集ID时出错: {e}", exc_info=True)
+        return set() # 出错时返回空集合，避免影响主流程
