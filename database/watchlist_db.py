@@ -226,7 +226,7 @@ def get_in_progress_series_tmdb_ids() -> set:
             sql = """
                 SELECT tmdb_id FROM watchlist
                 WHERE
-                    status = 'Watching'
+                    status IN ('Watching', 'Paused')  
                     AND force_ended = FALSE
                     AND (
                         tmdb_status NOT IN ('Ended', 'Canceled')
