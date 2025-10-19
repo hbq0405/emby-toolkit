@@ -470,11 +470,8 @@ def handle_get_mimicked_library_items(user_id, mimicked_id, params):
 
 def handle_get_latest_items(user_id, params):
     """
-    【V5.4 - 综合排序最终完美版】
-    - 采纳用户建议，为混合库的“最新项目”实现最强的综合排序逻辑。
     - 如果虚拟库包含剧集（纯剧集或混合库），则强制按“最后一集更新,添加入库”(DateLastContentAdded,DateCreated)的多重标准排序。
     - 如果是纯电影库，则强制按“添加时间”(DateCreated)排序。
-    - 此逻辑将完美、优雅地处理所有类型的虚拟库的“最新”排序。
     """
     try:
         base_url, api_key = _get_real_emby_url_and_key()
@@ -504,8 +501,6 @@ def handle_get_latest_items(user_id, params):
 
             final_visible_ids = list(base_emby_ids_set)
             if not final_visible_ids: return Response(json.dumps([]), mimetype='application/json')
-
-            # --- ★★★ 核心修正：实现全新的“综合排序”决策逻辑 ★★★ ---
             
             # 1. 判断库的内容类型
             item_type_from_db = definition.get('item_type', 'Movie')
@@ -534,7 +529,7 @@ def handle_get_latest_items(user_id, params):
 
             if use_emby_native_sort:
                 # --- 分支 A: Emby 原生排序路径 ---
-                logger.info(f"首页最新项目(库:'{collection_info['name']}')正在使用Emby原生排序 (SortBy={sort_by_str})。")
+                logger.debug(f"  ➜ 首页最新项目(库:'{collection_info['name']}')正在使用Emby原生排序 (SortBy={sort_by_str})。")
                 
                 emby_params = {
                     'api_key': api_key,
@@ -555,7 +550,7 @@ def handle_get_latest_items(user_id, params):
 
             else:
                 # --- 分支 B: 本地高性能排序路径 ---
-                logger.debug(f"首页最新项目(库:'{collection_info['name']}')正在使用本地高性能排序 (SortBy={sort_by_str})。")
+                logger.debug(f"  ➜ 首页最新项目(库:'{collection_info['name']}')正在使用本地高性能排序 (SortBy={sort_by_str})。")
                 latest_ids = queries_db.get_sorted_and_paginated_ids(final_visible_ids, sort_by_str, sort_order, limit, 0)
 
                 if not latest_ids: return Response(json.dumps([]), mimetype='application/json')
@@ -567,7 +562,7 @@ def handle_get_latest_items(user_id, params):
 
         # --- 情况二：处理【全局】“最近添加”请求 (这部分逻辑保持不变，因为它总是按DateCreated排序) ---
         elif not virtual_library_id:
-            logger.debug(f"正在为用户 {user_id} 处理全局“最新媒体”请求...")
+            logger.debug(f"  ➜ 正在为用户 {user_id} 处理全局“最新媒体”请求...")
             
             all_collections = collection_db.get_all_active_custom_collections()
             visible_collections = []
@@ -577,7 +572,7 @@ def handle_get_latest_items(user_id, params):
                     visible_collections.append(coll)
             
             if not visible_collections:
-                logger.debug("该用户没有任何可见的虚拟库，返回空列表。")
+                logger.debug("  ➜ 该用户没有任何可见的虚拟库，返回空列表。")
                 return Response(json.dumps([]), mimetype='application/json')
 
             user_accessible_ids = None
@@ -623,7 +618,7 @@ def handle_get_latest_items(user_id, params):
             items_map = {item['Id']: item for item in items_from_emby}
             final_items = [items_map[id] for id in latest_ids if id in items_map]
             
-            logger.debug(f"为用户 {user_id} 的全局“最新媒体”请求成功返回 {len(final_items)} 个项目。")
+            logger.debug(f"  ➜ 为用户 {user_id} 的全局“最新媒体”请求成功返回 {len(final_items)} 个项目。")
             return Response(json.dumps(final_items), mimetype='application/json')
             
         # --- 情况三：原生库的请求，直接转发 ---
@@ -639,7 +634,7 @@ def handle_get_latest_items(user_id, params):
             return Response(resp.iter_content(chunk_size=8192), resp.status_code, response_headers)
             
     except Exception as e:
-        logger.error(f"处理最新媒体时发生未知错误 (V5.4 同步版): {e}", exc_info=True)
+        logger.error(f"  ➜ 处理最新媒体时发生未知错误 (V5.4 同步版): {e}", exc_info=True)
         return Response(json.dumps([]), mimetype='application/json')
 
 proxy_app = Flask(__name__)
