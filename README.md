@@ -65,7 +65,7 @@
           - PGID=1000                                 # 设置为DOCKER组ID (一键更新用，‘grep docker /etc/group’可以查询)
           - UMASK=022                                 # 设置文件权限掩码，建议022
           - DB_HOST=172.17.0.1                        # 数据库服务的地址 
-          - DB_PORT=5432                              # 数据库服务的端口 
+          - DB_PORT=5433                              # 数据库服务的端口 
           - DB_USER=embytoolkit                       # !!! (可选) 修改为你自己的数据库用户名
           - DB_PASSWORD=embytoolkit                   # !!! (必填) 请修改为一个强密码 !!!
           - DB_NAME=embytoolkit                       # !!! (可选) 修改为你自己的数据库名
@@ -92,8 +92,8 @@
           - POSTGRES_PASSWORD=embytoolkit           # !!! (必填) 修改，与上面保持一致 !!!
           - POSTGRES_DB=embytoolkit                 # !!! (可选) 修改，与上面保持一致
         ports:
-          # (可选) 将数据库端口映射到宿主机，方便使用Navicat等工具连接调试
-          - "5432:5432"
+          # 将数据库端口映射到宿主机，方便使用Navicat等工具连接调试
+          - "5433:5432"
         healthcheck:
           # 健康检查，确保数据库服务已准备好接受连接
           test: ["CMD-SHELL", "pg_isready -U embytoolkit -d embytoolkit"]
