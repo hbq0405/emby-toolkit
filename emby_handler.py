@@ -1653,6 +1653,65 @@ def get_all_accessible_item_ids_for_user_optimized(base_url: str, api_key: str, 
     logger.trace(f"  ➜ 成功为用户 {user_id} 获取到 {len(accessible_ids)} 个原生可访问的媒体项ID。")
     return accessible_ids
 
+def get_user_ids_with_access_to_item(item_id: str, base_url: str, api_key: str) -> List[str]:
+    """
+    获取对特定媒体项拥有原生访问权限的所有用户ID列表。
+    通过并发查询每个用户的视图来实现，效率较高。
+    """
+    if not all([item_id, base_url, api_key]):
+        logger.error("get_user_ids_with_access_to_item: 缺少必要参数。")
+        return []
+
+    all_users = get_all_emby_users_from_server(base_url, api_key)
+    if not all_users:
+        logger.error("无法获取用户列表，无法确定项目访问权限。")
+        return []
+
+    user_ids_with_access = []
+    # 使用线程锁来确保并发写入列表时的线程安全
+    lock = threading.Lock()
+
+    def check_access_for_user(user: Dict[str, Any]):
+        """在单个线程中为单个用户检查权限"""
+        user_id = user.get("Id")
+        if not user_id:
+            return
+
+        # 我们查询用户的 /Items 接口，如果能查到这个 item_id，就说明有权限
+        api_url = f"{base_url.rstrip('/')}/Users/{user_id}/Items"
+        params = {
+            "api_key": api_key,
+            "Ids": item_id,
+            "Limit": 1,
+            "Fields": "Id"  # 只请求最少的数据以提高效率
+        }
+        api_timeout = config_manager.APP_CONFIG.get(constants.CONFIG_OPTION_EMBY_API_TIMEOUT, 30)
+
+        try:
+            response = requests.get(api_url, params=params, timeout=api_timeout)
+            # 只要成功返回200，就说明在用户视图内
+            if response.status_code == 200:
+                data = response.json()
+                # 再次确认 Items 列表不为空
+                if data.get("Items"):
+                    with lock:
+                        user_ids_with_access.append(user_id)
+                    logger.trace(f"  ➜ 权限检查：用户 '{user.get('Name')}' 可以访问项目 {item_id}。")
+        except Exception as e:
+            logger.warning(f"  ➜ 为用户 '{user.get('Name')}' 检查项目 {item_id} 访问权限时出错: {e}")
+
+    logger.debug(f"  ➜ 开始为 {len(all_users)} 个用户并发检查新项目 {item_id} 的访问权限...")
+    # 使用 concurrent.futures.ThreadPoolExecutor 来并发执行检查
+    with concurrent.futures.ThreadPoolExecutor(max_workers=10) as executor:
+        # 提交所有用户的检查任务
+        futures = [executor.submit(check_access_for_user, user) for user in all_users]
+        # 等待所有任务完成
+        for future in concurrent.futures.as_completed(futures):
+            pass  # 我们不需要处理返回值，因为函数内部直接操作列表
+    
+    logger.debug(f"  ➜ 权限检查完成，共有 {len(user_ids_with_access)} 个用户可以访问新项目。")
+    return user_ids_with_access
+
 # --- 用户管理模块 ---
 def create_user_with_policy(
     username: str, 
