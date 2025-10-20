@@ -973,8 +973,6 @@ def update_user_caches_on_item_add(
     logger.info(f"  ➜ 开始为新入库项目 《{new_item_name}》 更新用户权限缓存...")
     
     try:
-        # 1. 获取这个新媒体项的原生权限（谁能看它）
-        #    注意：这个函数需要你在 emby_handler.py 中实现
         user_ids_with_access = emby_handler.get_user_ids_with_access_to_item(
             item_id=new_item_emby_id,
             base_url=emby_config['url'],
@@ -987,14 +985,10 @@ def update_user_caches_on_item_add(
 
         logger.debug(f"  ➜ 共有 {len(user_ids_with_access)} 个用户对新项目有原生访问权限。")
 
-        # 2. 构造要追加的 JSON 对象
-        item_to_append_json = json.dumps({'emby_id': new_item_emby_id, 'tmdb_id': new_item_tmdb_id})
+        item_to_append_json = json.dumps([new_item_emby_id])
 
-        # 3. 在一个事务中，为所有有权限的用户，更新所有匹配的合集
         with get_db_connection() as conn:
             with conn.cursor() as cursor:
-                # 使用 jsonb_insert 可以更精确地控制插入位置，但 jsonb_concat (||) 更简单
-                # 我们这里用 || 追加到末尾
                 sql = """
                     UPDATE user_collection_cache
                     SET 
@@ -1007,7 +1001,7 @@ def update_user_caches_on_item_add(
                 """
                 
                 cursor.execute(sql, (
-                    f'[{item_to_append_json}]', # PostgreSQL 需要一个数组形式的 JSONB
+                    item_to_append_json, 
                     user_ids_with_access,
                     matching_collection_ids
                 ))
