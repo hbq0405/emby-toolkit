@@ -1885,7 +1885,7 @@ class MediaProcessor:
                     updated_names_count += 1
             
             if updated_names_count > 0:
-                logger.info(f"    ➜ 成功通过 API 更新了 {updated_names_count} 位演员的名字。")
+                logger.info(f"  ➜ 成功通过 API 更新了 {updated_names_count} 位演员的名字。")
 
             # ======================================================================
             # 步骤 4: 文件读、改、写 (包含最终格式化)
@@ -1915,24 +1915,24 @@ class MediaProcessor:
                     
                     # --- B. 处理新增演员 ---
                     else:
-                        logger.info(f"    ➜ 发现新演员: '{actor_from_frontend.get('name')}' (TMDb ID: {tmdb_id_str})，开始补全元数据...")
+                        logger.info(f"    ├─ 发现新演员: '{actor_from_frontend.get('name')}' (TMDb ID: {tmdb_id_str})，开始补全元数据...")
                         
                         # B1: 优先从 actor_metadata 缓存获取
                         person_details = self._get_actor_metadata_from_cache(tmdb_id_str, cursor)
                         
                         # B2: 如果缓存没有，则从 TMDb API 获取并反哺
                         if not person_details:
-                            logger.debug(f"      ➜ 缓存未命中，从 TMDb API 获取详情...")
+                            logger.debug(f"  ➜ 缓存未命中，从 TMDb API 获取详情...")
                             person_details_from_api = tmdb_handler.get_person_details_tmdb(tmdb_id_str, self.tmdb_api_key)
                             if person_details_from_api:
                                 self.actor_db_manager.update_actor_metadata_from_tmdb(cursor, tmdb_id_str, person_details_from_api)
                                 person_details = person_details_from_api # 使用API返回的数据
                             else:
-                                logger.warning(f"      ➜ 无法获取TMDb ID {tmdb_id_str} 的详情，将使用基础信息跳过。")
+                                logger.warning(f"  ➜ 无法获取TMDb ID {tmdb_id_str} 的详情，将使用基础信息跳过。")
                                 # 即使失败，也创建一个基础对象，避免丢失
                                 person_details = {} 
                         else:
-                            logger.debug(f"      ➜ 成功从数据库缓存命中元数据。")
+                            logger.debug(f"  ➜ 成功从数据库缓存命中元数据。")
 
                         # B3: 构建一个与 override 文件格式一致的新演员对象
                         new_actor_entry = {
