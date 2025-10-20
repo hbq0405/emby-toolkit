@@ -395,13 +395,14 @@ def handle_get_latest_items(user_id, params):
     """
     【V6.0 - “完全体”异步权限预计算版】
     - 无论是处理单个库还是全局最新，都直接从预计算好的专属列表中获取数据。
+    - 彻底消除了所有实时的 Emby 权限检查网络请求，实现首页“秒开”。
     """
     try:
         base_url, api_key = _get_real_emby_url_and_key()
         virtual_library_id = params.get('ParentId') or params.get('customViewId')
 
         # ======================================================================
-        # 场景一：处理针对【单个】虚拟库的“最近添加”请求 (例如，进入虚拟库首页)
+        # 场景一：处理针对【单个】虚拟库的“最近添加”请求
         # ======================================================================
         if virtual_library_id and is_mimicked_id(virtual_library_id):
             real_db_id = from_mimicked_id(virtual_library_id)
@@ -409,13 +410,14 @@ def handle_get_latest_items(user_id, params):
             if not collection_info: 
                 return Response(json.dumps([]), mimetype='application/json')
 
-            # 这个函数现在的作用就是去 user_collection_cache 表里查出专属列表
+            # ★★★ 核心修改：直接调用 V8.0 架构的专属列表获取函数 ★★★
+            # 这个函数内部已经处理了“查缓存”和“应用动态筛选”
             final_visible_ids = _get_final_item_ids_for_view(user_id, collection_info)
             
             if not final_visible_ids: 
                 return Response(json.dumps([]), mimetype='application/json')
             
-            # --- 后续的排序和分页逻辑完全不变，因为它们本来就是对干净列表操作的 ---
+            # --- 后续的排序和分页逻辑，现在变得更智能 ---
             definition = collection_info.get('definition_json') or {}
             item_type_from_db = definition.get('item_type', ['Movie'])
             is_series_focused = 'Series' in item_type_from_db
@@ -441,12 +443,12 @@ def handle_get_latest_items(user_id, params):
             return Response(json.dumps(final_items), mimetype='application/json')
 
         # ======================================================================
-        # 场景二：处理【全局】“最近添加”请求 (例如，Emby 主页最顶部的“最新媒体”)
+        # 场景二：处理【全局】“最近添加”请求 (首页加载的核心)
         # ======================================================================
         elif not virtual_library_id:
             logger.debug(f"  ➜ 正在为用户 {user_id} 处理全局“最新媒体”请求...")
             
-            # --- 不再遍历所有合集，而是直接从 user_collection_cache 聚合 ---
+            # ★★★ 核心修改：不再遍历所有合集，而是直接从 user_collection_cache 聚合 ★★★
             all_possible_ids = set()
             from database.connection import get_db_connection
             try:
@@ -458,7 +460,7 @@ def handle_get_latest_items(user_id, params):
                             (user_id,)
                         )
                         rows = cursor.fetchall()
-                        # 在内存中把所有列表合并成一个大的 set
+                        # 在内存中把所有列表合并成一个大的 set，自动去重
                         for row in rows:
                             if row['visible_emby_ids_json']:
                                 all_possible_ids.update(row['visible_emby_ids_json'])
@@ -469,6 +471,7 @@ def handle_get_latest_items(user_id, params):
             if not all_possible_ids:
                 return Response(json.dumps([]), mimetype='application/json')
 
+            # --- 后续逻辑与 V5.4 类似，但数据源已是最高效的 ---
             limit = int(params.get('Limit', 100))
             # 全局最新，永远按 DateCreated 排序
             latest_ids = queries_db.get_sorted_and_paginated_ids(list(all_possible_ids), 'DateCreated', 'Descending', limit, 0)
@@ -485,7 +488,7 @@ def handle_get_latest_items(user_id, params):
             return Response(json.dumps(final_items), mimetype='application/json')
             
         # ======================================================================
-        # 场景三：原生库的请求，直接转发 
+        # 场景三：原生库的请求，直接转发 (保持不变)
         # ======================================================================
         else:
             target_url = f"{base_url}/{request.path.lstrip('/')}"
