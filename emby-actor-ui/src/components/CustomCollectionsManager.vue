@@ -312,7 +312,7 @@
                     :placeholder="rule.field === 'actors' ? '输入以搜索并添加演员' : '输入以搜索并添加导演'"
                     :options="actorOptions"
                     :loading="isSearchingActors"
-                    @search="handleActorSearch"
+                    @search="(query) => handlePersonSearch(query, rule)"  
                     :disabled="!rule.operator"
                     style="flex-grow: 1; min-width: 220px;"
                     label-field="name"
@@ -684,7 +684,7 @@
           <n-input
             v-model:value="actorSearchText"
             placeholder="搜索演员，例如：周星驰"
-            @update:value="handleActorSearchForDiscover" 
+            @update:value="(query) => handlePersonSearch(query, null)" 
             clearable
           />
           <div v-if="isSearchingActors || actorOptions.length > 0" class="search-results-box person-results">
@@ -705,7 +705,7 @@
           <n-input
             v-model:value="directorSearchText"
             placeholder="搜索导演，例如：克里斯托弗·诺兰"
-            @update:value="handleDirectorSearch" 
+            @update:value="(query) => handlePersonSearch(query, null)" 
             clearable
           />
           <div v-if="isSearchingDirectors || directorOptions.length > 0" class="search-results-box person-results"> 
@@ -1267,24 +1267,55 @@ const handleStudioSearch = (query) => {
   }, 300);
 };
 
-const handleActorSearch = (query) => {
+let personSearchTimeout = null;
+
+const handlePersonSearch = (query, rule) => {
+  // 区分是来自筛选规则还是探索助手
+  const isFilterRule = !!rule; 
+  
   if (!query) {
-    actorOptions.value = [];
+    // 如果清空了搜索框，选项列表里应该只保留已选中的演员
+    if (isFilterRule) {
+      actorOptions.value = Array.isArray(rule.value) ? rule.value : [];
+    } else {
+      actorOptions.value = []; // 探索助手的逻辑
+    }
     return;
   }
+
   isSearchingActors.value = true;
-  if (searchTimeout) clearTimeout(searchTimeout);
-  searchTimeout = setTimeout(async () => {
+  if (personSearchTimeout) clearTimeout(personSearchTimeout);
+
+  personSearchTimeout = setTimeout(async () => {
     try {
-      // ★★★ 核心修改 1/3: 调用新的、更强大的 API 端点 ★★★
       const response = await axios.get(`/api/custom_collections/config/tmdb_search_persons?q=${query}`);
-      // ★★★ 核心修改 2/3: 直接使用返回的完整对象数组，不再需要 .map ★★★
-      actorOptions.value = response.data; 
+      const searchResults = response.data || [];
+      
+      if (isFilterRule) {
+        // ★★★ 筛选规则的逻辑：合并“已选项”和“新搜索结果” ★★★
+        const selectedPersons = Array.isArray(rule.value) ? rule.value : [];
+        const selectedIds = new Set(selectedPersons.map(p => p.id));
+        const newResults = searchResults.filter(result => !selectedIds.has(result.id));
+        actorOptions.value = [...selectedPersons, ...newResults];
+      } else {
+        // ★★★ 探索助手的逻辑：直接显示搜索结果 ★★★
+        actorOptions.value = searchResults;
+        // 同样，导演搜索也用这个结果
+        directorOptions.value = searchResults;
+      }
+
     } catch (error) {
-      console.error('搜索演员失败:', error);
-      actorOptions.value = [];
+      console.error('搜索人物失败:', error);
+      if (isFilterRule) {
+        actorOptions.value = Array.isArray(rule.value) ? rule.value : [];
+      } else {
+        actorOptions.value = [];
+        directorOptions.value = [];
+      }
     } finally {
       isSearchingActors.value = false;
+      // 探索助手的导演搜索加载状态也一并处理
+      isSearchingDirectors.value = false; 
     }
   }, 300);
 };
@@ -1830,25 +1861,6 @@ const handleCompanySelect = (option) => {
   }
   companySearchText.value = '';
   companyOptions.value = [];
-};
-
-let actorSearchTimeout = null;
-const handleActorSearchForDiscover = (query) => {
-  actorSearchText.value = query;
-  if (!query.length) {
-    actorOptions.value = [];
-    return;
-  }
-  isSearchingActors.value = true;
-  if (actorSearchTimeout) clearTimeout(actorSearchTimeout);
-  actorSearchTimeout = setTimeout(async () => {
-    try {
-      const response = await axios.get(`/api/custom_collections/config/tmdb_search_persons?q=${query}`);
-      actorOptions.value = response.data;
-    } finally {
-      isSearchingActors.value = false;
-    }
-  }, 300);
 };
 
 let directorSearchTimeout = null;
