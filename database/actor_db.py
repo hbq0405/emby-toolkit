@@ -75,6 +75,59 @@ class ActorDBManager:
         except Exception as e:
             logger.error(f"  ➜ DB保存翻译缓存失败 for '{original_text}': {e}", exc_info=True)
 
+    # 核心批量写入函数
+    def batch_upsert_actors_and_metadata(self, cursor: psycopg2.extensions.cursor, actors_list: List[Dict[str, Any]], emby_config: Dict[str, Any]) -> Dict[str, int]:
+        """
+        【管家函数-写】接收一个完整的演员列表，自动将数据分发到
+        person_identity_map 和 actor_metadata 两个表中。
+        这是所有演员数据写入的唯一入口。
+        """
+        if not actors_list:
+            return {}
+
+        logger.info(f"  ➜ [演员数据管家] 开始批量处理 {len(actors_list)} 位演员的写入任务...")
+        stats = {"INSERTED": 0, "UPDATED": 0, "UNCHANGED": 0, "SKIPPED": 0, "ERROR": 0}
+
+        for actor_data in actors_list:
+            # 直接调用下面已经很完善的单个演员处理函数
+            map_id, action = self.upsert_person(cursor, actor_data, emby_config)
+            
+            # 累加统计结果
+            if action in stats:
+                stats[action] += 1
+            else:
+                stats["ERROR"] += 1
+        
+        logger.info(f"  ➜ [演员数据管家] 批量写入完成。统计: {stats}")
+        return stats
+
+    # 核心批量读取函数
+    def get_full_actor_details_by_tmdb_ids(self, cursor: psycopg2.extensions.cursor, tmdb_ids: List[int]) -> Dict[int, Dict[str, Any]]:
+        """
+        【管家函数-读】根据一组 TMDB ID，从 actor_metadata 表中高效地获取所有演员的详细信息。
+        返回一个以 TMDB ID 为键，演员信息字典为值的映射。
+        """
+        if not tmdb_ids:
+            return {}
+
+        logger.debug(f"  ➜ [演员数据管家] 正在批量查询 {len(tmdb_ids)} 位演员的详细元数据...")
+        
+        try:
+            # 使用 ANY(%s) 是 PostgreSQL 中处理列表参数的高效方式
+            sql = "SELECT * FROM actor_metadata WHERE tmdb_id = ANY(%s)"
+            cursor.execute(sql, (tmdb_ids,))
+            
+            results = cursor.fetchall()
+            
+            # 将查询结果处理成一个 {tmdb_id: {actor_details}} 的字典，方便上层调用
+            actor_details_map = {row['tmdb_id']: dict(row) for row in results}
+            
+            logger.debug(f"  ➜ [演员数据管家] 成功从数据库中找到了 {len(actor_details_map)} 条匹配的演员元数据。")
+            return actor_details_map
+
+        except Exception as e:
+            logger.error(f"  ➜ [演员数据管家] 批量查询演员元数据时失败: {e}", exc_info=True)
+            return {}
 
     def find_person_by_any_id(self, cursor: psycopg2.extensions.cursor, **kwargs) -> Optional[dict]:
         
@@ -95,6 +148,73 @@ class ActorDBManager:
             except psycopg2.Error as e:
                 logger.error(f"  ➜ 查询 person_identity_map 时出错 ({column}={value}): {e}")
         return None
+    
+    def enrich_actors_with_provider_ids(self, cursor: psycopg2.extensions.cursor, raw_emby_actors: List[Dict[str, Any]], emby_config: Dict[str, Any]) -> List[Dict[str, Any]]:
+        """
+        接收一个来自 Emby 的原始演员列表，
+        高效地为他们补充 ProviderIds。
+        策略：优先从本地数据库批量查询，对未找到的演员再通过 Emby API 补漏。
+        """
+        if not raw_emby_actors:
+            return []
+
+        logger.info(f"  ➜ [演员数据管家] 开始为 {len(raw_emby_actors)} 位演员丰富外部ID...")
+        
+        # 准备一个最终结果的映射，用 emby_id 作为 key
+        enriched_actors_map = {actor['Id']: actor.copy() for actor in raw_emby_actors}
+        
+        # --- 阶段一：从本地数据库批量获取数据 ---
+        emby_ids_to_check = list(enriched_actors_map.keys())
+        ids_found_in_db = set()
+        
+        try:
+            if emby_ids_to_check:
+                # 使用 ANY(%s) 进行高效的批量查询
+                sql = "SELECT emby_person_id, tmdb_person_id, imdb_id, douban_celebrity_id FROM person_identity_map WHERE emby_person_id = ANY(%s)"
+                cursor.execute(sql, (emby_ids_to_check,))
+                db_results = cursor.fetchall()
+
+                for row in db_results:
+                    emby_id = row["emby_person_id"]
+                    ids_found_in_db.add(emby_id)
+                    
+                    # 构建 ProviderIds 字典并注入回结果
+                    provider_ids = {}
+                    if row.get("tmdb_person_id"):
+                        provider_ids["Tmdb"] = str(row.get("tmdb_person_id"))
+                    if row.get("imdb_id"):
+                        provider_ids["Imdb"] = row.get("imdb_id")
+                    if row.get("douban_celebrity_id"):
+                        provider_ids["Douban"] = str(row.get("douban_celebrity_id"))
+                    
+                    if emby_id in enriched_actors_map:
+                        enriched_actors_map[emby_id]["ProviderIds"] = provider_ids
+                
+                logger.info(f"  ➜ [演员数据管家] 从数据库缓存中找到了 {len(ids_found_in_db)} 位演员的外部ID。")
+        except Exception as e:
+            logger.error(f"  ➜ [演员数据管家] 批量查询演员外部ID时失败: {e}", exc_info=True)
+
+        # --- 阶段二：为未找到的演员实时查询 Emby API ---
+        ids_to_fetch_from_api = [pid for pid in emby_ids_to_check if pid not in ids_found_in_db]
+
+        if ids_to_fetch_from_api:
+            logger.info(f"  ➜ [演员数据管家] 将通过 Emby API 为剩余 {len(ids_to_fetch_from_api)} 位演员获取外部ID...")
+            
+            for person_id in ids_to_fetch_from_api:
+                person_details = get_emby_item_details(
+                    item_id=person_id, 
+                    emby_server_url=emby_config['url'], 
+                    emby_api_key=emby_config['api_key'], 
+                    user_id=emby_config['user_id'],
+                    fields="ProviderIds" # 我们只需要这一个字段
+                )
+                
+                if person_details and person_details.get("ProviderIds"):
+                    if person_id in enriched_actors_map:
+                        enriched_actors_map[person_id]["ProviderIds"] = person_details.get("ProviderIds")
+
+        # --- 阶段三：返回最终的列表 ---
+        return list(enriched_actors_map.values())
 
     def upsert_person(self, cursor: psycopg2.extensions.cursor, person_data: Dict[str, Any], emby_config: Dict[str, Any]) -> Tuple[int, str]:
         """

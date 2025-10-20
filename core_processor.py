@@ -49,6 +49,8 @@ def _read_local_json(file_path: str) -> Optional[Dict[str, Any]]:
         logger.error(f"读取本地JSON文件失败: {file_path}, 错误: {e}")
         return None
 def _save_metadata_to_cache(
+    # ▼▼▼ 核心修改 1/2: 在函数签名中接收 ActorDBManager 实例 ▼▼▼
+    actor_db_manager: "ActorDBManager", 
     cursor: psycopg2.extensions.cursor,
     tmdb_id: str,
     emby_item_id: str,
@@ -56,6 +58,7 @@ def _save_metadata_to_cache(
     item_details_from_emby: Dict[str, Any],
     final_processed_cast: List[Dict[str, Any]],
     tmdb_details_for_extra: Optional[Dict[str, Any]],
+    emby_config: Dict[str, Any],
     emby_children_details: Optional[List[Dict[str, Any]]] = None
 ):
     """
@@ -65,18 +68,27 @@ def _save_metadata_to_cache(
     try:
         logger.trace(f"【实时缓存】正在为 '{item_details_from_emby.get('Name')}' 组装元数据...")
         
-        actors_for_cache = []
+        # ======================================================================
+        # ★★★ 核心重构: 委托给“演员数据管家”处理所有演员数据 ★★★
+        # ======================================================================
+        actor_db_manager.batch_upsert_actors_and_metadata(
+            cursor=cursor, 
+            actors_list=final_processed_cast,
+            emby_config=emby_config
+        )
+
+        # ======================================================================
+        # ★★★ 核心重构: 创建精简的、只包含“关系”的 actors_json ★★★
+        # ======================================================================
+        actors_relation_for_cache = []
         for p in final_processed_cast:
-            actors_for_cache.append({
-                "id": p.get("id"),
-                "name": p.get("name"),
-                "character": p.get("character"), # <--- 关键！保存角色名
-                "original_name": p.get("original_name"),
-                "profile_path": p.get("profile_path"),
-                "gender": p.get("gender"),
-                "popularity": p.get("popularity"),
-                "order": p.get("order")
-            })
+            actor_tmdb_id = p.get("id") or p.get("tmdb_id")
+            if actor_tmdb_id:
+                actors_relation_for_cache.append({
+                    "tmdb_id": int(actor_tmdb_id),
+                    "character": p.get("character"),
+                    "order": p.get("order")
+                })
 
         directors, countries = [], []
         if tmdb_details_for_extra:
@@ -115,7 +127,7 @@ def _save_metadata_to_cache(
             "release_year": item_details_from_emby.get('ProductionYear'),
             "rating": item_details_from_emby.get('CommunityRating'),
             "genres_json": json.dumps(genres, ensure_ascii=False),
-            "actors_json": json.dumps(actors_for_cache, ensure_ascii=False),
+            "actors_json": json.dumps(actors_relation_for_cache, ensure_ascii=False),
             "directors_json": json.dumps(directors, ensure_ascii=False),
             "studios_json": json.dumps(studios, ensure_ascii=False),
             "countries_json": json.dumps(countries, ensure_ascii=False),
@@ -357,90 +369,6 @@ class MediaProcessor:
                             return os.path.join(dir_path, filename)
         return None
 
-    # --- 演员数据查询、反哺 ---
-    def _enrich_cast_from_db_and_api(self, cast_list: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
-        """
-        演员数据查询、反哺
-        """
-        if not cast_list:
-            return []
-        
-        logger.info(f"  ➜ 正在为 {len(cast_list)} 位演员丰富数据...")
-
-        original_actor_map = {str(actor.get("Id")): actor for actor in cast_list if actor.get("Id")}
-        
-        # --- 阶段一：从本地数据库获取数据 ---
-        enriched_actors_map = {}
-        ids_found_in_db = set()
-        
-        try:
-            db_results = []
-            
-            with get_central_db_connection() as conn:
-                cursor = conn.cursor()
-                person_ids = list(original_actor_map.keys())
-                
-                if person_ids:
-                    query = "SELECT * FROM person_identity_map WHERE emby_person_id = ANY(%s)"
-                    cursor.execute(query, (person_ids,))
-                    db_results = cursor.fetchall()
-
-            for row in db_results:
-                db_data = dict(row)
-                actor_id = str(db_data["emby_person_id"])
-                ids_found_in_db.add(actor_id)
-                
-                provider_ids = {}
-                if db_data.get("tmdb_person_id"):
-                    provider_ids["Tmdb"] = str(db_data.get("tmdb_person_id"))
-                if db_data.get("imdb_id"):
-                    provider_ids["Imdb"] = db_data.get("imdb_id")
-                if db_data.get("douban_celebrity_id"):
-                    provider_ids["Douban"] = str(db_data.get("douban_celebrity_id"))
-                
-                enriched_actor = original_actor_map[actor_id].copy()
-                enriched_actor["ProviderIds"] = provider_ids
-                enriched_actors_map[actor_id] = enriched_actor
-                
-        except Exception as e:
-            logger.error(f"  ➜ 数据库查询阶段失败: {e}", exc_info=True)
-
-        logger.info(f"  ➜ 从演员映射表找到了 {len(ids_found_in_db)} 位演员的信息。")
-
-        # --- 阶段二：为未找到的演员实时查询 Emby API ---
-        ids_to_fetch_from_api = [pid for pid in original_actor_map.keys() if pid not in ids_found_in_db]
-
-        if ids_to_fetch_from_api:
-            logger.trace(f"  ➜ 开始为 {len(ids_to_fetch_from_api)} 位新演员从Emby获取信息...")
-            
-            for person_id in ids_to_fetch_from_api:
-                if self.is_stop_requested():
-                    break
-                
-                person_details = emby_handler.get_emby_item_details(
-                    item_id=person_id, 
-                    emby_server_url=self.emby_url, 
-                    emby_api_key=self.emby_api_key, 
-                    user_id=self.emby_user_id,
-                    fields="ProviderIds,Name" # 我们只需要这两个字段
-                )
-                
-                if person_details and person_details.get("ProviderIds"):
-                    enriched_actor = original_actor_map[person_id].copy()
-                    enriched_actor["ProviderIds"] = person_details.get("ProviderIds")
-                    enriched_actors_map[person_id] = enriched_actor
-                    time_module.sleep(0.1) # 加个小延迟避免请求过快
-        else:
-            logger.trace("  ➜ (API查询) 跳过：所有演员均在本地数据库中找到。")
-
-        # --- 阶段三：合并最终结果 ---
-        final_enriched_cast = []
-        for original_actor in cast_list:
-            actor_id = str(original_actor.get("Id"))
-            final_enriched_cast.append(enriched_actors_map.get(actor_id, original_actor))
-
-        return final_enriched_cast
-    
     # ✨ 封装了“优先本地缓存，失败则在线获取”的逻辑
     def _get_douban_data_with_local_cache(self, media_info: Dict[str, Any]) -> Tuple[List[Dict[str, Any]], Optional[float]]:
         """
@@ -516,23 +444,6 @@ class MediaProcessor:
 
         return douban_cast_raw, douban_rating
     
-    # --- 通过豆瓣ID查找映射表 ---
-    def _find_person_in_map_by_douban_id(self, douban_id: str, cursor: psycopg2.extensions.cursor) -> Optional[Dict[str, Any]]:
-        """
-        根据豆瓣名人ID在 person_identity_map 表中查找对应的记录。
-        """
-        if not douban_id:
-            return None
-        try:
-            cursor.execute(
-                "SELECT * FROM person_identity_map WHERE douban_celebrity_id = %s",
-                (douban_id,)
-            )
-            return cursor.fetchone()
-        except psycopg2.Error as e:
-            logger.error(f"通过豆瓣ID '{douban_id}' 查询 person_identity_map 时出错: {e}")
-            return None
-    
     # --- 通过TmdbID查找映射表 ---
     def _find_person_in_map_by_tmdb_id(self, tmdb_id: str, cursor: psycopg2.extensions.cursor) -> Optional[Dict[str, Any]]:
         """
@@ -549,35 +460,6 @@ class MediaProcessor:
         except psycopg2.Error as e:
             logger.error(f"通过 TMDB ID '{tmdb_id}' 查询 person_identity_map 时出错: {e}")
             return None
-    
-    # --- 通过ImbdID查找映射表 ---
-    def _find_person_in_map_by_imdb_id(self, imdb_id: str, cursor: psycopg2.extensions.cursor) -> Optional[Dict[str, Any]]:
-        """
-        根据 IMDb ID 在 person_identity_map 表中查找对应的记录。
-        """
-        if not imdb_id:
-            return None
-        try:
-            # 核心改动：将查询字段从 douban_celebrity_id 改为 imdb_id
-            cursor.execute(
-                "SELECT * FROM person_identity_map WHERE imdb_id = %s",
-                (imdb_id,)
-            )
-            return cursor.fetchone()
-        except psycopg2.Error as e:
-            logger.error(f"通过 IMDb ID '{imdb_id}' 查询 person_identity_map 时出错: {e}")
-            return None
-    
-    # --- 补充新增演员额外数据 ---
-    def _get_actor_metadata_from_cache(self, tmdb_id: int, cursor: psycopg2.extensions.cursor) -> Optional[Dict]:
-        """根据TMDb ID从ActorMetadata缓存表中获取演员的元数据。"""
-        if not tmdb_id:
-            return None
-        cursor.execute("SELECT * FROM actor_metadata WHERE tmdb_id = %s", (tmdb_id,))
-        metadata_row = cursor.fetchone()  # fetchone() 返回一个 Dict[str, Any] 对象或 None
-        if metadata_row:
-            return dict(metadata_row)  # 将其转换为字典，方便使用
-        return None
     
     # --- 通过 API 更新 Emby 中演员名字 ---
     def _update_emby_person_names_from_final_cast(self, final_cast: List[Dict[str, Any]], item_name_for_log: str):
@@ -972,7 +854,8 @@ class MediaProcessor:
                     
                     all_emby_people = item_details_from_emby.get("People", [])
                     current_emby_cast_raw = [p for p in all_emby_people if p.get("Type") == "Actor"]
-                    enriched_emby_cast = self._enrich_cast_from_db_and_api(current_emby_cast_raw)
+                    emby_config = {"url": self.emby_url, "api_key": self.emby_api_key, "user_id": self.emby_user_id}
+                    enriched_emby_cast = self.actor_db_manager.enrich_actors_with_provider_ids(cursor, current_emby_cast_raw, emby_config)
                     douban_cast_raw, douban_rating_deep = self._get_douban_data_with_local_cache(item_details_from_emby)
                     douban_rating = douban_rating_deep # 覆盖评分
 
@@ -1020,7 +903,12 @@ class MediaProcessor:
 
                 # 步骤 3.4: 更新我们自己的数据库缓存
                 _save_metadata_to_cache(
-                    cursor=cursor, tmdb_id=tmdb_id, emby_item_id=item_id, item_type=item_type,
+                    actor_db_manager=self.actor_db_manager,
+                    emby_config={"url": self.emby_url, "api_key": self.emby_api_key, "user_id": self.emby_user_id},
+                    cursor=cursor, 
+                    tmdb_id=tmdb_id, 
+                    emby_item_id=item_id, 
+                    item_type=item_type,
                     item_details_from_emby=item_details_from_emby,
                     final_processed_cast=final_processed_cast,
                     tmdb_details_for_extra=tmdb_details_for_extra
@@ -1238,13 +1126,13 @@ class MediaProcessor:
                     d_douban_id = d_actor.get("DoubanCelebrityId")
                     match_found = False
                     if d_douban_id:
-                        entry_row = self._find_person_in_map_by_douban_id(d_douban_id, cursor)
-                        entry = dict(entry_row) if entry_row else None
+                        entry = self.actor_db_manager.find_person_by_any_id(cursor, douban_id=d_douban_id)
                         if entry and entry.get("tmdb_person_id") and entry.get("emby_person_id"):
                             tmdb_id_from_map = str(entry.get("tmdb_person_id"))
                             if tmdb_id_from_map not in final_cast_map:
                                 logger.info(f"    ├─ 匹配成功 (通过 豆瓣ID映射): 豆瓣演员 '{d_actor.get('Name')}' -> 加入最终演员表")
-                                cached_metadata = self._get_actor_metadata_from_cache(tmdb_id_from_map, cursor) or {}
+                                cached_metadata_map = self.actor_db_manager.get_full_actor_details_by_tmdb_ids(cursor, [int(tmdb_id_from_map)])
+                                cached_metadata = cached_metadata_map.get(int(tmdb_id_from_map), {})
                                 new_actor_entry = {
                                     "id": tmdb_id_from_map, "name": d_actor.get("Name"),
                                     "original_name": cached_metadata.get("original_name") or d_actor.get("OriginalName"),
@@ -1289,8 +1177,7 @@ class MediaProcessor:
                         if d_imdb_id:
                             logger.debug(f"  ➜ 为 '{d_actor.get('Name')}' 获取到 IMDb ID: {d_imdb_id}，开始匹配...")
                             
-                            entry_row_from_map = self._find_person_in_map_by_imdb_id(d_imdb_id, cursor)
-                            entry_from_map = dict(entry_row_from_map) if entry_row_from_map else None
+                            entry_from_map = self.actor_db_manager.find_person_by_any_id(cursor, imdb_id=d_imdb_id)
                             if entry_from_map and entry_from_map.get("tmdb_person_id") and entry_from_map.get("emby_person_id"):
                                 tmdb_id_from_map = str(entry_from_map.get("tmdb_person_id"))
                                 if tmdb_id_from_map not in final_cast_map:
@@ -1315,7 +1202,7 @@ class MediaProcessor:
                                     d_actor['tmdb_id_from_api'] = tmdb_id_from_find
                                     d_actor['imdb_id_from_api'] = d_imdb_id
 
-                                    final_check_row = self._find_person_in_map_by_tmdb_id(tmdb_id_from_find, cursor)
+                                    final_check_row = self.actor_db_manager.find_person_by_any_id(cursor, tmdb_id=tmdb_id_from_find)
                                     if final_check_row and dict(final_check_row).get("emby_person_id"):
                                         emby_pid_from_final_check = dict(final_check_row).get("emby_person_id")
                                         if tmdb_id_from_find not in final_cast_map:
@@ -1386,6 +1273,9 @@ class MediaProcessor:
         if actors_to_supplement:
             total_to_supplement = len(actors_to_supplement)
             logger.info(f"  ➜ 开始为 {total_to_supplement} 位新增演员检查并补全头像信息...")
+
+            ids_to_fetch = [actor.get("id") for actor in actors_to_supplement if actor.get("id")]
+            all_cached_metadata = self.actor_db_manager.get_full_actor_details_by_tmdb_ids(cursor, ids_to_fetch)
             
             supplemented_count = 0
             for actor in actors_to_supplement:
@@ -1393,8 +1283,7 @@ class MediaProcessor:
                 
                 tmdb_id = actor.get("id")
                 profile_path = None
-                
-                cached_meta = self._get_actor_metadata_from_cache(tmdb_id, cursor)
+                cached_meta = all_cached_metadata.get(tmdb_id)
                 if cached_meta and cached_meta.get("profile_path"):
                     profile_path = cached_meta["profile_path"]
                 
@@ -1430,10 +1319,12 @@ class MediaProcessor:
                     douban_id = actor.get("douban_id")
                     # 如果演员身上没有预先关联的豆瓣ID，就去映射表里查一次
                     if not douban_id:
-                        map_entry = self._find_person_in_map_by_tmdb_id(str(actor.get("id")), cursor)
-                        if map_entry and map_entry.get("douban_celebrity_id"):
-                            douban_id = map_entry.get("douban_celebrity_id")
-                            logger.debug(f"    ➜ 为演员 '{actor.get('name')}' (TMDb ID: {actor.get('id')}) 从映射表找到豆瓣ID: {douban_id}")
+                        tmdb_id_to_check = actor.get("id")
+                        if tmdb_id_to_check:
+                            map_entry = self.actor_db_manager.find_person_by_any_id(cursor, tmdb_id=tmdb_id_to_check)
+                            if map_entry and map_entry.get("douban_celebrity_id"):
+                                douban_id = map_entry.get("douban_celebrity_id")
+                                logger.debug(f"    ➜ 为演员 '{actor.get('name')}' (TMDb ID: {actor.get('id')}) 从映射表找到豆瓣ID: {douban_id}")
 
                     if douban_id:
                         try:
@@ -1773,16 +1664,21 @@ class MediaProcessor:
         logger.info(f"  ➜ 手动处理流程启动：ItemID: {item_id} ('{item_name}')")
         
         try:
-            # ======================================================================
-            # 步骤 1: 数据准备与定位
-            # ======================================================================
             item_details = emby_handler.get_emby_item_details(item_id, self.emby_url, self.emby_api_key, self.emby_user_id)
             if not item_details: raise ValueError(f"无法获取项目 {item_id} 的详情。")
             
-            logger.info(f"  ➜ 手动处理：步骤 1/6: 构建TMDb与Emby演员的ID映射...")
             raw_emby_actors = [p for p in item_details.get("People", []) if p.get("Type") == "Actor"]
-            enriched_actors = self._enrich_cast_from_db_and_api(raw_emby_actors)
-            
+            emby_config = {"url": self.emby_url, "api_key": self.emby_api_key, "user_id": self.emby_user_id}
+
+            # ★★★ 核心修改: 在所有操作开始前，一次性获取所有 enriched_actors ★★★
+            with get_central_db_connection() as conn:
+                cursor = conn.cursor()
+                enriched_actors = self.actor_db_manager.enrich_actors_with_provider_ids(cursor, raw_emby_actors, emby_config)
+
+            # ======================================================================
+            # 步骤 1: 数据准备与定位 (现在只负责构建映射)
+            # ======================================================================
+            logger.info(f"  ➜ 手动处理：步骤 1/6: 构建TMDb与Emby演员的ID映射...")
             tmdb_to_emby_map = {}
             for person in enriched_actors:
                 person_tmdb_id = (person.get("ProviderIds") or {}).get("Tmdb")
@@ -1854,8 +1750,11 @@ class MediaProcessor:
             # ======================================================================
             logger.info(f"  ➜ 手动处理：步骤 3/6: 通过API更新现有演员的名字...")
             # 构建 TMDb ID -> Emby Person ID 和 Emby Person ID -> 当前名字的映射
-            raw_emby_actors = [p for p in item_details.get("People", []) if p.get("Type") == "Actor"]
-            enriched_actors = self._enrich_cast_from_db_and_api(raw_emby_actors)
+            emby_id_to_name_map = {}
+            for person in enriched_actors: # ★★★ 直接使用 enriched_actors
+                person_emby_id = person.get("Id")
+                if person_emby_id:
+                    emby_id_to_name_map[person_emby_id] = person.get("Name")
             
             tmdb_to_emby_map = {}
             emby_id_to_name_map = {}
@@ -1897,6 +1796,17 @@ class MediaProcessor:
             original_cast_data = (data.get('casts', {}) or data.get('credits', {})).get('cast', [])
             original_cast_map = {str(actor.get('id')): actor for actor in original_cast_data if actor.get('id')}
 
+            new_actor_tmdb_ids = [
+                int(actor.get("tmdbId")) for actor in manual_cast_list 
+                if str(actor.get("tmdbId")) not in original_cast_map
+            ]
+
+            all_new_actors_metadata = {}
+            if new_actor_tmdb_ids:
+                with get_central_db_connection() as conn_new:
+                    cursor_new = conn_new.cursor()
+                    all_new_actors_metadata = self.actor_db_manager.get_full_actor_details_by_tmdb_ids(cursor_new, new_actor_tmdb_ids)
+
             new_cast_built = []
             
             with get_central_db_connection() as conn:
@@ -1917,8 +1827,8 @@ class MediaProcessor:
                     else:
                         logger.info(f"    ├─ 发现新演员: '{actor_from_frontend.get('name')}' (TMDb ID: {tmdb_id_str})，开始补全元数据...")
                         
-                        # B1: 优先从 actor_metadata 缓存获取
-                        person_details = self._get_actor_metadata_from_cache(tmdb_id_str, cursor)
+                        # B1: 优先从 内存 缓存获取
+                        person_details = all_new_actors_metadata.get(int(tmdb_id_str))
                         
                         # B2: 如果缓存没有，则从 TMDb API 获取并反哺
                         if not person_details:
