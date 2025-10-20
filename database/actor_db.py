@@ -102,7 +102,7 @@ class ActorDBManager:
         return stats
 
     # 核心批量读取函数
-    def get_full_actor_details_by_tmdb_ids(self, cursor: psycopg2.extensions.cursor, tmdb_ids: List[int]) -> Dict[int, Dict[str, Any]]:
+    def get_full_actor_details_by_tmdb_ids(self, cursor: psycopg2.extensions.cursor, tmdb_ids: List[Any]) -> Dict[int, Dict[str, Any]]:
         """
         【管家函数-读】根据一组 TMDB ID，从 actor_metadata 表中高效地获取所有演员的详细信息。
         返回一个以 TMDB ID 为键，演员信息字典为值的映射。
@@ -113,13 +113,17 @@ class ActorDBManager:
         logger.debug(f"  ➜ [演员数据管家] 正在批量查询 {len(tmdb_ids)} 位演员的详细元数据...")
         
         try:
-            # 使用 ANY(%s) 是 PostgreSQL 中处理列表参数的高效方式
+            try:
+                int_tmdb_ids = [int(tid) for tid in tmdb_ids]
+            except (ValueError, TypeError):
+                logger.error("  ➜ [演员数据管家] 转换演员 TMDb ID 为整数时失败，列表可能包含无效数据。")
+                return {}
+
             sql = "SELECT * FROM actor_metadata WHERE tmdb_id = ANY(%s)"
-            cursor.execute(sql, (tmdb_ids,))
+            cursor.execute(sql, (int_tmdb_ids,))
             
             results = cursor.fetchall()
             
-            # 将查询结果处理成一个 {tmdb_id: {actor_details}} 的字典，方便上层调用
             actor_details_map = {row['tmdb_id']: dict(row) for row in results}
             
             logger.debug(f"  ➜ [演员数据管家] 成功从数据库中找到了 {len(actor_details_map)} 条匹配的演员元数据。")
@@ -127,7 +131,7 @@ class ActorDBManager:
 
         except Exception as e:
             logger.error(f"  ➜ [演员数据管家] 批量查询演员元数据时失败: {e}", exc_info=True)
-            return {}
+            raise
 
     def find_person_by_any_id(self, cursor: psycopg2.extensions.cursor, **kwargs) -> Optional[dict]:
         
