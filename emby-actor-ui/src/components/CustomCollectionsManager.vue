@@ -308,6 +308,7 @@
                     multiple
                     filterable
                     remote
+                    tag
                     :placeholder="rule.field === 'actors' ? '输入以搜索并添加演员' : '输入以搜索并添加导演'"
                     :options="actorOptions"
                     :loading="isSearchingActors"

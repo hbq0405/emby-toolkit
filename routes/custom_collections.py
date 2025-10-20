@@ -473,22 +473,6 @@ def api_subscribe_media_from_custom_collection():
         logger.error(f"处理订阅请求时发生严重错误: {e}", exc_info=True)
         return jsonify({"error": "处理订阅时发生服务器内部错误。"}), 500
     
-# --- 根据关键词搜索演员 ---
-@custom_collections_bp.route('/search_actors') # 或者 @media_api_bp.route('/search_actors')
-@login_required
-def api_search_actors():
-    search_term = request.args.get('q', '')
-    if len(search_term) < 1:
-        return jsonify([])
-    
-    try:
-        actors = collection_db.search_unique_actors(search_term)
-        # 返回简单的字符串列表
-        return jsonify(actors)
-    except Exception as e:
-        logger.error(f"搜索演员API出错: {e}", exc_info=True)
-        return jsonify({"error": "服务器内部错误"}), 500
-    
 # --- 提取国家列表 ---
 @custom_collections_bp.route('/config/countries', methods=['GET'])
 @login_required
