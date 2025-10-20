@@ -4,6 +4,7 @@
 import json
 import logging
 import pytz
+import time
 from datetime import datetime, timezone
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from typing import Dict, Any
@@ -238,7 +239,7 @@ def task_process_all_custom_collections(processor):
 
     try:
         # ======================================================================
-        # 步骤 1 & 2: 获取所有数据 (这部分逻辑不变)
+        # 步骤 1: 获取所有用户权限
         # ======================================================================
         task_manager.update_status_from_thread(0, "正在获取所有Emby用户及权限...")
         all_emby_users = emby_handler.get_all_emby_users_from_server(processor.emby_url, processor.emby_api_key)
@@ -254,6 +255,9 @@ def task_process_all_custom_collections(processor):
                     if permission_set is not None: user_permissions_map[user['Id']] = permission_set
                 except Exception as e: logger.error(f"为用户 '{user['Name']}' 获取权限时出错: {e}")
         
+        # ======================================================================
+        # 步骤 2: 获取所有合集数据
+        # ======================================================================
         task_manager.update_status_from_thread(10, "正在获取所有启用的合集定义...")
         active_collections = collection_db.get_all_active_custom_collections()
         if not active_collections:
@@ -276,7 +280,7 @@ def task_process_all_custom_collections(processor):
             cover_config = settings_db.get_setting('cover_generator_config') or {}
             if cover_config.get("enabled"):
                 cover_service = CoverGeneratorService(config=cover_config)
-                logger.info("  ➜ 封面生成器已启用。")
+                logger.trace("  ➜ 封面生成器已启用。")
         except Exception as e_cover_init:
             logger.error(f"初始化封面生成器时失败: {e_cover_init}", exc_info=True)
 
@@ -382,6 +386,12 @@ def task_process_all_custom_collections(processor):
                             )
                     except Exception as e_cover:
                         logger.error(f"为合集 '{collection_name}' 生成封面时出错: {e_cover}", exc_info=True)
+
+                # 如果刚刚处理的是一个猫眼榜单，就主动休息几秒，避免对猫眼服务器造成压力
+                if collection['type'] == 'list' and collection['definition_json'].get('url', '').startswith('maoyan://'):
+                    delay_seconds = 10
+                    logger.info(f"  ➜ 已处理一个猫眼榜单，为避免触发反爬机制，将主动降温 {delay_seconds} 秒...")
+                    time.sleep(delay_seconds)
                 
             except Exception as e_coll:
                 logger.error(f"处理合集 '{collection_name}' (ID: {collection_id}) 时发生错误: {e_coll}", exc_info=True)
@@ -432,7 +442,9 @@ def process_single_custom_collection(processor, custom_collection_id: int):
     logger.info(f"--- 开始执行 '{task_name}' 任务 ---")
     
     try:
-        # --- 步骤 1 & 2: 获取数据 (逻辑不变) ---
+        # ======================================================================
+        # 步骤 1: 获取所有用户权限
+        # ======================================================================
         task_manager.update_status_from_thread(0, "正在获取所有Emby用户及权限...")
         all_emby_users = emby_handler.get_all_emby_users_from_server(processor.emby_url, processor.emby_api_key)
         if not all_emby_users: raise RuntimeError("无法获取用户列表")
@@ -447,13 +459,18 @@ def process_single_custom_collection(processor, custom_collection_id: int):
                     if permission_set is not None: user_permissions_map[user['Id']] = permission_set
                 except Exception as e: logger.error(f"为用户 '{user['Name']}' 获取权限时出错: {e}")
         
+        # ======================================================================
+        # 步骤 2: 获取合集定义
+        # ======================================================================
         task_manager.update_status_from_thread(20, "正在读取合集定义...")
         collection = collection_db.get_custom_collection_by_id(custom_collection_id)
         if not collection: raise ValueError(f"未找到ID为 {custom_collection_id} 的自定义合集。")
         
         collection_name = collection['name']
         
-        # --- 步骤 3: 计算全局列表并创建/更新 Emby 物理合集 (逻辑不变) ---
+        # ======================================================================
+        # 步骤 3: 创建物理合集
+        # ======================================================================
         task_manager.update_status_from_thread(30, f"正在为《{collection_name}》计算媒体列表...")
         definition = collection['definition_json']
         tmdb_items = []
@@ -480,7 +497,9 @@ def process_single_custom_collection(processor, custom_collection_id: int):
             base_url=processor.emby_url, api_key=processor.emby_api_key, user_id=processor.emby_user_id
         )
 
-        # --- 步骤 4: 【用户权限 - 计算并写入】为所有用户更新这一个合集的权限缓存 ---
+        # ======================================================================
+        # 步骤 4: 计算并写入用户权限缓存
+        # ======================================================================
         task_manager.update_status_from_thread(90, "正在为所有用户更新此合集的权限缓存...")
         user_collection_cache_data_to_upsert = []
         for user_id, permission_set in user_permissions_map.items():
@@ -507,7 +526,9 @@ def process_single_custom_collection(processor, custom_collection_id: int):
             execute_batch(cursor, sql, user_collection_cache_data_to_upsert)
             conn.commit()
 
-        # --- 步骤 5: 【健康检查 & 状态更新】根据合集类型执行不同逻辑 ---
+        # ======================================================================
+        # 步骤 5: 榜单类合集健康度检查
+        # ======================================================================
         update_data = {
             "emby_collection_id": emby_collection_id,
             "item_type": json.dumps(definition.get('item_type', ['Movie'])),
@@ -516,7 +537,6 @@ def process_single_custom_collection(processor, custom_collection_id: int):
         }
 
         if collection['type'] == 'list':
-            # ... (这里是完整的榜单健康检查逻辑，和你上次提供的一样) ...
             logger.info(f"  ➜ 榜单合集 '{collection_name}'，开始进行详细健康度分析...")
             previous_media_map = {str(m.get('tmdb_id')): m for m in (collection.get('generated_media_info_json') or [])}
             all_media_details_unordered = []
@@ -549,7 +569,9 @@ def process_single_custom_collection(processor, custom_collection_id: int):
 
         collection_db.update_custom_collection_after_sync(custom_collection_id, update_data)
 
-        # ★★★ 封面生成逻辑 - 调用 ★★★
+        # ======================================================================
+        # 步骤 6: 封面生成
+        # ======================================================================
         try:
             cover_config = settings_db.get_setting('cover_generator_config') or {}
             if cover_config.get("enabled") and emby_collection_id:

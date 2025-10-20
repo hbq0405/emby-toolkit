@@ -732,6 +732,7 @@ class FilterEngine:
             field, op, value = rule.get("field"), rule.get("operator"), rule.get("value")
             match = False
             
+            # 1. 处理演员和导演
             if field in ['actors', 'directors']:
                 # ★★★ 核心修改 ★★★
                 if not isinstance(value, list):
@@ -739,14 +740,14 @@ class FilterEngine:
                     results.append(False)
                     continue
 
-                # 1. 直接从规则的 value 中提取出 TMDB ID 列表
+                # 直接从规则的 value 中提取出 TMDB ID 列表
                 person_tmdb_ids_from_rule = [str(p['id']) for p in value if isinstance(p, dict) and 'id' in p]
 
                 if not person_tmdb_ids_from_rule:
                     results.append(False)
                     continue
 
-                # 2. 获取当前媒体项中所有演员/导演的 TMDB ID 集合 
+                # 获取当前媒体项中所有演员/导演的 TMDB ID 集合 
                 item_person_list = item_metadata.get(f"{field}_json")
                 if item_person_list:
                     try:
@@ -755,7 +756,8 @@ class FilterEngine:
                         
                         # 如果是演员且总数超过3，可以加个日志方便调试
                         if field == 'actors' and len(item_person_list) > 3:
-                            logger.trace(f"  ➜ 演员筛选优化：媒体项《{item_metadata.get('title')}》有 {len(item_person_list)} 位演员，仅匹配前 3 位。")
+                            pass
+                            # logger.trace(f"  ➜ 演员筛选优化：媒体项《{item_metadata.get('title')}》有 {len(item_person_list)} 位演员，仅匹配前 3 位。")
 
                         item_person_tmdb_ids = set()
                         # 使用截断后的 top_persons 列表进行遍历
@@ -775,11 +777,9 @@ class FilterEngine:
 
             # 2. 检查字段是否为“字符串列表”（类型/国家/工作室/标签）
             elif field in ['genres', 'countries', 'studios', 'tags']:
-                # ★★★ 核心修复 2/2：直接使用已经是列表的 _json 字段 ★★★
                 item_value_list = item_metadata.get(f"{field}_json")
                 if item_value_list:
                     try:
-                        # 不再需要 json.loads()
                         if op == 'is_one_of':
                             if isinstance(value, list) and any(v in item_value_list for v in value):
                                 match = True
@@ -792,18 +792,16 @@ class FilterEngine:
                     except TypeError:
                         logger.warning(f"处理 {field}_json 时遇到意外的类型错误，内容: {item_value_list}")
 
-            # 3. 处理其他所有非列表字段 (这部分逻辑是正确的，无需修改)
+            # 3. 处理其他所有非列表字段
             elif field in ['release_date', 'date_added']:
                 item_date_val = item_metadata.get(field)
                 if item_date_val and str(value).isdigit():
                     try:
-                        # 兼容处理 datetime 和 date 类型
                         if isinstance(item_date_val, datetime):
                             item_date = item_date_val.date()
                         elif isinstance(item_date_val, date):
                             item_date = item_date_val
                         else:
-                            # 兼容字符串格式
                             item_date = datetime.strptime(str(item_date_val), '%Y-%m-%d').date()
 
                         today = datetime.now().date()
