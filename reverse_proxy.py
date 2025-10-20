@@ -345,35 +345,30 @@ def handle_get_mimicked_library_items(user_id, mimicked_id, params):
             logger.debug(f"  ➜ 虚拟库 '{collection_info['name']}' 正在强制使用Emby原生排序 (SortBy={sort_by_str})。")
             
             base_url, api_key = _get_real_emby_url_and_key()
-            target_url = f"{base_url}/emby/Users/{user_id}/Items"
             
-            # 我们依然复制params，是为了保留Limit, StartIndex等分页参数
-            emby_params = params.copy() 
-            emby_params['api_key'] = api_key
-            emby_params['Ids'] = ",".join(map(str, final_visible_ids))
+            # ★★★ 核心修复：不再直接请求，而是先分页和排序 ★★★
+            limit = int(params.get('Limit', 50))
+            offset = int(params.get('StartIndex', 0))
 
-            # 强制写入我们决定的排序方式
-            emby_params['SortBy'] = sort_by_str
-            emby_params['SortOrder'] = sort_order
-            
-            if 'ParentId' in emby_params:
-                del emby_params['ParentId']
-            
-            try:
-                resp = requests.get(target_url, params=emby_params, timeout=25)
-                resp.raise_for_status()
-                emby_response_data = resp.json()
-                
-                if 'Items' not in emby_response_data:
-                    emby_response_data['Items'] = []
+            # 1. 先在本地数据库进行高效排序和分页，拿到最终需要显示的 ID 列表
+            paginated_ids = queries_db.get_sorted_and_paginated_ids(
+                final_visible_ids, sort_by_str.split(',')[0], sort_order, limit, offset
+            )
 
-                emby_response_data['TotalRecordCount'] = total_record_count
-                
-                return Response(json.dumps(emby_response_data), mimetype='application/json')
-
-            except Exception as e:
-                logger.error(f"  ➜ 请求 Emby 原生排序时失败: {e}", exc_info=True)
+            if not paginated_ids:
                 return Response(json.dumps({"Items": [], "TotalRecordCount": total_record_count}), mimetype='application/json')
+
+            # 2. 只为这一页的 ID 去 Emby 获取详细信息
+            full_fields = "PrimaryImageAspectRatio,ProviderIds,UserData,Name,ProductionYear,CommunityRating,DateCreated,PremiereDate,Type,RecursiveItemCount,SortName,ChildCount"
+            items_from_emby = _fetch_items_in_chunks(base_url, api_key, user_id, paginated_ids, full_fields)
+            
+            # 3. 按照本地排好的顺序，重新组合 Emby 返回的结果
+            items_map = {item['Id']: item for item in items_from_emby}
+            final_items = [items_map[id] for id in paginated_ids if id in items_map]
+            
+            # 4. 构造最终的响应
+            final_response = {"Items": final_items, "TotalRecordCount": total_record_count}
+            return Response(json.dumps(final_response), mimetype='application/json')
 
         else:
             # --- 分支 B: 本地高性能排序路径 ---
