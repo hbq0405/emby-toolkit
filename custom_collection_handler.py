@@ -17,7 +17,7 @@ from gevent import subprocess, Timeout
 import tmdb_handler
 import emby_handler
 import config_manager
-from database import collection_db, watchlist_db 
+from database import collection_db, watchlist_db, connection 
 from douban import DoubanApi
 from tmdb_handler import search_media, get_tv_details
 
@@ -706,8 +706,48 @@ class FilterEngine:
     - 移除了所有对 _json 字段的多余 json.loads() 调用，解决了筛选规则静默失效的问题。
     """
     def __init__(self):
-        # ★ 新增：为“连载中”规则缓存TMDb ID，避免在单次执行中重复查询数据库
         self.airing_series_ids = None
+        self.actor_name_to_id_cache = {}
+
+    def _get_actor_tmdb_ids_by_names(self, actor_names: List[str]) -> List[int]:
+        """
+        根据演员名字列表，批量从数据库查询对应的 TMDB ID。
+        利用内存缓存提高效率。
+        """
+        if not actor_names:
+            return []
+
+        ids_to_return = []
+        names_to_query = []
+
+        # 1. 优先从内存缓存中获取
+        for name in actor_names:
+            if name in self.actor_name_to_id_cache:
+                ids_to_return.append(self.actor_name_to_id_cache[name])
+            else:
+                names_to_query.append(name)
+        
+        # 2. 对缓存中没有的名字，进行数据库查询
+        if names_to_query:
+            try:
+                with connection.get_db_connection() as conn:
+                    cursor = conn.cursor()
+                    # 使用 ANY(%s) 进行高效批量查询
+                    sql = "SELECT primary_name, tmdb_person_id FROM person_identity_map WHERE primary_name = ANY(%s)"
+                    cursor.execute(sql, (names_to_query,))
+                    rows = cursor.fetchall()
+                    
+                    for row in rows:
+                        name = row['primary_name']
+                        tmdb_id = row['tmdb_person_id']
+                        if tmdb_id:
+                            ids_to_return.append(tmdb_id)
+                            # 将查询结果存入缓存
+                            self.actor_name_to_id_cache[name] = tmdb_id
+            except Exception as e:
+                logger.error(f"批量查询演员TMDB ID时出错: {e}", exc_info=True)
+
+        return ids_to_return
 
     def _get_airing_ids(self): # ◀◀◀ 函数名也改了
         """辅助函数，带缓存地获取连载中ID"""
@@ -727,24 +767,37 @@ class FilterEngine:
             
             # 1. 检查字段是否为“对象列表”（演员/导演）
             if field in ['actors', 'directors']:
-                # ★★★ 核心修复 1/2：直接使用已经是列表的 _json 字段 ★★★
-                item_object_list = item_metadata.get(f"{field}_json")
-                if item_object_list:
+                # 1. 获取规则中指定的演员/导演名字对应的 TMDB ID
+                person_tmdb_ids_from_rule = []
+                if isinstance(value, list):
+                    person_tmdb_ids_from_rule = self._get_actor_tmdb_ids_by_names(value)
+                elif isinstance(value, str):
+                    person_tmdb_ids_from_rule = self._get_actor_tmdb_ids_by_names([value])
+
+                if not person_tmdb_ids_from_rule:
+                    # 如果连一个ID都查不到，这条规则直接判为不匹配
+                    results.append(False)
+                    continue
+
+                # 2. 获取当前媒体项中所有演员/导演的 TMDB ID
+                #    actors_json 已经是瘦身后的 [{tmdb_id, ...}, ...] 格式
+                item_person_list = item_metadata.get(f"{field}_json")
+                if item_person_list:
                     try:
-                        # ★★★ 核心改造：只取列表中的前5个演员进行匹配！ ★★★
-                        item_name_list = [p['name'] for p in item_object_list[:3] if 'name' in p]
+                        # 提取出所有 tmdb_id 组成一个集合，方便快速查找
+                        item_person_tmdb_ids = {p['tmdb_id'] for p in item_person_list if 'tmdb_id' in p}
                         
-                        if op == 'is_one_of':
-                            if isinstance(value, list) and any(v in item_name_list for v in value):
+                        # 3. 进行 ID 对 ID 的匹配
+                        if op == 'is_one_of' or op == 'contains':
+                            # 只要规则里的任何一个ID，出现在了电影的ID列表里，就匹配成功
+                            if any(rule_id in item_person_tmdb_ids for rule_id in person_tmdb_ids_from_rule):
                                 match = True
                         elif op == 'is_none_of':
-                            if isinstance(value, list) and not any(v in item_name_list for v in value):
+                            # 只有当规则里的所有ID，一个都没出现在电影的ID列表里，才匹配成功
+                            if not any(rule_id in item_person_tmdb_ids for rule_id in person_tmdb_ids_from_rule):
                                 match = True
-                        elif op == 'contains':
-                            if value in item_name_list:
-                                match = True
-                    except TypeError:
-                        logger.warning(f"  ➜ 处理 {field}_json 时遇到意外的类型错误，内容: {item_object_list}")
+                    except (TypeError, KeyError):
+                        logger.warning(f"  ➜ 处理 {field}_json 时遇到意外的格式错误，内容: {item_person_list}")
 
             # 2. 检查字段是否为“字符串列表”（类型/国家/工作室/标签）
             elif field in ['genres', 'countries', 'studios', 'tags']:
