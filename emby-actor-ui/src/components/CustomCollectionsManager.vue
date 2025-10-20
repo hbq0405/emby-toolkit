@@ -320,7 +320,7 @@
                     :render-tag="renderPersonTag"
                   />
                 </template>
-                <template v-if="ruleConfig[rule.field]?.type === 'single_select_boolean'">
+                <template v-else-if="ruleConfig[rule.field]?.type === 'single_select_boolean'">
                   <n-select
                     v-model:value="rule.value"
                     @update:value="rule.operator = 'is'"
