@@ -5,6 +5,7 @@ import xml.etree.ElementTree as ET
 import re
 import os
 import sys
+import gevent
 from typing import List, Dict, Any, Optional, Tuple
 import json
 from datetime import datetime, timedelta, date
@@ -586,15 +587,22 @@ class ListImporter:
 
     def process(self, definition: Dict) -> Tuple[List[Dict[str, str]], str]:
         url = definition.get('url')
-        # ★★★ 核心修改 1/2: 增加一个默认的 source_type ★★★
-        source_type = 'list_rss' # 默认是普通榜单
+        source_type = 'list_rss'
         
         if not url:
             return [], source_type
-        if url.startswith('maoyan://'):
-            # 猫眼类型直接在 task 里处理了，这里返回特定标识
-            return [], 'list_maoyan'
 
+        # ★★★ 核心修正：在这里直接处理猫眼逻辑 ★★★
+        if url.startswith('maoyan://'):
+            source_type = 'list_maoyan'
+            logger.info(f"  ➜ 检测到猫眼榜单，将启动异步后台脚本...")
+            # 使用 gevent 异步执行耗时的子进程调用
+            greenlet = gevent.spawn(self._execute_maoyan_fetch, definition)
+            # .get() 会等待 greenlet 执行完毕并返回结果
+            tmdb_items = greenlet.get()
+            return tmdb_items, source_type
+
+        # --- 对于非猫眼榜单，保持原有逻辑不变 ---
         item_types = definition.get('item_type', ['Movie'])
         if isinstance(item_types, str): item_types = [item_types]
         limit = definition.get('limit')
