@@ -15,7 +15,7 @@ from .actors import (task_sync_person_map, task_enrich_aliases, task_actor_trans
                      task_purge_ghost_actors)
 from .media import task_role_translation, task_populate_metadata_cache, task_apply_main_cast_to_episodes 
 from .watchlist import task_process_watchlist, task_run_revival_check
-from .collections import task_refresh_collections, task_process_all_custom_collections, task_process_custom_collection
+from .collections import task_refresh_collections, task_process_all_custom_collections, process_single_custom_collection
 from .subscriptions import task_auto_subscribe, task_update_resubscribe_cache, task_resubscribe_library
 from .covers import task_generate_all_covers, task_generate_all_custom_collection_covers
 from .maintenance import task_scan_for_cleanup_issues 
@@ -197,7 +197,7 @@ def get_task_registry(context: str = 'all'):
         
         # --- 不适合任务链的、需要特定参数的任务 ---
         'process_all_custom_collections': (task_process_all_custom_collections, "生成所有自建合集", 'media', False),
-        'process-single-custom-collection': (task_process_custom_collection, "生成单个自建合集", 'media', False),
+        'process-single-custom-collection': (process_single_custom_collection, "生成单个自建合集", 'media', False),
         'scan-cleanup-issues': (task_scan_for_cleanup_issues, "扫描媒体重复项", 'media', False),
         'revival-check': (task_run_revival_check, "检查剧集复活", 'watchlist', False),
         'task_apply_main_cast_to_episodes': (task_apply_main_cast_to_episodes, "轻量化同步分集演员表", 'media', False),

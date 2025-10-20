@@ -21,8 +21,6 @@ import extensions
 import emby_handler
 logger = logging.getLogger(__name__)
 
-permission_fetch_lock = RLock()
-
 MIMICKED_ID_BASE = 900000
 def to_mimicked_id(db_id): return str(-(MIMICKED_ID_BASE + db_id))
 def from_mimicked_id(mimicked_id): return -(int(mimicked_id)) - MIMICKED_ID_BASE
@@ -32,62 +30,11 @@ def is_mimicked_id(item_id):
 MIMICKED_ITEMS_RE = re.compile(r'/emby/Users/([^/]+)/Items/(-(\d+))')
 MIMICKED_ITEM_DETAILS_RE = re.compile(r'emby/Users/([^/]+)/Items/(-(\d+))$')
 
-class SlidingTTLCache(TTLCache):
-    """
-    一个自定义的 TTLCache，它会在每次访问（get）一个项目时，
-    自动重置该项目的存活时间（TTL）。
-    这实现了真正的“滑动窗口”缓存，完美解决了“定时过期”导致的不良体验。
-    """
-    def __getitem__(self, key, cache_getitem=TTLCache.__getitem__):
-        # 首先，使用父类的方法获取项目。
-        # 如果项目不存在或已过期，这里会像预期的那样抛出 KeyError。
-        item = cache_getitem(self, key)
-        
-        # 如果代码能执行到这里，说明项目存在且有效。
-        # 我们通过重新设置该项目的值来巧妙地更新它的过期时间。
-        # 这利用了 TTLCache 在 __setitem__ 时会自动刷新计时器的特性。
-        self[key] = item
-        
-        return item
-
-user_permission_cache = SlidingTTLCache(maxsize=50, ttl=300) # 缓存5分钟
-
 def _get_real_emby_url_and_key():
     base_url = config_manager.APP_CONFIG.get("emby_server_url", "").rstrip('/')
     api_key = config_manager.APP_CONFIG.get("emby_api_key", "")
     if not base_url or not api_key: raise ValueError("Emby服务器地址或API Key未配置")
     return base_url, api_key
-
-def _get_user_accessible_ids_with_lock(user_id):
-    """
-    【V5.5 - 防惊群版】
-    一个带锁的辅助函数，用于安全地获取用户的Emby原生权限ID。
-    它通过“检查-锁定-再检查”模式，可以完美防止在高并发下对Emby API的重复请求。
-    """
-    # 第一次检查：这是最快的路径，99%的请求应该在这里命中缓存并立即返回
-    cached_ids = user_permission_cache.get(f"user_perms_{user_id}")
-    if cached_ids is not None:
-        return cached_ids
-
-    # 如果缓存未命中，则进入锁定流程
-    with permission_fetch_lock:
-        # 第二次检查：至关重要！
-        # 在当前线程获得锁时，可能已经有另一个线程完成了数据获取和缓存填充。
-        # 再次检查可以避免不必要的API调用。
-        cached_ids = user_permission_cache.get(f"user_perms_{user_id}")
-        if cached_ids is not None:
-            return cached_ids
-
-        # 如果真的没有缓存，那么只有获得锁的这个线程会执行以下代码
-        logger.debug(f"用户 {user_id} 的权限缓存未命中且无其他线程正在获取，现在开始从Emby实时获取...")
-        base_url, api_key = _get_real_emby_url_and_key()
-        
-        live_ids = emby_handler.get_all_accessible_item_ids_for_user_optimized(base_url, api_key, user_id)
-        
-        if live_ids is not None:
-            user_permission_cache[f"user_perms_{user_id}"] = live_ids
-        
-        return live_ids
 
 def _fetch_items_in_chunks(base_url, api_key, user_id, item_ids, fields):
     # ... V4.8 的并发版本，现在重新变得重要 ...
@@ -114,53 +61,48 @@ def _fetch_items_in_chunks(base_url, api_key, user_id, item_ids, fields):
 
 def _get_final_item_ids_for_view(user_id, collection_info):
     """
-    【V5.9 核心重构 - 权限前置最终版】
-    - 彻底解决 V5.7 的性能问题，将权限检查前置并缓存。
-    - 实现了 (权限过滤 -> 内容过滤 -> 排序 -> 分页) 的高效流程。
+    【V6.0 - 终极简化版】
+    - 彻底移除实时权限检查。
+    - 直接从 user_collection_cache 表中获取为该用户预计算好的、100%有权限的媒体列表。
+    - 仍然保留了动态用户数据筛选的能力。
     """
     collection_id = collection_info['id']
     definition = collection_info.get('definition_json') or {}
     
-    # --- 步骤 1: 获取并缓存用户的“权限ID白名单” ---
-    user_accessible_ids = None
-    if definition.get('enforce_emby_permissions'):
-        perm_cache_key = f"user_perms_{user_id}"
-        if perm_cache_key in user_permission_cache:
-            user_accessible_ids = user_permission_cache[perm_cache_key]
-            logger.trace(f"用户 {user_id} 的原生权限ID缓存命中。")
-        else:
-            logger.debug(f"用户 {user_id} 的原生权限ID缓存未命中，正在从Emby实时获取...")
-            base_url, api_key = _get_real_emby_url_and_key()
-            user_accessible_ids = emby_handler.get_all_accessible_item_ids_for_user_optimized(base_url, api_key, user_id)
-            if user_accessible_ids is not None:
-                user_permission_cache[perm_cache_key] = user_accessible_ids
-        
-        if user_accessible_ids is None:
-            logger.error(f"无法获取用户 {user_id} 的Emby原生权限，将返回空列表。")
-            return []
+    # ======================================================================
+    # ★★★ 核心改造 2/4: 逻辑极度简化！★★★
+    # ======================================================================
+    
+    # --- 步骤 1: 直接从“贵宾名册”中查询专属列表 ---
+    from database.connection import get_db_connection
+    base_ordered_emby_ids = []
+    try:
+        with get_db_connection() as conn:
+            with conn.cursor() as cursor:
+                cursor.execute(
+                    "SELECT visible_emby_ids_json FROM user_collection_cache WHERE user_id = %s AND collection_id = %s",
+                    (user_id, collection_id)
+                )
+                row = cursor.fetchone()
+                if row and row['visible_emby_ids_json']:
+                    base_ordered_emby_ids = row['visible_emby_ids_json']
+    except Exception as e:
+        logger.error(f"查询用户 {user_id} 在合集 {collection_id} 的权限缓存时出错: {e}", exc_info=True)
+        return []
 
-    # --- 步骤 2: 获取虚拟库的“全局”媒体ID列表 ---
-    db_media_list = collection_info.get('generated_media_info_json') or []
-    base_ordered_emby_ids = [item.get('emby_id') for item in db_media_list if item.get('emby_id')]
     if not base_ordered_emby_ids:
         return []
 
-    # --- 步骤 3: 在内存中极速完成权限过滤 (如果需要) ---
-    if user_accessible_ids is not None:
-        final_emby_ids_to_process = [emby_id for emby_id in base_ordered_emby_ids if emby_id in user_accessible_ids]
-        logger.debug(f"Emby原生权限过滤后，媒体项数量从 {len(base_ordered_emby_ids)} 变为 {len(final_emby_ids_to_process)}。")
-    else:
-        final_emby_ids_to_process = base_ordered_emby_ids
-
-    # --- 步骤 4: 在权限过滤后的结果上，再执行用户个人行为数据筛选 (如果需要) ---
+    # --- 步骤 2: 在这个干净的列表上，再执行动态用户数据筛选 (如果需要) ---
+    final_emby_ids_to_process = base_ordered_emby_ids
     if definition.get('dynamic_filter_enabled'):
         dynamic_rules = definition.get('dynamic_rules', [])
         ids_from_local_db = user_db.get_item_ids_by_dynamic_rules(user_id, dynamic_rules)
         
         if ids_from_local_db is not None:
             dynamic_ids_set = set(ids_from_local_db)
-            final_emby_ids_to_process = [emby_id for emby_id in final_emby_ids_to_process if emby_id in dynamic_ids_set]
-            logger.debug(f"用户个人行为数据过滤后，媒体项数量变为 {len(final_emby_ids_to_process)}。")
+            final_emby_ids_to_process = [emby_id for emby_id in base_ordered_emby_ids if emby_id in dynamic_ids_set]
+            logger.debug(f"用户个人行为数据过滤后，媒体项数量从 {len(base_ordered_emby_ids)} 变为 {len(final_emby_ids_to_process)}。")
 
     return final_emby_ids_to_process
 
@@ -375,9 +317,6 @@ def handle_mimicked_library_metadata_endpoint(path, mimicked_id, params):
         return Response(json.dumps([]), mimetype='application/json')
     
 def handle_get_mimicked_library_items(user_id, mimicked_id, params):
-    """
-    - 使用“强制劫持”策略，无条件使用虚拟库的默认排序设置。
-    """
     try:
         real_db_id = from_mimicked_id(mimicked_id)
         collection_info = collection_db.get_custom_collection_by_id(real_db_id)
@@ -470,158 +409,100 @@ def handle_get_mimicked_library_items(user_id, mimicked_id, params):
 
 def handle_get_latest_items(user_id, params):
     """
-    - 如果虚拟库包含剧集（纯剧集或混合库），则强制按“最后一集更新,添加入库”(DateLastContentAdded,DateCreated)的多重标准排序。
-    - 如果是纯电影库，则强制按“添加时间”(DateCreated)排序。
+    【V6.0 - “完全体”异步权限预计算版】
+    - 无论是处理单个库还是全局最新，都直接从预计算好的专属列表中获取数据。
     """
     try:
         base_url, api_key = _get_real_emby_url_and_key()
         virtual_library_id = params.get('ParentId') or params.get('customViewId')
 
-        # --- 情况一：处理针对【单个】虚拟库的“最近添加”请求 (首页的核心) ---
+        # ======================================================================
+        # 场景一：处理针对【单个】虚拟库的“最近添加”请求 (例如，进入虚拟库首页)
+        # ======================================================================
         if virtual_library_id and is_mimicked_id(virtual_library_id):
             real_db_id = from_mimicked_id(virtual_library_id)
             collection_info = collection_db.get_custom_collection_by_id(real_db_id)
-            if not collection_info: return Response(json.dumps([]), mimetype='application/json')
+            if not collection_info: 
+                return Response(json.dumps([]), mimetype='application/json')
 
-            # 步骤 1: 获取该库所有可见的媒体ID (这部分逻辑不变)
-            db_media_list = collection_info.get('generated_media_info_json') or []
-            base_emby_ids_set = {item.get('emby_id') for item in db_media_list if item.get('emby_id')}
-            if not base_emby_ids_set: return Response(json.dumps([]), mimetype='application/json')
-
+            # 这个函数现在的作用就是去 user_collection_cache 表里查出专属列表
+            final_visible_ids = _get_final_item_ids_for_view(user_id, collection_info)
+            
+            if not final_visible_ids: 
+                return Response(json.dumps([]), mimetype='application/json')
+            
+            # --- 后续的排序和分页逻辑完全不变，因为它们本来就是对干净列表操作的 ---
             definition = collection_info.get('definition_json') or {}
-            if definition.get('enforce_emby_permissions'):
-                user_accessible_ids = _get_user_accessible_ids_with_lock(user_id)
-                if user_accessible_ids is not None: base_emby_ids_set.intersection_update(user_accessible_ids)
-                else: return Response(json.dumps([]), mimetype='application/json')
-
-            if definition.get('dynamic_filter_enabled'):
-                dynamic_rules = definition.get('dynamic_rules', [])
-                ids_from_local_db = user_db.get_item_ids_by_dynamic_rules(user_id, dynamic_rules)
-                if ids_from_local_db is not None: base_emby_ids_set.intersection_update(ids_from_local_db)
-
-            final_visible_ids = list(base_emby_ids_set)
-            if not final_visible_ids: return Response(json.dumps([]), mimetype='application/json')
+            item_type_from_db = definition.get('item_type', ['Movie'])
+            is_series_focused = 'Series' in item_type_from_db
             
-            # 1. 判断库的内容类型
-            item_type_from_db = definition.get('item_type', 'Movie')
-            is_series_focused = False
-            if isinstance(item_type_from_db, list) and 'Series' in item_type_from_db:
-                is_series_focused = True
-            elif isinstance(item_type_from_db, str) and item_type_from_db == 'Series':
-                is_series_focused = True
-
-            # 2. 根据内容类型，强制应用最强的“最新”排序规则
-            if is_series_focused:
-                # 对于任何包含剧集的库（纯剧集或混合库），使用“综合排名”
-                sort_by_str = 'DateLastContentAdded,DateCreated'
-            else:
-                # 对于纯电影库，简单按入库时间即可
-                sort_by_str = 'DateCreated'
+            # 根据库的内容，智能决定“最新”的排序规则
+            sort_by_str = 'DateLastContentAdded,DateCreated' if is_series_focused else 'DateCreated'
+            sort_order = 'Descending'
             
-            sort_order = 'Descending' # “最新”永远是降序
-
-            # 2. 判断走本地排序还是Emby原生排序
-            SUPPORTED_LOCAL_SORT_FIELDS = ['PremiereDate', 'DateCreated', 'CommunityRating', 'ProductionYear', 'SortName', 'original']
-            use_emby_native_sort = (sort_by_str not in SUPPORTED_LOCAL_SORT_FIELDS) or (definition.get('default_sort_by') == 'none')
-
             limit = int(params.get('Limit', 24))
             fields = params.get('Fields', "PrimaryImageAspectRatio,BasicSyncInfo,DateCreated,UserData")
+            
+            # 使用我们已有的、高效的本地排序分页函数
+            latest_ids = queries_db.get_sorted_and_paginated_ids(final_visible_ids, sort_by_str.split(',')[0], sort_order, limit, 0)
 
-            if use_emby_native_sort:
-                # --- 分支 A: Emby 原生排序路径 ---
-                logger.debug(f"  ➜ 首页最新项目(库:'{collection_info['name']}')正在使用Emby原生排序 (SortBy={sort_by_str})。")
-                
-                emby_params = {
-                    'api_key': api_key,
-                    'Ids': ",".join(map(str, final_visible_ids)),
-                    'SortBy': sort_by_str,
-                    'SortOrder': sort_order,
-                    'Limit': limit,
-                    'StartIndex': 0,
-                    'Fields': fields,
-                    'Recursive': True,
-                    'IncludeItemTypes': params.get('IncludeItemTypes', 'Movie,Series,Video')
-                }
-                
-                target_url = f"{base_url}/emby/Users/{user_id}/Items"
-                resp = requests.get(target_url, params=emby_params, timeout=25)
-                resp.raise_for_status()
-                return Response(resp.content, resp.status_code, content_type=resp.headers.get('Content-Type'))
+            if not latest_ids: 
+                return Response(json.dumps([]), mimetype='application/json')
+            
+            # 只为最终的一页 ID 去 Emby 获取详情
+            items_from_emby = _fetch_items_in_chunks(base_url, api_key, user_id, latest_ids, fields)
+            items_map = {item['Id']: item for item in items_from_emby}
+            final_items = [items_map[id] for id in latest_ids if id in items_map]
+            
+            return Response(json.dumps(final_items), mimetype='application/json')
 
-            else:
-                # --- 分支 B: 本地高性能排序路径 ---
-                logger.debug(f"  ➜ 首页最新项目(库:'{collection_info['name']}')正在使用本地高性能排序 (SortBy={sort_by_str})。")
-                latest_ids = queries_db.get_sorted_and_paginated_ids(final_visible_ids, sort_by_str, sort_order, limit, 0)
-
-                if not latest_ids: return Response(json.dumps([]), mimetype='application/json')
-                
-                items_from_emby = _fetch_items_from_emby(base_url, api_key, user_id, latest_ids, fields)
-                items_map = {item['Id']: item for item in items_from_emby}
-                final_items = [items_map[id] for id in latest_ids if id in items_map]
-                return Response(json.dumps(final_items), mimetype='application/json')
-
-        # --- 情况二：处理【全局】“最近添加”请求 (这部分逻辑保持不变，因为它总是按DateCreated排序) ---
+        # ======================================================================
+        # 场景二：处理【全局】“最近添加”请求 (例如，Emby 主页最顶部的“最新媒体”)
+        # ======================================================================
         elif not virtual_library_id:
             logger.debug(f"  ➜ 正在为用户 {user_id} 处理全局“最新媒体”请求...")
             
-            all_collections = collection_db.get_all_active_custom_collections()
-            visible_collections = []
-            for coll in all_collections:
-                allowed_users = coll.get('allowed_user_ids')
-                if not allowed_users or user_id in allowed_users:
-                    visible_collections.append(coll)
-            
-            if not visible_collections:
-                logger.debug("  ➜ 该用户没有任何可见的虚拟库，返回空列表。")
-                return Response(json.dumps([]), mimetype='application/json')
-
-            user_accessible_ids = None
-            if any(c.get('definition_json', {}).get('enforce_emby_permissions') for c in visible_collections):
-                user_accessible_ids = _get_user_accessible_ids_with_lock(user_id)
-            
-            all_dynamic_rules = []
-            for coll in visible_collections:
-                definition = coll.get('definition_json', {})
-                if definition.get('dynamic_filter_enabled'):
-                    all_dynamic_rules.extend(definition.get('dynamic_rules', []))
-            
-            dynamic_ids_set = None
-            if all_dynamic_rules:
-                unique_rules = [dict(t) for t in {tuple(d.items()) for d in all_dynamic_rules}]
-                ids_from_local_db = user_db.get_item_ids_by_dynamic_rules(user_id, unique_rules)
-                if ids_from_local_db:
-                    dynamic_ids_set = set(ids_from_local_db)
-
+            # --- 不再遍历所有合集，而是直接从 user_collection_cache 聚合 ---
             all_possible_ids = set()
-            for coll in visible_collections:
-                db_media_list = coll.get('generated_media_info_json') or []
-                coll_ids = {item.get('emby_id') for item in db_media_list if item.get('emby_id')}
-                
-                definition = coll.get('definition_json', {})
-                if definition.get('enforce_emby_permissions') and user_accessible_ids is not None:
-                    coll_ids.intersection_update(user_accessible_ids)
-                if definition.get('dynamic_filter_enabled') and dynamic_ids_set is not None:
-                    coll_ids.intersection_update(dynamic_ids_set)
-                
-                all_possible_ids.update(coll_ids)
+            from database.connection import get_db_connection
+            try:
+                with get_db_connection() as conn:
+                    with conn.cursor() as cursor:
+                        # 一次查询，拿出这个用户所有可见合集的专属列表
+                        cursor.execute(
+                            "SELECT visible_emby_ids_json FROM user_collection_cache WHERE user_id = %s",
+                            (user_id,)
+                        )
+                        rows = cursor.fetchall()
+                        # 在内存中把所有列表合并成一个大的 set
+                        for row in rows:
+                            if row['visible_emby_ids_json']:
+                                all_possible_ids.update(row['visible_emby_ids_json'])
+            except Exception as e:
+                logger.error(f"聚合用户 {user_id} 的所有可见媒体ID时出错: {e}", exc_info=True)
+                return Response(json.dumps([]), mimetype='application/json')
 
             if not all_possible_ids:
                 return Response(json.dumps([]), mimetype='application/json')
 
             limit = int(params.get('Limit', 100))
+            # 全局最新，永远按 DateCreated 排序
             latest_ids = queries_db.get_sorted_and_paginated_ids(list(all_possible_ids), 'DateCreated', 'Descending', limit, 0)
 
-            if not latest_ids: return Response(json.dumps([]), mimetype='application/json')
+            if not latest_ids: 
+                return Response(json.dumps([]), mimetype='application/json')
 
             fields = params.get('Fields', "PrimaryImageAspectRatio,BasicSyncInfo,DateCreated,UserData")
-            items_from_emby = _fetch_items_from_emby(base_url, api_key, user_id, latest_ids, fields)
+            items_from_emby = _fetch_items_in_chunks(base_url, api_key, user_id, latest_ids, fields)
             items_map = {item['Id']: item for item in items_from_emby}
             final_items = [items_map[id] for id in latest_ids if id in items_map]
             
             logger.debug(f"  ➜ 为用户 {user_id} 的全局“最新媒体”请求成功返回 {len(final_items)} 个项目。")
             return Response(json.dumps(final_items), mimetype='application/json')
             
-        # --- 情况三：原生库的请求，直接转发 ---
+        # ======================================================================
+        # 场景三：原生库的请求，直接转发 
+        # ======================================================================
         else:
             target_url = f"{base_url}/{request.path.lstrip('/')}"
             forward_headers = {k: v for k, v in request.headers if k.lower() not in ['host', 'accept-encoding']}
@@ -634,7 +515,7 @@ def handle_get_latest_items(user_id, params):
             return Response(resp.iter_content(chunk_size=8192), resp.status_code, response_headers)
             
     except Exception as e:
-        logger.error(f"  ➜ 处理最新媒体时发生未知错误 (V5.4 同步版): {e}", exc_info=True)
+        logger.error(f"  ➜ 处理最新媒体时发生未知错误: {e}", exc_info=True)
         return Response(json.dumps([]), mimetype='application/json')
 
 proxy_app = Flask(__name__)

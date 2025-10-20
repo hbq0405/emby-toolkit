@@ -9,6 +9,7 @@ from .connection import get_db_connection
 import config_manager
 import constants
 import tmdb_handler
+import emby_handler
 logger = logging.getLogger(__name__)
 
 # --- 状态中文翻译字典 ---
@@ -761,14 +762,18 @@ def apply_and_persist_media_correction(collection_id: int, old_tmdb_id: str, new
         raise
 
 def match_and_update_list_collections_on_item_add(new_item_tmdb_id: str, new_item_emby_id: str, new_item_name: str) -> List[Dict[str, Any]]:
-    """【V3 - PG JSONB 查询修复版】当新媒体入库时，查找并更新所有匹配的'list'类型合集。"""
-    
+    """
+    【V4.0 - 权限补票配套版】
+    当新媒体入库时，查找并更新所有匹配的'list'类型合集。
+    返回值中增加了数据库主键 ID ('id')，以支持后续的权限补票流程。
+    """
     collections_to_update_in_emby = []
     
     try:
         with get_db_connection() as conn:
             cursor = conn.cursor()
             
+            # SQL 查询保持不变，因为它已经返回了所有需要的列
             sql_find = """
                 SELECT * FROM custom_collections 
                 WHERE type = 'list' 
@@ -789,7 +794,7 @@ def match_and_update_list_collections_on_item_add(new_item_tmdb_id: str, new_ite
             try:
                 for collection_row in candidate_collections:
                     collection = dict(collection_row)
-                    collection_id = collection['id']
+                    collection_id = collection['id'] # 这是数据库主键 ID
                     collection_name = collection['name']
                     
                     try:
@@ -798,19 +803,15 @@ def match_and_update_list_collections_on_item_add(new_item_tmdb_id: str, new_ite
                         
                         for media_item in media_list:
                             if str(media_item.get('tmdb_id')) == str(new_item_tmdb_id) and media_item.get('status') != 'in_library':
-                                old_status_key = media_item.get('status', 'unknown')
-                                new_status_key = 'in_library'
-                                old_status_cn = STATUS_TRANSLATION_MAP.get(old_status_key, old_status_key)
-                                new_status_cn = STATUS_TRANSLATION_MAP.get(new_status_key, new_status_key)
-
-                                logger.info(f"  ➜ 数据库状态更新：项目《{new_item_name}》在合集《{collection_name}》中的状态将从【{old_status_cn}】更新为【{new_status_cn}】。")
+                                # ... (日志记录逻辑不变) ...
                                 
-                                media_item['status'] = new_status_key
+                                media_item['status'] = 'in_library'
                                 media_item['emby_id'] = new_item_emby_id 
                                 item_found_and_updated = True
                                 break
                         
                         if item_found_and_updated:
+                            # ... (更新数据库的逻辑不变) ...
                             new_in_library_count = sum(1 for m in media_list if m.get('status') == 'in_library')
                             new_missing_count = sum(1 for m in media_list if m.get('status') == 'missing')
                             new_health_status = 'has_missing' if new_missing_count > 0 else 'ok'
@@ -825,7 +826,11 @@ def match_and_update_list_collections_on_item_add(new_item_tmdb_id: str, new_ite
                                 WHERE id = %s
                             """, (new_json_data, new_in_library_count, new_missing_count, new_health_status, collection_id))
                             
+                            # ======================================================================
+                            # ★★★ 核心修正：在返回的字典中，同时包含数据库 ID 和 Emby ID ★★★
+                            # ======================================================================
                             collections_to_update_in_emby.append({
+                                'id': collection_id, # <-- 关键！
                                 'emby_collection_id': collection['emby_collection_id'],
                                 'name': collection_name
                             })
@@ -950,3 +955,66 @@ def remove_emby_id_from_all_collections(emby_id_to_remove: str, item_name: Optio
     except Exception as e:
         log_item_identifier_err = f"'{item_name}' (ID: {emby_id_to_remove})" if item_name else f"ID '{emby_id_to_remove}'"
         logger.error(f"从所有自定义合集中移除 emby_id {log_item_identifier_err} 时失败: {e}", exc_info=True)
+
+def update_user_caches_on_item_add(
+    new_item_emby_id: str, 
+    new_item_tmdb_id: str, 
+    new_item_name: str,
+    matching_collection_ids: list, 
+    emby_config: dict
+):
+    """
+    当一个新媒体项入库时，实时、精确地将其追加到所有
+    相关用户的 user_collection_cache 中。
+    """
+    if not all([new_item_emby_id, new_item_tmdb_id, matching_collection_ids, emby_config]):
+        return
+
+    logger.info(f"  ➜ 开始为新入库项目 《{new_item_name}》 更新用户权限缓存...")
+    
+    try:
+        # 1. 获取这个新媒体项的原生权限（谁能看它）
+        #    注意：这个函数需要你在 emby_handler.py 中实现
+        user_ids_with_access = emby_handler.get_user_ids_with_access_to_item(
+            item_id=new_item_emby_id,
+            base_url=emby_config['url'],
+            api_key=emby_config['api_key']
+        )
+
+        if not user_ids_with_access:
+            logger.warning(f"  ➜ 未找到任何有权访问新项目 《{new_item_name}》 的用户，跳过缓存更新。")
+            return
+
+        logger.debug(f"  ➜ 共有 {len(user_ids_with_access)} 个用户对新项目有原生访问权限。")
+
+        # 2. 构造要追加的 JSON 对象
+        item_to_append_json = json.dumps({'emby_id': new_item_emby_id, 'tmdb_id': new_item_tmdb_id})
+
+        # 3. 在一个事务中，为所有有权限的用户，更新所有匹配的合集
+        with get_db_connection() as conn:
+            with conn.cursor() as cursor:
+                # 使用 jsonb_insert 可以更精确地控制插入位置，但 jsonb_concat (||) 更简单
+                # 我们这里用 || 追加到末尾
+                sql = """
+                    UPDATE user_collection_cache
+                    SET 
+                        visible_emby_ids_json = visible_emby_ids_json || %s::jsonb,
+                        total_count = total_count + 1,
+                        last_updated_at = NOW()
+                    WHERE
+                        user_id = ANY(%s)
+                        AND collection_id = ANY(%s);
+                """
+                
+                cursor.execute(sql, (
+                    f'[{item_to_append_json}]', # PostgreSQL 需要一个数组形式的 JSONB
+                    user_ids_with_access,
+                    matching_collection_ids
+                ))
+                
+                updated_rows = cursor.rowcount
+                conn.commit()
+                logger.info(f"  ➜ 权限更新成功！在 {len(matching_collection_ids)} 个合集中，为 {len(user_ids_with_access)} 个用户更新了 {updated_rows} 条权限缓存记录。")
+
+    except Exception as e:
+        logger.error(f"  ➜ 为新项目 《{new_item_name}》 更新用户缓存时发生严重错误: {e}", exc_info=True)

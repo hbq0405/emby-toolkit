@@ -139,6 +139,15 @@ def _handle_full_processing_flow(processor: 'MediaProcessor', item_id: str, forc
         else:
              logger.info(f"  ➜ 《{item_name}》没有匹配到任何需要更新状态的榜单类合集。")
 
+        all_matching_collection_ids = []
+        if matching_filter_collections:
+            all_matching_collection_ids.extend([c['id'] for c in matching_filter_collections])
+        if updated_list_collections:
+            # 注意：match_and_update_list_collections_on_item_add 需要被修改，
+            # 让它返回包含数据库 ID 的字典列表
+            # 假设它已经修改好了
+            all_matching_collection_ids.extend([c['id'] for c in updated_list_collections])
+
     except Exception as e:
         logger.error(f"  ➜ 为新入库项目 '{item_name_for_log}' 匹配自定义合集时发生意外错误: {e}", exc_info=True)
 
@@ -181,8 +190,24 @@ def _handle_full_processing_flow(processor: 'MediaProcessor', item_id: str, forc
         else:
             logger.debug("  ➜ 封面生成器或入库监控未启用，跳过封面生成。")
 
+        # ======================================================================
+        # ★★★ 核心修改：在所有流程的最后，调用“补票员” ★★★
+        # ======================================================================
+        if all_matching_collection_ids:
+            emby_config = {
+                "url": processor.emby_url,
+                "api_key": processor.emby_api_key,
+            }
+            collection_db.update_user_caches_on_item_add(
+                new_item_emby_id=item_id,
+                new_item_tmdb_id=tmdb_id,
+                new_item_name=item_name,
+                matching_collection_ids=all_matching_collection_ids,
+                emby_config=emby_config
+            )
+
     except Exception as e:
-        logger.error(f"  ➜ 在新入库后执行精准封面生成时发生错误: {e}", exc_info=True)
+        logger.error(f"  ➜ 在新入库后执行精准封面生成或权限补票时发生错误: {e}", exc_info=True)
 
     logger.trace(f"  ➜ Webhook 任务及所有后续流程完成: '{item_name_for_log}'")
 

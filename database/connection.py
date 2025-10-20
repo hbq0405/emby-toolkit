@@ -158,6 +158,19 @@ def init_db():
                 cursor.execute("CREATE INDEX IF NOT EXISTS idx_cc_type ON custom_collections (type)")
                 cursor.execute("CREATE INDEX IF NOT EXISTS idx_cc_status ON custom_collections (status)")
 
+                logger.trace("  ➜ 正在创建 'user_collection_cache' 表 (虚拟库权限预计算)...")
+                cursor.execute("""
+                    CREATE TABLE IF NOT EXISTS user_collection_cache (
+                        user_id TEXT NOT NULL,
+                        collection_id INTEGER NOT NULL,
+                        visible_emby_ids_json JSONB,
+                        total_count INTEGER DEFAULT 0,
+                        last_updated_at TIMESTAMP WITH TIME ZONE DEFAULT NOW(),
+                        PRIMARY KEY (user_id, collection_id)
+                    )
+                """)
+                cursor.execute("CREATE INDEX IF NOT EXISTS idx_ucc_user_coll ON user_collection_cache (user_id, collection_id);")
+
                 logger.trace("  ➜ 正在创建 'media_metadata' 表...")
                 cursor.execute("""
                     CREATE TABLE IF NOT EXISTS media_metadata (

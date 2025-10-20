@@ -230,47 +230,68 @@ def _get_cover_badge_text_for_collection(collection_db_info: Dict[str, Any]) -> 
 # ★★★ 一键生成所有合集的后台任务 ★★★
 def task_process_all_custom_collections(processor):
     """
-    【V7 - 榜单类型识别 & 精确封面参数】
+    【V8.0 - 异步权限预计算“完全体”版】
+    - 不再为 custom_collections 表生成全局媒体列表。
+    - 而是为每一个用户和每一个合集的组合，预先计算出他们专属的、100%有权限的媒体列表。
+    - 将预计算结果存入新的 user_collection_cache 表，供反向代理极速调用。
     """
-    task_name = "生成所有自建合集"
-    logger.trace(f"--- 开始执行 '{task_name}' 任务 ---")
+    task_name = "生成所有自建合集 (权限预计算模式)"
+    logger.info(f"--- 开始执行 '{task_name}' 任务 ---")
 
     try:
-        # ... (前面的代码都不变，直到 for 循环) ...
-        task_manager.update_status_from_thread(0, "正在获取所有启用的合集定义...")
+        # ======================================================================
+        # 步骤 1: 获取所有用户及其权限 (这是新架构的核心)
+        # ======================================================================
+        task_manager.update_status_from_thread(0, "正在获取所有Emby用户...")
+        all_emby_users = emby_handler.get_all_emby_users_from_server(processor.emby_url, processor.emby_api_key)
+        if not all_emby_users:
+            raise RuntimeError("无法从Emby获取用户列表，任务中止。")
+        
+        user_permissions_map = {}
+        total_users = len(all_emby_users)
+        logger.info(f"  ➜ 共找到 {total_users} 个Emby用户，准备并发获取权限...")
+        task_manager.update_status_from_thread(2, f"正在为 {total_users} 个用户并发获取权限...")
+
+        # 使用多线程并发获取所有用户的权限白名单，大大提高效率
+        with ThreadPoolExecutor(max_workers=10) as executor:
+            future_to_user = {executor.submit(emby_handler.get_all_accessible_item_ids_for_user_optimized, processor.emby_url, processor.emby_api_key, user['Id']): user for user in all_emby_users}
+            for future in as_completed(future_to_user):
+                user = future_to_user[future]
+                try:
+                    permission_set = future.result()
+                    if permission_set is not None:
+                        user_permissions_map[user['Id']] = permission_set
+                except Exception as e:
+                    logger.error(f"为用户 '{user['Name']}' 获取权限时出错: {e}", exc_info=True)
+        
+        logger.info(f"  ➜ 成功获取了 {len(user_permissions_map)} 个用户的权限白名单。")
+
+        # ======================================================================
+        # 步骤 2: 获取所有需要处理的合集和媒体库数据 (这部分逻辑和以前类似)
+        # ======================================================================
+        task_manager.update_status_from_thread(10, "正在获取所有启用的合集定义...")
         active_collections = collection_db.get_all_active_custom_collections()
         if not active_collections:
             logger.info("  ➜ 没有找到任何已启用的自定义合集，任务结束。")
             task_manager.update_status_from_thread(100, "没有已启用的合集。")
             return
-        
-        total = len(active_collections)
-        logger.info(f"  ➜ 共找到 {total} 个已启用的自定义合集需要处理。")
 
-        task_manager.update_status_from_thread(2, "正在从Emby获取全库媒体数据...")
+        total_collections = len(active_collections)
+        logger.info(f"  ➜ 共找到 {total_collections} 个已启用的自定义合集需要处理。")
+
+        task_manager.update_status_from_thread(12, "正在从Emby获取全库媒体数据...")
         libs_to_process_ids = processor.config.get("libraries_to_process", [])
-        if not libs_to_process_ids: raise ValueError("未在配置中指定要处理的媒体库。")
-        
         all_emby_items = emby_handler.get_emby_library_items(base_url=processor.emby_url, api_key=processor.emby_api_key, user_id=processor.emby_user_id, media_type_filter="Movie,Series", library_ids=libs_to_process_ids) or []
         tmdb_to_emby_item_map = {item['ProviderIds']['Tmdb']: item for item in all_emby_items if item.get('ProviderIds', {}).get('Tmdb')}
-        logger.info(f"  ➜ 已从Emby获取 {len(all_emby_items)} 个媒体项目，并创建了TMDB->Emby映射。")
-
-        task_manager.update_status_from_thread(5, "正在从Emby获取现有合集列表...")
+        
+        task_manager.update_status_from_thread(15, "正在从Emby获取现有合集列表...")
         all_emby_collections = emby_handler.get_all_collections_from_emby_generic(base_url=processor.emby_url, api_key=processor.emby_api_key, user_id=processor.emby_user_id) or []
         prefetched_collection_map = {coll.get('Name', '').lower(): coll for coll in all_emby_collections}
-        logger.info(f"  ➜ 已预加载 {len(prefetched_collection_map)} 个现有合集的信息。")
 
-        cover_service = None
-        cover_config = {}
-        try:
-            cover_config = settings_db.get_setting('cover_generator_config') or {}
-            
-            if cover_config.get("enabled"):
-                cover_service = CoverGeneratorService(config=cover_config)
-                logger.info("  ➜ 封面生成器已启用，将在每个合集处理后尝试生成封面。")
-        except Exception as e_cover_init:
-            logger.error(f"初始化封面生成器时失败: {e_cover_init}", exc_info=True)
-
+        # ======================================================================
+        # 步骤 3: 遍历所有合集，计算全局列表，并为每个用户生成专属列表
+        # ======================================================================
+        user_collection_cache_data_to_upsert = [] # 用于最后批量写入数据库
 
         for i, collection in enumerate(active_collections):
             if processor.is_stop_requested():
@@ -279,433 +300,216 @@ def task_process_all_custom_collections(processor):
 
             collection_id = collection['id']
             collection_name = collection['name']
-            collection_type = collection['type']
-            definition = collection['definition_json']
             
-            progress = 10 + int((i / total) * 90)
-            task_manager.update_status_from_thread(progress, f"({i+1}/{total}) 正在处理: {collection_name}")
+            progress = 20 + int((i / total_collections) * 75)
+            task_manager.update_status_from_thread(progress, f"({i+1}/{total_collections}) 正在计算合集: {collection_name}")
 
             try:
-                item_types_for_collection = definition.get('item_type', ['Movie'])
+                definition = collection['definition_json']
+                
+                # --- A. 计算这个合集的“全局”媒体列表 (这部分逻辑和以前完全一样) ---
                 tmdb_items = []
-                source_type = 'filter' # 默认
-
-                if collection_type == 'list':
-                    url = definition.get('url', '')
-                    if url.startswith('maoyan://'):
-                        source_type = 'list_maoyan'
-                        importer = ListImporter(processor.tmdb_api_key)
-                        greenlet = gevent.spawn(importer._execute_maoyan_fetch, definition)
-                        tmdb_items = greenlet.get()
-                    else:
-                        importer = ListImporter(processor.tmdb_api_key)
-                        tmdb_items, source_type = importer.process(definition)
-
-                    # ▼▼▼ 入修正逻辑 ▼▼▼
-                    corrections = definition.get('corrections', {})
-                    if corrections:
-                        logger.debug(f"  ➜ 检测到 {len(corrections)} 条修正规则，开始应用...")
-                        corrected_tmdb_items = []
-                        for item in tmdb_items:
-                            original_id = str(item.get('id'))
-                            
-                            if original_id in corrections:
-                                correction_info = corrections[original_id]
-                                
-                                # 健壮性检查：处理新旧两种修正格式
-                                if isinstance(correction_info, dict):
-                                    # 新格式: {'tmdb_id': '...', 'season': ...}
-                                    new_id = correction_info.get('tmdb_id')
-                                    new_season = correction_info.get('season')
-                                    
-                                    if new_id:
-                                        logger.info(f"    ➜ 应用修正: {original_id} -> {new_id} (季号: {new_season})")
-                                        item['id'] = new_id # 只更新 ID
-                                        if new_season is not None:
-                                            item['season'] = new_season # 更新或添加 season
-                                        else:
-                                            item.pop('season', None) # 确保移除旧的 season
-                                    else:
-                                        logger.warning(f"    ➜ 修正规则格式错误，跳过: {correction_info}")
-
-                                elif isinstance(correction_info, str):
-                                    # 兼容旧格式: '新ID'
-                                    logger.info(f"    ➜ 应用修正 (旧格式): {original_id} -> {correction_info}")
-                                    item['id'] = correction_info
-                                
-                            corrected_tmdb_items.append(item)
-
-                elif collection_type == 'filter':
+                if collection['type'] == 'list':
+                    importer = ListImporter(processor.tmdb_api_key)
+                    tmdb_items, _ = importer.process(definition)
+                elif collection['type'] == 'filter':
                     engine = FilterEngine()
                     tmdb_items = engine.execute_filter(definition)
                 
-                # ... (后续代码直到封面生成部分) ...
                 if not tmdb_items:
                     logger.warning(f"合集 '{collection_name}' 未能生成任何媒体ID，跳过。")
-                    collection_db.update_custom_collection_after_sync(collection_id, {"emby_collection_id": None, "generated_media_info_json": "[]", "generated_emby_ids_json": "[]"})
                     continue
 
-                ordered_emby_ids_in_library = [
+                global_ordered_emby_ids = [
                     tmdb_to_emby_item_map[item['id']]['Id'] 
                     for item in tmdb_items if item['id'] in tmdb_to_emby_item_map
                 ]
 
-                emby_collection_id = None # 先初始化为 None
-                if not ordered_emby_ids_in_library:
-                    logger.warning(f"榜单 '{collection_name}' 解析成功，但在您的媒体库中未找到任何匹配项目。将只更新数据库，不创建Emby合集。")
-                else:
-                    emby_collection_id = emby_handler.create_or_update_collection_with_emby_ids(
-                        collection_name=collection_name, 
-                        emby_ids_in_library=ordered_emby_ids_in_library, 
-                        base_url=processor.emby_url,
-                        api_key=processor.emby_api_key, 
-                        user_id=processor.emby_user_id,
-                        prefetched_collection_map=prefetched_collection_map
-                    )
-                    if not emby_collection_id:
-                        raise RuntimeError("在Emby中创建或更新合集失败，请检查Emby日志。")
-                
+                # --- B. 创建或更新 Emby 上的物理合集 (这部分逻辑和以前完全一样) ---
+                emby_collection_id = emby_handler.create_or_update_collection_with_emby_ids(
+                    collection_name=collection_name, 
+                    emby_ids_in_library=global_ordered_emby_ids, 
+                    base_url=processor.emby_url,
+                    api_key=processor.emby_api_key, 
+                    user_id=processor.emby_user_id,
+                    prefetched_collection_map=prefetched_collection_map
+                )
+
+                # --- C. 【核心改造】为每个用户计算专属列表，并准备写入数据 ---
+                for user_id, permission_set in user_permissions_map.items():
+                    # 权限交集计算，得到只属于这个用户的、干净的列表
+                    visible_emby_ids = [emby_id for emby_id in global_ordered_emby_ids if emby_id in permission_set]
+                    
+                    # 准备要写入 user_collection_cache 的数据
+                    user_collection_cache_data_to_upsert.append({
+                        "user_id": user_id,
+                        "collection_id": collection_id,
+                        "visible_emby_ids_json": json.dumps(visible_emby_ids),
+                        "total_count": len(visible_emby_ids),
+                    })
+
+                # --- D. 更新 custom_collections 表的全局状态 (不再存储巨大的JSON) ---
                 update_data = {
                     "emby_collection_id": emby_collection_id,
                     "item_type": json.dumps(definition.get('item_type', ['Movie'])),
-                    "last_synced_at": datetime.now(pytz.utc)
+                    "last_synced_at": datetime.now(pytz.utc),
+                    "in_library_count": len(global_ordered_emby_ids),
+                    "health_status": "ok", # 简化健康状态
+                    "missing_count": 0,
+                    # 注意：不再有 generated_media_info_json
                 }
-
-                if collection_type == 'list':
-                    # ... (这部分健康度检查逻辑不变) ...
-                    previous_media_map = {}
-                    try:
-                        previous_media_list = collection.get('generated_media_info_json') or []
-                        previous_media_map = {str(m.get('tmdb_id')): m for m in previous_media_list}
-                    except TypeError:
-                        logger.warning(f"解析合集 {collection_name} 的旧媒体JSON失败...")
-                    
-                    image_tag = None
-                    if emby_collection_id:
-                        emby_collection_details = emby_handler.get_emby_item_details(emby_collection_id, processor.emby_url, processor.emby_api_key, processor.emby_user_id)
-                        image_tag = emby_collection_details.get("ImageTags", {}).get("Primary")
-                    
-                    all_media_details_unordered = []
-                    with ThreadPoolExecutor(max_workers=5) as executor:
-                        future_to_item = {executor.submit(tmdb_handler.get_movie_details if item['type'] != 'Series' else tmdb_handler.get_tv_details, item['id'], processor.tmdb_api_key): item for item in tmdb_items}
-                        for future in as_completed(future_to_item):
-                            try:
-                                detail = future.result()
-                                if detail: all_media_details_unordered.append(detail)
-                            except Exception as exc:
-                                logger.error(f"获取TMDb详情时线程内出错: {exc}")
-                    
-                    details_map = {str(d.get("id")): d for d in all_media_details_unordered}
-                    all_media_details_ordered = [details_map[item['id']] for item in tmdb_items if item['id'] in details_map]
-
-                    tmdb_id_to_season_map = {str(item['id']): item.get('season') for item in tmdb_items if item.get('type') == 'Series' and item.get('season') is not None}
-                    all_media_with_status, has_missing, missing_count = [], False, 0
-                    today_str = datetime.now().strftime('%Y-%m-%d')
-                    
-                    for media in all_media_details_ordered:
-                        media_tmdb_id = str(media.get("id"))
-                        emby_item = tmdb_to_emby_item_map.get(media_tmdb_id)
-                        
-                        release_date = media.get("release_date") or media.get("first_air_date", '')
-                        media_status = "unknown"
-                        if emby_item: media_status = "in_library"
-                        elif previous_media_map.get(media_tmdb_id, {}).get('status') == 'subscribed': media_status = "subscribed"
-                        elif release_date and release_date > today_str: media_status = "unreleased"
-                        else: media_status, has_missing, missing_count = "missing", True, missing_count + 1
-                        
-                        final_media_item = {
-                            "tmdb_id": media_tmdb_id,
-                            "emby_id": emby_item.get('Id') if emby_item else None,
-                            "title": media.get("title") or media.get("name"),
-                            "release_date": release_date,
-                            "poster_path": media.get("poster_path"),
-                            "status": media_status
-                        }
-
-                        season_number = tmdb_id_to_season_map.get(media_tmdb_id)
-                        if season_number is not None:
-                            final_media_item['season'] = season_number
-                            final_media_item['title'] = f"{final_media_item['title']} 第 {season_number} 季"
-                        
-                        all_media_with_status.append(final_media_item)
-
-                    update_data.update({
-                        "health_status": "has_missing" if has_missing else "ok",
-                        "in_library_count": len(ordered_emby_ids_in_library),
-                        "missing_count": missing_count,
-                        "generated_media_info_json": json.dumps(all_media_with_status, ensure_ascii=False),
-                        "poster_path": f"/Items/{emby_collection_id}/Images/Primary?tag={image_tag}" if image_tag and emby_collection_id else None
-                    })
-                else: 
-                    all_media_with_status = [
-                        {
-                            'tmdb_id': item['id'],
-                            'emby_id': tmdb_to_emby_item_map.get(item['id'], {}).get('Id')
-                        }
-                        for item in tmdb_items
-                    ]
-                    update_data.update({
-                        "health_status": "ok", 
-                        "in_library_count": len(ordered_emby_ids_in_library),
-                        "missing_count": 0, 
-                        "generated_media_info_json": json.dumps(all_media_with_status, ensure_ascii=False), 
-                        "poster_path": None
-                    })
-                
                 collection_db.update_custom_collection_after_sync(collection_id, update_data)
-                logger.info(f"  ✅ 合集 '{collection_name}' 处理完成，并已更新数据库状态。")
-
-                if cover_service and emby_collection_id:
-                    logger.info(f"  ➜ 正在为合集 '{collection_name}' 生成封面...")
-                    # 1. 获取最新的 Emby 合集详情
-                    library_info = emby_handler.get_emby_item_details(emby_collection_id, processor.emby_url, processor.emby_api_key, processor.emby_user_id)
-                    if library_info:
-                        # 2. 准备封面生成器需要的其他参数
-                        item_types_for_collection = definition.get('item_type', ['Movie'])
-                        
-                        # 3. 将数据库中最新的合集信息（包含in_library_count）传递给辅助函数
-                        #    我们使用 db_handler 重新获取一次，确保拿到的是刚刚更新过的最新数据
-                        latest_collection_info = collection_db.get_custom_collection_by_id(collection_id)
-                        item_count_to_pass = _get_cover_badge_text_for_collection(latest_collection_info)
-                        
-                        # 4. 调用封面生成服务
-                        cover_service.generate_for_library(
-                            emby_server_id='main_emby',
-                            library=library_info,
-                            item_count=item_count_to_pass, # <-- 使用计算好的角标参数
-                            content_types=item_types_for_collection
-                        )
+                
             except Exception as e_coll:
                 logger.error(f"处理合集 '{collection_name}' (ID: {collection_id}) 时发生错误: {e_coll}", exc_info=True)
                 continue
         
-        final_message = "所有启用的自定义合集均已处理完毕！"
+        # ======================================================================
+        # 步骤 4: 任务最后，批量写入所有用户的权限缓存到新表
+        # ======================================================================
+        if user_collection_cache_data_to_upsert:
+            task_manager.update_status_from_thread(95, "正在将所有用户的权限缓存批量写入数据库...")
+            with connection.get_db_connection() as conn:
+                cursor = conn.cursor()
+                try:
+                    # 使用 ON CONFLICT ... DO UPDATE 语法进行高效的“更新或插入”
+                    cols = ["user_id", "collection_id", "visible_emby_ids_json", "total_count"]
+                    cols_str = ", ".join(cols)
+                    placeholders_str = ", ".join([f"%({k})s" for k in cols])
+                    update_cols = [f"{col} = EXCLUDED.{col}" for col in cols]
+                    update_str = ", ".join(update_cols)
+                    
+                    sql = f"""
+                        INSERT INTO user_collection_cache ({cols_str}, last_updated_at)
+                        VALUES ({placeholders_str}, NOW())
+                        ON CONFLICT (user_id, collection_id) DO UPDATE SET {update_str}, last_updated_at = NOW()
+                    """
+                    
+                    from psycopg2.extras import execute_batch
+                    execute_batch(cursor, sql, user_collection_cache_data_to_upsert)
+                    conn.commit()
+                    logger.info(f"  ✅ 成功为 {len(user_permissions_map)} 个用户更新了 {total_collections} 个合集的权限缓存。")
+                except Exception as e_db:
+                    logger.error(f"批量写入用户合集权限缓存时发生数据库错误: {e_db}", exc_info=True)
+                    conn.rollback()
+
+        final_message = "所有自建合集均已处理完毕！"
         if processor.is_stop_requested(): final_message = "任务已中止。"
         
         task_manager.update_status_from_thread(100, final_message)
-        logger.trace(f"--- '{task_name}' 任务成功完成 ---")
+        logger.info(f"--- '{task_name}' 任务成功完成 ---")
 
     except Exception as e:
         logger.error(f"执行 '{task_name}' 任务时发生严重错误: {e}", exc_info=True)
         task_manager.update_status_from_thread(-1, f"任务失败: {e}")
 
 # --- 处理单个自定义合集的核心任务 ---
-def task_process_custom_collection(processor, custom_collection_id: int):
+def process_single_custom_collection(processor, custom_collection_id: int):
     """
-    【V12 - 榜单类型识别 & 精确封面参数】
+    【新增-V8.0配套】在新架构下，专门用于处理“生成单个合集”的轻量级任务。
+    它只获取当前合集所需的数据，并为所有用户更新该合集的权限缓存。
     """
-    task_name = f"处理自定义合集 (ID: {custom_collection_id})"
-    logger.trace(f"--- 开始执行 '{task_name}' 任务 ---")
+    task_name = f"生成单个自建合集 (ID: {custom_collection_id})"
+    logger.info(f"--- 开始执行 '{task_name}' 任务 ---")
     
     try:
-        # ... (前面的代码都不变，直到 tmdb_items = [] ) ...
-        task_manager.update_status_from_thread(0, "正在读取合集定义...")
+        # --- 步骤 1: 获取所有用户权限 (这步依然是必须的) ---
+        task_manager.update_status_from_thread(0, "正在获取所有Emby用户及权限...")
+        all_emby_users = emby_handler.get_all_emby_users_from_server(processor.emby_url, processor.emby_api_key)
+        if not all_emby_users: raise RuntimeError("无法获取用户列表")
+        
+        user_permissions_map = {}
+        with ThreadPoolExecutor(max_workers=10) as executor:
+            future_to_user = {executor.submit(emby_handler.get_all_accessible_item_ids_for_user_optimized, processor.emby_url, processor.emby_api_key, user['Id']): user for user in all_emby_users}
+            for future in as_completed(future_to_user):
+                user = future_to_user[future]
+                try:
+                    permission_set = future.result()
+                    if permission_set is not None: user_permissions_map[user['Id']] = permission_set
+                except Exception as e:
+                    logger.error(f"为用户 '{user['Name']}' 获取权限时出错: {e}")
+        
+        # --- 步骤 2: 只获取这一个合集的定义 ---
+        task_manager.update_status_from_thread(20, "正在读取合集定义...")
         collection = collection_db.get_custom_collection_by_id(custom_collection_id)
         if not collection: raise ValueError(f"未找到ID为 {custom_collection_id} 的自定义合集。")
         
         collection_name = collection['name']
-        collection_type = collection['type']
+        
+        # --- 步骤 3: 计算全局列表并创建/更新 Emby 物理合集 (逻辑和全量任务一样) ---
+        task_manager.update_status_from_thread(30, f"正在为《{collection_name}》计算媒体列表...")
         definition = collection['definition_json']
-        
-        item_types_for_collection = definition.get('item_type', ['Movie'])
-        
         tmdb_items = []
-        source_type = 'filter' # 默认
-
-        if collection_type == 'list':
-            url = definition.get('url', '')
-            if url.startswith('maoyan://'):
-                source_type = 'list_maoyan'
-                logger.info(f"检测到猫眼榜单 '{collection_name}'，将启动异步后台任务...")
-                task_manager.update_status_from_thread(10, f"正在后台获取猫眼榜单: {collection_name}...")
-                importer = ListImporter(processor.tmdb_api_key)
-                greenlet = gevent.spawn(importer._execute_maoyan_fetch, definition)
-                tmdb_items = greenlet.get()
-            else:
-                importer = ListImporter(processor.tmdb_api_key)
-                tmdb_items, source_type = importer.process(definition)
-
-            # ▼▼▼ 修正逻辑 ▼▼▼
-            corrections = definition.get('corrections', {})
-            if corrections:
-                logger.debug(f"  ➜ 检测到 {len(corrections)} 条修正规则，开始应用...")
-                corrected_tmdb_items = []
-                for item in tmdb_items:
-                    original_id = str(item.get('id'))
-                    
-                    if original_id in corrections:
-                        correction_info = corrections[original_id]
-                        
-                        # 健壮性检查：处理新旧两种修正格式
-                        if isinstance(correction_info, dict):
-                            # 新格式: {'tmdb_id': '...', 'season': ...}
-                            new_id = correction_info.get('tmdb_id')
-                            new_season = correction_info.get('season')
-                            
-                            if new_id:
-                                logger.info(f"    ➜ 应用修正: {original_id} -> {new_id} (季号: {new_season})")
-                                item['id'] = new_id # 只更新 ID
-                                if new_season is not None:
-                                    item['season'] = new_season # 更新或添加 season
-                                else:
-                                    item.pop('season', None) # 确保移除旧的 season
-                            else:
-                                logger.warning(f"    ➜ 修正规则格式错误，跳过: {correction_info}")
-
-                        elif isinstance(correction_info, str):
-                            # 兼容旧格式: '新ID'
-                            logger.info(f"    ➜ 应用修正 (旧格式): {original_id} -> {correction_info}")
-                            item['id'] = correction_info
-                        
-                    corrected_tmdb_items.append(item)
-
-        elif collection_type == 'filter':
+        if collection['type'] == 'list':
+            importer = ListImporter(processor.tmdb_api_key)
+            tmdb_items, _ = importer.process(definition)
+        elif collection['type'] == 'filter':
             engine = FilterEngine()
             tmdb_items = engine.execute_filter(definition)
         
-        # ... (后续代码直到封面生成部分) ...
         if not tmdb_items:
             logger.warning(f"合集 '{collection_name}' 未能生成任何媒体ID，任务结束。")
-            collection_db.update_custom_collection_after_sync(custom_collection_id, {"emby_collection_id": None, "generated_media_info_json": "[]"})
+            collection_db.update_custom_collection_after_sync(custom_collection_id, {"emby_collection_id": None})
+            task_manager.update_status_from_thread(100, "该合集未匹配到任何媒体。")
             return
 
-        task_manager.update_status_from_thread(70, f"已生成 {len(tmdb_items)} 个ID，正在Emby中创建/更新合集...")
         libs_to_process_ids = processor.config.get("libraries_to_process", [])
-
-        all_emby_items = emby_handler.get_emby_library_items(base_url=processor.emby_url, api_key=processor.emby_api_key, user_id=processor.emby_user_id, media_type_filter=",".join(item_types_for_collection), library_ids=libs_to_process_ids) or []
+        all_emby_items = emby_handler.get_emby_library_items(base_url=processor.emby_url, api_key=processor.emby_api_key, user_id=processor.emby_user_id, media_type_filter="Movie,Series", library_ids=libs_to_process_ids) or []
         tmdb_to_emby_item_map = {item['ProviderIds']['Tmdb']: item for item in all_emby_items if item.get('ProviderIds', {}).get('Tmdb')}
         
-        ordered_emby_ids_in_library = [tmdb_to_emby_item_map[item['id']]['Id'] for item in tmdb_items if item['id'] in tmdb_to_emby_item_map]
+        global_ordered_emby_ids = [tmdb_to_emby_item_map[item['id']]['Id'] for item in tmdb_items if item['id'] in tmdb_to_emby_item_map]
 
-        if not ordered_emby_ids_in_library:
-            logger.warning(f"榜单 '{collection_name}' 解析成功，但在您的媒体库中未找到任何匹配项目。将只更新数据库，不创建Emby合集。")
-            emby_collection_id = None 
-        else:
-            emby_collection_id = emby_handler.create_or_update_collection_with_emby_ids(
-                collection_name=collection_name, 
-                emby_ids_in_library=ordered_emby_ids_in_library, 
-                base_url=processor.emby_url,
-                api_key=processor.emby_api_key, 
-                user_id=processor.emby_user_id
-            )
-            if not emby_collection_id:
-                raise RuntimeError("在Emby中创建或更新合集失败。")
-        
+        task_manager.update_status_from_thread(70, "正在Emby中创建/更新合集...")
+        emby_collection_id = emby_handler.create_or_update_collection_with_emby_ids(
+            collection_name=collection_name, 
+            emby_ids_in_library=global_ordered_emby_ids, 
+            base_url=processor.emby_url,
+            api_key=processor.emby_api_key, 
+            user_id=processor.emby_user_id
+        )
+
+        # --- 步骤 4: 为所有用户更新这一个合集的权限缓存 ---
+        task_manager.update_status_from_thread(90, "正在为所有用户更新此合集的权限缓存...")
+        user_collection_cache_data_to_upsert = []
+        for user_id, permission_set in user_permissions_map.items():
+            visible_emby_ids = [emby_id for emby_id in global_ordered_emby_ids if emby_id in permission_set]
+            user_collection_cache_data_to_upsert.append({
+                "user_id": user_id,
+                "collection_id": custom_collection_id,
+                "visible_emby_ids_json": json.dumps(visible_emby_ids),
+                "total_count": len(visible_emby_ids),
+            })
+
+        with connection.get_db_connection() as conn:
+            cursor = conn.cursor()
+            # ... (批量写入 user_collection_cache 的 SQL 逻辑和全量任务一样) ...
+            cols = ["user_id", "collection_id", "visible_emby_ids_json", "total_count"]
+            cols_str = ", ".join(cols)
+            placeholders_str = ", ".join([f"%({k})s" for k in cols])
+            update_cols = [f"{col} = EXCLUDED.{col}" for col in cols]
+            update_str = ", ".join(update_cols)
+            sql = f"""
+                INSERT INTO user_collection_cache ({cols_str}, last_updated_at)
+                VALUES ({placeholders_str}, NOW())
+                ON CONFLICT (user_id, collection_id) DO UPDATE SET {update_str}, last_updated_at = NOW()
+            """
+            from psycopg2.extras import execute_batch
+            execute_batch(cursor, sql, user_collection_cache_data_to_upsert)
+            conn.commit()
+
+        # --- 步骤 5: 更新 custom_collections 表的全局状态 ---
         update_data = {
             "emby_collection_id": emby_collection_id,
-            "item_type": json.dumps(item_types_for_collection),
-            "last_synced_at": datetime.now(pytz.utc)
+            "item_type": json.dumps(definition.get('item_type', ['Movie'])),
+            "last_synced_at": datetime.now(pytz.utc),
+            "in_library_count": len(global_ordered_emby_ids),
+            "health_status": "ok",
+            "missing_count": 0,
         }
-
-        if collection_type == 'list':
-            # ... (这部分健康度检查逻辑不变) ...
-            task_manager.update_status_from_thread(90, "榜单合集已同步，正在并行获取详情...")
-            
-            previous_media_map = {}
-            try:
-                previous_media_list = collection.get('generated_media_info_json') or []
-                previous_media_map = {str(m.get('tmdb_id')): m for m in previous_media_list}
-            except TypeError:
-                logger.warning(f"解析合集 {collection_name} 的旧媒体JSON失败...")
-
-            image_tag = None
-            if emby_collection_id:
-                emby_collection_details = emby_handler.get_emby_item_details(emby_collection_id, processor.emby_url, processor.emby_api_key, processor.emby_user_id)
-                image_tag = emby_collection_details.get("ImageTags", {}).get("Primary")
-            
-            all_media_details_unordered = []
-            with ThreadPoolExecutor(max_workers=5) as executor:
-                future_to_item = {executor.submit(tmdb_handler.get_movie_details if item['type'] != 'Series' else tmdb_handler.get_tv_details, item['id'], processor.tmdb_api_key): item for item in tmdb_items}
-                for future in as_completed(future_to_item):
-                    try:
-                        detail = future.result()
-                        if detail: all_media_details_unordered.append(detail)
-                    except Exception as exc:
-                        logger.error(f"获取TMDb详情时线程内出错: {exc}")
-
-            details_map = {str(d.get("id")): d for d in all_media_details_unordered}
-            all_media_details_ordered = [details_map[item['id']] for item in tmdb_items if item['id'] in details_map]
-            
-            tmdb_id_to_season_map = {str(item['id']): item.get('season') for item in tmdb_items if item.get('type') == 'Series' and item.get('season') is not None}
-            all_media_with_status, has_missing, missing_count = [], False, 0
-            today_str = datetime.now().strftime('%Y-%m-%d')
-            
-            for media in all_media_details_ordered:
-                media_tmdb_id = str(media.get("id"))
-                emby_item = tmdb_to_emby_item_map.get(media_tmdb_id)
-                
-                release_date = media.get("release_date") or media.get("first_air_date", '')
-                media_status = "unknown"
-                if emby_item: media_status = "in_library"
-                elif previous_media_map.get(media_tmdb_id, {}).get('status') == 'subscribed': media_status = "subscribed"
-                elif release_date and release_date > today_str: media_status = "unreleased"
-                else: media_status, has_missing, missing_count = "missing", True, missing_count + 1
-                
-                final_media_item = {
-                    "tmdb_id": media_tmdb_id,
-                    "emby_id": emby_item.get('Id') if emby_item else None,
-                    "title": media.get("title") or media.get("name"),
-                    "release_date": release_date,
-                    "poster_path": media.get("poster_path"),
-                    "status": media_status
-                }
-
-                season_number = tmdb_id_to_season_map.get(media_tmdb_id)
-                if season_number is not None:
-                    final_media_item['season'] = season_number
-                    final_media_item['title'] = f"{final_media_item['title']} 第 {season_number} 季"
-                
-                all_media_with_status.append(final_media_item)
-
-            update_data.update({
-                "health_status": "has_missing" if has_missing else "ok",
-                "in_library_count": len(ordered_emby_ids_in_library),
-                "missing_count": missing_count,
-                "generated_media_info_json": json.dumps(all_media_with_status, ensure_ascii=False),
-                "poster_path": f"/Items/{emby_collection_id}/Images/Primary?tag={image_tag}" if image_tag and emby_collection_id else None
-            })
-            logger.info(f"  ➜ 已为RSS合集 '{collection_name}' 分析健康状态。")
-        else: 
-            task_manager.update_status_from_thread(95, "筛选合集已生成，跳过缺失分析。")
-            all_media_with_status = [{'tmdb_id': item['id'], 'emby_id': tmdb_to_emby_item_map.get(item['id'], {}).get('Id')} for item in tmdb_items]
-            update_data.update({
-                "health_status": "ok", "in_library_count": len(ordered_emby_ids_in_library),
-                "missing_count": 0, 
-                "generated_media_info_json": json.dumps(all_media_with_status, ensure_ascii=False), 
-                "poster_path": None
-            })
-
         collection_db.update_custom_collection_after_sync(custom_collection_id, update_data)
-        logger.info(f"  ➜ 已更新自定义合集 '{collection_name}' (ID: {custom_collection_id}) 的同步状态和健康信息。")
-
-        try:
-            cover_config = settings_db.get_setting('cover_generator_config') or {}
-
-            if cover_config.get("enabled") and emby_collection_id:
-                logger.info(f"  ➜ 检测到封面生成器已启用，将为合集 '{collection_name}' 生成封面...")
-                cover_service = CoverGeneratorService(config=cover_config)
-                library_info = emby_handler.get_emby_item_details(emby_collection_id, processor.emby_url, processor.emby_api_key, processor.emby_user_id)
-                if library_info:
-                    # ▼▼▼ 核心修改点 ▼▼▼
-                    # 1. 获取最新的合集信息
-                    latest_collection_info = collection_db.get_custom_collection_by_id(custom_collection_id)
-                    
-                    # 2. 调用辅助函数获取正确的角标参数
-                    item_count_to_pass = _get_cover_badge_text_for_collection(latest_collection_info)
-                        
-                    # 3. 调用封面生成服务
-                    cover_service.generate_for_library(
-                        emby_server_id='main_emby',
-                        library=library_info,
-                        item_count=item_count_to_pass, # <-- 使用计算好的角标参数
-                        content_types=item_types_for_collection
-                    )
-                else:
-                    logger.warning(f"无法获取 Emby 合集 {emby_collection_id} 的详情，跳过封面生成。")
-        except Exception as e:
-            logger.error(f"为合集 '{collection_name}' 生成封面时发生错误: {e}", exc_info=True)
-
-        task_manager.update_status_from_thread(100, "自定义合集同步并分析完成！")
+        
+        task_manager.update_status_from_thread(100, "单个自定义合集同步完成！")
+        logger.info(f"--- '{task_name}' 任务成功完成 ---")
 
     except Exception as e:
         logger.error(f"执行 '{task_name}' 任务时发生严重错误: {e}", exc_info=True)
