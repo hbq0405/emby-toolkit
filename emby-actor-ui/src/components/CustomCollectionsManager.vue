@@ -308,7 +308,6 @@
                     multiple
                     filterable
                     remote
-                    tag
                     :placeholder="rule.field === 'actors' ? '输入以搜索并添加演员' : '输入以搜索并添加导演'"
                     :options="actorOptions"
                     :loading="isSearchingActors"
@@ -352,7 +351,12 @@
                   :show-button="false"
                   style="width: 180px;"
                 />
-                <n-input v-else v-model:value="rule.value" placeholder="值" :disabled="!rule.operator" />
+                <n-input 
+                    v-else-if="!['actors', 'directors'].includes(rule.field)" 
+                    v-model:value="rule.value" 
+                    placeholder="值" 
+                    :disabled="!rule.operator" 
+                />
                 <n-button text type="error" @click="removeRule(index)">
                   <template #icon><n-icon :component="DeleteIcon" /></template>
                 </n-button>
@@ -988,22 +992,22 @@ const handleGenerateAllCovers = async () => {
 
 // 自定义渲染下拉选项的函数
 const renderPersonOption = ({ node, option }) => {
-  return h(
-    'div',
-    { style: 'display: flex; align-items: center; padding: 4px 0;' },
-    [
-      h(NAvatar, {
-        src: getTmdbImageUrl(option.profile_path, 'w92'),
-        size: 'small',
-        style: 'margin-right: 8px;',
-        round: true,
-      }),
-      h('div', { style: 'display: flex; flex-direction: column;' }, [
-        h(NText, null, { default: () => option.name }),
-        h(NText, { depth: 3, style: 'font-size: 12px;' }, { default: () => `代表作: ${option.known_for || '暂无'}` })
-      ])
-    ]
-  );
+  // 直接将一个 VNode 数组赋值给 node.children
+  // 这样既能自定义内容，又能保留 node 自身的所有交互事件
+  node.children = [
+    h(NAvatar, {
+      src: getTmdbImageUrl(option.profile_path, 'w92'),
+      size: 'small',
+      style: 'margin-right: 8px;',
+      round: true,
+    }),
+    h('div', { style: 'display: flex; flex-direction: column;' }, [
+      h(NText, null, { default: () => option.name }),
+      h(NText, { depth: 3, style: 'font-size: 12px;' }, { default: () => `代表作: ${option.known_for || '暂无'}` })
+    ])
+  ];
+  // 务必返回修改后的原始 node
+  return node;
 };
 
 // 自定义渲染已选中标签的函数
@@ -1017,8 +1021,27 @@ const renderPersonTag = ({ option, handleClose }) => {
         e.stopPropagation();
         handleClose();
       },
+      // 添加一点样式让头像和文字垂直居中
+      style: {
+        display: 'flex',
+        alignItems: 'center',
+        padding: '0 6px 0 2px', // 微调内边距
+        height: '24px'
+      },
+      round: true // 让标签也变圆角，更美观
     },
-    { default: () => option.name } // 只显示演员的名字
+    {
+      // default 插槽返回一个数组，包含头像和名字
+      default: () => [
+        h(NAvatar, {
+          src: getTmdbImageUrl(option.profile_path, 'w92'),
+          size: 'small',
+          style: 'margin-right: 5px;',
+          round: true,
+        }),
+        option.name // 演员的名字
+      ]
+    }
   );
 };
 
@@ -1038,20 +1061,6 @@ const renderSelectOptionWithTag = (option) => {
   }
   // 如果不是模板源，就只渲染用户名
   return option.label;
-};
-
-const getPersonIdsFromRule = (value) => {
-  if (!Array.isArray(value)) return [];
-  return value.map(person => person.id);
-};
-
-const updatePersonRuleValue = (rule, selectedOptions) => {
-  if (!Array.isArray(selectedOptions)) {
-    rule.value = [];
-    return;
-  }
-  // 只保留 id 和 name，保持数据干净
-  rule.value = selectedOptions.map(option => ({ id: option.id, name: option.name }));
 };
 
 const fetchEmbyUsers = async () => {
@@ -1320,6 +1329,20 @@ const handlePersonSearch = (query, rule) => {
   }, 300);
 };
 
+// 函数1: 从我们的对象数组中，提取出纯 ID 数组，给 n-select 的 :value 使用
+const getPersonIdsFromRule = (value) => {
+  if (!Array.isArray(value)) return [];
+  // 确保 value 里的每个元素都是对象，避免对数字调用 .id 出错
+  return value.filter(p => typeof p === 'object' && p !== null).map(p => p.id);
+};
+
+// 函数2: 核心！当选项改变时，用 n-select 提供的【完整对象数组】来更新我们的数据
+const updatePersonRuleValue = (rule, selectedOptions) => {
+  // @update:value 传来的第二个参数 (options) 是完整的对象数组
+  // 我们直接用它来覆盖 rule.value，这样就不会丢失任何信息
+  rule.value = selectedOptions;
+};
+
 const unifiedRatingOptions = ref([]);
 const fetchUnifiedRatingOptions = async () => {
   try {
@@ -1575,6 +1598,23 @@ const handleEditClick = (row) => {
   }
 
   currentCollection.value = rowCopy;
+
+  // ★★★ 新增逻辑：为已存在的演员/导演规则，预加载选项数据 ★★★
+  if (rowCopy.type === 'filter' && rowCopy.definition?.rules) {
+    // 1. 从所有规则中提取出所有已选的演员/导演
+    const initialPersons = rowCopy.definition.rules
+      .filter(rule => (rule.field === 'actors' || rule.field === 'directors') && Array.isArray(rule.value))
+      .flatMap(rule => rule.value);
+    
+    // 2. 去重，防止同一个演员在多个规则中出现导致重复
+    const uniquePersons = Array.from(new Map(initialPersons.map(p => [p.id, p])).values());
+    
+    // 3. 将这些演员信息设置为 actorOptions 的初始值
+    actorOptions.value = uniquePersons;
+  } else {
+    // 如果不是筛选类型或没有规则，清空选项
+    actorOptions.value = [];
+  }
 
   if (rowCopy.type === 'list') {
     const url = rowCopy.definition.url || '';

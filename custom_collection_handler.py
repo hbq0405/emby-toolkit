@@ -732,17 +732,22 @@ class FilterEngine:
                     continue
 
                 # 1. 直接从规则的 value 中提取出 TMDB ID 列表
-                person_tmdb_ids_from_rule = [p['id'] for p in value if isinstance(p, dict) and 'id' in p]
+                person_tmdb_ids_from_rule = [str(p['id']) for p in value if isinstance(p, dict) and 'id' in p]
 
                 if not person_tmdb_ids_from_rule:
                     results.append(False)
                     continue
 
-                # 2. 获取当前媒体项中所有演员/导演的 TMDB ID 集合 (这部分逻辑不变)
+                # 2. 获取当前媒体项中所有演员/导演的 TMDB ID 集合 
                 item_person_list = item_metadata.get(f"{field}_json")
                 if item_person_list:
                     try:
-                        item_person_tmdb_ids = {p['tmdb_id'] for p in item_person_list if 'tmdb_id' in p}
+                        item_person_tmdb_ids = set()
+                        for p in item_person_list:
+                            # 优雅地获取 ID，无论 key 是 'tmdb_id' 还是 'id'
+                            person_id = p.get('tmdb_id') or p.get('id')
+                            if person_id is not None:
+                                item_person_tmdb_ids.add(str(person_id))
                         
                         # 3. 进行 ID 对 ID 的匹配 (这部分逻辑不变)
                         if op == 'is_one_of' or op == 'contains':
