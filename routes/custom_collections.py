@@ -30,8 +30,6 @@ GENRE_TRANSLATION_PATCH = {
     # 以后如果发现其他未翻译的，也可以加在这里
 }
 
-# 2. 定义API路由
-
 # ★★★ 获取 Emby 用户列表 ★★★
 @custom_collections_bp.route('/config/emby_users', methods=['GET'])
 @login_required
