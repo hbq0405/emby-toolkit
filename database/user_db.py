@@ -306,8 +306,6 @@ def get_all_emby_users_with_template_info() -> List[Dict[str, Any]]:
     try:
         with get_db_connection() as conn:
             cursor = conn.cursor()
-            # ★★★ 核心修改：使用 LEFT JOIN 关联 emby_users_extended 表 ★★★
-            # 这样，每个用户都会被附加上 template_id (如果有的话)
             sql = """
                 SELECT
                     u.id,
