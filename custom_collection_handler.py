@@ -750,14 +750,20 @@ class FilterEngine:
                 item_person_list = item_metadata.get(f"{field}_json")
                 if item_person_list:
                     try:
+                        # ★★★ 核心修改：只取前三位演员/导演进行匹配 ★★★
+                        top_persons = item_person_list[:3]
+                        
+                        # 如果是演员且总数超过3，可以加个日志方便调试
+                        if field == 'actors' and len(item_person_list) > 3:
+                            logger.trace(f"  ➜ 演员筛选优化：媒体项《{item_metadata.get('title')}》有 {len(item_person_list)} 位演员，仅匹配前 3 位。")
+
                         item_person_tmdb_ids = set()
-                        for p in item_person_list:
-                            # 优雅地获取 ID，无论 key 是 'tmdb_id' 还是 'id'
+                        # 使用截断后的 top_persons 列表进行遍历
+                        for p in top_persons:
                             person_id = p.get('tmdb_id') or p.get('id')
                             if person_id is not None:
                                 item_person_tmdb_ids.add(str(person_id))
                         
-                        # 3. 进行 ID 对 ID 的匹配 (这部分逻辑不变)
                         if op == 'is_one_of' or op == 'contains':
                             if any(rule_id in item_person_tmdb_ids for rule_id in person_tmdb_ids_from_rule):
                                 match = True
