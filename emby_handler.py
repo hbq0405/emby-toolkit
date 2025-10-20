@@ -311,7 +311,7 @@ def get_emby_series_details_with_full_cast(
                 # 如果这个演员不在我们的Map里，就加进去
                 if person_id and person_id not in aggregated_cast_map:
                     aggregated_cast_map[person_id] = person
-                    logger.debug(f"      ➜ 发现新演员: '{person.get('Name')}'")
+                    logger.debug(f"   ├─ 发现新演员: '{person.get('Name')}'")
     
     # 5. 将聚合好的完整演员列表替换掉原始剧集详情中的不完整列表
     full_cast_list = list(aggregated_cast_map.values())
