@@ -480,8 +480,11 @@ def search_unique_studios(search_term: str, limit: int = 20) -> List[str]:
     return final_matches[:limit]
 
 def search_unique_actors(search_term: str, limit: int = 20) -> List[str]:
-    """【V6.1 - PG JSON 兼容版】搜索演员。"""
-    
+    """
+    【V7.0 - 新架构终极修正版】
+    直接从 person_identity_map 和 actor_metadata 表中获取所有演员的姓名进行搜索，
+    确保数据来源的准确性和查询效率。
+    """
     if not search_term:
         return []
     
@@ -489,24 +492,31 @@ def search_unique_actors(search_term: str, limit: int = 20) -> List[str]:
     try:
         with get_db_connection() as conn:
             cursor = conn.cursor()
-            cursor.execute("SELECT actors_json FROM media_metadata WHERE in_library = TRUE")
+            
+            # ======================================================================
+            # ★★★ 核心修正：直接 JOIN 演员信息表，获取最原始、最准确的数据 ★★★
+            # ======================================================================
+            sql = """
+                SELECT
+                    pim.primary_name,
+                    am.original_name
+                FROM
+                    person_identity_map pim
+                JOIN
+                    actor_metadata am ON pim.tmdb_person_id = am.tmdb_id;
+            """
+            cursor.execute(sql)
             rows = cursor.fetchall()
             
             for row in rows:
-                actors = row['actors_json']
-                if actors:
-                    try:
-                        for actor in actors:
-                            actor_name = actor.get('name')
-                            original_name = actor.get('original_name')
-                            
-                            if actor_name and actor_name.strip():
-                                if actor_name not in unique_actors_map:
-                                    unique_actors_map[actor_name.strip()] = (original_name or '').strip()
-                    except TypeError:
-                        logger.warning(f"处理 actors_json 时遇到意外的类型错误，内容: {actors}")
-                        continue
-        
+                actor_name = row.get('primary_name')
+                original_name = row.get('original_name')
+                
+                if actor_name and actor_name.strip():
+                    # 使用 .get() 来安全地处理可能不存在的键
+                    if unique_actors_map.get(actor_name.strip()) is None:
+                        unique_actors_map[actor_name.strip()] = (original_name or '').strip()
+
         if not unique_actors_map:
             return []
 
