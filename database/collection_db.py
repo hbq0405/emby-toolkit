@@ -985,14 +985,22 @@ def update_user_caches_on_item_add(
 
         logger.debug(f"  ➜ 共有 {len(user_ids_with_access)} 个用户对新项目有原生访问权限。")
 
-        item_to_append_json = json.dumps([new_item_emby_id])
-
         with get_db_connection() as conn:
             with conn.cursor() as cursor:
+                # ★★★ 核心修复：使用 COALESCE 和 jsonb_set 构建终极防弹的 UPDATE 语句 ★★★
                 sql = """
                     UPDATE user_collection_cache
                     SET 
-                        visible_emby_ids_json = visible_emby_ids_json || %s::jsonb,
+                        -- 1. 先用 COALESCE 确保 visible_emby_ids_json 不是 NULL，如果
+                        --    是 NULL，就把它当作一个空的 JSON 数组 '[]'::jsonb。
+                        -- 2. 然后用 jsonb_set，在数组的末尾 ('{-1}') 追加我们的新 ID。
+                        --    第四个参数 true 表示如果路径不存在（比如数组为空），就创建它。
+                        visible_emby_ids_json = jsonb_set(
+                            COALESCE(visible_emby_ids_json, '[]'::jsonb),
+                            '{-1}',
+                            %s::jsonb,
+                            true
+                        ),
                         total_count = total_count + 1,
                         last_updated_at = NOW()
                     WHERE
@@ -1000,8 +1008,11 @@ def update_user_caches_on_item_add(
                         AND collection_id = ANY(%s);
                 """
                 
+                # 注意：传递给 jsonb_set 的新值，不应该是数组，而应该是要插入的元素本身
+                new_id_json = json.dumps(new_item_emby_id)
+
                 cursor.execute(sql, (
-                    item_to_append_json, 
+                    new_id_json, # <-- 传递的是 '"307300"'
                     user_ids_with_access,
                     matching_collection_ids
                 ))
