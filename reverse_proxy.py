@@ -437,10 +437,12 @@ def handle_get_latest_items(user_id, params):
             # --- 后续的排序和分页逻辑完全不变，因为它们本来就是对干净列表操作的 ---
             definition = collection_info.get('definition_json') or {}
             item_type_from_db = definition.get('item_type', ['Movie'])
-            is_series_focused = 'Series' in item_type_from_db
-            
-            # 根据库的内容，智能决定“最新”的排序规则
-            sort_by_str = 'DateLastContentAdded,DateCreated' if is_series_focused else 'DateCreated'
+            # 如果是混合库，则用DateCreated排序
+            if len(item_type_from_db) > 1:
+                sort_by_str = 'DateCreated'
+            else:
+                is_series_focused = 'Series' in item_type_from_db
+                sort_by_str = 'DateLastContentAdded,DateCreated' if is_series_focused else 'DateCreated'
             sort_order = 'Descending'
             
             limit = int(params.get('Limit', 24))
