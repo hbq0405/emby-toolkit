@@ -837,7 +837,7 @@ class MediaProcessor:
                               AND actors_json IS NOT NULL AND actors_json::text != '[]'
                         """, (tmdb_id, item_type))
                         cache_row = cursor.fetchone()
-                        
+
                         if cache_row:
                             logger.info(f"  ➜ 成功命中有效缓存！将从数据库恢复演员数据...")
                             slim_actors_from_cache = cache_row["actors_json"]
@@ -1911,27 +1911,19 @@ class MediaProcessor:
             with get_central_db_connection() as conn:
                 cursor = conn.cursor()
                 
-                # 构建包含完整元数据的演员列表用于缓存
-                actors_for_cache = []
-                # 使用 final_formatted_cast，因为它包含了最完整和排序后的信息
-                for actor in final_formatted_cast:
-                    actors_for_cache.append({
-                        "id": actor.get("id"),
-                        "name": actor.get("name"),
-                        "character": actor.get("character"),
-                        "original_name": actor.get("original_name"),
-                        "profile_path": actor.get("profile_path"),
-                        "gender": actor.get("gender"),
-                        "popularity": actor.get("popularity"),
-                        "order": actor.get("order")
-                    })
-
-                new_actors_json = json.dumps(actors_for_cache, ensure_ascii=False)
-                
-                # 更新 media_metadata 表
-                cursor.execute(
-                    "UPDATE media_metadata SET actors_json = %s, last_synced_at = NOW() WHERE tmdb_id = %s AND item_type = %s",
-                    (new_actors_json, tmdb_id, item_type)
+                # ======================================================================
+                # ★★★ 调用统一的、已规范化的缓存写入函数 ★★★
+                # ======================================================================
+                _save_metadata_to_cache(
+                    actor_db_manager=self.actor_db_manager,
+                    emby_config={"url": self.emby_url, "api_key": self.emby_api_key, "user_id": self.emby_user_id},
+                    cursor=cursor,
+                    tmdb_id=tmdb_id,
+                    emby_item_id=item_id,
+                    item_type=item_type,
+                    item_details_from_emby=item_details,
+                    final_processed_cast=final_formatted_cast, # <-- 把我们手动编辑好的最终列表传进去
+                    tmdb_details_for_extra=None, # 手动模式下不需要这个
                 )
                 
                 logger.info(f"  ➜ 正在将手动处理完成的《{item_name}》写入已处理日志...")
