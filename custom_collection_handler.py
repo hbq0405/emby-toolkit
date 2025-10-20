@@ -784,8 +784,10 @@ class FilterEngine:
                             if isinstance(value, list) and any(v in item_value_list for v in value):
                                 match = True
                         elif op == 'is_none_of':
-                            if isinstance(value, list) and not any(v in item_value_list for v in value):
-                                match = True
+                            match = True
+                            if isinstance(value, list):
+                                if set(item_value_list) & set(value):
+                                    match = False
                         elif op == 'contains':
                             if value in item_value_list:
                                 match = True
