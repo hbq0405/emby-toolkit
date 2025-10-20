@@ -707,47 +707,6 @@ class FilterEngine:
     """
     def __init__(self):
         self.airing_series_ids = None
-        self.actor_name_to_id_cache = {}
-
-    def _get_actor_tmdb_ids_by_names(self, actor_names: List[str]) -> List[int]:
-        """
-        根据演员名字列表，批量从数据库查询对应的 TMDB ID。
-        利用内存缓存提高效率。
-        """
-        if not actor_names:
-            return []
-
-        ids_to_return = []
-        names_to_query = []
-
-        # 1. 优先从内存缓存中获取
-        for name in actor_names:
-            if name in self.actor_name_to_id_cache:
-                ids_to_return.append(self.actor_name_to_id_cache[name])
-            else:
-                names_to_query.append(name)
-        
-        # 2. 对缓存中没有的名字，进行数据库查询
-        if names_to_query:
-            try:
-                with connection.get_db_connection() as conn:
-                    cursor = conn.cursor()
-                    # 使用 ANY(%s) 进行高效批量查询
-                    sql = "SELECT primary_name, tmdb_person_id FROM person_identity_map WHERE primary_name = ANY(%s)"
-                    cursor.execute(sql, (names_to_query,))
-                    rows = cursor.fetchall()
-                    
-                    for row in rows:
-                        name = row['primary_name']
-                        tmdb_id = row['tmdb_person_id']
-                        if tmdb_id:
-                            ids_to_return.append(tmdb_id)
-                            # 将查询结果存入缓存
-                            self.actor_name_to_id_cache[name] = tmdb_id
-            except Exception as e:
-                logger.error(f"批量查询演员TMDB ID时出错: {e}", exc_info=True)
-
-        return ids_to_return
 
     def _get_airing_ids(self): # ◀◀◀ 函数名也改了
         """辅助函数，带缓存地获取连载中ID"""
@@ -765,35 +724,31 @@ class FilterEngine:
             field, op, value = rule.get("field"), rule.get("operator"), rule.get("value")
             match = False
             
-            # 1. 检查字段是否为“对象列表”（演员/导演）
             if field in ['actors', 'directors']:
-                # 1. 获取规则中指定的演员/导演名字对应的 TMDB ID
-                person_tmdb_ids_from_rule = []
-                if isinstance(value, list):
-                    person_tmdb_ids_from_rule = self._get_actor_tmdb_ids_by_names(value)
-                elif isinstance(value, str):
-                    person_tmdb_ids_from_rule = self._get_actor_tmdb_ids_by_names([value])
-
-                if not person_tmdb_ids_from_rule:
-                    # 如果连一个ID都查不到，这条规则直接判为不匹配
+                # ★★★ 核心修改 ★★★
+                if not isinstance(value, list):
+                    # 如果 value 格式不对（比如是旧的字符串格式），直接跳过
                     results.append(False)
                     continue
 
-                # 2. 获取当前媒体项中所有演员/导演的 TMDB ID
-                #    actors_json 已经是瘦身后的 [{tmdb_id, ...}, ...] 格式
+                # 1. 直接从规则的 value 中提取出 TMDB ID 列表
+                person_tmdb_ids_from_rule = [p['id'] for p in value if isinstance(p, dict) and 'id' in p]
+
+                if not person_tmdb_ids_from_rule:
+                    results.append(False)
+                    continue
+
+                # 2. 获取当前媒体项中所有演员/导演的 TMDB ID 集合 (这部分逻辑不变)
                 item_person_list = item_metadata.get(f"{field}_json")
                 if item_person_list:
                     try:
-                        # 提取出所有 tmdb_id 组成一个集合，方便快速查找
                         item_person_tmdb_ids = {p['tmdb_id'] for p in item_person_list if 'tmdb_id' in p}
                         
-                        # 3. 进行 ID 对 ID 的匹配
+                        # 3. 进行 ID 对 ID 的匹配 (这部分逻辑不变)
                         if op == 'is_one_of' or op == 'contains':
-                            # 只要规则里的任何一个ID，出现在了电影的ID列表里，就匹配成功
                             if any(rule_id in item_person_tmdb_ids for rule_id in person_tmdb_ids_from_rule):
                                 match = True
                         elif op == 'is_none_of':
-                            # 只有当规则里的所有ID，一个都没出现在电影的ID列表里，才匹配成功
                             if not any(rule_id in item_person_tmdb_ids for rule_id in person_tmdb_ids_from_rule):
                                 match = True
                     except (TypeError, KeyError):

@@ -301,50 +301,23 @@
                     style="flex-grow: 1;"
                   />
                 </template>
-                <template v-else-if="rule.field === 'actors'">
+                <template v-else-if="rule.field === 'actors' || rule.field === 'directors'">
                   <n-select
-                    v-if="['is_one_of', 'is_none_of'].includes(rule.operator)"
-                    v-model:value="rule.value"
-                    multiple filterable remote
-                    placeholder="输入以搜索并添加演员"
+                    :value="getPersonIdsFromRule(rule.value)"
+                    @update:value="(ids, options) => updatePersonRuleValue(rule, options)"
+                    multiple
+                    filterable
+                    remote
+                    :placeholder="rule.field === 'actors' ? '输入以搜索并添加演员' : '输入以搜索并添加导演'"
                     :options="actorOptions"
                     :loading="isSearchingActors"
                     @search="handleActorSearch"
                     :disabled="!rule.operator"
                     style="flex-grow: 1; min-width: 220px;"
-                  />
-                  <n-auto-complete
-                    v-else
-                    v-model:value="rule.value"
-                    :options="actorOptions"
-                    :loading="isSearchingActors"
-                    placeholder="边输入边搜索演员"
-                    @update:value="handleActorSearch"
-                    :disabled="!rule.operator"
-                    clearable
-                  />
-                </template>
-                <template v-else-if="rule.field === 'directors'">
-                  <n-select
-                    v-if="['is_one_of', 'is_none_of'].includes(rule.operator)"
-                    v-model:value="rule.value"
-                    multiple filterable remote
-                    placeholder="输入以搜索并添加导演"
-                    :options="actorOptions"
-                    :loading="isSearchingActors"
-                    @search="handleActorSearch"
-                    :disabled="!rule.operator"
-                    style="flex-grow: 1; min-width: 220px;"
-                  />
-                  <n-auto-complete
-                    v-else
-                    v-model:value="rule.value"
-                    :options="actorOptions"
-                    :loading="isSearchingActors"
-                    placeholder="边输入边搜索导演"
-                    @update:value="handleActorSearch"
-                    :disabled="!rule.operator"
-                    clearable
+                    label-field="name"
+                    value-field="id"
+                    :render-option="renderPersonOption"
+                    :render-tag="renderPersonTag"
                   />
                 </template>
                 <template v-if="ruleConfig[rule.field]?.type === 'single_select_boolean'">
@@ -1012,6 +985,42 @@ const handleGenerateAllCovers = async () => {
   }
 };
 
+// 自定义渲染下拉选项的函数
+const renderPersonOption = ({ node, option }) => {
+  return h(
+    'div',
+    { style: 'display: flex; align-items: center; padding: 4px 0;' },
+    [
+      h(NAvatar, {
+        src: getTmdbImageUrl(option.profile_path, 'w92'),
+        size: 'small',
+        style: 'margin-right: 8px;',
+        round: true,
+      }),
+      h('div', { style: 'display: flex; flex-direction: column;' }, [
+        h(NText, null, { default: () => option.name }),
+        h(NText, { depth: 3, style: 'font-size: 12px;' }, { default: () => `代表作: ${option.known_for || '暂无'}` })
+      ])
+    ]
+  );
+};
+
+// 自定义渲染已选中标签的函数
+const renderPersonTag = ({ option, handleClose }) => {
+  return h(
+    NTag,
+    {
+      type: 'info',
+      closable: true,
+      onClose: (e) => {
+        e.stopPropagation();
+        handleClose();
+      },
+    },
+    { default: () => option.name } // 只显示演员的名字
+  );
+};
+
 // ★★★ 自定义 Select 选项的渲染函数 ★★★
 const renderSelectOptionWithTag = (option) => {
   // option 对象就是我们从后端接收到的 { label, value, is_template_source }
@@ -1028,6 +1037,20 @@ const renderSelectOptionWithTag = (option) => {
   }
   // 如果不是模板源，就只渲染用户名
   return option.label;
+};
+
+const getPersonIdsFromRule = (value) => {
+  if (!Array.isArray(value)) return [];
+  return value.map(person => person.id);
+};
+
+const updatePersonRuleValue = (rule, selectedOptions) => {
+  if (!Array.isArray(selectedOptions)) {
+    rule.value = [];
+    return;
+  }
+  // 只保留 id 和 name，保持数据干净
+  rule.value = selectedOptions.map(option => ({ id: option.id, name: option.name }));
 };
 
 const fetchEmbyUsers = async () => {
@@ -1252,8 +1275,10 @@ const handleActorSearch = (query) => {
   if (searchTimeout) clearTimeout(searchTimeout);
   searchTimeout = setTimeout(async () => {
     try {
-      const response = await axios.get(`/api/custom_collections/search_actors?q=${query}`);
-      actorOptions.value = response.data.map(name => ({ label: name, value: name }));
+      // ★★★ 核心修改 1/3: 调用新的、更强大的 API 端点 ★★★
+      const response = await axios.get(`/api/custom_collections/config/tmdb_search_persons?q=${query}`);
+      // ★★★ 核心修改 2/3: 直接使用返回的完整对象数组，不再需要 .map ★★★
+      actorOptions.value = response.data; 
     } catch (error) {
       console.error('搜索演员失败:', error);
       actorOptions.value = [];
