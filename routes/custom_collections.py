@@ -507,6 +507,7 @@ def api_get_unified_ratings_for_filter():
     """为筛选器提供一个固定的、统一的分级列表。"""
     # 直接返回我们预定义好的分类列表
     return jsonify(UNIFIED_RATING_CATEGORIES)
+
 # --- 获取 Emby 媒体库列表 ---
 @custom_collections_bp.route('/config/emby_libraries', methods=['GET'])
 @login_required
