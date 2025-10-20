@@ -837,10 +837,13 @@ class MediaProcessor:
                               AND actors_json IS NOT NULL AND actors_json::text != '[]'
                         """, (tmdb_id, item_type))
                         cache_row = cursor.fetchone()
+                        
                         if cache_row:
-                            logger.info(f"  ➜ 成功命中有效缓存！将跳过演员表深度处理。")
-                            final_processed_cast = cache_row["actors_json"]
+                            logger.info(f"  ➜ 成功命中有效缓存！将从数据库恢复演员数据...")
+                            slim_actors_from_cache = cache_row["actors_json"]
+                            final_processed_cast = self.actor_db_manager.rehydrate_slim_actors(cursor, slim_actors_from_cache)
                             douban_rating = cache_row.get("rating")
+
                 except Exception as e_cache:
                     logger.warning(f"  ➜ 加载缓存失败: {e_cache}。将回退到深度模式。")
                     final_processed_cast = None

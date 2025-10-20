@@ -215,6 +215,70 @@ class ActorDBManager:
 
         # --- 阶段三：返回最终的列表 ---
         return list(enriched_actors_map.values())
+    
+    def rehydrate_slim_actors(self, cursor: psycopg2.extensions.cursor, slim_actors_list: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+        """
+        接收一个简单的演员关系列表，
+        从数据库中查询完整的演员信息，将其恢复成一个完整的演员列表。
+        """
+        if not slim_actors_list:
+            return []
+
+        logger.debug(f"  ➜ [演员数据管家-恢复] 开始为 {len(slim_actors_list)} 位演员从缓存恢复完整元数据...")
+        
+        # 1. 提取所有需要查询的 TMDB ID
+        tmdb_ids_to_fetch = [actor['tmdb_id'] for actor in slim_actors_list if 'tmdb_id' in actor]
+        if not tmdb_ids_to_fetch:
+            return []
+
+        # 2. 一次性批量查询所有演员的完整信息
+        #    我们 JOIN 两张表，把所有需要的信息都拿出来
+        sql = """
+            SELECT
+                pim.primary_name AS name,
+                pim.emby_person_id,
+                pim.imdb_id,
+                pim.douban_celebrity_id AS douban_id,
+                am.* 
+            FROM
+                person_identity_map pim
+            JOIN
+                actor_metadata am ON pim.tmdb_person_id = am.tmdb_id
+            WHERE
+                am.tmdb_id = ANY(%s);
+        """
+        cursor.execute(sql, (tmdb_ids_to_fetch,))
+        full_details_rows = cursor.fetchall()
+        
+        # 3. 将查询结果处理成一个 {tmdb_id: {full_details}} 的字典，方便快速查找
+        details_map = {row['tmdb_id']: dict(row) for row in full_details_rows}
+        
+        # 4. 遍历原始的“脱水”列表，进行“复水”合并
+        rehydrated_list = []
+        for slim_actor in slim_actors_list:
+            tmdb_id = slim_actor.get('tmdb_id')
+            if tmdb_id in details_map:
+                # 从数据库查到的完整信息
+                full_details = details_map[tmdb_id]
+                
+                # 合并！
+                # 用 full_details 做基础，因为它包含了大部分信息
+                # 然后用 slim_actor 里的 character 和 order 覆盖/补充，因为这是关系特有的
+                hydrated_actor = {**full_details, **slim_actor}
+                
+                # 兼容一下主流程里常用的 'id' 键
+                hydrated_actor['id'] = tmdb_id
+                
+                rehydrated_list.append(hydrated_actor)
+            else:
+                # 如果因为某些原因在数据库里没找到，至少保留基本信息
+                rehydrated_list.append(slim_actor)
+                
+        # 按照原始的 order 排序
+        rehydrated_list.sort(key=lambda x: x.get('order', 999))
+        
+        logger.debug(f"  ➜ [演员数据管家-恢复] 成功恢复 {len(rehydrated_list)} 位演员的元数据。")
+        return rehydrated_list
 
     def upsert_person(self, cursor: psycopg2.extensions.cursor, person_data: Dict[str, Any], emby_config: Dict[str, Any]) -> Tuple[int, str]:
         """
