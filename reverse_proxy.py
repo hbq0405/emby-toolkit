@@ -318,10 +318,10 @@ def handle_mimicked_library_metadata_endpoint(path, mimicked_id, params):
     
 def handle_get_mimicked_library_items(user_id, mimicked_id, params):
     """
-    【V6.1 - 排序逻辑终极修复版】
-    - 统一了排序逻辑，不再区分“原生”和“本地”分支。
-    - 智能判断：当合集排序设为 'none' 时，采纳并响应客户端发来的 SortBy 参数。
-    - 彻底解决了 '414 URI Too Long' 和客户端排序失效的问题。
+    【V6.2 - 排序逻辑终极归正版】
+    - 恢复“劫持”与“不劫持”的双分支逻辑。
+    - 当排序为 'none' 时，将请求完美转发给 Emby 原生处理，彻底解决排序不一致问题。
+    - 通过传递 ParentId 而非 Ids，从根本上避免了 414 URI Too Long 错误。
     """
     try:
         real_db_id = from_mimicked_id(mimicked_id)
@@ -336,56 +336,75 @@ def handle_get_mimicked_library_items(user_id, mimicked_id, params):
             return Response(json.dumps({"Items": [], "TotalRecordCount": 0}), mimetype='application/json')
 
         definition = collection_info.get('definition_json') or {}
-        
-        # ======================================================================
-        # ★★★ 核心修复：统一排序逻辑流 ★★★
-        # ======================================================================
-
-        # 1. 确定最终要使用的排序参数
         collection_sort_by = definition.get('default_sort_by', 'SortName')
-        
-        final_sort_by = ""
-        final_sort_order = ""
+
+        # ======================================================================
+        # ★★★ 核心修复：恢复双分支逻辑 ★★★
+        # ======================================================================
 
         if collection_sort_by == 'none':
-            # 当合集设置为“不设置”时，听从客户端的指令
-            final_sort_by = params.get('SortBy', 'SortName') # 从请求参数中获取，提供默认值
-            final_sort_order = params.get('SortOrder', 'Ascending')
-            logger.debug(f"  ➜ 虚拟库 '{collection_info['name']}' 使用客户端指定的排序 (SortBy={final_sort_by})。")
+            # --- 分支 A: “不劫持”模式，完全交由 Emby 处理 ---
+            logger.debug(f"  ➜ 虚拟库 '{collection_info['name']}' 使用 Emby 原生排序 (客户端请求: SortBy={params.get('SortBy')})。")
+            
+            real_emby_collection_id = collection_info.get('emby_collection_id')
+            if not real_emby_collection_id:
+                # 如果没有对应的物理合集，无法转发，返回空
+                return Response(json.dumps({"Items": [], "TotalRecordCount": 0}), mimetype='application/json')
+
+            base_url, api_key = _get_real_emby_url_and_key()
+            target_url = f"{base_url}/emby/Users/{user_id}/Items"
+            
+            # 构造一个干净的、用于转发的参数字典
+            emby_params = params.copy()
+            emby_params['api_key'] = api_key
+            # ★ 关键：我们不传 Ids，而是传 ParentId，让 Emby 自己去合集里找
+            emby_params['ParentId'] = real_emby_collection_id
+            
+            try:
+                resp = requests.get(target_url, params=emby_params, timeout=25)
+                resp.raise_for_status()
+                emby_response_data = resp.json()
+                
+                # Emby 返回的总数是合集内的总数，我们需要用我们自己计算的、用户可见的总数来覆盖它，
+                # 这样客户端的分页栏才不会出错。
+                emby_response_data['TotalRecordCount'] = total_record_count
+                
+                return Response(json.dumps(emby_response_data), mimetype='application/json')
+
+            except Exception as e:
+                logger.error(f"  ➜ 请求 Emby 原生排序时失败: {e}", exc_info=True)
+                return Response(json.dumps({"Items": [], "TotalRecordCount": total_record_count}), mimetype='application/json')
+
         else:
-            # 否则，强制使用合集预设的排序
+            # --- 分支 B: “劫持”模式，使用本地数据库进行高性能排序 ---
+            logger.debug(f"  ➜ 虚拟库 '{collection_info['name']}' 强制使用本地预设排序 (SortBy={collection_sort_by})。")
+            
             final_sort_by = collection_sort_by
             final_sort_order = definition.get('default_sort_order', 'Ascending')
-            logger.debug(f"  ➜ 虚拟库 '{collection_info['name']}' 强制使用预设排序 (SortBy={final_sort_by})。")
+            
+            limit = int(params.get('Limit', 50))
+            offset = int(params.get('StartIndex', 0))
+            
+            paginated_ids = []
+            if final_sort_by == 'original':
+                paginated_ids = final_visible_ids[offset : offset + limit]
+            else:
+                primary_sort_by = final_sort_by.split(',')[0]
+                paginated_ids = queries_db.get_sorted_and_paginated_ids(
+                    final_visible_ids, primary_sort_by, final_sort_order, limit, offset
+                )
 
-        # 2. 使用最终确定的排序参数，在本地进行高效排序和分页
-        limit = int(params.get('Limit', 50))
-        offset = int(params.get('StartIndex', 0))
-        
-        paginated_ids = []
-        # `original` 是一种特殊的排序，直接按原始列表顺序切片
-        if final_sort_by == 'original':
-            paginated_ids = final_visible_ids[offset : offset + limit]
-        else:
-            # 其他所有排序规则，都交给数据库处理
-            primary_sort_by = final_sort_by.split(',')[0]
-            paginated_ids = queries_db.get_sorted_and_paginated_ids(
-                final_visible_ids, primary_sort_by, final_sort_order, limit, offset
-            )
+            if not paginated_ids:
+                return Response(json.dumps({"Items": [], "TotalRecordCount": total_record_count}), mimetype='application/json')
 
-        if not paginated_ids:
-            return Response(json.dumps({"Items": [], "TotalRecordCount": total_record_count}), mimetype='application/json')
+            base_url, api_key = _get_real_emby_url_and_key()
+            full_fields = "PrimaryImageAspectRatio,ProviderIds,UserData,Name,ProductionYear,CommunityRating,DateCreated,PremiereDate,Type,RecursiveItemCount,SortName,ChildCount"
+            items_from_emby = _fetch_items_in_chunks(base_url, api_key, user_id, paginated_ids, full_fields)
+            
+            items_map = {item['Id']: item for item in items_from_emby}
+            final_items = [items_map[id] for id in paginated_ids if id in items_map]
 
-        # 3. 只为分页后的一小部分ID，去Emby获取详细信息
-        base_url, api_key = _get_real_emby_url_and_key()
-        full_fields = "PrimaryImageAspectRatio,ProviderIds,UserData,Name,ProductionYear,CommunityRating,DateCreated,PremiereDate,Type,RecursiveItemCount,SortName,ChildCount"
-        items_from_emby = _fetch_items_in_chunks(base_url, api_key, user_id, paginated_ids, full_fields)
-        
-        # 4. 按照本地排好的顺序，重新组合Emby返回的结果
-        items_map = {item['Id']: item for item in items_from_emby}
-        final_items = [items_map[id] for id in paginated_ids if id in items_map]
-
-        return Response(json.dumps({"Items": final_items, "TotalRecordCount": total_record_count}), mimetype='application/json')
+            return Response(json.dumps({"Items": final_items, "TotalRecordCount": total_record_count}), mimetype='application/json')
 
     except Exception as e:
         logger.error(f"  ➜ 处理虚拟库 '{collection_info.get('name', mimicked_id)}' 时发生严重错误: {e}", exc_info=True)
@@ -395,14 +414,13 @@ def handle_get_latest_items(user_id, params):
     """
     【V6.0 - “完全体”异步权限预计算版】
     - 无论是处理单个库还是全局最新，都直接从预计算好的专属列表中获取数据。
-    - 彻底消除了所有实时的 Emby 权限检查网络请求，实现首页“秒开”。
     """
     try:
         base_url, api_key = _get_real_emby_url_and_key()
         virtual_library_id = params.get('ParentId') or params.get('customViewId')
 
         # ======================================================================
-        # 场景一：处理针对【单个】虚拟库的“最近添加”请求
+        # 场景一：处理针对【单个】虚拟库的“最近添加”请求 (例如，进入虚拟库首页)
         # ======================================================================
         if virtual_library_id and is_mimicked_id(virtual_library_id):
             real_db_id = from_mimicked_id(virtual_library_id)
@@ -410,14 +428,13 @@ def handle_get_latest_items(user_id, params):
             if not collection_info: 
                 return Response(json.dumps([]), mimetype='application/json')
 
-            # ★★★ 核心修改：直接调用 V8.0 架构的专属列表获取函数 ★★★
-            # 这个函数内部已经处理了“查缓存”和“应用动态筛选”
+            # 这个函数现在的作用就是去 user_collection_cache 表里查出专属列表
             final_visible_ids = _get_final_item_ids_for_view(user_id, collection_info)
             
             if not final_visible_ids: 
                 return Response(json.dumps([]), mimetype='application/json')
             
-            # --- 后续的排序和分页逻辑，现在变得更智能 ---
+            # --- 后续的排序和分页逻辑完全不变，因为它们本来就是对干净列表操作的 ---
             definition = collection_info.get('definition_json') or {}
             item_type_from_db = definition.get('item_type', ['Movie'])
             is_series_focused = 'Series' in item_type_from_db
@@ -443,12 +460,12 @@ def handle_get_latest_items(user_id, params):
             return Response(json.dumps(final_items), mimetype='application/json')
 
         # ======================================================================
-        # 场景二：处理【全局】“最近添加”请求 (首页加载的核心)
+        # 场景二：处理【全局】“最近添加”请求 (例如，Emby 主页最顶部的“最新媒体”)
         # ======================================================================
         elif not virtual_library_id:
             logger.debug(f"  ➜ 正在为用户 {user_id} 处理全局“最新媒体”请求...")
             
-            # ★★★ 核心修改：不再遍历所有合集，而是直接从 user_collection_cache 聚合 ★★★
+            # --- 不再遍历所有合集，而是直接从 user_collection_cache 聚合 ---
             all_possible_ids = set()
             from database.connection import get_db_connection
             try:
@@ -460,7 +477,7 @@ def handle_get_latest_items(user_id, params):
                             (user_id,)
                         )
                         rows = cursor.fetchall()
-                        # 在内存中把所有列表合并成一个大的 set，自动去重
+                        # 在内存中把所有列表合并成一个大的 set
                         for row in rows:
                             if row['visible_emby_ids_json']:
                                 all_possible_ids.update(row['visible_emby_ids_json'])
@@ -471,7 +488,6 @@ def handle_get_latest_items(user_id, params):
             if not all_possible_ids:
                 return Response(json.dumps([]), mimetype='application/json')
 
-            # --- 后续逻辑与 V5.4 类似，但数据源已是最高效的 ---
             limit = int(params.get('Limit', 100))
             # 全局最新，永远按 DateCreated 排序
             latest_ids = queries_db.get_sorted_and_paginated_ids(list(all_possible_ids), 'DateCreated', 'Descending', limit, 0)
@@ -488,7 +504,7 @@ def handle_get_latest_items(user_id, params):
             return Response(json.dumps(final_items), mimetype='application/json')
             
         # ======================================================================
-        # 场景三：原生库的请求，直接转发 (保持不变)
+        # 场景三：原生库的请求，直接转发 
         # ======================================================================
         else:
             target_url = f"{base_url}/{request.path.lstrip('/')}"
