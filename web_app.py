@@ -115,7 +115,7 @@ def save_config_and_reload(new_config: Dict[str, Any]):
         
         scheduler_manager.update_all_scheduled_jobs()
         
-        logger.info("所有组件已根据新配置重新初始化完毕。")
+        logger.info("  ✅ 新配置重新初始化完毕。")
         
     except Exception as e:
         logger.error(f"保存配置文件或重新初始化时失败: {e}", exc_info=True)
