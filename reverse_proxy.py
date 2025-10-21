@@ -317,17 +317,14 @@ def handle_mimicked_library_metadata_endpoint(path, mimicked_id, params):
     
 def handle_get_mimicked_library_items(user_id, mimicked_id, params):
     """
-    【V7.3 - 并发获取最终版】
-    - 采纳用户的关键洞察，使用 `_fetch_items_in_chunks` 函数来解决 414 URI Too Long 的根本问题。
-    - 逻辑与 V7.2 的混合智能排序一致，但“可靠路径”的数据获取方式被升级为高效的并发模式。
-    - 运行逻辑:
-        1. [决策] 检查排序字段。
-        2. [快速路径] 本地支持的字段，走本地数据库排序。
-        3. [可靠路径] 本地不支持的字段 (如DateLastContentAdded) 或 'none' 模式:
-            a. 调用 `_fetch_items_in_chunks` 并发获取所有可见媒体项的详细信息。
-            b. 在服务内存中对返回的完整列表进行排序。
-            c. 对排序后的列表进行分页后返回。
-    - 此方案是功能、性能和稳定性的最终结合体。
+    【V7.4 - 排序劫持最终修正版】
+    - 修复了 V7.3 版本中“本地劫持排序”无效的核心逻辑错误。
+    - 重新设计了排序决策逻辑，确保其正确反映“劫持”的强制性。
+    - 新的决策流程:
+        1. [劫持优先] 如果虚拟库配置了默认排序 (且非'none')，则【强制】使用该配置，【忽略】所有客户端参数。
+        2. [客户端优先] 如果虚拟库配置为 'none' 或未配置，则遵循客户端发送的排序参数。
+        3. 根据最终确定的排序方式，智能选择“快速本地路径”或“可靠内存路径”。
+    - 此版本在解决了 414 问题的基础上，正确地实现了排序劫持功能。
     """
     try:
         real_db_id = from_mimicked_id(mimicked_id)
@@ -343,31 +340,43 @@ def handle_get_mimicked_library_items(user_id, mimicked_id, params):
 
         definition = collection_info.get('definition_json') or {}
         
-        if params.get('SortBy'):
-             sort_by_str = params.get('SortBy')
-             sort_order = params.get('SortOrder', 'Ascending')
-        else:
-             sort_by_str = definition.get('default_sort_by', 'SortName')
-             sort_order = definition.get('default_sort_order', 'Ascending')
+        # --- ★★★ 核心修正：重写排序决策逻辑 ★★★ ---
+        defined_sort_by = definition.get('default_sort_by')
 
-        primary_sort_by = sort_by_str.split(',')[0]
+        # 路径1：如果定义了默认排序且不是'none'，则执行“劫持”，无视客户端
+        if defined_sort_by and defined_sort_by != 'none':
+            final_sort_by = defined_sort_by
+            final_sort_order = definition.get('default_sort_order', 'Ascending')
+            logger.debug(f"  ➜ 虚拟库 '{collection_info['name']}' 触发排序劫持，强制使用: {final_sort_by} {final_sort_order}")
+        # 路径2：否则，听从客户端的指令 ('none'模式或未设置模式)
+        else:
+            final_sort_by = params.get('SortBy') or 'SortName'
+            final_sort_order = params.get('SortOrder') or 'Ascending'
+            if defined_sort_by == 'none':
+                logger.debug(f"  ➜ 虚拟库 '{collection_info['name']}' 为 'none' 模式，遵循客户端排序: {final_sort_by} {final_sort_order}")
+            else:
+                logger.debug(f"  ➜ 虚拟库 '{collection_info['name']}' 未配置排序，遵循客户端排序: {final_sort_by} {final_sort_order}")
+        
+        # --- 根据最终的排序方式，决定走哪个技术路径 ---
+        primary_sort_by = final_sort_by.split(',')[0]
         SUPPORTED_LOCAL_SORT_FIELDS = ['PremiereDate', 'DateCreated', 'CommunityRating', 'ProductionYear', 'SortName', 'original']
         
-        use_memory_sort = (primary_sort_by not in SUPPORTED_LOCAL_SORT_FIELDS) or (definition.get('default_sort_by') == 'none')
+        # 如果最终排序方式本地不支持，或者模式被明确设为'none'，则必须走可靠的内存排序路径
+        use_memory_sort = (primary_sort_by not in SUPPORTED_LOCAL_SORT_FIELDS) or (defined_sort_by == 'none')
 
         limit = int(params.get('Limit', 50))
         offset = int(params.get('StartIndex', 0))
 
         if not use_memory_sort:
             # --- 分支 A: [快速路径] 本地高性能排序 ---
-            logger.debug(f"  ➜ 虚拟库 '{collection_info['name']}' 使用本地高性能排序 (SortBy={primary_sort_by})。")
+            logger.debug(f"  ➜ [快速路径] 使用本地数据库排序 (SortBy={primary_sort_by})。")
             
             paginated_ids = []
             if primary_sort_by == 'original':
                 paginated_ids = final_visible_ids[offset : offset + limit]
             else:
                 paginated_ids = queries_db.get_sorted_and_paginated_ids(
-                    final_visible_ids, primary_sort_by, sort_order, limit, offset
+                    final_visible_ids, primary_sort_by, final_sort_order, limit, offset
                 )
 
             if not paginated_ids:
@@ -384,23 +393,19 @@ def handle_get_mimicked_library_items(user_id, mimicked_id, params):
 
         else:
             # --- 分支 B: [可靠路径] 并发获取 + 内存排序 ---
-            logger.warning(f"  ➜ 虚拟库 '{collection_info['name']}' 使用并发获取+内存排序 (SortBy={primary_sort_by})。")
+            logger.warning(f"  ➜ [可靠路径] 使用并发获取+内存排序 (SortBy={primary_sort_by})。")
             
             base_url, api_key = _get_real_emby_url_and_key()
-            
-            # ★★★ 核心升级：使用并发函数获取全量数据 ★★★
             fields_to_fetch = f"PrimaryImageAspectRatio,ProviderIds,UserData,Name,ProductionYear,CommunityRating,DateCreated,PremiereDate,Type,RecursiveItemCount,SortName,ChildCount,{primary_sort_by}"
             all_items_details = _fetch_items_in_chunks(base_url, api_key, user_id, final_visible_ids, fields_to_fetch)
 
-            # 在内存中排序
             try:
-                is_desc = sort_order == 'Descending'
+                is_desc = final_sort_order == 'Descending'
                 default_value = '' if 'Date' in primary_sort_by else 0
                 all_items_details.sort(key=lambda x: x.get(primary_sort_by, default_value), reverse=is_desc)
             except Exception as sort_e:
                 logger.error(f"  ➜ 内存排序时发生错误: {sort_e}", exc_info=True)
             
-            # 对排序后的完整列表进行切片分页
             paginated_items = all_items_details[offset : offset + limit]
             return Response(json.dumps({"Items": paginated_items, "TotalRecordCount": total_record_count}), mimetype='application/json')
 
