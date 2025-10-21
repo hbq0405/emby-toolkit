@@ -46,13 +46,13 @@ class CoverGeneratorService:
         self.__get_fonts()
         image_data = self.__generate_image_data(emby_server_id, library, item_count, content_types)
         if not image_data:
-            logger.error(f"为媒体库 '{library['Name']}' 生成封面图片失败。")
+            logger.error(f"  ➜ 为媒体库 '{library['Name']}' 生成封面图片失败。")
             return False
         success = self.__set_library_image(emby_server_id, library, image_data)
         if success:
             logger.info(f"  ✅ 成功更新媒体库 '{library['Name']}' 的封面！")
         else:
-            logger.error(f"上传封面到媒体库 '{library['Name']}' 失败。")
+            logger.error(f"  ➜ 上传封面到媒体库 '{library['Name']}' 失败。")
         return success
 
     def __generate_image_data(self, server_id: str, library: Dict[str, Any], item_count: Optional[int] = None, content_types: Optional[List[str]] = None) -> bytes:
@@ -60,16 +60,16 @@ class CoverGeneratorService:
         title = self.__get_library_title_from_yaml(library_name)
         custom_image_paths = self.__check_custom_image(library_name)
         if custom_image_paths:
-            logger.info(f"发现媒体库 '{library_name}' 的自定义图片，将使用路径模式生成。")
+            logger.info(f"  ➜ 发现媒体库 '{library_name}' 的自定义图片，将使用路径模式生成。")
             return self.__generate_image_from_path(library_name, title, custom_image_paths, item_count)
-        logger.trace(f"未发现自定义图片，将从服务器 '{server_id}' 获取媒体项作为封面来源。")
+        logger.trace(f"  ➜ 未发现自定义图片，将从服务器 '{server_id}' 获取媒体项作为封面来源。")
         return self.__generate_from_server(server_id, library, title, item_count, content_types)
 
     def __generate_from_server(self, server_id: str, library: Dict[str, Any], title: Tuple[str, str], item_count: Optional[int] = None, content_types: Optional[List[str]] = None) -> bytes:
         required_items_count = 1 if self._cover_style.startswith('single') else 9
         items = self.__get_valid_items_from_library(server_id, library, required_items_count, content_types)
         if not items:
-            logger.warning(f"在媒体库 '{library['Name']}' 中找不到任何带有可用图片的媒体项。")
+            logger.warning(f"  ➜ 在媒体库 '{library['Name']}' 中找不到任何带有可用图片的媒体项。")
             return None
         if self._cover_style.startswith('single'):
             image_url = self.__get_image_url(items[0])
@@ -86,7 +86,7 @@ class CoverGeneratorService:
                     if path:
                         image_paths.append(path)
             if not image_paths:
-                logger.warning(f"为多图模式下载图片失败。")
+                logger.warning(f"  ➜ 为多图模式下载图片失败。")
                 return None
             return self.__generate_image_from_path(library['Name'], title, image_paths, item_count)
 
@@ -192,14 +192,14 @@ class CoverGeneratorService:
                 )
                 if success: return filepath
             else:
-                logger.error(f"无法从API路径解析有效的项目ID和图片类型: {api_path}")
+                logger.error(f"  ➜ 无法从API路径解析有效的项目ID和图片类型: {api_path}")
         except Exception as e:
-            logger.error(f"下载图片失败 ({api_path}): {e}", exc_info=True)
+            logger.error(f"  ➜ 下载图片失败 ({api_path}): {e}", exc_info=True)
         return None
 
     # ... (文件末尾的 __generate_image_from_path, __set_library_image, __get_library_title_from_yaml, __prepare_multi_images, __check_custom_image, __download_file, __get_fonts 函数与您提供的原始文件一致，无需修改，此处省略以保持简洁) ...
     def __generate_image_from_path(self, library_name: str, title: Tuple[str, str], image_paths: List[str], item_count: Optional[int] = None) -> bytes:
-        logger.trace(f"正在为 '{library_name}' 从本地路径生成封面...")
+        logger.trace(f"  ➜ 正在为 '{library_name}' 从本地路径生成封面...")
         zh_font_size = self.config.get("zh_font_size", 1)
         en_font_size = self.config.get("en_font_size", 1)
         blur_size = self.config.get("blur_size", 50)
@@ -217,12 +217,12 @@ class CoverGeneratorService:
             if self.zh_font_path_multi_1 and self.zh_font_path_multi_1.exists():
                 zh_font_path_multi = self.zh_font_path_multi_1
             else:
-                logger.warning(f"未找到多图专用中文字体 ({self.zh_font_path_multi_1})，将回退使用单图字体。")
+                logger.warning(f"  ➜ 未找到多图专用中文字体 ({self.zh_font_path_multi_1})，将回退使用单图字体。")
                 zh_font_path_multi = self.zh_font_path
             if self.en_font_path_multi_1 and self.en_font_path_multi_1.exists():
                 en_font_path_multi = self.en_font_path_multi_1
             else:
-                logger.warning(f"未找到多图专用英文字体 ({self.en_font_path_multi_1})，将回退使用单图字体。")
+                logger.warning(f"  ➜ 未找到多图专用英文字体 ({self.en_font_path_multi_1})，将回退使用单图字体。")
                 en_font_path_multi = self.en_font_path
             font_path_multi = (str(zh_font_path_multi), str(en_font_path_multi))
             zh_font_size_multi = self.config.get("zh_font_size_multi_1", 1)
@@ -250,16 +250,16 @@ class CoverGeneratorService:
                 save_path.parent.mkdir(parents=True, exist_ok=True)
                 with open(save_path, "wb") as f:
                     f.write(image_data)
-                logger.info(f"封面已另存到: {save_path}")
+                logger.info(f"  ➜ 封面已另存到: {save_path}")
             except Exception as e:
-                logger.error(f"另存封面失败: {e}")
+                logger.error(f"  ➜ 另存封面失败: {e}")
         try:
             response = requests.post(upload_url, data=image_data, headers=headers, timeout=30)
             response.raise_for_status()
             logger.debug(f"  ➜ 成功上传封面到媒体库 '{library['Name']}'。")
             return True
         except requests.exceptions.RequestException as e:
-            logger.error(f"上传封面到媒体库 '{library['Name']}' 时发生网络错误: {e}")
+            logger.error(f"  ➜ 上传封面到媒体库 '{library['Name']}' 时发生网络错误: {e}")
             if e.response is not None:
                 logger.error(f"  ➜ 响应状态: {e.response.status_code}, 响应内容: {e.response.text[:200]}")
             return False
@@ -275,7 +275,7 @@ class CoverGeneratorService:
                 if isinstance(titles, list) and len(titles) >= 2:
                     zh_title, en_title = titles[0], titles[1]
         except yaml.YAMLError as e:
-            logger.error(f"解析标题配置失败: {e}")
+            logger.error(f"  ➜ 解析标题配置失败: {e}")
         return zh_title, en_title
 
     def __prepare_multi_images(self, library_dir: Path, source_paths: List[str]):
@@ -298,18 +298,18 @@ class CoverGeneratorService:
 
     def __download_file(self, url: str, dest_path: Path):
         if dest_path.exists():
-            logger.trace(f"字体文件已存在，跳过下载: {dest_path.name}")
+            logger.trace(f"  ➜ 字体文件已存在，跳过下载: {dest_path.name}")
             return
-        logger.info(f"字体文件不存在，正在从URL下载: {dest_path.name}...")
+        logger.info(f"  ➜ 字体文件不存在，正在从URL下载: {dest_path.name}...")
         try:
             response = requests.get(url, stream=True, timeout=60)
             response.raise_for_status()
             with open(dest_path, 'wb') as f:
                 for chunk in response.iter_content(chunk_size=8192):
                     f.write(chunk)
-            logger.info(f"字体 '{dest_path.name}' 下载成功。")
+            logger.info(f"  ➜ 字体 '{dest_path.name}' 下载成功。")
         except requests.RequestException as e:
-            logger.error(f"下载字体 '{dest_path.name}' 失败: {e}")
+            logger.error(f"  ➜ 下载字体 '{dest_path.name}' 失败: {e}")
             if dest_path.exists():
                 dest_path.unlink()
 
@@ -331,10 +331,10 @@ class CoverGeneratorService:
             if local_path_str:
                 local_path = Path(local_path_str)
                 if local_path.exists():
-                    logger.trace(f"发现并优先使用用户指定的外部字体: {local_path_str}")
+                    logger.trace(f"  ➜ 发现并优先使用用户指定的外部字体: {local_path_str}")
                     font_path_to_set = local_path
                 else:
-                    logger.warning(f"配置的外部字体路径不存在: {local_path_str}，将忽略此配置。")
+                    logger.warning(f"  ➜ 配置的外部字体路径不存在: {local_path_str}，将忽略此配置。")
             if not font_path_to_set:
                 url = self.config.get(font_def["url_key"])
                 if url:
@@ -343,7 +343,7 @@ class CoverGeneratorService:
                         font_path_to_set = expected_font_file
             setattr(self, font_def["target_attr"], font_path_to_set)
         if self.zh_font_path and self.en_font_path:
-            logger.trace("核心字体文件已准备就绪。后续任务将不再重复检查。")
+            logger.trace("  ➜ 核心字体文件已准备就绪。后续任务将不再重复检查。")
             self._fonts_checked_and_ready = True
         else:
-            logger.warning("一个或多个核心字体文件缺失且无法下载。请检查UI中的本地路径或下载链接是否有效。")
+            logger.warning("  ➜ 一个或多个核心字体文件缺失且无法下载。请检查UI中的本地路径或下载链接是否有效。")
