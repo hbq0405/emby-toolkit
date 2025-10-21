@@ -30,6 +30,14 @@ def is_mimicked_id(item_id):
 MIMICKED_ITEMS_RE = re.compile(r'/emby/Users/([^/]+)/Items/(-(\d+))')
 MIMICKED_ITEM_DETAILS_RE = re.compile(r'emby/Users/([^/]+)/Items/(-(\d+))$')
 
+SUPPORTED_LOCAL_SORT_FIELDS = {
+        'PremiereDate': 'release_date',
+        'DateCreated': 'date_added',
+        'CommunityRating': 'rating',
+        'ProductionYear': 'release_year',
+        'SortName': 'title'
+    }
+
 def _get_real_emby_url_and_key():
     base_url = config_manager.APP_CONFIG.get("emby_server_url", "").rstrip('/')
     api_key = config_manager.APP_CONFIG.get("emby_api_key", "")
@@ -318,10 +326,11 @@ def handle_mimicked_library_metadata_endpoint(path, mimicked_id, params):
     
 def handle_get_mimicked_library_items(user_id, mimicked_id, params):
     """
-    【V6.2 - 排序逻辑终极归正版】
-    - 恢复“劫持”与“不劫持”的双分支逻辑。
-    - 当排序为 'none' 时，将请求完美转发给 Emby 原生处理，彻底解决排序不一致问题。
-    - 通过传递 ParentId 而非 Ids，从根本上避免了 414 URI Too Long 错误。
+    【V7.0 - 智能混合排序终极版】
+    - 实现了智能路由：根据客户端请求的 SortBy 字段，动态决定是在本地排序还是转发给 Emby 排序。
+    - 对于本地支持的字段 (如 SortName, PremiereDate)，使用高性能的本地数据库排序。
+    - 对于本地不支持的字段 (如 DateLastContentAdded)，完美转发给 Emby 原生处理，确保排序100%准确。
+    - 彻底解决了 DateLastContentAdded 排序不准确的问题。
     """
     try:
         real_db_id = from_mimicked_id(mimicked_id)
@@ -329,70 +338,28 @@ def handle_get_mimicked_library_items(user_id, mimicked_id, params):
         if not collection_info:
             return Response(json.dumps({"Items": [], "TotalRecordCount": 0}), mimetype='application/json')
 
+        # 无论采用哪种排序，我们都需要先知道用户在这个库里总共能看多少东西
         final_visible_ids = _get_final_item_ids_for_view(user_id, collection_info)
         total_record_count = len(final_visible_ids)
         
         if not final_visible_ids:
             return Response(json.dumps({"Items": [], "TotalRecordCount": 0}), mimetype='application/json')
 
-        definition = collection_info.get('definition_json') or {}
-        collection_sort_by = definition.get('default_sort_by', 'SortName')
+        # --- ★★★ 核心改造：智能排序路由 ★★★ ---
+        
+        client_sort_by = params.get('SortBy', 'SortName').split(',')[0] # 取第一个排序字段作为判断依据
 
-        # ======================================================================
-        # ★★★ 核心修复：恢复双分支逻辑 ★★★
-        # ======================================================================
-
-        if collection_sort_by == 'none':
-            # --- 分支 A: “不劫持”模式，完全交由 Emby 处理 ---
-            logger.debug(f"  ➜ 虚拟库 '{collection_info['name']}' 使用 Emby 原生排序 (客户端请求: SortBy={params.get('SortBy')})。")
+        # 场景一：客户端请求的排序方式，是我们可以本地处理的 -> 高性能本地排序
+        if client_sort_by in SUPPORTED_LOCAL_SORT_FIELDS:
+            logger.debug(f"  ➜ 虚拟库 '{collection_info['name']}' 采用高性能本地排序 (SortBy={client_sort_by})。")
             
-            real_emby_collection_id = collection_info.get('emby_collection_id')
-            if not real_emby_collection_id:
-                # 如果没有对应的物理合集，无法转发，返回空
-                return Response(json.dumps({"Items": [], "TotalRecordCount": 0}), mimetype='application/json')
-
-            base_url, api_key = _get_real_emby_url_and_key()
-            target_url = f"{base_url}/emby/Users/{user_id}/Items"
-            
-            # 构造一个干净的、用于转发的参数字典
-            emby_params = params.copy()
-            emby_params['api_key'] = api_key
-            # ★ 关键：我们不传 Ids，而是传 ParentId，让 Emby 自己去合集里找
-            emby_params['ParentId'] = real_emby_collection_id
-            
-            try:
-                resp = requests.get(target_url, params=emby_params, timeout=25)
-                resp.raise_for_status()
-                emby_response_data = resp.json()
-                
-                # Emby 返回的总数是合集内的总数，我们需要用我们自己计算的、用户可见的总数来覆盖它，
-                # 这样客户端的分页栏才不会出错。
-                emby_response_data['TotalRecordCount'] = total_record_count
-                
-                return Response(json.dumps(emby_response_data), mimetype='application/json')
-
-            except Exception as e:
-                logger.error(f"  ➜ 请求 Emby 原生排序时失败: {e}", exc_info=True)
-                return Response(json.dumps({"Items": [], "TotalRecordCount": total_record_count}), mimetype='application/json')
-
-        else:
-            # --- 分支 B: “劫持”模式，使用本地数据库进行高性能排序 ---
-            logger.debug(f"  ➜ 虚拟库 '{collection_info['name']}' 强制使用本地预设排序 (SortBy={collection_sort_by})。")
-            
-            final_sort_by = collection_sort_by
-            final_sort_order = definition.get('default_sort_order', 'Ascending')
-            
+            final_sort_order = params.get('SortOrder', 'Ascending')
             limit = int(params.get('Limit', 50))
             offset = int(params.get('StartIndex', 0))
             
-            paginated_ids = []
-            if final_sort_by == 'original':
-                paginated_ids = final_visible_ids[offset : offset + limit]
-            else:
-                primary_sort_by = final_sort_by.split(',')[0]
-                paginated_ids = queries_db.get_sorted_and_paginated_ids(
-                    final_visible_ids, primary_sort_by, final_sort_order, limit, offset
-                )
+            paginated_ids = queries_db.get_sorted_and_paginated_ids(
+                final_visible_ids, client_sort_by, final_sort_order, limit, offset
+            )
 
             if not paginated_ids:
                 return Response(json.dumps({"Items": [], "TotalRecordCount": total_record_count}), mimetype='application/json')
@@ -406,8 +373,44 @@ def handle_get_mimicked_library_items(user_id, mimicked_id, params):
 
             return Response(json.dumps({"Items": final_items, "TotalRecordCount": total_record_count}), mimetype='application/json')
 
+        # 场景二：客户端请求了我们无法本地处理的排序 (如 DateLastContentAdded) -> 完美转发给 Emby
+        else:
+            logger.debug(f"  ➜ 虚拟库 '{collection_info['name']}' 无法本地处理排序 '{client_sort_by}'，将请求转发给 Emby 原生处理。")
+            
+            real_emby_collection_id = collection_info.get('emby_collection_id')
+            if not real_emby_collection_id:
+                logger.warning(f"虚拟库 '{collection_info['name']}' 想要使用Emby原生排序，但没有配置对应的Emby合集ID。")
+                return Response(json.dumps({"Items": [], "TotalRecordCount": 0}), mimetype='application/json')
+
+            base_url, api_key = _get_real_emby_url_and_key()
+            target_url = f"{base_url}/emby/Users/{user_id}/Items"
+            
+            # 构造一个干净的、用于转发的参数字典
+            emby_params = params.copy()
+            emby_params['api_key'] = api_key
+            # ★ 关键：我们不传 Ids，而是传 ParentId，让 Emby 自己去合集里找并排序
+            emby_params['ParentId'] = real_emby_collection_id
+            
+            try:
+                resp = requests.get(target_url, params=emby_params, timeout=25)
+                resp.raise_for_status()
+                emby_response_data = resp.json()
+                
+                # ★ 关键：用我们自己算出来的总数，覆盖Emby返回的总数，确保分页正确！
+                emby_response_data['TotalRecordCount'] = total_record_count
+                
+                return Response(json.dumps(emby_response_data), mimetype='application/json')
+
+            except Exception as e:
+                logger.error(f"  ➜ 请求 Emby 原生排序时失败: {e}", exc_info=True)
+                # 即使请求失败，也要返回正确的总数，避免客户端分页错乱
+                return Response(json.dumps({"Items": [], "TotalRecordCount": total_record_count}), mimetype='application/json')
+
     except Exception as e:
-        logger.error(f"  ➜ 处理虚拟库 '{collection_info.get('name', mimicked_id)}' 时发生严重错误: {e}", exc_info=True)
+        collection_name = "未知"
+        if 'collection_info' in locals() and collection_info:
+            collection_name = collection_info.get('name', mimicked_id)
+        logger.error(f"  ➜ 处理虚拟库 '{collection_name}' 时发生严重错误: {e}", exc_info=True)
         return Response(json.dumps({"Items": [], "TotalRecordCount": 0}), mimetype='application/json')
 
 def handle_get_latest_items(user_id, params):
