@@ -408,7 +408,7 @@ def handle_get_mimicked_library_items(user_id, mimicked_id, params):
 
         else:
             # --- 分支 B: [Emby 代理排序路径] - 调用新的健壮函数 ---
-            logger.warning(f"  ➜ 使用 Emby 进行远程排序或内存排序 (SortBy={primary_sort_by})。")
+            logger.trace(f"  ➜ 使用 Emby 进行远程排序或内存排序 (SortBy={primary_sort_by})。")
             full_fields = "PrimaryImageAspectRatio,ProviderIds,UserData,Name,ProductionYear,CommunityRating,DateCreated,PremiereDate,Type,RecursiveItemCount,SortName,ChildCount"
             
             sorted_data = _fetch_sorted_items_via_emby_proxy(
