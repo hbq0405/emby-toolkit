@@ -317,9 +317,15 @@ def handle_mimicked_library_metadata_endpoint(path, mimicked_id, params):
     
 def handle_get_mimicked_library_items(user_id, mimicked_id, params):
     """
-    【V6.4 - 剧集库原生排序最终修正版】
-    - 修复了 V6.3 版本中，因客户端可能主动发送 IncludeItemTypes 参数而导致强制指定 Series 无效的问题。
-    - 移除 `if 'IncludeItemTypes' not in emby_params` 的判断，改为强制覆盖，确保代理说了算。
+    【V6.6 - 用户指导终极版】
+    - 彻底采纳用户建议，重构“原生排序” (none) 模式的实现方式。
+    - 模式A (原生排序):
+        1. 先在本地计算出用户可见的、类型正确的完整媒体ID列表 (final_visible_ids)。
+        2. 将这个ID列表，连同客户端请求的排序/分页参数，通过 POST 请求发送给 Emby。
+        3. Emby 将对这个指定的ID列表执行原生排序，并返回分页后的结果。
+    - 此方法完美解决了剧集库显示单集的问题，同时又能利用 Emby 强大的原生排序能力，
+      使得 'DateLastContentAdded' 等所有排序字段都能正常工作。
+    - 使用 POST 请求是为了从根本上避免因ID列表过长导致的 "414 URI Too Long" 错误。
     """
     try:
         real_db_id = from_mimicked_id(mimicked_id)
@@ -336,45 +342,48 @@ def handle_get_mimicked_library_items(user_id, mimicked_id, params):
         definition = collection_info.get('definition_json') or {}
         collection_sort_by = definition.get('default_sort_by', 'SortName')
 
-        if collection_sort_by == 'none':
-            # --- 分支 A: “不劫持”模式，完全交由 Emby 处理 ---
-            logger.debug(f"  ➜ 虚拟库 '{collection_info['name']}' 使用 Emby 原生排序 (客户端请求: SortBy={params.get('SortBy')})。")
-            
-            real_emby_collection_id = collection_info.get('emby_collection_id')
-            if not real_emby_collection_id:
-                return Response(json.dumps({"Items": [], "TotalRecordCount": 0}), mimetype='application/json')
+        # ======================================================================
+        # ★★★ 核心逻辑重构：原生排序 vs 本地排序 ★★★
+        # ======================================================================
 
+        # --- 模式 A: “原生排序”模式，但使用 ID 列表 + POST 请求 ---
+        if collection_sort_by == 'none':
+            logger.debug(f"  ➜ 虚拟库 '{collection_info['name']}' 使用 Emby 原生排序（ID列表POST模式）。")
+            
             base_url, api_key = _get_real_emby_url_and_key()
+            # POST 请求的目标 URL 依然是 Items 终结点
             target_url = f"{base_url}/emby/Users/{user_id}/Items"
             
-            emby_params = params.copy()
-            emby_params['api_key'] = api_key
-            emby_params['ParentId'] = real_emby_collection_id
+            # 准备 POST 请求的 body
+            # 它包含了客户端所有的原始请求参数
+            post_data = params.copy()
             
-            item_type_from_db = definition.get('item_type', 'Movie')
-            authoritative_type = None
-            if not (isinstance(item_type_from_db, list) and len(item_type_from_db) > 1):
-                authoritative_type = item_type_from_db[0] if isinstance(item_type_from_db, list) and item_type_from_db else item_type_from_db if isinstance(item_type_from_db, str) else 'Movie'
-
-            if authoritative_type == 'Series':
-                logger.debug(f"  ➜ 检测到为剧集库，强制覆盖参数为: IncludeItemTypes=Series, Recursive=true")
-                # ★★★ 关键修正：移除条件判断，强制覆盖！★★★
-                emby_params['IncludeItemTypes'] = 'Series'
-                emby_params['Recursive'] = 'true'
+            # 将我们本地计算出的、干净的 ID 列表加入到 body 中
+            # Emby 要求是逗号分隔的字符串
+            post_data['Ids'] = ",".join(map(str, final_visible_ids))
+            
+            # 对于 POST 请求，API Key 通常作为 URL 的查询参数
+            query_params = {'api_key': api_key}
             
             try:
-                resp = requests.get(target_url, params=emby_params, timeout=25)
+                # 发起 POST 请求，将参数放在 json body 中
+                resp = requests.post(target_url, params=query_params, json=post_data, timeout=30)
                 resp.raise_for_status()
                 emby_response_data = resp.json()
+                
+                # ★ 关键一步：用我们自己计算的总数覆盖 Emby 返回的总数
+                # Emby 返回的总数是它处理的ID数量，而我们需要的是虚拟库的完整总数，以确保客户端分页正确
                 emby_response_data['TotalRecordCount'] = total_record_count
+                
                 return Response(json.dumps(emby_response_data), mimetype='application/json')
 
             except Exception as e:
-                logger.error(f"  ➜ 请求 Emby 原生排序时失败: {e}", exc_info=True)
+                logger.error(f"  ➜ 向 Emby POST ID列表进行排序时失败: {e}", exc_info=True)
+                # 即使请求失败，也要返回正确的总数，避免客户端分页栏显示错误
                 return Response(json.dumps({"Items": [], "TotalRecordCount": total_record_count}), mimetype='application/json')
 
+        # --- 模式 B: “强制本地预设排序”模式 ---
         else:
-            # --- 分支 B: “劫持”模式，使用本地数据库进行高性能排序 ---
             logger.debug(f"  ➜ 虚拟库 '{collection_info['name']}' 强制使用本地预设排序 (SortBy={collection_sort_by})。")
             
             final_sort_by = collection_sort_by
