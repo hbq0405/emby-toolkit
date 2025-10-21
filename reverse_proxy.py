@@ -8,10 +8,15 @@ from flask import Flask, request, Response
 from urllib.parse import urlparse, urlunparse
 import time
 import uuid 
+from datetime import datetime, timezone
 from gevent import spawn, joinall
+from gevent.lock import RLock
+from geventwebsocket.websocket import WebSocket
 from websocket import create_connection
 from database import collection_db, user_db, queries_db
 import config_manager
+from cachetools import TTLCache
+
 import extensions
 import emby_handler
 logger = logging.getLogger(__name__)
@@ -57,7 +62,6 @@ def _fetch_items_in_chunks(base_url, api_key, user_id, item_ids, fields):
 def _get_final_item_ids_for_view(user_id, collection_info):
     """
     【V6.0 - 终极简化版】
-    - 彻底移除实时权限检查。
     - 直接从 user_collection_cache 表中获取为该用户预计算好的、100%有权限的媒体列表。
     - 仍然保留了动态用户数据筛选的能力。
     """
@@ -341,45 +345,30 @@ def handle_get_mimicked_library_items(user_id, mimicked_id, params):
             # --- 分支 A: “不劫持”模式，完全交由 Emby 处理 ---
             logger.debug(f"  ➜ 虚拟库 '{collection_info['name']}' 使用 Emby 原生排序 (客户端请求: SortBy={params.get('SortBy')})。")
             
+            real_emby_collection_id = collection_info.get('emby_collection_id')
+            if not real_emby_collection_id:
+                return Response(json.dumps({"Items": [], "TotalRecordCount": 0}), mimetype='application/json')
+
             base_url, api_key = _get_real_emby_url_and_key()
             target_url = f"{base_url}/emby/Users/{user_id}/Items"
             
             emby_params = params.copy()
             emby_params['api_key'] = api_key
+            emby_params['ParentId'] = real_emby_collection_id
             
-            definition = collection_info.get('definition_json') or {}
+            # ★★★ 关键修正：判断是否为剧集库，并强制请求正确的媒体类型 ★★★
             item_type_from_db = definition.get('item_type', 'Movie')
-            is_series_library = ('Series' in item_type_from_db) if isinstance(item_type_from_db, list) else (item_type_from_db == 'Series')
+            authoritative_type = None
+            # 判断是否为单一类型的库 (非混合库)
+            if not (isinstance(item_type_from_db, list) and len(item_type_from_db) > 1):
+                authoritative_type = item_type_from_db[0] if isinstance(item_type_from_db, list) and item_type_from_db else item_type_from_db if isinstance(item_type_from_db, str) else 'Movie'
 
-            if is_series_library:
-                # 对于剧集库，必须传递剧的ID列表，才能正确显示
-                logger.debug("  ➜ 检测到为剧集库，强制使用 'Ids' 参数以确保显示正确。")
-                emby_params['Ids'] = ",".join(final_visible_ids)
-                
-                # ▼▼▼【二次修正】确保请求了足够的字段信息以供显示 ▼▼▼
-                # 当使用 Ids 参数时，Emby 可能不会默认返回所有信息，我们需要手动确保关键字段被请求
-                current_fields = emby_params.get('Fields', '')
-                required_fields = "ImageTags,PrimaryImageAspectRatio,UserData" # Name 字段通常会默认包含
-                
-                # 使用集合操作来高效地检查和添加缺失的字段
-                current_fields_set = {f.strip() for f in current_fields.split(',') if f.strip()}
-                required_fields_set = {f.strip() for f in required_fields.split(',')}
-                
-                missing_fields = required_fields_set - current_fields_set
-                
-                if missing_fields:
-                    # 将缺失的字段追加到现有字段后面
-                    new_fields_str = current_fields + ',' + ','.join(missing_fields)
-                    emby_params['Fields'] = new_fields_str.strip(',') # 移除可能的前导逗号
-                    logger.debug(f"  ➜ 为保证海报显示，已自动追加缺失的字段。新 Fields: {emby_params['Fields']}")
-
-            else:
-                # 对于电影库，使用 ParentId 来避免 414 错误
-                logger.debug("  ➜ 检测到为电影库，使用 'ParentId' 参数进行优化。")
-                real_emby_collection_id = collection_info.get('emby_collection_id')
-                if not real_emby_collection_id:
-                    return Response(json.dumps({"Items": [], "TotalRecordCount": 0}), mimetype='application/json')
-                emby_params['ParentId'] = real_emby_collection_id
+            if authoritative_type == 'Series':
+                logger.debug(f"  ➜ 检测到为剧集库，强制添加参数: IncludeItemTypes=Series, Recursive=true")
+                # 仅当客户端没有指定类型时才覆盖，以防破坏“播放队列”等特殊请求
+                if 'IncludeItemTypes' not in emby_params:
+                    emby_params['IncludeItemTypes'] = 'Series'
+                emby_params['Recursive'] = 'true'
             
             try:
                 resp = requests.get(target_url, params=emby_params, timeout=25)
