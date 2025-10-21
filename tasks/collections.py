@@ -230,7 +230,6 @@ def _get_cover_badge_text_for_collection(collection_db_info: Dict[str, Any]) -> 
 # --- 可复用的权限更新函数 ---
 def update_user_permissions_for_collection(collection_id: int, global_ordered_emby_ids: list, user_permissions_map: dict):
     """
-    【V9 - 权限计算核心函数】
     为单个自定义合集，计算所有用户的专属可见媒体列表，并批量更新到 user_collection_cache 表。
     这是一个可被多处调用的独立、可复用函数。
     """
