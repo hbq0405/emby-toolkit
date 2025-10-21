@@ -8,14 +8,10 @@ from flask import Flask, request, Response
 from urllib.parse import urlparse, urlunparse
 import time
 import uuid 
-from datetime import datetime, timezone
 from gevent import spawn, joinall
-from gevent.lock import RLock
-from geventwebsocket.websocket import WebSocket
 from websocket import create_connection
 from database import collection_db, user_db, queries_db
 import config_manager
-from cachetools import TTLCache
 
 import extensions
 import emby_handler
@@ -58,6 +54,68 @@ def _fetch_items_in_chunks(base_url, api_key, user_id, item_ids, fields):
     for g in greenlets:
         if g.value: all_items.extend(g.value)
     return all_items
+
+def _fetch_sorted_items_via_emby_proxy(user_id, item_ids, sort_by, sort_order, limit, offset, fields, total_record_count):
+    """
+    【V7.6 - 414错误规避核心函数】
+    一个健壮的函数，用于将排序任务代理给Emby。
+    它会智能地根据ID列表的长度选择使用GET或POST方法，以避免414 URI Too Long错误。
+    """
+    base_url, api_key = _get_real_emby_url_and_key()
+    target_url = f"{base_url}/emby/Users/{user_id}/Items"
+    
+    # --- 核心规避逻辑：动态选择 GET 或 POST 请求 ---
+    
+    # 1. 预估使用GET请求时的URL长度
+    # 一个Emby ID大约32-36个字符，加上逗号，我们按40估算
+    estimated_ids_length = len(item_ids) * 40
+    URL_LENGTH_THRESHOLD = 2000 # 设置一个保守的URL长度阈值
+
+    try:
+        if estimated_ids_length < URL_LENGTH_THRESHOLD:
+            # --- 路径 A: ID列表较短，使用 GET 请求 ---
+            logger.debug(f"  ➜ [Emby 代理排序] ID列表长度较短，使用 GET 方法。")
+            emby_params = {
+                'api_key': api_key,
+                'Ids': ",".join(item_ids),
+                'Fields': fields,
+                'SortBy': sort_by,
+                'SortOrder': sort_order,
+                'StartIndex': offset,
+                'Limit': limit,
+            }
+            resp = requests.get(target_url, params=emby_params, timeout=25)
+        else:
+            # --- 路径 B: ID列表超长，切换到 POST 请求 ---
+            logger.warning(f"  ➜ [Emby 代理排序] ID列表可能超长 (估算 > {URL_LENGTH_THRESHOLD}), 切换到 POST 方法以避免414错误。")
+            # 对于POST请求，所有参数都应放在JSON body中
+            post_data = {
+                'Ids': item_ids, # 直接传递列表，而不是拼接字符串
+                'Fields': fields,
+                'SortBy': sort_by,
+                'SortOrder': sort_order,
+                'StartIndex': offset,
+                'Limit': limit,
+            }
+            # api_key 仍然放在查询参数中
+            resp = requests.post(target_url, params={'api_key': api_key}, json=post_data, timeout=30)
+
+        resp.raise_for_status()
+        emby_data = resp.json()
+        
+        # 关键：用我们自己的总数覆盖Emby返回的总数，确保客户端分页器正确显示
+        # Emby在收到Ids参数时，返回的TotalRecordCount是当页的数量，这是不正确的
+        emby_data['TotalRecordCount'] = total_record_count 
+        
+        # /Items/Latest 接口期望返回一个纯粹的Items列表
+        if "Items" in emby_data:
+            return emby_data
+        else: # 兼容 /Items/Latest 这种直接返回列表的场景
+            return {"Items": emby_data, "TotalRecordCount": len(emby_data)}
+
+    except Exception as e:
+        logger.error(f"  ➜ 向Emby请求代理排序时失败: {e}", exc_info=True)
+        return {"Items": [], "TotalRecordCount": total_record_count}
 
 def _get_final_item_ids_for_view(user_id, collection_info):
     """
@@ -104,18 +162,6 @@ def _get_final_item_ids_for_view(user_id, collection_info):
             logger.debug(f"用户个人行为数据过滤后，媒体项数量从 {len(base_ordered_emby_ids)} 变为 {len(final_emby_ids_to_process)}。")
 
     return final_emby_ids_to_process
-
-def _fetch_items_from_emby(base_url, api_key, user_id, item_ids, fields):
-    if not item_ids: return []
-    target_url = f"{base_url}/emby/Users/{user_id}/Items"
-    params = {'api_key': api_key, 'Ids': ",".join(item_ids), 'Fields': fields}
-    try:
-        resp = requests.get(target_url, params=params, timeout=15)
-        resp.raise_for_status()
-        return resp.json().get("Items", [])
-    except Exception as e:
-        logger.error(f"向Emby请求媒体信息时失败: {e}")
-        return []
 
 def handle_get_views():
     """
@@ -317,13 +363,8 @@ def handle_mimicked_library_metadata_endpoint(path, mimicked_id, params):
     
 def handle_get_mimicked_library_items(user_id, mimicked_id, params):
     """
-    【V7.5 - DateLastContentAdded 排序修正版】
-    - 修复了因本地无 `DateLastContentAdded` 数据而无法正确排序剧集的问题。
-    - 引入新的“Emby代理排序”路径，替代旧的、低效的“内存排序”路径。
-    - 决策流程:
-        1. [快速路径] 如果排序字段在本地数据库支持，则使用最高性能的本地排序。
-        2. [Emby代理排序] 如果排序字段为 `DateLastContentAdded` 或其他本地不支持的字段，
-           则将完整的媒体ID列表和排序参数一起发给Emby，由Emby完成排序和分页。
+    - 将Emby代理排序的逻辑提取到独立的、健壮的辅助函数中。
+    - 该函数能智能选择GET或POST，彻底解决因ID列表过长导致的414错误。
     """
     try:
         real_db_id = from_mimicked_id(mimicked_id)
@@ -339,31 +380,25 @@ def handle_get_mimicked_library_items(user_id, mimicked_id, params):
 
         definition = collection_info.get('definition_json') or {}
         
-        # --- 排序决策逻辑 (与V7.4保持一致) ---
         defined_sort_by = definition.get('default_sort_by')
         if defined_sort_by and defined_sort_by != 'none':
             final_sort_by = defined_sort_by
             final_sort_order = definition.get('default_sort_order', 'Ascending')
-            logger.debug(f"  ➜ 虚拟库 '{collection_info['name']}' 触发排序劫持，强制使用: {final_sort_by} {final_sort_order}")
         else:
             final_sort_by = params.get('SortBy') or 'SortName'
             final_sort_order = params.get('SortOrder') or 'Ascending'
-            logger.debug(f"  ➜ 虚拟库 '{collection_info['name']}' 遵循客户端排序: {final_sort_by} {final_sort_order}")
         
-        # --- ★★★ 核心修复：根据排序字段选择技术路径 ★★★ ---
         primary_sort_by = final_sort_by.split(',')[0]
         SUPPORTED_LOCAL_SORT_FIELDS = ['PremiereDate', 'DateCreated', 'CommunityRating', 'ProductionYear', 'SortName', 'original']
         
         limit = int(params.get('Limit', 50))
         offset = int(params.get('StartIndex', 0))
 
-        # 决策：如果排序字段本地支持，并且不是强制'none'模式，则走快速路径
         use_local_sort = (primary_sort_by in SUPPORTED_LOCAL_SORT_FIELDS) and (defined_sort_by != 'none')
 
         if use_local_sort:
-            # --- 分支 A: [快速路径] 本地高性能排序 ---
+            # --- 分支 A: [快速路径] 本地高性能排序 (逻辑不变) ---
             logger.debug(f"  ➜ [快速路径] 使用本地数据库排序 (SortBy={primary_sort_by})。")
-            
             paginated_ids = []
             if primary_sort_by == 'original':
                 paginated_ids = final_visible_ids[offset : offset + limit]
@@ -371,48 +406,26 @@ def handle_get_mimicked_library_items(user_id, mimicked_id, params):
                 paginated_ids = queries_db.get_sorted_and_paginated_ids(
                     final_visible_ids, primary_sort_by, final_sort_order, limit, offset
                 )
-
             if not paginated_ids:
                 return Response(json.dumps({"Items": [], "TotalRecordCount": total_record_count}), mimetype='application/json')
 
             base_url, api_key = _get_real_emby_url_and_key()
             full_fields = "PrimaryImageAspectRatio,ProviderIds,UserData,Name,ProductionYear,CommunityRating,DateCreated,PremiereDate,Type,RecursiveItemCount,SortName,ChildCount"
             items_from_emby = _fetch_items_in_chunks(base_url, api_key, user_id, paginated_ids, full_fields)
-            
             items_map = {item['Id']: item for item in items_from_emby}
             final_items = [items_map[id] for id in paginated_ids if id in items_map]
-
             return Response(json.dumps({"Items": final_items, "TotalRecordCount": total_record_count}), mimetype='application/json')
 
         else:
-            # --- 分支 B: [Emby 代理排序路径] - 替代旧的内存排序，解决 DateLastContentAdded 问题 ---
+            # --- 分支 B: [Emby 代理排序路径] - 调用新的健壮函数 ---
             logger.warning(f"  ➜ [Emby 代理排序] 使用 Emby 进行远程排序 (SortBy={primary_sort_by})。")
-            
-            base_url, api_key = _get_real_emby_url_and_key()
-            target_url = f"{base_url}/emby/Users/{user_id}/Items"
             full_fields = "PrimaryImageAspectRatio,ProviderIds,UserData,Name,ProductionYear,CommunityRating,DateCreated,PremiereDate,Type,RecursiveItemCount,SortName,ChildCount"
             
-            # 构造请求，将ID列表和排序/分页参数一起发给Emby
-            emby_params = {
-                'api_key': api_key,
-                'Ids': ",".join(final_visible_ids),
-                'Fields': full_fields,
-                'SortBy': final_sort_by,
-                'SortOrder': final_sort_order,
-                'StartIndex': offset,
-                'Limit': limit,
-            }
-            
-            try:
-                resp = requests.get(target_url, params=emby_params, timeout=25)
-                resp.raise_for_status()
-                emby_data = resp.json()
-                # 关键：用我们自己的总数覆盖Emby返回的总数，确保客户端分页器正确显示
-                emby_data['TotalRecordCount'] = total_record_count 
-                return Response(json.dumps(emby_data), mimetype='application/json')
-            except Exception as e:
-                logger.error(f"  ➜ 向Emby请求代理排序时失败: {e}", exc_info=True)
-                return Response(json.dumps({"Items": [], "TotalRecordCount": total_record_count}), mimetype='application/json')
+            # 调用我们新的、可以规避414错误的函数
+            sorted_data = _fetch_sorted_items_via_emby_proxy(
+                user_id, final_visible_ids, final_sort_by, final_sort_order, limit, offset, full_fields, total_record_count
+            )
+            return Response(json.dumps(sorted_data), mimetype='application/json')
 
     except Exception as e:
         logger.error(f"  ➜ 处理虚拟库 '{collection_info.get('name', mimicked_id)}' 时发生严重错误: {e}", exc_info=True)
@@ -420,35 +433,25 @@ def handle_get_mimicked_library_items(user_id, mimicked_id, params):
 
 def handle_get_latest_items(user_id, params):
     """
-    【V6.1 - “最新剧集”排序修正版】
-    - 修复了在虚拟库首页，“最新添加”的剧集类内容排序不准确的问题。
-    - 当检测到需要按 `DateLastContentAdded` 排序时，不再使用本地数据库，
-      而是切换到“Emby代理排序”模式，将排序任务交由Emby处理，以获取最准确的结果。
+    - 同样调用新的健壮辅助函数来处理剧集的最新排序，彻底解决414问题。
     """
     try:
         base_url, api_key = _get_real_emby_url_and_key()
         virtual_library_id = params.get('ParentId') or params.get('customViewId')
 
-        # ======================================================================
-        # 场景一：处理针对【单个】虚拟库的“最近添加”请求 (例如，进入虚拟库首页)
-        # ======================================================================
+        # 场景一：处理单个虚拟库的“最近添加”
         if virtual_library_id and is_mimicked_id(virtual_library_id):
             real_db_id = from_mimicked_id(virtual_library_id)
             collection_info = collection_db.get_custom_collection_by_id(real_db_id)
-            if not collection_info: 
-                return Response(json.dumps([]), mimetype='application/json')
+            if not collection_info: return Response(json.dumps([]), mimetype='application/json')
 
             final_visible_ids = _get_final_item_ids_for_view(user_id, collection_info)
+            if not final_visible_ids: return Response(json.dumps([]), mimetype='application/json')
             
-            if not final_visible_ids: 
-                return Response(json.dumps([]), mimetype='application/json')
-            
-            # --- ★★★ 核心修复：根据内容类型决定排序方式和技术路径 ★★★ ---
             definition = collection_info.get('definition_json') or {}
             item_type_from_db = definition.get('item_type', ['Movie'])
             
             sort_by_str = 'DateCreated'
-            # 仅当库被明确定义为只包含剧集时，才使用剧集的最新更新时间排序
             if isinstance(item_type_from_db, list) and len(item_type_from_db) == 1 and item_type_from_db[0] == 'Series':
                 sort_by_str = 'DateLastContentAdded,DateCreated'
             
@@ -456,34 +459,18 @@ def handle_get_latest_items(user_id, params):
             limit = int(params.get('Limit', 24))
             fields = params.get('Fields', "PrimaryImageAspectRatio,BasicSyncInfo,DateCreated,UserData")
 
-            # 如果需要按剧集更新时间排序，则必须走Emby代理排序路径
             if 'DateLastContentAdded' in sort_by_str:
                 logger.debug(f"  ➜ [Emby 代理排序] 为虚拟库 '{collection_info['name']}' 的最新剧集请求排序。")
-                target_url = f"{base_url}/emby/Users/{user_id}/Items"
-                emby_params = {
-                    'api_key': api_key,
-                    'Ids': ",".join(final_visible_ids),
-                    'Fields': fields,
-                    'SortBy': sort_by_str,
-                    'SortOrder': sort_order,
-                    'StartIndex': 0, # 最新项目总是从头开始
-                    'Limit': limit,
-                }
-                try:
-                    resp = requests.get(target_url, params=emby_params, timeout=20)
-                    resp.raise_for_status()
-                    # /Items/Latest 接口期望返回一个纯粹的Items列表，而不是一个对象
-                    items_from_emby = resp.json().get("Items", [])
-                    return Response(json.dumps(items_from_emby), mimetype='application/json')
-                except Exception as e:
-                    logger.error(f"  ➜ 向Emby请求最新剧集排序时失败: {e}", exc_info=True)
-                    return Response(json.dumps([]), mimetype='application/json')
-
-            # 否则，走高效的本地排序路径
+                # 调用新的健壮函数，total_record_count在这里不重要，因为/Latest只关心Items
+                sorted_data = _fetch_sorted_items_via_emby_proxy(
+                    user_id, final_visible_ids, sort_by_str, sort_order, limit, 0, fields, len(final_visible_ids)
+                )
+                # /Items/Latest 接口期望返回一个纯粹的Items列表
+                return Response(json.dumps(sorted_data.get("Items", [])), mimetype='application/json')
             else:
+                # 本地排序逻辑不变
                 latest_ids = queries_db.get_sorted_and_paginated_ids(final_visible_ids, sort_by_str.split(',')[0], sort_order, limit, 0)
-                if not latest_ids: 
-                    return Response(json.dumps([]), mimetype='application/json')
+                if not latest_ids: return Response(json.dumps([]), mimetype='application/json')
                 
                 items_from_emby = _fetch_items_in_chunks(base_url, api_key, user_id, latest_ids, fields)
                 items_map = {item['Id']: item for item in items_from_emby}
