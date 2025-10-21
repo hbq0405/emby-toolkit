@@ -8,15 +8,10 @@ from flask import Flask, request, Response
 from urllib.parse import urlparse, urlunparse
 import time
 import uuid 
-from datetime import datetime, timezone
 from gevent import spawn, joinall
-from gevent.lock import RLock
-from geventwebsocket.websocket import WebSocket
 from websocket import create_connection
 from database import collection_db, user_db, queries_db
 import config_manager
-from cachetools import TTLCache
-
 import extensions
 import emby_handler
 logger = logging.getLogger(__name__)
@@ -346,19 +341,32 @@ def handle_get_mimicked_library_items(user_id, mimicked_id, params):
             # --- 分支 A: “不劫持”模式，完全交由 Emby 处理 ---
             logger.debug(f"  ➜ 虚拟库 '{collection_info['name']}' 使用 Emby 原生排序 (客户端请求: SortBy={params.get('SortBy')})。")
             
-            real_emby_collection_id = collection_info.get('emby_collection_id')
-            if not real_emby_collection_id:
-                # 如果没有对应的物理合集，无法转发，返回空
-                return Response(json.dumps({"Items": [], "TotalRecordCount": 0}), mimetype='application/json')
-
+            # ▼▼▼【修正】在这里补上缺失的变量定义 ▼▼▼
             base_url, api_key = _get_real_emby_url_and_key()
             target_url = f"{base_url}/emby/Users/{user_id}/Items"
             
             # 构造一个干净的、用于转发的参数字典
             emby_params = params.copy()
             emby_params['api_key'] = api_key
-            # ★ 关键：我们不传 Ids，而是传 ParentId，让 Emby 自己去合集里找
-            emby_params['ParentId'] = real_emby_collection_id
+            
+            # ======================================================================
+            # ★★★ 核心修正：根据媒体类型决定是传 ParentId 还是 Ids ★★★
+            # ======================================================================
+            definition = collection_info.get('definition_json') or {}
+            item_type_from_db = definition.get('item_type', 'Movie')
+            is_series_library = ('Series' in item_type_from_db) if isinstance(item_type_from_db, list) else (item_type_from_db == 'Series')
+
+            if is_series_library:
+                # 对于剧集库，必须传递剧的ID列表，才能正确显示
+                logger.debug("  ➜ 检测到为剧集库，强制使用 'Ids' 参数以确保显示正确。")
+                emby_params['Ids'] = ",".join(final_visible_ids)
+            else:
+                # 对于电影库，使用 ParentId 来避免 414 错误
+                logger.debug("  ➜ 检测到为电影库，使用 'ParentId' 参数进行优化。")
+                real_emby_collection_id = collection_info.get('emby_collection_id')
+                if not real_emby_collection_id:
+                    return Response(json.dumps({"Items": [], "TotalRecordCount": 0}), mimetype='application/json')
+                emby_params['ParentId'] = real_emby_collection_id
             
             try:
                 resp = requests.get(target_url, params=emby_params, timeout=25)
