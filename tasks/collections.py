@@ -227,7 +227,7 @@ def _get_cover_badge_text_for_collection(collection_db_info: Dict[str, Any]) -> 
     # 如果不是榜单类型，或者榜单类型不匹配任何特殊规则，则返回数字角标
     return item_count_to_pass
 
-# --- 权限更新函数 ---
+# --- 可复用的权限更新函数 ---
 def update_user_permissions_for_collection(collection_id: int, global_ordered_emby_ids: list, user_permissions_map: dict):
     """
     【V9 - 权限计算核心函数】
@@ -279,11 +279,9 @@ def update_user_permissions_for_collection(collection_id: int, global_ordered_em
 # ★★★ 一键生成所有合集的后台任务 ★★★
 def task_process_all_custom_collections(processor):
     """
-    【V8.1 - 混合模式最终修复版】
-    - 恢复了对 'list' 类型合集的详细健康度检查。
-    - 确保用户权限预计算的【计算】和【写入】两个步骤完整执行。
+    - 一键生成所有合集的后台任务。
     """
-    task_name = "生成所有自建合集 (混合模式)"
+    task_name = "生成所有自建合集"
     logger.info(f"--- 开始执行 '{task_name}' 任务 ---")
 
     try:
@@ -336,7 +334,6 @@ def task_process_all_custom_collections(processor):
         # ======================================================================
         # 步骤 3: 遍历所有合集，执行核心逻辑
         # ======================================================================
-        user_collection_cache_data_to_upsert = [] # ★★★ 关键：用于累积所有用户权限数据的列表
 
         for i, collection in enumerate(active_collections):
             if processor.is_stop_requested(): break
@@ -371,7 +368,7 @@ def task_process_all_custom_collections(processor):
                     prefetched_collection_map=prefetched_collection_map
                 )
 
-                # --- C. 【用户权限 - 计算部分】为每个用户计算专属列表，并【累积】到列表中 ---
+                # --- C. 【用户权限 - 写入缓存】为每个用户计算专属列表，并【累积】到列表中 ---
                 update_user_permissions_for_collection(collection_id, global_ordered_emby_ids, user_permissions_map)
 
                 # --- D. 【健康检查 & 状态更新】根据合集类型执行不同逻辑 ---
@@ -383,7 +380,6 @@ def task_process_all_custom_collections(processor):
                 }
 
                 if collection['type'] == 'list':
-                    # ... (这里是完整的榜单健康检查逻辑，和你上次提供的一样) ...
                     logger.info(f"  ➜ 榜单合集 '{collection_name}'，开始进行详细健康度分析...")
                     previous_media_map = {str(m.get('tmdb_id')): m for m in (collection.get('generated_media_info_json') or [])}
                     all_media_details_unordered = []
@@ -453,7 +449,7 @@ def task_process_all_custom_collections(processor):
 # --- 处理单个自定义合集的核心任务 ---
 def process_single_custom_collection(processor, custom_collection_id: int):
     """
-    【V8.1 - 混合模式最终修复版】
+    - 处理单个自定义合集的核心任务
     """
     task_name = f"生成单个自建合集 (ID: {custom_collection_id})"
     logger.info(f"--- 开始执行 '{task_name}' 任务 ---")
@@ -515,7 +511,7 @@ def process_single_custom_collection(processor, custom_collection_id: int):
         )
 
         # ======================================================================
-        # 步骤 4: 计算并写入用户权限缓存
+        # 步骤 4: 写入用户权限缓存
         # ======================================================================
         task_manager.update_status_from_thread(90, "正在为所有用户更新此合集的权限缓存...")
         update_user_permissions_for_collection(custom_collection_id, global_ordered_emby_ids, user_permissions_map)
