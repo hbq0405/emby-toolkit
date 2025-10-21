@@ -393,8 +393,7 @@ def task_populate_metadata_cache(processor, batch_size: int = 50, force_full_upd
                 premiere_date_str = full_details_emby.get('PremiereDate')
                 release_date = premiere_date_str.split('T')[0] if premiere_date_str else None
                 
-                date_created_str = full_details_emby.get('DateCreated')
-                date_added = date_created_str.split('T')[0] if date_created_str else None
+                date_added = full_details_emby.get('DateCreated') or None
 
                 official_rating = full_details_emby.get('OfficialRating') # 获取原始分级，可能为 None
                 unified_rating = get_unified_rating(official_rating)    # 即使 official_rating 是 None，函数也能处理

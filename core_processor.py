@@ -131,7 +131,7 @@ def _save_metadata_to_cache(
             "directors_json": json.dumps(directors, ensure_ascii=False),
             "studios_json": json.dumps(studios, ensure_ascii=False),
             "countries_json": json.dumps(countries, ensure_ascii=False),
-            "date_added": (item_details_from_emby.get("DateCreated") or '').split('T')[0] or None,
+            "date_added": item_details_from_emby.get("DateCreated") or None,
             "release_date": release_date_str, # <--- 这里现在会接收到 None 或者一个有效的日期
             "in_library": True
         }
