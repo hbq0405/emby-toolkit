@@ -341,17 +341,12 @@ def handle_get_mimicked_library_items(user_id, mimicked_id, params):
             # --- 分支 A: “不劫持”模式，完全交由 Emby 处理 ---
             logger.debug(f"  ➜ 虚拟库 '{collection_info['name']}' 使用 Emby 原生排序 (客户端请求: SortBy={params.get('SortBy')})。")
             
-            # ▼▼▼【修正】在这里补上缺失的变量定义 ▼▼▼
             base_url, api_key = _get_real_emby_url_and_key()
             target_url = f"{base_url}/emby/Users/{user_id}/Items"
             
-            # 构造一个干净的、用于转发的参数字典
             emby_params = params.copy()
             emby_params['api_key'] = api_key
             
-            # ======================================================================
-            # ★★★ 核心修正：根据媒体类型决定是传 ParentId 还是 Ids ★★★
-            # ======================================================================
             definition = collection_info.get('definition_json') or {}
             item_type_from_db = definition.get('item_type', 'Movie')
             is_series_library = ('Series' in item_type_from_db) if isinstance(item_type_from_db, list) else (item_type_from_db == 'Series')
@@ -360,6 +355,24 @@ def handle_get_mimicked_library_items(user_id, mimicked_id, params):
                 # 对于剧集库，必须传递剧的ID列表，才能正确显示
                 logger.debug("  ➜ 检测到为剧集库，强制使用 'Ids' 参数以确保显示正确。")
                 emby_params['Ids'] = ",".join(final_visible_ids)
+                
+                # ▼▼▼【二次修正】确保请求了足够的字段信息以供显示 ▼▼▼
+                # 当使用 Ids 参数时，Emby 可能不会默认返回所有信息，我们需要手动确保关键字段被请求
+                current_fields = emby_params.get('Fields', '')
+                required_fields = "ImageTags,PrimaryImageAspectRatio,UserData" # Name 字段通常会默认包含
+                
+                # 使用集合操作来高效地检查和添加缺失的字段
+                current_fields_set = {f.strip() for f in current_fields.split(',') if f.strip()}
+                required_fields_set = {f.strip() for f in required_fields.split(',')}
+                
+                missing_fields = required_fields_set - current_fields_set
+                
+                if missing_fields:
+                    # 将缺失的字段追加到现有字段后面
+                    new_fields_str = current_fields + ',' + ','.join(missing_fields)
+                    emby_params['Fields'] = new_fields_str.strip(',') # 移除可能的前导逗号
+                    logger.debug(f"  ➜ 为保证海报显示，已自动追加缺失的字段。新 Fields: {emby_params['Fields']}")
+
             else:
                 # 对于电影库，使用 ParentId 来避免 414 错误
                 logger.debug("  ➜ 检测到为电影库，使用 'ParentId' 参数进行优化。")
