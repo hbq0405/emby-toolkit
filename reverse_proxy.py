@@ -317,10 +317,9 @@ def handle_mimicked_library_metadata_endpoint(path, mimicked_id, params):
     
 def handle_get_mimicked_library_items(user_id, mimicked_id, params):
     """
-    【V6.2 - 排序逻辑终极归正版】
-    - 恢复“劫持”与“不劫持”的双分支逻辑。
-    - 当排序为 'none' 时，将请求完美转发给 Emby 原生处理，彻底解决排序不一致问题。
-    - 通过传递 ParentId 而非 Ids，从根本上避免了 414 URI Too Long 错误。
+    【V6.4 - 剧集库原生排序最终修正版】
+    - 修复了 V6.3 版本中，因客户端可能主动发送 IncludeItemTypes 参数而导致强制指定 Series 无效的问题。
+    - 移除 `if 'IncludeItemTypes' not in emby_params` 的判断，改为强制覆盖，确保代理说了算。
     """
     try:
         real_db_id = from_mimicked_id(mimicked_id)
@@ -337,10 +336,6 @@ def handle_get_mimicked_library_items(user_id, mimicked_id, params):
         definition = collection_info.get('definition_json') or {}
         collection_sort_by = definition.get('default_sort_by', 'SortName')
 
-        # ======================================================================
-        # ★★★ 核心修复：恢复双分支逻辑 ★★★
-        # ======================================================================
-
         if collection_sort_by == 'none':
             # --- 分支 A: “不劫持”模式，完全交由 Emby 处理 ---
             logger.debug(f"  ➜ 虚拟库 '{collection_info['name']}' 使用 Emby 原生排序 (客户端请求: SortBy={params.get('SortBy')})。")
@@ -356,29 +351,22 @@ def handle_get_mimicked_library_items(user_id, mimicked_id, params):
             emby_params['api_key'] = api_key
             emby_params['ParentId'] = real_emby_collection_id
             
-            # ★★★ 关键修正：判断是否为剧集库，并强制请求正确的媒体类型 ★★★
             item_type_from_db = definition.get('item_type', 'Movie')
             authoritative_type = None
-            # 判断是否为单一类型的库 (非混合库)
             if not (isinstance(item_type_from_db, list) and len(item_type_from_db) > 1):
                 authoritative_type = item_type_from_db[0] if isinstance(item_type_from_db, list) and item_type_from_db else item_type_from_db if isinstance(item_type_from_db, str) else 'Movie'
 
             if authoritative_type == 'Series':
-                logger.debug(f"  ➜ 检测到为剧集库，强制添加参数: IncludeItemTypes=Series, Recursive=true")
-                # 仅当客户端没有指定类型时才覆盖，以防破坏“播放队列”等特殊请求
-                if 'IncludeItemTypes' not in emby_params:
-                    emby_params['IncludeItemTypes'] = 'Series'
+                logger.debug(f"  ➜ 检测到为剧集库，强制覆盖参数为: IncludeItemTypes=Series, Recursive=true")
+                # ★★★ 关键修正：移除条件判断，强制覆盖！★★★
+                emby_params['IncludeItemTypes'] = 'Series'
                 emby_params['Recursive'] = 'true'
             
             try:
                 resp = requests.get(target_url, params=emby_params, timeout=25)
                 resp.raise_for_status()
                 emby_response_data = resp.json()
-                
-                # Emby 返回的总数是合集内的总数，我们需要用我们自己计算的、用户可见的总数来覆盖它，
-                # 这样客户端的分页栏才不会出错。
                 emby_response_data['TotalRecordCount'] = total_record_count
-                
                 return Response(json.dumps(emby_response_data), mimetype='application/json')
 
             except Exception as e:
