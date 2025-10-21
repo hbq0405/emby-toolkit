@@ -50,9 +50,9 @@ def save_setting(setting_key: str, value: Dict[str, Any]):
             cursor = conn.cursor()
             _save_setting_with_cursor(cursor, setting_key, value)
             conn.commit()
-            logger.info(f"DB: 成功保存设置 '{setting_key}'。")
+            logger.info(f"  ➜ 成功保存设置 '{setting_key}'。")
     except Exception as e:
-        logger.error(f"DB: 保存设置 '{setting_key}' 时失败: {e}", exc_info=True)
+        logger.error(f"  ➜ 保存设置 '{setting_key}' 时失败: {e}", exc_info=True)
         raise
 
 # --- 全局订阅配额管理器 ---

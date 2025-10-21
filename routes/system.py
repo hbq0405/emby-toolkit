@@ -143,7 +143,7 @@ def api_save_config():
             logger.warning(f"API /api/config (POST): 拒绝保存，原因: {error_message}")
             return jsonify({"error": error_message}), 400
         
-        logger.info(f"API /api/config (POST): 收到新的配置数据，准备全面净化并保存...")
+        logger.info(f"  ➜ 收到新的配置数据，准备全面净化并保存...")
 
         # ▼▼▼ 核心修正：全面净化逻辑 ▼▼▼
         
@@ -154,7 +154,7 @@ def api_save_config():
         
         valid_library_ids = None
         if emby_url and emby_api_key and user_id:
-            logger.info("正在从Emby获取有效媒体库列表以进行净化...")
+            logger.trace("  ➜ 正在从Emby获取有效媒体库列表以进行净化...")
             valid_libraries = emby_handler.get_emby_libraries(emby_url, emby_api_key, user_id)
             if valid_libraries is not None:
                 valid_library_ids = {lib['Id'] for lib in valid_libraries}

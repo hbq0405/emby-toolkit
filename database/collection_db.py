@@ -916,45 +916,83 @@ def append_item_to_filter_collection_db(collection_id: int, new_item_tmdb_id: st
     
 def remove_emby_id_from_all_collections(emby_id_to_remove: str, item_name: Optional[str] = None):
     """
-    【V5.8 - 日志增强版】
-    从所有 custom_collections 的 generated_media_info_json 字段中，
-    移除一个指定的 emby_id。这是保证数据一致性的关键。
-    增加了对片名的日志记录支持。
+    【V6.0 - 缓存清理大师终极版】
+    从所有 custom_collections 的缓存中移除一个指定的 emby_id，并【级联】清理
+    下游的 user_collection_cache 表，实现数据一致性的“一条龙”服务。
     """
     if not emby_id_to_remove:
         return
 
-    # 这个SQL查询会遍历每一行，检查JSON数组，如果找到匹配项就移除它
-    # jsonb_set 和 a.elem ->> 'emby_id' 的组合是PostgreSQL处理JSON的强大功能
-    sql = """
-        UPDATE custom_collections
-        SET generated_media_info_json = (
-            SELECT jsonb_agg(elem)
-            FROM jsonb_array_elements(generated_media_info_json) AS elem
-            WHERE elem ->> 'emby_id' != %s
-        ),
-        in_library_count = in_library_count - 1
-        WHERE generated_media_info_json @> %s::jsonb;
-    """
-    
+    # ★★★ 1/3: 准备一个列表，用来记录被影响的合集的数据库ID ★★★
+    affected_collection_ids = []
+
     try:
         with get_db_connection() as conn:
             with conn.cursor() as cursor:
-                # 第二个参数需要构造成一个可以被 @> 操作符匹配的JSON字符串
-                jsonb_match_str = f'[{{"emby_id": "{emby_id_to_remove}"}}]'
-                cursor.execute(sql, (emby_id_to_remove, jsonb_match_str))
+                # --- 步骤 A: 清理 generated_media_info_json (和以前一样) ---
+                sql_cleanup_generated_media = """
+                    UPDATE custom_collections
+                    SET generated_media_info_json = (
+                        SELECT jsonb_agg(elem)
+                        FROM jsonb_array_elements(generated_media_info_json) AS elem
+                        WHERE elem ->> 'emby_id' != %s
+                    ),
+                    in_library_count = in_library_count - 1
+                    WHERE generated_media_info_json @> %s::jsonb
+                    RETURNING id;  -- ★★★ 核心修改：让 UPDATE 语句返回被修改行的 ID ★★★
+                """
                 
-                # ▼▼▼ 核心修改：根据是否提供了 item_name，生成更友好的日志信息 ▼▼▼
+                jsonb_match_str = f'[{{"emby_id": "{emby_id_to_remove}"}}]'
+                cursor.execute(sql_cleanup_generated_media, (emby_id_to_remove, jsonb_match_str))
+                
+                # 收集所有被影响的合集ID
+                rows = cursor.fetchall()
+                affected_collection_ids = [row['id'] for row in rows]
+                
                 log_item_identifier = f"'{item_name}'" if item_name else f"ID: {emby_id_to_remove}"
-
-                if cursor.rowcount > 0:
-                    logger.info(f"  ➜ 已从 {cursor.rowcount} 个自定义合集的缓存中，成功移除了媒体项 {log_item_identifier}。")
+                if affected_collection_ids:
+                    logger.info(f"  ➜ 已从 {len(affected_collection_ids)} 个自定义合集的 generated_media_info_json 缓存中，成功移除了媒体项 {log_item_identifier}。")
                 else:
-                    logger.debug(f"  ➜ 在所有自定义合集的缓存中未找到媒体项 {log_item_identifier}，无需清理。")
+                    logger.debug(f"  ➜ 在所有自定义合集的 generated_media_info_json 缓存中未找到媒体项 {log_item_identifier}，无需清理。")
+
+                # --- 步骤 B: 如果有合集被影响，则级联清理 user_collection_cache ---
+                if affected_collection_ids:
+                    logger.info(f"  ➜ 开始级联清理下游的用户权限缓存 (user_collection_cache)...")
+                    
+                    # ★★★ 2/3: 构建针对 user_collection_cache 的精准打击SQL ★★★
+                    sql_cleanup_user_cache = """
+                        UPDATE user_collection_cache
+                        SET visible_emby_ids_json = (
+                            SELECT jsonb_agg(elem)
+                            FROM jsonb_array_elements(visible_emby_ids_json) AS elem
+                            WHERE elem #>> '{}' != %s
+                        ),
+                        total_count = total_count - 1
+                        WHERE collection_id = ANY(%s)
+                          AND visible_emby_ids_json @> %s::jsonb;
+                    """
+                    
+                    # 这里的匹配字符串是纯JSON数组，因为 visible_emby_ids_json 里存的是字符串列表
+                    jsonb_match_str_for_user_cache = f'["{emby_id_to_remove}"]'
+                    
+                    cursor.execute(sql_cleanup_user_cache, (
+                        emby_id_to_remove, 
+                        affected_collection_ids, 
+                        jsonb_match_str_for_user_cache
+                    ))
+                    
+                    # ★★★ 3/3: 记录最终的清理结果 ★★★
+                    if cursor.rowcount > 0:
+                        logger.info(f"  ➜ 级联清理成功！已从 {cursor.rowcount} 条用户权限缓存记录中移除了媒体项 {log_item_identifier}。")
+                    else:
+                        logger.debug(f"  ➜ 在用户权限缓存中未找到媒体项 {log_item_identifier} 的记录，无需清理。")
+
             conn.commit()
+            logger.info(f"  ✅ 针对媒体项 {log_item_identifier} 的所有缓存清理任务已完成。")
+
     except Exception as e:
         log_item_identifier_err = f"'{item_name}' (ID: {emby_id_to_remove})" if item_name else f"ID '{emby_id_to_remove}'"
-        logger.error(f"从所有自定义合集中移除 emby_id {log_item_identifier_err} 时失败: {e}", exc_info=True)
+        logger.error(f"从所有合集缓存中移除 emby_id {log_item_identifier_err} 时失败: {e}", exc_info=True)
 
 def update_user_caches_on_item_add(
     new_item_emby_id: str, 

@@ -227,6 +227,55 @@ def _get_cover_badge_text_for_collection(collection_db_info: Dict[str, Any]) -> 
     # 如果不是榜单类型，或者榜单类型不匹配任何特殊规则，则返回数字角标
     return item_count_to_pass
 
+# --- 权限更新函数 ---
+def update_user_permissions_for_collection(collection_id: int, global_ordered_emby_ids: list, user_permissions_map: dict):
+    """
+    【V9 - 权限计算核心函数】
+    为单个自定义合集，计算所有用户的专属可见媒体列表，并批量更新到 user_collection_cache 表。
+    这是一个可被多处调用的独立、可复用函数。
+    """
+    logger.debug(f"  ➜ 正在为合集ID {collection_id} 计算并更新用户权限缓存...")
+    if not user_permissions_map:
+        logger.warning("  ➜ 未提供用户权限映射，跳过权限计算。")
+        return
+
+    user_collection_cache_data_to_upsert = []
+    for user_id, permission_set in user_permissions_map.items():
+        # 计算交集，得到该用户在此合集中可见的媒体ID
+        visible_emby_ids = [emby_id for emby_id in global_ordered_emby_ids if emby_id in permission_set]
+        user_collection_cache_data_to_upsert.append({
+            "user_id": user_id,
+            "collection_id": collection_id,
+            "visible_emby_ids_json": json.dumps(visible_emby_ids),
+            "total_count": len(visible_emby_ids),
+        })
+
+    if not user_collection_cache_data_to_upsert:
+        logger.debug(f"  ➜ 合集ID {collection_id} 无需更新任何用户权限缓存。")
+        return
+
+    # 批量写入数据库
+    with connection.get_db_connection() as conn:
+        cursor = conn.cursor()
+        try:
+            cols = ["user_id", "collection_id", "visible_emby_ids_json", "total_count"]
+            cols_str = ", ".join(cols)
+            placeholders_str = ", ".join([f"%({k})s" for k in cols])
+            update_cols = [f"{col} = EXCLUDED.{col}" for col in cols]
+            update_str = ", ".join(update_cols)
+            sql = f"""
+                INSERT INTO user_collection_cache ({cols_str}, last_updated_at)
+                VALUES ({placeholders_str}, NOW())
+                ON CONFLICT (user_id, collection_id) DO UPDATE SET {update_str}, last_updated_at = NOW()
+            """
+            from psycopg2.extras import execute_batch
+            execute_batch(cursor, sql, user_collection_cache_data_to_upsert)
+            conn.commit()
+            logger.info(f"  ✅ 成功为 {len(user_permissions_map)} 个用户更新了合集ID {collection_id} 的权限缓存。")
+        except Exception as e_db:
+            logger.error(f"批量写入用户合集权限缓存 (合集ID: {collection_id}) 时发生数据库错误: {e_db}", exc_info=True)
+            conn.rollback()
+
 # ★★★ 一键生成所有合集的后台任务 ★★★
 def task_process_all_custom_collections(processor):
     """
@@ -323,13 +372,7 @@ def task_process_all_custom_collections(processor):
                 )
 
                 # --- C. 【用户权限 - 计算部分】为每个用户计算专属列表，并【累积】到列表中 ---
-                for user_id, permission_set in user_permissions_map.items():
-                    visible_emby_ids = [emby_id for emby_id in global_ordered_emby_ids if emby_id in permission_set]
-                    user_collection_cache_data_to_upsert.append({
-                        "user_id": user_id, "collection_id": collection_id,
-                        "visible_emby_ids_json": json.dumps(visible_emby_ids),
-                        "total_count": len(visible_emby_ids),
-                    })
+                update_user_permissions_for_collection(collection_id, global_ordered_emby_ids, user_permissions_map)
 
                 # --- D. 【健康检查 & 状态更新】根据合集类型执行不同逻辑 ---
                 update_data = {
@@ -397,32 +440,6 @@ def task_process_all_custom_collections(processor):
                 logger.error(f"处理合集 '{collection_name}' (ID: {collection_id}) 时发生错误: {e_coll}", exc_info=True)
                 continue
         
-        # ======================================================================
-        # 步骤 4: 【用户权限 - 写入部分】在所有合集循环结束后，批量写入所有用户的权限缓存
-        # ======================================================================
-        if user_collection_cache_data_to_upsert:
-            task_manager.update_status_from_thread(95, "正在将所有用户的权限缓存批量写入数据库...")
-            with connection.get_db_connection() as conn:
-                cursor = conn.cursor()
-                try:
-                    cols = ["user_id", "collection_id", "visible_emby_ids_json", "total_count"]
-                    cols_str = ", ".join(cols)
-                    placeholders_str = ", ".join([f"%({k})s" for k in cols])
-                    update_cols = [f"{col} = EXCLUDED.{col}" for col in cols]
-                    update_str = ", ".join(update_cols)
-                    sql = f"""
-                        INSERT INTO user_collection_cache ({cols_str}, last_updated_at)
-                        VALUES ({placeholders_str}, NOW())
-                        ON CONFLICT (user_id, collection_id) DO UPDATE SET {update_str}, last_updated_at = NOW()
-                    """
-                    from psycopg2.extras import execute_batch
-                    execute_batch(cursor, sql, user_collection_cache_data_to_upsert)
-                    conn.commit()
-                    logger.info(f"  ✅ 成功为 {len(user_permissions_map)} 个用户更新了 {total_collections} 个合集的权限缓存。")
-                except Exception as e_db:
-                    logger.error(f"批量写入用户合集权限缓存时发生数据库错误: {e_db}", exc_info=True)
-                    conn.rollback()
-
         final_message = "所有自建合集均已处理完毕！"
         if processor.is_stop_requested(): final_message = "任务已中止。"
         
@@ -501,30 +518,7 @@ def process_single_custom_collection(processor, custom_collection_id: int):
         # 步骤 4: 计算并写入用户权限缓存
         # ======================================================================
         task_manager.update_status_from_thread(90, "正在为所有用户更新此合集的权限缓存...")
-        user_collection_cache_data_to_upsert = []
-        for user_id, permission_set in user_permissions_map.items():
-            visible_emby_ids = [emby_id for emby_id in global_ordered_emby_ids if emby_id in permission_set]
-            user_collection_cache_data_to_upsert.append({
-                "user_id": user_id, "collection_id": custom_collection_id,
-                "visible_emby_ids_json": json.dumps(visible_emby_ids),
-                "total_count": len(visible_emby_ids),
-            })
-
-        with connection.get_db_connection() as conn:
-            cursor = conn.cursor()
-            cols = ["user_id", "collection_id", "visible_emby_ids_json", "total_count"]
-            cols_str = ", ".join(cols)
-            placeholders_str = ", ".join([f"%({k})s" for k in cols])
-            update_cols = [f"{col} = EXCLUDED.{col}" for col in cols]
-            update_str = ", ".join(update_cols)
-            sql = f"""
-                INSERT INTO user_collection_cache ({cols_str}, last_updated_at)
-                VALUES ({placeholders_str}, NOW())
-                ON CONFLICT (user_id, collection_id) DO UPDATE SET {update_str}, last_updated_at = NOW()
-            """
-            from psycopg2.extras import execute_batch
-            execute_batch(cursor, sql, user_collection_cache_data_to_upsert)
-            conn.commit()
+        update_user_permissions_for_collection(custom_collection_id, global_ordered_emby_ids, user_permissions_map)
 
         # ======================================================================
         # 步骤 5: 榜单类合集健康度检查

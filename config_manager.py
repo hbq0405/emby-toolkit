@@ -272,10 +272,10 @@ def save_config(new_config: Dict[str, Any]):
         
         # 步骤 5: 更新内存中的全局配置以立即生效
         APP_CONFIG.update(dynamic_config_to_save)
-        logger.info("动态应用配置已成功合并保存到数据库，内存中的配置已同步。")
+        logger.info("  ➜ 动态应用配置已成功合并保存到数据库，内存中的配置已同步。")
         
     except Exception as e:
-        logger.error(f"保存动态配置到数据库时失败: {e}", exc_info=True)
+        logger.error(f"  ➜ 保存动态配置到数据库时失败: {e}", exc_info=True)
         raise
 
 # ★★★ 保存自定义主题 ★★★
@@ -288,9 +288,9 @@ def save_custom_theme(theme_data: dict):
     try:
         with open(custom_theme_path, 'w', encoding='utf-8') as f:
             json.dump(theme_data, f, ensure_ascii=False, indent=4)
-        logger.info(f"自定义主题已成功写入到: {custom_theme_path}")
+        logger.info(f"  ➜ 自定义主题已成功写入到: {custom_theme_path}")
     except Exception as e:
-        logger.error(f"写入自定义主题文件失败: {e}", exc_info=True)
+        logger.error(f"  ➜ 写入自定义主题文件失败: {e}", exc_info=True)
         raise
 # ★★★ 加载自定义主题 ★★★
 def load_custom_theme() -> dict:
@@ -307,16 +307,16 @@ def load_custom_theme() -> dict:
         with open(custom_theme_path, 'r', encoding='utf-8') as f:
             theme_data = json.load(f)
             if isinstance(theme_data, dict):
-                logger.debug(f"成功从 {custom_theme_path} 加载自定义主题。")
+                logger.debug(f"  ➜ 成功从 {custom_theme_path} 加载自定义主题。")
                 return theme_data
             else:
-                logger.warning(f"自定义主题文件 {custom_theme_path} 内容格式不正确，不是一个JSON对象。")
+                logger.warning(f"  ➜ 自定义主题文件 {custom_theme_path} 内容格式不正确，不是一个JSON对象。")
                 return {}
     except json.JSONDecodeError:
-        logger.error(f"解析自定义主题文件 {custom_theme_path} 失败，请检查JSON格式。")
+        logger.error(f"  ➜ 解析自定义主题文件 {custom_theme_path} 失败，请检查JSON格式。")
         return {}
     except Exception as e:
-        logger.error(f"读取自定义主题文件时发生未知错误: {e}", exc_info=True)
+        logger.error(f"  ➜ 读取自定义主题文件时发生未知错误: {e}", exc_info=True)
         return {}
 # ★★★ 删除自定义主题 ★★★    
 def delete_custom_theme() -> bool:
@@ -330,12 +330,12 @@ def delete_custom_theme() -> bool:
     try:
         if os.path.exists(theme_file_path):
             os.remove(theme_file_path)
-            logger.info(f"✅ 成功删除自定义主题文件: {theme_file_path}")
+            logger.info(f"  ✅ 成功删除自定义主题文件: {theme_file_path}")
         else:
-            logger.info("尝试删除自定义主题文件，但文件本就不存在。")
+            logger.info("  ➜ 尝试删除自定义主题文件，但文件本就不存在。")
         return True
     except OSError as e:
-        logger.error(f"删除自定义主题文件时发生 I/O 错误: {e}", exc_info=True)
+        logger.error(f"  ➜ 删除自定义主题文件时发生 I/O 错误: {e}", exc_info=True)
         return False
     
 # --- 代理小助手 ---
