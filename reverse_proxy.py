@@ -317,15 +317,17 @@ def handle_mimicked_library_metadata_endpoint(path, mimicked_id, params):
     
 def handle_get_mimicked_library_items(user_id, mimicked_id, params):
     """
-    【V7.1 - 返璞归真最终版】
-    - 核心逻辑完全基于用户提供的、被验证过的 V5.9 版本，感谢用户的宝贵输入。
-    - 放弃所有基于 ParentId 的复杂方案，回归最稳定、最明确的“ID列表”模式。
+    【V7.3 - 并发获取最终版】
+    - 采纳用户的关键洞察，使用 `_fetch_items_in_chunks` 函数来解决 414 URI Too Long 的根本问题。
+    - 逻辑与 V7.2 的混合智能排序一致，但“可靠路径”的数据获取方式被升级为高效的并发模式。
     - 运行逻辑:
-        1. [鉴权] 代理首先计算出用户有权访问的完整媒体ID列表 (final_visible_ids)。
-        2. [决策] 根据客户端请求的排序字段以及库的配置，决定使用“Emby原生排序”还是“本地排序”。
-        3. [Emby原生排序] 将完整的ID列表和排序参数通过 GET 请求发送给 Emby，由 Emby 完成排序和分页。
-        4. [本地排序] 对于本地支持的排序字段，直接在本地完成排序和分页，以获得更高性能。
-    - 此方案解决了之前遇到的所有问题，包括“0项目”、“显示单集”、“默认排序失效”等。
+        1. [决策] 检查排序字段。
+        2. [快速路径] 本地支持的字段，走本地数据库排序。
+        3. [可靠路径] 本地不支持的字段 (如DateLastContentAdded) 或 'none' 模式:
+            a. 调用 `_fetch_items_in_chunks` 并发获取所有可见媒体项的详细信息。
+            b. 在服务内存中对返回的完整列表进行排序。
+            c. 对排序后的列表进行分页后返回。
+    - 此方案是功能、性能和稳定性的最终结合体。
     """
     try:
         real_db_id = from_mimicked_id(mimicked_id)
@@ -341,7 +343,6 @@ def handle_get_mimicked_library_items(user_id, mimicked_id, params):
 
         definition = collection_info.get('definition_json') or {}
         
-        # 智能判断使用客户端排序还是默认排序
         if params.get('SortBy'):
              sort_by_str = params.get('SortBy')
              sort_order = params.get('SortOrder', 'Ascending')
@@ -349,54 +350,17 @@ def handle_get_mimicked_library_items(user_id, mimicked_id, params):
              sort_by_str = definition.get('default_sort_by', 'SortName')
              sort_order = definition.get('default_sort_order', 'Ascending')
 
-        # 定义本地数据库支持的排序字段
+        primary_sort_by = sort_by_str.split(',')[0]
         SUPPORTED_LOCAL_SORT_FIELDS = ['PremiereDate', 'DateCreated', 'CommunityRating', 'ProductionYear', 'SortName', 'original']
         
-        # 决策：如果排序字段本地不支持，或者库被强制设为'none'，则使用Emby原生排序
-        use_emby_native_sort = (sort_by_str not in SUPPORTED_LOCAL_SORT_FIELDS) or (definition.get('default_sort_by') == 'none')
+        use_memory_sort = (primary_sort_by not in SUPPORTED_LOCAL_SORT_FIELDS) or (definition.get('default_sort_by') == 'none')
 
-        if use_emby_native_sort:
-            # --- 分支 A: Emby 原生排序路径 ---
-            logger.debug(f"  ➜ 虚拟库 '{collection_info['name']}' 使用 Emby 原生排序 (SortBy={sort_by_str})。")
-            
-            base_url, api_key = _get_real_emby_url_and_key()
-            target_url = f"{base_url}/emby/Users/{user_id}/Items"
-            
-            emby_params = params.copy()
-            emby_params['api_key'] = api_key
-            # 核心：将我们计算好的、有权限的ID列表发给Emby
-            emby_params['Ids'] = ",".join(map(str, final_visible_ids))
+        limit = int(params.get('Limit', 50))
+        offset = int(params.get('StartIndex', 0))
 
-            # 明确告知Emby排序规则
-            emby_params['SortBy'] = sort_by_str
-            emby_params['SortOrder'] = sort_order
-            
-            # 防御性代码：确保虚拟库的ParentId不会被错误地传给Emby
-            if is_mimicked_id(emby_params.get('ParentId')):
-                del emby_params['ParentId']
-            
-            try:
-                # 注意：ID列表过长可能导致GET请求超长(414)，但这是V5.9的工作模式
-                resp = requests.get(target_url, params=emby_params, timeout=30)
-                resp.raise_for_status()
-                emby_response_data = resp.json()
-                
-                # 用我们自己计算的准确总数覆盖Emby的返回，确保分页正确
-                emby_response_data['TotalRecordCount'] = total_record_count
-                
-                return Response(json.dumps(emby_response_data), mimetype='application/json')
-
-            except Exception as e:
-                logger.error(f"  ➜ 请求 Emby 原生排序时失败: {e}", exc_info=True)
-                return Response(json.dumps({"Items": [], "TotalRecordCount": total_record_count}), mimetype='application/json')
-
-        else:
-            # --- 分支 B: 本地高性能排序路径 ---
-            logger.debug(f"  ➜ 虚拟库 '{collection_info['name']}' 使用本地高性能排序 (SortBy={sort_by_str})。")
-            
-            primary_sort_by = sort_by_str.split(',')[0]
-            limit = int(params.get('Limit', 50))
-            offset = int(params.get('StartIndex', 0))
+        if not use_memory_sort:
+            # --- 分支 A: [快速路径] 本地高性能排序 ---
+            logger.debug(f"  ➜ 虚拟库 '{collection_info['name']}' 使用本地高性能排序 (SortBy={primary_sort_by})。")
             
             paginated_ids = []
             if primary_sort_by == 'original':
@@ -417,6 +381,28 @@ def handle_get_mimicked_library_items(user_id, mimicked_id, params):
             final_items = [items_map[id] for id in paginated_ids if id in items_map]
 
             return Response(json.dumps({"Items": final_items, "TotalRecordCount": total_record_count}), mimetype='application/json')
+
+        else:
+            # --- 分支 B: [可靠路径] 并发获取 + 内存排序 ---
+            logger.warning(f"  ➜ 虚拟库 '{collection_info['name']}' 使用并发获取+内存排序 (SortBy={primary_sort_by})。")
+            
+            base_url, api_key = _get_real_emby_url_and_key()
+            
+            # ★★★ 核心升级：使用并发函数获取全量数据 ★★★
+            fields_to_fetch = f"PrimaryImageAspectRatio,ProviderIds,UserData,Name,ProductionYear,CommunityRating,DateCreated,PremiereDate,Type,RecursiveItemCount,SortName,ChildCount,{primary_sort_by}"
+            all_items_details = _fetch_items_in_chunks(base_url, api_key, user_id, final_visible_ids, fields_to_fetch)
+
+            # 在内存中排序
+            try:
+                is_desc = sort_order == 'Descending'
+                default_value = '' if 'Date' in primary_sort_by else 0
+                all_items_details.sort(key=lambda x: x.get(primary_sort_by, default_value), reverse=is_desc)
+            except Exception as sort_e:
+                logger.error(f"  ➜ 内存排序时发生错误: {sort_e}", exc_info=True)
+            
+            # 对排序后的完整列表进行切片分页
+            paginated_items = all_items_details[offset : offset + limit]
+            return Response(json.dumps({"Items": paginated_items, "TotalRecordCount": total_record_count}), mimetype='application/json')
 
     except Exception as e:
         logger.error(f"  ➜ 处理虚拟库 '{collection_info.get('name', mimicked_id)}' 时发生严重错误: {e}", exc_info=True)
