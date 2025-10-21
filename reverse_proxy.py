@@ -33,7 +33,7 @@ def _get_real_emby_url_and_key():
     return base_url, api_key
 
 def _fetch_items_in_chunks(base_url, api_key, user_id, item_ids, fields):
-    # ... V4.8 的并发版本，现在重新变得重要 ...
+    # ... 并发获取分块数据 ...
     if not item_ids: return []
     def chunk_list(lst, n):
         for i in range(0, len(lst), n): yield lst[i:i + n]
@@ -57,8 +57,6 @@ def _fetch_items_in_chunks(base_url, api_key, user_id, item_ids, fields):
 
 def _fetch_sorted_items_via_emby_proxy(user_id, item_ids, sort_by, sort_order, limit, offset, fields, total_record_count):
     """
-    【V7.7 - 终极生产稳定版核心函数】
-    - 修复了因 Emby 4.9+ 移除 POST /Items 接口导致的 404 错误。
     - 引入“内存排序安全回退”机制。
     - 决策流程:
         1. [GET优先] 如果ID列表不超长，使用高效的GET请求让Emby排序。
@@ -121,18 +119,13 @@ def _fetch_sorted_items_via_emby_proxy(user_id, item_ids, sort_by, sort_order, l
 
 def _get_final_item_ids_for_view(user_id, collection_info):
     """
-    【V6.0 - 终极简化版】
     - 直接从 user_collection_cache 表中获取为该用户预计算好的、100%有权限的媒体列表。
     - 仍然保留了动态用户数据筛选的能力。
     """
     collection_id = collection_info['id']
     definition = collection_info.get('definition_json') or {}
     
-    # ======================================================================
-    # ★★★ 核心改造 2/4: 逻辑极度简化！★★★
-    # ======================================================================
-    
-    # --- 步骤 1: 直接从“贵宾名册”中查询专属列表 ---
+    # --- 步骤 1: 直接从本地数据库中查询用户专属列表 ---
     from database.connection import get_db_connection
     base_ordered_emby_ids = []
     try:
@@ -146,7 +139,7 @@ def _get_final_item_ids_for_view(user_id, collection_info):
                 if row and row['visible_emby_ids_json']:
                     base_ordered_emby_ids = row['visible_emby_ids_json']
     except Exception as e:
-        logger.error(f"查询用户 {user_id} 在合集 {collection_id} 的权限缓存时出错: {e}", exc_info=True)
+        logger.error(f"  ➜ 查询用户 {user_id} 在合集 {collection_id} 的权限缓存时出错: {e}", exc_info=True)
         return []
 
     if not base_ordered_emby_ids:
@@ -161,13 +154,12 @@ def _get_final_item_ids_for_view(user_id, collection_info):
         if ids_from_local_db is not None:
             dynamic_ids_set = set(ids_from_local_db)
             final_emby_ids_to_process = [emby_id for emby_id in base_ordered_emby_ids if emby_id in dynamic_ids_set]
-            logger.debug(f"用户个人行为数据过滤后，媒体项数量从 {len(base_ordered_emby_ids)} 变为 {len(final_emby_ids_to_process)}。")
+            logger.debug(f"  ➜ 用户个人行为数据过滤后，媒体项数量从 {len(base_ordered_emby_ids)} 变为 {len(final_emby_ids_to_process)}。")
 
     return final_emby_ids_to_process
 
 def handle_get_views():
     """
-    【V12 - 极速裸奔最终版】
     - 移除所有动态库的空壳检查，将主页加载速度置于最高优先级。
     - 可见性现在只由两个核心条件决定：1. 库在Emby中真实存在。 2. 用户拥有访问权限。
     """
@@ -235,7 +227,7 @@ def handle_get_views():
             }
             fake_views_items.append(fake_view)
         
-        logger.debug(f"已为用户 {user_id} 生成 {len(fake_views_items)} 个可见的虚拟库。")
+        logger.debug(f"  ➜ 已为用户 {user_id} 生成 {len(fake_views_items)} 个可见的虚拟库。")
 
         # --- 原生库合并逻辑 (保持不变) ---
         native_views_items = []
@@ -267,7 +259,6 @@ def handle_get_views():
 
 def handle_get_mimicked_library_details(user_id, mimicked_id):
     """
-    【V2 - PG JSON 兼容版】
     - 修复了因 psycopg2 自动解析 JSON 字段而导致的 TypeError。
     """
     try:
@@ -322,15 +313,13 @@ UNSUPPORTED_METADATA_ENDPOINTS = [
         '/Years'           # 年份筛选
     ]
 
-# --- ★★★ 核心修复 #1：用下面这个通用的“万能翻译”函数，替换掉旧的 a_prefixes 函数 ★★★ ---
 def handle_mimicked_library_metadata_endpoint(path, mimicked_id, params):
     """
-    【V3 - URL修正版】
     智能处理所有针对虚拟库的元数据类请求。
     """
     # 检查当前请求的路径是否在我们定义的“不支持列表”中
     if any(path.endswith(endpoint) for endpoint in UNSUPPORTED_METADATA_ENDPOINTS):
-        logger.trace(f"检测到对虚拟库的不支持的元数据请求 '{path}'，将直接返回空列表以避免后端错误。")
+        logger.trace(f"  ➜ 检测到对虚拟库的不支持的元数据请求 '{path}'，将直接返回空列表以避免后端错误。")
         # 直接返回一个空的JSON数组，客户端会优雅地处理它（不显示相关筛选器）
         return Response(json.dumps([]), mimetype='application/json')
 
@@ -344,7 +333,6 @@ def handle_mimicked_library_metadata_endpoint(path, mimicked_id, params):
         
         base_url, api_key = _get_real_emby_url_and_key()
         
-        # ★★★ 核心修复：在这里加上一个至关重要的斜杠！ ★★★
         target_url = f"{base_url}/{path}"
         
         headers = {k: v for k, v in request.headers if k.lower() not in ['host']}
@@ -400,7 +388,7 @@ def handle_get_mimicked_library_items(user_id, mimicked_id, params):
 
         if use_local_sort:
             # --- 分支 A: [快速路径] 本地高性能排序 (逻辑不变) ---
-            logger.debug(f"  ➜ [快速路径] 使用本地数据库排序 (SortBy={primary_sort_by})。")
+            logger.debug(f"  ➜ 使用本地数据库排序 (SortBy={primary_sort_by})。")
             paginated_ids = []
             if primary_sort_by == 'original':
                 paginated_ids = final_visible_ids[offset : offset + limit]
@@ -420,7 +408,7 @@ def handle_get_mimicked_library_items(user_id, mimicked_id, params):
 
         else:
             # --- 分支 B: [Emby 代理排序路径] - 调用新的健壮函数 ---
-            logger.warning(f"  ➜ [Emby 代理/回退] 使用 Emby 进行远程排序或内存排序 (SortBy={primary_sort_by})。")
+            logger.warning(f"  ➜ 使用 Emby 进行远程排序或内存排序 (SortBy={primary_sort_by})。")
             full_fields = "PrimaryImageAspectRatio,ProviderIds,UserData,Name,ProductionYear,CommunityRating,DateCreated,PremiereDate,Type,RecursiveItemCount,SortName,ChildCount"
             
             sorted_data = _fetch_sorted_items_via_emby_proxy(
@@ -434,7 +422,7 @@ def handle_get_mimicked_library_items(user_id, mimicked_id, params):
 
 def handle_get_latest_items(user_id, params):
     """
-    - 同样调用新的健壮辅助函数来处理剧集的最新排序，彻底解决414问题。
+    - 同样调用新的健壮辅助函数来处理剧集的最新排序
     """
     try:
         base_url, api_key = _get_real_emby_url_and_key()
@@ -461,7 +449,7 @@ def handle_get_latest_items(user_id, params):
             fields = params.get('Fields', "PrimaryImageAspectRatio,BasicSyncInfo,DateCreated,UserData")
 
             if 'DateLastContentAdded' in sort_by_str:
-                logger.debug(f"  ➜ [Emby 代理/回退] 为虚拟库 '{collection_info['name']}' 的最新剧集请求排序。")
+                logger.debug(f"  ➜ 为虚拟库 '{collection_info['name']}' 的最新剧集请求排序。")
                 sorted_data = _fetch_sorted_items_via_emby_proxy(
                     user_id, final_visible_ids, sort_by_str, sort_order, limit, 0, fields, len(final_visible_ids)
                 )
@@ -496,7 +484,7 @@ def handle_get_latest_items(user_id, params):
                             if row['visible_emby_ids_json']:
                                 all_possible_ids.update(row['visible_emby_ids_json'])
             except Exception as e:
-                logger.error(f"聚合用户 {user_id} 的所有可见媒体ID时出错: {e}", exc_info=True)
+                logger.error(f"  ➜ 聚合用户 {user_id} 的所有可见媒体ID时出错: {e}", exc_info=True)
                 return Response(json.dumps([]), mimetype='application/json')
 
             if not all_possible_ids:
