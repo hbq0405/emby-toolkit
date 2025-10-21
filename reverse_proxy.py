@@ -317,16 +317,17 @@ def handle_mimicked_library_metadata_endpoint(path, mimicked_id, params):
     
 def handle_get_mimicked_library_items(user_id, mimicked_id, params):
     """
-    【V6.9 - 用户智慧结晶最终版】
-    - 完全采纳用户的终极方案，该方案优雅且高效，从根本上解决问题。
-    - 模式 A (原生排序) 的新逻辑:
-        1. 向 Emby 请求获取【物理合集】内的【所有】媒体项，并附上客户端的【排序参数】。
-           (通过传递 ParentId 和 SortBy 等参数，让 Emby 完成最核心的排序工作)
-        2. Emby 返回一个已完美排序的、包含合集内所有媒体的列表。
-        3. 在代理服务本地，使用 `final_visible_ids` (用户可见ID列表) 对上一步的结果进行过滤。
-        4. 过滤后的列表既保留了 Emby 的原生精确排序，又确保了用户权限的正确性。
-        5. 最后，对这个干净的列表进行内存分页，返回给客户端。
-    - 此方案完美结合了 Emby 的排序能力和代理的鉴权能力，解决了所有已知问题。
+    【V7.0 - 终极形态版】
+    - 修复了 V6.9 版本中，因向 Emby 请求全量数据时未指定 Recursive=true 和 IncludeItemTypes，
+      导致 Emby 从物理合集中返回 0 个项目的问题。
+    - 模式 A (原生排序) 的最终逻辑:
+        1. 确定虚拟库的媒体类型 (如 'Series')。
+        2. 向 Emby 请求物理合集内的【所有】媒体项，并强制附上【Recursive=true】和
+           【IncludeItemTypes=类型】参数，同时保留客户端的排序要求。
+        3. Emby 返回一个已完美排序的、类型正确的全量媒体列表。
+        4. 在代理服务本地，使用 `final_visible_ids` 对上一步的结果进行过滤。
+        5. 对过滤后的列表进行内存分页，返回给客户端。
+    - 此版本是 V6.9 正确思路的完美实现。
     """
     try:
         real_db_id = from_mimicked_id(mimicked_id)
@@ -350,36 +351,42 @@ def handle_get_mimicked_library_items(user_id, mimicked_id, params):
                 logger.error(f"  ➜ 无法执行原生排序，因为虚拟库 '{collection_info['name']}' 未关联物理合集ID。")
                 return Response(json.dumps({"Items": [], "TotalRecordCount": 0}), mimetype='application/json')
 
-            # 为了快速过滤，将可见ID列表转换为集合 (Set)，查询效率为 O(1)
             allowed_ids_set = set(final_visible_ids)
             
             base_url, api_key = _get_real_emby_url_and_key()
             target_url = f"{base_url}/emby/Users/{user_id}/Items"
             
-            # 准备发给 Emby 的参数，继承客户端的所有参数 (如 SortBy, Fields 等)
             emby_params = params.copy()
             emby_params['api_key'] = api_key
             emby_params['ParentId'] = real_emby_collection_id
-            # 确保获取所有项目以进行完整排序，因此移除分页参数
+            
+            # ★★★ 关键修正 V7.0: 强制添加递归和类型参数 ★★★
+            emby_params['Recursive'] = 'true'
+            
+            # 判断库的权威类型，并强制覆盖 IncludeItemTypes
+            item_type_from_db = definition.get('item_type', 'Movie')
+            if not (isinstance(item_type_from_db, list) and len(item_type_from_db) > 1):
+                authoritative_type = item_type_from_db[0] if isinstance(item_type_from_db, list) and item_type_from_db else item_type_from_db if isinstance(item_type_from_db, str) else 'Movie'
+                logger.debug(f"  ➜ 已确定库类型为 '{authoritative_type}'，强制设置 IncludeItemTypes。")
+                emby_params['IncludeItemTypes'] = authoritative_type
+            # ★★★ 修正结束 ★★★
+
+            # 移除分页参数，以获取全量数据进行排序
             emby_params.pop('StartIndex', None)
             emby_params.pop('Limit', None)
             
             try:
-                # 向 Emby 请求已排序的全量数据
                 resp = requests.get(target_url, params=emby_params, timeout=45)
                 resp.raise_for_status()
                 sorted_all_items_from_emby = resp.json().get("Items", [])
                 
-                # 在本地进行权限过滤，同时保持 Emby 返回的顺序
                 final_sorted_visible_items = [
                     item for item in sorted_all_items_from_emby
                     if item.get('Id') in allowed_ids_set
                 ]
                 
-                # 计算正确的总数
                 total_record_count = len(final_sorted_visible_items)
                 
-                # 在内存中进行分页
                 limit = int(params.get('Limit', 50))
                 offset = int(params.get('StartIndex', 0))
                 paginated_items = final_sorted_visible_items[offset : offset + limit]
@@ -393,7 +400,6 @@ def handle_get_mimicked_library_items(user_id, mimicked_id, params):
         # --- 模式 B: “强制本地预设排序”模式 (逻辑不变) ---
         else:
             logger.debug(f"  ➜ 虚拟库 '{collection_info['name']}' 强制使用本地预设排序 (SortBy={collection_sort_by})。")
-            # ... (此部分代码与之前版本完全相同，保持不变) ...
             final_sort_by = collection_sort_by
             final_sort_order = definition.get('default_sort_order', 'Ascending')
             limit = int(params.get('Limit', 50))
