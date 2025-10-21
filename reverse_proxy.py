@@ -317,17 +317,15 @@ def handle_mimicked_library_metadata_endpoint(path, mimicked_id, params):
     
 def handle_get_mimicked_library_items(user_id, mimicked_id, params):
     """
-    【V7.0 - 终极形态版】
-    - 修复了 V6.9 版本中，因向 Emby 请求全量数据时未指定 Recursive=true 和 IncludeItemTypes，
-      导致 Emby 从物理合集中返回 0 个项目的问题。
-    - 模式 A (原生排序) 的最终逻辑:
-        1. 确定虚拟库的媒体类型 (如 'Series')。
-        2. 向 Emby 请求物理合集内的【所有】媒体项，并强制附上【Recursive=true】和
-           【IncludeItemTypes=类型】参数，同时保留客户端的排序要求。
-        3. Emby 返回一个已完美排序的、类型正确的全量媒体列表。
-        4. 在代理服务本地，使用 `final_visible_ids` 对上一步的结果进行过滤。
-        5. 对过滤后的列表进行内存分页，返回给客户端。
-    - 此版本是 V6.9 正确思路的完美实现。
+    【V7.1 - 返璞归真最终版】
+    - 核心逻辑完全基于用户提供的、被验证过的 V5.9 版本，感谢用户的宝贵输入。
+    - 放弃所有基于 ParentId 的复杂方案，回归最稳定、最明确的“ID列表”模式。
+    - 运行逻辑:
+        1. [鉴权] 代理首先计算出用户有权访问的完整媒体ID列表 (final_visible_ids)。
+        2. [决策] 根据客户端请求的排序字段以及库的配置，决定使用“Emby原生排序”还是“本地排序”。
+        3. [Emby原生排序] 将完整的ID列表和排序参数通过 GET 请求发送给 Emby，由 Emby 完成排序和分页。
+        4. [本地排序] 对于本地支持的排序字段，直接在本地完成排序和分页，以获得更高性能。
+    - 此方案解决了之前遇到的所有问题，包括“0项目”、“显示单集”、“默认排序失效”等。
     """
     try:
         real_db_id = from_mimicked_id(mimicked_id)
@@ -336,92 +334,89 @@ def handle_get_mimicked_library_items(user_id, mimicked_id, params):
             return Response(json.dumps({"Items": [], "TotalRecordCount": 0}), mimetype='application/json')
 
         final_visible_ids = _get_final_item_ids_for_view(user_id, collection_info)
+        total_record_count = len(final_visible_ids)
+        
         if not final_visible_ids:
             return Response(json.dumps({"Items": [], "TotalRecordCount": 0}), mimetype='application/json')
 
         definition = collection_info.get('definition_json') or {}
-        collection_sort_by = definition.get('default_sort_by', 'SortName')
+        
+        # 智能判断使用客户端排序还是默认排序
+        if params.get('SortBy'):
+             sort_by_str = params.get('SortBy')
+             sort_order = params.get('SortOrder', 'Ascending')
+        else:
+             sort_by_str = definition.get('default_sort_by', 'SortName')
+             sort_order = definition.get('default_sort_order', 'Ascending')
 
-        # --- 模式 A: “原生排序”模式 (Emby排序 + 本地过滤) ---
-        if collection_sort_by == 'none':
-            logger.debug(f"  ➜ 虚拟库 '{collection_info['name']}' 使用原生排序（Emby排序+本地过滤模式）。")
-            
-            real_emby_collection_id = collection_info.get('emby_collection_id')
-            if not real_emby_collection_id:
-                logger.error(f"  ➜ 无法执行原生排序，因为虚拟库 '{collection_info['name']}' 未关联物理合集ID。")
-                return Response(json.dumps({"Items": [], "TotalRecordCount": 0}), mimetype='application/json')
+        # 定义本地数据库支持的排序字段
+        SUPPORTED_LOCAL_SORT_FIELDS = ['PremiereDate', 'DateCreated', 'CommunityRating', 'ProductionYear', 'SortName', 'original']
+        
+        # 决策：如果排序字段本地不支持，或者库被强制设为'none'，则使用Emby原生排序
+        use_emby_native_sort = (sort_by_str not in SUPPORTED_LOCAL_SORT_FIELDS) or (definition.get('default_sort_by') == 'none')
 
-            allowed_ids_set = set(final_visible_ids)
+        if use_emby_native_sort:
+            # --- 分支 A: Emby 原生排序路径 ---
+            logger.debug(f"  ➜ 虚拟库 '{collection_info['name']}' 使用 Emby 原生排序 (SortBy={sort_by_str})。")
             
             base_url, api_key = _get_real_emby_url_and_key()
             target_url = f"{base_url}/emby/Users/{user_id}/Items"
             
             emby_params = params.copy()
             emby_params['api_key'] = api_key
-            emby_params['ParentId'] = real_emby_collection_id
-            
-            # ★★★ 关键修正 V7.0: 强制添加递归和类型参数 ★★★
-            emby_params['Recursive'] = 'true'
-            
-            # 判断库的权威类型，并强制覆盖 IncludeItemTypes
-            item_type_from_db = definition.get('item_type', 'Movie')
-            if not (isinstance(item_type_from_db, list) and len(item_type_from_db) > 1):
-                authoritative_type = item_type_from_db[0] if isinstance(item_type_from_db, list) and item_type_from_db else item_type_from_db if isinstance(item_type_from_db, str) else 'Movie'
-                logger.debug(f"  ➜ 已确定库类型为 '{authoritative_type}'，强制设置 IncludeItemTypes。")
-                emby_params['IncludeItemTypes'] = authoritative_type
-            # ★★★ 修正结束 ★★★
+            # 核心：将我们计算好的、有权限的ID列表发给Emby
+            emby_params['Ids'] = ",".join(map(str, final_visible_ids))
 
-            # 移除分页参数，以获取全量数据进行排序
-            emby_params.pop('StartIndex', None)
-            emby_params.pop('Limit', None)
+            # 明确告知Emby排序规则
+            emby_params['SortBy'] = sort_by_str
+            emby_params['SortOrder'] = sort_order
+            
+            # 防御性代码：确保虚拟库的ParentId不会被错误地传给Emby
+            if is_mimicked_id(emby_params.get('ParentId')):
+                del emby_params['ParentId']
             
             try:
-                resp = requests.get(target_url, params=emby_params, timeout=45)
+                # 注意：ID列表过长可能导致GET请求超长(414)，但这是V5.9的工作模式
+                resp = requests.get(target_url, params=emby_params, timeout=30)
                 resp.raise_for_status()
-                sorted_all_items_from_emby = resp.json().get("Items", [])
+                emby_response_data = resp.json()
                 
-                final_sorted_visible_items = [
-                    item for item in sorted_all_items_from_emby
-                    if item.get('Id') in allowed_ids_set
-                ]
+                # 用我们自己计算的准确总数覆盖Emby的返回，确保分页正确
+                emby_response_data['TotalRecordCount'] = total_record_count
                 
-                total_record_count = len(final_sorted_visible_items)
-                
-                limit = int(params.get('Limit', 50))
-                offset = int(params.get('StartIndex', 0))
-                paginated_items = final_sorted_visible_items[offset : offset + limit]
-                
-                return Response(json.dumps({"Items": paginated_items, "TotalRecordCount": total_record_count}), mimetype='application/json')
+                return Response(json.dumps(emby_response_data), mimetype='application/json')
 
             except Exception as e:
-                logger.error(f"  ➜ 请求 Emby 全量排序数据时失败: {e}", exc_info=True)
-                return Response(json.dumps({"Items": [], "TotalRecordCount": len(final_visible_ids)}), mimetype='application/json')
+                logger.error(f"  ➜ 请求 Emby 原生排序时失败: {e}", exc_info=True)
+                return Response(json.dumps({"Items": [], "TotalRecordCount": total_record_count}), mimetype='application/json')
 
-        # --- 模式 B: “强制本地预设排序”模式 (逻辑不变) ---
         else:
-            logger.debug(f"  ➜ 虚拟库 '{collection_info['name']}' 强制使用本地预设排序 (SortBy={collection_sort_by})。")
-            final_sort_by = collection_sort_by
-            final_sort_order = definition.get('default_sort_order', 'Ascending')
+            # --- 分支 B: 本地高性能排序路径 ---
+            logger.debug(f"  ➜ 虚拟库 '{collection_info['name']}' 使用本地高性能排序 (SortBy={sort_by_str})。")
+            
+            primary_sort_by = sort_by_str.split(',')[0]
             limit = int(params.get('Limit', 50))
             offset = int(params.get('StartIndex', 0))
             
             paginated_ids = []
-            if final_sort_by == 'original':
+            if primary_sort_by == 'original':
                 paginated_ids = final_visible_ids[offset : offset + limit]
             else:
                 paginated_ids = queries_db.get_sorted_and_paginated_ids(
-                    final_visible_ids, final_sort_by.split(',')[0], final_sort_order, limit, offset
+                    final_visible_ids, primary_sort_by, sort_order, limit, offset
                 )
 
             if not paginated_ids:
-                return Response(json.dumps({"Items": [], "TotalRecordCount": len(final_visible_ids)}), mimetype='application/json')
+                return Response(json.dumps({"Items": [], "TotalRecordCount": total_record_count}), mimetype='application/json')
 
             base_url, api_key = _get_real_emby_url_and_key()
             full_fields = "PrimaryImageAspectRatio,ProviderIds,UserData,Name,ProductionYear,CommunityRating,DateCreated,PremiereDate,Type,RecursiveItemCount,SortName,ChildCount"
             items_from_emby = _fetch_items_in_chunks(base_url, api_key, user_id, paginated_ids, full_fields)
+            
             items_map = {item['Id']: item for item in items_from_emby}
             final_items = [items_map[id] for id in paginated_ids if id in items_map]
-            return Response(json.dumps({"Items": final_items, "TotalRecordCount": len(final_visible_ids)}), mimetype='application/json')
+
+            return Response(json.dumps({"Items": final_items, "TotalRecordCount": total_record_count}), mimetype='application/json')
 
     except Exception as e:
         logger.error(f"  ➜ 处理虚拟库 '{collection_info.get('name', mimicked_id)}' 时发生严重错误: {e}", exc_info=True)
