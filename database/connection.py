@@ -185,6 +185,7 @@ def init_db():
                         actors_json JSONB,
                         directors_json JSONB,
                         studios_json JSONB,
+                        keywords_json JSONB,
                         countries_json JSONB,
                         last_updated_at TIMESTAMP WITH TIME ZONE DEFAULT NOW(),
                         release_date DATE,
@@ -464,7 +465,8 @@ def init_db():
                             "unified_rating": "TEXT",
                             "emby_item_id": "TEXT",
                             "in_library": "BOOLEAN DEFAULT TRUE NOT NULL",
-                            "emby_children_details_json": "JSONB"
+                            "emby_children_details_json": "JSONB",
+                            "keywords_json": "JSONB"
                         },
                         'watchlist': {
                             "last_episode_to_air_json": "JSONB",

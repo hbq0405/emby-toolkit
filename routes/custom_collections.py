@@ -17,7 +17,7 @@ import moviepilot_handler
 import emby_handler
 from extensions import login_required
 from custom_collection_handler import FilterEngine
-from utils import get_country_translation_map, UNIFIED_RATING_CATEGORIES, get_tmdb_country_options
+from utils import get_country_translation_map, UNIFIED_RATING_CATEGORIES, get_tmdb_country_options, KEYWORD_TRANSLATION_MAP
 from tmdb_handler import get_movie_genres_tmdb, get_tv_genres_tmdb, search_companies_tmdb, search_person_tmdb
 # 1. 创建自定义合集蓝图
 custom_collections_bp = Blueprint('custom_collections', __name__, url_prefix='/api/custom_collections')
@@ -655,3 +655,22 @@ def api_get_tmdb_countries():
     except Exception as e:
         logger.error(f"获取 TMDb 国家/地区选项时出错: {e}", exc_info=True)
         return jsonify({"error": "服务器内部错误"}), 500
+    
+# --- 提取关键词列表 ---
+@custom_collections_bp.route('/config/keywords', methods=['GET'])
+@login_required
+def api_get_keywords_for_filter():
+    """为筛选器提供一个中英对照的关键词列表。"""
+    try:
+        # KEYWORD_TRANSLATION_MAP 的格式是 {"中文": "english"}
+        # 我们需要转换成 [{label: "中文", value: "english"}, ...]
+        keyword_options = [
+            {"label": chinese, "value": english}
+            for chinese, english in KEYWORD_TRANSLATION_MAP.items()
+        ]
+        # 按中文标签的拼音排序，方便前端查找
+        sorted_options = sorted(keyword_options, key=lambda x: x['label'])
+        return jsonify(sorted_options)
+    except Exception as e:
+        logger.error(f"获取关键词列表时出错: {e}", exc_info=True)
+        return jsonify([]), 500

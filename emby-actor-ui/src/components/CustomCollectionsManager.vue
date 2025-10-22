@@ -257,6 +257,28 @@
                     clearable
                   />
                 </template>
+                <template v-else-if="rule.field === 'keywords'">
+                  <n-select
+                    v-if="['is_one_of', 'is_none_of'].includes(rule.operator)"
+                    v-model:value="rule.value"
+                    multiple
+                    filterable
+                    placeholder="选择一个或多个关键词"
+                    :options="keywordOptions"
+                    :disabled="!rule.operator"
+                    style="flex-grow: 1; min-width: 220px;"
+                  />
+                  <n-select
+                    v-else
+                    v-model:value="rule.value"
+                    filterable
+                    placeholder="选择一个关键词"
+                    :options="keywordOptions"
+                    :disabled="!rule.operator"
+                    clearable
+                    style="flex-grow: 1;"
+                  />
+                </template>
                 <template v-else-if="rule.field === 'tags'">
                   <n-select
                     v-if="['is_one_of', 'is_none_of'].includes(rule.operator)"
@@ -793,6 +815,7 @@ const genreOptions = ref([]);
 const studioOptions = ref([]);
 const isSearchingStudios = ref(false);
 const tagOptions = ref([]);
+const keywordOptions = ref([]);
 const showDetailsModal = ref(false);
 const isLoadingDetails = ref(false);
 const selectedCollectionDetails = ref(null);
@@ -919,6 +942,7 @@ const ruleConfig = {
   genres: { label: '类型', type: 'select', operators: ['contains', 'is_one_of', 'is_none_of', 'is_primary'] }, 
   countries: { label: '国家/地区', type: 'select', operators: ['contains', 'is_one_of', 'is_none_of', 'is_primary'] },
   studios: { label: '工作室', type: 'select', operators: ['contains', 'is_one_of', 'is_none_of', 'is_primary'] },
+  keywords: { label: '关键词', type: 'select', operators: ['contains', 'is_one_of', 'is_none_of'] },
   tags: { label: '标签', type: 'select', operators: ['contains', 'is_one_of', 'is_none_of'] }, 
   unified_rating: { label: '家长分级', type: 'select', operators: ['is_one_of', 'is_none_of', 'eq'] },
   release_date: { label: '上映于', type: 'date', operators: ['in_last_days', 'not_in_last_days'] },
@@ -935,6 +959,15 @@ const operatorLabels = {
   is_one_of: '是其中之一', is_none_of: '不是任何一个',
   is: '是', is_not: '不是',
   is_primary: '主要是' 
+};
+
+const fetchKeywordOptions = async () => {
+  try {
+    const response = await axios.get('/api/custom_collections/config/keywords');
+    keywordOptions.value = response.data;
+  } catch (error) {
+    message.error('获取关键词列表失败。');
+  }
 };
 
 const staticFieldOptions = computed(() => 
@@ -1961,6 +1994,7 @@ onMounted(() => {
   fetchCountryOptions();
   fetchGenreOptions();
   fetchTagOptions();
+  fetchKeywordOptions();
   fetchUnifiedRatingOptions();
   fetchEmbyLibraries();
   fetchTmdbGenres();

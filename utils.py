@@ -180,6 +180,84 @@ RATING_MAP = {
     'ao': '限制级', 'rp': '限制级', 'ur': '限制级',
 }
 
+# --- ★★★ 新增：关键词中英翻译词典 ★★★ ---
+# 一个权威的、可扩展的关键词翻译映射表。
+# 格式: "中文": "英文"
+KEYWORD_TRANSLATION_MAP = {
+    # --- 类型/题材 ---
+    "科幻": "science fiction",
+    "奇幻": "fantasy",
+    "恐怖": "horror",
+    "悬疑": "suspense",
+    "惊悚": "thriller",
+    "犯罪": "crime",
+    "动作": "action",
+    "冒险": "adventure",
+    "喜剧": "comedy",
+    "爱情": "romance",
+    "战争": "war",
+    "西部": "western",
+    "历史": "history",
+    "传记": "biography",
+    "动画": "animation",
+    "纪录片": "documentary",
+    "音乐": "music",
+    "歌舞": "musical",
+    "家庭": "family",
+    "运动": "sports",
+    "灾难": "disaster",
+    "武侠": "wuxia",
+    "黑色电影": "film noir",
+
+    # --- 科幻/奇幻元素 ---
+    "赛博朋克": "cyberpunk",
+    "太空": "space",
+    "外星人": "alien",
+    "时间旅行": "time travel",
+    "机器人": "robot",
+    "人工智能": "artificial intelligence",
+    "后末日": "post-apocalyptic",
+    "反乌托邦": "dystopia",
+    "魔法": "magic",
+    "龙": "dragon",
+    "怪兽": "monster",
+    "神话": "mythology",
+    "超级英雄": "superhero",
+    "平行宇宙": "parallel universe",
+
+    # --- 恐怖/惊悚元素 ---
+    "丧尸": "zombie",
+    "吸血鬼": "vampire",
+    "狼人": "werewolf",
+    "鬼": "ghost",
+    "恶魔": "demon",
+    "心理惊悚": "psychological thriller",
+    "连环杀手": "serial killer",
+    "生存": "survival",
+    "血腥": "gore",
+
+    # --- 犯罪/悬疑元素 ---
+    "侦探": "detective",
+    "警察": "police",
+    "黑帮": "gangster",
+    "卧底": "undercover",
+    "抢劫": "heist",
+    "阴谋": "conspiracy",
+    "法庭": "courtroom",
+
+    # --- 其他常见概念 ---
+    "青春": "teen",
+    "成长": "coming of age",
+    "政治": "politics",
+    "法律": "legal",
+    "医疗": "medical",
+    "间谍": "spy",
+    "武术": "martial arts",
+    "寻宝": "treasure hunt",
+    "公路旅行": "road trip",
+    "独立电影": "independent film"
+}
+
 def get_unified_rating(official_rating_str: str) -> str:
     """
     【V2 - 健壮版】

@@ -395,6 +395,20 @@ def task_populate_metadata_cache(processor, batch_size: int = 50, force_full_upd
                 
                 date_added = full_details_emby.get('DateCreated') or None
 
+                # ★★★ TMDb 详情中提取关键词★★★
+                keywords = []
+                if tmdb_details:
+                    keywords_data = tmdb_details.get("keywords", {})
+                    keyword_list = []
+                    item_type = full_details_emby.get("Type") # 需要获取一下 item_type
+                    if item_type == 'Movie':
+                        keyword_list = keywords_data.get("keywords", [])
+                    elif item_type == 'Series':
+                        keyword_list = keywords_data.get("results", [])
+                    
+                    if isinstance(keyword_list, list):
+                        keywords = [k['name'] for k in keyword_list if k.get('name')]
+
                 official_rating = full_details_emby.get('OfficialRating') # 获取原始分级，可能为 None
                 unified_rating = get_unified_rating(official_rating)    # 即使 official_rating 是 None，函数也能处理
 
@@ -413,6 +427,7 @@ def task_populate_metadata_cache(processor, batch_size: int = 50, force_full_upd
                     "studios_json": json.dumps(studios, ensure_ascii=False),
                     "countries_json": json.dumps(countries, ensure_ascii=False),
                     "tags_json": json.dumps(tags, ensure_ascii=False),
+                    "keywords_json": json.dumps(keywords, ensure_ascii=False),
                     "in_library": True
                 }
                 if metadata_to_save["item_type"] == "Series":

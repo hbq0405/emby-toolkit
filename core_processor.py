@@ -110,6 +110,22 @@ def _save_metadata_to_cache(
                     directors = [{'id': c.get('id'), 'name': c.get('name')} for c in tmdb_details_for_extra.get('created_by', [])]
                 country_codes = tmdb_details_for_extra.get('origin_country', [])
                 countries = translate_country_list(country_codes)
+
+        keywords = []
+        if tmdb_details_for_extra:
+            # TMDb API 对电影和剧集的关键词结构不同，需要分别处理
+            keywords_data = tmdb_details_for_extra.get("keywords", {})
+            keyword_list = []
+            if item_type == 'Movie':
+                # 电影的关键词在 keywords.keywords
+                keyword_list = keywords_data.get("keywords", [])
+            elif item_type == 'Series':
+                # 剧集的关键词在 keywords.results
+                keyword_list = keywords_data.get("results", [])
+            
+            if isinstance(keyword_list, list):
+                # 我们只存储英文名，因为筛选时用英文
+                keywords = [k['name'] for k in keyword_list if k.get('name')]
         
         studios = [s['Name'] for s in item_details_from_emby.get('Studios', [])]
         genres = item_details_from_emby.get('Genres', [])
@@ -133,6 +149,7 @@ def _save_metadata_to_cache(
             "directors_json": json.dumps(directors, ensure_ascii=False),
             "studios_json": json.dumps(studios, ensure_ascii=False),
             "countries_json": json.dumps(countries, ensure_ascii=False),
+            "keywords_json": json.dumps(keywords, ensure_ascii=False),
             "date_added": item_details_from_emby.get("DateCreated") or None,
             "release_date": release_date_str, # <--- 这里现在会接收到 None 或者一个有效的日期
             "in_library": True
