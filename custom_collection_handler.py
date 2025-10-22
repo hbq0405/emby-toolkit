@@ -732,26 +732,22 @@ class FilterEngine:
             field, op, value = rule.get("field"), rule.get("operator"), rule.get("value")
             match = False
             
-            # ★★★ 统一处理所有列表型字段 ★★★
             if field in ['actors', 'directors', 'genres', 'countries', 'studios', 'tags']:
-                # 1. 安全地获取元数据列表
                 item_value_list = item_metadata.get(f"{field}_json")
                 if not item_value_list or not isinstance(item_value_list, list):
                     results.append(False)
                     continue
 
-                # 2. 根据操作符决定要检查的范围 (切片或完整列表)
                 values_to_check = item_value_list
                 if op == 'is_primary':
                     if field == 'actors':
-                        values_to_check = item_value_list[:3] # 演员取前三
+                        values_to_check = item_value_list[:3]
                     else:
-                        values_to_check = item_value_list[:1] # 其他都只取第一个
+                        values_to_check = item_value_list[:1]
                 
-                # 3. 执行匹配逻辑
                 try:
-                    # A. 处理需要和规则值列表比较的操作 (is_one_of, is_none_of)
-                    if op in ['is_one_of', 'is_none_of', 'contains'] and field in ['actors', 'directors']:
+                    # 统一处理人物相关的字段 (actors, directors)
+                    if field in ['actors', 'directors']:
                         if not isinstance(value, list):
                             results.append(False); continue
                         
@@ -759,34 +755,26 @@ class FilterEngine:
                         if not rule_person_ids:
                             results.append(False); continue
 
+                        # ★★★ 核心修复：统一使用健壮的ID获取方式 ★★★
                         item_person_ids = set()
-                        for p in values_to_check: # 使用我们切片后的列表
-                            person_id = p.get('tmdb_id') or p.get('id')
+                        for p in values_to_check:
+                            person_id = p.get('tmdb_id') or p.get('id') # <-- 修正点！
                             if person_id is not None:
                                 item_person_ids.add(str(person_id))
                         
-                        # 'contains' 对于人物字段，我们视为 'is_one_of'
-                        if op == 'is_one_of' or op == 'contains':
+                        # 'contains' 和 'is_primary' 对于人物字段，逻辑都是检查交集
+                        if op in ['is_one_of', 'contains', 'is_primary']:
                             if not rule_person_ids.isdisjoint(item_person_ids):
                                 match = True
                         elif op == 'is_none_of':
                             if rule_person_ids.isdisjoint(item_person_ids):
                                 match = True
                     
-                    # B. 处理需要和单个规则值比较的操作 (is_primary, contains)
+                    # 处理其他普通列表字段
                     else:
                         if op == 'is_primary':
-                            # 对于人物，规则值也是列表，我们只取第一个来比较
-                            if field in ['actors', 'directors']:
-                                if isinstance(value, list) and value:
-                                    rule_person_id = str(value[0].get('id'))
-                                    item_person_ids = set(str(p.get('id')) for p in values_to_check if p.get('id'))
-                                    if rule_person_id in item_person_ids:
-                                        match = True
-                            # 对于普通字符串列表
-                            else:
-                                if values_to_check and values_to_check[0] == value:
-                                    match = True
+                            if values_to_check and values_to_check[0] == value:
+                                match = True
                         elif op == 'is_one_of':
                             if isinstance(value, list) and any(v in values_to_check for v in value):
                                 match = True
@@ -797,8 +785,8 @@ class FilterEngine:
                             if value in values_to_check:
                                 match = True
 
-                except (TypeError, KeyError):
-                    logger.warning(f"  ➜ 处理 {field}_json 时遇到意外的格式错误，内容: {item_value_list}")
+                except (TypeError, KeyError) as e:
+                    logger.warning(f"  ➜ 处理 {field}_json 时遇到意外的格式错误: {e}, 内容: {item_value_list}")
 
             # 3. 处理其他所有非列表字段
             elif field in ['release_date', 'date_added']:
