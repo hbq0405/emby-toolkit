@@ -72,7 +72,7 @@ def _fetch_sorted_items_via_emby_proxy(user_id, item_ids, sort_by, sort_order, l
     try:
         if estimated_ids_length < URL_LENGTH_THRESHOLD:
             # --- 路径 A: ID列表较短，使用 GET 请求 (快速路径) ---
-            logger.debug(f"  ➜ [Emby 代理排序] ID列表长度较短，使用 GET 方法。")
+            logger.trace(f"  ➜ [Emby 代理排序] ID列表长度较短，使用 GET 方法。")
             target_url = f"{base_url}/emby/Users/{user_id}/Items"
             emby_params = {
                 'api_key': api_key, 'Ids': ",".join(item_ids), 'Fields': fields,
@@ -86,7 +86,7 @@ def _fetch_sorted_items_via_emby_proxy(user_id, item_ids, sort_by, sort_order, l
             return emby_data
         else:
             # --- 路径 B: ID列表超长，启动内存排序安全回退 ---
-            logger.warning(f"  ➜ [内存排序回退] ID列表超长 (估算 > {URL_LENGTH_THRESHOLD})，启动内存排序。")
+            logger.trace(f"  ➜ [内存排序回退] ID列表超长 (估算 > {URL_LENGTH_THRESHOLD})，启动内存排序。")
             
             # 1. 获取所有媒体的详细信息，确保包含排序所需的字段
             primary_sort_by = sort_by.split(',')[0]
@@ -154,7 +154,7 @@ def _get_final_item_ids_for_view(user_id, collection_info):
         if ids_from_local_db is not None:
             dynamic_ids_set = set(ids_from_local_db)
             final_emby_ids_to_process = [emby_id for emby_id in base_ordered_emby_ids if emby_id in dynamic_ids_set]
-            logger.debug(f"  ➜ 用户个人行为数据过滤后，媒体项数量从 {len(base_ordered_emby_ids)} 变为 {len(final_emby_ids_to_process)}。")
+            logger.trace(f"  ➜ 用户个人行为数据过滤后，媒体项数量从 {len(base_ordered_emby_ids)} 变为 {len(final_emby_ids_to_process)}。")
 
     return final_emby_ids_to_process
 
@@ -388,7 +388,7 @@ def handle_get_mimicked_library_items(user_id, mimicked_id, params):
 
         if use_local_sort:
             # --- 分支 A: [快速路径] 本地高性能排序 (逻辑不变) ---
-            logger.debug(f"  ➜ 使用本地数据库排序 (SortBy={primary_sort_by})。")
+            logger.trace(f"  ➜ 使用本地数据库排序 (SortBy={primary_sort_by})。")
             paginated_ids = []
             if primary_sort_by == 'original':
                 paginated_ids = final_visible_ids[offset : offset + limit]
@@ -449,7 +449,7 @@ def handle_get_latest_items(user_id, params):
             fields = params.get('Fields', "PrimaryImageAspectRatio,BasicSyncInfo,DateCreated,UserData")
 
             if 'DateLastContentAdded' in sort_by_str:
-                logger.debug(f"  ➜ 为虚拟库 '{collection_info['name']}' 的最新剧集请求排序。")
+                logger.trace(f"  ➜ 为虚拟库 '{collection_info['name']}' 的最新剧集请求排序。")
                 sorted_data = _fetch_sorted_items_via_emby_proxy(
                     user_id, final_visible_ids, sort_by_str, sort_order, limit, 0, fields, len(final_visible_ids)
                 )
@@ -468,7 +468,7 @@ def handle_get_latest_items(user_id, params):
         # 场景二：处理【全局】“最近添加”请求 (例如，Emby 主页最顶部的“最新媒体”)
         # ======================================================================
         elif not virtual_library_id:
-            logger.debug(f"  ➜ 正在为用户 {user_id} 处理全局“最新媒体”请求...")
+            logger.trace(f"  ➜ 正在为用户 {user_id} 处理全局“最新媒体”请求...")
             
             all_possible_ids = set()
             from database.connection import get_db_connection
@@ -502,7 +502,7 @@ def handle_get_latest_items(user_id, params):
             items_map = {item['Id']: item for item in items_from_emby}
             final_items = [items_map[id] for id in latest_ids if id in items_map]
             
-            logger.debug(f"  ➜ 为用户 {user_id} 的全局“最新媒体”请求成功返回 {len(final_items)} 个项目。")
+            logger.trace(f"  ➜ 为用户 {user_id} 的全局“最新媒体”请求成功返回 {len(final_items)} 个项目。")
             return Response(json.dumps(final_items), mimetype='application/json')
             
         # ======================================================================
