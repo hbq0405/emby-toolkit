@@ -273,10 +273,43 @@ def _process_batch_webhook_events():
             # 默认情况下，不强制深度更新
             force_full_update_for_new_item = False
             
-            # 如果是首次入库的剧集，则启用深度更新以从TMDb获取最全的演员表
+            # 如果是首次入库的剧集，根据是否有缓存决定传递参数
             if parent_type == 'Series':
-                force_full_update_for_new_item = True
-                logger.info(f"  ➜ 检测到新入库剧集 '{parent_name}'，将从TMDb获取完整演员表。")
+                logger.info(f"  ➜ [智能判断] 检测到新入库剧集 '{parent_name}'，正在检查本地缓存...")
+                
+                # 1. 先获取TMDb ID
+                item_details_for_check = emby_handler.get_emby_item_details(parent_id, extensions.media_processor_instance.emby_url, extensions.media_processor_instance.emby_api_key, extensions.media_processor_instance.emby_user_id, fields="ProviderIds")
+                tmdb_id_for_check = (item_details_for_check.get("ProviderIds", {}) if item_details_for_check else {}).get("Tmdb")
+
+                if tmdb_id_for_check:
+                    try:
+                        with connection.get_db_connection() as conn:
+                            with conn.cursor() as cursor:
+                                # 2. 查询数据库看是否存在有效缓存
+                                cursor.execute("""
+                                    SELECT 1 FROM media_metadata 
+                                    WHERE tmdb_id = %s AND item_type = 'Series'
+                                      AND actors_json IS NOT NULL AND actors_json::text != '[]'
+                                """, (tmdb_id_for_check,))
+                                cache_exists = cursor.fetchone() is not None
+                        
+                        if cache_exists:
+                            logger.info(f"  ➜ [智能判断] 发现有效缓存，将使用快速模式处理 '{parent_name}'。")
+                            force_full_update_for_new_item = False
+                        else:
+                            logger.info(f"  ➜ [智能判断] 未发现有效缓存，将为 '{parent_name}' 启用深度刮削模式以获取最全演员表。")
+                            force_full_update_for_new_item = True
+                            
+                    except Exception as e_check:
+                        logger.error(f"  ➜ [智能判断] 检查缓存时出错: {e_check}，为保险起见，将启用深度刮削模式。")
+                        force_full_update_for_new_item = True
+                else:
+                    logger.warning(f"  ➜ [智能判断] 无法获取 '{parent_name}' 的TMDb ID，为保险起见，将启用深度刮削模式。")
+                    force_full_update_for_new_item = True
+            
+            # 对于电影，永远是 False，走常规流程
+            else: 
+                force_full_update_for_new_item = False
             
             logger.info(f"  ➜ 为 '{parent_name}' 分派【完整处理】任务 (原因: 首次入库)。")
             task_manager.submit_task(
