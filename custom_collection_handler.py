@@ -732,70 +732,73 @@ class FilterEngine:
             field, op, value = rule.get("field"), rule.get("operator"), rule.get("value")
             match = False
             
-            # 1. 处理演员和导演
-            if field in ['actors', 'directors']:
-                # ★★★ 核心修改 ★★★
-                if not isinstance(value, list):
-                    # 如果 value 格式不对（比如是旧的字符串格式），直接跳过
+            # ★★★ 统一处理所有列表型字段 ★★★
+            if field in ['actors', 'directors', 'genres', 'countries', 'studios', 'tags']:
+                # 1. 安全地获取元数据列表
+                item_value_list = item_metadata.get(f"{field}_json")
+                if not item_value_list or not isinstance(item_value_list, list):
                     results.append(False)
                     continue
 
-                # 直接从规则的 value 中提取出 TMDB ID 列表
-                person_tmdb_ids_from_rule = [str(p['id']) for p in value if isinstance(p, dict) and 'id' in p]
-
-                if not person_tmdb_ids_from_rule:
-                    results.append(False)
-                    continue
-
-                # 获取当前媒体项中所有演员/导演的 TMDB ID 集合 
-                item_person_list = item_metadata.get(f"{field}_json")
-                if item_person_list:
-                    try:
-                        # ★★★ 核心修改：只取前三位演员/导演进行匹配 ★★★
-                        top_persons = item_person_list[:3]
+                # 2. 根据操作符决定要检查的范围 (切片或完整列表)
+                values_to_check = item_value_list
+                if op == 'is_primary':
+                    if field == 'actors':
+                        values_to_check = item_value_list[:3] # 演员取前三
+                    else:
+                        values_to_check = item_value_list[:1] # 其他都只取第一个
+                
+                # 3. 执行匹配逻辑
+                try:
+                    # A. 处理需要和规则值列表比较的操作 (is_one_of, is_none_of)
+                    if op in ['is_one_of', 'is_none_of', 'contains'] and field in ['actors', 'directors']:
+                        if not isinstance(value, list):
+                            results.append(False); continue
                         
-                        # 如果是演员且总数超过3，可以加个日志方便调试
-                        if field == 'actors' and len(item_person_list) > 3:
-                            pass
-                            # logger.trace(f"  ➜ 演员筛选优化：媒体项《{item_metadata.get('title')}》有 {len(item_person_list)} 位演员，仅匹配前 3 位。")
+                        rule_person_ids = set(str(p['id']) for p in value if isinstance(p, dict) and 'id' in p)
+                        if not rule_person_ids:
+                            results.append(False); continue
 
-                        item_person_tmdb_ids = set()
-                        # 使用截断后的 top_persons 列表进行遍历
-                        for p in top_persons:
+                        item_person_ids = set()
+                        for p in values_to_check: # 使用我们切片后的列表
                             person_id = p.get('tmdb_id') or p.get('id')
                             if person_id is not None:
-                                item_person_tmdb_ids.add(str(person_id))
+                                item_person_ids.add(str(person_id))
                         
+                        # 'contains' 对于人物字段，我们视为 'is_one_of'
                         if op == 'is_one_of' or op == 'contains':
-                            if any(rule_id in item_person_tmdb_ids for rule_id in person_tmdb_ids_from_rule):
+                            if not rule_person_ids.isdisjoint(item_person_ids):
                                 match = True
                         elif op == 'is_none_of':
-                            if not any(rule_id in item_person_tmdb_ids for rule_id in person_tmdb_ids_from_rule):
+                            if rule_person_ids.isdisjoint(item_person_ids):
                                 match = True
-                    except (TypeError, KeyError):
-                        logger.warning(f"  ➜ 处理 {field}_json 时遇到意外的格式错误，内容: {item_person_list}")
-
-            # 2. 检查字段是否为“字符串列表”（类型/国家/工作室/标签）
-            elif field in ['genres', 'countries', 'studios', 'tags']:
-                item_value_list = item_metadata.get(f"{field}_json")
-                if item_value_list and isinstance(item_value_list, list):
-                    try:
-                        # ★★★ 在这里添加新运算符的逻辑 ★★★
+                    
+                    # B. 处理需要和单个规则值比较的操作 (is_primary, contains)
+                    else:
                         if op == 'is_primary':
-                            # 只有当列表不为空，且第一个元素与规则值相同时，才匹配
-                            if item_value_list and item_value_list[0] == value:
-                                match = True
+                            # 对于人物，规则值也是列表，我们只取第一个来比较
+                            if field in ['actors', 'directors']:
+                                if isinstance(value, list) and value:
+                                    rule_person_id = str(value[0].get('id'))
+                                    item_person_ids = set(str(p.get('id')) for p in values_to_check if p.get('id'))
+                                    if rule_person_id in item_person_ids:
+                                        match = True
+                            # 对于普通字符串列表
+                            else:
+                                if values_to_check and values_to_check[0] == value:
+                                    match = True
                         elif op == 'is_one_of':
-                            if isinstance(value, list) and any(v in item_value_list for v in value):
+                            if isinstance(value, list) and any(v in values_to_check for v in value):
                                 match = True
                         elif op == 'is_none_of':
-                            if isinstance(value, list) and not any(v in item_value_list for v in value):
+                            if isinstance(value, list) and not any(v in values_to_check for v in value):
                                 match = True
                         elif op == 'contains':
-                            if value in item_value_list:
+                            if value in values_to_check:
                                 match = True
-                    except TypeError:
-                        logger.warning(f"处理 {field}_json 时遇到意外的类型错误，内容: {item_value_list}")
+
+                except (TypeError, KeyError):
+                    logger.warning(f"  ➜ 处理 {field}_json 时遇到意外的格式错误，内容: {item_value_list}")
 
             # 3. 处理其他所有非列表字段
             elif field in ['release_date', 'date_added']:

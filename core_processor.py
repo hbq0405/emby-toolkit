@@ -96,10 +96,12 @@ def _save_metadata_to_cache(
                 credits_data = tmdb_details_for_extra.get("credits", {}) or tmdb_details_for_extra.get("casts", {})
                 if credits_data:
                     directors = [{'id': p.get('id'), 'name': p.get('name')} for p in credits_data.get('crew', []) if p.get('job') == 'Director']
-                # --- 智能化判断所属国家/地区 ---
-                primary_country = determine_primary_country(tmdb_details_for_extra)
-                country_names = [primary_country] if primary_country else []
-                countries = translate_country_list(country_names)
+                # 1. 从 production_countries 字段获取完整的国家列表
+                country_objects = tmdb_details_for_extra.get('production_countries', [])
+                # 2. 提取出国家名称 (iso_3166_1 代码)
+                country_codes = [c.get('iso_3166_1') for c in country_objects if c.get('iso_3166_1')]
+                # 3. 翻译整个列表
+                countries = translate_country_list(country_codes)
             elif item_type == 'Series':
                 credits_data = tmdb_details_for_extra.get("credits", {})
                 if credits_data:

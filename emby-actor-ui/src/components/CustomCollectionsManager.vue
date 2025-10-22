@@ -912,13 +912,13 @@ const submitFixMatch = async (payload) => {
 
 const ruleConfig = {
   title: { label: '标题', type: 'text', operators: ['contains', 'does_not_contain', 'starts_with', 'ends_with'] },
-  actors: { label: '演员', type: 'text', operators: ['contains', 'is_one_of', 'is_none_of'] }, 
-  directors: { label: '导演', type: 'text', operators: ['contains', 'is_one_of', 'is_none_of'] }, 
+  actors: { label: '演员', type: 'text', operators: ['contains', 'is_one_of', 'is_none_of', 'is_primary'] }, 
+  directors: { label: '导演', type: 'text', operators: ['contains', 'is_one_of', 'is_none_of', 'is_primary'] }, 
   release_year: { label: '年份', type: 'number', operators: ['gte', 'lte', 'eq'] },
   rating: { label: '评分', type: 'number', operators: ['gte', 'lte'] },
   genres: { label: '类型', type: 'select', operators: ['contains', 'is_one_of', 'is_none_of', 'is_primary'] }, 
-  countries: { label: '国家/地区', type: 'select', operators: ['contains', 'is_one_of', 'is_none_of'] },
-  studios: { label: '工作室', type: 'select', operators: ['contains', 'is_one_of', 'is_none_of'] },
+  countries: { label: '国家/地区', type: 'select', operators: ['contains', 'is_one_of', 'is_none_of', 'is_primary'] },
+  studios: { label: '工作室', type: 'select', operators: ['contains', 'is_one_of', 'is_none_of', 'is_primary'] },
   tags: { label: '标签', type: 'select', operators: ['contains', 'is_one_of', 'is_none_of'] }, 
   unified_rating: { label: '家长分级', type: 'select', operators: ['is_one_of', 'is_none_of', 'eq'] },
   release_date: { label: '上映于', type: 'date', operators: ['in_last_days', 'not_in_last_days'] },
@@ -934,7 +934,7 @@ const operatorLabels = {
   in_last_days: '最近N天内', not_in_last_days: 'N天以前',
   is_one_of: '是其中之一', is_none_of: '不是任何一个',
   is: '是', is_not: '不是',
-  is_primary: '主类型是' 
+  is_primary: '主要是' 
 };
 
 const staticFieldOptions = computed(() => 

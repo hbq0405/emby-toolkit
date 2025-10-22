@@ -375,9 +375,9 @@ def task_populate_metadata_cache(processor, batch_size: int = 50, force_full_upd
                         if credits_data:
                             directors = [{'id': p.get('id'), 'name': p.get('name')} for p in credits_data.get('crew', []) if p.get('job') == 'Director']
                         # --- 智能化判断所属国家/地区 ---
-                        primary_country = determine_primary_country(tmdb_details)
-                        country_names = [primary_country] if primary_country else []
-                        countries = translate_country_list(country_names)
+                        country_objects = tmdb_details.get('production_countries', [])
+                        country_codes = [c.get('iso_3166_1') for c in country_objects if c.get('iso_3166_1')]
+                        countries = translate_country_list(country_codes)
                     elif item_type == 'Series':
                         credits_data = tmdb_details.get("credits", {})
                         if credits_data:
