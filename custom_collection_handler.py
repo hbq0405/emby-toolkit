@@ -778,9 +778,14 @@ class FilterEngine:
             # 2. 检查字段是否为“字符串列表”（类型/国家/工作室/标签）
             elif field in ['genres', 'countries', 'studios', 'tags']:
                 item_value_list = item_metadata.get(f"{field}_json")
-                if item_value_list:
+                if item_value_list and isinstance(item_value_list, list):
                     try:
-                        if op == 'is_one_of':
+                        # ★★★ 在这里添加新运算符的逻辑 ★★★
+                        if op == 'is_primary':
+                            # 只有当列表不为空，且第一个元素与规则值相同时，才匹配
+                            if item_value_list and item_value_list[0] == value:
+                                match = True
+                        elif op == 'is_one_of':
                             if isinstance(value, list) and any(v in item_value_list for v in value):
                                 match = True
                         elif op == 'is_none_of':

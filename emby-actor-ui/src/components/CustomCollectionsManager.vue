@@ -916,7 +916,7 @@ const ruleConfig = {
   directors: { label: '导演', type: 'text', operators: ['contains', 'is_one_of', 'is_none_of'] }, 
   release_year: { label: '年份', type: 'number', operators: ['gte', 'lte', 'eq'] },
   rating: { label: '评分', type: 'number', operators: ['gte', 'lte'] },
-  genres: { label: '类型', type: 'select', operators: ['contains', 'is_one_of', 'is_none_of'] }, 
+  genres: { label: '类型', type: 'select', operators: ['contains', 'is_one_of', 'is_none_of', 'is_primary'] }, 
   countries: { label: '国家/地区', type: 'select', operators: ['contains', 'is_one_of', 'is_none_of'] },
   studios: { label: '工作室', type: 'select', operators: ['contains', 'is_one_of', 'is_none_of'] },
   tags: { label: '标签', type: 'select', operators: ['contains', 'is_one_of', 'is_none_of'] }, 
@@ -933,7 +933,8 @@ const operatorLabels = {
   gte: '大于等于', lte: '小于等于', eq: '等于',
   in_last_days: '最近N天内', not_in_last_days: 'N天以前',
   is_one_of: '是其中之一', is_none_of: '不是任何一个',
-  is: '是', is_not: '不是'
+  is: '是', is_not: '不是',
+  is_primary: '主类型是' 
 };
 
 const staticFieldOptions = computed(() => 
