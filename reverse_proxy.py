@@ -428,18 +428,18 @@ def handle_get_latest_items(user_id, params):
         base_url, api_key = _get_real_emby_url_and_key()
         virtual_library_id = params.get('ParentId') or params.get('customViewId')
 
-        # 场景一：处理单个虚拟库的“最近添加”
+        # ======================================================================
+        # 场景一：处理【单个】虚拟库的“最近添加”
+        # ======================================================================
         if virtual_library_id and is_mimicked_id(virtual_library_id):
             real_db_id = from_mimicked_id(virtual_library_id)
             collection_info = collection_db.get_custom_collection_by_id(real_db_id)
-            if not collection_info: return Response(json.dumps([]), mimetype='application/json')
+            if not collection_info: 
+                return Response(json.dumps([]), mimetype='application/json')
 
-            final_visible_ids = _get_final_item_ids_for_view(user_id, collection_info)
-            if not final_visible_ids: return Response(json.dumps([]), mimetype='application/json')
-            
             definition = collection_info.get('definition_json') or {}
-
-            # ★★★ 检查单个库的开关 ★★★
+            
+            # ★★★ 核心修改 1: 检查单个库的开关 ★★★
             if not definition.get('show_in_latest', True):
                 logger.trace(f"  ➜ 虚拟库 '{collection_info['name']}' 已关闭“在首页显示最新”，为其返回空列表。")
                 return Response(json.dumps([]), mimetype='application/json')
@@ -447,7 +447,7 @@ def handle_get_latest_items(user_id, params):
             final_visible_ids = _get_final_item_ids_for_view(user_id, collection_info)
             if not final_visible_ids: 
                 return Response(json.dumps([]), mimetype='application/json')
-
+            
             item_type_from_db = definition.get('item_type', ['Movie'])
             
             sort_by_str = 'DateCreated'
@@ -465,7 +465,6 @@ def handle_get_latest_items(user_id, params):
                 )
                 return Response(json.dumps(sorted_data.get("Items", [])), mimetype='application/json')
             else:
-                # 本地排序逻辑不变
                 latest_ids = queries_db.get_sorted_and_paginated_ids(final_visible_ids, sort_by_str.split(',')[0], sort_order, limit, 0)
                 if not latest_ids: return Response(json.dumps([]), mimetype='application/json')
                 
