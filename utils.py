@@ -216,7 +216,7 @@ KEYWORD_TRANSLATION_MAP = {
     "时间旅行": "time travel",
     "机器人": "robot",
     "人工智能": "artificial intelligence",
-    "后末日": "post-apocalyptic",
+    "后末日": "post-apocalyptic future",
     "反乌托邦": "dystopia",
     "魔法": "magic",
     "龙": "dragon",
@@ -235,6 +235,12 @@ KEYWORD_TRANSLATION_MAP = {
     "连环杀手": "serial killer",
     "生存": "survival",
     "血腥": "gore",
+
+    # --- 病毒/感染/瘟疫 ---
+    "病毒": "virus",
+    "感染": "infection",
+    "瘟疫": "plague",
+    "变种人": "mutant",
 
     # --- 犯罪/悬疑元素 ---
     "侦探": "detective",
