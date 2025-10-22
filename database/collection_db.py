@@ -916,20 +916,19 @@ def append_item_to_filter_collection_db(collection_id: int, new_item_tmdb_id: st
     
 def remove_emby_id_from_all_collections(emby_id_to_remove: str, item_name: Optional[str] = None):
     """
-    从所有 custom_collections 的缓存中移除一个指定的 emby_id，并【安全地】级联清理
-    下游的 user_collection_cache 表，彻底杜绝“误杀”风险。
-    - 采用“先查后改”的策略，将复杂的UPDATE-SELECT语句拆分为独立、明确的步骤。
+    从所有 custom_collections 的缓存中移除一个指定的 emby_id，并【级联】清理
+    下游的 user_collection_cache 表，实现数据一致性的“一条龙”服务。
     """
     if not emby_id_to_remove:
         return
 
+    # ★★★ 1/3: 准备一个列表，用来记录被影响的合集的数据库ID ★★★
     affected_collection_ids = []
-    log_item_identifier = f"'{item_name}'" if item_name else f"ID: {emby_id_to_remove}"
 
     try:
         with get_db_connection() as conn:
             with conn.cursor() as cursor:
-                # --- 步骤 A: 清理 custom_collections (这部分逻辑是安全的，保持不变) ---
+                # --- 步骤 A: 清理 generated_media_info_json (和以前一样) ---
                 sql_cleanup_generated_media = """
                     UPDATE custom_collections
                     SET generated_media_info_json = (
@@ -937,82 +936,55 @@ def remove_emby_id_from_all_collections(emby_id_to_remove: str, item_name: Optio
                         FROM jsonb_array_elements(generated_media_info_json) AS elem
                         WHERE elem ->> 'emby_id' != %s
                     ),
-                    in_library_count = GREATEST(0, in_library_count - 1) -- 使用 GREATEST 确保不会变为负数
+                    in_library_count = in_library_count - 1
                     WHERE generated_media_info_json @> %s::jsonb
-                    RETURNING id;
+                    RETURNING id;  -- ★★★ 核心修改：让 UPDATE 语句返回被修改行的 ID ★★★
                 """
+                
                 jsonb_match_str = f'[{{"emby_id": "{emby_id_to_remove}"}}]'
                 cursor.execute(sql_cleanup_generated_media, (emby_id_to_remove, jsonb_match_str))
                 
+                # 收集所有被影响的合集ID
                 rows = cursor.fetchall()
                 affected_collection_ids = [row['id'] for row in rows]
                 
+                log_item_identifier = f"'{item_name}'" if item_name else f"ID: {emby_id_to_remove}"
                 if affected_collection_ids:
-                    logger.info(f"  ➜ 已从 {len(affected_collection_ids)} 个自定义合集的缓存中，移除了媒体项 {log_item_identifier}。")
+                    logger.info(f"  ➜ 已从 {len(affected_collection_ids)} 个自定义合集的 generated_media_info_json 缓存中，成功移除了媒体项 {log_item_identifier}。")
                 else:
-                    logger.debug(f"  ➜ 在自定义合集缓存中未找到媒体项 {log_item_identifier}，无需清理。")
+                    logger.debug(f"  ➜ 在所有自定义合集的 generated_media_info_json 缓存中未找到媒体项 {log_item_identifier}，无需清理。")
 
-                # ======================================================================
-                # ★★★ 步骤 B: 安全地、分步式地清理 user_collection_cache ★★★
-                # ======================================================================
+                # --- 步骤 B: 如果有合集被影响，则级联清理 user_collection_cache ---
                 if affected_collection_ids:
                     logger.info(f"  ➜ 开始级联清理下游的用户权限缓存 (user_collection_cache)...")
                     
-                    # 1. 先查：找出所有需要更新的记录
-                    sql_find_caches_to_update = """
-                        SELECT user_id, collection_id, visible_emby_ids_json
-                        FROM user_collection_cache
+                    # ★★★ 2/3: 构建针对 user_collection_cache 的精准打击SQL ★★★
+                    sql_cleanup_user_cache = """
+                        UPDATE user_collection_cache
+                        SET visible_emby_ids_json = (
+                            SELECT jsonb_agg(elem)
+                            FROM jsonb_array_elements(visible_emby_ids_json) AS elem
+                            WHERE elem #>> '{}' != %s
+                        ),
+                        total_count = total_count - 1
                         WHERE collection_id = ANY(%s)
                           AND visible_emby_ids_json @> %s::jsonb;
                     """
+                    
+                    # 这里的匹配字符串是纯JSON数组，因为 visible_emby_ids_json 里存的是字符串列表
                     jsonb_match_str_for_user_cache = f'["{emby_id_to_remove}"]'
-                    cursor.execute(sql_find_caches_to_update, (affected_collection_ids, jsonb_match_str_for_user_cache))
                     
-                    caches_to_update = cursor.fetchall()
+                    cursor.execute(sql_cleanup_user_cache, (
+                        emby_id_to_remove, 
+                        affected_collection_ids, 
+                        jsonb_match_str_for_user_cache
+                    ))
                     
-                    if not caches_to_update:
-                        logger.debug(f"  ➜ 在用户权限缓存中未找到媒体项 {log_item_identifier} 的记录，无需清理。")
+                    # ★★★ 3/3: 记录最终的清理结果 ★★★
+                    if cursor.rowcount > 0:
+                        logger.info(f"  ➜ 级联清理成功！已从 {cursor.rowcount} 条用户权限缓存记录中移除了媒体项 {log_item_identifier}。")
                     else:
-                        logger.info(f"  ➜ 发现 {len(caches_to_update)} 条用户权限缓存记录需要更新。")
-                        
-                        # 2. 后改：在 Python 中计算新值，然后用简单的 UPDATE 批量执行
-                        update_payload = []
-                        for cache_row in caches_to_update:
-                            original_list = cache_row['visible_emby_ids_json']
-                            # 在 Python 中进行过滤，这是最安全的方式
-                            new_list = [emby_id for emby_id in original_list if emby_id != emby_id_to_remove]
-                            
-                            # 准备批量更新的数据
-                            update_payload.append({
-                                "new_json": json.dumps(new_list),
-                                "new_count": len(new_list),
-                                "user_id": cache_row['user_id'],
-                                "collection_id": cache_row['collection_id']
-                            })
-
-                        # 3. 使用 psycopg2 的 execute_values 高效执行批量更新
-                        from psycopg2.extras import execute_values
-                        
-                        # 使用临时表和JOIN的更新方式，是PostgreSQL中最高效、最安全的批量更新方法
-                        update_sql = """
-                            UPDATE user_collection_cache AS ucc
-                            SET
-                                visible_emby_ids_json = tmp.new_json::jsonb,
-                                total_count = tmp.new_count,
-                                last_updated_at = NOW()
-                            FROM (VALUES %s) AS tmp(new_json, new_count, user_id, collection_id)
-                            WHERE ucc.user_id = tmp.user_id AND ucc.collection_id = tmp.collection_id;
-                        """
-                        
-                        # 将字典列表转换为元组列表
-                        values_to_execute = [
-                            (d['new_json'], d['new_count'], d['user_id'], d['collection_id'])
-                            for d in update_payload
-                        ]
-                        
-                        execute_values(cursor, update_sql, values_to_execute)
-                        
-                        logger.info(f"  ➜ 级联清理成功！已安全更新了 {cursor.rowcount} 条用户权限缓存记录。")
+                        logger.debug(f"  ➜ 在用户权限缓存中未找到媒体项 {log_item_identifier} 的记录，无需清理。")
 
             conn.commit()
             logger.info(f"  ✅ 针对媒体项 {log_item_identifier} 的所有缓存清理任务已完成。")
@@ -1031,6 +1003,8 @@ def update_user_caches_on_item_add(
     """
     当一个新媒体项入库时，实时、精确地将其追加到所有
     相关用户的 user_collection_cache 中。
+    - 彻底修复了因权限判断逻辑不严谨导致的“误杀”问题。
+    - 采用“逐个合集检查权限”的策略，确保更新的绝对精准。
     """
     if not all([new_item_emby_id, new_item_tmdb_id, matching_collection_ids, emby_config]):
         return
@@ -1038,53 +1012,73 @@ def update_user_caches_on_item_add(
     logger.info(f"  ➜ 开始为新入库项目 《{new_item_name}》 更新用户权限缓存...")
     
     try:
-        user_ids_with_access = emby_handler.get_user_ids_with_access_to_item(
+        # 步骤 1: 获取所有能直接访问【新媒体项】的用户 (这个逻辑是正确的)
+        users_who_can_see_item = set(emby_handler.get_user_ids_with_access_to_item(
             item_id=new_item_emby_id,
             base_url=emby_config['url'],
             api_key=emby_config['api_key']
-        )
+        ))
 
-        if not user_ids_with_access:
+        if not users_who_can_see_item:
             logger.warning(f"  ➜ 未找到任何有权访问新项目 《{new_item_name}》 的用户，跳过缓存更新。")
             return
 
-        logger.debug(f"  ➜ 共有 {len(user_ids_with_access)} 个用户对新项目有原生访问权限。")
+        logger.debug(f"  ➜ 共有 {len(users_who_can_see_item)} 个用户对新项目有原生访问权限。")
+        total_updated_rows = 0
 
         with get_db_connection() as conn:
             with conn.cursor() as cursor:
-                # ★★★ 核心修复：使用 COALESCE 和 jsonb_set 构建终极防弹的 UPDATE 语句 ★★★
-                sql = """
-                    UPDATE user_collection_cache
-                    SET 
-                        -- 1. 先用 COALESCE 确保 visible_emby_ids_json 不是 NULL，如果
-                        --    是 NULL，就把它当作一个空的 JSON 数组 '[]'::jsonb。
-                        -- 2. 然后用 jsonb_set，在数组的末尾 ('{-1}') 追加我们的新 ID。
-                        --    第四个参数 true 表示如果路径不存在（比如数组为空），就创建它。
-                        visible_emby_ids_json = jsonb_set(
-                            COALESCE(visible_emby_ids_json, '[]'::jsonb),
-                            '{-1}',
-                            %s::jsonb,
-                            true
-                        ),
-                        total_count = total_count + 1,
-                        last_updated_at = NOW()
-                    WHERE
-                        user_id = ANY(%s)
-                        AND collection_id = ANY(%s);
-                """
                 
-                # 注意：传递给 jsonb_set 的新值，不应该是数组，而应该是要插入的元素本身
-                new_id_json = json.dumps(new_item_emby_id)
+                # ★★★ 核心修复：不再使用一条SQL，而是逐个合集进行精准判断 ★★★
+                for collection_id in matching_collection_ids:
+                    
+                    # 步骤 2: 获取【当前合集】的访问权限设置
+                    cursor.execute(
+                        "SELECT allowed_user_ids FROM custom_collections WHERE id = %s",
+                        (collection_id,)
+                    )
+                    collection_row = cursor.fetchone()
+                    if not collection_row:
+                        continue # 如果合集不存在，跳过
 
-                cursor.execute(sql, (
-                    new_id_json, # <-- 传递的是 '"307300"'
-                    user_ids_with_access,
-                    matching_collection_ids
-                ))
+                    allowed_users_for_collection = collection_row.get('allowed_user_ids')
+                    
+                    users_to_update_for_this_collection = set()
+                    
+                    # 步骤 3: 计算需要更新权限的【用户交集】
+                    if allowed_users_for_collection is None:
+                        # 如果 allowed_user_ids 为 NULL，表示合集对所有用户可见
+                        # 所以，所有能看见新媒体项的用户，都需要更新
+                        users_to_update_for_this_collection = users_who_can_see_item
+                    else:
+                        # 否则，取交集：既要能看新媒体，又要被允许看这个合集
+                        allowed_users_set = set(allowed_users_for_collection)
+                        users_to_update_for_this_collection = users_who_can_see_item.intersection(allowed_users_set)
+
+                    # 步骤 4: 如果交集不为空，则执行【精准更新】
+                    if users_to_update_for_this_collection:
+                        sql_precise_update = """
+                            UPDATE user_collection_cache
+                            SET 
+                                visible_emby_ids_json = COALESCE(visible_emby_ids_json, '[]'::jsonb) || %s::jsonb,
+                                total_count = total_count + 1,
+                                last_updated_at = NOW()
+                            WHERE
+                                user_id = ANY(%s)
+                                AND collection_id = %s;
+                        """
+                        
+                        new_id_json_array = json.dumps([new_item_emby_id])
+
+                        cursor.execute(sql_precise_update, (
+                            new_id_json_array,
+                            list(users_to_update_for_this_collection),
+                            collection_id
+                        ))
+                        total_updated_rows += cursor.rowcount
                 
-                updated_rows = cursor.rowcount
                 conn.commit()
-                logger.info(f"  ➜ 权限更新成功！在 {len(matching_collection_ids)} 个合集中，为 {len(user_ids_with_access)} 个用户更新了 {updated_rows} 条权限缓存记录。")
+                logger.info(f"  ➜ 权限更新成功！在 {len(matching_collection_ids)} 个合集中，共更新了 {total_updated_rows} 条权限缓存记录。")
 
     except Exception as e:
         logger.error(f"  ➜ 为新项目 《{new_item_name}》 更新用户缓存时发生严重错误: {e}", exc_info=True)
