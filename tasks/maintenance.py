@@ -319,11 +319,24 @@ def task_import_database(processor, file_content: str, tables_to_import: List[st
         backup_data = backup.get("data", {})
 
         def get_table_sort_key(table_name):
+            # ★★★【V2 - 依赖关系修正版】★★★
             order = {
-                'person_identity_map': 0, 'users': 1, 'actor_subscriptions': 10,
-                'actor_metadata': 11, 'tracked_actor_media': 20
+                # --- 级别 0: 无任何依赖的核心表 ---
+                'person_identity_map': 0,
+                'users': 1,
+                'user_templates': 2,      # 爹: 必须在 emby_users_extended 和 invitations 之前
+                'emby_users': 3,          # 爹: 必须在 emby_users_extended 之前
+
+                # --- 级别 1: 依赖级别 0 的表 ---
+                'emby_users_extended': 4, # 儿: 依赖 user_templates 和 emby_users
+                'invitations': 5,         # 儿: 依赖 user_templates
+                'actor_subscriptions': 10,
+
+                # --- 级别 2: 依赖更早级别的表 ---
+                'actor_metadata': 11,     # 依赖 person_identity_map (虽然外键已移除，但逻辑上依赖)
+                'tracked_actor_media': 20 # 依赖 actor_subscriptions
             }
-            return order.get(table_name.lower(), 100)
+            return order.get(table_name.lower(), 100) # 其他表默认优先级100
 
         actual_tables_to_import = [t for t in tables_to_import if t in backup_data]
         sorted_tables_to_import = sorted(actual_tables_to_import, key=get_table_sort_key)
