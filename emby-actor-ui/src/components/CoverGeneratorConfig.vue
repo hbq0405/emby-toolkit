@@ -49,9 +49,9 @@
             </n-gi>
             <!-- 第三列 -->
             <n-gi>
-              <n-form-item label="在封面上显示媒体统计数字">
+              <n-form-item label="在封面上显示角标">
                 <n-switch v-model:value="configData.show_item_count" />
-                <template #feedback>在封面左上角显示媒体项总数</template>
+                <template #feedback>媒体项总数或是榜单类型</template>
               </n-form-item>
             </n-gi>
             <!-- 第四列 -->
