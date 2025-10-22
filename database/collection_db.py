@@ -1066,3 +1066,27 @@ def update_user_caches_on_item_add(
 
     except Exception as e:
         logger.error(f"  ➜ 为新项目 《{new_item_name}》 更新用户缓存时发生严重错误: {e}", exc_info=True)
+
+def get_active_collection_ids_for_latest_view() -> List[int]:
+    """
+    高效地获取所有状态为 'active' 且在定义中开启了 'show_in_latest' 的
+    自定义合集的数据库 ID 列表。
+    """
+    try:
+        with get_db_connection() as conn:
+            cursor = conn.cursor()
+            # ★★★ 核心SQL优化：直接在WHERE子句中查询JSONB字段内部的值 ★★★
+            # COALESCE确保即使老合集没有show_in_latest这个键，也默认按'true'处理
+            # ->> 操作符将JSON字段提取为文本，然后我们将其转换为布尔值进行比较
+            sql = """
+                SELECT id FROM custom_collections
+                WHERE status = 'active'
+                  AND COALESCE((definition_json ->> 'show_in_latest'), 'true')::boolean = TRUE
+            """
+            cursor.execute(sql)
+            rows = cursor.fetchall()
+            logger.trace(f"  ➜ [性能优化] 从数据库找到 {len(rows)} 个配置为“在首页显示最新”的合集ID。")
+            return [row['id'] for row in rows]
+    except psycopg2.Error as e:
+        logger.error(f"高效获取“最新”合集ID时发生数据库错误: {e}", exc_info=True)
+        return []

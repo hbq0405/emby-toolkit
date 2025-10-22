@@ -422,7 +422,8 @@ def handle_get_mimicked_library_items(user_id, mimicked_id, params):
 
 def handle_get_latest_items(user_id, params):
     """
-    - 同样调用新的健壮辅助函数来处理剧集的最新排序
+    - 直接从数据库筛选合集ID。
+    - 同样调用新的健壮辅助函数来处理剧集的最新排序。
     """
     try:
         base_url, api_key = _get_real_emby_url_and_key()
@@ -439,7 +440,6 @@ def handle_get_latest_items(user_id, params):
 
             definition = collection_info.get('definition_json') or {}
             
-            # ★★★ 核心修改 1: 检查单个库的开关 ★★★
             if not definition.get('show_in_latest', True):
                 logger.trace(f"  ➜ 虚拟库 '{collection_info['name']}' 已关闭“在首页显示最新”，为其返回空列表。")
                 return Response(json.dumps([]), mimetype='application/json')
@@ -459,7 +459,6 @@ def handle_get_latest_items(user_id, params):
             fields = params.get('Fields', "PrimaryImageAspectRatio,BasicSyncInfo,DateCreated,UserData")
 
             if 'DateLastContentAdded' in sort_by_str:
-                logger.trace(f"  ➜ 为虚拟库 '{collection_info['name']}' 的最新剧集请求排序。")
                 sorted_data = _fetch_sorted_items_via_emby_proxy(
                     user_id, final_visible_ids, sort_by_str, sort_order, limit, 0, fields, len(final_visible_ids)
                 )
@@ -479,27 +478,19 @@ def handle_get_latest_items(user_id, params):
         elif not virtual_library_id:
             logger.trace(f"  ➜ 正在为用户 {user_id} 处理全局“最新媒体”请求...")
             
-            # ★★★ 从源头过滤掉不应包含的合集 ★★★
-            # 1. 获取所有启用的合集定义
-            all_active_collections = collection_db.get_all_active_custom_collections()
-            
-            # 2. 筛选出那些开启了“在首页显示最新”的合集，并获取它们的数据库ID
-            included_collection_ids = [
-                coll['id'] for coll in all_active_collections 
-                if (coll.get('definition_json') or {}).get('show_in_latest', True)
-            ]
+            # ★★★ 核心性能优化: 直接从数据库调用新函数，一步到位获取符合条件的合集ID ★★★
+            included_collection_ids = collection_db.get_active_collection_ids_for_latest_view()
 
             if not included_collection_ids:
                 logger.trace(f"  ➜ 用户 {user_id} 没有任何开启了“在首页显示最新”的可见合集。")
                 return Response(json.dumps([]), mimetype='application/json')
 
-            # 3. 在查询用户缓存时，只查询这些被允许的合集
+            # 后续逻辑不变，但现在它处理的是一个预先被高效筛选过的ID列表
             all_possible_ids = set()
             from database.connection import get_db_connection
             try:
                 with get_db_connection() as conn:
                     with conn.cursor() as cursor:
-                        # 使用 ANY(%s) 高效地匹配ID列表
                         sql = "SELECT visible_emby_ids_json FROM user_collection_cache WHERE user_id = %s AND collection_id = ANY(%s)"
                         cursor.execute(sql, (user_id, included_collection_ids))
                         rows = cursor.fetchall()
@@ -528,7 +519,7 @@ def handle_get_latest_items(user_id, params):
             return Response(json.dumps(final_items), mimetype='application/json')
             
         # ======================================================================
-        # 场景三：原生库的请求，直接转发 
+        # 场景三：原生库的请求，直接转发
         # ======================================================================
         else:
             target_url = f"{base_url}/{request.path.lstrip('/')}"
