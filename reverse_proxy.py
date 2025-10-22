@@ -637,6 +637,7 @@ def proxy_all(path):
     # --- 2. HTTP 代理逻辑 (V4.2 路由修复版) ---
     try:
         full_path = f'/{path}'
+        params = request.args
 
         # 规则 1: 获取主页媒体库列表 (/Views)
         if path.endswith('/Views') and path.startswith('emby/Users/'):
@@ -647,36 +648,76 @@ def proxy_all(path):
             user_id_match = re.search(r'/emby/Users/([^/]+)/', full_path)
             if user_id_match:
                 return handle_get_latest_items(user_id_match.group(1), request.args)
+            
+        # 规则 3: 智能识别第三方客户端的“最新”请求 
+        # 检查条件：
+        # 1. 请求的是通用的 /Items 路径
+        # 2. URL参数中【没有】ParentId (这意味着它是在全局范围搜索，而不是在某个库内部)
+        # 3. URL参数中【包含】Recursive=true 和 按日期排序的迹象
+        if path.endswith('/Items') and 'ParentId' not in params:
+            sort_by = params.get('SortBy', '')
+            is_latest_query = (
+                params.get('Recursive') == 'true' and
+                ('DateCreated' in sort_by or 'DateLastContentAdded' in sort_by) and
+                params.get('SortOrder') == 'Descending'
+            )
+            if is_latest_query:
+                logger.info(f"  ➜ 检测到来自第三方客户端的“最新媒体”请求，将应用虚拟库过滤规则。")
+                user_id_match = re.search(r'/emby/Users/([^/]+)/', full_path)
+                if user_id_match:
+                    return handle_get_latest_items(user_id_match.group(1), params)
 
-        # 规则 3: 获取虚拟库详情 (e.g., /Items/-900001)
+        # 规则 4: 获取虚拟库详情 (e.g., /Items/-900001)
         details_match = MIMICKED_ITEM_DETAILS_RE.search(full_path)
         if details_match:
             user_id = details_match.group(1)
             mimicked_id = details_match.group(2)
             return handle_get_mimicked_library_details(user_id, mimicked_id)
 
-        # 规则 4: 获取虚拟库图片
+        # 规则 5: 获取虚拟库图片
         if path.startswith('emby/Items/') and '/Images/' in path:
             item_id = path.split('/')[2]
             if is_mimicked_id(item_id):
                 return handle_get_mimicked_library_image(path)
         
-        # 规则 5: 获取虚拟库的元数据筛选信息 (如类型、年代等)
+        # 规则 6: 获取虚拟库的元数据筛选信息 (如类型、年代等)
         parent_id = request.args.get("ParentId")
         if parent_id and is_mimicked_id(parent_id):
             # 检查是否是元数据端点
             if any(path.endswith(endpoint) for endpoint in UNSUPPORTED_METADATA_ENDPOINTS + ['/Items/Prefixes', '/Genres', '/Studios', '/Tags', '/OfficialRatings', '/Years']):
                 return handle_mimicked_library_metadata_endpoint(path, parent_id, request.args)
             
-            # 规则 6: 获取虚拟库的内容 (最通用的规则，放在后面)
+            # 规则 7: 获取虚拟库的内容 (最通用的规则，放在后面)
             user_id_match = re.search(r'emby/Users/([^/]+)/Items', path)
             if user_id_match:
                 user_id = user_id_match.group(1)
                 return handle_get_mimicked_library_items(user_id, parent_id, request.args)
 
         # --- 默认转发逻辑 ---
-        logger.warning(f"反代服务收到了一个未处理的请求: '{path}'。这通常意味着Nginx配置有误，请检查路由规则。")
-        return Response("Path not handled by virtual library proxy.", status=404, mimetype='text/plain')
+        logger.trace(f"  ➜ 请求 '{path}' 未命中任何虚拟库规则，将直接转发至后端 Emby。")
+        base_url, api_key = _get_real_emby_url_and_key()
+        target_url = f"{base_url}/{path.lstrip('/')}"
+        
+        forward_headers = {k: v for k, v in request.headers if k.lower() not in ['host', 'accept-encoding']}
+        forward_headers['Host'] = urlparse(base_url).netloc
+        
+        forward_params = request.args.copy()
+        forward_params['api_key'] = api_key
+        
+        resp = requests.request(
+            method=request.method,
+            url=target_url,
+            headers=forward_headers,
+            params=forward_params,
+            data=request.get_data(),
+            stream=True,
+            timeout=30.0
+        )
+        
+        excluded_resp_headers = ['content-encoding', 'content-length', 'transfer-encoding', 'connection']
+        response_headers = [(name, value) for name, value in resp.raw.headers.items() if name.lower() not in excluded_resp_headers]
+        
+        return Response(resp.iter_content(chunk_size=8192), resp.status_code, response_headers)
         
     except Exception as e:
         logger.error(f"[PROXY] HTTP 代理时发生未知错误: {e}", exc_info=True)
