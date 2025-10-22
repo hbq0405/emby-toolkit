@@ -25,27 +25,46 @@ def _prepare_data_for_insert(table_name: str, table_data: List[Dict[str, Any]]) 
     """
     # 定义哪些列是 JSONB 类型，需要特殊处理
     JSONB_COLUMNS = {
-        'actor_subscriptions': {
-            'config_genres_include_json', 'config_genres_exclude_json', 
-            'config_tags_include_json', 'config_tags_exclude_json'
+        'app_settings': {
+            'value_json'
         },
-        'custom_collections': {'definition_json', 'generated_media_info_json'},
+        'collections_info': {
+            'missing_movies_json'
+        },
+        'custom_collections': {
+            'definition_json', 'generated_media_info_json', 
+            'emby_children_details_json', 'generated_emby_ids_json', 
+            'allowed_user_ids'
+        },
+        'user_collection_cache': {
+            'visible_emby_ids_json'
+        },
         'media_metadata': {
             'genres_json', 'actors_json', 'directors_json', 
-            'studios_json', 'countries_json', 'tags_json'
+            'studios_json', 'countries_json', 'tags_json', 
+            'emby_children_details_json'
         },
-        'watchlist': {'next_episode_to_air_json', 'missing_info_json'},
-        'collections_info': {'missing_movies_json'},
-        'resubscribe_rules': { # Add resubscribe_rules as it has JSONB fields
+        'watchlist': {
+            'next_episode_to_air_json', 'missing_info_json', 
+            'resubscribe_info_json', 'last_episode_to_air_json'
+        },
+        'actor_subscriptions': {
+            'config_genres_include_json', 'config_genres_exclude_json'
+            # 注意：旧的 config_tags... 已根据 schema 移除
+        },
+        'resubscribe_rules': {
             'target_library_ids', 'resubscribe_audio_missing_languages',
             'resubscribe_subtitle_missing_languages', 'resubscribe_quality_include',
             'resubscribe_effect_include'
         },
-        'media_cleanup_tasks': { # Add media_cleanup_tasks as it has JSONB fields
+        'resubscribe_cache': {
+            'audio_languages_raw', 'subtitle_languages_raw'
+        },
+        'media_cleanup_tasks': {
             'versions_info_json'
         },
-        'app_settings': { # Add app_settings as it has JSONB fields
-            'value_json'
+        'user_templates': {
+            'emby_policy_json', 'emby_configuration_json'
         }
     }
 
