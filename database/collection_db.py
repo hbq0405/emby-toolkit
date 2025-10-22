@@ -1003,8 +1003,7 @@ def update_user_caches_on_item_add(
     """
     当一个新媒体项入库时，实时、精确地将其追加到所有
     相关用户的 user_collection_cache 中。
-    - 彻底修复了因权限判断逻辑不严谨导致的“误杀”问题。
-    - 采用“逐个合集检查权限”的策略，确保更新的绝对精准。
+    修复了会覆盖原有权限的严重 Bug，并增加了防重复机制。
     """
     if not all([new_item_emby_id, new_item_tmdb_id, matching_collection_ids, emby_config]):
         return
@@ -1012,73 +1011,58 @@ def update_user_caches_on_item_add(
     logger.info(f"  ➜ 开始为新入库项目 《{new_item_name}》 更新用户权限缓存...")
     
     try:
-        # 步骤 1: 获取所有能直接访问【新媒体项】的用户 (这个逻辑是正确的)
-        users_who_can_see_item = set(emby_handler.get_user_ids_with_access_to_item(
+        user_ids_with_access = emby_handler.get_user_ids_with_access_to_item(
             item_id=new_item_emby_id,
             base_url=emby_config['url'],
             api_key=emby_config['api_key']
-        ))
+        )
 
-        if not users_who_can_see_item:
+        if not user_ids_with_access:
             logger.warning(f"  ➜ 未找到任何有权访问新项目 《{new_item_name}》 的用户，跳过缓存更新。")
             return
 
-        logger.debug(f"  ➜ 共有 {len(users_who_can_see_item)} 个用户对新项目有原生访问权限。")
-        total_updated_rows = 0
+        logger.debug(f"  ➜ 共有 {len(user_ids_with_access)} 个用户对新项目有原生访问权限。")
 
         with get_db_connection() as conn:
             with conn.cursor() as cursor:
-                
-                # ★★★ 核心修复：不再使用一条SQL，而是逐个合集进行精准判断 ★★★
-                for collection_id in matching_collection_ids:
-                    
-                    # 步骤 2: 获取【当前合集】的访问权限设置
-                    cursor.execute(
-                        "SELECT allowed_user_ids FROM custom_collections WHERE id = %s",
-                        (collection_id,)
-                    )
-                    collection_row = cursor.fetchone()
-                    if not collection_row:
-                        continue # 如果合集不存在，跳过
-
-                    allowed_users_for_collection = collection_row.get('allowed_user_ids')
-                    
-                    users_to_update_for_this_collection = set()
-                    
-                    # 步骤 3: 计算需要更新权限的【用户交集】
-                    if allowed_users_for_collection is None:
-                        # 如果 allowed_user_ids 为 NULL，表示合集对所有用户可见
-                        # 所以，所有能看见新媒体项的用户，都需要更新
-                        users_to_update_for_this_collection = users_who_can_see_item
-                    else:
-                        # 否则，取交集：既要能看新媒体，又要被允许看这个合集
-                        allowed_users_set = set(allowed_users_for_collection)
-                        users_to_update_for_this_collection = users_who_can_see_item.intersection(allowed_users_set)
-
-                    # 步骤 4: 如果交集不为空，则执行【精准更新】
-                    if users_to_update_for_this_collection:
-                        sql_precise_update = """
-                            UPDATE user_collection_cache
-                            SET 
-                                visible_emby_ids_json = COALESCE(visible_emby_ids_json, '[]'::jsonb) || %s::jsonb,
-                                total_count = total_count + 1,
-                                last_updated_at = NOW()
-                            WHERE
-                                user_id = ANY(%s)
-                                AND collection_id = %s;
-                        """
+                # ★★★ 核心修复：使用 || 操作符进行追加，并增加防重复条件 ★★★
+                sql = """
+                    UPDATE user_collection_cache
+                    SET 
+                        -- 1. 使用 COALESCE 确保字段不为 NULL，若为 NULL 则视为空数组 '[]'::jsonb
+                        -- 2. 使用 || 操作符将新元素的 JSONB 数组追加到现有数组末尾
+                        visible_emby_ids_json = COALESCE(visible_emby_ids_json, '[]'::jsonb) || %s::jsonb,
                         
-                        new_id_json_array = json.dumps([new_item_emby_id])
-
-                        cursor.execute(sql_precise_update, (
-                            new_id_json_array,
-                            list(users_to_update_for_this_collection),
-                            collection_id
-                        ))
-                        total_updated_rows += cursor.rowcount
+                        -- 3. 只有在成功追加时才增加计数
+                        total_count = total_count + 1,
+                        last_updated_at = NOW()
+                    WHERE
+                        user_id = ANY(%s)
+                        AND collection_id = ANY(%s)
+                        -- 4. ★★★ 关键条件：只有当新 ID 不存在于数组中时，才执行更新 ★★★
+                        --    使用 @> 操作符检查数组是否包含指定的单个元素 JSONB 数组
+                        AND NOT (visible_emby_ids_json @> %s::jsonb);
+                """
                 
+                # 构造一个只包含新 ID 的 JSONB 数组字符串，用于追加和检查
+                # 例如: '["307300"]'
+                new_id_jsonb_array = json.dumps([new_item_emby_id])
+
+                cursor.execute(sql, (
+                    new_id_jsonb_array,      # 用于追加
+                    user_ids_with_access,
+                    matching_collection_ids,
+                    new_id_jsonb_array       # 用于防重复检查
+                ))
+                
+                updated_rows = cursor.rowcount
                 conn.commit()
-                logger.info(f"  ➜ 权限更新成功！在 {len(matching_collection_ids)} 个合集中，共更新了 {total_updated_rows} 条权限缓存记录。")
+                
+                if updated_rows > 0:
+                    logger.info(f"  ➜ 权限更新成功！在 {len(matching_collection_ids)} 个合集中，为 {len(user_ids_with_access)} 个相关用户更新了 {updated_rows} 条权限缓存记录。")
+                else:
+                    logger.info(f"  ➜ 权限缓存检查完成。所有相关用户的缓存记录均已包含新项目《{new_item_name}》，无需更新。")
+
 
     except Exception as e:
         logger.error(f"  ➜ 为新项目 《{new_item_name}》 更新用户缓存时发生严重错误: {e}", exc_info=True)
