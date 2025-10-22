@@ -275,7 +275,7 @@ def _process_batch_webhook_events():
             
             # 如果是首次入库的剧集，根据是否有缓存决定传递参数
             if parent_type == 'Series':
-                logger.info(f"  ➜ [智能判断] 检测到新入库剧集 '{parent_name}'，正在检查本地缓存...")
+                logger.info(f"  ➜ [前置判断] 检测到新入库剧集 '{parent_name}'，正在检查本地缓存...")
                 
                 # 1. 先获取TMDb ID
                 item_details_for_check = emby_handler.get_emby_item_details(parent_id, extensions.media_processor_instance.emby_url, extensions.media_processor_instance.emby_api_key, extensions.media_processor_instance.emby_user_id, fields="ProviderIds")
@@ -294,17 +294,17 @@ def _process_batch_webhook_events():
                                 cache_exists = cursor.fetchone() is not None
                         
                         if cache_exists:
-                            logger.info(f"  ➜ [智能判断] 发现有效缓存，将使用快速模式处理 '{parent_name}'。")
+                            logger.info(f"  ➜ [前置判断] 发现有效缓存，不传递深度处理参数。")
                             force_full_update_for_new_item = False
                         else:
-                            logger.info(f"  ➜ [智能判断] 未发现有效缓存，将为 '{parent_name}' 启用深度刮削模式以获取最全演员表。")
+                            logger.info(f"  ➜ [前置判断] 未发现有效缓存，将传递深度处理参数以获取最全演员表。")
                             force_full_update_for_new_item = True
                             
                     except Exception as e_check:
-                        logger.error(f"  ➜ [智能判断] 检查缓存时出错: {e_check}，为保险起见，将启用深度刮削模式。")
+                        logger.error(f"  ➜ [前置判断] 检查缓存时出错: {e_check}，为保险起见，将启用深度处理模式。")
                         force_full_update_for_new_item = True
                 else:
-                    logger.warning(f"  ➜ [智能判断] 无法获取 '{parent_name}' 的TMDb ID，为保险起见，将启用深度刮削模式。")
+                    logger.warning(f"  ➜ [前置判断] 无法获取 '{parent_name}' 的TMDb ID，为保险起见，将启用深度处理模式。")
                     force_full_update_for_new_item = True
             
             # 对于电影，永远是 False，走常规流程
