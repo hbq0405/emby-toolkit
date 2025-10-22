@@ -385,8 +385,22 @@
             </n-input-group>
           </n-form-item>
           <n-divider title-placement="left" style="margin-top: 15px;">
-            附加实时筛选 (可选)
+            附加功能 (可选)
           </n-divider>
+          <n-form-item>
+            <template #label>
+              <n-space align="center">
+                <span>在首页显示最新内容</span>
+                <n-tooltip trigger="hover">
+                  <template #trigger>
+                    <n-icon :component="HelpIcon" />
+                  </template>
+                  开启后，此合集的内容将出现在 Emby 首页的“最新媒体”栏目中。
+                </n-tooltip>
+              </n-space>
+            </template>
+            <n-switch v-model:value="currentCollection.definition.show_in_latest" />
+          </n-form-item>
           <n-form-item>
             <template #label>
               <n-space align="center">
@@ -1154,7 +1168,8 @@ const getInitialFormModel = () => ({
     default_sort_order: 'Ascending',
     dynamic_filter_enabled: false,
     dynamic_logic: 'AND',
-    dynamic_rules: []
+    dynamic_rules: [],
+    show_in_latest: true,
   }
 });
 const currentCollection = ref(getInitialFormModel());

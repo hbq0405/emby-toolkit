@@ -438,6 +438,16 @@ def handle_get_latest_items(user_id, params):
             if not final_visible_ids: return Response(json.dumps([]), mimetype='application/json')
             
             definition = collection_info.get('definition_json') or {}
+
+            # ★★★ 检查单个库的开关 ★★★
+            if not definition.get('show_in_latest', True):
+                logger.trace(f"  ➜ 虚拟库 '{collection_info['name']}' 已关闭“在首页显示最新”，为其返回空列表。")
+                return Response(json.dumps([]), mimetype='application/json')
+
+            final_visible_ids = _get_final_item_ids_for_view(user_id, collection_info)
+            if not final_visible_ids: 
+                return Response(json.dumps([]), mimetype='application/json')
+
             item_type_from_db = definition.get('item_type', ['Movie'])
             
             sort_by_str = 'DateCreated'
@@ -470,15 +480,29 @@ def handle_get_latest_items(user_id, params):
         elif not virtual_library_id:
             logger.trace(f"  ➜ 正在为用户 {user_id} 处理全局“最新媒体”请求...")
             
+            # ★★★ 从源头过滤掉不应包含的合集 ★★★
+            # 1. 获取所有启用的合集定义
+            all_active_collections = collection_db.get_all_active_custom_collections()
+            
+            # 2. 筛选出那些开启了“在首页显示最新”的合集，并获取它们的数据库ID
+            included_collection_ids = [
+                coll['id'] for coll in all_active_collections 
+                if (coll.get('definition_json') or {}).get('show_in_latest', True)
+            ]
+
+            if not included_collection_ids:
+                logger.trace(f"  ➜ 用户 {user_id} 没有任何开启了“在首页显示最新”的可见合集。")
+                return Response(json.dumps([]), mimetype='application/json')
+
+            # 3. 在查询用户缓存时，只查询这些被允许的合集
             all_possible_ids = set()
             from database.connection import get_db_connection
             try:
                 with get_db_connection() as conn:
                     with conn.cursor() as cursor:
-                        cursor.execute(
-                            "SELECT visible_emby_ids_json FROM user_collection_cache WHERE user_id = %s",
-                            (user_id,)
-                        )
+                        # 使用 ANY(%s) 高效地匹配ID列表
+                        sql = "SELECT visible_emby_ids_json FROM user_collection_cache WHERE user_id = %s AND collection_id = ANY(%s)"
+                        cursor.execute(sql, (user_id, included_collection_ids))
                         rows = cursor.fetchall()
                         for row in rows:
                             if row['visible_emby_ids_json']:
@@ -491,7 +515,6 @@ def handle_get_latest_items(user_id, params):
                 return Response(json.dumps([]), mimetype='application/json')
 
             limit = int(params.get('Limit', 100))
-            # 全局最新，永远按 DateCreated 排序，这里逻辑不变
             latest_ids = queries_db.get_sorted_and_paginated_ids(list(all_possible_ids), 'DateCreated', 'Descending', limit, 0)
 
             if not latest_ids: 
