@@ -732,6 +732,7 @@ class FilterEngine:
             field, op, value = rule.get("field"), rule.get("operator"), rule.get("value")
             match = False
             
+            # 1. 处理列表字段
             if field in ['actors', 'directors', 'genres', 'countries', 'studios', 'tags']:
                 item_value_list = item_metadata.get(f"{field}_json")
                 if not item_value_list or not isinstance(item_value_list, list):
@@ -741,12 +742,11 @@ class FilterEngine:
                 values_to_check = item_value_list
                 if op == 'is_primary':
                     if field == 'actors':
-                        values_to_check = item_value_list[:3]
+                        values_to_check = item_value_list[:3] #演员只取前3
                     else:
                         values_to_check = item_value_list[:1]
                 
                 try:
-                    # 统一处理人物相关的字段 (actors, directors)
                     if field in ['actors', 'directors']:
                         if not isinstance(value, list):
                             results.append(False); continue
@@ -755,14 +755,12 @@ class FilterEngine:
                         if not rule_person_ids:
                             results.append(False); continue
 
-                        # ★★★ 核心修复：统一使用健壮的ID获取方式 ★★★
                         item_person_ids = set()
                         for p in values_to_check:
                             person_id = p.get('tmdb_id') or p.get('id') # <-- 修正点！
                             if person_id is not None:
                                 item_person_ids.add(str(person_id))
                         
-                        # 'contains' 和 'is_primary' 对于人物字段，逻辑都是检查交集
                         if op in ['is_one_of', 'contains', 'is_primary']:
                             if not rule_person_ids.isdisjoint(item_person_ids):
                                 match = True
@@ -788,7 +786,7 @@ class FilterEngine:
                 except (TypeError, KeyError) as e:
                     logger.warning(f"  ➜ 处理 {field}_json 时遇到意外的格式错误: {e}, 内容: {item_value_list}")
 
-            # 3. 处理其他所有非列表字段
+            # 2. 处理其他所有非列表字段
             elif field in ['release_date', 'date_added']:
                 item_date_val = item_metadata.get(field)
                 if item_date_val and str(value).isdigit():
@@ -813,7 +811,7 @@ class FilterEngine:
                     except (ValueError, TypeError):
                         pass
 
-            # 4. 处理分级字段
+            # 3. 处理分级字段
             elif field == 'unified_rating':
                 item_unified_rating = item_metadata.get('unified_rating')
                 if item_unified_rating:
