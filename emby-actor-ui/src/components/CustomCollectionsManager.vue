@@ -1182,7 +1182,8 @@ watch(() => currentCollection.value.type, (newType) => {
     default_sort_order: 'Ascending',
     dynamic_filter_enabled: false,
     dynamic_logic: 'AND',
-    dynamic_rules: []
+    dynamic_rules: [],
+    show_in_latest: true,
   };
   if (newType === 'filter') {
     currentCollection.value.definition = {
@@ -1586,6 +1587,10 @@ const handleEditClick = (row) => {
     rowCopy.definition = rowCopy.type === 'filter'
       ? { item_type: ['Movie'], logic: 'AND', rules: [] }
       : { item_type: ['Movie'], url: '' };
+  }
+
+  if (typeof rowCopy.definition.show_in_latest === 'undefined') {
+    rowCopy.definition.show_in_latest = true;
   }
 
   if (!rowCopy.definition.default_sort_by) {
