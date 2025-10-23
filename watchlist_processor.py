@@ -624,16 +624,34 @@ class WatchlistProcessor:
                 except ValueError:
                     logger.warning(f"  ➜ 解析TMDb最后播出日期 '{last_air_date_str}' 失败。")
 
+        # ▼▼▼ 元数据超时强制完结逻辑 ▼▼▼
+        force_complete_due_to_timeout = False
+        # 规则：TMDb已完结 + 本地文件不缺 + 元数据缺失 + 完结已超1个月
+        if is_ended_on_tmdb and not has_missing_media and not has_complete_metadata:
+            if last_episode_to_air:
+                last_air_date_str = last_episode_to_air.get("air_date")
+                if last_air_date_str:
+                    try:
+                        last_air_date = datetime.strptime(last_air_date_str, '%Y-%m-%d').date()
+                        days_since_ended = (datetime.now(timezone.utc).date() - last_air_date).days
+                        # 如果完结超过30天 (约一个月)
+                        if days_since_ended > 30:
+                            force_complete_due_to_timeout = True
+                            logger.warning(f"  ➜ 剧集 '{item_name}' 已完结超过一个月，虽元数据缺失但文件完整，将强制完结。")
+                    except ValueError:
+                        logger.warning(f"  ➜ 解析TMDb最后播出日期 '{last_air_date_str}' 失败，无法应用元数据超时规则。")
+
         final_status = STATUS_WATCHING
         paused_until_date = None
 
-        # ▼▼▼ 核心状态判断逻辑 (已整合元数据检查) ▼▼▼
         # 完结的【硬性前提】：本地文件完整 且 元数据完整
         can_be_completed = not has_missing_media and has_complete_metadata
 
-        if can_be_completed and (is_ended_on_tmdb or is_season_finale):
+        if (can_be_completed and (is_ended_on_tmdb or is_season_finale)) or force_complete_due_to_timeout:
             final_status = STATUS_COMPLETED
-            if is_season_finale and not is_ended_on_tmdb:
+            if force_complete_due_to_timeout:
+                logger.info(f"  ➜ 剧集因“元数据超时”规则，状态变更为: {translate_internal_status(final_status)}")
+            elif is_season_finale and not is_ended_on_tmdb:
                 logger.info(f"  ➜ 剧集因“本季大结局”且本地/元数据完整，状态变更为: {translate_internal_status(final_status)}")
             else:
                 logger.info(f"  ➜ 剧集已完结且本地/元数据完整，状态变更为: {translate_internal_status(final_status)}")
