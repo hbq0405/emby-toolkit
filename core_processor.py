@@ -23,7 +23,7 @@ from database.log_db import LogDBManager
 from database.connection import get_db_connection as get_central_db_connection
 from cachetools import TTLCache
 from ai_translator import AITranslator
-from utils import get_override_path_for_item, translate_country_list, get_unified_rating, determine_primary_country
+from utils import translate_country_list, get_unified_rating
 from watchlist_processor import WatchlistProcessor
 from douban import DoubanApi
 

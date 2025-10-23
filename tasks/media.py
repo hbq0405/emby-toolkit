@@ -14,7 +14,7 @@ import task_manager
 import tmdb_handler
 import emby_handler
 from database import connection
-from utils import translate_country_list, get_unified_rating, determine_primary_country
+from utils import translate_country_list, get_unified_rating
 
 logger = logging.getLogger(__name__)
 

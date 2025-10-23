@@ -13,14 +13,8 @@ import moviepilot_handler
 import utils
 from tasks import *
 import extensions
-from extensions import (
-    login_required, 
-    task_lock_required, 
-    processor_ready_required
-)
 from flask import Flask, render_template, request, redirect, url_for, jsonify, flash, stream_with_context, send_from_directory,Response, abort, session
 from werkzeug.utils import safe_join, secure_filename
-from utils import get_override_path_for_item, translate_country_list, get_unified_rating
 from watchlist_processor import WatchlistProcessor
 from datetime import datetime
 import requests
