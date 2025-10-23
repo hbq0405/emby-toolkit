@@ -552,7 +552,7 @@ class WatchlistProcessor:
         item_name = series_data['item_name']
         is_force_ended = bool(series_data.get('force_ended', 0))
         
-        logger.info(f"【追剧检查】正在处理: '{item_name}' (TMDb ID: {tmdb_id})")
+        logger.info(f"  ➜ 【追剧检查】正在处理: '{item_name}' (TMDb ID: {tmdb_id})")
 
         # 步骤1: 存活检查
         item_details_for_check = emby_handler.get_emby_item_details(
@@ -565,7 +565,7 @@ class WatchlistProcessor:
             return 
 
         if not self.tmdb_api_key:
-            logger.warning("未配置TMDb API Key，跳过。")
+            logger.warning("  ➜ 未配置TMDb API Key，跳过。")
             return
 
         # 步骤2: 从TMDb获取权威数据
