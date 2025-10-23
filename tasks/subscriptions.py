@@ -5,7 +5,7 @@ import os
 import json
 import time
 import logging
-from datetime import datetime, date
+from datetime import datetime, date, timedelta, timezone
 from typing import List, Optional
 from concurrent.futures import ThreadPoolExecutor, as_completed # <--- 就是加上这一行！
 
@@ -162,7 +162,22 @@ def task_auto_subscribe(processor):
                                 continue
 
                             if season_date <= today:
-                                # ★★★ 核心修改 2/3: 在订阅前检查配额 ★★★
+                                # 冷却判断 
+                                resubscribe_info = series.get('resubscribe_info_json') or {}
+                                last_subscribed_str = resubscribe_info.get(str(season['season_number']))
+                                
+                                if last_subscribed_str:
+                                    try:
+                                        cooldown_hours = 24 
+                                        last_subscribed_time = datetime.fromisoformat(last_subscribed_str.replace('Z', '+00:00'))
+                                        if datetime.now(timezone.utc) < last_subscribed_time + timedelta(hours=cooldown_hours):
+                                            logger.info(f"  ➜ 《{series['item_name']}》第 {season['season_number']} 季在 {cooldown_hours} 小时内已订阅过，本次跳过。")
+                                            seasons_to_keep.append(season) # 把它加回去，等待下次检查
+                                            continue # 跳过当前季，继续检查下一个
+                                    except (ValueError, TypeError):
+                                        logger.warning(f"  ➜ 解析《{series['item_name']}》第 {season['season_number']} 季的上次订阅时间失败，将继续尝试订阅。")
+
+                                # --- 配额检查 ---
                                 current_quota = settings_db.get_subscription_quota()
                                 if current_quota <= 0:
                                     quota_exhausted = True
@@ -173,6 +188,17 @@ def task_auto_subscribe(processor):
                                 success = moviepilot_handler.subscribe_series_to_moviepilot(dict(series), season['season_number'], config_manager.APP_CONFIG)
                                 if success:
                                     settings_db.decrement_subscription_quota() # 消耗配额
+                                    
+                                    # 订阅成功后，立刻更新我们的“记忆” 
+                                    cursor.execute("""
+                                        UPDATE watchlist
+                                        SET resubscribe_info_json = jsonb_set(
+                                            COALESCE(resubscribe_info_json, '{}'::jsonb),
+                                            %s, %s::jsonb, true
+                                        )
+                                        WHERE item_id = %s
+                                    """, ([str(season['season_number'])], f'"{datetime.now(timezone.utc).isoformat()}"', series['item_id']))
+
                                     successfully_subscribed_items.append(f"《{series['item_name']}》第 {season['season_number']} 季")
                                     seasons_changed = True
                                 else:
