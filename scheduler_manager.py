@@ -266,7 +266,8 @@ class SchedulerManager:
                 )
                 
                 friendly_cron_str = _get_next_run_time_str(cron_str)
-                chain_max_runtime_minutes = config.get(runtime_key, 0)
+                chain_max_runtime_minutes = config.get(runtime_key) or 0
+                
                 log_message = (
                     f"  ➜ 已成功设置'{job_name}'，执行计划: {friendly_cron_str}，"
                     f"包含 {len(task_sequence)} 个任务。"
