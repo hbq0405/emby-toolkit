@@ -107,7 +107,7 @@ def remove_item_from_watchlist(item_id: str) -> bool:
         raise
 
 def batch_force_end_watchlist_items(item_ids: List[str]) -> int:
-    """【V2】批量将追剧项目标记为“强制完结”。"""
+    """批量将追剧项目标记为“强制完结”，并同步更新其“在播”状态。"""
     
     if not item_ids:
         return 0
@@ -116,14 +116,14 @@ def batch_force_end_watchlist_items(item_ids: List[str]) -> int:
         with get_db_connection() as conn:
             cursor = conn.cursor()
             placeholders = ','.join('%s' for _ in item_ids)
-            sql = f"UPDATE watchlist SET status = 'Completed', force_ended = TRUE WHERE item_id IN ({placeholders})"
+            sql = f"UPDATE watchlist SET status = 'Completed', force_ended = TRUE, is_airing = FALSE WHERE item_id IN ({placeholders})"
             
             cursor.execute(sql, item_ids)
             conn.commit()
             
             updated_count = cursor.rowcount
             if updated_count > 0:
-                logger.info(f"DB: 批量强制完结了 {updated_count} 个追剧项目。")
+                logger.info(f"DB: 批量强制完结了 {updated_count} 个追剧项目，并同步更新了其在播状态。")
             else:
                 logger.warning(f"DB: 尝试批量强制完结，但提供的ID在列表中均未找到。")
             return updated_count
