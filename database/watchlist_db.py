@@ -62,18 +62,32 @@ def add_item_to_watchlist(item_id: str, tmdb_id: str, item_name: str, item_type:
         raise
 
 def update_watchlist_item_status(item_id: str, new_status: str) -> bool:
-    """更新追剧列表中某个项目的状态。"""
+    """更新追剧列表中某个项目的状态，并智能处理关联字段。"""
     
     try:
         with get_db_connection() as conn:
             cursor = conn.cursor()
-            cursor.execute(
-                "UPDATE watchlist SET status = %s WHERE item_id = %s",
-                (new_status, item_id)
-            )
+            
+            # 准备要更新的字段和值
+            updates = {"status": new_status}
+            
+            # 如果新状态是 'Watching'，则联动重置 'force_ended' 和 'paused_until'
+            if new_status == 'Watching':
+                updates["force_ended"] = False
+                updates["paused_until"] = None
+            
+            # 动态构建 SET 子句
+            set_clauses = [f"{key} = %s" for key in updates.keys()]
+            values = list(updates.values())
+            values.append(item_id) # 最后把 item_id 加上
+            
+            sql = f"UPDATE watchlist SET {', '.join(set_clauses)} WHERE item_id = %s"
+            
+            cursor.execute(sql, tuple(values))
+
             conn.commit()
             if cursor.rowcount > 0:
-                logger.info(f"DB: 项目 {item_id} 的追剧状态已更新为 '{new_status}'。")
+                logger.info(f"DB: 项目 {item_id} 的追剧状态已更新为 '{new_status}'，并重置了关联状态。")
                 return True
             else:
                 logger.warning(f"DB: 尝试更新追剧状态，但未在列表中找到项目 {item_id}。")
@@ -132,7 +146,7 @@ def batch_force_end_watchlist_items(item_ids: List[str]) -> int:
         raise
 
 def batch_update_watchlist_status(item_ids: list, new_status: str) -> int:
-    """【V2 - 时间格式修复版】批量更新指定项目ID列表的追剧状态。"""
+    """批量更新指定项目ID列表的追剧状态，并智能处理关联字段。"""
     
     if not item_ids:
         return 0
@@ -141,14 +155,17 @@ def batch_update_watchlist_status(item_ids: list, new_status: str) -> int:
         with get_db_connection() as conn:
             cursor = conn.cursor()
             
-            updates = { "status": new_status }
+            # ▼▼▼  (逻辑与单体更新函数保持一致) ▼▼▼
+            updates = {"status": new_status}
             
+            # 如果新状态是 'Watching'，则联动重置 'force_ended' 和 'paused_until'
             if new_status == 'Watching':
-                updates["paused_until"] = None
                 updates["force_ended"] = False
+                updates["paused_until"] = None
             
             set_clauses = [f"{key} = %s" for key in updates.keys()]
-            set_clauses.append("last_checked_at = NOW()")
+            # 批量更新时，也更新检查时间，避免立即被旧缓存影响
+            set_clauses.append("last_checked_at = NOW()") 
             
             values = list(updates.values())
             
@@ -158,9 +175,11 @@ def batch_update_watchlist_status(item_ids: list, new_status: str) -> int:
             values.extend(item_ids)
             
             cursor.execute(sql, tuple(values))
+            # ▲▲▲ 修改结束 ▲▲▲
+
             conn.commit()
             
-            logger.info(f"DB: 成功将 {cursor.rowcount} 个项目的状态批量更新为 '{new_status}'。")
+            logger.info(f"DB: 成功将 {cursor.rowcount} 个项目的状态批量更新为 '{new_status}'，并重置了关联状态。")
             return cursor.rowcount
             
     except Exception as e:

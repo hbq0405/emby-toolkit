@@ -51,7 +51,6 @@ def api_get_watchlist():
 @watchlist_bp.route('/add', methods=['POST'])
 @login_required
 def api_add_to_watchlist():
-    # ... (函数逻辑和原来完全一样) ...
     data = request.json
     item_id = data.get('item_id')
     tmdb_id = data.get('tmdb_id')
@@ -81,7 +80,6 @@ def api_add_to_watchlist():
 @watchlist_bp.route('/update_status', methods=['POST'])
 @login_required
 def api_update_watchlist_status():
-    # ... (函数逻辑和原来完全一样) ...
     data = request.json
     item_id = data.get('item_id')
     new_status = data.get('new_status')
@@ -106,7 +104,6 @@ def api_update_watchlist_status():
 @watchlist_bp.route('/remove/<item_id>', methods=['POST'])
 @login_required
 def api_remove_from_watchlist(item_id):
-    # ... (函数逻辑和原来完全一样) ...
     logger.info(f"API (Blueprint): 收到请求，将项目 {item_id} 从追剧列表移除。")
     try:
         success = watchlist_db.remove_item_from_watchlist(
@@ -123,7 +120,6 @@ def api_remove_from_watchlist(item_id):
 @watchlist_bp.route('/refresh/<item_id>', methods=['POST'])
 @login_required
 def api_trigger_single_watchlist_refresh(item_id):
-    # ... (函数逻辑和原来完全一样) ...
     from tasks import task_refresh_single_watchlist_item # 延迟导入任务函数
     logger.trace(f"API (Blueprint): 收到对单个追剧项目 {item_id} 的刷新请求。")
     if not extensions.watchlist_processor_instance:
