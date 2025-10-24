@@ -132,18 +132,6 @@ You will receive a JSON object with `context` (containing `title` and `year`) an
 **Output Format (MANDATORY):**
 You MUST return a single, valid JSON object mapping each original term to its Chinese translation. NO other text or markdown.
 """
-# ★★★ 专门用于“中译英”的指令 ★★★
-ZH_TO_EN_PROMPT = """
-You are a translation API that only returns JSON.
-Your task is to translate a list of Simplified Chinese terms into **English**.
-
-You MUST return a single, valid JSON object mapping each original Chinese term to its English translation.
-- The source language is always Simplified Chinese.
-- The target language MUST ALWAYS be English.
-- If a term cannot be translated, use the original term as its value.
-- Do not add any explanations or text outside the JSON object.
-"""
-
 class AITranslator:
     def __init__(self, config: Dict[str, Any]):
         self.provider = config.get("ai_provider", "openai").lower()
@@ -198,8 +186,7 @@ class AITranslator:
                         texts: List[str], 
                         mode: str = 'fast',
                         title: Optional[str] = None, 
-                        year: Optional[int] = None,
-                        override_system_prompt: Optional[str] = None) -> Dict[str, str]:
+                        year: Optional[int] = None) -> Dict[str, str]:
         
         if not texts: 
             return {}
@@ -208,14 +195,17 @@ class AITranslator:
         
         # 调度员开始看指令
         if mode == 'quality':
-            # ▼▼▼ 核心修改 2：把新参数传递下去 ▼▼▼
-            return self._translate_quality_mode(unique_texts, title, year, override_system_prompt)
+            # 如果指令是“高质量”，就喊“顾问组”来干活
+            return self._translate_quality_mode(unique_texts, title, year)
+        # ★★★ 新增调度逻辑 ★★★
         elif mode == 'transliterate':
-            return self._translate_transliterate_mode(unique_texts, override_system_prompt)
+            # 如果指令是“强制音译”，就喊“音译组”来干活
+            return self._translate_transliterate_mode(unique_texts)
         else:
-            return self._translate_fast_mode(unique_texts, override_system_prompt)
+            # 其他所有情况（包括默认的'fast'），都喊“翻译组”来干活
+            return self._translate_fast_mode(unique_texts)
     # ★★★ “翻译快做”小组长 (现在负责分批和调度！) ★★★
-    def _translate_fast_mode(self, texts: List[str], override_system_prompt: Optional[str] = None) -> Dict[str, str]:
+    def _translate_fast_mode(self, texts: List[str]) -> Dict[str, str]:
         CHUNK_SIZE = 50
         REQUEST_INTERVAL = 1.5
 
@@ -235,16 +225,13 @@ class AITranslator:
                 logger.info(f"  ➜ [翻译模式] 正在处理批次 {i + 1}/{total_chunks}")
             
             # 根据公司（provider）选择不同的员工干活
-            prompt_to_use = override_system_prompt or FAST_MODE_SYSTEM_PROMPT
-            
             result_chunk = {}
             if self.provider == 'openai':
-                # ★★★ 把最终选择的指令传给底层函数 ★★★
-                result_chunk = self._fast_openai(chunk, system_prompt=prompt_to_use)
+                result_chunk = self._fast_openai(chunk)
             elif self.provider == 'zhipuai':
-                result_chunk = self._fast_zhipuai(chunk, system_prompt=prompt_to_use)
+                result_chunk = self._fast_zhipuai(chunk)
             elif self.provider == 'gemini':
-                result_chunk = self._fast_gemini(chunk, system_prompt=prompt_to_use)
+                result_chunk = self._fast_gemini(chunk)
             
             if result_chunk:
                 all_results.update(result_chunk)
