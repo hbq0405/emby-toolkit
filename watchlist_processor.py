@@ -841,15 +841,15 @@ class WatchlistProcessor:
         )
 
         if not series_to_process:
-            logger.info("追剧列表中没有需要检查的剧集。")
+            logger.info("  ➜ 追剧列表中没有需要检查的剧集。")
             return
 
         total = len(series_to_process)
-        logger.info(f"发现 {total} 部剧集需要检查更新...")
+        logger.info(f"  ➜ 发现 {total} 部剧集需要检查更新...")
 
         for i, series in enumerate(series_to_process):
             if self.is_stop_requested():
-                logger.info("追剧列表更新任务被中止。")
+                logger.info("  ➜ 追剧列表更新任务被中止。")
                 break
             
             if self.progress_callback:
