@@ -389,7 +389,31 @@ def update_person_details(person_id: str, new_data: Dict[str, Any], emby_server_
     except requests.exceptions.RequestException as e:
         logger.error(f"  ➜ 更新 Person (ID: {person_id}) 时发生错误: {e}")
         return False
-
+# --- 高效获取指定媒体库中所有类型为 "Series" 的项目ID ---
+def get_library_series_ids(library_id: str, emby_server_url: str, emby_api_key: str, user_id: str) -> List[str]:
+    """
+    高效获取指定媒体库中所有类型为 "Series" 的项目ID。
+    """
+    api_url = f"{emby_server_url}/Users/{user_id}/Items"
+    params = {
+        "ParentId": library_id,
+        "Recursive": "true",
+        "IncludeItemTypes": "Series", # 直接让Emby过滤，效率最高
+        "Fields": "Id", # 我们只需要ID
+        "api_key": emby_api_key
+    }
+    try:
+        # 注意：这里为了保持函数独立性，使用了固定的超时时间。
+        # 如果需要，也可以像其他函数一样从全局配置读取。
+        response = requests.get(api_url, params=params, timeout=30)
+        response.raise_for_status()
+        items = response.json().get("Items", [])
+        series_ids = [item["Id"] for item in items]
+        logger.trace(f"成功从媒体库 {library_id} 获取到 {len(series_ids)} 个剧集ID。")
+        return series_ids
+    except requests.exceptions.RequestException as e:
+        logger.error(f"从媒体库 {library_id} 获取剧集ID列表时出错: {e}")
+        return []
 # ✨✨✨ 获取 Emby 用户可见媒体库列表 ✨✨✨
 def get_emby_libraries(emby_server_url, emby_api_key, user_id):
     if not all([emby_server_url, emby_api_key, user_id]):

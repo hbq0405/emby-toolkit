@@ -524,58 +524,78 @@ class WatchlistProcessor:
 
     def _get_series_to_process(self, where_clause: str, item_id: Optional[str] = None) -> List[Dict[str, Any]]:
         """
-        【V12 - 媒体库过滤版】从数据库获取需要处理的剧集列表。
-        - 支持传入自定义的 WHERE 子句来筛选剧集。
-        - 如果提供了 item_id，则无视 WHERE 子句，强制只处理该项目。
-        - ★ 新增：会根据配置中的 libraries_to_process 过滤剧集。
+        【V13 - 自顶向下过滤版】从数据库获取需要处理的剧集列表。
+        - ★ 核心逻辑重构：先从Emby获取所选媒体库中的所有剧集ID，再到数据库中进行精确匹配。
+        - 这种方法更高效、更可靠，彻底解决了之前因ParentId查找和类型不匹配导致的问题。
         """
+        # 规则1：如果指定了单个item_id，则无视任何过滤器，直接处理。
+        if item_id:
+            try:
+                with connection.get_db_connection() as conn:
+                    cursor = conn.cursor()
+                    query = "SELECT * FROM watchlist WHERE item_id = %s"
+                    cursor.execute(query, (item_id,))
+                    return [dict(row) for row in cursor.fetchall()]
+            except Exception as e:
+                logger.error(f"为 item_id {item_id} 获取追剧信息时发生数据库错误: {e}")
+                return []
+
+        # 规则2：获取配置中的媒体库列表
+        selected_libraries = self.config.get(constants.CONFIG_OPTION_EMBY_LIBRARIES_TO_PROCESS, [])
+        
+        # 规则3：如果未选择任何媒体库，则按旧逻辑处理，不过滤
+        if not selected_libraries:
+            logger.info("  ➜ 未在设置中指定要处理的媒体库，将处理所有符合条件的追剧项目。")
+            try:
+                with connection.get_db_connection() as conn:
+                    cursor = conn.cursor()
+                    query = f"SELECT * FROM watchlist {where_clause}"
+                    cursor.execute(query)
+                    return [dict(row) for row in cursor.fetchall()]
+            except Exception as e:
+                logger.error(f"获取全部追剧列表时发生数据库错误: {e}")
+                return []
+
+        # --- 核心过滤逻辑开始 ---
+        logger.info(f"  ➜ 已启用媒体库过滤器，开始从 {len(selected_libraries)} 个选定媒体库中获取剧集ID...")
+        
+        # 步骤1: 从Emby获取所有在选定库中的剧集ID集合
+        valid_series_ids_from_emby = set()
+        for lib_id in selected_libraries:
+            series_ids_in_lib = emby_handler.get_library_series_ids(
+                library_id=lib_id,
+                emby_server_url=self.emby_url,
+                emby_api_key=self.emby_api_key,
+                user_id=self.emby_user_id
+            )
+            valid_series_ids_from_emby.update(series_ids_in_lib)
+        
+        if not valid_series_ids_from_emby:
+            logger.warning("  ➜ 从所选媒体库中未能获取到任何剧集ID，本次任务将不处理任何项目。")
+            return []
+            
+        logger.info(f"  ➜ 成功从Emby获取到 {len(valid_series_ids_from_emby)} 个有效的剧集ID，开始匹配数据库...")
+
+        # 步骤2: 从数据库中捞出所有符合基础条件(如status='Watching')的剧集
         try:
             with connection.get_db_connection() as conn:
                 cursor = conn.cursor()
-                
                 query = f"SELECT * FROM watchlist {where_clause}"
-                params = []
-                
-                if item_id:
-                    query = "SELECT * FROM watchlist WHERE item_id = %s"
-                    params.append(item_id)
-                
-                cursor.execute(query, tuple(params))
-                initial_series_list = [dict(row) for row in cursor.fetchall()]
-
-            # ▼▼▼ 新增的媒体库过滤逻辑 ▼▼▼
-            selected_libraries = self.config.get(constants.CONFIG_OPTION_EMBY_LIBRARIES_TO_PROCESS, [])
-            
-            # 如果没有在设置中选择任何媒体库，则不过滤，返回所有结果
-            if not selected_libraries:
-                logger.info("  ➜ 未在设置中指定要处理的媒体库，将处理所有追剧项目。")
-                return initial_series_list
-
-            logger.info(f"  ➜ 已启用媒体库过滤器，将只处理来自 {len(selected_libraries)} 个选定媒体库的剧集。")
-            filtered_series = []
-            for series in initial_series_list:
-                # 为了获取媒体库ID (ParentId)，我们需要查询Emby
-                item_details = emby_handler.get_emby_item_details(
-                    item_id=series['item_id'],
-                    emby_server_url=self.emby_url,
-                    emby_api_key=self.emby_api_key,
-                    user_id=self.emby_user_id,
-                    fields="ParentId"  # 只请求 ParentId 字段以提高效率
-                )
-                
-                if item_details and item_details.get('ParentId') in selected_libraries:
-                    filtered_series.append(series)
-                else:
-                    library_id = item_details.get('ParentId') if item_details else '未知'
-                    logger.debug(f"  ➜ 剧集 '{series['item_name']}' (媒体库ID: {library_id}) 不在所选媒体库列表中，已跳过。")
-            
-            logger.info(f"  ➜ 媒体库过滤完成：初始发现 {len(initial_series_list)} 个项目，过滤后剩余 {len(filtered_series)} 个。")
-            return filtered_series
-            # ▲▲▲ 过滤逻辑结束 ▲▲▲
-
+                cursor.execute(query)
+                all_candidate_series = [dict(row) for row in cursor.fetchall()]
         except Exception as e:
-            logger.error(f"获取追剧列表时发生数据库错误: {e}")
+            logger.error(f"过滤前获取追剧列表时发生数据库错误: {e}")
             return []
+            
+        # 步骤3: 在内存中进行最终匹配
+        final_series_to_process = [
+            series for series in all_candidate_series 
+            if series['item_id'] in valid_series_ids_from_emby
+        ]
+        
+        logger.info(f"  ➜ 媒体库过滤完成：数据库中发现 {len(all_candidate_series)} 个候选项目，最终匹配到 {len(final_series_to_process)} 个。")
+        
+        return final_series_to_process
             
     # ★★★ 核心处理逻辑：单个剧集的所有操作在此完成 ★★★
     def _process_one_series(self, series_data: Dict[str, Any]):

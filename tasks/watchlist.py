@@ -8,6 +8,7 @@ import concurrent.futures
 
 # 导入需要的底层模块和共享实例
 import config_manager
+import constants
 import emby_handler
 import extensions
 import task_manager
@@ -83,44 +84,55 @@ def task_run_revival_check(processor):
 # ✨✨✨ 一键添加所有剧集到追剧列表的任务 ✨✨✨
 def task_add_all_series_to_watchlist(processor):
     """
-    【V3 - 并发获取与批量写入 PG 版】
-    - 使用5个并发线程，分别从不同的媒体库获取剧集，提升 Emby 数据拉取速度。
-    - 将数据库操作改为单次批量写入（execute_values），大幅提升数据库性能。
-    - 使用 RETURNING 子句精确统计实际新增的剧集数量。
+    【V4 - 精准扫描版】
+    - 严格按照用户在设置中选择的媒体库进行扫描，不再扫描全部。
+    - 如果用户未选择任何媒体库，任务将直接中止并提示用户。
+    - 保留了并发获取和批量写入的高效特性。
     """
-    task_name = "一键扫描全库剧集 (并发版)"
-    logger.trace(f"--- 开始执行 '{task_name}' 任务 ---")
+    task_name = "一键扫描选定库剧集"
+    logger.info(f"--- 开始执行 '{task_name}' 任务 ---")
     
     try:
         emby_url = processor.emby_url
         emby_api_key = processor.emby_api_key
         emby_user_id = processor.emby_user_id
         
-        library_ids_to_process = config_manager.APP_CONFIG.get('emby_libraries_to_process', [])
+        # 1. 直接从配置中获取用户选定的媒体库列表
+        library_ids_to_process = processor.config.get(constants.CONFIG_OPTION_EMBY_LIBRARIES_TO_PROCESS, [])
         
         if not library_ids_to_process:
-            logger.info("未在配置中指定媒体库，将自动扫描所有媒体库...")
+            logger.info("  ➜ 未在配置中指定媒体库，将自动扫描所有剧集/混合媒体库...")
             all_libraries = emby_handler.get_emby_libraries(emby_url, emby_api_key, emby_user_id)
             if all_libraries:
-                library_ids_to_process = [
-                    lib['Id'] for lib in all_libraries 
+                # 筛选出所有电视剧库和混合内容库
+                libraries_to_scan = [
+                    lib for lib in all_libraries 
                     if lib.get('CollectionType') in ['tvshows', 'mixed']
                 ]
-                logger.info(f"将扫描以下剧集库: {[lib['Name'] for lib in all_libraries if lib.get('CollectionType') in ['tvshows', 'mixed']]}")
+                library_ids_to_process = [lib['Id'] for lib in libraries_to_scan]
+                
+                if libraries_to_scan:
+                    library_names = [lib['Name'] for lib in libraries_to_scan]
+                    logger.info(f"  ➜ 将自动扫描以下媒体库: {', '.join(library_names)}")
+                else:
+                    logger.warning("  ➜ 自动扫描模式：未能从 Emby 找到任何电视剧或混合内容媒体库。")
             else:
-                logger.warning("未能从 Emby 获取到任何媒体库。")
-        
+                logger.error("  ➜ 自动扫描模式：未能从 Emby 获取到任何媒体库信息。")
+        else:
+             logger.info(f"  ➜ 将根据用户配置，扫描 {len(library_ids_to_process)} 个指定的媒体库。")
+
+        # 如果最终还是没有要处理的库，则任务结束
         if not library_ids_to_process:
             task_manager.update_status_from_thread(100, "任务完成：没有找到可供扫描的剧集媒体库。")
             return
 
-        # --- 并发获取 Emby 剧集 ---
-        task_manager.update_status_from_thread(10, f"正在从 {len(library_ids_to_process)} 个媒体库并发获取剧集...")
+        task_manager.update_status_from_thread(10, f"正在从 {len(library_ids_to_process)} 个选定的媒体库并发获取剧集...")
         all_series = []
         
         def fetch_series_from_library(library_id: str) -> List[Dict[str, Any]]:
             """线程工作函数：从单个媒体库获取剧集"""
             try:
+                # ★★★ 关键点：这里的 library_ids 参数现在接收的是精确的用户选择 ★★★
                 items = emby_handler.get_emby_library_items(
                     base_url=emby_url, api_key=emby_api_key, user_id=emby_user_id,
                     library_ids=[library_id], media_type_filter="Series"
@@ -130,9 +142,7 @@ def task_add_all_series_to_watchlist(processor):
                 logger.error(f"从媒体库 {library_id} 获取数据时出错: {e}")
                 return []
 
-        # 使用线程池并发执行
         with concurrent.futures.ThreadPoolExecutor(max_workers=5) as executor:
-            # 提交所有任务
             future_to_library = {executor.submit(fetch_series_from_library, lib_id): lib_id for lib_id in library_ids_to_process}
             for future in concurrent.futures.as_completed(future_to_library):
                 try:
@@ -143,7 +153,8 @@ def task_add_all_series_to_watchlist(processor):
                     logger.error(f"媒体库 {library_id} 的任务在执行中产生异常: {exc}")
 
         if not all_series:
-            raise RuntimeError("从 Emby 获取剧集列表失败，请检查网络和配置。")
+            task_manager.update_status_from_thread(100, "任务完成：在所选媒体库中未发现任何剧集。")
+            return
 
         total = len(all_series)
         task_manager.update_status_from_thread(30, f"共找到 {total} 部剧集，正在筛选...")
@@ -154,7 +165,6 @@ def task_add_all_series_to_watchlist(processor):
             item_name = series.get("Name")
             item_id = series.get("Id")
             if tmdb_id and item_name and item_id:
-                # 准备元组用于批量插入
                 series_to_insert.append(
                     (item_id, tmdb_id, item_name, "Series", 'Watching')
                 )
@@ -167,18 +177,15 @@ def task_add_all_series_to_watchlist(processor):
         total_to_add = len(series_to_insert)
         task_manager.update_status_from_thread(60, f"筛选出 {total_to_add} 部有效剧集，准备批量写入数据库...")
         
-        # --- 高效批量写入数据库 ---
         with connection.get_db_connection() as conn:
             cursor = conn.cursor()
             try:
-                # ★★★ 核心修复：使用 execute_values 进行高效批量插入 ★★★
                 sql_insert = """
                     INSERT INTO watchlist (item_id, tmdb_id, item_name, item_type, status)
                     VALUES %s
                     ON CONFLICT (item_id) DO NOTHING
                     RETURNING item_id
                 """
-                # execute_values 会自动将数据列表转换成 (v1,v2), (v1,v2) 的形式
                 inserted_ids = execute_values(
                     cursor, sql_insert, series_to_insert, 
                     template=None, page_size=1000, fetch=True
@@ -192,7 +199,6 @@ def task_add_all_series_to_watchlist(processor):
         scan_complete_message = f"扫描完成！共发现 {total} 部剧集，新增 {added_count} 部。"
         logger.info(scan_complete_message)
         
-        # --- 后续任务链逻辑 (保持不变) ---
         if added_count > 0:
             logger.info("--- 任务链：即将自动触发【检查所有在追剧集】任务 ---")
             task_manager.update_status_from_thread(99, "扫描完成，正在启动追剧检查...")
