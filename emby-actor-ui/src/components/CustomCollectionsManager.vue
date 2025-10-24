@@ -508,7 +508,14 @@
               <n-gi v-for="media in missingMediaInModal" :key="media.tmdb_id">
                 <n-card class="movie-card" content-style="padding: 0;">
                   <template #cover><img :src="getTmdbImageUrl(media.poster_path)" class="movie-poster" /></template>
-                  <div class="movie-info"><div class="movie-title">{{ media.title }}<br />({{ extractYear(media.release_date) || '未知年份' }})</div></div>
+                  <div class="movie-info">
+                    <div class="movie-title">
+                      {{ media.title }}
+                        <span v-if="media.season"> 第 {{ media.season }} 季</span>
+                        <br />
+                      ({{ extractYear(media.release_date) || '未知年份' }})
+                    </div>
+                  </div>
                   <template #action>
                     <n-button-group style="width: 100%;">
                       <n-tooltip>
@@ -540,7 +547,14 @@
               <n-gi v-for="media in inLibraryMediaInModal" :key="media.tmdb_id">
                 <n-card class="movie-card" content-style="padding: 0;">
                   <template #cover><img :src="getTmdbImageUrl(media.poster_path)" class="movie-poster" /></template>
-                  <div class="movie-info"><div class="movie-title">{{ media.title }}<br />({{ extractYear(media.release_date) || '未知年份' }})</div></div>
+                  <div class="movie-info">
+                    <div class="movie-title">
+                      {{ media.title }}
+                        <span v-if="media.season"> 第 {{ media.season }} 季</span>
+                        <br />
+                      ({{ extractYear(media.release_date) || '未知年份' }})
+                    </div>
+                  </div>
                    <template #action>
                     <n-button-group style="width: 100%;">
                       <n-tooltip>
@@ -593,7 +607,14 @@
               <n-gi v-for="media in subscribedMediaInModal" :key="media.tmdb_id">
                 <n-card class="movie-card" content-style="padding: 0;">
                   <template #cover><img :src="getTmdbImageUrl(media.poster_path)" class="movie-poster" /></template>
-                  <div class="movie-info"><div class="movie-title">{{ media.title }}<br />({{ extractYear(media.release_date) || '未知年份' }})</div></div>
+                  <div class="movie-info">
+                    <div class="movie-title">
+                      {{ media.title }}
+                        <span v-if="media.season"> 第 {{ media.season }} 季</span>
+                        <br />
+                      ({{ extractYear(media.release_date) || '未知年份' }})
+                    </div>
+                  </div>
                   <template #action>
                     <n-button-group style="width: 100%;">
                       <n-tooltip>
