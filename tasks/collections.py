@@ -24,7 +24,8 @@ logger = logging.getLogger(__name__)
 # 辅助函数应用修正
 def _apply_id_corrections(tmdb_items: list, definition: dict, collection_name: str) -> tuple[list, dict]:
     """
-    应用合集定义中的ID修正规则。
+    【V2 - 完整修正版】
+    应用合集定义中的ID修正规则，并完整保留季号信息。
     :return: 一个元组，包含 (修正后的tmdb_items列表, 新ID到旧ID的映射字典)
     """
     corrections = definition.get('corrections', {})
@@ -38,14 +39,26 @@ def _apply_id_corrections(tmdb_items: list, definition: dict, collection_name: s
                 logger.info(f"    -> 应用修正: 将源 ID {original_id_str} 替换为 {corrected_value}")
                 
                 new_id = None
+                # ▼▼▼ 核心修复 ▼▼▼
                 if isinstance(corrected_value, dict):
+                    # 同时提取 tmdb_id 和 season
                     new_id = corrected_value.get('tmdb_id')
+                    new_season = corrected_value.get('season')
+                    
+                    if new_id:
+                        item['id'] = new_id
+                    # 如果有季号信息，也更新到 item 中
+                    if new_season is not None:
+                        item['season'] = new_season
                 else:
+                    # 兼容旧的纯ID修正
                     new_id = corrected_value
+                    item['id'] = new_id
+                # ▲▲▲ 修复结束 ▲▲▲
                 
                 if new_id:
-                    item['id'] = new_id
                     corrected_id_to_original_id_map[str(new_id)] = original_id_str
+                    
     return tmdb_items, corrected_id_to_original_id_map
 
 # 辅助函数榜单健康检查
