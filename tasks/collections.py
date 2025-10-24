@@ -353,6 +353,18 @@ def task_process_all_custom_collections(processor):
                 elif collection['type'] == 'filter':
                     engine = FilterEngine()
                     tmdb_items = engine.execute_filter(definition)
+
+                # 应用修正
+                corrections = definition.get('corrections', {})
+                if corrections:
+                    logger.info(f"  -> 检测到合集 '{collection_name}' 存在 {len(corrections)} 条修正规则，正在应用...")
+                    for item in tmdb_items:
+                        # 确保源ID和修正规则中的ID都是字符串，以便正确匹配
+                        original_id_str = str(item.get('id'))
+                        if original_id_str in corrections:
+                            corrected_id = corrections[original_id_str]
+                            logger.info(f"    -> 应用修正: 将源 ID {original_id_str} 替换为 {corrected_id}")
+                            item['id'] = corrected_id # 直接修改列表中的字典
                 
                 if not tmdb_items:
                     logger.warning(f"合集 '{collection_name}' 未生成任何媒体ID，跳过。")
@@ -492,6 +504,18 @@ def process_single_custom_collection(processor, custom_collection_id: int):
         elif collection['type'] == 'filter':
             engine = FilterEngine()
             tmdb_items = engine.execute_filter(definition)
+
+        # 应用修正
+        corrections = definition.get('corrections', {})
+        if corrections:
+            logger.info(f"  -> 检测到合集 '{collection_name}' 存在 {len(corrections)} 条修正规则，正在应用...")
+            for item in tmdb_items:
+                # 确保源ID和修正规则中的ID都是字符串，以便正确匹配
+                original_id_str = str(item.get('id'))
+                if original_id_str in corrections:
+                    corrected_id = corrections[original_id_str]
+                    logger.info(f"    -> 应用修正: 将源 ID {original_id_str} 替换为 {corrected_id}")
+                    item['id'] = corrected_id # 直接修改列表中的字典
         
         if not tmdb_items:
             collection_db.update_custom_collection_after_sync(custom_collection_id, {"emby_collection_id": None})
