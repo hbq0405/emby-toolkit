@@ -279,40 +279,37 @@ def api_delete_custom_collection(collection_id):
 @login_required
 def api_get_custom_collection_status(collection_id):
     """
-    【V3 - 最终健壮修复版】
-    获取单个自定义合集的详情，确保 definition 字段始终为正确的对象格式。
-    - 解决了编辑框因 definition 格式错误而无法加载规则的致命BUG。
+    【V4 - 智能返回版】
+    获取单个自定义合集的详情。
+    - 修复了因删除 generated_media_info_json 导致详情弹窗无内容的BUG。
+    - 确保 definition 字段始终为正确的对象格式。
     """
     try:
         collection_details = collection_db.get_custom_collection_by_id(collection_id)
         if not collection_details:
             return jsonify({"error": "未在自定义合集表中找到该合集"}), 404
         
-        # 为“健康状态”弹窗准备 media_items 字段
+        # 1. 将 generated_media_info_json 的内容（如果存在）赋给一个新的键 media_items
+        #    psycopg2 已经自动将 JSONB 解析为 Python 列表/字典
         collection_details['media_items'] = collection_details.get('generated_media_info_json', [])
         
-        # ★★★ 核心修复：确保 definition 是一个对象，而不是字符串 ★★★
+        # 2. 确保 definition 是一个对象
         definition_data = collection_details.get('definition_json')
-        
+        parsed_definition = {}
         if isinstance(definition_data, str):
             try:
-                # 先尝试解析一次
                 obj = json.loads(definition_data)
-                # 如果解析结果依然是字符串，尝试再解析一次（双重序列化情况）
-                if isinstance(obj, str):
-                    obj = json.loads(obj)
-                collection_details['definition'] = obj if isinstance(obj, dict) else {}
-            except (json.JSONDecodeError, TypeError) as e:
-                logger.error(f"合集 {collection_id} 的 definition_json 字段无法被解析为JSON，内容: {definition_data}, 错误: {e}")
-                collection_details['definition'] = {}  # 解析失败，返回空对象
+                if isinstance(obj, str): obj = json.loads(obj)
+                parsed_definition = obj if isinstance(obj, dict) else {}
+            except (json.JSONDecodeError, TypeError):
+                logger.error(f"合集 {collection_id} 的 definition_json 字段无法被解析为JSON。")
+                parsed_definition = {}
         elif isinstance(definition_data, dict):
-            # 如果它已经是字典（psycopg2自动解析JSONB字段），则直接使用
-            collection_details['definition'] = definition_data
-        else:
-            # 其他意外情况（如None），提供一个空的默认值
-            collection_details['definition'] = {}
+            parsed_definition = definition_data
         
-        # 现在，我们可以安全地删除那些体积巨大或不再需要的原始字段
+        collection_details['definition'] = parsed_definition
+        
+        # 3. 删除原始的、可能命名不一致或格式不纯净的字段，保持API返回的清洁
         if 'generated_media_info_json' in collection_details:
             del collection_details['generated_media_info_json']
         if 'definition_json' in collection_details:
