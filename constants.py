@@ -3,7 +3,7 @@
 # ==============================================================================
 # ✨ 应用基础信息 (Application Basics)
 # ==============================================================================
-APP_VERSION = "4.8.1"  # 更新版本号
+APP_VERSION = "4.8.2"  # 更新版本号
 GITHUB_REPO_OWNER = "hbq0405"  # 您的 GitHub 用户名
 GITHUB_REPO_NAME = "emby-toolkit" # 您的 GitHub 仓库名
 DEBUG_MODE = True     # 开发模式开关，部署时应设为 False
@@ -90,6 +90,7 @@ CONFIG_OPTION_MOVIEPILOT_PASSWORD = "moviepilot_password"
 # --- 智能订阅相关配置 ---
 CONFIG_OPTION_AUTOSUB_ENABLED = "autosub_enabled" # 智能订阅总开关
 CONFIG_OPTION_RESUBSCRIBE_COMPLETED_ON_MISSING = "resubscribe_completed_on_missing"
+CONFIG_OPTION_RESUBSCRIBE_USE_BEST_VERSION = "resubscribe_use_best_version"
 CONFIG_OPTION_RESUBSCRIBE_DAILY_CAP = "resubscribe_daily_cap"
 CONFIG_OPTION_RESUBSCRIBE_DELAY_SECONDS = "resubscribe_delay_seconds"
 CONFIG_OPTION_USE_CUSTOM_RESUBSCRIBE = "use_custom_resubscribe"

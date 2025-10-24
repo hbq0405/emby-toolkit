@@ -481,9 +481,11 @@ class WatchlistProcessor:
                         quota_exhausted = True
                         break
 
+                    best_version_param = 1 if self.config.get(constants.CONFIG_OPTION_RESUBSCRIBE_USE_BEST_VERSION) else None
+                    
                     success = moviepilot_handler.subscribe_series_to_moviepilot(
                         series_info=series, season_number=season_num,
-                        config=self.config, best_version=1
+                        config=self.config, best_version=best_version_param
                     )
                     
                     if success:
