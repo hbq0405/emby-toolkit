@@ -21,6 +21,95 @@ from services.cover_generator import CoverGeneratorService
 
 logger = logging.getLogger(__name__)
 
+# 辅助函数应用修正
+def _apply_id_corrections(tmdb_items: list, definition: dict, collection_name: str) -> tuple[list, dict]:
+    """
+    应用合集定义中的ID修正规则。
+    :return: 一个元组，包含 (修正后的tmdb_items列表, 新ID到旧ID的映射字典)
+    """
+    corrections = definition.get('corrections', {})
+    corrected_id_to_original_id_map = {}
+    if corrections:
+        logger.info(f"  -> 检测到合集 '{collection_name}' 存在 {len(corrections)} 条修正规则，正在应用...")
+        for item in tmdb_items:
+            original_id_str = str(item.get('id'))
+            if original_id_str in corrections:
+                corrected_value = corrections[original_id_str]
+                logger.info(f"    -> 应用修正: 将源 ID {original_id_str} 替换为 {corrected_value}")
+                
+                new_id = None
+                if isinstance(corrected_value, dict):
+                    new_id = corrected_value.get('tmdb_id')
+                else:
+                    new_id = corrected_value
+                
+                if new_id:
+                    item['id'] = new_id
+                    corrected_id_to_original_id_map[str(new_id)] = original_id_str
+    return tmdb_items, corrected_id_to_original_id_map
+
+# 辅助函数榜单健康检查
+def _perform_list_collection_health_check(
+    tmdb_items: list, 
+    tmdb_to_emby_item_map: dict, 
+    corrected_id_to_original_id_map: dict, 
+    collection_db_record: dict, 
+    tmdb_api_key: str
+) -> dict:
+    """
+    为榜单类合集执行详细的健康度检查。
+    :return: 一个包含 health_status, missing_count, generated_media_info_json 的字典。
+    """
+    logger.info(f"  ➜ 榜单合集 '{collection_db_record.get('name')}'，开始进行详细健康度分析...")
+    
+    # 1. 获取历史状态
+    previous_media_map = {str(m.get('tmdb_id')): m for m in (collection_db_record.get('generated_media_info_json') or [])}
+    
+    # 2. 并发获取所有TMDb详情
+    all_media_details_unordered = []
+    with ThreadPoolExecutor(max_workers=5) as executor:
+        f_to_item = {executor.submit(tmdb_handler.get_movie_details if item['type'] != 'Series' else tmdb_handler.get_tv_details, item['id'], tmdb_api_key): item for item in tmdb_items}
+        for future in as_completed(f_to_item):
+            try:
+                detail = future.result()
+                if detail: all_media_details_unordered.append(detail)
+            except Exception as exc: logger.error(f"获取TMDb详情时出错: {exc}")
+    
+    details_map = {str(d.get("id")): d for d in all_media_details_unordered}
+    tmdb_id_to_season_map = {str(item['id']): item.get('season') for item in tmdb_items if item.get('type') == 'Series' and item.get('season') is not None}
+    
+    # 3. 核心循环，判断状态
+    all_media_with_status, has_missing, missing_count = [], False, 0
+    today_str = datetime.now().strftime('%Y-%m-%d')
+    for item in tmdb_items:
+        media_tmdb_id = str(item['id'])
+        media = details_map.get(media_tmdb_id)
+        if not media: continue
+
+        # 双重查找 Emby Item
+        emby_item = tmdb_to_emby_item_map.get(media_tmdb_id)
+        if not emby_item and media_tmdb_id in corrected_id_to_original_id_map:
+            original_id = corrected_id_to_original_id_map[media_tmdb_id]
+            emby_item = tmdb_to_emby_item_map.get(original_id)
+            if emby_item: logger.info(f"    -> 修正项命中：在媒体库中通过旧ID '{original_id}' 找到了项目。")
+
+        # 判断状态
+        release_date = media.get("release_date") or media.get("first_air_date", '')
+        media_status = "in_library" if emby_item else ("subscribed" if previous_media_map.get(media_tmdb_id, {}).get('status') == 'subscribed' else ("unreleased" if release_date and release_date > today_str else "missing"))
+        if media_status == 'missing': has_missing, missing_count = True, missing_count + 1
+        
+        # 构建最终结果
+        final_media_item = {"tmdb_id": media_tmdb_id, "emby_id": emby_item.get('Id') if emby_item else None, "title": media.get("title") or media.get("name"), "release_date": release_date, "poster_path": media.get("poster_path"), "status": media_status}
+        season_number = tmdb_id_to_season_map.get(media_tmdb_id)
+        if season_number is not None: final_media_item['season'] = season_number
+        all_media_with_status.append(final_media_item)
+        
+    return {
+        "health_status": "has_missing" if has_missing else "ok", 
+        "missing_count": missing_count, 
+        "generated_media_info_json": json.dumps(all_media_with_status, ensure_ascii=False)
+    }
+
 # ✨ 辅助函数，并发刷新合集使用
 def _process_single_collection_concurrently(collection_data: dict, tmdb_api_key: str) -> dict:
     """
@@ -355,22 +444,7 @@ def task_process_all_custom_collections(processor):
                     tmdb_items = engine.execute_filter(definition)
 
                 # 应用修正
-                corrections = definition.get('corrections', {})
-                if corrections:
-                    logger.info(f"  -> 检测到合集 '{collection_name}' 存在 {len(corrections)} 条修正规则，正在应用...")
-                    for item in tmdb_items:
-                        original_id_str = str(item.get('id'))
-                        if original_id_str in corrections:
-                            corrected_value = corrections[original_id_str]
-                            logger.info(f"    -> 应用修正: 将源 ID {original_id_str} 替换为 {corrected_value}")
-                            
-                            # ★★★ 核心修复：判断修正值的类型 ★★★
-                            # 如果修正值是一个字典 (新格式)，则从中提取 tmdb_id
-                            if isinstance(corrected_value, dict):
-                                item['id'] = corrected_value.get('tmdb_id')
-                            # 否则，直接使用该值 (兼容旧的纯ID修正)
-                            else:
-                                item['id'] = corrected_value
+                tmdb_items, corrected_id_to_original_id_map = _apply_id_corrections(tmdb_items, definition, collection_name)
                 
                 if not tmdb_items:
                     logger.warning(f"合集 '{collection_name}' 未生成任何媒体ID，跳过。")
@@ -397,33 +471,14 @@ def task_process_all_custom_collections(processor):
                 }
 
                 if collection['type'] == 'list':
-                    logger.info(f"  ➜ 榜单合集 '{collection_name}'，开始进行详细健康度分析...")
-                    previous_media_map = {str(m.get('tmdb_id')): m for m in (collection.get('generated_media_info_json') or [])}
-                    all_media_details_unordered = []
-                    with ThreadPoolExecutor(max_workers=5) as executor:
-                        f_to_item = {executor.submit(tmdb_handler.get_movie_details if item['type'] != 'Series' else tmdb_handler.get_tv_details, item['id'], processor.tmdb_api_key): item for item in tmdb_items}
-                        for future in as_completed(f_to_item):
-                            try:
-                                detail = future.result()
-                                if detail: all_media_details_unordered.append(detail)
-                            except Exception as exc: logger.error(f"获取TMDb详情时出错: {exc}")
-                    details_map = {str(d.get("id")): d for d in all_media_details_unordered}
-                    tmdb_id_to_season_map = {str(item['id']): item.get('season') for item in tmdb_items if item.get('type') == 'Series' and item.get('season') is not None}
-                    all_media_with_status, has_missing, missing_count = [], False, 0
-                    today_str = datetime.now().strftime('%Y-%m-%d')
-                    for item in tmdb_items:
-                        media_tmdb_id = str(item['id'])
-                        media = details_map.get(media_tmdb_id)
-                        if not media: continue
-                        emby_item = tmdb_to_emby_item_map.get(media_tmdb_id)
-                        release_date = media.get("release_date") or media.get("first_air_date", '')
-                        media_status = "in_library" if emby_item else ("subscribed" if previous_media_map.get(media_tmdb_id, {}).get('status') == 'subscribed' else ("unreleased" if release_date and release_date > today_str else "missing"))
-                        if media_status == 'missing': has_missing, missing_count = True, missing_count + 1
-                        final_media_item = {"tmdb_id": media_tmdb_id, "emby_id": emby_item.get('Id') if emby_item else None, "title": media.get("title") or media.get("name"), "release_date": release_date, "poster_path": media.get("poster_path"), "status": media_status}
-                        season_number = tmdb_id_to_season_map.get(media_tmdb_id)
-                        if season_number is not None: final_media_item['season'] = season_number
-                        all_media_with_status.append(final_media_item)
-                    update_data.update({"health_status": "has_missing" if has_missing else "ok", "missing_count": missing_count, "generated_media_info_json": json.dumps(all_media_with_status, ensure_ascii=False)})
+                    health_check_results = _perform_list_collection_health_check(
+                        tmdb_items=tmdb_items,
+                        tmdb_to_emby_item_map=tmdb_to_emby_item_map,
+                        corrected_id_to_original_id_map=corrected_id_to_original_id_map,
+                        collection_db_record=collection,
+                        tmdb_api_key=processor.tmdb_api_key
+                    )
+                    update_data.update(health_check_results)
                 else:
                     update_data.update({"health_status": "ok", "missing_count": 0})
 
@@ -512,22 +567,7 @@ def process_single_custom_collection(processor, custom_collection_id: int):
             tmdb_items = engine.execute_filter(definition)
 
         # 应用修正
-        corrections = definition.get('corrections', {})
-        if corrections:
-            logger.info(f"  -> 检测到合集 '{collection_name}' 存在 {len(corrections)} 条修正规则，正在应用...")
-            for item in tmdb_items:
-                original_id_str = str(item.get('id'))
-                if original_id_str in corrections:
-                    corrected_value = corrections[original_id_str]
-                    logger.info(f"    -> 应用修正: 将源 ID {original_id_str} 替换为 {corrected_value}")
-                    
-                    # ★★★ 核心修复：判断修正值的类型 ★★★
-                    # 如果修正值是一个字典 (新格式)，则从中提取 tmdb_id
-                    if isinstance(corrected_value, dict):
-                        item['id'] = corrected_value.get('tmdb_id')
-                    # 否则，直接使用该值 (兼容旧的纯ID修正)
-                    else:
-                        item['id'] = corrected_value
+        tmdb_items, corrected_id_to_original_id_map = _apply_id_corrections(tmdb_items, definition, collection_name)
         
         if not tmdb_items:
             collection_db.update_custom_collection_after_sync(custom_collection_id, {"emby_collection_id": None})
@@ -562,33 +602,14 @@ def process_single_custom_collection(processor, custom_collection_id: int):
         }
 
         if collection['type'] == 'list':
-            logger.info(f"  ➜ 榜单合集 '{collection_name}'，开始进行详细健康度分析...")
-            previous_media_map = {str(m.get('tmdb_id')): m for m in (collection.get('generated_media_info_json') or [])}
-            all_media_details_unordered = []
-            with ThreadPoolExecutor(max_workers=5) as executor:
-                f_to_item = {executor.submit(tmdb_handler.get_movie_details if item['type'] != 'Series' else tmdb_handler.get_tv_details, item['id'], processor.tmdb_api_key): item for item in tmdb_items}
-                for future in as_completed(f_to_item):
-                    try:
-                        detail = future.result()
-                        if detail: all_media_details_unordered.append(detail)
-                    except Exception as exc: logger.error(f"获取TMDb详情时出错: {exc}")
-            details_map = {str(d.get("id")): d for d in all_media_details_unordered}
-            tmdb_id_to_season_map = {str(item['id']): item.get('season') for item in tmdb_items if item.get('type') == 'Series' and item.get('season') is not None}
-            all_media_with_status, has_missing, missing_count = [], False, 0
-            today_str = datetime.now().strftime('%Y-%m-%d')
-            for item in tmdb_items:
-                media_tmdb_id = str(item['id'])
-                media = details_map.get(media_tmdb_id)
-                if not media: continue
-                emby_item = tmdb_to_emby_item_map.get(media_tmdb_id)
-                release_date = media.get("release_date") or media.get("first_air_date", '')
-                media_status = "in_library" if emby_item else ("subscribed" if previous_media_map.get(media_tmdb_id, {}).get('status') == 'subscribed' else ("unreleased" if release_date and release_date > today_str else "missing"))
-                if media_status == 'missing': has_missing, missing_count = True, missing_count + 1
-                final_media_item = {"tmdb_id": media_tmdb_id, "emby_id": emby_item.get('Id') if emby_item else None, "title": media.get("title") or media.get("name"), "release_date": release_date, "poster_path": media.get("poster_path"), "status": media_status}
-                season_number = tmdb_id_to_season_map.get(media_tmdb_id)
-                if season_number is not None: final_media_item['season'] = season_number
-                all_media_with_status.append(final_media_item)
-            update_data.update({"health_status": "has_missing" if has_missing else "ok", "missing_count": missing_count, "generated_media_info_json": json.dumps(all_media_with_status, ensure_ascii=False)})
+            health_check_results = _perform_list_collection_health_check(
+                tmdb_items=tmdb_items,
+                tmdb_to_emby_item_map=tmdb_to_emby_item_map,
+                corrected_id_to_original_id_map=corrected_id_to_original_id_map,
+                collection_db_record=collection,
+                tmdb_api_key=processor.tmdb_api_key
+            )
+            update_data.update(health_check_results)
         else:
             update_data.update({"health_status": "ok", "missing_count": 0})
 
