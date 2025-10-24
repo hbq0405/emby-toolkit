@@ -485,7 +485,7 @@ def task_populate_metadata_cache(processor, batch_size: int = 50, force_full_upd
                             columns_str = ', '.join(columns)
                             placeholders_str = ', '.join(['%s'] * len(columns))
                             
-                            update_clauses = [f"{col} = EXCLUDED.{col}" for col in columns]
+                            update_clauses = [f"{col} = EXCLUDED.{col}" for col in columns if col != 'actors_json']
                             update_clauses.append("last_synced_at = EXCLUDED.last_synced_at")
                             update_str = ', '.join(update_clauses)
 
