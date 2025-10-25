@@ -398,14 +398,30 @@ def task_populate_metadata_cache(processor, batch_size: int = 50, force_full_upd
                 # ★★★ TMDb 详情中提取关键词★★★
                 keywords = []
                 if tmdb_details:
-                    keywords_data = tmdb_details.get("keywords", {})
                     keyword_list = []
-                    item_type = full_details_emby.get("Type") # 需要获取一下 item_type
-                    if item_type == 'Movie':
-                        keyword_list = keywords_data.get("keywords", [])
-                    elif item_type == 'Series':
-                        keyword_list = keywords_data.get("results", [])
+                    item_type = full_details_emby.get("Type")
                     
+                    if item_type == 'Movie':
+                        # 优先尝试从嵌套结构 'keywords': {'keywords': [...]} 中获取
+                        keywords_obj = tmdb_details.get("keywords", {})
+                        if isinstance(keywords_obj, dict):
+                            keyword_list = keywords_obj.get("keywords", [])
+                        
+                        # 如果上面没取到，再尝试直接从顶层 'keywords': [...] 获取 (增加兼容性)
+                        if not keyword_list and isinstance(tmdb_details.get("keywords"), list):
+                            keyword_list = tmdb_details.get("keywords", [])
+
+                    elif item_type == 'Series':
+                        # 优先尝试从嵌套结构 'keywords': {'results': [...]} 中获取
+                        keywords_obj = tmdb_details.get("keywords", {})
+                        if isinstance(keywords_obj, dict):
+                            keyword_list = keywords_obj.get("results", [])
+
+                        # 如果上面没取到，再尝试直接从顶层 'results': [...] 获取 (增加兼容性)
+                        if not keyword_list and isinstance(tmdb_details.get("results"), list):
+                            keyword_list = tmdb_details.get("results", [])
+                    
+                    # 统一处理提取到的 keyword_list
                     if isinstance(keyword_list, list):
                         keywords = [k['name'] for k in keyword_list if k.get('name')]
 

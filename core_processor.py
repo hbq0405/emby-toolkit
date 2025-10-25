@@ -111,6 +111,7 @@ def _save_metadata_to_cache(
                 country_codes = tmdb_details_for_extra.get('origin_country', [])
                 countries = translate_country_list(country_codes)
 
+        # 提取关键词
         keywords = []
         if tmdb_details_for_extra:
             keyword_list = []
