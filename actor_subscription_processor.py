@@ -85,7 +85,7 @@ class ActorSubscriptionProcessor:
         
         _update_status(5, "  ➜ 正在从 Emby 获取媒体库信息...")
         logger.info("  ➜ 正在从 Emby 一次性获取全量媒体库数据...")
-        emby_tmdb_ids: Set[str] = set()
+        emby_media_map: Dict[str, str] = {}
         try:
             all_libraries = emby_handler.get_emby_libraries(self.emby_url, self.emby_api_key, self.emby_user_id)
             library_ids_to_scan = [lib['Id'] for lib in all_libraries if lib.get('CollectionType') in ['movies', 'tvshows']]
@@ -95,8 +95,12 @@ class ActorSubscriptionProcessor:
                 logger.info("任务在获取Emby媒体库后被用户中断。")
                 return
 
-            emby_tmdb_ids = {item['ProviderIds'].get('Tmdb') for item in emby_items if item.get('ProviderIds', {}).get('Tmdb')}
-            logger.debug(f"  ➜ 已从 Emby 获取 {len(emby_tmdb_ids)} 个已入库媒体的 TMDb ID 用于后续对比。")
+            emby_media_map = {
+                item['ProviderIds']['Tmdb']: item['Id']
+                for item in emby_items
+                if item.get('ProviderIds', {}).get('Tmdb')
+            }
+            logger.debug(f"  ➜ 已从 Emby 获取 {len(emby_media_map)} 个已入库媒体的 TMDb ID 与 Emby ID 映射。")
         except Exception as e:
             logger.error(f"  ➜ 从 Emby 获取媒体库信息时发生严重错误: {e}", exc_info=True)
             _update_status(-1, "错误：连接 Emby 或获取数据失败。")
@@ -114,7 +118,7 @@ class ActorSubscriptionProcessor:
             _update_status(progress, message)
             logger.info(message)
             
-            self.run_full_scan_for_actor(sub['id'], emby_tmdb_ids, session_subscribed_ids)
+            self.run_full_scan_for_actor(sub['id'], emby_media_map, session_subscribed_ids)
             
             if not self.is_stop_requested() and i < total_subs - 1:
                 time.sleep(1) 
@@ -124,7 +128,7 @@ class ActorSubscriptionProcessor:
             _update_status(100, "  ➜ 所有订阅扫描完成。")
 
 
-    def run_full_scan_for_actor(self, subscription_id: int, emby_tmdb_ids: Set[str], session_subscribed_ids: Optional[Set[str]] = None):
+    def run_full_scan_for_actor(self, subscription_id: int, emby_media_map: Dict[str, str], session_subscribed_ids: Optional[Set[str]] = None):
         if session_subscribed_ids is None:
             session_subscribed_ids = set()
 
@@ -150,7 +154,7 @@ class ActorSubscriptionProcessor:
                 all_works_raw = movie_works + tv_works
                 logger.info(f"  ➜ 从TMDb获取到演员 {sub['actor_name']} 的 {len(all_works_raw)} 部原始作品记录。")
 
-                emby_tmdb_ids_str = {str(id) for id in emby_tmdb_ids if id}
+                emby_tmdb_ids_str = {str(id) for id in emby_media_map.keys() if id}
                 
                 media_to_insert = []
                 media_to_update = []
@@ -172,13 +176,20 @@ class ActorSubscriptionProcessor:
                 for work in works_for_status_update:
                     media_id = work.get('id')
                     old_status = old_tracked_media.get(media_id)
-                    # 如果作品之前被忽略了，现在也直接跳过，不做任何处理
                     if old_status == MediaStatus.IGNORED.value:
                         continue
                     
                     current_status = self._determine_media_status(work, emby_tmdb_ids_str, today_str, old_status, session_subscribed_ids)
                     if old_status != current_status.value:
-                        media_to_update.append({'status': current_status.value, 'subscription_id': subscription_id, 'tmdb_media_id': media_id})
+                        # ★★★ 核心修改：如果状态变为 IN_LIBRARY，则查找并添加 emby_item_id ★★★
+                        update_dict = {'status': current_status.value, 'subscription_id': subscription_id, 'tmdb_media_id': media_id}
+                        if current_status == MediaStatus.IN_LIBRARY:
+                            emby_id = emby_media_map.get(str(media_id))
+                            update_dict['emby_item_id'] = emby_id
+                        else:
+                            # 如果状态从 IN_LIBRARY 变为其他（例如用户删除了文件），则清空 emby_item_id
+                            update_dict['emby_item_id'] = None
+                        media_to_update.append(update_dict)
 
                 # 2. 处理全新的作品 (需要严格筛选)
                 if new_candidate_works:
@@ -198,7 +209,9 @@ class ActorSubscriptionProcessor:
                     # 为符合条件的新作品确定初始状态 (MISSING/PENDING/IN_LIBRARY)
                     for work in final_new_works:
                         status = self._determine_media_status(work, emby_tmdb_ids_str, today_str, None, session_subscribed_ids)
-                        media_to_insert.append(self._prepare_media_dict(work, subscription_id, status))
+                        # ★★★ 核心修改：为新作品准备字典时，如果已在库，则直接传入 emby_item_id ★★★
+                        emby_id = emby_media_map.get(str(work.get('id'))) if status == MediaStatus.IN_LIBRARY else None
+                        media_to_insert.append(self._prepare_media_dict(work, subscription_id, status, emby_id))
 
                     # 为被忽略的新作品直接标记为 IGNORED
                     for work in ignored_new_works:
@@ -326,12 +339,11 @@ class ActorSubscriptionProcessor:
         #    实际的订阅操作将由“智能订阅”任务或用户手动触发
         return MediaStatus.MISSING
 
-    def _prepare_media_dict(self, work: Dict, subscription_id: int, status: MediaStatus) -> Dict:
+    def _prepare_media_dict(self, work: Dict, subscription_id: int, status: MediaStatus, emby_item_id: Optional[str] = None) -> Dict:
         """根据作品信息和状态，准备用于插入数据库的字典。"""
         media_type_raw = work.get('media_type', 'movie' if 'title' in work else 'tv')
         media_type = MediaType.SERIES if media_type_raw == 'tv' else MediaType.MOVIE
         
-        # ★★★ 核心修正：确保日期为空时返回 None，而不是空字符串 ★★★
         release_date = work.get('release_date') or work.get('first_air_date')
         if not release_date:
             release_date = None
@@ -341,22 +353,20 @@ class ActorSubscriptionProcessor:
             'tmdb_media_id': work.get('id'),
             'media_type': media_type.value,
             'title': work.get('title') or work.get('name'),
-            'release_date': release_date, # 这里现在是 None 而不是 ''
+            'release_date': release_date, 
             'poster_path': work.get('poster_path'),
             'status': status.value,
-            'emby_item_id': None
+            'emby_item_id': emby_item_id
         }
 
     def _update_database_records(self, cursor, subscription_id: int, to_insert: List[Dict], to_update: List[Dict], to_delete_ids: List[int]):
         """执行数据库的增、删、改操作。"""
         if to_insert:
             logger.info(f"  ➜ 新增 {len(to_insert)} 条作品记录。")
-            # ★★★ 核心修改：SQL占位符从 :name 改为 %s
             sql_insert = (
                 "INSERT INTO tracked_actor_media (subscription_id, tmdb_media_id, media_type, title, release_date, poster_path, status, emby_item_id, last_updated_at) "
                 "VALUES (%s, %s, %s, %s, %s, %s, %s, %s, CURRENT_TIMESTAMP)"
             )
-            # ★★★ 核心修改：将字典列表转换为元组列表以适配 psycopg2
             insert_data = [
                 (d['subscription_id'], d['tmdb_media_id'], d['media_type'], d['title'], d['release_date'], d['poster_path'], d['status'], d['emby_item_id'])
                 for d in to_insert
@@ -365,14 +375,12 @@ class ActorSubscriptionProcessor:
         
         if to_update:
             logger.info(f"  ➜ 更新 {len(to_update)} 条作品记录的状态。")
-            # ★★★ 核心修改：SQL占位符从 :name 改为 %s
             sql_update = (
-                "UPDATE tracked_actor_media SET status = %s, last_updated_at = CURRENT_TIMESTAMP "
+                "UPDATE tracked_actor_media SET status = %s, emby_item_id = %s, last_updated_at = CURRENT_TIMESTAMP "
                 "WHERE subscription_id = %s AND tmdb_media_id = %s"
             )
-            # ★★★ 核心修改：将字典列表转换为元组列表，并注意顺序
             update_data = [
-                (d['status'], d['subscription_id'], d['tmdb_media_id'])
+                (d['status'], d.get('emby_item_id'), d['subscription_id'], d['tmdb_media_id'])
                 for d in to_update
             ]
             cursor.executemany(sql_update, update_data)
@@ -380,13 +388,11 @@ class ActorSubscriptionProcessor:
         if to_delete_ids:
             logger.info(f"  ➜ 删除 {len(to_delete_ids)} 条过时的作品记录。")
             delete_params = [(subscription_id, media_id) for media_id in to_delete_ids]
-            # ★★★ 核心修改：SQL占位符从 ? 改为 %s
             cursor.executemany(
                 "DELETE FROM tracked_actor_media WHERE subscription_id = %s AND tmdb_media_id = %s",
                 delete_params
             )
         
-        # ★★★ 核心修改：SQL占位符从 ? 改为 %s
         cursor.execute("UPDATE actor_subscriptions SET last_checked_at = CURRENT_TIMESTAMP WHERE id = %s", (subscription_id,))
 
     def _enrich_works_with_order(self, works: List[Dict], tmdb_person_id: int, api_key: str) -> List[Dict]:
