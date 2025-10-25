@@ -152,6 +152,16 @@ class ActorSubscriptionProcessor:
                 for work in movie_works: work['media_type'] = 'movie'
                 for work in tv_works: work['media_type'] = 'tv'
                 all_works_raw = movie_works + tv_works
+                unique_works = []
+                seen_media_ids = set()
+                for work in all_works_raw:
+                    media_id = work.get('id')
+                    if media_id and media_id not in seen_media_ids:
+                        unique_works.append(work)
+                        seen_media_ids.add(media_id)
+                
+                # 使用去重后的列表进行后续所有操作
+                all_works_raw = unique_works
                 logger.info(f"  ➜ 从TMDb获取到演员 {sub['actor_name']} 的 {len(all_works_raw)} 部原始作品记录。")
 
                 emby_tmdb_ids_str = {str(id) for id in emby_media_map.keys() if id}
