@@ -678,10 +678,6 @@ class WatchlistProcessor:
         missing_info = self._calculate_missing_info(latest_series_data.get('seasons', []), all_tmdb_episodes, emby_seasons)
         has_missing_media = bool(missing_info["missing_seasons"] or missing_info["missing_episodes"])
 
-        # 只要“还有下一集要等”或者“已经播出的集没下全”，就视为连载中
-        is_truly_airing = bool(real_next_episode_to_air or has_missing_media)
-        logger.info(f"  ➜ 最终判定 '{item_name}' 的真实连载状态为: {is_truly_airing}")
-
         # ★★★ 元数据完整性检查 ★★★
         has_complete_metadata = self._check_all_episodes_have_overview(all_tmdb_episodes)
 
@@ -746,6 +742,10 @@ class WatchlistProcessor:
             final_status = STATUS_COMPLETED
             paused_until_date = None
             logger.warning(f"  ➜ [强制完结生效] 最终状态被覆盖为 '已完结'。")
+
+        # 只有当内部状态是“追剧中”或“已暂停”时，才认为它在“连载中”
+        is_truly_airing = final_status in [STATUS_WATCHING, STATUS_PAUSED]
+        logger.info(f"  ➜ 最终判定 '{item_name}' 的真实连载状态为: {is_truly_airing} (内部状态: {translate_internal_status(final_status)})")
 
         # 步骤5: 更新追剧数据库
         updates_to_db = {
