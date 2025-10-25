@@ -75,11 +75,15 @@ def _check_and_get_series_best_version_flag(series_tmdb_id: int, tmdb_api_key: s
                         logger.info(f"  ➜ 《{series_name}》第 {season_number} 季已完结，将以洗版模式订阅。")
                         return 1
         else:
-            # 检查整部剧是否完结
             series_details = tmdb_handler.get_tv_details(series_tmdb_id, tmdb_api_key)
-            if series_details and series_details.get('status') in ["Ended", "Canceled"]:
-                logger.info(f"  ➜ 剧集《{series_name}》已完结 (状态: {series_details.get('status')})，将以洗版模式订阅。")
-                return 1
+            if series_details and (last_episode_to_air := series_details.get('last_episode_to_air')):
+                last_air_date_str = last_episode_to_air.get('air_date')
+                if last_air_date_str:
+                    last_air_date = datetime.strptime(last_air_date_str, '%Y-%m-%d').date()
+                    if last_air_date <= today:
+                        logger.info(f"  ➜ 剧集《{series_name}》的最后一集已播出，将以洗版模式订阅。")
+                        return 1
+                        
     except Exception as e_tmdb:
         logger.warning(f"  ➜ 获取《{series_name}》详情失败: {e_tmdb}，将以普通模式订阅。")
     
