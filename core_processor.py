@@ -113,15 +113,24 @@ def _save_metadata_to_cache(
 
         keywords = []
         if tmdb_details_for_extra:
-            # TMDb API 对电影和剧集的关键词结构不同，需要分别处理
-            keywords_data = tmdb_details_for_extra.get("keywords", {})
             keyword_list = []
             if item_type == 'Movie':
-                # 电影的关键词在 keywords.keywords
-                keyword_list = keywords_data.get("keywords", [])
+                # 尝试从嵌套结构中获取
+                keywords_obj = tmdb_details_for_extra.get("keywords", {})
+                if isinstance(keywords_obj, dict):
+                    keyword_list = keywords_obj.get("keywords", [])
+                # 如果没取到，尝试直接从顶层获取 (增加兼容性)
+                if not keyword_list:
+                    keyword_list = tmdb_details_for_extra.get("keywords", [])
+
             elif item_type == 'Series':
-                # 剧集的关键词在 keywords.results
-                keyword_list = keywords_data.get("results", [])
+                # 尝试从嵌套结构中获取
+                keywords_obj = tmdb_details_for_extra.get("keywords", {})
+                if isinstance(keywords_obj, dict):
+                    keyword_list = keywords_obj.get("results", [])
+                # 如果没取到，尝试直接从顶层获取 (增加兼容性)
+                if not keyword_list:
+                    keyword_list = tmdb_details_for_extra.get("results", [])
             
             if isinstance(keyword_list, list):
                 # 我们只存储英文名，因为筛选时用英文

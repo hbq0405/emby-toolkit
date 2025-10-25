@@ -176,6 +176,8 @@ KEYWORD_TRANSLATION_MAP = {
     "灾难": "disaster",
     "武侠": "wuxia",
     "黑色电影": "film noir",
+    "古装剧": "costume drama",
+    "仙侠": "xianxia",
 
     # --- 科幻/奇幻元素 ---
     "赛博朋克": "cyberpunk",
