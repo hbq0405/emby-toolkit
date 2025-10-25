@@ -100,41 +100,51 @@ class WatchlistProcessor:
     # --- 自动添加追剧列表的方法 ---
     def add_series_to_watchlist(self, item_details: Dict[str, Any]):
         """
-        【V13 - 逻辑修改版】
-        检查剧集状态，将在播剧以“追剧中”状态、非在播剧（已完结/已取消）以“已完结”状态自动加入追剧列表。
+        【V14 - 冷宫逻辑版】
+        - 新增剧集时，会检查其下一集的播出日期。
+        - 如果下一集遥遥无期（超过90天或无日期），则直接以“已完结”状态入库，打入冷宫等待复活任务。
         """
         if item_details.get("Type") != "Series": return
         tmdb_id = item_details.get("ProviderIds", {}).get("Tmdb")
         item_name = item_details.get("Name")
         item_id = item_details.get("Id")
-        if not tmdb_id: return
-
-        if not self.tmdb_api_key: return
+        if not tmdb_id or not self.tmdb_api_key: return
             
         tmdb_details = tmdb_handler.get_tv_details(tmdb_id, self.tmdb_api_key)
         if not tmdb_details: return
 
         tmdb_status = tmdb_details.get("status")
-        
-        # 如果无法获取TMDb状态，则不进行任何操作
         if not tmdb_status:
             logger.warning(f"无法确定剧集 '{item_name}' 的TMDb状态，跳过自动添加。")
             return
 
-        # 根据TMDb状态决定内部追剧状态
-        internal_status = ""
+        # ★★★ 核心逻辑重构：基于播出日期的初始状态判断 ★★★
+        internal_status = STATUS_COMPLETED  # 默认打入冷宫
         is_airing_flag = False
+        today = datetime.now(timezone.utc).date()
+        
+        # 只有明确的“连载中”剧集才需要进一步判断
         if tmdb_status in ["Returning Series", "In Production", "Planned"]:
-            internal_status = STATUS_WATCHING
-            is_airing_flag = True  # 连载中、制作中、计划中的剧集，都视为“在播”
-        else: # 包括 "Ended", "Canceled" 以及其他任何未知状态
-            internal_status = STATUS_COMPLETED
-            is_airing_flag = False # 已完结或取消的剧集，明确标记为“不在播”
+            next_episode = tmdb_details.get("next_episode_to_air")
+            if next_episode and next_episode.get('air_date'):
+                try:
+                    air_date = datetime.strptime(next_episode['air_date'], '%Y-%m-%d').date()
+                    days_until_air = (air_date - today).days
+                    
+                    # 90天是我们的“冷宫”阈值
+                    if days_until_air <= 90:
+                        internal_status = STATUS_WATCHING
+                        is_airing_flag = True
+                    else:
+                        logger.info(f"  ➜ 剧集 '{item_name}' 的下一集在 {days_until_air} 天后播出，超过阈值，初始状态设为“已完结”。")
+                except (ValueError, TypeError):
+                    logger.warning(f"  ➜ 解析剧集 '{item_name}' 的待播日期失败，初始状态设为“已完结”。")
+            else:
+                logger.info(f"  ➜ 剧集 '{item_name}' 虽为连载状态，但无明确待播信息，初始状态设为“已完结”。")
 
         try:
             with connection.get_db_connection() as conn:
                 with conn.cursor() as cursor:
-                    # ★★★ 核心逻辑修改: 插入时同时写入 is_airing 字段 ★★★
                     cursor.execute("""
                         INSERT INTO watchlist (item_id, tmdb_id, item_name, item_type, status, is_airing)
                         VALUES (%s, %s, %s, %s, %s, %s)
@@ -142,9 +152,8 @@ class WatchlistProcessor:
                     """, (item_id, tmdb_id, item_name, "Series", internal_status, is_airing_flag))
                     
                     if cursor.rowcount > 0:
-                        # 使用辅助函数翻译内部状态，使日志更友好
                         log_status_translated = translate_internal_status(internal_status)
-                        logger.info(f"  ➜ 剧集 '{item_name}' (TMDb状态: {translate_status(tmdb_status)}) 已自动加入追剧列表，初始状态为: {log_status_translated}，在播状态: {is_airing_flag}。")
+                        logger.info(f"  ➜ 剧集 '{item_name}' 已自动加入追剧列表，初始状态为: {log_status_translated}。")
                 conn.commit()
         except Exception as e:
             logger.error(f"自动添加剧集 '{item_name}' 到追剧列表时发生数据库错误: {e}", exc_info=True)
@@ -246,12 +255,15 @@ class WatchlistProcessor:
 
     # ★★★ 专门用于“复活检查”的任务方法 ★★★
     def run_revival_check_task(self, progress_callback: callable):
-        """【低频任务】检查所有已完结剧集是否“复活”。"""
+        """
+        【V2 - 精准复活版】
+        - 彻底重构复活逻辑，只有当新一季的第一集有明确播出日期，且该日期在3天内时，才将剧集状态改回“追剧中”。
+        - 避免了对“待定”新季的过早反应。
+        """
         self.progress_callback = progress_callback
         task_name = "已完结剧集复活检查"
         self.progress_callback(0, "准备开始复活检查...")
         try:
-            # 【修改】查询条件不变，依然是检查所有已完结的剧集
             completed_series = self._get_series_to_process(f"WHERE status = '{STATUS_COMPLETED}'")
             total = len(completed_series)
             if not completed_series:
@@ -261,59 +273,72 @@ class WatchlistProcessor:
             logger.info(f"开始低频检查 {total} 部已完结剧集是否复活...")
             self.progress_callback(10, f"发现 {total} 部已完结剧集，开始检查...")
             revived_count = 0
+            today = datetime.now(timezone.utc).date()
 
             for i, series in enumerate(completed_series):
                 if self.is_stop_requested(): break
                 progress = 10 + int(((i + 1) / total) * 90)
-                self.progress_callback(progress, f"检查中: {series['item_name'][:20]}... ({i+1}/{total})")
+                series_name = series['item_name']
+                self.progress_callback(progress, f"检查中: {series_name[:20]}... ({i+1}/{total})")
 
                 tmdb_details = tmdb_handler.get_tv_details(series['tmdb_id'], self.tmdb_api_key)
                 if not tmdb_details: continue
 
-                new_tmdb_status = tmdb_details.get('status')
-                # 基础条件：TMDb状态不再是“已完结”或“已取消”
-                is_status_revived = new_tmdb_status not in ["Ended", "Canceled"]
+                # ▼▼▼ 核心逻辑重构：基于播出日期的精准复活判断 ▼▼▼
+                should_revive = False
+                
+                # 1. 从数据库获取旧的最后季号
+                last_episode_info = series.get('last_episode_to_air_json')
+                old_season_number = 0
+                if last_episode_info and isinstance(last_episode_info, dict):
+                    old_season_number = last_episode_info.get('season_number', 0)
 
-                # ▼▼▼ 核心修正：增加新季检查，防止误判 ▼▼▼
-                has_new_season = False
-                if is_status_revived:
-                    try:
-                        # 从新获取的TMDb详情中拿到总季数
-                        new_total_seasons = tmdb_details.get('number_of_seasons', 0)
-                        
-                        # 从数据库中存储的“最后播出集信息”里解析出旧的季号
-                        last_episode_info = series.get('last_episode_to_air_json')
-                        old_season_number = 0
-                        if last_episode_info and isinstance(last_episode_info, dict):
-                            old_season_number = last_episode_info.get('season_number', 0)
-                        
-                        # 如果新的总季数 > 旧的最后一集季号，说明出了新的一季
-                        if new_total_seasons > old_season_number:
-                            has_new_season = True
-                            logger.info(f"  ➜ 检测到《{series['item_name']}》有新内容：TMDb总季数 ({new_total_seasons}) > 上次记录的最终季号 ({old_season_number})。")
-                        else:
-                            logger.info(f"  ➜ 《{series['item_name']}》TMDb状态为'{new_tmdb_status}'，但未发现新季（TMDb总季数 {new_total_seasons}，记录的最终季 {old_season_number}），不作复活处理。")
+                # 2. 从TMDb获取最新的总季数
+                new_total_seasons = tmdb_details.get('number_of_seasons', 0)
 
-                    except Exception as e:
-                        logger.error(f"  ➜ 解析《{series['item_name']}》的新旧季数时出错: {e}", exc_info=True)
-                        has_new_season = False # 出错则保守处理，不认为有新季
-
-                # 最终复活判断：状态符合 且 必须有新季
-                if is_status_revived and has_new_season:
-                    logger.warning(f"检测到剧集 '{series['item_name']}' 已复活！TMDb状态从 '{series.get('tmdb_status')}' 变为 '{new_tmdb_status}'，并发布了新季。")
-                    revived_count += 1
+                # 3. 只有当新季出现时，才进行后续判断
+                if new_total_seasons > old_season_number:
+                    logger.info(f"  ➜ 检测到《{series_name}》可能有新内容：TMDb总季数 ({new_total_seasons}) > 上次记录的最终季号 ({old_season_number})。")
                     
-                    # 准备更新的数据
+                    # 4. 获取这个新季度的详情
+                    new_season_to_check_num = old_season_number + 1 # 通常是下一季
+                    season_details = tmdb_handler.get_season_details(series['tmdb_id'], new_season_to_check_num, self.tmdb_api_key)
+                    
+                    if season_details and season_details.get('episodes'):
+                        first_episode = season_details['episodes'][0]
+                        air_date_str = first_episode.get('air_date')
+                        
+                        if air_date_str:
+                            try:
+                                air_date = datetime.strptime(air_date_str, '%Y-%m-%d').date()
+                                days_until_air = (air_date - today).days
+                                
+                                # 5. 最终判断：播出日期必须在3天内
+                                if 0 <= days_until_air <= 3:
+                                    should_revive = True
+                                    logger.warning(f"  ➜ 确认复活！《{series_name}》新季 S{new_season_to_check_num} 的首集将于 {days_until_air} 天后播出。")
+                                else:
+                                    logger.info(f"  ➜ 《{series_name}》新季首播日期 ({air_date_str}) 不在3天内，暂不复活。")
+                            except ValueError:
+                                logger.warning(f"  ➜ 《{series_name}》新季首播日期格式错误 ({air_date_str})，暂不复活。")
+                        else:
+                            logger.info(f"  ➜ 《{series_name}》新季首集尚无明确播出日期 (待定)，暂不复活。")
+                    else:
+                        logger.info(f"  ➜ 《{series_name}》新季尚无具体分集信息，暂不复活。")
+                
+                # ▲▲▲ 核心逻辑重构结束 ▲▲▲
+
+                if should_revive:
+                    revived_count += 1
                     updates_to_db = {
                         "status": STATUS_WATCHING,
                         "paused_until": None,
-                        "tmdb_status": new_tmdb_status,
-                        # 【关键】一旦因新一季而复活，就必须重置 force_ended 标志，让它恢复正常追剧逻辑
+                        "tmdb_status": tmdb_details.get('status'),
                         "force_ended": False 
                     }
-                    self._update_watchlist_entry(series['item_id'], series['item_name'], updates_to_db)
+                    self._update_watchlist_entry(series['item_id'], series_name, updates_to_db)
                 
-                time.sleep(2) # 保持API调用间隔
+                time.sleep(2)
             
             final_message = f"复活检查完成。共发现 {revived_count} 部剧集回归。"
             self.progress_callback(100, final_message)
@@ -657,86 +682,52 @@ class WatchlistProcessor:
         is_truly_airing = bool(real_next_episode_to_air or has_missing_media)
         logger.info(f"  ➜ 最终判定 '{item_name}' 的真实连载状态为: {is_truly_airing}")
 
-        # ★★★ 新增：元数据完整性检查 ★★★
+        # ★★★ 元数据完整性检查 ★★★
         has_complete_metadata = self._check_all_episodes_have_overview(all_tmdb_episodes)
 
         # “本季大结局”判断逻辑
-        is_season_finale = False
         last_episode_to_air = latest_series_data.get("last_episode_to_air")
-        next_episode_to_air_tmdb = latest_series_data.get("next_episode_to_air")
-
-        if last_episode_to_air and not next_episode_to_air_tmdb:
-            last_air_date_str = last_episode_to_air.get("air_date")
-            if last_air_date_str:
-                try:
-                    last_air_date = datetime.strptime(last_air_date_str, '%Y-%m-%d').date()
-                    if last_air_date <= datetime.now(timezone.utc).date():
-                        is_season_finale = True
-                        logger.info("  ➜ 符合“本季大结局”条件：已播出最后一集，且无明确的待播集。")
-                except ValueError:
-                    logger.warning(f"  ➜ 解析TMDb最后播出日期 '{last_air_date_str}' 失败。")
-
-        # ▼▼▼ 元数据超时强制完结逻辑 ▼▼▼
-        force_complete_due_to_timeout = False
-        # 规则：TMDb已完结 + 本地文件不缺 + 元数据缺失 + 完结已超1个月
-        if is_ended_on_tmdb and not has_missing_media and not has_complete_metadata:
-            if last_episode_to_air:
-                last_air_date_str = last_episode_to_air.get("air_date")
-                if last_air_date_str:
-                    try:
-                        last_air_date = datetime.strptime(last_air_date_str, '%Y-%m-%d').date()
-                        days_since_ended = (datetime.now(timezone.utc).date() - last_air_date).days
-                        # 如果完结超过30天 (约一个月)
-                        if days_since_ended > 30:
-                            force_complete_due_to_timeout = True
-                            logger.warning(f"  ➜ 剧集 '{item_name}' 已完结超过一个月，虽元数据缺失但文件完整，将强制完结。")
-                    except ValueError:
-                        logger.warning(f"  ➜ 解析TMDb最后播出日期 '{last_air_date_str}' 失败，无法应用元数据超时规则。")
-
-        final_status = STATUS_WATCHING
+        final_status = STATUS_WATCHING # 默认值
         paused_until_date = None
-
-        # 完结的【硬性前提】：本地文件完整 且 元数据完整
+        today = datetime.now(timezone.utc).date()
+        
+        # 规则1：硬性完结条件 (文件全、元数据全、TMDB已完结)
         can_be_completed = not has_missing_media and has_complete_metadata
-
-        if (can_be_completed and (is_ended_on_tmdb or is_season_finale)) or force_complete_due_to_timeout:
+        if can_be_completed and is_ended_on_tmdb:
             final_status = STATUS_COMPLETED
-            if force_complete_due_to_timeout:
-                logger.info(f"  ➜ 剧集因“元数据超时”规则，状态变更为: {translate_internal_status(final_status)}")
-            elif is_season_finale and not is_ended_on_tmdb:
-                logger.info(f"  ➜ 剧集因“本季大结局”且本地/元数据完整，状态变更为: {translate_internal_status(final_status)}")
-            else:
-                logger.info(f"  ➜ 剧集已完结且本地/元数据完整，状态变更为: {translate_internal_status(final_status)}")
+            logger.info(f"  ➜ 剧集已完结且本地/元数据完整，状态变更为: {translate_internal_status(final_status)}")
+        
+        # 规则2：检查待播集，并应用“冷宫”逻辑
         elif real_next_episode_to_air and real_next_episode_to_air.get('air_date'):
             air_date_str = real_next_episode_to_air['air_date']
             try:
                 air_date = datetime.strptime(air_date_str, '%Y-%m-%d').date()
-                days_until_air = (air_date - datetime.now(timezone.utc).date()).days
-                if days_until_air > 3:
-                    final_status = STATUS_PAUSED
-                    paused_until_date = air_date - timedelta(days=1)
-                    logger.info(f"  ➜ 下一集在3天后播出，状态变更为: {translate_internal_status(final_status)}，暂停至 {paused_until_date}。")
-                else:
+                days_until_air = (air_date - today).days
+                
+                if days_until_air <= 3:
                     final_status = STATUS_WATCHING
                     logger.info(f"  ➜ 下一集即将在3天内播出或已播出，状态保持为: {translate_internal_status(final_status)}。")
+                elif 3 < days_until_air <= 90: # 90天是我们的阈值
+                    final_status = STATUS_PAUSED
+                    paused_until_date = air_date - timedelta(days=1)
+                    logger.info(f"  ➜ 下一集在 {days_until_air} 天后播出，状态变更为: {translate_internal_status(final_status)}，暂停至 {paused_until_date}。")
+                else: # 超过90天，打入冷宫
+                    final_status = STATUS_COMPLETED
+                    logger.warning(f"  ➜ [打入冷宫] 下一集在 {days_until_air} 天后播出，超过90天阈值，状态强制变更为“已完结”。")
             except ValueError:
-                logger.warning(f"  ➜ 解析TMDb待播日期 '{air_date_str}' 失败，将临时暂停。")
-                final_status = STATUS_PAUSED
-                paused_until_date = datetime.now(timezone.utc).date() + timedelta(days=1)
+                final_status = STATUS_COMPLETED # 日期格式错误，也打入冷宫
+                logger.warning(f"  ➜ [打入冷宫] 解析待播日期 '{air_date_str}' 失败，状态强制变更为“已完结”。")
+        
+        # 规则3：无待播信息（季歇期），直接打入冷宫
         else:
-            final_status = STATUS_PAUSED
-            paused_until_date = datetime.now(timezone.utc).date() + timedelta(days=7)
-            # 对暂停原因进行更详细的日志记录
-            if not has_complete_metadata and not has_missing_media:
-                 logger.info(f"  ➜ 剧集文件完整但元数据不全，状态变更为: {translate_internal_status(final_status)}，暂停7天以待元数据更新。")
-            else:
-                 logger.info(f"  ➜ 暂无待播信息 (季歇期)，状态变更为: {translate_internal_status(final_status)}，暂停7天。")
+            final_status = STATUS_COMPLETED
+            logger.warning(f"  ➜ [打入冷宫] 剧集暂无明确的待播信息（季歇期），状态强制变更为“已完结”。")
 
-
+        # 规则4：强制完结标志拥有最高优先级
         if is_force_ended and final_status != STATUS_COMPLETED:
             final_status = STATUS_COMPLETED
             paused_until_date = None
-            logger.warning(f"  ➜ [强制完结生效] 剧集 '{item_name}' 被标记为强制完结，即使系统判断为其他状态，也将强制变更为 '已完结'。")
+            logger.warning(f"  ➜ [强制完结生效] 最终状态被覆盖为 '已完结'。")
 
         # 步骤5: 更新追剧数据库
         updates_to_db = {
