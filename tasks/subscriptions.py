@@ -62,7 +62,7 @@ def _check_and_get_series_best_version_flag(series_tmdb_id: int, tmdb_api_key: s
     try:
         if season_number is not None:
             # 检查单季是否完结
-            season_details = tmdb_handler.get_season_details(series_tmdb_id, season_number, tmdb_api_key)
+            season_details = tmdb_handler.get_tv_details(series_tmdb_id, season_number, tmdb_api_key)
             if season_details and season_details.get('episodes'):
                 last_episode = season_details['episodes'][-1]
                 last_air_date_str = last_episode.get('air_date')
