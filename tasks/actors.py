@@ -190,11 +190,11 @@ def task_actor_translation(processor):
             task_manager.update_status_from_thread(5, f"阶段 1/3: 已扫描 {total_scanned} 名演员...")
 
         if not name_to_persons_map:
-            logger.info("扫描完成，没有发现需要翻译的演员名。")
+            logger.info("  ➜ 扫描完成，没有发现需要翻译的演员名。")
             task_manager.update_status_from_thread(100, "任务完成，所有演员名都无需翻译。")
             return
 
-        logger.info(f"扫描完成！共发现 {len(name_to_persons_map)} 个外文名需要翻译。")
+        logger.info(f"  ➜ 扫描完成！共发现 {len(name_to_persons_map)} 个外文名需要翻译。")
 
         # ======================================================================
         # ★★★ 新增阶段 2: 从本地数据库获取 Original Name ★★★
@@ -217,7 +217,7 @@ def task_actor_translation(processor):
                     for row in cursor.fetchall():
                         tmdb_id_to_original_name[str(row['tmdb_id'])] = row['original_name']
             
-            logger.info(f"成功从本地数据库为 {len(tmdb_id_to_original_name)} 个TMDb ID找到了original_name。")
+            logger.trace(f"  ➜ 成功从本地数据库为 {len(tmdb_id_to_original_name)} 个TMDb ID找到了original_name。")
 
             # 构建最终待翻译列表
             for actor in actors_to_enrich:
@@ -323,12 +323,12 @@ def task_actor_translation(processor):
             total_updated_count += batch_updated_count
             
             if batch_updated_count > 0:
-                logger.info(f"  ✅ 批次 {batch_num}/{total_batches} 并发写回完成，成功更新 {batch_updated_count} 个演员名。")
+                logger.info(f"  ➜ 批次 {batch_num}/{total_batches} 并发写回完成，成功更新 {batch_updated_count} 个演员名。")
         
         # ======================================================================
         # 阶段 3: 任务结束 (此部分逻辑不变)
         # ======================================================================
-        final_message = f"任务完成！共成功翻译并更新了 {total_updated_count} 个演员名。"
+        final_message = f"  ✅ 任务完成！共成功翻译并更新了 {total_updated_count} 个演员名。"
         if processor.is_stop_requested():
             final_message = f"任务已中断。本次运行成功翻译并更新了 {total_updated_count} 个演员名。"
         
