@@ -747,12 +747,6 @@ class WatchlistProcessor:
             paused_until_date = None
             logger.warning(f"  ➜ [强制完结生效] 最终状态被覆盖为 '已完结'。")
 
-        # 规则4：强制完结标志拥有最高优先级
-        if is_force_ended and final_status != STATUS_COMPLETED:
-            final_status = STATUS_COMPLETED
-            paused_until_date = None
-            logger.warning(f"  ➜ [强制完结生效] 最终状态被覆盖为 '已完结'。")
-
         # 步骤5: 更新追剧数据库
         updates_to_db = {
             "status": final_status,
