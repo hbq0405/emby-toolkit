@@ -54,9 +54,6 @@ def _get_resolution_tier(width: int, height: int) -> tuple[int, str]:
 def _check_and_get_series_best_version_flag(series_tmdb_id: int, tmdb_api_key: str, season_number: Optional[int] = None, series_name: str = "未知剧集") -> Optional[int]:
     """
     辅助函数：检查剧集或特定季是否完结，并返回洗版标志。
-    - 如果提供了 season_number，则检查该季最后一集是否已播出。
-    - 如果未提供 season_number，则检查整部剧的状态是否为 "Ended" 或 "Canceled"。
-    :return: 如果完结则返回 1，否则返回 None。
     """
     if not tmdb_api_key:
         return None
