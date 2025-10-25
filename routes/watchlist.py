@@ -87,7 +87,7 @@ def api_update_watchlist_status():
     if not item_id or new_status not in ['Watching', 'Ended', 'Paused']:
         return jsonify({"error": "请求参数无效"}), 400
 
-    logger.info(f"API (Blueprint): 收到请求，将项目 {item_id} 的追剧状态更新为 '{new_status}'。")
+    logger.info(f"  ➜ API (Blueprint): 收到请求，将项目 {item_id} 的追剧状态更新为 '{new_status}'。")
     try:
         success = watchlist_db.update_watchlist_item_status(
             item_id=item_id,
@@ -104,7 +104,7 @@ def api_update_watchlist_status():
 @watchlist_bp.route('/remove/<item_id>', methods=['POST'])
 @login_required
 def api_remove_from_watchlist(item_id):
-    logger.info(f"API (Blueprint): 收到请求，将项目 {item_id} 从追剧列表移除。")
+    logger.info(f"  ➜ API (Blueprint): 收到请求，将项目 {item_id} 从追剧列表移除。")
     try:
         success = watchlist_db.remove_item_from_watchlist(
             item_id=item_id
