@@ -687,17 +687,17 @@ class WatchlistProcessor:
 
         # “本季大结局”判断逻辑
         last_episode_to_air = latest_series_data.get("last_episode_to_air")
-        final_status = STATUS_WATCHING # 默认值
+        final_status = STATUS_WATCHING
         paused_until_date = None
         today = datetime.now(timezone.utc).date()
         
-        # 规则1：硬性完结条件 (文件全、元数据全、TMDB已完结)
+        # 规则1：硬性完结条件
         can_be_completed = not has_missing_media and has_complete_metadata
         if can_be_completed and is_ended_on_tmdb:
             final_status = STATUS_COMPLETED
             logger.info(f"  ➜ 剧集已完结且本地/元数据完整，状态变更为: {translate_internal_status(final_status)}")
         
-        # 规则2：检查待播集，并应用“强制完结”逻辑
+        # 规则2：检查待播集，并应用“冷宫”逻辑
         elif real_next_episode_to_air and real_next_episode_to_air.get('air_date'):
             air_date_str = real_next_episode_to_air['air_date']
             try:
@@ -707,21 +707,45 @@ class WatchlistProcessor:
                 if days_until_air <= 3:
                     final_status = STATUS_WATCHING
                     logger.info(f"  ➜ 下一集即将在3天内播出或已播出，状态保持为: {translate_internal_status(final_status)}。")
-                elif 3 < days_until_air <= 90: # 90天是我们的阈值
+                elif 3 < days_until_air <= 90:
                     final_status = STATUS_PAUSED
                     paused_until_date = air_date - timedelta(days=1)
                     logger.info(f"  ➜ 下一集在 {days_until_air} 天后播出，状态变更为: {translate_internal_status(final_status)}，暂停至 {paused_until_date}。")
-                else: # 超过90天，强制完结
+                else:
                     final_status = STATUS_COMPLETED
-                    logger.warning(f"  ➜ 下一集在 {days_until_air} 天后播出，超过90天，状态强制变更为“已完结”，到期会复活。")
+                    logger.warning(f"  ➜ 下一集在 {days_until_air} 天后播出，超过90天阈值，状态强制变更为“已完结”。")
             except ValueError:
-                final_status = STATUS_COMPLETED # 日期格式错误，也打入冷宫
+                final_status = STATUS_COMPLETED
                 logger.warning(f"  ➜ 解析待播日期 '{air_date_str}' 失败，状态强制变更为“已完结”。")
         
-        # 规则3：无待播信息（季歇期），直接强制完结
+        # 规则3：无待播信息，进入“安全网”判断
         else:
+            # 默认执行安全的7天暂停，以防信息不全导致误判
+            final_status = STATUS_PAUSED
+            paused_until_date = today + timedelta(days=7)
+            
+            # 只有当我们能获取到明确的、且超过7天的上次播出日期时，才覆盖默认行为，将其打入冷宫
+            if last_episode_to_air and last_episode_to_air.get('air_date'):
+                try:
+                    last_air_date = datetime.strptime(last_episode_to_air['air_date'], '%Y-%m-%d').date()
+                    days_since_last_air = (today - last_air_date).days
+                    
+                    if days_since_last_air > 7:
+                        final_status = STATUS_COMPLETED
+                        paused_until_date = None
+                        logger.warning(f"  ➜ 剧集暂无明确待播信息，且上一集播出已超过7天，状态强制变更为“已完结”。")
+                    else:
+                        logger.info(f"  ➜ 剧集暂无待播信息，但上一集在7天内播出（周播剧典型特征），临时暂停7天以减少API请求。")
+                except ValueError:
+                    logger.warning(f"  ➜ 剧集上次播出日期格式错误，为安全起见，执行默认的7天暂停。")
+            else:
+                logger.info(f"  ➜ 剧集完全缺失播出日期数据，为安全起见，执行默认的7天暂停以待数据更新。")
+
+        # 规则4：强制完结标志拥有最高优先级
+        if is_force_ended and final_status != STATUS_COMPLETED:
             final_status = STATUS_COMPLETED
-            logger.warning(f"  ➜ 剧集暂无明确的待播信息（季歇期），状态强制变更为“已完结”，等待复活。")
+            paused_until_date = None
+            logger.warning(f"  ➜ [强制完结生效] 最终状态被覆盖为 '已完结'。")
 
         # 规则4：强制完结标志拥有最高优先级
         if is_force_ended and final_status != STATUS_COMPLETED:
