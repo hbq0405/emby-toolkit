@@ -102,8 +102,8 @@ def task_scan_actor_media(processor, subscription_id: int):
     """【新】后台任务：扫描单个演员订阅的所有作品。"""
     logger.trace(f"手动刷新任务(ID: {subscription_id})：开始准备Emby媒体库数据...")
     
-    # 在调用核心扫描函数前，必须先获取Emby数据
-    emby_tmdb_ids = set()
+    # ★★★ 核心修正：初始化一个字典 (dict)，而不是集合 (set) ★★★
+    emby_media_map = {}
     try:
         # 从 processor 或全局配置中获取 Emby 连接信息
         config = processor.config # 假设 processor 对象中存有配置
@@ -115,16 +115,20 @@ def task_scan_actor_media(processor, subscription_id: int):
         library_ids_to_scan = [lib['Id'] for lib in all_libraries if lib.get('CollectionType') in ['movies', 'tvshows']]
         emby_items = emby_handler.get_emby_library_items(base_url=emby_url, api_key=emby_api_key, user_id=emby_user_id, library_ids=library_ids_to_scan, media_type_filter="Movie,Series")
         
-        emby_tmdb_ids = {item['ProviderIds'].get('Tmdb') for item in emby_items if item.get('ProviderIds', {}).get('Tmdb')}
-        logger.debug(f"手动刷新任务：已从 Emby 获取 {len(emby_tmdb_ids)} 个媒体ID。")
+        # ★★★ 核心修正：创建 TMDb ID -> Emby Item ID 的映射字典 ★★★
+        emby_media_map = {
+            item['ProviderIds']['Tmdb']: item['Id']
+            for item in emby_items
+            if item.get('ProviderIds', {}).get('Tmdb')
+        }
+        logger.debug(f"手动刷新任务：已从 Emby 获取 {len(emby_media_map)} 个媒体ID映射。")
 
     except Exception as e:
         logger.error(f"手动刷新任务：在获取Emby媒体库信息时失败: {e}", exc_info=True)
-        # 获取失败时，可以传递一个空集合，让扫描逻辑继续（但可能不准确），或者直接返回
-        # 这里选择继续，让用户至少能更新TMDb信息
+        # 获取失败时，传递一个空字典，让扫描逻辑继续
 
-    # 现在，带着准备好的 emby_tmdb_ids 调用函数
-    processor.run_full_scan_for_actor(subscription_id, emby_tmdb_ids)
+    # ★★★ 核心修正：现在，带着准备好的 emby_media_map (字典) 调用函数 ★★★
+    processor.run_full_scan_for_actor(subscription_id, emby_media_map)
 
 # --- 演员订阅 ---
 def task_process_actor_subscriptions(processor):
