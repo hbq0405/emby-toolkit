@@ -133,6 +133,7 @@ CONFIG_OPTION_TASK_CHAIN_LOW_FREQ_MAX_RUNTIME_MINUTES = "task_chain_low_freq_max
 # --- 演员前缀 ---
 CONFIG_SECTION_ACTOR = "Actor"
 CONFIG_OPTION_ACTOR_ROLE_ADD_PREFIX = "actor_role_add_prefix"
+CONFIG_OPTION_ACTOR_MAIN_ROLE_ONLY = "actor_main_role_only"
 
 
 # --- 日志配置 ---

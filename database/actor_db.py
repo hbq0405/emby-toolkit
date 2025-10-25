@@ -490,7 +490,7 @@ def get_single_subscription_details(subscription_id: int) -> Optional[Dict[str, 
             if not sub_row:
                 return None
             
-            cursor.execute("SELECT * FROM tracked_actor_media WHERE subscription_id = %s ORDER BY release_date DESC", (subscription_id,))
+            cursor.execute("SELECT * FROM tracked_actor_media WHERE subscription_id = %s AND status != 'IGNORED' ORDER BY release_date DESC", (subscription_id,))
             tracked_media = [dict(row) for row in cursor.fetchall()]
             
             response_data = {
@@ -506,7 +506,8 @@ def get_single_subscription_details(subscription_id: int) -> Optional[Dict[str, 
                     "media_types": [t.strip() for t in (sub_row.get('config_media_types') or '').split(',') if t.strip()],
                     "genres_include_json": sub_row.get('config_genres_include_json') or [],
                     "genres_exclude_json": sub_row.get('config_genres_exclude_json') or [],
-                    "min_rating": float(sub_row.get('config_min_rating', 0.0))
+                    "min_rating": float(sub_row.get('config_min_rating', 0.0)),
+                    "main_role_only": sub_row.get('config_main_role_only', False)
                 },
                 "tracked_media": tracked_media
             }
@@ -530,7 +531,7 @@ def safe_json_dumps(value):
         return json.dumps(value, ensure_ascii=False)
 
 def add_actor_subscription(tmdb_person_id: int, actor_name: str, profile_path: str, config: dict) -> int:
-    """【V3 - 最终修复版】新增一个演员订阅。"""
+    """【V5 - 列名/值完全匹配最终版】新增一个演员订阅。"""
     
     start_year = config.get('start_year', 1900)
     media_types_list = config.get('media_types', ['Movie','TV'])
@@ -542,6 +543,7 @@ def add_actor_subscription(tmdb_person_id: int, actor_name: str, profile_path: s
     genres_include = safe_json_dumps(config.get('genres_include_json', []))
     genres_exclude = safe_json_dumps(config.get('genres_exclude_json', []))
     min_rating = config.get('min_rating', 6.0)
+    main_role_only = config.get('main_role_only', False)
 
     try:
         with get_db_connection() as conn:
@@ -549,14 +551,14 @@ def add_actor_subscription(tmdb_person_id: int, actor_name: str, profile_path: s
             
             sql = """
                 INSERT INTO actor_subscriptions 
-                (tmdb_person_id, actor_name, profile_path, status, config_start_year, config_media_types, config_genres_include_json, config_genres_exclude_json, config_min_rating)
-                VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s)
+                (tmdb_person_id, actor_name, profile_path, status, config_start_year, config_media_types, config_genres_include_json, config_genres_exclude_json, config_min_rating, config_main_role_only)
+                VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
                 RETURNING id
             """
             
             cursor.execute(
                 sql,
-                (tmdb_person_id, actor_name, profile_path, 'active', start_year, media_types, genres_include, genres_exclude, min_rating)
+                (tmdb_person_id, actor_name, profile_path, 'active', start_year, media_types, genres_include, genres_exclude, min_rating, main_role_only)
             )
             
             result = cursor.fetchone()
@@ -575,8 +577,8 @@ def add_actor_subscription(tmdb_person_id: int, actor_name: str, profile_path: s
         raise
 
 def update_actor_subscription(subscription_id: int, data: dict) -> bool:
-    """【V6 - 逻辑重构最终修复版】更新一个演员订阅的状态或配置。"""
-    
+    """【V11 - 配置变更重置版】更新订阅，并在配置变化时自动清理已忽略的记录以便重新评估。"""
+    logger.debug(f"  ➜ 准备更新订阅ID {subscription_id}，接收到的原始数据: {data}")
     try:
         with get_db_connection() as conn:
             cursor = conn.cursor()
@@ -585,39 +587,73 @@ def update_actor_subscription(subscription_id: int, data: dict) -> bool:
             if not current_sub:
                 return False
 
-            new_status = current_sub['status']
-            new_start_year = current_sub['config_start_year']
-            new_min_rating = current_sub['config_min_rating']
-            new_genres_include_list = current_sub.get('config_genres_include_json') or []
-            new_genres_exclude_list = current_sub.get('config_genres_exclude_json') or []
-            new_media_types_list = [t.strip() for t in (current_sub.get('config_media_types') or '').split(',') if t.strip()]
+            # 1. 将数据库中的当前配置作为基础
+            final_config = {
+                'status': current_sub['status'],
+                'start_year': current_sub['config_start_year'],
+                'min_rating': current_sub['config_min_rating'],
+                'media_types': [t.strip() for t in (current_sub.get('config_media_types') or '').split(',') if t.strip()],
+                'genres_include_json': current_sub.get('config_genres_include_json') or [],
+                'genres_exclude_json': current_sub.get('config_genres_exclude_json') or [],
+                'main_role_only': current_sub.get('config_main_role_only', False)
+            }
+            
+            # 记录旧配置的关键部分，用于判断是否需要重置
+            old_config_snapshot = {k: final_config[k] for k in ['start_year', 'min_rating', 'media_types', 'genres_include_json', 'genres_exclude_json', 'main_role_only']}
 
-            new_status = data.get('status', new_status)
+            # 2. 确定包含新配置的字典
+            incoming_config = data.get('config', data)
+            
+            # 3. 用传入的新值覆盖基础配置
+            if 'status' in data:
+                final_config['status'] = data['status']
+            if 'start_year' in incoming_config:
+                final_config['start_year'] = incoming_config['start_year']
+            if 'min_rating' in incoming_config:
+                final_config['min_rating'] = incoming_config['min_rating']
+            if 'media_types' in incoming_config and isinstance(incoming_config['media_types'], list):
+                final_config['media_types'] = incoming_config['media_types']
+            if 'genres_include_json' in incoming_config and isinstance(incoming_config['genres_include_json'], list):
+                final_config['genres_include_json'] = incoming_config['genres_include_json']
+            if 'genres_exclude_json' in incoming_config and isinstance(incoming_config['genres_exclude_json'], list):
+                final_config['genres_exclude_json'] = incoming_config['genres_exclude_json']
+            if 'main_role_only' in incoming_config:
+                final_config['main_role_only'] = bool(incoming_config.get('main_role_only'))
 
-            config = data.get('config')
-            if config is not None:
-                new_start_year = config.get('start_year', new_start_year)
-                new_min_rating = config.get('min_rating', new_min_rating)
-                if 'media_types' in config and isinstance(config['media_types'], list):
-                    new_media_types_list = config['media_types']
-                if 'genres_include_json' in config and isinstance(config['genres_include_json'], list):
-                    new_genres_include_list = config['genres_include_json']
-                if 'genres_exclude_json' in config and isinstance(config['genres_exclude_json'], list):
-                    new_genres_exclude_list = config['genres_exclude_json']
+            # 4. 准备最终要写入数据库的格式化值
+            final_media_types_str = ','.join(final_config['media_types'])
+            final_genres_include_json = json.dumps(final_config['genres_include_json'], ensure_ascii=False)
+            final_genres_exclude_json = json.dumps(final_config['genres_exclude_json'], ensure_ascii=False)
 
-            final_media_types_str = ','.join(new_media_types_list)
-            final_genres_include_json = json.dumps(new_genres_include_list, ensure_ascii=False)
-            final_genres_exclude_json = json.dumps(new_genres_exclude_list, ensure_ascii=False)
-
-            cursor.execute("""
+            # 5. 执行更新
+            sql = """
                 UPDATE actor_subscriptions SET
                 status = %s, config_start_year = %s, config_media_types = %s, 
-                config_genres_include_json = %s, config_genres_exclude_json = %s, config_min_rating = %s
+                config_genres_include_json = %s, config_genres_exclude_json = %s, config_min_rating = %s,
+                config_main_role_only = %s
                 WHERE id = %s
-            """, (new_status, new_start_year, final_media_types_str, final_genres_include_json, final_genres_exclude_json, new_min_rating, subscription_id))
+            """
+            params = (
+                final_config['status'], final_config['start_year'], final_media_types_str,
+                final_genres_include_json, final_genres_exclude_json, final_config['min_rating'],
+                final_config['main_role_only'], subscription_id
+            )
+            
+            cursor.execute(sql, params)
+            logger.info(f"  ➜ 成功更新订阅ID {subscription_id} 的配置。")
+
+            # ★★★ 核心逻辑：判断配置是否变更，如果变更则清理IGNORED记录 ★★★
+            new_config_snapshot = {k: final_config[k] for k in old_config_snapshot.keys()}
+            if new_config_snapshot != old_config_snapshot:
+                logger.info(f"  ➜ 检测到订阅ID {subscription_id} 的筛选配置发生变更，将清理历史忽略记录...")
+                cursor.execute(
+                    "DELETE FROM tracked_actor_media WHERE subscription_id = %s AND status = 'IGNORED'",
+                    (subscription_id,)
+                )
+                deleted_rows = cursor.rowcount
+                logger.info(f"  ➜ 成功清理 {deleted_rows} 条旧的'忽略'记录，下次刷新时将重新评估。")
             
             conn.commit()
-            logger.info(f"  ➜ 成功更新订阅ID {subscription_id}。")
             return True
             
     except Exception as e:

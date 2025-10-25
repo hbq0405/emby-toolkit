@@ -131,6 +131,7 @@ DYNAMIC_CONFIG_DEF = {
     
     # [Actor]
     constants.CONFIG_OPTION_ACTOR_ROLE_ADD_PREFIX: (constants.CONFIG_SECTION_ACTOR, 'boolean', False),
+    constants.CONFIG_OPTION_ACTOR_MAIN_ROLE_ONLY: (constants.CONFIG_SECTION_ACTOR, 'boolean', False),
 
     # [Logging]
     constants.CONFIG_OPTION_LOG_ROTATION_SIZE_MB: (constants.CONFIG_SECTION_LOGGING, 'int', constants.DEFAULT_LOG_ROTATION_SIZE_MB),

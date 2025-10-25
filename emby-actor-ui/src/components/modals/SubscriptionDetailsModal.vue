@@ -201,6 +201,7 @@ const resetConfig = () => {
     genres_include_json: config.genres_include_json || [],
     genres_exclude_json: config.genres_exclude_json || [],
     min_rating: config.min_rating || 6.0,
+    main_role_only: config.main_role_only || false, // 新增：初始化 main_role_only
   };
 };
 

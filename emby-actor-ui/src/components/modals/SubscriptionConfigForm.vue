@@ -37,6 +37,16 @@
         </n-text>
       </template>
     </n-form-item>
+    <n-form-item label="仅限主演">
+      <n-checkbox v-model:checked="localConfig.main_role_only">
+        只筛选该演员在演员表中排名前三的作品
+      </n-checkbox>
+      <template #feedback>
+        <n-text depth="3">
+          勾选后将尝试过滤掉客串、龙套等非主要角色。注意：此功能依赖的数据可能不完整，可能会误过滤部分联合主演的作品。
+        </n-text>
+      </template>
+    </n-form-item>
   </n-form>
 </template>
 

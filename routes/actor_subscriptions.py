@@ -24,7 +24,6 @@ logger = logging.getLogger(__name__)
 @login_required
 @processor_ready_required
 def api_search_actors():
-    # ... (此函数不直接与本地数据库交互，无需修改) ...
     query = request.args.get('name', '').strip()
     if not query:
         return jsonify({"error": "必须提供搜索关键词 'name'"}), 400
@@ -71,7 +70,8 @@ def handle_default_actor_config():
                 "media_types": default_config.get("media_types", []),
                 "genres_include_json": default_config.get("genres_include_json", []),
                 "genres_exclude_json": default_config.get("genres_exclude_json", []),
-                "min_rating": default_config.get("min_rating", 0.0)
+                "min_rating": default_config.get("min_rating", 0.0),
+                "main_role_only": default_config.get("main_role_only", False)
             }
             return jsonify(final_config)
         except Exception as e:
@@ -166,19 +166,25 @@ def handle_single_actor_subscription(sub_id):
 @actor_subscriptions_bp.route('/<int:sub_id>/refresh', methods=['POST'])
 @login_required
 def refresh_single_actor_subscription(sub_id):
-    # ★★★ 核心修复：现在我们确实需要导入函数对象了 ★★★
     from tasks import task_scan_actor_media 
 
-    actor_name = f"订阅ID {sub_id}"
+    # ★★★ 核心修改：先从数据库获取订阅详情以拿到演员名 ★★★
+    try:
+        subscription_details = actor_db.get_single_subscription_details(sub_id)
+        if not subscription_details:
+            return jsonify({"error": f"未找到 ID 为 {sub_id} 的订阅"}), 404
+        
+        # 如果找到了，就用真实的演员名；如果没找到名字，再用 ID 作为备用
+        actor_name = subscription_details.get('actor_name', f"订阅ID {sub_id}")
+    except Exception as e:
+        logger.error(f"刷新订阅 {sub_id} 前获取演员名失败: {e}", exc_info=True)
+        # 即使数据库查询失败，也用 ID 作为备用名称提交任务，保证功能可用性
+        actor_name = f"订阅ID {sub_id}"
 
-    # ★★★ 核心修复：按照正确的参数顺序调用 submit_task ★★★
-    # 1. task_function: 任务函数本身 (task_scan_actor_media)
-    # 2. task_name:     任务的显示名称 (一个字符串)
-    # 3. processor_type: 指定使用 'actor' 处理器 (一个字符串)
-    # 4. *args:         所有要传递给 task_scan_actor_media 的额外参数 (sub_id)
+    # 使用获取到的 actor_name 提交任务
     task_manager.submit_task(
         task_scan_actor_media, 
-        f"手动刷新演员: {actor_name}", 
+        f"手动刷新演员: {actor_name}", # <--- 这里现在会显示演员的真实姓名
         'actor', 
         sub_id
     )
