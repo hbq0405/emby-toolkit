@@ -43,7 +43,7 @@
       </n-checkbox>
       <template #feedback>
         <n-text depth="3">
-          勾选后将尝试过滤掉客串、龙套等非主要角色。注意：此功能依赖的数据可能不完整，可能会误过滤部分联合主演的作品。
+          勾选后将过滤掉客串、龙套等非主要角色作品。
         </n-text>
       </template>
     </n-form-item>
