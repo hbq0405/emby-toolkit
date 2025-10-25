@@ -697,7 +697,7 @@ class WatchlistProcessor:
             final_status = STATUS_COMPLETED
             logger.info(f"  ➜ 剧集已完结且本地/元数据完整，状态变更为: {translate_internal_status(final_status)}")
         
-        # 规则2：检查待播集，并应用“冷宫”逻辑
+        # 规则2：检查待播集，并应用“强制完结”逻辑
         elif real_next_episode_to_air and real_next_episode_to_air.get('air_date'):
             air_date_str = real_next_episode_to_air['air_date']
             try:
@@ -711,17 +711,17 @@ class WatchlistProcessor:
                     final_status = STATUS_PAUSED
                     paused_until_date = air_date - timedelta(days=1)
                     logger.info(f"  ➜ 下一集在 {days_until_air} 天后播出，状态变更为: {translate_internal_status(final_status)}，暂停至 {paused_until_date}。")
-                else: # 超过90天，打入冷宫
+                else: # 超过90天，强制完结
                     final_status = STATUS_COMPLETED
-                    logger.warning(f"  ➜ [打入冷宫] 下一集在 {days_until_air} 天后播出，超过90天阈值，状态强制变更为“已完结”。")
+                    logger.warning(f"  ➜ 下一集在 {days_until_air} 天后播出，超过90天，状态强制变更为“已完结”，到期会复活。")
             except ValueError:
                 final_status = STATUS_COMPLETED # 日期格式错误，也打入冷宫
-                logger.warning(f"  ➜ [打入冷宫] 解析待播日期 '{air_date_str}' 失败，状态强制变更为“已完结”。")
+                logger.warning(f"  ➜ 解析待播日期 '{air_date_str}' 失败，状态强制变更为“已完结”。")
         
-        # 规则3：无待播信息（季歇期），直接打入冷宫
+        # 规则3：无待播信息（季歇期），直接强制完结
         else:
             final_status = STATUS_COMPLETED
-            logger.warning(f"  ➜ [打入冷宫] 剧集暂无明确的待播信息（季歇期），状态强制变更为“已完结”。")
+            logger.warning(f"  ➜ 剧集暂无明确的待播信息（季歇期），状态强制变更为“已完结”，等待复活。")
 
         # 规则4：强制完结标志拥有最高优先级
         if is_force_ended and final_status != STATUS_COMPLETED:
