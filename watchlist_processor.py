@@ -731,7 +731,7 @@ class WatchlistProcessor:
                         paused_until_date = None
                         logger.warning(f"  ➜ 剧集暂无明确待播信息，且上一集播出已超过7天，状态强制变更为“已完结”。")
                     else:
-                        logger.info(f"  ➜ 剧集暂无待播信息，但上一集在7天内播出（周播剧典型特征），临时暂停7天以减少API请求。")
+                        logger.info(f"  ➜ 剧集暂无待播信息，但上一集在7天内播出，临时暂停7天以减少API请求。")
                 except ValueError:
                     logger.warning(f"  ➜ 剧集上次播出日期格式错误，为安全起见，执行默认的7天暂停。")
             else:
