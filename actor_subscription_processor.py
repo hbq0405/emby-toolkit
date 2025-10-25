@@ -12,7 +12,6 @@ import concurrent.futures # 新增：导入 concurrent.futures
 import tmdb_handler
 import emby_handler
 from database.connection import get_db_connection
-import moviepilot_handler
 import constants
 
 logger = logging.getLogger(__name__)
