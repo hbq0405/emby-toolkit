@@ -607,35 +607,48 @@ def _item_needs_resubscribe(item_details: dict, config: dict, media_metadata: Op
         logger.warning(f"  ➜ [特效检查] 处理时发生未知错误: {e}")
 
     # 4. & 5. 音轨和字幕检查
-    def _is_exempted_from_chinese_check() -> bool:
+    def _is_exempted_from_chinese_check(item_details: dict) -> bool:
         """
-        【V3 - 优先级优化最终版】
-        - 根据制片国家/地区优先判断，解决因音轨元数据错误导致的误判问题。
-        - 豁免条件 (按优先级顺序检查，满足任意一条即可):
+        【V5 - 原始标题终极版】
+        - 采纳用户的绝佳建议，使用 TMDB 的 original_title 作为核心判断依据。
+        - 这是目前最精准、最能抵抗本地化命名干扰的方案。
+        - 豁免条件 (按优先级顺序检查):
           1. (最高) 媒体的制片国家/地区是华语区。
-          2. 媒体已包含中文音轨。
-          3. 媒体已包含中文字幕 (防止将已有中字的外语片误判)。
+          2. (次高) 媒体的原始标题 (original_title) 是中文。
+          3. 媒体已包含中文音轨。
+          4. 媒体已包含中文字幕。
         """
+        import re
+        
+        # 准备关键词和语言代码
         CHINESE_LANG_CODES = {'chi', 'zho', 'chs', 'cht', 'zh-cn', 'zh-hans', 'zh-sg', 'cmn', 'yue'}
         CHINESE_SPEAKING_REGIONS = {'中国', '中国大陆', '香港', '中国香港', '台湾', '中国台湾', '新加坡'}
 
-        # 优先级 1: 检查制片国家/地区
+        # 优先级 1: 检查制片国家/地区 (依然是最可靠的依据之一)
         if media_metadata and media_metadata.get('countries_json'):
-            # 使用 isdisjoint 检查两个集合是否有交集，效率更高
             if not set(media_metadata['countries_json']).isdisjoint(CHINESE_SPEAKING_REGIONS):
-                return True # 如果是华语地区制作，立即豁免
+                return True
 
-        # 优先级 2: 检查现有音轨
-        present_audio_langs = {str(s.get('Language', '')).lower() for s in media_streams if s.get('Type') == 'Audio' and s.get('Language')}
-        if not present_audio_langs.isdisjoint(CHINESE_LANG_CODES):
-            return True # 如果已有中文音轨，也豁免
+        # ★★★ 优先级 2: 检查 TMDB 的原始标题 (核心修改) ★★★
+        if media_metadata and (original_title := media_metadata.get('original_title')):
+            # 匹配中文字符的 Unicode 范围
+            chinese_chars = re.findall(r'[\u4e00-\u9fff]', original_title)
+            # 如果原始标题中包含3个或以上的中文字符，就认定为华语内容
+            if len(chinese_chars) >= 3:
+                return True
 
-        # 优先级 3: 检查现有字幕
-        present_subtitle_langs = {str(s.get('Language', '')).lower() for s in media_streams if s.get('Type') == 'Subtitle' and s.get('Language')}
-        if not present_subtitle_langs.isdisjoint(CHINESE_LANG_CODES):
-            return True # 如果已有中文字幕，也豁免
+        # 优先级 3: 检查现有音轨
+        detected_audio_langs = _get_detected_languages_from_streams(media_streams, 'Audio', AUDIO_SUBTITLE_KEYWORD_MAP)
+        if 'chi' in detected_audio_langs or 'yue' in detected_audio_langs:
+            return True
+            
+        # 优先级 4: 检查现有字幕
+        detected_subtitle_langs = _get_detected_languages_from_streams(media_streams, 'Subtitle', AUDIO_SUBTITLE_KEYWORD_MAP)
+        if 'chi' in detected_subtitle_langs or 'yue' in detected_subtitle_langs:
+            return True
 
-        return False # 所有豁免条件都不满足
+        # 注意：我们已经彻底移除了对本地显示名称 (item_details['Name']) 的检查，因为它会造成误判
+        return False
 
     is_exempted = _is_exempted_from_chinese_check()
     
@@ -643,8 +656,11 @@ def _item_needs_resubscribe(item_details: dict, config: dict, media_metadata: Op
         if config.get("resubscribe_audio_enabled") and not is_exempted:
             required_langs = set(config.get("resubscribe_audio_missing_languages", []))
             if 'chi' in required_langs or 'yue' in required_langs:
-                present_langs = {str(s.get('Language', '')).lower() for s in media_streams if s.get('Type') == 'Audio' and s.get('Language')}
-                if present_langs.isdisjoint(CHINESE_LANG_CODES):
+                # ★★★ 让音轨判断也使用智能函数 ★★★
+                detected_audio_langs = _get_detected_languages_from_streams(
+                    media_streams, 'Audio', AUDIO_SUBTITLE_KEYWORD_MAP
+                )
+                if 'chi' not in detected_audio_langs and 'yue' not in detected_audio_langs:
                     reasons.append("缺中文音轨")
     except Exception as e:
         logger.warning(f"  ➜ [音轨检查] 处理时发生未知错误: {e}")
@@ -1012,19 +1028,19 @@ def task_update_resubscribe_cache(processor):
                 
                 quality_str = _extract_quality_tag_from_filename(file_name_lower, video_stream)
                 
-                AUDIO_LANG_MAP = {'chi': '国语', 'zho': '国语', 'yue': '粤语', 'eng': '英语'}
-                CHINESE_AUDIO_CODES = {'chi', 'zho', 'yue'}
-                audio_langs_raw = list(set(s.get('Language') for s in media_streams if s.get('Type') == 'Audio' and s.get('Language')))
-                display_audio_langs = []
-                has_other_audio = False
-                for lang in audio_langs_raw:
-                    if lang in CHINESE_AUDIO_CODES or lang == 'eng':
-                        display_audio_langs.append(AUDIO_LANG_MAP.get(lang, lang))
-                    else:
-                        has_other_audio = True
-                display_audio_langs = sorted(list(set(display_audio_langs)))
-                if has_other_audio: display_audio_langs.append('...')
-                audio_str = ', '.join(display_audio_langs) or '无'
+                detected_audio_langs = _get_detected_languages_from_streams(
+                    media_streams, 'Audio', AUDIO_SUBTITLE_KEYWORD_MAP
+                )
+
+                # 定义显示名称的映射
+                AUDIO_DISPLAY_MAP = {'chi': '国语', 'yue': '粤语', 'eng': '英语', 'jpn': '日语'}
+
+                # 生成显示字符串
+                display_audio_list = sorted([AUDIO_DISPLAY_MAP.get(lang, lang) for lang in detected_audio_langs])
+                audio_str = ', '.join(display_audio_list) or '无'
+
+                # 将原始检测结果也存入数据库
+                audio_langs_raw = list(detected_audio_langs)
 
                 detected_sub_langs = _get_detected_languages_from_streams(
                     media_streams, 'Subtitle', AUDIO_SUBTITLE_KEYWORD_MAP
