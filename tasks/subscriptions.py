@@ -634,7 +634,7 @@ def _item_needs_resubscribe(item_details: dict, config: dict, media_metadata: Op
             # 匹配中文字符的 Unicode 范围
             chinese_chars = re.findall(r'[\u4e00-\u9fff]', original_title)
             # 如果原始标题中包含3个或以上的中文字符，就认定为华语内容
-            if len(chinese_chars) >= 3:
+            if len(chinese_chars) >= 2:
                 return True
 
         # 优先级 3: 检查现有音轨
