@@ -21,6 +21,52 @@ from .helpers import _get_standardized_effect, _extract_quality_tag_from_filenam
 
 logger = logging.getLogger(__name__)
 
+def _get_detected_languages_from_streams(
+    media_streams: List[dict], 
+    stream_type: str, 
+    lang_keyword_map: dict
+) -> set:
+    """
+    【V2 - 智能识别版】
+    从媒体流中检测指定类型（Audio/Subtitle）的语言。
+    - 优先检查标准的 'Language' 字段。
+    - 然后检查 'Title' 和 'DisplayTitle' 字段中的关键词。
+    - 返回一个包含标准化语言代码的集合 (例如 {'chi', 'eng'})。
+    """
+    detected_langs = set()
+    
+    # 1. 优先从标准的 Language 字段获取信息
+    standard_chinese_codes = {'chi', 'zho', 'chs', 'cht', 'zh-cn', 'zh-hans', 'zh-sg', 'cmn', 'yue'}
+    standard_english_codes = {'eng'}
+    standard_japanese_codes = {'jpn'}
+    
+    for stream in media_streams:
+        if stream.get('Type') == stream_type and (lang_code := str(stream.get('Language', '')).lower()):
+            if lang_code in standard_chinese_codes:
+                detected_langs.add('chi')
+            elif lang_code in standard_english_codes:
+                detected_langs.add('eng')
+            elif lang_code in standard_japanese_codes:
+                detected_langs.add('jpn')
+
+    # 2. 扫描 Title 和 DisplayTitle 作为补充
+    for stream in media_streams:
+        if stream.get('Type') == stream_type:
+            # 将标题和显示标题合并，并转为小写，以便搜索
+            title_string = (stream.get('Title', '') + stream.get('DisplayTitle', '')).lower()
+            if not title_string:
+                continue
+            
+            # 检查是否包含关键词
+            for lang_key, keywords in lang_keyword_map.items():
+                # lang_key 可能是 'chi', 'sub_chi', 'eng' 等
+                normalized_lang_key = lang_key.replace('sub_', '')
+                
+                if any(keyword.lower() in title_string for keyword in keywords):
+                    detected_langs.add(normalized_lang_key)
+
+    return detected_langs
+
 EFFECT_KEYWORD_MAP = {
     "杜比视界": ["dolby vision", "dovi"],
     "HDR": ["hdr", "hdr10", "hdr10+", "hlg"]
@@ -607,8 +653,11 @@ def _item_needs_resubscribe(item_details: dict, config: dict, media_metadata: Op
         if config.get("resubscribe_subtitle_enabled") and not is_exempted:
             required_langs = set(config.get("resubscribe_subtitle_missing_languages", []))
             if 'chi' in required_langs:
-                present_sub_langs = {str(s.get('Language', '')).lower() for s in media_streams if s.get('Type') == 'Subtitle' and s.get('Language')}
-                if present_sub_langs.isdisjoint(CHINESE_LANG_CODES):
+                # ★★★ 使用新的智能函数进行检测 ★★★
+                detected_subtitle_langs = _get_detected_languages_from_streams(
+                    media_streams, 'Subtitle', AUDIO_SUBTITLE_KEYWORD_MAP
+                )
+                if 'chi' not in detected_subtitle_langs and 'yue' not in detected_subtitle_langs:
                     reasons.append("缺中文字幕")
     except Exception as e:
         logger.warning(f"  ➜ [字幕检查] 处理时发生未知错误: {e}")
@@ -977,22 +1026,19 @@ def task_update_resubscribe_cache(processor):
                 if has_other_audio: display_audio_langs.append('...')
                 audio_str = ', '.join(display_audio_langs) or '无'
 
-                SUBTITLE_LANG_MAP = {'chi': '中字', 'zho': '中字', 'eng': '英文'}
-                CHINESE_SUB_CODES = {'chi', 'zho', 'chs', 'cht', 'zh-cn', 'zh-hans', 'zh-sg', 'cmn'}
-                subtitle_langs_raw = list(set(s.get('Language') for s in media_streams if s.get('Type') == 'Subtitle' and s.get('Language')))
-                display_subtitle_langs = []
-                has_other_subtitle = False
-                for lang in subtitle_langs_raw:
-                    lang_lower = str(lang).lower()
-                    if lang_lower in CHINESE_SUB_CODES:
-                        display_subtitle_langs.append(SUBTITLE_LANG_MAP.get('chi'))
-                    elif lang_lower == 'eng':
-                        display_subtitle_langs.append(SUBTITLE_LANG_MAP.get('eng'))
-                    else:
-                        has_other_subtitle = True
-                display_subtitle_langs = sorted(list(set(display_subtitle_langs)))
-                if has_other_subtitle: display_subtitle_langs.append('...')
-                subtitle_str = ', '.join(display_subtitle_langs) or '无'
+                detected_sub_langs = _get_detected_languages_from_streams(
+                    media_streams, 'Subtitle', AUDIO_SUBTITLE_KEYWORD_MAP
+                )
+
+                # 定义显示名称的映射
+                SUB_DISPLAY_MAP = {'chi': '中字', 'yue': '粤字', 'eng': '英文', 'jpn': '日文'}
+
+                # 生成显示字符串
+                display_subtitle_list = sorted([SUB_DISPLAY_MAP.get(lang, lang) for lang in detected_sub_langs])
+                subtitle_str = ', '.join(display_subtitle_list) or '无'
+
+                # 将原始检测结果也存入数据库
+                subtitle_langs_raw = list(detected_sub_langs)
                 
                 return {
                     "item_id": item_id, "item_name": item_details.get('Name'), "tmdb_id": tmdb_id, "item_type": item_type, "status": new_status, 
