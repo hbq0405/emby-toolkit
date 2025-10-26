@@ -590,15 +590,15 @@ def task_scan_for_cleanup_issues(processor):
                     "versions_info_json": analyzed_versions, "best_version_id": best_id
                 })
 
-        task_manager.update_status_from_thread(90, f"分析完成，正在将 {len(duplicate_tasks)} 组重复项写入数据库...")
+        task_manager.update_status_from_thread(90, f"  ➜ 分析完成，正在将 {len(duplicate_tasks)} 组重复项写入数据库...")
         maintenance_db.batch_insert_cleanup_tasks(duplicate_tasks)
 
-        final_message = f"扫描完成！共发现 {len(duplicate_tasks)} 组重复项，待清理。"
+        final_message = f"  ➜ 扫描完成！共发现 {len(duplicate_tasks)} 组重复项，待清理。"
         task_manager.update_status_from_thread(100, final_message)
         logger.info(f"--- '{task_name}' 任务成功完成 ---")
 
     except Exception as e:
-        logger.error(f"执行 '{task_name}' 任务时发生严重错误: {e}", exc_info=True)
+        logger.error(f"  ➜ 执行 '{task_name}' 任务时发生严重错误: {e}", exc_info=True)
         task_manager.update_status_from_thread(-1, f"任务失败: {e}")
 
 def task_execute_cleanup(processor, task_ids: List[int], **kwargs):

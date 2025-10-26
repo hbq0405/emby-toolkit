@@ -847,7 +847,7 @@ def task_resubscribe_library(processor):
 
                 # --- ★★★ 核心逻辑改造：根据规则决定是“删除”还是“更新” ★★★ ---
                 if rule and rule.get('delete_after_resubscribe'):
-                    logger.warning(f"规则 '{rule['name']}' 要求删除源文件，正在删除 Emby 项目: {item_name} (ID: {item_id})")
+                    logger.warning(f"  ➜ 规则 '{rule['name']}' 要求删除源文件，正在删除 Emby 项目: {item_name} (ID: {item_id})")
                     delete_success = emby_handler.delete_item(
                         item_id=item_id, emby_server_url=processor.emby_url,
                         emby_api_key=processor.emby_api_key, user_id=processor.emby_user_id
@@ -1072,7 +1072,7 @@ def task_update_resubscribe_cache(processor):
                     "matched_rule_id": applicable_rule.get('id'), "matched_rule_name": applicable_rule.get('name'), "source_library_id": source_lib_id
                 }
             except Exception as e:
-                logger.error(f"处理项目 '{item_name}' (ID: {item_id}) 时线程内发生错误: {e}", exc_info=True)
+                logger.error(f"  ➜ 处理项目 '{item_name}' (ID: {item_id}) 时线程内发生错误: {e}", exc_info=True)
                 return None
 
         with ThreadPoolExecutor(max_workers=10) as executor:
@@ -1086,7 +1086,7 @@ def task_update_resubscribe_cache(processor):
                 task_manager.update_status_from_thread(progress, f"({processed_count}/{total}) 正在分析: {future_to_item[future].get('Name')}")
 
         if cache_update_batch:
-            logger.info(f"分析完成，正在将 {len(cache_update_batch)} 条记录写入缓存表...")
+            logger.info(f"  ➜ 分析完成，正在将 {len(cache_update_batch)} 条记录写入缓存表...")
             resubscribe_db.upsert_resubscribe_cache_batch(cache_update_batch)
             
             task_manager.update_status_from_thread(99, "缓存写入完成，即将刷新...")

@@ -1445,7 +1445,7 @@ def delete_item(item_id: str, emby_server_url: str, emby_api_key: str, user_id: 
     【V-Final Frontier 终极版】
     通过模拟管理员登录获取临时 AccessToken 来执行删除，绕过永久 API Key 的权限问题。
     """
-    logger.warning(f"检测到删除请求，将尝试使用 [自动登录模式] 执行...")
+    logger.warning(f"  ➜ 检测到删除请求，将尝试使用 [自动登录] 执行...")
 
     # 1. 登录获取临时令牌
     access_token, logged_in_user_id = get_admin_access_token()

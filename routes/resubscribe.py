@@ -201,7 +201,7 @@ def resubscribe_single_item():
 
             # --- ★★★ 核心逻辑改造：根据规则决定是“删除”还是“更新” ★★★ ---
             if rule_to_check and rule_to_check.get('delete_after_resubscribe'):
-                logger.warning(f"规则 '{rule_to_check['name']}' 要求删除源文件，正在为项目 {item_name} 执行删除...")
+                logger.warning(f"  ➜ 规则 '{rule_to_check['name']}' 要求删除源文件，正在为项目 {item_name} 执行删除...")
                 delete_success = emby_handler.delete_item(
                     item_id=item_id, emby_server_url=processor.emby_url,
                     emby_api_key=processor.emby_api_key, user_id=processor.emby_user_id
