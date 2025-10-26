@@ -562,14 +562,34 @@ def _item_needs_resubscribe(item_details: dict, config: dict, media_metadata: Op
 
     # 4. & 5. 音轨和字幕检查
     def _is_exempted_from_chinese_check() -> bool:
+        """
+        【V3 - 优先级优化最终版】
+        - 根据制片国家/地区优先判断，解决因音轨元数据错误导致的误判问题。
+        - 豁免条件 (按优先级顺序检查，满足任意一条即可):
+          1. (最高) 媒体的制片国家/地区是华语区。
+          2. 媒体已包含中文音轨。
+          3. 媒体已包含中文字幕 (防止将已有中字的外语片误判)。
+        """
+        CHINESE_LANG_CODES = {'chi', 'zho', 'chs', 'cht', 'zh-cn', 'zh-hans', 'zh-sg', 'cmn', 'yue'}
+        CHINESE_SPEAKING_REGIONS = {'中国', '中国大陆', '香港', '中国香港', '台湾', '中国台湾', '新加坡'}
+
+        # 优先级 1: 检查制片国家/地区
+        if media_metadata and media_metadata.get('countries_json'):
+            # 使用 isdisjoint 检查两个集合是否有交集，效率更高
+            if not set(media_metadata['countries_json']).isdisjoint(CHINESE_SPEAKING_REGIONS):
+                return True # 如果是华语地区制作，立即豁免
+
+        # 优先级 2: 检查现有音轨
         present_audio_langs = {str(s.get('Language', '')).lower() for s in media_streams if s.get('Type') == 'Audio' and s.get('Language')}
         if not present_audio_langs.isdisjoint(CHINESE_LANG_CODES):
-            return True
-        if 'und' in present_audio_langs or not present_audio_langs:
-            if media_metadata and media_metadata.get('countries_json'):
-                if not set(media_metadata['countries_json']).isdisjoint(CHINESE_SPEAKING_REGIONS):
-                    return True
-        return False
+            return True # 如果已有中文音轨，也豁免
+
+        # 优先级 3: 检查现有字幕
+        present_subtitle_langs = {str(s.get('Language', '')).lower() for s in media_streams if s.get('Type') == 'Subtitle' and s.get('Language')}
+        if not present_subtitle_langs.isdisjoint(CHINESE_LANG_CODES):
+            return True # 如果已有中文字幕，也豁免
+
+        return False # 所有豁免条件都不满足
 
     is_exempted = _is_exempted_from_chinese_check()
     
