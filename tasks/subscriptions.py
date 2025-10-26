@@ -21,33 +21,6 @@ from .helpers import _get_standardized_effect, _extract_quality_tag_from_filenam
 
 logger = logging.getLogger(__name__)
 
-def _has_hardcoded_subs_by_filename(filename: str) -> bool:
-    """
-    【启发式规则】
-    通过检查文件名中的常见关键词，猜测文件是否包含硬字幕。
-    """
-    if not filename:
-        return False
-    
-    # 将文件名转为小写以便匹配
-    lower_filename = filename.lower()
-    
-    # 定义硬字幕的常见关键词/暗号
-    # 你可以根据你的收藏习惯，随时在这里添加或修改
-    hardcode_keywords = [
-        '[chs',         # [CHS] 或 [CHS&ENG]
-        '.chs',         # xxx.chs.mp4
-        '[hc]',         # [HC]
-        'hardsub',      # hardsub
-        # --- 以下是常见发布组，他们的部分作品可能是硬字幕 ---
-        'yyets',        # 人人影视
-        'fanxiang',     # FIX字幕侠
-        'frt',          # 风软
-        'fgt'           # FGT (GalaxyTV) 的一些老资源
-    ]
-    
-    return any(keyword in lower_filename for keyword in hardcode_keywords)
-
 def _get_detected_languages_from_streams(
     media_streams: List[dict], 
     stream_type: str, 
@@ -700,15 +673,11 @@ def _item_needs_resubscribe(item_details: dict, config: dict, media_metadata: Op
                     media_streams, 'Subtitle', AUDIO_SUBTITLE_KEYWORD_MAP
                 )
                 
+                # ★★★ 新增的核心逻辑：外挂字幕豁免规则 ★★★
+                # 如果通过常规方式没找到中字，则检查是否存在外挂字幕
                 if 'chi' not in detected_subtitle_langs and 'yue' not in detected_subtitle_langs:
                     if any(s.get('IsExternal') for s in media_streams if s.get('Type') == 'Subtitle'):
-                        detected_subtitle_langs.add('chi')
-
-                # ★★★ 新增的终极防线：硬字幕文件名猜测 ★★★
-                if 'chi' not in detected_subtitle_langs and 'yue' not in detected_subtitle_langs:
-                    file_path = item_details.get('Path', '')
-                    if _has_hardcoded_subs_by_filename(os.path.basename(file_path)):
-                        # 如果文件名暗示了硬字幕，就豁免
+                        # 如果存在外挂字幕，就默认它是中文，并加入到检测结果中
                         detected_subtitle_langs.add('chi')
 
                 # 最终检查
