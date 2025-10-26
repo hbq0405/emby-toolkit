@@ -669,10 +669,18 @@ def _item_needs_resubscribe(item_details: dict, config: dict, media_metadata: Op
         if config.get("resubscribe_subtitle_enabled") and not is_exempted:
             required_langs = set(config.get("resubscribe_subtitle_missing_languages", []))
             if 'chi' in required_langs:
-                # ★★★ 使用新的智能函数进行检测 ★★★
                 detected_subtitle_langs = _get_detected_languages_from_streams(
                     media_streams, 'Subtitle', AUDIO_SUBTITLE_KEYWORD_MAP
                 )
+                
+                # ★★★ 新增的核心逻辑：外挂字幕豁免规则 ★★★
+                # 如果通过常规方式没找到中字，则检查是否存在外挂字幕
+                if 'chi' not in detected_subtitle_langs and 'yue' not in detected_subtitle_langs:
+                    if any(s.get('IsExternal') for s in media_streams if s.get('Type') == 'Subtitle'):
+                        # 如果存在外挂字幕，就默认它是中文，并加入到检测结果中
+                        detected_subtitle_langs.add('chi')
+
+                # 最终检查
                 if 'chi' not in detected_subtitle_langs and 'yue' not in detected_subtitle_langs:
                     reasons.append("缺中文字幕")
     except Exception as e:
@@ -1046,14 +1054,14 @@ def task_update_resubscribe_cache(processor):
                     media_streams, 'Subtitle', AUDIO_SUBTITLE_KEYWORD_MAP
                 )
 
-                # 定义显示名称的映射
-                SUB_DISPLAY_MAP = {'chi': '中字', 'yue': '粤字', 'eng': '英文', 'jpn': '日文'}
+                # ★★★ 新增的核心逻辑：外挂字幕显示规则 ★★★
+                if 'chi' not in detected_sub_langs and 'yue' not in detected_sub_langs:
+                    if any(s.get('IsExternal') for s in media_streams if s.get('Type') == 'Subtitle'):
+                        detected_sub_langs.add('chi')
 
-                # 生成显示字符串
+                SUB_DISPLAY_MAP = {'chi': '中字', 'yue': '粤字', 'eng': '英文', 'jpn': '日文'}
                 display_subtitle_list = sorted([SUB_DISPLAY_MAP.get(lang, lang) for lang in detected_sub_langs])
                 subtitle_str = ', '.join(display_subtitle_list) or '无'
-
-                # 将原始检测结果也存入数据库
                 subtitle_langs_raw = list(detected_sub_langs)
                 
                 return {
