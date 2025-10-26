@@ -650,7 +650,7 @@ def _item_needs_resubscribe(item_details: dict, config: dict, media_metadata: Op
         # 注意：我们已经彻底移除了对本地显示名称 (item_details['Name']) 的检查，因为它会造成误判
         return False
 
-    is_exempted = _is_exempted_from_chinese_check()
+    is_exempted = _is_exempted_from_chinese_check(item_details)
     
     try:
         if config.get("resubscribe_audio_enabled") and not is_exempted:
