@@ -406,27 +406,74 @@ def api_correct_all_sequences():
         logger.error(f"API调用api_correct_all_sequences时发生错误: {e}", exc_info=True)
         return jsonify({"error": "服务器在处理时发生内部错误"}), 500
     
-# --- 重置演员映射表 ---
-@db_admin_bp.route('/actions/reset_actor_mappings', methods=['POST'])
+# --- 重置Emby数据 ---
+@db_admin_bp.route('/actions/prepare-for-library-rebuild', methods=['POST'])
 @login_required
-def api_reset_actor_mappings():
+def api_prepare_for_library_rebuild():
     """
-    清空 person_identity_map 表中所有记录的 emby_person_id 字段。
-    这是一个高级操作，用于 Emby 媒体库重建后的数据恢复流程。
+    【高危操作】为 Emby 媒体库重建做准备。
+    此操作会清空所有与 Emby 直接相关的数据表，并断开元数据表中与 Emby ID 的关联。
+    执行此操作后，你需要重新运行“同步 Emby 用户”、“扫描媒体库元数据”等任务来重建关联。
+    前端应已提供高危操作警告。
     """
-    logger.warning("接收到重置演员映射表的请求，这是一个重要操作。")
+    logger.warning("接收到“为 Emby 重建做准备”的请求，这是一个高危操作，将重置所有 Emby 关联数据。")
+
     try:
+        # 定义需要完全清空的表 (这些表的数据完全依赖于 Emby)
+        tables_to_truncate = [
+            'emby_users',               # Emby 用户列表
+            'emby_users_extended',      # Emby 用户扩展信息
+            'user_media_data',          # 用户播放状态、收藏等
+            'user_collection_cache',    # 虚拟库权限缓存
+            'collections_info',         # Emby 原生合集信息
+            'watchlist',                # 追剧列表 (主键是 Emby Item ID)
+            'resubscribe_cache',        # 媒体洗版缓存 (主键是 Emby Item ID)
+            'media_cleanup_tasks'       # 多版本清理任务
+        ]
+
+        # 定义需要置空 Emby 关联 ID 的表和字段
+        columns_to_reset = {
+            'media_metadata': 'emby_item_id',
+            'person_identity_map': 'emby_person_id',
+            'custom_collections': 'emby_collection_id',
+            'tracked_actor_media': 'emby_item_id'
+        }
+
+        results = {
+            "truncated_tables": {},
+            "updated_columns": {}
+        }
+
         with connection.get_db_connection() as conn:
             with conn.cursor() as cursor:
-                # 执行核心的 SQL 更新命令
-                cursor.execute("UPDATE person_identity_map SET emby_person_id = NULL;")
-                # 获取受影响的行数，用于返回给前端
-                affected_rows = cursor.rowcount
-        
-        message = f"操作成功！已重置 {affected_rows} 条演员记录的 Emby Person ID。"
+                # 1. 完全清空表
+                logger.info("第一步：开始清空 Emby 专属数据表...")
+                for table_name in tables_to_truncate:
+                    logger.warning(f"  ➜ 正在清空表: {table_name}")
+                    # 使用 TRUNCATE ... RESTART IDENTITY CASCADE 可以高效清空并重置序列，同时处理外键
+                    query = sql.SQL("TRUNCATE TABLE {table} RESTART IDENTITY CASCADE;").format(
+                        table=sql.Identifier(table_name)
+                    )
+                    cursor.execute(query)
+                    results["truncated_tables"][table_name] = "清空成功"
+                
+                # 2. 置空关联字段
+                logger.info("第二步：开始断开元数据与 Emby ID 的关联...")
+                for table_name, column_name in columns_to_reset.items():
+                    logger.warning(f"  ➜ 正在重置表 '{table_name}' 中的 '{column_name}' 字段...")
+                    query = sql.SQL("UPDATE {table} SET {column} = NULL WHERE {column} IS NOT NULL;").format(
+                        table=sql.Identifier(table_name),
+                        column=sql.Identifier(column_name)
+                    )
+                    cursor.execute(query)
+                    affected_rows = cursor.rowcount
+                    results["updated_columns"][f"{table_name}.{column_name}"] = f"重置了 {affected_rows} 行"
+                    logger.info(f"    ➜ 操作完成，影响了 {affected_rows} 行。")
+
+        message = "为 Emby 媒体库重建的准备工作已成功完成！"
         logger.info(message)
-        return jsonify({"message": message}), 200
+        return jsonify({"message": message, "details": results}), 200
         
     except Exception as e:
-        logger.error(f"API调用 api_reset_actor_mappings 时发生错误: {e}", exc_info=True)
-        return jsonify({"error": "服务器在处理时发生内部错误"}), 500
+        logger.error(f"API 调用 api_prepare_for_library_rebuild 时发生严重错误: {e}", exc_info=True)
+        return jsonify({"error": "服务器在处理时发生内部错误，操作可能未完全执行。"}), 500

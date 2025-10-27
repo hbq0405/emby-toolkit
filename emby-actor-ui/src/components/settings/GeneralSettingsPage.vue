@@ -427,10 +427,10 @@
                           @click="showResetMappingsModal"
                         >
                           <template #icon><n-icon :component="SyncIcon" /></template>
-                          重置演员映射
+                          重置Emby数据
                         </n-button>
                       </n-space>
-                      <p class="description-text"><b>导出：</b>将数据库中的一个或多个表备份为 JSON 文件。<br><b>导入：</b>从 JSON 备份文件中恢复数据。<br><b>清空：</b>删除指定表中的所有数据，此操作不可逆。<br><b>校准：</b>修复导入数据可能引起的自增序号错乱的问题。<br><b>重置：</b>在重建 Emby 媒体库后，使用此功能清空旧的 Emby 演员ID，然后执行一次“同步演员映射”任务即可重新建立关联。</p>
+                      <p class="description-text"><b>导出：</b>将数据库中的一个或多个表备份为 JSON 文件。<br><b>导入：</b>从 JSON 备份文件中恢复数据。<br><b>清空：</b>删除指定表中的所有数据，此操作不可逆。<br><b>校准：</b>修复导入数据可能引起的自增序号错乱的问题。<br><b>重置：</b>在重建 Emby 媒体库后，使用此功能清空所有旧的 Emby 关联数据（用户、合集、播放状态等），并保留核心元数据，以便后续重新扫描和关联。</p>
                     </n-space>
                   </n-card>
                 </n-gi>
@@ -571,11 +571,11 @@
   <n-modal 
     v-model:show="resetMappingsModalVisible" 
     preset="dialog" 
-    title="确认重置演员映射表"
+    title="确认重置Emby数据"
   >
     <n-alert title="高危操作警告" type="warning" style="margin-bottom: 15px;">
-      <p style="margin: 0 0 8px 0;">此操作将 <strong>清空所有演员的 Emby Person ID</strong>。</p>
-      <p style="margin: 0 0 8px 0;">它会保留宝贵的 TMDb/IMDb/Douban 映射关系，以便在全量扫描后自动重新关联。</p>
+      <p style="margin: 0 0 8px 0;">此操作将 <strong>清空所有Emby相关数据</strong>。</p>
+      <p style="margin: 0 0 8px 0;">它会保留宝贵的 元数据以及演员映射，以便在全量扫描后自动重新关联。</p>
       <p class="warning-text" style="margin: 0;"><strong>请仅在您已经或将要重建 Emby 媒体库时执行此操作。</strong></p>
     </n-alert>
     <template #action>
@@ -785,8 +785,8 @@ const showResetMappingsModal = () => {
 const handleResetActorMappings = async () => {
   isResettingMappings.value = true;
   try {
-    const response = await axios.post('/api/actions/reset_actor_mappings');
-    message.success(response.data.message || '演员映射已成功重置！');
+    const response = await axios.post('/api/actions/prepare-for-library-rebuild');
+    message.success(response.data.message || 'Emby数据已成功重置！');
     // 成功后关闭模态框
     resetMappingsModalVisible.value = false;
   } catch (error) {
