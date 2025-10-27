@@ -400,67 +400,9 @@ def task_auto_subscribe(processor):
                         successfully_subscribed_items.append(f"演员作品《{media_title}》")
                         cursor.execute("UPDATE tracked_actor_media SET status = 'SUBSCRIBED' WHERE id = %s", (media_item['id'],))
 
-            # --- 5. 处理媒体洗版 ---
-            if not processor.is_stop_requested() and not quota_exhausted:
-                task_manager.update_status_from_thread(75, "正在检查需要洗版的媒体...")
-                all_rules = resubscribe_db.get_all_resubscribe_rules()
-                delay = float(processor.config.get(constants.CONFIG_OPTION_RESUBSCRIBE_DELAY_SECONDS, 1.5))
-
-                cursor.execute("SELECT * FROM resubscribe_cache WHERE status = 'needed'")
-                items_to_resubscribe = cursor.fetchall()
-                total_needed = len(items_to_resubscribe)
-
-                if total_needed > 0:
-                    logger.info(f"  ➜ 找到 {total_needed} 个项目需要洗版，将开始订阅...")
-                    for i, item in enumerate(items_to_resubscribe):
-                        if processor.is_stop_requested(): break
-                        
-                        current_quota = settings_db.get_subscription_quota()
-                        if current_quota <= 0:
-                            quota_exhausted = True
-                            logger.warning("  ➜ 每日订阅配额已用尽，媒体洗版提前结束。")
-                            break
-
-                        item_name = item.get('item_name')
-                        item_id = item.get('item_id')
-                        progress = int(75 + ((i / total_needed) * 24)) # 75% to 99%
-                        task_manager.update_status_from_thread(
-                            progress, 
-                            f"({i+1}/{total_needed}) [配额:{current_quota}] 正在洗版: {item_name}"
-                        )
-
-                        matched_rule_id = item.get('matched_rule_id')
-                        rule = next((r for r in all_rules if r['id'] == matched_rule_id), None) if matched_rule_id else None
-                        payload = build_resubscribe_payload(item, rule)
-
-                        if not payload:
-                            logger.warning(f"为《{item_name}》构建洗版Payload失败，已跳过。")
-                            continue
-
-                        success = moviepilot_handler.subscribe_with_custom_payload(payload, processor.config)
-                        
-                        if success:
-                            settings_db.decrement_subscription_quota()
-                            resubscribed_count += 1
-                            
-                            if rule and rule.get('delete_after_resubscribe'):
-                                logger.warning(f"  ➜ 规则 '{rule['name']}' 要求删除源文件，正在删除 Emby 项目: {item_name} (ID: {item_id})")
-                                delete_success = emby_handler.delete_item(
-                                    item_id=item_id, emby_server_url=processor.emby_url,
-                                    emby_api_key=processor.emby_api_key, user_id=processor.emby_user_id
-                                )
-                                if delete_success:
-                                    cursor.execute("DELETE FROM resubscribe_cache WHERE item_id = %s", (item_id,))
-                                    deleted_count += 1
-                                else:
-                                    cursor.execute("UPDATE resubscribe_cache SET status = %s WHERE item_id = %s", ('subscribed', item_id))
-                            else:
-                                cursor.execute("UPDATE resubscribe_cache SET status = %s WHERE item_id = %s", ('subscribed', item_id))
-                            
-                            if i < total_needed - 1: time.sleep(delay)
-
             conn.commit()
 
+        # --- 5. 处理媒体洗版 ---
         logger.info("--- 智能订阅缺失已完成，开始执行媒体洗版任务 ---")
         task_manager.update_status_from_thread(85, "缺失订阅完成，正在启动媒体洗版...") # 更新一个过渡状态
         
