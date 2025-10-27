@@ -304,13 +304,28 @@ def task_import_database(processor, file_content: str, tables_to_import: List[st
     
     SHARABLE_TABLES = {'person_identity_map', 'actor_metadata', 'translation_cache', 'media_metadata'}
     TABLE_TRANSLATIONS = {
-        'person_identity_map': '演员映射表', 'actor_metadata': '演员元数据', 'translation_cache': '翻译缓存',
-        'watchlist': '智能追剧列表', 'actor_subscriptions': '演员订阅配置', 'tracked_actor_media': '已追踪的演员作品',
-        'collections_info': '电影合集信息', 'processed_log': '已处理列表', 'failed_log': '待复核列表',
-        'users': '用户账户', 'custom_collections': '自建合集', 'media_metadata': '媒体元数据',
-        'app_settings': '应用设置', 'emby_users': 'Emby用户', 'user_media_data': '用户媒体数据',
-        'resubscribe_rules': '洗版规则', 'resubscribe_cache': '洗版缓存', 'media_cleanup_tasks': '媒体清理任务',
-        'user_templates': '用户权限模板', 'invitations': '邀请码', 'emby_users_extended': 'Emby用户扩展信息',
+        'person_identity_map': '演员映射表', 
+        'actor_metadata': '演员元数据', 
+        'translation_cache': '翻译缓存',
+        'watchlist': '智能追剧列表', 
+        'actor_subscriptions': '演员订阅配置', 
+        'tracked_actor_media': '已追踪的演员作品',
+        'collections_info': '电影合集信息', 
+        'processed_log': '已处理列表', 
+        'failed_log': '待复核列表',
+        'users': '用户账户', 
+        'custom_collections': '自建合集', 
+        'media_metadata': '媒体元数据',
+        'app_settings': '应用设置', 
+        'emby_users': 'Emby用户', 
+        'user_media_data': '用户媒体数据',
+        'resubscribe_rules': '洗版规则', 
+        'resubscribe_cache': '洗版缓存', 
+        'media_cleanup_tasks': '媒体清理任务',
+        'user_templates': '用户权限模板', 
+        'invitations': '邀请码', 
+        'emby_users_extended': 'Emby用户扩展信息',
+        'user_collection_cache': 'Emby用户权限缓存',
     }
     summary_lines = []
     conn = None
