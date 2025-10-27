@@ -283,3 +283,32 @@ def update_single_tracked_media_status(media_id):
     except Exception as e:
         logger.error(f"手动更新媒体项 {media_id} 状态失败: {e}", exc_info=True)
         return jsonify({"error": "更新状态时发生未知的服务器错误"}), 500
+    
+# ★★★ 智能恢复（重新评估）单个作品状态的 API 端点 ★★★
+@actor_subscriptions_bp.route('/media/<int:media_id>/re-evaluate', methods=['POST'])
+@login_required
+def api_re_evaluate_tracked_media(media_id):
+    """
+    智能地将一个“已忽略”的媒体项恢复到正确的状态 (IN_LIBRARY 或 MISSING)。
+    """
+    try:
+        # 1. 获取媒体的 TMDB ID 和类型
+        media_info = actor_db.get_tracked_media_by_id(media_id)
+        if not media_info:
+            return jsonify({"error": "未找到指定的媒体项"}), 404
+        
+        # 2. 调用“侦察兵”，获取真实状态
+        tmdb_id = media_info['tmdb_media_id']
+        media_type = media_info['media_type']
+        new_status = actor_db.get_media_library_status(tmdb_id, media_type)
+        
+        # 3. 更新数据库
+        actor_db.update_tracked_media_status(media_id, new_status)
+        
+        # 4. 向前端返回最终决定的新状态
+        message = f"《{media_info['title']}》已恢复！当前状态: {'已入库' if new_status == 'IN_LIBRARY' else '缺失'}"
+        return jsonify({"message": message, "new_status": new_status})
+
+    except Exception as e:
+        logger.error(f"智能恢复媒体项 {media_id} 状态失败: {e}", exc_info=True)
+        return jsonify({"error": "恢复状态时发生未知的服务器错误"}), 500

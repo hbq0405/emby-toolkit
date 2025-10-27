@@ -149,39 +149,40 @@ const handleSubscribe = async (mediaId) => {
 // ★★★ 忽略单个作品的函数 ★★★
 const handleIgnore = async (mediaId, currentStatus) => {
   if (currentStatus === 'MISSING') {
-    // 从 缺失 -> 忽略，需要弹窗确认
+    // --- 这是“忽略”操作，逻辑不变 ---
     dialog.warning({
       title: '确认忽略',
       content: '确定要忽略这个作品吗？忽略后将不会被自动订阅。',
       positiveText: '确认',
       negativeText: '取消',
       onPositiveClick: async () => {
-        await updateMediaStatus(mediaId, 'MISSING', '忽略成功！');
+        // 直接调用 /status 接口，将状态强制变为 IGNORED
+        try {
+          await axios.post(`/api/actor-subscriptions/media/${mediaId}/status`, { status: 'IGNORED' });
+          message.success('忽略成功！');
+          const mediaIndex = subscriptionData.value.tracked_media.findIndex(m => m.id === mediaId);
+          if (mediaIndex !== -1) {
+            subscriptionData.value.tracked_media[mediaIndex].status = 'IGNORED';
+          }
+        } catch (err) {
+          message.error(err.response?.data?.error || '操作失败。');
+        }
       },
     });
-  } else {
-    // 从 忽略 -> 缺失，直接操作，无需确认
-    await updateMediaStatus(mediaId, 'IGNORED', '已恢复为缺失状态！');
-  }
-};
-
-// ★★★ 一个通用的状态更新函数，用于代码复用 ★★★
-const updateMediaStatus = async (mediaId, currentStatus, successMessage) => {
-  // 如果当前是 IGNORED，则目标状态是 MISSING，反之亦然
-  const newStatus = currentStatus === 'IGNORED' ? 'MISSING' : 'IGNORED';
-  
-  try {
-    await axios.post(`/api/actor-subscriptions/media/${mediaId}/status`, { status: newStatus });
-    message.success(successMessage || `状态已更新为 ${newStatus}`);
-    
-    // 实时更新UI
-    const mediaIndex = subscriptionData.value.tracked_media.findIndex(m => m.id === mediaId);
-    if (mediaIndex !== -1) {
-      subscriptionData.value.tracked_media[mediaIndex].status = newStatus;
+  } else if (currentStatus === 'IGNORED') {
+    // --- 这是“恢复”操作，调用新的智能 API ---
+    try {
+      const response = await axios.post(`/api/actor-subscriptions/media/${mediaId}/re-evaluate`);
+      message.success(response.data.message);
+      
+      // 使用后端返回的、经过智能判断的新状态来更新UI
+      const mediaIndex = subscriptionData.value.tracked_media.findIndex(m => m.id === mediaId);
+      if (mediaIndex !== -1) {
+        subscriptionData.value.tracked_media[mediaIndex].status = response.data.new_status;
+      }
+    } catch (err) {
+      message.error(err.response?.data?.error || '恢复失败，请检查后台日志。');
     }
-  } catch (err) {
-    const errorMsg = err.response?.data?.error || '操作失败，请检查后台日志。';
-    message.error(errorMsg);
   }
 };
 

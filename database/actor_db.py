@@ -712,3 +712,26 @@ def update_tracked_media_status(media_id: int, new_status: str) -> bool:
     except Exception as e:
         logger.error(f"  ➜ 更新已追踪媒体项 {media_id} 状态失败: {e}", exc_info=True)
         raise
+
+def get_media_library_status(tmdb_id: int, media_type: str) -> str:
+    """
+    根据 TMDB ID 和媒体类型，从 media_metadata 表查询项目的在库状态。
+    返回 'IN_LIBRARY' 或 'MISSING'。
+    """
+    try:
+        with get_db_connection() as conn:
+            cursor = conn.cursor()
+            # 我们只需要检查 emby_item_id 是否存在即可
+            sql = "SELECT emby_item_id FROM media_metadata WHERE tmdb_id = %s AND item_type = %s"
+            cursor.execute(sql, (str(tmdb_id), media_type))
+            row = cursor.fetchone()
+            
+            # 如果找到了记录并且 emby_item_id 不为空，说明已在库
+            if row and row.get('emby_item_id'):
+                return 'IN_LIBRARY'
+            else:
+                return 'MISSING'
+    except Exception as e:
+        logger.error(f"DB: 查询媒体 (TMDb ID: {tmdb_id}) 在库状态时失败: {e}", exc_info=True)
+        # 如果查询失败，为安全起见，默认为缺失
+        return 'MISSING'
