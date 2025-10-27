@@ -42,7 +42,8 @@ def _prepare_data_for_insert(table_name: str, table_data: List[Dict[str, Any]]) 
         'media_metadata': {
             'genres_json', 'actors_json', 'directors_json', 
             'studios_json', 'countries_json', 'tags_json', 
-            'emby_children_details_json'
+            'emby_children_details_json',
+            'keywords_json'
         },
         'watchlist': {
             'next_episode_to_air_json', 'missing_info_json', 
@@ -50,7 +51,6 @@ def _prepare_data_for_insert(table_name: str, table_data: List[Dict[str, Any]]) 
         },
         'actor_subscriptions': {
             'config_genres_include_json', 'config_genres_exclude_json'
-            # 注意：旧的 config_tags... 已根据 schema 移除
         },
         'resubscribe_rules': {
             'target_library_ids', 'resubscribe_audio_missing_languages',
