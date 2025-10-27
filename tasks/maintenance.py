@@ -105,7 +105,7 @@ def _overwrite_table_data(cursor, table_name: str, columns: List[str], data: Lis
     """安全地清空并批量插入数据。"""
     db_table_name = table_name.lower()
 
-    logger.warning(f"执行覆盖模式：将清空表 '{db_table_name}' 中的所有数据！")
+    logger.warning(f"  ➜ 执行覆盖模式：将清空表 '{db_table_name}' 中的所有数据！")
     truncate_query = sql.SQL("TRUNCATE TABLE {table} RESTART IDENTITY CASCADE;").format(
         table=sql.Identifier(db_table_name)
     )
@@ -117,7 +117,7 @@ def _overwrite_table_data(cursor, table_name: str, columns: List[str], data: Lis
     )
 
     execute_values(cursor, insert_query, data, page_size=500)
-    logger.info(f"成功向表 '{db_table_name}' 插入 {len(data)} 条记录。")
+    logger.info(f"  ➜ 成功向表 '{db_table_name}' 插入 {len(data)} 条记录。")
 
 # ★★★ 辅助函数 3: 数据库共享导入操作 ★★★
 def _share_import_table_data(cursor, table_name: str, columns: List[str], data: List[tuple]):
@@ -138,10 +138,10 @@ def _share_import_table_data(cursor, table_name: str, columns: List[str], data: 
     conflict_target = CONFLICT_TARGETS.get(db_table_name)
 
     if not conflict_target:
-        logger.error(f"共享导入失败：表 '{db_table_name}' 未定义冲突目标，无法执行合并操作。")
+        logger.error(f"  ➜ 共享导入失败：表 '{db_table_name}' 未定义冲突目标，无法执行合并操作。")
         raise ValueError(f"Conflict target not defined for table {db_table_name}")
 
-    logger.info(f"执行共享模式：将合并数据到表 '{db_table_name}'，冲突项将被忽略。")
+    logger.info(f"  ➜ 执行共享模式：将合并数据到表 '{db_table_name}'，冲突项将被忽略。")
     
     # 构造带有 ON CONFLICT 子句的 SQL
     insert_query = sql.SQL("""
@@ -156,7 +156,7 @@ def _share_import_table_data(cursor, table_name: str, columns: List[str], data: 
     execute_values(cursor, insert_query, data, page_size=500)
     # cursor.rowcount 在 ON CONFLICT DO NOTHING 后返回的是实际插入的行数
     inserted_count = cursor.rowcount
-    logger.info(f"成功向表 '{db_table_name}' 合并 {inserted_count} 条新记录（总共尝试 {len(data)} 条）。")
+    logger.info(f"  ➜ 成功向表 '{db_table_name}' 合并 {inserted_count} 条新记录（总共尝试 {len(data)} 条）。")
     return inserted_count
 
 # ★★★ 辅助函数 4: 专门用于合并 person_identity_map 的智能函数 ★★★
@@ -166,7 +166,7 @@ def _merge_person_identity_map_data(cursor, table_name: str, columns: List[str],
     - 采用 "先删除，后更新" 的策略，彻底解决因唯一性约束导致的 UPDATE 失败问题。
     - 它会查找所有相关的碎片化记录，将它们合并到一个主记录中，并删除多余的记录。
     """
-    logger.info(f"执行智能合并模式：将合并数据到表 '{table_name}'...")
+    logger.info(f"  ➜ 执行智能合并模式：将合并数据到表 '{table_name}'...")
     
     stats = {'inserted': 0, 'updated': 0, 'merged_and_deleted': 0}
     
@@ -243,7 +243,7 @@ def _merge_person_identity_map_data(cursor, table_name: str, columns: List[str],
                 cursor.execute(update_sql, tuple(updates.values()) + (merged_data['map_id'],))
                 stats['updated'] += 1
             
-    logger.info(f"智能合并完成：新增 {stats['inserted']} 条，更新 {stats['updated']} 条，合并删除 {stats['merged_and_deleted']} 条记录。")
+    logger.info(f"  ➜ 智能合并完成：新增 {stats['inserted']} 条，更新 {stats['updated']} 条，合并删除 {stats['merged_and_deleted']} 条记录。")
     return stats
 
 # ★★★ 新增辅助函数 5: 同步主键序列 ★★★
@@ -268,7 +268,7 @@ def _resync_primary_key_sequence(cursor, table_name: str):
     
     pk_column = PRIMARY_KEY_COLUMNS.get(table_name.lower())
     if not pk_column:
-        logger.debug(f"表 '{table_name}' 未在主键序列同步列表中定义 (或其主键非SERIAL类型)，跳过。")
+        logger.debug(f"  ➜ 表 '{table_name}' 未在主键序列同步列表中定义 (或其主键非SERIAL类型)，跳过。")
         return
 
     try:
@@ -290,7 +290,7 @@ def _resync_primary_key_sequence(cursor, table_name: str):
         cursor.execute(resync_sql)
         logger.info(f"  ➜ 已成功同步表 '{table_name}' 的主键序列。")
     except Exception as e:
-        logger.warning(f"同步表 '{table_name}' 的主键序列时发生非致命错误: {e}")
+        logger.warning(f"  ➜ 同步表 '{table_name}' 的主键序列时发生非致命错误: {e}")
 
 # --- 主任务函数 (V4 - 纯PG重构版) ---
 def task_import_database(processor, file_content: str, tables_to_import: List[str], import_strategy: str):
@@ -300,7 +300,7 @@ def task_import_database(processor, file_content: str, tables_to_import: List[st
     - 这将彻底解决因数据库序列（ID计数器）与实际数据不一致导致的主键冲突问题。
     """
     task_name = f"数据库恢复 ({'覆盖模式' if import_strategy == 'overwrite' else '共享模式'})"
-    logger.info(f"后台任务开始：{task_name}，将恢复表: {tables_to_import}。")
+    logger.info(f"  ➜ 后台任务开始：{task_name}，将恢复表: {tables_to_import}。")
     
     SHARABLE_TABLES = {'person_identity_map', 'actor_metadata', 'translation_cache', 'media_metadata'}
     TABLE_TRANSLATIONS = {
@@ -356,17 +356,17 @@ def task_import_database(processor, file_content: str, tables_to_import: List[st
         actual_tables_to_import = [t for t in tables_to_import if t in backup_data]
         sorted_tables_to_import = sorted(actual_tables_to_import, key=get_table_sort_key)
         
-        logger.info(f"调整后的导入顺序：{sorted_tables_to_import}")
+        logger.info(f"  ➜ 调整后的导入顺序：{sorted_tables_to_import}")
 
         with connection.get_db_connection() as conn:
             with conn.cursor() as cursor:
-                logger.info("数据库事务已开始。")
+                logger.info("  ➜ 数据库事务已开始。")
 
                 # ★★★ 核心修复：在所有操作之前，为每个表同步主键序列 ★★★
-                logger.info("正在同步所有相关表的主键ID序列...")
+                logger.info("  ➜ 正在同步所有相关表的主键ID序列...")
                 for table_name in sorted_tables_to_import:
                     _resync_primary_key_sequence(cursor, table_name)
-                logger.info("主键ID序列同步完成。")
+                logger.info("  ➜ 主键ID序列同步完成。")
                 # ★★★ 修复结束 ★★★
 
                 for table_name in sorted_tables_to_import:
@@ -377,7 +377,7 @@ def task_import_database(processor, file_content: str, tables_to_import: List[st
                         summary_lines.append(f"  - 表 '{cn_name}': 跳过 (备份中无数据)。")
                         continue
 
-                    logger.info(f"正在处理表: '{cn_name}'，共 {len(table_data)} 行。")
+                    logger.info(f"  ➜ 正在处理表: '{cn_name}'，共 {len(table_data)} 行。")
 
                     if import_strategy == 'share':
                         if table_name.lower() not in SHARABLE_TABLES:
@@ -417,7 +417,7 @@ def task_import_database(processor, file_content: str, tables_to_import: List[st
                 for line in summary_lines: logger.info(line)
                 logger.info("="*36)
                 conn.commit()
-                logger.info(f"✅ 数据库事务已成功提交！任务 '{task_name}' 完成。")
+                logger.info(f"  ➜  数据库事务已成功提交！任务 '{task_name}' 完成。")
     except Exception as e:
         logger.error(f"数据库恢复任务发生严重错误，所有更改将回滚: {e}", exc_info=True)
         if conn:
