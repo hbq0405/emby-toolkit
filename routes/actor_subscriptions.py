@@ -289,7 +289,7 @@ def update_single_tracked_media_status(media_id):
 @login_required
 def api_re_evaluate_tracked_media(media_id):
     """
-    智能地将一个“已忽略”的媒体项恢复到正确的状态 (IN_LIBRARY 或 MISSING)。
+    智能地将一个“已忽略”的媒体项恢复到正确的状态，并返回 Emby Item ID。
     """
     try:
         # 1. 获取媒体的 TMDB ID 和类型
@@ -297,17 +297,21 @@ def api_re_evaluate_tracked_media(media_id):
         if not media_info:
             return jsonify({"error": "未找到指定的媒体项"}), 404
         
-        # 2. 调用“侦察兵”，获取真实状态
+        # 2. 调用升级后的“侦察兵”，同时获取状态和 Emby ID
         tmdb_id = media_info['tmdb_media_id']
         media_type = media_info['media_type']
-        new_status = actor_db.get_media_library_status(tmdb_id, media_type)
+        new_status, emby_item_id = actor_db.get_media_library_status(tmdb_id, media_type)
         
-        # 3. 更新数据库
-        actor_db.update_tracked_media_status(media_id, new_status)
+        # 3. 更新数据库中的状态和 Emby ID
+        actor_db.update_tracked_media_details(media_id, new_status, emby_item_id)
         
-        # 4. 向前端返回最终决定的新状态
+        # 4. 向前端返回最终决定的新状态和 Emby ID
         message = f"《{media_info['title']}》已恢复！当前状态: {'已入库' if new_status == 'IN_LIBRARY' else '缺失'}"
-        return jsonify({"message": message, "new_status": new_status})
+        return jsonify({
+            "message": message, 
+            "new_status": new_status,
+            "emby_item_id": emby_item_id 
+        })
 
     except Exception as e:
         logger.error(f"智能恢复媒体项 {media_id} 状态失败: {e}", exc_info=True)
