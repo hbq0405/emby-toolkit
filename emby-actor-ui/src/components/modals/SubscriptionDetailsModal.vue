@@ -299,7 +299,7 @@ const createColumns = () => [
               },
               { default: () => '忽略' }
             ),
-            default: () => '将此媒体标记为已忽略'
+            default: () => '将此媒体标记为忽略不再追踪'
           }
         ));
       } else if (row.status === 'IGNORED') {
@@ -315,7 +315,7 @@ const createColumns = () => [
               },
               { default: () => '恢复' }
             ),
-            default: () => '将此媒体恢复为缺失状态'
+            default: () => '将此媒体恢复为追踪状态'
           }
         ));
       }
