@@ -734,3 +734,20 @@ def get_media_library_status(tmdb_id: int, media_type: str) -> Tuple[str, Option
     except Exception as e:
         logger.error(f"DB: 查询媒体 (TMDb ID: {tmdb_id}) 在库状态时失败: {e}", exc_info=True)
         return 'MISSING', None
+    
+def update_tracked_media_details(media_id: int, new_status: str, emby_item_id: Optional[str]) -> bool:
+    """根据主键 ID 更新单个媒体项的状态和 Emby Item ID。"""
+    try:
+        with get_db_connection() as conn:
+            cursor = conn.cursor()
+            sql = """
+                UPDATE tracked_actor_media 
+                SET status = %s, emby_item_id = %s, last_updated_at = CURRENT_TIMESTAMP 
+                WHERE id = %s
+            """
+            cursor.execute(sql, (new_status, emby_item_id, media_id))
+            conn.commit()
+            return cursor.rowcount > 0
+    except Exception as e:
+        logger.error(f"  ➜ 更新已追踪媒体项 {media_id} 详情失败: {e}", exc_info=True)
+        raise

@@ -146,7 +146,7 @@ const handleSubscribe = async (mediaId) => {
   }
 };
 
-// ★★★ 忽略单个作品的函数 ★★★
+// ★★★ 变更单个作品状态的函数 ★★★
 const handleIgnore = async (mediaId, currentStatus) => {
   if (currentStatus === 'MISSING') {
     // --- 这是“忽略”操作，逻辑不变 ---
@@ -175,10 +175,11 @@ const handleIgnore = async (mediaId, currentStatus) => {
       const response = await axios.post(`/api/actor-subscriptions/media/${mediaId}/re-evaluate`);
       message.success(response.data.message);
       
-      // 使用后端返回的、经过智能判断的新状态来更新UI
       const mediaIndex = subscriptionData.value.tracked_media.findIndex(m => m.id === mediaId);
       if (mediaIndex !== -1) {
+        // ★★★ 核心修改：同时更新状态和 emby_item_id ★★★
         subscriptionData.value.tracked_media[mediaIndex].status = response.data.new_status;
+        subscriptionData.value.tracked_media[mediaIndex].emby_item_id = response.data.emby_item_id;
       }
     } catch (err) {
       message.error(err.response?.data?.error || '恢复失败，请检查后台日志。');
