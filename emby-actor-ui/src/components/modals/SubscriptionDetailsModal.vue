@@ -15,7 +15,7 @@
         <n-tab-pane name="tracking" tab="追踪列表">
           <!-- ★★★ 核心修改：用标签页系统替换单一表格 ★★★ -->
           <div v-if="subscriptionData.tracked_media && subscriptionData.tracked_media.length > 0">
-            <n-tabs type="segment" size="small" default-value="missing" animated>
+            <n-tabs type="segment" size="small" v-model:value="activeTab" animated>
               
               <!-- 缺失 -->
               <n-tab-pane v-if="missingMedia.length > 0" name="missing" :tab="`缺失 (${missingMedia.length})`">
@@ -87,7 +87,7 @@
 
 <script setup>
 import { ref, watch, h, computed } from 'vue';
-import { NModal, NSpin, NAlert, NTabs, NTabPane, NDataTable, NTag, NButton, NSpace, NPopconfirm, useMessage, NImage, useDialog, NTooltip, NEmpty } from 'naive-ui';
+import { NModal, NSpin, NAlert, NTabs, NTabPane, NDataTable, NTag, NButton, NSpace, NPopconfirm, useMessage, NImage, useDialog, NTooltip, NEmpty, nextTick } from 'naive-ui';
 import axios from 'axios';
 import SubscriptionConfigForm from './SubscriptionConfigForm.vue';
 
@@ -103,6 +103,7 @@ const loading = ref(false);
 const error = ref(null);
 const subscriptionData = ref(null);
 const editableConfig = ref({});
+const activeTab = ref('missing')
 
 // ★★★ 为每个状态创建一个计算属性 ★★★
 const missingMedia = computed(() => 
@@ -350,6 +351,28 @@ const fetchDetails = async (id) => {
     const response = await axios.get(`/api/actor-subscriptions/${id}`);
     subscriptionData.value = response.data;
     resetConfig();
+
+    // ★★★ 核心新增逻辑：在数据加载后，智能选择默认标签页 ★★★
+    await nextTick(); // 等待 DOM 更新完成，确保 computed 属性已计算完毕
+
+    const tabPriority = [
+      { name: 'missing', data: missingMedia.value },
+      { name: 'in-library', data: inLibraryMedia.value },
+      { name: 'subscribed', data: subscribedMedia.value },
+      { name: 'pending', data: pendingReleaseMedia.value },
+      { name: 'ignored', data: ignoredMedia.value },
+    ];
+
+    // 寻找第一个有数据的标签页
+    const firstAvailableTab = tabPriority.find(tab => tab.data.length > 0);
+
+    if (firstAvailableTab) {
+      activeTab.value = firstAvailableTab.name;
+    } else {
+      // 如果所有列表都为空，可以默认回到 'missing' 或保持不动
+      activeTab.value = 'missing'; 
+    }
+
   } catch (err) {
     error.value = err.response?.data?.error || '加载订阅详情失败。';
   } finally {
