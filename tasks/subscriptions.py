@@ -200,7 +200,7 @@ def task_auto_subscribe(processor):
 
                                 if moviepilot_handler.subscribe_movie_to_moviepilot(movie, config_manager.APP_CONFIG):
                                     settings_db.decrement_subscription_quota()
-                                    subscription_details.append({'module': '原生合集', 'item': f"电影《{movie['title']}》"})
+                                    subscription_details.append({'module': '原生合集', 'source': collection.get('name', '未知合集'), 'item': f"电影《{movie['title']}》"})
                                     movies_changed = True
                                     movie['status'] = 'subscribed'
                                 movies_to_keep.append(movie)
@@ -338,7 +338,7 @@ def task_auto_subscribe(processor):
                                     
                                     if success:
                                         settings_db.decrement_subscription_quota()
-                                        subscription_details.append({'module': '自定义合集', 'item': f"{authoritative_type}《{media_title}》"})
+                                        subscription_details.append({'module': '自定义合集', 'source': collection.get('name', '未知榜单'), 'item': f"{authoritative_type}《{media_title}》"})
                                         media_changed = True
                                         media_item['status'] = 'subscribed'
                                     media_to_keep.append(media_item)
@@ -361,7 +361,17 @@ def task_auto_subscribe(processor):
             # --- 4. 处理演员订阅 ---
             if not processor.is_stop_requested() and not quota_exhausted:
                 task_manager.update_status_from_thread(60, "正在检查演员订阅的缺失作品...")
-                sql_query_actors = "SELECT * FROM tracked_actor_media WHERE status = 'MISSING'"
+                sql_query_actors = """
+                    SELECT
+                        tam.*,
+                        sub.actor_name
+                    FROM
+                        tracked_actor_media AS tam
+                    JOIN
+                        actor_subscriptions AS sub ON tam.subscription_id = sub.id
+                    WHERE
+                        tam.status = 'MISSING'
+                """
                 cursor.execute(sql_query_actors)
                 actor_media_to_check = cursor.fetchall()
                 
@@ -397,7 +407,8 @@ def task_auto_subscribe(processor):
                     
                     if success:
                         settings_db.decrement_subscription_quota()
-                        subscription_details.append({'module': '演员订阅', 'item': f"演员作品《{media_title}》"})
+                        actor_name = media_item.get('actor_name', '未知演员')
+                        subscription_details.append({'module': '演员订阅', 'source': actor_name, 'item': f"作品《{media_title}》"})
                         cursor.execute("UPDATE tracked_actor_media SET status = 'SUBSCRIBED' WHERE id = %s", (media_item['id'],))
 
             conn.commit()
@@ -410,21 +421,30 @@ def task_auto_subscribe(processor):
         task_resubscribe_library(processor)
 
         # --- 构建最终的分类汇总日志 ---
-        summary_parts = []
         if subscription_details:
-            # 使用列表推导式生成带模块标签的字符串列表
-            formatted_items = [f"[{detail['module']}] {detail['item']}" for detail in subscription_details]
-            # 使用分号和换行符来连接，使日志更清晰
-            summary_parts.append(f"智能订阅完成，成功提交 {len(subscription_details)} 项:\n  " + "\n  ".join(formatted_items))
+            # 日志头部
+            header = f"✅ 智能订阅完成，成功提交 {len(subscription_details)} 项:"
+            
+            # 构建每一行的内容
+            item_lines = []
+            for detail in subscription_details:
+                module = detail['module']
+                source = detail.get('source') # 使用 .get() 安全地获取 source
+                
+                # 如果有 source，格式为 [模块-来源]，否则为 [模块]
+                prefix = f"[{module}-{source}]" if source else f"[{module}]"
+                
+                item_lines.append(f"  ├─ {prefix} {detail['item']}")
+            
+            # 将头部和所有行合并成一个多行字符串
+            final_summary = header + "\n" + "\n".join(item_lines)
+            
+            if quota_exhausted:
+                final_summary += "\n(每日订阅配额已用尽，部分项目可能未处理)"
+                
+            logger.info(final_summary)
         else:
-            summary_parts.append("智能订阅完成，本次未发现符合条件的媒体。")
-
-        if quota_exhausted:
-            summary_parts.append("(每日订阅配额已用尽，部分项目可能未处理)")
-
-        # 将所有部分连接成最终的日志消息
-        final_summary = " ".join(summary_parts)
-        logger.info(final_summary)
+            logger.info("✅ 智能订阅完成，本次未发现符合条件的媒体。")
 
     except Exception as e:
         logger.error(f"智能订阅与洗版任务失败: {e}", exc_info=True)
