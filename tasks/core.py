@@ -163,7 +163,6 @@ def task_run_chain_low_freq(processor):
 
 def get_task_registry(context: str = 'all'):
     """
-    【V10 - 拆分为高频/低频任务链】
     返回一个包含所有可执行任务的字典。
     - 新增 'task-chain-high-freq' 和 'task-chain-low-freq' 两个独立的任务链入口。
     """
@@ -176,22 +175,22 @@ def get_task_registry(context: str = 'all'):
 
         # --- 适合任务链的常规任务 ---
         'sync-person-map': (task_sync_person_map, "同步演员数据", 'media', True),
-        'populate-metadata': (task_populate_metadata_cache, "同步媒体数据", 'media', True),
-        'process-watchlist': (task_process_watchlist, "刷新智能追剧", 'watchlist', True),
-        'actor-tracking': (task_process_actor_subscriptions, "刷新演员订阅", 'actor', True),
-        'auto-subscribe': (task_auto_subscribe, "缺失洗版订阅", 'media', True),
-        'update-resubscribe-cache': (task_update_resubscribe_cache, "刷新洗版状态", 'media', True),
-        'sync-all-user-data': (task_sync_all_user_data, "同步用户数据", 'media', True),
         'enrich-aliases': (task_enrich_aliases, "演员数据补充", 'media', True),
+        'populate-metadata': (task_populate_metadata_cache, "同步媒体数据", 'media', True),
         'role-translation': (task_role_translation, "中文化角色名", 'media', True),
         'actor-translation': (task_actor_translation, "中文化演员名", 'media', True),
+        'process-watchlist': (task_process_watchlist, "刷新智能追剧", 'watchlist', True),
+        'actor-tracking': (task_process_actor_subscriptions, "刷新演员订阅", 'actor', True),
         'refresh-collections': (task_refresh_collections, "刷新原生合集", 'media', True),
         'custom-collections': (task_process_all_custom_collections, "刷新自建合集", 'media', True),
+        'update-resubscribe-cache': (task_update_resubscribe_cache, "刷新洗版状态", 'media', True),
+        'auto-subscribe': (task_auto_subscribe, "缺失洗版订阅", 'media', True),
         'generate-all-covers': (task_generate_all_covers, "生成原生封面", 'media', True),
         'generate-custom-collection-covers': (task_generate_all_custom_collection_covers, "生成合集封面", 'media', True),
         'merge-duplicate-actors': (task_merge_duplicate_actors, "合并分身演员", 'media', True),
         'purge-unregistered-actors': (task_purge_unregistered_actors, "删除黑户演员", 'media', True),
         'purge-ghost-actors': (task_purge_ghost_actors, "删除幽灵演员", 'media', True),
+        'sync-all-user-data': (task_sync_all_user_data, "同步用户数据", 'media', True),
         'check-expired-users': (task_check_expired_users, "检查过期用户", 'media', True),
         
         # --- 不适合任务链的、需要特定参数的任务 ---
