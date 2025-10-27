@@ -13,6 +13,7 @@ import moviepilot_handler
 from database import settings_db
 from database import actor_db
 from extensions import login_required, processor_ready_required, task_lock_required
+from tasks.subscriptions import _check_and_get_series_best_version_flag
 
 # 1. 创建演员订阅蓝图
 actor_subscriptions_bp = Blueprint('actor_subscriptions', __name__, url_prefix='/api/actor-subscriptions')
@@ -202,7 +203,7 @@ def subscribe_single_tracked_media(media_id):
         # 1. 检查配额
         current_quota = settings_db.get_subscription_quota()
         if current_quota <= 0:
-            return jsonify({"error": "今日订阅配额已用尽"}), 429 # 429 Too Many Requests
+            return jsonify({"error": "今日订阅配额已用尽"}), 429
 
         # 2. 获取媒体信息
         media_info = actor_db.get_tracked_media_by_id(media_id)
@@ -214,12 +215,33 @@ def subscribe_single_tracked_media(media_id):
         # 3. 执行订阅
         success = False
         config = config_manager.APP_CONFIG
+        
         if media_info['media_type'] == 'Movie':
             movie_payload = {'title': media_info['title'], 'tmdb_id': media_info['tmdb_media_id']}
             success = moviepilot_handler.subscribe_movie_to_moviepilot(movie_payload, config)
+        
         elif media_info['media_type'] == 'Series':
-            series_payload = {'item_name': media_info['title'], 'tmdb_id': media_info['tmdb_media_id']}
-            success = moviepilot_handler.subscribe_series_to_moviepilot(series_payload, season_number=None, config=config)
+            # ★★★ 完结检查逻辑 ★★★
+            tmdb_api_key = config.get("tmdb_api_key")
+            series_tmdb_id = media_info['tmdb_media_id']
+            series_title = media_info['title']
+
+            # 调用辅助函数检查剧集是否完结
+            best_version_flag = _check_and_get_series_best_version_flag(
+                series_tmdb_id=series_tmdb_id,
+                tmdb_api_key=tmdb_api_key,
+                series_name=series_title
+            )
+            
+            series_payload = {'item_name': series_title, 'tmdb_id': series_tmdb_id}
+            
+            # 将检查结果传递给订阅函数
+            success = moviepilot_handler.subscribe_series_to_moviepilot(
+                series_info=series_payload, 
+                season_number=None, 
+                config=config,
+                best_version=best_version_flag 
+            )
 
         # 4. 根据结果更新数据库和配额
         if success:
@@ -232,3 +254,32 @@ def subscribe_single_tracked_media(media_id):
     except Exception as e:
         logger.error(f"手动订阅媒体项 {media_id} 失败: {e}", exc_info=True)
         return jsonify({"error": "订阅时发生未知的服务器错误"}), 500
+    
+# ★★★ 手动更新单个作品状态的API端点 ★★★
+@actor_subscriptions_bp.route('/media/<int:media_id>/status', methods=['POST'])
+@login_required
+def update_single_tracked_media_status(media_id):
+    """
+    手动更新单个已追踪媒体项的状态，主要用于“忽略”操作。
+    """
+    data = request.json
+    new_status = data.get('status')
+
+    if not new_status:
+        return jsonify({"error": "请求体中必须包含 'status' 字段"}), 400
+    
+    # 为了安全，可以限制允许的状态
+    allowed_statuses = ['MISSING', 'SUBSCRIBED', 'IGNORED']
+    if new_status not in allowed_statuses:
+        return jsonify({"error": f"无效的状态值 '{new_status}'"}), 400
+
+    try:
+        success = actor_db.update_tracked_media_status(media_id, new_status)
+        if success:
+            return jsonify({"message": f"媒体项状态已成功更新为 '{new_status}'"})
+        else:
+            return jsonify({"error": "未找到指定的媒体项或状态未改变"}), 404
+
+    except Exception as e:
+        logger.error(f"手动更新媒体项 {media_id} 状态失败: {e}", exc_info=True)
+        return jsonify({"error": "更新状态时发生未知的服务器错误"}), 500

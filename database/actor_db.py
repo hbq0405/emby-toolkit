@@ -7,7 +7,8 @@ from typing import Optional, Dict, Any, List, Tuple
 from .connection import get_db_connection
 from utils import contains_chinese
 from emby_handler import get_emby_item_details
-
+from config_manager import APP_CONFIG
+import extensions 
 logger = logging.getLogger(__name__)
 
 # ======================================================================
@@ -479,7 +480,7 @@ def get_all_actor_subscriptions() -> List[Dict[str, Any]]:
         raise
 
 def get_single_subscription_details(subscription_id: int) -> Optional[Dict[str, Any]]:
-    """【V2 - 格式化修复版】获取单个订阅的完整详情。"""
+    """【V3 - 包含Emby URL版】获取单个订阅的完整详情。"""
     
     try:
         with get_db_connection() as conn:
@@ -490,9 +491,14 @@ def get_single_subscription_details(subscription_id: int) -> Optional[Dict[str, 
             if not sub_row:
                 return None
             
-            cursor.execute("SELECT * FROM tracked_actor_media WHERE subscription_id = %s AND status != 'IGNORED' ORDER BY release_date DESC", (subscription_id,))
+            cursor.execute("SELECT * FROM tracked_actor_media WHERE subscription_id = %s ORDER BY release_date DESC", (subscription_id,))
             tracked_media = [dict(row) for row in cursor.fetchall()]
             
+            # ★★★ 核心修改：从全局配置 APP_CONFIG 中读取 Emby URL 和 API Key ★★★
+            emby_url = APP_CONFIG.get("emby_server_url", "").rstrip('/') # 确保 URL 末尾没有斜杠
+            emby_api_key = APP_CONFIG.get("emby_api_key", "")
+            emby_server_id = extensions.EMBY_SERVER_ID
+
             response_data = {
                 "id": sub_row['id'],
                 "tmdb_person_id": sub_row['tmdb_person_id'],
@@ -509,7 +515,11 @@ def get_single_subscription_details(subscription_id: int) -> Optional[Dict[str, 
                     "min_rating": float(sub_row.get('config_min_rating', 0.0)),
                     "main_role_only": sub_row.get('config_main_role_only', False)
                 },
-                "tracked_media": tracked_media
+                "tracked_media": tracked_media,
+                # ★★★ 新增了这两个字段，供前端拼接URL ★★★
+                "emby_server_url": emby_url,
+                "emby_api_key_for_url": emby_api_key,
+                "emby_server_id": emby_server_id
             }
             
             return response_data

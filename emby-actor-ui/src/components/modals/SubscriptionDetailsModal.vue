@@ -13,14 +13,41 @@
     <div v-else-if="subscriptionData">
       <n-tabs type="line" animated default-value="tracking">
         <n-tab-pane name="tracking" tab="追踪列表">
-          <!-- ★★★ 核心修改 1：将静态 columns 改为动态函数 createColumns() ★★★ -->
-          <n-data-table
-            :columns="createColumns()"
-            :data="subscriptionData.tracked_media"
-            :pagination="{ pageSize: 10 }"
-            :bordered="false"
-            size="small"
-          />
+          <!-- ★★★ 核心修改：用标签页系统替换单一表格 ★★★ -->
+          <div v-if="subscriptionData.tracked_media && subscriptionData.tracked_media.length > 0">
+            <n-tabs type="segment" size="small" default-value="missing" animated>
+              
+              <!-- 缺失 -->
+              <n-tab-pane v-if="missingMedia.length > 0" name="missing" :tab="`缺失 (${missingMedia.length})`">
+                <n-data-table :columns="createColumns()" :data="missingMedia" :pagination="{ pageSize: 10 }" :bordered="false" size="small" />
+              </n-tab-pane>
+
+              <!-- 已入库 -->
+              <n-tab-pane v-if="inLibraryMedia.length > 0" name="in-library" :tab="`已入库 (${inLibraryMedia.length})`">
+                <n-data-table :columns="createColumns()" :data="inLibraryMedia" :pagination="{ pageSize: 10 }" :bordered="false" size="small" />
+              </n-tab-pane>
+
+              <!-- 已订阅 -->
+              <n-tab-pane v-if="subscribedMedia.length > 0" name="subscribed" :tab="`已订阅 (${subscribedMedia.length})`">
+                <n-data-table :columns="createColumns()" :data="subscribedMedia" :pagination="{ pageSize: 10 }" :bordered="false" size="small" />
+              </n-tab-pane>
+
+              <!-- 待发行 -->
+              <n-tab-pane v-if="pendingReleaseMedia.length > 0" name="pending" :tab="`待发行 (${pendingReleaseMedia.length})`">
+                <n-data-table :columns="createColumns()" :data="pendingReleaseMedia" :pagination="{ pageSize: 10 }" :bordered="false" size="small" />
+              </n-tab-pane>
+
+              <!-- 已忽略 -->
+              <n-tab-pane v-if="ignoredMedia.length > 0" name="ignored" :tab="`已忽略 (${ignoredMedia.length})`">
+                <n-data-table :columns="createColumns()" :data="ignoredMedia" :pagination="{ pageSize: 10 }" :bordered="false" size="small" />
+              </n-tab-pane>
+
+            </n-tabs>
+          </div>
+          <!-- 如果没有任何追踪作品，显示空状态 -->
+          <div v-else>
+            <n-empty description="该演员没有追踪任何作品" style="padding: 40px 0;" />
+          </div>
         </n-tab-pane>
         <n-tab-pane name="config" tab="订阅配置">
           <div style="max-width: 600px; margin: 0 auto; padding: 20px 0;">
@@ -59,9 +86,8 @@
 </template>
 
 <script setup>
-import { ref, watch, h } from 'vue';
-// ★★★ 引入 NImage 以便在表格中渲染海报 ★★★
-import { NModal, NSpin, NAlert, NTabs, NTabPane, NDataTable, NTag, NButton, NSpace, NPopconfirm, useMessage, NImage } from 'naive-ui';
+import { ref, watch, h, computed } from 'vue';
+import { NModal, NSpin, NAlert, NTabs, NTabPane, NDataTable, NTag, NButton, NSpace, NPopconfirm, useMessage, NImage, useDialog, NTooltip, NEmpty } from 'naive-ui';
 import axios from 'axios';
 import SubscriptionConfigForm from './SubscriptionConfigForm.vue';
 
@@ -72,10 +98,28 @@ const props = defineProps({
 const emit = defineEmits(['update:show', 'subscription-updated', 'subscription-deleted']);
 
 const message = useMessage();
+const dialog = useDialog();
 const loading = ref(false);
 const error = ref(null);
 const subscriptionData = ref(null);
 const editableConfig = ref({});
+
+// ★★★ 为每个状态创建一个计算属性 ★★★
+const missingMedia = computed(() => 
+  subscriptionData.value?.tracked_media.filter(m => m.status === 'MISSING') || []
+);
+const inLibraryMedia = computed(() => 
+  subscriptionData.value?.tracked_media.filter(m => m.status === 'IN_LIBRARY') || []
+);
+const subscribedMedia = computed(() => 
+  subscriptionData.value?.tracked_media.filter(m => m.status === 'SUBSCRIBED') || []
+);
+const pendingReleaseMedia = computed(() => 
+  subscriptionData.value?.tracked_media.filter(m => m.status === 'PENDING_RELEASE') || []
+);
+const ignoredMedia = computed(() => 
+  subscriptionData.value?.tracked_media.filter(m => m.status === 'IGNORED') || []
+);
 
 // ★★★ 新增：用于跟踪正在订阅的媒体项ID，以显示行内加载状态 ★★★
 const subscribingMediaId = ref(null);
@@ -101,7 +145,46 @@ const handleSubscribe = async (mediaId) => {
   }
 };
 
-// ★★★ 核心修改 2：将静态的 columns 定义改为动态创建的函数 ★★★
+// ★★★ 忽略单个作品的函数 ★★★
+const handleIgnore = async (mediaId, currentStatus) => {
+  if (currentStatus === 'MISSING') {
+    // 从 缺失 -> 忽略，需要弹窗确认
+    dialog.warning({
+      title: '确认忽略',
+      content: '确定要忽略这个作品吗？忽略后将不会被自动订阅。',
+      positiveText: '确认',
+      negativeText: '取消',
+      onPositiveClick: async () => {
+        await updateMediaStatus(mediaId, 'MISSING', '忽略成功！');
+      },
+    });
+  } else {
+    // 从 忽略 -> 缺失，直接操作，无需确认
+    await updateMediaStatus(mediaId, 'IGNORED', '已恢复为缺失状态！');
+  }
+};
+
+// ★★★ 一个通用的状态更新函数，用于代码复用 ★★★
+const updateMediaStatus = async (mediaId, currentStatus, successMessage) => {
+  // 如果当前是 IGNORED，则目标状态是 MISSING，反之亦然
+  const newStatus = currentStatus === 'IGNORED' ? 'MISSING' : 'IGNORED';
+  
+  try {
+    await axios.post(`/api/actor-subscriptions/media/${mediaId}/status`, { status: newStatus });
+    message.success(successMessage || `状态已更新为 ${newStatus}`);
+    
+    // 实时更新UI
+    const mediaIndex = subscriptionData.value.tracked_media.findIndex(m => m.id === mediaId);
+    if (mediaIndex !== -1) {
+      subscriptionData.value.tracked_media[mediaIndex].status = newStatus;
+    }
+  } catch (err) {
+    const errorMsg = err.response?.data?.error || '操作失败，请检查后台日志。';
+    message.error(errorMsg);
+  }
+};
+
+// ★★★ 将静态的 columns 定义改为动态创建的函数 ★★★
 const createColumns = () => [
   {
     title: '海报',
@@ -109,7 +192,6 @@ const createColumns = () => [
     width: 65,
     render(row) {
       const url = row.poster_path ? `https://image.tmdb.org/t/p/w92${row.poster_path}` : 'https://via.placeholder.com/92x138.png?text=N/A';
-      // 使用 NImage 组件以支持懒加载和预览
       return h(NImage, { src: url, width: "45", style: 'border-radius: 3px; display: block;' });
     }
   },
@@ -129,7 +211,6 @@ const createColumns = () => [
     width: 120,
     render(row) {
       if (!row.release_date) return '';
-      // 保持您原来的日期格式化逻辑
       return new Date(row.release_date).toLocaleDateString('zh-CN');
     }
   },
@@ -142,34 +223,118 @@ const createColumns = () => [
         'IN_LIBRARY': { type: 'success', text: '已入库' },
         'SUBSCRIBED': { type: 'info', text: '已订阅' },
         'PENDING_RELEASE': { type: 'default', text: '待发行' },
-        'MISSING': { type: 'warning', text: '缺失' }, // 将缺失状态改为 warning，更符合语义
+        'MISSING': { type: 'warning', text: '缺失' },
+        'IGNORED': { type: 'default', text: '已忽略' },
       };
       const info = statusMap[row.status] || { type: 'error', text: '未知' };
       return h(NTag, { type: info.type, size: 'small', round: true }, { default: () => info.text });
     }
   },
-  // ★★★ 新增“操作”列 ★★★
   {
     title: '操作',
     key: 'actions',
-    width: 100,
+    width: 180,
     render(row) {
-      // 只在状态为 'MISSING' 时显示按钮
+      const buttons = [];
+
+      // --- 按钮 1: 订阅 / Emby ---
       if (row.status === 'MISSING') {
-        return h(
-          NButton,
+        buttons.push(h(
+          NTooltip,
+          { trigger: 'hover' },
           {
-            size: 'small',
-            type: 'primary',
-            ghost: true,
-            loading: subscribingMediaId.value === row.id, // 绑定行内加载状态
-            disabled: !!subscribingMediaId.value, // 当有任何一项在订阅时，禁用其他按钮
-            onClick: () => handleSubscribe(row.id),
-          },
-          { default: () => '订阅' }
-        );
+            trigger: () => h(
+              NButton,
+              {
+                size: 'tiny', type: 'primary', ghost: true,
+                loading: subscribingMediaId.value === row.id,
+                disabled: !!subscribingMediaId.value,
+                onClick: () => handleSubscribe(row.id),
+              },
+              { default: () => '订阅' }
+            ),
+            default: () => '使用 MoviePilot 订阅此媒体'
+          }
+        ));
+      } else if (
+        row.status === 'IN_LIBRARY' && 
+        row.emby_item_id && 
+        subscriptionData.value.emby_server_url &&
+        subscriptionData.value.emby_server_id // <-- 确保 server_id 也存在
+      ) {
+        // ★★★ 核心修改：拼接包含 serverId 的标准 Emby Web URL ★★★
+        const embyItemUrl = `${subscriptionData.value.emby_server_url}/web/index.html#!/item?id=${row.emby_item_id}&serverId=${subscriptionData.value.emby_server_id}`;
+
+        buttons.push(h(
+          NTooltip,
+          { trigger: 'hover' },
+          {
+            trigger: () => h(
+              'a',
+              {
+                href: embyItemUrl, // <--- 使用最终拼接好的 URL
+                target: '_blank',
+              },
+              [h(NButton, { size: 'tiny', type: 'info', ghost: true }, { default: () => 'Emby' })]
+            ),
+            default: () => '在 Emby 中打开'
+          }
+        ));
       }
-      return null; // 其他状态不渲染任何内容
+
+      // --- 按钮 2: 忽略 / 恢复 ---
+      if (row.status === 'MISSING') {
+        buttons.push(h(
+          NTooltip,
+          { trigger: 'hover' },
+          {
+            trigger: () => h(
+              NButton,
+              {
+                size: 'tiny', type: 'default',
+                onClick: () => handleIgnore(row.id, 'MISSING'),
+              },
+              { default: () => '忽略' }
+            ),
+            default: () => '将此媒体标记为已忽略'
+          }
+        ));
+      } else if (row.status === 'IGNORED') {
+        buttons.push(h(
+          NTooltip,
+          { trigger: 'hover' },
+          {
+            trigger: () => h(
+              NButton,
+              {
+                size: 'tiny', type: 'warning', ghost: true,
+                onClick: () => handleIgnore(row.id, 'IGNORED'),
+              },
+              { default: () => '恢复' }
+            ),
+            default: () => '将此媒体恢复为缺失状态'
+          }
+        ));
+      }
+
+      // --- 按钮 3: TMDb 链接 ---
+      if (row.tmdb_media_id) {
+        const tmdbUrl = `https://www.themoviedb.org/${row.media_type.toLowerCase()}/${row.tmdb_media_id}`;
+        buttons.push(h(
+          NTooltip,
+          { trigger: 'hover' },
+          {
+            trigger: () => h(
+              'a',
+              { href: tmdbUrl, target: '_blank' },
+              [h(NButton, { size: 'tiny', type: 'tertiary' }, { default: () => 'TMDb' })]
+            ),
+            default: () => '在 TMDb 上查看详情'
+          }
+        ));
+      }
+
+      return h(NSpace, null, { default: () => buttons });
     },
   },
 ];
