@@ -319,7 +319,8 @@ const createColumns = () => [
 
       // --- 按钮 3: TMDb 链接 ---
       if (row.tmdb_media_id) {
-        const tmdbUrl = `https://www.themoviedb.org/${row.media_type.toLowerCase()}/${row.tmdb_media_id}`;
+        const mediaTypeForUrl = row.media_type.toLowerCase() === 'series' ? 'tv' : 'movie';
+        const tmdbUrl = `https://www.themoviedb.org/${mediaTypeForUrl}/${row.tmdb_media_id}`;
         buttons.push(h(
           NTooltip,
           { trigger: 'hover' },
