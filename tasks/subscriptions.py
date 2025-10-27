@@ -153,7 +153,7 @@ def task_auto_subscribe(processor):
         tmdb_api_key = config_manager.APP_CONFIG.get(constants.CONFIG_OPTION_TMDB_API_KEY)
 
         task_manager.update_status_from_thread(10, "缺失洗版订阅已启动...")
-        successfully_subscribed_items = []
+        subscription_details = []
         resubscribed_count = 0
         deleted_count = 0
         quota_exhausted = False
@@ -200,7 +200,7 @@ def task_auto_subscribe(processor):
 
                                 if moviepilot_handler.subscribe_movie_to_moviepilot(movie, config_manager.APP_CONFIG):
                                     settings_db.decrement_subscription_quota()
-                                    successfully_subscribed_items.append(f"电影《{movie['title']}》")
+                                    subscription_details.append({'module': '原生合集', 'item': f"电影《{movie['title']}》"})
                                     movies_changed = True
                                     movie['status'] = 'subscribed'
                                 movies_to_keep.append(movie)
@@ -276,7 +276,7 @@ def task_auto_subscribe(processor):
                                             COALESCE(resubscribe_info_json, '{}'::jsonb), %s, %s::jsonb, true)
                                         WHERE item_id = %s
                                     """, ([str(season['season_number'])], f'"{datetime.now(timezone.utc).isoformat()}"', series['item_id']))
-                                    successfully_subscribed_items.append(f"《{series_name}》第 {season['season_number']} 季")
+                                    subscription_details.append({'module': '智能追剧', 'item': f"《{series_name}》第 {season['season_number']} 季"})
                                     seasons_changed = True
                                 else:
                                     seasons_to_keep.append(season)
@@ -338,7 +338,7 @@ def task_auto_subscribe(processor):
                                     
                                     if success:
                                         settings_db.decrement_subscription_quota()
-                                        successfully_subscribed_items.append(f"{authoritative_type}《{media_title}》")
+                                        subscription_details.append({'module': '自定义合集', 'item': f"{authoritative_type}《{media_title}》"})
                                         media_changed = True
                                         media_item['status'] = 'subscribed'
                                     media_to_keep.append(media_item)
@@ -397,7 +397,7 @@ def task_auto_subscribe(processor):
                     
                     if success:
                         settings_db.decrement_subscription_quota()
-                        successfully_subscribed_items.append(f"演员作品《{media_title}》")
+                        subscription_details.append({'module': '演员订阅', 'item': f"演员作品《{media_title}》"})
                         cursor.execute("UPDATE tracked_actor_media SET status = 'SUBSCRIBED' WHERE id = %s", (media_item['id'],))
 
             conn.commit()
@@ -408,6 +408,23 @@ def task_auto_subscribe(processor):
         
         # 直接调用洗版任务函数
         task_resubscribe_library(processor)
+
+        # --- 构建最终的分类汇总日志 ---
+        summary_parts = []
+        if subscription_details:
+            # 使用列表推导式生成带模块标签的字符串列表
+            formatted_items = [f"[{detail['module']}] {detail['item']}" for detail in subscription_details]
+            # 使用分号和换行符来连接，使日志更清晰
+            summary_parts.append(f"智能订阅完成，成功提交 {len(subscription_details)} 项:\n  " + "\n  ".join(formatted_items))
+        else:
+            summary_parts.append("智能订阅完成，本次未发现符合条件的媒体。")
+
+        if quota_exhausted:
+            summary_parts.append("(每日订阅配额已用尽，部分项目可能未处理)")
+
+        # 将所有部分连接成最终的日志消息
+        final_summary = " ".join(summary_parts)
+        logger.info(final_summary)
 
     except Exception as e:
         logger.error(f"智能订阅与洗版任务失败: {e}", exc_info=True)
