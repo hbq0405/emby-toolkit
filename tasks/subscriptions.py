@@ -132,20 +132,19 @@ def _check_and_get_series_best_version_flag(series_tmdb_id: int, tmdb_api_key: s
     
     return None
 
-# ★★★ 带智能预判的自动订阅任务 ★★★
+# ★★★ 自动订阅任务 ★★★
 def task_auto_subscribe(processor):
     """
-    【V9 - 终极重构版】
-    - 将所有“完结洗版”的判断逻辑封装到独立的辅助函数 _check_and_get_series_best_version_flag 中。
-    - 主函数代码大幅简化，可读性和可维护性极高。
+    - 现在此任务会依次处理：原生合集、追剧、自定义合集、演员订阅，最后处理媒体洗版。
+    - 一个任务搞定所有日常自动化订阅需求。
     """
-    task_name = "智能订阅缺失"
+    task_name = "缺失洗版订阅"
     logger.info(f"--- 开始执行 '{task_name}' 任务 ---")
     
-    task_manager.update_status_from_thread(0, "正在启动智能订阅任务...")
+    task_manager.update_status_from_thread(0, "正在启动缺失洗版订阅任务...")
     
     if not config_manager.APP_CONFIG.get(constants.CONFIG_OPTION_AUTOSUB_ENABLED):
-        logger.info("智能订阅总开关未开启，任务跳过。")
+        logger.info("  ➜ 订阅总开关未开启，任务跳过。")
         task_manager.update_status_from_thread(100, "任务跳过：总开关未开启")
         return
 
@@ -153,8 +152,10 @@ def task_auto_subscribe(processor):
         today = date.today()
         tmdb_api_key = config_manager.APP_CONFIG.get(constants.CONFIG_OPTION_TMDB_API_KEY)
 
-        task_manager.update_status_from_thread(10, "智能订阅已启动...")
+        task_manager.update_status_from_thread(10, "缺失洗版订阅已启动...")
         successfully_subscribed_items = []
+        resubscribed_count = 0
+        deleted_count = 0
         quota_exhausted = False
 
         with connection.get_db_connection() as conn:
@@ -162,7 +163,7 @@ def task_auto_subscribe(processor):
 
             # --- 1. 处理原生电影合集  ---
             if not processor.is_stop_requested() and not quota_exhausted:
-                task_manager.update_status_from_thread(20, "正在检查原生电影合集...")
+                task_manager.update_status_from_thread(15, "正在检查原生电影合集...")
                 sql_query_native_movies = "SELECT * FROM collections_info WHERE status = 'has_missing' AND missing_movies_json IS NOT NULL AND missing_movies_json != '[]'"
                 cursor.execute(sql_query_native_movies)
                 native_collections_to_check = cursor.fetchall()
@@ -215,7 +216,7 @@ def task_auto_subscribe(processor):
 
             # --- 2. 处理智能追剧 ---
             if not processor.is_stop_requested() and not quota_exhausted:
-                task_manager.update_status_from_thread(60, "正在检查缺失的剧集...")
+                task_manager.update_status_from_thread(30, "正在检查缺失的剧集...")
                 sql_query = "SELECT * FROM watchlist WHERE status IN ('Watching', 'Paused') AND missing_info_json IS NOT NULL AND missing_info_json != '[]'"
                 cursor.execute(sql_query)
                 series_to_check = cursor.fetchall()
@@ -286,11 +287,11 @@ def task_auto_subscribe(processor):
                             missing_info['missing_seasons'] = seasons_to_keep
                             cursor.execute("UPDATE watchlist SET missing_info_json = %s WHERE item_id = %s", (json.dumps(missing_info), series['item_id']))
                     except Exception as e_series:
-                        logger.error(f"【智能订阅-剧集】处理剧集 '{series_name}' 时出错: {e_series}")
+                        logger.error(f"  ➜ 【智能订阅-剧集】处理剧集 '{series_name}' 时出错: {e_series}")
 
             # --- 3. 处理自定义合集 ---
             if not processor.is_stop_requested() and not quota_exhausted:
-                task_manager.update_status_from_thread(70, "正在检查自定义榜单合集...")
+                task_manager.update_status_from_thread(45, "正在检查自定义榜单合集...")
                 sql_query_custom_collections = "SELECT * FROM custom_collections WHERE type = 'list' AND health_status = 'has_missing' AND generated_media_info_json IS NOT NULL AND generated_media_info_json != '[]'"
                 cursor.execute(sql_query_custom_collections)
                 custom_collections_to_check = cursor.fetchall()
@@ -359,7 +360,7 @@ def task_auto_subscribe(processor):
 
             # --- 4. 处理演员订阅 ---
             if not processor.is_stop_requested() and not quota_exhausted:
-                task_manager.update_status_from_thread(80, "正在检查演员订阅的缺失作品...")
+                task_manager.update_status_from_thread(60, "正在检查演员订阅的缺失作品...")
                 sql_query_actors = "SELECT * FROM tracked_actor_media WHERE status = 'MISSING'"
                 cursor.execute(sql_query_actors)
                 actor_media_to_check = cursor.fetchall()
@@ -399,28 +400,80 @@ def task_auto_subscribe(processor):
                         successfully_subscribed_items.append(f"演员作品《{media_title}》")
                         cursor.execute("UPDATE tracked_actor_media SET status = 'SUBSCRIBED' WHERE id = %s", (media_item['id'],))
 
+            # --- 5. 处理媒体洗版 ---
+            if not processor.is_stop_requested() and not quota_exhausted:
+                task_manager.update_status_from_thread(75, "正在检查需要洗版的媒体...")
+                all_rules = resubscribe_db.get_all_resubscribe_rules()
+                delay = float(processor.config.get(constants.CONFIG_OPTION_RESUBSCRIBE_DELAY_SECONDS, 1.5))
+
+                cursor.execute("SELECT * FROM resubscribe_cache WHERE status = 'needed'")
+                items_to_resubscribe = cursor.fetchall()
+                total_needed = len(items_to_resubscribe)
+
+                if total_needed > 0:
+                    logger.info(f"  ➜ 找到 {total_needed} 个项目需要洗版，将开始订阅...")
+                    for i, item in enumerate(items_to_resubscribe):
+                        if processor.is_stop_requested(): break
+                        
+                        current_quota = settings_db.get_subscription_quota()
+                        if current_quota <= 0:
+                            quota_exhausted = True
+                            logger.warning("  ➜ 每日订阅配额已用尽，媒体洗版提前结束。")
+                            break
+
+                        item_name = item.get('item_name')
+                        item_id = item.get('item_id')
+                        progress = int(75 + ((i / total_needed) * 24)) # 75% to 99%
+                        task_manager.update_status_from_thread(
+                            progress, 
+                            f"({i+1}/{total_needed}) [配额:{current_quota}] 正在洗版: {item_name}"
+                        )
+
+                        matched_rule_id = item.get('matched_rule_id')
+                        rule = next((r for r in all_rules if r['id'] == matched_rule_id), None) if matched_rule_id else None
+                        payload = build_resubscribe_payload(item, rule)
+
+                        if not payload:
+                            logger.warning(f"为《{item_name}》构建洗版Payload失败，已跳过。")
+                            continue
+
+                        success = moviepilot_handler.subscribe_with_custom_payload(payload, processor.config)
+                        
+                        if success:
+                            settings_db.decrement_subscription_quota()
+                            resubscribed_count += 1
+                            
+                            if rule and rule.get('delete_after_resubscribe'):
+                                logger.warning(f"  ➜ 规则 '{rule['name']}' 要求删除源文件，正在删除 Emby 项目: {item_name} (ID: {item_id})")
+                                delete_success = emby_handler.delete_item(
+                                    item_id=item_id, emby_server_url=processor.emby_url,
+                                    emby_api_key=processor.emby_api_key, user_id=processor.emby_user_id
+                                )
+                                if delete_success:
+                                    cursor.execute("DELETE FROM resubscribe_cache WHERE item_id = %s", (item_id,))
+                                    deleted_count += 1
+                                else:
+                                    cursor.execute("UPDATE resubscribe_cache SET status = %s WHERE item_id = %s", ('subscribed', item_id))
+                            else:
+                                cursor.execute("UPDATE resubscribe_cache SET status = %s WHERE item_id = %s", ('subscribed', item_id))
+                            
+                            if i < total_needed - 1: time.sleep(delay)
+
             conn.commit()
 
-        summary = "  ✅ 任务完成！"
-        if successfully_subscribed_items:
-            summary += "已自动订阅: " + ", ".join(successfully_subscribed_items)
-        else:
-            summary += "本次运行没有发现符合自动订阅条件的媒体。"
+        logger.info("--- 智能订阅缺失已完成，开始执行媒体洗版任务 ---")
+        task_manager.update_status_from_thread(85, "缺失订阅完成，正在启动媒体洗版...") # 更新一个过渡状态
         
-        if quota_exhausted:
-            summary += " (每日订阅配额已用尽，部分项目可能未处理)"
-
-        logger.info(summary)
-        task_manager.update_status_from_thread(100, summary)
+        # 直接调用洗版任务函数
+        task_resubscribe_library(processor)
 
     except Exception as e:
-        logger.error(f"智能订阅任务失败: {e}", exc_info=True)
+        logger.error(f"智能订阅与洗版任务失败: {e}", exc_info=True)
         task_manager.update_status_from_thread(-1, f"错误: {e}")
 
 # ★★★ 媒体洗版任务 (基于精确API模型重构) ★★★
 def build_resubscribe_payload(item_details: dict, rule: Optional[dict]) -> Optional[dict]:
     """
-    【V4 - 实战命名·最终版】
     - 根据PT站点的实际命名约定，优化了杜比视界Profile 8的正则表达式。
     - 现在，当订阅 Profile 8 时，会生成一个匹配 "dovi" 和 "hdr" 两个关键词同时存在的正则，
       这完美符合了现实世界中的文件命名习惯。
@@ -784,6 +837,7 @@ def task_resubscribe_batch(processor, item_ids: List[str]):
         logger.error(f"执行 '{task_name}' 任务时发生严重错误: {e}", exc_info=True)
         task_manager.update_status_from_thread(-1, f"任务失败: {e}")
 
+# --- 一键洗版 ---
 def task_resubscribe_library(processor):
     """ 后台任务：订阅成功后，根据规则删除或更新缓存。"""
     task_name = "媒体洗版"

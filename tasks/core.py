@@ -179,7 +179,7 @@ def get_task_registry(context: str = 'all'):
         'populate-metadata': (task_populate_metadata_cache, "同步媒体数据", 'media', True),
         'process-watchlist': (task_process_watchlist, "刷新智能追剧", 'watchlist', True),
         'actor-tracking': (task_process_actor_subscriptions, "刷新演员订阅", 'actor', True),
-        'auto-subscribe': (task_auto_subscribe, "智能订阅缺失", 'media', True),
+        'auto-subscribe': (task_auto_subscribe, "缺失洗版订阅", 'media', True),
         'update-resubscribe-cache': (task_update_resubscribe_cache, "刷新洗版状态", 'media', True),
         'sync-all-user-data': (task_sync_all_user_data, "同步用户数据", 'media', True),
         'enrich-aliases': (task_enrich_aliases, "演员数据补充", 'media', True),
@@ -187,7 +187,6 @@ def get_task_registry(context: str = 'all'):
         'actor-translation': (task_actor_translation, "中文化演员名", 'media', True),
         'refresh-collections': (task_refresh_collections, "刷新原生合集", 'media', True),
         'custom-collections': (task_process_all_custom_collections, "刷新自建合集", 'media', True),
-        'resubscribe-library': (task_resubscribe_library, "媒体洗版订阅", 'media', True),
         'generate-all-covers': (task_generate_all_covers, "生成原生封面", 'media', True),
         'generate-custom-collection-covers': (task_generate_all_custom_collection_covers, "生成合集封面", 'media', True),
         'merge-duplicate-actors': (task_merge_duplicate_actors, "合并分身演员", 'media', True),
@@ -201,6 +200,7 @@ def get_task_registry(context: str = 'all'):
         'scan-cleanup-issues': (task_scan_for_cleanup_issues, "扫描媒体重复项", 'media', False),
         'revival-check': (task_run_revival_check, "检查剧集复活", 'watchlist', False),
         'task_apply_main_cast_to_episodes': (task_apply_main_cast_to_episodes, "轻量化同步分集演员表", 'media', False),
+        'resubscribe-library': (task_resubscribe_library, "媒体洗版订阅", 'media', False),
     }
 
     if context == 'chain':
