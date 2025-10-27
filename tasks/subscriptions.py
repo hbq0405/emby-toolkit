@@ -958,10 +958,9 @@ def task_delete_batch(processor, item_ids: List[str]):
 
 def task_update_resubscribe_cache(processor):
     """
-    【V-Final Pro - 架构恢复最终版】
     - 恢复了简洁的函数结构，所有业务逻辑都通过调用正确的全局辅助函数完成。
     """
-    task_name = "刷新洗版状态 (架构恢复最终版)"
+    task_name = "刷新洗版状态"
     logger.info(f"--- 开始执行 '{task_name}' 任务 ---")
     
     try:
