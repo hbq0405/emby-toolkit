@@ -9,7 +9,9 @@ import config_manager
 import moviepilot_handler
 import task_manager
 import extensions
+import constants
 from extensions import login_required, task_lock_required
+from tasks import task_batch_subscribe_gaps
 from database import watchlist_db
 from database import settings_db
 # 1. 创建追剧列表蓝图
@@ -248,3 +250,66 @@ def api_subscribe_series_to_moviepilot():
     except Exception as e:
         logger.error(f"订阅剧集到 MoviePilot 时发生未知错误: {e}", exc_info=True)
         return jsonify({"error": "订阅时发生未知的服务器内部错误。"}), 500
+    
+# ★★★ 订阅单个“缺集的季” ★★★
+@watchlist_bp.route('/subscribe/gap_season', methods=['POST'])
+@login_required
+def api_subscribe_gap_season():
+    data = request.json
+    item_id = data.get('item_id')
+    season_number = data.get('season_number')
+
+    if not all([item_id, season_number is not None]):
+        return jsonify({"error": "请求参数无效，必须提供 item_id 和 season_number。"}), 400
+
+    # 配额检查
+    current_quota = settings_db.get_subscription_quota()
+    if current_quota <= 0:
+        return jsonify({"error": "今日订阅配额已用尽，请明天再试。"}), 429
+
+    try:
+        series_info = watchlist_db.get_watchlist_item_details(item_id) # 假设有这个函数，或直接查询
+        if not series_info:
+            return jsonify({"error": "未找到指定的剧集"}), 404
+
+        # 核心：根据用户设置决定订阅模式
+        config = config_manager.APP_CONFIG
+        use_best_version = config.get(constants.CONFIG_OPTION_RESUBSCRIBE_USE_BEST_VERSION, False)
+        best_version_param = 1 if use_best_version else None
+        
+        success = moviepilot_handler.subscribe_series_to_moviepilot(
+            series_info=series_info,
+            season_number=season_number,
+            config=config,
+            best_version=best_version_param
+        )
+        
+        if success:
+            settings_db.decrement_subscription_quota()
+            # 订阅成功后，从数据库标记中移除，防止重复
+            watchlist_db.remove_seasons_from_gaps_list(item_id, [season_number])
+            return jsonify({"message": "订阅任务已成功提交！"}), 200
+        else:
+            return jsonify({"error": "提交订阅到 MoviePilot 失败。"}), 500
+    except Exception as e:
+        logger.error(f"订阅缺集的季时发生错误: {e}", exc_info=True)
+        return jsonify({"error": "订阅时发生服务器内部错误。"}), 500
+
+# ★★★ 批量订阅“缺集的季” ★★★
+@watchlist_bp.route('/batch_subscribe_gaps', methods=['POST'])
+@login_required
+@task_lock_required
+def api_batch_subscribe_gaps():
+    data = request.json
+    item_ids = data.get('item_ids')
+
+    if not isinstance(item_ids, list) or not item_ids:
+        return jsonify({"error": "请求参数无效：必须提供一个 item_ids 列表。"}), 400
+
+    task_manager.submit_task(
+        task_batch_subscribe_gaps,
+        f"批量订阅 {len(item_ids)} 个项目的缺集季",
+        item_ids=item_ids
+    )
+    
+    return jsonify({"message": f"已在后台启动任务，为 {len(item_ids)} 个项目订阅缺集的季。"}), 202

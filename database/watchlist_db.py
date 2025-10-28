@@ -1,6 +1,7 @@
 # database/watchlist_db.py
 import psycopg2
 import logging
+import json
 from typing import List, Dict, Any, Optional
 
 from .connection import get_db_connection
@@ -12,12 +13,23 @@ logger = logging.getLogger(__name__)
 # ======================================================================
 
 def get_all_watchlist_items() -> List[Dict[str, Any]]:
-    """获取所有追剧列表中的项目。"""
-    
+    """获取所有追剧列表中的项目，并包含发行年份。"""
     try:
         with get_db_connection() as conn:
             cursor = conn.cursor()
-            cursor.execute("SELECT * FROM watchlist ORDER BY added_at DESC")
+            # --- 修改SQL查询 ---
+            sql = """
+                SELECT 
+                    w.*, 
+                    m.release_year 
+                FROM 
+                    watchlist w
+                LEFT JOIN 
+                    media_metadata m ON w.tmdb_id = m.tmdb_id AND m.item_type = 'Series'
+                ORDER BY 
+                    w.added_at DESC
+            """
+            cursor.execute(sql)
             items = [dict(row) for row in cursor.fetchall()]
             return items
     except Exception as e:
@@ -245,3 +257,49 @@ def get_airing_series_tmdb_ids() -> set:
     except Exception as e:
         logger.error(f"从数据库获取“连载中”剧集ID时出错: {e}", exc_info=True)
         return set()
+    
+def get_watchlist_item_details(item_id: str) -> Optional[Dict[str, Any]]:
+    """根据 item_id 获取单个追剧项目的完整字典信息。"""
+    try:
+        with get_db_connection() as conn:
+            cursor = conn.cursor()
+            cursor.execute("SELECT * FROM watchlist WHERE item_id = %s", (item_id,))
+            row = cursor.fetchone()
+            return dict(row) if row else None
+    except Exception as e:
+        logger.error(f"DB: 获取项目 {item_id} 详情时出错: {e}", exc_info=True)
+        return None
+
+def remove_seasons_from_gaps_list(item_id: str, seasons_to_remove: List[int]):
+    """从指定项目的 missing_info_json['seasons_with_gaps'] 列表中移除指定的季号。"""
+    if not seasons_to_remove:
+        return
+    try:
+        with get_db_connection() as conn:
+            with conn.cursor() as cursor:
+                # 1. 先读出当前的 JSON
+                cursor.execute("SELECT missing_info_json FROM watchlist WHERE item_id = %s", (item_id,))
+                row = cursor.fetchone()
+                if not row or not row.get('missing_info_json'):
+                    return
+
+                missing_info = row['missing_info_json']
+                
+                # 2. 在 Python 中修改
+                current_gaps = missing_info.get('seasons_with_gaps', [])
+                if not current_gaps:
+                    return
+                
+                updated_gaps = [s for s in current_gaps if s not in seasons_to_remove]
+                missing_info['seasons_with_gaps'] = updated_gaps
+                
+                # 3. 写回数据库
+                updated_json_str = json.dumps(missing_info)
+                cursor.execute(
+                    "UPDATE watchlist SET missing_info_json = %s WHERE item_id = %s",
+                    (updated_json_str, item_id)
+                )
+            conn.commit()
+            logger.info(f"DB: 已为项目 {item_id} 更新缺集标记，移除了季: {seasons_to_remove}")
+    except Exception as e:
+        logger.error(f"DB: 更新项目 {item_id} 的缺集标记时出错: {e}", exc_info=True)

@@ -289,7 +289,62 @@ def task_auto_subscribe(processor):
                     except Exception as e_series:
                         logger.error(f"  ➜ 【智能订阅-剧集】处理剧集 '{series_name}' 时出错: {e_series}")
 
-            # --- 3. 处理自定义合集 ---
+            # --- 3. 处理中间缺集的季 ---
+            if not processor.is_stop_requested() and not quota_exhausted:
+                task_manager.update_status_from_thread(35, "正在检查中间缺集的季...")
+                # 查询那些被标记了 "seasons_with_gaps" 的剧集
+                sql_query_gaps = "SELECT * FROM watchlist WHERE status IN ('Watching', 'Paused', 'Completed') AND jsonb_array_length(missing_info_json->'seasons_with_gaps') > 0"
+                cursor.execute(sql_query_gaps)
+                series_with_gaps_to_check = cursor.fetchall()
+                
+                logger.info(f"  ➜ 找到 {len(series_with_gaps_to_check)} 部剧集存在中间缺集的季需要订阅。")
+
+                for series in series_with_gaps_to_check:
+                    if processor.is_stop_requested() or quota_exhausted: break
+                    
+                    series_name = series['item_name']
+                    missing_info = series['missing_info_json']
+                    seasons_to_subscribe = missing_info.get('seasons_with_gaps', [])
+                    
+                    if not seasons_to_subscribe: continue
+
+                    seasons_subscribed_this_run = []
+                    for season_num in seasons_to_subscribe:
+                        if processor.is_stop_requested() or quota_exhausted: break
+
+                        # 配额检查
+                        current_quota = settings_db.get_subscription_quota()
+                        if current_quota <= 0:
+                            quota_exhausted = True
+                            logger.warning("  ➜ 每日订阅配额已用尽，中间缺集订阅提前结束。")
+                            break
+
+                        # ★★★ 核心：根据用户设置决定订阅模式 ★★★
+                        # constants.CONFIG_OPTION_RESUBSCRIBE_USE_BEST_VERSION 对应 "是否整季洗版" 开关
+                        use_best_version = config_manager.APP_CONFIG.get(constants.CONFIG_OPTION_RESUBSCRIBE_USE_BEST_VERSION, False)
+                        best_version_param = 1 if use_best_version else None
+                        log_mode = "洗版模式" if use_best_version else "普通模式"
+                        logger.info(f"  ➜ 准备为《{series_name}》第 {season_num} 季提交订阅 ({log_mode})...")
+
+                        success = moviepilot_handler.subscribe_series_to_moviepilot(
+                            series_info=dict(series), 
+                            season_number=season_num, 
+                            config=config_manager.APP_CONFIG, 
+                            best_version=best_version_param
+                        )
+
+                        if success:
+                            settings_db.decrement_subscription_quota()
+                            subscription_details.append({'module': '中间缺集', 'item': f"《{series_name}》第 {season_num} 季 ({log_mode})"})
+                            seasons_subscribed_this_run.append(season_num)
+                    
+                    # 如果成功订阅了任何季，就从标记中移除它们，防止重复订阅
+                    if seasons_subscribed_this_run:
+                        remaining_gaps = [s for s in seasons_to_subscribe if s not in seasons_subscribed_this_run]
+                        missing_info['seasons_with_gaps'] = remaining_gaps
+                        cursor.execute("UPDATE watchlist SET missing_info_json = %s WHERE item_id = %s", (json.dumps(missing_info), series['item_id']))
+
+            # --- 4. 处理自定义合集 ---
             if not processor.is_stop_requested() and not quota_exhausted:
                 task_manager.update_status_from_thread(45, "正在检查自定义榜单合集...")
                 sql_query_custom_collections = "SELECT * FROM custom_collections WHERE type = 'list' AND health_status = 'has_missing' AND generated_media_info_json IS NOT NULL AND generated_media_info_json != '[]'"
@@ -358,7 +413,7 @@ def task_auto_subscribe(processor):
                     except Exception as e_coll:
                         logger.error(f"  ➜ 处理自定义合集 '{collection['name']}' 时发生错误: {e_coll}", exc_info=True)
 
-            # --- 4. 处理演员订阅 ---
+            # --- 5. 处理演员订阅 ---
             if not processor.is_stop_requested() and not quota_exhausted:
                 task_manager.update_status_from_thread(60, "正在检查演员订阅的缺失作品...")
                 sql_query_actors = """
@@ -413,7 +468,7 @@ def task_auto_subscribe(processor):
 
             conn.commit()
 
-        # --- 5. 处理媒体洗版 ---
+        # --- 6. 处理媒体洗版 ---
         logger.info("--- 智能订阅缺失已完成，开始执行媒体洗版任务 ---")
         task_manager.update_status_from_thread(85, "缺失订阅完成，正在启动媒体洗版...") # 更新一个过渡状态
         

@@ -93,6 +93,13 @@
         />
         
         <n-select
+          v-if="currentView === 'completed'"
+          v-model:value="filterGaps"
+          :options="gapsFilterOptions"
+          style="min-width: 140px;"
+        />
+        
+        <n-select
           v-model:value="sortKey"
           :options="sortKeyOptions"
           style="min-width: 160px;"
@@ -209,12 +216,25 @@
     <n-modal v-model:show="showModal" preset="card" style="width: 90%; max-width: 900px;" :title="selectedSeries ? `缺失详情 - ${selectedSeries.item_name}` : ''" :bordered="false" size="huge">
       <div v-if="selectedSeries && missingData">
         <n-tabs type="line" animated>
-          <n-tab-pane name="seasons" :tab="`缺失的季 (${missingData.missing_seasons.length})`" :disabled="missingData.missing_seasons.length === 0">
+          <n-tab-pane name="seasons" :tab="`缺季 (${missingData.missing_seasons.length})`" :disabled="missingData.missing_seasons.length === 0">
             <n-list bordered>
               <n-list-item v-for="season in missingData.missing_seasons" :key="season.season_number">
                 <template #prefix><n-tag type="warning">S{{ season.season_number }}</n-tag></template>
                 <n-ellipsis>{{ season.name }} ({{ season.episode_count }}集, {{ formatAirDate(season.air_date) }})</n-ellipsis>
                 <template #suffix><n-button size="small" type="primary" @click="subscribeSeason(season.season_number)" :loading="subscribing['s'+season.season_number]">订阅本季</n-button></template>
+              </n-list-item>
+            </n-list>
+          </n-tab-pane>
+          <n-tab-pane name="gaps" :tab="`缺集的季 (${missingData.seasons_with_gaps.length})`" :disabled="missingData.seasons_with_gaps.length === 0">
+            <n-list bordered>
+              <n-list-item v-for="seasonNum in missingData.seasons_with_gaps" :key="seasonNum">
+                <template #prefix><n-tag type="error">S{{ seasonNum }}</n-tag></template>
+                <n-ellipsis>第 {{ seasonNum }} 季存在中间缺集</n-ellipsis>
+                <template #suffix>
+                  <n-button size="small" type="primary" @click="subscribeGapSeason(seasonNum)" :loading="subscribing['g'+seasonNum]">
+                    订阅本季
+                  </n-button>
+                </template>
               </n-list-item>
             </n-list>
           </n-tab-pane>
@@ -235,10 +255,13 @@
 import { ref, onMounted, onBeforeUnmount, h, computed, watch } from 'vue';
 import axios from 'axios';
 import { NLayout, NPageHeader, NDivider, NEmpty, NTag, NButton, NSpace, NIcon, useMessage, useDialog, NPopconfirm, NTooltip, NGrid, NGi, NCard, NImage, NEllipsis, NSpin, NAlert, NRadioGroup, NRadioButton, NModal, NTabs, NTabPane, NList, NListItem, NCheckbox, NDropdown, NInput, NSelect, NButtonGroup } from 'naive-ui';
-import { SyncOutline, TvOutline as TvIcon, TrashOutline as TrashIcon, EyeOutline as EyeIcon, CalendarOutline as CalendarIcon, PlayCircleOutline as WatchingIcon, PauseCircleOutline as PausedIcon, CheckmarkCircleOutline as CompletedIcon, ScanCircleOutline as ScanIcon, CaretDownOutline as CaretDownIcon, FlashOffOutline as ForceEndIcon, ArrowUpOutline as ArrowUpIcon, ArrowDownOutline as ArrowDownIcon } from '@vicons/ionicons5';
+import { SyncOutline, TvOutline as TvIcon, TrashOutline as TrashIcon, EyeOutline as EyeIcon, CalendarOutline as CalendarIcon, PlayCircleOutline as WatchingIcon, PauseCircleOutline as PausedIcon, CheckmarkCircleOutline as CompletedIcon, ScanCircleOutline as ScanIcon, CaretDownOutline as CaretDownIcon, FlashOffOutline as ForceEndIcon, ArrowUpOutline as ArrowUpIcon, ArrowDownOutline as ArrowDownIcon, DownloadOutline as DownloadIcon } from '@vicons/ionicons5';
 import { format, parseISO } from 'date-fns';
 import { useConfig } from '../composables/useConfig.js';
 
+// =======================================================================
+// 图标定义 
+// =======================================================================
 const EmbyIcon = () => h('svg', { xmlns: "http://www.w3.org/2000/svg", viewBox: "0 0 48 48", width: "18", height: "18" }, [
   h('path', { d: "M24,4.2c-11,0-19.8,8.9-19.8,19.8S13,43.8,24,43.8s19.8-8.9,19.8-19.8S35,4.2,24,4.2z M24,39.8c-8.7,0-15.8-7.1-15.8-15.8S15.3,8.2,24,8.2s15.8,7.1,15.8,15.8S32.7,39.8,24,39.8z", fill: "currentColor" }),
   h('polygon', { points: "22.2,16.4 22.2,22.2 16.4,22.2 16.4,25.8 22.2,25.8 22.2,31.6 25.8,31.6 25.8,25.8 31.6,31.6 31.6,22.2 25.8,22.2 25.8,16.4 ", fill: "currentColor" })
@@ -247,6 +270,9 @@ const TMDbIcon = () => h('svg', { xmlns: "http://www.w3.org/2000/svg", viewBox: 
   h('path', { d: "M256 512A256 256 0 1 0 256 0a256 256 0 1 0 0 512zM133.2 176.6a22.4 22.4 0 1 1 0-44.8 22.4 22.4 0 1 1 0 44.8zm63.3-22.4a22.4 22.4 0 1 1 44.8 0 22.4 22.4 0 1 1 -44.8 0zm74.8 108.2c-27.5-3.3-50.2-26-53.5-53.5a8 8 0 0 1 16-.6c2.3 19.3 18.8 34 38.1 31.7a8 8 0 0 1 7.4 8c-2.3.3-4.5.4-6.8.4zm-74.8-108.2a22.4 22.4 0 1 1 44.8 0 22.4 22.4 0 1 1 -44.8 0zm149.7 22.4a22.4 22.4 0 1 1 0-44.8 22.4 22.4 0 1 1 0 44.8zM133.2 262.6a22.4 22.4 0 1 1 0-44.8 22.4 22.4 0 1 1 0 44.8zm63.3-22.4a22.4 22.4 0 1 1 44.8 0 22.4 22.4 0 1 1 -44.8 0zm74.8 108.2c-27.5-3.3-50.2-26-53.5-53.5a8 8 0 0 1 16-.6c2.3 19.3 18.8 34 38.1 31.7a8 8 0 0 1 7.4 8c-2.3.3-4.5.4-6.8.4zm-74.8-108.2a22.4 22.4 0 1 1 44.8 0 22.4 22.4 0 1 1 -44.8 0zm149.7 22.4a22.4 22.4 0 1 1 0-44.8 22.4 22.4 0 1 1 0 44.8z", fill: "#01b4e4" })
 ]);
 
+// =======================================================================
+// 基础状态和 Refs
+// =======================================================================
 const { configModel } = useConfig();
 const message = useMessage();
 const dialog = useDialog();
@@ -271,41 +297,190 @@ let observer = null;
 const selectedItems = ref([]);
 const lastSelectedIndex = ref(null);
 
-// ★★★ 新增：排序和筛选的状态 ★★★
+// 排序和筛选的状态
 const searchQuery = ref('');
 const filterStatus = ref('all');
 const filterMissing = ref('all');
+const filterGaps = ref('all');
 const sortKey = ref('last_checked_at');
 const sortOrder = ref('desc');
 
+// =======================================================================
+// ★★★ 所有辅助函数定义前置 ★★★
+// =======================================================================
+const hasMissingSeasons = (item) => {
+  const data = item.missing_info;
+  return data?.missing_seasons?.length > 0;
+};
+
+const hasGaps = (item) => {
+  const data = item.missing_info;
+  return data?.seasons_with_gaps?.length > 0;
+};
+
+const hasMissing = (item) => {
+  return hasMissingSeasons(item) || hasGaps(item);
+};
+
+const getMissingCountText = (item) => {
+  if (!hasMissing(item)) return '';
+  const data = item.missing_info;
+  const season_count = data.missing_seasons?.length || 0;
+  const gaps_count = data.seasons_with_gaps?.length || 0;
+  let parts = [];
+  if (season_count > 0) parts.push(`缺 ${season_count} 季`);
+  if (gaps_count > 0) parts.push(`有缺集`);
+  return parts.join(' | ');
+};
+
+// =======================================================================
+// Computed 属性 
+// =======================================================================
 const statusFilterOptions = [
   { label: '所有状态', value: 'all' },
   { label: '追剧中', value: 'Watching' },
   { label: '已暂停', value: 'Paused' },
 ];
-const missingFilterOptions = [
-  { label: '所有剧集', value: 'all' },
-  { label: '有缺失', value: 'yes' },
-  { label: '无缺失', value: 'no' },
+const missingFilterOptions = computed(() => {
+    return [
+      { label: '缺季筛选', value: 'all' },
+      { label: '有缺季', value: 'yes' },
+      { label: '无缺季', value: 'no' },
+    ];
+});
+const gapsFilterOptions = [
+    { label: '缺集筛选', value: 'all' },
+    { label: '有缺集', value: 'yes' },
+    { label: '无缺集', value: 'no' },
 ];
 const sortKeyOptions = [
   { label: '按上次检查时间', value: 'last_checked_at' },
   { label: '按剧集名称', value: 'item_name' },
   { label: '按添加时间', value: 'added_at' },
+  { label: '按发行年份', value: 'release_year' },
 ];
 
-// 支持 shift+多选
+const batchActions = computed(() => {
+  if (currentView.value === 'inProgress') {
+    return [
+      {
+        label: '强制完结',
+        key: 'forceEnd',
+        icon: () => h(NIcon, { component: ForceEndIcon })
+      }
+    ];
+  } 
+  else if (currentView.value === 'completed') {
+    const actions = [
+      {
+        label: '重新追剧',
+        key: 'rewatch',
+        icon: () => h(NIcon, { component: WatchingIcon })
+      } 
+    ];
+    const hasGapsInSelection = filteredWatchlist.value
+      .filter(item => selectedItems.value.includes(item.item_id))
+      .some(hasGaps);
+    if (hasGapsInSelection) {
+      actions.push({
+        label: '订阅缺集的季',
+        key: 'subscribeGaps',
+        icon: () => h(NIcon, { component: DownloadIcon })
+      });
+    }
+    return actions;
+  }
+  return []; 
+});
+
+const filteredWatchlist = computed(() => {
+  let list = rawWatchlist.value;
+
+  if (currentView.value === 'inProgress') {
+    list = list.filter(item => item.status === 'Watching' || item.status === 'Paused');
+  } else if (currentView.value === 'completed') {
+    list = list.filter(item => item.status === 'Completed');
+  }
+
+  if (searchQuery.value) {
+    const query = searchQuery.value.toLowerCase();
+    list = list.filter(item => item.item_name.toLowerCase().includes(query));
+  }
+
+  if (currentView.value === 'inProgress' && filterStatus.value !== 'all') {
+    list = list.filter(item => item.status === filterStatus.value);
+  }
+
+  if (filterMissing.value !== 'all') {
+    const hasMissingValue = filterMissing.value === 'yes';
+    list = list.filter(item => hasMissingSeasons(item) === hasMissingValue);
+  }
+
+  if (currentView.value === 'completed' && filterGaps.value !== 'all') {
+      const hasGapsValue = filterGaps.value === 'yes';
+      list = list.filter(item => hasGaps(item) === hasGapsValue);
+  }
+
+  list.sort((a, b) => {
+    let valA, valB;
+    switch (sortKey.value) {
+      case 'item_name':
+        valA = a.item_name || '';
+        valB = b.item_name || '';
+        return sortOrder.value === 'asc' ? valA.localeCompare(valB) : valB.localeCompare(valA);
+      case 'added_at':
+        valA = a.added_at ? new Date(a.added_at).getTime() : 0;
+        valB = b.added_at ? new Date(b.added_at).getTime() : 0;
+        break;
+      case 'release_year':
+        valA = a.release_year || 0;
+        valB = b.release_year || 0;
+        break;
+      case 'last_checked_at':
+      default:
+        valA = a.last_checked_at ? new Date(a.last_checked_at).getTime() : 0;
+        valB = b.last_checked_at ? new Date(b.last_checked_at).getTime() : 0;
+        break;
+    }
+    return sortOrder.value === 'asc' ? valA - valB : valB - valA;
+  });
+
+  return list;
+});
+
+const renderedWatchlist = computed(() => {
+  return filteredWatchlist.value.slice(0, displayCount.value);
+});
+const hasMore = computed(() => {
+  return displayCount.value < filteredWatchlist.value.length;
+});
+const emptyStateDescription = computed(() => {
+  if (rawWatchlist.value.length > 0 && filteredWatchlist.value.length === 0) {
+    return '没有匹配当前筛选条件的剧集。';
+  }
+  if (currentView.value === 'inProgress') {
+    return '追剧列表为空，快去“手动处理”页面搜索并添加你正在追的剧集吧！';
+  }
+  return '还没有已完结的剧集。';
+});
+const missingData = computed(() => {
+  return selectedSeries.value?.missing_info || { missing_seasons: [], missing_episodes: [], seasons_with_gaps: [] };
+});
+const nextEpisode = (item) => {
+  return item.next_episode_to_air || null;
+};
+
+// =======================================================================
+// 方法和生命周期钩子
+// =======================================================================
 const toggleSelection = (itemId, event, index) => {
   if (!event) return;
-
   if (event.shiftKey && lastSelectedIndex.value !== null) {
     const start = Math.min(lastSelectedIndex.value, index);
     const end = Math.max(lastSelectedIndex.value, index);
     const idsInRange = renderedWatchlist.value.slice(start, end + 1).map(i => i.item_id);
-
     const isCurrentlySelected = selectedItems.value.includes(itemId);
-    const willSelect = !isCurrentlySelected; // 因为点击时状态还没切换，取反表示切换后的状态
-
+    const willSelect = !isCurrentlySelected;
     if (willSelect) {
       const newSet = new Set(selectedItems.value);
       idsInRange.forEach(id => newSet.add(id));
@@ -324,41 +499,16 @@ const toggleSelection = (itemId, event, index) => {
   lastSelectedIndex.value = index;
 };
 
-// 【核心修改】将 batchActions 转换为 computed 属性
-const batchActions = computed(() => {
-  if (currentView.value === 'inProgress') {
-    return [
-      {
-        label: '强制完结',
-        key: 'forceEnd',
-        icon: () => h(NIcon, { component: ForceEndIcon })
-      }
-    ];
-  } else if (currentView.value === 'completed') {
-    return [
-      {
-        label: '重新追剧',
-        key: 'rewatch',
-        icon: () => h(NIcon, { component: WatchingIcon }) // 使用“追剧中”的图标
-      }
-    ];
-  }
-  return []; // 默认返回空数组
-});
-
-// 【核心修改】更新 handleBatchAction 以处理新的 'rewatch' 键
 const handleBatchAction = (key) => {
   if (key === 'forceEnd') {
     dialog.warning({
       title: '确认操作',
-      content: `确定要将选中的 ${selectedItems.value.length} 部剧集标记为“强制完结”吗？这会防止它们因集数更新而被错误地复活，但如果将来有新一季发布，它们仍会自动恢复追剧。`,
+      content: `确定要将选中的 ${selectedItems.value.length} 部剧集标记为“强制完结”吗？`,
       positiveText: '确定',
       negativeText: '取消',
       onPositiveClick: async () => {
         try {
-          const response = await axios.post('/api/watchlist/batch_force_end', {
-            item_ids: selectedItems.value
-          });
+          const response = await axios.post('/api/watchlist/batch_force_end', { item_ids: selectedItems.value });
           message.success(response.data.message || '批量操作成功！');
           await fetchWatchlist();
           selectedItems.value = [];
@@ -368,7 +518,6 @@ const handleBatchAction = (key) => {
       }
     });
   }
-  // 【新增逻辑】处理“重新追剧”
   else if (key === 'rewatch') {
     dialog.info({
       title: '确认操作',
@@ -377,10 +526,7 @@ const handleBatchAction = (key) => {
       negativeText: '取消',
       onPositiveClick: async () => {
         try {
-          const response = await axios.post('/api/watchlist/batch_update_status', {
-            item_ids: selectedItems.value,
-            new_status: 'Watching'
-          });
+          const response = await axios.post('/api/watchlist/batch_update_status', { item_ids: selectedItems.value, new_status: 'Watching' });
           message.success(response.data.message || '批量操作成功！');
           currentView.value = 'inProgress';
         } catch (err) {
@@ -389,9 +535,24 @@ const handleBatchAction = (key) => {
       }
     });
   }
+  else if (key === 'subscribeGaps') {
+    dialog.info({
+      title: '确认批量订阅',
+      content: `确定要为选中的 ${selectedItems.value.length} 个项目中所有“缺集的季”提交订阅吗？`,
+      positiveText: '确定',
+      negativeText: '取消',
+      onPositiveClick: async () => {
+        try {
+            const response = await axios.post('/api/watchlist/batch_subscribe_gaps', { item_ids: selectedItems.value });
+            message.success(response.data.message || '批量订阅任务已提交！');
+        } catch (err) {
+            message.error(err.response?.data?.error || '提交批量订阅任务失败。');
+        }
+      }
+    });
+  }
 };
 
-// +++ 一键添加所有剧集到智能追剧列表 的函数 +++
 const addAllSeriesToWatchlist = async () => {
   isAddingAll.value = true;
   try {
@@ -403,6 +564,7 @@ const addAllSeriesToWatchlist = async () => {
     isAddingAll.value = false;
   }
 };
+
 const triggerSingleRefresh = async (itemId, itemName) => {
   refreshingItems.value[itemId] = true;
   try {
@@ -415,6 +577,7 @@ const triggerSingleRefresh = async (itemId, itemName) => {
     setTimeout(() => { refreshingItems.value[itemId] = false; }, 5000);
   }
 };
+
 const subscribeSeason = async (seasonNumber) => {
   if (!selectedSeries.value) return;
   const key = `s${seasonNumber}`;
@@ -426,10 +589,11 @@ const subscribeSeason = async (seasonNumber) => {
       season_number: seasonNumber
     });
     message.success(`《${selectedSeries.value.item_name}》第 ${seasonNumber} 季已提交订阅！`);
-    if (selectedSeries.value.missing_info_json) {
-      const data = JSON.parse(selectedSeries.value.missing_info_json);
-      data.missing_seasons = data.missing_seasons.filter(s => s.season_number !== seasonNumber);
-      selectedSeries.value.missing_info_json = JSON.stringify(data);
+    if (selectedSeries.value.missing_info?.missing_seasons) {
+      const index = selectedSeries.value.missing_info.missing_seasons.findIndex(s => s.season_number === seasonNumber);
+      if (index > -1) {
+        selectedSeries.value.missing_info.missing_seasons.splice(index, 1);
+      }
     }
   } catch (err) {
     message.error(err.response?.data?.error || '订阅失败');
@@ -438,156 +602,73 @@ const subscribeSeason = async (seasonNumber) => {
   }
 };
 
-// ★★★ 核心修改：重写 filteredWatchlist 以包含排序和筛选逻辑 ★★★
-const filteredWatchlist = computed(() => {
-  let list = rawWatchlist.value;
-
-  // 1. 基础视图筛选
-  if (currentView.value === 'inProgress') {
-    list = list.filter(item => item.status === 'Watching' || item.status === 'Paused');
-  } else if (currentView.value === 'completed') {
-    list = list.filter(item => item.status === 'Completed');
-  }
-
-  // 2. 文本搜索
-  if (searchQuery.value) {
-    const query = searchQuery.value.toLowerCase();
-    list = list.filter(item => item.item_name.toLowerCase().includes(query));
-  }
-
-  // 3. 状态筛选 (仅追剧中视图)
-  if (currentView.value === 'inProgress' && filterStatus.value !== 'all') {
-    list = list.filter(item => item.status === filterStatus.value);
-  }
-
-  // 4. 缺失筛选
-  if (filterMissing.value !== 'all') {
-    const hasMissingValue = filterMissing.value === 'yes';
-    list = list.filter(item => hasMissing(item) === hasMissingValue);
-  }
-
-  // 5. 排序
-  list.sort((a, b) => {
-    let valA, valB;
-
-    switch (sortKey.value) {
-      case 'item_name':
-        valA = a.item_name || '';
-        valB = b.item_name || '';
-        return sortOrder.value === 'asc' ? valA.localeCompare(valB) : valB.localeCompare(valA);
-      
-      case 'added_at':
-        valA = a.added_at ? new Date(a.added_at).getTime() : 0;
-        valB = b.added_at ? new Date(b.added_at).getTime() : 0;
-        break;
-
-      case 'last_checked_at':
-      default:
-        valA = a.last_checked_at ? new Date(a.last_checked_at).getTime() : 0;
-        valB = b.last_checked_at ? new Date(b.last_checked_at).getTime() : 0;
-        break;
+const subscribeGapSeason = async (seasonNumber) => {
+    if (!selectedSeries.value) return;
+    const key = `g${seasonNumber}`;
+    subscribing.value[key] = true;
+    try {
+        await axios.post('/api/watchlist/subscribe/gap_season', {
+            item_id: selectedSeries.value.item_id,
+            season_number: seasonNumber
+        });
+        message.success(`《${selectedSeries.value.item_name}》第 ${seasonNumber} 季的订阅任务已成功提交！`);
+        if (selectedSeries.value.missing_info?.seasons_with_gaps) {
+            const index = selectedSeries.value.missing_info.seasons_with_gaps.indexOf(seasonNumber);
+            if (index > -1) {
+                selectedSeries.value.missing_info.seasons_with_gaps.splice(index, 1);
+            }
+        }
+    } catch (err) {
+        message.error(err.response?.data?.error || '订阅失败');
+    } finally {
+        subscribing.value[key] = false;
     }
-    
-    return sortOrder.value === 'asc' ? valA - valB : valB - valA;
-  });
+};
 
-  return list;
-});
-
-// ★★★ 新增：监听视图切换，重置筛选和多选 ★★★
 watch(currentView, () => {
   displayCount.value = 30;
   selectedItems.value = [];
   lastSelectedIndex.value = null;
-  // 重置筛选条件
   searchQuery.value = '';
   filterStatus.value = 'all';
   filterMissing.value = 'all';
+  filterGaps.value = 'all';
 });
 
-const renderedWatchlist = computed(() => {
-  return filteredWatchlist.value.slice(0, displayCount.value);
-});
-const hasMore = computed(() => {
-  return displayCount.value < filteredWatchlist.value.length;
-});
 const loadMore = () => {
   if (hasMore.value) {
     displayCount.value = Math.min(displayCount.value + INCREMENT, filteredWatchlist.value.length);
   }
 };
-const emptyStateDescription = computed(() => {
-  if (rawWatchlist.value.length > 0 && filteredWatchlist.value.length === 0) {
-    return '没有匹配当前筛选条件的剧集。';
-  }
-  if (currentView.value === 'inProgress') {
-    return '追剧列表为空，快去“手动处理”页面搜索并添加你正在追的剧集吧！';
-  }
-  return '还没有已完结的剧集。';
-});
-const missingData = computed(() => {
-// ★★★ 直接使用后端传来的 'missing_info' 对象 ★★★
-return selectedSeries.value?.missing_info || { missing_seasons: [], missing_episodes: [] };
-});
-const nextEpisode = (item) => {
-  // ★★★ 直接返回后端传来的 'next_episode_to_air' 对象 ★★★
-  return item.next_episode_to_air || null;
-};
-const hasMissing = (item) => {
-  // ★★★ 直接检查 'missing_info' 对象 ★★★
-  const data = item.missing_info;
-  if (!data) return false;
-  return (data.missing_seasons?.length > 0) || (data.missing_episodes?.length > 0);
-};
-const getMissingCountText = (item) => {
-  // ★★★ 直接使用 'missing_info' 对象 ★★★
-  if (!hasMissing(item)) return '';
-  const data = item.missing_info;
-  const season_count = data.missing_seasons?.length || 0;
-  const episode_count = data.missing_episodes?.length || 0;
-  let parts = [];
-  if (season_count > 0) parts.push(`缺 ${season_count} 季`);
-  if (episode_count > 0) parts.push(`缺 ${episode_count} 集`);
-  return parts.join(' | ');
-};
+
 const formatTimestamp = (timestamp) => {
   if (!timestamp) return '从未';
   try {
-    // 核心：使用 new Date() 来解析后端传来的标准 ISO 时间字符串。
-    // 这个操作会创建一个 Date 对象，该对象在进行格式化时会自动使用浏览器的本地时区。
     const localDate = new Date(timestamp);
-
-    // 然后，将这个已经转换为本地时区的 Date 对象交给 format 函数进行格式化。
     return format(localDate, 'MM-dd HH:mm');
   }
   catch (e) {
-    console.error(`无法解析或格式化时间戳: "${timestamp}"`, e);
     return 'N/A';
   }
 };
+
 const formatAirDate = (dateString) => {
   if (!dateString) return '待定';
   try { return format(parseISO(dateString), 'yyyy-MM-dd'); }
   catch (e) { return 'N/A'; }
 };
+
 const getPosterUrl = (itemId) => `/image_proxy/Items/${itemId}/Images/Primary?maxHeight=480&tag=1`;
-const getEmbyUrl = (itemId) => {
-  const embyServerUrl = configModel.value?.emby_server_url;
-  const serverId = configModel.value?.emby_server_id;
-  if (!embyServerUrl || !itemId) return '#';
-  const baseUrl = embyServerUrl.endsWith('/') ? embyServerUrl.slice(0, -1) : embyServerUrl;
-  let finalUrl = `${baseUrl}/web/index.html#!/item?id=${itemId}`;
-  if (serverId) {
-    finalUrl += `&serverId=${serverId}`;
-  }
-  return finalUrl;
-};
+
 const openInEmby = (itemId) => {
-  const url = getEmbyUrl(itemId);
-  if (url !== '#') {
-    window.open(url, '_blank');
-  }
+  const embyServerUrl = configModel.value?.emby_server_url;
+  if (!embyServerUrl || !itemId) return;
+  const baseUrl = embyServerUrl.endsWith('/') ? embyServerUrl.slice(0, -1) : embyServerUrl;
+  const serverId = configModel.value?.emby_server_id;
+  let finalUrl = `${baseUrl}/web/index.html#!/item?id=${itemId}${serverId ? `&serverId=${serverId}` : ''}`;
+  window.open(finalUrl, '_blank');
 };
+
 const statusInfo = (status) => {
   const map = {
     'Watching': { type: 'success', text: '追剧中', icon: WatchingIcon, next: 'Paused', nextText: '暂停' },
@@ -596,33 +677,26 @@ const statusInfo = (status) => {
   };
   return map[status] || map['Paused'];
 };
+
 const translateTmdbStatus = (status) => {
   const statusMap = {
-    "Returning Series": "连载中",
-    "Ended": "已完结",
-    "Canceled": "已取消",
-    "In Production": "制作中",
-    "Planned": "计划中",
-    "Pilot": "试播"
+    "Returning Series": "连载中", "Ended": "已完结", "Canceled": "已取消",
+    "In Production": "制作中", "Planned": "计划中", "Pilot": "试播"
   };
   return statusMap[status] || status;
 };
+
 const getSmartTMDbStatusText = (item) => {
-  const internalStatus = item.status;
-  const tmdbStatus = item.tmdb_status;
-  if (internalStatus === 'Completed') {
-    if (tmdbStatus === 'Ended' || tmdbStatus === 'Canceled') {
-      return '待回归';
-    }
+  if (item.status === 'Completed' && (item.tmdb_status === 'Ended' || item.tmdb_status === 'Canceled')) {
+    return '待回归';
   }
-  return translateTmdbStatus(tmdbStatus);
+  return translateTmdbStatus(item.tmdb_status);
 };
+
 const getSmartTMDbStatusType = (item) => {
-  if (getSmartTMDbStatusText(item) === '待回归') {
-    return 'info';
-  }
-  return 'default';
+  return getSmartTMDbStatusText(item) === '待回归' ? 'info' : 'default';
 };
+
 const fetchWatchlist = async () => {
   isLoading.value = true;
   error.value = null;
@@ -635,6 +709,7 @@ const fetchWatchlist = async () => {
     isLoading.value = false;
   }
 };
+
 const updateStatus = async (itemId, newStatus) => {
   const item = rawWatchlist.value.find(i => i.item_id === itemId);
   if (!item) return;
@@ -648,6 +723,7 @@ const updateStatus = async (itemId, newStatus) => {
     message.error(err.response?.data?.error || '更新状态失败。');
   }
 };
+
 const removeFromWatchlist = async (itemId, itemName) => {
   try {
     await axios.post(`/api/watchlist/remove/${itemId}`);
@@ -657,6 +733,7 @@ const removeFromWatchlist = async (itemId, itemName) => {
     message.error(err.response?.data?.error || '移除失败。');
   }
 };
+
 const triggerAllWatchlistUpdate = async () => {
   isBatchUpdating.value = true;
   try {
@@ -668,36 +745,23 @@ const triggerAllWatchlistUpdate = async () => {
     isBatchUpdating.value = false;
   }
 };
-const triggerSingleUpdate = async (itemId) => {
-  message.loading(`正在为该剧集检查更新...`, { duration: 0, key: `updating-${itemId}` });
-  try {
-    const response = await axios.post(`/api/watchlist/trigger_update/${itemId}/`);
-    message.destroyAll();
-    message.success(response.data.message || '单项更新任务已启动！');
-  } catch (err) {
-    message.destroyAll();
-    message.error(err.response?.data?.error || '启动单项更新失败。');
-  }
-};
+
 const openMissingInfoModal = (item) => {
   selectedSeries.value = item;
   showModal.value = true;
 };
+
 watch(() => props.taskStatus.is_running, (isRunning, wasRunning) => {
   if (wasRunning && !isRunning) {
-    const relevantActions = [
-      '追剧',
-      '扫描全库剧集',
-      '手动刷新'
-    ];
-    if (relevantActions.some(action => props.taskStatus.current_action.includes(action))) {
+    const lastAction = props.taskStatus.last_action;
+    const relevantActions = ['追剧', '扫描', '刷新'];
+    if (lastAction && relevantActions.some(action => lastAction.includes(action))) {
       message.info('相关后台任务已结束，正在刷新追剧列表...');
       fetchWatchlist();
     }
   }
 });
 
-// ==== 无限滚动部分 ====
 onMounted(() => {
   fetchWatchlist();
   observer = new IntersectionObserver(
@@ -706,35 +770,22 @@ onMounted(() => {
         loadMore();
       }
     },
-    {
-      root: null,
-      rootMargin: '0px',
-      threshold: 0.1, // 元素进入视口10%触发加载
-    }
+    { root: null, rootMargin: '0px', threshold: 0.1 }
   );
   if (loaderRef.value) {
     observer.observe(loaderRef.value);
   }
 });
+
 onBeforeUnmount(() => {
   if (observer) {
     observer.disconnect();
   }
 });
+
 watch(loaderRef, (newEl, oldEl) => {
   if (oldEl && observer) observer.unobserve(oldEl);
   if (newEl && observer) observer.observe(newEl);
-});
-watch(isTaskRunning, (isRunning, wasRunning) => {
-  if (wasRunning && !isRunning) {
-    const lastAction = props.taskStatus.last_action;
-    const relevantActions = ['追剧', '扫描全库剧集', '手动刷新'];
-    const isRelevant = lastAction && relevantActions.some(action => lastAction.includes(action));
-    if (isRelevant) {
-      message.info('相关后台任务已结束，正在刷新追剧列表...');
-      fetchWatchlist();
-    }
-  }
 });
 </script>
 <style scoped>

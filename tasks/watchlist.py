@@ -12,7 +12,8 @@ import constants
 import emby_handler
 import extensions
 import task_manager
-from database import connection
+import moviepilot_handler
+from database import connection, watchlist_db, settings_db
 from psycopg2.extras import execute_values
 
 logger = logging.getLogger(__name__)
@@ -225,3 +226,69 @@ def task_add_all_series_to_watchlist(processor):
     except Exception as e:
         logger.error(f"执行 '{task_name}' 任务时发生严重错误: {e}", exc_info=True)
         task_manager.update_status_from_thread(-1, f"任务失败: {e}")
+
+# ★★★ 新增后台任务：批量订阅缺集的季 ★★★
+def task_batch_subscribe_gaps(processor, item_ids: List[str]):
+    task_name = "批量订阅缺集的季"
+    logger.info(f"--- 开始执行 '{task_name}' 任务 ---")
+    
+    total_items = len(item_ids)
+    processed_count = 0
+    subscribed_seasons_count = 0
+    quota_exhausted = False
+
+    config = config_manager.APP_CONFIG
+    use_best_version = config.get(constants.CONFIG_OPTION_RESUBSCRIBE_USE_BEST_VERSION, False)
+    best_version_param = 1 if use_best_version else None
+    log_mode = "洗版模式" if use_best_version else "普通模式"
+    logger.info(f"  ➜ 本次任务将以 [{log_mode}] 进行订阅。")
+
+    for i, item_id in enumerate(item_ids):
+        if processor.is_stop_requested() or quota_exhausted:
+            break
+        
+        series_info = watchlist_db.get_watchlist_item_details(item_id)
+        if not series_info or not series_info.get('missing_info_json'):
+            continue
+        
+        item_name = series_info.get('item_name', '未知剧集')
+        task_manager.update_status_from_thread(
+            int((i / total_items) * 100),
+            f"({i+1}/{total_items}) 正在处理: {item_name}"
+        )
+
+        seasons_to_subscribe = series_info['missing_info_json'].get('seasons_with_gaps', [])
+        if not seasons_to_subscribe:
+            continue
+
+        seasons_successfully_subscribed = []
+        for season_num in seasons_to_subscribe:
+            if processor.is_stop_requested(): break
+
+            current_quota = settings_db.get_subscription_quota()
+            if current_quota <= 0:
+                logger.warning("  ➜ 每日订阅配额已用尽，任务提前结束。")
+                quota_exhausted = True
+                break
+
+            success = moviepilot_handler.subscribe_series_to_moviepilot(
+                series_info=series_info,
+                season_number=season_num,
+                config=config,
+                best_version=best_version_param
+            )
+            
+            if success:
+                settings_db.decrement_subscription_quota()
+                subscribed_seasons_count += 1
+                seasons_successfully_subscribed.append(season_num)
+            
+            time.sleep(1) # 避免请求过快
+
+        if seasons_successfully_subscribed:
+            watchlist_db.remove_seasons_from_gaps_list(item_id, seasons_successfully_subscribed)
+
+    final_message = f"任务完成！共成功提交 {subscribed_seasons_count} 个季的订阅。"
+    if quota_exhausted:
+        final_message += " (因配额用尽提前中止)"
+    task_manager.update_status_from_thread(100, final_message)

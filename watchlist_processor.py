@@ -467,74 +467,54 @@ class WatchlistProcessor:
 
                     if has_later_episode_locally:
                         max_local_episode = max(local_episodes_for_season)
-                        logger.info(f"  ➜ 分析 S{s_num}E{e_num}: 本地存在更高集号 S{s_num}E{max_local_episode}，确认为【中间缺失】，需要洗版。")
+                        logger.info(f"  ➜ 分析 S{s_num}E{e_num}: 本地存在更高集号 S{s_num}E{max_local_episode}，确认为【中间缺失】，需要标记。")
                         seasons_with_real_gaps.add(s_num)
                     else:
                         max_local_episode = max(local_episodes_for_season) if local_episodes_for_season else '无'
                         logger.info(f"  ➜ 分析 S{s_num}E{e_num}: 本地不存在更高集号 (最高为 E{max_local_episode})，判定为【末尾缺失】，【忽略】。")
                 
-                # ▲▲▲ 核心逻辑修正结束 ▲▲▲
 
                 if not seasons_with_real_gaps:
                     logger.info(f"  ➜ 《{item_name}》分析完成，未发现需要洗版的中间缺失季。")
                     continue
 
-                logger.warning(f"  ➜ 最终确认剧集《{item_name}》存在中间缺集的季: {sorted(list(seasons_with_real_gaps))}，准备逐季触发洗版订阅。")
+                # 4. 将分析结果写入数据库进行标记
+                final_seasons_to_mark = set()
+                resubscribe_info = series.get('resubscribe_info_json') or {}
+                cooldown_hours = 24  # 冷却时间（小时）
 
-                for season_num in sorted(list(seasons_with_real_gaps)):
-                    if quota_exhausted: break
-                    
-                    # ▼▼▼ 核心修改：在这里加入冷却判断 ▼▼▼
-                    resubscribe_info = series.get('resubscribe_info_json') or {}
+                for season_num in seasons_with_real_gaps:
                     last_subscribed_str = resubscribe_info.get(str(season_num))
-                    
                     if last_subscribed_str:
                         try:
-                            # 默认冷却时间为24小时
-                            cooldown_hours = 24 
                             last_subscribed_time = datetime.fromisoformat(last_subscribed_str.replace('Z', '+00:00'))
                             if datetime.now(timezone.utc) < last_subscribed_time + timedelta(hours=cooldown_hours):
-                                logger.info(f"  ➜ 《{item_name}》第 {season_num} 季在 {cooldown_hours} 小时内已订阅过，本次跳过。")
-                                continue # 跳过当前季，继续检查下一个
-                        except (ValueError, TypeError) as e:
-                            logger.warning(f"  ➜ 解析《{item_name}》第 {season_num} 季的上次订阅时间 '{last_subscribed_str}' 失败: {e}，将继续尝试订阅。")
+                                logger.info(f"  ➜ 《{item_name}》第 {season_num} 季虽有缺集，但在 {cooldown_hours} 小时冷却期内，暂不标记。")
+                                continue  # 跳过这个季，不把它加入最终的标记列表
+                        except (ValueError, TypeError):
+                            pass  # 如果时间戳格式错误，则忽略冷却，继续标记
 
-                    # ... (配额检查逻辑保持不变) ...
-                    current_quota = settings_db.get_subscription_quota()
-                    if current_quota <= 0:
-                        logger.warning(f"  ➜ [洗版订阅] 尝试订阅《{item_name}》第 {season_num} 季，但每日配额已用尽。停止本次所有剩余的洗版任务。")
-                        quota_exhausted = True
-                        break
+                    # 如果没有冷却记录或冷却已过，则加入最终待标记列表
+                    final_seasons_to_mark.add(season_num)
 
-                    best_version_param = 1 if self.config.get(constants.CONFIG_OPTION_RESUBSCRIBE_USE_BEST_VERSION) else None
+                # ▲▲▲ 冷却逻辑结束 ▲▲▲
+
+                # 4. 将【过滤后】的分析结果与数据库中的现有标记进行比较和更新
+                existing_gaps = set(missing_info.get('seasons_with_gaps', []))
+
+                if final_seasons_to_mark != existing_gaps:
+                    logger.warning(f"  ➜ 《{item_name}》分析完成，最终需标记的缺集季为: {sorted(list(final_seasons_to_mark))}，将更新标记。")
                     
-                    success = moviepilot_handler.subscribe_series_to_moviepilot(
-                        series_info=series, season_number=season_num,
-                        config=self.config, best_version=best_version_param
+                    missing_info['seasons_with_gaps'] = sorted(list(final_seasons_to_mark))
+                    
+                    self._update_watchlist_entry(
+                        item_id=series['item_id'],
+                        item_name=item_name,
+                        updates={"missing_info_json": json.dumps(missing_info)}
                     )
-                    
-                    if success:
-                        settings_db.decrement_subscription_quota()
-                        total_seasons_subscribed += 1
-                        # ★★★ 订阅成功后，立刻更新我们的“记忆” ★★★
-                        watchlist_db.update_resubscribe_info(
-                            item_id=series['item_id'],
-                            season_number=season_num,
-                            timestamp=datetime.now(timezone.utc).isoformat()
-                        )
+                else:
+                    logger.info(f"  ➜ 《{item_name}》分析完成，标记无变化。")
 
-                        # --- 订阅成功后，将状态重置为“追剧中”，以触发下一次的完整状态刷新 ---
-                        logger.info(f"  ➜ 《{item_name}》洗版订阅成功，状态将重置为“追剧中”以待系统自动刷新校准。")
-                        self._update_watchlist_entry(
-                            item_id=series['item_id'],
-                            item_name=item_name,
-                            updates={
-                                "status": STATUS_WATCHING,
-                                "paused_until": None  # 清除暂停状态
-                            }
-                        )
-                    
-                    time.sleep(1)
                 time.sleep(1)
 
             final_message = f"所有流程已完成！共为 {total_seasons_subscribed} 个确认存在中间缺失的季提交了精准洗版订阅。"
@@ -679,65 +659,84 @@ class WatchlistProcessor:
         has_missing_media = bool(missing_info["missing_seasons"] or missing_info["missing_episodes"])
 
         # ★★★ 元数据完整性检查 ★★★
-        has_complete_metadata = self._check_all_episodes_have_overview(all_tmdb_episodes)
+        today_str = datetime.now(timezone.utc).date().isoformat()
+        aired_episodes = [ep for ep in all_tmdb_episodes if ep.get('air_date') and ep['air_date'] <= today_str]
+        has_complete_metadata = self._check_all_episodes_have_overview(aired_episodes)
 
         # “本季大结局”判断逻辑
         last_episode_to_air = latest_series_data.get("last_episode_to_air")
-        final_status = STATUS_WATCHING
+        final_status = STATUS_WATCHING # 默认是追剧中
         paused_until_date = None
         today = datetime.now(timezone.utc).date()
-        
-        # 规则1：硬性完结条件
-        can_be_completed = not has_missing_media and has_complete_metadata
-        if can_be_completed and is_ended_on_tmdb:
+
+        # ▼▼▼ 核心逻辑重构：基于播出日期的三层决策 ▼▼▼
+
+        # 规则1：硬性完结条件 (TMDb官方说它完了)
+        if is_ended_on_tmdb and has_complete_metadata:
             final_status = STATUS_COMPLETED
-            logger.info(f"  ➜ 剧集已完结且本地/元数据完整，状态变更为: {translate_internal_status(final_status)}")
-        
-        # 规则2：检查待播集，并应用“冷宫”逻辑
+            logger.info(f"  ➜ 剧集在TMDb已完结且元数据完整，状态变更为: {translate_internal_status(final_status)}")
+
+        # 规则2：有明确的下一集播出日期 (最复杂的决策树)
         elif real_next_episode_to_air and real_next_episode_to_air.get('air_date'):
             air_date_str = real_next_episode_to_air['air_date']
             try:
                 air_date = datetime.strptime(air_date_str, '%Y-%m-%d').date()
                 days_until_air = (air_date - today).days
-                
+                episode_number = real_next_episode_to_air.get('episode_number')
+
                 if days_until_air <= 3:
                     final_status = STATUS_WATCHING
-                    logger.info(f"  ➜ 下一集即将在3天内播出或已播出，状态保持为: {translate_internal_status(final_status)}。")
+                    logger.info(f"  ➜ 下一集在3天内播出或已播出，状态保持为: {translate_internal_status(final_status)}。")
+                
                 elif 3 < days_until_air <= 90:
-                    final_status = STATUS_PAUSED
-                    paused_until_date = air_date - timedelta(days=1)
-                    logger.info(f"  ➜ 下一集在 {days_until_air} 天后播出，状态变更为: {translate_internal_status(final_status)}，暂停至 {paused_until_date}。")
-                else:
-                    final_status = STATUS_COMPLETED
-                    logger.warning(f"  ➜ 下一集在 {days_until_air} 天后播出，超过90天阈值，状态强制变更为“已完结”。")
-            except ValueError:
-                final_status = STATUS_COMPLETED
-                logger.warning(f"  ➜ 解析待播日期 '{air_date_str}' 失败，状态强制变更为“已完结”。")
-        
-        # 规则3：无待播信息，进入“安全网”判断
-        else:
-            # 默认执行安全的7天暂停，以防信息不全导致误判
-            final_status = STATUS_PAUSED
-            paused_until_date = today + timedelta(days=7)
-            
-            # 只有当我们能获取到明确的、且超过7天的上次播出日期时，才覆盖默认行为，将其打入冷宫
-            if last_episode_to_air and last_episode_to_air.get('air_date'):
-                try:
-                    last_air_date = datetime.strptime(last_episode_to_air['air_date'], '%Y-%m-%d').date()
-                    days_since_last_air = (today - last_air_date).days
-                    
-                    if days_since_last_air > 7:
+                    # ★★★ 核心判断：这是新一季的开端，还是季中的普通一集？ ★★★
+                    if episode_number is not None and int(episode_number) == 1:
+                        # 是新一季的第一集，说明当前季已完结，应进入待回归状态
                         final_status = STATUS_COMPLETED
                         paused_until_date = None
-                        logger.warning(f"  ➜ 剧集暂无明确待播信息，且上一集播出已超过7天，状态强制变更为“已完结”。")
+                        logger.warning(f"  ➜ 下一集是新季首播 (S{real_next_episode_to_air.get('season_number')}E01)，在 {days_until_air} 天后播出。当前季已完结，状态变更为“已完结”。")
                     else:
-                        logger.info(f"  ➜ 剧集暂无待播信息，但上一集在7天内播出，临时暂停7天以减少API请求。")
-                except ValueError:
-                    logger.warning(f"  ➜ 剧集上次播出日期格式错误，为安全起见，执行默认的7天暂停。")
-            else:
-                logger.info(f"  ➜ 剧集完全缺失播出日期数据，为安全起见，执行默认的7天暂停以待数据更新。")
+                        # 不是第一集，说明是正常的季内停播（如周播剧的间歇）
+                        final_status = STATUS_PAUSED
+                        paused_until_date = air_date - timedelta(days=1)
+                        logger.info(f"  ➜ 下一集 (非首集) 在 {days_until_air} 天后播出，状态变更为: {translate_internal_status(final_status)}，暂停至 {paused_until_date}。")
+                
+                else: # days_until_air > 90
+                    # 播出时间太遥远，无论如何都应视为已完结/长期停播
+                    final_status = STATUS_COMPLETED
+                    paused_until_date = None
+                    logger.warning(f"  ➜ 下一集在 {days_until_air} 天后播出，超过90天阈值，状态强制变更为“已完结”。")
 
-        # 规则4：强制完结标志拥有最高优先级
+            except (ValueError, TypeError):
+                final_status = STATUS_COMPLETED
+                logger.warning(f"  ➜ 解析待播日期 '{air_date_str}' 失败，状态强制变更为“已完结”。")
+
+        # 规则3：没有下一集信息，启用30天规则
+        elif last_episode_to_air and last_episode_to_air.get('air_date'):
+            try:
+                last_air_date = datetime.strptime(last_episode_to_air['air_date'], '%Y-%m-%d').date()
+                days_since_last_air = (today - last_air_date).days
+                
+                if days_since_last_air > 30:
+                    final_status = STATUS_COMPLETED
+                    paused_until_date = None
+                    logger.warning(f"  ➜ 剧集无待播信息，且最后一集播出已超过30天，状态强制变更为“已完结”。")
+                else:
+                    final_status = STATUS_PAUSED
+                    paused_until_date = today + timedelta(days=7)
+                    logger.info(f"  ➜ 剧集无待播信息，但上一集在30天内播出，临时暂停7天以待数据更新。")
+            except ValueError:
+                final_status = STATUS_PAUSED
+                paused_until_date = today + timedelta(days=7)
+                logger.warning(f"  ➜ 剧集上次播出日期格式错误，为安全起见，执行默认的7天暂停。")
+
+        # 规则4：绝对的后备方案 (如果连上一集信息都没有)
+        else:
+            final_status = STATUS_PAUSED
+            paused_until_date = today + timedelta(days=7)
+            logger.info(f"  ➜ 剧集完全缺失播出日期数据，为安全起见，执行默认的7天暂停以待数据更新。")
+
+        # 规则5：强制完结标志拥有最高优先级
         if is_force_ended and final_status != STATUS_COMPLETED:
             final_status = STATUS_COMPLETED
             paused_until_date = None
