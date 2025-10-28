@@ -465,7 +465,13 @@ const emptyStateDescription = computed(() => {
   return '还没有已完结的剧集。';
 });
 const missingData = computed(() => {
-  return selectedSeries.value?.missing_info || { missing_seasons: [], missing_episodes: [], seasons_with_gaps: [] };
+  const defaults = { 
+    missing_seasons: [], 
+    missing_episodes: [], 
+    seasons_with_gaps: [] 
+  };
+  const infoFromServer = selectedSeries.value?.missing_info;
+  return { ...defaults, ...infoFromServer };
 });
 const nextEpisode = (item) => {
   return item.next_episode_to_air || null;
