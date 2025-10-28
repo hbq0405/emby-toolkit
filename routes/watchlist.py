@@ -313,3 +313,28 @@ def api_batch_subscribe_gaps():
     )
     
     return jsonify({"message": f"已在后台启动任务，为 {len(item_ids)} 个项目订阅缺集的季。"}), 202
+
+@watchlist_bp.route('/batch_remove', methods=['POST'])
+@login_required
+def api_batch_remove_from_watchlist():
+    """
+    接收前端请求，批量从追剧列表中移除项目。
+    """
+    data = request.json
+    item_ids = data.get('item_ids')
+
+    if not isinstance(item_ids, list) or not item_ids:
+        return jsonify({"error": "请求参数无效：必须提供一个包含项目ID的列表 (item_ids)。"}), 400
+
+    logger.info(f"API: 收到对 {len(item_ids)} 个项目的批量移除请求。")
+    
+    try:
+        removed_count = watchlist_db.batch_remove_from_watchlist(item_ids)
+        
+        return jsonify({
+            "message": f"操作成功！已从追剧列表移除了 {removed_count} 个项目。",
+            "removed_count": removed_count
+        }), 200
+    except Exception as e:
+        logger.error(f"批量移除项目时发生未知错误: {e}", exc_info=True)
+        return jsonify({"error": "批量移除项目时发生未知的服务器内部错误"}), 500

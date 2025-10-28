@@ -362,13 +362,21 @@ const sortKeyOptions = [
 ];
 
 const batchActions = computed(() => {
+  // 定义一个通用的“批量移除”操作
+  const removeAction = {
+    label: '批量移除',
+    key: 'remove',
+    icon: () => h(NIcon, { component: TrashIcon })
+  };
+
   if (currentView.value === 'inProgress') {
     return [
       {
         label: '强制完结',
         key: 'forceEnd',
         icon: () => h(NIcon, { component: ForceEndIcon })
-      }
+      },
+      removeAction // 在“追剧中”视图添加移除操作
     ];
   } 
   else if (currentView.value === 'completed') {
@@ -377,11 +385,13 @@ const batchActions = computed(() => {
         label: '重新追剧',
         key: 'rewatch',
         icon: () => h(NIcon, { component: WatchingIcon })
-      } 
+      }
     ];
+
     const hasGapsInSelection = filteredWatchlist.value
       .filter(item => selectedItems.value.includes(item.item_id))
       .some(hasGaps);
+
     if (hasGapsInSelection) {
       actions.push({
         label: '订阅缺集的季',
@@ -389,8 +399,11 @@ const batchActions = computed(() => {
         icon: () => h(NIcon, { component: DownloadIcon })
       });
     }
+    
+    actions.push(removeAction); // 在“已完结”视图也添加移除操作
     return actions;
   }
+
   return []; 
 });
 
@@ -554,6 +567,26 @@ const handleBatchAction = (key) => {
             message.success(response.data.message || '批量订阅任务已提交！');
         } catch (err) {
             message.error(err.response?.data?.error || '提交批量订阅任务失败。');
+        }
+      }
+    });
+  }
+  else if (key === 'remove') {
+    dialog.warning({
+      title: '确认移除',
+      content: `确定要从追剧列表中移除选中的 ${selectedItems.value.length} 个项目吗？此操作不可恢复。`,
+      positiveText: '确定移除',
+      negativeText: '取消',
+      onPositiveClick: async () => {
+        try {
+          const response = await axios.post('/api/watchlist/batch_remove', {
+            item_ids: selectedItems.value
+          });
+          message.success(response.data.message || '批量移除成功！');
+          await fetchWatchlist(); // 重新加载列表
+          selectedItems.value = []; // 清空选择
+        } catch (err) {
+          message.error(err.response?.data?.error || '批量移除失败。');
         }
       }
     });

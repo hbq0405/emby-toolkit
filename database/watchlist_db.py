@@ -303,3 +303,26 @@ def remove_seasons_from_gaps_list(item_id: str, seasons_to_remove: List[int]):
             logger.info(f"DB: 已为项目 {item_id} 更新缺集标记，移除了季: {seasons_to_remove}")
     except Exception as e:
         logger.error(f"DB: 更新项目 {item_id} 的缺集标记时出错: {e}", exc_info=True)
+
+def batch_remove_from_watchlist(item_ids: List[str]) -> int:
+    """从追剧列表中批量移除多个项目。"""
+    
+    if not item_ids:
+        return 0
+    
+    try:
+        with get_db_connection() as conn:
+            cursor = conn.cursor()
+            # 使用 IN %s 和元组来安全地处理批量删除
+            sql = "DELETE FROM watchlist WHERE item_id IN %s"
+            
+            cursor.execute(sql, (tuple(item_ids),))
+            conn.commit()
+            
+            removed_count = cursor.rowcount
+            if removed_count > 0:
+                logger.info(f"DB: 成功从追剧列表批量移除了 {removed_count} 个项目。")
+            return removed_count
+    except Exception as e:
+        logger.error(f"DB: 批量移除追剧项目时发生错误: {e}", exc_info=True)
+        raise
