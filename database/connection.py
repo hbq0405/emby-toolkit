@@ -277,6 +277,7 @@ def init_db():
                         poster_path TEXT,
                         status TEXT NOT NULL,
                         emby_item_id TEXT,
+                        ignore_reason TEXT,
                         last_updated_at TIMESTAMP WITH TIME ZONE DEFAULT NOW(),
                         FOREIGN KEY(subscription_id) REFERENCES actor_subscriptions(id) ON DELETE CASCADE,
                         UNIQUE(subscription_id, tmdb_media_id)
@@ -461,6 +462,9 @@ def init_db():
                         all_existing_columns[table].add(row['column_name'])
 
                     schema_upgrades = {
+                        'tracked_actor_media': { 
+                            "ignore_reason": "TEXT"
+                        },
                         'media_metadata': {
                             "official_rating": "TEXT",
                             "unified_rating": "TEXT",

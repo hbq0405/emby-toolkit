@@ -4,7 +4,7 @@ import time
 import re
 from datetime import datetime, timedelta
 import logging
-from typing import Optional, Dict, Any, List, Set, Callable
+from typing import Optional, Dict, Any, List, Set, Callable, Tuple
 import threading
 from enum import Enum
 import concurrent.futures # 新增：导入 concurrent.futures
@@ -205,26 +205,24 @@ class ActorSubscriptionProcessor:
                     logger.info(f"  ➜ 发现 {len(new_candidate_works)} 部全新作品，将进行首次严格筛选...")
                     
                     # 执行完整的筛选流程
-                    pre_filtered_new = self._pre_filter_works(new_candidate_works, sub)
-                    enriched_new = self._enrich_works_with_order(pre_filtered_new, sub['tmdb_person_id'], self.tmdb_api_key)
-                    final_new_works = self._post_filter_works_by_role(enriched_new, sub)
+                    # 先为所有新作品丰富番位信息
+                    enriched_new_works = self._enrich_works_with_order(new_candidate_works, sub['tmdb_person_id'], self.tmdb_api_key)
                     
-                    final_new_ids = {w['id'] for w in final_new_works}
-                    ignored_new_works = [w for w in new_candidate_works if w.get('id') not in final_new_ids]
+                    grace_period_months = 6
+                    six_months_ago = datetime.now() - timedelta(days=grace_period_months * 30)
+                    grace_period_end_date_str = six_months_ago.strftime('%Y-%m-%d')
 
-                    logger.info(f"  ➜ 筛选后，有 {len(final_new_works)} 部新作品符合条件。")
-                    logger.info(f"  ➜ 其余 {len(ignored_new_works)} 部新作品将被标记为'忽略'，未来不再处理。")
-
-                    # 为符合条件的新作品确定初始状态 (MISSING/PENDING/IN_LIBRARY)
-                    for work in final_new_works:
-                        status = self._determine_media_status(work, emby_tmdb_ids_str, today_str, None, session_subscribed_ids)
-                        # ★★★ 核心修改：为新作品准备字典时，如果已在库，则直接传入 emby_item_id ★★★
-                        emby_id = emby_media_map.get(str(work.get('id'))) if status == MediaStatus.IN_LIBRARY else None
-                        media_to_insert.append(self._prepare_media_dict(work, subscription_id, status, emby_id))
-
-                    # 为被忽略的新作品直接标记为 IGNORED
-                    for work in ignored_new_works:
-                        media_to_insert.append(self._prepare_media_dict(work, subscription_id, MediaStatus.IGNORED))
+                    for work in enriched_new_works:
+                        is_kept, reason = self._filter_work_and_get_reason(work, sub, grace_period_end_date_str)
+                        
+                        if is_kept:
+                            # 符合条件，确定初始状态
+                            status = self._determine_media_status(work, emby_tmdb_ids_str, today_str, None, session_subscribed_ids)
+                            emby_id = emby_media_map.get(str(work.get('id'))) if status == MediaStatus.IN_LIBRARY else None
+                            media_to_insert.append(self._prepare_media_dict(work, subscription_id, status, emby_id))
+                        else:
+                            # 不符合条件，直接标记为 IGNORED 并记录原因
+                            media_to_insert.append(self._prepare_media_dict(work, subscription_id, MediaStatus.IGNORED, ignore_reason=reason))
                 
                 # --- 统一的数据库更新 ---
                 # 在这个逻辑下，old_tracked_media 不再需要 pop，因为我们是基于新旧分离来处理的
@@ -245,11 +243,11 @@ class ActorSubscriptionProcessor:
         cursor.execute("SELECT tmdb_media_id, status FROM tracked_actor_media WHERE subscription_id = %s", (subscription_id,))
         return {row['tmdb_media_id']: row['status'] for row in cursor.fetchall()}
 
-    def _pre_filter_works(self, works: List[Dict], sub_config) -> List[Dict]:
-        """【新增】根据订阅配置对作品进行初步筛选（不依赖番位）。"""
-        filtered = []
-        handled_media_ids = set()
-        
+    def _filter_work_and_get_reason(self, work: Dict, sub_config, grace_period_end_date_str: str) -> Tuple[bool, Optional[str]]:
+        """
+        对单个作品进行完整筛选，如果被忽略，则返回具体原因。
+        返回: (是否通过, 忽略原因或None)
+        """
         config_start_year = sub_config['config_start_year']
         raw_types_from_db = sub_config['config_media_types'].split(',')
         config_media_types = {
@@ -259,70 +257,49 @@ class ActorSubscriptionProcessor:
         config_genres_include = set(sub_config['config_genres_include_json'] or [])
         config_genres_exclude = set(sub_config['config_genres_exclude_json'] or [])
         config_min_rating = sub_config['config_min_rating']
-        grace_period_months = 6
-        six_months_ago = datetime.now() - timedelta(days=grace_period_months * 30)
-        grace_period_end_date_str = six_months_ago.strftime('%Y-%m-%d')
+        config_main_role_only = sub_config.get('config_main_role_only', False)
         chinese_char_regex = re.compile(r'[\u4e00-\u9fff]')
 
-        for work in works:
-            media_id = work.get('id')
-            if not media_id or media_id in handled_media_ids:
-                continue
+        # 筛选1：上映日期年份
+        release_date_str = work.get('release_date') or work.get('first_air_date', '')
+        if not release_date_str: return False, "缺少发行日期"
+        try:
+            if int(release_date_str.split('-')[0]) < config_start_year:
+                return False, f"发行年份早于 {config_start_year}"
+        except (ValueError, IndexError): pass
 
-            # 筛选1：上映日期年份
-            release_date_str = work.get('release_date') or work.get('first_air_date', '')
-            if not release_date_str: continue
-            try:
-                if int(release_date_str.split('-')[0]) < config_start_year: continue
-            except (ValueError, IndexError): pass
+        # 筛选2：媒体类型
+        media_type_raw = work.get('media_type', 'movie' if 'title' in work else 'tv')
+        media_type = MediaType.MOVIE.value if media_type_raw == 'movie' else MediaType.SERIES.value
+        if media_type not in config_media_types:
+            return False, "排除的媒体类型"
 
-            # 筛选2：媒体类型
-            media_type_raw = work.get('media_type', 'movie' if 'title' in work else 'tv')
-            media_type = MediaType.MOVIE.value if media_type_raw == 'movie' else MediaType.SERIES.value
-            if media_type not in config_media_types:
-                continue
+        # 筛选3：题材
+        genre_ids = set(work.get('genre_ids', []))
+        if config_genres_exclude and not genre_ids.isdisjoint(config_genres_exclude):
+            return False, "排除的题材"
+        if config_genres_include and genre_ids.isdisjoint(config_genres_include):
+            return False, "不包含指定的题材"
 
-            # 筛选3：题材
-            genre_ids = set(work.get('genre_ids', []))
-            if config_genres_exclude and not genre_ids.isdisjoint(config_genres_exclude): continue
-            if config_genres_include and genre_ids.isdisjoint(config_genres_include): continue
-
-            # 筛选4：评分
-            if config_min_rating > 0:
-                vote_average = work.get('vote_average', 0.0)
-                is_new_movie = release_date_str >= grace_period_end_date_str
-                if not is_new_movie and vote_average < config_min_rating:
-                    logger.trace(f"  ➜ 过滤老片: '{work.get('title') or work.get('name')}' (评分 {vote_average} < {config_min_rating})")
-                    continue
-            
-            # 筛选5：中文片名
-            title = work.get('title') or work.get('name', '')
-            if not chinese_char_regex.search(title):
-                logger.trace(f"  ➜ 过滤作品: '{title}' (排除无中文片名)。")
-                continue
-            
-            handled_media_ids.add(media_id)
-            filtered.append(work)
-            
-        return filtered
-    
-    def _post_filter_works_by_role(self, works: List[Dict], sub_config) -> List[Dict]:
-        """ 在获取番位后，根据主演配置对作品进行最终筛选。"""
-        config_main_role_only = sub_config.get('config_main_role_only', False)
+        # 筛选4：评分
+        if config_min_rating > 0:
+            vote_average = work.get('vote_average', 0.0)
+            is_new_movie = release_date_str >= grace_period_end_date_str
+            if not is_new_movie and vote_average < config_min_rating:
+                return False, f"评分过低 ({vote_average})"
         
-        # 如果用户没有勾选“只看主演”，直接返回所有作品，不做任何操作
-        if not config_main_role_only:
-            return works
+        # 筛选5：中文片名
+        title = work.get('title') or work.get('name', '')
+        if not chinese_char_regex.search(title):
+            return False, "缺少中文标题"
 
-        filtered = []
-        for work in works:
-            cast_order = work.get('order', 999) # 此时的 work 已经由 _enrich_works_with_order 处理过
+        # 筛选6：主演番位
+        if config_main_role_only:
+            cast_order = work.get('order', 999)
             if cast_order >= 3:
-                logger.trace(f"  ➜ 过滤非主演作品: '{work.get('title') or work.get('name')}' (番位: {cast_order} >= 3)")
-                continue
-            filtered.append(work)
-            
-        return filtered
+                return False, f"非主演 (番位: {cast_order+1})"
+
+        return True, None
 
     def _determine_media_status(self, work: Dict, emby_tmdb_ids: Set[str], today_str: str, old_status: Optional[str], session_subscribed_ids: Set[str]) -> Optional[MediaStatus]:
         """
@@ -348,7 +325,7 @@ class ActorSubscriptionProcessor:
         #    实际的订阅操作将由“智能订阅”任务或用户手动触发
         return MediaStatus.MISSING
 
-    def _prepare_media_dict(self, work: Dict, subscription_id: int, status: MediaStatus, emby_item_id: Optional[str] = None) -> Dict:
+    def _prepare_media_dict(self, work: Dict, subscription_id: int, status: MediaStatus, emby_item_id: Optional[str] = None, ignore_reason: Optional[str] = None) -> Dict:
         """根据作品信息和状态，准备用于插入数据库的字典。"""
         media_type_raw = work.get('media_type', 'movie' if 'title' in work else 'tv')
         media_type = MediaType.SERIES if media_type_raw == 'tv' else MediaType.MOVIE
@@ -365,7 +342,8 @@ class ActorSubscriptionProcessor:
             'release_date': release_date, 
             'poster_path': work.get('poster_path'),
             'status': status.value,
-            'emby_item_id': emby_item_id
+            'emby_item_id': emby_item_id,
+            'ignore_reason': ignore_reason
         }
 
     def _update_database_records(self, cursor, subscription_id: int, to_insert: List[Dict], to_update: List[Dict], to_delete_ids: List[int]):
@@ -373,11 +351,11 @@ class ActorSubscriptionProcessor:
         if to_insert:
             logger.info(f"  ➜ 新增 {len(to_insert)} 条作品记录。")
             sql_insert = (
-                "INSERT INTO tracked_actor_media (subscription_id, tmdb_media_id, media_type, title, release_date, poster_path, status, emby_item_id, last_updated_at) "
-                "VALUES (%s, %s, %s, %s, %s, %s, %s, %s, CURRENT_TIMESTAMP)"
+                "INSERT INTO tracked_actor_media (subscription_id, tmdb_media_id, media_type, title, release_date, poster_path, status, emby_item_id, ignore_reason, last_updated_at) "
+                "VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, CURRENT_TIMESTAMP)" 
             )
             insert_data = [
-                (d['subscription_id'], d['tmdb_media_id'], d['media_type'], d['title'], d['release_date'], d['poster_path'], d['status'], d['emby_item_id'])
+                (d['subscription_id'], d['tmdb_media_id'], d['media_type'], d['title'], d['release_date'], d['poster_path'], d['status'], d['emby_item_id'], d['ignore_reason']) 
                 for d in to_insert
             ]
             cursor.executemany(sql_insert, insert_data)

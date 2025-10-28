@@ -1,3 +1,4 @@
+<!-- src/components/modals/SubscriptionDetailsModal.vue -->
 <template>
   <n-modal
     :show="props.show"
@@ -187,53 +188,68 @@ const handleIgnore = async (mediaId, currentStatus) => {
   }
 };
 
-// ★★★ 将静态的 columns 定义改为动态创建的函数 ★★★
-const createColumns = () => [
-  {
-    title: '海报',
-    key: 'poster_path',
-    width: 65,
-    render(row) {
-      const url = row.poster_path ? `https://image.tmdb.org/t/p/w92${row.poster_path}` : 'https://via.placeholder.com/92x138.png?text=N/A';
-      return h(NImage, { src: url, width: "45", style: 'border-radius: 3px; display: block;' });
+const createColumns = () => {
+  // 先定义好基本上每个标签页都有的列
+  const columns = [
+    {
+      title: '海报',
+      key: 'poster_path',
+      width: 65,
+      render(row) {
+        const url = row.poster_path ? `https://image.tmdb.org/t/p/w92${row.poster_path}` : 'https://via.placeholder.com/92x138.png?text=N/A';
+        return h(NImage, { src: url, width: "45", style: 'border-radius: 3px; display: block;' });
+      }
+    },
+    { title: '标题', key: 'title', ellipsis: { tooltip: true } },
+    { 
+      title: '类型', 
+      key: 'media_type', 
+      width: 80,
+      render(row) {
+        const typeMap = { 'Series': '电视剧', 'Movie': '电影' };
+        return typeMap[row.media_type] || row.media_type;
+      }
+    },
+    {
+      title: '发行日期',
+      key: 'release_date',
+      width: 120,
+      render(row) {
+        if (!row.release_date) return '';
+        return new Date(row.release_date).toLocaleDateString('zh-CN');
+      }
+    },
+    {
+      title: '状态',
+      key: 'status',
+      width: 100,
+      render(row) {
+        const statusMap = {
+          'IN_LIBRARY': { type: 'success', text: '已入库' },
+          'SUBSCRIBED': { type: 'info', text: '已订阅' },
+          'PENDING_RELEASE': { type: 'default', text: '待发行' },
+          'MISSING': { type: 'warning', text: '缺失' },
+          'IGNORED': { type: 'default', text: '已忽略' },
+        };
+        const info = statusMap[row.status] || { type: 'error', text: '未知' };
+        return h(NTag, { type: info.type, size: 'small', round: true }, { default: () => info.text });
+      }
     }
-  },
-  { title: '标题', key: 'title', ellipsis: { tooltip: true } },
-  { 
-    title: '类型', 
-    key: 'media_type', 
-    width: 80,
-    render(row) {
-      const typeMap = { 'Series': '电视剧', 'Movie': '电影' };
-      return typeMap[row.media_type] || row.media_type;
-    }
-  },
-  {
-    title: '发行日期',
-    key: 'release_date',
-    width: 120,
-    render(row) {
-      if (!row.release_date) return '';
-      return new Date(row.release_date).toLocaleDateString('zh-CN');
-    }
-  },
-  {
-    title: '状态',
-    key: 'status',
-    width: 100,
-    render(row) {
-      const statusMap = {
-        'IN_LIBRARY': { type: 'success', text: '已入库' },
-        'SUBSCRIBED': { type: 'info', text: '已订阅' },
-        'PENDING_RELEASE': { type: 'default', text: '待发行' },
-        'MISSING': { type: 'warning', text: '缺失' },
-        'IGNORED': { type: 'default', text: '已忽略' },
-      };
-      const info = statusMap[row.status] || { type: 'error', text: '未知' };
-      return h(NTag, { type: info.type, size: 'small', round: true }, { default: () => info.text });
-    }
-  },
-  {
+  ];
+
+  // ★★★ 核心逻辑：只有在“已忽略”标签页，才把“忽略原因”这列加进去 ★★★
+  if (activeTab.value === 'ignored') {
+    columns.push({
+      title: '忽略原因',
+      key: 'ignore_reason',
+      width: 150,
+      ellipsis: { tooltip: true }
+      // 注意：这里不再需要 render 函数了，因为这列只在有内容时才显示
+    });
+  }
+
+  // 最后，把“操作”列加在末尾
+  columns.push({
     title: '操作',
     key: 'actions',
     width: 180,
@@ -263,21 +279,16 @@ const createColumns = () => [
         row.status === 'IN_LIBRARY' && 
         row.emby_item_id && 
         subscriptionData.value.emby_server_url &&
-        subscriptionData.value.emby_server_id // <-- 确保 server_id 也存在
+        subscriptionData.value.emby_server_id
       ) {
-        // ★★★ 核心修改：拼接包含 serverId 的标准 Emby Web URL ★★★
         const embyItemUrl = `${subscriptionData.value.emby_server_url}/web/index.html#!/item?id=${row.emby_item_id}&serverId=${subscriptionData.value.emby_server_id}`;
-
         buttons.push(h(
           NTooltip,
           { trigger: 'hover' },
           {
             trigger: () => h(
               'a',
-              {
-                href: embyItemUrl, // <--- 使用最终拼接好的 URL
-                target: '_blank',
-              },
+              { href: embyItemUrl, target: '_blank' },
               [h(NButton, { size: 'tiny', type: 'info', ghost: true }, { default: () => 'Emby' })]
             ),
             default: () => '在 Emby 中打开'
@@ -340,8 +351,10 @@ const createColumns = () => [
 
       return h(NSpace, null, { default: () => buttons });
     },
-  },
-];
+  });
+
+  return columns;
+};
 
 
 const fetchDetails = async (id) => {

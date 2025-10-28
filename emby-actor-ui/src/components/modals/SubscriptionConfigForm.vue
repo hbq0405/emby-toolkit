@@ -1,4 +1,4 @@
-<!-- src/components/modals/SubscriptionConfigForm.vue (防无限循环最终版) -->
+<!-- src/components/modals/SubscriptionConfigForm.vue -->
 <template>
   <n-form label-placement="left" label-width="auto" :model="localConfig">
     <n-form-item label="起始年份">

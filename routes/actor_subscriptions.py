@@ -268,13 +268,13 @@ def update_single_tracked_media_status(media_id):
     if not new_status:
         return jsonify({"error": "请求体中必须包含 'status' 字段"}), 400
     
-    # 为了安全，可以限制允许的状态
     allowed_statuses = ['MISSING', 'SUBSCRIBED', 'IGNORED']
     if new_status not in allowed_statuses:
         return jsonify({"error": f"无效的状态值 '{new_status}'"}), 400
 
     try:
-        success = actor_db.update_tracked_media_status(media_id, new_status)
+        # ▼▼▼ 就是这里，加上 reason="手动忽略" ▼▼▼
+        success = actor_db.update_tracked_media_status(media_id, new_status, reason="手动忽略")
         if success:
             return jsonify({"message": f"媒体项状态已成功更新为 '{new_status}'"})
         else:

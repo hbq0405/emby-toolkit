@@ -697,15 +697,23 @@ def get_tracked_media_by_id(media_id: int) -> Optional[Dict[str, Any]]:
         logger.error(f"  ➜ 获取已追踪媒体项 {media_id} 失败: {e}", exc_info=True)
         raise
 
-def update_tracked_media_status(media_id: int, new_status: str) -> bool:
-    """根据 tracked_actor_media 表的主键 ID 更新单个媒体项的状态。"""
+def update_tracked_media_status(media_id: int, new_status: str, reason: Optional[str] = None) -> bool:
+    """根据 tracked_actor_media 表的主键 ID 更新单个媒体项的状态，并可选择性记录原因。"""
     
     try:
         with get_db_connection() as conn:
             cursor = conn.cursor()
+            # 如果是忽略，则记录原因；否则（比如恢复时）清空原因
+            sql = """
+                UPDATE tracked_actor_media 
+                SET status = %s, 
+                    ignore_reason = CASE WHEN %s = 'IGNORED' THEN %s ELSE NULL END,
+                    last_updated_at = CURRENT_TIMESTAMP 
+                WHERE id = %s
+            """
             cursor.execute(
-                "UPDATE tracked_actor_media SET status = %s, last_updated_at = CURRENT_TIMESTAMP WHERE id = %s",
-                (new_status, media_id)
+                sql,
+                (new_status, new_status, reason, media_id)
             )
             conn.commit()
             return cursor.rowcount > 0
