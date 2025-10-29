@@ -70,6 +70,31 @@ def delete_cleanup_tasks():
         return jsonify({"message": f"成功删除 {deleted_count} 个任务。"}), 200
     except Exception as e:
         return jsonify({"error": f"删除任务时失败: {e}"}), 500
+
+@media_cleanup_bp.route('/api/cleanup/clear_all', methods=['POST'])
+@task_lock_required
+@processor_ready_required
+def clear_all_cleanup_tasks():
+    """一键执行所有媒体去重任务。"""
+    try:
+        # 1. 获取所有待处理的清理任务ID
+        all_pending_tasks = maintenance_db.get_all_cleanup_tasks()
+        task_ids = [task['id'] for task in all_pending_tasks]
+
+        if not task_ids:
+            return jsonify({"message": "没有发现待处理的清理任务，无需执行。"}), 200
+
+        # 2. 提交任务到后台执行
+        task_manager.submit_task(
+            task_execute_cleanup,
+            f"一键执行所有 {len(task_ids)} 项媒体去重",
+            'media',
+            task_ids
+        )
+        return jsonify({"message": f"一键执行所有 {len(task_ids)} 项清理任务已提交到后台。"}), 202
+    except Exception as e:
+        logger.error(f"一键执行所有清理任务时失败: {e}", exc_info=True)
+        return jsonify({"error": f"一键执行所有清理任务失败: {e}"}), 500
     
 @media_cleanup_bp.route('/api/cleanup/rules', methods=['GET'])
 def get_cleanup_rules():
@@ -112,15 +137,29 @@ def get_cleanup_rules():
                 default_priority = default_rules_map['effect']['priority']
 
                 # 创建一个最终的优先级列表，先放入用户已经保存并排序好的项
-                final_priority = list(saved_priority)
-                # 创建一个集合用于快速判断是否存在，忽略大小写
-                saved_priority_set = set(p.lower() for p in saved_priority)
+                final_priority = []
+                # 创建一个集合用于快速判断是否存在，并统一标准化 'dovi_other'
+                saved_priority_set = set()
+
+                for p_item in saved_priority:
+                    p_lower = str(p_item).lower().replace(' ', '_')
+                    # 统一标准化 'dovi_other' 的各种变体，包括 'dovi_(other)'
+                    if p_lower in ['dovi', 'dovi_other', 'dovi(other)', 'dovi_(other)']:
+                        p_lower = 'dovi_other'
+                    
+                    if p_lower not in saved_priority_set:
+                        final_priority.append(p_lower)
+                        saved_priority_set.add(p_lower)
+
+                # 获取代码中定义的最新的完整优先级
+                default_priority = default_rules_map['effect']['priority']
 
                 # 遍历最新的默认列表，将用户没有的“新”选项追加到末尾
                 for new_item in default_priority:
-                    if new_item.lower() not in saved_priority_set:
+                    if new_item not in saved_priority_set: # new_item 已经是标准化的
                         final_priority.append(new_item)
-                
+                        saved_priority_set.add(new_item) # 添加到集合以防止重复
+
                 # 用升级后的完整列表替换掉旧的列表
                 merged_rule['priority'] = final_priority
             

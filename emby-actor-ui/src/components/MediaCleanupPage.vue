@@ -11,9 +11,9 @@
         </n-space>
         </template>
         <n-alert title="操作提示" type="warning" style="margin-top: 24px;">
-        本模块用于查找并清理媒体库中的“重复项”问题（多个独立的媒体项指向了同一个电影/剧集）。<br />
-        如果你的重复媒体被神医插件合并，请先使用“神医”插件的“一键拆分多版本”功能，再重新扫描。<br />
-        **所有清理操作都会从 Emby 和硬盘中永久删除文件，是高危操作，请谨慎使用！**
+          <li>本模块用于查找并清理媒体库中的多版本（一个媒体项有多个版本）和重复项（多个独立的媒体项指向了同一个电影/剧集）。</li>
+          <li>首先按需配置清理规则，扫描的时候会自动标记出保留的唯一版本，其他所有版本会标记为待清理。</li>
+          <li>扫描结束后，刷新本页即可展示待清理媒体项。可多选批量清理，也可以一键清理所有。</li>
         </n-alert>
         <template #extra>
           <n-space>
@@ -22,10 +22,19 @@
               :options="batchActions"
               @select="handleBatchAction"
             >
-              <n-button type="error" :disabled="selectedTasks.size === 0">
-                批量操作 ({{ selectedTasks.size }})
+              <n-button type="error" :disabled="selectedSeriesNames.length === 0">
+                批量操作 ({{ selectedSeriesNames.length }})
               </n-button>
             </n-dropdown>
+
+            <n-button 
+              type="warning" 
+              @click="handleClearAllTasks" 
+              :disabled="allTasks.length === 0"
+            >
+              <template #icon><n-icon :component="DeleteIcon" /></template>
+              一键清理
+            </n-button>
             
             <n-button @click="showSettingsModal = true">
               <template #icon><n-icon :component="SettingsIcon" /></template>
@@ -47,13 +56,13 @@
 
       <div v-if="isLoading" class="center-container"><n-spin size="large" /></div>
       <div v-else-if="error" class="center-container"><n-alert title="加载错误" type="error">{{ error }}</n-alert></div>
-      <div v-else-if="allTasks.length > 0">
+      <div v-else-if="groupedTasks.length > 0">
         <n-data-table
-          :columns="columns"
-          :data="allTasks"
+          :columns="seriesColumns"
+          :data="groupedTasks"
           :pagination="pagination"
-          :row-key="row => row.id"
-          v-model:checked-row-keys="selectedTaskIds"
+          :row-key="row => `${row.isMovie ? 'movie' : 'series'}-${row.seriesName}`"
+          v-model:checked-row-keys="selectedSeriesNames"
         />
       </div>
       <div v-else class="center-container">
@@ -87,7 +96,9 @@ import {
   ScanCircleOutline as ScanIcon, 
   TrashBinOutline as DeleteIcon, 
   CheckmarkCircleOutline as KeepIcon,
-  SettingsOutline as SettingsIcon
+  SettingsOutline as SettingsIcon,
+  TvOutline as SeriesIcon,
+  FilmOutline as MovieIcon
 } from '@vicons/ionicons5';
 import MediaCleanupSettingsPage from './settings/MediaCleanupSettingsPage.vue';
 
@@ -100,10 +111,21 @@ const isLoading = ref(true);
 const error = ref(null);
 const selectedTasks = ref(new Set());
 const showSettingsModal = ref(false);
+const selectedSeriesNames = ref([]); // 存储的是 mapKey
 
-const selectedTaskIds = computed({
-  get: () => Array.from(selectedTasks.value),
-  set: (keys) => { selectedTasks.value = new Set(keys); }
+const selectedTaskIds = computed(() => {
+  const ids = [];
+  const selectedKeysSet = new Set(selectedSeriesNames.value); // 现在存储的是 mapKey
+  
+  groupedTasks.value.forEach(group => {
+    const groupKey = `${group.isMovie ? 'movie' : 'series'}-${group.seriesName}`;
+    if (selectedKeysSet.has(groupKey)) {
+      group.episodes.forEach(task => {
+        ids.push(task.id);
+      });
+    }
+  });
+  return ids;
 });
 
 const isTaskRunning = (taskName) => props.taskStatus.is_running && props.taskStatus.current_action.includes(taskName);
@@ -111,7 +133,7 @@ const isTaskRunning = (taskName) => props.taskStatus.is_running && props.taskSta
 const fetchData = async () => {
   isLoading.value = true;
   error.value = null;
-  selectedTasks.value.clear();
+  selectedSeriesNames.value = []; // 清空勾选
   try {
     const response = await axios.get('/api/cleanup/tasks');
     allTasks.value = response.data;
@@ -141,14 +163,217 @@ const triggerScan = () => {
   });
 };
 
+const groupedTasks = computed(() => {
+  const seriesMap = new Map();
+
+  allTasks.value.forEach(task => {
+    const itemType = task.item_type ? String(task.item_type).toLowerCase() : '';
+    let currentSeriesName;
+    let isCurrentTaskMovie = false;
+    let mapKey;
+
+    // 检查 itemType 是否包含 'movie' 或 '电影' 字符串，以更健壮地识别电影
+    if (itemType.includes('movie') || itemType.includes('电影')) {
+      currentSeriesName = task.item_name;
+      isCurrentTaskMovie = true;
+      mapKey = `movie-${currentSeriesName}`; // 使用前缀区分电影
+    } else { // 默认视为剧集
+      const seriesNameMatch = task.item_name.match(/^(.*)\sS\d{2}E\d{2}/);
+      currentSeriesName = seriesNameMatch ? seriesNameMatch[1] : task.item_name;
+      mapKey = `series-${currentSeriesName}`; // 使用前缀区分剧集
+    }
+
+    if (!seriesMap.has(mapKey)) {
+      seriesMap.set(mapKey, {
+        seriesName: currentSeriesName,
+        isMovie: isCurrentTaskMovie,
+        episodes: []
+      });
+    }
+    // 确保 isMovie 属性的正确性，如果当前任务是电影，则强制设置为电影
+    if (isCurrentTaskMovie) {
+        seriesMap.get(mapKey).isMovie = true;
+    }
+    seriesMap.get(mapKey).episodes.push(task);
+  });
+
+  return Array.from(seriesMap.values());
+});
+
+// --- 重新定义表格列 ---
+
+// 内层展开表格的列定义
+const episodeColumns = [
+  {
+    title: '媒体项',
+    key: 'item_name',
+    render(row) {
+      const episodeNameMatch = row.item_name.match(/(S\d{2}E\d{2}.*)/);
+      const displayName = episodeNameMatch ? episodeNameMatch[1] : row.item_name;
+      
+      const issueType = row.task_type === 'Duplicate' ? '重复项' : '多版本';
+      const tagType = row.task_type === 'Duplicate' ? 'error' : 'info';
+
+      return h('div', { style: 'display: flex; align-items: center; gap: 8px;' }, [
+        h(NTag, {
+            type: tagType,
+            bordered: false,
+            size: 'small'
+        }, { default: () => issueType }),
+        h('span', displayName)
+      ]);
+    }
+  },
+  {
+    title: '版本详情',
+    key: 'versions_info_json',
+    // ★★★ 把原来那个功能完备的 render 函数完整地复制到这里 ★★★
+    render(row) {
+      const versions = row.versions_info_json || [];
+      
+      const getVersionDisplayInfo = (v) => {
+        return {
+          resolution: v.resolution || 'Unknown',
+          quality: (v.quality || 'Unknown').toUpperCase(),
+          effect: formatEffectTagForDisplay(v.effect),
+          size: formatBytes(v.filesize || 0)
+        };
+      };
+
+      const sortedVersions = [...versions].sort((a, b) => {
+        if (a.id === row.best_version_id) return -1;
+        if (b.id === row.best_version_id) return 1;
+        return 0;
+      });
+
+      return h(NSpace, { vertical: true, size: 'small' }, {
+        default: () => sortedVersions.map(v => {
+          const isBest = v.id === row.best_version_id;
+          const icon = isBest ? KeepIcon : DeleteIcon;
+          const iconColor = isBest ? 'var(--n-success-color)' : 'var(--n-error-color)';
+          const tooltipText = isBest ? '保留此版本' : '删除此版本';
+          const displayInfo = getVersionDisplayInfo(v);
+          
+          return h(NTooltip, null, {
+            trigger: () => h('div', { style: 'display: flex; align-items: center; gap: 8px;' }, [
+              h(NIcon, { component: icon, color: iconColor, size: 16 }),
+              h(NSpace, { size: 'small' }, {
+                default: () => [
+                  h(NTag, { size: 'small', bordered: false }, { default: () => displayInfo.resolution }),
+                  h(NTag, { size: 'small', bordered: false, type: 'info' }, { default: () => displayInfo.quality }),
+                  h(NTag, { size: 'small', bordered: false, type: 'warning' }, { default: () => displayInfo.effect }),
+                  h(NTag, { size: 'small', bordered: false, type: 'success' }, { default: () => displayInfo.size }),
+                ]
+              }),
+              // 注意：这里可能需要从 v.Path 获取路径，如果你的数据结构是这样的话
+              h(NText, { style: `font-weight: ${isBest ? 'bold' : 'normal'}; margin-left: 8px;` }, { 
+                default: () => v.Path || v.path 
+              })
+            ]),
+            default: () => tooltipText
+          });
+        })
+      });
+    }
+  }
+];
+
+// 外层主表格的列定义
+const seriesColumns = computed(() => [
+  { type: 'selection' },
+  { 
+    type: 'expand',
+    expandable: (rowData) => !rowData.isMovie, // 电影行不可展开
+    renderExpand: (rowData) => {
+      return h(NDataTable, {
+        columns: episodeColumns,
+        data: rowData.episodes,
+        size: 'small',
+        bordered: false,
+        rowKey: row => row.id
+      });
+    }
+  },
+  {
+    title: '剧集 / 电影',
+    key: 'seriesName',
+    render(row) {
+      const iconComponent = row.isMovie ? MovieIcon : SeriesIcon;
+      return h(NSpace, { align: 'center' }, {
+        default: () => [
+          h(NIcon, { component: iconComponent, size: 20 }),
+          h('strong', row.seriesName),
+          h(NTag, { type: 'info', round: true, size: 'small' }, { default: () => `${row.episodes.length} 项` })
+        ]
+      });
+    }
+  },
+  {
+    title: '版本详情',
+    key: 'movieVersionsInfo', // 新增一个key
+    render(row) {
+      if (!row.isMovie || !row.episodes || row.episodes.length === 0) {
+        return null; // 如果不是电影或者没有版本信息，则不显示
+      }
+
+      // 电影只有一个“剧集”项，直接取第一个
+      const movieTask = row.episodes[0]; 
+      const versions = movieTask.versions_info_json || [];
+      
+      const getVersionDisplayInfo = (v) => {
+        return {
+          resolution: v.resolution || 'Unknown',
+          quality: (v.quality || 'Unknown').toUpperCase(),
+          effect: formatEffectTagForDisplay(v.effect),
+          size: formatBytes(v.filesize || 0)
+        };
+      };
+
+      const sortedVersions = [...versions].sort((a, b) => {
+        if (a.id === movieTask.best_version_id) return -1;
+        if (b.id === movieTask.best_version_id) return 1;
+        return 0;
+      });
+
+      return h(NSpace, { vertical: true, size: 'small' }, {
+        default: () => sortedVersions.map(v => {
+          const isBest = v.id === movieTask.best_version_id;
+          const icon = isBest ? KeepIcon : DeleteIcon;
+          const iconColor = isBest ? 'var(--n-success-color)' : 'var(--n-error-color)';
+          const tooltipText = isBest ? '保留此版本' : '删除此版本';
+          const displayInfo = getVersionDisplayInfo(v);
+          
+          return h(NTooltip, null, {
+            trigger: () => h('div', { style: 'display: flex; align-items: center; gap: 8px;' }, [
+              h(NIcon, { component: icon, color: iconColor, size: 16 }),
+              h(NSpace, { size: 'small' }, {
+                default: () => [
+                  h(NTag, { size: 'small', bordered: false }, { default: () => displayInfo.resolution }),
+                  h(NTag, { size: 'small', bordered: false, type: 'info' }, { default: () => displayInfo.quality }),
+                  h(NTag, { size: 'small', bordered: false, type: 'warning' }, { default: () => displayInfo.effect }),
+                  h(NTag, { size: 'small', bordered: false, type: 'success' }, { default: () => displayInfo.size }),
+                ]
+              }),
+              h(NText, { style: `font-weight: ${isBest ? 'bold' : 'normal'}; margin-left: 8px;` }, { 
+                default: () => v.Path || v.path 
+              })
+            ]),
+            default: () => tooltipText
+          });
+        })
+      });
+    }
+  }
+]);
+
 const batchActions = computed(() => [
-  { label: `执行清理 (${selectedTasks.value.size}项)`, key: 'execute', props: { type: 'error' } },
-  { label: `忽略 (${selectedTasks.value.size}项)`, key: 'ignore' },
-  { label: `从列表移除 (${selectedTasks.value.size}项)`, key: 'delete' }
+  { label: `执行清理 (${selectedSeriesNames.value.length}项)`, key: 'execute', props: { type: 'error' } },
+  { label: `忽略 (${selectedSeriesNames.value.length}项)`, key: 'ignore' },
+  { label: `从列表移除 (${selectedSeriesNames.value.length}项)`, key: 'delete' }
 ]);
 
 const handleBatchAction = (key) => {
-  const ids = Array.from(selectedTasks.value);
+  const ids = selectedTaskIds.value; // 使用新的计算属性
   if (ids.length === 0) return;
 
   if (key === 'execute') {
@@ -170,8 +395,7 @@ const executeCleanup = async (ids) => {
   try {
     await axios.post('/api/cleanup/execute', { task_ids: ids });
     message.success('清理任务已提交到后台执行。');
-    allTasks.value = allTasks.value.filter(task => !ids.includes(task.id));
-    selectedTasks.value.clear();
+    fetchData(); // 操作成功后，重新加载数据，这是最简单可靠的方式
   } catch (err) {
     message.error(err.response?.data?.error || '提交清理任务失败。');
   }
@@ -181,8 +405,7 @@ const ignoreTasks = async (ids) => {
   try {
     const response = await axios.post('/api/cleanup/ignore', { task_ids: ids });
     message.success(response.data.message);
-    allTasks.value = allTasks.value.filter(task => !ids.includes(task.id));
-    selectedTasks.value.clear();
+    fetchData(); // 重新加载数据
   } catch (err) {
     message.error(err.response?.data?.error || '忽略任务失败。');
   }
@@ -192,11 +415,28 @@ const deleteTasks = async (ids) => {
   try {
     const response = await axios.post('/api/cleanup/delete', { task_ids: ids });
     message.success(response.data.message);
-    allTasks.value = allTasks.value.filter(task => !ids.includes(task.id));
-    selectedTasks.value.clear();
+    fetchData(); // 重新加载数据
   } catch (err) {
     message.error(err.response?.data?.error || '删除任务失败。');
   }
+};
+
+const handleClearAllTasks = () => {
+  dialog.warning({
+    title: '高危操作确认',
+    content: '确定要一键清理所有重复项任务吗？此操作将永久删除多余的媒体文件，且不可恢复！',
+    positiveText: '我确定，一键清理！',
+    negativeText: '取消',
+    onPositiveClick: async () => {
+      try {
+        const response = await axios.post('/api/cleanup/clear_all');
+        message.success(response.data.message);
+        fetchData(); // 清除成功后，重新加载数据
+      } catch (err) {
+        message.error(err.response?.data?.error || '一键清理任务失败。');
+      }
+    }
+  });
 };
 
 const formatBytes = (bytes, decimals = 2) => {

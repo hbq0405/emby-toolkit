@@ -35,12 +35,12 @@ def batch_insert_cleanup_tasks(tasks: List[Dict[str, Any]]):
     try:
         with get_db_connection() as conn:
             cursor = conn.cursor()
-            logger.warning("正在清空旧的媒体去重任务列表...")
+            logger.warning("  ➜ 正在清空旧的媒体去重任务列表...")
             cursor.execute("TRUNCATE TABLE media_cleanup_tasks RESTART IDENTITY;")
 
             sql = """
                 INSERT INTO media_cleanup_tasks (
-                    task_type, tmdb_id, item_name, versions_info_json, 
+                    task_type, tmdb_id, item_name, item_type, versions_info_json, 
                     status, best_version_id, created_at
                 ) VALUES %s
             """
@@ -50,6 +50,7 @@ def batch_insert_cleanup_tasks(tasks: List[Dict[str, Any]]):
                     task.get('task_type'),
                     task.get('tmdb_id'),
                     task.get('item_name'),
+                    task.get('item_type'), # 修正 item_type 的位置
                     Json(task.get('versions_info_json')),
                     task.get('status', 'pending'),
                     task.get('best_version_id'),
@@ -59,10 +60,10 @@ def batch_insert_cleanup_tasks(tasks: List[Dict[str, Any]]):
             
             execute_values(cursor, sql, values_to_insert, page_size=500)
             conn.commit()
-            logger.info(f"DB: 成功批量插入 {len(tasks)} 条新的媒体去重任务。")
+            logger.info(f"  ➜ 成功批量插入 {len(tasks)} 条新的媒体去重任务。")
 
     except Exception as e:
-        logger.error(f"DB: 批量插入媒体去重任务时失败: {e}", exc_info=True)
+        logger.error(f"  ➜ 批量插入媒体去重任务时失败: {e}", exc_info=True)
         raise
 
 def get_cleanup_tasks_by_ids(task_ids: List[int]) -> List[Dict[str, Any]]:

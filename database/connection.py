@@ -345,6 +345,7 @@ def init_db():
                         task_type TEXT NOT NULL, -- 'multi_version' or 'duplicate'
                         tmdb_id TEXT,
                         item_name TEXT,
+                        item_type TEXT, -- 新增 item_type 列
                         versions_info_json JSONB,
                         status TEXT DEFAULT 'pending', -- 'pending', 'processed', 'ignored'
                         best_version_id TEXT,
@@ -485,6 +486,9 @@ def init_db():
                         },
                         'resubscribe_rules': {
                             "resubscribe_subtitle_effect_only": "BOOLEAN DEFAULT FALSE"
+                        },
+                        'media_cleanup_tasks': { # 添加 media_cleanup_tasks 的升级
+                            "item_type": "TEXT"
                         },
                         'custom_collections': {
                             "generated_emby_ids_json": "JSONB DEFAULT '[]'::jsonb NOT NULL",

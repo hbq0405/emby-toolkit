@@ -100,7 +100,12 @@ const getRuleDescription = (id) => RULE_METADATA[id]?.description || '未知规�
 // ★★★ 核心修改 2/3: 彻底重写特效标签的“翻译”函数 ★★★
 const formatEffectPriority = (priorityArray, to = 'display') => {
     return priorityArray.map(p => {
-        const p_lower = String(p).toLowerCase().replace(/\s/g, '_'); // 标准化输入
+        let p_lower = String(p).toLowerCase().replace(/\s/g, '_'); // 标准化输入
+
+        // 进一步标准化 'dovi_other' 的各种变体
+        if (p_lower === 'dovi' || p_lower === 'dovi_other' || p_lower === 'dovi(other)') {
+            p_lower = 'dovi_other';
+        }
         
         if (to === 'display') { // 转换为用户友好的显示文本
             if (p_lower === 'dovi_p8') return 'DoVi P8';
@@ -108,9 +113,19 @@ const formatEffectPriority = (priorityArray, to = 'display') => {
             if (p_lower === 'dovi_p5') return 'DoVi P5';
             if (p_lower === 'dovi_other') return 'DoVi (Other)';
             if (p_lower === 'hdr10+') return 'HDR10+';
-            return p_lower.toUpperCase();
+            if (p_lower === 'hdr') return 'HDR';
+            if (p_lower === 'sdr') return 'SDR';
+            return p_lower.toUpperCase(); // 作为最后的通用回退
         } else { // (to === 'save') 转换为后端需要的存储格式
-            return p_lower;
+            // 确保保存时也进行标准化，以防前端有非标准输入
+            if (p_lower === 'dovi_p8') return 'dovi_p8';
+            if (p_lower === 'dovi_p7') return 'dovi_p7';
+            if (p_lower === 'dovi_p5') return 'dovi_p5';
+            if (p_lower === 'dovi_other') return 'dovi_other';
+            if (p_lower === 'hdr10+') return 'hdr10+';
+            if (p_lower === 'hdr') return 'hdr';
+            if (p_lower === 'sdr') return 'sdr';
+            return p_lower; // 如果是其他未知标签，则原样保存
         }
     });
 };
