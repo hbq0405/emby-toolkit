@@ -80,8 +80,12 @@ watch(() => props.modelValue, (parentValue) => {
   // 只有当父组件的数据和本地数据不一致时，才进行更新
   // 使用 JSON.stringify 进行简单的深比较，足以应对此场景
   if (parentValue && JSON.stringify(parentValue) !== JSON.stringify(localConfig.value)) {
-    console.log('Parent data changed, updating local component state.');
-    localConfig.value = JSON.parse(JSON.stringify(parentValue)); // 深拷贝
+    const newConfig = JSON.parse(JSON.stringify(parentValue)); // 深拷贝
+    // 确保 min_rating 始终为数字，如果父组件未提供或为 null/undefined，则默认为 0
+    if (newConfig.min_rating === null || newConfig.min_rating === undefined) {
+      newConfig.min_rating = 0;
+    }
+    localConfig.value = newConfig;
   }
 }, {
   deep: true,
@@ -93,7 +97,6 @@ watch(localConfig, (localValue) => {
   // 只有当本地数据和父组件数据不一致时，才通知父组件
   // 这可以防止因父组件更新而触发的“回声”
   if (localValue && JSON.stringify(localValue) !== JSON.stringify(props.modelValue)) {
-    console.log('Local data changed by user, emitting update to parent.');
     emit('update:modelValue', localValue);
   }
 }, {

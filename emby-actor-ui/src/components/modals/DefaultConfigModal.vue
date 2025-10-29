@@ -65,6 +65,7 @@ const handleSave = async () => {
     // 假设这是保存默认配置的 API
     await axios.post('/api/actor-subscriptions/default-config', config.value);
     message.success('默认配置已保存！');
+    await fetchDefaultConfig();
     emit('update:show', false);
   } catch (error) {
     console.error("保存默认订阅配置失败:", error);
