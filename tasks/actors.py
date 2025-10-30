@@ -99,36 +99,77 @@ def task_enrich_aliases(processor, force_full_update: bool = False):
 
 # --- 扫描单个演员订阅的所有作品 ---
 def task_scan_actor_media(processor, subscription_id: int):
-    """【新】后台任务：扫描单个演员订阅的所有作品。"""
+    """
+    手动触发对单个演员订阅进行全量作品扫描的任务。
+    """
+    from actor_subscription_processor import ActorSubscriptionProcessor
+
     logger.trace(f"手动刷新任务(ID: {subscription_id})：开始准备Emby媒体库数据...")
     
-    # ★★★ 核心修正：初始化一个字典 (dict)，而不是集合 (set) ★★★
-    emby_media_map = {}
     try:
-        # 从 processor 或全局配置中获取 Emby 连接信息
-        config = processor.config # 假设 processor 对象中存有配置
+        config = processor.config
         emby_url = config.get('emby_server_url')
         emby_api_key = config.get('emby_api_key')
         emby_user_id = config.get('emby_user_id')
 
+        sub_processor = ActorSubscriptionProcessor(config)
+
+        # 1. 完整地从Emby获取全量媒体信息，并构建所有核心映射表
+        task_manager.update_status_from_thread(10, "正在从Emby获取媒体库及剧集结构...")
+        
+        emby_media_map: dict = {}
+        emby_series_seasons_map: dict = {}
+        emby_series_name_to_tmdb_id_map: dict = {} # 新增的剧名映射表
+
         all_libraries = emby_handler.get_emby_libraries(emby_url, emby_api_key, emby_user_id)
         library_ids_to_scan = [lib['Id'] for lib in all_libraries if lib.get('CollectionType') in ['movies', 'tvshows']]
-        emby_items = emby_handler.get_emby_library_items(base_url=emby_url, api_key=emby_api_key, user_id=emby_user_id, library_ids=library_ids_to_scan, media_type_filter="Movie,Series")
         
-        # ★★★ 核心修正：创建 TMDb ID -> Emby Item ID 的映射字典 ★★★
-        emby_media_map = {
-            item['ProviderIds']['Tmdb']: item['Id']
-            for item in emby_items
-            if item.get('ProviderIds', {}).get('Tmdb')
-        }
-        logger.debug(f"手动刷新任务：已从 Emby 获取 {len(emby_media_map)} 个媒体ID映射。")
+        emby_items = emby_handler.get_emby_library_items(
+            base_url=emby_url, api_key=emby_api_key, user_id=emby_user_id,
+            library_ids=library_ids_to_scan, media_type_filter="Movie,Series"
+        )
+        
+        series_to_check = []
+        if emby_items:
+            for item in emby_items:
+                tmdb_id = item.get('ProviderIds', {}).get('Tmdb')
+                if tmdb_id:
+                    emby_media_map[tmdb_id] = item['Id']
+                    if item.get('Type') == 'Series':
+                        series_to_check.append({'tmdb_id': tmdb_id, 'emby_id': item['Id'], 'name': item.get('Name', '')})
+                        # ▼▼▼ 核心补充：构建剧名到TMDb ID的映射 ▼▼▼
+                        normalized_name = utils.normalize_name_for_matching(item.get('Name', ''))
+                        if normalized_name:
+                            emby_series_name_to_tmdb_id_map[normalized_name] = tmdb_id
+
+        if series_to_check:
+            for series in series_to_check:
+                seasons = emby_handler.get_series_children(
+                    series_id=series['emby_id'], base_url=emby_url, api_key=emby_api_key,
+                    user_id=emby_user_id, include_item_types="Season", fields="IndexNumber"
+                )
+                if seasons:
+                    season_numbers = {s.get('IndexNumber') for s in seasons if s.get('IndexNumber') is not None}
+                    if season_numbers:
+                        emby_series_seasons_map[series['tmdb_id']] = season_numbers
+        
+        logger.debug(f"手动刷新任务：已从 Emby 获取 {len(emby_media_map)} 个媒体ID，{len(emby_series_seasons_map)} 个剧集季，以及 {len(emby_series_name_to_tmdb_id_map)} 个剧名映射。")
+
+        # 2. 执行扫描，传入所有必需的参数
+        task_manager.update_status_from_thread(30, "正在扫描演员作品...")
+        
+        # ▼▼▼ 核心修正：使用正确的、完整的参数列表调用函数 ▼▼▼
+        sub_processor.run_full_scan_for_actor(
+            subscription_id=subscription_id,
+            emby_media_map=emby_media_map,
+            emby_series_seasons_map=emby_series_seasons_map,
+            emby_series_name_to_tmdb_id_map=emby_series_name_to_tmdb_id_map
+        )
+        task_manager.update_status_from_thread(100, "扫描完成。")
 
     except Exception as e:
-        logger.error(f"手动刷新任务：在获取Emby媒体库信息时失败: {e}", exc_info=True)
-        # 获取失败时，传递一个空字典，让扫描逻辑继续
-
-    # ★★★ 核心修正：现在，带着准备好的 emby_media_map (字典) 调用函数 ★★★
-    processor.run_full_scan_for_actor(subscription_id, emby_media_map)
+        logger.error(f"手动刷新任务：在执行时失败: {e}", exc_info=True)
+        task_manager.update_status_from_thread(-1, f"错误: {e}")
 
 # --- 演员订阅 ---
 def task_process_actor_subscriptions(processor):

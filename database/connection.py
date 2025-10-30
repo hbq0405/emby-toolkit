@@ -260,7 +260,8 @@ def init_db():
                         last_checked_at TIMESTAMP WITH TIME ZONE,
                         added_at TIMESTAMP WITH TIME ZONE DEFAULT NOW(),
                         config_min_rating REAL DEFAULT 6.0,
-                        config_main_role_only BOOLEAN NOT NULL DEFAULT FALSE
+                        config_main_role_only BOOLEAN NOT NULL DEFAULT FALSE,
+                        config_min_vote_count INTEGER NOT NULL DEFAULT 10
                     )
                 """)
                 cursor.execute("CREATE INDEX IF NOT EXISTS idx_as_status ON actor_subscriptions (status)")
@@ -502,7 +503,8 @@ def init_db():
                             "template_id": "INTEGER"
                         },
                         'actor_subscriptions': {
-                            "config_main_role_only": "BOOLEAN NOT NULL DEFAULT FALSE"
+                            "config_main_role_only": "BOOLEAN NOT NULL DEFAULT FALSE",
+                            "config_min_vote_count": "INTEGER NOT NULL DEFAULT 10"
                         }
                     }
 

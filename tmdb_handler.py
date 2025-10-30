@@ -451,6 +451,13 @@ def search_media(query: str, api_key: str, item_type: str = 'movie', year: Optio
         data = _tmdb_request(endpoint, api_key, params)
 
     return data.get("results") if data else None
+# --- 搜索电视剧 ---
+def search_tv_shows(query: str, api_key: str, year: Optional[str] = None) -> Optional[List[Dict[str, Any]]]:
+    """
+    【新增】通过名字在 TMDb 上搜索电视剧。
+    这是 search_media 的一个便捷封装。
+    """
+    return search_media(query=query, api_key=api_key, item_type='tv', year=year)
 # --- 搜索演员 ---
 def search_person_tmdb(query: str, api_key: str) -> Optional[List[Dict[str, Any]]]:
     """

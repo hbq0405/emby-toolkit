@@ -19,6 +19,18 @@ except ImportError:
         # 如果库不存在，这个模拟函数将导致中文名无法转换为拼音进行匹配
         return []
 
+def normalize_full_width_chars(text: str) -> str:
+    """将字符串中的全角字符（数字、字母、冒号）转换为半角。"""
+    if not text:
+        return ""
+    # 全角空格
+    text = text.replace('\u3000', ' ')
+    # 全角数字、字母、冒号的转换表
+    full_width = "０１２３４５６７８９ＡＢＣＤＥＦＧＨＩＪＫＬＭＮＯＰＱＲＳＴＵＶＷＸＹＺａｂｃｄｅｆｇｈｉｊｋｌｍｎｏｐｑｒｓｔｕｖｗｘｙｚ： "
+    half_width = "0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz: "
+    translation_table = str.maketrans(full_width, half_width)
+    return text.translate(translation_table)
+
 def contains_chinese(text: Optional[str]) -> bool:
     """检查字符串是否包含中文字符。"""
     if not text:

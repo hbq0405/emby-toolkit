@@ -72,7 +72,8 @@ def handle_default_actor_config():
                 "genres_include_json": default_config.get("genres_include_json", []),
                 "genres_exclude_json": default_config.get("genres_exclude_json", []),
                 "min_rating": default_config.get("min_rating", 0.0),
-                "main_role_only": default_config.get("main_role_only", False)
+                "main_role_only": default_config.get("main_role_only", False),
+                "min_vote_count": default_config.get("min_vote_count", 10)
             }
             return jsonify(final_config)
         except Exception as e:

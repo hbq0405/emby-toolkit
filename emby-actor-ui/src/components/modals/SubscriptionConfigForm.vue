@@ -33,7 +33,15 @@
       <n-input-number v-model:value="localConfig.min_rating" :min="0" :max="10" :step="0.1" style="width: 100%;" placeholder="0.0"/>
       <template #feedback>
         <n-text depth="3">
-          设置为 0 表示不筛选。系统将自动对发布未满6个月的新影片豁免此规则。
+          设置为 0 表示不筛选。
+        </n-text>
+      </template>
+    </n-form-item>
+    <n-form-item label="最低参评人数">
+      <n-input-number v-model:value="localConfig.min_vote_count" :min="0" placeholder="例如: 10" />
+      <template #feedback>
+        <n-text depth="3">
+          当作品的TMDb投票人数低于此值时，将自动豁免“最低评分”的筛选规则。
         </n-text>
       </template>
     </n-form-item>

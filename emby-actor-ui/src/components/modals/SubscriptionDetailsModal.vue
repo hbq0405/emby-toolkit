@@ -242,7 +242,7 @@ const createColumns = () => {
     columns.push({
       title: '忽略原因',
       key: 'ignore_reason',
-      width: 150,
+      width: 250,
       ellipsis: { tooltip: true }
       // 注意：这里不再需要 render 函数了，因为这列只在有内容时才显示
     });
@@ -395,7 +395,6 @@ const fetchDetails = async (id) => {
   }
 };
 
-// ... (您其他的 script setup 内容保持完全不变)
 const resetConfig = () => {
   if (!subscriptionData.value || !subscriptionData.value.config) return;
   const config = subscriptionData.value.config;
@@ -405,7 +404,8 @@ const resetConfig = () => {
     genres_include_json: config.genres_include_json || [],
     genres_exclude_json: config.genres_exclude_json || [],
     min_rating: config.min_rating,
-    main_role_only: config.main_role_only || false, // 新增：初始化 main_role_only
+    main_role_only: config.main_role_only || false,
+    min_vote_count: config.min_vote_count === undefined ? 10 : config.min_vote_count,
   };
 };
 

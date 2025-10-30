@@ -513,10 +513,10 @@ def get_single_subscription_details(subscription_id: int) -> Optional[Dict[str, 
                     "genres_include_json": sub_row.get('config_genres_include_json') or [],
                     "genres_exclude_json": sub_row.get('config_genres_exclude_json') or [],
                     "min_rating": float(sub_row.get('config_min_rating', 0.0)),
-                    "main_role_only": sub_row.get('config_main_role_only', False)
+                    "main_role_only": sub_row.get('config_main_role_only', False),
+                    "min_vote_count": sub_row.get('config_min_vote_count', 10)
                 },
                 "tracked_media": tracked_media,
-                # ★★★ 新增了这两个字段，供前端拼接URL ★★★
                 "emby_server_url": emby_url,
                 "emby_api_key_for_url": emby_api_key,
                 "emby_server_id": emby_server_id
@@ -554,6 +554,7 @@ def add_actor_subscription(tmdb_person_id: int, actor_name: str, profile_path: s
     genres_exclude = safe_json_dumps(config.get('genres_exclude_json', []))
     min_rating = config.get('min_rating', 6.0)
     main_role_only = config.get('main_role_only', False)
+    min_vote_count = config.get('min_vote_count', 10)
 
     try:
         with get_db_connection() as conn:
@@ -561,14 +562,13 @@ def add_actor_subscription(tmdb_person_id: int, actor_name: str, profile_path: s
             
             sql = """
                 INSERT INTO actor_subscriptions 
-                (tmdb_person_id, actor_name, profile_path, status, config_start_year, config_media_types, config_genres_include_json, config_genres_exclude_json, config_min_rating, config_main_role_only)
-                VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+                (tmdb_person_id, actor_name, profile_path, status, config_start_year, config_media_types, config_genres_include_json, config_genres_exclude_json, config_min_rating, config_main_role_only, config_min_vote_count) -- <--- 新增字段
+                VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s) -- <--- 增加占位符
                 RETURNING id
             """
-            
             cursor.execute(
                 sql,
-                (tmdb_person_id, actor_name, profile_path, 'active', start_year, media_types, genres_include, genres_exclude, min_rating, main_role_only)
+                (tmdb_person_id, actor_name, profile_path, 'active', start_year, media_types, genres_include, genres_exclude, min_rating, main_role_only, min_vote_count) # <--- 增加新值
             )
             
             result = cursor.fetchone()
@@ -587,85 +587,80 @@ def add_actor_subscription(tmdb_person_id: int, actor_name: str, profile_path: s
         raise
 
 def update_actor_subscription(subscription_id: int, data: dict) -> bool:
-    """【V11 - 配置变更重置版】更新订阅，并在配置变化时自动清理已忽略的记录以便重新评估。"""
+    """更新订阅，并在配置变化时自动清理已忽略的记录。"""
     logger.debug(f"  ➜ 准备更新订阅ID {subscription_id}，接收到的原始数据: {data}")
     try:
         with get_db_connection() as conn:
-            cursor = conn.cursor()
-            cursor.execute("SELECT * FROM actor_subscriptions WHERE id = %s", (subscription_id,))
-            current_sub = cursor.fetchone()
-            if not current_sub:
-                return False
+            with conn.cursor() as cursor:
+                # 步骤 1: 获取当前数据库中的订阅配置，作为基础
+                cursor.execute("SELECT * FROM actor_subscriptions WHERE id = %s", (subscription_id,))
+                current_sub = cursor.fetchone()
+                if not current_sub:
+                    return False
 
-            # 1. 将数据库中的当前配置作为基础
-            final_config = {
-                'status': current_sub['status'],
-                'start_year': current_sub['config_start_year'],
-                'min_rating': current_sub['config_min_rating'],
-                'media_types': [t.strip() for t in (current_sub.get('config_media_types') or '').split(',') if t.strip()],
-                'genres_include_json': current_sub.get('config_genres_include_json') or [],
-                'genres_exclude_json': current_sub.get('config_genres_exclude_json') or [],
-                'main_role_only': current_sub.get('config_main_role_only', False)
-            }
-            
-            # 记录旧配置的关键部分，用于判断是否需要重置
-            old_config_snapshot = {k: final_config[k] for k in ['start_year', 'min_rating', 'media_types', 'genres_include_json', 'genres_exclude_json', 'main_role_only']}
+                # 将数据库行转换为一个字典，方便操作
+                current_config = {
+                    'start_year': current_sub['config_start_year'],
+                    'min_rating': float(current_sub['config_min_rating']),
+                    'media_types': [t.strip() for t in (current_sub.get('config_media_types') or '').split(',') if t.strip()],
+                    'genres_include_json': current_sub.get('config_genres_include_json') or [],
+                    'genres_exclude_json': current_sub.get('config_genres_exclude_json') or [],
+                    'main_role_only': current_sub.get('config_main_role_only', False),
+                    # ▼▼▼ 核心：从数据库读取新增的字段 ▼▼▼
+                    'min_vote_count': current_sub.get('config_min_vote_count', 10)
+                }
+                
+                # 创建一个快照，用于稍后比较配置是否真的发生了变化
+                old_config_snapshot = current_config.copy()
 
-            # 2. 确定包含新配置的字典
-            incoming_config = data.get('config', data)
-            
-            # 3. 用传入的新值覆盖基础配置
-            if 'status' in data:
-                final_config['status'] = data['status']
-            if 'start_year' in incoming_config:
-                final_config['start_year'] = incoming_config['start_year']
-            if 'min_rating' in incoming_config:
-                final_config['min_rating'] = incoming_config['min_rating']
-            if 'media_types' in incoming_config and isinstance(incoming_config['media_types'], list):
-                final_config['media_types'] = incoming_config['media_types']
-            if 'genres_include_json' in incoming_config and isinstance(incoming_config['genres_include_json'], list):
-                final_config['genres_include_json'] = incoming_config['genres_include_json']
-            if 'genres_exclude_json' in incoming_config and isinstance(incoming_config['genres_exclude_json'], list):
-                final_config['genres_exclude_json'] = incoming_config['genres_exclude_json']
-            if 'main_role_only' in incoming_config:
-                final_config['main_role_only'] = bool(incoming_config.get('main_role_only'))
+                # 步骤 2: 获取从前端传来的新配置
+                # 前端可能把配置放在 'config' 键里，也可能直接放在顶层，这里做兼容
+                incoming_config = data.get('config', data)
 
-            # 4. 准备最终要写入数据库的格式化值
-            final_media_types_str = ','.join(final_config['media_types'])
-            final_genres_include_json = json.dumps(final_config['genres_include_json'], ensure_ascii=False)
-            final_genres_exclude_json = json.dumps(final_config['genres_exclude_json'], ensure_ascii=False)
+                # 步骤 3: 将新配置合并到当前配置中，新值会覆盖旧值
+                final_config = {**current_config, **incoming_config}
 
-            # 5. 执行更新
-            sql = """
-                UPDATE actor_subscriptions SET
-                status = %s, config_start_year = %s, config_media_types = %s, 
-                config_genres_include_json = %s, config_genres_exclude_json = %s, config_min_rating = %s,
-                config_main_role_only = %s
-                WHERE id = %s
-            """
-            params = (
-                final_config['status'], final_config['start_year'], final_media_types_str,
-                final_genres_include_json, final_genres_exclude_json, final_config['min_rating'],
-                final_config['main_role_only'], subscription_id
-            )
-            
-            cursor.execute(sql, params)
-            logger.info(f"  ➜ 成功更新订阅ID {subscription_id} 的配置。")
+                # 步骤 4: 准备最终要写入数据库的、格式化好的值
+                final_media_types_str = ','.join(final_config.get('media_types', []))
+                final_genres_include_json = json.dumps(final_config.get('genres_include_json', []), ensure_ascii=False)
+                final_genres_exclude_json = json.dumps(final_config.get('genres_exclude_json', []), ensure_ascii=False)
 
-            # ★★★ 核心逻辑：判断配置是否变更，如果变更则清理IGNORED记录 ★★★
-            new_config_snapshot = {k: final_config[k] for k in old_config_snapshot.keys()}
-            if new_config_snapshot != old_config_snapshot:
-                logger.info(f"  ➜ 检测到订阅ID {subscription_id} 的筛选配置发生变更，将清理历史忽略记录...")
-                cursor.execute(
-                    "DELETE FROM tracked_actor_media WHERE subscription_id = %s AND status = 'IGNORED'",
-                    (subscription_id,)
+                # 步骤 5: 准备并执行 SQL 更新语句
+                sql = """
+                    UPDATE actor_subscriptions SET
+                    status = %s, config_start_year = %s, config_media_types = %s, 
+                    config_genres_include_json = %s, config_genres_exclude_json = %s, config_min_rating = %s,
+                    config_main_role_only = %s, config_min_vote_count = %s
+                    WHERE id = %s
+                """
+                params = (
+                    data.get('status', current_sub['status']), 
+                    final_config['start_year'], 
+                    final_media_types_str,
+                    final_genres_include_json, 
+                    final_genres_exclude_json, 
+                    final_config['min_rating'],
+                    final_config['main_role_only'],
+                    final_config['min_vote_count'], 
+                    subscription_id
                 )
-                deleted_rows = cursor.rowcount
-                logger.info(f"  ➜ 成功清理 {deleted_rows} 条旧的'忽略'记录，下次刷新时将重新评估。")
-            
-            conn.commit()
-            return True
-            
+                
+                cursor.execute(sql, params)
+                logger.info(f"  ➜ 成功更新订阅ID {subscription_id} 的配置。")
+
+                # 步骤 6: 比较新旧配置，如果筛选条件变了，就清理掉旧的“忽略”记录
+                if final_config != old_config_snapshot:
+                    logger.info(f"  ➜ 检测到订阅ID {subscription_id} 的筛选配置发生变更，将清理历史忽略记录...")
+                    cursor.execute(
+                        "DELETE FROM tracked_actor_media WHERE subscription_id = %s AND status = 'IGNORED'",
+                        (subscription_id,)
+                    )
+                    deleted_rows = cursor.rowcount
+                    logger.info(f"  ➜ 成功清理 {deleted_rows} 条旧的'忽略'记录，下次刷新时将重新评估。")
+                
+                conn.commit()
+                return True
+                
     except Exception as e:
         logger.error(f"  ➜ 更新订阅 {subscription_id} 失败: {e}", exc_info=True)
         raise
