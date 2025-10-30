@@ -518,7 +518,7 @@ def emby_webhook():
                 except Exception:
                     # 如果获取失败，不影响主流程，日志中继续使用ID
                     pass
-                logger.info(f"  ➜ Webhook: 已更新用户 '{user_name_for_log}' 对项目 '{item_name_for_log}' 的状态 ({event_type})。")
+                logger.trace(f"  ➜ Webhook: 已更新用户 '{user_name_for_log}' 对项目 '{item_name_for_log}' 的状态 ({event_type})。")
                 return jsonify({"status": "user_data_updated"}), 200
             else:
                 logger.debug(f"  ➜ Webhook '{event_type}' 未包含可更新的用户数据，已忽略。")

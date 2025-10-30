@@ -890,7 +890,7 @@ def get_series_id_from_child_id(
         )
         series_name = series_details.get("Name") if series_details else None
         series_name_for_log = f"'{series_name}'" if series_name else "未知片名"
-        logger.info(f"  ➜ 媒体项 '{name_for_log}' 所属剧集为：{series_name_for_log}。")
+        logger.trace(f"  ➜ 媒体项 '{name_for_log}' 所属剧集为：{series_name_for_log}。")
         return str(series_id)
     
     logger.warning(f"  ➜ 媒体项 '{name_for_log}' (类型: {item_type}) 的详情中未找到 'SeriesId' 字段，无法确定所属剧集。")
