@@ -30,18 +30,24 @@
       />
     </n-form-item>
     <n-form-item label="最低评分">
-      <n-input-number v-model:value="localConfig.min_rating" :min="0" :max="10" :step="0.1" style="width: 100%;" placeholder="0.0"/>
+      <n-input-number v-model:value="localConfig.min_rating" :min="0" :max="10" :step="0.1" style="width: 200px;" />
       <template #feedback>
         <n-text depth="3">
-          设置为 0 表示不筛选。
+          设置为 0 表示不进行评分筛选。
         </n-text>
       </template>
     </n-form-item>
     <n-form-item label="最低参评人数">
-      <n-input-number v-model:value="localConfig.min_vote_count" :min="0" placeholder="例如: 10" />
+      <n-input-number 
+        v-model:value="localConfig.min_vote_count" 
+        :min="0" 
+        placeholder="例如: 10" 
+        style="width: 200px;"
+        :disabled="!localConfig.min_rating || localConfig.min_rating === 0"
+      />
       <template #feedback>
         <n-text depth="3">
-          当作品的TMDb投票人数低于此值时，将自动豁免“最低评分”的筛选规则。
+          当作品的TMDb投票人数低于此值时，将豁免“最低评分”规则。此项仅在最低评分 > 0 时生效。
         </n-text>
       </template>
     </n-form-item>
