@@ -263,6 +263,15 @@ import Sortable from 'sortablejs';
 
 const message = useMessage();
 
+// 双模任务列表
+const DUAL_MODE_TASKS = [
+  'role-translation',    
+  'populate-metadata',
+  'enrich-aliases',
+  'process-watchlist',
+  'update-resubscribe-cache'
+];
+
 // --- Composable Hooks ---
 const {
     configModel,
@@ -331,18 +340,10 @@ const runTaskFromModal = async (isDeepMode) => {
   try {
     const payload = { task_name: taskIdentifier };
 
-    // ▼▼▼ 核心修改：将所有支持双模的任务统一管理 ▼▼▼
-    const dualModeTasks = [
-      'role-translation',    
-      'populate-metadata',
-      'enrich-aliases',
-      'process-watchlist'
-    ];
-
-    if (dualModeTasks.includes(taskIdentifier)) {
-      // 对所有在列表中的任务，统一使用 force_full_update 参数
-      payload.force_full_update = isDeepMode;
-    }
+    // 关键改动：这里不再需要检查任务是否在列表中
+    // 因为能调用这个函数的任务，在 triggerTaskNow 中已经被 DUAL_MODE_TASKS 过滤过了。
+    // 所以我们可以直接、无条件地添加 force_full_update 参数。
+    payload.force_full_update = isDeepMode;
 
     const response = await axios.post('/api/tasks/run', payload);
     message.success(response.data.message || '任务已成功提交！');
@@ -355,18 +356,24 @@ const runTaskFromModal = async (isDeepMode) => {
   }
 };
 
+/**
+ * 触发一个任务。
+ * 对于双模式任务，会弹出选择框；其他任务则直接运行。
+ */
 const triggerTaskNow = async (taskIdentifier) => {
   if (isBackgroundTaskRunning.value) {
     message.warning('已有后台任务正在运行，请稍后再试。');
     return;
   }
 
-  if (['role-translation', 'populate-metadata', 'enrich-aliases', 'process-watchlist'].includes(taskIdentifier)) {
+  // ▼▼▼ 使用共享的常量进行判断 ▼▼▼
+  if (DUAL_MODE_TASKS.includes(taskIdentifier)) {
     taskToRunInModal.value = taskIdentifier; 
     showSyncModeModal.value = true;
-    return; 
+    return; // 拦截执行，等待用户选择模式
   }
 
+  // 对于非双模式任务，按原方式直接执行
   isTriggeringTask.value = taskIdentifier;
   try {
     const response = await axios.post('/api/tasks/run', { task_name: taskIdentifier });

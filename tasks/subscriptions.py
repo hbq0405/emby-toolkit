@@ -1011,15 +1011,23 @@ def task_delete_batch(processor, item_ids: List[str]):
         logger.error(f"执行 '{task_name}' 任务时发生严重错误: {e}", exc_info=True)
         task_manager.update_status_from_thread(-1, f"任务失败: {e}")
 
-def task_update_resubscribe_cache(processor):
+def task_update_resubscribe_cache(processor, force_full_update: bool = False):
     """
-    - 恢复了简洁的函数结构，所有业务逻辑都通过调用正确的全局辅助函数完成。
+    - 刷新媒体库的洗版状态缓存。
+    - 支持两种模式:
+      - 快速模式 (force_full_update=False): 默认模式，增量扫描。
+        1. 对比 Emby 和数据库，找出差异。
+        2. 删除数据库中多余的记录 (Emby中已不存在)。
+        3. 只扫描 Emby 中新增的媒体项。
+      - 深度模式 (force_full_update=True): 完整扫描。
+        - 忽略现有缓存，重新扫描媒体库中的所有项目。
     """
     task_name = "刷新洗版状态"
-    logger.info(f"--- 开始执行 '{task_name}' 任务 ---")
+    scan_mode = "深度模式" if force_full_update else "快速模式"
+    logger.info(f"--- 开始执行 '{task_name}' 任务 ({scan_mode}) ---")
     
     try:
-        task_manager.update_status_from_thread(0, "正在加载规则并确定扫描范围...")
+        task_manager.update_status_from_thread(0, f"正在加载规则并确定扫描范围 ({scan_mode})...")
         all_enabled_rules = [rule for rule in resubscribe_db.get_all_resubscribe_rules() if rule.get('enabled')]
         library_ids_to_scan = set()
         for rule in all_enabled_rules:
@@ -1032,17 +1040,50 @@ def task_update_resubscribe_cache(processor):
             task_manager.update_status_from_thread(100, "任务跳过：没有规则指定媒体库")
             return
         
-        task_manager.update_status_from_thread(10, f"正在从 {len(libs_to_process_ids)} 个目标库中获取项目...")
-        all_items_base_info = emby_handler.get_emby_library_items(
+        task_manager.update_status_from_thread(5, f"正在从 {len(libs_to_process_ids)} 个目标库中获取项目列表...")
+        all_emby_items_base_info = emby_handler.get_emby_library_items(
             base_url=processor.emby_url, api_key=processor.emby_api_key, user_id=processor.emby_user_id,
             media_type_filter="Movie,Series", library_ids=libs_to_process_ids,
             fields="ProviderIds,Name,Type,ChildCount,_SourceLibraryId"
         ) or []
-        
-        current_db_status_map = {item['item_id']: item['status'] for item in resubscribe_db.get_all_resubscribe_cache()}
-        total = len(all_items_base_info)
+
+        items_to_process = []
+
+        if force_full_update:
+            # --- 深度模式 (保留原始逻辑) ---
+            logger.info(f"  ➜ 深度模式：将完整扫描 {len(all_emby_items_base_info)} 个媒体项目。")
+            items_to_process = all_emby_items_base_info
+            # 在深度模式下，我们不需要从数据库加载状态，因为所有东西都会被重新评估
+            current_db_status_map = {}
+        else:
+            # --- 新增：快速模式 ---
+            task_manager.update_status_from_thread(10, "快速模式：正在对比本地缓存与 Emby...")
+            
+            # 1. 获取 Emby 和数据库中的所有 Item ID
+            emby_item_ids = {item['Id'] for item in all_emby_items_base_info}
+            db_cache_items = resubscribe_db.get_all_resubscribe_cache()
+            db_item_ids = {item['item_id'] for item in db_cache_items}
+            current_db_status_map = {item['item_id']: item['status'] for item in db_cache_items}
+
+            # 2. 清理：找出并删除数据库中多余的记录
+            ids_to_delete = list(db_item_ids - emby_item_ids)
+            if ids_to_delete:
+                logger.info(f"  ➜ 快速模式清理：发现 {len(ids_to_delete)} 条缓存记录在 Emby 中已不存在，将被删除。")
+                resubscribe_db.delete_resubscribe_cache_items_batch(ids_to_delete)
+
+            # 3. 增量更新：只处理 Emby 中新增的项目
+            new_item_ids = emby_item_ids - db_item_ids
+            if new_item_ids:
+                logger.info(f"  ➜ 快速模式：发现 {len(new_item_ids)} 个新媒体项目需要扫描。")
+                items_to_process = [item for item in all_emby_items_base_info if item['Id'] in new_item_ids]
+            else:
+                logger.info("  ➜ 快速模式：未发现新项目，也无陈旧缓存，无需处理。")
+                task_manager.update_status_from_thread(100, "任务完成：媒体库无变化。")
+                return
+
+        total = len(items_to_process)
         if total == 0:
-            task_manager.update_status_from_thread(100, "任务完成：在目标媒体库中未找到任何项目。")
+            task_manager.update_status_from_thread(100, "任务完成：在目标媒体库中未找到需要处理的项目。")
             return
 
         logger.info(f"  ➜ 将为 {total} 个媒体项目获取详情并按规则检查洗版状态...")
@@ -1060,6 +1101,7 @@ def task_update_resubscribe_cache(processor):
             item_name = item_base_info.get('Name')
             source_lib_id = item_base_info.get('_SourceLibraryId')
 
+            # 在快速模式下，我们已经过滤了新项目，所以这个检查主要对深度模式有效
             if current_db_status_map.get(item_id) == 'ignored': return None
         
             try:
@@ -1074,32 +1116,17 @@ def task_update_resubscribe_cache(processor):
                 media_metadata = collection_db.get_media_metadata_by_tmdb_id(tmdb_id) if tmdb_id else None
                 item_type = item_details.get('Type')
                 if item_type == 'Series' and item_details.get('ChildCount', 0) > 0:
-                    # 步骤 1: 仅获取第一集的 ID，这是高效且轻量的
                     first_episode_list = emby_handler.get_series_children(
-                        series_id=item_id,
-                        base_url=processor.emby_url,
-                        api_key=processor.emby_api_key,
-                        user_id=processor.emby_user_id,
-                        include_item_types="Episode",
-                        fields="Id"  # 只需要 ID
+                        series_id=item_id, base_url=processor.emby_url, api_key=processor.emby_api_key,
+                        user_id=processor.emby_user_id, include_item_types="Episode", fields="Id"
                     )
-                    
-                    # 步骤 2: 如果找到了分集，就用它的 ID 去获取完整详情
-                    if first_episode_list:
-                        first_episode_id = first_episode_list[0].get('Id')
-                        if first_episode_id:
-                            # 这个调用会返回包含完整 MediaStreams 和 Path 的详细信息
-                            first_episode_details = emby_handler.get_emby_item_details(
-                                first_episode_id, 
-                                processor.emby_url, 
-                                processor.emby_api_key, 
-                                processor.emby_user_id
-                            )
-                            
-                            # 步骤 3: 用获取到的完整详情来代表整个剧集的质量
-                            if first_episode_details:
-                                item_details['MediaStreams'] = first_episode_details.get('MediaStreams', [])
-                                item_details['Path'] = first_episode_details.get('Path', '')
+                    if first_episode_list and (first_episode_id := first_episode_list[0].get('Id')):
+                        first_episode_details = emby_handler.get_emby_item_details(
+                            first_episode_id, processor.emby_url, processor.emby_api_key, processor.emby_user_id
+                        )
+                        if first_episode_details:
+                            item_details['MediaStreams'] = first_episode_details.get('MediaStreams', [])
+                            item_details['Path'] = first_episode_details.get('Path', '')
                 
                 needs_resubscribe, reason = _item_needs_resubscribe(item_details, applicable_rule, media_metadata)
                 old_status = current_db_status_map.get(item_id)
@@ -1110,42 +1137,27 @@ def task_update_resubscribe_cache(processor):
                 file_name_lower = os.path.basename(item_details.get('Path', '')).lower()
                 
                 raw_effect_tag = _get_standardized_effect(file_name_lower, video_stream)
-                
                 EFFECT_DISPLAY_MAP = {'dovi_p8': 'DoVi P8', 'dovi_p7': 'DoVi P7', 'dovi_p5': 'DoVi P5', 'dovi_other': 'DoVi (Other)', 'hdr10+': 'HDR10+', 'hdr': 'HDR', 'sdr': 'SDR'}
                 effect_str = EFFECT_DISPLAY_MAP.get(raw_effect_tag, raw_effect_tag.upper())
 
                 resolution_str = "未知"
                 if video_stream:
-                    # ★★★ 3. (修改) 使用等级系统生成显示名称 ★★★
                     width = int(video_stream.get('Width') or 0)
                     height = int(video_stream.get('Height') or 0)
                     _ , resolution_str = _get_resolution_tier(width, height)
                 
                 quality_str = _extract_quality_tag_from_filename(file_name_lower, video_stream)
                 
-                detected_audio_langs = _get_detected_languages_from_streams(
-                    media_streams, 'Audio', AUDIO_SUBTITLE_KEYWORD_MAP
-                )
-
-                # 定义显示名称的映射
+                detected_audio_langs = _get_detected_languages_from_streams(media_streams, 'Audio', AUDIO_SUBTITLE_KEYWORD_MAP)
                 AUDIO_DISPLAY_MAP = {'chi': '国语', 'yue': '粤语', 'eng': '英语', 'jpn': '日语'}
-
-                # 生成显示字符串
                 display_audio_list = sorted([AUDIO_DISPLAY_MAP.get(lang, lang) for lang in detected_audio_langs])
                 audio_str = ', '.join(display_audio_list) or '无'
-
-                # 将原始检测结果也存入数据库
                 audio_langs_raw = list(detected_audio_langs)
 
-                detected_sub_langs = _get_detected_languages_from_streams(
-                    media_streams, 'Subtitle', AUDIO_SUBTITLE_KEYWORD_MAP
-                )
-
-                # ★★★ 新增的核心逻辑：外挂字幕显示规则 ★★★
+                detected_sub_langs = _get_detected_languages_from_streams(media_streams, 'Subtitle', AUDIO_SUBTITLE_KEYWORD_MAP)
                 if 'chi' not in detected_sub_langs and 'yue' not in detected_sub_langs:
                     if any(s.get('IsExternal') for s in media_streams if s.get('Type') == 'Subtitle'):
                         detected_sub_langs.add('chi')
-
                 SUB_DISPLAY_MAP = {'chi': '中字', 'yue': '粤字', 'eng': '英文', 'jpn': '日文'}
                 display_subtitle_list = sorted([SUB_DISPLAY_MAP.get(lang, lang) for lang in detected_sub_langs])
                 subtitle_str = ', '.join(display_subtitle_list) or '无'
@@ -1163,7 +1175,7 @@ def task_update_resubscribe_cache(processor):
                 return None
 
         with ThreadPoolExecutor(max_workers=10) as executor:
-            future_to_item = {executor.submit(process_item_for_cache, item): item for item in all_items_base_info}
+            future_to_item = {executor.submit(process_item_for_cache, item): item for item in items_to_process}
             for future in as_completed(future_to_item):
                 if processor.is_stop_requested(): break
                 result = future.result()
@@ -1177,9 +1189,9 @@ def task_update_resubscribe_cache(processor):
             resubscribe_db.upsert_resubscribe_cache_batch(cache_update_batch)
             
             task_manager.update_status_from_thread(99, "缓存写入完成，即将刷新...")
-            time.sleep(1) # 给前端一点反应时间，确保信号被接收
+            time.sleep(1)
 
-        final_message = "媒体洗版状态刷新完成！"
+        final_message = f"媒体洗版状态刷新完成 ({scan_mode})！"
         if processor.is_stop_requested(): final_message = "任务已中止。"
         task_manager.update_status_from_thread(100, final_message)
 

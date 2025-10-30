@@ -283,3 +283,22 @@ def batch_update_resubscribe_cache_status(item_ids: List[str], new_status: str) 
     except Exception as e:
         logger.error(f"DB: 批量更新洗版缓存状态时失败: {e}", exc_info=True)
         return 0
+    
+def delete_resubscribe_cache_items_batch(item_ids: List[str]) -> int:
+    """ 根据 Item ID 列表批量删除缓存记录 """
+    if not item_ids:
+        return 0
+    try:
+        with get_db_connection() as conn:
+            cursor = conn.cursor()
+            # 使用 ANY(%s) 语法高效处理列表
+            sql = "DELETE FROM resubscribe_cache WHERE item_id = ANY(%s)"
+            cursor.execute(sql, (item_ids,))
+            deleted_count = cursor.rowcount
+            conn.commit()
+            if deleted_count > 0:
+                logger.info(f"DB: [快速扫描清理] 成功批量删除了 {deleted_count} 条陈旧的洗版缓存。")
+            return deleted_count
+    except Exception as e:
+        logger.error(f"DB: 批量删除洗版缓存时失败: {e}", exc_info=True)
+        return 0
