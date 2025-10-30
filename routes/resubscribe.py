@@ -70,7 +70,7 @@ def update_rule(rule_id):
 def delete_rule(rule_id):
     """删除指定ID的洗版规则。"""
     try:
-        logger.info(f"API: 准备删除规则 {rule_id}，将首先清理其关联的缓存...")
+        logger.info(f"  ➜ 准备删除规则 {rule_id}，将首先清理其关联的缓存...")
         resubscribe_db.delete_resubscribe_cache_by_rule_id(rule_id)
         success = resubscribe_db.delete_resubscribe_rule(rule_id)
         if success:

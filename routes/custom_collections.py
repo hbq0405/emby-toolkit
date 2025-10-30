@@ -104,7 +104,7 @@ def api_get_all_custom_collections():
                     if isinstance(obj, str): obj = json.loads(obj)
                     if isinstance(obj, dict): parsed_definition = obj
                 except (json.JSONDecodeError, TypeError):
-                    logger.warning(f"合集 ID {collection.get('id')} 的 definition_json 无法解析。")
+                    logger.warning(f"  ➜ 合集 '{collection.get('name')}' 的 definition_json 无法解析。")
             elif isinstance(definition_data, dict):
                 parsed_definition = definition_data
             collection['definition'] = parsed_definition
@@ -210,7 +210,7 @@ def api_update_custom_collection(collection_id):
             return jsonify({"error": "数据库操作失败，未找到或无法更新该合集"}), 404
             
     except Exception as e:
-        logger.error(f"更新自定义合集 {collection_id} 时发生严重错误: {e}", exc_info=True)
+        logger.error(f"  ➜ 更新自定义合集 '{name}' 时发生严重错误: {e}", exc_info=True)
         return jsonify({"error": "服务器内部错误，请检查后端日志"}), 500
 
 # ★★★ 更新合集排序的API ★★★
@@ -302,7 +302,7 @@ def api_get_custom_collection_status(collection_id):
                 if isinstance(obj, str): obj = json.loads(obj)
                 parsed_definition = obj if isinstance(obj, dict) else {}
             except (json.JSONDecodeError, TypeError):
-                logger.error(f"合集 {collection_id} 的 definition_json 字段无法被解析为JSON。")
+                logger.error(f"合集 '{collection_details.get('name')}' 的 definition_json 字段无法被解析为JSON。")
                 parsed_definition = {}
         elif isinstance(definition_data, dict):
             parsed_definition = definition_data
@@ -392,12 +392,13 @@ def api_subscribe_media_from_custom_collection():
     data = request.json
     tmdb_id = data.get('tmdb_id')
     collection_id = data.get('collection_id')
+
     if not all([tmdb_id, collection_id]):
         return jsonify({"error": "请求无效: 缺少 tmdb_id 或 collection_id"}), 400
     try:
         with connection.get_db_connection() as conn:
             cursor = conn.cursor()
-            cursor.execute("SELECT definition_json, generated_media_info_json FROM custom_collections WHERE id = %s", (collection_id,))
+            cursor.execute("SELECT name, definition_json, generated_media_info_json FROM custom_collections WHERE id = %s", (collection_id,))
             collection_record = cursor.fetchone()
             if not collection_record:
                 return jsonify({"error": "数据库错误: 找不到指定的合集。"}), 404
@@ -411,7 +412,8 @@ def api_subscribe_media_from_custom_collection():
                 authoritative_type = item_type_from_db
             
             if authoritative_type not in ['Movie', 'Series']:
-                logger.warning(f"合集 {collection_id} 的 item_type 格式无法识别 ('{item_type_from_db}')，将默认使用 'Movie' 进行订阅。")
+                collection_name = collection_record.get('name')
+                logger.warning(f"合集 '{collection_name}' 的 item_type 格式无法识别 ('{item_type_from_db}')，将默认使用 'Movie' 进行订阅。")
                 authoritative_type = 'Movie'
             media_list = collection_record.get('generated_media_info_json') or []
             target_media_item = next((item for item in media_list if str(item.get('tmdb_id')) == str(tmdb_id)), None)
@@ -462,7 +464,7 @@ def api_subscribe_media_from_custom_collection():
                 (new_media_info_json, new_health_status, new_missing_count, collection_id)
             )
             conn.commit()
-            logger.info(f"  ➜ 已成功更新合集 {collection_id} 中《{authoritative_title}》的状态为 '订阅中'。")
+            logger.info(f"  ➜ 已成功更新合集 '{collection_name}' 中《{authoritative_title}》的状态为 '订阅中'。")
 
         return jsonify({"message": f"《{authoritative_title}》已成功提交订阅，并已更新本地状态。"}), 200
     except Exception as e:

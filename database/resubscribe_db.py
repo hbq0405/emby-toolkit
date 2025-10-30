@@ -36,7 +36,7 @@ def get_all_resubscribe_rules() -> List[Dict[str, Any]]:
             cursor.execute("SELECT * FROM resubscribe_rules ORDER BY sort_order ASC, id ASC")
             return [dict(row) for row in cursor.fetchall()]
     except Exception as e:
-        logger.error(f"DB: 获取所有洗版规则时失败: {e}", exc_info=True)
+        logger.error(f"  ➜ 获取所有洗版规则时失败: {e}", exc_info=True)
         return []
 
 def create_resubscribe_rule(rule_data: Dict[str, Any]) -> int:
@@ -55,13 +55,13 @@ def create_resubscribe_rule(rule_data: Dict[str, Any]) -> int:
                 raise psycopg2.Error("数据库未能返回新创建的规则ID。")
             new_id = result['id']
             conn.commit()
-            logger.info(f"DB: 成功创建洗版规则 '{rule_data.get('name')}' (ID: {new_id})。")
+            logger.info(f"  ➜ 成功创建洗版规则 '{rule_data.get('name')}' (ID: {new_id})。")
             return new_id
     except psycopg2.IntegrityError as e:
-        logger.warning(f"DB: 创建洗版规则失败，可能名称 '{rule_data.get('name')}' 已存在: {e}")
+        logger.warning(f"  ➜ 创建洗版规则失败，可能名称 '{rule_data.get('name')}' 已存在: {e}")
         raise
     except Exception as e:
-        logger.error(f"DB: 创建洗版规则时发生未知错误: {e}", exc_info=True)
+        logger.error(f"  ➜ 创建洗版规则时发生未知错误: {e}", exc_info=True)
         raise
 
 def update_resubscribe_rule(rule_id: int, rule_data: Dict[str, Any]) -> bool:
@@ -77,13 +77,13 @@ def update_resubscribe_rule(rule_id: int, rule_data: Dict[str, Any]) -> bool:
             cursor = conn.cursor()
             cursor.execute(sql, tuple(values))
             if cursor.rowcount == 0:
-                logger.warning(f"DB: 尝试更新洗版规则ID {rule_id}，但在数据库中未找到。")
+                logger.warning(f"  ➜ 尝试更新洗版规则ID {rule_id}，但在数据库中未找到。")
                 return False
             conn.commit()
-            logger.info(f"DB: 成功更新洗版规则ID {rule_id}。")
+            logger.info(f"  ➜ 成功更新洗版规则ID {rule_id}。")
             return True
     except Exception as e:
-        logger.error(f"DB: 更新洗版规则ID {rule_id} 时失败: {e}", exc_info=True)
+        logger.error(f"  ➜ 更新洗版规则ID {rule_id} 时失败: {e}", exc_info=True)
         raise
 
 def delete_resubscribe_rule(rule_id: int) -> bool:
@@ -93,13 +93,13 @@ def delete_resubscribe_rule(rule_id: int) -> bool:
             cursor = conn.cursor()
             cursor.execute("DELETE FROM resubscribe_rules WHERE id = %s", (rule_id,))
             if cursor.rowcount == 0:
-                logger.warning(f"DB: 尝试删除洗版规则ID {rule_id}，但在数据库中未找到。")
+                logger.warning(f"  ➜ 尝试删除洗版规则ID {rule_id}，但在数据库中未找到。")
                 return False
             conn.commit()
-            logger.info(f"DB: 成功删除洗版规则ID {rule_id}。")
+            logger.info(f"  ➜ 成功删除洗版规则ID {rule_id}。")
             return True
     except Exception as e:
-        logger.error(f"DB: 删除洗版规则ID {rule_id} 时失败: {e}", exc_info=True)
+        logger.error(f"  ➜ 删除洗版规则ID {rule_id} 时失败: {e}", exc_info=True)
         raise
 
 def update_resubscribe_rules_order(ordered_ids: List[int]) -> bool:
@@ -113,10 +113,10 @@ def update_resubscribe_rules_order(ordered_ids: List[int]) -> bool:
             sql = "UPDATE resubscribe_rules SET sort_order = data.sort_order FROM (VALUES %s) AS data(sort_order, id) WHERE resubscribe_rules.id = data.id;"
             execute_values(cursor, sql, data_to_update)
             conn.commit()
-            logger.info(f"DB: 成功更新了 {len(ordered_ids)} 个洗版规则的顺序。")
+            logger.info(f"  ➜ 成功更新了 {len(ordered_ids)} 个洗版规则的顺序。")
             return True
     except Exception as e:
-        logger.error(f"DB: 批量更新洗版规则顺序时失败: {e}", exc_info=True)
+        logger.error(f"  ➜ 批量更新洗版规则顺序时失败: {e}", exc_info=True)
         raise
 
 # --- 缓存管理 (Cache Management) ---
@@ -128,7 +128,7 @@ def get_all_resubscribe_cache() -> List[Dict[str, Any]]:
             cursor.execute("SELECT * FROM resubscribe_cache ORDER BY item_name")
             return [dict(row) for row in cursor.fetchall()]
     except Exception as e:
-        logger.error(f"DB: 获取洗版缓存失败: {e}", exc_info=True)
+        logger.error(f"  ➜ 获取洗版缓存失败: {e}", exc_info=True)
         return []
 
 def upsert_resubscribe_cache_batch(items_data: List[Dict[str, Any]]):
@@ -181,7 +181,7 @@ def upsert_resubscribe_cache_batch(items_data: List[Dict[str, Any]]):
             execute_values(cursor, sql, values_to_insert, page_size=500)
             conn.commit()
     except Exception as e:
-        logger.error(f"DB: 批量更新洗版缓存失败: {e}", exc_info=True)
+        logger.error(f"  ➜ 批量更新洗版缓存失败: {e}", exc_info=True)
         raise
 
 def update_resubscribe_item_status(item_id: str, new_status: str) -> bool:
@@ -196,7 +196,7 @@ def update_resubscribe_item_status(item_id: str, new_status: str) -> bool:
             conn.commit()
             return cursor.rowcount > 0
     except Exception as e:
-        logger.error(f"DB: 更新洗版缓存状态失败 for item {item_id}: {e}", exc_info=True)
+        logger.error(f"  ➜ 更新洗版缓存状态失败 for item {item_id}: {e}", exc_info=True)
         return False
 
 def delete_resubscribe_cache_by_rule_id(rule_id: int) -> int:
@@ -207,10 +207,10 @@ def delete_resubscribe_cache_by_rule_id(rule_id: int) -> int:
             cursor.execute("DELETE FROM resubscribe_cache WHERE matched_rule_id = %s", (rule_id,))
             deleted_count = cursor.rowcount
             conn.commit()
-            logger.info(f"DB: 联动删除了 {deleted_count} 条与规则ID {rule_id} 关联的洗版缓存。")
+            logger.info(f"  ➜ 联动删除了 {deleted_count} 条与规则ID {rule_id} 关联的洗版缓存。")
             return deleted_count
     except Exception as e:
-        logger.error(f"DB: 根据规则ID {rule_id} 删除洗版缓存时失败: {e}", exc_info=True)
+        logger.error(f"  ➜ 根据规则ID {rule_id} 删除洗版缓存时失败: {e}", exc_info=True)
         raise
 
 def delete_resubscribe_cache_for_unwatched_libraries(watched_library_ids: List[str]) -> int:
@@ -229,10 +229,10 @@ def delete_resubscribe_cache_for_unwatched_libraries(watched_library_ids: List[s
             deleted_count = cursor.rowcount
             conn.commit()
             if deleted_count > 0:
-                logger.info(f"DB: [自愈清理] 成功删除了 {deleted_count} 条来自无效媒体库的陈旧洗版缓存。")
+                logger.info(f"  ➜ 成功删除了 {deleted_count} 条来自无效媒体库的陈旧洗版缓存。")
             return deleted_count
     except Exception as e:
-        logger.error(f"DB: [自愈清理] 清理无效洗版缓存时失败: {e}", exc_info=True)
+        logger.error(f"  ➜ 清理无效洗版缓存时失败: {e}", exc_info=True)
         raise
 
 def get_resubscribe_cache_item(item_id: str) -> Optional[Dict[str, Any]]:
@@ -244,7 +244,7 @@ def get_resubscribe_cache_item(item_id: str) -> Optional[Dict[str, Any]]:
             row = cursor.fetchone()
             return dict(row) if row else None
     except Exception as e:
-        logger.error(f"DB: 获取单个洗版缓存项 {item_id} 失败: {e}", exc_info=True)
+        logger.error(f"  ➜ 获取单个洗版缓存项 {item_id} 失败: {e}", exc_info=True)
         return None
 
 def get_resubscribe_rule_by_id(rule_id: int) -> Optional[Dict[str, Any]]:
@@ -256,7 +256,7 @@ def get_resubscribe_rule_by_id(rule_id: int) -> Optional[Dict[str, Any]]:
             row = cursor.fetchone()
             return dict(row) if row else None
     except Exception as e:
-        logger.error(f"DB: 获取单个洗版规则 {rule_id} 失败: {e}", exc_info=True)
+        logger.error(f"  ➜ 获取单个洗版规则 {rule_id} 失败: {e}", exc_info=True)
         return None
     
 def delete_resubscribe_cache_item(item_id: str) -> bool:
@@ -268,7 +268,7 @@ def delete_resubscribe_cache_item(item_id: str) -> bool:
             conn.commit()
             return cursor.rowcount > 0
     except Exception as e:
-        logger.error(f"DB: 删除单条洗版缓存项 {item_id} 失败: {e}", exc_info=True)
+        logger.error(f"  ➜ 删除单条洗版缓存项 {item_id} 失败: {e}", exc_info=True)
         return False
     
 def batch_update_resubscribe_cache_status(item_ids: List[str], new_status: str) -> int:
@@ -282,10 +282,10 @@ def batch_update_resubscribe_cache_status(item_ids: List[str], new_status: str) 
             cursor.execute(sql, (new_status, item_ids))
             updated_count = cursor.rowcount
             conn.commit()
-            logger.info(f"DB: 成功将 {updated_count} 个洗版缓存项的状态批量更新为 '{new_status}'。")
+            logger.info(f"  ➜ 成功将 {updated_count} 个洗版缓存项的状态批量更新为 '{new_status}'。")
             return updated_count
     except Exception as e:
-        logger.error(f"DB: 批量更新洗版缓存状态时失败: {e}", exc_info=True)
+        logger.error(f"  ➜ 批量更新洗版缓存状态时失败: {e}", exc_info=True)
         return 0
     
 def delete_resubscribe_cache_items_batch(item_ids: List[str]) -> int:
@@ -301,10 +301,10 @@ def delete_resubscribe_cache_items_batch(item_ids: List[str]) -> int:
             deleted_count = cursor.rowcount
             conn.commit()
             if deleted_count > 0:
-                logger.info(f"DB: [快速扫描清理] 成功批量删除了 {deleted_count} 条陈旧的洗版缓存。")
+                logger.info(f"  ➜ [快速扫描清理] 成功批量删除了 {deleted_count} 条陈旧的洗版缓存。")
             return deleted_count
     except Exception as e:
-        logger.error(f"DB: 批量删除洗版缓存时失败: {e}", exc_info=True)
+        logger.error(f"  ➜ 批量删除洗版缓存时失败: {e}", exc_info=True)
         return 0
     
 def clear_resubscribe_cache_except_ignored() -> int:
@@ -320,8 +320,8 @@ def clear_resubscribe_cache_except_ignored() -> int:
             deleted_count = cursor.rowcount
             conn.commit()
             if deleted_count > 0:
-                logger.info(f"DB: [深度扫描] 成功清空了 {deleted_count} 条非忽略状态的旧缓存。")
+                logger.info(f"  ➜ [深度扫描] 成功清空了 {deleted_count} 条非忽略状态的旧缓存。")
             return deleted_count
     except Exception as e:
-        logger.error(f"DB: [深度扫描] 清空洗版缓存时失败: {e}", exc_info=True)
+        logger.error(f"  ➜ [深度扫描] 清空洗版缓存时失败: {e}", exc_info=True)
         return 0
