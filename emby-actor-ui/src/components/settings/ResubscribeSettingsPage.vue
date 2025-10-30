@@ -150,6 +150,34 @@
               </n-form-item>
             </n-collapse-item>
 
+            <n-collapse-item title="按文件大小洗版">
+              <template #header-extra>
+                <n-switch v-model:value="currentRule.resubscribe_filesize_enabled" @click.stop />
+              </template>
+              <n-space vertical>
+                <n-form-item label="洗版条件" label-placement="left">
+                  <n-select
+                    v-model:value="currentRule.resubscribe_filesize_operator"
+                    :options="filesizeOperatorOptions"
+                    :disabled="!currentRule.resubscribe_filesize_enabled"
+                    style="width: 120px; margin-right: 8px;"
+                  />
+                  <n-input-number
+                    v-model:value="currentRule.resubscribe_filesize_threshold_gb"
+                    :min="0"
+                    :step="0.1"
+                    :disabled="!currentRule.resubscribe_filesize_enabled"
+                    placeholder="输入大小"
+                  >
+                    <template #suffix>GB</template>
+                  </n-input-number>
+                </n-form-item>
+                <p style="margin: 0; font-size: 12px; color: #888;">
+                  提示：对于剧集，将按单集平均大小进行判断。
+                </p>
+              </n-space>
+            </n-collapse-item>
+
             <n-collapse-item title="按音轨洗版">
                <template #header-extra>
                 <n-switch v-model:value="currentRule.resubscribe_audio_enabled" @click.stop />
@@ -225,6 +253,11 @@ const formRules = {
   name: { required: true, message: '请输入规则名称', trigger: 'blur' },
   target_library_ids: { type: 'array', required: true, message: '请至少选择一个媒体库', trigger: 'change' },
 };
+
+const filesizeOperatorOptions = ref([
+  { label: '小于', value: 'lt' },
+  { label: '大于', value: 'gt' },
+]);
 
 const resolutionOptions = ref([
   { label: '低于 4K (3840px)', value: 3840 },
@@ -311,6 +344,9 @@ const openRuleModal = async (rule = null) => {
       resubscribe_quality_include: [], resubscribe_effect_enabled: false,
       resubscribe_effect_include: [],
       resubscribe_subtitle_effect_only: false,
+      resubscribe_filesize_enabled: false,
+      resubscribe_filesize_operator: 'lt', 
+      resubscribe_filesize_threshold_gb: null, 
     };
   }
 

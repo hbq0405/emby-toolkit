@@ -468,7 +468,7 @@ const triggerRefreshStatus = async () => {
 };
 const triggerResubscribeAll = async () => { try { await axios.post('/api/resubscribe/resubscribe_all'); message.success('一键洗版任务已提交，请稍后查看任务状态。'); } catch (err) { message.error(err.response?.data?.error || '提交一键洗版任务失败。'); }};
 const resubscribeItem = async (item) => { subscribing.value[item.item_id] = true; try { const response = await axios.post('/api/resubscribe/resubscribe_item', { item_id: item.item_id, item_name: item.item_name, tmdb_id: item.tmdb_id, item_type: item.item_type, }); message.success(response.data.message); const itemInList = allItems.value.find(i => i.item_id === item.item_id); if (itemInList) { itemInList.status = 'subscribed'; } } catch (err) { message.error(err.response?.data?.error || '洗版订阅失败。'); } finally { subscribing.value[item.item_id] = false; }};
-const getPosterUrl = (itemId) => `/image_proxy/Items/${itemId}/Images/Primary?maxHeight=480&tag=1`;
+const getPosterUrl = (itemId) => `/image_proxy/Items/${itemId}/Images/Primary?maxHeight=600&tag=1`;
 const openInEmby = (itemId) => { const embyServerUrl = configModel.value?.emby_server_url; const serverId = configModel.value?.emby_server_id; if (!embyServerUrl || !itemId) { message.error('Emby服务器地址未配置，无法跳转。'); return; } const baseUrl = embyServerUrl.endsWith('/') ? embyServerUrl.slice(0, -1) : embyServerUrl; let finalUrl = `${baseUrl}/web/index.html#!/item?id=${itemId}`; if (serverId) { finalUrl += `&serverId=${serverId}`; } window.open(finalUrl, '_blank'); };
 
 const handleSettingsSaved = (payload = {}) => {
@@ -539,7 +539,14 @@ watch(() => props.taskStatus, (newStatus, oldStatus) => {
   flex-grow: 1; /* 让内容区占据剩余空间 */
   min-height: 0;
 }
-.card-poster-container { flex-shrink: 0; width: 120px; height: 180px; overflow: hidden; border-radius: 4px; }
+
+.card-poster-container { 
+  flex-shrink: 0; 
+  width: 150px; /* 这里调整海报宽度 */
+  height: 225px; /* 这里调整海报高度 */
+  overflow: hidden; 
+  border-radius: 4px; 
+} 
 .card-poster { width: 100%; height: 100%; }
 .card-content-container { 
   flex-grow: 1; 

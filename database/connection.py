@@ -293,17 +293,9 @@ def init_db():
                         id SERIAL PRIMARY KEY,
                         name TEXT NOT NULL UNIQUE,
                         enabled BOOLEAN DEFAULT TRUE,
-                        
-                        -- ★ 新增：规则应用的目标媒体库ID列表
                         target_library_ids JSONB, 
-                        
-                        -- ★ 新增：洗版成功后是否删除Emby媒体项
                         delete_after_resubscribe BOOLEAN DEFAULT FALSE,
-                        
-                        -- ★ 新增：规则优先级，数字越小越优先
                         sort_order INTEGER DEFAULT 0,
-
-                        -- ▼ 下面是原来 settings 表里的所有字段
                         resubscribe_resolution_enabled BOOLEAN DEFAULT FALSE,
                         resubscribe_resolution_threshold INT DEFAULT 1920,
                         resubscribe_audio_enabled BOOLEAN DEFAULT FALSE,
@@ -313,7 +305,10 @@ def init_db():
                         resubscribe_quality_enabled BOOLEAN DEFAULT FALSE,
                         resubscribe_quality_include JSONB,
                         resubscribe_effect_enabled BOOLEAN DEFAULT FALSE,
-                        resubscribe_effect_include JSONB
+                        resubscribe_effect_include JSONB,
+                        resubscribe_filesize_enabled BOOLEAN DEFAULT FALSE,
+                        resubscribe_filesize_operator TEXT DEFAULT 'lt', 
+                        resubscribe_filesize_threshold_gb REAL DEFAULT 10.0 
                     )
                 """)
 
@@ -490,7 +485,10 @@ def init_db():
                             "filename": "TEXT"
                         },
                         'resubscribe_rules': {
-                            "resubscribe_subtitle_effect_only": "BOOLEAN DEFAULT FALSE"
+                            "resubscribe_subtitle_effect_only": "BOOLEAN DEFAULT FALSE",
+                            "resubscribe_filesize_enabled": "BOOLEAN DEFAULT FALSE",
+                            "resubscribe_filesize_operator": "TEXT DEFAULT 'lt'",
+                            "resubscribe_filesize_threshold_gb": "REAL DEFAULT 10.0"
                         },
                         'media_cleanup_tasks': { # 添加 media_cleanup_tasks 的升级
                             "item_type": "TEXT"

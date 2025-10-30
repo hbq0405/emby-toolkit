@@ -721,7 +721,7 @@ def _item_needs_resubscribe(item_details: dict, config: dict, media_metadata: Op
 
                 # 只有当前等级严格小于要求等级时，才标记
                 if current_tier < required_tier:
-                    reasons.append(f"分辨率低于{required_tier_name}")
+                    reasons.append(f"分辨率 < {required_tier_name}")
 
     except (ValueError, TypeError) as e:
         logger.warning(f"  ➜ [分辨率检查] 处理时发生类型错误: {e}")
@@ -733,7 +733,7 @@ def _item_needs_resubscribe(item_details: dict, config: dict, media_metadata: Op
             if isinstance(required_list, list) and required_list:
                 required_list_lower = [str(q).lower() for q in required_list]
                 if not any(term in file_name_lower for term in required_list_lower):
-                    reasons.append("质量不达标")
+                    reasons.append("质量不符")
     except Exception as e:
         logger.warning(f"  ➜ [质量检查] 处理时发生未知错误: {e}")
 
@@ -758,11 +758,42 @@ def _item_needs_resubscribe(item_details: dict, config: dict, media_metadata: Op
                     current_effect = _get_standardized_effect(file_name_lower, video_stream)
                     current_priority = EFFECT_HIERARCHY.index(current_effect)
                     if current_priority > highest_req_priority:
-                        reasons.append("特效不达标")
+                        reasons.append("特效不符")
     except Exception as e:
         logger.warning(f"  ➜ [特效检查] 处理时发生未知错误: {e}")
 
-    # 4. & 5. 音轨和字幕检查
+    # 4. 文件大小检查 
+    try:
+        if config.get("resubscribe_filesize_enabled"):
+            # 从 MediaSources 获取文件大小（单位：字节）
+            media_source = item_details.get('MediaSources', [{}])[0]
+            file_size_bytes = media_source.get('Size')
+            
+            if file_size_bytes:
+                # 获取规则配置
+                operator = config.get("resubscribe_filesize_operator", 'lt')
+                threshold_gb = float(config.get("resubscribe_filesize_threshold_gb", 10.0))
+                
+                # 将文件大小从 Bytes 转换为 GB
+                file_size_gb = file_size_bytes / (1024**3)
+
+                # 根据操作符进行比较
+                needs_resubscribe = False
+                reason_text = ""
+                if operator == 'lt' and file_size_gb < threshold_gb:
+                    needs_resubscribe = True
+                    reason_text = f"文件 < {threshold_gb} GB"
+                elif operator == 'gt' and file_size_gb > threshold_gb:
+                    needs_resubscribe = True
+                    reason_text = f"文件 > {threshold_gb} GB"
+                
+                if needs_resubscribe:
+                    reasons.append(reason_text)
+
+    except (ValueError, TypeError, IndexError) as e:
+        logger.warning(f"  ➜ [文件大小检查] 处理时发生错误: {e}")
+
+    # 5. 音轨和字幕检查
     def _is_exempted_from_chinese_check(item_details: dict) -> bool:
         """
         【V5 - 原始标题终极版】
@@ -1208,6 +1239,7 @@ def task_update_resubscribe_cache(processor, force_full_update: bool = False):
                             if first_episode_details:
                                 item_details['MediaStreams'] = first_episode_details.get('MediaStreams', [])
                                 item_details['Path'] = first_episode_details.get('Path', '')
+                                item_details['MediaSources'] = first_episode_details.get('MediaSources', [])
                 
                 needs_resubscribe, reason = _item_needs_resubscribe(item_details, applicable_rule, media_metadata)
                 old_status = current_db_status_map.get(item_id)
@@ -1260,7 +1292,7 @@ def task_update_resubscribe_cache(processor, force_full_update: bool = False):
                 subtitle_langs_raw = list(detected_sub_langs)
                 file_path = item_details.get('Path')
                 filename = os.path.basename(file_path) if file_path else None
-                
+
                 return {
                     "item_id": item_id, "item_name": item_details.get('Name'), "tmdb_id": tmdb_id, "item_type": item_type, "status": new_status, 
                     "reason": reason, "resolution_display": resolution_str, "quality_display": quality_str, "effect_display": effect_str,
