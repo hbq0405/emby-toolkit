@@ -334,7 +334,9 @@ def init_db():
                         audio_languages_raw JSONB,
                         subtitle_languages_raw JSONB,
                         last_checked_at TIMESTAMP WITH TIME ZONE,
-                        source_library_id TEXT
+                        source_library_id TEXT,
+                        path TEXT,
+                        filename TEXT
                     )
                 """)
                 cursor.execute("CREATE INDEX IF NOT EXISTS idx_resubscribe_cache_status ON resubscribe_cache (status);")
@@ -483,7 +485,9 @@ def init_db():
                         'resubscribe_cache': {
                             "matched_rule_id": "INTEGER",
                             "matched_rule_name": "TEXT",
-                            "source_library_id": "TEXT"
+                            "source_library_id": "TEXT",
+                            "path": "TEXT",
+                            "filename": "TEXT"
                         },
                         'resubscribe_rules': {
                             "resubscribe_subtitle_effect_only": "BOOLEAN DEFAULT FALSE"

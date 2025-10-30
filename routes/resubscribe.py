@@ -145,42 +145,42 @@ def trigger_resubscribe_all():
 @login_required
 def resubscribe_single_item():
     """
-    【V3 - 标准化配置源】API端点：为单个媒体项提交洗版订阅。
+    【V4 - 最终修正版】修复了只传递三个键值对的致命BUG。
+    现在会从数据库获取完整的媒体项信息进行处理。
     """
     data = request.json
     item_id = data.get('item_id')
-    item_name = data.get('item_name')
-    tmdb_id = data.get('tmdb_id')
-    item_type = data.get('item_type')
-
-    if not all([item_id, item_name, tmdb_id, item_type]):
-        return jsonify({"error": "请求中缺少必要的媒体项参数"}), 400
+    
+    if not item_id:
+        return jsonify({"error": "请求中缺少必要的 item_id 参数"}), 400
 
     try:
         current_quota = settings_db.get_subscription_quota()
         if current_quota <= 0:
             return jsonify({"error": "今日订阅配额已用尽，请明天再试。"}), 429
 
-        # --- ★★★ 核心修复 1/2: 从核心处理器获取配置，而不是全局字典 ★★★
         processor = extensions.media_processor_instance
         if not processor:
             return jsonify({"error": "核心处理器未初始化"}), 503
             
-        # 1. 提前获取规则
-        cache_item = resubscribe_db.get_resubscribe_cache_item(item_id)
+        # ======================================================================
+        # ★★★★★★★★★★★★★★★★★ 核心修复 ★★★★★★★★★★★★★★★★★
+        # ======================================================================
+        # 1. 不再构建残缺字典！直接从数据库获取最完整的原始数据！
+        item_details_for_payload = resubscribe_db.get_resubscribe_cache_item(item_id)
+
+        if not item_details_for_payload:
+            return jsonify({"error": f"数据库中未找到 Item ID 为 {item_id} 的缓存记录。"}), 404
+        
+        item_name = item_details_for_payload.get('item_name', '未知项目') # 从完整数据中获取名字
+        # ======================================================================
+
+        # 2. 获取与此项匹配的规则
         rule_to_check = None
-        if cache_item and cache_item.get('matched_rule_id'):
-            rule_to_check = resubscribe_db.get_resubscribe_rule_by_id(cache_item['matched_rule_id'])
+        if item_details_for_payload.get('matched_rule_id'):
+            rule_to_check = resubscribe_db.get_resubscribe_rule_by_id(item_details_for_payload['matched_rule_id'])
 
-        # 2. 构建媒体信息字典
-        item_details_for_payload = {
-            'item_name': item_name,
-            'tmdb_id': tmdb_id,
-            'item_type': item_type
-        }
-
-        # 3. 让“智能荷官”配牌
-        # 注意：这里要从 tasks 模块导入 _build_resubscribe_payload 函数
+        # 3. 让“智能荷官”配牌 (现在它拿到的是包含 filename 的完整数据了！)
         payload = tasks.build_resubscribe_payload(item_details_for_payload, rule_to_check)
 
         if not payload:
@@ -194,14 +194,13 @@ def resubscribe_single_item():
             
             message = f"《{item_name}》的洗版请求已成功提交！"
             
-            cache_item = resubscribe_db.get_resubscribe_cache_item(item_id)
-            rule_to_check = None
-            if cache_item and cache_item.get('matched_rule_id'):
-                rule_to_check = resubscribe_db.get_resubscribe_rule_by_id(cache_item['matched_rule_id'])
+            # 重新获取一次规则，因为上面的 rule_to_check 变量可能没被赋值
+            final_rule = None
+            if item_details_for_payload.get('matched_rule_id'):
+                final_rule = resubscribe_db.get_resubscribe_rule_by_id(item_details_for_payload['matched_rule_id'])
 
-            # --- ★★★ 核心逻辑改造：根据规则决定是“删除”还是“更新” ★★★ ---
-            if rule_to_check and rule_to_check.get('delete_after_resubscribe'):
-                logger.warning(f"  ➜ 规则 '{rule_to_check['name']}' 要求删除源文件，正在为项目 {item_name} 执行删除...")
+            if final_rule and final_rule.get('delete_after_resubscribe'):
+                logger.warning(f"  ➜ 规则 '{final_rule['name']}' 要求删除源文件，正在为项目 {item_name} 执行删除...")
                 delete_success = emby_handler.delete_item(
                     item_id=item_id, emby_server_url=processor.emby_url,
                     emby_api_key=processor.emby_api_key, user_id=processor.emby_user_id

@@ -1,6 +1,6 @@
 # tasks/subscriptions.py
 # 智能订阅与媒体洗版任务模块
-
+import re
 import os
 import json
 import time
@@ -20,6 +20,61 @@ from database import connection, settings_db, resubscribe_db, collection_db
 from .helpers import _get_standardized_effect, _extract_quality_tag_from_filename
 
 logger = logging.getLogger(__name__)
+
+def _extract_exclusion_keywords_from_filename(filename: str) -> Optional[str]:
+    """
+    【V6 - 智能识别组】
+    - 核心升级：重写了发布组的识别逻辑，不再依赖 '-' 作为前缀。
+    - 新逻辑：将文件名末尾的、非技术标签的词识别为发布组，更加健壮和智能。
+    """
+    if not filename:
+        return None
+
+    name_part = os.path.splitext(filename)[0]
+    keywords = set()
+
+    # 定义所有已知的技术标签，用于反向排除
+    KNOWN_TECH_TAGS = {
+        'BLURAY', 'BDRIP', 'WEB-DL', 'WEBDL', 'WEBRIP', 'HDTV', 'REMUX', 
+        'X264', 'X265', 'H264', 'H265', 'AVC', 'HEVC', '10BIT', 
+        'DTS', 'AC3', 'ATMOS', 'DDP5', 'AAC', 'FLAC',
+        '1080P', '2160P', '720P', '4K', 'UHD' # 也排除掉分辨率
+    }
+
+    # ======================================================================
+    # ★★★★★★★★★★★★★★★★★ 核心升级：智能识别发布组 ★★★★★★★★★★★★★★★★★
+    # ======================================================================
+    # 1. 将文件名按所有可能的分隔符拆分成单词列表
+    words = re.split(r'[.\s_·()\[\]-]', name_part)
+    
+    # 2. 从后往前遍历单词列表，寻找第一个不属于已知技术标签的词
+    for word in reversed(words):
+        if word and len(word) > 2 and not word.isdigit():
+            # 检查这个词的大写形式是否在我们的技术标签库里
+            if word.upper() not in KNOWN_TECH_TAGS:
+                # 如果不是，我们就认定它是发布组！
+                keywords.add(word)
+                # 找到一个就够了，跳出循环
+                break
+    # ======================================================================
+
+    # 3. 提取所有技术标签（这部分逻辑保持不变，作为补充）
+    normalized_name_part = re.sub(r'[\s_·()\[\]]', '.', name_part)
+    common_tags_regex = r'\.(BluRay|BDRip|WEB-DL|WEBDL|WEBRip|HDTV|REMUX|x264|x265|h264|h265|AVC|HEVC|10bit|DTS|AC3|Atmos|DDP5|AAC|FLAC)\b'
+    found_tags = re.findall(common_tags_regex, normalized_name_part, re.IGNORECASE)
+    
+    for tag in found_tags:
+        normalized_tag = tag.upper().replace('WEB-DL', 'WEBDL')
+        keywords.add(normalized_tag)
+
+    # 4. 生成最终的“且”逻辑正则表达式
+    if keywords:
+        final_keywords = {k for k in keywords if k}
+        if final_keywords:
+            and_regex_parts = [f"(?=.*{re.escape(k)})" for k in sorted(list(final_keywords))]
+            return "".join(and_regex_parts)
+    
+    return None
 
 def _get_detected_languages_from_streams(
     media_streams: List[dict], 
@@ -505,12 +560,10 @@ def task_auto_subscribe(processor):
         logger.error(f"智能订阅与洗版任务失败: {e}", exc_info=True)
         task_manager.update_status_from_thread(-1, f"错误: {e}")
 
-# ★★★ 媒体洗版任务 (基于精确API模型重构) ★★★
+# ★★★ 媒体洗版任务 ★★★
 def build_resubscribe_payload(item_details: dict, rule: Optional[dict]) -> Optional[dict]:
     """
-    - 根据PT站点的实际命名约定，优化了杜比视界Profile 8的正则表达式。
-    - 现在，当订阅 Profile 8 时，会生成一个匹配 "dovi" 和 "hdr" 两个关键词同时存在的正则，
-      这完美符合了现实世界中的文件命名习惯。
+    - 【V5 - 亮出底牌版】在函数入口处，直接打印接收到的完整 item_details 字典。
     """
     item_name = item_details.get('Name') or item_details.get('item_name')
     tmdb_id = item_details.get("ProviderIds", {}).get("Tmdb") or item_details.get('tmdb_id')
@@ -526,10 +579,22 @@ def build_resubscribe_payload(item_details: dict, rule: Optional[dict]) -> Optio
         "best_version": 1
     }
 
+    original_filename = item_details.get('filename')
+    if original_filename:
+        exclusion_keywords = _extract_exclusion_keywords_from_filename(original_filename)
+        
+        if exclusion_keywords:
+            payload['exclude'] = exclusion_keywords
+        else:
+            logger.info("  ❌ 提取失败或无关键字返回。跳过添加 exclude 参数。")
+    else:
+        logger.info("  🤷 文件名为空或不存在，无法提取关键字。")
+
     use_custom_subscribe = config_manager.APP_CONFIG.get(constants.CONFIG_OPTION_USE_CUSTOM_RESUBSCRIBE, False)
     if not use_custom_subscribe or not rule:
         log_reason = "自定义洗版未开启" if not use_custom_subscribe else "未匹配到规则"
         logger.info(f"  ➜ 《{item_name}》将使用全局洗版 ({log_reason})。")
+        
         return payload
 
     rule_name = rule.get('name', '未知规则')
@@ -610,6 +675,10 @@ def build_resubscribe_payload(item_details: dict, rule: Optional[dict]) -> Optio
         payload['include'] = "".join(final_include_lookaheads)
         logger.info(f"  ➜ 《{item_name}》按规则 '{rule_name}' 生成的 AND 正则过滤器(精筛): {payload['include']}")
 
+    # ======================== 魔法日志 START ========================
+    logger.info(f"[魔法日志] 最终生成的 payload (自定义规则模式):\n{json.dumps(payload, ensure_ascii=False, indent=2)}")
+    logger.info("============== 魔法日志: 结束 build_resubscribe_payload ==============")
+    # ===============================================================
     return payload
 
 def _item_needs_resubscribe(item_details: dict, config: dict, media_metadata: Optional[dict] = None) -> tuple[bool, str]:
@@ -1013,21 +1082,14 @@ def task_delete_batch(processor, item_ids: List[str]):
 
 def task_update_resubscribe_cache(processor, force_full_update: bool = False):
     """
-    - 刷新媒体库的洗版状态缓存。
-    - 支持两种模式:
-      - 快速模式 (force_full_update=False): 默认模式，增量扫描。
-        1. 对比 Emby 和数据库，找出差异。
-        2. 删除数据库中多余的记录 (Emby中已不存在)。
-        3. 只扫描 Emby 中新增的媒体项。
-      - 深度模式 (force_full_update=True): 完整扫描。
-        - 忽略现有缓存，重新扫描媒体库中的所有项目。
+    - 恢复了简洁的函数结构，所有业务逻辑都通过调用正确的全局辅助函数完成。
     """
-    task_name = "刷新洗版状态"
     scan_mode = "深度模式" if force_full_update else "快速模式"
-    logger.info(f"--- 开始执行 '{task_name}' 任务 ({scan_mode}) ---")
+    task_name = f"刷新洗版状态 ({scan_mode})"
+    logger.info(f"--- 开始执行 '{task_name}' 任务 ---")
     
     try:
-        task_manager.update_status_from_thread(0, f"正在加载规则并确定扫描范围 ({scan_mode})...")
+        task_manager.update_status_from_thread(0, "正在加载规则并确定扫描范围...")
         all_enabled_rules = [rule for rule in resubscribe_db.get_all_resubscribe_rules() if rule.get('enabled')]
         library_ids_to_scan = set()
         for rule in all_enabled_rules:
@@ -1040,50 +1102,55 @@ def task_update_resubscribe_cache(processor, force_full_update: bool = False):
             task_manager.update_status_from_thread(100, "任务跳过：没有规则指定媒体库")
             return
         
-        task_manager.update_status_from_thread(5, f"正在从 {len(libs_to_process_ids)} 个目标库中获取项目列表...")
-        all_emby_items_base_info = emby_handler.get_emby_library_items(
+        task_manager.update_status_from_thread(10, f"正在从 {len(libs_to_process_ids)} 个目标库中获取项目...")
+        all_items_base_info = emby_handler.get_emby_library_items(
             base_url=processor.emby_url, api_key=processor.emby_api_key, user_id=processor.emby_user_id,
             media_type_filter="Movie,Series", library_ids=libs_to_process_ids,
             fields="ProviderIds,Name,Type,ChildCount,_SourceLibraryId"
         ) or []
-
+        
         items_to_process = []
-
+        
         if force_full_update:
-            # --- 深度模式 (保留原始逻辑) ---
-            logger.info(f"  ➜ 深度模式：将完整扫描 {len(all_emby_items_base_info)} 个媒体项目。")
-            items_to_process = all_emby_items_base_info
-            # 在深度模式下，我们不需要从数据库加载状态，因为所有东西都会被重新评估
-            current_db_status_map = {}
-        else:
-            # --- 新增：快速模式 ---
-            task_manager.update_status_from_thread(10, "快速模式：正在对比本地缓存与 Emby...")
+            logger.info(f"  ➜ [深度模式] 正在清空旧缓存以进行全面刷新...")
+            resubscribe_db.clear_resubscribe_cache_except_ignored()
             
-            # 1. 获取 Emby 和数据库中的所有 Item ID
-            emby_item_ids = {item['Id'] for item in all_emby_items_base_info}
-            db_cache_items = resubscribe_db.get_all_resubscribe_cache()
-            db_item_ids = {item['item_id'] for item in db_cache_items}
-            current_db_status_map = {item['item_id']: item['status'] for item in db_cache_items}
+            # ★★★ 关键修复：清空后，将所有非忽略的项目作为处理目标 ★★★
+            # 重新获取一次缓存，这次只剩下 ignored 的项目了
+            cached_items_after_clear = resubscribe_db.get_all_resubscribe_cache()
+            ignored_ids = {item['item_id'] for item in cached_items_after_clear}
+            
+            # 从所有 Emby 项目中，排除掉那些被忽略的
+            items_to_process = [item for item in all_items_base_info if item.get('Id') not in ignored_ids]
+            logger.info(f"  ➜ [深度模式] 将对 {len(items_to_process)} 个非忽略项目进行全面分析。")
 
-            # 2. 清理：找出并删除数据库中多余的记录
-            ids_to_delete = list(db_item_ids - emby_item_ids)
-            if ids_to_delete:
-                logger.info(f"  ➜ 快速模式清理：发现 {len(ids_to_delete)} 条缓存记录在 Emby 中已不存在，将被删除。")
-                resubscribe_db.delete_resubscribe_cache_items_batch(ids_to_delete)
-
-            # 3. 增量更新：只处理 Emby 中新增的项目
-            new_item_ids = emby_item_ids - db_item_ids
+        else:
+            # --- 快速模式 (逻辑保持不变) ---
+            logger.info("  ➜ [快速模式] 已启动，将进行增量扫描...")
+            cached_items = resubscribe_db.get_all_resubscribe_cache()
+            current_emby_ids = {item.get('Id') for item in all_items_base_info}
+            cached_ids = {item['item_id'] for item in cached_items}
+            
+            deleted_ids = list(cached_ids - current_emby_ids)
+            if deleted_ids:
+                logger.info(f"  ➜ [快速模式] 发现 {len(deleted_ids)} 个项目已从媒体库移除，将清理其缓存。")
+                resubscribe_db.delete_resubscribe_cache_items_batch(deleted_ids)
+            
+            new_item_ids = current_emby_ids - cached_ids
             if new_item_ids:
-                logger.info(f"  ➜ 快速模式：发现 {len(new_item_ids)} 个新媒体项目需要扫描。")
-                items_to_process = [item for item in all_emby_items_base_info if item['Id'] in new_item_ids]
+                logger.info(f"  ➜ [快速模式] 发现 {len(new_item_ids)} 个新项目，将对它们进行分析。")
+                items_to_process = [item for item in all_items_base_info if item.get('Id') in new_item_ids]
             else:
-                logger.info("  ➜ 快速模式：未发现新项目，也无陈旧缓存，无需处理。")
-                task_manager.update_status_from_thread(100, "任务完成：媒体库无变化。")
-                return
+                logger.info("  ➜ [快速模式] 未发现新增项目，无需分析。")
+
+        # ★★★ 无论哪种模式，都需要在处理前获取最新的缓存状态 ★★★
+        # 因为深度模式清空了缓存，所以需要重新获取
+        final_cached_items = resubscribe_db.get_all_resubscribe_cache()
+        current_db_status_map = {item['item_id']: item['status'] for item in final_cached_items}
 
         total = len(items_to_process)
         if total == 0:
-            task_manager.update_status_from_thread(100, "任务完成：在目标媒体库中未找到需要处理的项目。")
+            task_manager.update_status_from_thread(100, f"任务完成：({scan_mode}) 无需处理任何项目。")
             return
 
         logger.info(f"  ➜ 将为 {total} 个媒体项目获取详情并按规则检查洗版状态...")
@@ -1101,7 +1168,6 @@ def task_update_resubscribe_cache(processor, force_full_update: bool = False):
             item_name = item_base_info.get('Name')
             source_lib_id = item_base_info.get('_SourceLibraryId')
 
-            # 在快速模式下，我们已经过滤了新项目，所以这个检查主要对深度模式有效
             if current_db_status_map.get(item_id) == 'ignored': return None
         
             try:
@@ -1116,17 +1182,32 @@ def task_update_resubscribe_cache(processor, force_full_update: bool = False):
                 media_metadata = collection_db.get_media_metadata_by_tmdb_id(tmdb_id) if tmdb_id else None
                 item_type = item_details.get('Type')
                 if item_type == 'Series' and item_details.get('ChildCount', 0) > 0:
+                    # 步骤 1: 仅获取第一集的 ID，这是高效且轻量的
                     first_episode_list = emby_handler.get_series_children(
-                        series_id=item_id, base_url=processor.emby_url, api_key=processor.emby_api_key,
-                        user_id=processor.emby_user_id, include_item_types="Episode", fields="Id"
+                        series_id=item_id,
+                        base_url=processor.emby_url,
+                        api_key=processor.emby_api_key,
+                        user_id=processor.emby_user_id,
+                        include_item_types="Episode",
+                        fields="Id"  # 只需要 ID
                     )
-                    if first_episode_list and (first_episode_id := first_episode_list[0].get('Id')):
-                        first_episode_details = emby_handler.get_emby_item_details(
-                            first_episode_id, processor.emby_url, processor.emby_api_key, processor.emby_user_id
-                        )
-                        if first_episode_details:
-                            item_details['MediaStreams'] = first_episode_details.get('MediaStreams', [])
-                            item_details['Path'] = first_episode_details.get('Path', '')
+                    
+                    # 步骤 2: 如果找到了分集，就用它的 ID 去获取完整详情
+                    if first_episode_list:
+                        first_episode_id = first_episode_list[0].get('Id')
+                        if first_episode_id:
+                            # 这个调用会返回包含完整 MediaStreams 和 Path 的详细信息
+                            first_episode_details = emby_handler.get_emby_item_details(
+                                first_episode_id, 
+                                processor.emby_url, 
+                                processor.emby_api_key, 
+                                processor.emby_user_id
+                            )
+                            
+                            # 步骤 3: 用获取到的完整详情来代表整个剧集的质量
+                            if first_episode_details:
+                                item_details['MediaStreams'] = first_episode_details.get('MediaStreams', [])
+                                item_details['Path'] = first_episode_details.get('Path', '')
                 
                 needs_resubscribe, reason = _item_needs_resubscribe(item_details, applicable_rule, media_metadata)
                 old_status = current_db_status_map.get(item_id)
@@ -1137,38 +1218,57 @@ def task_update_resubscribe_cache(processor, force_full_update: bool = False):
                 file_name_lower = os.path.basename(item_details.get('Path', '')).lower()
                 
                 raw_effect_tag = _get_standardized_effect(file_name_lower, video_stream)
+                
                 EFFECT_DISPLAY_MAP = {'dovi_p8': 'DoVi P8', 'dovi_p7': 'DoVi P7', 'dovi_p5': 'DoVi P5', 'dovi_other': 'DoVi (Other)', 'hdr10+': 'HDR10+', 'hdr': 'HDR', 'sdr': 'SDR'}
                 effect_str = EFFECT_DISPLAY_MAP.get(raw_effect_tag, raw_effect_tag.upper())
 
                 resolution_str = "未知"
                 if video_stream:
+                    # ★★★ 3. (修改) 使用等级系统生成显示名称 ★★★
                     width = int(video_stream.get('Width') or 0)
                     height = int(video_stream.get('Height') or 0)
                     _ , resolution_str = _get_resolution_tier(width, height)
                 
                 quality_str = _extract_quality_tag_from_filename(file_name_lower, video_stream)
                 
-                detected_audio_langs = _get_detected_languages_from_streams(media_streams, 'Audio', AUDIO_SUBTITLE_KEYWORD_MAP)
+                detected_audio_langs = _get_detected_languages_from_streams(
+                    media_streams, 'Audio', AUDIO_SUBTITLE_KEYWORD_MAP
+                )
+
+                # 定义显示名称的映射
                 AUDIO_DISPLAY_MAP = {'chi': '国语', 'yue': '粤语', 'eng': '英语', 'jpn': '日语'}
+
+                # 生成显示字符串
                 display_audio_list = sorted([AUDIO_DISPLAY_MAP.get(lang, lang) for lang in detected_audio_langs])
                 audio_str = ', '.join(display_audio_list) or '无'
+
+                # 将原始检测结果也存入数据库
                 audio_langs_raw = list(detected_audio_langs)
 
-                detected_sub_langs = _get_detected_languages_from_streams(media_streams, 'Subtitle', AUDIO_SUBTITLE_KEYWORD_MAP)
+                detected_sub_langs = _get_detected_languages_from_streams(
+                    media_streams, 'Subtitle', AUDIO_SUBTITLE_KEYWORD_MAP
+                )
+
+                # ★★★ 新增的核心逻辑：外挂字幕显示规则 ★★★
                 if 'chi' not in detected_sub_langs and 'yue' not in detected_sub_langs:
                     if any(s.get('IsExternal') for s in media_streams if s.get('Type') == 'Subtitle'):
                         detected_sub_langs.add('chi')
+
                 SUB_DISPLAY_MAP = {'chi': '中字', 'yue': '粤字', 'eng': '英文', 'jpn': '日文'}
                 display_subtitle_list = sorted([SUB_DISPLAY_MAP.get(lang, lang) for lang in detected_sub_langs])
                 subtitle_str = ', '.join(display_subtitle_list) or '无'
                 subtitle_langs_raw = list(detected_sub_langs)
+                file_path = item_details.get('Path')
+                filename = os.path.basename(file_path) if file_path else None
                 
                 return {
                     "item_id": item_id, "item_name": item_details.get('Name'), "tmdb_id": tmdb_id, "item_type": item_type, "status": new_status, 
                     "reason": reason, "resolution_display": resolution_str, "quality_display": quality_str, "effect_display": effect_str,
                     "audio_display": audio_str, "subtitle_display": subtitle_str,
                     "audio_languages_raw": audio_langs_raw, "subtitle_languages_raw": subtitle_langs_raw,
-                    "matched_rule_id": applicable_rule.get('id'), "matched_rule_name": applicable_rule.get('name'), "source_library_id": source_lib_id
+                    "matched_rule_id": applicable_rule.get('id'), "matched_rule_name": applicable_rule.get('name'), "source_library_id": source_lib_id,
+                    "path": file_path, 
+                    "filename": filename
                 }
             except Exception as e:
                 logger.error(f"  ➜ 处理项目 '{item_name}' (ID: {item_id}) 时线程内发生错误: {e}", exc_info=True)
@@ -1189,9 +1289,9 @@ def task_update_resubscribe_cache(processor, force_full_update: bool = False):
             resubscribe_db.upsert_resubscribe_cache_batch(cache_update_batch)
             
             task_manager.update_status_from_thread(99, "缓存写入完成，即将刷新...")
-            time.sleep(1)
+            time.sleep(1) # 给前端一点反应时间，确保信号被接收
 
-        final_message = f"媒体洗版状态刷新完成 ({scan_mode})！"
+        final_message = "媒体洗版状态刷新完成！"
         if processor.is_stop_requested(): final_message = "任务已中止。"
         task_manager.update_status_from_thread(100, final_message)
 

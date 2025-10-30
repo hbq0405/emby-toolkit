@@ -141,7 +141,7 @@ def upsert_resubscribe_cache_batch(items_data: List[Dict[str, Any]]):
             item_id, item_name, tmdb_id, item_type, status, reason,
             resolution_display, quality_display, effect_display, audio_display, subtitle_display,
             audio_languages_raw, subtitle_languages_raw, last_checked_at,
-            matched_rule_id, matched_rule_name, source_library_id
+            matched_rule_id, matched_rule_name, source_library_id, path, filename
         ) VALUES %s
         ON CONFLICT (item_id) DO UPDATE SET
             item_name = EXCLUDED.item_name, tmdb_id = EXCLUDED.tmdb_id,
@@ -154,7 +154,9 @@ def upsert_resubscribe_cache_batch(items_data: List[Dict[str, Any]]):
             last_checked_at = EXCLUDED.last_checked_at,
             matched_rule_id = EXCLUDED.matched_rule_id,
             matched_rule_name = EXCLUDED.matched_rule_name,
-            source_library_id = EXCLUDED.source_library_id;
+            source_library_id = EXCLUDED.source_library_id,
+            path = EXCLUDED.path,
+            filename = EXCLUDED.filename;
     """
     values_to_insert = []
     for item in items_data:
@@ -168,7 +170,9 @@ def upsert_resubscribe_cache_batch(items_data: List[Dict[str, Any]]):
             datetime.now(timezone.utc),
             item.get('matched_rule_id'),
             item.get('matched_rule_name'),
-            item.get('source_library_id')
+            item.get('source_library_id'),
+            item.get('path'),
+            item.get('filename') 
         ))
     
     try:
@@ -301,4 +305,23 @@ def delete_resubscribe_cache_items_batch(item_ids: List[str]) -> int:
             return deleted_count
     except Exception as e:
         logger.error(f"DB: 批量删除洗版缓存时失败: {e}", exc_info=True)
+        return 0
+    
+def clear_resubscribe_cache_except_ignored() -> int:
+    """
+    【深度扫描专用】清空洗版缓存表中所有不是 'ignored' 状态的记录。
+    返回被删除的记录数。
+    """
+    try:
+        with get_db_connection() as conn:
+            cursor = conn.cursor()
+            sql = "DELETE FROM resubscribe_cache WHERE status != 'ignored'"
+            cursor.execute(sql)
+            deleted_count = cursor.rowcount
+            conn.commit()
+            if deleted_count > 0:
+                logger.info(f"DB: [深度扫描] 成功清空了 {deleted_count} 条非忽略状态的旧缓存。")
+            return deleted_count
+    except Exception as e:
+        logger.error(f"DB: [深度扫描] 清空洗版缓存时失败: {e}", exc_info=True)
         return 0
