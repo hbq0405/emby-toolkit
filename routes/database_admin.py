@@ -307,39 +307,24 @@ def api_get_review_items():
 def api_mark_item_processed(item_id):
     if task_manager.is_task_running(): return jsonify({"error": "后台有任务正在运行，请稍后再试。"}), 409
     try:
-        # ★★★ 核心修改 1: 在数据库操作前，先获取项目名称 ★★★
-        item_name = log_db.get_item_name_from_failed_log(item_id)
-
-        # 执行数据库操作
         success = log_db.mark_review_item_as_processed(item_id)
         
         if success:
-            # ★★★ 核心修改 2: 如果数据库操作成功，立即同步更新内存缓存 ★★★
-            if item_name:
-                extensions.media_processor_instance.processed_items_cache[item_id] = item_name
-                logger.info(f"已将项目 {item_id} ('{item_name}') 的状态同步到内存缓存。")
-            
-            return jsonify({"message": f"项目 {item_id} 已成功标记为已处理。"}), 200
+            return jsonify({"message": f"项目 {item_id} 已成功从待复核列表移除。"}), 200
         else:
             return jsonify({"error": f"未在待复核列表中找到项目 {item_id}。"}), 404
     except Exception as e:
         return jsonify({"error": "服务器内部错误"}), 500
 
-# ✨✨✨ 清空待复核列表（并全部标记为已处理）的 API ✨✨✨
+# ✨✨✨ 清空待复核列表 ✨✨✨
 @db_admin_bp.route('/actions/clear_review_items', methods=['POST'])
 @login_required
 def api_clear_review_items():
     try:
-        # ★★★ 核心修改 1: 调用修改后的函数，它会返回被移动的条目列表 ★★★
-        moved_items = log_db.clear_all_review_items()
-        count = len(moved_items)
+        count = log_db.clear_all_review_items()
 
-        # ★★★ 核心修改 2: 遍历返回的列表，逐个更新到内存缓存 ★★★
         if count > 0:
-            for item in moved_items:
-                extensions.media_processor_instance.processed_items_cache[item['item_id']] = item['item_name']
-            logger.info(f"已将 {count} 个项目从待复核列表的状态同步到内存缓存。")
-            message = f"操作成功！已将 {count} 个项目移至已处理列表。"
+            message = f"操作成功！已从待复核列表移除 {count} 个项目。"
         else:
             message = "操作完成，待复核列表本就是空的。"
             

@@ -970,6 +970,8 @@ class MediaProcessor:
                     reason = f"处理评分 ({processing_score:.2f}) 低于阈值 ({min_score_for_review})。"
                     logger.warning(f"  ➜ 《{item_name_for_log}》处理质量不佳，已标记待复核。原因: {reason}")
                     self.log_db_manager.save_to_failed_log(cursor, item_id, item_name_for_log, reason, item_type, score=processing_score)
+                    logger.info(f"  ➜ 同时将《{item_name_for_log}》标记为已处理，锁定状态等待手动复核。")
+                    self._mark_item_as_processed(cursor, item_id, item_name_for_log, score=processing_score)
                 else:
                     logger.info(f"  ➜ 《{item_name_for_log}》处理质量良好 (评分: {processing_score:.2f})，已标记已处理。")
                     self._mark_item_as_processed(cursor, item_id, item_name_for_log, score=processing_score)

@@ -122,62 +122,32 @@ def get_review_items_paginated(page: int, per_page: int, query_filter: str) -> T
         raise
 
 def mark_review_item_as_processed(item_id: str) -> bool:
-    
+    """从待复核列表中移除一个项目。"""
     try:
         with get_db_connection() as conn:
-            cursor = conn.cursor()
             with conn.cursor() as cursor:
-                cursor.execute("SELECT item_name, item_type, score FROM failed_log WHERE item_id = %s", (item_id,))
-                failed_item_info = cursor.fetchone()
-                if not failed_item_info: return False
-
                 cursor.execute("DELETE FROM failed_log WHERE item_id = %s", (item_id,))
-                
-                score_to_save = failed_item_info["score"] if failed_item_info["score"] is not None else 10.0
-                
-                upsert_sql = """
-                    INSERT INTO processed_log (item_id, item_name, processed_at, score) 
-                    VALUES (%s, %s, NOW(), %s)
-                    ON CONFLICT (item_id) DO UPDATE SET
-                        item_name = EXCLUDED.item_name,
-                        processed_at = NOW(),
-                        score = EXCLUDED.score;
-                """
-                cursor.execute(upsert_sql, (item_id, failed_item_info["item_name"], score_to_save))
+                # 检查是否真的删除了行
+                was_deleted = cursor.rowcount > 0
             conn.commit()
-            logger.info(f"DB: 项目 {item_id} 已成功移至已处理日志。")
-            return True
+            if was_deleted:
+                logger.info(f"DB: 项目 {item_id} 已成功从待复核日志中移除。")
+            return was_deleted
     except Exception as e:
-        logger.error(f"DB: 标记项目 {item_id} 为已处理时失败: {e}", exc_info=True)
+        logger.error(f"DB: 从待复核日志移除项目 {item_id} 时失败: {e}", exc_info=True)
         raise
 
-def clear_all_review_items() -> List[Dict[str, str]]:
-    """将所有待复核项移至已处理。"""
-    
-    moved_items = []
+def clear_all_review_items() -> int:
+    """清空所有待复核项。"""
     try:
         with get_db_connection() as conn:
             with conn.cursor() as cursor:
-                cursor.execute("SELECT item_id, item_name, score FROM failed_log")
-                items_to_move = cursor.fetchall()
-                
-                if not items_to_move:
-                    return []
-
-                for item in items_to_move:
-                    score_to_save = item["score"] if item["score"] is not None else 10.0
-                    cursor.execute(
-                        "INSERT INTO processed_log (item_id, item_name, processed_at, score) VALUES (%s, %s, NOW(), %s) "
-                        "ON CONFLICT (item_id) DO UPDATE SET item_name = EXCLUDED.item_name, processed_at = NOW(), score = EXCLUDED.score",
-                        (item['item_id'], item['item_name'], score_to_save)
-                    )
-                    moved_items.append(dict(item))
-
                 cursor.execute("DELETE FROM failed_log")
+                deleted_count = cursor.rowcount
                 conn.commit()
                 
-            logger.info(f"成功移动 {len(moved_items)} 条记录从待复核到已处理。")
-            return moved_items
+            logger.info(f"成功从待复核列表删除 {deleted_count} 条记录。")
+            return deleted_count
     except Exception as e:
-        logger.error(f"清空并标记待复核列表时发生异常：{e}", exc_info=True)
-        return []
+        logger.error(f"清空待复核列表时发生异常：{e}", exc_info=True)
+        return 0
