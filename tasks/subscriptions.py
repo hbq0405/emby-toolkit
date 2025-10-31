@@ -565,8 +565,6 @@ def build_resubscribe_payload(item_details: dict, rule: Optional[dict]) -> Optio
         # 将 datetime 和 date 对象都转换为 ISO 格式的字符串
         if isinstance(value, (datetime, date)):
             details_for_log[key] = value.isoformat()
-    
-    logger.info(f"[魔法日志] build_resubscribe_payload 接收到的 item_details:\n{json.dumps(details_for_log, ensure_ascii=False, indent=2)}")
 
     # --- 1. 更稳健地提取核心ID ---
     item_name = item_details.get('item_name') # 直接使用 item_name，它更可靠
@@ -713,9 +711,6 @@ def build_resubscribe_payload(item_details: dict, rule: Optional[dict]) -> Optio
         payload['include'] = "".join(final_include_lookaheads)
         logger.info(f"  ➜ 《{item_name}》按规则 '{rule_name}' 生成的 AND 正则过滤器(精筛): {payload['include']}")
 
-    # ★★★ 关键调试步骤 2: 打印最终生成的完整Payload ★★★
-    logger.info(f"[魔法日志] 最终生成的 payload:\n{json.dumps(payload, ensure_ascii=False, indent=2)}")
-    logger.info("============== 魔法日志: 结束 build_resubscribe_payload ==============")
     return payload
 
 def _item_needs_resubscribe(item_details: dict, config: dict, media_metadata: Optional[dict] = None) -> tuple[bool, str]:
