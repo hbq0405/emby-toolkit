@@ -12,9 +12,9 @@
           </n-space>
         </template>
         <n-alert title="操作提示" type="info" style="margin-top: 24px;">
-          先进行洗版规则设定，然后点击刷新按钮扫描全库媒体项，扫描完刷新页面会展示所有媒体项并按照预设的洗版规则显示是否需要洗版。<br />
-          按住Shift键可以进行多选然后批量操作。<br />
-          本模块所有涉及删除的功能都是删除Emby的媒体项和媒体文件，危险操作，慎用！！！
+          <li>先进行洗版规则设定，然后点击刷新按钮扫描全库媒体项，扫描完刷新页面会展示所有媒体项并按照预设的洗版规则显示是否需要洗版。</li>
+          <li>按住Shift键可以进行多选然后批量操作。</li>
+          <li>本模块所有涉及删除的功能都是删除Emby的媒体项和媒体文件，危险操作，慎用！！！</li>
         </n-alert>
         <template #extra>
           <n-space>
@@ -56,6 +56,18 @@
           style="width: 240px;"
         />
         <n-space align="center">
+          <n-select
+            v-model:value="mediaTypeFilter"
+            :options="mediaTypeOptions"
+            placeholder="按类型筛选"
+            style="width: 120px;"
+          />
+          <n-select
+            v-model:value="ruleFilter"
+            :options="ruleOptions"
+            placeholder="按规则筛选"
+            style="width: 200px;"
+          />
           <n-select
             v-model:value="sortBy"
             :options="sortOptions"
@@ -199,9 +211,17 @@ const lastSelectedIndex = ref(-1);
 const searchQuery = ref('');
 const sortBy = ref('item_name');
 const sortOrder = ref('asc');
+const mediaTypeFilter = ref(null); // 新增：媒体类型筛选
+const mediaTypeOptions = ref([ // 新增：媒体类型选项
+  { label: '全部类型', value: null },
+  { label: '电影', value: 'Movie' },
+  { label: '剧集', value: 'Series' },
+]);
+const ruleFilter = ref(null); // 新增：洗版规则筛选
+const ruleOptions = ref([{ label: '全部规则', value: null }]); // 新增：洗版规则选项
+
 const sortOptions = ref([
   { label: '按名称', value: 'item_name' },
-  // 未来可以添加更多排序选项，例如按添加日期等
 ]);
 
 const isTaskRunning = (taskName) => props.taskStatus.is_running && props.taskStatus.current_action.includes(taskName);
@@ -223,7 +243,22 @@ const filteredItems = computed(() => {
     items = items.filter(item => item.item_name.toLowerCase().includes(query));
   }
 
-  // 3. 排序 (新增逻辑)
+  // 3. 按媒体类型筛选 (新增逻辑)
+  if (mediaTypeFilter.value) {
+    if (mediaTypeFilter.value === 'Series') {
+      // 如果选择剧集，则包含 item_type 为 'Series' 或 'Season' 的项目
+      items = items.filter(item => item.item_type === 'Series' || item.item_type === 'Season');
+    } else {
+      items = items.filter(item => item.item_type === mediaTypeFilter.value);
+    }
+  }
+
+  // 4. 按洗版规则筛选 (新增逻辑)
+  if (ruleFilter.value !== null) {
+    items = items.filter(item => item.matched_rule_id === ruleFilter.value);
+  }
+
+  // 5. 排序 (新增逻辑)
   items.sort((a, b) => {
     const valA = a[sortBy.value];
     const valB = b[sortBy.value];
@@ -298,8 +333,23 @@ watch(filteredItems, (newFilteredItems) => {
   setupObserver();
 }, { immediate: true });
 
-onMounted(fetchData);
+onMounted(async () => {
+  await fetchData();
+  await fetchRules(); // 在组件挂载时获取规则列表
+});
 onUnmounted(() => { if (observer) observer.disconnect(); });
+
+const fetchRules = async () => {
+  try {
+    const response = await axios.get('/api/resubscribe/rules');
+    ruleOptions.value = [{ label: '全部规则', value: null }, ...response.data.map(rule => ({
+      label: rule.name,
+      value: rule.id
+    }))];
+  } catch (err) {
+    message.error('获取洗版规则列表失败。');
+  }
+};
 
 const handleCardClick = (event, item, index) => {
   const itemId = item.item_id;
