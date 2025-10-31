@@ -229,6 +229,19 @@ def get_season_details_tmdb(tv_id: int, season_number: int, api_key: str, append
     logger.debug(f"  ➜ TMDb API: 获取电视剧 {item_name_for_log}(ID: {tv_id}) 第 {season_number} 季的详情...")
     
     return _tmdb_request(endpoint, api_key, params)
+def get_tv_season_details(tv_id: int, season_number: int, api_key: str) -> Optional[Dict[str, Any]]:
+    """
+    【新增】获取电视剧某一季的详细信息。
+    这是 get_season_details_tmdb 的一个更简洁的别名，用于简化调用并获取海报。
+    """
+    # 直接调用已有的、功能更全的函数。
+    # 我们不需要 'credits' 等附加信息，所以 append_to_response 传 None，这样请求更轻量。
+    return get_season_details_tmdb(
+        tv_id=tv_id,
+        season_number=season_number,
+        api_key=api_key,
+        append_to_response=None
+    )
 # --- 并发获取剧集详情 ---
 def aggregate_full_series_data_from_tmdb(
     tv_id: int,

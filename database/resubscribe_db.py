@@ -132,54 +132,91 @@ def get_all_resubscribe_cache() -> List[Dict[str, Any]]:
         return []
 
 def upsert_resubscribe_cache_batch(items_data: List[Dict[str, Any]]):
-    
+    """
+    【V3 - 剧集分季修复版】
+    批量插入或更新洗版缓存表。
+    - 核心修复：确保 SQL 语句和数据准备过程都包含了 series_id 和 season_number 字段。
+    - 使用更现代的 execute_batch 方法以提高兼容性。
+    """
     if not items_data:
         return
 
+    # ★★★ 1. 更新 SQL 语句以包含新字段 ★★★
     sql = """
         INSERT INTO resubscribe_cache (
             item_id, item_name, tmdb_id, item_type, status, reason,
             resolution_display, quality_display, effect_display, audio_display, subtitle_display,
             audio_languages_raw, subtitle_languages_raw, last_checked_at,
-            matched_rule_id, matched_rule_name, source_library_id, path, filename
-        ) VALUES %s
+            matched_rule_id, matched_rule_name, source_library_id, path, filename,
+            series_id, season_number  -- 新增字段
+        )
+        VALUES (
+            %(item_id)s, %(item_name)s, %(tmdb_id)s, %(item_type)s, %(status)s, %(reason)s,
+            %(resolution_display)s, %(quality_display)s, %(effect_display)s, %(audio_display)s, %(subtitle_display)s,
+            %(audio_languages_raw)s, %(subtitle_languages_raw)s, NOW(),
+            %(matched_rule_id)s, %(matched_rule_name)s, %(source_library_id)s, %(path)s, %(filename)s,
+            %(series_id)s, %(season_number)s -- 新增字段
+        )
         ON CONFLICT (item_id) DO UPDATE SET
-            item_name = EXCLUDED.item_name, tmdb_id = EXCLUDED.tmdb_id,
-            item_type = EXCLUDED.item_type, status = EXCLUDED.status,
-            reason = EXCLUDED.reason, resolution_display = EXCLUDED.resolution_display,
-            quality_display = EXCLUDED.quality_display, effect_display = EXCLUDED.effect_display,
-            audio_display = EXCLUDED.audio_display, subtitle_display = EXCLUDED.subtitle_display,
+            item_name = EXCLUDED.item_name,
+            tmdb_id = EXCLUDED.tmdb_id,
+            item_type = EXCLUDED.item_type,
+            status = EXCLUDED.status,
+            reason = EXCLUDED.reason,
+            resolution_display = EXCLUDED.resolution_display,
+            quality_display = EXCLUDED.quality_display,
+            effect_display = EXCLUDED.effect_display,
+            audio_display = EXCLUDED.audio_display,
+            subtitle_display = EXCLUDED.subtitle_display,
             audio_languages_raw = EXCLUDED.audio_languages_raw,
             subtitle_languages_raw = EXCLUDED.subtitle_languages_raw,
-            last_checked_at = EXCLUDED.last_checked_at,
+            last_checked_at = NOW(),
             matched_rule_id = EXCLUDED.matched_rule_id,
             matched_rule_name = EXCLUDED.matched_rule_name,
             source_library_id = EXCLUDED.source_library_id,
             path = EXCLUDED.path,
-            filename = EXCLUDED.filename;
+            filename = EXCLUDED.filename,
+            series_id = EXCLUDED.series_id,          -- 新增字段
+            season_number = EXCLUDED.season_number;   -- 新增字段
     """
-    values_to_insert = []
-    for item in items_data:
-        values_to_insert.append((
-            item.get('item_id'), item.get('item_name'), item.get('tmdb_id'),
-            item.get('item_type'), item.get('status'), item.get('reason'),
-            item.get('resolution_display'), item.get('quality_display'), item.get('effect_display'),
-            item.get('audio_display'), item.get('subtitle_display'),
-            json.dumps(item.get('audio_languages_raw', [])),
-            json.dumps(item.get('subtitle_languages_raw', [])),
-            datetime.now(timezone.utc),
-            item.get('matched_rule_id'),
-            item.get('matched_rule_name'),
-            item.get('source_library_id'),
-            item.get('path'),
-            item.get('filename') 
-        ))
     
+    # ★★★ 2. 准备数据，确保每个字典都包含所有键，即使是 None ★★★
+    # 这是为了让 execute_batch 能够正常工作
+    prepared_items = []
+    for item in items_data:
+        # 确保所有可能的键都存在，为缺失的键提供默认值 None
+        full_item = {
+            'item_id': item.get('item_id'),
+            'item_name': item.get('item_name'),
+            'tmdb_id': item.get('tmdb_id'),
+            'item_type': item.get('item_type'),
+            'status': item.get('status'),
+            'reason': item.get('reason'),
+            'resolution_display': item.get('resolution_display'),
+            'quality_display': item.get('quality_display'),
+            'effect_display': item.get('effect_display'),
+            'audio_display': item.get('audio_display'),
+            'subtitle_display': item.get('subtitle_display'),
+            'audio_languages_raw': Json(item.get('audio_languages_raw')),
+            'subtitle_languages_raw': Json(item.get('subtitle_languages_raw')),
+            'matched_rule_id': item.get('matched_rule_id'),
+            'matched_rule_name': item.get('matched_rule_name'),
+            'source_library_id': item.get('source_library_id'),
+            'path': item.get('path'),
+            'filename': item.get('filename'),
+            'series_id': item.get('series_id'), # ★★★ 包含新字段
+            'season_number': item.get('season_number') # ★★★ 包含新字段
+        }
+        prepared_items.append(full_item)
+
     try:
         with get_db_connection() as conn:
-            cursor = conn.cursor()
-            execute_values(cursor, sql, values_to_insert, page_size=500)
+            with conn.cursor() as cursor:
+                # ★★★ 3. 使用更现代、更推荐的 execute_batch 方法 ★★★
+                from psycopg2.extras import execute_batch
+                execute_batch(cursor, sql, prepared_items, page_size=500)
             conn.commit()
+        logger.info(f"成功向 resubscribe_cache 表中写入/更新了 {len(items_data)} 条记录。")
     except Exception as e:
         logger.error(f"  ➜ 批量更新洗版缓存失败: {e}", exc_info=True)
         raise

@@ -848,6 +848,68 @@ def get_series_children(
     except requests.exceptions.RequestException as e:
         logger.error(f"获取剧集 {log_identifier} 的子项目列表时发生错误: {e}", exc_info=True)
         return None
+# ✨✨✨ 获取剧集下所有季的函数 ✨✨✨
+def get_series_seasons(
+    series_id: str,
+    base_url: str,
+    api_key: str,
+    user_id: str,
+    series_name_for_log: Optional[str] = None
+) -> Optional[List[Dict[str, Any]]]:
+    """
+    【新增】专门用于获取一个剧集下所有“季”（Season）的列表。
+    这是通过调用 get_series_children 实现的，以确保代码复用。
+    """
+    # 直接调用通用的 get_series_children 函数，并指定只获取 Season 类型
+    return get_series_children(
+        series_id=series_id,
+        base_url=base_url,
+        api_key=api_key,
+        user_id=user_id,
+        series_name_for_log=series_name_for_log,
+        include_item_types="Season",  # ★★★ 核心：只请求季
+        fields="Id,Name,IndexNumber"  # ★★★ 核心：请求季ID和季号，这是洗版逻辑需要的
+    )
+
+# ✨✨✨ 获取季下所有分集的函数 ✨✨✨
+def get_season_children(
+    season_id: str,
+    base_url: str,
+    api_key: str,
+    user_id: str,
+    fields: str = "Id,Name",
+    limit: Optional[int] = None
+) -> Optional[List[Dict[str, Any]]]:
+    """
+    【新增】获取一个季（Season）下的所有子项目，通常是分集（Episode）。
+    """
+    if not all([season_id, base_url, api_key, user_id]):
+        logger.error(f"get_season_children for ID {season_id}: 参数不足。")
+        return None
+
+    api_url = f"{base_url.rstrip('/')}/Users/{user_id}/Items"
+    params = {
+        "api_key": api_key,
+        "ParentId": season_id,
+        "IncludeItemTypes": "Episode",
+        "Recursive": "true",
+        "Fields": fields,
+    }
+    if limit is not None:
+        params["Limit"] = limit
+    
+    logger.debug(f"  ➜ 准备获取季 {season_id} 的子项目...")
+    try:
+        api_timeout = config_manager.APP_CONFIG.get(constants.CONFIG_OPTION_EMBY_API_TIMEOUT, 60)
+        response = requests.get(api_url, params=params, timeout=api_timeout)
+        response.raise_for_status()
+        data = response.json()
+        children = data.get("Items", [])
+        logger.debug(f"  ➜ 成功为季 {season_id} 获取到 {len(children)} 个子项目。")
+        return children
+    except requests.exceptions.RequestException as e:
+        logger.error(f"获取季 {season_id} 的子项目列表时发生错误: {e}", exc_info=True)
+        return None
 # ✨✨✨ 根据子项目ID（如分集或季）获取其所属的剧集（Series）的ID ✨✨✨    
 def get_series_id_from_child_id(
     item_id: str,

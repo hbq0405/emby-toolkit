@@ -316,6 +316,8 @@ def init_db():
                 cursor.execute("""
                     CREATE TABLE IF NOT EXISTS resubscribe_cache (
                         item_id TEXT PRIMARY KEY,
+                        series_id TEXT,  
+                        season_number INTEGER,
                         item_name TEXT,
                         tmdb_id TEXT,
                         item_type TEXT,
@@ -478,6 +480,8 @@ def init_db():
                             "is_airing": "BOOLEAN DEFAULT FALSE NOT NULL"
                         },
                         'resubscribe_cache': {
+                            "series_id": "TEXT",  
+                            "season_number": "INTEGER",  
                             "matched_rule_id": "INTEGER",
                             "matched_rule_name": "TEXT",
                             "source_library_id": "TEXT",

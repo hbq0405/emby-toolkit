@@ -21,44 +21,41 @@ from .helpers import _get_standardized_effect, _extract_quality_tag_from_filenam
 
 logger = logging.getLogger(__name__)
 
-def _extract_exclusion_keywords_from_filename(filename: str) -> Optional[str]:
+def _extract_exclusion_keywords_from_filename(filename: str) -> List[str]:
     """
-    【V6 - 智能识别组】
-    - 核心升级：重写了发布组的识别逻辑，不再依赖 '-' 作为前缀。
-    - 新逻辑：将文件名末尾的、非技术标签的词识别为发布组，更加健壮和智能。
+    【V8 - 职责明确版】
+    - 核心职责：仅负责从文件名中提取有效的、非中文的技术标签和发布组关键字。
+    - 输出：返回一个干净的关键字列表 (List[str])。如果提取不到任何有效关键字，则返回一个空列表。
+    - ★★★ 本函数不再负责生成任何最终格式的字符串。
     """
     if not filename:
-        return None
+        return []
 
     name_part = os.path.splitext(filename)[0]
     keywords = set()
 
-    # 定义所有已知的技术标签，用于反向排除
     KNOWN_TECH_TAGS = {
         'BLURAY', 'BDRIP', 'WEB-DL', 'WEBDL', 'WEBRIP', 'HDTV', 'REMUX', 
         'X264', 'X265', 'H264', 'H265', 'AVC', 'HEVC', '10BIT', 
         'DTS', 'AC3', 'ATMOS', 'DDP5', 'AAC', 'FLAC',
-        '1080P', '2160P', '720P', '4K', 'UHD' # 也排除掉分辨率
+        '1080P', '2160P', '720P', '4K', 'UHD'
     }
 
-    # ======================================================================
-    # ★★★★★★★★★★★★★★★★★ 核心升级：智能识别发布组 ★★★★★★★★★★★★★★★★★
-    # ======================================================================
-    # 1. 将文件名按所有可能的分隔符拆分成单词列表
     words = re.split(r'[.\s_·()\[\]-]', name_part)
-    
-    # 2. 从后往前遍历单词列表，寻找第一个不属于已知技术标签的词
-    for word in reversed(words):
-        if word and len(word) > 2 and not word.isdigit():
-            # 检查这个词的大写形式是否在我们的技术标签库里
-            if word.upper() not in KNOWN_TECH_TAGS:
-                # 如果不是，我们就认定它是发布组！
-                keywords.add(word)
-                # 找到一个就够了，跳出循环
-                break
-    # ======================================================================
+    season_episode_pattern = re.compile(r'^S\d{2,4}E\d{2,4}$', re.IGNORECASE)
 
-    # 3. 提取所有技术标签（这部分逻辑保持不变，作为补充）
+    for word in reversed(words):
+        if not word or season_episode_pattern.match(word):
+            continue
+        
+        if re.search(r'[\u4e00-\u9fff]', word):
+            continue
+
+        if len(word) > 2 and not word.isdigit():
+            if word.upper() not in KNOWN_TECH_TAGS:
+                keywords.add(word)
+                break
+
     normalized_name_part = re.sub(r'[\s_·()\[\]]', '.', name_part)
     common_tags_regex = r'\.(BluRay|BDRip|WEB-DL|WEBDL|WEBRip|HDTV|REMUX|x264|x265|h264|h265|AVC|HEVC|10bit|DTS|AC3|Atmos|DDP5|AAC|FLAC)\b'
     found_tags = re.findall(common_tags_regex, normalized_name_part, re.IGNORECASE)
@@ -67,14 +64,7 @@ def _extract_exclusion_keywords_from_filename(filename: str) -> Optional[str]:
         normalized_tag = tag.upper().replace('WEB-DL', 'WEBDL')
         keywords.add(normalized_tag)
 
-    # 4. 生成最终的“且”逻辑正则表达式
-    if keywords:
-        final_keywords = {k for k in keywords if k}
-        if final_keywords:
-            and_regex_parts = [f"(?=.*{re.escape(k)})" for k in sorted(list(final_keywords))]
-            return "".join(and_regex_parts)
-    
-    return None
+    return sorted(list(keywords))
 
 def _get_detected_languages_from_streams(
     media_streams: List[dict], 
@@ -563,30 +553,78 @@ def task_auto_subscribe(processor):
 # ★★★ 媒体洗版任务 ★★★
 def build_resubscribe_payload(item_details: dict, rule: Optional[dict]) -> Optional[dict]:
     """
-    - 【V5 - 亮出底牌版】在函数入口处，直接打印接收到的完整 item_details 字典。
+    - 【V6 - 健壮与调试版】
+    - 增加详细的入口日志，用于排查问题。
+    - 强化了从 item_details 中提取核心信息的逻辑。
+    - 确保为“季”类型正确添加 season 参数。
     """
-    item_name = item_details.get('Name') or item_details.get('item_name')
-    tmdb_id = item_details.get("ProviderIds", {}).get("Tmdb") or item_details.get('tmdb_id')
-    item_type = item_details.get("Type") or item_details.get('item_type')
+    # ★★★ 关键调试步骤 1: 打印传入的完整原始数据 ★★★
+    from datetime import date, datetime # 确保导入
+    details_for_log = item_details.copy()
+    for key, value in details_for_log.items():
+        # 将 datetime 和 date 对象都转换为 ISO 格式的字符串
+        if isinstance(value, (datetime, date)):
+            details_for_log[key] = value.isoformat()
+    
+    logger.info(f"[魔法日志] build_resubscribe_payload 接收到的 item_details:\n{json.dumps(details_for_log, ensure_ascii=False, indent=2)}")
 
-    if not all([item_name, tmdb_id, item_type]):
-        logger.error(f"构建Payload失败：缺少核心媒体信息 {item_details}")
+    # --- 1. 更稳健地提取核心ID ---
+    item_name = item_details.get('item_name') # 直接使用 item_name，它更可靠
+    tmdb_id_str = str(item_details.get('tmdb_id', '')).strip()
+    item_type = item_details.get('item_type') # 'Movie' or 'Season'
+
+    if not all([item_name, tmdb_id_str, item_type]):
+        logger.error(f"构建Payload失败：缺少核心媒体信息 (name, tmdb_id, type)。来源: {item_details}")
+        return None
+    
+    try:
+        tmdb_id = int(tmdb_id_str)
+    except (ValueError, TypeError):
+        logger.error(f"构建Payload失败：TMDB ID '{tmdb_id_str}' 不是一个有效的数字。")
         return None
 
+    # --- 2. 初始化Payload，并根据类型决定基础订阅名 ---
+    # 默认使用原始剧集名，避免名称中包含 “- 第 X 季”
+    base_series_name = item_name.split(' - 第')[0]
+    media_type_for_payload = "电视剧" if item_type in ["Series", "Season"] else "电影"
+
     payload = {
-        "name": item_name, "tmdbid": int(tmdb_id),
-        "type": "电影" if item_type == "Movie" else "电视剧",
+        "name": base_series_name,
+        "tmdbid": tmdb_id,
+        "type": media_type_for_payload,
         "best_version": 1
     }
 
+    # --- 3. ★★★ 核心逻辑：如果是季，则必须添加 season 字段 ★★★
+    if item_type == "Season":
+        season_num = item_details.get('season_number')
+        if season_num is not None:
+            payload['season'] = int(season_num)
+            logger.info(f"  ➜ 已为《{base_series_name}》精准指定订阅季: {payload['season']}")
+        else:
+            # 这是一个保护性分支，正常情况下不应该进入
+            logger.error(f"  ➜ 严重错误：项目类型为 'Season'，但在数据库记录中未找到 'season_number'！将按整季订阅，可能导致问题！")
+
+    # --- 4. 处理文件名排除逻辑 ---
     original_filename = item_details.get('filename')
     if original_filename:
-        exclusion_keywords = _extract_exclusion_keywords_from_filename(original_filename)
+        exclusion_keywords_list = _extract_exclusion_keywords_from_filename(original_filename)
         
-        if exclusion_keywords:
-            payload['exclude'] = exclusion_keywords
+        # ★★★★★★★★★★★★★★★★★ 核心逻辑重构 ★★★★★★★★★★★★★★★★★
+        # 只有在提取到有效关键字时，才构建并应用“且(AND)”逻辑的正则表达式
+        if exclusion_keywords_list:
+            # 使用正则表达式的正向先行断言 (positive lookahead) 来实现 AND 逻辑
+            # 例如: (?=.*1080p)(?=.*x265)(?=.*GROUP)
+            # 这意味着标题中必须同时包含 "1080p", "x265", 和 "GROUP"
+            and_regex_parts = [f"(?=.*{re.escape(k)})" for k in exclusion_keywords_list]
+            payload['exclude'] = "".join(and_regex_parts)
+            logger.info(f"  ➜ 精准排除模式：已为《{item_name}》生成 AND 逻辑正则: {payload['exclude']}")
         else:
-            logger.info("  ❌ 提取失败或无关键字返回。跳过添加 exclude 参数。")
+            # 如果列表为空，说明文件名很干净，没有任何可供排除的特征
+            # 此时我们不添加任何 exclude 参数，这是最安全的做法
+            logger.info(f"  ✅ 文件名分析完成，未提取到有效技术或发布组关键字，不添加排除规则。")
+        # ★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★
+
     else:
         logger.info("  🤷 文件名为空或不存在，无法提取关键字。")
 
@@ -675,10 +713,9 @@ def build_resubscribe_payload(item_details: dict, rule: Optional[dict]) -> Optio
         payload['include'] = "".join(final_include_lookaheads)
         logger.info(f"  ➜ 《{item_name}》按规则 '{rule_name}' 生成的 AND 正则过滤器(精筛): {payload['include']}")
 
-    # ======================== 魔法日志 START ========================
-    logger.info(f"[魔法日志] 最终生成的 payload (自定义规则模式):\n{json.dumps(payload, ensure_ascii=False, indent=2)}")
+    # ★★★ 关键调试步骤 2: 打印最终生成的完整Payload ★★★
+    logger.info(f"[魔法日志] 最终生成的 payload:\n{json.dumps(payload, ensure_ascii=False, indent=2)}")
     logger.info("============== 魔法日志: 结束 build_resubscribe_payload ==============")
-    # ===============================================================
     return payload
 
 def _item_needs_resubscribe(item_details: dict, config: dict, media_metadata: Optional[dict] = None) -> tuple[bool, str]:
@@ -1212,96 +1249,134 @@ def task_update_resubscribe_cache(processor, force_full_update: bool = False):
                 tmdb_id = item_details.get("ProviderIds", {}).get("Tmdb")
                 media_metadata = collection_db.get_media_metadata_by_tmdb_id(tmdb_id) if tmdb_id else None
                 item_type = item_details.get('Type')
-                if item_type == 'Series' and item_details.get('ChildCount', 0) > 0:
-                    # 步骤 1: 仅获取第一集的 ID，这是高效且轻量的
-                    first_episode_list = emby_handler.get_series_children(
-                        series_id=item_id,
-                        base_url=processor.emby_url,
-                        api_key=processor.emby_api_key,
-                        user_id=processor.emby_user_id,
-                        include_item_types="Episode",
-                        fields="Id"  # 只需要 ID
-                    )
+
+                # ★★★ 核心改造：如果是剧集，则按季处理 ★★★
+                if item_type == 'Series':
+                    seasons = emby_handler.get_series_seasons(item_id, processor.emby_url, processor.emby_api_key, processor.emby_user_id)
+                    if not seasons:
+                        return None # 如果剧集没有季信息，则跳过
+
+                    season_cache_results = []
                     
-                    # 步骤 2: 如果找到了分集，就用它的 ID 去获取完整详情
-                    if first_episode_list:
-                        first_episode_id = first_episode_list[0].get('Id')
-                        if first_episode_id:
-                            # 这个调用会返回包含完整 MediaStreams 和 Path 的详细信息
-                            first_episode_details = emby_handler.get_emby_item_details(
-                                first_episode_id, 
-                                processor.emby_url, 
-                                processor.emby_api_key, 
-                                processor.emby_user_id
-                            )
-                            
-                            # 步骤 3: 用获取到的完整详情来代表整个剧集的质量
-                            if first_episode_details:
-                                item_details['MediaStreams'] = first_episode_details.get('MediaStreams', [])
-                                item_details['Path'] = first_episode_details.get('Path', '')
-                                item_details['MediaSources'] = first_episode_details.get('MediaSources', [])
-                
-                needs_resubscribe, reason = _item_needs_resubscribe(item_details, applicable_rule, media_metadata)
-                old_status = current_db_status_map.get(item_id)
-                new_status = 'ok' if not needs_resubscribe else ('subscribed' if old_status == 'subscribed' else 'needed')
-                
-                media_streams = item_details.get('MediaStreams', [])
-                video_stream = next((s for s in media_streams if s.get('Type') == 'Video'), None)
-                file_name_lower = os.path.basename(item_details.get('Path', '')).lower()
-                
-                raw_effect_tag = _get_standardized_effect(file_name_lower, video_stream)
-                
-                EFFECT_DISPLAY_MAP = {'dovi_p8': 'DoVi P8', 'dovi_p7': 'DoVi P7', 'dovi_p5': 'DoVi P5', 'dovi_other': 'DoVi (Other)', 'hdr10+': 'HDR10+', 'hdr': 'HDR', 'sdr': 'SDR'}
-                effect_str = EFFECT_DISPLAY_MAP.get(raw_effect_tag, raw_effect_tag.upper())
+                    for season in seasons:
+                        season_number = season.get('IndexNumber')
+                        season_id = season.get('Id')
+                        if season_number is None or season_id is None:
+                            continue
 
-                resolution_str = "未知"
-                if video_stream:
-                    # ★★★ 3. (修改) 使用等级系统生成显示名称 ★★★
-                    width = int(video_stream.get('Width') or 0)
-                    height = int(video_stream.get('Height') or 0)
-                    _ , resolution_str = _get_resolution_tier(width, height)
-                
-                quality_str = _extract_quality_tag_from_filename(file_name_lower, video_stream)
-                
-                detected_audio_langs = _get_detected_languages_from_streams(
-                    media_streams, 'Audio', AUDIO_SUBTITLE_KEYWORD_MAP
-                )
+                        season_item_id = f"{item_id}-S{season_number}"
+                        
+                        first_episode_details = None
+                        first_episode_list = emby_handler.get_season_children(season_id, processor.emby_url, processor.emby_api_key, processor.emby_user_id, fields="Id", limit=1)
+                        if first_episode_list and (first_episode_id := first_episode_list[0].get('Id')):
+                            first_episode_details = emby_handler.get_emby_item_details(first_episode_id, processor.emby_url, processor.emby_api_key, processor.emby_user_id)
 
-                # 定义显示名称的映射
-                AUDIO_DISPLAY_MAP = {'chi': '国语', 'yue': '粤语', 'eng': '英语', 'jpn': '日语'}
+                        if not first_episode_details:
+                            needs_resubscribe, reason = False, "季内容为空"
+                        else:
+                            needs_resubscribe, reason = _item_needs_resubscribe(first_episode_details, applicable_rule, media_metadata)
 
-                # 生成显示字符串
-                display_audio_list = sorted([AUDIO_DISPLAY_MAP.get(lang, lang) for lang in detected_audio_langs])
-                audio_str = ', '.join(display_audio_list) or '无'
+                        old_status = current_db_status_map.get(season_item_id)
+                        new_status = 'ok' if not needs_resubscribe else ('subscribed' if old_status == 'subscribed' else 'needed')
+                        
+                        # --- 以下所有显示信息的生成逻辑，都基于 first_episode_details ---
+                        media_streams = first_episode_details.get('MediaStreams', []) if first_episode_details else []
+                        video_stream = next((s for s in media_streams if s.get('Type') == 'Video'), None)
+                        file_name_lower = os.path.basename(first_episode_details.get('Path', '')).lower() if first_episode_details else ""
+                        
+                        raw_effect_tag = _get_standardized_effect(file_name_lower, video_stream)
+                        EFFECT_DISPLAY_MAP = {'dovi_p8': 'DoVi P8', 'dovi_p7': 'DoVi P7', 'dovi_p5': 'DoVi P5', 'dovi_other': 'DoVi (Other)', 'hdr10+': 'HDR10+', 'hdr': 'HDR', 'sdr': 'SDR'}
+                        effect_str = EFFECT_DISPLAY_MAP.get(raw_effect_tag, raw_effect_tag.upper())
 
-                # 将原始检测结果也存入数据库
-                audio_langs_raw = list(detected_audio_langs)
+                        resolution_str = "未知"
+                        if video_stream:
+                            width, height = int(video_stream.get('Width') or 0), int(video_stream.get('Height') or 0)
+                            _, resolution_str = _get_resolution_tier(width, height)
+                        
+                        quality_str = _extract_quality_tag_from_filename(file_name_lower, video_stream)
+                        
+                        detected_audio_langs = _get_detected_languages_from_streams(media_streams, 'Audio', AUDIO_SUBTITLE_KEYWORD_MAP)
+                        AUDIO_DISPLAY_MAP = {'chi': '国语', 'yue': '粤语', 'eng': '英语', 'jpn': '日语'}
+                        audio_str = ', '.join(sorted([AUDIO_DISPLAY_MAP.get(lang, lang) for lang in detected_audio_langs])) or '无'
+                        
+                        detected_sub_langs = _get_detected_languages_from_streams(media_streams, 'Subtitle', AUDIO_SUBTITLE_KEYWORD_MAP)
+                        if 'chi' not in detected_sub_langs and 'yue' not in detected_sub_langs and any(s.get('IsExternal') for s in media_streams if s.get('Type') == 'Subtitle'):
+                            detected_sub_langs.add('chi')
+                        SUB_DISPLAY_MAP = {'chi': '中字', 'yue': '粤字', 'eng': '英文', 'jpn': '日文'}
+                        subtitle_str = ', '.join(sorted([SUB_DISPLAY_MAP.get(lang, lang) for lang in detected_sub_langs])) or '无'
 
-                detected_sub_langs = _get_detected_languages_from_streams(
-                    media_streams, 'Subtitle', AUDIO_SUBTITLE_KEYWORD_MAP
-                )
+                        file_path = first_episode_details.get('Path') if first_episode_details else None
+                        filename = os.path.basename(file_path) if file_path else None
 
-                # ★★★ 新增的核心逻辑：外挂字幕显示规则 ★★★
-                if 'chi' not in detected_sub_langs and 'yue' not in detected_sub_langs:
-                    if any(s.get('IsExternal') for s in media_streams if s.get('Type') == 'Subtitle'):
+                        season_cache_item = {
+                            "item_id": season_item_id,
+                            "series_id": item_id,
+                            "season_number": season_number,
+                            "item_name": f"{item_name} - 第 {season_number} 季",
+                            "tmdb_id": tmdb_id,
+                            "item_type": "Season",
+                            "status": new_status,
+                            "reason": reason,
+                            "resolution_display": resolution_str,
+                            "quality_display": quality_str,
+                            "effect_display": effect_str,
+                            "audio_display": audio_str,
+                            "subtitle_display": subtitle_str,
+                            "audio_languages_raw": list(detected_audio_langs),
+                            "subtitle_languages_raw": list(detected_sub_langs),
+                            "matched_rule_id": applicable_rule.get('id'),
+                            "matched_rule_name": applicable_rule.get('name'),
+                            "source_library_id": source_lib_id,
+                            "path": file_path,
+                            "filename": filename
+                        }
+                        season_cache_results.append(season_cache_item)
+                    
+                    return season_cache_results # 返回包含所有季结果的列表
+
+                # 如果不是剧集（是电影），则沿用旧逻辑
+                else:
+                    needs_resubscribe, reason = _item_needs_resubscribe(item_details, applicable_rule, media_metadata)
+                    old_status = current_db_status_map.get(item_id)
+                    new_status = 'ok' if not needs_resubscribe else ('subscribed' if old_status == 'subscribed' else 'needed')
+                    
+                    media_streams = item_details.get('MediaStreams', [])
+                    video_stream = next((s for s in media_streams if s.get('Type') == 'Video'), None)
+                    file_name_lower = os.path.basename(item_details.get('Path', '')).lower()
+                    
+                    raw_effect_tag = _get_standardized_effect(file_name_lower, video_stream)
+                    EFFECT_DISPLAY_MAP = {'dovi_p8': 'DoVi P8', 'dovi_p7': 'DoVi P7', 'dovi_p5': 'DoVi P5', 'dovi_other': 'DoVi (Other)', 'hdr10+': 'HDR10+', 'hdr': 'HDR', 'sdr': 'SDR'}
+                    effect_str = EFFECT_DISPLAY_MAP.get(raw_effect_tag, raw_effect_tag.upper())
+
+                    resolution_str = "未知"
+                    if video_stream:
+                        width, height = int(video_stream.get('Width') or 0), int(video_stream.get('Height') or 0)
+                        _, resolution_str = _get_resolution_tier(width, height)
+                    
+                    quality_str = _extract_quality_tag_from_filename(file_name_lower, video_stream)
+                    
+                    detected_audio_langs = _get_detected_languages_from_streams(media_streams, 'Audio', AUDIO_SUBTITLE_KEYWORD_MAP)
+                    AUDIO_DISPLAY_MAP = {'chi': '国语', 'yue': '粤语', 'eng': '英语', 'jpn': '日语'}
+                    audio_str = ', '.join(sorted([AUDIO_DISPLAY_MAP.get(lang, lang) for lang in detected_audio_langs])) or '无'
+                    
+                    detected_sub_langs = _get_detected_languages_from_streams(media_streams, 'Subtitle', AUDIO_SUBTITLE_KEYWORD_MAP)
+                    if 'chi' not in detected_sub_langs and 'yue' not in detected_sub_langs and any(s.get('IsExternal') for s in media_streams if s.get('Type') == 'Subtitle'):
                         detected_sub_langs.add('chi')
+                    SUB_DISPLAY_MAP = {'chi': '中字', 'yue': '粤字', 'eng': '英文', 'jpn': '日文'}
+                    subtitle_str = ', '.join(sorted([SUB_DISPLAY_MAP.get(lang, lang) for lang in detected_sub_langs])) or '无'
 
-                SUB_DISPLAY_MAP = {'chi': '中字', 'yue': '粤字', 'eng': '英文', 'jpn': '日文'}
-                display_subtitle_list = sorted([SUB_DISPLAY_MAP.get(lang, lang) for lang in detected_sub_langs])
-                subtitle_str = ', '.join(display_subtitle_list) or '无'
-                subtitle_langs_raw = list(detected_sub_langs)
-                file_path = item_details.get('Path')
-                filename = os.path.basename(file_path) if file_path else None
+                    file_path = item_details.get('Path')
+                    filename = os.path.basename(file_path) if file_path else None
 
-                return {
-                    "item_id": item_id, "item_name": item_details.get('Name'), "tmdb_id": tmdb_id, "item_type": item_type, "status": new_status, 
-                    "reason": reason, "resolution_display": resolution_str, "quality_display": quality_str, "effect_display": effect_str,
-                    "audio_display": audio_str, "subtitle_display": subtitle_str,
-                    "audio_languages_raw": audio_langs_raw, "subtitle_languages_raw": subtitle_langs_raw,
-                    "matched_rule_id": applicable_rule.get('id'), "matched_rule_name": applicable_rule.get('name'), "source_library_id": source_lib_id,
-                    "path": file_path, 
-                    "filename": filename
-                }
+                    return {
+                        "item_id": item_id, "item_name": item_details.get('Name'), "tmdb_id": tmdb_id, "item_type": item_type, "status": new_status, 
+                        "reason": reason, "resolution_display": resolution_str, "quality_display": quality_str, "effect_display": effect_str,
+                        "audio_display": audio_str, "subtitle_display": subtitle_str,
+                        "audio_languages_raw": list(detected_audio_langs), "subtitle_languages_raw": list(detected_sub_langs),
+                        "matched_rule_id": applicable_rule.get('id'), "matched_rule_name": applicable_rule.get('name'), "source_library_id": source_lib_id,
+                        "path": file_path, 
+                        "filename": filename
+                    }
             except Exception as e:
                 logger.error(f"  ➜ 处理项目 '{item_name}' (ID: {item_id}) 时线程内发生错误: {e}", exc_info=True)
                 return None
@@ -1311,7 +1386,12 @@ def task_update_resubscribe_cache(processor, force_full_update: bool = False):
             for future in as_completed(future_to_item):
                 if processor.is_stop_requested(): break
                 result = future.result()
-                if result: cache_update_batch.append(result)
+                if result:
+                    # ★★★ 修改点：如果返回的是列表（剧集的多季结果），则扩展列表 ★★★
+                    if isinstance(result, list):
+                        cache_update_batch.extend(result)
+                    else:
+                        cache_update_batch.append(result)
                 processed_count += 1
                 progress = int(20 + (processed_count / (total or 1)) * 80)
                 task_manager.update_status_from_thread(progress, f"({processed_count}/{total}) 正在分析: {future_to_item[future].get('Name')}")
