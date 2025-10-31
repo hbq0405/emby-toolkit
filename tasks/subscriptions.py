@@ -1073,8 +1073,20 @@ def task_resubscribe_library(processor):
                 # --- ★★★ 核心逻辑改造：根据规则决定是“删除”还是“更新” ★★★ ---
                 if rule and rule.get('delete_after_resubscribe'):
                     logger.warning(f"  ➜ 规则 '{rule['name']}' 要求删除源文件，正在删除 Emby 项目: {item_name} (ID: {item_id})")
+                    
+                    id_to_delete = None
+                    if item.get('item_type') == 'Season':
+                        id_to_delete = item.get('emby_item_id') # 对于季，必须使用 emby_item_id (实际的季GUID)
+                        if not id_to_delete:
+                            logger.error(f"  ➜ 无法删除季 '{item_name}' (缓存ID: {item_id})：emby_item_id (季GUID) 为空。跳过删除。")
+                            resubscribe_db.update_resubscribe_item_status(item_id, 'subscribed') # 订阅成功，但删除失败
+                            continue
+                    else:
+                        id_to_delete = item.get('emby_item_id') or item_id # 对于电影或剧集，优先使用 emby_item_id，否则回退到 item_id
+
                     delete_success = emby_handler.delete_item(
-                        item_id=item_id, emby_server_url=processor.emby_url,
+                        item_id=id_to_delete, 
+                        emby_server_url=processor.emby_url,
                         emby_api_key=processor.emby_api_key, user_id=processor.emby_user_id
                     )
                     if delete_success:
@@ -1131,8 +1143,18 @@ def task_delete_batch(processor, item_ids: List[str]):
                 f"({i+1}/{total_to_process}) 正在删除: {item_name}"
             )
             
+            id_to_delete = None
+            if item.get('item_type') == 'Season':
+                id_to_delete = item.get('emby_item_id') # 对于季，必须使用 emby_item_id (实际的季GUID)
+                if not id_to_delete:
+                    logger.error(f"  ➜ 无法删除季 '{item_name}' (缓存ID: {item_id})：emby_item_id (季GUID) 为空。跳过删除。")
+                    continue
+            else:
+                id_to_delete = item.get('emby_item_id') or item_id # 对于电影或剧集，优先使用 emby_item_id，否则回退到 item_id
+
             delete_success = emby_handler.delete_item(
-                item_id=item_id, emby_server_url=processor.emby_url,
+                item_id=id_to_delete, 
+                emby_server_url=processor.emby_url,
                 emby_api_key=processor.emby_api_key, user_id=processor.emby_user_id
             )
             if delete_success:
@@ -1310,6 +1332,7 @@ def task_update_resubscribe_cache(processor, force_full_update: bool = False):
 
                         season_cache_item = {
                             "item_id": season_item_id,
+                            "emby_item_id": season_id,
                             "series_id": item_id,
                             "season_number": season_number,
                             "item_name": f"{item_name} - 第 {season_number} 季",

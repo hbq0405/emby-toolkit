@@ -201,8 +201,20 @@ def resubscribe_single_item():
 
             if final_rule and final_rule.get('delete_after_resubscribe'):
                 logger.warning(f"  ➜ 规则 '{final_rule['name']}' 要求删除源文件，正在为项目 {item_name} 执行删除...")
+                
+                id_to_delete = None
+                if item_details_for_payload.get('item_type') == 'Season':
+                    id_to_delete = item_details_for_payload.get('emby_item_id') # 对于季，必须使用 emby_item_id (实际的季GUID)
+                    if not id_to_delete:
+                        logger.error(f"  ➜ 无法删除季 '{item_name}' (缓存ID: {item_id})：emby_item_id (季GUID) 为空。跳过删除。")
+                        resubscribe_db.update_resubscribe_item_status(item_id, 'subscribed')
+                        message += " 但无法删除Emby源文件，因为季的GUID为空。"
+                        return jsonify({"message": message}) # 提前返回，不再尝试删除
+                else:
+                    id_to_delete = item_details_for_payload.get('emby_item_id') or item_id # 对于电影或剧集，优先使用 emby_item_id，否则回退到 item_id
+
                 delete_success = emby_handler.delete_item(
-                    item_id=item_id, emby_server_url=processor.emby_url,
+                    item_id=id_to_delete, emby_server_url=processor.emby_url,
                     emby_api_key=processor.emby_api_key, user_id=processor.emby_user_id
                 )
                 if delete_success:

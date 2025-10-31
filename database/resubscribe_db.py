@@ -144,20 +144,21 @@ def upsert_resubscribe_cache_batch(items_data: List[Dict[str, Any]]):
     # ★★★ 1. 更新 SQL 语句以包含新字段 ★★★
     sql = """
         INSERT INTO resubscribe_cache (
-            item_id, item_name, tmdb_id, item_type, status, reason,
+            item_id, emby_item_id, item_name, tmdb_id, item_type, status, reason,
             resolution_display, quality_display, effect_display, audio_display, subtitle_display,
             audio_languages_raw, subtitle_languages_raw, last_checked_at,
             matched_rule_id, matched_rule_name, source_library_id, path, filename,
-            series_id, season_number  -- 新增字段
+            series_id, season_number
         )
         VALUES (
-            %(item_id)s, %(item_name)s, %(tmdb_id)s, %(item_type)s, %(status)s, %(reason)s,
+            %(item_id)s, %(emby_item_id)s, %(item_name)s, %(tmdb_id)s, %(item_type)s, %(status)s, %(reason)s,
             %(resolution_display)s, %(quality_display)s, %(effect_display)s, %(audio_display)s, %(subtitle_display)s,
             %(audio_languages_raw)s, %(subtitle_languages_raw)s, NOW(),
             %(matched_rule_id)s, %(matched_rule_name)s, %(source_library_id)s, %(path)s, %(filename)s,
-            %(series_id)s, %(season_number)s -- 新增字段
+            %(series_id)s, %(season_number)s
         )
         ON CONFLICT (item_id) DO UPDATE SET
+            emby_item_id = EXCLUDED.emby_item_id,
             item_name = EXCLUDED.item_name,
             tmdb_id = EXCLUDED.tmdb_id,
             item_type = EXCLUDED.item_type,
@@ -187,6 +188,7 @@ def upsert_resubscribe_cache_batch(items_data: List[Dict[str, Any]]):
         # 确保所有可能的键都存在，为缺失的键提供默认值 None
         full_item = {
             'item_id': item.get('item_id'),
+            'emby_item_id': item.get('emby_item_id'),
             'item_name': item.get('item_name'),
             'tmdb_id': item.get('tmdb_id'),
             'item_type': item.get('item_type'),
@@ -204,8 +206,8 @@ def upsert_resubscribe_cache_batch(items_data: List[Dict[str, Any]]):
             'source_library_id': item.get('source_library_id'),
             'path': item.get('path'),
             'filename': item.get('filename'),
-            'series_id': item.get('series_id'), # ★★★ 包含新字段
-            'season_number': item.get('season_number') # ★★★ 包含新字段
+            'series_id': item.get('series_id'), 
+            'season_number': item.get('season_number') 
         }
         prepared_items.append(full_item)
 
