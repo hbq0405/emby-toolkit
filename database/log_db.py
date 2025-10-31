@@ -29,22 +29,22 @@ class LogDBManager:
             """
             cursor.execute(sql, (item_id, item_name, score))
         except Exception as e:
-            logger.error(f"写入已处理 失败 (Item ID: {item_id}): {e}")
+            logger.error(f"  ➜ 写入已处理 失败 (Item ID: {item_id}): {e}")
     
     def remove_from_processed_log(self, cursor: psycopg2.extensions.cursor, item_id: str):
         
         try:
-            logger.debug(f"正在从已处理日志中删除 Item ID: {item_id}...")
+            logger.debug(f"  ➜ 正在从已处理日志中删除 Item ID: {item_id}...")
             cursor.execute("DELETE FROM processed_log WHERE item_id = %s", (item_id,))
         except Exception as e:
-            logger.error(f"从已处理日志删除失败 for item {item_id}: {e}", exc_info=True)
+            logger.error(f"  ➜ 从已处理日志删除失败 for item {item_id}: {e}", exc_info=True)
 
     def remove_from_failed_log(self, cursor: psycopg2.extensions.cursor, item_id: str):
         
         try:
             cursor.execute("DELETE FROM failed_log WHERE item_id = %s", (item_id,))
         except Exception as e:
-            logger.error(f"从 failed_log 删除失败 (Item ID: {item_id}): {e}")
+            logger.error(f"  ➜ 从 failed_log 删除失败 (Item ID: {item_id}): {e}")
 
     def save_to_failed_log(self, cursor: psycopg2.extensions.cursor, item_id: str, item_name: str, reason: str, item_type: str, score: Optional[float] = None):
         
@@ -61,7 +61,7 @@ class LogDBManager:
             """
             cursor.execute(sql, (item_id, item_name, reason, item_type, score))
         except Exception as e:
-            logger.error(f"写入 failed_log 失败 (Item ID: {item_id}): {e}")
+            logger.error(f"  ➜ 写入 failed_log 失败 (Item ID: {item_id}): {e}")
     
     def mark_assets_as_synced(self, cursor, item_id: str, sync_timestamp_iso: str):
         """在 processed_log 中标记一个项目的资源文件已同步。"""
@@ -76,7 +76,7 @@ class LogDBManager:
         try:
             cursor.execute(sql, (item_id, sync_timestamp_iso))
         except Exception as e:
-            logger.error(f"更新资源同步时间戳时失败 for item {item_id}: {e}", exc_info=True)
+            logger.error(f"  ➜ 更新资源同步时间戳时失败 for item {item_id}: {e}", exc_info=True)
 
 def get_item_name_from_failed_log(item_id: str) -> Optional[str]:
     
@@ -87,7 +87,7 @@ def get_item_name_from_failed_log(item_id: str) -> Optional[str]:
             result = cursor.fetchone()
             return result['item_name'] if result else None
     except Exception as e:
-        logger.error(f"从 failed_log 获取 item_name 时出错: {e}")
+        logger.error(f"  ➜ 从 failed_log 获取 item_name 时出错: {e}")
         return None
 
 def get_review_items_paginated(page: int, per_page: int, query_filter: str) -> Tuple[List, int]:
@@ -118,7 +118,7 @@ def get_review_items_paginated(page: int, per_page: int, query_filter: str) -> T
             
         return items_to_review, total_matching_items
     except Exception as e:
-        logger.error(f"DB: 获取待复核列表失败: {e}", exc_info=True)
+        logger.error(f"  ➜ 获取待复核列表失败: {e}", exc_info=True)
         raise
 
 def mark_review_item_as_processed(item_id: str) -> bool:
@@ -131,10 +131,10 @@ def mark_review_item_as_processed(item_id: str) -> bool:
                 was_deleted = cursor.rowcount > 0
             conn.commit()
             if was_deleted:
-                logger.info(f"DB: 项目 {item_id} 已成功从待复核日志中移除。")
+                logger.info(f"  ➜ 项目 {item_id} 已成功从待复核日志中移除。")
             return was_deleted
     except Exception as e:
-        logger.error(f"DB: 从待复核日志移除项目 {item_id} 时失败: {e}", exc_info=True)
+        logger.error(f"  ➜ 从待复核日志移除项目 {item_id} 时失败: {e}", exc_info=True)
         raise
 
 def clear_all_review_items() -> int:
@@ -146,8 +146,8 @@ def clear_all_review_items() -> int:
                 deleted_count = cursor.rowcount
                 conn.commit()
                 
-            logger.info(f"成功从待复核列表删除 {deleted_count} 条记录。")
+            logger.info(f"  ➜ 成功从待复核列表删除 {deleted_count} 条记录。")
             return deleted_count
     except Exception as e:
-        logger.error(f"清空待复核列表时发生异常：{e}", exc_info=True)
+        logger.error(f"  ➜ 清空待复核列表时发生异常：{e}", exc_info=True)
         return 0
