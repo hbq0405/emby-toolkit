@@ -474,8 +474,23 @@ const getPosterUrl = (itemId) => {
   const seriesId = String(itemId).split('-')[0];
   return `/image_proxy/Items/${seriesId}/Images/Primary?maxHeight=600&tag=1`;
 };
-const openInEmby = (itemId) => { const embyServerUrl = configModel.value?.emby_server_url; const serverId = configModel.value?.emby_server_id; if (!embyServerUrl || !itemId) { message.error('Emby服务器地址未配置，无法跳转。'); return; } const baseUrl = embyServerUrl.endsWith('/') ? embyServerUrl.slice(0, -1) : embyServerUrl; let finalUrl = `${baseUrl}/web/index.html#!/item?id=${itemId}`; if (serverId) { finalUrl += `&serverId=${serverId}`; } window.open(finalUrl, '_blank'); };
-
+const openInEmby = (itemId) => {
+  const embyServerUrl = configModel.value?.emby_server_url;
+  const serverId = configModel.value?.emby_server_id;
+  if (!embyServerUrl || !itemId) {
+    message.error('Emby服务器地址未配置，无法跳转。');
+    return;
+  }
+  // 核心修复：如果itemId包含季号信息 (如 '12345-S1')，则只取主剧集ID
+  const mainItemId = String(itemId).split('-')[0];
+  const baseUrl = embyServerUrl.endsWith('/') ? embyServerUrl.slice(0, -1) : embyServerUrl;
+  // 使用处理过的 mainItemId 构建链接
+  let finalUrl = `${baseUrl}/web/index.html#!/item?id=${mainItemId}`;
+  if (serverId) {
+    finalUrl += `&serverId=${serverId}`;
+  }
+  window.open(finalUrl, '_blank');
+};
 const handleSettingsSaved = (payload = {}) => {
   showSettingsModal.value = false;
   if (payload.needsRefresh) {
