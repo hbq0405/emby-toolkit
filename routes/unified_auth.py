@@ -59,22 +59,20 @@ def init_auth():
 @unified_auth_bp.route('/login', methods=['POST'])
 def unified_login():
     """
-    【统一登录接口】
-    根据前端传来的 'loginType' 决定使用哪种认证方式。
+    【统一登录接口 - V2 修正版】
+    返回的 user 对象结构统一，包含所有前端需要的信息。
     """
     data = request.json
     username = data.get('username')
     password = data.get('password')
-    login_type = data.get('loginType') # ★ 接收新的字段
+    login_type = data.get('loginType')
 
     if not all([username, password, login_type]):
         return jsonify({"status": "error", "message": "缺少用户名、密码或登录类型"}), 400
 
-    # ★ 2. 清理所有可能存在的旧 session，确保每次登录都是干净的
     session.clear()
 
     if login_type == 'local':
-        # --- 执行本地管理员认证 ---
         try:
             with connection.get_db_connection() as conn:
                 cursor = conn.cursor()
@@ -86,17 +84,21 @@ def unified_login():
                 session['username'] = local_user['username']
                 session.permanent = True
                 logger.info(f"  ➜ [统一登录] 用户 '{username}' 作为本地管理员登录成功。")
+                
+                # ★★★ 核心修正 1/2：返回一个信息完整的 user 对象 ★★★
                 return jsonify({
                     "status": "ok",
-                    "login_type": "local_admin",
-                    "user": { "name": local_user['username'] }
+                    "user": { 
+                        "name": local_user['username'],
+                        "user_type": "local_admin", 
+                        "is_admin": True 
+                    }
                 }), 200
         except Exception as e:
             logger.error(f"  ➜ [统一登录] 本地认证时数据库出错: {e}", exc_info=True)
             return jsonify({"status": "error", "message": "服务器内部错误"}), 500
 
     elif login_type == 'emby':
-        # --- 执行 Emby 用户认证 ---
         auth_result = emby_handler.authenticate_emby_user(username, password)
         if auth_result:
             user_info = auth_result.get('User', {})
@@ -105,40 +107,46 @@ def unified_login():
             session['emby_is_admin'] = user_info.get('Policy', {}).get('IsAdministrator', False)
             session.permanent = True
             logger.info(f"  ➜ [统一登录] 用户 '{username}' 作为 Emby 用户登录成功。")
+            
+            # ★★★ Emby 登录也返回统一结构的 user 对象 ★★★
             return jsonify({
                 "status": "ok",
-                "login_type": "emby_user",
                 "user": {
                     "id": session['emby_user_id'],
                     "name": session['emby_username'],
+                    "user_type": "emby_user", 
                     "is_admin": session['emby_is_admin']
                 }
             }), 200
 
-    # --- 如果 login_type 不对，或者认证失败 ---
     logger.warning(f"  ➜ [统一登录] 用户 '{username}' 使用 '{login_type}' 方式登录失败。")
     return jsonify({"status": "error", "message": "用户名或密码错误"}), 401
 
 @unified_auth_bp.route('/status', methods=['GET'])
 def unified_status():
-    """【统一状态接口】检查两种登录状态"""
+    """【统一状态接口 - V2 修正版】返回与登录接口完全一致的 user 对象结构"""
     is_local_admin_logged_in = 'user_id' in session
     is_emby_user_logged_in = 'emby_user_id' in session
     
     response = {
         "logged_in": is_local_admin_logged_in or is_emby_user_logged_in,
-        "user_type": None,
-        "user": {}
+        "user": {} 
     }
 
+    # ★★★ 核心修正 2/2：无论哪种用户，都构建一个信息完整的 user 对象 ★★★
     if is_local_admin_logged_in:
-        response["user_type"] = "local_admin"
-        response["user"]["name"] = session.get('username')
+        response["user"] = {
+            "name": session.get('username'),
+            "user_type": "local_admin",
+            "is_admin": True
+        }
     elif is_emby_user_logged_in:
-        response["user_type"] = "emby_user"
-        response["user"]["name"] = session.get('emby_username')
-        response["user"]["id"] = session.get('emby_user_id')
-        response["user"]["is_admin"] = session.get('emby_is_admin')
+        response["user"] = {
+            "id": session.get('emby_user_id'),
+            "name": session.get('emby_username'),
+            "user_type": "emby_user",
+            "is_admin": session.get('emby_is_admin')
+        }
 
     return jsonify(response)
 
