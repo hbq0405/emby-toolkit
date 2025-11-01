@@ -588,9 +588,35 @@ def task_scan_for_cleanup_issues(processor):
     task_manager.update_status_from_thread(0, "正在准备扫描媒体库...")
 
     try:
-        libs_to_process_ids = processor.config.get("libraries_to_process", [])
+        logger.info("正在确定要扫描的媒体库范围...")
+        # 1. 从数据库获取专门为清理任务配置的媒体库ID
+        libs_to_process_ids = settings_db.get_setting('media_cleanup_library_ids')
+
+        # 2. 如果数据库中没有配置（或配置为空列表），则扫描所有媒体库
         if not libs_to_process_ids:
-            raise ValueError("未在配置中指定要处理的媒体库。")
+            logger.info("  ➜ 未在清理规则中指定媒体库，将扫描服务器上的所有媒体库。")
+            all_libraries = emby_handler.get_emby_libraries(
+                emby_server_url=processor.emby_url,
+                emby_api_key=processor.emby_api_key,
+                user_id=processor.emby_user_id
+            )
+            if not all_libraries:
+                raise ValueError("无法从 Emby 获取媒体库列表以进行全库扫描。")
+            
+            # 筛选出电影、剧集、混合内容库
+            valid_collection_types = {'movies', 'tvshows', 'homevideos', 'mixed'}
+            libs_to_process_ids = [
+                lib['Id'] for lib in all_libraries 
+                if lib.get('CollectionType') in valid_collection_types
+            ]
+            logger.info(f"  ➜ 已自动选择 {len(libs_to_process_ids)} 个媒体库进行全库扫描。")
+        else:
+            logger.info(f"  ➜ 将根据配置扫描指定的 {len(libs_to_process_ids)} 个媒体库。")
+
+        if not libs_to_process_ids:
+            task_manager.update_status_from_thread(100, "任务完成：没有找到可供扫描的媒体库。")
+            logger.warning("最终没有确定任何要扫描的媒体库，任务中止。")
+            return
 
         task_manager.update_status_from_thread(5, "正在获取所有电影和分集的ID列表...")
         

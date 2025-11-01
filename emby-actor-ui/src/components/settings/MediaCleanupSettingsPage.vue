@@ -1,7 +1,8 @@
 <template>
   <n-spin :show="loading">
     <n-space vertical :size="24">
-      <n-card :bordered="false">
+      <!-- 规则说明 -->
+      <n-card :bordered="false" style="background-color: transparent;">
         <template #header>
           <span style="font-size: 1.2em; font-weight: bold;">媒体去重决策规则</span>
         </template>
@@ -37,9 +38,33 @@
         </template>
       </draggable>
 
+      <!-- 扫描范围设置 -->
+      <n-divider title-placement="left" style="margin-top: 24px;">扫描范围</n-divider>
+      <n-form-item label-placement="left">
+        <template #label>
+          指定媒体库
+          <n-tooltip trigger="hover">
+            <template #trigger>
+              <n-icon :component="HelpIcon" style="margin-left: 4px; cursor: help; color: #888;" />
+            </template>
+            留空则扫描所有电影和剧集类型的媒体库。指定后，仅扫描选中的媒体库。
+          </n-tooltip>
+        </template>
+        <n-select
+          v-model:value="selectedLibraryIds"
+          multiple
+          filterable
+          placeholder="不选择则默认扫描所有媒体库"
+          :options="allLibraries"
+          :loading="isLibrariesLoading"
+          clearable
+        />
+      </n-form-item>
+
+      <!-- 底部按钮 -->
       <div style="display: flex; justify-content: flex-end; gap: 12px; margin-top: 16px;">
-        <n-button @click="fetchRules">重置更改</n-button>
-        <n-button type="primary" @click="saveRules" :loading="saving">保存规则</n-button>
+        <n-button @click="fetchSettings">重置更改</n-button>
+        <n-button type="primary" @click="saveSettings" :loading="saving">保存设置</n-button>
       </div>
 
       <!-- 优先级编辑弹窗 -->
@@ -66,27 +91,38 @@
 </template>
 
 <script setup>
-import { ref, onMounted, defineEmits } from 'vue';
+import { ref, onMounted, defineEmits, computed } from 'vue';
 import axios from 'axios';
 import { 
-  NCard, NSpace, NSwitch, NButton, useMessage, NSpin, NIcon, NModal, NTag, NText
+  NCard, NSpace, NSwitch, NButton, useMessage, NSpin, NIcon, NModal, NTag, NText,
+  // 确保引入了新组件
+  NSelect, NFormItem, NDivider, NTooltip
 } from 'naive-ui';
 import draggable from 'vuedraggable';
 import { 
-  Pencil as EditIcon, Move as DragHandleIcon,
+  Pencil as EditIcon, 
+  Move as DragHandleIcon,
+  // 引入帮助图标
+  HelpCircleOutline as HelpIcon 
 } from '@vicons/ionicons5';
 
 const message = useMessage();
 const emit = defineEmits(['on-close']);
 
-const loading = ref(true);
+// --- 状态定义 ---
 const saving = ref(false);
 const showEditModal = ref(false);
-
 const rules = ref([]);
 const currentEditingRule = ref({ priority: [] });
+const allLibraries = ref([]);
+const selectedLibraryIds = ref([]);
 
-// ★★★ 核心修改 1/3: 更新元数据描述，使其更精确 ★★★
+// ★★★ 核心修复 1/3: 拆分并合并加载状态，确保健壮性 ★★★
+const isRulesLoading = ref(true);
+const isLibrariesLoading = ref(true);
+const loading = computed(() => isRulesLoading.value || isLibrariesLoading.value);
+
+
 const RULE_METADATA = {
   quality: { name: "按质量", description: "比较文件名中的质量标签 (如 Remux, BluRay)。" },
   resolution: { name: "按分辨率", description: "比较视频的分辨率 (如 2160p, 1080p)。" },
@@ -97,55 +133,51 @@ const RULE_METADATA = {
 const getRuleDisplayName = (id) => RULE_METADATA[id]?.name || id;
 const getRuleDescription = (id) => RULE_METADATA[id]?.description || '未知规则';
 
-// ★★★ 核心修改 2/3: 彻底重写特效标签的“翻译”函数 ★★★
 const formatEffectPriority = (priorityArray, to = 'display') => {
     return priorityArray.map(p => {
-        let p_lower = String(p).toLowerCase().replace(/\s/g, '_'); // 标准化输入
-
-        // 进一步标准化 'dovi_other' 的各种变体
+        let p_lower = String(p).toLowerCase().replace(/\s/g, '_');
         if (p_lower === 'dovi' || p_lower === 'dovi_other' || p_lower === 'dovi(other)') {
             p_lower = 'dovi_other';
         }
-        
-        if (to === 'display') { // 转换为用户友好的显示文本
+        if (to === 'display') {
             if (p_lower === 'dovi_p8') return 'DoVi P8';
             if (p_lower === 'dovi_p7') return 'DoVi P7';
             if (p_lower === 'dovi_p5') return 'DoVi P5';
             if (p_lower === 'dovi_other') return 'DoVi (Other)';
             if (p_lower === 'hdr10+') return 'HDR10+';
-            if (p_lower === 'hdr') return 'HDR';
-            if (p_lower === 'sdr') return 'SDR';
-            return p_lower.toUpperCase(); // 作为最后的通用回退
-        } else { // (to === 'save') 转换为后端需要的存储格式
-            // 确保保存时也进行标准化，以防前端有非标准输入
-            if (p_lower === 'dovi_p8') return 'dovi_p8';
-            if (p_lower === 'dovi_p7') return 'dovi_p7';
-            if (p_lower === 'dovi_p5') return 'dovi_p5';
-            if (p_lower === 'dovi_other') return 'dovi_other';
-            if (p_lower === 'hdr10+') return 'hdr10+';
-            if (p_lower === 'hdr') return 'hdr';
-            if (p_lower === 'sdr') return 'sdr';
-            return p_lower; // 如果是其他未知标签，则原样保存
+            return p_lower.toUpperCase();
+        } else {
+            return p_lower;
         }
     });
 };
 
-const fetchRules = async () => {
-  loading.value = true;
+// ★★★ 核心修复 2/3: 重写数据加载函数，增加 finally 块 ★★★
+const fetchSettings = async () => {
+  isRulesLoading.value = true;
+  isLibrariesLoading.value = true;
   try {
-    const response = await axios.get('/api/cleanup/rules');
-    const loadedRules = response.data || [];
-    
+    const [settingsRes, librariesRes] = await Promise.all([
+      axios.get('/api/cleanup/settings'),
+      axios.get('/api/resubscribe/libraries') 
+    ]);
+
+    // 处理规则
+    const loadedRules = settingsRes.data.rules || [];
     rules.value = loadedRules.map(rule => {
         if (rule.id === 'effect' && Array.isArray(rule.priority)) {
-            // 使用新的翻译函数，将 'dovi_p8' 格式化为 'DoVi P8'
             return { ...rule, priority: formatEffectPriority(rule.priority, 'display') };
         }
         return rule;
     });
+
+    // 处理媒体库
+    allLibraries.value = librariesRes.data || [];
+    selectedLibraryIds.value = settingsRes.data.library_ids || [];
+
   } catch (error) {
-    message.error('加载清理规则失败！将使用默认规则。');
-    // ★★★ 核心修改 3/3: 更新默认规则，以匹配新的显示格式 ★★★
+    message.error('加载设置失败！请确保后端服务正常。');
+    // 加载失败时也要提供默认规则
     rules.value = [
         { id: 'quality', enabled: true, priority: ['Remux', 'BluRay', 'WEB-DL', 'HDTV'] },
         { id: 'resolution', enabled: true, priority: ['2160p', '1080p', '720p'] },
@@ -153,28 +185,36 @@ const fetchRules = async () => {
         { id: 'filesize', enabled: true, priority: 'desc' },
     ];
   } finally {
-    loading.value = false;
+    // 无论成功或失败，最后都必须把加载状态关掉！
+    isRulesLoading.value = false;
+    isLibrariesLoading.value = false;
   }
 };
 
-
-const saveRules = async () => {
+// ★★★ 核心修复 3/3: 更新保存函数，使其发送完整数据 ★★★
+const saveSettings = async () => {
   saving.value = true;
   try {
     const rulesToSave = rules.value.map(rule => {
       if (rule.id === 'effect' && Array.isArray(rule.priority)) {
-        // 保存时，使用翻译函数将 'DoVi P8' 转换回 'dovi_p8'
         return { ...rule, priority: formatEffectPriority(rule.priority, 'save') };
       }
       return rule;
     });
-    await axios.post('/api/cleanup/rules', rulesToSave);
-    message.success('清理规则已成功保存！');
+
+    // 构造包含规则和媒体库ID的完整数据体
+    const payload = {
+      rules: rulesToSave,
+      library_ids: selectedLibraryIds.value
+    };
+
+    await axios.post('/api/cleanup/settings', payload);
+    message.success('清理设置已成功保存！');
     
     emit('on-close');
 
   } catch (error) {
-    message.error('保存规则失败，请检查后端日志。');
+    message.error('保存设置失败，请检查后端日志。');
   } finally {
     saving.value = false;
   }
@@ -185,7 +225,7 @@ const openEditModal = (rule) => {
   showEditModal.value = true;
 };
 
-onMounted(fetchRules);
+onMounted(fetchSettings);
 </script>
 
 <style scoped>

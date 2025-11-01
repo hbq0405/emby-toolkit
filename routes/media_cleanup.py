@@ -5,7 +5,7 @@ from extensions import task_lock_required, processor_ready_required
 
 import task_manager
 import config_manager
-from tasks import task_execute_cleanup
+from tasks import task_execute_cleanup, task_scan_for_cleanup_issues
 from database import (
     maintenance_db,
     settings_db
@@ -96,11 +96,11 @@ def clear_all_cleanup_tasks():
         logger.error(f"一键执行所有清理任务时失败: {e}", exc_info=True)
         return jsonify({"error": f"一键执行所有清理任务失败: {e}"}), 500
     
-@media_cleanup_bp.route('/api/cleanup/rules', methods=['GET'])
-def get_cleanup_rules():
-    """【V5 - 智能升级最终版】获取去重规则，并能将新选项智能合并到旧的已存规则中。"""
+@media_cleanup_bp.route('/api/cleanup/settings', methods=['GET'])
+def get_cleanup_settings():
+    """获取所有媒体去重设置（包括规则和指定的媒体库）。"""
     try:
-        # 1. 定义一套完整的、包含所有最新选项的默认规则
+        # --- Part 1: 获取规则 (逻辑与之前完全相同) ---
         default_rules_map = {
             "quality": {"id": "quality", "enabled": True, "priority": ["Remux", "BluRay", "WEB-DL", "HDTV"]},
             "resolution": {"id": "resolution", "enabled": True, "priority": ["2160p", "1080p", "720p"]},
@@ -111,83 +111,91 @@ def get_cleanup_rules():
             },
             "filesize": {"id": "filesize", "enabled": True, "priority": "desc"}
         }
-        
-        # 2. 从数据库加载用户已保存的规则列表
         saved_rules_list = settings_db.get_setting('media_cleanup_rules')
         
         if not saved_rules_list:
-            # 如果数据库为空，直接返回最新的默认规则
-            return jsonify(list(default_rules_map.values()))
+            final_rules = list(default_rules_map.values())
+        else:
+            final_rules = []
+            saved_rules_map = {rule['id']: rule for rule in saved_rules_list}
+            for saved_rule in saved_rules_list:
+                rule_id = saved_rule['id']
+                merged_rule = {**default_rules_map.get(rule_id, {}), **saved_rule}
+                if rule_id == 'effect' and 'priority' in merged_rule and isinstance(merged_rule['priority'], list):
+                    saved_priority = merged_rule['priority']
+                    default_priority = default_rules_map['effect']['priority']
+                    final_priority = []
+                    saved_priority_set = set()
+                    for p_item in saved_priority:
+                        p_lower = str(p_item).lower().replace(' ', '_')
+                        if p_lower in ['dovi', 'dovi_other', 'dovi(other)', 'dovi_(other)']:
+                            p_lower = 'dovi_other'
+                        if p_lower not in saved_priority_set:
+                            final_priority.append(p_lower)
+                            saved_priority_set.add(p_lower)
+                    for new_item in default_priority:
+                        if new_item not in saved_priority_set:
+                            final_priority.append(new_item)
+                            saved_priority_set.add(new_item)
+                    merged_rule['priority'] = final_priority
+                final_rules.append(merged_rule)
+            saved_ids = set(saved_rules_map.keys())
+            for key, default_rule in default_rules_map.items():
+                if key not in saved_ids:
+                    final_rules.append(default_rule)
 
-        # --- 如果数据库中有规则，则执行智能合并 ---
-        final_rules = []
-        saved_rules_map = {rule['id']: rule for rule in saved_rules_list}
-        
-        # 3. 以用户保存的顺序为准进行遍历
-        for saved_rule in saved_rules_list:
-            rule_id = saved_rule['id']
-            # 将数据库中的规则与默认规则合并，确保 enabled 等基础字段存在
-            merged_rule = {**default_rules_map.get(rule_id, {}), **saved_rule}
+        # --- Part 2: 新增 - 获取已保存的媒体库ID列表 ---
+        saved_library_ids = settings_db.get_setting('media_cleanup_library_ids') or []
 
-            # ★★★ 核心修改：对 "effect" 规则进行特殊处理，智能升级选项列表 ★★★
-            if rule_id == 'effect' and 'priority' in merged_rule and isinstance(merged_rule['priority'], list):
-                # 获取用户保存的旧优先级 (例如: ['dovi', 'hdr'])
-                saved_priority = merged_rule['priority']
-                # 获取代码中定义的最新的完整优先级
-                default_priority = default_rules_map['effect']['priority']
-
-                # 创建一个最终的优先级列表，先放入用户已经保存并排序好的项
-                final_priority = []
-                # 创建一个集合用于快速判断是否存在，并统一标准化 'dovi_other'
-                saved_priority_set = set()
-
-                for p_item in saved_priority:
-                    p_lower = str(p_item).lower().replace(' ', '_')
-                    # 统一标准化 'dovi_other' 的各种变体，包括 'dovi_(other)'
-                    if p_lower in ['dovi', 'dovi_other', 'dovi(other)', 'dovi_(other)']:
-                        p_lower = 'dovi_other'
-                    
-                    if p_lower not in saved_priority_set:
-                        final_priority.append(p_lower)
-                        saved_priority_set.add(p_lower)
-
-                # 获取代码中定义的最新的完整优先级
-                default_priority = default_rules_map['effect']['priority']
-
-                # 遍历最新的默认列表，将用户没有的“新”选项追加到末尾
-                for new_item in default_priority:
-                    if new_item not in saved_priority_set: # new_item 已经是标准化的
-                        final_priority.append(new_item)
-                        saved_priority_set.add(new_item) # 添加到集合以防止重复
-
-                # 用升级后的完整列表替换掉旧的列表
-                merged_rule['priority'] = final_priority
-            
-            final_rules.append(merged_rule)
-
-        # 4. 检查是否有在代码中新增的、但用户从未保存过的规则（例如未来新增一个 "codec" 规则）
-        saved_ids = set(saved_rules_map.keys())
-        for key, default_rule in default_rules_map.items():
-            if key not in saved_ids:
-                final_rules.append(default_rule)
-
-        return jsonify(final_rules)
+        # --- Part 3: 将规则和媒体库ID合并到一个对象中返回给前端 ---
+        return jsonify({
+            "rules": final_rules,
+            "library_ids": saved_library_ids
+        })
         
     except Exception as e:
-        logger.error(f"获取媒体去重规则时出错: {e}", exc_info=True)
-        return jsonify({"error": f"获取清理规则失败: {e}"}), 500
+        logger.error(f"获取媒体去重设置时出错: {e}", exc_info=True)
+        return jsonify({"error": f"获取清理设置失败: {e}"}), 500
 
-@media_cleanup_bp.route('/api/cleanup/rules', methods=['POST'])
-def save_cleanup_rules():
-    """保存新的媒体去重规则。"""
-    new_rules = request.get_json()
+@media_cleanup_bp.route('/api/cleanup/settings', methods=['POST'])
+def save_cleanup_settings():
+    """保存新的媒体去重设置（包括规则和指定的媒体库）。"""
+    data = request.get_json()
+    if not isinstance(data, dict):
+        return jsonify({"error": "无效的数据格式，必须是一个对象。"}), 400
+
+    new_rules = data.get('rules')
+    library_ids = data.get('library_ids')
+
     if not isinstance(new_rules, list):
-        return jsonify({"error": "无效的规则格式，必须是一个列表。"}), 400
+        return jsonify({"error": "无效的规则格式，'rules' 必须是一个列表。"}), 400
+    # 对 library_ids 也进行校验
+    if not isinstance(library_ids, list):
+        return jsonify({"error": "无效的媒体库格式，'library_ids' 必须是一个列表。"}), 400
     
     try:
-        # 直接使用 db_handler 保存设置
+        # 分别保存规则和媒体库ID到数据库
         settings_db.save_setting('media_cleanup_rules', new_rules)
-        # 通知配置管理器重新加载内存中的设置，确保后续任务使用新规则
-        return jsonify({"message": "清理规则已成功保存！"}), 200
+        settings_db.save_setting('media_cleanup_library_ids', library_ids)
+        
+        return jsonify({"message": "清理设置已成功保存！"}), 200
     except Exception as e:
-        return jsonify({"error": f"保存清理规则时失败: {e}"}), 500
+        return jsonify({"error": f"保存清理设置时失败: {e}"}), 500
+
+# ★★★ 核心修改 2/3: 新增一个触发扫描的路由 ★★★
+# 这个路由会调用更新后的 task_scan_for_cleanup_issues 任务
+@media_cleanup_bp.route('/api/cleanup/scan', methods=['POST'])
+@task_lock_required
+@processor_ready_required
+def trigger_cleanup_scan():
+    """触发一次媒体库重复项扫描。"""
+    try:
+        task_manager.submit_task(
+            task_scan_for_cleanup_issues,
+            "扫描媒体库重复项",
+            'media'
+        )
+        return jsonify({"message": "扫描任务已提交到后台执行。"}), 202
+    except Exception as e:
+        logger.error(f"提交扫描任务时失败: {e}", exc_info=True)
+        return jsonify({"error": f"提交扫描任务失败: {e}"}), 500
