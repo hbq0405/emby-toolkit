@@ -12,7 +12,7 @@ import task_manager
 import moviepilot_handler
 from database import settings_db
 from database import actor_db
-from extensions import login_required, processor_ready_required, task_lock_required
+from extensions import admin_required, processor_ready_required, task_lock_required
 from tasks.subscriptions import _check_and_get_series_best_version_flag
 
 # 1. 创建演员订阅蓝图
@@ -22,7 +22,7 @@ logger = logging.getLogger(__name__)
 
 # 2. 使用蓝图定义路由
 @actor_subscriptions_bp.route('/search', methods=['GET'])
-@login_required
+@admin_required
 @processor_ready_required
 def api_search_actors():
     query = request.args.get('name', '').strip()
@@ -54,7 +54,7 @@ def api_search_actors():
 
 # ✨ 定义默认订阅配置的路由
 @actor_subscriptions_bp.route('/default-config', methods=['GET', 'POST'])
-@login_required
+@admin_required
 def handle_default_actor_config():
     """
     处理获取和保存演员订阅的默认配置。
@@ -91,7 +91,7 @@ def handle_default_actor_config():
             return jsonify({"error": "保存默认配置时发生服务器内部错误"}), 500
 
 @actor_subscriptions_bp.route('', methods=['GET', 'POST'])
-@login_required
+@admin_required
 def handle_actor_subscriptions():
     if request.method == 'GET':
         try:
@@ -136,7 +136,7 @@ def handle_actor_subscriptions():
             return jsonify({"error": "添加订阅时发生服务器内部错误"}), 500
 
 @actor_subscriptions_bp.route('/<int:sub_id>', methods=['GET', 'PUT', 'DELETE'])
-@login_required
+@admin_required
 def handle_single_actor_subscription(sub_id):
     if request.method == 'GET':
         try:
@@ -166,7 +166,7 @@ def handle_single_actor_subscription(sub_id):
             return jsonify({"error": "删除订阅时发生服务器内部错误"}), 500
 
 @actor_subscriptions_bp.route('/<int:sub_id>/refresh', methods=['POST'])
-@login_required
+@admin_required
 def refresh_single_actor_subscription(sub_id):
     from tasks import task_scan_actor_media 
 
@@ -195,7 +195,7 @@ def refresh_single_actor_subscription(sub_id):
 
 # ★★★ 手动订阅单个缺失作品的API端点 ★★★
 @actor_subscriptions_bp.route('/media/<int:media_id>/subscribe', methods=['POST'])
-@login_required
+@admin_required
 def subscribe_single_tracked_media(media_id):
     """
     手动触发对单个已追踪但状态为'MISSING'的媒体项的订阅。
@@ -258,7 +258,7 @@ def subscribe_single_tracked_media(media_id):
     
 # ★★★ 手动更新单个作品状态的API端点 ★★★
 @actor_subscriptions_bp.route('/media/<int:media_id>/status', methods=['POST'])
-@login_required
+@admin_required
 def update_single_tracked_media_status(media_id):
     """
     手动更新单个已追踪媒体项的状态，主要用于“忽略”操作。
@@ -287,7 +287,7 @@ def update_single_tracked_media_status(media_id):
     
 # ★★★ 智能恢复（重新评估）单个作品状态的 API 端点 ★★★
 @actor_subscriptions_bp.route('/media/<int:media_id>/re-evaluate', methods=['POST'])
-@login_required
+@admin_required
 def api_re_evaluate_tracked_media(media_id):
     """
     智能地将一个“已忽略”的媒体项恢复到正确的状态，并返回 Emby Item ID。

@@ -40,6 +40,7 @@ import logging
 import collections # Added for deque
 from gevent import spawn_later # Added for debouncing
 # --- 导入蓝图 ---
+from routes.auth import auth_bp
 from routes.watchlist import watchlist_bp
 from routes.collections import collections_bp
 from routes.custom_collections import custom_collections_bp
@@ -48,7 +49,6 @@ from routes.logs import logs_bp
 from routes.database_admin import db_admin_bp
 from routes.system import system_bp
 from routes.media import media_api_bp, media_proxy_bp
-from routes.auth import auth_bp, init_auth as init_auth_from_blueprint
 from routes.actions import actions_bp
 from routes.cover_generator_config import cover_generator_config_bp
 from routes.tasks import tasks_bp
@@ -56,6 +56,7 @@ from routes.resubscribe import resubscribe_bp
 from routes.media_cleanup import media_cleanup_bp
 from routes.user_management import user_management_bp
 from routes.webhook import webhook_bp
+from routes.unified_auth import unified_auth_bp, init_auth
 # --- 核心模块导入 ---
 import constants # 你的常量定义\
 import logging
@@ -105,7 +106,7 @@ def save_config_and_reload(new_config: Dict[str, Any]):
         
         # 步骤 2: 执行所有依赖于新配置的重新初始化逻辑
         initialize_processors()
-        init_auth_from_blueprint()
+        init_auth()
         
         scheduler_manager.update_all_scheduled_jobs()
         
@@ -297,6 +298,7 @@ def serve(path):
         return send_from_directory(static_folder_path, 'index.html')
     
 # +++ 在应用对象上注册所有蓝图 +++
+app.register_blueprint(auth_bp)
 app.register_blueprint(watchlist_bp)
 app.register_blueprint(collections_bp)
 app.register_blueprint(custom_collections_bp)
@@ -306,7 +308,6 @@ app.register_blueprint(db_admin_bp)
 app.register_blueprint(system_bp)
 app.register_blueprint(media_api_bp) 
 app.register_blueprint(media_proxy_bp)
-app.register_blueprint(auth_bp)
 app.register_blueprint(actions_bp)
 app.register_blueprint(cover_generator_config_bp)
 app.register_blueprint(tasks_bp)
@@ -314,6 +315,7 @@ app.register_blueprint(resubscribe_bp)
 app.register_blueprint(media_cleanup_bp)
 app.register_blueprint(user_management_bp)
 app.register_blueprint(webhook_bp)
+app.register_blueprint(unified_auth_bp)
 
 def main_app_start():
     """将主应用启动逻辑封装成一个函数"""
@@ -337,7 +339,7 @@ def main_app_start():
     connection.init_db()
 
     ensure_cover_generator_fonts()
-    init_auth_from_blueprint()
+    init_auth()
     initialize_processors()
     task_manager.start_task_worker_if_not_running()
     scheduler_manager.start()

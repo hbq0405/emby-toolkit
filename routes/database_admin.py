@@ -22,7 +22,7 @@ from database import (
 )
 # 导入共享模块
 import extensions
-from extensions import login_required, processor_ready_required, task_lock_required
+from extensions import admin_required, processor_ready_required, task_lock_required
 
 # 1. 创建蓝图
 db_admin_bp = Blueprint('database_admin', __name__, url_prefix='/api')
@@ -90,7 +90,7 @@ def _get_all_stats_in_one_query(cursor: psycopg2.extensions.cursor) -> dict:
 
 # --- 数据看板 ---
 @db_admin_bp.route('/database/stats', methods=['GET'])
-@login_required
+@admin_required
 def api_get_database_stats():
     try:
         with connection.get_db_connection() as conn:
@@ -145,7 +145,7 @@ def api_get_database_stats():
 
 # --- 数据库表管理 ---
 @db_admin_bp.route('/database/tables', methods=['GET'])
-@login_required
+@admin_required
 def api_get_db_tables():
     """【修改2】: 使用 PostgreSQL 的 information_schema 来获取表列表。"""
     try:
@@ -168,7 +168,7 @@ def api_get_db_tables():
         return jsonify({"error": "无法获取数据库表列表"}), 500
 
 @db_admin_bp.route('/database/export', methods=['POST'])
-@login_required
+@admin_required
 def api_export_database():
     try:
         tables_to_export = request.json.get('tables')
@@ -218,7 +218,7 @@ def api_export_database():
         return jsonify({"error": f"导出时发生服务器错误: {e}"}), 500
 
 @db_admin_bp.route('/database/import', methods=['POST'])
-@login_required
+@admin_required
 def api_import_database():
     """
     【V4 - 共享导入终版】接收备份文件和要导入的表名列表，
@@ -287,7 +287,7 @@ def api_import_database():
 
 # --- 待复核列表管理 ---
 @db_admin_bp.route('/review_items', methods=['GET'])
-@login_required
+@admin_required
 def api_get_review_items():
     page = request.args.get('page', 1, type=int)
     per_page = request.args.get('per_page', 20, type=int)
@@ -303,7 +303,7 @@ def api_get_review_items():
         return jsonify({"error": "获取待复核列表时发生服务器内部错误"}), 500
 
 @db_admin_bp.route('/actions/mark_item_processed/<item_id>', methods=['POST'])
-@login_required
+@admin_required
 def api_mark_item_processed(item_id):
     if task_manager.is_task_running(): return jsonify({"error": "后台有任务正在运行，请稍后再试。"}), 409
     try:
@@ -318,7 +318,7 @@ def api_mark_item_processed(item_id):
 
 # ✨✨✨ 清空待复核列表 ✨✨✨
 @db_admin_bp.route('/actions/clear_review_items', methods=['POST'])
-@login_required
+@admin_required
 def api_clear_review_items():
     try:
         count = log_db.clear_all_review_items()
@@ -335,7 +335,7 @@ def api_clear_review_items():
 
 # --- 清空指定表列表的接口 ---
 @db_admin_bp.route('/actions/clear_tables', methods=['POST'])
-@login_required
+@admin_required
 def api_clear_tables():
     logger.info("接收到清空指定表请求。")
     try:
@@ -371,7 +371,7 @@ def api_clear_tables():
 
 # --- 一键矫正自增序列 ---
 @db_admin_bp.route('/database/correct-sequences', methods=['POST'])
-@login_required
+@admin_required
 def api_correct_all_sequences():
     """
     触发一个任务，校准数据库中所有表的自增ID序列。
@@ -393,7 +393,7 @@ def api_correct_all_sequences():
     
 # --- 重置Emby数据 ---
 @db_admin_bp.route('/actions/prepare-for-library-rebuild', methods=['POST'])
-@login_required
+@admin_required
 def api_prepare_for_library_rebuild():
     """
     【高危操作】为 Emby 媒体库重建做准备。

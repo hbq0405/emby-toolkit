@@ -9,7 +9,7 @@ from database import collection_db
 from database import settings_db
 import config_manager
 import moviepilot_handler
-from extensions import login_required, task_lock_required, processor_ready_required
+from extensions import admin_required, task_lock_required, processor_ready_required
 
 # 1. 创建电影合集蓝图
 collections_bp = Blueprint('collections', __name__, url_prefix='/api/collections')
@@ -18,7 +18,7 @@ logger = logging.getLogger(__name__)
 
 # 2. 使用蓝图定义路由
 @collections_bp.route('/status', methods=['GET'])
-@login_required
+@admin_required
 @processor_ready_required
 def api_get_collections_status():
     try:
@@ -30,7 +30,7 @@ def api_get_collections_status():
 
 # ★★★ 将电影提交到 MoviePilot 订阅  ★★★
 @collections_bp.route('/subscribe', methods=['POST'])
-@login_required
+@admin_required
 def api_subscribe_moviepilot():
     data = request.json
     tmdb_id = data.get('tmdb_id')
@@ -59,7 +59,7 @@ def api_subscribe_moviepilot():
         return jsonify({"error": "订阅失败，请检查后端日志获取详细信息。"}), 500
 
 @collections_bp.route('/subscribe_all_missing', methods=['POST'])
-@login_required
+@admin_required
 def api_subscribe_all_missing():
     logger.info("API (Blueprint): 收到一键订阅所有缺失电影的请求。")
 
@@ -129,7 +129,7 @@ def api_subscribe_all_missing():
         return jsonify({"error": "服务器在处理一键订阅时发生内部错误"}), 500
 
 @collections_bp.route('/update_movie_status', methods=['POST'])
-@login_required
+@admin_required
 def api_update_movie_status():
     data = request.json
     collection_id = data.get('collection_id')
@@ -158,7 +158,7 @@ def api_update_movie_status():
     
 # ★★★ 批量将缺失电影的状态标记为“已订阅”（不触发真订阅） ★★★
 @collections_bp.route('/batch_mark_as_subscribed', methods=['POST'])
-@login_required
+@admin_required
 def api_batch_mark_as_subscribed():
     data = request.json
     collection_ids = data.get('collection_ids')

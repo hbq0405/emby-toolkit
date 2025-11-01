@@ -2055,3 +2055,69 @@ def delete_emby_user(user_id: str) -> bool:
     except Exception as e:
         logger.error(f"  ➜ 删除 Emby 用户 '{user_name_for_log}' 时发生未知错误: {e}")
         return False
+# ★★★ 新增：通用 Emby 用户认证函数 ★★★
+def authenticate_emby_user(username: str, password: str) -> Optional[Dict[str, Any]]:
+    """
+    【V4 - 终极伪装与日志版】
+    - 伪装成一个标准的 Emby Web 客户端，提供更完整的 Header 和 Payload。
+    - 增加最关键的失败日志，直接打印 Emby Server 返回的原始错误文本。
+    """
+    # 1. 它自己会从全局配置读取 URL，API 端点无需关心
+    cfg = config_manager.APP_CONFIG
+    emby_url = cfg.get(constants.CONFIG_OPTION_EMBY_SERVER_URL)
+
+    if not all([emby_url, username]):
+        logger.error("  ➜ [用户认证] 失败：缺少服务器地址或用户名。")
+        return None
+
+    auth_url = f"{emby_url.rstrip('/')}/Users/AuthenticateByName"
+    
+    device_id = "my-emby-toolkit-auth-v4"
+    auth_header = (
+        f'Emby Client="Emby Web", '
+        f'Device="Chrome", '
+        f'DeviceId="{device_id}", '
+        f'Version="4.8.0.80"'
+    )
+    headers = {
+        'Content-Type': 'application/json',
+        'X-Emby-Authorization': auth_header
+    }
+    
+    payload = {
+        "Username": username,
+        "LoginType": "Manual"
+    }
+    if password:
+        payload['Pw'] = password
+    else:
+        payload['Pw'] = ""
+
+    logger.debug(f"  ➜ [用户认证] 准备向 {auth_url} 发送认证请求，Payload: {{'Username': '{username}', 'Pw': '***'}}")
+    
+    try:
+        api_timeout = config_manager.APP_CONFIG.get(constants.CONFIG_OPTION_EMBY_API_TIMEOUT, 60)
+        response = requests.post(auth_url, headers=headers, json=payload, timeout=api_timeout)
+        
+        logger.debug(f"  ➜ [用户认证] Emby 服务器响应状态码: {response.status_code}")
+
+        if response.status_code == 200:
+            data = response.json()
+            if data.get("AccessToken") and data.get("User"):
+                logger.info(f"  ➜ [用户认证] 用户 '{username}' 认证成功！")
+                # ★★★ 注意：这里返回的是包含 User 和 AccessToken 的完整 data ★★★
+                return data
+            else:
+                logger.error(f"  ➜ [用户认证] 登录成功但响应格式不正确: {data}")
+                return None
+        else:
+            error_message = response.text
+            logger.error(f"  ➜ [用户认证] 登录失败，Emby 返回的原始错误信息: {error_message}")
+            return None
+
+    except requests.exceptions.RequestException as e:
+        logger.error(f"  ➜ [用户认证] 认证用户 '{username}' 时发生网络请求错误: {e}", exc_info=True)
+        return None
+    except Exception as e:
+        logger.error(f"  ➜ [用户认证] 认证用户 '{username}' 时发生未知错误: {e}", exc_info=True)
+        return None

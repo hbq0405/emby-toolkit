@@ -1,85 +1,78 @@
-// src/stores/auth.js (最终正确版)
+// src/stores/auth.js
 
 import { defineStore } from 'pinia';
-import { ref } from 'vue';
+import { ref, computed } from 'vue'; // ★ 导入 computed
 import axios from 'axios';
 
 export const useAuthStore = defineStore('auth', () => {
   // --- State ---
+  // ★ 1. 不再只存 username，而是存整个 user 对象和登录状态
   const isLoggedIn = ref(false);
-  const isAuthEnabled = ref(true);
-  const username = ref(null);
-  const initializationError = ref(null);
-  const forceChangePassword = ref(false);
+  const user = ref({}); // { name: 'xxx', user_type: 'emby_user', is_admin: true, ... }
+
+  // --- Getters (Computed Properties) ---
+  // ★ 2. 创建一些方便的计算属性，让组件使用起来更简单
+  const username = computed(() => user.value?.name || null);
+  const userType = computed(() => user.value?.user_type || null);
+  // ★ 智能判断是否为管理员：本地管理员 或 Emby管理员
+  const isAdmin = computed(() => {
+    if (userType.value === 'local_admin') return true;
+    if (userType.value === 'emby_user' && user.value?.is_admin) return true;
+    return false;
+  });
 
   // --- Actions ---
   async function checkAuthStatus() {
     try {
-      const response = await axios.get('/api/auth/status');
-      isAuthEnabled.value = response.data.auth_enabled;
+      const response = await axios.get('/api/status');
       isLoggedIn.value = response.data.logged_in;
-      username.value = response.data.username;
-      initializationError.value = null;
+      user.value = response.data.user || {};
+      // ★★★ 如果后端明确说未登录，就抛出错误，让路由守卫能捕获到 ★★★
       if (!isLoggedIn.value) {
-        forceChangePassword.value = false;
+        throw new Error("User not logged in");
       }
-      return response.data;
     } catch (error) {
       console.error('检查认证状态失败:', error);
-      initializationError.value = '无法连接到后端服务，请检查服务是否运行。';
-      isAuthEnabled.value = true;
+      // ★★★ 捕获到任何错误，都坚决地把状态设置为未登录 ★★★
       isLoggedIn.value = false;
-      username.value = null;
-      forceChangePassword.value = false;
+      user.value = {};
+      // 把错误继续抛出去
       throw error;
     }
   }
 
-  // ★★★ 核心修改在这里 ★★★
   async function login(credentials) {
     try {
-      const response = await axios.post('/api/auth/login', credentials);
-      
-      // 1. 检查后端返回的数据是否表示成功。
-      //    我们假设成功的响应总是包含一个 username 字段。
-      //    如果您的后端成功时不一定返回 username，可以换成检查 response.status === 200
-      if (response.data && response.data.username) {
-        // 2. 只有在业务逻辑真正成功时，才更新前端状态
-        isLoggedIn.value = true;
-        username.value = response.data.username;
-        forceChangePassword.value = response.data.force_change_password;
-        // 成功时，函数正常结束
-      } else {
-        // 3. 如果后端返回了 200 OK 但内容表示失败，我们主动抛出一个错误
-        throw new Error('后端返回了意外的成功响应结构。');
-      }
+      const response = await axios.post('/api/login', credentials);
+      isLoggedIn.value = true;
+      user.value = response.data.user || {};
     } catch (error) {
-      // 4. 捕获所有错误（axios抛出的网络/HTTP错误，或我们自己抛出的业务错误）
-      console.error("登录时发生错误:", error);
-      // 5. 将错误再次向上抛出，让调用它的组件（Login.vue）去处理
-      throw error;
+      // 登录失败时，确保状态被清理
+      isLoggedIn.value = false;
+      user.value = {};
+      throw error; // 把错误继续抛出去给组件处理
     }
   }
 
   async function logout() {
     try {
-        await axios.post('/api/auth/logout');
+      await axios.post('/api/logout');
     } catch (error) {
-        console.error("登出时后端发生错误:", error);
+      console.error("登出时后端发生错误:", error);
     } finally {
-        isLoggedIn.value = false;
-        username.value = null;
-        forceChangePassword.value = false;
+      // 无论如何都清理前端状态
+      isLoggedIn.value = false;
+      user.value = {};
     }
   }
 
   // --- Return ---
   return {
     isLoggedIn,
-    isAuthEnabled,
-    username,
-    initializationError,
-    forceChangePassword,
+    user,
+    username, // 暴露计算属性
+    userType, // 暴露计算属性
+    isAdmin,  // 暴露计算属性
     checkAuthStatus,
     login,
     logout,

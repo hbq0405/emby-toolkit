@@ -13,12 +13,13 @@
           <div style="display: flex; align-items: center; gap: 16px;">
             <!-- 用户名下拉菜单 -->
             <n-dropdown 
-              v-if="authStore.isAuthEnabled" 
+              v-if="authStore.isLoggedIn" 
               trigger="hover" 
               :options="userOptions" 
               @select="handleUserSelect"
             >
               <div style="display: flex; align-items: center; cursor: pointer; gap: 4px;">
+                <!-- ★★★ 2. 用户名直接从 store 的计算属性获取 ★★★ -->
                 <span style="font-size: 14px;">欢迎, {{ authStore.username }}</span>
                 <svg xmlns="http://www.w3.org/2000/svg" width="1em" height="1em" viewBox="0 0 24 24"><path fill="currentColor" d="m7 10l5 5l5-5z"></path></svg>
               </div>
@@ -220,12 +221,41 @@ const themeOptions = [
 // 4. 所有函数
 const renderIcon = (iconComponent) => () => h(NIcon, null, { default: () => h(iconComponent) });
 
-const userOptions = computed(() => [
-  { label: '修改密码', key: 'change-password', icon: renderIcon(PasswordIcon) },
-  { label: '重启容器', key: 'restart-container', icon: renderIcon(RestartIcon) },
-  { type: 'divider', key: 'd1' },
-  { label: '退出登录', key: 'logout', icon: renderIcon(LogoutIcon) }
-]);
+const userOptions = computed(() => {
+  const options = [];
+
+  // 规则1: 只有本地管理员才能看到“修改密码”
+  if (authStore.userType === 'local_admin') {
+    options.push({
+      label: '修改密码',
+      key: 'change-password',
+      icon: renderIcon(PasswordIcon)
+    });
+  }
+
+  // 规则2: 只要是管理员（本地或Emby），就能看到“重启容器”
+  if (authStore.isAdmin) {
+    options.push({
+      label: '重启容器',
+      key: 'restart-container',
+      icon: renderIcon(RestartIcon)
+    });
+  }
+
+  // 如果有任何管理项，就加一个分割线
+  if (options.length > 0) {
+    options.push({ type: 'divider', key: 'd1' });
+  }
+
+  // 规则3: 只要登录了，就能看到“退出登录”
+  options.push({
+    label: '退出登录',
+    key: 'logout',
+    icon: renderIcon(LogoutIcon)
+  });
+
+  return options;
+});
 
 // ▼▼▼ 修改点1: 创建一个健壮的、可复用的重启函数 ▼▼▼
 const triggerRestart = async () => {

@@ -9,7 +9,7 @@ import moviepilot_handler
 import config_manager
 import extensions
 import emby_handler
-from extensions import login_required, task_lock_required
+from extensions import admin_required, task_lock_required
 from database import resubscribe_db, settings_db
 resubscribe_bp = Blueprint('resubscribe', __name__, url_prefix='/api/resubscribe')
 logger = logging.getLogger(__name__)
@@ -19,7 +19,7 @@ logger = logging.getLogger(__name__)
 # ======================================================================
 
 @resubscribe_bp.route('/rules', methods=['GET'])
-@login_required
+@admin_required
 def get_rules():
     """获取所有洗版规则列表。"""
     try:
@@ -30,7 +30,7 @@ def get_rules():
         return jsonify({"error": "服务器内部错误"}), 500
 
 @resubscribe_bp.route('/rules', methods=['POST'])
-@login_required
+@admin_required
 def create_rule():
     """创建一条新的洗版规则。"""
     try:
@@ -48,7 +48,7 @@ def create_rule():
         return jsonify({"error": "服务器内部错误"}), 500
 
 @resubscribe_bp.route('/rules/<int:rule_id>', methods=['PUT'])
-@login_required
+@admin_required
 def update_rule(rule_id):
     """更新指定ID的洗版规则。"""
     try:
@@ -66,7 +66,7 @@ def update_rule(rule_id):
         return jsonify({"error": "服务器内部错误"}), 500
 
 @resubscribe_bp.route('/rules/<int:rule_id>', methods=['DELETE'])
-@login_required
+@admin_required
 def delete_rule(rule_id):
     """删除指定ID的洗版规则。"""
     try:
@@ -82,7 +82,7 @@ def delete_rule(rule_id):
         return jsonify({"error": "服务器内部错误"}), 500
 
 @resubscribe_bp.route('/rules/order', methods=['POST'])
-@login_required
+@admin_required
 def update_rules_order():
     """更新所有规则的排序。"""
     try:
@@ -101,7 +101,7 @@ def update_rules_order():
 # ======================================================================
 
 @resubscribe_bp.route('/library_status', methods=['GET'])
-@login_required
+@admin_required
 def get_library_status():
     """获取海报墙数据。"""
     try:
@@ -112,7 +112,7 @@ def get_library_status():
         return jsonify({"error": "服务器内部错误"}), 500
 
 @resubscribe_bp.route('/refresh_status', methods=['POST'])
-@login_required
+@admin_required
 @task_lock_required
 def trigger_refresh_status():
     """触发缓存刷新任务。"""
@@ -127,7 +127,7 @@ def trigger_refresh_status():
         return jsonify({"error": f"提交任务失败: {e}"}), 500
 
 @resubscribe_bp.route('/resubscribe_all', methods=['POST'])
-@login_required
+@admin_required
 @task_lock_required
 def trigger_resubscribe_all():
     """触发一键洗版全部的任务。"""
@@ -142,7 +142,7 @@ def trigger_resubscribe_all():
         return jsonify({"error": f"提交任务失败: {e}"}), 500
 
 @resubscribe_bp.route('/resubscribe_item', methods=['POST'])
-@login_required
+@admin_required
 def resubscribe_single_item():
     """
     【V4 - 最终修正版】修复了只传递三个键值对的致命BUG。
@@ -236,7 +236,7 @@ def resubscribe_single_item():
     
 # ★★★ 新增：为洗版规则提供媒体库选项的 API ★★★
 @resubscribe_bp.route('/libraries', methods=['GET'])
-@login_required
+@admin_required
 def get_emby_libraries_for_rules():
     """
     获取所有 Emby 媒体库，并返回一个精简的列表 (label, value)，
@@ -271,7 +271,7 @@ def get_emby_libraries_for_rules():
     
 # ★★★ 处理批量操作的 API ★★★
 @resubscribe_bp.route('/batch_action', methods=['POST'])
-@login_required
+@admin_required
 def batch_action():
     """【V4 - 支持一键操作】处理对洗版缓存项的批量操作。"""
     data = request.json

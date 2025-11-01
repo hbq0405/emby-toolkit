@@ -10,7 +10,7 @@ import moviepilot_handler
 import task_manager
 import extensions
 import constants
-from extensions import login_required, task_lock_required
+from extensions import admin_required, task_lock_required
 from tasks import task_batch_subscribe_gaps
 from database import watchlist_db
 from database import settings_db
@@ -21,7 +21,7 @@ logger = logging.getLogger(__name__)
 
 # 2. 使用蓝图定义路由
 @watchlist_bp.route('', methods=['GET']) # 注意：这里的路径是空的，因为前缀已经定义
-@login_required
+@admin_required
 def api_get_watchlist():
     logger.debug("API (Blueprint): 收到获取追剧列表的请求。")
     try:
@@ -51,7 +51,7 @@ def api_get_watchlist():
         return jsonify({"error": "获取追剧列表时发生服务器内部错误"}), 500
 
 @watchlist_bp.route('/add', methods=['POST'])
-@login_required
+@admin_required
 def api_add_to_watchlist():
     data = request.json
     item_id = data.get('item_id')
@@ -80,7 +80,7 @@ def api_add_to_watchlist():
         return jsonify({"error": "服务器在添加时发生内部错误"}), 500
 
 @watchlist_bp.route('/update_status', methods=['POST'])
-@login_required
+@admin_required
 def api_update_watchlist_status():
     data = request.json
     item_id = data.get('item_id')
@@ -104,7 +104,7 @@ def api_update_watchlist_status():
         return jsonify({"error": "服务器在更新状态时发生内部错误"}), 500
 
 @watchlist_bp.route('/remove/<item_id>', methods=['POST'])
-@login_required
+@admin_required
 def api_remove_from_watchlist(item_id):
     logger.info(f"  ➜ API (Blueprint): 收到请求，将项目 {item_id} 从追剧列表移除。")
     try:
@@ -120,7 +120,7 @@ def api_remove_from_watchlist(item_id):
         return jsonify({"error": "移除项目时发生未知的服务器内部错误"}), 500
 
 @watchlist_bp.route('/refresh/<item_id>', methods=['POST'])
-@login_required
+@admin_required
 def api_trigger_single_watchlist_refresh(item_id):
     from tasks import task_refresh_single_watchlist_item # 延迟导入任务函数
     logger.trace(f"API (Blueprint): 收到对单个追剧项目 {item_id} 的刷新请求。")
@@ -141,7 +141,7 @@ def api_trigger_single_watchlist_refresh(item_id):
 
 # --- 批量强制完结选中的追剧项目 ---
 @watchlist_bp.route('/batch_force_end', methods=['POST'])
-@login_required
+@admin_required
 def api_batch_force_end_watchlist_items():
     """
     【V2】接收前端请求，批量强制完结选中的追剧项目。
@@ -172,7 +172,7 @@ def api_batch_force_end_watchlist_items():
     
 # ★★★ 批量更新追剧状态的 API (用于“重新追剧”) ★★★
 @watchlist_bp.route('/batch_update_status', methods=['POST'])
-@login_required
+@admin_required
 def api_batch_update_watchlist_status():
     """
     接收前端请求，批量更新选中项目的追剧状态。
@@ -207,7 +207,7 @@ def api_batch_update_watchlist_status():
         return jsonify({"error": "批量更新项目状态时发生未知的服务器内部错误"}), 500
     
 @watchlist_bp.route('/subscribe/moviepilot/series', methods=['POST'])
-@login_required
+@admin_required
 def api_subscribe_series_to_moviepilot():
     """
     接收前端请求，将指定的一季剧集订阅到 MoviePilot。
@@ -253,7 +253,7 @@ def api_subscribe_series_to_moviepilot():
     
 # ★★★ 订阅单个“缺集的季” ★★★
 @watchlist_bp.route('/subscribe/gap_season', methods=['POST'])
-@login_required
+@admin_required
 def api_subscribe_gap_season():
     data = request.json
     item_id = data.get('item_id')
@@ -297,7 +297,7 @@ def api_subscribe_gap_season():
 
 # ★★★ 批量订阅“缺集的季” ★★★
 @watchlist_bp.route('/batch_subscribe_gaps', methods=['POST'])
-@login_required
+@admin_required
 @task_lock_required
 def api_batch_subscribe_gaps():
     data = request.json
@@ -315,7 +315,7 @@ def api_batch_subscribe_gaps():
     return jsonify({"message": f"已在后台启动任务，为 {len(item_ids)} 个项目订阅缺集的季。"}), 202
 
 @watchlist_bp.route('/batch_remove', methods=['POST'])
-@login_required
+@admin_required
 def api_batch_remove_from_watchlist():
     """
     接收前端请求，批量从追剧列表中移除项目。

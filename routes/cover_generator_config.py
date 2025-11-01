@@ -8,7 +8,7 @@ import task_manager
 
 from extensions import media_processor_instance
 import config_manager # 导入以获取数据路径
-from extensions import login_required
+from extensions import admin_required
 from tasks import get_task_registry
 import emby_handler
 from services.cover_generator.styles.badge_drawer import draw_badge
@@ -59,7 +59,7 @@ def get_default_config():
 
 # --- 获取封面生成器的配置 ---
 @cover_generator_config_bp.route('', methods=['GET'])
-@login_required
+@admin_required
 def get_cover_generator_config():
     """获取封面生成器的配置"""
     try:
@@ -83,7 +83,7 @@ def get_cover_generator_config():
 
 # --- 保存封面生成器的配置 ---
 @cover_generator_config_bp.route('', methods=['POST'])
-@login_required
+@admin_required
 def save_cover_generator_config():
     """保存封面生成器的配置"""
     try:
@@ -99,7 +99,7 @@ def save_cover_generator_config():
     
 # --- 获取媒体库列表 ---
 @cover_generator_config_bp.route('/libraries', methods=['GET'])
-@login_required
+@admin_required
 def get_all_libraries():
     """
     【V3 - 参数修正版】获取所有媒体库和合集，用于UI勾选。
@@ -131,7 +131,7 @@ def get_all_libraries():
 
 # --- 创建实时预览 ---
 @cover_generator_config_bp.route('/preview', methods=['POST'])
-@login_required
+@admin_required
 def api_generate_cover_preview():
     """根据传入的设置，实时生成带徽章的预览图"""
     try:

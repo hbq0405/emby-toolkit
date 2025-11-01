@@ -9,7 +9,7 @@ from flask import Blueprint, request, jsonify
 import emby_handler
 import config_manager
 import constants
-from extensions import login_required
+from extensions import admin_required
 from database import connection
 # 创建一个新的蓝图
 user_management_bp = Blueprint('user_management_bp', __name__)
@@ -18,7 +18,7 @@ logger = logging.getLogger(__name__)
 
 # --- 模块 1: 用户模板管理 (Templates) ---
 @user_management_bp.route('/api/admin/user_templates', methods=['GET'])
-@login_required
+@admin_required
 def get_all_templates():
     """【V2 - 返回源用户ID】获取所有用户模板"""
     try:
@@ -34,7 +34,7 @@ def get_all_templates():
         return jsonify({"status": "error", "message": str(e)}), 500
 
 @user_management_bp.route('/api/admin/user_templates', methods=['POST'])
-@login_required
+@admin_required
 def create_template():
     """【V3 - 支持首选项】创建一个新的用户模板"""
     data = request.json
@@ -80,7 +80,7 @@ def create_template():
         return jsonify({"status": "error", "message": str(e)}), 500
 
 @user_management_bp.route('/api/admin/user_templates/<int:template_id>/sync', methods=['POST'])
-@login_required
+@admin_required
 def sync_template(template_id):
     """【V3 - 修正版】从源用户同步并更新模板，并将其应用到所有关联用户。"""
     try:
@@ -170,7 +170,7 @@ def sync_template(template_id):
 # --- 模块 2: 邀请链接管理 (Invitations) ---
 
 @user_management_bp.route('/api/admin/invitations', methods=['POST'])
-@login_required
+@admin_required
 def create_invitation():
     """生成一个新的邀请链接"""
     data = request.json
@@ -378,7 +378,7 @@ def register_with_invite():
         logger.error(f"用户注册时发生严重错误: {e}", exc_info=True)
         return jsonify({"status": "error", "message": "注册过程中发生服务器内部错误，请联系管理员。"}), 500
 @user_management_bp.route('/api/admin/invitations', methods=['GET'])
-@login_required
+@admin_required
 def get_all_invitations():
     """获取所有已生成的邀请码及其状态"""
     try:
@@ -398,7 +398,7 @@ def get_all_invitations():
         return jsonify({"status": "error", "message": "获取邀请码列表失败"}), 500
 
 @user_management_bp.route('/api/admin/invitations/<int:invitation_id>', methods=['DELETE'])
-@login_required
+@admin_required
 def delete_invitation(invitation_id):
     """删除一个邀请码"""
     try:
@@ -425,7 +425,7 @@ def _get_all_source_user_ids(cursor) -> set:
         return set() # 出错时返回空集合，确保不会意外过滤掉所有用户
 
 @user_management_bp.route('/api/admin/users', methods=['GET'])
-@login_required
+@admin_required
 def get_all_managed_users():
     """
     【V2 - 隐藏源用户】获取所有 Emby 用户，并自动过滤掉被用作模板源的用户。
@@ -482,7 +482,7 @@ def get_all_managed_users():
 # 3. ★★★ 一个用于切换模板的 API 函数 ★★★
 # (可以放在 get_all_managed_users 函数的下面)
 @user_management_bp.route('/api/admin/users/<string:user_id>/template', methods=['POST'])
-@login_required
+@admin_required
 def change_user_template(user_id):
     """
     【V6 - 支持首选项】为一个现有用户切换模板并应用新权限和首选项。
@@ -557,7 +557,7 @@ def change_user_template(user_id):
         return jsonify({"status": "error", "message": "切换模板失败"}), 500
 
 @user_management_bp.route('/api/admin/users/<string:user_id>/status', methods=['POST'])
-@login_required
+@admin_required
 def set_user_status(user_id):
     """【V2 - 增加日志用户名】手动禁用或启用一个用户"""
     data = request.json
@@ -598,7 +598,7 @@ def set_user_status(user_id):
         return jsonify({"status": "error", "message": "更新用户状态失败"}), 500
 
 @user_management_bp.route('/api/admin/users/<string:user_id>/expiration', methods=['POST'])
-@login_required
+@admin_required
 def set_user_expiration(user_id):
     """【V2 - 增加日志用户名】设置或清除用户的有效期"""
     data = request.json
@@ -642,7 +642,7 @@ def set_user_expiration(user_id):
         return jsonify({"status": "error", "message": "更新有效期失败"}), 500
 
 @user_management_bp.route('/api/admin/users/<string:user_id>', methods=['DELETE'])
-@login_required
+@admin_required
 def delete_user(user_id):
     """【V2 - 增加日志用户名】从 Emby 和本地数据库中彻底删除一个用户"""
     config = config_manager.APP_CONFIG
@@ -681,7 +681,7 @@ def delete_user(user_id):
     else:
         return jsonify({"status": "error", "message": f"在 Emby 中删除用户 '{user_name_for_log}' 失败"}), 500
 @user_management_bp.route('/api/admin/user_templates/<int:template_id>', methods=['DELETE'])
-@login_required
+@admin_required
 def delete_template(template_id):
     """删除一个用户模板"""
     try:

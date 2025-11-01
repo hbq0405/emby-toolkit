@@ -5,7 +5,7 @@ from flask import Blueprint, request, jsonify
 
 # 导入您项目中用于管理和执行任务的核心模块
 import task_manager 
-from extensions import login_required, processor_ready_required
+from extensions import admin_required, processor_ready_required
 # ★★★ 导入任务注册表，这是“翻译”的关键 ★★★
 from tasks import get_task_registry
 
@@ -16,7 +16,7 @@ tasks_bp = Blueprint('tasks', __name__, url_prefix='/api/tasks')
 
 # ★★★ 新增API：获取所有可供选择的任务 ★★★
 @tasks_bp.route('/available', methods=['GET'])
-@login_required
+@admin_required
 def get_available_tasks():
     """
     【V2】返回一个可用于任务链配置的、有序的、人类可读的任务列表。
@@ -36,7 +36,7 @@ def get_available_tasks():
         return jsonify({"error": "无法获取可用任务列表"}), 500
 
 @tasks_bp.route('/run', methods=['POST'])
-@login_required
+@admin_required
 @processor_ready_required
 def run_task():
     """

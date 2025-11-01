@@ -10,7 +10,7 @@ import config_manager
 import task_manager
 import extensions
 from database import collection_db
-from extensions import login_required, processor_ready_required
+from extensions import admin_required, processor_ready_required
 from urllib.parse import urlparse
 
 # --- 蓝图 1：用于所有 /api/... 的路由 ---
@@ -65,7 +65,7 @@ def api_search_emby_library():
         return jsonify({"error": "搜索时发生未知服务器错误"}), 500
 
 @media_api_bp.route('/media_for_editing/<item_id>', methods=['GET'])
-@login_required
+@admin_required
 @processor_ready_required
 def api_get_media_for_editing(item_id):
     # 直接调用 core_processor 的新方法
@@ -77,7 +77,7 @@ def api_get_media_for_editing(item_id):
         return jsonify({"error": f"无法获取项目 {item_id} 的编辑数据，请检查日志。"}), 404
 
 @media_api_bp.route('/update_media_cast_sa/<item_id>', methods=['POST'])
-@login_required
+@admin_required
 @processor_ready_required
 def api_update_edited_cast_sa(item_id):
     from tasks import task_manual_update
@@ -191,7 +191,7 @@ def proxy_emby_image(image_path):
     
 # ✨✨✨ 一键翻译 ✨✨✨
 @media_api_bp.route('/actions/translate_cast_sa', methods=['POST']) # 注意路径不同
-@login_required
+@admin_required
 @processor_ready_required
 def api_translate_cast_sa():
     data = request.json
@@ -344,7 +344,7 @@ def api_get_emby_user_views(user_id):
 
 # ★★★ 提供工作室远程搜索的API ★★★
 @media_api_bp.route('/search_studios', methods=['GET'])
-@login_required
+@admin_required
 def api_search_studios():
     """
     根据查询参数 'q' 动态搜索工作室列表。

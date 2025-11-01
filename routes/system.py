@@ -16,7 +16,7 @@ import emby_handler
 # 导入共享模块
 import extensions
 from database import collection_db
-from extensions import login_required, task_lock_required
+from extensions import admin_required, task_lock_required
 import tasks
 import constants
 import github_handler
@@ -195,7 +195,7 @@ def api_save_config():
     
 # ★★★ 保存用户的自定义主题 ★★★
 @system_bp.route('/config/custom_theme', methods=['POST'])
-@login_required
+@admin_required
 def api_save_custom_theme():
     """
     接收前端发来的自定义主题JSON对象，并将其保存到配置文件。
@@ -217,7 +217,7 @@ def api_save_custom_theme():
     
 # --- 调用文件删除函数的API端点 ---
 @system_bp.route('/config/custom_theme', methods=['DELETE'])
-@login_required
+@admin_required
 def api_delete_custom_theme():
     """
     删除 custom_theme.json 文件。
@@ -274,7 +274,7 @@ def get_about_info():
 
 # --- 一键更新 ---
 @system_bp.route('/system/update/stream', methods=['GET'])
-@login_required
+@admin_required
 @task_lock_required
 def stream_update_progress():
     """
@@ -372,7 +372,7 @@ def stream_update_progress():
 
 # +++ 重启容器 +++
 @system_bp.route('/system/restart', methods=['POST'])
-@login_required
+@admin_required
 def restart_container():
     """
     重启运行此应用的 Docker 容器。
@@ -403,7 +403,7 @@ def restart_container():
 
 # ★★★ 提供电影类型映射的API ★★★
 @system_bp.route('/config/genres', methods=['GET'])
-@login_required
+@admin_required
 def api_get_genres_config():
     """
     (V2 - 数据库驱动版)
@@ -420,7 +420,7 @@ def api_get_genres_config():
     
 # ★★★ 提供电影工作室列表的API ★★★
 @system_bp.route('/config/studios', methods=['GET'])
-@login_required
+@admin_required
 def api_get_studios_config():
     """
     从媒体元数据缓存中动态获取所有唯一的工作室。

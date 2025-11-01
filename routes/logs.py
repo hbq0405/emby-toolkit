@@ -7,13 +7,13 @@ from werkzeug.utils import secure_filename
 import re
 
 import config_manager
-from extensions import login_required
+from extensions import admin_required
 
 logs_bp = Blueprint('logs', __name__, url_prefix='/api/logs')
 logger = logging.getLogger(__name__)
 
 @logs_bp.route('/list', methods=['GET'])
-@login_required
+@admin_required
 def list_log_files():
     """列出日志目录下的所有日志文件 (app.log*)"""
     try:
@@ -38,7 +38,7 @@ def list_log_files():
         return jsonify({"error": "无法读取日志文件列表"}), 500
 
 @logs_bp.route('/view', methods=['GET'])
-@login_required
+@admin_required
 def view_log_file():
     """查看指定日志文件的内容，自动处理 .gz 文件"""
     # 安全性第一：防止目录遍历攻击
@@ -69,7 +69,7 @@ def view_log_file():
         abort(500, f"读取文件 '{filename}' 时发生内部错误。")
 
 @logs_bp.route('/search', methods=['GET'])
-@login_required
+@admin_required
 def search_all_logs():
     """
     在所有日志文件 (app.log*) 中搜索关键词。
@@ -132,7 +132,7 @@ def search_all_logs():
         return jsonify({"error": "搜索过程中发生服务器内部错误"}), 500
 
 @logs_bp.route('/search_context', methods=['GET'])
-@login_required
+@admin_required
 def search_logs_with_context():
     """
     【V9 - 最终无干扰版】在所有日志文件中定位与关键词匹配的、完整的、未被中断的处理块。

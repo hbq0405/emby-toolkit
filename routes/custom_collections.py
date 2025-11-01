@@ -15,7 +15,7 @@ import config_manager
 import task_manager
 import moviepilot_handler
 import emby_handler
-from extensions import login_required
+from extensions import admin_required
 from custom_collection_handler import FilterEngine
 from utils import get_country_translation_map, UNIFIED_RATING_CATEGORIES, get_tmdb_country_options, KEYWORD_TRANSLATION_MAP
 from tmdb_handler import get_movie_genres_tmdb, get_tv_genres_tmdb, search_companies_tmdb, search_person_tmdb
@@ -33,7 +33,7 @@ GENRE_TRANSLATION_PATCH = {
 
 # ★★★ 获取 Emby 用户列表 ★★★
 @custom_collections_bp.route('/config/emby_users', methods=['GET'])
-@login_required
+@admin_required
 def api_get_emby_users():
     """为权限设置提供一个可选的 Emby 用户列表。"""
     try:
@@ -86,7 +86,7 @@ def api_get_emby_users():
 
 # --- 获取所有自定义合集定义 ---
 @custom_collections_bp.route('', methods=['GET']) # 原为 '/'
-@login_required
+@admin_required
 def api_get_all_custom_collections():
     """获取所有自定义合集定义 (V3.1 - 最终修正版)"""
     try:
@@ -149,7 +149,7 @@ def api_get_all_custom_collections():
 
 # --- 创建一个新的自定义合集定义 ---
 @custom_collections_bp.route('', methods=['POST'])
-@login_required
+@admin_required
 def api_create_custom_collection():
     """创建一个新的自定义合集定义"""
     data = request.json
@@ -179,7 +179,7 @@ def api_create_custom_collection():
 
 # --- 更新一个自定义合集定义 ---
 @custom_collections_bp.route('/<int:collection_id>', methods=['PUT'])
-@login_required
+@admin_required
 def api_update_custom_collection(collection_id):
     """更新一个自定义合集定义"""
     try:
@@ -215,7 +215,7 @@ def api_update_custom_collection(collection_id):
 
 # ★★★ 更新合集排序的API ★★★
 @custom_collections_bp.route('/update_order', methods=['POST'])
-@login_required
+@admin_required
 def api_update_custom_collections_order():
     """接收前端发来的新顺序并更新到数据库"""
     data = request.json
@@ -236,7 +236,7 @@ def api_update_custom_collections_order():
 
 # --- 联动删除Emby合集 ---
 @custom_collections_bp.route('/<int:collection_id>', methods=['DELETE'])
-@login_required
+@admin_required
 def api_delete_custom_collection(collection_id):
     """【V8 - 最终决战版】通过清空所有成员来联动删除Emby合集"""
     try:
@@ -276,7 +276,7 @@ def api_delete_custom_collection(collection_id):
 
 # --- 获取单个自定义合集健康状态 ---
 @custom_collections_bp.route('/<int:collection_id>/status', methods=['GET'])
-@login_required
+@admin_required
 def api_get_custom_collection_status(collection_id):
     """
     【V4 - 智能返回版】
@@ -323,7 +323,7 @@ def api_get_custom_collection_status(collection_id):
 
 # --- 更新自定义合集中单个媒体项状态 ---
 @custom_collections_bp.route('/<int:collection_id>/media_status', methods=['POST'])
-@login_required
+@admin_required
 def api_update_custom_collection_media_status(collection_id):
     """更新自定义合集中单个媒体项的状态 (e.g., subscribed -> missing)"""
     data = request.json
@@ -349,7 +349,7 @@ def api_update_custom_collection_media_status(collection_id):
     
 # --- 修正榜单合集中的媒体匹配 ---
 @custom_collections_bp.route('/<int:collection_id>/fix_match', methods=['POST'])
-@login_required
+@admin_required
 def api_fix_media_match_in_custom_collection(collection_id):
     """
     【V2 - 季号支持版】修正榜单合集中一个错误的媒体匹配项。
@@ -384,7 +384,7 @@ def api_fix_media_match_in_custom_collection(collection_id):
 
 # --- 手动订阅 ---
 @custom_collections_bp.route('/subscribe', methods=['POST'])
-@login_required
+@admin_required
 def api_subscribe_media_from_custom_collection():
     """
     【PG JSON 兼容 & 季号精确订阅修复版】从RSS榜单合集页面手动订阅。
@@ -473,7 +473,7 @@ def api_subscribe_media_from_custom_collection():
     
 # --- 提取国家列表 ---
 @custom_collections_bp.route('/config/countries', methods=['GET'])
-@login_required
+@admin_required
 def api_get_countries_for_filter():
     """【重构版】为筛选器提供一个纯中文的国家/地区列表。"""
     try:
@@ -489,7 +489,7 @@ def api_get_countries_for_filter():
     
 # --- 提取标签列表 ---
 @custom_collections_bp.route('/config/tags', methods=['GET'])
-@login_required
+@admin_required
 def api_get_tags_for_filter():
     """为筛选器提供一个标签列表。"""
     try:
@@ -500,7 +500,7 @@ def api_get_tags_for_filter():
         return jsonify([]), 500
 
 @custom_collections_bp.route('/config/unified_ratings', methods=['GET'])
-@login_required
+@admin_required
 def api_get_unified_ratings_for_filter():
     """为筛选器提供一个固定的、统一的分级列表。"""
     # 直接返回我们预定义好的分类列表
@@ -508,7 +508,7 @@ def api_get_unified_ratings_for_filter():
 
 # --- 获取 Emby 媒体库列表 ---
 @custom_collections_bp.route('/config/emby_libraries', methods=['GET'])
-@login_required
+@admin_required
 def api_get_emby_libraries_for_filter():
     """为筛选器提供一个可选的 Emby 媒体库列表。"""
     try:
@@ -542,7 +542,7 @@ def api_get_emby_libraries_for_filter():
     
 # --- 获取 TMDb 电影类型列表 ---
 @custom_collections_bp.route('/config/tmdb_movie_genres', methods=['GET'])
-@login_required
+@admin_required
 def api_get_tmdb_movie_genres():
     """【V2 - 汉化补丁版】为 TMDb 探索助手提供电影类型列表。"""
     try:
@@ -565,7 +565,7 @@ def api_get_tmdb_movie_genres():
 
 # --- 获取 TMDb 电视剧类型列表 ---
 @custom_collections_bp.route('/config/tmdb_tv_genres', methods=['GET'])
-@login_required
+@admin_required
 def api_get_tmdb_tv_genres():
     """【V2 - 汉化补丁版】为 TMDb 探索助手提供电视剧类型列表。"""
     try:
@@ -588,7 +588,7 @@ def api_get_tmdb_tv_genres():
     
 # --- 搜索 TMDb 电影公司 ---
 @custom_collections_bp.route('/config/tmdb_search_companies', methods=['GET'])
-@login_required
+@admin_required
 def api_search_tmdb_companies():
     """为 TMDb 探索助手提供电影公司搜索功能。"""
     query = request.args.get('q', '')
@@ -604,7 +604,7 @@ def api_search_tmdb_companies():
     
 # --- 搜索 TMDb 人物 (演员/导演) ---
 @custom_collections_bp.route('/config/tmdb_search_persons', methods=['GET'])
-@login_required
+@admin_required
 def api_search_tmdb_persons():
     """【V2 - 增强版】为 TMDb 探索助手提供带详细信息的人物搜索功能。"""
     query = request.args.get('q', '')
@@ -644,7 +644,7 @@ def api_search_tmdb_persons():
     
 # --- 获取 TMDb 国家/地区选项列表 ---
 @custom_collections_bp.route('/config/tmdb_countries', methods=['GET'])
-@login_required
+@admin_required
 def api_get_tmdb_countries():
     """为 TMDb 探索助手提供国家/地区选项列表 (含ISO代码)。"""
     try:
@@ -657,7 +657,7 @@ def api_get_tmdb_countries():
     
 # --- 提取关键词列表 ---
 @custom_collections_bp.route('/config/keywords', methods=['GET'])
-@login_required
+@admin_required
 def api_get_keywords_for_filter():
     """为筛选器提供一个中英对照的关键词列表。"""
     try:

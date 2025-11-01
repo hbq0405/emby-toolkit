@@ -140,22 +140,36 @@ const router = createRouter({
 router.beforeEach(async (to, from, next) => {
   const authStore = useAuthStore();
 
-  if (authStore.username === null && authStore.initializationError === null) {
-    try {
-      await authStore.checkAuthStatus();
-    } catch (error) {
-      // ...
-    }
-  }
-  
-  const requiresAuth = to.meta.requiresAuth;
-  const isAuthEnabled = authStore.isAuthEnabled;
-  const isLoggedIn = authStore.isLoggedIn;
-
-  if (requiresAuth && isAuthEnabled && !isLoggedIn) {
-    next({ name: 'Login' });
-  } else {
+  // 规则1: 如果要去的是公共页面 (我们用 !requiresAuth 判断)，直接放行
+  if (!to.meta.requiresAuth) {
     next();
+    return;
+  }
+
+  // 规则2: 如果要去的是受保护页面，我们必须先确定身份
+  // 如果前端状态已知是已登录，直接放行 (这是为了优化，避免每次都请求后端)
+  if (authStore.isLoggedIn) {
+    next();
+    return;
+  }
+
+  // 规则3: 如果前端状态是未登录 (比如刚刷新页面)，必须向后端验证
+  try {
+    // 我们等待 checkAuthStatus 执行完毕
+    await authStore.checkAuthStatus();
+
+    // 验证完毕后，再次检查 store 的状态
+    if (authStore.isLoggedIn) {
+      // 如果后端说你确实登录了，放行
+      next();
+    } else {
+      // 如果后端说你没登录，踢回登录页
+      next({ name: 'Login' });
+    }
+  } catch (error) {
+    // 如果 checkAuthStatus 本身就出错了 (比如网络问题或403)，
+    // 说明 session 肯定无效，同样踢回登录页
+    next({ name: 'Login' });
   }
 });
 
