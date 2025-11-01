@@ -15,7 +15,7 @@ import config_manager
 import task_manager
 import moviepilot_handler
 import emby_handler
-from extensions import admin_required
+from extensions import admin_required, any_login_required
 from custom_collection_handler import FilterEngine
 from utils import get_country_translation_map, UNIFIED_RATING_CATEGORIES, get_tmdb_country_options, KEYWORD_TRANSLATION_MAP
 from tmdb_handler import get_movie_genres_tmdb, get_tv_genres_tmdb, search_companies_tmdb, search_person_tmdb
@@ -473,7 +473,7 @@ def api_subscribe_media_from_custom_collection():
     
 # --- 提取国家列表 ---
 @custom_collections_bp.route('/config/countries', methods=['GET'])
-@admin_required
+@any_login_required
 def api_get_countries_for_filter():
     """【重构版】为筛选器提供一个纯中文的国家/地区列表。"""
     try:
@@ -542,7 +542,7 @@ def api_get_emby_libraries_for_filter():
     
 # --- 获取 TMDb 电影类型列表 ---
 @custom_collections_bp.route('/config/tmdb_movie_genres', methods=['GET'])
-@admin_required
+@any_login_required
 def api_get_tmdb_movie_genres():
     """【V2 - 汉化补丁版】为 TMDb 探索助手提供电影类型列表。"""
     try:
@@ -565,7 +565,7 @@ def api_get_tmdb_movie_genres():
 
 # --- 获取 TMDb 电视剧类型列表 ---
 @custom_collections_bp.route('/config/tmdb_tv_genres', methods=['GET'])
-@admin_required
+@any_login_required
 def api_get_tmdb_tv_genres():
     """【V2 - 汉化补丁版】为 TMDb 探索助手提供电视剧类型列表。"""
     try:
@@ -588,7 +588,7 @@ def api_get_tmdb_tv_genres():
     
 # --- 搜索 TMDb 电影公司 ---
 @custom_collections_bp.route('/config/tmdb_search_companies', methods=['GET'])
-@admin_required
+@any_login_required
 def api_search_tmdb_companies():
     """为 TMDb 探索助手提供电影公司搜索功能。"""
     query = request.args.get('q', '')
@@ -604,7 +604,7 @@ def api_search_tmdb_companies():
     
 # --- 搜索 TMDb 人物 (演员/导演) ---
 @custom_collections_bp.route('/config/tmdb_search_persons', methods=['GET'])
-@admin_required
+@any_login_required
 def api_search_tmdb_persons():
     """【V2 - 增强版】为 TMDb 探索助手提供带详细信息的人物搜索功能。"""
     query = request.args.get('q', '')
@@ -644,7 +644,7 @@ def api_search_tmdb_persons():
     
 # --- 获取 TMDb 国家/地区选项列表 ---
 @custom_collections_bp.route('/config/tmdb_countries', methods=['GET'])
-@admin_required
+@any_login_required
 def api_get_tmdb_countries():
     """为 TMDb 探索助手提供国家/地区选项列表 (含ISO代码)。"""
     try:
@@ -657,7 +657,7 @@ def api_get_tmdb_countries():
     
 # --- 提取关键词列表 ---
 @custom_collections_bp.route('/config/keywords', methods=['GET'])
-@admin_required
+@any_login_required
 def api_get_keywords_for_filter():
     """为筛选器提供一个中英对照的关键词列表。"""
     try:

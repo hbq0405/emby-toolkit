@@ -1,11 +1,13 @@
 # moviepilot_handler.py
 
 import requests
+import re
 import logging
-from typing import Dict, Any, Optional
+from typing import Dict, Any, Optional, Tuple
 
-# 从你的常量模块导入，这不会造成循环
-import constants 
+import tmdb_handler
+import constants
+import utils 
 
 logger = logging.getLogger(__name__)
 
@@ -147,3 +149,55 @@ def subscribe_with_custom_payload(payload: dict, config: Dict[str, Any]) -> bool
     except Exception as e:
         logger.error(f"使用自定义Payload订阅到MoviePilot时发生错误: {e}", exc_info=True)
         return False
+    
+# ★★★ 一个新的、更强大的智能订阅函数 ★★★
+def smart_subscribe_series(series_info: dict, config: Dict[str, Any]) -> Optional[Dict[str, Any]]:
+    """
+    【V2 - 返回详细工单】
+    解析剧集信息，然后调用 MoviePilot 订阅。
+    成功后，返回一个包含所有解析信息的字典，供上层写入数据库。
+    失败则返回 None。
+    """
+    tmdb_id = series_info.get('tmdb_id')
+    title = series_info.get('item_name')
+    if not tmdb_id or not title:
+        return None
+
+    base_name, season_num = utils.parse_series_title_and_season(title) # 调用中央工具
+
+    mp_payload = { "type": "电视剧" }
+    parsed_info = {} # 用于返回的“工单”
+
+    if base_name and season_num:
+        # 分季剧集
+        tmdb_api_key = config.get(constants.CONFIG_OPTION_TMDB_API_KEY)
+        search_results = tmdb_handler.search_tv_shows(base_name, tmdb_api_key)
+        
+        if search_results:
+            parent_series = search_results[0]
+            parent_tmdb_id = parent_series.get('id')
+            parent_name = parent_series.get('name')
+            
+            mp_payload["name"] = parent_name
+            mp_payload["tmdbid"] = parent_tmdb_id
+            mp_payload["season"] = season_num
+            
+            parsed_info = {
+                "parent_tmdb_id": str(parent_tmdb_id),
+                "parsed_series_name": parent_name,
+                "parsed_season_number": season_num
+            }
+        else:
+            # 降级处理
+            mp_payload["name"] = title
+            mp_payload["tmdbid"] = tmdb_id
+    else:
+        # 整季剧集
+        mp_payload["name"] = title
+        mp_payload["tmdbid"] = tmdb_id
+
+    # 调用 MP 订阅
+    success = subscribe_with_custom_payload(mp_payload, config)
+
+    # 如果订阅成功，返回“工单”；如果失败，返回 None
+    return parsed_info if success else None

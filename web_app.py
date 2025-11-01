@@ -57,6 +57,8 @@ from routes.media_cleanup import media_cleanup_bp
 from routes.user_management import user_management_bp
 from routes.webhook import webhook_bp
 from routes.unified_auth import unified_auth_bp, init_auth
+from routes.user_portal import user_portal_bp
+from routes.discover import discover_bp
 # --- 核心模块导入 ---
 import constants # 你的常量定义\
 import logging
@@ -316,6 +318,8 @@ app.register_blueprint(media_cleanup_bp)
 app.register_blueprint(user_management_bp)
 app.register_blueprint(webhook_bp)
 app.register_blueprint(unified_auth_bp)
+app.register_blueprint(user_portal_bp)
+app.register_blueprint(discover_bp)
 
 def main_app_start():
     """将主应用启动逻辑封装成一个函数"""

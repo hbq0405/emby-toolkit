@@ -21,6 +21,8 @@ export const useAuthStore = defineStore('auth', () => {
     return false;
   });
 
+  const canSubscribeWithoutReview = computed(() => user.value?.allow_unrestricted_subscriptions || false);
+
   // --- Actions ---
   async function checkAuthStatus() {
     try {
@@ -73,6 +75,7 @@ export const useAuthStore = defineStore('auth', () => {
     username, // 暴露计算属性
     userType, // 暴露计算属性
     isAdmin,  // 暴露计算属性
+    canSubscribeWithoutReview,
     checkAuthStatus,
     login,
     logout,

@@ -173,7 +173,8 @@ import {
   SparklesOutline as ResubscribeIcon,
   TrashBinOutline as CleanupIcon,
   PeopleCircleOutline as UserManagementIcon,
-  TicketOutline as InviteIcon,
+  PersonCircleOutline as UserCenterIcon,
+  FilmOutline as DiscoverIcon
 } from '@vicons/ionicons5';
 import { Password24Regular as PasswordIcon } from '@vicons/fluent';
 import axios from 'axios';
@@ -292,22 +293,68 @@ const handleUserSelect = async (key) => {
   }
 };
 
-const menuOptions = computed(() => [
-  { label: '发现', key: 'group-discovery', type: 'group', children: [ { label: '数据看板', key: 'DatabaseStats', icon: renderIcon(StatsIcon) } ] },
-  { label: '整理', key: 'group-management', type: 'group', children: [ { label: '原生合集', key: 'Collections', icon: renderIcon(CollectionsIcon) }, { label: '自建合集', key: 'CustomCollectionsManager', icon: renderIcon(CustomCollectionsIcon) }, { label: '媒体去重', key: 'MediaCleanupPage', icon: renderIcon(CleanupIcon) }, { label: '封面生成', key: 'CoverGeneratorConfig', icon: renderIcon(PaletteIcon) }, { label: '手动处理', key: 'ReviewList', icon: renderIcon(ReviewListIcon) }, ] },
-  { label: '订阅', key: 'group-subscriptions', type: 'group', children: [ { label: '智能追剧', key: 'Watchlist', icon: renderIcon(WatchlistIcon) }, { label: '演员订阅', key: 'ActorSubscriptions', icon: renderIcon(ActorSubIcon) }, { label: '媒体洗版', key: 'ResubscribePage', icon: renderIcon(ResubscribeIcon) }, ] },
-  { 
-    label: '系统', 
-    key: 'group-system', 
-    type: 'group', 
-    children: [ 
-      { label: '用户管理', key: 'UserManagement', icon: renderIcon(UserManagementIcon) }, // <-- 在这里添加新菜单项
-      { label: '通用设置', key: 'settings-general', icon: renderIcon(GeneralIcon) }, 
-      { label: '任务中心', key: 'settings-scheduler', icon: renderIcon(SchedulerIcon) }, 
-      { label: '查看更新', key: 'Releases', icon: renderIcon(AboutIcon) }, 
-    ] 
+const menuOptions = computed(() => {
+  // 1. 先定义一个基础菜单，这是所有登录用户都能看到的
+  const baseMenu = [
+    { 
+      label: '发现', 
+      key: 'group-discovery', 
+      type: 'group', 
+      children: [ 
+        { label: '数据看板', key: 'DatabaseStats', icon: renderIcon(StatsIcon) },
+        { label: '影视探索', key: 'Discover', icon: renderIcon(DiscoverIcon) },
+        // 只有 Emby 用户能看到用户中心
+        ...(authStore.userType === 'emby_user' ? [{ 
+          label: '用户中心', 
+          key: 'UserCenter', 
+          icon: renderIcon(UserCenterIcon) 
+        }] : [])
+      ] 
+    },
+  ];
+
+  // 2. 如果当前用户是管理员 (无论是本地还是Emby)，我们再把所有管理菜单加上去
+  if (authStore.isAdmin) {
+    baseMenu.push(
+      { 
+        label: '整理', 
+        key: 'group-management', 
+        type: 'group', 
+        children: [ 
+          { label: '原生合集', key: 'Collections', icon: renderIcon(CollectionsIcon) }, 
+          { label: '自建合集', key: 'CustomCollectionsManager', icon: renderIcon(CustomCollectionsIcon) }, 
+          { label: '媒体去重', key: 'MediaCleanupPage', icon: renderIcon(CleanupIcon) }, 
+          { label: '封面生成', key: 'CoverGeneratorConfig', icon: renderIcon(PaletteIcon) }, 
+          { label: '手动处理', key: 'ReviewList', icon: renderIcon(ReviewListIcon) }, 
+        ] 
+      },
+      { 
+        label: '订阅', 
+        key: 'group-subscriptions', 
+        type: 'group', 
+        children: [ 
+          { label: '智能追剧', key: 'Watchlist', icon: renderIcon(WatchlistIcon) }, 
+          { label: '演员订阅', key: 'ActorSubscriptions', icon: renderIcon(ActorSubIcon) }, 
+          { label: '媒体洗版', key: 'ResubscribePage', icon: renderIcon(ResubscribeIcon) }, 
+        ] 
+      },
+      { 
+        label: '系统', 
+        key: 'group-system', 
+        type: 'group', 
+        children: [ 
+          { label: '用户管理', key: 'UserManagement', icon: renderIcon(UserManagementIcon) },
+          { label: '通用设置', key: 'settings-general', icon: renderIcon(GeneralIcon) }, 
+          { label: '任务中心', key: 'settings-scheduler', icon: renderIcon(SchedulerIcon) }, 
+          { label: '查看更新', key: 'Releases', icon: renderIcon(AboutIcon) }, 
+        ] 
+      }
+    );
   }
-]);
+
+  // 3. 返回最终构建好的菜单
+  return baseMenu;
+});
 
 function handleMenuUpdate(key) {
   router.push({ name: key });

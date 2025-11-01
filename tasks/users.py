@@ -93,10 +93,18 @@ def task_sync_all_user_data(processor):
                         existing_item['UserData']['PlaybackPositionTicks'] = new_user_data['PlaybackPositionTicks']
                     if 'Played' in new_user_data:
                         existing_item['UserData']['Played'] = new_user_data['Played']
+                    
+                    # ★★★ 在这里把播放次数累加起来 ★★★
+                    if 'PlayCount' in new_user_data:
+                        # 如果 existing_item['UserData'] 里还没有 PlayCount，就先初始化为 0
+                        if 'PlayCount' not in existing_item['UserData']:
+                            existing_item['UserData']['PlayCount'] = 0
+                        # 然后把新分集的播放次数加进去
+                        existing_item['UserData']['PlayCount'] += new_user_data['PlayCount']
             
             final_data_to_upsert = list(final_data_map.values())
             
-            user_db.upsert_user_media_data_batch_no_date(user_id, final_data_to_upsert)
+            user_db.upsert_user_media_data_batch(user_id, final_data_to_upsert)
             
             logger.info(f"  ➜ 成功为用户 '{user_name}' 同步了 {len(final_data_to_upsert)} 条媒体状态。")
 

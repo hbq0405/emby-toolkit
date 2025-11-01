@@ -14,17 +14,35 @@ logger = logging.getLogger(__name__)
 # ======================================================================
 
 def upsert_user_media_data(data: Dict[str, Any]):
-    """【V1】根据Webhook传入的数据，更新或插入单条用户媒体状态。"""
-    
+    """【V2 - 健壮版】根据Webhook传入的数据，更新或插入单条用户媒体状态。
+    - 明确列出所有要更新的字段，避免因 webhook 负载变化而遗漏数据。
+    """
     user_id = data.get('user_id')
     item_id = data.get('item_id')
     if not user_id or not item_id:
         return
 
-    data['last_updated_at'] = datetime.now(timezone.utc)
-    set_clauses = [f"{key} = EXCLUDED.{key}" for key in data.keys() if key not in ['user_id', 'item_id']]
+    # 准备所有可能更新的字段
+    update_data = {
+        'is_favorite': data.get('is_favorite'),
+        'played': data.get('played'),
+        'playback_position_ticks': data.get('playback_position_ticks'),
+        'play_count': data.get('play_count'), # 确保 play_count 在这里
+        'last_played_date': data.get('last_played_date'),
+        'last_updated_at': datetime.now(timezone.utc)
+    }
+
+    # 过滤掉值为 None 的字段，这样就不会用 None 覆盖掉数据库中已有的值
+    update_data = {k: v for k, v in update_data.items() if v is not None}
+
+    if not update_data:
+        logger.warning(f"Webhook 为 user {user_id}, item {item_id} 传来的数据为空，跳过更新。")
+        return
+
+    # 动态构建 SQL
+    columns = ['user_id', 'item_id'] + list(update_data.keys())
+    set_clauses = [f"{key} = EXCLUDED.{key}" for key in update_data.keys()]
     
-    columns = list(data.keys())
     columns_str = ', '.join(columns)
     placeholders_str = ', '.join(['%s'] * len(columns))
     
@@ -35,10 +53,12 @@ def upsert_user_media_data(data: Dict[str, Any]):
             {', '.join(set_clauses)};
     """
     
+    values = (user_id, item_id) + tuple(update_data.values())
+
     try:
         with get_db_connection() as conn:
             cursor = conn.cursor()
-            cursor.execute(sql, tuple(data.values()))
+            cursor.execute(sql, values)
             conn.commit()
     except Exception as e:
         logger.error(f"DB: 更新用户媒体数据失败 for user {user_id}, item {item_id}: {e}", exc_info=True)
@@ -75,7 +95,8 @@ def upsert_user_media_data_batch(user_id: str, items_data: List[Dict[str, Any]])
             user_data.get('Played', False),
             user_data.get('PlaybackPositionTicks', 0),
             user_data.get('PlayCount', 0),
-            user_data.get('LastPlayedDate'),
+            # ★★★ 正确的位置：直接从顶层 item 对象里获取 LastPlayedDate ★★★
+            item.get('LastPlayedDate'), 
             now_utc
         ))
 
@@ -358,3 +379,194 @@ def expand_template_user_ids(selected_user_ids: List[str]) -> List[str]:
         logger.error(f"DB: 展开模板用户ID时失败 (V2): {e}", exc_info=True)
         # 出错时，保守地返回原始列表
         return selected_user_ids
+    
+# ★★★ 新增：获取用户观影历史并关联媒体元数据 ★★★
+def get_user_history_with_metadata(user_id: str, limit: int = 100) -> List[Dict[str, Any]]:
+    """
+    获取指定用户的观影历史，并 JOIN 媒体元数据表以获取标题、年份等信息。
+    """
+    sql = """
+        SELECT
+            umd.item_id,
+            umd.last_played_date,
+            umd.play_count,
+            mm.title,
+            mm.original_title,
+            mm.release_year,
+            mm.item_type,
+            mm.rating
+        FROM
+            user_media_data umd
+        LEFT JOIN
+            media_metadata mm ON umd.item_id = mm.emby_item_id
+        WHERE
+            umd.user_id = %s
+            AND umd.last_played_date IS NOT NULL
+        ORDER BY
+            umd.last_played_date DESC
+        LIMIT %s;
+    """
+    try:
+        with get_db_connection() as conn:
+            cursor = conn.cursor()
+            cursor.execute(sql, (user_id, limit))
+            return [dict(row) for row in cursor.fetchall()]
+    except Exception as e:
+        logger.error(f"DB: 为用户 {user_id} 查询观影历史失败: {e}", exc_info=True)
+        raise
+
+# ★★★ 新增：获取全局播放次数排行榜 ★★★
+def get_global_play_count_rankings(limit: int = 20) -> List[Dict[str, Any]]:
+    """
+    统计所有用户的播放数据，按总播放次数进行全局排名。
+    """
+    sql = """
+        SELECT
+            umd.item_id,
+            SUM(umd.play_count) as total_play_count,
+            COUNT(DISTINCT umd.user_id) as total_viewers,
+            mm.title,
+            mm.original_title,
+            mm.release_year,
+            mm.item_type
+        FROM
+            user_media_data umd
+        LEFT JOIN
+            media_metadata mm ON umd.item_id = mm.emby_item_id
+        WHERE
+            umd.play_count > 0
+        GROUP BY
+            umd.item_id, mm.title, mm.original_title, mm.release_year, mm.item_type
+        ORDER BY
+            total_play_count DESC, total_viewers DESC
+        LIMIT %s;
+    """
+    try:
+        with get_db_connection() as conn:
+            cursor = conn.cursor()
+            cursor.execute(sql, (limit,))
+            return [dict(row) for row in cursor.fetchall()]
+    except Exception as e:
+        logger.error(f"DB: 查询全局排行榜失败: {e}", exc_info=True)
+        raise
+
+def create_subscription_request(**kwargs) -> int:
+    """
+    在 subscription_requests 表中创建一条新的申请记录。
+    """
+    columns = kwargs.keys()
+    values = kwargs.values()
+    
+    sql = f"""
+        INSERT INTO subscription_requests ({', '.join(columns)})
+        VALUES ({', '.join(['%s'] * len(values))})
+        RETURNING id;
+    """
+    
+    try:
+        with get_db_connection() as conn:
+            cursor = conn.cursor()
+            cursor.execute(sql, tuple(values))
+            new_id = cursor.fetchone()['id']
+            conn.commit()
+            return new_id
+    except Exception as e:
+        logger.error(f"DB: 创建订阅请求失败: {e}", exc_info=True)
+        raise
+
+def get_user_subscription_permission(user_id: str) -> bool:
+    """
+    根据用户ID，查询其所属模板是否允许免审订阅。
+    """
+    sql = """
+        SELECT t.allow_unrestricted_subscriptions
+        FROM emby_users_extended ue
+        JOIN user_templates t ON ue.template_id = t.id
+        WHERE ue.emby_user_id = %s;
+    """
+    try:
+        with get_db_connection() as conn:
+            cursor = conn.cursor()
+            cursor.execute(sql, (user_id,))
+            result = cursor.fetchone()
+            # 如果能查到记录，并且值为 True，则返回 True
+            return result['allow_unrestricted_subscriptions'] if result else False
+    except Exception as e:
+        logger.error(f"DB: 查询用户 {user_id} 的订阅权限失败: {e}", exc_info=True)
+        return False # 出错时，保守地返回 False
+    
+def get_pending_subscription_requests() -> List[Dict[str, Any]]:
+    """查询所有状态为 'pending' 的订阅请求，并关联用户名。"""
+    sql = """
+        SELECT sr.*, u.name as username
+        FROM subscription_requests sr
+        JOIN emby_users u ON sr.emby_user_id = u.id
+        WHERE sr.status = 'pending'
+        ORDER BY sr.requested_at ASC;
+    """
+    try:
+        with get_db_connection() as conn:
+            cursor = conn.cursor()
+            cursor.execute(sql)
+            return [dict(row) for row in cursor.fetchall()]
+    except Exception as e:
+        logger.error(f"DB: 查询待审订阅列表失败: {e}", exc_info=True)
+        raise
+
+def get_subscription_request_details(request_id: int) -> Optional[Dict[str, Any]]:
+    """根据ID获取单条订阅请求的完整信息。"""
+    sql = "SELECT * FROM subscription_requests WHERE id = %s"
+    try:
+        with get_db_connection() as conn:
+            cursor = conn.cursor()
+            cursor.execute(sql, (request_id,))
+            return dict(cursor.fetchone()) if cursor.rowcount > 0 else None
+    except Exception as e:
+        logger.error(f"DB: 查询订阅请求 {request_id} 详情失败: {e}", exc_info=True)
+        raise
+
+def update_subscription_request_status(request_id: int, status: str, processed_by: str = 'admin') -> bool:
+    """更新指定订阅请求的状态和处理信息。"""
+    sql = """
+        UPDATE subscription_requests
+        SET status = %s, processed_by = %s, processed_at = NOW()
+        WHERE id = %s;
+    """
+    try:
+        with get_db_connection() as conn:
+            cursor = conn.cursor()
+            cursor.execute(sql, (status, processed_by, request_id))
+            conn.commit()
+            return cursor.rowcount > 0
+    except Exception as e:
+        logger.error(f"DB: 更新订阅请求 {request_id} 状态失败: {e}", exc_info=True)
+        raise
+
+def get_user_account_details(user_id: str) -> Optional[Dict[str, Any]]:
+    """
+    根据用户ID，查询其在 emby_users_extended 表中的信息，并关联 user_templates 表获取模板详情。
+    """
+    sql = """
+        SELECT
+            ue.status,
+            ue.registration_date,
+            ue.expiration_date,
+            ut.name as template_name,
+            ut.description as template_description,
+            ut.allow_unrestricted_subscriptions
+        FROM
+            emby_users_extended ue
+        LEFT JOIN
+            user_templates ut ON ue.template_id = ut.id
+        WHERE
+            ue.emby_user_id = %s;
+    """
+    try:
+        with get_db_connection() as conn:
+            cursor = conn.cursor()
+            cursor.execute(sql, (user_id,))
+            result = cursor.fetchone()
+            return dict(result) if result else None
+    except Exception as e:
+        logger.error(f"DB: 查询用户 {user_id} 的账户详情失败: {e}", exc_info=True)
+        raise

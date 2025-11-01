@@ -4,7 +4,7 @@ import re
 import os
 import psycopg2
 from datetime import datetime
-from typing import Optional, List, Dict, Any
+from typing import Optional, List, Dict, Any, Tuple
 from urllib.parse import quote_plus
 import unicodedata
 import logging
@@ -18,6 +18,51 @@ except ImportError:
     def pinyin(*args, **kwargs):
         # 如果库不存在，这个模拟函数将导致中文名无法转换为拼音进行匹配
         return []
+
+def parse_series_title_and_season(title: str) -> Tuple[Optional[str], Optional[int]]:
+    """
+    【中央工具函数】
+    从一个可能包含季号的剧集标题中，解析出基础剧名和季号。
+    支持全角/半角数字、罗马数字、中文数字、年份等多种格式。
+    """
+    if not title:
+        return None, None
+        
+    # 预处理：先将所有全角字符转为半角，统一格式
+    normalized_title = normalize_full_width_chars(title)
+
+    roman_map = {'I': 1, 'II': 2, 'III': 3, 'IV': 4, 'V': 5, 'VI': 6, 'VII': 7, 'VIII': 8, 'IX': 9, 'X': 10}
+    chinese_map = {'一': 1, '二': 2, '三': 3, '四': 4, '五': 5, '六': 6, '七': 7, '八': 8, '九': 9, '十': 10}
+
+    patterns = [
+        re.compile(r'^(.*?)\s*(?:第([一二三四五六七八九十\d]+)季|Season\s*(\d+))', re.IGNORECASE),
+        re.compile(r'^(.*?)\s+((?:19|20)\d{2})$'),
+        re.compile(r'^(.*?)\s*[第部]?\s*([IVX\d]+|[一二三四五六七八九十])(?:[:\s-]|$)')
+    ]
+
+    for pattern in patterns:
+        match = pattern.match(normalized_title)
+        if not match: continue
+        
+        groups = [g for g in match.groups() if g is not None]
+        if len(groups) < 2: continue
+        
+        base_name, season_str = groups[0].strip(), groups[1].strip()
+
+        if (not base_name and len(normalized_title) < 8) or (len(base_name) <= 1 and season_str.isdigit()):
+            continue
+
+        season_num = 0
+        if season_str.isdigit(): season_num = int(season_str)
+        elif season_str.upper() in roman_map: season_num = roman_map[season_str.upper()]
+        elif season_str in chinese_map: season_num = chinese_map[season_str]
+
+        if season_num > 0:
+            for suffix in ["系列", "合集"]:
+                if base_name.endswith(suffix): base_name = base_name[:-len(suffix)]
+            return base_name, season_num
+
+    return None, None
 
 def normalize_full_width_chars(text: str) -> str:
     """将字符串中的全角字符（数字、字母、冒号）转换为半角。"""

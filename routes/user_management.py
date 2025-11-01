@@ -7,10 +7,11 @@ from datetime import datetime, timedelta, timezone
 from flask import Blueprint, request, jsonify
 
 import emby_handler
+import moviepilot_handler
 import config_manager
 import constants
 from extensions import admin_required
-from database import connection
+from database import connection, user_db, settings_db
 # 创建一个新的蓝图
 user_management_bp = Blueprint('user_management_bp', __name__)
 
@@ -24,9 +25,12 @@ def get_all_templates():
     try:
         with connection.get_db_connection() as conn:
             cursor = conn.cursor()
-            # ★★★ 核心修复：在 SELECT 语句中添加 source_emby_user_id ★★★
             cursor.execute(
-                "SELECT id, name, description, default_expiration_days, source_emby_user_id FROM user_templates ORDER BY name"
+                """
+                SELECT id, name, description, default_expiration_days, source_emby_user_id, allow_unrestricted_subscriptions
+                FROM user_templates 
+                ORDER BY name
+                """
             )
             templates = [dict(row) for row in cursor.fetchall()]
         return jsonify(templates), 200
@@ -480,7 +484,6 @@ def get_all_managed_users():
 
 
 # 3. ★★★ 一个用于切换模板的 API 函数 ★★★
-# (可以放在 get_all_managed_users 函数的下面)
 @user_management_bp.route('/api/admin/users/<string:user_id>/template', methods=['POST'])
 @admin_required
 def change_user_template(user_id):
@@ -705,3 +708,120 @@ def delete_template(template_id):
     except Exception as e:
         logger.error(f"删除模板 {template_id} 时发生未知错误: {e}", exc_info=True)
         return jsonify({"status": "error", "message": "删除模板时发生未知错误"}), 500
+    
+@user_management_bp.route('/api/admin/user_templates/<int:template_id>', methods=['PUT'])
+@admin_required
+def update_template(template_id):
+    """编辑并更新一个现有的用户模板。"""
+    data = request.json
+    
+    # 从 data 中提取所有可能被更新的字段
+    name = data.get('name')
+    description = data.get('description')
+    default_expiration_days = data.get('default_expiration_days')
+    allow_unrestricted_subscriptions = data.get('allow_unrestricted_subscriptions', False)
+
+    if not name:
+        return jsonify({"status": "error", "message": "模板名称不能为空"}), 400
+
+    try:
+        with connection.get_db_connection() as conn:
+            cursor = conn.cursor()
+            cursor.execute(
+                """
+                UPDATE user_templates
+                SET name = %s, description = %s, default_expiration_days = %s, allow_unrestricted_subscriptions = %s
+                WHERE id = %s
+                """,
+                (name, description, default_expiration_days, allow_unrestricted_subscriptions, template_id)
+            )
+            conn.commit()
+            
+            if cursor.rowcount == 0:
+                return jsonify({"status": "error", "message": "模板不存在"}), 404
+
+        return jsonify({"status": "ok", "message": "模板更新成功"}), 200
+    except Exception as e:
+        # 捕获 unique 约束冲突
+        if 'unique constraint' in str(e).lower():
+            return jsonify({"status": "error", "message": "模板名称已被占用"}), 409
+        logger.error(f"更新模板 {template_id} 时出错: {e}", exc_info=True)
+        return jsonify({"status": "error", "message": str(e)}), 500
+
+# --- 模块 4: 订阅审核管理 ---
+
+@user_management_bp.route('/api/admin/subscriptions/pending', methods=['GET'])
+@admin_required
+def get_pending_subscriptions():
+    """获取所有待审核的订阅请求。"""
+    try:
+        requests = user_db.get_pending_subscription_requests()
+        return jsonify(requests)
+    except Exception as e:
+        return jsonify({"status": "error", "message": "获取列表失败"}), 500
+
+@user_management_bp.route('/api/admin/subscriptions/<int:request_id>/approve', methods=['POST'])
+@admin_required
+def approve_subscription(request_id):
+    """批准一个订阅请求，并提交给 MoviePilot。"""
+    try:
+        # ★★★ 2. 核心改造：在所有操作之前，先检查配额 ★★★
+        current_quota = settings_db.get_subscription_quota()
+        if current_quota <= 0:
+            logger.warning(f"管理员尝试批准请求 {request_id}，但配额已用尽。")
+            return jsonify({"status": "error", "message": "今日订阅配额已用尽，无法批准此请求。"}), 429
+
+        # a. 获取请求详情 (不变)
+        req_details = user_db.get_subscription_request_details(request_id)
+        if not req_details or req_details['status'] != 'pending':
+            return jsonify({"status": "error", "message": "请求不存在或已被处理"}), 404
+
+        # b. 构造 MoviePilot payload (不变)
+        mp_payload = {
+            "name": req_details['item_name'],
+            "tmdbid": int(req_details['tmdb_id']),
+            "type": "电影" if req_details['item_type'] == 'Movie' else "电视剧"
+        }
+        
+        # c. 调用 MoviePilot 订阅 (不变)
+        item_type = req_details['item_type']
+        config = config_manager.APP_CONFIG
+        
+        parsed_info = None
+        if item_type == 'Movie':
+            mp_payload = { "name": req_details['item_name'], "tmdbid": int(req_details['tmdb_id']), "type": "电影" }
+            if moviepilot_handler.subscribe_with_custom_payload(mp_payload, config):
+                parsed_info = {}
+        elif item_type == 'Series':
+            series_info = { "tmdb_id": int(req_details['tmdb_id']), "item_name": req_details['item_name'] }
+            parsed_info = moviepilot_handler.smart_subscribe_series(series_info, config)
+
+        if parsed_info is None:
+            return jsonify({"status": "error", "message": "提交给 MoviePilot 失败，请检查 MP 连接"}), 500
+
+        settings_db.decrement_subscription_quota()
+        
+        # ★★★ 在更新状态的同时，也把解析信息补上 ★★★
+        # (这里需要修改 update_subscription_request_status 函数，或者创建一个新函数)
+        # 简单起见，我们先只在创建时记录，更新时可以后续再加
+        user_db.update_subscription_request_status(request_id, 'approved')
+        
+        return jsonify({"status": "ok", "message": "已批准并成功提交给 MoviePilot！"})
+    except Exception as e:
+        logger.error(f"批准订阅请求 {request_id} 时出错: {e}", exc_info=True)
+        return jsonify({"status": "error", "message": "处理批准时发生内部错误"}), 500
+
+@user_management_bp.route('/api/admin/subscriptions/<int:request_id>/reject', methods=['POST'])
+@admin_required
+def reject_subscription(request_id):
+    """拒绝一个订阅请求。"""
+    try:
+        # 直接更新数据库状态
+        success = user_db.update_subscription_request_status(request_id, 'rejected')
+        if not success:
+            return jsonify({"status": "error", "message": "请求不存在或已被处理"}), 404
+            
+        return jsonify({"status": "ok", "message": "请求已拒绝。"})
+    except Exception as e:
+        logger.error(f"拒绝订阅请求 {request_id} 时出错: {e}", exc_info=True)
+        return jsonify({"status": "error", "message": "处理拒绝时发生内部错误"}), 500

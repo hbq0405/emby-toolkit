@@ -6,7 +6,7 @@ from werkzeug.security import generate_password_hash, check_password_hash
 import config_manager
 import constants
 import emby_handler
-from database import connection
+from database import connection, user_db
 
 # ★ 1. 创建一个新的蓝图，它将处理所有登录和状态检查
 unified_auth_bp = Blueprint('unified_auth_bp', __name__, url_prefix='/api')
@@ -91,7 +91,8 @@ def unified_login():
                     "user": { 
                         "name": local_user['username'],
                         "user_type": "local_admin", 
-                        "is_admin": True 
+                        "is_admin": True,
+                        "allow_unrestricted_subscriptions": True 
                     }
                 }), 200
         except Exception as e:
@@ -107,6 +108,8 @@ def unified_login():
             session['emby_is_admin'] = user_info.get('Policy', {}).get('IsAdministrator', False)
             session.permanent = True
             logger.info(f"  ➜ [统一登录] 用户 '{username}' 作为 Emby 用户登录成功。")
+
+            can_subscribe_without_review = user_db.get_user_subscription_permission(session['emby_user_id'])
             
             # ★★★ Emby 登录也返回统一结构的 user 对象 ★★★
             return jsonify({
@@ -115,7 +118,8 @@ def unified_login():
                     "id": session['emby_user_id'],
                     "name": session['emby_username'],
                     "user_type": "emby_user", 
-                    "is_admin": session['emby_is_admin']
+                    "is_admin": session['emby_is_admin'],
+                    "allow_unrestricted_subscriptions": can_subscribe_without_review
                 }
             }), 200
 
@@ -138,14 +142,17 @@ def unified_status():
         response["user"] = {
             "name": session.get('username'),
             "user_type": "local_admin",
-            "is_admin": True
+            "is_admin": True,
+            "allow_unrestricted_subscriptions": True
         }
     elif is_emby_user_logged_in:
+        can_subscribe_without_review = user_db.get_user_subscription_permission(session['emby_user_id'])
         response["user"] = {
             "id": session.get('emby_user_id'),
             "name": session.get('emby_username'),
             "user_type": "emby_user",
-            "is_admin": session.get('emby_is_admin')
+            "is_admin": session.get('emby_is_admin'),
+            "allow_unrestricted_subscriptions": can_subscribe_without_review
         }
 
     return jsonify(response)

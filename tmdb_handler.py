@@ -556,7 +556,7 @@ def discover_movie_tmdb(api_key: str, params: Dict[str, Any]) -> Optional[Dict[s
     endpoint = "/discover/movie"
     logger.debug(f"TMDb: 发现电影 (无语言限制，条件: {params})")
     # ★★★ 明确告诉快递员：这次别贴“中文”标签！ ★★★
-    return _tmdb_request(endpoint, api_key, params, use_default_language=False)
+    return _tmdb_request(endpoint, api_key, params, use_default_language=True)
 
 # --- 通过筛选条件发现电视剧 ---
 def discover_tv_tmdb(api_key: str, params: Dict[str, Any]) -> Optional[Dict[str, Any]]:
@@ -566,7 +566,7 @@ def discover_tv_tmdb(api_key: str, params: Dict[str, Any]) -> Optional[Dict[str,
     endpoint = "/discover/tv"
     logger.debug(f"TMDb: 发现电视剧 (无语言限制，条件: {params})")
     # ★★★ 明确告诉快递员：这次也别贴！ ★★★
-    return _tmdb_request(endpoint, api_key, params, use_default_language=False)
+    return _tmdb_request(endpoint, api_key, params, use_default_language=True)
 
 def get_movie_genres_tmdb(api_key: str) -> Optional[List[Dict[str, Any]]]:
     """【新】获取TMDb所有电影类型的官方列表。"""

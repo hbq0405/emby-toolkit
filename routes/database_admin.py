@@ -22,7 +22,7 @@ from database import (
 )
 # 导入共享模块
 import extensions
-from extensions import admin_required, processor_ready_required, task_lock_required
+from extensions import any_login_required, admin_required
 
 # 1. 创建蓝图
 db_admin_bp = Blueprint('database_admin', __name__, url_prefix='/api')
@@ -90,7 +90,7 @@ def _get_all_stats_in_one_query(cursor: psycopg2.extensions.cursor) -> dict:
 
 # --- 数据看板 ---
 @db_admin_bp.route('/database/stats', methods=['GET'])
-@admin_required
+@any_login_required
 def api_get_database_stats():
     try:
         with connection.get_db_connection() as conn:

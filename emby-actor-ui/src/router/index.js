@@ -16,6 +16,8 @@ import Login from '../components/Login.vue';
 import RegisterPage from '../components/RegisterPage.vue';
 import CoverGeneratorConfig from '../components/CoverGeneratorConfig.vue';
 import UserManagementPage from '../components/UserManagementPage.vue';
+import DiscoverPage from '../components/DiscoverPage.vue';
+import UserCenterPage from '../components/UserCenterPage.vue'
 
 // --- 2. 定义路由规则 (带 meta.public 标签) ---
 const routes = [
@@ -127,6 +129,20 @@ const routes = [
     name: 'UserManagement',
     component: UserManagementPage,
     meta: { requiresAuth: true },
+  },
+  {
+    path: '/user-center',
+    name: 'UserCenter',
+    component: UserCenterPage,
+    meta: { 
+      requiresAuth: true // 这个页面必须登录才能访问
+    },
+  },
+  {
+    path: '/discover',
+    name: 'Discover',
+    component: DiscoverPage,
+    meta: { requiresAuth: true }, // 必须登录才能访问
   },
 ];
 

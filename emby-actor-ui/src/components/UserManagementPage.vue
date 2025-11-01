@@ -1,4 +1,4 @@
-<!-- src/components/UserManagementPage.vue (已更新) -->
+<!-- src/components/UserManagementPage.vue -->
 <template>
   <div class="user-management-page">
     <n-page-header>
@@ -7,9 +7,6 @@
       </template>
     </n-page-header>
 
-    <!-- ★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★ -->
-    <!-- ★★★ 在这里添加您需要的操作提示 ★★★ -->
-    <!-- ★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★ -->
     <n-alert title="操作提示" type="info" style="margin-top: 15px; margin-bottom: 20px;">
       <template #default>
         <ul>
@@ -25,6 +22,9 @@
       <n-tab-pane name="user-list" tab="用户列表">
         <UserList />
       </n-tab-pane>
+      <n-tab-pane name="subscription-approval" tab="订阅审核">
+        <SubscriptionApproval />
+      </n-tab-pane>
       <n-tab-pane name="invitation-list" tab="邀请链接">
         <InvitationList />
       </n-tab-pane>
@@ -36,11 +36,11 @@
 </template>
 
 <script setup>
-// ★★★ 确保导入了 NAlert ★★★
 import { NTabs, NTabPane, NPageHeader, NAlert } from 'naive-ui';
 import UserList from './UserList.vue';
 import InvitationList from './InvitationList.vue';
 import UserTemplates from './UserTemplates.vue';
+import SubscriptionApproval from './SubscriptionApproval.vue';
 </script>
 
 <style scoped>
@@ -51,7 +51,6 @@ h1 {
   font-size: 24px;
   margin: 0;
 }
-/* ★★★ 为列表添加一点样式，让提示更美观 ★★★ */
 ul {
   padding-left: 20px;
   margin: 0;

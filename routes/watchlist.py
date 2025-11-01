@@ -221,7 +221,7 @@ def api_subscribe_series_to_moviepilot():
         return jsonify({"error": "请求参数无效，必须提供 tmdb_id, title 和 season_number。"}), 400
     logger.info(f"API: 收到对《{title}》第 {season_number} 季 (TMDb ID: {tmdb_id}) 的 MoviePilot 订阅请求。")
 
-    # --- 新增配额检查 ---
+    # --- 配额检查 ---
     current_quota = settings_db.get_subscription_quota()
     if current_quota <= 0:
         logger.warning(f"API: 用户尝试订阅《{title}》第 {season_number} 季，但每日配额已用尽。")

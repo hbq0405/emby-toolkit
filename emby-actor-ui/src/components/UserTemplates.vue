@@ -46,28 +46,25 @@
             设置为 0 表示永久有效。
           </template>
         </n-form-item>
-        <n-form-item label="源 Emby 用户" path="source_emby_user_id">
-          <n-select
-            v-model:value="formModel.source_emby_user_id"
-            placeholder="选择一个用户作为权限样板"
-            :options="embyUserOptions"
-            filterable
-          />
-           <template #feedback>
-            重要：模板的权限将完全复制您在此选择的源用户的当前权限设置，后续更改了源用户的权限，模板以及模板绑定的用户会自动同步权限。
-          </template>
+        <!-- ★★★ 1. 在编辑模式下，禁用源用户和首选项的修改 ★★★ -->
+        <n-form-item v-if="!isEditMode" label="源 Emby 用户" path="source_emby_user_id">
+          <n-select v-model:value="formModel.source_emby_user_id" placeholder="选择一个用户作为权限样板" :options="embyUserOptions" filterable />
+          <template #feedback>重要：创建后不可更改。模板权限将完全复制源用户。</template>
         </n-form-item>
-        <!-- ★★★ 同步首选项的开关 ★★★ -->
-        <n-form-item label="同步首选项" path="include_configuration">
+        <n-form-item v-if="!isEditMode" label="同步首选项" path="include_configuration">
           <n-switch v-model:value="formModel.include_configuration" />
-          <template #feedback>
-            开启后，模板将额外包含源用户的个性化设置（如媒体库顺序、音轨和字幕偏好设置）。
-          </template>
+          <template #feedback>创建后不可更改。将包含源用户的个性化设置。</template>
+        </n-form-item>
+
+        <!-- ★★★ 2. “免审订阅”开关 ★★★ -->
+        <n-form-item label="免审订阅" path="allow_unrestricted_subscriptions">
+          <n-switch v-model:value="formModel.allow_unrestricted_subscriptions" />
+          <template #feedback>开启后，使用此模板的用户提交订阅请求时，将无需管理员审核，直接提交给下载器。</template>
         </n-form-item>
       </n-form>
       <template #footer>
         <n-button @click="isModalVisible = false">取消</n-button>
-        <n-button type="primary" @click="handleOk" :loading="isSubmitting">创建</n-button>
+        <n-button type="primary" @click="handleOk" :loading="isSubmitting">{{ isEditMode ? '更新' : '创建' }}</n-button>
       </template>
     </n-modal>
   </div>
@@ -96,6 +93,11 @@ const api = {
   syncTemplate: (templateId) => fetch(`/api/admin/user_templates/${templateId}/sync`, {
     method: 'POST',
   }),
+  updateTemplate: (id, data) => fetch(`/api/admin/user_templates/${id}`, {
+    method: 'PUT',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(data),
+  }),
 };
 
 // --- 状态和Hooks ---
@@ -105,15 +107,17 @@ const embyUsers = ref([]);
 const loading = ref(false);
 const isModalVisible = ref(false);
 const isSubmitting = ref(false);
-// ★★★ 新增：用于跟踪哪个模板正在同步的状态 ★★★
 const syncingTemplateId = ref(null);
 const formRef = ref(null);
+const isEditMode = ref(false);
+const modalTitle = computed(() => isEditMode.value ? '编辑用户模板' : '创建新的用户模板');
 const formModel = ref({
   name: '',
   description: '',
   default_expiration_days: 30,
   source_emby_user_id: null,
   include_configuration: true,
+  allow_unrestricted_subscriptions: false,
 });
 
 const rules = {
@@ -157,22 +161,38 @@ const handleCreate = () => {
   isModalVisible.value = true;
 };
 
+const handleEdit = (template) => {
+  isEditMode.value = true;
+  
+  // ★ 核心修正：使用对象扩展运算符 (...) 完整地复制整个 template 对象 ★
+  // 这样，无论 template 里有多少字段，都会被完整地填充到表单模型中
+  formModel.value = { ...template }; 
+  
+  isModalVisible.value = true;
+};
+
 const handleOk = (e) => {
   e.preventDefault();
   formRef.value?.validate(async (errors) => {
     if (!errors) {
       isSubmitting.value = true;
       try {
-        const response = await api.createTemplate(formModel.value);
-        if (response.status === 'ok') {
-          message.success('模板创建成功！');
+        const apiCall = isEditMode.value 
+          ? api.updateTemplate(formModel.value.id, formModel.value)
+          : api.createTemplate(formModel.value);
+        
+        const response = await apiCall;
+        const data = await response.json();
+
+        if (response.ok) {
+          message.success(`模板${isEditMode.value ? '更新' : '创建'}成功！`);
           isModalVisible.value = false;
           fetchData();
         } else {
-          throw new Error(response.message || '创建失败');
+          throw new Error(data.message || '操作失败');
         }
       } catch (error) {
-        message.error(`创建失败: ${error.message}`);
+        message.error(`操作失败: ${error.message}`);
       } finally {
         isSubmitting.value = false;
       }
@@ -221,6 +241,11 @@ const columns = [
   { title: '模板名称', key: 'name' },
   { title: '描述', key: 'description' },
   { 
+    title: '免审订阅', 
+    key: 'allow_unrestricted_subscriptions',
+    render: (row) => row.allow_unrestricted_subscriptions ? '是' : '否'
+  },
+  { 
     title: '默认有效期(天)', 
     key: 'default_expiration_days',
     render(row) {
@@ -233,6 +258,7 @@ const columns = [
     render(row) {
       // ★★★ 4. 在操作列中增加“同步权限”按钮 ★★★
       return h(NSpace, null, () => [
+        h(NButton, { size: 'small', onClick: () => handleEdit(row) }, { default: () => '编辑', icon: () => h(NIcon, { component: EditIcon }) }),
         // 同步按钮
         h(NButton, {
           size: 'small',

@@ -303,72 +303,6 @@ class ActorSubscriptionProcessor:
         except Exception as e:
             logger.error(f"为订阅ID {subscription_id} 执行扫描时发生严重错误: {e}", exc_info=True)
 
-    def _parse_series_title_and_season(self, title: str) -> Tuple[Optional[str], Optional[int]]:
-        """
-        - 支持全角/半角数字、罗马数字、中文数字。
-        - 支持年份作为季号。
-        - 优先匹配更精确的模式，避免误判。
-        - 增加了后置校验，过滤掉像 '24小时' 这样的剧名。
-        """
-        # 1. 预处理：先将所有全角字符转为半角，统一格式
-        normalized_title = utils.normalize_full_width_chars(title)
-
-        # 罗马和中文数字映射 (保持不变)
-        roman_map = {'I': 1, 'II': 2, 'III': 3, 'IV': 4, 'V': 5, 'VI': 6, 'VII': 7, 'VIII': 8, 'IX': 9, 'X': 10}
-        chinese_map = {'一': 1, '二': 2, '三': 3, '四': 4, '五': 5, '六': 6, '七': 7, '八': 8, '九': 9, '十': 10}
-
-        # 2. 定义多种匹配模式，按精度从高到低排列
-        patterns = [
-            # 模式1: 最精确，匹配 "剧名 第X季" 或 "剧名 Season X"
-            re.compile(r'^(.*?)\s*(?:第([一二三四五六七八九十\d]+)季|Season\s*(\d+))', re.IGNORECASE),
-            
-            # 模式2: 匹配年份作为季号，例如 "CSI 2015"
-            re.compile(r'^(.*?)\s+((?:19|20)\d{2})$'),
-
-            # 模式3: 匹配 "剧名 X：副标题" 或 "剧名 X" (我们上一版的核心)
-            re.compile(r'^(.*?)\s*[第部]?\s*([IVX\d]+|[一二三四五六七八九十])(?:[:\s-]|$)')
-        ]
-
-        for pattern in patterns:
-            match = pattern.match(normalized_title)
-            if not match:
-                continue
-
-            # 提取基础剧名和季号字符串
-            groups = [g for g in match.groups() if g is not None]
-            if len(groups) < 2:
-                continue
-            
-            base_name = groups[0].strip()
-            season_str = groups[1].strip()
-
-            # 3. 后置校验：过滤掉明显的误判
-            # 规则a: 如果基础剧名为空，且原始标题不长，很可能是误判 (比如 "1917", "24")
-            if not base_name and len(normalized_title) < 8:
-                continue
-            # 规则b: 如果基础剧名过短（比如只有一个字母），也可能是误判
-            if len(base_name) <= 1 and season_str.isdigit():
-                continue
-
-            # 转换季号
-            season_num = 0
-            if season_str.isdigit():
-                season_num = int(season_str)
-            elif season_str.upper() in roman_map:
-                season_num = roman_map[season_str.upper()]
-            elif season_str in chinese_map:
-                season_num = chinese_map[season_str]
-
-            if season_num > 0:
-                # 清理剧名末尾可能存在的系列词
-                for suffix in ["系列", "合集"]:
-                    if base_name.endswith(suffix):
-                        base_name = base_name[:-len(suffix)]
-                return base_name, season_num
-
-        # 如果所有模式都匹配失败，则返回 None
-        return None, None
-
     def _find_parent_series_tmdb_id_from_emby_cache(self, base_name: str, name_to_id_map: Dict[str, str]) -> Optional[str]:
         """
         【V2 - 本地优先版】根据基础剧名，在Emby本地剧集缓存中查找父剧集TMDb ID。
@@ -476,7 +410,7 @@ class ActorSubscriptionProcessor:
         media_type_raw = work.get('media_type', 'movie' if 'title' in work else 'tv')
         if media_type_raw == 'tv':
             title = work.get('name', '')
-            base_name, season_num = self._parse_series_title_and_season(title)
+            base_name, season_num = utils.parse_series_title_and_season(title)
             
             if base_name and season_num:
                 parent_tmdb_id = self._find_parent_series_tmdb_id_from_emby_cache(base_name, emby_series_name_to_tmdb_id_map)

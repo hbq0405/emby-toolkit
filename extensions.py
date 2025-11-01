@@ -91,6 +91,27 @@ def emby_login_required(f):
         return f(*args, **kwargs)
     return decorated_function
 
+def any_login_required(f):
+    """
+    【通用登录认证】
+    保护那些所有类型的登录用户（本地管理员 或 Emby用户）都能访问的路由。
+    这是最宽松的登录检查。
+    """
+    @wraps(f)
+    def decorated_function(*args, **kwargs):
+        # 检查是否存在本地管理员的 session key
+        is_local_admin_logged_in = 'user_id' in session
+        # 检查是否存在 Emby 用户的 session key
+        is_emby_user_logged_in = 'emby_user_id' in session
+
+        # 只要其中任意一个存在，就说明有用户登录了，放行！
+        if is_local_admin_logged_in or is_emby_user_logged_in:
+            return f(*args, **kwargs)
+        else:
+            # 如果两种 session key 都不存在，则返回未授权
+            return jsonify({"status": "error", "message": "需要登录才能访问此资源"}), 401
+    return decorated_function
+
 # ======================================================================
 # 共享的全局实例
 # ======================================================================

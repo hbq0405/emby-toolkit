@@ -366,7 +366,8 @@ def init_db():
                         emby_policy_json JSONB NOT NULL,
                         -- 模板默认的有效期（天数），0 表示永久
                         default_expiration_days INTEGER DEFAULT 30,
-                        created_at TIMESTAMP WITH TIME ZONE DEFAULT NOW()
+                        created_at TIMESTAMP WITH TIME ZONE DEFAULT NOW(),
+                        allow_unrestricted_subscriptions BOOLEAN DEFAULT FALSE NOT NULL
                     )
                 """)
 
@@ -407,6 +408,28 @@ def init_db():
                 """)
                 cursor.execute("CREATE INDEX IF NOT EXISTS idx_eue_status ON emby_users_extended (status);")
                 cursor.execute("CREATE INDEX IF NOT EXISTS idx_eue_expiration_date ON emby_users_extended (expiration_date);")
+
+                logger.trace("  ➜ 正在创建 'subscription_requests' 表 (TMDb探索)...")
+                cursor.execute("""
+                    CREATE TABLE IF NOT EXISTS subscription_requests (
+                        id SERIAL PRIMARY KEY,
+                        emby_user_id TEXT NOT NULL,
+                        tmdb_id TEXT NOT NULL,
+                        item_type TEXT NOT NULL, -- 'Movie' or 'Series'
+                        item_name TEXT,
+                        parent_tmdb_id TEXT,        -- 解析后的父剧集TMDb ID
+                        parsed_series_name TEXT,    -- 解析后的父剧集名称
+                        parsed_season_number INTEGER, -- 解析后的季号
+                        status TEXT NOT NULL DEFAULT 'pending', -- 'pending', 'approved', 'rejected', 'processing', 'completed'
+                        requested_at TIMESTAMP WITH TIME ZONE DEFAULT NOW(),
+                        processed_at TIMESTAMP WITH TIME ZONE,
+                        processed_by TEXT, -- 'admin' or 'auto' (for VIPs)
+                        notes TEXT, -- 管理员可以填写拒绝理由等
+                        FOREIGN KEY(emby_user_id) REFERENCES emby_users(id) ON DELETE CASCADE
+                    )
+                """)
+                cursor.execute("CREATE INDEX IF NOT EXISTS idx_sr_status ON subscription_requests (status);")
+                cursor.execute("CREATE INDEX IF NOT EXISTS idx_sr_user_id ON subscription_requests (emby_user_id);")
 
                 # --- 2. 执行平滑升级检查 ---
                 logger.trace("  ➜ 开始执行数据库表结构升级检查...")
@@ -505,7 +528,8 @@ def init_db():
                         },
                         'user_templates': {
                             "source_emby_user_id": "TEXT",
-                            "emby_configuration_json": "JSONB"
+                            "emby_configuration_json": "JSONB",
+                            "allow_unrestricted_subscriptions": "BOOLEAN DEFAULT FALSE NOT NULL"
                         },
                         'emby_users_extended': {
                             "template_id": "INTEGER"
