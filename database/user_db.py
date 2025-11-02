@@ -525,17 +525,17 @@ def get_subscription_request_details(request_id: int) -> Optional[Dict[str, Any]
         logger.error(f"DB: 查询订阅请求 {request_id} 详情失败: {e}", exc_info=True)
         raise
 
-def update_subscription_request_status(request_id: int, status: str, processed_by: str = 'admin') -> bool:
-    """更新指定订阅请求的状态和处理信息。"""
+def update_subscription_request_status(request_id: int, status: str, processed_by: str = 'admin', notes: Optional[str] = None) -> bool:
+    """更新指定订阅请求的状态、处理人和备注信息。"""
     sql = """
         UPDATE subscription_requests
-        SET status = %s, processed_by = %s, processed_at = NOW()
+        SET status = %s, processed_by = %s, processed_at = NOW(), notes = %s
         WHERE id = %s;
     """
     try:
         with get_db_connection() as conn:
             cursor = conn.cursor()
-            cursor.execute(sql, (status, processed_by, request_id))
+            cursor.execute(sql, (status, processed_by, notes, request_id))
             conn.commit()
             return cursor.rowcount > 0
     except Exception as e:
@@ -569,4 +569,21 @@ def get_user_account_details(user_id: str) -> Optional[Dict[str, Any]]:
             return dict(result) if result else None
     except Exception as e:
         logger.error(f"DB: 查询用户 {user_id} 的账户详情失败: {e}", exc_info=True)
+        raise
+
+def get_user_subscription_history(user_id: str) -> List[Dict[str, Any]]:
+    """获取指定用户的所有订阅请求历史。"""
+    sql = """
+        SELECT id, item_name, item_type, status, requested_at, notes
+        FROM subscription_requests
+        WHERE emby_user_id = %s
+        ORDER BY requested_at DESC;
+    """
+    try:
+        with get_db_connection() as conn:
+            cursor = conn.cursor()
+            cursor.execute(sql, (user_id,))
+            return [dict(row) for row in cursor.fetchall()]
+    except Exception as e:
+        logger.error(f"DB: 查询用户 {user_id} 的订阅历史失败: {e}", exc_info=True)
         raise

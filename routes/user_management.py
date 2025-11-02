@@ -814,10 +814,17 @@ def approve_subscription(request_id):
 @user_management_bp.route('/api/admin/subscriptions/<int:request_id>/reject', methods=['POST'])
 @admin_required
 def reject_subscription(request_id):
-    """拒绝一个订阅请求。"""
+    """ 拒绝一个订阅请求，并可附带理由。"""
+    data = request.json or {}
+    reason = data.get('reason') # 从请求体中获取理由
+
     try:
-        # 直接更新数据库状态
-        success = user_db.update_subscription_request_status(request_id, 'rejected')
+        # ★ 修改: 调用更新函数时传入理由
+        success = user_db.update_subscription_request_status(
+            request_id, 
+            'rejected',
+            notes=reason
+        )
         if not success:
             return jsonify({"status": "error", "message": "请求不存在或已被处理"}), 404
             

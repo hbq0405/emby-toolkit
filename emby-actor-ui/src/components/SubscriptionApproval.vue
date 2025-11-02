@@ -8,6 +8,19 @@
       :row-key="row => row.id"
     />
   </div>
+  <n-modal v-model:show="showRejectModal" preset="card" style="width: 600px" title="填写拒绝理由">
+  <n-input
+    v-model:value="rejectionReason"
+    type="textarea"
+    placeholder="请输入拒绝理由（选填）"
+  />
+  <template #footer>
+    <n-space justify="end">
+      <n-button @click="showRejectModal = false">取消</n-button>
+      <n-button type="primary" :loading="!!processingId" @click="handleReject">确认拒绝</n-button>
+    </n-space>
+  </template>
+</n-modal>
 </template>
 
 <script setup>
@@ -19,6 +32,15 @@ const message = useMessage();
 const loading = ref(false);
 const requests = ref([]);
 const processingId = ref(null); // 用于跟踪正在处理的行
+const showRejectModal = ref(false);
+const rejectionReason = ref('');
+const currentRowToReject = ref(null);
+
+const openRejectModal = (row) => {
+  currentRowToReject.value = row;
+  rejectionReason.value = '';
+  showRejectModal.value = true;
+};
 
 // 获取数据
 const fetchData = async () => {
@@ -50,12 +72,17 @@ const handleApprove = async (row) => {
 };
 
 // 处理拒绝
-const handleReject = async (row) => {
-  processingId.value = row.id;
+const handleReject = async () => {
+  if (!currentRowToReject.value) return;
+  processingId.value = currentRowToReject.value.id;
   try {
-    const response = await axios.post(`/api/admin/subscriptions/${row.id}/reject`);
+    // 在post请求中加入body
+    const response = await axios.post(`/api/admin/subscriptions/${currentRowToReject.value.id}/reject`, {
+      reason: rejectionReason.value
+    });
     message.success(response.data.message || '已拒绝');
-    fetchData(); // 刷新列表
+    showRejectModal.value = false;
+    fetchData();
   } catch (error) {
     message.error(error.response?.data?.message || '拒绝失败');
   } finally {
@@ -89,7 +116,7 @@ const columns = [
           type: 'error',
           ghost: true,
           loading: processingId.value === row.id,
-          onClick: () => handleReject(row),
+          onClick: () => openRejectModal(row),
         }, { default: () => '拒绝' }),
       ]);
     },

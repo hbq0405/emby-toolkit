@@ -104,3 +104,15 @@ def get_account_info():
     except Exception as e:
         logger.error(f"为用户 {emby_user_id} 获取账户信息时出错: {e}", exc_info=True)
         return jsonify({"status": "error", "message": "获取账户信息失败"}), 500
+    
+@user_portal_bp.route('/subscription-history', methods=['GET'])
+@emby_login_required
+def get_subscription_history():
+    """获取当前用户的订阅历史记录。"""
+    emby_user_id = session['emby_user_id']
+    try:
+        history = user_db.get_user_subscription_history(emby_user_id)
+        return jsonify(history)
+    except Exception as e:
+        logger.error(f"为用户 {emby_user_id} 获取订阅历史时出错: {e}", exc_info=True)
+        return jsonify({"status": "error", "message": "获取订阅历史失败"}), 500
