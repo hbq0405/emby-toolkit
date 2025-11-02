@@ -591,24 +591,22 @@ def get_list_details_tmdb(list_id: int, api_key: str, page: int = 1) -> Optional
     logger.debug(f"TMDb: 获取片单详情 (ID: {list_id}, Page: {page})")
     return _tmdb_request(endpoint, api_key, params)
 
-# --- 通过筛选条件发现电影 ---
+# --- 探索电影 ---
 def discover_movie_tmdb(api_key: str, params: Dict[str, Any]) -> Optional[Dict[str, Any]]:
-    """【V3.1 - 最终驱魔版】调用底层请求时，明确禁用默认语言。"""
+    """ 通过筛选条件发现电影。"""
     if not api_key:
         return None
     endpoint = "/discover/movie"
-    logger.debug(f"TMDb: 发现电影 (无语言限制，条件: {params})")
-    # ★★★ 明确告诉快递员：这次别贴“中文”标签！ ★★★
+    logger.debug(f"TMDb: 发现电影 (条件: {params})")
     return _tmdb_request(endpoint, api_key, params, use_default_language=True)
 
-# --- 通过筛选条件发现电视剧 ---
+# --- 探索电视剧 ---
 def discover_tv_tmdb(api_key: str, params: Dict[str, Any]) -> Optional[Dict[str, Any]]:
-    """【V3.1 - 最终驱魔版】调用底层请求时，明确禁用默认语言。"""
+    """ 通过筛选条件发现电视剧。"""
     if not api_key:
         return None
     endpoint = "/discover/tv"
-    logger.debug(f"TMDb: 发现电视剧 (无语言限制，条件: {params})")
-    # ★★★ 明确告诉快递员：这次也别贴！ ★★★
+    logger.debug(f"TMDb: 发现电视剧 (条件: {params})")
     return _tmdb_request(endpoint, api_key, params, use_default_language=True)
 
 def get_movie_genres_tmdb(api_key: str) -> Optional[List[Dict[str, Any]]]:
