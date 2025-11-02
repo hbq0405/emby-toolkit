@@ -218,102 +218,17 @@ def _handle_full_processing_flow(processor: 'MediaProcessor', item_id: str, forc
     # ★★★ TG的入库通知 - START ★★★
     # ======================================================================
     try:
-        # --- 1. 准备基础信息 ---
-        tmdb_id = item_details.get("ProviderIds", {}).get("Tmdb")
-        year = item_details.get("ProductionYear", "")
-        title = f"{item_name_for_log} ({year})" if year else item_name_for_log
-        overview = item_details.get("Overview", "暂无剧情简介。")
-        if len(overview) > 200:
-            overview = overview[:200] + "..."
-            
-        # ★★★ 在这个 try 块内部重新获取 item_type ★★★
-        item_type = item_details.get("Type")
-
-        # --- 2. 准备剧集信息 (如果适用) ---
-        episode_info_text = ""
-        if item_type == "Series" and new_episode_ids:
-            episode_details = []
-            for ep_id in new_episode_ids:
-                detail = emby_handler.get_emby_item_details(ep_id, processor.emby_url, processor.emby_api_key, processor.emby_user_id, fields="IndexNumber,ParentIndexNumber")
-                if detail:
-                    season_num = detail.get("ParentIndexNumber", 0)
-                    episode_num = detail.get("IndexNumber", 0)
-                    episode_details.append(f"S{season_num:02d}E{episode_num:02d}")
-            if episode_details:
-                episode_info_text = f"*集数*: `{', '.join(sorted(episode_details))}`\n"
-
-        # --- 3. 准备图片URL ---
-        photo_url = None
-        if tmdb_id:
-            tmdb_api_key = config_manager.APP_CONFIG.get(constants.CONFIG_OPTION_TMDB_API_KEY)
-            image_details = None
-            
-            try:
-                # 3.1 根据媒体类型，调用对应的、已经写好的函数
-                if item_type == 'Movie':
-                    logger.debug("  ➜ [通知] 调用 tmdb_handler.get_movie_details 获取图片...")
-                    # 调用时只获取基础信息，让请求更轻量
-                    image_details = get_movie_details(int(tmdb_id), tmdb_api_key, append_to_response=None)
-                elif item_type == 'Series':
-                    logger.debug("  ➜ [通知] 调用 tmdb_handler.get_tv_details 获取图片...")
-                    image_details = get_tv_details(int(tmdb_id), tmdb_api_key, append_to_response=None)
-
-                # 3.2 从返回结果中智能选择图片
-                if image_details:
-                    # 优先使用背景图 (Backdrop)
-                    if image_details.get('backdrop_path'):
-                        backdrop_path = image_details['backdrop_path']
-                        photo_url = f"https://image.tmdb.org/t/p/w780{backdrop_path}"
-                        logger.info(f"  ➜ [通知] 已通过 tmdb_handler 获取并构建背景图链接。")
-                    # 其次使用海报图 (Poster)
-                    elif image_details.get('poster_path'):
-                        poster_path = image_details['poster_path']
-                        photo_url = f"https://image.tmdb.org/t/p/w500{poster_path}"
-                        logger.warning(f"  ➜ [通知] 未找到背景图，已通过 tmdb_handler 获取并构建海报图链接。")
-            except Exception as e:
-                 logger.error(f"  ➜ [通知] 调用 tmdb_handler 获取图片信息时出错: {e}", exc_info=True)
-
-        # 3.3 如果调用 tmdb_handler 失败，才使用 Emby 链接作为最终备用
-        if not photo_url:
-            logger.error("  ➜ [通知] 调用 tmdb_handler 失败或未返回图片，将尝试使用Emby链接作为备用。")
-            image_tag = item_details.get("ImageTags", {}).get("Primary")
-            if image_tag:
-                photo_url = f"{processor.emby_url}/Items/{item_id}/Images/Primary?tag={image_tag}&quality=90"
-                logger.info(f"  ➜ [通知] 已构建 Emby 本地图片链接: {photo_url}")
-
-        # --- 4. 组装最终的通知文本 (Caption) ---
-        current_time = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-        caption = (
-            f"*{title}* 入库成功\n\n"
-            f"{episode_info_text}"
-            f"*时间*: `{current_time}`\n"
-            f"*剧情*: {overview}"
+        # 直接调用 telegram_handler 中的新函数，传递所需参数
+        telegram_handler.send_media_notification(
+            item_details=item_details, 
+            notification_type='new', 
+            new_episode_ids=new_episode_ids
         )
-        
-        # --- 5. 查询订阅者并发送通知 ---
-        subscribers = user_db.get_subscribers_by_tmdb_id(tmdb_id) if tmdb_id else []
-        subscriber_chat_ids = {user_db.get_user_telegram_chat_id(sub['emby_user_id']) for sub in subscribers}
-        subscriber_chat_ids = {chat_id for chat_id in subscriber_chat_ids if chat_id}
-
-        # --- 6. 发送全局通知 ---
-        global_channel_id = config_manager.APP_CONFIG.get(constants.CONFIG_OPTION_TELEGRAM_CHANNEL_ID)
-        if global_channel_id and global_channel_id not in subscriber_chat_ids:
-            if photo_url:
-                telegram_handler.send_telegram_photo(global_channel_id, photo_url, caption)
-            else:
-                telegram_handler.send_telegram_message(global_channel_id, caption)
-
-        # --- 7. 发送个人订阅到货通知 ---
-        if subscriber_chat_ids:
-            personal_caption = f"✅ *您的订阅已入库*\n\n{caption}"
-            for chat_id in subscriber_chat_ids:
-                if photo_url:
-                    telegram_handler.send_telegram_photo(chat_id, photo_url, personal_caption)
-                else:
-                    telegram_handler.send_telegram_message(chat_id, personal_caption)
             
     except Exception as e:
-        logger.error(f"发送最终入库通知时发生错误: {e}", exc_info=True)
+        logger.error(f"触发入库通知时发生错误: {e}", exc_info=True)
+
+    logger.trace(f"  ➜ Webhook 任务及所有后续流程完成: '{item_name_for_log}'")
 
 # --- 辅助函数 ---
 def _process_batch_webhook_events():

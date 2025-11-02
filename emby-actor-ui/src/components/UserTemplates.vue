@@ -76,20 +76,18 @@ import {
   NButton, NDataTable, NModal, NForm, NFormItem, NSelect, NInputNumber,
   NIcon, NInput, useMessage, NPopconfirm, NSpace
 } from 'naive-ui';
-// ★★★ 1. 导入新的图标 ★★★
 import { Add as AddIcon, TrashOutline as DeleteIcon, SyncOutline as SyncIcon, CreateOutline as EditIcon } from '@vicons/ionicons5';
 
 // --- API ---
 const api = {
-  getUserTemplates: () => fetch('/api/admin/user_templates').then(res => res.json()),
-  getEmbyUsers: () => fetch('/api/admin/users').then(res => res.json()),
+  getUserTemplates: () => fetch('/api/admin/user_templates'), // <-- 移除 .then(...)
+  getEmbyUsers: () => fetch('/api/admin/users'), // <-- 移除 .then(...)
   createTemplate: (data) => fetch('/api/admin/user_templates', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify(data),
-  }).then(res => res.json()),
+  }), // <-- 移除 .then(...)
   deleteTemplate: (templateId) => fetch(`/api/admin/user_templates/${templateId}`, { method: 'DELETE' }),
-  // ★★★ 2. 新增 syncTemplate API 调用函数 ★★★
   syncTemplate: (templateId) => fetch(`/api/admin/user_templates/${templateId}/sync`, {
     method: 'POST',
   }),
@@ -97,7 +95,7 @@ const api = {
     method: 'PUT',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify(data),
-  }),
+  }), // <-- 移除 .then(...)
 };
 
 // --- 状态和Hooks ---
@@ -134,14 +132,32 @@ const embyUserOptions = computed(() =>
 const fetchData = async () => {
   loading.value = true;
   try {
-    const [templatesData, usersData] = await Promise.all([
+    // ★★★ 核心修正：分两步处理，先 fetch，再解析 json ★★★
+
+    // 步骤 1: 并发发起所有网络请求
+    const [templatesResponse, usersResponse] = await Promise.all([
       api.getUserTemplates(),
       api.getEmbyUsers(),
     ]);
+
+    // 步骤 2: 检查每个响应是否成功，然后并发解析它们的 JSON 内容
+    if (!templatesResponse.ok || !usersResponse.ok) {
+      // 如果任一请求失败，则抛出错误
+      throw new Error('Failed to fetch initial data.');
+    }
+    
+    const [templatesData, usersData] = await Promise.all([
+      templatesResponse.json(),
+      usersResponse.json(),
+    ]);
+
+    // 步骤 3: 将解析后的正确数据赋值给 ref
     templates.value = templatesData;
     embyUsers.value = usersData;
+
   } catch (error) {
     message.error('加载模板或 Emby 用户列表失败');
+    console.error(error); // 在控制台打印详细错误，方便调试
   } finally {
     loading.value = false;
   }

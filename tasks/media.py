@@ -13,6 +13,7 @@ import concurrent.futures
 import task_manager
 import tmdb_handler
 import emby_handler
+import telegram_handler
 from database import connection
 from utils import translate_country_list, get_unified_rating
 
@@ -565,6 +566,15 @@ def task_apply_main_cast_to_episodes(processor, series_id: str, episode_ids: lis
             replace_all_metadata_param=True,
             item_name_for_log=series_name
         )
+
+        # TG通知
+        if series_details_for_log:
+            logger.info(f"  ➜ 正在为《{series_name}》触发追更通知...")
+            telegram_handler.send_media_notification(
+                item_details=series_details_for_log,
+                notification_type='update',
+                new_episode_ids=episode_ids
+            )
 
         # 步骤 3: 更新父剧集在元数据缓存中的 last_synced_at 时间戳 (这个逻辑可以保留)
         if series_details_for_log:
