@@ -10,8 +10,13 @@ def _escape_markdown(text: str) -> str:
     """Helper function to escape characters for Telegram's MarkdownV2."""
     if not isinstance(text, str):
         return ""
-    # Chars to escape: . > # - = | { } !
-    escape_chars = r'\._>#-=|{}!'
+    # 为 MarkdownV2 格式转义所有特殊字符
+    # 根据 Telegram Bot API 文档，这些字符需要转义: _ * [ ] ( ) ~ ` > # + - = | { } . !
+    escape_chars = r'_*[]()~`>#+-=|{}.!'
+    
+    # 创建一个翻译表，比循环更快
+    # 但为了清晰和避免与其他逻辑冲突，保持你原有的循环方式也可以
+    # 这里我们直接在你的逻辑上修改
     return ''.join(f'\\{char}' if char in escape_chars else char for char in text)
 
 def send_telegram_message(chat_id: str, text: str, disable_notification: bool = False):
