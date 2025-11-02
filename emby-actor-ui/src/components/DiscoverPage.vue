@@ -362,37 +362,37 @@ onUnmounted(() => {
 }
 .ribbon {
   position: absolute;
-  top: -6px;
-  left: -6px;
-  width: 90px;
-  height: 90px;
+  top: -4px;
+  left: -4px;
+  width: 60px;
+  height: 60px;
   overflow: hidden;
 }
 .ribbon span {
   position: absolute;
   display: block;
-  width: 125px;
-  padding: 8px 0;
+  width: 85px;
+  padding: 4px 0;
   background-color: #67c23a;
   box-shadow: 0 5px 10px rgba(0,0,0,0.1);
   color: #fff;
-  font-size: 12px;
+  font-size: 9px;
   font-weight: bold;
   text-shadow: 0 1px 1px rgba(0,0,0,0.2);
   text-transform: uppercase;
   text-align: center;
-  left: -30px;
-  top: 20px;
+  left: -20px;
+  top: 14px;
   transform: rotate(-45deg);
 }
 .rating-badge {
   position: absolute;
-  top: 8px;
-  right: 8px;
+  top: 6px;
+  right: 6px;
   background-color: rgba(0, 0, 0, 0.75);
   color: #fff;
-  padding: 4px 8px;
-  border-radius: 4px;
+  padding: 2px 6px;
+  border-radius: 3px;
   font-size: 14px;
   font-weight: bold;
   backdrop-filter: blur(4px);
