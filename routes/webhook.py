@@ -31,6 +31,7 @@ from custom_collection_handler import FilterEngine
 from services.cover_generator import CoverGeneratorService
 from database import collection_db, connection, settings_db, user_db
 from database.log_db import LogDBManager
+from tmdb_handler import get_movie_details, get_tv_details
 import logging
 logger = logging.getLogger(__name__)
 
@@ -244,27 +245,41 @@ def _handle_full_processing_flow(processor: 'MediaProcessor', item_id: str, forc
         # --- 3. 准备图片URL ---
         photo_url = None
         if tmdb_id:
-            media_meta = collection_db.get_media_metadata_by_tmdb_id(tmdb_id)
-            if media_meta:
-                # 3.1 优先使用背景图 (Backdrop) - 这是横版的
-                if media_meta.get('backdrop_path'):
-                    backdrop_path = media_meta['backdrop_path']
-                    # w780 是一个非常适合通知的尺寸
-                    photo_url = f"https://image.tmdb.org/t/p/w780{backdrop_path}"
-                    logger.info(f"  ➜ 已为通知构建 TMDb 背景图链接: {photo_url}")
-                # 3.2 如果没有背景图，则使用海报图 (Poster) 作为次选
-                elif media_meta.get('poster_path'):
-                    poster_path = media_meta['poster_path']
-                    photo_url = f"https://image.tmdb.org/t/p/w500{poster_path}"
-                    logger.warning(f"  ➜ 未找到背景图，通知将使用 TMDb 海报图链接: {photo_url}")
+            tmdb_api_key = config_manager.APP_CONFIG.get(constants.CONFIG_OPTION_TMDB_API_KEY)
+            image_details = None
+            
+            try:
+                # 3.1 根据媒体类型，调用对应的、已经写好的函数
+                if item_type == 'Movie':
+                    logger.debug("  ➜ [通知] 调用 tmdb_handler.get_movie_details 获取图片...")
+                    # 调用时只获取基础信息，让请求更轻量
+                    image_details = get_movie_details(int(tmdb_id), tmdb_api_key, append_to_response=None)
+                elif item_type == 'Series':
+                    logger.debug("  ➜ [通知] 调用 tmdb_handler.get_tv_details 获取图片...")
+                    image_details = get_tv_details(int(tmdb_id), tmdb_api_key, append_to_response=None)
 
-        # 3.3 如果TMDb方式完全失败，则回退到 Emby 地址作为最终备用方案
+                # 3.2 从返回结果中智能选择图片
+                if image_details:
+                    # 优先使用背景图 (Backdrop)
+                    if image_details.get('backdrop_path'):
+                        backdrop_path = image_details['backdrop_path']
+                        photo_url = f"https://image.tmdb.org/t/p/w780{backdrop_path}"
+                        logger.info(f"  ➜ [通知] 已通过 tmdb_handler 获取并构建背景图链接。")
+                    # 其次使用海报图 (Poster)
+                    elif image_details.get('poster_path'):
+                        poster_path = image_details['poster_path']
+                        photo_url = f"https://image.tmdb.org/t/p/w500{poster_path}"
+                        logger.warning(f"  ➜ [通知] 未找到背景图，已通过 tmdb_handler 获取并构建海报图链接。")
+            except Exception as e:
+                 logger.error(f"  ➜ [通知] 调用 tmdb_handler 获取图片信息时出错: {e}", exc_info=True)
+
+        # 3.3 如果调用 tmdb_handler 失败，才使用 Emby 链接作为最终备用
         if not photo_url:
-            logger.warning("  ➜ 未能从本地缓存获取任何TMDb图片，将尝试使用Emby链接作为备用。")
+            logger.error("  ➜ [通知] 调用 tmdb_handler 失败或未返回图片，将尝试使用Emby链接作为备用。")
             image_tag = item_details.get("ImageTags", {}).get("Primary")
             if image_tag:
                 photo_url = f"{processor.emby_url}/Items/{item_id}/Images/Primary?tag={image_tag}&quality=90"
-                logger.info(f"  ➜ 已构建 Emby 本地图片链接: {photo_url}")
+                logger.info(f"  ➜ [通知] 已构建 Emby 本地图片链接: {photo_url}")
 
         # --- 4. 组装最终的通知文本 (Caption) ---
         current_time = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
