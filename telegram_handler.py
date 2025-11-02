@@ -49,13 +49,13 @@ def send_telegram_message(chat_id: str, text: str, disable_notification: bool = 
         proxies = get_proxies_for_requests()
         response = requests.post(api_url, json=payload, timeout=15, proxies=proxies)
         if response.status_code == 200:
-            logger.info(f"成功发送 Telegram 文本消息至 Chat ID: {final_chat_id}")
+            logger.info(f"  ➜ 成功发送 Telegram 文本消息至 Chat ID: {final_chat_id}")
             return True
         else:
-            logger.error(f"发送 Telegram 文本消息失败, 状态码: {response.status_code}, 响应: {response.text}")
+            logger.error(f"  ➜ 发送 Telegram 文本消息失败, 状态码: {response.status_code}, 响应: {response.text}")
             return False
     except requests.RequestException as e:
-        logger.error(f"发送 Telegram 文本消息时发生网络请求错误: {e}")
+        logger.error(f"  ➜ 发送 Telegram 文本消息时发生网络请求错误: {e}")
         return False
 
 # ★★★ 发送图片函数 ★★★
@@ -85,13 +85,13 @@ def send_telegram_photo(chat_id: str, photo_url: str, caption: str, disable_noti
         proxies = get_proxies_for_requests()
         response = requests.post(api_url, json=payload, timeout=30, proxies=proxies) # 图片上传超时时间更长
         if response.status_code == 200:
-            logger.info(f"成功发送 Telegram 图文消息至 Chat ID: {final_chat_id}")
+            logger.info(f"  ➜ 成功发送 Telegram 图文消息至 Chat ID: {final_chat_id}")
             return True
         else:
-            logger.error(f"发送 Telegram 图文消息失败, 状态码: {response.status_code}, 响应: {response.text}")
+            logger.error(f"  ➜ 发送 Telegram 图文消息失败, 状态码: {response.status_code}, 响应: {response.text}")
             return False
     except requests.RequestException as e:
-        logger.error(f"发送 Telegram 图文消息时发生网络请求错误: {e}")
+        logger.error(f"  ➜ 发送 Telegram 图文消息时发生网络请求错误: {e}")
         return False
     
 # ★★★ 2. 全能的通知函数 ★★★
