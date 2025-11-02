@@ -94,7 +94,7 @@ def send_telegram_photo(chat_id: str, photo_url: str, caption: str, disable_noti
         logger.error(f"发送 Telegram 图文消息时发生网络请求错误: {e}")
         return False
     
-# ★★★ 2. 在文件末尾，添加这个全新的、全能的通知函数 ★★★
+# ★★★ 2. 全能的通知函数 ★★★
 def send_media_notification(item_details: dict, notification_type: str = 'new', new_episode_ids: list = None):
     """
     【全能媒体通知函数】
@@ -122,13 +122,9 @@ def send_media_notification(item_details: dict, notification_type: str = 'new', 
         # --- 2. 准备剧集信息 (如果适用) ---
         episode_info_text = ""
         if item_type == "Series" and new_episode_ids:
-            # 注意：这里的 emby_url, api_key, user_id 需要从配置中获取
-            # 假设 config_manager.APP_CONFIG 可以直接使用
-            cfg = APP_CONFIG
-            emby_url = cfg.get(constants.CONFIG_OPTION_EMBY_SERVER_URL)
-            api_key = cfg.get(constants.CONFIG_OPTION_EMBY_API_KEY)
-            # 对于系统级操作，通常使用管理员用户的ID
-            user_id = cfg.get(constants.CONFIG_OPTION_EMBY_ADMIN_USER_ID)
+            emby_url = APP_CONFIG.get(constants.CONFIG_OPTION_EMBY_SERVER_URL)
+            api_key = APP_CONFIG.get(constants.CONFIG_OPTION_EMBY_API_KEY)
+            user_id = APP_CONFIG.get(constants.CONFIG_OPTION_EMBY_USER_ID)
 
             episode_details = []
             for ep_id in new_episode_ids:
