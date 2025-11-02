@@ -42,14 +42,15 @@ def get_all_templates():
 @user_management_bp.route('/api/admin/user_templates', methods=['POST'])
 @admin_required
 def create_template():
-    """【V3 - 支持首选项】创建一个新的用户模板"""
+    """【V4 - 健壮版】创建一个新的用户模板，增加完整的错误处理。"""
     data = request.json
     name = data.get('name')
     description = data.get('description')
     default_expiration_days = data.get('default_expiration_days', 30)
     source_emby_user_id = data.get('source_emby_user_id')
-    # ★★★ 新增：接收是否包含首选项的标志 ★★★
     include_configuration = data.get('include_configuration', False)
+    # 1. ★★★ 确保读取了前端传来的值 ★★★
+    allow_unrestricted_subscriptions = data.get('allow_unrestricted_subscriptions', False)
 
     if not name or not source_emby_user_id:
         return jsonify({"status": "error", "message": "模板名称和源用户ID不能为空"}), 400
@@ -63,26 +64,43 @@ def create_template():
             return jsonify({"status": "error", "message": "无法获取源用户的权限策略"}), 404
         
         policy_json = json.dumps(user_details['Policy'], ensure_ascii=False)
-        # ★★★ 新增：根据标志决定是否保存首选项 ★★★
         configuration_json = None
         if include_configuration and 'Configuration' in user_details:
             configuration_json = json.dumps(user_details['Configuration'], ensure_ascii=False)
 
         with connection.get_db_connection() as conn:
             cursor = conn.cursor()
-            # ★★★ 核心修改：在 INSERT 语句中增加 emby_configuration_json ★★★
+            # 2. ★★★ 确保 INSERT 语句包含了所有字段 ★★★
             cursor.execute(
                 """
-                INSERT INTO user_templates (name, description, emby_policy_json, default_expiration_days, source_emby_user_id, emby_configuration_json)
-                VALUES (%s, %s, %s, %s, %s, %s) RETURNING id
+                INSERT INTO user_templates (name, description, emby_policy_json, default_expiration_days, source_emby_user_id, emby_configuration_json, allow_unrestricted_subscriptions)
+                VALUES (%s, %s, %s, %s, %s, %s, %s) RETURNING id
                 """,
-                (name, description, policy_json, default_expiration_days, source_emby_user_id, configuration_json)
+                (name, description, policy_json, default_expiration_days, source_emby_user_id, configuration_json, allow_unrestricted_subscriptions)
             )
-            new_id = cursor.fetchone()['id']
+            
+            # 3. ★★★ 增加对返回结果的健壮性检查 ★★★
+            new_row = cursor.fetchone()
+            if not new_row:
+                # 如果没有返回新ID，说明插入可能失败了，手动回滚并报错
+                conn.rollback()
+                logger.error("数据库 INSERT 后未能返回新模板的ID，操作已回滚。")
+                return jsonify({"status": "error", "message": "创建模板失败，数据库未返回新ID。"}), 500
+            
+            new_id = new_row['id']
             conn.commit()
         
         return jsonify({"status": "ok", "message": "模板创建成功", "id": new_id}), 201
+
+    # 4. ★★★ 增加对特定数据库错误的捕获，提供更友好的提示 ★★★
+    except psycopg2.IntegrityError as e:
+        # 捕获 unique 约束冲突
+        if 'unique constraint' in str(e).lower():
+            return jsonify({"status": "error", "message": "模板名称已被占用"}), 409
+        # 其他完整性错误
+        return jsonify({"status": "error", "message": f"数据库完整性错误: {e}"}), 500
     except Exception as e:
+        logger.error(f"创建模板时发生未知错误: {e}", exc_info=True)
         return jsonify({"status": "error", "message": str(e)}), 500
 
 @user_management_bp.route('/api/admin/user_templates/<int:template_id>/sync', methods=['POST'])

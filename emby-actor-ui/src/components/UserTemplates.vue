@@ -77,7 +77,7 @@ import {
   NIcon, NInput, useMessage, NPopconfirm, NSpace
 } from 'naive-ui';
 // ★★★ 1. 导入新的图标 ★★★
-import { Add as AddIcon, TrashOutline as DeleteIcon, SyncOutline as SyncIcon } from '@vicons/ionicons5';
+import { Add as AddIcon, TrashOutline as DeleteIcon, SyncOutline as SyncIcon, CreateOutline as EditIcon } from '@vicons/ionicons5';
 
 // --- API ---
 const api = {
@@ -157,7 +157,9 @@ const handleCreate = () => {
     default_expiration_days: 30,
     source_emby_user_id: null,
     include_configuration: true,
+    allow_unrestricted_subscriptions: false, 
   };
+  isEditMode.value = false; // 确保切换到创建模式
   isModalVisible.value = true;
 };
 

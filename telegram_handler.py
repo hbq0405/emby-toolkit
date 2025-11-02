@@ -24,6 +24,18 @@ def send_telegram_message(chat_id: str, text: str, disable_notification: bool = 
     bot_token = APP_CONFIG.get(constants.CONFIG_OPTION_TELEGRAM_BOT_TOKEN)
     if not bot_token or not chat_id:
         return False
+    
+    # ★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★
+    # ★★★            诊断日志 - START            ★★★
+    # ★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★
+    logger.warning(f"--- Telegram Handler 诊断 ---")
+    logger.warning(f"原始文本 (Message): {text}")
+    escaped_text = _escape_markdown(text)
+    logger.warning(f"转义后文本 (Message): {escaped_text}")
+    logger.warning(f"--- 诊断结束 ---")
+    # ★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★
+    # ★★★             诊断日志 - END             ★★★
+    # ★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★
 
     final_chat_id = str(chat_id).strip()
     if final_chat_id.startswith('https://t.me/'):
@@ -34,7 +46,7 @@ def send_telegram_message(chat_id: str, text: str, disable_notification: bool = 
     api_url = f"https://api.telegram.org/bot{bot_token}/sendMessage"
     payload = {
         'chat_id': final_chat_id,
-        'text': _escape_markdown(text),
+        'text': escaped_text,
         'parse_mode': 'MarkdownV2',
         'disable_web_page_preview': True,
         'disable_notification': disable_notification,
@@ -58,6 +70,18 @@ def send_telegram_photo(chat_id: str, photo_url: str, caption: str, disable_noti
     bot_token = APP_CONFIG.get(constants.CONFIG_OPTION_TELEGRAM_BOT_TOKEN)
     if not bot_token or not chat_id or not photo_url:
         return False
+    
+    # ★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★
+    # ★★★            诊断日志 - START            ★★★
+    # ★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★
+    logger.warning(f"--- Telegram Handler 诊断 ---")
+    logger.warning(f"原始图文标题 (Caption): {caption}")
+    escaped_caption = _escape_markdown(caption)
+    logger.warning(f"转义后图文标题 (Caption): {escaped_caption}")
+    logger.warning(f"--- 诊断结束 ---")
+    # ★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★
+    # ★★★             诊断日志 - END             ★★★
+    # ★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★
 
     final_chat_id = str(chat_id).strip()
     if final_chat_id.startswith('https://t.me/'):
@@ -69,7 +93,7 @@ def send_telegram_photo(chat_id: str, photo_url: str, caption: str, disable_noti
     payload = {
         'chat_id': final_chat_id,
         'photo': photo_url,
-        'caption': _escape_markdown(caption),
+        'caption': escaped_caption,
         'parse_mode': 'MarkdownV2',
         'disable_notification': disable_notification,
     }
