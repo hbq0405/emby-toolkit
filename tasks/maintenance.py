@@ -414,47 +414,8 @@ def task_import_database(processor, file_content: str, tables_to_import: List[st
 # ★★★ 媒体去重模块 (Media Cleanup Module) - 新增 ★★★
 # ======================================================================
 
-def _get_representative_episode_for_series(processor, series_id: str, series_name: str) -> Optional[Dict]:
-    """
-    获取一个剧集的代表性单集（尝试S01E01）。
-    这是分析剧集版本质量的关键。
-    """
-    episodes = emby_handler.get_series_children(
-        series_id=series_id,
-        base_url=processor.emby_url,
-        api_key=processor.emby_api_key,
-        user_id=processor.emby_user_id,
-        series_name_for_log=series_name,
-        # 精确指定只获取剧集，让 API 返回更少的数据，效率更高
-        include_item_types="Episode", 
-        # 确保请求了分析版本所需的所有字段
-        fields="MediaSources,MediaStreams,Path,ProviderIds,ParentIndexNumber,IndexNumber"
-    )
-    if not episodes:
-        return None
-    
-    # Emby 的季和集号通常在 ParentIndexNumber 和 IndexNumber 字段
-    first_episode = None
-    for ep in episodes:
-        # 寻找第一季 (ParentIndexNumber == 1)
-        if ep.get("ParentIndexNumber") == 1:
-            # 寻找第一集 (IndexNumber == 1)
-            if ep.get("IndexNumber") == 1:
-                first_episode = ep
-                break # 找到了，退出循环
-            # 如果没找到第一集，但找到了第一季的任意一集，先存着
-            if first_episode is None:
-                first_episode = ep
-
-    # 如果遍历完都没找到第一季的任何一集，就用整个列表的第一个
-    if first_episode:
-        return first_episode
-    else:
-        return episodes[0]
-
 def _get_version_properties(version: Optional[Dict]) -> Dict:
     """
-    【V7 - 路径恢复最终版】
     - 恢复了在返回结果中包含 Path 字段，解决前端无法显示文件路径的问题。
     - 保持了与媒体洗版模块统一的强大识别逻辑。
     """
@@ -560,12 +521,11 @@ def _determine_best_version_by_rules(versions: List[Dict[str, Any]]) -> Tuple[Li
 
 def task_scan_for_cleanup_issues(processor):
     """
-    【V26 - 逐个击破最终版】
     - 采纳“先获取所有ID，再逐个查询详情”的终极可靠策略。
     - 彻底抛弃对批量查询返回数据的任何幻想，确保每个项目的信息都来自最权威的单点查询。
     - 此方法虽然速度较慢，但能100%保证数据完整性，是解决此问题的根本之道。
     """
-    task_name = "扫描媒体库重复项 (最终版)"
+    task_name = "扫描媒体库重复项"
     logger.info(f"--- 开始执行 '{task_name}' 任务 ---")
     task_manager.update_status_from_thread(0, "正在准备扫描媒体库...")
 
