@@ -244,21 +244,25 @@ def _handle_full_processing_flow(processor: 'MediaProcessor', item_id: str, forc
         # --- 3. 准备图片URL ---
         photo_url = None
         if tmdb_id:
-            # 3.1 尝试从我们的数据库缓存中获取 poster_path
-            # 注意：collection_db 需要有一个 get_media_metadata_by_tmdb_id 函数
-            # 从你的代码结构来看，这个函数应该已经存在
             media_meta = collection_db.get_media_metadata_by_tmdb_id(tmdb_id)
-            if media_meta and media_meta.get('poster_path'):
-                poster_path = media_meta['poster_path']
-                photo_url = f"https://image.tmdb.org/t/p/w500{poster_path}"
-                logger.info(f"  ➜ 已为通知构建 TMDb 图片链接: {photo_url}")
+            if media_meta:
+                # 3.1 优先使用背景图 (Backdrop) - 这是横版的
+                if media_meta.get('backdrop_path'):
+                    backdrop_path = media_meta['backdrop_path']
+                    # w780 是一个非常适合通知的尺寸
+                    photo_url = f"https://image.tmdb.org/t/p/w780{backdrop_path}"
+                    logger.info(f"  ➜ 已为通知构建 TMDb 背景图链接: {photo_url}")
+                # 3.2 如果没有背景图，则使用海报图 (Poster) 作为次选
+                elif media_meta.get('poster_path'):
+                    poster_path = media_meta['poster_path']
+                    photo_url = f"https://image.tmdb.org/t/p/w500{poster_path}"
+                    logger.warning(f"  ➜ 未找到背景图，通知将使用 TMDb 海报图链接: {photo_url}")
 
-        # 3.2 如果TMDb方式失败，则回退到 Emby 地址作为备用方案
+        # 3.3 如果TMDb方式完全失败，则回退到 Emby 地址作为最终备用方案
         if not photo_url:
-            logger.warning("  ➜ 未能从本地缓存获取TMDb海报，将尝试使用Emby链接作为备用。")
+            logger.warning("  ➜ 未能从本地缓存获取任何TMDb图片，将尝试使用Emby链接作为备用。")
             image_tag = item_details.get("ImageTags", {}).get("Primary")
             if image_tag:
-                # 这里的 emby_url 仍然需要是公网地址才能成功
                 photo_url = f"{processor.emby_url}/Items/{item_id}/Images/Primary?tag={image_tag}&quality=90"
                 logger.info(f"  ➜ 已构建 Emby 本地图片链接: {photo_url}")
 
