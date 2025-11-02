@@ -34,12 +34,18 @@ def discover_movies():
 
         tmdb_ids = [str(movie.get("id")) for movie in tmdb_data["results"]]
         
-        in_library_tmdb_ids = media_db.check_tmdb_ids_in_library(tmdb_ids, item_type='Movie')
+        library_items_map = media_db.check_tmdb_ids_in_library(tmdb_ids, item_type='Movie')
         subscription_statuses = media_db.get_subscription_statuses(tmdb_ids, current_user_id)
 
+        # ★ 2. 遍历结果，同时附加三个状态字段
         for movie in tmdb_data["results"]:
             tmdb_id_str = str(movie.get("id"))
-            movie["in_library"] = tmdb_id_str in in_library_tmdb_ids
+            
+            # in_library 现在通过检查字典的键来判断
+            movie["in_library"] = tmdb_id_str in library_items_map
+            # 新增 emby_item_id 字段
+            movie["emby_item_id"] = library_items_map.get(tmdb_id_str) # 如果不在库，get返回None
+            
             movie["subscription_status"] = subscription_statuses.get(tmdb_id_str, None)
 
         return jsonify(tmdb_data)
@@ -72,12 +78,13 @@ def discover_tv_shows():
 
         tmdb_ids = [str(tv.get("id")) for tv in tmdb_data["results"]]
         
-        in_library_tmdb_ids = media_db.check_tmdb_ids_in_library(tmdb_ids, item_type='Series')
+        library_items_map = media_db.check_tmdb_ids_in_library(tmdb_ids, item_type='Series')
         subscription_statuses = media_db.get_subscription_statuses(tmdb_ids, current_user_id)
 
         for tv_show in tmdb_data["results"]:
             tmdb_id_str = str(tv_show.get("id"))
-            tv_show["in_library"] = tmdb_id_str in in_library_tmdb_ids
+            tv_show["in_library"] = tmdb_id_str in library_items_map
+            tv_show["emby_item_id"] = library_items_map.get(tmdb_id_str)
             tv_show["subscription_status"] = subscription_statuses.get(tmdb_id_str, None)
 
         return jsonify(tmdb_data)

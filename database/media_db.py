@@ -6,25 +6,26 @@ from .connection import get_db_connection
 
 logger = logging.getLogger(__name__)
 
-def check_tmdb_ids_in_library(tmdb_ids: List[str], item_type: str) -> Set[str]:
+def check_tmdb_ids_in_library(tmdb_ids: List[str], item_type: str) -> Dict[str, str]:
     """
-    【V2 - 类型精确版】
-    接收一个 TMDb ID 列表和媒体类型，返回一个集合，其中包含在 media_metadata 表中已存在的 ID。
+    【V3 - 返回 Emby ID 版】
+    接收 TMDb ID 列表，返回一个字典，映射 TMDb ID 到 Emby Item ID。
     """
     if not tmdb_ids:
-        return set()
+        return {}
     
-    # ★★★ 核心修改：在查询条件中增加了 item_type 的判断 ★★★
-    sql = "SELECT tmdb_id FROM media_metadata WHERE item_type = %s AND tmdb_id = ANY(%s)"
+    # ★ 核心修改：同时查询 tmdb_id 和 emby_item_id
+    sql = "SELECT tmdb_id, emby_item_id FROM media_metadata WHERE item_type = %s AND tmdb_id = ANY(%s)"
     
     try:
         with get_db_connection() as conn:
             cursor = conn.cursor()
             cursor.execute(sql, (item_type, tmdb_ids))
-            return {row['tmdb_id'] for row in cursor.fetchall()}
+            # ★ 返回一个 {tmdb_id: emby_item_id} 格式的字典
+            return {row['tmdb_id']: row['emby_item_id'] for row in cursor.fetchall() if row['emby_item_id']}
     except Exception as e:
         logger.error(f"DB: 检查 TMDb ID 是否在库时失败: {e}", exc_info=True)
-        return set()
+        return {}
     
 def get_subscription_statuses(tmdb_ids: List[str], emby_user_id: str) -> Dict[str, str]:
     """
