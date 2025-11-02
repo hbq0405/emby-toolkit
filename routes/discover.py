@@ -4,6 +4,7 @@ from flask import Blueprint, jsonify, request, g, session
 
 from extensions import any_login_required
 import tmdb_handler
+from utils import KEYWORD_ID_MAP, contains_chinese
 from database import media_db
 
 discover_bp = Blueprint('discover_bp', __name__, url_prefix='/api/discover')
@@ -11,37 +12,39 @@ logger = logging.getLogger(__name__)
 
 def _filter_and_enrich_results(tmdb_data: dict, current_user_id: str, db_item_type: str) -> dict:
     """
-    辅助函数：过滤TMDb结果（移除无海报项），并附加数据库信息（在库状态、订阅状态）。
-    
-    :param tmdb_data: 从TMDb API获取的原始数据字典。
-    :param current_user_id: 当前Emby用户的ID。
-    :param db_item_type: 在数据库中对应的媒体类型 ('Movie' 或 'Series')。
-    :return: 处理过的、可以直接返回给前端的数据字典。
+    【V2 - 中文元数据过滤版】
+    辅助函数：过滤TMDb结果（移除无海报、无中文元数据项），并附加数据库信息。
     """
     if not tmdb_data or not tmdb_data.get("results"):
         return {"results": [], "total_pages": 0}
 
     # 步骤 1: 过滤掉没有海报的结果
     original_results = tmdb_data.get("results", [])
-    filtered_results = [item for item in original_results if item.get("poster_path")]
+    results_with_poster = [item for item in original_results if item.get("poster_path")]
 
-    if not filtered_results:
+    # 步骤 2: 过滤掉没有中文元数据的结果
+    final_filtered_results = [
+        item for item in results_with_poster 
+        if contains_chinese(item.get('title') or item.get('name'))
+    ]
+
+    if not final_filtered_results:
         return {"results": [], "total_pages": 0}
 
-    # 步骤 2: 附加数据库信息
-    tmdb_ids = [str(item.get("id")) for item in filtered_results]
+    # 步骤 3: 附加数据库信息 (现在使用我们最终过滤后的列表)
+    tmdb_ids = [str(item.get("id")) for item in final_filtered_results]
     
     library_items_map = media_db.check_tmdb_ids_in_library(tmdb_ids, item_type=db_item_type)
     subscription_statuses = media_db.get_subscription_statuses(tmdb_ids, current_user_id)
 
-    for item in filtered_results:
+    for item in final_filtered_results:
         tmdb_id_str = str(item.get("id"))
         item["in_library"] = tmdb_id_str in library_items_map
         item["emby_item_id"] = library_items_map.get(tmdb_id_str)
         item["subscription_status"] = subscription_statuses.get(tmdb_id_str, None)
     
-    # 步骤 3: 将原始数据中的 results 替换为我们处理后的版本并返回
-    tmdb_data["results"] = filtered_results
+    # 步骤 4: 将原始数据中的 results 替换为我们处理后的版本并返回
+    tmdb_data["results"] = final_filtered_results
     return tmdb_data
 
 @discover_bp.route('/movie', methods=['POST'])
@@ -142,3 +145,20 @@ def search_media_handler():
     except Exception as e:
         logger.error(f"TMDb 搜索 {media_type} 时出错: {e}", exc_info=True)
         return jsonify({"status": "error", "message": "从 TMDb 搜索数据失败"}), 500
+    
+@discover_bp.route('/config/keywords', methods=['GET'])
+@any_login_required
+def api_get_discover_keywords():
+    """为影视探索页面提供专用的、带TMDb ID的关键词列表。"""
+    try:
+        # 从 KEYWORD_ID_MAP 构建前端需要的格式
+        keyword_options = [
+            {"label": chinese_name, "value": tmdb_id}
+            for chinese_name, tmdb_id in KEYWORD_ID_MAP.items()
+        ]
+        # 按中文标签排序
+        sorted_options = sorted(keyword_options, key=lambda x: x['label'])
+        return jsonify(sorted_options)
+    except Exception as e:
+        logger.error(f"获取 Discover 关键词列表时出错: {e}", exc_info=True)
+        return jsonify([]), 500

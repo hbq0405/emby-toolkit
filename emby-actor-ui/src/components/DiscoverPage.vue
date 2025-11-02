@@ -1,4 +1,4 @@
-<!-- src/components/DiscoverPage.vue (终极修复版：修复订阅逻辑 + 升级无限滚动) -->
+<!-- src/components/DiscoverPage.vue -->
 <template>
   <div>
     <n-page-header title="影视探索" subtitle="发现您感兴趣的下一部作品" />
@@ -10,7 +10,7 @@
           <label>搜索:</label>
           <n-input
             v-model:value="searchQuery"
-            placeholder="输入关键词搜索..."
+            placeholder="输入片名搜索..."
             clearable
             style="min-width: 300px;"
           />
@@ -56,6 +56,18 @@
             :options="countryOptions"
             style="min-width: 300px;"
         />
+        </n-space>
+        <n-space align="center">
+          <label>关键词:</label>
+          <n-select
+            v-model:value="selectedKeywords"
+            :disabled="isSearchMode"
+            multiple
+            filterable
+            placeholder="选择关键词"
+            :options="keywordOptions"
+            style="min-width: 300px;"
+          />
         </n-space>
         <n-space align="center">
           <label>评分不低于:</label>
@@ -142,6 +154,8 @@ const genres = ref([]);
 const selectedGenres = ref([]);
 const countryOptions = ref([]); 
 const selectedRegions = ref([]);
+const keywordOptions = ref([]); 
+const selectedKeywords = ref([]); 
 const filters = reactive({
   'sort_by': 'popularity.desc',
   'vote_average_gte': 0,
@@ -190,6 +204,15 @@ const fetchCountries = async () => {
   }
 };
 
+const fetchKeywords = async () => {
+  try {
+    const response = await axios.get('/api/discover/config/keywords');
+    keywordOptions.value = response.data;
+  } catch (error) {
+    message.error('加载关键词列表失败');
+  }
+};
+
 const fetchDiscoverData = async () => {
   if (isLoadingMore.value || loading.value) return;
 
@@ -214,6 +237,7 @@ const fetchDiscoverData = async () => {
         'vote_average.gte': filters.vote_average_gte,
         'with_genres': selectedGenres.value.join(','),
         'with_origin_country': selectedRegions.value.join('|'),
+        'with_keywords': selectedKeywords.value.join(','),
       };
       delete apiParams.vote_average_gte;
       response = await axios.post(`/api/discover/${mediaType.value}`, apiParams);
@@ -329,7 +353,7 @@ watch(searchQuery, (newValue) => {
   resetAndFetch();
 });
 
-watch([() => filters['sort_by'], () => filters.vote_average_gte, selectedGenres, selectedRegions], () => {
+watch([() => filters['sort_by'], () => filters.vote_average_gte, selectedGenres, selectedRegions, selectedKeywords], () => { 
   resetAndFetch();
 }, { deep: true });
 
@@ -339,6 +363,7 @@ let observer = null;
 onMounted(() => {
   fetchGenres();
   fetchCountries();
+  fetchKeywords();
   fetchEmbyConfig(); // 获取 Emby 配置
   resetAndFetch();
 
