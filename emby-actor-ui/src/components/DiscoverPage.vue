@@ -62,9 +62,9 @@
 
     <!-- 结果展示区域 -->
     <n-spin :show="loading && results.length === 0">
-      <n-grid :x-gap="16" :y-gap="24" responsive="screen" cols="2 s:3 m:4 l:5 xl:6 2xl:7" style="margin-top: 24px;">
+      <n-grid :x-gap="16" :y-gap="24" responsive="screen" cols="10" style="margin-top: 24px;">
         <n-gi v-for="media in results" :key="media.id">
-          <n-card class="media-card" content-style="padding: 0; position: relative; overflow: hidden;">
+          <n-card class="dashboard-card media-card" content-style="padding: 0; position: relative; overflow: hidden;" @click="handleClickCard(media)">
             <img :src="media.poster_path ? `https://image.tmdb.org/t/p/w500${media.poster_path}` : '/path/to/default/image.png'" class="media-poster">
             <div v-if="media.in_library" class="ribbon"><span>已入库</span></div>
             <div v-if="media.vote_average" class="rating-badge">
@@ -75,7 +75,7 @@
                 <span class="media-title">{{ media.title || media.name }}</span>
                 <span class="media-year">{{ getYear(media) }}</span>
               </div>
-              <div v-if="!media.in_library" class="action-icon" @click="handleSubscribe(media)">
+              <div v-if="!media.in_library" class="action-icon" @click.stop="handleSubscribe(media)">
                 <n-spin :show="subscribingId === media.id" size="small">
                   <n-icon size="24">
                     <Heart v-if="media.subscription_status === 'approved'" color="#ff4d4f" />
@@ -105,6 +105,7 @@
 
 <script setup>
 import { ref, reactive, watch, onMounted, onUnmounted, computed } from 'vue';
+import { useRouter } from 'vue-router'; // 导入 useRouter
 import axios from 'axios';
 import { useAuthStore } from '../stores/auth';
 import { 
@@ -115,6 +116,11 @@ import { Heart, HeartOutline, HourglassOutline } from '@vicons/ionicons5';
 
 const authStore = useAuthStore();
 const message = useMessage();
+const router = useRouter(); // 初始化 router
+
+// --- Emby 配置 ---
+const embyServerUrl = ref('');
+const embyServerId = ref('');
 
 // --- 状态管理 ---
 const loading = ref(false);
@@ -150,8 +156,25 @@ const getYear = (media) => {
 };
 
 // --- API 调用 ---
-const fetchGenres = async () => { /* ...代码不变... */ };
-const fetchCountries = async () => { /* ...代码不变... */ };
+const fetchGenres = async () => {  
+  try {
+    const endpoint = mediaType.value === 'movie' 
+      ? '/api/custom_collections/config/tmdb_movie_genres' 
+      : '/api/custom_collections/config/tmdb_tv_genres';
+    const response = await axios.get(endpoint);
+    genres.value = response.data;
+  } catch (error) {
+    message.error('加载类型列表失败');
+  }
+};
+const fetchCountries = async () => {  
+  try {
+    const response = await axios.get('/api/custom_collections/config/tmdb_countries');
+    countryOptions.value = response.data;
+  } catch (error) {
+    message.error('加载国家列表失败');
+  }
+};
 
 const fetchDiscoverData = async () => {
   if (isLoadingMore.value || loading.value) return;
@@ -191,11 +214,22 @@ const fetchDiscoverData = async () => {
   }
 };
 
+const fetchEmbyConfig = async () => {
+  try {
+    const response = await axios.get('/api/config');
+    embyServerUrl.value = response.data.emby_server_url;
+    embyServerId.value = response.data.emby_server_id;
+  } catch (error) {
+    console.error('获取 Emby 配置失败:', error);
+    message.error('获取 Emby 配置失败');
+  }
+};
+
 // ★★★ 核心改造 3: 恢复完整、正确的 handleSubscribe 函数逻辑 ★★★
 const handleSubscribe = async (media) => {
   // 如果正在提交，或者已经有订阅状态了（pending 或 approved），则直接返回，防止重复点击
   if (subscribingId.value || media.subscription_status) {
-    logger.debug("订阅请求被阻止：已有订阅状态或正在提交中。");
+    console.debug("订阅请求被阻止：已有订阅状态或正在提交中。");
     return;
   }
 
@@ -217,6 +251,18 @@ const handleSubscribe = async (media) => {
     message.error(error.response?.data?.message || '提交请求失败');
   } finally {
     subscribingId.value = null;
+  }
+};
+
+const handleClickCard = (media) => {
+  if (media.in_library && embyServerUrl.value && media.emby_item_id && embyServerId.value) {
+    // 跳转到 Emby 详情页
+    const embyDetailUrl = `${embyServerUrl.value}/web/index.html#!/item?id=${media.emby_item_id}&serverId=${embyServerId.value}`;
+    window.open(embyDetailUrl, '_blank');
+  } else {
+    // 跳转到 TMDb 详情页
+    const tmdbDetailUrl = `https://www.themoviedb.org/${mediaType.value}/${media.id}`;
+    window.open(tmdbDetailUrl, '_blank');
   }
 };
 
@@ -264,6 +310,7 @@ let observer = null;
 onMounted(() => {
   fetchGenres();
   fetchCountries();
+  fetchEmbyConfig(); // 获取 Emby 配置
   resetAndFetch();
 
   // 创建观察器
@@ -301,6 +348,7 @@ onUnmounted(() => {
   transition: transform 0.3s ease, box-shadow 0.3s ease;
   border-radius: 8px;
   box-shadow: 0 4px 8px rgba(0,0,0,0.1);
+  overflow: hidden;
 }
 .media-card:hover {
   transform: translateY(-8px);
@@ -376,13 +424,13 @@ onUnmounted(() => {
 }
 .media-title {
   font-weight: bold;
-  font-size: 1em;
+  font-size: 1.2em;
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
 }
 .media-year {
-  font-size: 0.8em;
+  font-size: 1em;
   color: #ccc;
 }
 .action-icon {
