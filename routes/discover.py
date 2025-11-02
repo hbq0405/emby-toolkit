@@ -9,46 +9,60 @@ from database import media_db
 discover_bp = Blueprint('discover_bp', __name__, url_prefix='/api/discover')
 logger = logging.getLogger(__name__)
 
+def _filter_and_enrich_results(tmdb_data: dict, current_user_id: str, db_item_type: str) -> dict:
+    """
+    辅助函数：过滤TMDb结果（移除无海报项），并附加数据库信息（在库状态、订阅状态）。
+    
+    :param tmdb_data: 从TMDb API获取的原始数据字典。
+    :param current_user_id: 当前Emby用户的ID。
+    :param db_item_type: 在数据库中对应的媒体类型 ('Movie' 或 'Series')。
+    :return: 处理过的、可以直接返回给前端的数据字典。
+    """
+    if not tmdb_data or not tmdb_data.get("results"):
+        return {"results": [], "total_pages": 0}
+
+    # 步骤 1: 过滤掉没有海报的结果
+    original_results = tmdb_data.get("results", [])
+    filtered_results = [item for item in original_results if item.get("poster_path")]
+
+    if not filtered_results:
+        return {"results": [], "total_pages": 0}
+
+    # 步骤 2: 附加数据库信息
+    tmdb_ids = [str(item.get("id")) for item in filtered_results]
+    
+    library_items_map = media_db.check_tmdb_ids_in_library(tmdb_ids, item_type=db_item_type)
+    subscription_statuses = media_db.get_subscription_statuses(tmdb_ids, current_user_id)
+
+    for item in filtered_results:
+        tmdb_id_str = str(item.get("id"))
+        item["in_library"] = tmdb_id_str in library_items_map
+        item["emby_item_id"] = library_items_map.get(tmdb_id_str)
+        item["subscription_status"] = subscription_statuses.get(tmdb_id_str, None)
+    
+    # 步骤 3: 将原始数据中的 results 替换为我们处理后的版本并返回
+    tmdb_data["results"] = filtered_results
+    return tmdb_data
+
 @discover_bp.route('/movie', methods=['POST'])
 @any_login_required
 def discover_movies():
     """
-    根据前端传来的筛选条件，从 TMDb 发现电影，并附加上“是否在库”和“订阅状态”的信息。
+    根据前端传来的筛选条件，从 TMDb 发现电影。
     """
     params = request.json
     api_key = tmdb_handler.config_manager.APP_CONFIG.get(tmdb_handler.constants.CONFIG_OPTION_TMDB_API_KEY)
     params.setdefault('with_origin_country', '')
 
     try:
-        # ★ 核心修改 1: 直接检查并获取 'emby_user_id' ★
         if 'emby_user_id' not in session:
-            logger.error("API 认证通过，但 session 中未找到 'emby_user_id'。这通常发生在本地管理员访问此接口时。")
-            # 对于 Emby 探索功能，我们只允许 Emby 用户访问
             return jsonify({"status": "error", "message": "此功能仅对 Emby 用户开放"}), 403
-
         current_user_id = session['emby_user_id']
 
+        # ★★★ 核心修改 2: 调用辅助函数简化逻辑 ★★★
         tmdb_data = tmdb_handler.discover_movie_tmdb(api_key, params)
-        if not tmdb_data or not tmdb_data.get("results"):
-            return jsonify({"results": [], "total_pages": 0})
-
-        tmdb_ids = [str(movie.get("id")) for movie in tmdb_data["results"]]
-        
-        library_items_map = media_db.check_tmdb_ids_in_library(tmdb_ids, item_type='Movie')
-        subscription_statuses = media_db.get_subscription_statuses(tmdb_ids, current_user_id)
-
-        # ★ 2. 遍历结果，同时附加三个状态字段
-        for movie in tmdb_data["results"]:
-            tmdb_id_str = str(movie.get("id"))
-            
-            # in_library 现在通过检查字典的键来判断
-            movie["in_library"] = tmdb_id_str in library_items_map
-            # 新增 emby_item_id 字段
-            movie["emby_item_id"] = library_items_map.get(tmdb_id_str) # 如果不在库，get返回None
-            
-            movie["subscription_status"] = subscription_statuses.get(tmdb_id_str, None)
-
-        return jsonify(tmdb_data)
+        processed_data = _filter_and_enrich_results(tmdb_data, current_user_id, 'Movie')
+        return jsonify(processed_data)
 
     except Exception as e:
         logger.error(f"TMDb 发现电影时出错: {e}", exc_info=True)
@@ -58,36 +72,21 @@ def discover_movies():
 @any_login_required
 def discover_tv_shows():
     """
-    根据前端传来的筛选条件，从 TMDb 发现电视剧，并附加上“是否在库”和“订阅状态”的信息。
+    根据前端传来的筛选条件，从 TMDb 发现电视剧。
     """
     params = request.json
     api_key = tmdb_handler.config_manager.APP_CONFIG.get(tmdb_handler.constants.CONFIG_OPTION_TMDB_API_KEY)
     params.setdefault('with_origin_country', '')
 
     try:
-        # ★ 核心修改 2: 在电视剧接口也使用同样精准的逻辑 ★
         if 'emby_user_id' not in session:
-            logger.error("API 认证通过，但 session 中未找到 'emby_user_id'。")
             return jsonify({"status": "error", "message": "此功能仅对 Emby 用户开放"}), 403
-            
         current_user_id = session['emby_user_id']
 
+        # ★★★ 核心修改 3: 再次调用辅助函数 ★★★
         tmdb_data = tmdb_handler.discover_tv_tmdb(api_key, params)
-        if not tmdb_data or not tmdb_data.get("results"):
-            return jsonify({"results": [], "total_pages": 0})
-
-        tmdb_ids = [str(tv.get("id")) for tv in tmdb_data["results"]]
-        
-        library_items_map = media_db.check_tmdb_ids_in_library(tmdb_ids, item_type='Series')
-        subscription_statuses = media_db.get_subscription_statuses(tmdb_ids, current_user_id)
-
-        for tv_show in tmdb_data["results"]:
-            tmdb_id_str = str(tv_show.get("id"))
-            tv_show["in_library"] = tmdb_id_str in library_items_map
-            tv_show["emby_item_id"] = library_items_map.get(tmdb_id_str)
-            tv_show["subscription_status"] = subscription_statuses.get(tmdb_id_str, None)
-
-        return jsonify(tmdb_data)
+        processed_data = _filter_and_enrich_results(tmdb_data, current_user_id, 'Series')
+        return jsonify(processed_data)
 
     except Exception as e:
         logger.error(f"TMDb 发现电视剧时出错: {e}", exc_info=True)
@@ -111,3 +110,35 @@ def get_genres(media_type):
     except Exception as e:
         logger.error(f"获取 TMDb 类型列表时出错: {e}", exc_info=True)
         return jsonify({"status": "error", "message": "获取类型列表失败"}), 500
+    
+# ★★★ 新增搜索接口 ★★★
+@discover_bp.route('/search', methods=['POST'])
+@any_login_required
+def search_media_handler():
+    """
+    根据前端传来的搜索词，从 TMDb 搜索影视。
+    """
+    data = request.json
+    query = data.get('query')
+    media_type = data.get('media_type', 'movie')
+    page = data.get('page', 1)
+
+    if not query:
+        return jsonify({"status": "error", "message": "搜索词不能为空"}), 400
+
+    api_key = tmdb_handler.config_manager.APP_CONFIG.get(tmdb_handler.constants.CONFIG_OPTION_TMDB_API_KEY)
+
+    try:
+        if 'emby_user_id' not in session:
+            return jsonify({"status": "error", "message": "此功能仅对 Emby 用户开放"}), 403
+        current_user_id = session['emby_user_id']
+        
+        # ★★★ 核心修改 4: 第三次调用辅助函数 ★★★
+        tmdb_data = tmdb_handler.search_media_for_discover(query=query, api_key=api_key, item_type=media_type, page=page)
+        db_item_type = 'Movie' if media_type == 'movie' else 'Series'
+        processed_data = _filter_and_enrich_results(tmdb_data, current_user_id, db_item_type)
+        return jsonify(processed_data)
+
+    except Exception as e:
+        logger.error(f"TMDb 搜索 {media_type} 时出错: {e}", exc_info=True)
+        return jsonify({"status": "error", "message": "从 TMDb 搜索数据失败"}), 500

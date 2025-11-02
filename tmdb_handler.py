@@ -464,6 +464,49 @@ def search_media(query: str, api_key: str, item_type: str = 'movie', year: Optio
         data = _tmdb_request(endpoint, api_key, params)
 
     return data.get("results") if data else None
+# --- 搜索媒体 (为探索页面定制) ---
+def search_media_for_discover(query: str, api_key: str, item_type: str = 'movie', year: Optional[str] = None, page: int = 1) -> Optional[Dict[str, Any]]:
+    """
+    【新】为探索页面的搜索功能定制，返回完整的TMDb响应对象。
+    """
+    if not query or not api_key:
+        return None
+    
+    endpoint_map = {
+        'movie': '/search/movie',
+        'tv': '/search/tv',
+        'series': '/search/tv',
+        'person': '/search/person'
+    }
+    endpoint = endpoint_map.get(item_type.lower())
+    
+    if not endpoint:
+        logger.error(f"不支持的搜索类型: '{item_type}'")
+        return None
+
+    params = {
+        "query": query,
+        "include_adult": "true",
+        "language": DEFAULT_LANGUAGE,
+        "page": page
+    }
+    
+    if year:
+        if item_type.lower() == 'movie':
+            params['year'] = year
+        elif item_type.lower() in ['tv', 'series']:
+            params['first_air_date_year'] = year
+
+    year_info = f" (年份: {year})" if year else ""
+    logger.debug(f"TMDb: 正在搜索 {item_type}: '{query}'{year_info} at page {page}")
+    data = _tmdb_request(endpoint, api_key, params)
+    
+    if data and not data.get("results") and params['language'].startswith("zh"):
+        logger.debug(f"中文搜索 '{query}'{year_info} 未找到结果，尝试使用英文再次搜索...")
+        params['language'] = 'en-US'
+        data = _tmdb_request(endpoint, api_key, params)
+
+    return data
 # --- 搜索电视剧 ---
 def search_tv_shows(query: str, api_key: str, year: Optional[str] = None) -> Optional[List[Dict[str, Any]]]:
     """

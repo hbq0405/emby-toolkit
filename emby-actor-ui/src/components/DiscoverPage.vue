@@ -7,15 +7,24 @@
       <!-- 筛选区域代码完全不变 -->
       <n-space vertical size="large">
         <n-space align="center">
+          <label>搜索:</label>
+          <n-input
+            v-model:value="searchQuery"
+            placeholder="输入关键词搜索..."
+            clearable
+            style="min-width: 300px;"
+          />
+        </n-space>
+        <n-space align="center">
           <label>类型:</label>
-          <n-radio-group v-model:value="mediaType">
+          <n-radio-group v-model:value="mediaType" :disabled="isSearchMode">
             <n-radio-button value="movie" label="电影" />
             <n-radio-button value="tv" label="电视剧" />
           </n-radio-group>
         </n-space>
         <n-space align="center">
           <label>排序:</label>
-          <n-radio-group v-model:value="filters['sort_by']">
+          <n-radio-group v-model:value="filters['sort_by']" :disabled="isSearchMode">
             <n-radio-button value="popularity.desc" label="热度降序" />
             <n-radio-button value="popularity.asc" label="热度升序" />
             <n-radio-button :value="mediaType === 'movie' ? 'primary_release_date.desc' : 'first_air_date.desc'" label="上映日期降序" />
@@ -28,6 +37,7 @@
           <label>风格:</label>
           <n-select
             v-model:value="selectedGenres"
+            :disabled="isSearchMode"
             multiple
             filterable
             placeholder="选择风格/类型"
@@ -39,6 +49,7 @@
         <label>地区:</label>
         <n-select
             v-model:value="selectedRegions"
+            :disabled="isSearchMode"
             multiple
             filterable
             placeholder="选择国家/地区"
@@ -50,6 +61,7 @@
           <label>评分不低于:</label>
           <n-input-number
             v-model:value="filters.vote_average_gte"
+            :disabled="isSearchMode"
             :step="0.5"
             :min="0"
             :max="10"
@@ -140,6 +152,8 @@ const filters = reactive({
 const results = ref([]);
 const totalPages = ref(0);
 const isLoadingMore = ref(false);
+const searchQuery = ref('');
+const isSearchMode = computed(() => searchQuery.value.trim() !== '');
 
 // ★★★ 核心改造 2: 为“哨兵”元素创建一个 ref ★★★
 const sentinel = ref(null);
@@ -186,15 +200,24 @@ const fetchDiscoverData = async () => {
   }
 
   try {
-    const apiParams = {
-      ...filters,
-      'vote_average.gte': filters.vote_average_gte,
-      'with_genres': selectedGenres.value.join(','),
-      'with_origin_country': selectedRegions.value.join('|'),
-    };
-    delete apiParams.vote_average_gte;
-
-    const response = await axios.post(`/api/discover/${mediaType.value}`, apiParams);
+    let response;
+    // ★★★ 核心逻辑：判断是搜索还是发现 ★★★
+    if (isSearchMode.value) {
+      response = await axios.post('/api/discover/search', {
+        query: searchQuery.value,
+        media_type: mediaType.value,
+        page: filters.page,
+      });
+    } else {
+      const apiParams = {
+        ...filters,
+        'vote_average.gte': filters.vote_average_gte,
+        'with_genres': selectedGenres.value.join(','),
+        'with_origin_country': selectedRegions.value.join('|'),
+      };
+      delete apiParams.vote_average_gte;
+      response = await axios.post(`/api/discover/${mediaType.value}`, apiParams);
+    }
     
     if (filters.page === 1) {
       results.value = response.data.results;
@@ -297,6 +320,12 @@ watch(mediaType, () => {
   selectedGenres.value = [];
   filters['sort_by'] = 'popularity.desc';
   fetchGenres();
+  resetAndFetch();
+});
+
+watch(searchQuery, (newValue) => {
+  // 当搜索框内容变化时，重置并获取数据
+  // fetchDiscoverDataDebounced 函数内部会根据 isSearchMode 决定调用哪个API
   resetAndFetch();
 });
 
