@@ -7,6 +7,7 @@ import re
 import time
 from datetime import datetime, timezone
 from flask import Blueprint, request, jsonify
+from typing import Optional, List
 from gevent import spawn_later
 
 # 导入需要的模块
@@ -14,6 +15,7 @@ import task_manager
 
 import emby_handler
 import config_manager
+import telegram_handler
 import constants
 import extensions
 from extensions import SYSTEM_UPDATE_MARKERS, SYSTEM_UPDATE_LOCK, RECURSION_SUPPRESSION_WINDOW
@@ -45,7 +47,7 @@ UPDATE_DEBOUNCE_TIMERS = {}
 UPDATE_DEBOUNCE_LOCK = threading.Lock()
 UPDATE_DEBOUNCE_TIME = 15
 
-def _handle_full_processing_flow(processor: 'MediaProcessor', item_id: str, force_full_update: bool):
+def _handle_full_processing_flow(processor: 'MediaProcessor', item_id: str, force_full_update: bool, new_episode_ids: Optional[List[str]] = None):
     """
     【Webhook 专用】编排一个新入库媒体项的完整处理流程。
     包括：元数据处理 -> 自定义合集匹配 -> 封面生成。
@@ -211,6 +213,74 @@ def _handle_full_processing_flow(processor: 'MediaProcessor', item_id: str, forc
 
     logger.trace(f"  ➜ Webhook 任务及所有后续流程完成: '{item_name_for_log}'")
 
+    # ======================================================================
+    # ★★★ TG的入库通知 - START ★★★
+    # ======================================================================
+    try:
+        # --- 1. 准备基础信息 ---
+        tmdb_id = item_details.get("ProviderIds", {}).get("Tmdb")
+        year = item_details.get("ProductionYear", "")
+        title = f"{item_name_for_log} ({year})" if year else item_name_for_log
+        overview = item_details.get("Overview", "暂无剧情简介。")
+        if len(overview) > 200:
+            overview = overview[:200] + "..."
+            
+        # ★★★ 在这个 try 块内部重新获取 item_type ★★★
+        item_type = item_details.get("Type")
+
+        # --- 2. 准备剧集信息 (如果适用) ---
+        episode_info_text = ""
+        if item_type == "Series" and new_episode_ids:
+            episode_details = []
+            for ep_id in new_episode_ids:
+                detail = emby_handler.get_emby_item_details(ep_id, processor.emby_url, processor.emby_api_key, processor.emby_user_id, fields="IndexNumber,ParentIndexNumber")
+                if detail:
+                    season_num = detail.get("ParentIndexNumber", 0)
+                    episode_num = detail.get("IndexNumber", 0)
+                    episode_details.append(f"S{season_num:02d}E{episode_num:02d}")
+            if episode_details:
+                episode_info_text = f"*集数*: `{', '.join(sorted(episode_details))}`\n"
+
+        # --- 3. 准备图片URL ---
+        photo_url = None
+        image_tag = item_details.get("ImageTags", {}).get("Primary")
+        if image_tag:
+            photo_url = f"{processor.emby_url}/Items/{item_id}/Images/Primary?tag={image_tag}&quality=90"
+
+        # --- 4. 组装最终的通知文本 (Caption) ---
+        current_time = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+        caption = (
+            f"*{title}* 入库成功\n\n"
+            f"{episode_info_text}"
+            f"*时间*: `{current_time}`\n"
+            f"*剧情*: {overview}"
+        )
+        
+        # --- 5. 查询订阅者并发送通知 ---
+        subscribers = user_db.get_subscribers_by_tmdb_id(tmdb_id) if tmdb_id else []
+        subscriber_chat_ids = {user_db.get_user_telegram_chat_id(sub['emby_user_id']) for sub in subscribers}
+        subscriber_chat_ids = {chat_id for chat_id in subscriber_chat_ids if chat_id}
+
+        # --- 6. 发送全局通知 ---
+        global_channel_id = config_manager.APP_CONFIG.get(constants.CONFIG_OPTION_TELEGRAM_CHANNEL_ID)
+        if global_channel_id and global_channel_id not in subscriber_chat_ids:
+            if photo_url:
+                telegram_handler.send_telegram_photo(global_channel_id, photo_url, caption)
+            else:
+                telegram_handler.send_telegram_message(global_channel_id, caption)
+
+        # --- 7. 发送个人订阅到货通知 ---
+        if subscriber_chat_ids:
+            personal_caption = f"✅ *您的订阅已入库*\n\n{caption}"
+            for chat_id in subscriber_chat_ids:
+                if photo_url:
+                    telegram_handler.send_telegram_photo(chat_id, photo_url, personal_caption)
+                else:
+                    telegram_handler.send_telegram_message(chat_id, personal_caption)
+            
+    except Exception as e:
+        logger.error(f"发送最终入库通知时发生错误: {e}", exc_info=True)
+
 # --- 辅助函数 ---
 def _process_batch_webhook_events():
     global WEBHOOK_BATCH_DEBOUNCER
@@ -316,7 +386,8 @@ def _process_batch_webhook_events():
                 _handle_full_processing_flow,
                 task_name=f"Webhook完整处理: {parent_name}",
                 item_id=parent_id,
-                force_full_update=force_full_update_for_new_item 
+                force_full_update=force_full_update_for_new_item,
+                new_episode_ids=list(item_info["episode_ids"]) 
             )
         else:
             # ★★★ 核心修复：恢复正确的追更处理逻辑 ★★★

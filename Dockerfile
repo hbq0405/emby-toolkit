@@ -67,6 +67,7 @@ COPY web_app.py \
      scheduler_manager.py \
      reverse_proxy.py \
      maoyan_fetcher.py \
+     telegram_handler.py \
      ./
 
 COPY database/ ./database/

@@ -27,6 +27,13 @@ ENV_VAR_DB_PASSWORD = "DB_PASSWORD"
 ENV_VAR_DB_NAME = "DB_NAME"
 
 # ==============================================================================
+# ✨ 通知服务 (Notification Services)
+# ==============================================================================
+CONFIG_SECTION_TELEGRAM = "Telegram"
+CONFIG_OPTION_TELEGRAM_BOT_TOKEN = "telegram_bot_token"
+CONFIG_OPTION_TELEGRAM_CHANNEL_ID = "telegram_channel_id"
+
+# ==============================================================================
 # ✨ 反向代理配置 (Reverse Proxy)
 # ==============================================================================
 CONFIG_SECTION_REVERSE_PROXY = "ReverseProxy"

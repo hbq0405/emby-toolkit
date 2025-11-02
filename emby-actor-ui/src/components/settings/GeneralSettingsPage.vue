@@ -438,7 +438,7 @@
                 <!-- 卡片 4: 用户注册设置 (右下) -->
                 <n-gi>
                   <n-card :bordered="false" class="dashboard-card">
-                    <template #header><span class="card-title">用户注册设置</span></template>
+                    <template #header><span class="card-title">Emby用户设置</span></template>
                     <n-form-item-grid-item label="注册成功跳转地址" path="registration_redirect_url">
                       <n-input 
                         v-model:value="configModel.registration_redirect_url" 
@@ -447,6 +447,33 @@
                       <template #feedback>
                         <n-text depth="3" style="font-size:0.8em;">
                           新用户通过邀请链接注册成功后，将自动跳转到您在此处设置的 URL。
+                        </n-text>
+                      </template>
+                    </n-form-item-grid-item>
+                    <n-divider title-placement="left" style="margin-top: 20px; margin-bottom: 20px;">Telegram 通知</n-divider>
+
+                    <n-form-item-grid-item label="Telegram Bot Token" path="telegram_bot_token">
+                      <n-input 
+                        v-model:value="configModel.telegram_bot_token" 
+                        type="password" 
+                        show-password-on="click"
+                        placeholder="从 @BotFather 获取" 
+                      />
+                      <template #feedback>
+                        <n-text depth="3" style="font-size:0.8em;">
+                          用于发送通知的 Telegram 机器人令牌。
+                        </n-text>
+                      </template>
+                    </n-form-item-grid-item>
+
+                    <n-form-item-grid-item label="全局通知频道 ID" path="telegram_channel_id">
+                      <n-input 
+                        v-model:value="configModel.telegram_channel_id" 
+                        placeholder="例如: -100123456789" 
+                      />
+                      <template #feedback>
+                        <n-text depth="3" style="font-size:0.8em;">
+                          用于发送全局入库等通知的公开频道或群组的 Chat ID。
                         </n-text>
                       </template>
                     </n-form-item-grid-item>

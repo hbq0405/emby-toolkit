@@ -532,7 +532,8 @@ def init_db():
                             "allow_unrestricted_subscriptions": "BOOLEAN DEFAULT FALSE NOT NULL"
                         },
                         'emby_users_extended': {
-                            "template_id": "INTEGER"
+                            "template_id": "INTEGER",
+                            "telegram_chat_id": "TEXT"
                         },
                         'actor_subscriptions': {
                             "config_main_role_only": "BOOLEAN NOT NULL DEFAULT FALSE",

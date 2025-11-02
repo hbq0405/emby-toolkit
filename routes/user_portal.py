@@ -1,11 +1,14 @@
 # routes/user_portal.py
 import logging
+import requests
 from flask import Blueprint, jsonify, session, request
 
 from extensions import emby_login_required # 保护我们的新接口
 from database import user_db, settings_db
 import moviepilot_handler # ★ 1. 导入我们的 MP 处理器
 import config_manager     # ★ 2. 导入配置管理器，因为 MP 处理器需要它
+import constants
+from telegram_handler import send_telegram_message
 
 # 1. 创建一个新的蓝图
 user_portal_bp = Blueprint('user_portal_bp', __name__, url_prefix='/api/portal')
@@ -76,10 +79,29 @@ def request_subscription():
                     **parsed_info # ★★★ 用 ** 解包字典，优雅地传入所有解析字段
                 )
                 message = "订阅成功，已自动提交给 MoviePilot！"
+                
             else:
                 return jsonify({"status": "error", "message": "提交给 MoviePilot 失败，请联系管理员。"}), 500
         else:
             message = "“想看”请求已提交，请等待管理员审核。"
+
+        # ★★★ 在这里添加通知逻辑 ★★★
+        try:
+            user_chat_id = user_db.get_user_telegram_chat_id(emby_user_id)
+            if user_chat_id:
+                item_name = data.get('item_name')
+                # 根据是否是 VIP，发送不同的通知内容
+                if is_vip:
+                    # VIP 自动批准的通知
+                    if parsed_info is not None: # 确保 MP 提交成功了
+                        message_text = f"✅ *您的订阅已自动处理*\n\n您订阅的 *{item_name}* 已成功提交订阅。"
+                        send_telegram_message(user_chat_id, message_text)
+                else:
+                    # 普通用户需要审核的通知
+                    message_text = f"🔔 *您的订阅请求已提交*\n\n您想看的 *{item_name}* 已进入待审队列，管理员处理后会通知您。"
+                    send_telegram_message(user_chat_id, message_text)
+        except Exception as e:
+            logger.error(f"发送订阅请求提交通知时出错: {e}")
             
         return jsonify({"status": "ok", "message": message})
 
@@ -91,14 +113,20 @@ def request_subscription():
 @user_portal_bp.route('/account-info', methods=['GET'])
 @emby_login_required # 必须登录才能访问
 def get_account_info():
-    """获取当前登录用户的详细账户信息，如模板、有效期等。"""
+    """获取当前登录用户的详细账户信息，并附带全局配置信息。"""
     emby_user_id = session['emby_user_id']
-    
     try:
-        # 我们将在下一步的 user_db.py 中创建这个函数
+        # 1. 照常获取用户的个人账户详情
         account_info = user_db.get_user_account_details(emby_user_id)
+        
+        # 2. ★★★ 核心修改：即使个人详情为空，也创建一个空字典 ★★★
+        #    这样可以确保即使用户是新来的，也能看到全局频道信息。
         if not account_info:
-            return jsonify({"status": "error", "message": "找不到用户账户信息"}), 404
+            account_info = {}
+
+        # 3. ★★★ 从全局配置中读取频道ID，并添加到返回的字典中 ★★★
+        channel_id = config_manager.APP_CONFIG.get(constants.CONFIG_OPTION_TELEGRAM_CHANNEL_ID)
+        account_info['telegram_channel_id'] = channel_id
             
         return jsonify(account_info)
     except Exception as e:
@@ -116,3 +144,51 @@ def get_subscription_history():
     except Exception as e:
         logger.error(f"为用户 {emby_user_id} 获取订阅历史时出错: {e}", exc_info=True)
         return jsonify({"status": "error", "message": "获取订阅历史失败"}), 500
+    
+@user_portal_bp.route('/telegram-chat-id', methods=['POST'])
+@emby_login_required
+def save_telegram_chat_id():
+    """保存当前用户的 Telegram Chat ID。"""
+    data = request.json
+    chat_id = data.get('chat_id', '').strip() # 获取并去除前后空格
+    emby_user_id = session['emby_user_id']
+
+    success = user_db.update_user_telegram_chat_id(emby_user_id, chat_id)
+    if success:
+        return jsonify({"status": "ok", "message": "Telegram Chat ID 保存成功！"})
+    else:
+        return jsonify({"status": "error", "message": "保存失败，请联系管理员"}), 500
+    
+@user_portal_bp.route('/telegram-bot-info', methods=['GET'])
+@emby_login_required
+def get_telegram_bot_info():
+    """安全地获取 Telegram 机器人的用户名，并返回详细的错误信息。"""
+    bot_token = config_manager.APP_CONFIG.get(constants.CONFIG_OPTION_TELEGRAM_BOT_TOKEN)
+    if not bot_token:
+        return jsonify({"bot_username": None, "error": "Bot Token未配置"})
+
+    try:
+        api_url = f"https://api.telegram.org/bot{bot_token}/getMe"
+        from config_manager import get_proxies_for_requests
+        proxies = get_proxies_for_requests()
+        
+        # ★★★ 核心修改 1: 增加超时时间到20秒，给网络多一点机会 ★★★
+        response = requests.get(api_url, timeout=20, proxies=proxies)
+        
+        if response.status_code == 200:
+            bot_info = response.json()
+            if bot_info.get("ok"):
+                return jsonify({"bot_username": bot_info.get("result", {}).get("username")})
+            else:
+                # Token正确但API返回错误 (例如被吊销)
+                error_desc = bot_info.get('description', '未知API错误')
+                return jsonify({"bot_username": None, "error": f"Telegram API 错误: {error_desc}"})
+        else:
+            # HTTP请求失败
+            return jsonify({"bot_username": None, "error": f"HTTP错误, 状态码: {response.status_code}"})
+
+    except requests.RequestException as e:
+        # ★★★ 核心修改 2: 捕获异常后，将错误信息返回给前端 ★★★
+        logger.error(f"调用 Telegram getMe API 失败: {e}")
+        # 将具体的网络错误（如超时）作为 error 字段返回
+        return jsonify({"bot_username": None, "error": f"网络请求失败: {str(e)}"})

@@ -551,6 +551,7 @@ def get_user_account_details(user_id: str) -> Optional[Dict[str, Any]]:
             ue.status,
             ue.registration_date,
             ue.expiration_date,
+            ue.telegram_chat_id,
             ut.name as template_name,
             ut.description as template_description,
             ut.allow_unrestricted_subscriptions
@@ -587,3 +588,54 @@ def get_user_subscription_history(user_id: str) -> List[Dict[str, Any]]:
     except Exception as e:
         logger.error(f"DB: 查询用户 {user_id} 的订阅历史失败: {e}", exc_info=True)
         raise
+
+def update_user_telegram_chat_id(user_id: str, chat_id: str) -> bool:
+    """更新或设置用户的 Telegram Chat ID"""
+    # 确保空字符串存为 NULL，方便处理
+    chat_id_to_save = chat_id if chat_id and chat_id.strip() else None
+    sql = "UPDATE emby_users_extended SET telegram_chat_id = %s WHERE emby_user_id = %s"
+    try:
+        with get_db_connection() as conn:
+            cursor = conn.cursor()
+            cursor.execute(sql, (chat_id_to_save, user_id))
+            # 如果用户在 extended 表里不存在，则需要插入一条新记录
+            if cursor.rowcount == 0:
+                insert_sql = "INSERT INTO emby_users_extended (emby_user_id, telegram_chat_id) VALUES (%s, %s) ON CONFLICT (emby_user_id) DO UPDATE SET telegram_chat_id = EXCLUDED.telegram_chat_id"
+                cursor.execute(insert_sql, (user_id, chat_id_to_save))
+            conn.commit()
+            return True
+    except Exception as e:
+        logger.error(f"DB: 更新用户 {user_id} 的 Telegram Chat ID 失败: {e}")
+        return False
+
+def get_user_telegram_chat_id(user_id: str) -> Optional[str]:
+    """根据用户ID获取其 Telegram Chat ID"""
+    sql = "SELECT telegram_chat_id FROM emby_users_extended WHERE emby_user_id = %s"
+    try:
+        with get_db_connection() as conn:
+            cursor = conn.cursor()
+            cursor.execute(sql, (user_id,))
+            result = cursor.fetchone()
+            return result['telegram_chat_id'] if result else None
+    except Exception as e:
+        logger.error(f"DB: 获取用户 {user_id} 的 Telegram Chat ID 失败: {e}")
+        return None
+    
+def get_subscribers_by_tmdb_id(tmdb_id: str) -> List[Dict[str, Any]]:
+    """根据 TMDb ID 查询所有订阅了该媒体的用户 (状态为 pending 或 approved)。"""
+    if not tmdb_id:
+        return []
+    
+    sql = """
+        SELECT DISTINCT emby_user_id
+        FROM subscription_requests
+        WHERE tmdb_id = %s AND status IN ('pending', 'approved');
+    """
+    try:
+        with get_db_connection() as conn:
+            cursor = conn.cursor()
+            cursor.execute(sql, (tmdb_id,))
+            return [dict(row) for row in cursor.fetchall()]
+    except Exception as e:
+        logger.error(f"DB: 根据 TMDb ID [{tmdb_id}] 查询订阅者失败: {e}", exc_info=True)
+        return []

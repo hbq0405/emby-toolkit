@@ -10,8 +10,10 @@ import emby_handler
 import moviepilot_handler
 import config_manager
 import constants
+from telegram_handler import send_telegram_message
 from extensions import admin_required
 from database import connection, user_db, settings_db
+
 # 创建一个新的蓝图
 user_management_bp = Blueprint('user_management_bp', __name__)
 
@@ -805,6 +807,21 @@ def approve_subscription(request_id):
         # (这里需要修改 update_subscription_request_status 函数，或者创建一个新函数)
         # 简单起见，我们先只在创建时记录，更新时可以后续再加
         user_db.update_subscription_request_status(request_id, 'approved')
+
+        # ★★★ 在批准成功后，添加通知逻辑 ★★★
+        try:
+            item_name = req_details.get('item_name')
+            item_type_text = "电影" if req_details.get('item_type') == 'Movie' else "电视剧"
+
+            # 发送给订阅者本人的通知
+            subscriber_id = req_details.get('emby_user_id')
+            subscriber_chat_id = user_db.get_user_telegram_chat_id(subscriber_id)
+            if subscriber_chat_id:
+                personal_message = f"✅ *您的订阅审核已通过*\n\n您想看的 *{item_type_text}*: `{item_name}` 已经成功加入订阅列表！祝观影愉快！"
+                send_telegram_message(subscriber_chat_id, personal_message)
+                
+        except Exception as e:
+            logger.error(f"发送批准通知时发生错误: {e}")
         
         return jsonify({"status": "ok", "message": "已批准并成功提交给 MoviePilot！"})
     except Exception as e:
@@ -819,7 +836,9 @@ def reject_subscription(request_id):
     reason = data.get('reason') # 从请求体中获取理由
 
     try:
-        # ★ 修改: 调用更新函数时传入理由
+        req_details = user_db.get_subscription_request_details(request_id)
+        if not req_details:
+            return jsonify({"status": "error", "message": "请求不存在或已被处理"}), 404
         success = user_db.update_subscription_request_status(
             request_id, 
             'rejected',
@@ -827,6 +846,17 @@ def reject_subscription(request_id):
         )
         if not success:
             return jsonify({"status": "error", "message": "请求不存在或已被处理"}), 404
+        
+        try:
+            subscriber_id = req_details.get('emby_user_id')
+            subscriber_chat_id = user_db.get_user_telegram_chat_id(subscriber_id)
+            if subscriber_chat_id:
+                item_name = req_details.get('item_name')
+                reason_text = f"\n\n*拒绝理由*: {reason}" if reason else ""
+                message_text = f"❌ *您的订阅请求已被拒绝*\n\n您想看的 *{item_name}* 未能通过审核。{reason_text}"
+                send_telegram_message(subscriber_chat_id, message_text)
+        except Exception as e:
+            logger.error(f"发送拒绝通知时发生错误: {e}")
             
         return jsonify({"status": "ok", "message": "请求已拒绝。"})
     except Exception as e:

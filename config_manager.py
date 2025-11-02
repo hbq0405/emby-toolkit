@@ -137,6 +137,10 @@ DYNAMIC_CONFIG_DEF = {
     constants.CONFIG_OPTION_LOG_ROTATION_SIZE_MB: (constants.CONFIG_SECTION_LOGGING, 'int', constants.DEFAULT_LOG_ROTATION_SIZE_MB),
     constants.CONFIG_OPTION_LOG_ROTATION_BACKUPS: (constants.CONFIG_SECTION_LOGGING, 'int', constants.DEFAULT_LOG_ROTATION_BACKUPS),
     constants.CONFIG_OPTION_REGISTRATION_REDIRECT_URL: (constants.CONFIG_SECTION_USER_MANAGEMENT, 'string', ""),
+
+    # [Telegram]
+    constants.CONFIG_OPTION_TELEGRAM_BOT_TOKEN: (constants.CONFIG_SECTION_TELEGRAM, 'password', ""),
+    constants.CONFIG_OPTION_TELEGRAM_CHANNEL_ID: (constants.CONFIG_SECTION_TELEGRAM, 'string', ""),
 }
 
 # --- 全局配置字典 ---
