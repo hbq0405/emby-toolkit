@@ -807,23 +807,26 @@ def approve_subscription(request_id):
         item_type = req_details['item_type']
         config = config_manager.APP_CONFIG
         
-        parsed_info = None
+        subscription_successful = False
         if item_type == 'Movie':
             mp_payload = { "name": req_details['item_name'], "tmdbid": int(req_details['tmdb_id']), "type": "电影" }
+            # 电影订阅成功，直接标记
             if moviepilot_handler.subscribe_with_custom_payload(mp_payload, config):
-                parsed_info = {}
+                subscription_successful = True
         elif item_type == 'Series':
             series_info = { "tmdb_id": int(req_details['tmdb_id']), "item_name": req_details['item_name'] }
-            parsed_info = moviepilot_handler.smart_subscribe_series(series_info, config)
+            # 调用新版函数，它返回一个列表或 None
+            subscription_results = moviepilot_handler.smart_subscribe_series(series_info, config)
+            # 只要返回值不是 None (即使是空列表)，就代表函数执行成功了
+            if subscription_results is not None:
+                subscription_successful = True
 
-        if parsed_info is None:
+        # 如果 MoviePilot 订阅过程成功 (无论是电影还是电视剧)
+        if not subscription_successful:
             return jsonify({"status": "error", "message": "提交给 MoviePilot 失败，请检查 MP 连接"}), 500
 
+        # 订阅成功后，再扣除配额并更新数据库
         settings_db.decrement_subscription_quota()
-        
-        # ★★★ 在更新状态的同时，也把解析信息补上 ★★★
-        # (这里需要修改 update_subscription_request_status 函数，或者创建一个新函数)
-        # 简单起见，我们先只在创建时记录，更新时可以后续再加
         user_db.update_subscription_request_status(request_id, 'approved')
 
         # ★★★ 在批准成功后，添加通知逻辑 ★★★
