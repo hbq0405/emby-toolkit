@@ -24,7 +24,7 @@ def _prepare_data_for_insert(table_name: str, table_data: List[Dict[str, Any]]) 
     一个极简的数据准备函数，专为 PG-to-PG 流程设计。
     - 它只做一件事：将需要存入 JSONB 列的数据包装成 psycopg2 的 Json 对象。
     """
-    # 定义哪些列是 JSONB 类型，需要特殊处理
+    # ★★★ 核心修改 1: 在这里注册所有新增的 JSONB 列 ★★★
     JSONB_COLUMNS = {
         'app_settings': {
             'value_json'
@@ -35,7 +35,7 @@ def _prepare_data_for_insert(table_name: str, table_data: List[Dict[str, Any]]) 
         'custom_collections': {
             'definition_json', 'generated_media_info_json', 
             'emby_children_details_json', 'generated_emby_ids_json', 
-            'allowed_user_ids'
+            'allowed_user_ids' 
         },
         'user_collection_cache': {
             'visible_emby_ids_json'
@@ -44,11 +44,12 @@ def _prepare_data_for_insert(table_name: str, table_data: List[Dict[str, Any]]) 
             'genres_json', 'actors_json', 'directors_json', 
             'studios_json', 'countries_json', 'tags_json', 
             'emby_children_details_json',
-            'keywords_json'
+            'keywords_json' 
         },
         'watchlist': {
             'next_episode_to_air_json', 'missing_info_json', 
-            'resubscribe_info_json', 'last_episode_to_air_json'
+            'resubscribe_info_json', 
+            'last_episode_to_air_json' 
         },
         'actor_subscriptions': {
             'config_genres_include_json', 'config_genres_exclude_json'
@@ -65,7 +66,8 @@ def _prepare_data_for_insert(table_name: str, table_data: List[Dict[str, Any]]) 
             'versions_info_json'
         },
         'user_templates': {
-            'emby_policy_json', 'emby_configuration_json'
+            'emby_policy_json', 
+            'emby_configuration_json' 
         }
     }
 
@@ -88,12 +90,9 @@ def _prepare_data_for_insert(table_name: str, table_data: List[Dict[str, Any]]) 
         for col_name in columns:
             value = row_dict.get(col_name)
             
-            # ★ 核心逻辑: 如果列是 JSONB 类型且值非空，使用 Json 适配器包装 ★
             if col_name in table_json_rules and value is not None:
-                # Json() 会告诉 psycopg2: "请将这个 Python 对象作为 JSON 处理"
                 value = Json(value)
             elif col_name in table_list_to_string_rules and isinstance(value, list):
-                # 如果是需要转换为字符串的列表，则进行转换
                 value = ','.join(map(str, value))
             
             row_values.append(value)
@@ -126,12 +125,10 @@ def _share_import_table_data(cursor, table_name: str, columns: List[str], data: 
     安全地合并数据，使用 ON CONFLICT DO NOTHING 策略。
     这会尝试插入新行，如果主键或唯一约束冲突，则静默忽略。
     """
-    # 定义每个表用于冲突检测的列（通常是主键或唯一键）
     CONFLICT_TARGETS = {
         'person_identity_map': 'tmdb_person_id',
         'actor_metadata': 'tmdb_id',
         'translation_cache': 'original_text',
-        # media_metadata 的主键是复合主键
         'media_metadata': 'tmdb_id, item_type', 
     }
     
@@ -144,7 +141,6 @@ def _share_import_table_data(cursor, table_name: str, columns: List[str], data: 
 
     logger.info(f"  ➜ 执行共享模式：将合并数据到表 '{db_table_name}'，冲突项将被忽略。")
     
-    # 构造带有 ON CONFLICT 子句的 SQL
     insert_query = sql.SQL("""
         INSERT INTO {table} ({cols}) VALUES %s
         ON CONFLICT ({conflict_cols}) DO NOTHING
@@ -155,7 +151,6 @@ def _share_import_table_data(cursor, table_name: str, columns: List[str], data: 
     )
 
     execute_values(cursor, insert_query, data, page_size=500)
-    # cursor.rowcount 在 ON CONFLICT DO NOTHING 后返回的是实际插入的行数
     inserted_count = cursor.rowcount
     logger.info(f"  ➜ 成功向表 '{db_table_name}' 合并 {inserted_count} 条新记录（总共尝试 {len(data)} 条）。")
     return inserted_count
@@ -164,8 +159,6 @@ def _share_import_table_data(cursor, table_name: str, columns: List[str], data: 
 def _merge_person_identity_map_data(cursor, table_name: str, columns: List[str], data: List[tuple]) -> dict:
     """
     【V2 - 终极修复版】为 person_identity_map 表提供一个健壮的合并策略。
-    - 采用 "先删除，后更新" 的策略，彻底解决因唯一性约束导致的 UPDATE 失败问题。
-    - 它会查找所有相关的碎片化记录，将它们合并到一个主记录中，并删除多余的记录。
     """
     logger.info(f"  ➜ 执行智能合并模式：将合并数据到表 '{table_name}'...")
     
@@ -174,7 +167,6 @@ def _merge_person_identity_map_data(cursor, table_name: str, columns: List[str],
     data_dicts = [dict(zip(columns, row)) for row in data]
 
     for row_to_merge in data_dicts:
-        # 提取所有可能的ID
         ids_to_check = {
             'tmdb_person_id': row_to_merge.get('tmdb_person_id'),
             'imdb_id': row_to_merge.get('imdb_id'),
@@ -191,13 +183,11 @@ def _merge_person_identity_map_data(cursor, table_name: str, columns: List[str],
         if not query_parts:
             continue
 
-        # 步骤 1: 查找所有相关的记录
         find_sql = sql.SQL("SELECT * FROM person_identity_map WHERE {}").format(sql.SQL(' OR ').join(query_parts))
         cursor.execute(find_sql, tuple(params))
         existing_records = cursor.fetchall()
 
         if not existing_records:
-            # --- 场景 A: 记录完全不存在，直接插入 ---
             all_cols_in_order = [col for col in columns if col != 'map_id']
             values_to_insert = [row_to_merge.get(col) for col in all_cols_in_order]
 
@@ -208,31 +198,24 @@ def _merge_person_identity_map_data(cursor, table_name: str, columns: List[str],
             cursor.execute(insert_sql, values_to_insert)
             stats['inserted'] += 1
         else:
-            # --- 场景 B: 找到一条或多条相关记录，执行 "先删除，后更新" 的合并 ---
-            
-            # 步骤 2: 确定主记录 (ID最小的) 和待删除记录
             sorted_records = sorted(existing_records, key=lambda r: r['map_id'])
-            master_record_original = dict(sorted_records[0]) # 这是更新前的主记录
+            master_record_original = dict(sorted_records[0])
             records_to_delete = sorted_records[1:]
             
-            # 步骤 3: 在内存中构建最终的、完整的合并后数据
             merged_data = master_record_original.copy()
             all_sources = records_to_delete + [row_to_merge]
             
             for source in all_sources:
                 for key, value in source.items():
-                    # 只合并ID字段和名字，且仅当新值存在而主记录中不存在时
                     if key in ['tmdb_person_id', 'imdb_id', 'douban_celebrity_id', 'primary_name'] and value and not merged_data.get(key):
                         merged_data[key] = value
 
-            # ★★★ 核心修复步骤 4: 先删除被合并的冗余记录 ★★★
             if records_to_delete:
                 ids_to_delete = [r['map_id'] for r in records_to_delete]
                 delete_sql = sql.SQL("DELETE FROM person_identity_map WHERE map_id = ANY(%s)")
                 cursor.execute(delete_sql, (ids_to_delete,))
                 stats['merged_and_deleted'] += len(ids_to_delete)
 
-            # ★★★ 核心修复步骤 5: 在唯一键被释放后，再更新主记录 ★★★
             updates = {
                 k: v for k, v in merged_data.items() 
                 if k != 'map_id' and v != master_record_original.get(k)
@@ -247,15 +230,13 @@ def _merge_person_identity_map_data(cursor, table_name: str, columns: List[str],
     logger.info(f"  ➜ 智能合并完成：新增 {stats['inserted']} 条，更新 {stats['updated']} 条，合并删除 {stats['merged_and_deleted']} 条记录。")
     return stats
 
-# ★★★ 新增辅助函数 5: 同步主键序列 ★★★
+# ★★★ 辅助函数 5: 同步主键序列 ★★★
 def _resync_primary_key_sequence(cursor, table_name: str):
     """
     在执行插入前，同步表的主键序列生成器。
-    - 【V3修复】根据项目真实的 init_db.py 代码，构建了完全正确的 PRIMARY_KEY_COLUMNS 字典。
     """
-    # ★★★ 核心修复：这个字典现在只包含那些在 init_db 中被定义为 SERIAL 的表 ★★★
+    # ★★★ 在这里注册新表的 SERIAL 主键 ★★★
     PRIMARY_KEY_COLUMNS = {
-        # --- 包含 SERIAL 主键的表 ---
         'users': 'id',
         'custom_collections': 'id',
         'person_identity_map': 'map_id',
@@ -265,6 +246,7 @@ def _resync_primary_key_sequence(cursor, table_name: str):
         'media_cleanup_tasks': 'id',
         'user_templates': 'id',
         'invitations': 'id',
+        'subscription_requests': 'id' # <-- 新增
     }
     
     pk_column = PRIMARY_KEY_COLUMNS.get(table_name.lower())
@@ -293,17 +275,17 @@ def _resync_primary_key_sequence(cursor, table_name: str):
     except Exception as e:
         logger.warning(f"  ➜ 同步表 '{table_name}' 的主键序列时发生非致命错误: {e}")
 
-# --- 主任务函数 (V4 - 纯PG重构版) ---
+# --- 主任务函数 ---
 def task_import_database(processor, file_content: str, tables_to_import: List[str], import_strategy: str):
     """
-    【V6 - 终极健壮版】
-    - 在所有操作开始前，为每个待处理的表调用 _resync_primary_key_sequence。
-    - 这将彻底解决因数据库序列（ID计数器）与实际数据不一致导致的主键冲突问题。
+    - 导入数据库备份主任务函数。
     """
     task_name = f"数据库恢复 ({'覆盖模式' if import_strategy == 'overwrite' else '共享模式'})"
     logger.info(f"  ➜ 后台任务开始：{task_name}，将恢复表: {tables_to_import}。")
     
     SHARABLE_TABLES = {'person_identity_map', 'actor_metadata', 'translation_cache', 'media_metadata'}
+    
+    # ★★★ 为新表添加中文名 ★★★
     TABLE_TRANSLATIONS = {
         'person_identity_map': '演员映射表', 
         'actor_metadata': '演员元数据', 
@@ -327,6 +309,7 @@ def task_import_database(processor, file_content: str, tables_to_import: List[st
         'invitations': '邀请码', 
         'emby_users_extended': 'Emby用户扩展信息',
         'user_collection_cache': 'Emby用户权限缓存',
+        'subscription_requests': 'TMDb探索订阅请求' # <-- 新增
     }
     summary_lines = []
     conn = None
@@ -335,24 +318,25 @@ def task_import_database(processor, file_content: str, tables_to_import: List[st
         backup_data = backup.get("data", {})
 
         def get_table_sort_key(table_name):
-            # ★★★【V2 - 依赖关系修正版】★★★
+            # ★★★ 设置导入顺序 ★★★
             order = {
                 # --- 级别 0: 无任何依赖的核心表 ---
                 'person_identity_map': 0,
                 'users': 1,
-                'user_templates': 2,      # 爹: 必须在 emby_users_extended 和 invitations 之前
-                'emby_users': 3,          # 爹: 必须在 emby_users_extended 之前
+                'user_templates': 2,
+                'emby_users': 3,
 
                 # --- 级别 1: 依赖级别 0 的表 ---
-                'emby_users_extended': 4, # 儿: 依赖 user_templates 和 emby_users
-                'invitations': 5,         # 儿: 依赖 user_templates
+                'emby_users_extended': 4,
+                'invitations': 5,
                 'actor_subscriptions': 10,
+                'subscription_requests': 30, 
 
                 # --- 级别 2: 依赖更早级别的表 ---
-                'actor_metadata': 11,     # 依赖 person_identity_map (虽然外键已移除，但逻辑上依赖)
-                'tracked_actor_media': 20 # 依赖 actor_subscriptions
+                'actor_metadata': 11,
+                'tracked_actor_media': 20
             }
-            return order.get(table_name.lower(), 100) # 其他表默认优先级100
+            return order.get(table_name.lower(), 100)
 
         actual_tables_to_import = [t for t in tables_to_import if t in backup_data]
         sorted_tables_to_import = sorted(actual_tables_to_import, key=get_table_sort_key)
@@ -363,12 +347,10 @@ def task_import_database(processor, file_content: str, tables_to_import: List[st
             with conn.cursor() as cursor:
                 logger.info("  ➜ 数据库事务已开始。")
 
-                # ★★★ 核心修复：在所有操作之前，为每个表同步主键序列 ★★★
                 logger.info("  ➜ 正在同步所有相关表的主键ID序列...")
                 for table_name in sorted_tables_to_import:
                     _resync_primary_key_sequence(cursor, table_name)
                 logger.info("  ➜ 主键ID序列同步完成。")
-                # ★★★ 修复结束 ★★★
 
                 for table_name in sorted_tables_to_import:
                     cn_name = TABLE_TRANSLATIONS.get(table_name.lower(), table_name)

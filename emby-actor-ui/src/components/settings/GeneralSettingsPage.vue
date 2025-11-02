@@ -656,6 +656,7 @@ const tableInfo = {
   'invitations': { cn: '邀请链接', isSharable: false },
   'emby_users_extended': { cn: 'Emby用户扩展信息', isSharable: false },
   'user_collection_cache': { cn: '用户权限缓存', isSharable: false },
+  'subscription_requests': { cn: '订阅请求', isSharable: false }
 };
 
 // ★★★ START: 新增的依赖关系自动勾选逻辑 ★★★
