@@ -17,14 +17,18 @@ logger = logging.getLogger(__name__)
 @user_portal_bp.route('/subscribe', methods=['POST'])
 @emby_login_required
 def request_subscription():
-    """【V3 - 适配多季订阅】处理用户的订阅或“想看”请求。"""
+    """【V4 - 优化多季订阅通知】处理用户的订阅或“想看”请求。"""
     data = request.json
     emby_user_id = session['emby_user_id']
     
     is_vip = user_db.get_user_subscription_permission(emby_user_id)
+    
+    # ★★★ V4 优化：为通知逻辑准备一个变量 ★★★
+    seasons_subscribed_count = 0
+    message = ""
 
     if not is_vip:
-        # 普通用户的订阅申请
+        # 普通用户的逻辑保持不变
         user_db.create_subscription_request(
             emby_user_id=emby_user_id,
             tmdb_id=str(data.get('tmdb_id')),
@@ -38,20 +42,17 @@ def request_subscription():
         # --- VIP 用户的自动订阅逻辑 ---
         logger.info(f"VIP 用户 {emby_user_id} 的订阅请求已自动批准，准备通过 MoviePilot 订阅...")
         
-        # a. 检查总配额
         if settings_db.get_subscription_quota() <= 0:
             logger.warning(f"VIP 用户 {emby_user_id} 尝试自动订阅，但配额已用尽。")
             return jsonify({"status": "error", "message": "今日订阅配额已用尽，请明天再试。"}), 429
 
         item_type = data.get('item_type')
         config = config_manager.APP_CONFIG
-        
         subscription_successful = False
         
         if item_type == 'Movie':
             mp_payload = { "name": data.get('item_name'), "tmdbid": int(data.get('tmdb_id')), "type": "电影" }
             if moviepilot_handler.subscribe_with_custom_payload(mp_payload, config):
-                # 电影订阅成功，扣配额，创建一条记录
                 settings_db.decrement_subscription_quota()
                 user_db.create_subscription_request(
                     emby_user_id=emby_user_id, tmdb_id=str(data.get('tmdb_id')),
@@ -64,21 +65,19 @@ def request_subscription():
             series_info = { "tmdb_id": int(data.get('tmdb_id')), "item_name": data.get('item_name') }
             subscription_results = moviepilot_handler.smart_subscribe_series(series_info, config)
 
-            # 如果返回了列表 (即使是空列表)，说明 MP 调用没问题
             if subscription_results is not None:
-                # ★★★ 核心修改：遍历返回的列表 ★★★
+                # ★★★ V4 优化：记录订阅的季数 ★★★
+                seasons_subscribed_count = len(subscription_results)
+                
                 if not subscription_results:
                     logger.warning(f"智能订阅 '{data.get('item_name')}' 未返回任何有效的季订阅信息，但仍视为成功。")
-                    # 即使没有订阅任何季，也创建一个总的请求记录
                     user_db.create_subscription_request(
                         emby_user_id=emby_user_id, tmdb_id=str(data.get('tmdb_id')),
                         item_type=item_type, item_name=data.get('item_name'),
                         status='approved', processed_by='auto'
                     )
                 else:
-                    # 为返回的每一季都创建一条记录
                     for season_info in subscription_results:
-                        # 每次循环都检查配额，防止超额
                         if settings_db.get_subscription_quota() <= 0:
                             logger.warning("在订阅多季剧集时配额耗尽，部分季可能未被记录。")
                             break 
@@ -86,12 +85,11 @@ def request_subscription():
                         settings_db.decrement_subscription_quota()
                         user_db.create_subscription_request(
                             emby_user_id=emby_user_id,
-                            tmdb_id=str(season_info.get('parent_tmdb_id')), # 使用返回的父ID
+                            tmdb_id=str(season_info.get('parent_tmdb_id')),
                             item_type=item_type,
                             item_name=f"{season_info.get('parsed_series_name')} - 第 {season_info.get('parsed_season_number')} 季",
                             status='approved',
                             processed_by='auto',
-                            # 将解析出的信息也存入数据库
                             parent_tmdb_id=str(season_info.get('parent_tmdb_id')),
                             parsed_series_name=season_info.get('parsed_series_name'),
                             parsed_season_number=season_info.get('parsed_season_number')
@@ -109,7 +107,11 @@ def request_subscription():
         if user_chat_id:
             item_name = data.get('item_name')
             if is_vip:
-                message_text = f"✅ *您的订阅已自动处理*\n\n您订阅的 *{item_name}* 已成功提交订阅。"
+                # ★★★ V4 优化：根据季数生成不同的通知内容 ★★★
+                if seasons_subscribed_count > 1:
+                    message_text = f"✅ *您的订阅已自动处理*\n\n您订阅的 *{item_name}* 已成功提交订阅，共计 *{seasons_subscribed_count}* 季。"
+                else:
+                    message_text = f"✅ *您的订阅已自动处理*\n\n您订阅的 *{item_name}* 已成功提交订阅。"
                 send_telegram_message(user_chat_id, message_text)
             else:
                 message_text = f"🔔 *您的订阅请求已提交*\n\n您想看的 *{item_name}* 已进入待审队列，管理员处理后会通知您。"
