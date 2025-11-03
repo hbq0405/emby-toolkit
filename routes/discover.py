@@ -5,7 +5,7 @@ from flask import Blueprint, jsonify, request, g, session
 from extensions import any_login_required
 import tmdb_handler
 from utils import KEYWORD_ID_MAP, contains_chinese
-from database import media_db
+from database import user_db
 
 discover_bp = Blueprint('discover_bp', __name__, url_prefix='/api/discover')
 logger = logging.getLogger(__name__)
@@ -37,7 +37,7 @@ def _filter_and_enrich_results(tmdb_data: dict, current_user_id: str, db_item_ty
     library_items_map = media_db.check_tmdb_ids_in_library(tmdb_ids, item_type=db_item_type)
     
     # ★★★ 核心修改：调用新的全局状态查询函数，不再传入 current_user_id ★★★
-    subscription_statuses = media_db.get_global_subscription_statuses_by_tmdb_ids(tmdb_ids)
+    subscription_statuses = user_db.get_global_subscription_statuses_by_tmdb_ids(tmdb_ids)
 
     for item in final_filtered_results:
         tmdb_id_str = str(item.get("id"))
