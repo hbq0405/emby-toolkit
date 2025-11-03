@@ -272,31 +272,40 @@ const fetchEmbyConfig = async () => {
   }
 };
 
-// ★★★ 核心改造 3: 恢复完整、正确的 handleSubscribe 函数逻辑 ★★★
 const handleSubscribe = async (media) => {
-  // 如果正在提交，或者已经有订阅状态了（pending 或 approved），则直接返回，防止重复点击
+  // 1. 前置检查：如果正在提交，或者这个媒体已经有了一个明确的订阅状态，则直接返回，防止重复点击。
   if (subscribingId.value || media.subscription_status) {
     console.debug("订阅请求被阻止：已有订阅状态或正在提交中。");
     return;
   }
 
-  subscribingId.value = media.id;
+  subscribingId.value = media.id; // 设置加载状态，防止重复点击
   try {
+    // 2. 发送 API 请求
     const response = await axios.post('/api/portal/subscribe', {
       tmdb_id: media.id,
       item_type: mediaType.value === 'movie' ? 'Movie' : 'Series',
       item_name: media.title || media.name,
     });
+
+    // 3. 显示后端返回的成功消息
     message.success(response.data.message);
 
+    // 4. ★★★ 核心逻辑：实时更新UI ★★★
+    // a. 在前端的 results 数组中找到我们刚刚点击的那个媒体项
     const targetMedia = results.value.find(r => r.id === media.id);
+
+    // b. 确保找到了媒体项，并且后端的响应中包含了新的 'status' 字段
     if (targetMedia && response.data.status) {
+      // c. 将后端返回的新状态 (例如 "pending" 或 "approved") 赋值给前端数据项的 subscription_status 属性
       targetMedia.subscription_status = response.data.status;
     }
 
   } catch (error) {
+    // 5. 处理可能发生的错误
     message.error(error.response?.data?.message || '提交请求失败');
   } finally {
+    // 6. 无论成功或失败，都清除加载状态
     subscribingId.value = null;
   }
 };
