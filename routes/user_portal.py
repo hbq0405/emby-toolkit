@@ -17,27 +17,41 @@ logger = logging.getLogger(__name__)
 @user_portal_bp.route('/subscribe', methods=['POST'])
 @emby_login_required
 def request_subscription():
-    """【V4 - 优化多季订阅通知】处理用户的订阅或“想看”请求。"""
+    """【V5 - 实时状态返回版】处理用户的订阅请求，并返回媒体的最新状态。"""
     data = request.json
     emby_user_id = session['emby_user_id']
+    tmdb_id = str(data.get('tmdb_id'))
+    item_type = data.get('item_type')
+    item_name = data.get('item_name')
+
+    # 首先，检查该媒体是否已被其他用户订阅，防止重复提交
+    # 这个逻辑在之前的修改中已经存在，现在它变得更加重要
+    existing_status = user_db.get_global_subscription_status_by_tmdb_id(tmdb_id)
+    if existing_status == 'approved':
+        return jsonify({"status": "approved", "message": "该项目已在订阅队列中，无需重复提交。"}), 200
+    if existing_status == 'pending':
+        return jsonify({"status": "pending", "message": "该项目正在等待审核，无需重复提交。"}), 200
     
     is_vip = user_db.get_user_subscription_permission(emby_user_id)
     
-    # ★★★ V4 优化：为通知逻辑准备一个变量 ★★★
     seasons_subscribed_count = 0
     message = ""
+    # ★★★ 核心修改 1: 定义一个变量，用于存储本次操作后，媒体应该具有的新状态 ★★★
+    new_status_for_frontend = None
 
     if not is_vip:
-        # 普通用户的逻辑保持不变
+        # --- 普通用户的逻辑 ---
         user_db.create_subscription_request(
             emby_user_id=emby_user_id,
-            tmdb_id=str(data.get('tmdb_id')),
-            item_type=data.get('item_type'),
-            item_name=data.get('item_name'),
+            tmdb_id=tmdb_id,
+            item_type=item_type,
+            item_name=item_name,
             status='pending',
             processed_by=None
         )
         message = "“想看”请求已提交，请等待管理员审核。"
+        # ★★★ 核心修改 2: 普通用户提交后，新状态是 'pending' ★★★
+        new_status_for_frontend = 'pending'
     else:
         # --- VIP 用户的自动订阅逻辑 ---
         logger.info(f"VIP 用户 {emby_user_id} 的订阅请求已自动批准，准备通过 MoviePilot 订阅...")
