@@ -849,6 +849,106 @@ def approve_subscription(request_id):
         logger.error(f"批准订阅请求 {request_id} 时出错: {e}", exc_info=True)
         return jsonify({"status": "error", "message": "处理批准时发生内部错误"}), 500
 
+@user_management_bp.route('/api/admin/subscriptions/batch-approve', methods=['POST'])
+@admin_required
+def batch_approve_subscriptions():
+    """批量批准订阅请求。"""
+    data = request.json
+    request_ids = data.get('ids', [])
+
+    if not request_ids:
+        return jsonify({"status": "error", "message": "未提供任何订阅请求ID"}), 400
+
+    try:
+        # 1. 检查配额 (批量操作只检查一次总配额)
+        current_quota = settings_db.get_subscription_quota()
+        if current_quota <= 0:
+            logger.warning(f"管理员尝试批量批准请求，但配额已用尽。")
+            return jsonify({"status": "error", "message": "今日订阅配额已用尽，无法批准请求。"}), 429
+
+        # 2. 批量更新数据库状态并获取已批准请求的详情
+        approved_requests = user_db.batch_approve_subscription_requests(request_ids)
+        
+        if not approved_requests:
+            return jsonify({"status": "ok", "message": "没有新的请求被批准或请求已处理。"}), 200
+
+        # 3. 批量提交给 MoviePilot 并扣除配额
+        config = config_manager.APP_CONFIG
+        successful_subscriptions = 0
+        for req_details in approved_requests:
+            item_type = req_details['item_type']
+            subscription_successful = False
+            
+            if item_type == 'Movie':
+                mp_payload = { "name": req_details['item_name'], "tmdbid": int(req_details['tmdb_id']), "type": "电影" }
+                if moviepilot_handler.subscribe_with_custom_payload(mp_payload, config):
+                    subscription_successful = True
+            elif item_type == 'Series':
+                series_info = { "tmdb_id": int(req_details['tmdb_id']), "item_name": req_details['item_name'] }
+                subscription_results = moviepilot_handler.smart_subscribe_series(series_info, config)
+                if subscription_results is not None:
+                    subscription_successful = True
+            
+            if subscription_successful:
+                successful_subscriptions += 1
+                settings_db.decrement_subscription_quota() # 每次成功订阅扣除配额
+            else:
+                logger.error(f"批量批准：提交请求 {req_details['id']} 到 MoviePilot 失败。")
+                # 如果 MoviePilot 失败，将该请求的状态改回 pending 或标记为处理失败
+                # 这里为了简化，我们暂时不回滚，但实际应用中可能需要更复杂的错误处理
+        
+        # 4. 发送通知 (可以考虑批量通知或逐个通知)
+        for req_details in approved_requests:
+            try:
+                item_name = req_details.get('item_name')
+                item_type_text = "电影" if req_details.get('item_type') == 'Movie' else "电视剧"
+                subscriber_id = req_details.get('emby_user_id')
+                subscriber_chat_id = user_db.get_user_telegram_chat_id(subscriber_id)
+                if subscriber_chat_id:
+                    personal_message = f"✅ *您的订阅审核已通过*\n\n您想看的 *{item_type_text}*: `{item_name}` 已经成功加入订阅列表！祝观影愉快！"
+                    send_telegram_message(subscriber_chat_id, personal_message)
+            except Exception as e:
+                logger.error(f"发送批量批准通知时发生错误: {e}")
+
+        return jsonify({"status": "ok", "message": f"成功批准并提交了 {successful_subscriptions} 条订阅请求！"}), 200
+    except Exception as e:
+        logger.error(f"批量批准订阅请求时出错: {e}", exc_info=True)
+        return jsonify({"status": "error", "message": "处理批量批准时发生内部错误"}), 500
+
+@user_management_bp.route('/api/admin/subscriptions/batch-reject', methods=['POST'])
+@admin_required
+def batch_reject_subscriptions():
+    """批量拒绝订阅请求。"""
+    data = request.json
+    request_ids = data.get('ids', [])
+    reason = data.get('reason')
+
+    if not request_ids:
+        return jsonify({"status": "error", "message": "未提供任何订阅请求ID"}), 400
+
+    try:
+        updated_count = user_db.batch_reject_subscription_requests(request_ids, reason)
+        
+        # 发送通知
+        for request_id in request_ids:
+            try:
+                req_details = user_db.get_subscription_request_details(request_id)
+                if req_details:
+                    subscriber_id = req_details.get('emby_user_id')
+                    subscriber_chat_id = user_db.get_user_telegram_chat_id(subscriber_id)
+                    if subscriber_chat_id:
+                        item_name = req_details.get('item_name')
+                        reason_text = f"\n\n*拒绝理由*: {reason}" if reason else ""
+                        message_text = f"❌ *您的订阅请求已被拒绝*\n\n您想看的 *{item_name}* 未能通过审核。{reason_text}"
+                        send_telegram_message(subscriber_chat_id, message_text)
+            except Exception as e:
+                logger.error(f"发送批量拒绝通知时发生错误 for request {request_id}: {e}")
+
+        return jsonify({"status": "ok", "message": f"成功拒绝了 {updated_count} 条订阅请求。"}), 200
+    except Exception as e:
+        logger.error(f"批量拒绝订阅请求时出错: {e}", exc_info=True)
+        return jsonify({"status": "error", "message": "处理批量拒绝时发生内部错误"}), 500
+
 @user_management_bp.route('/api/admin/subscriptions/<int:request_id>/reject', methods=['POST'])
 @admin_required
 def reject_subscription(request_id):

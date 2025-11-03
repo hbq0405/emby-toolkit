@@ -542,6 +542,66 @@ def update_subscription_request_status(request_id: int, status: str, processed_b
         logger.error(f"DB: 更新订阅请求 {request_id} 状态失败: {e}", exc_info=True)
         raise
 
+def batch_approve_subscription_requests(request_ids: List[int], processed_by: str = 'admin') -> List[Dict[str, Any]]:
+    """
+    批量批准订阅请求，并返回这些请求的详细信息。
+    """
+    if not request_ids:
+        return []
+
+    try:
+        with get_db_connection() as conn:
+            cursor = conn.cursor()
+            # 1. 更新状态
+            sql_update = """
+                UPDATE subscription_requests
+                SET status = 'approved', processed_by = %s, processed_at = NOW()
+                WHERE id = ANY(%s) AND status = 'pending'
+                RETURNING id;
+            """
+            cursor.execute(sql_update, (processed_by, request_ids))
+            updated_ids = [row['id'] for row in cursor.fetchall()]
+
+            # 2. 获取已批准请求的详细信息
+            if not updated_ids:
+                return []
+
+            sql_select = """
+                SELECT id, item_name, item_type, tmdb_id, emby_user_id
+                FROM subscription_requests
+                WHERE id = ANY(%s);
+            """
+            cursor.execute(sql_select, (updated_ids,))
+            approved_requests = [dict(row) for row in cursor.fetchall()]
+            conn.commit()
+            return approved_requests
+    except Exception as e:
+        logger.error(f"DB: 批量批准订阅请求失败: {e}", exc_info=True)
+        raise
+
+def batch_reject_subscription_requests(request_ids: List[int], reason: Optional[str] = None, processed_by: str = 'admin') -> int:
+    """
+    批量拒绝订阅请求。
+    """
+    if not request_ids:
+        return 0
+
+    try:
+        with get_db_connection() as conn:
+            cursor = conn.cursor()
+            sql = """
+                UPDATE subscription_requests
+                SET status = 'rejected', processed_by = %s, processed_at = NOW(), notes = %s
+                WHERE id = ANY(%s) AND status = 'pending';
+            """
+            cursor.execute(sql, (processed_by, reason, request_ids))
+            updated_count = cursor.rowcount
+            conn.commit()
+            return updated_count
+    except Exception as e:
+        logger.error(f"DB: 批量拒绝订阅请求失败: {e}", exc_info=True)
+        raise
+
 def get_user_account_details(user_id: str) -> Optional[Dict[str, Any]]:
     """
     根据用户ID，查询其在 emby_users_extended 表中的信息，并关联 user_templates 表获取模板详情。
