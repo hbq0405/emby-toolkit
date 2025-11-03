@@ -59,7 +59,7 @@
         <!-- ★★★ 2. “免审订阅”开关 ★★★ -->
         <n-form-item label="免审订阅" path="allow_unrestricted_subscriptions">
           <n-switch v-model:value="formModel.allow_unrestricted_subscriptions" />
-          <template #feedback>开启后，使用此模板的用户提交订阅请求时，将无需管理员审核，直接提交给下载器。</template>
+          <template #feedback>开启后，使用此模板的用户提交订阅请求时，将无需管理员审核，直接提交订阅。</template>
         </n-form-item>
       </n-form>
       <template #footer>
