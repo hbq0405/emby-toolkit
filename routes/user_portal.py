@@ -66,6 +66,7 @@ def request_subscription():
                     status='approved', processed_by='auto'
                 )
                 subscription_successful = True
+                new_status_for_frontend = 'approved'
         
         elif item_type == 'Series':
             series_info = { "tmdb_id": int(data.get('tmdb_id')), "item_name": data.get('item_name') }
@@ -101,6 +102,7 @@ def request_subscription():
                             parsed_season_number=season_info.get('parsed_season_number')
                         )
                 subscription_successful = True
+                new_status_for_frontend = 'approved'
 
         if not subscription_successful:
             return jsonify({"status": "error", "message": "提交给 MoviePilot 失败，请联系管理员。"}), 500

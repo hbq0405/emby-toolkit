@@ -21,7 +21,7 @@
       v-model:show="isModalVisible"
       preset="card"
       style="width: 600px"
-      title="创建新的用户模板"
+      :title="modalTitle"
       :bordered="false"
       size="huge"
     >
