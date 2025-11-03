@@ -290,6 +290,7 @@ const handleUserSelect = async (key) => {
     });
   } else if (key === 'logout') {
     await authStore.logout();
+    router.push({ name: 'Login' }); // 添加导航到登录页
   }
 };
 
