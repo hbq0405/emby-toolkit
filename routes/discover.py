@@ -5,7 +5,7 @@ from flask import Blueprint, jsonify, request, g, session
 from extensions import any_login_required
 import tmdb_handler
 from utils import KEYWORD_ID_MAP, contains_chinese
-from database import user_db
+from database import user_db, media_db
 
 discover_bp = Blueprint('discover_bp', __name__, url_prefix='/api/discover')
 logger = logging.getLogger(__name__)
