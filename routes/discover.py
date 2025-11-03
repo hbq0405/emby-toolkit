@@ -12,8 +12,8 @@ logger = logging.getLogger(__name__)
 
 def _filter_and_enrich_results(tmdb_data: dict, current_user_id: str, db_item_type: str) -> dict:
     """
-    【V2 - 中文元数据过滤版】
-    辅助函数：过滤TMDb结果（移除无海报、无中文元数据项），并附加数据库信息。
+    【V3 - 全局订阅状态版】
+    辅助函数：过滤TMDb结果，并附加数据库中的全局信息。
     """
     if not tmdb_data or not tmdb_data.get("results"):
         return {"results": [], "total_pages": 0}
@@ -31,16 +31,19 @@ def _filter_and_enrich_results(tmdb_data: dict, current_user_id: str, db_item_ty
     if not final_filtered_results:
         return {"results": [], "total_pages": 0}
 
-    # 步骤 3: 附加数据库信息 (现在使用我们最终过滤后的列表)
+    # 步骤 3: 附加数据库信息
     tmdb_ids = [str(item.get("id")) for item in final_filtered_results]
     
     library_items_map = media_db.check_tmdb_ids_in_library(tmdb_ids, item_type=db_item_type)
-    subscription_statuses = media_db.get_subscription_statuses(tmdb_ids, current_user_id)
+    
+    # ★★★ 核心修改：调用新的全局状态查询函数，不再传入 current_user_id ★★★
+    subscription_statuses = media_db.get_global_subscription_statuses_by_tmdb_ids(tmdb_ids)
 
     for item in final_filtered_results:
         tmdb_id_str = str(item.get("id"))
         item["in_library"] = tmdb_id_str in library_items_map
         item["emby_item_id"] = library_items_map.get(tmdb_id_str)
+        # 从全局状态字典中获取状态
         item["subscription_status"] = subscription_statuses.get(tmdb_id_str, None)
     
     # 步骤 4: 将原始数据中的 results 替换为我们处理后的版本并返回

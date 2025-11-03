@@ -639,3 +639,50 @@ def get_subscribers_by_tmdb_id(tmdb_id: str) -> List[Dict[str, Any]]:
     except Exception as e:
         logger.error(f"DB: 根据 TMDb ID [{tmdb_id}] 查询订阅者失败: {e}", exc_info=True)
         return []
+    
+def get_global_subscription_statuses_by_tmdb_ids(tmdb_ids: List[str]) -> Dict[str, str]:
+    """
+    根据一个TMDb ID列表，高效查询每个ID的最高优先级订阅状态。
+    返回一个字典，键为 tmdb_id，值为状态 ('approved' 或 'pending')。
+    """
+    if not tmdb_ids:
+        return {}
+
+    # 使用 PostgreSQL 的 DISTINCT ON 功能，可以非常高效地为每个 tmdb_id 找到优先级最高的那条记录
+    sql = """
+        SELECT DISTINCT ON (tmdb_id)
+            tmdb_id,
+            status
+        FROM subscription_requests
+        WHERE tmdb_id = ANY(%s) AND status != 'rejected'
+        ORDER BY
+            tmdb_id,
+            CASE status
+                WHEN 'approved' THEN 1
+                WHEN 'processing' THEN 2
+                WHEN 'completed' THEN 3
+                WHEN 'pending' THEN 4
+                ELSE 5
+            END;
+    """
+    
+    status_map = {}
+    try:
+        with get_db_connection() as conn:
+            cursor = conn.cursor()
+            # psycopg2 会自动将 Python 列表转换为 PostgreSQL 数组
+            cursor.execute(sql, (tmdb_ids,))
+            rows = cursor.fetchall()
+            
+            for row in rows:
+                status = row['status']
+                tmdb_id = row['tmdb_id']
+                # 简化返回给前端的状态
+                if status in ['approved', 'processing', 'completed']:
+                    status_map[tmdb_id] = 'approved'
+                elif status == 'pending':
+                    status_map[tmdb_id] = 'pending'
+    except Exception as e:
+        logger.error(f"DB: 批量查询 TMDb IDs 的全局状态失败: {e}", exc_info=True)
+    
+    return status_map
