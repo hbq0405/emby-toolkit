@@ -156,11 +156,19 @@ def get_account_info():
 @user_portal_bp.route('/subscription-history', methods=['GET'])
 @emby_login_required
 def get_subscription_history():
-    """获取当前用户的订阅历史记录。"""
+    """获取当前用户的订阅历史记录，支持分页。"""
     emby_user_id = session['emby_user_id']
+    page = request.args.get('page', 1, type=int)
+    page_size = request.args.get('page_size', 10, type=int)
+    
     try:
-        history = user_db.get_user_subscription_history(emby_user_id)
-        return jsonify(history)
+        history, total_records = user_db.get_user_subscription_history(emby_user_id, page, page_size)
+        return jsonify({
+            "items": history,
+            "total_records": total_records,
+            "page": page,
+            "page_size": page_size
+        })
     except Exception as e:
         logger.error(f"为用户 {emby_user_id} 获取订阅历史时出错: {e}", exc_info=True)
         return jsonify({"status": "error", "message": "获取订阅历史失败"}), 500

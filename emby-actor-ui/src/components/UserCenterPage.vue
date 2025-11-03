@@ -2,10 +2,10 @@
 <template>
   <div style="padding: 24px;"> 
     <n-page-header :title="`欢迎回来, ${authStore.username}`" subtitle="在这里查看您的账户信息" />
-    <n-grid cols="1 s:1 m:2 l:2" :x-gap="24" :y-gap="24" style="margin-top: 24px;">
+    <n-grid cols="2" :x-gap="24" :y-gap="24" style="margin-top: 24px;">
       
       <!-- ==================== 左侧卡片: 账户详情 ==================== -->
-      <n-gi>
+      <n-gi :span="1">
         <n-card :loading="loading" title="账户详情" class="dashboard-card">
           
           <!-- ★★★ 核心修正: 使用 v-if 和 v-else 来切换显示内容 ★★★ -->
@@ -98,14 +98,24 @@
       </n-gi>
 
       <!-- ==================== 右侧卡片: 订阅历史 ==================== -->
-      <n-gi>
+      <n-gi :span="1">
         <n-card :loading="loading" title="订阅历史" class="dashboard-card">
           <n-data-table
             :columns="historyColumns"
             :data="subscriptionHistory"
             :bordered="false"
             :single-line="false"
+            :pagination="false"
           />
+          <div v-if="totalRecords > pageSize" style="margin-top: 16px; display: flex; justify-content: center;">
+            <n-pagination
+              v-model:page="currentPage"
+              :page-size="pageSize"
+              :item-count="totalRecords"
+              show-quick-jumper
+              @update:page="fetchSubscriptionHistory"
+            />
+          </div>
         </n-card>
       </n-gi>
 
@@ -120,9 +130,8 @@ import { useAuthStore } from '../stores/auth';
 // ★ 修正: 导入所有需要的组件，并移除不再使用的 NStatistic
 import { 
   NPageHeader, NCard, NDescriptions, NDescriptionsItem, NTag, NEmpty, NGrid, NGi, 
-  NDataTable, NInputGroup, NInput, NButton, NText, useMessage 
+  NDataTable, NInputGroup, NInput, NButton, NText, useMessage, NPagination 
 } from 'naive-ui';
-
 const authStore = useAuthStore();
 const loading = ref(true);
 const accountInfo = ref(null);
@@ -131,6 +140,11 @@ const telegramChatId = ref('');
 const isSavingChatId = ref(false);
 const message = useMessage();
 const isFetchingBotLink = ref(false);
+
+// 分页相关状态
+const currentPage = ref(1);
+const pageSize = ref(10); // 每页显示10条
+const totalRecords = ref(0);
 
 // 将状态文本映射到 Naive UI 的类型
 const statusMap = {
@@ -219,25 +233,46 @@ const openBotChat = async () => {
   }
 };
 
+// 获取订阅历史的函数，现在支持分页
+const fetchSubscriptionHistory = async (page = 1) => {
+  loading.value = true;
+  try {
+    const response = await axios.get('/api/portal/subscription-history', {
+      params: {
+        page: page,
+        page_size: pageSize.value,
+      },
+    });
+    subscriptionHistory.value = response.data.items;
+    totalRecords.value = response.data.total_records;
+    currentPage.value = page;
+  } catch (error) {
+    console.error("加载订阅历史失败:", error);
+    message.error('加载订阅历史失败');
+  } finally {
+    loading.value = false;
+  }
+};
+
 // ★ 修正: 完整的 onMounted 逻辑
 onMounted(async () => {
   try {
     // ★★★ 核心修改: 只加载两个必要接口 ★★★
-    const [accountResponse, historyResponse] = await Promise.all([
+    const [accountResponse] = await Promise.all([
       axios.get('/api/portal/account-info'),
-      axios.get('/api/portal/subscription-history'),
     ]);
 
-    // ... (下面的赋值逻辑保持不变，但要删除所有和 botUsername 相关的代码)
     accountInfo.value = accountResponse.data;
     if (accountInfo.value) {
         telegramChatId.value = accountInfo.value.telegram_chat_id || '';
     }
-    subscriptionHistory.value = historyResponse.data;
+    
+    // 首次加载订阅历史
+    await fetchSubscriptionHistory();
 
   } catch (error) {
     console.error("加载用户中心数据失败:", error);
-    // ...
+    message.error('加载账户信息失败');
   } finally {
     loading.value = false;
   }

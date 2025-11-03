@@ -2,7 +2,7 @@
 import psycopg2
 from psycopg2.extras import execute_values
 import logging
-from typing import List, Dict, Any, Optional
+from typing import List, Dict, Any, Optional, Tuple # 导入 Tuple
 from datetime import datetime, timezone
 
 from .connection import get_db_connection
@@ -632,19 +632,37 @@ def get_user_account_details(user_id: str) -> Optional[Dict[str, Any]]:
         logger.error(f"DB: 查询用户 {user_id} 的账户详情失败: {e}", exc_info=True)
         raise
 
-def get_user_subscription_history(user_id: str) -> List[Dict[str, Any]]:
-    """获取指定用户的所有订阅请求历史。"""
-    sql = """
+def get_user_subscription_history(user_id: str, page: int = 1, page_size: int = 10) -> Tuple[List[Dict[str, Any]], int]:
+    """获取指定用户的订阅请求历史，支持分页，并返回总记录数。"""
+    offset = (page - 1) * page_size
+    
+    # 查询总记录数
+    count_sql = """
+        SELECT COUNT(*) FROM subscription_requests
+        WHERE emby_user_id = %s;
+    """
+    
+    # 查询分页数据
+    data_sql = """
         SELECT id, item_name, item_type, status, requested_at, notes
         FROM subscription_requests
         WHERE emby_user_id = %s
-        ORDER BY requested_at DESC;
+        ORDER BY requested_at DESC
+        LIMIT %s OFFSET %s;
     """
     try:
         with get_db_connection() as conn:
             cursor = conn.cursor()
-            cursor.execute(sql, (user_id,))
-            return [dict(row) for row in cursor.fetchall()]
+            
+            # 获取总数
+            cursor.execute(count_sql, (user_id,))
+            total_records = cursor.fetchone()['count']
+            
+            # 获取分页数据
+            cursor.execute(data_sql, (user_id, page_size, offset))
+            history = [dict(row) for row in cursor.fetchall()]
+            
+            return history, total_records
     except Exception as e:
         logger.error(f"DB: 查询用户 {user_id} 的订阅历史失败: {e}", exc_info=True)
         raise
