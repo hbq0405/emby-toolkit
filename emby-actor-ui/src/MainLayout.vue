@@ -300,16 +300,17 @@ const menuOptions = computed(() => {
       label: '发现', 
       key: 'group-discovery', 
       type: 'group', 
-      children: [ 
-        { label: '数据看板', key: 'DatabaseStats', icon: renderIcon(StatsIcon) },
+      children: [
+        // 如果用户是本地管理员或 Emby 管理员，则显示数据看板
+        ...(authStore.isAdmin ? [{ label: '数据看板', key: 'DatabaseStats', icon: renderIcon(StatsIcon) }] : []),
         { label: '影视探索', key: 'Discover', icon: renderIcon(DiscoverIcon) },
         // 只有 Emby 用户能看到用户中心
-        ...(authStore.userType === 'emby_user' ? [{ 
-          label: '用户中心', 
-          key: 'UserCenter', 
-          icon: renderIcon(UserCenterIcon) 
+        ...(authStore.userType === 'emby_user' ? [{
+          label: '用户中心',
+          key: 'UserCenter',
+          icon: renderIcon(UserCenterIcon)
         }] : [])
-      ] 
+      ]
     },
   ];
 
