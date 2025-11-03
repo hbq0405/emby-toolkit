@@ -127,4 +127,28 @@ export const themes = {
       }
     }
   },
+
+  // ================= 主题八: 极简风格 (无特效) =================
+  minimal: {
+    name: '极简风格',
+    light: {
+      custom: { '--card-bg-color': '#ffffff', '--modal-solid-bg-color': '#ffffff', '--card-border-color': '#e0e0e0', '--card-shadow-color': 'rgba(0, 0, 0, 0.05)', '--accent-color': '#42b983', '--accent-glow-color': 'transparent', '--text-color': '#333333' },
+      naive: {
+        common: { primaryColor: '#42b983', bodyColor: '#f5f5f5' },
+        Card: { color: '#ffffff', borderColor: '#e0e0e0' },
+        Layout: { siderColor: '#f0f0f0' },
+        Menu: { itemTextColor: '#555555', itemIconColor: '#555555', itemTextColorHover: 'var(--n-common-primary-color)', itemIconColorHover: 'var(--n-common-primary-color)', itemTextColorActive: 'var(--n-common-primary-color)', itemIconColorActive: 'var(--n-common-primary-color)', itemTextColorActiveHover: 'var(--n-common-primary-color)', itemIconColorActiveHover: 'var(--n-common-primary-color)' }
+      }
+    },
+    dark: {
+      custom: { '--card-bg-color': '#2c2c2c', '--modal-solid-bg-color': '#2c2c2c', '--card-border-color': '#444444', '--card-shadow-color': 'rgba(0, 0, 0, 0.2)', '--accent-color': '#66cc99', '--accent-glow-color': 'transparent', '--text-color': '#e0e0e0' },
+      naive: {
+        common: { primaryColor: '#66cc99', primaryColorHover: '#80d4ad', primaryColorPressed: '#5cb88c', primaryColorSuppl: '#66cc99', bodyColor: '#1e1e1e', cardColor: '#2c2c2c' },
+        Card: { color: '#2c2c2c', borderColor: '#444444' },
+        Layout: { siderColor: '#252525' },
+        Menu: { itemTextColor: '#cccccc', itemIconColor: '#cccccc', itemTextColorHover: '#ffffff', itemIconColorHover: '#ffffff', itemTextColorActive: 'var(--n-common-primary-color)', itemIconColorActive: 'var(--n-common-primary-color)', itemTextColorActiveHover: 'var(--n-common-primary-color)', itemIconColorActiveHover: 'var(--n-common-primary-color)' },
+        Switch: { railColorActive: '#66cc99' }, Slider: { fillColor: '#66cc99' }, Checkbox: { colorChecked: '#66cc99', checkMarkColor: '#ffffff', borderChecked: '#66cc99' }, Button: { textColorPrimary: '#ffffff' }
+      }
+    }
+  }
 };
