@@ -233,7 +233,7 @@ onMounted(async () => {
     if (accountInfo.value) {
         telegramChatId.value = accountInfo.value.telegram_chat_id || '';
     }
-    subscriptionHistory.value = historyResponse.data.details;
+    subscriptionHistory.value = historyResponse.data;
 
   } catch (error) {
     console.error("加载用户中心数据失败:", error);
