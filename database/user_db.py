@@ -639,3 +639,45 @@ def get_subscribers_by_tmdb_id(tmdb_id: str) -> List[Dict[str, Any]]:
     except Exception as e:
         logger.error(f"DB: 根据 TMDb ID [{tmdb_id}] 查询订阅者失败: {e}", exc_info=True)
         return []
+    
+def get_global_subscription_status_by_tmdb_id(tmdb_id: str) -> Optional[str]:
+    """
+    【V1 - 全局状态查询】查询单个 TMDb ID 的最高优先级订阅状态。
+    优先级: approved > processing > pending.
+    """
+    if not tmdb_id:
+        return None
+
+    sql = """
+        SELECT status
+        FROM subscription_requests
+        WHERE tmdb_id = %s AND status != 'rejected'
+        ORDER BY
+            CASE status
+                WHEN 'approved' THEN 1
+                WHEN 'processing' THEN 2
+                WHEN 'completed' THEN 3
+                WHEN 'pending' THEN 4
+                ELSE 5
+            END
+        LIMIT 1;
+    """
+    try:
+        with get_db_connection() as conn:
+            cursor = conn.cursor()
+            cursor.execute(sql, (tmdb_id,))
+            result = cursor.fetchone()
+            if not result:
+                return None
+            
+            status = result['status']
+            # 简化返回给前端的状态
+            if status in ['approved', 'processing', 'completed']:
+                return 'approved'
+            if status == 'pending':
+                return 'pending'
+            return None
+            
+    except Exception as e:
+        logger.error(f"DB: 查询 TMDb ID {tmdb_id} 的全局状态失败: {e}", exc_info=True)
+        return None

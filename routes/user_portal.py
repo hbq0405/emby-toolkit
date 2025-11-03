@@ -4,7 +4,7 @@ import requests
 from flask import Blueprint, jsonify, session, request
 
 from extensions import emby_login_required # 保护我们的新接口
-from database import user_db, settings_db, media_db
+from database import user_db, settings_db
 import moviepilot_handler # ★ 1. 导入我们的 MP 处理器
 import config_manager     # ★ 2. 导入配置管理器，因为 MP 处理器需要它
 import constants
@@ -26,7 +26,7 @@ def request_subscription():
 
     # 首先，检查该媒体是否已被其他用户订阅，防止重复提交
     # 这个逻辑在之前的修改中已经存在，现在它变得更加重要
-    existing_status = media_db.get_global_subscription_statuses_by_tmdb_ids(tmdb_id)
+    existing_status = user_db.get_global_subscription_status_by_tmdb_id(tmdb_id)
     if existing_status == 'approved':
         return jsonify({"status": "approved", "message": "该项目已在订阅队列中，无需重复提交。"}), 200
     if existing_status == 'pending':
