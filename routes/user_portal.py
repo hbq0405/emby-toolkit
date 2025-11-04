@@ -17,33 +17,31 @@ logger = logging.getLogger(__name__)
 @user_portal_bp.route('/subscribe', methods=['POST'])
 @emby_login_required
 def request_subscription():
-    """【V5.4 - 管理员免审版】处理用户订阅请求，Emby管理员和VIP用户均可跳过审核。"""
+    """
+    【V5.8 - 最终正确版】处理用户订阅请求。
+    - VIP/管理员的请求拥有最高优先级，无视任何现有的 pending 状态。
+    - 普通用户的请求在项目已有状态时会被拦截。
+    """
     data = request.json
     emby_user_id = session['emby_user_id']
-    
-    # ★★★ 获取VIP状态，也从 session 中获取管理员状态 ★★★
     emby_username = session.get('emby_username', emby_user_id)
-    is_emby_admin = session.get('emby_is_admin', False) # 使用 .get() 更安全
+    
+    is_emby_admin = session.get('emby_is_admin', False)
     is_vip = user_db.get_user_subscription_permission(emby_user_id)
     
     tmdb_id = str(data.get('tmdb_id'))
     item_type = data.get('item_type')
     item_name = data.get('item_name')
 
-    # 检查全局状态，防止重复提交 (逻辑保持不变)
-    existing_status = user_db.get_global_subscription_status_by_tmdb_id(tmdb_id)
-    if existing_status:
-        message = "该项目正在等待审核。" if existing_status == 'pending' else "该项目已在订阅队列中。"
-        return jsonify({"status": existing_status, "message": f"{message}无需重复提交。"}), 200
-
     message = ""
     new_status_for_frontend = None
 
-    # ★★★ 核心修改 2/3：更新判断条件，VIP 或 Emby 管理员都可以直接订阅 ★★★
+    # ★★★ 核心逻辑：VIP/管理员先进专属通道 ★★★
     if is_vip or is_emby_admin:
-        # --- VIP 或管理员的自动订阅逻辑 ---
+        # --- VIP 或管理员的自动订阅逻辑 (拥有最高优先级) ---
+        # 这个通道里，不检查任何 existing_status，直接往下走！
         log_user_type = "管理员" if is_emby_admin else "VIP 用户"
-        logger.info(f"{log_user_type} '{emby_username}' 的订阅请求已自动批准，准备通过 MoviePilot 订阅...")
+        logger.info(f"【VIP通道】{log_user_type} '{emby_username}' 的订阅请求已自动批准...")
         
         if settings_db.get_subscription_quota() <= 0:
             logger.warning(f"{log_user_type} {emby_user_id} 尝试自动订阅，但配额已用尽。")
@@ -62,8 +60,8 @@ def request_subscription():
                     item_type=item_type, item_name=item_name,
                     status='approved', processed_by='auto'
                 )
+                settings_db.remove_item_from_recommendation_pool(tmdb_id)
                 subscription_successful = True
-                new_status_for_frontend = 'approved'
         
         elif item_type == 'Series':
             series_info = { "tmdb_id": int(tmdb_id), "item_name": item_name }
@@ -87,19 +85,28 @@ def request_subscription():
                             status='approved', processed_by='auto', parent_tmdb_id=str(season_info.get('parent_tmdb_id')),
                             parsed_series_name=season_info.get('parsed_series_name'), parsed_season_number=season_info.get('parsed_season_number')
                         )
-                subscription_successful = True
-                new_status_for_frontend = 'approved'
-
-        if not subscription_successful:
-            return jsonify({"status": "error", "message": "提交给 MoviePilot 失败，请联系管理员。"}), 500
-        
-        message = "订阅成功，已自动提交给 MoviePilot！"
+                subscription_successful = True 
+        if subscription_successful:
+            message = "订阅成功，已自动提交给 MoviePilot！"
+            new_status_for_frontend = 'approved'
+        else:
+            # 处理订阅失败的情况
+            pass
     else:
-        # --- 普通用户逻辑 (保持不变) ---
+        # --- 普通用户通道 ---
+        # ★ 只有普通用户才需要检查全局状态
+        existing_status = user_db.get_global_subscription_status_by_tmdb_id(tmdb_id)
+        if existing_status:
+            message = "该项目正在等待审核。" if existing_status == 'pending' else "该项目已在订阅队列中。"
+            return jsonify({"status": existing_status, "message": message}), 200
+        
+        # 如果没有全局状态，则为普通用户创建待审请求
         user_db.create_subscription_request(
             emby_user_id=emby_user_id, tmdb_id=tmdb_id, item_type=item_type,
             item_name=item_name, status='pending'
         )
+        if item_type == 'Movie':
+            settings_db.remove_item_from_recommendation_pool(tmdb_id)
         message = "“想看”请求已提交，请等待管理员审核。"
         new_status_for_frontend = 'pending'
 

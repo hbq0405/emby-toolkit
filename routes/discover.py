@@ -5,7 +5,9 @@ from flask import Blueprint, jsonify, request, g, session
 from extensions import any_login_required
 import handler.tmdb as tmdb
 from utils import KEYWORD_ID_MAP, contains_chinese
-from database import user_db, media_db
+from database import user_db, media_db, settings_db
+from tasks.discover import task_update_daily_recommendation
+import task_manager
 
 discover_bp = Blueprint('discover_bp', __name__, url_prefix='/api/discover')
 logger = logging.getLogger(__name__)
@@ -39,14 +41,16 @@ def _filter_and_enrich_results(tmdb_data: dict, current_user_id: str, db_item_ty
     # ★★★ 核心修改：调用新的全局状态查询函数，不再传入 current_user_id ★★★
     subscription_statuses = user_db.get_global_subscription_statuses_by_tmdb_ids(tmdb_ids)
 
+    media_type_for_frontend = 'movie' if db_item_type == 'Movie' else 'tv'
+
     for item in final_filtered_results:
         tmdb_id_str = str(item.get("id"))
         item["in_library"] = tmdb_id_str in library_items_map
         item["emby_item_id"] = library_items_map.get(tmdb_id_str)
-        # 从全局状态字典中获取状态
         item["subscription_status"] = subscription_statuses.get(tmdb_id_str, None)
+        # ★★★ 把标签贴上！ ★★★
+        item["media_type"] = media_type_for_frontend
     
-    # 步骤 4: 将原始数据中的 results 替换为我们处理后的版本并返回
     tmdb_data["results"] = final_filtered_results
     return tmdb_data
 
@@ -198,3 +202,42 @@ def api_get_discover_keywords():
     except Exception as e:
         logger.error(f"获取 Discover 关键词列表时出错: {e}", exc_info=True)
         return jsonify([]), 500
+    
+@discover_bp.route('/daily_recommendation', methods=['GET'])
+@any_login_required
+def get_recommendation_pool():
+    """
+    读取并返回由后台任务生成的“推荐池”列表。
+    """
+    try:
+        # ★ 使用新的 key 来获取数据
+        pool_data = settings_db.get_setting('recommendation_pool')
+
+        if pool_data is None:
+            return jsonify({"error": "推荐池尚未生成，请稍后再试。"}), 404
+        
+        # 直接返回整个列表
+        return jsonify(pool_data)
+    except Exception as e:
+        logger.error(f"读取推荐池数据时出错: {e}", exc_info=True)
+        return jsonify({"error": "获取推荐池失败"}), 500
+    
+@discover_bp.route('/trigger_recommendation_update', methods=['POST'])
+@any_login_required
+def trigger_recommendation_update():
+    """
+    手动触发一次“每日推荐”更新任务。
+    这是一个异步操作，接口会立即返回。
+    """
+    try:
+        logger.info("  ➜ 收到前端请求，手动触发【每日推荐】更新任务...")
+        # 使用 task_manager 提交任务到后台执行
+        task_manager.submit_task(
+            task_function=task_update_daily_recommendation,
+            task_name="手动更新每日推荐",
+            processor_type='media' # 这个任务需要 'media' 类型的处理器
+        )
+        return jsonify({"status": "ok", "message": "更新任务已在后台启动。"}), 202
+    except Exception as e:
+        logger.error(f"手动触发每日推荐任务时失败: {e}", exc_info=True)
+        return jsonify({"error": "启动任务失败"}), 500

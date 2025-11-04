@@ -139,3 +139,36 @@ def decrement_subscription_quota() -> bool:
     except Exception as e:
         logger.error(f"减少订阅配额时发生严重错误: {e}", exc_info=True)
         return False
+    
+def remove_item_from_recommendation_pool(tmdb_id: str):
+    """
+    从 'recommendation_pool' 列表中移除一个指定的媒体项。
+    """
+    try:
+        with get_db_connection() as conn:
+            with conn.cursor() as cursor:
+                cursor.execute("SELECT value_json FROM app_settings WHERE setting_key = 'recommendation_pool' FOR UPDATE")
+                result = cursor.fetchone()
+                
+                if not result or not result['value_json']:
+                    logger.info("推荐池为空或不存在，无需移除。")
+                    return
+
+                current_pool = result['value_json']
+                new_pool = [item for item in current_pool if str(item.get('id')) != str(tmdb_id)]
+
+                if len(new_pool) == len(current_pool):
+                    logger.warning(f"尝试从推荐池移除 TMDB ID {tmdb_id}，但未在池中找到。")
+                    return
+
+                new_pool_json = json.dumps(new_pool, ensure_ascii=False)
+                cursor.execute("""
+                    UPDATE app_settings SET value_json = %s, last_updated_at = NOW()
+                    WHERE setting_key = 'recommendation_pool'
+                """, (new_pool_json,))
+                
+                
+                logger.info(f"  ✅ 已成功从推荐池中移除 TMDB ID: {tmdb_id}。")
+
+    except Exception as e:
+        logger.error(f"从推荐池移除 TMDB ID {tmdb_id} 时失败: {e}", exc_info=True)

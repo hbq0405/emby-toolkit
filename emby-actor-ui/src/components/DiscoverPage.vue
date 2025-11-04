@@ -1,114 +1,209 @@
 <!-- src/components/DiscoverPage.vue -->
 <template>
+  <n-layout content-style="padding: 24px;">
   <div>
     <n-page-header title="影视探索" subtitle="发现您感兴趣的下一部作品" />
+      <n-grid :x-gap="24" :y-gap="24" cols="2" style="margin-top: 24px;">
+        <!-- 左侧筛选面板 (占1列) -->
+        <n-gi :span="1">
+          <n-card :bordered="false" class="dashboard-card">
+            <template #header>
+              <span class="card-title">筛选条件</span>
+            </template>
+            <n-space vertical size="large">
+              <n-space align="center">
+                <label>搜索:</label>
+                <n-input
+                  v-model:value="searchQuery"
+                  placeholder="输入片名搜索..."
+                  clearable
+                  style="min-width: 300px;"
+                />
+              </n-space>
+              <n-space align="center">
+                <label>类型:</label>
+                <n-radio-group v-model:value="mediaType" :disabled="isSearchMode">
+                  <n-radio-button value="movie" label="电影" />
+                  <n-radio-button value="tv" label="电视剧" />
+                </n-radio-group>
+              </n-space>
+              <n-space align="center">
+                <label>排序:</label>
+                <n-radio-group v-model:value="filters['sort_by']" :disabled="isSearchMode">
+                  <n-radio-button value="popularity.desc" label="热度降序" />
+                  <n-radio-button value="popularity.asc" label="热度升序" />
+                  <n-radio-button :value="mediaType === 'movie' ? 'primary_release_date.desc' : 'first_air_date.desc'" label="上映日期降序" />
+                  <n-radio-button :value="mediaType === 'movie' ? 'primary_release_date.asc' : 'first_air_date.asc'" label="上映日期升序" />
+                  <n-radio-button value="vote_average.desc" label="评分降序" />
+                  <n-radio-button value="vote_average.asc" label="评分升序" />
+                </n-radio-group>
+              </n-space>
+              <n-space align="center">
+                <label>风格:</label>
+                <!-- 新增的“包含/排除”切换器 -->
+                <n-radio-group v-model:value="genreFilterMode" :disabled="isSearchMode">
+                  <n-radio-button value="include" label="包含" />
+                  <n-radio-button value="exclude" label="排除" />
+                </n-radio-group>
+                <n-select
+                  v-model:value="selectedGenres"
+                  :disabled="isSearchMode"
+                  multiple
+                  filterable
+                  :placeholder="genreFilterMode === 'include' ? '选择要包含的风格' : '选择要排除的风格'"
+                  :options="genreOptions"
+                  style="min-width: 300px;"
+                />
+              </n-space>
+              <n-space align="center">
+              <label>地区:</label>
+              <n-select
+                  v-model:value="selectedRegions"
+                  :disabled="isSearchMode"
+                  multiple
+                  filterable
+                  placeholder="选择国家/地区"
+                  :options="countryOptions"
+                  style="min-width: 300px;"
+              />
+              </n-space>
+              <n-space align="center">
+                <label>发行年份:</label>
+                <n-input-group>
+                  <n-input-number
+                    v-model:value="yearFrom"
+                    :disabled="isSearchMode"
+                    :show-button="false"
+                    placeholder="从 (例如 1990)"
+                    clearable
+                    style="width: 150px;"
+                  />
+                  <n-input-number
+                    v-model:value="yearTo"
+                    :disabled="isSearchMode"
+                    :show-button="false"
+                    placeholder="到 (例如 1999)"
+                    clearable
+                    style="width: 150px;"
+                  />
+                </n-input-group>
+              </n-space>
+              <n-space align="center">
+                <label>关键词:</label>
+                <n-select
+                  v-model:value="selectedKeywords"
+                  :disabled="isSearchMode"
+                  multiple
+                  filterable
+                  placeholder="选择关键词"
+                  :options="keywordOptions"
+                  style="min-width: 300px;"
+                />
+              </n-space>
+              <n-space align="center">
+                <label>评分不低于:</label>
+                <n-input-number
+                  v-model:value="filters.vote_average_gte"
+                  :disabled="isSearchMode"
+                  :step="0.5"
+                  :min="0"
+                  :max="10"
+                  placeholder="最低评分"
+                  style="width: 120px;"
+                />
+              </n-space>
+            </n-space>
+          </n-card>
+        </n-gi>
+        <!-- ★★★ 右侧“每日推荐”面板 ★★★ -->
+        <n-gi :span="1">
+          <n-card :bordered="false" class="dashboard-card recommendation-card">
+            <!-- ★ 1. 修改卡片头，加入“换一个”按钮 -->
+            <template #header>
+              <span class="card-title">每日推荐 ✨</span>
+            </template>
+            <template #header-extra>
+              <n-tooltip trigger="hover">
+                <template #trigger>
+                  <n-button circle size="small" @click="pickRandomRecommendation">
+                    <template #icon><n-icon :component="DiceIcon" /></template>
+                  </n-button>
+                </template>
+                换一个
+              </n-tooltip>
+            </template>
+            <n-skeleton v-if="isPoolLoading" text :repeat="8" />
+              <div v-if="!isPoolLoading && currentRecommendation" class="recommendation-content">
+                <!-- 新的布局容器 -->
+                <div class="recommendation-grid">
+                    <!-- ★ 左栏：海报 -->
+                    <div class="poster-column">
+                        <img :src="`https://image.tmdb.org/t/p/w500${currentRecommendation.poster_path}`" class="recommendation-poster" />
+                    </div>
 
-    <n-card :bordered="false" style="margin-top: 24px;">
-      <!-- 筛选区域代码完全不变 -->
-      <n-space vertical size="large">
-        <n-space align="center">
-          <label>搜索:</label>
-          <n-input
-            v-model:value="searchQuery"
-            placeholder="输入片名搜索..."
-            clearable
-            style="min-width: 300px;"
-          />
-        </n-space>
-        <n-space align="center">
-          <label>类型:</label>
-          <n-radio-group v-model:value="mediaType" :disabled="isSearchMode">
-            <n-radio-button value="movie" label="电影" />
-            <n-radio-button value="tv" label="电视剧" />
-          </n-radio-group>
-        </n-space>
-        <n-space align="center">
-          <label>排序:</label>
-          <n-radio-group v-model:value="filters['sort_by']" :disabled="isSearchMode">
-            <n-radio-button value="popularity.desc" label="热度降序" />
-            <n-radio-button value="popularity.asc" label="热度升序" />
-            <n-radio-button :value="mediaType === 'movie' ? 'primary_release_date.desc' : 'first_air_date.desc'" label="上映日期降序" />
-            <n-radio-button :value="mediaType === 'movie' ? 'primary_release_date.asc' : 'first_air_date.asc'" label="上映日期升序" />
-            <n-radio-button value="vote_average.desc" label="评分降序" />
-            <n-radio-button value="vote_average.asc" label="评分升序" />
-          </n-radio-group>
-        </n-space>
-        <n-space align="center">
-          <label>风格:</label>
-          <!-- 新增的“包含/排除”切换器 -->
-          <n-radio-group v-model:value="genreFilterMode" :disabled="isSearchMode">
-            <n-radio-button value="include" label="包含" />
-            <n-radio-button value="exclude" label="排除" />
-          </n-radio-group>
-          <n-select
-            v-model:value="selectedGenres"
-            :disabled="isSearchMode"
-            multiple
-            filterable
-            :placeholder="genreFilterMode === 'include' ? '选择要包含的风格' : '选择要排除的风格'"
-            :options="genreOptions"
-            style="min-width: 300px;"
-          />
-        </n-space>
-        <n-space align="center">
-        <label>地区:</label>
-        <n-select
-            v-model:value="selectedRegions"
-            :disabled="isSearchMode"
-            multiple
-            filterable
-            placeholder="选择国家/地区"
-            :options="countryOptions"
-            style="min-width: 300px;"
-        />
-        </n-space>
-        <n-space align="center">
-          <label>发行年份:</label>
-          <n-input-group>
-            <n-input-number
-              v-model:value="yearFrom"
-              :disabled="isSearchMode"
-              :show-button="false"
-              placeholder="从 (例如 1990)"
-              clearable
-              style="width: 150px;"
-            />
-            <n-input-number
-              v-model:value="yearTo"
-              :disabled="isSearchMode"
-              :show-button="false"
-              placeholder="到 (例如 1999)"
-              clearable
-              style="width: 150px;"
-            />
-          </n-input-group>
-        </n-space>
-        <n-space align="center">
-          <label>关键词:</label>
-          <n-select
-            v-model:value="selectedKeywords"
-            :disabled="isSearchMode"
-            multiple
-            filterable
-            placeholder="选择关键词"
-            :options="keywordOptions"
-            style="min-width: 300px;"
-          />
-        </n-space>
-        <n-space align="center">
-          <label>评分不低于:</label>
-          <n-input-number
-            v-model:value="filters.vote_average_gte"
-            :disabled="isSearchMode"
-            :step="0.5"
-            :min="0"
-            :max="10"
-            placeholder="最低评分"
-            style="width: 120px;"
-          />
-        </n-space>
-      </n-space>
-    </n-card>
+                    <!-- ★ 右栏：所有信息 -->
+                    <div class="details-column">
+                        <!-- 标题 -->
+                        <n-h3 style="margin-top: 0; margin-bottom: 8px;">{{ currentRecommendation.title }}</n-h3>
+                        
+                        <!-- 评分和年份 -->
+                        <n-space align="center" size="small" style="color: #888; margin-bottom: 16px;">
+                            <n-icon :component="StarIcon" color="#f7b824" />
+                            <span>{{ currentRecommendation.vote_average?.toFixed(1) }}</span>
+                            <span>·</span>
+                            <span>{{ new Date(currentRecommendation.release_date).getFullYear() }}</span>
+                        </n-space>
+
+                        <!-- 简介 -->
+                        <n-ellipsis :line-clamp="4" :tooltip="false" class="overview-text">
+                            {{ currentRecommendation.overview }}
+                        </n-ellipsis>
+
+                        <!-- “想看这个”按钮 -->
+                        <n-tag v-if="currentRecommendation.subscription_status === 'approved'" type="success" size="large" style="width: 100%; justify-content: center; margin-top: 24px;">
+                            <template #icon><n-icon :component="Heart" /></template>
+                            已在订阅队列
+                        </n-tag>
+                        <!-- 场景2: 待审核 -->
+                        <div v-else-if="currentRecommendation.subscription_status === 'pending'" style="margin-top: 24px;">
+                            <n-button v-if="isPrivilegedUser" type="warning" block @click="handleSubscribe(currentRecommendation)" :loading="subscribingId === currentRecommendation.id">
+                                <template #icon><n-icon :component="LightningIcon" /></template>
+                                等待管理员审核（加急处理）
+                            </n-button>
+                            <n-tag v-else type="warning" size="large" style="width: 100%; justify-content: center;">
+                                <template #icon><n-icon :component="HourglassOutline" /></template>
+                                等待管理员审核
+                            </n-tag>
+                        </div>
+                        <!-- 场景3: 默认 -->
+                        <n-button v-else type="primary" block @click="handleSubscribe(currentRecommendation)" :loading="subscribingId === currentRecommendation.id" style="margin-top: 24px;">
+                            <template #icon><n-icon :component="HeartOutline" /></template>
+                            想看这个
+                        </n-button>
+                    </div>
+                </div>
+
+                <!-- 演员列表 (现在放在布局容器下方) -->
+                <div v-if="currentRecommendation.cast && currentRecommendation.cast.length > 0">
+                    <n-divider style="margin-top: 24px; margin-bottom: 16px;" />
+                    <n-h4 style="margin: 0 0 16px 0;">主要演员</n-h4>
+                    <div class="actor-list-container">
+                        <div v-for="actor in currentRecommendation.cast" :key="actor.id" class="actor-card">
+                            <img 
+                            :src="actor.profile_path ? `https://image.tmdb.org/t/p/w185${actor.profile_path}` : '/default-avatar.png'" 
+                            class="actor-avatar"
+                            @error="onImageError"
+                            />
+                            <div class="actor-name">{{ actor.name }}</div>
+                            <div class="actor-character">{{ actor.character }}</div>
+                        </div>
+                    </div>
+                </div>
+              </div>
+            <n-empty v-if="!isRecommendationLoading && !currentRecommendation" description="太棒了！热门电影似乎都在您的库中，今日无特别推荐。" />
+          </n-card>
+        </n-gi>
+      </n-grid>
 
     <!-- 结果展示区域 -->
     <n-spin :show="loading && results.length === 0">
@@ -128,8 +223,18 @@
               <div v-if="!media.in_library" class="action-icon" @click.stop="handleSubscribe(media)">
                 <n-spin :show="subscribingId === media.id" size="small">
                   <n-icon size="24">
-                    <Heart v-if="media.subscription_status === 'approved'" color="#ff4d4f" />
-                    <HourglassOutline v-else-if="media.subscription_status === 'pending'" color="#e6a23c" />
+                    <!-- 场景1: approved -> 红色实心 (不可点，由 handleSubscribe 内部逻辑拦截) -->
+                    <Heart v-if="media.subscription_status === 'approved'" color="#ff4d4f" style="cursor: not-allowed;" />
+                    
+                    <!-- 场景2: pending -->
+                    <template v-else-if="media.subscription_status === 'pending'">
+                      <!-- 2a. VIP 看见的是黄色的、可点击的闪电 -->
+                      <LightningIcon v-if="isPrivilegedUser" color="#f0a020" />
+                      <!-- 2b. 普通用户看见的是灰色的、不可点击的沙漏 -->
+                      <HourglassOutline v-else color="#888" style="cursor: not-allowed;" />
+                    </template>
+
+                    <!-- 场景3: 默认 -> 空心 -->
                     <HeartOutline v-else />
                   </n-icon>
                 </n-spin>
@@ -151,6 +256,7 @@
     <div ref="sentinel" style="height: 50px;"></div>
 
   </div>
+  </n-layout>
 </template>
 
 <script setup>
@@ -160,14 +266,17 @@ import axios from 'axios';
 import { useAuthStore } from '../stores/auth';
 import { 
   NPageHeader, NCard, NSpace, NRadioGroup, NRadioButton, NSelect,
-  NInputNumber, NSpin, NGrid, NGi, NButton, NRate, useMessage, NIcon, 
-  NInput, NInputGroup
+  NInputNumber, NSpin, NGrid, NGi, NButton, NThing, useMessage, NIcon, 
+  NInput, NInputGroup, NSkeleton, NEllipsis, NEmpty, NDivider, NH4
 } from 'naive-ui';
-import { Heart, HeartOutline, HourglassOutline } from '@vicons/ionicons5';
+import { Heart, HeartOutline, HourglassOutline, Star as StarIcon, FlashOutline as LightningIcon, DiceOutline as DiceIcon } from '@vicons/ionicons5';
 
 const authStore = useAuthStore();
 const message = useMessage();
-const router = useRouter(); // 初始化 router
+const router = useRouter(); 
+const isPrivilegedUser = computed(() => {
+  return authStore.isAdmin || authStore.user?.allow_unrestricted_subscriptions;
+});
 
 // --- Emby 配置 ---
 const embyServerUrl = ref('');
@@ -183,9 +292,12 @@ const countryOptions = ref([]);
 const selectedRegions = ref([]);
 const keywordOptions = ref([]); 
 const selectedKeywords = ref([]); 
-const genreFilterMode = ref('include'); // 'include' 或 'exclude'
+const genreFilterMode = ref('include'); 
 const yearFrom = ref(null);
 const yearTo = ref(null);
+const recommendationPool = ref([]); 
+const currentRecommendation = ref(null); 
+const isPoolLoading = ref(true); 
 
 const filters = reactive({
   sort_by: 'popularity.desc',
@@ -325,42 +437,142 @@ const fetchEmbyConfig = async () => {
   }
 };
 
-const handleSubscribe = async (media) => {
-  // 1. 前置检查：如果正在提交，或者这个媒体已经有了一个明确的订阅状态，则直接返回，防止重复点击。
-  if (subscribingId.value || media.subscription_status) {
-    console.debug("订阅请求被阻止：已有订阅状态或正在提交中。");
+const pickRandomRecommendation = () => {
+  if (!recommendationPool.value || recommendationPool.value.length === 0) {
+    currentRecommendation.value = null;
     return;
   }
+  if (recommendationPool.value.length === 1) {
+    currentRecommendation.value = recommendationPool.value[0];
+    return;
+  }
+  let newRecommendation;
+  do {
+    const randomIndex = Math.floor(Math.random() * recommendationPool.value.length);
+    newRecommendation = recommendationPool.value[randomIndex];
+  } while (newRecommendation.id === currentRecommendation.value?.id);
+  currentRecommendation.value = newRecommendation;
+};
 
-  subscribingId.value = media.id; // 设置加载状态，防止重复点击
+const fetchRecommendationPool = async () => {
+  // 1. 无论如何，一开始总是显示加载状态
+  isPoolLoading.value = true;
+  
   try {
-    // 2. 发送 API 请求
+    // 2. 尝试直接获取数据
+    const response = await axios.get('/api/discover/daily_recommendation');
+    
+    // 3. ★ 核心逻辑：如果直接成功了 (对应“再次访问”的场景)
+    recommendationPool.value = response.data || [];
+    pickRandomRecommendation(); // 抽卡
+    
+    // ★★★ 关键修复：在这里立刻关闭加载状态！ ★★★
+    isPoolLoading.value = false;
+
+  } catch (error) {
+    // 4. 如果捕获到错误，再判断错误的类型
+    if (error.response && error.response.status === 404) {
+      // 4a. 如果是 404 (对应“首次访问”的场景)，启动后台任务并开始轮询
+      // 此时 isPoolLoading 保持为 true，由轮询逻辑去关闭
+      console.log("未找到推荐池，将自动触发后台生成任务...");
+      try {
+        await axios.post('/api/discover/trigger_recommendation_update');
+        
+        let attempts = 0;
+        const maxAttempts = 10;
+        const pollInterval = 3000;
+
+        const intervalId = setInterval(async () => {
+          if (attempts >= maxAttempts) {
+            clearInterval(intervalId);
+            message.error("获取今日推荐超时，请稍后刷新。");
+            isPoolLoading.value = false; // 超时也要关闭
+            return;
+          }
+          
+          try {
+            console.log(`正在进行第 ${attempts + 1} 次轮询...`);
+            const pollResponse = await axios.get('/api/discover/daily_recommendation');
+            
+            if (pollResponse.data && pollResponse.data.length > 0) {
+              clearInterval(intervalId);
+              recommendationPool.value = pollResponse.data;
+              pickRandomRecommendation(); // 轮询成功，抽卡！
+              isPoolLoading.value = false; // 轮询成功，关闭加载
+              console.log("轮询成功，已获取推荐池！");
+            }
+          } catch (pollError) {
+            // 轮询过程中继续遇到错误，不做处理，等待下一次
+          }
+          attempts++;
+        }, pollInterval);
+
+      } catch (triggerError) {
+        message.error("启动推荐任务失败。");
+        isPoolLoading.value = false; // 触发失败也要关闭
+      }
+      
+    } else {
+      // 4b. 如果是其他网络错误
+      console.error('加载推荐池失败:', error);
+      message.error("加载今日推荐失败。");
+      isPoolLoading.value = false; // 其他错误也要关闭
+    }
+  }
+  // ★ 删除了之前有问题的 finally 块，所有逻辑都在 try/catch 中清晰处理
+};
+
+const handleSubscribe = async (media) => {
+  // 拦截1: 如果正在提交，任何人都不许再点
+  if (subscribingId.value) return;
+
+  // 拦截2: 如果电影已有状态...
+  if (media.subscription_status) {
+    // ...但当前用户不是特权用户，则拦截并给出提示
+    if (!isPrivilegedUser.value) {
+      if (media.subscription_status === 'pending') message.warning('该项目正在等待审核，请勿重复提交。');
+      if (media.subscription_status === 'approved') message.info('该项目已在订阅队列中。');
+      return;
+    }
+    // 如果是特权用户，则允许他继续往下走，去覆盖 pending 状态
+  }
+
+  subscribingId.value = media.id;
+  try {
     const response = await axios.post('/api/portal/subscribe', {
       tmdb_id: media.id,
-      item_type: mediaType.value === 'movie' ? 'Movie' : 'Series',
+      item_type: media.media_type === 'movie' ? 'Movie' : 'Series',
       item_name: media.title || media.name,
     });
 
-    // 3. 显示后端返回的成功消息
     message.success(response.data.message);
 
-    // 4. ★★★ 核心逻辑：实时更新UI ★★★
-    // a. 在前端的 results 数组中找到我们刚刚点击的那个媒体项
-    const targetMedia = results.value.find(r => r.id === media.id);
+    // a. 更新搜索结果列表中的对应项 (这个逻辑依然需要，因为搜索结果不清空)
+    const targetInResults = results.value.find(r => r.id === media.id);
+    if (targetInResults) {
+      targetInResults.subscription_status = response.data.status;
+    }
 
-    // b. 确保找到了媒体项，并且后端的响应中包含了新的 'status' 字段
-    if (targetMedia && response.data.status) {
-      // c. 将后端返回的新状态 (例如 "pending" 或 "approved") 赋值给前端数据项的 subscription_status 属性
-      targetMedia.subscription_status = response.data.status;
+    // b. 如果被操作的是每日推荐里的项，则重新获取整个推荐池
+    if (currentRecommendation.value && currentRecommendation.value.id === media.id) {
+      console.log("推荐项已订阅，正在刷新推荐池...");
+      // 直接调用我们获取推荐池的函数，它会完成所有事情：
+      // 1. 显示加载状态
+      // 2. 获取新的、缩减过的池子
+      // 3. 自动抽一张新的卡来显示
+      // 4. 关闭加载状态
+      await fetchRecommendationPool();
     }
 
   } catch (error) {
-    // 5. 处理可能发生的错误
     message.error(error.response?.data?.message || '提交请求失败');
   } finally {
-    // 6. 无论成功或失败，都清除加载状态
     subscribingId.value = null;
   }
+};
+
+const onImageError = (e) => {
+  e.target.src = '/default-avatar.png'; // 确保你在 public 文件夹下放了一张默认头像图片
 };
 
 const handleClickCard = (media) => {
@@ -439,7 +651,8 @@ onMounted(() => {
   fetchGenres();
   fetchCountries();
   fetchKeywords();
-  fetchEmbyConfig(); // 获取 Emby 配置
+  fetchEmbyConfig(); 
+  fetchRecommendationPool();
   resetAndFetch();
 
   // 创建观察器
@@ -568,5 +781,87 @@ onUnmounted(() => {
 }
 .action-icon:hover {
   transform: scale(1.2);
+}
+/* ★★★ “每日推荐”的专属样式 ★★★ */
+/* 1. 卡片和内容区的基础设置 (不变) */
+.recommendation-content {
+  display: flex;
+  flex-direction: column;
+  height: 100%;
+}
+
+/* 1. 两栏布局的网格容器 */
+.recommendation-grid {
+  display: flex;
+  gap: 24px; /* 控制左右两栏的间距 */
+}
+
+/* 2. 左栏：海报 */
+.poster-column {
+  flex-shrink: 0; /* 防止海报被压缩 */
+}
+.recommendation-poster {
+  width: 150px;
+  height: 225px;
+  border-radius: 8px;
+  object-fit: cover;
+  box-shadow: 0 4px 12px rgba(0,0,0,0.2);
+  display: block;
+}
+
+/* 3. 右栏：详情信息 */
+.details-column {
+  display: flex;
+  flex-direction: column; /* 让右栏内部的元素垂直排列 */
+  min-width: 0; /* 防止 flex 布局溢出 */
+}
+
+/* 4. 简介文本样式 */
+.overview-text {
+  flex-grow: 1; /* ★ 核心：让简介部分占据所有剩余空间，将按钮推到底部 */
+  /* 如果简介内容过少，按钮不会紧贴着它，而是会被推到卡片底部 */
+}
+
+/* 5. 演员列表区域的样式 (基本不变) */
+.actor-list-container {
+  display: flex;
+  gap: 16px;
+  overflow-x: auto;
+  padding-bottom: 10px;
+  scrollbar-width: thin;
+  scrollbar-color: #555 #333;
+}
+.actor-list-container::-webkit-scrollbar { height: 6px; }
+.actor-list-container::-webkit-scrollbar-track { background: #333; border-radius: 3px; }
+.actor-list-container::-webkit-scrollbar-thumb { background: #555; border-radius: 3px; }
+.actor-list-container::-webkit-scrollbar-thumb:hover { background: #777; }
+
+/* 6. 单个演员卡片的样式 (不变) */
+.actor-card {
+  flex-shrink: 0;
+  width: 90px;
+  text-align: center;
+}
+.actor-avatar {
+  width: 90px;
+  height: 135px;
+  border-radius: 8px;
+  object-fit: cover;
+  margin-bottom: 8px;
+  background-color: #333;
+}
+.actor-name {
+  font-weight: bold;
+  font-size: 0.9em;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.actor-character {
+  font-size: 0.8em;
+  color: #888;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
 }
 </style>

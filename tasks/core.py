@@ -20,6 +20,7 @@ from .subscriptions import task_auto_subscribe, task_update_resubscribe_cache, t
 from .covers import task_generate_all_covers, task_generate_all_custom_collection_covers
 from .maintenance import task_scan_for_cleanup_issues 
 from .users import task_sync_all_user_data, task_check_expired_users
+from .discover import task_update_daily_recommendation
 
 
 logger = logging.getLogger(__name__)
@@ -200,6 +201,7 @@ def get_task_registry(context: str = 'all'):
         'revival-check': (task_run_revival_check, "检查剧集复活", 'watchlist', False),
         'task_apply_main_cast_to_episodes': (task_apply_main_cast_to_episodes, "轻量化同步分集演员表", 'media', False),
         'resubscribe-library': (task_resubscribe_library, "媒体洗版订阅", 'media', False),
+        'update-daily-recommendation': (task_update_daily_recommendation, "更新每日推荐", 'media', True),
     }
 
     if context == 'chain':

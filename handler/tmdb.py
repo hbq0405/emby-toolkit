@@ -629,3 +629,15 @@ def search_companies_tmdb(api_key: str, query: str) -> Optional[List[Dict[str, A
     params = {"query": query}
     data = _tmdb_request(endpoint, api_key, params)
     return data.get("results") if data else None
+
+# --- 探索 TMDb 热门电影 ---
+def get_popular_movies_tmdb(api_key: str, params: Optional[Dict[str, Any]] = None) -> Optional[Dict[str, Any]]:
+    """
+    获取 TMDb 上的热门电影列表，支持分页等参数。
+    这是“每日推荐”功能的核心数据源。
+    """
+    if not api_key:
+        return None
+    endpoint = "/movie/popular"
+    logger.debug(f"TMDb: 获取热门电影 (参数: {params})")
+    return _tmdb_request(endpoint, api_key, params, use_default_language=True)
