@@ -26,7 +26,7 @@ export const useAuthStore = defineStore('auth', () => {
   // --- Actions ---
   async function checkAuthStatus() {
     try {
-      const response = await axios.get('/api/status');
+      const response = await axios.get('/api/auth/status');
       isLoggedIn.value = response.data.logged_in;
       user.value = response.data.user || {};
       // ★★★ 如果后端明确说未登录，就抛出错误，让路由守卫能捕获到 ★★★
@@ -45,7 +45,7 @@ export const useAuthStore = defineStore('auth', () => {
 
   async function login(credentials) {
     try {
-      const response = await axios.post('/api/login', credentials);
+      const response = await axios.post('/api/auth/login', credentials);
       isLoggedIn.value = true;
       user.value = response.data.user || {};
     } catch (error) {
@@ -58,7 +58,7 @@ export const useAuthStore = defineStore('auth', () => {
 
   async function logout() {
     try {
-      await axios.post('/api/logout');
+      await axios.post('/api/auth/logout');
     } catch (error) {
       console.error("登出时后端发生错误:", error);
     } finally {

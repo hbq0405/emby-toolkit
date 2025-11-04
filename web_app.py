@@ -40,7 +40,6 @@ import logging
 import collections # Added for deque
 from gevent import spawn_later # Added for debouncing
 # --- 导入蓝图 ---
-from routes.auth import auth_bp
 from routes.watchlist import watchlist_bp
 from routes.collections import collections_bp
 from routes.custom_collections import custom_collections_bp
@@ -300,7 +299,6 @@ def serve(path):
         return send_from_directory(static_folder_path, 'index.html')
     
 # +++ 在应用对象上注册所有蓝图 +++
-app.register_blueprint(auth_bp)
 app.register_blueprint(watchlist_bp)
 app.register_blueprint(collections_bp)
 app.register_blueprint(custom_collections_bp)

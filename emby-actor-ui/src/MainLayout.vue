@@ -295,29 +295,39 @@ const handleUserSelect = async (key) => {
 };
 
 const menuOptions = computed(() => {
-  // 1. 先定义一个基础菜单，这是所有登录用户都能看到的
-  const baseMenu = [
-    { 
-      label: '发现', 
-      key: 'group-discovery', 
-      type: 'group', 
-      children: [
-        // 如果用户是本地管理员或 Emby 管理员，则显示数据看板
-        ...(authStore.isAdmin ? [{ label: '数据看板', key: 'DatabaseStats', icon: renderIcon(StatsIcon) }] : []),
-        { label: '影视探索', key: 'Discover', icon: renderIcon(DiscoverIcon) },
-        // 只有 Emby 用户能看到用户中心
-        ...(authStore.userType === 'emby_user' ? [{
-          label: '用户中心',
-          key: 'UserCenter',
-          icon: renderIcon(UserCenterIcon)
-        }] : [])
-      ]
-    },
-  ];
+  // 1. 先定义一个基础菜单组
+  const discoveryGroup = { 
+    label: '发现', 
+    key: 'group-discovery', 
+    type: 'group', 
+    children: [] // 先创建一个空的孩子列表
+  };
 
-  // 2. 如果当前用户是管理员 (无论是本地还是Emby)，我们再把所有管理菜单加上去
+  // 2. 根据用户类型，动态地往这个组里添加菜单项
+  
+  // 规则1: 如果用户是任何类型的管理员，就添加“数据看板”
   if (authStore.isAdmin) {
-    baseMenu.push(
+    discoveryGroup.children.push({ 
+      label: '数据看板', 
+      key: 'DatabaseStats', 
+      icon: renderIcon(StatsIcon) 
+    });
+  }
+
+  // 规则2: ★★★ 只有当用户是 Emby 用户时，才添加“影视探索”和“用户中心” ★★★
+  if (authStore.userType === 'emby_user') {
+    discoveryGroup.children.push(
+      { label: '影视探索', key: 'Discover', icon: renderIcon(DiscoverIcon) },
+      { label: '用户中心', key: 'UserCenter', icon: renderIcon(UserCenterIcon) }
+    );
+  }
+
+  // 3. 构建最终的菜单列表
+  const finalMenu = [discoveryGroup];
+
+  // 4. 如果是管理员，再把所有管理相关的菜单组加上去
+  if (authStore.isAdmin) {
+    finalMenu.push(
       { 
         label: '整理', 
         key: 'group-management', 
@@ -354,8 +364,8 @@ const menuOptions = computed(() => {
     );
   }
 
-  // 3. 返回最终构建好的菜单
-  return baseMenu;
+  // 5. 返回最终构建好的菜单
+  return finalMenu;
 });
 
 function handleMenuUpdate(key) {

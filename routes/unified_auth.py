@@ -1,15 +1,16 @@
-# routes/unified_login.py
+# routes/unified_auth.py
 import logging
 import os
 from flask import Blueprint, request, jsonify, session
-from werkzeug.security import generate_password_hash, check_password_hash
+from werkzeug.security import generate_password_hash, check_password_hash 
 import config_manager
 import constants
 import handler.emby as emby
 from database import connection, user_db
+from extensions import login_required # ★ 导入 login_required 装饰器
 
-# ★ 1. 创建一个新的蓝图，它将处理所有登录和状态检查
-unified_auth_bp = Blueprint('unified_auth_bp', __name__, url_prefix='/api')
+# ★ 蓝图保持不变，它拥有 /api/auth 前缀
+unified_auth_bp = Blueprint('unified_auth_bp', __name__, url_prefix='/api/auth')
 logger = logging.getLogger(__name__)
 
 DEFAULT_INITIAL_PASSWORD = "password"
@@ -162,3 +163,38 @@ def unified_logout():
     """【统一登出接口】"""
     session.clear()
     return jsonify({"status": "ok", "message": "登出成功"})
+
+@unified_auth_bp.route('/change_password', methods=['POST'])
+@login_required # 这个装饰器会确保只有登录的本地管理员才能访问
+def change_password():
+    """修改本地管理员的密码。"""
+    data = request.json
+    current_password = data.get('current_password')
+    new_password = data.get('new_password')
+
+    if not current_password or not new_password or len(new_password) < 6:
+        return jsonify({"error": "缺少参数或新密码长度不足6位"}), 400
+
+    user_id = session.get('user_id')
+    if not user_id:
+        # 理论上 login_required 会阻止这种情况，但作为双重保险
+        return jsonify({"error": "未授权或会话已过期"}), 401
+
+    try:
+        with connection.get_db_connection() as conn:
+            cursor = conn.cursor()
+            cursor.execute("SELECT * FROM users WHERE id = %s", (user_id,))
+            user = cursor.fetchone()
+
+            if not user or not check_password_hash(user['password_hash'], current_password):
+                return jsonify({"error": "当前密码不正确"}), 403
+
+            new_password_hash = generate_password_hash(new_password)
+            cursor.execute("UPDATE users SET password_hash = %s WHERE id = %s", (new_password_hash, user_id))
+            conn.commit()
+    except Exception as e:
+        logger.error(f"修改密码时发生数据库错误: {e}", exc_info=True)
+        return jsonify({"error": "服务器内部错误"}), 500
+
+    logger.info(f"用户 '{user['username']}' 成功修改密码。")
+    return jsonify({"message": "密码修改成功"})
