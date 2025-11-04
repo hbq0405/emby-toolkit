@@ -54,19 +54,36 @@ def _filter_and_enrich_results(tmdb_data: dict, current_user_id: str, db_item_ty
 @any_login_required
 def discover_movies():
     """
+    【V2 - 支持高级筛选】
     根据前端传来的筛选条件，从 TMDb 发现电影。
     """
-    params = request.json
+    data = request.json
     api_key = tmdb.config_manager.APP_CONFIG.get(tmdb.constants.CONFIG_OPTION_TMDB_API_KEY)
-    params.setdefault('with_origin_country', '')
 
     try:
         if 'emby_user_id' not in session:
             return jsonify({"status": "error", "message": "此功能仅对 Emby 用户开放"}), 403
         current_user_id = session['emby_user_id']
 
-        # ★★★ 核心修改 2: 调用辅助函数简化逻辑 ★★★
-        tmdb_data = tmdb.discover_movie_tmdb(api_key, params)
+        # ★★★ 核心修改 1: 构建一个干净的参数字典 ★★★
+        tmdb_params = {
+            'sort_by': data.get('sort_by', 'popularity.desc'),
+            'page': data.get('page', 1),
+            'vote_average.gte': data.get('vote_average.gte', 0),
+            'with_genres': data.get('with_genres', ''),
+            'with_origin_country': data.get('with_origin_country', ''),
+            'with_keywords': data.get('with_keywords', ''),
+            
+            # ★★★ 新增的参数 ★★★
+            'without_genres': data.get('without_genres', ''),
+            'primary_release_date.gte': data.get('primary_release_date.gte', ''),
+            'primary_release_date.lte': data.get('primary_release_date.lte', ''),
+        }
+        
+        # 清理掉值为 None 或空字符串的键，避免发送空参数
+        tmdb_params = {k: v for k, v in tmdb_params.items() if v is not None and v != ''}
+
+        tmdb_data = tmdb.discover_movie_tmdb(api_key, tmdb_params)
         processed_data = _filter_and_enrich_results(tmdb_data, current_user_id, 'Movie')
         return jsonify(processed_data)
 
@@ -78,19 +95,35 @@ def discover_movies():
 @any_login_required
 def discover_tv_shows():
     """
+    【V2 - 支持高级筛选】
     根据前端传来的筛选条件，从 TMDb 发现电视剧。
     """
-    params = request.json
+    data = request.json
     api_key = tmdb.config_manager.APP_CONFIG.get(tmdb.constants.CONFIG_OPTION_TMDB_API_KEY)
-    params.setdefault('with_origin_country', '')
 
     try:
         if 'emby_user_id' not in session:
             return jsonify({"status": "error", "message": "此功能仅对 Emby 用户开放"}), 403
         current_user_id = session['emby_user_id']
 
-        # ★★★ 核心修改 3: 再次调用辅助函数 ★★★
-        tmdb_data = tmdb.discover_tv_tmdb(api_key, params)
+        # ★★★ 核心修改 2: 为电视剧构建参数字典 ★★★
+        tmdb_params = {
+            'sort_by': data.get('sort_by', 'popularity.desc'),
+            'page': data.get('page', 1),
+            'vote_average.gte': data.get('vote_average.gte', 0),
+            'with_genres': data.get('with_genres', ''),
+            'with_origin_country': data.get('with_origin_country', ''),
+            'with_keywords': data.get('with_keywords', ''),
+            
+            # ★★★ 新增的参数 (注意日期参数名不同) ★★★
+            'without_genres': data.get('without_genres', ''),
+            'first_air_date.gte': data.get('first_air_date.gte', ''),
+            'first_air_date.lte': data.get('first_air_date.lte', ''),
+        }
+        
+        tmdb_params = {k: v for k, v in tmdb_params.items() if v is not None and v != ''}
+
+        tmdb_data = tmdb.discover_tv_tmdb(api_key, tmdb_params)
         processed_data = _filter_and_enrich_results(tmdb_data, current_user_id, 'Series')
         return jsonify(processed_data)
 

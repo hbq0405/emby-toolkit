@@ -35,12 +35,17 @@
         </n-space>
         <n-space align="center">
           <label>风格:</label>
+          <!-- 新增的“包含/排除”切换器 -->
+          <n-radio-group v-model:value="genreFilterMode" :disabled="isSearchMode">
+            <n-radio-button value="include" label="包含" />
+            <n-radio-button value="exclude" label="排除" />
+          </n-radio-group>
           <n-select
             v-model:value="selectedGenres"
             :disabled="isSearchMode"
             multiple
             filterable
-            placeholder="选择风格/类型"
+            :placeholder="genreFilterMode === 'include' ? '选择要包含的风格' : '选择要排除的风格'"
             :options="genreOptions"
             style="min-width: 300px;"
           />
@@ -56,6 +61,27 @@
             :options="countryOptions"
             style="min-width: 300px;"
         />
+        </n-space>
+        <n-space align="center">
+          <label>发行年份:</label>
+          <n-input-group>
+            <n-input-number
+              v-model:value="yearFrom"
+              :disabled="isSearchMode"
+              :show-button="false"
+              placeholder="从 (例如 1990)"
+              clearable
+              style="width: 150px;"
+            />
+            <n-input-number
+              v-model:value="yearTo"
+              :disabled="isSearchMode"
+              :show-button="false"
+              placeholder="到 (例如 1999)"
+              clearable
+              style="width: 150px;"
+            />
+          </n-input-group>
         </n-space>
         <n-space align="center">
           <label>关键词:</label>
@@ -134,7 +160,8 @@ import axios from 'axios';
 import { useAuthStore } from '../stores/auth';
 import { 
   NPageHeader, NCard, NSpace, NRadioGroup, NRadioButton, NSelect,
-  NInputNumber, NSpin, NGrid, NGi, NButton, NRate, useMessage, NIcon
+  NInputNumber, NSpin, NGrid, NGi, NButton, NRate, useMessage, NIcon, 
+  NInput, NInputGroup
 } from 'naive-ui';
 import { Heart, HeartOutline, HourglassOutline } from '@vicons/ionicons5';
 
@@ -156,12 +183,14 @@ const countryOptions = ref([]);
 const selectedRegions = ref([]);
 const keywordOptions = ref([]); 
 const selectedKeywords = ref([]); 
+const genreFilterMode = ref('include'); // 'include' 或 'exclude'
+const yearFrom = ref(null);
+const yearTo = ref(null);
+
 const filters = reactive({
-  'sort_by': 'popularity.desc',
-  'vote_average_gte': 0,
-  'with_genres': '',
-  'with_origin_country': '',
-  'page': 1,
+  sort_by: 'popularity.desc',
+  vote_average_gte: 0, // 不再使用带点的属性名
+  page: 1,
 });
 const results = ref([]);
 const totalPages = ref(0);
@@ -224,7 +253,6 @@ const fetchDiscoverData = async () => {
 
   try {
     let response;
-    // ★★★ 核心逻辑：判断是搜索还是发现 ★★★
     if (isSearchMode.value) {
       response = await axios.post('/api/discover/search', {
         query: searchQuery.value,
@@ -232,15 +260,40 @@ const fetchDiscoverData = async () => {
         page: filters.page,
       });
     } else {
+      // 1. 构建 API 参数对象，这里进行关键的映射
       const apiParams = {
-        ...filters,
-        'vote_average.gte': filters.vote_average_gte,
-        'with_genres': selectedGenres.value.join(','),
+        'sort_by': filters.sort_by,
+        'page': filters.page,
+        'vote_average.gte': filters.vote_average_gte, // 将 vote_average_gte 映射回 'vote_average.gte'
         'with_origin_country': selectedRegions.value.join('|'),
         'with_keywords': selectedKeywords.value.join(','),
       };
-      delete apiParams.vote_average_gte;
-      response = await axios.post(`/api/discover/${mediaType.value}`, apiParams);
+
+      // 2. 条件性地添加风格参数
+      if (selectedGenres.value.length > 0) {
+        if (genreFilterMode.value === 'include') {
+          apiParams.with_genres = selectedGenres.value.join(',');
+        } else {
+          apiParams.without_genres = selectedGenres.value.join(',');
+        }
+      }
+
+      // 3. 条件性地添加年份参数
+      const yearGteParam = mediaType.value === 'movie' ? 'primary_release_date.gte' : 'first_air_date.gte';
+      const yearLteParam = mediaType.value === 'movie' ? 'primary_release_date.lte' : 'first_air_date.lte';
+      
+      if (yearFrom.value) {
+        apiParams[yearGteParam] = `${yearFrom.value}-01-01`;
+      }
+      if (yearTo.value) {
+        apiParams[yearLteParam] = `${yearTo.value}-12-31`;
+      }
+
+      // 4. 清理空参数并发送
+      const cleanedParams = Object.fromEntries(
+        Object.entries(apiParams).filter(([_, v]) => v !== null && v !== '')
+      );
+      response = await axios.post(`/api/discover/${mediaType.value}`, cleanedParams);
     }
     
     if (filters.page === 1) {
@@ -362,9 +415,22 @@ watch(searchQuery, (newValue) => {
   resetAndFetch();
 });
 
-watch([() => filters['sort_by'], () => filters.vote_average_gte, selectedGenres, selectedRegions, selectedKeywords], () => { 
-  resetAndFetch();
-}, { deep: true });
+watch(
+  [
+    () => filters.sort_by, 
+    () => filters.vote_average_gte, // 使用正确的属性名
+    selectedGenres, 
+    selectedRegions, 
+    selectedKeywords,
+    genreFilterMode,
+    yearFrom,
+    yearTo
+  ], 
+  () => { 
+    resetAndFetch();
+  }, 
+  { deep: true }
+);
 
 
 // ★★★ 核心改造 5: 在生命周期中设置和销毁 IntersectionObserver ★★★
