@@ -12,8 +12,8 @@ import time as time_module
 import psycopg2
 import requests
 # 确保所有依赖都已正确导入
-import emby_handler
-import tmdb_handler
+import handler.emby as emby
+import handler.tmdb as tmdb
 import utils
 import constants
 import logging
@@ -25,11 +25,11 @@ from cachetools import TTLCache
 from ai_translator import AITranslator
 from utils import translate_country_list, get_unified_rating
 from watchlist_processor import WatchlistProcessor
-from douban import DoubanApi
+from handler.douban import DoubanApi
 
 logger = logging.getLogger(__name__)
 try:
-    from douban import DoubanApi
+    from handler.douban import DoubanApi
     DOUBAN_API_AVAILABLE = True
 except ImportError:
     DOUBAN_API_AVAILABLE = False
@@ -508,7 +508,7 @@ class MediaProcessor:
         
         # 批量获取这些演员在 Emby 中的当前信息，以减少 API 请求
         person_ids = [actor["emby_person_id"] for actor in actors_to_update]
-        current_person_details = emby_handler.get_emby_items_by_id(
+        current_person_details = emby.get_emby_items_by_id(
             base_url=self.emby_url,
             api_key=self.emby_api_key,
             user_id=self.emby_user_id,
@@ -526,7 +526,7 @@ class MediaProcessor:
 
             # 只有当新名字和当前名字不同时，才执行更新
             if new_name != current_name:
-                emby_handler.update_person_details(
+                emby.update_person_details(
                     person_id=person_id,
                     new_data={"Name": new_name},
                     emby_server_url=self.emby_url,
@@ -563,11 +563,11 @@ class MediaProcessor:
             return
 
         logger.info("  ➜ 正在尝试从Emby获取媒体项目...")
-        all_emby_libraries = emby_handler.get_emby_libraries(self.emby_url, self.emby_api_key, self.emby_user_id) or []
+        all_emby_libraries = emby.get_emby_libraries(self.emby_url, self.emby_api_key, self.emby_user_id) or []
         library_name_map = {lib.get('Id'): lib.get('Name', '未知库名') for lib in all_emby_libraries}
         
-        movies = emby_handler.get_emby_library_items(self.emby_url, self.emby_api_key, "Movie", self.emby_user_id, libs_to_process_ids, library_name_map=library_name_map) or []
-        series = emby_handler.get_emby_library_items(self.emby_url, self.emby_api_key, "Series", self.emby_user_id, libs_to_process_ids, library_name_map=library_name_map) or []
+        movies = emby.get_emby_library_items(self.emby_url, self.emby_api_key, "Movie", self.emby_user_id, libs_to_process_ids, library_name_map=library_name_map) or []
+        series = emby.get_emby_library_items(self.emby_url, self.emby_api_key, "Series", self.emby_user_id, libs_to_process_ids, library_name_map=library_name_map) or []
         
         if movies:
             source_movie_lib_names = sorted(list({library_name_map.get(item.get('_SourceLibraryId')) for item in movies if item.get('_SourceLibraryId')}))
@@ -664,7 +664,7 @@ class MediaProcessor:
             return False
 
         # 3. 获取Emby详情，这是后续所有操作的基础
-        item_details_precheck = emby_handler.get_emby_item_details(emby_item_id, self.emby_url, self.emby_api_key, self.emby_user_id, fields="Type")
+        item_details_precheck = emby.get_emby_item_details(emby_item_id, self.emby_url, self.emby_api_key, self.emby_user_id, fields="Type")
         if not item_details_precheck:
             logger.error(f"process_single_item: 无法获取 Emby 项目 {emby_item_id} 的基础详情。")
             return False
@@ -674,7 +674,7 @@ class MediaProcessor:
 
         if item_type == "Series":
             # 如果是剧集，调用我们新的聚合函数
-            item_details = emby_handler.get_emby_series_details_with_full_cast(
+            item_details = emby.get_emby_series_details_with_full_cast(
                 series_id=emby_item_id,
                 emby_server_url=self.emby_url,
                 emby_api_key=self.emby_api_key,
@@ -682,7 +682,7 @@ class MediaProcessor:
             )
         else:
             # 如果是电影或其他类型，使用原来的函数
-            item_details = emby_handler.get_emby_item_details(
+            item_details = emby.get_emby_item_details(
                 emby_item_id, self.emby_url, self.emby_api_key, self.emby_user_id
             )
         if not item_details:
@@ -735,7 +735,7 @@ class MediaProcessor:
                 logger.warning(f"  ➜ 核心处理前置检查：本地元数据文件 '{source_json_path}' 不存在。启动备用方案...")
                 logger.info(f"  ➜ 正在通知 Emby 为 '{item_name_for_log}' 刷新元数据以生成缓存文件...")
                 
-                emby_handler.refresh_emby_item_metadata(
+                emby.refresh_emby_item_metadata(
                     item_emby_id=item_id,
                     emby_server_url=self.emby_url,
                     emby_api_key=self.emby_api_key,
@@ -804,7 +804,7 @@ class MediaProcessor:
             if force_full_update and self.tmdb_api_key:
                 logger.info(f"  ➜ [深度更新模式] 正在从 TMDB 获取最新演员表...")
                 if item_type == "Movie":
-                    movie_details = tmdb_handler.get_movie_details(tmdb_id, self.tmdb_api_key)
+                    movie_details = tmdb.get_movie_details(tmdb_id, self.tmdb_api_key)
                     if movie_details and movie_details.get("credits", {}).get("cast"):
                         tmdb_details_for_extra = movie_details
                         authoritative_cast_source = movie_details["credits"]["cast"]
@@ -812,7 +812,7 @@ class MediaProcessor:
                     else:
                         logger.warning(f"  ➜ 从 TMDb 获取演员数据失败或返回为空，将回退到本地数据。")
                 elif item_type == "Series":
-                    aggregated_tmdb_data = tmdb_handler.aggregate_full_series_data_from_tmdb(int(tmdb_id), self.tmdb_api_key)
+                    aggregated_tmdb_data = tmdb.aggregate_full_series_data_from_tmdb(int(tmdb_id), self.tmdb_api_key)
                     if aggregated_tmdb_data:
                         tmdb_details_for_extra = aggregated_tmdb_data.get("series_details")
                         all_episodes = list(aggregated_tmdb_data.get("episodes_details", {}).values())
@@ -924,7 +924,7 @@ class MediaProcessor:
 
                 # 步骤 3.3: 通知 Emby 刷新
                 logger.info(f"  ➜ 处理完成，正在通知 Emby 刷新...")
-                emby_handler.refresh_emby_item_metadata(
+                emby.refresh_emby_item_metadata(
                     item_emby_id=item_id,
                     emby_server_url=self.emby_url,
                     emby_api_key=self.emby_api_key,
@@ -1227,7 +1227,7 @@ class MediaProcessor:
                             if not match_found:
                                 logger.debug(f"  ➜ 数据库未找到 {d_imdb_id} 的映射，开始通过 TMDb API 反查...")
                                 if self.is_stop_requested(): raise InterruptedError("任务中止")
-                                person_from_tmdb = tmdb_handler.find_person_by_external_id(
+                                person_from_tmdb = tmdb.find_person_by_external_id(
                                     external_id=d_imdb_id, api_key=self.tmdb_api_key, source="imdb_id"
                                 )
                                 if person_from_tmdb and person_from_tmdb.get("id"):
@@ -1322,7 +1322,7 @@ class MediaProcessor:
                     profile_path = cached_meta["profile_path"]
                 
                 elif tmdb_api_key:
-                    person_details = tmdb_handler.get_person_details_tmdb(tmdb_id, tmdb_api_key)
+                    person_details = tmdb.get_person_details_tmdb(tmdb_id, tmdb_api_key)
                     if person_details:
                         if person_details.get("profile_path"):
                             profile_path = person_details["profile_path"]
@@ -1698,7 +1698,7 @@ class MediaProcessor:
         logger.info(f"  ➜ 手动处理流程启动：ItemID: {item_id} ('{item_name}')")
         
         try:
-            item_details = emby_handler.get_emby_item_details(item_id, self.emby_url, self.emby_api_key, self.emby_user_id)
+            item_details = emby.get_emby_item_details(item_id, self.emby_url, self.emby_api_key, self.emby_user_id)
             if not item_details: raise ValueError(f"无法获取项目 {item_id} 的详情。")
             
             raw_emby_actors = [p for p in item_details.get("People", []) if p.get("Type") == "Actor"]
@@ -1811,7 +1811,7 @@ class MediaProcessor:
                 original_name = emby_id_to_name_map.get(actor_emby_id)
                 
                 if new_name and original_name and new_name != original_name:
-                    emby_handler.update_person_details(
+                    emby.update_person_details(
                         person_id=actor_emby_id, new_data={"Name": new_name},
                         emby_server_url=self.emby_url, emby_api_key=self.emby_api_key, user_id=self.emby_user_id
                     )
@@ -1867,7 +1867,7 @@ class MediaProcessor:
                         # B2: 如果缓存没有，则从 TMDb API 获取并反哺
                         if not person_details:
                             logger.debug(f"  ➜ 缓存未命中，从 TMDb API 获取详情...")
-                            person_details_from_api = tmdb_handler.get_person_details_tmdb(tmdb_id_str, self.tmdb_api_key)
+                            person_details_from_api = tmdb.get_person_details_tmdb(tmdb_id_str, self.tmdb_api_key)
                             if person_details_from_api:
                                 self.actor_db_manager.update_actor_metadata_from_tmdb(cursor, tmdb_id_str, person_details_from_api)
                                 person_details = person_details_from_api # 使用API返回的数据
@@ -1929,7 +1929,7 @@ class MediaProcessor:
             # ======================================================================
             logger.info("  ➜ 手动处理：步骤 6/6: 触发 Emby 刷新并更新内部日志...")
             
-            emby_handler.refresh_emby_item_metadata(
+            emby.refresh_emby_item_metadata(
                 item_emby_id=item_id,
                 emby_server_url=self.emby_url,
                 emby_api_key=self.emby_api_key,
@@ -1985,7 +1985,7 @@ class MediaProcessor:
         
         try:
             # 步骤 1: 获取 Emby 基础详情 和 用于ID映射的People列表
-            emby_details = emby_handler.get_emby_item_details(item_id, self.emby_url, self.emby_api_key, self.emby_user_id)
+            emby_details = emby.get_emby_item_details(item_id, self.emby_url, self.emby_api_key, self.emby_user_id)
             if not emby_details:
                 raise ValueError(f"在Emby中未找到项目 {item_id}")
 
@@ -2104,7 +2104,7 @@ class MediaProcessor:
             return
 
         try:
-            item_details = emby_handler.get_emby_item_details(
+            item_details = emby.get_emby_item_details(
                 item_id, self.emby_url, self.emby_api_key, self.emby_user_id,
                 fields="ProviderIds,Type,Name,IndexNumber,ParentIndexNumber"
             )
@@ -2219,13 +2219,13 @@ class MediaProcessor:
                     if self.is_stop_requested():
                         logger.warning(f"  ➜ {log_prefix} 收到停止信号，中止图片下载。")
                         return False
-                    emby_handler.download_emby_image(item_id, image_type, os.path.join(image_override_dir, filename), self.emby_url, self.emby_api_key)
+                    emby.download_emby_image(item_id, image_type, os.path.join(image_override_dir, filename), self.emby_url, self.emby_api_key)
             
             # --- 分集图片逻辑 ---
             if item_type == "Series":
                 children_to_process = []
                 # 获取所有子项信息，用于查找
-                all_children = emby_handler.get_series_children(item_id, self.emby_url, self.emby_api_key, self.emby_user_id, series_name_for_log=item_name_for_log) or []
+                all_children = emby.get_series_children(item_id, self.emby_url, self.emby_api_key, self.emby_user_id, series_name_for_log=item_name_for_log) or []
                 
                 if episode_ids_to_sync:
                     # 模式一：只处理指定的分集
@@ -2244,11 +2244,11 @@ class MediaProcessor:
                     if child_type == "Season":
                         season_number = child.get("IndexNumber")
                         if season_number is not None:
-                            emby_handler.download_emby_image(child_id, "Primary", os.path.join(image_override_dir, f"season-{season_number}.jpg"), self.emby_url, self.emby_api_key)
+                            emby.download_emby_image(child_id, "Primary", os.path.join(image_override_dir, f"season-{season_number}.jpg"), self.emby_url, self.emby_api_key)
                     elif child_type == "Episode":
                         season_number, episode_number = child.get("ParentIndexNumber"), child.get("IndexNumber")
                         if season_number is not None and episode_number is not None:
-                            emby_handler.download_emby_image(child_id, "Primary", os.path.join(image_override_dir, f"season-{season_number}-episode-{episode_number}.jpg"), self.emby_url, self.emby_api_key)
+                            emby.download_emby_image(child_id, "Primary", os.path.join(image_override_dir, f"season-{season_number}-episode-{episode_number}.jpg"), self.emby_url, self.emby_api_key)
             
             logger.trace(f"  ➜ {log_prefix} 成功完成 '{item_name_for_log}' 的覆盖缓存-图片备份。")
             return True
@@ -2361,7 +2361,7 @@ class MediaProcessor:
         else:
             logger.info(f"  ➜ {log_prefix} 开始将实时元数据（标题/简介）同步到所有季/集备份文件...")
         
-        children_from_emby = emby_handler.get_series_children(
+        children_from_emby = emby.get_series_children(
             series_id=series_details.get("Id"), base_url=self.emby_url,
             api_key=self.emby_api_key, user_id=self.emby_user_id,
             series_name_for_log=series_details.get("Name")
@@ -2450,7 +2450,7 @@ class MediaProcessor:
                     return
 
                 # 1. 批量获取新分集的详情
-                new_episodes_details = emby_handler.get_emby_items_by_id(
+                new_episodes_details = emby.get_emby_items_by_id(
                     base_url=self.emby_url, api_key=self.emby_api_key, user_id=self.emby_user_id,
                     item_ids=episode_ids_to_add, fields="Id,Type,ParentIndexNumber,IndexNumber"
                 )
@@ -2485,14 +2485,14 @@ class MediaProcessor:
             # --- 模式二：常规元数据刷新 ---
             # (如果执行到这里，说明 episode_ids_to_add 为 None)
             fields_to_get = "ProviderIds,Type,DateCreated,Name,ProductionYear,OriginalTitle,PremiereDate,CommunityRating,Genres,Studios,ProductionLocations,Tags,DateModified,OfficialRating"
-            full_details_emby = emby_handler.get_emby_item_details(item_id, self.emby_url, self.emby_api_key, self.emby_user_id, fields=fields_to_get)
+            full_details_emby = emby.get_emby_item_details(item_id, self.emby_url, self.emby_api_key, self.emby_user_id, fields=fields_to_get)
             if not full_details_emby: raise ValueError("在Emby中找不到该项目。")
             
             item_type = full_details_emby.get("Type")
             if item_type == "Episode":
-                series_id = emby_handler.get_series_id_from_child_id(item_id, self.emby_url, self.emby_api_key, self.emby_user_id, item_name=item_name)
+                series_id = emby.get_series_id_from_child_id(item_id, self.emby_url, self.emby_api_key, self.emby_user_id, item_name=item_name)
                 if series_id:
-                    full_details_emby = emby_handler.get_emby_item_details(series_id, self.emby_url, self.emby_api_key, self.emby_user_id, fields=fields_to_get)
+                    full_details_emby = emby.get_emby_item_details(series_id, self.emby_url, self.emby_api_key, self.emby_user_id, fields=fields_to_get)
                     if not full_details_emby:
                         logger.warning(f"  ➜ {log_prefix} 无法获取所属剧集 (ID: {series_id}) 的详情，跳过缓存。")
                         return
@@ -2509,9 +2509,9 @@ class MediaProcessor:
             tmdb_details = None
             item_type = full_details_emby.get("Type")
             if item_type == 'Movie':
-                tmdb_details = tmdb_handler.get_movie_details(tmdb_id, self.tmdb_api_key)
+                tmdb_details = tmdb.get_movie_details(tmdb_id, self.tmdb_api_key)
             elif item_type == 'Series':
-                tmdb_details = tmdb_handler.get_tv_details(tmdb_id, self.tmdb_api_key)
+                tmdb_details = tmdb.get_tv_details(tmdb_id, self.tmdb_api_key)
             directors, countries = [], []
             if tmdb_details:
                 if item_type == 'Movie':

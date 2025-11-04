@@ -1,4 +1,4 @@
-# custom_collection_handler.py
+# handler/custom_collection.py
 import logging
 import requests
 import xml.etree.ElementTree as ET
@@ -15,12 +15,12 @@ from bs4 import BeautifulSoup
 # ★★★ 核心修正：再次回归 gevent.subprocess ★★★
 from gevent import subprocess, Timeout
 
-import tmdb_handler
-import emby_handler
+import handler.tmdb as tmdb
+import handler.emby as emby
 import config_manager
 from database import collection_db, watchlist_db, connection 
-from douban import DoubanApi
-from tmdb_handler import search_media, get_tv_details
+from handler.douban import DoubanApi
+from handler.tmdb import search_media, get_tv_details
 
 logger = logging.getLogger(__name__)
 
@@ -130,7 +130,7 @@ class ListImporter:
         if imdb_id:
             logger.debug(f"  ➜ 通过IMDb ID查找TMDb ID：{imdb_id}")
             try:
-                tmdb_id_from_imdb = tmdb_handler.get_tmdb_id_by_imdb_id(imdb_id, self.tmdb_api_key, item_type)
+                tmdb_id_from_imdb = tmdb.get_tmdb_id_by_imdb_id(imdb_id, self.tmdb_api_key, item_type)
                 if tmdb_id_from_imdb:
                     logger.debug(f"  ➜ IMDb ID {imdb_id} 对应 TMDb ID: {tmdb_id_from_imdb}")
                     return str(tmdb_id_from_imdb)
@@ -236,7 +236,7 @@ class ListImporter:
         while current_page <= total_pages:
             try:
                 logger.debug(f"    ➜ 正在获取第 {current_page} / {total_pages} 页...")
-                list_data = tmdb_handler.get_list_details_tmdb(list_id, self.tmdb_api_key, page=current_page)
+                list_data = tmdb.get_list_details_tmdb(list_id, self.tmdb_api_key, page=current_page)
 
                 if not list_data or not list_data.get('items'):
                     logger.warning(f"  ➜ 在第 {current_page} 页未发现更多项目，获取结束。")
@@ -306,10 +306,10 @@ class ListImporter:
 
                 # ★★★ 使用最健壮的判断逻辑 ★★★
                 if '/discover/movie' in url:
-                    discover_data = tmdb_handler.discover_movie_tmdb(self.tmdb_api_key, params)
+                    discover_data = tmdb.discover_movie_tmdb(self.tmdb_api_key, params)
                     item_type_for_result = 'Movie'
                 elif '/discover/tv' in url:
-                    discover_data = tmdb_handler.discover_tv_tmdb(self.tmdb_api_key, params)
+                    discover_data = tmdb.discover_tv_tmdb(self.tmdb_api_key, params)
                     item_type_for_result = 'Series'
                 else:
                     # 如果URL格式意外，直接跳出循环
@@ -897,7 +897,7 @@ class FilterEngine:
                 logger.error("  ➜ Emby服务器配置不完整，无法从指定媒体库筛选。")
                 return []
 
-            emby_items = emby_handler.get_emby_library_items(
+            emby_items = emby.get_emby_library_items(
                 base_url=emby_url, api_key=emby_key, user_id=emby_user_id,
                 library_ids=library_ids, media_type_filter=",".join(item_types_to_process)
             )

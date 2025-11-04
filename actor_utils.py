@@ -11,9 +11,9 @@ import logging
 from database import connection
 from database.actor_db import ActorDBManager
 import utils
-import tmdb_handler
-import emby_handler
-from douban import DoubanApi
+import handler.tmdb as tmdb
+import handler.emby as emby
+from handler.douban import DoubanApi
 from ai_translator import AITranslator
 from utils import contains_chinese
 
@@ -381,7 +381,7 @@ def fetch_tmdb_details_for_actor(actor_info: Dict, tmdb_api_key: str) -> Optiona
     if not tmdb_id:
         return None
     try:
-        details = tmdb_handler.get_person_details_tmdb(
+        details = tmdb.get_person_details_tmdb(
             person_id=int(tmdb_id), 
             api_key=tmdb_api_key, 
             append_to_response="external_ids,translations"
@@ -393,11 +393,11 @@ def fetch_tmdb_details_for_actor(actor_info: Dict, tmdb_api_key: str) -> Optiona
             # API调用成功但返回空，也标记为未找到
             return {"tmdb_id": tmdb_id, "status": "not_found"}
 
-    except tmdb_handler.TMDbResourceNotFound:
+    except tmdb.TMDbResourceNotFound:
         # ★★★ 捕获到404异常，返回一个明确的“未找到”状态 ★★★
         return {"tmdb_id": tmdb_id, "status": "not_found"}
     
-    except tmdb_handler.TMDbAPIError as e:
+    except tmdb.TMDbAPIError as e:
         # 其他API错误（如网络问题），记录日志并返回失败状态
         logger.warning(f"获取演员 {tmdb_id} 详情时遇到API错误: {e}")
         return {"tmdb_id": tmdb_id, "status": "failed"}

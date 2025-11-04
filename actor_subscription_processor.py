@@ -9,8 +9,8 @@ import threading
 from enum import Enum
 import concurrent.futures # 新增：导入 concurrent.futures
 
-import tmdb_handler
-import emby_handler
+import handler.tmdb as tmdb
+import handler.emby as emby
 from database.connection import get_db_connection
 import constants
 import utils
@@ -90,9 +90,9 @@ class ActorSubscriptionProcessor:
         emby_series_name_to_tmdb_id_map: Dict[str, str] = {}
 
         try:
-            all_libraries = emby_handler.get_emby_libraries(self.emby_url, self.emby_api_key, self.emby_user_id)
+            all_libraries = emby.get_emby_libraries(self.emby_url, self.emby_api_key, self.emby_user_id)
             library_ids_to_scan = [lib['Id'] for lib in all_libraries if lib.get('CollectionType') in ['movies', 'tvshows']]
-            emby_items = emby_handler.get_emby_library_items(base_url=self.emby_url, api_key=self.emby_api_key, user_id=self.emby_user_id, library_ids=library_ids_to_scan, media_type_filter="Movie,Series")
+            emby_items = emby.get_emby_library_items(base_url=self.emby_url, api_key=self.emby_api_key, user_id=self.emby_user_id, library_ids=library_ids_to_scan, media_type_filter="Movie,Series")
             
             if self.is_stop_requested():
                 logger.info("任务在获取Emby媒体库后被用户中断。")
@@ -116,7 +116,7 @@ class ActorSubscriptionProcessor:
             if series_to_check:
                 logger.info(f"  ➜ 正在为 {len(series_to_check)} 个剧集获取季结构...")
                 for series in series_to_check:
-                    seasons = emby_handler.get_series_children(
+                    seasons = emby.get_series_children(
                         series_id=series['emby_id'],
                         base_url=self.emby_url,
                         api_key=self.emby_api_key,
@@ -172,7 +172,7 @@ class ActorSubscriptionProcessor:
 
                 old_tracked_media = self._get_existing_tracked_media(cursor, subscription_id)
                 
-                credits = tmdb_handler.get_person_credits_tmdb(sub['tmdb_person_id'], self.tmdb_api_key)
+                credits = tmdb.get_person_credits_tmdb(sub['tmdb_person_id'], self.tmdb_api_key)
                 if self.is_stop_requested() or not credits: return
                 
                 movie_works = credits.get('movie_credits', {}).get('cast', [])
@@ -572,7 +572,7 @@ class ActorSubscriptionProcessor:
         if not media_id:
             return None
         
-        details = tmdb_handler.get_tv_details(media_id, api_key, append_to_response="credits")
+        details = tmdb.get_tv_details(media_id, api_key, append_to_response="credits")
         
         if details:
             logger.debug(f"  ➜ 获取电视剧 '{work.get('title') or work.get('name')}' (ID: {media_id}) 详情成功。")

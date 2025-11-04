@@ -4,7 +4,7 @@ import logging
 from flask import Blueprint, request, jsonify
 
 from database import connection
-import moviepilot_handler
+import handler.moviepilot as moviepilot
 import config_manager
 from extensions import admin_required # 假设你有这个登录装饰器
 
@@ -57,9 +57,9 @@ def approve_request(request_id):
             media_info = {'tmdb_id': req['tmdb_id'], 'title': req['title']}
             success = False
             if req['media_type'] == 'movie':
-                success = moviepilot_handler.subscribe_movie_to_moviepilot(media_info, config)
+                success = moviepilot.subscribe_movie_to_moviepilot(media_info, config)
             elif req['media_type'] == 'tv':
-                success = moviepilot_handler.subscribe_series_to_moviepilot(media_info, None, config)
+                success = moviepilot.subscribe_series_to_moviepilot(media_info, None, config)
 
             if not success:
                 return jsonify({"status": "error", "message": "推送到MoviePilot失败，请检查其配置和连接"}), 500

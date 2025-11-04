@@ -5,7 +5,7 @@ from flask import Blueprint, request, jsonify, session
 from werkzeug.security import generate_password_hash, check_password_hash
 import config_manager
 import constants
-import emby_handler
+import handler.emby as emby
 from database import connection, user_db
 
 # ★ 1. 创建一个新的蓝图，它将处理所有登录和状态检查
@@ -100,7 +100,7 @@ def unified_login():
             return jsonify({"status": "error", "message": "服务器内部错误"}), 500
 
     elif login_type == 'emby':
-        auth_result = emby_handler.authenticate_emby_user(username, password)
+        auth_result = emby.authenticate_emby_user(username, password)
         if auth_result:
             user_info = auth_result.get('User', {})
             session['emby_user_id'] = user_info.get('Id')

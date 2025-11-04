@@ -3,7 +3,7 @@ import logging
 from flask import Blueprint, jsonify, request, g, session
 
 from extensions import any_login_required
-import tmdb_handler
+import handler.tmdb as tmdb
 from utils import KEYWORD_ID_MAP, contains_chinese
 from database import user_db, media_db
 
@@ -57,7 +57,7 @@ def discover_movies():
     根据前端传来的筛选条件，从 TMDb 发现电影。
     """
     params = request.json
-    api_key = tmdb_handler.config_manager.APP_CONFIG.get(tmdb_handler.constants.CONFIG_OPTION_TMDB_API_KEY)
+    api_key = tmdb.config_manager.APP_CONFIG.get(tmdb.constants.CONFIG_OPTION_TMDB_API_KEY)
     params.setdefault('with_origin_country', '')
 
     try:
@@ -66,7 +66,7 @@ def discover_movies():
         current_user_id = session['emby_user_id']
 
         # ★★★ 核心修改 2: 调用辅助函数简化逻辑 ★★★
-        tmdb_data = tmdb_handler.discover_movie_tmdb(api_key, params)
+        tmdb_data = tmdb.discover_movie_tmdb(api_key, params)
         processed_data = _filter_and_enrich_results(tmdb_data, current_user_id, 'Movie')
         return jsonify(processed_data)
 
@@ -81,7 +81,7 @@ def discover_tv_shows():
     根据前端传来的筛选条件，从 TMDb 发现电视剧。
     """
     params = request.json
-    api_key = tmdb_handler.config_manager.APP_CONFIG.get(tmdb_handler.constants.CONFIG_OPTION_TMDB_API_KEY)
+    api_key = tmdb.config_manager.APP_CONFIG.get(tmdb.constants.CONFIG_OPTION_TMDB_API_KEY)
     params.setdefault('with_origin_country', '')
 
     try:
@@ -90,7 +90,7 @@ def discover_tv_shows():
         current_user_id = session['emby_user_id']
 
         # ★★★ 核心修改 3: 再次调用辅助函数 ★★★
-        tmdb_data = tmdb_handler.discover_tv_tmdb(api_key, params)
+        tmdb_data = tmdb.discover_tv_tmdb(api_key, params)
         processed_data = _filter_and_enrich_results(tmdb_data, current_user_id, 'Series')
         return jsonify(processed_data)
 
@@ -104,12 +104,12 @@ def discover_tv_shows():
 @any_login_required
 def get_genres(media_type):
     """获取电影或电视剧的类型列表。"""
-    api_key = tmdb_handler.config_manager.APP_CONFIG.get(tmdb_handler.constants.CONFIG_OPTION_TMDB_API_KEY)
+    api_key = tmdb.config_manager.APP_CONFIG.get(tmdb.constants.CONFIG_OPTION_TMDB_API_KEY)
     try:
         if media_type == 'movie':
-            genres = tmdb_handler.get_movie_genres_tmdb(api_key)
+            genres = tmdb.get_movie_genres_tmdb(api_key)
         elif media_type == 'tv':
-            genres = tmdb_handler.get_tv_genres_tmdb(api_key)
+            genres = tmdb.get_tv_genres_tmdb(api_key)
         else:
             return jsonify({"status": "error", "message": "无效的媒体类型"}), 400
         return jsonify(genres)
@@ -132,7 +132,7 @@ def search_media_handler():
     if not query:
         return jsonify({"status": "error", "message": "搜索词不能为空"}), 400
 
-    api_key = tmdb_handler.config_manager.APP_CONFIG.get(tmdb_handler.constants.CONFIG_OPTION_TMDB_API_KEY)
+    api_key = tmdb.config_manager.APP_CONFIG.get(tmdb.constants.CONFIG_OPTION_TMDB_API_KEY)
 
     try:
         if 'emby_user_id' not in session:
@@ -140,7 +140,7 @@ def search_media_handler():
         current_user_id = session['emby_user_id']
         
         # ★★★ 核心修改 4: 第三次调用辅助函数 ★★★
-        tmdb_data = tmdb_handler.search_media_for_discover(query=query, api_key=api_key, item_type=media_type, page=page)
+        tmdb_data = tmdb.search_media_for_discover(query=query, api_key=api_key, item_type=media_type, page=page)
         db_item_type = 'Movie' if media_type == 'movie' else 'Series'
         processed_data = _filter_and_enrich_results(tmdb_data, current_user_id, db_item_type)
         return jsonify(processed_data)

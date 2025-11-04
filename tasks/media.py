@@ -11,9 +11,9 @@ import concurrent.futures
 
 # 导入需要的底层模块和共享实例
 import task_manager
-import tmdb_handler
-import emby_handler
-import telegram_handler
+import handler.tmdb as tmdb
+import handler.emby as emby
+import handler.telegram as telegram
 from database import connection
 from utils import translate_country_list, get_unified_rating
 
@@ -68,7 +68,7 @@ def task_sync_images(processor, item_id: str, update_description: str, sync_time
     try:
         # --- ▼▼▼ 核心修复 ▼▼▼ ---
         # 1. 根据 item_id 获取完整的媒体详情
-        item_details = emby_handler.get_emby_item_details(
+        item_details = emby.get_emby_item_details(
             item_id, 
             processor.emby_url, 
             processor.emby_api_key, 
@@ -103,7 +103,7 @@ def task_sync_all_metadata(processor, item_id: str, item_name: str):
     logger.trace(f"  ➜ 任务开始：{log_prefix}")
     try:
         # 步骤 1: 获取包含了用户修改的、最新的完整媒体详情
-        item_details = emby_handler.get_emby_item_details(
+        item_details = emby.get_emby_item_details(
             item_id, 
             processor.emby_url, 
             processor.emby_api_key, 
@@ -219,7 +219,7 @@ def task_populate_metadata_cache(processor, batch_size: int = 50, force_full_upd
         if not libs_to_process_ids:
             raise ValueError("未在配置中指定要处理的媒体库。")
 
-        emby_items_index = emby_handler.get_emby_library_items(
+        emby_items_index = emby.get_emby_library_items(
             base_url=processor.emby_url, api_key=processor.emby_api_key, user_id=processor.emby_user_id,
             media_type_filter="Movie,Series", library_ids=libs_to_process_ids,
             fields="ProviderIds,Type,DateCreated,Name,ProductionYear,OriginalTitle,PremiereDate,CommunityRating,Genres,Studios,ProductionLocations,Tags,DateModified,OfficialRating"
@@ -338,9 +338,9 @@ def task_populate_metadata_cache(processor, batch_size: int = 50, force_full_upd
                 if not tmdb_id: return None, None
                 details = None
                 if item_type == 'Movie':
-                    details = tmdb_handler.get_movie_details(tmdb_id, processor.tmdb_api_key)
+                    details = tmdb.get_movie_details(tmdb_id, processor.tmdb_api_key)
                 elif item_type == 'Series':
-                    details = tmdb_handler.get_tv_details(tmdb_id, processor.tmdb_api_key)
+                    details = tmdb.get_tv_details(tmdb_id, processor.tmdb_api_key)
                 return tmdb_id, details
 
             with concurrent.futures.ThreadPoolExecutor(max_workers=5) as executor:
@@ -449,7 +449,7 @@ def task_populate_metadata_cache(processor, batch_size: int = 50, force_full_upd
                 }
                 if metadata_to_save["item_type"] == "Series":
                     series_id = metadata_to_save["emby_item_id"]
-                    children = emby_handler.get_series_children(
+                    children = emby.get_series_children(
                         series_id=series_id,
                         base_url=processor.emby_url,
                         api_key=processor.emby_api_key,
@@ -545,7 +545,7 @@ def task_apply_main_cast_to_episodes(processor, series_id: str, episode_ids: lis
             logger.info(f"  ➜ 剧集 {series_id} 追更任务跳过：未提供需要更新的分集ID。")
             return
         
-        series_details_for_log = emby_handler.get_emby_item_details(series_id, processor.emby_url, processor.emby_api_key, processor.emby_user_id, fields="Name,ProviderIds")
+        series_details_for_log = emby.get_emby_item_details(series_id, processor.emby_url, processor.emby_api_key, processor.emby_user_id, fields="Name,ProviderIds")
         series_name = series_details_for_log.get("Name", f"ID:{series_id}") if series_details_for_log else f"ID:{series_id}"
 
         logger.info(f"  ➜ 追更任务启动：准备为剧集 《{series_name}》 的 {len(episode_ids)} 个新分集同步元数据...")
@@ -558,7 +558,7 @@ def task_apply_main_cast_to_episodes(processor, series_id: str, episode_ids: lis
         )
 
         logger.info(f"  ➜ 处理完成，正在通知 Emby 刷新...")
-        emby_handler.refresh_emby_item_metadata(
+        emby.refresh_emby_item_metadata(
             item_emby_id=series_id,
             emby_server_url=processor.emby_url,
             emby_api_key=processor.emby_api_key,
@@ -570,7 +570,7 @@ def task_apply_main_cast_to_episodes(processor, series_id: str, episode_ids: lis
         # TG通知
         if series_details_for_log:
             logger.info(f"  ➜ 正在为《{series_name}》触发追更通知...")
-            telegram_handler.send_media_notification(
+            telegram.send_media_notification(
                 item_details=series_details_for_log,
                 notification_type='update',
                 new_episode_ids=episode_ids

@@ -10,10 +10,10 @@ import threading
 
 # 导入我们需要的辅助模块
 from database import connection, settings_db, watchlist_db
-import moviepilot_handler
+import handler.moviepilot as moviepilot
 import constants
-import tmdb_handler
-import emby_handler
+import handler.tmdb as tmdb
+import handler.emby as emby
 import logging
 
 logger = logging.getLogger(__name__)
@@ -110,7 +110,7 @@ class WatchlistProcessor:
         item_id = item_details.get("Id")
         if not tmdb_id or not self.tmdb_api_key: return
             
-        tmdb_details = tmdb_handler.get_tv_details(tmdb_id, self.tmdb_api_key)
+        tmdb_details = tmdb.get_tv_details(tmdb_id, self.tmdb_api_key)
         if not tmdb_details: return
 
         tmdb_status = tmdb_details.get("status")
@@ -281,7 +281,7 @@ class WatchlistProcessor:
                 series_name = series['item_name']
                 self.progress_callback(progress, f"检查中: {series_name[:20]}... ({i+1}/{total})")
 
-                tmdb_details = tmdb_handler.get_tv_details(series['tmdb_id'], self.tmdb_api_key)
+                tmdb_details = tmdb.get_tv_details(series['tmdb_id'], self.tmdb_api_key)
                 if not tmdb_details: continue
 
                 # ▼▼▼ 核心逻辑重构：基于播出日期的精准复活判断 ▼▼▼
@@ -302,7 +302,7 @@ class WatchlistProcessor:
                     
                     # 4. 获取这个新季度的详情
                     new_season_to_check_num = old_season_number + 1 # 通常是下一季
-                    season_details = tmdb_handler.get_season_details(series['tmdb_id'], new_season_to_check_num, self.tmdb_api_key)
+                    season_details = tmdb.get_season_details(series['tmdb_id'], new_season_to_check_num, self.tmdb_api_key)
                     
                     if season_details and season_details.get('episodes'):
                         first_episode = season_details['episodes'][0]
@@ -432,7 +432,7 @@ class WatchlistProcessor:
                 seasons_with_real_gaps = set()
 
                 # 1. 实时获取 Emby 本地分集数据，用于对比
-                emby_children = emby_handler.get_series_children(series['item_id'], self.emby_url, self.emby_api_key, self.emby_user_id)
+                emby_children = emby.get_series_children(series['item_id'], self.emby_url, self.emby_api_key, self.emby_user_id)
                 emby_seasons = {}
                 if emby_children:
                     for child in emby_children:
@@ -567,7 +567,7 @@ class WatchlistProcessor:
         # 步骤1: 从Emby获取所有在选定库中的剧集ID集合
         valid_series_ids_from_emby = set()
         for lib_id in selected_libraries:
-            series_ids_in_lib = emby_handler.get_library_series_ids(
+            series_ids_in_lib = emby.get_library_series_ids(
                 library_id=lib_id,
                 emby_server_url=self.emby_url,
                 emby_api_key=self.emby_api_key,
@@ -612,7 +612,7 @@ class WatchlistProcessor:
         logger.info(f"  ➜ 【追剧检查】正在处理: '{item_name}' (TMDb ID: {tmdb_id})")
 
         # 步骤1: 存活检查
-        item_details_for_check = emby_handler.get_emby_item_details(
+        item_details_for_check = emby.get_emby_item_details(
             item_id=item_id, emby_server_url=self.emby_url, emby_api_key=self.emby_api_key,
             user_id=self.emby_user_id, fields="Id,Name"
         )
@@ -627,7 +627,7 @@ class WatchlistProcessor:
 
         # 步骤2: 从TMDb获取权威数据
         logger.debug(f"  ➜ 正在从TMDb API获取 '{item_name}' 的最新详情...")
-        latest_series_data = tmdb_handler.get_tv_details(tmdb_id, self.tmdb_api_key)
+        latest_series_data = tmdb.get_tv_details(tmdb_id, self.tmdb_api_key)
         if not latest_series_data:
             logger.error(f"  ➜ 无法获取 '{item_name}' 的TMDb详情，本次处理中止。")
             return
@@ -636,13 +636,13 @@ class WatchlistProcessor:
         for season_summary in latest_series_data.get("seasons", []):
             season_num = season_summary.get("season_number")
             if season_num is None or season_num == 0: continue
-            season_details = tmdb_handler.get_season_details_tmdb(tmdb_id, season_num, self.tmdb_api_key)
+            season_details = tmdb.get_season_details_tmdb(tmdb_id, season_num, self.tmdb_api_key)
             if season_details and season_details.get("episodes"):
                 all_tmdb_episodes.extend(season_details.get("episodes", []))
             time.sleep(0.1)
 
         # 步骤3: 获取Emby本地数据
-        emby_children = emby_handler.get_series_children(item_id, self.emby_url, self.emby_api_key, self.emby_user_id, fields="Id,Name,ParentIndexNumber,IndexNumber,Type,Overview")
+        emby_children = emby.get_series_children(item_id, self.emby_url, self.emby_api_key, self.emby_user_id, fields="Id,Name,ParentIndexNumber,IndexNumber,Type,Overview")
         emby_seasons = {}
         if emby_children:
             for child in emby_children:
@@ -788,7 +788,7 @@ class WatchlistProcessor:
                             "Overview": overview
                         }
                         
-                        success = emby_handler.update_emby_item_details(
+                        success = emby.update_emby_item_details(
                             item_id=emby_episode_id,
                             new_data=data_to_inject,
                             emby_server_url=self.emby_url,

@@ -7,9 +7,9 @@ import psycopg2
 # 导入需要的模块
  
 import config_manager
-import tmdb_handler
+import handler.tmdb as tmdb
 import task_manager
-import moviepilot_handler
+import handler.moviepilot as moviepilot
 from database import settings_db
 from database import actor_db
 from extensions import admin_required, processor_ready_required, task_lock_required
@@ -34,7 +34,7 @@ def api_search_actors():
         return jsonify({"error": "服务器未配置TMDb API Key"}), 503
 
     try:
-        search_results = tmdb_handler.search_person_tmdb(query, tmdb_api_key)
+        search_results = tmdb.search_person_tmdb(query, tmdb_api_key)
         if search_results is None:
             return jsonify({"error": "从TMDb搜索演员时发生错误"}), 500
         
@@ -219,7 +219,7 @@ def subscribe_single_tracked_media(media_id):
         
         if media_info['media_type'] == 'Movie':
             movie_payload = {'title': media_info['title'], 'tmdb_id': media_info['tmdb_media_id']}
-            success = moviepilot_handler.subscribe_movie_to_moviepilot(movie_payload, config)
+            success = moviepilot.subscribe_movie_to_moviepilot(movie_payload, config)
         
         elif media_info['media_type'] == 'Series':
             # ★★★ 完结检查逻辑 ★★★
@@ -237,7 +237,7 @@ def subscribe_single_tracked_media(media_id):
             series_payload = {'item_name': series_title, 'tmdb_id': series_tmdb_id}
             
             # 将检查结果传递给订阅函数
-            success = moviepilot_handler.subscribe_series_to_moviepilot(
+            success = moviepilot.subscribe_series_to_moviepilot(
                 series_info=series_payload, 
                 season_number=None, 
                 config=config,

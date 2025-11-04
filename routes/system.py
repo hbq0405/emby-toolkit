@@ -12,14 +12,14 @@ import task_manager
 from logger_setup import frontend_log_queue
 import config_manager
 
-import emby_handler
+import handler.emby as emby
 # 导入共享模块
 import extensions
 from database import collection_db
 from extensions import admin_required, task_lock_required
 import tasks
 import constants
-import github_handler
+import handler.github as github
 # 1. 创建蓝图
 system_bp = Blueprint('system', __name__, url_prefix='/api')
 logger = logging.getLogger(__name__)
@@ -155,7 +155,7 @@ def api_save_config():
         valid_library_ids = None
         if emby_url and emby_api_key and user_id:
             logger.trace("  ➜ 正在从Emby获取有效媒体库列表以进行净化...")
-            valid_libraries = emby_handler.get_emby_libraries(emby_url, emby_api_key, user_id)
+            valid_libraries = emby.get_emby_libraries(emby_url, emby_api_key, user_id)
             if valid_libraries is not None:
                 valid_library_ids = {lib['Id'] for lib in valid_libraries}
             else:
@@ -250,7 +250,7 @@ def get_about_info():
 
         proxies = config_manager.get_proxies_for_requests()
         # ★★★ 2. 将 Token 传递给 get_github_releases 函数 ★★★
-        releases = github_handler.get_github_releases(
+        releases = github.get_github_releases(
             owner=constants.GITHUB_REPO_OWNER,
             repo=constants.GITHUB_REPO_NAME,
             token=github_token,  # <--- 将令牌作为参数传入

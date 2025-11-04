@@ -10,7 +10,7 @@ from extensions import media_processor_instance
 import config_manager # 导入以获取数据路径
 from extensions import admin_required
 from tasks import get_task_registry
-import emby_handler
+import handler.emby as emby
 from services.cover_generator.styles.badge_drawer import draw_badge
 from services.cover_generator import CoverGeneratorService 
 from database import settings_db
@@ -106,7 +106,7 @@ def get_all_libraries():
     """
     try:
         # ★★★ 核心修复：使用正确的参数名来调用函数 ★★★
-        full_libraries_list = emby_handler.get_emby_libraries(
+        full_libraries_list = emby.get_emby_libraries(
             emby_server_url=config_manager.APP_CONFIG.get('emby_server_url'), 
             emby_api_key=config_manager.APP_CONFIG.get('emby_api_key'),       
             user_id=config_manager.APP_CONFIG.get('emby_user_id')

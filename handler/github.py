@@ -1,4 +1,4 @@
-# github_handler.py
+# handler/github.py
 
 import requests
 import logging

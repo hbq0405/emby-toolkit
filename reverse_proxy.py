@@ -14,7 +14,7 @@ from database import collection_db, user_db, queries_db
 import config_manager
 
 import extensions
-import emby_handler
+import handler.emby as emby
 logger = logging.getLogger(__name__)
 
 MIMICKED_ID_BASE = 900000
@@ -173,7 +173,7 @@ def handle_get_views():
             return "Could not determine user from request path", 400
         user_id = user_id_match.group(1)
 
-        user_visible_native_libs = emby_handler.get_emby_libraries(
+        user_visible_native_libs = emby.get_emby_libraries(
             config_manager.APP_CONFIG.get("emby_server_url", ""),
             config_manager.APP_CONFIG.get("emby_api_key", ""),
             user_id

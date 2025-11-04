@@ -9,11 +9,11 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 # 导入需要的底层模块和共享实例
 from database.connection import get_db_connection
 import constants
-import emby_handler
+import handler.emby as emby
 import task_manager
 import utils
 from actor_utils import enrich_all_actor_aliases_task
-from actor_sync_handler import UnifiedSyncHandler
+from handler.actor_sync import UnifiedSyncHandler
 
 logger = logging.getLogger(__name__)
 
@@ -121,10 +121,10 @@ def task_scan_actor_media(processor, subscription_id: int):
         emby_series_seasons_map: dict = {}
         emby_series_name_to_tmdb_id_map: dict = {} # 新增的剧名映射表
 
-        all_libraries = emby_handler.get_emby_libraries(emby_url, emby_api_key, emby_user_id)
+        all_libraries = emby.get_emby_libraries(emby_url, emby_api_key, emby_user_id)
         library_ids_to_scan = [lib['Id'] for lib in all_libraries if lib.get('CollectionType') in ['movies', 'tvshows']]
         
-        emby_items = emby_handler.get_emby_library_items(
+        emby_items = emby.get_emby_library_items(
             base_url=emby_url, api_key=emby_api_key, user_id=emby_user_id,
             library_ids=library_ids_to_scan, media_type_filter="Movie,Series"
         )
@@ -144,7 +144,7 @@ def task_scan_actor_media(processor, subscription_id: int):
 
         if series_to_check:
             for series in series_to_check:
-                seasons = emby_handler.get_series_children(
+                seasons = emby.get_series_children(
                     series_id=series['emby_id'], base_url=emby_url, api_key=emby_api_key,
                     user_id=emby_user_id, include_item_types="Season", fields="IndexNumber"
                 )
@@ -200,7 +200,7 @@ def task_actor_translation(processor):
         # 同时，我们需要一个列表来存储需要获取 original_name 的演员信息
         actors_to_enrich = []
 
-        person_generator = emby_handler.get_all_persons_from_emby(
+        person_generator = emby.get_all_persons_from_emby(
             base_url=processor.emby_url,
             api_key=processor.emby_api_key,
             user_id=processor.emby_user_id,
@@ -338,7 +338,7 @@ def task_actor_translation(processor):
                 # 提交所有更新任务
                 future_to_task = {
                     executor.submit(
-                        emby_handler.update_person_details,
+                        emby.update_person_details,
                         person_id=task[0],
                         new_data={"Name": task[1]},
                         emby_server_url=processor.emby_url,
@@ -409,7 +409,7 @@ def task_merge_duplicate_actors(processor):
         logger.info(f"  ➜ 将扫描 {len(library_ids_to_process)} 个选定媒体库来建立演员-媒体映射...")
         task_manager.update_status_from_thread(5, f"阶段 1/4: 扫描媒体库，建立演员-媒体映射...")
 
-        all_media_items = emby_handler.get_emby_library_items(
+        all_media_items = emby.get_emby_library_items(
             base_url=processor.emby_url, api_key=processor.emby_api_key, user_id=processor.emby_user_id,
             library_ids=library_ids_to_process, media_type_filter="Movie,Series", fields="People"
         )
@@ -431,7 +431,7 @@ def task_merge_duplicate_actors(processor):
         task_manager.update_status_from_thread(25, "阶段 2/4: 扫描所有演员，按TMDb ID分组...")
         
         tmdb_id_to_persons_map = defaultdict(list)
-        person_generator = emby_handler.get_all_persons_from_emby(
+        person_generator = emby.get_all_persons_from_emby(
             base_url=processor.emby_url, api_key=processor.emby_api_key, user_id=processor.emby_user_id,
             stop_event=processor.get_stop_event(),
             force_full_scan=True
@@ -531,7 +531,7 @@ def task_merge_duplicate_actors(processor):
             if media_ids_to_update:
                 logger.info(f"  ➜ 正在将 '{deletee['Name']}' 的 {len(media_ids_to_update)} 个作品转移给 '{keeper['Name']}'...")
                 for media_id in media_ids_to_update:
-                    item_details = emby_handler.get_emby_item_details(media_id, processor.emby_url, processor.emby_api_key, processor.emby_user_id)
+                    item_details = emby.get_emby_item_details(media_id, processor.emby_url, processor.emby_api_key, processor.emby_user_id)
                     if not item_details:
                         logger.error(f"    - 获取媒体项 {media_id} 详情失败，跳过此项的合并。")
                         all_media_updates_succeeded = False
@@ -553,7 +553,7 @@ def task_merge_duplicate_actors(processor):
                             "Type": "Actor", "Role": role_from_deletee
                         })
                     
-                    update_success = emby_handler.update_emby_item_details(
+                    update_success = emby.update_emby_item_details(
                         item_id=media_id, new_data={"People": new_people},
                         emby_server_url=processor.emby_url, emby_api_key=processor.emby_api_key,
                         user_id=processor.emby_user_id
@@ -568,7 +568,7 @@ def task_merge_duplicate_actors(processor):
 
             if all_media_updates_succeeded:
                 logger.info(f"  ➜ 所有媒体项已成功转移，准备删除“小号”演员 '{deletee['Name']}' (ID: {deletee['Id']})...")
-                delete_success = emby_handler.delete_person_custom_api(
+                delete_success = emby.delete_person_custom_api(
                     base_url=processor.emby_url, api_key=processor.emby_api_key, person_id=deletee['Id']
                 )
                 if delete_success:
@@ -622,7 +622,7 @@ def task_purge_ghost_actors(processor):
         task_manager.update_status_from_thread(0, "准备阶段: 正在扫描所有媒体库...")
         
         # 1.1 获取服务器上所有可见的媒体库ID
-        all_libraries = emby_handler.get_emby_libraries(processor.emby_url, processor.emby_api_key, processor.emby_user_id)
+        all_libraries = emby.get_emby_libraries(processor.emby_url, processor.emby_api_key, processor.emby_user_id)
         if not all_libraries:
             task_manager.update_status_from_thread(100, "任务中止：无法获取服务器媒体库列表。")
             return
@@ -631,7 +631,7 @@ def task_purge_ghost_actors(processor):
         logger.info(f"  ➜ 将扫描服务器上的 {len(all_library_ids)} 个媒体库...")
 
         # 1.2 获取所有媒体项
-        all_media_items = emby_handler.get_emby_library_items(
+        all_media_items = emby.get_emby_library_items(
             base_url=processor.emby_url, api_key=processor.emby_api_key, user_id=processor.emby_user_id,
             library_ids=all_library_ids, media_type_filter="Movie,Series", fields="People"
         )
@@ -657,7 +657,7 @@ def task_purge_ghost_actors(processor):
         task_manager.update_status_from_thread(0, "准备阶段: 白名单建立完成，正在扫描演员...")
         
         all_person_items = []
-        person_generator = emby_handler.get_all_persons_from_emby(
+        person_generator = emby.get_all_persons_from_emby(
             base_url=processor.emby_url, api_key=processor.emby_api_key, user_id=processor.emby_user_id,
             stop_event=processor.get_stop_event(), force_full_scan=True
         )
@@ -700,7 +700,7 @@ def task_purge_ghost_actors(processor):
             progress = int(((i + 1) / total_to_delete) * 100)
             task_manager.update_status_from_thread(progress, f"({i+1}/{total_to_delete}) 正在删除幽灵: {person.get('Name')}")
 
-            success = emby_handler.delete_person_custom_api(
+            success = emby.delete_person_custom_api(
                 base_url=processor.emby_url, api_key=processor.emby_api_key, person_id=person_id
             )
             
@@ -751,7 +751,7 @@ def task_purge_unregistered_actors(processor):
         task_manager.update_status_from_thread(10, f"  ➜ 正在从 {len(library_ids_to_process)} 个媒体库中获取所有媒体...")
 
         # 2. 获取指定媒体库中的所有电影和剧集
-        all_media_items = emby_handler.get_emby_library_items(
+        all_media_items = emby.get_emby_library_items(
             base_url=processor.emby_url,
             api_key=processor.emby_api_key,
             user_id=processor.emby_user_id,
@@ -790,7 +790,7 @@ def task_purge_unregistered_actors(processor):
             batch_ids = person_ids_to_fetch[i:i + batch_size]
             logger.debug(f"  ➜ 正在获取批次 {i//batch_size + 1} 的演员详情 ({len(batch_ids)} 个)...")
 
-            person_details_batch = emby_handler.get_emby_items_by_id(
+            person_details_batch = emby.get_emby_items_by_id(
                 base_url=processor.emby_url,
                 api_key=processor.emby_api_key,
                 user_id=processor.emby_user_id,
@@ -839,7 +839,7 @@ def task_purge_unregistered_actors(processor):
             progress = 60 + int((i / total_to_delete) * 40)
             task_manager.update_status_from_thread(progress, f"({i+1}/{total_to_delete}) 正在删除: {person_name}")
 
-            success = emby_handler.delete_person_custom_api(
+            success = emby.delete_person_custom_api(
                 base_url=processor.emby_url,
                 api_key=processor.emby_api_key,
                 person_id=person_id

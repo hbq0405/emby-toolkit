@@ -3,7 +3,7 @@ import logging
 from flask import Blueprint, request, jsonify, session
 
 # 导入我们正确的认证函数和装饰器
-import emby_handler
+import handler.emby as emby
 from extensions import emby_login_required
 
 # 创建蓝图
@@ -21,7 +21,7 @@ def portal_login():
         return jsonify({"status": "error", "message": "用户名和密码不能为空"}), 400
 
     # 1. 直接调用 emby_handler 中的函数，它会自己处理所有细节
-    auth_result = emby_handler.authenticate_emby_user(username, password)
+    auth_result = emby.authenticate_emby_user(username, password)
 
     if not auth_result:
         return jsonify({"status": "error", "message": "用户名或密码错误"}), 401

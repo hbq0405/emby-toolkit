@@ -1,9 +1,9 @@
-# actor_sync_handler.py (最终版)
+# handler/actor_sync.py 
 
 from typing import Optional, Callable
 import threading
 # 导入必要的模块
-import emby_handler
+import handler.emby as emby
 from database.actor_db import ActorDBManager
 from database import connection, actor_db
 import logging
@@ -49,7 +49,7 @@ class UnifiedSyncHandler:
                     emby_server_ids = set() # 用于存储从 Emby 服务器获取到的所有 ID
                     emby_config_for_upsert = {"url": self.emby_url, "api_key": self.emby_api_key, "user_id": self.emby_user_id}
 
-                    person_generator = emby_handler.get_all_persons_from_emby(
+                    person_generator = emby.get_all_persons_from_emby(
                         self.emby_url, self.emby_api_key, self.emby_user_id, stop_event,
                         update_status_callback=update_status_callback
                     )

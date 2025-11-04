@@ -14,7 +14,7 @@ import re
 sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 try:
-    import tmdb_handler
+    import handler.tmdb as tmdb
 except ImportError as e:
     print(f"错误：缺少 tmdb_handler 模块。请确保路径正确。详细信息: {e}")
     sys.exit(1)
@@ -163,7 +163,7 @@ def match_titles_to_tmdb(titles: List[Dict], item_type: str, tmdb_api_key: str) 
         
         if item_type == 'Movie':
             logger.info(f"正在为 Movie '{title}' 搜索TMDb匹配...")
-            results = tmdb_handler.search_media(title, tmdb_api_key, 'Movie')
+            results = tmdb.search_media(title, tmdb_api_key, 'Movie')
             if results:
                 best_match = results[0]
                 tmdb_id = str(best_match.get('id'))
@@ -179,7 +179,7 @@ def match_titles_to_tmdb(titles: List[Dict], item_type: str, tmdb_api_key: str) 
             show_name, season_number = parse_series_title(title)
             logger.debug(f"  ➜ 标题 '{title}' 解析为: 剧名='{show_name}', 季号='{season_number}'")
             
-            results = tmdb_handler.search_media(show_name, tmdb_api_key, 'Series')
+            results = tmdb.search_media(show_name, tmdb_api_key, 'Series')
             
             if not results:
                 logger.warning(f"  ➜ 使用搜索词 '{show_name}' 未能找到任何TMDb匹配项。")

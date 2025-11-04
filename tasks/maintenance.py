@@ -10,7 +10,7 @@ from typing import List, Dict, Any, Tuple, Optional
 
 # 导入需要的底层模块和共享实例
 import task_manager
-import emby_handler
+import handler.emby as emby
 from database import connection, maintenance_db, settings_db
 from psycopg2 import sql
 from psycopg2.extras import execute_values, Json
@@ -537,7 +537,7 @@ def task_scan_for_cleanup_issues(processor):
         # 2. 如果数据库中没有配置（或配置为空列表），则扫描所有媒体库
         if not libs_to_process_ids:
             logger.info("  ➜ 未在清理规则中指定媒体库，将扫描服务器上的所有媒体库。")
-            all_libraries = emby_handler.get_emby_libraries(
+            all_libraries = emby.get_emby_libraries(
                 emby_server_url=processor.emby_url,
                 emby_api_key=processor.emby_api_key,
                 user_id=processor.emby_user_id
@@ -563,7 +563,7 @@ def task_scan_for_cleanup_issues(processor):
         task_manager.update_status_from_thread(5, "正在获取所有电影和分集的ID列表...")
         
         # ★★★ 核心修改：第一步 - 只获取所有 Movie 和 Episode 的 ID ★★★
-        all_item_ids_and_types = emby_handler.get_library_items_for_cleanup(
+        all_item_ids_and_types = emby.get_library_items_for_cleanup(
             base_url=processor.emby_url, api_key=processor.emby_api_key, user_id=processor.emby_user_id,
             media_type_filter="Movie,Episode",
             library_ids=libs_to_process_ids,
@@ -589,7 +589,7 @@ def task_scan_for_cleanup_issues(processor):
             task_manager.update_status_from_thread(progress, f"({i+1}/{total_items}) 正在查询: {item_id}")
 
             # 调用最权威的单点查询API
-            item = emby_handler.get_emby_item_details(item_id, processor.emby_url, processor.emby_api_key, processor.emby_user_id)
+            item = emby.get_emby_item_details(item_id, processor.emby_url, processor.emby_api_key, processor.emby_user_id)
             if not item: continue
 
             # ★★★ 第三步：后续逻辑与之前版本完全相同，因为现在 item 的数据是100%完整的 ★★★
@@ -609,7 +609,7 @@ def task_scan_for_cleanup_issues(processor):
                 if not series_tmdb_id and series_id:
                     if series_id in series_tmdb_id_cache: series_tmdb_id = series_tmdb_id_cache[series_id]
                     else:
-                        series_details = emby_handler.get_emby_item_details(series_id, processor.emby_url, processor.emby_api_key, processor.emby_user_id)
+                        series_details = emby.get_emby_item_details(series_id, processor.emby_url, processor.emby_api_key, processor.emby_user_id)
                         if series_details: series_tmdb_id = series_details.get("ProviderIds", {}).get("Tmdb")
                         series_tmdb_id_cache[series_id] = series_tmdb_id
 
@@ -720,7 +720,7 @@ def task_execute_cleanup(processor, task_ids: List[int], **kwargs):
                         emby_item_id_to_delete = version_id_to_check.replace('mediasource_', '')
                         logger.debug(f"    ➜ 检测到 'mediasource_' 前缀，已移除。实际删除ID: {emby_item_id_to_delete}")
 
-                    success = emby_handler.delete_item(
+                    success = emby.delete_item(
                         item_id=emby_item_id_to_delete,
                         emby_server_url=processor.emby_url,
                         emby_api_key=processor.emby_api_key,

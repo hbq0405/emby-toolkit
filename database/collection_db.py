@@ -8,8 +8,8 @@ from typing import Optional, Dict, Any, List
 from .connection import get_db_connection
 import config_manager
 import constants
-import tmdb_handler
-import emby_handler
+import handler.tmdb as tmdb
+import handler.emby as emby
 logger = logging.getLogger(__name__)
 
 # --- 状态中文翻译字典 ---
@@ -696,9 +696,9 @@ def apply_and_persist_media_correction(collection_id: int, old_tmdb_id: str, new
             
             new_details = None
             if item_type == 'Series':
-                new_details = tmdb_handler.get_tv_details(int(new_tmdb_id), api_key)
+                new_details = tmdb.get_tv_details(int(new_tmdb_id), api_key)
             else:
-                new_details = tmdb_handler.get_movie_details(int(new_tmdb_id), api_key)
+                new_details = tmdb.get_movie_details(int(new_tmdb_id), api_key)
 
             if not new_details:
                 conn.rollback(); return None
@@ -1011,7 +1011,7 @@ def update_user_caches_on_item_add(
     logger.info(f"  ➜ 开始为新入库项目 《{new_item_name}》 更新用户权限缓存...")
     
     try:
-        user_ids_with_access = emby_handler.get_user_ids_with_access_to_item(
+        user_ids_with_access = emby.get_user_ids_with_access_to_item(
             item_id=new_item_emby_id,
             base_url=emby_config['url'],
             api_key=emby_config['api_key']

@@ -6,7 +6,7 @@ import json
 import logging
 
 # 导入需要的底层模块和共享实例
-import emby_handler
+import handler.emby as emby
 import task_manager
 from database import connection, user_db
 from extensions import SYSTEM_UPDATE_MARKERS, SYSTEM_UPDATE_LOCK
@@ -28,7 +28,7 @@ def task_sync_all_user_data(processor):
         emby_key = processor.emby_api_key
         
         # 步骤 1: 从 Emby 获取当前所有用户的权威列表
-        all_users = emby_handler.get_all_emby_users_from_server(emby_url, emby_key)
+        all_users = emby.get_all_emby_users_from_server(emby_url, emby_key)
         if all_users is None: # API 调用失败
             task_manager.update_status_from_thread(-1, "任务失败：无法从Emby获取用户列表。")
             return
@@ -46,11 +46,11 @@ def task_sync_all_user_data(processor):
         ids_to_delete = list(local_user_ids - emby_user_ids)
         
         if ids_to_delete:
-            logger.warning(f"发现 {len(ids_to_delete)} 个用户已在Emby中被删除，将从本地数据库清理...")
+            logger.warning(f"  ➜ 发现 {len(ids_to_delete)} 个用户已在Emby中被删除，将从本地数据库清理...")
             task_manager.update_status_from_thread(8, f"正在清理 {len(ids_to_delete)} 个陈旧用户...")
             user_db.delete_emby_users_by_ids(ids_to_delete)
         else:
-            logger.info("本地用户与Emby用户一致，无需清理。")
+            logger.info("  ➜ 本地用户与Emby用户一致，无需清理。")
 
         # 步骤 3: 更新或插入最新的用户信息到本地缓存 (此逻辑保持不变)
         if not all_users:
@@ -71,7 +71,7 @@ def task_sync_all_user_data(processor):
             progress = 10 + int((i / total_users) * 90) # 进度从10%开始
             task_manager.update_status_from_thread(progress, f"({i+1}/{total_users}) 正在同步用户: {user_name}")
 
-            user_items_with_data = emby_handler.get_all_user_view_data(user_id, emby_url, emby_key)
+            user_items_with_data = emby.get_all_user_view_data(user_id, emby_url, emby_key)
             if not user_items_with_data:
                 continue
             
@@ -171,7 +171,7 @@ def task_check_expired_users(processor):
 
         try:
             # 1. 调用 Emby API 禁用用户
-            success = emby_handler.set_user_disabled_status(
+            success = emby.set_user_disabled_status(
                 user_id, 
                 disable=True, 
                 base_url=emby_url, 
@@ -247,7 +247,7 @@ def task_auto_sync_template_on_policy_change(processor, updated_user_id: str):
                 template_name = cursor.fetchone()['name']
                 logger.info(f"  ➜ ({i+1}/{total_templates}) 正在同步模板 '{template_name}'...")
 
-                user_details = emby_handler.get_user_details(
+                user_details = emby.get_user_details(
                     updated_user_id, config.get("emby_server_url"), config.get("emby_api_key")
                 )
                 if not user_details or 'Policy' not in user_details:
@@ -293,7 +293,7 @@ def task_auto_sync_template_on_policy_change(processor, updated_user_id: str):
                             SYSTEM_UPDATE_MARKERS[user_id_to_push] = time.time()
                         
                         # 现在才真正去调用 Emby API
-                        emby_handler.force_set_user_policy(
+                        emby.force_set_user_policy(
                             user_id_to_push, new_policy_dict,
                             config.get("emby_server_url"), config.get("emby_api_key")
                         )

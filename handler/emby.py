@@ -1,4 +1,4 @@
-# emby_handler.py
+# handler/emby.py
 
 import requests
 import concurrent.futures
@@ -8,6 +8,7 @@ import time
 import json
 import utils
 import threading
+from datetime import date
 # ★★★ 核心修改 1/3: 导入我们需要的配置管理器和常量 ★★★
 import config_manager
 import constants
@@ -1611,7 +1612,7 @@ def get_all_user_view_data(user_id: str, base_url: str, api_key: str) -> Optiona
     log_counter = 0
     LOG_LIMIT = 5 # 只打印前 5 个有用户数据的条目
 
-    logger.debug(f"开始为用户 {user_id} 分批获取所有媒体的用户数据 (魔法日志模式)...")
+    logger.debug(f"开始为用户 {user_id} 分批获取所有媒体的用户数据")
     while True:
         try:
             request_params = params.copy()
@@ -1632,10 +1633,10 @@ def get_all_user_view_data(user_id: str, base_url: str, api_key: str) -> Optiona
                 if user_data.get('Played') or user_data.get('IsFavorite') or user_data.get('PlaybackPositionTicks', 0) > 0:
                     
                     # ★★★ 3. 魔法日志：在这里把原始数据打印出来！★★★
-                    if log_counter < LOG_LIMIT:
-                        # 使用 CRITICAL 级别让它在日志里最显眼，并用 json.dumps 保证完整输出
-                        logger.critical(f"  ➜ [魔法日志] 捕获到原始 Emby Item 数据: {json.dumps(item, indent=2, ensure_ascii=False)}")
-                        log_counter += 1
+                    # if log_counter < LOG_LIMIT:
+                    #     # 使用 CRITICAL 级别让它在日志里最显眼，并用 json.dumps 保证完整输出
+                    #     logger.critical(f"  ➜ [魔法日志] 捕获到原始 Emby Item 数据: {json.dumps(item, indent=2, ensure_ascii=False)}")
+                    #     log_counter += 1
 
                     all_items_with_data.append(item)
             

@@ -5,7 +5,7 @@ import logging
 
 import requests
 
-import emby_handler
+import handler.emby as emby
 import config_manager
 import task_manager
 import extensions
@@ -30,7 +30,7 @@ def api_search_emby_library():
 
     try:
         # ✨✨✨ 调用改造后的函数，并传入 search_term ✨✨✨
-        search_results = emby_handler.get_emby_library_items(
+        search_results = emby.get_emby_library_items(
             base_url=extensions.media_processor_instance.emby_url,
             api_key=extensions.media_processor_instance.emby_api_key,
             user_id=extensions.media_processor_instance.emby_user_id,
@@ -227,7 +227,7 @@ def api_preview_processed_cast(item_id):
 
     # 步骤 1: 获取当前媒体的 Emby 详情
     try:
-        item_details = emby_handler.get_emby_item_details(
+        item_details = emby.get_emby_item_details(
             item_id,
             extensions.media_processor_instance.emby_url,
             extensions.media_processor_instance.emby_api_key,
@@ -281,7 +281,7 @@ def api_get_emby_libraries():
         return jsonify({"error": "Emby配置不完整或服务未就绪"}), 500
 
     # 调用通用的函数，它会返回完整的列表
-    full_libraries_list = emby_handler.get_emby_libraries(
+    full_libraries_list = emby.get_emby_libraries(
         extensions.media_processor_instance.emby_url,
         extensions.media_processor_instance.emby_api_key,
         extensions.media_processor_instance.emby_user_id

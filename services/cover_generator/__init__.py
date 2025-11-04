@@ -9,7 +9,7 @@ from pathlib import Path
 from typing import Dict, Any, List, Tuple, Optional
 
 import config_manager
-import emby_handler 
+import handler.emby as emby 
 from .styles.style_single_1 import create_style_single_1
 from .styles.style_single_2 import create_style_single_2
 from .styles.style_multi_1 import create_style_multi_1
@@ -127,7 +127,7 @@ class CoverGeneratorService:
         
         api_limit = limit * 5 if limit < 10 else limit * 2 
 
-        all_items = emby_handler.get_emby_library_items(
+        all_items = emby.get_emby_library_items(
             base_url=base_url, api_key=api_key, user_id=user_id,
             library_ids=[library_id],
             media_type_filter=media_type_to_fetch,
@@ -186,7 +186,7 @@ class CoverGeneratorService:
             if len(path_parts) >= 4 and path_parts[1] == 'Items' and path_parts[3] == 'Images':
                 item_id = path_parts[2]
                 image_type = path_parts[4]
-                success = emby_handler.download_emby_image(
+                success = emby.download_emby_image(
                     item_id=item_id, image_type=image_type, image_tag=image_tag,
                     save_path=str(filepath), emby_server_url=base_url, emby_api_key=api_key
                 )

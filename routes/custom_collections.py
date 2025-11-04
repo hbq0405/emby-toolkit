@@ -13,12 +13,12 @@ from database import connection
 from database import settings_db
 import config_manager
 import task_manager
-import moviepilot_handler
-import emby_handler
+import handler.moviepilot as moviepilot
+import handler.emby as emby
 from extensions import admin_required, any_login_required
-from custom_collection_handler import FilterEngine
+from handler.custom_collection import FilterEngine
 from utils import get_country_translation_map, UNIFIED_RATING_CATEGORIES, get_tmdb_country_options, KEYWORD_TRANSLATION_MAP
-from tmdb_handler import get_movie_genres_tmdb, get_tv_genres_tmdb, search_companies_tmdb, search_person_tmdb
+from handler.tmdb import get_movie_genres_tmdb, get_tv_genres_tmdb, search_companies_tmdb, search_person_tmdb
 # 1. 创建自定义合集蓝图
 custom_collections_bp = Blueprint('custom_collections', __name__, url_prefix='/api/custom_collections')
 
@@ -47,7 +47,7 @@ def api_get_emby_users():
                 return jsonify({"error": "Emby服务器配置不完整"}), 500
             
             # 这个函数需要你自己添加到 emby_handler.py 中
-            live_users = emby_handler.get_all_emby_users_from_server(emby_url, emby_key)
+            live_users = emby.get_all_emby_users_from_server(emby_url, emby_key)
             
             if live_users is None:
                 return jsonify({"error": "无法从Emby获取用户列表"}), 500
@@ -253,7 +253,7 @@ def api_delete_custom_collection(collection_id):
             logger.info(f"  ➜ 正在删除合集 '{collection_name}' (Emby ID: {emby_id_to_empty})...")
             
             # ★★★ 调用我们全新的、真正有效的清空函数 ★★★
-            emby_handler.empty_collection_in_emby(
+            emby.empty_collection_in_emby(
                 collection_id=emby_id_to_empty,
                 base_url=config_manager.APP_CONFIG.get('emby_server_url'),
                 api_key=config_manager.APP_CONFIG.get('emby_api_key'),
@@ -442,10 +442,10 @@ def api_subscribe_media_from_custom_collection():
         success = False
         if authoritative_type == 'Movie':
             movie_info = {"tmdb_id": tmdb_id, "title": authoritative_title}
-            success = moviepilot_handler.subscribe_movie_to_moviepilot(movie_info, config_manager.APP_CONFIG)
+            success = moviepilot.subscribe_movie_to_moviepilot(movie_info, config_manager.APP_CONFIG)
         elif authoritative_type == 'Series':
             series_info = {"tmdb_id": tmdb_id, "title": authoritative_title}
-            success = moviepilot_handler.subscribe_series_to_moviepilot(series_info, season_number=season_to_subscribe, config=config_manager.APP_CONFIG)
+            success = moviepilot.subscribe_series_to_moviepilot(series_info, season_number=season_to_subscribe, config=config_manager.APP_CONFIG)
         
         if not success:
             return jsonify({"error": "提交到 MoviePilot 失败，请检查日志。"}), 500
@@ -521,7 +521,7 @@ def api_get_emby_libraries_for_filter():
             return jsonify({"error": "Emby 服务器配置不完整"}), 500
 
         # 调用 emby_handler 获取原始的媒体库/视图列表
-        all_views = emby_handler.get_emby_libraries(emby_url, emby_key, emby_user_id)
+        all_views = emby.get_emby_libraries(emby_url, emby_key, emby_user_id)
         if all_views is None:
             return jsonify({"error": "无法从 Emby 获取媒体库列表"}), 500
 

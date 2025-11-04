@@ -4,7 +4,7 @@
 import logging
 
 # 导入需要的底层模块和共享实例
-import emby_handler
+import handler.emby as emby
 import task_manager
 from database import settings_db, collection_db
 from services.cover_generator import CoverGeneratorService
@@ -35,7 +35,7 @@ def task_generate_all_covers(processor):
 
         # 2. 获取媒体库列表
         task_manager.update_status_from_thread(5, "正在获取所有媒体库列表...")
-        all_libraries = emby_handler.get_emby_libraries(
+        all_libraries = emby.get_emby_libraries(
             emby_server_url=processor.emby_url,
             emby_api_key=processor.emby_api_key,
             user_id=processor.emby_user_id
@@ -105,7 +105,7 @@ def task_generate_all_covers(processor):
 
                 item_count = 0
                 if library_id and item_type_to_query:
-                    item_count = emby_handler.get_item_count(
+                    item_count = emby.get_item_count(
                         base_url=processor.emby_url,
                         api_key=processor.emby_api_key,
                         user_id=processor.emby_user_id,
@@ -175,7 +175,7 @@ def task_generate_all_custom_collection_covers(processor):
             
             try:
                 # a. 获取完整的Emby合集详情，这是封面生成器需要的
-                emby_collection_details = emby_handler.get_emby_item_details(
+                emby_collection_details = emby.get_emby_item_details(
                     emby_collection_id, processor.emby_url, processor.emby_api_key, processor.emby_user_id
                 )
                 if not emby_collection_details:

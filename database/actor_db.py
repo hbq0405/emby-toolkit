@@ -6,7 +6,7 @@ from typing import Optional, Dict, Any, List, Tuple
 
 from .connection import get_db_connection
 from utils import contains_chinese
-from emby_handler import get_emby_item_details
+from handler.emby import get_emby_item_details
 from config_manager import APP_CONFIG
 import extensions 
 logger = logging.getLogger(__name__)

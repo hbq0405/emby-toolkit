@@ -9,10 +9,10 @@ import concurrent.futures
 # 导入需要的底层模块和共享实例
 import config_manager
 import constants
-import emby_handler
+import handler.emby as emby
 import extensions
 import task_manager
-import moviepilot_handler
+import handler.moviepilot as moviepilot
 from database import connection, watchlist_db, settings_db
 from psycopg2.extras import execute_values
 
@@ -103,7 +103,7 @@ def task_add_all_series_to_watchlist(processor):
         
         if not library_ids_to_process:
             logger.info("  ➜ 未在配置中指定媒体库，将自动扫描所有剧集/混合媒体库...")
-            all_libraries = emby_handler.get_emby_libraries(emby_url, emby_api_key, emby_user_id)
+            all_libraries = emby.get_emby_libraries(emby_url, emby_api_key, emby_user_id)
             if all_libraries:
                 # 筛选出所有电视剧库和混合内容库
                 libraries_to_scan = [
@@ -134,7 +134,7 @@ def task_add_all_series_to_watchlist(processor):
             """线程工作函数：从单个媒体库获取剧集"""
             try:
                 # ★★★ 关键点：这里的 library_ids 参数现在接收的是精确的用户选择 ★★★
-                items = emby_handler.get_emby_library_items(
+                items = emby.get_emby_library_items(
                     base_url=emby_url, api_key=emby_api_key, user_id=emby_user_id,
                     library_ids=[library_id], media_type_filter="Series"
                 )
@@ -271,7 +271,7 @@ def task_batch_subscribe_gaps(processor, item_ids: List[str]):
                 quota_exhausted = True
                 break
 
-            success = moviepilot_handler.subscribe_series_to_moviepilot(
+            success = moviepilot.subscribe_series_to_moviepilot(
                 series_info=series_info,
                 season_number=season_num,
                 config=config,

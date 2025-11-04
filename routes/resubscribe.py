@@ -5,10 +5,10 @@ import logging
 
 import tasks
 import task_manager
-import moviepilot_handler
+import handler.moviepilot as moviepilot
 import config_manager
 import extensions
-import emby_handler
+import handler.emby as emby
 from extensions import admin_required, task_lock_required
 from database import resubscribe_db, settings_db
 resubscribe_bp = Blueprint('resubscribe', __name__, url_prefix='/api/resubscribe')
@@ -187,7 +187,7 @@ def resubscribe_single_item():
             return jsonify({"error": "构建订阅请求失败，请检查日志。"}), 500
         
         # 4. 发送订阅
-        success = moviepilot_handler.subscribe_with_custom_payload(payload, processor.config)
+        success = moviepilot.subscribe_with_custom_payload(payload, processor.config)
         
         if success:
             settings_db.decrement_subscription_quota()
@@ -213,7 +213,7 @@ def resubscribe_single_item():
                 else:
                     id_to_delete = item_details_for_payload.get('emby_item_id') or item_id # 对于电影或剧集，优先使用 emby_item_id，否则回退到 item_id
 
-                delete_success = emby_handler.delete_item(
+                delete_success = emby.delete_item(
                     item_id=id_to_delete, emby_server_url=processor.emby_url,
                     emby_api_key=processor.emby_api_key, user_id=processor.emby_user_id
                 )
@@ -248,7 +248,7 @@ def get_emby_libraries_for_rules():
            not extensions.media_processor_instance.emby_api_key:
             return jsonify({"error": "Emby配置不完整或服务未就绪"}), 503
 
-        full_libraries_list = emby_handler.get_emby_libraries(
+        full_libraries_list = emby.get_emby_libraries(
             extensions.media_processor_instance.emby_url,
             extensions.media_processor_instance.emby_api_key,
             extensions.media_processor_instance.emby_user_id

@@ -13,9 +13,9 @@ from gevent import spawn_later
 # 导入需要的模块
 import task_manager
 
-import emby_handler
+import handler.emby as emby
 import config_manager
-import telegram_handler
+import handler.telegram as telegram
 import constants
 import extensions
 from extensions import SYSTEM_UPDATE_MARKERS, SYSTEM_UPDATE_LOCK, RECURSION_SUPPRESSION_WINDOW
@@ -27,11 +27,11 @@ from tasks import (
     task_sync_images,
     task_apply_main_cast_to_episodes
 )
-from custom_collection_handler import FilterEngine
+from handler.custom_collection import FilterEngine
 from services.cover_generator import CoverGeneratorService
 from database import collection_db, connection, settings_db, user_db
 from database.log_db import LogDBManager
-from tmdb_handler import get_movie_details, get_tv_details
+from handler.tmdb import get_movie_details, get_tv_details
 import logging
 logger = logging.getLogger(__name__)
 
@@ -57,7 +57,7 @@ def _handle_full_processing_flow(processor: 'MediaProcessor', item_id: str, forc
         logger.error(f"完整处理流程中止：核心处理器 (MediaProcessor) 未初始化。")
         return
 
-    item_details = emby_handler.get_emby_item_details(item_id, processor.emby_url, processor.emby_api_key, processor.emby_user_id)
+    item_details = emby.get_emby_item_details(item_id, processor.emby_url, processor.emby_api_key, processor.emby_user_id)
     if not item_details:
         logger.error(f"  ➜ 无法获取项目 {item_id} 的详情，任务中止。")
         return
@@ -85,7 +85,7 @@ def _handle_full_processing_flow(processor: 'MediaProcessor', item_id: str, forc
             return
 
         # ▼▼▼ 步骤 1: 将获取媒体库信息的逻辑提前 ▼▼▼
-        library_info = emby_handler.get_library_root_for_item(item_id, processor.emby_url, processor.emby_api_key, processor.emby_user_id)
+        library_info = emby.get_library_root_for_item(item_id, processor.emby_url, processor.emby_api_key, processor.emby_user_id)
         if not library_info:
             logger.warning(f"  ➜ 无法为项目 '{item_name_for_log}' 定位到其所属的媒体库根，将无法进行基于媒体库的合集匹配。")
             # 注意：这里我们只记录警告，不中止任务，因为可能还有不限制媒体库的合集需要匹配
@@ -103,7 +103,7 @@ def _handle_full_processing_flow(processor: 'MediaProcessor', item_id: str, forc
             logger.info(f"  ➜ 《{item_name}》匹配到 {len(matching_filter_collections)} 个筛选类合集，正在追加...")
             for collection in matching_filter_collections:
                 # 步骤 1: 更新 Emby 实体合集
-                emby_handler.append_item_to_collection(
+                emby.append_item_to_collection(
                     collection_id=collection['emby_collection_id'],
                     item_emby_id=item_id,
                     base_url=processor.emby_url,
@@ -132,7 +132,7 @@ def _handle_full_processing_flow(processor: 'MediaProcessor', item_id: str, forc
         if updated_list_collections:
             logger.info(f"  ➜ 《{item_name}》匹配到 {len(updated_list_collections)} 个榜单类合集，正在追加...")
             for collection_info in updated_list_collections:
-                emby_handler.append_item_to_collection(
+                emby.append_item_to_collection(
                     collection_id=collection_info['emby_collection_id'],
                     item_emby_id=item_id,
                     base_url=processor.emby_url,
@@ -185,7 +185,7 @@ def _handle_full_processing_flow(processor: 'MediaProcessor', item_id: str, forc
             
             item_count = 0
             if library_id and item_type_to_query:
-                item_count = emby_handler.get_item_count(base_url=processor.emby_url, api_key=processor.emby_api_key, user_id=processor.emby_user_id, parent_id=library_id, item_type=item_type_to_query) or 0
+                item_count = emby.get_item_count(base_url=processor.emby_url, api_key=processor.emby_api_key, user_id=processor.emby_user_id, parent_id=library_id, item_type=item_type_to_query) or 0
             
             logger.info(f"  ➜ 正在为媒体库 '{library_name}' 生成封面 (当前实时数量: {item_count}) ---")
             cover_service = CoverGeneratorService(config=cover_config)
@@ -219,7 +219,7 @@ def _handle_full_processing_flow(processor: 'MediaProcessor', item_id: str, forc
     # ======================================================================
     try:
         # 直接调用 telegram_handler 中的新函数，传递所需参数
-        telegram_handler.send_media_notification(
+        telegram.send_media_notification(
             item_details=item_details, 
             notification_type='new', 
             new_episode_ids=new_episode_ids
@@ -254,7 +254,7 @@ def _process_batch_webhook_events():
         parent_type = item_type
         
         if item_type == "Episode":
-            series_id = emby_handler.get_series_id_from_child_id(
+            series_id = emby.get_series_id_from_child_id(
                 item_id, extensions.media_processor_instance.emby_url,
                 extensions.media_processor_instance.emby_api_key, extensions.media_processor_instance.emby_user_id, item_name=item_name
             )
@@ -270,7 +270,7 @@ def _process_batch_webhook_events():
             
             # 更新父项的名字（只需一次）
             if not parent_items[parent_id]["name"]:
-                series_details = emby_handler.get_emby_item_details(parent_id, extensions.media_processor_instance.emby_url, extensions.media_processor_instance.emby_api_key, extensions.media_processor_instance.emby_user_id, fields="Name")
+                series_details = emby.get_emby_item_details(parent_id, extensions.media_processor_instance.emby_url, extensions.media_processor_instance.emby_api_key, extensions.media_processor_instance.emby_user_id, fields="Name")
                 parent_items[parent_id]["name"] = series_details.get("Name", item_name) if series_details else item_name
         else:
             # 如果事件是电影或剧集容器本身，也记录下来
@@ -297,7 +297,7 @@ def _process_batch_webhook_events():
                 logger.info(f"  ➜ [前置判断] 检测到新入库剧集 '{parent_name}'，正在检查本地缓存...")
                 
                 # 1. 先获取TMDb ID
-                item_details_for_check = emby_handler.get_emby_item_details(parent_id, extensions.media_processor_instance.emby_url, extensions.media_processor_instance.emby_api_key, extensions.media_processor_instance.emby_user_id, fields="ProviderIds")
+                item_details_for_check = emby.get_emby_item_details(parent_id, extensions.media_processor_instance.emby_url, extensions.media_processor_instance.emby_api_key, extensions.media_processor_instance.emby_user_id, fields="ProviderIds")
                 tmdb_id_for_check = (item_details_for_check.get("ProviderIds", {}) if item_details_for_check else {}).get("Tmdb")
 
                 if tmdb_id_for_check:
@@ -480,7 +480,7 @@ def emby_webhook():
         if item_type_from_webhook in ['Movie', 'Series']:
             id_to_update_in_db = item_id_from_webhook
         elif item_type_from_webhook == 'Episode':
-            series_id = emby_handler.get_series_id_from_child_id(
+            series_id = emby.get_series_id_from_child_id(
                 item_id=item_id_from_webhook,
                 base_url=config_manager.APP_CONFIG.get("emby_server_url"),
                 api_key=config_manager.APP_CONFIG.get("emby_api_key"),
@@ -526,7 +526,7 @@ def emby_webhook():
                 item_name_for_log = f"ID:{id_to_update_in_db}"
                 try:
                     # 为了日志，只请求 Name 字段，提高效率
-                    item_details_for_log = emby_handler.get_emby_item_details(
+                    item_details_for_log = emby.get_emby_item_details(
                         item_id=id_to_update_in_db,
                         emby_server_url=config_manager.APP_CONFIG.get("emby_server_url"),
                         emby_api_key=config_manager.APP_CONFIG.get("emby_api_key"),
@@ -667,7 +667,7 @@ def emby_webhook():
     name_for_task = original_item_name
     
     if original_item_type == "Episode":
-        series_id = emby_handler.get_series_id_from_child_id(
+        series_id = emby.get_series_id_from_child_id(
             original_item_id, extensions.media_processor_instance.emby_url,
             extensions.media_processor_instance.emby_api_key, extensions.media_processor_instance.emby_user_id, item_name=original_item_name
         )
@@ -676,7 +676,7 @@ def emby_webhook():
             return jsonify({"status": "event_ignored_episode_no_series_id"}), 200
         id_to_process = series_id
         
-        full_series_details = emby_handler.get_emby_item_details(
+        full_series_details = emby.get_emby_item_details(
             item_id=id_to_process, emby_server_url=extensions.media_processor_instance.emby_url,
             emby_api_key=extensions.media_processor_instance.emby_api_key, user_id=extensions.media_processor_instance.emby_user_id
         )

@@ -6,7 +6,7 @@ from datetime import datetime, date
 # 导入需要的模块
 
 import config_manager
-import moviepilot_handler
+import handler.moviepilot as moviepilot
 import task_manager
 import extensions
 import constants
@@ -235,7 +235,7 @@ def api_subscribe_series_to_moviepilot():
         }
         
         # 调用 handler 函数执行实际的订阅操作
-        success = moviepilot_handler.subscribe_series_to_moviepilot(
+        success = moviepilot.subscribe_series_to_moviepilot(
             series_info=series_info,
             season_number=season_number,
             config=config_manager.APP_CONFIG
@@ -277,7 +277,7 @@ def api_subscribe_gap_season():
         use_best_version = config.get(constants.CONFIG_OPTION_RESUBSCRIBE_USE_BEST_VERSION, False)
         best_version_param = 1 if use_best_version else None
         
-        success = moviepilot_handler.subscribe_series_to_moviepilot(
+        success = moviepilot.subscribe_series_to_moviepilot(
             series_info=series_info,
             season_number=season_number,
             config=config,

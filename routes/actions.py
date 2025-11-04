@@ -19,9 +19,9 @@ logger = logging.getLogger(__name__)
 @admin_required
 def api_reprocess_item(item_id):
     from tasks import task_reprocess_single_item # 延迟导入
-    import emby_handler
+    import handler.emby as emby
 
-    item_details = emby_handler.get_emby_item_details(
+    item_details = emby.get_emby_item_details(
         item_id,
         extensions.media_processor_instance.emby_url,
         extensions.media_processor_instance.emby_api_key,

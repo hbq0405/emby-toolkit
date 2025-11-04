@@ -1,10 +1,10 @@
-# 文件: telegram_handler.py (V2 - 图文版)
+# 文件: handler/telegram.py (V2 - 图文版)
 import requests
 import logging
 from datetime import datetime
 from config_manager import APP_CONFIG, get_proxies_for_requests
-from tmdb_handler import get_movie_details, get_tv_details
-from emby_handler import get_emby_item_details
+from handler.tmdb import get_movie_details, get_tv_details
+from handler.emby import get_emby_item_details
 from database import user_db
 import constants
 

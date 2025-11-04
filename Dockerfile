@@ -47,29 +47,22 @@ RUN pip install --no-cache-dir -r requirements.txt
 # 这样，你每次修改代码，只会让这一层和后面的缓存失效。
 COPY web_app.py \
      core_processor.py \
-     douban.py \
-     tmdb_handler.py \
-     emby_handler.py \
      utils.py \
      logger_setup.py \
      constants.py \
      ai_translator.py \
      watchlist_processor.py \
-     actor_sync_handler.py \
      actor_utils.py \
      actor_subscription_processor.py \
-     moviepilot_handler.py \
      config_manager.py \
      task_manager.py \
      extensions.py \
-     github_handler.py \
-     custom_collection_handler.py \
      scheduler_manager.py \
      reverse_proxy.py \
      maoyan_fetcher.py \
-     telegram_handler.py \
      ./
 
+COPY handler/ ./handler/
 COPY database/ ./database/
 COPY tasks/ ./tasks/
 COPY fonts/ ./fonts/

@@ -1,4 +1,4 @@
-# tmdb_handler.py
+# handler/tmdb.py
 
 import requests
 from requests.adapters import HTTPAdapter

@@ -6,11 +6,11 @@ import psycopg2
 from datetime import datetime, timedelta, timezone
 from flask import Blueprint, request, jsonify
 
-import emby_handler
-import moviepilot_handler
+import handler.emby as emby
+import handler.moviepilot as moviepilot
 import config_manager
 import constants
-from telegram_handler import send_telegram_message
+from handler.telegram import send_telegram_message
 from extensions import admin_required
 from database import connection, user_db, settings_db
 
@@ -57,7 +57,7 @@ def create_template():
 
     try:
         config = config_manager.APP_CONFIG
-        user_details = emby_handler.get_user_details(
+        user_details = emby.get_user_details(
             source_emby_user_id, config.get("emby_server_url"), config.get("emby_api_key")
         )
         if not user_details or 'Policy' not in user_details:
@@ -123,7 +123,7 @@ def sync_template(template_id):
             logger.info(f"正在为模板 '{template_name}' 从源用户 {source_user_id} 同步最新权限和首选项...")
 
             config = config_manager.APP_CONFIG
-            user_details = emby_handler.get_user_details(
+            user_details = emby.get_user_details(
                 source_user_id, config.get("emby_server_url"), config.get("emby_api_key")
             )
             if not user_details or 'Policy' not in user_details: return jsonify({"status": "error", "message": "无法获取源用户的最新权限策略。"}), 404
@@ -158,7 +158,7 @@ def sync_template(template_id):
                     logger.info(f"  ➜ 正在将新配置应用到用户 '{user_name}'...")
                     
                     # ★★★ 核心修正：将 (...) 替换为完整的函数参数 ★★★
-                    policy_applied = emby_handler.force_set_user_policy(
+                    policy_applied = emby.force_set_user_policy(
                         user_id, 
                         new_policy_dict,
                         config.get("emby_server_url"), 
@@ -167,7 +167,7 @@ def sync_template(template_id):
                     
                     config_applied = True
                     if new_config_dict:
-                        config_applied = emby_handler.force_set_user_configuration(
+                        config_applied = emby.force_set_user_configuration(
                             user_id, new_config_dict,
                             config.get("emby_server_url"), config.get("emby_api_key")
                         )
@@ -304,14 +304,14 @@ def register_with_invite():
                 return jsonify({"status": "error", "message": "内部错误：找不到关联的模板"}), 500
 
             config = config_manager.APP_CONFIG
-            if emby_handler.check_if_user_exists(username, config.get("emby_server_url"), config.get("emby_api_key")):
+            if emby.check_if_user_exists(username, config.get("emby_server_url"), config.get("emby_api_key")):
                 conn.rollback()
                 return jsonify({"status": "error", "message": "该用户名已被占用"}), 409
 
             # ★★★ 核心修改点 ★★★
 
             # 1. 调用【纯净版】的创建函数，它不再需要 policy 参数
-            new_user_id = emby_handler.create_user_with_policy(
+            new_user_id = emby.create_user_with_policy(
                 username, password,
                 config.get("emby_server_url"), config.get("emby_api_key")
             )
@@ -322,7 +322,7 @@ def register_with_invite():
             # 2. 用户创建成功后，立刻调用强制设置函数，应用模板中的完整 Policy
             # 这一步和之前一样，现在是它唯一负责设置权限的地方
             template_policy = template['emby_policy_json']
-            policy_applied = emby_handler.force_set_user_policy(
+            policy_applied = emby.force_set_user_policy(
                 new_user_id, template_policy,
                 config.get("emby_server_url"), config.get("emby_api_key")
             )
@@ -335,7 +335,7 @@ def register_with_invite():
             template_config = template.get('emby_configuration_json')
             if template_config:
                 logger.info(f"正在为新用户 {username} 应用模板中的个性化首选项...")
-                emby_handler.force_set_user_configuration(
+                emby.force_set_user_configuration(
                     new_user_id, template_config,
                     config.get("emby_server_url"), config.get("emby_api_key")
                 )
@@ -456,7 +456,7 @@ def get_all_managed_users():
     """
     try:
         config = config_manager.APP_CONFIG
-        all_emby_users = emby_handler.get_all_emby_users_from_server(
+        all_emby_users = emby.get_all_emby_users_from_server(
             config.get("emby_server_url"), config.get("emby_api_key")
         )
         if all_emby_users is None:
@@ -546,7 +546,7 @@ def change_user_template(user_id):
             
             # 2. 应用权限
             template_policy = template['emby_policy_json']
-            policy_applied = emby_handler.force_set_user_policy(
+            policy_applied = emby.force_set_user_policy(
                 user_id, template_policy,
                 config.get("emby_server_url"), config.get("emby_api_key")
             )
@@ -557,7 +557,7 @@ def change_user_template(user_id):
             # 3. 应用首选项
             template_config = template.get('emby_configuration_json')
             if template_config:
-                emby_handler.force_set_user_configuration(
+                emby.force_set_user_configuration(
                     user_id, template_config,
                     config.get("emby_server_url"), config.get("emby_api_key")
                 )
@@ -601,7 +601,7 @@ def set_user_status(user_id):
     logger.info(f"  ➜ 准备为用户 '{user_name_for_log}' 执行 '{action_text}' 操作...")
     
     config = config_manager.APP_CONFIG
-    success = emby_handler.set_user_disabled_status(
+    success = emby.set_user_disabled_status(
         user_id, disable, config.get("emby_server_url"), config.get("emby_api_key")
     )
     
@@ -682,7 +682,7 @@ def delete_user(user_id):
     except Exception:
         pass # 获取失败则继续使用ID
 
-    emby_delete_success = emby_handler.delete_emby_user(user_id)
+    emby_delete_success = emby.delete_emby_user(user_id)
     
     if emby_delete_success:
         try:
@@ -812,11 +812,11 @@ def batch_approve_subscriptions():
             
             if item_type == 'Movie':
                 mp_payload = { "name": req_details['item_name'], "tmdbid": int(req_details['tmdb_id']), "type": "电影" }
-                if moviepilot_handler.subscribe_with_custom_payload(mp_payload, config):
+                if moviepilot.subscribe_with_custom_payload(mp_payload, config):
                     subscription_successful = True
             elif item_type == 'Series':
                 series_info = { "tmdb_id": int(req_details['tmdb_id']), "item_name": req_details['item_name'] }
-                subscription_results = moviepilot_handler.smart_subscribe_series(series_info, config)
+                subscription_results = moviepilot.smart_subscribe_series(series_info, config)
                 if subscription_results is not None:
                     subscription_successful = True
             

@@ -12,11 +12,11 @@ from typing import Dict, Any
 # 导入需要的底层模块和共享实例
 import config_manager
 import constants
-import emby_handler
+import handler.emby as emby
 import task_manager
-import tmdb_handler
+import handler.tmdb as tmdb
 from database import collection_db, connection, settings_db
-from custom_collection_handler import ListImporter, FilterEngine
+from handler.custom_collection import ListImporter, FilterEngine
 from services.cover_generator import CoverGeneratorService
 
 logger = logging.getLogger(__name__)
@@ -81,7 +81,7 @@ def _perform_list_collection_health_check(
     # 2. 并发获取所有TMDb详情
     all_media_details_unordered = []
     with ThreadPoolExecutor(max_workers=5) as executor:
-        f_to_item = {executor.submit(tmdb_handler.get_movie_details if item['type'] != 'Series' else tmdb_handler.get_tv_details, item['id'], tmdb_api_key): item for item in tmdb_items}
+        f_to_item = {executor.submit(tmdb.get_movie_details if item['type'] != 'Series' else tmdb.get_tv_details, item['id'], tmdb_api_key): item for item in tmdb_items}
         for future in as_completed(f_to_item):
             try:
                 detail = future.result()
@@ -147,7 +147,7 @@ def _process_single_collection_concurrently(collection_data: dict, tmdb_api_key:
     if not tmdb_id:
         status = "unlinked"
     else:
-        details = tmdb_handler.get_collection_details_tmdb(int(tmdb_id), tmdb_api_key)
+        details = tmdb.get_collection_details_tmdb(int(tmdb_id), tmdb_api_key)
         if not details or "parts" not in details:
             status = "tmdb_error"
         else:
@@ -215,7 +215,7 @@ def task_refresh_collections(processor):
     """
     task_manager.update_status_from_thread(0, "正在获取 Emby 合集列表...")
     try:
-        emby_collections = emby_handler.get_all_collections_with_items(
+        emby_collections = emby.get_all_collections_with_items(
             base_url=processor.emby_url, api_key=processor.emby_api_key, user_id=processor.emby_user_id
         )
         if emby_collections is None: raise RuntimeError("从 Emby 获取合集列表失败")
@@ -390,12 +390,12 @@ def task_process_all_custom_collections(processor):
         # 步骤 1: 获取所有用户权限
         # ======================================================================
         task_manager.update_status_from_thread(0, "正在获取所有Emby用户及权限...")
-        all_emby_users = emby_handler.get_all_emby_users_from_server(processor.emby_url, processor.emby_api_key)
+        all_emby_users = emby.get_all_emby_users_from_server(processor.emby_url, processor.emby_api_key)
         if not all_emby_users: raise RuntimeError("无法从Emby获取用户列表")
         
         user_permissions_map = {}
         with ThreadPoolExecutor(max_workers=10) as executor:
-            future_to_user = {executor.submit(emby_handler.get_all_accessible_item_ids_for_user_optimized, processor.emby_url, processor.emby_api_key, user['Id']): user for user in all_emby_users}
+            future_to_user = {executor.submit(emby.get_all_accessible_item_ids_for_user_optimized, processor.emby_url, processor.emby_api_key, user['Id']): user for user in all_emby_users}
             for future in as_completed(future_to_user):
                 user = future_to_user[future]
                 try:
@@ -415,11 +415,11 @@ def task_process_all_custom_collections(processor):
         total_collections = len(active_collections)
         task_manager.update_status_from_thread(12, "正在从Emby获取全库媒体数据...")
         libs_to_process_ids = processor.config.get("libraries_to_process", [])
-        all_emby_items = emby_handler.get_emby_library_items(base_url=processor.emby_url, api_key=processor.emby_api_key, user_id=processor.emby_user_id, media_type_filter="Movie,Series", library_ids=libs_to_process_ids) or []
+        all_emby_items = emby.get_emby_library_items(base_url=processor.emby_url, api_key=processor.emby_api_key, user_id=processor.emby_user_id, media_type_filter="Movie,Series", library_ids=libs_to_process_ids) or []
         tmdb_to_emby_item_map = {item['ProviderIds']['Tmdb']: item for item in all_emby_items if item.get('ProviderIds', {}).get('Tmdb')}
         
         task_manager.update_status_from_thread(15, "正在从Emby获取现有合集列表...")
-        all_emby_collections = emby_handler.get_all_collections_from_emby_generic(base_url=processor.emby_url, api_key=processor.emby_api_key, user_id=processor.emby_user_id) or []
+        all_emby_collections = emby.get_all_collections_from_emby_generic(base_url=processor.emby_url, api_key=processor.emby_api_key, user_id=processor.emby_user_id) or []
         prefetched_collection_map = {coll.get('Name', '').lower(): coll for coll in all_emby_collections}
 
         # ★★★ 封面生成逻辑 - 初始化 ★★★
@@ -466,7 +466,7 @@ def task_process_all_custom_collections(processor):
                 global_ordered_emby_ids = [tmdb_to_emby_item_map[item['id']]['Id'] for item in tmdb_items if item['id'] in tmdb_to_emby_item_map]
 
                 # --- B. 创建/更新 Emby 物理合集 (逻辑不变) ---
-                emby_collection_id = emby_handler.create_or_update_collection_with_emby_ids(
+                emby_collection_id = emby.create_or_update_collection_with_emby_ids(
                     collection_name=collection_name, emby_ids_in_library=global_ordered_emby_ids, 
                     base_url=processor.emby_url, api_key=processor.emby_api_key, user_id=processor.emby_user_id,
                     prefetched_collection_map=prefetched_collection_map
@@ -500,7 +500,7 @@ def task_process_all_custom_collections(processor):
                 # ★★★ 封面生成逻辑 - 调用 ★★★
                 if cover_service and emby_collection_id:
                     try:
-                        library_info = emby_handler.get_emby_item_details(emby_collection_id, processor.emby_url, processor.emby_api_key, processor.emby_user_id)
+                        library_info = emby.get_emby_item_details(emby_collection_id, processor.emby_url, processor.emby_api_key, processor.emby_user_id)
                         if library_info:
                             latest_collection_info = collection_db.get_custom_collection_by_id(collection_id)
                             item_count_to_pass = _get_cover_badge_text_for_collection(latest_collection_info)
@@ -544,12 +544,12 @@ def process_single_custom_collection(processor, custom_collection_id: int):
         # 步骤 1: 获取所有用户权限
         # ======================================================================
         task_manager.update_status_from_thread(0, "正在获取所有Emby用户及权限...")
-        all_emby_users = emby_handler.get_all_emby_users_from_server(processor.emby_url, processor.emby_api_key)
+        all_emby_users = emby.get_all_emby_users_from_server(processor.emby_url, processor.emby_api_key)
         if not all_emby_users: raise RuntimeError("无法获取用户列表")
         
         user_permissions_map = {}
         with ThreadPoolExecutor(max_workers=10) as executor:
-            future_to_user = {executor.submit(emby_handler.get_all_accessible_item_ids_for_user_optimized, processor.emby_url, processor.emby_api_key, user['Id']): user for user in all_emby_users}
+            future_to_user = {executor.submit(emby.get_all_accessible_item_ids_for_user_optimized, processor.emby_url, processor.emby_api_key, user['Id']): user for user in all_emby_users}
             for future in as_completed(future_to_user):
                 user = future_to_user[future]
                 try:
@@ -588,12 +588,12 @@ def process_single_custom_collection(processor, custom_collection_id: int):
             return
 
         libs_to_process_ids = processor.config.get("libraries_to_process", [])
-        all_emby_items = emby_handler.get_emby_library_items(base_url=processor.emby_url, api_key=processor.emby_api_key, user_id=processor.emby_user_id, media_type_filter="Movie,Series", library_ids=libs_to_process_ids) or []
+        all_emby_items = emby.get_emby_library_items(base_url=processor.emby_url, api_key=processor.emby_api_key, user_id=processor.emby_user_id, media_type_filter="Movie,Series", library_ids=libs_to_process_ids) or []
         tmdb_to_emby_item_map = {item['ProviderIds']['Tmdb']: item for item in all_emby_items if item.get('ProviderIds', {}).get('Tmdb')}
         global_ordered_emby_ids = [tmdb_to_emby_item_map[item['id']]['Id'] for item in tmdb_items if item['id'] in tmdb_to_emby_item_map]
 
         task_manager.update_status_from_thread(70, "正在Emby中创建/更新合集...")
-        emby_collection_id = emby_handler.create_or_update_collection_with_emby_ids(
+        emby_collection_id = emby.create_or_update_collection_with_emby_ids(
             collection_name=collection_name, emby_ids_in_library=global_ordered_emby_ids, 
             base_url=processor.emby_url, api_key=processor.emby_api_key, user_id=processor.emby_user_id
         )
@@ -635,7 +635,7 @@ def process_single_custom_collection(processor, custom_collection_id: int):
             cover_config = settings_db.get_setting('cover_generator_config') or {}
             if cover_config.get("enabled") and emby_collection_id:
                 cover_service = CoverGeneratorService(config=cover_config)
-                library_info = emby_handler.get_emby_item_details(emby_collection_id, processor.emby_url, processor.emby_api_key, processor.emby_user_id)
+                library_info = emby.get_emby_item_details(emby_collection_id, processor.emby_url, processor.emby_api_key, processor.emby_user_id)
                 if library_info:
                     latest_collection_info = collection_db.get_custom_collection_by_id(custom_collection_id)
                     item_count_to_pass = _get_cover_badge_text_for_collection(latest_collection_info)

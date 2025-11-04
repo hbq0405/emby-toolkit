@@ -5,10 +5,10 @@ from flask import Blueprint, jsonify, session, request
 
 from extensions import emby_login_required # 保护我们的新接口
 from database import user_db, settings_db
-import moviepilot_handler # ★ 1. 导入我们的 MP 处理器
+import handler.moviepilot as moviepilot # ★ 1. 导入我们的 MP 处理器
 import config_manager     # ★ 2. 导入配置管理器，因为 MP 处理器需要它
 import constants
-from telegram_handler import send_telegram_message
+from handler.telegram import send_telegram_message
 
 # 1. 创建一个新的蓝图
 user_portal_bp = Blueprint('user_portal_bp', __name__, url_prefix='/api/portal')
@@ -58,7 +58,7 @@ def request_subscription():
         
         if item_type == 'Movie':
             mp_payload = { "name": data.get('item_name'), "tmdbid": int(data.get('tmdb_id')), "type": "电影" }
-            if moviepilot_handler.subscribe_with_custom_payload(mp_payload, config):
+            if moviepilot.subscribe_with_custom_payload(mp_payload, config):
                 settings_db.decrement_subscription_quota()
                 user_db.create_subscription_request(
                     emby_user_id=emby_user_id, tmdb_id=str(data.get('tmdb_id')),
@@ -70,7 +70,7 @@ def request_subscription():
         
         elif item_type == 'Series':
             series_info = { "tmdb_id": int(data.get('tmdb_id')), "item_name": data.get('item_name') }
-            subscription_results = moviepilot_handler.smart_subscribe_series(series_info, config)
+            subscription_results = moviepilot.smart_subscribe_series(series_info, config)
 
             if subscription_results is not None:
                 # ★★★ V4 优化：记录订阅的季数 ★★★

@@ -8,7 +8,7 @@ import json
 from database import collection_db
 from database import settings_db
 import config_manager
-import moviepilot_handler
+import handler.moviepilot as moviepilot
 from extensions import admin_required, task_lock_required, processor_ready_required
 
 # 1. 创建电影合集蓝图
@@ -50,7 +50,7 @@ def api_subscribe_moviepilot():
         'title': title
     }
     # 2. 调用业务逻辑函数
-    success = moviepilot_handler.subscribe_movie_to_moviepilot(movie_info, config_manager.APP_CONFIG)
+    success = moviepilot.subscribe_movie_to_moviepilot(movie_info, config_manager.APP_CONFIG)
     if success:
         # 配额消耗
         settings_db.decrement_subscription_quota()
@@ -98,7 +98,7 @@ def api_subscribe_all_missing():
                         logger.warning("API: 配额用尽，停止剩余电影订阅。")
                         break  # 退出循环，停止继续订阅
 
-                    success = moviepilot_handler.subscribe_movie_to_moviepilot(movie, config_manager.APP_CONFIG)
+                    success = moviepilot.subscribe_movie_to_moviepilot(movie, config_manager.APP_CONFIG)
                     if success:
                         movie['status'] = 'subscribed'
                         total_subscribed_count += 1

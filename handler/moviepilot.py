@@ -1,4 +1,4 @@
-# moviepilot_handler.py
+# handler/moviepilot.py
 
 import requests
 import re

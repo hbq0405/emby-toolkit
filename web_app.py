@@ -7,9 +7,9 @@ import shutil
 import threading
 from datetime import datetime, timezone # Added timezone for image.update
 from jinja2 import Environment, FileSystemLoader
-from actor_sync_handler import UnifiedSyncHandler
-import emby_handler
-import moviepilot_handler
+from handler.actor_sync import UnifiedSyncHandler
+import handler.emby as emby
+import handler.moviepilot as moviepilot
 import utils
 from tasks import *
 import extensions
@@ -18,9 +18,9 @@ from werkzeug.utils import safe_join, secure_filename
 from watchlist_processor import WatchlistProcessor
 from datetime import datetime
 import requests
-import tmdb_handler
+import handler
 import task_manager
-from douban import DoubanApi
+from handler.douban import DoubanApi
 from tasks import get_task_registry 
 from typing import Optional, Dict, Any, List, Tuple, Union # 确保 List 被导入
 from apscheduler.schedulers.background import BackgroundScheduler
@@ -135,7 +135,7 @@ def initialize_processors():
     emby_url = current_config.get("emby_server_url")
     emby_key = current_config.get("emby_api_key")
     if emby_url and emby_key:
-        server_info = emby_handler.get_emby_server_info(emby_url, emby_key)
+        server_info = handler.emby.get_emby_server_info(emby_url, emby_key)
         if server_info and server_info.get("Id"):
             server_id_local = server_info.get("Id")
             logger.trace(f"成功获取到 Emby Server ID: {server_id_local}")

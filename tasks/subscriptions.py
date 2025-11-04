@@ -12,9 +12,9 @@ from concurrent.futures import ThreadPoolExecutor, as_completed # <--- 就是加
 # 导入需要的底层模块和共享实例
 import config_manager
 import constants
-import emby_handler
-import tmdb_handler
-import moviepilot_handler
+import handler.emby as emby
+import handler.tmdb as tmdb
+import handler.moviepilot as moviepilot
 import task_manager
 from database import connection, settings_db, resubscribe_db, collection_db
 from .helpers import _get_standardized_effect, _extract_quality_tag_from_filename
@@ -153,7 +153,7 @@ def _check_and_get_series_best_version_flag(series_tmdb_id: int, tmdb_api_key: s
     try:
         if season_number is not None:
             # 检查单季是否完结
-            season_details = tmdb_handler.get_tv_details(series_tmdb_id, season_number, tmdb_api_key)
+            season_details = tmdb.get_tv_details(series_tmdb_id, season_number, tmdb_api_key)
             if season_details and season_details.get('episodes'):
                 last_episode = season_details['episodes'][-1]
                 last_air_date_str = last_episode.get('air_date')
@@ -163,7 +163,7 @@ def _check_and_get_series_best_version_flag(series_tmdb_id: int, tmdb_api_key: s
                         logger.info(f"  ➜ 《{series_name}》第 {season_number} 季已完结，将以洗版模式订阅。")
                         return 1
         else:
-            series_details = tmdb_handler.get_tv_details(series_tmdb_id, tmdb_api_key)
+            series_details = tmdb.get_tv_details(series_tmdb_id, tmdb_api_key)
             if series_details and (last_episode_to_air := series_details.get('last_episode_to_air')):
                 last_air_date_str = last_episode_to_air.get('air_date')
                 if last_air_date_str:
@@ -243,7 +243,7 @@ def task_auto_subscribe(processor):
                                     movies_to_keep.append(movie)
                                     break
 
-                                if moviepilot_handler.subscribe_movie_to_moviepilot(movie, config_manager.APP_CONFIG):
+                                if moviepilot.subscribe_movie_to_moviepilot(movie, config_manager.APP_CONFIG):
                                     settings_db.decrement_subscription_quota()
                                     subscription_details.append({'module': '原生合集', 'source': collection.get('name', '未知合集'), 'item': f"电影《{movie['title']}》"})
                                     movies_changed = True
@@ -309,7 +309,7 @@ def task_auto_subscribe(processor):
                                     series_name=series_name
                                 )
                                 
-                                success = moviepilot_handler.subscribe_series_to_moviepilot(
+                                success = moviepilot.subscribe_series_to_moviepilot(
                                     series_info=dict(series), season_number=season['season_number'], 
                                     config=config_manager.APP_CONFIG, best_version=best_version_flag
                                 )
@@ -371,7 +371,7 @@ def task_auto_subscribe(processor):
                         log_mode = "洗版模式" if use_best_version else "普通模式"
                         logger.info(f"  ➜ 准备为《{series_name}》第 {season_num} 季提交订阅 ({log_mode})...")
 
-                        success = moviepilot_handler.subscribe_series_to_moviepilot(
+                        success = moviepilot.subscribe_series_to_moviepilot(
                             series_info=dict(series), 
                             season_number=season_num, 
                             config=config_manager.APP_CONFIG, 
@@ -422,7 +422,7 @@ def task_auto_subscribe(processor):
                                     authoritative_type = 'Series' if media_item.get('media_type') == 'Series' else 'Movie'
 
                                     if authoritative_type == 'Movie':
-                                        success = moviepilot_handler.subscribe_movie_to_moviepilot(media_item, config_manager.APP_CONFIG)
+                                        success = moviepilot.subscribe_movie_to_moviepilot(media_item, config_manager.APP_CONFIG)
                                     elif authoritative_type == 'Series':
                                         # --- 检查剧集是否完结 ---
                                         best_version_flag = _check_and_get_series_best_version_flag(
@@ -431,7 +431,7 @@ def task_auto_subscribe(processor):
                                             series_name=media_title
                                         )
                                         series_info = { "item_name": media_title, "tmdb_id": media_tmdb_id }
-                                        success = moviepilot_handler.subscribe_series_to_moviepilot(
+                                        success = moviepilot.subscribe_series_to_moviepilot(
                                             series_info, season_number=None, 
                                             config=config_manager.APP_CONFIG, best_version=best_version_flag
                                         )
@@ -491,7 +491,7 @@ def task_auto_subscribe(processor):
                     
                     if media_item['media_type'] == 'Movie':
                         movie_info = {'title': media_title, 'tmdb_id': media_tmdb_id}
-                        success = moviepilot_handler.subscribe_movie_to_moviepilot(movie_info, config_manager.APP_CONFIG)
+                        success = moviepilot.subscribe_movie_to_moviepilot(movie_info, config_manager.APP_CONFIG)
                     elif media_item['media_type'] == 'Series':
                         # --- 检查剧集是否完结 ---
                         best_version_flag = _check_and_get_series_best_version_flag(
@@ -500,7 +500,7 @@ def task_auto_subscribe(processor):
                             series_name=media_title
                         )
                         series_info = {"item_name": media_title, "tmdb_id": media_tmdb_id}
-                        success = moviepilot_handler.subscribe_series_to_moviepilot(
+                        success = moviepilot.subscribe_series_to_moviepilot(
                             series_info, season_number=None, 
                             config=config_manager.APP_CONFIG, best_version=best_version_flag
                         )
@@ -972,7 +972,7 @@ def task_resubscribe_batch(processor, item_ids: List[str]):
                 continue # 跳过这个项目，继续下一个
 
             # 3. 发送订阅
-            success = moviepilot_handler.subscribe_with_custom_payload(payload, config)
+            success = moviepilot.subscribe_with_custom_payload(payload, config)
             
             if success:
                 settings_db.decrement_subscription_quota()
@@ -982,7 +982,7 @@ def task_resubscribe_batch(processor, item_ids: List[str]):
                 rule = next((r for r in all_rules if r['id'] == matched_rule_id), None) if matched_rule_id else None
 
                 if rule and rule.get('delete_after_resubscribe'):
-                    delete_success = emby_handler.delete_item(
+                    delete_success = emby.delete_item(
                         item_id=item_id, emby_server_url=processor.emby_url,
                         emby_api_key=processor.emby_api_key, user_id=processor.emby_user_id
                     )
@@ -1056,7 +1056,7 @@ def task_resubscribe_library(processor):
                 continue # 跳过这个项目，继续下一个
 
             # 3. 发送订阅
-            success = moviepilot_handler.subscribe_with_custom_payload(payload, config)
+            success = moviepilot.subscribe_with_custom_payload(payload, config)
             
             if success:
                 settings_db.decrement_subscription_quota()
@@ -1079,7 +1079,7 @@ def task_resubscribe_library(processor):
                     else:
                         id_to_delete = item.get('emby_item_id') or item_id # 对于电影或剧集，优先使用 emby_item_id，否则回退到 item_id
 
-                    delete_success = emby_handler.delete_item(
+                    delete_success = emby.delete_item(
                         item_id=id_to_delete, 
                         emby_server_url=processor.emby_url,
                         emby_api_key=processor.emby_api_key, user_id=processor.emby_user_id
@@ -1147,7 +1147,7 @@ def task_delete_batch(processor, item_ids: List[str]):
             else:
                 id_to_delete = item.get('emby_item_id') or item_id # 对于电影或剧集，优先使用 emby_item_id，否则回退到 item_id
 
-            delete_success = emby_handler.delete_item(
+            delete_success = emby.delete_item(
                 item_id=id_to_delete, 
                 emby_server_url=processor.emby_url,
                 emby_api_key=processor.emby_api_key, user_id=processor.emby_user_id
@@ -1188,7 +1188,7 @@ def task_update_resubscribe_cache(processor, force_full_update: bool = False):
             return
         
         task_manager.update_status_from_thread(10, f"正在从 {len(libs_to_process_ids)} 个目标库中获取项目...")
-        all_items_base_info = emby_handler.get_emby_library_items(
+        all_items_base_info = emby.get_emby_library_items(
             base_url=processor.emby_url, api_key=processor.emby_api_key, user_id=processor.emby_user_id,
             media_type_filter="Movie,Series", library_ids=libs_to_process_ids,
             fields="ProviderIds,Name,Type,ChildCount,_SourceLibraryId"
@@ -1260,7 +1260,7 @@ def task_update_resubscribe_cache(processor, force_full_update: bool = False):
                 if not applicable_rule:
                     return { "item_id": item_id, "status": 'ok', "reason": "无匹配规则" }
                 
-                item_details = emby_handler.get_emby_item_details(item_id, processor.emby_url, processor.emby_api_key, processor.emby_user_id)
+                item_details = emby.get_emby_item_details(item_id, processor.emby_url, processor.emby_api_key, processor.emby_user_id)
                 if not item_details: return None
                 
                 tmdb_id = item_details.get("ProviderIds", {}).get("Tmdb")
@@ -1269,7 +1269,7 @@ def task_update_resubscribe_cache(processor, force_full_update: bool = False):
 
                 # ★★★ 核心改造：如果是剧集，则按季处理 ★★★
                 if item_type == 'Series':
-                    seasons = emby_handler.get_series_seasons(item_id, processor.emby_url, processor.emby_api_key, processor.emby_user_id)
+                    seasons = emby.get_series_seasons(item_id, processor.emby_url, processor.emby_api_key, processor.emby_user_id)
                     if not seasons:
                         return None # 如果剧集没有季信息，则跳过
 
@@ -1284,9 +1284,9 @@ def task_update_resubscribe_cache(processor, force_full_update: bool = False):
                         season_item_id = f"{item_id}-S{season_number}"
                         
                         first_episode_details = None
-                        first_episode_list = emby_handler.get_season_children(season_id, processor.emby_url, processor.emby_api_key, processor.emby_user_id, fields="Id", limit=1)
+                        first_episode_list = emby.get_season_children(season_id, processor.emby_url, processor.emby_api_key, processor.emby_user_id, fields="Id", limit=1)
                         if first_episode_list and (first_episode_id := first_episode_list[0].get('Id')):
-                            first_episode_details = emby_handler.get_emby_item_details(first_episode_id, processor.emby_url, processor.emby_api_key, processor.emby_user_id)
+                            first_episode_details = emby.get_emby_item_details(first_episode_id, processor.emby_url, processor.emby_api_key, processor.emby_user_id)
 
                         if not first_episode_details:
                             needs_resubscribe, reason = False, "季内容为空"
