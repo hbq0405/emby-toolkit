@@ -579,6 +579,16 @@ def batch_approve_subscription_requests(request_ids: List[int], processed_by: st
         logger.error(f"DB: 批量批准订阅请求失败: {e}", exc_info=True)
         raise
 
+def get_multiple_subscription_request_details(request_ids: list) -> list:
+            """根据ID列表获取多个订阅请求的详情。"""
+            if not request_ids:
+                return []
+            with get_db_connection() as conn:
+                cursor = conn.cursor()
+                # 使用 ANY 操作符来查询列表中的所有ID
+                cursor.execute("SELECT * FROM subscription_requests WHERE id = ANY(%s)", (request_ids,))
+                return [dict(row) for row in cursor.fetchall()]
+
 def batch_reject_subscription_requests(request_ids: List[int], reason: Optional[str] = None, processed_by: str = 'admin') -> int:
     """
     批量拒绝订阅请求。

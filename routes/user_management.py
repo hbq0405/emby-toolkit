@@ -783,7 +783,7 @@ def get_pending_subscriptions():
 @user_management_bp.route('/api/admin/subscriptions/batch-approve', methods=['POST'])
 @admin_required
 def batch_approve_subscriptions():
-    """批量批准订阅请求。"""
+    """【V3 - 通知合并版】批量批准订阅请求，并为同一用户合并通知。"""
     data = request.json
     request_ids = data.get('ids', [])
 
@@ -791,21 +791,22 @@ def batch_approve_subscriptions():
         return jsonify({"status": "error", "message": "未提供任何订阅请求ID"}), 400
 
     try:
-        # 1. 检查配额 (批量操作只检查一次总配额)
         current_quota = settings_db.get_subscription_quota()
         if current_quota <= 0:
             logger.warning(f"管理员尝试批量批准请求，但配额已用尽。")
             return jsonify({"status": "error", "message": "今日订阅配额已用尽，无法批准请求。"}), 429
 
-        # 2. 批量更新数据库状态并获取已批准请求的详情
         approved_requests = user_db.batch_approve_subscription_requests(request_ids)
         
         if not approved_requests:
             return jsonify({"status": "ok", "message": "没有新的请求被批准或请求已处理。"}), 200
 
-        # 3. 批量提交给 MoviePilot 并扣除配额
         config = config_manager.APP_CONFIG
         successful_subscriptions = 0
+        
+        # ★★★ 核心修改 1/3：创建一个用于分组通知的字典 ★★★
+        notifications_to_send = {}
+
         for req_details in approved_requests:
             item_type = req_details['item_type']
             subscription_successful = False
@@ -822,24 +823,39 @@ def batch_approve_subscriptions():
             
             if subscription_successful:
                 successful_subscriptions += 1
-                settings_db.decrement_subscription_quota() # 每次成功订阅扣除配额
+                settings_db.decrement_subscription_quota()
+                
+                # ★★★ 核心修改 2/3：将成功的请求按用户ID分组 ★★★
+                subscriber_id = req_details.get('emby_user_id')
+                if subscriber_id not in notifications_to_send:
+                    notifications_to_send[subscriber_id] = []
+                notifications_to_send[subscriber_id].append(req_details)
             else:
                 logger.error(f"批量批准：提交请求 {req_details['id']} 到 MoviePilot 失败。")
-                # 如果 MoviePilot 失败，将该请求的状态改回 pending 或标记为处理失败
-                # 这里为了简化，我们暂时不回滚，但实际应用中可能需要更复杂的错误处理
         
-        # 4. 发送通知 (可以考虑批量通知或逐个通知)
-        for req_details in approved_requests:
+        # ★★★ 核心修改 3/3：循环分组后的字典，构建并发送合并通知 ★★★
+        for subscriber_id, user_requests in notifications_to_send.items():
             try:
-                item_name = req_details.get('item_name')
-                item_type_text = "电影" if req_details.get('item_type') == 'Movie' else "电视剧"
-                subscriber_id = req_details.get('emby_user_id')
                 subscriber_chat_id = user_db.get_user_telegram_chat_id(subscriber_id)
                 if subscriber_chat_id:
-                    personal_message = f"✅ *您的订阅审核已通过*\n\n您想看的 *{item_type_text}*: `{item_name}` 已经成功加入订阅列表！祝观影愉快！"
+                    # 构建消息内容
+                    approved_items_list = []
+                    for req in user_requests:
+                        item_type_text = "电影" if req.get('item_type') == 'Movie' else "电视剧"
+                        approved_items_list.append(f"· *{item_type_text}*: `{req.get('item_name')}`")
+                    
+                    approved_items_str = "\n".join(approved_items_list)
+                    
+                    # 生成最终的合并消息
+                    personal_message = (
+                        f"✅ *您的 {len(user_requests)} 个订阅审核已通过*\n\n"
+                        f"您想看的内容已成功加入订阅列表：\n"
+                        f"{approved_items_str}\n\n"
+                        f"祝观影愉快！"
+                    )
                     send_telegram_message(subscriber_chat_id, personal_message)
             except Exception as e:
-                logger.error(f"发送批量批准通知时发生错误: {e}")
+                logger.error(f"为用户 {subscriber_id} 发送批量批准的合并通知时发生错误: {e}")
 
         return jsonify({"status": "ok", "message": f"成功批准并提交了 {successful_subscriptions} 条订阅请求！"}), 200
     except Exception as e:
@@ -849,7 +865,7 @@ def batch_approve_subscriptions():
 @user_management_bp.route('/api/admin/subscriptions/batch-reject', methods=['POST'])
 @admin_required
 def batch_reject_subscriptions():
-    """批量拒绝订阅请求。"""
+    """【V2 - 通知合并版】批量拒绝订阅请求，并为同一用户合并通知。"""
     data = request.json
     request_ids = data.get('ids', [])
     reason = data.get('reason')
@@ -858,22 +874,40 @@ def batch_reject_subscriptions():
         return jsonify({"status": "error", "message": "未提供任何订阅请求ID"}), 400
 
     try:
+        # ★★★ 核心修改 1/3：在更新数据库前，先获取这些请求的详细信息用于后续通知 ★★★
+        requests_to_notify = user_db.get_multiple_subscription_request_details(request_ids)
+        
         updated_count = user_db.batch_reject_subscription_requests(request_ids, reason)
         
-        # 发送通知
-        for request_id in request_ids:
+        # ★★★ 核心修改 2/3：按用户ID对要通知的请求进行分组 ★★★
+        notifications_to_send = {}
+        for req_details in requests_to_notify:
+            subscriber_id = req_details.get('emby_user_id')
+            if subscriber_id not in notifications_to_send:
+                notifications_to_send[subscriber_id] = []
+            notifications_to_send[subscriber_id].append(req_details)
+
+        # ★★★ 核心修改 3/3：循环分组，构建并发送合并通知 ★★★
+        for subscriber_id, user_requests in notifications_to_send.items():
             try:
-                req_details = user_db.get_subscription_request_details(request_id)
-                if req_details:
-                    subscriber_id = req_details.get('emby_user_id')
-                    subscriber_chat_id = user_db.get_user_telegram_chat_id(subscriber_id)
-                    if subscriber_chat_id:
-                        item_name = req_details.get('item_name')
-                        reason_text = f"\n\n*拒绝理由*: {reason}" if reason else ""
-                        message_text = f"❌ *您的订阅请求已被拒绝*\n\n您想看的 *{item_name}* 未能通过审核。{reason_text}"
-                        send_telegram_message(subscriber_chat_id, message_text)
+                subscriber_chat_id = user_db.get_user_telegram_chat_id(subscriber_id)
+                if subscriber_chat_id:
+                    # 构建被拒绝的项目列表
+                    rejected_items_list = [f"`{req.get('item_name')}`" for req in user_requests]
+                    rejected_items_str = "\n".join(rejected_items_list)
+                    
+                    reason_text = f"\n\n*拒绝理由*: {reason}" if reason else ""
+                    
+                    # 生成最终的合并消息
+                    message_text = (
+                        f"❌ *您的 {len(user_requests)} 个订阅请求已被拒绝*\n\n"
+                        f"您想看的以下内容未能通过审核：\n"
+                        f"{rejected_items_str}"
+                        f"{reason_text}"
+                    )
+                    send_telegram_message(subscriber_chat_id, message_text)
             except Exception as e:
-                logger.error(f"发送批量拒绝通知时发生错误 for request {request_id}: {e}")
+                logger.error(f"为用户 {subscriber_id} 发送批量拒绝的合并通知时发生错误: {e}")
 
         return jsonify({"status": "ok", "message": f"成功拒绝了 {updated_count} 条订阅请求。"}), 200
     except Exception as e:
