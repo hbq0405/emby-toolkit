@@ -24,16 +24,28 @@
                 {{ accountInfo.expiration_date ? new Date(accountInfo.expiration_date).toLocaleString() : '永久有效' }}
               </n-descriptions-item>
               <!-- 账号等级 -->
-              <n-descriptions-item label="账号等级">
-                <strong>{{ accountInfo.template_name || '未分配' }}</strong>
+              <n-descriptions-item label="账户等级">
+                <!-- 如果 authStore 说当前用户是管理员，就优先显示“管理员” -->
+                <strong v-if="authStore.isAdmin">管理员</strong>
+                <!-- 否则，才显示从后端获取的模板名称 -->
+                <strong v-else>{{ accountInfo.template_name || '未分配' }}</strong>
               </n-descriptions-item>
+              
               <!-- 等级说明 -->
               <n-descriptions-item label="等级说明">
-                {{ accountInfo.template_description || '无' }}
+                <!-- 同样，管理员有专属的说明 -->
+                <span v-if="authStore.isAdmin">拥有系统所有管理权限</span>
+                <span v-else>{{ accountInfo.template_description || '无' }}</span>
               </n-descriptions-item>
+              
               <!-- 订阅权限 -->
               <n-descriptions-item label="订阅权限">
-                <n-tag :type="accountInfo.allow_unrestricted_subscriptions ? 'success' : 'warning'">
+                <!-- 管理员永远显示“免审核订阅” -->
+                <n-tag v-if="authStore.isAdmin" type="success">
+                  免审核订阅
+                </n-tag>
+                <!-- 其他用户则根据后端返回的权限来显示 -->
+                <n-tag v-else :type="accountInfo.allow_unrestricted_subscriptions ? 'success' : 'warning'">
                   {{ accountInfo.allow_unrestricted_subscriptions ? '免审核订阅' : '需管理员审核' }}
                 </n-tag>
               </n-descriptions-item>
