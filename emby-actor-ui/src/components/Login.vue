@@ -64,8 +64,11 @@ async function handleLogin() {
     });
 
     message.success('登录成功！');
-    router.push({ name: 'DatabaseStats' }); 
-
+    if (loginType.value === 'local') {
+      router.push({ name: 'DatabaseStats' });
+    } else {
+      router.push({ name: 'UserCenter' });
+    }
   } catch (error) {
     const errorMessage = error.response?.data?.message || error.message || '登录失败，请检查网络或联系管理员';
     message.error(errorMessage);
