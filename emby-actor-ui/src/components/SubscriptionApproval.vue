@@ -129,7 +129,10 @@ const handleReject = async () => {
 const handleApprove = async (row) => {
   processingId.value = row.id;
   try {
-    const response = await axios.post('/api/admin/subscriptions/approve', { id: row.id });
+    // 和批量批准调用同一个接口，并把 id 包装成数组
+    const response = await axios.post('/api/admin/subscriptions/batch-approve', {
+      ids: [row.id] // <--- 核心修改点
+    });
     message.success(response.data.message || '订阅批准成功！');
     fetchData();
   } catch (error) {
