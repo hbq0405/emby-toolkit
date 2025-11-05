@@ -70,7 +70,7 @@ def get_subscription_quota() -> int:
             last_reset_date = state.get('last_reset_date')
             
             if last_reset_date != today_str:
-                logger.info(f"检测到新的一天 ({today_str})，正在重置订阅配额为 {current_max_quota}。")
+                logger.info(f"  ➜ 检测到新的一天 ({today_str})，正在重置订阅配额为 {current_max_quota}。")
                 new_state = {
                     'current_quota': current_max_quota,
                     'last_reset_date': today_str,
@@ -92,7 +92,7 @@ def get_subscription_quota() -> int:
                 final_remaining_quota = min(effective_remaining_quota, current_max_quota)
                 
                 if final_remaining_quota != current_quota_in_db or max_quota_on_reset == -1:
-                    logger.info(f"动态调整或修正了当日订阅配额。旧剩余: {current_quota_in_db}, 新剩余: {final_remaining_quota}, 当前上限: {current_max_quota}")
+                    logger.info(f"  ➜ 动态调整或修正了当日订阅配额。旧剩余: {current_quota_in_db}, 新剩余: {final_remaining_quota}, 当前上限: {current_max_quota}")
                     new_state = {
                         'current_quota': final_remaining_quota,
                         'last_reset_date': today_str,
@@ -119,7 +119,7 @@ def decrement_subscription_quota() -> bool:
                 
                 if not row or not row.get('value_json'):
                     conn.rollback()
-                    logger.warning("尝试减少配额，但未找到配额状态记录。")
+                    logger.warning("  ➜ 尝试减少配额，但未找到配额状态记录。")
                     return False
 
                 state = row['value_json']
@@ -134,10 +134,10 @@ def decrement_subscription_quota() -> bool:
                 return True
             except Exception as e_trans:
                 conn.rollback()
-                logger.error(f"减少配额的数据库事务失败: {e_trans}", exc_info=True)
+                logger.error(f"  ➜ 减少配额的数据库事务失败: {e_trans}", exc_info=True)
                 return False
     except Exception as e:
-        logger.error(f"减少订阅配额时发生严重错误: {e}", exc_info=True)
+        logger.error(f"  ➜ 减少订阅配额时发生严重错误: {e}", exc_info=True)
         return False
     
 def remove_item_from_recommendation_pool(tmdb_id: str):
@@ -151,14 +151,14 @@ def remove_item_from_recommendation_pool(tmdb_id: str):
                 result = cursor.fetchone()
                 
                 if not result or not result['value_json']:
-                    logger.info("推荐池为空或不存在，无需移除。")
+                    logger.debug("  ➜ 推荐池为空或不存在，无需移除。")
                     return
 
                 current_pool = result['value_json']
                 new_pool = [item for item in current_pool if str(item.get('id')) != str(tmdb_id)]
 
                 if len(new_pool) == len(current_pool):
-                    logger.warning(f"尝试从推荐池移除 TMDB ID {tmdb_id}，但未在池中找到。")
+                    logger.warning(f"  ➜ 尝试从推荐池移除 TMDB ID {tmdb_id}，但未在池中找到。")
                     return
 
                 new_pool_json = json.dumps(new_pool, ensure_ascii=False)

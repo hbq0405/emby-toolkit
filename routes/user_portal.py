@@ -42,7 +42,7 @@ def request_subscription():
         # --- VIP 或管理员的自动订阅逻辑 (拥有最高优先级) ---
         # 这个通道里，不检查任何 existing_status，直接往下走！
         log_user_type = "管理员" if is_emby_admin else "VIP 用户"
-        logger.info(f"【VIP通道】{log_user_type} '{emby_username}' 的订阅请求已自动批准...")
+        logger.info(f"  ➜ 【VIP通道】{log_user_type} '{emby_username}' 的订阅请求已自动批准...")
         
         if settings_db.get_subscription_quota() <= 0:
             logger.warning(f"{log_user_type} {emby_user_id} 尝试自动订阅，但配额已用尽。")
