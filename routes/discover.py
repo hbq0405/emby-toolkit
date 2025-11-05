@@ -6,7 +6,7 @@ from extensions import any_login_required
 import handler.tmdb as tmdb
 from utils import KEYWORD_ID_MAP, contains_chinese
 from database import user_db, media_db, settings_db
-from tasks.discover import task_update_daily_recommendation
+from tasks.discover import task_update_daily_recommendation, task_replenish_recommendation_pool
 import task_manager
 
 discover_bp = Blueprint('discover_bp', __name__, url_prefix='/api/discover')
@@ -241,3 +241,32 @@ def trigger_recommendation_update():
     except Exception as e:
         logger.error(f"自动触发每日推荐任务时失败: {e}", exc_info=True)
         return jsonify({"error": "启动任务失败"}), 500
+    
+def check_and_replenish_pool():
+    """
+    【V2 - 修正版】
+    检查推荐池库存，如果低于阈值则触发后台补货任务。
+    这个函数应该在订阅成功后被调用。
+    """
+    try:
+        # ★ 核心修正：分两步安全地获取推荐池数据
+        # 1. 先用正确的单个参数获取设置
+        pool_data = settings_db.get_setting('recommendation_pool')
+        # 2. 如果返回的是 None (比如第一次运行还没有这个设置)，则视为空列表
+        pool = pool_data or []
+        
+        # 定义库存阈值
+        REPLENISH_THRESHOLD = 5 
+
+        if len(pool) < REPLENISH_THRESHOLD:
+            logger.info(f"  ➜ 推荐池库存 ({len(pool)}) 低于阈值 ({REPLENISH_THRESHOLD})，触发后台补货任务。")
+            task_manager.submit_task(
+                task_function=task_replenish_recommendation_pool,
+                task_name="补充每日推荐池",
+                processor_type='media'
+            )
+        else:
+            logger.debug(f"  ➜ 推荐池库存充足 ({len(pool)})，无需补货。")
+            
+    except Exception as e:
+        logger.error(f"检查并补充推荐池时出错: {e}", exc_info=True)

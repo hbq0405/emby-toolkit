@@ -160,23 +160,7 @@
                         </n-ellipsis>
 
                         <!-- “想看这个”按钮 -->
-                        <n-tag v-if="currentRecommendation.subscription_status === 'approved'" type="success" size="large" style="width: 100%; justify-content: center; margin-top: 24px;">
-                            <template #icon><n-icon :component="Heart" /></template>
-                            已在订阅队列
-                        </n-tag>
-                        <!-- 场景2: 待审核 -->
-                        <div v-else-if="currentRecommendation.subscription_status === 'pending'" style="margin-top: 24px;">
-                            <n-button v-if="isPrivilegedUser" type="warning" block @click="handleSubscribe(currentRecommendation)" :loading="subscribingId === currentRecommendation.id">
-                                <template #icon><n-icon :component="LightningIcon" /></template>
-                                等待管理员审核（加急处理）
-                            </n-button>
-                            <n-tag v-else type="warning" size="large" style="width: 100%; justify-content: center;">
-                                <template #icon><n-icon :component="HourglassOutline" /></template>
-                                等待管理员审核
-                            </n-tag>
-                        </div>
-                        <!-- 场景3: 默认 -->
-                        <n-button v-else type="primary" block @click="handleSubscribe(currentRecommendation)" :loading="subscribingId === currentRecommendation.id" style="margin-top: 24px;">
+                        <n-button type="primary" block @click="handleSubscribe(currentRecommendation)" :loading="subscribingId === currentRecommendation.id" style="margin-top: 24px;">
                             <template #icon><n-icon :component="HeartOutline" /></template>
                             想看这个
                         </n-button>

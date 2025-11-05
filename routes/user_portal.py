@@ -9,6 +9,7 @@ import handler.moviepilot as moviepilot # ★ 1. 导入我们的 MP 处理器
 import config_manager     # ★ 2. 导入配置管理器，因为 MP 处理器需要它
 import constants
 from handler.telegram import send_telegram_message
+from routes.discover import check_and_replenish_pool
 
 # 1. 创建一个新的蓝图
 user_portal_bp = Blueprint('user_portal_bp', __name__, url_prefix='/api/portal')
@@ -60,7 +61,6 @@ def request_subscription():
                     item_type=item_type, item_name=item_name,
                     status='approved', processed_by='auto'
                 )
-                settings_db.remove_item_from_recommendation_pool(tmdb_id)
                 subscription_successful = True
         
         elif item_type == 'Series':
@@ -105,10 +105,16 @@ def request_subscription():
             emby_user_id=emby_user_id, tmdb_id=tmdb_id, item_type=item_type,
             item_name=item_name, status='pending'
         )
-        if item_type == 'Movie':
-            settings_db.remove_item_from_recommendation_pool(tmdb_id)
         message = "“想看”请求已提交，请等待管理员审核。"
         new_status_for_frontend = 'pending'
+
+    # 只要成功创建了 'approved' 或 'pending' 状态的请求，并且是电影，就执行此逻辑块
+    if new_status_for_frontend in ['approved', 'pending'] and item_type == 'Movie':
+        logger.info(f"  ➜ 订阅请求已创建 (状态: {new_status_for_frontend})，开始更新推荐池...")
+        # 第一步：从池中移除当前这个电影，避免重复推荐
+        settings_db.remove_item_from_recommendation_pool(tmdb_id)
+        # 第二步：检查库存并决定是否需要补货
+        check_and_replenish_pool()
 
     # --- 统一的通知逻辑 ---
     try:
