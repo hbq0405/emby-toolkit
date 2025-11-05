@@ -446,21 +446,13 @@ const fetchRecommendationPool = async () => {
   
   try {
     const response = await axios.get('/api/discover/daily_recommendation');
-    const data = response.data;
-
-    // ★★★ 兼容性改造：判断响应数据的格式 ★★★
-    if (Array.isArray(data)) {
-      // 这是旧版格式，直接就是一个数组
-      console.warn("检测到旧版推荐池数据格式，已做兼容处理。");
-      recommendationPool.value = data || [];
-      recommendationThemeName.value = '每日推荐'; // 使用默认标题
-    } else {
-      // 这是新版格式，一个包含 theme_name 和 pool 的对象
-      recommendationPool.value = data.pool || [];
-      recommendationThemeName.value = data.theme_name || '每日推荐';
-    }
-
+    
+    // ★ 核心修改：从 response.data 对象中解构出主题和池子
+    recommendationPool.value = response.data.pool || [];
+    recommendationThemeName.value = response.data.theme_name || '每日推荐';
     pickRandomRecommendation();
+    
+    isPoolLoading.value = false;
 
   } catch (error) {
     if (error.response && error.response.status === 404) {

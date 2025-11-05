@@ -207,24 +207,37 @@ def api_get_discover_keywords():
 @any_login_required
 def get_recommendation_pool():
     """
-    读取并返回推荐池列表，并附带当天的主题名称。
+    【V3 - 主动纠正版】
+    读取推荐池。如果发现数据是旧版格式（有池但无主题索引），
+    则主动触发一次全量更新任务，并返回 404，强制前端进入轮询等待。
     """
     try:
         pool_data = settings_db.get_setting('recommendation_pool')
-
-        if pool_data is None:
-            return jsonify({"error": "推荐池尚未生成，请稍后再试。"}), 404
-        
-        # ★ 核心改造：获取并附带主题信息 ★
-        theme_name = "今日精选" # 默认值
         theme_index = settings_db.get_setting('recommendation_theme_index')
-        
-        if theme_index is not None:
-            theme_list = list(KEYWORD_ID_MAP.items())
-            if 0 <= theme_index < len(theme_list):
-                theme_name = theme_list[theme_index][0] # [0] 是中文名
 
-        # 将返回数据包装成一个对象
+        # 场景1：池不存在或为空，这是正常的“未生成”状态
+        if not pool_data:
+            logger.debug("  ➜ 推荐池不存在或为空，返回 404 以触发前端生成任务。")
+            return jsonify({"error": "推荐池尚未生成或为空。"}), 404
+
+        # ★★★ 核心逻辑：检测到旧版数据，主动触发更新 ★★★
+        # 如果池子有数据，但是主题索引不存在，说明是旧版数据，必须更新！
+        if pool_data and theme_index is None:
+            logger.warning("  ➜ 检测到旧版推荐池数据（有池但无主题索引），将自动触发一次全量更新任务...")
+            task_manager.submit_task(
+                task_function=task_update_daily_recommendation,
+                task_name="自动纠正每日推荐数据",
+                processor_type='media'
+            )
+            # 同样返回 404，告诉前端：“数据正在路上，请等待！”
+            return jsonify({"error": "正在更新推荐池数据格式。"}), 404
+
+        # 场景2：一切正常，数据是新版的
+        theme_list = list(KEYWORD_ID_MAP.items())
+        theme_name = "今日精选"
+        if theme_index is not None and 0 <= theme_index < len(theme_list):
+            theme_name = theme_list[theme_index][0]
+
         response_data = {
             "theme_name": theme_name,
             "pool": pool_data
