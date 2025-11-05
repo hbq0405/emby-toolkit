@@ -122,12 +122,12 @@ def request_subscription():
                 )
                 # 2. 循环列表，给每个查询到的管理员都发送通知
                 for admin_id in admin_chat_ids:
-                    logger.info(f"  ➜ 正在向管理员 (TGID: {admin_id}) 发送新的审核请求通知...")
+                    logger.debug(f"  ➜ 正在向管理员 (TGID: {admin_id}) 发送新的审核请求通知...")
                     send_telegram_message(admin_id, notification_text)
             else:
-                logger.warning("未查询到任何已配置Telegram的管理员，无法发送审核通知。")
+                logger.warning("  ➜ 未查询到任何已配置Telegram的管理员，无法发送审核通知。")
         except Exception as e:
-            logger.error(f"发送管理员审核通知时出错: {e}", exc_info=True)
+            logger.error(f"  ➜ 发送管理员审核通知时出错: {e}", exc_info=True)
 
     # 只要成功创建了 'approved' 或 'pending' 状态的请求，并且是电影，就执行此逻辑块
     if new_status_for_frontend in ['approved', 'pending'] and item_type == 'Movie':
