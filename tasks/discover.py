@@ -30,7 +30,7 @@ def task_update_daily_recommendation(processor):
         
         # ★ 2. 启动循环，直到满足条件或达到上限
         while len(recommendation_pool) < MIN_POOL_SIZE and page_to_fetch <= MAX_PAGES_TO_SCAN:
-            logger.info(f"  ➜ 正在扫描第 {page_to_fetch}/{MAX_PAGES_TO_SCAN} 页热门电影...")
+            logger.debug(f"  ➜ 正在扫描第 {page_to_fetch}/{MAX_PAGES_TO_SCAN} 页热门电影...")
             
             popular_movies_data = tmdb.get_popular_movies_tmdb(api_key, {'page': page_to_fetch})
             
@@ -86,10 +86,10 @@ def task_update_daily_recommendation(processor):
             logger.info(f"  ➜ 扫描了 {page_to_fetch - 1} 页后，仍未找到任何符合条件的电影，今日推荐为空。")
         
         settings_db.save_setting('recommendation_pool', recommendation_pool)
-        # ★ 4. 关键：保存我们扫描到的最后一页的页码，这样补货时就能从下一页开始
+        # ★ 4. 关键：保存我们扫描到的最后一页的页码，这样补充时就能从下一页开始
         settings_db.save_setting('recommendation_pool_page', page_to_fetch - 1)
         
-        logger.info(f"  ✅ 每日推荐池已更新，共找到 {len(recommendation_pool)} 部电影。补货将从第 {page_to_fetch} 页开始。")
+        logger.debug(f"  ✅ 每日推荐池已更新，共找到 {len(recommendation_pool)} 部电影。补充将从第 {page_to_fetch} 页开始。")
 
     except Exception as e:
         logger.error(f"  ➜ 每日推荐更新任务执行失败: {e}", exc_info=True)
@@ -98,9 +98,9 @@ def task_update_daily_recommendation(processor):
 def task_replenish_recommendation_pool(processor):
     """
     【V4 - 最终防并发版】
-    为推荐池补货。在执行前会再次检查库存，防止因并发请求导致重复补货。
+    为推荐池补充。在执行前会再次检查库存，防止因并发请求导致重复补充。
     """
-    logger.info("  ➜ 开始执行【推荐池补货】任务...")
+    logger.info("  ➜ 开始执行【推荐池补充】任务...")
     try:
         # ★ 核心修正：在任务开始时，立刻再次检查库存 ★
         REPLENISH_THRESHOLD = 5
@@ -108,7 +108,7 @@ def task_replenish_recommendation_pool(processor):
         pool_check = pool_data_check or []
         
         if len(pool_check) >= REPLENISH_THRESHOLD:
-            logger.info(f"  ➜ 任务启动时发现推荐池库存 ({len(pool_check)}) 已充足，无需补货。任务提前结束。")
+            logger.debug(f"  ➜ 任务启动时发现推荐池库存 ({len(pool_check)}) 已充足，无需补充。任务提前结束。")
             return # 直接退出，不执行任何操作
         
         config = processor.config
@@ -122,7 +122,7 @@ def task_replenish_recommendation_pool(processor):
         current_page = current_page_data if current_page_data is not None else 1
         next_page_to_fetch = current_page + 1
 
-        logger.debug(f"  ➜ 当前池中有 {len(current_pool)} 部电影，准备从第 {next_page_to_fetch} 页热门电影补货。")
+        logger.debug(f"  ➜ 当前池中有 {len(current_pool)} 部电影，准备从第 {next_page_to_fetch} 页热门电影补充。")
 
         more_movies_data = tmdb.get_popular_movies_tmdb(api_key, {'page': next_page_to_fetch})
         if not more_movies_data or not more_movies_data.get("results"):
@@ -146,7 +146,7 @@ def task_replenish_recommendation_pool(processor):
         ]
 
         if not candidate_movies:
-            logger.info(f"  ➜ 第 {next_page_to_fetch} 页的电影均不符合补充条件，本次不补货。")
+            logger.debug(f"  ➜ 第 {next_page_to_fetch} 页的电影均不符合补充条件，本次不补充。")
             settings_db.save_setting('recommendation_pool_page', next_page_to_fetch)
             return
 
@@ -175,9 +175,9 @@ def task_replenish_recommendation_pool(processor):
             updated_pool = current_pool + replenishment_list
             settings_db.save_setting('recommendation_pool', updated_pool)
             settings_db.save_setting('recommendation_pool_page', next_page_to_fetch)
-            logger.info(f"  ✅ 推荐池补货成功！新增 {len(replenishment_list)} 部电影，当前总数 {len(updated_pool)}。下次将从第 {next_page_to_fetch + 1} 页开始。")
+            logger.debug(f"  ✅ 推荐池补充成功！新增 {len(replenishment_list)} 部电影，当前总数 {len(updated_pool)}。下次将从第 {next_page_to_fetch + 1} 页开始。")
         else:
-            logger.info("  ➜ 未能成功获取任何电影详情，本次补货列表为空。")
+            logger.debug("  ➜ 未能成功获取任何电影详情，本次补充列表为空。")
 
     except Exception as e:
-        logger.error(f"  ➜ 推荐池补货任务执行失败: {e}", exc_info=True)
+        logger.error(f"  ➜ 推荐池补充任务执行失败: {e}", exc_info=True)

@@ -259,7 +259,7 @@ def check_and_replenish_pool():
         REPLENISH_THRESHOLD = 5 
 
         if len(pool) < REPLENISH_THRESHOLD:
-            logger.info(f"  ➜ 推荐池库存 ({len(pool)}) 低于阈值 ({REPLENISH_THRESHOLD})，触发后台补货任务。")
+            logger.debug(f"  ➜ 推荐池库存 ({len(pool)}) 低于阈值 ({REPLENISH_THRESHOLD})，触发后台补货任务。")
             task_manager.submit_task(
                 task_function=task_replenish_recommendation_pool,
                 task_name="补充每日推荐池",
