@@ -821,3 +821,38 @@ def get_global_subscription_statuses_by_tmdb_ids(tmdb_ids: List[str]) -> Dict[st
         logger.error(f"DB: 批量查询 TMDb IDs 的全局状态失败: {e}", exc_info=True)
     
     return status_map
+
+def get_admin_telegram_chat_ids():
+    """
+    查询数据库，获取所有在emby_users表中标记为管理员，
+    且在emby_users_extended表中配置了Telegram Chat ID的用户ID列表。
+    
+    Returns:
+        list: 一个包含所有符合条件的管理员Telegram Chat ID的字符串列表。
+    """
+    try:
+        with get_db_connection() as conn:
+            with conn.cursor() as cursor:
+                # 使用 JOIN 联结两张表，高效查询
+                query = """
+                    SELECT ext.telegram_chat_id
+                    FROM emby_users AS base
+                    JOIN emby_users_extended AS ext ON base.id = ext.emby_user_id
+                    WHERE base.is_administrator = TRUE
+                      AND ext.telegram_chat_id IS NOT NULL AND ext.telegram_chat_id != ''
+                """
+                cursor.execute(query)
+                
+                # RealDictCursor 返回的是字典列表，我们提取 'telegram_chat_id' 的值
+                admin_ids = [row['telegram_chat_id'] for row in cursor.fetchall()]
+                
+                if admin_ids:
+                    logger.debug(f"  ➜ 查询到 {len(admin_ids)} 个管理员的 Telegram Chat ID。")
+                else:
+                    logger.debug("  ➜ 未查询到任何已配置Telegram的管理员账户。")
+                    
+                return admin_ids
+                
+    except Exception as e:
+        logger.error(f"查询管理员Telegram Chat ID时出错: {e}", exc_info=True)
+        return [] # 出错时返回空列表，保证安全

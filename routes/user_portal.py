@@ -108,6 +108,27 @@ def request_subscription():
         message = "“想看”请求已提交，请等待管理员审核。"
         new_status_for_frontend = 'pending'
 
+        # 给管理员发送需要审核的通知
+        try:
+            # 1. 调用我们100%正确的函数
+            admin_chat_ids = user_db.get_admin_telegram_chat_ids()
+            
+            if admin_chat_ids:
+                notification_text = (
+                    f"🔔 *新的订阅审核请求*\n\n"
+                    f"用户 *{emby_username}* 提交了想看请求：\n"
+                    f"*{item_name}*\n\n"
+                    f"请前往管理后台审核。"
+                )
+                # 2. 循环列表，给每个查询到的管理员都发送通知
+                for admin_id in admin_chat_ids:
+                    logger.info(f"  ➜ 正在向管理员 (TGID: {admin_id}) 发送新的审核请求通知...")
+                    send_telegram_message(admin_id, notification_text)
+            else:
+                logger.warning("未查询到任何已配置Telegram的管理员，无法发送审核通知。")
+        except Exception as e:
+            logger.error(f"发送管理员审核通知时出错: {e}", exc_info=True)
+
     # 只要成功创建了 'approved' 或 'pending' 状态的请求，并且是电影，就执行此逻辑块
     if new_status_for_frontend in ['approved', 'pending'] and item_type == 'Movie':
         logger.info(f"  ➜ 订阅请求已创建 (状态: {new_status_for_frontend})，开始更新推荐池...")
