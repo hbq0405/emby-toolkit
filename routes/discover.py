@@ -4,7 +4,7 @@ from flask import Blueprint, jsonify, request, g, session
 
 from extensions import any_login_required
 import handler.tmdb as tmdb
-from utils import KEYWORD_ID_MAP, contains_chinese
+from utils import KEYWORD_ID_MAP, DAILY_THEME, contains_chinese
 from database import user_db, media_db, settings_db
 from tasks.discover import task_update_daily_recommendation, task_replenish_recommendation_pool
 import task_manager
@@ -233,7 +233,7 @@ def get_recommendation_pool():
             return jsonify({"error": "正在更新推荐池数据格式。"}), 404
 
         # 场景2：一切正常，数据是新版的
-        theme_list = list(KEYWORD_ID_MAP.items())
+        theme_list = list(DAILY_THEME.items())
         theme_name = "今日精选"
         if theme_index is not None and 0 <= theme_index < len(theme_list):
             theme_name = theme_list[theme_index][0]

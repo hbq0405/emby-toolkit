@@ -7,7 +7,7 @@ import handler.tmdb as tmdb
 from database import media_db, settings_db, user_db
 import config_manager
 import constants
-from utils import KEYWORD_ID_MAP
+from utils import DAILY_THEME
 logger = logging.getLogger(__name__)
 
 def task_update_daily_recommendation(processor):
@@ -29,7 +29,7 @@ def task_update_daily_recommendation(processor):
         # ★ 2. 引入每日主题轮换逻辑
         #   - 从你的 utils.py 获取权威的主题列表
         #   - 我们只用 KEYWORD_ID_MAP 的键（中文名）和值（ID）
-        theme_list = list(KEYWORD_ID_MAP.items())
+        theme_list = list(DAILY_THEME.items())
         if not theme_list:
             logger.error("  ➜ 每日推荐失败：主题列表 (KEYWORD_ID_MAP) 为空，请检查 utils.py。")
             return
@@ -155,7 +155,7 @@ def task_replenish_recommendation_pool(processor):
             logger.warning("  ➜ 补充任务中止：未找到当前推荐主题索引(recommendation_theme_index)。请先执行一次每日推荐更新任务。")
             return
 
-        theme_list = list(KEYWORD_ID_MAP.items())
+        theme_list = list(DAILY_THEME.items())
         if not theme_list or current_theme_index >= len(theme_list):
             logger.error(f"  ➜ 补充任务失败：主题索引({current_theme_index})无效或主题列表为空。")
             return
