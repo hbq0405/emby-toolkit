@@ -134,7 +134,7 @@ def request_subscription():
         logger.info(f"  ➜ 订阅请求已创建 (状态: {new_status_for_frontend})，开始更新推荐池...")
         # 第一步：从池中移除当前这个电影，避免重复推荐
         settings_db.remove_item_from_recommendation_pool(tmdb_id)
-        # 第二步：检查库存并决定是否需要补货
+        # 第二步：检查库存并决定是否需要补充
         check_and_replenish_pool()
 
     # --- 统一的通知逻辑 ---

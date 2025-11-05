@@ -245,7 +245,7 @@ def trigger_recommendation_update():
 def check_and_replenish_pool():
     """
     【V2 - 修正版】
-    检查推荐池库存，如果低于阈值则触发后台补货任务。
+    检查推荐池库存，如果低于阈值则触发后台补充任务。
     这个函数应该在订阅成功后被调用。
     """
     try:
@@ -259,14 +259,14 @@ def check_and_replenish_pool():
         REPLENISH_THRESHOLD = 5 
 
         if len(pool) < REPLENISH_THRESHOLD:
-            logger.debug(f"  ➜ 推荐池库存 ({len(pool)}) 低于阈值 ({REPLENISH_THRESHOLD})，触发后台补货任务。")
+            logger.debug(f"  ➜ 推荐池库存 ({len(pool)}) 低于阈值 ({REPLENISH_THRESHOLD})，触发后台补充任务。")
             task_manager.submit_task(
                 task_function=task_replenish_recommendation_pool,
                 task_name="补充每日推荐池",
                 processor_type='media'
             )
         else:
-            logger.debug(f"  ➜ 推荐池库存充足 ({len(pool)})，无需补货。")
+            logger.debug(f"  ➜ 推荐池库存充足 ({len(pool)})，无需补充。")
             
     except Exception as e:
         logger.error(f"检查并补充推荐池时出错: {e}", exc_info=True)
