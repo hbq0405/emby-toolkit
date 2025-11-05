@@ -10,7 +10,6 @@ import constants
 logger = logging.getLogger(__name__)
 def task_update_daily_recommendation(processor):
     """
-    【V6 - 推荐池版】更新推荐电影池的任务。
     获取所有符合条件的电影详情，存入一个列表。
     """
     logger.info("  ➜ 开始执行【推荐池】更新任务...")
@@ -33,9 +32,9 @@ def task_update_daily_recommendation(processor):
         recommendation_pool = []
         
         if not movies_with_overview:
-            logger.info("【推荐池】热门电影都已入库或缺少中文简介，今日推荐池为空。")
+            logger.info("  ➜ 热门电影都已入库或缺少中文简介，今日推荐为空。")
         else:
-            logger.info(f"【推荐池】发现 {len(movies_with_overview)} 部符合条件的电影，开始获取详情...")
+            logger.debug(f"  ➜ 发现 {len(movies_with_overview)} 部符合条件的电影，开始获取详情...")
             # 遍历所有符合条件的电影
             for movie in movies_with_overview:
                 try:
@@ -57,13 +56,13 @@ def task_update_daily_recommendation(processor):
                         "cast": cast, "media_type": "movie"
                     })
                 except Exception as e_detail:
-                    logger.warning(f"【推荐池】获取电影 {movie.get('title')} 详情时失败: {e_detail}")
+                    logger.warning(f"  ➜ 获取今日推荐电影 {movie.get('title')} 详情时失败: {e_detail}")
 
         # ★★★ 将整个“推荐池”列表存入数据库 ★★★
         # 我们换个 key，更符合现在的逻辑
         settings_db.save_setting('recommendation_pool', recommendation_pool)
             
-        logger.info(f"  ✅ 【推荐池】更新成功，共 {len(recommendation_pool)} 部电影已存入数据库。")
+        logger.debug(f"  ✅ 今日推荐更新成功，共 {len(recommendation_pool)} 部电影已存入数据库。")
 
     except Exception as e:
-        logger.error(f"【推荐池】更新任务执行失败: {e}", exc_info=True)
+        logger.error(f"  ➜ 今日推荐更新任务执行失败: {e}", exc_info=True)

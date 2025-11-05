@@ -31,7 +31,7 @@ def init_auth():
                 logger.info("  ➜ 数据库中已存在用户，跳过初始用户创建。")
                 return
 
-            logger.info("数据库中未发现任何用户，开始创建初始管理员账户。")
+            logger.info("  ➜ 数据库中未发现任何用户，开始创建初始管理员账户。")
             
             env_username = os.environ.get("AUTH_USERNAME")
             if env_username:
@@ -84,7 +84,7 @@ def unified_login():
                 session['user_id'] = local_user['id']
                 session['username'] = local_user['username']
                 session.permanent = True
-                logger.info(f"  ➜ [统一登录] 用户 '{username}' 作为本地管理员登录成功。")
+                logger.info(f"  ➜ 用户 '{username}' 作为本地管理员登录成功。")
                 
                 # ★★★ 核心修正 1/2：返回一个信息完整的 user 对象 ★★★
                 return jsonify({
@@ -97,7 +97,7 @@ def unified_login():
                     }
                 }), 200
         except Exception as e:
-            logger.error(f"  ➜ [统一登录] 本地认证时数据库出错: {e}", exc_info=True)
+            logger.error(f"  ➜ 本地认证时数据库出错: {e}", exc_info=True)
             return jsonify({"status": "error", "message": "服务器内部错误"}), 500
 
     elif login_type == 'emby':
@@ -108,7 +108,7 @@ def unified_login():
             session['emby_username'] = user_info.get('Name')
             session['emby_is_admin'] = user_info.get('Policy', {}).get('IsAdministrator', False)
             session.permanent = True
-            logger.info(f"  ➜ [统一登录] 用户 '{username}' 作为 Emby 用户登录成功。")
+            logger.info(f"  ➜ 用户 '{username}' 作为 Emby 用户登录成功。")
 
             can_subscribe_without_review = user_db.get_user_subscription_permission(session['emby_user_id'])
             
@@ -124,7 +124,7 @@ def unified_login():
                 }
             }), 200
 
-    logger.warning(f"  ➜ [统一登录] 用户 '{username}' 使用 '{login_type}' 方式登录失败。")
+    logger.warning(f"  ➜ 用户 '{username}' 使用 '{login_type}' 方式登录失败。")
     return jsonify({"status": "error", "message": "用户名或密码错误"}), 401
 
 @unified_auth_bp.route('/status', methods=['GET'])
