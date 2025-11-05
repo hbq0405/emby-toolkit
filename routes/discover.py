@@ -230,14 +230,14 @@ def trigger_recommendation_update():
     这是一个异步操作，接口会立即返回。
     """
     try:
-        logger.info("  ➜ 收到前端请求，手动触发【每日推荐】更新任务...")
+        logger.debug("  ➜ 收到前端请求，自动触发【每日推荐】更新任务...")
         # 使用 task_manager 提交任务到后台执行
         task_manager.submit_task(
             task_function=task_update_daily_recommendation,
-            task_name="手动更新每日推荐",
+            task_name="自动更新每日推荐",
             processor_type='media' # 这个任务需要 'media' 类型的处理器
         )
         return jsonify({"status": "ok", "message": "更新任务已在后台启动。"}), 202
     except Exception as e:
-        logger.error(f"手动触发每日推荐任务时失败: {e}", exc_info=True)
+        logger.error(f"自动触发每日推荐任务时失败: {e}", exc_info=True)
         return jsonify({"error": "启动任务失败"}), 500
