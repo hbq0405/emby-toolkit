@@ -207,17 +207,31 @@ def api_get_discover_keywords():
 @any_login_required
 def get_recommendation_pool():
     """
-    读取并返回由后台任务生成的“推荐池”列表。
+    读取并返回推荐池列表，并附带当天的主题名称。
     """
     try:
-        # ★ 使用新的 key 来获取数据
         pool_data = settings_db.get_setting('recommendation_pool')
 
         if pool_data is None:
             return jsonify({"error": "推荐池尚未生成，请稍后再试。"}), 404
         
-        # 直接返回整个列表
-        return jsonify(pool_data)
+        # ★ 核心改造：获取并附带主题信息 ★
+        theme_name = "今日精选" # 默认值
+        theme_index = settings_db.get_setting('recommendation_theme_index')
+        
+        if theme_index is not None:
+            theme_list = list(KEYWORD_ID_MAP.items())
+            if 0 <= theme_index < len(theme_list):
+                theme_name = theme_list[theme_index][0] # [0] 是中文名
+
+        # 将返回数据包装成一个对象
+        response_data = {
+            "theme_name": theme_name,
+            "pool": pool_data
+        }
+        
+        return jsonify(response_data)
+        
     except Exception as e:
         logger.error(f"读取推荐池数据时出错: {e}", exc_info=True)
         return jsonify({"error": "获取推荐池失败"}), 500

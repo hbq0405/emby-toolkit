@@ -120,7 +120,9 @@
           <n-card :bordered="false" class="dashboard-card recommendation-card">
             <!-- ★ 1. 修改卡片头，加入“换一个”按钮 -->
             <template #header>
-              <span class="card-title">每日推荐 ✨</span>
+              <span class="card-title">
+                {{ recommendationThemeName === '每日推荐' ? '每日推荐' : `今日主题：${recommendationThemeName}` }} ✨
+              </span>
             </template>
             <template #header-extra>
               <n-tooltip trigger="hover">
@@ -282,6 +284,7 @@ const yearTo = ref(null);
 const recommendationPool = ref([]); 
 const currentRecommendation = ref(null); 
 const isPoolLoading = ref(true); 
+const recommendationThemeName = ref('每日推荐');
 
 const filters = reactive({
   sort_by: 'popularity.desc',
@@ -439,25 +442,28 @@ const pickRandomRecommendation = () => {
 };
 
 const fetchRecommendationPool = async () => {
-  // 1. 无论如何，一开始总是显示加载状态
   isPoolLoading.value = true;
   
   try {
-    // 2. 尝试直接获取数据
     const response = await axios.get('/api/discover/daily_recommendation');
-    
-    // 3. ★ 核心逻辑：如果直接成功了 (对应“再次访问”的场景)
-    recommendationPool.value = response.data || [];
-    pickRandomRecommendation(); // 抽卡
-    
-    // ★★★ 关键修复：在这里立刻关闭加载状态！ ★★★
-    isPoolLoading.value = false;
+    const data = response.data;
+
+    // ★★★ 兼容性改造：判断响应数据的格式 ★★★
+    if (Array.isArray(data)) {
+      // 这是旧版格式，直接就是一个数组
+      console.warn("检测到旧版推荐池数据格式，已做兼容处理。");
+      recommendationPool.value = data || [];
+      recommendationThemeName.value = '每日推荐'; // 使用默认标题
+    } else {
+      // 这是新版格式，一个包含 theme_name 和 pool 的对象
+      recommendationPool.value = data.pool || [];
+      recommendationThemeName.value = data.theme_name || '每日推荐';
+    }
+
+    pickRandomRecommendation();
 
   } catch (error) {
-    // 4. 如果捕获到错误，再判断错误的类型
     if (error.response && error.response.status === 404) {
-      // 4a. 如果是 404 (对应“首次访问”的场景)，启动后台任务并开始轮询
-      // 此时 isPoolLoading 保持为 true，由轮询逻辑去关闭
       console.log("未找到推荐池，将自动触发后台生成任务...");
       try {
         await axios.post('/api/discover/trigger_recommendation_update');
@@ -470,7 +476,7 @@ const fetchRecommendationPool = async () => {
           if (attempts >= maxAttempts) {
             clearInterval(intervalId);
             message.error("获取今日推荐超时，请稍后刷新。");
-            isPoolLoading.value = false; // 超时也要关闭
+            isPoolLoading.value = false;
             return;
           }
           
@@ -478,32 +484,32 @@ const fetchRecommendationPool = async () => {
             console.log(`正在进行第 ${attempts + 1} 次轮询...`);
             const pollResponse = await axios.get('/api/discover/daily_recommendation');
             
-            if (pollResponse.data && pollResponse.data.length > 0) {
+            // ★ 核心修改：轮询时也使用新的数据结构
+            if (pollResponse.data && pollResponse.data.pool && pollResponse.data.pool.length > 0) {
               clearInterval(intervalId);
-              recommendationPool.value = pollResponse.data;
-              pickRandomRecommendation(); // 轮询成功，抽卡！
-              isPoolLoading.value = false; // 轮询成功，关闭加载
+              recommendationPool.value = pollResponse.data.pool;
+              recommendationThemeName.value = pollResponse.data.theme_name;
+              pickRandomRecommendation();
+              isPoolLoading.value = false;
               console.log("轮询成功，已获取推荐池！");
             }
           } catch (pollError) {
-            // 轮询过程中继续遇到错误，不做处理，等待下一次
+            // 轮询过程中继续遇到错误，不做处理
           }
           attempts++;
         }, pollInterval);
 
       } catch (triggerError) {
         message.error("启动推荐任务失败。");
-        isPoolLoading.value = false; // 触发失败也要关闭
+        isPoolLoading.value = false;
       }
       
     } else {
-      // 4b. 如果是其他网络错误
       console.error('加载推荐池失败:', error);
       message.error("加载今日推荐失败。");
-      isPoolLoading.value = false; // 其他错误也要关闭
+      isPoolLoading.value = false;
     }
   }
-  // ★ 删除了之前有问题的 finally 块，所有逻辑都在 try/catch 中清晰处理
 };
 
 const handleSubscribe = async (media) => {

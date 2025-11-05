@@ -7,39 +7,69 @@ import handler.tmdb as tmdb
 from database import media_db, settings_db, user_db
 import config_manager
 import constants
+from utils import KEYWORD_ID_MAP
 logger = logging.getLogger(__name__)
 
 def task_update_daily_recommendation(processor):
     """
-    【V4 - 循环勘探版】
-    如果第一页热门电影不满足条件，会自动扫描后续页面，
-    直到凑够指定的最小推荐数量或达到扫描上限。
+    【V5 - 每日主题轮换版】
+    每天从预设的主题列表中选择一个，推荐该主题下的热门电影。
+    如果第一页不满足条件，会自动扫描后续页面。
     """
-    logger.info("  ➜ 开始执行【每日推荐池】全量更新任务...")
+    logger.info("  ➜ 开始执行【每日推荐池-主题轮换】全量更新任务...")
     try:
         config = processor.config
         api_key = config.get(constants.CONFIG_OPTION_TMDB_API_KEY)
         if not api_key: return
 
         # ★ 1. 定义勘探目标和安全限制
-        MIN_POOL_SIZE = 10  # 我们希望至少找到 10 部电影
-        MAX_PAGES_TO_SCAN = 5 # 最多扫描 5 页，防止无限循环和API滥用
+        MIN_POOL_SIZE = 10  # 至少找到 10 部电影
+        MAX_PAGES_TO_SCAN = 5 # 最多扫描 5 页
 
+        # ★ 2. 引入每日主题轮换逻辑
+        #   - 从你的 utils.py 获取权威的主题列表
+        #   - 我们只用 KEYWORD_ID_MAP 的键（中文名）和值（ID）
+        theme_list = list(KEYWORD_ID_MAP.items())
+        if not theme_list:
+            logger.error("  ➜ 每日推荐失败：主题列表 (KEYWORD_ID_MAP) 为空，请检查 utils.py。")
+            return
+
+        #   - 从数据库获取上次推荐到哪个主题的索引
+        last_theme_index = settings_db.get_setting('recommendation_theme_index')
+        if last_theme_index is None:
+            last_theme_index = -1 # 如果是第一次运行，从-1开始，这样下一个就是0
+
+        #   - 计算今天的主题
+        today_theme_index = (last_theme_index + 1) % len(theme_list)
+        today_theme_name, today_theme_id = theme_list[today_theme_index]
+        
+        logger.info(f"  ➜ 今日推荐主题: 【{today_theme_name}】 (ID: {today_theme_id})")
+
+        # ★ 3. 启动循环，勘探今日主题的电影
         recommendation_pool = []
         page_to_fetch = 1
         
-        # ★ 2. 启动循环，直到满足条件或达到上限
         while len(recommendation_pool) < MIN_POOL_SIZE and page_to_fetch <= MAX_PAGES_TO_SCAN:
-            logger.debug(f"  ➜ 正在扫描第 {page_to_fetch}/{MAX_PAGES_TO_SCAN} 页热门电影...")
+            logger.debug(f"  ➜ 正在扫描主题【{today_theme_name}】的第 {page_to_fetch}/{MAX_PAGES_TO_SCAN} 页...")
             
-            popular_movies_data = tmdb.get_popular_movies_tmdb(api_key, {'page': page_to_fetch})
+            # ★★★ 核心改造：更换数据源 ★★★
+            # 从调用“热门电影”改为调用“发现电影”，并传入主题ID
+            discover_params = {
+                'with_keywords': today_theme_id,
+                'sort_by': 'popularity.desc', # 按热度排序
+                'page': page_to_fetch,
+                'include_adult': True
+            }
+            # 你的 tmdb.py 中已经有 discover_movie_tmdb 这个函数了
+            movies_data = tmdb.discover_movie_tmdb(api_key, discover_params)
             
-            # 如果某一页已经没有数据了，就提前结束
-            if not popular_movies_data or not popular_movies_data.get("results"):
-                logger.warning(f"  ➜ 从第 {page_to_fetch} 页获取热门电影失败，勘探提前结束。")
+            if not movies_data or not movies_data.get("results"):
+                logger.warning(f"  ➜ 从主题【{today_theme_name}】第 {page_to_fetch} 页获取电影失败，勘探提前结束。")
                 break
 
-            popular_movies = popular_movies_data["results"]
+            # --- 后续逻辑与原来基本一致 ---
+            
+            popular_movies = movies_data["results"]
             tmdb_ids = [str(movie["id"]) for movie in popular_movies]
 
             library_items_map = media_db.check_tmdb_ids_in_library(tmdb_ids, item_type='Movie')
@@ -56,11 +86,12 @@ def task_update_daily_recommendation(processor):
             if not movies_with_overview:
                 logger.debug(f"  ➜ 第 {page_to_fetch} 页没有符合条件的电影，继续扫描下一页。")
                 page_to_fetch += 1
-                continue # 直接进入下一次循环
+                continue
 
             logger.debug(f"  ➜ 在第 {page_to_fetch} 页发现 {len(movies_with_overview)} 部符合条件的电影，开始获取详情...")
             for movie in movies_with_overview:
                 try:
+                    # 获取详情的逻辑保持不变
                     movie_details = tmdb.get_movie_details(movie["id"], api_key)
                     if not movie_details: continue
 
@@ -78,67 +109,93 @@ def task_update_daily_recommendation(processor):
                 except Exception as e_detail:
                     logger.warning(f"  ➜ 获取电影 {movie.get('title')} 详情时失败: {e_detail}")
             
-            # 准备扫描下一页
             page_to_fetch += 1
 
-        # ★ 3. 循环结束后，统一保存结果
+        # ★ 4. 循环结束后，统一保存结果
         if not recommendation_pool:
-            logger.info(f"  ➜ 扫描了 {page_to_fetch - 1} 页后，仍未找到任何符合条件的电影，今日推荐为空。")
+            logger.info(f"  ➜ 扫描了 {page_to_fetch - 1} 页后，仍未找到任何符合【{today_theme_name}】主题的电影，今日推荐为空。")
         
         settings_db.save_setting('recommendation_pool', recommendation_pool)
-        # ★ 4. 关键：保存我们扫描到的最后一页的页码，这样补充时就能从下一页开始
+        
+        # ★ 5. 关键：保存我们这次用的主题索引，确保下次轮换！
+        settings_db.save_setting('recommendation_theme_index', today_theme_index)
+        # （原来的 recommendation_pool_page 记录可以保留，补充逻辑也许还能用上）
         settings_db.save_setting('recommendation_pool_page', page_to_fetch - 1)
         
-        logger.debug(f"  ✅ 每日推荐池已更新，共找到 {len(recommendation_pool)} 部电影。补充将从第 {page_to_fetch} 页开始。")
+        logger.debug(f"  ✅ 每日推荐池已更新为【{today_theme_name}】主题，共找到 {len(recommendation_pool)} 部电影。下次将推荐下一个主题。")
 
     except Exception as e:
-        logger.error(f"  ➜ 每日推荐更新任务执行失败: {e}", exc_info=True)
+        logger.error(f"  ➜ 每日推荐(主题轮换)更新任务执行失败: {e}", exc_info=True)
 
 
 def task_replenish_recommendation_pool(processor):
     """
-    【V4 - 最终防并发版】
-    为推荐池补充。在执行前会再次检查库存，防止因并发请求导致重复补充。
+    【V5 - 主题感知防并发版】
+    为推荐池补充弹药。它会自动识别当前池的主题，并只补充同一主题的电影。
+    在执行前会再次检查库存，防止因并发请求导致重复补充。
     """
-    logger.info("  ➜ 开始执行【推荐池补充】任务...")
+    logger.info("  ➜ 开始执行【推荐池主题感知补充】任务...")
     try:
-        # ★ 核心修正：在任务开始时，立刻再次检查库存 ★
+        # 1. 核心修正：在任务开始时，立刻再次检查库存
         REPLENISH_THRESHOLD = 5
         pool_data_check = settings_db.get_setting('recommendation_pool')
         pool_check = pool_data_check or []
         
         if len(pool_check) >= REPLENISH_THRESHOLD:
             logger.debug(f"  ➜ 任务启动时发现推荐池库存 ({len(pool_check)}) 已充足，无需补充。任务提前结束。")
-            return # 直接退出，不执行任何操作
+            return
         
         config = processor.config
         api_key = config.get(constants.CONFIG_OPTION_TMDB_API_KEY)
         if not api_key: return
 
-        # 注意：这里我们使用上面已经获取过一次的 pool_check 作为 current_pool，避免重复查询数据库
+        # 2. ★★★ 核心改造：获取当前推荐主题 ★★★
+        current_theme_index = settings_db.get_setting('recommendation_theme_index')
+        if current_theme_index is None:
+            logger.warning("  ➜ 补充任务中止：未找到当前推荐主题索引(recommendation_theme_index)。请先执行一次每日推荐更新任务。")
+            return
+
+        theme_list = list(KEYWORD_ID_MAP.items())
+        if not theme_list or current_theme_index >= len(theme_list):
+            logger.error(f"  ➜ 补充任务失败：主题索引({current_theme_index})无效或主题列表为空。")
+            return
+            
+        current_theme_name, current_theme_id = theme_list[current_theme_index]
+        logger.info(f"  ➜ 当前推荐主题为【{current_theme_name}】，将按此主题进行补充。")
+
+        # 3. 获取当前进度和池内ID
         current_pool = pool_check
-        
         current_page_data = settings_db.get_setting('recommendation_pool_page')
         current_page = current_page_data if current_page_data is not None else 1
         next_page_to_fetch = current_page + 1
 
-        logger.debug(f"  ➜ 当前池中有 {len(current_pool)} 部电影，准备从第 {next_page_to_fetch} 页热门电影补充。")
+        logger.debug(f"  ➜ 当前池中有 {len(current_pool)} 部电影，准备从主题【{current_theme_name}】的第 {next_page_to_fetch} 页补充。")
 
-        more_movies_data = tmdb.get_popular_movies_tmdb(api_key, {'page': next_page_to_fetch})
+        # 4. ★★★ 核心改造：更换数据源 ★★★
+        discover_params = {
+            'with_keywords': current_theme_id,
+            'sort_by': 'popularity.desc',
+            'page': next_page_to_fetch,
+            'include_adult': True
+        }
+        more_movies_data = tmdb.discover_movie_tmdb(api_key, discover_params)
+
         if not more_movies_data or not more_movies_data.get("results"):
-            logger.warning(f"  ➜ 从第 {next_page_to_fetch} 页获取热门电影失败，无内容可补充。")
+            logger.warning(f"  ➜ 从主题【{current_theme_name}】第 {next_page_to_fetch} 页获取电影失败，无内容可补充。")
+            # 即使没获取到，也要更新页码，防止下次重复请求失败的页
+            settings_db.save_setting('recommendation_pool_page', next_page_to_fetch)
             return
 
+        # --- 后续过滤和处理逻辑与之前一致 ---
         current_pool_ids = {str(movie["id"]) for movie in current_pool}
-        new_popular_movies = more_movies_data["results"]
-        
-        new_tmdb_ids = [str(movie["id"]) for movie in new_popular_movies]
+        new_movies = more_movies_data["results"]
+        new_tmdb_ids = [str(movie["id"]) for movie in new_movies]
         
         library_items_map = media_db.check_tmdb_ids_in_library(new_tmdb_ids, item_type='Movie')
         subscription_statuses = user_db.get_global_subscription_statuses_by_tmdb_ids(new_tmdb_ids)
         
         candidate_movies = [
-            movie for movie in new_popular_movies
+            movie for movie in new_movies
             if str(movie["id"]) not in library_items_map
             and str(movie["id"]) not in current_pool_ids
             and str(movie["id"]) not in subscription_statuses
@@ -146,7 +203,7 @@ def task_replenish_recommendation_pool(processor):
         ]
 
         if not candidate_movies:
-            logger.debug(f"  ➜ 第 {next_page_to_fetch} 页的电影均不符合补充条件，本次不补充。")
+            logger.debug(f"  ➜ 主题【{current_theme_name}】第 {next_page_to_fetch} 页的电影均不符合补充条件。")
             settings_db.save_setting('recommendation_pool_page', next_page_to_fetch)
             return
 
@@ -175,9 +232,9 @@ def task_replenish_recommendation_pool(processor):
             updated_pool = current_pool + replenishment_list
             settings_db.save_setting('recommendation_pool', updated_pool)
             settings_db.save_setting('recommendation_pool_page', next_page_to_fetch)
-            logger.debug(f"  ✅ 推荐池补充成功！新增 {len(replenishment_list)} 部电影，当前总数 {len(updated_pool)}。下次将从第 {next_page_to_fetch + 1} 页开始。")
+            logger.debug(f"  ✅ 推荐池补充成功！为主题【{current_theme_name}】新增 {len(replenishment_list)} 部电影，当前总数 {len(updated_pool)}。下次将从第 {next_page_to_fetch + 1} 页开始。")
         else:
             logger.debug("  ➜ 未能成功获取任何电影详情，本次补充列表为空。")
 
     except Exception as e:
-        logger.error(f"  ➜ 推荐池补充任务执行失败: {e}", exc_info=True)
+        logger.error(f"  ➜ 推荐池(主题感知)补充任务执行失败: {e}", exc_info=True)
