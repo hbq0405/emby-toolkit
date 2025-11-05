@@ -201,7 +201,7 @@ def get_task_registry(context: str = 'all'):
         'revival-check': (task_run_revival_check, "检查剧集复活", 'watchlist', False),
         'task_apply_main_cast_to_episodes': (task_apply_main_cast_to_episodes, "轻量化同步分集演员表", 'media', False),
         'resubscribe-library': (task_resubscribe_library, "媒体洗版订阅", 'media', False),
-        'update-daily-recommendation': (task_update_daily_recommendation, "更新每日推荐", 'media', True),
+        'update-daily-recommendation': (task_update_daily_recommendation, "更新每日推荐", 'media', False),
     }
 
     if context == 'chain':
