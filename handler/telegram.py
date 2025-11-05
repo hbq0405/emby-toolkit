@@ -1,4 +1,4 @@
-# 文件: handler/telegram.py (V2 - 图文版)
+# 文件: handler/telegram.py
 import requests
 import logging
 from datetime import datetime
@@ -11,26 +11,23 @@ import constants
 logger = logging.getLogger(__name__)
 
 def _escape_markdown(text: str) -> str:
-    """Helper function to escape characters for Telegram's MarkdownV2."""
+    """
+    Helper function to escape characters for Telegram's MarkdownV2.
+    只应该用于转义从外部API获取的、内容不可控的文本部分。
+    """
     if not isinstance(text, str):
         return ""
-    # 为 MarkdownV2 格式转义所有特殊字符
     # 根据 Telegram Bot API 文档，这些字符需要转义: _ * [ ] ( ) ~ ` > # + - = | { } . !
     escape_chars = r'_*[]()~`>#+-=|{}.!'
-    
-    # 创建一个翻译表，比循环更快
-    # 但为了清晰和避免与其他逻辑冲突，保持你原有的循环方式也可以
-    # 这里我们直接在你的逻辑上修改
     return ''.join(f'\\{char}' if char in escape_chars else char for char in text)
 
+# --- 通用的 Telegram 文本消息发送函数 ---
 def send_telegram_message(chat_id: str, text: str, disable_notification: bool = False):
     """通用的 Telegram 文本消息发送函数。"""
     bot_token = APP_CONFIG.get(constants.CONFIG_OPTION_TELEGRAM_BOT_TOKEN)
     if not bot_token or not chat_id:
         return False
     
-    escaped_text = _escape_markdown(text)
-
     final_chat_id = str(chat_id).strip()
     if final_chat_id.startswith('https://t.me/'):
         username = final_chat_id.split('/')[-1]
@@ -40,7 +37,7 @@ def send_telegram_message(chat_id: str, text: str, disable_notification: bool = 
     api_url = f"https://api.telegram.org/bot{bot_token}/sendMessage"
     payload = {
         'chat_id': final_chat_id,
-        'text': escaped_text,
+        'text': text, 
         'parse_mode': 'MarkdownV2',
         'disable_web_page_preview': True,
         'disable_notification': disable_notification,
@@ -58,15 +55,13 @@ def send_telegram_message(chat_id: str, text: str, disable_notification: bool = 
         logger.error(f"  ➜ 发送 Telegram 文本消息时发生网络请求错误: {e}")
         return False
 
-# ★★★ 发送图片函数 ★★★
+# --- 通用的 Telegram 图文消息发送函数 ---
 def send_telegram_photo(chat_id: str, photo_url: str, caption: str, disable_notification: bool = False):
     """通用的 Telegram 图文消息发送函数。"""
     bot_token = APP_CONFIG.get(constants.CONFIG_OPTION_TELEGRAM_BOT_TOKEN)
     if not bot_token or not chat_id or not photo_url:
         return False
     
-    escaped_caption = _escape_markdown(caption)
-
     final_chat_id = str(chat_id).strip()
     if final_chat_id.startswith('https://t.me/'):
         username = final_chat_id.split('/')[-1]
@@ -77,13 +72,13 @@ def send_telegram_photo(chat_id: str, photo_url: str, caption: str, disable_noti
     payload = {
         'chat_id': final_chat_id,
         'photo': photo_url,
-        'caption': escaped_caption,
+        'caption': caption, 
         'parse_mode': 'MarkdownV2',
         'disable_notification': disable_notification,
     }
     try:
         proxies = get_proxies_for_requests()
-        response = requests.post(api_url, json=payload, timeout=30, proxies=proxies) # 图片上传超时时间更长
+        response = requests.post(api_url, json=payload, timeout=30, proxies=proxies)
         if response.status_code == 200:
             logger.info(f"  ➜ 成功发送 Telegram 图文消息至 Chat ID: {final_chat_id}")
             return True
@@ -94,15 +89,11 @@ def send_telegram_photo(chat_id: str, photo_url: str, caption: str, disable_noti
         logger.error(f"  ➜ 发送 Telegram 图文消息时发生网络请求错误: {e}")
         return False
     
-# ★★★ 2. 全能的通知函数 ★★★
+# --- 全能的通知函数 ---
 def send_media_notification(item_details: dict, notification_type: str = 'new', new_episode_ids: list = None):
     """
     【全能媒体通知函数】
     根据传入的媒体详情，自动获取图片、组装消息并发送给频道和订阅者。
-
-    :param item_details: 从 Emby API 获取的媒体详情字典。
-    :param notification_type: 通知类型, 'new' (入库) 或 'update' (更新)。
-    :param new_episode_ids: (可选) 对于剧集更新，传入新增分集的ID列表。
     """
     logger.info(f"  ➜ 准备为 '{item_details.get('Name')}' 发送 '{notification_type}' 类型的 Telegram 通知...")
     
@@ -119,6 +110,9 @@ def send_media_notification(item_details: dict, notification_type: str = 'new', 
             
         item_type = item_details.get("Type")
 
+        escaped_title = _escape_markdown(title)
+        escaped_overview = _escape_markdown(overview)
+
         # --- 2. 准备剧集信息 (如果适用) ---
         episode_info_text = ""
         if item_type == "Series" and new_episode_ids:
@@ -134,7 +128,7 @@ def send_media_notification(item_details: dict, notification_type: str = 'new', 
                     episode_num = detail.get("IndexNumber", 0)
                     episode_details.append(f"S{season_num:02d}E{episode_num:02d}")
             if episode_details:
-                episode_info_text = f"*集数*: `{', '.join(sorted(episode_details))}`\n"
+                episode_info_text = f"🎞️ *集数*: `{', '.join(sorted(episode_details))}`\n"
 
         # --- 3. 调用 tmdb_handler 获取图片路径 ---
         photo_url = None
@@ -157,17 +151,19 @@ def send_media_notification(item_details: dict, notification_type: str = 'new', 
         
         # --- 4. 组装最终的通知文本 (Caption) ---
         notification_title_map = {
-            'new': '入库成功',
-            'update': '已更新'
+            'new': '✨ 入库成功',
+            'update': '🔄 已更新'
         }
-        notification_title = notification_title_map.get(notification_type, '状态更新')
+        notification_title = notification_title_map.get(notification_type, '🔔 状态更新')
         current_time = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+        media_icon = "🎬" if item_type == "Movie" else "📺"
         
+        # 使用转义后的变量来构建消息，同时保留我们自己的格式化符号
         caption = (
-            f"*{title}* {notification_title}\n\n"
+            f"{media_icon} *{escaped_title}* {notification_title}\n\n"
             f"{episode_info_text}"
-            f"*时间*: `{current_time}`\n"
-            f"*剧情*: {overview}"
+            f"⏰ *时间*: `{current_time}`\n"
+            f"📝 *剧情*: {escaped_overview}"
         )
         
         # --- 5. 查询订阅者 ---
@@ -193,7 +189,6 @@ def send_media_notification(item_details: dict, notification_type: str = 'new', 
             personal_caption = personal_caption_map.get(notification_type, caption)
             
             for chat_id in subscriber_chat_ids:
-                # 避免重复发送给全局频道
                 if chat_id == global_channel_id: continue
                 logger.info(f"  ➜ 正在向订阅者 {chat_id} 发送个人通知...")
                 if photo_url:

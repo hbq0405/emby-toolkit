@@ -94,7 +94,7 @@
         :native-scrollbar="false"
       >
       <!-- ★★★ 任务状态 ★★★ -->
-      <div class="status-display-area" v-if="props.taskStatus && props.taskStatus.current_action !== '空闲'">
+      <div class="status-display-area" v-if="authStore.isAdmin && props.taskStatus && props.taskStatus.current_action !== '空闲'">
         <n-card size="small" :bordered="false" style="margin-bottom: 15px;">
           <p style="margin: 0; font-size: 0.9em; display: flex; align-items: center; justify-content: space-between; gap: 16px;">
             <span style="flex-grow: 1;">
