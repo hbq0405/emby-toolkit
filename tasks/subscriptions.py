@@ -16,7 +16,8 @@ import handler.emby as emby
 import handler.tmdb as tmdb
 import handler.moviepilot as moviepilot
 import task_manager
-from database import connection, settings_db, resubscribe_db, collection_db
+from handler import telegram
+from database import connection, settings_db, resubscribe_db, collection_db, user_db
 from .helpers import _get_standardized_effect, _extract_quality_tag_from_filename
 
 logger = logging.getLogger(__name__)
@@ -521,30 +522,36 @@ def task_auto_subscribe(processor):
         task_resubscribe_library(processor)
 
         # --- 构建最终的分类汇总日志 ---
+        summary_message = ""
         if subscription_details:
-            # 日志头部
             header = f"✅ 智能订阅完成，成功提交 {len(subscription_details)} 项:"
-            
-            # 构建每一行的内容
             item_lines = []
             for detail in subscription_details:
                 module = detail['module']
-                source = detail.get('source') # 使用 .get() 安全地获取 source
-                
-                # 如果有 source，格式为 [模块-来源]，否则为 [模块]
+                source = detail.get('source')
                 prefix = f"[{module}-{source}]" if source else f"[{module}]"
-                
                 item_lines.append(f"  ├─ {prefix} {detail['item']}")
             
-            # 将头部和所有行合并成一个多行字符串
-            final_summary = header + "\n" + "\n".join(item_lines)
-            
+            summary_message = header + "\n" + "\n".join(item_lines)
             if quota_exhausted:
-                final_summary += "\n(每日订阅配额已用尽，部分项目可能未处理)"
-                
-            logger.info(final_summary)
+                summary_message += "\n(每日订阅配额已用尽，部分项目可能未处理)"
         else:
-            logger.info("✅ 智能订阅完成，本次未发现符合条件的媒体。")
+            summary_message = "✅ 智能订阅完成，本次未发现符合条件的媒体。"
+
+        # 无论有无订阅，都打印最终日志
+        logger.info(summary_message)
+
+        # --- 向管理员发送 Telegram 通知 ---
+        admin_chat_ids = user_db.get_admin_telegram_chat_ids()
+        if admin_chat_ids:
+            # 为 Telegram 的 MarkdownV2 格式转义特殊字符
+            # 注意：我们只转义消息内容，保留我们自己添加的格式
+            escaped_summary = summary_message.replace('[', '\\[').replace(']', '\\]').replace('(', '\\(').replace(')', '\\)').replace('-', '\\-')
+            
+            logger.info(f"  ➜ 准备向 {len(admin_chat_ids)} 位管理员发送任务总结...")
+            for chat_id in admin_chat_ids:
+                # disable_notification=True 表示发送静默通知，避免打扰
+                telegram.send_telegram_message(chat_id, escaped_summary, disable_notification=True)
 
     except Exception as e:
         logger.error(f"智能订阅与洗版任务失败: {e}", exc_info=True)

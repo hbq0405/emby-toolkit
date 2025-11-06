@@ -70,8 +70,9 @@ def _perform_list_collection_health_check(
     tmdb_api_key: str
 ) -> dict:
     """
+    【V2 - media_type 注入修复版】
     为榜单类合集执行详细的健康度检查。
-    :return: 一个包含 health_status, missing_count, generated_media_info_json 的字典。
+    - 核心修复：在生成的媒体清单中，明确注入 media_type 字段。
     """
     logger.info(f"  ➜ 榜单合集 '{collection_db_record.get('name')}'，开始进行详细健康度分析...")
     
@@ -91,6 +92,10 @@ def _perform_list_collection_health_check(
     details_map = {str(d.get("id")): d for d in all_media_details_unordered}
     tmdb_id_to_season_map = {str(item['id']): item.get('season') for item in tmdb_items if item.get('type') == 'Series' and item.get('season') is not None}
     
+    # ### 新增：在循环前创建类型映射 ###
+    # 这是为了在循环内部能方便地查到每个TMDb ID的媒体类型
+    tmdb_id_to_type_map = {str(item['id']): item['type'] for item in tmdb_items}
+    
     # 3. 核心循环，判断状态
     all_media_with_status, has_missing, missing_count = [], False, 0
     today_str = datetime.now().strftime('%Y-%m-%d')
@@ -99,20 +104,26 @@ def _perform_list_collection_health_check(
         media = details_map.get(media_tmdb_id)
         if not media: continue
 
-        # 双重查找 Emby Item
         emby_item = tmdb_to_emby_item_map.get(media_tmdb_id)
         if not emby_item and media_tmdb_id in corrected_id_to_original_id_map:
             original_id = corrected_id_to_original_id_map[media_tmdb_id]
             emby_item = tmdb_to_emby_item_map.get(original_id)
             if emby_item: logger.info(f"    -> 修正项命中：在媒体库中通过旧ID '{original_id}' 找到了项目。")
 
-        # 判断状态
         release_date = media.get("release_date") or media.get("first_air_date", '')
         media_status = "in_library" if emby_item else ("subscribed" if previous_media_map.get(media_tmdb_id, {}).get('status') == 'subscribed' else ("unreleased" if release_date and release_date > today_str else "missing"))
         if media_status == 'missing': has_missing, missing_count = True, missing_count + 1
         
-        # 构建最终结果
-        final_media_item = {"tmdb_id": media_tmdb_id, "emby_id": emby_item.get('Id') if emby_item else None, "title": media.get("title") or media.get("name"), "release_date": release_date, "poster_path": media.get("poster_path"), "status": media_status}
+        final_media_item = {
+            "tmdb_id": media_tmdb_id,
+            "emby_id": emby_item.get('Id') if emby_item else None,
+            "title": media.get("title") or media.get("name"),
+            "release_date": release_date,
+            "poster_path": media.get("poster_path"),
+            "status": media_status,
+            "media_type": tmdb_id_to_type_map.get(media_tmdb_id) 
+        }
+        
         season_number = tmdb_id_to_season_map.get(media_tmdb_id)
         if season_number is not None: final_media_item['season'] = season_number
         all_media_with_status.append(final_media_item)
