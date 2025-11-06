@@ -111,7 +111,7 @@ const isLoading = ref(true);
 const error = ref(null);
 const selectedTasks = ref(new Set());
 const showSettingsModal = ref(false);
-const selectedSeriesNames = ref([]); // 存储的是 mapKey
+const selectedSeriesNames = ref([]); 
 
 const selectedTaskIds = computed(() => {
   const ids = [];
@@ -528,15 +528,39 @@ const columns = computed(() => [
   }
 ]);
 
+const currentPage = ref(1);
+const currentPageSize = ref(20);
+
+// --- 核心修改：步骤 2 ---
+// 改造 pagination 计算属性，使其具备读写能力
 const pagination = computed(() => {
-  if (allTasks.value.length > 20) {
-    return {
-      pageSize: 20,
-      pageSizes: [20, 50, 100, { label: '全部', value: allTasks.value.length }],
-      showSizePicker: true,
-    };
+  // 使用 groupedTasks.length 来判断，因为表格的实际数据源是它
+  const totalItems = groupedTasks.value.length;
+
+  // 如果总条目数为0，则不显示分页
+  if (totalItems === 0) {
+    return false;
   }
-  return false;
+
+  return {
+    // 读取“记忆”变量
+    page: currentPage.value,
+    pageSize: currentPageSize.value,
+    
+    // 动态计算“全部”选项的值
+    pageSizes: [20, 50, 100, { label: '全部', value: totalItems > 0 ? totalItems : 1 }],
+    showSizePicker: true,
+    
+    // 关键：提供更新“记忆”变量的方法
+    onUpdatePage: (page) => {
+      currentPage.value = page;
+    },
+    onUpdatePageSize: (pageSize) => {
+      currentPageSize.value = pageSize;
+      // 当每页数量变化时，重置到第一页，避免出错
+      currentPage.value = 1; 
+    }
+  };
 });
 
 onMounted(fetchData);
