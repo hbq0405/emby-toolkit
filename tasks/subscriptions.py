@@ -524,7 +524,7 @@ def task_auto_subscribe(processor):
         # --- 构建最终的分类汇总日志 ---
         summary_message = ""
         if subscription_details:
-            header = f"✅ 缺失洗版订阅完成，成功提交 {len(subscription_details)} 项:"
+            header = f"  ✅ 缺失洗版订阅完成，成功提交 {len(subscription_details)} 项:"
             item_lines = []
             for detail in subscription_details:
                 module = detail['module']
@@ -536,7 +536,7 @@ def task_auto_subscribe(processor):
             if quota_exhausted:
                 summary_message += "\n(每日订阅配额已用尽，部分项目可能未处理)"
         else:
-            summary_message = "✅ 缺失洗版订阅完成，本次未发现需要订阅的媒体。"
+            summary_message = "  ✅ 缺失洗版订阅完成，本次未发现需要订阅的媒体。"
 
         # 无论有无订阅，都打印最终日志
         logger.info(summary_message)
@@ -554,7 +554,7 @@ def task_auto_subscribe(processor):
                 telegram.send_telegram_message(chat_id, escaped_summary, disable_notification=True)
 
     except Exception as e:
-        logger.error(f"智能订阅与洗版任务失败: {e}", exc_info=True)
+        logger.error(f"  ➜ 缺失洗版订阅任务失败: {e}", exc_info=True)
         task_manager.update_status_from_thread(-1, f"错误: {e}")
 
 # ★★★ 媒体洗版任务 ★★★
