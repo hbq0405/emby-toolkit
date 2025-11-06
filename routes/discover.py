@@ -6,7 +6,7 @@ from extensions import any_login_required
 import handler.tmdb as tmdb
 from utils import KEYWORD_ID_MAP, DAILY_THEME, contains_chinese
 from database import user_db, media_db, settings_db
-from tasks.discover import task_update_daily_recommendation, task_replenish_recommendation_pool
+from tasks.discover import task_update_daily_theme, task_replenish_recommendation_pool
 import task_manager
 
 discover_bp = Blueprint('discover_bp', __name__, url_prefix='/api/discover')
@@ -225,7 +225,7 @@ def get_recommendation_pool():
         if pool_data and theme_index is None:
             logger.warning("  ➜ 检测到旧版推荐池数据（有池但无主题索引），将自动触发一次全量更新任务...")
             task_manager.submit_task(
-                task_function=task_update_daily_recommendation,
+                task_function=task_update_daily_theme,
                 task_name="自动纠正每日推荐数据",
                 processor_type='media'
             )
@@ -260,7 +260,7 @@ def trigger_recommendation_update():
         logger.debug("  ➜ 收到前端请求，自动触发【每日推荐】更新任务...")
         # 使用 task_manager 提交任务到后台执行
         task_manager.submit_task(
-            task_function=task_update_daily_recommendation,
+            task_function=task_update_daily_theme,
             task_name="自动更新每日推荐",
             processor_type='media' # 这个任务需要 'media' 类型的处理器
         )

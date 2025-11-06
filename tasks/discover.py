@@ -1,18 +1,13 @@
 # tasks/discover.py
 import logging
-import random
-import json
-import os
 import handler.tmdb as tmdb
 from database import media_db, settings_db, user_db
-import config_manager
 import constants
 from utils import DAILY_THEME
 logger = logging.getLogger(__name__)
 
-def task_update_daily_recommendation(processor):
+def task_update_daily_theme(processor):
     """
-    【V5 - 每日主题轮换版】
     每天从预设的主题列表中选择一个，推荐该主题下的热门电影。
     如果第一页不满足条件，会自动扫描后续页面。
     """
@@ -27,11 +22,10 @@ def task_update_daily_recommendation(processor):
         MAX_PAGES_TO_SCAN = 5 # 最多扫描 5 页
 
         # ★ 2. 引入每日主题轮换逻辑
-        #   - 从你的 utils.py 获取权威的主题列表
-        #   - 我们只用 KEYWORD_ID_MAP 的键（中文名）和值（ID）
+        #   - 我们只用 DAILY_THEME 的键（中文名）和值（ID）
         theme_list = list(DAILY_THEME.items())
         if not theme_list:
-            logger.error("  ➜ 每日推荐失败：主题列表 (KEYWORD_ID_MAP) 为空，请检查 utils.py。")
+            logger.error("  ➜ 每日推荐失败：主题列表 (DAILY_THEME) 为空，请检查 utils.py。")
             return
 
         #   - 从数据库获取上次推荐到哪个主题的索引
@@ -52,8 +46,7 @@ def task_update_daily_recommendation(processor):
         while len(recommendation_pool) < MIN_POOL_SIZE and page_to_fetch <= MAX_PAGES_TO_SCAN:
             logger.debug(f"  ➜ 正在扫描主题【{today_theme_name}】的第 {page_to_fetch}/{MAX_PAGES_TO_SCAN} 页...")
             
-            # ★★★ 核心改造：更换数据源 ★★★
-            # 从调用“热门电影”改为调用“发现电影”，并传入主题ID
+            # 调用“发现电影”，并传入主题ID
             discover_params = {
                 'with_keywords': today_theme_id,
                 'sort_by': 'popularity.desc', # 按热度排序
@@ -67,8 +60,6 @@ def task_update_daily_recommendation(processor):
                 logger.warning(f"  ➜ 从主题【{today_theme_name}】第 {page_to_fetch} 页获取电影失败，勘探提前结束。")
                 break
 
-            # --- 后续逻辑与原来基本一致 ---
-            
             popular_movies = movies_data["results"]
             tmdb_ids = [str(movie["id"]) for movie in popular_movies]
 
@@ -91,7 +82,7 @@ def task_update_daily_recommendation(processor):
             logger.debug(f"  ➜ 在第 {page_to_fetch} 页发现 {len(movies_with_overview)} 部符合条件的电影，开始获取详情...")
             for movie in movies_with_overview:
                 try:
-                    # 获取详情的逻辑保持不变
+                    # 获取详情
                     movie_details = tmdb.get_movie_details(movie["id"], api_key)
                     if not movie_details: continue
 
@@ -117,9 +108,8 @@ def task_update_daily_recommendation(processor):
         
         settings_db.save_setting('recommendation_pool', recommendation_pool)
         
-        # ★ 5. 关键：保存我们这次用的主题索引，确保下次轮换！
+        # ★ 5. 关键：保存我们这次用的主题索引和页数，确保下次轮换以及补充！
         settings_db.save_setting('recommendation_theme_index', today_theme_index)
-        # （原来的 recommendation_pool_page 记录可以保留，补充逻辑也许还能用上）
         settings_db.save_setting('recommendation_pool_page', page_to_fetch - 1)
         
         logger.debug(f"  ✅ 每日推荐池已更新为【{today_theme_name}】主题，共找到 {len(recommendation_pool)} 部电影。下次将推荐下一个主题。")
@@ -130,7 +120,6 @@ def task_update_daily_recommendation(processor):
 
 def task_replenish_recommendation_pool(processor):
     """
-    【V5 - 主题感知防并发版】
     为推荐池补充弹药。它会自动识别当前池的主题，并只补充同一主题的电影。
     在执行前会再次检查库存，防止因并发请求导致重复补充。
     """
@@ -149,7 +138,7 @@ def task_replenish_recommendation_pool(processor):
         api_key = config.get(constants.CONFIG_OPTION_TMDB_API_KEY)
         if not api_key: return
 
-        # 2. ★★★ 核心改造：获取当前推荐主题 ★★★
+        # 2. ★★★ 获取当前推荐主题 ★★★
         current_theme_index = settings_db.get_setting('recommendation_theme_index')
         if current_theme_index is None:
             logger.warning("  ➜ 补充任务中止：未找到当前推荐主题索引(recommendation_theme_index)。请先执行一次每日推荐更新任务。")
@@ -171,7 +160,7 @@ def task_replenish_recommendation_pool(processor):
 
         logger.debug(f"  ➜ 当前池中有 {len(current_pool)} 部电影，准备从主题【{current_theme_name}】的第 {next_page_to_fetch} 页补充。")
 
-        # 4. ★★★ 核心改造：更换数据源 ★★★
+        # 4. ★★★ 更换数据源 ★★★
         discover_params = {
             'with_keywords': current_theme_id,
             'sort_by': 'popularity.desc',
@@ -186,7 +175,6 @@ def task_replenish_recommendation_pool(processor):
             settings_db.save_setting('recommendation_pool_page', next_page_to_fetch)
             return
 
-        # --- 后续过滤和处理逻辑与之前一致 ---
         current_pool_ids = {str(movie["id"]) for movie in current_pool}
         new_movies = more_movies_data["results"]
         new_tmdb_ids = [str(movie["id"]) for movie in new_movies]

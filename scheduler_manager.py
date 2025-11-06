@@ -23,7 +23,7 @@ logger = logging.getLogger(__name__)
 HIGH_FREQ_CHAIN_JOB_ID = 'high_freq_task_chain_job'
 LOW_FREQ_CHAIN_JOB_ID = 'low_freq_task_chain_job'
 REVIVAL_CHECK_JOB_ID = 'weekly_revival_check_job'
-DAILY_RECOMMENDATION_JOB_ID = 'daily_recommendation_job'
+DAILY_THEME_JOB_ID = 'daily_theme_job'
 
 
 # --- 友好的CRON日志翻译函数 (保持不变) ---
@@ -220,7 +220,7 @@ class SchedulerManager:
         self.update_high_freq_task_chain_job()
         self.update_low_freq_task_chain_job()
         self.update_revival_check_job()
-        self.update_daily_recommendation_job()
+        self.update_daily_theme_job()
 
     def _update_single_task_chain_job(self, job_id: str, job_name: str, task_key: str, enabled_key: str, cron_key: str, sequence_key: str, runtime_key: str):
         """
@@ -354,7 +354,7 @@ class SchedulerManager:
         except ValueError as e:
             logger.error(f"设置'{task_description}'任务失败：CRON表达式 '{cron_str}' 无效。错误: {e}")
 
-    def update_daily_recommendation_job(self):
+    def update_daily_theme_job(self):
         """根据硬编码的规则，设置每日推荐的更新任务。"""
         if not self.scheduler.running:
             return
@@ -362,17 +362,17 @@ class SchedulerManager:
         logger.debug("正在更新固定的'每日推荐'定时任务...")
 
         try:
-            self.scheduler.remove_job(DAILY_RECOMMENDATION_JOB_ID)
+            self.scheduler.remove_job(DAILY_THEME_JOB_ID)
         except JobLookupError:
             pass 
 
         # 每天凌晨 0 点 5 分执行
         cron_str = '5 0 * * *' 
         registry = tasks.get_task_registry()
-        task_info = registry.get('update-daily-recommendation')
+        task_info = registry.get('update-daily-theme')
         
         if not task_info:
-            logger.error("设置'每日推荐'任务失败：在任务注册表中未找到 'update-daily-recommendation'。")
+            logger.error("设置'每日主题'任务失败：在任务注册表中未找到 'update-daily-theme'。")
             return
             
         task_function, task_description, processor_type = task_info
@@ -389,7 +389,7 @@ class SchedulerManager:
             self.scheduler.add_job(
                 func=scheduled_recommendation_wrapper,
                 trigger=CronTrigger.from_crontab(cron_str, timezone=str(pytz.timezone(constants.TIMEZONE))),
-                id=DAILY_RECOMMENDATION_JOB_ID,
+                id=DAILY_THEME_JOB_ID,
                 name=task_description,
                 replace_existing=True
             )
