@@ -515,7 +515,7 @@ def task_auto_subscribe(processor):
             conn.commit()
 
         # --- 6. 处理媒体洗版 ---
-        logger.info("--- 智能订阅缺失已完成，开始执行媒体洗版任务 ---")
+        logger.info("--- 缺失洗版订阅已完成，开始执行媒体洗版任务 ---")
         task_manager.update_status_from_thread(85, "缺失订阅完成，正在启动媒体洗版...") # 更新一个过渡状态
         
         # 直接调用洗版任务函数
@@ -524,7 +524,7 @@ def task_auto_subscribe(processor):
         # --- 构建最终的分类汇总日志 ---
         summary_message = ""
         if subscription_details:
-            header = f"✅ 智能订阅完成，成功提交 {len(subscription_details)} 项:"
+            header = f"✅ 缺失洗版订阅完成，成功提交 {len(subscription_details)} 项:"
             item_lines = []
             for detail in subscription_details:
                 module = detail['module']
@@ -536,7 +536,7 @@ def task_auto_subscribe(processor):
             if quota_exhausted:
                 summary_message += "\n(每日订阅配额已用尽，部分项目可能未处理)"
         else:
-            summary_message = "✅ 智能订阅完成，本次未发现符合条件的媒体。"
+            summary_message = "✅ 缺失洗版订阅完成，本次未发现需要订阅的媒体。"
 
         # 无论有无订阅，都打印最终日志
         logger.info(summary_message)
