@@ -144,9 +144,9 @@ def request_subscription():
             # ★★★ 核心修改 3/3：通知逻辑也使用相同的条件 ★★★
             if is_vip or is_emby_admin:
                 if item_type == 'Series' and seasons_subscribed_count > 1:
-                    message_text = f"✅ *您的订阅已自动处理*\n\n您订阅的 *{item_name}* 已成功提交订阅，共计 *{seasons_subscribed_count}* 季。"
+                    message_text = f"✅ *您的订阅已自动处理*\n\n您想看的 *{item_name}* 已成功提交订阅，共计 *{seasons_subscribed_count}* 季。"
                 else:
-                    message_text = f"✅ *您的订阅已自动处理*\n\n您订阅的 *{item_name}* 已成功提交订阅。"
+                    message_text = f"✅ *您的订阅已自动处理*\n\n您想看的 *{item_name}* 已成功提交订阅。"
                 send_telegram_message(user_chat_id, message_text)
             else:
                 message_text = f"🔔 *您的订阅请求已提交*\n\n您想看的 *{item_name}* 已进入待审队列，管理员处理后会通知您。"
