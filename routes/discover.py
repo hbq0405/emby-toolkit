@@ -4,7 +4,7 @@ from flask import Blueprint, jsonify, request, g, session
 
 from extensions import any_login_required
 import handler.tmdb as tmdb
-from utils import KEYWORD_ID_MAP, DAILY_THEME, contains_chinese
+from utils import KEYWORD_ID_MAP, DAILY_THEME, contains_chinese, get_tmdb_language_options
 from database import user_db, media_db, settings_db
 from tasks.discover import task_update_daily_theme, task_replenish_recommendation_pool
 import task_manager
@@ -69,7 +69,7 @@ def discover_movies():
             return jsonify({"status": "error", "message": "此功能仅对 Emby 用户开放"}), 403
         current_user_id = session['emby_user_id']
 
-        # ★★★ 核心修改 1: 构建一个干净的参数字典 ★★★
+        # ★★★ 构建一个干净的参数字典 ★★★
         tmdb_params = {
             'sort_by': data.get('sort_by', 'popularity.desc'),
             'page': data.get('page', 1),
@@ -77,11 +77,10 @@ def discover_movies():
             'with_genres': data.get('with_genres', ''),
             'with_origin_country': data.get('with_origin_country', ''),
             'with_keywords': data.get('with_keywords', ''),
-            
-            # ★★★ 新增的参数 ★★★
             'without_genres': data.get('without_genres', ''),
             'primary_release_date.gte': data.get('primary_release_date.gte', ''),
             'primary_release_date.lte': data.get('primary_release_date.lte', ''),
+            'with_original_language': data.get('with_original_language', ''),
         }
         
         # 清理掉值为 None 或空字符串的键，避免发送空参数
@@ -110,7 +109,7 @@ def discover_tv_shows():
             return jsonify({"status": "error", "message": "此功能仅对 Emby 用户开放"}), 403
         current_user_id = session['emby_user_id']
 
-        # ★★★ 核心修改 2: 为电视剧构建参数字典 ★★★
+        # ★★★ 为电视剧构建参数字典 ★★★
         tmdb_params = {
             'sort_by': data.get('sort_by', 'popularity.desc'),
             'page': data.get('page', 1),
@@ -118,11 +117,10 @@ def discover_tv_shows():
             'with_genres': data.get('with_genres', ''),
             'with_origin_country': data.get('with_origin_country', ''),
             'with_keywords': data.get('with_keywords', ''),
-            
-            # ★★★ 新增的参数 (注意日期参数名不同) ★★★
             'without_genres': data.get('without_genres', ''),
             'first_air_date.gte': data.get('first_air_date.gte', ''),
             'first_air_date.lte': data.get('first_air_date.lte', ''),
+            'with_original_language': data.get('with_original_language', ''),
         }
         
         tmdb_params = {k: v for k, v in tmdb_params.items() if v is not None and v != ''}
@@ -154,7 +152,7 @@ def get_genres(media_type):
         logger.error(f"获取 TMDb 类型列表时出错: {e}", exc_info=True)
         return jsonify({"status": "error", "message": "获取类型列表失败"}), 500
     
-# ★★★ 新增搜索接口 ★★★
+# ★★★ 搜索接口 ★★★
 @discover_bp.route('/search', methods=['POST'])
 @any_login_required
 def search_media_handler():
@@ -185,6 +183,18 @@ def search_media_handler():
     except Exception as e:
         logger.error(f"TMDb 搜索 {media_type} 时出错: {e}", exc_info=True)
         return jsonify({"status": "error", "message": "从 TMDb 搜索数据失败"}), 500
+    
+@discover_bp.route('/config/languages', methods=['GET'])
+@any_login_required
+def api_get_discover_languages():
+    """为影视探索页面提供专用的、友好的常用语言列表。"""
+    try:
+        # 直接调用 utils 中的新函数，它已经返回了前端所需的格式
+        language_options = get_tmdb_language_options()
+        return jsonify(language_options)
+    except Exception as e:
+        logger.error(f"获取 Discover 语言列表时出错: {e}", exc_info=True)
+        return jsonify([]), 500
     
 @discover_bp.route('/config/keywords', methods=['GET'])
 @any_login_required

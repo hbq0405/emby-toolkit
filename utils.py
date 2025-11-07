@@ -392,50 +392,48 @@ def get_unified_rating(official_rating_str: str) -> str:
     return RATING_MAP.get(rating_value, '未知')
 # --- ★★★ 新增结束 ★★★ ---
 
-# --- 国家/地区名称映射功能 ---
+_COUNTRY_SOURCE_DATA = {
+    "China": {"chinese_name": "中国大陆", "abbr": "CN"},
+    "Taiwan": {"chinese_name": "中国台湾", "abbr": "TW"},
+    "Hong Kong": {"chinese_name": "中国香港", "abbr": "HK"},
+    "United States of America": {"chinese_name": "美国", "abbr": "US"},
+    "Japan": {"chinese_name": "日本", "abbr": "JP"},
+    "South Korea": {"chinese_name": "韩国", "abbr": "KR"},
+    "United Kingdom": {"chinese_name": "英国", "abbr": "GB"},
+    "France": {"chinese_name": "法国", "abbr": "FR"},
+    "Germany": {"chinese_name": "德国", "abbr": "DE"},
+    "Canada": {"chinese_name": "加拿大", "abbr": "CA"},
+    "India": {"chinese_name": "印度", "abbr": "IN"},
+    "Italy": {"chinese_name": "意大利", "abbr": "IT"},
+    "Spain": {"chinese_name": "西班牙", "abbr": "ES"},
+    "Australia": {"chinese_name": "澳大利亚", "abbr": "AU"},
+    "Russia": {"chinese_name": "俄罗斯", "abbr": "RU"},
+    "Thailand": {"chinese_name": "泰国", "abbr": "TH"},
+    "Sweden": {"chinese_name": "瑞典", "abbr": "SE"},
+    "Denmark": {"chinese_name": "丹麦", "abbr": "DK"},
+    "Mexico": {"chinese_name": "墨西哥", "abbr": "MX"},
+    "Brazil": {"chinese_name": "巴西", "abbr": "BR"},
+    "Argentina": {"chinese_name": "阿根廷", "abbr": "AR"},
+    "Ireland": {"chinese_name": "爱尔兰", "abbr": "IE"},
+    "New Zealand": {"chinese_name": "新西兰", "abbr": "NZ"},
+    "Netherlands": {"chinese_name": "荷兰", "abbr": "NL"},
+    "Singapore": {"chinese_name": "新加坡", "abbr": "SG"},
+    "Belgium": {"chinese_name": "比利时", "abbr": "BE"}
+}
+
+# --- 国家/地区名称映射功能 (已重构) ---
 _country_map_cache = None
 def get_country_translation_map() -> dict:
     """
-    【V-Hardcoded - 硬编码最终版】
-    直接在代码中定义并缓存一个权威的国家/地区反向映射表。
+    从 _COUNTRY_SOURCE_DATA 构建并缓存国家/地区反向映射表。
     """
     global _country_map_cache
     if _country_map_cache is not None:
         return _country_map_cache
 
     try:
-        # 直接在代码中定义数据源
-        source_data = {
-        "China": {"chinese_name": "中国大陆", "abbr": "CN"},
-        "Taiwan": {"chinese_name": "中国台湾", "abbr": "TW"},
-        "Hong Kong": {"chinese_name": "中国香港", "abbr": "HK"},
-        "United States of America": {"chinese_name": "美国", "abbr": "US"},
-        "Japan": {"chinese_name": "日本", "abbr": "JP"},
-        "South Korea": {"chinese_name": "韩国", "abbr": "KR"},
-        "United Kingdom": {"chinese_name": "英国", "abbr": "GB"},
-        "France": {"chinese_name": "法国", "abbr": "FR"},
-        "Germany": {"chinese_name": "德国", "abbr": "DE"},
-        "Canada": {"chinese_name": "加拿大", "abbr": "CA"},
-        "India": {"chinese_name": "印度", "abbr": "IN"},
-        "Italy": {"chinese_name": "意大利", "abbr": "IT"},
-        "Spain": {"chinese_name": "西班牙", "abbr": "ES"},
-        "Australia": {"chinese_name": "澳大利亚", "abbr": "AU"},
-        "Russia": {"chinese_name": "俄罗斯", "abbr": "RU"},
-        "Thailand": {"chinese_name": "泰国", "abbr": "TH"},
-        "Sweden": {"chinese_name": "瑞典", "abbr": "SE"},
-        "Denmark": {"chinese_name": "丹麦", "abbr": "DK"},
-        "Mexico": {"chinese_name": "墨西哥", "abbr": "MX"},
-        "Brazil": {"chinese_name": "巴西", "abbr": "BR"},
-        "Argentina": {"chinese_name": "阿根廷", "abbr": "AR"},
-        "Ireland": {"chinese_name": "爱尔兰", "abbr": "IE"},
-        "New Zealand": {"chinese_name": "新西兰", "abbr": "NZ"},
-        "Netherlands": {"chinese_name": "荷兰", "abbr": "NL"},
-        "Singapore": {"chinese_name": "新加坡", "abbr": "SG"},
-        "Belgium": {"chinese_name": "比利时", "abbr": "BE"}
-        }
-
         reverse_map = {}
-        for english_name, details in source_data.items():
+        for english_name, details in _COUNTRY_SOURCE_DATA.items():
             chinese_name = details.get('chinese_name')
             abbr = details.get('abbr')
             if chinese_name:
@@ -452,54 +450,20 @@ def get_country_translation_map() -> dict:
         _country_map_cache = {}
         return {}
 
-_country_reverse_map_cache = None
-
-def get_country_reverse_lookup_map() -> dict:
+def get_tmdb_country_options():
     """
-    【新增】从硬编码数据中，创建一个 "英文全称 -> 两字母代码" 的反向查找表。
+    从 _COUNTRY_SOURCE_DATA 生成前端需要的国家/地区选项。
     """
-    global _country_reverse_map_cache
-    if _country_reverse_map_cache is not None:
-        return _country_reverse_map_cache
-
-    # 复用 get_country_translation_map 中定义的源数据
-    source_data = {
-        "Hong Kong": {"chinese_name": "香港", "abbr": "HK"},
-        "United States of America": {"chinese_name": "美国", "abbr": "US"},
-        "Japan": {"chinese_name": "日本", "abbr": "JP"},
-        "United Kingdom": {"chinese_name": "英国", "abbr": "GB"},
-        "France": {"chinese_name": "法国", "abbr": "FR"},
-        "South Korea": {"chinese_name": "韩国", "abbr": "KR"},
-        "Germany": {"chinese_name": "德国", "abbr": "DE"},
-        "Canada": {"chinese_name": "加拿大", "abbr": "CA"},
-        "India": {"chinese_name": "印度", "abbr": "IN"},
-        "Italy": {"chinese_name": "意大利", "abbr": "IT"},
-        "Spain": {"chinese_name": "西班牙", "abbr": "ES"},
-        "Australia": {"chinese_name": "澳大利亚", "abbr": "AU"},
-        "China": {"chinese_name": "中国大陆", "abbr": "CN"},
-        "Taiwan": {"chinese_name": "中国台湾", "abbr": "TW"},
-        "Russia": {"chinese_name": "俄罗斯", "abbr": "RU"},
-        "Thailand": {"chinese_name": "泰国", "abbr": "TH"},
-        "Sweden": {"chinese_name": "瑞典", "abbr": "SE"},
-        "Denmark": {"chinese_name": "丹麦", "abbr": "DK"},
-        "Mexico": {"chinese_name": "墨西哥", "abbr": "MX"},
-        "Brazil": {"chinese_name": "巴西", "abbr": "BR"},
-        "Argentina": {"chinese_name": "阿根廷", "abbr": "AR"},
-        "Ireland": {"chinese_name": "爱尔兰", "abbr": "IE"},
-        "New Zealand": {"chinese_name": "新西兰", "abbr": "NZ"},
-        "Netherlands": {"chinese_name": "荷兰", "abbr": "NL"},
-        "Belgium": {"chinese_name": "比利时", "abbr": "BE"}
-    }
+    options = []
+    # ★ 现在从常量读取数据
+    for details in _COUNTRY_SOURCE_DATA.values():
+        if details.get('chinese_name') and details.get('abbr'):
+            options.append({
+                "label": details['chinese_name'],
+                "value": details['abbr']
+            })
     
-    reverse_map = {
-        english_name.lower(): details.get('abbr')
-        for english_name, details in source_data.items()
-        if details.get('abbr')
-    }
-    
-    _country_reverse_map_cache = reverse_map
-    logger.trace(f"成功构建了 {len(reverse_map)} 条国家英文名到代码的反向映射。")
-    return _country_reverse_map_cache
+    return options
 
 def translate_country_list(country_names_or_codes: list) -> list:
     """
@@ -520,50 +484,47 @@ def translate_country_list(country_names_or_codes: list) -> list:
         
     return list(dict.fromkeys(translated_list))
 
-def get_tmdb_country_options():
-    """
-    【复用版】
-    复用 get_country_translation_map 中的硬编码数据源，
-    生成前端需要的 [{label: '中文', value: '代码'}, ...] 格式。
-    """
-    # 直接从你的函数中复制这份权威的数据源
-    source_data = {
-        "China": {"chinese_name": "中国大陆", "abbr": "CN"},
-        "Taiwan": {"chinese_name": "中国台湾", "abbr": "TW"},
-        "Hong Kong": {"chinese_name": "中国香港", "abbr": "HK"},
-        "United States of America": {"chinese_name": "美国", "abbr": "US"},
-        "Japan": {"chinese_name": "日本", "abbr": "JP"},
-        "South Korea": {"chinese_name": "韩国", "abbr": "KR"},
-        "United Kingdom": {"chinese_name": "英国", "abbr": "GB"},
-        "France": {"chinese_name": "法国", "abbr": "FR"},
-        "Germany": {"chinese_name": "德国", "abbr": "DE"},
-        "Canada": {"chinese_name": "加拿大", "abbr": "CA"},
-        "India": {"chinese_name": "印度", "abbr": "IN"},
-        "Italy": {"chinese_name": "意大利", "abbr": "IT"},
-        "Spain": {"chinese_name": "西班牙", "abbr": "ES"},
-        "Australia": {"chinese_name": "澳大利亚", "abbr": "AU"},
-        "Russia": {"chinese_name": "俄罗斯", "abbr": "RU"},
-        "Thailand": {"chinese_name": "泰国", "abbr": "TH"},
-        "Sweden": {"chinese_name": "瑞典", "abbr": "SE"},
-        "Denmark": {"chinese_name": "丹麦", "abbr": "DK"},
-        "Mexico": {"chinese_name": "墨西哥", "abbr": "MX"},
-        "Brazil": {"chinese_name": "巴西", "abbr": "BR"},
-        "Argentina": {"chinese_name": "阿根廷", "abbr": "AR"},
-        "Ireland": {"chinese_name": "爱尔兰", "abbr": "IE"},
-        "New Zealand": {"chinese_name": "新西兰", "abbr": "NZ"},
-        "Netherlands": {"chinese_name": "荷兰", "abbr": "NL"},
-        "Singapore": {"chinese_name": "新加坡", "abbr": "SG"},
-        "Belgium": {"chinese_name": "比利时", "abbr": "BE"}
-    }
+# --- 语言名称映射 ---
+LANGUAGE_TRANSLATION_MAP = {
+    "zh": "国语",
+    "cn": "粤语",
+    "en": "英语",
+    "ja": "日语",
+    "ko": "韩语",
+    "fr": "法语",
+    "de": "德语",
+    "es": "西班牙语",
+    "it": "意大利语",
+    "ru": "俄语",
+    "th": "泰语",
+    "hi": "印地语",
+    "pt": "葡萄牙语",
+    "sv": "瑞典语",
+    "da": "丹麦语",
+    "nl": "荷兰语",
+    "no": "挪威语",
+    "fi": "芬兰语",
+    "pl": "波兰语",
+    "tr": "土耳其语",
+    "ar": "阿拉伯语",
+    "he": "希伯来语",
+    "id": "印尼语",
+    "ms": "马来语",
+    "vi": "越南语",
+    "cs": "捷克语",
+    "hu": "匈牙利语",
+    "ro": "罗马尼亚语",
+    "el": "希腊语",
+    "xx": "无语言"
+}
 
-    options = []
-    for details in source_data.values():
-        # 确保中文名和缩写都存在
-        if details.get('chinese_name') and details.get('abbr'):
-            options.append({
-                "label": details['chinese_name'],
-                "value": details['abbr']
-            })
-    
-    # 按中文标签的拼音排序，对用户更友好
-    return sorted(options, key=lambda x: x['label'])
+def get_tmdb_language_options():
+    """
+    从硬编码的语言映射表中，生成前端需要的 [{label: '中文', value: '代码'}, ...] 格式。
+    严格保持与 LANGUAGE_TRANSLATION_MAP 字典中定义一致的顺序。
+    """
+    options = [
+        {"label": chinese_name, "value": code}
+        for code, chinese_name in LANGUAGE_TRANSLATION_MAP.items()
+    ]
+    return options

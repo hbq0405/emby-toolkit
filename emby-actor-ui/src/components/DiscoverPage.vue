@@ -68,6 +68,18 @@
               />
               </n-space>
               <n-space align="center">
+                <label>语言:</label>
+                <n-select
+                  v-model:value="selectedLanguage"
+                  :disabled="isSearchMode"
+                  filterable
+                  clearable
+                  placeholder="选择原始语言"
+                  :options="languageOptions"
+                  style="min-width: 300px;"
+                />
+              </n-space>
+              <n-space align="center">
                 <label>发行年份:</label>
                 <n-input-group>
                   <n-input-number
@@ -276,6 +288,8 @@ const genres = ref([]);
 const selectedGenres = ref([]);
 const countryOptions = ref([]); 
 const selectedRegions = ref([]);
+const languageOptions = ref([]);
+const selectedLanguage = ref(null);
 const keywordOptions = ref([]); 
 const selectedKeywords = ref([]); 
 const genreFilterMode = ref('include'); 
@@ -332,6 +346,15 @@ const fetchCountries = async () => {
   }
 };
 
+const fetchLanguages = async () => {
+  try {
+    const response = await axios.get('/api/discover/config/languages');
+    languageOptions.value = response.data;
+  } catch (error) {
+    message.error('加载语言列表失败');
+  }
+};
+
 const fetchKeywords = async () => {
   try {
     const response = await axios.get('/api/discover/config/keywords');
@@ -365,6 +388,7 @@ const fetchDiscoverData = async () => {
         'page': filters.page,
         'vote_average.gte': filters.vote_average_gte, // 将 vote_average_gte 映射回 'vote_average.gte'
         'with_origin_country': selectedRegions.value.join('|'),
+        'with_original_language': selectedLanguage.value,
         'with_keywords': selectedKeywords.value.join(','),
       };
 
@@ -615,6 +639,7 @@ watch(
     () => filters.vote_average_gte, // 使用正确的属性名
     selectedGenres, 
     selectedRegions, 
+    selectedLanguage,
     selectedKeywords,
     genreFilterMode,
     yearFrom,
@@ -632,6 +657,7 @@ let observer = null;
 onMounted(() => {
   fetchGenres();
   fetchCountries();
+  fetchLanguages();
   fetchKeywords();
   fetchEmbyConfig(); 
   fetchRecommendationPool();
