@@ -140,7 +140,7 @@ def request_subscription():
 
     # 只要成功创建了 'approved' 或 'pending' 状态的请求，并且是电影，就执行此逻辑块
     if new_status_for_frontend in ['approved', 'pending'] and item_type == 'Movie':
-        logger.info(f"  ➜ 订阅请求已创建 (状态: {new_status_for_frontend})，开始更新推荐池...")
+        logger.debug(f"  ➜ 订阅请求已创建 (状态: {new_status_for_frontend})，开始更新推荐池...")
         # 第一步：从池中移除当前这个电影，避免重复推荐
         settings_db.remove_item_from_recommendation_pool(tmdb_id)
         # 第二步：检查库存并决定是否需要补充

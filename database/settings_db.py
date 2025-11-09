@@ -161,7 +161,7 @@ def remove_item_from_recommendation_pool(tmdb_id: str):
                 new_pool = [item for item in current_pool if str(item.get('id')) != str(tmdb_id)]
 
                 if len(new_pool) == len(current_pool):
-                    logger.warning(f"  ➜ 尝试从推荐池移除 TMDB ID {tmdb_id}，但未在池中找到。")
+                    logger.trace(f"  ➜ 尝试从推荐池移除 TMDB ID {tmdb_id}，但未在池中找到。")
                     return
 
                 new_pool_json = json.dumps(new_pool, ensure_ascii=False)
@@ -173,7 +173,7 @@ def remove_item_from_recommendation_pool(tmdb_id: str):
                 # 添加下面这行来提交你的更改！
                 conn.commit()
                 
-                logger.info(f"  ✅ 已成功从推荐池中移除 TMDB ID: {tmdb_id}。")
+                logger.debug(f"  ✅ 已成功从推荐池中移除 TMDB ID: {tmdb_id}。")
 
     except Exception as e:
         # 发生错误时，数据库连接会自动回滚，所以这里不用显式 rollback
