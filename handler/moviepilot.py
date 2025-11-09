@@ -1,7 +1,7 @@
 # handler/moviepilot.py
 
 import requests
-import re
+import json
 import logging
 from typing import Dict, Any, Optional, Tuple, List
 from datetime import datetime
@@ -136,6 +136,8 @@ def subscribe_with_custom_payload(payload: dict, config: Dict[str, Any]) -> bool
 
         subscribe_url = f"{moviepilot_url}/api/v1/subscribe/"
         subscribe_headers = {"Authorization": f"Bearer {access_token}"}
+
+        logger.trace(f"  ➜ 最终发送给 MoviePilot 的 Payload: {json.dumps(payload, ensure_ascii=False)}")
         
         # 直接使用传入的 payload
         sub_response = requests.post(subscribe_url, headers=subscribe_headers, json=payload, timeout=15)

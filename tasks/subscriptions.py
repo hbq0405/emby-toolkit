@@ -7,7 +7,7 @@ import time
 import logging
 from datetime import datetime, date, timedelta, timezone
 from typing import List, Optional
-from concurrent.futures import ThreadPoolExecutor, as_completed
+from concurrent.futures import ThreadPoolExecutor, as_completed # <--- 就是加上这一行！
 
 # 导入需要的底层模块和共享实例
 import config_manager
@@ -21,8 +21,6 @@ from database import connection, settings_db, resubscribe_db, collection_db, use
 from .helpers import _get_standardized_effect, _extract_quality_tag_from_filename, is_movie_subscribable
 
 logger = logging.getLogger(__name__)
-
-config = config_manager.APP_CONFIG
 
 def _extract_exclusion_keywords_from_filename(filename: str) -> List[str]:
     """
@@ -191,14 +189,14 @@ def task_auto_subscribe(processor):
     
     task_manager.update_status_from_thread(0, "正在启动缺失洗版订阅任务...")
     
-    if not config.get(constants.CONFIG_OPTION_AUTOSUB_ENABLED):
+    if not config_manager.APP_CONFIG.get(constants.CONFIG_OPTION_AUTOSUB_ENABLED):
         logger.info("  ➜ 订阅总开关未开启，任务跳过。")
         task_manager.update_status_from_thread(100, "任务跳过：总开关未开启")
         return
 
     try:
         today = date.today()
-        tmdb_api_key = config.get(constants.CONFIG_OPTION_TMDB_API_KEY)
+        tmdb_api_key = config_manager.APP_CONFIG.get(constants.CONFIG_OPTION_TMDB_API_KEY)
 
         task_manager.update_status_from_thread(10, "缺失洗版订阅已启动...")
         subscription_details = []
@@ -248,8 +246,8 @@ def task_auto_subscribe(processor):
                                     break
 
                                 # +++ 订阅前检查 +++
-                                if is_movie_subscribable(movie.get('tmdb_id'), tmdb_api_key, config):
-                                    if moviepilot.subscribe_movie_to_moviepilot(movie, config):
+                                if is_movie_subscribable(movie.get('tmdb_id'), tmdb_api_key, config_manager.APP_CONFIG):
+                                    if moviepilot.subscribe_movie_to_moviepilot(movie, config_manager.APP_CONFIG):
                                         settings_db.decrement_subscription_quota()
                                         subscription_details.append({'module': '原生合集', 'source': collection.get('name', '未知合集'), 'item': f"电影《{movie['title']}》"})
                                         movies_changed = True
@@ -322,7 +320,7 @@ def task_auto_subscribe(processor):
                                 
                                 success = moviepilot.subscribe_series_to_moviepilot(
                                     series_info=dict(series), season_number=season['season_number'], 
-                                    config=config, best_version=best_version_flag
+                                    config=config_manager.APP_CONFIG, best_version=best_version_flag
                                 )
                                 
                                 if success:
@@ -377,7 +375,7 @@ def task_auto_subscribe(processor):
 
                         # ★★★ 核心：根据用户设置决定订阅模式 ★★★
                         # constants.CONFIG_OPTION_RESUBSCRIBE_USE_BEST_VERSION 对应 "是否整季洗版" 开关
-                        use_best_version = config.get(constants.CONFIG_OPTION_RESUBSCRIBE_USE_BEST_VERSION, False)
+                        use_best_version = config_manager.APP_CONFIG.get(constants.CONFIG_OPTION_RESUBSCRIBE_USE_BEST_VERSION, False)
                         best_version_param = 1 if use_best_version else None
                         log_mode = "洗版模式" if use_best_version else "普通模式"
                         logger.info(f"  ➜ 准备为《{series_name}》第 {season_num} 季提交订阅 ({log_mode})...")
@@ -385,7 +383,7 @@ def task_auto_subscribe(processor):
                         success = moviepilot.subscribe_series_to_moviepilot(
                             series_info=dict(series), 
                             season_number=season_num, 
-                            config=config, 
+                            config=config_manager.APP_CONFIG, 
                             best_version=best_version_param
                         )
 
@@ -434,8 +432,8 @@ def task_auto_subscribe(processor):
 
                                     if authoritative_type == 'Movie':
                                         # +++ 订阅前检查 +++
-                                        if is_movie_subscribable(media_tmdb_id, tmdb_api_key, config):
-                                            success = moviepilot.subscribe_movie_to_moviepilot(media_item, config)
+                                        if is_movie_subscribable(media_tmdb_id, tmdb_api_key, config_manager.APP_CONFIG):
+                                            success = moviepilot.subscribe_movie_to_moviepilot(media_item, config_manager.APP_CONFIG)
                                         else:
                                             logger.warning(f"  ➜ 电影《{media_title}》因未正式发行而被跳过订阅。")
                                             rejected_details.append({'module': '自定义合集', 'source': collection.get('name', '未知榜单'), 'item': f"电影《{media_title}》"})
@@ -450,7 +448,7 @@ def task_auto_subscribe(processor):
                                         series_info = { "item_name": media_title, "tmdb_id": media_tmdb_id }
                                         success = moviepilot.subscribe_series_to_moviepilot(
                                             series_info, season_number=None, 
-                                            config=config, best_version=best_version_flag
+                                            config=config_manager.APP_CONFIG, best_version=best_version_flag
                                         )
                                     
                                     if success:
@@ -508,9 +506,9 @@ def task_auto_subscribe(processor):
                     
                     if media_item['media_type'] == 'Movie':
                         # +++ 订阅前检查 +++
-                        if is_movie_subscribable(media_tmdb_id, tmdb_api_key, config):
+                        if is_movie_subscribable(media_tmdb_id, tmdb_api_key, config_manager.APP_CONFIG):
                             movie_info = {'title': media_title, 'tmdb_id': media_tmdb_id}
-                            success = moviepilot.subscribe_movie_to_moviepilot(movie_info, config)
+                            success = moviepilot.subscribe_movie_to_moviepilot(movie_info, config_manager.APP_CONFIG)
                         else:
                             logger.warning(f"  ➜ 电影《{media_title}》因未正式发行而被跳过订阅。")
                             actor_name = media_item.get('actor_name', '未知演员')
@@ -526,7 +524,7 @@ def task_auto_subscribe(processor):
                         series_info = {"item_name": media_title, "tmdb_id": media_tmdb_id}
                         success = moviepilot.subscribe_series_to_moviepilot(
                             series_info, season_number=None, 
-                            config=config, best_version=best_version_flag
+                            config=config_manager.APP_CONFIG, best_version=best_version_flag
                         )
                     
                     if success:
@@ -672,7 +670,7 @@ def build_resubscribe_payload(item_details: dict, rule: Optional[dict]) -> Optio
     else:
         logger.info("  🤷 文件名为空或不存在，无法提取关键字。")
 
-    use_custom_subscribe = config.get(constants.CONFIG_OPTION_USE_CUSTOM_RESUBSCRIBE, False)
+    use_custom_subscribe = config_manager.APP_CONFIG.get(constants.CONFIG_OPTION_USE_CUSTOM_RESUBSCRIBE, False)
     if not use_custom_subscribe or not rule:
         log_reason = "自定义洗版未开启" if not use_custom_subscribe else "未匹配到规则"
         logger.info(f"  ➜ 《{item_name}》将使用全局洗版 ({log_reason})。")
