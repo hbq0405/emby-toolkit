@@ -92,15 +92,15 @@ def _extract_quality_tag_from_filename(filename_lower: str, video_stream: dict) 
 # +++ 判断电影是否满足订阅条件 +++
 def is_movie_subscribable(movie_id: int, api_key: str, config: dict) -> bool:
     """
-    【V2 - 配置化延迟天数版】检查一部电影是否适合订阅。
+    检查一部电影是否适合订阅。
     """
     if not api_key:
         logger.error("TMDb API Key 未提供，无法检查电影是否可订阅。")
         return False
 
-    # 从配置中读取延迟天数，如果没配置则默认为30天
     delay_days = config.get(constants.CONFIG_OPTION_MOVIE_SUBSCRIPTION_DELAY_DAYS, 30)
 
+    # 初始日志仍然使用ID，因为此时我们还没有片名
     logger.debug(f"检查电影 (ID: {movie_id}) 是否适合订阅 (延迟天数: {delay_days})...")
 
     details = get_movie_details(
@@ -109,13 +109,16 @@ def is_movie_subscribable(movie_id: int, api_key: str, config: dict) -> bool:
         append_to_response="release_dates"
     )
 
+    # ★★★ 获取片名用于后续日志，如果获取失败则回退到使用ID ★★★
+    log_identifier = f"《{details.get('title')}》" if details and details.get('title') else f"(ID: {movie_id})"
+
     if not details:
-        logger.warning(f"无法获取电影 (ID: {movie_id}) 的详情，默认其不适合订阅。")
+        logger.warning(f"无法获取电影 {log_identifier} 的详情，默认其不适合订阅。")
         return False
 
     release_info = details.get("release_dates", {}).get("results", [])
     if not release_info:
-        logger.warning(f"电影 (ID: {movie_id}) 未找到任何地区的发行日期信息，默认其不适合订阅。")
+        logger.warning(f"电影 {log_identifier} 未找到任何地区的发行日期信息，默认其不适合订阅。")
         return False
 
     earliest_theatrical_date = None
@@ -124,7 +127,7 @@ def is_movie_subscribable(movie_id: int, api_key: str, config: dict) -> bool:
     for country_releases in release_info:
         for release in country_releases.get("release_dates", []):
             if release.get("type") == 4:
-                logger.info(f"  ➜ 成功: 电影 (ID: {movie_id}) 已有数字版发行记录，适合订阅。")
+                logger.info(f"  ➜ 成功: 电影 {log_identifier} 已有数字版发行记录，适合订阅。")
                 return True
             if release.get("type") == 3:
                 try:
@@ -134,18 +137,17 @@ def is_movie_subscribable(movie_id: int, api_key: str, config: dict) -> bool:
                         if earliest_theatrical_date is None or current_release_date < earliest_theatrical_date:
                             earliest_theatrical_date = current_release_date
                 except (ValueError, TypeError):
-                    logger.warning(f"解析电影 (ID: {movie_id}) 的上映日期 '{release.get('release_date')}' 时出错。")
+                    logger.warning(f"解析电影 {log_identifier} 的上映日期 '{release.get('release_date')}' 时出错。")
                     continue
 
     if earliest_theatrical_date:
         days_since_release = (today - earliest_theatrical_date).days
-        # 使用配置的延迟天数进行判断
         if days_since_release >= delay_days:
-            logger.info(f"  ➜ 成功: 电影 (ID: {movie_id}) 最早于 {days_since_release} 天前在影院上映，已超过配置的 {delay_days} 天，适合订阅。")
+            logger.info(f"  ➜ 成功: 电影 {log_identifier} 最早于 {days_since_release} 天前在影院上映，已超过配置的 {delay_days} 天，适合订阅。")
             return True
         else:
-            logger.info(f"  ➜ 失败: 电影 (ID: {movie_id}) 最早于 {days_since_release} 天前在影院上映，未满配置的 {delay_days} 天，不适合订阅。")
+            logger.info(f"  ➜ 失败: 电影 {log_identifier} 最早于 {days_since_release} 天前在影院上映，未满配置的 {delay_days} 天，不适合订阅。")
             return False
 
-    logger.warning(f"电影 (ID: {movie_id}) 未找到数字版或任何有效的影院上映日期，默认其不适合订阅。")
+    logger.warning(f"电影 {log_identifier} 未找到数字版或任何有效的影院上映日期，默认其不适合订阅。")
     return False
