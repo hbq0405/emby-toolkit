@@ -18,7 +18,7 @@ import handler.moviepilot as moviepilot
 import task_manager
 from handler import telegram
 from database import connection, settings_db, resubscribe_db, collection_db, user_db
-from .helpers import _get_standardized_effect, _extract_quality_tag_from_filename
+from .helpers import _get_standardized_effect, _extract_quality_tag_from_filename, is_movie_subscribable
 
 logger = logging.getLogger(__name__)
 
@@ -200,6 +200,7 @@ def task_auto_subscribe(processor):
 
         task_manager.update_status_from_thread(10, "缺失洗版订阅已启动...")
         subscription_details = []
+        rejected_details = []
         resubscribed_count = 0
         deleted_count = 0
         quota_exhausted = False
@@ -244,12 +245,19 @@ def task_auto_subscribe(processor):
                                     movies_to_keep.append(movie)
                                     break
 
-                                if moviepilot.subscribe_movie_to_moviepilot(movie, config_manager.APP_CONFIG):
-                                    settings_db.decrement_subscription_quota()
-                                    subscription_details.append({'module': '原生合集', 'source': collection.get('name', '未知合集'), 'item': f"电影《{movie['title']}》"})
-                                    movies_changed = True
-                                    movie['status'] = 'subscribed'
-                                movies_to_keep.append(movie)
+                                # +++ 订阅前检查 +++
+                                if is_movie_subscribable(movie.get('tmdb_id'), tmdb_api_key):
+                                    if moviepilot.subscribe_movie_to_moviepilot(movie, config_manager.APP_CONFIG):
+                                        settings_db.decrement_subscription_quota()
+                                        subscription_details.append({'module': '原生合集', 'source': collection.get('name', '未知合集'), 'item': f"电影《{movie['title']}》"})
+                                        movies_changed = True
+                                        movie['status'] = 'subscribed'
+                                else:
+                                    # 如果不适合订阅，记录拒绝信息
+                                    logger.warning(f"  ➜ 电影《{movie['title']}》因未正式发行而被跳过订阅。")
+                                    rejected_details.append({'module': '原生合集', 'source': collection.get('name', '未知合集'), 'item': f"电影《{movie['title']}》"})
+                                
+                                movies_to_keep.append(movie) # 无论成功与否，都保留在列表里
                             else:
                                 movies_to_keep.append(movie)
                         else:
@@ -423,7 +431,13 @@ def task_auto_subscribe(processor):
                                     authoritative_type = 'Series' if media_item.get('media_type') == 'Series' else 'Movie'
 
                                     if authoritative_type == 'Movie':
-                                        success = moviepilot.subscribe_movie_to_moviepilot(media_item, config_manager.APP_CONFIG)
+                                        # +++ 订阅前检查 +++
+                                        if is_movie_subscribable(media_tmdb_id, tmdb_api_key):
+                                            success = moviepilot.subscribe_movie_to_moviepilot(media_item, config_manager.APP_CONFIG)
+                                        else:
+                                            logger.warning(f"  ➜ 电影《{media_title}》因未正式发行而被跳过订阅。")
+                                            rejected_details.append({'module': '自定义合集', 'source': collection.get('name', '未知榜单'), 'item': f"电影《{media_title}》"})
+                                            success = False # 确保 success 标志为 False
                                     elif authoritative_type == 'Series':
                                         # --- 检查剧集是否完结 ---
                                         best_version_flag = _check_and_get_series_best_version_flag(
@@ -491,8 +505,15 @@ def task_auto_subscribe(processor):
                     media_tmdb_id = media_item.get('tmdb_media_id')
                     
                     if media_item['media_type'] == 'Movie':
-                        movie_info = {'title': media_title, 'tmdb_id': media_tmdb_id}
-                        success = moviepilot.subscribe_movie_to_moviepilot(movie_info, config_manager.APP_CONFIG)
+                        # +++ 订阅前检查 +++
+                        if is_movie_subscribable(media_tmdb_id, tmdb_api_key):
+                            movie_info = {'title': media_title, 'tmdb_id': media_tmdb_id}
+                            success = moviepilot.subscribe_movie_to_moviepilot(movie_info, config_manager.APP_CONFIG)
+                        else:
+                            logger.warning(f"  ➜ 电影《{media_title}》因未正式发行而被跳过订阅。")
+                            actor_name = media_item.get('actor_name', '未知演员')
+                            rejected_details.append({'module': '演员订阅', 'source': actor_name, 'item': f"作品《{media_title}》"})
+                            success = False # 确保 success 标志为 False
                     elif media_item['media_type'] == 'Series':
                         # --- 检查剧集是否完结 ---
                         best_version_flag = _check_and_get_series_best_version_flag(
@@ -531,12 +552,28 @@ def task_auto_subscribe(processor):
                 source = detail.get('source')
                 prefix = f"[{module}-{source}]" if source else f"[{module}]"
                 item_lines.append(f"  ├─ {prefix} {detail['item']}")
-            
             summary_message = header + "\n" + "\n".join(item_lines)
-            if quota_exhausted:
-                summary_message += "\n(每日订阅配额已用尽，部分项目可能未处理)"
         else:
             summary_message = "  ✅ 缺失洗版订阅完成，本次未发现需要订阅的媒体。"
+
+        # +++ 添加被拒绝订阅的电影信息 +++
+        if rejected_details:
+            rejected_header = f"\n\n  ❌ 下列 {len(rejected_details)} 项因未正式发行而被跳过:"
+            rejected_lines = []
+            for detail in rejected_details:
+                module = detail['module']
+                source = detail.get('source')
+                prefix = f"[{module}-{source}]" if source else f"[{module}]"
+                rejected_lines.append(f"  ├─ {prefix} {detail['item']}")
+            
+            # 如果之前没有任何成功订阅，就直接用新消息，否则追加
+            if not subscription_details:
+                summary_message = "  ℹ️ 缺失洗版订阅完成，无符合条件的订阅项。" + rejected_header + "\n" + "\n".join(rejected_lines)
+            else:
+                summary_message += rejected_header + "\n" + "\n".join(rejected_lines)
+
+        if quota_exhausted and subscription_details:
+            summary_message += "\n(每日订阅配额已用尽，部分项目可能未处理)"
 
         # 无论有无订阅，都打印最终日志
         logger.info(summary_message)

@@ -13,6 +13,7 @@ import constants
 from handler.telegram import send_telegram_message
 from extensions import admin_required
 from database import connection, user_db, settings_db
+from tasks.helpers import is_movie_subscribable
 
 # 创建一个新的蓝图
 user_management_bp = Blueprint('user_management_bp', __name__)
@@ -783,7 +784,7 @@ def get_pending_subscriptions():
 @user_management_bp.route('/api/admin/subscriptions/batch-approve', methods=['POST'])
 @admin_required
 def batch_approve_subscriptions():
-    """【V3 - 通知合并版】批量批准订阅请求，并为同一用户合并通知。"""
+    """【V4 - 增加发行检查】批量批准订阅请求，并为同一用户合并通知。"""
     data = request.json
     request_ids = data.get('ids', [])
 
@@ -796,68 +797,117 @@ def batch_approve_subscriptions():
             logger.warning(f"管理员尝试批量批准请求，但配额已用尽。")
             return jsonify({"status": "error", "message": "今日订阅配额已用尽，无法批准请求。"}), 429
 
-        approved_requests = user_db.batch_approve_subscription_requests(request_ids)
-        
-        if not approved_requests:
-            return jsonify({"status": "ok", "message": "没有新的请求被批准或请求已处理。"}), 200
+        # 1. 获取所有待处理请求的详情
+        requests_to_process = user_db.get_multiple_subscription_request_details(request_ids)
+        if not requests_to_process:
+            return jsonify({"status": "ok", "message": "请求已处理或不存在。"}), 200
 
         config = config_manager.APP_CONFIG
-        successful_subscriptions = 0
+        tmdb_api_key = config.get(constants.CONFIG_OPTION_TMDB_API_KEY)
         
-        # ★★★ 核心修改 1/3：创建一个用于分组通知的字典 ★★★
-        notifications_to_send = {}
+        # 2. 将请求分类
+        requests_to_subscribe = []
+        requests_to_auto_reject = []
 
-        for req_details in approved_requests:
-            item_type = req_details['item_type']
-            subscription_successful = False
-            
-            if item_type == 'Movie':
-                mp_payload = { "name": req_details['item_name'], "tmdbid": int(req_details['tmdb_id']), "type": "电影" }
-                if moviepilot.subscribe_with_custom_payload(mp_payload, config):
-                    subscription_successful = True
-            elif item_type == 'Series':
-                series_info = { "tmdb_id": int(req_details['tmdb_id']), "item_name": req_details['item_name'] }
-                subscription_results = moviepilot.smart_subscribe_series(series_info, config)
-                if subscription_results is not None:
-                    subscription_successful = True
-            
-            if subscription_successful:
-                successful_subscriptions += 1
-                settings_db.decrement_subscription_quota()
-                
-                # ★★★ 核心修改 2/3：将成功的请求按用户ID分组 ★★★
-                subscriber_id = req_details.get('emby_user_id')
-                if subscriber_id not in notifications_to_send:
-                    notifications_to_send[subscriber_id] = []
-                notifications_to_send[subscriber_id].append(req_details)
-            else:
-                logger.error(f"批量批准：提交请求 {req_details['id']} 到 MoviePilot 失败。")
+        for req in requests_to_process:
+            if req['item_type'] == 'Movie':
+                if is_movie_subscribable(int(req['tmdb_id']), tmdb_api_key):
+                    requests_to_subscribe.append(req)
+                else:
+                    requests_to_auto_reject.append(req)
+            else: # 电视剧直接加入待订阅列表
+                requests_to_subscribe.append(req)
         
-        # ★★★ 核心修改 3/3：循环分组后的字典，构建并发送合并通知 ★★★
-        for subscriber_id, user_requests in notifications_to_send.items():
+        # 3. 处理可订阅的请求
+        successful_subscriptions = 0
+        notifications_to_send_success = {}
+        if requests_to_subscribe:
+            subscribe_ids = [req['id'] for req in requests_to_subscribe]
+            user_db.batch_update_request_status(subscribe_ids, 'approved')
+
+            for req_details in requests_to_subscribe:
+                # 配额再检查，因为可能在处理过程中耗尽
+                if settings_db.get_subscription_quota() <= 0:
+                    logger.warning("配额在批量批准过程中耗尽，部分请求未提交。")
+                    break
+                
+                subscription_successful = False
+                if req_details['item_type'] == 'Movie':
+                    mp_payload = { "name": req_details['item_name'], "tmdbid": int(req_details['tmdb_id']), "type": "电影" }
+                    if moviepilot.subscribe_with_custom_payload(mp_payload, config):
+                        subscription_successful = True
+                elif req_details['item_type'] == 'Series':
+                    series_info = { "tmdb_id": int(req_details['tmdb_id']), "item_name": req_details['item_name'] }
+                    if moviepilot.smart_subscribe_series(series_info, config) is not None:
+                        subscription_successful = True
+                
+                if subscription_successful:
+                    successful_subscriptions += 1
+                    settings_db.decrement_subscription_quota()
+                    subscriber_id = req_details.get('emby_user_id')
+                    if subscriber_id not in notifications_to_send_success:
+                        notifications_to_send_success[subscriber_id] = []
+                    notifications_to_send_success[subscriber_id].append(req_details)
+                else:
+                    logger.error(f"批量批准：提交请求 {req_details['id']} 到 MoviePilot 失败。")
+
+        # 4. 处理自动拒绝的请求
+        auto_rejected_count = 0
+        notifications_to_send_reject = {}
+        if requests_to_auto_reject:
+            auto_rejected_count = len(requests_to_auto_reject)
+            reject_ids = [req['id'] for req in requests_to_auto_reject]
+            reason = "自动拒绝：该电影尚未正式发行"
+            user_db.batch_reject_subscription_requests(reject_ids, reason)
+            
+            for req_details in requests_to_auto_reject:
+                subscriber_id = req_details.get('emby_user_id')
+                if subscriber_id not in notifications_to_send_reject:
+                    notifications_to_send_reject[subscriber_id] = []
+                notifications_to_send_reject[subscriber_id].append(req_details)
+
+        # 5. 发送合并通知
+        # 发送成功通知
+        for subscriber_id, user_requests in notifications_to_send_success.items():
             try:
                 subscriber_chat_id = user_db.get_user_telegram_chat_id(subscriber_id)
                 if subscriber_chat_id:
-                    # 构建消息内容
-                    approved_items_list = []
-                    for req in user_requests:
-                        item_type_text = "电影" if req.get('item_type') == 'Movie' else "电视剧"
-                        approved_items_list.append(f"· *{item_type_text}*: `{req.get('item_name')}`")
-                    
+                    approved_items_list = [f"· `{req.get('item_name')}`" for req in user_requests]
                     approved_items_str = "\n".join(approved_items_list)
-                    
-                    # 生成最终的合并消息
                     personal_message = (
                         f"✅ *您的 {len(user_requests)} 个订阅审核已通过*\n\n"
-                        f"您想看的内容已成功加入订阅列表：\n"
-                        f"{approved_items_str}\n\n"
-                        f"祝观影愉快！"
+                        f"您想看的内容已成功加入订阅列表：\n{approved_items_str}\n\n祝观影愉快！"
                     )
                     send_telegram_message(subscriber_chat_id, personal_message)
             except Exception as e:
                 logger.error(f"为用户 {subscriber_id} 发送批量批准的合并通知时发生错误: {e}")
 
-        return jsonify({"status": "ok", "message": f"成功批准并提交了 {successful_subscriptions} 条订阅请求！"}), 200
+        # 发送自动拒绝通知
+        for subscriber_id, user_requests in notifications_to_send_reject.items():
+            try:
+                subscriber_chat_id = user_db.get_user_telegram_chat_id(subscriber_id)
+                if subscriber_chat_id:
+                    rejected_items_list = [f"`{req.get('item_name')}`" for req in user_requests]
+                    rejected_items_str = "\n".join(rejected_items_list)
+                    message_text = (
+                        f"❌ *您的 {len(user_requests)} 个订阅请求已被系统自动拒绝*\n\n"
+                        f"您想看的以下内容未能通过审核：\n{rejected_items_str}\n\n"
+                        f"*拒绝理由*: 该电影尚未正式发行，系统将在其发行后通过“缺失订阅”功能自动添加。"
+                    )
+                    send_telegram_message(subscriber_chat_id, message_text)
+            except Exception as e:
+                logger.error(f"为用户 {subscriber_id} 发送自动拒绝的合并通知时发生错误: {e}")
+
+        # 6. 构建最终返回消息
+        message_parts = []
+        if successful_subscriptions > 0:
+            message_parts.append(f"成功批准并提交了 {successful_subscriptions} 条订阅。")
+        if auto_rejected_count > 0:
+            message_parts.append(f"自动拒绝了 {auto_rejected_count} 条未发行的电影请求。")
+        
+        final_message = " ".join(message_parts) or "所有请求均已处理。"
+        return jsonify({"status": "ok", "message": final_message}), 200
+        
     except Exception as e:
         logger.error(f"批量批准订阅请求时出错: {e}", exc_info=True)
         return jsonify({"status": "error", "message": "处理批量批准时发生内部错误"}), 500

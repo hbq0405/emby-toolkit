@@ -10,6 +10,7 @@ import config_manager     # ★ 2. 导入配置管理器，因为 MP 处理器�
 import constants
 from handler.telegram import send_telegram_message
 from routes.discover import check_and_replenish_pool
+from tasks.helpers import is_movie_subscribable
 
 # 1. 创建一个新的蓝图
 user_portal_bp = Blueprint('user_portal_bp', __name__, url_prefix='/api/portal')
@@ -53,6 +54,14 @@ def request_subscription():
         seasons_subscribed_count = 0 # 初始化季数统计
         
         if item_type == 'Movie':
+            # +++ 新增：订阅前检查 +++
+            tmdb_api_key = config.get(constants.CONFIG_OPTION_TMDB_API_KEY)
+            if not is_movie_subscribable(int(tmdb_id), tmdb_api_key):
+                logger.warning(f"  ➜ {log_user_type} '{emby_username}' 订阅《{item_name}》失败，因其未正式发行。")
+                # 直接返回错误，终止后续流程
+                return jsonify({"status": "error", "message": "订阅失败：该电影尚未正式发行，无法订阅。"}), 400
+
+            # 如果检查通过，才继续执行订阅
             mp_payload = { "name": item_name, "tmdbid": int(tmdb_id), "type": "电影" }
             if moviepilot.subscribe_with_custom_payload(mp_payload, config):
                 settings_db.decrement_subscription_quota()
