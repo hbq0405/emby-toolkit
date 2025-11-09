@@ -6,7 +6,6 @@ import logging
 import tasks
 import task_manager
 import handler.moviepilot as moviepilot
-import config_manager
 import extensions
 import handler.emby as emby
 from extensions import admin_required, task_lock_required

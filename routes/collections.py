@@ -2,14 +2,12 @@
 
 from flask import Blueprint, request, jsonify
 import logging
-import json
 
 # 导入需要的模块
-from database import collection_db
-from database import settings_db
+from database import collection_db, settings_db
 import config_manager
 import handler.moviepilot as moviepilot
-from extensions import admin_required, task_lock_required, processor_ready_required
+from extensions import admin_required, processor_ready_required
 from tasks.helpers import is_movie_subscribable
 
 # 1. 创建电影合集蓝图

@@ -10,9 +10,8 @@ import config_manager
 import handler.tmdb as tmdb
 import task_manager
 import handler.moviepilot as moviepilot
-from database import settings_db
-from database import actor_db
-from extensions import admin_required, processor_ready_required, task_lock_required
+from database import settings_db, actor_db
+from extensions import admin_required, processor_ready_required
 from tasks.subscriptions import _check_and_get_series_best_version_flag
 from tasks.helpers import is_movie_subscribable
 

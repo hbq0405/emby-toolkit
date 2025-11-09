@@ -93,7 +93,6 @@ def update_collection_movies(collection_id: str, movies: List[Dict[str, Any]]):
                 "UPDATE collections_info SET missing_movies_json = %s, has_missing = %s WHERE emby_collection_id = %s",
                 (new_missing_json, still_has_missing, collection_id)
             )
-            conn.commit()
             logger.info(f"DB: 已更新合集 {collection_id} 的电影列表。")
     except Exception as e:
         logger.error(f"DB: 更新合集 {collection_id} 的电影列表时失败: {e}", exc_info=True)
@@ -105,11 +104,9 @@ def update_single_movie_status_in_collection(collection_id: str, movie_tmdb_id: 
     try:
         with get_db_connection() as conn:
             cursor = conn.cursor()
-            cursor.execute("BEGIN TRANSACTION;")
             cursor.execute("SELECT missing_movies_json FROM collections_info WHERE emby_collection_id = %s", (collection_id,))
             row = cursor.fetchone()
             if not row:
-                conn.rollback()
                 return False
 
             movies = row.get('missing_movies_json')
@@ -124,7 +121,6 @@ def update_single_movie_status_in_collection(collection_id: str, movie_tmdb_id: 
                     break
             
             if not movie_found:
-                conn.rollback()
                 return False
 
             still_has_missing = any(m.get('status') == 'missing' for m in movies)
@@ -134,7 +130,6 @@ def update_single_movie_status_in_collection(collection_id: str, movie_tmdb_id: 
                 "UPDATE collections_info SET missing_movies_json = %s, has_missing = %s WHERE emby_collection_id = %s", 
                 (new_missing_json, still_has_missing, collection_id)
             )
-            conn.commit()
             logger.info(f"DB: 已更新合集 {collection_id} 中电影 {movie_tmdb_id} 的状态为 '{new_status}'。")
             return True
     except Exception as e:
@@ -162,7 +157,6 @@ def batch_mark_movies_as_subscribed_in_collections(collection_ids: List[str]) ->
             if not collections_to_process:
                 return 0
 
-            cursor.execute("BEGIN TRANSACTION;")
             try:
                 for collection_row in collections_to_process:
                     collection_id = collection_row['emby_collection_id']
@@ -185,11 +179,9 @@ def batch_mark_movies_as_subscribed_in_collections(collection_ids: List[str]) ->
                             (new_missing_json, collection_id)
                         )
                 
-                conn.commit()
                 logger.info(f"DB: 成功将 {len(collection_ids)} 个合集中的 {total_updated_movies} 部缺失电影标记为已订阅。")
 
             except Exception as e_trans:
-                conn.rollback()
                 logger.error(f"批量标记已订阅的数据库事务失败，已回滚: {e_trans}", exc_info=True)
                 raise
         
@@ -221,7 +213,6 @@ def create_custom_collection(name: str, type: str, definition_json: str, allowed
                 raise psycopg2.Error("数据库未能返回新创建行的ID。")
             new_id = result['id']
 
-            conn.commit()
             logger.info(f"成功创建自定义合集 '{name}' (类型: {type})。")
             return new_id
     except psycopg2.IntegrityError:
@@ -286,12 +277,10 @@ def update_custom_collection(collection_id: int, name: str, type: str, definitio
             cursor.execute(sql, (name, type, definition_json, status, allowed_user_ids_json, collection_id))
             
             if cursor.rowcount > 0:
-                conn.commit()
                 logger.info(f"  ✅ 成功更新自定义合集: {name}。")
                 return True
             else:
                 logger.warning(f"尝试更新自定义合集 ID {collection_id}，但在数据库中未找到该记录。")
-                conn.rollback()
                 return False
 
     except psycopg2.Error as e:
@@ -306,7 +295,6 @@ def delete_custom_collection(collection_id: int) -> bool:
         with get_db_connection() as conn:
             cursor = conn.cursor()
             cursor.execute(sql, (collection_id,))
-            conn.commit()
             if cursor.rowcount > 0:
                 logger.info(f"  ✅ 成功从数据库中删除了自定义合集定义 (ID: {collection_id})。")
                 return True
@@ -329,9 +317,7 @@ def update_custom_collections_order(ordered_ids: List[int]) -> bool:
     try:
         with get_db_connection() as conn:
             cursor = conn.cursor()
-            cursor.execute("BEGIN TRANSACTION;")
             cursor.executemany(sql, data_to_update)
-            conn.commit()
             logger.info(f"成功更新了 {len(ordered_ids)} 个自定义合集的顺序。")
             return True
     except psycopg2.Error as e:
@@ -588,7 +574,6 @@ def upsert_collection_info(collection_data: Dict[str, Any]):
                 collection_data.get('poster_path'),
                 collection_data.get('in_library_count')
             ))
-            conn.commit()
             logger.info(f"成功写入/更新合集检查信息到数据库 (ID: {collection_data.get('emby_collection_id')})。")
     except psycopg2.Error as e:
         logger.error(f"写入合集检查信息时发生数据库错误: {e}", exc_info=True)
@@ -611,7 +596,6 @@ def update_custom_collection_after_sync(collection_id: int, update_data: Dict[st
         with get_db_connection() as conn:
             cursor = conn.cursor()
             cursor.execute(sql, tuple(values))
-            conn.commit()
             logger.trace(f"已更新自定义合集 {collection_id} 的同步后状态。")
             return True
     except psycopg2.Error as e:
@@ -624,11 +608,9 @@ def update_single_media_status_in_custom_collection(collection_id: int, media_tm
     try:
         with get_db_connection() as conn:
             cursor = conn.cursor()
-            cursor.execute("BEGIN TRANSACTION;")
             cursor.execute("SELECT generated_media_info_json FROM custom_collections WHERE id = %s", (collection_id,))
             row = cursor.fetchone()
             if not row:
-                conn.rollback()
                 return False
 
             media_items = row.get('generated_media_info_json')
@@ -643,7 +625,6 @@ def update_single_media_status_in_custom_collection(collection_id: int, media_tm
                     break
             
             if not item_found:
-                conn.rollback()
                 return False
 
             missing_count = sum(1 for item in media_items if item.get('status') == 'missing')
@@ -661,7 +642,6 @@ def update_single_media_status_in_custom_collection(collection_id: int, media_tm
             values.append(collection_id)
             
             cursor.execute(sql, tuple(values))
-            conn.commit()
             logger.trace(f"已更新自定义合集 {collection_id} 中媒体 {media_tmdb_id} 的状态为 '{new_status}'。")
             return True
     except Exception as e:
@@ -678,7 +658,6 @@ def apply_and_persist_media_correction(collection_id: int, old_tmdb_id: str, new
     try:
         with get_db_connection() as conn:
             cursor = conn.cursor()
-            cursor.execute("BEGIN TRANSACTION;")
 
             cursor.execute(
                 "SELECT definition_json, generated_media_info_json FROM custom_collections WHERE id = %s FOR UPDATE", 
@@ -686,7 +665,7 @@ def apply_and_persist_media_correction(collection_id: int, old_tmdb_id: str, new
             )
             row = cursor.fetchone()
             if not row:
-                conn.rollback(); return None
+                return None
 
             definition = row.get('definition_json') or {}
             media_list = row.get('generated_media_info_json') or []
@@ -701,7 +680,7 @@ def apply_and_persist_media_correction(collection_id: int, old_tmdb_id: str, new
                 new_details = tmdb.get_movie_details(int(new_tmdb_id), api_key)
 
             if not new_details:
-                conn.rollback(); return None
+                return None
 
             cursor.execute("SELECT emby_item_id FROM media_metadata WHERE tmdb_id = %s", (new_tmdb_id,))
             metadata_row = cursor.fetchone()
@@ -752,7 +731,6 @@ def apply_and_persist_media_correction(collection_id: int, old_tmdb_id: str, new
                 (new_definition_json, new_media_list_json, collection_id)
             )
             
-            conn.commit()
             logger.info(f"成功为合集 {collection_id} 应用并保存修正：{old_tmdb_id} -> {new_tmdb_id} (季号: {final_season})")
             return corrected_media_item
 
@@ -790,7 +768,6 @@ def match_and_update_list_collections_on_item_add(new_item_tmdb_id: str, new_ite
                 logger.debug(f"  ➜ 未在任何榜单合集中找到 TMDb ID: {new_item_tmdb_id}。")
                 return []
 
-            cursor.execute("BEGIN TRANSACTION;")
             try:
                 for collection_row in candidate_collections:
                     collection = dict(collection_row)
@@ -839,10 +816,8 @@ def match_and_update_list_collections_on_item_add(new_item_tmdb_id: str, new_ite
                         logger.warning(f"解析或处理榜单合集《{collection_name}》的数据时出错: {e_json}，跳过。")
                         continue
                 
-                conn.commit()
                 
             except Exception as e_trans:
-                conn.rollback()
                 logger.error(f"在更新榜单合集数据库状态的事务中发生错误: {e_trans}", exc_info=True)
                 raise
 
@@ -875,11 +850,9 @@ def append_item_to_filter_collection_db(collection_id: int, new_item_tmdb_id: st
     try:
         with get_db_connection() as conn:
             cursor = conn.cursor()
-            cursor.execute("BEGIN TRANSACTION;")
             cursor.execute("SELECT generated_media_info_json, in_library_count FROM custom_collections WHERE id = %s FOR UPDATE", (collection_id,))
             row = cursor.fetchone()
             if not row:
-                conn.rollback()
                 logger.warning(f"尝试向规则合集 (DB ID: {collection_id}) 追加媒体项，但未找到该合集。")
                 return False
 
@@ -888,7 +861,6 @@ def append_item_to_filter_collection_db(collection_id: int, new_item_tmdb_id: st
                 media_list = []
             
             if any(item.get('emby_id') == new_item_emby_id for item in media_list):
-                conn.rollback()
                 logger.debug(f"媒体项 {new_item_emby_id} 已存在于合集 {collection_id} 的JSON缓存中，跳过追加。")
                 return True
 
@@ -904,7 +876,6 @@ def append_item_to_filter_collection_db(collection_id: int, new_item_tmdb_id: st
                 "UPDATE custom_collections SET generated_media_info_json = %s, in_library_count = %s WHERE id = %s",
                 (new_json_data, new_in_library_count, collection_id)
             )
-            conn.commit()
             logger.info(f"  ➜ 数据库状态同步：已将新媒体项 《{item_name}》 追加到规则合集 《{collection_name}》。")
             return True
 
@@ -986,7 +957,6 @@ def remove_emby_id_from_all_collections(emby_id_to_remove: str, item_name: Optio
                     else:
                         logger.debug(f"  ➜ 在用户权限缓存中未找到媒体项 {log_item_identifier} 的记录，无需清理。")
 
-            conn.commit()
             logger.info(f"  ✅ 针对媒体项 {log_item_identifier} 的所有缓存清理任务已完成。")
 
     except Exception as e:
@@ -1056,7 +1026,6 @@ def update_user_caches_on_item_add(
                 ))
                 
                 updated_rows = cursor.rowcount
-                conn.commit()
                 
                 if updated_rows > 0:
                     logger.info(f"  ➜ 权限更新成功！在 {len(matching_collection_ids)} 个合集中，为 {len(user_ids_with_access)} 个相关用户更新了 {updated_rows} 条权限缓存记录。")

@@ -112,13 +112,14 @@ def decrement_subscription_quota() -> bool:
     try:
         with get_db_connection() as conn:
             cursor = conn.cursor()
-            cursor.execute("BEGIN;")
             try:
+                # 使用 FOR UPDATE 锁住这行，防止并发问题，这是很好的实践
                 cursor.execute("SELECT value_json FROM app_settings WHERE setting_key = 'subscription_quota_state' FOR UPDATE")
                 row = cursor.fetchone()
                 
                 if not row or not row.get('value_json'):
-                    conn.rollback()
+                    # 注意：这里不需要 rollback，因为还没有做任何修改。
+                    # 事务会在 with 块结束时自动处理。
                     logger.warning("  ➜ 尝试减少配额，但未找到配额状态记录。")
                     return False
 
@@ -130,9 +131,11 @@ def decrement_subscription_quota() -> bool:
                     _save_setting_with_cursor(cursor, 'subscription_quota_state', state)
                     logger.debug(f"  ➜ 配额已消耗，剩余: {state['current_quota']}")
                 
+                # 所有操作成功，提交事务
                 conn.commit()
                 return True
             except Exception as e_trans:
+                # 事务中发生任何错误，回滚
                 conn.rollback()
                 logger.error(f"  ➜ 减少配额的数据库事务失败: {e_trans}", exc_info=True)
                 return False
@@ -167,8 +170,11 @@ def remove_item_from_recommendation_pool(tmdb_id: str):
                     WHERE setting_key = 'recommendation_pool'
                 """, (new_pool_json,))
                 
+                # 添加下面这行来提交你的更改！
+                conn.commit()
                 
                 logger.info(f"  ✅ 已成功从推荐池中移除 TMDB ID: {tmdb_id}。")
 
     except Exception as e:
+        # 发生错误时，数据库连接会自动回滚，所以这里不用显式 rollback
         logger.error(f"从推荐池移除 TMDB ID {tmdb_id} 时失败: {e}", exc_info=True)

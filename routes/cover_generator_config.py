@@ -1,10 +1,7 @@
 # routes/cover_generator_config.py
 
-import os
-import json
 import logging
 from flask import Blueprint, request, jsonify
-import task_manager
 
 from extensions import media_processor_instance
 import config_manager # 导入以获取数据路径

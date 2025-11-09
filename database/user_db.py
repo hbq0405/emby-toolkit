@@ -1,9 +1,10 @@
 # database/user_db.py
 import psycopg2
+import uuid
 from psycopg2.extras import execute_values
 import logging
 from typing import List, Dict, Any, Optional, Tuple # 导入 Tuple
-from datetime import datetime, timezone
+from datetime import datetime, timezone, timedelta
 
 from .connection import get_db_connection
 
@@ -856,3 +857,369 @@ def get_admin_telegram_chat_ids():
     except Exception as e:
         logger.error(f"查询管理员Telegram Chat ID时出错: {e}", exc_info=True)
         return [] # 出错时返回空列表，保证安全
+    
+def is_user_admin(user_id: str) -> bool:
+    """
+    【短事务】检查一个指定的用户ID是否为Emby管理员。
+    """
+    if not user_id:
+        return False
+        
+    # 这个函数遵循“用完即走”的原则
+    try:
+        with get_db_connection() as conn:
+            with conn.cursor() as cursor:
+                # 我们需要从 emby_users 表中查询 is_administrator 标志
+                cursor.execute("SELECT is_administrator FROM emby_users WHERE id = %s", (user_id,))
+                user_record = cursor.fetchone()
+                
+                # 如果找到了记录，并且 is_administrator 为 True，则返回 True
+                if user_record and user_record['is_administrator']:
+                    return True
+                
+                # 其他所有情况都返回 False
+                return False
+    except Exception as e:
+        logger.error(f"检查用户 {user_id} 管理员权限时发生数据库错误: {e}", exc_info=True)
+        # 发生任何错误时，都应安全地返回 False
+        return False
+    
+def get_template_source_user_ids() -> set:
+    """
+    【短事务】从 user_templates 表中获取所有被用作模板源用户的ID集合。
+    """
+    try:
+        with get_db_connection() as conn:
+            with conn.cursor() as cursor:
+                cursor.execute("SELECT source_emby_user_id FROM user_templates WHERE source_emby_user_id IS NOT NULL")
+                # 返回一个集合(set)，用于实现 O(1) 的高效查找
+                return {row['source_emby_user_id'] for row in cursor.fetchall()}
+    except Exception as e:
+        logger.error(f"获取模板源用户ID列表时出错: {e}", exc_info=True)
+        return set() # 出错时返回空集合，确保安全
+    
+def get_user_count() -> int:
+    """
+    【短事务】获取 users 表中的用户总数。
+    """
+    try:
+        with get_db_connection() as conn:
+            with conn.cursor() as cursor:
+                cursor.execute("SELECT COUNT(*) as count FROM users")
+                result = cursor.fetchone()
+                return result['count'] if result else 0
+    except Exception as e:
+        logger.error(f"获取用户总数时出错: {e}", exc_info=True)
+        return 0 # 出错时安全返回0
+
+def create_initial_admin_user(username: str, password_hash: str):
+    """
+    【短事务】创建一个初始的本地管理员用户。
+    """
+    try:
+        with get_db_connection() as conn:
+            with conn.cursor() as cursor:
+                cursor.execute(
+                    "INSERT INTO users (username, password_hash) VALUES (%s, %s)",
+                    (username, password_hash)
+                )
+    except Exception as e:
+        logger.error(f"创建初始管理员 '{username}' 时出错: {e}", exc_info=True)
+        raise # 将异常向上抛出，让调用者知道操作失败
+
+def get_local_user_by_username(username: str) -> Optional[Dict]:
+    """
+    【短事务】根据用户名从 users 表获取本地用户信息。
+    """
+    try:
+        with get_db_connection() as conn:
+            with conn.cursor() as cursor:
+                cursor.execute("SELECT * FROM users WHERE username = %s", (username,))
+                user = cursor.fetchone()
+                return dict(user) if user else None
+    except Exception as e:
+        logger.error(f"根据用户名 '{username}' 获取本地用户时出错: {e}", exc_info=True)
+        return None
+
+def get_local_user_by_id(user_id: int) -> Optional[Dict]:
+    """
+    【短事务】根据ID从 users 表获取本地用户信息。
+    """
+    try:
+        with get_db_connection() as conn:
+            with conn.cursor() as cursor:
+                cursor.execute("SELECT * FROM users WHERE id = %s", (user_id,))
+                user = cursor.fetchone()
+                return dict(user) if user else None
+    except Exception as e:
+        logger.error(f"根据ID {user_id} 获取本地用户时出错: {e}", exc_info=True)
+        return None
+
+def update_local_user_password(user_id: int, new_password_hash: str):
+    """
+    【短事务】更新本地用户的密码哈希。
+    """
+    try:
+        with get_db_connection() as conn:
+            with conn.cursor() as cursor:
+                cursor.execute("UPDATE users SET password_hash = %s WHERE id = %s", (new_password_hash, user_id))
+    except Exception as e:
+        logger.error(f"更新用户 {user_id} 密码时出错: {e}", exc_info=True)
+        raise
+
+# ======================================================================
+# 模块: 用户模板管理 (User Templates)
+# ======================================================================
+
+def get_all_user_templates() -> List[Dict]:
+    """【短事务】获取所有用户模板。"""
+    try:
+        with get_db_connection() as conn:
+            with conn.cursor() as cursor:
+                cursor.execute(
+                    """
+                    SELECT id, name, description, default_expiration_days, source_emby_user_id, allow_unrestricted_subscriptions
+                    FROM user_templates ORDER BY name
+                    """
+                )
+                return [dict(row) for row in cursor.fetchall()]
+    except Exception as e:
+        logger.error(f"获取所有用户模板时出错: {e}", exc_info=True)
+        raise
+
+def create_user_template(name, description, policy_json, default_expiration_days, source_emby_user_id, configuration_json, allow_unrestricted_subscriptions) -> int:
+    """【短事务】创建一个新的用户模板。"""
+    try:
+        with get_db_connection() as conn:
+            with conn.cursor() as cursor:
+                cursor.execute(
+                    """
+                    INSERT INTO user_templates (name, description, emby_policy_json, default_expiration_days, source_emby_user_id, emby_configuration_json, allow_unrestricted_subscriptions)
+                    VALUES (%s, %s, %s, %s, %s, %s, %s) RETURNING id
+                    """,
+                    (name, description, policy_json, default_expiration_days, source_emby_user_id, configuration_json, allow_unrestricted_subscriptions)
+                )
+                new_row = cursor.fetchone()
+                if not new_row:
+                    raise Exception("数据库 INSERT 后未能返回新模板的ID。")
+                return new_row['id']
+    except Exception as e:
+        logger.error(f"创建用户模板 '{name}' 时出错: {e}", exc_info=True)
+        raise
+
+def get_template_for_sync(template_id: int) -> Optional[Dict]:
+    """【短事务】获取用于同步的模板信息。"""
+    try:
+        with get_db_connection() as conn:
+            with conn.cursor() as cursor:
+                cursor.execute("SELECT source_emby_user_id, name, emby_configuration_json IS NOT NULL as has_config FROM user_templates WHERE id = %s", (template_id,))
+                template = cursor.fetchone()
+                return dict(template) if template else None
+    except Exception as e:
+        logger.error(f"获取待同步模板 {template_id} 信息时出错: {e}", exc_info=True)
+        raise
+
+def update_template_from_sync(template_id: int, new_policy_json: str, new_config_json: Optional[str]):
+    """【短事务】从源用户同步后，更新模板的 policy 和 configuration。"""
+    try:
+        with get_db_connection() as conn:
+            with conn.cursor() as cursor:
+                cursor.execute(
+                    "UPDATE user_templates SET emby_policy_json = %s, emby_configuration_json = %s WHERE id = %s",
+                    (new_policy_json, new_config_json, template_id)
+                )
+    except Exception as e:
+        logger.error(f"同步更新模板 {template_id} 时出错: {e}", exc_info=True)
+        raise
+
+def get_users_associated_with_template(template_id: int) -> List[Dict]:
+    """【短事务】获取所有使用指定模板的用户列表。"""
+    try:
+        with get_db_connection() as conn:
+            with conn.cursor() as cursor:
+                cursor.execute(
+                    "SELECT u.id, u.name FROM emby_users_extended uex JOIN emby_users u ON uex.emby_user_id = u.id WHERE uex.template_id = %s",
+                    (template_id,)
+                )
+                return [dict(row) for row in cursor.fetchall()]
+    except Exception as e:
+        logger.error(f"获取模板 {template_id} 关联用户时出错: {e}", exc_info=True)
+        raise
+
+def delete_user_template(template_id: int) -> int:
+    """【短事务】删除一个用户模板，返回受影响行数。"""
+    try:
+        with get_db_connection() as conn:
+            with conn.cursor() as cursor:
+                cursor.execute("DELETE FROM user_templates WHERE id = %s", (template_id,))
+                return cursor.rowcount
+    except Exception as e:
+        logger.error(f"删除模板 {template_id} 时出错: {e}", exc_info=True)
+        raise
+
+def update_user_template_details(template_id, name, description, default_expiration_days, allow_unrestricted_subscriptions) -> int:
+    """【短事务】更新用户模板的详细信息，返回受影响行数。"""
+    try:
+        with get_db_connection() as conn:
+            with conn.cursor() as cursor:
+                cursor.execute(
+                    """
+                    UPDATE user_templates
+                    SET name = %s, description = %s, default_expiration_days = %s, allow_unrestricted_subscriptions = %s
+                    WHERE id = %s
+                    """,
+                    (name, description, default_expiration_days, allow_unrestricted_subscriptions, template_id)
+                )
+                return cursor.rowcount
+    except Exception as e:
+        logger.error(f"更新模板 {template_id} 时出错: {e}", exc_info=True)
+        raise
+
+# ======================================================================
+# 模块: 邀请链接管理 (Invitations)
+# ======================================================================
+
+def create_invitation_link(template_id, expiration_days, link_expires_in_days) -> str:
+    """【短事务】创建一个新的邀请链接，并返回生成的token。"""
+    try:
+        with get_db_connection() as conn:
+            with conn.cursor() as cursor:
+                final_expiration_days = expiration_days
+                if final_expiration_days is None:
+                    cursor.execute("SELECT default_expiration_days FROM user_templates WHERE id = %s", (template_id,))
+                    template = cursor.fetchone()
+                    if not template:
+                        raise ValueError("模板不存在")
+                    final_expiration_days = template['default_expiration_days']
+                
+                token = str(uuid.uuid4())
+                expires_at = datetime.now(timezone.utc) + timedelta(days=link_expires_in_days)
+                
+                cursor.execute(
+                    "INSERT INTO invitations (token, template_id, expiration_days, expires_at, status) VALUES (%s, %s, %s, %s, 'active')",
+                    (token, template_id, final_expiration_days, expires_at)
+                )
+                return token
+    except Exception as e:
+        logger.error(f"创建邀请链接时出错: {e}", exc_info=True)
+        raise
+
+def get_all_invitation_links() -> List[Dict]:
+    """【短事务】获取所有邀请链接及其关联的模板名称。"""
+    try:
+        with get_db_connection() as conn:
+            with conn.cursor() as cursor:
+                cursor.execute("""
+                    SELECT i.*, t.name as template_name 
+                    FROM invitations i JOIN user_templates t ON i.template_id = t.id
+                    ORDER BY i.created_at DESC
+                """)
+                return [dict(row) for row in cursor.fetchall()]
+    except Exception as e:
+        logger.error(f"获取邀请链接列表时出错: {e}", exc_info=True)
+        raise
+
+def delete_invitation_link(invitation_id: int) -> int:
+    """【短事务】删除一个邀请链接，返回受影响行数。"""
+    try:
+        with get_db_connection() as conn:
+            with conn.cursor() as cursor:
+                cursor.execute("DELETE FROM invitations WHERE id = %s", (invitation_id,))
+                return cursor.rowcount
+    except Exception as e:
+        logger.error(f"删除邀请链接 {invitation_id} 时出错: {e}", exc_info=True)
+        raise
+
+# ======================================================================
+# 模块: 用户管理 (User Management)
+# ======================================================================
+
+def get_all_extended_user_info() -> Dict[str, Dict]:
+    """【短事务】获取所有用户的扩展信息，并以用户ID为键返回一个字典。"""
+    try:
+        with get_db_connection() as conn:
+            with conn.cursor() as cursor:
+                cursor.execute("""
+                    SELECT eue.*, ut.name as template_name 
+                    FROM emby_users_extended eue
+                    LEFT JOIN user_templates ut ON eue.template_id = ut.id
+                """)
+                return {row['emby_user_id']: dict(row) for row in cursor.fetchall()}
+    except Exception as e:
+        logger.error(f"获取所有扩展用户信息时出错: {e}", exc_info=True)
+        raise
+
+def change_user_template_and_get_names(user_id: str, new_template_id: int) -> tuple:
+    """【短事务】切换用户模板，并返回用户名和模板名用于日志。"""
+    try:
+        with get_db_connection() as conn:
+            with conn.cursor() as cursor:
+                user_name, new_template_name = user_id, f"ID:{new_template_id}"
+                cursor.execute("SELECT name FROM emby_users WHERE id = %s", (user_id,))
+                user_record = cursor.fetchone()
+                if user_record: user_name = user_record['name']
+                
+                cursor.execute("SELECT emby_policy_json, emby_configuration_json, name FROM user_templates WHERE id = %s", (new_template_id,))
+                template_record = cursor.fetchone()
+                if not template_record:
+                    raise ValueError("模板不存在")
+                new_template_name = template_record['name']
+                
+                upsert_sql = """
+                    INSERT INTO emby_users_extended (emby_user_id, template_id, status, created_by)
+                    VALUES (%s, %s, 'active', 'admin-assigned')
+                    ON CONFLICT (emby_user_id) DO UPDATE SET template_id = EXCLUDED.template_id;
+                """
+                cursor.execute(upsert_sql, (user_id, new_template_id))
+                return user_name, new_template_name, dict(template_record)
+    except Exception as e:
+        logger.error(f"切换用户 {user_id} 模板时出错: {e}", exc_info=True)
+        raise
+
+def set_user_status_in_db(user_id: str, new_status: str):
+    """【短事务】在数据库中更新用户的状态。"""
+    try:
+        with get_db_connection() as conn:
+            with conn.cursor() as cursor:
+                cursor.execute("UPDATE emby_users_extended SET status = %s WHERE emby_user_id = %s", (new_status, user_id))
+    except Exception as e:
+        logger.error(f"更新用户 {user_id} 状态时出错: {e}", exc_info=True)
+        raise
+
+def set_user_expiration_in_db(user_id: str, expiration_date: Optional[str]):
+    """【短事务】在数据库中设置或清除用户的有效期。"""
+    try:
+        with get_db_connection() as conn:
+            with conn.cursor() as cursor:
+                cursor.execute("SELECT 1 FROM emby_users_extended WHERE emby_user_id = %s", (user_id,))
+                if not cursor.fetchone():
+                    cursor.execute(
+                        "INSERT INTO emby_users_extended (emby_user_id, status, created_by) VALUES (%s, 'active', 'admin-assigned')",
+                        (user_id,)
+                    )
+                cursor.execute("UPDATE emby_users_extended SET expiration_date = %s WHERE emby_user_id = %s", (expiration_date, user_id))
+    except Exception as e:
+        logger.error(f"更新用户 {user_id} 有效期时出错: {e}", exc_info=True)
+        raise
+
+def delete_user_from_db(user_id: str) -> int:
+    """【短事务】从本地数据库删除一个用户，返回受影响行数。"""
+    try:
+        with get_db_connection() as conn:
+            with conn.cursor() as cursor:
+                cursor.execute("DELETE FROM emby_users WHERE id = %s", (user_id,))
+                return cursor.rowcount
+    except Exception as e:
+        logger.error(f"从数据库删除用户 {user_id} 时出错: {e}", exc_info=True)
+        raise
+
+def get_username_by_id(user_id: str) -> Optional[str]:
+    """【短事务】根据用户ID获取用户名。"""
+    try:
+        with get_db_connection() as conn:
+            with conn.cursor() as cursor:
+                cursor.execute("SELECT name FROM emby_users WHERE id = %s", (user_id,))
+                record = cursor.fetchone()
+                return record['name'] if record else None
+    except Exception:
+        return None

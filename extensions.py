@@ -29,33 +29,38 @@ def login_required(f):
 # ★★★ 新增：智能的、统一的管理员权限装饰器 ★★★
 def admin_required(f):
     """
-    【统一管理员认证】
+    【V2 - 终极安全版】
     保护所有后台管理 API 的核心装饰器。
-    它会检查两种管理员身份：
-    1. 已登录的本地管理员 (通过 /api/auth/login 登录)。
-    2. 已登录的 Emby 管理员 (通过 /api/portal/login 登录)。
-    如果工具的本地认证功能被禁用，则此装饰器也会放行所有请求。
+    - 它自己负责进行数据库查询，不再依赖任何可能存在问题的上游中间件。
+    - 严格遵循“用完即走”的短事务原则，检查完权限立刻释放数据库连接。
     """
     @wraps(f)
     def decorated_function(*args, **kwargs):
-        import config_manager # 在函数内部导入，避免循环
+        import config_manager
+        # 导入 user_db，因为我们需要在这里直接调用它
+        from database import user_db 
         
-        # 1. 如果工具本身的认证功能被禁用了，则认为不需要任何权限检查
+        # 1. 如果工具本身的认证功能被禁用了，则直接放行
         if not config_manager.APP_CONFIG.get("auth_enabled", False):
             return f(*args, **kwargs)
 
-        # 2. 检查是否为本地管理员
-        is_local_admin = 'user_id' in session
-
-        # 3. 检查是否为 Emby 管理员
-        is_emby_admin = session.get('emby_is_admin', False)
-
-        # 4. 只要满足其中一个条件，就授予访问权限
-        if is_local_admin or is_emby_admin:
+        # 2. 检查是否为本地管理员 (这个不涉及数据库，很快)
+        if 'user_id' in session:
             return f(*args, **kwargs)
-        else:
-            # 如果两种身份都不是，则拒绝访问
-            return jsonify({"status": "error", "message": "需要管理员权限才能执行此操作"}), 403
+
+        # 3. 检查是否为 Emby 管理员 (这是核心修改)
+        emby_user_id = session.get('emby_user_id')
+        if emby_user_id:
+            # ★★★ 核心逻辑 ★★★
+            # 调用一个独立的、遵循“短事务”原则的函数来检查权限。
+            # 这个函数会自己连接数据库、查询、然后立刻断开。
+            if user_db.is_user_admin(emby_user_id):
+                # 权限检查通过，并且数据库连接已经释放。
+                # 现在才调用主业务函数，此时没有任何活动的事务。
+                return f(*args, **kwargs)
+        
+        # 如果以上所有检查都不通过，则拒绝访问
+        return jsonify({"status": "error", "message": "需要管理员权限才能执行此操作"}), 403
     return decorated_function
 
 
