@@ -24,48 +24,53 @@ logger = logging.getLogger(__name__)
 
 def _extract_exclusion_keywords_from_filename(filename: str) -> List[str]:
     """
-    【V8 - 职责明确版】
-    - 核心职责：仅负责从文件名中提取有效的、非中文的技术标签和发布组关键字。
-    - 输出：返回一个干净的关键字列表 (List[str])。如果提取不到任何有效关键字，则返回一个空列表。
-    - ★★★ 本函数不再负责生成任何最终格式的字符串。
+    【V9 - 职责单一版：仅提取发布组】
+    - 核心职责：只负责从文件名末尾提取唯一的、非中文的、非通用技术标签的发布组关键字。
+    - 这是为了解决技术标签写法不统一 (如 H.265 vs HEVC) 导致排除失败的漏洞。
+    - 输出：返回一个只包含发布组的列表 (通常只有一个元素)，或一个空列表。
     """
     if not filename:
         return []
 
     name_part = os.path.splitext(filename)[0]
-    keywords = set()
-
+    
+    # ★★★ 关键：这个集合现在只用于“排除”，而不是“包含” ★★★
+    # 我们用它来识别哪些是通用技术标签，从而跳过它们，找到真正的发布组。
     KNOWN_TECH_TAGS = {
         'BLURAY', 'BDRIP', 'WEB-DL', 'WEBDL', 'WEBRIP', 'HDTV', 'REMUX', 
-        'X264', 'X265', 'H264', 'H265', 'AVC', 'HEVC', '10BIT', 
-        'DTS', 'AC3', 'ATMOS', 'DDP5', 'AAC', 'FLAC',
-        '1080P', '2160P', '720P', '4K', 'UHD'
+        'X264', 'X265', 'H264', 'H265', 'AVC', 'HEVC', '10BIT', '8BIT',
+        'DTS', 'AC3', 'ATMOS', 'DDP5', 'AAC', 'FLAC', 'DTS-HD', 'MA',
+        '1080P', '2160P', '720P', '4K', 'UHD', 'SD',
+        'HDR', 'SDR', 'DV', 'DOVI',
+        'ITUNES', # 像 iTunes 这种来源也可以被视为通用标签
     }
 
     words = re.split(r'[.\s_·()\[\]-]', name_part)
     season_episode_pattern = re.compile(r'^S\d{2,4}E\d{2,4}$', re.IGNORECASE)
 
+    # ★★★ 核心逻辑：从后往前找，找到第一个符合条件的就认定为发布组并立即返回 ★★★
     for word in reversed(words):
+        # 1. 跳过无效词
         if not word or season_episode_pattern.match(word):
             continue
         
+        # 2. 跳过包含中文的词
         if re.search(r'[\u4e00-\u9fff]', word):
             continue
 
-        if len(word) > 2 and not word.isdigit():
-            if word.upper() not in KNOWN_TECH_TAGS:
-                keywords.add(word)
-                break
+        # 3. 跳过纯数字或太短的词
+        if len(word) <= 2 or word.isdigit():
+            continue
 
-    normalized_name_part = re.sub(r'[\s_·()\[\]]', '.', name_part)
-    common_tags_regex = r'\.(BluRay|BDRip|WEB-DL|WEBDL|WEBRip|HDTV|REMUX|x264|x265|h264|h265|AVC|HEVC|10bit|DTS|AC3|Atmos|DDP5|AAC|FLAC)\b'
-    found_tags = re.findall(common_tags_regex, normalized_name_part, re.IGNORECASE)
-    
-    for tag in found_tags:
-        normalized_tag = tag.upper().replace('WEB-DL', 'WEBDL')
-        keywords.add(normalized_tag)
+        # 4. ★ 如果这个词不是一个已知的通用技术标签，我们就认为它是发布组 ★
+        if word.upper() not in KNOWN_TECH_TAGS:
+            logger.info(f"  ➜ 已从文件名中成功提取到发布组: {word}")
+            return [word] # 找到后立即返回，确保只获取最末尾的那个
 
-    return sorted(list(keywords))
+    # ★★★ 如果遍历完所有词都没找到，就放弃，返回空列表 ★★★
+    # 彻底移除了之前通过正则表达式再次提取技术标签的逻辑
+    logger.info("  ➜ 未能在文件名中识别出明确的发布组，不生成排除规则。")
+    return []
 
 def _get_detected_languages_from_streams(
     media_streams: List[dict], 
