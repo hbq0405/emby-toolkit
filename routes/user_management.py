@@ -811,7 +811,7 @@ def batch_approve_subscriptions():
 
         for req in requests_to_process:
             if req['item_type'] == 'Movie':
-                if is_movie_subscribable(int(req['tmdb_id']), tmdb_api_key):
+                if is_movie_subscribable(int(req['tmdb_id']), tmdb_api_key, config):
                     requests_to_subscribe.append(req)
                 else:
                     requests_to_auto_reject.append(req)

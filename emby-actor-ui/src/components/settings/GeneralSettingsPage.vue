@@ -281,6 +281,16 @@
                       <template #feedback><n-text depth="3" style="font-size:0.8em;">总开关。开启后，智能订阅定时任务才会真正执行订阅操作。</n-text></template>
                     </n-form-item-grid-item>
 
+                    <n-form-item-grid-item label="上映延迟订阅天数" path="movie_subscription_delay_days">
+                      <n-input-number v-model:value="configModel.movie_subscription_delay_days" :min="0" :disabled="!isMoviePilotConfigured" />
+                      <template #feedback>
+                        <n-text depth="3" style="font-size:0.8em;">
+                          电影在影院上映指定天数后，才允许订阅，有数字发行的无视此设定。<br>
+                          <b>设置为 0 表示上映当天即可订阅。</b>
+                        </n-text>
+                      </template>
+                    </n-form-item-grid-item>
+
                     <n-form-item-grid-item label="启用自定义洗版订阅" path="use_custom_resubscribe">
                       <n-switch v-model:value="configModel.use_custom_resubscribe" :disabled="!isMoviePilotConfigured" />
                       <template #feedback>

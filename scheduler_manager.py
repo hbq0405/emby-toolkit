@@ -286,7 +286,7 @@ class SchedulerManager:
             except Exception as e:
                 logger.error(f"添加新的 '{job_name}' 作业时发生未知错误: {e}", exc_info=True)
         else:
-            logger.info(f"'{job_name}' 未启用或配置不完整，本次不设置定时任务。")
+            logger.info(f"  ➜ '{job_name}' 未启用或配置不完整，本次不设置定时任务。")
 
     def update_high_freq_task_chain_job(self):
         """更新高频刷新任务链的定时作业。"""

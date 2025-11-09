@@ -14,6 +14,7 @@ from database import settings_db
 from database import actor_db
 from extensions import admin_required, processor_ready_required, task_lock_required
 from tasks.subscriptions import _check_and_get_series_best_version_flag
+from tasks.helpers import is_movie_subscribable
 
 # 1. 创建演员订阅蓝图
 actor_subscriptions_bp = Blueprint('actor_subscriptions', __name__, url_prefix='/api/actor-subscriptions')
@@ -218,7 +219,18 @@ def subscribe_single_tracked_media(media_id):
         config = config_manager.APP_CONFIG
         
         if media_info['media_type'] == 'Movie':
-            movie_payload = {'title': media_info['title'], 'tmdb_id': media_info['tmdb_media_id']}
+            # 订阅前检查 +++
+            tmdb_api_key = config.get("tmdb_api_key")
+            movie_tmdb_id = media_info['tmdb_media_id']
+            movie_title = media_info['title']
+
+            if not is_movie_subscribable(movie_tmdb_id, tmdb_api_key, config):
+                logger.warning(f"  ➜ 手动订阅电影《{movie_title}》失败，因其未正式发行。")
+                # 直接返回错误信息给前端
+                return jsonify({"error": "订阅失败：该电影尚未正式发行，无法订阅。"}), 400
+
+            # 如果检查通过，才继续执行订阅
+            movie_payload = {'title': movie_title, 'tmdb_id': movie_tmdb_id}
             success = moviepilot.subscribe_movie_to_moviepilot(movie_payload, config)
         
         elif media_info['media_type'] == 'Series':

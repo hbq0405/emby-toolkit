@@ -101,6 +101,7 @@ CONFIG_OPTION_RESUBSCRIBE_USE_BEST_VERSION = "resubscribe_use_best_version"
 CONFIG_OPTION_RESUBSCRIBE_DAILY_CAP = "resubscribe_daily_cap"
 CONFIG_OPTION_RESUBSCRIBE_DELAY_SECONDS = "resubscribe_delay_seconds"
 CONFIG_OPTION_USE_CUSTOM_RESUBSCRIBE = "use_custom_resubscribe"
+CONFIG_OPTION_MOVIE_SUBSCRIPTION_DELAY_DAYS = "movie_subscription_delay_days"
 
 # --- AI 翻译 ---
 CONFIG_SECTION_AI_TRANSLATION = "AITranslation"

@@ -56,7 +56,7 @@ def request_subscription():
         if item_type == 'Movie':
             # +++ 新增：订阅前检查 +++
             tmdb_api_key = config.get(constants.CONFIG_OPTION_TMDB_API_KEY)
-            if not is_movie_subscribable(int(tmdb_id), tmdb_api_key):
+            if not is_movie_subscribable(int(tmdb_id), tmdb_api_key, config):
                 logger.warning(f"  ➜ {log_user_type} '{emby_username}' 订阅《{item_name}》失败，因其未正式发行。")
                 # 直接返回错误，终止后续流程
                 return jsonify({"status": "error", "message": "订阅失败：该电影尚未正式发行，无法订阅。"}), 400

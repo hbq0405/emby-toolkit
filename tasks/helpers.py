@@ -10,6 +10,7 @@ from datetime import datetime, timedelta
 # (例如 tasks/ 和 handler/)，您可能需要调整 Python 的 sys.path 或使用相对导入
 # 例如: from ..handler.tmdb import get_movie_details
 from handler.tmdb import get_movie_details
+import constants
 
 logger = logging.getLogger(__name__)
 
@@ -89,30 +90,19 @@ def _extract_quality_tag_from_filename(filename_lower: str, video_stream: dict) 
     return (video_stream.get('Codec', '未知') if video_stream else '未知').upper()
 
 # +++ 判断电影是否满足订阅条件 +++
-def is_movie_subscribable(movie_id: int, api_key: str) -> bool:
+def is_movie_subscribable(movie_id: int, api_key: str, config: dict) -> bool:
     """
-    【新增】检查一部电影是否适合订阅。
-
-    一部电影被认为适合订阅，必须满足以下条件之一：
-    1. 在TMDb中有记录的“数字版”发行日期 (Digital release)。
-    2. 其最早的“影院”上映日期 (Theatrical release) 至今已满30天。
-
-    这个函数旨在过滤掉那些尚未公开发行、不可能有可用资源的电影，从而提高订阅的成功率。
-
-    Args:
-        movie_id: 电影的 TMDb ID。
-        api_key: 用于请求 TMDb API 的密钥。
-
-    Returns:
-        bool: 如果电影适合订阅，返回 True；否则返回 False。
+    【V2 - 配置化延迟天数版】检查一部电影是否适合订阅。
     """
     if not api_key:
         logger.error("TMDb API Key 未提供，无法检查电影是否可订阅。")
         return False
 
-    logger.debug(f"检查电影 (ID: {movie_id}) 是否适合订阅...")
+    # 从配置中读取延迟天数，如果没配置则默认为30天
+    delay_days = config.get(constants.CONFIG_OPTION_MOVIE_SUBSCRIPTION_DELAY_DAYS, 30)
 
-    # 步骤 1: 获取电影详情，并附加“release_dates”信息
+    logger.debug(f"检查电影 (ID: {movie_id}) 是否适合订阅 (延迟天数: {delay_days})...")
+
     details = get_movie_details(
         movie_id=movie_id,
         api_key=api_key,
@@ -131,38 +121,31 @@ def is_movie_subscribable(movie_id: int, api_key: str) -> bool:
     earliest_theatrical_date = None
     today = datetime.now().date()
 
-    # 步骤 2: 遍历所有地区的发行信息
     for country_releases in release_info:
         for release in country_releases.get("release_dates", []):
-            # 条件 1: 检查是否存在数字版发行 (TMDb中 type 4 代表 Digital)
             if release.get("type") == 4:
                 logger.info(f"  ➜ 成功: 电影 (ID: {movie_id}) 已有数字版发行记录，适合订阅。")
                 return True
-
-            # 记录最早的影院上映日期 (TMDb中 type 3 代表 Theatrical)
             if release.get("type") == 3:
                 try:
-                    # TMDb返回的日期格式为 "YYYY-MM-DDTHH:MM:SS.sssZ"，我们只取日期部分
                     release_date_str = release.get("release_date", "").split("T")[0]
                     if release_date_str:
                         current_release_date = datetime.strptime(release_date_str, "%Y-%m-%d").date()
                         if earliest_theatrical_date is None or current_release_date < earliest_theatrical_date:
                             earliest_theatrical_date = current_release_date
                 except (ValueError, TypeError):
-                    # 如果日期格式错误，记录警告并跳过
                     logger.warning(f"解析电影 (ID: {movie_id}) 的上映日期 '{release.get('release_date')}' 时出错。")
                     continue
 
-    # 步骤 3: 如果未找到数字版发行，则检查影院上映日期是否满30天
     if earliest_theatrical_date:
         days_since_release = (today - earliest_theatrical_date).days
-        if days_since_release >= 30:
-            logger.info(f"  ➜ 成功: 电影 (ID: {movie_id}) 最早于 {days_since_release} 天前在影院上映，已超过30天，适合订阅。")
-            return True  # 条件 2 满足
+        # 使用配置的延迟天数进行判断
+        if days_since_release >= delay_days:
+            logger.info(f"  ➜ 成功: 电影 (ID: {movie_id}) 最早于 {days_since_release} 天前在影院上映，已超过配置的 {delay_days} 天，适合订阅。")
+            return True
         else:
-            logger.info(f"  ➜ 失败: 电影 (ID: {movie_id}) 最早于 {days_since_release} 天前在影院上映，未满30天，不适合订阅。")
+            logger.info(f"  ➜ 失败: 电影 (ID: {movie_id}) 最早于 {days_since_release} 天前在影院上映，未满配置的 {delay_days} 天，不适合订阅。")
             return False
 
-    # 步骤 4: 如果既没有数字版记录，也找不到任何有效的影院上映日期
     logger.warning(f"电影 (ID: {movie_id}) 未找到数字版或任何有效的影院上映日期，默认其不适合订阅。")
     return False

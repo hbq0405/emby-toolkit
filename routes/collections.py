@@ -10,6 +10,7 @@ from database import settings_db
 import config_manager
 import handler.moviepilot as moviepilot
 from extensions import admin_required, task_lock_required, processor_ready_required
+from tasks.helpers import is_movie_subscribable
 
 # 1. 创建电影合集蓝图
 collections_bp = Blueprint('collections', __name__, url_prefix='/api/collections')
@@ -44,13 +45,20 @@ def api_subscribe_moviepilot():
         logger.warning(f"API: 用户尝试订阅《{title}》，但每日配额已用尽。")
         return jsonify({"error": "今日订阅配额已用尽，请明天再试。"}), 429
 
+    # +++ 订阅前检查 +++
+    config = config_manager.APP_CONFIG
+    tmdb_api_key = config.get("tmdb_api_key")
+    if not is_movie_subscribable(int(tmdb_id), tmdb_api_key, config):
+        logger.warning(f"  ➜ 手动订阅电影《{title}》失败，因其未正式发行。")
+        return jsonify({"error": "订阅失败：该电影尚未正式发行，无法订阅。"}), 400
+
     # 1. 准备传递给业务逻辑函数的数据
     movie_info = {
         'tmdb_id': tmdb_id,
         'title': title
     }
     # 2. 调用业务逻辑函数
-    success = moviepilot.subscribe_movie_to_moviepilot(movie_info, config_manager.APP_CONFIG)
+    success = moviepilot.subscribe_movie_to_moviepilot(movie_info, config)
     if success:
         # 配额消耗
         settings_db.decrement_subscription_quota()
@@ -91,20 +99,33 @@ def api_subscribe_all_missing():
 
             needs_db_update = False
             
+            # +++ 获取 API Key 用于检查 +++
+            config = config_manager.APP_CONFIG
+            tmdb_api_key = config.get("tmdb_api_key")
+            total_skipped_count = 0
+
             for movie in movies:
                 if movie.get('status') == 'missing':
                     # 先检查配额是否足够
                     if current_quota <= 0:
                         logger.warning("API: 配额用尽，停止剩余电影订阅。")
-                        break  # 退出循环，停止继续订阅
+                        break
 
-                    success = moviepilot.subscribe_movie_to_moviepilot(movie, config_manager.APP_CONFIG)
+                    # +++ 订阅前检查 +++
+                    movie_tmdb_id = movie.get('tmdb_id')
+                    movie_title = movie.get('title', '未知电影')
+                    if not is_movie_subscribable(movie_tmdb_id, tmdb_api_key, config):
+                        logger.info(f"  ➜ 一键订阅：跳过未发行的电影《{movie_title}》")
+                        total_skipped_count += 1
+                        continue # 跳过当前电影，继续下一个
+
+                    success = moviepilot.subscribe_movie_to_moviepilot(movie, config)
                     if success:
                         movie['status'] = 'subscribed'
                         total_subscribed_count += 1
                         needs_db_update = True
                         current_quota -= 1
-                        settings_db.decrement_subscription_quota()  # 确保数据库配额同步更新
+                        settings_db.decrement_subscription_quota()
                     else:
                         total_failed_count += 1
 
@@ -116,12 +137,15 @@ def api_subscribe_all_missing():
                 logger.info("API: 配额用尽，停止处理更多合集的订阅。")
                 break
         
-        message = f"操作完成！成功提交 {total_subscribed_count} 部电影订阅。"
+        message_parts = [f"操作完成！成功提交 {total_subscribed_count} 部电影订阅。"]
+        if total_skipped_count > 0:
+            message_parts.append(f"因未正式发行跳过了 {total_skipped_count} 部。")
         if total_failed_count > 0:
-            message += f" 有 {total_failed_count} 部电影订阅失败，请检查日志。"
-        if current_quota <= 0:
-            message += " 今日订阅配额已用尽，部分订阅可能未完成。"
+            message_parts.append(f"{total_failed_count} 部电影订阅失败，请检查日志。")
+        if current_quota <= 0 and (total_skipped_count > 0 or total_failed_count > 0 or total_subscribed_count > 0):
+            message_parts.append("今日订阅配额已用尽，部分订阅可能未完成。")
 
+        message = " ".join(message_parts)
         return jsonify({"message": message, "count": total_subscribed_count}), 200
 
     except Exception as e:
