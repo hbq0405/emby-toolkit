@@ -11,14 +11,12 @@ import json
 from datetime import datetime, timedelta, date
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from bs4 import BeautifulSoup
-
-# ★★★ 核心修正：再次回归 gevent.subprocess ★★★
 from gevent import subprocess, Timeout
 
 import handler.tmdb as tmdb
 import handler.emby as emby
 import config_manager
-from database import collection_db, watchlist_db, connection 
+from database import collection_db, watchlist_db 
 from handler.douban import DoubanApi
 from handler.tmdb import search_media, get_tv_details
 
@@ -267,12 +265,12 @@ class ListImporter:
         return all_items
     
     def _get_items_from_tmdb_discover(self, url: str) -> List[Dict[str, str]]:
-        """【V4.1 - 最终确认版】专门用于解析TMDb Discover URL并获取结果的函数，支持自动分页获取所有项目"""
+        """【V4.2 - 过滤增强版】专门用于解析TMDb Discover URL并获取结果的函数，支持自动分页并过滤无海报/无中文元数据的项目"""
         from urllib.parse import urlparse, parse_qs
         from datetime import datetime, timedelta
         import re
 
-        logger.info(f"  ➜ 检测到TMDb Discover链接，开始动态获取 (支持分页): {url}")
+        logger.info(f"  ➜ 检测到TMDb Discover链接，开始动态获取 (支持分页和过滤): {url}")
         
         parsed_url = urlparse(url)
         query_params = parse_qs(parsed_url.query)
@@ -304,7 +302,6 @@ class ListImporter:
                 discover_data = None
                 item_type_for_result = None
 
-                # ★★★ 使用最健壮的判断逻辑 ★★★
                 if '/discover/movie' in url:
                     discover_data = tmdb.discover_movie_tmdb(self.tmdb_api_key, params)
                     item_type_for_result = 'Movie'
@@ -312,7 +309,6 @@ class ListImporter:
                     discover_data = tmdb.discover_tv_tmdb(self.tmdb_api_key, params)
                     item_type_for_result = 'Series'
                 else:
-                    # 如果URL格式意外，直接跳出循环
                     logger.warning(f"  ➜ 无法从URL '{url}' 判断是电影还是电视剧，discover任务中止。")
                     break
 
@@ -324,6 +320,17 @@ class ListImporter:
                     total_pages = discover_data.get('total_pages', 1)
 
                 for item in discover_data['results']:
+                    # 筛选条件 1: 必须有海报 (poster_path不为None或空)
+                    if not item.get('poster_path'):
+                        logger.debug(f"  ➜ 筛选TMDb Discover结果：跳过项目 '{item.get('title') or item.get('name')}' (ID: {item.get('id')})，因为它没有海报。")
+                        continue
+
+                    # 筛选条件 2: 必须有中文元数据 (以overview字段不为空作为判断依据)
+                    # TMDB API在指定language=zh-CN时，若无中文简介，此字段通常为空
+                    if not item.get('overview'):
+                        logger.debug(f"  ➜ 筛选TMDb Discover结果：跳过项目 '{item.get('title') or item.get('name')}' (ID: {item.get('id')})，因为它没有中文简介。")
+                        continue
+                    
                     tmdb_id = item.get('id')
                     if tmdb_id and item_type_for_result:
                         all_items.append({'id': str(tmdb_id), 'type': item_type_for_result})
