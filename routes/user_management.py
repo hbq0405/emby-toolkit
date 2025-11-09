@@ -350,7 +350,7 @@ def batch_approve_subscriptions():
         notifications_to_send_success = {}
         if requests_to_subscribe:
             subscribe_ids = [req['id'] for req in requests_to_subscribe]
-            user_db.batch_update_request_status(subscribe_ids, 'approved')
+            user_db.batch_approve_subscription_requests(subscribe_ids, 'approved')
 
             for req_details in requests_to_subscribe:
                 # 配额再检查，因为可能在处理过程中耗尽
