@@ -20,8 +20,10 @@ logger = logging.getLogger(__name__)
 @emby_login_required
 def request_subscription():
     """
-    【V5.8 - 最终正确版】处理用户订阅请求。
-    - VIP/管理员的请求拥有最高优先级，无视任何现有的 pending 状态。
+    【V5.9 - VIP加速版】处理用户订阅请求。
+    - VIP/管理员的请求拥有最高优先级。
+    - 如果存在待审请求，VIP/管理员的请求会直接将其“加速”批准。
+    - 否则，按原VIP逻辑创建新的订阅记录。
     - 普通用户的请求在项目已有状态时会被拦截。
     """
     data = request.json
@@ -40,79 +42,101 @@ def request_subscription():
 
     # ★★★ 核心逻辑：VIP/管理员先进专属通道 ★★★
     if is_vip or is_emby_admin:
-        # --- VIP 或管理员的自动订阅逻辑 (拥有最高优先级) ---
         log_user_type = "管理员" if is_emby_admin else "VIP 用户"
-        logger.info(f"  ➜ 【VIP通道】{log_user_type} '{emby_username}' 的订阅请求已自动批准...")
         
-        if settings_db.get_subscription_quota() <= 0:
-            logger.warning(f"{log_user_type} {emby_user_id} 尝试自动订阅，但配额已用尽。")
-            return jsonify({"status": "error", "message": "今日订阅配额已用尽，请明天再试。"}), 429
+        # ★★★ 核心修改：检查是否存在待审请求，如果存在则“加速”它 ★★★
+        pending_request = user_db.find_pending_request_by_tmdb_id(tmdb_id)
+        if pending_request:
+            logger.info(f"  ➜ 【VIP加速】{log_user_type} '{emby_username}' 正在加速 TMDb ID '{tmdb_id}' 的待审请求...")
+            
+            # 更新现有记录的状态
+            success = user_db.update_subscription_request_status(
+                request_id=pending_request['id'],
+                status='approved',
+                processed_by=emby_username, # 记录由谁加速
+                notes=f"由 {log_user_type} 加速" # 添加备注
+            )
+            
+            if success:
+                message = "请求已加速，该项目的订阅已批准！"
+                new_status_for_frontend = 'approved'
+                
+                # (可选) 在这里可以给原申请人发送一个通知，告知其请求已被VIP加速批准
+                # ...
+                
+            else:
+                # 这种情况很少见，但以防万一
+                return jsonify({"status": "error", "message": "加速失败，请稍后再试或联系管理员。"}), 500
 
-        config = config_manager.APP_CONFIG
-        subscription_successful = False
-        seasons_subscribed_count = 0 # 初始化季数统计
-        
-        if item_type == 'Movie':
-            tmdb_api_key = config.get(constants.CONFIG_OPTION_TMDB_API_KEY)
-            # ★★★ 核心修改点 ★★★
-            if is_movie_subscribable(int(tmdb_id), tmdb_api_key, config):
-                # 如果满足发行条件，则立即订阅
-                logger.info(f"  ➜ 电影《{item_name}》已发行，为 {log_user_type} '{emby_username}' 立即提交订阅。")
-                mp_payload = { "name": item_name, "tmdbid": int(tmdb_id), "type": "电影" }
-                if moviepilot.subscribe_with_custom_payload(mp_payload, config):
-                    settings_db.decrement_subscription_quota()
+        else:
+            # --- 如果没有待审请求，则执行 VIP 或管理员的自动订阅逻辑 (拥有最高优先级) ---
+            logger.info(f"  ➜ 【VIP通道】{log_user_type} '{emby_username}' 的订阅请求已自动批准...")
+            
+            if settings_db.get_subscription_quota() <= 0:
+                logger.warning(f"{log_user_type} {emby_user_id} 尝试自动订阅，但配额已用尽。")
+                return jsonify({"status": "error", "message": "今日订阅配额已用尽，请明天再试。"}), 429
+
+            config = config_manager.APP_CONFIG
+            subscription_successful = False
+            seasons_subscribed_count = 0 # 初始化季数统计
+            
+            if item_type == 'Movie':
+                tmdb_api_key = config.get(constants.CONFIG_OPTION_TMDB_API_KEY)
+                if is_movie_subscribable(int(tmdb_id), tmdb_api_key, config):
+                    logger.info(f"  ➜ 电影《{item_name}》已发行，为 {log_user_type} '{emby_username}' 立即提交订阅。")
+                    mp_payload = { "name": item_name, "tmdbid": int(tmdb_id), "type": "电影" }
+                    if moviepilot.subscribe_with_custom_payload(mp_payload, config):
+                        settings_db.decrement_subscription_quota()
+                        user_db.create_subscription_request(
+                            emby_user_id=emby_user_id, tmdb_id=tmdb_id,
+                            item_type=item_type, item_name=item_name,
+                            status='completed', processed_by='auto'
+                        )
+                        subscription_successful = True
+                        new_status_for_frontend = 'completed'
+                else:
+                    logger.info(f"  ➜ 电影《{item_name}》未到发行日期，为 {log_user_type} '{emby_username}' 创建预订阅记录。")
                     user_db.create_subscription_request(
                         emby_user_id=emby_user_id, tmdb_id=tmdb_id,
                         item_type=item_type, item_name=item_name,
-                        status='completed', processed_by='auto'
+                        status='approved', processed_by='auto'
                     )
                     subscription_successful = True
-                    new_status_for_frontend = 'completed'
-            else:
-                # 如果未发行，则创建一条 approved 记录，留给后台任务处理
-                logger.info(f"  ➜ 电影《{item_name}》未到发行日期，为 {log_user_type} '{emby_username}' 创建预订阅记录。")
-                user_db.create_subscription_request(
-                    emby_user_id=emby_user_id, tmdb_id=tmdb_id,
-                    item_type=item_type, item_name=item_name,
-                    status='approved', processed_by='auto'
-                )
-                subscription_successful = True # 标记为成功，以便后续流程继续
-        
-        elif item_type == 'Series':
-            # 剧集逻辑不变，总是立即订阅
-            series_info = { "tmdb_id": int(tmdb_id), "item_name": item_name }
-            subscription_results = moviepilot.smart_subscribe_series(series_info, config)
+            
+            elif item_type == 'Series':
+                series_info = { "tmdb_id": int(tmdb_id), "item_name": item_name }
+                subscription_results = moviepilot.smart_subscribe_series(series_info, config)
 
-            if subscription_results is not None:
-                seasons_subscribed_count = len(subscription_results)
-                if not subscription_results:
-                    user_db.create_subscription_request(
-                        emby_user_id=emby_user_id, tmdb_id=tmdb_id, item_type=item_type,
-                        item_name=item_name, status='completed', processed_by='auto'
-                    )
-                else:
-                    for season_info in subscription_results:
-                        if settings_db.get_subscription_quota() <= 0: break 
-                        settings_db.decrement_subscription_quota()
+                if subscription_results is not None:
+                    seasons_subscribed_count = len(subscription_results)
+                    if not subscription_results:
                         user_db.create_subscription_request(
-                            emby_user_id=emby_user_id, tmdb_id=str(season_info.get('parent_tmdb_id')),
-                            item_type=item_type, item_name=f"{season_info.get('parsed_series_name')} - 第 {season_info.get('parsed_season_number')} 季",
-                            status='completed', processed_by='auto', parent_tmdb_id=str(season_info.get('parent_tmdb_id')),
-                            parsed_series_name=season_info.get('parsed_series_name'), parsed_season_number=season_info.get('parsed_season_number')
+                            emby_user_id=emby_user_id, tmdb_id=tmdb_id, item_type=item_type,
+                            item_name=item_name, status='completed', processed_by='auto'
                         )
-                subscription_successful = True
-                new_status_for_frontend = 'completed'
+                    else:
+                        for season_info in subscription_results:
+                            if settings_db.get_subscription_quota() <= 0: break 
+                            settings_db.decrement_subscription_quota()
+                            user_db.create_subscription_request(
+                                emby_user_id=emby_user_id, tmdb_id=str(season_info.get('parent_tmdb_id')),
+                                item_type=item_type, item_name=f"{season_info.get('parsed_series_name')} - 第 {season_info.get('parsed_season_number')} 季",
+                                status='completed', processed_by='auto', parent_tmdb_id=str(season_info.get('parent_tmdb_id')),
+                                parsed_series_name=season_info.get('parsed_series_name'), parsed_season_number=season_info.get('parsed_season_number')
+                            )
+                    subscription_successful = True
+                    new_status_for_frontend = 'completed'
 
-        if subscription_successful:
-            # ★★★ 核心修改点：根据是否立即订阅，返回不同提示 ★★★
-            if item_type == 'Movie' and not is_movie_subscribable(int(tmdb_id), tmdb_api_key, config):
-                message = "订阅请求已接受，将在电影发行后自动处理。"
+            if subscription_successful:
+                if item_type == 'Movie' and not is_movie_subscribable(int(tmdb_id), tmdb_api_key, config):
+                    message = "订阅请求已接受，将在电影发行后自动处理。"
+                    new_status_for_frontend = 'approved'
+                else:
+                    message = "订阅成功，已自动提交给 MoviePilot！"
             else:
-                message = "订阅成功，已自动提交给 MoviePilot！"
-            new_status_for_frontend = 'approved'
-        else:
-            # 处理订阅失败的情况
-            pass
+                # 处理订阅失败的情况
+                message = "订阅失败，请检查 MoviePilot 配置或联系管理员。"
+                return jsonify({"status": "error", "message": message}), 500
     else:
         # --- 普通用户通道 (逻辑不变) ---
         existing_status = user_db.get_global_subscription_status_by_tmdb_id(tmdb_id)
@@ -158,7 +182,8 @@ def request_subscription():
                 if item_type == 'Series' and seasons_subscribed_count > 1:
                     message_text = f"✅ *您的订阅已自动处理*\n\n您想看的 *{item_name}* 已成功提交订阅，共计 *{seasons_subscribed_count}* 季。"
                 else:
-                    message_text = f"✅ *您的订阅已自动处理*\n\n您想看的 *{item_name}* 已成功提交订阅。"
+                    # 使用最终确定的 message 变量，确保“加速”的提示也能被发送
+                    message_text = f"✅ *订阅处理通知*\n\n{message}"
                 send_telegram_message(user_chat_id, message_text)
             else:
                 message_text = f"🔔 *您的订阅请求已提交*\n\n您想看的 *{item_name}* 已进入待审队列，管理员处理后会通知您。"

@@ -530,6 +530,26 @@ def get_approved_subscription_requests() -> List[Dict[str, Any]]:
         logger.error(f"DB: 查询已批准的订阅列表失败: {e}", exc_info=True)
         raise
 
+def find_pending_request_by_tmdb_id(tmdb_id: str) -> Optional[Dict[str, Any]]:
+    """
+    根据 TMDb ID 查找一个状态为 'pending' 的订阅请求。
+    如果找到，返回该请求的完整信息，否则返回 None。
+    """
+    if not tmdb_id:
+        return None
+    
+    sql = "SELECT * FROM subscription_requests WHERE tmdb_id = %s AND status = 'pending' LIMIT 1"
+    
+    try:
+        with get_db_connection() as conn:
+            cursor = conn.cursor()
+            cursor.execute(sql, (tmdb_id,))
+            result = cursor.fetchone()
+            return dict(result) if result else None
+    except Exception as e:
+        logger.error(f"DB: 查找待审请求 (TMDb ID: {tmdb_id}) 失败: {e}", exc_info=True)
+        return None
+
 def get_subscription_request_details(request_id: int) -> Optional[Dict[str, Any]]:
     """根据ID获取单条订阅请求的完整信息。"""
     sql = "SELECT * FROM subscription_requests WHERE id = %s"

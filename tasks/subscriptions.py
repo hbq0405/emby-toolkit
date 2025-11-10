@@ -543,7 +543,7 @@ def task_auto_subscribe(processor):
                     item_type_cn = '剧集' if item_type_en == 'Series' else '电影'
                     formatted_item_str = f"{item_type_cn}《{item_name}》"
                     if can_subscribe:
-                        logger.info(f"  ➜ 正在为请求 {req_id}《{item_name}》提交订阅...")
+                        logger.info(f"  ➜ 正在为请求 《{item_name}》 提交订阅...")
                         success = False
                         if item_type_en == 'Movie':
                             mp_payload = { "name": item_name, "tmdbid": int(tmdb_id), "type": "电影" }
@@ -591,9 +591,9 @@ def task_auto_subscribe(processor):
             # 遍历列表，只对动态内容进行转义
             item_lines = []
             for detail in subscription_details:
-                module = telegram.escape_markdown_v2(detail['module'])
-                source = telegram.escape_markdown_v2(detail.get('source', ''))
-                item = telegram.escape_markdown_v2(detail['item'])
+                module = telegram.escape_markdown(detail['module'])
+                source = telegram.escape_markdown(detail.get('source', ''))
+                item = telegram.escape_markdown(detail['item'])
                 # 用我们自己的格式符号，包裹住已经“消毒”过的内容
                 item_lines.append(f"├─ `[{module}-{source}]` {item}")
                 
@@ -606,9 +606,9 @@ def task_auto_subscribe(processor):
             
             rejected_lines = []
             for detail in rejected_details:
-                module = telegram.escape_markdown_v2(detail['module'])
-                source = telegram.escape_markdown_v2(detail.get('source', ''))
-                item = telegram.escape_markdown_v2(detail['item'])
+                module = telegram.escape_markdown(detail['module'])
+                source = telegram.escape_markdown(detail.get('source', ''))
+                item = telegram.escape_markdown(detail['item'])
                 rejected_lines.append(f"├─ `[{module}-{source}]` {item}")
                 
             summary_message += rejected_header + "\n" + "\n".join(rejected_lines)
@@ -616,7 +616,7 @@ def task_auto_subscribe(processor):
         if quota_exhausted:
             # 只对括号和里面的内容进行转义，保留外面的星号
             content = "(每日订阅配额已用尽，部分项目可能未处理)"
-            escaped_content = telegram.escape_markdown_v2(content)
+            escaped_content = telegram.escape_markdown(content)
             summary_message += f"\n\n*{escaped_content}*"
 
         # 打印日志和发送通知的逻辑保持不变

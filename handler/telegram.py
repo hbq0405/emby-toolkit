@@ -10,7 +10,7 @@ import constants
 
 logger = logging.getLogger(__name__)
 
-def _escape_markdown(text: str) -> str:
+def escape_markdown(text: str) -> str:
     """
     Helper function to escape characters for Telegram's MarkdownV2.
     只应该用于转义从外部API获取的、内容不可控的文本部分。
@@ -110,8 +110,8 @@ def send_media_notification(item_details: dict, notification_type: str = 'new', 
             
         item_type = item_details.get("Type")
 
-        escaped_title = _escape_markdown(title)
-        escaped_overview = _escape_markdown(overview)
+        escaped_title = escape_markdown(title)
+        escaped_overview = escape_markdown(overview)
 
         # --- 2. 准备剧集信息 (如果适用) ---
         episode_info_text = ""

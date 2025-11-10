@@ -221,18 +221,21 @@
               <div v-if="!media.in_library" class="action-icon" @click.stop="handleSubscribe(media)">
                 <n-spin :show="subscribingId === media.id" size="small">
                   <n-icon size="24">
-                    <!-- 场景1: approved -> 红色实心 (不可点，由 handleSubscribe 内部逻辑拦截) -->
-                    <Heart v-if="media.subscription_status === 'approved'" color="#ff4d4f" style="cursor: not-allowed;" />
-                    
-                    <!-- 场景2: pending -->
+                    <!-- 场景1: 已完成 -> 红色实心 (所有人，不可点) -->
+                    <Heart v-if="media.subscription_status === 'completed'" color="#ff4d4f" style="cursor: not-allowed;" />
+
+                    <!-- 场景2: 已批准 -> 灰色沙漏 (所有人，不可点) -->
+                    <HourglassOutline v-else-if="media.subscription_status === 'approved'" color="#888" style="cursor: not-allowed;" />
+
+                    <!-- 场景3: 待审核 -->
                     <template v-else-if="media.subscription_status === 'pending'">
-                      <!-- 2a. VIP 看见的是黄色的、可点击的闪电 -->
+                      <!-- 3a. VIP 用户 -> 黄色闪电 (可点，用于加速) -->
                       <LightningIcon v-if="isPrivilegedUser" color="#f0a020" />
-                      <!-- 2b. 普通用户看见的是灰色的、不可点击的沙漏 -->
+                      <!-- 3b. 普通用户 -> 灰色沙漏 (不可点) -->
                       <HourglassOutline v-else color="#888" style="cursor: not-allowed;" />
                     </template>
 
-                    <!-- 场景3: 默认 -> 空心 -->
+                    <!-- 场景4: 默认状态 -> 空心 (所有人，可点) -->
                     <HeartOutline v-else />
                   </n-icon>
                 </n-spin>
@@ -532,17 +535,18 @@ const handleSubscribe = async (media) => {
   // 拦截1: 如果正在提交，任何人都不许再点
   if (subscribingId.value) return;
 
-  // 拦截2: 如果电影已有状态...
-  if (media.subscription_status) {
-    // ...但当前用户不是特权用户，则拦截并给出提示
-    if (!isPrivilegedUser.value) {
-      if (media.subscription_status === 'pending') message.warning('该项目正在等待审核，请勿重复提交。');
-      if (media.subscription_status === 'approved') message.info('该项目已在订阅队列中。');
-      return;
-    }
-    // 如果是特权用户，则允许他继续往下走，去覆盖 pending 状态
+  // 拦截2: 根据状态进行严格拦截
+  const status = media.subscription_status;
+  if (status === 'completed' || status === 'approved') {
+    message.info(status === 'completed' ? '该项目已完成订阅。' : '该项目已批准，正在等待订阅。');
+    return;
+  }
+  if (status === 'pending' && !isPrivilegedUser.value) {
+    message.warning('该项目正在等待审核，请勿重复提交。');
+    return;
   }
 
+  // 如果通过了所有拦截，才继续执行订阅逻辑
   subscribingId.value = media.id;
   try {
     const response = await axios.post('/api/portal/subscribe', {
@@ -553,24 +557,17 @@ const handleSubscribe = async (media) => {
 
     message.success(response.data.message);
 
-    // a. 更新搜索结果列表中的对应项 (这个逻辑依然需要，因为搜索结果不清空)
     const targetInResults = results.value.find(r => r.id === media.id);
     if (targetInResults) {
       targetInResults.subscription_status = response.data.status;
     }
 
-    // b. 如果被操作的是每日推荐里的项，则重新获取整个推荐池
     if (currentRecommendation.value && currentRecommendation.value.id === media.id) {
-      console.log("推荐项已订阅，正在刷新推荐池...");
-      // 直接调用我们获取推荐池的函数，它会完成所有事情：
-      // 1. 显示加载状态
-      // 2. 获取新的、缩减过的池子
-      // 3. 自动抽一张新的卡来显示
-      // 4. 关闭加载状态
       await fetchRecommendationPool();
     }
 
   } catch (error) {
+    // 后端返回409时，也会在这里捕获到
     message.error(error.response?.data?.message || '提交请求失败');
   } finally {
     subscribingId.value = null;
