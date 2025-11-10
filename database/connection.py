@@ -280,6 +280,8 @@ def init_db():
                         emby_item_id TEXT,
                         ignore_reason TEXT,
                         last_updated_at TIMESTAMP WITH TIME ZONE DEFAULT NOW(),
+                        parent_series_tmdb_id TEXT,
+                        parsed_season_number INTEGER,
                         FOREIGN KEY(subscription_id) REFERENCES actor_subscriptions(id) ON DELETE CASCADE,
                         UNIQUE(subscription_id, tmdb_media_id)
                     )
@@ -488,7 +490,9 @@ def init_db():
 
                     schema_upgrades = {
                         'tracked_actor_media': { 
-                            "ignore_reason": "TEXT"
+                            "ignore_reason": "TEXT",
+                            "parent_series_tmdb_id": "TEXT",
+                            "parsed_season_number": "INTEGER"
                         },
                         'media_metadata': {
                             "official_rating": "TEXT",

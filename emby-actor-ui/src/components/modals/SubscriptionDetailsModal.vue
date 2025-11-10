@@ -200,7 +200,20 @@ const createColumns = () => {
         return h(NImage, { src: url, width: "45", style: 'border-radius: 3px; display: block;' });
       }
     },
-    { title: '标题', key: 'title', ellipsis: { tooltip: true } },
+    {
+      title: '标题',
+      key: 'title',
+      ellipsis: { tooltip: true },
+      render(row) {
+        // 检查这一行数据里，我们之前存的 parsed_season_number 是否有值
+        if (row.parsed_season_number && !isNaN(row.parsed_season_number)) {
+          // 如果有值，就拼接成 "剧名 第 X 季" 的格式
+          return `${row.title} 第 ${row.parsed_season_number} 季`;
+        }
+        // 如果没有值（比如是电影，或者是没有季号的剧集），就直接显示原来的标题
+        return row.title;
+      }
+    },
     { 
       title: '类型', 
       key: 'media_type', 

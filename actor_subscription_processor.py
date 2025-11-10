@@ -242,7 +242,7 @@ class ActorSubscriptionProcessor:
                     if old_status == MediaStatus.IGNORED.value:
                         continue
                     
-                    current_status, emby_id_from_check = self._determine_media_status(work, emby_media_map, emby_series_seasons_map, emby_series_name_to_tmdb_id_map, today_str, old_status, session_subscribed_ids)
+                    current_status, emby_id_from_check, parent_id, season_num, base_name = self._determine_media_status(work, emby_media_map, emby_series_seasons_map, emby_series_name_to_tmdb_id_map, today_str, old_status, session_subscribed_ids)
                     
                     if old_status != current_status.value:
                         update_dict = {
@@ -262,11 +262,11 @@ class ActorSubscriptionProcessor:
                     enriched_new_works = self._enrich_works_with_order(new_candidate_works, sub['tmdb_person_id'], self.tmdb_api_key)
                     
                     for work in enriched_new_works:
-                        status, emby_id_from_check = self._determine_media_status(work, emby_media_map, emby_series_seasons_map, emby_series_name_to_tmdb_id_map, today_str, None, session_subscribed_ids)
+                        status, emby_id_from_check, parent_id, season_num, base_name = self._determine_media_status(work, emby_media_map, emby_series_seasons_map, emby_series_name_to_tmdb_id_map, today_str, None, session_subscribed_ids)
 
                         if status == MediaStatus.IN_LIBRARY:
                             # 如果已在库，直接记录，跳过筛选
-                            media_to_insert.append(self._prepare_media_dict(work, subscription_id, MediaStatus.IN_LIBRARY, emby_id_from_check))
+                            media_to_insert.append(self._prepare_media_dict(work, subscription_id, MediaStatus.IN_LIBRARY, emby_id_from_check, parent_tmdb_id=parent_id, season_number=season_num, base_name=base_name))
                             logger.info(f"  ➜ 作品 '{work.get('title') or work.get('name')}' 已在库 (Emby ID: {emby_id_from_check})，直接标记为 IN_LIBRARY。")
                         
                         else:
@@ -285,10 +285,10 @@ class ActorSubscriptionProcessor:
                             
                             if is_kept:
                                 # 筛选通过，记录其状态 (此时 emby_id_from_check 必为 None)
-                                media_to_insert.append(self._prepare_media_dict(work, subscription_id, status, emby_id_from_check))
+                                media_to_insert.append(self._prepare_media_dict(work, subscription_id, status, emby_id_from_check, parent_tmdb_id=parent_id, season_number=season_num, base_name=base_name))
                             else:
                                 # 筛选不通过，标记为 IGNORED
-                                media_to_insert.append(self._prepare_media_dict(work, subscription_id, MediaStatus.IGNORED, ignore_reason=reason))
+                                media_to_insert.append(self._prepare_media_dict(work, subscription_id, MediaStatus.IGNORED, ignore_reason=reason, parent_tmdb_id=parent_id, season_number=season_num, base_name=base_name))
                 
                 # --- 统一的数据库更新 ---
                 # 在这个逻辑下，old_tracked_media 不再需要 pop，因为我们是基于新旧分离来处理的
@@ -404,7 +404,7 @@ class ActorSubscriptionProcessor:
         # 1. 最高优先级：如果作品本身的TMDb ID就在Emby库中
         if media_id_str in emby_tmdb_ids:
             # ▼▼▼ 返回状态和它自己的 Emby ID ▼▼▼
-            return MediaStatus.IN_LIBRARY, emby_media_map.get(media_id_str)
+            return MediaStatus.IN_LIBRARY, emby_media_map.get(media_id_str), None, None, None
         
         # 2. 对电视剧进行特殊处理
         media_type_raw = work.get('media_type', 'movie' if 'title' in work else 'tv')
@@ -423,20 +423,19 @@ class ActorSubscriptionProcessor:
                             # ▼▼▼ 返回状态和父剧集的 Emby ID ▼▼▼
                             parent_emby_id = emby_media_map.get(parent_tmdb_id_str)
                             logger.info(f"  ➜ 父剧集 '{base_name}' (Emby ID: {parent_emby_id}) 已在库且包含第 {season_num} 季，标记为【已入库】。")
-                            return MediaStatus.IN_LIBRARY, parent_emby_id
-
+                            return MediaStatus.IN_LIBRARY, parent_emby_id, parent_tmdb_id_str, season_num, base_name
         # 3. 如果之前已被标记为 SUBSCRIBED
         if old_status == MediaStatus.SUBSCRIBED.value:
-            return MediaStatus.SUBSCRIBED, None # 保持订阅状态，没有Emby ID
+            return MediaStatus.SUBSCRIBED, None, None, None, None
 
         # 4. 如果还未上映
         if release_date_str and release_date_str > today_str:
-            return MediaStatus.PENDING_RELEASE, None
+            return MediaStatus.PENDING_RELEASE, None, None, None, None
 
         # 5. 其他所有情况
-        return MediaStatus.MISSING, None
+        return MediaStatus.MISSING, None, None, None, None
 
-    def _prepare_media_dict(self, work: Dict, subscription_id: int, status: MediaStatus, emby_item_id: Optional[str] = None, ignore_reason: Optional[str] = None) -> Dict:
+    def _prepare_media_dict(self, work: Dict, subscription_id: int, status: MediaStatus, emby_item_id: Optional[str] = None, ignore_reason: Optional[str] = None, parent_tmdb_id: Optional[str] = None, season_number: Optional[int] = None, base_name: Optional[str] = None) -> Dict:
         """根据作品信息和状态，准备用于插入数据库的字典。"""
         media_type_raw = work.get('media_type', 'movie' if 'title' in work else 'tv')
         media_type = MediaType.SERIES if media_type_raw == 'tv' else MediaType.MOVIE
@@ -449,12 +448,14 @@ class ActorSubscriptionProcessor:
             'subscription_id': subscription_id,
             'tmdb_media_id': work.get('id'),
             'media_type': media_type.value,
-            'title': work.get('title') or work.get('name'),
+            'title': base_name if base_name else (work.get('title') or work.get('name')),
             'release_date': release_date, 
             'poster_path': work.get('poster_path'),
             'status': status.value,
             'emby_item_id': emby_item_id,
-            'ignore_reason': ignore_reason
+            'ignore_reason': ignore_reason,
+            'parent_series_tmdb_id': parent_tmdb_id,
+            'parsed_season_number': season_number
         }
 
     def _update_database_records(self, cursor, subscription_id: int, to_insert: List[Dict], to_update: List[Dict], to_delete_ids: List[int]):
@@ -462,11 +463,11 @@ class ActorSubscriptionProcessor:
         if to_insert:
             logger.info(f"  ➜ 新增 {len(to_insert)} 条作品记录。")
             sql_insert = (
-                "INSERT INTO tracked_actor_media (subscription_id, tmdb_media_id, media_type, title, release_date, poster_path, status, emby_item_id, ignore_reason, last_updated_at) "
-                "VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, CURRENT_TIMESTAMP)" 
+                "INSERT INTO tracked_actor_media (subscription_id, tmdb_media_id, media_type, title, release_date, poster_path, status, emby_item_id, ignore_reason, parent_series_tmdb_id, parsed_season_number, last_updated_at) "
+                "VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, CURRENT_TIMESTAMP)" 
             )
             insert_data = [
-                (d['subscription_id'], d['tmdb_media_id'], d['media_type'], d['title'], d['release_date'], d['poster_path'], d['status'], d['emby_item_id'], d['ignore_reason']) 
+                (d['subscription_id'], d['tmdb_media_id'], d['media_type'], d['title'], d['release_date'], d['poster_path'], d['status'], d['emby_item_id'], d['ignore_reason'], d.get('parent_series_tmdb_id'), d.get('parsed_season_number')) 
                 for d in to_insert
             ]
             cursor.executemany(sql_insert, insert_data)

@@ -462,25 +462,73 @@ def task_auto_subscribe(processor):
                     release_date = media_item.get('release_date')
                     if not release_date or release_date > today: continue
                     if settings_db.get_subscription_quota() <= 0: quota_exhausted = True; break
-                    success, media_title, media_tmdb_id, actor_name = False, media_item.get('title', '未知标题'), media_item.get('tmdb_media_id'), media_item.get('actor_name', '未知演员')
+                    
+                    media_title, media_tmdb_id, actor_name = media_item.get('title', '未知标题'), media_item.get('tmdb_media_id'), media_item.get('actor_name', '未知演员')
                     media_type_en = media_item['media_type']
-                    media_type_cn = '剧集' if media_type_en == 'Series' else '电影'
-                    formatted_item_str = f"{media_type_cn}《{media_title}》"
+                    
                     if media_type_en == 'Movie':
+                        formatted_item_str = f"电影《{media_title}》"
                         if is_movie_subscribable(media_tmdb_id, tmdb_api_key, config_manager.APP_CONFIG):
                             movie_info = {'title': media_title, 'tmdb_id': media_tmdb_id}
-                            success = moviepilot.subscribe_movie_to_moviepilot(movie_info, config_manager.APP_CONFIG)
+                            # ★★★ 核心修改：订阅成功后，立刻记录！ ★★★
+                            if moviepilot.subscribe_movie_to_moviepilot(movie_info, config_manager.APP_CONFIG):
+                                settings_db.decrement_subscription_quota()
+                                subscription_details.append({'module': '演员订阅', 'source': actor_name, 'item': formatted_item_str})
+                                cursor.execute("UPDATE tracked_actor_media SET status = 'SUBSCRIBED' WHERE id = %s", (media_item['id'],))
                         else:
                             logger.warning(f"  ➜ 电影《{media_title}》因未正式发行而被跳过订阅。")
                             rejected_details.append({'module': '演员订阅', 'source': actor_name, 'item': formatted_item_str})
+
                     elif media_type_en == 'Series':
-                        best_version_flag = _check_and_get_series_best_version_flag(series_tmdb_id=media_tmdb_id, tmdb_api_key=tmdb_api_key, series_name=media_title)
-                        series_info = {"item_name": media_title, "tmdb_id": media_tmdb_id}
-                        success = moviepilot.subscribe_series_to_moviepilot(series_info, season_number=None, config=config_manager.APP_CONFIG, best_version=best_version_flag)
-                    if success:
-                        settings_db.decrement_subscription_quota()
-                        subscription_details.append({'module': '演员订阅', 'source': actor_name, 'item': formatted_item_str})
-                        cursor.execute("UPDATE tracked_actor_media SET status = 'SUBSCRIBED' WHERE id = %s", (media_item['id'],))
+                        parent_tmdb_id = media_item.get('parent_series_tmdb_id')
+                        parsed_season_number = media_item.get('parsed_season_number')
+                        
+                        success = False # 先初始化
+                        
+                        if parent_tmdb_id and parsed_season_number:
+                            # --- A. 智能模式：订阅特定季 ---
+                            formatted_item_str = f"剧集《{media_title}》第 {parsed_season_number} 季"
+                            logger.info(f"  ➜ 演员订阅：为《{media_title}》精准订阅第 {parsed_season_number} 季 (主剧集ID: {parent_tmdb_id})。")
+                            best_version_flag = _check_and_get_series_best_version_flag(series_tmdb_id=parent_tmdb_id, tmdb_api_key=tmdb_api_key, series_name=media_title, season_number=parsed_season_number)
+                            series_info = {"item_name": media_title, "tmdb_id": parent_tmdb_id}
+                            success = moviepilot.subscribe_series_to_moviepilot(series_info, season_number=parsed_season_number, config=config_manager.APP_CONFIG, best_version=best_version_flag)
+                        else:
+                            # --- B. 智能处理器模式：调用 smart_subscribe_series 处理整部剧 ---
+                            logger.info(f"  ➜ 演员订阅：为《{media_title}》调用智能订阅处理器...")
+                            
+                            # 准备给智能处理器的输入
+                            series_info = {"item_name": media_title, "tmdb_id": media_tmdb_id}
+                            
+                            # ★★★ 核心调用：使用全新的智能订阅函数 ★★★
+                            successful_subscriptions = moviepilot.smart_subscribe_series(series_info, config_manager.APP_CONFIG)
+                            
+                            # smart_subscribe_series 成功时会返回一个列表，失败时返回 None
+                            if successful_subscriptions:
+                                # 因为智能订阅可能一次性订阅了多个季，我们需要遍历结果
+                                for sub_details in successful_subscriptions:
+                                    # 在处理每一季之前，都检查一下配额
+                                    if settings_db.get_subscription_quota() <= 0:
+                                        quota_exhausted = True
+                                        logger.warning("  ➜ 配额在智能订阅多季过程中用尽，部分季可能未处理。")
+                                        break # 跳出这个季的循环
+
+                                    # 从返回结果中构建更精确的通知内容
+                                    season_num = sub_details.get('parsed_season_number')
+                                    series_name = sub_details.get('parsed_series_name', media_title)
+                                    formatted_item_str = f"剧集《{series_name}》第 {season_num} 季"
+                                    
+                                    # 为每一季的成功订阅都扣除配额并记录
+                                    settings_db.decrement_subscription_quota()
+                                    subscription_details.append({'module': '演员订阅', 'source': actor_name, 'item': formatted_item_str})
+
+                                # 只要至少有一个季订阅成功，就更新主条目的状态
+                                cursor.execute("UPDATE tracked_actor_media SET status = 'SUBSCRIBED' WHERE id = %s", (media_item['id'],))
+                        
+                        # ★★★ 核心修改：对剧集的成功订阅，也在这里立刻记录！ ★★★
+                        if success:
+                            settings_db.decrement_subscription_quota()
+                            subscription_details.append({'module': '演员订阅', 'source': actor_name, 'item': formatted_item_str})
+                            cursor.execute("UPDATE tracked_actor_media SET status = 'SUBSCRIBED' WHERE id = %s", (media_item['id'],))
 
             # --- 6. 处理已批准的用户订阅请求 ---
             if not processor.is_stop_requested() and not quota_exhausted:
