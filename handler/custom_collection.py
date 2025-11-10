@@ -16,6 +16,7 @@ from gevent import subprocess, Timeout
 import handler.tmdb as tmdb
 import handler.emby as emby
 import config_manager
+import utils
 from database import collection_db, watchlist_db 
 from handler.douban import DoubanApi
 from handler.tmdb import search_media, get_tv_details
@@ -404,63 +405,6 @@ class ListImporter:
         
         return items, source_type
 
-    def _parse_series_title(self, title: str) -> Tuple[str, Optional[int]]:
-        """
-        (V4 - 兼容末尾数字版) 能够处理中英文季号混合及末尾数字的复杂标题。
-        采用分步清理和回退匹配的策略，确保各种常见格式都能正确提取剧集名和季号。
-        """
-        show_name = title.strip()
-        season_number = None
-
-        # 定义英文、中文和纯数字的季号模式
-        # 英文模式: "Name Season 2"
-        SEASON_PATTERN_EN = re.compile(r'(.*?)\s+Season\s+(\d+)', re.IGNORECASE)
-        # 中文模式: "名字 第一季" (使用类里已有的)
-        SEASON_PATTERN_CN = self.SEASON_PATTERN
-        # ★★★ 新增：纯数字结尾模式: "名字 2" 或 "名字2" ★★★
-        SEASON_PATTERN_NUM = re.compile(r'^(.*?)\s*(\d+)$')
-
-        # --- 步骤 1: 尝试解析并清理英文季号 ---
-        match_en = SEASON_PATTERN_EN.search(show_name)
-        if match_en:
-            show_name = match_en.group(1).strip()
-            season_number = int(match_en.group(2))
-            logger.debug(f"  ➜ 标题解析 (英文部分): '{title}' -> 初步解析为名称='{show_name}', 季号='{season_number}'")
-
-        # --- 步骤 2: 在上一步的结果上，继续尝试解析并清理中文季号 ---
-        match_cn = SEASON_PATTERN_CN.search(show_name)
-        if match_cn:
-            show_name = match_cn.group(1).strip()
-            if season_number is None:
-                season_word = match_cn.group(2)
-                season_number_from_cn = self.CHINESE_NUM_MAP.get(season_word)
-                if season_number_from_cn:
-                    season_number = season_number_from_cn
-            logger.debug(f"  ➜ 标题解析 (中文部分): 清理后名称='{show_name}', 最终季号='{season_number}'")
-
-        # --- 步骤 3: 如果以上都没有匹配到季号，则尝试匹配末尾的纯数字 ---
-        if season_number is None:
-            # 排除年份结尾的情况，例如 "Series Title 2023"
-            if not re.search(r'\b(19|20)\d{2}$', show_name):
-                match_num = SEASON_PATTERN_NUM.search(show_name)
-                if match_num:
-                    potential_name = match_num.group(1).strip()
-                    potential_season = int(match_num.group(2))
-                    
-                    # 增加一个判断，避免把 "1984" 这样的标题错误解析
-                    # 如果标题去掉数字后仍然有意义，我们才采纳它
-                    if potential_name:
-                        show_name = potential_name
-                        season_number = potential_season
-                        logger.debug(f"  ➜ 标题解析 (回退数字部分): '{title}' -> 解析为名称='{show_name}', 季号='{season_number}'")
-
-        # 如果没有任何匹配，show_name就是原始标题, season_number是None
-        if show_name == title.strip() and season_number is None:
-            return title.strip(), None
-            
-        logger.debug(f"  ➜ 标题解析 (最终结果): '{title}' -> 名称='{show_name}', 季号='{season_number}'")
-        return show_name, season_number
-
     def _match_title_to_tmdb(self, title: str, item_type: str, year: Optional[str] = None) -> Optional[Tuple[str, str]]:
         """
         【V3 - 剧集精确匹配最终版】
@@ -540,7 +484,9 @@ class ListImporter:
         elif item_type == 'Series':
             # ★★★ 核心修正区域开始 ★★★
             # 1. 无论如何，先解析标题，分离出基础剧名和可能的季号
-            show_name, season_number_to_validate = self._parse_series_title(title)
+            show_name_parsed, season_number_to_validate = utils.parse_series_title_and_season(title)
+            # 如果解析失败（比如标题里没季号），就用原始标题去搜，保证健壮性
+            show_name = show_name_parsed if show_name_parsed else title
             
             # 2. 使用解析出的干净剧名进行搜索
             results = search_media(show_name, self.tmdb_api_key, 'Series', year=year)
@@ -640,7 +586,7 @@ class ListImporter:
 
                 cleaned_title_for_parsing = re.sub(r'^\s*\d+\.\s*', '', title)
                 cleaned_title_for_parsing = re.sub(r'\s*\(\d{4}\)$', '', cleaned_title_for_parsing).strip()
-                _, season_number = self._parse_series_title(cleaned_title_for_parsing)
+                _, season_number = utils.parse_series_title_and_season(cleaned_title_for_parsing)
 
                 def create_result(tmdb_id, item_type):
                     result = {'id': tmdb_id, 'type': item_type}

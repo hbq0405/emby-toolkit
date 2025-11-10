@@ -15,57 +15,14 @@ sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 try:
     import handler.tmdb as tmdb
+    from utils import parse_series_title_and_season
 except ImportError as e:
-    print(f"错误：缺少 tmdb_handler 模块。请确保路径正确。详细信息: {e}")
+    print(f"错误：缺少 必要 模块。请确保路径正确。详细信息: {e}")
     sys.exit(1)
 
 # --- 日志记录设置 ---
 logging.basicConfig(level=logging.INFO, format='[%(asctime)s] [%(levelname)s] - %(message)s')
 logger = logging.getLogger(__name__)
-
-# ★★★ 新增 1/2: 从主处理器中引入完整的标题解析工具 ★★★
-SEASON_PATTERN = re.compile(r'(.*?)\s*[（(]?\s*(第?[一二三四五六七八九十百]+)\s*季\s*[)）]?')
-CHINESE_NUM_MAP = {
-    '一': 1, '二': 2, '三': 3, '四': 4, '五': 5, '六': 6, '七': 7, '八': 8, '九': 9, '十': 10,
-    '十一': 11, '十二': 12, '十三': 13, '十四': 14, '十五': 15, '十六': 16, '十七': 17, '十八': 18, '十九': 19, '二十': 20,
-    '第一': 1, '第二': 2, '第三': 3, '第四': 4, '第五': 5, '第六': 6, '第七': 7, '第八': 8, '第九': 9, '第十': 10,
-    '第十一': 11, '第十二': 12, '第十三': 13, '第十四': 14, '第十五': 15, '第十六': 16, '第十七': 17, '第十八': 18, '第十九': 19, '第二十': 20
-}
-
-def parse_series_title(title: str) -> Tuple[str, Optional[int]]:
-    """
-    (V4 - 兼容末尾数字版) 能够处理中英文季号混合及末尾数字的复杂标题。
-    """
-    show_name = title.strip()
-    season_number = None
-    SEASON_PATTERN_EN = re.compile(r'(.*?)\s+Season\s+(\d+)', re.IGNORECASE)
-    SEASON_PATTERN_CN = SEASON_PATTERN
-    SEASON_PATTERN_NUM = re.compile(r'^(.*?)\s*(\d+)$')
-
-    match_en = SEASON_PATTERN_EN.search(show_name)
-    if match_en:
-        show_name = match_en.group(1).strip()
-        season_number = int(match_en.group(2))
-
-    match_cn = SEASON_PATTERN_CN.search(show_name)
-    if match_cn:
-        show_name = match_cn.group(1).strip()
-        if season_number is None:
-            season_word = match_cn.group(2)
-            season_number_from_cn = CHINESE_NUM_MAP.get(season_word)
-            if season_number_from_cn:
-                season_number = season_number_from_cn
-
-    if season_number is None:
-        if not re.search(r'\b(19|20)\d{2}$', show_name):
-            match_num = SEASON_PATTERN_NUM.search(show_name)
-            if match_num:
-                potential_name = match_num.group(1).strip()
-                if potential_name:
-                    show_name = potential_name
-                    season_number = int(match_num.group(2))
-
-    return show_name, season_number
 
 def get_random_user_agent() -> str:
     user_agents = [
@@ -80,7 +37,6 @@ def get_cookies() -> Dict[str, str]:
     return {}
 
 def get_maoyan_rank_titles(types_to_fetch: List[str], platform: str, num: int) -> Tuple[List[Dict], List[Dict]]:
-    # ... 此函数保持不变 ...
     movies_list = []
     tv_list = []
     
@@ -176,8 +132,9 @@ def match_titles_to_tmdb(titles: List[Dict], item_type: str, tmdb_api_key: str) 
         elif item_type == 'Series':
             logger.info(f"正在为 Series '{title}' 搜索TMDb匹配...")
             
-            show_name, season_number = parse_series_title(title)
-            logger.debug(f"  ➜ 标题 '{title}' 解析为: 剧名='{show_name}', 季号='{season_number}'")
+            base_name, season_num = parse_series_title_and_season(title)
+            show_name = base_name if base_name else title
+            logger.info(f"  ➜ 标题 '{title}' 解析为: 剧名='{show_name}', 季号='{season_num}'")
             
             results = tmdb.search_media(show_name, tmdb_api_key, 'Series')
             
@@ -203,9 +160,9 @@ def match_titles_to_tmdb(titles: List[Dict], item_type: str, tmdb_api_key: str) 
             
             # ★★★ 核心修正：在这里构建包含季号的结果 ★★★
             item_to_add = {'id': tmdb_id, 'type': 'Series'}
-            if season_number is not None:
-                item_to_add['season'] = season_number
-                logger.info(f"  ➜ 已为剧集 '{show_name}' 附加季号: {season_number}")
+            if season_num is not None:
+                item_to_add['season'] = season_num
+                logger.info(f"  ➜ 已为剧集 '{show_name}' 附加季号: {season_num}")
             
             matched_items.append(item_to_add)
             
