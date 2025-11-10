@@ -584,23 +584,43 @@ def task_auto_subscribe(processor):
         task_resubscribe_library(processor)
 
         # --- 9. 构建并发送管理员最终汇总通知 ---
-        summary_message = ""
         if subscription_details:
+            # 先准备好不需要转义的标题部分
             header = f"✅ *缺失洗版订阅完成，成功提交 {len(subscription_details)} 项:*"
-            item_lines = [f"├─ `[{detail['module']}-{detail.get('source', '')}]` {detail['item']}" for detail in subscription_details]
+            
+            # 遍历列表，只对动态内容进行转义
+            item_lines = []
+            for detail in subscription_details:
+                module = telegram.escape_markdown_v2(detail['module'])
+                source = telegram.escape_markdown_v2(detail.get('source', ''))
+                item = telegram.escape_markdown_v2(detail['item'])
+                # 用我们自己的格式符号，包裹住已经“消毒”过的内容
+                item_lines.append(f"├─ `[{module}-{source}]` {item}")
+                
             summary_message = header + "\n" + "\n".join(item_lines)
         else:
             summary_message = "ℹ️ *缺失洗版订阅完成，无符合条件的订阅项。*"
 
         if rejected_details:
             rejected_header = f"\n\n❌ *下列 {len(rejected_details)} 项因未正式发行而被跳过:*"
-            rejected_lines = [f"├─ `[{detail['module']}-{detail.get('source', '')}]` {detail['item']}" for detail in rejected_details]
+            
+            rejected_lines = []
+            for detail in rejected_details:
+                module = telegram.escape_markdown_v2(detail['module'])
+                source = telegram.escape_markdown_v2(detail.get('source', ''))
+                item = telegram.escape_markdown_v2(detail['item'])
+                rejected_lines.append(f"├─ `[{module}-{source}]` {item}")
+                
             summary_message += rejected_header + "\n" + "\n".join(rejected_lines)
 
         if quota_exhausted:
-            summary_message += "\n\n*(每日订阅配额已用尽，部分项目可能未处理)*"
+            # 只对括号和里面的内容进行转义，保留外面的星号
+            content = "(每日订阅配额已用尽，部分项目可能未处理)"
+            escaped_content = telegram.escape_markdown_v2(content)
+            summary_message += f"\n\n*{escaped_content}*"
 
-        logger.info(summary_message.replace('*', '').replace('`', '')) # 打印纯文本日志
+        # 打印日志和发送通知的逻辑保持不变
+        logger.info(summary_message.replace('*', '').replace('`', ''))
         admin_chat_ids = user_db.get_admin_telegram_chat_ids()
         if admin_chat_ids:
             logger.info(f"  ➜ 准备向 {len(admin_chat_ids)} 位管理员发送任务总结...")
