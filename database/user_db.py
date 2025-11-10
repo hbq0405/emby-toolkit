@@ -514,6 +514,22 @@ def get_pending_subscription_requests() -> List[Dict[str, Any]]:
         logger.error(f"DB: 查询待审订阅列表失败: {e}", exc_info=True)
         raise
 
+def get_approved_subscription_requests() -> List[Dict[str, Any]]:
+    """查询所有状态为 'approved' 的订阅请求。"""
+    sql = """
+        SELECT * FROM subscription_requests
+        WHERE status = 'approved'
+        ORDER BY requested_at ASC;
+    """
+    try:
+        with get_db_connection() as conn:
+            cursor = conn.cursor()
+            cursor.execute(sql)
+            return [dict(row) for row in cursor.fetchall()]
+    except Exception as e:
+        logger.error(f"DB: 查询已批准的订阅列表失败: {e}", exc_info=True)
+        raise
+
 def get_subscription_request_details(request_id: int) -> Optional[Dict[str, Any]]:
     """根据ID获取单条订阅请求的完整信息。"""
     sql = "SELECT * FROM subscription_requests WHERE id = %s"
@@ -860,7 +876,7 @@ def get_admin_telegram_chat_ids():
     
 def is_user_admin(user_id: str) -> bool:
     """
-    【短事务】检查一个指定的用户ID是否为Emby管理员。
+    检查一个指定的用户ID是否为Emby管理员。
     """
     if not user_id:
         return False
@@ -886,7 +902,7 @@ def is_user_admin(user_id: str) -> bool:
     
 def get_template_source_user_ids() -> set:
     """
-    【短事务】从 user_templates 表中获取所有被用作模板源用户的ID集合。
+    从 user_templates 表中获取所有被用作模板源用户的ID集合。
     """
     try:
         with get_db_connection() as conn:
@@ -900,7 +916,7 @@ def get_template_source_user_ids() -> set:
     
 def get_user_count() -> int:
     """
-    【短事务】获取 users 表中的用户总数。
+    获取 users 表中的用户总数。
     """
     try:
         with get_db_connection() as conn:
@@ -914,7 +930,7 @@ def get_user_count() -> int:
 
 def create_initial_admin_user(username: str, password_hash: str):
     """
-    【短事务】创建一个初始的本地管理员用户。
+    创建一个初始的本地管理员用户。
     """
     try:
         with get_db_connection() as conn:
@@ -929,7 +945,7 @@ def create_initial_admin_user(username: str, password_hash: str):
 
 def get_local_user_by_username(username: str) -> Optional[Dict]:
     """
-    【短事务】根据用户名从 users 表获取本地用户信息。
+    根据用户名从 users 表获取本地用户信息。
     """
     try:
         with get_db_connection() as conn:
@@ -943,7 +959,7 @@ def get_local_user_by_username(username: str) -> Optional[Dict]:
 
 def get_local_user_by_id(user_id: int) -> Optional[Dict]:
     """
-    【短事务】根据ID从 users 表获取本地用户信息。
+    根据ID从 users 表获取本地用户信息。
     """
     try:
         with get_db_connection() as conn:
@@ -957,7 +973,7 @@ def get_local_user_by_id(user_id: int) -> Optional[Dict]:
 
 def update_local_user_password(user_id: int, new_password_hash: str):
     """
-    【短事务】更新本地用户的密码哈希。
+    更新本地用户的密码哈希。
     """
     try:
         with get_db_connection() as conn:
@@ -972,7 +988,7 @@ def update_local_user_password(user_id: int, new_password_hash: str):
 # ======================================================================
 
 def get_all_user_templates() -> List[Dict]:
-    """【短事务】获取所有用户模板。"""
+    """获取所有用户模板。"""
     try:
         with get_db_connection() as conn:
             with conn.cursor() as cursor:
@@ -988,7 +1004,7 @@ def get_all_user_templates() -> List[Dict]:
         raise
 
 def create_user_template(name, description, policy_json, default_expiration_days, source_emby_user_id, configuration_json, allow_unrestricted_subscriptions) -> int:
-    """【短事务】创建一个新的用户模板。"""
+    """创建一个新的用户模板。"""
     try:
         with get_db_connection() as conn:
             with conn.cursor() as cursor:
@@ -1008,7 +1024,7 @@ def create_user_template(name, description, policy_json, default_expiration_days
         raise
 
 def get_template_for_sync(template_id: int) -> Optional[Dict]:
-    """【短事务】获取用于同步的模板信息。"""
+    """获取用于同步的模板信息。"""
     try:
         with get_db_connection() as conn:
             with conn.cursor() as cursor:
@@ -1020,7 +1036,7 @@ def get_template_for_sync(template_id: int) -> Optional[Dict]:
         raise
 
 def update_template_from_sync(template_id: int, new_policy_json: str, new_config_json: Optional[str]):
-    """【短事务】从源用户同步后，更新模板的 policy 和 configuration。"""
+    """从源用户同步后，更新模板的 policy 和 configuration。"""
     try:
         with get_db_connection() as conn:
             with conn.cursor() as cursor:
@@ -1033,7 +1049,7 @@ def update_template_from_sync(template_id: int, new_policy_json: str, new_config
         raise
 
 def get_users_associated_with_template(template_id: int) -> List[Dict]:
-    """【短事务】获取所有使用指定模板的用户列表。"""
+    """获取所有使用指定模板的用户列表。"""
     try:
         with get_db_connection() as conn:
             with conn.cursor() as cursor:
@@ -1047,7 +1063,7 @@ def get_users_associated_with_template(template_id: int) -> List[Dict]:
         raise
 
 def delete_user_template(template_id: int) -> int:
-    """【短事务】删除一个用户模板，返回受影响行数。"""
+    """删除一个用户模板，返回受影响行数。"""
     try:
         with get_db_connection() as conn:
             with conn.cursor() as cursor:
@@ -1058,7 +1074,7 @@ def delete_user_template(template_id: int) -> int:
         raise
 
 def update_user_template_details(template_id, name, description, default_expiration_days, allow_unrestricted_subscriptions) -> int:
-    """【短事务】更新用户模板的详细信息，返回受影响行数。"""
+    """更新用户模板的详细信息，返回受影响行数。"""
     try:
         with get_db_connection() as conn:
             with conn.cursor() as cursor:
@@ -1080,7 +1096,7 @@ def update_user_template_details(template_id, name, description, default_expirat
 # ======================================================================
 
 def create_invitation_link(template_id, expiration_days, link_expires_in_days) -> str:
-    """【短事务】创建一个新的邀请链接，并返回生成的token。"""
+    """创建一个新的邀请链接，并返回生成的token。"""
     try:
         with get_db_connection() as conn:
             with conn.cursor() as cursor:
@@ -1105,7 +1121,7 @@ def create_invitation_link(template_id, expiration_days, link_expires_in_days) -
         raise
 
 def get_all_invitation_links() -> List[Dict]:
-    """【短事务】获取所有邀请链接及其关联的模板名称。"""
+    """获取所有邀请链接及其关联的模板名称。"""
     try:
         with get_db_connection() as conn:
             with conn.cursor() as cursor:
@@ -1120,7 +1136,7 @@ def get_all_invitation_links() -> List[Dict]:
         raise
 
 def delete_invitation_link(invitation_id: int) -> int:
-    """【短事务】删除一个邀请链接，返回受影响行数。"""
+    """删除一个邀请链接，返回受影响行数。"""
     try:
         with get_db_connection() as conn:
             with conn.cursor() as cursor:
@@ -1135,7 +1151,7 @@ def delete_invitation_link(invitation_id: int) -> int:
 # ======================================================================
 
 def get_all_extended_user_info() -> Dict[str, Dict]:
-    """【短事务】获取所有用户的扩展信息，并以用户ID为键返回一个字典。"""
+    """获取所有用户的扩展信息，并以用户ID为键返回一个字典。"""
     try:
         with get_db_connection() as conn:
             with conn.cursor() as cursor:
@@ -1150,7 +1166,7 @@ def get_all_extended_user_info() -> Dict[str, Dict]:
         raise
 
 def change_user_template_and_get_names(user_id: str, new_template_id: int) -> tuple:
-    """【短事务】切换用户模板，并返回用户名和模板名用于日志。"""
+    """切换用户模板，并返回用户名和模板名用于日志。"""
     try:
         with get_db_connection() as conn:
             with conn.cursor() as cursor:
@@ -1177,7 +1193,7 @@ def change_user_template_and_get_names(user_id: str, new_template_id: int) -> tu
         raise
 
 def set_user_status_in_db(user_id: str, new_status: str):
-    """【短事务】在数据库中更新用户的状态。"""
+    """在数据库中更新用户的状态。"""
     try:
         with get_db_connection() as conn:
             with conn.cursor() as cursor:
@@ -1187,7 +1203,7 @@ def set_user_status_in_db(user_id: str, new_status: str):
         raise
 
 def set_user_expiration_in_db(user_id: str, expiration_date: Optional[str]):
-    """【短事务】在数据库中设置或清除用户的有效期。"""
+    """在数据库中设置或清除用户的有效期。"""
     try:
         with get_db_connection() as conn:
             with conn.cursor() as cursor:
@@ -1203,7 +1219,7 @@ def set_user_expiration_in_db(user_id: str, expiration_date: Optional[str]):
         raise
 
 def delete_user_from_db(user_id: str) -> int:
-    """【短事务】从本地数据库删除一个用户，返回受影响行数。"""
+    """从本地数据库删除一个用户，返回受影响行数。"""
     try:
         with get_db_connection() as conn:
             with conn.cursor() as cursor:
@@ -1214,7 +1230,7 @@ def delete_user_from_db(user_id: str) -> int:
         raise
 
 def get_username_by_id(user_id: str) -> Optional[str]:
-    """【短事务】根据用户ID获取用户名。"""
+    """根据用户ID获取用户名。"""
     try:
         with get_db_connection() as conn:
             with conn.cursor() as cursor:

@@ -29,7 +29,7 @@ def check_tmdb_ids_in_library(tmdb_ids: List[str], item_type: str) -> Dict[str, 
     
 def does_series_have_valid_actor_cache(tmdb_id: str) -> bool:
     """
-    【短事务】检查一个剧集是否在 media_metadata 中存在有效的演员缓存。
+    检查一个剧集是否在 media_metadata 中存在有效的演员缓存。
     "有效"定义为 actors_json 字段存在且不为空数组 '[]'。
     """
     if not tmdb_id:

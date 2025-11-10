@@ -198,13 +198,16 @@ const historyColumns = [
     title: '状态',
     key: 'status',
     render(row) {
+      // ★★★ 核心修改：增加对 completed 和 processing 状态的支持 ★★★
       const statusMap = {
-        approved: { type: 'success', text: '已批准' },
+        completed: { type: 'success', text: '已完成' },
+        approved: { type: 'info', text: '处理中' }, 
         pending: { type: 'warning', text: '待审核' },
         rejected: { type: 'error', text: '已拒绝' },
+        processing: { type: 'info', text: '处理中' }, 
       };
-      const s = statusMap[row.status] || { type: 'default', text: '未知' };
-      return h(NTag, { type: s.type }, { default: () => s.text });
+      const s = statusMap[row.status] || { type: 'default', text: row.status }; // 如果有未知状态，直接显示
+      return h(NTag, { type: s.type, bordered: false }, { default: () => s.text });
     },
   },
   { title: '申请时间', key: 'requested_at', render: (row) => new Date(row.requested_at).toLocaleString() },

@@ -186,7 +186,7 @@ def correct_all_sequences() -> list:
 
 def get_dashboard_stats() -> dict:
     """
-    【短事务】执行一个聚合查询，获取数据看板所需的所有统计数据。
+    执行一个聚合查询，获取数据看板所需的所有统计数据。
     """
     # 这个函数是从 database_admin.py 迁移过来的 _get_all_stats_in_one_query
     sql = """
@@ -230,7 +230,7 @@ def get_dashboard_stats() -> dict:
 
 def get_all_table_names() -> List[str]:
     """
-    【短事务】使用 information_schema 获取数据库中所有表的名称。
+    使用 information_schema 获取数据库中所有表的名称。
     """
     try:
         with get_db_connection() as conn:
@@ -248,7 +248,7 @@ def get_all_table_names() -> List[str]:
 
 def export_tables_data(tables_to_export: List[str]) -> Dict[str, List[Dict]]:
     """
-    【短事务】从指定的多个表中导出所有数据。
+    从指定的多个表中导出所有数据。
     """
     exported_data = {}
     try:
@@ -270,7 +270,7 @@ def export_tables_data(tables_to_export: List[str]) -> Dict[str, List[Dict]]:
 
 def prepare_for_library_rebuild() -> Dict[str, Dict]:
     """
-    【短事务】【高危】执行为 Emby 媒体库重建做准备的所有数据库操作。
+    【高危】执行为 Emby 媒体库重建做准备的所有数据库操作。
     """
     tables_to_truncate = [
         'emby_users', 'emby_users_extended', 'user_media_data', 'user_collection_cache',
@@ -309,7 +309,7 @@ def prepare_for_library_rebuild() -> Dict[str, Dict]:
 
 def cleanup_deleted_media_item(item_id: str, item_name: str, item_type: str, series_id_from_webhook: Optional[str] = None):
     """
-    【短事务】【高危】处理一个从 Emby 中被删除的媒体项，并清理所有相关的数据库记录。
+    【高危】处理一个从 Emby 中被删除的媒体项，并清理所有相关的数据库记录。
     """
     try:
         with get_db_connection() as conn:

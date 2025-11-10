@@ -9,7 +9,7 @@ logger = logging.getLogger(__name__)
 
 def get_pending_requests_with_username() -> List[Dict]:
     """
-    【短事务】获取所有待审批的媒体请求，并关联请求者的用户名。
+    获取所有待审批的媒体请求，并关联请求者的用户名。
     """
     try:
         with get_db_connection() as conn:
@@ -28,7 +28,7 @@ def get_pending_requests_with_username() -> List[Dict]:
 
 def get_request_by_id(request_id: int) -> Optional[Dict]:
     """
-    【短事务】根据ID获取单个媒体请求的详细信息。
+    根据ID获取单个媒体请求的详细信息。
     """
     try:
         with get_db_connection() as conn:
@@ -42,7 +42,7 @@ def get_request_by_id(request_id: int) -> Optional[Dict]:
 
 def update_request_status(request_id: int, status: str, admin_notes: Optional[str] = None) -> int:
     """
-    【短事务】更新单个媒体请求的状态和可选的管理员备注。
+    更新单个媒体请求的状态和可选的管理员备注。
     返回受影响的行数。
     """
     try:
