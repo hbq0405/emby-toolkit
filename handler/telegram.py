@@ -10,24 +10,32 @@ import constants
 
 logger = logging.getLogger(__name__)
 
-def _escape_markdown(text: str) -> str:
+def escape_markdown_v2(text: str) -> str:
     """
-    Helper function to escape characters for Telegram's MarkdownV2.
-    只应该用于转义从外部API获取的、内容不可控的文本部分。
+    【中央转义函数】
+    这是整个系统中唯一负责转义 Telegram MarkdownV2 保留字符的地方。
     """
     if not isinstance(text, str):
         return ""
-    # 根据 Telegram Bot API 文档，这些字符需要转义: _ * [ ] ( ) ~ ` > # + - = | { } . !
+    # 根据 Telegram Bot API 官方文档，这些字符在 MarkdownV2 中需要转义
     escape_chars = r'_*[]()~`>#+-=|{}.!'
-    return ''.join(f'\\{char}' if char in escape_chars else char for char in text)
+    
+    # 遍历所有需要转义的字符，并在其前面加上反斜杠
+    for char in escape_chars:
+        text = text.replace(char, f'\\{char}')
+    return text
 
-# --- 通用的 Telegram 文本消息发送函数 ---
+# --- 黄金标准：通用的 Telegram 文本消息发送函数 ---
 def send_telegram_message(chat_id: str, text: str, disable_notification: bool = False):
-    """通用的 Telegram 文本消息发送函数。"""
+    """
+    【V3 - 安全出口】
+    所有文本消息都必须通过此函数发送。它会在发送前自动处理转义。
+    """
     bot_token = APP_CONFIG.get(constants.CONFIG_OPTION_TELEGRAM_BOT_TOKEN)
     if not bot_token or not chat_id:
         return False
     
+    # (处理 @username 的逻辑保持不变)
     final_chat_id = str(chat_id).strip()
     if final_chat_id.startswith('https://t.me/'):
         username = final_chat_id.split('/')[-1]
@@ -35,9 +43,13 @@ def send_telegram_message(chat_id: str, text: str, disable_notification: bool = 
             final_chat_id = f'@{username}'
 
     api_url = f"https://api.telegram.org/bot{bot_token}/sendMessage"
+    
+    # ★★★ 核心修改：在这里，在发送前的最后一刻，对完整的消息文本进行转义 ★★★
+    safe_text = escape_markdown_v2(text)
+    
     payload = {
         'chat_id': final_chat_id,
-        'text': text, 
+        'text': safe_text, # 使用转义后的安全文本
         'parse_mode': 'MarkdownV2',
         'disable_web_page_preview': True,
         'disable_notification': disable_notification,
@@ -49,19 +61,26 @@ def send_telegram_message(chat_id: str, text: str, disable_notification: bool = 
             logger.info(f"  ➜ 成功发送 Telegram 文本消息至 Chat ID: {final_chat_id}")
             return True
         else:
+            # 即使失败，也打印原始文本和转义后的文本，方便调试
             logger.error(f"  ➜ 发送 Telegram 文本消息失败, 状态码: {response.status_code}, 响应: {response.text}")
+            logger.debug(f"    - 原始文本: {text}")
+            logger.debug(f"    - 转义后文本: {safe_text}")
             return False
     except requests.RequestException as e:
         logger.error(f"  ➜ 发送 Telegram 文本消息时发生网络请求错误: {e}")
         return False
 
-# --- 通用的 Telegram 图文消息发送函数 ---
+# --- 黄金标准：通用的 Telegram 图文消息发送函数 ---
 def send_telegram_photo(chat_id: str, photo_url: str, caption: str, disable_notification: bool = False):
-    """通用的 Telegram 图文消息发送函数。"""
+    """
+    【V3 - 安全出口】
+    所有图文消息都必须通过此函数发送。它会在发送前自动处理 caption 的转义。
+    """
     bot_token = APP_CONFIG.get(constants.CONFIG_OPTION_TELEGRAM_BOT_TOKEN)
     if not bot_token or not chat_id or not photo_url:
         return False
     
+    # (处理 @username 的逻辑保持不变)
     final_chat_id = str(chat_id).strip()
     if final_chat_id.startswith('https://t.me/'):
         username = final_chat_id.split('/')[-1]
@@ -69,10 +88,14 @@ def send_telegram_photo(chat_id: str, photo_url: str, caption: str, disable_noti
             final_chat_id = f'@{username}'
 
     api_url = f"https://api.telegram.org/bot{bot_token}/sendPhoto"
+    
+    # ★★★ 核心修改：同样地，在发送前对完整的 caption 进行转义 ★★★
+    safe_caption = escape_markdown_v2(caption)
+    
     payload = {
         'chat_id': final_chat_id,
         'photo': photo_url,
-        'caption': caption, 
+        'caption': safe_caption, # 使用转义后的安全文本
         'parse_mode': 'MarkdownV2',
         'disable_notification': disable_notification,
     }
@@ -84,6 +107,8 @@ def send_telegram_photo(chat_id: str, photo_url: str, caption: str, disable_noti
             return True
         else:
             logger.error(f"  ➜ 发送 Telegram 图文消息失败, 状态码: {response.status_code}, 响应: {response.text}")
+            logger.debug(f"    - 原始 Caption: {caption}")
+            logger.debug(f"    - 转义后 Caption: {safe_caption}")
             return False
     except requests.RequestException as e:
         logger.error(f"  ➜ 发送 Telegram 图文消息时发生网络请求错误: {e}")
@@ -98,20 +123,15 @@ def send_media_notification(item_details: dict, notification_type: str = 'new', 
     logger.info(f"  ➜ 准备为 '{item_details.get('Name')}' 发送 '{notification_type}' 类型的 Telegram 通知...")
     
     try:
-        # --- 1. 准备基础信息 ---
+        # --- 1. 准备基础信息 (不再需要 _escape_markdown) ---
         tmdb_id = item_details.get("ProviderIds", {}).get("Tmdb")
-        item_id = item_details.get("Id")
-        item_name_for_log = item_details.get("Name", f"ID:{item_id}")
+        item_name_for_log = item_details.get("Name", f"ID:{item_details.get('Id')}")
         year = item_details.get("ProductionYear", "")
         title = f"{item_name_for_log} ({year})" if year else item_name_for_log
         overview = item_details.get("Overview", "暂无剧情简介。")
         if len(overview) > 200:
             overview = overview[:200] + "..."
-            
         item_type = item_details.get("Type")
-
-        escaped_title = _escape_markdown(title)
-        escaped_overview = _escape_markdown(overview)
 
         # --- 2. 准备剧集信息 (如果适用) ---
         episode_info_text = ""
@@ -149,21 +169,17 @@ def send_media_notification(item_details: dict, notification_type: str = 'new', 
             except Exception as e:
                  logger.error(f"  ➜ [通知] 调用 tmdb_handler 获取图片信息时出错: {e}", exc_info=True)
         
-        # --- 4. 组装最终的通知文本 (Caption) ---
-        notification_title_map = {
-            'new': '✨ 入库成功',
-            'update': '🔄 已更新'
-        }
+        # --- 4. 组装最终的通知文本 (使用原生 Markdown，不再调用任何转义函数) ---
+        notification_title_map = {'new': '✨ 入库成功', 'update': '🔄 已更新'}
         notification_title = notification_title_map.get(notification_type, '🔔 状态更新')
         current_time = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
         media_icon = "🎬" if item_type == "Movie" else "📺"
         
-        # 使用转义后的变量来构建消息，同时保留我们自己的格式化符号
         caption = (
-            f"{media_icon} *{escaped_title}* {notification_title}\n\n"
+            f"{media_icon} *{title}* {notification_title}\n\n"
             f"{episode_info_text}"
             f"⏰ *时间*: `{current_time}`\n"
-            f"📝 *剧情*: {escaped_overview}"
+            f"📝 *剧情*: {overview}"
         )
         
         # --- 5. 查询订阅者 ---
@@ -171,7 +187,7 @@ def send_media_notification(item_details: dict, notification_type: str = 'new', 
         subscriber_chat_ids = {user_db.get_user_telegram_chat_id(sub['emby_user_id']) for sub in subscribers}
         subscriber_chat_ids = {chat_id for chat_id in subscriber_chat_ids if chat_id}
 
-        # --- 6. 发送全局通知 ---
+        # --- 6 发送全局通知 ---
         global_channel_id = APP_CONFIG.get(constants.CONFIG_OPTION_TELEGRAM_CHANNEL_ID)
         if global_channel_id:
             logger.info(f"  ➜ 正在向全局频道 {global_channel_id} 发送通知...")
@@ -180,12 +196,9 @@ def send_media_notification(item_details: dict, notification_type: str = 'new', 
             else:
                 send_telegram_message(global_channel_id, caption)
 
-        # --- 7. 发送个人订阅到货通知 ---
+        # --- 7 发送个人通知 ---
         if subscriber_chat_ids:
-            personal_caption_map = {
-                'new': f"✅ *您的订阅已入库*\n\n{caption}",
-                'update': f"🔄 *您的订阅已更新*\n\n{caption}"
-            }
+            personal_caption_map = {'new': f"✅ *您的订阅已入库*\n\n{caption}", 'update': f"🔄 *您的订阅已更新*\n\n{caption}"}
             personal_caption = personal_caption_map.get(notification_type, caption)
             
             for chat_id in subscriber_chat_ids:
