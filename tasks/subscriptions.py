@@ -553,7 +553,7 @@ def task_auto_subscribe(processor):
                             success = moviepilot.smart_subscribe_series(series_info, config_manager.APP_CONFIG) is not None
                         if success:
                             settings_db.decrement_subscription_quota()
-                            note = "系统检测到满足订阅条件，已自动处理。"
+                            note = "已加入订阅。"
                             user_db.update_subscription_request_status(req_id, 'completed', 'auto', notes=note)
                             subscription_details.append({'module': '用户请求', 'source': user_db.get_username_by_id(user_id) or user_id, 'item': formatted_item_str})
                             if user_id not in notifications_to_send_success: notifications_to_send_success[user_id] = []
