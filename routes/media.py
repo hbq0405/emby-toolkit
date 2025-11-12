@@ -370,13 +370,43 @@ def api_search_studios():
 @admin_required
 def api_unified_subscription_status():
     """
-    【统一】请求变更一个或多个媒体项状态的入口。
-    所有前端的手动订阅操作都应调用此接口。
-    请求体应包含一个 'requests' 列表，每个元素是一个媒体请求字典，
-    包含 'tmdb_id', 'item_type', 'source' (字典) 和可选的媒体元数据。
+    【V2 - 全能版】统一处理所有媒体项状态变更的唯一入口。
+    取代了旧的 /subscription/status, /cancel, /ignore 三个接口。
+    
+    请求体示例:
+    {
+        "requests": [
+            {
+                "tmdb_id": "123",
+                "item_type": "Movie",
+                "new_status": "WANTED",  // 待订阅
+                "source": {"type": "manual_add"},
+                "title": "一部新电影" 
+            },
+            {
+                "tmdb_id": "456",
+                "item_type": "Series",
+                "new_status": "IGNORED", // 忽略
+                "source": {"type": "manual_ignore"},
+                "ignore_reason": "不喜欢这个系列"
+            },
+            {
+                "tmdb_id": "789",
+                "item_type": "Movie",
+                "new_status": "NONE"     // 取消订阅
+            },
+            {
+                "tmdb_id": "456",
+                "item_type": "Series",
+                "new_status": "WANTED",  // 反悔，取消忽略
+                "source": {"type": "manual_unignore"},
+                "force_unignore": true
+            }
+        ]
+    }
     """
     data = request.json
-    requests_list = data.get('requests') # 这是一个包含多个订阅请求的列表
+    requests_list = data.get('requests')
 
     # 参数校验
     if not isinstance(requests_list, list) or not requests_list:
@@ -384,95 +414,52 @@ def api_unified_subscription_status():
 
     processed_count = 0
     errors = []
+    
+    # 定义允许的状态，防止意外的输入
+    ALLOWED_STATUSES = ['WANTED', 'SUBSCRIBED', 'IGNORED', 'NONE', 'PENDING_RELEASE']
 
     for req in requests_list:
         tmdb_id = req.get('tmdb_id')
         item_type = req.get('item_type')
-        source = req.get('source') # 每个请求携带自己的 source
-
-        if not all([tmdb_id, item_type, source]) or not isinstance(source, dict):
-            errors.append(f"无效的请求项，缺少 tmdb_id, item_type 或 source，或 source 不是字典: {req}")
-            logger.warning(f"统一订阅请求中发现无效项，跳过: {req}")
-            continue
+        new_status = req.get('new_status')
         
+        # ★★★ 核心升级：从请求体中动态获取 new_status ★★★
+        if not all([tmdb_id, item_type, new_status]):
+            errors.append(f"无效请求项，缺少 tmdb_id, item_type 或 new_status: {req}")
+            continue
+            
+        if new_status.upper() not in ALLOWED_STATUSES:
+            errors.append(f"无效的状态 '{new_status}' for TMDb ID {tmdb_id}")
+            continue
+
         try:
+            # 从请求中获取可选参数
+            source = req.get('source', {"type": f"api_unified_status_change_{new_status.lower()}"})
+            ignore_reason = req.get('ignore_reason')
+            force_unignore = req.get('force_unignore', False)
+
+            # ★★★ 调用我们强大的数据库函数，传递所有参数 ★★★
             media_db.update_subscription_status(
-                tmdb_ids=tmdb_id, # 单个 tmdb_id
+                tmdb_ids=tmdb_id,
                 item_type=item_type,
-                new_status='WANTED',
-                source=source, # 使用请求中提供的 source
-                media_info_list=[req] # 传递单个媒体信息列表
+                new_status=new_status.upper(),
+                source=source,
+                media_info_list=[req], # 传递整个请求体，以便创建新记录
+                ignore_reason=ignore_reason,
+                force_unignore=force_unignore
             )
             processed_count += 1
         except Exception as e:
-            errors.append(f"处理 TMDb ID {tmdb_id} ({item_type}) 时发生错误: {e}")
-            logger.error(f"API /subscription/status 处理 TMDb ID {tmdb_id} 发生错误: {e}", exc_info=True)
+            error_msg = f"处理 TMDb ID {tmdb_id} ({item_type}) 状态变更为 '{new_status}' 时发生错误: {e}"
+            errors.append(error_msg)
+            logger.error(f"API /subscription/status 发生错误: {error_msg}", exc_info=True)
 
+    # 统一返回处理结果
     if processed_count > 0:
-        message = f"已成功提交 {processed_count} 个媒体项的统一状态变更请求。"
+        message = f"已成功提交 {processed_count} 个媒体项的状态变更请求。"
         if errors:
             message += f" 但有 {len(errors)} 个请求处理失败。"
         logger.info(f"API: {message}")
         return jsonify({"message": message, "errors": errors}), 200
     else:
         return jsonify({"error": "没有有效的媒体项被成功处理。", "errors": errors}), 400
-    
-@media_api_bp.route('/subscription/cancel', methods=['POST'])
-@admin_required
-def api_cancel_subscription():
-    """
-    【新增】取消对单个媒体项的订阅。
-    """
-    data = request.json
-    tmdb_id = data.get('tmdb_id')
-    item_type = data.get('item_type')
-
-    if not tmdb_id or not item_type:
-        return jsonify({"error": "请求中缺少 'tmdb_id' 或 'item_type'"}), 400
-
-    try:
-        # 调用我们早已准备好的数据库函数来执行操作
-        media_db.update_subscription_status(
-            tmdb_ids=tmdb_id,
-            item_type=item_type,
-            new_status='NONE', # 取消订阅应设置为 'NONE'
-            source={"type": "api_cancel_subscription"}, # 添加来源信息
-            media_info_list=[{'tmdb_id': tmdb_id, 'item_type': item_type}]
-        )
-        
-        logger.info(f"API: 成功取消对媒体 (TMDb ID: {tmdb_id}) 的订阅。")
-        return jsonify({"message": f"已取消对 TMDb ID {tmdb_id} 的订阅。"}), 200
-
-    except Exception as e:
-        logger.error(f"API /subscription/cancel 发生错误: {e}", exc_info=True)
-        return jsonify({"error": "服务器在取消订阅时发生内部错误"}), 500
-    
-@media_api_bp.route('/subscription/ignore', methods=['POST'])
-@admin_required
-def api_ignore_subscription():
-    """
-    通用的、忽略单个媒体项的入口。
-    """
-    data = request.json
-    tmdb_id = data.get('tmdb_id')
-    item_type = data.get('item_type')
-
-    if not tmdb_id or not item_type:
-        return jsonify({"error": "请求中缺少 'tmdb_id' 或 'item_type'"}), 400
-
-    try:
-        # ★★★ 调用我们刚刚在数据库层创建的“忽略”函数 ★★★
-        media_db.update_subscription_status(
-            tmdb_ids=tmdb_id,
-            item_type=item_type,
-            new_status='IGNORED', # 忽略订阅应设置为 'IGNORED'
-            source={"type": "api_ignore_subscription"}, # 添加来源信息
-            media_info_list=[{'tmdb_id': tmdb_id, 'item_type': item_type}]
-        )
-        
-        logger.info(f"API: 成功将媒体 (TMDb ID: {tmdb_id}) 标记为忽略。")
-        return jsonify({"message": f"已将 TMDb ID {tmdb_id} 标记为忽略。"}), 200
-
-    except Exception as e:
-        logger.error(f"API /subscription/ignore 发生错误: {e}", exc_info=True)
-        return jsonify({"error": "服务器在标记忽略时发生内部错误"}), 500

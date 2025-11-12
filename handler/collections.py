@@ -95,9 +95,9 @@ def sync_and_subscribe_native_collections():
                 'source': {'type': 'native_collection', 'id': emby_collection_id, 'name': collection.get('name')}
             })
 
-    # 3. 使用“五合一”终极函数发起批量订阅
+    # 3. 发起批量处理
     if media_requests_with_info:
-        logger.info(f"  ➜ (SYNC) 发现 {len(media_requests_with_info)} 个缺失的电影订阅请求，正在全部加入订阅队列...")
+        logger.info(f"  ➜ (SYNC) 发现 {len(media_requests_with_info)} 个缺失的电影订阅请求，正在全部加入待订阅队列...")
         
         # 提取所有需要订阅的 TMDb ID
         tmdb_ids_to_subscribe = [req['tmdb_id'] for req in media_requests_with_info]
