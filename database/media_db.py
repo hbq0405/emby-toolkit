@@ -198,8 +198,28 @@ def update_subscription_status(
                     })
 
                 # 2. 根据不同状态，选择不同的SQL逻辑 (WANTED 逻辑不变)
+                if new_status_upper == 'REQUESTED':
+                    # REQUESTED 状态的逻辑和 WANTED 非常相似，都是创建一个新记录或更新现有记录
+                    # 但它的目标状态是 'REQUESTED'
+                    sql = """
+                        INSERT INTO media_metadata (
+                            tmdb_id, item_type, subscription_status, subscription_sources_json, 
+                            first_requested_at, title, original_title, release_date, poster_path, season_number, overview
+                        ) VALUES (
+                            %(tmdb_id)s, %(item_type)s, 'REQUESTED', %(source)s::jsonb,
+                            NOW(), %(title)s, %(original_title)s, %(release_date)s, %(poster_path)s, %(season_number)s, %(overview)s
+                        )
+                        ON CONFLICT (tmdb_id, item_type) DO UPDATE SET
+                            subscription_status = 'REQUESTED',
+                            subscription_sources_json = media_metadata.subscription_sources_json || EXCLUDED.subscription_sources_json,
+                            first_requested_at = COALESCE(media_metadata.first_requested_at, EXCLUDED.first_requested_at)
+                        -- 只有当媒体不在库中，且当前没有任何订阅意图时，才创建或更新
+                        WHERE media_metadata.in_library = FALSE 
+                          AND media_metadata.subscription_status = 'NONE';
+                    """
+                    execute_batch(cursor, sql, data_to_upsert)
                 
-                if new_status_upper == 'WANTED':
+                elif new_status_upper == 'WANTED':
                     if force_unignore:
                         # 逻辑 1: 强制反悔
                         logger.info("  ➜ [状态执行] 执行'强制反悔'逻辑，将 IGNORED -> WANTED。")
@@ -319,19 +339,22 @@ def update_subscription_status(
                             ignore_reason = NULL
                         WHERE tmdb_id = ANY(%s) AND item_type = %s;
                     """
-                    cursor.execute(sql, (tuple(id_list), item_type))
+                    cursor.execute(sql, (id_list, item_type))
                 
                 else:
-                    logger.warning(f"  ➜ [统一状态更新] 未知的状态 '{new_status_upper}'，操作已跳过。")
-                    return
+                    # 在这里，我们需要确保 'REQUESTED' 不会掉进这个分支
+                    VALID_STATUSES = {'WANTED', 'SUBSCRIBED', 'IGNORED', 'NONE', 'PENDING_RELEASE', 'REQUESTED'}
+                    if new_status_upper not in VALID_STATUSES:
+                        logger.warning(f"  ➜ [状态执行] 未知的状态 '{new_status_upper}'，操作已跳过。")
+                        return
 
                 if cursor.rowcount > 0:
-                    logger.info(f"  ➜ [统一状态更新] 成功，影响了 {cursor.rowcount} 行。")
+                    logger.info(f"  ➜ [状态执行] 成功，影响了 {cursor.rowcount} 行。")
                 else:
-                    logger.info(f"  ➜ [统一状态更新] 操作完成，但没有行受到影响（可能因为媒体已在库或状态未变化）。")
+                    logger.info(f"  ➜ [状态执行] 操作完成，但没有行受到影响（可能因为不满足前置条件）。")
 
     except Exception as e:
-        logger.error(f"  ➜ [统一状态更新] 更新媒体状态时发生错误: {e}", exc_info=True)
+        logger.error(f"  ➜ [状态执行] 更新媒体状态时发生错误: {e}", exc_info=True)
         raise
 
 def remove_subscription_source(tmdb_id: str, item_type: str, source_to_remove: Dict[str, Any]):
@@ -379,3 +402,225 @@ def remove_subscription_source(tmdb_id: str, item_type: str, source_to_remove: D
     except Exception as e:
         logger.error(f"移除媒体 {tmdb_id} 的订阅源时出错: {e}", exc_info=True)
         raise
+
+def get_all_non_library_media() -> List[Dict[str, Any]]:
+    """
+    【V2 - 增加 SUBSCRIBED 状态】获取所有不在媒体库中的媒体项，用于前端统一管理。
+    """
+    sql = """
+        SELECT 
+            tmdb_id, item_type, title, release_date, poster_path, 
+            subscription_status, ignore_reason, subscription_sources_json,
+            first_requested_at
+        FROM media_metadata
+        WHERE 
+            in_library = FALSE 
+            AND subscription_status IN ('WANTED', 'PENDING_RELEASE', 'IGNORED', 'SUBSCRIBED') -- ★★★ 核心修改 ★★★
+        ORDER BY first_requested_at DESC;
+    """
+    try:
+        with get_db_connection() as conn:
+            cursor = conn.cursor()
+            cursor.execute(sql)
+            return [dict(row) for row in cursor.fetchall()]
+    except Exception as e:
+        logger.error(f"DB: 获取所有非在库媒体失败: {e}", exc_info=True)
+        return []
+    
+def get_pending_requests_for_admin() -> List[Dict[str, Any]]:
+    """获取所有待审批 (REQUESTED) 的订阅请求，并关联用户名。"""
+    sql = """
+        SELECT 
+            m.tmdb_id, m.item_type, m.title, m.release_date, m.poster_path,
+            m.first_requested_at as requested_at,
+            (m.subscription_sources_json -> 0 ->> 'user_id') as emby_user_id,
+            u.name as username
+        FROM media_metadata m
+        LEFT JOIN emby_users u ON (m.subscription_sources_json -> 0 ->> 'user_id') = u.id
+        WHERE m.subscription_status = 'REQUESTED'
+        ORDER BY m.first_requested_at ASC;
+    """
+    try:
+        with get_db_connection() as conn:
+            cursor = conn.cursor()
+            cursor.execute(sql)
+            return [dict(row) for row in cursor.fetchall()]
+    except Exception as e:
+        logger.error(f"DB: 查询待审订阅列表失败: {e}", exc_info=True)
+        return []
+
+def get_user_request_history(user_id: str, page: int = 1, page_size: int = 10) -> tuple[List[Dict[str, Any]], int]:
+    """
+    【V2 - 分页功能修复版】
+    获取指定用户的订阅请求历史，支持分页，并返回总记录数。
+    """
+    offset = (page - 1) * page_size
+    
+    # ★★★ 核心修改 1/3: 准备用于查询的 source filter ★★★
+    source_filter = json.dumps([{"type": "user_request", "user_id": user_id}])
+
+    # ★★★ 核心修改 2/3: 增加一个查询总记录数的 SQL ★★★
+    count_sql = """
+        SELECT COUNT(*) 
+        FROM media_metadata
+        WHERE subscription_sources_json @> %s::jsonb;
+    """
+    
+    # ★★★ 核心修改 3/3: 在查询数据的 SQL 中加入 LIMIT 和 OFFSET ★★★
+    data_sql = """
+        SELECT 
+            tmdb_id, item_type, title, 
+            subscription_status as status, 
+            in_library, -- <--- 把这个字段也拿出来
+            first_requested_at as requested_at, 
+            ignore_reason as notes
+        FROM media_metadata
+        WHERE subscription_sources_json @> %s::jsonb
+        ORDER BY first_requested_at DESC
+        LIMIT %s OFFSET %s;
+    """
+    try:
+        with get_db_connection() as conn:
+            cursor = conn.cursor()
+            
+            # 先获取总数
+            cursor.execute(count_sql, (source_filter,))
+            total_records = cursor.fetchone()['count']
+            
+            # 再获取分页数据
+            cursor.execute(data_sql, (source_filter, page_size, offset))
+            rows = cursor.fetchall()
+            history = []
+            for row in rows:
+                # 复制一份，避免修改原始数据
+                history_item = dict(row)
+                
+                # 规则1: 只要在库里了，就是“已完成”，这是最高优先级
+                if history_item.get('in_library'):
+                    history_item['status'] = 'completed'
+                # 规则2: 如果不在库，且状态是 IGNORED，那就是“已拒绝”
+                elif history_item.get('status') == 'IGNORED':
+                    history_item['status'] = 'rejected'
+                # 其他状态 (WANTED, SUBSCRIBED, REQUESTED) 直接使用，前端 statusMap 能识别
+                
+                history.append(history_item)
+            
+            return history, total_records
+    except Exception as e:
+        logger.error(f"DB: 查询用户 {user_id} 的订阅历史失败: {e}", exc_info=True)
+        # 保持与旧函数一致的返回类型，即使出错
+        return [], 0
+
+def get_global_request_status_by_tmdb_id(tmdb_id: str) -> Optional[str]:
+    """查询单个 TMDb ID 的全局请求/订阅状态。"""
+    sql = "SELECT subscription_status FROM media_metadata WHERE tmdb_id = %s LIMIT 1;"
+    try:
+        with get_db_connection() as conn:
+            cursor = conn.cursor()
+            cursor.execute(sql, (tmdb_id,))
+            result = cursor.fetchone()
+            if not result: return None
+            
+            status = result['subscription_status']
+            if status in ['WANTED', 'SUBSCRIBED', 'PENDING_RELEASE']: return 'approved'
+            if status == 'REQUESTED': return 'pending'
+            return None
+    except Exception as e:
+        logger.error(f"DB: 查询 TMDb ID {tmdb_id} 的全局状态失败: {e}", exc_info=True)
+        return None
+    
+def sync_series_children_metadata(parent_tmdb_id: str, seasons: List[Dict], episodes: List[Dict], local_in_library_info: Dict[int, set]):
+    """
+    根据从 TMDB 获取的最新数据，批量同步一个剧集的所有季和集到 media_metadata 表。
+    使用 ON CONFLICT DO UPDATE 实现高效的“插入或更新”。
+    """
+    if not parent_tmdb_id:
+        return
+
+    records_to_upsert = []
+
+    # 1. 准备所有季的记录
+    for season in seasons:
+        season_num = season.get('season_number')
+        if season_num is None or season_num == 0: continue
+
+        season_tmdb_id = f"{parent_tmdb_id}-S{season_num}"
+        
+        # ★★★ 核心修改 1/4: 判断本季是否在库 ★★★
+        # 只要本地有这个季号，就认为“季”这个条目在库
+        is_season_in_library = season_num in local_in_library_info
+        
+        records_to_upsert.append({
+            "tmdb_id": season_tmdb_id, "item_type": "Season",
+            "parent_series_tmdb_id": parent_tmdb_id, "title": season.get('name'),
+            "overview": season.get('overview'), "release_date": season.get('air_date'),
+            "poster_path": season.get('poster_path'), "season_number": season_num,
+            "in_library": is_season_in_library # <-- 使用判断结果
+        })
+
+    # 2. 准备所有集的记录
+    for episode in episodes:
+        episode_tmdb_id = episode.get('id')
+        if not episode_tmdb_id: continue
+
+        season_num = episode.get('season_number')
+        episode_num = episode.get('episode_number')
+
+        # ★★★ 核心修改 2/4: 判断本集是否在库 ★★★
+        is_episode_in_library = season_num in local_in_library_info and episode_num in local_in_library_info.get(season_num, set())
+
+        records_to_upsert.append({
+            "tmdb_id": str(episode_tmdb_id), "item_type": "Episode",
+            "parent_series_tmdb_id": parent_tmdb_id, "title": episode.get('name'),
+            "overview": episode.get('overview'), "release_date": episode.get('air_date'),
+            "season_number": season_num, "episode_number": episode_num,
+            "in_library": is_episode_in_library # <-- 使用判断结果
+        })
+
+    if not records_to_upsert:
+        return
+
+    # 3. 执行批量“插入或更新”
+    try:
+        with get_db_connection() as conn:
+            with conn.cursor() as cursor:
+                from psycopg2.extras import execute_batch
+                
+                # ★★★ 核心修改 3/4: SQL语句的 ON CONFLICT 部分，也要更新 in_library 状态 ★★★
+                sql = """
+                    INSERT INTO media_metadata (
+                        tmdb_id, item_type, parent_series_tmdb_id, title, overview, 
+                        release_date, poster_path, season_number, episode_number, in_library
+                    ) VALUES (
+                        %(tmdb_id)s, %(item_type)s, %(parent_series_tmdb_id)s, %(title)s, %(overview)s,
+                        %(release_date)s, %(poster_path)s, %(season_number)s, %(episode_number)s, %(in_library)s
+                    )
+                    ON CONFLICT (tmdb_id, item_type) DO UPDATE SET
+                        parent_series_tmdb_id = EXCLUDED.parent_series_tmdb_id,
+                        title = EXCLUDED.title,
+                        overview = EXCLUDED.overview,
+                        release_date = EXCLUDED.release_date,
+                        poster_path = EXCLUDED.poster_path,
+                        season_number = EXCLUDED.season_number,
+                        episode_number = EXCLUDED.episode_number,
+                        in_library = EXCLUDED.in_library, -- <-- 关键！确保更新时也同步在库状态
+                        last_synced_at = NOW();
+                """
+                
+                # ★★★ 核心修改 4/4: 确保 in_library 字段被正确填充 ★★★
+                data_for_batch = []
+                for rec in records_to_upsert:
+                    data_for_batch.append({
+                        "tmdb_id": rec.get("tmdb_id"), "item_type": rec.get("item_type"),
+                        "parent_series_tmdb_id": rec.get("parent_series_tmdb_id"),
+                        "title": rec.get("title"), "overview": rec.get("overview"),
+                        "release_date": rec.get("release_date"), "poster_path": rec.get("poster_path"),
+                        "season_number": rec.get("season_number"), "episode_number": rec.get("episode_number"),
+                        "in_library": rec.get("in_library", False) # <-- 确保这个值被正确传入
+                    })
+
+                execute_batch(cursor, sql, data_for_batch)
+                logger.info(f"  ➜ [追剧联动] 成功为剧集 {parent_tmdb_id} 智能同步了 {len(data_for_batch)} 个子项目的元数据和在库状态。")
+
+    except Exception as e:
+        logger.error(f"  ➜ [追剧联动] 在同步剧集 {parent_tmdb_id} 的子项目时发生错误: {e}", exc_info=True)

@@ -532,6 +532,36 @@ def get_user_subscription_permission(user_id: str) -> bool:
         logger.error(f"DB: 查询用户 {user_id} 的订阅权限失败: {e}", exc_info=True)
         return False # 出错时，保守地返回 False
     
+def get_user_account_details(user_id: str) -> Optional[Dict[str, Any]]:
+    """
+    根据用户ID，查询其在 emby_users_extended 表中的信息，并关联 user_templates 表获取模板详情。
+    """
+    sql = """
+        SELECT
+            ue.status,
+            ue.registration_date,
+            ue.expiration_date,
+            ue.telegram_chat_id,
+            ut.name as template_name,
+            ut.description as template_description,
+            ut.allow_unrestricted_subscriptions
+        FROM
+            emby_users_extended ue
+        LEFT JOIN
+            user_templates ut ON ue.template_id = ut.id
+        WHERE
+            ue.emby_user_id = %s;
+    """
+    try:
+        with get_db_connection() as conn:
+            cursor = conn.cursor()
+            cursor.execute(sql, (user_id,))
+            result = cursor.fetchone()
+            return dict(result) if result else None
+    except Exception as e:
+        logger.error(f"DB: 查询用户 {user_id} 的账户详情失败: {e}", exc_info=True)
+        raise
+    
 # ======================================================================
 # 模块: 用户通知
 # ======================================================================

@@ -13,27 +13,99 @@ logger = logging.getLogger(__name__)
 # ======================================================================
 
 def get_all_watchlist_items() -> List[Dict[str, Any]]:
-    """获取所有追剧列表中的项目，并包含发行年份。"""
+    """【新架构】获取所有被追踪的剧集项目。"""
+    sql = """
+        SELECT 
+            tmdb_id, item_type, title as item_name, release_year,
+            watching_status as status,
+            paused_until, force_ended, watchlist_last_checked_at as last_checked_at,
+            watchlist_tmdb_status as tmdb_status,
+            watchlist_next_episode_json as next_episode_to_air_json,
+            watchlist_missing_info_json as missing_info_json,
+            watchlist_is_airing as is_airing
+        FROM media_metadata
+        WHERE item_type = 'Series' AND watching_status != 'NONE'
+        ORDER BY first_requested_at DESC;
+    """
     try:
         with get_db_connection() as conn:
             cursor = conn.cursor()
-            # --- 修改SQL查询 ---
-            sql = """
-                SELECT 
-                    w.*, 
-                    m.release_year 
-                FROM 
-                    watchlist w
-                LEFT JOIN 
-                    media_metadata m ON w.tmdb_id = m.tmdb_id AND m.item_type = 'Series'
-                ORDER BY 
-                    w.added_at DESC
-            """
             cursor.execute(sql)
-            items = [dict(row) for row in cursor.fetchall()]
-            return items
+            return [dict(row) for row in cursor.fetchall()]
     except Exception as e:
-        logger.error(f"DB: 获取追剧列表失败: {e}", exc_info=True)
+        logger.error(f"DB (新架构): 获取追剧列表失败: {e}", exc_info=True)
+        raise
+
+def add_item_to_watchlist(tmdb_id: str, item_name: str) -> bool:
+    """【新架构】将一个剧集标记为“正在追剧”。"""
+    sql = """
+        UPDATE media_metadata
+        SET watching_status = 'Watching',
+            -- 首次添加时，清空可能存在的旧状态
+            paused_until = NULL,
+            force_ended = FALSE
+        WHERE tmdb_id = %s AND item_type = 'Series';
+    """
+    try:
+        with get_db_connection() as conn:
+            cursor = conn.cursor()
+            cursor.execute(sql, (tmdb_id,))
+            # 如果没有行被更新（说明 media_metadata 里还没有这条记录），则插入一条
+            if cursor.rowcount == 0:
+                insert_sql = """
+                    INSERT INTO media_metadata (tmdb_id, item_type, title, watching_status)
+                    VALUES (%s, 'Series', %s, 'Watching')
+                    ON CONFLICT (tmdb_id, item_type) DO UPDATE SET watching_status = 'Watching';
+                """
+                cursor.execute(insert_sql, (tmdb_id, item_name))
+            return True
+    except Exception as e:
+        logger.error(f"DB (新架构): 添加 '{item_name}' 到追剧列表失败: {e}", exc_info=True)
+        raise
+
+def update_watchlist_item_status(tmdb_id: str, new_status: str) -> bool:
+    """【新架构】更新剧集项目的追剧状态。"""
+    updates = {"watching_status": new_status}
+    if new_status == 'Watching':
+        updates["force_ended"] = False
+        updates["paused_until"] = None
+    
+    set_clauses = [f"{key} = %s" for key in updates.keys()]
+    values = list(updates.values())
+    values.append(tmdb_id)
+    
+    sql = f"UPDATE media_metadata SET {', '.join(set_clauses)} WHERE tmdb_id = %s AND item_type = 'Series'"
+    try:
+        with get_db_connection() as conn:
+            cursor = conn.cursor()
+            cursor.execute(sql, tuple(values))
+            return cursor.rowcount > 0
+    except Exception as e:
+        logger.error(f"DB (新架构): 更新追剧状态失败: {e}", exc_info=True)
+        raise
+
+def remove_item_from_watchlist(tmdb_id: str) -> bool:
+    """【新架构】将一个剧集从追剧列表中移除（重置其追剧状态）。"""
+    # 我们不删除记录，只是重置追剧相关的字段
+    sql = """
+        UPDATE media_metadata
+        SET watching_status = 'NONE',
+            paused_until = NULL,
+            force_ended = FALSE,
+            watchlist_last_checked_at = NULL,
+            watchlist_tmdb_status = NULL,
+            watchlist_next_episode_json = NULL,
+            watchlist_missing_info_json = NULL,
+            watchlist_is_airing = FALSE
+        WHERE tmdb_id = %s AND item_type = 'Series';
+    """
+    try:
+        with get_db_connection() as conn:
+            cursor = conn.cursor()
+            cursor.execute(sql, (tmdb_id,))
+            return cursor.rowcount > 0
+    except Exception as e:
+        logger.error(f"DB (新架构): 从追剧列表移除项目时失败: {e}", exc_info=True)
         raise
 
 def get_watchlist_item_name(item_id: str) -> Optional[str]:
@@ -48,89 +120,6 @@ def get_watchlist_item_name(item_id: str) -> Optional[str]:
     except Exception as e:
         logger.warning(f"DB: 获取项目 {item_id} 名称时出错: {e}")
         return None
-
-def add_item_to_watchlist(item_id: str, tmdb_id: str, item_name: str, item_type: str) -> bool:
-    """【V2 - PG语法修复版】添加一个新项目到追剧列表。"""
-    
-    try:
-        with get_db_connection() as conn:
-            with conn.cursor() as cursor:
-                sql = """
-                    INSERT INTO watchlist (item_id, tmdb_id, item_name, item_type, status, last_checked_at)
-                    VALUES (%s, %s, %s, %s, 'Watching', NULL)
-                    ON CONFLICT (item_id) DO UPDATE SET
-                        tmdb_id = EXCLUDED.tmdb_id,
-                        item_name = EXCLUDED.item_name,
-                        item_type = EXCLUDED.item_type,
-                        status = EXCLUDED.status,
-                        last_checked_at = EXCLUDED.last_checked_at;
-                """
-                cursor.execute(sql, (item_id, tmdb_id, item_name, item_type))
-            conn.commit()
-            logger.info(f"DB: 项目 '{item_name}' (ID: {item_id}) 已成功添加/更新到追剧列表。")
-            return True
-    except Exception as e:
-        logger.error(f"DB: 手动添加项目到追剧列表时发生错误: {e}", exc_info=True)
-        raise
-
-def update_watchlist_item_status(item_id: str, new_status: str) -> bool:
-    """更新追剧列表中某个项目的状态，并智能处理关联字段。"""
-    
-    try:
-        with get_db_connection() as conn:
-            cursor = conn.cursor()
-            
-            # 准备要更新的字段和值
-            updates = {"status": new_status}
-            
-            # 如果新状态是 'Watching'，则联动重置 'force_ended' 和 'paused_until'
-            if new_status == 'Watching':
-                updates["force_ended"] = False
-                updates["paused_until"] = None
-            
-            # 动态构建 SET 子句
-            set_clauses = [f"{key} = %s" for key in updates.keys()]
-            values = list(updates.values())
-            values.append(item_id) # 最后把 item_id 加上
-            
-            sql = f"UPDATE watchlist SET {', '.join(set_clauses)} WHERE item_id = %s"
-            
-            cursor.execute(sql, tuple(values))
-
-            conn.commit()
-            if cursor.rowcount > 0:
-                logger.info(f"DB: 项目 {item_id} 的追剧状态已更新为 '{new_status}'，并重置了关联状态。")
-                return True
-            else:
-                logger.warning(f"DB: 尝试更新追剧状态，但未在列表中找到项目 {item_id}。")
-                return False
-    except Exception as e:
-        logger.error(f"DB: 更新追剧状态时发生错误: {e}", exc_info=True)
-        raise
-
-def remove_item_from_watchlist(item_id: str) -> bool:
-    """从追剧列表中移除一个项目。"""
-    
-    try:
-        with get_db_connection() as conn:
-            cursor = conn.cursor()
-            cursor.execute("DELETE FROM watchlist WHERE item_id = %s", (item_id,))
-            conn.commit()
-            if cursor.rowcount > 0:
-                logger.trace(f"DB: 项目 {item_id} 已从追剧列表移除。")
-                return True
-            else:
-                logger.warning(f"DB: 尝试删除项目 {item_id}，但在追剧列表中未找到。")
-                return False
-    except psycopg2.OperationalError as e:
-        if "database is locked" in str(e).lower():
-            logger.error(f"DB: 从追剧列表移除项目时发生数据库锁定错误: {e}", exc_info=True)
-        else:
-            logger.error(f"DB: 从追剧列表移除项目时发生数据库操作错误: {e}", exc_info=True)
-        raise
-    except Exception as e:
-        logger.error(f"DB: 从追剧列表移除项目时发生未知错误: {e}", exc_info=True)
-        raise
 
 def batch_force_end_watchlist_items(item_ids: List[str]) -> int:
     """批量将追剧项目标记为“强制完结”，并同步更新其“在播”状态。"""
@@ -212,30 +201,6 @@ def get_watching_tmdb_ids() -> set:
     except Exception as e:
         logger.error(f"从数据库获取正在追看的TMDB ID时出错: {e}", exc_info=True)
     return watching_ids
-
-def update_resubscribe_info(item_id: str, season_number: int, timestamp: str):
-    """
-    更新或插入特定季的最后一次洗版订阅时间。
-    """
-    try:
-        with get_db_connection() as conn:
-            with conn.cursor() as cursor:
-                # 使用 PostgreSQL 的 jsonb_set 函数来更新 JSONB 字段
-                update_query = """
-                    UPDATE watchlist
-                    SET resubscribe_info_json = jsonb_set(
-                        COALESCE(resubscribe_info_json, '{}'::jsonb),
-                        %s,
-                        %s::jsonb,
-                        true
-                    )
-                    WHERE item_id = %s
-                """
-                cursor.execute(update_query, ([str(season_number)], f'"{timestamp}"', item_id))
-            conn.commit()
-            logger.info(f"  ➜ 已记录 ItemID {item_id} 第 {season_number} 季的洗版订阅时间。")
-    except Exception as e:
-        logger.error(f"更新 ItemID {item_id} 第 {season_number} 季的洗版订阅时间时出错: {e}", exc_info=True)
 
 def get_airing_series_tmdb_ids() -> set:
     """

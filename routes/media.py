@@ -10,6 +10,7 @@ import config_manager
 import task_manager
 import extensions
 from database import collection_db, media_db
+import handler.moviepilot as moviepilot
 from extensions import admin_required, processor_ready_required
 from urllib.parse import urlparse
 
@@ -433,22 +434,39 @@ def api_unified_subscription_status():
             continue
 
         try:
-            # 从请求中获取可选参数
-            source = req.get('source', {"type": f"api_unified_status_change_{new_status.lower()}"})
-            ignore_reason = req.get('ignore_reason')
-            force_unignore = req.get('force_unignore', False)
+            if new_status.upper() == 'NONE':
+                media_details_map = media_db.get_media_details_by_tmdb_ids([tmdb_id])
+                current_status = media_details_map.get(tmdb_id, {}).get('subscription_status')
+                
+                if current_status == 'SUBSCRIBED':
+                    logger.info(f"  ➜ 检测到对已订阅项 (TMDb ID: {tmdb_id}) 的取消请求，将通知MoviePilot取消订阅...")
+                    season_num = media_details_map.get(tmdb_id, {}).get('season_number')
+                    
+                    config = config_manager.APP_CONFIG
+                    if not moviepilot.cancel_subscription(tmdb_id, item_type, config, season_num):
+                        error_msg = f"处理 TMDb ID {tmdb_id} 失败：在 MoviePilot 中取消订阅失败，请检查 MP 日志。"
+                        errors.append(error_msg)
+                        logger.error(f"API /subscription/status: {error_msg}")
+                        continue
 
-            # ★★★ 调用我们强大的数据库函数，传递所有参数 ★★★
-            media_db.update_subscription_status(
-                tmdb_ids=tmdb_id,
-                item_type=item_type,
-                new_status=new_status.upper(),
-                source=source,
-                media_info_list=[req], # 传递整个请求体，以便创建新记录
-                ignore_reason=ignore_reason,
-                force_unignore=force_unignore
-            )
-            processed_count += 1
+                media_db.update_subscription_status(
+                    tmdb_ids=tmdb_id, item_type=item_type, new_status='NONE'
+                )
+                processed_count += 1
+
+            else:
+                # --- 对于其他所有状态 (WANTED, IGNORED 等)，保持原有逻辑 ---
+                source = req.get('source', {"type": f"api_unified_status_change_{new_status.lower()}"})
+                ignore_reason = req.get('ignore_reason')
+                force_unignore = req.get('force_unignore', False)
+
+                media_db.update_subscription_status(
+                    tmdb_ids=tmdb_id, item_type=item_type, new_status=new_status.upper(),
+                    source=source, media_info_list=[req],
+                    ignore_reason=ignore_reason, force_unignore=force_unignore
+                )
+                processed_count += 1
+
         except Exception as e:
             error_msg = f"处理 TMDb ID {tmdb_id} ({item_type}) 状态变更为 '{new_status}' 时发生错误: {e}"
             errors.append(error_msg)
@@ -463,3 +481,17 @@ def api_unified_subscription_status():
         return jsonify({"message": message, "errors": errors}), 200
     else:
         return jsonify({"error": "没有有效的媒体项被成功处理。", "errors": errors}), 400
+
+@media_api_bp.route('/subscriptions/all', methods=['GET'])
+@admin_required
+def api_get_all_subscriptions_for_management():
+    """
+    为前端“统一订阅”页面提供所有非在库媒体项的数据。
+    """
+    try:
+        # 直接调用我们之前在 media_db.py 中创建的数据库函数
+        items = media_db.get_all_non_library_media()
+        return jsonify(items)
+    except Exception as e:
+        logger.error(f"API /subscriptions/all 获取数据失败: {e}", exc_info=True)
+        return jsonify({"error": "获取订阅列表时发生服务器内部错误"}), 500

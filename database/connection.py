@@ -190,7 +190,7 @@ def init_db():
                         paths_json JSONB,
 
                         -- 订阅与状态管理
-                        subscription_status TEXT NOT NULL DEFAULT 'NONE', -- 'NONE', 'WANTED', 'SUBSCRIBED', 'IGNORED'
+                        subscription_status TEXT NOT NULL DEFAULT 'NONE', -- 'NONE', 'WANTED', 'SUBSCRIBED', 'IGNORED', 'PENDING_RELEASE', 'REQUESTED'
                         subscription_sources_json JSONB NOT NULL DEFAULT '[]'::jsonb,
                         first_requested_at TIMESTAMP WITH TIME ZONE,
                         last_subscribed_at TIMESTAMP WITH TIME ZONE,
@@ -233,6 +233,16 @@ def init_db():
                         parent_series_tmdb_id TEXT,
                         season_number INTEGER,
                         episode_number INTEGER,
+                               
+                        -- ★★★ 追剧专属字段 ★★★
+                        watching_status TEXT DEFAULT 'NONE', -- 'NONE', 'Watching', 'Paused', 'Completed'
+                        paused_until DATE,
+                        force_ended BOOLEAN DEFAULT FALSE,
+                        watchlist_last_checked_at TIMESTAMP WITH TIME ZONE,
+                        watchlist_tmdb_status TEXT,
+                        watchlist_next_episode_json JSONB,
+                        watchlist_missing_info_json JSONB,
+                        watchlist_is_airing BOOLEAN DEFAULT FALSE,
 
                         -- 内部管理字段
                         last_synced_at TIMESTAMP WITH TIME ZONE,
@@ -242,27 +252,6 @@ def init_db():
                         PRIMARY KEY (tmdb_id, item_type)
                     )
                 """)
-
-                logger.trace("  ➜ 正在创建 'watchlist' 表...")
-                cursor.execute("""
-                    CREATE TABLE IF NOT EXISTS watchlist (
-                        item_id TEXT PRIMARY KEY,
-                        tmdb_id TEXT NOT NULL,
-                        item_name TEXT,
-                        item_type TEXT DEFAULT 'Series',
-                        status TEXT DEFAULT 'Watching',
-                        added_at TIMESTAMP WITH TIME ZONE DEFAULT NOW(),
-                        last_checked_at TIMESTAMP WITH TIME ZONE,
-                        tmdb_status TEXT,
-                        next_episode_to_air_json JSONB,
-                        missing_info_json JSONB,
-                        paused_until DATE DEFAULT NULL,
-                        force_ended BOOLEAN DEFAULT FALSE NOT NULL,
-                        resubscribe_info_json JSONB,
-                        is_airing BOOLEAN DEFAULT FALSE NOT NULL
-                    )
-                """)
-                cursor.execute("CREATE INDEX IF NOT EXISTS idx_watchlist_status ON watchlist (status)")
 
                 logger.trace("  ➜ 正在创建 'person_identity_map' 表...")
                 cursor.execute("""
@@ -435,28 +424,6 @@ def init_db():
                 cursor.execute("CREATE INDEX IF NOT EXISTS idx_eue_status ON emby_users_extended (status);")
                 cursor.execute("CREATE INDEX IF NOT EXISTS idx_eue_expiration_date ON emby_users_extended (expiration_date);")
 
-                logger.trace("  ➜ 正在创建 'subscription_requests' 表 (TMDb探索)...")
-                cursor.execute("""
-                    CREATE TABLE IF NOT EXISTS subscription_requests (
-                        id SERIAL PRIMARY KEY,
-                        emby_user_id TEXT NOT NULL,
-                        tmdb_id TEXT NOT NULL,
-                        item_type TEXT NOT NULL, -- 'Movie' or 'Series'
-                        item_name TEXT,
-                        parent_tmdb_id TEXT,        -- 解析后的父剧集TMDb ID
-                        parsed_series_name TEXT,    -- 解析后的父剧集名称
-                        parsed_season_number INTEGER, -- 解析后的季号
-                        status TEXT NOT NULL DEFAULT 'pending', -- 'pending', 'approved', 'rejected', 'processing', 'completed'
-                        requested_at TIMESTAMP WITH TIME ZONE DEFAULT NOW(),
-                        processed_at TIMESTAMP WITH TIME ZONE,
-                        processed_by TEXT, -- 'admin' or 'auto' (for VIPs)
-                        notes TEXT, -- 管理员可以填写拒绝理由等
-                        FOREIGN KEY(emby_user_id) REFERENCES emby_users(id) ON DELETE CASCADE
-                    )
-                """)
-                cursor.execute("CREATE INDEX IF NOT EXISTS idx_sr_status ON subscription_requests (status);")
-                cursor.execute("CREATE INDEX IF NOT EXISTS idx_sr_user_id ON subscription_requests (emby_user_id);")
-
                 # --- 2. 执行平滑升级检查 ---
                 logger.trace("  ➜ 开始执行数据库表结构升级检查...")
                 
@@ -539,12 +506,15 @@ def init_db():
                             "parent_series_tmdb_id": "TEXT",
                             "season_number": "INTEGER",
                             "episode_number": "INTEGER",
-                            "ignore_reason": "TEXT"
-                        },
-                        'watchlist': {
-                            "last_episode_to_air_json": "JSONB",
-                            "resubscribe_info_json": "JSONB",
-                            "is_airing": "BOOLEAN DEFAULT FALSE NOT NULL"
+                            "ignore_reason": "TEXT",
+                            "watching_status": "TEXT DEFAULT 'NONE'",
+                            "paused_until": "DATE",
+                            "force_ended": "BOOLEAN DEFAULT FALSE",
+                            "watchlist_last_checked_at": "TIMESTAMP WITH TIME ZONE",
+                            "watchlist_tmdb_status": "TEXT",
+                            "watchlist_next_episode_json": "JSONB",
+                            "watchlist_missing_info_json": "JSONB",
+                            "watchlist_is_airing": "BOOLEAN DEFAULT FALSE"
                         },
                         'resubscribe_cache': {
                             "emby_item_id": "TEXT",

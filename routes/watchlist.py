@@ -69,10 +69,8 @@ def api_add_to_watchlist():
     
     try:
         watchlist_db.add_item_to_watchlist(
-            item_id=item_id,
             tmdb_id=tmdb_id,
-            item_name=item_name,
-            item_type=item_type
+            item_name=item_name
         )
         return jsonify({"message": f"《{item_name}》已成功添加到追剧列表！"}), 200
     except Exception as e:
@@ -206,114 +204,6 @@ def api_batch_update_watchlist_status():
         logger.error(f"批量更新项目状态时发生未知错误: {e}", exc_info=True)
         return jsonify({"error": "批量更新项目状态时发生未知的服务器内部错误"}), 500
     
-@watchlist_bp.route('/subscribe/moviepilot/series', methods=['POST'])
-@admin_required
-def api_subscribe_series_to_moviepilot():
-    """
-    接收前端请求，将指定的一季剧集订阅到 MoviePilot。
-    """
-    data = request.json
-    tmdb_id = data.get('tmdb_id')
-    title = data.get('title')
-    season_number = data.get('season_number')
-    # 校验输入参数
-    if not all([tmdb_id, title, season_number is not None]):
-        return jsonify({"error": "请求参数无效，必须提供 tmdb_id, title 和 season_number。"}), 400
-    logger.info(f"API: 收到对《{title}》第 {season_number} 季 (TMDb ID: {tmdb_id}) 的 MoviePilot 订阅请求。")
-
-    # --- 配额检查 ---
-    current_quota = settings_db.get_subscription_quota()
-    if current_quota <= 0:
-        logger.warning(f"API: 用户尝试订阅《{title}》第 {season_number} 季，但每日配额已用尽。")
-        return jsonify({"error": "今日订阅配额已用尽，请明天再试。"}), 429
-
-    try:
-        # 准备需要传递给 handler 的信息
-        series_info = {
-            "tmdb_id": tmdb_id,
-            "item_name": title  # 使用 item_name 以匹配 handler 的兼容性
-        }
-        
-        # 调用 handler 函数执行实际的订阅操作
-        success = moviepilot.subscribe_series_to_moviepilot(
-            series_info=series_info,
-            season_number=season_number,
-            config=config_manager.APP_CONFIG
-        )
-        if success:
-            # 订阅成功后扣减配额
-            settings_db.decrement_subscription_quota()
-
-            return jsonify({"message": f"《{title}》第 {season_number} 季的订阅任务已成功提交到 MoviePilot！"}), 200
-        else:
-            return jsonify({"error": "提交订阅到 MoviePilot 失败，请检查 MoviePilot 的日志。"}), 500
-    except Exception as e:
-        logger.error(f"订阅剧集到 MoviePilot 时发生未知错误: {e}", exc_info=True)
-        return jsonify({"error": "订阅时发生未知的服务器内部错误。"}), 500
-    
-# ★★★ 订阅单个“缺集的季” ★★★
-@watchlist_bp.route('/subscribe/gap_season', methods=['POST'])
-@admin_required
-def api_subscribe_gap_season():
-    data = request.json
-    item_id = data.get('item_id')
-    season_number = data.get('season_number')
-
-    if not all([item_id, season_number is not None]):
-        return jsonify({"error": "请求参数无效，必须提供 item_id 和 season_number。"}), 400
-
-    # 配额检查
-    current_quota = settings_db.get_subscription_quota()
-    if current_quota <= 0:
-        return jsonify({"error": "今日订阅配额已用尽，请明天再试。"}), 429
-
-    try:
-        series_info = watchlist_db.get_watchlist_item_details(item_id) # 假设有这个函数，或直接查询
-        if not series_info:
-            return jsonify({"error": "未找到指定的剧集"}), 404
-
-        # 核心：根据用户设置决定订阅模式
-        config = config_manager.APP_CONFIG
-        use_best_version = config.get(constants.CONFIG_OPTION_RESUBSCRIBE_USE_BEST_VERSION, False)
-        best_version_param = 1 if use_best_version else None
-        
-        success = moviepilot.subscribe_series_to_moviepilot(
-            series_info=series_info,
-            season_number=season_number,
-            config=config,
-            best_version=best_version_param
-        )
-        
-        if success:
-            settings_db.decrement_subscription_quota()
-            # 订阅成功后，从数据库标记中移除，防止重复
-            watchlist_db.remove_seasons_from_gaps_list(item_id, [season_number])
-            return jsonify({"message": "订阅任务已成功提交！"}), 200
-        else:
-            return jsonify({"error": "提交订阅到 MoviePilot 失败。"}), 500
-    except Exception as e:
-        logger.error(f"订阅缺集的季时发生错误: {e}", exc_info=True)
-        return jsonify({"error": "订阅时发生服务器内部错误。"}), 500
-
-# ★★★ 批量订阅“缺集的季” ★★★
-@watchlist_bp.route('/batch_subscribe_gaps', methods=['POST'])
-@admin_required
-@task_lock_required
-def api_batch_subscribe_gaps():
-    data = request.json
-    item_ids = data.get('item_ids')
-
-    if not isinstance(item_ids, list) or not item_ids:
-        return jsonify({"error": "请求参数无效：必须提供一个 item_ids 列表。"}), 400
-
-    task_manager.submit_task(
-        task_batch_subscribe_gaps,
-        f"批量订阅 {len(item_ids)} 个项目的缺集季",
-        item_ids=item_ids
-    )
-    
-    return jsonify({"message": f"已在后台启动任务，为 {len(item_ids)} 个项目订阅缺集的季。"}), 202
-
 @watchlist_bp.route('/batch_remove', methods=['POST'])
 @admin_required
 def api_batch_remove_from_watchlist():

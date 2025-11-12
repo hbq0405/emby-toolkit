@@ -131,6 +131,12 @@ const routes = [
     meta: { requiresAuth: true },
   },
   {
+    path: '/unified-subscriptions',
+    name: 'UnifiedSubscriptions',
+    component: () => import('../components/UnifiedSubscriptionsPage.vue'),
+    meta: { requiresAuth: true },
+  },
+  {
     path: '/user-center',
     name: 'UserCenter',
     component: UserCenterPage,

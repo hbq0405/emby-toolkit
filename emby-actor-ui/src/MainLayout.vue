@@ -174,7 +174,8 @@ import {
   TrashBinOutline as CleanupIcon,
   PeopleCircleOutline as UserManagementIcon,
   PersonCircleOutline as UserCenterIcon,
-  FilmOutline as DiscoverIcon
+  FilmOutline as DiscoverIcon,
+  ArchiveOutline as UnifiedSubIcon
 } from '@vicons/ionicons5';
 import { Password24Regular as PasswordIcon } from '@vicons/fluent';
 import axios from 'axios';
@@ -348,6 +349,7 @@ const menuOptions = computed(() => {
           { label: '智能追剧', key: 'Watchlist', icon: renderIcon(WatchlistIcon) }, 
           { label: '演员订阅', key: 'ActorSubscriptions', icon: renderIcon(ActorSubIcon) }, 
           { label: '媒体洗版', key: 'ResubscribePage', icon: renderIcon(ResubscribeIcon) }, 
+          { label: '统一订阅', key: 'UnifiedSubscriptions', icon: renderIcon(UnifiedSubIcon) },
         ] 
       },
       { 

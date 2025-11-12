@@ -57,20 +57,6 @@
               </template>
               立即检查所有在追剧集
             </n-tooltip>
-            <n-popconfirm @positive-click="handleCheckCompleted">
-              <template #trigger>
-                <n-tooltip>
-                  <template #trigger>
-                    <n-button type="warning" ghost circle :loading="isTaskRunning('resubscribe-completed')">
-                      <template #icon><n-icon :component="DownloadIcon" /></template>
-                    </n-button>
-                  </template>
-                  检查已完结剧集 (洗版)
-                </n-tooltip>
-              </template>
-              确定要立即检查所有“已完结”的剧集，并为其中缺集的季提交洗版订阅吗？<br>
-              <strong style="color: var(--n-warning-color);">此操作可能会一次性提交大量订阅任务，请谨慎操作！</strong>
-            </n-popconfirm>
           </n-space>
         </template>
       </n-page-header>
@@ -222,7 +208,7 @@
               <n-list-item v-for="season in missingData.missing_seasons" :key="season.season_number">
                 <template #prefix><n-tag type="warning">S{{ season.season_number }}</n-tag></template>
                 <n-ellipsis>{{ season.name }} ({{ season.episode_count }}集, {{ formatAirDate(season.air_date) }})</n-ellipsis>
-                <template #suffix><n-button size="small" type="primary" @click="subscribeSeason(season.season_number)" :loading="subscribing['s'+season.season_number]">订阅本季</n-button></template>
+                <!-- ▼▼▼ 移除 suffix 部分的订阅按钮 ▼▼▼ -->
               </n-list-item>
             </n-list>
           </n-tab-pane>
@@ -231,11 +217,7 @@
               <n-list-item v-for="seasonNum in missingData.seasons_with_gaps" :key="seasonNum">
                 <template #prefix><n-tag type="error">S{{ seasonNum }}</n-tag></template>
                 <n-ellipsis>第 {{ seasonNum }} 季存在中间缺集</n-ellipsis>
-                <template #suffix>
-                  <n-button size="small" type="primary" @click="subscribeGapSeason(seasonNum)" :loading="subscribing['g'+seasonNum]">
-                    订阅本季
-                  </n-button>
-                </template>
+                <!-- ▼▼▼ 移除 suffix 部分的订阅按钮 ▼▼▼ -->
               </n-list-item>
             </n-list>
           </n-tab-pane>
@@ -287,7 +269,6 @@ const error = ref(null);
 const showModal = ref(false);
 const isAddingAll = ref(false);
 const selectedSeries = ref(null);
-const subscribing = ref({});
 const refreshingItems = ref({});
 const isTaskRunning = computed(() => props.taskStatus.is_running);
 const displayCount = ref(30);
@@ -392,14 +373,6 @@ const batchActions = computed(() => {
       .filter(item => selectedItems.value.includes(item.item_id))
       .some(hasGaps);
 
-    if (hasGapsInSelection) {
-      actions.push({
-        label: '订阅缺集的季',
-        key: 'subscribeGaps',
-        icon: () => h(NIcon, { component: DownloadIcon })
-      });
-    }
-    
     actions.push(removeAction); // 在“已完结”视图也添加移除操作
     return actions;
   }
@@ -555,22 +528,6 @@ const handleBatchAction = (key) => {
       }
     });
   }
-  else if (key === 'subscribeGaps') {
-    dialog.info({
-      title: '确认批量订阅',
-      content: `确定要为选中的 ${selectedItems.value.length} 个项目中所有“缺集的季”提交订阅吗？`,
-      positiveText: '确定',
-      negativeText: '取消',
-      onPositiveClick: async () => {
-        try {
-            const response = await axios.post('/api/watchlist/batch_subscribe_gaps', { item_ids: selectedItems.value });
-            message.success(response.data.message || '批量订阅任务已提交！');
-        } catch (err) {
-            message.error(err.response?.data?.error || '提交批量订阅任务失败。');
-        }
-      }
-    });
-  }
   else if (key === 'remove') {
     dialog.warning({
       title: '确认移除',
@@ -616,53 +573,6 @@ const triggerSingleRefresh = async (itemId, itemName) => {
   } finally {
     setTimeout(() => { refreshingItems.value[itemId] = false; }, 5000);
   }
-};
-
-const subscribeSeason = async (seasonNumber) => {
-  if (!selectedSeries.value) return;
-  const key = `s${seasonNumber}`;
-  subscribing.value[key] = true;
-  try {
-    await axios.post('/api/watchlist/subscribe/moviepilot/series', {
-      tmdb_id: selectedSeries.value.tmdb_id,
-      title: selectedSeries.value.item_name,
-      season_number: seasonNumber
-    });
-    message.success(`《${selectedSeries.value.item_name}》第 ${seasonNumber} 季已提交订阅！`);
-    if (selectedSeries.value.missing_info?.missing_seasons) {
-      const index = selectedSeries.value.missing_info.missing_seasons.findIndex(s => s.season_number === seasonNumber);
-      if (index > -1) {
-        selectedSeries.value.missing_info.missing_seasons.splice(index, 1);
-      }
-    }
-  } catch (err) {
-    message.error(err.response?.data?.error || '订阅失败');
-  } finally {
-    subscribing.value[key] = false;
-  }
-};
-
-const subscribeGapSeason = async (seasonNumber) => {
-    if (!selectedSeries.value) return;
-    const key = `g${seasonNumber}`;
-    subscribing.value[key] = true;
-    try {
-        await axios.post('/api/watchlist/subscribe/gap_season', {
-            item_id: selectedSeries.value.item_id,
-            season_number: seasonNumber
-        });
-        message.success(`《${selectedSeries.value.item_name}》第 ${seasonNumber} 季的订阅任务已成功提交！`);
-        if (selectedSeries.value.missing_info?.seasons_with_gaps) {
-            const index = selectedSeries.value.missing_info.seasons_with_gaps.indexOf(seasonNumber);
-            if (index > -1) {
-                selectedSeries.value.missing_info.seasons_with_gaps.splice(index, 1);
-            }
-        }
-    } catch (err) {
-        message.error(err.response?.data?.error || '订阅失败');
-    } finally {
-        subscribing.value[key] = false;
-    }
 };
 
 watch(currentView, () => {

@@ -121,35 +121,7 @@ def batch_reject_subscription_requests(request_ids: List[int], reason: Optional[
         logger.error(f"DB: 批量拒绝订阅请求失败: {e}", exc_info=True)
         raise
 
-def get_user_account_details(user_id: str) -> Optional[Dict[str, Any]]:
-    """
-    根据用户ID，查询其在 emby_users_extended 表中的信息，并关联 user_templates 表获取模板详情。
-    """
-    sql = """
-        SELECT
-            ue.status,
-            ue.registration_date,
-            ue.expiration_date,
-            ue.telegram_chat_id,
-            ut.name as template_name,
-            ut.description as template_description,
-            ut.allow_unrestricted_subscriptions
-        FROM
-            emby_users_extended ue
-        LEFT JOIN
-            user_templates ut ON ue.template_id = ut.id
-        WHERE
-            ue.emby_user_id = %s;
-    """
-    try:
-        with get_db_connection() as conn:
-            cursor = conn.cursor()
-            cursor.execute(sql, (user_id,))
-            result = cursor.fetchone()
-            return dict(result) if result else None
-    except Exception as e:
-        logger.error(f"DB: 查询用户 {user_id} 的账户详情失败: {e}", exc_info=True)
-        raise
+
 
 def get_user_subscription_history(user_id: str, page: int = 1, page_size: int = 10) -> Tuple[List[Dict[str, Any]], int]:
     """获取指定用户的订阅请求历史，支持分页，并返回总记录数。"""

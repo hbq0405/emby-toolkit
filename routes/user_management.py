@@ -15,7 +15,7 @@ import config_manager
 import constants
 from handler.telegram import send_telegram_message
 from extensions import admin_required
-from database import user_db, request_db, media_db, connection
+from database import user_db, media_db, connection
 
 # 创建一个新的蓝图
 user_management_bp = Blueprint('user_management_bp', __name__)
@@ -303,7 +303,7 @@ def delete_user(user_id):
 def get_pending_subscriptions():
     """获取所有待审核的订阅请求。"""
     try:
-        requests = request_db.get_pending_subscription_requests()
+        requests = media_db.get_pending_requests_for_admin()
         return jsonify(requests)
     except Exception as e:
         return jsonify({"status": "error", "message": "获取列表失败"}), 500
@@ -311,92 +311,60 @@ def get_pending_subscriptions():
 @user_management_bp.route('/api/admin/subscriptions/batch-approve', methods=['POST'])
 @admin_required
 def batch_approve_subscriptions():
-    """【V8 - 订阅来源精确溯源版】
-    - 逐条处理批准请求，确保每个媒体项的订阅来源都精确记录了原始申请人的用户ID。
-    """
+    """【V8 - 增加前置状态校验】"""
     data = request.json
-    request_ids = data.get('ids', [])
-
-    if not request_ids:
-        return jsonify({"status": "error", "message": "未提供任何订阅请求ID"}), 400
+    requests_to_approve = data.get('requests', [])
+    if not requests_to_approve:
+        return jsonify({"status": "error", "message": "未提供任何订阅请求"}), 400
 
     try:
-        requests_to_approve = request_db.get_multiple_subscription_request_details(request_ids)
-        if not requests_to_approve:
-            return jsonify({"status": "ok", "message": "请求已处理或不存在。"}), 200
+        # ★★★ 核心修改 1/3: 在处理前，先批量获取所有请求的当前状态 ★★★
+        all_tmdb_ids = [req['tmdb_id'] for req in requests_to_approve]
+        media_details_map = media_db.get_media_details_by_tmdb_ids(all_tmdb_ids)
 
-        # (并发获取元数据的逻辑保持不变)
-        config = config_manager.APP_CONFIG
-        tmdb_api_key = config.get(constants.CONFIG_OPTION_TMDB_API_KEY)
-        media_info_to_subscribe = []
+        # ★★★ 核心修改 2/3: 筛选出真正处于 'REQUESTED' 状态的请求 ★★★
+        valid_requests = []
+        for req in requests_to_approve:
+            details = media_details_map.get(req['tmdb_id'])
+            if details and details.get('subscription_status') == 'REQUESTED':
+                valid_requests.append(req)
         
-        def fetch_details(req):
-            try:
-                details = None
-                if req['item_type'] == 'Movie':
-                    details = tmdb.get_movie_details(int(req['tmdb_id']), tmdb_api_key)
-                elif req['item_type'] == 'Series':
-                    details = tmdb.get_tv_details(int(req['tmdb_id']), tmdb_api_key)
-                
-                if details:
-                    return {
-                        'tmdb_id': req['tmdb_id'], 'item_type': req['item_type'],
-                        'title': details.get('title') or details.get('name') or req['item_name'],
-                        'original_title': details.get('original_title') or details.get('original_name'),
-                        'release_date': details.get('release_date') or details.get('first_air_date'),
-                        'poster_path': details.get('poster_path'), 'overview': details.get('overview'),
-                        '_original_request': req 
-                    }
-            except Exception as e:
-                logger.error(f"批准请求时获取TMDb详情失败 (ID: {req['tmdb_id']}): {e}")
-            return None
+        if not valid_requests:
+            return jsonify({"status": "ok", "message": "选中的请求已被处理或不存在。"}), 200
 
-        with concurrent.futures.ThreadPoolExecutor(max_workers=5) as executor:
-            for result in executor.map(fetch_details, requests_to_approve):
-                if result:
-                    media_info_to_subscribe.append(result)
-
-        if not media_info_to_subscribe:
-            request_db.batch_approve_subscription_requests([req['id'] for req in requests_to_approve], 'admin')
-            return jsonify({"status": "error", "message": "无法获取任何媒体的详细信息，但已将请求标记为已处理。"}), 500
-
-        # ★★★ 核心修改：放弃按类型分组，改为逐条处理，确保来源精确 ★★★
+        # 后续的逻辑只针对 valid_requests 操作
         approved_count = 0
-        notifications_to_send = {} # 用于合并通知
+        notifications_to_send = {}
 
-        for media_info in media_info_to_subscribe:
+        # ★★★ 核心修改 3/3: 逐条处理【有效】的请求 ★★★
+        for req in valid_requests:
             try:
-                original_req = media_info['_original_request']
-                
-                # 1. 构建精确的、包含原始用户ID的订阅源
-                precise_source = {
-                    "type": "user_request", 
-                    "request_id": original_req['id'], 
-                    "user_id": original_req['emby_user_id'] # <-- 关键！使用原始申请人的ID
+                # (这里的 media_info 理论上可以从上面的 media_details_map 复用，但为了逻辑清晰，重新构建也无妨)
+                media_info = {
+                    'tmdb_id': req['tmdb_id'], 'item_type': req['item_type'], 'title': req['title'],
+                    # ... (可以补充更多元数据)
                 }
-
-                # 2. 为单个媒体项调用 update_subscription_status
-                media_db.update_subscription_status(
-                    tmdb_ids=media_info['tmdb_id'],
-                    item_type=media_info['item_type'],
-                    new_status='WANTED',
-                    source=precise_source, # <--- 传入精确的来源
-                    media_info_list=[media_info]
-                )
                 
-                # 3. 更新原始请求的状态
-                request_db.update_subscription_request_status(original_req['id'], 'approved', 'admin')
+                media_db.update_subscription_status(
+                    tmdb_ids=req['tmdb_id'],
+                    item_type=req['item_type'],
+                    new_status='WANTED',
+                    source={"type": "admin_approval", "admin": "admin"}
+                )
                 approved_count += 1
+                
+                # 准备通知
+                details = media_details_map.get(req['tmdb_id'])
+                if details and details.get('subscription_sources_json'):
+                    first_source = details['subscription_sources_json'][0]
+                    if first_source.get('type') == 'user_request' and (subscriber_id := first_source.get('user_id')):
+                        if subscriber_id not in notifications_to_send:
+                            notifications_to_send[subscriber_id] = []
+                        notifications_to_send[subscriber_id].append(req)
 
-                # 4. 收集通知信息 (这部分逻辑不变)
-                subscriber_id = original_req.get('emby_user_id')
-                if subscriber_id not in notifications_to_send:
-                    notifications_to_send[subscriber_id] = []
-                notifications_to_send[subscriber_id].append(original_req)
-
-            except Exception as e:
-                logger.error(f"处理已批准的请求 {media_info.get('_original_request', {}).get('id')} 时出错: {e}", exc_info=True)
-                continue # 单个失败不影响其他
+            except Exception as e_ind:
+                logger.error(f"批准请求 {req['tmdb_id']} 时失败: {e_ind}")
+                continue
         
         # 按用户ID对要通知的请求进行分组
         notifications_to_send = {}
@@ -431,40 +399,65 @@ def batch_approve_subscriptions():
 @user_management_bp.route('/api/admin/subscriptions/batch-reject', methods=['POST'])
 @admin_required
 def batch_reject_subscriptions():
-    """【V2 - 通知合并版】批量拒绝订阅请求，并为同一用户合并通知。"""
+    """【V3 - 统一订阅架构版】批量拒绝订阅请求，并更新状态为 IGNORED。"""
     data = request.json
-    request_ids = data.get('ids', [])
+    # ★★★ 1. 接收的不再是 id 列表，而是包含完整信息的对象列表 ★★★
+    requests_to_reject = data.get('requests', [])
     reason = data.get('reason')
 
-    if not request_ids:
-        return jsonify({"status": "error", "message": "未提供任何订阅请求ID"}), 400
+    if not requests_to_reject:
+        return jsonify({"status": "error", "message": "未提供任何订阅请求"}), 400
 
     try:
-        # ★★★ 核心修改 1/3：在更新数据库前，先获取这些请求的详细信息用于后续通知 ★★★
-        requests_to_notify = request_db.get_multiple_subscription_request_details(request_ids)
-        
-        updated_count = request_db.batch_reject_subscription_requests(request_ids, reason)
-        
-        # ★★★ 核心修改 2/3：按用户ID对要通知的请求进行分组 ★★★
-        notifications_to_send = {}
-        for req_details in requests_to_notify:
-            subscriber_id = req_details.get('emby_user_id')
-            if subscriber_id not in notifications_to_send:
-                notifications_to_send[subscriber_id] = []
-            notifications_to_send[subscriber_id].append(req_details)
+        # ★★★ 2. 按 item_type 对请求进行分组，为批量更新做准备 ★★★
+        grouped_requests = {}
+        for req in requests_to_reject:
+            item_type = req.get('item_type')
+            if item_type not in grouped_requests:
+                grouped_requests[item_type] = []
+            grouped_requests[item_type].append(req)
 
-        # ★★★ 核心修改 3/3：循环分组，构建并发送合并通知 ★★★
+        updated_count = 0
+        
+        # ★★★ 3. 遍历分组，为每种 item_type 执行一次批量更新 ★★★
+        for item_type, req_list in grouped_requests.items():
+            tmdb_ids = [req['tmdb_id'] for req in req_list]
+            
+            media_db.update_subscription_status(
+                tmdb_ids=tmdb_ids,
+                item_type=item_type,
+                new_status='IGNORED',
+                source={"type": "admin_rejection"},
+                ignore_reason=reason
+            )
+            updated_count += len(tmdb_ids)
+
+        # ★★★ 4. 发送合并通知 (逻辑与 batch-approve 类似) ★★★
+        notifications_to_send = {}
+        # 为了获取用户名，我们需要从 `subscription_sources_json` 中解析
+        # 我们可以通过一次批量查询获取所有相关媒体的详情
+        all_tmdb_ids = [req['tmdb_id'] for req in requests_to_reject]
+        media_details_map = media_db.get_media_details_by_tmdb_ids(all_tmdb_ids)
+
+        for req in requests_to_reject:
+            media_details = media_details_map.get(req['tmdb_id'])
+            if not media_details or not media_details.get('subscription_sources_json'):
+                continue
+            
+            # 假设第一个 source 就是原始请求者
+            first_source = media_details['subscription_sources_json'][0]
+            if first_source.get('type') == 'user_request' and (subscriber_id := first_source.get('user_id')):
+                if subscriber_id not in notifications_to_send:
+                    notifications_to_send[subscriber_id] = []
+                notifications_to_send[subscriber_id].append(req)
+
         for subscriber_id, user_requests in notifications_to_send.items():
             try:
                 subscriber_chat_id = user_db.get_user_telegram_chat_id(subscriber_id)
                 if subscriber_chat_id:
-                    # 构建被拒绝的项目列表
-                    rejected_items_list = [f"`{req.get('item_name')}`" for req in user_requests]
+                    rejected_items_list = [f"`{req.get('item_name') or req.get('title')}`" for req in user_requests]
                     rejected_items_str = "\n".join(rejected_items_list)
-                    
                     reason_text = f"\n\n*拒绝理由*: {reason}" if reason else ""
-                    
-                    # 生成最终的合并消息
                     message_text = (
                         f"❌ *您的 {len(user_requests)} 个订阅请求已被拒绝*\n\n"
                         f"您想看的以下内容未能通过审核：\n"

@@ -4,7 +4,7 @@ import requests
 from flask import Blueprint, jsonify, session, request
 
 from extensions import emby_login_required # 保护我们的新接口
-from database import user_db, settings_db, media_db, request_db
+from database import user_db, settings_db, media_db
 import config_manager     # ★ 2. 导入配置管理器，因为 MP 处理器需要它
 import constants
 import handler.tmdb as tmdb
@@ -19,10 +19,9 @@ logger = logging.getLogger(__name__)
 @emby_login_required
 def request_subscription():
     """
-    【V7 - 终极纯净版】处理用户订阅请求。
-    - 移除配额和上映日期判断，所有决策交由统一订阅模块处理。
-    - VIP/管理员请求直接进入待订阅队列 (WANTED)。
-    - 普通用户请求进入待审队列 (pending)。
+    【V9 - 终极统一版】
+    - 彻底废弃 request_db，所有用户的请求都通过 media_db 写入 media_metadata 表。
+    - 普通用户的请求状态为 REQUESTED，VIP/管理员的请求状态为 WANTED。
     """
     data = request.json
     emby_user_id = session['emby_user_id']
@@ -33,71 +32,59 @@ def request_subscription():
     
     tmdb_id = str(data.get('tmdb_id'))
     item_type = data.get('item_type')
-    item_name = data.get('item_name')
+    item_name = data.get('item_name') # 仅作为备用
 
     message = ""
     new_status_for_frontend = None
 
-    # ★★★ VIP/管理员通道 -> 终极简化 ★★★
+    # ★★★ 核心修改：无论是谁，我们都需要先获取媒体的详细信息 ★★★
+    config = config_manager.APP_CONFIG
+    tmdb_api_key = config.get(constants.CONFIG_OPTION_TMDB_API_KEY)
+    details = None
+    try:
+        if item_type == 'Movie':
+            details = tmdb.get_movie_details(int(tmdb_id), tmdb_api_key)
+        elif item_type == 'Series':
+            details = tmdb.get_tv_details(int(tmdb_id), tmdb_api_key)
+        if not details:
+            raise ValueError("无法从TMDb获取媒体详情")
+    except Exception as e:
+        logger.error(f"用户 {emby_username} 请求订阅时，获取TMDb详情失败 (ID: {tmdb_id}): {e}")
+        return jsonify({"status": "error", "message": "无法获取媒体详情，请稍后再试。"}), 500
+
+    media_info = {
+        'tmdb_id': tmdb_id, 'item_type': item_type,
+        'title': details.get('title') or details.get('name') or item_name,
+        'original_title': details.get('original_title') or details.get('original_name'),
+        'release_date': details.get('release_date') or details.get('first_air_date'),
+        'poster_path': details.get('poster_path'), 'overview': details.get('overview')
+    }
+
     if is_vip or is_emby_admin:
         log_user_type = "管理员" if is_emby_admin else "VIP 用户"
         logger.info(f"  ➜ 【{log_user_type}通道】'{emby_username}' 的订阅请求将直接加入待订阅队列...")
         
-        config = config_manager.APP_CONFIG
-        tmdb_api_key = config.get(constants.CONFIG_OPTION_TMDB_API_KEY)
-        details = None
-        try:
-            if item_type == 'Movie':
-                details = tmdb.get_movie_details(int(tmdb_id), tmdb_api_key)
-            elif item_type == 'Series':
-                details = tmdb.get_tv_details(int(tmdb_id), tmdb_api_key)
-            
-            if not details:
-                raise ValueError("无法从TMDb获取媒体详情")
-
-        except Exception as e:
-            logger.error(f"为 {log_user_type} 请求订阅时，获取TMDb详情失败 (ID: {tmdb_id}): {e}")
-            return jsonify({"status": "error", "message": "无法获取媒体详情，请稍后再试。"}), 500
-
-        # 准备包含完整元数据的 media_info_list
-        media_info = {
-            'tmdb_id': tmdb_id,
-            'item_type': item_type,
-            'title': details.get('title') or details.get('name') or item_name, # 使用TMDB的标题，item_name做备用
-            'original_title': details.get('original_title') or details.get('original_name'),
-            'release_date': details.get('release_date') or details.get('first_air_date'),
-            'poster_path': details.get('poster_path'),
-            'overview': details.get('overview')
-        }
-
-        # ★★★ 核心修改 2/2: 调用 update_subscription_status 时传入完整信息 ★★★
         media_db.update_subscription_status(
-            tmdb_ids=tmdb_id,
-            item_type=item_type,
-            new_status='WANTED',
+            tmdb_ids=tmdb_id, item_type=item_type, new_status='WANTED',
             source={"type": "user_request", "user_id": emby_user_id, "user_type": log_user_type},
-            media_info_list=[media_info] # <--- 传入我们刚准备好的完整信息
+            media_info_list=[media_info]
         )
-        
-        request_db.create_subscription_request(
-            emby_user_id=emby_user_id, tmdb_id=tmdb_id, item_type=item_type,
-            item_name=media_info['title'], # 使用更准确的标题创建历史记录
-            status='approved', processed_by='auto'
-        )
-        
         message = "订阅请求已提交，系统将自动处理！"
         new_status_for_frontend = 'approved'
 
     else:
-        # --- 普通用户通道 (逻辑保持不变) ---
-        existing_status = request_db.get_global_subscription_status_by_tmdb_id(tmdb_id)
+        # --- ★★★ 普通用户通道终极改造 ★★★ ---
+        existing_status = media_db.get_global_request_status_by_tmdb_id(tmdb_id)
         if existing_status:
             message = "该项目正在等待审核。" if existing_status == 'pending' else "该项目已在订阅队列中。"
             return jsonify({"status": existing_status, "message": message}), 200
         
-        request_db.create_subscription_request(
-            emby_user_id=emby_user_id, tmdb_id=tmdb_id, item_type=item_type,
-            item_name=item_name, status='pending'
+        # 不再调用 request_db，而是调用 media_db 将状态设为 REQUESTED
+        media_db.update_subscription_status(
+            tmdb_ids=tmdb_id, item_type=item_type,
+            new_status='REQUESTED', # <-- 核心状态
+            source={"type": "user_request", "user_id": emby_user_id},
+            media_info_list=[media_info] # <-- 传入完整信息
         )
         message = "“想看”请求已提交，请等待管理员审核。"
         new_status_for_frontend = 'pending'
@@ -141,7 +128,7 @@ def get_account_info():
     emby_user_id = session['emby_user_id']
     try:
         # 1. 照常获取用户的个人账户详情
-        account_info = request_db.get_user_account_details(emby_user_id)
+        account_info = user_db.get_user_account_details(emby_user_id)
         
         # 2. ★★★ 核心修改：即使个人详情为空，也创建一个空字典 ★★★
         #    这样可以确保即使用户是新来的，也能看到全局频道信息。
@@ -166,7 +153,7 @@ def get_subscription_history():
     page_size = request.args.get('page_size', 10, type=int)
     
     try:
-        history, total_records = request_db.get_user_subscription_history(emby_user_id, page, page_size)
+        history, total_records = media_db.get_user_request_history(emby_user_id, page, page_size)
         return jsonify({
             "items": history,
             "total_records": total_records,

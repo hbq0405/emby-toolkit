@@ -278,3 +278,55 @@ def smart_subscribe_series(series_info: dict, config: Dict[str, Any]) -> Optiona
             })
 
     return successful_subscriptions if successful_subscriptions else None
+
+def cancel_subscription(tmdb_id: str, item_type: str, config: Dict[str, Any], season: Optional[int] = None) -> bool:
+    """
+    调用 MoviePilot 的 API 来取消一个订阅。
+    """
+    try:
+        moviepilot_url = config.get(constants.CONFIG_OPTION_MOVIEPILOT_URL, '').rstrip('/')
+        mp_username = config.get(constants.CONFIG_OPTION_MOVIEPILOT_USERNAME, '')
+        mp_password = config.get(constants.CONFIG_OPTION_MOVIEPILOT_PASSWORD, '')
+        if not all([moviepilot_url, mp_username, mp_password]):
+            logger.warning("  ➜ MoviePilot 取消订阅跳过：配置不完整。")
+            return False
+
+        # 1. 登录获取 Token
+        login_url = f"{moviepilot_url}/api/v1/login/access-token"
+        login_data = {"username": mp_username, "password": mp_password}
+        login_response = requests.post(login_url, data=login_data, timeout=10)
+        login_response.raise_for_status()
+        access_token = login_response.json().get("access_token")
+        if not access_token:
+            logger.error("  ➜ MoviePilot 取消订阅失败：认证失败。")
+            return False
+
+        # 2. 构造 mediaid 和 URL
+        media_id_for_api = f"tmdb:{tmdb_id}"
+        cancel_url = f"{moviepilot_url}/api/v1/subscribe/media/{media_id_for_api}"
+        params = {}
+        if item_type == 'Series' and season is not None:
+            params['season'] = season
+        
+        headers = {"Authorization": f"Bearer {access_token}"}
+
+        logger.info(f"  ➜ 正在向 MoviePilot 发送取消订阅请求: {media_id_for_api} (Season: {season or 'N/A'})")
+
+        # 3. 发送 DELETE 请求
+        response = requests.delete(cancel_url, headers=headers, params=params, timeout=15)
+        
+        # MP 的 DELETE 成功时通常返回 200 或 204 (No Content)
+        if response.status_code in [200, 204]:
+            logger.info(f"  ✅ MoviePilot 已成功取消订阅: {media_id_for_api}")
+            return True
+        # 如果返回 404，说明 MP 那边本来就没有这个订阅，也算“取消成功”
+        elif response.status_code == 404:
+            logger.info(f"  ✅ MoviePilot 中未找到订阅 {media_id_for_api}，视为取消成功。")
+            return True
+        else:
+            logger.error(f"  ➜ MoviePilot 取消订阅失败！API 返回: {response.status_code} - {response.text}")
+            return False
+
+    except Exception as e:
+        logger.error(f"  ➜ 调用 MoviePilot 取消订阅 API 时发生网络或未知错误: {e}", exc_info=True)
+        return False

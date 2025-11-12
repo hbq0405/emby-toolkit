@@ -192,7 +192,7 @@ const globalChannelLink = computed(() => {
 });
 
 const historyColumns = [
-  { title: '媒体名称', key: 'item_name' },
+  { title: '媒体名称', key: 'title' },
   { title: '类型', key: 'item_type', render: (row) => (row.item_type === 'Movie' ? '电影' : '电视剧') },
   {
     title: '状态',
@@ -201,10 +201,10 @@ const historyColumns = [
       // ★★★ 核心修改：增加对 completed 和 processing 状态的支持 ★★★
       const statusMap = {
         completed: { type: 'success', text: '已完成' },
-        approved: { type: 'info', text: '处理中' }, 
-        pending: { type: 'warning', text: '待审核' },
+        WANTED: { type: 'info', text: '处理中' }, 
+        REQUESTED: { type: 'warning', text: '待审核' },
         rejected: { type: 'error', text: '已拒绝' },
-        processing: { type: 'info', text: '处理中' }, 
+        SUBSCRIBED: { type: 'info', text: '已订阅' }, 
       };
       const s = statusMap[row.status] || { type: 'default', text: row.status }; // 如果有未知状态，直接显示
       return h(NTag, { type: s.type, bordered: false }, { default: () => s.text });
