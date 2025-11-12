@@ -2635,5 +2635,169 @@ class MediaProcessor:
         except Exception as e:
             logger.error(f"  ➜ {log_prefix} 为 '{item_name_for_log}' 更新覆盖缓存文件时发生错误: {e}", exc_info=True)
 
+    def _update_pre_processed_metadata_in_db(
+        self,
+        cursor: psycopg2.extensions.cursor,
+        tmdb_id: str,
+        item_type: str,
+        final_processed_cast: List[Dict[str, Any]],
+        tmdb_details_for_extra: Optional[Dict[str, Any]]
+    ):
+        """
+        【新】一个专门用于预处理的数据库更新函数。
+        它只更新元数据，不涉及 Emby ID，并设置 pre_processed_at 标志。
+        """
+        try:
+            # 1. 准备演员关系数据 (与 _save_metadata_to_cache 逻辑相同)
+            self.actor_db_manager.batch_upsert_actors_and_metadata(
+                cursor=cursor, 
+                actors_list=final_processed_cast,
+                emby_config=self.config # 传递完整的 emby_config
+            )
+            actors_relation_for_cache = [
+                {"tmdb_id": int(p.get("id") or p.get("tmdb_id")), "character": p.get("character"), "order": p.get("order")}
+                for p in final_processed_cast if p.get("id") or p.get("tmdb_id")
+            ]
+
+            # 2. 准备其他元数据 (与 _save_metadata_to_cache 逻辑相同)
+            directors, countries, keywords = [], [], []
+            if tmdb_details_for_extra:
+                credits = tmdb_details_for_extra.get("credits", {})
+                crew = credits.get('crew', [])
+                if item_type == 'Movie':
+                    directors = [{'id': p.get('id'), 'name': p.get('name')} for p in crew if p.get('job') == 'Director']
+                elif item_type == 'Series':
+                    directors = [{'id': c.get('id'), 'name': c.get('name')} for c in tmdb_details_for_extra.get('created_by', [])]
+                
+                if item_type == 'Movie':
+                    countries = translate_country_list([c.get('iso_3166_1') for c in tmdb_details_for_extra.get('production_countries', [])])
+                elif item_type == 'Series':
+                    countries = translate_country_list(tmdb_details_for_extra.get('origin_country', []))
+
+                keywords_data = tmdb_details_for_extra.get('keywords', {})
+                keywords = [k['name'] for k in (keywords_data.get('keywords', []) or keywords_data.get('results', []))]
+
+            # 3. 组装要 UPDATE 的数据
+            updates = {
+                "actors_json": json.dumps(actors_relation_for_cache, ensure_ascii=False),
+                "directors_json": json.dumps(directors, ensure_ascii=False),
+                "countries_json": json.dumps(countries, ensure_ascii=False),
+                "keywords_json": json.dumps(keywords, ensure_ascii=False),
+                "poster_path": tmdb_details_for_extra.get('poster_path') if tmdb_details_for_extra else None,
+                "pre_processed_at": datetime.now(timezone.utc) # ★★★ 关键：设置处理完成时间戳
+            }
+            
+            # 过滤掉值为 None 的键
+            updates_filtered = {k: v for k, v in updates.items() if v is not None}
+            
+            # 4. 构建并执行 UPDATE 语句
+            set_clauses = [f"{key} = %s" for key in updates_filtered.keys()]
+            sql = f"UPDATE media_metadata SET {', '.join(set_clauses)} WHERE tmdb_id = %s AND item_type = %s"
+            
+            cursor.execute(sql, tuple(updates_filtered.values()) + (tmdb_id, item_type))
+            logger.info(f"  ➜ 成功为 TMDB ID {tmdb_id} 预处理并更新了 {cursor.rowcount} 条元数据记录。")
+
+        except Exception as e:
+            logger.error(f"预处理元数据并更新数据库时失败: {e}", exc_info=True)
+            raise # 向上抛出异常，让调用者知道失败了
+
+    def pre_process_media_metadata(self, tmdb_id: str, item_type: str, item_name_for_log: str):
+        """
+        【V2 - 豆瓣集成版】只处理演员表并更新数据库，不与Emby或文件系统交互。
+        此版本重新集成了豆瓣作为核心数据源，以实现高质量的预处理。
+        """
+        logger.info(f"--- 开始为 '{item_name_for_log}' (TMDb ID: {tmdb_id}) 执行元数据预处理 (豆瓣集成模式) ---")
+        
+        if not self.tmdb_api_key:
+            logger.error("  ➜ 预处理失败：未配置 TMDb API Key。")
+            return
+
+        try:
+            # 1. 从 TMDb 获取权威的最新数据
+            authoritative_cast_source = []
+            tmdb_details_for_extra = None
+            
+            logger.info(f"  ➜ 步骤 1/4: 正在从 TMDb 获取基础元数据...")
+            if item_type == "Movie":
+                movie_details = tmdb.get_movie_details(tmdb_id, self.tmdb_api_key)
+                if movie_details:
+                    tmdb_details_for_extra = movie_details
+                    authoritative_cast_source = movie_details.get("credits", {}).get("cast", [])
+            elif item_type == "Series":
+                aggregated_tmdb_data = tmdb.aggregate_full_series_data_from_tmdb(int(tmdb_id), self.tmdb_api_key)
+                if aggregated_tmdb_data:
+                    tmdb_details_for_extra = aggregated_tmdb_data.get("series_details")
+                    all_episodes = list(aggregated_tmdb_data.get("episodes_details", {}).values())
+                    authoritative_cast_source = _aggregate_series_cast_from_tmdb_data(aggregated_tmdb_data["series_details"], all_episodes)
+            
+            if not authoritative_cast_source:
+                logger.warning(f"  ➜ 从 TMDb 获取演员数据失败或返回为空，预处理中止。")
+                return
+
+            # ★★★ 新增：集成豆瓣数据获取 ★★★
+            logger.info(f"  ➜ 步骤 2/4: 正在从豆瓣获取中文演员表及评分...")
+            douban_cast_raw = []
+            # douban_rating = None # 预处理阶段暂不处理评分，专注于演员表
+            
+            if self.douban_api and tmdb_details_for_extra:
+                # 从 TMDb 数据中提取用于豆瓣匹配的信息
+                imdb_id = None
+                if item_type == "Movie":
+                    imdb_id = tmdb_details_for_extra.get("imdb_id")
+                elif item_type == "Series":
+                    imdb_id = tmdb_details_for_extra.get("external_ids", {}).get("imdb_id")
+
+                release_date_str = tmdb_details_for_extra.get("release_date") or tmdb_details_for_extra.get("first_air_date", "")
+                year = release_date_str.split('-')[0] if release_date_str else ""
+
+                # 调用豆瓣API进行匹配和数据获取
+                match_info = self.douban_api.match_info(name=item_name_for_log, imdbid=imdb_id, mtype=item_type, year=year)
+                if match_info and not match_info.get("error") and match_info.get("id"):
+                    douban_id = match_info["id"]
+                    douban_type = match_info.get("type")
+                    logger.info(f"  ➜ 豆瓣匹配成功: ID {douban_id}, 类型 {douban_type}")
+                    
+                    acting_data = self.douban_api.get_acting(name=item_name_for_log, douban_id_override=douban_id, mtype=douban_type)
+                    if acting_data and "cast" in acting_data:
+                        douban_cast_raw = acting_data["cast"]
+                        logger.info(f"  ➜ 成功从豆瓣获取到 {len(douban_cast_raw)} 位演职员信息。")
+                else:
+                    logger.warning(f"  ➜ 未能从豆瓣匹配到 '{item_name_for_log}' 的信息。")
+            else:
+                logger.info("  ➜ 豆瓣API未启用或缺少TMDb详细信息，跳过豆瓣处理。")
+
+            # 2. 调用核心演员处理逻辑，现在包含了豆瓣数据
+            with get_central_db_connection() as conn:
+                with conn.cursor() as cursor:
+                    logger.info(f"  ➜ 步骤 3/4: 开始核心处理流程 (TMDb: {len(authoritative_cast_source)} 人, 豆瓣: {len(douban_cast_raw)} 人)...")
+                    final_processed_cast = self._process_cast_list(
+                        tmdb_cast_people=authoritative_cast_source,
+                        emby_cast_people=[], # 预处理阶段，没有Emby演员
+                        douban_cast_list=douban_cast_raw, # ★ 传入豆瓣数据
+                        item_details_from_emby={"Name": item_name_for_log, "Genres": []}, # 模拟一个基础对象
+                        cursor=cursor,
+                        tmdb_api_key=self.tmdb_api_key,
+                        stop_event=self.get_stop_event()
+                    )
+
+                    # 3. 将处理结果写入数据库
+                    logger.info(f"  ➜ 步骤 4/4: 正在将处理结果写入数据库...")
+                    if final_processed_cast:
+                        self._update_pre_processed_metadata_in_db(
+                            cursor=cursor,
+                            tmdb_id=tmdb_id,
+                            item_type=item_type,
+                            final_processed_cast=final_processed_cast,
+                            tmdb_details_for_extra=tmdb_details_for_extra
+                        )
+                        conn.commit()
+                    else:
+                        logger.error("  ➜ 核心演员处理流程未能生成有效的最终演员列表。")
+
+            logger.info(f"--- 成功完成 '{item_name_for_log}' 的元数据预处理 ---")
+
+        except Exception as e:
+            logger.error(f"为 '{item_name_for_log}' 执行元数据预处理时发生严重错误: {e}", exc_info=True)
+
     def close(self):
         if self.douban_api: self.douban_api.close()

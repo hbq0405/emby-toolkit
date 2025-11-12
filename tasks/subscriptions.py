@@ -291,7 +291,35 @@ def task_auto_subscribe(processor):
                 # b. 扣除配额
                 settings_db.decrement_subscription_quota()
 
-                # c. 准备通知 (智能拼接通知标题)
+                # c. 立即触发元数据预处理
+                try:
+                    logger.info(f"  ➜ 订阅成功，正在为《{item['title']}》启动后台元数据预处理...")
+                    # 我们需要 item 的 tmdb_id 和 item_type
+                    item_tmdb_id = str(item['tmdb_id'])
+                    
+                    # 对于季订阅，我们需要使用父剧集的 TMDB ID 和 'Series' 类型
+                    if item_type == 'Season':
+                        parent_series_tmdb_id = item.get('parent_series_tmdb_id')
+                        if parent_series_tmdb_id:
+                             # 预处理整个剧集，而不是单季
+                            processor.pre_process_media_metadata(
+                                tmdb_id=str(parent_series_tmdb_id), 
+                                item_type='Series',
+                                item_name_for_log=series_name # 使用前面获取的剧集名
+                            )
+                        else:
+                            logger.warning(f"  ➜ 预处理跳过：季订阅《{item['title']}》缺少父剧集ID。")
+                    else:
+                        # 电影和整季剧集订阅，直接使用自己的信息
+                        processor.pre_process_media_metadata(
+                            tmdb_id=item_tmdb_id, 
+                            item_type=item_type,
+                            item_name_for_log=item['title']
+                        )
+                except Exception as e_preprocess:
+                    logger.error(f"  ➜ 为《{item['title']}》执行元数据预处理时失败: {e_preprocess}", exc_info=True)
+
+                # d. 准备通知 (智能拼接通知标题)
                 item_display_name = ""
                 if item_type == 'Season':
                     season_num = item.get('season_number')
