@@ -17,7 +17,7 @@ import handler.tmdb as tmdb
 import handler.emby as emby
 import config_manager
 import utils
-from database import collection_db, watchlist_db 
+from database import collection_db, watchlist_db, media_db
 from handler.douban import DoubanApi
 from handler.tmdb import search_media, get_tv_details
 
@@ -878,7 +878,7 @@ class FilterEngine:
             # --- 分支2：保持原有逻辑，扫描全库 ---
             logger.info("  ➜ 未指定媒体库，将扫描所有媒体库的元数据缓存...")
             for item_type in item_types_to_process:
-                all_media_metadata.extend(collection_db.get_all_media_metadata(item_type=item_type))
+                all_media_metadata.extend(media_db.get_all_media_metadata(item_type=item_type))
 
         # --- 后续的筛选逻辑保持不变 ---
         matched_items = []

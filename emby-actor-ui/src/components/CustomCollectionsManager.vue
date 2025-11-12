@@ -520,19 +520,12 @@
                     <n-button-group style="width: 100%;">
                       <n-tooltip>
                         <template #trigger>
-                          <n-button @click="subscribeMedia(media)" type="primary" size="small" style="width: 50%;" :loading="subscribing[media.tmdb_id]">
-                            <template #icon><n-icon :component="CloudDownloadIcon" /></template>
-                          </n-button>
-                        </template>
-                        订阅
-                      </n-tooltip>
-                      <n-tooltip>
-                        <template #trigger>
-                          <n-button @click="handleFixMatchClick(media)" size="small" style="width: 50%;">
+                          <n-button @click="handleFixMatchClick(media)" size="small" block>
                             <template #icon><n-icon :component="FixIcon" /></template>
+                            修正匹配
                           </n-button>
                         </template>
-                        修正匹配
+                        修正错误的媒体匹配
                       </n-tooltip>
                     </n-button-group>
                   </template>
@@ -619,19 +612,12 @@
                     <n-button-group style="width: 100%;">
                       <n-tooltip>
                         <template #trigger>
-                          <n-button @click="updateMediaStatus(media, 'missing')" type="warning" size="small" style="width: 50%;" ghost>
-                            <template #icon><n-icon :component="CloseCircleIcon" /></template>
-                          </n-button>
-                        </template>
-                        取消订阅
-                      </n-tooltip>
-                      <n-tooltip>
-                        <template #trigger>
-                          <n-button @click="handleFixMatchClick(media)" size="small" style="width: 50%;">
+                          <n-button @click="handleFixMatchClick(media)" size="small" block>
                             <template #icon><n-icon :component="FixIcon" /></template>
+                            修正匹配
                           </n-button>
                         </template>
-                        修正匹配
+                        修正错误的媒体匹配
                       </n-tooltip>
                     </n-button-group>
                   </template>
@@ -1543,26 +1529,6 @@ const openDetailsModal = async (collection) => {
     showDetailsModal.value = false;
   } finally {
     isLoadingDetails.value = false;
-  }
-};
-
-const subscribeMedia = async (media) => {
-  if (!selectedCollectionDetails.value?.id) {
-    message.error("无法确定当前操作的合集ID，请重试。");
-    return;
-  }
-  subscribing.value[media.tmdb_id] = true;
-  try {
-    await axios.post('/api/custom_collections/subscribe', {
-      collection_id: selectedCollectionDetails.value.id,
-      tmdb_id: media.tmdb_id,
-    });
-    message.success(`《${media.title}》已成功提交订阅并更新状态！`);
-    media.status = 'subscribed'; 
-  } catch (err) {
-    message.error(err.response?.data?.error || '订阅失败，请检查后端日志。');
-  } finally {
-    subscribing.value[media.tmdb_id] = false;
   }
 };
 

@@ -650,7 +650,6 @@ const tableInfo = {
   'translation_cache': { cn: '翻译缓存', isSharable: true },
   'watchlist': { cn: '追剧列表', isSharable: false },
   'actor_subscriptions': { cn: '演员订阅配置', isSharable: false },
-  'tracked_actor_media': { cn: '已追踪的演员作品', isSharable: false },
   'collections_info': { cn: '原生合集', isSharable: false },
   'processed_log': { cn: '已处理日志', isSharable: false },
   'failed_log': { cn: '待复核日志', isSharable: false },

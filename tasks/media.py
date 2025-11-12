@@ -198,12 +198,11 @@ def task_reprocess_all_review_items(processor):
 # ★★★ 轻量级的元数据缓存填充任务 ★★★
 def task_populate_metadata_cache(processor, batch_size: int = 50, force_full_update: bool = False):
     """
-    【V5 - 增量与全量同步版 - 软删除兼容】
-    - 移除了基于时间戳的差异对比逻辑。
-    - 快速模式: 只同步 Emby 中新增的、本地数据库不存在的媒体项。
-    - 深度模式: 强制同步 Emby 媒体库中的所有媒体项，覆盖本地数据。
-    - 保留了高效的分批处理、并发获取和带 SAVEPOINT 的健壮数据库写入机制。
-    - ★★★ 新增：将删除逻辑改为“软删除”，更新 in_library 字段为 FALSE，并清空 emby_item_id。 ★★★
+    【V6 - 适配新表结构 - 层级同步版】
+    - 完全适配新的 media_metadata 表结构，支持 Movie, Series, Season, Episode 作为独立记录。
+    - 同步剧集时，会将其所有在库的季、集作为单独的记录插入/更新到数据库。
+    - 软删除逻辑升级：当一个剧集被删除时，会将其自身及其所有关联的季、集记录的 in_library 状态都更新为 FALSE。
+    - 健壮性提升：为无法从 TMDB 找到匹配的季/集，会生成一个稳定的、可预测的 tmdb_id (例如 'series_tmdb_id-S01')。
     """
     task_name = "同步媒体元数据"
     sync_mode = "深度同步 (全量)" if force_full_update else "快速同步 (增量)"
@@ -211,7 +210,7 @@ def task_populate_metadata_cache(processor, batch_size: int = 50, force_full_upd
     
     try:
         # ======================================================================
-        # 步骤 1: 计算差异 (逻辑已简化)
+        # 步骤 1: 计算差异 (逻辑与之前类似，但删除操作更强大)
         # ======================================================================
         task_manager.update_status_from_thread(0, f"阶段1/2: 计算媒体库差异 ({sync_mode})...")
         
@@ -219,10 +218,11 @@ def task_populate_metadata_cache(processor, batch_size: int = 50, force_full_upd
         if not libs_to_process_ids:
             raise ValueError("未在配置中指定要处理的媒体库。")
 
+        # ★★★ 改动点 1: 请求更丰富的字段，为子项目处理做准备 ★★★
         emby_items_index = emby.get_emby_library_items(
             base_url=processor.emby_url, api_key=processor.emby_api_key, user_id=processor.emby_user_id,
             media_type_filter="Movie,Series", library_ids=libs_to_process_ids,
-            fields="ProviderIds,Type,DateCreated,Name,ProductionYear,OriginalTitle,PremiereDate,CommunityRating,Genres,Studios,ProductionLocations,Tags,DateModified,OfficialRating"
+            fields="ProviderIds,Type,DateCreated,Name,OriginalTitle,PremiereDate,CommunityRating,Genres,Studios,Tags,DateModified,OfficialRating,ProductionYear,Path,PrimaryImageAspectRatio,Overview"
         ) or []
         
         emby_items_map = {
@@ -230,100 +230,70 @@ def task_populate_metadata_cache(processor, batch_size: int = 50, force_full_upd
             for item in emby_items_index if item.get("ProviderIds", {}).get("Tmdb")
         }
         emby_tmdb_ids = set(emby_items_map.keys())
-        logger.info(f"  ➜ 从 Emby 获取到 {len(emby_tmdb_ids)} 个有效的媒体项。")
+        logger.info(f"  ➜ 从 Emby 获取到 {len(emby_tmdb_ids)} 个有效的顶层媒体项 (电影/剧集)。")
 
-        if processor.is_stop_requested():
-            logger.info("任务在获取 Emby 媒体项后被中止。")
-            return
+        if processor.is_stop_requested(): return
 
-        db_tmdb_ids = set()
-        # ★★★ 修改点：查询时只获取 in_library = TRUE 的项目，这样才能正确识别“已删除”的项目 ★★★
+        # 查询数据库中所有在库的顶层媒体项
         with connection.get_db_connection() as conn:
             cursor = conn.cursor()
-            cursor.execute("SELECT tmdb_id FROM media_metadata WHERE in_library = TRUE") # <-- 增加条件
+            cursor.execute("SELECT tmdb_id FROM media_metadata WHERE in_library = TRUE AND item_type IN ('Movie', 'Series')")
             db_tmdb_ids = {row["tmdb_id"] for row in cursor.fetchall()}
-        logger.info(f"  ➜ 从本地数据库 media_metadata 表中获取到 {len(db_tmdb_ids)} 个【仍在库中】的媒体项。")
+        logger.info(f"  ➜ 从本地数据库获取到 {len(db_tmdb_ids)} 个【仍在库中】的顶层媒体项。")
 
-        if processor.is_stop_requested():
-            logger.info("任务在获取本地数据库媒体项后被中止。")
-            return
+        if processor.is_stop_requested(): return
 
-        # --- 核心逻辑修改 ---
-        ids_to_process: set
-        # items_to_delete_tmdb_ids 仍然是那些在 DB 中标记为 TRUE 但在 Emby 中已不存在的
+        # --- 计算差异 ---
         items_to_delete_tmdb_ids = db_tmdb_ids - emby_tmdb_ids
         
         if force_full_update:
-            logger.info("  ➜ 深度同步模式：将处理 Emby 中的所有项目。")
             ids_to_process = emby_tmdb_ids
-            logger.info(f"  ➜ 计算差异完成：处理 {len(ids_to_process)} 项, 标记离线 {len(items_to_delete_tmdb_ids)} 项。")
+            logger.info(f"  ➜ 深度同步：将处理 {len(ids_to_process)} 项, 标记离线 {len(items_to_delete_tmdb_ids)} 项。")
         else:
-            logger.info("  ➜ 快速同步模式：仅处理 Emby 中新增的项目。")
-            # 新增的项目是 Emby 有，但 DB 中没有标记为 TRUE 的项目
-            # 注意：这里需要考虑那些在 DB 中 in_library=FALSE 的项目，它们也应该被“处理”
-            # 所以 ids_to_process 应该是 Emby 有，但 DB 中 in_library=TRUE 的项目没有的
-            # 最简单的做法是，先找出所有 Emby 中的项目，然后过滤掉那些在 DB 中 in_library=TRUE 的
-            
-            # 获取所有在 media_metadata 中，但 in_library=FALSE 的 tmdb_id
-            db_soft_deleted_tmdb_ids = set()
-            with connection.get_db_connection() as conn:
-                cursor = conn.cursor()
-                cursor.execute("SELECT tmdb_id FROM media_metadata WHERE in_library = FALSE")
-                db_soft_deleted_tmdb_ids = {row["tmdb_id"] for row in cursor.fetchall()}
-
-            # 需要处理的项目 = (Emby中所有项目) - (DB中in_library=TRUE的项目)
-            # 这会包含 Emby 中新增的，以及 Emby 中重新入库的（之前在DB中in_library=FALSE的）
             ids_to_process = emby_tmdb_ids - db_tmdb_ids
-            
-            logger.info(f"  ➜ 计算差异完成：新增/恢复 {len(ids_to_process)} 项, 标记离线 {len(items_to_delete_tmdb_ids)} 项。")
+            logger.info(f"  ➜ 快速同步：新增/恢复 {len(ids_to_process)} 项, 标记离线 {len(items_to_delete_tmdb_ids)} 项。")
 
+        # ★★★ 改动点 2: 软删除逻辑升级，会一并处理剧集的所有子项目 ★★★
         if items_to_delete_tmdb_ids:
-            logger.info(f"  ➜ 正在从数据库中标记 {len(items_to_delete_tmdb_ids)} 个已不存在的媒体项...")
+            logger.info(f"  ➜ 正在标记 {len(items_to_delete_tmdb_ids)} 个已不存在的媒体项及其子项为离线...")
             with connection.get_db_connection() as conn:
                 cursor = conn.cursor()
                 ids_to_delete_list = list(items_to_delete_tmdb_ids)
-                for i in range(0, len(ids_to_delete_list), 500):
-                    if processor.is_stop_requested():
-                        logger.info("任务在软删除冗余数据时被中止。")
-                        break
-                    batch_ids = ids_to_delete_list[i:i+500]
-                    # ### 修改点：将 DELETE 改为 UPDATE，设置 in_library = FALSE 和 emby_item_id = NULL ###
-                    sql = "UPDATE media_metadata SET in_library = FALSE, emby_item_id = NULL WHERE tmdb_id = ANY(%s)"
-                    cursor.execute(sql, (batch_ids,))
+                # 使用 ANY 操作符可以高效处理
+                # 不仅更新顶层项目，还更新所有以它为父项目的子项目
+                sql = """
+                    UPDATE media_metadata 
+                    SET in_library = FALSE, emby_item_ids_json = '[]'::jsonb
+                    WHERE tmdb_id = ANY(%s) OR parent_series_tmdb_id = ANY(%s)
+                """
+                cursor.execute(sql, (ids_to_delete_list, ids_to_delete_list))
                 conn.commit()
-            logger.info("  ➜ 冗余数据清理完成。")
+            logger.info("  ➜ 离线项目标记完成。")
 
-        if processor.is_stop_requested():
-            logger.info("任务在冗余数据清理后被中止。")
-            return
+        if processor.is_stop_requested(): return
 
         items_to_process = [emby_items_map[tmdb_id] for tmdb_id in ids_to_process]
-        
         total_to_process = len(items_to_process)
         if total_to_process == 0:
             task_manager.update_status_from_thread(100, "数据库已是最新，无需同步。")
             return
 
-        logger.info(f"  ➜ 总共需要处理 {total_to_process} 项，将分 { (total_to_process + batch_size - 1) // batch_size } 个批次。")
+        logger.info(f"  ➜ 总共需要处理 {total_to_process} 个顶层项目。")
 
         # ======================================================================
-        # 步骤 2: 分批循环处理需要新增/更新的媒体项
+        # 步骤 2: 分批循环处理，核心逻辑重构
         # ======================================================================
-        
         processed_count = 0
         for i in range(0, total_to_process, batch_size):
-            if processor.is_stop_requested():
-                logger.info("任务在批次处理前被中止。")
-                break
+            if processor.is_stop_requested(): break
 
             batch_items = items_to_process[i:i + batch_size]
             batch_number = (i // batch_size) + 1
-            total_batches = (total_to_process + batch_size - 1) // batch_size
             
-            logger.info(f"--- 开始处理批次 {batch_number}/{total_batches} (包含 {len(batch_items)} 个项目) ---")
+            logger.info(f"--- 开始处理批次 {batch_number} (包含 {len(batch_items)} 个顶层项目) ---")
             task_manager.update_status_from_thread(
                 10 + int((processed_count / total_to_process) * 90), 
-                f"处理批次 {batch_number}/{total_batches}..."
+                f"处理批次 {batch_number}..."
             )
 
             if processor.is_stop_requested():
@@ -357,11 +327,11 @@ def task_populate_metadata_cache(processor, batch_size: int = 50, force_full_upd
                 logger.info("任务在 TMDb 详情获取后被中止。")
                 break
 
+            # ★★★ 改动点 3: 构建元数据批次的核心逻辑完全重写 ★★★
             metadata_batch = []
             for item in batch_items:
-                if processor.is_stop_requested():
-                    logger.info("任务在处理单个媒体项时被中止。")
-                    break
+                if processor.is_stop_requested(): break
+                
                 tmdb_id = item.get("ProviderIds", {}).get("Tmdb")
                 if not tmdb_id: continue
 
@@ -427,100 +397,139 @@ def task_populate_metadata_cache(processor, batch_size: int = 50, force_full_upd
                         keywords = [k['name'] for k in keyword_list if k.get('name')]
 
                 official_rating = full_details_emby.get('OfficialRating') # 获取原始分级，可能为 None
-                unified_rating = get_unified_rating(official_rating)    # 即使 official_rating 是 None，函数也能处理
-
-                metadata_to_save = {
+                unified_rating = get_unified_rating(official_rating)  
+                
+                # 构建顶层记录
+                top_level_record = {
                     "tmdb_id": tmdb_id,
-                    "emby_item_id": full_details_emby.get('Id'),
-                    "item_type": full_details_emby.get("Type"),
-                    "title": full_details_emby.get('Name'), "original_title": full_details_emby.get('OriginalTitle'),
-                    "release_year": full_details_emby.get('ProductionYear'), "rating": full_details_emby.get('CommunityRating'),
-                    "official_rating": official_rating,
-                    "unified_rating": unified_rating,
-                    "release_date": release_date,
-                    "date_added": date_added,
-                    "genres_json": json.dumps(full_details_emby.get('Genres', []), ensure_ascii=False),
+                    "item_type": item.get("Type"),
+                    "title": item.get('Name'),
+                    "original_title": item.get('OriginalTitle'),
+                    "release_year": item.get('ProductionYear'),
+                    "rating": item.get('CommunityRating'),
+                    "overview": tmdb_details.get('overview') or item.get('Overview'),
+                    "release_date": item.get('PremiereDate', '').split('T')[0] if item.get('PremiereDate') else None,
+                    "date_added": item.get('DateCreated'),
+                    "poster_path": tmdb_details.get('poster_path'),
+                    "genres_json": json.dumps(item.get('Genres', []), ensure_ascii=False),
+                    "studios_json": json.dumps([s['name'] for s in tmdb_details.get('production_companies', [])], ensure_ascii=False),
                     "directors_json": json.dumps(directors, ensure_ascii=False),
-                    "studios_json": json.dumps(studios, ensure_ascii=False),
                     "countries_json": json.dumps(countries, ensure_ascii=False),
-                    "tags_json": json.dumps(tags, ensure_ascii=False),
                     "keywords_json": json.dumps(keywords, ensure_ascii=False),
-                    "in_library": True
+                    "in_library": True,
+                    "emby_item_ids_json": json.dumps([item.get('Id')], ensure_ascii=False),
+                    "official_rating": item.get('OfficialRating'),
+                    "unified_rating": get_unified_rating(item.get('OfficialRating'))
                 }
-                if metadata_to_save["item_type"] == "Series":
-                    series_id = metadata_to_save["emby_item_id"]
+                metadata_batch.append(top_level_record)
+
+                # --- 2. 如果是剧集，则处理其所有子项目 (Season, Episode) ---
+                if item.get("Type") == "Series":
+                    series_id = item.get('Id')
+                    series_tmdb_id = tmdb_id
+                    
+                    # 从 Emby 获取所有在库的子项目
                     children = emby.get_series_children(
-                        series_id=series_id,
-                        base_url=processor.emby_url,
-                        api_key=processor.emby_api_key,
-                        user_id=processor.emby_user_id,
-                        include_item_types="Season,Episode",
-                        fields="Id,Type,ParentIndexNumber,IndexNumber" # 请求更丰富的字段
+                        series_id=series_id, base_url=processor.emby_url, api_key=processor.emby_api_key,
+                        user_id=processor.emby_user_id, include_item_types="Season,Episode",
+                        fields="Id,Type,ParentIndexNumber,IndexNumber,ProviderIds,Name,PremiereDate,Overview"
                     )
-                    
-                    children_details = []
-                    if children is not None:
-                        for child in children:
-                            child_type = child.get("Type")
-                            detail = {
-                                "Id": child.get("Id"),
-                                "Type": child_type
-                            }
-                            if child_type == "Season":
-                                detail["SeasonNumber"] = child.get("IndexNumber")
-                            elif child_type == "Episode":
-                                detail["SeasonNumber"] = child.get("ParentIndexNumber")
-                                detail["EpisodeNumber"] = child.get("IndexNumber")
-                            
-                            children_details.append(detail)
-                    else:
-                        logger.warning(f"  ➜ 无法获取剧集 '{metadata_to_save['title']}' (ID: {series_id}) 的子项目详情，将存入空列表。")
-                    
-                    metadata_to_save["emby_children_details_json"] = json.dumps(children_details, ensure_ascii=False)
-                metadata_batch.append(metadata_to_save)
+                    if not children:
+                        logger.warning(f"  ➜ 无法获取剧集 '{item.get('Name')}' 的子项目，跳过层级同步。")
+                        continue
 
-            if processor.is_stop_requested():
-                logger.info("任务在构建元数据批次后被中止。")
-                break
+                    # 从 TMDB 获取一次完整的剧集详情，用于匹配子项目
+                    tmdb_series_details = tmdb.get_tv_details(series_tmdb_id, processor.tmdb_api_key)
+                    
+                    # 创建一个 TMDB 季/集数据的快速查找字典
+                    tmdb_children_map = {}
+                    if tmdb_series_details and 'seasons' in tmdb_series_details:
+                        for season_info in tmdb_series_details['seasons']:
+                            s_num = season_info.get('season_number')
+                            # 存储季信息
+                            tmdb_children_map[f"S{s_num}"] = season_info
+                            # 获取该季的详细信息（包含所有集）
+                            tmdb_season_details = tmdb.get_tv_season_details(series_tmdb_id, s_num, processor.tmdb_api_key)
+                            if tmdb_season_details and 'episodes' in tmdb_season_details:
+                                for episode_info in tmdb_season_details['episodes']:
+                                    e_num = episode_info.get('episode_number')
+                                    tmdb_children_map[f"S{s_num}E{e_num}"] = episode_info
 
+                    for child in children:
+                        child_type = child.get("Type")
+                        child_record = { "in_library": True, "emby_item_ids_json": json.dumps([child.get('Id')]) }
+                        
+                        s_num = child.get("ParentIndexNumber") if child_type == "Episode" else child.get("IndexNumber")
+                        e_num = child.get("IndexNumber") if child_type == "Episode" else None
+                        
+                        # 匹配 TMDB 数据
+                        lookup_key = f"S{s_num}E{e_num}" if e_num is not None else f"S{s_num}"
+                        tmdb_child_info = tmdb_children_map.get(lookup_key)
+
+                        if tmdb_child_info:
+                            child_record.update({
+                                "tmdb_id": str(tmdb_child_info.get('id')),
+                                "title": tmdb_child_info.get('name'),
+                                "release_date": tmdb_child_info.get('air_date'),
+                                "rating": tmdb_child_info.get('vote_average'),
+                                "overview": tmdb_child_info.get('overview')
+                            })
+                        else:
+                            # 如果 TMDB 没有匹配项，生成一个稳定的备用 ID
+                            child_record.update({
+                                "tmdb_id": f"{series_tmdb_id}-{lookup_key}",
+                                "title": child.get('Name'),
+                                "overview": child.get('Overview')
+                            })
+
+                        child_record.update({
+                            "item_type": child_type,
+                            "parent_series_tmdb_id": series_tmdb_id,
+                            "season_number": s_num,
+                            "episode_number": e_num
+                        })
+                        metadata_batch.append(child_record)
+
+            if processor.is_stop_requested(): break
+
+            # --- 3. 数据库写入 (逻辑保持不变，但现在会写入更多行) ---
             if metadata_batch:
                 with connection.get_db_connection() as conn:
                     cursor = conn.cursor()
-                    # ★★★ 修复 2/2: 改进事务处理逻辑 ★★★
-                    # 开启一个总事务
                     cursor.execute("BEGIN;")
                     for idx, metadata in enumerate(metadata_batch):
-                        if processor.is_stop_requested():
-                            logger.info("任务在数据库写入循环中被中止。")
-                            break
+                        if processor.is_stop_requested(): break
                         savepoint_name = f"sp_{idx}"
                         try:
-                            # 为每个条目创建一个保存点
                             cursor.execute(f"SAVEPOINT {savepoint_name};")
                             
-                            columns = list(metadata.keys())
-                            columns_str = ', '.join(columns)
-                            placeholders_str = ', '.join(['%s'] * len(columns))
+                            # 动态生成 SQL 语句
+                            columns = [k for k, v in metadata.items() if v is not None]
+                            values = [v for v in metadata.values() if v is not None]
                             
-                            update_clauses = [f"{col} = EXCLUDED.{col}" for col in columns if col != 'actors_json']
-                            update_clauses.append("last_synced_at = EXCLUDED.last_synced_at")
+                            columns_str = ', '.join(columns)
+                            placeholders_str = ', '.join(['%s'] * len(values))
+                            
+                            update_clauses = [f"{col} = EXCLUDED.{col}" for col in columns]
                             update_str = ', '.join(update_clauses)
 
                             sql = f"""
                                 INSERT INTO media_metadata ({columns_str}, last_synced_at)
-                                VALUES ({placeholders_str}, %s)
-                                ON CONFLICT (tmdb_id, item_type) DO UPDATE SET {update_str}
+                                VALUES ({placeholders_str}, NOW())
+                                ON CONFLICT (tmdb_id, item_type) DO UPDATE SET {update_str}, last_synced_at = NOW()
                             """
-                            sync_time = datetime.now(timezone.utc).isoformat()
-                            cursor.execute(sql, tuple(metadata.values()) + (sync_time,))
+                            cursor.execute(sql, tuple(values))
                         except psycopg2.Error as e:
-                            # 如果发生错误，记录它，并回滚到这个条目之前的状态
                             logger.error(f"写入 TMDB ID {metadata.get('tmdb_id')} 的元数据时发生数据库错误: {e}")
                             cursor.execute(f"ROLLBACK TO SAVEPOINT {savepoint_name};")
                     
-                    # 提交整个事务（所有成功的条目）
-                    conn.commit()
-                logger.info(f"--- 批次 {batch_number}/{total_batches} 已成功写入数据库。---")
+                    if not processor.is_stop_requested():
+                        conn.commit()
+                    else:
+                        conn.rollback() # 如果中止，则回滚整个批次
+                        logger.info("任务中止，回滚当前数据库批次。")
+
+                logger.info(f"--- 批次 {batch_number} 已成功写入数据库。---")
             
             processed_count += len(batch_items)
 

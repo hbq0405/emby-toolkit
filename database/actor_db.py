@@ -3,8 +3,10 @@ import psycopg2
 import logging
 import json
 from typing import Optional, Dict, Any, List, Tuple
+from datetime import datetime
 
 from .connection import get_db_connection
+from . import media_db
 from utils import contains_chinese
 from handler.emby import get_emby_item_details
 from config_manager import APP_CONFIG
@@ -480,22 +482,72 @@ def get_all_actor_subscriptions() -> List[Dict[str, Any]]:
         raise
 
 def get_single_subscription_details(subscription_id: int) -> Optional[Dict[str, Any]]:
-    """【V3 - 包含Emby URL版】获取单个订阅的完整详情。"""
-    
+    """【V5 - 新架构版】获取单个订阅的完整详情，从 media_metadata 读取追踪媒体。"""
     try:
         with get_db_connection() as conn:
             cursor = conn.cursor()
             
+            # 步骤 1: 获取订阅本身的信息
             cursor.execute("SELECT * FROM actor_subscriptions WHERE id = %s", (subscription_id,))
             sub_row = cursor.fetchone()
             if not sub_row:
                 return None
             
-            cursor.execute("SELECT * FROM tracked_actor_media WHERE subscription_id = %s ORDER BY release_date DESC", (subscription_id,))
-            tracked_media = [dict(row) for row in cursor.fetchall()]
+            # ★★★ 步骤 2: 从 media_metadata 表中查询所有被此订阅追踪的媒体 ★★★
+            # 我们使用 JSONB 的 @> 操作符来高效查询
+            source_filter = json.dumps([{"type": "actor_subscription", "id": subscription_id}])
+            cursor.execute(
+                """
+                    SELECT 
+                        tmdb_id as tmdb_media_id, 
+                        item_type as media_type,
+                        title, release_date, poster_path,
+                        subscription_status as status,
+                        emby_item_ids_json, -- 用于前端跳转
+                        in_library,
+                        ignore_reason
+                    FROM media_metadata 
+                    WHERE subscription_sources_json @> %s::jsonb
+                    ORDER BY release_date DESC
+                """, 
+                (source_filter,)
+            )
             
-            # ★★★ 核心修改：从全局配置 APP_CONFIG 中读取 Emby URL 和 API Key ★★★
-            emby_url = APP_CONFIG.get("emby_server_url", "").rstrip('/') # 确保 URL 末尾没有斜杠
+            tracked_media = []
+            for row in cursor.fetchall():
+                media_item = dict(row)
+                
+                # ▼▼▼ 全新的、更精确的状态判断逻辑 ▼▼▼
+                final_status = ''
+                # 最高优先级：在库
+                if media_item.get('in_library'):
+                    final_status = 'IN_LIBRARY'
+                else:
+                    # 如果不在库，则根据订阅状态来决定
+                    backend_status = media_item.get('status') # 这是从 subscription_status 来的
+                    if backend_status == 'SUBSCRIBED':
+                        final_status = 'SUBSCRIBED'
+                    elif backend_status == 'WANTED':
+                        final_status = 'WANTED' # ★★★ 核心修正：直接传递 WANTED 状态
+                    elif backend_status == 'IGNORED':
+                        final_status = 'IGNORED'
+                    else: # 包含 'NONE' 和其他所有情况
+                        # 检查发行日期，判断是“未发行”还是“缺失”
+                        release_date = media_item.get('release_date')
+                        if release_date and release_date.strftime('%Y-%m-%d') > datetime.now().strftime('%Y-%m-%d'):
+                            final_status = 'PENDING_RELEASE'
+                        else:
+                            final_status = 'MISSING'
+                
+                media_item['status'] = final_status
+                
+                # 从 emby_item_ids_json 中取第一个 ID 给前端用
+                emby_ids = media_item.get('emby_item_ids_json', [])
+                media_item['emby_item_id'] = emby_ids[0] if emby_ids else None
+                tracked_media.append(media_item)
+
+            # 步骤 3: 组装最终返回的数据
+            emby_url = APP_CONFIG.get("emby_server_url", "").rstrip('/')
             emby_api_key = APP_CONFIG.get("emby_api_key", "")
             emby_server_id = extensions.EMBY_SERVER_ID
 
@@ -651,12 +703,25 @@ def update_actor_subscription(subscription_id: int, data: dict) -> bool:
                 # 步骤 6: 比较新旧配置，如果筛选条件变了，就清理掉旧的“忽略”记录
                 if final_config != old_config_snapshot:
                     logger.info(f"  ➜ 检测到订阅ID {subscription_id} 的筛选配置发生变更，将清理历史忽略记录...")
+                    
+                    # ★★★ 新的清理逻辑 ★★★
+                    # 找到所有被此订阅标记为 IGNORED 的媒体，并从中移除此订阅源
+                    source_to_remove = {"type": "actor_subscription", "id": subscription_id}
+                    source_filter = json.dumps([source_to_remove])
+                    
                     cursor.execute(
-                        "DELETE FROM tracked_actor_media WHERE subscription_id = %s AND status = 'IGNORED'",
-                        (subscription_id,)
+                        """
+                        SELECT tmdb_id, item_type FROM media_metadata 
+                        WHERE subscription_status = 'IGNORED' AND subscription_sources_json @> %s::jsonb
+                        """,
+                        (source_filter,)
                     )
-                    deleted_rows = cursor.rowcount
-                    logger.info(f"  ➜ 成功清理 {deleted_rows} 条旧的'忽略'记录，下次刷新时将重新评估。")
+                    items_to_clean = cursor.fetchall()
+                    
+                    for item in items_to_clean:
+                        media_db.remove_subscription_source(item['tmdb_id'], item['item_type'], source_to_remove)
+
+                    logger.info(f"  ➜ 成功清理 {len(items_to_clean)} 条旧的'忽略'记录，下次刷新时将重新评估。")
                 
                 conn.commit()
                 return True
@@ -666,91 +731,125 @@ def update_actor_subscription(subscription_id: int, data: dict) -> bool:
         raise
 
 def delete_actor_subscription(subscription_id: int) -> bool:
-    """删除一个演员订阅及其所有追踪的媒体。"""
-    
+    """【V2 - 新架构版】删除一个演员订阅，并清理其在 media_metadata 中的所有追踪记录。"""
     try:
         with get_db_connection() as conn:
             cursor = conn.cursor()
+
+            # 步骤 1: 获取订阅详情，以便知道要移除哪个 source
+            cursor.execute("SELECT actor_name, tmdb_person_id FROM actor_subscriptions WHERE id = %s", (subscription_id,))
+            sub_info = cursor.fetchone()
+            if not sub_info:
+                logger.warning(f"尝试删除一个不存在的订阅 (ID: {subscription_id})。")
+                return True # 已经不存在了，也算成功
+
+            # 步骤 2: 找到所有被此订阅追踪的媒体
+            source_to_remove = {
+                "type": "actor_subscription", 
+                "id": subscription_id,
+                "name": sub_info['actor_name'],
+                "person_id": sub_info['tmdb_person_id']
+            }
+            source_filter = json.dumps([source_to_remove])
+            cursor.execute(
+                "SELECT tmdb_id, item_type FROM media_metadata WHERE subscription_sources_json @> %s::jsonb",
+                (source_filter,)
+            )
+            items_to_clean = cursor.fetchall()
+
+            # 步骤 3: 逐个清理媒体的订阅源
+            logger.info(f"  ➜ 正在从 {len(items_to_clean)} 个媒体项中移除订阅源 (ID: {subscription_id})...")
+            for item in items_to_clean:
+                media_db.remove_subscription_source(item['tmdb_id'], item['item_type'], source_to_remove)
+
+            # 步骤 4: 最后删除订阅本身
             cursor.execute("DELETE FROM actor_subscriptions WHERE id = %s", (subscription_id,))
             conn.commit()
-            logger.info(f"  ➜ 成功删除订阅ID {subscription_id}。")
+            logger.info(f"  ➜ 成功删除订阅ID {subscription_id} 及其所有追踪记录。")
             return True
     except Exception as e:
         logger.error(f"  ➜ 删除订阅 {subscription_id} 失败: {e}", exc_info=True)
         raise
 
-def get_tracked_media_by_id(media_id: int) -> Optional[Dict[str, Any]]:
-    """根据 tracked_actor_media 表的主键 ID 获取单个媒体项的完整信息。"""
+# def get_tracked_media_by_id(media_id: int) -> Optional[Dict[str, Any]]:
+#     """根据 tracked_actor_media 表的主键 ID 获取单个媒体项的完整信息。"""
     
-    try:
-        with get_db_connection() as conn:
-            cursor = conn.cursor()
-            cursor.execute("SELECT * FROM tracked_actor_media WHERE id = %s", (media_id,))
-            row = cursor.fetchone()
-            return dict(row) if row else None
-    except Exception as e:
-        logger.error(f"  ➜ 获取已追踪媒体项 {media_id} 失败: {e}", exc_info=True)
-        raise
+#     try:
+#         with get_db_connection() as conn:
+#             cursor = conn.cursor()
+#             cursor.execute("SELECT * FROM tracked_actor_media WHERE id = %s", (media_id,))
+#             row = cursor.fetchone()
+#             return dict(row) if row else None
+#     except Exception as e:
+#         logger.error(f"  ➜ 获取已追踪媒体项 {media_id} 失败: {e}", exc_info=True)
+#         raise
 
-def update_tracked_media_status(media_id: int, new_status: str, reason: Optional[str] = None) -> bool:
-    """根据 tracked_actor_media 表的主键 ID 更新单个媒体项的状态，并可选择性记录原因。"""
-    
-    try:
-        with get_db_connection() as conn:
-            cursor = conn.cursor()
-            # 如果是忽略，则记录原因；否则（比如恢复时）清空原因
-            sql = """
-                UPDATE tracked_actor_media 
-                SET status = %s, 
-                    ignore_reason = CASE WHEN %s = 'IGNORED' THEN %s ELSE NULL END,
-                    last_updated_at = CURRENT_TIMESTAMP 
-                WHERE id = %s
-            """
-            cursor.execute(
-                sql,
-                (new_status, new_status, reason, media_id)
-            )
-            conn.commit()
-            return cursor.rowcount > 0
-    except Exception as e:
-        logger.error(f"  ➜ 更新已追踪媒体项 {media_id} 状态失败: {e}", exc_info=True)
-        raise
+# def update_tracked_media_status(media_id: int, new_status: str, reason: Optional[str] = None) -> bool:
+#     """
+#     【V4 - 统一接口版】
+#     状态操作完全委托给 media_db.update_subscription_status。
+#     """
+#     try:
+#         tracked_media = get_tracked_media_by_id(media_id)
+#         if not tracked_media:
+#             logger.error(f"更新状态失败：在 tracked_actor_media 中找不到 ID 为 {media_id} 的记录。")
+#             return False
+        
+#         tmdb_id = str(tracked_media['tmdb_media_id'])
+#         media_type = tracked_media['media_type']
 
-def get_media_library_status(tmdb_id: int, media_type: str) -> Tuple[str, Optional[str]]:
-    """
-    根据 TMDB ID 和媒体类型，从 media_metadata 表查询项目的在库状态和 Emby Item ID。
-    返回一个元组: (状态, Emby Item ID 或 None)。
-    例如: ('IN_LIBRARY', '12345') 或 ('MISSING', None)
-    """
-    try:
-        with get_db_connection() as conn:
-            cursor = conn.cursor()
-            sql = "SELECT emby_item_id FROM media_metadata WHERE tmdb_id = %s AND item_type = %s"
-            cursor.execute(sql, (str(tmdb_id), media_type))
-            row = cursor.fetchone()
+#         # ▼▼▼ 核心：将所有状态操作全权委托给【统一状态更新器】▼▼▼
+#         source = {"type": "actor_subscription_manual_update", "reason": reason or f"Status set to {new_status}"}
+#         media_db.update_subscription_status(
+#             tmdb_ids=tmdb_id, 
+#             item_type=media_type, 
+#             new_status=new_status, 
+#             source=source,
+#             ignore_reason=reason # ★★★ 将 reason 传递过去 ★★★
+#         )
+        
+#         return True
+
+#     except Exception as e:
+#         logger.error(f"  ➜ 更新已追踪媒体项 {media_id} 状态失败: {e}", exc_info=True)
+#         # 重新抛出异常，让上层API知道操作失败了
+#         raise
+
+# def get_media_library_status(tmdb_id: int, media_type: str) -> Tuple[str, Optional[str]]:
+#     """
+#     根据 TMDB ID 和媒体类型，从 media_metadata 表查询项目的在库状态和 Emby Item ID。
+#     返回一个元组: (状态, Emby Item ID 或 None)。
+#     例如: ('IN_LIBRARY', '12345') 或 ('MISSING', None)
+#     """
+#     try:
+#         with get_db_connection() as conn:
+#             cursor = conn.cursor()
+#             sql = "SELECT emby_item_id FROM media_metadata WHERE tmdb_id = %s AND item_type = %s"
+#             cursor.execute(sql, (str(tmdb_id), media_type))
+#             row = cursor.fetchone()
             
-            if row and row.get('emby_item_id'):
-                # ★★★ 核心修改：如果已在库，把 emby_item_id 也一起返回 ★★★
-                return 'IN_LIBRARY', row['emby_item_id']
-            else:
-                return 'MISSING', None
-    except Exception as e:
-        logger.error(f"DB: 查询媒体 (TMDb ID: {tmdb_id}) 在库状态时失败: {e}", exc_info=True)
-        return 'MISSING', None
+#             if row and row.get('emby_item_id'):
+#                 # ★★★ 核心修改：如果已在库，把 emby_item_id 也一起返回 ★★★
+#                 return 'IN_LIBRARY', row['emby_item_id']
+#             else:
+#                 return 'MISSING', None
+#     except Exception as e:
+#         logger.error(f"DB: 查询媒体 (TMDb ID: {tmdb_id}) 在库状态时失败: {e}", exc_info=True)
+#         return 'MISSING', None
     
-def update_tracked_media_details(media_id: int, new_status: str, emby_item_id: Optional[str]) -> bool:
-    """根据主键 ID 更新单个媒体项的状态和 Emby Item ID。"""
-    try:
-        with get_db_connection() as conn:
-            cursor = conn.cursor()
-            sql = """
-                UPDATE tracked_actor_media 
-                SET status = %s, emby_item_id = %s, last_updated_at = CURRENT_TIMESTAMP 
-                WHERE id = %s
-            """
-            cursor.execute(sql, (new_status, emby_item_id, media_id))
-            conn.commit()
-            return cursor.rowcount > 0
-    except Exception as e:
-        logger.error(f"  ➜ 更新已追踪媒体项 {media_id} 详情失败: {e}", exc_info=True)
-        raise
+# def update_tracked_media_details(media_id: int, new_status: str, emby_item_id: Optional[str]) -> bool:
+#     """根据主键 ID 更新单个媒体项的状态和 Emby Item ID。"""
+#     try:
+#         with get_db_connection() as conn:
+#             cursor = conn.cursor()
+#             sql = """
+#                 UPDATE tracked_actor_media 
+#                 SET status = %s, emby_item_id = %s, last_updated_at = CURRENT_TIMESTAMP 
+#                 WHERE id = %s
+#             """
+#             cursor.execute(sql, (new_status, emby_item_id, media_id))
+#             conn.commit()
+#             return cursor.rowcount > 0
+#     except Exception as e:
+#         logger.error(f"  ➜ 更新已追踪媒体项 {media_id} 详情失败: {e}", exc_info=True)
+#         raise

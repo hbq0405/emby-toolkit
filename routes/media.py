@@ -9,7 +9,7 @@ import handler.emby as emby
 import config_manager
 import task_manager
 import extensions
-from database import collection_db
+from database import collection_db, media_db
 from extensions import admin_required, processor_ready_required
 from urllib.parse import urlparse
 
@@ -360,3 +360,118 @@ def api_search_studios():
     except Exception as e:
         logger.error(f"搜索工作室时发生错误: {e}", exc_info=True)
         return jsonify({"error": "服务器内部错误"}), 500
+
+
+# ======================================================================
+# ★★★ 通用订阅操作 API ★★★
+# ======================================================================
+
+@media_api_bp.route('/subscription/request', methods=['POST'])
+@admin_required
+def api_request_subscription():
+    """
+    通用的、请求订阅单个媒体项的入口。
+    所有前端的手动订阅操作都应调用此接口。
+    """
+    data = request.json
+    tmdb_id = data.get('tmdb_id')
+    item_type = data.get('item_type')
+    source = data.get('source') # source 是一个描述来源的字典, e.g., {"type": "manual"}
+
+    # 对参数进行严格校验
+    if not all([tmdb_id, item_type, source]):
+        return jsonify({"error": "请求中缺少 'tmdb_id', 'item_type' 或 'source' 参数"}), 400
+    if not isinstance(source, dict):
+        return jsonify({"error": "'source' 参数必须是一个字典"}), 400
+
+    try:
+        media_db.request_media_subscription(
+            tmdb_id=tmdb_id,
+            item_type=item_type,
+            source=source
+        )
+        
+        logger.info(f"API: 成功为媒体 (TMDb ID: {tmdb_id}) 创建订阅请求。")
+        return jsonify({"message": f"已为 TMDb ID {tmdb_id} 创建订阅请求。"}), 200
+
+    except Exception as e:
+        logger.error(f"API /subscription/request 发生错误: {e}", exc_info=True)
+        return jsonify({"error": "服务器在创建订阅请求时发生内部错误"}), 500
+    
+@media_api_bp.route('/subscription/batch_request', methods=['POST'])
+@admin_required
+def api_batch_request_subscriptions():
+    """
+    【新增】通用的、批量请求订阅多个媒体项的入口。
+    """
+    data = request.json
+    item_type = data.get('item_type')
+    requests_list = data.get('requests') # 这是一个包含多个订阅请求的列表
+
+    # 参数校验
+    if not all([item_type, requests_list]):
+        return jsonify({"error": "请求中缺少 'item_type' 或 'requests' 列表"}), 400
+    if not isinstance(requests_list, list) or not requests_list:
+        return jsonify({"error": "'requests' 必须是一个非空列表"}), 400
+
+    try:
+        media_db.batch_request_media_subscriptions(
+            media_requests=requests_list,
+            item_type=item_type
+        )
+        
+        count = len(requests_list)
+        logger.info(f"API: 成功提交了 {count} 个媒体项的批量订阅请求。")
+        return jsonify({"message": f"已成功提交 {count} 个媒体项的批量订阅请求。"}), 200
+
+    except Exception as e:
+        logger.error(f"API /subscription/batch_request 发生错误: {e}", exc_info=True)
+        return jsonify({"error": "服务器在处理批量订阅时发生内部错误"}), 500
+    
+@media_api_bp.route('/subscription/cancel', methods=['POST'])
+@admin_required
+def api_cancel_subscription():
+    """
+    【新增】取消对单个媒体项的订阅。
+    """
+    data = request.json
+    tmdb_id = data.get('tmdb_id')
+    item_type = data.get('item_type')
+
+    if not tmdb_id or not item_type:
+        return jsonify({"error": "请求中缺少 'tmdb_id' 或 'item_type'"}), 400
+
+    try:
+        # 调用我们早已准备好的数据库函数来执行操作
+        media_db.cancel_media_subscription(tmdb_id, item_type)
+        
+        logger.info(f"API: 成功取消对媒体 (TMDb ID: {tmdb_id}) 的订阅。")
+        return jsonify({"message": f"已取消对 TMDb ID {tmdb_id} 的订阅。"}), 200
+
+    except Exception as e:
+        logger.error(f"API /subscription/cancel 发生错误: {e}", exc_info=True)
+        return jsonify({"error": "服务器在取消订阅时发生内部错误"}), 500
+    
+@media_api_bp.route('/subscription/ignore', methods=['POST'])
+@admin_required
+def api_ignore_subscription():
+    """
+    通用的、忽略单个媒体项的入口。
+    """
+    data = request.json
+    tmdb_id = data.get('tmdb_id')
+    item_type = data.get('item_type')
+
+    if not tmdb_id or not item_type:
+        return jsonify({"error": "请求中缺少 'tmdb_id' 或 'item_type'"}), 400
+
+    try:
+        # ★★★ 调用我们刚刚在数据库层创建的“忽略”函数 ★★★
+        media_db.ignore_media_item(tmdb_id, item_type)
+        
+        logger.info(f"API: 成功将媒体 (TMDb ID: {tmdb_id}) 标记为忽略。")
+        return jsonify({"message": f"已将 TMDb ID {tmdb_id} 标记为忽略。"}), 200
+
+    except Exception as e:
+        logger.error(f"API /subscription/ignore 发生错误: {e}", exc_info=True)
+        return jsonify({"error": "服务器在标记忽略时发生内部错误"}), 500

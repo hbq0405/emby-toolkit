@@ -257,7 +257,6 @@ def ensure_cover_generator_fonts():
             else:
                 logger.warning(f"项目根目录缺少字体文件 {font_name}，无法拷贝至 {cover_fonts_dir}")
 
-
 # --- 应用退出处理 ---
 def application_exit_handler():
     # global media_processor_instance, scheduler, task_worker_thread # 不再需要 scheduler
@@ -339,6 +338,9 @@ def main_app_start():
     add_file_handler(log_directory=config_manager.LOG_DIRECTORY, log_size_mb=log_size, log_backups=log_backups)
     
     connection.init_db()
+
+    # 在这里调用数据迁移函数 过段时间删除
+    connection.run_database_migrations()
 
     ensure_cover_generator_fonts()
     init_auth()

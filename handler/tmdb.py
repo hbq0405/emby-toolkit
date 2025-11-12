@@ -406,7 +406,7 @@ def find_person_by_external_id(external_id: str, api_key: str, source: str = "im
         logger.error(f"TMDb: 通过外部ID查找时发生网络错误: {e}")
         return None
 # --- 获取合集的详细信息 ---
-def get_collection_details_tmdb(collection_id: int, api_key: str) -> Optional[Dict[str, Any]]:
+def get_collection_details(collection_id: int, api_key: str) -> Optional[Dict[str, Any]]:
     """
     【新】获取指定 TMDb 合集的详细信息，包含其所有影片部分。
     """

@@ -1107,7 +1107,50 @@ def get_all_collections_with_items(base_url: str, api_key: str, user_id: str) ->
     except Exception as e:
         logger.error(f"处理 Emby 电影合集时发生未知错误: {e}", exc_info=True)
         return None
+# --- 获取所有原生合集（新版）---
+# handler/emby.py
 
+# ... (其他函数) ...
+
+def get_all_native_collections_from_emby(base_url: str, api_key: str, user_id: str) -> List[Dict[str, Any]]:
+    """
+    【V3 - 最终修正版】从 Emby 服务器获取所有类型为 "BoxSet" (原生合集) 的项目。
+    - 根据 Emby 4.9.x 的实际行为，原生合集的 TMDB ID 存储在 "Tmdb" 字段中。
+    """
+    logger.info("  ➜ 正在从 Emby 获取所有原生合集 (BoxSet)...")
+    
+    params = {
+        "Recursive": "true",
+        "IncludeItemTypes": "BoxSet",
+        "Fields": "ProviderIds,Name",
+        "api_key": api_key
+    }
+    url = f"{base_url}/Users/{user_id}/Items"
+    
+    try:
+        response = requests.get(url, params=params, timeout=30)
+        response.raise_for_status()
+        all_emby_collections = response.json().get("Items", [])
+        
+        valid_collections = []
+        for item in all_emby_collections:
+            provider_ids = item.get("ProviderIds", {})
+            
+            # ★★★ 最终核心修正：根据你的截图和 Emby 的实际行为，我们只检查 "Tmdb" 字段 ★★★
+            tmdb_collection_id = provider_ids.get("Tmdb") 
+            
+            if tmdb_collection_id:
+                valid_collections.append({
+                    "emby_collection_id": item.get("Id"),
+                    "name": item.get("Name"),
+                    "tmdb_collection_id": tmdb_collection_id
+                })
+        
+        logger.info(f"  ➜ 筛选出 {len(valid_collections)} 个有效的、已关联 TMDB 的原生合集。")
+        return valid_collections
+    except Exception as e:
+        logger.error(f"从 Emby 获取原生合集时发生错误: {e}", exc_info=True)
+        return []
 # ✨✨✨ 获取 Emby 服务器信息 (如 Server ID) ✨✨✨
 def get_emby_server_info(base_url: str, api_key: str) -> Optional[Dict[str, Any]]:
     if not base_url or not api_key:

@@ -6,7 +6,7 @@ import json
 import psycopg2
 import pytz
 from datetime import datetime
-from database import user_db, collection_db, settings_db
+from database import user_db, collection_db, settings_db, media_db
 import config_manager
 import handler.moviepilot as moviepilot
 import handler.emby as emby
@@ -66,7 +66,7 @@ def api_get_all_custom_collections():
     """获取所有自定义合集定义 (V3.1 - 最终修正版)"""
     try:
         beijing_tz = pytz.timezone('Asia/Shanghai')
-        collections_from_db = collection_db.get_all_custom_collections()
+        collections_from_db = collection_db.get_all_active_custom_collections()
         processed_collections = []
 
         for collection in collections_from_db:
@@ -254,46 +254,75 @@ def api_delete_custom_collection(collection_id):
 @admin_required
 def api_get_custom_collection_status(collection_id):
     """
-    【V4 - 智能返回版】
-    获取单个自定义合集的详情。
-    - 修复了因删除 generated_media_info_json 导致详情弹窗无内容的BUG。
-    - 确保 definition 字段始终为正确的对象格式。
+    【V8 - 键名完全修正版】
+    修复了因键名不统一 (tmdb_id vs id) 导致的 KeyError。
     """
     try:
-        collection_details = collection_db.get_custom_collection_by_id(collection_id)
-        if not collection_details:
-            return jsonify({"error": "未在自定义合集表中找到该合集"}), 404
+        collection = collection_db.get_custom_collection_by_id(collection_id)
+        if not collection:
+            return jsonify({"error": "未找到合集"}), 404
         
-        # 1. 将 generated_media_info_json 的内容（如果存在）赋给一个新的键 media_items
-        #    psycopg2 已经自动将 JSONB 解析为 Python 列表/字典
-        collection_details['media_items'] = collection_details.get('generated_media_info_json', [])
+        definition_list = collection.get('generated_media_info_json') or []
+        if not definition_list:
+            collection['media_items'] = []
+            return jsonify(collection)
+
+        # ▼▼▼ 修正 1/3：使用正确的键名 'tmdb_id' 来提取所有ID ▼▼▼
+        tmdb_ids = [str(item['tmdb_id']) for item in definition_list if 'tmdb_id' in item]
         
-        # 2. 确保 definition 是一个对象
-        definition_data = collection_details.get('definition_json')
-        parsed_definition = {}
-        if isinstance(definition_data, str):
-            try:
-                obj = json.loads(definition_data)
-                if isinstance(obj, str): obj = json.loads(obj)
-                parsed_definition = obj if isinstance(obj, dict) else {}
-            except (json.JSONDecodeError, TypeError):
-                logger.error(f"合集 '{collection_details.get('name')}' 的 definition_json 字段无法被解析为JSON。")
-                parsed_definition = {}
-        elif isinstance(definition_data, dict):
-            parsed_definition = definition_data
+        media_in_db_map = media_db.get_media_details_by_tmdb_ids(tmdb_ids)
         
-        collection_details['definition'] = parsed_definition
+        final_media_list = []
+        for item_def in definition_list:
+            # 安全地获取值，防止因个别数据格式错误导致整个接口崩溃
+            tmdb_id = str(item_def.get('tmdb_id'))
+            if not tmdb_id:
+                continue
+
+            # ▼▼▼ 修正 2/3：使用正确的键名 'media_type' ▼▼▼
+            media_type = item_def.get('media_type')
+            season_number = item_def.get('season')
+
+            if tmdb_id in media_in_db_map:
+                db_record = media_in_db_map[tmdb_id]
+                status = "missing"  # 默认状态，WANTED 和 NONE 都会落入此分类
+                if db_record.get('in_library'):
+                    status = "in_library"
+                elif db_record.get('subscription_status') == 'SUBSCRIBED':
+                    # 只有 SUBSCRIBED 才算作真正的“已订阅”
+                    status = "subscribed"
+                elif db_record.get('subscription_status') == 'IGNORED':
+                    status = "ignored"
+                
+                final_media_list.append({
+                    "tmdb_id": tmdb_id,
+                    "emby_id": db_record.get('emby_item_id'),
+                    "title": db_record.get('title') or db_record.get('original_title', f"媒体 {tmdb_id}"),
+                    "release_date": db_record.get('release_date').strftime('%Y-%m-%d') if db_record.get('release_date') else '',
+                    "poster_path": db_record.get('poster_path'),
+                    "status": status,
+                    # ▼▼▼ 修正 3/3：确保返回的 media_type 也是正确的 ▼▼▼
+                    "media_type": media_type,
+                    "season": season_number
+                })
+            else:
+                final_media_list.append({
+                    "tmdb_id": tmdb_id,
+                    "emby_id": None,
+                    "title": item_def.get('title') or f"未知媒体 (ID: {tmdb_id})",
+                    "release_date": item_def.get('release_date', ''),
+                    "poster_path": item_def.get('poster_path'),
+                    "status": "missing",
+                    "media_type": media_type,
+                    "season": season_number
+                })
         
-        # 3. 删除原始的、可能命名不一致或格式不纯净的字段，保持API返回的清洁
-        if 'generated_media_info_json' in collection_details:
-            del collection_details['generated_media_info_json']
-        if 'definition_json' in collection_details:
-            del collection_details['definition_json']
-            
-        return jsonify(collection_details)
+        collection['media_items'] = final_media_list
+        collection.pop('generated_media_info_json', None)
+        return jsonify(collection)
             
     except Exception as e:
-        logger.error(f"读取单个自定义合集状态 {collection_id} 时出错: {e}", exc_info=True)
+        logger.error(f"实时生成合集状态 {collection_id} 时出错: {e}", exc_info=True)
         return jsonify({"error": "服务器内部错误"}), 500
 
 # --- 更新自定义合集中单个媒体项状态 ---
