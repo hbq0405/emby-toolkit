@@ -205,8 +205,8 @@ def get_dashboard_stats() -> dict:
         (SELECT COUNT(*) FROM collections_info) AS collections_tmdb_total,
         (SELECT COUNT(*) FROM collections_info WHERE has_missing = TRUE) AS collections_with_missing,
         (SELECT COUNT(*) FROM custom_collections WHERE status = 'active') AS collections_custom_active,
-        (SELECT COUNT(*) FROM watchlist WHERE status = 'Watching') AS watchlist_active,
-        (SELECT COUNT(*) FROM watchlist WHERE status = 'Paused') AS watchlist_paused,
+        COUNT(*) FILTER (WHERE watching_status = 'Watching') AS watchlist_active,
+        COUNT(*) FILTER (WHERE watching_status = 'Paused') AS watchlist_paused,
         (SELECT COUNT(*) FROM actor_subscriptions WHERE status = 'active') AS actor_subscriptions_active,
         (SELECT COUNT(*) FROM resubscribe_cache WHERE status ILIKE 'needed') AS resubscribe_pending,
         (SELECT COUNT(*) FROM person_identity_map WHERE emby_person_id IS NOT NULL) AS actor_mappings_linked,
@@ -224,7 +224,11 @@ def get_dashboard_stats() -> dict:
                 result = cursor.fetchone()
                 return dict(result) if result else {}
     except psycopg2.Error as e:
-        logger.error(f"执行聚合统计查询时出错: {e}")
+        # ★ 修正：在捕获异常时，也检查是否是 "relation 'watchlist' does not exist" 错误
+        if "watchlist" in str(e):
+             logger.warning(f"聚合统计查询失败，可能是由于旧的数据库结构: {e}。这通常在升级后自动解决。")
+        else:
+            logger.error(f"执行聚合统计查询时出错: {e}")
         return {}
 
 def get_all_table_names() -> List[str]:
