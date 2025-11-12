@@ -8,12 +8,12 @@ import logging
 from typing import Optional, Dict, Any, List, Set, Callable, Tuple
 import threading
 from enum import Enum
-import concurrent.futures # 新增：导入 concurrent.futures
+import concurrent.futures 
 
 import handler.tmdb as tmdb
 import handler.emby as emby
 from database.connection import get_db_connection
-from database import media_db, actor_db
+from database import media_db
 import constants
 import utils
 

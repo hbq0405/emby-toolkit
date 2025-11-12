@@ -5,7 +5,7 @@ from flask import Blueprint, jsonify, request, g, session
 from extensions import any_login_required
 import handler.tmdb as tmdb
 from utils import KEYWORD_ID_MAP, DAILY_THEME, contains_chinese, get_tmdb_language_options
-from database import user_db, media_db, settings_db
+from database import media_db, settings_db, request_db
 from tasks.discover import task_update_daily_theme, task_replenish_recommendation_pool
 import task_manager
 
@@ -39,7 +39,7 @@ def _filter_and_enrich_results(tmdb_data: dict, current_user_id: str, db_item_ty
     library_items_map = media_db.check_tmdb_ids_in_library(tmdb_ids, item_type=db_item_type)
     
     # ★★★ 核心修改：调用新的全局状态查询函数，不再传入 current_user_id ★★★
-    subscription_statuses = user_db.get_global_subscription_statuses_by_tmdb_ids(tmdb_ids)
+    subscription_statuses = request_db.get_global_subscription_statuses_by_tmdb_ids(tmdb_ids)
 
     media_type_for_frontend = 'movie' if db_item_type == 'Movie' else 'tv'
 

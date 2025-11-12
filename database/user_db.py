@@ -381,484 +381,6 @@ def expand_template_user_ids(selected_user_ids: List[str]) -> List[str]:
         # 出错时，保守地返回原始列表
         return selected_user_ids
     
-# ★★★ 新增：获取用户观影历史并关联媒体元数据 ★★★
-def get_user_history_with_metadata(user_id: str, limit: int = 100) -> List[Dict[str, Any]]:
-    """
-    获取指定用户的观影历史，并 JOIN 媒体元数据表以获取标题、年份等信息。
-    """
-    sql = """
-        SELECT
-            umd.item_id,
-            umd.last_played_date,
-            umd.play_count,
-            mm.title,
-            mm.original_title,
-            mm.release_year,
-            mm.item_type,
-            mm.rating
-        FROM
-            user_media_data umd
-        LEFT JOIN
-            media_metadata mm ON umd.item_id = mm.emby_item_id
-        WHERE
-            umd.user_id = %s
-            AND umd.last_played_date IS NOT NULL
-        ORDER BY
-            umd.last_played_date DESC
-        LIMIT %s;
-    """
-    try:
-        with get_db_connection() as conn:
-            cursor = conn.cursor()
-            cursor.execute(sql, (user_id, limit))
-            return [dict(row) for row in cursor.fetchall()]
-    except Exception as e:
-        logger.error(f"DB: 为用户 {user_id} 查询观影历史失败: {e}", exc_info=True)
-        raise
-
-# ★★★ 新增：获取全局播放次数排行榜 ★★★
-def get_global_play_count_rankings(limit: int = 20) -> List[Dict[str, Any]]:
-    """
-    统计所有用户的播放数据，按总播放次数进行全局排名。
-    """
-    sql = """
-        SELECT
-            umd.item_id,
-            SUM(umd.play_count) as total_play_count,
-            COUNT(DISTINCT umd.user_id) as total_viewers,
-            mm.title,
-            mm.original_title,
-            mm.release_year,
-            mm.item_type
-        FROM
-            user_media_data umd
-        LEFT JOIN
-            media_metadata mm ON umd.item_id = mm.emby_item_id
-        WHERE
-            umd.play_count > 0
-        GROUP BY
-            umd.item_id, mm.title, mm.original_title, mm.release_year, mm.item_type
-        ORDER BY
-            total_play_count DESC, total_viewers DESC
-        LIMIT %s;
-    """
-    try:
-        with get_db_connection() as conn:
-            cursor = conn.cursor()
-            cursor.execute(sql, (limit,))
-            return [dict(row) for row in cursor.fetchall()]
-    except Exception as e:
-        logger.error(f"DB: 查询全局排行榜失败: {e}", exc_info=True)
-        raise
-
-def create_subscription_request(**kwargs) -> int:
-    """
-    在 subscription_requests 表中创建一条新的申请记录。
-    """
-    columns = kwargs.keys()
-    values = kwargs.values()
-    
-    sql = f"""
-        INSERT INTO subscription_requests ({', '.join(columns)})
-        VALUES ({', '.join(['%s'] * len(values))})
-        RETURNING id;
-    """
-    
-    try:
-        with get_db_connection() as conn:
-            cursor = conn.cursor()
-            cursor.execute(sql, tuple(values))
-            new_id = cursor.fetchone()['id']
-            conn.commit()
-            return new_id
-    except Exception as e:
-        logger.error(f"DB: 创建订阅请求失败: {e}", exc_info=True)
-        raise
-
-def get_user_subscription_permission(user_id: str) -> bool:
-    """
-    根据用户ID，查询其所属模板是否允许免审订阅。
-    """
-    sql = """
-        SELECT t.allow_unrestricted_subscriptions
-        FROM emby_users_extended ue
-        JOIN user_templates t ON ue.template_id = t.id
-        WHERE ue.emby_user_id = %s;
-    """
-    try:
-        with get_db_connection() as conn:
-            cursor = conn.cursor()
-            cursor.execute(sql, (user_id,))
-            result = cursor.fetchone()
-            # 如果能查到记录，并且值为 True，则返回 True
-            return result['allow_unrestricted_subscriptions'] if result else False
-    except Exception as e:
-        logger.error(f"DB: 查询用户 {user_id} 的订阅权限失败: {e}", exc_info=True)
-        return False # 出错时，保守地返回 False
-    
-def get_pending_subscription_requests() -> List[Dict[str, Any]]:
-    """查询所有状态为 'pending' 的订阅请求，并关联用户名。"""
-    sql = """
-        SELECT sr.*, u.name as username
-        FROM subscription_requests sr
-        JOIN emby_users u ON sr.emby_user_id = u.id
-        WHERE sr.status = 'pending'
-        ORDER BY sr.requested_at ASC;
-    """
-    try:
-        with get_db_connection() as conn:
-            cursor = conn.cursor()
-            cursor.execute(sql)
-            return [dict(row) for row in cursor.fetchall()]
-    except Exception as e:
-        logger.error(f"DB: 查询待审订阅列表失败: {e}", exc_info=True)
-        raise
-
-def get_approved_subscription_requests() -> List[Dict[str, Any]]:
-    """查询所有状态为 'approved' 的订阅请求。"""
-    sql = """
-        SELECT * FROM subscription_requests
-        WHERE status = 'approved'
-        ORDER BY requested_at ASC;
-    """
-    try:
-        with get_db_connection() as conn:
-            cursor = conn.cursor()
-            cursor.execute(sql)
-            return [dict(row) for row in cursor.fetchall()]
-    except Exception as e:
-        logger.error(f"DB: 查询已批准的订阅列表失败: {e}", exc_info=True)
-        raise
-
-def find_pending_request_by_tmdb_id(tmdb_id: str) -> Optional[Dict[str, Any]]:
-    """
-    根据 TMDb ID 查找一个状态为 'pending' 的订阅请求。
-    如果找到，返回该请求的完整信息，否则返回 None。
-    """
-    if not tmdb_id:
-        return None
-    
-    sql = "SELECT * FROM subscription_requests WHERE tmdb_id = %s AND status = 'pending' LIMIT 1"
-    
-    try:
-        with get_db_connection() as conn:
-            cursor = conn.cursor()
-            cursor.execute(sql, (tmdb_id,))
-            result = cursor.fetchone()
-            return dict(result) if result else None
-    except Exception as e:
-        logger.error(f"DB: 查找待审请求 (TMDb ID: {tmdb_id}) 失败: {e}", exc_info=True)
-        return None
-
-def get_subscription_request_details(request_id: int) -> Optional[Dict[str, Any]]:
-    """根据ID获取单条订阅请求的完整信息。"""
-    sql = "SELECT * FROM subscription_requests WHERE id = %s"
-    try:
-        with get_db_connection() as conn:
-            cursor = conn.cursor()
-            cursor.execute(sql, (request_id,))
-            return dict(cursor.fetchone()) if cursor.rowcount > 0 else None
-    except Exception as e:
-        logger.error(f"DB: 查询订阅请求 {request_id} 详情失败: {e}", exc_info=True)
-        raise
-
-def update_subscription_request_status(request_id: int, status: str, processed_by: str = 'admin', notes: Optional[str] = None) -> bool:
-    """更新指定订阅请求的状态、处理人和备注信息。"""
-    sql = """
-        UPDATE subscription_requests
-        SET status = %s, processed_by = %s, processed_at = NOW(), notes = %s
-        WHERE id = %s;
-    """
-    try:
-        with get_db_connection() as conn:
-            cursor = conn.cursor()
-            cursor.execute(sql, (status, processed_by, notes, request_id))
-            conn.commit()
-            return cursor.rowcount > 0
-    except Exception as e:
-        logger.error(f"DB: 更新订阅请求 {request_id} 状态失败: {e}", exc_info=True)
-        raise
-
-def batch_approve_subscription_requests(request_ids: List[int], processed_by: str = 'admin') -> List[Dict[str, Any]]:
-    """
-    批量批准订阅请求，并返回这些请求的详细信息。
-    """
-    if not request_ids:
-        return []
-
-    try:
-        with get_db_connection() as conn:
-            cursor = conn.cursor()
-            # 1. 更新状态
-            sql_update = """
-                UPDATE subscription_requests
-                SET status = 'approved', processed_by = %s, processed_at = NOW()
-                WHERE id = ANY(%s) AND status = 'pending'
-                RETURNING id;
-            """
-            cursor.execute(sql_update, (processed_by, request_ids))
-            updated_ids = [row['id'] for row in cursor.fetchall()]
-
-            # 2. 获取已批准请求的详细信息
-            if not updated_ids:
-                return []
-
-            sql_select = """
-                SELECT id, item_name, item_type, tmdb_id, emby_user_id
-                FROM subscription_requests
-                WHERE id = ANY(%s);
-            """
-            cursor.execute(sql_select, (updated_ids,))
-            approved_requests = [dict(row) for row in cursor.fetchall()]
-            conn.commit()
-            return approved_requests
-    except Exception as e:
-        logger.error(f"DB: 批量批准订阅请求失败: {e}", exc_info=True)
-        raise
-
-def get_multiple_subscription_request_details(request_ids: list) -> list:
-    """根据ID列表获取多个订阅请求的详情。"""
-    if not request_ids:
-        return []
-    with get_db_connection() as conn:
-        cursor = conn.cursor()
-        # 使用 ANY 操作符来查询列表中的所有ID
-        cursor.execute("SELECT * FROM subscription_requests WHERE id = ANY(%s)", (request_ids,))
-        return [dict(row) for row in cursor.fetchall()]
-
-def batch_reject_subscription_requests(request_ids: List[int], reason: Optional[str] = None, processed_by: str = 'admin') -> int:
-    """
-    批量拒绝订阅请求。
-    """
-    if not request_ids:
-        return 0
-
-    try:
-        with get_db_connection() as conn:
-            cursor = conn.cursor()
-            sql = """
-                UPDATE subscription_requests
-                SET status = 'rejected', processed_by = %s, processed_at = NOW(), notes = %s
-                WHERE id = ANY(%s) AND status = 'pending';
-            """
-            cursor.execute(sql, (processed_by, reason, request_ids))
-            updated_count = cursor.rowcount
-            conn.commit()
-            return updated_count
-    except Exception as e:
-        logger.error(f"DB: 批量拒绝订阅请求失败: {e}", exc_info=True)
-        raise
-
-def get_user_account_details(user_id: str) -> Optional[Dict[str, Any]]:
-    """
-    根据用户ID，查询其在 emby_users_extended 表中的信息，并关联 user_templates 表获取模板详情。
-    """
-    sql = """
-        SELECT
-            ue.status,
-            ue.registration_date,
-            ue.expiration_date,
-            ue.telegram_chat_id,
-            ut.name as template_name,
-            ut.description as template_description,
-            ut.allow_unrestricted_subscriptions
-        FROM
-            emby_users_extended ue
-        LEFT JOIN
-            user_templates ut ON ue.template_id = ut.id
-        WHERE
-            ue.emby_user_id = %s;
-    """
-    try:
-        with get_db_connection() as conn:
-            cursor = conn.cursor()
-            cursor.execute(sql, (user_id,))
-            result = cursor.fetchone()
-            return dict(result) if result else None
-    except Exception as e:
-        logger.error(f"DB: 查询用户 {user_id} 的账户详情失败: {e}", exc_info=True)
-        raise
-
-def get_user_subscription_history(user_id: str, page: int = 1, page_size: int = 10) -> Tuple[List[Dict[str, Any]], int]:
-    """获取指定用户的订阅请求历史，支持分页，并返回总记录数。"""
-    offset = (page - 1) * page_size
-    
-    # 查询总记录数
-    count_sql = """
-        SELECT COUNT(*) FROM subscription_requests
-        WHERE emby_user_id = %s;
-    """
-    
-    # 查询分页数据
-    data_sql = """
-        SELECT id, item_name, item_type, status, requested_at, notes
-        FROM subscription_requests
-        WHERE emby_user_id = %s
-        ORDER BY requested_at DESC
-        LIMIT %s OFFSET %s;
-    """
-    try:
-        with get_db_connection() as conn:
-            cursor = conn.cursor()
-            
-            # 获取总数
-            cursor.execute(count_sql, (user_id,))
-            total_records = cursor.fetchone()['count']
-            
-            # 获取分页数据
-            cursor.execute(data_sql, (user_id, page_size, offset))
-            history = [dict(row) for row in cursor.fetchall()]
-            
-            return history, total_records
-    except Exception as e:
-        logger.error(f"DB: 查询用户 {user_id} 的订阅历史失败: {e}", exc_info=True)
-        raise
-
-def update_user_telegram_chat_id(user_id: str, chat_id: str) -> bool:
-    """更新或设置用户的 Telegram Chat ID"""
-    # 确保空字符串存为 NULL，方便处理
-    chat_id_to_save = chat_id if chat_id and chat_id.strip() else None
-    sql = "UPDATE emby_users_extended SET telegram_chat_id = %s WHERE emby_user_id = %s"
-    try:
-        with get_db_connection() as conn:
-            cursor = conn.cursor()
-            cursor.execute(sql, (chat_id_to_save, user_id))
-            # 如果用户在 extended 表里不存在，则需要插入一条新记录
-            if cursor.rowcount == 0:
-                insert_sql = "INSERT INTO emby_users_extended (emby_user_id, telegram_chat_id) VALUES (%s, %s) ON CONFLICT (emby_user_id) DO UPDATE SET telegram_chat_id = EXCLUDED.telegram_chat_id"
-                cursor.execute(insert_sql, (user_id, chat_id_to_save))
-            conn.commit()
-            return True
-    except Exception as e:
-        logger.error(f"DB: 更新用户 {user_id} 的 Telegram Chat ID 失败: {e}")
-        return False
-
-def get_user_telegram_chat_id(user_id: str) -> Optional[str]:
-    """根据用户ID获取其 Telegram Chat ID"""
-    sql = "SELECT telegram_chat_id FROM emby_users_extended WHERE emby_user_id = %s"
-    try:
-        with get_db_connection() as conn:
-            cursor = conn.cursor()
-            cursor.execute(sql, (user_id,))
-            result = cursor.fetchone()
-            return result['telegram_chat_id'] if result else None
-    except Exception as e:
-        logger.error(f"DB: 获取用户 {user_id} 的 Telegram Chat ID 失败: {e}")
-        return None
-    
-def get_subscribers_by_tmdb_id(tmdb_id: str) -> List[Dict[str, Any]]:
-    """根据 TMDb ID 查询所有订阅了该媒体的用户 (状态为 pending 或 approved)。"""
-    if not tmdb_id:
-        return []
-    
-    sql = """
-        SELECT DISTINCT emby_user_id
-        FROM subscription_requests
-        WHERE tmdb_id = %s AND status IN ('pending', 'approved');
-    """
-    try:
-        with get_db_connection() as conn:
-            cursor = conn.cursor()
-            cursor.execute(sql, (tmdb_id,))
-            return [dict(row) for row in cursor.fetchall()]
-    except Exception as e:
-        logger.error(f"DB: 根据 TMDb ID [{tmdb_id}] 查询订阅者失败: {e}", exc_info=True)
-        return []
-    
-def get_global_subscription_status_by_tmdb_id(tmdb_id: str) -> Optional[str]:
-    """
-    【V1 - 全局状态查询】查询单个 TMDb ID 的最高优先级订阅状态。
-    优先级: approved > processing > pending.
-    """
-    if not tmdb_id:
-        return None
-
-    sql = """
-        SELECT status
-        FROM subscription_requests
-        WHERE tmdb_id = %s AND status != 'rejected'
-        ORDER BY
-            CASE status
-                WHEN 'approved' THEN 1
-                WHEN 'processing' THEN 2
-                WHEN 'completed' THEN 3
-                WHEN 'pending' THEN 4
-                ELSE 5
-            END
-        LIMIT 1;
-    """
-    try:
-        with get_db_connection() as conn:
-            cursor = conn.cursor()
-            cursor.execute(sql, (tmdb_id,))
-            result = cursor.fetchone()
-            if not result:
-                return None
-            
-            status = result['status']
-            # 简化返回给前端的状态
-            if status in ['approved', 'processing', 'completed']:
-                return 'approved'
-            if status == 'pending':
-                return 'pending'
-            return None
-            
-    except Exception as e:
-        logger.error(f"DB: 查询 TMDb ID {tmdb_id} 的全局状态失败: {e}", exc_info=True)
-        return None
-    
-def get_global_subscription_statuses_by_tmdb_ids(tmdb_ids: List[str]) -> Dict[str, str]:
-    """
-    【V1 - 全局批量查询】根据一个TMDb ID列表，高效查询每个ID的最高优先级订阅状态。
-    此函数不关心用户，只返回全局状态。
-    返回一个字典，键为 tmdb_id，值为状态 ('approved' 或 'pending')。
-    """
-    if not tmdb_ids:
-        return {}
-
-    # 使用 PostgreSQL 的 DISTINCT ON 功能，可以非常高效地为每个 tmdb_id 找到优先级最高的那条记录
-    sql = """
-        SELECT DISTINCT ON (tmdb_id)
-            tmdb_id,
-            status
-        FROM subscription_requests
-        WHERE tmdb_id = ANY(%s) AND status != 'rejected'
-        ORDER BY
-            tmdb_id,
-            CASE status
-                WHEN 'approved' THEN 1
-                WHEN 'processing' THEN 2
-                WHEN 'completed' THEN 3
-                WHEN 'pending' THEN 4
-                ELSE 5
-            END;
-    """
-    
-    status_map = {}
-    try:
-        # 假设您有一个 get_db_connection 的函数
-        from .connection import get_db_connection 
-        with get_db_connection() as conn:
-            cursor = conn.cursor()
-            cursor.execute(sql, (tmdb_ids,))
-            rows = cursor.fetchall()
-            
-            for row in rows:
-                status = row['status']
-                tmdb_id = row['tmdb_id']
-                # 简化返回给前端的状态
-                if status in ['approved', 'processing', 'completed']:
-                    status_map[tmdb_id] = 'approved'
-                elif status == 'pending':
-                    status_map[tmdb_id] = 'pending'
-    except Exception as e:
-        # 假设您有 logger
-        import logging
-        logger = logging.getLogger(__name__)
-        logger.error(f"DB: 批量查询 TMDb IDs 的全局状态失败: {e}", exc_info=True)
-    
-    return status_map
-
 def get_admin_telegram_chat_ids():
     """
     查询数据库，获取所有在emby_users表中标记为管理员，
@@ -919,20 +441,6 @@ def is_user_admin(user_id: str) -> bool:
         logger.error(f"检查用户 {user_id} 管理员权限时发生数据库错误: {e}", exc_info=True)
         # 发生任何错误时，都应安全地返回 False
         return False
-    
-def get_template_source_user_ids() -> set:
-    """
-    从 user_templates 表中获取所有被用作模板源用户的ID集合。
-    """
-    try:
-        with get_db_connection() as conn:
-            with conn.cursor() as cursor:
-                cursor.execute("SELECT source_emby_user_id FROM user_templates WHERE source_emby_user_id IS NOT NULL")
-                # 返回一个集合(set)，用于实现 O(1) 的高效查找
-                return {row['source_emby_user_id'] for row in cursor.fetchall()}
-    except Exception as e:
-        logger.error(f"获取模板源用户ID列表时出错: {e}", exc_info=True)
-        return set() # 出错时返回空集合，确保安全
     
 def get_user_count() -> int:
     """
@@ -1003,9 +511,78 @@ def update_local_user_password(user_id: int, new_password_hash: str):
         logger.error(f"更新用户 {user_id} 密码时出错: {e}", exc_info=True)
         raise
 
+def get_user_subscription_permission(user_id: str) -> bool:
+    """
+    根据用户ID，查询其所属模板是否允许免审订阅。
+    """
+    sql = """
+        SELECT t.allow_unrestricted_subscriptions
+        FROM emby_users_extended ue
+        JOIN user_templates t ON ue.template_id = t.id
+        WHERE ue.emby_user_id = %s;
+    """
+    try:
+        with get_db_connection() as conn:
+            cursor = conn.cursor()
+            cursor.execute(sql, (user_id,))
+            result = cursor.fetchone()
+            # 如果能查到记录，并且值为 True，则返回 True
+            return result['allow_unrestricted_subscriptions'] if result else False
+    except Exception as e:
+        logger.error(f"DB: 查询用户 {user_id} 的订阅权限失败: {e}", exc_info=True)
+        return False # 出错时，保守地返回 False
+    
+# ======================================================================
+# 模块: 用户通知
+# ======================================================================
+def update_user_telegram_chat_id(user_id: str, chat_id: str) -> bool:
+    """更新或设置用户的 Telegram Chat ID"""
+    # 确保空字符串存为 NULL，方便处理
+    chat_id_to_save = chat_id if chat_id and chat_id.strip() else None
+    sql = "UPDATE emby_users_extended SET telegram_chat_id = %s WHERE emby_user_id = %s"
+    try:
+        with get_db_connection() as conn:
+            cursor = conn.cursor()
+            cursor.execute(sql, (chat_id_to_save, user_id))
+            # 如果用户在 extended 表里不存在，则需要插入一条新记录
+            if cursor.rowcount == 0:
+                insert_sql = "INSERT INTO emby_users_extended (emby_user_id, telegram_chat_id) VALUES (%s, %s) ON CONFLICT (emby_user_id) DO UPDATE SET telegram_chat_id = EXCLUDED.telegram_chat_id"
+                cursor.execute(insert_sql, (user_id, chat_id_to_save))
+            conn.commit()
+            return True
+    except Exception as e:
+        logger.error(f"DB: 更新用户 {user_id} 的 Telegram Chat ID 失败: {e}")
+        return False
+
+def get_user_telegram_chat_id(user_id: str) -> Optional[str]:
+    """根据用户ID获取其 Telegram Chat ID"""
+    sql = "SELECT telegram_chat_id FROM emby_users_extended WHERE emby_user_id = %s"
+    try:
+        with get_db_connection() as conn:
+            cursor = conn.cursor()
+            cursor.execute(sql, (user_id,))
+            result = cursor.fetchone()
+            return result['telegram_chat_id'] if result else None
+    except Exception as e:
+        logger.error(f"DB: 获取用户 {user_id} 的 Telegram Chat ID 失败: {e}")
+        return None
+
 # ======================================================================
 # 模块: 用户模板管理 (User Templates)
 # ======================================================================
+def get_template_source_user_ids() -> set:
+    """
+    从 user_templates 表中获取所有被用作模板源用户的ID集合。
+    """
+    try:
+        with get_db_connection() as conn:
+            with conn.cursor() as cursor:
+                cursor.execute("SELECT source_emby_user_id FROM user_templates WHERE source_emby_user_id IS NOT NULL")
+                # 返回一个集合(set)，用于实现 O(1) 的高效查找
+                return {row['source_emby_user_id'] for row in cursor.fetchall()}
+    except Exception as e:
+        logger.error(f"获取模板源用户ID列表时出错: {e}", exc_info=True)
+        return set() # 出错时返回空集合，确保安全
 
 def get_all_user_templates() -> List[Dict]:
     """获取所有用户模板。"""

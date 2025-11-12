@@ -1,7 +1,7 @@
 # tasks/discover.py
 import logging
 import handler.tmdb as tmdb
-from database import media_db, settings_db, user_db
+from database import media_db, settings_db, request_db
 import constants
 from utils import DAILY_THEME
 logger = logging.getLogger(__name__)
@@ -64,7 +64,7 @@ def task_update_daily_theme(processor):
             tmdb_ids = [str(movie["id"]) for movie in popular_movies]
 
             library_items_map = media_db.check_tmdb_ids_in_library(tmdb_ids, item_type='Movie')
-            subscription_statuses = user_db.get_global_subscription_statuses_by_tmdb_ids(tmdb_ids)
+            subscription_statuses = request_db.get_global_subscription_statuses_by_tmdb_ids(tmdb_ids)
 
             candidate_movies = [
                 movie for movie in popular_movies
@@ -180,7 +180,7 @@ def task_replenish_recommendation_pool(processor):
         new_tmdb_ids = [str(movie["id"]) for movie in new_movies]
         
         library_items_map = media_db.check_tmdb_ids_in_library(new_tmdb_ids, item_type='Movie')
-        subscription_statuses = user_db.get_global_subscription_statuses_by_tmdb_ids(new_tmdb_ids)
+        subscription_statuses = request_db.get_global_subscription_statuses_by_tmdb_ids(new_tmdb_ids)
         
         candidate_movies = [
             movie for movie in new_movies

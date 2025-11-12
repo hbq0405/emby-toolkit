@@ -5,17 +5,17 @@ import json
 import time
 import logging
 import psycopg2
+import concurrent.futures
 from datetime import datetime, timedelta, timezone
 from flask import Blueprint, request, jsonify
 
 import handler.emby as emby
-import handler.moviepilot as moviepilot
+import handler.tmdb as tmdb
 import config_manager
 import constants
 from handler.telegram import send_telegram_message
 from extensions import admin_required
-from database import user_db, settings_db, connection
-from tasks.helpers import is_movie_subscribable
+from database import user_db, request_db, media_db, connection
 
 # 创建一个新的蓝图
 user_management_bp = Blueprint('user_management_bp', __name__)
@@ -303,7 +303,7 @@ def delete_user(user_id):
 def get_pending_subscriptions():
     """获取所有待审核的订阅请求。"""
     try:
-        requests = user_db.get_pending_subscription_requests()
+        requests = request_db.get_pending_subscription_requests()
         return jsonify(requests)
     except Exception as e:
         return jsonify({"status": "error", "message": "获取列表失败"}), 500
@@ -311,7 +311,9 @@ def get_pending_subscriptions():
 @user_management_bp.route('/api/admin/subscriptions/batch-approve', methods=['POST'])
 @admin_required
 def batch_approve_subscriptions():
-    """【V5 - 逻辑修正 & 通知合并版】批量批准订阅请求。"""
+    """【V8 - 订阅来源精确溯源版】
+    - 逐条处理批准请求，确保每个媒体项的订阅来源都精确记录了原始申请人的用户ID。
+    """
     data = request.json
     request_ids = data.get('ids', [])
 
@@ -319,15 +321,82 @@ def batch_approve_subscriptions():
         return jsonify({"status": "error", "message": "未提供任何订阅请求ID"}), 400
 
     try:
-        # ★★★ 核心修改 1/3：不再检查发行日期，管理员的“批准”就是最高指令 ★★★
-        # 直接获取所有待批准请求的详情，用于后续通知
-        requests_to_approve = user_db.get_multiple_subscription_request_details(request_ids)
+        requests_to_approve = request_db.get_multiple_subscription_request_details(request_ids)
         if not requests_to_approve:
             return jsonify({"status": "ok", "message": "请求已处理或不存在。"}), 200
 
-        # ★★★ 核心修改 2/3：无条件批准所有请求 ★★★
-        approve_ids = [req['id'] for req in requests_to_approve]
-        user_db.batch_approve_subscription_requests(approve_ids, 'admin')
+        # (并发获取元数据的逻辑保持不变)
+        config = config_manager.APP_CONFIG
+        tmdb_api_key = config.get(constants.CONFIG_OPTION_TMDB_API_KEY)
+        media_info_to_subscribe = []
+        
+        def fetch_details(req):
+            try:
+                details = None
+                if req['item_type'] == 'Movie':
+                    details = tmdb.get_movie_details(int(req['tmdb_id']), tmdb_api_key)
+                elif req['item_type'] == 'Series':
+                    details = tmdb.get_tv_details(int(req['tmdb_id']), tmdb_api_key)
+                
+                if details:
+                    return {
+                        'tmdb_id': req['tmdb_id'], 'item_type': req['item_type'],
+                        'title': details.get('title') or details.get('name') or req['item_name'],
+                        'original_title': details.get('original_title') or details.get('original_name'),
+                        'release_date': details.get('release_date') or details.get('first_air_date'),
+                        'poster_path': details.get('poster_path'), 'overview': details.get('overview'),
+                        '_original_request': req 
+                    }
+            except Exception as e:
+                logger.error(f"批准请求时获取TMDb详情失败 (ID: {req['tmdb_id']}): {e}")
+            return None
+
+        with concurrent.futures.ThreadPoolExecutor(max_workers=5) as executor:
+            for result in executor.map(fetch_details, requests_to_approve):
+                if result:
+                    media_info_to_subscribe.append(result)
+
+        if not media_info_to_subscribe:
+            request_db.batch_approve_subscription_requests([req['id'] for req in requests_to_approve], 'admin')
+            return jsonify({"status": "error", "message": "无法获取任何媒体的详细信息，但已将请求标记为已处理。"}), 500
+
+        # ★★★ 核心修改：放弃按类型分组，改为逐条处理，确保来源精确 ★★★
+        approved_count = 0
+        notifications_to_send = {} # 用于合并通知
+
+        for media_info in media_info_to_subscribe:
+            try:
+                original_req = media_info['_original_request']
+                
+                # 1. 构建精确的、包含原始用户ID的订阅源
+                precise_source = {
+                    "type": "user_request", 
+                    "request_id": original_req['id'], 
+                    "user_id": original_req['emby_user_id'] # <-- 关键！使用原始申请人的ID
+                }
+
+                # 2. 为单个媒体项调用 update_subscription_status
+                media_db.update_subscription_status(
+                    tmdb_ids=media_info['tmdb_id'],
+                    item_type=media_info['item_type'],
+                    new_status='WANTED',
+                    source=precise_source, # <--- 传入精确的来源
+                    media_info_list=[media_info]
+                )
+                
+                # 3. 更新原始请求的状态
+                request_db.update_subscription_request_status(original_req['id'], 'approved', 'admin')
+                approved_count += 1
+
+                # 4. 收集通知信息 (这部分逻辑不变)
+                subscriber_id = original_req.get('emby_user_id')
+                if subscriber_id not in notifications_to_send:
+                    notifications_to_send[subscriber_id] = []
+                notifications_to_send[subscriber_id].append(original_req)
+
+            except Exception as e:
+                logger.error(f"处理已批准的请求 {media_info.get('_original_request', {}).get('id')} 时出错: {e}", exc_info=True)
+                continue # 单个失败不影响其他
         
         # 按用户ID对要通知的请求进行分组
         notifications_to_send = {}
@@ -352,7 +421,7 @@ def batch_approve_subscriptions():
             except Exception as e:
                 logger.error(f"为用户 {subscriber_id} 发送批量批准的合并通知时发生错误: {e}")
 
-        final_message = f"成功批准了 {len(approve_ids)} 条订阅，它们将由后台任务自动处理。"
+        final_message = f"成功批准了 {approved_count} 条订阅，它们已加入待订阅队列。"
         return jsonify({"status": "ok", "message": final_message}), 200
         
     except Exception as e:
@@ -372,9 +441,9 @@ def batch_reject_subscriptions():
 
     try:
         # ★★★ 核心修改 1/3：在更新数据库前，先获取这些请求的详细信息用于后续通知 ★★★
-        requests_to_notify = user_db.get_multiple_subscription_request_details(request_ids)
+        requests_to_notify = request_db.get_multiple_subscription_request_details(request_ids)
         
-        updated_count = user_db.batch_reject_subscription_requests(request_ids, reason)
+        updated_count = request_db.batch_reject_subscription_requests(request_ids, reason)
         
         # ★★★ 核心修改 2/3：按用户ID对要通知的请求进行分组 ★★★
         notifications_to_send = {}

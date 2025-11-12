@@ -5,7 +5,7 @@ from datetime import datetime
 from config_manager import APP_CONFIG, get_proxies_for_requests
 from handler.tmdb import get_movie_details, get_tv_details
 from handler.emby import get_emby_item_details
-from database import user_db
+from database import user_db, request_db
 import constants
 
 logger = logging.getLogger(__name__)
@@ -167,7 +167,7 @@ def send_media_notification(item_details: dict, notification_type: str = 'new', 
         )
         
         # --- 5. 查询订阅者 ---
-        subscribers = user_db.get_subscribers_by_tmdb_id(tmdb_id) if tmdb_id else []
+        subscribers = request_db.get_subscribers_by_tmdb_id(tmdb_id) if tmdb_id else []
         subscriber_chat_ids = {user_db.get_user_telegram_chat_id(sub['emby_user_id']) for sub in subscribers}
         subscriber_chat_ids = {chat_id for chat_id in subscriber_chat_ids if chat_id}
 
