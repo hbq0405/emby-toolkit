@@ -135,9 +135,15 @@ def _perform_list_collection_health_check(
         for item_type, requests in requests_by_type.items():
             if requests:
                 try:
-                    media_db.batch_request_media_subscriptions(media_requests=requests, item_type=item_type)
+                    media_db.update_subscription_status(
+                        tmdb_ids=[req['tmdb_id'] for req in requests],
+                        item_type=item_type,
+                        new_status='WANTED',
+                        media_info_list=requests,
+                        source={"type": "collection", "id": collection_db_record.get('id'), "name": collection_name}
+                    )
                 except Exception as e:
-                    logger.error(f"为合集 '{collection_name}' 批量订阅 '{item_type}' 时失败: {e}", exc_info=True)
+                    logger.error(f"为合集 '{collection_name}' 批量请求订阅 '{item_type}' 时失败: {e}", exc_info=True)
 
     # 返回值 (现在变得极其简单，因为输入的 tmdb_items 已经是标准格式，直接返回即可)
     return {

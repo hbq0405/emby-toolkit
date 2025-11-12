@@ -363,70 +363,59 @@ def api_search_studios():
 
 
 # ======================================================================
-# ★★★ 通用订阅操作 API ★★★
+# ★★★ 通用状态操作 API ★★★
 # ======================================================================
 
-@media_api_bp.route('/subscription/request', methods=['POST'])
+@media_api_bp.route('/subscription/status', methods=['POST'])
 @admin_required
-def api_request_subscription():
+def api_unified_subscription_status():
     """
-    通用的、请求订阅单个媒体项的入口。
+    【统一】请求变更一个或多个媒体项状态的入口。
     所有前端的手动订阅操作都应调用此接口。
+    请求体应包含一个 'requests' 列表，每个元素是一个媒体请求字典，
+    包含 'tmdb_id', 'item_type', 'source' (字典) 和可选的媒体元数据。
     """
     data = request.json
-    tmdb_id = data.get('tmdb_id')
-    item_type = data.get('item_type')
-    source = data.get('source') # source 是一个描述来源的字典, e.g., {"type": "manual"}
-
-    # 对参数进行严格校验
-    if not all([tmdb_id, item_type, source]):
-        return jsonify({"error": "请求中缺少 'tmdb_id', 'item_type' 或 'source' 参数"}), 400
-    if not isinstance(source, dict):
-        return jsonify({"error": "'source' 参数必须是一个字典"}), 400
-
-    try:
-        media_db.request_media_subscription(
-            tmdb_id=tmdb_id,
-            item_type=item_type,
-            source=source
-        )
-        
-        logger.info(f"API: 成功为媒体 (TMDb ID: {tmdb_id}) 创建订阅请求。")
-        return jsonify({"message": f"已为 TMDb ID {tmdb_id} 创建订阅请求。"}), 200
-
-    except Exception as e:
-        logger.error(f"API /subscription/request 发生错误: {e}", exc_info=True)
-        return jsonify({"error": "服务器在创建订阅请求时发生内部错误"}), 500
-    
-@media_api_bp.route('/subscription/batch_request', methods=['POST'])
-@admin_required
-def api_batch_request_subscriptions():
-    """
-    【新增】通用的、批量请求订阅多个媒体项的入口。
-    """
-    data = request.json
-    item_type = data.get('item_type')
     requests_list = data.get('requests') # 这是一个包含多个订阅请求的列表
 
     # 参数校验
-    if not all([item_type, requests_list]):
-        return jsonify({"error": "请求中缺少 'item_type' 或 'requests' 列表"}), 400
     if not isinstance(requests_list, list) or not requests_list:
         return jsonify({"error": "'requests' 必须是一个非空列表"}), 400
 
-    try:
-        media_db.batch_request_media_subscriptions(
-            media_requests=requests_list,
-            item_type=item_type
-        )
-        
-        count = len(requests_list)
-        logger.info(f"API: 成功提交了 {count} 个媒体项的批量订阅请求。")
-        return jsonify({"message": f"已成功提交 {count} 个媒体项的批量订阅请求。"}), 200
+    processed_count = 0
+    errors = []
 
-    except Exception as e:
-        logger.error(f"API /subscription/batch_request 发生错误: {e}", exc_info=True)
-        return jsonify({"error": "服务器在处理批量订阅时发生内部错误"}), 500
+    for req in requests_list:
+        tmdb_id = req.get('tmdb_id')
+        item_type = req.get('item_type')
+        source = req.get('source') # 每个请求携带自己的 source
+
+        if not all([tmdb_id, item_type, source]) or not isinstance(source, dict):
+            errors.append(f"无效的请求项，缺少 tmdb_id, item_type 或 source，或 source 不是字典: {req}")
+            logger.warning(f"统一订阅请求中发现无效项，跳过: {req}")
+            continue
+        
+        try:
+            media_db.update_subscription_status(
+                tmdb_ids=tmdb_id, # 单个 tmdb_id
+                item_type=item_type,
+                new_status='WANTED',
+                source=source, # 使用请求中提供的 source
+                media_info_list=[req] # 传递单个媒体信息列表
+            )
+            processed_count += 1
+        except Exception as e:
+            errors.append(f"处理 TMDb ID {tmdb_id} ({item_type}) 时发生错误: {e}")
+            logger.error(f"API /subscription/status 处理 TMDb ID {tmdb_id} 发生错误: {e}", exc_info=True)
+
+    if processed_count > 0:
+        message = f"已成功提交 {processed_count} 个媒体项的统一状态变更请求。"
+        if errors:
+            message += f" 但有 {len(errors)} 个请求处理失败。"
+        logger.info(f"API: {message}")
+        return jsonify({"message": message, "errors": errors}), 200
+    else:
+        return jsonify({"error": "没有有效的媒体项被成功处理。", "errors": errors}), 400
     
 @media_api_bp.route('/subscription/cancel', methods=['POST'])
 @admin_required
@@ -443,7 +432,13 @@ def api_cancel_subscription():
 
     try:
         # 调用我们早已准备好的数据库函数来执行操作
-        media_db.cancel_media_subscription(tmdb_id, item_type)
+        media_db.update_subscription_status(
+            tmdb_ids=tmdb_id,
+            item_type=item_type,
+            new_status='NONE', # 取消订阅应设置为 'NONE'
+            source={"type": "api_cancel_subscription"}, # 添加来源信息
+            media_info_list=[{'tmdb_id': tmdb_id, 'item_type': item_type}]
+        )
         
         logger.info(f"API: 成功取消对媒体 (TMDb ID: {tmdb_id}) 的订阅。")
         return jsonify({"message": f"已取消对 TMDb ID {tmdb_id} 的订阅。"}), 200
@@ -467,7 +462,13 @@ def api_ignore_subscription():
 
     try:
         # ★★★ 调用我们刚刚在数据库层创建的“忽略”函数 ★★★
-        media_db.ignore_media_item(tmdb_id, item_type)
+        media_db.update_subscription_status(
+            tmdb_ids=tmdb_id,
+            item_type=item_type,
+            new_status='IGNORED', # 忽略订阅应设置为 'IGNORED'
+            source={"type": "api_ignore_subscription"}, # 添加来源信息
+            media_info_list=[{'tmdb_id': tmdb_id, 'item_type': item_type}]
+        )
         
         logger.info(f"API: 成功将媒体 (TMDb ID: {tmdb_id}) 标记为忽略。")
         return jsonify({"message": f"已将 TMDb ID {tmdb_id} 标记为忽略。"}), 200

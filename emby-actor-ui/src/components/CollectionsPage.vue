@@ -27,33 +27,6 @@
         </template>
         <template #extra>
           <n-space>
-            <!-- ★ 批量操作按钮 -->
-            <n-dropdown
-              v-if="selectedCollectionIds.length > 0"
-              trigger="click"
-              :options="batchActions"
-              @select="handleBatchAction"
-            >
-              <n-button type="primary">
-                批量操作 ({{ selectedCollectionIds.length }})
-                <template #icon><n-icon :component="CaretDownIcon" /></template>
-              </n-button>
-            </n-dropdown>
-
-            <n-popconfirm @positive-click="subscribeAllMissingMovies" :disabled="globalStats.totalMissingMovies === 0">
-              <template #trigger>
-                <n-tooltip>
-                  <template #trigger>
-                    <n-button circle :loading="isSubscribingAll" :disabled="globalStats.totalMissingMovies === 0">
-                      <template #icon><n-icon :component="CloudDownloadIcon" /></template>
-                    </n-button>
-                  </template>
-                  一键订阅所有缺失
-                </n-tooltip>
-              </template>
-              确定要将所有 {{ globalStats.totalMissingMovies }} 部缺失的电影提交到 MoviePilot 订阅吗？
-            </n-popconfirm>
-
             <n-tooltip>
               <template #trigger>
                 <n-button @click="triggerFullRefresh" :loading="isRefreshing" circle>
@@ -65,8 +38,7 @@
           </n-space>
         </template>
         <n-alert title="操作提示" type="info" style="margin-top: 24px;">
-          <li>点击 <n-icon :component="SyncOutline" /> 可扫描Emby所有原生合集并显示缺失。</li><br />
-          <li>点击 <n-icon :component="CloudDownloadIcon" /> 可一键订阅所有缺失，也可以通过任务中心智能订阅定期检查缺失并订阅。</li>
+          <li>点击 <n-icon :component="SyncOutline" /> 可扫描Emby所有原生合集并显示缺失。</li>
         </n-alert>
       </n-page-header>
 
@@ -169,22 +141,10 @@
                   <template #cover><img :src="getTmdbImageUrl(movie.poster_path)" class="movie-poster" /></template>
                   <div class="movie-info"><div class="movie-title">{{ movie.title }}<br />({{ extractYear(movie.release_date) || '未知年份' }})</div></div>
                   <template #action>
-                    <!-- ★★★ 核心修改：使用按钮组 ★★★ -->
-                    <n-button-group style="width: 100%;">
-                      <n-button @click="subscribeMovie(movie)" type="primary" size="small" :loading="subscribing[movie.tmdb_id]" style="width: 50%;">
-                        <template #icon><n-icon :component="CloudDownloadIcon" /></template>
-                        订阅
-                      </n-button>
-                      <n-tooltip>
-                        <template #trigger>
-                          <n-button @click="ignoreMovie(movie)" type="tertiary" size="small" ghost style="width: 50%;">
-                            <template #icon><n-icon :component="BanIcon" /></template>
-                            忽略
-                          </n-button>
-                        </template>
-                        忽略后，此电影将不再被视为缺失
-                      </n-tooltip>
-                    </n-button-group>
+                    <n-tag type="warning" size="small" style="width: 100%; justify-content: center;">
+                      <template #icon><n-icon :component="CloudDownloadIcon" /></template>
+                      待订阅
+                    </n-tag>
                   </template>
                 </n-card>
               </n-gi>
@@ -248,7 +208,7 @@
 import { ref, onMounted, onBeforeUnmount, computed, watch, h } from 'vue';
 import axios from 'axios';
 import { NLayout, NPageHeader, NEmpty, NTag, NButton, NSpace, NIcon, useMessage, useDialog, NTooltip, NGrid, NGi, NCard, NImage, NEllipsis, NSpin, NAlert, NModal, NTabs, NTabPane, NPopconfirm, NCheckbox, NDropdown, NInput, NSelect, NButtonGroup } from 'naive-ui';
-import { SyncOutline, AlbumsOutline as AlbumsIcon, EyeOutline as EyeIcon, CloudDownloadOutline as CloudDownloadIcon, CloseCircleOutline as CloseCircleIcon, CheckmarkCircleOutline as CheckmarkCircle, CaretDownOutline as CaretDownIcon, ArrowUpOutline as ArrowUpIcon, ArrowDownOutline as ArrowDownIcon, BanOutline as BanIcon } from '@vicons/ionicons5';
+import { SyncOutline, AlbumsOutline as AlbumsIcon, EyeOutline as EyeIcon, CloudDownloadOutline as CloudDownloadIcon, CheckmarkCircleOutline as CheckmarkCircle, ArrowUpOutline as ArrowUpIcon, ArrowDownOutline as ArrowDownIcon } from '@vicons/ionicons5';
 import { format } from 'date-fns';
 import { useConfig } from '../composables/useConfig.js';
 
@@ -264,10 +224,9 @@ const collections = ref([]);
 const isInitialLoading = ref(true);
 const isRefreshing = ref(false);
 const error = ref(null);
-const subscribing = ref({});
+const subscribing = ref({}); // 订阅状态不再需要，但暂时保留以防万一
 const showModal = ref(false);
 const selectedCollection = ref(null);
-const isSubscribingAll = ref(false);
 const displayCount = ref(50);
 const INCREMENT = 50;
 const loaderRef = ref(null);
@@ -327,59 +286,11 @@ const toggleSelection = (collectionId, event, index) => {
   lastSelectedIndex.value = index;
 };
 
-const batchActions = computed(() => [
-  {
-    label: '标记为已订阅',
-    key: 'markAsSubscribed',
-    icon: () => h(NIcon, { component: CheckmarkCircle })
-  }
-]);
+const batchActions = computed(() => []); // 移除批量操作
 
 const handleBatchAction = (key) => {
-  if (key === 'markAsSubscribed') {
-    const selectedWithMissing = collections.value.filter(c => 
-      selectedCollectionIds.value.includes(c.emby_collection_id) && c.has_missing
-    );
-    if (selectedWithMissing.length === 0) {
-      message.info('选中的合集中没有需要标记的缺失电影。');
-      return;
-    }
-    
-    dialog.warning({
-      title: '确认操作',
-      content: `确定要将选中的 ${selectedWithMissing.length} 个合集中的所有“缺失”电影的状态标记为“已订阅”吗？`,
-      positiveText: '确定',
-      negativeText: '取消',
-      onPositiveClick: async () => {
-        const tmdbIdsToMark = [];
-        selectedWithMissing.forEach(c => {
-          c.movies.forEach(m => {
-            if (m.status === 'missing') {
-              tmdbIdsToMark.push(m.tmdb_id);
-            }
-          });
-        });
-
-        if (tmdbIdsToMark.length === 0) {
-          message.info('没有找到需要标记的缺失电影。');
-          return;
-        }
-
-        try {
-          await axios.post('/api/media/batch_update_status', {
-            tmdb_ids: tmdbIdsToMark,
-            item_type: 'Movie',
-            new_status: 'WANTED'
-          });
-          message.success(`成功将 ${tmdbIdsToMark.length} 部电影标记为已订阅！`);
-          await loadCachedData();
-          selectedCollectionIds.value = [];
-        } catch (err) {
-          message.error(err.response?.data?.error || '批量标记失败。');
-        }
-      }
-    });
-  }
+  // 批量操作已移除，此函数不再需要实际逻辑
+  message.info('批量操作功能已转移到统一订阅处理模块。');
 };
 
 const getMovieCountByStatus = (collection, status) => {
@@ -554,82 +465,11 @@ watch(isTaskRunning, (isRunning, wasRunning) => {
 
 watch([searchQuery, filterStatus, sortKey, sortOrder], () => {
   displayCount.value = 50;
-  selectedCollectionIds.value = [];
-  lastSelectedIndex.value = null;
 });
 
 const openMissingMoviesModal = (collection) => {
   selectedCollection.value = collection;
   showModal.value = true;
-};
-
-const updateMovieSubscriptionStatus = async (movie, newStatus) => {
-  try {
-    await axios.post('/api/subscription/request', {
-      tmdb_id: movie.tmdb_id,
-      item_type: 'Movie',
-      source: { type: 'manual_request', user: 'admin' } // 假设是管理员手动操作
-    });
-    movie.status = 'subscribed';
-    message.success(`《${movie.title}》已加入订阅队列`);
-  } catch (err) {
-    message.error(err.response?.data?.error || '操作失败');
-  }
-};
-
-const cancelMovieSubscription = async (movie) => {
-  try {
-    await axios.post('/api/subscription/cancel', {
-      tmdb_id: movie.tmdb_id,
-      item_type: 'Movie'
-    });
-    movie.status = 'missing';
-    message.success(`已取消对《${movie.title}》的订阅`);
-  } catch (err) {
-    message.error(err.response?.data?.error || '操作失败');
-  }
-};
-
-const subscribeMovie = async (movie) => {
-  subscribing.value[movie.tmdb_id] = true;
-  try {
-    await updateMovieSubscriptionStatus(movie, 'WANTED');
-  } finally {
-    subscribing.value[movie.tmdb_id] = false;
-  }
-};
-
-const unsubscribeMovie = (movie) => {
-  cancelMovieSubscription(movie);
-};
-
-const ignoreMovie = async (movie) => {
-  // 使用 dialog 再次确认，防止误操作
-  dialog.warning({
-    title: '确认忽略',
-    content: `确定要忽略《${movie.title}》吗？忽略后，它将不会再出现在任何缺失列表中。`,
-    positiveText: '确定',
-    negativeText: '取消',
-    onPositiveClick: async () => {
-      try {
-        // 调用我们刚刚创建的后端 API
-        await axios.post('/api/subscription/ignore', {
-          tmdb_id: movie.tmdb_id,
-          item_type: 'Movie'
-        });
-        
-        // 从列表中移除，实现即时反馈
-        const index = selectedCollection.value.movies.indexOf(movie);
-        if (index > -1) {
-          selectedCollection.value.movies.splice(index, 1);
-        }
-        
-        message.success(`已忽略《${movie.title}》`);
-      } catch (err) {
-        message.error(err.response?.data?.error || '忽略操作失败');
-      }
-    }
-  });
 };
 
 const getEmbyUrl = (itemId) => {
