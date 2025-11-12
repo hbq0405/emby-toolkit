@@ -439,11 +439,28 @@ def api_unified_subscription_status():
                 current_status = media_details_map.get(tmdb_id, {}).get('subscription_status')
                 
                 if current_status == 'SUBSCRIBED':
-                    logger.info(f"  ➜ 检测到对已订阅项 (TMDb ID: {tmdb_id}) 的取消请求，将通知MoviePilot取消订阅...")
-                    season_num = media_details_map.get(tmdb_id, {}).get('season_number')
+                    logger.info(f"  ➜ 检测到对已订阅项 (TMDb ID: {tmdb_id}, 类型: {item_type}) 的取消请求...")
+                    
+                    # ★★★ 核心修复：智能判断要发给 MoviePilot 的真实 ID ★★★
+                    id_for_mp = tmdb_id # 默认ID
+                    season_for_mp = None # 默认没有季号
+
+                    if item_type == 'Season':
+                        media_details = media_details_map.get(tmdb_id, {})
+                        parent_id = media_details.get('parent_series_tmdb_id')
+                        season_num = media_details.get('season_number')
+                        
+                        if parent_id and season_num is not None:
+                            id_for_mp = parent_id
+                            season_for_mp = season_num
+                        else:
+                            error_msg = f"处理季 (TMDb ID: {tmdb_id}) 失败：无法在数据库中找到其父剧集ID或季号。"
+                            errors.append(error_msg)
+                            logger.error(f"API /subscription/status: {error_msg}")
+                            continue # 跳过这个有问题的请求
                     
                     config = config_manager.APP_CONFIG
-                    if not moviepilot.cancel_subscription(tmdb_id, item_type, config, season_num):
+                    if not moviepilot.cancel_subscription(id_for_mp, item_type, config, season_for_mp):
                         error_msg = f"处理 TMDb ID {tmdb_id} 失败：在 MoviePilot 中取消订阅失败，请检查 MP 日志。"
                         errors.append(error_msg)
                         logger.error(f"API /subscription/status: {error_msg}")

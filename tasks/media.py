@@ -506,11 +506,28 @@ def task_populate_metadata_cache(processor, batch_size: int = 50, force_full_upd
                             # 动态生成 SQL 语句
                             columns = [k for k, v in metadata.items() if v is not None]
                             values = [v for v in metadata.values() if v is not None]
-                            
                             columns_str = ', '.join(columns)
                             placeholders_str = ', '.join(['%s'] * len(values))
                             
-                            update_clauses = [f"{col} = EXCLUDED.{col}" for col in columns]
+                            # ★★★ 核心修改：为 emby_item_ids_json 生成特殊的合并更新逻辑 ★★★
+                            update_clauses = []
+                            for col in columns:
+                                if col == 'emby_item_ids_json':
+                                    # 对于 ItemID 列表，执行合并去重，而不是简单覆盖
+                                    update_clauses.append("""
+                                        emby_item_ids_json = (
+                                            SELECT jsonb_agg(DISTINCT elem)
+                                            FROM (
+                                                SELECT jsonb_array_elements_text(media_metadata.emby_item_ids_json) AS elem
+                                                UNION ALL
+                                                SELECT jsonb_array_elements_text(EXCLUDED.emby_item_ids_json) AS elem
+                                            ) AS combined
+                                        )
+                                    """)
+                                else:
+                                    # 其他所有字段，正常覆盖更新
+                                    update_clauses.append(f"{col} = EXCLUDED.{col}")
+                            
                             update_str = ', '.join(update_clauses)
 
                             sql = f"""

@@ -242,13 +242,40 @@ def task_auto_subscribe(processor):
 
             # 2.3 执行订阅
             success = False
-            if item['item_type'] == 'Movie':
+            item_type = item['item_type']
+
+            if item_type == 'Movie':
                 mp_payload = {"name": item['title'], "tmdbid": int(item['tmdb_id']), "type": "电影"}
                 success = moviepilot.subscribe_with_custom_payload(mp_payload, config)
-            elif item['item_type'] == 'Series':
+
+            elif item_type == 'Series':
                 series_info = {"tmdb_id": int(item['tmdb_id']), "item_name": item['title']}
-                # smart_subscribe_series 成功时返回列表，失败时返回 None
                 success = moviepilot.smart_subscribe_series(series_info, config) is not None
+
+            # ★★★ 新增：处理季订阅的专属逻辑 ★★★
+            elif item_type == 'Season':
+                parent_tmdb_id = item.get('parent_series_tmdb_id')
+                season_num = item.get('season_number')
+                
+                # ★ 核心修改：不再相信传入的 title，而是主动查询父剧集标题 ★
+                series_name = media_db.get_series_title_by_tmdb_id(parent_tmdb_id)
+
+                # 如果因为某种原因查不到父剧名，就使用季自己的标题作为最后的备用方案
+                if not series_name:
+                    series_name = item.get('title')
+
+                if parent_tmdb_id and season_num is not None:
+                    logger.info(f"  ➜ 检测到季订阅请求：为剧集《{series_name}》(ID: {parent_tmdb_id}) 订阅第 {season_num} 季。")
+                    mp_payload = {
+                        "name": series_name,
+                        "tmdbid": int(parent_tmdb_id),
+                        "type": "电视剧",
+                        "season": season_num
+                    }
+                    success = moviepilot.subscribe_with_custom_payload(mp_payload, config)
+                else:
+                    logger.error(f"  ➜ 订阅季《{item.get('season_title')}》失败：缺少父剧集ID或季号。")
+                    success = False
 
             # 2.4 根据订阅结果更新状态和发送通知
             if success:
@@ -256,16 +283,23 @@ def task_auto_subscribe(processor):
                 
                 # a. 将状态从 WANTED 更新为 SUBSCRIBED
                 media_db.update_subscription_status(
-                    tmdb_ids=item['tmdb_id'],
-                    item_type=item['item_type'],
+                    tmdb_ids=item['tmdb_id'], # 更新的是季/电影自己的记录
+                    item_type=item_type,
                     new_status='SUBSCRIBED'
                 )
 
                 # b. 扣除配额
                 settings_db.decrement_subscription_quota()
 
-                # c. 准备通知
-                item_display_name = f"{item['item_type']}《{item['title']}》"
+                # c. 准备通知 (智能拼接通知标题)
+                item_display_name = ""
+                if item_type == 'Season':
+                    season_num = item.get('season_number')
+                    default_season_title = f"第{season_num}季" if season_num is not None else ""
+                    season_display_title = item.get('season_title', default_season_title)
+                    item_display_name = f"剧集《{item['title']} - {season_display_title}》"
+                else:
+                    item_display_name = f"{item_type}《{item['title']}》"
                 
                 # 解析订阅来源，找出需要通知的用户
                 sources = item.get('subscription_sources_json', [])

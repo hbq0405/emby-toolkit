@@ -71,97 +71,172 @@ def _perform_list_collection_health_check(
     tmdb_api_key: str
 ) -> dict:
     """
-    【V8 - 增加未上映处理】
-    - 检测到缺失媒体时，会判断其上映日期。
-    - 如果尚未上映，则将其状态设置为 PENDING_RELEASE。
-    - 如果已经上映，则设置为 WANTED。
+    榜单健康检查
     """
+    collection_id = collection_db_record.get('id')
     collection_name = collection_db_record.get('name', '未知合集')
     logger.info(f"  ➜ 榜单合集 '{collection_name}'，开始进行健康度分析...")
 
-    in_library_tmdb_ids = set(tmdb_to_emby_item_map.keys())
-    # ★★★ 核心修改 1/3: 创建两个列表，分别存放已上映和未上映的缺失项 ★★★
+    # 获取上一次同步时生成的媒体列表 
+    old_media_map = {}
+    if collection_db_record.get('generated_media_info_json'):
+        try:
+            # 我们需要 TMDB ID 和 item_type 来执行清理
+            old_items = json.loads(collection_db_record['generated_media_info_json'])
+            old_media_map = {str(item['tmdb_id']): item['media_type'] for item in old_items}
+        except (json.JSONDecodeError, KeyError, TypeError):
+            logger.warning(f"  -> 解析合集 '{collection_name}' 的历史媒体列表失败或格式不兼容，将跳过来源清理。")
+
+    # 提前加载所有在库的“季”的信息，用于快速比对
+    in_library_seasons_set = set()
+    try:
+        with connection.get_db_connection() as conn:
+            cursor = conn.cursor()
+            cursor.execute("SELECT parent_series_tmdb_id, season_number FROM media_metadata WHERE item_type = 'Season' AND in_library = TRUE")
+            for row in cursor.fetchall():
+                in_library_seasons_set.add((row['parent_series_tmdb_id'], row['season_number']))
+    except Exception as e_db:
+        logger.error(f"  -> 获取在库季列表时发生数据库错误: {e_db}", exc_info=True)
+
+    in_library_top_level_tmdb_ids = set(tmdb_to_emby_item_map.keys())
     missing_released_items = []
     missing_unreleased_items = []
+    # 新增一个列表，专门存放需要确保存在的父剧集信息 
+    parent_series_to_ensure_exist = []
     today_str = datetime.now().strftime('%Y-%m-%d')
 
-    with ThreadPoolExecutor(max_workers=5) as executor:
-        future_to_item = {
-            executor.submit(
-                tmdb.get_movie_details if item['media_type'] != 'Series' else tmdb.get_tv_details, 
-                item['tmdb_id'], tmdb_api_key
-            ): item for item in tmdb_items
-        }
-        
-        for future in as_completed(future_to_item):
-            item_def = future_to_item[future]
-            tmdb_id = str(item_def.get('tmdb_id'))
-            media_type = item_def.get('media_type')
-            
-            if not tmdb_id or not media_type:
-                continue
+    for item_def in tmdb_items:
+        tmdb_id = str(item_def.get('tmdb_id'))
+        media_type = item_def.get('media_type')
+        season_num = item_def.get('season')
 
-            # 检查是否在库 (包括修正前的ID)
+        is_in_library = False
+        if season_num is not None and media_type == 'Series':
+            if (tmdb_id, season_num) in in_library_seasons_set:
+                is_in_library = True
+        else:
             original_id = corrected_id_to_original_id_map.get(tmdb_id, tmdb_id)
-            if tmdb_id in in_library_tmdb_ids or original_id in in_library_tmdb_ids:
-                continue
+            if tmdb_id in in_library_top_level_tmdb_ids or original_id in in_library_top_level_tmdb_ids:
+                is_in_library = True
+        
+        if is_in_library:
+            continue
 
-            try:
-                details = future.result()
-                if not details: continue
-                
-                release_date = details.get("release_date") or details.get("first_air_date", '')
-                item_details_for_db = {
-                    'tmdb_id': tmdb_id,
-                    'media_type': media_type,
-                    'title': details.get('title') or details.get('name'),
-                    'original_title': details.get('original_title') or details.get('original_name'),
-                    'release_date': release_date,
-                    'poster_path': details.get('poster_path'),
-                    'source': {
-                        "type": "collection", 
-                        "id": collection_db_record.get('id'), 
-                        "name": collection_name
-                    }
-                }
+        try:
+            details = None
+            item_type_for_db = media_type
 
-                # ★★★ 核心修改 2/3: 根据上映日期，将缺失项分类 ★★★
-                if release_date and release_date > today_str:
-                    missing_unreleased_items.append(item_details_for_db)
-                else:
-                    missing_released_items.append(item_details_for_db)
+            if season_num is not None and media_type == 'Series':
+                details = tmdb.get_tv_season_details(tmdb_id, season_num, tmdb_api_key)
+                if details:
+                    item_type_for_db = 'Season'
+                    parent_details = tmdb.get_tv_details(tmdb_id, tmdb_api_key)
+                    details['parent_series_tmdb_id'] = tmdb_id
+                    details['parent_title'] = parent_details.get('name', '')
+                    details['parent_poster_path'] = parent_details.get('poster_path')
 
-            except Exception as e:
-                logger.error(f"为合集 '{collection_name}' 获取 {tmdb_id} 详情时发生异常: {e}", exc_info=True)
+                    # ★★★ 当发现缺失的季时，立即登记父剧集 ★★★
+                    parent_series_to_ensure_exist.append({
+                        'tmdb_id': tmdb_id,
+                        'item_type': 'Series',
+                        'title': parent_details.get('name'),
+                        'original_title': parent_details.get('original_name'),
+                        'release_date': parent_details.get('first_air_date'),
+                        'release_year': parent_details.get('first_air_date', '----').split('-')[0],
+                        'poster_path': parent_details.get('poster_path')
+                    })
+            else:
+                details = tmdb.get_movie_details(tmdb_id, tmdb_api_key) if media_type == 'Movie' else tmdb.get_tv_details(tmdb_id, tmdb_api_key)
 
-    # ★★★ 核心修改 3/3: 分别对两类缺失项执行不同的状态更新 ★★★
+            if not details: continue
+            
+            release_date = details.get("air_date") or details.get("release_date") or details.get("first_air_date", '')
+            
+            item_details_for_db = {
+                'tmdb_id': str(details.get('id')),
+                'item_type': item_type_for_db,
+                'title': details.get('name') or f"第 {season_num} 季" if item_type_for_db == 'Season' else details.get('title') or details.get('name'),
+                'release_date': release_date,
+                'poster_path': details.get('poster_path') or details.get('parent_poster_path'),
+                'parent_series_tmdb_id': tmdb_id if item_type_for_db == 'Season' else None,
+                'season_number': details.get('season_number'),
+                'source': { "type": "collection", "id": collection_db_record.get('id'), "name": collection_name }
+            }
+
+            if release_date and release_date > today_str:
+                missing_unreleased_items.append(item_details_for_db)
+            else:
+                missing_released_items.append(item_details_for_db)
+
+        except Exception as e:
+            logger.error(f"为合集 '{collection_name}' 获取 {tmdb_id} (季: {season_num}) 详情时发生异常: {e}", exc_info=True)
+
     source_for_subscription = {"type": "collection", "id": collection_db_record.get('id'), "name": collection_name}
 
-    # 处理已上映的缺失项 -> WANTED
-    if missing_released_items:
-        logger.info(f"  -> 检测到 {len(missing_released_items)} 个已上映的缺失媒体，将订阅状态设为 'WANTED'...")
-        requests_by_type = {'Movie': [], 'Series': []}
-        for item in missing_released_items:
-            requests_by_type[item['media_type']].append(item)
-        for item_type, requests in requests_by_type.items():
-            if requests:
-                media_db.update_subscription_status(
-                    tmdb_ids=[req['tmdb_id'] for req in requests], item_type=item_type,
-                    new_status='WANTED', media_info_list=requests, source=source_for_subscription
-                )
+    # 在处理订阅请求之前，先把所有父剧集的档案建立好
+    if parent_series_to_ensure_exist:
+        # 去重，防止重复处理
+        unique_parents = {p['tmdb_id']: p for p in parent_series_to_ensure_exist}.values()
+        logger.info(f"  -> 检测到 {len(unique_parents)} 个缺失的父剧集元数据，正在创建占位记录...")
+        media_db.update_subscription_status(
+            tmdb_ids=[p['tmdb_id'] for p in unique_parents],
+            item_type='Series',
+            new_status='NONE', # ★ 我们只是想创建记录，而不是订阅它，所以用 NONE
+            media_info_list=list(unique_parents)
+        )
 
-    # 处理未上映的缺失项 -> PENDING_RELEASE
-    if missing_unreleased_items:
-        logger.info(f"  -> 检测到 {len(missing_unreleased_items)} 个未上映的媒体，将订阅状态设为 'PENDING_RELEASE'...")
-        requests_by_type = {'Movie': [], 'Series': []}
-        for item in missing_unreleased_items:
-            requests_by_type[item['media_type']].append(item)
+    # 分组并更新季的订阅状态
+    def group_and_update(items_list, status):
+        if not items_list: return
+        logger.info(f"  -> 检测到 {len(items_list)} 个缺失媒体，将订阅状态设为 '{status}'...")
+        
+        requests_by_type = {}
+        for item in items_list:
+            item_type = item['item_type']
+            if item_type not in requests_by_type:
+                requests_by_type[item_type] = []
+            requests_by_type[item_type].append(item)
+            
         for item_type, requests in requests_by_type.items():
-            if requests:
-                media_db.update_subscription_status(
-                    tmdb_ids=[req['tmdb_id'] for req in requests], item_type=item_type,
-                    new_status='PENDING_RELEASE', media_info_list=requests, source=source_for_subscription
-                )
+            logger.info(f"    -> 正在为 {len(requests)} 个 '{item_type}' 类型的项目更新状态...")
+            media_db.update_subscription_status(
+                tmdb_ids=[req['tmdb_id'] for req in requests], 
+                item_type=item_type,
+                new_status=status, 
+                media_info_list=requests, 
+                source=source_for_subscription
+            )
+
+    group_and_update(missing_released_items, 'WANTED')
+    group_and_update(missing_unreleased_items, 'PENDING_RELEASE')
+
+    # 清理掉出榜单的媒体项
+    if old_media_map:
+        # 获取本次新生成的媒体ID集合
+        new_tmdb_ids = {str(item['tmdb_id']) for item in tmdb_items}
+        
+        # 计算差异，找出那些在旧列表里，但不在新列表里的ID
+        removed_tmdb_ids = set(old_media_map.keys()) - new_tmdb_ids
+
+        if removed_tmdb_ids:
+            logger.warning(f"  -> 检测到 {len(removed_tmdb_ids)} 个媒体已从合集 '{collection_name}' 中移除，正在清理其订阅来源...")
+            
+            # 准备要移除的来源信息字典，这个对于本次清理的所有媒体都是一样的
+            source_to_remove = {
+                "type": "collection", 
+                "id": collection_id, 
+                "name": collection_name
+            }
+            
+            # 遍历所有被移除的媒体，并调用数据库函数执行清理
+            for tmdb_id in removed_tmdb_ids:
+                # 从我们之前保存的旧媒体 map 中获取它的 item_type
+                item_type = old_media_map.get(tmdb_id)
+                if item_type:
+                    try:
+                        media_db.remove_subscription_source(tmdb_id, item_type, source_to_remove)
+                    except Exception as e_remove:
+                        logger.error(f"  -> 清理媒体 {tmdb_id} ({item_type}) 的来源时发生错误: {e_remove}", exc_info=True)
     
     total_missing = len(missing_released_items) + len(missing_unreleased_items)
     return {

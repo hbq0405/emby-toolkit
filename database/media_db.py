@@ -122,16 +122,19 @@ def get_media_in_library_status_by_tmdb_ids(tmdb_ids: List[str]) -> Dict[str, bo
     
 def get_all_wanted_media() -> List[Dict[str, Any]]:
     """
-    【统一订阅模块核心】获取所有状态为 'WANTED' 的媒体项。
-    这是统一订阅处理器的唯一数据来源。
+    【V2 - 增加父剧信息版】获取所有状态为 'WANTED' 的媒体项。
+    为 Season 类型的项目额外提供 parent_series_tmdb_id。
     """
     sql = """
         SELECT 
             tmdb_id, item_type, title, release_date, poster_path, overview,
-            season_number, subscription_sources_json
+            -- ★★★ 核心修改：把这两个关键字段也查出来 ★★★
+            parent_series_tmdb_id, 
+            season_number, 
+            subscription_sources_json
         FROM media_metadata
         WHERE subscription_status = 'WANTED'
-        ORDER BY first_requested_at ASC; -- 按请求时间排序，先到先得
+        ORDER BY first_requested_at ASC;
     """
     try:
         with get_db_connection() as conn:
@@ -152,13 +155,11 @@ def update_subscription_status(
     force_unignore: bool = False
 ):
     """
-    【V6 - 终极精简版】
-    根据上游模块的指令精确更新订阅状态，自身不做决策。
-    - 移除了冗余的 'MISSING' 状态处理。
-    - 新增 force_unignore 参数，用于显式地将 IGNORED 状态改回 WANTED。
-    - 默认情况下，WANTED 请求会严格跳过 IGNORED 的媒体项。
+    【V7 - 父子关系终极修复版】
+    - 确保在所有 INSERT 和 UPDATE 操作中，都正确处理 parent_series_tmdb_id 字段。
+    - 将 'NONE' 状态的逻辑彻底改造为安全的 UPSERT，用于创建元数据占位记录。
     """
-    # 1. 标准化输入
+    # 1. 标准化输入 (逻辑不变)
     if isinstance(tmdb_ids, str):
         id_list = [tmdb_ids]
     elif isinstance(tmdb_ids, list):
@@ -172,15 +173,14 @@ def update_subscription_status(
         return
 
     new_status_upper = new_status.upper()
-
-    logger.info(f"  ➜ [状态执行] 准备将 {len(id_list)} 个媒体 (类型: {item_type}) 的状态更新为 '{new_status_upper}' (Force Unignore: {force_unignore})。")
+    logger.info(f"  ➜ [状态执行] 准备将 {len(id_list)} 个媒体 (类型: {item_type}) 的状态更新为 '{new_status_upper}'...")
 
     try:
         with get_db_connection() as conn:
             with conn.cursor() as cursor:
                 from psycopg2.extras import execute_batch
                 
-                # 准备通用的批量数据 (逻辑不变)
+                # ★★★ 核心修复 1/3: 准备数据时，必须包含 parent_series_tmdb_id ★★★
                 data_to_upsert = []
                 media_info_map = {info['tmdb_id']: info for info in media_info_list} if media_info_list else {}
                 
@@ -194,120 +194,95 @@ def update_subscription_status(
                         "release_date": media_info.get('release_date') or None,
                         "poster_path": media_info.get('poster_path'),
                         "season_number": media_info.get('season_number') or None,
+                        "parent_series_tmdb_id": media_info.get('parent_series_tmdb_id') or None, # <-- 关键！
                         "overview": media_info.get('overview')
                     })
 
-                # 2. 根据不同状态，选择不同的SQL逻辑 (WANTED 逻辑不变)
+                # ★★★ 核心修复 2/3: 改造所有 SQL 语句，让它们都认识 parent_series_tmdb_id ★★★
+                
                 if new_status_upper == 'REQUESTED':
-                    # REQUESTED 状态的逻辑和 WANTED 非常相似，都是创建一个新记录或更新现有记录
-                    # 但它的目标状态是 'REQUESTED'
                     sql = """
                         INSERT INTO media_metadata (
-                            tmdb_id, item_type, subscription_status, subscription_sources_json, 
-                            first_requested_at, title, original_title, release_date, poster_path, season_number, overview
+                            tmdb_id, item_type, subscription_status, subscription_sources_json, first_requested_at, 
+                            title, original_title, release_date, poster_path, season_number, parent_series_tmdb_id, overview
                         ) VALUES (
-                            %(tmdb_id)s, %(item_type)s, 'REQUESTED', %(source)s::jsonb,
-                            NOW(), %(title)s, %(original_title)s, %(release_date)s, %(poster_path)s, %(season_number)s, %(overview)s
+                            %(tmdb_id)s, %(item_type)s, 'REQUESTED', %(source)s::jsonb, NOW(),
+                            %(title)s, %(original_title)s, %(release_date)s, %(poster_path)s, %(season_number)s, %(parent_series_tmdb_id)s, %(overview)s
                         )
                         ON CONFLICT (tmdb_id, item_type) DO UPDATE SET
                             subscription_status = 'REQUESTED',
                             subscription_sources_json = media_metadata.subscription_sources_json || EXCLUDED.subscription_sources_json,
-                            first_requested_at = COALESCE(media_metadata.first_requested_at, EXCLUDED.first_requested_at)
-                        -- 只有当媒体不在库中，且当前没有任何订阅意图时，才创建或更新
-                        WHERE media_metadata.in_library = FALSE 
-                          AND media_metadata.subscription_status = 'NONE';
+                            first_requested_at = COALESCE(media_metadata.first_requested_at, EXCLUDED.first_requested_at),
+                            parent_series_tmdb_id = EXCLUDED.parent_series_tmdb_id
+                        WHERE media_metadata.in_library = FALSE AND media_metadata.subscription_status = 'NONE';
                     """
                     execute_batch(cursor, sql, data_to_upsert)
                 
                 elif new_status_upper == 'WANTED':
                     if force_unignore:
-                        # 逻辑 1: 强制反悔
-                        logger.info("  ➜ [状态执行] 执行'强制反悔'逻辑，将 IGNORED -> WANTED。")
                         sql = """
                             UPDATE media_metadata SET 
                                 subscription_status = 'WANTED',
                                 subscription_sources_json = subscription_sources_json || %(source)s::jsonb,
                                 ignore_reason = NULL, last_synced_at = NOW()
-                            WHERE tmdb_id = %(tmdb_id)s AND item_type = %(item_type)s
-                              AND subscription_status = 'IGNORED';
+                            WHERE tmdb_id = %(tmdb_id)s AND item_type = %(item_type)s AND subscription_status = 'IGNORED';
                         """
                         execute_batch(cursor, sql, data_to_upsert)
                     else:
-                        # 逻辑 2: 常规添加
                         sql = """
                             INSERT INTO media_metadata (
-                                tmdb_id, item_type, subscription_status, subscription_sources_json, 
-                                first_requested_at, title, original_title, release_date, poster_path, season_number, overview
+                                tmdb_id, item_type, subscription_status, subscription_sources_json, first_requested_at,
+                                title, original_title, release_date, poster_path, season_number, parent_series_tmdb_id, overview
                             ) VALUES (
-                                %(tmdb_id)s, %(item_type)s, 'WANTED', %(source)s::jsonb,
-                                NOW(), %(title)s, %(original_title)s, %(release_date)s, %(poster_path)s, %(season_number)s, %(overview)s
+                                %(tmdb_id)s, %(item_type)s, 'WANTED', %(source)s::jsonb, NOW(),
+                                %(title)s, %(original_title)s, %(release_date)s, %(poster_path)s, %(season_number)s, %(parent_series_tmdb_id)s, %(overview)s
                             )
                             ON CONFLICT (tmdb_id, item_type) DO UPDATE SET
                                 subscription_status = 'WANTED',
                                 subscription_sources_json = media_metadata.subscription_sources_json || EXCLUDED.subscription_sources_json,
                                 first_requested_at = COALESCE(media_metadata.first_requested_at, EXCLUDED.first_requested_at),
-                                ignore_reason = NULL
-                            WHERE media_metadata.in_library = FALSE 
+                                ignore_reason = NULL,
+                                parent_series_tmdb_id = EXCLUDED.parent_series_tmdb_id
+                            WHERE (media_metadata.in_library = FALSE OR (media_metadata.item_type = 'Series' AND EXCLUDED.subscription_sources_json->0->>'reason' LIKE 'missing_%%season'))
                               AND media_metadata.subscription_status NOT IN ('SUBSCRIBED', 'IGNORED');
                         """
                         execute_batch(cursor, sql, data_to_upsert)
                 
-                if new_status_upper == 'PENDING_RELEASE':
+                elif new_status_upper == 'PENDING_RELEASE':
                     sql = """
                         INSERT INTO media_metadata (
-                            tmdb_id, item_type, subscription_status, subscription_sources_json, 
-                            first_requested_at, title, original_title, release_date, poster_path, season_number, overview
+                            tmdb_id, item_type, subscription_status, subscription_sources_json, first_requested_at,
+                            title, original_title, release_date, poster_path, season_number, parent_series_tmdb_id, overview
                         ) VALUES (
-                            %(tmdb_id)s, %(item_type)s, 'PENDING_RELEASE', %(source)s::jsonb,
-                            NOW(), %(title)s, %(original_title)s, %(release_date)s, %(poster_path)s, %(season_number)s, %(overview)s
+                            %(tmdb_id)s, %(item_type)s, 'PENDING_RELEASE', %(source)s::jsonb, NOW(),
+                            %(title)s, %(original_title)s, %(release_date)s, %(poster_path)s, %(season_number)s, %(parent_series_tmdb_id)s, %(overview)s
                         )
                         ON CONFLICT (tmdb_id, item_type) DO UPDATE SET
                             subscription_status = 'PENDING_RELEASE',
                             subscription_sources_json = media_metadata.subscription_sources_json || EXCLUDED.subscription_sources_json,
                             first_requested_at = COALESCE(media_metadata.first_requested_at, EXCLUDED.first_requested_at),
-                            ignore_reason = NULL
-                        -- 仅当媒体不在库中，且当前状态不是更高级的 'SUBSCRIBED' 或 'WANTED' 时才更新
-                        WHERE media_metadata.in_library = FALSE
-                          AND media_metadata.subscription_status NOT IN ('SUBSCRIBED', 'WANTED');
-                    """
-                    execute_batch(cursor, sql, data_to_upsert)
-
-                elif new_status_upper == 'WANTED':
-                    sql = """
-                        INSERT INTO media_metadata (
-                            tmdb_id, item_type, subscription_status, subscription_sources_json, 
-                            first_requested_at, title, original_title, release_date, poster_path, season_number, overview
-                        ) VALUES (
-                            %(tmdb_id)s, %(item_type)s, 'WANTED', %(source)s::jsonb,
-                            NOW(), %(title)s, %(original_title)s, %(release_date)s, %(poster_path)s, %(season_number)s, %(overview)s
-                        )
-                        ON CONFLICT (tmdb_id, item_type) DO UPDATE SET
-                            subscription_status = 'WANTED',
-                            subscription_sources_json = media_metadata.subscription_sources_json || EXCLUDED.subscription_sources_json,
-                            first_requested_at = COALESCE(media_metadata.first_requested_at, EXCLUDED.first_requested_at),
-                            ignore_reason = NULL
-                        -- 仅当媒体不在库中，且当前状态不是 SUBSCRIBED 时，才允许更新 (这会正确地覆盖 PENDING_RELEASE 和 IGNORED)
-                        WHERE media_metadata.in_library = FALSE 
-                          AND media_metadata.subscription_status != 'SUBSCRIBED';
+                            ignore_reason = NULL,
+                            parent_series_tmdb_id = EXCLUDED.parent_series_tmdb_id
+                        WHERE media_metadata.in_library = FALSE AND media_metadata.subscription_status NOT IN ('SUBSCRIBED', 'WANTED');
                     """
                     execute_batch(cursor, sql, data_to_upsert)
 
                 elif new_status_upper == 'SUBSCRIBED':
                     sql = """
                         INSERT INTO media_metadata (
-                            tmdb_id, item_type, subscription_status, subscription_sources_json, 
-                            first_requested_at, title, original_title, release_date, poster_path, season_number, overview
+                            tmdb_id, item_type, subscription_status, subscription_sources_json, first_requested_at,
+                            title, original_title, release_date, poster_path, season_number, parent_series_tmdb_id, overview
                         ) VALUES (
-                            %(tmdb_id)s, %(item_type)s, 'SUBSCRIBED', %(source)s::jsonb,
-                            NOW(), %(title)s, %(original_title)s, %(release_date)s, %(poster_path)s, %(season_number)s, %(overview)s
+                            %(tmdb_id)s, %(item_type)s, 'SUBSCRIBED', %(source)s::jsonb, NOW(),
+                            %(title)s, %(original_title)s, %(release_date)s, %(poster_path)s, %(season_number)s, %(parent_series_tmdb_id)s, %(overview)s
                         )
                         ON CONFLICT (tmdb_id, item_type) DO UPDATE SET
                             subscription_status = 'SUBSCRIBED',
                             subscription_sources_json = media_metadata.subscription_sources_json || EXCLUDED.subscription_sources_json,
                             first_requested_at = COALESCE(media_metadata.first_requested_at, EXCLUDED.first_requested_at),
                             last_synced_at = NOW(),
-                            ignore_reason = NULL
-                        -- 仅当媒体不在库中时，才允许更新为 SUBSCRIBED
+                            ignore_reason = NULL,
+                            parent_series_tmdb_id = EXCLUDED.parent_series_tmdb_id
                         WHERE media_metadata.in_library = FALSE;
                     """
                     execute_batch(cursor, sql, data_to_upsert)
@@ -315,38 +290,39 @@ def update_subscription_status(
                 elif new_status_upper == 'IGNORED':
                     sql = """
                         INSERT INTO media_metadata (
-                            tmdb_id, item_type, subscription_status, subscription_sources_json, 
-                            ignore_reason, title, original_title, release_date, poster_path, season_number, overview
+                            tmdb_id, item_type, subscription_status, subscription_sources_json, ignore_reason,
+                            title, original_title, release_date, poster_path, season_number, parent_series_tmdb_id, overview
                         ) VALUES (
-                            %(tmdb_id)s, %(item_type)s, 'IGNORED', %(source)s::jsonb, 
-                            %(reason)s, %(title)s, %(original_title)s, %(release_date)s, %(poster_path)s, %(season_number)s, %(overview)s
+                            %(tmdb_id)s, %(item_type)s, 'IGNORED', %(source)s::jsonb, %(reason)s,
+                            %(title)s, %(original_title)s, %(release_date)s, %(poster_path)s, %(season_number)s, %(parent_series_tmdb_id)s, %(overview)s
                         )
                         ON CONFLICT (tmdb_id, item_type) DO UPDATE SET
                             subscription_status = 'IGNORED',
                             subscription_sources_json = media_metadata.subscription_sources_json || EXCLUDED.subscription_sources_json,
                             ignore_reason = EXCLUDED.ignore_reason,
-                            last_synced_at = NOW()
-                        -- 仅当媒体不在库中时，才允许忽略
+                            last_synced_at = NOW(),
+                            parent_series_tmdb_id = EXCLUDED.parent_series_tmdb_id
                         WHERE media_metadata.in_library = FALSE;
                     """
                     execute_batch(cursor, sql, data_to_upsert)
 
+                # ★★★ 核心修复 3/3: 将 'NONE' 的逻辑彻底改造为安全的“上户口”专用 UPSERT ★★★
                 elif new_status_upper == 'NONE':
                     sql = """
-                        UPDATE media_metadata
-                        SET subscription_status = 'NONE',
-                            subscription_sources_json = '[]'::jsonb,
-                            ignore_reason = NULL
-                        WHERE tmdb_id = ANY(%s) AND item_type = %s;
+                        INSERT INTO media_metadata (
+                            tmdb_id, item_type, title, original_title, release_date, poster_path, 
+                            subscription_status, season_number, parent_series_tmdb_id, overview
+                        ) VALUES (
+                            %(tmdb_id)s, %(item_type)s, %(title)s, %(original_title)s, %(release_date)s, %(poster_path)s, 
+                            'NONE', %(season_number)s, %(parent_series_tmdb_id)s, %(overview)s
+                        )
+                        ON CONFLICT (tmdb_id, item_type) DO NOTHING;
                     """
-                    cursor.execute(sql, (id_list, item_type))
+                    execute_batch(cursor, sql, data_to_upsert)
                 
                 else:
-                    # 在这里，我们需要确保 'REQUESTED' 不会掉进这个分支
-                    VALID_STATUSES = {'WANTED', 'SUBSCRIBED', 'IGNORED', 'NONE', 'PENDING_RELEASE', 'REQUESTED'}
-                    if new_status_upper not in VALID_STATUSES:
-                        logger.warning(f"  ➜ [状态执行] 未知的状态 '{new_status_upper}'，操作已跳过。")
-                        return
+                    logger.warning(f"  ➜ [状态执行] 未知的状态 '{new_status_upper}'，操作已跳过。")
+                    return
 
                 if cursor.rowcount > 0:
                     logger.info(f"  ➜ [状态执行] 成功，影响了 {cursor.rowcount} 行。")
@@ -405,18 +381,36 @@ def remove_subscription_source(tmdb_id: str, item_type: str, source_to_remove: D
 
 def get_all_non_library_media() -> List[Dict[str, Any]]:
     """
-    【V2 - 增加 SUBSCRIBED 状态】获取所有不在媒体库中的媒体项，用于前端统一管理。
+    【V3 - 智能标题拼接版】获取所有不在媒体库中的媒体项，用于前端统一管理。
+    当项目类型为 Season 时，会自动查询并拼接父剧集的标题。
     """
+    # ★★★ 核心修改：使用 LEFT JOIN 和 CASE 语句来智能构建标题 ★★★
     sql = """
         SELECT 
-            tmdb_id, item_type, title, release_date, poster_path, 
-            subscription_status, ignore_reason, subscription_sources_json,
-            first_requested_at
-        FROM media_metadata
+            m1.tmdb_id, 
+            m1.item_type, 
+            -- ★★★ 核心修改：无论原始季名是什么，都拼接成“第 X 季” ★★★
+            CASE 
+                WHEN m1.item_type = 'Season' THEN COALESCE(m2.title, '未知剧集') || ' 第 ' || m1.season_number || '季'
+                ELSE m1.title 
+            END AS title,
+            m1.release_date, 
+            m1.poster_path, 
+            m1.subscription_status, 
+            m1.ignore_reason, 
+            m1.subscription_sources_json,
+            m1.first_requested_at
+        FROM 
+            media_metadata AS m1
+        LEFT JOIN 
+            media_metadata AS m2 
+        ON 
+            m1.parent_series_tmdb_id = m2.tmdb_id AND m2.item_type = 'Series'
         WHERE 
-            in_library = FALSE 
-            AND subscription_status IN ('WANTED', 'PENDING_RELEASE', 'IGNORED', 'SUBSCRIBED') -- ★★★ 核心修改 ★★★
-        ORDER BY first_requested_at DESC;
+            m1.in_library = FALSE 
+            AND m1.subscription_status IN ('WANTED', 'PENDING_RELEASE', 'IGNORED', 'SUBSCRIBED')
+        ORDER BY 
+            m1.first_requested_at DESC;
     """
     try:
         with get_db_connection() as conn:
@@ -542,20 +536,22 @@ def sync_series_children_metadata(parent_tmdb_id: str, seasons: List[Dict], epis
     # 1. 准备所有季的记录
     for season in seasons:
         season_num = season.get('season_number')
-        if season_num is None or season_num == 0: continue
+        # ★★★ 核心修改：直接从 TMDb 数据中获取真实的季 ID ★★★
+        season_tmdb_id = season.get('id')
 
-        season_tmdb_id = f"{parent_tmdb_id}-S{season_num}"
+        # 如果季号或真实 ID 不存在，则跳过此记录，保证数据完整性
+        if season_num is None or season_num == 0 or not season_tmdb_id:
+            continue
         
-        # ★★★ 核心修改 1/4: 判断本季是否在库 ★★★
-        # 只要本地有这个季号，就认为“季”这个条目在库
+        # 判断本季是否在库的逻辑保持不变
         is_season_in_library = season_num in local_in_library_info
         
         records_to_upsert.append({
-            "tmdb_id": season_tmdb_id, "item_type": "Season",
+            "tmdb_id": str(season_tmdb_id), "item_type": "Season", # <-- 使用修正后的真实 ID
             "parent_series_tmdb_id": parent_tmdb_id, "title": season.get('name'),
             "overview": season.get('overview'), "release_date": season.get('air_date'),
             "poster_path": season.get('poster_path'), "season_number": season_num,
-            "in_library": is_season_in_library # <-- 使用判断结果
+            "in_library": is_season_in_library
         })
 
     # 2. 准备所有集的记录
@@ -624,3 +620,18 @@ def sync_series_children_metadata(parent_tmdb_id: str, seasons: List[Dict], epis
 
     except Exception as e:
         logger.error(f"  ➜ [追剧联动] 在同步剧集 {parent_tmdb_id} 的子项目时发生错误: {e}", exc_info=True)
+
+def get_series_title_by_tmdb_id(tmdb_id: str) -> Optional[str]:
+    """根据 TMDB ID 精确查询剧集的标题。"""
+    if not tmdb_id:
+        return None
+    try:
+        with get_db_connection() as conn:
+            cursor = conn.cursor()
+            sql = "SELECT title FROM media_metadata WHERE tmdb_id = %s AND item_type = 'Series' LIMIT 1"
+            cursor.execute(sql, (tmdb_id,))
+            row = cursor.fetchone()
+            return row['title'] if row else None
+    except psycopg2.Error as e:
+        logger.error(f"根据 TMDB ID {tmdb_id} 查询剧集标题时出错: {e}", exc_info=True)
+        return None

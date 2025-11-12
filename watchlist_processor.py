@@ -40,12 +40,13 @@ def translate_status(status: str) -> str:
 def translate_internal_status(status: str) -> str:
     """★★★ 新增：一个辅助函数，用于翻译内部状态，用于日志显示 ★★★"""
     return INTERNAL_STATUS_TRANSLATION.get(status, status)
+
 class WatchlistProcessor:
     """
-    【V12 - 精准强制完结版】
-    实现基于待播日期的三态(Watching, Paused, Completed)自动转换，
-    并包含一个独立的、用于低频检查已完结剧集“复活”的方法。
-    新增对 `force_ended` 标志的支持。
+    【V13 - media_metadata 适配版】
+    - 所有数据库操作完全迁移至 media_metadata 表。
+    - 读写逻辑重构，以 tmdb_id 为核心标识符。
+    - 保留了所有复杂的状态判断逻辑，使其在新架构下无缝工作。
     """
     def __init__(self, config: Dict[str, Any]):
         if not isinstance(config, dict):
@@ -75,39 +76,55 @@ class WatchlistProcessor:
             logger.error(f"读取本地JSON文件失败: {file_path}, 错误: {e}")
             return None
 
-    def _update_watchlist_entry(self, item_id: str, item_name: str, updates: Dict[str, Any]):
-        """【V4 - 最终修复版】统一更新追剧列表中的一个条目。"""
+    # ★★★ 核心修改 1: 重构统一的数据库更新函数 ★★★
+    def _update_watchlist_entry(self, tmdb_id: str, item_name: str, updates: Dict[str, Any]):
+        """【新架构】统一更新 media_metadata 表中的追剧信息。"""
+        # 字段名映射：将旧的逻辑键名映射到新的数据库列名
+        column_mapping = {
+            'status': 'watching_status',
+            'paused_until': 'paused_until',
+            'tmdb_status': 'watchlist_tmdb_status',
+            'next_episode_to_air_json': 'watchlist_next_episode_json',
+            'missing_info_json': 'watchlist_missing_info_json',
+            'last_episode_to_air_json': 'last_episode_to_air_json', # 这个字段是主元数据的一部分
+            'is_airing': 'watchlist_is_airing',
+            'force_ended': 'force_ended'
+        }
+        
+        # 使用映射转换 updates 字典
+        db_updates = {column_mapping[k]: v for k, v in updates.items() if k in column_mapping}
+        
+        if not db_updates:
+            logger.warning(f"  ➜ 尝试更新 '{item_name}'，但没有提供有效的更新字段。")
+            return
+
         try:
             with connection.get_db_connection() as conn:
                 with conn.cursor() as cursor:
-                    # ★★★ 核心修正：使用 datetime.utcnow() 生成不带时区的UTC时间 ★★★
-                    # 这能最大限度地兼容各种数据库时区设置，避免类型冲突
-                    current_time = datetime.utcnow()
-                    updates['last_checked_at'] = current_time
+                    # 使用 NOW() 让数据库自己处理时间，更可靠
+                    db_updates['watchlist_last_checked_at'] = 'NOW()'
                     
-                    set_clauses = [f"{key} = %s" for key in updates.keys()]
-                    values = list(updates.values())
-                    values.append(item_id)
+                    # 动态生成 SET 子句，特殊处理 NOW()
+                    set_clauses = [f"{key} = {value}" if key == 'watchlist_last_checked_at' else f"{key} = %s" for key, value in db_updates.items()]
+                    values = [v for k, v in db_updates.items() if k != 'watchlist_last_checked_at']
+                    values.append(tmdb_id)
                     
-                    sql = f"UPDATE watchlist SET {', '.join(set_clauses)} WHERE item_id = %s"
+                    sql = f"UPDATE media_metadata SET {', '.join(set_clauses)} WHERE tmdb_id = %s AND item_type = 'Series'"
                     
                     cursor.execute(sql, tuple(values))
                 conn.commit()
                 logger.info(f"  ➜ 成功更新数据库中 '{item_name}' 的追剧信息。")
         except Exception as e:
             logger.error(f"  更新 '{item_name}' 的追剧信息时数据库出错: {e}", exc_info=True)
-    # --- 自动添加追剧列表的方法 ---
+
+    # ★★★ 核心修改 2: 重构自动添加追剧列表的函数 ★★★
     def add_series_to_watchlist(self, item_details: Dict[str, Any]):
-        """
-        【V14 - 冷宫逻辑版】
-        - 新增剧集时，会检查其下一集的播出日期。
-        - 如果下一集遥遥无期（超过90天或无日期），则直接以“已完结”状态入库，打入冷宫等待复活任务。
-        """
+        """【新架构】将新剧集添加/更新到 media_metadata 表并标记为追剧。"""
         if item_details.get("Type") != "Series": return
         tmdb_id = item_details.get("ProviderIds", {}).get("Tmdb")
         item_name = item_details.get("Name")
-        item_id = item_details.get("Id")
-        if not tmdb_id or not self.tmdb_api_key: return
+        item_id = item_details.get("Id") # Emby ID
+        if not tmdb_id or not item_name or not item_id or not self.tmdb_api_key: return
             
         tmdb_details = tmdb.get_tv_details(tmdb_id, self.tmdb_api_key)
         if not tmdb_details: return
@@ -117,38 +134,40 @@ class WatchlistProcessor:
             logger.warning(f"无法确定剧集 '{item_name}' 的TMDb状态，跳过自动添加。")
             return
 
-        # ★★★ 核心逻辑重构：基于播出日期的初始状态判断 ★★★
-        internal_status = STATUS_COMPLETED  # 默认打入冷宫
-        is_airing_flag = False
+        # 保留原有的“冷宫”判断逻辑
+        internal_status = STATUS_COMPLETED
         today = datetime.now(timezone.utc).date()
         
-        # 只有明确的“连载中”剧集才需要进一步判断
         if tmdb_status in ["Returning Series", "In Production", "Planned"]:
             next_episode = tmdb_details.get("next_episode_to_air")
             if next_episode and next_episode.get('air_date'):
                 try:
                     air_date = datetime.strptime(next_episode['air_date'], '%Y-%m-%d').date()
-                    days_until_air = (air_date - today).days
-                    
-                    # 90天是我们的“冷宫”阈值
-                    if days_until_air <= 90:
+                    if (air_date - today).days <= 90:
                         internal_status = STATUS_WATCHING
-                        is_airing_flag = True
-                    else:
-                        logger.info(f"  ➜ 剧集 '{item_name}' 的下一集在 {days_until_air} 天后播出，超过阈值，初始状态设为“已完结”。")
                 except (ValueError, TypeError):
-                    logger.warning(f"  ➜ 解析剧集 '{item_name}' 的待播日期失败，初始状态设为“已完结”。")
-            else:
-                logger.info(f"  ➜ 剧集 '{item_name}' 虽为连载状态，但无明确待播信息，初始状态设为“已完结”。")
+                    pass
 
         try:
             with connection.get_db_connection() as conn:
                 with conn.cursor() as cursor:
-                    cursor.execute("""
-                        INSERT INTO watchlist (item_id, tmdb_id, item_name, item_type, status, is_airing)
-                        VALUES (%s, %s, %s, %s, %s, %s)
-                        ON CONFLICT (item_id) DO NOTHING
-                    """, (item_id, tmdb_id, item_name, "Series", internal_status, is_airing_flag))
+                    # 使用 UPSERT 逻辑
+                    sql = """
+                        INSERT INTO media_metadata (tmdb_id, item_type, title, watching_status, emby_item_ids_json)
+                        VALUES (%s, 'Series', %s, %s, %s)
+                        ON CONFLICT (tmdb_id, item_type) DO UPDATE SET
+                            watching_status = EXCLUDED.watching_status,
+                            -- 智能合并 Emby ID
+                            emby_item_ids_json = (
+                                SELECT jsonb_agg(DISTINCT elem)
+                                FROM (
+                                    SELECT jsonb_array_elements_text(media_metadata.emby_item_ids_json) AS elem
+                                    UNION ALL
+                                    SELECT jsonb_array_elements_text(EXCLUDED.emby_item_ids_json) AS elem
+                                ) AS combined
+                            );
+                    """
+                    cursor.execute(sql, (tmdb_id, item_name, internal_status, json.dumps([item_id])))
                     
                     if cursor.rowcount > 0:
                         log_status_translated = translate_internal_status(internal_status)
@@ -157,7 +176,7 @@ class WatchlistProcessor:
         except Exception as e:
             logger.error(f"自动添加剧集 '{item_name}' 到追剧列表时发生数据库错误: {e}", exc_info=True)
 
-    # --- 核心任务启动器 ---
+    # --- 核心任务启动器 (无需修改) ---
     def run_regular_processing_task_concurrent(self, progress_callback: callable, item_id: Optional[str] = None, force_full_update: bool = False):
         """【V2 - 流程修复版】修复因没有活跃剧集而导致洗版检查被跳过的流程缺陷。"""
         self.progress_callback = progress_callback
@@ -183,7 +202,7 @@ class WatchlistProcessor:
             else:
                 # 快速模式 (默认)：只查询活跃剧集
                 today_str = datetime.now(timezone.utc).date().isoformat()
-                where_clause = f"WHERE status = '{STATUS_WATCHING}' OR (status = '{STATUS_PAUSED}' AND paused_until <= '{today_str}')"
+                where_clause = f"WHERE watching_status = '{STATUS_WATCHING}' OR (watching_status = '{STATUS_PAUSED}' AND paused_until <= '{today_str}')"
 
             active_series = self._get_series_to_process(where_clause, item_id)
             
@@ -254,16 +273,12 @@ class WatchlistProcessor:
 
     # ★★★ 专门用于“复活检查”的任务方法 ★★★
     def run_revival_check_task(self, progress_callback: callable):
-        """
-        【V2 - 精准复活版】
-        - 彻底重构复活逻辑，只有当新一季的第一集有明确播出日期，且该日期在3天内时，才将剧集状态改回“追剧中”。
-        - 避免了对“待定”新季的过早反应。
-        """
+        """【新架构】检查所有已完结剧集是否“复活”。"""
         self.progress_callback = progress_callback
         task_name = "已完结剧集复活检查"
         self.progress_callback(0, "准备开始复活检查...")
         try:
-            completed_series = self._get_series_to_process(f"WHERE status = '{STATUS_COMPLETED}'")
+            completed_series = self._get_series_to_process(f"WHERE watching_status = '{STATUS_COMPLETED}'")
             total = len(completed_series)
             if not completed_series:
                 self.progress_callback(100, "没有已完结的剧集需要检查。")
@@ -283,50 +298,28 @@ class WatchlistProcessor:
                 tmdb_details = tmdb.get_tv_details(series['tmdb_id'], self.tmdb_api_key)
                 if not tmdb_details: continue
 
-                # ▼▼▼ 核心逻辑重构：基于播出日期的精准复活判断 ▼▼▼
+                # 保留原有的精准复活逻辑
                 should_revive = False
-                
-                # 1. 从数据库获取旧的最后季号
                 last_episode_info = series.get('last_episode_to_air_json')
                 old_season_number = 0
                 if last_episode_info and isinstance(last_episode_info, dict):
                     old_season_number = last_episode_info.get('season_number', 0)
 
-                # 2. 从TMDb获取最新的总季数
                 new_total_seasons = tmdb_details.get('number_of_seasons', 0)
 
-                # 3. 只有当新季出现时，才进行后续判断
                 if new_total_seasons > old_season_number:
-                    logger.info(f"  ➜ 检测到《{series_name}》可能有新内容：TMDb总季数 ({new_total_seasons}) > 上次记录的最终季号 ({old_season_number})。")
-                    
-                    # 4. 获取这个新季度的详情
-                    new_season_to_check_num = old_season_number + 1 # 通常是下一季
+                    new_season_to_check_num = old_season_number + 1
                     season_details = tmdb.get_season_details(series['tmdb_id'], new_season_to_check_num, self.tmdb_api_key)
-                    
                     if season_details and season_details.get('episodes'):
                         first_episode = season_details['episodes'][0]
                         air_date_str = first_episode.get('air_date')
-                        
                         if air_date_str:
                             try:
                                 air_date = datetime.strptime(air_date_str, '%Y-%m-%d').date()
-                                days_until_air = (air_date - today).days
-                                
-                                # 5. 最终判断：播出日期必须在3天内
-                                if 0 <= days_until_air <= 3:
+                                if 0 <= (air_date - today).days <= 3:
                                     should_revive = True
-                                    logger.warning(f"  ➜ 确认复活！《{series_name}》新季 S{new_season_to_check_num} 的首集将于 {days_until_air} 天后播出。")
-                                else:
-                                    logger.info(f"  ➜ 《{series_name}》新季首播日期 ({air_date_str}) 不在3天内，暂不复活。")
-                            except ValueError:
-                                logger.warning(f"  ➜ 《{series_name}》新季首播日期格式错误 ({air_date_str})，暂不复活。")
-                        else:
-                            logger.info(f"  ➜ 《{series_name}》新季首集尚无明确播出日期 (待定)，暂不复活。")
-                    else:
-                        logger.info(f"  ➜ 《{series_name}》新季尚无具体分集信息，暂不复活。")
+                            except ValueError: pass
                 
-                # ▲▲▲ 核心逻辑重构结束 ▲▲▲
-
                 if should_revive:
                     revived_count += 1
                     updates_to_db = {
@@ -335,7 +328,8 @@ class WatchlistProcessor:
                         "tmdb_status": tmdb_details.get('status'),
                         "force_ended": False 
                     }
-                    self._update_watchlist_entry(series['item_id'], series_name, updates_to_db)
+                    # ★★★ 调用适配 ★★★
+                    self._update_watchlist_entry(series['tmdb_id'], series_name, updates_to_db)
                 
                 time.sleep(2)
             
@@ -350,12 +344,7 @@ class WatchlistProcessor:
 
     # ★★★ 已完结剧集缺集洗版检查 ★★★
     def _run_wash_plate_check_logic(self, progress_callback: callable, item_id: Optional[str] = None):
-        """
-        【V13 - 精准订阅最终版】
-        彻底重构洗版逻辑，使其专注处理“中间缺集”的核心职责。
-        本函数将不再处理任何“整季缺失”的情况（特别是未播出的新季），
-        从而避免了对MoviePilot的无效洗版订阅。
-        """
+        """【新架构】处理“中间缺集”的洗版逻辑。"""
         task_name = "洗版缺集的季"
         
         if not self.config.get(constants.CONFIG_OPTION_RESUBSCRIBE_COMPLETED_ON_MISSING):
@@ -371,25 +360,25 @@ class WatchlistProcessor:
             if item_id:
                 series_to_check = self._get_series_to_process("", item_id=item_id)
             else:
-                # 三阶段查询逻辑保持不变，因为它能精准地找出所有“嫌疑犯”
+                # 查询逻辑需要适配新表字段名
                 stuck_series = self._get_series_to_process(
                     f"""
-                    WHERE status IN ('{STATUS_WATCHING}', '{STATUS_PAUSED}')
-                      AND tmdb_status IN ('Ended', 'Canceled')
-                      AND jsonb_typeof(missing_info_json) IN ('object', 'array')
+                    WHERE watching_status IN ('{STATUS_WATCHING}', '{STATUS_PAUSED}')
+                      AND watchlist_tmdb_status IN ('Ended', 'Canceled')
+                      AND jsonb_typeof(watchlist_missing_info_json) IN ('object', 'array')
                     """
                 )
                 today_minus_365_days = (datetime.now(timezone.utc).date() - timedelta(days=365)).isoformat()
                 zombie_series = self._get_series_to_process(
                     f"""
-                    WHERE status IN ('{STATUS_WATCHING}', '{STATUS_PAUSED}')
-                      AND tmdb_status NOT IN ('Ended', 'Canceled')
+                    WHERE watching_status IN ('{STATUS_WATCHING}', '{STATUS_PAUSED}')
+                      AND watchlist_tmdb_status NOT IN ('Ended', 'Canceled')
                       AND jsonb_typeof(last_episode_to_air_json) = 'object'
                       AND (last_episode_to_air_json->>'air_date')::date < '{today_minus_365_days}'
                     """
                 )
                 completed_missing_series = self._get_series_to_process(
-                    f"WHERE status = '{STATUS_COMPLETED}' AND jsonb_typeof(missing_info_json) IN ('object', 'array')"
+                    f"WHERE watching_status = '{STATUS_COMPLETED}' AND jsonb_typeof(watchlist_missing_info_json) IN ('object', 'array')"
                 )
                 all_series_map = {s['item_id']: s for s in stuck_series}
                 all_series_map.update({s['item_id']: s for s in zombie_series})
@@ -496,29 +485,22 @@ class WatchlistProcessor:
                     # 如果没有冷却记录或冷却已过，则加入最终待标记列表
                     final_seasons_to_mark.add(season_num)
 
-                # ▲▲▲ 冷却逻辑结束 ▲▲▲
 
                 # 4. 将【过滤后】的分析结果与数据库中的现有标记进行比较和更新
                 existing_gaps = set(missing_info.get('seasons_with_gaps', []))
-
                 if final_seasons_to_mark != existing_gaps:
-                    logger.warning(f"  ➜ 《{item_name}》分析完成，最终需标记的缺集季为: {sorted(list(final_seasons_to_mark))}，将更新标记。")
-                    
                     missing_info['seasons_with_gaps'] = sorted(list(final_seasons_to_mark))
                     
                     self._update_watchlist_entry(
-                        item_id=series['item_id'],
+                        tmdb_id=series['tmdb_id'], # ★★★ 调用适配
                         item_name=item_name,
                         updates={"missing_info_json": json.dumps(missing_info)}
                     )
-                else:
-                    logger.info(f"  ➜ 《{item_name}》分析完成，标记无变化。")
-
+                
                 time.sleep(1)
 
-            final_message = f"所有流程已完成！共为 {total_seasons_subscribed} 个确认存在中间缺失的季提交了精准洗版订阅。"
+            final_message = "所有流程已完成！洗版检查结束。"
             if progress_callback: progress_callback(100, final_message)
-            logger.trace(f"  ➜ 后台任务 '{task_name}' 结束，最终状态: 处理完成")
 
         except Exception as e:
             logger.error(f"执行 '{task_name}' 时发生严重错误: {e}", exc_info=True)
@@ -527,18 +509,31 @@ class WatchlistProcessor:
             if progress_callback: self.progress_callback = None
 
     def _get_series_to_process(self, where_clause: str, item_id: Optional[str] = None) -> List[Dict[str, Any]]:
+        """【新架构】从 media_metadata 获取需要处理的剧集列表，并兼容 Emby 库过滤。"""
+        
+        base_query = """
+            SELECT 
+                tmdb_id,
+                title AS item_name,
+                watching_status AS status,
+                emby_item_ids_json->>0 AS item_id, -- 提取第一个 Emby ID 作为主 ID
+                emby_item_ids_json,
+                force_ended,
+                paused_until,
+                last_episode_to_air_json,
+                watchlist_tmdb_status AS tmdb_status,
+                watchlist_missing_info_json AS missing_info_json
+            FROM media_metadata
         """
-        【V13 - 自顶向下过滤版】从数据库获取需要处理的剧集列表。
-        - ★ 核心逻辑重构：先从Emby获取所选媒体库中的所有剧集ID，再到数据库中进行精确匹配。
-        - 这种方法更高效、更可靠，彻底解决了之前因ParentId查找和类型不匹配导致的问题。
-        """
-        # 规则1：如果指定了单个item_id，则无视任何过滤器，直接处理。
+        
+        # 规则1：如果指定了单个 item_id (Emby ID)，则用 JSONB 查询
         if item_id:
             try:
                 with connection.get_db_connection() as conn:
                     cursor = conn.cursor()
-                    query = "SELECT * FROM watchlist WHERE item_id = %s"
-                    cursor.execute(query, (item_id,))
+                    # 使用 JSONB 包含操作符 @>
+                    query = f"{base_query} WHERE item_type = 'Series' AND emby_item_ids_json @> %s::jsonb"
+                    cursor.execute(query, (json.dumps([item_id]),))
                     return [dict(row) for row in cursor.fetchall()]
             except Exception as e:
                 logger.error(f"为 item_id {item_id} 获取追剧信息时发生数据库错误: {e}")
@@ -547,23 +542,26 @@ class WatchlistProcessor:
         # 规则2：获取配置中的媒体库列表
         selected_libraries = self.config.get(constants.CONFIG_OPTION_EMBY_LIBRARIES_TO_PROCESS, [])
         
-        # 规则3：如果未选择任何媒体库，则按旧逻辑处理，不过滤
+        # 规则3：如果未选择任何媒体库，则直接查询数据库
         if not selected_libraries:
-            logger.info("  ➜ 未在设置中指定要处理的媒体库，将处理所有符合条件的追剧项目。")
             try:
                 with connection.get_db_connection() as conn:
                     cursor = conn.cursor()
-                    query = f"SELECT * FROM watchlist {where_clause}"
+                    # 附加 WHERE 条件
+                    final_where = f"WHERE item_type = 'Series' AND watching_status != 'NONE'"
+                    if where_clause:
+                        final_where += f" AND ({where_clause.replace('WHERE', '').strip()})"
+                    
+                    query = f"{base_query} {final_where}"
                     cursor.execute(query)
                     return [dict(row) for row in cursor.fetchall()]
             except Exception as e:
                 logger.error(f"获取全部追剧列表时发生数据库错误: {e}")
                 return []
 
-        # --- 核心过滤逻辑开始 ---
+        # --- 核心过滤逻辑 ---
         logger.info(f"  ➜ 已启用媒体库过滤器，开始从 {len(selected_libraries)} 个选定媒体库中获取剧集ID...")
         
-        # 步骤1: 从Emby获取所有在选定库中的剧集ID集合
         valid_series_ids_from_emby = set()
         for lib_id in selected_libraries:
             series_ids_in_lib = emby.get_library_series_ids(
@@ -580,18 +578,21 @@ class WatchlistProcessor:
             
         logger.info(f"  ➜ 成功从Emby获取到 {len(valid_series_ids_from_emby)} 个有效的剧集ID，开始匹配数据库...")
 
-        # 步骤2: 从数据库中捞出所有符合基础条件(如status='Watching')的剧集
         try:
             with connection.get_db_connection() as conn:
                 cursor = conn.cursor()
-                query = f"SELECT * FROM watchlist {where_clause}"
+                final_where = f"WHERE item_type = 'Series' AND watching_status != 'NONE'"
+                if where_clause:
+                    final_where += f" AND ({where_clause.replace('WHERE', '').strip()})"
+                
+                query = f"{base_query} {final_where}"
                 cursor.execute(query)
                 all_candidate_series = [dict(row) for row in cursor.fetchall()]
         except Exception as e:
             logger.error(f"过滤前获取追剧列表时发生数据库错误: {e}")
             return []
             
-        # 步骤3: 在内存中进行最终匹配
+        # 在内存中进行最终匹配
         final_series_to_process = [
             series for series in all_candidate_series 
             if series['item_id'] in valid_series_ids_from_emby
@@ -603,22 +604,28 @@ class WatchlistProcessor:
             
     # ★★★ 核心处理逻辑：单个剧集的所有操作在此完成 ★★★
     def _process_one_series(self, series_data: Dict[str, Any]):
-        item_id = str(series_data['item_id']).strip()
+        # ★★★ 核心修改：现在主键是 tmdb_id，item_id 仅用于 Emby API 调用 ★★★
         tmdb_id = series_data['tmdb_id']
+        item_id = series_data.get('item_id') # 可能为 None，但后续有检查
         item_name = series_data['item_name']
-        is_force_ended = bool(series_data.get('force_ended', 0))
+        is_force_ended = bool(series_data.get('force_ended', False))
         
         logger.info(f"  ➜ 【追剧检查】正在处理: '{item_name}' (TMDb ID: {tmdb_id})")
 
-        # 步骤1: 存活检查
-        item_details_for_check = emby.get_emby_item_details(
-            item_id=item_id, emby_server_url=self.emby_url, emby_api_key=self.emby_api_key,
-            user_id=self.emby_user_id, fields="Id,Name"
-        )
-        if not item_details_for_check:
-            logger.warning(f"  ➜ 剧集 '{item_name}' (ID: {item_id}) 在 Emby 中已不存在。将从追剧列表移除。")
-            watchlist_db.remove_item_from_watchlist(item_id=item_id)
-            return 
+        # 步骤1: 存活检查 (如果 item_id 存在)
+        if item_id:
+            item_details_for_check = emby.get_emby_item_details(
+                item_id=item_id, emby_server_url=self.emby_url, emby_api_key=self.emby_api_key,
+                user_id=self.emby_user_id, fields="Id,Name"
+            )
+            if not item_details_for_check:
+                logger.warning(f"  ➜ 剧集 '{item_name}' (Emby ID: {item_id}) 在 Emby 中已不存在。将从追剧列表移除。")
+                # 使用 watchlist_db 中的函数，它已经被适配了新表
+                watchlist_db.remove_item_from_watchlist(tmdb_id=tmdb_id)
+                return 
+        else:
+            logger.warning(f"  ➜ 剧集 '{item_name}' 在数据库中没有关联的 Emby ID，跳过存活检查。")
+
 
         if not self.tmdb_api_key:
             logger.warning("  ➜ 未配置TMDb API Key，跳过。")
@@ -667,8 +674,6 @@ class WatchlistProcessor:
         final_status = STATUS_WATCHING # 默认是追剧中
         paused_until_date = None
         today = datetime.now(timezone.utc).date()
-
-        # ▼▼▼ 核心逻辑重构：基于播出日期的三层决策 ▼▼▼
 
         # 规则1：硬性完结条件 (TMDb官方说它完了)
         if is_ended_on_tmdb and has_complete_metadata:
@@ -755,34 +760,74 @@ class WatchlistProcessor:
             "last_episode_to_air_json": json.dumps(last_episode_to_air) if last_episode_to_air else None,
             "is_airing": is_truly_airing
         }
-        self._update_watchlist_entry(item_id, item_name, updates_to_db)
+        self._update_watchlist_entry(tmdb_id, item_name, updates_to_db)
 
         # 步骤6：把需要订阅的剧加入待订阅队列
-        if final_status in [STATUS_WATCHING, STATUS_PAUSED] and has_missing_media:
-            logger.info(f"  ➜ 《{item_name}》检测到缺失内容，正在将订阅需求推入统一队列...")
+        today = datetime.now(timezone.utc).date()
+
+        # ★★★ 场景一：补旧番 - 只处理已完结剧集中，已播出的缺失季 ★★★
+        if final_status == STATUS_COMPLETED and has_missing_media:
+            logger.info(f"  ➜ 《{item_name}》为已完结状态，开始检查可补全的缺失季...")
+            
+            for season in missing_info.get("missing_seasons", []):
+                season_num = season.get('season_number')
+                air_date_str = season.get('air_date')
+                
+                if season_num is None or not air_date_str:
+                    continue
+
+                try:
+                    air_date = datetime.strptime(air_date_str, '%Y-%m-%d').date()
+                    # 关键判断：只有当这一季的播出日期早于或等于今天，才订阅
+                    if air_date <= today:
+                        logger.warning(f"  ➜ 发现已完结的缺失季 S{season_num} (播出日期: {air_date_str})，将状态设为 WANTED。")
+                        
+                        # 准备媒体信息
+                        season_tmdb_id = str(season.get('id'))
+                        media_info = {
+                            'tmdb_id': season_tmdb_id, # ★★★ BUG修复：使用季的TMDB ID作为键 ★★★
+                            'item_type': 'Season',     # 概念修正
+                            'title': f"{item_name} {season.get('name', f'第 {season_num} 季')}", # 标题构建更健壮
+                            'original_title': latest_series_data.get('original_name'),
+                            'release_date': season.get('air_date'),
+                            'poster_path': season.get('poster_path') or latest_series_data.get('poster_path'),
+                            'overview': season.get('overview'), 
+                            'season_number': season_num
+                        }
+                        
+                        # 推送需求
+                        media_db.update_subscription_status(
+                            tmdb_ids=str(season.get('id')), # ★★★ 核心修正：使用季的真实 TMDB ID ★★★
+                            item_type='Season',             # ★★★ 核心修正：类型明确为 Season ★★★
+                            new_status='WANTED',
+                            source={"type": "watchlist", "reason": "missing_completed_season", "item_id": item_id},
+                            media_info_list=[media_info]
+                        )
+                    else:
+                        logger.info(f"  ➜ 缺失季 S{season_num} 尚未播出 ({air_date_str})，跳过补全订阅。")
+                except ValueError:
+                    logger.warning(f"  ➜ 解析缺失季 S{season_num} 的播出日期 '{air_date_str}' 失败，跳过。")
+
+        # ★★★ 场景二：追新剧 - 为在追/暂停的剧集，订阅所有缺失内容 (保持原逻辑) ★★★
+        elif final_status in [STATUS_WATCHING, STATUS_PAUSED] and has_missing_media:
+            logger.info(f"  ➜ 《{item_name}》为在追状态，将订阅所有缺失内容...")
             
             # a. 处理缺失的整季
             for season in missing_info.get("missing_seasons", []):
                 season_num = season.get('season_number')
                 if season_num is None: continue
 
-                # 准备媒体信息
                 media_info = {
-                    'tmdb_id': tmdb_id,
-                    'item_type': 'Series',
+                    'tmdb_id': tmdb_id, 'item_type': 'Series',
                     'title': f"{item_name} 第 {season_num} 季",
                     'original_title': latest_series_data.get('original_name'),
                     'release_date': season.get('air_date'),
                     'poster_path': season.get('poster_path') or latest_series_data.get('poster_path'),
-                    'overview': season.get('overview'),
-                    'season_number': season_num
+                    'overview': season.get('overview'), 'season_number': season_num
                 }
                 
-                # 推送需求
                 media_db.update_subscription_status(
-                    tmdb_ids=tmdb_id,
-                    item_type='Series',
-                    new_status='WANTED',
+                    tmdb_ids=tmdb_id, item_type='Series', new_status='WANTED',
                     source={"type": "watchlist", "reason": "missing_season", "item_id": item_id},
                     media_info_list=[media_info]
                 )
@@ -958,28 +1003,3 @@ class WatchlistProcessor:
         
         logger.info("  ➜ 元数据完整性检查通过，所有集都有简介。")
         return True
-
-    def _update_watchlist_status(self, item_id: str, status: str, item_name: str):
-        """【V4 - 最终修复版】更新数据库中指定项目的状态。"""
-        try:
-            with connection.get_db_connection() as conn:
-                with conn.cursor() as cursor:
-                    # ★★★ 核心修正：统一使用 datetime.utcnow() ★★★
-                    current_time = datetime.utcnow()
-                    cursor.execute("UPDATE watchlist SET status = %s, last_checked_at = %s WHERE item_id = %s", (status, current_time, item_id))
-                conn.commit()
-            logger.info(f"  成功更新 '{item_name}' 在数据库中的状态为 '{status}'。")
-        except Exception as e:
-            logger.error(f"  更新 '{item_name}' 状态为 '{status}' 时数据库出错: {e}")
-
-    def _update_watchlist_timestamp(self, item_id: str, item_name: str):
-        """【V4 - 最终修复版】仅更新数据库中指定项目的 last_checked_at 时间戳。"""
-        try:
-            with connection.get_db_connection() as conn:
-                with conn.cursor() as cursor:
-                    # ★★★ 核心修正：统一使用 datetime.utcnow() ★★★
-                    current_time = datetime.utcnow()
-                    cursor.execute("UPDATE watchlist SET last_checked_at = %s WHERE item_id = %s", (current_time, item_id))
-                conn.commit()
-        except Exception as e:
-            logger.error(f"更新 '{item_name}' 的 last_checked_at 时间戳时失败: {e}")

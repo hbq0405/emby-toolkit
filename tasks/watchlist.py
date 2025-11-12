@@ -1,6 +1,6 @@
 # tasks/watchlist.py
 # 智能追剧列表任务模块
-
+import json
 import time
 import logging
 from typing import Optional, List, Dict, Any
@@ -160,47 +160,55 @@ def task_add_all_series_to_watchlist(processor):
         total = len(all_series)
         task_manager.update_status_from_thread(30, f"共找到 {total} 部剧集，正在筛选...")
         
-        series_to_insert = []
+        series_to_upsert = []
         for series in all_series:
             tmdb_id = series.get("ProviderIds", {}).get("Tmdb")
             item_name = series.get("Name")
-            item_id = series.get("Id")
+            item_id = series.get("Id")  
             if tmdb_id and item_name and item_id:
-                series_to_insert.append(
-                    (item_id, tmdb_id, item_name, "Series", 'Watching')
+                series_to_upsert.append(
+                    (tmdb_id, "Series", item_name, 'Watching', json.dumps([item_id]))
                 )
 
-        if not series_to_insert:
+        if not series_to_upsert:
             task_manager.update_status_from_thread(100, "任务完成：找到的剧集均缺少TMDb ID，无法添加。")
             return
 
-        added_count = 0
-        total_to_add = len(series_to_insert)
+        total_to_add = len(series_to_upsert)
         task_manager.update_status_from_thread(60, f"筛选出 {total_to_add} 部有效剧集，准备批量写入数据库...")
         
         with connection.get_db_connection() as conn:
             cursor = conn.cursor()
             try:
-                sql_insert = """
-                    INSERT INTO watchlist (item_id, tmdb_id, item_name, item_type, status)
+                sql_upsert = """
+                    INSERT INTO media_metadata (tmdb_id, item_type, title, watching_status, emby_item_ids_json)
                     VALUES %s
-                    ON CONFLICT (item_id) DO NOTHING
-                    RETURNING item_id
+                    ON CONFLICT (tmdb_id, item_type) DO UPDATE SET
+                        watching_status = EXCLUDED.watching_status,
+                        paused_until = NULL,
+                        force_ended = FALSE,
+                        emby_item_ids_json = (
+                            SELECT jsonb_agg(DISTINCT elem)
+                            FROM (
+                                SELECT jsonb_array_elements_text(media_metadata.emby_item_ids_json) AS elem
+                                UNION ALL
+                                SELECT jsonb_array_elements_text(EXCLUDED.emby_item_ids_json) AS elem
+                            ) AS combined
+                        );
                 """
-                inserted_ids = execute_values(
-                    cursor, sql_insert, series_to_insert, 
-                    template=None, page_size=1000, fetch=True
+                execute_values(
+                    cursor, sql_upsert, series_to_upsert, 
+                    template=None, page_size=1000
                 )
-                added_count = len(inserted_ids)
                 conn.commit()
             except Exception as e_db:
                 conn.rollback()
                 raise RuntimeError(f"数据库批量写入时发生错误: {e_db}")
 
-        scan_complete_message = f"扫描完成！共发现 {total} 部剧集，新增 {added_count} 部。"
+        scan_complete_message = f"扫描完成！共发现 {total} 部剧集，已将 {total_to_add} 部有效剧集全部标记为“追剧中”。"
         logger.info(scan_complete_message)
         
-        if added_count > 0:
+        if total_to_add > 0:
             logger.info("--- 任务链：即将自动触发【检查所有在追剧集】任务 ---")
             task_manager.update_status_from_thread(99, "扫描完成，正在启动追剧检查...")
             time.sleep(2)

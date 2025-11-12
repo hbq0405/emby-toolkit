@@ -184,7 +184,6 @@ def init_db():
 
                         -- 媒体库状态
                         in_library BOOLEAN DEFAULT FALSE NOT NULL,
-                        emby_item_id TEXT, -- ★★★ 保留旧字段，用于平滑升级 ★★★
                         emby_item_ids_json JSONB NOT NULL DEFAULT '[]'::jsonb,
                         date_added TIMESTAMP WITH TIME ZONE,
                         paths_json JSONB,
@@ -484,7 +483,6 @@ def init_db():
                             "overview": "TEXT",
                             "official_rating": "TEXT",
                             "unified_rating": "TEXT",
-                            "emby_item_id": "TEXT",
                             "keywords_json": "JSONB",
                             "in_library": "BOOLEAN DEFAULT FALSE NOT NULL",
                             "emby_item_ids_json": "JSONB NOT NULL DEFAULT '[]'::jsonb",
@@ -616,7 +614,26 @@ def init_db():
                 # ======================================================================
                 # ★★★ 数据库自动修正补丁 (END) ★★★
 
-                logger.trace("  ➜ 数据库升级检查完成。")
+                # ★★★ 清理所有已废弃的旧数据表 ★★★
+                logger.info("  ➜ [数据库清理] 正在检查并移除已废弃的旧数据表...")
+                obsolete_tables = [
+                    'watchlist',
+                    'tracked_actor_media',
+                    'subscription_requests'
+                ]
+                
+                for table_name in obsolete_tables:
+                    try:
+                        logger.debug(f"    -> 正在尝试移除废弃表: {table_name}...")
+                        # 使用 IF EXISTS 确保即使表不存在也不会报错
+                        # 使用 CASCADE 确保与该表相关的任何依赖（如视图、外键）也会被一并移除
+                        cursor.execute(f"DROP TABLE IF EXISTS {table_name} CASCADE;")
+                        logger.info(f"    ✅ 成功移除或确认废弃表 '{table_name}' 不存在。")
+                    except Exception as e_drop:
+                        # 记录错误，但不中断整个初始化过程
+                        logger.error(f"    -> 尝试移除废弃表 '{table_name}' 时发生错误: {e_drop}", exc_info=True)
+                
+                logger.info("  ➜ 废弃表清理完成。")
 
             conn.commit()
             logger.info("  ➜ PostgreSQL 数据库初始化完成，所有表结构已创建/验证。")
@@ -627,48 +644,3 @@ def init_db():
     except Exception as e_global:
         logger.error(f"数据库初始化时发生未知错误: {e_global}", exc_info=True)
         raise
-
-# --- 临时迁移数据 过段时间删除---
-def run_database_migrations():
-    """
-    【启动时任务】执行所有必要的数据迁移。
-    这个函数应该是幂等的，即多次运行不会产生副作用。
-    """
-    logger.info("  ➜ 正在检查并执行数据库数据迁移...")
-    
-    try:
-        with get_db_connection() as conn:
-            with conn.cursor() as cursor:
-                
-                # --- 迁移任务 1: 将 media_metadata.emby_item_id 迁移到 emby_item_ids_json ---
-                logger.trace("  ➜ [数据迁移] 正在处理 'emby_item_id' -> 'emby_item_ids_json'...")
-                
-                # 这个查询非常安全：
-                # 1. 只找旧字段有值的行
-                # 2. 并且新字段还是空的（jsonb_array_length = 0），防止重复迁移
-                cursor.execute("""
-                    UPDATE media_metadata
-                    SET emby_item_ids_json = jsonb_build_array(emby_item_id)
-                    WHERE 
-                        emby_item_id IS NOT NULL 
-                        AND emby_item_id != ''
-                        AND jsonb_array_length(emby_item_ids_json) = 0;
-                """)
-                
-                migrated_count = cursor.rowcount
-                if migrated_count > 0:
-                    conn.commit()
-                    logger.info(f"    ✅ [数据迁移] 成功将 {migrated_count} 条 'emby_item_id' 数据迁移到新格式。")
-                else:
-                    logger.trace("    ➜ 'emby_item_id' 数据无需迁移。")
-
-                # --- 在这里可以添加未来的其他迁移任务 ---
-                # logger.trace("  ➜ [数据迁移] 正在处理其他任务...")
-
-        logger.info("  ✅ 数据库数据迁移检查完成。")
-
-    except psycopg2.Error as e_pg:
-        logger.error(f"数据迁移时发生 PostgreSQL 错误: {e_pg}", exc_info=True)
-        # 发生错误时最好不要 raise，避免应用启动失败，但要记录严重错误
-    except Exception as e_global:
-        logger.error(f"数据迁移时发生未知错误: {e_global}", exc_info=True)
