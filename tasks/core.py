@@ -91,7 +91,10 @@ def _task_run_chain_internal(processor, task_name: str, sequence_config_key: str
             try:
                 target_processor = None
                 if processor_type == 'media':
-                    target_processor = extensions.media_processor_instance
+                    # ★★★ 核心修复 ★★★
+                    # 优先使用传递给任务链的 processor 实例。
+                    # 这个 processor 就是主 media_processor_instance。
+                    target_processor = processor
                 elif processor_type == 'watchlist':
                     target_processor = extensions.watchlist_processor_instance
                 elif processor_type == 'actor':
