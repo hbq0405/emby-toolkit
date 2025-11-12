@@ -297,7 +297,7 @@ def task_auto_subscribe(processor):
                     season_num = item.get('season_number')
                     default_season_title = f"第{season_num}季" if season_num is not None else ""
                     season_display_title = item.get('season_title', default_season_title)
-                    item_display_name = f"剧集《{item['title']} - {season_display_title}》"
+                    item_display_name = f"剧集《{series_name} - {season_display_title}》"
                 else:
                     item_display_name = f"{item_type}《{item['title']}》"
                 

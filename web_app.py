@@ -339,9 +339,6 @@ def main_app_start():
     
     connection.init_db()
 
-    # 在这里调用数据迁移函数 过段时间删除
-    connection.run_database_migrations()
-
     ensure_cover_generator_fonts()
     init_auth()
     initialize_processors()
