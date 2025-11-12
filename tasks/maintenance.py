@@ -34,9 +34,9 @@ def _prepare_data_for_insert(table_name: str, table_data: List[Dict[str, Any]]) 
             'emby_item_ids_json', 'paths_json', 'subscription_sources_json', 
             'pre_cached_tags_json', 'pre_cached_extra_json', 'genres_json', 
             'actors_json', 'directors_json', 'studios_json', 'countries_json', 
-            'keywords_json', 'next_episode_to_air_json', 'last_episode_to_air_json'
+            'keywords_json', 'next_episode_to_air_json', 'last_episode_to_air_json',
+            'watchlist_next_episode_json', 'watchlist_missing_info_json'
         },
-        'watchlist': {'next_episode_to_air_json', 'missing_info_json', 'resubscribe_info_json', 'last_episode_to_air_json'},
         'actor_subscriptions': {'config_genres_include_json', 'config_genres_exclude_json'},
         'resubscribe_rules': {
             'target_library_ids', 'resubscribe_audio_missing_languages',
@@ -221,8 +221,7 @@ def _resync_primary_key_sequence(cursor, table_name: str):
         'resubscribe_rules': 'id',
         'media_cleanup_tasks': 'id',
         'user_templates': 'id',
-        'invitations': 'id',
-        'subscription_requests': 'id' # <-- 新增
+        'invitations': 'id'
     }
     
     pk_column = PRIMARY_KEY_COLUMNS.get(table_name.lower())
@@ -266,7 +265,6 @@ def task_import_database(processor, file_content: str, tables_to_import: List[st
         'person_identity_map': '演员映射表', 
         'actor_metadata': '演员元数据', 
         'translation_cache': '翻译缓存',
-        'watchlist': '智能追剧列表', 
         'actor_subscriptions': '演员订阅配置', 
         'collections_info': '电影合集信息', 
         'processed_log': '已处理列表', 
@@ -283,8 +281,7 @@ def task_import_database(processor, file_content: str, tables_to_import: List[st
         'user_templates': '用户权限模板', 
         'invitations': '邀请码', 
         'emby_users_extended': 'Emby用户扩展信息',
-        'user_collection_cache': 'Emby用户权限缓存',
-        'subscription_requests': 'TMDb探索订阅请求' # <-- 新增
+        'user_collection_cache': 'Emby用户权限缓存'
     }
     summary_lines = []
     conn = None
@@ -305,7 +302,6 @@ def task_import_database(processor, file_content: str, tables_to_import: List[st
                 'emby_users_extended': 4,
                 'invitations': 5,
                 'actor_subscriptions': 10,
-                'subscription_requests': 30, 
 
                 # --- 级别 2: 依赖更早级别的表 ---
                 'actor_metadata': 11

@@ -648,7 +648,6 @@ const tableInfo = {
   'person_identity_map': { cn: '演员映射表', isSharable: true },
   'actor_metadata': { cn: '演员元数据', isSharable: true },
   'translation_cache': { cn: '翻译缓存', isSharable: true },
-  'watchlist': { cn: '追剧列表', isSharable: false },
   'actor_subscriptions': { cn: '演员订阅配置', isSharable: false },
   'collections_info': { cn: '原生合集', isSharable: false },
   'processed_log': { cn: '已处理日志', isSharable: false },
@@ -664,8 +663,7 @@ const tableInfo = {
   'user_templates': { cn: '用户权限模板', isSharable: false },
   'invitations': { cn: '邀请链接', isSharable: false },
   'emby_users_extended': { cn: 'Emby用户扩展信息', isSharable: false },
-  'user_collection_cache': { cn: '用户权限缓存', isSharable: false },
-  'subscription_requests': { cn: '订阅请求', isSharable: false }
+  'user_collection_cache': { cn: '用户权限缓存', isSharable: false }
 };
 
 // ★★★ START: 新增的依赖关系自动勾选逻辑 ★★★
@@ -675,7 +673,8 @@ const tableInfo = {
 // 定义表之间的依赖关系 (这个可以保留或重新添加)
 const tableDependencies = {
   // 演员订阅 -> 已追踪作品 (硬依赖)
-  'actor_subscriptions': ['tracked_actor_media'],
+  'actor_subscriptions': ['media_metadata'],
+  'custom_collections': ['media_metadata'],
   // Emby用户 -> 用户扩展信息 & 用户媒体数据 (硬依赖)
   'emby_users': ['user_media_data', 'emby_users_extended'],
   // 权限模板 -> 邀请链接 (硬依赖)
