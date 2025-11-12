@@ -196,20 +196,30 @@ def refresh_single_actor_subscription(sub_id):
 # ★★★ 智能恢复（重新评估）单个作品状态的 API 端点 ★★★
 @actor_subscriptions_bp.route('/media/<int:media_id>/re-evaluate', methods=['POST'])
 @admin_required
-def api_re_evaluate_tracked_media(item_type: str, tmdb_id: str):
-    """将一个“已忽略”的媒体项恢复到 'WANTED' 状态，以便重新评估。"""
+def api_re_evaluate_tracked_media(): # ★ 2. 移除函数参数
+    """将一个“已忽略”或“缺失”的媒体项恢复到 'WANTED' 状态，以便重新评估。"""
+    
+    # ★ 3. 从 request.json 中获取参数
+    data = request.json
+    tmdb_id = data.get('tmdb_id')
+    item_type = data.get('item_type')
+
+    if not tmdb_id or not item_type:
+        return jsonify({"error": "请求体中必须包含 'tmdb_id' 和 'item_type'"}), 400
+
     try:
         media_map = media_db.get_media_details_by_tmdb_ids([tmdb_id])
         media_info = media_map.get(tmdb_id)
         if not media_info:
             return jsonify({"error": "未找到指定的媒体项"}), 404
 
-        # 核心操作：将状态从 IGNORED 改为 WANTED
+        # 核心操作：将状态改为 WANTED
         media_db.update_subscription_status(
             tmdb_ids=tmdb_id,
             item_type=item_type,
-            new_status='WANTED', # 设置为WANTED，让下次扫描来决定它是在库还是缺失
-            source={"type": "manual_re_evaluate"}
+            new_status='WANTED',
+            source={"type": "manual_re_evaluate"},
+            force_unignore=True # ★ 4. 增加 force_unignore 参数，确保能从 IGNORED 状态恢复
         )
         
         message = f"《{media_info['title']}》已恢复评估！下次演员扫描时将自动更新其最新状态。"

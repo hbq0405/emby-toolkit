@@ -5,9 +5,9 @@ import os
 import json
 import time
 import logging
-from datetime import datetime, date, timedelta, timezone
+from datetime import datetime, date
 from typing import List, Optional
-from concurrent.futures import ThreadPoolExecutor, as_completed # <--- 就是加上这一行！
+from concurrent.futures import ThreadPoolExecutor, as_completed 
 
 # 导入需要的底层模块和共享实例
 import config_manager
@@ -17,7 +17,7 @@ import handler.tmdb as tmdb
 import handler.moviepilot as moviepilot
 import task_manager
 from handler import telegram
-from database import connection, settings_db, resubscribe_db, collection_db, user_db
+from database import connection, settings_db, resubscribe_db, collection_db, user_db, media_db
 from .helpers import _get_standardized_effect, _extract_quality_tag_from_filename, is_movie_subscribable
 
 logger = logging.getLogger(__name__)
@@ -186,13 +186,14 @@ def _check_and_get_series_best_version_flag(series_tmdb_id: int, tmdb_api_key: s
 # ★★★ 自动订阅任务 ★★★
 def task_auto_subscribe(processor):
     """
-    - 依次处理：原生合集、追剧、自定义合集、演员订阅，然后处理已批准的用户请求，最后处理媒体洗版。
-    - 一个任务搞定所有日常自动化订阅需求，并生成格式统一的管理员通知。
+    【V2 - 统一订阅处理器】
+    - 唯一的职责：处理 media_metadata 表中所有状态为 'WANTED' 的媒体项。
+    - 在这里统一进行配额、发行日期检查，并执行订阅。
     """
-    task_name = "缺失洗版订阅"
+    task_name = "统一订阅处理"
     logger.info(f"--- 开始执行 '{task_name}' 任务 ---")
     
-    task_manager.update_status_from_thread(0, "正在启动缺失洗版订阅任务...")
+    task_manager.update_status_from_thread(0, "正在启动统一订阅处理器...")
     
     if not config_manager.APP_CONFIG.get(constants.CONFIG_OPTION_AUTOSUB_ENABLED):
         logger.info("  ➜ 订阅总开关未开启，任务跳过。")
@@ -200,421 +201,136 @@ def task_auto_subscribe(processor):
         return
 
     try:
-        today = date.today()
-        tmdb_api_key = config_manager.APP_CONFIG.get(constants.CONFIG_OPTION_TMDB_API_KEY)
+        # 1. 从“中央订单池”获取所有待办任务
+        wanted_items = media_db.get_all_wanted_media()
+        if not wanted_items:
+            logger.info("  ➜ 待订阅列表为空，无需处理。")
+            task_manager.update_status_from_thread(100, "待订阅列表为空。")
+            return
 
-        task_manager.update_status_from_thread(10, "缺失洗版订阅已启动...")
-        subscription_details = []
-        rejected_details = []
+        logger.info(f"  ➜ 发现 {len(wanted_items)} 个待处理的订阅请求。")
+        task_manager.update_status_from_thread(10, f"发现 {len(wanted_items)} 个待处理请求...")
+
+        # 准备变量
+        config = config_manager.APP_CONFIG
+        tmdb_api_key = config.get(constants.CONFIG_OPTION_TMDB_API_KEY)
+        subscription_details = [] # 给管理员的报告
+        rejected_details = []     # 给管理员的报告
+        notifications_to_send = {} # 给用户的通知 {user_id: [item_name, ...]}
         quota_exhausted = False
-        notifications_to_send_success = {}
 
-        with connection.get_db_connection() as conn:
-            cursor = conn.cursor()
+        # 2. 遍历待办列表，逐一处理
+        for i, item in enumerate(wanted_items):
+            if processor.is_stop_requested(): break
+            
+            task_manager.update_status_from_thread(
+                int(10 + (i / len(wanted_items)) * 85),
+                f"({i+1}/{len(wanted_items)}) 正在处理: {item['title']}"
+            )
 
-            # --- 1. 处理原生电影合集 ---
-            if not processor.is_stop_requested() and not quota_exhausted:
-                task_manager.update_status_from_thread(15, "正在检查原生电影合集...")
-                sql_query_native_movies = "SELECT * FROM collections_info WHERE status = 'has_missing' AND missing_movies_json IS NOT NULL AND missing_movies_json != '[]'"
-                cursor.execute(sql_query_native_movies)
-                native_collections_to_check = cursor.fetchall()
-                logger.info(f"  ➜ 找到 {len(native_collections_to_check)} 个有缺失影片的原生合集。")
+            # 2.1 检查配额
+            if settings_db.get_subscription_quota() <= 0:
+                quota_exhausted = True
+                logger.warning("  ➜ 每日订阅配额已用尽，任务提前结束。")
+                break
+
+            # 2.2 检查发行日期 (只对电影检查，剧集由 smart_subscribe 处理)
+            if item['item_type'] == 'Movie' and not is_movie_subscribable(int(item['tmdb_id']), tmdb_api_key, config):
+                logger.info(f"  ➜ 电影《{item['title']}》未到发行日期，本次跳过。")
+                rejected_details.append({'item': f"电影《{item['title']}》", 'reason': '未发行'})
+                continue
+
+            # 2.3 执行订阅
+            success = False
+            if item['item_type'] == 'Movie':
+                mp_payload = {"name": item['title'], "tmdbid": int(item['tmdb_id']), "type": "电影"}
+                success = moviepilot.subscribe_with_custom_payload(mp_payload, config)
+            elif item['item_type'] == 'Series':
+                series_info = {"tmdb_id": int(item['tmdb_id']), "item_name": item['title']}
+                # smart_subscribe_series 成功时返回列表，失败时返回 None
+                success = moviepilot.smart_subscribe_series(series_info, config) is not None
+
+            # 2.4 根据订阅结果更新状态和发送通知
+            if success:
+                logger.info(f"  ✅ 《{item['title']}》订阅成功！")
                 
-                for collection in native_collections_to_check:
-                    if processor.is_stop_requested() or quota_exhausted: break
-                    movies_to_keep, all_movies, movies_changed = [], collection['missing_movies_json'], False
-                    for movie in all_movies:
-                        if processor.is_stop_requested(): break
-                        if movie.get('status') == 'missing':
-                            release_date_str = movie.get('release_date')
-                            if not release_date_str: movies_to_keep.append(movie); continue
-                            try: release_date = datetime.strptime(release_date_str.strip(), '%Y-%m-%d').date()
-                            except (ValueError, TypeError): movies_to_keep.append(movie); continue
-                            if release_date <= today:
-                                if settings_db.get_subscription_quota() <= 0: quota_exhausted = True; movies_to_keep.append(movie); break
-                                
-                                item_type_str = '电影'
-                                item_title = movie['title']
-                                formatted_item_str = f"{item_type_str}《{item_title}》"
+                # a. 将状态从 WANTED 更新为 SUBSCRIBED
+                media_db.update_subscription_status(
+                    tmdb_ids=item['tmdb_id'],
+                    item_type=item['item_type'],
+                    new_status='SUBSCRIBED'
+                )
 
-                                if is_movie_subscribable(movie.get('tmdb_id'), tmdb_api_key, config_manager.APP_CONFIG):
-                                    if moviepilot.subscribe_movie_to_moviepilot(movie, config_manager.APP_CONFIG):
-                                        settings_db.decrement_subscription_quota()
-                                        subscription_details.append({'module': '原生合集', 'source': collection.get('name', '未知合集'), 'item': formatted_item_str})
-                                        movies_changed = True; movie['status'] = 'subscribed'
-                                else:
-                                    logger.warning(f"  ➜ 电影《{item_title}》因未正式发行而被跳过订阅。")
-                                    rejected_details.append({'module': '原生合集', 'source': collection.get('name', '未知合集'), 'item': formatted_item_str})
-                                movies_to_keep.append(movie)
-                            else: movies_to_keep.append(movie)
-                        else: movies_to_keep.append(movie)
-                    if movies_changed:
-                        new_missing_json = json.dumps(movies_to_keep)
-                        new_status = 'ok' if not any(m.get('status') == 'missing' for m in movies_to_keep) else 'has_missing'
-                        cursor.execute("UPDATE collections_info SET missing_movies_json = %s, status = %s WHERE emby_collection_id = %s", (new_missing_json, new_status, collection['emby_collection_id']))
+                # b. 扣除配额
+                settings_db.decrement_subscription_quota()
 
-            # --- 2. 处理智能追剧 ---
-            if not processor.is_stop_requested() and not quota_exhausted:
-                task_manager.update_status_from_thread(30, "正在检查缺失的剧集...")
-                sql_query = "SELECT * FROM watchlist WHERE status IN ('Watching', 'Paused') AND missing_info_json IS NOT NULL AND missing_info_json != '[]'"
-                cursor.execute(sql_query)
-                series_to_check = cursor.fetchall()
+                # c. 准备通知
+                item_display_name = f"{item['item_type']}《{item['title']}》"
                 
-                for series in series_to_check:
-                    if processor.is_stop_requested() or quota_exhausted: break
-                    series_name = series['item_name']
-                    series_tmdb_id = series['tmdb_id']
-                    logger.info(f"    ├─ 正在检查: 《{series_name}》")
-                    try:
-                        missing_info = series['missing_info_json']
-                        missing_seasons = missing_info.get('missing_seasons', [])
-                        if not missing_seasons: continue
-                        
-                        seasons_to_keep = []
-                        seasons_changed = False
-                        for season in missing_seasons:
-                            if processor.is_stop_requested() or quota_exhausted: break
-                            
-                            air_date_str = season.get('air_date')
-                            if not air_date_str: seasons_to_keep.append(season); continue
-                            try: season_date = datetime.strptime(air_date_str.strip(), '%Y-%m-%d').date()
-                            except (ValueError, TypeError): seasons_to_keep.append(season); continue
-
-                            if season_date <= today:
-                                resubscribe_info = series.get('resubscribe_info_json') or {}
-                                last_subscribed_str = resubscribe_info.get(str(season['season_number']))
-                                if last_subscribed_str:
-                                    try:
-                                        cooldown_hours = 24 
-                                        last_subscribed_time = datetime.fromisoformat(last_subscribed_str.replace('Z', '+00:00'))
-                                        if datetime.now(timezone.utc) < last_subscribed_time + timedelta(hours=cooldown_hours):
-                                            seasons_to_keep.append(season)
-                                            continue
-                                    except (ValueError, TypeError): pass
-                                current_quota = settings_db.get_subscription_quota()
-                                if current_quota <= 0:
-                                    quota_exhausted = True; seasons_to_keep.append(season); break
-
-                                # --- 检查剧集是否完结 ---
-                                best_version_flag = _check_and_get_series_best_version_flag(
-                                    series_tmdb_id=series_tmdb_id,
-                                    tmdb_api_key=tmdb_api_key,
-                                    season_number=season['season_number'],
-                                    series_name=series_name
-                                )
-                                
-                                success = moviepilot.subscribe_series_to_moviepilot(
-                                    series_info=dict(series), season_number=season['season_number'], 
-                                    config=config_manager.APP_CONFIG, best_version=best_version_flag
-                                )
-                                
-                                if success:
-                                    settings_db.decrement_subscription_quota()
-                                    cursor.execute("""
-                                        UPDATE watchlist SET resubscribe_info_json = jsonb_set(
-                                            COALESCE(resubscribe_info_json, '{}'::jsonb), %s, %s::jsonb, true)
-                                        WHERE item_id = %s
-                                    """, ([str(season['season_number'])], f'"{datetime.now(timezone.utc).isoformat()}"', series['item_id']))
-                                    subscription_details.append({'module': '智能追剧', 'item': f"《{series_name}》第 {season['season_number']} 季"})
-                                    seasons_changed = True
-                                else:
-                                    seasons_to_keep.append(season)
-                            else:
-                                seasons_to_keep.append(season)
-                                
-                        if seasons_changed:
-                            missing_info['missing_seasons'] = seasons_to_keep
-                            cursor.execute("UPDATE watchlist SET missing_info_json = %s WHERE item_id = %s", (json.dumps(missing_info), series['item_id']))
-                    except Exception as e_series:
-                        logger.error(f"  ➜ 【智能订阅-剧集】处理剧集 '{series_name}' 时出错: {e_series}")
-
-            # --- 3. 处理中间缺集的季 ---
-            if not processor.is_stop_requested() and not quota_exhausted:
-                task_manager.update_status_from_thread(35, "正在检查中间缺集的季...")
-                # 查询那些被标记了 "seasons_with_gaps" 的剧集
-                sql_query_gaps = "SELECT * FROM watchlist WHERE status IN ('Watching', 'Paused', 'Completed') AND jsonb_array_length(missing_info_json->'seasons_with_gaps') > 0"
-                cursor.execute(sql_query_gaps)
-                series_with_gaps_to_check = cursor.fetchall()
+                # 解析订阅来源，找出需要通知的用户
+                sources = item.get('subscription_sources_json', [])
+                source_display_parts = []
+                for source in sources:
+                    source_type = source.get('type')
+                    if source_type == 'user_request' and (user_id := source.get('user_id')):
+                        if user_id not in notifications_to_send:
+                            notifications_to_send[user_id] = []
+                        notifications_to_send[user_id].append(item['title'])
+                        source_display_parts.append(f"用户请求({user_db.get_username_by_id(user_id) or user_id})")
+                    elif source_type == 'actor_subscription':
+                        source_display_parts.append(f"演员订阅({source.get('name', '未知')})")
+                    elif source_type in ['collection', 'native_collection']:
+                        source_display_parts.append(f"合集({source.get('name', '未知')})")
                 
-                logger.info(f"  ➜ 找到 {len(series_with_gaps_to_check)} 部剧集存在中间缺集的季需要订阅。")
+                source_display = ", ".join(set(source_display_parts)) or "未知来源"
+                subscription_details.append({'source': source_display, 'item': item_display_name})
 
-                for series in series_with_gaps_to_check:
-                    if processor.is_stop_requested() or quota_exhausted: break
-                    
-                    series_name = series['item_name']
-                    missing_info = series['missing_info_json']
-                    seasons_to_subscribe = missing_info.get('seasons_with_gaps', [])
-                    
-                    if not seasons_to_subscribe: continue
-
-                    seasons_subscribed_this_run = []
-                    for season_num in seasons_to_subscribe:
-                        if processor.is_stop_requested() or quota_exhausted: break
-
-                        # 配额检查
-                        current_quota = settings_db.get_subscription_quota()
-                        if current_quota <= 0:
-                            quota_exhausted = True
-                            logger.warning("  ➜ 每日订阅配额已用尽，中间缺集订阅提前结束。")
-                            break
-
-                        # ★★★ 核心：根据用户设置决定订阅模式 ★★★
-                        # constants.CONFIG_OPTION_RESUBSCRIBE_USE_BEST_VERSION 对应 "是否整季洗版" 开关
-                        use_best_version = config_manager.APP_CONFIG.get(constants.CONFIG_OPTION_RESUBSCRIBE_USE_BEST_VERSION, False)
-                        best_version_param = 1 if use_best_version else None
-                        log_mode = "洗版模式" if use_best_version else "普通模式"
-                        logger.info(f"  ➜ 准备为《{series_name}》第 {season_num} 季提交订阅 ({log_mode})...")
-
-                        success = moviepilot.subscribe_series_to_moviepilot(
-                            series_info=dict(series), 
-                            season_number=season_num, 
-                            config=config_manager.APP_CONFIG, 
-                            best_version=best_version_param
-                        )
-
-                        if success:
-                            settings_db.decrement_subscription_quota()
-                            subscription_details.append({'module': '中间缺集', 'item': f"《{series_name}》第 {season_num} 季 ({log_mode})"})
-                            seasons_subscribed_this_run.append(season_num)
-                    
-                    # 如果成功订阅了任何季，就从标记中移除它们，防止重复订阅
-                    if seasons_subscribed_this_run:
-                        remaining_gaps = [s for s in seasons_to_subscribe if s not in seasons_subscribed_this_run]
-                        missing_info['seasons_with_gaps'] = remaining_gaps
-                        cursor.execute("UPDATE watchlist SET missing_info_json = %s WHERE item_id = %s", (json.dumps(missing_info), series['item_id']))
-
-            # --- 4. 处理自定义合集 ---
-            if not processor.is_stop_requested() and not quota_exhausted:
-                task_manager.update_status_from_thread(45, "正在检查自定义榜单合集...")
-                sql_query_custom_collections = "SELECT * FROM custom_collections WHERE type = 'list' AND health_status = 'has_missing' AND generated_media_info_json IS NOT NULL AND generated_media_info_json != '[]'"
-                cursor.execute(sql_query_custom_collections)
-                custom_collections_to_check = cursor.fetchall()
-                for collection in custom_collections_to_check:
-                    if processor.is_stop_requested() or quota_exhausted: break
-                    try:
-                        all_media, media_to_keep, media_changed = collection['generated_media_info_json'], [], False
-                        for media_item in all_media:
-                            if processor.is_stop_requested(): break
-                            if media_item.get('status') == 'missing':
-                                release_date_str = media_item.get('release_date')
-                                if not release_date_str: media_to_keep.append(media_item); continue
-                                try: release_date = datetime.strptime(release_date_str.strip(), '%Y-%m-%d').date()
-                                except (ValueError, TypeError): media_to_keep.append(media_item); continue
-                                if release_date <= today:
-                                    if settings_db.get_subscription_quota() <= 0: quota_exhausted = True; media_to_keep.append(media_item); break
-                                    success, media_title, media_tmdb_id = False, media_item.get('title', '未知标题'), media_item.get('tmdb_id')
-                                    authoritative_type_en = 'Series' if media_item.get('media_type') == 'Series' else 'Movie'
-                                    authoritative_type_cn = '剧集' if authoritative_type_en == 'Series' else '电影'
-                                    
-                                    # ★★★ 核心修正 1/2：直接从数据库记录中获取季号 ★★★
-                                    season_to_subscribe = media_item.get('season')
-                                    
-                                    # 动态生成标题，如果_有_季号，就加上
-                                    display_title = f"{media_title} 第 {season_to_subscribe} 季" if season_to_subscribe else media_title
-                                    formatted_item_str = f"{authoritative_type_cn}《{display_title}》"
-                                    
-                                    if authoritative_type_en == 'Movie':
-                                        if is_movie_subscribable(media_tmdb_id, tmdb_api_key, config_manager.APP_CONFIG):
-                                            success = moviepilot.subscribe_movie_to_moviepilot(media_item, config_manager.APP_CONFIG)
-                                        else:
-                                            logger.warning(f"  ➜ 电影《{media_title}》因未正式发行而被跳过订阅。")
-                                            rejected_details.append({'module': '自定义合集', 'source': collection.get('name', '未知榜单'), 'item': formatted_item_str})
-                                    
-                                    elif authoritative_type_en == 'Series':
-                                        best_version_flag = _check_and_get_series_best_version_flag(
-                                            series_tmdb_id=media_tmdb_id,
-                                            tmdb_api_key=tmdb_api_key,
-                                            series_name=media_title,
-                                            season_number=season_to_subscribe # 使用直读的季号
-                                        )
-                                        series_info = { "item_name": media_title, "tmdb_id": media_tmdb_id }
-                                        
-                                        # ★★★ 核心修正 2/2：将直读的季号传给订阅函数 ★★★
-                                        success = moviepilot.subscribe_series_to_moviepilot(
-                                            series_info,
-                                            season_number=season_to_subscribe,
-                                            config=config_manager.APP_CONFIG,
-                                            best_version=best_version_flag
-                                        )
-
-                                    if success:
-                                        settings_db.decrement_subscription_quota()
-                                        subscription_details.append({'module': '自定义合集', 'source': collection.get('name', '未知榜单'), 'item': formatted_item_str})
-                                        media_changed = True; media_item['status'] = 'subscribed'
-                                    media_to_keep.append(media_item)
-                                else: media_to_keep.append(media_item)
-                            else: media_to_keep.append(media_item)
-                        if media_changed:
-                            new_missing_json = json.dumps(media_to_keep, ensure_ascii=False)
-                            new_missing_count = sum(1 for m in media_to_keep if m.get('status') == 'missing')
-                            new_health_status = 'has_missing' if new_missing_count > 0 else 'ok'
-                            cursor.execute("UPDATE custom_collections SET generated_media_info_json = %s, health_status = %s, missing_count = %s WHERE id = %s", (new_missing_json, new_health_status, new_missing_count, collection['id']))
-                    except Exception as e_coll: logger.error(f"  ➜ 处理自定义合集 '{collection['name']}' 时发生错误: {e_coll}", exc_info=True)
-
-            # --- 5. 处理演员订阅 ---
-            if not processor.is_stop_requested() and not quota_exhausted:
-                task_manager.update_status_from_thread(60, "正在检查演员订阅的缺失作品...")
-                sql_query_actors = "SELECT tam.*, sub.actor_name FROM tracked_actor_media AS tam JOIN actor_subscriptions AS sub ON tam.subscription_id = sub.id WHERE tam.status = 'MISSING'"
-                cursor.execute(sql_query_actors)
-                actor_media_to_check = cursor.fetchall()
-                for media_item in actor_media_to_check:
-                    if processor.is_stop_requested() or quota_exhausted: break
-                    release_date = media_item.get('release_date')
-                    if not release_date or release_date > today: continue
-                    if settings_db.get_subscription_quota() <= 0: quota_exhausted = True; break
-                    
-                    media_title, media_tmdb_id, actor_name = media_item.get('title', '未知标题'), media_item.get('tmdb_media_id'), media_item.get('actor_name', '未知演员')
-                    media_type_en = media_item['media_type']
-                    
-                    if media_type_en == 'Movie':
-                        formatted_item_str = f"电影《{media_title}》"
-                        if is_movie_subscribable(media_tmdb_id, tmdb_api_key, config_manager.APP_CONFIG):
-                            movie_info = {'title': media_title, 'tmdb_id': media_tmdb_id}
-                            # ★★★ 核心修改：订阅成功后，立刻记录！ ★★★
-                            if moviepilot.subscribe_movie_to_moviepilot(movie_info, config_manager.APP_CONFIG):
-                                settings_db.decrement_subscription_quota()
-                                subscription_details.append({'module': '演员订阅', 'source': actor_name, 'item': formatted_item_str})
-                                cursor.execute("UPDATE tracked_actor_media SET status = 'SUBSCRIBED' WHERE id = %s", (media_item['id'],))
-                        else:
-                            logger.warning(f"  ➜ 电影《{media_title}》因未正式发行而被跳过订阅。")
-                            rejected_details.append({'module': '演员订阅', 'source': actor_name, 'item': formatted_item_str})
-
-                    elif media_type_en == 'Series':
-                        parent_tmdb_id = media_item.get('parent_series_tmdb_id')
-                        parsed_season_number = media_item.get('parsed_season_number')
-                        
-                        success = False # 先初始化
-                        
-                        if parent_tmdb_id and parsed_season_number:
-                            # --- A. 智能模式：订阅特定季 ---
-                            formatted_item_str = f"剧集《{media_title}》第 {parsed_season_number} 季"
-                            logger.info(f"  ➜ 演员订阅：为《{media_title}》精准订阅第 {parsed_season_number} 季 (主剧集ID: {parent_tmdb_id})。")
-                            best_version_flag = _check_and_get_series_best_version_flag(series_tmdb_id=parent_tmdb_id, tmdb_api_key=tmdb_api_key, series_name=media_title, season_number=parsed_season_number)
-                            series_info = {"item_name": media_title, "tmdb_id": parent_tmdb_id}
-                            success = moviepilot.subscribe_series_to_moviepilot(series_info, season_number=parsed_season_number, config=config_manager.APP_CONFIG, best_version=best_version_flag)
-                        else:
-                            # --- B. 智能处理器模式：调用 smart_subscribe_series 处理整部剧 ---
-                            logger.info(f"  ➜ 演员订阅：为《{media_title}》调用智能订阅处理器...")
-                            
-                            # 准备给智能处理器的输入
-                            series_info = {"item_name": media_title, "tmdb_id": media_tmdb_id}
-                            
-                            # ★★★ 核心调用：使用全新的智能订阅函数 ★★★
-                            successful_subscriptions = moviepilot.smart_subscribe_series(series_info, config_manager.APP_CONFIG)
-                            
-                            # smart_subscribe_series 成功时会返回一个列表，失败时返回 None
-                            if successful_subscriptions:
-                                # 因为智能订阅可能一次性订阅了多个季，我们需要遍历结果
-                                for sub_details in successful_subscriptions:
-                                    # 在处理每一季之前，都检查一下配额
-                                    if settings_db.get_subscription_quota() <= 0:
-                                        quota_exhausted = True
-                                        logger.warning("  ➜ 配额在智能订阅多季过程中用尽，部分季可能未处理。")
-                                        break # 跳出这个季的循环
-
-                                    # 从返回结果中构建更精确的通知内容
-                                    season_num = sub_details.get('parsed_season_number')
-                                    series_name = sub_details.get('parsed_series_name', media_title)
-                                    formatted_item_str = f"剧集《{series_name}》第 {season_num} 季"
-                                    
-                                    # 为每一季的成功订阅都扣除配额并记录
-                                    settings_db.decrement_subscription_quota()
-                                    subscription_details.append({'module': '演员订阅', 'source': actor_name, 'item': formatted_item_str})
-
-                                # 只要至少有一个季订阅成功，就更新主条目的状态
-                                cursor.execute("UPDATE tracked_actor_media SET status = 'SUBSCRIBED' WHERE id = %s", (media_item['id'],))
-                        
-                        # ★★★ 核心修改：对剧集的成功订阅，也在这里立刻记录！ ★★★
-                        if success:
-                            settings_db.decrement_subscription_quota()
-                            subscription_details.append({'module': '演员订阅', 'source': actor_name, 'item': formatted_item_str})
-                            cursor.execute("UPDATE tracked_actor_media SET status = 'SUBSCRIBED' WHERE id = %s", (media_item['id'],))
-
-            # --- 6. 处理已批准的用户订阅请求 ---
-            if not processor.is_stop_requested() and not quota_exhausted:
-                task_manager.update_status_from_thread(75, "正在处理已批准的用户订阅...")
-                approved_requests = user_db.get_approved_subscription_requests()
-                logger.info(f"  ➜ 找到 {len(approved_requests)} 个已批准的订阅请求待处理。")
-                for req in approved_requests:
-                    if processor.is_stop_requested() or quota_exhausted: break
-                    if settings_db.get_subscription_quota() <= 0: quota_exhausted = True; break
-                    req_id, item_name, item_type_en, tmdb_id, user_id = req['id'], req['item_name'], req['item_type'], req['tmdb_id'], req['emby_user_id']
-                    can_subscribe = (item_type_en == 'Series') or (item_type_en == 'Movie' and is_movie_subscribable(int(tmdb_id), tmdb_api_key, config_manager.APP_CONFIG))
-                    item_type_cn = '剧集' if item_type_en == 'Series' else '电影'
-                    formatted_item_str = f"{item_type_cn}《{item_name}》"
-                    if can_subscribe:
-                        logger.info(f"  ➜ 正在为请求 《{item_name}》 提交订阅...")
-                        success = False
-                        if item_type_en == 'Movie':
-                            mp_payload = { "name": item_name, "tmdbid": int(tmdb_id), "type": "电影" }
-                            success = moviepilot.subscribe_with_custom_payload(mp_payload, config_manager.APP_CONFIG)
-                        elif item_type_en == 'Series':
-                            series_info = { "tmdb_id": int(tmdb_id), "item_name": item_name }
-                            success = moviepilot.smart_subscribe_series(series_info, config_manager.APP_CONFIG) is not None
-                        if success:
-                            settings_db.decrement_subscription_quota()
-                            note = "已加入订阅。"
-                            user_db.update_subscription_request_status(req_id, 'completed', 'auto', notes=note)
-                            subscription_details.append({'module': '用户请求', 'source': user_db.get_username_by_id(user_id) or user_id, 'item': formatted_item_str})
-                            if user_id not in notifications_to_send_success: notifications_to_send_success[user_id] = []
-                            notifications_to_send_success[user_id].append(item_name)
-                        else: logger.error(f"  ➜ 自动处理用户订阅请求 {req_id}《{item_name}》失败。")
-                    else:
-                        note = "等待发行数字版..."
-                        user_db.update_subscription_request_status(req_id, 'approved', 'auto', notes=note)
-                        logger.debug(f"  ➜ 请求 {req_id}《{item_name}》仍不满足发行条件，已更新备注并跳过。")
-                        rejected_details.append({'module': '用户请求', 'source': user_db.get_username_by_id(user_id) or user_id, 'item': formatted_item_str})
-
-            conn.commit()
-
-        # --- 7. 合并用户通知 ---
-        logger.info(f"  ➜ 准备为 {len(notifications_to_send_success)} 位用户发送合并的成功通知...")
-        for user_id, subscribed_items in notifications_to_send_success.items():
+            else:
+                logger.error(f"  ➜ 订阅《{item['title']}》失败，请检查 MoviePilot 连接或日志。")
+        
+        # 3. 发送用户通知
+        logger.info(f"  ➜ 准备为 {len(notifications_to_send)} 位用户发送合并的成功通知...")
+        for user_id, subscribed_items in notifications_to_send.items():
             try:
                 user_chat_id = user_db.get_user_telegram_chat_id(user_id)
                 if user_chat_id:
                     items_list_str = "\n".join([f"· `{item}`" for item in subscribed_items])
                     message_text = (f"🎉 *您的 {len(subscribed_items)} 个订阅已成功处理*\n\n您之前想看的下列内容现已加入下载队列：\n{items_list_str}")
                     telegram.send_telegram_message(user_chat_id, message_text)
-            except Exception as e: logger.error(f"为用户 {user_id} 发送自动订阅的合并通知时出错: {e}")
+            except Exception as e:
+                logger.error(f"为用户 {user_id} 发送自动订阅的合并通知时出错: {e}")
 
-        # --- 8. 处理媒体洗版 ---
-        logger.info("--- 缺失洗版订阅已完成，开始执行媒体洗版任务 ---")
-        task_manager.update_status_from_thread(85, "缺失订阅完成，正在启动媒体洗版...")
-        task_resubscribe_library(processor)
-
-        # --- 9. 构建并发送管理员最终汇总通知 ---
         if subscription_details:
-            # 先准备好不需要转义的标题部分
-            header = f"✅ *缺失洗版订阅完成，成功提交 {len(subscription_details)} 项:*"
+            # ★★★ 核心修改 1/3: 调整标题，使用更通用的措辞 ★★★
+            header = f"✅ *统一订阅任务完成，成功处理 {len(subscription_details)} 项:*"
             
-            # 遍历列表，只对动态内容进行转义
             item_lines = []
             for detail in subscription_details:
-                module = telegram.escape_markdown(detail['module'])
-                source = telegram.escape_markdown(detail.get('source', ''))
+                # ★★★ 核心修改 2/3: 移除 module，直接使用 source ★★★
+                # 我们在前面已经把来源格式化得很好了，比如 "用户请求(admin)" 或 "合集(豆瓣电影Top250)"
+                source = telegram.escape_markdown(detail.get('source', '未知来源'))
                 item = telegram.escape_markdown(detail['item'])
-                # 用我们自己的格式符号，包裹住已经“消毒”过的内容
-                item_lines.append(f"├─ `[{module}-{source}]` {item}")
+                # 新的格式更简洁: [来源] -> 项目
+                item_lines.append(f"├─ `[{source}]` {item}")
                 
             summary_message = header + "\n" + "\n".join(item_lines)
         else:
-            summary_message = "ℹ️ *缺失洗版订阅完成，无符合条件的订阅项。*"
+            summary_message = "ℹ️ *统一订阅任务完成，无成功处理的订阅项。*"
 
         if rejected_details:
-            rejected_header = f"\n\n❌ *下列 {len(rejected_details)} 项因未正式发行而被跳过:*"
+            # ★★★ 核心修改 3/3: 调整被拒部分的措辞和格式 ★★★
+            rejected_header = f"\n\n⚠️ *下列 {len(rejected_details)} 项因不满足订阅条件而被跳过:*"
             
             rejected_lines = []
             for detail in rejected_details:
-                module = telegram.escape_markdown(detail['module'])
-                source = telegram.escape_markdown(detail.get('source', ''))
+                # 这里不再需要 module 和 source，因为被拒的原因更重要
+                reason = telegram.escape_markdown(detail.get('reason', '未知原因'))
                 item = telegram.escape_markdown(detail['item'])
-                rejected_lines.append(f"├─ `[{module}-{source}]` {item}")
+                rejected_lines.append(f"├─ `{reason}` {item}")
                 
             summary_message += rejected_header + "\n" + "\n".join(rejected_lines)
 
         if quota_exhausted:
-            # 只对括号和里面的内容进行转义，保留外面的星号
             content = "(每日订阅配额已用尽，部分项目可能未处理)"
             escaped_content = telegram.escape_markdown(content)
             summary_message += f"\n\n*{escaped_content}*"
@@ -625,10 +341,14 @@ def task_auto_subscribe(processor):
         if admin_chat_ids:
             logger.info(f"  ➜ 准备向 {len(admin_chat_ids)} 位管理员发送任务总结...")
             for chat_id in admin_chat_ids:
+                # 发送通知，静默模式，避免打扰
                 telegram.send_telegram_message(chat_id, summary_message, disable_notification=True)
 
+        task_manager.update_status_from_thread(100, "统一订阅任务处理完成。")
+        logger.info(f"--- '{task_name}' 任务执行完毕 ---")
+
     except Exception as e:
-        logger.error(f"  ➜ 缺失洗版订阅任务失败: {e}", exc_info=True)
+        logger.error(f"  ➜ {task_name} 任务失败: {e}", exc_info=True)
         task_manager.update_status_from_thread(-1, f"错误: {e}")
 
 # ★★★ 媒体洗版任务 ★★★

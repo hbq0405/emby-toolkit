@@ -185,7 +185,7 @@ def get_task_registry(context: str = 'all'):
         'refresh-collections': (task_refresh_collections, "刷新原生合集", 'media', True),
         'custom-collections': (task_process_all_custom_collections, "刷新自建合集", 'media', True),
         'update-resubscribe-cache': (task_update_resubscribe_cache, "刷新洗版状态", 'media', True),
-        'auto-subscribe': (task_auto_subscribe, "缺失洗版订阅", 'media', True),
+        'auto-subscribe': (task_auto_subscribe, "统一订阅处理", 'media', True),
         'generate-all-covers': (task_generate_all_covers, "生成原生封面", 'media', True),
         'generate-custom-collection-covers': (task_generate_all_custom_collection_covers, "生成合集封面", 'media', True),
         'merge-duplicate-actors': (task_merge_duplicate_actors, "合并分身演员", 'media', True),

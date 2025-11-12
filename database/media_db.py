@@ -120,6 +120,28 @@ def get_media_in_library_status_by_tmdb_ids(tmdb_ids: List[str]) -> Dict[str, bo
         logger.error(f"批量获取媒体在库状态时出错: {e}", exc_info=True)
         return {}
     
+def get_all_wanted_media() -> List[Dict[str, Any]]:
+    """
+    【统一订阅模块核心】获取所有状态为 'WANTED' 的媒体项。
+    这是统一订阅处理器的唯一数据来源。
+    """
+    sql = """
+        SELECT 
+            tmdb_id, item_type, title, release_date, poster_path, overview,
+            season_number, subscription_sources_json
+        FROM media_metadata
+        WHERE subscription_status = 'WANTED'
+        ORDER BY first_requested_at ASC; -- 按请求时间排序，先到先得
+    """
+    try:
+        with get_db_connection() as conn:
+            cursor = conn.cursor()
+            cursor.execute(sql)
+            return [dict(row) for row in cursor.fetchall()]
+    except Exception as e:
+        logger.error(f"DB: 获取所有待订阅(WANTED)媒体失败: {e}", exc_info=True)
+        return []
+    
 def update_subscription_status(
     tmdb_ids: Union[str, List[str]], 
     item_type: str, 

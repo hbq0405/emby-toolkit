@@ -208,8 +208,6 @@ def get_dashboard_stats() -> dict:
         (SELECT COUNT(*) FROM watchlist WHERE status = 'Watching') AS watchlist_active,
         (SELECT COUNT(*) FROM watchlist WHERE status = 'Paused') AS watchlist_paused,
         (SELECT COUNT(*) FROM actor_subscriptions WHERE status = 'active') AS actor_subscriptions_active,
-        (SELECT COUNT(*) FROM tracked_actor_media) AS tracked_media_total,
-        (SELECT COUNT(*) FROM tracked_actor_media WHERE status = 'IN_LIBRARY') AS tracked_media_in_library,
         (SELECT COUNT(*) FROM resubscribe_cache WHERE status ILIKE 'needed') AS resubscribe_pending,
         (SELECT COUNT(*) FROM person_identity_map WHERE emby_person_id IS NOT NULL) AS actor_mappings_linked,
         (SELECT COUNT(*) FROM person_identity_map WHERE emby_person_id IS NULL) AS actor_mappings_unlinked,
@@ -279,7 +277,7 @@ def prepare_for_library_rebuild() -> Dict[str, Dict]:
     ]
     columns_to_reset = {
         'media_metadata': 'emby_item_id', 'person_identity_map': 'emby_person_id',
-        'custom_collections': 'emby_collection_id', 'tracked_actor_media': 'emby_item_id'
+        'custom_collections': 'emby_collection_id'
     }
     results = {"truncated_tables": {}, "updated_columns": {}}
 

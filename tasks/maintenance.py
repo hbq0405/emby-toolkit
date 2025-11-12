@@ -26,49 +26,26 @@ def _prepare_data_for_insert(table_name: str, table_data: List[Dict[str, Any]]) 
     """
     # ★★★ 核心修改 1: 在这里注册所有新增的 JSONB 列 ★★★
     JSONB_COLUMNS = {
-        'app_settings': {
-            'value_json'
-        },
-        'collections_info': {
-            'missing_movies_json'
-        },
-        'custom_collections': {
-            'definition_json', 'generated_media_info_json', 
-            'emby_children_details_json', 'generated_emby_ids_json', 
-            'allowed_user_ids' 
-        },
-        'user_collection_cache': {
-            'visible_emby_ids_json'
-        },
+        'app_settings': {'value_json'},
+        'collections_info': {'missing_movies_json'},
+        'custom_collections': {'definition_json', 'allowed_user_ids', 'generated_media_info_json'},
+        'user_collection_cache': {'visible_emby_ids_json'},
         'media_metadata': {
-            'genres_json', 'actors_json', 'directors_json', 
-            'studios_json', 'countries_json', 'tags_json', 
-            'emby_children_details_json',
-            'keywords_json' 
+            'emby_item_ids_json', 'paths_json', 'subscription_sources_json', 
+            'pre_cached_tags_json', 'pre_cached_extra_json', 'genres_json', 
+            'actors_json', 'directors_json', 'studios_json', 'countries_json', 
+            'keywords_json', 'next_episode_to_air_json', 'last_episode_to_air_json'
         },
-        'watchlist': {
-            'next_episode_to_air_json', 'missing_info_json', 
-            'resubscribe_info_json', 
-            'last_episode_to_air_json' 
-        },
-        'actor_subscriptions': {
-            'config_genres_include_json', 'config_genres_exclude_json'
-        },
+        'watchlist': {'next_episode_to_air_json', 'missing_info_json', 'resubscribe_info_json', 'last_episode_to_air_json'},
+        'actor_subscriptions': {'config_genres_include_json', 'config_genres_exclude_json'},
         'resubscribe_rules': {
             'target_library_ids', 'resubscribe_audio_missing_languages',
             'resubscribe_subtitle_missing_languages', 'resubscribe_quality_include',
             'resubscribe_effect_include'
         },
-        'resubscribe_cache': {
-            'audio_languages_raw', 'subtitle_languages_raw'
-        },
-        'media_cleanup_tasks': {
-            'versions_info_json'
-        },
-        'user_templates': {
-            'emby_policy_json', 
-            'emby_configuration_json' 
-        }
+        'resubscribe_cache': {'audio_languages_raw', 'subtitle_languages_raw'},
+        'media_cleanup_tasks': {'versions_info_json'},
+        'user_templates': {'emby_policy_json', 'emby_configuration_json'}
     }
 
     # Add specific non-JSONB columns that might be lists and need string conversion
@@ -241,7 +218,6 @@ def _resync_primary_key_sequence(cursor, table_name: str):
         'custom_collections': 'id',
         'person_identity_map': 'map_id',
         'actor_subscriptions': 'id',
-        'tracked_actor_media': 'id',
         'resubscribe_rules': 'id',
         'media_cleanup_tasks': 'id',
         'user_templates': 'id',
@@ -292,7 +268,6 @@ def task_import_database(processor, file_content: str, tables_to_import: List[st
         'translation_cache': '翻译缓存',
         'watchlist': '智能追剧列表', 
         'actor_subscriptions': '演员订阅配置', 
-        'tracked_actor_media': '已追踪的演员作品',
         'collections_info': '电影合集信息', 
         'processed_log': '已处理列表', 
         'failed_log': '待复核列表',
@@ -333,8 +308,7 @@ def task_import_database(processor, file_content: str, tables_to_import: List[st
                 'subscription_requests': 30, 
 
                 # --- 级别 2: 依赖更早级别的表 ---
-                'actor_metadata': 11,
-                'tracked_actor_media': 20
+                'actor_metadata': 11
             }
             return order.get(table_name.lower(), 100)
 
