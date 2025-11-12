@@ -71,18 +71,21 @@ def _perform_list_collection_health_check(
     tmdb_api_key: str
 ) -> dict:
     """
-    【V7 - 最终键名统一版】
-    函数内部完全使用标准化的 'tmdb_id' 和 'media_type' 键名。
+    【V8 - 增加未上映处理】
+    - 检测到缺失媒体时，会判断其上映日期。
+    - 如果尚未上映，则将其状态设置为 PENDING_RELEASE。
+    - 如果已经上映，则设置为 WANTED。
     """
     collection_name = collection_db_record.get('name', '未知合集')
-    logger.info(f"  ➜ 榜单合集 '{collection_name}'，开始进行健康度分析 (最终统一模式)...")
+    logger.info(f"  ➜ 榜单合集 '{collection_name}'，开始进行健康度分析...")
 
     in_library_tmdb_ids = set(tmdb_to_emby_item_map.keys())
-    missing_items_with_details = []
+    # ★★★ 核心修改 1/3: 创建两个列表，分别存放已上映和未上映的缺失项 ★★★
+    missing_released_items = []
+    missing_unreleased_items = []
     today_str = datetime.now().strftime('%Y-%m-%d')
 
     with ThreadPoolExecutor(max_workers=5) as executor:
-        # ▼▼▼ 核心修正 1/2：这里必须使用标准化的键名 'media_type' 和 'tmdb_id' ▼▼▼
         future_to_item = {
             executor.submit(
                 tmdb.get_movie_details if item['media_type'] != 'Series' else tmdb.get_tv_details, 
@@ -92,15 +95,15 @@ def _perform_list_collection_health_check(
         
         for future in as_completed(future_to_item):
             item_def = future_to_item[future]
-            # ▼▼▼ 核心修正 2/2：这里也必须使用标准化的键名 ▼▼▼
             tmdb_id = str(item_def.get('tmdb_id'))
             media_type = item_def.get('media_type')
             
             if not tmdb_id or not media_type:
                 continue
 
-            corrected_id = next((k for k, v in corrected_id_to_original_id_map.items() if v == tmdb_id), tmdb_id)
-            if tmdb_id in in_library_tmdb_ids or corrected_id in in_library_tmdb_ids:
+            # 检查是否在库 (包括修正前的ID)
+            original_id = corrected_id_to_original_id_map.get(tmdb_id, tmdb_id)
+            if tmdb_id in in_library_tmdb_ids or original_id in in_library_tmdb_ids:
                 continue
 
             try:
@@ -108,62 +111,75 @@ def _perform_list_collection_health_check(
                 if not details: continue
                 
                 release_date = details.get("release_date") or details.get("first_air_date", '')
-                if release_date and release_date <= today_str:
-                    missing_items_with_details.append({
-                        'tmdb_id': tmdb_id,
-                        'media_type': media_type,
-                        'title': details.get('title') or details.get('name'),
-                        'original_title': details.get('original_title') or details.get('original_name'),
-                        'release_date': release_date,
-                        'poster_path': details.get('poster_path'),
-                        'source': {
-                            "type": "collection", 
-                            "id": collection_db_record.get('id'), 
-                            "name": collection_name
-                        }
-                    })
+                item_details_for_db = {
+                    'tmdb_id': tmdb_id,
+                    'media_type': media_type,
+                    'title': details.get('title') or details.get('name'),
+                    'original_title': details.get('original_title') or details.get('original_name'),
+                    'release_date': release_date,
+                    'poster_path': details.get('poster_path'),
+                    'source': {
+                        "type": "collection", 
+                        "id": collection_db_record.get('id'), 
+                        "name": collection_name
+                    }
+                }
+
+                # ★★★ 核心修改 2/3: 根据上映日期，将缺失项分类 ★★★
+                if release_date and release_date > today_str:
+                    missing_unreleased_items.append(item_details_for_db)
+                else:
+                    missing_released_items.append(item_details_for_db)
+
             except Exception as e:
                 logger.error(f"为合集 '{collection_name}' 获取 {tmdb_id} 详情时发生异常: {e}", exc_info=True)
 
-    # 自动订阅逻辑 (这部分已经是正确的，因为它使用了我们组装好的 missing_items_with_details)
-    if missing_items_with_details:
-        logger.info(f"  -> 检测到 {len(missing_items_with_details)} 个缺失媒体，将写入元数据并订阅...")
-        requests_by_type = {'Movie': [], 'Series': []}
-        for item in missing_items_with_details:
-            requests_by_type[item['media_type']].append(item)
+    # ★★★ 核心修改 3/3: 分别对两类缺失项执行不同的状态更新 ★★★
+    source_for_subscription = {"type": "collection", "id": collection_db_record.get('id'), "name": collection_name}
 
+    # 处理已上映的缺失项 -> WANTED
+    if missing_released_items:
+        logger.info(f"  -> 检测到 {len(missing_released_items)} 个已上映的缺失媒体，将订阅状态设为 'WANTED'...")
+        requests_by_type = {'Movie': [], 'Series': []}
+        for item in missing_released_items:
+            requests_by_type[item['media_type']].append(item)
         for item_type, requests in requests_by_type.items():
             if requests:
-                try:
-                    media_db.update_subscription_status(
-                        tmdb_ids=[req['tmdb_id'] for req in requests],
-                        item_type=item_type,
-                        new_status='WANTED',
-                        media_info_list=requests,
-                        source={"type": "collection", "id": collection_db_record.get('id'), "name": collection_name}
-                    )
-                except Exception as e:
-                    logger.error(f"为合集 '{collection_name}' 批量请求订阅 '{item_type}' 时失败: {e}", exc_info=True)
+                media_db.update_subscription_status(
+                    tmdb_ids=[req['tmdb_id'] for req in requests], item_type=item_type,
+                    new_status='WANTED', media_info_list=requests, source=source_for_subscription
+                )
 
-    # 返回值 (现在变得极其简单，因为输入的 tmdb_items 已经是标准格式，直接返回即可)
+    # 处理未上映的缺失项 -> PENDING_RELEASE
+    if missing_unreleased_items:
+        logger.info(f"  -> 检测到 {len(missing_unreleased_items)} 个未上映的媒体，将订阅状态设为 'PENDING_RELEASE'...")
+        requests_by_type = {'Movie': [], 'Series': []}
+        for item in missing_unreleased_items:
+            requests_by_type[item['media_type']].append(item)
+        for item_type, requests in requests_by_type.items():
+            if requests:
+                media_db.update_subscription_status(
+                    tmdb_ids=[req['tmdb_id'] for req in requests], item_type=item_type,
+                    new_status='PENDING_RELEASE', media_info_list=requests, source=source_for_subscription
+                )
+    
+    total_missing = len(missing_released_items) + len(missing_unreleased_items)
     return {
-        "health_status": "has_missing" if missing_items_with_details else "ok", 
-        "missing_count": len(missing_items_with_details), 
+        "health_status": "has_missing" if total_missing > 0 else "ok", 
+        "missing_count": total_missing, 
         "generated_media_info_json": json.dumps(tmdb_items, ensure_ascii=False)
     }
 
 # ✨ 辅助函数，并发刷新合集使用
 def _process_single_collection_concurrently(collection_data: dict, tmdb_api_key: str) -> dict:
     """
-    【V5 - 逻辑与类型双重修复版】
-    在单个线程中处理单个电影合集的所有逻辑。
+    【V7 - 增加垃圾数据过滤器】
     """
     collection_id = collection_data['Id']
     collection_name = collection_data.get('Name', '')
     today_str = datetime.now().strftime('%Y-%m-%d')
     item_type = 'Movie'
     
-    # ★★★ 核心修复 1/2: 强制将所有来自Emby的ID转换为字符串集合，确保类型统一 ★★★
     emby_movie_tmdb_ids = {str(id) for id in collection_data.get("ExistingMovieTmdbIds", [])}
     
     in_library_count = len(emby_movie_tmdb_ids)
@@ -180,14 +196,11 @@ def _process_single_collection_concurrently(collection_data: dict, tmdb_api_key:
         if not details or "parts" not in details:
             status = "tmdb_error"
         else:
-            # ★★★ 核心修复 2/2: 修正数据库读取逻辑 ★★★
             previous_movies_map = {}
             with connection.get_db_connection() as conn:
                 cursor = conn.cursor()
                 cursor.execute("SELECT missing_movies_json FROM collections_info WHERE emby_collection_id = %s", (collection_id,))
                 row = cursor.fetchone()
-                # 1. 使用字典键 'missing_movies_json' 访问，而不是索引 [0]
-                # 2. psycopg2 已经自动解析了 JSONB 字段，无需再 json.loads
                 if row and row.get('missing_movies_json'):
                     try:
                         previous_movies_map = {str(m['tmdb_id']): m for m in row['missing_movies_json']}
@@ -195,13 +208,12 @@ def _process_single_collection_concurrently(collection_data: dict, tmdb_api_key:
                         logger.warning(f"解析合集 '{collection_name}' 的历史数据时格式不兼容，将忽略。")
             
             for movie in details.get("parts", []):
-                # 确保 TMDB ID 也为字符串，与上面创建的集合类型一致
-                movie_tmdb_id = str(movie.get("id"))
-                
-                # 跳过没有发布日期的电影，它们通常是未完成的项目
-                if not movie.get("release_date"): 
+                # ★★★ 核心过滤点 3/3: 在这个辅助函数中也加入过滤器 ★★★
+                if not movie.get("release_date") or not movie.get("poster_path"): 
                     continue
 
+                movie_tmdb_id = str(movie.get("id"))
+                
                 movie_status = "unknown"
                 if movie_tmdb_id in emby_movie_tmdb_ids:
                     movie_status = "in_library"

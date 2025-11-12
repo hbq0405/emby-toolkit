@@ -266,34 +266,36 @@ def apply_and_persist_media_correction(collection_id: int, old_tmdb_id: str, new
 
             # === Part 3: 执行状态变更 ===
             
-            # 3.1 忽略旧ID (仅当ID不同时)
             if old_tmdb_id != new_tmdb_id:
                 media_db.update_subscription_status(old_tmdb_id, item_type, 'IGNORED')
 
-            # 3.2 为新ID应用继承的状态
-            final_ui_status = 'missing' # 默认返回给UI的状态
+            final_ui_status = 'missing'
             
             if inherited_target_status == 'WANTED':
-                # 如果继承的状态是“需要”，则执行完整的订阅流程
                 subscription_source = {"type": "collection_correction", "id": collection_id, "name": definition.get('name', '')}
                 api_key = config_manager.APP_CONFIG.get(constants.CONFIG_OPTION_TMDB_API_KEY)
                 details = tmdb.get_tv_details(int(new_tmdb_id), api_key) if item_type == 'Series' else tmdb.get_movie_details(int(new_tmdb_id), api_key)
                 if not details: raise ValueError(f"无法从TMDb获取ID为 {new_tmdb_id} 的媒体详情。")
 
+                release_date = details.get("release_date") or details.get("first_air_date", '')
+                
+                # ★★★ 核心修改：根据上映日期决定最终订阅状态 ★★★
+                final_subscription_status = 'PENDING_RELEASE' if release_date and release_date > datetime.now().strftime('%Y-%m-%d') else 'WANTED'
+                
                 media_info = {
                     'tmdb_id': new_tmdb_id, 'item_type': item_type, 'title': details.get('title') or details.get('name'),
                     'original_title': details.get('original_title') or details.get('original_name'),
-                    'release_date': details.get("release_date") or details.get("first_air_date", ''),
-                    'poster_path': details.get("poster_path"), 'overview': details.get("overview"),
-                    'season_number': season_number
+                    'release_date': release_date, 'poster_path': details.get("poster_path"), 
+                    'overview': details.get("overview"), 'season_number': season_number
                 }
                 media_db.update_subscription_status(
-                    tmdb_ids=new_tmdb_id, item_type=item_type, new_status='WANTED', 
+                    tmdb_ids=new_tmdb_id, item_type=item_type, new_status=final_subscription_status, 
                     source=subscription_source, media_info_list=[media_info]
                 )
-                final_ui_status = 'subscribed'
+                
+                # 根据订阅状态决定返回给UI的状态
+                final_ui_status = 'unreleased' if final_subscription_status == 'PENDING_RELEASE' else 'subscribed'
             else:
-                # 如果继承的状态是“无需”，则执行取消/重置流程
                 media_db.update_subscription_status(new_tmdb_id, item_type, 'NONE')
                 final_ui_status = 'missing'
 
