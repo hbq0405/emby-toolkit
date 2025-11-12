@@ -378,21 +378,20 @@ def update_subscription_status(
                 
                 # 2. 根据不同状态，选择不同的SQL逻辑
                 
-                if new_status_upper in ['WANTED', 'SUBSCRIBED']:
-                    # 这是最复杂的逻辑，需要处理元数据和订阅来源
+                if new_status_upper == 'WANTED':
+                    # WANTED 状态：表示用户想要订阅，加入待订阅列表，不更新 last_synced_at
                     sql = """
                         INSERT INTO media_metadata (
                             tmdb_id, item_type, subscription_status, subscription_sources_json, 
                             first_requested_at, title, original_title, release_date, poster_path, season_number, overview
                         ) VALUES (
-                            %(tmdb_id)s, %(item_type)s, %(new_status)s, %(source)s::jsonb,
+                            %(tmdb_id)s, %(item_type)s, 'WANTED', %(source)s::jsonb,
                             NOW(), %(title)s, %(original_title)s, %(release_date)s, %(poster_path)s, %(season_number)s, %(overview)s
                         )
                         ON CONFLICT (tmdb_id, item_type) DO UPDATE SET
-                            subscription_status = EXCLUDED.subscription_status,
+                            subscription_status = 'WANTED',
                             subscription_sources_json = media_metadata.subscription_sources_json || EXCLUDED.subscription_sources_json,
-                            first_requested_at = COALESCE(media_metadata.first_requested_at, EXCLUDED.first_requested_at),
-                            last_synced_at = NOW()
+                            first_requested_at = COALESCE(media_metadata.first_requested_at, EXCLUDED.first_requested_at)
                         WHERE media_metadata.in_library = FALSE;
                     """
                     
@@ -405,7 +404,6 @@ def update_subscription_status(
                         data_to_upsert.append({
                             "tmdb_id": tmdb_id,
                             "item_type": item_type,
-                            "new_status": new_status_upper,
                             "source": json.dumps([source]) if source else '[]',
                             "title": media_info.get('title'),
                             "original_title": media_info.get('original_title'),
@@ -418,7 +416,45 @@ def update_subscription_status(
                     from psycopg2.extras import execute_batch
                     execute_batch(cursor, sql, data_to_upsert)
 
-                if new_status_upper == 'IGNORED':
+                elif new_status_upper == 'SUBSCRIBED':
+                    # SUBSCRIBED 状态：表示已成功订阅，更新 last_synced_at
+                    sql = """
+                        INSERT INTO media_metadata (
+                            tmdb_id, item_type, subscription_status, subscription_sources_json, 
+                            first_requested_at, title, original_title, release_date, poster_path, season_number, overview
+                        ) VALUES (
+                            %(tmdb_id)s, %(item_type)s, 'SUBSCRIBED', %(source)s::jsonb,
+                            NOW(), %(title)s, %(original_title)s, %(release_date)s, %(poster_path)s, %(season_number)s, %(overview)s
+                        )
+                        ON CONFLICT (tmdb_id, item_type) DO UPDATE SET
+                            subscription_status = 'SUBSCRIBED',
+                            subscription_sources_json = media_metadata.subscription_sources_json || EXCLUDED.subscription_sources_json,
+                            first_requested_at = COALESCE(media_metadata.first_requested_at, EXCLUDED.first_requested_at),
+                            last_synced_at = NOW();
+                    """
+                    
+                    # 准备批量数据
+                    data_to_upsert = []
+                    media_info_map = {info['tmdb_id']: info for info in media_info_list} if media_info_list else {}
+                    
+                    for tmdb_id in id_list:
+                        media_info = media_info_map.get(tmdb_id, {})
+                        data_to_upsert.append({
+                            "tmdb_id": tmdb_id,
+                            "item_type": item_type,
+                            "source": json.dumps([source]) if source else '[]',
+                            "title": media_info.get('title'),
+                            "original_title": media_info.get('original_title'),
+                            "release_date": media_info.get('release_date') or None,
+                            "poster_path": media_info.get('poster_path'),
+                            "season_number": media_info.get('season_number') or None,
+                            "overview": media_info.get('overview')
+                        })
+                    
+                    from psycopg2.extras import execute_batch
+                    execute_batch(cursor, sql, data_to_upsert)
+
+                elif new_status_upper == 'IGNORED':
                     # ★★★ 全新重构的 IGNORED 逻辑 ★★★
                     sql = """
                         INSERT INTO media_metadata (

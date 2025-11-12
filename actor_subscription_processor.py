@@ -262,13 +262,20 @@ class ActorSubscriptionProcessor:
                         # 筛选通过，状态可能是 IN_LIBRARY, MISSING, SUBSCRIBED, PENDING_RELEASE
                         status, emby_id = self._determine_library_status(work, emby_media_map, emby_series_seasons_map, emby_series_name_to_tmdb_id_map, today_str)
                         
-                        new_sub_status = 'NONE'
-                        if status == MediaStatus.IN_LIBRARY:
-                            new_sub_status = 'SUBSCRIBED' # 在库即为已订阅
-                        elif status == MediaStatus.MISSING:
-                            new_sub_status = 'WANTED' # 缺失则标记为需要
+                        # 获取当前媒体项在此订阅源下的追踪状态
+                        current_tracked_status = old_tracked_media.get(tmdb_id, {}).get('subscription_status')
                         
-                        if new_sub_status != 'NONE':
+                        new_sub_status = 'NONE' # 默认不操作
+                        
+                        # 根据用户反馈，除了统一订阅模块，其他模块一律没有权限把状态改为 SUBSCRIBED。
+                        # 因此，这里只将符合条件的媒体项标记为 WANTED。
+                        if status == MediaStatus.MISSING or status == MediaStatus.PENDING_RELEASE:
+                            # 媒体不在库中或未发行，且筛选通过，则标记为 WANTED
+                            new_sub_status = 'WANTED'
+                        # 如果媒体已在库中 (MediaStatus.IN_LIBRARY)，则不应由演员订阅模块将其状态改为 SUBSCRIBED。
+                        # 此时，new_sub_status 保持为 'NONE'，即不进行状态更新。
+                        
+                        if new_sub_status == 'WANTED': # 只有当状态明确为 WANTED 时才进行更新
                             media_db.update_subscription_status(
                                 tmdb_ids=tmdb_id,
                                 item_type=media_type,
@@ -365,12 +372,6 @@ class ActorSubscriptionProcessor:
             
         return parent_id
     
-    def _get_existing_tracked_media(self, cursor, subscription_id: int) -> Dict[int, str]:
-        """从数据库获取当前已追踪的媒体及其状态。"""
-        # ★★★ 核心修改：SQL占位符从 ? 改为 %s
-        cursor.execute("SELECT tmdb_media_id, status FROM tracked_actor_media WHERE subscription_id = %s", (subscription_id,))
-        return {row['tmdb_media_id']: row['status'] for row in cursor.fetchall()}
-
     def _filter_work_and_get_reason(self, work: Dict, sub_config) -> Tuple[bool, Optional[str]]:
         """
         对单个作品进行完整筛选。
@@ -503,42 +504,6 @@ class ActorSubscriptionProcessor:
             'parent_series_tmdb_id': parent_tmdb_id,
             'parsed_season_number': season_number
         }
-
-    def _update_database_records(self, cursor, subscription_id: int, to_insert: List[Dict], to_update: List[Dict], to_delete_ids: List[int]):
-        """执行数据库的增、删、改操作。"""
-        if to_insert:
-            logger.info(f"  ➜ 新增 {len(to_insert)} 条作品记录。")
-            sql_insert = (
-                "INSERT INTO tracked_actor_media (subscription_id, tmdb_media_id, media_type, title, release_date, poster_path, status, emby_item_id, ignore_reason, parent_series_tmdb_id, parsed_season_number, last_updated_at) "
-                "VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, CURRENT_TIMESTAMP)" 
-            )
-            insert_data = [
-                (d['subscription_id'], d['tmdb_media_id'], d['media_type'], d['title'], d['release_date'], d['poster_path'], d['status'], d['emby_item_id'], d['ignore_reason'], d.get('parent_series_tmdb_id'), d.get('parsed_season_number')) 
-                for d in to_insert
-            ]
-            cursor.executemany(sql_insert, insert_data)
-        
-        if to_update:
-            logger.info(f"  ➜ 更新 {len(to_update)} 条作品记录的状态。")
-            sql_update = (
-                "UPDATE tracked_actor_media SET status = %s, emby_item_id = %s, last_updated_at = CURRENT_TIMESTAMP "
-                "WHERE subscription_id = %s AND tmdb_media_id = %s"
-            )
-            update_data = [
-                (d['status'], d.get('emby_item_id'), d['subscription_id'], d['tmdb_media_id'])
-                for d in to_update
-            ]
-            cursor.executemany(sql_update, update_data)
-
-        if to_delete_ids:
-            logger.info(f"  ➜ 删除 {len(to_delete_ids)} 条过时的作品记录。")
-            delete_params = [(subscription_id, media_id) for media_id in to_delete_ids]
-            cursor.executemany(
-                "DELETE FROM tracked_actor_media WHERE subscription_id = %s AND tmdb_media_id = %s",
-                delete_params
-            )
-        
-        cursor.execute("UPDATE actor_subscriptions SET last_checked_at = CURRENT_TIMESTAMP WHERE id = %s", (subscription_id,))
 
     def _enrich_works_with_order(self, works: List[Dict], tmdb_person_id: int, api_key: str) -> List[Dict]:
         """
