@@ -575,7 +575,6 @@ def init_db():
                     cursor.execute("CREATE INDEX IF NOT EXISTS idx_mm_pre_processing_needed ON media_metadata (pre_processed_at) WHERE subscription_status = 'SUBSCRIBED' AND pre_processed_at IS NULL;")
                     cursor.execute("CREATE INDEX IF NOT EXISTS idx_mm_emby_ids_gin ON media_metadata USING GIN(emby_item_ids_json);")
                     cursor.execute("CREATE INDEX IF NOT EXISTS idx_mm_subscription_sources_gin ON media_metadata USING GIN(subscription_sources_json);")
-                    cursor.execute("CREATE INDEX IF NOT EXISTS idx_mm_emby_item_id ON media_metadata (emby_item_id);")
                 except Exception as e_index:
                     logger.error(f"  ➜ 创建 'emby_item_id' 索引时出错: {e_index}", exc_info=True)
 
