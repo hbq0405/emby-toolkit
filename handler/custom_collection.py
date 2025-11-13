@@ -871,7 +871,7 @@ class FilterEngine:
             
             logger.info(f"  ➜ 正在从本地缓存中查询这 {len(tmdb_ids_from_libs)} 个项目的元数据...")
             for item_type in item_types_to_process:
-                metadata_for_type = collection_db.get_media_metadata_by_tmdb_ids(tmdb_ids_from_libs, item_type)
+                metadata_for_type = media_db.get_media_details_by_tmdb_ids(tmdb_ids_from_libs, item_type)
                 all_media_metadata.extend(metadata_for_type)
 
         else:
