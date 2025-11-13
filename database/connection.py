@@ -581,60 +581,6 @@ def init_db():
 
                 logger.trace("  ➜ 数据库升级检查完成。")
 
-                # ======================================================================
-                # ★★★ 数据库自动修正补丁 (START) ★★★
-                # 修正 'media_metadata.in_library' 字段错误的默认值
-                # ======================================================================
-                logger.trace("  ➜ [数据库修正] 正在检查并修正 'media_metadata.in_library' 的默认值...")
-                try:
-                    # 查询 information_schema 来获取列的当前默认值
-                    cursor.execute("""
-                        SELECT column_default
-                        FROM information_schema.columns
-                        WHERE table_schema = current_schema()
-                          AND table_name = 'media_metadata'
-                          AND column_name = 'in_library';
-                    """)
-                    result = cursor.fetchone()
-                    current_default = result['column_default'] if result else None
-
-                    # 如果默认值是 'true' 或包含 'true' (例如 'true::boolean')，则修正它
-                    if current_default and 'true' in current_default.lower():
-                        logger.warning(f"    ➜ [数据库修正] 检测到 'in_library' 字段的默认值为不正确的 '{current_default}'。正在修正...")
-                        
-                        # 执行 ALTER COLUMN 命令来设置正确的默认值
-                        cursor.execute("ALTER TABLE media_metadata ALTER COLUMN in_library SET DEFAULT FALSE;")
-                        
-                        logger.info("    ➜ [数据库修正] 成功将 'in_library' 的默认值修正为 FALSE。")
-                    else:
-                        logger.trace("    ➜ 'in_library' 字段的默认值正确，无需修正。")
-
-                except Exception as e_fix:
-                    logger.error(f"  ➜ [数据库修正] 修正 'in_library' 默认值时出错: {e_fix}", exc_info=True)
-                # ======================================================================
-                # ★★★ 数据库自动修正补丁 (END) ★★★
-
-                # ★★★ 清理所有已废弃的旧数据表 ★★★
-                logger.info("  ➜ [数据库清理] 正在检查并移除已废弃的旧数据表...")
-                obsolete_tables = [
-                    'watchlist',
-                    'tracked_actor_media',
-                    'subscription_requests'
-                ]
-                
-                for table_name in obsolete_tables:
-                    try:
-                        logger.debug(f"    -> 正在尝试移除废弃表: {table_name}...")
-                        # 使用 IF EXISTS 确保即使表不存在也不会报错
-                        # 使用 CASCADE 确保与该表相关的任何依赖（如视图、外键）也会被一并移除
-                        cursor.execute(f"DROP TABLE IF EXISTS {table_name} CASCADE;")
-                        logger.info(f"    ✅ 成功移除或确认废弃表 '{table_name}' 不存在。")
-                    except Exception as e_drop:
-                        # 记录错误，但不中断整个初始化过程
-                        logger.error(f"    -> 尝试移除废弃表 '{table_name}' 时发生错误: {e_drop}", exc_info=True)
-                
-                logger.info("  ➜ 废弃表清理完成。")
-
             conn.commit()
             logger.info("  ➜ PostgreSQL 数据库初始化完成，所有表结构已创建/验证。")
 
