@@ -20,7 +20,6 @@ logger = logging.getLogger(__name__)
 def request_subscription():
     """
     【V9 - 终极统一版】
-    - 彻底废弃 request_db，所有用户的请求都通过 media_db 写入 media_metadata 表。
     - 普通用户的请求状态为 REQUESTED，VIP/管理员的请求状态为 WANTED。
     """
     data = request.json
@@ -79,7 +78,6 @@ def request_subscription():
             message = "该项目正在等待审核。" if existing_status == 'pending' else "该项目已在订阅队列中。"
             return jsonify({"status": existing_status, "message": message}), 200
         
-        # 不再调用 request_db，而是调用 media_db 将状态设为 REQUESTED
         media_db.update_subscription_status(
             tmdb_ids=tmdb_id, item_type=item_type,
             new_status='REQUESTED', # <-- 核心状态
