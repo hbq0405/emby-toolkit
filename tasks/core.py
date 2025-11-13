@@ -16,7 +16,7 @@ from .actors import (task_sync_person_map, task_enrich_aliases, task_actor_trans
 from .media import task_role_translation, task_populate_metadata_cache, task_apply_main_cast_to_episodes 
 from .watchlist import task_process_watchlist, task_run_revival_check
 from .collections import task_refresh_collections, task_process_all_custom_collections, process_single_custom_collection
-from .subscriptions import task_auto_subscribe, task_update_resubscribe_cache, task_resubscribe_library
+from .subscriptions import task_auto_subscribe, task_update_resubscribe_cache, task_resubscribe_library, task_manual_subscribe_batch
 from .covers import task_generate_all_covers, task_generate_all_custom_collection_covers
 from .maintenance import task_scan_for_cleanup_issues 
 from .users import task_sync_all_user_data, task_check_expired_users
@@ -205,6 +205,7 @@ def get_task_registry(context: str = 'all'):
         'task_apply_main_cast_to_episodes': (task_apply_main_cast_to_episodes, "轻量化同步分集演员表", 'media', False),
         'resubscribe-library': (task_resubscribe_library, "媒体洗版订阅", 'media', False),
         'update-daily-theme': (task_update_daily_theme, "更新每日主题", 'media', False),
+        'manual_subscribe_batch': (task_manual_subscribe_batch, "手动订阅处理", 'media', False),
     }
 
     if context == 'chain':

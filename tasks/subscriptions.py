@@ -6,7 +6,7 @@ import json
 import time
 import logging
 from datetime import datetime, date
-from typing import List, Optional
+from typing import List, Optional, Dict
 from concurrent.futures import ThreadPoolExecutor, as_completed 
 
 # 导入需要的底层模块和共享实例
@@ -182,6 +182,106 @@ def _check_and_get_series_best_version_flag(series_tmdb_id: int, tmdb_api_key: s
         logger.warning(f"  ➜ 获取《{series_name}》详情失败: {e_tmdb}，将以普通模式订阅。")
     
     return None
+
+# ★★★ 手动动订阅任务 ★★★
+def task_manual_subscribe_batch(processor, subscribe_requests: List[Dict]):
+    """
+    【V1 - 异步版】
+    专门用于处理来自前端的手动“立即订阅”请求的后台任务。
+    - 包含完整的配额检查、发行日期检查、订阅和预处理流程。
+    - 通过 task_manager 更新状态，以便在UI中跟踪。
+    """
+    task_name = f"手动订阅 {len(subscribe_requests)} 个项目"
+    logger.info(f"--- 开始执行 '{task_name}' 任务 ---")
+    
+    task_manager.update_status_from_thread(0, "正在准备手动订阅任务...")
+
+    if not subscribe_requests:
+        task_manager.update_status_from_thread(100, "任务完成：没有需要处理的项目。")
+        return
+
+    try:
+        # 1. 批量获取所有请求的媒体详情
+        tmdb_ids = [req.get('tmdb_id') for req in subscribe_requests if req.get('tmdb_id')]
+        if not tmdb_ids:
+            task_manager.update_status_from_thread(100, "任务失败：请求中未包含有效的 tmdb_id。")
+            return
+            
+        media_details_map = media_db.get_media_details_by_tmdb_ids(tmdb_ids)
+        config = config_manager.APP_CONFIG
+        tmdb_api_key = config.get(constants.CONFIG_OPTION_TMDB_API_KEY)
+        
+        processed_count = 0
+        total_to_process = len(subscribe_requests)
+
+        # 2. 遍历处理每个订阅请求
+        for i, req in enumerate(subscribe_requests):
+            if processor.is_stop_requested():
+                logger.info("  ➜ 任务被用户中止。")
+                break
+
+            tmdb_id = req.get('tmdb_id')
+            item_type = req.get('item_type')
+            media_info = media_details_map.get(tmdb_id)
+            
+            if not media_info:
+                logger.warning(f"  ➜ 无法找到 TMDb ID {tmdb_id} 的媒体信息，跳过。")
+                continue
+
+            item_title = media_info.get('title', tmdb_id)
+            task_manager.update_status_from_thread(
+                int((i / total_to_process) * 100),
+                f"({i+1}/{total_to_process}) 正在处理: {item_title}"
+            )
+
+            # 2.1 配额检查
+            if settings_db.get_subscription_quota() <= 0:
+                logger.warning(f"  ➜ 每日订阅配额已用尽，已跳过《{item_title}》及之后的所有项目。")
+                break
+
+            # 2.2 发行日期检查 (仅对电影)
+            if item_type == 'Movie' and not is_movie_subscribable(int(tmdb_id), tmdb_api_key, config):
+                logger.info(f"  ➜ 电影《{item_title}》未到可订阅日期，已跳过。")
+                continue
+
+            # 2.3 执行订阅
+            success = False
+            if item_type == 'Movie':
+                success = moviepilot.subscribe_movie_to_moviepilot(media_info, config)
+            elif item_type == 'Series':
+                sub_results = moviepilot.smart_subscribe_series(media_info, config)
+                success = sub_results is not None and len(sub_results) > 0
+            
+            # 2.4 成功后处理
+            if success:
+                logger.info(f"  ✅ 《{item_title}》订阅成功！")
+                settings_db.decrement_subscription_quota()
+                media_db.update_subscription_status(
+                    tmdb_ids=tmdb_id, 
+                    item_type=item_type, 
+                    new_status='SUBSCRIBED'
+                )
+                try:
+                    logger.info(f"  ➜ 正在为《{item_title}》启动后台元数据预处理...")
+                    processor.pre_process_media_metadata(
+                        tmdb_id=str(tmdb_id), 
+                        item_type=item_type,
+                        item_name_for_log=item_title
+                    )
+                except Exception as e_preprocess:
+                    logger.error(f"  ➜ 为《{item_title}》执行元数据预处理时失败: {e_preprocess}", exc_info=True)
+                
+                processed_count += 1
+            else:
+                logger.error(f"  ➜ 订阅《{item_title}》失败，请检查 MoviePilot 日志。")
+        
+        final_message = f"手动订阅任务完成，成功处理 {processed_count}/{total_to_process} 个项目。"
+        task_manager.update_status_from_thread(100, final_message)
+        logger.info(f"--- '{task_name}' 任务执行完毕 ---")
+
+    except Exception as e:
+        logger.error(f"  ➜ {task_name} 任务失败: {e}", exc_info=True)
+        task_manager.update_status_from_thread(-1, f"错误: {e}")
 
 # ★★★ 自动订阅任务 ★★★
 def task_auto_subscribe(processor):

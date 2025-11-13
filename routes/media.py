@@ -14,7 +14,7 @@ from database import collection_db, media_db, settings_db
 import handler.moviepilot as moviepilot
 from extensions import admin_required, processor_ready_required
 from urllib.parse import urlparse
-from tasks.subscriptions import is_movie_subscribable
+from tasks.subscriptions import is_movie_subscribable, task_manual_subscribe_batch
 
 # --- 蓝图 1：用于所有 /api/... 的路由 ---
 media_api_bp = Blueprint('media_api', __name__, url_prefix='/api')
@@ -364,117 +364,6 @@ def api_search_studios():
         logger.error(f"搜索工作室时发生错误: {e}", exc_info=True)
         return jsonify({"error": "服务器内部错误"}), 500
 
-@media_api_bp.route('/subscription/subscribe_now', methods=['POST'])
-@admin_required
-def api_subscribe_now():
-    """
-    【V2 - 增强版】
-    接收一个媒体列表，并立即尝试将它们提交给 MoviePilot 订阅。
-    - 新增了配额检查。
-    - 新增了电影发行日期检查。
-    - 订阅成功后，会扣除配额并立即触发元数据预处理，与自动订阅任务行为完全一致。
-    """
-    data = request.json
-    requests_list = data.get('requests')
-
-    if not isinstance(requests_list, list) or not requests_list:
-        return jsonify({"error": "'requests' 必须是一个非空列表"}), 400
-
-    processed_count = 0
-    errors = []
-    quota_exhausted = False
-    
-    # 1. 批量获取所有请求的媒体详情
-    tmdb_ids = [req.get('tmdb_id') for req in requests_list if req.get('tmdb_id')]
-    if not tmdb_ids:
-        return jsonify({"error": "请求中未包含有效的 tmdb_id"}), 400
-        
-    media_details_map = media_db.get_media_details_by_tmdb_ids(tmdb_ids)
-    config = config_manager.APP_CONFIG
-    tmdb_api_key = config.get(constants.CONFIG_OPTION_TMDB_API_KEY)
-
-    # 2. 遍历处理每个订阅请求
-    for req in requests_list:
-        tmdb_id = req.get('tmdb_id')
-        item_type = req.get('item_type')
-        
-        media_info = media_details_map.get(tmdb_id)
-        if not media_info:
-            errors.append(f"无法找到 TMDb ID {tmdb_id} 的媒体信息，跳过。")
-            continue
-
-        # ✨✨✨ 2.1 新增：配额检查 ✨✨✨
-        if settings_db.get_subscription_quota() <= 0:
-            quota_exhausted = True
-            errors.append(f"配额已用尽，已跳过《{media_info.get('title', tmdb_id)}》及之后的所有项目。")
-            break # 配额用尽，直接中断循环
-
-        # ✨✨✨ 2.2 新增：发行日期检查 (仅对电影) ✨✨✨
-        if item_type == 'Movie' and not is_movie_subscribable(int(tmdb_id), tmdb_api_key, config):
-            errors.append(f"电影《{media_info.get('title')}》未到可订阅日期，已跳过。")
-            continue
-
-        try:
-            success = False
-            logger.info(f"API: 收到对《{media_info.get('title')}》(TMDb ID: {tmdb_id}) 的立即订阅请求...")
-            
-            if item_type == 'Movie':
-                success = moviepilot.subscribe_movie_to_moviepilot(media_info, config)
-            elif item_type == 'Series':
-                sub_results = moviepilot.smart_subscribe_series(media_info, config)
-                success = sub_results is not None and len(sub_results) > 0
-            
-            if success:
-                # ✨✨✨ 2.3 新增：订阅成功后的完整处理流程 ✨✨✨
-                
-                # a. 扣除配额
-                settings_db.decrement_subscription_quota()
-                
-                # b. 更新数据库状态
-                media_db.update_subscription_status(
-                    tmdb_ids=tmdb_id, 
-                    item_type=item_type, 
-                    new_status='SUBSCRIBED'
-                )
-
-                # c. 立即触发元数据预处理
-                try:
-                    logger.info(f"  ➜ API订阅成功，为《{media_info.get('title')}》启动后台元数据预处理...")
-                    processor = extensions.media_processor_instance
-                    processor.pre_process_media_metadata(
-                        tmdb_id=str(tmdb_id), 
-                        item_type=item_type,
-                        item_name_for_log=media_info.get('title')
-                    )
-                except Exception as e_preprocess:
-                    # 预处理失败不应中断流程，但需要记录错误
-                    error_msg = f"为《{media_info.get('title')}》执行元数据预处理时失败: {e_preprocess}"
-                    errors.append(error_msg)
-                    logger.error(f"API /subscription/subscribe_now: {error_msg}", exc_info=True)
-
-                processed_count += 1
-            else:
-                errors.append(f"《{media_info.get('title')}》提交到 MoviePilot 失败，请检查日志。")
-
-        except Exception as e:
-            error_msg = f"处理 TMDb ID {tmdb_id} 时发生内部错误: {e}"
-            errors.append(error_msg)
-            logger.error(f"API /subscription/subscribe_now 发生错误: {error_msg}", exc_info=True)
-
-    # 3. 统一返回结果
-    if processed_count > 0:
-        message = f"成功提交 {processed_count} 个订阅任务到 MoviePilot。"
-        if errors:
-            message += f" 但有 {len(errors)} 个请求处理失败。"
-        if quota_exhausted:
-            message += " (任务因每日配额用尽而提前中止)"
-        return jsonify({"message": message, "errors": errors}), 200
-    else:
-        error_summary = "没有媒体项被成功订阅。"
-        if quota_exhausted:
-            error_summary = "每日订阅配额已用尽，无法处理任何请求。"
-        return jsonify({"error": error_summary, "errors": errors}), 400
-    
 # ======================================================================
 # ★★★ 通用状态操作 API ★★★
 # ======================================================================
