@@ -579,6 +579,39 @@ def init_db():
                 except Exception as e_index:
                     logger.error(f"  ➜ 创建 'emby_item_id' 索引时出错: {e_index}", exc_info=True)
 
+                # ======================================================================
+                # ★★★ 数据库自动修正补丁 (START) ★★★
+                # 修正 'media_metadata.in_library' 字段错误的默认值
+                # ======================================================================
+                logger.trace("  ➜ [数据库修正] 正在检查并修正 'media_metadata.in_library' 的默认值...")
+                try:
+                    # 查询 information_schema 来获取列的当前默认值
+                    cursor.execute("""
+                        SELECT column_default
+                        FROM information_schema.columns
+                        WHERE table_schema = current_schema()
+                          AND table_name = 'media_metadata'
+                          AND column_name = 'in_library';
+                    """)
+                    result = cursor.fetchone()
+                    current_default = result['column_default'] if result else None
+
+                    # 如果默认值是 'true' 或包含 'true' (例如 'true::boolean')，则修正它
+                    if current_default and 'true' in current_default.lower():
+                        logger.warning(f"    ➜ [数据库修正] 检测到 'in_library' 字段的默认值为不正确的 '{current_default}'。正在修正...")
+                        
+                        # 执行 ALTER COLUMN 命令来设置正确的默认值
+                        cursor.execute("ALTER TABLE media_metadata ALTER COLUMN in_library SET DEFAULT FALSE;")
+                        
+                        logger.info("    ➜ [数据库修正] 成功将 'in_library' 的默认值修正为 FALSE。")
+                    else:
+                        logger.trace("    ➜ 'in_library' 字段的默认值正确，无需修正。")
+
+                except Exception as e_fix:
+                    logger.error(f"  ➜ [数据库修正] 修正 'in_library' 默认值时出错: {e_fix}", exc_info=True)
+                # ======================================================================
+                # ★★★ 数据库自动修正补丁 (END) ★★★
+
                 logger.trace("  ➜ 数据库升级检查完成。")
 
             conn.commit()
