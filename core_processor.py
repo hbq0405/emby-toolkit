@@ -951,15 +951,14 @@ class MediaProcessor:
 
                 # 步骤 3.4: 更新我们自己的数据库缓存
                 self._upsert_media_metadata(
-                    actor_db_manager=self.actor_db_manager,
-                    emby_config={"url": self.emby_url, "api_key": self.emby_api_key, "user_id": self.emby_user_id},
                     cursor=cursor, 
                     tmdb_id=tmdb_id, 
-                    emby_item_id=item_id, 
+                    emby_item_id=item_id, # emby_item_id 不再需要，函数内部会从 item_details_from_emby 提取
                     item_type=item_type,
-                    item_details_from_emby=item_details_from_emby,
+                    item_details_from_emby=item_details_from_emby, # ★ 入库模式，传入此项
                     final_processed_cast=final_processed_cast,
-                    tmdb_details_for_extra=tmdb_details_for_extra
+                    tmdb_details_for_extra=tmdb_details_for_extra,
+                    douban_rating=douban_rating # ★ 传入评分
                 )
                 
                 # 步骤 3.5: 根据处理质量评分，决定写入“已处理”或“失败”日志
@@ -1740,6 +1739,22 @@ class MediaProcessor:
             tmdb_id = item_details.get("ProviderIds", {}).get("Tmdb")
             if not tmdb_id: raise ValueError(f"项目 {item_id} 缺少 TMDb ID。")
 
+            # --- 新增：获取 TMDb 详情用于分级数据提取 ---
+            tmdb_details_for_manual_extra = None
+            if self.tmdb_api_key:
+                if item_type == "Movie":
+                    tmdb_details_for_manual_extra = tmdb.get_movie_details(tmdb_id, self.tmdb_api_key)
+                    if not tmdb_details_for_manual_extra:
+                        logger.warning(f"  ➜ 手动处理：无法从 TMDb 获取电影 '{item_name}' ({tmdb_id}) 的详情。")
+                elif item_type == "Series":
+                    aggregated_tmdb_data = tmdb.aggregate_full_series_data_from_tmdb(int(tmdb_id), self.tmdb_api_key)
+                    if aggregated_tmdb_data:
+                        tmdb_details_for_manual_extra = aggregated_tmdb_data.get("series_details")
+                    else:
+                        logger.warning(f"  ➜ 手动处理：无法从 TMDb 获取剧集 '{item_name}' ({tmdb_id}) 的详情。")
+            else:
+                logger.warning("  ➜ 手动处理：未配置 TMDb API Key，无法获取 TMDb 详情用于分级数据。")
+
             cache_folder_name = "tmdb-movies2" if item_type == "Movie" else "tmdb-tv"
             target_override_dir = os.path.join(self.local_data_path, "override", cache_folder_name, tmdb_id)
             main_json_filename = "all.json" if item_type == "Movie" else "series.json"
@@ -1970,7 +1985,7 @@ class MediaProcessor:
                     item_type=item_type,
                     item_details_from_emby=item_details,
                     final_processed_cast=final_formatted_cast, # <-- 把我们手动编辑好的最终列表传进去
-                    tmdb_details_for_extra=None, # 手动模式下不需要这个
+                    tmdb_details_for_extra=tmdb_details_for_manual_extra, # <-- 传入获取到的 TMDb 详情
                 )
                 
                 logger.info(f"  ➜ 正在将手动处理完成的《{item_name}》写入已处理日志...")
