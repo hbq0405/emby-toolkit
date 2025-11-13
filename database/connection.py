@@ -496,6 +496,7 @@ def init_db():
                             "pre_cached_tags_json": "JSONB",
                             "pre_cached_extra_json": "JSONB",
                             "tmdb_status": "TEXT",
+                            "poster_path": "TEXT",
                             "total_seasons": "INTEGER",
                             "total_episodes": "INTEGER",
                             "next_episode_to_air_json": "JSONB",
