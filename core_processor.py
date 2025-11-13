@@ -951,9 +951,8 @@ class MediaProcessor:
 
                 # 步骤 3.4: 更新我们自己的数据库缓存
                 self._upsert_media_metadata(
-                    cursor=cursor, 
-                    tmdb_id=tmdb_id, 
-                    emby_item_id=item_id, # emby_item_id 不再需要，函数内部会从 item_details_from_emby 提取
+                    cursor=cursor,
+                    tmdb_id=tmdb_id,
                     item_type=item_type,
                     item_details_from_emby=item_details_from_emby, # ★ 入库模式，传入此项
                     final_processed_cast=final_processed_cast,
@@ -1977,15 +1976,12 @@ class MediaProcessor:
                 # ★★★ 调用统一的、已规范化的缓存写入函数 ★★★
                 # ======================================================================
                 self._upsert_media_metadata(
-                    actor_db_manager=self.actor_db_manager,
-                    emby_config={"url": self.emby_url, "api_key": self.emby_api_key, "user_id": self.emby_user_id},
                     cursor=cursor,
                     tmdb_id=tmdb_id,
-                    emby_item_id=item_id,
                     item_type=item_type,
                     item_details_from_emby=item_details,
-                    final_processed_cast=final_formatted_cast, # <-- 把我们手动编辑好的最终列表传进去
-                    tmdb_details_for_extra=tmdb_details_for_manual_extra, # <-- 传入获取到的 TMDb 详情
+                    final_processed_cast=final_formatted_cast, 
+                    tmdb_details_for_extra=None, 
                 )
                 
                 logger.info(f"  ➜ 正在将手动处理完成的《{item_name}》写入已处理日志...")
