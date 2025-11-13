@@ -1127,7 +1127,7 @@ def task_update_resubscribe_cache(processor, force_full_update: bool = False):
                 if not item_details: return None
                 
                 tmdb_id = item_details.get("ProviderIds", {}).get("Tmdb")
-                media_metadata = collection_db.get_media_metadata_by_tmdb_id(tmdb_id) if tmdb_id else None
+                media_metadata = media_db.get_media_details_by_tmdb_ids(tmdb_id) if tmdb_id else None
                 item_type = item_details.get('Type')
 
                 # ★★★ 核心改造：如果是剧集，则按季处理 ★★★
