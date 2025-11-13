@@ -12,7 +12,7 @@
           </n-space>
         </template>
         <n-alert title="管理说明" type="info" style="margin-top: 24px;">
-          <li>这里汇总了所有通过“用户请求”、“演员订阅”、“合集补全”等方式进入待处理队列，但尚未入库的媒体项。</li>
+          <li>这里汇总了所有通过“用户请求”、“演员订阅”、“合集补全”、“智能追剧”等方式进入待处理队列，但尚未入库的媒体项。</li>
           <li><b>待订阅 (WANTED):</b> 等待后台“统一订阅任务”处理的项目。</li>
           <li><b>未上映 (PENDING):</b> 等待上映后，会自动转为“待订阅”的项目。</li>
           <li><b>已忽略 (IGNORED):</b> 被手动或规则忽略的项目，后台任务会自动跳过它们。</li>
@@ -198,9 +198,13 @@ const sortKeyOptions = [
 const SOURCE_TYPE_MAP = {
   'user_request': '用户请求',
   'actor_subscription': '演员订阅',
-  'collection': '自定义合集',
+  'collection': '自建合集',
   'native_collection': '原生合集',
   'manual_add': '手动添加',
+  'watchlist': '智能追剧',
+  'admin_approval': '管理员审核',
+  'batch_admin_op': '批量处理',
+  'manual_admin_op': '手动处理'
 };
 
 const sourceFilterOptions = computed(() => {

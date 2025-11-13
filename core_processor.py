@@ -2737,7 +2737,7 @@ class MediaProcessor:
             # ★★★ 新增：集成豆瓣数据获取 ★★★
             logger.info(f"  ➜ 步骤 2/4: 正在从豆瓣获取中文演员表及评分...")
             douban_cast_raw = []
-            # douban_rating = None # 预处理阶段暂不处理评分，专注于演员表
+            douban_rating = None # 预处理阶段暂不处理评分，专注于演员表
             
             if self.douban_api and tmdb_details_for_extra:
                 # 从 TMDb 数据中提取用于豆瓣匹配的信息
