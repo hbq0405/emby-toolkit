@@ -270,7 +270,7 @@ def api_get_custom_collection_status(collection_id):
         # ▼▼▼ 修正 1/3：使用正确的键名 'tmdb_id' 来提取所有ID ▼▼▼
         tmdb_ids = [str(item['tmdb_id']) for item in definition_list if 'tmdb_id' in item]
         
-        media_in_db_map = media_db.get_media_details_by_tmdb_ids(tmdb_ids)
+        media_in_db_map = media_db.get_media_details_by_tmdb_ids([tmdb_ids])
         
         final_media_list = []
         for item_def in definition_list:

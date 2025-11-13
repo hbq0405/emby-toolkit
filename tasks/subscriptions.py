@@ -207,7 +207,7 @@ def task_manual_subscribe_batch(processor, subscribe_requests: List[Dict]):
             task_manager.update_status_from_thread(100, "任务失败：请求中未包含有效的 tmdb_id。")
             return
             
-        media_details_map = media_db.get_media_details_by_tmdb_ids(tmdb_ids)
+        media_details_map = media_db.get_media_details_by_tmdb_ids([tmdb_id])
         config = config_manager.APP_CONFIG
         tmdb_api_key = config.get(constants.CONFIG_OPTION_TMDB_API_KEY)
         
@@ -1227,7 +1227,7 @@ def task_update_resubscribe_cache(processor, force_full_update: bool = False):
                 if not item_details: return None
                 
                 tmdb_id = item_details.get("ProviderIds", {}).get("Tmdb")
-                media_metadata = media_db.get_media_details_by_tmdb_ids(tmdb_id) if tmdb_id else None
+                media_metadata = media_db.get_media_details_by_tmdb_ids([tmdb_id]) if tmdb_id else None
                 item_type = item_details.get('Type')
 
                 # ★★★ 核心改造：如果是剧集，则按季处理 ★★★

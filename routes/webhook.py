@@ -73,7 +73,7 @@ def _handle_full_processing_flow(processor: 'MediaProcessor', item_id: str, forc
             logger.debug("  ➜ 媒体项缺少TMDb ID，无法进行自定义合集匹配。")
             return
 
-        item_metadata = media_db.get_media_details_by_tmdb_ids(tmdb_id)
+        item_metadata = media_db.get_media_details_by_tmdb_ids([tmdb_id])
         if not item_metadata:
             logger.warning(f"  ➜ 无法从本地缓存中找到TMDb ID为 {tmdb_id} 的元数据，无法匹配合集。")
             return
