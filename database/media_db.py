@@ -158,9 +158,7 @@ def update_subscription_status(
     force_unignore: bool = False
 ):
     """
-    【V7 - 父子关系终极修复版】
-    - 确保在所有 INSERT 和 UPDATE 操作中，都正确处理 parent_series_tmdb_id 字段。
-    - 将 'NONE' 状态的逻辑彻底改造为安全的 UPSERT，用于创建元数据占位记录。
+    - 统一状态更新器。
     """
     # 1. 标准化输入 (逻辑不变)
     if isinstance(tmdb_ids, str):
@@ -312,14 +310,14 @@ def update_subscription_status(
                 # ★★★ 核心修复 3/3: 将 'NONE' 的逻辑彻底改造为安全的“上户口”专用 UPSERT ★★★
                 elif new_status_upper == 'NONE':
                     sql = """
-                        INSERT INTO media_metadata (
-                            tmdb_id, item_type, title, original_title, release_date, poster_path, 
-                            subscription_status, season_number, parent_series_tmdb_id, overview
-                        ) VALUES (
-                            %(tmdb_id)s, %(item_type)s, %(title)s, %(original_title)s, %(release_date)s, %(poster_path)s, 
-                            'NONE', %(season_number)s, %(parent_series_tmdb_id)s, %(overview)s
-                        )
-                        ON CONFLICT (tmdb_id, item_type) DO NOTHING;
+                        UPDATE media_metadata
+                        SET
+                            subscription_status = 'NONE',
+                            subscription_sources_json = '[]'::jsonb,
+                            ignore_reason = NULL,
+                            last_synced_at = NOW()
+                        WHERE
+                            tmdb_id = %(tmdb_id)s AND item_type = %(item_type)s;
                     """
                     execute_batch(cursor, sql, data_to_upsert)
                 

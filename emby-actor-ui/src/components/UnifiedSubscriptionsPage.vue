@@ -332,33 +332,34 @@ const toggleSelection = (item, event, index) => {
 
 // ✨✨✨ 更新批量操作处理器 ✨✨✨
 const handleBatchAction = (key) => {
-  // 1. 定义每个操作对应的任务名和参数构造逻辑
   const actionMap = {
     'subscribe': { 
       title: '批量订阅', 
       content: `确定要将选中的 ${selectedItems.value.length} 个媒体项提交到后台订阅吗？`, 
-      task_name: 'manual_subscribe_batch', // <--- 任务名
-      getParams: () => ({ subscribe_requests: selectedItems.value }) // <--- 构造参数的函数
+      task_name: 'manual_subscribe_batch',
+      getParams: () => ({ subscribe_requests: selectedItems.value }),
+      optimistic_status: 'SUBSCRIBED' // 成功后的新状态
     },
     'ignore': { 
       title: '批量忽略', 
       content: `确定要忽略选中的 ${selectedItems.value.length} 个媒体项吗？`, 
-      // 注意：忽略和取消订阅仍然可以使用旧的 status 接口，因为它本身就是快速的
-      // 如果未来也想把它们变成后台任务，只需修改这里的 task_name 和 getParams 即可
       endpoint: '/api/subscription/status', 
-      getParams: () => ({ requests: selectedItems.value.map(item => ({...item, new_status: 'IGNORED'})) })
+      getParams: () => ({ requests: selectedItems.value.map(item => ({...item, new_status: 'IGNORED'})) }),
+      optimistic_status: 'IGNORED'
     },
     'cancel': { 
       title: '批量取消', 
       content: `确定要取消订阅选中的 ${selectedItems.value.length} 个媒体项吗？`, 
       endpoint: '/api/subscription/status',
-      getParams: () => ({ requests: selectedItems.value.map(item => ({...item, new_status: 'NONE'})) })
+      getParams: () => ({ requests: selectedItems.value.map(item => ({...item, new_status: 'NONE'})) }),
+      optimistic_status: 'NONE' // 'NONE' 表示删除
     },
     'unignore': { 
       title: '批量取消忽略', 
       content: `确定要取消忽略选中的 ${selectedItems.value.length} 个媒体项吗？`, 
       endpoint: '/api/subscription/status',
-      getParams: () => ({ requests: selectedItems.value.map(item => ({...item, new_status: 'WANTED', force_unignore: true})) })
+      getParams: () => ({ requests: selectedItems.value.map(item => ({...item, new_status: 'WANTED', force_unignore: true})) }),
+      optimistic_status: 'WANTED'
     },
   };
 
@@ -373,25 +374,34 @@ const handleBatchAction = (key) => {
     onPositiveClick: async () => {
       try {
         let response;
-        // 2. 根据 actionMap 中的定义，决定是调用新任务接口还是旧接口
         if (action.task_name) {
-          // 调用通用任务接口
           response = await axios.post('/api/tasks/run', {
             task_name: action.task_name,
             ...action.getParams()
           });
         } else if (action.endpoint) {
-          // 调用旧的、快速的状态更新接口
           response = await axios.post(action.endpoint, action.getParams());
         } else {
-          throw new Error("Action apec 未定义 task_name 或 endpoint");
+          throw new Error("Action spec 未定义 task_name 或 endpoint");
         }
 
         message.success(response.data.message || '批量操作任务已提交！');
         
-        // 3. 乐观更新UI (逻辑不变)
+        // 核心修正：根据 optimistic_status 执行正确的UI更新
         const selectedKeys = new Set(selectedItems.value.map(item => `${item.tmdb_id}-${item.item_type}`));
-        rawItems.value = rawItems.value.filter(item => !selectedKeys.has(`${item.tmdb_id}-${item.item_type}`));
+        
+        if (action.optimistic_status === 'NONE') {
+          // 如果是取消/删除操作，则从数组中过滤掉
+          rawItems.value = rawItems.value.filter(item => !selectedKeys.has(`${item.tmdb_id}-${item.item_type}`));
+        } else {
+          // 否则，遍历数组，原地更新匹配项的状态
+          rawItems.value.forEach(item => {
+            if (selectedKeys.has(`${item.tmdb_id}-${item.item_type}`)) {
+              item.subscription_status = action.optimistic_status;
+            }
+          });
+        }
+        
         selectedItems.value = [];
 
       } catch (err) {
@@ -404,23 +414,19 @@ const handleBatchAction = (key) => {
 // ✨✨✨ 新增的立即订阅函数 ✨✨✨
 const subscribeItem = async (item) => {
   try {
-    // 1. 准备要传递给后台任务的参数
     const taskParams = {
       subscribe_requests: [{ tmdb_id: item.tmdb_id, item_type: item.item_type }]
     };
-
-    // 2. 调用通用的任务API，并明确指定任务名称
     const response = await axios.post('/api/tasks/run', {
-      task_name: 'manual_subscribe_batch', // <--- 核心：指定要运行的任务名
-      ...taskParams // 将任务所需的参数展开
+      task_name: 'manual_subscribe_batch',
+      ...taskParams
     });
-    
     message.success(response.data.message || '订阅任务已提交到后台！');
     
-    // 3. 乐观更新UI (逻辑不变)
+    // 核心修正：将状态更新为 'SUBSCRIBED'，而不是从数组中删除
     const index = rawItems.value.findIndex(i => i.tmdb_id === item.tmdb_id && i.item_type === item.item_type);
     if (index > -1) {
-      rawItems.value.splice(index, 1);
+      rawItems.value[index].subscription_status = 'SUBSCRIBED';
     }
   } catch (err) {
     message.error(err.response?.data?.error || '提交订阅任务失败。');
@@ -441,7 +447,12 @@ const updateItemStatus = async (item, newStatus, forceUnignore = false) => {
 
     const index = rawItems.value.findIndex(i => i.tmdb_id === item.tmdb_id && i.item_type === item.item_type);
     if (index > -1) {
-      rawItems.value.splice(index, 1);
+      // 核心修正：只有当新状态是 'NONE' 时才删除，否则一律更新状态
+      if (newStatus === 'NONE') {
+        rawItems.value.splice(index, 1);
+      } else {
+        rawItems.value[index].subscription_status = newStatus;
+      }
     }
   } catch (err) {
     message.error(err.response?.data?.error || '更新状态失败。');

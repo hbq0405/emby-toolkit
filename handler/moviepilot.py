@@ -162,10 +162,12 @@ def smart_subscribe_series(series_info: dict, config: Dict[str, Any]) -> Optiona
     - 失败则返回 None。
     """
     tmdb_id = series_info.get('tmdb_id')
-    title = series_info.get('item_name')
+    # ★★★ 核心修正：同时检查 'item_name' 和 'title' 两个键 ★★★
+    title = series_info.get('item_name') or series_info.get('title')
     tmdb_api_key = config.get(constants.CONFIG_OPTION_TMDB_API_KEY)
+    
     if not all([tmdb_id, title, tmdb_api_key]):
-        logger.error("  ➜ 智能订阅失败：缺少 tmdb_id, item_name 或 tmdb_api_key。")
+        logger.error(f"  ➜ 智能订阅失败：缺少 tmdb_id, item_name/title 或 tmdb_api_key。")
         return None
 
     base_name, season_num = utils.parse_series_title_and_season(title)
@@ -202,10 +204,8 @@ def smart_subscribe_series(series_info: dict, config: Dict[str, Any]) -> Optiona
             return None
         
         series_name = series_details.get('name', title)
-        # 过滤掉不计入订阅的 "Specials" (第0季)
         seasons_to_subscribe = [s for s in series_details.get('seasons', []) if s.get('season_number', 0) > 0]
 
-        # 如果是多季剧集，则遍历订阅所有季
         if len(seasons_to_subscribe) > 1:
             logger.info(f"'{series_name}'  ➜ 是多季剧集，将为所有 {len(seasons_to_subscribe)} 个季分别提交订阅。")
             for season in seasons_to_subscribe:
@@ -227,7 +227,6 @@ def smart_subscribe_series(series_info: dict, config: Dict[str, Any]) -> Optiona
                         "parsed_series_name": series_name,
                         "parsed_season_number": current_season_num
                     })
-        # 如果是单季剧集（或信息不足），则按整部剧订阅
         else:
             logger.info(f"'{series_name}'  ➜ 将作为单季/整部剧集进行订阅。")
             best_version = None
@@ -251,7 +250,6 @@ def smart_subscribe_series(series_info: dict, config: Dict[str, Any]) -> Optiona
         logger.info(f"'{title}'  ➜ 已解析出季号: {season_num}，执行单季订阅。")
         best_version = 1 if _is_season_fully_aired(tmdb_id, season_num, tmdb_api_key) else None
         
-        # 尝试获取更规范的剧集名
         parent_name = base_name
         parent_tmdb_id = tmdb_id
         search_results = tmdb.search_tv_shows(base_name, tmdb_api_key)

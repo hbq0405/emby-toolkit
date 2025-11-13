@@ -138,161 +138,172 @@ class MediaProcessor:
     def _upsert_media_metadata(
         self,
         cursor: psycopg2.extensions.cursor,
-        tmdb_id: str,
         item_type: str,
         final_processed_cast: List[Dict[str, Any]],
-        tmdb_details_for_extra: Optional[Dict[str, Any]],
+        source_data_package: Optional[Dict[str, Any]],
         item_details_from_emby: Optional[Dict[str, Any]] = None,
         douban_rating: Optional[float] = None
     ):
         """
-        【V9 - 终极统一版】
-        - 唯一的、权威的元数据写入函数，处理所有场景。
-        - 智能地从 TMDb 或 Emby 的详情中提取元数据。
-        - 优先使用传入的豆瓣评分。
-        - 使用 PostgreSQL 的 UPSERT 语法，高效地插入或更新记录。
+        【V12 - 层级结构感知与批量写入版】
+        - 能够处理层级数据，为一个剧集一次性写入主条目、所有季、所有集的数据。
+        - 使用 psycopg2.extras.execute_batch 实现高效的批量写入。
         """
         try:
-            logger.trace(f"【元数据写入】正在为 TMDB ID '{tmdb_id}' 组装元数据...")
+            from psycopg2.extras import execute_batch
             
-            # 1. 演员数据处理 (这部分逻辑不变)
-            self.actor_db_manager.batch_upsert_actors_and_metadata(
-                cursor=cursor, 
-                actors_list=final_processed_cast,
-                emby_config=self.config
-            )
-            actors_relation_for_cache = [
-                {"tmdb_id": int(p.get("id") or p.get("tmdb_id")), "character": p.get("character"), "order": p.get("order")}
-                for p in final_processed_cast if p.get("id") or p.get("tmdb_id")
+            if not source_data_package:
+                logger.warning("  ➜ 元数据写入跳过：未提供源数据包。")
+                return
+
+            records_to_upsert = []
+            
+            # ======================================================================
+            # 步骤 1: 生成所有待写入的记录 
+            # ======================================================================
+            if item_type == "Movie":
+                movie_record = source_data_package.copy()
+                movie_record['item_type'] = 'Movie'
+                movie_record['tmdb_id'] = str(movie_record.get('id'))
+                actors_relation = [{"tmdb_id": int(p.get("id")), "character": p.get("character"), "order": p.get("order")} for p in final_processed_cast if p.get("id")]
+                movie_record['actors_json'] = json.dumps(actors_relation, ensure_ascii=False)
+                if douban_rating is not None: movie_record['rating'] = douban_rating
+                if item_details_from_emby:
+                    movie_record['in_library'] = True
+                    movie_record['subscription_status'] = 'NONE'
+                    movie_record['emby_item_ids_json'] = json.dumps([item_details_from_emby.get('Id')])
+                    movie_record['date_added'] = item_details_from_emby.get("DateCreated")
+                records_to_upsert.append(movie_record)
+            elif item_type == "Series":
+                series_details = source_data_package.get("series_details", source_data_package)
+                seasons_details = source_data_package.get("seasons_details", series_details.get("seasons", []))
+                episodes_details = list(source_data_package.get("episodes_details", {}).values())
+                series_record = {
+                    "item_type": "Series", "tmdb_id": str(series_details.get('id')), "title": series_details.get('name'),
+                    "original_title": series_details.get('original_name'), "overview": series_details.get('overview'),
+                    "release_date": series_details.get('first_air_date'), "poster_path": series_details.get('poster_path'),
+                    "rating": douban_rating if douban_rating is not None else series_details.get('vote_average'),
+                }
+                actors_relation = [{"tmdb_id": int(p.get("id")), "character": p.get("character"), "order": p.get("order")} for p in final_processed_cast if p.get("id")]
+                series_record['actors_json'] = json.dumps(actors_relation, ensure_ascii=False)
+                tmdb_official_rating = None
+                if series_details.get('content_ratings', {}).get('results'):
+                    for cr in series_details['content_ratings']['results']:
+                        if cr.get('iso_3166_1') == 'US' and cr.get('rating'):
+                            tmdb_official_rating = cr['rating']; break
+                series_record['official_rating'] = tmdb_official_rating
+                series_record['unified_rating'] = get_unified_rating(tmdb_official_rating)
+                series_record['genres_json'] = json.dumps([g['name'] for g in series_details.get('genres', [])], ensure_ascii=False)
+                series_record['studios_json'] = json.dumps([s['name'] for s in series_details.get('production_companies', [])], ensure_ascii=False)
+                series_record['directors_json'] = json.dumps([{'id': c.get('id'), 'name': c.get('name')} for c in series_details.get('created_by', [])], ensure_ascii=False)
+                series_record['countries_json'] = json.dumps(translate_country_list(series_details.get('origin_country', [])), ensure_ascii=False)
+                keywords_data = series_details.get('keywords', {})
+                keywords = [k['name'] for k in (keywords_data.get('keywords', []) or keywords_data.get('results', []))]
+                series_record['keywords_json'] = json.dumps(keywords, ensure_ascii=False)
+                if item_details_from_emby:
+                    series_record['in_library'] = True
+                    series_record['subscription_status'] = 'NONE'
+                    series_record['emby_item_ids_json'] = json.dumps([item_details_from_emby.get('Id')])
+                    series_record['date_added'] = item_details_from_emby.get("DateCreated")
+                records_to_upsert.append(series_record)
+                for season in seasons_details:
+                    if season.get('season_number', 0) == 0: continue
+                    records_to_upsert.append({"tmdb_id": str(season.get('id')), "item_type": "Season", "parent_series_tmdb_id": str(series_details.get('id')), "title": season.get('name'), "overview": season.get('overview'), "release_date": season.get('air_date'), "poster_path": season.get('poster_path'), "season_number": season.get('season_number')})
+                for episode in episodes_details:
+                    records_to_upsert.append({"tmdb_id": str(episode.get('id')), "item_type": "Episode", "parent_series_tmdb_id": str(series_details.get('id')), "title": episode.get('name'), "overview": episode.get('overview'), "release_date": episode.get('air_date'), "season_number": episode.get('season_number'), "episode_number": episode.get('episode_number')})
+
+            if not records_to_upsert:
+                logger.warning("  ➜ 元数据写入跳过：未能从数据包生成任何有效记录。")
+                return
+
+            # ======================================================================
+            # 步骤 2: 准备批量写入的数据
+            # ======================================================================
+            all_possible_columns = [
+                "tmdb_id", "item_type", "title", "original_title", "overview", "release_date", "release_year",
+                "poster_path", "rating", "actors_json", "parent_series_tmdb_id", "season_number", "episode_number",
+                "in_library", "subscription_status", "subscription_sources_json", "emby_item_ids_json", "date_added",
+                "official_rating", "unified_rating",
+                "genres_json", "directors_json", "studios_json", "countries_json", "keywords_json" 
             ]
 
-            # 2. ★★★ 智能元数据提取 (核心改造) ★★★
-            metadata = {
-                "tmdb_id": tmdb_id,
-                "item_type": item_type,
-                "actors_json": json.dumps(actors_relation_for_cache, ensure_ascii=False)
-            }
-
-            # 根据传入的数据源，智能填充元数据
-            source = tmdb_details_for_extra or {}
-            emby_source = item_details_from_emby or {}
-
-            # 标题、年份等
-            metadata['title'] = emby_source.get('Name') or source.get('title') or source.get('name')
-            metadata['original_title'] = emby_source.get('OriginalTitle') or source.get('original_title') or source.get('original_name')
-            metadata['release_year'] = emby_source.get('ProductionYear') or (source.get('release_date') or source.get('first_air_date', '----'))[:4]
-            release_date = emby_source.get('PremiereDate', '').split('T')[0] or source.get('release_date') or source.get('first_air_date')
-            if release_date: metadata['release_date'] = release_date
-
-            # 评分 (优先豆瓣 -> Emby -> TMDb)
-            if douban_rating is not None:
-                metadata['rating'] = douban_rating
-            elif emby_source.get('CommunityRating') is not None:
-                metadata['rating'] = emby_source.get('CommunityRating')
-            elif source.get('vote_average') is not None:
-                metadata['rating'] = source.get('vote_average')
-            
-            # ★★★ 智能提取 TMDb 分级数据 ★★★
-            tmdb_official_rating = None
-            if item_type == 'Movie' and source.get('release_dates', {}).get('results'):
-                for rd in source['release_dates']['results']:
-                    if rd.get('iso_3166_1') == 'US': # 优先使用配置的区域
-                        for release in rd.get('release_dates', []):
-                            if release.get('certification'):
-                                tmdb_official_rating = release['certification']
-                                break
-                    if tmdb_official_rating: break
-                if not tmdb_official_rating: # 如果配置区域没有，尝试找US
-                    for rd in source['release_dates']['results']:
-                        if rd.get('iso_3166_1') == 'US':
-                            for release in rd.get('release_dates', []):
-                                if release.get('certification'):
-                                    tmdb_official_rating = release['certification']
-                                    break
-                        if tmdb_official_rating: break
-            elif item_type == 'Series' and source.get('content_ratings', {}).get('results'):
-                for cr in source['content_ratings']['results']:
-                    if cr.get('iso_3166_1') == 'US': # 优先使用配置的区域
-                        if cr.get('rating'):
-                            tmdb_official_rating = cr['rating']
-                            break
-                    if tmdb_official_rating: break
-                if not tmdb_official_rating: # 如果配置区域没有，尝试找US
-                    for cr in source['content_ratings']['results']:
-                        if cr.get('iso_3166_1') == 'US':
-                            if cr.get('rating'):
-                                tmdb_official_rating = cr['rating']
-                                break
-            
-            metadata['official_rating'] = emby_source.get('OfficialRating') or tmdb_official_rating
-            metadata['unified_rating'] = get_unified_rating(metadata['official_rating'])
-
-            # JSON 字段 (类型、工作室、国家、关键词等)
-            if emby_source.get('Genres'):
-                metadata['genres_json'] = json.dumps(emby_source.get('Genres', []), ensure_ascii=False)
-            elif source.get('genres'):
-                metadata['genres_json'] = json.dumps([g['name'] for g in source.get('genres', [])], ensure_ascii=False)
-
-            if emby_source.get('Studios'):
-                metadata['studios_json'] = json.dumps([s['Name'] for s in emby_source.get('Studios', [])], ensure_ascii=False)
-            elif source.get('production_companies'):
-                metadata['studios_json'] = json.dumps([s['name'] for s in source.get('production_companies', [])], ensure_ascii=False)
-
-            # 导演、国家、关键词 (这些主要来自TMDb)
-            if source:
-                credits = source.get("credits", {})
-                crew = credits.get('crew', [])
-                if item_type == 'Movie':
-                    metadata['directors_json'] = json.dumps([{'id': p.get('id'), 'name': p.get('name')} for p in crew if p.get('job') == 'Director'], ensure_ascii=False)
-                elif item_type == 'Series':
-                    metadata['directors_json'] = json.dumps([{'id': c.get('id'), 'name': c.get('name')} for c in source.get('created_by', [])], ensure_ascii=False)
+            data_for_batch = []
+            for record in records_to_upsert:
+                db_row_complete = {col: record.get(col) for col in all_possible_columns}
                 
-                if item_type == 'Movie':
-                    metadata['countries_json'] = json.dumps(translate_country_list([c.get('iso_3166_1') for c in source.get('production_countries', [])]), ensure_ascii=False)
-                elif item_type == 'Series':
-                    metadata['countries_json'] = json.dumps(translate_country_list(source.get('origin_country', [])), ensure_ascii=False)
+                if db_row_complete['in_library'] is None:
+                    db_row_complete['in_library'] = False
+                if db_row_complete['subscription_status'] is None:
+                    db_row_complete['subscription_status'] = 'PENDING'
+                if db_row_complete['subscription_sources_json'] is None:
+                    db_row_complete['subscription_sources_json'] = '[]'
+                if db_row_complete['emby_item_ids_json'] is None:
+                    db_row_complete['emby_item_ids_json'] = '[]'
 
-                keywords_data = source.get('keywords', {})
-                keywords = [k['name'] for k in (keywords_data.get('keywords', []) or keywords_data.get('results', []))]
-                metadata['keywords_json'] = json.dumps(keywords, ensure_ascii=False)
-                metadata['poster_path'] = source.get('poster_path')
+                release_date_str = db_row_complete.get('release_date')
+                if release_date_str and len(release_date_str) >= 4:
+                    try: db_row_complete['release_year'] = int(release_date_str[:4])
+                    except (ValueError, TypeError): pass
 
-            # Emby 专属字段
-            if emby_source:
-                metadata['emby_item_ids_json'] = json.dumps([emby_source.get('Id')])
-                metadata['in_library'] = True
-                metadata['date_added'] = emby_source.get("DateCreated")
-                if emby_source.get('Path'):
-                    metadata['paths_json'] = json.dumps([emby_source.get('Path')])
+                if record.get('item_type') == 'Movie':
+                    tmdb_official_rating = None
+                    if record.get('release_dates', {}).get('results'):
+                        for rd in record['release_dates']['results']:
+                            if rd.get('iso_3166_1') == 'US':
+                                for release in rd.get('release_dates', []):
+                                    if release.get('certification'):
+                                        tmdb_official_rating = release['certification']; break
+                            if tmdb_official_rating: break
+                    db_row_complete['official_rating'] = tmdb_official_rating
+                    db_row_complete['unified_rating'] = get_unified_rating(tmdb_official_rating)
+                    db_row_complete['genres_json'] = json.dumps([g['name'] for g in record.get('genres', [])], ensure_ascii=False)
+                    db_row_complete['studios_json'] = json.dumps([s['name'] for s in record.get('production_companies', [])], ensure_ascii=False)
+                    crew = record.get("credits", {}).get('crew', [])
+                    db_row_complete['directors_json'] = json.dumps([{'id': p.get('id'), 'name': p.get('name')} for p in crew if p.get('job') == 'Director'], ensure_ascii=False)
+                    db_row_complete['countries_json'] = json.dumps(translate_country_list([c.get('iso_3166_1') for c in record.get('production_countries', [])]), ensure_ascii=False)
+                    keywords_data = record.get('keywords', {})
+                    keywords = [k['name'] for k in (keywords_data.get('keywords', {}) or keywords_data.get('results', []))]
+                    db_row_complete['keywords_json'] = json.dumps(keywords, ensure_ascii=False)
 
-            # 3. 构建并执行终极 UPSERT 语句
-            columns_to_write = {k: v for k, v in metadata.items() if v is not None}
-            columns = list(columns_to_write.keys())
-            values = list(columns_to_write.values())
+                data_for_batch.append(db_row_complete)
+
+            # ======================================================================
+            # 步骤 3: 执行批量写入
+            # ======================================================================
+            # 定义一个包含所有可能字段的SQL模板
             
-            columns_str = ', '.join(columns)
-            placeholders_str = ', '.join(['%s'] * len(values))
             
-            update_clauses = [f"{col} = EXCLUDED.{col}" for col in columns if col not in ['tmdb_id', 'item_type', 'emby_item_ids_json']]
-            if 'emby_item_ids_json' in columns:
-                update_clauses.append("emby_item_ids_json = media_metadata.emby_item_ids_json || EXCLUDED.emby_item_ids_json")
+            cols_str = ", ".join(all_possible_columns)
+            placeholders_str = ", ".join([f"%({col})s" for col in all_possible_columns])
             
-            # 根据场景决定是预处理还是常规同步
+            update_clauses = [f"{col} = EXCLUDED.{col}" for col in all_possible_columns if col not in ['tmdb_id', 'item_type', 'parent_series_tmdb_id', 'season_number', 'episode_number']]
+            
+            if not item_details_from_emby:
+                logger.debug("  ➜ [工作流感知] 预处理模式：将保留数据库中现有的 'subscription_status', 'in_library' 和 'subscription_sources_json' 状态。")
+                # --- ✨✨✨ 核心修复：将 subscription_sources_json 加入保护名单 ✨✨✨ ---
+                update_clauses = [
+                    clause for clause in update_clauses 
+                    if not clause.startswith('subscription_status =') and \
+                       not clause.startswith('in_library =') and \
+                       not clause.startswith('subscription_sources_json =')
+                ]
+            
             timestamp_field = "pre_processed_at" if not item_details_from_emby else "last_synced_at"
             update_clauses.append(f"{timestamp_field} = NOW()")
 
             sql = f"""
-                INSERT INTO media_metadata ({columns_str}, {timestamp_field})
-                VALUES ({placeholders_str}, NOW())
-                ON CONFLICT (tmdb_id, item_type) DO UPDATE SET {', '.join(update_clauses)}
+                INSERT INTO media_metadata ({cols_str})
+                VALUES ({placeholders_str})
+                ON CONFLICT (tmdb_id, item_type) DO UPDATE SET {', '.join(update_clauses)};
             """
             
-            cursor.execute(sql, tuple(values))
-            logger.debug(f"  ➜ 成功将《{metadata.get('title')}》的元数据写入数据库。")
+            execute_batch(cursor, sql, data_for_batch)
+            logger.info(f"  ➜ 成功将 {len(data_for_batch)} 条层级元数据记录批量写入数据库。")
 
         except Exception as e:
-            logger.error(f"写入元数据到数据库时失败: {e}", exc_info=True)
+            logger.error(f"批量写入层级元数据到数据库时失败: {e}", exc_info=True)
             raise
+
     # --- 标记为已处理 ---
     def _mark_item_as_processed(self, cursor: psycopg2.extensions.cursor, item_id: str, item_name: str, score: float = 10.0):
         """
@@ -952,12 +963,11 @@ class MediaProcessor:
                 # 步骤 3.4: 更新我们自己的数据库缓存
                 self._upsert_media_metadata(
                     cursor=cursor,
-                    tmdb_id=tmdb_id,
                     item_type=item_type,
-                    item_details_from_emby=item_details_from_emby, # ★ 入库模式，传入此项
+                    item_details_from_emby=item_details_from_emby,
                     final_processed_cast=final_processed_cast,
-                    tmdb_details_for_extra=tmdb_details_for_extra,
-                    douban_rating=douban_rating # ★ 传入评分
+                    source_data_package=tmdb_details_for_extra,
+                    douban_rating=douban_rating
                 )
                 
                 # 步骤 3.5: 根据处理质量评分，决定写入“已处理”或“失败”日志
@@ -1977,11 +1987,10 @@ class MediaProcessor:
                 # ======================================================================
                 self._upsert_media_metadata(
                     cursor=cursor,
-                    tmdb_id=tmdb_id,
                     item_type=item_type,
                     item_details_from_emby=item_details,
                     final_processed_cast=final_formatted_cast, 
-                    tmdb_details_for_extra=None, 
+                    source_data_package=tmdb_details_for_manual_extra, 
                 )
                 
                 logger.info(f"  ➜ 正在将手动处理完成的《{item_name}》写入已处理日志...")
@@ -2763,12 +2772,11 @@ class MediaProcessor:
                     if final_processed_cast:
                         self._upsert_media_metadata(
                             cursor=cursor,
-                            tmdb_id=tmdb_id,
                             item_type=item_type,
                             final_processed_cast=final_processed_cast,
-                            tmdb_details_for_extra=tmdb_details_for_extra,
-                            item_details_from_emby=None, # ★ 预处理模式，此项为None
-                            douban_rating=douban_rating  # ★ 传入豆瓣评分
+                            source_data_package=tmdb_details_for_extra,
+                            item_details_from_emby=None,
+                            douban_rating=douban_rating
                         )
                         conn.commit()
                     else:
