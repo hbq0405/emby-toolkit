@@ -192,7 +192,39 @@ class MediaProcessor:
             elif source.get('vote_average') is not None:
                 metadata['rating'] = source.get('vote_average')
             
-            metadata['official_rating'] = emby_source.get('OfficialRating') or source.get('official_rating') # 假设TMDb详情里有
+            # ★★★ 智能提取 TMDb 分级数据 ★★★
+            tmdb_official_rating = None
+            if item_type == 'Movie' and source.get('release_dates', {}).get('results'):
+                for rd in source['release_dates']['results']:
+                    if rd.get('iso_3166_1') == 'US': # 优先使用配置的区域
+                        for release in rd.get('release_dates', []):
+                            if release.get('certification'):
+                                tmdb_official_rating = release['certification']
+                                break
+                    if tmdb_official_rating: break
+                if not tmdb_official_rating: # 如果配置区域没有，尝试找US
+                    for rd in source['release_dates']['results']:
+                        if rd.get('iso_3166_1') == 'US':
+                            for release in rd.get('release_dates', []):
+                                if release.get('certification'):
+                                    tmdb_official_rating = release['certification']
+                                    break
+                        if tmdb_official_rating: break
+            elif item_type == 'Series' and source.get('content_ratings', {}).get('results'):
+                for cr in source['content_ratings']['results']:
+                    if cr.get('iso_3166_1') == 'US': # 优先使用配置的区域
+                        if cr.get('rating'):
+                            tmdb_official_rating = cr['rating']
+                            break
+                    if tmdb_official_rating: break
+                if not tmdb_official_rating: # 如果配置区域没有，尝试找US
+                    for cr in source['content_ratings']['results']:
+                        if cr.get('iso_3166_1') == 'US':
+                            if cr.get('rating'):
+                                tmdb_official_rating = cr['rating']
+                                break
+            
+            metadata['official_rating'] = emby_source.get('OfficialRating') or tmdb_official_rating
             metadata['unified_rating'] = get_unified_rating(metadata['official_rating'])
 
             # JSON 字段 (类型、工作室、国家、关键词等)
