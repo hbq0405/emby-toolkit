@@ -48,142 +48,6 @@ def _read_local_json(file_path: str) -> Optional[Dict[str, Any]]:
     except Exception as e:
         logger.error(f"读取本地JSON文件失败: {file_path}, 错误: {e}")
         return None
-def _save_metadata_to_cache(
-    actor_db_manager: "ActorDBManager", 
-    cursor: psycopg2.extensions.cursor,
-    tmdb_id: str,
-    emby_item_id: str,
-    item_type: str,
-    item_details_from_emby: Dict[str, Any],
-    final_processed_cast: List[Dict[str, Any]],
-    tmdb_details_for_extra: Optional[Dict[str, Any]],
-    emby_config: Dict[str, Any]
-):
-    """
-    【V8 - 最终重构版】
-    - 适配 media_metadata 新表结构，使用 PostgreSQL 的 UPSERT 语法。
-    - 作为权威数据源，写入经过完整流程处理后的 actors_json。
-    - 补充写入在主流程中已获取的其他核心元数据（导演、国家、关键词、海报等）。
-    """
-    try:
-        logger.trace(f"【元数据缓存】正在为 '{item_details_from_emby.get('Name')}' 组装元数据...")
-        
-        # ======================================================================
-        # 1. 委托“演员数据管家”处理所有演员自身的元数据
-        # ======================================================================
-        actor_db_manager.batch_upsert_actors_and_metadata(
-            cursor=cursor, 
-            actors_list=final_processed_cast,
-            emby_config=emby_config
-        )
-
-        # ======================================================================
-        # 2. 创建精简的、只包含“关系”的 actors_json，用于存入 media_metadata
-        # ======================================================================
-        actors_relation_for_cache = [
-            {
-                "tmdb_id": int(p.get("id") or p.get("tmdb_id")),
-                "character": p.get("character"),
-                "order": p.get("order")
-            }
-            for p in final_processed_cast if p.get("id") or p.get("tmdb_id")
-        ]
-
-        # ======================================================================
-        # 3. 从已有的 tmdb_details_for_extra 中提取其他元数据
-        # ======================================================================
-        directors, countries, keywords = [], [], []
-        if tmdb_details_for_extra:
-            # 导演
-            credits = tmdb_details_for_extra.get("credits", {})
-            crew = credits.get('crew', [])
-            if item_type == 'Movie':
-                directors = [{'id': p.get('id'), 'name': p.get('name')} for p in crew if p.get('job') == 'Director']
-            elif item_type == 'Series':
-                directors = [{'id': p.get('id'), 'name': p.get('name')} for p in crew if p.get('job') == 'Director']
-                if not directors:
-                    directors = [{'id': c.get('id'), 'name': c.get('name')} for c in tmdb_details_for_extra.get('created_by', [])]
-            
-            # 国家
-            if item_type == 'Movie':
-                country_codes = [c.get('iso_3166_1') for c in tmdb_details_for_extra.get('production_countries', [])]
-                countries = translate_country_list(country_codes)
-            elif item_type == 'Series':
-                countries = translate_country_list(tmdb_details_for_extra.get('origin_country', []))
-
-            # 关键词
-            if item_type == 'Movie':
-                keywords_data = tmdb_details_for_extra.get('keywords', {})
-                keywords = [k['name'] for k in keywords_data.get('keywords', [])]
-            elif item_type == 'Series':
-                keywords_data = tmdb_details_for_extra.get('keywords', {})
-                keywords = [k['name'] for k in keywords_data.get('results', [])]
-
-        # ======================================================================
-        # 4. 组装最终要写入数据库的 metadata 字典
-        # ======================================================================
-        metadata = {
-            "tmdb_id": tmdb_id,
-            "item_type": item_type,
-            "emby_item_ids_json": json.dumps([emby_item_id]),
-            "in_library": True,
-            "title": item_details_from_emby.get('Name'),
-            "original_title": item_details_from_emby.get('OriginalTitle'),
-            "release_year": item_details_from_emby.get('ProductionYear'),
-            "release_date": (item_details_from_emby.get('PremiereDate') or '').split('T')[0] or None,
-            "date_added": item_details_from_emby.get("DateCreated"),
-            "rating": item_details_from_emby.get('CommunityRating'),
-            "official_rating": item_details_from_emby.get('OfficialRating'),
-            "unified_rating": get_unified_rating(item_details_from_emby.get('OfficialRating')),
-            "genres_json": json.dumps(item_details_from_emby.get('Genres', []), ensure_ascii=False),
-            "studios_json": json.dumps([s['Name'] for s in item_details_from_emby.get('Studios', [])], ensure_ascii=False),
-            "tags_json": json.dumps(item_details_from_emby.get('Tags', []), ensure_ascii=False),
-            "paths_json": json.dumps([item_details_from_emby.get('Path')]) if item_details_from_emby.get('Path') else None,
-            
-            # --- 权威数据写入 ---
-            "actors_json": json.dumps(actors_relation_for_cache, ensure_ascii=False),
-            
-            # --- 补充数据写入 ---
-            "directors_json": json.dumps(directors, ensure_ascii=False),
-            "countries_json": json.dumps(countries, ensure_ascii=False),
-            "keywords_json": json.dumps(keywords, ensure_ascii=False),
-            "poster_path": tmdb_details_for_extra.get('poster_path') if tmdb_details_for_extra else None
-        }
-        
-        # ======================================================================
-        # 5. 构建并执行 PostgreSQL 的 UPSERT 语句
-        # ======================================================================
-        # 过滤掉值为 None 的键，避免向数据库写入 NULL 覆盖掉可能已存在的值
-        # 但保留 actors_json，因为它是本次操作的权威数据
-        columns_to_write = {k: v for k, v in metadata.items() if v is not None or k == 'actors_json'}
-        
-        columns = list(columns_to_write.keys())
-        values = list(columns_to_write.values())
-        
-        columns_str = ', '.join(columns)
-        placeholders_str = ', '.join(['%s'] * len(values))
-        
-        # 在 ON CONFLICT 时，我们希望合并 emby_item_ids_json，而不是覆盖
-        update_clauses = [
-            f"{col} = EXCLUDED.{col}" for col in columns 
-            if col not in ['tmdb_id', 'item_type', 'emby_item_ids_json']
-        ]
-        # 特殊处理 emby_item_ids_json: 使用 || 操作符进行合并
-        update_clauses.append("emby_item_ids_json = media_metadata.emby_item_ids_json || EXCLUDED.emby_item_ids_json")
-        update_clauses.append("last_synced_at = NOW()")
-        update_str = ', '.join(update_clauses)
-
-        sql = f"""
-            INSERT INTO media_metadata ({columns_str}, last_synced_at)
-            VALUES ({placeholders_str}, NOW())
-            ON CONFLICT (tmdb_id, item_type) DO UPDATE SET {update_str}
-        """
-        
-        cursor.execute(sql, tuple(values))
-        logger.debug(f"  ➜ 成功将《{metadata.get('title')}》的权威演员表及元数据缓存到数据库。")
-
-    except Exception as e:
-        logger.error(f"保存元数据到缓存表时失败: {e}", exc_info=True)
 
 def _aggregate_series_cast_from_tmdb_data(series_data: Dict[str, Any], all_episodes_data: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
     """
@@ -270,6 +134,133 @@ class MediaProcessor:
         self.processed_items_cache = self._load_processed_log_from_db()
         self.manual_edit_cache = TTLCache(maxsize=10, ttl=600)
         logger.trace("核心处理器初始化完成。")
+    # --- 更新媒体元数据缓存 ---
+    def _upsert_media_metadata(
+        self,
+        cursor: psycopg2.extensions.cursor,
+        tmdb_id: str,
+        item_type: str,
+        final_processed_cast: List[Dict[str, Any]],
+        tmdb_details_for_extra: Optional[Dict[str, Any]],
+        item_details_from_emby: Optional[Dict[str, Any]] = None,
+        douban_rating: Optional[float] = None
+    ):
+        """
+        【V9 - 终极统一版】
+        - 唯一的、权威的元数据写入函数，处理所有场景。
+        - 智能地从 TMDb 或 Emby 的详情中提取元数据。
+        - 优先使用传入的豆瓣评分。
+        - 使用 PostgreSQL 的 UPSERT 语法，高效地插入或更新记录。
+        """
+        try:
+            logger.trace(f"【元数据写入】正在为 TMDB ID '{tmdb_id}' 组装元数据...")
+            
+            # 1. 演员数据处理 (这部分逻辑不变)
+            self.actor_db_manager.batch_upsert_actors_and_metadata(
+                cursor=cursor, 
+                actors_list=final_processed_cast,
+                emby_config=self.config
+            )
+            actors_relation_for_cache = [
+                {"tmdb_id": int(p.get("id") or p.get("tmdb_id")), "character": p.get("character"), "order": p.get("order")}
+                for p in final_processed_cast if p.get("id") or p.get("tmdb_id")
+            ]
+
+            # 2. ★★★ 智能元数据提取 (核心改造) ★★★
+            metadata = {
+                "tmdb_id": tmdb_id,
+                "item_type": item_type,
+                "actors_json": json.dumps(actors_relation_for_cache, ensure_ascii=False)
+            }
+
+            # 根据传入的数据源，智能填充元数据
+            source = tmdb_details_for_extra or {}
+            emby_source = item_details_from_emby or {}
+
+            # 标题、年份等
+            metadata['title'] = emby_source.get('Name') or source.get('title') or source.get('name')
+            metadata['original_title'] = emby_source.get('OriginalTitle') or source.get('original_title') or source.get('original_name')
+            metadata['release_year'] = emby_source.get('ProductionYear') or (source.get('release_date') or source.get('first_air_date', '----'))[:4]
+            release_date = emby_source.get('PremiereDate', '').split('T')[0] or source.get('release_date') or source.get('first_air_date')
+            if release_date: metadata['release_date'] = release_date
+
+            # 评分 (优先豆瓣 -> Emby -> TMDb)
+            if douban_rating is not None:
+                metadata['rating'] = douban_rating
+            elif emby_source.get('CommunityRating') is not None:
+                metadata['rating'] = emby_source.get('CommunityRating')
+            elif source.get('vote_average') is not None:
+                metadata['rating'] = source.get('vote_average')
+            
+            metadata['official_rating'] = emby_source.get('OfficialRating') or source.get('official_rating') # 假设TMDb详情里有
+            metadata['unified_rating'] = get_unified_rating(metadata['official_rating'])
+
+            # JSON 字段 (类型、工作室、国家、关键词等)
+            if emby_source.get('Genres'):
+                metadata['genres_json'] = json.dumps(emby_source.get('Genres', []), ensure_ascii=False)
+            elif source.get('genres'):
+                metadata['genres_json'] = json.dumps([g['name'] for g in source.get('genres', [])], ensure_ascii=False)
+
+            if emby_source.get('Studios'):
+                metadata['studios_json'] = json.dumps([s['Name'] for s in emby_source.get('Studios', [])], ensure_ascii=False)
+            elif source.get('production_companies'):
+                metadata['studios_json'] = json.dumps([s['name'] for s in source.get('production_companies', [])], ensure_ascii=False)
+
+            # 导演、国家、关键词 (这些主要来自TMDb)
+            if source:
+                credits = source.get("credits", {})
+                crew = credits.get('crew', [])
+                if item_type == 'Movie':
+                    metadata['directors_json'] = json.dumps([{'id': p.get('id'), 'name': p.get('name')} for p in crew if p.get('job') == 'Director'], ensure_ascii=False)
+                elif item_type == 'Series':
+                    metadata['directors_json'] = json.dumps([{'id': c.get('id'), 'name': c.get('name')} for c in source.get('created_by', [])], ensure_ascii=False)
+                
+                if item_type == 'Movie':
+                    metadata['countries_json'] = json.dumps(translate_country_list([c.get('iso_3166_1') for c in source.get('production_countries', [])]), ensure_ascii=False)
+                elif item_type == 'Series':
+                    metadata['countries_json'] = json.dumps(translate_country_list(source.get('origin_country', [])), ensure_ascii=False)
+
+                keywords_data = source.get('keywords', {})
+                keywords = [k['name'] for k in (keywords_data.get('keywords', []) or keywords_data.get('results', []))]
+                metadata['keywords_json'] = json.dumps(keywords, ensure_ascii=False)
+                metadata['poster_path'] = source.get('poster_path')
+
+            # Emby 专属字段
+            if emby_source:
+                metadata['emby_item_ids_json'] = json.dumps([emby_source.get('Id')])
+                metadata['in_library'] = True
+                metadata['date_added'] = emby_source.get("DateCreated")
+                if emby_source.get('Path'):
+                    metadata['paths_json'] = json.dumps([emby_source.get('Path')])
+
+            # 3. 构建并执行终极 UPSERT 语句
+            columns_to_write = {k: v for k, v in metadata.items() if v is not None}
+            columns = list(columns_to_write.keys())
+            values = list(columns_to_write.values())
+            
+            columns_str = ', '.join(columns)
+            placeholders_str = ', '.join(['%s'] * len(values))
+            
+            update_clauses = [f"{col} = EXCLUDED.{col}" for col in columns if col not in ['tmdb_id', 'item_type', 'emby_item_ids_json']]
+            if 'emby_item_ids_json' in columns:
+                update_clauses.append("emby_item_ids_json = media_metadata.emby_item_ids_json || EXCLUDED.emby_item_ids_json")
+            
+            # 根据场景决定是预处理还是常规同步
+            timestamp_field = "pre_processed_at" if not item_details_from_emby else "last_synced_at"
+            update_clauses.append(f"{timestamp_field} = NOW()")
+
+            sql = f"""
+                INSERT INTO media_metadata ({columns_str}, {timestamp_field})
+                VALUES ({placeholders_str}, NOW())
+                ON CONFLICT (tmdb_id, item_type) DO UPDATE SET {', '.join(update_clauses)}
+            """
+            
+            cursor.execute(sql, tuple(values))
+            logger.debug(f"  ➜ 成功将《{metadata.get('title')}》的元数据写入数据库。")
+
+        except Exception as e:
+            logger.error(f"写入元数据到数据库时失败: {e}", exc_info=True)
+            raise
     # --- 标记为已处理 ---
     def _mark_item_as_processed(self, cursor: psycopg2.extensions.cursor, item_id: str, item_name: str, score: float = 10.0):
         """
@@ -927,7 +918,7 @@ class MediaProcessor:
                 )
 
                 # 步骤 3.4: 更新我们自己的数据库缓存
-                _save_metadata_to_cache(
+                self._upsert_media_metadata(
                     actor_db_manager=self.actor_db_manager,
                     emby_config={"url": self.emby_url, "api_key": self.emby_api_key, "user_id": self.emby_user_id},
                     cursor=cursor, 
@@ -1938,7 +1929,7 @@ class MediaProcessor:
                 # ======================================================================
                 # ★★★ 调用统一的、已规范化的缓存写入函数 ★★★
                 # ======================================================================
-                _save_metadata_to_cache(
+                self._upsert_media_metadata(
                     actor_db_manager=self.actor_db_manager,
                     emby_config={"url": self.emby_url, "api_key": self.emby_api_key, "user_id": self.emby_user_id},
                     cursor=cursor,
@@ -2635,72 +2626,6 @@ class MediaProcessor:
         except Exception as e:
             logger.error(f"  ➜ {log_prefix} 为 '{item_name_for_log}' 更新覆盖缓存文件时发生错误: {e}", exc_info=True)
 
-    def _update_pre_processed_metadata_in_db(
-        self,
-        cursor: psycopg2.extensions.cursor,
-        tmdb_id: str,
-        item_type: str,
-        final_processed_cast: List[Dict[str, Any]],
-        tmdb_details_for_extra: Optional[Dict[str, Any]]
-    ):
-        """
-        【新】一个专门用于预处理的数据库更新函数。
-        它只更新元数据，不涉及 Emby ID，并设置 pre_processed_at 标志。
-        """
-        try:
-            # 1. 准备演员关系数据 (与 _save_metadata_to_cache 逻辑相同)
-            self.actor_db_manager.batch_upsert_actors_and_metadata(
-                cursor=cursor, 
-                actors_list=final_processed_cast,
-                emby_config=self.config # 传递完整的 emby_config
-            )
-            actors_relation_for_cache = [
-                {"tmdb_id": int(p.get("id") or p.get("tmdb_id")), "character": p.get("character"), "order": p.get("order")}
-                for p in final_processed_cast if p.get("id") or p.get("tmdb_id")
-            ]
-
-            # 2. 准备其他元数据 (与 _save_metadata_to_cache 逻辑相同)
-            directors, countries, keywords = [], [], []
-            if tmdb_details_for_extra:
-                credits = tmdb_details_for_extra.get("credits", {})
-                crew = credits.get('crew', [])
-                if item_type == 'Movie':
-                    directors = [{'id': p.get('id'), 'name': p.get('name')} for p in crew if p.get('job') == 'Director']
-                elif item_type == 'Series':
-                    directors = [{'id': c.get('id'), 'name': c.get('name')} for c in tmdb_details_for_extra.get('created_by', [])]
-                
-                if item_type == 'Movie':
-                    countries = translate_country_list([c.get('iso_3166_1') for c in tmdb_details_for_extra.get('production_countries', [])])
-                elif item_type == 'Series':
-                    countries = translate_country_list(tmdb_details_for_extra.get('origin_country', []))
-
-                keywords_data = tmdb_details_for_extra.get('keywords', {})
-                keywords = [k['name'] for k in (keywords_data.get('keywords', []) or keywords_data.get('results', []))]
-
-            # 3. 组装要 UPDATE 的数据
-            updates = {
-                "actors_json": json.dumps(actors_relation_for_cache, ensure_ascii=False),
-                "directors_json": json.dumps(directors, ensure_ascii=False),
-                "countries_json": json.dumps(countries, ensure_ascii=False),
-                "keywords_json": json.dumps(keywords, ensure_ascii=False),
-                "poster_path": tmdb_details_for_extra.get('poster_path') if tmdb_details_for_extra else None,
-                "pre_processed_at": datetime.now(timezone.utc) # ★★★ 关键：设置处理完成时间戳
-            }
-            
-            # 过滤掉值为 None 的键
-            updates_filtered = {k: v for k, v in updates.items() if v is not None}
-            
-            # 4. 构建并执行 UPDATE 语句
-            set_clauses = [f"{key} = %s" for key in updates_filtered.keys()]
-            sql = f"UPDATE media_metadata SET {', '.join(set_clauses)} WHERE tmdb_id = %s AND item_type = %s"
-            
-            cursor.execute(sql, tuple(updates_filtered.values()) + (tmdb_id, item_type))
-            logger.info(f"  ➜ 成功为 TMDB ID {tmdb_id} 预处理并更新了 {cursor.rowcount} 条元数据记录。")
-
-        except Exception as e:
-            logger.error(f"预处理元数据并更新数据库时失败: {e}", exc_info=True)
-            raise # 向上抛出异常，让调用者知道失败了
-
     def pre_process_media_metadata(self, tmdb_id: str, item_type: str, item_name_for_log: str):
         """
         【V2 - 豆瓣集成版】只处理演员表并更新数据库，不与Emby或文件系统交互。
@@ -2737,7 +2662,8 @@ class MediaProcessor:
             # ★★★ 新增：集成豆瓣数据获取 ★★★
             logger.info(f"  ➜ 步骤 2/4: 正在从豆瓣获取中文演员表及评分...")
             douban_cast_raw = []
-            douban_rating = None # 预处理阶段暂不处理评分，专注于演员表
+            douban_id = None
+            douban_type = None
             
             if self.douban_api and tmdb_details_for_extra:
                 # 从 TMDb 数据中提取用于豆瓣匹配的信息
@@ -2766,6 +2692,15 @@ class MediaProcessor:
             else:
                 logger.info("  ➜ 豆瓣API未启用或缺少TMDb详细信息，跳过豆瓣处理。")
 
+            douban_rating = None
+            if self.douban_api and douban_id and douban_type:
+                details_data = self.douban_api._get_subject_details(douban_id, douban_type)
+                if details_data and not details_data.get("error"):
+                    rating_str = details_data.get("rating", {}).get("value")
+                    if rating_str:
+                        try: douban_rating = float(rating_str)
+                        except (ValueError, TypeError): pass
+
             # 2. 调用核心演员处理逻辑，现在包含了豆瓣数据
             with get_central_db_connection() as conn:
                 with conn.cursor() as cursor:
@@ -2783,12 +2718,14 @@ class MediaProcessor:
                     # 3. 将处理结果写入数据库
                     logger.info(f"  ➜ 步骤 4/4: 正在将处理结果写入数据库...")
                     if final_processed_cast:
-                        self._update_pre_processed_metadata_in_db(
+                        self._upsert_media_metadata(
                             cursor=cursor,
                             tmdb_id=tmdb_id,
                             item_type=item_type,
                             final_processed_cast=final_processed_cast,
-                            tmdb_details_for_extra=tmdb_details_for_extra
+                            tmdb_details_for_extra=tmdb_details_for_extra,
+                            item_details_from_emby=None, # ★ 预处理模式，此项为None
+                            douban_rating=douban_rating  # ★ 传入豆瓣评分
                         )
                         conn.commit()
                     else:
