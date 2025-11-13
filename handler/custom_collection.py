@@ -845,33 +845,29 @@ class FilterEngine:
             emby_url = cfg.get('emby_server_url')
             emby_key = cfg.get('emby_api_key')
             emby_user_id = cfg.get('emby_user_id')
-
             if not all([emby_url, emby_key, emby_user_id]):
                 logger.error("  ➜ Emby服务器配置不完整，无法从指定媒体库筛选。")
                 return []
-
             emby_items = emby.get_emby_library_items(
                 base_url=emby_url, api_key=emby_key, user_id=emby_user_id,
                 library_ids=library_ids, media_type_filter=",".join(item_types_to_process)
             )
-
             if not emby_items:
                 logger.warning("  ➜ 从指定的媒体库中未能获取到任何媒体项。")
                 return []
-
             tmdb_ids_from_libs = [
                 item['ProviderIds']['Tmdb']
                 for item in emby_items
                 if item.get('ProviderIds', {}).get('Tmdb')
             ]
-
             if not tmdb_ids_from_libs:
                 logger.warning("  ➜ 指定媒体库中的项目均缺少TMDb ID，无法进行筛选。")
                 return []
             
             logger.info(f"  ➜ 正在从本地缓存中查询这 {len(tmdb_ids_from_libs)} 个项目的元数据...")
             for item_type in item_types_to_process:
-                metadata_for_type = media_db.get_media_details_by_tmdb_ids(tmdb_ids_from_libs, item_type)
+                media_metadata_map = media_db.get_media_details_by_tmdb_ids(tmdb_ids_from_libs)
+                metadata_for_type = [v for v in media_metadata_map.values() if v.get('item_type') == item_type]
                 all_media_metadata.extend(metadata_for_type)
 
         else:
