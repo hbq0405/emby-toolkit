@@ -13,7 +13,7 @@
         </template>
         <n-alert title="管理说明" type="info" style="margin-top: 24px;">
           <li>这里汇总了所有通过“用户请求”、“演员订阅”、“合集补全”、“智能追剧”等方式进入待处理队列，但尚未入库的媒体项。</li>
-          <li><b>待订阅 (WANTED):</b> 等待后台“统一订阅任务”处理的项目。</li>
+          <li><b>待订阅 (WANTED):</b> 点击“订阅”可立即提交给下载器。或等待后台“统一订阅任务”处理。</li>
           <li><b>未上映 (PENDING):</b> 等待上映后，会自动转为“待订阅”的项目。</li>
           <li><b>已忽略 (IGNORED):</b> 被手动或规则忽略的项目，后台任务会自动跳过它们。</li>
         </n-alert>
@@ -52,7 +52,6 @@
       <n-space :wrap="true" :size="[20, 12]" style="margin-bottom: 20px;">
         <n-input v-model:value="searchQuery" placeholder="按名称搜索..." clearable style="min-width: 200px;" />
         <n-select v-model:value="filterType" :options="typeFilterOptions" style="min-width: 140px;" />
-        <!-- ▼▼▼ 新增的来源筛选器 ▼▼▼ -->
         <n-select v-model:value="filterSource" :options="sourceFilterOptions" style="min-width: 160px;" clearable placeholder="按来源筛选" />
         <n-select v-model:value="sortKey" :options="sortKeyOptions" style="min-width: 160px;" />
         <n-button-group>
@@ -107,30 +106,32 @@
                 <div class="card-actions">
                   <!-- ★★★ 核心修改：根据状态动态显示不同的按钮组 ★★★ -->
                   <n-button-group size="small">
-                    
-                    <!-- 规则1: 只有“已忽略”状态才显示“取消忽略”按钮 -->
-                    <n-button 
-                      v-if="item.subscription_status === 'IGNORED'" 
-                      @click="() => updateItemStatus(item, 'WANTED', true)" 
-                      type="primary" 
-                      ghost>
-                      取消忽略
-                    </n-button>
-                    
-                    <!-- 规则2: 只要不是“已忽略”，就显示“忽略”按钮 -->
-                    <n-button 
-                      v-if="item.subscription_status !== 'IGNORED'" 
-                      @click="() => updateItemStatus(item, 'IGNORED')" 
-                      type="error" 
-                      ghost>
-                      忽略
-                    </n-button>
-                    
-                    <!-- 规则3: “取消订阅”按钮总是显示，用于彻底移除 -->
-                    <n-button @click="() => updateItemStatus(item, 'NONE')">
-                      取消订阅
-                    </n-button>
+                    <!-- Case 1: Status is WANTED -->
+                    <template v-if="item.subscription_status === 'WANTED'">
+                      <n-button @click="() => subscribeItem(item)" type="primary" ghost>
+                        订阅
+                      </n-button>
+                      <n-button @click="() => updateItemStatus(item, 'IGNORED')" type="error" ghost>
+                        忽略
+                      </n-button>
+                    </template>
 
+                    <!-- Case 2: Status is SUBSCRIBED or PENDING_RELEASE -->
+                    <template v-else-if="item.subscription_status === 'SUBSCRIBED' || item.subscription_status === 'PENDING_RELEASE'">
+                      <n-button @click="() => updateItemStatus(item, 'IGNORED')" type="error" ghost>
+                        忽略
+                      </n-button>
+                      <n-button @click="() => updateItemStatus(item, 'NONE')">
+                        取消订阅
+                      </n-button>
+                    </template>
+
+                    <!-- Case 3: Status is IGNORED -->
+                    <template v-else-if="item.subscription_status === 'IGNORED'">
+                      <n-button @click="() => updateItemStatus(item, 'WANTED', true)" type="primary" ghost>
+                        取消忽略
+                      </n-button>
+                    </template>
                   </n-button-group>
                   <n-tooltip>
                     <template #trigger><n-button text tag="a" :href="`https://www.themoviedb.org/${item.item_type === 'Movie' ? 'movie' : 'tv'}/${item.tmdb_id}`" target="_blank"><template #icon><n-icon :component="TMDbIcon" size="18" /></template></n-button></template>
@@ -220,15 +221,32 @@ const sourceFilterOptions = computed(() => {
     label: SOURCE_TYPE_MAP[type] || type,
     value: type
   }));
-  // 按 label 排序
   options.sort((a, b) => a.label.localeCompare(b.label));
   return options;
 });
 
-const batchActions = computed(() => [
-  { label: '批量忽略', key: 'ignore', icon: () => h(NIcon, { component: IgnoredIcon }) },
-  { label: '批量取消订阅', key: 'cancel', icon: () => h(NIcon, { component: TvIcon }) },
-]);
+// ✨✨✨ 动态批量操作 ✨✨✨
+const batchActions = computed(() => {
+  switch (filterStatus.value) {
+    case 'WANTED':
+      return [
+        { label: '批量订阅', key: 'subscribe', icon: () => h(NIcon, { component: SubscribedIcon }) },
+        { label: '批量忽略', key: 'ignore', icon: () => h(NIcon, { component: IgnoredIcon }) },
+      ];
+    case 'SUBSCRIBED':
+    case 'PENDING_RELEASE':
+      return [
+        { label: '批量忽略', key: 'ignore', icon: () => h(NIcon, { component: IgnoredIcon }) },
+        { label: '批量取消订阅', key: 'cancel', icon: () => h(NIcon, { component: TvIcon }) },
+      ];
+    case 'IGNORED':
+      return [
+        { label: '批量取消忽略', key: 'unignore', icon: () => h(NIcon, { component: WantedIcon }) },
+      ];
+    default:
+      return [];
+  }
+});
 
 const filteredItems = computed(() => {
   let list = rawItems.value.filter(item => item.subscription_status === filterStatus.value);
@@ -242,7 +260,6 @@ const filteredItems = computed(() => {
     list = list.filter(item => item.item_type === filterType.value);
   }
 
-  // 应用新的来源筛选
   if (filterSource.value) {
     list = list.filter(item => 
       item.subscription_sources_json?.some(source => source.type === filterSource.value)
@@ -313,10 +330,13 @@ const toggleSelection = (item, event, index) => {
   lastSelectedIndex.value = index;
 };
 
+// ✨✨✨ 更新批量操作处理器 ✨✨✨
 const handleBatchAction = (key) => {
   const actionMap = {
-    'ignore': { title: '批量忽略', content: `确定要忽略选中的 ${selectedItems.value.length} 个媒体项吗？`, new_status: 'IGNORED' },
-    'cancel': { title: '批量取消', content: `确定要取消订阅选中的 ${selectedItems.value.length} 个媒体项吗？`, new_status: 'NONE' },
+    'subscribe': { title: '批量订阅', content: `确定要立即订阅选中的 ${selectedItems.value.length} 个媒体项吗？`, endpoint: '/api/subscription/subscribe_now' },
+    'ignore': { title: '批量忽略', content: `确定要忽略选中的 ${selectedItems.value.length} 个媒体项吗？`, endpoint: '/api/subscription/status', new_status: 'IGNORED' },
+    'cancel': { title: '批量取消', content: `确定要取消订阅选中的 ${selectedItems.value.length} 个媒体项吗？`, endpoint: '/api/subscription/status', new_status: 'NONE' },
+    'unignore': { title: '批量取消忽略', content: `确定要取消忽略选中的 ${selectedItems.value.length} 个媒体项吗？`, endpoint: '/api/subscription/status', new_status: 'WANTED', force_unignore: true },
   };
   const action = actionMap[key];
   if (!action) return;
@@ -331,15 +351,40 @@ const handleBatchAction = (key) => {
         const requests = selectedItems.value.map(item => ({
           tmdb_id: item.tmdb_id,
           item_type: item.item_type,
-          new_status: action.new_status,
+          ...(action.new_status && { new_status: action.new_status }),
+          ...(action.force_unignore && { force_unignore: action.force_unignore }),
           source: { type: 'batch_admin_op' }
         }));
-        const response = await axios.post('/api/subscription/status', { requests });
+        const response = await axios.post(action.endpoint, { requests });
         message.success(response.data.message || '批量操作成功！');
         await fetchData();
         selectedItems.value = [];
       } catch (err) {
         message.error(err.response?.data?.error || '批量操作失败。');
+      }
+    }
+  });
+};
+
+// ✨✨✨ 新增的立即订阅函数 ✨✨✨
+const subscribeItem = async (item) => {
+  dialog.info({
+    title: '确认订阅',
+    content: `确定要立即将《${item.title}》提交到 MoviePilot 进行订阅吗？`,
+    positiveText: '确定',
+    negativeText: '取消',
+    onPositiveClick: async () => {
+      try {
+        const requests = [{ tmdb_id: item.tmdb_id, item_type: item.item_type }];
+        await axios.post('/api/subscription/subscribe_now', { requests });
+        message.success(`《${item.title}》已成功提交订阅！`);
+        // 乐观更新：将状态改为 'SUBSCRIBED'，这样它会从当前 'WANTED' 列表中消失
+        const index = rawItems.value.findIndex(i => i.tmdb_id === item.tmdb_id && i.item_type === item.item_type);
+        if (index > -1) {
+          rawItems.value[index].subscription_status = 'SUBSCRIBED';
+        }
+      } catch (err) {
+        message.error(err.response?.data?.error || '订阅失败。');
       }
     }
   });
@@ -356,7 +401,6 @@ const updateItemStatus = async (item, newStatus, forceUnignore = false) => {
     }];
     await axios.post('/api/subscription/status', { requests });
     message.success('状态更新成功！');
-    // 乐观更新UI
     const index = rawItems.value.findIndex(i => i.tmdb_id === item.tmdb_id && i.item_type === item.item_type);
     if (index > -1) {
       if (newStatus === 'NONE') {
@@ -385,7 +429,6 @@ const loadMore = () => {
 const formatTimestamp = (timestamp) => {
   if (!timestamp) return 'N/A';
   try {
-    // 使用 new Date()，它对多种格式更宽容
     return format(new Date(timestamp), 'yyyy-MM-dd HH:mm');
   } catch (e) { return 'N/A'; }
 };
@@ -393,7 +436,6 @@ const formatTimestamp = (timestamp) => {
 const formatAirDate = (dateString) => {
   if (!dateString) return 'N/A';
   try {
-    // 使用 new Date()
     return format(new Date(dateString), 'yyyy-MM-dd');
   } catch (e) { return 'N/A'; }
 };
@@ -445,13 +487,12 @@ watch(loaderRef, (newEl, oldEl) => {
 </script>
 
 <style scoped>
+/* ... (样式部分保持不变) ... */
 .watchlist-page { padding: 0 10px; }
 .center-container { display: flex; justify-content: center; align-items: center; height: calc(100vh - 200px); }
-/* 卡片样式，为 checkbox 定位做准备 */
 .series-card {
   position: relative;
 }
-/* 【修改】Checkbox 样式，默认隐藏，鼠标悬浮或已选中时显示 */
 .card-checkbox {
   position: absolute;
   top: 8px;
@@ -462,19 +503,15 @@ watch(loaderRef, (newEl, oldEl) => {
   padding: 4px;
   --n-color-checked: var(--n-color-primary-hover);
   --n-border-radius: 50%;
-  /* 默认隐藏并添加过渡效果 */
   opacity: 0;
   visibility: hidden;
   transition: opacity 0.2s ease-in-out, visibility 0.2s ease-in-out;
 }
-/* 鼠标悬浮于卡片上时，或当多选框自身被勾选时，显示它 */
-/* 注意: .n-checkbox--checked 是 Naive UI 内部用于标记“已选中”状态的类 */
 .series-card:hover .card-checkbox,
 .card-checkbox.n-checkbox--checked {
   opacity: 1;
   visibility: visible;
 }
-/* 【终极修复】为海报容器添加 overflow: hidden，裁剪掉溢出的图片部分，防止其挤压右侧内容 */
 .card-poster-container {
   flex-shrink: 0;
   width: 160px;
@@ -493,7 +530,6 @@ watch(loaderRef, (newEl, oldEl) => {
   height: 100%;
   background-color: var(--n-action-color);
 }
-/* 【布局优化】减小右侧内边距，给内容更多空间 */
 .card-content-container {
   flex-grow: 1;
   display: flex;
@@ -528,7 +564,6 @@ watch(loaderRef, (newEl, oldEl) => {
   gap: 4px;
   font-size: 0.8em;
 }
-/* 【最终优化】将按钮改为环绕对齐，使其均匀分布 */
 .card-actions {
   border-top: 1px solid var(--n-border-color);
   padding-top: 8px;
@@ -544,25 +579,9 @@ watch(loaderRef, (newEl, oldEl) => {
   justify-content: center;
   align-items: center;
 }
-/*
-  【布局终极修正】
-  此样式块专门用于对抗 .dashboard-card 的全局布局设置。
-  它使用 :deep() 来穿透组件，并用 !important 强制覆盖，
-  确保追剧列表的卡片内容区（.n-card__content）采用我们期望的水平布局。
-*/
 .series-card.dashboard-card > :deep(.n-card__content) {
-  /* 核心：强制将 flex 方向从全局的 "column" 改为 "row" */
   flex-direction: row !important;
-  /* 
-    重置对齐方式。
-    全局的 "space-between" 在水平布局下会导致元素被拉开，
-    我们把它改回默认的起始对齐。
-  */
   justify-content: flex-start !important;
-  /* 
-    重置内边距和间距，以匹配你在 template 中最初的设定。
-    这确保了海报和右侧内容区之间有正确的空隙。
-  */
   padding: 12px !important;
   gap: 12px !important;
 }
