@@ -206,13 +206,13 @@ def remove_tmdb_id_from_all_collections(tmdb_id_to_remove: str):
     try:
         with get_db_connection() as conn:
             cursor = conn.cursor()
-            # 使用 jsonb_path_query_array 和 jsonb_set 实现从数组中移除元素
+            # ★★★ 核心修复：使用正确的逻辑从字符串数组中移除元素 ★★★
             sql = """
                 UPDATE custom_collections
                 SET generated_media_info_json = (
                     SELECT jsonb_agg(elem)
-                    FROM jsonb_array_elements(generated_media_info_json) AS elem
-                    WHERE elem ->> 0 != %s
+                    FROM jsonb_array_elements_text(generated_media_info_json) AS elem
+                    WHERE elem != %s
                 )
                 WHERE generated_media_info_json @> %s::jsonb;
             """
@@ -221,8 +221,6 @@ def remove_tmdb_id_from_all_collections(tmdb_id_to_remove: str):
                 logger.info(f"已从 {cursor.rowcount} 个自定义合集的缓存中移除了 TMDB ID: {tmdb_id_to_remove}。")
     except psycopg2.Error as e:
         logger.error(f"从所有合集缓存中移除 TMDB ID {tmdb_id_to_remove} 时失败: {e}", exc_info=True)
-
-# database/collection_db.py
 
 def apply_and_persist_media_correction(collection_id: int, old_tmdb_id: str, new_tmdb_id: str, season_number: Optional[int] = None) -> Optional[Dict[str, Any]]:
     """
@@ -354,8 +352,10 @@ def apply_and_persist_media_correction(collection_id: int, old_tmdb_id: str, new
 
 def match_and_update_list_collections_on_item_add(new_item_tmdb_id: str, new_item_emby_id: str, new_item_name: str) -> List[Dict[str, Any]]:
     """
+    【V2 - 查询逻辑修复版】
     当新媒体入库时，查找并更新所有匹配的'list'类型合集。
-    返回值中增加了数据库主键 ID ('id')，以支持后续的权限补票流程。
+    - 修复了查询 generated_media_info_json 字段的逻辑，使其能正确匹配字符串数组。
+    - 修复了更新 generated_media_info_json 的逻辑，使其能正确处理对象数组。
     """
     collections_to_update_in_emby = []
     
@@ -363,6 +363,7 @@ def match_and_update_list_collections_on_item_add(new_item_tmdb_id: str, new_ite
         with get_db_connection() as conn:
             cursor = conn.cursor()
             
+            # ★★★ 核心修复 1/3: 使用正确的 JSONB 查询来匹配字符串数组 ★★★
             sql_find = """
                 SELECT * FROM custom_collections 
                 WHERE type = 'list' 
@@ -370,7 +371,8 @@ def match_and_update_list_collections_on_item_add(new_item_tmdb_id: str, new_ite
                   AND emby_collection_id IS NOT NULL
                   AND generated_media_info_json @> %s::jsonb
             """
-            search_payload = json.dumps([{'tmdb_id': str(new_item_tmdb_id)}])
+            # 查询数组是否包含一个特定的 "字符串"
+            search_payload = json.dumps([str(new_item_tmdb_id)])
             
             cursor.execute(sql_find, (search_payload,))
             candidate_collections = cursor.fetchall()
@@ -382,16 +384,35 @@ def match_and_update_list_collections_on_item_add(new_item_tmdb_id: str, new_ite
             try:
                 for collection_row in candidate_collections:
                     collection = dict(collection_row)
-                    collection_id = collection['id'] # 这是数据库主键 ID
+                    collection_id = collection['id']
                     collection_name = collection['name']
                     
                     try:
-                        media_list = collection.get('generated_media_info_json') or []
+                        # ★★★ 核心修复 2/3: 假设 generated_media_info_json 是对象数组，如果不是则转换 ★★★
+                        media_list_raw = collection.get('generated_media_info_json') or []
+                        media_list = []
+                        
+                        # 健壮性处理：如果存的是字符串数组，先转换为对象数组
+                        if media_list_raw and isinstance(media_list_raw[0], str):
+                            logger.warning(f"  ➜ 检测到合集《{collection_name}》的缓存格式为旧版（字符串数组），将进行动态转换...")
+                            # 这是一个耗时操作，但能保证兼容性
+                            details_map = media_db.get_media_details_by_tmdb_ids(media_list_raw)
+                            for tmdb_id_str in media_list_raw:
+                                detail = details_map.get(tmdb_id_str, {})
+                                media_list.append({
+                                    "tmdb_id": tmdb_id_str,
+                                    "status": "in_library" if detail.get('in_library') else "missing",
+                                    "title": detail.get('title', '未知标题'),
+                                    "poster_path": detail.get('poster_path'),
+                                    "release_date": detail.get('release_date')
+                                })
+                        else:
+                            media_list = media_list_raw
+
                         item_found_and_updated = False
                         
                         for media_item in media_list:
                             if str(media_item.get('tmdb_id')) == str(new_item_tmdb_id) and media_item.get('status') != 'in_library':
-                                
                                 media_item['status'] = 'in_library'
                                 media_item['emby_id'] = new_item_emby_id 
                                 item_found_and_updated = True
@@ -399,9 +420,9 @@ def match_and_update_list_collections_on_item_add(new_item_tmdb_id: str, new_ite
                         
                         if item_found_and_updated:
                             new_in_library_count = sum(1 for m in media_list if m.get('status') == 'in_library')
-                            new_missing_count = sum(1 for m in media_list if m.get('status') == 'missing')
+                            new_missing_count = len(media_list) - new_in_library_count
                             new_health_status = 'has_missing' if new_missing_count > 0 else 'ok'
-                            new_json_data = json.dumps(media_list, ensure_ascii=False)
+                            new_json_data = json.dumps(media_list, ensure_ascii=False, default=str)
                             
                             cursor.execute("""
                                 UPDATE custom_collections
@@ -412,19 +433,15 @@ def match_and_update_list_collections_on_item_add(new_item_tmdb_id: str, new_ite
                                 WHERE id = %s
                             """, (new_json_data, new_in_library_count, new_missing_count, new_health_status, collection_id))
                             
-                            # ======================================================================
-                            # ★★★ 核心修正：在返回的字典中，同时包含数据库 ID 和 Emby ID ★★★
-                            # ======================================================================
                             collections_to_update_in_emby.append({
-                                'id': collection_id, # <-- 关键！
+                                'id': collection_id,
                                 'emby_collection_id': collection['emby_collection_id'],
                                 'name': collection_name
                             })
 
-                    except (json.JSONDecodeError, TypeError) as e_json:
+                    except (json.JSONDecodeError, TypeError, IndexError) as e_json:
                         logger.warning(f"解析或处理榜单合集《{collection_name}》的数据时出错: {e_json}，跳过。")
                         continue
-                
                 
             except Exception as e_trans:
                 logger.error(f"在更新榜单合集数据库状态的事务中发生错误: {e_trans}", exc_info=True)
