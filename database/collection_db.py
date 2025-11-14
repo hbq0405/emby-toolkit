@@ -350,29 +350,6 @@ def apply_and_persist_media_correction(collection_id: int, old_tmdb_id: str, new
     finally:
         if conn: conn.close()
 
-def get_in_library_status_for_tmdb_ids(tmdb_ids: List[str]) -> Dict[str, bool]:
-    """
-    给定一个 TMDB ID 列表，批量查询它们在 media_metadata 中的 in_library 状态。
-    返回一个字典，键是 TMDB ID，值是布尔值 (True/False)。
-    """
-    if not tmdb_ids:
-        return {}
-    
-    sql = """
-        SELECT tmdb_id, in_library 
-        FROM media_metadata 
-        WHERE tmdb_id = ANY(%s);
-    """
-    try:
-        with get_db_connection() as conn:
-            with conn.cursor() as cursor:
-                cursor.execute(sql, (tmdb_ids,))
-                # 使用字典推导式高效地构建返回结果
-                return {str(row['tmdb_id']): row['in_library'] for row in cursor.fetchall()}
-    except Exception as e:
-        logger.error(f"DB: 批量查询 TMDB ID 的在库状态失败: {e}", exc_info=True)
-        return {}
-
 def match_and_update_list_collections_on_item_add(new_item_tmdb_id: str, new_item_emby_id: str, new_item_name: str) -> List[Dict[str, Any]]:
     """
     【V4 - 统计逻辑终极修复版】
