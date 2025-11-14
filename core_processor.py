@@ -2495,7 +2495,7 @@ class MediaProcessor:
                 # 1. 批量获取新分集的详情
                 new_episodes_details = emby.get_emby_items_by_id(
                     base_url=self.emby_url, api_key=self.emby_api_key, user_id=self.emby_user_id,
-                    item_ids=episode_ids_to_add, fields="Id,Type,ParentIndexNumber,IndexNumber,Name,PremiereDate,ProviderIds"
+                    item_ids=episode_ids_to_add, fields="Id,Type,ParentIndexNumber,IndexNumber,Name,OriginalTitle,PremiereDate,ProviderIds"
                 )
                 
                 if not new_episodes_details:
@@ -2520,7 +2520,8 @@ class MediaProcessor:
                         "season_number": s_num,
                         "episode_number": e_num,
                         "title": episode.get("Name"),
-                        "release_date": (episode.get("PremiereDate") or '').split('T')[0] or None,
+                        "original_title": episode.get("OriginalTitle"), 
+                        "release_date": episode.get("PremiereDate") or None, 
                         "in_library": True,
                         "emby_item_ids_json": json.dumps([episode.get("Id")])
                     })
