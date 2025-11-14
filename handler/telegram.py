@@ -167,7 +167,7 @@ def send_media_notification(item_details: dict, notification_type: str = 'new', 
         )
         
         # --- 5. 查询订阅者 ---
-        subscribers = request_db.get_subscribers_by_tmdb_id(tmdb_id) if tmdb_id else []
+        subscribers = request_db.get_subscribers_by_tmdb_id(tmdb_id, item_type) if tmdb_id else []
         subscriber_chat_ids = {user_db.get_user_telegram_chat_id(sub['emby_user_id']) for sub in subscribers}
         subscriber_chat_ids = {chat_id for chat_id in subscriber_chat_ids if chat_id}
 
