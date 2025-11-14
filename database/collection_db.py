@@ -351,6 +351,90 @@ def apply_and_persist_media_correction(collection_id: int, old_tmdb_id: str, new
     finally:
         if conn: conn.close()
 
+def match_and_update_list_collections_on_item_add(new_item_tmdb_id: str, new_item_emby_id: str, new_item_name: str) -> List[Dict[str, Any]]:
+    """
+    当新媒体入库时，查找并更新所有匹配的'list'类型合集。
+    返回值中增加了数据库主键 ID ('id')，以支持后续的权限补票流程。
+    """
+    collections_to_update_in_emby = []
+    
+    try:
+        with get_db_connection() as conn:
+            cursor = conn.cursor()
+            
+            sql_find = """
+                SELECT * FROM custom_collections 
+                WHERE type = 'list' 
+                  AND status = 'active' 
+                  AND emby_collection_id IS NOT NULL
+                  AND generated_media_info_json @> %s::jsonb
+            """
+            search_payload = json.dumps([{'tmdb_id': str(new_item_tmdb_id)}])
+            
+            cursor.execute(sql_find, (search_payload,))
+            candidate_collections = cursor.fetchall()
+
+            if not candidate_collections:
+                logger.debug(f"  ➜ 未在任何榜单合集中找到 TMDb ID: {new_item_tmdb_id}。")
+                return []
+
+            try:
+                for collection_row in candidate_collections:
+                    collection = dict(collection_row)
+                    collection_id = collection['id'] # 这是数据库主键 ID
+                    collection_name = collection['name']
+                    
+                    try:
+                        media_list = collection.get('generated_media_info_json') or []
+                        item_found_and_updated = False
+                        
+                        for media_item in media_list:
+                            if str(media_item.get('tmdb_id')) == str(new_item_tmdb_id) and media_item.get('status') != 'in_library':
+                                
+                                media_item['status'] = 'in_library'
+                                media_item['emby_id'] = new_item_emby_id 
+                                item_found_and_updated = True
+                                break
+                        
+                        if item_found_and_updated:
+                            new_in_library_count = sum(1 for m in media_list if m.get('status') == 'in_library')
+                            new_missing_count = sum(1 for m in media_list if m.get('status') == 'missing')
+                            new_health_status = 'has_missing' if new_missing_count > 0 else 'ok'
+                            new_json_data = json.dumps(media_list, ensure_ascii=False)
+                            
+                            cursor.execute("""
+                                UPDATE custom_collections
+                                SET generated_media_info_json = %s,
+                                    in_library_count = %s,
+                                    missing_count = %s,
+                                    health_status = %s
+                                WHERE id = %s
+                            """, (new_json_data, new_in_library_count, new_missing_count, new_health_status, collection_id))
+                            
+                            # ======================================================================
+                            # ★★★ 核心修正：在返回的字典中，同时包含数据库 ID 和 Emby ID ★★★
+                            # ======================================================================
+                            collections_to_update_in_emby.append({
+                                'id': collection_id, # <-- 关键！
+                                'emby_collection_id': collection['emby_collection_id'],
+                                'name': collection_name
+                            })
+
+                    except (json.JSONDecodeError, TypeError) as e_json:
+                        logger.warning(f"解析或处理榜单合集《{collection_name}》的数据时出错: {e_json}，跳过。")
+                        continue
+                
+                
+            except Exception as e_trans:
+                logger.error(f"在更新榜单合集数据库状态的事务中发生错误: {e_trans}", exc_info=True)
+                raise
+
+        return collections_to_update_in_emby
+
+    except psycopg2.Error as e_db:
+        logger.error(f"匹配和更新榜单合集时发生数据库错误: {e_db}", exc_info=True)
+        raise
+
 # ======================================================================
 # 模块: 筛选器
 # ======================================================================
