@@ -58,7 +58,11 @@ def api_get_database_stats():
             },
             'subscriptions_card': {
                 'watchlist': {'watching': raw_stats.get('watchlist_active', 0), 'paused': raw_stats.get('watchlist_paused', 0)},
-                'actors': {'subscriptions': raw_stats.get('actor_subscriptions_active', 0), 'tracked_total': raw_stats.get('tracked_media_total', 0), 'tracked_in_library': raw_stats.get('tracked_media_in_library', 0)},
+                'actors': {
+                    'subscriptions': raw_stats.get('actor_subscriptions_active', 0), 
+                    'tracked_total': raw_stats.get('actor_works_total', 0), 
+                    'tracked_in_library': raw_stats.get('actor_works_in_library', 0)
+                },
                 'resubscribe': {'pending': raw_stats.get('resubscribe_pending', 0)},
                 'collections': {'with_missing': raw_stats.get('collections_with_missing', 0)},
                 'quota': {'available': available_quota, 'consumed': consumed_quota}
