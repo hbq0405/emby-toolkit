@@ -101,6 +101,10 @@
                     <n-text :depth="3" class="info-text">
                       <n-icon :component="TimeIcon" /> 请求于: {{ formatTimestamp(item.first_requested_at) }}
                     </n-text>
+                    <!-- ★★★ 新增：显示详细来源 ★★★ -->
+                    <n-ellipsis :tooltip="{ style: { maxWidth: '300px' } }" :line-clamp="1" class="info-text">
+                      <n-icon :component="SourceIcon" /> {{ formatSources(item.subscription_sources_json) }}
+                    </n-ellipsis>
                   </n-space>
                 </div>
                 <div class="card-actions">
@@ -155,7 +159,8 @@
 import { ref, onMounted, onBeforeUnmount, h, computed, watch } from 'vue';
 import axios from 'axios';
 import { NLayout, NPageHeader, NDivider, NEmpty, NTag, NButton, NSpace, NIcon, useMessage, useDialog, NTooltip, NGrid, NGi, NCard, NImage, NEllipsis, NSpin, NAlert, NRadioGroup, NRadioButton, NCheckbox, NDropdown, NInput, NSelect, NButtonGroup } from 'naive-ui';
-import { SyncOutline, TvOutline as TvIcon, CalendarOutline as CalendarIcon, TimeOutline as TimeIcon, ArrowUpOutline as ArrowUpIcon, ArrowDownOutline as ArrowDownIcon, CaretDownOutline as CaretDownIcon, CheckmarkCircleOutline as WantedIcon, HourglassOutline as PendingIcon, BanOutline as IgnoredIcon, DownloadOutline as SubscribedIcon } from '@vicons/ionicons5';
+// ★★★ 新增：导入来源图标 ★★★
+import { SyncOutline, TvOutline as TvIcon, CalendarOutline as CalendarIcon, TimeOutline as TimeIcon, ArrowUpOutline as ArrowUpIcon, ArrowDownOutline as ArrowDownIcon, CaretDownOutline as CaretDownIcon, CheckmarkCircleOutline as WantedIcon, HourglassOutline as PendingIcon, BanOutline as IgnoredIcon, DownloadOutline as SubscribedIcon, PersonCircleOutline as SourceIcon } from '@vicons/ionicons5';
 import { format } from 'date-fns'
 
 // 图标定义
@@ -493,12 +498,25 @@ const loadMore = () => {
   }
 };
 
+// ★★★ 修改：格式化请求时间，只保留日期 ★★★
 const formatTimestamp = (timestamp) => {
   if (!timestamp) return 'N/A';
   try {
-    return format(new Date(timestamp), 'yyyy-MM-dd HH:mm');
+    return format(new Date(timestamp), 'yyyy-MM-dd');
   } catch (e) { return 'N/A'; }
 };
+
+// ★★★ 新增：格式化来源信息 ★★★
+const formatSources = (sources) => {
+  if (!sources || sources.length === 0) return '来源: 未知';
+  // 优先显示第一个来源，通常是最早的那个
+  const firstSource = sources[0];
+  const typeText = SOURCE_TYPE_MAP[firstSource.type] || firstSource.type;
+  // 动态获取来源详情，兼容 user, name, collection_name 等字段
+  const detail = firstSource.user || firstSource.name || firstSource.collection_name || '';
+  return `来源: ${typeText}${detail ? ` - ${detail}` : ''}`;
+};
+
 
 const formatAirDate = (dateString) => {
   if (!dateString) return 'N/A';
@@ -651,5 +669,12 @@ watch(loaderRef, (newEl, oldEl) => {
   justify-content: flex-start !important;
   padding: 12px !important;
   gap: 12px !important;
+}
+/* ★★★ 新增：确保来源和请求时间样式一致 ★★★ */
+.info-text {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  font-size: 0.85em;
 }
 </style>
