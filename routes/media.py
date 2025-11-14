@@ -10,11 +10,10 @@ import config_manager
 import constants
 import task_manager
 import extensions
-from database import collection_db, media_db, settings_db
+from database import collection_db, media_db, user_db
 import handler.moviepilot as moviepilot
 from extensions import admin_required, processor_ready_required
 from urllib.parse import urlparse
-from tasks.subscriptions import is_movie_subscribable, task_manual_subscribe_batch
 
 # --- 蓝图 1：用于所有 /api/... 的路由 ---
 media_api_bp = Blueprint('media_api', __name__, url_prefix='/api')
@@ -510,10 +509,27 @@ def api_unified_subscription_status():
 def api_get_all_subscriptions_for_management():
     """
     为前端“统一订阅”页面提供所有非在库媒体项的数据。
+    【V2 - 数据增强版】
+    - 在返回数据前，会解析 subscription_sources_json。
+    - 如果来源是 'user_request'，会根据 user_id 查找用户名并附加到来源对象中。
     """
     try:
-        # 直接调用我们之前在 media_db.py 中创建的数据库函数
+        # 1. 从数据库获取原始数据
         items = media_db.get_all_non_library_media()
+
+        # 2. ★★★ 核心修改 2/2: 数据增强逻辑 ★★★
+        # 遍历每个媒体项，处理其来源信息
+        for item in items:
+            sources = item.get('subscription_sources_json')
+            if isinstance(sources, list):
+                for source in sources:
+                    # 如果来源是用户请求，并且有 user_id
+                    if source.get('type') == 'user_request' and (user_id := source.get('user_id')):
+                        # 根据 user_id 查询用户名，并将其添加到 source 字典中
+                        # 使用 'user' 作为键名，以匹配前端已有的逻辑
+                        source['user'] = user_db.get_username_by_id(user_id) or '未知用户'
+
+        # 3. 返回增强后的数据
         return jsonify(items)
     except Exception as e:
         logger.error(f"API /subscriptions/all 获取数据失败: {e}", exc_info=True)

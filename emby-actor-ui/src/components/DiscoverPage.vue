@@ -278,7 +278,7 @@ import { useAuthStore } from '../stores/auth';
 import { 
   NPageHeader, NCard, NSpace, NRadioGroup, NRadioButton, NSelect,
   NInputNumber, NSpin, NGrid, NGi, NButton, NThing, useMessage, NIcon, 
-  NInput, NInputGroup, NSkeleton, NEllipsis, NEmpty, NDivider, NH4
+  NInput, NInputGroup, NSkeleton, NEllipsis, NEmpty, NDivider, NH4, NH3
 } from 'naive-ui';
 import { Heart, HeartOutline, HourglassOutline, Star as StarIcon, FlashOutline as LightningIcon, DiceOutline as DiceIcon } from '@vicons/ionicons5';
 
@@ -559,11 +559,13 @@ const handleSubscribe = async (media) => {
 
   subscribingId.value = media.id;
   try {
-    // ★★★ 核心修正 1: 第一步，总是调用门户订阅接口，创建订阅意图 ★★★
-    // 这个接口会根据用户权限，自动将状态设置为 'REQUESTED' 或 'WANTED'
+    // ★★★ 核心修复：使用组件的 mediaType.value 状态，而不是 media.media_type ★★★
+    const itemTypeForApi = mediaType.value === 'movie' ? 'Movie' : 'Series';
+
+    // 第一步，总是调用门户订阅接口，创建订阅意图
     const portalResponse = await axios.post('/api/portal/subscribe', {
       tmdb_id: media.id,
-      item_type: media.media_type === 'movie' ? 'Movie' : 'Series',
+      item_type: itemTypeForApi,
       item_name: media.title || media.name,
     });
 
@@ -576,13 +578,12 @@ const handleSubscribe = async (media) => {
       targetInResults.subscription_status = newStatus;
     }
 
-    // ★★★ 核心修正 2: 如果是特权用户，并且状态允许，则立即触发手动订阅任务 ★★★
-    // (状态为 'WANTED' 或 'REQUESTED' 都可以加速)
+    // 第二步: 如果是特权用户，并且状态允许，则立即触发手动订阅任务
     if (isPrivilegedUser.value && (newStatus === 'WANTED' || newStatus === 'REQUESTED')) {
       
       const requestItem = {
         tmdb_id: media.id,
-        item_type: media.media_type === 'movie' ? 'Movie' : 'Series',
+        item_type: itemTypeForApi,
         title: media.title || media.name
       };
       
@@ -593,9 +594,7 @@ const handleSubscribe = async (media) => {
 
       // 异步触发，不需要等待结果
       axios.post('/api/tasks/run', taskPayload).then(taskResponse => {
-        // 任务提交成功后，可以再给一个提示
         message.info('已提交到后台立即处理...');
-        // 再次乐观更新为 'SUBSCRIBED'，让图标变成沙漏
         if (targetInResults) {
           targetInResults.subscription_status = 'SUBSCRIBED';
         }
