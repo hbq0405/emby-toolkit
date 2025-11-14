@@ -94,6 +94,21 @@ def get_custom_collection_by_id(collection_id: int) -> Optional[Dict[str, Any]]:
         logger.error(f"根据ID {collection_id} 获取自定义合集时出错: {e}", exc_info=True)
         return None
 
+def get_all_custom_collections() -> List[Dict[str, Any]]:
+    """ 获取所有自定义合集的基础定义。"""
+    try:
+        with get_db_connection() as conn:
+            cursor = conn.cursor()
+            cursor.execute("""
+                SELECT * FROM custom_collections
+                ORDER BY sort_order ASC, id ASC
+            """)
+            rows = cursor.fetchall()
+            return [dict(row) for row in rows]
+    except psycopg2.Error as e:
+        logger.error(f"获取所有自定义合集时发生数据库错误: {e}", exc_info=True)
+        return []
+
 def get_all_active_custom_collections() -> List[Dict[str, Any]]:
     """ 获取所有状态为 'active' 的自定义合集的基础定义。"""
     try:
