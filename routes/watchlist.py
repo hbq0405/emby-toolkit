@@ -156,7 +156,7 @@ def api_batch_force_end_watchlist_items():
     try:
         # 调用更新后的 watchlist_db 函数
         updated_count = watchlist_db.batch_force_end_watchlist_items(
-            item_ids=item_ids
+            tmdb_ids=item_ids
         )
         
         return jsonify({
