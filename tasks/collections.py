@@ -496,7 +496,8 @@ def task_process_all_custom_collections(processor):
                 
                 tmdb_items = [
                     {
-                        'tmdb_id': item.get('id'),
+                        # ★★★ 核心修正：将所有源头获取的ID强制转换为字符串 ★★★
+                        'tmdb_id': str(item.get('id')),
                         'media_type': item.get('type'),
                         # 使用字典解包的技巧，如果 'season' 存在，就把它加进去
                         **({'season': item['season']} if 'season' in item and item.get('season') is not None else {})
@@ -608,10 +609,10 @@ def process_single_custom_collection(processor, custom_collection_id: int):
         
         tmdb_items = [
             {
-                'tmdb_id': item.get('id'),
+                # ★★★ 核心修正：将所有源头获取的ID强制转换为字符串 ★★★
+                'tmdb_id': str(item.get('id')),
                 'media_type': item.get('type'),
-                # 使用字典解包的技巧，如果 'season' 存在，就把它加进去
-                **({'season': item['season']} if 'season' in item and item.get('season') is not None else {})
+                # ...
             }
             for item in raw_tmdb_items
         ]
