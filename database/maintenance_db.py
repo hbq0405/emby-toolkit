@@ -192,28 +192,39 @@ def get_dashboard_stats() -> dict:
     # ★★★ 核心修正：将 watchlist 相关的查询指向 media_metadata 表 ★★★
     sql = """
     SELECT
+        -- 核心数据: 已缓存媒体 (只统计顶层项目)
         (SELECT COUNT(*) FROM media_metadata WHERE item_type IN ('Movie', 'Series')) AS media_cached_total,
-        (SELECT COUNT(*) FROM media_metadata WHERE in_library = TRUE) AS media_in_library_total,
-        (SELECT COUNT(*) FROM media_metadata WHERE item_type = 'Movie' AND in_library = TRUE) AS media_movies_in_library,
-        (SELECT COUNT(*) FROM media_metadata WHERE item_type = 'Series' AND in_library = TRUE) AS media_series_in_library,
-        (SELECT COUNT(*) FROM media_metadata WHERE item_type = 'Episode' AND in_library = TRUE) AS media_episodes_in_library,
-        (SELECT COUNT(*) FROM media_metadata WHERE in_library = FALSE) AS media_missing_total,
+        
+        -- 核心数据: 已归档演员 (逻辑不变)
         (SELECT COUNT(*) FROM person_identity_map) AS actor_mappings_total,
+        
+        -- 媒体细分: 在库电影数 (逻辑不变)
+        (SELECT COUNT(*) FROM media_metadata WHERE item_type = 'Movie' AND in_library = TRUE) AS media_movies_in_library,
+        
+        -- 媒体细分: 在库剧集数 (逻辑不变)
+        (SELECT COUNT(*) FROM media_metadata WHERE item_type = 'Series' AND in_library = TRUE) AS media_series_in_library,
+        
+        -- 媒体细分: 在库总集数 (逻辑不变)
+        (SELECT COUNT(*) FROM media_metadata WHERE item_type = 'Episode' AND in_library = TRUE) AS media_episodes_in_library,
+        
+        -- 媒体细分: 预缓存 (修正：只统计不在库的顶层项目)
+        (SELECT COUNT(*) FROM media_metadata WHERE in_library = FALSE AND item_type IN ('Movie', 'Series')) AS media_missing_total,
+        
+        -- 演员细分 (逻辑不变)
         (SELECT COUNT(*) FROM person_identity_map WHERE emby_person_id IS NOT NULL) AS actor_mappings_linked,
         (SELECT COUNT(*) FROM person_identity_map WHERE emby_person_id IS NULL) AS actor_mappings_unlinked,
+        
+        -- 系统日志与缓存 (逻辑不变)
         (SELECT COUNT(*) FROM translation_cache) AS translation_cache_count,
         (SELECT COUNT(*) FROM processed_log) AS processed_log_count,
         (SELECT COUNT(*) FROM failed_log) AS failed_log_count,
         
-        -- ▼▼▼ 核心修改在这里 ▼▼▼
+        -- 智能订阅 (逻辑不变)
         (SELECT COUNT(*) FROM media_metadata WHERE watching_status = 'Watching') AS watchlist_active,
         (SELECT COUNT(*) FROM media_metadata WHERE watching_status = 'Paused') AS watchlist_paused,
-        -- ▲▲▲ 核心修改在这里 ▲▲▲
-        
         (SELECT COUNT(*) FROM actor_subscriptions WHERE status = 'active') AS actor_subscriptions_active,
         (SELECT COUNT(*) FROM resubscribe_cache WHERE status ILIKE 'needed') AS resubscribe_pending,
-        (SELECT COUNT(*) FROM collections_info WHERE has_missing = TRUE) AS collections_with_missing
-    LIMIT 1;
+        (SELECT COUNT(*) FROM collections_info WHERE has_missing = TRUE) AS collections_with_missing;
     """
     try:
         with get_db_connection() as conn:
