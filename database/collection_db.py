@@ -350,20 +350,42 @@ def apply_and_persist_media_correction(collection_id: int, old_tmdb_id: str, new
     finally:
         if conn: conn.close()
 
+def get_in_library_status_for_tmdb_ids(tmdb_ids: List[str]) -> Dict[str, bool]:
+    """
+    给定一个 TMDB ID 列表，批量查询它们在 media_metadata 中的 in_library 状态。
+    返回一个字典，键是 TMDB ID，值是布尔值 (True/False)。
+    """
+    if not tmdb_ids:
+        return {}
+    
+    sql = """
+        SELECT tmdb_id, in_library 
+        FROM media_metadata 
+        WHERE tmdb_id = ANY(%s);
+    """
+    try:
+        with get_db_connection() as conn:
+            with conn.cursor() as cursor:
+                cursor.execute(sql, (tmdb_ids,))
+                # 使用字典推导式高效地构建返回结果
+                return {str(row['tmdb_id']): row['in_library'] for row in cursor.fetchall()}
+    except Exception as e:
+        logger.error(f"DB: 批量查询 TMDB ID 的在库状态失败: {e}", exc_info=True)
+        return {}
+
 def match_and_update_list_collections_on_item_add(new_item_tmdb_id: str, new_item_emby_id: str, new_item_name: str) -> List[Dict[str, Any]]:
     """
-    【V3 - 逻辑完整修复版】
+    【V4 - 统计逻辑终极修复版】
     当新媒体入库时，查找并更新所有匹配的'list'类型合集。
-    - 使用正确的 JSONB 查询。
-    - 正确地在对象数组中查找和更新状态。
+    - 修复了 in_library_count 统计错误的致命 Bug。
     """
     collections_to_update_in_emby = []
     
     try:
         with get_db_connection() as conn:
-            # ★★★ 核心修复 1/2: 事务应该在这里开始 ★★★
             with conn.cursor() as cursor:
                 
+                # 步骤 1: 查找匹配的合集 (这部分逻辑是正确的)
                 sql_find = """
                     SELECT * FROM custom_collections 
                     WHERE type = 'list' 
@@ -372,12 +394,10 @@ def match_and_update_list_collections_on_item_add(new_item_tmdb_id: str, new_ite
                       AND generated_media_info_json @> %s::jsonb
                 """
                 search_payload = json.dumps([{'tmdb_id': str(new_item_tmdb_id)}])
-                
                 cursor.execute(sql_find, (search_payload,))
                 candidate_collections = cursor.fetchall()
 
                 if not candidate_collections:
-                    logger.debug(f"  ➜ 未在任何榜单合集中找到 TMDb ID: {new_item_tmdb_id}。")
                     return []
 
                 for collection_row in candidate_collections:
@@ -386,58 +406,71 @@ def match_and_update_list_collections_on_item_add(new_item_tmdb_id: str, new_ite
                     collection_name = collection['name']
                     
                     try:
-                        # ★★★ 核心修复 2/2: 这里的逻辑现在是正确的，因为我们确认了数据结构 ★★★
-                        media_list = collection.get('generated_media_info_json') or []
-                        item_found_and_updated = False
+                        # ★★★ 核心重构开始 ★★★
                         
-                        # 遍历对象数组，找到匹配的 tmdb_id 并且状态不是 in_library 的项
-                        for media_item in media_list:
-                            if str(media_item.get('tmdb_id')) == str(new_item_tmdb_id) and media_item.get('status') != 'in_library':
-                                
-                                media_item['status'] = 'in_library'
-                                media_item['emby_id'] = new_item_emby_id 
-                                item_found_and_updated = True
-                                # 找到并更新后就跳出，因为一个合集里不应该有重复的 tmdb_id
-                                break 
+                        # 步骤 2: 获取合集定义中的所有 TMDB ID
+                        media_list_from_db = collection.get('generated_media_info_json') or []
+                        all_tmdb_ids_in_collection = [str(item.get('tmdb_id')) for item in media_list_from_db if item.get('tmdb_id')]
+
+                        if not all_tmdb_ids_in_collection:
+                            continue
+
+                        # 步骤 3: 批量查询这些 ID 的最新在库状态
+                        in_library_status_map = media_db.get_in_library_status_for_tmdb_ids(all_tmdb_ids_in_collection)
+
+                        # 步骤 4: 彻底重建 media_list
+                        rebuilt_media_list = []
+                        new_in_library_count = 0
+                        for item in media_list_from_db:
+                            tmdb_id = str(item.get('tmdb_id'))
+                            if not tmdb_id: continue
+                            
+                            is_in_library = in_library_status_map.get(tmdb_id, False)
+                            
+                            # 更新状态
+                            item['status'] = 'in_library' if is_in_library else 'missing'
+                            
+                            # 如果是刚刚入库的这一项，把 emby_id 也补上
+                            if tmdb_id == str(new_item_tmdb_id):
+                                item['emby_id'] = new_item_emby_id
+                            
+                            rebuilt_media_list.append(item)
+                            
+                            if is_in_library:
+                                new_in_library_count += 1
+
+                        # 步骤 5: 计算全新的、绝对准确的统计数据
+                        new_missing_count = len(rebuilt_media_list) - new_in_library_count
+                        new_health_status = 'has_missing' if new_missing_count > 0 else 'ok'
                         
-                        if item_found_and_updated:
-                            # 重新计算统计数据
-                            new_in_library_count = sum(1 for m in media_list if m.get('status') == 'in_library')
-                            new_missing_count = len(media_list) - new_in_library_count
-                            new_health_status = 'has_missing' if new_missing_count > 0 else 'ok'
-                            
-                            # 将更新后的整个对象数组写回数据库
-                            new_json_data = json.dumps(media_list, ensure_ascii=False, default=str)
-                            
-                            cursor.execute("""
-                                UPDATE custom_collections
-                                SET generated_media_info_json = %s,
-                                    in_library_count = %s,
-                                    missing_count = %s,
-                                    health_status = %s
-                                WHERE id = %s
-                            """, (new_json_data, new_in_library_count, new_missing_count, new_health_status, collection_id))
-                            
-                            logger.info(f"  ➜ 已在数据库中更新榜单合集《{collection_name}》的状态，标记《{new_item_name}》为已入库。")
+                        # 步骤 6: 将完美的数据写回数据库
+                        new_json_data = json.dumps(rebuilt_media_list, ensure_ascii=False, default=str)
+                        
+                        cursor.execute("""
+                            UPDATE custom_collections
+                            SET generated_media_info_json = %s,
+                                in_library_count = %s,
+                                missing_count = %s,
+                                health_status = %s
+                            WHERE id = %s
+                        """, (new_json_data, new_in_library_count, new_missing_count, new_health_status, collection_id))
+                        
+                        logger.info(f"  ➜ 已全量刷新榜单合集《{collection_name}》的缓存，当前入库/缺失: {new_in_library_count}/{new_missing_count}。")
 
-                            collections_to_update_in_emby.append({
-                                'id': collection_id,
-                                'emby_collection_id': collection['emby_collection_id'],
-                                'name': collection_name
-                            })
+                        collections_to_update_in_emby.append({
+                            'id': collection_id,
+                            'emby_collection_id': collection['emby_collection_id'],
+                            'name': collection_name
+                        })
 
-                    except (json.JSONDecodeError, TypeError, IndexError) as e_json:
-                        logger.warning(f"解析或处理榜单合集《{collection_name}》的数据时出错: {e_json}，跳过。")
+                    except Exception as e_inner:
+                        logger.error(f"处理合集《{collection_name}》时发生内部错误: {e_inner}", exc_info=True)
                         continue
-                
-                # 所有数据库操作完成后，在这里统一提交事务
-                # conn.commit() # psycopg2 的 with conn: 会自动处理 commit 和 rollback
 
         return collections_to_update_in_emby
 
     except psycopg2.Error as e_db:
         logger.error(f"匹配和更新榜单合集时发生数据库错误: {e_db}", exc_info=True)
-        # with conn: 会自动回滚
         raise
 
 def append_item_to_filter_collection_db(collection_id: int, new_item_tmdb_id: str, new_item_emby_id: str, collection_name: str, item_name: str) -> bool:
