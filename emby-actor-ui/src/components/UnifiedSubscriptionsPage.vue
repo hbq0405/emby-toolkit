@@ -337,8 +337,14 @@ const handleBatchAction = (key) => {
       title: '批量订阅', 
       content: `确定要将选中的 ${selectedItems.value.length} 个媒体项提交到后台订阅吗？`, 
       task_name: 'manual_subscribe_batch',
-      getParams: () => ({ subscribe_requests: selectedItems.value }),
-      optimistic_status: 'SUBSCRIBED' // 成功后的新状态
+      getParams: () => {
+        // ★★★ 核心修正：从 rawItems 中筛选出完整的对象，确保季号等信息被传递 ★★★
+        const fullSelectedItems = rawItems.value.filter(item => 
+          selectedItems.value.some(sel => sel.tmdb_id === item.tmdb_id && sel.item_type === item.item_type)
+        );
+        return { subscribe_requests: fullSelectedItems };
+      },
+      optimistic_status: 'SUBSCRIBED'
     },
     'ignore': { 
       title: '批量忽略', 
@@ -352,7 +358,7 @@ const handleBatchAction = (key) => {
       content: `确定要取消订阅选中的 ${selectedItems.value.length} 个媒体项吗？`, 
       endpoint: '/api/subscription/status',
       getParams: () => ({ requests: selectedItems.value.map(item => ({...item, new_status: 'NONE'})) }),
-      optimistic_status: 'NONE' // 'NONE' 表示删除
+      optimistic_status: 'NONE'
     },
     'unignore': { 
       title: '批量取消忽略', 
@@ -374,6 +380,7 @@ const handleBatchAction = (key) => {
     onPositiveClick: async () => {
       try {
         let response;
+        // ★★★ 这里的逻辑是正确的，会根据 task_name 调用 /api/tasks/run ★★★
         if (action.task_name) {
           response = await axios.post('/api/tasks/run', {
             task_name: action.task_name,
@@ -387,14 +394,11 @@ const handleBatchAction = (key) => {
 
         message.success(response.data.message || '批量操作任务已提交！');
         
-        // 核心修正：根据 optimistic_status 执行正确的UI更新
         const selectedKeys = new Set(selectedItems.value.map(item => `${item.tmdb_id}-${item.item_type}`));
         
         if (action.optimistic_status === 'NONE') {
-          // 如果是取消/删除操作，则从数组中过滤掉
           rawItems.value = rawItems.value.filter(item => !selectedKeys.has(`${item.tmdb_id}-${item.item_type}`));
         } else {
-          // 否则，遍历数组，原地更新匹配项的状态
           rawItems.value.forEach(item => {
             if (selectedKeys.has(`${item.tmdb_id}-${item.item_type}`)) {
               item.subscription_status = action.optimistic_status;
@@ -411,19 +415,30 @@ const handleBatchAction = (key) => {
   });
 };
 
-// ✨✨✨ 新增的立即订阅函数 ✨✨✨
+// ✨✨✨ 立即订阅函数 ✨✨✨
 const subscribeItem = async (item) => {
   try {
-    const taskParams = {
-      subscribe_requests: [{ tmdb_id: item.tmdb_id, item_type: item.item_type }]
+    // ★★★ 核心修正：构建包含所有必要信息的请求 ★★★
+    const request_item = { 
+      tmdb_id: item.tmdb_id, 
+      item_type: item.item_type,
+      title: item.title // 传递标题，方便后台日志记录
     };
+    // 如果是季，则必须传递季号
+    if (item.item_type === 'Season' && item.season_number) {
+      request_item.season_number = item.season_number;
+    }
+
+    const taskParams = {
+      subscribe_requests: [request_item]
+    };
+    
     const response = await axios.post('/api/tasks/run', {
       task_name: 'manual_subscribe_batch',
       ...taskParams
     });
     message.success(response.data.message || '订阅任务已提交到后台！');
     
-    // 核心修正：将状态更新为 'SUBSCRIBED'，而不是从数组中删除
     const index = rawItems.value.findIndex(i => i.tmdb_id === item.tmdb_id && i.item_type === item.item_type);
     if (index > -1) {
       rawItems.value[index].subscription_status = 'SUBSCRIBED';

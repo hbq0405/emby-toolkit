@@ -927,14 +927,20 @@ const submitFixMatch = async (payload) => {
   if (!selectedCollectionDetails.value?.id) return;
   try {
     const response = await axios.post(`/api/custom_collections/${selectedCollectionDetails.value.id}/fix_match`, payload);
-    
-    const items = selectedCollectionDetails.value.media_items;
-    const index = items.findIndex(m => String(m.tmdb_id) === String(payload.old_tmdb_id));
-    if (index !== -1) {
-      items.splice(index, 1, response.data.corrected_item);
+    message.success(response.data.message || '修正成功！正在刷新合集详情...');
+
+    // ★★★ 核心修正：调用刷新逻辑，而不是手动 splice ★★★
+    isLoadingDetails.value = true; // 显示加载动画
+    try {
+      const refreshResponse = await axios.get(`/api/custom_collections/${selectedCollectionDetails.value.id}/status`);
+      selectedCollectionDetails.value = refreshResponse.data;
+    } catch (refreshError) {
+      message.error('刷新合集详情失败，请重新打开弹窗。');
+      showDetailsModal.value = false; // 出错时直接关闭弹窗
+    } finally {
+      isLoadingDetails.value = false; // 隐藏加载动画
     }
-    
-    message.success(response.data.message || '修正成功！');
+
   } catch (error) {
     message.error(error.response?.data?.error || '修正失败，请检查后端日志。');
   }

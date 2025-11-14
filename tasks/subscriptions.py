@@ -186,12 +186,13 @@ def _check_and_get_series_best_version_flag(series_tmdb_id: int, tmdb_api_key: s
 # ★★★ 手动动订阅任务 ★★★
 def task_manual_subscribe_batch(processor, subscribe_requests: List[Dict]):
     """
-    【V1 - 异步版】
-    专门用于处理来自前端的手动“立即订阅”请求的后台任务。
-    - 包含完整的配额检查、发行日期检查、订阅和预处理流程。
-    - 通过 task_manager 更新状态，以便在UI中跟踪。
+    【V5 - 正确荷载版】
+    - 采纳用户的终极洞察，彻底修正了为 MoviePilot 构建荷载(payload)的逻辑。
+    - 当订阅特定季时，不再错误地使用季的TMDB ID，而是正确地查找并使用其
+      【父剧的TMDB ID】和【父剧的标题】，确保 MoviePilot 能够正确识别。
     """
-    task_name = f"手动订阅 {len(subscribe_requests)} 个项目"
+    total_items = len(subscribe_requests)
+    task_name = f"手动订阅 {total_items} 个项目"
     logger.info(f"--- 开始执行 '{task_name}' 任务 ---")
     
     task_manager.update_status_from_thread(0, "正在准备手动订阅任务...")
@@ -201,81 +202,110 @@ def task_manual_subscribe_batch(processor, subscribe_requests: List[Dict]):
         return
 
     try:
-        # 1. 批量获取所有请求的媒体详情
-        tmdb_ids = [req.get('tmdb_id') for req in subscribe_requests if req.get('tmdb_id')]
-        if not tmdb_ids:
-            task_manager.update_status_from_thread(100, "任务失败：请求中未包含有效的 tmdb_id。")
-            return
-            
-        media_details_map = media_db.get_media_details_by_tmdb_ids(tmdb_ids)
+        # 预先获取所有相关媒体的详情，包括可能的父剧集
+        all_relevant_ids = set()
+        for req in subscribe_requests:
+            if req.get('tmdb_id'):
+                all_relevant_ids.add(req.get('tmdb_id'))
+        
+        # 为了查找父剧信息，我们需要把所有父剧ID也加入查询
+        temp_details_map = media_db.get_media_details_by_tmdb_ids(list(all_relevant_ids))
+        for tmdb_id in list(all_relevant_ids):
+            details = temp_details_map.get(tmdb_id)
+            if details and details.get('parent_series_tmdb_id'):
+                all_relevant_ids.add(details.get('parent_series_tmdb_id'))
+        
+        # 最终查询，确保 media_details_map 包含所有父剧和子季的信息
+        media_details_map = media_db.get_media_details_by_tmdb_ids(list(all_relevant_ids))
+
         config = config_manager.APP_CONFIG
         tmdb_api_key = config.get(constants.CONFIG_OPTION_TMDB_API_KEY)
-        
         processed_count = 0
-        total_to_process = len(subscribe_requests)
 
-        # 2. 遍历处理每个订阅请求
         for i, req in enumerate(subscribe_requests):
-            if processor.is_stop_requested():
-                logger.info("  ➜ 任务被用户中止。")
-                break
-
+        # ...
             tmdb_id = req.get('tmdb_id')
             item_type = req.get('item_type')
-            media_info = media_details_map.get(tmdb_id)
             
+            media_info = media_details_map.get(tmdb_id)
             if not media_info:
-                logger.warning(f"  ➜ 无法找到 TMDb ID {tmdb_id} 的媒体信息，跳过。")
+                logger.warning(f"  ➜ 无法在数据库中找到 TMDb ID {tmdb_id} 的媒体信息，跳过。")
                 continue
 
-            item_title = media_info.get('title', tmdb_id)
+            # ★★★ 双重保险逻辑 ★★★
+            season_num = req.get('season') or req.get('season_number')
+            # 如果请求里没有季号，但条目类型是季，则从数据库里捞
+            if season_num is None and item_type == 'Season':
+                season_num = media_info.get('season_number')
+                logger.info(f"  ➜ 请求中未包含季号，但类型为季。已从数据库中回填季号: {season_num}")
+
+            item_title_for_log = media_info.get('title', tmdb_id)
+
             task_manager.update_status_from_thread(
-                int((i / total_to_process) * 100),
-                f"({i+1}/{total_to_process}) 正在处理: {item_title}"
+                int((i / total_items) * 100),
+                f"({i+1}/{total_items}) 正在处理: {item_title_for_log}"
             )
 
-            # 2.1 配额检查
-            if settings_db.get_subscription_quota() <= 0:
-                logger.warning(f"  ➜ 每日订阅配额已用尽，已跳过《{item_title}》及之后的所有项目。")
-                break
+            if settings_db.get_subscription_quota() <= 0: break
+            if item_type == 'Movie' and not is_movie_subscribable(int(tmdb_id), tmdb_api_key, config): continue
 
-            # 2.2 发行日期检查 (仅对电影)
-            if item_type == 'Movie' and not is_movie_subscribable(int(tmdb_id), tmdb_api_key, config):
-                logger.info(f"  ➜ 电影《{item_title}》未到可订阅日期，已跳过。")
-                continue
-
-            # 2.3 执行订阅
             success = False
             if item_type == 'Movie':
                 success = moviepilot.subscribe_movie_to_moviepilot(media_info, config)
-            elif item_type == 'Series':
-                sub_results = moviepilot.smart_subscribe_series(media_info, config)
-                success = sub_results is not None and len(sub_results) > 0
-            
-            # 2.4 成功后处理
+            elif item_type in ['Series', 'Season']:
+                parent_tmdb_id = media_info.get('parent_series_tmdb_id') if item_type == 'Season' else tmdb_id
+                parent_details = media_details_map.get(parent_tmdb_id) if parent_tmdb_id else media_info
+                
+                if not parent_details:
+                    logger.error(f"  ➜ 订阅失败：无法找到父剧信息 (父ID: {parent_tmdb_id})。")
+                    continue
+                
+                parent_title = parent_details.get('title')
+                
+                if season_num is not None:
+                    # --- 精准单季订阅 ---
+                    logger.info(f"  ➜ 手动订阅：为剧集《{parent_title}》精准订阅第 {season_num} 季。")
+                    mp_payload = {
+                        "name": parent_title,
+                        "tmdbid": int(parent_tmdb_id),
+                        "type": "电视剧",
+                        "season": int(season_num)
+                    }
+                    success = moviepilot.subscribe_with_custom_payload(mp_payload, config)
+                else:
+                    # --- 整剧订阅 ---
+                    sub_results = moviepilot.smart_subscribe_series(media_info, config)
+                    success = sub_results is not None and len(sub_results) > 0
+
             if success:
-                logger.info(f"  ✅ 《{item_title}》订阅成功！")
+                logger.info(f"  ✅ 《{item_title_for_log}》订阅成功！")
                 settings_db.decrement_subscription_quota()
+                
+                # 订阅成功后，更新对应条目的状态为 SUBSCRIBED
+                # 对于季订阅，我们更新的是季自己的条目状态
                 media_db.update_subscription_status(
                     tmdb_ids=tmdb_id, 
                     item_type=item_type, 
                     new_status='SUBSCRIBED'
                 )
                 try:
-                    logger.info(f"  ➜ 正在为《{item_title}》启动后台元数据预处理...")
+                    # 预处理时，如果是季，应该处理父剧
+                    preprocess_id = parent_tmdb_id if item_type == 'Season' else tmdb_id
+                    preprocess_type = 'Series' if item_type in ['Series', 'Season'] else 'Movie'
+                    logger.info(f"  ➜ 正在为《{item_title_for_log}》启动后台元数据预处理...")
                     processor.pre_process_media_metadata(
-                        tmdb_id=str(tmdb_id), 
-                        item_type=item_type,
-                        item_name_for_log=item_title
+                        tmdb_id=str(preprocess_id), 
+                        item_type=preprocess_type,
+                        item_name_for_log=item_title_for_log
                     )
                 except Exception as e_preprocess:
-                    logger.error(f"  ➜ 为《{item_title}》执行元数据预处理时失败: {e_preprocess}", exc_info=True)
+                    logger.error(f"  ➜ 为《{item_title_for_log}》执行元数据预处理时失败: {e_preprocess}", exc_info=True)
                 
                 processed_count += 1
             else:
-                logger.error(f"  ➜ 订阅《{item_title}》失败，请检查 MoviePilot 日志。")
+                logger.error(f"  ➜ 订阅《{item_title_for_log}》失败，请检查 MoviePilot 日志。")
         
-        final_message = f"手动订阅任务完成，成功处理 {processed_count}/{total_to_process} 个项目。"
+        final_message = f"手动订阅任务完成，成功处理 {processed_count}/{total_items} 个项目。"
         task_manager.update_status_from_thread(100, final_message)
         logger.info(f"--- '{task_name}' 任务执行完毕 ---")
 

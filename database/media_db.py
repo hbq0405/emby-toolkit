@@ -148,6 +148,65 @@ def get_all_wanted_media() -> List[Dict[str, Any]]:
         logger.error(f"DB: 获取所有待订阅(WANTED)媒体失败: {e}", exc_info=True)
         return []
     
+def ensure_media_record_exists(media_info_list: List[Dict[str, Any]]):
+    """
+    【V1 - 职责单一版】
+    确保媒体元数据记录存在于数据库中。
+    - 如果记录不存在，则创建它，订阅状态默认为 'NONE'。
+    - 如果记录已存在，则只更新其基础元数据（标题、海报、父子关系等）。
+    - ★★★ 这个函数【绝不】会修改已存在的订阅状态 ★★★
+    """
+    if not media_info_list:
+        return
+
+    logger.info(f"  ➜ [元数据注册] 准备为 {len(media_info_list)} 个媒体项目确保记录存在...")
+    
+    try:
+        with get_db_connection() as conn:
+            with conn.cursor() as cursor:
+                from psycopg2.extras import execute_batch
+                
+                sql = """
+                    INSERT INTO media_metadata (
+                        tmdb_id, item_type, title, original_title, release_date, poster_path, 
+                        overview, season_number, parent_series_tmdb_id
+                    ) VALUES (
+                        %(tmdb_id)s, %(item_type)s, %(title)s, %(original_title)s, %(release_date)s, %(poster_path)s,
+                        %(overview)s, %(season_number)s, %(parent_series_tmdb_id)s
+                    )
+                    ON CONFLICT (tmdb_id, item_type) DO UPDATE SET
+                        title = EXCLUDED.title,
+                        original_title = EXCLUDED.original_title,
+                        release_date = EXCLUDED.release_date,
+                        poster_path = EXCLUDED.poster_path,
+                        overview = EXCLUDED.overview,
+                        season_number = EXCLUDED.season_number,
+                        parent_series_tmdb_id = EXCLUDED.parent_series_tmdb_id,
+                        last_synced_at = NOW();
+                """
+                
+                # 准备数据，确保所有 key 都存在，避免 psycopg2 报错
+                data_for_batch = []
+                for info in media_info_list:
+                    data_for_batch.append({
+                        "tmdb_id": info.get("tmdb_id"),
+                        "item_type": info.get("item_type"),
+                        "title": info.get("title"),
+                        "original_title": info.get("original_title"),
+                        "release_date": info.get("release_date") or None,
+                        "poster_path": info.get("poster_path"),
+                        "overview": info.get("overview"),
+                        "season_number": info.get("season_number"),
+                        "parent_series_tmdb_id": info.get("parent_series_tmdb_id")
+                    })
+
+                execute_batch(cursor, sql, data_for_batch)
+                logger.info(f"  ➜ [元数据注册] 成功，影响了 {cursor.rowcount} 行。")
+
+    except Exception as e:
+        logger.error(f"  ➜ [元数据注册] 确保媒体记录存在时发生错误: {e}", exc_info=True)
+        raise
+
 def update_subscription_status(
     tmdb_ids: Union[str, List[str]], 
     item_type: str, 
