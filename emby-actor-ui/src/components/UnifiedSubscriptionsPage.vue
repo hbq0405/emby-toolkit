@@ -278,10 +278,13 @@ const filteredItems = computed(() => {
         valA = a.title || '';
         valB = b.title || '';
         return sortOrder.value === 'asc' ? valA.localeCompare(valB) : valB.localeCompare(valA);
+      
+      // ★★★ 核心修复：将日期字符串转换为时间戳进行比较 ★★★
       case 'release_date':
-        valA = a.release_date || '0';
-        valB = b.release_date || '0';
-        return sortOrder.value === 'asc' ? valA.localeCompare(valB) : valB.localeCompare(valA);
+        valA = a.release_date ? new Date(a.release_date).getTime() : 0;
+        valB = b.release_date ? new Date(b.release_date).getTime() : 0;
+        return sortOrder.value === 'asc' ? valA - valB : valB - valA;
+
       case 'first_requested_at':
       default:
         valA = a.first_requested_at ? new Date(a.first_requested_at).getTime() : 0;
@@ -350,7 +353,6 @@ const handleBatchAction = (key) => {
       content: `确定要将选中的 ${selectedItems.value.length} 个媒体项提交到后台订阅吗？`, 
       task_name: 'manual_subscribe_batch',
       getParams: () => {
-        // ★★★ 核心修正：从 rawItems 中筛选出完整的对象，确保季号等信息被传递 ★★★
         const fullSelectedItems = rawItems.value.filter(item => 
           selectedItems.value.some(sel => sel.tmdb_id === item.tmdb_id && sel.item_type === item.item_type)
         );
@@ -362,7 +364,8 @@ const handleBatchAction = (key) => {
       title: '批量忽略', 
       content: `确定要忽略选中的 ${selectedItems.value.length} 个媒体项吗？`, 
       endpoint: '/api/subscription/status', 
-      getParams: () => ({ requests: selectedItems.value.map(item => ({...item, new_status: 'IGNORED'})) }),
+      // ★★★ 修改：批量忽略时，主动添加原因 ★★★
+      getParams: () => ({ requests: selectedItems.value.map(item => ({...item, new_status: 'IGNORED', ignore_reason: '手动忽略'})) }),
       optimistic_status: 'IGNORED'
     },
     'cancel': { 
@@ -392,7 +395,6 @@ const handleBatchAction = (key) => {
     onPositiveClick: async () => {
       try {
         let response;
-        // ★★★ 这里的逻辑是正确的，会根据 task_name 调用 /api/tasks/run ★★★
         if (action.task_name) {
           response = await axios.post('/api/tasks/run', {
             task_name: action.task_name,
@@ -414,6 +416,10 @@ const handleBatchAction = (key) => {
           rawItems.value.forEach(item => {
             if (selectedKeys.has(`${item.tmdb_id}-${item.item_type}`)) {
               item.subscription_status = action.optimistic_status;
+              // ★★★ 修改：同步更新UI中的原因 ★★★
+              if (action.optimistic_status === 'IGNORED') {
+                item.ignore_reason = '手动忽略';
+              }
             }
           });
         }
@@ -430,13 +436,11 @@ const handleBatchAction = (key) => {
 // ✨✨✨ 立即订阅函数 ✨✨✨
 const subscribeItem = async (item) => {
   try {
-    // ★★★ 核心修正：构建包含所有必要信息的请求 ★★★
     const request_item = { 
       tmdb_id: item.tmdb_id, 
       item_type: item.item_type,
-      title: item.title // 传递标题，方便后台日志记录
+      title: item.title
     };
-    // 如果是季，则必须传递季号
     if (item.item_type === 'Season' && item.season_number) {
       request_item.season_number = item.season_number;
     }
@@ -462,23 +466,32 @@ const subscribeItem = async (item) => {
 
 const updateItemStatus = async (item, newStatus, forceUnignore = false) => {
   try {
-    const requests = [{
+    const requestItem = {
       tmdb_id: item.tmdb_id,
       item_type: item.item_type,
       new_status: newStatus,
       source: { type: 'manual_admin_op' },
       force_unignore: forceUnignore
-    }];
-    await axios.post('/api/subscription/status', { requests });
+    };
+    
+    // ★★★ 修改：当手动忽略时，主动添加原因 ★★★
+    if (newStatus === 'IGNORED') {
+      requestItem.ignore_reason = '手动忽略';
+    }
+
+    await axios.post('/api/subscription/status', { requests: [requestItem] });
     message.success('状态更新成功！');
 
     const index = rawItems.value.findIndex(i => i.tmdb_id === item.tmdb_id && i.item_type === item.item_type);
     if (index > -1) {
-      // 核心修正：只有当新状态是 'NONE' 时才删除，否则一律更新状态
       if (newStatus === 'NONE') {
         rawItems.value.splice(index, 1);
       } else {
         rawItems.value[index].subscription_status = newStatus;
+        // ★★★ 修改：同步更新UI中的原因 ★★★
+        if (newStatus === 'IGNORED') {
+          rawItems.value[index].ignore_reason = '手动忽略';
+        }
       }
     }
   } catch (err) {
@@ -498,7 +511,6 @@ const loadMore = () => {
   }
 };
 
-// ★★★ 修改：格式化请求时间，只保留日期 ★★★
 const formatTimestamp = (timestamp) => {
   if (!timestamp) return 'N/A';
   try {
@@ -506,13 +518,10 @@ const formatTimestamp = (timestamp) => {
   } catch (e) { return 'N/A'; }
 };
 
-// ★★★ 新增：格式化来源信息 ★★★
 const formatSources = (sources) => {
   if (!sources || sources.length === 0) return '来源: 未知';
-  // 优先显示第一个来源，通常是最早的那个
   const firstSource = sources[0];
   const typeText = SOURCE_TYPE_MAP[firstSource.type] || firstSource.type;
-  // 动态获取来源详情，兼容 user, name, collection_name 等字段
   const detail = firstSource.user || firstSource.name || firstSource.collection_name || '';
   return `来源: ${typeText}${detail ? ` - ${detail}` : ''}`;
 };

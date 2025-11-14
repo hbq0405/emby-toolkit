@@ -473,15 +473,20 @@ def api_unified_subscription_status():
                 processed_count += 1
 
             else:
-                # --- 对于其他所有状态 (WANTED, IGNORED 等)，保持原有逻辑 ---
+                # --- 其他所有状态 (WANTED, IGNORED 等) ---
                 source = req.get('source', {"type": f"api_unified_status_change_{new_status.lower()}"})
                 ignore_reason = req.get('ignore_reason')
                 force_unignore = req.get('force_unignore', False)
 
+                # ★★★ 如果状态是 IGNORED 且没有提供原因，则设置默认原因 ★★★
+                if new_status.upper() == 'IGNORED' and not ignore_reason:
+                    ignore_reason = '手动忽略'
+
                 media_db.update_subscription_status(
                     tmdb_ids=tmdb_id, item_type=item_type, new_status=new_status.upper(),
                     source=source, media_info_list=[req],
-                    ignore_reason=ignore_reason, force_unignore=force_unignore
+                    ignore_reason=ignore_reason,
+                    force_unignore=force_unignore
                 )
                 processed_count += 1
 
