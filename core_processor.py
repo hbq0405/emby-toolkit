@@ -2516,7 +2516,7 @@ class MediaProcessor:
                         if self.tmdb_api_key:
                             # 调用 TMDb API 获取分集详情
                             episode_details_from_tmdb = tmdb.get_episode_details_tmdb(
-                                series_id=series_tmdb_id,
+                                tv_id=series_tmdb_id,
                                 season_number=s_num,
                                 episode_number=e_num,
                                 api_key=self.tmdb_api_key
