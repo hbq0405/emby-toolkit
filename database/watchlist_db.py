@@ -12,22 +12,23 @@ logger = logging.getLogger(__name__)
 # 模块: 追剧数据访问
 # ======================================================================
 
-def get_all_watchlist_items() -> List[Dict[str, Any]]:
-    """【新架构】获取所有被追踪的剧集项目。"""
+def get_all_watchlist_items() -> List[Dict[Any]]:
+    """ 获取所有被追踪的剧集项目。"""
     sql = """
         SELECT 
-            tmdb_id, item_type, title as item_name, release_year,
+            tmdb_id, -- ★★★ 直接使用 tmdb_id 作为主键 ★★★
+            item_type, 
+            title as item_name, 
+            release_year,
             watching_status as status,
-            paused_until, force_ended, watchlist_last_checked_at as last_checked_at,
+            paused_until, 
+            force_ended, 
+            watchlist_last_checked_at as last_checked_at,
             watchlist_tmdb_status as tmdb_status,
             watchlist_next_episode_json as next_episode_to_air_json,
             watchlist_missing_info_json as missing_info_json,
             watchlist_is_airing as is_airing,
-            
-            -- ★★★ 核心修复：从 JSON 数组中提取第一个 Emby ID 作为主 ID ★★★
-            emby_item_ids_json,
-            emby_item_ids_json->>0 AS item_id  -- 提取第一个元素作为 item_id
-
+            emby_item_ids_json -- 保留这个字段，以防前端其他地方需要
         FROM media_metadata
         WHERE item_type = 'Series' AND watching_status != 'NONE'
         ORDER BY first_requested_at DESC;

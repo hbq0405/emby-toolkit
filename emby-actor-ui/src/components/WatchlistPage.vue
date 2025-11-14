@@ -108,23 +108,23 @@
       <div v-else-if="error" class="center-container"><n-alert title="加载错误" type="error" style="max-width: 500px;">{{ error }}</n-alert></div>
       <div v-else-if="filteredWatchlist.length > 0">
         <n-grid cols="1 s:1 m:2 l:3 xl:4" :x-gap="20" :y-gap="20" responsive="screen">
-          <n-gi v-for="(item, i) in renderedWatchlist" :key="item.item_id">
+          <n-gi v-for="(item, i) in renderedWatchlist" :key="item.tmdb_id">
             <!-- 【布局优化】减小海报和内容之间的 gap -->
             <n-card class="dashboard-card series-card" :bordered="false">
               <n-checkbox
-                :checked="selectedItems.includes(item.item_id)"
-                @update:checked="(checked, event) => toggleSelection(item.item_id, event, i)"
+                :checked="selectedItems.includes(item.tmdb_id)"
+                @update:checked="(checked, event) => toggleSelection(item.tmdb_id, event, i)"
                 class="card-checkbox"
               />
               <div class="card-poster-container">
-                <n-image lazy :src="getPosterUrl(item.item_id)" class="card-poster" object-fit="cover">
+                <n-image lazy :src="getPosterUrl(item.tmdb_id)" class="card-poster" object-fit="cover">
                   <template #placeholder><div class="poster-placeholder"><n-icon :component="TvIcon" size="32" /></div></template>
                 </n-image>
               </div>
               <div class="card-content-container">
                 <div class="card-header">
                   <n-ellipsis class="card-title" :tooltip="{ style: { maxWidth: '300px' } }">{{ item.item_name }}</n-ellipsis>
-                  <n-popconfirm @positive-click="() => removeFromWatchlist(item.item_id, item.item_name)">
+                  <n-popconfirm @positive-click="() => removeFromWatchlist(item.tmdb_id, item.item_name)">
                     <template #trigger><n-button text type="error" circle title="移除" size="tiny"><template #icon><n-icon :component="TrashIcon" /></template></n-button></template>
                     确定要从追剧列表中移除《{{ item.item_name }}》吗？
                   </n-popconfirm>
@@ -137,7 +137,7 @@
                       2. 将“缺失”标签单独放在一行，确保布局稳定。
                     -->
                     <n-space align="center" :wrap="false">
-                      <n-button round size="tiny" :type="statusInfo(item.status).type" @click="() => updateStatus(item.item_id, statusInfo(item.status).next)" :title="`点击切换到 '${statusInfo(item.status).nextText}'`">
+                      <n-button round size="tiny" :type="statusInfo(item.status).type" @click="() => updateStatus(item.tmdb_id, statusInfo(item.status).next)" :title="`点击切换到 '${statusInfo(item.status).nextText}'`">
                         <template #icon><n-icon :component="statusInfo(item.status).icon" /></template>
                         {{ statusInfo(item.status).text }}
                       </n-button>
@@ -173,8 +173,8 @@
                     <template #trigger>
                       <n-button
                         circle
-                        :loading="refreshingItems[item.item_id]"
-                        @click="() => triggerSingleRefresh(item.item_id, item.item_name)"
+                        :loading="refreshingItems[item.tmdb_id]"
+                        @click="() => triggerSingleRefresh(item.tmdb_id, item.item_name)"
                       >
                         <template #icon><n-icon :component="SyncOutline" /></template>
                       </n-button>
@@ -182,7 +182,7 @@
                     立即刷新此剧集
                   </n-tooltip>
                   <n-tooltip>
-                    <template #trigger><n-button text @click="openInEmby(item.item_id)"><template #icon><n-icon :component="EmbyIcon" size="18" /></template></n-button></template>
+                    <template #trigger><n-button text @click="openInEmby(item.tmdb_id)"><template #icon><n-icon :component="EmbyIcon" size="18" /></template></n-button></template>
                     在 Emby 中打开
                   </n-tooltip>
                   <n-tooltip>
@@ -370,7 +370,7 @@ const batchActions = computed(() => {
     ];
 
     const hasGapsInSelection = filteredWatchlist.value
-      .filter(item => selectedItems.value.includes(item.item_id))
+      .filter(item => selectedItems.value.includes(item.tmdb_id))
       .some(hasGaps);
 
     actions.push(removeAction); // 在“已完结”视图也添加移除操作
@@ -608,9 +608,14 @@ const formatAirDate = (dateString) => {
   catch (e) { return 'N/A'; }
 };
 
-const getPosterUrl = (itemId) => `/image_proxy/Items/${itemId}/Images/Primary?maxHeight=480&tag=1`;
+const getPosterUrl = (embyIds) => {
+  const itemId = embyIds?.[0]; // 安全地获取第一个Emby ID
+  if (!itemId) return ''; // 如果没有ID，返回空
+  return `/image_proxy/Items/${itemId}/Images/Primary?maxHeight=480&tag=1`;
+}
 
-const openInEmby = (itemId) => {
+const openInEmby = (embyIds) => {
+  const itemId = embyIds?.[0];
   const embyServerUrl = configModel.value?.emby_server_url;
   if (!embyServerUrl || !itemId) return;
   const baseUrl = embyServerUrl.endsWith('/') ? embyServerUrl.slice(0, -1) : embyServerUrl;
