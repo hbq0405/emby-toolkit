@@ -221,22 +221,32 @@
               <div v-if="!media.in_library" class="action-icon" @click.stop="handleSubscribe(media)">
                 <n-spin :show="subscribingId === media.id" size="small">
                   <n-icon size="24">
-                    <!-- 场景1: 已完成 -> 红色实心 (所有人，不可点) -->
-                    <Heart v-if="media.subscription_status === 'completed'" color="#ff4d4f" style="cursor: not-allowed;" />
+                    <!-- 
+                      后端返回的状态:
+                      'NONE', 'WANTED', 'SUBSCRIBED', 'IGNORED', 'PENDING_RELEASE', 'REQUESTED'
+                    -->
 
-                    <!-- 场景2: 已批准 -> 灰色沙漏 (所有人，不可点) -->
-                    <HourglassOutline v-else-if="media.subscription_status === 'approved'" color="#888" style="cursor: not-allowed;" />
+                    <!-- 场景 1: 已提交订阅 (SUBSCRIBED) 或 未上映 (PENDING_RELEASE) -->
+                    <!-- 显示灰色沙漏，所有用户都不可点击 -->
+                    <HourglassOutline v-if="media.subscription_status === 'SUBSCRIBED' || media.subscription_status === 'PENDING_RELEASE'" 
+                                      color="#888" 
+                                      style="cursor: not-allowed;" />
 
-                    <!-- 场景3: 待审核 -->
-                    <template v-else-if="media.subscription_status === 'pending'">
-                      <!-- 3a. VIP 用户 -> 黄色闪电 (可点，用于加速) -->
-                      <LightningIcon v-if="isPrivilegedUser" color="#f0a020" />
-                      <!-- 3b. 普通用户 -> 灰色沙漏 (不可点) -->
-                      <HourglassOutline v-else color="#888" style="cursor: not-allowed;" />
-                    </template>
+                    <!-- 场景 2: 待管理员审核 (REQUESTED) -->
+                    <!-- 普通用户显示灰色沙漏，不可点击 -->
+                    <HourglassOutline v-else-if="media.subscription_status === 'REQUESTED' && !isPrivilegedUser" 
+                                      color="#888" 
+                                      style="cursor: not-allowed;" />
 
-                    <!-- 场景4: 默认状态 -> 空心 (所有人，可点) -->
+                    <!-- 场景 3: 待订阅 (WANTED) 或 待管理员审核 (REQUESTED, 且是特权用户) -->
+                    <!-- 特权用户看到黄色闪电，可点击，触发订阅 -->
+                    <LightningIcon v-else-if="media.subscription_status === 'WANTED' || (media.subscription_status === 'REQUESTED' && isPrivilegedUser)" 
+                                  color="#f0a020" />
+
+                    <!-- 场景 4: 默认状态 (NONE, IGNORED, 或其他未知状态) -->
+                    <!-- 显示空心，所有人可点击，触发订阅 -->
                     <HeartOutline v-else />
+
                   </n-icon>
                 </n-spin>
               </div>
@@ -537,37 +547,69 @@ const handleSubscribe = async (media) => {
 
   // 拦截2: 根据状态进行严格拦截
   const status = media.subscription_status;
-  if (status === 'completed' || status === 'approved') {
-    message.info(status === 'completed' ? '该项目已完成订阅。' : '该项目已批准，正在等待订阅。');
+  if (status === 'SUBSCRIBED' || status === 'PENDING_RELEASE') {
+    message.info(status === 'SUBSCRIBED' ? '该项目已提交订阅，请等待下载器处理。' : '该项目尚未上映，已加入监控。');
     return;
   }
-  if (status === 'pending' && !isPrivilegedUser.value) {
-    message.warning('该项目正在等待审核，请勿重复提交。');
+  // 普通用户在 'REQUESTED' 状态下不能重复点击
+  if (status === 'REQUESTED' && !isPrivilegedUser.value) {
+    message.warning('您的请求正在等待审核，请勿重复提交。');
     return;
   }
 
-  // 如果通过了所有拦截，才继续执行订阅逻辑
   subscribingId.value = media.id;
   try {
-    const response = await axios.post('/api/portal/subscribe', {
+    // ★★★ 核心修正 1: 第一步，总是调用门户订阅接口，创建订阅意图 ★★★
+    // 这个接口会根据用户权限，自动将状态设置为 'REQUESTED' 或 'WANTED'
+    const portalResponse = await axios.post('/api/portal/subscribe', {
       tmdb_id: media.id,
       item_type: media.media_type === 'movie' ? 'Movie' : 'Series',
       item_name: media.title || media.name,
     });
 
-    message.success(response.data.message);
+    message.success(portalResponse.data.message);
 
+    // 前端乐观更新为后端返回的新状态
+    const newStatus = portalResponse.data.status;
     const targetInResults = results.value.find(r => r.id === media.id);
     if (targetInResults) {
-      targetInResults.subscription_status = response.data.status;
+      targetInResults.subscription_status = newStatus;
     }
 
+    // ★★★ 核心修正 2: 如果是特权用户，并且状态允许，则立即触发手动订阅任务 ★★★
+    // (状态为 'WANTED' 或 'REQUESTED' 都可以加速)
+    if (isPrivilegedUser.value && (newStatus === 'WANTED' || newStatus === 'REQUESTED')) {
+      
+      const requestItem = {
+        tmdb_id: media.id,
+        item_type: media.media_type === 'movie' ? 'Movie' : 'Series',
+        title: media.title || media.name
+      };
+      
+      const taskPayload = {
+        task_name: 'manual_subscribe_batch',
+        subscribe_requests: [requestItem]
+      };
+
+      // 异步触发，不需要等待结果
+      axios.post('/api/tasks/run', taskPayload).then(taskResponse => {
+        // 任务提交成功后，可以再给一个提示
+        message.info('已提交到后台立即处理...');
+        // 再次乐观更新为 'SUBSCRIBED'，让图标变成沙漏
+        if (targetInResults) {
+          targetInResults.subscription_status = 'SUBSCRIBED';
+        }
+      }).catch(taskError => {
+        message.error(taskError.response?.data?.message || '提交立即处理任务失败。');
+      });
+    }
+
+    // 如果订阅的是每日推荐项，则刷新推荐池
     if (currentRecommendation.value && currentRecommendation.value.id === media.id) {
-      await fetchRecommendationPool();
+      fetchRecommendationPool();
     }
 
   } catch (error) {
-    // 后端返回409时，也会在这里捕获到
     message.error(error.response?.data?.message || '提交请求失败');
   } finally {
     subscribingId.value = null;

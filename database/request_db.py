@@ -224,46 +224,6 @@ def get_user_subscription_history(user_id: str, page: int = 1, page_size: int = 
         logger.error(f"DB: 查询用户 {user_id} 的订阅历史失败: {e}", exc_info=True)
         raise
 
-def get_user_subscription_statuses_by_tmdb_ids(tmdb_ids: List[str], user_id: str) -> Dict[str, str]:
-    """
-    【新增】根据 TMDb ID 列表和指定的用户ID，查询该用户对每个媒体的订阅状态。
-    返回一个字典，键为 tmdb_id，值为该用户的具体状态 ('REQUESTED', 'SUBSCRIBED', 'NONE' 等)。
-    """
-    if not tmdb_ids or not user_id:
-        return {}
-
-    # 这个查询稍微复杂一些：
-    # 1. 我们只关心那些 subscription_sources_json 字段包含我们目标 user_id 的行。
-    #    这通过 WHERE subscription_sources_json @> ... 来高效筛选。
-    # 2. 对于筛选出的行，我们直接返回它的 tmdb_id 和全局的 subscription_status。
-    #    因为如果一个用户在请求列表里，那么这个媒体的状态 ('REQUESTED', 'SUBSCRIBED' 等) 对他就是有效的。
-    sql = """
-        SELECT
-            m.tmdb_id,
-            m.subscription_status
-        FROM
-            media_metadata m
-        WHERE
-            m.tmdb_id = ANY(%s)
-            AND m.subscription_sources_json @> %s::jsonb;
-    """
-    
-    status_map = {}
-    # 构建用于 JSONB 查询的用户过滤器
-    user_filter = json.dumps([{'user_id': user_id}])
-
-    try:
-        with get_db_connection() as conn:
-            with conn.cursor() as cursor:
-                cursor.execute(sql, (tmdb_ids, user_filter))
-                rows = cursor.fetchall()
-                for row in rows:
-                    status_map[row['tmdb_id']] = row['subscription_status']
-    except Exception as e:
-        logger.error(f"DB: 批量查询用户 {user_id} 的订阅状态失败: {e}", exc_info=True)
-    
-    return status_map
-
 def get_global_subscription_statuses_by_tmdb_ids(tmdb_ids: List[str]) -> Dict[str, str]:
     """
     【新】根据 TMDb ID 列表，高效查询每个ID的订阅状态。
