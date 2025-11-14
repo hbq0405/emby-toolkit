@@ -196,6 +196,7 @@ def get_dashboard_stats() -> dict:
         (SELECT COUNT(*) FROM media_metadata WHERE in_library = TRUE) AS media_in_library_total,
         (SELECT COUNT(*) FROM media_metadata WHERE item_type = 'Movie' AND in_library = TRUE) AS media_movies_in_library,
         (SELECT COUNT(*) FROM media_metadata WHERE item_type = 'Series' AND in_library = TRUE) AS media_series_in_library,
+        (SELECT COUNT(*) FROM media_metadata WHERE item_type = 'Episode' AND in_library = TRUE) AS media_episodes_in_library,
         (SELECT COUNT(*) FROM media_metadata WHERE in_library = FALSE) AS media_missing_total,
         (SELECT COUNT(*) FROM person_identity_map) AS actor_mappings_total,
         (SELECT COUNT(*) FROM person_identity_map WHERE emby_person_id IS NOT NULL) AS actor_mappings_linked,
