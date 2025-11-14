@@ -73,9 +73,23 @@ def _handle_full_processing_flow(processor: 'MediaProcessor', item_id: str, forc
             logger.debug("  ➜ 媒体项缺少TMDb ID，无法进行自定义合集匹配。")
             return
 
-        item_metadata = media_db.get_media_details_by_tmdb_ids([tmdb_id])
+        media_metadata_map = media_db.get_media_details_by_tmdb_ids([tmdb_id])
+        item_metadata = media_metadata_map.get(tmdb_id) # 使用 .get() 安全获取
+
+        # ★★★ 核心修复：如果数据库里没有，就从 Emby 的详情里实时构建一个 ★★★
         if not item_metadata:
-            logger.warning(f"  ➜ 无法从本地缓存中找到TMDb ID为 {tmdb_id} 的元数据，无法匹配合集。")
+            logger.warning(f"  ➜ 无法从本地缓存找到 TMDb ID {tmdb_id} 的元数据，将尝试从 Emby 详情实时构建。")
+            item_metadata = {
+                "tmdb_id": tmdb_id,
+                "title": item_details.get("Name"),
+                "item_type": item_details.get("Type"),
+                "genres_json": item_details.get("Genres", []),
+                # ... 你可以根据需要从 item_details 添加更多字段 ...
+            }
+        
+        # 再次检查，如果连实时构建都失败，才放弃
+        if not item_metadata or not item_metadata.get('item_type'):
+            logger.error(f"  ➜ 无法确定媒体项 {tmdb_id} 的类型，合集匹配中止。")
             return
 
         # ▼▼▼ 步骤 1: 将获取媒体库信息的逻辑提前 ▼▼▼

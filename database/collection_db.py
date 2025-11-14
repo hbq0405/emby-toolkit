@@ -371,8 +371,10 @@ def match_and_update_list_collections_on_item_add(new_item_tmdb_id: str, new_ite
                   AND emby_collection_id IS NOT NULL
                   AND generated_media_info_json @> %s::jsonb
             """
-            # 查询数组是否包含一个特定的 "字符串"
-            search_payload = json.dumps([str(new_item_tmdb_id)])
+            # 构造一个包含“部分匹配对象”的数组
+            # 意思是：查找 generated_media_info_json 数组中，是否存在一个
+            # 至少包含 "tmdb_id": "xxx" 的对象。
+            search_payload = json.dumps([{'tmdb_id': str(new_item_tmdb_id)}])
             
             cursor.execute(sql_find, (search_payload,))
             candidate_collections = cursor.fetchall()
