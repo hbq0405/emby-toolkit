@@ -352,78 +352,61 @@ def apply_and_persist_media_correction(collection_id: int, old_tmdb_id: str, new
 
 def match_and_update_list_collections_on_item_add(new_item_tmdb_id: str, new_item_emby_id: str, new_item_name: str) -> List[Dict[str, Any]]:
     """
-    【V2 - 查询逻辑修复版】
+    【V3 - 逻辑完整修复版】
     当新媒体入库时，查找并更新所有匹配的'list'类型合集。
-    - 修复了查询 generated_media_info_json 字段的逻辑，使其能正确匹配字符串数组。
-    - 修复了更新 generated_media_info_json 的逻辑，使其能正确处理对象数组。
+    - 使用正确的 JSONB 查询。
+    - 正确地在对象数组中查找和更新状态。
     """
     collections_to_update_in_emby = []
     
     try:
         with get_db_connection() as conn:
-            cursor = conn.cursor()
-            
-            # ★★★ 核心修复 1/3: 使用正确的 JSONB 查询来匹配字符串数组 ★★★
-            sql_find = """
-                SELECT * FROM custom_collections 
-                WHERE type = 'list' 
-                  AND status = 'active' 
-                  AND emby_collection_id IS NOT NULL
-                  AND generated_media_info_json @> %s::jsonb
-            """
-            # 构造一个包含“部分匹配对象”的数组
-            # 意思是：查找 generated_media_info_json 数组中，是否存在一个
-            # 至少包含 "tmdb_id": "xxx" 的对象。
-            search_payload = json.dumps([{'tmdb_id': str(new_item_tmdb_id)}])
-            
-            cursor.execute(sql_find, (search_payload,))
-            candidate_collections = cursor.fetchall()
+            # ★★★ 核心修复 1/2: 事务应该在这里开始 ★★★
+            with conn.cursor() as cursor:
+                
+                sql_find = """
+                    SELECT * FROM custom_collections 
+                    WHERE type = 'list' 
+                      AND status = 'active' 
+                      AND emby_collection_id IS NOT NULL
+                      AND generated_media_info_json @> %s::jsonb
+                """
+                search_payload = json.dumps([{'tmdb_id': str(new_item_tmdb_id)}])
+                
+                cursor.execute(sql_find, (search_payload,))
+                candidate_collections = cursor.fetchall()
 
-            if not candidate_collections:
-                logger.debug(f"  ➜ 未在任何榜单合集中找到 TMDb ID: {new_item_tmdb_id}。")
-                return []
+                if not candidate_collections:
+                    logger.debug(f"  ➜ 未在任何榜单合集中找到 TMDb ID: {new_item_tmdb_id}。")
+                    return []
 
-            try:
                 for collection_row in candidate_collections:
                     collection = dict(collection_row)
                     collection_id = collection['id']
                     collection_name = collection['name']
                     
                     try:
-                        # ★★★ 核心修复 2/3: 假设 generated_media_info_json 是对象数组，如果不是则转换 ★★★
-                        media_list_raw = collection.get('generated_media_info_json') or []
-                        media_list = []
-                        
-                        # 健壮性处理：如果存的是字符串数组，先转换为对象数组
-                        if media_list_raw and isinstance(media_list_raw[0], str):
-                            logger.warning(f"  ➜ 检测到合集《{collection_name}》的缓存格式为旧版（字符串数组），将进行动态转换...")
-                            # 这是一个耗时操作，但能保证兼容性
-                            details_map = media_db.get_media_details_by_tmdb_ids(media_list_raw)
-                            for tmdb_id_str in media_list_raw:
-                                detail = details_map.get(tmdb_id_str, {})
-                                media_list.append({
-                                    "tmdb_id": tmdb_id_str,
-                                    "status": "in_library" if detail.get('in_library') else "missing",
-                                    "title": detail.get('title', '未知标题'),
-                                    "poster_path": detail.get('poster_path'),
-                                    "release_date": detail.get('release_date')
-                                })
-                        else:
-                            media_list = media_list_raw
-
+                        # ★★★ 核心修复 2/2: 这里的逻辑现在是正确的，因为我们确认了数据结构 ★★★
+                        media_list = collection.get('generated_media_info_json') or []
                         item_found_and_updated = False
                         
+                        # 遍历对象数组，找到匹配的 tmdb_id 并且状态不是 in_library 的项
                         for media_item in media_list:
                             if str(media_item.get('tmdb_id')) == str(new_item_tmdb_id) and media_item.get('status') != 'in_library':
+                                
                                 media_item['status'] = 'in_library'
                                 media_item['emby_id'] = new_item_emby_id 
                                 item_found_and_updated = True
-                                break
+                                # 找到并更新后就跳出，因为一个合集里不应该有重复的 tmdb_id
+                                break 
                         
                         if item_found_and_updated:
+                            # 重新计算统计数据
                             new_in_library_count = sum(1 for m in media_list if m.get('status') == 'in_library')
                             new_missing_count = len(media_list) - new_in_library_count
                             new_health_status = 'has_missing' if new_missing_count > 0 else 'ok'
+                            
+                            # 将更新后的整个对象数组写回数据库
                             new_json_data = json.dumps(media_list, ensure_ascii=False, default=str)
                             
                             cursor.execute("""
@@ -435,6 +418,8 @@ def match_and_update_list_collections_on_item_add(new_item_tmdb_id: str, new_ite
                                 WHERE id = %s
                             """, (new_json_data, new_in_library_count, new_missing_count, new_health_status, collection_id))
                             
+                            logger.info(f"  ➜ 已在数据库中更新榜单合集《{collection_name}》的状态，标记《{new_item_name}》为已入库。")
+
                             collections_to_update_in_emby.append({
                                 'id': collection_id,
                                 'emby_collection_id': collection['emby_collection_id'],
@@ -445,14 +430,14 @@ def match_and_update_list_collections_on_item_add(new_item_tmdb_id: str, new_ite
                         logger.warning(f"解析或处理榜单合集《{collection_name}》的数据时出错: {e_json}，跳过。")
                         continue
                 
-            except Exception as e_trans:
-                logger.error(f"在更新榜单合集数据库状态的事务中发生错误: {e_trans}", exc_info=True)
-                raise
+                # 所有数据库操作完成后，在这里统一提交事务
+                # conn.commit() # psycopg2 的 with conn: 会自动处理 commit 和 rollback
 
         return collections_to_update_in_emby
 
     except psycopg2.Error as e_db:
         logger.error(f"匹配和更新榜单合集时发生数据库错误: {e_db}", exc_info=True)
+        # with conn: 会自动回滚
         raise
 
 def update_user_caches_on_item_add(
