@@ -320,7 +320,13 @@ def task_auto_subscribe(processor):
         return
 
     try:
-        # 1. 从“中央订单池”获取所有待办任务
+        logger.info("  ➜ 正在检查未上映...")
+        promoted_count = media_db.promote_pending_to_wanted()
+        if promoted_count > 0:
+            logger.info(f"  ➜ 成功将 {promoted_count} 个项目从“未上映”更新为“待订阅”。")
+        else:
+            logger.trace("  ➜ 没有需要晋升状态的媒体项。")
+
         wanted_items = media_db.get_all_wanted_media()
         if not wanted_items:
             logger.info("  ➜ 待订阅列表为空，无需处理。")

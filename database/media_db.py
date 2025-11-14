@@ -148,6 +148,33 @@ def get_all_wanted_media() -> List[Dict[str, Any]]:
         logger.error(f"DB: 获取所有待订阅(WANTED)媒体失败: {e}", exc_info=True)
         return []
     
+def promote_pending_to_wanted() -> int:
+    """
+    【新增】检查所有状态为 'PENDING_RELEASE' 的媒体项。
+    如果其发行日期已到或已过，则将其状态更新为 'WANTED'。
+    返回被成功晋升状态的媒体项数量。
+    """
+    sql = """
+        UPDATE media_metadata
+        SET 
+            subscription_status = 'WANTED',
+            -- 可以选择性地在这里也更新一个时间戳字段，用于追踪状态变更
+            last_synced_at = NOW()
+        WHERE 
+            subscription_status = 'PENDING_RELEASE' 
+            AND release_date <= NOW();
+    """
+    try:
+        with get_db_connection() as conn:
+            with conn.cursor() as cursor:
+                cursor.execute(sql)
+                promoted_count = cursor.rowcount
+                conn.commit()
+                return promoted_count
+    except Exception as e:
+        logger.error(f"DB: 晋升 PENDING_RELEASE 状态失败: {e}", exc_info=True)
+        return 0
+
 def ensure_media_record_exists(media_info_list: List[Dict[str, Any]]):
     """
     【V1 - 职责单一版】
