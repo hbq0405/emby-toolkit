@@ -2569,7 +2569,7 @@ class MediaProcessor:
                 "overview": item_details.get('Overview'),
                 "official_rating": item_details.get('OfficialRating'),
                 "unified_rating": get_unified_rating(item_details.get('OfficialRating')),
-                "tags_json": json.dumps(item_details.get('Tags', []), ensure_ascii=False),
+                "pre_cached_tags_json": json.dumps(item_details.get('Tags', []), ensure_ascii=False),
                 "last_synced_at": datetime.now(timezone.utc)
             }
             
