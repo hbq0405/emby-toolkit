@@ -12,7 +12,7 @@ logger = logging.getLogger(__name__)
 # 模块: 追剧数据访问
 # ======================================================================
 
-def get_all_watchlist_items() -> List[Dict[Any]]:
+def get_all_watchlist_items() -> List[Dict[str, Any]]:
     """ 获取所有被追踪的剧集项目。"""
     sql = """
         SELECT 
