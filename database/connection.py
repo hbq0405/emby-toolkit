@@ -184,7 +184,6 @@ def init_db():
 
                         -- 媒体库状态
                         in_library BOOLEAN DEFAULT FALSE NOT NULL,
-                        emby_item_id TEXT, 
                         emby_item_ids_json JSONB NOT NULL DEFAULT '[]'::jsonb,
                         date_added TIMESTAMP WITH TIME ZONE,
                         paths_json JSONB,
@@ -579,59 +578,6 @@ def init_db():
                     cursor.execute("CREATE INDEX IF NOT EXISTS idx_mm_subscription_sources_gin ON media_metadata USING GIN(subscription_sources_json);")
                 except Exception as e_index:
                     logger.error(f"  ➜ 创建 'emby_item_id' 索引时出错: {e_index}", exc_info=True)
-
-                # ======================================================================
-                # ★★★ 数据迁移补丁: 从 emby_item_id 迁移到 emby_item_ids_json ★★★
-                # ======================================================================
-                logger.trace("  ➜ [数据迁移] 正在检查并执行 'emby_item_id' 到 'emby_item_ids_json' 的数据迁移...")
-                try:
-                    # 首先，确保两列都存在，避免在全新安装时出错
-                    cursor.execute("""
-                        SELECT 
-                            (SELECT EXISTS (
-                                SELECT 1 FROM information_schema.columns 
-                                WHERE table_name='media_metadata' AND column_name='emby_item_id'
-                            )) as old_col_exists,
-                            (SELECT EXISTS (
-                                SELECT 1 FROM information_schema.columns 
-                                WHERE table_name='media_metadata' AND column_name='emby_item_ids_json'
-                            )) as new_col_exists;
-                    """)
-                    cols_exist = cursor.fetchone()
-
-                    if cols_exist and cols_exist['old_col_exists'] and cols_exist['new_col_exists']:
-                        logger.trace("    ➜ 'emby_item_id' 和 'emby_item_ids_json' 字段均存在，开始检查迁移条件...")
-                        
-                        # 核心迁移逻辑：
-                        # - 条件1: emby_item_id 必须有值 (IS NOT NULL AND a.emby_item_id != '')
-                        # - 条件2: emby_item_ids_json 必须是空的 JSON 数组 '[]' 或 NULL，避免覆盖已经有多个值的数据
-                        # - 操作: 将 emby_item_id 的值包装成一个单元素的 JSON 数组，并更新到 emby_item_ids_json
-                        update_query = """
-                            UPDATE media_metadata
-                            SET emby_item_ids_json = jsonb_build_array(emby_item_id)
-                            WHERE 
-                                emby_item_id IS NOT NULL 
-                                AND emby_item_id != ''
-                                AND (
-                                    emby_item_ids_json IS NULL 
-                                    OR emby_item_ids_json = '[]'::jsonb
-                                );
-                        """
-                        cursor.execute(update_query)
-                        
-                        # 获取受影响的行数，用于日志记录
-                        updated_rows = cursor.rowcount
-                        if updated_rows > 0:
-                            logger.info(f"    ➜ [数据迁移] 成功将 {updated_rows} 条记录从 'emby_item_id' 迁移到了 'emby_item_ids_json'。")
-                        else:
-                            logger.trace("    ➜ 无需迁移数据，所有记录均已是最新格式。")
-                    else:
-                        logger.trace("    ➜ 'emby_item_id' 或 'emby_item_ids_json' 字段不存在，跳过数据迁移（可能为全新安装）。")
-
-                except Exception as e_migrate:
-                    logger.error(f"  ➜ [数据迁移] 从 'emby_item_id' 迁移数据时出错: {e_migrate}", exc_info=True)
-                # ======================================================================
-                # ★★★ 数据迁移补丁 (END) ★★★
 
                 # ======================================================================
                 # ★★★ 数据库自动修正补丁 (START) ★★★
