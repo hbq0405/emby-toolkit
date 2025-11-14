@@ -471,7 +471,7 @@ const toggleSelection = (itemId, event, index) => {
   if (event.shiftKey && lastSelectedIndex.value !== null) {
     const start = Math.min(lastSelectedIndex.value, index);
     const end = Math.max(lastSelectedIndex.value, index);
-    const idsInRange = renderedWatchlist.value.slice(start, end + 1).map(i => i.item_id);
+    const idsInRange = renderedWatchlist.value.slice(start, end + 1).map(i => i.tmdb_id);
     const isCurrentlySelected = selectedItems.value.includes(itemId);
     const willSelect = !isCurrentlySelected;
     if (willSelect) {
@@ -609,10 +609,10 @@ const formatAirDate = (dateString) => {
 };
 
 const getPosterUrl = (embyIds) => {
-  const itemId = embyIds?.[0]; // 安全地获取第一个Emby ID
-  if (!itemId) return ''; // 如果没有ID，返回空
+  const itemId = embyIds?.[0]; // 安全地获取数组的第一个 Emby ID
+  if (!itemId) return ''; // 如果没有ID，返回空字符串以避免错误
   return `/image_proxy/Items/${itemId}/Images/Primary?maxHeight=480&tag=1`;
-}
+};
 
 const openInEmby = (embyIds) => {
   const itemId = embyIds?.[0];
@@ -666,7 +666,7 @@ const fetchWatchlist = async () => {
 };
 
 const updateStatus = async (itemId, newStatus) => {
-  const item = rawWatchlist.value.find(i => i.item_id === itemId);
+  const item = rawWatchlist.value.find(i => i.tmdb_id === itemId);
   if (!item) return;
   const oldStatus = item.status;
   item.status = newStatus;
@@ -683,7 +683,7 @@ const removeFromWatchlist = async (itemId, itemName) => {
   try {
     await axios.post(`/api/watchlist/remove/${itemId}`);
     message.success(`已将《${itemName}》从追剧列表移除。`);
-    rawWatchlist.value = rawWatchlist.value.filter(i => i.item_id !== itemId);
+    rawWatchlist.value = rawWatchlist.value.filter(i => i.tmdb_id !== itemId);
   } catch (err) {
     message.error(err.response?.data?.error || '移除失败。');
   }
