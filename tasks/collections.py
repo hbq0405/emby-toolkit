@@ -79,13 +79,27 @@ def _perform_list_collection_health_check(
 
     # 获取上一次同步时生成的媒体列表 
     old_media_map = {}
-    if collection_db_record.get('generated_media_info_json'):
+    # 从数据库记录中获取历史数据
+    historical_data = collection_db_record.get('generated_media_info_json')
+    
+    if historical_data:
         try:
-            # 我们需要 TMDB ID 和 item_type 来执行清理
-            old_items = json.loads(collection_db_record['generated_media_info_json'])
-            old_media_map = {str(item['tmdb_id']): item['media_type'] for item in old_items}
-        except (json.JSONDecodeError, KeyError, TypeError):
-            logger.warning(f"  -> 解析合集 '{collection_name}' 的历史媒体列表失败或格式不兼容，将跳过来源清理。")
+            old_items = []
+            # ★★★ 核心修正：检查数据类型 ★★★
+            # 如果是字符串，说明是旧格式或者意外情况，我们手动解析
+            if isinstance(historical_data, str):
+                old_items = json.loads(historical_data)
+            # 如果已经是列表，说明数据库驱动已经帮我们解析好了，直接用
+            elif isinstance(historical_data, list):
+                old_items = historical_data
+            
+            if old_items:
+                # 我们需要 TMDB ID 和 item_type 来执行清理
+                old_media_map = {str(item['tmdb_id']): item['media_type'] for item in old_items}
+
+        except (json.JSONDecodeError, KeyError, TypeError) as e:
+            # 这里的日志现在能更精确地反映问题
+            logger.warning(f"  -> 解析合集 '{collection_name}' 的历史媒体列表时失败或格式不兼容: {e}，将跳过来源清理。")
 
     # 提前加载所有在库的“季”的信息，用于快速比对
     in_library_seasons_set = set()
