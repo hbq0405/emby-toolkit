@@ -2509,22 +2509,51 @@ class MediaProcessor:
                     e_num = episode.get("IndexNumber")
                     episode_tmdb_id = episode.get("ProviderIds", {}).get("Tmdb")
                     
-                    # 如果 Emby 没有提供 TMDb ID，我们生成一个备用 ID
+                    # 如果 Emby 没有提供 TMDb ID，我们亲自去TMDb查
+                    episode_details_from_tmdb = None # 先初始化一个变量
                     if not episode_tmdb_id:
-                        episode_tmdb_id = f"{series_tmdb_id}-S{s_num:02d}E{e_num:02d}"
+                        logger.info(f"  ➜ Emby 未提供 S{s_num:02d}E{e_num:02d} 的 TMDb ID，正在通过 API 查询...")
+                        if self.tmdb_api_key:
+                            # 调用 TMDb API 获取分集详情
+                            episode_details_from_tmdb = tmdb.get_episode_details_tmdb(
+                                series_id=series_tmdb_id,
+                                season_number=s_num,
+                                episode_number=e_num,
+                                api_key=self.tmdb_api_key
+                            )
+                            
+                            if episode_details_from_tmdb and episode_details_from_tmdb.get("id"):
+                                episode_tmdb_id = episode_details_from_tmdb.get("id")
+                                logger.info(f"  ➜ 成功从 TMDb 获取到分集 ID: {episode_tmdb_id}")
+                            else:
+                                logger.error(f"  ➜ 无法从 TMDb 找到 S{s_num:02d}E{e_num:02d} 的信息，此分集将无法同步！")
+                                continue # 直接跳过这个无法处理的分集
+                        else:
+                            logger.error("  ➜ 无法查询 TMDb：未配置 TMDb API Key。")
+                            continue # 跳过
 
-                    metadata_batch.append({
-                        "tmdb_id": episode_tmdb_id,
+                    metadata_to_add = {
+                        "tmdb_id": str(episode_tmdb_id),
                         "item_type": "Episode",
-                        "parent_series_tmdb_id": series_tmdb_id,
+                        "parent_series_tmdb_id": str(series_tmdb_id),
                         "season_number": s_num,
                         "episode_number": e_num,
-                        "title": episode.get("Name"),
-                        "original_title": episode.get("OriginalTitle"), 
-                        "release_date": episode.get("PremiereDate") or None, 
                         "in_library": True,
                         "emby_item_ids_json": json.dumps([episode.get("Id")])
-                    })
+                    }
+
+                    if episode_details_from_tmdb:
+                        metadata_to_add["title"] = episode_details_from_tmdb.get("name")
+                        metadata_to_add["overview"] = episode_details_from_tmdb.get("overview")
+                        metadata_to_add["release_date"] = episode_details_from_tmdb.get("air_date")
+                        # 还可以添加更多字段，比如 vote_average 等
+                    else:
+                        # 否则，回退到使用 Emby 提供的数据（适用于 Emby 本身就提供了 TMDb ID 的情况）
+                        metadata_to_add["title"] = episode.get("Name")
+                        metadata_to_add["original_title"] = episode.get("OriginalTitle")
+                        metadata_to_add["release_date"] = episode.get("PremiereDate")
+
+                    metadata_batch.append(metadata_to_add)
                 
                 # 3. 批量写入数据库
                 if metadata_batch:
