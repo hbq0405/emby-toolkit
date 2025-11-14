@@ -471,7 +471,6 @@ def task_populate_metadata_cache(processor, batch_size: int = 50, force_full_upd
                                 "tmdb_id": str(tmdb_child_info.get('id')),
                                 "title": tmdb_child_info.get('name'),
                                 "release_date": tmdb_child_info.get('air_date'),
-                                "rating": tmdb_child_info.get('vote_average'),
                                 "overview": tmdb_child_info.get('overview')
                             })
                         else:

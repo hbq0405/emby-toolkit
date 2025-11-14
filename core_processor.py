@@ -2552,6 +2552,7 @@ class MediaProcessor:
                             "season_number": season_num,
                             "episode_number": e_num,
                             "in_library": True,
+                            "subscription_status": "NONE",
                             "emby_item_ids_json": json.dumps([emby_episode.get("Id")]),
                             # 优先使用 TMDb 的权威数据
                             "title": tmdb_details.get("name"),
