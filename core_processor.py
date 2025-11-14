@@ -3,14 +3,13 @@
 import os
 import json
 import time
-import concurrent.futures
-from typing import Dict, List, Optional, Any, Tuple, Set
+from typing import Dict, List, Optional, Any, Tuple
+from collections import defaultdict
 import shutil
 import threading
 from datetime import datetime, timezone
 import time as time_module
 import psycopg2
-import requests
 # 确保所有依赖都已正确导入
 import handler.emby as emby
 import handler.tmdb as tmdb
@@ -2504,76 +2503,84 @@ class MediaProcessor:
 
                 # 2. 准备批量写入数据库的元数据
                 metadata_batch = []
+                episodes_by_season = defaultdict(list)
                 for episode in new_episodes_details:
-                    s_num = episode.get("ParentIndexNumber")
-                    e_num = episode.get("IndexNumber")
-                    episode_tmdb_id = episode.get("ProviderIds", {}).get("Tmdb")
+                    season_num = episode.get("ParentIndexNumber")
+                    if season_num is not None:
+                        episodes_by_season[season_num].append(episode)
+
+                logger.info(f"  ➜ 检测到 {len(new_episodes_details)} 个新分集，分属于 {len(episodes_by_season)} 个不同的季。")
                     
-                    # 如果 Emby 没有提供 TMDb ID，我们亲自去TMDb查
-                    episode_details_from_tmdb = None # 先初始化一个变量
-                    if not episode_tmdb_id:
-                        logger.info(f"  ➜ Emby 未提供 S{s_num:02d}E{e_num:02d} 的 TMDb ID，正在通过 API 查询...")
-                        if self.tmdb_api_key:
-                            # 调用 TMDb API 获取分集详情
-                            episode_details_from_tmdb = tmdb.get_episode_details_tmdb(
-                                tv_id=series_tmdb_id,
-                                season_number=s_num,
-                                episode_number=e_num,
-                                api_key=self.tmdb_api_key
-                            )
-                            
-                            if episode_details_from_tmdb and episode_details_from_tmdb.get("id"):
-                                episode_tmdb_id = episode_details_from_tmdb.get("id")
-                                logger.info(f"  ➜ 成功从 TMDb 获取到分集 ID: {episode_tmdb_id}")
-                            else:
-                                logger.error(f"  ➜ 无法从 TMDb 找到 S{s_num:02d}E{e_num:02d} 的信息，此分集将无法同步！")
-                                continue # 直接跳过这个无法处理的分集
-                        else:
-                            logger.error("  ➜ 无法查询 TMDb：未配置 TMDb API Key。")
-                            continue # 跳过
+                # --- 按季进行批量处理 ---
+                for season_num, emby_episodes_in_season in episodes_by_season.items():
+                    logger.info(f"  ➜ 正在为第 {season_num} 季的 {len(emby_episodes_in_season)} 个分集批量获取 TMDb 信息...")
+                    
+                    # --- 关键：为每一季只调用一次 API ---
+                    # We get series_details at the beginning of the 'if episode_ids_to_add:' block
+                    season_details_from_tmdb = tmdb.get_season_details_tmdb(
+                        tv_id=series_tmdb_id,
+                        season_number=season_num,
+                        api_key=self.tmdb_api_key,
+                        item_name=series_details.get('Name') # <-- 新增此行，让日志更清晰
+                    )
 
-                    metadata_to_add = {
-                        "tmdb_id": str(episode_tmdb_id),
-                        "item_type": "Episode",
-                        "parent_series_tmdb_id": str(series_tmdb_id),
-                        "season_number": s_num,
-                        "episode_number": e_num,
-                        "in_library": True,
-                        "emby_item_ids_json": json.dumps([episode.get("Id")])
-                    }
+                    if not season_details_from_tmdb or not season_details_from_tmdb.get("episodes"):
+                        logger.error(f"  ➜ 无法从 TMDb 获取第 {season_num} 季的详情，该季所有分集将无法同步！")
+                        continue # 跳过处理这一整季
 
-                    if episode_details_from_tmdb:
-                        metadata_to_add["title"] = episode_details_from_tmdb.get("name")
-                        metadata_to_add["overview"] = episode_details_from_tmdb.get("overview")
-                        metadata_to_add["release_date"] = episode_details_from_tmdb.get("air_date")
-                        # 还可以添加更多字段，比如 vote_average 等
-                    else:
-                        # 否则，回退到使用 Emby 提供的数据（适用于 Emby 本身就提供了 TMDb ID 的情况）
-                        metadata_to_add["title"] = episode.get("Name")
-                        metadata_to_add["original_title"] = episode.get("OriginalTitle")
-                        metadata_to_add["release_date"] = episode.get("PremiereDate")
+                    # --- 为了快速查找，将返回的TMDb分集列表转换成一个字典（集号 -> 分集详情） ---
+                    tmdb_episode_map = {ep.get("episode_number"): ep for ep in season_details_from_tmdb["episodes"]}
 
-                    metadata_batch.append(metadata_to_add)
+                    # --- 现在，遍历这一季的 Emby 分集，并从 map 中匹配数据 ---
+                    for emby_episode in emby_episodes_in_season:
+                        e_num = emby_episode.get("IndexNumber")
+                        
+                        # 从我们一次性获取的 map 中查找对应的分集详情
+                        tmdb_details = tmdb_episode_map.get(e_num)
+
+                        if not tmdb_details or not tmdb_details.get("id"):
+                            logger.warning(f"  ➜ 在 TMDb 第 {season_num} 季详情中未找到 S{season_num:02d}E{e_num:02d} 的信息，跳过此分集。")
+                            continue
+
+                        episode_tmdb_id = tmdb_details.get("id")
+                        
+                        # 创建“篮子”并填充数据
+                        metadata_to_add = {
+                            "tmdb_id": str(episode_tmdb_id),
+                            "item_type": "Episode",
+                            "parent_series_tmdb_id": str(series_tmdb_id),
+                            "season_number": season_num,
+                            "episode_number": e_num,
+                            "in_library": True,
+                            "emby_item_ids_json": json.dumps([emby_episode.get("Id")]),
+                            # 优先使用 TMDb 的权威数据
+                            "title": tmdb_details.get("name"),
+                            "overview": tmdb_details.get("overview"),
+                            "release_date": tmdb_details.get("air_date")
+                        }
+                        
+                        metadata_batch.append(metadata_to_add)
+                        logger.info(f"  ➜ 成功匹配 S{season_num:02d}E{e_num:02d} -> TMDb ID: {episode_tmdb_id}")
                 
-                # 3. 批量写入数据库
-                if metadata_batch:
-                    with get_central_db_connection() as conn:
-                        with conn.cursor() as cursor:
-                            # ... (这里可以复用 task_populate_metadata_cache 中的批量写入逻辑)
-                            # 为了简化，我们这里直接循环执行，对于少量分集追加性能足够
-                            for metadata in metadata_batch:
-                                columns = list(metadata.keys())
-                                update_clauses = [f"{col} = EXCLUDED.{col}" for col in columns if col not in ['tmdb_id', 'item_type']]
-                                update_clauses.append("last_synced_at = NOW()")
-                                sql = f"""
-                                    INSERT INTO media_metadata ({', '.join(columns)}, last_synced_at)
-                                    VALUES ({', '.join(['%s'] * len(columns))}, NOW())
-                                    ON CONFLICT (tmdb_id, item_type) DO UPDATE SET {', '.join(update_clauses)}
-                                """
-                                cursor.execute(sql, tuple(metadata.values()))
-                            conn.commit()
-                    logger.info(f"  ➜ {log_prefix} [增量模式] 成功将 {len(metadata_batch)} 个新分集记录同步到数据库。")
-                return
+                    # 3. 批量写入数据库
+                    if metadata_batch:
+                        with get_central_db_connection() as conn:
+                            with conn.cursor() as cursor:
+                                # ... (这里可以复用 task_populate_metadata_cache 中的批量写入逻辑)
+                                # 为了简化，我们这里直接循环执行，对于少量分集追加性能足够
+                                for metadata in metadata_batch:
+                                    columns = list(metadata.keys())
+                                    update_clauses = [f"{col} = EXCLUDED.{col}" for col in columns if col not in ['tmdb_id', 'item_type']]
+                                    update_clauses.append("last_synced_at = NOW()")
+                                    sql = f"""
+                                        INSERT INTO media_metadata ({', '.join(columns)}, last_synced_at)
+                                        VALUES ({', '.join(['%s'] * len(columns))}, NOW())
+                                        ON CONFLICT (tmdb_id, item_type) DO UPDATE SET {', '.join(update_clauses)}
+                                    """
+                                    cursor.execute(sql, tuple(metadata.values()))
+                                conn.commit()
+                        logger.info(f"  ➜ {log_prefix} [增量模式] 成功将 {len(metadata_batch)} 个新分集记录同步到数据库。")
+                    return
 
             # ======================================================================
             # 模式二：常规元数据刷新 (全新增强逻辑)
