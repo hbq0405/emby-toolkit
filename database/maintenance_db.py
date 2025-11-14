@@ -223,6 +223,9 @@ def get_dashboard_stats() -> dict:
         (SELECT COUNT(*) FROM media_metadata WHERE watching_status = 'Watching') AS watchlist_active,
         (SELECT COUNT(*) FROM media_metadata WHERE watching_status = 'Paused') AS watchlist_paused,
         (SELECT COUNT(*) FROM actor_subscriptions WHERE status = 'active') AS actor_subscriptions_active,
+        (SELECT COUNT(*) FROM media_metadata WHERE subscription_sources_json @> '[{"type": "actor_subscription"}]'::jsonb) AS actor_works_total,
+        (SELECT COUNT(*) FROM media_metadata WHERE subscription_sources_json @> '[{"type": "actor_subscription"}]'::jsonb AND in_library = TRUE) AS actor_works_in_library,
+        
         (SELECT COUNT(*) FROM resubscribe_cache WHERE status ILIKE 'needed') AS resubscribe_pending,
         (SELECT COUNT(*) FROM collections_info WHERE has_missing = TRUE) AS collections_with_missing;
     """
