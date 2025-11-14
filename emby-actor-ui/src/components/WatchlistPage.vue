@@ -117,7 +117,7 @@
                 class="card-checkbox"
               />
               <div class="card-poster-container">
-                <n-image lazy :src="getPosterUrl(item.tmdb_id)" class="card-poster" object-fit="cover">
+                <n-image lazy :src="getPosterUrl(item.emby_item_ids_json)" class="card-poster" object-fit="cover">
                   <template #placeholder><div class="poster-placeholder"><n-icon :component="TvIcon" size="32" /></div></template>
                 </n-image>
               </div>
@@ -182,7 +182,7 @@
                     立即刷新此剧集
                   </n-tooltip>
                   <n-tooltip>
-                    <template #trigger><n-button text @click="openInEmby(item.tmdb_id)"><template #icon><n-icon :component="EmbyIcon" size="18" /></template></n-button></template>
+                    <template #trigger><n-button text @click="openInEmby(item.emby_item_ids_json)"><template #icon><n-icon :component="EmbyIcon" size="18" /></template></n-button></template>
                     在 Emby 中打开
                   </n-tooltip>
                   <n-tooltip>
