@@ -440,6 +440,57 @@ def match_and_update_list_collections_on_item_add(new_item_tmdb_id: str, new_ite
         # with conn: 会自动回滚
         raise
 
+def append_item_to_filter_collection_db(collection_id: int, new_item_tmdb_id: str, new_item_emby_id: str, collection_name: str, item_name: str) -> bool:
+    """
+    【V2 - 新架构修复版】
+    当新媒体项匹配“筛选类”合集时，更新数据库状态。
+    - generated_media_info_json 字段现在只追加 TMDB ID 字符串。
+    - in_library_count 直接使用数组的长度。
+    """
+    
+    try:
+        with get_db_connection() as conn:
+            with conn.cursor() as cursor:
+                # 使用 FOR UPDATE 锁定行，防止并发写入问题
+                cursor.execute("SELECT generated_media_info_json FROM custom_collections WHERE id = %s FOR UPDATE", (collection_id,))
+                row = cursor.fetchone()
+                if not row:
+                    logger.warning(f"尝试向筛选合集 (DB ID: {collection_id}) 追加媒体项，但未找到该合集。")
+                    return False
+
+                # ★★★ 核心修复 1/3: 将 JSON 字段解析为 TMDB ID 字符串列表 ★★★
+                tmdb_id_list = row.get('generated_media_info_json') or []
+                if not isinstance(tmdb_id_list, list):
+                    logger.warning(f"合集《{collection_name}》的缓存格式不正确，将被重置。")
+                    tmdb_id_list = []
+                
+                # 防重复检查
+                if str(new_item_tmdb_id) in tmdb_id_list:
+                    logger.debug(f"媒体项 (TMDb ID: {new_item_tmdb_id}) 已存在于合集《{collection_name}》的缓存中，跳过追加。")
+                    return True
+
+                # ★★★ 核心修复 2/3: 只追加 TMDB ID 字符串 ★★★
+                tmdb_id_list.append(str(new_item_tmdb_id))
+                
+                # ★★★ 核心修复 3/3: 入库数直接就是列表的新长度 ★★★
+                new_in_library_count = len(tmdb_id_list)
+                
+                new_json_data = json.dumps(tmdb_id_list, ensure_ascii=False)
+                
+                cursor.execute(
+                    "UPDATE custom_collections SET generated_media_info_json = %s, in_library_count = %s WHERE id = %s",
+                    (new_json_data, new_in_library_count, collection_id)
+                )
+                
+                logger.info(f"  ➜ 数据库状态同步：已将新媒体项《{item_name}》追加到筛选合集《{collection_name}》的缓存中。")
+                # with conn: 会自动提交事务
+                return True
+
+    except Exception as e:
+        # with conn: 会自动回滚事务
+        logger.error(f"向筛选合集《{collection_name}》的缓存追加媒体项时发生数据库错误: {e}", exc_info=True)
+        return False
+
 def update_user_caches_on_item_add(
     new_item_emby_id: str, 
     new_item_tmdb_id: str, 

@@ -421,8 +421,17 @@ def cleanup_deleted_media_item(item_id: str, item_name: str, item_type: str, ser
                     logger.info(f"  ➜ 已在 media_metadata 中将 {cursor.rowcount} 个相关记录标记为“不在库中”。")
 
                 # 3. 清理 watchlist (假设 watchlist.item_id 现在是 tmdb_id)
-                cursor.execute("DELETE FROM watchlist WHERE tmdb_id = %s", (target_tmdb_id,))
-                if cursor.rowcount > 0: logger.info(f"  ➜ 已从智能追剧列表中移除。")
+                sql_reset_watchlist = """
+                    UPDATE media_metadata
+                    SET watching_status = 'NONE'
+                    WHERE 
+                        tmdb_id = %s 
+                        AND item_type = 'Series' 
+                        AND watching_status != 'NONE'
+                """
+                cursor.execute(sql_reset_watchlist, (target_tmdb_id,))
+                if cursor.rowcount > 0:
+                    logger.info(f"  ➜ 已将该剧集的智能追剧状态重置为'NONE'。")
 
                 # 4. 清理 resubscribe_cache (假设 resubscribe_cache.tmdb_id 存在)
                 cursor.execute("DELETE FROM resubscribe_cache WHERE tmdb_id = %s", (target_tmdb_id,))
