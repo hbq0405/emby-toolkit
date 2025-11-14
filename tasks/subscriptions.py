@@ -207,7 +207,7 @@ def task_manual_subscribe_batch(processor, subscribe_requests: List[Dict]):
             task_manager.update_status_from_thread(100, "任务失败：请求中未包含有效的 tmdb_id。")
             return
             
-        media_details_map = media_db.get_media_details_by_tmdb_ids([tmdb_id])
+        media_details_map = media_db.get_media_details_by_tmdb_ids(tmdb_ids)
         config = config_manager.APP_CONFIG
         tmdb_api_key = config.get(constants.CONFIG_OPTION_TMDB_API_KEY)
         
