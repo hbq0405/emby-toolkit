@@ -417,6 +417,7 @@ def task_populate_metadata_cache(processor, batch_size: int = 50, force_full_upd
                     "countries_json": json.dumps(countries, ensure_ascii=False),
                     "keywords_json": json.dumps(keywords, ensure_ascii=False),
                     "in_library": True,
+                    "subscription_status": "NONE",
                     "emby_item_ids_json": json.dumps([item.get('Id')], ensure_ascii=False),
                     "official_rating": item.get('OfficialRating'),
                     "unified_rating": get_unified_rating(item.get('OfficialRating'))
@@ -457,7 +458,7 @@ def task_populate_metadata_cache(processor, batch_size: int = 50, force_full_upd
 
                     for child in children:
                         child_type = child.get("Type")
-                        child_record = { "in_library": True, "emby_item_ids_json": json.dumps([child.get('Id')]) }
+                        child_record = { "in_library": True, "subscription_status": "NONE", "emby_item_ids_json": json.dumps([child.get('Id')]) }
                         
                         s_num = child.get("ParentIndexNumber") if child_type == "Episode" else child.get("IndexNumber")
                         e_num = child.get("IndexNumber") if child_type == "Episode" else None
