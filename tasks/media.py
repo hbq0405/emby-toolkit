@@ -327,7 +327,6 @@ def task_populate_metadata_cache(processor, batch_size: int = 50, force_full_upd
                 logger.info("任务在 TMDb 详情获取后被中止。")
                 break
 
-            # ★★★ 改动点 3: 构建元数据批次的核心逻辑完全重写 ★★★
             metadata_batch = []
             for item in batch_items:
                 if processor.is_stop_requested(): break
@@ -335,71 +334,13 @@ def task_populate_metadata_cache(processor, batch_size: int = 50, force_full_upd
                 tmdb_id = item.get("ProviderIds", {}).get("Tmdb")
                 if not tmdb_id: continue
 
-                full_details_emby = item
+                # 从map中获取TMDb详情，这里可能是None
                 tmdb_details = tmdb_details_map.get(tmdb_id)
 
-                directors, countries = [], []
-                if tmdb_details:
-                    item_type = full_details_emby.get("Type")
-                    if item_type == 'Movie':
-                        credits_data = tmdb_details.get("credits", {}) or tmdb_details.get("casts", {})
-                        if credits_data:
-                            directors = [{'id': p.get('id'), 'name': p.get('name')} for p in credits_data.get('crew', []) if p.get('job') == 'Director']
-                        # --- 智能化判断所属国家/地区 ---
-                        country_objects = tmdb_details.get('production_countries', [])
-                        country_codes = [c.get('iso_3166_1') for c in country_objects if c.get('iso_3166_1')]
-                        countries = translate_country_list(country_codes)
-                    elif item_type == 'Series':
-                        credits_data = tmdb_details.get("credits", {})
-                        if credits_data:
-                            directors = [{'id': p.get('id'), 'name': p.get('name')} for p in credits_data.get('crew', []) if p.get('job') == 'Director']
-                        if not directors: directors = [{'id': c.get('id'), 'name': c.get('name')} for c in tmdb_details.get('created_by', [])]
-                        countries = translate_country_list(tmdb_details.get('origin_country', []))
-
-                studios = [s['Name'] for s in full_details_emby.get('Studios', []) if s.get('Name')]
-                tags = [tag['Name'] for tag in full_details_emby.get('TagItems', []) if tag.get('Name')]
-                
-                # ★★★ 修复 1/2: 修正日期处理逻辑 ★★★
-                # 如果日期字符串存在，则取 'T' 之前的部分；如果不存在，则直接为 None
-                premiere_date_str = full_details_emby.get('PremiereDate')
+                # --- 步骤 A: 建立一个“保底”的记录，只使用绝对安全的Emby数据 ---
+                premiere_date_str = item.get('PremiereDate')
                 release_date = premiere_date_str.split('T')[0] if premiere_date_str else None
                 
-                date_added = full_details_emby.get('DateCreated') or None
-
-                # ★★★ TMDb 详情中提取关键词★★★
-                keywords = []
-                if tmdb_details:
-                    keyword_list = []
-                    item_type = full_details_emby.get("Type")
-                    
-                    if item_type == 'Movie':
-                        # 优先尝试从嵌套结构 'keywords': {'keywords': [...]} 中获取
-                        keywords_obj = tmdb_details.get("keywords", {})
-                        if isinstance(keywords_obj, dict):
-                            keyword_list = keywords_obj.get("keywords", [])
-                        
-                        # 如果上面没取到，再尝试直接从顶层 'keywords': [...] 获取 (增加兼容性)
-                        if not keyword_list and isinstance(tmdb_details.get("keywords"), list):
-                            keyword_list = tmdb_details.get("keywords", [])
-
-                    elif item_type == 'Series':
-                        # 优先尝试从嵌套结构 'keywords': {'results': [...]} 中获取
-                        keywords_obj = tmdb_details.get("keywords", {})
-                        if isinstance(keywords_obj, dict):
-                            keyword_list = keywords_obj.get("results", [])
-
-                        # 如果上面没取到，再尝试直接从顶层 'results': [...] 获取 (增加兼容性)
-                        if not keyword_list and isinstance(tmdb_details.get("results"), list):
-                            keyword_list = tmdb_details.get("results", [])
-                    
-                    # 统一处理提取到的 keyword_list
-                    if isinstance(keyword_list, list):
-                        keywords = [k['name'] for k in keyword_list if k.get('name')]
-
-                official_rating = full_details_emby.get('OfficialRating') # 获取原始分级，可能为 None
-                unified_rating = get_unified_rating(official_rating)  
-                
-                # 构建顶层记录
                 top_level_record = {
                     "tmdb_id": tmdb_id,
                     "item_type": item.get("Type"),
@@ -407,22 +348,118 @@ def task_populate_metadata_cache(processor, batch_size: int = 50, force_full_upd
                     "original_title": item.get('OriginalTitle'),
                     "release_year": item.get('ProductionYear'),
                     "rating": item.get('CommunityRating'),
-                    "overview": tmdb_details.get('overview') or item.get('Overview'),
-                    "release_date": item.get('PremiereDate', '').split('T')[0] if item.get('PremiereDate') else None,
+                    "overview": item.get('Overview'), # 先用Emby的简介作为保底
+                    "release_date": release_date,
                     "date_added": item.get('DateCreated'),
-                    "poster_path": tmdb_details.get('poster_path'),
                     "genres_json": json.dumps(item.get('Genres', []), ensure_ascii=False),
-                    "studios_json": json.dumps([s['name'] for s in tmdb_details.get('production_companies', [])], ensure_ascii=False),
-                    "directors_json": json.dumps(directors, ensure_ascii=False),
-                    "countries_json": json.dumps(countries, ensure_ascii=False),
-                    "keywords_json": json.dumps(keywords, ensure_ascii=False),
                     "in_library": True,
                     "subscription_status": "NONE",
                     "emby_item_ids_json": json.dumps([item.get('Id')], ensure_ascii=False),
                     "official_rating": item.get('OfficialRating'),
                     "unified_rating": get_unified_rating(item.get('OfficialRating'))
                 }
+
+                # --- 步骤 B: 如果成功获取到TMDb详情，就用它来“增强”和“覆盖”保底记录 ---
+                if tmdb_details:
+                    # 安全地覆盖或补充字段
+                    top_level_record['overview'] = tmdb_details.get('overview') or item.get('Overview')
+                    top_level_record['poster_path'] = tmdb_details.get('poster_path')
+                    top_level_record['studios_json'] = json.dumps([s['name'] for s in tmdb_details.get('production_companies', [])], ensure_ascii=False)
+
+                    # 计算导演、国家、关键词
+                    directors, countries, keywords = [], [], []
+                    item_type = item.get("Type")
+                    if item_type == 'Movie':
+                        credits_data = tmdb_details.get("credits", {}) or tmdb_details.get("casts", {})
+                        directors = [{'id': p.get('id'), 'name': p.get('name')} for p in credits_data.get('crew', []) if p.get('job') == 'Director']
+                        country_codes = [c.get('iso_3166_1') for c in tmdb_details.get('production_countries', [])]
+                        countries = translate_country_list(country_codes)
+                        keywords_data = tmdb_details.get('keywords', {})
+                        keyword_list = keywords_data.get('keywords', []) if isinstance(keywords_data, dict) else []
+                        keywords = [k['name'] for k in keyword_list if k.get('name')]
+                    elif item_type == 'Series':
+                        directors = [{'id': c.get('id'), 'name': c.get('name')} for c in tmdb_details.get('created_by', [])]
+                        countries = translate_country_list(tmdb_details.get('origin_country', []))
+                        keywords_data = tmdb_details.get('keywords', {})
+                        keyword_list = keywords_data.get('results', []) if isinstance(keywords_data, dict) else []
+                        keywords = [k['name'] for k in keyword_list if k.get('name')]
+                    
+                    top_level_record['directors_json'] = json.dumps(directors, ensure_ascii=False)
+                    top_level_record['countries_json'] = json.dumps(countries, ensure_ascii=False)
+                    top_level_record['keywords_json'] = json.dumps(keywords, ensure_ascii=False)
+                else:
+                    # --- 步骤 C: 如果没有TMDb详情，为那些必须从TMDb获取的字段提供安全的空值 ---
+                    logger.warning(f"  ➜ 未能从 TMDb 获取到 TMDB ID: {tmdb_id} ('{item.get('Name')}') 的详情，将仅使用 Emby 元数据。")
+                    top_level_record['poster_path'] = None
+                    top_level_record['studios_json'] = json.dumps([s['Name'] for s in item.get('Studios', [])], ensure_ascii=False) # 回退到Emby的制片厂
+                    top_level_record['directors_json'] = '[]'
+                    top_level_record['countries_json'] = '[]'
+                    top_level_record['keywords_json'] = '[]'
+
                 metadata_batch.append(top_level_record)
+
+                # --- 步骤 D: 处理剧集子项目 (这部分是您原来的完整逻辑，现在被安全地保留了) ---
+                if item.get("Type") == "Series":
+                    series_id = item.get('Id')
+                    series_tmdb_id = tmdb_id
+                    
+                    children = emby.get_series_children(
+                        series_id=series_id, base_url=processor.emby_url, api_key=processor.emby_api_key,
+                        user_id=processor.emby_user_id, include_item_types="Season,Episode",
+                        fields="Id,Type,ParentIndexNumber,IndexNumber,ProviderIds,Name,PremiereDate,Overview"
+                    )
+                    if not children:
+                        logger.warning(f"  ➜ 无法获取剧集 '{item.get('Name')}' 的子项目，跳过层级同步。")
+                        continue
+
+                    tmdb_series_details = tmdb.get_tv_details(series_tmdb_id, processor.tmdb_api_key)
+                    
+                    tmdb_children_map = {}
+                    if tmdb_series_details and 'seasons' in tmdb_series_details:
+                        for season_info in tmdb_series_details['seasons']:
+                            s_num = season_info.get('season_number')
+                            tmdb_children_map[f"S{s_num}"] = season_info
+                            tmdb_season_details = tmdb.get_tv_season_details(series_tmdb_id, s_num, processor.tmdb_api_key)
+                            if tmdb_season_details and 'episodes' in tmdb_season_details:
+                                for episode_info in tmdb_season_details['episodes']:
+                                    e_num = episode_info.get('episode_number')
+                                    tmdb_children_map[f"S{s_num}E{e_num}"] = episode_info
+
+                    for child in children:
+                        child_type = child.get("Type")
+                        child_record = {
+                            "in_library": True,
+                            "subscription_status": "NONE",
+                            "emby_item_ids_json": json.dumps([child.get('Id')])
+                        }
+                        
+                        s_num = child.get("ParentIndexNumber") if child_type == "Episode" else child.get("IndexNumber")
+                        e_num = child.get("IndexNumber") if child_type == "Episode" else None
+                        
+                        lookup_key = f"S{s_num}E{e_num}" if e_num is not None else f"S{s_num}"
+                        tmdb_child_info = tmdb_children_map.get(lookup_key)
+
+                        if tmdb_child_info:
+                            child_record.update({
+                                "tmdb_id": str(tmdb_child_info.get('id')),
+                                "title": tmdb_child_info.get('name'),
+                                "release_date": tmdb_child_info.get('air_date'),
+                                "overview": tmdb_child_info.get('overview')
+                            })
+                        else:
+                            child_record.update({
+                                "tmdb_id": f"{series_tmdb_id}-{lookup_key}",
+                                "title": child.get('Name'),
+                                "overview": child.get('Overview')
+                            })
+
+                        child_record.update({
+                            "item_type": child_type,
+                            "parent_series_tmdb_id": series_tmdb_id,
+                            "season_number": s_num,
+                            "episode_number": e_num
+                        })
+                        metadata_batch.append(child_record)
 
                 # --- 2. 如果是剧集，则处理其所有子项目 (Season, Episode) ---
                 if item.get("Type") == "Series":
