@@ -437,8 +437,24 @@ def cleanup_deleted_media_item(item_id: str, item_name: str, item_type: str, ser
                 cursor.execute("DELETE FROM resubscribe_cache WHERE tmdb_id = %s", (target_tmdb_id,))
                 if cursor.rowcount > 0: logger.info(f"  ➜ 已从媒体洗版缓存中移除。")
 
-                # 5. 清理自定义合集缓存 (调用新的、基于 tmdb_id 的函数)
-                # 这个函数内部会处理自己的事务，所以我们在这里提交之前的操作
+                # 5. 清理用户权限缓存 
+                sql_cleanup_user_cache = """
+                    UPDATE user_collection_cache
+                    SET 
+                        visible_emby_ids_json = (
+                            SELECT jsonb_agg(elem)
+                            FROM jsonb_array_elements_text(visible_emby_ids_json) AS elem
+                            WHERE elem != %s
+                        ),
+                        total_count = total_count - 1
+                    WHERE 
+                        visible_emby_ids_json @> %s::jsonb;
+                """
+                # 使用被删除项的 Emby Item ID (函数入口传入的 item_id) 来执行清理
+                cursor.execute(sql_cleanup_user_cache, (item_id, json.dumps([item_id])))
+                if cursor.rowcount > 0:
+                    logger.info(f"  ➜ 已从 {cursor.rowcount} 条用户权限缓存中移除了已被删除的 Emby ID: {item_id}。")
+
                 conn.commit()
 
         # 在主事务之外调用，因为它自己管理事务
