@@ -71,6 +71,14 @@
                   </template>
                   {{ stats.media_library?.series_in_library || 0 }}
                 </n-statistic>
+                <n-statistic label="总集数" class="centered-statistic">
+                  <template #prefix>
+                    <n-icon-wrapper :size="20" :border-radius="5" color="#99999944">
+                      <n-icon :size="14" :component="AlbumsOutline" color="#999999" />
+                    </n-icon-wrapper>
+                  </template>
+                  {{ stats.media_library?.episodes_in_library || 0 }}
+                </n-statistic>
                 <n-statistic label="预缓存" class="centered-statistic">
                   <template #prefix>
                     <n-icon-wrapper :size="20" :border-radius="5" color="#FFCC3344">
@@ -211,7 +219,8 @@ import {
   TvOutline as TvIcon, 
   FolderOpenOutline, 
   ReaderOutline, 
-  ArchiveOutline 
+  ArchiveOutline,
+  AlbumsOutline 
 } from '@vicons/ionicons5';
 import LogViewer from './LogViewer.vue';
 
