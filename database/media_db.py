@@ -254,7 +254,8 @@ def get_all_non_library_media() -> List[Dict[str, Any]]:
             m1.subscription_status, 
             m1.ignore_reason, 
             m1.subscription_sources_json,
-            m1.first_requested_at
+            m1.first_requested_at,
+            m1.last_subscribed_at
         FROM 
             media_metadata AS m1
         LEFT JOIN 

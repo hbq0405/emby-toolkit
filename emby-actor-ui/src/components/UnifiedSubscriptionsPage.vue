@@ -98,7 +98,10 @@
                     <n-text :depth="3" class="info-text">
                       <n-icon :component="CalendarIcon" /> {{ formatAirDate(item.release_date) }}
                     </n-text>
-                    <n-text :depth="3" class="info-text">
+                    <n-text v-if="item.subscription_status === 'SUBSCRIBED'" :depth="3" class="info-text">
+                      <n-icon :component="TimeIcon" /> 订阅于: {{ formatTimestamp(item.last_subscribed_at) }}
+                    </n-text>
+                    <n-text v-else :depth="3" class="info-text">
                       <n-icon :component="TimeIcon" /> 请求于: {{ formatTimestamp(item.first_requested_at) }}
                     </n-text>
                     <!-- ★★★ 新增：显示详细来源 ★★★ -->
@@ -195,11 +198,14 @@ const typeFilterOptions = [
   { label: '电影', value: 'Movie' },
   { label: '剧集', value: 'Series' },
 ];
-const sortKeyOptions = [
-  { label: '按请求时间', value: 'first_requested_at' },
+const sortKeyOptions = computed(() => [
+  { 
+    label: filterStatus.value === 'SUBSCRIBED' ? '按订阅时间' : '按请求时间', 
+    value: 'first_requested_at' // value 保持不变，作为排序逻辑的 key
+  },
   { label: '按媒体名称', value: 'title' },
   { label: '按发行日期', value: 'release_date' },
-];
+]);
 
 const SOURCE_TYPE_MAP = {
   'user_request': '用户请求',
@@ -288,8 +294,14 @@ const filteredItems = computed(() => {
 
       case 'first_requested_at':
       default:
-        valA = a.first_requested_at ? new Date(a.first_requested_at).getTime() : 0;
-        valB = b.first_requested_at ? new Date(b.first_requested_at).getTime() : 0;
+        valA = (a.subscription_status === 'SUBSCRIBED' && a.last_subscribed_at)
+          ? new Date(a.last_subscribed_at).getTime()
+          : (a.first_requested_at ? new Date(a.first_requested_at).getTime() : 0);
+        
+        valB = (b.subscription_status === 'SUBSCRIBED' && b.last_subscribed_at)
+          ? new Date(b.last_subscribed_at).getTime()
+          : (b.first_requested_at ? new Date(b.first_requested_at).getTime() : 0);
+          
         return sortOrder.value === 'asc' ? valA - valB : valB - valA;
     }
   });

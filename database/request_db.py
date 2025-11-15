@@ -206,15 +206,18 @@ def set_media_status_subscribed(
                 sql = """
                     INSERT INTO media_metadata (
                         tmdb_id, item_type, subscription_status, subscription_sources_json, first_requested_at,
+                        last_subscribed_at, 
                         title, original_title, release_date, poster_path, season_number, parent_series_tmdb_id, overview
                     ) VALUES (
                         %(tmdb_id)s, %(item_type)s, 'SUBSCRIBED', %(source)s::jsonb, NOW(),
+                        NOW(),
                         %(title)s, %(original_title)s, %(release_date)s, %(poster_path)s, %(season_number)s, %(parent_series_tmdb_id)s, %(overview)s
                     )
                     ON CONFLICT (tmdb_id, item_type) DO UPDATE SET
                         subscription_status = 'SUBSCRIBED',
                         subscription_sources_json = media_metadata.subscription_sources_json || EXCLUDED.subscription_sources_json,
                         first_requested_at = COALESCE(media_metadata.first_requested_at, EXCLUDED.first_requested_at),
+                        last_subscribed_at = NOW(),
                         last_synced_at = NOW(),
                         ignore_reason = NULL,
                         parent_series_tmdb_id = EXCLUDED.parent_series_tmdb_id
