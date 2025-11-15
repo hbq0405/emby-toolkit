@@ -17,7 +17,6 @@ upstream redirect_service {
 server {
     listen {{ NGINX_LISTEN_PORT }};
     server_name your.domain.com;
-    client_max_body_size {{ NGINX_MAX_BODY_SIZE }};
 
     # --- 基础代理参数 ---
     proxy_set_header Host $host;

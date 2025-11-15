@@ -666,22 +666,13 @@ const tableInfo = {
   'user_collection_cache': { cn: '用户权限缓存', isSharable: false }
 };
 
-// ★★★ START: 新增的依赖关系自动勾选逻辑 ★★★
-
-// 定义表之间的依赖关系
-// 键 (key) 是父表，值 (value) 是必须随之一起勾选的子表数组
-// 定义表之间的依赖关系 (这个可以保留或重新添加)
 const tableDependencies = {
-  // 演员订阅 -> 已追踪作品 (硬依赖)
   'actor_subscriptions': ['media_metadata'],
   'custom_collections': ['media_metadata'],
-  // Emby用户 -> 用户扩展信息 & 用户媒体数据 (硬依赖)
   'emby_users': ['user_media_data', 'emby_users_extended'],
-  // 权限模板 -> 邀请链接 (硬依赖)
   'user_templates': ['invitations']
 };
 
-// ★ 新增: 创建一个反向依赖映射，用于快速查找父表 (e.g., { 'media_metadata': 'person_identity_map' })
 const reverseTableDependencies = {};
 for (const parent in tableDependencies) {
   for (const child of tableDependencies[parent]) {
@@ -689,54 +680,29 @@ for (const parent in tableDependencies) {
   }
 }
 
-/**
- * 当清空表的复选框组选项变化时触发此函数。
- * @param {string[]} currentSelection - 组件传递过来的、当前所有已勾选项的数组。
- */
 const handleClearSelectionChange = (currentSelection) => {
-  // 使用 Set 数据结构可以更高效地处理和避免重复项
   const selectionSet = new Set(currentSelection);
-
-  // 遍历依赖规则
   for (const parentTable in tableDependencies) {
-    // 检查父表是否在当前的勾选集合中
     if (selectionSet.has(parentTable)) {
       const children = tableDependencies[parentTable];
-      // 遍历所有必须一起勾选的子表
       for (const childTable of children) {
-        // 如果子表不在集合中，就添加进去
         if (!selectionSet.has(childTable)) {
           selectionSet.add(childTable);
         }
       }
     }
   }
-
-  // 检查 Set 的大小是否和原始数组长度不同。
-  // 如果不同，说明我们添加了新的子表，需要更新 v-model。
   if (selectionSet.size !== tablesToClear.value.length) {
-    // 将 Set 转回数组，并更新到 ref 上
     tablesToClear.value = Array.from(selectionSet);
   }
 };
 
-/**
- * ★ 新增: 当【导入表】的复选框组选项变化时触发。
- * 逻辑：双向依赖。
- * 1. 勾选父表 -> 自动勾选子表。
- * 2. 勾选子表 -> 自动勾选父表。
- * @param {string[]} currentSelection - 当前所有已勾选项的数组。
- */
 const handleImportSelectionChange = (currentSelection) => {
   const selectionSet = new Set(currentSelection);
   let changed = true;
-
-  // 使用循环来处理嵌套依赖，直到一次循环中不再有任何变化
   while (changed) {
     changed = false;
     const originalSize = selectionSet.size;
-
-    // 1. 正向依赖检查 (父 -> 子)
     for (const parentTable in tableDependencies) {
       if (selectionSet.has(parentTable)) {
         for (const childTable of tableDependencies[parentTable]) {
@@ -744,59 +710,38 @@ const handleImportSelectionChange = (currentSelection) => {
         }
       }
     }
-
-    // 2. 反向依赖检查 (子 -> 父)
     for (const childTable in reverseTableDependencies) {
       if (selectionSet.has(childTable)) {
         const parentTable = reverseTableDependencies[childTable];
         selectionSet.add(parentTable);
       }
     }
-    
-    // 如果集合大小发生变化，说明本轮循环添加了新项目，需要再循环一次
     if (selectionSet.size > originalSize) {
       changed = true;
     }
   }
-  
-  // 如果最终的集合与 v-model 的值不一致，则更新 v-model
   if (selectionSet.size !== tablesToImport.value.length) {
     tablesToImport.value = Array.from(selectionSet);
   }
 };
 
-// =================================================================
-// ★★★ END: 依赖关系联动勾选逻辑 ★★★
-// =================================================================
-
-
 const formRef = ref(null);
-const formRules = {
-    trigger: ['input', 'blur']
-};
+const formRules = { trigger: ['input', 'blur'] };
 const { configModel, loadingConfig, savingConfig, configError, handleSaveConfig } = useConfig();
 const message = useMessage();
 const dialog = useDialog();
 const isResettingMappings = ref(false);
 const resetMappingsModalVisible = ref(false);
-
-// --- Emby 相关的 Refs ---
 const availableLibraries = ref([]);
 const loadingLibraries = ref(false);
 const libraryError = ref(null);
 const componentIsMounted = ref(false);
-// --- 反代相关
 const nativeAvailableLibraries = ref([]);
 const loadingNativeLibraries = ref(false);
 const nativeLibraryError = ref(null);
-
 let unwatchGlobal = null;
 let unwatchEmbyConfig = null;
-
-// --- 代理测试 ---
 const isTestingProxy = ref(false);
-
-// --- Emby 用户ID 校验逻辑 ---
 const embyUserIdRegex = /^[a-f0-9]{32}$/i;
 const isInvalidUserId = computed(() => {
   if (!configModel.value || !configModel.value.emby_user_id) return false;
@@ -811,51 +756,31 @@ const embyUserIdRule = {
     return true;
   }
 };
-
-// 新增：显示重置映射表模态框的函数
-const showResetMappingsModal = () => {
-  resetMappingsModalVisible.value = true;
-};
-
-// 修改：原有的处理函数，现在需要增加关闭模态框的逻辑
+const showResetMappingsModal = () => { resetMappingsModalVisible.value = true; };
 const handleResetActorMappings = async () => {
   isResettingMappings.value = true;
   try {
     const response = await axios.post('/api/actions/prepare-for-library-rebuild');
     message.success(response.data.message || 'Emby数据已成功重置！');
-    // 成功后关闭模态框
     resetMappingsModalVisible.value = false;
   } catch (error) {
     message.error(error.response?.data?.error || '重置失败，请检查后端日志。');
-    // 失败时保持模态框打开，方便用户重试
   } finally {
     isResettingMappings.value = false;
   }
 };
-
-// ★★★ 新增计算属性，用于判断 MoviePilot 是否配置完整 ★★★
 const isMoviePilotConfigured = computed(() => {
   if (!configModel.value) return false;
-  return !!(
-    configModel.value.moviepilot_url &&
-    configModel.value.moviepilot_username &&
-    configModel.value.moviepilot_password
-  );
+  return !!(configModel.value.moviepilot_url && configModel.value.moviepilot_username && configModel.value.moviepilot_password);
 });
-
-// ★★★ 新增：测试代理连接的方法 ★★★
 const testProxy = async () => {
   if (!configModel.value.network_http_proxy_url) {
     message.warning('请先填写 HTTP 代理地址再进行测试。');
     return;
   }
-
   isTestingProxy.value = true;
   try {
-    const response = await axios.post('/api/proxy/test', {
-      url: configModel.value.network_http_proxy_url
-    });
-
+    const response = await axios.post('/api/proxy/test', { url: configModel.value.network_http_proxy_url });
     if (response.data.success) {
       message.success(response.data.message);
     } else {
@@ -868,8 +793,6 @@ const testProxy = async () => {
     isTestingProxy.value = false;
   }
 };
-
-// --- 反代 合并媒体库 ---
 const fetchNativeViewsSimple = async () => {
   if (!configModel.value?.emby_server_url || !configModel.value?.emby_api_key || !configModel.value?.emby_user_id) {
     nativeAvailableLibraries.value = [];
@@ -879,17 +802,9 @@ const fetchNativeViewsSimple = async () => {
   nativeLibraryError.value = null;
   try {
     const userId = configModel.value.emby_user_id;
-    const response = await axios.get(`/api/emby/user/${userId}/views`, {
-      headers: {
-        'X-Emby-Token': configModel.value.emby_api_key,
-      },
-    });
+    const response = await axios.get(`/api/emby/user/${userId}/views`, { headers: { 'X-Emby-Token': configModel.value.emby_api_key } });
     const items = response.data?.Items || [];
-    nativeAvailableLibraries.value = items.map(i => ({
-      Id: i.Id,
-      Name: i.Name,
-      CollectionType: i.CollectionType,
-    }));
+    nativeAvailableLibraries.value = items.map(i => ({ Id: i.Id, Name: i.Name, CollectionType: i.CollectionType }));
     if (nativeAvailableLibraries.value.length === 0) nativeLibraryError.value = "未找到原生媒体库。";
   } catch (err) {
     nativeAvailableLibraries.value = [];
@@ -898,48 +813,23 @@ const fetchNativeViewsSimple = async () => {
     loadingNativeLibraries.value = false;
   }
 };
-
-// ★★★ 新增代码：添加这个 watch 监听 ★★★
-watch(
-  () => configModel.value?.refresh_emby_after_update,
-  (isRefreshEnabled) => {
-    // 确保 configModel 已经加载
-    if (configModel.value) {
-      // 如果“刷新”开关被关闭了
-      if (!isRefreshEnabled) {
-        // 自动将“锁定”开关也关闭
-        configModel.value.auto_lock_cast_after_update = false;
-      }
-    }
+watch(() => configModel.value?.refresh_emby_after_update, (isRefreshEnabled) => {
+  if (configModel.value && !isRefreshEnabled) {
+    configModel.value.auto_lock_cast_after_update = false;
   }
-);
-
-watch(
-  () => [
-    configModel.value?.proxy_enabled,
-    configModel.value?.proxy_merge_native_libraries,
-    configModel.value?.emby_server_url,
-    configModel.value?.emby_api_key,
-    configModel.value?.emby_user_id,
-  ],
-  ([proxyEnabled, mergeNative, url, apiKey, userId]) => {
-    if (proxyEnabled && mergeNative && url && apiKey && userId) {
-      fetchNativeViewsSimple();
-    } else {
-      nativeAvailableLibraries.value = [];
-    }
-  },
-  { immediate: true }
-);
-
-// --- AI 服务商逻辑 ---
+});
+watch(() => [configModel.value?.proxy_enabled, configModel.value?.proxy_merge_native_libraries, configModel.value?.emby_server_url, configModel.value?.emby_api_key, configModel.value?.emby_user_id], ([proxyEnabled, mergeNative, url, apiKey, userId]) => {
+  if (proxyEnabled && mergeNative && url && apiKey && userId) {
+    fetchNativeViewsSimple();
+  } else {
+    nativeAvailableLibraries.value = [];
+  }
+}, { immediate: true });
 const aiProviderOptions = ref([
   { label: 'OpenAI (及兼容服务)', value: 'openai' },
   { label: '智谱AI (ZhipuAI)', value: 'zhipuai' },
   { label: 'Google Gemini', value: 'gemini' },
 ]);
-
-// --- 数据管理逻辑 ---
 const isExporting = ref(false);
 const exportModalVisible = ref(false);
 const allDbTables = ref([]);
@@ -949,122 +839,64 @@ const importModalVisible = ref(false);
 const fileToImport = ref(null);
 const tablesInBackupFile = ref([]);
 const tablesToImport = ref([]);
-
-// 清空指定表相关状态
 const clearTablesModalVisible = ref(false);
 const tablesToClear = ref([]);
-
-// 新增状态变量，表示清空操作中
 const isClearing = ref(false);
 const isCorrecting = ref(false);
-
-// 显示清空指定表模态框
 const showClearTablesModal = async () => {
-  console.log('showClearTablesModal called');
   try {
     const response = await axios.get('/api/database/tables');
     allDbTables.value = response.data;
-    tablesToClear.value = []; // 默认不选择任何表
+    tablesToClear.value = [];
     clearTablesModalVisible.value = true;
-    console.log('Fetched tables:', allDbTables.value);
   } catch (error) {
-    console.error('Error fetching database tables:', error);
     message.error('无法获取数据库表列表，请检查后端日志。');
   }
 };
-
-// 处理清空指定表操作
 const handleClearTables = async () => {
-  // 1. 检查用户是否选择了任何表。
   if (tablesToClear.value.length === 0) {
-    // 理论上按钮是禁用的，但作为安全措施，还是加上判断。
     message.warning('请至少选择一个要清空的数据表。');
     return;
   }
-
-  // 2. 立即开始加载状态
   isClearing.value = true;
-
   try {
-    // 3. ★ 直接调用后端API，不再有任何中间弹窗 ★
-    const response = await axios.post('/api/actions/clear_tables', {
-      tables: tablesToClear.value
-    });
-
-    // 4. 操作成功
+    const response = await axios.post('/api/actions/clear_tables', { tables: tablesToClear.value });
     message.success(response.data.message || '成功清空所选数据表！');
-    
-    // 5. 关闭模态框并清空选择
     clearTablesModalVisible.value = false;
     tablesToClear.value = [];
-
   } catch (error) {
-    // 6. 操作失败，显示错误信息
-    console.error('清空操作API调用失败:', error);
     const errorMsg = error.response?.data?.error || '清空操作失败，请检查后端日志。';
     message.error(errorMsg);
-    // 失败时，模态框可以保持打开，方便用户重试
-
   } finally {
-    // 7. 无论成功还是失败，最终都结束加载状态
     isClearing.value = false;
   }
 };
-
 const selectAllForClear = () => tablesToClear.value = [...allDbTables.value];
 const deselectAllForClear = () => tablesToClear.value = [];
-
-// ▼▼▼ 修改点2: 优化重启逻辑 ▼▼▼
 const initialRestartableConfig = ref(null);
-
 const triggerRestart = async () => {
   message.info('正在发送重启指令...');
   try {
     await axios.post('/api/system/restart');
-    // 由于服务器会立即重启，这个请求很可能会因网络错误而失败。
-    // 我们不依赖于它的成功响应，而是直接显示成功消息。
     message.success('重启指令已发送，应用正在后台重启。请稍后手动刷新页面。', { duration: 10000 });
   } catch (error) {
-    // 如果错误有响应体，说明是后端在重启前就返回了明确的错误（如权限问题）
     if (error.response) {
       message.error(error.response.data.error || '发送重启请求失败，请查看日志。');
     } else {
-      // 如果没有响应体，这很可能是预期的网络中断错误，是重启成功的标志。
       message.success('重启指令已发送，应用正在后台重启。请稍后手动刷新页面。', { duration: 10000 });
     }
   }
 };
-
 const save = async () => {
   try {
     await formRef.value?.validate();
-
-    // ▼▼▼ 核心修正：在这里创建一个干净的、临时的配置对象副本 ▼▼▼
-    // 使用 JSON.parse(JSON.stringify(...)) 是一个简单有效的深拷贝方法，
-    // 它可以断开所有响应式引用，得到一个纯净的 JavaScript 对象。
     const cleanConfigPayload = JSON.parse(JSON.stringify(configModel.value));
-    
-    // ★★★ 关键净化步骤 ★★★
-    // 无论 configModel 内部发生了什么污染，我们在这里强制用当前组件的
-    // v-model 的值来覆盖 payload 中对应的字段，确保其绝对正确。
-    // 这一步看似多余，但它正是修复这个隐蔽BUG的关键。
     if (configModel.value) {
         cleanConfigPayload.libraries_to_process = configModel.value.libraries_to_process;
         cleanConfigPayload.proxy_native_view_selection = configModel.value.proxy_native_view_selection;
     }
-    // ▲▲▲ 修正结束 ▲▲▲
-
-    const restartNeeded =
-      initialRestartableConfig.value && (
-        cleanConfigPayload.proxy_port !== initialRestartableConfig.value.proxy_port ||
-        cleanConfigPayload.proxy_302_redirect_url !== initialRestartableConfig.value.proxy_302_redirect_url ||
-        cleanConfigPayload.log_rotation_size_mb !== initialRestartableConfig.value.log_rotation_size_mb ||
-        cleanConfigPayload.log_rotation_backup_count !== initialRestartableConfig.value.log_rotation_backup_count ||
-        cleanConfigPayload.emby_server_url !== initialRestartableConfig.value.emby_server_url
-      );
-
+    const restartNeeded = initialRestartableConfig.value && (cleanConfigPayload.proxy_port !== initialRestartableConfig.value.proxy_port || cleanConfigPayload.proxy_302_redirect_url !== initialRestartableConfig.value.proxy_302_redirect_url || cleanConfigPayload.log_rotation_size_mb !== initialRestartableConfig.value.log_rotation_size_mb || cleanConfigPayload.log_rotation_backup_count !== initialRestartableConfig.value.log_rotation_backup_count || cleanConfigPayload.emby_server_url !== initialRestartableConfig.value.emby_server_url);
     const performSaveAndUpdateState = async () => {
-      // ▼▼▼ 核心修正：将净化后的 cleanConfigPayload 传递给保存函数 ▼▼▼
       const success = await handleSaveConfig(cleanConfigPayload);
       if (success) {
         message.success('所有设置已成功保存！');
@@ -1080,7 +912,6 @@ const save = async () => {
       }
       return success;
     };
-
     if (restartNeeded) {
       dialog.warning({
         title: '需要重启容器',
@@ -1089,23 +920,17 @@ const save = async () => {
         negativeText: '仅保存',
         onPositiveClick: async () => {
           const saved = await performSaveAndUpdateState();
-          if (saved) {
-            await triggerRestart();
-          }
+          if (saved) { await triggerRestart(); }
         },
-        onNegativeClick: async () => {
-          await performSaveAndUpdateState();
-        }
+        onNegativeClick: async () => { await performSaveAndUpdateState(); }
       });
     } else {
       await performSaveAndUpdateState();
     }
   } catch (errors) {
-    console.log('表单验证失败:', errors);
     message.error('请检查表单中的必填项或错误项！');
   }
 };
-
 const fetchEmbyLibrariesInternal = async () => {
   if (!configModel.value.emby_server_url || !configModel.value.emby_api_key) {
     availableLibraries.value = [];
@@ -1125,35 +950,27 @@ const fetchEmbyLibrariesInternal = async () => {
     loadingLibraries.value = false;
   }
 };
-
 const showExportModal = async () => {
   try {
     const response = await axios.get('/api/database/tables');
     allDbTables.value = response.data;
-    tablesToExport.value = [...response.data]; // 默认全选所有表
+    tablesToExport.value = [...response.data];
     exportModalVisible.value = true;
   } catch (error) {
     message.error('无法获取数据库表列表，请检查后端日志。');
   }
 };
-
 const handleExport = async () => {
   isExporting.value = true;
   exportModalVisible.value = false;
   try {
-    const response = await axios.post('/api/database/export', {
-      tables: tablesToExport.value
-    }, {
-      responseType: 'blob',
-    });
-
+    const response = await axios.post('/api/database/export', { tables: tablesToExport.value }, { responseType: 'blob' });
     const contentDisposition = response.headers['content-disposition'];
     let filename = 'database_backup.json';
     if (contentDisposition) {
       const match = contentDisposition.match(/filename="?(.+?)"?$/);
       if (match?.[1]) filename = match[1];
     }
-
     const blobUrl = window.URL.createObjectURL(new Blob([response.data]));
     const link = document.createElement('a');
     link.href = blobUrl;
@@ -1162,7 +979,6 @@ const handleExport = async () => {
     link.click();
     link.remove();
     window.URL.revokeObjectURL(blobUrl);
-
     message.success('数据已开始导出下载！');
   } catch (err) {
     message.error('导出数据失败，请查看日志。');
@@ -1170,35 +986,61 @@ const handleExport = async () => {
     isExporting.value = false;
   }
 };
-
 const selectAllForExport = () => tablesToExport.value = [...allDbTables.value];
 const deselectAllForExport = () => tablesToExport.value = [];
 
+// ★★★ 核心修复：重写文件上传和解析逻辑 ★★★
 const handleCustomImportRequest = ({ file }) => {
+  const rawFile = file.file; // 获取原始 File 对象
+  if (!rawFile) {
+    message.error("未能获取到文件对象。");
+    return;
+  }
+
+  // 步骤 1: 立即将文件对象保存起来，用于后续上传
+  fileToImport.value = rawFile;
+
+  // 步骤 2: 读取文件内容，仅用于解析元数据（获取表列表）
   const reader = new FileReader();
   reader.onload = (e) => {
     try {
-      const content = JSON.parse(e.target.result);
-      if (!content.data || typeof content.data !== 'object') {
-        message.error('备份文件格式不正确：缺少 "data" 对象。');
-        return;
-      }
-      tablesInBackupFile.value = Object.keys(content.data);
-      if (tablesInBackupFile.value.length === 0) {
-        message.error('备份文件格式不正确： "data" 对象为空。');
-        return;
+      let contentText = e.target.result;
+      // 注意：这里我们不需要解压，因为后端会处理。我们只需要解析JSON。
+      // 如果是 .gz 文件，我们无法在前端直接读取其内容来解析JSON。
+      // 所以，我们做一个妥协：对于 .gz 文件，我们无法预先展示表列表。
+      
+      if (rawFile.name.endsWith('.gz')) {
+        // 对于压缩文件，我们无法在前端解析，所以显示一个通用提示
+        tablesInBackupFile.value = ['(压缩文件，无法预览)'];
+        // 并且默认勾选一个虚拟的 "all" 选项，后端需要能识别这个
+        tablesToImport.value = ['(压缩文件，无法预览)']; 
+      } else {
+        // 对于普通 json 文件，正常解析
+        const content = JSON.parse(contentText);
+        if (!content.data || typeof content.data !== 'object') {
+          throw new Error('备份文件格式不正确：缺少 "data" 对象。');
+        }
+        tablesInBackupFile.value = Object.keys(content.data);
+        if (tablesInBackupFile.value.length === 0) {
+          throw new Error('备份文件格式不正确： "data" 对象为空。');
+        }
+        tablesToImport.value = [...tablesInBackupFile.value];
       }
       
-      // 默认全选所有在备份文件中的表
-      tablesToImport.value = [...tablesInBackupFile.value];
-      
-      fileToImport.value = file.file;
       importModalVisible.value = true;
     } catch (err) {
-      message.error('无法解析JSON文件，请确保文件格式正确。');
+      message.error(err.message || '无法解析JSON文件，请确保文件格式正确。');
+      fileToImport.value = null; // 解析失败，清空待上传文件
     }
   };
-  reader.readAsText(file.file);
+  
+  // 对于 .gz 文件，我们无法读取为文本，所以这里只处理 .json
+  if (rawFile.name.endsWith('.json')) {
+      reader.readAsText(rawFile);
+  } else if (rawFile.name.endsWith('.gz')) {
+      // 直接触发 onload，因为我们不解析内容
+      reader.onload({ target: { result: null } });
+  }
 };
 
 const cancelImport = () => {
@@ -1210,37 +1052,59 @@ const confirmImport = () => {
   importModalVisible.value = false; 
   startImportProcess();   
 };
+
 const startImportProcess = () => {
+  if (!fileToImport.value) {
+    message.error("没有要上传的文件。");
+    return;
+  }
   isImporting.value = true;
-  message.loading('正在上传并处理文件...', { duration: 0 });
+  const msgReactive = message.loading('正在上传并处理文件...', { duration: 0 });
 
   const formData = new FormData();
   formData.append('file', fileToImport.value);
-  // ★ 核心修改: 硬编码 mode 为 'overwrite' 以匹配后端逻辑
-  formData.append('mode', 'overwrite');
-  formData.append('tables', tablesToImport.value.join(','));
+
+  // 如果是压缩文件，我们无法预知表列表，所以发送一个空字符串
+  // 后端需要能处理这种情况（例如，导入所有表）
+  // 更好的做法是，后端应该总是从文件本身解析表列表
+  const tablesToSend = fileToImport.value.name.endsWith('.gz') 
+    ? tablesInBackupFile.value.join(',') // 如果是gz，发送 '(压缩文件，无法预览)'
+    : tablesToImport.value.join(',');
+  
+  // 修正：如果用户在UI上取消了所有勾选，即使是gz文件也应该发送空列表
+  if (tablesToImport.value.length === 0) {
+    formData.append('tables', '');
+  } else {
+    formData.append('tables', tablesToSend);
+  }
 
   axios.post('/api/database/import', formData, {
     headers: { 'Content-Type': 'multipart/form-data' }
   })
   .then(response => {
-    message.destroyAll();
+    msgReactive.destroy();
     message.success(response.data?.message || '恢复任务已提交！');
   })
   .catch(error => {
-    message.destroyAll();
-    // ★ 核心修改: 简化错误处理，直接显示后端返回的错误信息
+    msgReactive.destroy();
     const errorMsg = error.response?.data?.error || '恢复失败，未知错误。';
-    message.error(errorMsg, { duration: 8000 }); // 延长显示时间，方便用户阅读
+    message.error(errorMsg, { duration: 8000 });
   })
   .finally(() => {
     isImporting.value = false;
+    fileToImport.value = null;
   });
 };
-const selectAllForImport = () => tablesToImport.value = [...tablesInBackupFile.value];
-const deselectAllForImport = () => tablesToImport.value = [];
 
-// ▼▼▼ 一键矫正 ▼▼▼
+const selectAllForImport = () => {
+  if (tablesInBackupFile.value.length > 0 && tablesInBackupFile.value[0] !== '(压缩文件，无法预览)') {
+    tablesToImport.value = [...tablesInBackupFile.value];
+  }
+};
+const deselectAllForImport = () => {
+  tablesToImport.value = [];
+};
+
 const handleCorrectSequences = async () => {
   isCorrecting.value = true;
   try {
@@ -1252,17 +1116,13 @@ const handleCorrectSequences = async () => {
     isCorrecting.value = false;
   }
 };
-
-// --- 生命周期钩子 ---
 onMounted(() => {
   componentIsMounted.value = true;
-
   unwatchGlobal = watch(loadingConfig, (isLoading) => {
     if (!isLoading && componentIsMounted.value && configModel.value) {
       if (configModel.value.emby_server_url && configModel.value.emby_api_key) {
         fetchEmbyLibrariesInternal();
       }
-      // ▼▼▼ 修改点5: 存储需要重启的配置项的初始值，包含 emby_server_url ▼▼▼
       initialRestartableConfig.value = {
         proxy_port: configModel.value.proxy_port,
         proxy_302_redirect_url: configModel.value.proxy_302_redirect_url,
@@ -1270,25 +1130,17 @@ onMounted(() => {
         log_rotation_backup_count: configModel.value.log_rotation_backup_count,
         emby_server_url: configModel.value.emby_server_url,
       };
-
-      if (unwatchGlobal) {
-        unwatchGlobal();
-      }
+      if (unwatchGlobal) { unwatchGlobal(); }
     }
   }, { immediate: true });
-
-  unwatchEmbyConfig = watch(
-    () => [configModel.value?.emby_server_url, configModel.value?.emby_api_key],
-    (newValues, oldValues) => {
-      if (componentIsMounted.value && oldValues) {
-        if (newValues[0] !== oldValues[0] || newValues[1] !== oldValues[1]) {
-          fetchEmbyLibrariesInternal();
-        }
+  unwatchEmbyConfig = watch(() => [configModel.value?.emby_server_url, configModel.value?.emby_api_key], (newValues, oldValues) => {
+    if (componentIsMounted.value && oldValues) {
+      if (newValues[0] !== oldValues[0] || newValues[1] !== oldValues[1]) {
+        fetchEmbyLibrariesInternal();
       }
     }
-  );
+  });
 });
-
 onUnmounted(() => {
   componentIsMounted.value = false;
   if (unwatchGlobal) unwatchGlobal();
