@@ -107,25 +107,18 @@ def api_export_database():
         }
 
         timestamp = time.strftime("%Y%m%d-%H%M%S")
-        # ★★★ 核心修改 1: 文件名后缀改为 .json.gz ★★★
         filename = f"database_backup_{timestamp}.json.gz"
         
-        # ★★★ 核心修改 2: 移除 indent，将 JSON 序列化为 bytes ★★★
-        # indent=None 是默认值，输出为紧凑格式
         json_output_bytes = json.dumps(
             backup_data, 
             ensure_ascii=False, 
             default=json_datetime_serializer
         ).encode('utf-8')
 
-        # ★★★ 核心修改 3: 使用 gzip 压缩数据 ★★★
         compressed_data = gzip.compress(json_output_bytes)
 
-        # ★★★ 核心修改 4: 创建 Response 并设置正确的头信息 ★★★
         response = Response(compressed_data, mimetype='application/gzip')
         response.headers.set("Content-Disposition", "attachment", filename=filename)
-        # 告知浏览器这是 gzip 压缩的内容
-        response.headers.set("Content-Encoding", "gzip")
         
         return response
     except Exception as e:
@@ -136,14 +129,13 @@ def api_export_database():
 @admin_required
 def api_import_database():
     """
-    【V5 - 支持 Gzip 压缩】接收备份文件和要导入的表名列表...
+    【V6 - 健壮的 Gzip 导入】接收备份文件和要导入的表名列表...
     """
     from tasks import task_import_database
     if 'file' not in request.files:
         return jsonify({"error": "请求中未找到文件部分"}), 400
     
     file = request.files['file']
-    # ★★★ 核心修改 1: 同时接受 .json 和 .json.gz ★★★
     if not file.filename or not (file.filename.endswith('.json') or file.filename.endswith('.json.gz')):
         return jsonify({"error": "未选择文件或文件类型必须是 .json 或 .json.gz"}), 400
 
@@ -153,15 +145,24 @@ def api_import_database():
     tables_to_import = [table.strip() for table in tables_to_import_str.split(',')]
 
     try:
-        # ★★★ 核心修改 2: 根据文件名判断是否需要解压 ★★★
         file_bytes = file.stream.read()
+        
+        # ★★★ 核心修复：增加健壮的解压逻辑 ★★★
+        file_content = ""
         if file.filename.endswith('.gz'):
-            file_content = gzip.decompress(file_bytes).decode("utf-8-sig")
+            try:
+                # 尝试作为 Gzip 文件解压
+                file_content = gzip.decompress(file_bytes).decode("utf-8-sig")
+            except gzip.BadGzipFile:
+                # 如果解压失败，则认为它是一个被错误命名的普通文本文件
+                logger.warning(f"文件 '{file.filename}' 扩展名为 .gz 但内容不是 Gzip 格式。将尝试作为纯文本处理。")
+                file_content = file_bytes.decode("utf-8-sig")
         else:
+            # 如果是 .json 文件，直接解码
             file_content = file_bytes.decode("utf-8-sig")
             
         backup_json = json.loads(file_content)
-        # ... (后续逻辑完全不变) ...
+        # ... (后续所有逻辑完全不变) ...
         backup_metadata = backup_json.get("metadata", {})
         backup_server_id = backup_metadata.get("source_emby_server_id")
 
