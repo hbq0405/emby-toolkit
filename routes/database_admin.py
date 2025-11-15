@@ -3,7 +3,8 @@
 from flask import Blueprint, request, jsonify, Response
 import logging
 import json
-import re
+import gzip
+import io
 import time
 from datetime import datetime, date
 
@@ -93,7 +94,6 @@ def api_export_database():
         if not tables_to_export or not isinstance(tables_to_export, list):
             return jsonify({"error": "请求体中必须包含一个 'tables' 数组"}), 400
 
-        # ### 核心修改：调用新的数据库函数 ###
         tables_data = maintenance_db.export_tables_data(tables_to_export)
 
         backup_data = {
@@ -107,12 +107,26 @@ def api_export_database():
         }
 
         timestamp = time.strftime("%Y%m%d-%H%M%S")
-        filename = f"database_backup_{timestamp}.json"
+        # ★★★ 核心修改 1: 文件名后缀改为 .json.gz ★★★
+        filename = f"database_backup_{timestamp}.json.gz"
         
-        json_output = json.dumps(backup_data, indent=2, ensure_ascii=False, default=json_datetime_serializer)
+        # ★★★ 核心修改 2: 移除 indent，将 JSON 序列化为 bytes ★★★
+        # indent=None 是默认值，输出为紧凑格式
+        json_output_bytes = json.dumps(
+            backup_data, 
+            ensure_ascii=False, 
+            default=json_datetime_serializer
+        ).encode('utf-8')
 
-        response = Response(json_output, mimetype='application/json; charset=utf-8')
+        # ★★★ 核心修改 3: 使用 gzip 压缩数据 ★★★
+        compressed_data = gzip.compress(json_output_bytes)
+
+        # ★★★ 核心修改 4: 创建 Response 并设置正确的头信息 ★★★
+        response = Response(compressed_data, mimetype='application/gzip')
         response.headers.set("Content-Disposition", "attachment", filename=filename)
+        # 告知浏览器这是 gzip 压缩的内容
+        response.headers.set("Content-Encoding", "gzip")
+        
         return response
     except Exception as e:
         logger.error(f"导出数据库时发生错误: {e}", exc_info=True)
@@ -122,16 +136,16 @@ def api_export_database():
 @admin_required
 def api_import_database():
     """
-    【V4 - 共享导入终版】接收备份文件和要导入的表名列表，
-    并根据服务器ID是否匹配，自动决定采用“覆盖”或“共享”模式提交后台任务。
+    【V5 - 支持 Gzip 压缩】接收备份文件和要导入的表名列表...
     """
     from tasks import task_import_database
     if 'file' not in request.files:
         return jsonify({"error": "请求中未找到文件部分"}), 400
     
     file = request.files['file']
-    if not file.filename or not file.filename.endswith('.json'):
-        return jsonify({"error": "未选择文件或文件类型必须是 .json"}), 400
+    # ★★★ 核心修改 1: 同时接受 .json 和 .json.gz ★★★
+    if not file.filename or not (file.filename.endswith('.json') or file.filename.endswith('.json.gz')):
+        return jsonify({"error": "未选择文件或文件类型必须是 .json 或 .json.gz"}), 400
 
     tables_to_import_str = request.form.get('tables')
     if not tables_to_import_str:
@@ -139,13 +153,19 @@ def api_import_database():
     tables_to_import = [table.strip() for table in tables_to_import_str.split(',')]
 
     try:
-        file_content = file.stream.read().decode("utf-8-sig")
+        # ★★★ 核心修改 2: 根据文件名判断是否需要解压 ★★★
+        file_bytes = file.stream.read()
+        if file.filename.endswith('.gz'):
+            file_content = gzip.decompress(file_bytes).decode("utf-8-sig")
+        else:
+            file_content = file_bytes.decode("utf-8-sig")
+            
         backup_json = json.loads(file_content)
+        # ... (后续逻辑完全不变) ...
         backup_metadata = backup_json.get("metadata", {})
         backup_server_id = backup_metadata.get("source_emby_server_id")
 
-        # ★★★ 核心修改：在这里决定导入策略 ★★★
-        import_strategy = 'overwrite' # 默认为覆盖模式
+        import_strategy = 'overwrite'
         
         if not backup_server_id:
             error_msg = "此备份文件缺少来源服务器ID，为安全起见，禁止恢复。这通常意味着它是一个旧版备份或非本系统导出的文件。"
@@ -159,12 +179,10 @@ def api_import_database():
             return jsonify({"error": error_msg}), 503
 
         if backup_server_id != current_server_id:
-            # ID不匹配，自动切换到共享导入模式
             import_strategy = 'share'
             task_name = "数据库恢复 (共享模式)"
             logger.info(f"服务器ID不匹配，将以共享模式导入可共享数据。备份源: ...{backup_server_id[-12:]}, 当前: ...{current_server_id[-12:]}")
         else:
-            # ID匹配，使用标准的覆盖模式
             task_name = "数据库恢复 (覆盖模式)"
             logger.info("服务器ID匹配，将以覆盖模式导入。")
         
@@ -174,7 +192,6 @@ def api_import_database():
             task_import_database,
             task_name,
             processor_type='media',
-            # 传递任务所需的所有参数，新增 import_strategy
             file_content=file_content,
             tables_to_import=tables_to_import,
             import_strategy=import_strategy
