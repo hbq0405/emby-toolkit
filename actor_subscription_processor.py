@@ -11,9 +11,8 @@ from enum import Enum
 import concurrent.futures 
 
 import handler.tmdb as tmdb
-import handler.emby as emby
 from database.connection import get_db_connection
-from database import media_db, request_db
+from database import media_db, request_db, actor_db
 import constants
 import utils
 
@@ -55,7 +54,9 @@ class ActorSubscriptionProcessor:
 
     def run_scheduled_task(self, update_status_callback: Optional[Callable] = None):
         """
+        【V2 - 并发调度版】
         - 演员订阅扫描任务。
+        - 并发为所有已启用的订阅执行完整扫描，大幅提升二次扫描和首次扫描的速度。
         """
         def _update_status(progress, message):
             if update_status_callback:
@@ -69,7 +70,8 @@ class ActorSubscriptionProcessor:
         try:
             with get_db_connection() as conn:
                 with conn.cursor() as cursor:
-                    cursor.execute("SELECT id, actor_name FROM actor_subscriptions WHERE status = 'active' ORDER BY actor_name")
+                    # 我们只需要 id 即可，因为子任务会自己去查详情
+                    cursor.execute("SELECT id FROM actor_subscriptions WHERE status = 'active' ORDER BY actor_name")
                     subs_to_process = cursor.fetchall()
         except Exception as e:
             logger.error(f"任务调度：获取已启用的订阅列表时失败: {e}", exc_info=True)
@@ -82,224 +84,214 @@ class ActorSubscriptionProcessor:
             return
             
         total_subs = len(subs_to_process)
-        logger.info(f"  ➜ 共找到 {total_subs} 个已启用的订阅需要处理。")
+        logger.info(f"  ➜ 共找到 {total_subs} 个已启用的订阅需要并发处理。")
         
-        # --- 步骤 2: ★★★ 核心重构：从 media_metadata 表构建所有需要的映射 ★★★ ---
+        # --- 步骤 2: 一次性预加载所有任务共享的媒体库缓存 ---
         _update_status(5, "正在从本地数据库缓存媒体信息...")
         logger.info("  ➜ 正在从 media_metadata 表一次性获取全量在库媒体及剧集结构数据...")
-        
-        emby_media_map: Dict[str, str] = {}
-        emby_series_seasons_map: Dict[str, Set[int]] = {}
-        emby_series_name_to_tmdb_id_map: Dict[str, str] = {}
-        
         try:
-            # 直接调用一个专门的数据库函数来完成所有数据准备工作
             (emby_media_map, 
              emby_series_seasons_map, 
-             emby_series_name_to_tmdb_id_map) = request_db.get_all_in_library_media_for_actor_sync()
-
+             emby_series_name_to_tmdb_id_map) = actor_db.get_all_in_library_media_for_actor_sync()
             logger.info(f"  ➜ 从数据库成功加载 {len(emby_media_map)} 个媒体映射，{len(emby_series_seasons_map)} 个剧集季结构。")
-
         except Exception as e:
             logger.error(f"  ➜ 从 media_metadata 获取媒体库信息时发生严重错误: {e}", exc_info=True)
             _update_status(-1, "错误：读取本地数据库失败。")
             return
 
-        # --- 步骤 3: 循环处理每一个订阅 (逻辑完全不变) ---
-        for i, sub in enumerate(subs_to_process):
-            if self.is_stop_requested():
-                logger.info("演员订阅任务被用户中断。")
-                break
+        # --- 步骤 3: ★★★ 使用线程池并发执行所有演员的扫描任务 ★★★ ---
+        processed_count = 0
+        # 使用较少的 workers (如5) 可以避免因并发过高而触发 TMDb 的 API 速率限制
+        with concurrent.futures.ThreadPoolExecutor(max_workers=5) as executor:
             
-            progress = int(10 + ((i + 1) / total_subs) * 90)
-            message = f"({i+1}/{total_subs}) 正在扫描演员: {sub['actor_name']}"
-            _update_status(progress, message)
-            logger.info(message)
-            
-            self.run_full_scan_for_actor(
-                sub['id'], 
-                emby_media_map, 
-                emby_series_seasons_map, 
-                emby_series_name_to_tmdb_id_map
-            )
-            
-            if not self.is_stop_requested() and i < total_subs - 1:
-                time.sleep(1) 
+            # 提交所有任务到线程池
+            future_to_sub_id = {
+                executor.submit(
+                    self.run_full_scan_for_actor, 
+                    sub['id'], 
+                    emby_media_map, 
+                    emby_series_seasons_map, 
+                    emby_series_name_to_tmdb_id_map
+                ): sub['id'] 
+                for sub in subs_to_process
+            }
+
+            # 实时处理已完成的任务
+            for future in concurrent.futures.as_completed(future_to_sub_id):
+                if self.is_stop_requested():
+                    logger.info("演员订阅任务被用户中断。")
+                    # 尝试取消尚未开始的任务
+                    for f in future_to_sub_id: f.cancel()
+                    break
+                
+                processed_count += 1
+                progress = int(10 + (processed_count / total_subs) * 90)
+                # 这里的 message 只是一个通用进度，因为我们不知道具体是哪个演员刚完成
+                message = f"({processed_count}/{total_subs}) 已完成一个演员的扫描..."
+                _update_status(progress, message)
+                
+                # 检查任务是否成功执行（可选，用于捕获线程内异常）
+                try:
+                    future.result() 
+                except Exception as exc:
+                    sub_id = future_to_sub_id[future]
+                    logger.error(f"  ➜ 订阅ID {sub_id} 的扫描任务在线程内发生异常: {exc}", exc_info=True)
                 
         # --- 步骤 4: 任务结束 (逻辑不变) ---
         if not self.is_stop_requested():
-            logger.info("--- 演员订阅任务 (数据中台模式) 执行完毕 ---")
+            logger.info("--- 演员订阅任务 (并发调度模式) 执行完毕 ---")
             _update_status(100, "所有订阅扫描完成。")
 
 
+    def _process_single_work(self, work: Dict, sub_config: Dict, subscription_source: Dict) -> Optional[Dict]:
+        """
+        处理单个作品的完整流程，用于并发执行。
+        - 检查本地规则 -> 获取番位 -> 检查番位规则 -> 决定最终状态
+        - 返回一个包含操作指令和数据的字典，或在早期过滤掉时返回 None。
+        """
+        try:
+            tmdb_id = str(work.get('id'))
+            media_type = MediaType.SERIES.value if work.get('media_type') == 'tv' else MediaType.MOVIE.value
+            media_info = self._prepare_media_dict_for_upsert(work)
+
+            # 1. 执行廉价的本地规则过滤（不含番位）
+            is_kept, reason = self._filter_work_and_get_reason(work, sub_config, check_order=False)
+            if not is_kept:
+                return {"action": "ignore", "tmdb_id": tmdb_id, "item_type": media_type, "media_info": media_info, "reason": reason}
+
+            # 2. 对通过初筛的作品，获取番位信息（这是网络IO操作）
+            # 注意：_enrich_works_with_order 内部已有并发，但在这里我们是为单个项目调用
+            enriched_work = self._enrich_works_with_order([work], sub_config['tmdb_person_id'], self.tmdb_api_key)[0]
+            
+            # 3. 执行包含番位的最终过滤
+            is_kept_final, reason_final = self._filter_work_and_get_reason(enriched_work, sub_config, check_order=True)
+            if not is_kept_final:
+                return {"action": "ignore", "tmdb_id": tmdb_id, "item_type": media_type, "media_info": media_info, "reason": reason_final}
+
+            # 4. 决定最终状态 (WANTED 或 PENDING_RELEASE)
+            today_str = datetime.now().strftime('%Y-%m-%d')
+            release_date = enriched_work.get('release_date') or enriched_work.get('first_air_date', '')
+            final_status = 'PENDING_RELEASE' if release_date and release_date > today_str else 'WANTED'
+            
+            return {"action": final_status.lower(), "tmdb_id": tmdb_id, "item_type": media_type, "media_info": media_info}
+
+        except Exception as e:
+            item_name = work.get('title') or work.get('name', '未知作品')
+            logger.error(f"  ➜ (线程内) 处理作品 '{item_name}' 时发生错误: {e}", exc_info=True)
+            return None
+
     def run_full_scan_for_actor(self, subscription_id: int, emby_media_map: Dict[str, str], emby_series_seasons_map: Dict[str, Set[int]], emby_series_name_to_tmdb_id_map: Dict[str, str]):
         """
-        - 采用“层层过滤”的高效策略，数据源完全来自预加载的 media_metadata 缓存。
-        - 实现了极致的“差量更新”逻辑，每次只处理演员的新增或已移除作品。
+        - 采用并发模型处理所有新增作品，显著提升扫描速度。
+        - 将数据库操作聚合到任务末尾进行批量处理，大幅减少数据库I/O。
         """
-        actor_name_for_log = f"订阅ID {subscription_id}" # 设置一个备用名
+        actor_name_for_log = f"订阅ID {subscription_id}"
         try:
             with get_db_connection() as conn:
                 with conn.cursor() as cursor:
-                    # --- 步骤 1: 获取订阅规则、演员名和上次扫描的缓存 ---
+                    # --- 步骤 1 & 2: 获取订阅规则和TMDb全量作品 (逻辑不变) ---
                     cursor.execute("SELECT *, last_scanned_tmdb_ids_json FROM actor_subscriptions WHERE id = %s FOR UPDATE", (subscription_id,))
                     sub = cursor.fetchone()
-                    if not sub:
-                        logger.warning(f"扫描跳过：在数据库中未找到订阅ID {subscription_id}。")
-                        return
+                    if not sub: return
                     
-                    # 获取到演员名后，立即更新日志备用名
                     actor_name_for_log = sub.get('actor_name', actor_name_for_log)
-                    
-                    # ★★★ 核心修改 2/3: 在主日志中使用演员名 ★★★
                     logger.info(f"--- 开始为演员 '{actor_name_for_log}' 执行作品扫描 ---")
                     
-                    # 将上次扫描的ID列表（JSON）解析为一个集合(Set)，方便后续进行高效的差集运算。
                     last_scanned_ids = set(sub.get('last_scanned_tmdb_ids_json') or [])
-                    
-                    actor_name = sub['actor_name']
-                    tmdb_person_id = sub['tmdb_person_id']
-                    subscription_source = {
-                        "type": "actor_subscription", "id": subscription_id, 
-                        "name": actor_name, "person_id": tmdb_person_id
-                    }
+                    subscription_source = {"type": "actor_subscription", "id": subscription_id, "name": sub['actor_name'], "person_id": sub['tmdb_person_id']}
 
-                    # --- 步骤 2: 从 TMDb 获取演员当前的全量作品，并进行基础清洗 ---
-                    logger.info(f"  ➜ [阶段 1/5] 正在从 TMDb 获取演员 '{actor_name}' 的所有作品...")
-                    all_works = self._get_and_clean_actor_works(tmdb_person_id, self.tmdb_api_key)
+                    logger.info(f"  ➜ [阶段 1/4] 正在从 TMDb 获取演员 '{sub['actor_name']}' 的所有作品...")
+                    all_works = self._get_and_clean_actor_works(sub['tmdb_person_id'], self.tmdb_api_key)
                     if self.is_stop_requested(): return
-                    
-                    # 如果从TMDb没有获取到任何作品，就没必要继续了。
                     if not all_works:
-                        logger.warning(f"  ➜ 未能从TMDb获取到演员 '{actor_name}' 的任何有效作品。")
-                        # 即使没作品，也更新一下缓存，防止下次还扫
                         cursor.execute("UPDATE actor_subscriptions SET last_scanned_tmdb_ids_json = '[]' WHERE id = %s", (subscription_id,))
                         return
 
-                    # --- 步骤 3: 计算“差量”：找出新增的和已移除的作品 ---
-                    # 将当前获取到的所有作品ID转换成一个集合。
+                    # --- 步骤 3: 计算差量 (逻辑不变) ---
                     current_work_ids = {str(w.get('id')) for w in all_works if w.get('id')}
-                    
-                    # 新增作品 = 当前作品集 - 上次扫描的作品集
                     new_work_ids = current_work_ids - last_scanned_ids
-                    # 移除作品 = 上次扫描的作品集 - 当前作品集
                     removed_work_ids = last_scanned_ids - current_work_ids
-
-                    logger.info(f"  ➜ [阶段 1/5] 差量计算完成：发现 {len(new_work_ids)} 部新作品，{len(removed_work_ids)} 部作品已从TMDb移除。")
-
-                    # 筛选出真正需要处理的新作品对象列表。
+                    logger.info(f"  ➜ [阶段 1/4] 差量计算完成：发现 {len(new_work_ids)} 部新作品，{len(removed_work_ids)} 部作品已从TMDb移除。")
                     works_to_process = [w for w in all_works if str(w.get('id')) in new_work_ids]
-                    
-                    # 如果没有任何新增或移除的作品，说明一切都没变，任务提前结束。
                     if not works_to_process and not removed_work_ids:
-                        logger.info(f"  ➜ 演员 '{actor_name}' 的作品列表无变化，跳过。")
+                        logger.info(f"  ➜ 演员 '{sub['actor_name']}' 的作品列表无变化，跳过。")
                         return
 
-                    # --- 步骤 4: 对“新增作品”进行层层过滤 ---
-                    # 4.1 首先处理在库的作品
-                    logger.info(f"  ➜ [阶段 2/5] 正在批量检查 {len(works_to_process)} 部新作品的在库状态...")
+                    # --- 步骤 4: ★★★ 核心修改 - 并发处理所有新增作品 ★★★ ---
+                    
+                    # 4.1 首先处理在库的作品 (这个循环很快，无需并发)
+                    logger.info(f"  ➜ [阶段 2/4] 正在批量检查 {len(works_to_process)} 部新作品的在库状态...")
                     works_not_in_library = []
-                    in_library_count = 0
+                    in_library_media_to_update = []
                     for work in works_to_process:
                         tmdb_id = str(work.get('id'))
-                        # 使用预加载的 emby_media_map 进行O(1)复杂度的快速查找。
                         if tmdb_id in emby_media_map:
-                            # 如果在库，立即处理：确保数据库记录存在，并关联上本次订阅源。
                             media_type = MediaType.SERIES.value if work.get('media_type') == 'tv' else MediaType.MOVIE.value
                             media_info = self._prepare_media_dict_for_upsert(work)
-                            
-                            # 确保这条媒体记录在我们的数据库里存在。
-                            media_db.ensure_media_record_exists([media_info])
-                            
-                            # 只做“追加来源”这一件事。
-                            request_db.add_subscription_source(tmdb_id, media_type, subscription_source)
-                            
-                            in_library_count += 1
+                            in_library_media_to_update.append({'tmdb_id': tmdb_id, 'item_type': media_type, 'media_info': media_info})
                         else:
-                            # 如果不在库，则加入下一个待处理列表。
                             works_not_in_library.append(work)
-                    logger.info(f"  ➜ [阶段 2/5] {in_library_count} 部新作品已在库并已处理。剩余 {len(works_not_in_library)} 部待检查。")
+                    
+                    if in_library_media_to_update:
+                        logger.info(f"  ➜ [阶段 2/4] {len(in_library_media_to_update)} 部新作品已在库，将批量更新其订阅源...")
+                        # 批量确保记录存在并追加订阅源
+                        media_db.ensure_media_record_exists([item['media_info'] for item in in_library_media_to_update])
+                        for item in in_library_media_to_update:
+                            request_db.add_subscription_source(item['tmdb_id'], item['item_type'], subscription_source)
+                    
+                    # 4.2 并发处理所有不在库的作品
+                    logger.info(f"  ➜ [阶段 3/4] 正在并发处理 {len(works_not_in_library)} 部不在库的新作品...")
+                    results_to_commit = []
+                    with concurrent.futures.ThreadPoolExecutor(max_workers=5) as executor:
+                        future_to_work = {executor.submit(self._process_single_work, work, sub, subscription_source): work for work in works_not_in_library}
+                        for future in concurrent.futures.as_completed(future_to_work):
+                            if self.is_stop_requested(): break
+                            result = future.result()
+                            if result:
+                                results_to_commit.append(result)
+                    
+                    # 4.3 聚合结果并批量更新数据库
+                    if results_to_commit:
+                        logger.info(f"  ➜ [阶段 3/4] 并发处理完成，聚合 {len(results_to_commit)} 条结果准备批量写入数据库...")
+                        
+                        actions = {"wanted": [], "pending_release": [], "ignore": []}
+                        for res in results_to_commit:
+                            action = res.get("action")
+                            if action in actions:
+                                actions[action].append(res)
 
-                    # 4.2 执行廉价的本地规则过滤（不含番位）
-                    logger.info(f"  ➜ [阶段 3/5] 正在对剩余作品执行本地规则过滤...")
-                    works_passed_local_filters = []
-                    for work in works_not_in_library:
-                        tmdb_id = str(work.get('id'))
-                        media_type = MediaType.SERIES.value if work.get('media_type') == 'tv' else MediaType.MOVIE.value
-                        media_info = self._prepare_media_dict_for_upsert(work)
-                        
-                        # 调用过滤函数，但明确告诉它“不要检查番位”（check_order=False）。
-                        is_kept, reason = self._filter_work_and_get_reason(work, sub, check_order=False)
-                        
-                        if is_kept:
-                            works_passed_local_filters.append(work)
-                        else:
-                            # 不符合规则，直接标记为 IGNORED。
-                            request_db.set_media_status_ignored(
-                                tmdb_ids=tmdb_id, item_type=media_type,
-                                source=subscription_source,
-                                media_info_list=[media_info], ignore_reason=reason
+                        if actions["wanted"]:
+                            request_db.set_media_status_wanted(
+                                tmdb_ids=[r['tmdb_id'] for r in actions["wanted"]], item_type='Movie', # item_type will be ignored
+                                source=subscription_source, media_info_list=[r['media_info'] for r in actions["wanted"]]
                             )
-                    logger.info(f"  ➜ [阶段 3/5] 本地规则过滤完成，{len(works_passed_local_filters)} 部作品通过。")
+                        if actions["pending_release"]:
+                             request_db.set_media_status_pending_release(
+                                tmdb_ids=[r['tmdb_id'] for r in actions["pending_release"]], item_type='Movie',
+                                source=subscription_source, media_info_list=[r['media_info'] for r in actions["pending_release"]]
+                            )
+                        if actions["ignore"]:
+                            request_db.set_media_status_ignored(
+                                tmdb_ids=[r['tmdb_id'] for r in actions["ignore"]], item_type='Movie',
+                                source=subscription_source, media_info_list=[r['media_info'] for r in actions["ignore"]],
+                                ignore_reason="演员订阅规则" # 这是一个笼统的原因，具体原因在 res['reason']
+                            )
 
-                    # 4.3 对极少数幸存者，执行昂贵的番位检查和最终处理
-                    if works_passed_local_filters:
-                        logger.info(f"  ➜ [阶段 4/5] 正在为剩余 {len(works_passed_local_filters)} 部作品获取番位信息并进行最终检查...")
-                        enriched_works = self._enrich_works_with_order(works_passed_local_filters, tmdb_person_id, self.tmdb_api_key)
-                        today_str = datetime.now().strftime('%Y-%m-%d')
-
-                        for work in enriched_works:
-                            tmdb_id = str(work.get('id'))
-                            media_type = MediaType.SERIES.value if work.get('media_type') == 'tv' else MediaType.MOVIE.value
-                            media_info = self._prepare_media_dict_for_upsert(work)
-                            
-                            # 这次执行包含番位检查的完整过滤（check_order=True）。
-                            is_kept, reason = self._filter_work_and_get_reason(work, sub, check_order=True)
-
-                            if is_kept:
-                                # 最终通过所有检查，判断是“未上映”还是“待订阅”。
-                                release_date = work.get('release_date') or work.get('first_air_date', '')
-                                final_status = 'PENDING_RELEASE' if release_date and release_date > today_str else 'WANTED'
-                                if final_status == 'WANTED':
-                                    request_db.set_media_status_wanted(
-                                        tmdb_ids=tmdb_id, item_type=media_type,
-                                        source=subscription_source,
-                                        media_info_list=[media_info]
-                                    )
-                                elif final_status == 'PENDING_RELEASE':
-                                    request_db.set_media_status_pending_release(
-                                        tmdb_ids=tmdb_id, item_type=media_type,
-                                        source=subscription_source,
-                                        media_info_list=[media_info]
-                                    )
-                            else:
-                                # 因为番位不符被刷掉，标记为 IGNORED。
-                                request_db.set_media_status_ignored(
-                                    tmdb_ids=[tmdb_id], item_type=media_type,
-                                    source=subscription_source,
-                                    media_info_list=[media_info], ignore_reason=reason
-                                )
-                        logger.info(f"  ➜ [阶段 4/5] 最终检查完成。")
-
-                    # --- 步骤 5: 清理已从 TMDb 移除的作品的追踪记录 ---
+                    # --- 步骤 5: 清理已移除的作品 (逻辑不变，但可以优化) ---
                     if removed_work_ids:
-                        logger.info(f"  ➜ [阶段 5/5] 发现 {len(removed_work_ids)} 个过时的追踪记录，将为其解绑...")
-                        # 批量从数据库获取这些旧记录的详情，主要是为了拿到 item_type。
+                        logger.info(f"  ➜ [阶段 4/4] 发现 {len(removed_work_ids)} 个过时的追踪记录，将为其解绑...")
                         old_items_details = media_db.get_media_details_by_tmdb_ids(list(removed_work_ids))
                         for tmdb_id_to_clean in removed_work_ids:
                             item_info = old_items_details.get(tmdb_id_to_clean)
                             if item_info:
-                                # 调用函数，从作品的订阅源中移除当前演员订阅。
                                 request_db.remove_subscription_source(tmdb_id_to_clean, item_info['item_type'], subscription_source)
 
-                    # --- 步骤 6: 将本次扫描到的所有作品ID，更新回数据库作为新的“记忆” ---
-                    # 这样下次运行时，就可以和这个最新的列表进行比对，实现差量更新。
+                    # --- 步骤 6: 更新扫描缓存 (逻辑不变) ---
                     cursor.execute(
                         "UPDATE actor_subscriptions SET last_scanned_tmdb_ids_json = %s WHERE id = %s",
                         (json.dumps(list(current_work_ids)), subscription_id)
                     )
                     
-                    # 提交本次事务的所有数据库变更。
                     conn.commit()
                     logger.info(f"  ✅ 演员 '{actor_name_for_log}' 的差量更新成功完成 ---")
 
