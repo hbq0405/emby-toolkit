@@ -8,7 +8,6 @@ import pytz
 from datetime import datetime
 from database import user_db, collection_db, settings_db, media_db
 import config_manager
-import handler.moviepilot as moviepilot
 import handler.emby as emby
 from tasks.helpers import is_movie_subscribable
 from extensions import admin_required, any_login_required
@@ -386,84 +385,6 @@ def api_fix_media_match_in_custom_collection(collection_id):
         logger.error(f"修正合集 {collection_id} 媒体匹配时出错: {e}", exc_info=True)
         return jsonify({"error": "服务器内部错误"}), 500
 
-# --- 手动订阅 ---
-@custom_collections_bp.route('/subscribe', methods=['POST'])
-@admin_required
-def api_subscribe_media_from_custom_collection():
-    """
-    【V4 - 终极正确版】从自定义合集页面手动订阅单个媒体项。
-    - 修复了 UnboundLocalError。
-    - 修正了媒体类型判断逻辑。
-    - 新增了发行状态检查。
-    - 调用了 collection_db.py 中真实存在的函数。
-    """
-    data = request.json
-    tmdb_id = data.get('tmdb_id')
-    collection_id = data.get('collection_id')
-
-    if not all([tmdb_id, collection_id]):
-        return jsonify({"error": "请求无效: 缺少 tmdb_id 或 collection_id"}), 400
-
-    try:
-        # 1. 【BUG修复】获取合集信息，确保 collection_name 始终可用
-        collection_record = collection_db.get_custom_collection_by_id(collection_id)
-        if not collection_record:
-            return jsonify({"error": "数据库错误: 找不到指定的合集。"}), 404
-        collection_name = collection_record.get('name', f"ID:{collection_id}")
-
-        # 2. 从媒体列表中找到目标项
-        media_list = collection_record.get('generated_media_info_json') or []
-        target_media_item = next((item for item in media_list if str(item.get('tmdb_id')) == str(tmdb_id)), None)
-        if not target_media_item:
-            return jsonify({"error": "订阅失败: 在该合集的媒体列表中未找到此项目。"}), 404
-
-        # 3. 【逻辑修正】从媒体项本身获取类型和标题
-        authoritative_type = target_media_item.get('media_type', 'Movie')
-        authoritative_title = target_media_item.get('title')
-        season_to_subscribe = target_media_item.get('season')
-
-        if not authoritative_title:
-            return jsonify({"error": "订阅失败: 数据库中的媒体信息不完整（缺少标题）。"}), 500
-
-        # 4. 配额检查
-        if settings_db.get_subscription_quota() <= 0:
-            return jsonify({"error": "今日订阅配额已用尽，请明天再试。"}), 429
-
-        # 5. 执行订阅（内置发行状态检查）
-        config = config_manager.APP_CONFIG
-        success = False
-        
-        log_detail = f" 第 {season_to_subscribe} 季" if authoritative_type == 'Series' and season_to_subscribe is not None else ""
-        logger.info(f"  ➜ 正在为合集 '{collection_name}' 中的《{authoritative_title}》{log_detail} (TMDb ID: {tmdb_id}) 发起手动订阅...")
-
-        if authoritative_type == 'Movie':
-            # 【发行状态检查】
-            tmdb_api_key = config.get("tmdb_api_key")
-            if not is_movie_subscribable(int(tmdb_id), tmdb_api_key, config):
-                logger.warning(f"  ➜ 手动订阅电影《{authoritative_title}》失败，因其未正式发行。")
-                return jsonify({"error": "订阅失败：该电影尚未正式发行，无法订阅。"}), 400
-            
-            success = moviepilot.subscribe_movie_to_moviepilot(target_media_item, config)
-        
-        elif authoritative_type == 'Series':
-            series_info = {"tmdb_id": tmdb_id, "title": authoritative_title}
-            success = moviepilot.subscribe_series_to_moviepilot(series_info, season_number=season_to_subscribe, config=config)
-        
-        if not success:
-            return jsonify({"error": "提交到 MoviePilot 失败，请检查日志。"}), 500
-
-        # 6. 【正确函数调用】成功后扣除配额并调用真实存在的数据库函数更新状态
-        settings_db.decrement_subscription_quota()
-        collection_db.update_single_media_status_in_custom_collection(collection_id, tmdb_id, 'subscribed')
-        
-        logger.info(f"  ➜ 已成功更新合集 '{collection_name}' 中《{authoritative_title}》的状态为 '已订阅'。")
-
-        return jsonify({"message": f"《{authoritative_title}》已成功提交订阅，并已更新本地状态。"}), 200
-
-    except Exception as e:
-        logger.error(f"处理订阅请求时发生严重错误: {e}", exc_info=True)
-        return jsonify({"error": "处理订阅时发生服务器内部错误。"}), 500
-    
 # --- 提取国家列表 ---
 @custom_collections_bp.route('/config/countries', methods=['GET'])
 @any_login_required

@@ -9,8 +9,6 @@ from datetime import datetime, timezone # Added timezone for image.update
 from jinja2 import Environment, FileSystemLoader
 from handler.actor_sync import UnifiedSyncHandler
 import handler.emby as emby
-import handler.moviepilot as moviepilot
-import utils
 from tasks import *
 import extensions
 from flask import Flask, render_template, request, redirect, url_for, jsonify, flash, stream_with_context, send_from_directory,Response, abort, session
@@ -62,7 +60,6 @@ from routes.discover import discover_bp
 import constants # 你的常量定义\
 import logging
 from logger_setup import frontend_log_queue, add_file_handler # 日志记录器和前端日志队列
-import utils       # 例如，用于 /api/search_media
 import config_manager
 from database import connection
 
