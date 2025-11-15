@@ -341,6 +341,7 @@ def task_auto_subscribe(processor):
         subscription_details = [] # 给管理员的报告
         rejected_details = []     # 给管理员的报告
         notifications_to_send = {} # 给用户的通知 {user_id: [item_name, ...]}
+        failed_notifications_to_send = {} #失败的通知
         quota_exhausted = False
 
         # 2. 遍历待办列表，逐一处理
@@ -362,6 +363,13 @@ def task_auto_subscribe(processor):
             if item['item_type'] == 'Movie' and not is_movie_subscribable(int(item['tmdb_id']), tmdb_api_key, config):
                 logger.info(f"  ➜ 电影《{item['title']}》未到发行日期，本次跳过。")
                 rejected_details.append({'item': f"电影《{item['title']}》", 'reason': '未发行'})
+                # ★★★ 新增：解析来源并记录失败通知 ★★★
+                sources = item.get('subscription_sources_json', [])
+                for source in sources:
+                    if source.get('type') == 'user_request' and (user_id := source.get('user_id')):
+                        if user_id not in failed_notifications_to_send:
+                            failed_notifications_to_send[user_id] = []
+                        failed_notifications_to_send[user_id].append(f"《{item['title']}》(原因: 不满足发行日期延迟订阅)")
                 continue
 
             # 2.3 执行订阅
@@ -484,6 +492,18 @@ def task_auto_subscribe(processor):
                     telegram.send_telegram_message(user_chat_id, message_text)
             except Exception as e:
                 logger.error(f"为用户 {user_id} 发送自动订阅的合并通知时出错: {e}")
+
+        # 4. 失败的通知
+        logger.info(f"  ➜ 准备为 {len(failed_notifications_to_send)} 位用户发送合并的失败通知...")
+        for user_id, failed_items in failed_notifications_to_send.items():
+            try:
+                user_chat_id = user_db.get_user_telegram_chat_id(user_id)
+                if user_chat_id:
+                    items_list_str = "\n".join([f"· `{item}`" for item in failed_items])
+                    message_text = (f"⚠️ *您的部分订阅请求未被处理*\n\n下列内容因不满足条件而被跳过：\n{items_list_str}")
+                    telegram.send_telegram_message(user_chat_id, message_text)
+            except Exception as e:
+                logger.error(f"为用户 {user_id} 发送自动订阅的合并失败通知时出错: {e}")
 
         if subscription_details:
             # ★★★ 核心修改 1/3: 调整标题，使用更通用的措辞 ★★★

@@ -106,11 +106,8 @@ def request_subscription():
 
     try:
         user_chat_id = user_db.get_user_telegram_chat_id(emby_user_id)
-        if user_chat_id:
-            if is_vip or is_emby_admin:
-                message_text = f"✅ *您的订阅请求已提交*\n\n您想看的 *{item_name}* 已提交订阅。"
-            else:
-                message_text = f"🔔 *您的订阅请求已提交*\n\n您想看的 *{item_name}* 已进入待审队列，管理员处理后会通知您。"
+        if user_chat_id and not (is_vip or is_emby_admin):
+            message_text = f"🔔 *您的订阅请求已提交*\n\n您想看的 *{item_name}* 已进入待审队列，管理员处理后会通知您。"
             send_telegram_message(user_chat_id, message_text)
     except Exception as e:
         logger.error(f"发送订阅请求提交通知时出错: {e}")
