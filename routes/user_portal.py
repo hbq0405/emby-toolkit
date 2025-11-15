@@ -63,8 +63,8 @@ def request_subscription():
         log_user_type = "管理员" if is_emby_admin else "VIP 用户"
         logger.info(f"  ➜ 【{log_user_type}通道】'{emby_username}' 的订阅请求将直接加入待订阅队列...")
         
-        media_db.update_subscription_status(
-            tmdb_ids=tmdb_id, item_type=item_type, new_status='WANTED',
+        media_db.set_media_status_wanted(
+            tmdb_ids=[tmdb_id], item_type=item_type,
             source={"type": "user_request", "user_id": emby_user_id, "user_type": log_user_type},
             media_info_list=[media_info]
         )
@@ -78,11 +78,10 @@ def request_subscription():
             message = "该项目正在等待审核。" if existing_status == 'pending' else "该项目已在订阅队列中。"
             return jsonify({"status": existing_status, "message": message}), 200
         
-        media_db.update_subscription_status(
-            tmdb_ids=tmdb_id, item_type=item_type,
-            new_status='REQUESTED', # <-- 核心状态
+        media_db.set_media_status_requested(
+            tmdb_ids=[tmdb_id], item_type=item_type,
             source={"type": "user_request", "user_id": emby_user_id},
-            media_info_list=[media_info] # <-- 传入完整信息
+            media_info_list=[media_info]
         )
         message = "“想看”请求已提交，请等待管理员审核。"
         new_status_for_frontend = 'pending'

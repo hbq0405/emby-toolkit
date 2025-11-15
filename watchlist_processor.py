@@ -796,10 +796,9 @@ class WatchlistProcessor:
                         }
                         
                         # 推送需求
-                        media_db.update_subscription_status(
+                        media_db.set_media_status_wanted(
                             tmdb_ids=str(season.get('id')), # ★★★ 核心修正：使用季的真实 TMDB ID ★★★
                             item_type='Season',             # ★★★ 核心修正：类型明确为 Season ★★★
-                            new_status='WANTED',
                             source={"type": "watchlist", "reason": "missing_completed_season", "item_id": item_id},
                             media_info_list=[media_info]
                         )
@@ -826,8 +825,8 @@ class WatchlistProcessor:
                     'overview': season.get('overview'), 'season_number': season_num
                 }
                 
-                media_db.update_subscription_status(
-                    tmdb_ids=tmdb_id, item_type='Series', new_status='WANTED',
+                media_db.set_media_status_wanted(
+                    tmdb_ids=tmdb_id, item_type='Series',
                     source={"type": "watchlist", "reason": "missing_season", "item_id": item_id},
                     media_info_list=[media_info]
                 )

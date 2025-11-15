@@ -106,17 +106,17 @@ def sync_and_subscribe_native_collections():
 
     if released_requests:
         logger.info(f"  ➜ (SYNC) 发现 {len(released_requests)} 个已上映的缺失电影，状态将设为 'WANTED'...")
-        media_db.update_subscription_status(
+        media_db.set_media_status_wanted(
             tmdb_ids=[req['tmdb_id'] for req in released_requests],
-            item_type='Movie', new_status='WANTED',
+            item_type='Movie',
             source=released_requests[0]['source'], media_info_list=released_requests
         )
         
     if unreleased_requests:
         logger.info(f"  ➜ (SYNC) 发现 {len(unreleased_requests)} 个未上映的电影，状态将设为 'PENDING_RELEASE'...")
-        media_db.update_subscription_status(
+        media_db.set_media_status_pending_release(
             tmdb_ids=[req['tmdb_id'] for req in unreleased_requests],
-            item_type='Movie', new_status='PENDING_RELEASE',
+            item_type='Movie',
             source=unreleased_requests[0]['source'], media_info_list=unreleased_requests
         )
 

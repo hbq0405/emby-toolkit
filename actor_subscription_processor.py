@@ -235,9 +235,9 @@ class ActorSubscriptionProcessor:
                             works_passed_local_filters.append(work)
                         else:
                             # 不符合规则，直接标记为 IGNORED。
-                            media_db.update_subscription_status(
+                            media_db.set_media_status_ignored(
                                 tmdb_ids=tmdb_id, item_type=media_type,
-                                new_status='IGNORED', source=subscription_source,
+                                source=subscription_source,
                                 media_info_list=[media_info], ignore_reason=reason
                             )
                     logger.info(f"  ➜ [阶段 3/5] 本地规则过滤完成，{len(works_passed_local_filters)} 部作品通过。")
@@ -260,16 +260,23 @@ class ActorSubscriptionProcessor:
                                 # 最终通过所有检查，判断是“未上映”还是“待订阅”。
                                 release_date = work.get('release_date') or work.get('first_air_date', '')
                                 final_status = 'PENDING_RELEASE' if release_date and release_date > today_str else 'WANTED'
-                                media_db.update_subscription_status(
-                                    tmdb_ids=tmdb_id, item_type=media_type,
-                                    new_status=final_status, source=subscription_source,
-                                    media_info_list=[media_info]
-                                )
+                                if final_status == 'WANTED':
+                                    media_db.set_media_status_wanted(
+                                        tmdb_ids=tmdb_id, item_type=media_type,
+                                        source=subscription_source,
+                                        media_info_list=[media_info]
+                                    )
+                                elif final_status == 'PENDING_RELEASE':
+                                    media_db.set_media_status_pending_release(
+                                        tmdb_ids=tmdb_id, item_type=media_type,
+                                        source=subscription_source,
+                                        media_info_list=[media_info]
+                                    )
                             else:
                                 # 因为番位不符被刷掉，标记为 IGNORED。
-                                media_db.update_subscription_status(
-                                    tmdb_ids=tmdb_id, item_type=media_type,
-                                    new_status='IGNORED', source=subscription_source,
+                                media_db.set_media_status_ignored(
+                                    tmdb_ids=[tmdb_id], item_type=media_type,
+                                    source=subscription_source,
                                     media_info_list=[media_info], ignore_reason=reason
                                 )
                         logger.info(f"  ➜ [阶段 4/5] 最终检查完成。")

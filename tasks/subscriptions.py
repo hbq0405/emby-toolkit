@@ -274,10 +274,9 @@ def task_manual_subscribe_batch(processor, subscribe_requests: List[Dict]):
                 logger.info(f"  ✅ 《{item_title_for_log}》订阅成功！")
                 settings_db.decrement_subscription_quota()
                 
-                media_db.update_subscription_status(
+                media_db.set_media_status_subscribed(
                     tmdb_ids=[str(tmdb_id)],
                     item_type=item_type, 
-                    new_status='SUBSCRIBED'
                 )
                 
                 try:
@@ -407,10 +406,9 @@ def task_auto_subscribe(processor):
                 logger.info(f"  ✅ 《{item['title']}》订阅成功！")
                 
                 # a. 将状态从 WANTED 更新为 SUBSCRIBED
-                media_db.update_subscription_status(
+                media_db.set_media_status_subscribed(
                     tmdb_ids=item['tmdb_id'], # 更新的是季/电影自己的记录
                     item_type=item_type,
-                    new_status='SUBSCRIBED'
                 )
 
                 # b. 扣除配额

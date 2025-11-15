@@ -192,10 +192,9 @@ def _perform_list_collection_health_check(
         # 去重，防止重复处理
         unique_parents = {p['tmdb_id']: p for p in parent_series_to_ensure_exist}.values()
         logger.info(f"  -> 检测到 {len(unique_parents)} 个缺失的父剧集元数据，正在创建占位记录...")
-        media_db.update_subscription_status(
+        media_db.set_media_status_none(
             tmdb_ids=[p['tmdb_id'] for p in unique_parents],
             item_type='Series',
-            new_status='NONE', # ★ 我们只是想创建记录，而不是订阅它，所以用 NONE
             media_info_list=list(unique_parents)
         )
 
@@ -213,13 +212,20 @@ def _perform_list_collection_health_check(
             
         for item_type, requests in requests_by_type.items():
             logger.info(f"    -> 正在为 {len(requests)} 个 '{item_type}' 类型的项目更新状态...")
-            media_db.update_subscription_status(
-                tmdb_ids=[req['tmdb_id'] for req in requests], 
-                item_type=item_type,
-                new_status=status, 
-                media_info_list=requests, 
-                source=source_for_subscription
-            )
+            if status == 'WANTED':
+                media_db.set_media_status_wanted(
+                    tmdb_ids=[req['tmdb_id'] for req in requests],
+                    item_type=item_type,
+                    media_info_list=requests,
+                    source=source_for_subscription
+                )
+            elif status == 'PENDING_RELEASE':
+                media_db.set_media_status_pending_release(
+                    tmdb_ids=[req['tmdb_id'] for req in requests],
+                    item_type=item_type,
+                    media_info_list=requests,
+                    source=source_for_subscription
+                )
 
     group_and_update(missing_released_items, 'WANTED')
     group_and_update(missing_unreleased_items, 'PENDING_RELEASE')

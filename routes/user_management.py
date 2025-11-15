@@ -345,10 +345,9 @@ def batch_approve_subscriptions():
                     # ... (可以补充更多元数据)
                 }
                 
-                media_db.update_subscription_status(
-                    tmdb_ids=req['tmdb_id'],
+                media_db.set_media_status_wanted(
+                    tmdb_ids=[req['tmdb_id']],
                     item_type=req['item_type'],
-                    new_status='WANTED',
                     source={"type": "admin_approval", "admin": "admin"}
                 )
                 approved_count += 1
@@ -423,10 +422,9 @@ def batch_reject_subscriptions():
         for item_type, req_list in grouped_requests.items():
             tmdb_ids = [req['tmdb_id'] for req in req_list]
             
-            media_db.update_subscription_status(
+            media_db.set_media_status_ignored(
                 tmdb_ids=tmdb_ids,
                 item_type=item_type,
-                new_status='IGNORED',
                 source={"type": "admin_rejection"},
                 ignore_reason=reason
             )

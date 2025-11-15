@@ -266,7 +266,9 @@ def apply_and_persist_media_correction(collection_id: int, old_tmdb_id: str, new
             
             # 3.1 废弃旧条目
             if old_tmdb_id != new_tmdb_id:
-                media_db.update_subscription_status(old_tmdb_id, item_type, 'IGNORED', ignore_reason=f"修正为 {new_tmdb_id}")
+                media_db.set_media_status_ignored(
+                    tmdb_ids=[old_tmdb_id], item_type=item_type, ignore_reason=f"修正为 {new_tmdb_id}"
+                )
 
             corrected_item_for_return = {}
             
@@ -304,10 +306,16 @@ def apply_and_persist_media_correction(collection_id: int, old_tmdb_id: str, new
                     # 步骤 B: 现在可以安全地为“季”条目更新订阅状态
                     release_date = season_details.get("air_date", '')
                     final_subscription_status = 'PENDING_RELEASE' if release_date and release_date > datetime.now().strftime('%Y-%m-%d') else 'WANTED'
-                    media_db.update_subscription_status(
-                        tmdb_ids=season_tmdb_id, item_type='Season', new_status=final_subscription_status,
-                        source=subscription_source, media_info_list=[season_media_info]
-                    )
+                    if final_subscription_status == 'PENDING_RELEASE':
+                        media_db.set_media_status_pending_release(
+                            tmdb_ids=[season_tmdb_id], item_type='Season',
+                            source=subscription_source, media_info_list=[season_media_info]
+                        )
+                    else:
+                        media_db.set_media_status_wanted(
+                            tmdb_ids=[season_tmdb_id], item_type='Season',
+                            source=subscription_source, media_info_list=[season_media_info]
+                        )
                     
                     final_ui_status = 'unreleased' if final_subscription_status == 'PENDING_RELEASE' else 'subscribed'
                     corrected_item_for_return = {
@@ -326,10 +334,16 @@ def apply_and_persist_media_correction(collection_id: int, old_tmdb_id: str, new
                     
                     release_date = media_info['release_date']
                     final_subscription_status = 'PENDING_RELEASE' if release_date and release_date > datetime.now().strftime('%Y-%m-%d') else 'WANTED'
-                    media_db.update_subscription_status(
-                        tmdb_ids=new_tmdb_id, item_type=item_type, new_status=final_subscription_status, 
-                        source=subscription_source, media_info_list=[media_info]
-                    )
+                    if final_subscription_status == 'PENDING_RELEASE':
+                        media_db.set_media_status_pending_release(
+                            tmdb_ids=[new_tmdb_id], item_type=item_type,
+                            source=subscription_source, media_info_list=[media_info]
+                        )
+                    else:
+                        media_db.set_media_status_wanted(
+                            tmdb_ids=[new_tmdb_id], item_type=item_type,
+                            source=subscription_source, media_info_list=[media_info]
+                        )
                     
                     final_ui_status = 'unreleased' if final_subscription_status == 'PENDING_RELEASE' else 'subscribed'
                     corrected_item_for_return = {"tmdb_id": new_tmdb_id, "title": media_info['title'], "release_date": media_info['release_date'], "poster_path": media_info['poster_path'], "status": final_ui_status, "media_type": item_type}

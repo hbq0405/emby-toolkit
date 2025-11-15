@@ -466,8 +466,8 @@ def api_unified_subscription_status():
                         logger.error(f"API /subscription/status: {error_msg}")
                         continue
 
-                media_db.update_subscription_status(
-                    tmdb_ids=tmdb_id, item_type=item_type, new_status='NONE'
+                media_db.set_media_status_none(
+                    tmdb_ids=[tmdb_id], item_type=item_type
                 )
                 processed_count += 1
 
@@ -481,12 +481,25 @@ def api_unified_subscription_status():
                 if new_status.upper() == 'IGNORED' and not ignore_reason:
                     ignore_reason = '手动忽略'
 
-                media_db.update_subscription_status(
-                    tmdb_ids=tmdb_id, item_type=item_type, new_status=new_status.upper(),
-                    source=source, media_info_list=[req],
-                    ignore_reason=ignore_reason,
-                    force_unignore=force_unignore
-                )
+                if new_status.upper() == 'WANTED':
+                    media_db.set_media_status_wanted(
+                        tmdb_ids=[tmdb_id], item_type=item_type, source=source, media_info_list=[req],
+                        force_unignore=force_unignore
+                    )
+                elif new_status.upper() == 'SUBSCRIBED':
+                    media_db.set_media_status_subscribed(
+                        tmdb_ids=[tmdb_id], item_type=item_type, source=source, media_info_list=[req]
+                    )
+                elif new_status.upper() == 'IGNORED':
+                    media_db.set_media_status_ignored(
+                        tmdb_ids=[tmdb_id], item_type=item_type, source=source, media_info_list=[req],
+                        ignore_reason=ignore_reason
+                    )
+                else:
+                    # 理论上不应该走到这里，因为前面已经做了 ALLOWED_STATUSES 校验
+                    logger.warning(f"API /subscription/status: 遇到未处理的状态 '{new_status}' for TMDb ID {tmdb_id}")
+                    errors.append(f"处理 TMDb ID {tmdb_id} 失败：不支持的状态 '{new_status}'")
+                    continue
                 processed_count += 1
 
         except Exception as e:

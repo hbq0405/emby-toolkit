@@ -214,12 +214,11 @@ def api_re_evaluate_tracked_media(): # ★ 2. 移除函数参数
             return jsonify({"error": "未找到指定的媒体项"}), 404
 
         # 核心操作：将状态改为 WANTED
-        media_db.update_subscription_status(
-            tmdb_ids=tmdb_id,
+        media_db.set_media_status_wanted(
+            tmdb_ids=[tmdb_id],
             item_type=item_type,
-            new_status='WANTED',
             source={"type": "manual_re_evaluate"},
-            force_unignore=True # ★ 4. 增加 force_unignore 参数，确保能从 IGNORED 状态恢复
+            force_unignore=True
         )
         
         message = f"《{media_info['title']}》已恢复评估！下次演员扫描时将自动更新其最新状态。"
