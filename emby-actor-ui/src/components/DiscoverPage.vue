@@ -272,28 +272,25 @@
 
 <script setup>
 import { ref, reactive, watch, onMounted, onUnmounted, computed } from 'vue';
-import { useRouter } from 'vue-router'; // 导入 useRouter
+import { useRouter } from 'vue-router';
 import axios from 'axios';
 import { useAuthStore } from '../stores/auth';
 import { 
   NPageHeader, NCard, NSpace, NRadioGroup, NRadioButton, NSelect,
   NInputNumber, NSpin, NGrid, NGi, NButton, NThing, useMessage, NIcon, 
-  NInput, NInputGroup, NSkeleton, NEllipsis, NEmpty, NDivider, NH4, NH3
+  NInput, NInputGroup, NSkeleton, NEllipsis, NEmpty, NDivider, NH4, NH3, NTooltip
 } from 'naive-ui';
 import { Heart, HeartOutline, HourglassOutline, Star as StarIcon, FlashOutline as LightningIcon, DiceOutline as DiceIcon } from '@vicons/ionicons5';
 
+// ... (所有顶部的 import 和 ref 定义保持不变) ...
 const authStore = useAuthStore();
 const message = useMessage();
 const router = useRouter(); 
 const isPrivilegedUser = computed(() => {
   return authStore.isAdmin || authStore.user?.allow_unrestricted_subscriptions;
 });
-
-// --- Emby 配置 ---
 const embyServerUrl = ref('');
 const embyServerId = ref('');
-
-// --- 状态管理 ---
 const loading = ref(false);
 const subscribingId = ref(null);
 const mediaType = ref('movie');
@@ -312,10 +309,9 @@ const recommendationPool = ref([]);
 const currentRecommendation = ref(null); 
 const isPoolLoading = ref(true); 
 const recommendationThemeName = ref('每日推荐');
-
 const filters = reactive({
   sort_by: 'popularity.desc',
-  vote_average_gte: 0, // 不再使用带点的属性名
+  vote_average_gte: 0,
   page: 1,
 });
 const results = ref([]);
@@ -323,22 +319,14 @@ const totalPages = ref(0);
 const isLoadingMore = ref(false);
 const searchQuery = ref('');
 const isSearchMode = computed(() => searchQuery.value.trim() !== '');
-
-// ★★★ 核心改造 2: 为“哨兵”元素创建一个 ref ★★★
 const sentinel = ref(null);
 
-
-const genreOptions = computed(() => 
-  genres.value.map(g => ({ label: g.name, value: g.id }))
-);
-
+// ... (所有 fetch* 和其他辅助函数保持不变) ...
 const getYear = (media) => {
   const dateStr = media.release_date || media.first_air_date;
   if (!dateStr) return '';
   return new Date(dateStr).getFullYear();
 };
-
-// --- API 调用 ---
 const fetchGenres = async () => {  
   try {
     const endpoint = mediaType.value === 'movie' 
@@ -358,7 +346,6 @@ const fetchCountries = async () => {
     message.error('加载国家列表失败');
   }
 };
-
 const fetchLanguages = async () => {
   try {
     const response = await axios.get('/api/discover/config/languages');
@@ -367,7 +354,6 @@ const fetchLanguages = async () => {
     message.error('加载语言列表失败');
   }
 };
-
 const fetchKeywords = async () => {
   try {
     const response = await axios.get('/api/discover/config/keywords');
@@ -376,16 +362,9 @@ const fetchKeywords = async () => {
     message.error('加载关键词列表失败');
   }
 };
-
 const fetchDiscoverData = async () => {
   if (isLoadingMore.value || loading.value) return;
-
-  if (filters.page === 1) {
-    loading.value = true;
-  } else {
-    isLoadingMore.value = true;
-  }
-
+  if (filters.page === 1) { loading.value = true; } else { isLoadingMore.value = true; }
   try {
     let response;
     if (isSearchMode.value) {
@@ -395,61 +374,36 @@ const fetchDiscoverData = async () => {
         page: filters.page,
       });
     } else {
-      // 1. 构建 API 参数对象，这里进行关键的映射
       const apiParams = {
         'sort_by': filters.sort_by,
         'page': filters.page,
-        'vote_average.gte': filters.vote_average_gte, // 将 vote_average_gte 映射回 'vote_average.gte'
+        'vote_average.gte': filters.vote_average_gte,
         'with_origin_country': selectedRegions.value.join('|'),
         'with_original_language': selectedLanguage.value,
         'with_keywords': selectedKeywords.value.join(','),
       };
-
-      // 2. 条件性地添加风格参数
       if (selectedGenres.value.length > 0) {
-        if (genreFilterMode.value === 'include') {
-          apiParams.with_genres = selectedGenres.value.join(',');
-        } else {
-          apiParams.without_genres = selectedGenres.value.join(',');
-        }
+        if (genreFilterMode.value === 'include') { apiParams.with_genres = selectedGenres.value.join(','); } 
+        else { apiParams.without_genres = selectedGenres.value.join(','); }
       }
-
-      // 3. 条件性地添加年份参数
       const yearGteParam = mediaType.value === 'movie' ? 'primary_release_date.gte' : 'first_air_date.gte';
       const yearLteParam = mediaType.value === 'movie' ? 'primary_release_date.lte' : 'first_air_date.lte';
-      
-      if (yearFrom.value) {
-        apiParams[yearGteParam] = `${yearFrom.value}-01-01`;
-      }
-      if (yearTo.value) {
-        apiParams[yearLteParam] = `${yearTo.value}-12-31`;
-      }
-
-      // 4. 清理空参数并发送
-      const cleanedParams = Object.fromEntries(
-        Object.entries(apiParams).filter(([_, v]) => v !== null && v !== '')
-      );
+      if (yearFrom.value) { apiParams[yearGteParam] = `${yearFrom.value}-01-01`; }
+      if (yearTo.value) { apiParams[yearLteParam] = `${yearTo.value}-12-31`; }
+      const cleanedParams = Object.fromEntries(Object.entries(apiParams).filter(([_, v]) => v !== null && v !== ''));
       response = await axios.post(`/api/discover/${mediaType.value}`, cleanedParams);
     }
-    
-    if (filters.page === 1) {
-      results.value = response.data.results;
-    } else {
-      results.value.push(...response.data.results);
-    }
+    if (filters.page === 1) { results.value = response.data.results; } 
+    else { results.value.push(...response.data.results); }
     totalPages.value = response.data.total_pages;
-
   } catch (error) {
     message.error('加载影视数据失败');
-    if (filters.page === 1) {
-      results.value = [];
-    }
+    if (filters.page === 1) { results.value = []; }
   } finally {
     loading.value = false;
     isLoadingMore.value = false;
   }
 };
-
 const fetchEmbyConfig = async () => {
   try {
     const response = await axios.get('/api/config');
@@ -460,7 +414,6 @@ const fetchEmbyConfig = async () => {
     message.error('获取 Emby 配置失败');
   }
 };
-
 const pickRandomRecommendation = () => {
   if (!recommendationPool.value || recommendationPool.value.length === 0) {
     currentRecommendation.value = null;
@@ -477,30 +430,21 @@ const pickRandomRecommendation = () => {
   } while (newRecommendation.id === currentRecommendation.value?.id);
   currentRecommendation.value = newRecommendation;
 };
-
 const fetchRecommendationPool = async () => {
   isPoolLoading.value = true;
-  
   try {
     const response = await axios.get('/api/discover/daily_recommendation');
-    
-    // ★ 核心修改：从 response.data 对象中解构出主题和池子
     recommendationPool.value = response.data.pool || [];
     recommendationThemeName.value = response.data.theme_name || '每日推荐';
     pickRandomRecommendation();
-    
     isPoolLoading.value = false;
-
   } catch (error) {
     if (error.response && error.response.status === 404) {
-      console.log("未找到推荐池，将自动触发后台生成任务...");
       try {
         await axios.post('/api/discover/trigger_recommendation_update');
-        
         let attempts = 0;
         const maxAttempts = 10;
         const pollInterval = 3000;
-
         const intervalId = setInterval(async () => {
           if (attempts >= maxAttempts) {
             clearInterval(intervalId);
@@ -508,31 +452,22 @@ const fetchRecommendationPool = async () => {
             isPoolLoading.value = false;
             return;
           }
-          
           try {
-            console.log(`正在进行第 ${attempts + 1} 次轮询...`);
             const pollResponse = await axios.get('/api/discover/daily_recommendation');
-            
-            // ★ 核心修改：轮询时也使用新的数据结构
             if (pollResponse.data && pollResponse.data.pool && pollResponse.data.pool.length > 0) {
               clearInterval(intervalId);
               recommendationPool.value = pollResponse.data.pool;
               recommendationThemeName.value = pollResponse.data.theme_name;
               pickRandomRecommendation();
               isPoolLoading.value = false;
-              console.log("轮询成功，已获取推荐池！");
             }
-          } catch (pollError) {
-            // 轮询过程中继续遇到错误，不做处理
-          }
+          } catch (pollError) {}
           attempts++;
         }, pollInterval);
-
       } catch (triggerError) {
         message.error("启动推荐任务失败。");
         isPoolLoading.value = false;
       }
-      
     } else {
       console.error('加载推荐池失败:', error);
       message.error("加载今日推荐失败。");
@@ -542,27 +477,38 @@ const fetchRecommendationPool = async () => {
 };
 
 const handleSubscribe = async (media) => {
-  // 拦截1: 如果正在提交，任何人都不许再点
   if (subscribingId.value) return;
 
-  // 拦截2: 根据状态进行严格拦截
-  const status = media.subscription_status;
-  if (status === 'SUBSCRIBED' || status === 'PENDING_RELEASE') {
-    message.info(status === 'SUBSCRIBED' ? '该项目已提交订阅，请等待下载器处理。' : '该项目尚未上映，已加入监控。');
+  // ★★★ 核心修复 1: 兼容 null 和 undefined 的状态 ★★★
+  const originalStatus = media.subscription_status || 'NONE';
+
+  if (originalStatus === 'SUBSCRIBED' || originalStatus === 'PENDING_RELEASE') {
+    message.info(originalStatus === 'SUBSCRIBED' ? '该项目已提交订阅，请等待下载器处理。' : '该项目尚未上映，已加入监控。');
     return;
   }
-  // 普通用户在 'REQUESTED' 状态下不能重复点击
-  if (status === 'REQUESTED' && !isPrivilegedUser.value) {
+  if (originalStatus === 'REQUESTED' && !isPrivilegedUser.value) {
     message.warning('您的请求正在等待审核，请勿重复提交。');
     return;
   }
 
   subscribingId.value = media.id;
-  try {
-    // ★★★ 核心修复：使用组件的 mediaType.value 状态，而不是 media.media_type ★★★
-    const itemTypeForApi = mediaType.value === 'movie' ? 'Movie' : 'Series';
+  
+  const updateMediaStatus = (mediaId, newStatus) => {
+    if (currentRecommendation.value && currentRecommendation.value.id === mediaId) {
+      currentRecommendation.value = { ...currentRecommendation.value, subscription_status: newStatus };
+    }
+    const index = results.value.findIndex(r => r.id === mediaId);
+    if (index !== -1) {
+      results.value[index] = { ...results.value[index], subscription_status: newStatus };
+    }
+  };
 
-    // 第一步，总是调用门户订阅接口，创建订阅意图
+  try {
+    const itemTypeForApi = (media.media_type === 'tv' ? 'Series' : 'Movie') || (mediaType.value === 'movie' ? 'Movie' : 'Series');
+
+    // ★★★ 核心修复 2: 修正 shouldTriggerTaskImmediately 的判断逻辑 ★★★
+    const shouldTriggerTaskImmediately = isPrivilegedUser.value && ['WANTED', 'REQUESTED', 'NONE', 'IGNORED'].includes(originalStatus);
+
     const portalResponse = await axios.post('/api/portal/subscribe', {
       tmdb_id: media.id,
       item_type: itemTypeForApi,
@@ -570,42 +516,29 @@ const handleSubscribe = async (media) => {
     });
 
     message.success(portalResponse.data.message);
+    const newStatusFromServer = portalResponse.data.status;
+    updateMediaStatus(media.id, newStatusFromServer);
 
-    // 前端乐观更新为后端返回的新状态
-    const newStatus = portalResponse.data.status;
-    const targetInResults = results.value.find(r => r.id === media.id);
-    if (targetInResults) {
-      targetInResults.subscription_status = newStatus;
+    if (shouldTriggerTaskImmediately) {
+      const requestItem = { tmdb_id: media.id, item_type: itemTypeForApi, title: media.title || media.name };
+      const taskPayload = { task_name: 'manual_subscribe_batch', subscribe_requests: [requestItem] };
+
+      updateMediaStatus(media.id, 'SUBSCRIBED');
+      
+      axios.post('/api/tasks/run', taskPayload)
+        .then(taskResponse => {
+          message.info('已提交到后台立即处理...');
+        })
+        .catch(taskError => {
+          message.error(taskError.response?.data?.message || '提交立即处理任务失败。');
+          updateMediaStatus(media.id, newStatusFromServer);
+        });
     }
 
-    // 第二步: 如果是特权用户，并且状态允许，则立即触发手动订阅任务
-    if (isPrivilegedUser.value && (newStatus === 'WANTED' || newStatus === 'REQUESTED')) {
-      
-      const requestItem = {
-        tmdb_id: media.id,
-        item_type: itemTypeForApi,
-        title: media.title || media.name
-      };
-      
-      const taskPayload = {
-        task_name: 'manual_subscribe_batch',
-        subscribe_requests: [requestItem]
-      };
-
-      // 异步触发，不需要等待结果
-      axios.post('/api/tasks/run', taskPayload).then(taskResponse => {
-        message.info('已提交到后台立即处理...');
-        if (targetInResults) {
-          targetInResults.subscription_status = 'SUBSCRIBED';
-        }
-      }).catch(taskError => {
-        message.error(taskError.response?.data?.message || '提交立即处理任务失败。');
-      });
-    }
-
-    // 如果订阅的是每日推荐项，则刷新推荐池
     if (currentRecommendation.value && currentRecommendation.value.id === media.id) {
-      fetchRecommendationPool();
+      const poolIndex = recommendationPool.value.findIndex(item => item.id === media.id);
+      if (poolIndex !== -1) { recommendationPool.value.splice(poolIndex, 1); }
+      pickRandomRecommendation();
     }
 
   } catch (error) {
@@ -615,82 +548,42 @@ const handleSubscribe = async (media) => {
   }
 };
 
-const onImageError = (e) => {
-  e.target.src = '/default-avatar.png'; // 确保你在 public 文件夹下放了一张默认头像图片
-};
-
+// ... (所有剩余的辅助函数和生命周期钩子保持不变) ...
+const onImageError = (e) => { e.target.src = '/default-avatar.png'; };
 const handleClickCard = (media) => {
   if (media.in_library && embyServerUrl.value && media.emby_item_id && embyServerId.value) {
-    // 跳转到 Emby 详情页
     const embyDetailUrl = `${embyServerUrl.value}/web/index.html#!/item?id=${media.emby_item_id}&serverId=${embyServerId.value}`;
     window.open(embyDetailUrl, '_blank');
   } else {
-    // 跳转到 TMDb 详情页
-    const tmdbDetailUrl = `https://www.themoviedb.org/${mediaType.value}/${media.id}`;
+    const mediaTypeForUrl = media.media_type || mediaType.value;
+    const tmdbDetailUrl = `https://www.themoviedb.org/${mediaTypeForUrl}/${media.id}`;
     window.open(tmdbDetailUrl, '_blank');
   }
 };
-
 let debounceTimer = null;
 const fetchDiscoverDataDebounced = () => {
   clearTimeout(debounceTimer);
-  debounceTimer = setTimeout(() => {
-    fetchDiscoverData();
-  }, 300);
+  debounceTimer = setTimeout(() => { fetchDiscoverData(); }, 300);
 };
-
-// ★★★ 核心改造 4: 加载更多的逻辑 ★★★
 const loadMore = () => {
-  // 如果正在加载，或者已经没有更多页了，则不执行
-  if (isLoadingMore.value || loading.value || filters.page >= totalPages.value) {
-    return;
-  }
-  filters.page++; // 页数加一
-  fetchDiscoverData(); // 获取下一页数据
+  if (isLoadingMore.value || loading.value || filters.page >= totalPages.value) { return; }
+  filters.page++;
+  fetchDiscoverData();
 };
-
 const resetAndFetch = () => {
   results.value = [];
   filters.page = 1;
   totalPages.value = 0;
-  // 确保DOM更新后哨兵元素可见，以便可以重新触发加载
-  // 但首次加载由 fetchDiscoverDataDebounced 保证，所以这里不需要特殊处理
   fetchDiscoverDataDebounced();
 };
-
 watch(mediaType, () => {
   selectedGenres.value = [];
   filters['sort_by'] = 'popularity.desc';
   fetchGenres();
   resetAndFetch();
 });
-
-watch(searchQuery, (newValue) => {
-  // 当搜索框内容变化时，重置并获取数据
-  // fetchDiscoverDataDebounced 函数内部会根据 isSearchMode 决定调用哪个API
-  resetAndFetch();
-});
-
-watch(
-  [
-    () => filters.sort_by, 
-    () => filters.vote_average_gte, // 使用正确的属性名
-    selectedGenres, 
-    selectedRegions, 
-    selectedLanguage,
-    selectedKeywords,
-    genreFilterMode,
-    yearFrom,
-    yearTo
-  ], 
-  () => { 
-    resetAndFetch();
-  }, 
-  { deep: true }
-);
-
-
-// ★★★ 核心改造 5: 在生命周期中设置和销毁 IntersectionObserver ★★★
+watch(searchQuery, (newValue) => { resetAndFetch(); });
+watch([() => filters.sort_by, () => filters.vote_average_gte, selectedGenres, selectedRegions, selectedLanguage, selectedKeywords, genreFilterMode, yearFrom, yearTo], () => { resetAndFetch(); }, { deep: true });
 let observer = null;
 onMounted(() => {
   fetchGenres();
@@ -700,33 +593,12 @@ onMounted(() => {
   fetchEmbyConfig(); 
   fetchRecommendationPool();
   resetAndFetch();
-
-  // 创建观察器
-  observer = new IntersectionObserver(
-    (entries) => {
-      // 如果哨兵元素进入视口
-      if (entries[0].isIntersecting) {
-        loadMore();
-      }
-    },
-    {
-      root: null, // 相对于浏览器视口
-      threshold: 0.1, // 哨兵元素可见10%时触发
-    }
-  );
-
-  // 开始观察哨兵元素
-  if (sentinel.value) {
-    observer.observe(sentinel.value);
-  }
+  observer = new IntersectionObserver((entries) => {
+    if (entries[0].isIntersecting) { loadMore(); }
+  }, { root: null, threshold: 0.1 });
+  if (sentinel.value) { observer.observe(sentinel.value); }
 });
-
-onUnmounted(() => {
-  // 组件销毁时，停止观察，防止内存泄漏
-  if (observer) {
-    observer.disconnect();
-  }
-});
+onUnmounted(() => { if (observer) { observer.disconnect(); } });
 </script>
 
 <style scoped>
