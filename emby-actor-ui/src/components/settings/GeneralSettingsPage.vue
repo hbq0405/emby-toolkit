@@ -677,8 +677,6 @@ const tableInfo = {
   'user_collection_cache': { cn: '用户权限缓存', isSharable: false }
 };
 const tableDependencies = {
-  'actor_subscriptions': ['media_metadata'],
-  'custom_collections': ['media_metadata'],
   'emby_users': ['user_media_data', 'emby_users_extended'],
   'user_templates': ['invitations']
 };
