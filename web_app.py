@@ -73,7 +73,7 @@ logging.getLogger("apscheduler.scheduler").setLevel(logging.WARNING)
 logging.getLogger('werkzeug').setLevel(logging.ERROR)
 app = Flask(__name__, static_folder='static')
 app.secret_key = os.urandom(24)
-
+app.config['MAX_CONTENT_LENGTH'] = 128 * 1024 * 1024
 #过滤底层日志
 logging.getLogger("requests").setLevel(logging.WARNING)
 logging.getLogger("urllib3").setLevel(logging.WARNING)
@@ -210,7 +210,8 @@ def ensure_nginx_config():
             'EMBY_UPSTREAM': emby_upstream,
             'PROXY_UPSTREAM': proxy_upstream,
             'NGINX_LISTEN_PORT': nginx_listen_port,
-            'REDIRECT_UPSTREAM': redirect_upstream
+            'REDIRECT_UPSTREAM': redirect_upstream,
+            'NGINX_MAX_BODY_SIZE': '128m'
         }
         final_config_content = template.render(context)
 
