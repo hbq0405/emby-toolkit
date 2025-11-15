@@ -108,7 +108,7 @@ def request_subscription():
         user_chat_id = user_db.get_user_telegram_chat_id(emby_user_id)
         if user_chat_id:
             if is_vip or is_emby_admin:
-                message_text = f"✅ *您的订阅请求已提交*\n\n您想看的 *{item_name}* 已加入订阅队列，系统将自动为您处理。"
+                message_text = f"✅ *您的订阅请求已提交*\n\n您想看的 *{item_name}* 已提交订阅。"
             else:
                 message_text = f"🔔 *您的订阅请求已提交*\n\n您想看的 *{item_name}* 已进入待审队列，管理员处理后会通知您。"
             send_telegram_message(user_chat_id, message_text)
