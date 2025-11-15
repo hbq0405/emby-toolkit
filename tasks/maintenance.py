@@ -381,6 +381,15 @@ def task_import_database(processor, file_content: str, tables_to_import: List[st
                 logger.info("="*36)
                 conn.commit()
                 logger.info(f"  ➜  数据库事务已成功提交！任务 '{task_name}' 完成。")
+                # --- 触发自动校准任务 ---
+                try:
+                    logger.info("  ➜ 数据导入成功，将自动触发ID计数器校准任务以确保数据一致性...")
+                    # 直接调用校准任务函数
+                    maintenance_db.correct_all_sequences()
+                    logger.info("  ➜ ID计数器校准任务已完成。")
+                except Exception as e_resync:
+                    logger.error(f"  ➜ 在导入后自动执行ID校准时失败: {e_resync}", exc_info=True)
+                    # 这是一个非关键步骤的失败，不应该影响主任务的成功状态，只记录错误即可。
     except Exception as e:
         logger.error(f"数据库恢复任务发生严重错误，所有更改将回滚: {e}", exc_info=True)
         if conn:
