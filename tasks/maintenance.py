@@ -37,7 +37,7 @@ def _prepare_data_for_insert(table_name: str, table_data: List[Dict[str, Any]]) 
             'keywords_json', 'next_episode_to_air_json', 'last_episode_to_air_json',
             'watchlist_next_episode_json', 'watchlist_missing_info_json'
         },
-        'actor_subscriptions': {'config_genres_include_json', 'config_genres_exclude_json'},
+        'actor_subscriptions': {'config_genres_include_json', 'config_genres_exclude_json', 'last_scanned_tmdb_ids_json'},
         'resubscribe_rules': {
             'target_library_ids', 'resubscribe_audio_missing_languages',
             'resubscribe_subtitle_missing_languages', 'resubscribe_quality_include',
