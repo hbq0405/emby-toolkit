@@ -3,7 +3,7 @@
 import time
 import re
 import json
-from datetime import datetime, timedelta
+from datetime import datetime
 import logging
 from typing import Optional, Dict, Any, List, Set, Callable, Tuple
 import threading
@@ -13,7 +13,7 @@ import concurrent.futures
 import handler.tmdb as tmdb
 import handler.emby as emby
 from database.connection import get_db_connection
-from database import media_db
+from database import media_db, request_db
 import constants
 import utils
 
@@ -96,7 +96,7 @@ class ActorSubscriptionProcessor:
             # 直接调用一个专门的数据库函数来完成所有数据准备工作
             (emby_media_map, 
              emby_series_seasons_map, 
-             emby_series_name_to_tmdb_id_map) = media_db.get_all_in_library_media_for_actor_sync()
+             emby_series_name_to_tmdb_id_map) = request_db.get_all_in_library_media_for_actor_sync()
 
             logger.info(f"  ➜ 从数据库成功加载 {len(emby_media_map)} 个媒体映射，{len(emby_series_seasons_map)} 个剧集季结构。")
 
@@ -212,7 +212,7 @@ class ActorSubscriptionProcessor:
                             media_db.ensure_media_record_exists([media_info])
                             
                             # 只做“追加来源”这一件事。
-                            media_db.add_subscription_source(tmdb_id, media_type, subscription_source)
+                            request_db.add_subscription_source(tmdb_id, media_type, subscription_source)
                             
                             in_library_count += 1
                         else:
@@ -235,7 +235,7 @@ class ActorSubscriptionProcessor:
                             works_passed_local_filters.append(work)
                         else:
                             # 不符合规则，直接标记为 IGNORED。
-                            media_db.set_media_status_ignored(
+                            request_db.set_media_status_ignored(
                                 tmdb_ids=tmdb_id, item_type=media_type,
                                 source=subscription_source,
                                 media_info_list=[media_info], ignore_reason=reason
@@ -261,20 +261,20 @@ class ActorSubscriptionProcessor:
                                 release_date = work.get('release_date') or work.get('first_air_date', '')
                                 final_status = 'PENDING_RELEASE' if release_date and release_date > today_str else 'WANTED'
                                 if final_status == 'WANTED':
-                                    media_db.set_media_status_wanted(
+                                    request_db.set_media_status_wanted(
                                         tmdb_ids=tmdb_id, item_type=media_type,
                                         source=subscription_source,
                                         media_info_list=[media_info]
                                     )
                                 elif final_status == 'PENDING_RELEASE':
-                                    media_db.set_media_status_pending_release(
+                                    request_db.set_media_status_pending_release(
                                         tmdb_ids=tmdb_id, item_type=media_type,
                                         source=subscription_source,
                                         media_info_list=[media_info]
                                     )
                             else:
                                 # 因为番位不符被刷掉，标记为 IGNORED。
-                                media_db.set_media_status_ignored(
+                                request_db.set_media_status_ignored(
                                     tmdb_ids=[tmdb_id], item_type=media_type,
                                     source=subscription_source,
                                     media_info_list=[media_info], ignore_reason=reason
@@ -290,7 +290,7 @@ class ActorSubscriptionProcessor:
                             item_info = old_items_details.get(tmdb_id_to_clean)
                             if item_info:
                                 # 调用函数，从作品的订阅源中移除当前演员订阅。
-                                media_db.remove_subscription_source(tmdb_id_to_clean, item_info['item_type'], subscription_source)
+                                request_db.remove_subscription_source(tmdb_id_to_clean, item_info['item_type'], subscription_source)
 
                     # --- 步骤 6: 将本次扫描到的所有作品ID，更新回数据库作为新的“记忆” ---
                     # 这样下次运行时，就可以和这个最新的列表进行比对，实现差量更新。

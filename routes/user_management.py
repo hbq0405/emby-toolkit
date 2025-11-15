@@ -10,12 +10,11 @@ from datetime import datetime, timedelta, timezone
 from flask import Blueprint, request, jsonify
 
 import handler.emby as emby
-import handler.tmdb as tmdb
 import config_manager
 import constants
 from handler.telegram import send_telegram_message
 from extensions import admin_required
-from database import user_db, media_db, connection
+from database import user_db, media_db, connection, request_db
 
 # 创建一个新的蓝图
 user_management_bp = Blueprint('user_management_bp', __name__)
@@ -303,7 +302,7 @@ def delete_user(user_id):
 def get_pending_subscriptions():
     """获取所有待审核的订阅请求。"""
     try:
-        requests = media_db.get_pending_requests_for_admin()
+        requests = request_db.get_pending_requests_for_admin()
         return jsonify(requests)
     except Exception as e:
         return jsonify({"status": "error", "message": "获取列表失败"}), 500
@@ -345,7 +344,7 @@ def batch_approve_subscriptions():
                     # ... (可以补充更多元数据)
                 }
                 
-                media_db.set_media_status_wanted(
+                request_db.set_media_status_wanted(
                     tmdb_ids=[req['tmdb_id']],
                     item_type=req['item_type'],
                     source={"type": "admin_approval", "admin": "admin"}
@@ -422,7 +421,7 @@ def batch_reject_subscriptions():
         for item_type, req_list in grouped_requests.items():
             tmdb_ids = [req['tmdb_id'] for req in req_list]
             
-            media_db.set_media_status_ignored(
+            request_db.set_media_status_ignored(
                 tmdb_ids=tmdb_ids,
                 item_type=item_type,
                 source={"type": "admin_rejection"},

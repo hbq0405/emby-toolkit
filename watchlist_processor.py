@@ -9,7 +9,7 @@ from datetime import datetime, timedelta, timezone
 import threading
 
 # 导入我们需要的辅助模块
-from database import connection, media_db, watchlist_db
+from database import connection, media_db, watchlist_db, request_db
 import constants
 import handler.tmdb as tmdb
 import handler.emby as emby
@@ -796,7 +796,7 @@ class WatchlistProcessor:
                         }
                         
                         # 推送需求
-                        media_db.set_media_status_wanted(
+                        request_db.set_media_status_wanted(
                             tmdb_ids=str(season.get('id')), # ★★★ 核心修正：使用季的真实 TMDB ID ★★★
                             item_type='Season',             # ★★★ 核心修正：类型明确为 Season ★★★
                             source={"type": "watchlist", "reason": "missing_completed_season", "item_id": item_id},
@@ -825,7 +825,7 @@ class WatchlistProcessor:
                     'overview': season.get('overview'), 'season_number': season_num
                 }
                 
-                media_db.set_media_status_wanted(
+                request_db.set_media_status_wanted(
                     tmdb_ids=tmdb_id, item_type='Series',
                     source={"type": "watchlist", "reason": "missing_season", "item_id": item_id},
                     media_info_list=[media_info]

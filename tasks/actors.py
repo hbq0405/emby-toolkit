@@ -8,7 +8,7 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 
 # 导入需要的底层模块和共享实例
 from database.connection import get_db_connection
-from database import media_db
+from database import request_db
 import constants
 import handler.emby as emby
 import task_manager
@@ -131,7 +131,7 @@ def task_scan_actor_media(processor, subscription_id: int):
         try:
             (emby_media_map, 
              emby_series_seasons_map, 
-             emby_series_name_to_tmdb_id_map) = media_db.get_all_in_library_media_for_actor_sync()
+             emby_series_name_to_tmdb_id_map) = request_db.get_all_in_library_media_for_actor_sync()
             logger.info(f"  ➜ 从数据库成功加载 {len(emby_media_map)} 个媒体映射，{len(emby_series_seasons_map)} 个剧集季结构。")
         except Exception as e:
             logger.error(f"  ➜ 手动刷新任务：从 media_metadata 获取媒体库信息时发生严重错误: {e}", exc_info=True)

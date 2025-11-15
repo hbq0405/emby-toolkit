@@ -6,7 +6,7 @@ from typing import Optional, Dict, Any, List, Tuple
 from datetime import datetime
 
 from .connection import get_db_connection
-from . import media_db
+from . import media_db, request_db
 from utils import contains_chinese
 from handler.emby import get_emby_item_details
 from config_manager import APP_CONFIG
@@ -716,7 +716,7 @@ def update_actor_subscription(subscription_id: int, data: dict) -> bool:
                     )
                     items_to_clean = cursor.fetchall()
                     for item in items_to_clean:
-                        media_db.remove_subscription_source(item['tmdb_id'], item['item_type'], source_to_remove)
+                        request_db.remove_subscription_source(item['tmdb_id'], item['item_type'], source_to_remove)
                     logger.info(f"  ➜ 成功清理 {len(items_to_clean)} 条旧的'忽略'记录，下次刷新时将重新评估。")
                 
                 conn.commit()
@@ -756,7 +756,7 @@ def delete_actor_subscription(subscription_id: int) -> bool:
             # 步骤 3: 逐个清理媒体的订阅源
             logger.info(f"  ➜ 正在从 {len(items_to_clean)} 个媒体项中移除订阅源 (ID: {subscription_id})...")
             for item in items_to_clean:
-                media_db.remove_subscription_source(item['tmdb_id'], item['item_type'], source_to_remove)
+                request_db.remove_subscription_source(item['tmdb_id'], item['item_type'], source_to_remove)
 
             # 步骤 4: 最后删除订阅本身
             cursor.execute("DELETE FROM actor_subscriptions WHERE id = %s", (subscription_id,))

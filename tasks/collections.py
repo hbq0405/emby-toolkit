@@ -10,12 +10,10 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 from typing import Dict, Any
 
 # 导入需要的底层模块和共享实例
-import config_manager
-import constants
 import handler.emby as emby
 import task_manager
 import handler.tmdb as tmdb
-from database import collection_db, connection, settings_db, media_db
+from database import collection_db, connection, settings_db, media_db, request_db
 from handler.custom_collection import ListImporter, FilterEngine
 from handler import collections
 from services.cover_generator import CoverGeneratorService
@@ -192,7 +190,7 @@ def _perform_list_collection_health_check(
         # 去重，防止重复处理
         unique_parents = {p['tmdb_id']: p for p in parent_series_to_ensure_exist}.values()
         logger.info(f"  -> 检测到 {len(unique_parents)} 个缺失的父剧集元数据，正在创建占位记录...")
-        media_db.set_media_status_none(
+        request_db.set_media_status_none(
             tmdb_ids=[p['tmdb_id'] for p in unique_parents],
             item_type='Series',
             media_info_list=list(unique_parents)
@@ -213,14 +211,14 @@ def _perform_list_collection_health_check(
         for item_type, requests in requests_by_type.items():
             logger.info(f"    -> 正在为 {len(requests)} 个 '{item_type}' 类型的项目更新状态...")
             if status == 'WANTED':
-                media_db.set_media_status_wanted(
+                request_db.set_media_status_wanted(
                     tmdb_ids=[req['tmdb_id'] for req in requests],
                     item_type=item_type,
                     media_info_list=requests,
                     source=source_for_subscription
                 )
             elif status == 'PENDING_RELEASE':
-                media_db.set_media_status_pending_release(
+                request_db.set_media_status_pending_release(
                     tmdb_ids=[req['tmdb_id'] for req in requests],
                     item_type=item_type,
                     media_info_list=requests,
@@ -254,7 +252,7 @@ def _perform_list_collection_health_check(
                 item_type = old_media_map.get(tmdb_id)
                 if item_type:
                     try:
-                        media_db.remove_subscription_source(tmdb_id, item_type, source_to_remove)
+                        request_db.remove_subscription_source(tmdb_id, item_type, source_to_remove)
                     except Exception as e_remove:
                         logger.error(f"  -> 清理媒体 {tmdb_id} ({item_type}) 的来源时发生错误: {e_remove}", exc_info=True)
     

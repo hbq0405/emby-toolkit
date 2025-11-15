@@ -6,7 +6,7 @@ from datetime import datetime
 from typing import Optional, Dict, Any, List
 
 from .connection import get_db_connection
-from . import media_db
+from . import media_db, request_db
 import config_manager
 import constants
 import handler.tmdb as tmdb
@@ -266,7 +266,7 @@ def apply_and_persist_media_correction(collection_id: int, old_tmdb_id: str, new
             
             # 3.1 废弃旧条目
             if old_tmdb_id != new_tmdb_id:
-                media_db.set_media_status_ignored(
+                request_db.set_media_status_ignored(
                     tmdb_ids=[old_tmdb_id], item_type=item_type, ignore_reason=f"修正为 {new_tmdb_id}"
                 )
 
@@ -307,12 +307,12 @@ def apply_and_persist_media_correction(collection_id: int, old_tmdb_id: str, new
                     release_date = season_details.get("air_date", '')
                     final_subscription_status = 'PENDING_RELEASE' if release_date and release_date > datetime.now().strftime('%Y-%m-%d') else 'WANTED'
                     if final_subscription_status == 'PENDING_RELEASE':
-                        media_db.set_media_status_pending_release(
+                        request_db.set_media_status_pending_release(
                             tmdb_ids=[season_tmdb_id], item_type='Season',
                             source=subscription_source, media_info_list=[season_media_info]
                         )
                     else:
-                        media_db.set_media_status_wanted(
+                        request_db.set_media_status_wanted(
                             tmdb_ids=[season_tmdb_id], item_type='Season',
                             source=subscription_source, media_info_list=[season_media_info]
                         )
@@ -335,12 +335,12 @@ def apply_and_persist_media_correction(collection_id: int, old_tmdb_id: str, new
                     release_date = media_info['release_date']
                     final_subscription_status = 'PENDING_RELEASE' if release_date and release_date > datetime.now().strftime('%Y-%m-%d') else 'WANTED'
                     if final_subscription_status == 'PENDING_RELEASE':
-                        media_db.set_media_status_pending_release(
+                        request_db.set_media_status_pending_release(
                             tmdb_ids=[new_tmdb_id], item_type=item_type,
                             source=subscription_source, media_info_list=[media_info]
                         )
                     else:
-                        media_db.set_media_status_wanted(
+                        request_db.set_media_status_wanted(
                             tmdb_ids=[new_tmdb_id], item_type=item_type,
                             source=subscription_source, media_info_list=[media_info]
                         )

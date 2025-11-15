@@ -9,11 +9,8 @@ import psycopg2
 import config_manager
 import handler.tmdb as tmdb
 import task_manager
-import handler.moviepilot as moviepilot
-from database import settings_db, actor_db, media_db
+from database import settings_db, actor_db, media_db, request_db
 from extensions import admin_required, processor_ready_required
-from tasks.subscriptions import _check_and_get_series_best_version_flag
-from tasks.helpers import is_movie_subscribable
 
 # 1. 创建演员订阅蓝图
 actor_subscriptions_bp = Blueprint('actor_subscriptions', __name__, url_prefix='/api/actor-subscriptions')
@@ -214,7 +211,7 @@ def api_re_evaluate_tracked_media(): # ★ 2. 移除函数参数
             return jsonify({"error": "未找到指定的媒体项"}), 404
 
         # 核心操作：将状态改为 WANTED
-        media_db.set_media_status_wanted(
+        request_db.set_media_status_wanted(
             tmdb_ids=[tmdb_id],
             item_type=item_type,
             source={"type": "manual_re_evaluate"},

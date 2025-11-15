@@ -17,7 +17,7 @@ import handler.tmdb as tmdb
 import handler.moviepilot as moviepilot
 import task_manager
 from handler import telegram
-from database import connection, settings_db, resubscribe_db, collection_db, user_db, media_db
+from database import connection, settings_db, resubscribe_db, request_db, user_db, media_db
 from .helpers import _get_standardized_effect, _extract_quality_tag_from_filename, is_movie_subscribable
 
 logger = logging.getLogger(__name__)
@@ -274,7 +274,7 @@ def task_manual_subscribe_batch(processor, subscribe_requests: List[Dict]):
                 logger.info(f"  ✅ 《{item_title_for_log}》订阅成功！")
                 settings_db.decrement_subscription_quota()
                 
-                media_db.set_media_status_subscribed(
+                request_db.set_media_status_subscribed(
                     tmdb_ids=[str(tmdb_id)],
                     item_type=item_type, 
                 )
@@ -406,7 +406,7 @@ def task_auto_subscribe(processor):
                 logger.info(f"  ✅ 《{item['title']}》订阅成功！")
                 
                 # a. 将状态从 WANTED 更新为 SUBSCRIBED
-                media_db.set_media_status_subscribed(
+                request_db.set_media_status_subscribed(
                     tmdb_ids=item['tmdb_id'], # 更新的是季/电影自己的记录
                     item_type=item_type,
                 )

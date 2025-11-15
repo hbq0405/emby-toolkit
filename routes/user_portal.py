@@ -4,7 +4,7 @@ import requests
 from flask import Blueprint, jsonify, session, request
 
 from extensions import emby_login_required # 保护我们的新接口
-from database import user_db, settings_db, media_db
+from database import user_db, settings_db, media_db, request_db
 import config_manager     # ★ 2. 导入配置管理器，因为 MP 处理器需要它
 import constants
 import handler.tmdb as tmdb
@@ -63,7 +63,7 @@ def request_subscription():
         log_user_type = "管理员" if is_emby_admin else "VIP 用户"
         logger.info(f"  ➜ 【{log_user_type}通道】'{emby_username}' 的订阅请求将直接加入待订阅队列...")
         
-        media_db.set_media_status_wanted(
+        request_db.set_media_status_wanted(
             tmdb_ids=[tmdb_id], item_type=item_type,
             source={"type": "user_request", "user_id": emby_user_id, "user_type": log_user_type},
             media_info_list=[media_info]
@@ -73,12 +73,12 @@ def request_subscription():
 
     else:
         # --- ★★★ 普通用户通道终极改造 ★★★ ---
-        existing_status = media_db.get_global_request_status_by_tmdb_id(tmdb_id)
+        existing_status = request_db.get_global_request_status_by_tmdb_id(tmdb_id)
         if existing_status:
             message = "该项目正在等待审核。" if existing_status == 'pending' else "该项目已在订阅队列中。"
             return jsonify({"status": existing_status, "message": message}), 200
         
-        media_db.set_media_status_requested(
+        request_db.set_media_status_requested(
             tmdb_ids=[tmdb_id], item_type=item_type,
             source={"type": "user_request", "user_id": emby_user_id},
             media_info_list=[media_info]

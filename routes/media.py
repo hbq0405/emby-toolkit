@@ -10,7 +10,7 @@ import config_manager
 import constants
 import task_manager
 import extensions
-from database import collection_db, media_db, user_db
+from database import collection_db, media_db, user_db, request_db
 import handler.moviepilot as moviepilot
 from extensions import admin_required, processor_ready_required
 from urllib.parse import urlparse
@@ -466,7 +466,7 @@ def api_unified_subscription_status():
                         logger.error(f"API /subscription/status: {error_msg}")
                         continue
 
-                media_db.set_media_status_none(
+                request_db.set_media_status_none(
                     tmdb_ids=[tmdb_id], item_type=item_type
                 )
                 processed_count += 1
@@ -482,16 +482,16 @@ def api_unified_subscription_status():
                     ignore_reason = '手动忽略'
 
                 if new_status.upper() == 'WANTED':
-                    media_db.set_media_status_wanted(
+                    request_db.set_media_status_wanted(
                         tmdb_ids=[tmdb_id], item_type=item_type, source=source, media_info_list=[req],
                         force_unignore=force_unignore
                     )
                 elif new_status.upper() == 'SUBSCRIBED':
-                    media_db.set_media_status_subscribed(
+                    request_db.set_media_status_subscribed(
                         tmdb_ids=[tmdb_id], item_type=item_type, source=source, media_info_list=[req]
                     )
                 elif new_status.upper() == 'IGNORED':
-                    media_db.set_media_status_ignored(
+                    request_db.set_media_status_ignored(
                         tmdb_ids=[tmdb_id], item_type=item_type, source=source, media_info_list=[req],
                         ignore_reason=ignore_reason
                     )
