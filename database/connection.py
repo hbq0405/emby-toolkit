@@ -633,16 +633,23 @@ def init_db():
                         cursor.execute(f"DROP TABLE IF EXISTS {table} CASCADE;")
                         logger.trace(f"    ➜ [数据库清理] 移除 '{table}' 表的操作已执行。")
 
-                    # --- 3.2 清理 media_metadata 表中的废弃列 ---
-                    deprecated_columns = [
-                        'emby_item_id',
-                        'emby_children_details_json',
-                        'tags_json'
-                    ]
-                    for column in deprecated_columns:
-                        logger.info(f"    ➜ [数据库清理] 正在尝试从 'media_metadata' 表中移除废弃的列: '{column}'...")
-                        cursor.execute(f"ALTER TABLE media_metadata DROP COLUMN IF EXISTS {column};")
-                        logger.trace(f"    ➜ [数据库清理] 移除 '{column}' 列的操作已执行。")
+                    # ★★★ 核心修复：使用字典来管理多个表的废弃列 ★★★
+                    deprecated_columns_map = {
+                        'media_metadata': [
+                            'emby_item_id',
+                            'emby_children_details_json',
+                            'tags_json'
+                        ],
+                        'custom_collections': [
+                            'generated_emby_ids_json' # <-- 在这里添加了废弃的列！
+                        ]
+                    }
+
+                    for table_name, columns_to_drop in deprecated_columns_map.items():
+                        for column_name in columns_to_drop:
+                            logger.info(f"    ➜ [数据库清理] 正在尝试从 '{table_name}' 表中移除废弃的列: '{column_name}'...")
+                            cursor.execute(f"ALTER TABLE {table_name} DROP COLUMN IF EXISTS {column_name};")
+                            logger.trace(f"    ➜ [数据库清理] 移除 '{table_name}.{column_name}' 列的操作已执行。")
 
                     logger.info("  ➜ [数据库清理] 废弃对象清理完成。")
 
