@@ -246,7 +246,7 @@ def get_all_non_library_media() -> List[Dict[str, Any]]:
             m1.item_type, 
             -- ★★★ 核心修改：无论原始季名是什么，都拼接成“第 X 季” ★★★
             CASE 
-                WHEN m1.item_type = 'Season' THEN COALESCE(m2.title, '未知剧集') || ' 第 ' || m1.season_number || '季'
+                WHEN m1.item_type = 'Season' THEN COALESCE(m2.title, '未知剧集') || ' 第 ' || m1.season_number || ' 季 '
                 ELSE m1.title 
             END AS title,
             m1.release_date, 

@@ -84,7 +84,7 @@
               </div>
               <div class="card-content-container">
                 <div class="card-header">
-                  <n-ellipsis class="card-title" :tooltip="{ style: { maxWidth: '300px' } }">{{ formatTitle(item.title) }}</n-ellipsis>
+                  <n-ellipsis class="card-title" :tooltip="{ style: { maxWidth: '300px' } }">{{ item.title }}</n-ellipsis>
                 </div>
                 <div class="card-status-area">
                   <n-space vertical size="small">
@@ -349,13 +349,6 @@ const toggleSelection = (item, event, index) => {
     }
   }
   lastSelectedIndex.value = index;
-};
-
-const formatTitle = (title) => {
-  if (!title) return '';
-  // 使用正则表达式查找紧挨着"季"字的数字
-  // $1 代表捕获到的数字部分
-  return title.replace(/(\d)季$/, '$1 季');
 };
 
 // ✨✨✨ 更新批量操作处理器 ✨✨✨
