@@ -312,8 +312,8 @@ def task_auto_subscribe(processor):
     logger.info(f"--- 开始执行 '{task_name}' 任务 ---")
     
     task_manager.update_status_from_thread(0, "正在启动统一订阅处理器...")
-    
-    if not config_manager.APP_CONFIG.get(constants.CONFIG_OPTION_AUTOSUB_ENABLED):
+    config = config_manager.APP_CONFIG
+    if not config.get(constants.CONFIG_OPTION_AUTOSUB_ENABLED):
         logger.info("  ➜ 订阅总开关未开启，任务跳过。")
         task_manager.update_status_from_thread(100, "任务跳过：总开关未开启")
         return
@@ -401,7 +401,6 @@ def task_auto_subscribe(processor):
         task_manager.update_status_from_thread(10, f"发现 {len(wanted_items)} 个待处理请求...")
 
         # 准备变量
-        config = config_manager.APP_CONFIG
         tmdb_api_key = config.get(constants.CONFIG_OPTION_TMDB_API_KEY)
         subscription_details = [] # 给管理员的报告
         rejected_details = []     # 给管理员的报告
