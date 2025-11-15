@@ -616,6 +616,41 @@ def init_db():
 
                 logger.trace("  ➜ 数据库升级检查完成。")
 
+                # ======================================================================
+                # ★★★ 数据库废弃对象清理补丁 (START) ★★★
+                # 此处代码用于移除在新版本中已废弃的表和列，保持数据库整洁。
+                # ======================================================================
+                logger.trace("  ➜ [数据库清理] 正在检查并移除已废弃的数据库对象...")
+                try:
+                    # --- 3.1 清理废弃的表 ---
+                    deprecated_tables = [
+                        'watchlist',
+                        'tracked_actor_media',
+                        'subscription_requests'
+                    ]
+                    for table in deprecated_tables:
+                        logger.info(f"    ➜ [数据库清理] 正在尝试移除废弃的表: '{table}'...")
+                        cursor.execute(f"DROP TABLE IF EXISTS {table} CASCADE;")
+                        logger.trace(f"    ➜ [数据库清理] 移除 '{table}' 表的操作已执行。")
+
+                    # --- 3.2 清理 media_metadata 表中的废弃列 ---
+                    deprecated_columns = [
+                        'emby_item_id',
+                        'emby_children_details_json',
+                        'tags_json'
+                    ]
+                    for column in deprecated_columns:
+                        logger.info(f"    ➜ [数据库清理] 正在尝试从 'media_metadata' 表中移除废弃的列: '{column}'...")
+                        cursor.execute(f"ALTER TABLE media_metadata DROP COLUMN IF EXISTS {column};")
+                        logger.trace(f"    ➜ [数据库清理] 移除 '{column}' 列的操作已执行。")
+
+                    logger.info("  ➜ [数据库清理] 废弃对象清理完成。")
+
+                except Exception as e_cleanup:
+                    logger.error(f"  ➜ [数据库清理] 清理废弃对象时发生错误: {e_cleanup}", exc_info=True)
+                # ======================================================================
+                # ★★★ 数据库废弃对象清理补丁 (END) ★★★
+
             conn.commit()
             logger.info("  ➜ PostgreSQL 数据库初始化完成，所有表结构已创建/验证。")
 
