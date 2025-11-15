@@ -1,9 +1,10 @@
 # database/media_db.py
 import logging
-from typing import List, Dict, Optional, Any, Union
+from typing import List, Dict, Optional, Any, Union, Tuple, Set
 import json
 import psycopg2
 from .connection import get_db_connection
+import utils
 
 logger = logging.getLogger(__name__)
 
@@ -232,6 +233,38 @@ def ensure_media_record_exists(media_info_list: List[Dict[str, Any]]):
 
     except Exception as e:
         logger.error(f"  ➜ [元数据注册] 确保媒体记录存在时发生错误: {e}", exc_info=True)
+        raise
+
+def add_subscription_source(tmdb_id: str, item_type: str, source: Dict[str, Any]):
+    """
+    【新增】为一个已存在的媒体记录，安全地追加一个新的订阅源。
+    - 使用 JSONB 操作符，确保源的唯一性，防止重复添加。
+    """
+    if not all([tmdb_id, item_type, source]):
+        return
+
+    try:
+        with get_db_connection() as conn:
+            with conn.cursor() as cursor:
+                # ★★★ 核心逻辑：
+                # 1. 先用 @> 检查这个 source 是否已经存在于数组中。
+                # 2. 如果不存在，再用 || 操作符将新的 source 对象追加到数组末尾。
+                sql = """
+                    UPDATE media_metadata
+                    SET subscription_sources_json = subscription_sources_json || %s::jsonb
+                    WHERE 
+                        tmdb_id = %s 
+                        AND item_type = %s
+                        AND NOT (subscription_sources_json @> %s::jsonb);
+                """
+                # source 需要被转换成 JSON 字符串，然后包装成一个单元素的数组
+                source_jsonb_array = json.dumps([source])
+                
+                cursor.execute(sql, (source_jsonb_array, tmdb_id, item_type, source_jsonb_array))
+                # with conn: 会自动提交
+    except Exception as e:
+        logger.error(f"DB: 为 {tmdb_id} ({item_type}) 追加订阅源失败: {e}", exc_info=True)
+        # 向上抛出异常，以便外部事务可以回滚
         raise
 
 def update_subscription_status(
@@ -745,3 +778,67 @@ def get_in_library_status_for_tmdb_ids(tmdb_ids: List[str]) -> Dict[str, bool]:
     except Exception as e:
         logger.error(f"DB: 批量查询 TMDB ID 的在库状态失败: {e}", exc_info=True)
         return {}
+    
+def get_all_in_library_media_for_actor_sync() -> Tuple[Dict[str, str], Dict[str, Set[int]], Dict[str, str]]:
+    """
+    【新增】为演员订阅任务，一次性从 media_metadata 表中提取所有需要的数据。
+    返回三个核心映射:
+    1. emby_media_map: {tmdb_id: emby_id}
+    2. emby_series_seasons_map: {series_tmdb_id: {season_number, ...}}
+    3. emby_series_name_to_tmdb_id_map: {normalized_name: tmdb_id}
+    """
+    emby_media_map = {}
+    emby_series_seasons_map = {}
+    emby_series_name_to_tmdb_id_map = {}
+
+    # SQL 查询所有在库的、顶层的电影和剧集
+    sql = """
+        SELECT tmdb_id, item_type, title, emby_item_ids_json 
+        FROM media_metadata 
+        WHERE in_library = TRUE AND item_type IN ('Movie', 'Series');
+    """
+    try:
+        with get_db_connection() as conn:
+            with conn.cursor() as cursor:
+                cursor.execute(sql)
+                top_level_items = cursor.fetchall()
+
+                series_tmdb_ids = []
+                for item in top_level_items:
+                    tmdb_id = str(item['tmdb_id'])
+                    emby_ids = item.get('emby_item_ids_json')
+                    
+                    # 我们只需要第一个 Emby ID 用于映射
+                    if emby_ids and len(emby_ids) > 0:
+                        emby_media_map[tmdb_id] = emby_ids[0]
+
+                    if item['item_type'] == 'Series':
+                        series_tmdb_ids.append(tmdb_id)
+                        # 构建剧名到 ID 的映射
+                        normalized_name = utils.normalize_name_for_matching(item.get('title', ''))
+                        if normalized_name:
+                            emby_series_name_to_tmdb_id_map[normalized_name] = tmdb_id
+                
+                # 如果有剧集，再批量查询所有在库的季信息
+                if series_tmdb_ids:
+                    cursor.execute(
+                        """
+                        SELECT parent_series_tmdb_id, season_number 
+                        FROM media_metadata 
+                        WHERE in_library = TRUE AND item_type = 'Season' AND parent_series_tmdb_id = ANY(%s)
+                        """,
+                        (series_tmdb_ids,)
+                    )
+                    for row in cursor.fetchall():
+                        parent_id = str(row['parent_series_tmdb_id'])
+                        season_num = row['season_number']
+                        if parent_id not in emby_series_seasons_map:
+                            emby_series_seasons_map[parent_id] = set()
+                        emby_series_seasons_map[parent_id].add(season_num)
+
+        return emby_media_map, emby_series_seasons_map, emby_series_name_to_tmdb_id_map
+
+    except Exception as e:
+        logger.error(f"DB: 为演员同步任务准备在库媒体数据时失败: {e}", exc_info=True)
+        # 即使失败也返回空字典，避免上层任务崩溃
+        return {}, {}, {}

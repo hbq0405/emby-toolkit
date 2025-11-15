@@ -292,6 +292,7 @@ def init_db():
                         config_genres_include_json JSONB,
                         config_genres_exclude_json JSONB,
                         status TEXT DEFAULT 'active',
+                        last_scanned_tmdb_ids_json JSONB,
                         last_checked_at TIMESTAMP WITH TIME ZONE,
                         added_at TIMESTAMP WITH TIME ZONE DEFAULT NOW(),
                         config_min_rating REAL DEFAULT 6.0,
@@ -545,7 +546,8 @@ def init_db():
                         },
                         'actor_subscriptions': {
                             "config_main_role_only": "BOOLEAN NOT NULL DEFAULT FALSE",
-                            "config_min_vote_count": "INTEGER NOT NULL DEFAULT 10"
+                            "config_min_vote_count": "INTEGER NOT NULL DEFAULT 10",
+                            "last_scanned_tmdb_ids_json": "JSONB"
                         }
                     }
 

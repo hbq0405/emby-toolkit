@@ -702,25 +702,21 @@ def update_actor_subscription(subscription_id: int, data: dict) -> bool:
 
                 # 步骤 6: 比较新旧配置，如果筛选条件变了，就清理掉旧的“忽略”记录
                 if final_config != old_config_snapshot:
-                    logger.info(f"  ➜ 检测到订阅ID {subscription_id} 的筛选配置发生变更，将清理历史忽略记录...")
+                    logger.info(f"  ➜ 检测到订阅ID {subscription_id} 的筛选配置发生变更，将重置检查时间并清理历史忽略记录...")
                     
-                    # ★★★ 新的清理逻辑 ★★★
-                    # 找到所有被此订阅标记为 IGNORED 的媒体，并从中移除此订阅源
+                    #  重置扫描缓存 
+                    cursor.execute("UPDATE actor_subscriptions SET last_scanned_tmdb_ids_json = NULL WHERE id = %s", (subscription_id,))
+
+                    # 清理旧的忽略记录 
                     source_to_remove = {"type": "actor_subscription", "id": subscription_id}
                     source_filter = json.dumps([source_to_remove])
-                    
                     cursor.execute(
-                        """
-                        SELECT tmdb_id, item_type FROM media_metadata 
-                        WHERE subscription_status = 'IGNORED' AND subscription_sources_json @> %s::jsonb
-                        """,
+                        "SELECT tmdb_id, item_type FROM media_metadata WHERE subscription_status = 'IGNORED' AND subscription_sources_json @> %s::jsonb",
                         (source_filter,)
                     )
                     items_to_clean = cursor.fetchall()
-                    
                     for item in items_to_clean:
                         media_db.remove_subscription_source(item['tmdb_id'], item['item_type'], source_to_remove)
-
                     logger.info(f"  ➜ 成功清理 {len(items_to_clean)} 条旧的'忽略'记录，下次刷新时将重新评估。")
                 
                 conn.commit()
