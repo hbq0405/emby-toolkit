@@ -15,10 +15,11 @@ def _prepare_media_data_for_upsert(
     item_type: str, 
     source: Optional[Dict[str, Any]] = None,
     media_info_list: Optional[List[Dict[str, Any]]] = None,
-    ignore_reason: Optional[str] = None
+    ignore_reason: Optional[str] = None # 这个参数我们保留，作为备用
 ) -> List[Dict[str, Any]]:
     """
     内部辅助函数：标准化输入并准备用于批量插入/更新的数据。
+    【V2 - 智能原因版】
     """
     if isinstance(tmdb_ids, str):
         id_list = [tmdb_ids]
@@ -29,14 +30,22 @@ def _prepare_media_data_for_upsert(
         return []
 
     data_to_upsert = []
+    # ★★★ 核心修改 1/2: 将 media_info_list 转换成更方便查找的字典 ★★★
     media_info_map = {info['tmdb_id']: info for info in media_info_list} if media_info_list else {}
     
     for tmdb_id in id_list:
         media_info = media_info_map.get(tmdb_id, {})
+        
+        # ★★★ 核心修改 2/2: 智能决定 reason 的来源 ★★★
+        # 优先使用 media_info 字典中自带的 'reason' 键。
+        # 如果 media_info 中没有，再使用函数传入的全局 ignore_reason。
+        final_reason = media_info.get('reason', ignore_reason)
+
         data_to_upsert.append({
             "tmdb_id": tmdb_id, "item_type": item_type,
             "source": json.dumps([source]) if source else '[]',
-            "reason": ignore_reason, "title": media_info.get('title'),
+            "reason": final_reason, # <--- 使用我们智能判断出的 final_reason
+            "title": media_info.get('title'),
             "original_title": media_info.get('original_title'),
             "release_date": media_info.get('release_date') or None,
             "poster_path": media_info.get('poster_path'),

@@ -146,8 +146,7 @@ class ActorSubscriptionProcessor:
     def _process_single_work(self, work: Dict, sub_config: Dict, subscription_source: Dict) -> Optional[Dict]:
         """
         处理单个作品的完整流程，用于并发执行。
-        - 检查本地规则 -> 获取番位 -> 检查番位规则 -> 决定最终状态
-        - 返回一个包含操作指令和数据的字典，或在早期过滤掉时返回 None。
+        【V2 - 原因传递版】
         """
         try:
             tmdb_id = str(work.get('id'))
@@ -157,18 +156,21 @@ class ActorSubscriptionProcessor:
             # 1. 执行廉价的本地规则过滤（不含番位）
             is_kept, reason = self._filter_work_and_get_reason(work, sub_config, check_order=False)
             if not is_kept:
-                return {"action": "ignore", "tmdb_id": tmdb_id, "item_type": media_type, "media_info": media_info, "reason": reason}
+                # ★★★ 核心修改：将具体原因注入到 media_info 中 ★★★
+                media_info['reason'] = reason
+                return {"action": "ignore", "tmdb_id": tmdb_id, "item_type": media_type, "media_info": media_info}
 
-            # 2. 对通过初筛的作品，获取番位信息（这是网络IO操作）
-            # 注意：_enrich_works_with_order 内部已有并发，但在这里我们是为单个项目调用
+            # 2. 获取番位信息
             enriched_work = self._enrich_works_with_order([work], sub_config['tmdb_person_id'], self.tmdb_api_key)[0]
             
             # 3. 执行包含番位的最终过滤
             is_kept_final, reason_final = self._filter_work_and_get_reason(enriched_work, sub_config, check_order=True)
             if not is_kept_final:
-                return {"action": "ignore", "tmdb_id": tmdb_id, "item_type": media_type, "media_info": media_info, "reason": reason_final}
+                # ★★★ 核心修改：将具体原因注入到 media_info 中 ★★★
+                media_info['reason'] = reason_final
+                return {"action": "ignore", "tmdb_id": tmdb_id, "item_type": media_type, "media_info": media_info}
 
-            # 4. 决定最终状态 (WANTED 或 PENDING_RELEASE)
+            # 4. 决定最终状态
             today_str = datetime.now().strftime('%Y-%m-%d')
             release_date = enriched_work.get('release_date') or enriched_work.get('first_air_date', '')
             final_status = 'PENDING_RELEASE' if release_date and release_date > today_str else 'WANTED'
@@ -254,28 +256,47 @@ class ActorSubscriptionProcessor:
                     if results_to_commit:
                         logger.info(f"  ➜ [阶段 3/4] 并发处理完成，聚合 {len(results_to_commit)} 条结果准备批量写入数据库...")
                         
-                        actions = {"wanted": [], "pending_release": [], "ignore": []}
+                        # ★★★ 核心修复：按 action 和 item_type 进行两级分组 ★★★
+                        actions_by_type = {
+                            "wanted": {},
+                            "pending_release": {},
+                            "ignore": {}
+                        }
                         for res in results_to_commit:
                             action = res.get("action")
-                            if action in actions:
-                                actions[action].append(res)
+                            item_type = res.get("item_type")
+                            if action in actions_by_type and item_type:
+                                if item_type not in actions_by_type[action]:
+                                    actions_by_type[action][item_type] = []
+                                actions_by_type[action][item_type].append(res)
 
-                        if actions["wanted"]:
-                            request_db.set_media_status_wanted(
-                                tmdb_ids=[r['tmdb_id'] for r in actions["wanted"]], item_type='Movie', # item_type will be ignored
-                                source=subscription_source, media_info_list=[r['media_info'] for r in actions["wanted"]]
-                            )
-                        if actions["pending_release"]:
-                             request_db.set_media_status_pending_release(
-                                tmdb_ids=[r['tmdb_id'] for r in actions["pending_release"]], item_type='Movie',
-                                source=subscription_source, media_info_list=[r['media_info'] for r in actions["pending_release"]]
-                            )
-                        if actions["ignore"]:
-                            request_db.set_media_status_ignored(
-                                tmdb_ids=[r['tmdb_id'] for r in actions["ignore"]], item_type='Movie',
-                                source=subscription_source, media_info_list=[r['media_info'] for r in actions["ignore"]],
-                                ignore_reason="演员订阅规则" # 这是一个笼统的原因，具体原因在 res['reason']
-                            )
+                        # ★★★ 核心修复：分批、按正确的类型执行数据库更新 ★★★
+                        for item_type, items in actions_by_type["wanted"].items():
+                            if items:
+                                request_db.set_media_status_wanted(
+                                    tmdb_ids=[r['tmdb_id'] for r in items],
+                                    item_type=item_type, # <-- 使用正确分组的 item_type
+                                    source=subscription_source,
+                                    media_info_list=[r['media_info'] for r in items]
+                                )
+                        
+                        for item_type, items in actions_by_type["pending_release"].items():
+                            if items:
+                                request_db.set_media_status_pending_release(
+                                    tmdb_ids=[r['tmdb_id'] for r in items],
+                                    item_type=item_type, # <-- 使用正确分组的 item_type
+                                    source=subscription_source,
+                                    media_info_list=[r['media_info'] for r in items]
+                                )
+
+                        for item_type, items in actions_by_type["ignore"].items():
+                            if items:
+                                request_db.set_media_status_ignored(
+                                    tmdb_ids=[r['tmdb_id'] for r in items],
+                                    item_type=item_type,
+                                    source=subscription_source,
+                                    media_info_list=[r['media_info'] for r in items]
+                                )
 
                     # --- 步骤 5: 清理已移除的作品 (逻辑不变，但可以优化) ---
                     if removed_work_ids:
