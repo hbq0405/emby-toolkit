@@ -21,10 +21,11 @@ logger = logging.getLogger(__name__)
 # --- 辅助函数 1: 数据清洗与准备 ---
 def _prepare_data_for_insert(table_name: str, table_data: List[Dict[str, Any]]) -> tuple[List[str], List[tuple]]:
     """
-    一个极简的数据准备函数，专为 PG-to-PG 流程设计。
-    - 它只做一件事：将需要存入 JSONB 列的数据包装成 psycopg2 的 Json 对象。
+    【V2 - 健壮性修复版】一个更强大的数据准备函数。
+    - 核心功能：将需要存入 JSONB 列的数据包装成 psycopg2 的 Json 对象。
+    - 新增健壮性：如果一个非 JSONB 列意外地收到了字典或列表，
+      它会自动将其转换为 JSON 字符串，而不是让程序崩溃。
     """
-    # ★★★ 核心修改 1: 在这里注册所有新增的 JSONB 列 ★★★
     JSONB_COLUMNS = {
         'app_settings': {'value_json'},
         'collections_info': {'missing_movies_json'},
@@ -48,7 +49,6 @@ def _prepare_data_for_insert(table_name: str, table_data: List[Dict[str, Any]]) 
         'user_templates': {'emby_policy_json', 'emby_configuration_json'}
     }
 
-    # Add specific non-JSONB columns that might be lists and need string conversion
     LIST_TO_STRING_COLUMNS = {
         'actor_subscriptions': {'config_media_types'}
     }
@@ -57,7 +57,6 @@ def _prepare_data_for_insert(table_name: str, table_data: List[Dict[str, Any]]) 
         return [], []
 
     columns = list(table_data[0].keys())
-    # 使用小写表名来匹配规则
     table_json_rules = JSONB_COLUMNS.get(table_name.lower(), set())
     table_list_to_string_rules = LIST_TO_STRING_COLUMNS.get(table_name.lower(), set())
     
@@ -68,9 +67,20 @@ def _prepare_data_for_insert(table_name: str, table_data: List[Dict[str, Any]]) 
             value = row_dict.get(col_name)
             
             if col_name in table_json_rules and value is not None:
+                # 1. 如果是指定的 JSONB 列，使用 Json() 包装器
                 value = Json(value)
             elif col_name in table_list_to_string_rules and isinstance(value, list):
+                # 2. 如果是指定的需要转为字符串的列表列
                 value = ','.join(map(str, value))
+            # ★★★ 核心修复：在这里添加对意外字典/列表的处理 ★★★
+            elif isinstance(value, (dict, list)):
+                # 3. 如果它不是指定的 JSONB 列，但值依然是字典或列表
+                #    这通常意味着数据不一致。我们发出警告，并将其序列化为字符串以避免崩溃。
+                logger.warning(
+                    f"  ➜ [数据清洗] 在表 '{table_name}' 的非JSONB列 '{col_name}' "
+                    f"中发现了一个字典/列表类型的值。已自动将其转换为JSON字符串。"
+                )
+                value = json.dumps(value, ensure_ascii=False)
             
             row_values.append(value)
         prepared_rows.append(tuple(row_values))
