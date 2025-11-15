@@ -319,6 +319,71 @@ def task_auto_subscribe(processor):
         return
 
     try:
+        # ======================================================================
+        # 阶段 1 - 清理超时订阅 
+        # ======================================================================
+        cancel_threshold_days = config.get(constants.CONFIG_OPTION_AUTOCANCEL_SUBSCRIBED_DAYS, 0)
+        
+        if cancel_threshold_days > 0:
+            logger.info(f"  ➜ 正在检查超过 {cancel_threshold_days} 天仍未入库的订阅...")
+            task_manager.update_status_from_thread(2, "正在清理超时订阅...")
+            
+            stale_items = request_db.get_stale_subscribed_media(cancel_threshold_days)
+            
+            if stale_items:
+                logger.warning(f"  ➜ 发现 {len(stale_items)} 个超时订阅，将尝试取消它们。")
+                cancelled_ids_map = {} # 用于批量更新数据库状态 { 'Movie': [...], 'Series': [...], ... }
+                cancelled_for_report = []
+
+                for item in stale_items:
+                    tmdb_id_to_cancel = item['tmdb_id']
+                    item_type = item['item_type']
+                    season_to_cancel = None
+
+                    # 特殊处理季：取消时需要使用父剧集的ID
+                    if item_type == 'Season':
+                        if item['parent_series_tmdb_id']:
+                            tmdb_id_to_cancel = item['parent_series_tmdb_id']
+                            season_to_cancel = item['season_number']
+                        else:
+                            logger.error(f"  ➜ 无法取消季《{item['title']}》，因为它缺少父剧集ID。")
+                            continue
+                    
+                    # 调用 MoviePilot 取消接口
+                    success = moviepilot.cancel_subscription(
+                        tmdb_id=tmdb_id_to_cancel,
+                        item_type=item_type,
+                        config=config,
+                        season=season_to_cancel
+                    )
+                    
+                    if success:
+                        # 如果取消成功，记录下来以便稍后批量更新数据库
+                        if item_type not in cancelled_ids_map:
+                            cancelled_ids_map[item_type] = []
+                        cancelled_ids_map[item_type].append(item['tmdb_id']) # ★ 注意：这里用原始的 tmdb_id
+                        cancelled_for_report.append(f"《{item['title']}》")
+
+                # 批量更新数据库状态
+                for item_type, tmdb_ids in cancelled_ids_map.items():
+                    if tmdb_ids:
+                        request_db.set_media_status_none(tmdb_ids=tmdb_ids, item_type=item_type)
+                
+                # 如果有成功取消的，给管理员发个通知
+                if cancelled_for_report:
+                    admin_chat_ids = user_db.get_admin_telegram_chat_ids()
+                    if admin_chat_ids:
+                        items_list_str = "\n".join([f"· `{item}`" for item in cancelled_for_report])
+                        message_text = (f"🚫 *自动取消了 {len(cancelled_for_report)} 个超时订阅*\n\n"
+                                        f"下列项目因超过 {cancel_threshold_days} 天未入库而被自动取消：\n{items_list_str}")
+                        for admin_id in admin_chat_ids:
+                            telegram.send_telegram_message(admin_id, message_text, disable_notification=True)
+            else:
+                logger.info("  ➜ 未发现超时订阅。")
+
+        # ======================================================================
+        # 阶段 2 - 执行常规订阅 
+        # ======================================================================
         logger.info("  ➜ 正在检查未上映...")
         promoted_count = media_db.promote_pending_to_wanted()
         if promoted_count > 0:

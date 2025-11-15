@@ -474,3 +474,33 @@ def get_subscribers_by_tmdb_id(tmdb_id: str, item_type: str) -> List[Dict[str, A
     except Exception as e:
         logger.error(f"DB: 根据 TMDb ID [{tmdb_id}] 查询订阅者失败: {e}", exc_info=True)
         return []
+    
+def get_stale_subscribed_media(threshold_days: int) -> List[Dict[str, Any]]:
+    """
+    获取所有状态为 'SUBSCRIBED'、未入库，且订阅时间超过指定天数的媒体项。
+    """
+    if threshold_days <= 0:
+        return []
+
+    sql = """
+        SELECT 
+            tmdb_id, 
+            item_type, 
+            title,
+            parent_series_tmdb_id,
+            season_number
+        FROM 
+            media_metadata
+        WHERE 
+            subscription_status = 'SUBSCRIBED'
+            AND last_subscribed_at IS NOT NULL
+            AND NOW() - last_subscribed_at > INTERVAL '%s days';
+    """
+    try:
+        with get_db_connection() as conn:
+            with conn.cursor() as cursor:
+                cursor.execute(sql, (threshold_days,))
+                return cursor.fetchall()
+    except Exception as e:
+        logger.error(f"DB: 查询超时的订阅媒体时失败: {e}", exc_info=True)
+        return []
