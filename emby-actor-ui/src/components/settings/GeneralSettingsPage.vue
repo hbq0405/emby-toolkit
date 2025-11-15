@@ -416,7 +416,7 @@
                     <n-space vertical>
                       <n-space align="center">
                         <n-button @click="showExportModal" :loading="isExporting" class="action-button"><template #icon><n-icon :component="ExportIcon" /></template>导出数据</n-button>
-                        <n-upload :custom-request="handleCustomImportRequest" :show-file-list="false" accept=".json"><n-button :loading="isImporting" class="action-button"><template #icon><n-icon :component="ImportIcon" /></template>导入数据</n-button></n-upload>
+                        <n-upload :custom-request="handleCustomImportRequest" :show-file-list="false" accept=".json,.json.gz"><n-button :loading="isImporting" class="action-button"><template #icon><n-icon :component="ImportIcon" /></template>导入数据</n-button></n-upload>
                         <n-button @click="showClearTablesModal" :loading="isClearing" class="action-button" type="error" ghost><template #icon><n-icon :component="ClearIcon" /></template>清空指定表</n-button>
                         <n-popconfirm @positive-click="handleCorrectSequences">
                           <template #trigger>
@@ -643,6 +643,7 @@ import {
 import { useConfig } from '../../composables/useConfig.js';
 import axios from 'axios';
 
+// ... (从 tableInfo 到 handleImportSelectionChange 的所有代码保持不变) ...
 const tableInfo = {
   'app_settings': { cn: '基础配置', isSharable: false },
   'person_identity_map': { cn: '演员映射表', isSharable: true },
@@ -665,21 +666,18 @@ const tableInfo = {
   'emby_users_extended': { cn: 'Emby用户扩展信息', isSharable: false },
   'user_collection_cache': { cn: '用户权限缓存', isSharable: false }
 };
-
 const tableDependencies = {
   'actor_subscriptions': ['media_metadata'],
   'custom_collections': ['media_metadata'],
   'emby_users': ['user_media_data', 'emby_users_extended'],
   'user_templates': ['invitations']
 };
-
 const reverseTableDependencies = {};
 for (const parent in tableDependencies) {
   for (const child of tableDependencies[parent]) {
     reverseTableDependencies[child] = parent;
   }
 }
-
 const handleClearSelectionChange = (currentSelection) => {
   const selectionSet = new Set(currentSelection);
   for (const parentTable in tableDependencies) {
@@ -696,7 +694,6 @@ const handleClearSelectionChange = (currentSelection) => {
     tablesToClear.value = Array.from(selectionSet);
   }
 };
-
 const handleImportSelectionChange = (currentSelection) => {
   const selectionSet = new Set(currentSelection);
   let changed = true;
@@ -990,56 +987,39 @@ const selectAllForExport = () => tablesToExport.value = [...allDbTables.value];
 const deselectAllForExport = () => tablesToExport.value = [];
 
 // ★★★ 核心修复：重写文件上传和解析逻辑 ★★★
-const handleCustomImportRequest = ({ file }) => {
-  const rawFile = file.file; // 获取原始 File 对象
+const handleCustomImportRequest = async ({ file }) => {
+  const rawFile = file.file;
   if (!rawFile) {
     message.error("未能获取到文件对象。");
     return;
   }
 
-  // 步骤 1: 立即将文件对象保存起来，用于后续上传
-  fileToImport.value = rawFile;
-
-  // 步骤 2: 读取文件内容，仅用于解析元数据（获取表列表）
-  const reader = new FileReader();
-  reader.onload = (e) => {
-    try {
-      let contentText = e.target.result;
-      // 注意：这里我们不需要解压，因为后端会处理。我们只需要解析JSON。
-      // 如果是 .gz 文件，我们无法在前端直接读取其内容来解析JSON。
-      // 所以，我们做一个妥协：对于 .gz 文件，我们无法预先展示表列表。
-      
-      if (rawFile.name.endsWith('.gz')) {
-        // 对于压缩文件，我们无法在前端解析，所以显示一个通用提示
-        tablesInBackupFile.value = ['(压缩文件，无法预览)'];
-        // 并且默认勾选一个虚拟的 "all" 选项，后端需要能识别这个
-        tablesToImport.value = ['(压缩文件，无法预览)']; 
-      } else {
-        // 对于普通 json 文件，正常解析
-        const content = JSON.parse(contentText);
-        if (!content.data || typeof content.data !== 'object') {
-          throw new Error('备份文件格式不正确：缺少 "data" 对象。');
-        }
-        tablesInBackupFile.value = Object.keys(content.data);
-        if (tablesInBackupFile.value.length === 0) {
-          throw new Error('备份文件格式不正确： "data" 对象为空。');
-        }
-        tablesToImport.value = [...tablesInBackupFile.value];
-      }
-      
-      importModalVisible.value = true;
-    } catch (err) {
-      message.error(err.message || '无法解析JSON文件，请确保文件格式正确。');
-      fileToImport.value = null; // 解析失败，清空待上传文件
-    }
-  };
+  const msgReactive = message.loading('正在解析备份文件...', { duration: 0 });
   
-  // 对于 .gz 文件，我们无法读取为文本，所以这里只处理 .json
-  if (rawFile.name.endsWith('.json')) {
-      reader.readAsText(rawFile);
-  } else if (rawFile.name.endsWith('.gz')) {
-      // 直接触发 onload，因为我们不解析内容
-      reader.onload({ target: { result: null } });
+  try {
+    // 步骤 1: 将文件上传到新的预览接口
+    const formData = new FormData();
+    formData.append('file', rawFile);
+    const response = await axios.post('/api/database/preview-backup', formData);
+
+    msgReactive.destroy(); // 解析成功，销毁加载提示
+
+    const tables = response.data.tables;
+    if (!tables || tables.length === 0) {
+      message.error('备份文件有效，但其中不包含任何数据表。');
+      return;
+    }
+
+    // 步骤 2: 成功后，保存文件和表列表，并打开模态框
+    fileToImport.value = rawFile;
+    tablesInBackupFile.value = tables;
+    tablesToImport.value = [...tables]; // 默认全选
+    importModalVisible.value = true;
+
+  } catch (error) {
+    msgReactive.destroy();
+    const errorMsg = error.response?.data?.error || '解析备份文件失败，请检查文件是否有效。';
+    message.error(errorMsg);
   }
 };
 
@@ -1059,31 +1039,18 @@ const startImportProcess = () => {
     return;
   }
   isImporting.value = true;
-  const msgReactive = message.loading('正在上传并处理文件...', { duration: 0 });
+  const msgReactive = message.loading('正在上传并恢复数据...', { duration: 0 });
 
   const formData = new FormData();
   formData.append('file', fileToImport.value);
-
-  // 如果是压缩文件，我们无法预知表列表，所以发送一个空字符串
-  // 后端需要能处理这种情况（例如，导入所有表）
-  // 更好的做法是，后端应该总是从文件本身解析表列表
-  const tablesToSend = fileToImport.value.name.endsWith('.gz') 
-    ? tablesInBackupFile.value.join(',') // 如果是gz，发送 '(压缩文件，无法预览)'
-    : tablesToImport.value.join(',');
-  
-  // 修正：如果用户在UI上取消了所有勾选，即使是gz文件也应该发送空列表
-  if (tablesToImport.value.length === 0) {
-    formData.append('tables', '');
-  } else {
-    formData.append('tables', tablesToSend);
-  }
+  formData.append('tables', tablesToImport.value.join(','));
 
   axios.post('/api/database/import', formData, {
     headers: { 'Content-Type': 'multipart/form-data' }
   })
   .then(response => {
     msgReactive.destroy();
-    message.success(response.data?.message || '恢复任务已提交！');
+    message.success(response.data?.message || '恢复任务已成功提交！');
   })
   .catch(error => {
     msgReactive.destroy();
@@ -1096,14 +1063,8 @@ const startImportProcess = () => {
   });
 };
 
-const selectAllForImport = () => {
-  if (tablesInBackupFile.value.length > 0 && tablesInBackupFile.value[0] !== '(压缩文件，无法预览)') {
-    tablesToImport.value = [...tablesInBackupFile.value];
-  }
-};
-const deselectAllForImport = () => {
-  tablesToImport.value = [];
-};
+const selectAllForImport = () => tablesToImport.value = [...tablesInBackupFile.value];
+const deselectAllForImport = () => tablesToImport.value = [];
 
 const handleCorrectSequences = async () => {
   isCorrecting.value = true;

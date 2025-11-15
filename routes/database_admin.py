@@ -124,6 +124,47 @@ def api_export_database():
     except Exception as e:
         logger.error(f"导出数据库时发生错误: {e}", exc_info=True)
         return jsonify({"error": f"导出时发生服务器错误: {e}"}), 500
+    
+@db_admin_bp.route('/database/preview-backup', methods=['POST'])
+@admin_required
+def api_preview_backup_file():
+    """
+    接收上传的备份文件，解析其内容，并返回其中包含的表名列表。
+    """
+    if 'file' not in request.files:
+        return jsonify({"error": "请求中未找到文件部分"}), 400
+    
+    file = request.files['file']
+    if not file.filename:
+        return jsonify({"error": "未选择文件"}), 400
+
+    try:
+        file_bytes = file.stream.read()
+        
+        # 根据文件名判断是否需要解压
+        if file.filename.endswith('.gz'):
+            content_bytes = gzip.decompress(file_bytes)
+        else:
+            content_bytes = file_bytes
+            
+        # 解码并解析JSON
+        file_content = content_bytes.decode("utf-8-sig")
+        backup_json = json.loads(file_content)
+        
+        # 提取 "data" 字段下的所有键（即表名）
+        tables = list(backup_json.get("data", {}).keys())
+        
+        return jsonify({"status": "success", "tables": tables})
+
+    except gzip.BadGzipFile:
+        logger.error(f"上传的备份文件 '{file.filename}' 不是一个有效的 Gzip 文件。")
+        return jsonify({"error": "文件不是有效的 Gzip 格式。"}), 400
+    except json.JSONDecodeError:
+        logger.error(f"解析备份文件 '{file.filename}' 的 JSON 内容时失败。")
+        return jsonify({"error": "无法解析文件的 JSON 内容，文件可能已损坏。"}), 400
+    except Exception as e:
+        logger.error(f"预览备份文件时发生未知错误: {e}", exc_info=True)
+        return jsonify({"error": "处理文件时发生服务器内部错误。"}), 500
 
 @db_admin_bp.route('/database/import', methods=['POST'])
 @admin_required
