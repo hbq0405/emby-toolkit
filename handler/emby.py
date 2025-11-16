@@ -1112,7 +1112,7 @@ def get_all_native_collections_from_emby(base_url: str, api_key: str, user_id: s
     - 回归了通过检查 ProviderIds.Tmdb 字段是否存在来区分原生合集与自建合集的
       正确、简单且高效的原始逻辑。
     """
-    logger.info("  -> (EMBY_API) 正在采用“库优先+ProviderID过滤”策略获取真正的原生合集...")
+    logger.trace("  -> 正在采用“库优先+ProviderID过滤”策略获取真正的原生合集...")
     
     try:
         # 步骤 1: 获取服务器上所有的媒体库 (过滤掉顶层合集文件夹)
