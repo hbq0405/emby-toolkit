@@ -67,11 +67,13 @@ def api_get_database_stats():
                 'resubscribe': {'pending': raw_stats.get('resubscribe_pending', 0)},
                 
                 'native_collections': {
+                    'total': raw_stats.get('native_collections_total', 0), 
                     'count': raw_stats.get('native_collections_with_missing', 0),
                     'missing_items': raw_stats.get('native_collections_missing_items', 0) or 0
                 },
                 
                 'custom_collections': {
+                    'total': raw_stats.get('custom_collections_total', 0), 
                     'count': raw_stats.get('custom_collections_with_missing', 0),
                     'missing_items': raw_stats.get('custom_collections_missing_items', 0) or 0
                 },

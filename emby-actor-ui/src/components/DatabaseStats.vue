@@ -155,7 +155,7 @@
               </n-grid>
             </div>
             <div class="section-container">
-              <div class="section-title">自动化订阅</div>
+             <div class="section-title">自动化订阅</div>
               <n-grid :cols="3" :x-gap="12">
                 <!-- Block 1: 洗版任务 -->
                 <n-gi class="stat-block">
@@ -170,6 +170,10 @@
                   <div class="stat-block-title">原生合集</div>
                   <div class="stat-item-group">
                     <div class="stat-item">
+                      <div class="stat-item-label">总数</div>
+                      <div class="stat-item-value">{{ stats.subscriptions_card?.native_collections.total || 0 }}</div>
+                    </div>
+                    <div class="stat-item">
                       <div class="stat-item-label">待补全合集</div>
                       <div class="stat-item-value">{{ stats.subscriptions_card?.native_collections.count || 0 }}</div>
                     </div>
@@ -183,6 +187,10 @@
                 <n-gi class="stat-block">
                   <div class="stat-block-title">自建合集</div>
                   <div class="stat-item-group">
+                    <div class="stat-item">
+                      <div class="stat-item-label">总数</div>
+                      <div class="stat-item-value">{{ stats.subscriptions_card?.custom_collections.total || 0 }}</div>
+                    </div>
                     <div class="stat-item">
                       <div class="stat-item-label">待补全合集</div>
                       <div class="stat-item-value">{{ stats.subscriptions_card?.custom_collections.count || 0 }}</div>

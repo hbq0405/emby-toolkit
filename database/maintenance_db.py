@@ -226,10 +226,14 @@ def get_dashboard_stats() -> dict:
         (SELECT COUNT(*) FROM media_metadata WHERE subscription_sources_json @> '[{"type": "actor_subscription"}]'::jsonb) AS actor_works_total,
         (SELECT COUNT(*) FROM media_metadata WHERE subscription_sources_json @> '[{"type": "actor_subscription"}]'::jsonb AND in_library = TRUE) AS actor_works_in_library,
         (SELECT COUNT(*) FROM resubscribe_cache WHERE status ILIKE 'needed') AS resubscribe_pending,
-        -- ★★★ 原生合集统计 (原 collections_info 表) ★★★
+        
+        -- ★★★ 原生合集统计 (原 collections_info 表) - 新增总数统计 ★★★
+        (SELECT COUNT(*) FROM collections_info) AS native_collections_total,
         (SELECT COUNT(*) FROM collections_info WHERE has_missing = TRUE) AS native_collections_with_missing,
         (SELECT SUM(jsonb_array_length(missing_movies_json)) FROM collections_info WHERE has_missing = TRUE) AS native_collections_missing_items,
-        -- ★★★ 自建合集统计 (custom_collections 表) ★★★
+        
+        -- ★★★ 自建合集统计 (custom_collections 表) - 新增总数统计 ★★★
+        (SELECT COUNT(*) FROM custom_collections) AS custom_collections_total,
         (SELECT COUNT(*) FROM custom_collections WHERE missing_count > 0) AS custom_collections_with_missing,
         (SELECT SUM(missing_count) FROM custom_collections WHERE missing_count > 0) AS custom_collections_missing_items;
     """
