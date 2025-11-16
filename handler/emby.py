@@ -1178,7 +1178,7 @@ def get_all_native_collections_from_emby(base_url: str, api_key: str, user_id: s
                 if result:
                     all_enriched_collections.extend(result)
 
-        logger.info(f"  ➜ 成功从所有媒体库中处理了 {len(all_enriched_collections)} 个真正的原生合集。")
+        logger.info(f"  ➜ 成功从所有媒体库中处理了 {len(all_enriched_collections)} 个原生合集。")
         return all_enriched_collections
 
     except requests.RequestException as e:
