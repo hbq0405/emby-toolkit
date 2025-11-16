@@ -2718,7 +2718,7 @@ class MediaProcessor:
         【V2 - 豆瓣集成版】只处理演员表并更新数据库，不与Emby或文件系统交互。
         此版本重新集成了豆瓣作为核心数据源，以实现高质量的预处理。
         """
-        logger.info(f"--- 开始为 '{item_name_for_log}' (TMDb ID: {tmdb_id}) 执行元数据预处理 (豆瓣集成模式) ---")
+        logger.info(f"--- 开始为 '{item_name_for_log}' (TMDb ID: {tmdb_id}) 执行元数据预处理 ---")
         
         if not self.tmdb_api_key:
             logger.error("  ➜ 预处理失败：未配置 TMDb API Key。")
