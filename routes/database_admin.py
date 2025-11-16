@@ -65,7 +65,17 @@ def api_get_database_stats():
                     'tracked_in_library': raw_stats.get('actor_works_in_library', 0)
                 },
                 'resubscribe': {'pending': raw_stats.get('resubscribe_pending', 0)},
-                'collections': {'with_missing': raw_stats.get('collections_with_missing', 0)},
+                
+                'native_collections': {
+                    'count': raw_stats.get('native_collections_with_missing', 0),
+                    'missing_items': raw_stats.get('native_collections_missing_items', 0) or 0
+                },
+                
+                'custom_collections': {
+                    'count': raw_stats.get('custom_collections_with_missing', 0),
+                    'missing_items': raw_stats.get('custom_collections_missing_items', 0) or 0
+                },
+                
                 'quota': {'available': available_quota, 'consumed': consumed_quota}
             },
         }
@@ -129,7 +139,10 @@ def api_export_database():
 @admin_required
 def api_preview_backup_file():
     """
-    接收上传的备份文件，解析其内容，并返回其中包含的表名列表。
+    【V2 - 增强版】
+    接收上传的备份文件，解析其内容，并返回：
+    1. 其中包含的表名列表。
+    2. 根据服务器ID匹配结果，决定导入模式 ('overwrite' 或 'share')。
     """
     if 'file' not in request.files:
         return jsonify({"error": "请求中未找到文件部分"}), 400
@@ -141,20 +154,33 @@ def api_preview_backup_file():
     try:
         file_bytes = file.stream.read()
         
-        # 根据文件名判断是否需要解压
         if file.filename.endswith('.gz'):
             content_bytes = gzip.decompress(file_bytes)
         else:
             content_bytes = file_bytes
             
-        # 解码并解析JSON
         file_content = content_bytes.decode("utf-8-sig")
         backup_json = json.loads(file_content)
         
-        # 提取 "data" 字段下的所有键（即表名）
         tables = list(backup_json.get("data", {}).keys())
         
-        return jsonify({"status": "success", "tables": tables})
+        # ★★★ 核心修改：在这里进行服务器ID检查 ★★★
+        backup_metadata = backup_json.get("metadata", {})
+        backup_server_id = backup_metadata.get("source_emby_server_id")
+        current_server_id = extensions.EMBY_SERVER_ID
+        
+        import_mode = 'overwrite' # 默认为覆盖模式
+        if not backup_server_id or not current_server_id:
+            # 如果任一ID缺失，为安全起见，强制使用共享模式
+            import_mode = 'share'
+            logger.warning("备份文件或当前服务器缺少ID，将强制使用共享模式。")
+        elif backup_server_id != current_server_id:
+            # ID不匹配，明确设置为共享模式
+            import_mode = 'share'
+            logger.info(f"服务器ID不匹配，预览接口确定使用共享模式。")
+
+        # ★★★ 在返回的数据中加入 import_mode 字段 ★★★
+        return jsonify({"status": "success", "tables": tables, "import_mode": import_mode})
 
     except gzip.BadGzipFile:
         logger.error(f"上传的备份文件 '{file.filename}' 不是一个有效的 Gzip 文件。")

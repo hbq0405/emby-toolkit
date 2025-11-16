@@ -550,13 +550,15 @@
     <n-space vertical>
       <div><p><strong>文件名:</strong> {{ fileToImport?.name }}</p></div>
       
-      <!-- ★ 修改点: 增加醒目的警告提示 -->
-      <n-alert title="高危操作警告" type="warning">
+      <!-- ★★★ 核心修改：动态显示警告信息 ★★★ -->
+      <n-alert v-if="importMode === 'overwrite'" title="高危操作警告" type="warning">
         此操作将使用备份文件中的数据 <strong class="warning-text">覆盖</strong> 数据库中对应的表。这是一个 <strong class="warning-text">不可逆</strong> 的过程！<br>
         <strong>请确保您正在使用自己导出的备份文件</strong>，否则可能因服务器ID不匹配而被拒绝，或导致数据错乱。
       </n-alert>
-
-      <!-- ★ 修改点: 移除了导入模式的单选框 -->
+      <n-alert v-else-if="importMode === 'share'" title="共享模式导入" type="info">
+        检测到备份文件来自不同的服务器。为保护您的数据安全，将以 <strong>共享模式</strong> 进行恢复。<br>
+        此模式只会导入 <strong>可共享的数据</strong> (如演员元数据、翻译缓存等)，不会覆盖您现有的用户、订阅、日志等个性化配置。
+      </n-alert>
       
       <div>
         <n-text strong>选择要恢复的表 (从文件中自动读取)</n-text>
@@ -573,7 +575,8 @@
       >
         <n-grid :y-gap="8" :cols="2">
           <n-gi v-for="table in tablesInBackupFile" :key="table">
-            <n-checkbox :value="table">
+            <!-- ★★★ 核心修改：根据模式禁用不可共享的表 ★★★ -->
+            <n-checkbox :value="table" :disabled="isTableDisabledForImport(table)">
               {{ tableInfo[table]?.cn || table }}
               <span v-if="tableInfo[table]?.isSharable" class="sharable-label"> [可共享数据]</span>
             </n-checkbox>
@@ -848,6 +851,10 @@ const clearTablesModalVisible = ref(false);
 const tablesToClear = ref([]);
 const isClearing = ref(false);
 const isCorrecting = ref(false);
+const importMode = ref('overwrite');
+const isTableDisabledForImport = (table) => {
+  return importMode.value === 'share' && !tableInfo[table]?.isSharable;
+};
 const showClearTablesModal = async () => {
   try {
     const response = await axios.get('/api/database/tables');
@@ -994,7 +1001,6 @@ const handleExport = async () => {
 const selectAllForExport = () => tablesToExport.value = [...allDbTables.value];
 const deselectAllForExport = () => tablesToExport.value = [];
 
-// ★★★ 核心修复：重写文件上传和解析逻辑 ★★★
 const handleCustomImportRequest = async ({ file }) => {
   const rawFile = file.file;
   if (!rawFile) {
@@ -1005,12 +1011,12 @@ const handleCustomImportRequest = async ({ file }) => {
   const msgReactive = message.loading('正在解析备份文件...', { duration: 0 });
   
   try {
-    // 步骤 1: 将文件上传到新的预览接口
     const formData = new FormData();
     formData.append('file', rawFile);
+    // ★★★ 调用我们刚刚修改过的后端预览接口 ★★★
     const response = await axios.post('/api/database/preview-backup', formData);
 
-    msgReactive.destroy(); // 解析成功，销毁加载提示
+    msgReactive.destroy();
 
     const tables = response.data.tables;
     if (!tables || tables.length === 0) {
@@ -1018,10 +1024,20 @@ const handleCustomImportRequest = async ({ file }) => {
       return;
     }
 
-    // 步骤 2: 成功后，保存文件和表列表，并打开模态框
+    // ★★★ 核心修改：保存从后端获取的导入模式，并根据模式筛选默认勾选的表 ★★★
     fileToImport.value = rawFile;
     tablesInBackupFile.value = tables;
-    tablesToImport.value = [...tables]; // 默认全选
+    importMode.value = response.data.import_mode || 'overwrite'; // 保存模式
+
+    if (importMode.value === 'share') {
+      // 如果是共享模式，默认只勾选可共享的表
+      tablesToImport.value = tables.filter(t => tableInfo[t]?.isSharable);
+      message.info("已进入共享导入模式，默认仅选择可共享的数据。");
+    } else {
+      // 否则，默认全选
+      tablesToImport.value = [...tables];
+    }
+    
     importModalVisible.value = true;
 
   } catch (error) {

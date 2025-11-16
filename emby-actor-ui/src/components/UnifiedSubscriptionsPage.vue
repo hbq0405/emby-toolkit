@@ -77,6 +77,15 @@
                 @update:checked="(checked, event) => toggleSelection(item, event, i)"
                 class="card-checkbox"
               />
+              <!-- ★★★ 新增：右上角类型图标 ★★★ -->
+              <div class="card-type-icon">
+                <n-tooltip trigger="hover">
+                  <template #trigger>
+                    <n-icon :component="item.item_type === 'Movie' ? FilmIcon : TvIcon" size="16" />
+                  </template>
+                  {{ item.item_type === 'Movie' ? '电影' : '剧集' }}
+                </n-tooltip>
+              </div>
               <div class="card-poster-container">
                 <n-image lazy :src="getPosterUrl(item.poster_path)" class="card-poster" object-fit="cover">
                   <template #placeholder><div class="poster-placeholder"><n-icon :component="TvIcon" size="32" /></div></template>
@@ -104,16 +113,13 @@
                     <n-text v-else :depth="3" class="info-text">
                       <n-icon :component="TimeIcon" /> 请求于: {{ formatTimestamp(item.first_requested_at) }}
                     </n-text>
-                    <!-- ★★★ 新增：显示详细来源 ★★★ -->
                     <n-ellipsis :tooltip="{ style: { maxWidth: '300px' } }" :line-clamp="1" class="info-text">
                       <n-icon :component="SourceIcon" /> {{ formatSources(item.subscription_sources_json) }}
                     </n-ellipsis>
                   </n-space>
                 </div>
                 <div class="card-actions">
-                  <!-- ★★★ 核心修改：根据状态动态显示不同的按钮组 ★★★ -->
                   <n-button-group size="small">
-                    <!-- Case 1: Status is WANTED -->
                     <template v-if="item.subscription_status === 'WANTED'">
                       <n-button @click="() => subscribeItem(item)" type="primary" ghost>
                         订阅
@@ -123,7 +129,6 @@
                       </n-button>
                     </template>
 
-                    <!-- Case 2: Status is SUBSCRIBED or PENDING_RELEASE -->
                     <template v-else-if="item.subscription_status === 'SUBSCRIBED' || item.subscription_status === 'PENDING_RELEASE'">
                       <n-button @click="() => updateItemStatus(item, 'IGNORED')" type="error" ghost>
                         忽略
@@ -133,7 +138,6 @@
                       </n-button>
                     </template>
 
-                    <!-- Case 3: Status is IGNORED -->
                     <template v-else-if="item.subscription_status === 'IGNORED'">
                       <n-button @click="() => updateItemStatus(item, 'WANTED', true)" type="primary" ghost>
                         取消忽略
@@ -162,8 +166,8 @@
 import { ref, onMounted, onBeforeUnmount, h, computed, watch } from 'vue';
 import axios from 'axios';
 import { NLayout, NPageHeader, NDivider, NEmpty, NTag, NButton, NSpace, NIcon, useMessage, useDialog, NTooltip, NGrid, NGi, NCard, NImage, NEllipsis, NSpin, NAlert, NRadioGroup, NRadioButton, NCheckbox, NDropdown, NInput, NSelect, NButtonGroup } from 'naive-ui';
-// ★★★ 新增：导入来源图标 ★★★
-import { SyncOutline, TvOutline as TvIcon, CalendarOutline as CalendarIcon, TimeOutline as TimeIcon, ArrowUpOutline as ArrowUpIcon, ArrowDownOutline as ArrowDownIcon, CaretDownOutline as CaretDownIcon, CheckmarkCircleOutline as WantedIcon, HourglassOutline as PendingIcon, BanOutline as IgnoredIcon, DownloadOutline as SubscribedIcon, PersonCircleOutline as SourceIcon } from '@vicons/ionicons5';
+// ★★★ 核心修改 1：导入电影图标 ★★★
+import { SyncOutline, TvOutline as TvIcon, FilmOutline as FilmIcon, CalendarOutline as CalendarIcon, TimeOutline as TimeIcon, ArrowUpOutline as ArrowUpIcon, ArrowDownOutline as ArrowDownIcon, CaretDownOutline as CaretDownIcon, CheckmarkCircleOutline as WantedIcon, HourglassOutline as PendingIcon, BanOutline as IgnoredIcon, DownloadOutline as SubscribedIcon, PersonCircleOutline as SourceIcon } from '@vicons/ionicons5';
 import { format } from 'date-fns'
 
 // 图标定义
@@ -286,7 +290,6 @@ const filteredItems = computed(() => {
         valB = b.title || '';
         return sortOrder.value === 'asc' ? valA.localeCompare(valB) : valB.localeCompare(valA);
       
-      // ★★★ 核心修复：将日期字符串转换为时间戳进行比较 ★★★
       case 'release_date':
         valA = a.release_date ? new Date(a.release_date).getTime() : 0;
         valB = b.release_date ? new Date(b.release_date).getTime() : 0;
@@ -351,7 +354,6 @@ const toggleSelection = (item, event, index) => {
   lastSelectedIndex.value = index;
 };
 
-// ✨✨✨ 更新批量操作处理器 ✨✨✨
 const handleBatchAction = (key) => {
   const actionMap = {
     'subscribe': { 
@@ -370,7 +372,6 @@ const handleBatchAction = (key) => {
       title: '批量忽略', 
       content: `确定要忽略选中的 ${selectedItems.value.length} 个媒体项吗？`, 
       endpoint: '/api/subscription/status', 
-      // ★★★ 修改：批量忽略时，主动添加原因 ★★★
       getParams: () => ({ requests: selectedItems.value.map(item => ({...item, new_status: 'IGNORED', ignore_reason: '手动忽略'})) }),
       optimistic_status: 'IGNORED'
     },
@@ -422,7 +423,6 @@ const handleBatchAction = (key) => {
           rawItems.value.forEach(item => {
             if (selectedKeys.has(`${item.tmdb_id}-${item.item_type}`)) {
               item.subscription_status = action.optimistic_status;
-              // ★★★ 修改：同步更新UI中的原因 ★★★
               if (action.optimistic_status === 'IGNORED') {
                 item.ignore_reason = '手动忽略';
               }
@@ -439,7 +439,6 @@ const handleBatchAction = (key) => {
   });
 };
 
-// ✨✨✨ 立即订阅函数 ✨✨✨
 const subscribeItem = async (item) => {
   try {
     const request_item = { 
@@ -480,7 +479,6 @@ const updateItemStatus = async (item, newStatus, forceUnignore = false) => {
       force_unignore: forceUnignore
     };
     
-    // ★★★ 修改：当手动忽略时，主动添加原因 ★★★
     if (newStatus === 'IGNORED') {
       requestItem.ignore_reason = '手动忽略';
     }
@@ -494,7 +492,6 @@ const updateItemStatus = async (item, newStatus, forceUnignore = false) => {
         rawItems.value.splice(index, 1);
       } else {
         rawItems.value[index].subscription_status = newStatus;
-        // ★★★ 修改：同步更新UI中的原因 ★★★
         if (newStatus === 'IGNORED') {
           rawItems.value[index].ignore_reason = '手动忽略';
         }
@@ -587,7 +584,7 @@ watch(loaderRef, (newEl, oldEl) => {
 </script>
 
 <style scoped>
-/* ... (样式部分保持不变) ... */
+/* ... (已有样式保持不变) ... */
 .watchlist-page { padding: 0 10px; }
 .center-container { display: flex; justify-content: center; align-items: center; height: calc(100vh - 200px); }
 .series-card {
@@ -606,6 +603,21 @@ watch(loaderRef, (newEl, oldEl) => {
   opacity: 0;
   visibility: hidden;
   transition: opacity 0.2s ease-in-out, visibility 0.2s ease-in-out;
+}
+/* ★★★ 核心修改 2：为右上角图标添加样式 ★★★ */
+.card-type-icon {
+  position: absolute;
+  top: 8px;
+  right: 8px;
+  z-index: 10;
+  background-color: rgba(0, 0, 0, 0.5);
+  color: white;
+  border-radius: 4px;
+  padding: 4px 5px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  line-height: 1;
 }
 .series-card:hover .card-checkbox,
 .card-checkbox.n-checkbox--checked {
@@ -685,7 +697,6 @@ watch(loaderRef, (newEl, oldEl) => {
   padding: 12px !important;
   gap: 12px !important;
 }
-/* ★★★ 新增：确保来源和请求时间样式一致 ★★★ */
 .info-text {
   display: flex;
   align-items: center;

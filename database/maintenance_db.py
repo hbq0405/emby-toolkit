@@ -225,9 +225,13 @@ def get_dashboard_stats() -> dict:
         (SELECT COUNT(*) FROM actor_subscriptions WHERE status = 'active') AS actor_subscriptions_active,
         (SELECT COUNT(*) FROM media_metadata WHERE subscription_sources_json @> '[{"type": "actor_subscription"}]'::jsonb) AS actor_works_total,
         (SELECT COUNT(*) FROM media_metadata WHERE subscription_sources_json @> '[{"type": "actor_subscription"}]'::jsonb AND in_library = TRUE) AS actor_works_in_library,
-        
         (SELECT COUNT(*) FROM resubscribe_cache WHERE status ILIKE 'needed') AS resubscribe_pending,
-        (SELECT COUNT(*) FROM collections_info WHERE has_missing = TRUE) AS collections_with_missing;
+        -- ★★★ 原生合集统计 (原 collections_info 表) ★★★
+        (SELECT COUNT(*) FROM collections_info WHERE has_missing = TRUE) AS native_collections_with_missing,
+        (SELECT SUM(jsonb_array_length(missing_movies_json)) FROM collections_info WHERE has_missing = TRUE) AS native_collections_missing_items,
+        -- ★★★ 自建合集统计 (custom_collections 表) ★★★
+        (SELECT COUNT(*) FROM custom_collections WHERE missing_count > 0) AS custom_collections_with_missing,
+        (SELECT SUM(missing_count) FROM custom_collections WHERE missing_count > 0) AS custom_collections_missing_items;
     """
     try:
         with get_db_connection() as conn:
