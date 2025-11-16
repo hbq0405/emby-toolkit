@@ -320,16 +320,15 @@ def get_user_request_history(user_id: str, page: int = 1, page_size: int = 10) -
             rows = cursor.fetchall()
             history = []
             for row in rows:
-                # 复制一份，避免修改原始数据
                 history_item = dict(row)
                 
-                # 规则1: 只要在库里了，就是“已完成”，这是最高优先级
+                # ★★★ 核心逻辑：只翻译在库状态 ★★★
+                # 规则: 只要在库里了，就是“已完成”，这是唯一需要后端翻译的状态。
                 if history_item.get('in_library'):
                     history_item['status'] = 'completed'
-                # 规则2: 如果不在库，且状态是 IGNORED，那就是“已拒绝”
-                elif history_item.get('status') == 'IGNORED':
-                    history_item['status'] = 'rejected'
-                # 其他状态 (WANTED, SUBSCRIBED, REQUESTED) 直接使用，前端 statusMap 能识别
+                
+                # 对于所有其他情况 (不在库)，status 字段将保持其在数据库中的原始值
+                # (e.g., 'IGNORED', 'WANTED', 'SUBSCRIBED', 'REQUESTED', 'NONE', etc.)
                 
                 history.append(history_item)
             

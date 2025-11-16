@@ -198,13 +198,13 @@ const historyColumns = [
     title: '状态',
     key: 'status',
     render(row) {
-      // ★★★ 核心修改：增加对 completed 和 processing 状态的支持 ★★★
       const statusMap = {
         completed: { type: 'success', text: '已完成' },
         WANTED: { type: 'info', text: '处理中' }, 
         REQUESTED: { type: 'warning', text: '待审核' },
-        rejected: { type: 'error', text: '已拒绝' },
+        IGNORED: { type: 'error', text: '已忽略' },
         SUBSCRIBED: { type: 'info', text: '已订阅' }, 
+        PENDING_RELEASE: { type: 'error', text: '未上映' },
       };
       const s = statusMap[row.status] || { type: 'default', text: row.status }; // 如果有未知状态，直接显示
       return h(NTag, { type: s.type, bordered: false }, { default: () => s.text });

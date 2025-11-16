@@ -831,3 +831,32 @@ def get_all_in_library_media_for_actor_sync() -> Tuple[Dict[str, str], Dict[str,
         logger.error(f"DB: 为演员同步任务准备在库媒体数据时失败: {e}", exc_info=True)
         # 即使失败也返回空字典，避免上层任务崩溃
         return {}, {}, {}
+    
+def get_actor_chinese_names_by_tmdb_ids(tmdb_ids: List[int]) -> Dict[int, str]:
+    """
+    【新增】根据 TMDb Person ID 列表，高效地批量查询演员的中文名。
+    返回一个以 tmdb_id 为键，中文名 (primary_name) 为值的字典。
+    """
+    if not tmdb_ids:
+        return {}
+
+    name_map = {}
+    try:
+        with get_db_connection() as conn:
+            with conn.cursor() as cursor:
+                # 使用 ANY(%s) 语法进行高效的批量查询
+                sql = """
+                    SELECT tmdb_person_id, primary_name 
+                    FROM person_identity_map 
+                    WHERE tmdb_person_id = ANY(%s)
+                """
+                cursor.execute(sql, (tmdb_ids,))
+                rows = cursor.fetchall()
+                for row in rows:
+                    # 我们只关心包含中文名的映射
+                    if row['primary_name'] and contains_chinese(row['primary_name']):
+                        name_map[row['tmdb_person_id']] = row['primary_name']
+        return name_map
+    except Exception as e:
+        logger.error(f"DB: 批量查询演员中文名时失败: {e}", exc_info=True)
+        return {} # 即使出错也返回空字典，避免上层任务崩溃
