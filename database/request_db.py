@@ -85,7 +85,10 @@ def set_media_status_requested(
                         subscription_sources_json = media_metadata.subscription_sources_json || EXCLUDED.subscription_sources_json,
                         first_requested_at = COALESCE(media_metadata.first_requested_at, EXCLUDED.first_requested_at),
                         parent_series_tmdb_id = EXCLUDED.parent_series_tmdb_id
-                    WHERE media_metadata.in_library = FALSE AND media_metadata.subscription_status = 'NONE';
+                    -- ★★★ 核心修复：增加条件，只有当新来源不存在时才追加 ★★★
+                    WHERE media_metadata.in_library = FALSE 
+                      AND media_metadata.subscription_status = 'NONE'
+                      AND NOT (media_metadata.subscription_sources_json @> EXCLUDED.subscription_sources_json);
                 """
                 execute_batch(cursor, sql, data_to_upsert)
                 if cursor.rowcount > 0:
@@ -120,7 +123,9 @@ def set_media_status_wanted(
                             subscription_status = 'WANTED',
                             subscription_sources_json = subscription_sources_json || %(source)s::jsonb,
                             ignore_reason = NULL, last_synced_at = NOW()
-                        WHERE tmdb_id = %(tmdb_id)s AND item_type = %(item_type)s AND subscription_status = 'IGNORED';
+                        WHERE tmdb_id = %(tmdb_id)s AND item_type = %(item_type)s 
+                          AND subscription_status = 'IGNORED'
+                          AND NOT (subscription_sources_json @> %(source)s::jsonb);
                     """
                     execute_batch(cursor, sql, data_to_upsert)
                 else:
@@ -138,8 +143,10 @@ def set_media_status_wanted(
                             first_requested_at = COALESCE(media_metadata.first_requested_at, EXCLUDED.first_requested_at),
                             ignore_reason = NULL,
                             parent_series_tmdb_id = EXCLUDED.parent_series_tmdb_id
+                        -- ★★★ 核心修复：增加条件，只有当新来源不存在时才追加 ★★★
                         WHERE (media_metadata.in_library = FALSE OR (media_metadata.item_type = 'Series' AND EXCLUDED.subscription_sources_json->0->>'reason' LIKE 'missing_%%season'))
-                          AND media_metadata.subscription_status NOT IN ('SUBSCRIBED', 'IGNORED');
+                          AND media_metadata.subscription_status NOT IN ('SUBSCRIBED', 'IGNORED')
+                          AND NOT (media_metadata.subscription_sources_json @> EXCLUDED.subscription_sources_json);
                     """
                     execute_batch(cursor, sql, data_to_upsert)
                 
@@ -182,7 +189,10 @@ def set_media_status_pending_release(
                         first_requested_at = COALESCE(media_metadata.first_requested_at, EXCLUDED.first_requested_at),
                         ignore_reason = NULL,
                         parent_series_tmdb_id = EXCLUDED.parent_series_tmdb_id
-                    WHERE media_metadata.in_library = FALSE AND media_metadata.subscription_status NOT IN ('SUBSCRIBED', 'WANTED');
+                    -- ★★★ 核心修复：增加条件，只有当新来源不存在时才追加 ★★★
+                    WHERE media_metadata.in_library = FALSE 
+                      AND media_metadata.subscription_status NOT IN ('SUBSCRIBED', 'WANTED')
+                      AND NOT (media_metadata.subscription_sources_json @> EXCLUDED.subscription_sources_json);
                 """
                 execute_batch(cursor, sql, data_to_upsert)
                 if cursor.rowcount > 0:
@@ -228,7 +238,9 @@ def set_media_status_subscribed(
                         last_synced_at = NOW(),
                         ignore_reason = NULL,
                         parent_series_tmdb_id = EXCLUDED.parent_series_tmdb_id
-                    WHERE media_metadata.in_library = FALSE;
+                    -- ★★★ 核心修复：增加条件，只有当新来源不存在时才追加 ★★★
+                    WHERE media_metadata.in_library = FALSE
+                      AND NOT (media_metadata.subscription_sources_json @> EXCLUDED.subscription_sources_json);
                 """
                 execute_batch(cursor, sql, data_to_upsert)
                 if cursor.rowcount > 0:
@@ -271,7 +283,9 @@ def set_media_status_ignored(
                         ignore_reason = EXCLUDED.ignore_reason,
                         last_synced_at = NOW(),
                         parent_series_tmdb_id = EXCLUDED.parent_series_tmdb_id
-                    WHERE media_metadata.in_library = FALSE;
+                    -- ★★★ 核心修复：增加条件，只有当新来源不存在时才追加 ★★★
+                    WHERE media_metadata.in_library = FALSE
+                      AND NOT (media_metadata.subscription_sources_json @> EXCLUDED.subscription_sources_json);
                 """
                 execute_batch(cursor, sql, data_to_upsert)
                 if cursor.rowcount > 0:

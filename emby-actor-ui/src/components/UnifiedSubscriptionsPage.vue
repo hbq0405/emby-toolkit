@@ -221,7 +221,8 @@ const SOURCE_TYPE_MAP = {
   'admin_approval': '管理员审核',
   'batch_admin_op': '批量处理',
   'api_unified_status_change_ignored': '手动忽略',
-  'manual_admin_op': '手动处理'
+  'manual_admin_op': '手动处理',
+  'auto_cancel': '自动忽略'
 };
 
 const sourceFilterOptions = computed(() => {

@@ -367,7 +367,13 @@ def task_auto_subscribe(processor):
                 # 批量更新数据库状态
                 for item_type, tmdb_ids in cancelled_ids_map.items():
                     if tmdb_ids:
-                        request_db.set_media_status_none(tmdb_ids=tmdb_ids, item_type=item_type)
+                        # 设置忽略状态
+                        request_db.set_media_status_ignored(
+                            tmdb_ids=tmdb_ids, 
+                            item_type=item_type,
+                            source={"type": "auto_cancel", "reason": "stale_subscription"},
+                            ignore_reason="订阅超时"
+                        )
                 
                 # 如果有成功取消的，给管理员发个通知
                 if cancelled_for_report:
