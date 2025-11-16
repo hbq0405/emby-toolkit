@@ -5,17 +5,14 @@ import concurrent.futures
 import os
 import shutil
 import time
-import json
-import utils
 import threading
-from datetime import date
-# ★★★ 核心修改 1/3: 导入我们需要的配置管理器和常量 ★★★
+from concurrent.futures import ThreadPoolExecutor, as_completed
+
 import config_manager
 import constants
 from typing import Optional, List, Dict, Any, Generator, Tuple, Set, Callable
 import logging
 logger = logging.getLogger(__name__)
-# (SimpleLogger 和 logger 的导入保持不变)
 
 # 获取管理员令牌
 _admin_token_cache = {}
@@ -1108,48 +1105,84 @@ def get_all_collections_with_items(base_url: str, api_key: str, user_id: str) ->
         logger.error(f"处理 Emby 电影合集时发生未知错误: {e}", exc_info=True)
         return None
 # --- 获取所有原生合集（新版）---
-# handler/emby.py
-
-# ... (其他函数) ...
-
 def get_all_native_collections_from_emby(base_url: str, api_key: str, user_id: str) -> List[Dict[str, Any]]:
     """
-    【V3 - 最终修正版】从 Emby 服务器获取所有类型为 "BoxSet" (原生合集) 的项目。
-    - 根据 Emby 4.9.x 的实际行为，原生合集的 TMDB ID 存储在 "Tmdb" 字段中。
+    【V9 - 回归本质终极版】
+    - 融合了“库优先”策略以准确获取 ParentId。
+    - 回归了通过检查 ProviderIds.Tmdb 字段是否存在来区分原生合集与自建合集的
+      正确、简单且高效的原始逻辑。
     """
-    logger.info("  ➜ 正在从 Emby 获取所有原生合集 (BoxSet)...")
-    
-    params = {
-        "Recursive": "true",
-        "IncludeItemTypes": "BoxSet",
-        "Fields": "ProviderIds,Name",
-        "api_key": api_key
-    }
-    url = f"{base_url}/Users/{user_id}/Items"
+    logger.info("  -> (EMBY_API) 正在采用“库优先+ProviderID过滤”策略获取真正的原生合集...")
     
     try:
-        response = requests.get(url, params=params, timeout=30)
-        response.raise_for_status()
-        all_emby_collections = response.json().get("Items", [])
+        # 步骤 1: 获取服务器上所有的媒体库 (过滤掉顶层合集文件夹)
+        libraries_url = f"{base_url}/Library/VirtualFolders"
+        lib_params = {"api_key": api_key}
+        lib_response = requests.get(libraries_url, params=lib_params, timeout=30)
+        lib_response.raise_for_status()
+        all_libraries_raw = lib_response.json()
         
-        valid_collections = []
-        for item in all_emby_collections:
-            provider_ids = item.get("ProviderIds", {})
-            
-            # ★★★ 最终核心修正：根据你的截图和 Emby 的实际行为，我们只检查 "Tmdb" 字段 ★★★
-            tmdb_collection_id = provider_ids.get("Tmdb") 
-            
-            if tmdb_collection_id:
-                valid_collections.append({
-                    "emby_collection_id": item.get("Id"),
-                    "name": item.get("Name"),
-                    "tmdb_collection_id": tmdb_collection_id
-                })
+        if not all_libraries_raw:
+            logger.warning("  ➜ 未能从服务器获取到任何媒体库。")
+            return []
+
+        all_libraries = [lib for lib in all_libraries_raw if lib.get('CollectionType') != 'boxsets']
+        logger.info(f"  ➜ 发现 {len(all_libraries)} 个有效媒体库，将并发查询其中的原生合集...")
         
-        logger.info(f"  ➜ 筛选出 {len(valid_collections)} 个有效的、已关联 TMDB 的原生合集。")
-        return valid_collections
-    except Exception as e:
-        logger.error(f"从 Emby 获取原生合集时发生错误: {e}", exc_info=True)
+        all_enriched_collections = []
+        
+        # 辅助函数，用于在线程中处理单个媒体库
+        def process_library(library: Dict[str, Any]) -> List[Dict[str, Any]]:
+            library_id = library.get('Id')
+            library_name = library.get('Name')
+            
+            collections_url = f"{base_url}/Users/{user_id}/Items"
+            params = { "ParentId": library_id, "IncludeItemTypes": "BoxSet", "Recursive": "true", "fields": "ProviderIds,Name,Id,ImageTags", "api_key": api_key }
+            
+            try:
+                response = requests.get(collections_url, params=params, timeout=60)
+                response.raise_for_status()
+                collections_in_library = response.json().get("Items", [])
+                
+                if not collections_in_library: return []
+
+                processed = []
+                # ★★★ 核心逻辑回归：在这里使用你最初的正确判断方法 ★★★
+                for collection in collections_in_library:
+                    provider_ids = collection.get("ProviderIds", {})
+                    tmdb_collection_id = provider_ids.get("Tmdb")
+                    
+                    # 只有当 Tmdb ID 存在时，才认为它是一个原生合集
+                    if tmdb_collection_id:
+                        processed.append({
+                            'emby_collection_id': collection.get('Id'),
+                            'name': collection.get('Name'),
+                            'tmdb_collection_id': tmdb_collection_id,
+                            'ImageTags': collection.get('ImageTags'),
+                            'ParentId': library_id
+                        })
+                
+                if processed:
+                    logger.debug(f"  ➜ 在媒体库 '{library_name}' 中找到 {len(processed)} 个原生合集。")
+                
+                return processed
+            except requests.RequestException as e_coll:
+                logger.error(f"  ➜ 查询媒体库 '{library_name}' (ID: {library_id}) 中的合集时失败: {e_coll}")
+                return []
+
+        # 步骤 2: 使用线程池并发处理所有媒体库
+        with ThreadPoolExecutor(max_workers=5) as executor:
+            future_to_library = {executor.submit(process_library, lib): lib for lib in all_libraries}
+            for future in as_completed(future_to_library):
+                result = future.result()
+                if result:
+                    all_enriched_collections.extend(result)
+
+        logger.info(f"  ➜ 成功从所有媒体库中处理了 {len(all_enriched_collections)} 个真正的原生合集。")
+        return all_enriched_collections
+
+    except requests.RequestException as e:
+        logger.error(f"  ➜ 获取原生合集列表时发生严重网络错误: {e}", exc_info=True)
         return []
 # ✨✨✨ 获取 Emby 服务器信息 (如 Server ID) ✨✨✨
 def get_emby_server_info(base_url: str, api_key: str) -> Optional[Dict[str, Any]]:
@@ -1170,7 +1203,6 @@ def get_emby_server_info(base_url: str, api_key: str) -> Optional[Dict[str, Any]
     except Exception as e:
         logger.error(f"获取 Emby 服务器信息失败: {e}")
         return None
-
 # --- 根据名称查找一个特定的电影合集 ---
 def get_collection_by_name(name: str, base_url: str, api_key: str, user_id: str) -> Optional[Dict[str, Any]]:
     all_collections = get_all_collections_from_emby_generic(base_url, api_key, user_id)

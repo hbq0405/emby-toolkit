@@ -31,27 +31,27 @@ def sync_and_subscribe_native_collections():
         user_id=config.get('emby_user_id')
     )
     if not emby_collections:
-        logger.info("  ➜ (SYNC) 未找到原生合集，任务结束。")
+        logger.info("  ➜ 未找到原生合集，任务结束。")
         return
 
     # ★★★ 根据系统设置过滤要处理的合集 ★★★
     libraries_to_process = config.get("libraries_to_process", [])
     if libraries_to_process:
-        logger.info(f"  ➜ (SYNC) 将根据系统设置，只扫描 {len(libraries_to_process)} 个指定媒体库中的原生合集。")
+        logger.info(f"  ➜ 将根据系统设置，只扫描 {len(libraries_to_process)} 个指定媒体库中的原生合集。")
         original_count = len(emby_collections)
         # 过滤列表，只保留那些 ID 在 "libraries_to_process" 列表中的合集
         emby_collections = [
             coll for coll in emby_collections 
-            if coll.get('emby_collection_id') in libraries_to_process
+            if coll.get('ParentId') in libraries_to_process
         ]
         filtered_count = len(emby_collections)
-        logger.info(f"  ➜ (SYNC) 从 Emby 获取了 {original_count} 个原生合集，筛选后剩下 {filtered_count} 个需要处理。")
+        logger.info(f"  ➜ 从 Emby 获取了 {original_count} 个原生合集，筛选后剩下 {filtered_count} 个需要处理。")
     else:
-        logger.info("  ➜ (SYNC) 未在系统设置中指定媒体库，将扫描服务器上所有的原生合集。")
+        logger.info("  ➜ 未在系统设置中指定媒体库，将扫描服务器上所有的原生合集。")
     
     # 如果筛选后没有合集了，就直接结束
     if not emby_collections:
-        logger.info("  ➜ (SYNC) 筛选后没有需要处理的原生合集，任务结束。")
+        logger.info("  ➜ 筛选后没有需要处理的原生合集，任务结束。")
         return
 
     all_movie_parts = {}
@@ -72,13 +72,13 @@ def sync_and_subscribe_native_collections():
                 collection_tmdb_details_map[emby_id] = details
                 for part in details['parts']:
                     if not part.get('poster_path') or not part.get('release_date'):
-                        logger.debug(f"  ➜ (SYNC) 过滤掉无效电影条目: '{part.get('title')}' (ID: {part.get('id')})，因为它缺少海报或上映日期。")
+                        logger.debug(f"  ➜ 过滤掉无效电影条目: '{part.get('title')}' (ID: {part.get('id')})，因为它缺少海报或上映日期。")
                         continue
                     all_movie_parts[str(part['id'])] = part
 
     all_movie_tmdb_ids = list(all_movie_parts.keys())
     in_library_tmdb_ids = set(media_db.get_media_in_library_status_by_tmdb_ids(all_movie_tmdb_ids).keys())
-    logger.info(f"  ➜ (SYNC) 扫描涉及 {len(all_movie_tmdb_ids)} 部有效电影，其中 {len(in_library_tmdb_ids)} 部真正在库。")
+    logger.info(f"  ➜ 扫描涉及 {len(all_movie_tmdb_ids)} 部有效电影，其中 {len(in_library_tmdb_ids)} 部真正在库。")
 
     released_requests = []
     unreleased_requests = []
@@ -122,7 +122,7 @@ def sync_and_subscribe_native_collections():
                 released_requests.append(media_info)
 
     if released_requests:
-        logger.info(f"  ➜ (SYNC) 发现 {len(released_requests)} 个已上映的缺失电影，状态将设为 'WANTED'...")
+        logger.info(f"  ➜ 发现 {len(released_requests)} 个已上映的缺失电影，状态将设为 'WANTED'...")
         request_db.set_media_status_wanted(
             tmdb_ids=[req['tmdb_id'] for req in released_requests],
             item_type='Movie',
@@ -130,7 +130,7 @@ def sync_and_subscribe_native_collections():
         )
         
     if unreleased_requests:
-        logger.info(f"  ➜ (SYNC) 发现 {len(unreleased_requests)} 个未上映的电影，状态将设为 'PENDING_RELEASE'...")
+        logger.info(f"  ➜ 发现 {len(unreleased_requests)} 个未上映的电影，状态将设为 'PENDING_RELEASE'...")
         request_db.set_media_status_pending_release(
             tmdb_ids=[req['tmdb_id'] for req in unreleased_requests],
             item_type='Movie',
@@ -138,7 +138,7 @@ def sync_and_subscribe_native_collections():
         )
 
     if not released_requests and not unreleased_requests:
-        logger.info("  ➜ (SYNC) 扫描完成，所有合集均无缺失。")
+        logger.info("  ➜ 扫描完成，所有合集均无缺失。")
 
 
 def assemble_all_collection_details() -> List[Dict[str, Any]]:
@@ -146,7 +146,7 @@ def assemble_all_collection_details() -> List[Dict[str, Any]]:
     【V14 - 增加垃圾数据过滤器】
     - 在组装前端数据时，同样会过滤掉没有海报或上映日期的项目。
     """
-    logger.info("--- (ASSEMBLE) 开始为前端 API 组装原生合集详情 ---")
+    logger.info("--- 开始为前端 API 组装原生合集详情 ---")
     
     all_collections_from_db = collection_db.get_all_native_collections()
     if not all_collections_from_db:
@@ -203,5 +203,5 @@ def assemble_all_collection_details() -> List[Dict[str, Any]]:
         collection['movies'] = sorted(final_movie_list, key=lambda x: x.get('release_date') or '9999')
         if 'tmdb_parts' in collection: del collection['tmdb_parts']
 
-    logger.info("--- (ASSEMBLE) 前端 API 数据组装完成 ---")
+    logger.info("--- 前端 API 数据组装完成 ---")
     return all_collections_from_db
