@@ -167,6 +167,7 @@ class MediaProcessor:
                     movie_record['subscription_status'] = 'NONE'
                     movie_record['emby_item_ids_json'] = json.dumps([item_details_from_emby.get('Id')])
                     movie_record['date_added'] = item_details_from_emby.get("DateCreated")
+                    movie_record['ignore_reason'] = None
                 records_to_upsert.append(movie_record)
             elif item_type == "Series":
                 series_details = source_data_package.get("series_details", source_data_package)
@@ -199,6 +200,7 @@ class MediaProcessor:
                     series_record['subscription_status'] = 'NONE'
                     series_record['emby_item_ids_json'] = json.dumps([item_details_from_emby.get('Id')])
                     series_record['date_added'] = item_details_from_emby.get("DateCreated")
+                    series_record['ignore_reason'] = None
                 records_to_upsert.append(series_record)
                 for season in seasons_details:
                     if season.get('season_number', 0) == 0: continue
@@ -217,13 +219,13 @@ class MediaProcessor:
                 "poster_path", "rating", "actors_json", "parent_series_tmdb_id", "season_number", "episode_number",
                 "in_library", "subscription_status", "subscription_sources_json", "emby_item_ids_json", "date_added",
                 "official_rating", "unified_rating",
-                "genres_json", "directors_json", "studios_json", "countries_json", "keywords_json" 
+                "genres_json", "directors_json", "studios_json", "countries_json", "keywords_json", "ignore_reason" 
             ]
             data_for_batch = []
             for record in records_to_upsert:
                 db_row_complete = {col: record.get(col) for col in all_possible_columns}
                 
-                # ★★★ 核心修复：重新为所有 NOT NULL 字段设置安全的默认值 ★★★
+                # ★★★ 重新为所有 NOT NULL 字段设置安全的默认值 ★★★
                 # 这对于 INSERT 新记录至关重要，以避免 NotNullViolation 错误。
                 if db_row_complete['in_library'] is None:
                     db_row_complete['in_library'] = False
@@ -235,7 +237,6 @@ class MediaProcessor:
                 if db_row_complete['emby_item_ids_json'] is None:
                     db_row_complete['emby_item_ids_json'] = '[]'
 
-                # ... (其他数据准备逻辑保持不变) ...
                 release_date_str = db_row_complete.get('release_date')
                 if release_date_str and len(release_date_str) >= 4:
                     try: db_row_complete['release_year'] = int(release_date_str[:4])
@@ -272,11 +273,11 @@ class MediaProcessor:
                 if pk in cols_to_update: cols_to_update.remove(pk)
 
             if item_details_from_emby:
-                logger.debug("  ➜ [工作流感知] 媒体库内项目：将设置订阅状态为NONE，但保留订阅来源。")
+                logger.debug("  ➜ 入库模式：将设置订阅状态为NONE，但保留订阅来源。")
                 cols_to_protect = ['subscription_sources_json']
                 timestamp_field = "last_synced_at"
             else:
-                logger.debug("  ➜ [工作流感知] 预处理模式：将保留数据库中现有的 'subscription_status', 'in_library' 和 'subscription_sources_json' 状态。")
+                logger.debug("  ➜ 预处理模式：将保留数据库中现有的 '订阅' 状态。")
                 cols_to_protect = ['subscription_status', 'subscription_sources_json', 'in_library']
                 timestamp_field = "pre_processed_at"
 
