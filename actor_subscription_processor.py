@@ -54,7 +54,6 @@ class ActorSubscriptionProcessor:
 
     def run_scheduled_task(self, update_status_callback: Optional[Callable] = None):
         """
-        【V2 - 并发调度版】
         - 演员订阅扫描任务。
         - 并发为所有已启用的订阅执行完整扫描，大幅提升二次扫描和首次扫描的速度。
         """
@@ -146,7 +145,6 @@ class ActorSubscriptionProcessor:
     def _process_single_work(self, work: Dict, sub_config: Dict, subscription_source: Dict) -> Optional[Dict]:
         """
         处理单个作品的完整流程，用于并发执行。
-        【V2 - 原因传递版】
         """
         try:
             tmdb_id = str(work.get('id'))
@@ -225,43 +223,74 @@ class ActorSubscriptionProcessor:
                     logger.info(f"  ➜ [阶段 2/4] 正在批量检查 {len(works_to_process)} 部新作品的在库状态...")
                     works_not_in_library = []
                     in_library_media_to_update = []
+                    # ★ 用于存放因条目不规范而被忽略的作品
+                    ignored_due_to_bad_entry = []
+
                     for work in works_to_process:
                         tmdb_id = str(work.get('id'))
-                        if tmdb_id in emby_media_map:
-                            media_type = MediaType.SERIES.value if work.get('media_type') == 'tv' else MediaType.MOVIE.value
+                        media_type = MediaType.SERIES.value if work.get('media_type') == 'tv' else MediaType.MOVIE.value
+                        
+                        # ★★★ V4 核心逻辑：优先识别并忽略所有分季条目 ★★★
+                        is_standalone_season_entry = False
+                        if media_type == MediaType.SERIES.value:
+                            title = work.get('name', '')
+                            base_name, season_num = utils.parse_series_title_and_season(title)
+                            # 只要能解析出季号，就认定为不规范条目
+                            if base_name and season_num:
+                                is_standalone_season_entry = True
+
+                        # 根据检查结果进行分流
+                        if is_standalone_season_entry:
+                            logger.info(f"  ➜ 作品 '{work.get('name', '')}' 被识别为不规范的分季条目，将忽略。")
+                            media_info = self._prepare_media_dict_for_upsert(work)
+                            # 忽略原因
+                            media_info['reason'] = "错误的词条"
+                            ignored_due_to_bad_entry.append({
+                                'tmdb_id': tmdb_id,
+                                'item_type': media_type,
+                                'media_info': media_info
+                            })
+                        elif tmdb_id in emby_media_map:
+                            # 原有逻辑：作品本身就在库
                             media_info = self._prepare_media_dict_for_upsert(work)
                             in_library_media_to_update.append({'tmdb_id': tmdb_id, 'item_type': media_type, 'media_info': media_info})
                         else:
+                            # 最终漏网之鱼：规范的、且不在库的作品
                             works_not_in_library.append(work)
                     
+                    # ★ 批量处理因条目不规范而被忽略的作品
+                    if ignored_due_to_bad_entry:
+                        logger.info(f"  ➜ [阶段 2/4] {len(ignored_due_to_bad_entry)} 部新作品因条目不规范而被忽略，将批量更新状态...")
+                        request_db.set_media_status_ignored(
+                            tmdb_ids=[item['tmdb_id'] for item in ignored_due_to_bad_entry],
+                            item_type=MediaType.SERIES.value, # 这些必然是剧集
+                            source=subscription_source,
+                            media_info_list=[item['media_info'] for item in ignored_due_to_bad_entry]
+                        )
+
                     if in_library_media_to_update:
                         logger.info(f"  ➜ [阶段 2/4] {len(in_library_media_to_update)} 部新作品已在库，将批量更新其订阅源...")
-                        # 批量确保记录存在并追加订阅源
                         media_db.ensure_media_record_exists([item['media_info'] for item in in_library_media_to_update])
                         for item in in_library_media_to_update:
                             request_db.add_subscription_source(item['tmdb_id'], item['item_type'], subscription_source)
                     
-                    # 4.2 并发处理所有不在库的作品
+                    # 4.2 并发处理所有不在库的作品 (逻辑不变)
                     logger.info(f"  ➜ [阶段 3/4] 正在并发处理 {len(works_not_in_library)} 部不在库的新作品...")
                     results_to_commit = []
-                    with concurrent.futures.ThreadPoolExecutor(max_workers=5) as executor:
-                        future_to_work = {executor.submit(self._process_single_work, work, sub, subscription_source): work for work in works_not_in_library}
-                        for future in concurrent.futures.as_completed(future_to_work):
-                            if self.is_stop_requested(): break
-                            result = future.result()
-                            if result:
-                                results_to_commit.append(result)
+                    if works_not_in_library:
+                        with concurrent.futures.ThreadPoolExecutor(max_workers=5) as executor:
+                            future_to_work = {executor.submit(self._process_single_work, work, sub, subscription_source): work for work in works_not_in_library}
+                            for future in concurrent.futures.as_completed(future_to_work):
+                                if self.is_stop_requested(): break
+                                result = future.result()
+                                if result:
+                                    results_to_commit.append(result)
                     
-                    # 4.3 聚合结果并批量更新数据库
+                    # 4.3 聚合结果并批量更新数据库 (逻辑不变)
                     if results_to_commit:
                         logger.info(f"  ➜ [阶段 3/4] 并发处理完成，聚合 {len(results_to_commit)} 条结果准备批量写入数据库...")
                         
-                        # ★★★ 核心修复：按 action 和 item_type 进行两级分组 ★★★
-                        actions_by_type = {
-                            "wanted": {},
-                            "pending_release": {},
-                            "ignore": {}
-                        }
+                        actions_by_type = {"wanted": {}, "pending_release": {}, "ignore": {}}
                         for res in results_to_commit:
                             action = res.get("action")
                             item_type = res.get("item_type")
@@ -270,12 +299,11 @@ class ActorSubscriptionProcessor:
                                     actions_by_type[action][item_type] = []
                                 actions_by_type[action][item_type].append(res)
 
-                        # ★★★ 核心修复：分批、按正确的类型执行数据库更新 ★★★
                         for item_type, items in actions_by_type["wanted"].items():
                             if items:
                                 request_db.set_media_status_wanted(
                                     tmdb_ids=[r['tmdb_id'] for r in items],
-                                    item_type=item_type, # <-- 使用正确分组的 item_type
+                                    item_type=item_type,
                                     source=subscription_source,
                                     media_info_list=[r['media_info'] for r in items]
                                 )
@@ -284,7 +312,7 @@ class ActorSubscriptionProcessor:
                             if items:
                                 request_db.set_media_status_pending_release(
                                     tmdb_ids=[r['tmdb_id'] for r in items],
-                                    item_type=item_type, # <-- 使用正确分组的 item_type
+                                    item_type=item_type,
                                     source=subscription_source,
                                     media_info_list=[r['media_info'] for r in items]
                                 )
@@ -298,7 +326,7 @@ class ActorSubscriptionProcessor:
                                     media_info_list=[r['media_info'] for r in items]
                                 )
 
-                    # --- 步骤 5: 清理已移除的作品 (逻辑不变，但可以优化) ---
+                    # --- 步骤 5 & 6: 清理和更新缓存 (逻辑不变) ---
                     if removed_work_ids:
                         logger.info(f"  ➜ [阶段 4/4] 发现 {len(removed_work_ids)} 个过时的追踪记录，将为其解绑...")
                         old_items_details = media_db.get_media_details_by_tmdb_ids(list(removed_work_ids))
@@ -307,7 +335,6 @@ class ActorSubscriptionProcessor:
                             if item_info:
                                 request_db.remove_subscription_source(tmdb_id_to_clean, item_info['item_type'], subscription_source)
 
-                    # --- 步骤 6: 更新扫描缓存 (逻辑不变) ---
                     cursor.execute(
                         "UPDATE actor_subscriptions SET last_scanned_tmdb_ids_json = %s WHERE id = %s",
                         (json.dumps(list(current_work_ids)), subscription_id)
@@ -324,33 +351,26 @@ class ActorSubscriptionProcessor:
         media_id_str = str(work.get('id'))
         release_date_str = work.get('release_date') or work.get('first_air_date', '')
 
+        # 1. 最高优先级：直接检查作品本身的 TMDb ID 是否在库。
         if media_id_str in emby_media_map:
             return MediaStatus.IN_LIBRARY, emby_media_map.get(media_id_str)
         
-        if work.get('media_type') == 'tv':
-            title = work.get('name', '')
-            base_name, season_num = utils.parse_series_title_and_season(title)
-            
-            if base_name and season_num:
-                parent_tmdb_id = self._find_parent_series_tmdb_id_from_emby_cache(base_name, emby_series_name_to_tmdb_id_map)
-                if parent_tmdb_id and str(parent_tmdb_id) in emby_series_seasons_map:
-                    if season_num in emby_series_seasons_map[str(parent_tmdb_id)]:
-                        parent_emby_id = emby_media_map.get(str(parent_tmdb_id))
-                        return MediaStatus.IN_LIBRARY, parent_emby_id
-
+        # 2. 检查是否还未上映
         if release_date_str and release_date_str > today_str:
             return MediaStatus.PENDING_RELEASE, None
 
+        # 3. 其他所有情况都视为缺失
         return MediaStatus.MISSING, None
     
     def _prepare_media_dict_for_upsert(self, work: Dict) -> Dict:
-        """准备一个标准的 media_info 字典。"""
+        """
+        准备一个标准的 media_info 字典。
+        """
         media_type = MediaType.SERIES.value if work.get('media_type') == 'tv' else MediaType.MOVIE.value
         release_date = work.get('release_date') or work.get('first_air_date') or None
         
-        # 解析季号
+        # 这里的 title 就是原始标题，因为任何需要解析的条目都已被上游逻辑过滤掉了
         title = work.get('title') or work.get('name', '')
-        base_name, season_num = utils.parse_series_title_and_season(title)
 
         return {
             "tmdb_id": str(work.get('id')),
@@ -360,7 +380,7 @@ class ActorSubscriptionProcessor:
             "release_date": release_date,
             "poster_path": work.get('poster_path'),
             "overview": work.get('overview'),
-            "season_number": season_num
+            "season_number": None
         }
 
     def _find_parent_series_tmdb_id_from_emby_cache(self, base_name: str, name_to_id_map: Dict[str, str]) -> Optional[str]:
@@ -452,48 +472,6 @@ class ActorSubscriptionProcessor:
 
         # 如果所有检查都通过了，就返回 True
         return True, None
-
-    def _determine_media_status(self, work: Dict, emby_media_map: Dict[str, str], emby_series_seasons_map: Dict[str, Set[int]], emby_series_name_to_tmdb_id_map: Dict[str, str], today_str: str, old_status: Optional[str], session_subscribed_ids: Set[str]) -> Tuple[Optional[MediaStatus], Optional[str]]:
-        """
-        智能识别分季剧集，并检查父剧集下的【特定季】是否入库。
-        """
-        media_id_str = str(work.get('id'))
-        release_date_str = work.get('release_date') or work.get('first_air_date', '')
-        emby_tmdb_ids = set(emby_media_map.keys())
-
-        # 1. 最高优先级：如果作品本身的TMDb ID就在Emby库中
-        if media_id_str in emby_tmdb_ids:
-            # ▼▼▼ 返回状态和它自己的 Emby ID ▼▼▼
-            return MediaStatus.IN_LIBRARY, emby_media_map.get(media_id_str), None, None, None
-        
-        # 2. 对电视剧进行特殊处理
-        media_type_raw = work.get('media_type', 'movie' if 'title' in work else 'tv')
-        if media_type_raw == 'tv':
-            title = work.get('name', '')
-            base_name, season_num = utils.parse_series_title_and_season(title)
-            
-            if base_name and season_num:
-                parent_tmdb_id = self._find_parent_series_tmdb_id_from_emby_cache(base_name, emby_series_name_to_tmdb_id_map)
-                
-                if parent_tmdb_id:
-                    parent_tmdb_id_str = str(parent_tmdb_id)
-                    if parent_tmdb_id_str in emby_series_seasons_map:
-                        available_seasons = emby_series_seasons_map[parent_tmdb_id_str]
-                        if season_num in available_seasons:
-                            # ▼▼▼ 返回状态和父剧集的 Emby ID ▼▼▼
-                            parent_emby_id = emby_media_map.get(parent_tmdb_id_str)
-                            logger.info(f"  ➜ 父剧集 '{base_name}' (Emby ID: {parent_emby_id}) 已在库且包含第 {season_num} 季，标记为【已入库】。")
-                            return MediaStatus.IN_LIBRARY, parent_emby_id, parent_tmdb_id_str, season_num, base_name
-        # 3. 如果之前已被标记为 SUBSCRIBED
-        if old_status == MediaStatus.SUBSCRIBED.value:
-            return MediaStatus.SUBSCRIBED, None, None, None, None
-
-        # 4. 如果还未上映
-        if release_date_str and release_date_str > today_str:
-            return MediaStatus.PENDING_RELEASE, None, None, None, None
-
-        # 5. 其他所有情况
-        return MediaStatus.MISSING, None, None, None, None
 
     def _prepare_media_dict(self, work: Dict, subscription_id: int, status: MediaStatus, emby_item_id: Optional[str] = None, ignore_reason: Optional[str] = None, parent_tmdb_id: Optional[str] = None, season_number: Optional[int] = None, base_name: Optional[str] = None) -> Dict:
         """根据作品信息和状态，准备用于插入数据库的字典。"""

@@ -21,34 +21,43 @@ except ImportError:
 
 def parse_series_title_and_season(title: str) -> Tuple[Optional[str], Optional[int]]:
     """
-    【中央工具函数】
+    【中央工具函数 - V2 优化版】
     从一个可能包含季号的剧集标题中，解析出基础剧名和季号。
-    支持全角/半角数字、罗马数字、中文数字、年份等多种格式。
+    - 修复了对 "你好, 星期六" 等包含中文数字的普通标题的误判问题。
+    - 强制要求中文数字季号前必须有 "第" 或 "部" 等关键字。
     """
     if not title:
         return None, None
         
-    # 预处理：先将所有全角字符转为半角，统一格式
     normalized_title = normalize_full_width_chars(title)
 
     roman_map = {'I': 1, 'II': 2, 'III': 3, 'IV': 4, 'V': 5, 'VI': 6, 'VII': 7, 'VIII': 8, 'IX': 9, 'X': 10}
     chinese_map = {'一': 1, '二': 2, '三': 3, '四': 4, '五': 5, '六': 6, '七': 7, '八': 8, '九': 9, '十': 10}
 
     patterns = [
+        # 模式1: 最优先匹配 "第X季" 或 "Season X" 这种最明确的格式
         re.compile(r'^(.*?)\s*(?:第([一二三四五六七八九十\d]+)季|Season\s*(\d+))', re.IGNORECASE),
+        
+        # 模式2: 匹配年份 (如 "2024")
         re.compile(r'^(.*?)\s+((?:19|20)\d{2})$'),
-        re.compile(r'^(.*?)\s*[第部]?\s*([IVX\d]+|[一二三四五六七八九十])(?:[:\s-]|$)')
+        
+        # ★★★ 模式3 (核心优化): ★★★
+        # - 对中文数字，强制要求前面有 "第" 或 "部" (例如 "第五部")
+        # - 对阿拉伯数字和罗马数字，则可以直接匹配 (例如 "法证先锋5", "Rocky IV")
+        re.compile(r'^(.*?)\s*(?:[第部]\s*([一二三四五六七八九十])|([IVX\d]+))(?:[:\s-]|$)')
     ]
 
     for pattern in patterns:
         match = pattern.match(normalized_title)
         if not match: continue
         
+        # 从所有捕获组中提取第一个非None的值作为季号字符串
         groups = [g for g in match.groups() if g is not None]
         if len(groups) < 2: continue
         
         base_name, season_str = groups[0].strip(), groups[1].strip()
 
+        # 增加一个健壮性检查，防止将极短的标题（如 "S6"）误判
         if (not base_name and len(normalized_title) < 8) or (len(base_name) <= 1 and season_str.isdigit()):
             continue
 
@@ -58,10 +67,12 @@ def parse_series_title_and_season(title: str) -> Tuple[Optional[str], Optional[i
         elif season_str in chinese_map: season_num = chinese_map[season_str]
 
         if season_num > 0:
+            # 清理剧名末尾可能存在的 "系列"、"合集" 等词语
             for suffix in ["系列", "合集"]:
                 if base_name.endswith(suffix): base_name = base_name[:-len(suffix)]
             return base_name, season_num
 
+    # 如果所有模式都未匹配，则返回None
     return None, None
 
 def normalize_full_width_chars(text: str) -> str:
