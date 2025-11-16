@@ -371,7 +371,7 @@ def task_auto_subscribe(processor):
                         request_db.set_media_status_ignored(
                             tmdb_ids=tmdb_ids, 
                             item_type=item_type,
-                            source={"type": "auto_cancel", "reason": "stale_subscription"},
+                            source={"type": "auto_ignored", "reason": "stale_subscription"},
                             ignore_reason="订阅超时"
                         )
                 

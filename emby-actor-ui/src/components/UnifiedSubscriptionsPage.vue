@@ -222,7 +222,7 @@ const SOURCE_TYPE_MAP = {
   'batch_admin_op': '批量处理',
   'api_unified_status_change_ignored': '手动忽略',
   'manual_admin_op': '手动处理',
-  'auto_cancel': '自动忽略'
+  'auto_ignored': '自动忽略'
 };
 
 const sourceFilterOptions = computed(() => {
