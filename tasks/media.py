@@ -493,6 +493,8 @@ def task_populate_metadata_cache(processor, batch_size: int = 50, force_full_upd
                                     # 其他所有字段，正常覆盖更新
                                     update_clauses.append(f"{col} = EXCLUDED.{col}")
 
+                            # 无论如何，都强制将 ignore_reason 设置为 NULL
+                            update_clauses.append("ignore_reason = NULL")
                             update_str = ', '.join(update_clauses)
 
                             sql = f"""
