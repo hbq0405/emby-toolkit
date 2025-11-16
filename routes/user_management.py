@@ -1,11 +1,9 @@
 # routes/user_management.py (V2 - 终极净化版)
 
-import uuid
 import json
 import time
 import logging
 import psycopg2
-import concurrent.futures
 from datetime import datetime, timedelta, timezone
 from flask import Blueprint, request, jsonify
 
@@ -310,7 +308,7 @@ def get_pending_subscriptions():
 @user_management_bp.route('/api/admin/subscriptions/batch-approve', methods=['POST'])
 @admin_required
 def batch_approve_subscriptions():
-    """【V8 - 增加前置状态校验】"""
+    """ 批量批准用户订阅请求 """
     data = request.json
     requests_to_approve = data.get('requests', [])
     if not requests_to_approve:
@@ -335,29 +333,61 @@ def batch_approve_subscriptions():
         approved_count = 0
         notifications_to_send = {}
 
-        # ★★★ 核心修改 3/3: 逐条处理【有效】的请求 ★★★
+        # 逐条处理【有效】的请求
         for req in valid_requests:
             try:
-                # (这里的 media_info 理论上可以从上面的 media_details_map 复用，但为了逻辑清晰，重新构建也无妨)
+                # 从我们之前批量获取的数据中拿到完整的媒体详情
+                details = media_details_map.get(req['tmdb_id'])
+                if not details:
+                    logger.warning(f"批准时找不到 TMDB ID {req['tmdb_id']} 的缓存详情，跳过。")
+                    continue
+
+                # 发行日期检查
+                is_released = True
+                release_date_str = details.get('release_date')
+                if release_date_str:
+                    try:
+                        from datetime import datetime, date
+                        release_date_obj = datetime.strptime(str(release_date_str), '%Y-%m-%d').date()
+                        if release_date_obj > date.today():
+                            is_released = False
+                    except (ValueError, TypeError):
+                        logger.warning(f"无法解析媒体 {req['tmdb_id']} 的发行日期 '{release_date_str}'，将按已发行处理。")
+
+                # 构建完整的 media_info 用于更新数据库
                 media_info = {
-                    'tmdb_id': req['tmdb_id'], 'item_type': req['item_type'], 'title': req['title'],
-                    # ... (可以补充更多元数据)
+                    'tmdb_id': str(details['tmdb_id']), 'item_type': details['item_type'],
+                    'title': details.get('title'), 'original_title': details.get('original_title'),
+                    'release_date': details.get('release_date'), 'poster_path': details.get('poster_path'),
+                    'overview': details.get('overview')
                 }
+
+                if not is_released:
+                    logger.info(f"  ➜ [管理员审批] 请求 '{details.get('title')}' 未发行，状态转为 PENDING_RELEASE。")
+                    request_db.set_media_status_pending_release(
+                        tmdb_ids=[req['tmdb_id']],
+                        item_type=req['item_type'],
+                        source={"type": "admin_approval", "admin": "admin"},
+                        media_info_list=[media_info]
+                    )
+                else:
+                    logger.info(f"  ➜ [管理员审批] 请求 '{details.get('title')}' 已发行，状态转为 WANTED。")
+                    request_db.set_media_status_wanted(
+                        tmdb_ids=[req['tmdb_id']],
+                        item_type=req['item_type'],
+                        source={"type": "admin_approval", "admin": "admin"},
+                        media_info_list=[media_info] # 传递 media_info
+                    )
                 
-                request_db.set_media_status_wanted(
-                    tmdb_ids=[req['tmdb_id']],
-                    item_type=req['item_type'],
-                    source={"type": "admin_approval", "admin": "admin"}
-                )
                 approved_count += 1
                 
-                # 准备通知
-                details = media_details_map.get(req['tmdb_id'])
+                # 准备通知 (这部分逻辑保持不变)
                 if details and details.get('subscription_sources_json'):
                     first_source = details['subscription_sources_json'][0]
                     if first_source.get('type') == 'user_request' and (subscriber_id := first_source.get('user_id')):
                         if subscriber_id not in notifications_to_send:
                             notifications_to_send[subscriber_id] = []
+                        # 注意：这里我们依然使用原始的 req 对象来构建通知，因为它包含了前端传来的 item_name
                         notifications_to_send[subscriber_id].append(req)
 
             except Exception as e_ind:

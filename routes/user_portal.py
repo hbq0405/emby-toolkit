@@ -1,6 +1,7 @@
 # routes/user_portal.py
 import logging
 import requests
+from datetime import datetime, date
 from flask import Blueprint, jsonify, session, request
 
 from extensions import emby_login_required # 保护我们的新接口
@@ -61,15 +62,37 @@ def request_subscription():
 
     if is_vip or is_emby_admin:
         log_user_type = "管理员" if is_emby_admin else "VIP 用户"
-        logger.info(f"  ➜ 【{log_user_type}通道】'{emby_username}' 的订阅请求将直接加入待订阅队列...")
         
-        request_db.set_media_status_wanted(
-            tmdb_ids=[tmdb_id], item_type=item_type,
-            source={"type": "user_request", "user_id": emby_user_id, "user_type": log_user_type},
-            media_info_list=[media_info]
-        )
-        message = "订阅请求已提交，系统将自动处理！"
-        new_status_for_frontend = 'approved'
+        # 发行日期检查
+        is_released = True
+        release_date_str = media_info.get('release_date')
+        if release_date_str:
+            try:
+                from datetime import datetime, date
+                release_date_obj = datetime.strptime(release_date_str, '%Y-%m-%d').date()
+                if release_date_obj > date.today():
+                    is_released = False
+            except (ValueError, TypeError):
+                logger.warning(f"无法解析媒体 {tmdb_id} 的发行日期 '{release_date_str}'，将按已发行处理。")
+
+        if not is_released:
+            logger.info(f"  ➜ 【{log_user_type}-待发行通道】'{emby_username}' 请求的项目尚未发行，状态将设置为 PENDING_RELEASE...")
+            request_db.set_media_status_pending_release(
+                tmdb_ids=[tmdb_id], item_type=item_type,
+                source={"type": "user_request", "user_id": emby_user_id, "user_type": log_user_type},
+                media_info_list=[media_info]
+            )
+            message = "该项目尚未发行，已为您加入待发行监控队列。"
+            new_status_for_frontend = 'pending' # 前端统一显示为处理中
+        else:
+            logger.info(f"  ➜ 【{log_user_type}-待订阅通道】'{emby_username}' 的订阅请求将直接加入待订阅队列...")
+            request_db.set_media_status_wanted(
+                tmdb_ids=[tmdb_id], item_type=item_type,
+                source={"type": "user_request", "user_id": emby_user_id, "user_type": log_user_type},
+                media_info_list=[media_info]
+            )
+            message = "订阅请求已提交，系统将自动处理！"
+            new_status_for_frontend = 'approved'
 
     else:
         # --- ★★★ 普通用户通道终极改造 ★★★ ---
