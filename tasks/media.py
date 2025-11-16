@@ -354,6 +354,7 @@ def task_populate_metadata_cache(processor, batch_size: int = 50, force_full_upd
                     "genres_json": json.dumps(item.get('Genres', []), ensure_ascii=False),
                     "in_library": True,
                     "subscription_status": "NONE",
+                    "ignore_reason": None,
                     "emby_item_ids_json": json.dumps([item.get('Id')], ensure_ascii=False),
                     "official_rating": item.get('OfficialRating'),
                     "unified_rating": get_unified_rating(item.get('OfficialRating'))
@@ -430,6 +431,7 @@ def task_populate_metadata_cache(processor, batch_size: int = 50, force_full_upd
                         child_record = {
                             "in_library": True,
                             "subscription_status": "NONE",
+                            "ignore_reason": None, 
                             "emby_item_ids_json": json.dumps([child.get('Id')])
                         }
                         
@@ -440,91 +442,11 @@ def task_populate_metadata_cache(processor, batch_size: int = 50, force_full_upd
                         tmdb_child_info = tmdb_children_map.get(lookup_key)
 
                         if tmdb_child_info:
-                            child_record.update({
-                                "tmdb_id": str(tmdb_child_info.get('id')),
-                                "title": tmdb_child_info.get('name'),
-                                "release_date": tmdb_child_info.get('air_date'),
-                                "overview": tmdb_child_info.get('overview')
-                            })
+                            child_record.update({ "tmdb_id": str(tmdb_child_info.get('id')), "title": tmdb_child_info.get('name'), "release_date": tmdb_child_info.get('air_date'), "overview": tmdb_child_info.get('overview') })
                         else:
-                            child_record.update({
-                                "tmdb_id": f"{series_tmdb_id}-{lookup_key}",
-                                "title": child.get('Name'),
-                                "overview": child.get('Overview')
-                            })
+                            child_record.update({ "tmdb_id": f"{series_tmdb_id}-{lookup_key}", "title": child.get('Name'), "overview": child.get('Overview') })
 
-                        child_record.update({
-                            "item_type": child_type,
-                            "parent_series_tmdb_id": series_tmdb_id,
-                            "season_number": s_num,
-                            "episode_number": e_num
-                        })
-                        metadata_batch.append(child_record)
-
-                # --- 2. 如果是剧集，则处理其所有子项目 (Season, Episode) ---
-                if item.get("Type") == "Series":
-                    series_id = item.get('Id')
-                    series_tmdb_id = tmdb_id
-                    
-                    # 从 Emby 获取所有在库的子项目
-                    children = emby.get_series_children(
-                        series_id=series_id, base_url=processor.emby_url, api_key=processor.emby_api_key,
-                        user_id=processor.emby_user_id, include_item_types="Season,Episode",
-                        fields="Id,Type,ParentIndexNumber,IndexNumber,ProviderIds,Name,PremiereDate,Overview"
-                    )
-                    if not children:
-                        logger.warning(f"  ➜ 无法获取剧集 '{item.get('Name')}' 的子项目，跳过层级同步。")
-                        continue
-
-                    # 从 TMDB 获取一次完整的剧集详情，用于匹配子项目
-                    tmdb_series_details = tmdb.get_tv_details(series_tmdb_id, processor.tmdb_api_key)
-                    
-                    # 创建一个 TMDB 季/集数据的快速查找字典
-                    tmdb_children_map = {}
-                    if tmdb_series_details and 'seasons' in tmdb_series_details:
-                        for season_info in tmdb_series_details['seasons']:
-                            s_num = season_info.get('season_number')
-                            # 存储季信息
-                            tmdb_children_map[f"S{s_num}"] = season_info
-                            # 获取该季的详细信息（包含所有集）
-                            tmdb_season_details = tmdb.get_tv_season_details(series_tmdb_id, s_num, processor.tmdb_api_key)
-                            if tmdb_season_details and 'episodes' in tmdb_season_details:
-                                for episode_info in tmdb_season_details['episodes']:
-                                    e_num = episode_info.get('episode_number')
-                                    tmdb_children_map[f"S{s_num}E{e_num}"] = episode_info
-
-                    for child in children:
-                        child_type = child.get("Type")
-                        child_record = { "in_library": True, "subscription_status": "NONE", "emby_item_ids_json": json.dumps([child.get('Id')]) }
-                        
-                        s_num = child.get("ParentIndexNumber") if child_type == "Episode" else child.get("IndexNumber")
-                        e_num = child.get("IndexNumber") if child_type == "Episode" else None
-                        
-                        # 匹配 TMDB 数据
-                        lookup_key = f"S{s_num}E{e_num}" if e_num is not None else f"S{s_num}"
-                        tmdb_child_info = tmdb_children_map.get(lookup_key)
-
-                        if tmdb_child_info:
-                            child_record.update({
-                                "tmdb_id": str(tmdb_child_info.get('id')),
-                                "title": tmdb_child_info.get('name'),
-                                "release_date": tmdb_child_info.get('air_date'),
-                                "overview": tmdb_child_info.get('overview')
-                            })
-                        else:
-                            # 如果 TMDB 没有匹配项，生成一个稳定的备用 ID
-                            child_record.update({
-                                "tmdb_id": f"{series_tmdb_id}-{lookup_key}",
-                                "title": child.get('Name'),
-                                "overview": child.get('Overview')
-                            })
-
-                        child_record.update({
-                            "item_type": child_type,
-                            "parent_series_tmdb_id": series_tmdb_id,
-                            "season_number": s_num,
-                            "episode_number": e_num
-                        })
+                        child_record.update({ "item_type": child_type, "parent_series_tmdb_id": series_tmdb_id, "season_number": s_num, "episode_number": e_num })
                         metadata_batch.append(child_record)
 
             if processor.is_stop_requested(): break
@@ -548,8 +470,14 @@ def task_populate_metadata_cache(processor, batch_size: int = 50, force_full_upd
                             
                             # ★★★ 核心修改：为 emby_item_ids_json 生成特殊的合并更新逻辑 ★★★
                             update_clauses = []
-                            for col in columns:
-                                if col == 'emby_item_ids_json':
+                            # 从元数据中移除主键，因为它们不能出现在 UPDATE SET 子句中
+                            columns_to_update = [c for c in columns if c not in ('tmdb_id', 'item_type')]
+
+                            for col in columns_to_update:
+                                if col == 'subscription_sources_json':
+                                    # ★ 关键保护：如果遇到这个字段，直接跳过，不生成更新语句
+                                    continue
+                                elif col == 'emby_item_ids_json':
                                     # 对于 ItemID 列表，执行合并去重，而不是简单覆盖
                                     update_clauses.append("""
                                         emby_item_ids_json = (
@@ -564,7 +492,7 @@ def task_populate_metadata_cache(processor, batch_size: int = 50, force_full_upd
                                 else:
                                     # 其他所有字段，正常覆盖更新
                                     update_clauses.append(f"{col} = EXCLUDED.{col}")
-                            
+
                             update_str = ', '.join(update_clauses)
 
                             sql = f"""
