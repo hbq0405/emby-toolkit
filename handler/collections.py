@@ -15,16 +15,16 @@ logger = logging.getLogger(__name__)
 
 def sync_and_subscribe_native_collections():
     """
-    【V4.1 - 修复未定义函数错误】
-    - 补上了缺失的 fetch_tmdb_details 辅助函数定义。
+    - 增加新逻辑：只扫描在系统设置中被勾选的媒体库内的原生合集。
     - 在处理合集内电影时，会过滤掉没有海报或没有上映日期的项目。
     """
-    logger.info("--- (SYNC) 开始执行原生合集扫描与自动订阅任务 ---")
+    logger.info("--- 开始执行原生合集扫描任务 ---")
     
     config = config_manager.APP_CONFIG
     tmdb_api_key = config.get("tmdb_api_key")
     today_str = datetime.now().strftime('%Y-%m-%d')
     
+    # 从 Emby 获取所有原生合集
     emby_collections = emby.get_all_native_collections_from_emby(
         base_url=config.get('emby_server_url'),
         api_key=config.get('emby_api_key'),
@@ -34,10 +34,29 @@ def sync_and_subscribe_native_collections():
         logger.info("  ➜ (SYNC) 未找到原生合集，任务结束。")
         return
 
+    # ★★★ 根据系统设置过滤要处理的合集 ★★★
+    libraries_to_process = config.get("libraries_to_process", [])
+    if libraries_to_process:
+        logger.info(f"  ➜ (SYNC) 将根据系统设置，只扫描 {len(libraries_to_process)} 个指定媒体库中的原生合集。")
+        original_count = len(emby_collections)
+        # 过滤列表，只保留那些 ID 在 "libraries_to_process" 列表中的合集
+        emby_collections = [
+            coll for coll in emby_collections 
+            if coll.get('emby_collection_id') in libraries_to_process
+        ]
+        filtered_count = len(emby_collections)
+        logger.info(f"  ➜ (SYNC) 从 Emby 获取了 {original_count} 个原生合集，筛选后剩下 {filtered_count} 个需要处理。")
+    else:
+        logger.info("  ➜ (SYNC) 未在系统设置中指定媒体库，将扫描服务器上所有的原生合集。")
+    
+    # 如果筛选后没有合集了，就直接结束
+    if not emby_collections:
+        logger.info("  ➜ (SYNC) 筛选后没有需要处理的原生合集，任务结束。")
+        return
+
     all_movie_parts = {}
     collection_tmdb_details_map = {}
 
-    # ★★★ 核心修正：在这里补上缺失的函数定义 ★★★
     def fetch_tmdb_details(collection):
         """这是一个定义在 sync_and_subscribe_native_collections 内部的辅助函数"""
         tmdb_coll_id = collection.get('tmdb_collection_id')
@@ -46,7 +65,6 @@ def sync_and_subscribe_native_collections():
         return collection.get('emby_collection_id'), details
 
     with concurrent.futures.ThreadPoolExecutor(max_workers=5) as executor:
-        # 现在调用 fetch_tmdb_details 就不会报错了
         future_to_coll = {executor.submit(fetch_tmdb_details, c): c for c in emby_collections}
         for future in concurrent.futures.as_completed(future_to_coll):
             emby_id, details = future.result()
@@ -58,7 +76,6 @@ def sync_and_subscribe_native_collections():
                         continue
                     all_movie_parts[str(part['id'])] = part
 
-    # ... 后续的代码逻辑完全不变 ...
     all_movie_tmdb_ids = list(all_movie_parts.keys())
     in_library_tmdb_ids = set(media_db.get_media_in_library_status_by_tmdb_ids(all_movie_tmdb_ids).keys())
     logger.info(f"  ➜ (SYNC) 扫描涉及 {len(all_movie_tmdb_ids)} 部有效电影，其中 {len(in_library_tmdb_ids)} 部真正在库。")

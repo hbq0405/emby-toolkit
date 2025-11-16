@@ -343,7 +343,7 @@ def _process_single_collection_concurrently(collection_data: dict, tmdb_api_key:
 # ★★★ 刷新合集的后台任务函数 ★★★
 def task_refresh_collections(processor):
     """
-    【V3 - 新架构】后台任务：启动原生合集扫描与自动订阅。
+    后台任务：启动原生合集扫描。
     职责：只负责调用 handler 层的总指挥函数。
     """
     task_name = "刷新原生合集"
