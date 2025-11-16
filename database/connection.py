@@ -220,6 +220,7 @@ def init_db():
                         studios_json JSONB,
                         countries_json JSONB,
                         keywords_json JSONB,
+                        last_updated_at TIMESTAMP WITH TIME ZONE DEFAULT NOW(),
                         ignore_reason TEXT,
 
                         -- 剧集专属与层级数据
@@ -481,6 +482,7 @@ def init_db():
 
                     schema_upgrades = {
                         'media_metadata': {
+                            "last_updated_at": "TIMESTAMP WITH TIME ZONE",
                             "overview": "TEXT",
                             "official_rating": "TEXT",
                             "unified_rating": "TEXT",
