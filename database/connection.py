@@ -629,7 +629,7 @@ def init_db():
                         'subscription_requests'
                     ]
                     for table in deprecated_tables:
-                        logger.info(f"    ➜ [数据库清理] 正在尝试移除废弃的表: '{table}'...")
+                        logger.trace(f"    ➜ [数据库清理] 正在尝试移除废弃的表: '{table}'...")
                         cursor.execute(f"DROP TABLE IF EXISTS {table} CASCADE;")
                         logger.trace(f"    ➜ [数据库清理] 移除 '{table}' 表的操作已执行。")
 
@@ -647,7 +647,7 @@ def init_db():
 
                     for table_name, columns_to_drop in deprecated_columns_map.items():
                         for column_name in columns_to_drop:
-                            logger.info(f"    ➜ [数据库清理] 正在尝试从 '{table_name}' 表中移除废弃的列: '{column_name}'...")
+                            logger.trace(f"    ➜ [数据库清理] 正在尝试从 '{table_name}' 表中移除废弃的列: '{column_name}'...")
                             cursor.execute(f"ALTER TABLE {table_name} DROP COLUMN IF EXISTS {column_name};")
                             logger.trace(f"    ➜ [数据库清理] 移除 '{table_name}.{column_name}' 列的操作已执行。")
 
