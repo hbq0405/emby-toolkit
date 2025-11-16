@@ -429,7 +429,7 @@ def get_subscribers_by_tmdb_id(tmdb_id: str, item_type: str) -> List[Dict[str, A
     
 def get_stale_subscribed_media(threshold_days: int) -> List[Dict[str, Any]]:
     """
-    获取所有状态为 'SUBSCRIBED'、未入库，且订阅时间超过指定天数的媒体项。
+    获取所有状态为 'SUBSCRIBED'、发行时间超过1年，且订阅时间超过指定天数的媒体项。
     """
     if threshold_days <= 0:
         return []
@@ -446,7 +446,9 @@ def get_stale_subscribed_media(threshold_days: int) -> List[Dict[str, Any]]:
         WHERE 
             subscription_status = 'SUBSCRIBED'
             AND last_subscribed_at IS NOT NULL
-            AND NOW() - last_subscribed_at > INTERVAL '%s days';
+            AND NOW() - last_subscribed_at > INTERVAL '%s days'
+            AND release_date IS NOT NULL
+            AND release_date < NOW() - INTERVAL '1 year';
     """
     try:
         with get_db_connection() as conn:

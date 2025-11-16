@@ -295,7 +295,7 @@
                       <n-input-number v-model:value="configModel.autocancel_subscribed_days" :min="0" :disabled="!isMoviePilotConfigured" />
                       <template #feedback>
                         <n-text depth="3" style="font-size:0.8em;">
-                          对于已订阅但超过指定天数仍未入库的媒体，自动取消其在 MoviePilot 的订阅。<br>
+                          发行时间超过1年且超过设置天数仍未入库的媒体，自动取消其在 MoviePilot 的订阅。<br>
                           <b>设置为 0 表示禁用此功能。</b>
                         </n-text>
                       </template>
