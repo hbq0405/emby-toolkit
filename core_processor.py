@@ -144,9 +144,7 @@ class MediaProcessor:
         douban_rating: Optional[float] = None
     ):
         """
-        【V12 - 层级结构感知与批量写入版】
-        - 能够处理层级数据，为一个剧集一次性写入主条目、所有季、所有集的数据。
-        - 使用 psycopg2.extras.execute_batch 实现高效的批量写入。
+        - 媒体元数据更新主入口
         """
         try:
             from psycopg2.extras import execute_batch
@@ -155,11 +153,8 @@ class MediaProcessor:
                 logger.warning("  ➜ 元数据写入跳过：未提供源数据包。")
                 return
 
+            # ... (步骤1: 生成记录 的代码保持不变, 包括为已入库项目设置 status='NONE') ...
             records_to_upsert = []
-            
-            # ======================================================================
-            # 步骤 1: 生成所有待写入的记录 
-            # ======================================================================
             if item_type == "Movie":
                 movie_record = source_data_package.copy()
                 movie_record['item_type'] = 'Movie'
@@ -212,7 +207,6 @@ class MediaProcessor:
                     records_to_upsert.append({"tmdb_id": str(episode.get('id')), "item_type": "Episode", "parent_series_tmdb_id": str(series_details.get('id')), "title": episode.get('name'), "overview": episode.get('overview'), "release_date": episode.get('air_date'), "season_number": episode.get('season_number'), "episode_number": episode.get('episode_number')})
 
             if not records_to_upsert:
-                logger.warning("  ➜ 元数据写入跳过：未能从数据包生成任何有效记录。")
                 return
 
             # ======================================================================
@@ -225,23 +219,27 @@ class MediaProcessor:
                 "official_rating", "unified_rating",
                 "genres_json", "directors_json", "studios_json", "countries_json", "keywords_json" 
             ]
-
             data_for_batch = []
             for record in records_to_upsert:
                 db_row_complete = {col: record.get(col) for col in all_possible_columns}
                 
+                # ★★★ 核心修复：重新为所有 NOT NULL 字段设置安全的默认值 ★★★
+                # 这对于 INSERT 新记录至关重要，以避免 NotNullViolation 错误。
                 if db_row_complete['in_library'] is None:
                     db_row_complete['in_library'] = False
                 if db_row_complete['subscription_status'] is None:
-                    db_row_complete['subscription_status'] = 'PENDING'
+                    # 数据库的默认值是 'NONE'，我们在这里保持一致
+                    db_row_complete['subscription_status'] = 'NONE'
+                if db_row_complete['subscription_sources_json'] is None:
+                    db_row_complete['subscription_sources_json'] = '[]'
                 if db_row_complete['emby_item_ids_json'] is None:
                     db_row_complete['emby_item_ids_json'] = '[]'
 
+                # ... (其他数据准备逻辑保持不变) ...
                 release_date_str = db_row_complete.get('release_date')
                 if release_date_str and len(release_date_str) >= 4:
                     try: db_row_complete['release_year'] = int(release_date_str[:4])
                     except (ValueError, TypeError): pass
-
                 if record.get('item_type') == 'Movie':
                     tmdb_official_rating = None
                     if record.get('release_dates', {}).get('results'):
@@ -261,13 +259,11 @@ class MediaProcessor:
                     keywords_data = record.get('keywords', {})
                     keywords = [k['name'] for k in (keywords_data.get('keywords', {}) or keywords_data.get('results', []))]
                     db_row_complete['keywords_json'] = json.dumps(keywords, ensure_ascii=False)
-
                 data_for_batch.append(db_row_complete)
 
             # ======================================================================
-            # 步骤 3: 执行批量写入
+            # 步骤 3: 执行批量写入 (这部分逻辑已经是正确的，无需修改)
             # ======================================================================
-            # 定义一个包含所有可能字段的SQL模板
             cols_str = ", ".join(all_possible_columns)
             placeholders_str = ", ".join([f"%({col})s" for col in all_possible_columns])
             
@@ -276,17 +272,14 @@ class MediaProcessor:
                 if pk in cols_to_update: cols_to_update.remove(pk)
 
             if item_details_from_emby:
-                # 已入库项目：只保护订阅来源
-                logger.debug("  ➜ [入库] 将设置订阅状态为NONE，但保留订阅来源。")
+                logger.debug("  ➜ [工作流感知] 媒体库内项目：将设置订阅状态为NONE，但保留订阅来源。")
                 cols_to_protect = ['subscription_sources_json']
                 timestamp_field = "last_synced_at"
             else:
-                # 预处理项目：保护所有状态字段
-                logger.debug("  ➜ [预处理] 保留数据库中现有的 'subscription_status', 'in_library' 和 'subscription_sources_json' 状态。")
+                logger.debug("  ➜ [工作流感知] 预处理模式：将保留数据库中现有的 'subscription_status', 'in_library' 和 'subscription_sources_json' 状态。")
                 cols_to_protect = ['subscription_status', 'subscription_sources_json', 'in_library']
                 timestamp_field = "pre_processed_at"
 
-            # 从待更新列表中移除需要保护的字段
             for col in cols_to_protect:
                 if col in cols_to_update:
                     cols_to_update.remove(col)
