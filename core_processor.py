@@ -234,8 +234,6 @@ class MediaProcessor:
                     db_row_complete['in_library'] = False
                 if db_row_complete['subscription_status'] is None:
                     db_row_complete['subscription_status'] = 'PENDING'
-                if db_row_complete['subscription_sources_json'] is None:
-                    db_row_complete['subscription_sources_json'] = '[]'
                 if db_row_complete['emby_item_ids_json'] is None:
                     db_row_complete['emby_item_ids_json'] = '[]'
 
@@ -270,24 +268,30 @@ class MediaProcessor:
             # 步骤 3: 执行批量写入
             # ======================================================================
             # 定义一个包含所有可能字段的SQL模板
-            
-            
             cols_str = ", ".join(all_possible_columns)
             placeholders_str = ", ".join([f"%({col})s" for col in all_possible_columns])
             
-            update_clauses = [f"{col} = EXCLUDED.{col}" for col in all_possible_columns if col not in ['tmdb_id', 'item_type', 'parent_series_tmdb_id', 'season_number', 'episode_number']]
-            
-            if not item_details_from_emby:
-                logger.debug("  ➜ [工作流感知] 预处理模式：将保留数据库中现有的 'subscription_status', 'in_library' 和 'subscription_sources_json' 状态。")
-                # --- ✨✨✨ 核心修复：将 subscription_sources_json 加入保护名单 ✨✨✨ ---
-                update_clauses = [
-                    clause for clause in update_clauses 
-                    if not clause.startswith('subscription_status =') and \
-                       not clause.startswith('in_library =') and \
-                       not clause.startswith('subscription_sources_json =')
-                ]
-            
-            timestamp_field = "pre_processed_at" if not item_details_from_emby else "last_synced_at"
+            cols_to_update = all_possible_columns.copy()
+            for pk in ['tmdb_id', 'item_type']:
+                if pk in cols_to_update: cols_to_update.remove(pk)
+
+            if item_details_from_emby:
+                # 已入库项目：只保护订阅来源
+                logger.debug("  ➜ [入库] 将设置订阅状态为NONE，但保留订阅来源。")
+                cols_to_protect = ['subscription_sources_json']
+                timestamp_field = "last_synced_at"
+            else:
+                # 预处理项目：保护所有状态字段
+                logger.debug("  ➜ [预处理] 保留数据库中现有的 'subscription_status', 'in_library' 和 'subscription_sources_json' 状态。")
+                cols_to_protect = ['subscription_status', 'subscription_sources_json', 'in_library']
+                timestamp_field = "pre_processed_at"
+
+            # 从待更新列表中移除需要保护的字段
+            for col in cols_to_protect:
+                if col in cols_to_update:
+                    cols_to_update.remove(col)
+
+            update_clauses = [f"{col} = EXCLUDED.{col}" for col in cols_to_update]
             update_clauses.append(f"{timestamp_field} = NOW()")
 
             sql = f"""
