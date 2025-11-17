@@ -4,6 +4,7 @@ import requests
 from requests.adapters import HTTPAdapter
 from urllib3.util.retry import Retry
 import json
+import time
 import concurrent.futures
 from utils import contains_chinese, normalize_name_for_matching
 from typing import Optional, List, Dict, Any, Callable
@@ -247,13 +248,13 @@ def get_tv_season_details(tv_id: int, season_number: int, api_key: str) -> Optio
 def batch_get_full_series_details_tmdb(
     series_tmdb_ids: List[str], 
     api_key: str, 
-    max_workers: int = 10,
-    progress_callback: Optional[Callable] = None  # <-- 新增的回调函数参数
+    max_workers: int = 5, # <-- 将默认并发数从10降低到5，更加安全
+    progress_callback: Optional[Callable] = None
 ) -> Dict[str, List[Dict]]:
     """
-    【V1.1 - 进度回调版】
+    【V1.2 - 稳定防崩溃版】
     接收一个剧集 TMDB ID 列表，并发地获取所有这些剧集的完整子项（季、集）信息。
-    支持一个可选的 progress_callback 函数，用于实时报告下载进度。
+    通过降低默认并发数和增加请求间隔，防止触发TMDb的速率限制。
     """
     if not series_tmdb_ids or not api_key:
         return {}
@@ -261,7 +262,6 @@ def batch_get_full_series_details_tmdb(
     logger.info(f"  ➜ 开始为 {len(series_tmdb_ids)} 部剧集并发聚合 TMDB 子项数据 (并发数: {max_workers})...")
     
     all_children_data = {}
-    # 新增：用于线程安全地更新进度的计数器和锁
     completed_count = 0
     lock = threading.Lock()
     total_tasks = len(series_tmdb_ids)
@@ -284,7 +284,11 @@ def batch_get_full_series_details_tmdb(
                 season_details = get_season_details_tmdb(tv_id, season_num, api_key)
                 if season_details and season_details.get("episodes"):
                     children.extend(season_details["episodes"])
-            
+                
+                # ★★★ 核心修复 2/2：在这里加入一个微小的延时 ★★★
+                # 这会极大地增加程序的稳定性，避免被服务器拒绝连接。
+                time.sleep(0.05) # 暂停 50 毫秒
+
             return children
         except Exception as e:
             logger.error(f"    ➜ 获取剧集 {tv_id} 的子项时出错: {e}", exc_info=False)
@@ -302,16 +306,12 @@ def batch_get_full_series_details_tmdb(
             except Exception as exc:
                 logger.error(f"    剧集 {tv_id} 的并发任务执行时产生异常: {exc}")
             finally:
-                # ★★★ 核心修改：无论成功失败，都更新进度 ★★★
                 if progress_callback:
                     with lock:
                         completed_count += 1
                     
-                    # 我们将这个阶段的进度条范围定在 15% 到 40% 之间 (总共 25% 的空间)
-                    # 计算当前进度在整个任务中的百分比
                     progress_percent = 15 + (completed_count / total_tasks) * 25
                     message = f"正在从TMDb并发获取... ({completed_count}/{total_tasks})"
-                    # 调用回调函数，将进度和消息传出去
                     progress_callback(int(progress_percent), message)
 
     logger.info(f"  ➜ 成功为 {len(all_children_data)} 部剧集获取了完整的子项元数据。")
