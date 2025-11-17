@@ -176,87 +176,109 @@ class WatchlistProcessor:
         except Exception as e:
             logger.error(f"自动添加剧集 '{item_name}' 到追剧列表时发生数据库错误: {e}", exc_info=True)
 
-    # --- 核心任务启动器 (无需修改) ---
+    # --- 核心任务启动器  ---
     def run_regular_processing_task_concurrent(self, progress_callback: callable, item_id: Optional[str] = None, force_full_update: bool = False):
-        """核心任务启动器。"""
+        """【V2 - 高效重构版】核心任务启动器。"""
         self.progress_callback = progress_callback
         task_name = "并发追剧更新"
-        # ▼▼▼ 根据模式更新日志里的任务名 ▼▼▼
-        if force_full_update:
-            task_name = "并发追剧更新 (深度模式)"
-        if item_id: 
-            task_name = f"单项追剧更新 (ID: {item_id})"
+        if force_full_update: task_name = "并发追剧更新 (深度模式)"
+        if item_id: task_name = f"单项追剧更新 (ID: {item_id})"
         
-        self.progress_callback(0, "准备检查待更新剧集...")
+        self.progress_callback(0, "准备追剧任务...")
         try:
             # ======================================================================
-            # 阶段一：处理剧集
+            # 阶段一：守门 - 从Emby获取权威ID列表 (如果需要)
             # ======================================================================
-            
-            # ▼▼▼ BUG修复：仅在批量刷新时才应用状态过滤器 ▼▼▼
+            selected_libraries = self.config.get(constants.CONFIG_OPTION_EMBY_LIBRARIES_TO_PROCESS, [])
+            valid_emby_ids = None # None表示不过滤，即处理所有库
+            if selected_libraries:
+                logger.info(f"  ➜ 已启用媒体库过滤器，正在从 {len(selected_libraries)} 个库中获取剧集ID...")
+                self.progress_callback(2, "正在从Emby获取媒体库ID...")
+                valid_emby_ids = set()
+                for lib_id in selected_libraries:
+                    series_ids_in_lib = emby.get_library_series_ids(
+                        library_id=lib_id, emby_server_url=self.emby_url,
+                        emby_api_key=self.emby_api_key, user_id=self.emby_user_id
+                    )
+                    valid_emby_ids.update(series_ids_in_lib)
+                logger.info(f"  ➜ 成功从Emby获取到 {len(valid_emby_ids)} 个有效的剧集ID。")
+
+            # ======================================================================
+            # 阶段二：数据准备 - 从本地数据库获取并过滤
+            # ======================================================================
             where_clause = ""
-            # 只有在没有指定单个 item_id 时，才需要根据模式构建 WHERE 子句
-            if not item_id:
-                if force_full_update:
-                    # 深度模式：查询所有剧集 (除了手动强制完结的)
-                    where_clause = "WHERE force_ended = FALSE"
-                    logger.info("  ➜ 已启用【深度模式】，将刷新所有追剧列表中的项目。")
-                else:
-                    # 快速模式 (默认)：只查询活跃剧集
-                    today_str = datetime.now(timezone.utc).date().isoformat()
-                    where_clause = f"WHERE watching_status = '{STATUS_WATCHING}' OR (watching_status = '{STATUS_PAUSED}' AND paused_until <= '{today_str}')"
-
-            # 当 item_id 存在时，where_clause 会是空字符串，确保 _get_series_to_process 能获取到该剧集
-            active_series = self._get_series_to_process(where_clause, item_id)
-            
-            # ▼▼▼ 核心流程修正：即使没有活跃剧集，也不再提前退出 ▼▼▼
-            if active_series:
-                total = len(active_series)
-                self.progress_callback(5, f"开始并发处理 {total} 部剧集...")
-                
-                processed_count = 0
-                lock = threading.Lock()
-
-                def worker_process_series(series: dict):
-                    if self.is_stop_requested(): return "任务已停止"
-                    try:
-                        self._process_one_series(series)
-                        return "处理成功"
-                    except Exception as e:
-                        logger.error(f"处理剧集 {series.get('item_name')} 时发生错误: {e}", exc_info=False)
-                        return f"处理失败: {e}"
-
-                with concurrent.futures.ThreadPoolExecutor(max_workers=5) as executor:
-                    future_to_series = {executor.submit(worker_process_series, series): series for series in active_series}
-                    
-                    for future in concurrent.futures.as_completed(future_to_series):
-                        if self.is_stop_requested():
-                            executor.shutdown(wait=False, cancel_futures=True)
-                            break
-
-                        series_info = future_to_series[future]
-                        try:
-                            result = future.result()
-                            logger.trace(f"'{series_info['item_name']}' - {result}")
-                        except Exception as exc:
-                            logger.error(f"任务 '{series_info['item_name']}' 执行时产生未捕获的异常: {exc}")
-
-                        with lock:
-                            processed_count += 1
-                        
-                        # 根据总任务类型调整进度条基数
-                        progress_base = 0 if item_id or force_full_update else 5
-                        progress_multiplier = 100 if item_id or force_full_update else 45
-                        
-                        progress = progress_base + int((processed_count / total) * progress_multiplier)
-                        self.progress_callback(progress, f"剧集处理: {processed_count}/{total} - {series_info['item_name'][:15]}...")
-                
-                if not self.is_stop_requested():
-                    self.progress_callback(100, "追剧检查完成。")
+            if item_id:
+                # 单项刷新模式：直接通过 item_id 查找（这个逻辑已在 _get_series_to_process 中优化）
+                pass
+            elif force_full_update:
+                where_clause = "WHERE force_ended = FALSE"
+                logger.info("  ➜ 已启用【深度模式】，将刷新所有追剧列表中的项目。")
             else:
-                # 如果没有活跃剧集，直接进入下一阶段
-                self.progress_callback(100, "没有需要处理的剧集，任务完成。")
+                today_str = datetime.now(timezone.utc).date().isoformat()
+                where_clause = f"WHERE watching_status = '{STATUS_WATCHING}' OR (watching_status = '{STATUS_PAUSED}' AND paused_until <= '{today_str}')"
+
+            # 从数据库获取所有候选剧集
+            candidate_series = self._get_series_to_process(where_clause, item_id)
             
+            # 使用权威ID列表进行过滤
+            active_series = []
+            if valid_emby_ids is not None:
+                for series in candidate_series:
+                    # emby_item_ids_json 存储的是一个数组，我们需要检查是否有任何一个ID在有效集合中
+                    emby_ids_in_db = series.get('emby_item_ids_json', [])
+                    if isinstance(emby_ids_in_db, list) and any(eid in valid_emby_ids for eid in emby_ids_in_db):
+                        active_series.append(series)
+                logger.info(f"  ➜ 媒体库过滤完成：数据库中发现 {len(candidate_series)} 个候选项目，最终匹配到 {len(active_series)} 个。")
+            else:
+                # 如果不过滤，所有候选者都进入处理列表
+                active_series = candidate_series
+
+            # ======================================================================
+            # 阶段三：核心处理
+            # ======================================================================
+            if not active_series:
+                self.progress_callback(100, "没有需要处理的剧集，任务完成。")
+                return
+
+            total = len(active_series)
+            self.progress_callback(5, f"开始并发处理 {total} 部剧集...")
+            
+            processed_count = 0
+            lock = threading.Lock()
+
+            def worker_process_series(series: dict):
+                if self.is_stop_requested(): return "任务已停止"
+                try:
+                    self._process_one_series(series)
+                    return "处理成功"
+                except Exception as e:
+                    logger.error(f"处理剧集 {series.get('item_name')} 时发生错误: {e}", exc_info=False)
+                    return f"处理失败: {e}"
+
+            with concurrent.futures.ThreadPoolExecutor(max_workers=5) as executor:
+                future_to_series = {executor.submit(worker_process_series, series): series for series in active_series}
+                
+                for future in concurrent.futures.as_completed(future_to_series):
+                    if self.is_stop_requested():
+                        executor.shutdown(wait=False, cancel_futures=True)
+                        break
+
+                    series_info = future_to_series[future]
+                    try:
+                        result = future.result()
+                        logger.trace(f"'{series_info['item_name']}' - {result}")
+                    except Exception as exc:
+                        logger.error(f"任务 '{series_info['item_name']}' 执行时产生未捕获的异常: {exc}")
+
+                    with lock:
+                        processed_count += 1
+                    
+                    progress = 5 + int((processed_count / total) * 95)
+                    self.progress_callback(progress, f"剧集处理: {processed_count}/{total} - {series_info['item_name'][:15]}...")
+            
+            if not self.is_stop_requested():
+                self.progress_callback(100, "追剧检查完成。")
+
         except Exception as e:
             logger.error(f"执行 '{task_name}' 时发生严重错误: {e}", exc_info=True)
             self.progress_callback(-1, f"错误: {e}")
@@ -457,34 +479,26 @@ class WatchlistProcessor:
             
     # ★★★ 核心处理逻辑：单个剧集的所有操作在此完成 ★★★
     def _process_one_series(self, series_data: Dict[str, Any]):
-        # ★★★ 核心修改：现在主键是 tmdb_id，item_id 仅用于 Emby API 调用 ★★★
         tmdb_id = series_data['tmdb_id']
-        item_id = series_data.get('item_id') # 可能为 None，但后续有检查
+        # ★★★ 关键修改：emby_item_ids_json 是一个列表，我们取第一个作为代表ID ★★★
+        emby_ids = series_data.get('emby_item_ids_json', [])
+        item_id = emby_ids[0] if emby_ids else None
         item_name = series_data['item_name']
         is_force_ended = bool(series_data.get('force_ended', False))
         
         logger.info(f"  ➜ 【追剧检查】正在处理: '{item_name}' (TMDb ID: {tmdb_id})")
 
-        # 步骤1: 存活检查 (如果 item_id 存在)
-        if item_id:
-            item_details_for_check = emby.get_emby_item_details(
-                item_id=item_id, emby_server_url=self.emby_url, emby_api_key=self.emby_api_key,
-                user_id=self.emby_user_id, fields="Id,Name"
-            )
-            if not item_details_for_check:
-                logger.warning(f"  ➜ 剧集 '{item_name}' (Emby ID: {item_id}) 在 Emby 中已不存在。将从追剧列表移除。")
-                # 使用 watchlist_db 中的函数，它已经被适配了新表
-                watchlist_db.remove_item_from_watchlist(tmdb_id=tmdb_id)
-                return 
-        else:
-            logger.warning(f"  ➜ 剧集 '{item_name}' 在数据库中没有关联的 Emby ID，跳过存活检查。")
-
+        # 步骤1: 存活检查 (这一步可以简化或移除，因为已经在任务开始时批量过滤了)
+        # 为保持单项刷新的健壮性，我们保留一个简单的ID存在性检查
+        if not item_id:
+            logger.warning(f"  ➜ 剧集 '{item_name}' 在数据库中没有关联的 Emby ID，跳过。")
+            return
 
         if not self.tmdb_api_key:
             logger.warning("  ➜ 未配置TMDb API Key，跳过。")
             return
 
-        # 步骤2: 从TMDb获取权威数据
+        # 步骤2: 从TMDb获取权威数据 (逻辑不变)
         logger.debug(f"  ➜ 正在从TMDb API获取 '{item_name}' 的最新详情...")
         latest_series_data = tmdb.get_tv_details(tmdb_id, self.tmdb_api_key)
         if not latest_series_data:
@@ -500,16 +514,13 @@ class WatchlistProcessor:
                 all_tmdb_episodes.extend(season_details.get("episodes", []))
             time.sleep(0.1)
 
-        # 步骤3: 获取Emby本地数据
-        emby_children = emby.get_series_children(item_id, self.emby_url, self.emby_api_key, self.emby_user_id, fields="Id,Name,ParentIndexNumber,IndexNumber,Type,Overview")
-        emby_seasons = {}
-        if emby_children:
-            for child in emby_children:
-                s_num, e_num = child.get('ParentIndexNumber'), child.get('IndexNumber')
-                if s_num is not None and e_num is not None:
-                    emby_seasons.setdefault(s_num, set()).add(e_num)
+        # ★★★ 步骤3: 从本地数据库获取媒体库数据 (核心重构) ★★★
+        # 不再调用 emby.get_series_children，而是调用 media_db
+        emby_seasons = media_db.get_series_local_children_info(tmdb_id)
+        # ★★★ 同时，获取本地分集元数据用于后续的简介注入检查 ★★★
+        local_episodes_metadata = media_db.get_series_local_episodes_overview(tmdb_id)
 
-        # 步骤4: 计算状态和缺失信息
+        # 步骤4: 计算状态和缺失信息 (逻辑不变)
         new_tmdb_status = latest_series_data.get("status")
         is_ended_on_tmdb = new_tmdb_status in ["Ended", "Canceled"]
         
@@ -517,14 +528,12 @@ class WatchlistProcessor:
         missing_info = self._calculate_missing_info(latest_series_data.get('seasons', []), all_tmdb_episodes, emby_seasons)
         has_missing_media = bool(missing_info["missing_seasons"] or missing_info["missing_episodes"])
 
-        # ★★★ 元数据完整性检查 ★★★
         today_str = datetime.now(timezone.utc).date().isoformat()
         aired_episodes = [ep for ep in all_tmdb_episodes if ep.get('air_date') and ep['air_date'] <= today_str]
         has_complete_metadata = self._check_all_episodes_have_overview(aired_episodes)
 
-        # “本季大结局”判断逻辑
         last_episode_to_air = latest_series_data.get("last_episode_to_air")
-        final_status = STATUS_WATCHING # 默认是追剧中
+        final_status = STATUS_WATCHING
         paused_until_date = None
         today = datetime.now(timezone.utc).date()
 
@@ -692,50 +701,38 @@ class WatchlistProcessor:
             if ep.get('season_number') is not None and ep.get('episode_number') is not None
         }
 
-        for emby_episode in emby_children:
-            if emby_episode.get("Type") == "Episode" and not emby_episode.get("Overview"):
-                s_num = emby_episode.get("ParentIndexNumber")
-                e_num = emby_episode.get("IndexNumber")
+        # 使用从本地数据库获取的 local_episodes_metadata
+        for local_episode in local_episodes_metadata:
+            if not local_episode.get("overview"): # 只处理本地记录里没有简介的
+                s_num = local_episode.get("season_number")
+                e_num = local_episode.get("episode_number")
                 
-                if s_num is None or e_num is None:
-                    continue
+                if s_num is None or e_num is None: continue
 
                 ep_key = f"S{s_num}E{e_num}"
                 ep_name_for_log = f"S{s_num:02d}E{e_num:02d}"
                 
                 tmdb_data_for_episode = tmdb_episodes_map.get(ep_key)
-                if tmdb_data_for_episode:
-                    overview = tmdb_data_for_episode.get("overview")
-                    if overview and overview.strip():
-                        emby_episode_id = emby_episode.get("Id")
-                        logger.info(f"  ➜ 发现分集 '{ep_name_for_log}' (ID: {emby_episode_id}) 缺少简介，准备从TMDb注入...")
-                        data_to_inject = {
-                            "Name": tmdb_data_for_episode.get("name"),
-                            "Overview": overview
-                        }
-                        
-                        success = emby.update_emby_item_details(
-                            item_id=emby_episode_id,
-                            new_data=data_to_inject,
-                            emby_server_url=self.emby_url,
-                            emby_api_key=self.emby_api_key,
-                            user_id=self.emby_user_id
-                        )
+                if tmdb_data_for_episode and (overview := tmdb_data_for_episode.get("overview")):
+                    emby_episode_id = local_episode.get("emby_item_id")
+                    if not emby_episode_id: continue
 
-                        if success:
-                            logger.info(f"  ➜ Emby 分集 '{ep_name_for_log}' (ID: {emby_episode_id}) 简介更新成功。")
-                            # ★★★ 核心修改：同步更新内存中的数据，为稍后的步骤6做准备 ★★★
-                            emby_episode['Overview'] = overview
-                            emby_episode['Name'] = data_to_inject.get("Name")
-                        else:
-                            logger.error(f"  ➜ 更新 Emby 分集 '{ep_name_for_log}' (ID: {emby_episode_id}) 简介失败。")
+                    logger.info(f"  ➜ 发现分集 '{ep_name_for_log}' (ID: {emby_episode_id}) 缺少简介，准备从TMDb注入...")
+                    data_to_inject = {"Name": tmdb_data_for_episode.get("name"), "Overview": overview}
+                    
+                    success = emby.update_emby_item_details(
+                        item_id=emby_episode_id, new_data=data_to_inject,
+                        emby_server_url=self.emby_url, emby_api_key=self.emby_api_key,
+                        user_id=self.emby_user_id
+                    )
+                    if success:
+                        logger.info(f"  ➜ Emby 分集 '{ep_name_for_log}' 简介更新成功。")
+                        # ★★★ 可以在此更新本地数据库的 'overview' 字段，形成闭环 ★★★
+                        media_db.update_episode_overview(emby_episode_id, overview)
                     else:
-                        logger.info(f"  ➜ TMDb中分集 '{ep_name_for_log}' 尚无简介，跳过更新。")
-                else:
-                    logger.warning(f"  ➜ Emby分集 '{ep_name_for_log}' 缺少简介，但在TMDb中未找到对应信息。")
-        else:
-            # 这个else属于for循环，表示循环正常结束，没有被break
-            logger.info(f"  ➜ 分集简介检查与注入流程完成。")
+                        logger.error(f"  ➜ 更新 Emby 分集 '{ep_name_for_log}' 简介失败。")
+        
+        logger.info(f"  ➜ 分集简介检查与注入流程完成。")
 
         # 步骤8：更新媒体数据缓存
         try:

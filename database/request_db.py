@@ -118,14 +118,20 @@ def set_media_status_wanted(
                             subscription_status = 'WANTED',
                             subscription_sources_json = media_metadata.subscription_sources_json || EXCLUDED.subscription_sources_json,
                             first_requested_at = COALESCE(media_metadata.first_requested_at, EXCLUDED.first_requested_at),
-                            ignore_reason = NULL, parent_series_tmdb_id = COALESCE(EXCLUDED.parent_series_tmdb_id, media_metadata.parent_series_tmdb_id)
-                        WHERE (
-                            media_metadata.in_library = FALSE
-                            OR (media_metadata.item_type = 'Series' AND EXCLUDED.subscription_sources_json->0->>'reason' LIKE 'missing_%%season')
-                            OR (media_metadata.item_type = 'Season' AND EXCLUDED.subscription_sources_json->0->>'type' = 'gap_scan')
-                          )
-                          AND media_metadata.subscription_status NOT IN ('SUBSCRIBED', 'IGNORED')
-                          AND (EXCLUDED.subscription_sources_json = '[]'::jsonb OR NOT (media_metadata.subscription_sources_json @> EXCLUDED.subscription_sources_json));
+                            ignore_reason = NULL, 
+                            parent_series_tmdb_id = COALESCE(EXCLUDED.parent_series_tmdb_id, media_metadata.parent_series_tmdb_id)
+                        WHERE
+                            -- 基础前置条件：不能是已订阅或已忽略
+                            media_metadata.subscription_status NOT IN ('SUBSCRIBED', 'IGNORED')
+                            
+                            -- 并且满足以下任一条件即可：
+                            AND (
+                                -- 1. 这是一个全新的订阅源
+                                NOT (media_metadata.subscription_sources_json @> EXCLUDED.subscription_sources_json)
+                                
+                                -- 2. 或者，这是一个来自“缺集扫描”的请求（允许重复触发）
+                                OR EXCLUDED.subscription_sources_json->0->>'type' = 'gap_scan'
+                            );
                     """
                     execute_batch(cursor, sql, data_to_upsert)
                 if cursor.rowcount <= 0: logger.info(f"  ➜ [状态执行] 操作完成，但没有行受到影响（可能因为不满足前置条件）。")

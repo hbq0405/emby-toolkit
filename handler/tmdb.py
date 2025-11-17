@@ -231,9 +231,10 @@ def get_season_details_tmdb(tv_id: int, season_number: int, api_key: str, append
     logger.debug(f"  ➜ TMDb API: 获取电视剧 {item_name_for_log}(ID: {tv_id}) 第 {season_number} 季的详情...")
     
     return _tmdb_request(endpoint, api_key, params)
+# --- 获取电视剧某一季的详细信息，简化调用版 ---
 def get_tv_season_details(tv_id: int, season_number: int, api_key: str) -> Optional[Dict[str, Any]]:
     """
-    【新增】获取电视剧某一季的详细信息。
+    获取电视剧某一季的详细信息。
     这是 get_season_details_tmdb 的一个更简洁的别名，用于简化调用并获取海报。
     """
     # 直接调用已有的、功能更全的函数。
@@ -244,6 +245,62 @@ def get_tv_season_details(tv_id: int, season_number: int, api_key: str) -> Optio
         api_key=api_key,
         append_to_response=None
     )
+# --- 基于现有函数构建的、用于缺集扫描的批量获取函数
+def batch_get_specific_season_details_for_gap_scan(
+    seasons_to_fetch: List[Dict[str, Any]], 
+    api_key: str, 
+    progress_callback: Optional[callable] = None
+) -> List[Dict[str, Any]]:
+    """
+    【新】高性能并发获取指定的“剧集-季”的详细信息，专门为缺集扫描任务定制。
+    - 内部直接调用已有的 get_season_details_tmdb 函数。
+    - seasons_to_fetch: 一个字典列表，每个字典包含 'parent_series_tmdb_id' 和 'season_number'
+    """
+    total_seasons = len(seasons_to_fetch)
+    if total_seasons == 0:
+        return []
+
+    logger.info(f"  ➜ 准备从 TMDb 并发获取 {total_seasons} 个特定季的详情...")
+    
+    season_details_list = []
+    processed_count = 0
+    lock = threading.Lock()
+
+    def fetch_one_season(season_info: Dict[str, Any]):
+        nonlocal processed_count
+        series_id = season_info.get('parent_series_tmdb_id')
+        season_num = season_info.get('season_number')
+        
+        if not series_id or season_num is None:
+            return None
+
+        try:
+            # ★★★ 核心：直接调用您已有的函数 ★★★
+            details = get_season_details_tmdb(series_id, season_num, api_key, append_to_response=None)
+            if details:
+                # 关键：将父剧集ID补充到结果中，便于后续处理
+                details['parent_series_tmdb_id'] = series_id
+                return details
+        except Exception as e:
+            logger.error(f"获取剧集 {series_id} 第 {season_num} 季详情时出错: {e}")
+        finally:
+            with lock:
+                processed_count += 1
+                if progress_callback:
+                    # 进度条范围: 10% -> 40%
+                    progress = 10 + int((processed_count / total_seasons) * 30)
+                    progress_callback(progress, f"正在从 TMDb 并发获取... ({processed_count}/{total_seasons})")
+        return None
+
+    with concurrent.futures.ThreadPoolExecutor(max_workers=10) as executor:
+        future_to_season = {executor.submit(fetch_one_season, s_info): s_info for s_info in seasons_to_fetch}
+        for future in concurrent.futures.as_completed(future_to_season):
+            result = future.result()
+            if result:
+                season_details_list.append(result)
+
+    logger.info(f"  ➜ 成功获取到 {len(season_details_list)}/{total_seasons} 个季的详情。")
+    return season_details_list
 # --- 接收一个剧集 TMDB ID 列表，并发地获取所有这些剧集的完整子项（季、集）信息 ---
 def batch_get_full_series_details_tmdb(
     series_tmdb_ids: List[str], 

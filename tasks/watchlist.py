@@ -87,149 +87,108 @@ def task_run_revival_check(processor):
 # ✨✨✨ 一键添加所有剧集到追剧列表的任务 ✨✨✨
 def task_add_all_series_to_watchlist(processor):
     """
-    【V4 - 精准扫描版】
-    - 严格按照用户在设置中选择的媒体库进行扫描，不再扫描全部。
-    - 如果用户未选择任何媒体库，任务将直接中止并提示用户。
-    - 保留了并发获取和批量写入的高效特性。
+    【V5 - 高效重构版】
+    - 核心数据源改为本地数据库，极大提升执行速度和稳定性。
+    - 仅在需要按媒体库筛选时，才对 Emby 进行一次性的 ID 批量查询。
+    - 保留了批量写入和任务链的高效特性。
     """
-    task_name = "一键扫描选定库剧集"
-    logger.info(f"--- 开始执行 '{task_name}' 任务 ---")
+    task_name = "一键扫描库内剧集"
+    logger.info(f"--- 开始执行 '{task_name}' 任务 (高效模式) ---")
     
     try:
-        emby_url = processor.emby_url
-        emby_api_key = processor.emby_api_key
-        emby_user_id = processor.emby_user_id
-        
-        # 1. 直接从配置中获取用户选定的媒体库列表
+        # ----------------------------------------------------------------------
+        # 步骤 1: 确定处理范围 (媒体库过滤)
+        # ----------------------------------------------------------------------
+        task_manager.update_status_from_thread(5, "正在确定媒体库扫描范围...")
         library_ids_to_process = processor.config.get(constants.CONFIG_OPTION_EMBY_LIBRARIES_TO_PROCESS, [])
-        
-        if not library_ids_to_process:
-            logger.info("  ➜ 未在配置中指定媒体库，将自动扫描所有剧集/混合媒体库...")
-            all_libraries = emby.get_emby_libraries(emby_url, emby_api_key, emby_user_id)
-            if all_libraries:
-                # 筛选出所有电视剧库和混合内容库
-                libraries_to_scan = [
-                    lib for lib in all_libraries 
-                    if lib.get('CollectionType') in ['tvshows', 'mixed']
-                ]
-                library_ids_to_process = [lib['Id'] for lib in libraries_to_scan]
-                
-                if libraries_to_scan:
-                    library_names = [lib['Name'] for lib in libraries_to_scan]
-                    logger.info(f"  ➜ 将自动扫描以下媒体库: {', '.join(library_names)}")
-                else:
-                    logger.warning("  ➜ 自动扫描模式：未能从 Emby 找到任何电视剧或混合内容媒体库。")
-            else:
-                logger.error("  ➜ 自动扫描模式：未能从 Emby 获取到任何媒体库信息。")
+        valid_emby_ids = None # None 表示不过滤，处理所有库的剧集
+
+        if library_ids_to_process:
+            logger.info(f"  ➜ 已启用媒体库过滤器，将从 {len(library_ids_to_process)} 个指定库中进行筛选...")
+            valid_emby_ids = set()
+            for lib_id in library_ids_to_process:
+                series_ids_in_lib = emby.get_library_series_ids(
+                    library_id=lib_id, emby_server_url=processor.emby_url,
+                    emby_api_key=processor.emby_api_key, user_id=processor.emby_user_id
+                )
+                valid_emby_ids.update(series_ids_in_lib)
+            logger.info(f"  ➜ 成功从 Emby 获取到 {len(valid_emby_ids)} 个有效的剧集 ID 用于过滤。")
         else:
-             logger.info(f"  ➜ 将根据用户配置，扫描 {len(library_ids_to_process)} 个指定的媒体库。")
+            logger.info("  ➜ 未指定媒体库，将扫描数据库中所有的剧集。")
 
-        # 如果最终还是没有要处理的库，则任务结束
-        if not library_ids_to_process:
-            task_manager.update_status_from_thread(100, "任务完成：没有找到可供扫描的剧集媒体库。")
+        # ----------------------------------------------------------------------
+        # 步骤 2: 从本地数据库获取所有剧集
+        # ----------------------------------------------------------------------
+        task_manager.update_status_from_thread(20, "正在从本地数据库查询所有剧集...")
+        all_series_from_db = watchlist_db.get_all_series_for_watchlist_scan()
+        if not all_series_from_db:
+            task_manager.update_status_from_thread(100, "任务完成：本地数据库中没有任何剧集记录。")
             return
 
-        task_manager.update_status_from_thread(10, f"正在从 {len(library_ids_to_process)} 个选定的媒体库并发获取剧集...")
-        all_series = []
+        # ----------------------------------------------------------------------
+        # 步骤 3: 根据媒体库ID进行筛选
+        # ----------------------------------------------------------------------
+        task_manager.update_status_from_thread(40, f"正在从 {len(all_series_from_db)} 条记录中筛选...")
+        series_to_process = []
+        if valid_emby_ids is not None:
+            for series in all_series_from_db:
+                emby_ids_in_db = series.get('emby_item_ids_json', [])
+                if isinstance(emby_ids_in_db, list) and any(eid in valid_emby_ids for eid in emby_ids_in_db):
+                    series_to_process.append(series)
+        else:
+            # 如果不过滤，则处理所有从数据库查出来的剧集
+            series_to_process = all_series_from_db
         
-        def fetch_series_from_library(library_id: str) -> List[Dict[str, Any]]:
-            """线程工作函数：从单个媒体库获取剧集"""
-            try:
-                # ★★★ 关键点：这里的 library_ids 参数现在接收的是精确的用户选择 ★★★
-                items = emby.get_emby_library_items(
-                    base_url=emby_url, api_key=emby_api_key, user_id=emby_user_id,
-                    library_ids=[library_id], media_type_filter="Series"
-                )
-                return items if items is not None else []
-            except Exception as e:
-                logger.error(f"从媒体库 {library_id} 获取数据时出错: {e}")
-                return []
-
-        with concurrent.futures.ThreadPoolExecutor(max_workers=5) as executor:
-            future_to_library = {executor.submit(fetch_series_from_library, lib_id): lib_id for lib_id in library_ids_to_process}
-            for future in concurrent.futures.as_completed(future_to_library):
-                try:
-                    result = future.result()
-                    all_series.extend(result)
-                except Exception as exc:
-                    library_id = future_to_library[future]
-                    logger.error(f"媒体库 {library_id} 的任务在执行中产生异常: {exc}")
-
-        if not all_series:
-            task_manager.update_status_from_thread(100, "任务完成：在所选媒体库中未发现任何剧集。")
+        total_to_add = len(series_to_process)
+        if not series_to_process:
+            task_manager.update_status_from_thread(100, "任务完成：筛选后没有需要标记为“追剧中”的剧集。")
             return
+            
+        logger.info(f"  ➜ 筛选完成，共 {total_to_add} 部剧集将被标记为“追剧中”。")
 
-        total = len(all_series)
-        task_manager.update_status_from_thread(30, f"共找到 {total} 部剧集，正在筛选...")
+        # ----------------------------------------------------------------------
+        # 步骤 4: 准备数据并批量写入数据库
+        # ----------------------------------------------------------------------
+        task_manager.update_status_from_thread(60, f"准备将 {total_to_add} 部剧集批量更新为“追剧中”...")
         
-        series_to_upsert = []
-        for series in all_series:
-            tmdb_id = series.get("ProviderIds", {}).get("Tmdb")
-            item_name = series.get("Name")
-            item_id = series.get("Id")  
-            if tmdb_id and item_name and item_id:
-                series_to_upsert.append(
-                    (tmdb_id, "Series", item_name, 'Watching', json.dumps([item_id]))
-                )
+        # 我们只需要 tmdb_id 列表来进行更新
+        tmdb_ids_to_update = [s['tmdb_id'] for s in series_to_process]
 
-        if not series_to_upsert:
-            task_manager.update_status_from_thread(100, "任务完成：找到的剧集均缺少TMDb ID，无法添加。")
-            return
+        try:
+            watchlist_db.batch_set_series_watching(tmdb_ids_to_update)
+        except Exception as e_db:
+            raise RuntimeError(f"数据库批量更新状态时发生错误: {e_db}")
 
-        total_to_add = len(series_to_upsert)
-        task_manager.update_status_from_thread(60, f"筛选出 {total_to_add} 部有效剧集，准备批量写入数据库...")
-        
-        with connection.get_db_connection() as conn:
-            cursor = conn.cursor()
-            try:
-                sql_upsert = """
-                    INSERT INTO media_metadata (tmdb_id, item_type, title, watching_status, emby_item_ids_json)
-                    VALUES %s
-                    ON CONFLICT (tmdb_id, item_type) DO UPDATE SET
-                        watching_status = EXCLUDED.watching_status,
-                        paused_until = NULL,
-                        force_ended = FALSE,
-                        emby_item_ids_json = (
-                            SELECT jsonb_agg(DISTINCT elem)
-                            FROM (
-                                SELECT jsonb_array_elements_text(media_metadata.emby_item_ids_json) AS elem
-                                UNION ALL
-                                SELECT jsonb_array_elements_text(EXCLUDED.emby_item_ids_json) AS elem
-                            ) AS combined
-                        );
-                """
-                execute_values(
-                    cursor, sql_upsert, series_to_upsert, 
-                    template=None, page_size=1000
-                )
-                conn.commit()
-            except Exception as e_db:
-                conn.rollback()
-                raise RuntimeError(f"数据库批量写入时发生错误: {e_db}")
-
-        scan_complete_message = f"扫描完成！共发现 {total} 部剧集，已将 {total_to_add} 部有效剧集全部标记为“追剧中”。"
+        scan_complete_message = f"扫描完成！已将 {total_to_add} 部库内剧集全部标记为“追剧中”。"
         logger.info(scan_complete_message)
         
+        # ----------------------------------------------------------------------
+        # 步骤 5: 触发后续的追剧检查任务链 (逻辑不变)
+        # ----------------------------------------------------------------------
         if total_to_add > 0:
             logger.info("--- 任务链：即将自动触发【检查所有在追剧集】任务 ---")
             task_manager.update_status_from_thread(99, "扫描完成，正在启动追剧检查...")
-            time.sleep(2)
+            time.sleep(2) # 给前端一点反应时间
             try:
+                # ★★★ 核心修复：从 extensions 获取正确的 WatchlistProcessor 实例 ★★★
                 watchlist_proc = extensions.watchlist_processor_instance
                 if watchlist_proc:
-                    watchlist_proc.run_regular_processing_task_concurrent(
-                        progress_callback=task_manager.update_status_from_thread,
-                        item_id=None
+                    # 直接调用 task_process_watchlist，并把正确的处理器实例传给它
+                    task_process_watchlist(
+                        processor=watchlist_proc, 
+                        item_id=None, 
+                        force_full_update=False
                     )
                     final_message = "自动化流程完成：扫描与追剧检查均已结束。"
                     task_manager.update_status_from_thread(100, final_message)
                 else:
+                    # 这是一个健壮性检查，防止实例未被正确初始化
                     raise RuntimeError("WatchlistProcessor 未初始化，无法执行链式任务。")
             except Exception as e_chain:
                  logger.error(f"执行链式任务【检查所有在追剧集】时失败: {e_chain}", exc_info=True)
                  task_manager.update_status_from_thread(-1, f"链式任务失败: {e_chain}")
         else:
-            final_message = f"任务完成！共扫描到 {total} 部剧集，没有发现可新增的剧集。"
+            final_message = "任务完成！没有发现可新增或需要更新状态的剧集。"
             logger.info(final_message)
             task_manager.update_status_from_thread(100, final_message)
 
@@ -240,8 +199,9 @@ def task_add_all_series_to_watchlist(processor):
 # ★★★ 全新、独立的媒体库缺集扫描任务 ★★★
 def task_scan_library_gaps(processor):
     """
-    【V5 - 最终修复版】扫描指定的媒体库，通过即时同步全量元数据来确保数据完整性，
-    然后基于本地数据库分析所有剧集的“中间缺失”，并为真正缺失的季提交订阅请求。
+    【V8 - 最终正确版】沿用原版“先同步后分析”的可靠流程。
+    修复了分析环节，使其能够精确地找出每个季缺失的具体集数，
+    并将详细信息更新到数据库，同时为不完整的季提交订阅。
     """
     task_name = "媒体库缺集扫描"
     logger.info(f"--- 开始执行 '{task_name}' 任务 ---")
@@ -250,7 +210,7 @@ def task_scan_library_gaps(processor):
         task_manager.update_status_from_thread(progress, message)
 
     try:
-        # 步骤 1: 获取媒体库中的所有剧集 (此部分已正确)
+        # 步骤 1: 获取媒体库中的所有剧集 (逻辑不变)
         progress_updater(5, "正在从 Emby 获取媒体库中的剧集列表...")
         all_series_in_libs = processor._get_series_to_process(
             where_clause="", 
@@ -261,40 +221,29 @@ def task_scan_library_gaps(processor):
             return
         
         all_series_tmdb_ids = [s['tmdb_id'] for s in all_series_in_libs if s.get('tmdb_id')]
-        
-        # 增加一个健壮性检查：如果筛选后没有任何有效的 TMDb ID，也直接退出
         if not all_series_tmdb_ids:
             progress_updater(100, "任务完成：媒体库中的剧集均缺少有效的 TMDb ID。")
             return
 
         total_series = len(all_series_in_libs)
-        logger.info(f"  ➜ 发现 {total_series} 部剧集，即将开始同步子项目元数据...")
+        logger.info(f"  ➜ 发现 {total_series} 部剧集，即将开始同步全量元数据...")
         progress_updater(10, f"发现 {total_series} 部剧集，准备同步元数据...")
 
-        # 步骤 2: 高性能元数据同步 
-        # a. 并发从 TMDb 拉取所有剧集的完整子项信息
+        # 步骤 2: 高性能元数据同步 (保留原版可靠逻辑)
         tmdb_full_data = tmdb.batch_get_full_series_details_tmdb(
             all_series_tmdb_ids, 
             processor.tmdb_api_key,
             progress_callback=progress_updater  
         )
-
-        # b. 从本地数据库批量获取所有已存在的子项ID
-        progress_updater(40, "正在从本地数据库查询现有记录...")
         existing_children_ids = media_db.get_all_children_for_series_batch(all_series_tmdb_ids)
-
-        # c. 计算差异：找出 TMDb 上有但本地数据库没有的记录
-        progress_updater(45, "正在对比数据，计算缺失的元数据记录...")
         missing_records_to_insert = []
         for series_id, children in tmdb_full_data.items():
             for child_item in children:
                 child_tmdb_id = str(child_item.get("id"))
                 if child_tmdb_id not in existing_children_ids:
-                    # 这是一个新记录，需要添加到待插入列表
-                    child_item['parent_series_tmdb_id'] = series_id # 补充父ID
+                    child_item['parent_series_tmdb_id'] = series_id
                     missing_records_to_insert.append(child_item)
         
-        # d. 将所有缺失的记录一次性批量写入数据库
         if missing_records_to_insert:
             progress_updater(50, f"发现 {len(missing_records_to_insert)} 条缺失记录，正在批量写入数据库...")
             media_db.batch_insert_media_metadata(missing_records_to_insert)
@@ -305,64 +254,61 @@ def task_scan_library_gaps(processor):
             progress_updater(100, "任务已中止。")
             return
 
-        # 步骤 3: 执行数据库分析 (现在数据库中保证有完整且正确的数据了)
-        logger.info("  ➜ 所有剧集元数据同步完成，开始进行缺集分析...")
+        # 步骤 3: 【核心修复】执行全新的、详细的数据库分析
+        logger.info("  ➜ 所有剧集元数据同步完成，开始进行详细的缺集分析...")
         progress_updater(50, "元数据同步完成，开始数据库分析...")
         
-        all_series_tmdb_ids = [s['tmdb_id'] for s in all_series_in_libs if s.get('tmdb_id')]
-        seasons_with_gaps = watchlist_db.find_season_tmdb_ids_with_gaps(all_series_tmdb_ids)
+        seasons_with_gaps = watchlist_db.find_detailed_missing_episodes(all_series_tmdb_ids)
 
-        # --------------------------------------------------------------------------
-        # 步骤 4: 整合缺集数据并批量更新到数据库，供前端显示
-        # --------------------------------------------------------------------------
-        logger.info("  ➜ 正在整合缺集分析结果，准备更新前端显示数据...")
+        # 步骤 4: 【核心修复】整合详细的缺集数据并更新到数据库
+        logger.info("  ➜ 正在整合详细的缺集分析结果，准备更新前端显示数据...")
         progress_updater(55, "正在整合分析结果...")
 
-        # a. 将查询结果从列表转换为更易于处理的字典
         gaps_by_series = {}
         for gap_info in seasons_with_gaps:
             series_id = gap_info['parent_series_tmdb_id']
             season_num = gap_info['season_number']
-            gaps_by_series.setdefault(series_id, set()).add(season_num)
-
-        # b. 构建最终的更新数据，包含所有被扫描的剧集
-        final_gaps_data_to_update = {}
-        for series_id in all_series_tmdb_ids:
-            # 如果剧集在 gaps_by_series 中，说明它有缺集，我们用季号列表更新
-            # 否则，说明它没有缺集，我们用一个空列表来清空旧的标记
-            found_gaps = sorted(list(gaps_by_series.get(series_id, set())))
-            final_gaps_data_to_update[series_id] = found_gaps
+            missing_eps = sorted(gap_info.get('missing_episodes', []))
+            # 构建更详细的JSON结构
+            gaps_by_series.setdefault(series_id, []).append({
+                "season": season_num,
+                "missing": missing_eps
+            })
         
-        # c. 调用新的数据库函数进行一次性批量更新
+        final_gaps_data_to_update = {
+            series_id: gaps_by_series.get(series_id, [])
+            for series_id in all_series_tmdb_ids
+        }
+        
         if final_gaps_data_to_update:
-            try:
-                watchlist_db.batch_update_gaps_info(final_gaps_data_to_update)
-                logger.info("  ➜ 成功将最新的缺集信息同步到所有被扫描的剧集中。")
-            except Exception as e_update_gaps:
-                logger.error(f"  ➜ 更新缺集显示信息时发生错误: {e_update_gaps}", exc_info=True)
+            watchlist_db.batch_update_gaps_info(final_gaps_data_to_update)
+            logger.info("  ➜ 成功将最新的详细缺集信息同步到所有被扫描的剧集中。")
         
         progress_updater(60, "缺集信息已更新，准备提交订阅...")
         
         if not seasons_with_gaps:
-            progress_updater(100, "分析完成：媒体库中的所有剧集均无“中间缺失”的季。")
+            progress_updater(100, "分析完成：媒体库中所有剧集的季都是完整的。")
             return
 
-        # ★★★ 5. 一次性批量提交所有订阅请求 ★★★
+        # 步骤 5: 为所有不完整的季，一次性批量提交订阅请求
         total_seasons_to_sub = len(seasons_with_gaps)
-        logger.info(f"  ➜ 分析完成！共发现 {total_seasons_to_sub} 个存在中间缺失的季需要订阅。")
-        progress_updater(60, f"发现 {total_seasons_to_sub} 个缺集的季，准备提交订阅...")
+        logger.info(f"  ➜ 分析完成！共发现 {total_seasons_to_sub} 个不完整的季需要重新订阅。")
         
         series_info_map = {s['tmdb_id']: s for s in all_series_in_libs if s.get('tmdb_id')}
         media_info_batch_for_sub = []
         for i, gap_info in enumerate(seasons_with_gaps):
             series_tmdb_id = gap_info['parent_series_tmdb_id']
             season_num = gap_info['season_number']
-            season_tmdb_id = gap_info['tmdb_id']
+            season_tmdb_id = gap_info['season_tmdb_id']
+            
+            if not season_tmdb_id: continue # 如果季ID没找到，无法订阅
+
             series_info = series_info_map.get(series_tmdb_id)
-            if not series_info: continue
-            series_title = series_info.get('item_name', '未知剧集')
-            progress = 50 + int(((i + 1) / total_seasons_to_sub) * 50)
+            series_title = series_info.get('item_name', '未知剧集') if series_info else '未知剧集'
+            
+            progress = 60 + int(((i + 1) / total_seasons_to_sub) * 40)
             progress_updater(progress, f"({i+1}/{total_seasons_to_sub}) 准备订阅: {series_title} 第 {season_num} 季")
+            
             media_info_batch_for_sub.append({
                 'tmdb_id': season_tmdb_id,
                 'title': f"{series_title} - 第 {season_num} 季",
@@ -371,16 +317,15 @@ def task_scan_library_gaps(processor):
             })
 
         if media_info_batch_for_sub:
-            logger.info(f"  ➜ 准备批量提交 {len(media_info_batch_for_sub)} 个季的订阅请求...")
             request_db.set_media_status_wanted(
                 tmdb_ids=[info['tmdb_id'] for info in media_info_batch_for_sub],
                 item_type='Season',
-                source={"type": "gap_scan", "reason": "library_integrity_check"},
+                source={"type": "gap_scan", "reason": "incomplete_season"},
                 media_info_list=media_info_batch_for_sub
             )
 
-        final_message = f"任务完成！共为 {len(media_info_batch_for_sub)} 个缺集的季提交了订阅请求。"
-        progress_updater(60, final_message)
+        final_message = f"任务完成！共为 {len(media_info_batch_for_sub)} 个不完整的季提交了订阅请求。"
+        progress_updater(100, final_message)
 
     except Exception as e:
         logger.error(f"执行 '{task_name}' 时发生严重错误: {e}", exc_info=True)

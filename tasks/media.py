@@ -399,31 +399,71 @@ def task_populate_metadata_cache(processor, batch_size: int = 50, force_full_upd
 
                 metadata_batch.append(top_level_record)
 
-                # --- 步骤 D: 处理剧集子项目 (这部分是您原来的完整逻辑，现在被安全地保留了) ---
+                # --- 步骤 D: 处理剧集子项目 (已集成子项离线标记逻辑) ---
                 if item.get("Type") == "Series":
                     series_id = item.get('Id')
                     series_tmdb_id = tmdb_id
                     
+                    # 首先，获取当前 Emby 中实际存在的所有子项
                     children = emby.get_series_children(
                         series_id=series_id, base_url=processor.emby_url, api_key=processor.emby_api_key,
                         user_id=processor.emby_user_id, include_item_types="Season,Episode",
                         fields="Id,Type,ParentIndexNumber,IndexNumber,ProviderIds,Name,PremiereDate,Overview"
                     )
+
+                    # ★★★★★★★★★★★★★★★ 新增的子项离线标记逻辑开始 ★★★★★★★★★★★★★★★
+                    # 1. 从 Emby 返回的 children 中提取当前所有子项的 Emby ID
+                    current_emby_child_ids = {child.get('Id') for child in children} if children else set()
+
+                    # 2. 从数据库查询该剧集下，目前被标记为 "in_library" 的所有子项 Emby ID
+                    with connection.get_db_connection() as conn:
+                        with conn.cursor() as cursor:
+                            cursor.execute("""
+                                SELECT emby_item_ids_json FROM media_metadata
+                                WHERE parent_series_tmdb_id = %s AND in_library = TRUE AND item_type IN ('Season', 'Episode')
+                            """, (series_tmdb_id,))
+                            
+                            db_child_ids = set()
+                            for row in cursor.fetchall():
+                                if row['emby_item_ids_json']:
+                                    # emby_item_ids_json 是一个列表，比如 ["12345"]，我们用 update 添加所有元素
+                                    db_child_ids.update(row['emby_item_ids_json'])
+
+                            # 3. 计算差异，找出已从 Emby 删除的子项
+                            deleted_child_emby_ids = list(db_child_ids - current_emby_child_ids)
+
+                            # 4. 如果有被删除的子项，批量更新数据库
+                            if deleted_child_emby_ids:
+                                logger.info(f"  ➜ 发现剧集 '{item.get('Name')}' 下有 {len(deleted_child_emby_ids)} 个子项被删除，正在标记为离线...")
+                                # 使用 emby_item_ids_json->>0 = ANY(%s) 进行高效批量更新
+                                cursor.execute("""
+                                    UPDATE media_metadata
+                                    SET in_library = FALSE, emby_item_ids_json = '[]'::jsonb
+                                    WHERE parent_series_tmdb_id = %s AND emby_item_ids_json->>0 = ANY(%s)
+                                """, (series_tmdb_id, deleted_child_emby_ids))
+                                conn.commit()
+                    # ★★★★★★★★★★★★★★★ 新增的子项离线标记逻辑结束 ★★★★★★★★★★★★★★★
+
+                    # 继续后续的子项元数据同步逻辑...
                     if not children:
-                        logger.warning(f"  ➜ 无法获取剧集 '{item.get('Name')}' 的子项目，跳过层级同步。")
+                        logger.warning(f"  ➜ 剧集 '{item.get('Name')}' 当前没有任何子项目，跳过新增/更新同步。")
                         continue
 
+                    # 后续的 TMDb 匹配和元数据构建逻辑保持不变
                     tmdb_series_details = tmdb.get_tv_details(series_tmdb_id, processor.tmdb_api_key)
                     
                     tmdb_children_map = {}
                     if tmdb_series_details and 'seasons' in tmdb_series_details:
                         for season_info in tmdb_series_details['seasons']:
                             s_num = season_info.get('season_number')
+                            if s_num is None: continue
                             tmdb_children_map[f"S{s_num}"] = season_info
+                            # 为了效率，这里可以优化为只在需要时获取，但暂时保持原逻辑
                             tmdb_season_details = tmdb.get_tv_season_details(series_tmdb_id, s_num, processor.tmdb_api_key)
                             if tmdb_season_details and 'episodes' in tmdb_season_details:
                                 for episode_info in tmdb_season_details['episodes']:
                                     e_num = episode_info.get('episode_number')
+                                    if e_num is None: continue
                                     tmdb_children_map[f"S{s_num}E{e_num}"] = episode_info
 
                     for child in children:
@@ -438,10 +478,12 @@ def task_populate_metadata_cache(processor, batch_size: int = 50, force_full_upd
                         s_num = child.get("ParentIndexNumber") if child_type == "Episode" else child.get("IndexNumber")
                         e_num = child.get("IndexNumber") if child_type == "Episode" else None
                         
+                        if s_num is None: continue # 跳过无效的子项
+
                         lookup_key = f"S{s_num}E{e_num}" if e_num is not None else f"S{s_num}"
                         tmdb_child_info = tmdb_children_map.get(lookup_key)
 
-                        if tmdb_child_info:
+                        if tmdb_child_info and tmdb_child_info.get('id'):
                             child_record.update({ "tmdb_id": str(tmdb_child_info.get('id')), "title": tmdb_child_info.get('name'), "release_date": tmdb_child_info.get('air_date'), "overview": tmdb_child_info.get('overview'), "poster_path": tmdb_child_info.get('poster_path') })
                         else:
                             child_record.update({ "tmdb_id": f"{series_tmdb_id}-{lookup_key}", "title": child.get('Name'), "overview": child.get('Overview') })
@@ -474,16 +516,17 @@ def task_populate_metadata_cache(processor, batch_size: int = 50, force_full_upd
                             columns_to_update = [c for c in columns if c not in ('tmdb_id', 'item_type')]
 
                             for col in columns_to_update:
-                                if col == 'subscription_sources_json':
-                                    # ★ 关键保护：如果遇到这个字段，直接跳过，不生成更新语句
+                                # 跳过不能或不应在 UPDATE 中覆盖的字段
+                                if col in ['subscription_sources_json']:
                                     continue
-                                elif col == 'emby_item_ids_json':
-                                    # 对于 ItemID 列表，执行合并去重，而不是简单覆盖
+                                
+                                if col == 'emby_item_ids_json':
+                                    # ItemID 列表执行合并去重
                                     update_clauses.append("""
                                         emby_item_ids_json = (
                                             SELECT jsonb_agg(DISTINCT elem)
                                             FROM (
-                                                SELECT jsonb_array_elements_text(media_metadata.emby_item_ids_json) AS elem
+                                                SELECT jsonb_array_elements_text(COALESCE(media_metadata.emby_item_ids_json, '[]'::jsonb)) AS elem
                                                 UNION ALL
                                                 SELECT jsonb_array_elements_text(EXCLUDED.emby_item_ids_json) AS elem
                                             ) AS combined
@@ -493,8 +536,13 @@ def task_populate_metadata_cache(processor, batch_size: int = 50, force_full_upd
                                     # 其他所有字段，正常覆盖更新
                                     update_clauses.append(f"{col} = EXCLUDED.{col}")
 
-                            # 无论如何，都强制将 ignore_reason 设置为 NULL
+                            # 关键修复：在 UPDATE 时，无条件地将 in_library 设置为 TRUE。
+                            # 这确保了从“离线”状态恢复的项目能被正确标记为“在库”。
+                            update_clauses.append("in_library = TRUE")
+                            
+                            # 同时，重置忽略原因
                             update_clauses.append("ignore_reason = NULL")
+                            
                             update_str = ', '.join(update_clauses)
 
                             sql = f"""

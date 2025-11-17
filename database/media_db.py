@@ -564,3 +564,64 @@ def batch_insert_media_metadata(records: List[Dict[str, Any]]):
         logger.error(f"  ➜ [元数据补全] 批量插入缺失的子项记录时发生错误: {e}", exc_info=True)
         raise
 
+def get_series_local_children_info(parent_tmdb_id: str) -> dict:
+    """
+    【新】从本地数据库获取一个剧集在媒体库中的结构信息。
+    返回与旧版 emby.get_series_children 兼容的格式。
+    格式: { season_num: {ep_num1, ep_num2, ...} }
+    """
+    local_structure = {}
+    try:
+        with get_db_connection() as conn:
+            cursor = conn.cursor()
+            sql = """
+                SELECT season_number, episode_number
+                FROM media_metadata
+                WHERE parent_series_tmdb_id = %s
+                  AND item_type = 'Episode'
+                  AND in_library = TRUE
+            """
+            cursor.execute(sql, (parent_tmdb_id,))
+            for row in cursor.fetchall():
+                s_num, e_num = row['season_number'], row['episode_number']
+                if s_num is not None and e_num is not None:
+                    local_structure.setdefault(s_num, set()).add(e_num)
+        return local_structure
+    except Exception as e:
+        logger.error(f"从本地数据库获取剧集 {parent_tmdb_id} 的子项目结构时失败: {e}")
+        return {}
+
+def get_series_local_episodes_overview(parent_tmdb_id: str) -> list:
+    """
+    【新】从本地数据库获取一个剧集所有分集的元数据，用于检查简介。
+    返回一个字典列表，每个字典包含分集的基本信息。
+    """
+    try:
+        with get_db_connection() as conn:
+            cursor = conn.cursor()
+            sql = """
+                SELECT emby_item_ids_json->>0 AS emby_item_id, season_number, episode_number, overview
+                FROM media_metadata
+                WHERE parent_series_tmdb_id = %s
+                  AND item_type = 'Episode'
+                  AND in_library = TRUE
+            """
+            cursor.execute(sql, (parent_tmdb_id,))
+            return [dict(row) for row in cursor.fetchall()]
+    except Exception as e:
+        logger.error(f"从本地数据库获取剧集 {parent_tmdb_id} 的分集元数据时失败: {e}")
+        return []
+
+def update_episode_overview(emby_item_id: str, overview: str):
+    """【新】当成功注入简介到Emby后，同步更新本地数据库的记录。"""
+    if not emby_item_id or not overview:
+        return
+    try:
+        with get_db_connection() as conn:
+            cursor = conn.cursor()
+            # 使用 JSONB 包含操作符 @> 来查找对应的记录
+            sql = "UPDATE media_metadata SET overview = %s WHERE emby_item_ids_json @> %s::jsonb AND item_type = 'Episode'"
+            cursor.execute(sql, (overview, json.dumps([emby_item_id])))
+            conn.commit()
+    except Exception as e:
+        logger.error(f"更新分集 {emby_item_id} 的本地简介缓存时失败: {e}")

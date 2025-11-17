@@ -304,49 +304,52 @@ def batch_remove_from_watchlist(tmdb_ids: List[str]) -> int:
         logger.error(f"DB (新架构): 批量移除追剧项目时发生错误: {e}", exc_info=True)
         raise
 
-def find_season_tmdb_ids_with_gaps(series_tmdb_ids: List[str]) -> List[Dict[str, Any]]:
+def find_detailed_missing_episodes(series_tmdb_ids: List[str]) -> List[Dict[str, Any]]:
     """
-    【V2 - 优化版】在指定的剧集范围内，查找所有存在“中间缺失”的季。
-    直接返回这些季的 TMDB ID, 父剧 ID 和季号。
+    【全新正确版】在已同步全量元数据的基础上，精确分析每个剧集的每个季具体缺失了哪些集。
+    - 只返回那些真正存在“中间缺失”的季的详细信息。
+    - “中间缺失”定义为：该季至少有一集在库，但又不是全部在库。
     """
     if not series_tmdb_ids:
         return []
+
+    logger.info("  ➜ 开始在本地数据库中执行详细的缺集分析...")
     
-    sql = """
-        SELECT DISTINCT 
-            e1.parent_series_tmdb_id, 
-            e1.season_number,
-            -- 找到季本身的 TMDB ID
-            (SELECT s.tmdb_id 
-             FROM media_metadata s 
-             WHERE s.item_type = 'Season' 
-               AND s.parent_series_tmdb_id = e1.parent_series_tmdb_id 
-               AND s.season_number = e1.season_number
-             LIMIT 1) as tmdb_id
-        FROM 
-            media_metadata e1
-        WHERE 
-            e1.item_type = 'Episode'
-            AND e1.parent_series_tmdb_id IN %s
-            AND e1.in_library = FALSE
-            AND EXISTS (
-                SELECT 1
-                FROM media_metadata e2
-                WHERE e2.parent_series_tmdb_id = e1.parent_series_tmdb_id
-                  AND e2.season_number = e1.season_number
-                  AND e2.item_type = 'Episode'
-                  AND e2.in_library = TRUE
-                  AND e2.episode_number > e1.episode_number
-            );
-    """
     try:
         with get_db_connection() as conn:
             cursor = conn.cursor()
-            cursor.execute(sql, (tuple(series_tmdb_ids),))
-            # 过滤掉那些由于数据不完整而未能找到季TMDB ID的记录
-            return [dict(row) for row in cursor.fetchall() if row.get('tmdb_id')]
+            # 这个查询是本次修复的核心：
+            # 1. 按剧集和季分组。
+            # 2. 在每个组内，使用 FILTER 有条件地聚合出“缺失的集号列表”。
+            # 3. 使用 HAVING 子句筛选出那些“部分拥有”的季（即存在中间缺失）。
+            # 4. 最后关联查询出季本身的 TMDB ID 用于订阅。
+            sql = """
+                SELECT
+                    m.parent_series_tmdb_id,
+                    m.season_number,
+                    array_agg(m.episode_number) FILTER (WHERE m.in_library = FALSE) AS missing_episodes,
+                    (SELECT tmdb_id FROM media_metadata m2
+                     WHERE m2.parent_series_tmdb_id = m.parent_series_tmdb_id
+                       AND m2.season_number = m.season_number
+                       AND m2.item_type = 'Season' LIMIT 1) AS season_tmdb_id
+                FROM media_metadata m
+                WHERE
+                    m.item_type = 'Episode'
+                    AND m.parent_series_tmdb_id = ANY(%s)
+                GROUP BY m.parent_series_tmdb_id, m.season_number
+                HAVING
+                    -- 关键筛选条件：必须是部分拥有的季
+                    bool_or(m.in_library = TRUE) AND bool_or(m.in_library = FALSE);
+            """
+            cursor.execute(sql, (series_tmdb_ids,))
+            
+            seasons_with_gaps = [dict(row) for row in cursor.fetchall()]
+            
+            logger.info(f"  ➜ 详细分析完成，共发现 {len(seasons_with_gaps)} 个季存在分集缺失。")
+            return seasons_with_gaps
+
     except Exception as e:
-        logger.error(f"DB: 查找缺集的季时发生错误: {e}", exc_info=True)
+        logger.error(f"在详细分析缺失分集时发生数据库错误: {e}", exc_info=True)
         return []
     
 def batch_update_gaps_info(gaps_data: Dict[str, List[int]]):
@@ -393,4 +396,50 @@ def batch_update_gaps_info(gaps_data: Dict[str, List[int]]):
             logger.info(f"DB: 成功批量更新了 {len(gaps_data)} 个剧集的中间缺集信息。")
     except Exception as e:
         logger.error(f"DB: 批量更新中间缺集信息时发生错误: {e}", exc_info=True)
+        raise
+
+def get_all_series_for_watchlist_scan() -> List[Dict[str, Any]]:
+    """
+    【新】为“一键扫描”任务从数据库获取所有剧集的基本信息。
+    """
+    try:
+        with get_db_connection() as conn:
+            cursor = conn.cursor()
+            sql = """
+                SELECT tmdb_id, title, emby_item_ids_json
+                FROM media_metadata
+                WHERE item_type = 'Series'
+            """
+            cursor.execute(sql)
+            return [dict(row) for row in cursor.fetchall()]
+    except Exception as e:
+        logger.error(f"为一键扫描任务获取所有剧集时出错: {e}", exc_info=True)
+        return []
+
+def batch_set_series_watching(tmdb_ids: List[str]):
+    """
+    【新】批量将一组指定的剧集状态更新为“追剧中”。
+    同时会重置暂停日期和强制完结标记。
+    """
+    if not tmdb_ids:
+        return
+    try:
+        with get_db_connection() as conn:
+            cursor = conn.cursor()
+            # 使用 ANY(%s) 语法可以高效地处理列表
+            sql = """
+                UPDATE media_metadata
+                SET
+                    watching_status = 'Watching',
+                    paused_until = NULL,
+                    force_ended = FALSE
+                WHERE
+                    tmdb_id = ANY(%s) AND item_type = 'Series'
+            """
+            cursor.execute(sql, (tmdb_ids,))
+            conn.commit()
+            logger.info(f"成功将 {cursor.rowcount} 部剧集的状态批量更新为“追剧中”。")
+    except Exception as e:
+        conn.rollback()
+        logger.error(f"批量更新剧集为“追剧中”时出错: {e}", exc_info=True)
         raise

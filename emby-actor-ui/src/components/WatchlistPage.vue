@@ -1,4 +1,4 @@
-<!-- src/components/WatchlistPage.vue (排序筛选 + 无限滚动 + Shift 多选最终版) -->
+<!-- src/components/WatchlistPage.vue -->
 <template>
   <n-layout content-style="padding: 24px;">
     <div class="watchlist-page">
@@ -18,7 +18,6 @@
         </n-alert>
         <template #extra>
           <n-space>
-            <!-- 【新增】批量操作按钮，仅在有项目被选中时显示 -->
             <n-dropdown
               v-if="selectedItems.length > 0"
               trigger="click"
@@ -59,7 +58,6 @@
       </n-page-header>
       <n-divider />
 
-      <!-- ★★★ 新增：排序和筛选控件 ★★★ -->
       <n-space :wrap="true" :size="[20, 12]" style="margin-bottom: 20px;">
         <n-input v-model:value="searchQuery" placeholder="按名称搜索..." clearable style="min-width: 200px;" />
         
@@ -106,7 +104,6 @@
       <div v-else-if="filteredWatchlist.length > 0">
         <n-grid cols="1 s:1 m:2 l:3 xl:4" :x-gap="20" :y-gap="20" responsive="screen">
           <n-gi v-for="(item, i) in renderedWatchlist" :key="item.tmdb_id">
-            <!-- 【布局优化】减小海报和内容之间的 gap -->
             <n-card class="dashboard-card series-card" :bordered="false">
               <n-checkbox
                 :checked="selectedItems.includes(item.tmdb_id)"
@@ -128,11 +125,6 @@
                 </div>
                 <div class="card-status-area">
                   <n-space vertical size="small">
-                    <!-- 
-                      【布局修复】
-                      1. 用一个 n-space 包裹状态按钮和 TMDB 状态，确保它们总是在一起。
-                      2. 将“缺失”标签单独放在一行，确保布局稳定。
-                    -->
                     <n-space align="center" :wrap="false">
                       <n-button round size="tiny" :type="statusInfo(item.status).type" @click="() => updateStatus(item.tmdb_id, statusInfo(item.status).next)" :title="`点击切换到 '${statusInfo(item.status).nextText}'`">
                         <template #icon><n-icon :component="statusInfo(item.status).icon" /></template>
@@ -151,7 +143,6 @@
                   </n-space>
                 </div>
                 <div class="card-actions">
-                  <!-- 【最终优化】将“查看缺失”按钮改为带 Tooltip 的图标按钮 -->
                   <n-tooltip>
                     <template #trigger>
                       <n-button
@@ -205,16 +196,18 @@
               <n-list-item v-for="season in missingData.missing_seasons" :key="season.season_number">
                 <template #prefix><n-tag type="warning">S{{ season.season_number }}</n-tag></template>
                 <n-ellipsis>{{ season.name }} ({{ season.episode_count }}集, {{ formatAirDate(season.air_date) }})</n-ellipsis>
-                <!-- ▼▼▼ 移除 suffix 部分的订阅按钮 ▼▼▼ -->
               </n-list-item>
             </n-list>
           </n-tab-pane>
+          <!-- ★★★ 核心修复：改造“缺集的季”标签页，使其能显示详细信息 ★★★ -->
           <n-tab-pane name="gaps" :tab="`缺集的季 (${missingData.seasons_with_gaps.length})`" :disabled="missingData.seasons_with_gaps.length === 0">
             <n-list bordered>
-              <n-list-item v-for="seasonNum in missingData.seasons_with_gaps" :key="seasonNum">
-                <template #prefix><n-tag type="error">S{{ seasonNum }}</n-tag></template>
-                <n-ellipsis>第 {{ seasonNum }} 季存在中间缺集</n-ellipsis>
-                <!-- ▼▼▼ 移除 suffix 部分的订阅按钮 ▼▼▼ -->
+              <!-- 循环遍历 seasons_with_gaps 数组中的每个对象 -->
+              <n-list-item v-for="gap in missingData.seasons_with_gaps" :key="gap.season">
+                <n-space vertical>
+                  <div><n-tag type="error">第 {{ gap.season }} 季</n-tag> 存在分集缺失</div>
+                  <n-text :depth="3">具体缺失的集号: {{ gap.missing.join(', ') }}</n-text>
+                </n-space>
               </n-list-item>
             </n-list>
           </n-tab-pane>
@@ -239,9 +232,7 @@ import { SyncOutline, TvOutline as TvIcon, TrashOutline as TrashIcon, EyeOutline
 import { format, parseISO } from 'date-fns';
 import { useConfig } from '../composables/useConfig.js';
 
-// =======================================================================
-// 图标定义 
-// =======================================================================
+// ... (图标定义部分保持不变) ...
 const EmbyIcon = () => h('svg', { xmlns: "http://www.w3.org/2000/svg", viewBox: "0 0 48 48", width: "18", height: "18" }, [
   h('path', { d: "M24,4.2c-11,0-19.8,8.9-19.8,19.8S13,43.8,24,43.8s19.8-8.9,19.8-19.8S35,4.2,24,4.2z M24,39.8c-8.7,0-15.8-7.1-15.8-15.8S15.3,8.2,24,8.2s15.8,7.1,15.8,15.8S32.7,39.8,24,39.8z", fill: "currentColor" }),
   h('polygon', { points: "22.2,16.4 22.2,22.2 16.4,22.2 16.4,25.8 22.2,25.8 22.2,31.6 25.8,31.6 25.8,25.8 31.6,31.6 31.6,22.2 25.8,22.2 25.8,16.4 ", fill: "currentColor" })
@@ -250,9 +241,6 @@ const TMDbIcon = () => h('svg', { xmlns: "http://www.w3.org/2000/svg", viewBox: 
   h('path', { d: "M256 512A256 256 0 1 0 256 0a256 256 0 1 0 0 512zM133.2 176.6a22.4 22.4 0 1 1 0-44.8 22.4 22.4 0 1 1 0 44.8zm63.3-22.4a22.4 22.4 0 1 1 44.8 0 22.4 22.4 0 1 1 -44.8 0zm74.8 108.2c-27.5-3.3-50.2-26-53.5-53.5a8 8 0 0 1 16-.6c2.3 19.3 18.8 34 38.1 31.7a8 8 0 0 1 7.4 8c-2.3.3-4.5.4-6.8.4zm-74.8-108.2a22.4 22.4 0 1 1 44.8 0 22.4 22.4 0 1 1 -44.8 0zm149.7 22.4a22.4 22.4 0 1 1 0-44.8 22.4 22.4 0 1 1 0 44.8zM133.2 262.6a22.4 22.4 0 1 1 0-44.8 22.4 22.4 0 1 1 0 44.8zm63.3-22.4a22.4 22.4 0 1 1 44.8 0 22.4 22.4 0 1 1 -44.8 0zm74.8 108.2c-27.5-3.3-50.2-26-53.5-53.5a8 8 0 0 1 16-.6c2.3 19.3 18.8 34 38.1 31.7a8 8 0 0 1 7.4 8c-2.3.3-4.5.4-6.8.4zm-74.8-108.2a22.4 22.4 0 1 1 44.8 0 22.4 22.4 0 1 1 -44.8 0zm149.7 22.4a22.4 22.4 0 1 1 0-44.8 22.4 22.4 0 1 1 0 44.8z", fill: "#01b4e4" })
 ]);
 
-// =======================================================================
-// 基础状态和 Refs
-// =======================================================================
 const { configModel } = useConfig();
 const message = useMessage();
 const dialog = useDialog();
@@ -277,7 +265,6 @@ let observer = null;
 const selectedItems = ref([]);
 const lastSelectedIndex = ref(null);
 
-// 排序和筛选的状态
 const searchQuery = ref('');
 const filterStatus = ref('all');
 const filterMissing = ref('all');
@@ -285,9 +272,7 @@ const filterGaps = ref('all');
 const sortKey = ref('last_checked_at');
 const sortOrder = ref('desc');
 
-// =======================================================================
-// ★★★ 所有辅助函数定义前置 ★★★
-// =======================================================================
+// ★★★ 核心修复 1/3：更新辅助函数以适应新数据结构 ★★★
 const hasMissingSeasons = (item) => {
   const data = item.missing_info;
   return data?.missing_seasons?.length > 0;
@@ -295,7 +280,8 @@ const hasMissingSeasons = (item) => {
 
 const hasGaps = (item) => {
   const data = item.missing_info;
-  return data?.seasons_with_gaps?.length > 0;
+  // 新的判断逻辑：检查 seasons_with_gaps 数组是否存在且不为空
+  return Array.isArray(data?.seasons_with_gaps) && data.seasons_with_gaps.length > 0;
 };
 
 const hasMissing = (item) => {
@@ -305,17 +291,18 @@ const hasMissing = (item) => {
 const getMissingCountText = (item) => {
   if (!hasMissing(item)) return '';
   const data = item.missing_info;
-  const season_count = data.missing_seasons?.length || 0;
-  const gaps_count = data.seasons_with_gaps?.length || 0;
+  const season_count = data?.missing_seasons?.length || 0;
+  // 新的判断逻辑
+  const gaps_count = (Array.isArray(data?.seasons_with_gaps) && data.seasons_with_gaps.length > 0) ? 1 : 0;
+  
   let parts = [];
   if (season_count > 0) parts.push(`缺 ${season_count} 季`);
-  if (gaps_count > 0) parts.push(`有缺集`);
+  // 文本提示也更新
+  if (gaps_count > 0) parts.push(`有分集缺失`);
   return parts.join(' | ');
 };
 
-// =======================================================================
-// Computed 属性 
-// =======================================================================
+// ... (Computed 属性部分保持不变) ...
 const statusFilterOptions = [
   { label: '所有状态', value: 'all' },
   { label: '追剧中', value: 'Watching' },
@@ -341,7 +328,6 @@ const sortKeyOptions = [
 ];
 
 const batchActions = computed(() => {
-  // 定义一个通用的“批量移除”操作
   const removeAction = {
     label: '批量移除',
     key: 'remove',
@@ -355,7 +341,7 @@ const batchActions = computed(() => {
         key: 'forceEnd',
         icon: () => h(NIcon, { component: ForceEndIcon })
       },
-      removeAction // 在“追剧中”视图添加移除操作
+      removeAction
     ];
   } 
   else if (currentView.value === 'completed') {
@@ -371,7 +357,7 @@ const batchActions = computed(() => {
       .filter(item => selectedItems.value.includes(item.tmdb_id))
       .some(hasGaps);
 
-    actions.push(removeAction); // 在“已完结”视图也添加移除操作
+    actions.push(removeAction);
     return actions;
   }
 
@@ -448,22 +434,29 @@ const emptyStateDescription = computed(() => {
   }
   return '还没有已完结的剧集。';
 });
+
+// ★★★ 核心修复 2/3：更新 missingData 计算属性 ★★★
 const missingData = computed(() => {
   const defaults = { 
     missing_seasons: [], 
     missing_episodes: [], 
-    seasons_with_gaps: [] 
+    seasons_with_gaps: [] // 确保默认值是一个数组
   };
   const infoFromServer = selectedSeries.value?.missing_info;
+  
+  // 确保即使后端传来的 seasons_with_gaps 是 null 或 undefined，也能安全处理
+  if (infoFromServer && !Array.isArray(infoFromServer.seasons_with_gaps)) {
+    infoFromServer.seasons_with_gaps = [];
+  }
+
   return { ...defaults, ...infoFromServer };
 });
+
 const nextEpisode = (item) => {
   return item.next_episode_to_air || null;
 };
 
-// =======================================================================
-// 方法和生命周期钩子
-// =======================================================================
+// ... (方法和生命周期钩子部分保持不变) ...
 const toggleSelection = (itemId, event, index) => {
   if (!event) return;
   if (event.shiftKey && lastSelectedIndex.value !== null) {
@@ -538,8 +531,8 @@ const handleBatchAction = (key) => {
             item_ids: selectedItems.value
           });
           message.success(response.data.message || '批量移除成功！');
-          await fetchWatchlist(); // 重新加载列表
-          selectedItems.value = []; // 清空选择
+          await fetchWatchlist();
+          selectedItems.value = [];
         } catch (err) {
           message.error(err.response?.data?.error || '批量移除失败。');
         }
@@ -619,8 +612,8 @@ const formatAirDate = (dateString) => {
 };
 
 const getPosterUrl = (embyIds) => {
-  const itemId = embyIds?.[0]; // 安全地获取数组的第一个 Emby ID
-  if (!itemId) return ''; // 如果没有ID，返回空字符串以避免错误
+  const itemId = embyIds?.[0];
+  if (!itemId) return '';
   return `/image_proxy/Items/${itemId}/Images/Primary?maxHeight=480&tag=1`;
 };
 
