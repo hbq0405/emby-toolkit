@@ -115,8 +115,7 @@ def api_remove_from_watchlist(item_id):
 @watchlist_bp.route('/refresh/<item_id>', methods=['POST'])
 @admin_required
 def api_trigger_single_watchlist_refresh(item_id):
-    # ★★★★★★★★★★★★★★★ 核心修复：直接调用主任务函数 ★★★★★★★★★★★★★★★
-    # 1. 导入主任务函数，而不是那个快捷方式
+    # ★★★★★★★★★★★★★★★ 终极修复：使用 lambda 包装器 ★★★★★★★★★★★★★★★
     from tasks import task_process_watchlist 
     
     logger.trace(f"API (Blueprint): 收到对单个追剧项目 {item_id} 的刷新请求。")
@@ -125,12 +124,16 @@ def api_trigger_single_watchlist_refresh(item_id):
 
     item_name = watchlist_db.get_watchlist_item_name(item_id) or "未知剧集"
 
-    # 2. 直接提交主任务，并将 item_id 作为关键字参数传递
+    # 核心修复：
+    # 我们不再直接提交 task_process_watchlist，而是提交一个 lambda 函数。
+    # 这个 lambda 函数在创建时就“捕获”了当前的 item_id。
+    # task_manager 在执行时，会调用这个 lambda，并把 processor 传给它。
+    # 然后，我们的 lambda 再用这个 processor 和它早已捕获的 item_id，去调用真正的主任务。
     task_manager.submit_task(
-        task_process_watchlist,  # <--- 使用主任务
+        lambda processor: task_process_watchlist(processor, item_id=item_id),
         f"手动刷新: {item_name}",
-        processor_type='watchlist',
-        item_id=item_id  # <--- 将 item_id 作为参数传递给 task_process_watchlist
+        processor_type='watchlist'
+        # 这里不再需要传递 item_id，因为它已经被“烧录”进 lambda 函数里了。
     )
     
     return jsonify({"message": f"《{item_name}》的刷新任务已在后台启动！"}), 202
