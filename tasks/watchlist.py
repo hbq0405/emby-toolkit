@@ -199,19 +199,20 @@ def task_add_all_series_to_watchlist(processor):
 # ★★★ 全新、独立的媒体库缺集扫描任务 ★★★
 def task_scan_library_gaps(processor):
     """
-    【V8 - 最终正确版】沿用原版“先同步后分析”的可靠流程。
-    修复了分析环节，使其能够精确地找出每个季缺失的具体集数，
-    并将详细信息更新到数据库，同时为不完整的季提交订阅。
+    【V9 - 最终高效正确版】
+    1. 先在本地数据库通过高效SQL分析，精准找出“分集不完整”的季。
+    2. 只为这些不完整的季，向TMDb发起小规模、精准的订阅。
+    3. 不再进行大规模、无差别的全量元数据同步。
     """
     task_name = "媒体库缺集扫描"
-    logger.info(f"--- 开始执行 '{task_name}' 任务 ---")
+    logger.info(f"--- 开始执行 '{task_name}' 任务 (高效模式) ---")
     
     def progress_updater(progress, message):
         task_manager.update_status_from_thread(progress, message)
 
     try:
-        # 步骤 1: 获取媒体库中的所有剧集 (逻辑不变)
-        progress_updater(5, "正在从 Emby 获取媒体库中的剧集列表...")
+        # 步骤 1: 获取媒体库中的所有剧集ID (轻量级操作)
+        progress_updater(5, "正在确定媒体库扫描范围...")
         all_series_in_libs = processor._get_series_to_process(
             where_clause="", 
             include_all_series=True
@@ -226,50 +227,20 @@ def task_scan_library_gaps(processor):
             return
 
         total_series = len(all_series_in_libs)
-        logger.info(f"  ➜ 发现 {total_series} 部剧集，即将开始同步全量元数据...")
-        progress_updater(10, f"发现 {total_series} 部剧集，准备同步元数据...")
+        logger.info(f"  ➜ 发现 {total_series} 部剧集，即将开始本地数据库分析...")
+        progress_updater(20, f"正在对 {total_series} 部剧集进行本地缺集分析...")
 
-        # 步骤 2: 高性能元数据同步 (保留原版可靠逻辑)
-        tmdb_full_data = tmdb.batch_get_full_series_details_tmdb(
-            all_series_tmdb_ids, 
-            processor.tmdb_api_key,
-            progress_callback=progress_updater  
-        )
-        existing_children_ids = media_db.get_all_children_for_series_batch(all_series_tmdb_ids)
-        missing_records_to_insert = []
-        for series_id, children in tmdb_full_data.items():
-            for child_item in children:
-                child_tmdb_id = str(child_item.get("id"))
-                if child_tmdb_id not in existing_children_ids:
-                    child_item['parent_series_tmdb_id'] = series_id
-                    missing_records_to_insert.append(child_item)
-        
-        if missing_records_to_insert:
-            progress_updater(50, f"发现 {len(missing_records_to_insert)} 条缺失记录，正在批量写入数据库...")
-            media_db.batch_insert_media_metadata(missing_records_to_insert)
-        else:
-            progress_updater(50, "元数据完整性检查完成，无需补充新记录。")
+        # 步骤 2: 【核心优化】执行纯本地数据库分析，直接找出不完整的季
+        # 这里不再需要任何TMDb调用！
+        incomplete_seasons = watchlist_db.find_detailed_missing_episodes(all_series_tmdb_ids)
 
-        if processor.is_stop_requested():
-            progress_updater(100, "任务已中止。")
-            return
-
-        # 步骤 3: 【核心修复】执行全新的、详细的数据库分析
-        logger.info("  ➜ 所有剧集元数据同步完成，开始进行详细的缺集分析...")
-        progress_updater(50, "元数据同步完成，开始数据库分析...")
-        
-        seasons_with_gaps = watchlist_db.find_detailed_missing_episodes(all_series_tmdb_ids)
-
-        # 步骤 4: 【核心修复】整合详细的缺集数据并更新到数据库
-        logger.info("  ➜ 正在整合详细的缺集分析结果，准备更新前端显示数据...")
-        progress_updater(55, "正在整合分析结果...")
-
+        # 步骤 3: 更新前端显示的缺集信息
+        progress_updater(60, "分析完成，正在更新前端显示状态...")
         gaps_by_series = {}
-        for gap_info in seasons_with_gaps:
-            series_id = gap_info['parent_series_tmdb_id']
-            season_num = gap_info['season_number']
-            missing_eps = sorted(gap_info.get('missing_episodes', []))
-            # 构建更详细的JSON结构
+        for season_info in incomplete_seasons:
+            series_id = season_info['parent_series_tmdb_id']
+            season_num = season_info['season_number']
+            missing_eps = sorted(season_info.get('missing_episodes', []))
             gaps_by_series.setdefault(series_id, []).append({
                 "season": season_num,
                 "missing": missing_eps
@@ -283,31 +254,31 @@ def task_scan_library_gaps(processor):
         if final_gaps_data_to_update:
             watchlist_db.batch_update_gaps_info(final_gaps_data_to_update)
             logger.info("  ➜ 成功将最新的详细缺集信息同步到所有被扫描的剧集中。")
-        
-        progress_updater(60, "缺集信息已更新，准备提交订阅...")
-        
-        if not seasons_with_gaps:
+
+        # 如果本地分析后没有任何不完整的季，任务提前结束
+        if not incomplete_seasons:
             progress_updater(100, "分析完成：媒体库中所有剧集的季都是完整的。")
             return
+            
+        total_seasons_to_sub = len(incomplete_seasons)
+        logger.info(f"  ➜ 本地分析完成！共发现 {total_seasons_to_sub} 个分集不完整的季需要重新订阅。")
+        progress_updater(80, f"发现 {total_seasons_to_sub} 个不完整的季，准备提交订阅...")
 
-        # 步骤 5: 为所有不完整的季，一次性批量提交订阅请求
-        total_seasons_to_sub = len(seasons_with_gaps)
-        logger.info(f"  ➜ 分析完成！共发现 {total_seasons_to_sub} 个不完整的季需要重新订阅。")
-        
+        # 步骤 4: 批量提交所有不完整季的订阅请求
         series_info_map = {s['tmdb_id']: s for s in all_series_in_libs if s.get('tmdb_id')}
         media_info_batch_for_sub = []
-        for i, gap_info in enumerate(seasons_with_gaps):
-            series_tmdb_id = gap_info['parent_series_tmdb_id']
-            season_num = gap_info['season_number']
-            season_tmdb_id = gap_info['season_tmdb_id']
+        
+        for i, season_info in enumerate(incomplete_seasons):
+            series_tmdb_id = season_info['parent_series_tmdb_id']
+            season_num = season_info['season_number']
+            season_tmdb_id = season_info['season_tmdb_id']
             
-            if not season_tmdb_id: continue # 如果季ID没找到，无法订阅
+            if not season_tmdb_id: 
+                logger.warning(f"剧集 {series_tmdb_id} 的第 {season_num} 季缺少季TMDb ID，无法订阅。")
+                continue
 
             series_info = series_info_map.get(series_tmdb_id)
             series_title = series_info.get('item_name', '未知剧集') if series_info else '未知剧集'
-            
-            progress = 60 + int(((i + 1) / total_seasons_to_sub) * 40)
-            progress_updater(progress, f"({i+1}/{total_seasons_to_sub}) 准备订阅: {series_title} 第 {season_num} 季")
             
             media_info_batch_for_sub.append({
                 'tmdb_id': season_tmdb_id,

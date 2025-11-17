@@ -512,16 +512,13 @@ def task_populate_metadata_cache(processor, batch_size: int = 50, force_full_upd
                             
                             # ★★★ 核心修改：为 emby_item_ids_json 生成特殊的合并更新逻辑 ★★★
                             update_clauses = []
-                            # 从元数据中移除主键，因为它们不能出现在 UPDATE SET 子句中
                             columns_to_update = [c for c in columns if c not in ('tmdb_id', 'item_type')]
 
                             for col in columns_to_update:
-                                # 跳过不能或不应在 UPDATE 中覆盖的字段
                                 if col in ['subscription_sources_json']:
                                     continue
                                 
                                 if col == 'emby_item_ids_json':
-                                    # ItemID 列表执行合并去重
                                     update_clauses.append("""
                                         emby_item_ids_json = (
                                             SELECT jsonb_agg(DISTINCT elem)
@@ -533,14 +530,10 @@ def task_populate_metadata_cache(processor, batch_size: int = 50, force_full_upd
                                         )
                                     """)
                                 else:
-                                    # 其他所有字段，正常覆盖更新
+                                    # 其他所有字段（包括 in_library），都通过动态方式正常覆盖更新
                                     update_clauses.append(f"{col} = EXCLUDED.{col}")
 
-                            # 关键修复：在 UPDATE 时，无条件地将 in_library 设置为 TRUE。
-                            # 这确保了从“离线”状态恢复的项目能被正确标记为“在库”。
-                            update_clauses.append("in_library = TRUE")
-                            
-                            # 同时，重置忽略原因
+                            # 只需要在这里重置 ignore_reason 即可
                             update_clauses.append("ignore_reason = NULL")
                             
                             update_str = ', '.join(update_clauses)
