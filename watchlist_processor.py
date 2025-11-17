@@ -472,16 +472,18 @@ class WatchlistProcessor:
         has_complete_metadata = self._check_all_episodes_have_overview(aired_episodes)
 
         last_episode_to_air = latest_series_data.get("last_episode_to_air")
-        final_status = STATUS_WATCHING
+        final_status = STATUS_WATCHING # 默认是追剧中
         paused_until_date = None
         today = datetime.now(timezone.utc).date()
 
-        # 规则1：硬性完结条件 (TMDb官方说它完了)
+        # ★★★★★★★★★★★★★★★ 核心逻辑修复：调整判断优先级和条件 ★★★★★★★★★★★★★★★
+
+        # 规则1：硬性完结条件 (TMDb官方说它完了，并且我们认为元数据是完整的)
         if is_ended_on_tmdb and has_complete_metadata:
             final_status = STATUS_COMPLETED
             logger.info(f"  ➜ 剧集在TMDb已完结且元数据完整，状态变更为: {translate_internal_status(final_status)}")
 
-        # 规则2：有明确的下一集播出日期 (最复杂的决策树)
+        # 规则2：有明确的下一集播出日期 (增加对“过去”日期的判断)
         elif real_next_episode_to_air and real_next_episode_to_air.get('air_date'):
             air_date_str = real_next_episode_to_air['air_date']
             try:
@@ -489,35 +491,39 @@ class WatchlistProcessor:
                 days_until_air = (air_date - today).days
                 episode_number = real_next_episode_to_air.get('episode_number')
 
-                if days_until_air <= 3:
-                    final_status = STATUS_WATCHING
-                    logger.info(f"  ➜ 下一集在3天内播出或已播出，状态保持为: {translate_internal_status(final_status)}。")
-                
-                elif 3 < days_until_air <= 90:
-                    # ★★★ 核心判断：这是新一季的开端，还是季中的普通一集？ ★★★
-                    if episode_number is not None and int(episode_number) == 1:
-                        # 是新一季的第一集，说明当前季已完结，应进入待回归状态
+                # ★ 关键修复：只有当下一集是“今天”或“未来”播出时，这个规则才有效 ★
+                if days_until_air >= 0:
+                    if days_until_air <= 3:
+                        final_status = STATUS_WATCHING
+                        logger.info(f"  ➜ 下一集在未来3天内播出，状态保持为: {translate_internal_status(final_status)}。")
+                    
+                    elif 3 < days_until_air <= 90:
+                        if episode_number is not None and int(episode_number) == 1:
+                            final_status = STATUS_COMPLETED
+                            paused_until_date = None
+                            logger.warning(f"  ➜ 下一集是新季首播，在 {days_until_air} 天后播出。当前季已完结，状态变更为“已完结”。")
+                        else:
+                            final_status = STATUS_PAUSED
+                            paused_until_date = air_date - timedelta(days=1)
+                            logger.info(f"  ➜ 下一集 (非首集) 在 {days_until_air} 天后播出，状态变更为: {translate_internal_status(final_status)}，暂停至 {paused_until_date}。")
+                    
+                    else: # days_until_air > 90
                         final_status = STATUS_COMPLETED
                         paused_until_date = None
-                        logger.warning(f"  ➜ 下一集是新季首播 (S{real_next_episode_to_air.get('season_number')}E01)，在 {days_until_air} 天后播出。当前季已完结，状态变更为“已完结”。")
-                    else:
-                        # 不是第一集，说明是正常的季内停播（如周播剧的间歇）
-                        final_status = STATUS_PAUSED
-                        paused_until_date = air_date - timedelta(days=1)
-                        logger.info(f"  ➜ 下一集 (非首集) 在 {days_until_air} 天后播出，状态变更为: {translate_internal_status(final_status)}，暂停至 {paused_until_date}。")
+                        logger.warning(f"  ➜ 下一集在 {days_until_air} 天后播出，超过90天阈值，状态强制变更为“已完结”。")
                 
-                else: # days_until_air > 90
-                    # 播出时间太遥远，无论如何都应视为已完结/长期停播
-                    final_status = STATUS_COMPLETED
-                    paused_until_date = None
-                    logger.warning(f"  ➜ 下一集在 {days_until_air} 天后播出，超过90天阈值，状态强制变更为“已完结”。")
+                # ★ 如果下一集播出日期是“过去”，则忽略此规则，让程序继续向下执行到“僵尸剧”判断逻辑 ★
+                else:
+                    logger.warning(f"  ➜ 找到的“下一集” (S{real_next_episode_to_air.get('season_number')}E{episode_number}) 的播出日期 ({air_date_str}) 已是过去时，将忽略此信息，继续检查是否为僵尸剧。")
+                    # 我们在这里什么都不做，final_status 保持默认的 Watching，让后续逻辑来覆盖它
 
             except (ValueError, TypeError):
-                final_status = STATUS_COMPLETED
-                logger.warning(f"  ➜ 解析待播日期 '{air_date_str}' 失败，状态强制变更为“已完结”。")
+                # 解析日期失败，也视为无效线索，继续向下执行
+                logger.warning(f"  ➜ 解析待播日期 '{air_date_str}' 失败，将忽略此信息，继续检查。")
 
-        # 规则3：没有下一集信息，启用30天规则
-        elif last_episode_to_air and last_episode_to_air.get('air_date'):
+        # 规则3：没有“未来”的下一集信息，启用30天“僵尸剧”规则
+        # (因为上面的逻辑修改，现在程序可以正确地进入这里了)
+        if final_status == STATUS_WATCHING and last_episode_to_air and last_episode_to_air.get('air_date'):
             try:
                 last_air_date = datetime.strptime(last_episode_to_air['air_date'], '%Y-%m-%d').date()
                 days_since_last_air = (today - last_air_date).days
@@ -525,18 +531,18 @@ class WatchlistProcessor:
                 if days_since_last_air > 30:
                     final_status = STATUS_COMPLETED
                     paused_until_date = None
-                    logger.warning(f"  ➜ 剧集无待播信息，且最后一集播出已超过30天，状态强制变更为“已完结”。")
+                    logger.warning(f"  ➜ [僵尸剧判定] 剧集无未来待播信息，且最后一集播出已超过30天，状态强制变更为“已完结”。")
                 else:
                     final_status = STATUS_PAUSED
                     paused_until_date = today + timedelta(days=7)
-                    logger.info(f"  ➜ 剧集无待播信息，但上一集在30天内播出，临时暂停7天以待数据更新。")
+                    logger.info(f"  ➜ 剧集无未来待播信息，但上一集在30天内播出，临时暂停7天以待数据更新。")
             except ValueError:
                 final_status = STATUS_PAUSED
                 paused_until_date = today + timedelta(days=7)
                 logger.warning(f"  ➜ 剧集上次播出日期格式错误，为安全起见，执行默认的7天暂停。")
 
         # 规则4：绝对的后备方案 (如果连上一集信息都没有)
-        else:
+        elif final_status == STATUS_WATCHING:
             final_status = STATUS_PAUSED
             paused_until_date = today + timedelta(days=7)
             logger.info(f"  ➜ 剧集完全缺失播出日期数据，为安全起见，执行默认的7天暂停以待数据更新。")
