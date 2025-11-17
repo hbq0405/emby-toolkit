@@ -178,7 +178,7 @@ class WatchlistProcessor:
 
     # --- 核心任务启动器 (无需修改) ---
     def run_regular_processing_task_concurrent(self, progress_callback: callable, item_id: Optional[str] = None, force_full_update: bool = False):
-        """【V2 - 流程修复版】修复因没有活跃剧集而导致洗版检查被跳过的流程缺陷。"""
+        """核心任务启动器。"""
         self.progress_callback = progress_callback
         task_name = "并发追剧更新"
         # ▼▼▼ 根据模式更新日志里的任务名 ▼▼▼
@@ -246,25 +246,11 @@ class WatchlistProcessor:
                         self.progress_callback(progress, f"活跃剧集: {processed_count}/{total} - {series_info['item_name'][:15]}...")
                 
                 if not self.is_stop_requested():
-                    self.progress_callback(50, "常规追剧检查完成，即将开始洗版检查...")
+                    self.progress_callback(100, "常规追剧检查完成。")
             else:
                 # 如果没有活跃剧集，直接进入下一阶段
-                self.progress_callback(50, "没有需要立即处理的活跃剧集，直接开始洗版检查...")
+                self.progress_callback(100, "没有需要立即处理的活跃剧集，任务完成。")
             
-            time.sleep(2) # 给用户一点时间看消息
-
-            # ======================================================================
-            # 阶段二：处理洗版检查 (无论阶段一结果如何，都必须执行)
-            # ======================================================================
-            if self.is_stop_requested():
-                self.progress_callback(100, "任务已停止。")
-                return
-
-            # 调用我们新的、可复用的洗版检查函数
-            # 如果是单项刷新，把 item_id 也传过去
-            self._run_wash_plate_check_logic(progress_callback=self.progress_callback, item_id=item_id)
-            # ▲▲▲ 核心流程修正结束 ▲▲▲
-
         except Exception as e:
             logger.error(f"执行 '{task_name}' 时发生严重错误: {e}", exc_info=True)
             self.progress_callback(-1, f"错误: {e}")
@@ -342,173 +328,7 @@ class WatchlistProcessor:
         finally:
             self.progress_callback = None
 
-    # ★★★ 已完结剧集缺集洗版检查 ★★★
-    def _run_wash_plate_check_logic(self, progress_callback: callable, item_id: Optional[str] = None):
-        """【新架构】处理“中间缺集”的洗版逻辑。"""
-        task_name = "洗版缺集的季"
-        
-        if not self.config.get(constants.CONFIG_OPTION_RESUBSCRIBE_COMPLETED_ON_MISSING):
-            logger.info(f"'{task_name}' 功能未启用，跳过。")
-            if progress_callback: progress_callback(100, "所有流程已完成（洗版功能未启用）。")
-            return
-
-        logger.trace(f"  ➜ 后台任务 '{task_name}' 开始执行")
-        if progress_callback: progress_callback(0, "正在查找需要洗版的剧集...")
-
-        try:
-            series_to_check = []
-            if item_id:
-                series_to_check = self._get_series_to_process("", item_id=item_id)
-            else:
-                # 查询逻辑需要适配新表字段名
-                stuck_series = self._get_series_to_process(
-                    f"""
-                    WHERE watching_status IN ('{STATUS_WATCHING}', '{STATUS_PAUSED}')
-                      AND watchlist_tmdb_status IN ('Ended', 'Canceled')
-                      AND jsonb_typeof(watchlist_missing_info_json) IN ('object', 'array')
-                    """
-                )
-                today_minus_365_days = (datetime.now(timezone.utc).date() - timedelta(days=365)).isoformat()
-                zombie_series = self._get_series_to_process(
-                    f"""
-                    WHERE watching_status IN ('{STATUS_WATCHING}', '{STATUS_PAUSED}')
-                      AND watchlist_tmdb_status NOT IN ('Ended', 'Canceled')
-                      AND jsonb_typeof(last_episode_to_air_json) = 'object'
-                      AND (last_episode_to_air_json->>'air_date')::date < '{today_minus_365_days}'
-                    """
-                )
-                completed_missing_series = self._get_series_to_process(
-                    f"WHERE watching_status = '{STATUS_COMPLETED}' AND jsonb_typeof(watchlist_missing_info_json) IN ('object', 'array')"
-                )
-                all_series_map = {s['item_id']: s for s in stuck_series}
-                all_series_map.update({s['item_id']: s for s in zombie_series})
-                all_series_map.update({s['item_id']: s for s in completed_missing_series})
-                series_to_check = list(all_series_map.values())
-            
-            total = len(series_to_check)
-            if not series_to_check:
-                if progress_callback: progress_callback(100, "所有流程已完成，未发现需洗版的剧集。")
-                return
-
-            logger.info(f"  ➜ 共发现 {total} 部潜在的缺集剧集，开始进行精准订阅分析...")
-            total_seasons_subscribed = 0
-
-            quota_exhausted = False
-            for i, series in enumerate(series_to_check):
-                if self.is_stop_requested(): break
-                item_name = series.get('item_name', '未知剧集')
-                
-                # 7天宽限期判断保持不变
-                if series.get('tmdb_status') in ['Ended', 'Canceled']:
-                    last_episode_info = series.get('last_episode_to_air_json')
-                    if last_episode_info and isinstance(last_episode_info, dict):
-                        last_air_date_str = last_episode_info.get('air_date')
-                        if last_air_date_str:
-                            try:
-                                last_air_date = datetime.strptime(last_air_date_str, '%Y-%m-%d').date()
-                                days_since_airing = (datetime.now(timezone.utc).date() - last_air_date).days
-                                if days_since_airing < 7:
-                                    logger.info(f"  ➜ 《{item_name}》完结未满7天，跳过洗版分析。")
-                                    continue
-                            except ValueError: pass
-                
-                missing_info = series.get('missing_info_json')
-                if not missing_info: continue
-
-                # ▼▼▼ 核心逻辑修正：只分析“中间缺集”，彻底忽略“整季缺失” ▼▼▼
-                logger.info(f"  ➜ 开始为《{item_name}》进行精准的“中间缺集”分析...")
-                seasons_with_real_gaps = set()
-
-                # 1. 实时获取 Emby 本地分集数据，用于对比
-                emby_children = emby.get_series_children(series['item_id'], self.emby_url, self.emby_api_key, self.emby_user_id)
-                emby_seasons = {}
-                if emby_children:
-                    for child in emby_children:
-                        if child.get('Type') == 'Episode':
-                            s_num, e_num = child.get('ParentIndexNumber'), child.get('IndexNumber')
-                            if s_num is not None and e_num is not None:
-                                emby_seasons.setdefault(s_num, set()).add(e_num)
-                
-                # 2. 忽略完全缺失的季。洗版功能只负责填补“中间”的窟窿，
-                #    对于尚未播出的新季或完全没有的旧季，应由常规订阅逻辑处理。
-                if missing_info.get("missing_seasons"):
-                    missing_season_nums = [s.get('season_number') for s in missing_info.get("missing_seasons", []) if s.get('season_number') is not None]
-                    if missing_season_nums:
-                        logger.info(f"  ➜ 分析：检测到整季缺失 S{missing_season_nums}，根据精准订阅策略，洗版功能将【忽略】此情况。")
-                
-                # 3. 分析缺失的集，判断是否为“中间”缺失
-                for episode in missing_info.get("missing_episodes", []):
-                    s_num = episode.get('season_number')
-                    e_num = episode.get('episode_number')
-                    
-                    if s_num is None or e_num is None or s_num in seasons_with_real_gaps:
-                        continue
-
-                    local_episodes_for_season = emby_seasons.get(s_num, set())
-                    # 如果本地根本没有这一季的任何文件，那它本质上就是“整季缺失”，不归洗版管
-                    if not local_episodes_for_season:
-                        logger.info(f"  ➜ 分析 S{s_num}E{e_num}: 本地不存在该季的任何文件，视为整季缺失，【忽略】。")
-                        continue
-
-                    # 关键判断：本地是否存在比当前缺失集集号更大的集
-                    has_later_episode_locally = any(local_e > e_num for local_e in local_episodes_for_season)
-
-                    if has_later_episode_locally:
-                        max_local_episode = max(local_episodes_for_season)
-                        logger.info(f"  ➜ 分析 S{s_num}E{e_num}: 本地存在更高集号 S{s_num}E{max_local_episode}，确认为【中间缺失】，需要标记。")
-                        seasons_with_real_gaps.add(s_num)
-                    else:
-                        max_local_episode = max(local_episodes_for_season) if local_episodes_for_season else '无'
-                        logger.info(f"  ➜ 分析 S{s_num}E{e_num}: 本地不存在更高集号 (最高为 E{max_local_episode})，判定为【末尾缺失】，【忽略】。")
-                
-
-                if not seasons_with_real_gaps:
-                    logger.info(f"  ➜ 《{item_name}》分析完成，未发现需要洗版的中间缺失季。")
-                    continue
-
-                # 4. 将分析结果写入数据库进行标记
-                final_seasons_to_mark = set()
-                resubscribe_info = series.get('resubscribe_info_json') or {}
-                cooldown_hours = 24  # 冷却时间（小时）
-
-                for season_num in seasons_with_real_gaps:
-                    last_subscribed_str = resubscribe_info.get(str(season_num))
-                    if last_subscribed_str:
-                        try:
-                            last_subscribed_time = datetime.fromisoformat(last_subscribed_str.replace('Z', '+00:00'))
-                            if datetime.now(timezone.utc) < last_subscribed_time + timedelta(hours=cooldown_hours):
-                                logger.info(f"  ➜ 《{item_name}》第 {season_num} 季虽有缺集，但在 {cooldown_hours} 小时冷却期内，暂不标记。")
-                                continue  # 跳过这个季，不把它加入最终的标记列表
-                        except (ValueError, TypeError):
-                            pass  # 如果时间戳格式错误，则忽略冷却，继续标记
-
-                    # 如果没有冷却记录或冷却已过，则加入最终待标记列表
-                    final_seasons_to_mark.add(season_num)
-
-
-                # 4. 将【过滤后】的分析结果与数据库中的现有标记进行比较和更新
-                existing_gaps = set(missing_info.get('seasons_with_gaps', []))
-                if final_seasons_to_mark != existing_gaps:
-                    missing_info['seasons_with_gaps'] = sorted(list(final_seasons_to_mark))
-                    
-                    self._update_watchlist_entry(
-                        tmdb_id=series['tmdb_id'], # ★★★ 调用适配
-                        item_name=item_name,
-                        updates={"missing_info_json": json.dumps(missing_info)}
-                    )
-                
-                time.sleep(1)
-
-            final_message = "所有流程已完成！洗版检查结束。"
-            if progress_callback: progress_callback(100, final_message)
-
-        except Exception as e:
-            logger.error(f"执行 '{task_name}' 时发生严重错误: {e}", exc_info=True)
-            if progress_callback: progress_callback(-1, f"错误: {e}")
-        finally:
-            if progress_callback: self.progress_callback = None
-
-    def _get_series_to_process(self, where_clause: str, item_id: Optional[str] = None) -> List[Dict[str, Any]]:
+    def _get_series_to_process(self, where_clause: str, item_id: Optional[str] = None, include_all_series: bool = False) -> List[Dict[str, Any]]:
         """【新架构】从 media_metadata 获取需要处理的剧集列表，并兼容 Emby 库过滤。"""
         
         base_query = """
@@ -548,7 +368,10 @@ class WatchlistProcessor:
                 with connection.get_db_connection() as conn:
                     cursor = conn.cursor()
                     # 附加 WHERE 条件
-                    final_where = f"WHERE item_type = 'Series' AND watching_status != 'NONE'"
+                    final_where = "WHERE item_type = 'Series'"
+                    if not include_all_series:
+                        final_where += " AND watching_status != 'NONE'"
+                    
                     if where_clause:
                         final_where += f" AND ({where_clause.replace('WHERE', '').strip()})"
                     
@@ -581,7 +404,10 @@ class WatchlistProcessor:
         try:
             with connection.get_db_connection() as conn:
                 cursor = conn.cursor()
-                final_where = f"WHERE item_type = 'Series' AND watching_status != 'NONE'"
+                final_where = "WHERE item_type = 'Series'"
+                if not include_all_series:
+                    final_where += " AND watching_status != 'NONE'"
+
                 if where_clause:
                     final_where += f" AND ({where_clause.replace('WHERE', '').strip()})"
                 

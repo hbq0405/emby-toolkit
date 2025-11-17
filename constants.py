@@ -96,8 +96,7 @@ CONFIG_OPTION_MOVIEPILOT_USERNAME = "moviepilot_username"
 CONFIG_OPTION_MOVIEPILOT_PASSWORD = "moviepilot_password"
 # --- 智能订阅相关配置 ---
 CONFIG_OPTION_AUTOSUB_ENABLED = "autosub_enabled" # 智能订阅总开关
-CONFIG_OPTION_RESUBSCRIBE_COMPLETED_ON_MISSING = "resubscribe_completed_on_missing"
-CONFIG_OPTION_RESUBSCRIBE_USE_BEST_VERSION = "resubscribe_use_best_version"
+CONFIG_OPTION_GAP_FILL_RESUBSCRIBE_ENABLED = "gap_fill_resubscribe_enabled"
 CONFIG_OPTION_RESUBSCRIBE_DAILY_CAP = "resubscribe_daily_cap"
 CONFIG_OPTION_RESUBSCRIBE_DELAY_SECONDS = "resubscribe_delay_seconds"
 CONFIG_OPTION_USE_CUSTOM_RESUBSCRIBE = "use_custom_resubscribe"

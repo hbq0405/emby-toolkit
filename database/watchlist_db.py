@@ -303,3 +303,48 @@ def batch_remove_from_watchlist(tmdb_ids: List[str]) -> int:
     except Exception as e:
         logger.error(f"DB (新架构): 批量移除追剧项目时发生错误: {e}", exc_info=True)
         raise
+
+def find_season_tmdb_ids_with_gaps(series_tmdb_ids: List[str]) -> List[Dict[str, Any]]:
+    """
+    【V2 - 优化版】在指定的剧集范围内，查找所有存在“中间缺失”的季。
+    直接返回这些季的 TMDB ID, 父剧 ID 和季号。
+    """
+    if not series_tmdb_ids:
+        return []
+    
+    sql = """
+        SELECT DISTINCT 
+            e1.parent_series_tmdb_id, 
+            e1.season_number,
+            -- 找到季本身的 TMDB ID
+            (SELECT s.tmdb_id 
+             FROM media_metadata s 
+             WHERE s.item_type = 'Season' 
+               AND s.parent_series_tmdb_id = e1.parent_series_tmdb_id 
+               AND s.season_number = e1.season_number
+             LIMIT 1) as tmdb_id
+        FROM 
+            media_metadata e1
+        WHERE 
+            e1.item_type = 'Episode'
+            AND e1.parent_series_tmdb_id IN %s
+            AND e1.in_library = FALSE
+            AND EXISTS (
+                SELECT 1
+                FROM media_metadata e2
+                WHERE e2.parent_series_tmdb_id = e1.parent_series_tmdb_id
+                  AND e2.season_number = e1.season_number
+                  AND e2.item_type = 'Episode'
+                  AND e2.in_library = TRUE
+                  AND e2.episode_number > e1.episode_number
+            );
+    """
+    try:
+        with get_db_connection() as conn:
+            cursor = conn.cursor()
+            cursor.execute(sql, (tuple(series_tmdb_ids),))
+            # 过滤掉那些由于数据不完整而未能找到季TMDB ID的记录
+            return [dict(row) for row in cursor.fetchall() if row.get('tmdb_id')]
+    except Exception as e:
+        logger.error(f"DB: 查找缺集的季时发生错误: {e}", exc_info=True)
+        return []

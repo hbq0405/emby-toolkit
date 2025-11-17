@@ -14,7 +14,7 @@ from .actors import (task_sync_person_map, task_enrich_aliases, task_actor_trans
                      task_process_actor_subscriptions, task_purge_unregistered_actors, task_merge_duplicate_actors,
                      task_purge_ghost_actors)
 from .media import task_role_translation, task_populate_metadata_cache, task_apply_main_cast_to_episodes 
-from .watchlist import task_process_watchlist, task_run_revival_check
+from .watchlist import task_process_watchlist, task_run_revival_check, task_scan_library_gaps
 from .collections import task_refresh_collections, task_process_all_custom_collections, process_single_custom_collection
 from .subscriptions import task_auto_subscribe, task_update_resubscribe_cache, task_resubscribe_library, task_manual_subscribe_batch
 from .covers import task_generate_all_covers, task_generate_all_custom_collection_covers
@@ -206,6 +206,7 @@ def get_task_registry(context: str = 'all'):
         'resubscribe-library': (task_resubscribe_library, "媒体洗版订阅", 'media', False),
         'update-daily-theme': (task_update_daily_theme, "更新每日主题", 'media', False),
         'manual_subscribe_batch': (task_manual_subscribe_batch, "手动订阅处理", 'media', False),
+        'scan-library-gaps': (task_scan_library_gaps, "扫描缺集的季", 'watchlist', True),
     }
 
     if context == 'chain':

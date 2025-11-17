@@ -71,7 +71,26 @@ def get_tmdb_id_from_emby_id(emby_id: str) -> Optional[str]:
     except psycopg2.Error as e:
         logger.error(f"根据 Emby ID {emby_id} 反查 TMDB ID 时出错: {e}", exc_info=True)
         return None
+
+def get_media_details(tmdb_id: str, item_type: str) -> Optional[Dict[str, Any]]:
+    """
+    【新增】根据完整的复合主键 (tmdb_id, item_type) 获取唯一的一条媒体记录。
+    这是获取单个媒体详情最可靠的方法。
+    """
+    if not tmdb_id or not item_type:
+        return None
     
+    sql = "SELECT * FROM media_metadata WHERE tmdb_id = %s AND item_type = %s"
+    try:
+        with get_db_connection() as conn:
+            with conn.cursor() as cursor:
+                cursor.execute(sql, (tmdb_id, item_type))
+                row = cursor.fetchone()
+                return dict(row) if row else None
+    except Exception as e:
+        logger.error(f"DB: 获取媒体详情 (TMDb ID: {tmdb_id}, Type: {item_type}) 时失败: {e}", exc_info=True)
+        return None
+
 def get_media_details_by_tmdb_ids(tmdb_ids: List[str]) -> Dict[str, Dict[str, Any]]:
     """
     【V3 - 新增核心工具】根据 TMDB ID 列表，批量获取 media_metadata 表中的完整记录。
@@ -263,8 +282,14 @@ def get_all_non_library_media() -> List[Dict[str, Any]]:
         ON 
             m1.parent_series_tmdb_id = m2.tmdb_id AND m2.item_type = 'Series'
         WHERE 
-            m1.in_library = FALSE 
-            AND m1.subscription_status IN ('WANTED', 'PENDING_RELEASE', 'IGNORED', 'SUBSCRIBED')
+            -- 规则：订阅状态必须是我们需要关注的
+            m1.subscription_status IN ('WANTED', 'PENDING_RELEASE', 'IGNORED', 'SUBSCRIBED')
+            AND (
+                -- 条件1：媒体项本身不在库中（适用于电影和整部剧集）
+                m1.in_library = FALSE 
+                -- 条件2：或者，它是一个“季”（适用于填补已在库剧集的缺失季）
+                OR m1.item_type = 'Season'
+            )
         ORDER BY 
             m1.first_requested_at DESC;
     """
@@ -450,7 +475,7 @@ def get_series_title_by_tmdb_id(tmdb_id: str) -> Optional[str]:
     except psycopg2.Error as e:
         logger.error(f"根据 TMDB ID {tmdb_id} 查询剧集标题时出错: {e}", exc_info=True)
         return None
-    
+
 def get_in_library_status_for_tmdb_ids(tmdb_ids: List[str]) -> Dict[str, bool]:
     """
     给定一个 TMDB ID 列表，批量查询它们在 media_metadata 中的 in_library 状态。

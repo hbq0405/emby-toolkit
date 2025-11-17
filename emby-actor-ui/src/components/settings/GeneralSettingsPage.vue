@@ -311,27 +311,17 @@
                       </template>
                     </n-form-item-grid-item>
 
-                    <n-form-item-grid-item label="对缺集的已完结剧集触发订阅" path="resubscribe_completed_on_missing">
-                      <n-switch v-model:value="configModel.resubscribe_completed_on_missing" :disabled="!isMoviePilotConfigured" />
+                    <n-form-item-grid-item label="对缺集的季启用洗版订阅" path="gap_fill_resubscribe_enabled">
+                      <!-- ★ 1. v-model 绑定到新的配置项 ★ -->
+                      <n-switch v-model:value="configModel.gap_fill_resubscribe_enabled" :disabled="!isMoviePilotConfigured" />
                       <template #feedback>
                         <n-text depth="3" style="font-size:0.8em;">
-                          开启后，“洗版缺集的季”任务会检查所有已完结剧集，若本地文件不完整，则触发下方设置的订阅模式。
+                          当“统一订阅处理”任务订阅缺集的季时：<br>
+                          <b>开启：</b>将向 MoviePilot 提交<b>整季洗版</b>订阅请求，获取完整的版本。<br>
+                          <b>关闭：</b>将向 MoviePilot 提交<b>普通订阅</b>请求，MoviePilot 将只下载本地缺失的集。
                         </n-text>
                       </template>
                     </n-form-item-grid-item>
-
-                    <!-- 子开关 (仅在父开关开启时显示，并向右缩进) -->
-                    <div v-if="configModel.resubscribe_completed_on_missing" style="margin-left: 40px; margin-top: -10px;">
-                      <n-form-item-grid-item label="是否整季洗版" path="resubscribe_use_best_version">
-                        <n-switch v-model:value="configModel.resubscribe_use_best_version" :disabled="!isMoviePilotConfigured" />
-                        <template #feedback>
-                          <n-text depth="3" style="font-size:0.8em;">
-                            <b>开启：</b>提交整季洗版订阅，获取同一工作组发布的完整版本。<br>
-                            <b>关闭：</b>提交普通订阅，MoviePilot将只下载本地缺失的集。
-                          </n-text>
-                        </template>
-                      </n-form-item-grid-item>
-                    </div>
 
                     <!-- ★★★ 核心修改：在这里添加阀门设置 ★★★ -->
                     <n-divider title-placement="left" style="margin-top: 20px; margin-bottom: 20px;">每日订阅额度</n-divider>

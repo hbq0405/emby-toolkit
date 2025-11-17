@@ -5,16 +5,18 @@ import time
 import logging
 from typing import Optional, List, Dict, Any
 import concurrent.futures
+from datetime import datetime, timedelta, timezone
 
 # 导入需要的底层模块和共享实例
 import config_manager
 import constants
 import handler.emby as emby
+import handler.tmdb as tmdb
 import extensions
 import task_manager
-import handler.moviepilot as moviepilot
-from database import connection, watchlist_db, settings_db
+from database import connection, watchlist_db, request_db, media_db
 from psycopg2.extras import execute_values
+from watchlist_processor import STATUS_WATCHING, STATUS_PAUSED, STATUS_COMPLETED
 
 logger = logging.getLogger(__name__)
 
@@ -235,68 +237,134 @@ def task_add_all_series_to_watchlist(processor):
         logger.error(f"执行 '{task_name}' 任务时发生严重错误: {e}", exc_info=True)
         task_manager.update_status_from_thread(-1, f"任务失败: {e}")
 
-# ★★★ 新增后台任务：批量订阅缺集的季 ★★★
-def task_batch_subscribe_gaps(processor, item_ids: List[str]):
-    task_name = "批量订阅缺集的季"
+# ★★★ 全新、独立的媒体库缺集扫描任务 ★★★
+def task_scan_library_gaps(processor):
+    """
+    【V5 - 最终修复版】扫描指定的媒体库，通过即时同步全量元数据来确保数据完整性，
+    然后基于本地数据库分析所有剧集的“中间缺失”，并为真正缺失的季提交订阅请求。
+    """
+    task_name = "媒体库缺集扫描"
     logger.info(f"--- 开始执行 '{task_name}' 任务 ---")
     
-    total_items = len(item_ids)
-    processed_count = 0
-    subscribed_seasons_count = 0
-    quota_exhausted = False
+    def progress_updater(progress, message):
+        task_manager.update_status_from_thread(progress, message)
 
-    config = config_manager.APP_CONFIG
-    use_best_version = config.get(constants.CONFIG_OPTION_RESUBSCRIBE_USE_BEST_VERSION, False)
-    best_version_param = 1 if use_best_version else None
-    log_mode = "洗版模式" if use_best_version else "普通模式"
-    logger.info(f"  ➜ 本次任务将以 [{log_mode}] 进行订阅。")
-
-    for i, item_id in enumerate(item_ids):
-        if processor.is_stop_requested() or quota_exhausted:
-            break
-        
-        series_info = watchlist_db.get_watchlist_item_details(item_id)
-        if not series_info or not series_info.get('missing_info_json'):
-            continue
-        
-        item_name = series_info.get('item_name', '未知剧集')
-        task_manager.update_status_from_thread(
-            int((i / total_items) * 100),
-            f"({i+1}/{total_items}) 正在处理: {item_name}"
+    try:
+        # 步骤 1: 获取媒体库中的所有剧集 (此部分已正确)
+        progress_updater(5, "正在从 Emby 获取媒体库中的剧集列表...")
+        all_series_in_libs = processor._get_series_to_process(
+            where_clause="", 
+            include_all_series=True
         )
+        if not all_series_in_libs:
+            progress_updater(100, "任务完成：在指定的媒体库中未找到任何剧集。")
+            return
 
-        seasons_to_subscribe = series_info['missing_info_json'].get('seasons_with_gaps', [])
-        if not seasons_to_subscribe:
-            continue
+        total_series = len(all_series_in_libs)
+        logger.info(f"  ➜ 发现 {total_series} 部剧集，即将开始同步子项目元数据...")
+        progress_updater(10, f"发现 {total_series} 部剧集，准备同步元数据...")
 
-        seasons_successfully_subscribed = []
-        for season_num in seasons_to_subscribe:
+        # ★★★ 步骤 2: (核心修复) 完整复制主流程的元数据同步逻辑 ★★★
+        for i, series in enumerate(all_series_in_libs):
             if processor.is_stop_requested(): break
+            
+            tmdb_id = series['tmdb_id']
+            item_id = series['item_id'] # Emby ID
+            item_name = series['item_name']
+            
+            progress = 10 + int(((i + 1) / total_series) * 40) # 元数据同步占40%进度
+            progress_updater(progress, f"({i+1}/{total_series}) 同步元数据: {item_name[:20]}...")
 
-            current_quota = settings_db.get_subscription_quota()
-            if current_quota <= 0:
-                logger.warning("  ➜ 每日订阅配额已用尽，任务提前结束。")
-                quota_exhausted = True
-                break
+            # a. 从 TMDB 获取完整的、最新的剧集和分集信息
+            latest_series_data = tmdb.get_tv_details(tmdb_id, processor.tmdb_api_key)
+            if not latest_series_data:
+                logger.warning(f"  ➜ 无法获取《{item_name}》的 TMDB 详情，跳过。")
+                continue
 
-            success = moviepilot.subscribe_series_to_moviepilot(
-                series_info=series_info,
-                season_number=season_num,
-                config=config,
-                best_version=best_version_param
+            all_tmdb_episodes = []
+            for season_summary in latest_series_data.get("seasons", []):
+                season_num = season_summary.get("season_number")
+                if season_num is None: continue
+                # 注意：这里我们使用 get_season_details 而不是 get_season_details_tmdb，假设前者是更通用的函数
+                season_details = tmdb.get_season_details_tmdb(tmdb_id, season_num, processor.tmdb_api_key)
+                if season_details and season_details.get("episodes"):
+                    all_tmdb_episodes.extend(season_details.get("episodes", []))
+                time.sleep(0.1)
+
+            # b. 获取本地 Emby 的在库信息，并验证文件路径
+            emby_children = emby.get_series_children(
+                item_id, 
+                processor.emby_url, 
+                processor.emby_api_key, 
+                processor.emby_user_id,
+                fields="Id,Name,ParentIndexNumber,IndexNumber,Type,Path"
             )
+            emby_seasons = {}
+            if emby_children:
+                for child in emby_children:
+                    if child.get('Path'): # 只处理有真实路径的媒体项
+                        s_num, e_num = child.get('ParentIndexNumber'), child.get('IndexNumber')
+                        if s_num is not None and e_num is not None:
+                            emby_seasons.setdefault(s_num, set()).add(e_num)
             
-            if success:
-                settings_db.decrement_subscription_quota()
-                subscribed_seasons_count += 1
-                seasons_successfully_subscribed.append(season_num)
-            
-            time.sleep(1) # 避免请求过快
+            # c. 调用核心函数，将所有信息同步到数据库
+            media_db.sync_series_children_metadata(
+                parent_tmdb_id=tmdb_id,
+                seasons=latest_series_data.get("seasons", []),
+                episodes=all_tmdb_episodes,
+                local_in_library_info=emby_seasons
+            )
 
-        if seasons_successfully_subscribed:
-            watchlist_db.remove_seasons_from_gaps_list(item_id, seasons_successfully_subscribed)
+        if processor.is_stop_requested():
+            progress_updater(100, "任务已中止。")
+            return
 
-    final_message = f"任务完成！共成功提交 {subscribed_seasons_count} 个季的订阅。"
-    if quota_exhausted:
-        final_message += " (因配额用尽提前中止)"
-    task_manager.update_status_from_thread(100, final_message)
+        # 步骤 3: 执行数据库分析 (现在数据库中保证有完整且正确的数据了)
+        logger.info("  ➜ 所有剧集元数据同步完成，开始进行缺集分析...")
+        progress_updater(50, "元数据同步完成，开始数据库分析...")
+        
+        all_series_tmdb_ids = [s['tmdb_id'] for s in all_series_in_libs if s.get('tmdb_id')]
+        seasons_with_gaps = watchlist_db.find_season_tmdb_ids_with_gaps(all_series_tmdb_ids)
+        
+        if not seasons_with_gaps:
+            progress_updater(100, "分析完成：媒体库中的所有剧集均无“中间缺失”的季。")
+            return
+
+        # ★★★ 4. 一次性批量提交所有订阅请求 ★★★
+        total_seasons_to_sub = len(seasons_with_gaps)
+        logger.info(f"  ➜ 分析完成！共发现 {total_seasons_to_sub} 个存在中间缺失的季需要订阅。")
+        progress_updater(50, f"发现 {total_seasons_to_sub} 个缺集的季，准备提交订阅...")
+        
+        series_info_map = {s['tmdb_id']: s for s in all_series_in_libs if s.get('tmdb_id')}
+        media_info_batch_for_sub = []
+        for i, gap_info in enumerate(seasons_with_gaps):
+            series_tmdb_id = gap_info['parent_series_tmdb_id']
+            season_num = gap_info['season_number']
+            season_tmdb_id = gap_info['tmdb_id']
+            series_info = series_info_map.get(series_tmdb_id)
+            if not series_info: continue
+            series_title = series_info.get('item_name', '未知剧集')
+            progress = 50 + int(((i + 1) / total_seasons_to_sub) * 50)
+            progress_updater(progress, f"({i+1}/{total_seasons_to_sub}) 准备订阅: {series_title} 第 {season_num} 季")
+            media_info_batch_for_sub.append({
+                'tmdb_id': season_tmdb_id,
+                'title': f"{series_title} - 第 {season_num} 季",
+                'parent_series_tmdb_id': series_tmdb_id,
+                'season_number': season_num
+            })
+
+        if media_info_batch_for_sub:
+            logger.info(f"  ➜ 准备批量提交 {len(media_info_batch_for_sub)} 个季的订阅请求...")
+            request_db.set_media_status_wanted(
+                tmdb_ids=[info['tmdb_id'] for info in media_info_batch_for_sub],
+                item_type='Season',
+                source={"type": "gap_scan", "reason": "library_integrity_check"},
+                media_info_list=media_info_batch_for_sub
+            )
+
+        final_message = f"任务完成！共为 {len(media_info_batch_for_sub)} 个缺集的季提交了订阅请求。"
+        progress_updater(100, final_message)
+
+    except Exception as e:
+        logger.error(f"执行 '{task_name}' 时发生严重错误: {e}", exc_info=True)
+        progress_updater(-1, f"任务失败: {e}")

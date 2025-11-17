@@ -8,7 +8,6 @@ from datetime import datetime, date
 import task_manager
 import extensions
 from extensions import admin_required, task_lock_required
-from tasks import task_batch_subscribe_gaps
 from database import watchlist_db
 # 1. 创建追剧列表蓝图
 watchlist_bp = Blueprint('watchlist', __name__, url_prefix='/api/watchlist')

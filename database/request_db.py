@@ -77,7 +77,7 @@ def set_media_status_requested(
                         subscription_status = 'REQUESTED',
                         subscription_sources_json = media_metadata.subscription_sources_json || EXCLUDED.subscription_sources_json,
                         first_requested_at = COALESCE(media_metadata.first_requested_at, EXCLUDED.first_requested_at),
-                        parent_series_tmdb_id = EXCLUDED.parent_series_tmdb_id
+                        parent_series_tmdb_id = COALESCE(EXCLUDED.parent_series_tmdb_id, media_metadata.parent_series_tmdb_id)
                     WHERE media_metadata.in_library = FALSE AND media_metadata.subscription_status = 'NONE'
                       AND (EXCLUDED.subscription_sources_json = '[]'::jsonb OR NOT (media_metadata.subscription_sources_json @> EXCLUDED.subscription_sources_json));
                 """
@@ -118,8 +118,12 @@ def set_media_status_wanted(
                             subscription_status = 'WANTED',
                             subscription_sources_json = media_metadata.subscription_sources_json || EXCLUDED.subscription_sources_json,
                             first_requested_at = COALESCE(media_metadata.first_requested_at, EXCLUDED.first_requested_at),
-                            ignore_reason = NULL, parent_series_tmdb_id = EXCLUDED.parent_series_tmdb_id
-                        WHERE (media_metadata.in_library = FALSE OR (media_metadata.item_type = 'Series' AND EXCLUDED.subscription_sources_json->0->>'reason' LIKE 'missing_%%season'))
+                            ignore_reason = NULL, parent_series_tmdb_id = COALESCE(EXCLUDED.parent_series_tmdb_id, media_metadata.parent_series_tmdb_id)
+                        WHERE (
+                            media_metadata.in_library = FALSE 
+                            OR (media_metadata.item_type = 'Series' AND EXCLUDED.subscription_sources_json->0->>'reason' LIKE 'missing_%%season')
+                            OR (media_metadata.item_type = 'Season' AND EXCLUDED.subscription_sources_json->0->>'type' = 'gap_scan')
+                          )
                           AND media_metadata.subscription_status NOT IN ('SUBSCRIBED', 'IGNORED')
                           AND (EXCLUDED.subscription_sources_json = '[]'::jsonb OR NOT (media_metadata.subscription_sources_json @> EXCLUDED.subscription_sources_json));
                     """
@@ -151,7 +155,7 @@ def set_media_status_pending_release(
                         subscription_status = 'PENDING_RELEASE',
                         subscription_sources_json = media_metadata.subscription_sources_json || EXCLUDED.subscription_sources_json,
                         first_requested_at = COALESCE(media_metadata.first_requested_at, EXCLUDED.first_requested_at),
-                        ignore_reason = NULL, parent_series_tmdb_id = EXCLUDED.parent_series_tmdb_id
+                        ignore_reason = NULL, parent_series_tmdb_id = COALESCE(EXCLUDED.parent_series_tmdb_id, media_metadata.parent_series_tmdb_id)
                     WHERE media_metadata.in_library = FALSE AND media_metadata.subscription_status NOT IN ('SUBSCRIBED', 'WANTED')
                       AND (EXCLUDED.subscription_sources_json = '[]'::jsonb OR NOT (media_metadata.subscription_sources_json @> EXCLUDED.subscription_sources_json));
                 """
@@ -183,9 +187,19 @@ def set_media_status_subscribed(
                         subscription_status = 'SUBSCRIBED',
                         subscription_sources_json = media_metadata.subscription_sources_json || EXCLUDED.subscription_sources_json,
                         first_requested_at = COALESCE(media_metadata.first_requested_at, EXCLUDED.first_requested_at),
-                        last_subscribed_at = NOW(), last_synced_at = NOW(), ignore_reason = NULL, parent_series_tmdb_id = EXCLUDED.parent_series_tmdb_id
-                    WHERE media_metadata.in_library = FALSE
-                      AND (EXCLUDED.subscription_sources_json = '[]'::jsonb OR NOT (media_metadata.subscription_sources_json @> EXCLUDED.subscription_sources_json));
+                        last_subscribed_at = NOW(), 
+                        last_synced_at = NOW(), 
+                        ignore_reason = NULL, 
+                        parent_series_tmdb_id = COALESCE(EXCLUDED.parent_series_tmdb_id, media_metadata.parent_series_tmdb_id)
+                    WHERE 
+                        (
+                            media_metadata.in_library = FALSE 
+                            OR media_metadata.item_type = 'Season'
+                        )
+                        AND (
+                            EXCLUDED.subscription_sources_json = '[]'::jsonb 
+                            OR NOT (media_metadata.subscription_sources_json @> EXCLUDED.subscription_sources_json)
+                        );
                 """
                 execute_batch(cursor, sql, data_to_upsert)
                 if cursor.rowcount <= 0: logger.info(f"  ➜ [状态执行] 操作完成，但没有行受到影响（可能因为不满足前置条件）。")
@@ -215,7 +229,7 @@ def set_media_status_ignored(
                     ON CONFLICT (tmdb_id, item_type) DO UPDATE SET
                         subscription_status = 'IGNORED',
                         subscription_sources_json = media_metadata.subscription_sources_json || EXCLUDED.subscription_sources_json,
-                        ignore_reason = EXCLUDED.ignore_reason, last_synced_at = NOW(), parent_series_tmdb_id = EXCLUDED.parent_series_tmdb_id
+                        ignore_reason = EXCLUDED.ignore_reason, last_synced_at = NOW(), parent_series_tmdb_id = COALESCE(EXCLUDED.parent_series_tmdb_id, media_metadata.parent_series_tmdb_id)
                     WHERE media_metadata.in_library = FALSE
                       AND (EXCLUDED.subscription_sources_json = '[]'::jsonb OR NOT (media_metadata.subscription_sources_json @> EXCLUDED.subscription_sources_json));
                 """

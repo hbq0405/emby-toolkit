@@ -12,7 +12,7 @@
           </n-space>
         </template>
         <n-alert title="操作提示" type="info" style="margin-top: 24px;">
-          <li>本模块高度自动化，几乎无需人工干涉。新入库剧集，会自动判断是否完结，未完结剧集会自动更新集简介、检查是否缺失季、集，缺失的季会自动选择洗版订阅或普通订阅，缺集的季可手动选择洗版订阅或普通订阅。</li>
+          <li>本模块高度自动化，几乎无需人工干涉。新入库剧集，会自动判断是否完结，未完结剧集会自动更新集简介、检查是否缺失季、集，缺失的季会自动选择洗版订阅或普通订阅，缺集的季可设置洗版订阅或普通订阅。</li>
           <li>当剧集完结且所有集元数据完整后，会转入已完结列表，同时状态变更为待回归，后台定期会检查待回归剧集有新季上线会自动转成追剧中，并从上线之日开始自动订阅新季。</li>
           <li>所有缺失可由【统一订阅处理】任务自动订阅。</li>
         </n-alert>
@@ -49,6 +49,14 @@
               确定要扫描 Emby 媒体库中的所有剧集吗？<br />
               此操作会忽略已在列表中的剧集，只添加新的。
             </n-popconfirm>
+            <n-tooltip>
+              <template #trigger>
+                <n-button @click="triggerGapScan" :loading="isGapScanning" circle>
+                  <template #icon><n-icon :component="DownloadIcon" /></template>
+                </n-button>
+              </template>
+              扫描媒体库中所有剧集的缺集情况，并为中间缺失的季提交订阅请求
+            </n-tooltip>
             <n-tooltip>
               <template #trigger>
                 <n-button @click="triggerAllWatchlistUpdate" :loading="isBatchUpdating" circle>
@@ -268,6 +276,7 @@ const isBatchUpdating = ref(false);
 const error = ref(null);
 const showModal = ref(false);
 const isAddingAll = ref(false);
+const isGapScanning = ref(false);
 const selectedSeries = ref(null);
 const refreshingItems = ref({});
 const isTaskRunning = computed(() => props.taskStatus.is_running);
@@ -559,6 +568,18 @@ const addAllSeriesToWatchlist = async () => {
     message.error(err.response?.data?.error || '启动扫描任务失败。');
   } finally {
     isAddingAll.value = false;
+  }
+};
+
+const triggerGapScan = async () => {
+  isGapScanning.value = true;
+  try {
+    const response = await axios.post('/api/tasks/run', { task_name: 'scan-library-gaps' });
+    message.success(response.data.message || '媒体库缺集扫描任务已成功提交！');
+  } catch (err) {
+    message.error(err.response?.data?.error || '启动缺集扫描任务失败。');
+  } finally {
+    isGapScanning.value = false;
   }
 };
 
