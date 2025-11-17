@@ -230,8 +230,7 @@ def set_media_status_ignored(
                         subscription_status = 'IGNORED',
                         subscription_sources_json = media_metadata.subscription_sources_json || EXCLUDED.subscription_sources_json,
                         ignore_reason = EXCLUDED.ignore_reason, last_synced_at = NOW(), parent_series_tmdb_id = COALESCE(EXCLUDED.parent_series_tmdb_id, media_metadata.parent_series_tmdb_id)
-                    WHERE media_metadata.in_library = FALSE
-                      AND (EXCLUDED.subscription_sources_json = '[]'::jsonb OR NOT (media_metadata.subscription_sources_json @> EXCLUDED.subscription_sources_json));
+                    WHERE (EXCLUDED.subscription_sources_json = '[]'::jsonb OR NOT (media_metadata.subscription_sources_json @> EXCLUDED.subscription_sources_json));
                 """
                 execute_batch(cursor, sql, data_to_upsert)
                 if cursor.rowcount <= 0: logger.info(f"  ➜ [状态执行] 操作完成，但没有行受到影响（可能因为不满足前置条件）。")
