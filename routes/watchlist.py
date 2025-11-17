@@ -85,7 +85,7 @@ def api_update_watchlist_status():
     logger.info(f"  ➜ API (Blueprint): 收到请求，将项目 {item_id} 的追剧状态更新为 '{new_status}'。")
     try:
         success = watchlist_db.update_watchlist_item_status(
-            item_id=item_id,
+            tmdb_id=item_id,
             new_status=new_status
         )
         if success:

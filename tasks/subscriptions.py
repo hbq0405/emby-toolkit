@@ -493,6 +493,8 @@ def task_auto_subscribe(processor):
             success = False
             item_type = item['item_type']
 
+            series_name = ""
+
             mp_payload = {}
             best_version_flag = None
 
