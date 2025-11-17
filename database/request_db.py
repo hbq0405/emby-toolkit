@@ -96,13 +96,13 @@ def set_media_status_wanted(
 ):
     """
     将媒体状态设置为 'WANTED'。
-    【V3 - 海报回退增强版】
+    【V6 - 终极正确版】海报回退逻辑自给自足，不再依赖调用方。
     """
     data_to_upsert = _prepare_media_data_for_upsert(tmdb_ids, item_type, source, media_info_list)
     if not data_to_upsert: return
     try:
         with get_db_connection() as conn:
-            # ★★★★★★★★★★★★★★★ 新增：海报回退逻辑 ★★★★★★★★★★★★★★★
+            # ★★★★★★★★★★★★★★★ 终极核心修复：海报回退逻辑自给自足 ★★★★★★★★★★★★★★★
             # 1. 筛选出所有没有海报的“季”类型项目
             seasons_missing_poster = [
                 item for item in data_to_upsert 
@@ -115,7 +115,7 @@ def set_media_status_wanted(
                 # 2. 收集所有需要查询的父剧集ID
                 parent_ids = list({item['parent_series_tmdb_id'] for item in seasons_missing_poster})
                 
-                # 3. 一次性从数据库查出所有父剧集的海报
+                # 3. 自己动手，去数据库查出所有父剧集的海报
                 with conn.cursor() as cursor:
                     cursor.execute(
                         "SELECT tmdb_id, poster_path FROM media_metadata WHERE tmdb_id = ANY(%s) AND item_type = 'Series'", 
@@ -123,25 +123,23 @@ def set_media_status_wanted(
                     )
                     parent_poster_map = {row['tmdb_id']: row['poster_path'] for row in cursor.fetchall()}
                 
-                # 4. 遍历没有海报的季，为其填充父剧集的海报
+                # 4. 遍历没有海报的季，为它们“偷”来父剧集的海报
                 for item in seasons_missing_poster:
                     fallback_poster = parent_poster_map.get(item['parent_series_tmdb_id'])
                     if fallback_poster:
                         item['poster_path'] = fallback_poster
-                        logger.info(f"  ➜ 为季《{item.get('title', '未知')}》回退使用父剧集海報。")
+                        logger.info(f"  ➜ [海报回退] 为季《{item.get('title', '未知')}》填充父剧集海报。")
             # ★★★★★★★★★★★★★★★ 海报回退逻辑结束 ★★★★★★★★★★★★★★★
 
             with conn.cursor() as cursor:
                 from psycopg2.extras import execute_batch
                 if force_unignore:
-                    # force_unignore 逻辑保持不变
                     sql = """
                         UPDATE media_metadata SET subscription_status = 'WANTED', subscription_sources_json = subscription_sources_json || %(source)s::jsonb, ignore_reason = NULL, last_synced_at = NOW()
                         WHERE tmdb_id = %(tmdb_id)s AND item_type = %(item_type)s AND subscription_status = 'IGNORED' AND NOT (subscription_sources_json @> %(source)s::jsonb);
                     """
                     execute_batch(cursor, sql, data_to_upsert)
                 else:
-                    # 主体SQL逻辑保持我们上次修复后的版本
                     sql = """
                         INSERT INTO media_metadata (tmdb_id, item_type, subscription_status, subscription_sources_json, first_requested_at, title, original_title, release_date, poster_path, season_number, parent_series_tmdb_id, overview)
                         VALUES (%(tmdb_id)s, %(item_type)s, 'WANTED', %(source)s::jsonb, NOW(), %(title)s, %(original_title)s, %(release_date)s, %(poster_path)s, %(season_number)s, %(parent_series_tmdb_id)s, %(overview)s)
@@ -151,7 +149,6 @@ def set_media_status_wanted(
                             first_requested_at = COALESCE(media_metadata.first_requested_at, EXCLUDED.first_requested_at),
                             ignore_reason = NULL, 
                             parent_series_tmdb_id = COALESCE(EXCLUDED.parent_series_tmdb_id, media_metadata.parent_series_tmdb_id),
-                            -- 确保海报也能被更新
                             poster_path = COALESCE(EXCLUDED.poster_path, media_metadata.poster_path)
                         WHERE
                             media_metadata.subscription_status NOT IN ('SUBSCRIBED', 'IGNORED')
