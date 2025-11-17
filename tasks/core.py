@@ -206,7 +206,7 @@ def get_task_registry(context: str = 'all'):
         'resubscribe-library': (task_resubscribe_library, "媒体洗版订阅", 'media', False),
         'update-daily-theme': (task_update_daily_theme, "更新每日主题", 'media', False),
         'manual_subscribe_batch': (task_manual_subscribe_batch, "手动订阅处理", 'media', False),
-        'scan-library-gaps': (task_scan_library_gaps, "扫描缺集的季", 'watchlist', True),
+        'scan-library-gaps': (task_scan_library_gaps, "扫描缺集的季", 'watchlist', False),
     }
 
     if context == 'chain':

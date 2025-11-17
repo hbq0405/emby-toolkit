@@ -255,15 +255,13 @@ def ensure_media_record_exists(media_info_list: List[Dict[str, Any]]):
 
 def get_all_non_library_media() -> List[Dict[str, Any]]:
     """
-    【V3 - 智能标题拼接版】获取所有不在媒体库中的媒体项，用于前端统一管理。
-    当项目类型为 Season 时，会自动查询并拼接父剧集的标题。
+    【V3.1 - 链接修复版】获取所有不在媒体库中的媒体项，用于前端统一管理。
+    当项目类型为 Season 时，会自动查询并拼接父剧集的标题，并额外提供父剧集的TMDb ID用于生成正确的链接。
     """
-    # ★★★ 核心修改：使用 LEFT JOIN 和 CASE 语句来智能构建标题 ★★★
     sql = """
         SELECT 
             m1.tmdb_id, 
             m1.item_type, 
-            -- ★★★ 核心修改：无论原始季名是什么，都拼接成“第 X 季” ★★★
             CASE 
                 WHEN m1.item_type = 'Season' THEN COALESCE(m2.title, '未知剧集') || ' 第 ' || m1.season_number || ' 季 '
                 ELSE m1.title 
@@ -274,7 +272,12 @@ def get_all_non_library_media() -> List[Dict[str, Any]]:
             m1.ignore_reason, 
             m1.subscription_sources_json,
             m1.first_requested_at,
-            m1.last_subscribed_at
+            m1.last_subscribed_at,
+            CASE
+                WHEN m1.item_type = 'Series' THEN m1.tmdb_id -- 如果是剧集本身，父ID就是自己
+                WHEN m1.item_type = 'Season' THEN m1.parent_series_tmdb_id -- 如果是季，就用parent_series_tmdb_id
+                ELSE NULL -- 电影没有父剧集ID
+            END AS series_tmdb_id
         FROM 
             media_metadata AS m1
         LEFT JOIN 
@@ -282,12 +285,9 @@ def get_all_non_library_media() -> List[Dict[str, Any]]:
         ON 
             m1.parent_series_tmdb_id = m2.tmdb_id AND m2.item_type = 'Series'
         WHERE 
-            -- 规则：订阅状态必须是我们需要关注的
             m1.subscription_status IN ('WANTED', 'PENDING_RELEASE', 'IGNORED', 'SUBSCRIBED')
             AND (
-                -- 条件1：媒体项本身不在库中（适用于电影和整部剧集）
                 m1.in_library = FALSE 
-                -- 条件2：或者，它是一个“季”（适用于填补已在库剧集的缺失季）
                 OR m1.item_type = 'Season'
             )
         ORDER BY 
@@ -499,4 +499,68 @@ def get_in_library_status_for_tmdb_ids(tmdb_ids: List[str]) -> Dict[str, bool]:
         logger.error(f"DB: 批量查询 TMDB ID 的在库状态失败: {e}", exc_info=True)
         return {}
     
+def get_all_children_for_series_batch(parent_series_tmdb_ids: List[str]) -> set:
+    """
+    根据父剧集ID列表，批量获取所有已存在的子项（季、集）的TMDB ID。
+    返回一个集合(set)，用于进行高性能的查找。
+    """
+    if not parent_series_tmdb_ids:
+        return set()
+    
+    sql = """
+        SELECT tmdb_id FROM media_metadata 
+        WHERE parent_series_tmdb_id = ANY(%s) AND item_type IN ('Season', 'Episode');
+    """
+    try:
+        with get_db_connection() as conn:
+            with conn.cursor() as cursor:
+                cursor.execute(sql, (parent_series_tmdb_ids,))
+                return {str(row['tmdb_id']) for row in cursor.fetchall()}
+    except Exception as e:
+        logger.error(f"DB: 批量查询剧集子项ID时失败: {e}", exc_info=True)
+        return set()
+
+def batch_insert_media_metadata(records: List[Dict[str, Any]]):
+    """
+    使用 ON CONFLICT DO NOTHING 高效地批量插入媒体元数据记录。
+    如果记录已存在，则直接跳过，不做任何操作。
+    """
+    if not records:
+        return
+
+    try:
+        with get_db_connection() as conn:
+            with conn.cursor() as cursor:
+                from psycopg2.extras import execute_values
+                
+                sql = """
+                    INSERT INTO media_metadata (
+                        tmdb_id, item_type, parent_series_tmdb_id, title, overview, 
+                        release_date, poster_path, season_number, episode_number, in_library
+                    ) VALUES %s
+                    ON CONFLICT (tmdb_id, item_type) DO NOTHING;
+                """
+                
+                # 准备数据元组列表
+                data_tuples = [
+                    (
+                        str(rec.get("id")), # TMDb ID
+                        'Season' if rec.get("episode_count") is not None else 'Episode', # Item Type
+                        rec.get("parent_series_tmdb_id"), # Parent Series TMDB ID
+                        rec.get("name"), # Title
+                        rec.get("overview"), # Overview
+                        rec.get("air_date"), # Release Date
+                        rec.get("poster_path"), # Poster Path
+                        rec.get("season_number"), # Season Number
+                        rec.get("episode_number"), # Episode Number
+                        False # in_library, 默认为 False
+                    ) for rec in records
+                ]
+
+                execute_values(cursor, sql, data_tuples, page_size=1000)
+                logger.info(f"  ➜ [元数据补全] 尝试批量插入 {len(data_tuples)} 条缺失的子项记录，成功影响了 {cursor.rowcount} 行。")
+
+    except Exception as e:
+        logger.error(f"  ➜ [元数据补全] 批量插入缺失的子项记录时发生错误: {e}", exc_info=True)
+        raise
 

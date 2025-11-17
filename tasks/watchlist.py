@@ -259,61 +259,44 @@ def task_scan_library_gaps(processor):
         if not all_series_in_libs:
             progress_updater(100, "任务完成：在指定的媒体库中未找到任何剧集。")
             return
+        
+        all_series_tmdb_ids = [s['tmdb_id'] for s in all_series_in_libs if s.get('tmdb_id')]
+        
+        # 增加一个健壮性检查：如果筛选后没有任何有效的 TMDb ID，也直接退出
+        if not all_series_tmdb_ids:
+            progress_updater(100, "任务完成：媒体库中的剧集均缺少有效的 TMDb ID。")
+            return
 
         total_series = len(all_series_in_libs)
         logger.info(f"  ➜ 发现 {total_series} 部剧集，即将开始同步子项目元数据...")
         progress_updater(10, f"发现 {total_series} 部剧集，准备同步元数据...")
 
-        # ★★★ 步骤 2: (核心修复) 完整复制主流程的元数据同步逻辑 ★★★
-        for i, series in enumerate(all_series_in_libs):
-            if processor.is_stop_requested(): break
-            
-            tmdb_id = series['tmdb_id']
-            item_id = series['item_id'] # Emby ID
-            item_name = series['item_name']
-            
-            progress = 10 + int(((i + 1) / total_series) * 40) # 元数据同步占40%进度
-            progress_updater(progress, f"({i+1}/{total_series}) 同步元数据: {item_name[:20]}...")
+        # 步骤 2: 高性能元数据同步 
+        # a. 并发从 TMDb 拉取所有剧集的完整子项信息
+        progress_updater(15, f"正在从TMDb并发获取 {total_series} 部剧集的完整数据...")
+        tmdb_full_data = tmdb.batch_get_full_series_details_tmdb(all_series_tmdb_ids, processor.tmdb_api_key)
 
-            # a. 从 TMDB 获取完整的、最新的剧集和分集信息
-            latest_series_data = tmdb.get_tv_details(tmdb_id, processor.tmdb_api_key)
-            if not latest_series_data:
-                logger.warning(f"  ➜ 无法获取《{item_name}》的 TMDB 详情，跳过。")
-                continue
+        # b. 从本地数据库批量获取所有已存在的子项ID
+        progress_updater(40, "正在从本地数据库查询现有记录...")
+        existing_children_ids = media_db.get_all_children_for_series_batch(all_series_tmdb_ids)
 
-            all_tmdb_episodes = []
-            for season_summary in latest_series_data.get("seasons", []):
-                season_num = season_summary.get("season_number")
-                if season_num is None: continue
-                # 注意：这里我们使用 get_season_details 而不是 get_season_details_tmdb，假设前者是更通用的函数
-                season_details = tmdb.get_season_details_tmdb(tmdb_id, season_num, processor.tmdb_api_key)
-                if season_details and season_details.get("episodes"):
-                    all_tmdb_episodes.extend(season_details.get("episodes", []))
-                time.sleep(0.1)
-
-            # b. 获取本地 Emby 的在库信息，并验证文件路径
-            emby_children = emby.get_series_children(
-                item_id, 
-                processor.emby_url, 
-                processor.emby_api_key, 
-                processor.emby_user_id,
-                fields="Id,Name,ParentIndexNumber,IndexNumber,Type,Path"
-            )
-            emby_seasons = {}
-            if emby_children:
-                for child in emby_children:
-                    if child.get('Path'): # 只处理有真实路径的媒体项
-                        s_num, e_num = child.get('ParentIndexNumber'), child.get('IndexNumber')
-                        if s_num is not None and e_num is not None:
-                            emby_seasons.setdefault(s_num, set()).add(e_num)
-            
-            # c. 调用核心函数，将所有信息同步到数据库
-            media_db.sync_series_children_metadata(
-                parent_tmdb_id=tmdb_id,
-                seasons=latest_series_data.get("seasons", []),
-                episodes=all_tmdb_episodes,
-                local_in_library_info=emby_seasons
-            )
+        # c. 计算差异：找出 TMDb 上有但本地数据库没有的记录
+        progress_updater(45, "正在对比数据，计算缺失的元数据记录...")
+        missing_records_to_insert = []
+        for series_id, children in tmdb_full_data.items():
+            for child_item in children:
+                child_tmdb_id = str(child_item.get("id"))
+                if child_tmdb_id not in existing_children_ids:
+                    # 这是一个新记录，需要添加到待插入列表
+                    child_item['parent_series_tmdb_id'] = series_id # 补充父ID
+                    missing_records_to_insert.append(child_item)
+        
+        # d. 将所有缺失的记录一次性批量写入数据库
+        if missing_records_to_insert:
+            progress_updater(50, f"发现 {len(missing_records_to_insert)} 条缺失记录，正在批量写入数据库...")
+            media_db.batch_insert_media_metadata(missing_records_to_insert)
+        else:
+            progress_updater(50, "元数据完整性检查完成，无需补充新记录。")
 
         if processor.is_stop_requested():
             progress_updater(100, "任务已中止。")

@@ -145,7 +145,7 @@
                     </template>
                   </n-button-group>
                   <n-tooltip>
-                    <template #trigger><n-button text tag="a" :href="`https://www.themoviedb.org/${item.item_type === 'Movie' ? 'movie' : 'tv'}/${item.tmdb_id}`" target="_blank"><template #icon><n-icon :component="TMDbIcon" size="18" /></template></n-button></template>
+                    <template #trigger><n-button text tag="a" :href="getTMDbLink(item)" target="_blank"><template #icon><n-icon :component="TMDbIcon" size="18" /></template></n-button></template>
                     在 TMDb 中打开
                   </n-tooltip>
                 </div>
@@ -322,6 +322,18 @@ const emptyStateDescription = computed(() => {
   }
   return '当前列表为空。';
 });
+
+const getTMDbLink = (item) => {
+  if (item.item_type === 'Movie') {
+    return `https://www.themoviedb.org/movie/${item.tmdb_id}`;
+  }
+  // 对于剧集或季，都使用 series_tmdb_id (后端已提供)
+  if (item.series_tmdb_id) {
+    return `https://www.themoviedb.org/tv/${item.series_tmdb_id}`;
+  }
+  // 安全回退
+  return `https://www.themoviedb.org/`;
+};
 
 const toggleSelection = (item, event, index) => {
   if (!event) return;

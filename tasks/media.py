@@ -442,7 +442,7 @@ def task_populate_metadata_cache(processor, batch_size: int = 50, force_full_upd
                         tmdb_child_info = tmdb_children_map.get(lookup_key)
 
                         if tmdb_child_info:
-                            child_record.update({ "tmdb_id": str(tmdb_child_info.get('id')), "title": tmdb_child_info.get('name'), "release_date": tmdb_child_info.get('air_date'), "overview": tmdb_child_info.get('overview') })
+                            child_record.update({ "tmdb_id": str(tmdb_child_info.get('id')), "title": tmdb_child_info.get('name'), "release_date": tmdb_child_info.get('air_date'), "overview": tmdb_child_info.get('overview'), "poster_path": tmdb_child_info.get('poster_path') })
                         else:
                             child_record.update({ "tmdb_id": f"{series_tmdb_id}-{lookup_key}", "title": child.get('Name'), "overview": child.get('Overview') })
 
