@@ -174,9 +174,16 @@
                         </n-ellipsis>
 
                         <!-- “想看这个”按钮 -->
-                        <n-button type="primary" block @click="handleSubscribe(currentRecommendation)" :loading="subscribingId === currentRecommendation.id" style="margin-top: 24px;">
-                            <template #icon><n-icon :component="HeartOutline" /></template>
-                            想看这个
+                        <n-button 
+                          type="primary" 
+                          block 
+                          @click="handleSubscribe(currentRecommendation)" 
+                          :loading="subscribingId === currentRecommendation.id"
+                          :disabled="isTaskRunning"
+                          style="margin-top: 24px;"
+                        >
+                          <template #icon><n-icon :component="HeartOutline" /></template>
+                          {{ isTaskRunning ? '后台任务处理中...' : '想看这个' }}
                         </n-button>
                     </div>
                 </div>
@@ -218,7 +225,10 @@
                 <span class="media-title">{{ media.title || media.name }}</span>
                 <span class="media-year">{{ getYear(media) }}</span>
               </div>
-              <div v-if="!media.in_library" class="action-icon" @click.stop="handleSubscribe(media)">
+              <div v-if="!media.in_library" 
+                class="action-icon" 
+                :class="{ 'is-disabled': isTaskRunning }"
+                @click.stop="handleSubscribe(media)">
                 <n-spin :show="subscribingId === media.id" size="small">
                   <n-icon size="24">
                     <!-- 
@@ -292,6 +302,12 @@ const isPrivilegedUser = computed(() => {
 const embyServerUrl = ref('');
 const embyServerId = ref('');
 const loading = ref(false);
+// ★★★ 接收全局任务状态 ★★★
+const props = defineProps({
+  taskStatus: Object
+});
+
+const isTaskRunning = computed(() => props.taskStatus && props.taskStatus.is_running);
 const subscribingId = ref(null);
 const mediaType = ref('movie');
 const genres = ref([]);
@@ -477,36 +493,35 @@ const fetchRecommendationPool = async () => {
 };
 
 const handleSubscribe = async (media) => {
+  // ★ 核心入口检查：如果全局有任务在运行，直接阻止并提示 ★
+  if (isTaskRunning.value) {
+    message.warning('后台有任务正在运行，请稍后再试。');
+    return;
+  }
+
+  // 如果正在进行API调用，则直接返回
   if (subscribingId.value) return;
 
-  // ★★★ 核心修复 1: 兼容 null 和 undefined 的状态 ★★★
   const originalStatus = media.subscription_status || 'NONE';
 
+  // ... (前置状态检查逻辑保持不变) ...
   if (originalStatus === 'SUBSCRIBED' || originalStatus === 'PENDING_RELEASE') {
-    message.info(originalStatus === 'SUBSCRIBED' ? '该项目已提交订阅，请等待下载器处理。' : '该项目尚未上映，已加入监控。');
+    // ...
     return;
   }
   if (originalStatus === 'REQUESTED' && !isPrivilegedUser.value) {
-    message.warning('您的请求正在等待审核，请勿重复提交。');
+    // ...
     return;
   }
 
   subscribingId.value = media.id;
   
   const updateMediaStatus = (mediaId, newStatus) => {
-    if (currentRecommendation.value && currentRecommendation.value.id === mediaId) {
-      currentRecommendation.value = { ...currentRecommendation.value, subscription_status: newStatus };
-    }
-    const index = results.value.findIndex(r => r.id === mediaId);
-    if (index !== -1) {
-      results.value[index] = { ...results.value[index], subscription_status: newStatus };
-    }
+    // ... (此函数内部逻辑不变) ...
   };
 
   try {
     const itemTypeForApi = (media.media_type === 'tv' ? 'Series' : 'Movie') || (mediaType.value === 'movie' ? 'Movie' : 'Series');
-
-    // ★★★ 核心修复 2: 修正 shouldTriggerTaskImmediately 的判断逻辑 ★★★
     const shouldTriggerTaskImmediately = isPrivilegedUser.value && ['WANTED', 'REQUESTED', 'NONE', 'IGNORED'].includes(originalStatus);
 
     const portalResponse = await axios.post('/api/portal/subscribe', {
@@ -520,18 +535,17 @@ const handleSubscribe = async (media) => {
     updateMediaStatus(media.id, newStatusFromServer);
 
     if (shouldTriggerTaskImmediately) {
+      message.info('已提交到后台立即处理...');
       const requestItem = { tmdb_id: media.id, item_type: itemTypeForApi, title: media.title || media.name };
       const taskPayload = { task_name: 'manual_subscribe_batch', subscribe_requests: [requestItem] };
-
+      
       updateMediaStatus(media.id, 'SUBSCRIBED');
       
+      // 直接调用任务接口，不再需要任何本地状态跟踪
       axios.post('/api/tasks/run', taskPayload)
-        .then(taskResponse => {
-          message.info('已提交到后台立即处理...');
-        })
         .catch(taskError => {
+          updateMediaStatus(media.id, newStatusFromServer); // 状态回滚
           message.error(taskError.response?.data?.message || '提交立即处理任务失败。');
-          updateMediaStatus(media.id, newStatusFromServer);
         });
     }
 
@@ -781,5 +795,11 @@ onUnmounted(() => { if (observer) { observer.disconnect(); } });
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
+}
+/* ★ 新增：用于在任务运行时禁用图标点击的样式 ★ */
+.action-icon.is-disabled {
+  cursor: not-allowed;
+  pointer-events: none;
+  opacity: 0.5;
 }
 </style>

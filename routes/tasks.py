@@ -5,7 +5,7 @@ from flask import Blueprint, request, jsonify
 
 # 导入您项目中用于管理和执行任务的核心模块
 import task_manager 
-from extensions import admin_required, processor_ready_required
+from extensions import admin_required, processor_ready_required, task_lock_required
 # ★★★ 导入任务注册表，这是“翻译”的关键 ★★★
 from tasks import get_task_registry
 
@@ -37,6 +37,7 @@ def get_available_tasks():
 
 @tasks_bp.route('/run', methods=['POST'])
 @admin_required
+@task_lock_required
 @processor_ready_required
 def run_task():
     """
@@ -44,11 +45,6 @@ def run_task():
     一个通用的、用于从前端触发后台任务的API端点。
     它会从任务注册表中查找任务所需处理器的类型，并精确地提交给任务管理器。
     """
-    if task_manager.is_task_running():
-        running_task_name = task_manager.get_task_status().get('current_action', '未知任务')
-        logger.warning(f"任务提交被拒绝：已有任务 '{running_task_name}' 正在运行。")
-        return jsonify({"error": f"任务提交失败，已有任务 '{running_task_name}' 正在运行。"}), 409
-
     data = request.get_json()
     if not data or 'task_name' not in data:
         return jsonify({"error": "请求体中缺少 'task_name' 参数"}), 400
