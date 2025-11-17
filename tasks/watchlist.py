@@ -273,8 +273,11 @@ def task_scan_library_gaps(processor):
 
         # 步骤 2: 高性能元数据同步 
         # a. 并发从 TMDb 拉取所有剧集的完整子项信息
-        progress_updater(15, f"正在从TMDb并发获取 {total_series} 部剧集的完整数据...")
-        tmdb_full_data = tmdb.batch_get_full_series_details_tmdb(all_series_tmdb_ids, processor.tmdb_api_key)
+        tmdb_full_data = tmdb.batch_get_full_series_details_tmdb(
+            all_series_tmdb_ids, 
+            processor.tmdb_api_key,
+            progress_callback=progress_updater  
+        )
 
         # b. 从本地数据库批量获取所有已存在的子项ID
         progress_updater(40, "正在从本地数据库查询现有记录...")

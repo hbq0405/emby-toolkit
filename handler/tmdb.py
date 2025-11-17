@@ -6,10 +6,11 @@ from urllib3.util.retry import Retry
 import json
 import concurrent.futures
 from utils import contains_chinese, normalize_name_for_matching
-from typing import Optional, List, Dict, Any
+from typing import Optional, List, Dict, Any, Callable
 import logging
 import config_manager
 import constants
+import threading
 logger = logging.getLogger(__name__)
 
 # ★★★ 自定义的重试类，用于输出更友好的日志 ★★★
@@ -243,11 +244,16 @@ def get_tv_season_details(tv_id: int, season_number: int, api_key: str) -> Optio
         append_to_response=None
     )
 # --- 接收一个剧集 TMDB ID 列表，并发地获取所有这些剧集的完整子项（季、集）信息 ---
-def batch_get_full_series_details_tmdb(series_tmdb_ids: List[str], api_key: str, max_workers: int = 5) -> Dict[str, List[Dict]]:
+def batch_get_full_series_details_tmdb(
+    series_tmdb_ids: List[str], 
+    api_key: str, 
+    max_workers: int = 10,
+    progress_callback: Optional[Callable] = None  # <-- 新增的回调函数参数
+) -> Dict[str, List[Dict]]:
     """
-    【V1 - 高性能优化版】
+    【V1.1 - 进度回调版】
     接收一个剧集 TMDB ID 列表，并发地获取所有这些剧集的完整子项（季、集）信息。
-    返回一个字典，键是父剧集的 TMDB ID，值是包含其所有季和集详情的字典列表。
+    支持一个可选的 progress_callback 函数，用于实时报告下载进度。
     """
     if not series_tmdb_ids or not api_key:
         return {}
@@ -255,30 +261,28 @@ def batch_get_full_series_details_tmdb(series_tmdb_ids: List[str], api_key: str,
     logger.info(f"  ➜ 开始为 {len(series_tmdb_ids)} 部剧集并发聚合 TMDB 子项数据 (并发数: {max_workers})...")
     
     all_children_data = {}
+    # 新增：用于线程安全地更新进度的计数器和锁
+    completed_count = 0
+    lock = threading.Lock()
+    total_tasks = len(series_tmdb_ids)
 
     def _fetch_one_series_all_children(tv_id: str) -> Optional[List[Dict]]:
         """线程工作函数：获取单部剧集的所有子项"""
         try:
-            # 1. 获取顶层剧集详情，主要是为了拿到季列表
             series_details = get_tv_details(tv_id, api_key, append_to_response="seasons")
             if not series_details or not series_details.get("seasons"):
                 logger.warning(f"    ➜ 无法获取剧集 {tv_id} 的季列表，跳过。")
                 return None
 
             children = []
-            # 2. 遍历所有季，获取每一季的详情（包含了集列表）
             for season_summary in series_details.get("seasons", []):
                 season_num = season_summary.get("season_number")
                 if season_num is None or season_num == 0:
                     continue
                 
-                # 添加季本身的信息
                 children.append(season_summary)
-
-                # 获取该季的详细信息，里面包含了所有集
                 season_details = get_season_details_tmdb(tv_id, season_num, api_key)
                 if season_details and season_details.get("episodes"):
-                    # 添加该季下所有集的信息
                     children.extend(season_details["episodes"])
             
             return children
@@ -297,6 +301,18 @@ def batch_get_full_series_details_tmdb(series_tmdb_ids: List[str], api_key: str,
                     all_children_data[tv_id] = result
             except Exception as exc:
                 logger.error(f"    剧集 {tv_id} 的并发任务执行时产生异常: {exc}")
+            finally:
+                # ★★★ 核心修改：无论成功失败，都更新进度 ★★★
+                if progress_callback:
+                    with lock:
+                        completed_count += 1
+                    
+                    # 我们将这个阶段的进度条范围定在 15% 到 40% 之间 (总共 25% 的空间)
+                    # 计算当前进度在整个任务中的百分比
+                    progress_percent = 15 + (completed_count / total_tasks) * 25
+                    message = f"正在从TMDb并发获取... ({completed_count}/{total_tasks})"
+                    # 调用回调函数，将进度和消息传出去
+                    progress_callback(int(progress_percent), message)
 
     logger.info(f"  ➜ 成功为 {len(all_children_data)} 部剧集获取了完整的子项元数据。")
     return all_children_data
