@@ -21,7 +21,7 @@ from watchlist_processor import STATUS_WATCHING, STATUS_PAUSED, STATUS_COMPLETED
 logger = logging.getLogger(__name__)
 
 # --- 追剧 ---    
-def task_process_watchlist(processor, item_id: Optional[str] = None, force_full_update: bool = False):
+def task_process_watchlist(processor, tmdb_id: Optional[str] = None, force_full_update: bool = False):
     """
     【V9 - 启动器】
     调用处理器实例来执行追剧任务，并处理UI状态更新。
@@ -33,16 +33,14 @@ def task_process_watchlist(processor, item_id: Optional[str] = None, force_full_
     try:
         processor.run_regular_processing_task_concurrent(
             progress_callback=progress_updater, 
-            item_id=item_id,
+            tmdb_id=tmdb_id, # <--- 将接收到的 tmdb_id 传递给处理器
             force_full_update=force_full_update
         )
 
     except Exception as e:
         task_name = "追剧列表更新"
-        if force_full_update:
-            task_name += " (深度模式)"
-        if item_id:
-            task_name = f"单项追剧更新 (ID: {item_id})"
+        if force_full_update: task_name += " (深度模式)"
+        if tmdb_id: task_name = f"单项追剧更新 (TMDb ID: {tmdb_id})"
         logger.error(f"执行 '{task_name}' 时发生顶层错误: {e}", exc_info=True)
         progress_updater(-1, f"启动任务时发生错误: {e}")
 
