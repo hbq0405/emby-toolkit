@@ -102,7 +102,7 @@ def api_remove_from_watchlist(item_id):
     logger.info(f"  ➜ API (Blueprint): 收到请求，将项目 {item_id} 从追剧列表移除。")
     try:
         success = watchlist_db.remove_item_from_watchlist(
-            item_id=item_id
+            tmdb_id=item_id 
         )
         if success:
             return jsonify({"message": "已从追剧列表移除"}), 200

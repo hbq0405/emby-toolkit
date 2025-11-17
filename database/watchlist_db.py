@@ -348,3 +348,49 @@ def find_season_tmdb_ids_with_gaps(series_tmdb_ids: List[str]) -> List[Dict[str,
     except Exception as e:
         logger.error(f"DB: 查找缺集的季时发生错误: {e}", exc_info=True)
         return []
+    
+def batch_update_gaps_info(gaps_data: Dict[str, List[int]]):
+    """
+    批量更新多个剧集的“中间缺集”信息。
+    这个函数会覆盖 watchlist_missing_info_json->'seasons_with_gaps' 的内容。
+    如果一个剧集 ID 在 gaps_data 中对应一个空列表，则会清空它的缺集标记。
+
+    :param gaps_data: 一个字典，键是 series_tmdb_id，值是包含缺集季号的列表。
+                      例如: {'12345': [1, 3], '67890': []}
+    """
+    if not gaps_data:
+        return
+
+    # 将字典转换为适合 execute_values 的元组列表
+    # 我们需要将季号列表转换为 JSON 字符串
+    update_values = [
+        (tmdb_id, json.dumps(season_numbers))
+        for tmdb_id, season_numbers in gaps_data.items()
+    ]
+
+    sql = """
+        UPDATE media_metadata AS mm
+        SET
+            -- 使用 jsonb_set 函数来精确地插入或替换 'seasons_with_gaps' 键
+            -- COALESCE 确保即使原始 json 是 NULL 也能正常工作
+            watchlist_missing_info_json = jsonb_set(
+                COALESCE(mm.watchlist_missing_info_json, '{}'::jsonb),
+                '{seasons_with_gaps}',
+                v.gaps_json::jsonb,
+                true -- 如果键不存在，则创建它
+            )
+        FROM (
+            VALUES %s
+        ) AS v(tmdb_id, gaps_json)
+        WHERE mm.tmdb_id = v.tmdb_id AND mm.item_type = 'Series';
+    """
+    try:
+        with get_db_connection() as conn:
+            from psycopg2.extras import execute_values
+            with conn.cursor() as cursor:
+                execute_values(cursor, sql, update_values, page_size=1000)
+            conn.commit()
+            logger.info(f"DB: 成功批量更新了 {len(gaps_data)} 个剧集的中间缺集信息。")
+    except Exception as e:
+        logger.error(f"DB: 批量更新中间缺集信息时发生错误: {e}", exc_info=True)
+        raise

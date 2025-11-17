@@ -325,15 +325,46 @@ def task_scan_library_gaps(processor):
         
         all_series_tmdb_ids = [s['tmdb_id'] for s in all_series_in_libs if s.get('tmdb_id')]
         seasons_with_gaps = watchlist_db.find_season_tmdb_ids_with_gaps(all_series_tmdb_ids)
+
+        # --------------------------------------------------------------------------
+        # 步骤 4: 整合缺集数据并批量更新到数据库，供前端显示
+        # --------------------------------------------------------------------------
+        logger.info("  ➜ 正在整合缺集分析结果，准备更新前端显示数据...")
+        progress_updater(55, "正在整合分析结果...")
+
+        # a. 将查询结果从列表转换为更易于处理的字典
+        gaps_by_series = {}
+        for gap_info in seasons_with_gaps:
+            series_id = gap_info['parent_series_tmdb_id']
+            season_num = gap_info['season_number']
+            gaps_by_series.setdefault(series_id, set()).add(season_num)
+
+        # b. 构建最终的更新数据，包含所有被扫描的剧集
+        final_gaps_data_to_update = {}
+        for series_id in all_series_tmdb_ids:
+            # 如果剧集在 gaps_by_series 中，说明它有缺集，我们用季号列表更新
+            # 否则，说明它没有缺集，我们用一个空列表来清空旧的标记
+            found_gaps = sorted(list(gaps_by_series.get(series_id, set())))
+            final_gaps_data_to_update[series_id] = found_gaps
+        
+        # c. 调用新的数据库函数进行一次性批量更新
+        if final_gaps_data_to_update:
+            try:
+                watchlist_db.batch_update_gaps_info(final_gaps_data_to_update)
+                logger.info("  ➜ 成功将最新的缺集信息同步到所有被扫描的剧集中。")
+            except Exception as e_update_gaps:
+                logger.error(f"  ➜ 更新缺集显示信息时发生错误: {e_update_gaps}", exc_info=True)
+        
+        progress_updater(60, "缺集信息已更新，准备提交订阅...")
         
         if not seasons_with_gaps:
             progress_updater(100, "分析完成：媒体库中的所有剧集均无“中间缺失”的季。")
             return
 
-        # ★★★ 4. 一次性批量提交所有订阅请求 ★★★
+        # ★★★ 5. 一次性批量提交所有订阅请求 ★★★
         total_seasons_to_sub = len(seasons_with_gaps)
         logger.info(f"  ➜ 分析完成！共发现 {total_seasons_to_sub} 个存在中间缺失的季需要订阅。")
-        progress_updater(50, f"发现 {total_seasons_to_sub} 个缺集的季，准备提交订阅...")
+        progress_updater(60, f"发现 {total_seasons_to_sub} 个缺集的季，准备提交订阅...")
         
         series_info_map = {s['tmdb_id']: s for s in all_series_in_libs if s.get('tmdb_id')}
         media_info_batch_for_sub = []
@@ -363,7 +394,7 @@ def task_scan_library_gaps(processor):
             )
 
         final_message = f"任务完成！共为 {len(media_info_batch_for_sub)} 个缺集的季提交了订阅请求。"
-        progress_updater(100, final_message)
+        progress_updater(60, final_message)
 
     except Exception as e:
         logger.error(f"执行 '{task_name}' 时发生严重错误: {e}", exc_info=True)

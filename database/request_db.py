@@ -120,7 +120,7 @@ def set_media_status_wanted(
                             first_requested_at = COALESCE(media_metadata.first_requested_at, EXCLUDED.first_requested_at),
                             ignore_reason = NULL, parent_series_tmdb_id = COALESCE(EXCLUDED.parent_series_tmdb_id, media_metadata.parent_series_tmdb_id)
                         WHERE (
-                            media_metadata.in_library = FALSE 
+                            media_metadata.in_library = FALSE
                             OR (media_metadata.item_type = 'Series' AND EXCLUDED.subscription_sources_json->0->>'reason' LIKE 'missing_%%season')
                             OR (media_metadata.item_type = 'Season' AND EXCLUDED.subscription_sources_json->0->>'type' = 'gap_scan')
                           )
