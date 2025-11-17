@@ -46,26 +46,6 @@ def task_process_watchlist(processor, item_id: Optional[str] = None, force_full_
         logger.error(f"执行 '{task_name}' 时发生顶层错误: {e}", exc_info=True)
         progress_updater(-1, f"启动任务时发生错误: {e}")
 
-# ★★★ 只更新追剧列表中的一个特定项目 ★★★
-def task_refresh_single_watchlist_item(processor, item_id: str):
-    """
-    【V11 - 新增】后台任务：只刷新追剧列表中的一个特定项目。
-    这是一个职责更明确的函数，专门用于手动触发。
-    """
-    # 定义一个可以传递给处理器的回调函数
-    def progress_updater(progress, message):
-        task_manager.update_status_from_thread(progress, message)
-
-    try:
-        # 直接调用处理器的主方法，并将 item_id 传入
-        # 这会执行完整的元数据刷新、状态检查和数据库更新流程
-        processor.run_regular_processing_task_concurrent(progress_callback=progress_updater, item_id=item_id)
-
-    except Exception as e:
-        task_name = f"单项追剧刷新 (ID: {item_id})"
-        logger.error(f"执行 '{task_name}' 时发生顶层错误: {e}", exc_info=True)
-        progress_updater(-1, f"启动任务时发生错误: {e}")
-
 # ★★★ 低频任务 - 检查已完结剧集是否复活 ★★★
 def task_run_revival_check(processor):
     """

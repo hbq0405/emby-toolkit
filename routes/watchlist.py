@@ -115,19 +115,22 @@ def api_remove_from_watchlist(item_id):
 @watchlist_bp.route('/refresh/<item_id>', methods=['POST'])
 @admin_required
 def api_trigger_single_watchlist_refresh(item_id):
-    from tasks import task_refresh_single_watchlist_item # 延迟导入任务函数
+    # ★★★★★★★★★★★★★★★ 核心修复：直接调用主任务函数 ★★★★★★★★★★★★★★★
+    # 1. 导入主任务函数，而不是那个快捷方式
+    from tasks import task_process_watchlist 
+    
     logger.trace(f"API (Blueprint): 收到对单个追剧项目 {item_id} 的刷新请求。")
     if not extensions.watchlist_processor_instance:
         return jsonify({"error": "追剧处理模块未就绪"}), 503
 
     item_name = watchlist_db.get_watchlist_item_name(item_id) or "未知剧集"
 
+    # 2. 直接提交主任务，并将 item_id 作为关键字参数传递
     task_manager.submit_task(
-        task_refresh_single_watchlist_item,
+        task_process_watchlist,  # <--- 使用主任务
         f"手动刷新: {item_name}",
         processor_type='watchlist',
-        item_id=item_id
-        
+        item_id=item_id  # <--- 将 item_id 作为参数传递给 task_process_watchlist
     )
     
     return jsonify({"message": f"《{item_name}》的刷新任务已在后台启动！"}), 202
