@@ -80,14 +80,15 @@ def sync_and_subscribe_native_collections():
     in_library_tmdb_ids = set(media_db.get_media_in_library_status_by_tmdb_ids(all_movie_tmdb_ids).keys())
     logger.info(f"  ➜ 扫描涉及 {len(all_movie_tmdb_ids)} 部有效电影，其中 {len(in_library_tmdb_ids)} 部真正在库。")
 
-    released_requests = []
-    unreleased_requests = []
-    
+    total_missing_released = 0
+    total_missing_unreleased = 0    
     for collection in emby_collections:
         emby_collection_id = collection.get('emby_collection_id')
         tmdb_details = collection_tmdb_details_map.get(emby_collection_id)
         
         if not tmdb_details: continue
+
+        logger.info(f"  处理合集: '{collection.get('name')}' (ID: {emby_collection_id})")
 
         authoritative_tmdb_ids = {str(part['id']) for part in tmdb_details['parts'] if part.get('id')}
         truly_missing_tmdb_ids = list(authoritative_tmdb_ids - in_library_tmdb_ids)
@@ -104,6 +105,14 @@ def sync_and_subscribe_native_collections():
             'in_library_count': in_library_count
         })
 
+        if not truly_missing_tmdb_ids:
+            logger.info("    └ 该合集无缺失电影。")
+            continue
+
+        # ★★★ 改造点 2: 创建仅用于当前合集的临时请求列表 ★★★
+        collection_released_requests = []
+        collection_unreleased_requests = []
+
         for tmdb_id in truly_missing_tmdb_ids:
             part_details = all_movie_parts.get(tmdb_id)
             if not part_details: continue
@@ -113,32 +122,46 @@ def sync_and_subscribe_native_collections():
                 'tmdb_id': tmdb_id, 'title': part_details.get('title'),
                 'original_title': part_details.get('original_title'), 'release_date': release_date,
                 'poster_path': part_details.get('poster_path'), 'overview': part_details.get('overview'),
+                # 这里的 source 对于当前循环内的所有电影都是正确的
                 'source': {'type': 'native_collection', 'id': emby_collection_id, 'name': collection.get('name')}
             }
 
             if release_date and release_date > today_str:
-                unreleased_requests.append(media_info)
+                collection_unreleased_requests.append(media_info)
             else:
-                released_requests.append(media_info)
+                collection_released_requests.append(media_info)
 
-    if released_requests:
-        logger.info(f"  ➜ 发现 {len(released_requests)} 个已上映的缺失电影，状态将设为 'WANTED'...")
-        request_db.set_media_status_wanted(
-            tmdb_ids=[req['tmdb_id'] for req in released_requests],
-            item_type='Movie',
-            source=released_requests[0]['source'], media_info_list=released_requests
-        )
+        # ★★★ 改造点 3: 在循环内部立即处理当前合集的缺失电影 ★★★
+        if collection_released_requests:
+            count = len(collection_released_requests)
+            total_missing_released += count
+            logger.info(f"    └ 发现 {count} 个已上映的缺失电影，状态将设为 'WANTED'...")
+            request_db.set_media_status_wanted(
+                tmdb_ids=[req['tmdb_id'] for req in collection_released_requests],
+                item_type='Movie',
+                # 这里的 source 肯定是正确的
+                source=collection_released_requests[0]['source'], 
+                media_info_list=collection_released_requests
+            )
         
-    if unreleased_requests:
-        logger.info(f"  ➜ 发现 {len(unreleased_requests)} 个未上映的电影，状态将设为 'PENDING_RELEASE'...")
-        request_db.set_media_status_pending_release(
-            tmdb_ids=[req['tmdb_id'] for req in unreleased_requests],
-            item_type='Movie',
-            source=unreleased_requests[0]['source'], media_info_list=unreleased_requests
-        )
+        if collection_unreleased_requests:
+            count = len(collection_unreleased_requests)
+            total_missing_unreleased += count
+            logger.info(f"    └ 发现 {count} 个未上映的电影，状态将设为 'PENDING_RELEASE'...")
+            request_db.set_media_status_pending_release(
+                tmdb_ids=[req['tmdb_id'] for req in collection_unreleased_requests],
+                item_type='Movie',
+                # 这里的 source 肯定是正确的
+                source=collection_unreleased_requests[0]['source'], 
+                media_info_list=collection_unreleased_requests
+            )
 
-    if not released_requests and not unreleased_requests:
-        logger.info("  ➜ 扫描完成，所有合集均无缺失。")
+    # ★★★ 改造点 4: 更新总结日志 ★★★
+    if total_missing_released > 0 or total_missing_unreleased > 0:
+        logger.info(f"--- 原生合集扫描完成 ---")
+        logger.info(f"  ➜ 总计发现 {total_missing_released} 个已上映缺失项和 {total_missing_unreleased} 个未上映缺失项。")
+    else:
+        logger.info("--- 原生合集扫描完成，所有合集均无缺失。 ---")
 
 
 def assemble_all_collection_details() -> List[Dict[str, Any]]:

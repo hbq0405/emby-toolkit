@@ -318,8 +318,8 @@ const menuOptions = computed(() => {
   // 规则2: ★★★ 只有当用户是 Emby 用户时，才添加“影视探索”和“用户中心” ★★★
   if (authStore.userType === 'emby_user') {
     discoveryGroup.children.push(
-      { label: '影视探索', key: 'Discover', icon: renderIcon(DiscoverIcon) },
-      { label: '用户中心', key: 'UserCenter', icon: renderIcon(UserCenterIcon) }
+      { label: '用户中心', key: 'UserCenter', icon: renderIcon(UserCenterIcon) },
+      { label: '影视探索', key: 'Discover', icon: renderIcon(DiscoverIcon) }
     );
   }
 
