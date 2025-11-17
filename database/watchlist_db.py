@@ -306,50 +306,62 @@ def batch_remove_from_watchlist(tmdb_ids: List[str]) -> int:
 
 def find_detailed_missing_episodes(series_tmdb_ids: List[str]) -> List[Dict[str, Any]]:
     """
-    【全新正确版】在已同步全量元数据的基础上，精确分析每个剧集的每个季具体缺失了哪些集。
-    - 只返回那些真正存在“中间缺失”的季的详细信息。
-    - “中间缺失”定义为：该季至少有一集在库，但又不是全部在库。
+    【V2 - 最终正确版】精确分析每个季的“中间缺失”，忽略“尾部缺失”。
+    - 通过对比“在库的最大集号”和“在库的集数”来精准判断。
+    - 彻底解决因“未播出剧集”元数据导致误判的问题。
     """
     if not series_tmdb_ids:
         return []
 
-    logger.info("  ➜ 开始在本地数据库中执行详细的缺集分析...")
+    logger.info("  ➜ 开始在本地数据库中执行精确的中间缺集分析...")
     
     try:
         with get_db_connection() as conn:
             cursor = conn.cursor()
-            # 这个查询是本次修复的核心：
-            # 1. 按剧集和季分组。
-            # 2. 在每个组内，使用 FILTER 有条件地聚合出“缺失的集号列表”。
-            # 3. 使用 HAVING 子句筛选出那些“部分拥有”的季（即存在中间缺失）。
-            # 4. 最后关联查询出季本身的 TMDB ID 用于订阅。
+            # 这个查询分为两步:
+            # 1. CTE `season_stats`: 计算每个季在库的最大集号和在库的集数。
+            # 2. 主查询: 筛选出不完整的季，并关联出缺失的集号和季的TMDB ID。
             sql = """
+                WITH season_stats AS (
+                    SELECT
+                        parent_series_tmdb_id,
+                        season_number,
+                        MAX(episode_number) FILTER (WHERE in_library = TRUE) as max_episode_in_library,
+                        COUNT(*) FILTER (WHERE in_library = TRUE) as count_episodes_in_library
+                    FROM media_metadata
+                    WHERE
+                        item_type = 'Episode'
+                        AND parent_series_tmdb_id = ANY(%s)
+                        AND season_number > 0 -- 忽略特别篇 (Season 0)
+                    GROUP BY parent_series_tmdb_id, season_number
+                )
                 SELECT
-                    m.parent_series_tmdb_id,
-                    m.season_number,
-                    array_agg(m.episode_number) FILTER (WHERE m.in_library = FALSE) AS missing_episodes,
+                    s.parent_series_tmdb_id,
+                    s.season_number,
+                    (SELECT array_agg(m.episode_number ORDER BY m.episode_number) FROM media_metadata m
+                     WHERE m.parent_series_tmdb_id = s.parent_series_tmdb_id
+                       AND m.season_number = s.season_number
+                       AND m.in_library = FALSE) AS missing_episodes,
                     (SELECT tmdb_id FROM media_metadata m2
-                     WHERE m2.parent_series_tmdb_id = m.parent_series_tmdb_id
-                       AND m2.season_number = m.season_number
+                     WHERE m2.parent_series_tmdb_id = s.parent_series_tmdb_id
+                       AND m2.season_number = s.season_number
                        AND m2.item_type = 'Season' LIMIT 1) AS season_tmdb_id
-                FROM media_metadata m
+                FROM season_stats s
                 WHERE
-                    m.item_type = 'Episode'
-                    AND m.parent_series_tmdb_id = ANY(%s)
-                GROUP BY m.parent_series_tmdb_id, m.season_number
-                HAVING
-                    -- 关键筛选条件：必须是部分拥有的季
-                    bool_or(m.in_library = TRUE) AND bool_or(m.in_library = FALSE);
+                    -- 核心判断：在库的集数 < 在库的最大集号，这精确地定义了“中间缺失”
+                    s.count_episodes_in_library < s.max_episode_in_library
+                    -- 并且确保这一季至少有一集在库，避免处理完全没下载的季
+                    AND s.count_episodes_in_library > 0;
             """
             cursor.execute(sql, (series_tmdb_ids,))
             
             seasons_with_gaps = [dict(row) for row in cursor.fetchall()]
             
-            logger.info(f"  ➜ 详细分析完成，共发现 {len(seasons_with_gaps)} 个季存在分集缺失。")
+            logger.info(f"  ➜ 精确分析完成，共发现 {len(seasons_with_gaps)} 个季存在中间分集缺失。")
             return seasons_with_gaps
 
     except Exception as e:
-        logger.error(f"在详细分析缺失分集时发生数据库错误: {e}", exc_info=True)
+        logger.error(f"在精确分析缺失分集时发生数据库错误: {e}", exc_info=True)
         return []
     
 def batch_update_gaps_info(gaps_data: Dict[str, List[int]]):

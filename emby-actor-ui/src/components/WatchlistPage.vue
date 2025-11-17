@@ -190,7 +190,7 @@
     </div>
     <n-modal v-model:show="showModal" preset="card" style="width: 90%; max-width: 900px;" :title="selectedSeries ? `缺失详情 - ${selectedSeries.item_name}` : ''" :bordered="false" size="huge">
       <div v-if="selectedSeries && missingData">
-        <n-tabs type="line" animated>
+        <n-tabs type="line" animated v-model:value="activeTab">
           <n-tab-pane name="seasons" :tab="`缺季 (${missingData.missing_seasons.length})`" :disabled="missingData.missing_seasons.length === 0">
             <n-list bordered>
               <n-list-item v-for="season in missingData.missing_seasons" :key="season.season_number">
@@ -199,7 +199,6 @@
               </n-list-item>
             </n-list>
           </n-tab-pane>
-          <!-- ★★★ 核心修复：改造“缺集的季”标签页，使其能显示详细信息 ★★★ -->
           <n-tab-pane name="gaps" :tab="`缺集的季 (${missingData.seasons_with_gaps.length})`" :disabled="missingData.seasons_with_gaps.length === 0">
             <n-list bordered>
               <!-- 循环遍历 seasons_with_gaps 数组中的每个对象 -->
@@ -208,14 +207,6 @@
                   <div><n-tag type="error">第 {{ gap.season }} 季</n-tag> 存在分集缺失</div>
                   <n-text :depth="3">具体缺失的集号: {{ gap.missing.join(', ') }}</n-text>
                 </n-space>
-              </n-list-item>
-            </n-list>
-          </n-tab-pane>
-          <n-tab-pane name="episodes" :tab="`缺失的集 (${missingData.missing_episodes.length})`" :disabled="missingData.missing_episodes.length === 0">
-            <n-list bordered>
-              <n-list-item v-for="ep in missingData.missing_episodes" :key="`${ep.season_number}-${ep.episode_number}`">
-                <template #prefix><n-tag>S{{ ep.season_number.toString().padStart(2, '0') }}E{{ ep.episode_number.toString().padStart(2, '0') }}</n-tag></template>
-                <n-ellipsis>{{ ep.title }} ({{ formatAirDate(ep.air_date) }})</n-ellipsis>
               </n-list-item>
             </n-list>
           </n-tab-pane>
@@ -272,7 +263,9 @@ const filterGaps = ref('all');
 const sortKey = ref('last_checked_at');
 const sortOrder = ref('desc');
 
-// ★★★ 核心修复 1/3：更新辅助函数以适应新数据结构 ★★★
+// ★★★ 新增：用于控制模态框中 Tabs 的 ref ★★★
+const activeTab = ref('seasons');
+
 const hasMissingSeasons = (item) => {
   const data = item.missing_info;
   return data?.missing_seasons?.length > 0;
@@ -280,7 +273,6 @@ const hasMissingSeasons = (item) => {
 
 const hasGaps = (item) => {
   const data = item.missing_info;
-  // 新的判断逻辑：检查 seasons_with_gaps 数组是否存在且不为空
   return Array.isArray(data?.seasons_with_gaps) && data.seasons_with_gaps.length > 0;
 };
 
@@ -292,12 +284,10 @@ const getMissingCountText = (item) => {
   if (!hasMissing(item)) return '';
   const data = item.missing_info;
   const season_count = data?.missing_seasons?.length || 0;
-  // 新的判断逻辑
   const gaps_count = (Array.isArray(data?.seasons_with_gaps) && data.seasons_with_gaps.length > 0) ? 1 : 0;
   
   let parts = [];
   if (season_count > 0) parts.push(`缺 ${season_count} 季`);
-  // 文本提示也更新
   if (gaps_count > 0) parts.push(`有分集缺失`);
   return parts.join(' | ');
 };
@@ -435,16 +425,13 @@ const emptyStateDescription = computed(() => {
   return '还没有已完结的剧集。';
 });
 
-// ★★★ 核心修复 2/3：更新 missingData 计算属性 ★★★
 const missingData = computed(() => {
   const defaults = { 
     missing_seasons: [], 
-    missing_episodes: [], 
-    seasons_with_gaps: [] // 确保默认值是一个数组
+    seasons_with_gaps: []
   };
   const infoFromServer = selectedSeries.value?.missing_info;
   
-  // 确保即使后端传来的 seasons_with_gaps 是 null 或 undefined，也能安全处理
   if (infoFromServer && !Array.isArray(infoFromServer.seasons_with_gaps)) {
     infoFromServer.seasons_with_gaps = [];
   }
@@ -704,8 +691,20 @@ const triggerAllWatchlistUpdate = async () => {
   }
 };
 
+// ★★★ 核心修复：重写 openMissingInfoModal 函数 ★★★
 const openMissingInfoModal = (item) => {
   selectedSeries.value = item;
+  
+  // 智能计算默认激活的标签页
+  const info = item.missing_info || {};
+  if (info.missing_seasons && info.missing_seasons.length > 0) {
+    activeTab.value = 'seasons';
+  } else if (info.seasons_with_gaps && info.seasons_with_gaps.length > 0) {
+    activeTab.value = 'gaps';
+  } else {
+    activeTab.value = 'seasons'; // 默认回退到第一个
+  }
+  
   showModal.value = true;
 };
 

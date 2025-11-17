@@ -340,6 +340,7 @@ def task_populate_metadata_cache(processor, batch_size: int = 50, force_full_upd
                 # --- 步骤 A: 建立一个“保底”的记录，只使用绝对安全的Emby数据 ---
                 premiere_date_str = item.get('PremiereDate')
                 release_date = premiere_date_str.split('T')[0] if premiere_date_str else None
+                sub_status_to_set = "NONE" if item_type == "Movie" else None
                 
                 top_level_record = {
                     "tmdb_id": tmdb_id,
@@ -353,7 +354,7 @@ def task_populate_metadata_cache(processor, batch_size: int = 50, force_full_upd
                     "date_added": item.get('DateCreated'),
                     "genres_json": json.dumps(item.get('Genres', []), ensure_ascii=False),
                     "in_library": True,
-                    "subscription_status": "NONE",
+                    "subscription_status": sub_status_to_set,
                     "ignore_reason": None,
                     "emby_item_ids_json": json.dumps([item.get('Id')], ensure_ascii=False),
                     "official_rating": item.get('OfficialRating'),
@@ -470,7 +471,6 @@ def task_populate_metadata_cache(processor, batch_size: int = 50, force_full_upd
                         child_type = child.get("Type")
                         child_record = {
                             "in_library": True,
-                            "subscription_status": "NONE",
                             "ignore_reason": None, 
                             "emby_item_ids_json": json.dumps([child.get('Id')])
                         }
