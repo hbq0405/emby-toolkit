@@ -306,13 +306,13 @@ def batch_remove_from_watchlist(tmdb_ids: List[str]) -> int:
 
 def find_detailed_missing_episodes(series_tmdb_ids: List[str]) -> List[Dict[str, Any]]:
     """
-    【V4 - 终极正确版】使用 generate_series 精确计算所有类型的缺失集。
+    使用 generate_series 精确计算所有类型的缺失集。
     - 能够正确处理“记录不存在”和“记录标记为不在库”两种缺失情况。
     """
     if not series_tmdb_ids:
         return []
 
-    logger.info("  ➜ 开始在本地数据库中执行终极精确的中间缺集分析...")
+    logger.info("  ➜ 开始在本地数据库中执行中间缺集分析...")
     
     try:
         with get_db_connection() as conn:
@@ -334,7 +334,6 @@ def find_detailed_missing_episodes(series_tmdb_ids: List[str]) -> List[Dict[str,
                 SELECT
                     s.parent_series_tmdb_id,
                     s.season_number,
-                    -- ★★★★★★★★★★★★★★★ 核心修复：使用 generate_series 和 EXCEPT ★★★★★★★★★★★★★★★
                     (
                         SELECT COALESCE(array_agg(missing_num ORDER BY missing_num), '{}'::int[])
                         FROM (
@@ -367,11 +366,11 @@ def find_detailed_missing_episodes(series_tmdb_ids: List[str]) -> List[Dict[str,
             
             seasons_with_gaps = [dict(row) for row in cursor.fetchall()]
             
-            logger.info(f"  ➜ 终极精确分析完成，共发现 {len(seasons_with_gaps)} 个季存在中间分集缺失。")
+            logger.info(f"  ➜ 分析完成，共发现 {len(seasons_with_gaps)} 个季存在中间分集缺失。")
             return seasons_with_gaps
 
     except Exception as e:
-        logger.error(f"在终极精确分析缺失分集时发生数据库错误: {e}", exc_info=True)
+        logger.error(f"  ➜ 在分析缺失分集时发生数据库错误: {e}", exc_info=True)
         return []
     
 def batch_update_gaps_info(gaps_data: Dict[str, List[int]]):
@@ -415,9 +414,9 @@ def batch_update_gaps_info(gaps_data: Dict[str, List[int]]):
             with conn.cursor() as cursor:
                 execute_values(cursor, sql, update_values, page_size=1000)
             conn.commit()
-            logger.info(f"DB: 成功批量更新了 {len(gaps_data)} 个剧集的中间缺集信息。")
+            logger.info(f"  ➜ 成功批量更新了 {len(gaps_data)} 个剧集的中间缺集信息。")
     except Exception as e:
-        logger.error(f"DB: 批量更新中间缺集信息时发生错误: {e}", exc_info=True)
+        logger.error(f"  ➜ 批量更新中间缺集信息时发生错误: {e}", exc_info=True)
         raise
 
 def get_all_series_for_watchlist_scan() -> List[Dict[str, Any]]:
