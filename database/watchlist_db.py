@@ -306,9 +306,9 @@ def batch_remove_from_watchlist(tmdb_ids: List[str]) -> int:
 
 def find_detailed_missing_episodes(series_tmdb_ids: List[str]) -> List[Dict[str, Any]]:
     """
-    【V2 - 最终正确版】精确分析每个季的“中间缺失”，忽略“尾部缺失”。
-    - 通过对比“在库的最大集号”和“在库的集数”来精准判断。
-    - 彻底解决因“未播出剧集”元数据导致误判的问题。
+    【V3 - 健壮最终版】精确分析“中间缺失”，并返回订阅所需的所有元数据。
+    - 额外返回季的 poster_path，解决海报回退异常问题。
+    - 确保 missing_episodes 字段永远不会为 NULL。
     """
     if not series_tmdb_ids:
         return []
@@ -318,9 +318,6 @@ def find_detailed_missing_episodes(series_tmdb_ids: List[str]) -> List[Dict[str,
     try:
         with get_db_connection() as conn:
             cursor = conn.cursor()
-            # 这个查询分为两步:
-            # 1. CTE `season_stats`: 计算每个季在库的最大集号和在库的集数。
-            # 2. 主查询: 筛选出不完整的季，并关联出缺失的集号和季的TMDB ID。
             sql = """
                 WITH season_stats AS (
                     SELECT
@@ -332,25 +329,32 @@ def find_detailed_missing_episodes(series_tmdb_ids: List[str]) -> List[Dict[str,
                     WHERE
                         item_type = 'Episode'
                         AND parent_series_tmdb_id = ANY(%s)
-                        AND season_number > 0 -- 忽略特别篇 (Season 0)
+                        AND season_number > 0
                     GROUP BY parent_series_tmdb_id, season_number
                 )
                 SELECT
                     s.parent_series_tmdb_id,
                     s.season_number,
-                    (SELECT array_agg(m.episode_number ORDER BY m.episode_number) FROM media_metadata m
-                     WHERE m.parent_series_tmdb_id = s.parent_series_tmdb_id
-                       AND m.season_number = s.season_number
-                       AND m.in_library = FALSE) AS missing_episodes,
+                    -- ★★★ 修复1/2: 使用 COALESCE 确保 missing_episodes 永远是数组，而不是 NULL ★★★
+                    COALESCE(
+                        (SELECT array_agg(m.episode_number ORDER BY m.episode_number) FROM media_metadata m
+                         WHERE m.parent_series_tmdb_id = s.parent_series_tmdb_id
+                           AND m.season_number = s.season_number
+                           AND m.in_library = FALSE),
+                        '{}'::int[]
+                    ) AS missing_episodes,
                     (SELECT tmdb_id FROM media_metadata m2
                      WHERE m2.parent_series_tmdb_id = s.parent_series_tmdb_id
                        AND m2.season_number = s.season_number
-                       AND m2.item_type = 'Season' LIMIT 1) AS season_tmdb_id
+                       AND m2.item_type = 'Season' LIMIT 1) AS season_tmdb_id,
+                    -- ★★★ 修复2/2: 额外查询出季的海报路径 ★★★
+                    (SELECT poster_path FROM media_metadata m3
+                     WHERE m3.parent_series_tmdb_id = s.parent_series_tmdb_id
+                       AND m3.season_number = s.season_number
+                       AND m3.item_type = 'Season' LIMIT 1) AS season_poster_path
                 FROM season_stats s
                 WHERE
-                    -- 核心判断：在库的集数 < 在库的最大集号，这精确地定义了“中间缺失”
                     s.count_episodes_in_library < s.max_episode_in_library
-                    -- 并且确保这一季至少有一集在库，避免处理完全没下载的季
                     AND s.count_episodes_in_library > 0;
             """
             cursor.execute(sql, (series_tmdb_ids,))
