@@ -34,37 +34,26 @@
               <n-radio-button value="inProgress">追剧中</n-radio-button>
               <n-radio-button value="completed">已完结</n-radio-button>
             </n-radio-group>
-            <!-- +++ 新增：一键扫描按钮 +++ -->
             <n-popconfirm @positive-click="addAllSeriesToWatchlist">
               <template #trigger>
-                <n-tooltip>
-                  <template #trigger>
-                    <n-button circle :loading="isAddingAll">
-                      <template #icon><n-icon :component="ScanIcon" /></template>
-                    </n-button>
-                  </template>
-                  扫描媒体库并将所有剧集添加到追剧列表
-                </n-tooltip>
+                <n-button size="small" :loading="isAddingAll">
+                  <template #icon><n-icon :component="ScanIcon" /></template>
+                  一键扫描
+                </n-button>
               </template>
-              确定要扫描 Emby 媒体库中的所有剧集吗？<br />
+              确定要扫描 Emby 选定的媒体库中的所有剧集吗？<br />
               此操作会忽略已在列表中的剧集，只添加新的。
             </n-popconfirm>
-            <n-tooltip>
-              <template #trigger>
-                <n-button @click="triggerGapScan" :loading="isGapScanning" circle>
-                  <template #icon><n-icon :component="DownloadIcon" /></template>
-                </n-button>
-              </template>
-              扫描媒体库中所有剧集的缺集情况，并为中间缺失的季提交订阅请求
-            </n-tooltip>
-            <n-tooltip>
-              <template #trigger>
-                <n-button @click="triggerAllWatchlistUpdate" :loading="isBatchUpdating" circle>
-                  <template #icon><n-icon :component="SyncOutline" /></template>
-                </n-button>
-              </template>
-              立即检查所有在追剧集
-            </n-tooltip>
+
+            <n-button size="small" @click="triggerGapScan" :loading="isGapScanning">
+              <template #icon><n-icon :component="DownloadIcon" /></template>
+              扫描缺集
+            </n-button>
+
+            <n-button size="small" @click="triggerAllWatchlistUpdate" :loading="isBatchUpdating">
+              <template #icon><n-icon :component="SyncOutline" /></template>
+              刷新追剧
+            </n-button>
           </n-space>
         </template>
       </n-page-header>
