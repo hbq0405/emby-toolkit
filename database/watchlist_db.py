@@ -306,14 +306,13 @@ def batch_remove_from_watchlist(tmdb_ids: List[str]) -> int:
 
 def find_detailed_missing_episodes(series_tmdb_ids: List[str]) -> List[Dict[str, Any]]:
     """
-    【V3 - 健壮最终版】精确分析“中间缺失”，并返回订阅所需的所有元数据。
-    - 额外返回季的 poster_path，解决海报回退异常问题。
-    - 确保 missing_episodes 字段永远不会为 NULL。
+    【V4 - 终极正确版】使用 generate_series 精确计算所有类型的缺失集。
+    - 能够正确处理“记录不存在”和“记录标记为不在库”两种缺失情况。
     """
     if not series_tmdb_ids:
         return []
 
-    logger.info("  ➜ 开始在本地数据库中执行精确的中间缺集分析...")
+    logger.info("  ➜ 开始在本地数据库中执行终极精确的中间缺集分析...")
     
     try:
         with get_db_connection() as conn:
@@ -335,19 +334,26 @@ def find_detailed_missing_episodes(series_tmdb_ids: List[str]) -> List[Dict[str,
                 SELECT
                     s.parent_series_tmdb_id,
                     s.season_number,
-                    -- ★★★ 修复1/2: 使用 COALESCE 确保 missing_episodes 永远是数组，而不是 NULL ★★★
-                    COALESCE(
-                        (SELECT array_agg(m.episode_number ORDER BY m.episode_number) FROM media_metadata m
-                         WHERE m.parent_series_tmdb_id = s.parent_series_tmdb_id
-                           AND m.season_number = s.season_number
-                           AND m.in_library = FALSE),
-                        '{}'::int[]
+                    -- ★★★★★★★★★★★★★★★ 核心修复：使用 generate_series 和 EXCEPT ★★★★★★★★★★★★★★★
+                    (
+                        SELECT COALESCE(array_agg(missing_num ORDER BY missing_num), '{}'::int[])
+                        FROM (
+                            -- 1. 生成从 1 到最大集号的完整序列
+                            SELECT generate_series(1, s.max_episode_in_library) AS missing_num
+                            
+                            EXCEPT
+                            
+                            -- 2. 减去所有在库的集号
+                            SELECT episode_number FROM media_metadata m
+                            WHERE m.parent_series_tmdb_id = s.parent_series_tmdb_id
+                              AND m.season_number = s.season_number
+                              AND m.in_library = TRUE
+                        ) AS missing_numbers
                     ) AS missing_episodes,
                     (SELECT tmdb_id FROM media_metadata m2
                      WHERE m2.parent_series_tmdb_id = s.parent_series_tmdb_id
                        AND m2.season_number = s.season_number
                        AND m2.item_type = 'Season' LIMIT 1) AS season_tmdb_id,
-                    -- ★★★ 修复2/2: 额外查询出季的海报路径 ★★★
                     (SELECT poster_path FROM media_metadata m3
                      WHERE m3.parent_series_tmdb_id = s.parent_series_tmdb_id
                        AND m3.season_number = s.season_number
@@ -361,11 +367,11 @@ def find_detailed_missing_episodes(series_tmdb_ids: List[str]) -> List[Dict[str,
             
             seasons_with_gaps = [dict(row) for row in cursor.fetchall()]
             
-            logger.info(f"  ➜ 精确分析完成，共发现 {len(seasons_with_gaps)} 个季存在中间分集缺失。")
+            logger.info(f"  ➜ 终极精确分析完成，共发现 {len(seasons_with_gaps)} 个季存在中间分集缺失。")
             return seasons_with_gaps
 
     except Exception as e:
-        logger.error(f"在精确分析缺失分集时发生数据库错误: {e}", exc_info=True)
+        logger.error(f"在终极精确分析缺失分集时发生数据库错误: {e}", exc_info=True)
         return []
     
 def batch_update_gaps_info(gaps_data: Dict[str, List[int]]):
