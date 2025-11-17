@@ -333,6 +333,7 @@ def task_populate_metadata_cache(processor, batch_size: int = 50, force_full_upd
                 
                 tmdb_id = item.get("ProviderIds", {}).get("Tmdb")
                 if not tmdb_id: continue
+                item_type = item.get("Type")
 
                 # 从map中获取TMDb详情，这里可能是None
                 tmdb_details = tmdb_details_map.get(tmdb_id)
