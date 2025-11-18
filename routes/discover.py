@@ -20,15 +20,19 @@ def _filter_and_enrich_results(tmdb_data: dict, current_user_id: str, db_item_ty
     if not tmdb_data or not tmdb_data.get("results"):
         return {"results": [], "total_pages": 0}
 
+    # # 步骤 1: 过滤掉没有海报的结果
+    # original_results = tmdb_data.get("results", [])
+    # results_with_poster = [item for item in original_results if item.get("poster_path")]
+
+    # # 步骤 2: 过滤掉没有中文元数据的结果
+    # final_filtered_results = [
+    #     item for item in results_with_poster 
+    #     if contains_chinese(item.get('title') or item.get('name'))
+    # ]
+    
     # 步骤 1: 过滤掉没有海报的结果
     original_results = tmdb_data.get("results", [])
-    results_with_poster = [item for item in original_results if item.get("poster_path")]
-
-    # 步骤 2: 过滤掉没有中文元数据的结果
-    final_filtered_results = [
-        item for item in results_with_poster 
-        if contains_chinese(item.get('title') or item.get('name'))
-    ]
+    final_filtered_results = [item for item in original_results if item.get("poster_path")]
 
     if not final_filtered_results:
         return {"results": [], "total_pages": 0}
