@@ -483,12 +483,13 @@ class WatchlistProcessor:
 
         # 步骤A: 预处理 - 确定是否存在一个“有效的、未来的”下一集
         effective_next_episode = None
+        effective_next_episode_air_date = None  # <-- 新增一个变量来存储date对象
         if real_next_episode_to_air and (air_date_str := real_next_episode_to_air.get('air_date')):
             try:
                 air_date = datetime.strptime(air_date_str, '%Y-%m-%d').date()
                 if air_date >= today:
                     effective_next_episode = real_next_episode_to_air
-                    effective_next_episode['air_date_obj'] = air_date # 方便后续使用
+                    effective_next_episode_air_date = air_date 
             except (ValueError, TypeError):
                 logger.warning(f"  ➜ 解析待播日期 '{air_date_str}' 失败，将忽略此下一集信息。")
 
@@ -499,8 +500,9 @@ class WatchlistProcessor:
             logger.info(f"  ➜ [判定] 剧集在TMDb已完结且元数据完整，状态变更为: {translate_internal_status(final_status)}")
 
         # 规则2：如果存在一个“有效的、未来的”下一集
+        # 规则2：如果存在一个“有效的、未来的”下一集
         elif effective_next_episode:
-            air_date = effective_next_episode['air_date_obj']
+            air_date = effective_next_episode_air_date 
             days_until_air = (air_date - today).days
             episode_number = effective_next_episode.get('episode_number')
 
@@ -526,14 +528,14 @@ class WatchlistProcessor:
                 last_air_date = datetime.strptime(last_air_date_str, '%Y-%m-%d').date()
                 days_since_last_air = (today - last_air_date).days
                 
-                # 使用一个更宽容的阈值，比如60天，来应对TMDb更新不及时的情况
-                if days_since_last_air > 60:
+                # 使用一个更宽容的阈值，比如30天，来应对TMDb更新不及时的情况
+                if days_since_last_air > 30:
                     final_status = STATUS_COMPLETED
                     logger.warning(f"  ➜ [判定-僵尸剧] 剧集无未来待播信息，且最后一集播出已超过60天（TMDb数据为 {last_air_date_str}），状态强制变更为“已完结”。")
                 else:
                     final_status = STATUS_PAUSED
                     paused_until_date = today + timedelta(days=7)
-                    logger.info(f"  ➜ [判定] 剧集无未来待播信息，但上一集在60天内播出，临时暂停7天以待数据更新。")
+                    logger.info(f"  ➜ [判定] 剧集无未来待播信息，但上一集在30天内播出，临时暂停7天以待数据更新。")
             except ValueError:
                 final_status = STATUS_PAUSED
                 paused_until_date = today + timedelta(days=7)

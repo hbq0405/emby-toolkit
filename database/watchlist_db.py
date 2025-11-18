@@ -275,30 +275,51 @@ def remove_seasons_from_gaps_list(tmdb_id: str, seasons_to_remove: List[int]):
         logger.error(f"DB (新架构): 更新项目 {tmdb_id} 的缺集标记时出错: {e}", exc_info=True)
 
 def batch_remove_from_watchlist(tmdb_ids: List[str]) -> int:
-    """【新架构】从追剧列表中批量移除多个项目（重置其追剧状态）。"""
+    """
+    从追剧列表中批量移除多个项目。
+    这个操作现在会彻底重置剧集本身及其所有关联子项（季、集）的
+    追剧状态和订阅状态，以完全符合用户“不再关注此剧”的意图。
+    """
     if not tmdb_ids:
         return 0
     try:
         with get_db_connection() as conn:
             cursor = conn.cursor()
-            placeholders = ','.join('%s' for _ in tmdb_ids)
+            
+            # ★★★ 核心修改：一个 SQL 语句同时更新剧集本身和它所有的子项 ★★★
             sql = f"""
                 UPDATE media_metadata
-                SET watching_status = 'NONE',
+                SET 
+                    -- 1. 重置追剧相关的所有字段
+                    watching_status = 'NONE',
                     paused_until = NULL,
                     force_ended = FALSE,
                     watchlist_last_checked_at = NULL,
                     watchlist_tmdb_status = NULL,
                     watchlist_next_episode_json = NULL,
                     watchlist_missing_info_json = NULL,
-                    watchlist_is_airing = FALSE
-                WHERE tmdb_id IN ({placeholders}) AND item_type = 'Series';
+                    watchlist_is_airing = FALSE,
+                    
+                    -- 2. ★★★ 关键：同时重置订阅状态，斩草除根 ★★★
+                    subscription_status = 'NONE',
+                    subscription_sources_json = '[]'::jsonb,
+                    ignore_reason = NULL
+
+                WHERE
+                    -- 条件A: 匹配剧集本身 (顶层项目)
+                    (tmdb_id = ANY(%s) AND item_type = 'Series')
+                    OR
+                    -- 条件B: 匹配该剧集下的所有子项 (季和集)
+                    (parent_series_tmdb_id = ANY(%s));
             """
-            cursor.execute(sql, tmdb_ids)
+            # 需要将 tmdb_ids 列表传递两次，分别对应两个 ANY(%s)
+            cursor.execute(sql, (tmdb_ids, tmdb_ids))
             conn.commit()
+            
             removed_count = cursor.rowcount
             if removed_count > 0:
-                logger.info(f"DB (新架构): 成功从追剧列表批量移除了 {removed_count} 个项目。")
+                # 日志现在应该反映出操作的范围更广了
+                logger.info(f"DB (新架构): 成功从追剧列表批量移除了 {len(tmdb_ids)} 个剧集，并重置了总共 {removed_count} 个相关条目（包括子项）的追剧和订阅状态。")
             return removed_count
     except Exception as e:
         logger.error(f"DB (新架构): 批量移除追剧项目时发生错误: {e}", exc_info=True)
