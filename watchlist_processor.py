@@ -249,19 +249,19 @@ class WatchlistProcessor:
 
     # ★★★ 专门用于“复活检查”的任务方法 ★★★
     def run_revival_check_task(self, progress_callback: callable):
-        """【新架构】检查所有已完结剧集是否“复活”。"""
+        """【V2 - 预警模型版】检查所有已完结剧集是否“复活”。"""
         self.progress_callback = progress_callback
         task_name = "已完结剧集复活检查"
         self.progress_callback(0, "准备开始复活检查...")
         try:
-            completed_series = self._get_series_to_process(f"WHERE watching_status = '{STATUS_COMPLETED}'")
+            completed_series = self._get_series_to_process(f"WHERE watching_status = '{STATUS_COMPLETED}' AND force_ended = FALSE")
             total = len(completed_series)
             if not completed_series:
-                self.progress_callback(100, "没有已完结的剧集需要检查。")
+                self.progress_callback(100, "没有需要检查的已完结剧集。")
                 return
 
             logger.info(f"开始低频检查 {total} 部已完结剧集是否复活...")
-            self.progress_callback(10, f"发现 {total} 部已完结剧集，开始检查...")
+            self.progress_callback(10, f"发现 {total} 部已完jeet集，开始检查...")
             revived_count = 0
             today = datetime.now(timezone.utc).date()
 
@@ -274,8 +274,8 @@ class WatchlistProcessor:
                 tmdb_details = tmdb.get_tv_details(series['tmdb_id'], self.tmdb_api_key)
                 if not tmdb_details: continue
 
-                # 保留原有的精准复活逻辑
                 should_revive = False
+                # 优先使用数据库中缓存的 last_episode_to_air 信息
                 last_episode_info = series.get('last_episode_to_air_json')
                 old_season_number = 0
                 if last_episode_info and isinstance(last_episode_info, dict):
@@ -283,18 +283,24 @@ class WatchlistProcessor:
 
                 new_total_seasons = tmdb_details.get('number_of_seasons', 0)
 
+                # 只有当TMDb上的季数明确大于我们记录的旧季数时，才继续检查
                 if new_total_seasons > old_season_number:
                     new_season_to_check_num = old_season_number + 1
-                    season_details = tmdb.get_season_details(series['tmdb_id'], new_season_to_check_num, self.tmdb_api_key)
-                    if season_details and season_details.get('episodes'):
-                        first_episode = season_details['episodes'][0]
-                        air_date_str = first_episode.get('air_date')
-                        if air_date_str:
-                            try:
-                                air_date = datetime.strptime(air_date_str, '%Y-%m-%d').date()
-                                if 0 <= (air_date - today).days <= 3:
-                                    should_revive = True
-                            except ValueError: pass
+                    season_details = tmdb.get_tv_season_details(series['tmdb_id'], new_season_to_check_num, self.tmdb_api_key)
+                    
+                    # 确保获取到了季详情，并且有播出日期
+                    if season_details and (air_date_str := season_details.get('air_date')):
+                        try:
+                            air_date = datetime.strptime(air_date_str, '%Y-%m-%d').date()
+                            days_until_air = (air_date - today).days
+                            
+                            # ★★★★★★★★★★★★★★★ 核心逻辑升级 ★★★★★★★★★★★★★★★
+                            # 只要新季是在未来7天内（包括今天）上线，就立即复活
+                            if 0 <= days_until_air <= 7:
+                                logger.info(f"  ➜ 发现《{series_name}》的新季 (S{new_season_to_check_num}) 将在 {days_until_air} 天后上线，准备复活！")
+                                should_revive = True
+                        except ValueError:
+                            logger.warning(f"  ➜ 解析《{series_name}》新季的播出日期 '{air_date_str}' 失败。")
                 
                 if should_revive:
                     revived_count += 1
@@ -304,12 +310,11 @@ class WatchlistProcessor:
                         "tmdb_status": tmdb_details.get('status'),
                         "force_ended": False 
                     }
-                    # ★★★ 调用适配 ★★★
                     self._update_watchlist_entry(series['tmdb_id'], series_name, updates_to_db)
                 
-                time.sleep(2)
+                time.sleep(1) # 保持适当的API请求间隔
             
-            final_message = f"复活检查完成。共发现 {revived_count} 部剧集回归。"
+            final_message = f"复活检查完成。共发现 {revived_count} 部剧集即将回归。"
             self.progress_callback(100, final_message)
 
         except Exception as e:
@@ -609,25 +614,57 @@ class WatchlistProcessor:
         elif final_status in [STATUS_WATCHING, STATUS_PAUSED] and has_missing_media:
             logger.info(f"  ➜ 《{item_name}》为在追状态，将订阅所有缺失内容...")
             
+            today = datetime.now(timezone.utc).date()
+
             # a. 处理缺失的整季
             for season in missing_info.get("missing_seasons", []):
                 season_num = season.get('season_number')
                 if season_num is None: continue
 
+                # 准备通用的采购单信息
+                season_tmdb_id = str(season.get('id'))
                 media_info = {
-                    'tmdb_id': tmdb_id, 'item_type': 'Series',
-                    'title': f"{item_name} 第 {season_num} 季",
+                    'tmdb_id': season_tmdb_id,
+                    'item_type': 'Season',
+                    'title': f"{item_name} - {season.get('name', f'第 {season_num} 季')}",
                     'original_title': latest_series_data.get('original_name'),
                     'release_date': season.get('air_date'),
-                    'poster_path': season.get('poster_path') or latest_series_data.get('poster_path'),
-                    'overview': season.get('overview'), 'season_number': season_num
+                    'poster_path': season.get('poster_path'),
+                    'overview': season.get('overview'), 
+                    'season_number': season_num,
+                    'parent_series_tmdb_id': tmdb_id
                 }
                 
-                request_db.set_media_status_wanted(
-                    tmdb_ids=tmdb_id, item_type='Series',
-                    source={"type": "watchlist", "reason": "missing_season", "item_id": item_id},
-                    media_info_list=[media_info]
-                )
+                # ★★★★★★★★★★★★★★★ 核心修复：智能分拣状态 ★★★★★★★★★★★★★★★
+                air_date_str = season.get('air_date')
+                is_pending = False
+                if air_date_str:
+                    try:
+                        air_date = datetime.strptime(air_date_str, '%Y-%m-%d').date()
+                        if air_date > today:
+                            is_pending = True
+                    except ValueError:
+                        # 日期格式错误，按已上映处理
+                        pass
+                
+                if is_pending:
+                    # 如果是未来的季，则标记为 PENDING_RELEASE
+                    logger.info(f"  ➜ 发现未上映的缺失季 S{season_num} (播出日期: {air_date_str})，将状态设为 PENDING_RELEASE。")
+                    request_db.set_media_status_pending_release(
+                        tmdb_ids=season_tmdb_id,
+                        item_type='Season',
+                        source={"type": "watchlist", "reason": "missing_season", "item_id": item_id},
+                        media_info_list=[media_info]
+                    )
+                else:
+                    # 如果是已上映或日期未知的季，则标记为 WANTED
+                    logger.info(f"  ➜ 发现已上映的缺失季 S{season_num}，将状态设为 WANTED。")
+                    request_db.set_media_status_wanted(
+                        tmdb_ids=season_tmdb_id,
+                        item_type='Season',
+                        source={"type": "watchlist", "reason": "missing_season", "item_id": item_id},
+                        media_info_list=[media_info]
+                    )
 
         # 步骤7: 命令Emby刷新自己，并同步更新内存中的`emby_children`
         logger.debug(f"  ➜ 开始检查并注入缺失的分集简介到 Emby...")
