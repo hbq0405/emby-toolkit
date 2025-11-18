@@ -286,10 +286,6 @@ def get_all_non_library_media() -> List[Dict[str, Any]]:
             m1.parent_series_tmdb_id = m2.tmdb_id AND m2.item_type = 'Series'
         WHERE 
             m1.subscription_status IN ('WANTED', 'PENDING_RELEASE', 'IGNORED', 'SUBSCRIBED')
-            AND (
-                m1.in_library = FALSE 
-                OR m1.item_type = 'Season'
-            )
         ORDER BY 
             m1.first_requested_at DESC;
     """
