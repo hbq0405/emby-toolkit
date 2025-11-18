@@ -492,6 +492,25 @@ const fetchRecommendationPool = async () => {
   }
 };
 
+// 定义一个能正确触发响应式的辅助函数
+const updateMediaStatus = (mediaId, newStatus) => {
+  // 更新结果列表 (results) 中的项目
+  const indexInResults = results.value.findIndex(m => m.id === mediaId);
+  if (indexInResults !== -1) {
+    // 创建一个新对象来替换旧对象，这是确保 Vue 响应式系统能够检测到变化的关键
+    results.value[indexInResults] = { 
+      ...results.value[indexInResults], 
+      subscription_status: newStatus 
+    };
+  }
+
+  // 如果“每日推荐”中的项目是同一个，也更新它的状态
+  if (currentRecommendation.value && currentRecommendation.value.id === mediaId) {
+    // 对于单个 ref 对象，直接修改其属性是响应式的
+    currentRecommendation.value.subscription_status = newStatus;
+  }
+};
+
 const handleSubscribe = async (media) => {
   // ★ 核心入口检查：如果全局有任务在运行，直接阻止并提示 ★
   if (isTaskRunning.value) {
@@ -504,21 +523,15 @@ const handleSubscribe = async (media) => {
 
   const originalStatus = media.subscription_status || 'NONE';
 
-  // ... (前置状态检查逻辑保持不变) ...
+  // .前置状态检查
   if (originalStatus === 'SUBSCRIBED' || originalStatus === 'PENDING_RELEASE') {
-    // ...
     return;
   }
   if (originalStatus === 'REQUESTED' && !isPrivilegedUser.value) {
-    // ...
     return;
   }
 
   subscribingId.value = media.id;
-  
-  const updateMediaStatus = (mediaId, newStatus) => {
-    // ... (此函数内部逻辑不变) ...
-  };
 
   try {
     const itemTypeForApi = (media.media_type === 'tv' ? 'Series' : 'Movie') || (mediaType.value === 'movie' ? 'Movie' : 'Series');
@@ -532,6 +545,8 @@ const handleSubscribe = async (media) => {
 
     message.success(portalResponse.data.message);
     const newStatusFromServer = portalResponse.data.status;
+    
+    // ★★★ 3. 修改：调用新的、响应式的辅助函数 ★★★
     updateMediaStatus(media.id, newStatusFromServer);
 
     if (shouldTriggerTaskImmediately) {
@@ -539,12 +554,13 @@ const handleSubscribe = async (media) => {
       const requestItem = { tmdb_id: media.id, item_type: itemTypeForApi, title: media.title || media.name };
       const taskPayload = { task_name: 'manual_subscribe_batch', subscribe_requests: [requestItem] };
       
+      // ★★★ 4. 修改：再次调用辅助函数进行乐观更新，现在它能正确刷新UI了 ★★★
       updateMediaStatus(media.id, 'SUBSCRIBED');
       
-      // 直接调用任务接口，不再需要任何本地状态跟踪
       axios.post('/api/tasks/run', taskPayload)
         .catch(taskError => {
-          updateMediaStatus(media.id, newStatusFromServer); // 状态回滚
+          // 如果触发任务失败，状态回滚到之前的状态
+          updateMediaStatus(media.id, newStatusFromServer); 
           message.error(taskError.response?.data?.message || '提交立即处理任务失败。');
         });
     }
