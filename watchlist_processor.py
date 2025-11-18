@@ -593,7 +593,7 @@ class WatchlistProcessor:
                             'title': f"{item_name} {season.get('name', f'第 {season_num} 季')}", # 标题构建更健壮
                             'original_title': latest_series_data.get('original_name'),
                             'release_date': season.get('air_date'),
-                            'poster_path': season.get('poster_path') or latest_series_data.get('poster_path'),
+                            'poster_path': season.get('poster_path'),
                             'overview': season.get('overview'), 
                             'season_number': season_num
                         }
