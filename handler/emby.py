@@ -1558,7 +1558,7 @@ def delete_item(item_id: str, emby_server_url: str, emby_api_key: str, user_id: 
 
     # 2. 使用临时令牌执行删除
     # 使用最被社区推荐的 POST /Items/{Id}/Delete 接口
-    api_url = f"{emby_server_url.rstrip('/')}/Items/{item_id}/Delete"
+    api_url = f"{emby_server_url.rstrip('/')}/Items/{item_id}/DeleteVersion"
     
     headers = {
         'X-Emby-Token': access_token  # ★ 使用临时的 AccessToken
