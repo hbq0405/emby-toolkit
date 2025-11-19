@@ -187,6 +187,7 @@ def init_db():
                         emby_item_ids_json JSONB NOT NULL DEFAULT '[]'::jsonb,
                         date_added TIMESTAMP WITH TIME ZONE,
                         paths_json JSONB,
+                        asset_details_json JSONB,
 
                         -- 订阅与状态管理
                         subscription_status TEXT NOT NULL DEFAULT 'NONE', -- 'NONE', 'WANTED', 'SUBSCRIBED', 'IGNORED', 'PENDING_RELEASE', 'REQUESTED'
@@ -482,6 +483,7 @@ def init_db():
 
                     schema_upgrades = {
                         'media_metadata': {
+                            "asset_details_json": "JSONB",
                             "last_updated_at": "TIMESTAMP WITH TIME ZONE",
                             "overview": "TEXT",
                             "official_rating": "TEXT",

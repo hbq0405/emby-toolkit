@@ -190,10 +190,10 @@ def save_cleanup_settings():
 def trigger_cleanup_scan():
     """触发一次媒体库重复项扫描。"""
     try:
+        # 新的调用方式不再需要 'media' 这个 processor_type 参数
         task_manager.submit_task(
             task_scan_for_cleanup_issues,
-            "扫描媒体库重复项",
-            'media'
+            "扫描媒体库重复项 (数据库模式)"
         )
         return jsonify({"message": "扫描任务已提交到后台执行。"}), 202
     except Exception as e:

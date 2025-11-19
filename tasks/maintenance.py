@@ -403,87 +403,74 @@ def task_import_database(processor, file_content: str, tables_to_import: List[st
 # ★★★ 媒体去重模块 (Media Cleanup Module) - 新增 ★★★
 # ======================================================================
 
-def _get_version_properties(version: Optional[Dict]) -> Dict:
+def _get_properties_for_comparison(version: Dict) -> Dict:
     """
-    - 恢复了在返回结果中包含 Path 字段，解决前端无法显示文件路径的问题。
-    - 保持了与媒体洗版模块统一的强大识别逻辑。
+    【V2.2 - 最终数据结构修正版】
+    彻底修正了对 'media_cleanup_rules' 数据结构（List of Dicts）的错误处理。
     """
     if not version or not isinstance(version, dict):
-        return {
-            'id': 'unknown_or_invalid', 'path': '', 'quality': 'unknown',
-            'resolution': 'unknown', 'effect': 'sdr', 'filesize': 0
-        }
+        return {'id': None, 'quality': 'unknown', 'resolution': 'unknown', 'effect': 'sdr', 'filesize': 0}
 
-    path = version.get("Path", "")
-    path_lower = path.lower()
-    video_stream = version.get("video_stream")
-
-    # --- 1. 分辨率识别 (API优先，文件名保底) ---
-    resolution_tag = "unknown"
-    resolution_wh = version.get("resolution_wh", (0, 0))
-    if resolution_wh and resolution_wh[0] > 0:
-        width = resolution_wh[0]
-        if width >= 3800: resolution_tag = "2160p"
-        elif width >= 1900: resolution_tag = "1080p"
-        elif width >= 1260: resolution_tag = "720p"
+    # ★★★ 核心修正：正确处理规则列表 ★★★
+    # 1. 正确获取规则列表，如果不存在则为空列表
+    all_rules_list = settings_db.get_setting('media_cleanup_rules') or []
     
-    if resolution_tag == "unknown":
-        if "2160p" in path_lower or "4k" in path_lower:
-            resolution_tag = "2160p"
-        elif "1080p" in path_lower:
-            resolution_tag = "1080p"
-        elif "720p" in path_lower:
-            resolution_tag = "720p"
-
-    # --- 2. 质量识别 (调用全局辅助函数) ---
-    quality_tag = _extract_quality_tag_from_filename(path_lower, video_stream)
-
-    # --- 3. 特效识别 (调用全局辅助函数) ---
-    effect_tag = _get_standardized_effect(path_lower, video_stream)
+    # 2. 从规则列表中找到 'effect' 规则的字典
+    effect_rule = next((rule for rule in all_rules_list if rule.get('id') == 'effect'), {})
+    
+    # 3. 从找到的 'effect' 规则字典中安全地获取优先级列表
+    effect_priority = effect_rule.get('priority', 
+        ["dovi_p8", "dovi_p7", "dovi_p5", "dovi_other", "hdr10+", "hdr", "sdr"])
+    
+    effect_list = version.get("effect_display", [])
+    best_effect = 'sdr'
+    
+    if effect_list:
+        standardized_effects = [_get_standardized_effect(e, None) for e in effect_list]
+        best_effect = min(standardized_effects, key=lambda e: effect_priority.index(e) if e in effect_priority else 999)
 
     return {
-        "id": version.get("Id"),
-        "Path": path,  # ★★★ 核心修复：把路径加回来！ ★★★
-        "quality": quality_tag,
-        "resolution": resolution_tag,
-        "effect": effect_tag,
-        "filesize": version.get("Size", 0)
+        "id": version.get("emby_item_id"),
+        "quality": str(version.get("quality_display", "unknown")).lower().replace("bluray", "blu-ray").replace("webdl", "web-dl"),
+        "resolution": version.get("resolution_display", "unknown"),
+        "effect": best_effect,
+        "filesize": version.get("size_bytes", 0)
     }
 
 def _determine_best_version_by_rules(versions: List[Dict[str, Any]]) -> Tuple[List[Dict[str, Any]], Optional[str]]:
-    """【V6.1 - 修复版】修复了 compare_versions 中的 UnboundLocalError 问题。"""
-    
+    """
+    【V2 - 重构版】
+    接收从 asset_details_json 来的版本列表，并根据规则决定最佳版本。
+    """
     rules = settings_db.get_setting('media_cleanup_rules')
-    if not rules:
+    if not rules: # 如果没有设置，使用默认规则
         rules = [
-            {"id": "quality", "priority": ["remux", "blu-ray", "web-dl", "hdtv"]},
-            {"id": "resolution", "priority": ["2160p", "1080p", "720p"]},
-            {"id": "effect", "priority": ["dovi_p8", "dovi_p7", "dovi_p5", "dovi_other", "hdr10+", "hdr", "sdr"]},
-            {"id": "filesize", "priority": "desc"}
+            {"id": "quality", "enabled": True, "priority": ["remux", "blu-ray", "web-dl", "hdtv"]},
+            {"id": "resolution", "enabled": True, "priority": ["2160p", "1080p", "720p"]},
+            {"id": "effect", "enabled": True, "priority": ["dovi_p8", "dovi_p7", "dovi_p5", "dovi_other", "hdr10+", "hdr", "sdr"]},
+            {"id": "filesize", "enabled": True, "priority": "desc"}
         ]
 
+    # 预处理规则，确保格式统一
     processed_rules = []
     for rule in rules:
         new_rule = rule.copy()
-        if rule.get("id") == "quality" and "priority" in new_rule and isinstance(new_rule["priority"], list):
-            normalized_priority = [str(p).lower().replace("bluray", "blu-ray").replace("webdl", "web-dl") for p in new_rule["priority"]]
-            new_rule["priority"] = normalized_priority
-        elif rule.get("id") == "effect" and "priority" in new_rule and isinstance(new_rule["priority"], list):
+        if rule.get("id") == "quality" and "priority" in new_rule:
+            new_rule["priority"] = [str(p).lower().replace("bluray", "blu-ray").replace("webdl", "web-dl") for p in new_rule["priority"]]
+        elif rule.get("id") == "effect" and "priority" in new_rule:
             new_rule["priority"] = [str(p).lower().replace(" ", "_") for p in new_rule["priority"]]
         processed_rules.append(new_rule)
     
-    version_properties = [_get_version_properties(v) for v in versions if v is not None]
+    # 将数据库来的版本信息，转换为用于比较的标准化属性字典列表
+    version_properties = [_get_properties_for_comparison(v) for v in versions if v]
 
-    from functools import cmp_to_key
     def compare_versions(item1_props, item2_props):
         for rule in processed_rules:
             if not rule.get("enabled", True): continue
             
-            # ★★★ 核心修复：将单行赋值拆分为多行 ★★★
             rule_id = rule.get("id")
             val1 = item1_props.get(rule_id)
             val2 = item2_props.get(rule_id)
-            # ★★★ 修复结束 ★★★
 
             if rule_id == "filesize":
                 if val1 > val2: return -1
@@ -510,155 +497,79 @@ def _determine_best_version_by_rules(versions: List[Dict[str, Any]]) -> Tuple[Li
 
 def task_scan_for_cleanup_issues(processor):
     """
-    - 采纳“先获取所有ID，再逐个查询详情”的终极可靠策略。
-    - 彻底抛弃对批量查询返回数据的任何幻想，确保每个项目的信息都来自最权威的单点查询。
-    - 此方法虽然速度较慢，但能100%保证数据完整性，是解决此问题的根本之道。
+    【V4 - 最终统一标准版】
+    直接读取 media_metadata 中已分析好的数据，并格式化为前端需要的格式。
     """
-    task_name = "扫描媒体库重复项"
+    task_name = "扫描媒体库重复项 (统一标准模式)"
     logger.info(f"--- 开始执行 '{task_name}' 任务 ---")
-    task_manager.update_status_from_thread(0, "正在准备扫描媒体库...")
+    task_manager.update_status_from_thread(0, "正在从数据库准备扫描...")
 
     try:
-        logger.info("正在确定要扫描的媒体库范围...")
-        # 1. 从数据库获取专门为清理任务配置的媒体库ID
-        libs_to_process_ids = settings_db.get_setting('media_cleanup_library_ids')
+        sql_query = """
+            SELECT tmdb_id, item_type, title, asset_details_json
+            FROM media_metadata
+            WHERE in_library = TRUE AND jsonb_array_length(asset_details_json) > 1;
+        """
+        with connection.get_db_connection() as conn:
+            with conn.cursor() as cursor:
+                cursor.execute(sql_query)
+                multi_version_items = cursor.fetchall()
 
-        # 2. 如果数据库中没有配置（或配置为空列表），则扫描所有媒体库
-        if not libs_to_process_ids:
-            logger.info("  ➜ 未在清理规则中指定媒体库，将扫描服务器上的所有媒体库。")
-            all_libraries = emby.get_emby_libraries(
-                emby_server_url=processor.emby_url,
-                emby_api_key=processor.emby_api_key,
-                user_id=processor.emby_user_id
-            )
-            if not all_libraries:
-                raise ValueError("无法从 Emby 获取媒体库列表以进行全库扫描。")
-            
-            # 筛选出电影、剧集、混合内容库
-            valid_collection_types = {'movies', 'tvshows', 'homevideos', 'mixed'}
-            libs_to_process_ids = [
-                lib['Id'] for lib in all_libraries 
-                if lib.get('CollectionType') in valid_collection_types
-            ]
-            logger.info(f"  ➜ 已自动选择 {len(libs_to_process_ids)} 个媒体库进行全库扫描。")
-        else:
-            logger.info(f"  ➜ 将根据配置扫描指定的 {len(libs_to_process_ids)} 个媒体库。")
-
-        if not libs_to_process_ids:
-            task_manager.update_status_from_thread(100, "任务完成：没有找到可供扫描的媒体库。")
-            logger.warning("最终没有确定任何要扫描的媒体库，任务中止。")
+        total_items = len(multi_version_items)
+        if total_items == 0:
+            task_manager.update_status_from_thread(100, "扫描完成：未在数据库中发现多版本媒体。")
             return
 
-        task_manager.update_status_from_thread(5, "正在获取所有电影和分集的ID列表...")
+        task_manager.update_status_from_thread(10, f"发现 {total_items} 组多版本媒体，开始分析...")
         
-        # ★★★ 核心修改：第一步 - 只获取所有 Movie 和 Episode 的 ID ★★★
-        all_item_ids_and_types = emby.get_library_items_for_cleanup(
-            base_url=processor.emby_url, api_key=processor.emby_api_key, user_id=processor.emby_user_id,
-            media_type_filter="Movie,Episode",
-            library_ids=libs_to_process_ids,
-            fields="Id,Type" # 只需要ID和类型
-        ) or []
+        cleanup_tasks = []
+        for i, item in enumerate(multi_version_items):
+            progress = 10 + int((i / total_items) * 80)
+            task_manager.update_status_from_thread(progress, f"({i+1}/{total_items}) 正在分析: {item['title']}")
 
-        if not all_item_ids_and_types:
-            task_manager.update_status_from_thread(100, "任务完成：在指定媒体库中未找到任何电影或分集。")
-            return
-
-        total_items = len(all_item_ids_and_types)
-        task_manager.update_status_from_thread(10, f"已获取 {total_items} 个媒体ID，正在逐个获取详细信息...")
-        
-        series_tmdb_id_cache = {}
-        all_versions = []
-
-        # ★★★ 第二步 - 遍历ID列表，逐个获取完整详情 ★★★
-        for i, item_stub in enumerate(all_item_ids_and_types):
-            item_id = item_stub.get('Id')
-            if not item_id: continue
-
-            progress = 10 + int((i / total_items) * 50)
-            task_manager.update_status_from_thread(progress, f"({i+1}/{total_items}) 正在查询: {item_id}")
-
-            # 调用最权威的单点查询API
-            item = emby.get_emby_item_details(item_id, processor.emby_url, processor.emby_api_key, processor.emby_user_id)
-            if not item: continue
-
-            # ★★★ 第三步：后续逻辑与之前版本完全相同，因为现在 item 的数据是100%完整的 ★★★
-            media_sources = item.get("MediaSources", [])
-            if not media_sources: continue
-
-            grouping_key, display_name, item_type = None, item.get("Name"), item.get("Type")
-
-            if item_type == 'Movie':
-                tmdb_id = item.get("ProviderIds", {}).get("Tmdb")
-                if tmdb_id: grouping_key = ('Movie', tmdb_id)
+            versions_from_db = item['asset_details_json']
             
-            elif item_type == 'Episode':
-                series_tmdb_id = item.get("SeriesProviderIds", {}).get("Tmdb")
-                series_id = item.get("SeriesId")
+            # 1. 决策函数依然用于找出最佳ID
+            _, best_id = _determine_best_version_by_rules(versions_from_db)
 
-                if not series_tmdb_id and series_id:
-                    if series_id in series_tmdb_id_cache: series_tmdb_id = series_tmdb_id_cache[series_id]
-                    else:
-                        series_details = emby.get_emby_item_details(series_id, processor.emby_url, processor.emby_api_key, processor.emby_user_id)
-                        if series_details: series_tmdb_id = series_details.get("ProviderIds", {}).get("Tmdb")
-                        series_tmdb_id_cache[series_id] = series_tmdb_id
+            # 2. 格式化：将数据库中的标准数据，转换为前端需要的最终格式
+            versions_for_frontend = []
+            for v in versions_from_db:
+                # _get_properties_for_comparison 用于获取“比较”用的标准化值
+                props = _get_properties_for_comparison(v)
+                
+                # 特效需要特殊处理一下，从列表变成字符串
+                effect_value = "SDR" # 默认值
+                if effect_list := v.get('effect_display'):
+                    # 如果有多个特效，比如 ["Dolby Vision", "HDR"]，我们只取最重要的那个给 props.get('effect')
+                    # _get_properties_for_comparison 已经帮我们做了这件事
+                    effect_value = props.get('effect')
 
-                season_num, episode_num = item.get("ParentIndexNumber"), item.get("IndexNumber")
-                if series_tmdb_id and season_num is not None and episode_num is not None:
-                    grouping_key = ('Episode', series_tmdb_id, season_num, episode_num)
-                    display_name = f"{item.get('SeriesName', '')} S{season_num:02d}E{episode_num:02d}"
-
-            if not grouping_key: continue
-
-            for source in media_sources:
-                video_stream = next((s for s in source.get("MediaStreams", []) if s.get("Type") == "Video"), None)
-                version_info = {
-                    "grouping_key": grouping_key, 
-                    "display_name": display_name, 
-                    "Id": source.get("Id"), 
-                    "parent_item_id": item.get("Id"),
-                    "Path": source.get("Path") or item.get("Path") or "", 
-                    "Size": source.get("Size", 0),
-                    "resolution_wh": (video_stream.get("Width", 0), video_stream.get("Height", 0)) if video_stream else (0, 0),
-                    "video_stream": video_stream
-                }
-                all_versions.append(version_info)
-
-        task_manager.update_status_from_thread(60, "信息获取完毕，正在进行分组...")
-        media_map = collections.defaultdict(list)
-        for version in all_versions: media_map[version['grouping_key']].append(version)
-
-        duplicate_tasks = []
-        for key, versions in media_map.items():
-            if len(versions) > 1:
-                parent_ids = {v['parent_item_id'] for v in versions}
-                if len(parent_ids) > 1:
-                    cleanup_type = "Duplicate"  # 多个媒体项指向同一内容，是“重复项”
-                else:
-                    cleanup_type = "Multi-version" # 单个媒体项包含多个版本，是“多版本”
-
-                item_type = "Movie" if key[0] == 'Movie' else "Series"
-                tmdb_id = key[1]
-                enriched_versions = []
-                for v in versions:
-                    parsed_properties = _get_version_properties(v)
-                    enriched_version = {**v, **parsed_properties}
-                    enriched_versions.append(enriched_version)
-                _, best_id = _determine_best_version_by_rules(enriched_versions)
-                display_name = versions[0].get("display_name")
-                duplicate_tasks.append({
-                    "task_type": cleanup_type, 
-                    "tmdb_id": tmdb_id, 
-                    "item_type": item_type,
-                    "item_name": display_name, 
-                    "versions_info_json": enriched_versions, 
-                    "best_version_id": best_id
+                versions_for_frontend.append({
+                    'id': v.get('emby_item_id'),
+                    'Path': v.get('path'),
+                    'filesize': v.get('size_bytes', 0),
+                    'quality': v.get('quality_display'),
+                    'resolution': v.get('resolution_display'),
+                    'effect': effect_value # 使用我们处理过的单个特效值
                 })
 
-        task_manager.update_status_from_thread(90, f"分析完成，正在将 {len(duplicate_tasks)} 组重复项写入数据库...")
-        if duplicate_tasks:
-            maintenance_db.batch_insert_cleanup_tasks(duplicate_tasks)
+            # 3. 创建清理任务
+            cleanup_tasks.append({
+                "task_type": "Multi-version",
+                "tmdb_id": item['tmdb_id'], 
+                "item_type": item['item_type'],
+                "item_name": item['title'], 
+                "versions_info_json": versions_for_frontend,
+                "best_version_id": best_id
+            })
 
-        final_message = f"扫描完成！共发现 {len(duplicate_tasks)} 组需要清理的重复项。"
+        task_manager.update_status_from_thread(90, f"分析完成，正在将 {len(cleanup_tasks)} 组任务写入数据库...")
+        
+        if cleanup_tasks:
+            maintenance_db.batch_insert_cleanup_tasks(cleanup_tasks)
+
+        final_message = f"扫描完成！共发现 {len(cleanup_tasks)} 组需要清理的多版本媒体。"
         task_manager.update_status_from_thread(100, final_message)
         logger.info(f"--- '{task_name}' 任务成功完成 ---")
 

@@ -209,6 +209,47 @@ def task_populate_metadata_cache(processor, batch_size: int = 50, force_full_upd
     logger.info(f"--- 模式: {sync_mode} (分批大小: {batch_size}) ---")
     
     try:
+        def _parse_asset_details(item: dict) -> dict:
+            """
+            【V3 - 权威最终版】将单个 Emby Item 解析为 asset_details 字典，
+            并立即调用权威分析引擎，将分析结果一并存入。
+            """
+            from .helpers import analyze_media_asset # 仅在函数内导入
+
+            # 1. 提取基础物理信息
+            asset = {
+                "emby_item_id": item.get("Id"),
+                "path": item.get("Path", ""),
+                "size_bytes": item.get("Size"),
+                "container": item.get("Container"),
+                "video_codec": None,
+                "audio_tracks": [],
+                "subtitles": []
+            }
+
+            # 2. 填充音视频流信息
+            media_streams = item.get("MediaStreams", [])
+            for stream in media_streams:
+                stream_type = stream.get("Type")
+                if stream_type == "Video":
+                    asset["video_codec"] = stream.get("Codec")
+                elif stream_type == "Audio":
+                    asset["audio_tracks"].append({
+                        "language": stream.get("Language"), "codec": stream.get("Codec"),
+                        "channels": stream.get("Channels"), "display_title": stream.get("DisplayTitle")
+                    })
+                elif stream_type == "Subtitle":
+                    asset["subtitles"].append({
+                        "language": stream.get("Language"), "display_title": stream.get("DisplayTitle")
+                    })
+            
+            # 3. 调用权威分析引擎，获取分析结果
+            analysis_data = analyze_media_asset(item)
+            
+            # 4. 将分析结果合并到最终的字典中
+            asset.update(analysis_data)
+            
+            return asset
         # ======================================================================
         # 步骤 1: 计算差异 (逻辑与之前类似，但删除操作更强大)
         # ======================================================================
@@ -219,16 +260,20 @@ def task_populate_metadata_cache(processor, batch_size: int = 50, force_full_upd
             raise ValueError("未在配置中指定要处理的媒体库。")
 
         # ★★★ 改动点 1: 请求更丰富的字段，为子项目处理做准备 ★★★
-        emby_items_index = emby.get_emby_library_items(
+        emby_items_index = emby.get_all_library_versions( # <--- 只修改这里的函数名
             base_url=processor.emby_url, api_key=processor.emby_api_key, user_id=processor.emby_user_id,
             media_type_filter="Movie,Series", library_ids=libs_to_process_ids,
-            fields="ProviderIds,Type,DateCreated,Name,OriginalTitle,PremiereDate,CommunityRating,Genres,Studios,Tags,DateModified,OfficialRating,ProductionYear,Path,PrimaryImageAspectRatio,Overview"
+            fields="ProviderIds,Type,DateCreated,Name,OriginalTitle,PremiereDate,CommunityRating,Genres,Studios,Tags,DateModified,OfficialRating,ProductionYear,Path,PrimaryImageAspectRatio,Overview,MediaStreams,Container,Size"
         ) or []
         
-        emby_items_map = {
-            item.get("ProviderIds", {}).get("Tmdb"): item 
-            for item in emby_items_index if item.get("ProviderIds", {}).get("Tmdb")
-        }
+        from collections import defaultdict
+
+        # 创建一个字典，键是 tmdb_id，值是包含该 tmdb_id 所有版本Item的列表
+        emby_items_map = defaultdict(list)
+        for item in emby_items_index:
+            if tmdb_id := item.get("ProviderIds", {}).get("Tmdb"):
+                emby_items_map[tmdb_id].append(item)
+
         emby_tmdb_ids = set(emby_items_map.keys())
         logger.info(f"  ➜ 从 Emby 获取到 {len(emby_tmdb_ids)} 个有效的顶层媒体项 (电影/剧集)。")
 
@@ -278,31 +323,31 @@ def task_populate_metadata_cache(processor, batch_size: int = 50, force_full_upd
             task_manager.update_status_from_thread(100, "数据库已是最新，无需同步。")
             return
 
-        logger.info(f"  ➜ 总共需要处理 {total_to_process} 个顶层项目。")
+        logger.info(f"  ➜ 总共需要处理 {total_to_process} 个媒体组 (TMDB ID)。")
 
         # ======================================================================
-        # 步骤 2: 分批循环处理，核心逻辑重构
+        # 步骤 2: 分批循环处理 (已完全修正)
         # ======================================================================
         processed_count = 0
         for i in range(0, total_to_process, batch_size):
             if processor.is_stop_requested(): break
 
-            batch_items = items_to_process[i:i + batch_size]
+            batch_item_groups = items_to_process[i:i + batch_size]
             batch_number = (i // batch_size) + 1
             
-            logger.info(f"--- 开始处理批次 {batch_number} (包含 {len(batch_items)} 个顶层项目) ---")
+            logger.info(f"--- 开始处理批次 {batch_number} (包含 {len(batch_item_groups)} 个媒体组) ---")
             task_manager.update_status_from_thread(
                 10 + int((processed_count / total_to_process) * 90), 
                 f"处理批次 {batch_number}..."
             )
 
-            if processor.is_stop_requested():
-                logger.info("任务在演员数据补充后被中止。")
-                break
-
             logger.info(f"  ➜ 开始从Tmdb补充导演/国家数据...")
             tmdb_details_map = {}
-            def fetch_tmdb_details(item):
+            
+            # 修正后的 fetch_tmdb_details
+            def fetch_tmdb_details(item_group):
+                # 使用组里的第一个版本作为代表来获取信息
+                item = item_group[0]
                 tmdb_id = item.get("ProviderIds", {}).get("Tmdb")
                 item_type = item.get("Type")
                 if not tmdb_id: return None, None
@@ -314,35 +359,35 @@ def task_populate_metadata_cache(processor, batch_size: int = 50, force_full_upd
                 return tmdb_id, details
 
             with concurrent.futures.ThreadPoolExecutor(max_workers=5) as executor:
-                future_to_tmdb_id = {executor.submit(fetch_tmdb_details, item): item.get("ProviderIds", {}).get("Tmdb") for item in batch_items}
+                # 修正并发任务的创建
+                future_to_tmdb_id = {
+                    executor.submit(fetch_tmdb_details, item_group): item_group[0].get("ProviderIds", {}).get("Tmdb")
+                    for item_group in batch_item_groups
+                }
                 for future in concurrent.futures.as_completed(future_to_tmdb_id):
-                    if processor.is_stop_requested():
-                        logger.info("任务在并发获取 TMDb 详情时被中止。")
-                        break
+                    if processor.is_stop_requested(): break
                     tmdb_id, details = future.result()
                     if tmdb_id and details:
                         tmdb_details_map[tmdb_id] = details
             
-            if processor.is_stop_requested():
-                logger.info("任务在 TMDb 详情获取后被中止。")
-                break
+            if processor.is_stop_requested(): break
 
             metadata_batch = []
-            for item in batch_items:
+            for item_group in batch_item_groups:
                 if processor.is_stop_requested(): break
                 
+                # 使用组里的第一个版本作为元数据代表
+                item = item_group[0]
                 tmdb_id = item.get("ProviderIds", {}).get("Tmdb")
                 if not tmdb_id: continue
                 item_type = item.get("Type")
 
-                # 从map中获取TMDb详情，这里可能是None
                 tmdb_details = tmdb_details_map.get(tmdb_id)
 
-                # --- 步骤 A: 建立一个“保底”的记录，只使用绝对安全的Emby数据 ---
                 premiere_date_str = item.get('PremiereDate')
                 release_date = premiere_date_str.split('T')[0] if premiere_date_str else None
                 sub_status_to_set = "NONE" if item_type == "Movie" else None
-                
+                asset_details_list = [_parse_asset_details(version_item) for version_item in item_group]
                 top_level_record = {
                     "tmdb_id": tmdb_id,
                     "item_type": item.get("Type"),
@@ -350,14 +395,15 @@ def task_populate_metadata_cache(processor, batch_size: int = 50, force_full_upd
                     "original_title": item.get('OriginalTitle'),
                     "release_year": item.get('ProductionYear'),
                     "rating": item.get('CommunityRating'),
-                    "overview": item.get('Overview'), # 先用Emby的简介作为保底
+                    "overview": item.get('Overview'),
                     "release_date": release_date,
                     "date_added": item.get('DateCreated'),
                     "genres_json": json.dumps(item.get('Genres', []), ensure_ascii=False),
                     "in_library": True,
+                    "asset_details_json": json.dumps(asset_details_list, ensure_ascii=False),
                     "subscription_status": sub_status_to_set,
                     "ignore_reason": None,
-                    "emby_item_ids_json": json.dumps([item.get('Id')], ensure_ascii=False),
+                    "emby_item_ids_json": json.dumps([v.get('Id') for v in item_group if v.get('Id')], ensure_ascii=False),
                     "official_rating": item.get('OfficialRating'),
                     "unified_rating": get_unified_rating(item.get('OfficialRating'))
                 }
@@ -557,13 +603,17 @@ def task_populate_metadata_cache(processor, batch_size: int = 50, force_full_upd
 
                 logger.info(f"--- 批次 {batch_number} 已成功写入数据库。---")
             
-            processed_count += len(batch_items)
+            processed_count += len(batch_item_groups)
 
         final_message = f"同步完成！本次处理 {processed_count}/{total_to_process} 项, 标记离线 {len(items_to_delete_tmdb_ids)} 项。"
         if processor.is_stop_requested():
             final_message = "任务已中止，部分数据可能未处理。"
         task_manager.update_status_from_thread(100, final_message)
         logger.trace(f"--- '{task_name}' 任务成功完成 ---")
+
+    except Exception as e:
+        logger.error(f"执行 '{task_name}' 任务时发生严重错误: {e}", exc_info=True)
+        task_manager.update_status_from_thread(-1, f"任务失败: {e}")
 
     except Exception as e:
         logger.error(f"执行 '{task_name}' 任务时发生严重错误: {e}", exc_info=True)

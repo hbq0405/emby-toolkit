@@ -2,92 +2,164 @@
 # 跨模块共享的辅助函数
 
 import os
-from typing import Optional, Dict, Any
+import re
+from typing import Optional, Dict, Any, List
 import logging
 from datetime import datetime, timedelta
 
-# 假设您的项目结构允许这样导入，如果 helpers.py 和 tmdb.py 在不同的父文件夹下
-# (例如 tasks/ 和 handler/)，您可能需要调整 Python 的 sys.path 或使用相对导入
-# 例如: from ..handler.tmdb import get_movie_details
 from handler.tmdb import get_movie_details
 import constants
 
 logger = logging.getLogger(__name__)
 
+AUDIO_SUBTITLE_KEYWORD_MAP = {
+    "chi": ["Mandarin", "CHI", "ZHO", "国语", "国配", "国英双语", "公映", "台配", "京译", "上译", "央译"],
+    "yue": ["Cantonese", "YUE", "粤语"],
+    "eng": ["English", "ENG", "英语"],
+    "jpn": ["Japanese", "JPN", "日语"],
+    "sub_chi": ["CHS", "CHT", "中字", "简中", "繁中", "简", "繁"],
+    "sub_eng": ["ENG", "英字"],
+}
 
-# --- 从文件名和视频流信息中提取并标准化特效标签，支持杜比视界Profile ---
-def _get_standardized_effect(path_lower: str, video_stream: Optional[Dict]) -> str:
+def _get_standardized_effect(path_lower: str, video_stream: Optional[Dict]) -> List[str]:
     """
-    【V9 - 全局·智能文件名识别增强版】
-    - 这是一个全局函数，可被项目中所有需要特效识别的地方共享调用。
-    - 增强了文件名识别逻辑：当文件名同时包含 "dovi" 和 "hdr" 时，智能判断为 davi_p8。
-    - 调整了判断顺序，确保更精确的规则优先执行。
+    【V10 - 最终权威版】
+    - 优先、贪婪地从文件名中解析所有特效，因为文件名信息最全。
+    - 如果文件名没有信息，再从 API 的视频流中补充。
+    - 返回一个特效列表，例如 ["Dolby Vision", "HDR"]。
     """
-    
-    # 1. 优先从文件名判断 (逻辑增强)
-    if ("dovi" in path_lower or "dolbyvision" in path_lower or "dv" in path_lower) and "hdr" in path_lower:
-        return "dovi_p8"
-    if any(s in path_lower for s in ["dovi p7", "dovi.p7", "dv.p7", "profile 7", "profile7"]):
-        return "dovi_p7"
-    if any(s in path_lower for s in ["dovi p5", "dovi.p5", "dv.p5", "profile 5", "profile5"]):
-        return "dovi_p5"
-    if ("dovi" in path_lower or "dolbyvision" in path_lower) and "hdr" in path_lower:
-        return "dovi_p8"
-    if "dovi" in path_lower or "dolbyvision" in path_lower:
-        return "dovi_other"
+    effects = set()
+
+    # 1. 文件名优先，贪婪模式
+    if "dovi" in path_lower or "dolbyvision" in path_lower or "dv" in path_lower:
+        effects.add("Dolby Vision")
     if "hdr10+" in path_lower or "hdr10plus" in path_lower:
-        return "hdr10+"
-    if "hdr" in path_lower:
-        return "hdr"
+        effects.add("HDR10+")
+    # 确保文件名里有hdr，但又不是hdr10+
+    if "hdr" in path_lower and "hdr10+" not in path_lower and "hdr10plus" not in path_lower:
+        effects.add("HDR")
 
-    # 2. 如果文件名没有信息，再对视频流进行精确分析
-    if video_stream and isinstance(video_stream, dict):
-        all_stream_info = []
-        for key, value in video_stream.items():
-            all_stream_info.append(str(key).lower())
-            if isinstance(value, str):
-                all_stream_info.append(value.lower())
-        combined_info = " ".join(all_stream_info)
+    # 2. 如果文件名没信息，再从 API 补充
+    if not effects and video_stream:
+        if video_stream.get("BitDepth") == 10:
+            effects.add("HDR")
+        if (video_range := video_stream.get("VideoRange")):
+            if "hdr" in video_range.lower() or "pq" in video_range.lower():
+                effects.add("HDR")
 
-        if "doviprofile81" in combined_info: return "dovi_p8"
-        if "doviprofile76" in combined_info: return "dovi_p7"
-        if "doviprofile5" in combined_info: return "dovi_p5"
-        if any(s in combined_info for s in ["dvhe.08", "dvh1.08"]): return "dovi_p8"
-        if any(s in combined_info for s in ["dvhe.07", "dvh1.07"]): return "dovi_p7"
-        if any(s in combined_info for s in ["dvhe.05", "dvh1.05"]): return "dovi_p5"
-        if "dovi" in combined_info or "dolby" in combined_info or "dolbyvision" in combined_info: return "dovi_other"
-        if "hdr10+" in combined_info or "hdr10plus" in combined_info: return "hdr10+"
-        if "hdr" in combined_info: return "hdr"
+    # 3. 如果最终什么都没有，才默认为 SDR
+    if not effects:
+        effects.add("SDR")
+        
+    return sorted(list(effects))
 
-    # 3. 默认是SDR
-    return "sdr"
-
-# ★★★ 智能从文件名提取质量标签的辅助函数 ★★★
-def _extract_quality_tag_from_filename(filename_lower: str, video_stream: dict) -> str:
+def _extract_quality_tag_from_filename(filename_lower: str) -> str:
     """
-    根据预定义的优先级，从文件名中提取最高级的质量标签。
-    如果找不到任何标签，则回退到使用视频编码作为备用方案。
+    【V2 - 修正版】
+    从文件名中提取质量标签，如果找不到，则返回 'Unknown'。
     """
-    # 定义质量标签的优先级，越靠前越高级
     QUALITY_HIERARCHY = [
-        'remux',
-        'bluray',
-        'blu-ray', # 兼容写法
-        'web-dl',
-        'webdl',   # 兼容写法
-        'webrip',
-        'hdtv',
-        'dvdrip'
+        ('remux', 'Remux'),
+        ('bluray', 'BluRay'),
+        ('blu-ray', 'BluRay'),
+        ('web-dl', 'WEB-DL'),
+        ('webdl', 'WEB-DL'),
+        ('webrip', 'WEBrip'),
+        ('hdtv', 'HDTV'),
+        ('dvdrip', 'DVDrip')
     ]
     
-    for tag in QUALITY_HIERARCHY:
-        # 为了更精确匹配，我们检查被点、空格或短横线包围的标签
-        if f".{tag}." in filename_lower or f" {tag} " in filename_lower or f"-{tag}-" in filename_lower:
-            # 返回大写的、更美观的标签
-            return tag.replace('-', '').upper()
+    for tag, display in QUALITY_HIERARCHY:
+        # 使用更宽松的匹配，避免因为点、空格等问题匹配失败
+        if tag in filename_lower:
+            return display
+            
+    return "Unknown"
 
-    # 如果循环结束都没找到，提供一个备用值
-    return (video_stream.get('Codec', '未知') if video_stream else '未知').upper()
+def _get_resolution_tier(width: int, height: int) -> tuple[int, str]:
+    if width >= 3800 or height >= 2100: return 4, "2160p"
+    if width >= 1900 or height >= 1000: return 3, "1080p"
+    if width >= 1200 or height >= 700: return 2, "720p"
+    if height > 0: return 1, f"{height}p"
+    return 0, "Unknown"
+
+def _get_detected_languages_from_streams(
+    media_streams: List[dict], 
+    stream_type: str
+) -> set:
+    detected_langs = set()
+    standard_codes = {
+        'chi': {'chi', 'zho', 'chs', 'cht', 'zh-cn', 'zh-hans', 'zh-sg', 'cmn', 'yue'},
+        'eng': {'eng'},
+        'jpn': {'jpn'}
+    }
+    
+    for stream in media_streams:
+        if stream.get('Type') == stream_type:
+            # 检查 Language 字段
+            if lang_code := str(stream.get('Language', '')).lower():
+                for key, codes in standard_codes.items():
+                    if lang_code in codes:
+                        detected_langs.add(key)
+            
+            # 检查标题字段
+            title_string = (stream.get('Title', '') + stream.get('DisplayTitle', '')).lower()
+            if not title_string: continue
+            for lang_key, keywords in AUDIO_SUBTITLE_KEYWORD_MAP.items():
+                normalized_lang_key = lang_key.replace('sub_', '')
+                if any(keyword.lower() in title_string for keyword in keywords):
+                    detected_langs.add(normalized_lang_key)
+    return detected_langs
+
+def analyze_media_asset(item_details: dict) -> dict:
+    """
+    【权威分析引擎 V4 - 最终正确版】
+    正确调用所有辅助函数，生成最权威的分析结果。
+    """
+    if not item_details: return {}
+
+    media_streams = item_details.get('MediaStreams', [])
+    file_path = item_details.get('Path', '')
+    file_name_lower = os.path.basename(file_path).lower() if file_path else ""
+    video_stream = next((s for s in media_streams if s.get('Type') == 'Video'), None)
+
+    # --- 1. 分辨率 (API优先, 文件名保底) ---
+    resolution_str = "Unknown"
+    if video_stream and video_stream.get("Width"):
+        _, resolution_str = _get_resolution_tier(video_stream["Width"], video_stream.get("Height", 0))
+    if resolution_str == "Unknown":
+        if "2160p" in file_name_lower or "4k" in file_name_lower: resolution_str = "2160p"
+        elif "1080p" in file_name_lower: resolution_str = "1080p"
+        elif "1080i" in file_name_lower: resolution_str = "1080i"
+        elif "720p" in file_name_lower: resolution_str = "720p"
+
+    # --- 2. 质量 ---
+    quality_str = _extract_quality_tag_from_filename(file_name_lower)
+
+    # --- 3. 特效 ---
+    effect_list = _get_standardized_effect(file_name_lower, video_stream)
+
+    # --- 4. 音轨 ---
+    detected_audio_langs = _get_detected_languages_from_streams(media_streams, 'Audio')
+    AUDIO_DISPLAY_MAP = {'chi': '国语', 'yue': '粤语', 'eng': '英语', 'jpn': '日语'}
+    audio_str = ', '.join(sorted([AUDIO_DISPLAY_MAP.get(lang, lang) for lang in detected_audio_langs])) or '无'
+
+    # --- 5. 字幕 ---
+    detected_sub_langs = _get_detected_languages_from_streams(media_streams, 'Subtitle')
+    if 'chi' not in detected_sub_langs and 'yue' not in detected_sub_langs and any(s.get('IsExternal') for s in media_streams if s.get('Type') == 'Subtitle'):
+        detected_sub_langs.add('chi')
+    SUB_DISPLAY_MAP = {'chi': '中字', 'yue': '粤字', 'eng': '英文', 'jpn': '日文'}
+    subtitle_str = ', '.join(sorted([SUB_DISPLAY_MAP.get(lang, lang) for lang in detected_sub_langs])) or '无'
+
+    return {
+        "resolution_display": resolution_str,
+        "quality_display": quality_str,
+        "effect_display": effect_list, # 返回列表
+        "audio_display": audio_str,
+        "subtitle_display": subtitle_str,
+        "audio_languages_raw": list(detected_audio_langs),
+        "subtitle_languages_raw": list(detected_sub_langs),
+    }
 
 # +++ 判断电影是否满足订阅条件 +++
 def is_movie_subscribable(movie_id: int, api_key: str, config: dict) -> bool:

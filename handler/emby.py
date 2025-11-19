@@ -439,6 +439,63 @@ def get_emby_libraries(emby_server_url, emby_api_key, user_id):
     except Exception as e:
         logger.error(f"处理Emby媒体库/合集数据时发生未知错误: {e}", exc_info=True)
         return None
+# --- 遍历指定的媒体库，通过分页获取所有独立的、未被聚合的媒体项 ---
+def get_all_library_versions(
+    base_url: str,
+    api_key: str,
+    user_id: str, # 参数保留，但内部不再使用
+    library_ids: List[str],
+    media_type_filter: str,
+    fields: str
+) -> List[Dict[str, Any]]:
+    """
+    【最终修正版 V2】
+    彻底修正：移除 UserId 参数，以获取服务器级的、未经聚合的原始媒体项列表。
+    这才是解决多版本问题的根本方法。
+    """
+    all_items = []
+    session = requests.Session()
+    api_timeout = config_manager.APP_CONFIG.get(constants.CONFIG_OPTION_EMBY_API_TIMEOUT, 60)
+    
+    logger.info(f"  ➜ [系统级原始视图模式] 开始从 {len(library_ids)} 个媒体库中获取所有独立文件版本...")
+
+    for lib_id in library_ids:
+        start_index = 0
+        limit = 500
+        
+        while True:
+            api_url = f"{base_url.rstrip('/')}/Items"
+            params = {
+                "api_key": api_key,
+                # "UserId": user_id,  # <-- ★★★ 彻底移除这一行，这是所有问题的根源 ★★★
+                "ParentId": lib_id,
+                "IncludeItemTypes": media_type_filter,
+                "Recursive": "true",
+                "Fields": fields,
+                "StartIndex": start_index,
+                "Limit": limit
+            }
+            
+            try:
+                response = session.get(api_url, params=params, timeout=api_timeout)
+                response.raise_for_status()
+                items_in_batch = response.json().get("Items", [])
+                
+                if not items_in_batch:
+                    break
+
+                all_items.extend(items_in_batch)
+                start_index += len(items_in_batch)
+                
+                if len(items_in_batch) < limit:
+                    break
+
+            except requests.RequestException as e:
+                logger.error(f"  ➜ [系统级原始视图模式] 从媒体库 {lib_id} 获取数据时出错: {e}")
+                break
+    
+    logger.info(f"  ➜ [系统级原始视图模式] 获取完成，共找到 {len(all_items)} 个独立文件版本。")
+    return all_items
 # ✨✨✨ 获取项目，并为每个项目添加来源库ID ✨✨✨
 def get_emby_library_items(
     base_url: str,
