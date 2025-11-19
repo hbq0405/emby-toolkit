@@ -161,6 +161,57 @@ def analyze_media_asset(item_details: dict) -> dict:
         "subtitle_languages_raw": list(detected_sub_langs),
     }
 
+def parse_full_asset_details(item_details: dict) -> dict:
+    """
+    【V2 - 权威资产解析器】
+    这是跨模块共享的唯一入口函数，负责将一个媒体项的详情解析成
+    一个包含“原始流数据”和“前端展示标签”的完整资产字典。
+    """
+    # 1. 安全检查：如果输入无效，返回一个标准的空结构
+    if not item_details or "MediaStreams" not in item_details:
+        logger.warning(f"  ➜ 无法为媒体项 (ID: {item_details.get('Id')}) 找到可供分析的媒体流信息。")
+        return {
+            "emby_item_id": item_details.get("Id"), "path": item_details.get("Path", ""),
+            "size_bytes": None, "container": None, "video_codec": None,
+            "audio_tracks": [], "subtitles": [],
+            "resolution_display": "Unknown", "quality_display": "Unknown",
+            "effect_display": ["SDR"], "audio_display": "无", "subtitle_display": "无",
+            "audio_languages_raw": [], "subtitle_languages_raw": []
+        }
+
+    # 2. 提取原始数据 (复现 _analyze_media_item_streams 的第一部分)
+    asset = {
+        "emby_item_id": item_details.get("Id"),
+        "path": item_details.get("Path", ""),
+        "size_bytes": item_details.get("Size"),
+        "container": item_details.get("Container"),
+        "video_codec": None,
+        "audio_tracks": [],
+        "subtitles": []
+    }
+    media_streams = item_details.get("MediaStreams", [])
+    for stream in media_streams:
+        stream_type = stream.get("Type")
+        if stream_type == "Video":
+            asset["video_codec"] = stream.get("Codec")
+        elif stream_type == "Audio":
+            asset["audio_tracks"].append({
+                "language": stream.get("Language"), "codec": stream.get("Codec"),
+                "channels": stream.get("Channels"), "display_title": stream.get("DisplayTitle")
+            })
+        elif stream_type == "Subtitle":
+            asset["subtitles"].append({
+                "language": stream.get("Language"), "display_title": stream.get("DisplayTitle")
+            })
+
+    # 3. 调用现有的分析引擎生成展示标签
+    display_tags = analyze_media_asset(item_details)
+    
+    # 4. 将两部分结果合并成最终的完整字典
+    asset.update(display_tags)
+    
+    return asset
+
 # +++ 判断电影是否满足订阅条件 +++
 def is_movie_subscribable(movie_id: int, api_key: str, config: dict) -> bool:
     """
