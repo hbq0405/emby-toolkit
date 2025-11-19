@@ -16,15 +16,14 @@ from .actors import (task_sync_person_map, task_enrich_aliases, task_actor_trans
 from .media import task_role_translation, task_populate_metadata_cache, task_apply_main_cast_to_episodes 
 from .watchlist import task_process_watchlist, task_run_revival_check, task_scan_library_gaps
 from .collections import task_refresh_collections, task_process_all_custom_collections, process_single_custom_collection
-from .subscriptions import task_auto_subscribe, task_update_resubscribe_cache, task_resubscribe_library, task_manual_subscribe_batch
+from .subscriptions import task_auto_subscribe, task_manual_subscribe_batch
 from .covers import task_generate_all_covers, task_generate_all_custom_collection_covers
 from .maintenance import task_scan_for_cleanup_issues 
 from .users import task_sync_all_user_data, task_check_expired_users
 from .discover import task_update_daily_theme
-
+from .resubscribe import task_update_resubscribe_cache, task_resubscribe_library
 
 logger = logging.getLogger(__name__)
-
 
 def _task_run_chain_internal(processor, task_name: str, sequence_config_key: str, max_runtime_config_key: str):
     """

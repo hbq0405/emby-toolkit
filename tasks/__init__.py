@@ -15,3 +15,4 @@ from .subscriptions import *
 from .maintenance import *
 from .users import *
 from .covers import *
+from .resubscribe import *
