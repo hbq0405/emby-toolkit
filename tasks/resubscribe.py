@@ -142,61 +142,53 @@ def task_update_resubscribe_cache(processor, force_full_update: bool = False):
         for ep in all_episodes_from_db:
             episodes_map[ep['parent_series_tmdb_id']].append(ep)
 
-        items_to_process_index = []
+        movies_to_process = []
+        series_to_process_map = defaultdict(list)
+
+        # 筛选出所有顶层项目（电影和剧集）
+        top_level_items = [item for item in emby_index if item.get('Type') in ['Movie', 'Series']]
+
         if force_full_update:
             logger.info("  ➜ [深度模式] 将对所有项目进行全面分析。")
             resubscribe_db.clear_resubscribe_cache_except_ignored()
-            items_to_process_index = emby_index
+            for item in top_level_items:
+                if item.get('Type') == 'Movie':
+                    movies_to_process.append(item)
+                else:
+                    series_to_process_map[item.get('Id')] = item
         else:
             logger.info("  ➜ [快速模式] 将进行增量扫描...")
             cached_items = resubscribe_db.get_all_resubscribe_cache()
-            
-            current_emby_item_ids = set()
-            for item in emby_index:
-                if item.get('Type') == 'Movie':
-                    current_emby_item_ids.add(item.get('Id'))
-                elif item.get('Type') == 'Episode' and item.get('SeriesId') and item.get('ParentIndexNumber') is not None:
-                    season_item_id = f"{item['SeriesId']}-S{item['ParentIndexNumber']}"
-                    current_emby_item_ids.add(season_item_id)
-
             cached_ids = {item['item_id'] for item in cached_items}
+
+            # 清理已删除的项目
+            current_emby_item_ids = {item.get('Id') for item in top_level_items if item.get('Type') == 'Movie'}
+            seasons_in_emby = {f"{item['SeriesId']}-S{item['ParentIndexNumber']}" for item in emby_index if item.get('Type') == 'Episode' and item.get('SeriesId')}
+            current_emby_item_ids.update(seasons_in_emby)
             deleted_ids = list(cached_ids - current_emby_item_ids)
             if deleted_ids:
                 resubscribe_db.delete_resubscribe_cache_items_batch(deleted_ids)
-            
-            new_item_ids = set()
-            processed_series_ids = set()
-            for item in emby_index:
-                item_id = item.get('Id')
-                if item.get('Type') == 'Movie':
-                    if item_id not in cached_ids:
-                        new_item_ids.add(item_id)
-                elif item.get('Type') == 'Series':
-                    processed_series_ids.add(item_id)
-                elif item.get('Type') == 'Episode' and (series_id := item.get('SeriesId')) and item.get('ParentIndexNumber') is not None:
-                    if series_id in processed_series_ids: continue
-                    season_item_id = f"{series_id}-S{item['ParentIndexNumber']}"
-                    if season_item_id not in cached_ids:
-                        new_item_ids.add(series_id)
-                        processed_series_ids.add(series_id)
-            
-            if new_item_ids:
-                items_to_process_index = [item for item in emby_index if item.get('Id') in new_item_ids or item.get('SeriesId') in new_item_ids]
 
-        total = len(items_to_process_index)
+            # 找出需要处理的新项目
+            for item in top_level_items:
+                if item.get('Type') == 'Movie':
+                    if item.get('Id') not in cached_ids:
+                        movies_to_process.append(item)
+                elif item.get('Type') == 'Series':
+                    # 只要剧集的任何一季不在缓存中，就认为整个剧集需要重新处理
+                    seasons_for_series = {f"{item.get('Id')}-S{ep.get('ParentIndexNumber')}" for ep in emby_index if ep.get('SeriesId') == item.get('Id')}
+                    if not seasons_for_series.issubset(cached_ids):
+                        series_to_process_map[item.get('Id')] = item
+        
+        total = len(movies_to_process) + len(series_to_process_map)
+
         if total == 0:
             task_manager.update_status_from_thread(100, f"任务完成：({scan_mode}) 无需处理任何新项目。")
             return
 
-        logger.info(f"  ➜ 将对 {total} 个媒体索引项按规则检查洗版状态...")
+        logger.info(f"  ➜ 将对 {len(movies_to_process)} 个电影和 {len(series_to_process_map)} 个剧集按规则检查洗版状态...")
         cache_update_batch = []
         processed_count = 0
-        
-        movies_to_process = [item for item in items_to_process_index if item.get('Type') == 'Movie']
-        series_to_process_map = defaultdict(list)
-        for item in items_to_process_index:
-            if item.get('Type') == 'Series':
-                series_to_process_map[item.get('Id')] = item
 
         for movie_index in movies_to_process:
             if processor.is_stop_requested(): break
