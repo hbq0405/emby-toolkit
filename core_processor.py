@@ -145,9 +145,7 @@ class MediaProcessor:
         douban_rating: Optional[float] = None
     ):
         """
-        【V2 - 集成资产分析】
-        - 媒体元数据更新主入口
-        - 新增逻辑：在构建数据库记录时，同步分析并填充 asset_details_json 字段。
+        - 实时元数据写入。
         """
         try:
             from psycopg2.extras import execute_batch
@@ -157,11 +155,6 @@ class MediaProcessor:
                 return
 
             records_to_upsert = []
-            
-            # ======================================================================
-            # ▼▼▼ 核心修改 2: 在处理不同媒体类型时，同步进行资产分析 ▼▼▼
-            # ======================================================================
-            emby_children_map = {} # 用于缓存剧集子项，避免重复API调用
             
             if item_type == "Movie":
                 movie_record = source_data_package.copy()
@@ -176,38 +169,42 @@ class MediaProcessor:
                     movie_record['emby_item_ids_json'] = json.dumps([item_details_from_emby.get('Id')])
                     movie_record['date_added'] = item_details_from_emby.get("DateCreated")
                     movie_record['ignore_reason'] = None
-                    # --- 为电影分析资产 ---
                     asset_details = parse_full_asset_details(item_details_from_emby)
                     movie_record['asset_details_json'] = json.dumps([asset_details], ensure_ascii=False)
                 
                 records_to_upsert.append(movie_record)
 
             elif item_type == "Series":
-                # --- 如果是剧集，预先获取所有子项的完整Emby详情 ---
-                if item_details_from_emby:
-                    series_id = item_details_from_emby.get('Id')
-                    logger.info(f"  ➜ 正在为剧集 '{item_details_from_emby.get('Name')}' 获取所有分集详情以进行资产分析...")
-                    all_children = emby.get_series_children(
-                        series_id=series_id, base_url=self.emby_url, api_key=self.emby_api_key,
-                        user_id=self.emby_user_id, include_item_types="Episode",
-                        fields="Id,Type,ParentIndexNumber,IndexNumber,MediaStreams,Container,Size,Path"
-                    )
-                    if all_children:
-                        for child in all_children:
-                            s_num = child.get("ParentIndexNumber")
-                            e_num = child.get("IndexNumber")
-                            if s_num is not None and e_num is not None:
-                                emby_children_map[f"S{s_num}E{e_num}"] = child
-                
+                # ★★★  1: 恢复 TMDb 元数据列表的定义 ★★★
                 series_details = source_data_package.get("series_details", source_data_package)
                 seasons_details = source_data_package.get("seasons_details", series_details.get("seasons", []))
-                episodes_details = list(source_data_package.get("episodes_details", {}).values())
+                episodes_details = list(source_data_package.get("episodes_details", {}).values()) # <--- 恢复这行
+
+                # ★★★  2: 获取并预处理所有 Emby 分集文件版本 ★★★
+                emby_episode_versions = []
+                if item_details_from_emby:
+                    series_id = item_details_from_emby.get('Id')
+                    logger.info(f"  ➜ 正在为剧集 '{item_details_from_emby.get('Name')}' 获取所有分集文件版本...")
+                    emby_episode_versions = emby.get_all_library_versions(
+                        base_url=self.emby_url, api_key=self.emby_api_key, user_id=self.emby_user_id,
+                        media_type_filter="Episode", parent_id=series_id,
+                        fields="Id,Type,ParentIndexNumber,IndexNumber,MediaStreams,Container,Size,Path,ProviderIds"
+                    ) or []
+
+                episodes_grouped_by_number = defaultdict(list)
+                for ep_version in emby_episode_versions:
+                    s_num = ep_version.get("ParentIndexNumber")
+                    e_num = ep_version.get("IndexNumber")
+                    if s_num is not None and e_num is not None:
+                        episodes_grouped_by_number[(s_num, e_num)].append(ep_version)
+                
+                # ... (构建 series_record ) ...
                 series_record = {
                     "item_type": "Series", "tmdb_id": str(series_details.get('id')), "title": series_details.get('name'),
                     "original_title": series_details.get('original_name'), "overview": series_details.get('overview'),
                     "release_date": series_details.get('first_air_date'), "poster_path": series_details.get('poster_path'),
                     "rating": douban_rating if douban_rating is not None else series_details.get('vote_average'),
-                    "asset_details_json": '[]' # 剧集顶层不记录资产
+                    "asset_details_json": '[]'
                 }
                 actors_relation = [{"tmdb_id": int(p.get("id")), "character": p.get("character"), "order": p.get("order")} for p in final_processed_cast if p.get("id")]
                 series_record['actors_json'] = json.dumps(actors_relation, ensure_ascii=False)
@@ -232,53 +229,50 @@ class MediaProcessor:
                     series_record['date_added'] = item_details_from_emby.get("DateCreated")
                     series_record['ignore_reason'] = None
                 records_to_upsert.append(series_record)
+
                 for season in seasons_details:
                     if season.get('season_number', 0) == 0: continue
                     records_to_upsert.append({"tmdb_id": str(season.get('id')), "item_type": "Season", "parent_series_tmdb_id": str(series_details.get('id')), "title": season.get('name'), "overview": season.get('overview'), "release_date": season.get('air_date'), "poster_path": season.get('poster_path'), "season_number": season.get('season_number')})
+                
+                # ★★★  遍历 TMDb 元数据列表，并从中查找 Emby 版本进行聚合 ★★★
                 for episode in episodes_details:
                     episode_record = {"tmdb_id": str(episode.get('id')), "item_type": "Episode", "parent_series_tmdb_id": str(series_details.get('id')), "title": episode.get('name'), "overview": episode.get('overview'), "release_date": episode.get('air_date'), "season_number": episode.get('season_number'), "episode_number": episode.get('episode_number')}
                     
-                    # --- 为分集分析资产 ---
                     s_num = episode.get('season_number')
                     e_num = episode.get('episode_number')
-                    lookup_key = f"S{s_num}E{e_num}"
-                    emby_episode_details = emby_children_map.get(lookup_key)
-                    if emby_episode_details:
-                        asset_details = parse_full_asset_details(emby_episode_details)
-                        episode_record['asset_details_json'] = json.dumps([asset_details], ensure_ascii=False)
-                        # 同时补充 emby_item_ids_json
-                        episode_record['emby_item_ids_json'] = json.dumps([emby_episode_details.get('Id')])
+                    
+                    versions_of_episode = episodes_grouped_by_number.get((s_num, e_num))
+                    
+                    if versions_of_episode:
+                        all_emby_ids = [v.get('Id') for v in versions_of_episode]
+                        all_asset_details = [parse_full_asset_details(v) for v in versions_of_episode]
+                        
+                        episode_record['asset_details_json'] = json.dumps(all_asset_details, ensure_ascii=False)
+                        episode_record['emby_item_ids_json'] = json.dumps(all_emby_ids)
                         episode_record['in_library'] = True
 
                     records_to_upsert.append(episode_record)
-            # ======================================================================
-            # ▲▲▲ 核心修改 2: 修改结束 ▲▲▲
-            # ======================================================================
 
             if not records_to_upsert:
                 return
 
-            # ... (后续的批量写入数据库逻辑保持不变) ...
+            # ... (批量写入数据库) ...
             all_possible_columns = [
                 "tmdb_id", "item_type", "title", "original_title", "overview", "release_date", "release_year",
                 "poster_path", "rating", "actors_json", "parent_series_tmdb_id", "season_number", "episode_number",
                 "in_library", "subscription_status", "subscription_sources_json", "emby_item_ids_json", "date_added",
                 "official_rating", "unified_rating",
                 "genres_json", "directors_json", "studios_json", "countries_json", "keywords_json", "ignore_reason",
-                "asset_details_json" # ★ 确保 asset_details_json 在列清单中
+                "asset_details_json"
             ]
             data_for_batch = []
             for record in records_to_upsert:
                 db_row_complete = {col: record.get(col) for col in all_possible_columns}
                 
-                if db_row_complete['in_library'] is None:
-                    db_row_complete['in_library'] = False
-                if db_row_complete['subscription_status'] is None:
-                    db_row_complete['subscription_status'] = 'NONE'
-                if db_row_complete['subscription_sources_json'] is None:
-                    db_row_complete['subscription_sources_json'] = '[]'
-                if db_row_complete['emby_item_ids_json'] is None:
-                    db_row_complete['emby_item_ids_json'] = '[]'
+                if db_row_complete['in_library'] is None: db_row_complete['in_library'] = False
+                if db_row_complete['subscription_status'] is None: db_row_complete['subscription_status'] = 'NONE'
+                if db_row_complete['subscription_sources_json'] is None: db_row_complete['subscription_sources_json'] = '[]'
+                if db_row_complete['emby_item_ids_json'] is None: db_row_complete['emby_item_ids_json'] = '[]'
 
                 release_date_str = db_row_complete.get('release_date')
                 if release_date_str and len(release_date_str) >= 4:
@@ -307,23 +301,17 @@ class MediaProcessor:
 
             cols_str = ", ".join(all_possible_columns)
             placeholders_str = ", ".join([f"%({col})s" for col in all_possible_columns])
+            cols_to_update = [col for col in all_possible_columns if col not in ['tmdb_id', 'item_type']]
             
-            cols_to_update = all_possible_columns.copy()
-            for pk in ['tmdb_id', 'item_type']:
-                if pk in cols_to_update: cols_to_update.remove(pk)
-
             if item_details_from_emby:
-                logger.debug("  ➜ 入库模式：将设置订阅状态为NONE，但保留订阅来源。")
                 cols_to_protect = ['subscription_sources_json']
                 timestamp_field = "last_synced_at"
             else:
-                logger.debug("  ➜ 预处理模式：将保留数据库中现有的 '订阅' 状态。")
                 cols_to_protect = ['subscription_status', 'subscription_sources_json', 'in_library']
                 timestamp_field = "pre_processed_at"
-
+            
             for col in cols_to_protect:
-                if col in cols_to_update:
-                    cols_to_update.remove(col)
+                if col in cols_to_update: cols_to_update.remove(col)
 
             update_clauses = [f"{col} = EXCLUDED.{col}" for col in cols_to_update]
             update_clauses.append(f"{timestamp_field} = NOW()")
@@ -2506,20 +2494,17 @@ class MediaProcessor:
     # --- 为一个媒体项同步元数据缓存 ---
     def sync_single_item_to_metadata_cache(self, item_id: str, item_name: Optional[str] = None, episode_ids_to_add: Optional[List[str]] = None):
         """
-        【V10 - 全功能资产分析版】
-        - 常规模式现在可以同步电影或剧集所有分集的资产详情 (asset_details_json)。
-        - 分集追加模式现在也会分析并填充新分集的资产详情。
+        【V11 - 统一版本感知修复版】
+        - 常规模式在处理剧集时，会调用 get_all_library_versions 获取所有分集版本并进行聚合。
+        - 分集追加模式保持不变，因为它处理的是特定的新分集ID，逻辑天然正确。
         """
         log_prefix = f"实时同步媒体数据 '{item_name}'"
         sync_mode = "精准分集追加" if episode_ids_to_add else "常规元数据刷新"
         logger.info(f"  ➜ {log_prefix} 开始执行 ({sync_mode}模式)")
         
         try:
-            # ======================================================================
-            # ▼▼▼ 核心修改 3: 全面改造此函数以支持资产分析 ▼▼▼
-            # ======================================================================
             if episode_ids_to_add:
-                # --- 模式一：精准分集追加 ---
+                # --- 模式一：精准分集追加  ---
                 series_details = emby.get_emby_item_details(item_id, self.emby_url, self.emby_api_key, self.emby_user_id, fields="ProviderIds,Name")
                 if not series_details:
                     logger.error(f"  ➜ {log_prefix} [增量模式] 无法获取父剧集 {item_id} 的详情，任务中止。")
@@ -2530,7 +2515,6 @@ class MediaProcessor:
                     logger.error(f"  ➜ {log_prefix} [增量模式] 父剧集 '{series_details.get('Name')}' 缺少 TMDb ID，无法关联分集。")
                     return
 
-                # 1. 批量获取新分集的详情 (请求包含资产分析所需字段)
                 new_episodes_details = emby.get_emby_items_by_id(
                     base_url=self.emby_url, api_key=self.emby_api_key, user_id=self.emby_user_id,
                     item_ids=episode_ids_to_add, 
@@ -2544,52 +2528,36 @@ class MediaProcessor:
                 metadata_batch = []
                 episodes_by_season = defaultdict(list)
                 for episode in new_episodes_details:
-                    season_num = episode.get("ParentIndexNumber")
-                    if season_num is not None:
+                    if season_num := episode.get("ParentIndexNumber"):
                         episodes_by_season[season_num].append(episode)
 
-                logger.info(f"  ➜ 检测到 {len(new_episodes_details)} 个新分集，分属于 {len(episodes_by_season)} 个不同的季。")
-                    
                 for season_num, emby_episodes_in_season in episodes_by_season.items():
-                    logger.info(f"  ➜ 正在为第 {season_num} 季的 {len(emby_episodes_in_season)} 个分集批量获取 TMDb 信息...")
-                    
                     season_details_from_tmdb = tmdb.get_season_details_tmdb(
                         tv_id=series_tmdb_id, season_number=season_num,
                         api_key=self.tmdb_api_key, item_name=series_details.get('Name')
                     )
-
                     if not season_details_from_tmdb or not season_details_from_tmdb.get("episodes"):
-                        logger.error(f"  ➜ 无法从 TMDb 获取第 {season_num} 季的详情，该季所有分集将无法同步！")
                         continue
-
                     tmdb_episode_map = {ep.get("episode_number"): ep for ep in season_details_from_tmdb["episodes"]}
 
                     for emby_episode in emby_episodes_in_season:
                         e_num = emby_episode.get("IndexNumber")
                         tmdb_details = tmdb_episode_map.get(e_num)
-
                         if not tmdb_details or not tmdb_details.get("id"):
-                            logger.warning(f"  ➜ 在 TMDb 第 {season_num} 季详情中未找到 S{season_num:02d}E{e_num:02d} 的信息，跳过此分集。")
                             continue
-
-                        episode_tmdb_id = tmdb_details.get("id")
                         
-                        # --- 分析资产详情 ---
                         asset_details = parse_full_asset_details(emby_episode)
-
                         metadata_to_add = {
-                            "tmdb_id": str(episode_tmdb_id), "item_type": "Episode",
+                            "tmdb_id": str(tmdb_details.get("id")), "item_type": "Episode",
                             "parent_series_tmdb_id": str(series_tmdb_id),
                             "season_number": season_num, "episode_number": e_num,
                             "in_library": True, "subscription_status": "NONE",
                             "emby_item_ids_json": json.dumps([emby_episode.get("Id")]),
                             "title": tmdb_details.get("name"), "overview": tmdb_details.get("overview"),
                             "release_date": tmdb_details.get("air_date"),
-                            "asset_details_json": json.dumps([asset_details], ensure_ascii=False) # ★ 添加资产详情
+                            "asset_details_json": json.dumps([asset_details], ensure_ascii=False)
                         }
-                        
                         metadata_batch.append(metadata_to_add)
-                        logger.info(f"  ➜ 成功匹配 S{season_num:02d}E{e_num:02d} -> TMDb ID: {episode_tmdb_id}")
                 
                 if metadata_batch:
                     with get_central_db_connection() as conn:
@@ -2609,7 +2577,7 @@ class MediaProcessor:
                 return
 
             else:
-                # --- 模式二：常规元数据刷新 (全新增强逻辑) ---
+                # --- 模式二：常规元数据刷新 ---
                 fields_to_get = "ProviderIds,Type,Name,OriginalTitle,Overview,Tags,OfficialRating,MediaStreams,Container,Size,Path"
                 item_details = emby.get_emby_item_details(item_id, self.emby_url, self.emby_api_key, self.emby_user_id, fields=fields_to_get)
                 if not item_details:
@@ -2624,7 +2592,6 @@ class MediaProcessor:
 
                 with get_central_db_connection() as conn:
                     with conn.cursor() as cursor:
-                        # 1. 更新顶层项目的文本元数据
                         updates = {
                             "title": item_details.get('Name'), "original_title": item_details.get('OriginalTitle'),
                             "overview": item_details.get('Overview'), "official_rating": item_details.get('OfficialRating'),
@@ -2633,7 +2600,6 @@ class MediaProcessor:
                             "last_synced_at": datetime.now(timezone.utc)
                         }
                         
-                        # 2. 分析并更新资产元数据
                         if item_type == 'Movie':
                             asset_details = parse_full_asset_details(item_details)
                             updates["asset_details_json"] = json.dumps([asset_details], ensure_ascii=False)
@@ -2642,34 +2608,30 @@ class MediaProcessor:
                         sql = f"UPDATE media_metadata SET {', '.join(set_clauses)} WHERE tmdb_id = %s AND item_type = %s"
                         cursor.execute(sql, tuple(updates.values()) + (tmdb_id, item_type))
                         
-                        # 3. 如果是剧集，额外处理所有分集的资产
                         if item_type == 'Series':
-                            logger.info(f"  ➜ {log_prefix} [常规模式] 检测到剧集，开始同步所有分集的资产详情...")
-                            all_episodes = emby.get_series_children(
-                                series_id=item_id, base_url=self.emby_url, api_key=self.emby_api_key,
-                                user_id=self.emby_user_id, include_item_types="Episode",
+                            logger.info(f"  ➜ {log_prefix} [常规模式] 检测到剧集，开始同步所有分集的聚合资产详情...")
+                            all_episode_versions = emby.get_all_library_versions(
+                                base_url=self.emby_url, api_key=self.emby_api_key, user_id=self.emby_user_id,
+                                media_type_filter="Episode", parent_id=item_id,
                                 fields="Id,ProviderIds,MediaStreams,Container,Size,Path"
-                            )
-                            if all_episodes:
-                                for episode in all_episodes:
-                                    episode_tmdb_id = episode.get("ProviderIds", {}).get("Tmdb")
-                                    if not episode_tmdb_id: continue
-                                    
-                                    asset_details = parse_full_asset_details(episode)
-                                    asset_json = json.dumps([asset_details], ensure_ascii=False)
+                            ) or []
+
+                            episodes_grouped_by_tmdb_id = defaultdict(list)
+                            for ep_version in all_episode_versions:
+                                if ep_tmdb_id := ep_version.get("ProviderIds", {}).get("Tmdb"):
+                                    episodes_grouped_by_tmdb_id[str(ep_tmdb_id)].append(ep_version)
+
+                            if episodes_grouped_by_tmdb_id:
+                                for ep_tmdb_id, versions in episodes_grouped_by_tmdb_id.items():
+                                    asset_details = [parse_full_asset_details(v) for v in versions]
+                                    asset_json = json.dumps(asset_details, ensure_ascii=False)
                                     
                                     cursor.execute(
-                                        """
-                                        UPDATE media_metadata 
-                                        SET asset_details_json = %s, last_synced_at = NOW()
-                                        WHERE tmdb_id = %s AND item_type = 'Episode'
-                                        """,
-                                        (asset_json, str(episode_tmdb_id))
+                                        "UPDATE media_metadata SET asset_details_json = %s, last_synced_at = NOW() WHERE tmdb_id = %s AND item_type = 'Episode'",
+                                        (asset_json, ep_tmdb_id)
                                     )
-                                logger.info(f"  ➜ {log_prefix} [常规模式] 成功更新了 {len(all_episodes)} 个分集的资产详情。")
-
+                                logger.info(f"  ➜ {log_prefix} [常规模式] 成功更新了 {len(episodes_grouped_by_tmdb_id)} 个分集的聚合资产详情。")
                         conn.commit()
-                
                 logger.info(f"  ➜ {log_prefix} [常规模式] 成功更新了项目的核心元数据及资产详情。")
 
         except Exception as e:

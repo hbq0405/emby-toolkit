@@ -356,22 +356,30 @@ def init_db():
                 """)
                 cursor.execute("CREATE INDEX IF NOT EXISTS idx_resubscribe_cache_status ON resubscribe_cache (status);")
 
-                logger.trace("  ➜ 正在创建 'media_cleanup_tasks' 表...")
+                logger.trace("  ➜ 正在创建 'cleanup_index' 表 ...")
                 cursor.execute("""
-                    CREATE TABLE IF NOT EXISTS media_cleanup_tasks (
+                    CREATE TABLE IF NOT EXISTS cleanup_index (
                         id SERIAL PRIMARY KEY,
-                        task_type TEXT NOT NULL, -- 'multi_version' or 'duplicate'
-                        tmdb_id TEXT,
-                        item_name TEXT,
-                        item_type TEXT, -- 新增 item_type 列
-                        versions_info_json JSONB,
+                        
+                        -- 核心指针：指向 media_metadata 表的复合主键
+                        tmdb_id TEXT NOT NULL,
+                        item_type TEXT NOT NULL,
+
+                        -- 任务元数据
                         status TEXT DEFAULT 'pending', -- 'pending', 'processed', 'ignored'
+                        
+                        -- 决策结果
+                        versions_info_json JSONB,
                         best_version_id TEXT,
-                        created_at TIMESTAMP WITH TIME ZONE DEFAULT NOW()
+                        
+                        created_at TIMESTAMP WITH TIME ZONE DEFAULT NOW(),
+                        last_updated_at TIMESTAMP WITH TIME ZONE DEFAULT NOW(),
+
+                        -- 复合唯一约束，确保每个媒体项只有一个待办任务
+                        UNIQUE (tmdb_id, item_type)
                     )
                 """)
-                cursor.execute("CREATE INDEX IF NOT EXISTS idx_cleanup_task_type ON media_cleanup_tasks (task_type);")
-                cursor.execute("CREATE INDEX IF NOT EXISTS idx_cleanup_task_status ON media_cleanup_tasks (status);")
+                cursor.execute("CREATE INDEX IF NOT EXISTS idx_cleanup_index_status ON cleanup_index (status);")
 
                 logger.trace("  ➜ 正在创建 'user_templates' 表 (用户权限模板)...")
                 cursor.execute("""
@@ -536,9 +544,6 @@ def init_db():
                             "resubscribe_filesize_operator": "TEXT DEFAULT 'lt'",
                             "resubscribe_filesize_threshold_gb": "REAL DEFAULT 10.0"
                         },
-                        'media_cleanup_tasks': { # 添加 media_cleanup_tasks 的升级
-                            "item_type": "TEXT"
-                        },
                         'user_templates': {
                             "source_emby_user_id": "TEXT",
                             "emby_configuration_json": "JSONB",
@@ -630,7 +635,8 @@ def init_db():
                     deprecated_tables = [
                         'watchlist',
                         'tracked_actor_media',
-                        'subscription_requests'
+                        'subscription_requests',
+                        'media_cleanup_tasks'
                     ]
                     for table in deprecated_tables:
                         logger.trace(f"    ➜ [数据库清理] 正在尝试移除废弃的表: '{table}'...")

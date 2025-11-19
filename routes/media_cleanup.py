@@ -4,12 +4,12 @@ from flask import Blueprint, jsonify, request
 from extensions import task_lock_required, processor_ready_required
 
 import task_manager
-import config_manager
 from tasks import task_execute_cleanup, task_scan_for_cleanup_issues
 from database import (
     maintenance_db,
     settings_db
 )
+from database.connection import get_db_connection
 import logging
 
 logger = logging.getLogger(__name__)
@@ -18,55 +18,78 @@ media_cleanup_bp = Blueprint('media_cleanup_bp', __name__)
 
 @media_cleanup_bp.route('/api/cleanup/tasks', methods=['GET'])
 def get_cleanup_tasks():
-    """获取所有待处理的媒体去重任务。"""
+    """
+    【V2 - 瘦身关联版】
+    获取所有待处理的清理任务，并关联 media_metadata 表获取最新的元数据。
+    """
     try:
-        tasks = maintenance_db.get_all_cleanup_tasks()
+        sql_query = """
+            SELECT 
+                t.id,
+                t.tmdb_id,
+                t.item_type,
+                t.versions_info_json,
+                t.best_version_id,
+                m.title AS item_name,
+                m.season_number,
+                m.episode_number,
+                m.parent_series_tmdb_id,
+                parent.title AS parent_series_name
+            FROM cleanup_index AS t
+            JOIN media_metadata AS m ON t.tmdb_id = m.tmdb_id AND t.item_type = m.item_type
+            LEFT JOIN media_metadata AS parent ON m.parent_series_tmdb_id = parent.tmdb_id AND parent.item_type = 'Series'
+            WHERE t.status = 'pending'
+            ORDER BY parent.title, m.season_number, m.episode_number, m.title;
+        """
+        with get_db_connection() as conn:
+            with conn.cursor() as cursor:
+                cursor.execute(sql_query)
+                tasks = [dict(row) for row in cursor.fetchall()]
+        
         return jsonify(tasks)
     except Exception as e:
+        logger.error(f"获取关联后的清理任务失败: {e}", exc_info=True)
         return jsonify({"error": f"获取清理任务失败: {e}"}), 500
 
 @media_cleanup_bp.route('/api/cleanup/execute', methods=['POST'])
 @task_lock_required
 @processor_ready_required
 def execute_cleanup_tasks():
-    """执行指定的清理任务。"""
     data = request.get_json()
     task_ids = data.get('task_ids')
     if not task_ids or not isinstance(task_ids, list):
         return jsonify({"error": "缺少或无效的 task_ids 参数"}), 400
 
+    # ★★★ 注意：这里调用的后台任务名 task_execute_cleanup 是在 tasks/maintenance.py 中定义的，我们假设它不变 ★★★
     task_manager.submit_task(
-        task_execute_cleanup,
-        f"执行 {len(task_ids)} 项媒体去重", # task_name 是第二个位置参数
-        'media',                         # processor_type 是第三个位置参数
-        task_ids                         # task_ids 现在是第四个位置参数 (*args)
+        'execute_cleanup', # task_name
+        f"执行 {len(task_ids)} 项媒体去重",
+        task_ids=task_ids
     )
     return jsonify({"message": "清理任务已提交到后台执行。"}), 202
 
 @media_cleanup_bp.route('/api/cleanup/ignore', methods=['POST'])
 def ignore_cleanup_tasks():
-    """将指定的清理任务标记为已忽略。"""
     data = request.get_json()
     task_ids = data.get('task_ids')
     if not task_ids or not isinstance(task_ids, list):
         return jsonify({"error": "缺少或无效的 task_ids 参数"}), 400
-    
     try:
-        updated_count = maintenance_db.batch_update_cleanup_task_status(task_ids, 'ignored')
+        # ★★★ 调用新函数 ★★★
+        updated_count = maintenance_db.batch_update_cleanup_index_status(task_ids, 'ignored')
         return jsonify({"message": f"成功忽略 {updated_count} 个任务。"}), 200
     except Exception as e:
         return jsonify({"error": f"忽略任务时失败: {e}"}), 500
 
 @media_cleanup_bp.route('/api/cleanup/delete', methods=['POST'])
 def delete_cleanup_tasks():
-    """从列表中删除指定的清理任务（不执行清理）。"""
     data = request.get_json()
     task_ids = data.get('task_ids')
     if not task_ids or not isinstance(task_ids, list):
         return jsonify({"error": "缺少或无效的 task_ids 参数"}), 400
-
     try:
-        deleted_count = maintenance_db.batch_delete_cleanup_tasks(task_ids)
+        # ★★★ 调用新函数 ★★★
+        deleted_count = maintenance_db.batch_delete_cleanup_index(task_ids)
         return jsonify({"message": f"成功删除 {deleted_count} 个任务。"}), 200
     except Exception as e:
         return jsonify({"error": f"删除任务时失败: {e}"}), 500
@@ -75,26 +98,22 @@ def delete_cleanup_tasks():
 @task_lock_required
 @processor_ready_required
 def clear_all_cleanup_tasks():
-    """一键执行所有媒体去重任务。"""
     try:
-        # 1. 获取所有待处理的清理任务ID
-        all_pending_tasks = maintenance_db.get_all_cleanup_tasks()
+        # ★★★ 调用新函数 ★★★
+        all_pending_tasks = maintenance_db.get_all_cleanup_index()
         task_ids = [task['id'] for task in all_pending_tasks]
-
         if not task_ids:
-            return jsonify({"message": "没有发现待处理的清理任务，无需执行。"}), 200
+            return jsonify({"message": "没有发现待处理的清理任务。"}), 200
 
-        # 2. 提交任务到后台执行
         task_manager.submit_task(
-            task_execute_cleanup,
+            'execute_cleanup',
             f"一键执行所有 {len(task_ids)} 项媒体去重",
-            'media',
-            task_ids
+            task_ids=task_ids
         )
-        return jsonify({"message": f"一键执行所有 {len(task_ids)} 项清理任务已提交到后台。"}), 202
+        return jsonify({"message": f"一键清理任务已提交到后台。"}), 202
     except Exception as e:
         logger.error(f"一键执行所有清理任务时失败: {e}", exc_info=True)
-        return jsonify({"error": f"一键执行所有清理任务失败: {e}"}), 500
+        return jsonify({"error": f"一键清理失败: {e}"}), 500
     
 @media_cleanup_bp.route('/api/cleanup/settings', methods=['GET'])
 def get_cleanup_settings():

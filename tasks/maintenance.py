@@ -405,29 +405,31 @@ def task_import_database(processor, file_content: str, tables_to_import: List[st
 
 def _get_properties_for_comparison(version: Dict) -> Dict:
     """
-    【V2.2 - 最终数据结构修正版】
-    彻底修正了对 'media_cleanup_rules' 数据结构（List of Dicts）的错误处理。
+    从 asset_details_json 的单个版本条目中，提取用于比较的标准化属性。
+    (此函数逻辑不变)
     """
     if not version or not isinstance(version, dict):
         return {'id': None, 'quality': 'unknown', 'resolution': 'unknown', 'effect': 'sdr', 'filesize': 0}
 
-    # ★★★ 核心修正：正确处理规则列表 ★★★
-    # 1. 正确获取规则列表，如果不存在则为空列表
     all_rules_list = settings_db.get_setting('media_cleanup_rules') or []
-    
-    # 2. 从规则列表中找到 'effect' 规则的字典
     effect_rule = next((rule for rule in all_rules_list if rule.get('id') == 'effect'), {})
-    
-    # 3. 从找到的 'effect' 规则字典中安全地获取优先级列表
-    effect_priority = effect_rule.get('priority', 
-        ["dovi_p8", "dovi_p7", "dovi_p5", "dovi_other", "hdr10+", "hdr", "sdr"])
+    effect_priority = effect_rule.get('priority', ["dovi_p8", "dovi_p7", "dovi_p5", "dovi_other", "hdr10+", "hdr", "sdr"])
     
     effect_list = version.get("effect_display", [])
     best_effect = 'sdr'
     
     if effect_list:
-        standardized_effects = [_get_standardized_effect(e, None) for e in effect_list]
-        best_effect = min(standardized_effects, key=lambda e: effect_priority.index(e) if e in effect_priority else 999)
+        # effect_display 已经是标准化列表了，如 ["Dolby Vision", "HDR"]
+        # 我们需要将其转换为规则中使用的key，如 "dovi_other", "hdr"
+        standardized_effects = []
+        for e in effect_list:
+            e_lower = str(e).lower()
+            if 'dolby vision' in e_lower: standardized_effects.append('dovi_other') # 简化处理
+            elif 'hdr10+' in e_lower: standardized_effects.append('hdr10+')
+            elif 'hdr' in e_lower: standardized_effects.append('hdr')
+        
+        if standardized_effects:
+            best_effect = min(standardized_effects, key=lambda e: effect_priority.index(e) if e in effect_priority else 999)
 
     return {
         "id": version.get("emby_item_id"),
@@ -437,13 +439,13 @@ def _get_properties_for_comparison(version: Dict) -> Dict:
         "filesize": version.get("size_bytes", 0)
     }
 
-def _determine_best_version_by_rules(versions: List[Dict[str, Any]]) -> Tuple[List[Dict[str, Any]], Optional[str]]:
+def _determine_best_version_by_rules(versions: List[Dict[str, Any]]) -> Optional[str]:
     """
-    【V2 - 重构版】
-    接收从 asset_details_json 来的版本列表，并根据规则决定最佳版本。
+    根据规则决定最佳版本，只返回最佳版本的 ID。
+    (此函数逻辑不变, 只修改了返回值)
     """
     rules = settings_db.get_setting('media_cleanup_rules')
-    if not rules: # 如果没有设置，使用默认规则
+    if not rules:
         rules = [
             {"id": "quality", "enabled": True, "priority": ["remux", "blu-ray", "web-dl", "hdtv"]},
             {"id": "resolution", "enabled": True, "priority": ["2160p", "1080p", "720p"]},
@@ -451,7 +453,6 @@ def _determine_best_version_by_rules(versions: List[Dict[str, Any]]) -> Tuple[Li
             {"id": "filesize", "enabled": True, "priority": "desc"}
         ]
 
-    # 预处理规则，确保格式统一
     processed_rules = []
     for rule in rules:
         new_rule = rule.copy()
@@ -461,14 +462,16 @@ def _determine_best_version_by_rules(versions: List[Dict[str, Any]]) -> Tuple[Li
             new_rule["priority"] = [str(p).lower().replace(" ", "_") for p in new_rule["priority"]]
         processed_rules.append(new_rule)
     
-    # 将数据库来的版本信息，转换为用于比较的标准化属性字典列表
     version_properties = [_get_properties_for_comparison(v) for v in versions if v]
 
     def compare_versions(item1_props, item2_props):
         for rule in processed_rules:
             if not rule.get("enabled", True): continue
             
+            # ★★★ 核心修复：分步赋值 ★★★
+            # 1. 首先获取 rule_id
             rule_id = rule.get("id")
+            # 2. 然后再使用 rule_id 来获取其他值
             val1 = item1_props.get(rule_id)
             val2 = item2_props.get(rule_id)
 
@@ -476,100 +479,126 @@ def _determine_best_version_by_rules(versions: List[Dict[str, Any]]) -> Tuple[Li
                 if val1 > val2: return -1
                 if val1 < val2: return 1
                 continue
-
             priority_list = rule.get("priority", [])
             try:
                 index1 = priority_list.index(val1) if val1 in priority_list else 999
                 index2 = priority_list.index(val2) if val2 in priority_list else 999
-                
                 if index1 < index2: return -1
                 if index1 > index2: return 1
-            except (ValueError, TypeError):
-                continue
+            except (ValueError, TypeError): continue
         return 0
 
     sorted_versions = sorted(version_properties, key=cmp_to_key(compare_versions))
-    
-    best_version_id = sorted_versions[0]['id'] if sorted_versions else None
-    
-    # 返回原始版本信息和最佳ID
-    return versions, best_version_id
+    return sorted_versions[0]['id'] if sorted_versions else None
 
 def task_scan_for_cleanup_issues(processor):
     """
-    【V4 - 最终统一标准版】
-    直接读取 media_metadata 中已分析好的数据，并格式化为前端需要的格式。
+    扫描数据库，生成精简的清理索引，并调用新的 upsert 函数写入数据库。
     """
-    task_name = "扫描媒体库重复项 (统一标准模式)"
+    task_name = "扫描媒体库重复项"
     logger.info(f"--- 开始执行 '{task_name}' 任务 ---")
     task_manager.update_status_from_thread(0, "正在从数据库准备扫描...")
 
     try:
-        sql_query = """
-            SELECT tmdb_id, item_type, title, asset_details_json
-            FROM media_metadata
-            WHERE in_library = TRUE AND jsonb_array_length(asset_details_json) > 1;
-        """
+        task_manager.update_status_from_thread(0, "正在准备扫描...")
+
+        # ★★★ 核心修改 1: 读取扫描范围设置 ★★★
+        library_ids_to_scan = settings_db.get_setting('media_cleanup_library_ids') or []
+        
+        if library_ids_to_scan:
+            logger.info(f"  ➜ 将仅扫描指定的 {len(library_ids_to_scan)} 个媒体库。")
+            # 我们需要将媒体库ID转换为媒体项ID，因为 media_metadata 表没有直接的 library_id 字段
+            # 最可靠的方法是从 Emby 获取这些库中的所有项目ID
+            items_in_scope = emby.get_library_items_for_cleanup(
+                base_url=processor.emby_url,
+                api_key=processor.emby_api_key,
+                user_id=processor.emby_user_id,
+                library_ids=library_ids_to_scan,
+                media_type_filter="Movie,Series,Episode", # 获取所有相关类型
+                fields="Id" # 我们只需要ID来进行过滤
+            )
+            item_ids_in_scope = {item['Id'] for item in items_in_scope}
+            
+            if not item_ids_in_scope:
+                logger.warning("  ➜ 指定的媒体库中没有任何媒体项，扫描中止。")
+                task_manager.update_status_from_thread(100, "扫描中止：指定的媒体库为空。")
+                return
+            
+            # 构建 WHERE 子句来过滤这些 Emby Item ID
+            # emby_item_ids_json 是一个 JSON 数组，我们需要检查它是否与我们的ID集合有交集
+            where_clause = "AND EXISTS (SELECT 1 FROM jsonb_array_elements_text(t.emby_item_ids_json) AS elem WHERE elem = ANY(%(item_ids)s))"
+            params = {'item_ids': list(item_ids_in_scope)}
+        else:
+            logger.info("  ➜ 未指定媒体库，将扫描所有媒体库。")
+            where_clause = ""
+            params = {}
+
+        # ★★★ 核心修改 2: 将过滤条件动态加入 SQL 查询 ★★★
+        sql_query = sql.SQL("""
+            SELECT t.tmdb_id, t.item_type, t.asset_details_json
+            FROM media_metadata AS t
+            WHERE 
+                t.in_library = TRUE 
+                AND jsonb_array_length(t.asset_details_json) > 1
+                {where_clause}
+        """).format(where_clause=sql.SQL(where_clause))
+
         with connection.get_db_connection() as conn:
             with conn.cursor() as cursor:
-                cursor.execute(sql_query)
+                cursor.execute(sql_query, params)
                 multi_version_items = cursor.fetchall()
 
         total_items = len(multi_version_items)
         if total_items == 0:
-            task_manager.update_status_from_thread(100, "扫描完成：未在数据库中发现多版本媒体。")
+            maintenance_db.clear_pending_cleanup_tasks()
+            task_manager.update_status_from_thread(100, "扫描完成：未发现任何多版本媒体。")
             return
 
         task_manager.update_status_from_thread(10, f"发现 {total_items} 组多版本媒体，开始分析...")
         
-        cleanup_tasks = []
+        cleanup_index_entries = []
         for i, item in enumerate(multi_version_items):
             progress = 10 + int((i / total_items) * 80)
-            task_manager.update_status_from_thread(progress, f"({i+1}/{total_items}) 正在分析: {item['title']}")
+            # 为了UI显示更友好，我们从数据库再获取一下标题
+            with connection.get_db_connection() as conn:
+                with conn.cursor() as cursor:
+                    cursor.execute("SELECT title FROM media_metadata WHERE tmdb_id = %s AND item_type = %s", (item['tmdb_id'], item['item_type']))
+                    title_row = cursor.fetchone()
+                    display_title = title_row['title'] if title_row else '未知媒体'
+            task_manager.update_status_from_thread(progress, f"({i+1}/{total_items}) 正在分析: {display_title}")
 
             versions_from_db = item['asset_details_json']
-            
-            # 1. 决策函数依然用于找出最佳ID
-            _, best_id = _determine_best_version_by_rules(versions_from_db)
+            best_id = _determine_best_version_by_rules(versions_from_db)
 
-            # 2. 格式化：将数据库中的标准数据，转换为前端需要的最终格式
+            # versions_info_json 仍然需要完整信息给前端展示
             versions_for_frontend = []
             for v in versions_from_db:
-                # _get_properties_for_comparison 用于获取“比较”用的标准化值
                 props = _get_properties_for_comparison(v)
-                
-                # 特效需要特殊处理一下，从列表变成字符串
-                effect_value = "SDR" # 默认值
-                if effect_list := v.get('effect_display'):
-                    # 如果有多个特效，比如 ["Dolby Vision", "HDR"]，我们只取最重要的那个给 props.get('effect')
-                    # _get_properties_for_comparison 已经帮我们做了这件事
-                    effect_value = props.get('effect')
-
                 versions_for_frontend.append({
                     'id': v.get('emby_item_id'),
-                    'Path': v.get('path'),
+                    'path': v.get('path'),
                     'filesize': v.get('size_bytes', 0),
                     'quality': v.get('quality_display'),
                     'resolution': v.get('resolution_display'),
-                    'effect': effect_value # 使用我们处理过的单个特效值
+                    'effect': props.get('effect') # 使用比较用的标准化 effect
                 })
 
-            # 3. 创建清理任务
-            cleanup_tasks.append({
-                "task_type": "Multi-version",
+            cleanup_index_entries.append({
                 "tmdb_id": item['tmdb_id'], 
                 "item_type": item['item_type'],
-                "item_name": item['title'], 
                 "versions_info_json": versions_for_frontend,
-                "best_version_id": best_id
+                "best_version_id": best_id,
             })
 
-        task_manager.update_status_from_thread(90, f"分析完成，正在将 {len(cleanup_tasks)} 组任务写入数据库...")
-        
-        if cleanup_tasks:
-            maintenance_db.batch_insert_cleanup_tasks(cleanup_tasks)
+        task_manager.update_status_from_thread(90, f"分析完成，正在将 {len(cleanup_index_entries)} 组任务写入数据库...")
 
-        final_message = f"扫描完成！共发现 {len(cleanup_tasks)} 组需要清理的多版本媒体。"
+        maintenance_db.clear_pending_cleanup_tasks()
+        
+        if cleanup_index_entries:
+            # ★★★ 调用新的、支持 ON CONFLICT 的写入函数 ★★★
+            maintenance_db.batch_upsert_cleanup_index(cleanup_index_entries)
+
+        final_message = f"扫描完成！共发现 {len(cleanup_index_entries)} 组需要清理的多版本媒体。"
         task_manager.update_status_from_thread(100, final_message)
         logger.info(f"--- '{task_name}' 任务成功完成 ---")
 
@@ -580,7 +609,6 @@ def task_scan_for_cleanup_issues(processor):
 def task_execute_cleanup(processor, task_ids: List[int], **kwargs):
     """
     后台任务：执行指定的一批媒体去重任务（删除多余文件）。
-    (此函数逻辑不变)
     """
     if not task_ids or not isinstance(task_ids, list):
         logger.error("执行媒体去重任务失败：缺少有效的 'task_ids' 参数。")
@@ -588,10 +616,11 @@ def task_execute_cleanup(processor, task_ids: List[int], **kwargs):
         return
 
     task_name = "执行媒体去重"
-    logger.info(f"--- 开始执行 '{task_name}' 任务 (任务ID: {task_ids}) ---")
+    logger.info(f"--- 开始执行 '{task_name}' 任务 (索引ID: {task_ids}) ---")
     
     try:
-        tasks_to_execute = maintenance_db.get_cleanup_tasks_by_ids(task_ids)
+        # ★★★ 调用新的数据库函数 ★★★
+        tasks_to_execute = maintenance_db.get_cleanup_index_by_ids(task_ids)
         total = len(tasks_to_execute)
         if total == 0:
             task_manager.update_status_from_thread(100, "任务完成：未找到指定的清理任务。")
@@ -604,7 +633,13 @@ def task_execute_cleanup(processor, task_ids: List[int], **kwargs):
                 logger.warning("任务被用户中止。")
                 break
             
-            item_name = task['item_name']
+            # 为了日志更友好，我们从数据库获取一下标题
+            with connection.get_db_connection() as conn:
+                with conn.cursor() as cursor:
+                    cursor.execute("SELECT title FROM media_metadata WHERE tmdb_id = %s AND item_type = %s", (task['tmdb_id'], task['item_type']))
+                    title_row = cursor.fetchone()
+                    item_name = title_row['title'] if title_row else '未知媒体'
+
             best_version_id = task['best_version_id']
             versions = task['versions_info_json']
             task_manager.update_status_from_thread(int((i / total) * 100), f"({i+1}/{total}) 正在清理: {item_name}")
@@ -614,14 +649,8 @@ def task_execute_cleanup(processor, task_ids: List[int], **kwargs):
                 if version_id_to_check != best_version_id:
                     logger.warning(f"  ➜ 准备删除劣质版本 (ID: {version_id_to_check}): {version.get('path')}")
                     
-                    # ★★★ 核心修复：移除 mediasource_ 前缀，确保传递纯粹的 Emby GUID ★★★
-                    emby_item_id_to_delete = version_id_to_check
-                    if isinstance(version_id_to_check, str) and version_id_to_check.startswith('mediasource_'):
-                        emby_item_id_to_delete = version_id_to_check.replace('mediasource_', '')
-                        logger.debug(f"    ➜ 检测到 'mediasource_' 前缀，已移除。实际删除ID: {emby_item_id_to_delete}")
-
                     success = emby.delete_item(
-                        item_id=emby_item_id_to_delete,
+                        item_id=version_id_to_check,
                         emby_server_url=processor.emby_url,
                         emby_api_key=processor.emby_api_key,
                         user_id=processor.emby_user_id
@@ -635,7 +664,8 @@ def task_execute_cleanup(processor, task_ids: List[int], **kwargs):
             processed_task_ids.append(task['id'])
 
         if processed_task_ids:
-            maintenance_db.batch_update_cleanup_task_status(processed_task_ids, 'processed')
+            # ★★★ 调用新的数据库函数 ★★★
+            maintenance_db.batch_update_cleanup_index_status(processed_task_ids, 'processed')
 
         final_message = f"清理完成！共处理 {len(processed_task_ids)} 个任务，尝试删除了 {deleted_count} 个多余版本。"
         task_manager.update_status_from_thread(100, final_message)

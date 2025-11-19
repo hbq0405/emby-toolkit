@@ -8,6 +8,7 @@ import psycopg2
 from typing import Optional, List
 from datetime import datetime, timezone
 import concurrent.futures
+from collections import defaultdict
 
 # 导入需要的底层模块和共享实例
 import task_manager
@@ -199,24 +200,16 @@ def task_reprocess_all_review_items(processor):
 # ★★★ 重量级的元数据缓存填充任务 ★★★
 def task_populate_metadata_cache(processor, batch_size: int = 50, force_full_update: bool = False):
     """
-    【V7 - 精准分集资产分析版】
-    - 重构资产分析逻辑，不再使用剧集的“代表分集”。
-    - 剧集（Series）顶层条目不再记录不准确的 asset_details_json。
-    - 每一集（Episode）都会被独立分析，其媒体流、分辨率、音轨、字幕等详细信息被精确记录到该分集自身的 asset_details_json 字段中。
-    - 电影（Movie）的分析逻辑保持不变。
-    - 完全适配新的 media_metadata 表结构，支持 Movie, Series, Season, Episode 作为独立记录。
-    - 同步剧集时，会将其所有在库的季、集作为单独的记录插入/更新到数据库。
-    - 软删除逻辑升级：当一个剧集被删除时，会将其自身及其所有关联的季、集记录的 in_library 状态都更新为 FALSE。
-    - 健壮性提升：为无法从 TMDB 找到匹配的季/集，会生成一个稳定的、可预测的 tmdb_id (例如 'series_tmdb_id-S01')。
+    【V8 - 统一版本感知最终版】
+    - 核心重构：不再使用 get_series_children，而是统一使用 get_all_library_versions 的结果来处理分集。
+    - 实现了对“单集多版本”的完美支持，能够将同一分集的多个文件版本的 ID 和资产信息聚合到数据库的同一条记录中。
+    - 电影、剧集、分集的多版本处理逻辑完全统一，数据源一致。
     """
     task_name = "同步媒体元数据"
     sync_mode = "深度同步 (全量)" if force_full_update else "快速同步 (增量)"
     logger.info(f"--- 模式: {sync_mode} (分批大小: {batch_size}) ---")
     
     try:
-        # ======================================================================
-        # 步骤 1: 计算差异 (逻辑与之前类似，但删除操作更强大)
-        # ======================================================================
         task_manager.update_status_from_thread(0, f"阶段1/2: 计算媒体库差异 ({sync_mode})...")
         
         libs_to_process_ids = processor.config.get("libraries_to_process", [])
@@ -225,21 +218,24 @@ def task_populate_metadata_cache(processor, batch_size: int = 50, force_full_upd
 
         emby_items_index = emby.get_all_library_versions(
             base_url=processor.emby_url, api_key=processor.emby_api_key, user_id=processor.emby_user_id,
-            media_type_filter="Movie,Series", library_ids=libs_to_process_ids,
-            fields="ProviderIds,Type,DateCreated,Name,OriginalTitle,PremiereDate,CommunityRating,Genres,Studios,Tags,DateModified,OfficialRating,ProductionYear,Path,PrimaryImageAspectRatio,Overview,MediaStreams,Container,Size"
+            media_type_filter="Movie,Series,Episode",
+            library_ids=libs_to_process_ids,
+            fields="ProviderIds,Type,DateCreated,Name,OriginalTitle,PremiereDate,CommunityRating,Genres,Studios,Tags,DateModified,OfficialRating,ProductionYear,Path,PrimaryImageAspectRatio,Overview,MediaStreams,Container,Size,SeriesId,ParentIndexNumber,IndexNumber"
         ) or []
         
-        from collections import defaultdict
-
-        emby_items_map = defaultdict(list)
+        top_level_items_map = defaultdict(list)
+        series_to_episode_versions_map = defaultdict(list)
+        
         for item in emby_items_index:
-            if tmdb_id := item.get("ProviderIds", {}).get("Tmdb"):
-                emby_items_map[tmdb_id].append(item)
+            item_type = item.get("Type")
+            if item_type in ["Movie", "Series"]:
+                if tmdb_id := item.get("ProviderIds", {}).get("Tmdb"):
+                    top_level_items_map[tmdb_id].append(item)
+            elif item_type == 'Episode' and item.get('SeriesId'):
+                series_to_episode_versions_map[item['SeriesId']].append(item)
 
-        emby_tmdb_ids = set(emby_items_map.keys())
+        emby_tmdb_ids = set(top_level_items_map.keys())
         logger.info(f"  ➜ 从 Emby 获取到 {len(emby_tmdb_ids)} 个有效的顶层媒体项 (电影/剧集)。")
-
-        if processor.is_stop_requested(): return
 
         with connection.get_db_connection() as conn:
             cursor = conn.cursor()
@@ -253,133 +249,86 @@ def task_populate_metadata_cache(processor, batch_size: int = 50, force_full_upd
         
         if force_full_update:
             ids_to_process = emby_tmdb_ids
-            logger.info(f"  ➜ 深度同步：将处理 {len(ids_to_process)} 项, 标记离线 {len(items_to_delete_tmdb_ids)} 项。")
         else:
             ids_to_process = emby_tmdb_ids - db_tmdb_ids
-            logger.info(f"  ➜ 快速同步：新增/恢复 {len(ids_to_process)} 项, 标记离线 {len(items_to_delete_tmdb_ids)} 项。")
+        
+        logger.info(f"  ➜ 同步计划：处理 {len(ids_to_process)} 项, 标记离线 {len(items_to_delete_tmdb_ids)} 项。")
 
         if items_to_delete_tmdb_ids:
-            logger.info(f"  ➜ 正在标记 {len(items_to_delete_tmdb_ids)} 个已不存在的媒体项及其子项为离线...")
             with connection.get_db_connection() as conn:
                 cursor = conn.cursor()
                 ids_to_delete_list = list(items_to_delete_tmdb_ids)
-                sql = """
-                    UPDATE media_metadata 
-                    SET in_library = FALSE, emby_item_ids_json = '[]'::jsonb
-                    WHERE tmdb_id = ANY(%s) OR parent_series_tmdb_id = ANY(%s)
-                """
+                sql = "UPDATE media_metadata SET in_library = FALSE, emby_item_ids_json = '[]'::jsonb WHERE tmdb_id = ANY(%s) OR parent_series_tmdb_id = ANY(%s)"
                 cursor.execute(sql, (ids_to_delete_list, ids_to_delete_list))
                 conn.commit()
-            logger.info("  ➜ 离线项目标记完成。")
+            logger.info(f"  ➜ {len(items_to_delete_tmdb_ids)} 个离线项目标记完成。")
 
         if processor.is_stop_requested(): return
 
-        items_to_process = [emby_items_map[tmdb_id] for tmdb_id in ids_to_process]
+        items_to_process = [top_level_items_map[tmdb_id] for tmdb_id in ids_to_process]
         total_to_process = len(items_to_process)
         if total_to_process == 0:
             task_manager.update_status_from_thread(100, "数据库已是最新，无需同步。")
             return
 
-        logger.info(f"  ➜ 总共需要处理 {total_to_process} 个媒体组 (TMDB ID)。")
-
-        # ======================================================================
-        # 步骤 2: 分批循环处理 (已完全修正)
-        # ======================================================================
         processed_count = 0
         for i in range(0, total_to_process, batch_size):
             if processor.is_stop_requested(): break
-
             batch_item_groups = items_to_process[i:i + batch_size]
             batch_number = (i // batch_size) + 1
-            
-            logger.info(f"--- 开始处理批次 {batch_number} (包含 {len(batch_item_groups)} 个媒体组) ---")
-            task_manager.update_status_from_thread(
-                10 + int((processed_count / total_to_process) * 90), 
-                f"处理批次 {batch_number}..."
-            )
+            task_manager.update_status_from_thread(10 + int((processed_count / total_to_process) * 90), f"处理批次 {batch_number}...")
 
-            logger.info(f"  ➜ 开始从Tmdb补充导演/国家数据...")
             tmdb_details_map = {}
-            
+            # ... (获取 tmdb_details_map ) ...
             def fetch_tmdb_details(item_group):
                 item = item_group[0]
                 tmdb_id = item.get("ProviderIds", {}).get("Tmdb")
                 item_type = item.get("Type")
                 if not tmdb_id: return None, None
                 details = None
-                if item_type == 'Movie':
-                    details = tmdb.get_movie_details(tmdb_id, processor.tmdb_api_key)
-                elif item_type == 'Series':
-                    details = tmdb.get_tv_details(tmdb_id, processor.tmdb_api_key)
+                if item_type == 'Movie': details = tmdb.get_movie_details(tmdb_id, processor.tmdb_api_key)
+                elif item_type == 'Series': details = tmdb.get_tv_details(tmdb_id, processor.tmdb_api_key)
                 return tmdb_id, details
-
             with concurrent.futures.ThreadPoolExecutor(max_workers=5) as executor:
-                future_to_tmdb_id = {
-                    executor.submit(fetch_tmdb_details, item_group): item_group[0].get("ProviderIds", {}).get("Tmdb")
-                    for item_group in batch_item_groups
-                }
+                future_to_tmdb_id = {executor.submit(fetch_tmdb_details, item_group): item_group[0].get("ProviderIds", {}).get("Tmdb") for item_group in batch_item_groups}
                 for future in concurrent.futures.as_completed(future_to_tmdb_id):
                     if processor.is_stop_requested(): break
-                    tmdb_id, details = future.result()
-                    if tmdb_id and details:
-                        tmdb_details_map[tmdb_id] = details
-            
+                    tmdb_id_res, details = future.result()
+                    if tmdb_id_res and details: tmdb_details_map[tmdb_id_res] = details
             if processor.is_stop_requested(): break
 
             metadata_batch = []
             for item_group in batch_item_groups:
                 if processor.is_stop_requested(): break
-                
                 item = item_group[0]
                 tmdb_id = item.get("ProviderIds", {}).get("Tmdb")
                 if not tmdb_id: continue
                 item_type = item.get("Type")
-
-                tmdb_details = tmdb_details_map.get(tmdb_id)
-
-                premiere_date_str = item.get('PremiereDate')
-                release_date = premiere_date_str.split('T')[0] if premiere_date_str else None
-                sub_status_to_set = "NONE" if item_type == "Movie" else None
                 
-                # ======================================================================
-                # ▼▼▼ 核心修改 2: 区分电影和剧集，只为电影生成顶层资产详情 ▼▼▼
-                # ======================================================================
                 asset_details_list = []
                 if item_type == "Movie":
-                    # 电影的逻辑保持不变，分析其所有版本文件
-                    asset_details_list = [parse_full_asset_details(version_item) for version_item in item_group]
-                # 对于剧集(Series)，asset_details_list 保持为空，因为资产信息将记录在每一集上
-                # ======================================================================
-                # ▲▲▲ 核心修改 2: 修改结束 ▲▲▲
-                # ======================================================================
-
+                    asset_details_list = [parse_full_asset_details(v) for v in item_group]
+                
+                # ... (构建 top_level_record ) ...
+                tmdb_details = tmdb_details_map.get(tmdb_id)
+                premiere_date_str = item.get('PremiereDate')
+                release_date = premiere_date_str.split('T')[0] if premiere_date_str else None
                 top_level_record = {
-                    "tmdb_id": tmdb_id,
-                    "item_type": item.get("Type"),
-                    "title": item.get('Name'),
-                    "original_title": item.get('OriginalTitle'),
-                    "release_year": item.get('ProductionYear'),
-                    "rating": item.get('CommunityRating'),
-                    "overview": item.get('Overview'),
-                    "release_date": release_date,
-                    "date_added": item.get('DateCreated'),
-                    "genres_json": json.dumps(item.get('Genres', []), ensure_ascii=False),
-                    "in_library": True,
-                    "asset_details_json": json.dumps(asset_details_list, ensure_ascii=False), # 对于剧集，这里是 '[]'
-                    "subscription_status": sub_status_to_set,
-                    "ignore_reason": None,
+                    "tmdb_id": tmdb_id, "item_type": item_type, "title": item.get('Name'),
+                    "original_title": item.get('OriginalTitle'), "release_year": item.get('ProductionYear'),
+                    "rating": item.get('CommunityRating'), "overview": item.get('Overview'), "release_date": release_date,
+                    "date_added": item.get('DateCreated'), "genres_json": json.dumps(item.get('Genres', []), ensure_ascii=False),
+                    "in_library": True, "asset_details_json": json.dumps(asset_details_list, ensure_ascii=False),
+                    "subscription_status": "NONE" if item_type == "Movie" else None, "ignore_reason": None,
                     "emby_item_ids_json": json.dumps([v.get('Id') for v in item_group if v.get('Id')], ensure_ascii=False),
-                    "official_rating": item.get('OfficialRating'),
-                    "unified_rating": get_unified_rating(item.get('OfficialRating'))
+                    "official_rating": item.get('OfficialRating'), "unified_rating": get_unified_rating(item.get('OfficialRating'))
                 }
-
                 if tmdb_details:
+                    # ... (用 tmdb_details 填充 top_level_record 的逻辑) ...
                     top_level_record['overview'] = tmdb_details.get('overview') or item.get('Overview')
                     top_level_record['poster_path'] = tmdb_details.get('poster_path')
                     top_level_record['studios_json'] = json.dumps([s['name'] for s in tmdb_details.get('production_companies', [])], ensure_ascii=False)
-
                     directors, countries, keywords = [], [], []
-                    item_type = item.get("Type")
                     if item_type == 'Movie':
                         credits_data = tmdb_details.get("credits", {}) or tmdb_details.get("casts", {})
                         directors = [{'id': p.get('id'), 'name': p.get('name')} for p in credits_data.get('crew', []) if p.get('job') == 'Director']
@@ -394,120 +343,71 @@ def task_populate_metadata_cache(processor, batch_size: int = 50, force_full_upd
                         keywords_data = tmdb_details.get('keywords', {})
                         keyword_list = keywords_data.get('results', []) if isinstance(keywords_data, dict) else []
                         keywords = [k['name'] for k in keyword_list if k.get('name')]
-                    
                     top_level_record['directors_json'] = json.dumps(directors, ensure_ascii=False)
                     top_level_record['countries_json'] = json.dumps(countries, ensure_ascii=False)
                     top_level_record['keywords_json'] = json.dumps(keywords, ensure_ascii=False)
                 else:
-                    logger.warning(f"  ➜ 未能从 TMDb 获取到 TMDB ID: {tmdb_id} ('{item.get('Name')}') 的详情，将仅使用 Emby 元数据。")
+                    # ... (处理 tmdb_details 获取失败的逻辑) ...
                     top_level_record['poster_path'] = None
                     top_level_record['studios_json'] = json.dumps([s['Name'] for s in item.get('Studios', [])], ensure_ascii=False)
-                    top_level_record['directors_json'] = '[]'
-                    top_level_record['countries_json'] = '[]'
-                    top_level_record['keywords_json'] = '[]'
+                    top_level_record['directors_json'] = '[]'; top_level_record['countries_json'] = '[]'; top_level_record['keywords_json'] = '[]'
 
                 metadata_batch.append(top_level_record)
 
                 if item.get("Type") == "Series":
-                    series_id = item.get('Id')
                     series_tmdb_id = tmdb_id
+                    series_emby_id = item_group[0].get('Id')
+                    all_episode_versions = series_to_episode_versions_map.get(series_emby_id, [])
                     
-                    # ======================================================================
-                    # ▼▼▼ 核心修改 3: 请求分集时，获取包括媒体流在内的所有必要字段 ▼▼▼
-                    # ======================================================================
-                    children = emby.get_series_children(
-                        series_id=series_id, base_url=processor.emby_url, api_key=processor.emby_api_key,
-                        user_id=processor.emby_user_id, include_item_types="Season,Episode",
-                        fields="Id,Type,ParentIndexNumber,IndexNumber,ProviderIds,Name,PremiereDate,Overview,MediaStreams,Container,Size,Path"
-                    )
-                    # ======================================================================
-                    # ▲▲▲ 核心修改 3: 修改结束 ▲▲▲
-                    # ======================================================================
+                    if not all_episode_versions: continue
 
-                    current_emby_child_ids = {child.get('Id') for child in children} if children else set()
-
-                    with connection.get_db_connection() as conn:
-                        with conn.cursor() as cursor:
-                            cursor.execute("""
-                                SELECT emby_item_ids_json FROM media_metadata
-                                WHERE parent_series_tmdb_id = %s AND in_library = TRUE AND item_type IN ('Season', 'Episode')
-                            """, (series_tmdb_id,))
-                            
-                            db_child_ids = set()
-                            for row in cursor.fetchall():
-                                if row['emby_item_ids_json']:
-                                    db_child_ids.update(row['emby_item_ids_json'])
-
-                            deleted_child_emby_ids = list(db_child_ids - current_emby_child_ids)
-
-                            if deleted_child_emby_ids:
-                                logger.info(f"  ➜ 发现剧集 '{item.get('Name')}' 下有 {len(deleted_child_emby_ids)} 个子项被删除，正在标记为离线...")
-                                cursor.execute("""
-                                    UPDATE media_metadata
-                                    SET in_library = FALSE, emby_item_ids_json = '[]'::jsonb
-                                    WHERE parent_series_tmdb_id = %s AND emby_item_ids_json->>0 = ANY(%s)
-                                """, (series_tmdb_id, deleted_child_emby_ids))
-                                conn.commit()
-
-                    if not children:
-                        logger.warning(f"  ➜ 剧集 '{item.get('Name')}' 当前没有任何子项目，跳过新增/更新同步。")
-                        continue
-
-                    tmdb_series_details = tmdb.get_tv_details(series_tmdb_id, processor.tmdb_api_key)
+                    episodes_grouped_by_number = defaultdict(list)
+                    for ep_version in all_episode_versions:
+                        s_num, e_num = ep_version.get("ParentIndexNumber"), ep_version.get("IndexNumber")
+                        if s_num is not None and e_num is not None:
+                            episodes_grouped_by_number[(s_num, e_num)].append(ep_version)
                     
+                    tmdb_series_details = tmdb_details_map.get(series_tmdb_id)
                     tmdb_children_map = {}
                     if tmdb_series_details and 'seasons' in tmdb_series_details:
+                        # ... (构建 tmdb_children_map ) ...
                         for season_info in tmdb_series_details['seasons']:
-                            s_num = season_info.get('season_number')
-                            if s_num is None: continue
-                            tmdb_children_map[f"S{s_num}"] = season_info
-                            tmdb_season_details = tmdb.get_tv_season_details(series_tmdb_id, s_num, processor.tmdb_api_key)
+                            s_num_map = season_info.get('season_number')
+                            if s_num_map is None: continue
+                            tmdb_children_map[f"S{s_num_map}"] = season_info
+                            tmdb_season_details = tmdb.get_tv_season_details(series_tmdb_id, s_num_map, processor.tmdb_api_key)
                             if tmdb_season_details and 'episodes' in tmdb_season_details:
                                 for episode_info in tmdb_season_details['episodes']:
-                                    e_num = episode_info.get('episode_number')
-                                    if e_num is None: continue
-                                    tmdb_children_map[f"S{s_num}E{e_num}"] = episode_info
+                                    e_num_map = episode_info.get('episode_number')
+                                    if e_num_map is None: continue
+                                    tmdb_children_map[f"S{s_num_map}E{e_num_map}"] = episode_info
 
-                    for child in children:
-                        child_type = child.get("Type")
+                    for (s_num, e_num), versions_of_episode in episodes_grouped_by_number.items():
+                        representative_episode = versions_of_episode[0]
+                        all_emby_ids = [v.get('Id') for v in versions_of_episode]
+                        all_asset_details = [parse_full_asset_details(v) for v in versions_of_episode]
+
                         child_record = {
-                            "in_library": True,
-                            "ignore_reason": None, 
-                            "emby_item_ids_json": json.dumps([child.get('Id')])
+                            "in_library": True, "ignore_reason": None, 
+                            "emby_item_ids_json": json.dumps(all_emby_ids),
+                            "asset_details_json": json.dumps(all_asset_details, ensure_ascii=False)
                         }
                         
-                        # ======================================================================
-                        # ▼▼▼ 核心修改 4: 如果是分集，则调用分析函数并填充 asset_details_json ▼▼▼
-                        # ======================================================================
-                        if child_type == "Episode":
-                            # 对这一集进行独立的资产分析
-                            asset_details = parse_full_asset_details(child)
-                            # 数据库字段期望一个JSON数组，所以我们将单个结果包裹在列表中
-                            child_record["asset_details_json"] = json.dumps([asset_details], ensure_ascii=False)
-                        # 对于季(Season)，则不包含 asset_details_json 字段
-                        # ======================================================================
-                        # ▲▲▲ 核心修改 4: 修改结束 ▲▲▲
-                        # ======================================================================
-
-                        s_num = child.get("ParentIndexNumber") if child_type == "Episode" else child.get("IndexNumber")
-                        e_num = child.get("IndexNumber") if child_type == "Episode" else None
-                        
-                        if s_num is None: continue
-
-                        lookup_key = f"S{s_num}E{e_num}" if e_num is not None else f"S{s_num}"
+                        lookup_key = f"S{s_num}E{e_num}"
                         tmdb_child_info = tmdb_children_map.get(lookup_key)
 
                         if tmdb_child_info and tmdb_child_info.get('id'):
                             child_record.update({ "tmdb_id": str(tmdb_child_info.get('id')), "title": tmdb_child_info.get('name'), "release_date": tmdb_child_info.get('air_date'), "overview": tmdb_child_info.get('overview'), "poster_path": tmdb_child_info.get('poster_path') })
                         else:
-                            child_record.update({ "tmdb_id": f"{series_tmdb_id}-{lookup_key}", "title": child.get('Name'), "overview": child.get('Overview') })
+                            child_record.update({ "tmdb_id": f"{series_tmdb_id}-{lookup_key}", "title": representative_episode.get('Name'), "overview": representative_episode.get('Overview') })
 
-                        child_record.update({ "item_type": child_type, "parent_series_tmdb_id": series_tmdb_id, "season_number": s_num, "episode_number": e_num })
+                        child_record.update({ "item_type": "Episode", "parent_series_tmdb_id": series_tmdb_id, "season_number": s_num, "episode_number": e_num })
                         metadata_batch.append(child_record)
 
             if processor.is_stop_requested(): break
 
             if metadata_batch:
+                # ... (数据库写入) ...
                 with connection.get_db_connection() as conn:
                     cursor = conn.cursor()
                     for idx, metadata in enumerate(metadata_batch):
@@ -515,62 +415,34 @@ def task_populate_metadata_cache(processor, batch_size: int = 50, force_full_upd
                         savepoint_name = f"sp_{idx}"
                         try:
                             cursor.execute(f"SAVEPOINT {savepoint_name};")
-                            
                             columns = [k for k, v in metadata.items() if v is not None]
                             values = [v for v in metadata.values() if v is not None]
                             columns_str = ', '.join(columns)
                             placeholders_str = ', '.join(['%s'] * len(values))
-                            
                             update_clauses = []
                             columns_to_update = [c for c in columns if c not in ('tmdb_id', 'item_type')]
-
                             for col in columns_to_update:
-                                if col in ['subscription_sources_json']:
-                                    continue
-                                
+                                if col in ['subscription_sources_json']: continue
                                 if col == 'emby_item_ids_json':
-                                    update_clauses.append("""
-                                        emby_item_ids_json = (
-                                            SELECT jsonb_agg(DISTINCT elem)
-                                            FROM (
-                                                SELECT jsonb_array_elements_text(COALESCE(media_metadata.emby_item_ids_json, '[]'::jsonb)) AS elem
-                                                UNION ALL
-                                                SELECT jsonb_array_elements_text(EXCLUDED.emby_item_ids_json) AS elem
-                                            ) AS combined
-                                        )
-                                    """)
+                                    update_clauses.append("emby_item_ids_json = (SELECT jsonb_agg(DISTINCT elem) FROM (SELECT jsonb_array_elements_text(COALESCE(media_metadata.emby_item_ids_json, '[]'::jsonb)) AS elem UNION ALL SELECT jsonb_array_elements_text(EXCLUDED.emby_item_ids_json) AS elem) AS combined)")
                                 else:
                                     update_clauses.append(f"{col} = EXCLUDED.{col}")
-
                             update_clauses.append("ignore_reason = NULL")
-                            
                             update_str = ', '.join(update_clauses)
-
-                            sql = f"""
-                                INSERT INTO media_metadata ({columns_str}, last_synced_at)
-                                VALUES ({placeholders_str}, NOW())
-                                ON CONFLICT (tmdb_id, item_type) DO UPDATE SET {update_str}, last_synced_at = NOW()
-                            """
+                            sql = f"INSERT INTO media_metadata ({columns_str}, last_synced_at) VALUES ({placeholders_str}, NOW()) ON CONFLICT (tmdb_id, item_type) DO UPDATE SET {update_str}, last_synced_at = NOW()"
                             cursor.execute(sql, tuple(values))
                         except psycopg2.Error as e:
                             logger.error(f"写入 TMDB ID {metadata.get('tmdb_id')} 的元数据时发生数据库错误: {e}")
                             cursor.execute(f"ROLLBACK TO SAVEPOINT {savepoint_name};")
-                    
                     if not processor.is_stop_requested():
                         conn.commit()
                     else:
                         conn.rollback()
-                        logger.info("任务中止，回滚当前数据库批次。")
-
-                logger.info(f"--- 批次 {batch_number} 已成功写入数据库。---")
-            
             processed_count += len(batch_item_groups)
 
         final_message = f"同步完成！本次处理 {processed_count}/{total_to_process} 项, 标记离线 {len(items_to_delete_tmdb_ids)} 项。"
-        if processor.is_stop_requested():
-            final_message = "任务已中止，部分数据可能未处理。"
+        if processor.is_stop_requested(): final_message = "任务已中止。"
         task_manager.update_status_from_thread(100, final_message)
-        logger.trace(f"--- '{task_name}' 任务成功完成 ---")
 
     except Exception as e:
         logger.error(f"执行 '{task_name}' 任务时发生严重错误: {e}", exc_info=True)

@@ -20,104 +20,116 @@ logger = logging.getLogger(__name__)
 # ======================================================================
 
 # --- 媒体去重模块 ---
-def get_all_cleanup_tasks() -> List[Dict[str, Any]]:
-    
+def get_all_cleanup_index() -> List[Dict[str, Any]]:
+    """获取所有待处理的清理索引。"""
     try:
         with get_db_connection() as conn:
-            cursor = conn.cursor()
-            cursor.execute("SELECT * FROM media_cleanup_tasks WHERE status = 'pending' ORDER BY item_name")
-            return [dict(row) for row in cursor.fetchall()]
+            with conn.cursor() as cursor:
+                # ★★★ 表名已修改 ★★★
+                cursor.execute("SELECT * FROM cleanup_index WHERE status = 'pending' ORDER BY id")
+                return [dict(row) for row in cursor.fetchall()]
     except Exception as e:
-        logger.error(f"DB: 获取媒体去重任务列表失败: {e}", exc_info=True)
+        logger.error(f"DB: 获取清理索引列表失败: {e}", exc_info=True)
         return []
 
-def batch_insert_cleanup_tasks(tasks: List[Dict[str, Any]]):
-    
+def batch_upsert_cleanup_index(tasks: List[Dict[str, Any]]):
+    """
+    【V4 - 状态保持版 Upsert】
+    批量插入或更新清理索引。使用 (tmdb_id, item_type) 作为唯一标识来处理冲突。
+    ★★★ 核心修复：当发生冲突时，只有在现有记录的状态不是 'ignored' 的情况下才执行更新。★★★
+    """
     if not tasks:
-        logger.info("没有发现需要清理的媒体项，无需更新数据库。")
         return
 
     try:
         with get_db_connection() as conn:
-            cursor = conn.cursor()
-            logger.warning("  ➜ 正在清空旧的媒体去重任务列表...")
-            cursor.execute("TRUNCATE TABLE media_cleanup_tasks RESTART IDENTITY;")
+            with conn.cursor() as cursor:
+                columns = list(tasks[0].keys())
+                update_cols = [col for col in columns if col not in ['tmdb_id', 'item_type']]
+                
+                # ★★★ 修改后的 SQL 查询 ★★★
+                sql_query = sql.SQL("""
+                    INSERT INTO cleanup_index ({cols})
+                    VALUES %s
+                    ON CONFLICT (tmdb_id, item_type) DO UPDATE SET
+                        {updates},
+                        status = 'pending',
+                        last_updated_at = NOW()
+                    WHERE cleanup_index.status != 'ignored' -- <-- 新增的条件
+                """).format(
+                    cols=sql.SQL(', ').join(map(sql.Identifier, columns)),
+                    updates=sql.SQL(', ').join(
+                        sql.SQL("{} = EXCLUDED.{}").format(sql.Identifier(col), sql.Identifier(col)) for col in update_cols
+                    )
+                )
 
-            sql = """
-                INSERT INTO media_cleanup_tasks (
-                    task_type, tmdb_id, item_name, item_type, versions_info_json, 
-                    status, best_version_id, created_at
-                ) VALUES %s
-            """
+                values_to_insert = []
+                for task in tasks:
+                    row = [task.get(col) for col in columns]
+                    # 找到 versions_info_json 的索引并用 Json() 包装
+                    if 'versions_info_json' in columns:
+                        idx = columns.index('versions_info_json')
+                        row[idx] = Json(row[idx])
+                    values_to_insert.append(tuple(row))
             
-            values_to_insert = [
-                (
-                    task.get('task_type'),
-                    task.get('tmdb_id'),
-                    task.get('item_name'),
-                    task.get('item_type'), # 修正 item_type 的位置
-                    Json(task.get('versions_info_json')),
-                    task.get('status', 'pending'),
-                    task.get('best_version_id'),
-                    datetime.now(timezone.utc)
-                ) for task in tasks
-            ]
-            
-            execute_values(cursor, sql, values_to_insert, page_size=500)
-            conn.commit()
-            logger.info(f"  ➜ 成功批量插入 {len(tasks)} 条新的媒体去重任务。")
+                execute_values(cursor, sql_query, values_to_insert, page_size=500)
+                conn.commit()
+                logger.info(f"  ➜ 成功批量写入/更新 {len(tasks)} 条媒体清理索引。")
 
     except Exception as e:
-        logger.error(f"  ➜ 批量插入媒体去重任务时失败: {e}", exc_info=True)
+        logger.error(f"  ➜ 批量写入/更新媒体清理索引时失败: {e}", exc_info=True)
         raise
 
-def get_cleanup_tasks_by_ids(task_ids: List[int]) -> List[Dict[str, Any]]:
-    
-    if not task_ids:
-        return []
+def get_cleanup_index_by_ids(task_ids: List[int]) -> List[Dict[str, Any]]:
+    """根据ID获取清理索引。"""
+    if not task_ids: return []
     try:
         with get_db_connection() as conn:
-            cursor = conn.cursor()
-            sql = "SELECT * FROM media_cleanup_tasks WHERE id = ANY(%s)"
-            cursor.execute(sql, (task_ids,))
-            return [dict(row) for row in cursor.fetchall()]
+            with conn.cursor() as cursor:
+                cursor.execute("SELECT * FROM cleanup_index WHERE id = ANY(%s)", (task_ids,))
+                return [dict(row) for row in cursor.fetchall()]
     except Exception as e:
-        logger.error(f"DB: 根据ID获取清理任务时失败: {e}", exc_info=True)
+        logger.error(f"DB: 根据ID获取清理索引时失败: {e}", exc_info=True)
         return []
 
-def batch_update_cleanup_task_status(task_ids: List[int], new_status: str) -> int:
-    
-    if not task_ids:
-        return 0
+def batch_update_cleanup_index_status(task_ids: List[int], new_status: str) -> int:
+    """批量更新清理索引的状态。"""
+    if not task_ids: return 0
     try:
         with get_db_connection() as conn:
-            cursor = conn.cursor()
-            sql = "UPDATE media_cleanup_tasks SET status = %s WHERE id = ANY(%s)"
-            cursor.execute(sql, (new_status, task_ids))
-            updated_count = cursor.rowcount
-            conn.commit()
-            logger.info(f"DB: 成功将 {updated_count} 个清理任务的状态更新为 '{new_status}'。")
-            return updated_count
+            with conn.cursor() as cursor:
+                cursor.execute("UPDATE cleanup_index SET status = %s, last_updated_at = NOW() WHERE id = ANY(%s)", (new_status, task_ids))
+                updated_count = cursor.rowcount
+                conn.commit()
+                return updated_count
     except Exception as e:
-        logger.error(f"DB: 批量更新清理任务状态时失败: {e}", exc_info=True)
+        logger.error(f"DB: 批量更新清理索引状态时失败: {e}", exc_info=True)
         return 0
 
-def batch_delete_cleanup_tasks(task_ids: List[int]) -> int:
-    
-    if not task_ids:
-        return 0
+def batch_delete_cleanup_index(task_ids: List[int]) -> int:
+    """批量删除清理索引。"""
+    if not task_ids: return 0
     try:
         with get_db_connection() as conn:
-            cursor = conn.cursor()
-            sql = "DELETE FROM media_cleanup_tasks WHERE id = ANY(%s)"
-            cursor.execute(sql, (task_ids,))
-            deleted_count = cursor.rowcount
-            conn.commit()
-            logger.info(f"DB: 成功删除了 {deleted_count} 个清理任务。")
-            return deleted_count
+            with conn.cursor() as cursor:
+                cursor.execute("DELETE FROM cleanup_index WHERE id = ANY(%s)", (task_ids,))
+                deleted_count = cursor.rowcount
+                conn.commit()
+                return deleted_count
     except Exception as e:
-        logger.error(f"DB: 批量删除清理任务时失败: {e}", exc_info=True)
+        logger.error(f"DB: 批量删除清理索引时失败: {e}", exc_info=True)
         return 0
+
+def clear_pending_cleanup_tasks():
+    """清空所有状态为 'pending' 的清理任务 (现在是索引)。"""
+    try:
+        with get_db_connection() as conn:
+            with conn.cursor() as cursor:
+                cursor.execute("DELETE FROM cleanup_index WHERE status = 'pending';")
+                conn.commit()
+                logger.info("已清空所有待处理的媒体清理索引。")
+    except Exception as e:
+        logger.error(f"清空待处理的媒体清理索引时失败: {e}", exc_info=True)
 
 # --- 通用维护函数 ---
 def clear_table(table_name: str) -> int:
