@@ -230,42 +230,47 @@ def task_populate_metadata_cache(processor, batch_size: int = 50, force_full_upd
             item_type = item.get("Type")
             if item_type in ["Movie", "Series"]:
                 if tmdb_id := item.get("ProviderIds", {}).get("Tmdb"):
-                    top_level_items_map[tmdb_id].append(item)
+                    composite_key = (tmdb_id, item_type)
+                    top_level_items_map[composite_key].append(item)
             elif item_type == 'Episode' and item.get('SeriesId'):
                 series_to_episode_versions_map[item['SeriesId']].append(item)
 
-        emby_tmdb_ids = set(top_level_items_map.keys())
-        logger.info(f"  ➜ 从 Emby 获取到 {len(emby_tmdb_ids)} 个有效的顶层媒体项 (电影/剧集)。")
+        emby_composite_keys = set(top_level_items_map.keys())
+        logger.info(f"  ➜ 从 Emby 获取到 {len(emby_composite_keys)} 个有效的顶层媒体项 (电影/剧集)。")
 
         with connection.get_db_connection() as conn:
             cursor = conn.cursor()
-            cursor.execute("SELECT tmdb_id FROM media_metadata WHERE in_library = TRUE AND item_type IN ('Movie', 'Series')")
-            db_tmdb_ids = {row["tmdb_id"] for row in cursor.fetchall()}
-        logger.info(f"  ➜ 从本地数据库获取到 {len(db_tmdb_ids)} 个【仍在库中】的顶层媒体项。")
+            # 注意：查询数据库时，也需要同时获取类型
+            cursor.execute("SELECT tmdb_id, item_type FROM media_metadata WHERE in_library = TRUE AND item_type IN ('Movie', 'Series')")
+            db_composite_keys = {(row["tmdb_id"], row["item_type"]) for row in cursor.fetchall()}
+        logger.info(f"  ➜ 从本地数据库获取到 {len(db_composite_keys)} 个【仍在库中】的顶层媒体项。")
 
         if processor.is_stop_requested(): return
 
-        items_to_delete_tmdb_ids = db_tmdb_ids - emby_tmdb_ids
+        keys_to_delete = db_composite_keys - emby_composite_keys
         
         if force_full_update:
-            ids_to_process = emby_tmdb_ids
+            keys_to_process = emby_composite_keys
         else:
-            ids_to_process = emby_tmdb_ids - db_tmdb_ids
+            keys_to_process = emby_composite_keys - db_composite_keys
         
-        logger.info(f"  ➜ 同步计划：处理 {len(ids_to_process)} 项, 标记离线 {len(items_to_delete_tmdb_ids)} 项。")
+        logger.info(f"  ➜ 同步计划：处理 {len(keys_to_process)} 项, 标记离线 {len(keys_to_delete)} 项。")
 
-        if items_to_delete_tmdb_ids:
+        if keys_to_delete:
             with connection.get_db_connection() as conn:
                 cursor = conn.cursor()
-                ids_to_delete_list = list(items_to_delete_tmdb_ids)
+                # ★★★ 注意：删除逻辑也需要调整，但现有逻辑是基于tmdb_id的，更简单的做法是分别处理
+                tmdb_ids_to_delete = {key[0] for key in keys_to_delete}
+                ids_to_delete_list = list(tmdb_ids_to_delete)
                 sql = "UPDATE media_metadata SET in_library = FALSE, emby_item_ids_json = '[]'::jsonb WHERE tmdb_id = ANY(%s) OR parent_series_tmdb_id = ANY(%s)"
                 cursor.execute(sql, (ids_to_delete_list, ids_to_delete_list))
                 conn.commit()
-            logger.info(f"  ➜ {len(items_to_delete_tmdb_ids)} 个离线项目标记完成。")
+            logger.info(f"  ➜ {len(keys_to_delete)} 个离线项目标记完成。")
 
         if processor.is_stop_requested(): return
 
-        items_to_process = [top_level_items_map[tmdb_id] for tmdb_id in ids_to_process]
+        # ★★★ 核心修复：从复合键中获取 item_group ★★★
+        items_to_process = [top_level_items_map[key] for key in keys_to_process]
         total_to_process = len(items_to_process)
         if total_to_process == 0:
             task_manager.update_status_from_thread(100, "数据库已是最新，无需同步。")
@@ -440,7 +445,7 @@ def task_populate_metadata_cache(processor, batch_size: int = 50, force_full_upd
                         conn.rollback()
             processed_count += len(batch_item_groups)
 
-        final_message = f"同步完成！本次处理 {processed_count}/{total_to_process} 项, 标记离线 {len(items_to_delete_tmdb_ids)} 项。"
+        final_message = f"同步完成！本次处理 {processed_count}/{total_to_process} 项, 标记离线 {len(keys_to_delete)} 项。"
         if processor.is_stop_requested(): final_message = "任务已中止。"
         task_manager.update_status_from_thread(100, final_message)
 
