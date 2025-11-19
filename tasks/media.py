@@ -211,24 +211,54 @@ def task_populate_metadata_cache(processor, batch_size: int = 50, force_full_upd
     try:
         def _parse_asset_details(item: dict) -> dict:
             """
-            【V3 - 权威最终版】将单个 Emby Item 解析为 asset_details 字典，
-            并立即调用权威分析引擎，将分析结果一并存入。
+            【V4 - 剧集处理最终版】
+            - 如果是电影，直接分析。
+            - 如果是剧集，则获取其第一季第一集作为技术代表进行分析。
             """
-            from .helpers import analyze_media_asset # 仅在函数内导入
+            from .helpers import analyze_media_asset
+
+            item_to_analyze = None
+            
+            if item.get('Type') == 'Movie':
+                # 对于电影，直接使用其自身信息
+                item_to_analyze = item
+            elif item.get('Type') == 'Series':
+                # 对于剧集，调用新函数获取“代表集”的完整信息
+                logger.debug(f"  ➜ 检测到剧集《{item.get('Name')}》，正在为其查找技术代表集...")
+                item_to_analyze = emby.get_series_representative_episode(
+                    series_id=item.get('Id'),
+                    base_url=processor.emby_url,
+                    api_key=processor.emby_api_key,
+                    user_id=processor.emby_user_id
+                )
+            
+            # 如果最终没有可供分析的对象（比如剧集没有分集），则返回一个空结果
+            if not item_to_analyze:
+                logger.warning(f"  ➜ 无法为媒体项《{item.get('Name')}》(ID: {item.get('Id')}) 找到可供分析的媒体流信息。")
+                return {
+                    "emby_item_id": item.get("Id"),
+                    "path": item.get("Path", ""), # 剧集顶层可能也有路径
+                    "size_bytes": None, "container": None, "video_codec": None,
+                    "audio_tracks": [], "subtitles": [],
+                    "resolution_display": "Unknown", "quality_display": "Unknown",
+                    "effect_display": ["SDR"]
+                }
+
+            # --- 后续逻辑与之前完全相同，只是分析的对象变成了 item_to_analyze ---
 
             # 1. 提取基础物理信息
             asset = {
-                "emby_item_id": item.get("Id"),
-                "path": item.get("Path", ""),
-                "size_bytes": item.get("Size"),
-                "container": item.get("Container"),
+                "emby_item_id": item.get("Id"), # ★ 注意：ID 仍然使用顶层媒体项的ID
+                "path": item.get("Path", ""),   # ★ 路径也使用顶层的
+                "size_bytes": item_to_analyze.get("Size"),
+                "container": item_to_analyze.get("Container"),
                 "video_codec": None,
                 "audio_tracks": [],
                 "subtitles": []
             }
 
             # 2. 填充音视频流信息
-            media_streams = item.get("MediaStreams", [])
+            media_streams = item_to_analyze.get("MediaStreams", [])
             for stream in media_streams:
                 stream_type = stream.get("Type")
                 if stream_type == "Video":
@@ -243,10 +273,10 @@ def task_populate_metadata_cache(processor, batch_size: int = 50, force_full_upd
                         "language": stream.get("Language"), "display_title": stream.get("DisplayTitle")
                     })
             
-            # 3. 调用权威分析引擎，获取分析结果
-            analysis_data = analyze_media_asset(item)
+            # 3. 调用权威分析引擎
+            analysis_data = analyze_media_asset(item_to_analyze)
             
-            # 4. 将分析结果合并到最终的字典中
+            # 4. 将分析结果合并
             asset.update(analysis_data)
             
             return asset

@@ -965,6 +965,43 @@ def get_season_children(
     except requests.exceptions.RequestException as e:
         logger.error(f"获取季 {season_id} 的子项目列表时发生错误: {e}", exc_info=True)
         return None
+# ✨✨✨获取剧集“技术代表集”的辅助函数 ★★★
+def get_series_representative_episode(series_id: str, base_url: str, api_key: str, user_id: str) -> Optional[Dict[str, Any]]:
+    """
+    获取一个剧集的第一季第一集，作为该剧集技术规格的“代表”。
+    """
+    try:
+        # 1. 找到第一季
+        seasons = get_series_seasons(series_id, base_url, api_key, user_id)
+        if not seasons:
+            logger.warning(f"  ➜ 剧集 {series_id} 没有任何季信息，无法获取代表集。")
+            return None
+        
+        # 按季号排序，找到第一季
+        first_season = sorted(seasons, key=lambda s: s.get('IndexNumber', 999))[0]
+        first_season_id = first_season.get('Id')
+        if not first_season_id:
+            return None
+
+        # 2. 找到第一季的第一集
+        episodes = get_season_children(first_season_id, base_url, api_key, user_id, fields="Id,IndexNumber")
+        if not episodes:
+            logger.warning(f"  ➜ 剧集 {series_id} 的第一季没有任何分集信息，无法获取代表集。")
+            return None
+            
+        # 按集号排序，找到第一集
+        first_episode = sorted(episodes, key=lambda e: e.get('IndexNumber', 999))[0]
+        first_episode_id = first_episode.get('Id')
+        if not first_episode_id:
+            return None
+
+        # 3. 获取第一集的完整详情并返回
+        logger.trace(f"  ➜ 已定位剧集 {series_id} 的代表集为 {first_episode_id}，正在获取其完整详情...")
+        return get_emby_item_details(first_episode_id, base_url, api_key, user_id)
+
+    except Exception as e:
+        logger.error(f"  ➜ 在为剧集 {series_id} 查找代表集时发生错误: {e}", exc_info=True)
+        return None
 # ✨✨✨ 根据子项目ID（如分集或季）获取其所属的剧集（Series）的ID ✨✨✨    
 def get_series_id_from_child_id(
     item_id: str,
