@@ -313,11 +313,11 @@ class SchedulerManager:
         )
 
     def update_revival_check_job(self):
-        """根据硬编码的规则，设置每周的剧集复活检查任务。"""
+        """根据硬编码的规则，设置每周的新季上线检查任务。"""
         if not self.scheduler.running:
             return
 
-        logger.debug("正在更新固定的'剧集复活检查'定时任务...")
+        logger.debug("正在更新固定的'新季上线检查'定时任务...")
 
         try:
             self.scheduler.remove_job(REVIVAL_CHECK_JOB_ID)
@@ -326,10 +326,10 @@ class SchedulerManager:
 
         cron_str = '0 5 * * sun' 
         registry = tasks.get_task_registry()
-        task_info = registry.get('revival-check')
+        task_info = registry.get('run_new_season_check')
         
         if not task_info:
-            logger.error("设置'剧集复活检查'任务失败：在任务注册表中未找到 'revival-check'。")
+            logger.error("设置'剧集复活检查'任务失败：在任务注册表中未找到 'run_new_season_check'。")
             return
             
         task_function, task_description, processor_type = task_info

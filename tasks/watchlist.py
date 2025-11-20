@@ -44,10 +44,10 @@ def task_process_watchlist(processor, tmdb_id: Optional[str] = None, force_full_
         logger.error(f"执行 '{task_name}' 时发生顶层错误: {e}", exc_info=True)
         progress_updater(-1, f"启动任务时发生错误: {e}")
 
-# ★★★ 低频任务 - 检查已完结剧集是否复活 ★★★
-def task_run_revival_check(processor):
+# ★★★ 低频任务 - 检查已完结剧集是否有新季上线 ★★★
+def task_run_new_season_check(processor):
     """
-    【低频任务】后台任务入口：检查所有已完结剧集是否“复活”。
+    【低频任务】后台任务入口：检查所有已完结剧集是否有新季上线。
     """
     # 定义一个可以传递给处理器的回调函数
     def progress_updater(progress, message):
@@ -55,7 +55,7 @@ def task_run_revival_check(processor):
 
     try:
         # 直接调用 processor 实例的方法，并将回调函数传入
-        processor.run_revival_check_task(progress_callback=progress_updater)
+        processor.run_new_season_check_task(progress_callback=progress_updater)
 
     except Exception as e:
         task_name = "已完结剧集复活检查"
