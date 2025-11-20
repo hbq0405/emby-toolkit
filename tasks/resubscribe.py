@@ -567,7 +567,6 @@ def build_resubscribe_payload(item_details: dict, rule: Optional[dict]) -> Optio
             logger.error(f"严重错误：项目 '{item_name}' 类型为 'Season' 但未找到 'season_number'！")
 
     # ★★★ 核心修改：直接从 item_details 获取预先分析好的发布组 ★★★
-    # 不再调用 _extract_exclusion_keywords_from_filename 函数
     exclusion_keywords_list = item_details.get('release_group_raw', [])
     
     if exclusion_keywords_list:

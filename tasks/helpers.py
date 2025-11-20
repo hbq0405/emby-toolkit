@@ -21,42 +21,95 @@ AUDIO_SUBTITLE_KEYWORD_MAP = {
     "sub_eng": ["ENG", "英字"],
 }
 
+RELEASE_GROUPS: Dict[str, List[str]] = {
+    "0ff": ['FF(?:(?:A|WE)B|CD|E(?:DU|B)|TV)'],
+    "1pt": [],
+    "52pt": [],
+    "观众": ['Audies', 'AD(?:Audio|E(?:book|)|Music|Web)'],
+    "azusa": [],
+    "备胎": ['BeiTai'],
+    "学校": ['Bts(?:CHOOL|HD|PAD|TV)', 'Zone'],
+    "carpt": ['CarPT'],
+    "彩虹岛": ['CHD(?:Bits|PAD|(?:|HK)TV|WEB|)', 'StBOX', 'OneHD', 'Lee', 'xiaopie'],
+    "碟粉": ['discfan'],
+    "dragonhd": [],
+    "eastgame": ['(?:(?:iNT|(?:HALFC|Mini(?:S|H|FH)D))-|)TLF'],
+    "filelist": [],
+    "gainbound": ['(?:DG|GBWE)B'],
+    "hares": ['Hares(?:(?:M|T)V|Web|)'],
+    "hd4fans": [],
+    "高清视界": ['HDA(?:pad|rea|TV)', 'EPiC'],
+    "阿童木": ['hdatmos'],
+    "hdbd": [],
+    "hdchina": ['HDC(?:hina|TV|)', 'k9611', 'tudou', 'iHD'],
+    "杜比": ['D(?:ream|BTV)', '(?:HD|QHstudI)o'],
+    "红豆饭": ['beAst(?:TV|)'],
+    "家园": ['HDH(?:ome|Pad|TV|WEB|)'],
+    "hdpt": ['HDPT(?:Web|)'],
+    "天空": ['HDS(?:ky|TV|Pad|WEB|)', 'AQLJ'],
+    "高清时间": ['hdtime'],
+    "HDU": [],
+    "hdvideo": [],
+    "hdzone": ['HDZ(?:one|)'],
+    "憨憨": ['HHWEB'],
+    "hitpt": [],
+    "htpt": ['HTPT'],
+    "iptorrents": [],
+    "joyhd": [],
+    "朋友": ['FRDS', 'Yumi', 'cXcY'],
+    "柠檬": ['L(?:eague(?:(?:C|H)D|(?:M|T)V|NF|WEB)|HD)', 'i18n', 'CiNT'],
+    "馒头": ['MTeam(?:TV|)', 'MPAD', 'MWeb'],
+    "nanyangpt": [],
+    "老师": ['nicept'],
+    "oshen": [],
+    "我堡": ['Our(?:Bits|TV)', 'FLTTH', 'Ao', 'PbK', 'MGs', 'iLove(?:HD|TV)'],
+    "猪猪": ['PiGo(?:NF|(?:H|WE)B)'],
+    "ptchina": [],
+    "猫站": ['PTer(?:DIY|Game|(?:M|T)V|WEB|)'],
+    "pthome": ['PTH(?:Audio|eBook|music|ome|tv|WEB|)'],
+    "ptmsg": [],
+    "烧包": ['PTsbao', 'OPS', 'F(?:Fans(?:AIeNcE|BD|D(?:VD|IY)|TV|WEB)|HDMv)', 'SGXT'],
+    "pttime": [],
+    "putao": ['PuTao'],
+    "聆音": ['lingyin'],
+    "春天": [r"CMCT(?:A|V)?", "Oldboys", "GTR", "CLV", "CatEDU", "Telesto", "iFree"],
+    "鲨鱼": ['Shark(?:WEB|DIY|TV|MV|)'],
+    "tccf": [],
+    "北洋园": ['TJUPT'],
+    "totheglory": ['TTG', 'WiKi', 'NGB', 'DoA', '(?:ARi|ExRE)N'],
+    "U2": [],
+    "ultrahd": [],
+    "others": ['B(?:MDru|eyondHD|TN)', 'C(?:fandora|trlhd|MRG)', 'DON', 'EVO', 'FLUX', 'HONE(?:yG|)',
+               'N(?:oGroup|T(?:b|G))', 'PandaMoon', 'SMURF', 'T(?:EPES|aengoo|rollHD )'],
+    "anime": ['ANi', 'HYSUB', 'KTXP', 'LoliHouse', 'MCE', 'Nekomoe kissaten', 'SweetSub', 'MingY',
+              '(?:Lilith|NC)-Raws', '织梦字幕组', '枫叶字幕组', '猎户手抄部', '喵萌奶茶屋', '漫猫字幕社',
+              '霜庭云花Sub', '北宇治字幕组', '氢气烤肉架', '云歌字幕组', '萌樱字幕组', '极影字幕社',
+              '悠哈璃羽字幕社',
+              '❀拨雪寻春❀', '沸羊羊(?:制作|字幕组)', '(?:桜|樱)都字幕组'],
+    "forge": ['FROG(?:E|Web|)'],
+    "ubits": ['UB(?:its|WEB|TV)'],
+}
+
 def _extract_exclusion_keywords_from_filename(filename: str) -> List[str]:
     """
-    【V9 - 职责单一版：仅提取发布组】
-    - 核心职责：只负责从文件名末尾提取唯一的、非中文的、非通用技术标签的发布组关键字。
-    - 这是为了解决技术标签写法不统一 (如 H.265 vs HEVC) 导致排除失败的漏洞。
-    - 输出：返回一个只包含发布组的列表 (通常只有一个元素)，或一个空列表。
+    基于 RELEASE_GROUPS 字典中的别名匹配文件名，找到发布组名（中文），大小写保留。
     """
     if not filename:
         return []
-
     name_part = os.path.splitext(filename)[0]
-    
-    # 这个集合用于识别哪些是通用技术标签，从而跳过它们，找到真正的发布组。
-    KNOWN_TECH_TAGS = {
-        'BLURAY', 'BDRIP', 'WEB-DL', 'WEBDL', 'WEBRIP', 'HDTV', 'REMUX', 
-        'X264', 'X265', 'H264', 'H265', 'AVC', 'HEVC', '10BIT', '8BIT',
-        'DTS', 'AC3', 'ATMOS', 'DDP5', 'AAC', 'FLAC', 'DTS-HD', 'MA',
-        '1080P', '2160P', '720P', '4K', 'UHD', 'SD',
-        'HDR', 'SDR', 'DV', 'DOVI',
-        'ITUNES',
-    }
+    filename_upper = name_part.upper()
 
-    words = re.split(r'[.\s_·()\[\]-]', name_part)
-    season_episode_pattern = re.compile(r'^S\d{2,4}E\d{2,4}$', re.IGNORECASE)
+    for group_name, alias_list in RELEASE_GROUPS.items():
+        for alias in alias_list:
+            # 去除常见正则符号，方便转大写进行简单包含匹配
+            alias_plain = re.sub(r'[\?\:\(\)\[\]\{\}\|\*\+\^\\\$\.]', '', alias).upper()
+            if alias_plain and alias_plain in filename_upper:
+                return [group_name]
+        # 额外判断组名本身（如含英文）是否出现在文件名中
+        group_name_upper = group_name.upper()
+        if group_name_upper in filename_upper:
+            return [group_name]
 
-    # 从后往前找，找到第一个符合条件的就认定为发布组并立即返回
-    for word in reversed(words):
-        if not word or season_episode_pattern.match(word): continue
-        if re.search(r'[\u4e00-\u9fff]', word): continue
-        if len(word) <= 2 or word.isdigit(): continue
-        
-        if word.upper() not in KNOWN_TECH_TAGS:
-            logger.debug(f"  ➜ 已从文件名中成功提取到发布组: {word}")
-            return [word]
-
-    logger.debug("  ➜ 未能在文件名中识别出明确的发布组。")
     return []
 
 def _get_standardized_effect(path_lower: str, video_stream: Optional[Dict]) -> List[str]:
@@ -149,36 +202,42 @@ def _get_detected_languages_from_streams(
 
 def analyze_media_asset(item_details: dict) -> dict:
     """视频流分析引擎"""
-    if not item_details: return {}
+    if not item_details:
+        return {}
 
     media_streams = item_details.get('MediaStreams', [])
     file_path = item_details.get('Path', '')
-    file_name_lower = os.path.basename(file_path).lower() if file_path else ""
-    video_stream = next((s for s in media_streams if s.get('Type') == 'Video'), None)
+    file_name = os.path.basename(file_path) if file_path else ""
+    file_name_lower = file_name.lower()
 
+    video_stream = next((s for s in media_streams if s.get('Type') == 'Video'), None)
     resolution_str = "Unknown"
     if video_stream and video_stream.get("Width"):
         _, resolution_str = _get_resolution_tier(video_stream["Width"], video_stream.get("Height", 0))
     if resolution_str == "Unknown":
-        if "2160p" in file_name_lower or "4k" in file_name_lower: resolution_str = "2160p"
-        elif "1080p" in file_name_lower: resolution_str = "1080p"
-        elif "720p" in file_name_lower: resolution_str = "720p"
+        if "2160p" in file_name_lower or "4k" in file_name_lower:
+            resolution_str = "2160p"
+        elif "1080p" in file_name_lower:
+            resolution_str = "1080p"
+        elif "720p" in file_name_lower:
+            resolution_str = "720p"
 
     quality_str = _extract_quality_tag_from_filename(file_name_lower)
     effect_list = _get_standardized_effect(file_name_lower, video_stream)
-    
+
     detected_audio_langs = _get_detected_languages_from_streams(media_streams, 'Audio')
     AUDIO_DISPLAY_MAP = {'chi': '国语', 'yue': '粤语', 'eng': '英语', 'jpn': '日语'}
     audio_str = ', '.join(sorted([AUDIO_DISPLAY_MAP.get(lang, lang) for lang in detected_audio_langs])) or '无'
 
     detected_sub_langs = _get_detected_languages_from_streams(media_streams, 'Subtitle')
-    if 'chi' not in detected_sub_langs and 'yue' not in detected_sub_langs and any(s.get('IsExternal') for s in media_streams if s.get('Type') == 'Subtitle'):
+    if 'chi' not in detected_sub_langs and 'yue' not in detected_sub_langs and any(
+        s.get('IsExternal') for s in media_streams if s.get('Type') == 'Subtitle'):
         detected_sub_langs.add('chi')
     SUB_DISPLAY_MAP = {'chi': '中字', 'yue': '粤字', 'eng': '英文', 'jpn': '日文'}
     subtitle_str = ', '.join(sorted([SUB_DISPLAY_MAP.get(lang, lang) for lang in detected_sub_langs])) or '无'
 
-    # 调用新函数来提取发布组
-    release_group_list = _extract_exclusion_keywords_from_filename(file_name_lower)
+    # 保持发布组大小写
+    release_group_list = _extract_exclusion_keywords_from_filename(file_name)
 
     return {
         "resolution_display": resolution_str,
@@ -188,7 +247,7 @@ def analyze_media_asset(item_details: dict) -> dict:
         "subtitle_display": subtitle_str,
         "audio_languages_raw": list(detected_audio_langs),
         "subtitle_languages_raw": list(detected_sub_langs),
-        "release_group_raw": release_group_list, 
+        "release_group_raw": release_group_list,
     }
 
 def parse_full_asset_details(item_details: dict) -> dict:
