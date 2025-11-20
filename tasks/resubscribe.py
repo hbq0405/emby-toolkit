@@ -42,7 +42,7 @@ def task_update_resubscribe_cache(processor): # <--- 移除 force_full_update �
     logger.info(f"--- 开始执行 '{task_name}' 任务 ---")
     
     try:
-        # --- 步骤 1 & 2: 加载规则和Emby索引 (保持不变) ---
+        # --- 步骤 1: 加载规则和确定扫描范围 (逻辑不变) ---
         task_manager.update_status_from_thread(0, "正在加载规则并确定扫描范围...")
         all_enabled_rules = [rule for rule in resubscribe_db.get_all_resubscribe_rules() if rule.get('enabled')]
         
@@ -58,16 +58,32 @@ def task_update_resubscribe_cache(processor): # <--- 移除 force_full_update �
             task_manager.update_status_from_thread(100, "任务跳过：没有规则指定任何媒体库")
             return
 
+        # --- 步骤 2: 获取Emby全量数据 (逻辑不变) ---
         task_manager.update_status_from_thread(10, f"正在从 {len(all_target_lib_ids)} 个目标库中建立媒体索引...")
         emby_index = emby.get_all_library_versions(
             base_url=processor.emby_url, api_key=processor.emby_api_key, user_id=processor.emby_user_id,
             media_type_filter="Movie,Series,Episode", library_ids=list(all_target_lib_ids),
-            fields="Id,Type,ProviderIds,SeriesId,ParentIndexNumber,IndexNumber,_SourceLibraryId,Name",
+            fields="Id,Type,ProviderIds,SeriesId,ParentIndexNumber,_SourceLibraryId,Name",
             update_status_callback=task_manager.update_status_from_thread
         ) or []
 
-        # --- 步骤 3: 加载数据库元数据 (保持不变) ---
-        tmdb_ids_in_scope = {str(item['ProviderIds']['Tmdb']) for item in emby_index if item.get('ProviderIds', {}).get('Tmdb')}
+        # ★★★ 步骤 3: 预处理Emby数据，清晰分类 ★★★
+        movies_to_process = []
+        series_to_process = []
+        # 使用 series_emby_id 作为键，值为该剧集的所有分集列表
+        series_episodes_map = defaultdict(list)
+        
+        for item in emby_index:
+            item_type = item.get('Type')
+            if item_type == 'Movie':
+                movies_to_process.append(item)
+            elif item_type == 'Series':
+                series_to_process.append(item)
+            elif item_type == 'Episode' and item.get('SeriesId'):
+                series_episodes_map[item['SeriesId']].append(item)
+
+        # --- 步骤 4: 批量获取数据库元数据 (逻辑优化) ---
+        tmdb_ids_in_scope = {str(item['ProviderIds']['Tmdb']) for item in movies_to_process + series_to_process if item.get('ProviderIds', {}).get('Tmdb')}
         if not tmdb_ids_in_scope:
             task_manager.update_status_from_thread(100, "任务完成：目标媒体库为空。")
             return
@@ -77,181 +93,101 @@ def task_update_resubscribe_cache(processor): # <--- 移除 force_full_update �
         
         series_tmdb_ids = {meta['tmdb_id'] for meta in metadata_map.values() if meta.get('item_type') == 'Series'}
         all_episodes_from_db = media_db.get_episodes_for_series(list(series_tmdb_ids))
-        episodes_map = defaultdict(list)
+        episodes_metadata_map = defaultdict(list)
         for ep in all_episodes_from_db:
-            episodes_map[ep['parent_series_tmdb_id']].append(ep)
+            episodes_metadata_map[ep['parent_series_tmdb_id']].append(ep)
 
-        # ★★★ 步骤 4: 清理Emby中已删除的旧索引 ★★★
+        # --- 步骤 5: 清理Emby中已删除的旧索引 (逻辑不变) ---
         logger.info("  ➜ 正在比对并清理陈旧的洗版索引...")
         indexed_keys = resubscribe_db.get_all_resubscribe_index_keys()
-        
         current_emby_keys = set()
-        for item in emby_index:
-            tmdb_id = item.get('ProviderIds', {}).get('Tmdb')
-            if not tmdb_id: continue
-            
-            if item.get('Type') == 'Movie':
+        for item in movies_to_process:
+            if tmdb_id := item.get('ProviderIds', {}).get('Tmdb'):
                 current_emby_keys.add(str(tmdb_id))
-            elif item.get('Type') == 'Episode' and item.get('ParentIndexNumber') is not None:
-                current_emby_keys.add(f"{tmdb_id}-S{item['ParentIndexNumber']}")
+        for series_item in series_to_process:
+            if tmdb_id := series_item.get('ProviderIds', {}).get('Tmdb'):
+                # 确定这部剧实际存在哪些季
+                seasons_in_series = {ep.get('ParentIndexNumber') for ep in series_episodes_map.get(series_item.get('Id'), []) if ep.get('ParentIndexNumber') is not None}
+                for season_num in seasons_in_series:
+                    current_emby_keys.add(f"{tmdb_id}-S{season_num}")
         
         deleted_keys = indexed_keys - current_emby_keys
         if deleted_keys:
             resubscribe_db.delete_resubscribe_index_by_keys(list(deleted_keys))
 
-        # ★★★ 步骤 5: 全量处理所有项目 ★★★
-        items_to_process_index = emby_index
-        total = len(items_to_process_index)
+        # ★★★ 步骤 6: 全新、高效的全量处理流程 ★★★
+        total = len(movies_to_process) + len(series_to_process)
         if total == 0:
             task_manager.update_status_from_thread(100, "任务完成：无需处理任何项目。")
             return
 
-        logger.info(f"  ➜ 将对 {total} 个媒体索引项按规则检查洗版状态...")
+        logger.info(f"  ➜ 将对 {len(movies_to_process)} 部电影和 {len(series_to_process)} 部剧集按规则检查洗版状态...")
         index_update_batch = []
         processed_count = 0
-        
-        # +++ 添加一个计数器用于调试 +++
-        debug_skip_counter = defaultdict(int)
 
-        # 将索引项按电影和剧集分组
-        movies_to_process = [item for item in items_to_process_index if item.get('Type') == 'Movie']
-        series_episodes_map = defaultdict(list)
-        series_metadata_map = {} # 用于存储剧集本身的元数据，避免重复查找
-
-        for item in items_to_process_index:
-            # 我们只关心分集，因为它们代表了实际的文件
-            if item.get('Type') == 'Episode' and item.get('SeriesId'):
-                series_id = item.get('SeriesId')
-                series_episodes_map[series_id].append(item)
-                
-                # 顺便存储剧集本身的索引信息（只需要一次）
-                if series_id not in series_metadata_map:
-                    # 从原始索引中找到这个剧集的顶层信息
-                    series_index_item = next((s for s in emby_index if s.get('Id') == series_id and s.get('Type') == 'Series'), None)
-                    if series_index_item:
-                        series_metadata_map[series_id] = series_index_item
-
-        # --- 处理电影 ---
+        # --- 6a. 处理所有电影 ---
         for movie_index in movies_to_process:
             if processor.is_stop_requested(): break
             processed_count += 1
             progress = int(20 + (processed_count / total) * 80)
-            task_manager.update_status_from_thread(progress, f"({processed_count}/{total}) 正在分析: {movie_index.get('Name')}")
-
-            # +++ 添加详细的电影调试日志 +++
-            movie_name_for_log = movie_index.get('Name', '未知电影')
-            source_lib_id = movie_index.get('_SourceLibraryId')
-            tmdb_id = str(movie_index.get('ProviderIds', {}).get('Tmdb'))
-            
-            rule = library_to_rule_map.get(source_lib_id)
-            if not rule:
-                debug_skip_counter['movie_no_rule'] += 1
-                continue
-
-            metadata = metadata_map.get(tmdb_id)
-            if not metadata:
-                debug_skip_counter['movie_no_metadata'] += 1
-                continue
-                
-            if not metadata.get('asset_details_json'):
-                debug_skip_counter['movie_no_asset_details'] += 1
-                continue
-            # +++ 调试日志结束 +++
+            task_manager.update_status_from_thread(progress, f"({processed_count}/{total}) 正在分析电影: {movie_index.get('Name')}")
 
             tmdb_id = movie_index.get('ProviderIds', {}).get('Tmdb')
             metadata = metadata_map.get(tmdb_id)
-            if not metadata or not metadata.get('asset_details_json'): continue
-            
-            # 假设我们只分析第一个版本
-            asset = metadata['asset_details_json'][0]
             rule = library_to_rule_map.get(movie_index.get('_SourceLibraryId'))
-            if not rule: continue
 
+            if not all([tmdb_id, metadata, rule]) or not metadata.get('asset_details_json'):
+                continue
+            
+            asset = metadata['asset_details_json'][0]
             needs, reason = _item_needs_resubscribe(asset, rule, metadata)
             status = 'needed' if needs else 'ok'
             
             index_update_batch.append({
-                "tmdb_id": tmdb_id,
-                "item_type": "Movie",
-                "season_number": -1,
-                "status": status,
-                "reason": reason,
-                "matched_rule_id": rule.get('id')
+                "tmdb_id": tmdb_id, "item_type": "Movie", "season_number": -1,
+                "status": status, "reason": reason, "matched_rule_id": rule.get('id')
             })
 
-        # --- 处理剧集 ---
-        for series_id, series_index in series_metadata_map.items():
+        # --- 6b. 处理所有剧集 ---
+        for series_index in series_to_process:
             if processor.is_stop_requested(): break
             processed_count += 1
             progress = int(20 + (processed_count / total) * 80)
-            task_manager.update_status_from_thread(progress, f"({processed_count}/{total}) 正在分析: {series_index.get('Name')}")
-
-            # +++ 添加详细的剧集调试日志 +++
-            series_name_for_log = series_index.get('Name', '未知剧集')
-            source_lib_id = series_index.get('_SourceLibraryId')
-            tmdb_id = str(series_index.get('ProviderIds', {}).get('Tmdb'))
-
-            rule = library_to_rule_map.get(source_lib_id)
-            if not rule:
-                debug_skip_counter['series_no_rule'] += 1
-                continue
-
-            series_metadata = metadata_map.get(tmdb_id)
-            if not series_metadata:
-                debug_skip_counter['series_no_metadata'] += 1
-                continue
-
-            episodes_for_series = episodes_map.get(tmdb_id)
-            if not episodes_for_series:
-                debug_skip_counter['series_no_episodes_in_map'] += 1
-                continue
-            # +++ 调试日志结束 +++
+            task_manager.update_status_from_thread(progress, f"({processed_count}/{total}) 正在分析剧集: {series_index.get('Name')}")
 
             tmdb_id = series_index.get('ProviderIds', {}).get('Tmdb')
             series_metadata = metadata_map.get(tmdb_id)
-            episodes_for_series = episodes_map.get(tmdb_id)
-            if not series_metadata or not episodes_for_series: continue
-
             rule = library_to_rule_map.get(series_index.get('_SourceLibraryId'))
-            if not rule: continue
+            
+            # 获取该剧集在数据库中所有分集的元数据
+            episodes_for_series_from_db = episodes_metadata_map.get(tmdb_id)
 
+            if not all([tmdb_id, series_metadata, rule, episodes_for_series_from_db]):
+                continue
+
+            # 按季号对数据库中的分集元数据进行分组
             episodes_by_season = defaultdict(list)
-            for ep in episodes_for_series:
-                episodes_by_season[ep.get('season_number')].append(ep)
+            for ep_meta in episodes_for_series_from_db:
+                episodes_by_season[ep_meta.get('season_number')].append(ep_meta)
 
-            for season_num, episodes_in_season in episodes_by_season.items():
-                if season_num is None or not episodes_in_season: continue
+            for season_num, episodes_in_season_meta in episodes_by_season.items():
+                if season_num is None or not episodes_in_season_meta: continue
                 
-                # 选取第一集作为代表
-                representative_episode = episodes_in_season[0]
-                if not representative_episode.get('asset_details_json'): continue
+                # 选取第一集作为代表进行分析
+                representative_episode_meta = episodes_in_season_meta[0]
+                if not representative_episode_meta.get('asset_details_json'): continue
                 
-                asset = representative_episode['asset_details_json'][0]
+                asset = representative_episode_meta['asset_details_json'][0]
                 needs, reason = _item_needs_resubscribe(asset, rule, series_metadata)
                 status = 'needed' if needs else 'ok'
 
-                season_item_id = f"{series_id}-S{season_num}"
-                season_emby_id = next((item.get('Id') for item in emby_index if item.get('Type') == 'Season' and item.get('ParentId') == series_id and item.get('IndexNumber') == season_num), None)
-
                 index_update_batch.append({
-                    "tmdb_id": tmdb_id,
-                    "item_type": "Season",
-                    "season_number": season_num,
-                    "status": status,
-                    "reason": reason,
-                    "matched_rule_id": rule.get('id')
+                    "tmdb_id": tmdb_id, "item_type": "Season", "season_number": season_num,
+                    "status": status, "reason": reason, "matched_rule_id": rule.get('id')
                 })
 
         if index_update_batch:
             resubscribe_db.upsert_resubscribe_index_batch(index_update_batch)
-
-        # +++ 添加最终的调试统计信息输出 +++
-        if debug_skip_counter:
-            logger.warning("--- 洗版扫描跳过项统计 ---")
-            for reason, count in debug_skip_counter.items():
-                logger.warning(f"  ➜ 原因: '{reason}', 跳过数量: {count}")
-        logger.warning("--------------------------")
-        # +++ 调试统计结束 +++
             
         final_message = "媒体洗版状态刷新完成！"
         if processor.is_stop_requested(): final_message = "任务已中止。"
@@ -595,25 +531,26 @@ def _item_needs_resubscribe(asset_details: dict, rule: dict, media_metadata: Opt
                     # ★★★ 魔法日志开始 ★★★
                     # ★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★
                     # 只在处理“阿丽塔”并且要检查“英文”时触发，避免刷屏
-                    if '阿丽塔' in item_name and display_name == '英文':
-                        logger.critical("="*80)
-                        logger.critical(">>> [魔法日志]：进入《阿丽塔》英文规则判断 <<<")
-                        logger.critical(f"  - [原始字符串]   current_subtitle_display: {current_subtitle_display}")
-                        logger.critical(f"  - [原始类型]     type(current_subtitle_display): {type(current_subtitle_display)}")
-                        logger.critical(f"  - [字节级表示]   repr(current_subtitle_display): {repr(current_subtitle_display)}")
-                        logger.critical(f"  - [净化后集合]   existing_langs_set: {existing_langs_set}")
-                        logger.critical(f"  - [要查找的目标] display_name: '{display_name}'")
+                    # 只在处理“阿丽塔”并且要检查“中字”时触发，避免刷屏
+                    # if '阿丽塔' in item_name and display_name == '中字':
+                    #     logger.critical("="*80)
+                    #     logger.critical(">>> [魔法日志]：进入《阿丽塔》中字规则判断 <<<")
+                    #     logger.critical(f"  - [原始字符串]   current_subtitle_display: {current_subtitle_display}")
+                    #     logger.critical(f"  - [原始类型]     type(current_subtitle_display): {type(current_subtitle_display)}")
+                    #     logger.critical(f"  - [字节级表示]   repr(current_subtitle_display): {repr(current_subtitle_display)}")
+                    #     logger.critical(f"  - [净化后集合]   existing_langs_set: {existing_langs_set}")
+                    #     logger.critical(f"  - [要查找的目标] display_name: '{display_name}'")
                         
-                        check_result = display_name not in existing_langs_set
+                    #     check_result = display_name not in existing_langs_set
                         
-                        logger.critical(f"  - [判断表达式]   '{display_name}' not in {existing_langs_set}")
-                        logger.critical(f"  - [判断结果]     Check Result: {check_result}")
+                    #     logger.critical(f"  - [判断表达式]   '{display_name}' not in {existing_langs_set}")
+                    #     logger.critical(f"  - [判断结果]     Check Result: {check_result}")
                         
-                        if check_result:
-                            logger.critical("  - [最终结论]     程序认为【缺少】英文字幕，即将添加原因。")
-                        else:
-                            logger.critical("  - [最终结论]     程序认为【不缺】英文字幕，判断正确。")
-                        logger.critical("="*80)
+                    #     if check_result:
+                    #         logger.critical("  - [最终结论]     程序认为【缺少】中文字幕，即将添加原因。")
+                    #     else:
+                    #         logger.critical("  - [最终结论]     程序认为【不缺】中文字幕，判断正确。")
+                    #     logger.critical("="*80)
                     # ★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★
                     # ★★★ 魔法日志结束 ★★★
                     # ★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★

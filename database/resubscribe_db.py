@@ -169,6 +169,7 @@ def _format_library_status_results(rows: List[Dict]) -> List[Dict]:
             "item_id": item_id,
             "tmdb_id": row_dict['tmdb_id'],
             "item_type": row_dict['item_type'],
+            "conceptual_type": "Series" if row_dict['item_type'] == 'Season' else "Movie",
             "season_number": season_num if season_num != -1 else None,
             "status": row_dict['status'],
             "reason": row_dict['reason'],
@@ -190,39 +191,120 @@ def _format_library_status_results(rows: List[Dict]) -> List[Dict]:
     return results
 
 def get_resubscribe_library_status(where_clause: str = "", params: tuple = ()) -> List[Dict[str, Any]]:
-    """【V9 - 通用查询引擎】根据指定的 WHERE 条件获取海报墙数据。"""
-    sql = f"""
-    SELECT
-        idx.tmdb_id, idx.item_type, idx.season_number, idx.status, idx.reason, idx.matched_rule_id,
-        CASE
-            WHEN idx.item_type = 'Season' THEN series_meta.title || ' - 第 ' || idx.season_number || ' 季'
-            ELSE movie_meta.title
-        END AS item_name,
-        CASE
-            WHEN idx.item_type = 'Season' THEN COALESCE(season_meta.poster_path, series_meta.poster_path)
-            ELSE movie_meta.poster_path
-        END AS poster_path,
-        series_meta.emby_item_ids_json AS series_emby_ids,
-        COALESCE(movie_meta.asset_details_json, episode_meta.asset_details_json) -> 0 AS asset_details
-    FROM resubscribe_index AS idx
-    LEFT JOIN media_metadata AS movie_meta ON idx.tmdb_id = movie_meta.tmdb_id AND idx.item_type = 'Movie' AND movie_meta.item_type = 'Movie'
-    LEFT JOIN media_metadata AS series_meta ON idx.tmdb_id = series_meta.tmdb_id AND idx.item_type = 'Season' AND series_meta.item_type = 'Series'
-    LEFT JOIN media_metadata AS season_meta ON idx.tmdb_id = season_meta.parent_series_tmdb_id AND idx.season_number = season_meta.season_number AND idx.item_type = 'Season' AND season_meta.item_type = 'Season'
-    LEFT JOIN LATERAL (
-        SELECT asset_details_json FROM media_metadata
-        WHERE parent_series_tmdb_id = idx.tmdb_id AND season_number = idx.season_number AND item_type = 'Episode'
-        ORDER BY episode_number ASC LIMIT 1
-    ) AS episode_meta ON idx.item_type = 'Season'
-    {where_clause}
-    ORDER BY item_name;
-    """
+    """【V10 - 高性能重构版】彻底解决查询慢和数据重复问题。"""
     try:
         with get_db_connection() as conn:
             cursor = conn.cursor()
-            cursor.execute(sql, params)
-            return _format_library_status_results(cursor.fetchall())
+
+            # 步骤 1: 从索引表快速获取所有需要展示的主键信息。这个查询非常快。
+            index_sql = f"""
+                SELECT tmdb_id, item_type, season_number, status, reason, matched_rule_id
+                FROM resubscribe_index AS idx
+                {where_clause}
+                ORDER BY tmdb_id, season_number;
+            """
+            cursor.execute(index_sql, params)
+            index_items = cursor.fetchall()
+            if not index_items:
+                return []
+
+            # 步骤 2: 根据获取到的主键，去元数据表批量抓取所有需要的详细信息。
+            # 这种方式避免了复杂的JOIN，性能极高。
+            all_tmdb_ids = list({str(item['tmdb_id']) for item in index_items})
+            
+            metadata_sql = """
+                SELECT 
+                    tmdb_id, item_type, title, poster_path, season_number, 
+                    parent_series_tmdb_id, emby_item_ids_json,
+                    (asset_details_json -> 0) as asset_details
+                FROM media_metadata
+                WHERE tmdb_id = ANY(%s) OR parent_series_tmdb_id = ANY(%s);
+            """
+            cursor.execute(metadata_sql, (all_tmdb_ids, all_tmdb_ids))
+            
+            # 将元数据组织成高效的查找字典
+            metadata_map = {}
+            for row in cursor.fetchall():
+                # 为电影和剧集主体创建索引
+                if row['item_type'] in ['Movie', 'Series']:
+                    metadata_map[row['tmdb_id']] = row
+                # 为剧集季创建索引，键为 "tmdbid-S<season_number>"
+                elif row['item_type'] == 'Season':
+                    key = f"{row['parent_series_tmdb_id']}-S{row['season_number']}"
+                    metadata_map[key] = row
+
+            # 步骤 3: 在Python中高效地将两部分数据进行合并。
+            # 这种方式完全可控，绝不会产生重复数据。
+            final_results = []
+            for item in index_items:
+                tmdb_id = item['tmdb_id']
+                item_type = item['item_type']
+                season_num = item['season_number']
+                
+                meta = None
+                series_meta = None
+                
+                if item_type == 'Movie':
+                    meta = metadata_map.get(tmdb_id)
+                elif item_type == 'Season':
+                    series_meta = metadata_map.get(tmdb_id)
+                    season_key = f"{tmdb_id}-S{season_num}"
+                    meta = metadata_map.get(season_key)
+
+                if not meta and not series_meta:
+                    continue # 如果在元数据中找不到信息，则跳过
+
+                # 组合最终数据
+                asset = (meta or {}).get('asset_details') or {}
+                
+                # 确定标题
+                if item_type == 'Season':
+                    series_title = series_meta.get('title', '未知剧集') if series_meta else '未知剧集'
+                    item_name = f"{series_title} - 第 {season_num} 季"
+                else:
+                    item_name = (meta or {}).get('title', '未知电影')
+
+                # 确定海报 (季优先使用自己的海报，否则回退到剧集海报)
+                poster_path = (meta or {}).get('poster_path')
+                if item_type == 'Season' and not poster_path and series_meta:
+                    poster_path = series_meta.get('poster_path')
+
+                # 确定用于跳转的Emby ID
+                series_emby_ids = (series_meta or {}).get('emby_item_ids_json', [])
+                series_emby_id = series_emby_ids[0] if series_emby_ids else None
+
+                item_id_suffix = f"-S{season_num}" if item_type == 'Season' else ""
+                item_id = f"{tmdb_id}-{item_type}{item_id_suffix}"
+
+                final_results.append({
+                    "item_id": item_id,
+                    "tmdb_id": tmdb_id,
+                    "item_type": item_type,
+                    "conceptual_type": "Series" if item_type == 'Season' else "Movie",
+                    "season_number": season_num if season_num != -1 else None,
+                    "status": item['status'],
+                    "reason": item['reason'],
+                    "matched_rule_id": item['matched_rule_id'],
+                    "item_name": item_name,
+                    "poster_path": poster_path,
+                    "resolution_display": asset.get('resolution_display', 'Unknown'),
+                    "quality_display": asset.get('quality_display', 'Unknown'),
+                    "release_group_raw": asset.get('release_group_raw', '无'),
+                    "codec_display": asset.get('codec_display', 'unknown'),
+                    "effect_display": asset.get('effect_display', ['SDR']),
+                    "audio_display": asset.get('audio_display', '无'),
+                    "subtitle_display": asset.get('subtitle_display', '无'),
+                    "filename": os.path.basename(asset.get('path', '')) if asset.get('path') else None,
+                    "emby_item_id": asset.get('emby_item_id'),
+                    "series_emby_id": series_emby_id
+                })
+            
+            # 最后按名称排序
+            final_results.sort(key=lambda x: x['item_name'])
+            return final_results
+
     except Exception as e:
-        logger.error(f"  ➜ 获取洗版海报墙状态失败: {e}", exc_info=True)
+        logger.error(f"  ➜ 获取洗版海报墙状态失败 (高性能模式): {e}", exc_info=True)
         return []
 
 # ★★★ 新增函数 (兼容旧API) ★★★

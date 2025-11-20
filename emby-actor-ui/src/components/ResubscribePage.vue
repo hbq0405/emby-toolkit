@@ -251,12 +251,7 @@ const filteredItems = computed(() => {
 
   // 3. 按媒体类型筛选 (新增逻辑)
   if (mediaTypeFilter.value) {
-    if (mediaTypeFilter.value === 'Series') {
-      // 如果选择剧集，则包含 item_type 为 'Series' 或 'Season' 的项目
-      items = items.filter(item => item.item_type === 'Series' || item.item_type === 'Season');
-    } else {
-      items = items.filter(item => item.item_type === mediaTypeFilter.value);
-    }
+    items = items.filter(item => item.conceptual_type === mediaTypeFilter.value);
   }
 
   // 4. 按洗版规则筛选 (新增逻辑)
