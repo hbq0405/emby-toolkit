@@ -237,7 +237,7 @@ def get_dashboard_stats() -> dict:
         (SELECT COUNT(*) FROM actor_subscriptions WHERE status = 'active') AS actor_subscriptions_active,
         (SELECT COUNT(*) FROM media_metadata WHERE subscription_sources_json @> '[{"type": "actor_subscription"}]'::jsonb) AS actor_works_total,
         (SELECT COUNT(*) FROM media_metadata WHERE subscription_sources_json @> '[{"type": "actor_subscription"}]'::jsonb AND in_library = TRUE) AS actor_works_in_library,
-        (SELECT COUNT(*) FROM resubscribe_cache WHERE status ILIKE 'needed') AS resubscribe_pending,
+        (SELECT COUNT(*) FROM resubscribe_index WHERE status ILIKE 'needed') AS resubscribe_pending,
         
         -- ★★★ 原生合集统计 (原 collections_info 表) - 新增总数统计 ★★★
         (SELECT COUNT(*) FROM collections_info) AS native_collections_total,
@@ -309,7 +309,7 @@ def prepare_for_library_rebuild() -> Dict[str, Dict]:
     """
     tables_to_truncate = [
         'emby_users', 'emby_users_extended', 'user_media_data', 'user_collection_cache',
-        'collections_info', 'watchlist', 'resubscribe_cache', 'media_cleanup_tasks'
+        'collections_info', 'watchlist', 'resubscribe_index', 'media_cleanup_tasks'
     ]
     columns_to_reset = {
         'media_metadata': 'emby_item_id', 'person_identity_map': 'emby_person_id',
@@ -453,8 +453,8 @@ def cleanup_deleted_media_item(item_id: str, item_name: str, item_type: str, ser
                 if cursor.rowcount > 0:
                     logger.info(f"  ➜ 已将该剧集的智能追剧状态重置为'NONE'。")
 
-                # 4. 清理 resubscribe_cache (假设 resubscribe_cache.tmdb_id 存在)
-                cursor.execute("DELETE FROM resubscribe_cache WHERE tmdb_id = %s", (target_tmdb_id,))
+                # 4. 清理resubscribe_index 
+                cursor.execute("DELETE FROM resubscribe_index WHERE tmdb_id = %s", (target_tmdb_id,))
                 if cursor.rowcount > 0: logger.info(f"  ➜ 已从媒体洗版缓存中移除。")
 
                 # 5. 清理用户权限缓存 
