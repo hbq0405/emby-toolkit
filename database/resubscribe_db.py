@@ -157,6 +157,8 @@ def _format_library_status_results(rows: List[Dict]) -> List[Dict]:
     for row in rows:
         row_dict = dict(row)
         asset = row_dict.pop('asset_details') or {}
+        series_emby_ids = row_dict.pop('series_emby_ids', None) or []
+        series_emby_id = series_emby_ids[0] if series_emby_ids else None
         season_num = row_dict['season_number']
         
         # 兼容旧的 item_id 格式
@@ -181,7 +183,8 @@ def _format_library_status_results(rows: List[Dict]) -> List[Dict]:
             "audio_display": asset.get('audio_display', '无'),
             "subtitle_display": asset.get('subtitle_display', '无'),
             "filename": os.path.basename(asset.get('path', '')) if asset.get('path') else None,
-            "emby_item_id": asset.get('emby_item_id')
+            "emby_item_id": asset.get('emby_item_id'),
+            "series_emby_id": series_emby_id
         }
         results.append(final_item)
     return results
@@ -199,6 +202,7 @@ def get_resubscribe_library_status(where_clause: str = "", params: tuple = ()) -
             WHEN idx.item_type = 'Season' THEN COALESCE(season_meta.poster_path, series_meta.poster_path)
             ELSE movie_meta.poster_path
         END AS poster_path,
+        series_meta.emby_item_ids_json AS series_emby_ids,
         COALESCE(movie_meta.asset_details_json, episode_meta.asset_details_json) -> 0 AS asset_details
     FROM resubscribe_index AS idx
     LEFT JOIN media_metadata AS movie_meta ON idx.tmdb_id = movie_meta.tmdb_id AND idx.item_type = 'Movie' AND movie_meta.item_type = 'Movie'
