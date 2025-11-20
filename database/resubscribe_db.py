@@ -151,45 +151,6 @@ def upsert_resubscribe_index_batch(items_data: List[Dict[str, Any]]):
         logger.error(f"  ➜ 批量更新洗版索引失败: {e}", exc_info=True)
         raise
 
-def _format_library_status_results(rows: List[Dict]) -> List[Dict]:
-    """【内部辅助】格式化海报墙查询结果。"""
-    results = []
-    for row in rows:
-        row_dict = dict(row)
-        asset = row_dict.pop('asset_details') or {}
-        series_emby_ids = row_dict.pop('series_emby_ids', None) or []
-        series_emby_id = series_emby_ids[0] if series_emby_ids else None
-        season_num = row_dict['season_number']
-        
-        # 兼容旧的 item_id 格式
-        item_id_suffix = f"-S{season_num}" if row_dict['item_type'] == 'Season' else ""
-        item_id = f"{row_dict['tmdb_id']}-{row_dict['item_type']}{item_id_suffix}"
-
-        final_item = {
-            "item_id": item_id,
-            "tmdb_id": row_dict['tmdb_id'],
-            "item_type": row_dict['item_type'],
-            "conceptual_type": "Series" if row_dict['item_type'] == 'Season' else "Movie",
-            "season_number": season_num if season_num != -1 else None,
-            "status": row_dict['status'],
-            "reason": row_dict['reason'],
-            "matched_rule_id": row_dict['matched_rule_id'],
-            "item_name": row_dict['item_name'],
-            "poster_path": row_dict['poster_path'],
-            "resolution_display": asset.get('resolution_display', 'Unknown'),
-            "quality_display": asset.get('quality_display', 'Unknown'),
-            "release_group_raw": asset.get('release_group_raw', '无'),
-            "codec_display": asset.get('codec_display', 'unknown'),
-            "effect_display": asset.get('effect_display', ['SDR']),
-            "audio_display": asset.get('audio_display', '无'),
-            "subtitle_display": asset.get('subtitle_display', '无'),
-            "filename": os.path.basename(asset.get('path', '')) if asset.get('path') else None,
-            "emby_item_id": asset.get('emby_item_id'),
-            "series_emby_id": series_emby_id
-        }
-        results.append(final_item)
-    return results
-
 def get_resubscribe_library_status(where_clause: str = "", params: tuple = ()) -> List[Dict[str, Any]]:
     """【V10 - 高性能重构版】彻底解决查询慢和数据重复问题。"""
     try:
@@ -307,7 +268,6 @@ def get_resubscribe_library_status(where_clause: str = "", params: tuple = ()) -
         logger.error(f"  ➜ 获取洗版海报墙状态失败 (高性能模式): {e}", exc_info=True)
         return []
 
-# ★★★ 新增函数 (兼容旧API) ★★★
 def get_resubscribe_cache_item(item_id: str) -> Optional[Dict[str, Any]]:
     """根据前端 item_id 获取单个项目的完整信息。"""
     key_tuple = _parse_item_id(item_id)
@@ -317,7 +277,6 @@ def get_resubscribe_cache_item(item_id: str) -> Optional[Dict[str, Any]]:
     results = get_resubscribe_library_status(where_clause, key_tuple)
     return results[0] if results else None
 
-# ★★★ 新增函数 (兼容旧API) ★★★
 def update_resubscribe_item_status(item_id: str, new_status: str) -> bool:
     """根据前端 item_id 更新单个项目的状态。"""
     key_tuple = _parse_item_id(item_id)
@@ -333,7 +292,6 @@ def update_resubscribe_item_status(item_id: str, new_status: str) -> bool:
         logger.error(f"  ➜ 更新项目 {item_id} 状态时失败: {e}", exc_info=True)
         return False
 
-# ★★★ 新增函数 (兼容旧API) ★★★
 def delete_resubscribe_cache_item(item_id: str) -> bool:
     """根据前端 item_id 删除单个索引项。"""
     key_tuple = _parse_item_id(item_id)
@@ -424,3 +382,21 @@ def delete_resubscribe_index_by_keys(keys: List[str]) -> int:
     except Exception as e:
         logger.error(f"  ➜ 批量删除洗版索引时失败: {e}", exc_info=True)
         return 0
+    
+def get_resubscribe_items_by_ids(item_ids: List[str]) -> List[Dict[str, Any]]:
+    """根据前端 item_id 列表，批量获取项目的完整信息。"""
+    if not item_ids:
+        return []
+    
+    key_tuples = [key for item_id in item_ids if (key := _parse_item_id(item_id))]
+    if not key_tuples:
+        return []
+
+    where_clause = "WHERE (idx.tmdb_id, idx.item_type, idx.season_number) IN %s"
+    params = (tuple(key_tuples),)
+    return get_resubscribe_library_status(where_clause, params)
+
+def get_all_needed_resubscribe_items() -> List[Dict[str, Any]]:
+    """获取所有状态为 'needed' 的项目的完整信息。"""
+    where_clause = "WHERE idx.status = 'needed'"
+    return get_resubscribe_library_status(where_clause)

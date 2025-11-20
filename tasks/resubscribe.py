@@ -218,7 +218,7 @@ def task_delete_batch(processor, item_ids: List[str]):
     task_name = "批量删除媒体"
     logger.info(f"--- 开始执行 '{task_name}' 任务 (精准模式) ---")
     
-    items_to_delete = resubscribe_db.get_resubscribe_cache_by_ids(item_ids)
+    items_to_delete = resubscribe_db.get_resubscribe_items_by_ids(item_ids)
     total = len(items_to_delete)
     if total == 0:
         task_manager.update_status_from_thread(100, "任务完成：选中的项目中没有可删除的项。")
@@ -758,7 +758,7 @@ def _execute_resubscribe(processor, task_name: str, target):
     if isinstance(target, str) and target == "needed":
         items_to_subscribe = resubscribe_db.get_all_needed_resubscribe_items()
     elif isinstance(target, list):
-        items_to_subscribe = resubscribe_db.get_resubscribe_cache_by_ids(target)
+        items_to_subscribe = resubscribe_db.get_resubscribe_items_by_ids(target)
     else:
         task_manager.update_status_from_thread(-1, "任务失败：无效的目标参数")
         return
