@@ -530,34 +530,25 @@ def _is_exempted_from_chinese_check(media_streams: list, media_metadata: Optiona
     
     return False
 
-def _build_resubscribe_payload(item_details: dict, rule: Optional[dict]) -> Optional[dict]:
+def build_resubscribe_payload(item_details: dict, rule: Optional[dict]) -> Optional[dict]:
     """构建发送给 MoviePilot 的订阅 payload。"""
-    from .subscriptions import _extract_exclusion_keywords_from_filename, AUDIO_SUBTITLE_KEYWORD_MAP
-    # ★★★ 关键调试步骤 1: 打印传入的完整原始数据 ★★★
-    from datetime import date, datetime # 确保导入
-    details_for_log = item_details.copy()
-    for key, value in details_for_log.items():
-        # 将 datetime 和 date 对象都转换为 ISO 格式的字符串
-        if isinstance(value, (datetime, date)):
-            details_for_log[key] = value.isoformat()
+    from .subscriptions import AUDIO_SUBTITLE_KEYWORD_MAP
+    from datetime import date, datetime
 
-    # --- 1. 更稳健地提取核心ID ---
-    item_name = item_details.get('item_name') # 直接使用 item_name，它更可靠
+    item_name = item_details.get('item_name')
     tmdb_id_str = str(item_details.get('tmdb_id', '')).strip()
-    item_type = item_details.get('item_type') # 'Movie' or 'Season'
+    item_type = item_details.get('item_type')
 
     if not all([item_name, tmdb_id_str, item_type]):
-        logger.error(f"构建Payload失败：缺少核心媒体信息 (name, tmdb_id, type)。来源: {item_details}")
+        logger.error(f"构建Payload失败：缺少核心媒体信息。来源: {item_details}")
         return None
     
     try:
         tmdb_id = int(tmdb_id_str)
     except (ValueError, TypeError):
-        logger.error(f"构建Payload失败：TMDB ID '{tmdb_id_str}' 不是一个有效的数字。")
+        logger.error(f"构建Payload失败：TMDB ID '{tmdb_id_str}' 无效。")
         return None
 
-    # --- 2. 初始化Payload，并根据类型决定基础订阅名 ---
-    # 默认使用原始剧集名，避免名称中包含 “- 第 X 季”
     base_series_name = item_name.split(' - 第')[0]
     media_type_for_payload = "电视剧" if item_type in ["Series", "Season"] else "电影"
 
@@ -568,44 +559,28 @@ def _build_resubscribe_payload(item_details: dict, rule: Optional[dict]) -> Opti
         "best_version": 1
     }
 
-    # --- 3. ★★★ 核心逻辑：如果是季，则必须添加 season 字段 ★★★
     if item_type == "Season":
         season_num = item_details.get('season_number')
         if season_num is not None:
             payload['season'] = int(season_num)
-            logger.info(f"  ➜ 已为《{base_series_name}》精准指定订阅季: {payload['season']}")
         else:
-            # 这是一个保护性分支，正常情况下不应该进入
-            logger.error(f"  ➜ 严重错误：项目类型为 'Season'，但在数据库记录中未找到 'season_number'！将按整季订阅，可能导致问题！")
+            logger.error(f"严重错误：项目 '{item_name}' 类型为 'Season' 但未找到 'season_number'！")
 
-    # --- 4. 处理文件名排除逻辑 ---
-    original_filename = item_details.get('filename')
-    if original_filename:
-        exclusion_keywords_list = _extract_exclusion_keywords_from_filename(original_filename)
-        
-        # ★★★★★★★★★★★★★★★★★ 核心逻辑重构 ★★★★★★★★★★★★★★★★★
-        # 只有在提取到有效关键字时，才构建并应用“且(AND)”逻辑的正则表达式
-        if exclusion_keywords_list:
-            # 使用正则表达式的正向先行断言 (positive lookahead) 来实现 AND 逻辑
-            # 例如: (?=.*1080p)(?=.*x265)(?=.*GROUP)
-            # 这意味着标题中必须同时包含 "1080p", "x265", 和 "GROUP"
-            and_regex_parts = [f"(?=.*{re.escape(k)})" for k in exclusion_keywords_list]
-            payload['exclude'] = "".join(and_regex_parts)
-            logger.info(f"  ➜ 精准排除模式：已为《{item_name}》生成 AND 逻辑正则: {payload['exclude']}")
-        else:
-            # 如果列表为空，说明文件名很干净，没有任何可供排除的特征
-            # 此时我们不添加任何 exclude 参数，这是最安全的做法
-            logger.info(f"  ✅ 文件名分析完成，未提取到有效技术或发布组关键字，不添加排除规则。")
-        # ★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★
-
+    # ★★★ 核心修改：直接从 item_details 获取预先分析好的发布组 ★★★
+    # 不再调用 _extract_exclusion_keywords_from_filename 函数
+    exclusion_keywords_list = item_details.get('release_group_raw', [])
+    
+    if exclusion_keywords_list:
+        # 使用正向先行断言实现 AND 逻辑
+        and_regex_parts = [f"(?=.*{re.escape(k)})" for k in exclusion_keywords_list]
+        payload['exclude'] = "".join(and_regex_parts)
+        logger.info(f"  ➜ 精准排除模式：已为《{item_name}》生成 AND 逻辑正则: {payload['exclude']}")
     else:
-        logger.info("  🤷 文件名为空或不存在，无法提取关键字。")
+        logger.info(f"  ✅ 未找到预分析的发布组，不添加排除规则。")
+    # ★★★ 修改结束 ★★★
 
     use_custom_subscribe = config_manager.APP_CONFIG.get(constants.CONFIG_OPTION_USE_CUSTOM_RESUBSCRIBE, False)
     if not use_custom_subscribe or not rule:
-        log_reason = "自定义洗版未开启" if not use_custom_subscribe else "未匹配到规则"
-        logger.info(f"  ➜ 《{item_name}》将使用全局洗版 ({log_reason})。")
-        
         return payload
 
     rule_name = rule.get('name', '未知规则')
@@ -723,7 +698,7 @@ def _execute_resubscribe(processor, task_name: str, target):
         task_manager.update_status_from_thread(int((i / total) * 100), f"({i+1}/{total}) [配额:{current_quota}] 正在订阅: {item_name}")
 
         rule = next((r for r in all_rules if r['id'] == item.get('matched_rule_id')), None)
-        payload = _build_resubscribe_payload(item, rule)
+        payload = build_resubscribe_payload(item, rule)
         if not payload: continue
 
         if moviepilot.subscribe_with_custom_payload(payload, config):

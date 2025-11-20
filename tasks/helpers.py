@@ -21,9 +21,46 @@ AUDIO_SUBTITLE_KEYWORD_MAP = {
     "sub_eng": ["ENG", "英字"],
 }
 
+def _extract_exclusion_keywords_from_filename(filename: str) -> List[str]:
+    """
+    【V9 - 职责单一版：仅提取发布组】
+    - 核心职责：只负责从文件名末尾提取唯一的、非中文的、非通用技术标签的发布组关键字。
+    - 这是为了解决技术标签写法不统一 (如 H.265 vs HEVC) 导致排除失败的漏洞。
+    - 输出：返回一个只包含发布组的列表 (通常只有一个元素)，或一个空列表。
+    """
+    if not filename:
+        return []
+
+    name_part = os.path.splitext(filename)[0]
+    
+    # 这个集合用于识别哪些是通用技术标签，从而跳过它们，找到真正的发布组。
+    KNOWN_TECH_TAGS = {
+        'BLURAY', 'BDRIP', 'WEB-DL', 'WEBDL', 'WEBRIP', 'HDTV', 'REMUX', 
+        'X264', 'X265', 'H264', 'H265', 'AVC', 'HEVC', '10BIT', '8BIT',
+        'DTS', 'AC3', 'ATMOS', 'DDP5', 'AAC', 'FLAC', 'DTS-HD', 'MA',
+        '1080P', '2160P', '720P', '4K', 'UHD', 'SD',
+        'HDR', 'SDR', 'DV', 'DOVI',
+        'ITUNES',
+    }
+
+    words = re.split(r'[.\s_·()\[\]-]', name_part)
+    season_episode_pattern = re.compile(r'^S\d{2,4}E\d{2,4}$', re.IGNORECASE)
+
+    # 从后往前找，找到第一个符合条件的就认定为发布组并立即返回
+    for word in reversed(words):
+        if not word or season_episode_pattern.match(word): continue
+        if re.search(r'[\u4e00-\u9fff]', word): continue
+        if len(word) <= 2 or word.isdigit(): continue
+        
+        if word.upper() not in KNOWN_TECH_TAGS:
+            logger.debug(f"  ➜ 已从文件名中成功提取到发布组: {word}")
+            return [word]
+
+    logger.debug("  ➜ 未能在文件名中识别出明确的发布组。")
+    return []
+
 def _get_standardized_effect(path_lower: str, video_stream: Optional[Dict]) -> List[str]:
     """
-    【V10 - 最终权威版】
     - 优先、贪婪地从文件名中解析所有特效，因为文件名信息最全。
     - 如果文件名没有信息，再从 API 的视频流中补充。
     - 返回一个特效列表，例如 ["Dolby Vision", "HDR"]。
@@ -55,7 +92,6 @@ def _get_standardized_effect(path_lower: str, video_stream: Optional[Dict]) -> L
 
 def _extract_quality_tag_from_filename(filename_lower: str) -> str:
     """
-    【V2 - 修正版】
     从文件名中提取质量标签，如果找不到，则返回 'Unknown'。
     """
     QUALITY_HIERARCHY = [
@@ -112,10 +148,7 @@ def _get_detected_languages_from_streams(
     return detected_langs
 
 def analyze_media_asset(item_details: dict) -> dict:
-    """
-    【权威分析引擎 V4 - 最终正确版】
-    正确调用所有辅助函数，生成最权威的分析结果。
-    """
+    """视频流分析引擎"""
     if not item_details: return {}
 
     media_streams = item_details.get('MediaStreams', [])
@@ -123,91 +156,73 @@ def analyze_media_asset(item_details: dict) -> dict:
     file_name_lower = os.path.basename(file_path).lower() if file_path else ""
     video_stream = next((s for s in media_streams if s.get('Type') == 'Video'), None)
 
-    # --- 1. 分辨率 (API优先, 文件名保底) ---
     resolution_str = "Unknown"
     if video_stream and video_stream.get("Width"):
         _, resolution_str = _get_resolution_tier(video_stream["Width"], video_stream.get("Height", 0))
     if resolution_str == "Unknown":
         if "2160p" in file_name_lower or "4k" in file_name_lower: resolution_str = "2160p"
         elif "1080p" in file_name_lower: resolution_str = "1080p"
-        elif "1080i" in file_name_lower: resolution_str = "1080i"
         elif "720p" in file_name_lower: resolution_str = "720p"
 
-    # --- 2. 质量 ---
     quality_str = _extract_quality_tag_from_filename(file_name_lower)
-
-    # --- 3. 特效 ---
     effect_list = _get_standardized_effect(file_name_lower, video_stream)
-
-    # --- 4. 音轨 ---
+    
     detected_audio_langs = _get_detected_languages_from_streams(media_streams, 'Audio')
     AUDIO_DISPLAY_MAP = {'chi': '国语', 'yue': '粤语', 'eng': '英语', 'jpn': '日语'}
     audio_str = ', '.join(sorted([AUDIO_DISPLAY_MAP.get(lang, lang) for lang in detected_audio_langs])) or '无'
 
-    # --- 5. 字幕 ---
     detected_sub_langs = _get_detected_languages_from_streams(media_streams, 'Subtitle')
     if 'chi' not in detected_sub_langs and 'yue' not in detected_sub_langs and any(s.get('IsExternal') for s in media_streams if s.get('Type') == 'Subtitle'):
         detected_sub_langs.add('chi')
     SUB_DISPLAY_MAP = {'chi': '中字', 'yue': '粤字', 'eng': '英文', 'jpn': '日文'}
     subtitle_str = ', '.join(sorted([SUB_DISPLAY_MAP.get(lang, lang) for lang in detected_sub_langs])) or '无'
 
+    # 调用新函数来提取发布组
+    release_group_list = _extract_exclusion_keywords_from_filename(file_name_lower)
+
     return {
         "resolution_display": resolution_str,
         "quality_display": quality_str,
-        "effect_display": effect_list, # 返回列表
+        "effect_display": effect_list,
         "audio_display": audio_str,
         "subtitle_display": subtitle_str,
         "audio_languages_raw": list(detected_audio_langs),
         "subtitle_languages_raw": list(detected_sub_langs),
+        "release_group_raw": release_group_list, 
     }
 
 def parse_full_asset_details(item_details: dict) -> dict:
-    """
-    【V2 - 权威资产解析器】
-    这是跨模块共享的唯一入口函数，负责将一个媒体项的详情解析成
-    一个包含“原始流数据”和“前端展示标签”的完整资产字典。
-    """
-    # 1. 安全检查：如果输入无效，返回一个标准的空结构
+    """视频流分析主函数"""
     if not item_details or "MediaStreams" not in item_details:
-        logger.warning(f"  ➜ 无法为媒体项 (ID: {item_details.get('Id')}) 找到可供分析的媒体流信息。")
         return {
             "emby_item_id": item_details.get("Id"), "path": item_details.get("Path", ""),
             "size_bytes": None, "container": None, "video_codec": None,
             "audio_tracks": [], "subtitles": [],
             "resolution_display": "Unknown", "quality_display": "Unknown",
             "effect_display": ["SDR"], "audio_display": "无", "subtitle_display": "无",
-            "audio_languages_raw": [], "subtitle_languages_raw": []
+            "audio_languages_raw": [], "subtitle_languages_raw": [],
+            "release_group_raw": [], # 在空结构中也包含新字段
         }
 
-    # 2. 提取原始数据 (复现 _analyze_media_item_streams 的第一部分)
     asset = {
-        "emby_item_id": item_details.get("Id"),
-        "path": item_details.get("Path", ""),
-        "size_bytes": item_details.get("Size"),
-        "container": item_details.get("Container"),
-        "video_codec": None,
-        "audio_tracks": [],
-        "subtitles": []
+        "emby_item_id": item_details.get("Id"), "path": item_details.get("Path", ""),
+        "size_bytes": item_details.get("Size"), "container": item_details.get("Container"),
+        "video_codec": None, "audio_tracks": [], "subtitles": []
     }
     media_streams = item_details.get("MediaStreams", [])
     for stream in media_streams:
         stream_type = stream.get("Type")
         if stream_type == "Video":
             asset["video_codec"] = stream.get("Codec")
+            # 顺便把宽高也存进去
+            asset["width"] = stream.get("Width")
+            asset["height"] = stream.get("Height")
         elif stream_type == "Audio":
-            asset["audio_tracks"].append({
-                "language": stream.get("Language"), "codec": stream.get("Codec"),
-                "channels": stream.get("Channels"), "display_title": stream.get("DisplayTitle")
-            })
+            asset["audio_tracks"].append({"language": stream.get("Language"), "codec": stream.get("Codec"), "channels": stream.get("Channels"), "display_title": stream.get("DisplayTitle")})
         elif stream_type == "Subtitle":
-            asset["subtitles"].append({
-                "language": stream.get("Language"), "display_title": stream.get("DisplayTitle")
-            })
+            asset["subtitles"].append({"language": stream.get("Language"), "display_title": stream.get("DisplayTitle")})
 
-    # 3. 调用现有的分析引擎生成展示标签
     display_tags = analyze_media_asset(item_details)
-    
-    # 4. 将两部分结果合并成最终的完整字典
     asset.update(display_tags)
     
     return asset

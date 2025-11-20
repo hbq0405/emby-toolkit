@@ -268,8 +268,7 @@ const DUAL_MODE_TASKS = [
   'role-translation',    
   'populate-metadata',
   'enrich-aliases',
-  'process-watchlist',
-  'update-resubscribe-cache'
+  'process-watchlist'
 ];
 
 // --- Composable Hooks ---
