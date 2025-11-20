@@ -334,7 +334,6 @@ def init_db():
                     CREATE TABLE IF NOT EXISTS resubscribe_index (
                         tmdb_id TEXT NOT NULL,
                         item_type TEXT NOT NULL,
-                        -- ★★★ 核心修复：为 season_number 提供一个默认值，以满足主键的 NOT NULL 约束 ★★★
                         season_number INTEGER NOT NULL DEFAULT -1, -- 对于电影，我们将使用-1作为占位符
 
                         status TEXT NOT NULL,

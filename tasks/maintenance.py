@@ -36,7 +36,7 @@ def _prepare_data_for_insert(table_name: str, table_data: List[Dict[str, Any]]) 
             'pre_cached_tags_json', 'pre_cached_extra_json', 'genres_json', 
             'actors_json', 'directors_json', 'studios_json', 'countries_json', 
             'keywords_json', 'next_episode_to_air_json', 'last_episode_to_air_json',
-            'watchlist_next_episode_json', 'watchlist_missing_info_json'
+            'watchlist_next_episode_json', 'watchlist_missing_info_json', 'asset_details_json'
         },
         'actor_subscriptions': {'config_genres_include_json', 'config_genres_exclude_json', 'last_scanned_tmdb_ids_json'},
         'resubscribe_rules': {
@@ -44,7 +44,6 @@ def _prepare_data_for_insert(table_name: str, table_data: List[Dict[str, Any]]) 
             'resubscribe_subtitle_missing_languages', 'resubscribe_quality_include',
             'resubscribe_effect_include'
         },
-        'resubscribe_cache': {'audio_languages_raw', 'subtitle_languages_raw'},
         'media_cleanup_tasks': {'versions_info_json'},
         'user_templates': {'emby_policy_json', 'emby_configuration_json'}
     }
@@ -286,7 +285,7 @@ def task_import_database(processor, file_content: str, tables_to_import: List[st
         'emby_users': 'Emby用户', 
         'user_media_data': '用户媒体数据',
         'resubscribe_rules': '洗版规则', 
-        'resubscribe_cache': '洗版缓存', 
+        'resubscribe_index': '洗版缓存', 
         'media_cleanup_tasks': '媒体清理任务',
         'user_templates': '用户权限模板', 
         'invitations': '邀请码', 
@@ -355,7 +354,8 @@ def task_import_database(processor, file_content: str, tables_to_import: List[st
                                 new_row.pop('map_id', None)
                                 new_row.pop('emby_person_id', None)
                             elif table_name.lower() == 'media_metadata':
-                                new_row.pop('emby_item_id', None)
+                                new_row.pop('emby_item_ids_json', None)
+                                new_row.pop('asset_details_json', None)
                                 new_row['in_library'] = False
                             cleaned_data.append(new_row)
                         
