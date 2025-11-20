@@ -214,7 +214,7 @@ def task_resubscribe_batch(processor, item_ids: List[str]):
 # ======================================================================
 
 def task_delete_batch(processor, item_ids: List[str]):
-    """【V2 - 独立重构版】精准删除指定的项目。"""
+    """【V3 - ID安全版】精准删除指定的项目，并增加ID有效性检查。"""
     task_name = "批量删除媒体"
     logger.info(f"--- 开始执行 '{task_name}' 任务 (精准模式) ---")
     
@@ -228,14 +228,21 @@ def task_delete_batch(processor, item_ids: List[str]):
     for i, item in enumerate(items_to_delete):
         if processor.is_stop_requested(): break
         
-        item_id = item.get('item_id')
+        internal_item_id = item.get('item_id') # 这是我们内部的ID，用于日志和数据库操作
         item_name = item.get('item_name')
         task_manager.update_status_from_thread(int((i / total) * 100), f"({i+1}/{total}) 正在删除: {item_name}")
         
-        id_to_delete = item.get('emby_item_id') or item_id
+        # 只使用 emby_item_id，并进行严格检查 
+        id_to_delete = item.get('emby_item_id')
+        
+        # 健壮性检查：如果ID无效或格式错误，则跳过并记录错误
+        if not id_to_delete or not str(id_to_delete).isdigit():
+            logger.error(f"  ➜ 无法删除 '{item_name}'：获取到的Emby ID无效 ('{id_to_delete}')。跳过此项。")
+            continue
         
         if emby.delete_item(id_to_delete, processor.emby_url, processor.emby_api_key, processor.emby_user_id):
-            resubscribe_db.delete_resubscribe_cache_item(item_id)
+            # 删除成功后，使用内部ID从我们的索引中移除记录
+            resubscribe_db.delete_resubscribe_cache_item(internal_item_id)
             deleted_count += 1
         
         time.sleep(0.5)

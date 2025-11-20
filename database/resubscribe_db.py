@@ -237,6 +237,16 @@ def get_resubscribe_library_status(where_clause: str = "", params: tuple = ()) -
                 item_id_suffix = f"-S{season_num}" if item_type == 'Season' else ""
                 item_id = f"{tmdb_id}-{item_type}{item_id_suffix}"
 
+                final_emby_id = None
+                if item_type == 'Movie':
+                    # 电影的ID来自其文件资产记录
+                    final_emby_id = asset.get('emby_item_id')
+                elif item_type == 'Season' and meta:
+                    # 季的ID来自它自己的元数据记录
+                    season_emby_ids = meta.get('emby_item_ids_json', [])
+                    if season_emby_ids:
+                        final_emby_id = season_emby_ids[0]
+                
                 final_results.append({
                     "item_id": item_id,
                     "tmdb_id": tmdb_id,
@@ -256,7 +266,7 @@ def get_resubscribe_library_status(where_clause: str = "", params: tuple = ()) -
                     "audio_display": asset.get('audio_display', '无'),
                     "subtitle_display": asset.get('subtitle_display', '无'),
                     "filename": os.path.basename(asset.get('path', '')) if asset.get('path') else None,
-                    "emby_item_id": asset.get('emby_item_id'),
+                    "emby_item_id": final_emby_id,
                     "series_emby_id": series_emby_id
                 })
             
