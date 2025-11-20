@@ -33,23 +33,22 @@ logger = logging.getLogger(__name__)
 # 核心任务：刷新洗版状态
 # ======================================================================
 
-def task_update_resubscribe_cache(processor, force_full_update: bool = False):
+def task_update_resubscribe_cache(processor): # <--- 移除 force_full_update 参数
     """
-    【V4 - 数据库中心化重构版】
-    扫描指定的媒体库，完全依赖本地 media_metadata 缓存进行分析，实现极速扫描。
+    【V6 - 最终统一扫描版】
+    废除快速/深度模式，每次都执行全量、高效的数据库中心化扫描。
     """
-    scan_mode = "深度模式" if force_full_update else "快速模式"
-    task_name = f"刷新洗版状态 ({scan_mode})"
+    task_name = "刷新媒体洗版状态" # <--- 简化任务名
     logger.info(f"--- 开始执行 '{task_name}' 任务 ---")
     
     try:
+        # --- 步骤 1 & 2: 加载规则和Emby索引 (保持不变) ---
         task_manager.update_status_from_thread(0, "正在加载规则并确定扫描范围...")
         all_enabled_rules = [rule for rule in resubscribe_db.get_all_resubscribe_rules() if rule.get('enabled')]
         
-        # 1. 建立媒体库到规则的映射，用于后续分配
         library_to_rule_map = {}
         all_target_lib_ids = set()
-        for rule in reversed(all_enabled_rules): # 优先级高的规则会覆盖低的
+        for rule in reversed(all_enabled_rules):
             if target_libs := rule.get('target_library_ids'):
                 all_target_lib_ids.update(target_libs)
                 for lib_id in target_libs:
@@ -59,19 +58,15 @@ def task_update_resubscribe_cache(processor, force_full_update: bool = False):
             task_manager.update_status_from_thread(100, "任务跳过：没有规则指定任何媒体库")
             return
 
-        # 2. ★★★ 核心变更：不再获取Emby详情，而是进行轻量级索引 ★★★
         task_manager.update_status_from_thread(10, f"正在从 {len(all_target_lib_ids)} 个目标库中建立媒体索引...")
-        
-        # 这个API调用是必要的，因为它能告诉我们哪些媒体项（以及它们的emby_item_id）确实存在于目标库中
         emby_index = emby.get_all_library_versions(
             base_url=processor.emby_url, api_key=processor.emby_api_key, user_id=processor.emby_user_id,
             media_type_filter="Movie,Series,Episode", library_ids=list(all_target_lib_ids),
             fields="Id,Type,ProviderIds,SeriesId,ParentIndexNumber,IndexNumber,_SourceLibraryId,Name"
         ) or []
 
-        # 3. ★★★ 核心变更：从本地数据库批量获取所有需要的元数据 ★★★
-        tmdb_ids_in_scope = {item['ProviderIds'].get('Tmdb') for item in emby_index if item.get('ProviderIds', {}).get('Tmdb')}
-        
+        # --- 步骤 3: 加载数据库元数据 (保持不变) ---
+        tmdb_ids_in_scope = {str(item['ProviderIds']['Tmdb']) for item in emby_index if item.get('ProviderIds', {}).get('Tmdb')}
         if not tmdb_ids_in_scope:
             task_manager.update_status_from_thread(100, "任务完成：目标媒体库为空。")
             return
@@ -79,62 +74,39 @@ def task_update_resubscribe_cache(processor, force_full_update: bool = False):
         logger.info(f"  ➜ 正在从本地数据库批量获取 {len(tmdb_ids_in_scope)} 个媒体项的详细元数据...")
         metadata_map = media_db.get_media_details_by_tmdb_ids(list(tmdb_ids_in_scope))
         
-        series_tmdb_ids = {
-            meta['tmdb_id'] for meta in metadata_map.values() if meta.get('item_type') == 'Series'
-        }
+        series_tmdb_ids = {meta['tmdb_id'] for meta in metadata_map.values() if meta.get('item_type') == 'Series'}
         all_episodes_from_db = media_db.get_episodes_for_series(list(series_tmdb_ids))
         episodes_map = defaultdict(list)
         for ep in all_episodes_from_db:
             episodes_map[ep['parent_series_tmdb_id']].append(ep)
 
-        # 4. 增量/全量判断
-        items_to_process_index = []
-        if force_full_update:
-            logger.info("  ➜ [深度模式] 将对所有项目进行全面分析。")
-            resubscribe_db.clear_resubscribe_cache_except_ignored()
-            items_to_process_index = emby_index
-        else:
-            logger.info("  ➜ [快速模式] 将进行增量扫描...")
-            cached_items = resubscribe_db.get_all_resubscribe_cache()
+        # ★★★ 步骤 4: 清理Emby中已删除的旧索引 ★★★
+        logger.info("  ➜ 正在比对并清理陈旧的洗版索引...")
+        indexed_keys = resubscribe_db.get_all_resubscribe_index_keys()
+        
+        current_emby_keys = set()
+        for item in emby_index:
+            tmdb_id = item.get('ProviderIds', {}).get('Tmdb')
+            if not tmdb_id: continue
             
-            # item_id 在缓存中是 emby_item_id (电影) 或 series_id-S# (季)
-            # 我们需要构建当前 Emby 中所有有效项的 ID 集合
-            current_emby_item_ids = set()
-            for item in emby_index:
-                if item.get('Type') == 'Movie':
-                    current_emby_item_ids.add(item.get('Id'))
-                elif item.get('Type') == 'Episode' and item.get('SeriesId') and item.get('ParentIndexNumber') is not None:
-                    season_item_id = f"{item['SeriesId']}-S{item['ParentIndexNumber']}"
-                    current_emby_item_ids.add(season_item_id)
+            if item.get('Type') == 'Movie':
+                current_emby_keys.add(str(tmdb_id))
+            elif item.get('Type') == 'Episode' and item.get('ParentIndexNumber') is not None:
+                current_emby_keys.add(f"{tmdb_id}-S{item['ParentIndexNumber']}")
+        
+        deleted_keys = indexed_keys - current_emby_keys
+        if deleted_keys:
+            resubscribe_db.delete_resubscribe_index_by_keys(list(deleted_keys))
 
-            cached_ids = {item['item_id'] for item in cached_items}
-            deleted_ids = list(cached_ids - current_emby_item_ids)
-            if deleted_ids:
-                resubscribe_db.delete_resubscribe_cache_items_batch(deleted_ids)
-            
-            # 找出需要处理的新项目
-            new_item_ids = set()
-            for item in emby_index:
-                item_id = item.get('Id')
-                if item.get('Type') == 'Movie':
-                    if item_id not in cached_ids:
-                        new_item_ids.add(item_id)
-                elif item.get('Type') == 'Episode' and item.get('SeriesId') and item.get('ParentIndexNumber') is not None:
-                    season_item_id = f"{item['SeriesId']}-S{item['ParentIndexNumber']}"
-                    if season_item_id not in cached_ids:
-                        new_item_ids.add(item.get('SeriesId')) # 如果一季是新的，我们需要处理整个剧集
-            
-            if new_item_ids:
-                items_to_process_index = [item for item in emby_index if item.get('Id') in new_item_ids or item.get('SeriesId') in new_item_ids]
-
-        # 5. ★★★ 核心变更：在内存中进行极速处理 ★★★
+        # ★★★ 步骤 5: 全量处理所有项目 ★★★
+        items_to_process_index = emby_index
         total = len(items_to_process_index)
         if total == 0:
-            task_manager.update_status_from_thread(100, f"任务完成：({scan_mode}) 无需处理任何新项目。")
+            task_manager.update_status_from_thread(100, "任务完成：无需处理任何项目。")
             return
 
         logger.info(f"  ➜ 将对 {total} 个媒体索引项按规则检查洗版状态...")
-        cache_update_batch = []
+        index_update_batch = []
         processed_count = 0
         
         # +++ 添加一个计数器用于调试 +++
@@ -168,7 +140,7 @@ def task_update_resubscribe_cache(processor, force_full_update: bool = False):
             # +++ 添加详细的电影调试日志 +++
             movie_name_for_log = movie_index.get('Name', '未知电影')
             source_lib_id = movie_index.get('_SourceLibraryId')
-            tmdb_id = movie_index.get('ProviderIds', {}).get('Tmdb')
+            tmdb_id = str(movie_index.get('ProviderIds', {}).get('Tmdb'))
             
             rule = library_to_rule_map.get(source_lib_id)
             if not rule:
@@ -197,13 +169,13 @@ def task_update_resubscribe_cache(processor, force_full_update: bool = False):
             needs, reason = _item_needs_resubscribe(asset, rule, metadata)
             status = 'needed' if needs else 'ok'
             
-            cache_update_batch.append({
-                "item_id": movie_index.get('Id'), "emby_item_id": movie_index.get('Id'),
-                "item_name": movie_index.get('Name'), "tmdb_id": tmdb_id, "item_type": "Movie",
-                "status": status, "reason": reason, **analyze_media_asset(asset),
-                "matched_rule_id": rule.get('id'), "matched_rule_name": rule.get('name'),
-                "source_library_id": movie_index.get('_SourceLibraryId'),
-                "path": asset.get('path'), "filename": os.path.basename(asset.get('path', ''))
+            index_update_batch.append({
+                "tmdb_id": tmdb_id,
+                "item_type": "Movie",
+                "season_number": -1,
+                "status": status,
+                "reason": reason,
+                "matched_rule_id": rule.get('id')
             })
 
         # --- 处理剧集 ---
@@ -216,7 +188,7 @@ def task_update_resubscribe_cache(processor, force_full_update: bool = False):
             # +++ 添加详细的剧集调试日志 +++
             series_name_for_log = series_index.get('Name', '未知剧集')
             source_lib_id = series_index.get('_SourceLibraryId')
-            tmdb_id = series_index.get('ProviderIds', {}).get('Tmdb')
+            tmdb_id = str(series_index.get('ProviderIds', {}).get('Tmdb'))
 
             rule = library_to_rule_map.get(source_lib_id)
             if not rule:
@@ -260,18 +232,17 @@ def task_update_resubscribe_cache(processor, force_full_update: bool = False):
                 season_item_id = f"{series_id}-S{season_num}"
                 season_emby_id = next((item.get('Id') for item in emby_index if item.get('Type') == 'Season' and item.get('ParentId') == series_id and item.get('IndexNumber') == season_num), None)
 
-                cache_update_batch.append({
-                    "item_id": season_item_id, "emby_item_id": season_emby_id, "series_id": series_id,
-                    "season_number": season_num, "item_name": f"{series_index.get('Name')} - 第 {season_num} 季",
-                    "tmdb_id": tmdb_id, "item_type": "Season", "status": status, "reason": reason,
-                    **analyze_media_asset(asset),
-                    "matched_rule_id": rule.get('id'), "matched_rule_name": rule.get('name'),
-                    "source_library_id": series_index.get('_SourceLibraryId'),
-                    "path": asset.get('path'), "filename": os.path.basename(asset.get('path', ''))
+                index_update_batch.append({
+                    "tmdb_id": tmdb_id,
+                    "item_type": "Season",
+                    "season_number": season_num,
+                    "status": status,
+                    "reason": reason,
+                    "matched_rule_id": rule.get('id')
                 })
 
-        if cache_update_batch:
-            resubscribe_db.upsert_resubscribe_cache_batch(cache_update_batch)
+        if index_update_batch:
+            resubscribe_db.upsert_resubscribe_index_batch(index_update_batch)
 
         # +++ 添加最终的调试统计信息输出 +++
         if debug_skip_counter:
@@ -413,79 +384,81 @@ def _process_single_item_for_cache(processor, item_base_info: dict, library_to_r
 
 def _item_needs_resubscribe(asset_details: dict, rule: dict, media_metadata: Optional[dict]) -> tuple[bool, str]:
     """
-    【V4 - 数据库中心化重构版】
-    判断单个媒体资产是否需要洗版的核心逻辑，数据源为数据库缓存。
+    【V5 - 终极修正版】
+    完全依赖 asset_details 中预先分析好的数据进行判断，不再进行任何二次解析。
     """
     item_name = media_metadata.get('title', '未知项目')
-    logger.trace(f"  ➜ [洗版检查] 开始为《{item_name}》检查洗版需求...")
-    
-    # ★★★ 核心变更：从 asset_details 获取信息 ★★★
-    media_streams = asset_details.get('media_streams', [])
-    file_path = asset_details.get('path', '')
-    file_name_lower = os.path.basename(file_path).lower() if file_path else ""
-    video_stream = next((s for s in media_streams if s.get('Type') == 'Video'), None)
-
     reasons = []
 
-    # 1. 分辨率检查
+    # --- 1. 分辨率检查 (直接使用 resolution_display) ---
     try:
         if rule.get("resubscribe_resolution_enabled"):
-            if not video_stream:
-                reasons.append("无视频流信息")
-            else:
-                threshold_width = int(rule.get("resubscribe_resolution_threshold") or 1920)
-                required_tier, required_tier_name = _get_resolution_tier(threshold_width, 0)
-                current_width = int(video_stream.get('width') or 0)
-                current_height = int(video_stream.get('height') or 0)
-                current_tier, _ = _get_resolution_tier(current_width, current_height)
-                if current_tier < required_tier:
-                    reasons.append(f"分辨率 < {required_tier_name}")
-    except (ValueError, TypeError) as e:
-        logger.warning(f"  ➜ [分辨率检查] 处理时发生类型错误: {e}")
+            # 定义清晰度等级的顺序
+            RESOLUTION_ORDER = {
+                "2160p": 4,
+                "1080p": 3,
+                "720p": 2,
+                # 其他较低的分辨率都视为等级 1
+            }
+            
+            # 获取当前媒体的清晰度等级
+            current_res_str = asset_details.get('resolution_display', 'Unknown')
+            current_tier = RESOLUTION_ORDER.get(current_res_str, 1)
 
-    # 2. 质量检查
+            # 获取规则要求的清晰度等级
+            required_width = int(rule.get("resubscribe_resolution_threshold", 1920))
+            required_tier = 1
+            if required_width >= 3800: required_tier = 4
+            elif required_width >= 1900: required_tier = 3
+            elif required_width >= 1200: required_tier = 2
+
+            if current_tier < required_tier:
+                reasons.append("分辨率不达标")
+    except (ValueError, TypeError) as e:
+        logger.warning(f"  ➜ [分辨率检查] 处理时发生错误: {e}")
+
+    # --- 2. 质量检查 (直接使用 quality_display) ---
     try:
         if rule.get("resubscribe_quality_enabled"):
             required_list = rule.get("resubscribe_quality_include", [])
             if isinstance(required_list, list) and required_list:
                 required_list_lower = [str(q).lower() for q in required_list]
-                # ★★★ 核心变更：从 asset_details 获取信息 ★★★
                 current_quality = asset_details.get('quality_display', '').lower()
                 if not any(term in current_quality for term in required_list_lower):
                     reasons.append("质量不符")
     except Exception as e:
-        logger.warning(f"  ➜ [质量检查] 处理时发生未知错误: {e}")
+        logger.warning(f"  ➜ [质量检查] 处理时发生错误: {e}")
 
-    # 3. 特效检查
+    # --- 3. 特效检查 (直接使用 effect_display) ---
     try:
         if rule.get("resubscribe_effect_enabled"):
-            user_choices = rule.get("resubscribe_effect_include", [])
-            if isinstance(user_choices, list) and user_choices:
-                EFFECT_HIERARCHY = ["dovi_p8", "dovi_p7", "dovi_p5", "dovi_other", "hdr10+", "hdr", "sdr"]
-                OLD_EFFECT_MAP = {"杜比视界": "dovi_other", "HDR": "hdr"}
-                highest_req_priority = 999
-                for choice in user_choices:
-                    normalized_choice = OLD_EFFECT_MAP.get(choice, choice)
-                    try:
-                        priority = EFFECT_HIERARCHY.index(normalized_choice)
-                        if priority < highest_req_priority:
-                            highest_req_priority = priority
-                    except ValueError: continue
+            # 规则中存储的是 'dovi', 'hdr', 'hdr10+' 等
+            required_effects = set(rule.get("resubscribe_effect_include", []))
+            if required_effects:
+                # asset_details.effect_display 中是 ['Dolby Vision', 'HDR']
+                current_effects_raw = asset_details.get('effect_display', [])
                 
-                if highest_req_priority < 999:
-                    # ★★★ 核心变更：从 asset_details 获取信息 ★★★
-                    current_effect = asset_details.get('effect_display', [])
-                    current_best_effect = min(current_effect, key=lambda e: EFFECT_HIERARCHY.index(e) if e in EFFECT_HIERARCHY else 999) if current_effect else 'sdr'
-                    current_priority = EFFECT_HIERARCHY.index(current_best_effect)
-                    if current_priority > highest_req_priority:
-                        reasons.append("特效不符")
+                # 将 asset_details 中的显示名，标准化为与规则中一致的关键字
+                current_effects_normalized = set()
+                for effect in current_effects_raw:
+                    eff_lower = effect.lower()
+                    if 'dolby' in eff_lower or 'dovi' in eff_lower:
+                        current_effects_normalized.add('dovi')
+                    elif 'hdr10+' in eff_lower:
+                        current_effects_normalized.add('hdr10+')
+                    elif 'hdr' in eff_lower:
+                        current_effects_normalized.add('hdr')
+                
+                # 检查当前媒体的特效集合，是否与规则要求的特效集合有任何交集
+                # 如果没有任何交集，说明不满足规则
+                if not current_effects_normalized.intersection(required_effects):
+                    reasons.append("特效不符")
     except Exception as e:
-        logger.warning(f"  ➜ [特效检查] 处理时发生未知错误: {e}")
+        logger.warning(f"  ➜ [特效检查] 处理时发生错误: {e}")
 
-    # 4. 文件大小检查
+    # --- 4. 文件大小检查 (直接使用 size_bytes) ---
     try:
         if rule.get("resubscribe_filesize_enabled"):
-            # ★★★ 核心变更：从 asset_details 获取信息 ★★★
             file_size_bytes = asset_details.get('size_bytes')
             if file_size_bytes:
                 operator = rule.get("resubscribe_filesize_operator", 'lt')
@@ -504,40 +477,26 @@ def _item_needs_resubscribe(asset_details: dict, rule: dict, media_metadata: Opt
     except (ValueError, TypeError, IndexError) as e:
         logger.warning(f"  ➜ [文件大小检查] 处理时发生错误: {e}")
 
-    # 5. 音轨和字幕检查
-    def _is_exempted_from_chinese_check(media_streams: list, media_metadata: Optional[dict]) -> bool:
-        import re
-        CHINESE_SPEAKING_REGIONS = {'中国', '中国大陆', '香港', '中国香港', '台湾', '中国台湾', '新加坡'}
-        if media_metadata and media_metadata.get('countries_json'):
-            if not set(media_metadata['countries_json']).isdisjoint(CHINESE_SPEAKING_REGIONS): return True
-        if media_metadata and (original_title := media_metadata.get('original_title')):
-            if len(re.findall(r'[\u4e00-\u9fff]', original_title)) >= 2: return True
-        detected_audio_langs = _get_detected_languages_from_streams(media_streams, 'Audio')
-        if 'chi' in detected_audio_langs or 'yue' in detected_audio_langs: return True
-        detected_subtitle_langs = _get_detected_languages_from_streams(media_streams, 'Subtitle')
-        if 'chi' in detected_subtitle_langs or 'yue' in detected_subtitle_langs: return True
-        return False
-
-    is_exempted = _is_exempted_from_chinese_check(media_streams, media_metadata)
+    # --- 5. 音轨和字幕检查 (豁免逻辑) ---
+    is_exempted = _is_exempted_from_chinese_check(asset_details.get('media_streams', []), media_metadata)
     
+    # --- 6. 音轨检查 (直接使用 audio_languages_raw) ---
     try:
         if rule.get("resubscribe_audio_enabled") and not is_exempted:
             required_langs = set(rule.get("resubscribe_audio_missing_languages", []))
             if 'chi' in required_langs or 'yue' in required_langs:
-                detected_audio_langs = _get_detected_languages_from_streams(media_streams, 'Audio')
+                detected_audio_langs = set(asset_details.get('audio_languages_raw', []))
                 if 'chi' not in detected_audio_langs and 'yue' not in detected_audio_langs:
                     reasons.append("缺中文音轨")
     except Exception as e:
         logger.warning(f"  ➜ [音轨检查] 处理时发生未知错误: {e}")
 
+    # --- 7. 字幕检查 (直接使用 subtitle_languages_raw) ---
     try:
         if rule.get("resubscribe_subtitle_enabled") and not is_exempted:
             required_langs = set(rule.get("resubscribe_subtitle_missing_languages", []))
             if 'chi' in required_langs:
-                detected_subtitle_langs = _get_detected_languages_from_streams(media_streams, 'Subtitle')
-                if 'chi' not in detected_subtitle_langs and 'yue' not in detected_subtitle_langs:
-                    if any(s.get('IsExternal') for s in media_streams if s.get('Type') == 'Subtitle'):
-                        detected_subtitle_langs.add('chi')
+                detected_subtitle_langs = set(asset_details.get('subtitle_languages_raw', []))
                 if 'chi' not in detected_subtitle_langs and 'yue' not in detected_subtitle_langs:
                     reasons.append("缺中文字幕")
     except Exception as e:
@@ -550,6 +509,26 @@ def _item_needs_resubscribe(asset_details: dict, rule: dict, media_metadata: Opt
     else:
         logger.debug(f"  ➜ 《{item_name}》质量达标。")
         return False, ""
+
+def _is_exempted_from_chinese_check(media_streams: list, media_metadata: Optional[dict]) -> bool:
+    """
+    判断一个媒体是否应该免除中文音轨/字幕的检查（例如，本身就是国产影视剧）。
+    这个函数保持原样，因为它依赖的是媒体元数据，而不是文件技术细节。
+    """
+    import re
+    CHINESE_SPEAKING_REGIONS = {'中国', '中国大陆', '香港', '中国香港', '台湾', '中国台湾', '新加坡'}
+    if media_metadata and media_metadata.get('countries_json'):
+        if not set(media_metadata['countries_json']).isdisjoint(CHINESE_SPEAKING_REGIONS): return True
+    if media_metadata and (original_title := media_metadata.get('original_title')):
+        if len(re.findall(r'[\u4e00-\u9fff]', original_title)) >= 2: return True
+    
+    # 即使元数据不明确，也最后检查一下媒体流自身是否包含中文信息
+    detected_audio_langs = _get_detected_languages_from_streams(media_streams, 'Audio')
+    if 'chi' in detected_audio_langs or 'yue' in detected_audio_langs: return True
+    detected_subtitle_langs = _get_detected_languages_from_streams(media_streams, 'Subtitle')
+    if 'chi' in detected_subtitle_langs or 'yue' in detected_subtitle_langs: return True
+    
+    return False
 
 def _build_resubscribe_payload(item_details: dict, rule: Optional[dict]) -> Optional[dict]:
     """构建发送给 MoviePilot 的订阅 payload。"""

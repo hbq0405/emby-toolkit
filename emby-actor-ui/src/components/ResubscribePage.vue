@@ -107,7 +107,7 @@
               
               <div class="card-body-wrapper">
                 <div class="card-poster-container" @click.stop="handleCardClick($event, item, index)">
-                  <n-image lazy :src="getPosterUrl(item.item_id)" class="card-poster" object-fit="cover" />
+                  <n-image lazy :src="getPosterUrl(item)" class="card-poster" object-fit="cover" />
                 </div>
 
                 <div class="card-content-container">
@@ -131,7 +131,7 @@
                       <n-divider style="margin: 4px 0;" />
                       <n-text :depth="2" class="info-text">分辨率: {{ item.resolution_display }}</n-text>
                       <n-text :depth="2" class="info-text">质量: {{ item.quality_display }}</n-text>
-                      <n-text :depth="2" class="info-text">特效: {{ item.effect_display }}</n-text>
+                      <n-text :depth="2" class="info-text">特效: {{ Array.isArray(item.effect_display) ? item.effect_display.join(', ') : item.effect_display }}</n-text>
                       <n-tooltip><template #trigger><n-text :depth="2" class="info-text" :line-clamp="1">音轨: {{ item.audio_display }}</n-text></template>{{ item.audio_display }}</n-tooltip>
                       <n-tooltip><template #trigger><n-text :depth="2" class="info-text" :line-clamp="1">字幕: {{ item.subtitle_display }}</n-text></template>{{ item.subtitle_display }}</n-tooltip>
                     </n-space>
@@ -518,11 +518,14 @@ const triggerRefreshStatus = async () => {
 };
 const triggerResubscribeAll = async () => { try { await axios.post('/api/resubscribe/resubscribe_all'); message.success('一键洗版任务已提交，请稍后查看任务状态。'); } catch (err) { message.error(err.response?.data?.error || '提交一键洗版任务失败。'); }};
 const resubscribeItem = async (item) => { subscribing.value[item.item_id] = true; try { const response = await axios.post('/api/resubscribe/resubscribe_item', { item_id: item.item_id, item_name: item.item_name, tmdb_id: item.tmdb_id, item_type: item.item_type, }); message.success(response.data.message); const itemInList = allItems.value.find(i => i.item_id === item.item_id); if (itemInList) { itemInList.status = 'subscribed'; } } catch (err) { message.error(err.response?.data?.error || '洗版订阅失败。'); } finally { subscribing.value[item.item_id] = false; }};
-const getPosterUrl = (itemId) => {
-  // 如果 itemId 包含 '-', 比如 '12345-S1', 我们就只取 '-' 前面的部分作为剧集ID来获取海报
-  // 这样可以确保无论是电影还是剧集，都能正确获取到主海报
-  const seriesId = String(itemId).split('-')[0];
-  return `/image_proxy/Items/${seriesId}/Images/Primary?maxHeight=600&tag=1`;
+const getPosterUrl = (item) => {
+  // ★★★ 核心修复：使用 item.poster_path 拼接 TMDB 图片地址 ★★★
+  if (item.poster_path) {
+    // 您可以根据需要选择不同的图片尺寸，w500 是一个常用的尺寸
+    return `https://image.tmdb.org/t/p/w500${item.poster_path}`;
+  }
+  // 如果没有海报路径，可以返回一个占位图或者空字符串
+  return ''; 
 };
 const openInEmby = (itemId) => {
   const embyServerUrl = configModel.value?.emby_server_url;

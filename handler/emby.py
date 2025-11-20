@@ -484,6 +484,11 @@ def get_all_library_versions(
                 if not items_in_batch:
                     break
 
+                # ★★★ 核心修复：为每个项目注入来源库ID ★★★
+                for item in items_in_batch:
+                    item['_SourceLibraryId'] = lib_id
+                # ★★★ 修复结束 ★★★
+
                 all_items.extend(items_in_batch)
                 start_index += len(items_in_batch)
                 

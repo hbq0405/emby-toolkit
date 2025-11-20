@@ -70,7 +70,7 @@ def delete_rule(rule_id):
     """删除指定ID的洗版规则。"""
     try:
         logger.info(f"  ➜ 准备删除规则 {rule_id}，将首先清理其关联的缓存...")
-        resubscribe_db.delete_resubscribe_cache_by_rule_id(rule_id)
+        resubscribe_db.delete_resubscribe_index_by_rule_id(rule_id)
         success = resubscribe_db.delete_resubscribe_rule(rule_id)
         if success:
             return jsonify({"message": "洗版规则已成功删除！"})
@@ -104,7 +104,8 @@ def update_rules_order():
 def get_library_status():
     """获取海报墙数据。"""
     try:
-        items = resubscribe_db.get_all_resubscribe_cache()
+        # ★★★ 核心变更：调用新的、功能更强大的数据库函数 ★★★
+        items = resubscribe_db.get_resubscribe_library_status()
         return jsonify(items)
     except Exception as e:
         logger.error(f"API: 获取洗版状态缓存失败: {e}", exc_info=True)
@@ -117,7 +118,7 @@ def trigger_refresh_status():
     """触发缓存刷新任务。"""
     try:
         task_manager.submit_task(
-            tasks.task_update_resubscribe_cache,
+            tasks.task_update_resubscribe_cache, 
             task_name="刷新媒体洗版状态",
             processor_type='media'
         )

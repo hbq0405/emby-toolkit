@@ -218,7 +218,7 @@ def task_populate_metadata_cache(processor, batch_size: int = 50, force_full_upd
 
         emby_items_index = emby.get_all_library_versions(
             base_url=processor.emby_url, api_key=processor.emby_api_key, user_id=processor.emby_user_id,
-            media_type_filter="Movie,Series,Episode",
+            media_type_filter="Movie,Series,Season,Episode",
             library_ids=libs_to_process_ids,
             fields="ProviderIds,Type,DateCreated,Name,OriginalTitle,PremiereDate,CommunityRating,Genres,Studios,Tags,DateModified,OfficialRating,ProductionYear,Path,PrimaryImageAspectRatio,Overview,MediaStreams,Container,Size,SeriesId,ParentIndexNumber,IndexNumber"
         ) or []
@@ -375,10 +375,26 @@ def task_populate_metadata_cache(processor, batch_size: int = 50, force_full_upd
                     tmdb_series_details = tmdb_details_map.get(series_tmdb_id)
                     tmdb_children_map = {}
                     if tmdb_series_details and 'seasons' in tmdb_series_details:
-                        # ... (构建 tmdb_children_map ) ...
-                        for season_info in tmdb_series_details['seasons']:
+                        for season_info in tmdb_series_details.get('seasons', []):
                             s_num_map = season_info.get('season_number')
                             if s_num_map is None: continue
+                            
+                            # 为“季”构建数据库记录
+                            season_record = {
+                                "tmdb_id": f"{series_tmdb_id}-S{s_num_map}", # 使用复合键作为唯一标识
+                                "item_type": "Season",
+                                "parent_series_tmdb_id": series_tmdb_id,
+                                "season_number": s_num_map,
+                                "title": season_info.get('name'),
+                                "overview": season_info.get('overview'),
+                                "release_date": season_info.get('air_date'),
+                                "poster_path": season_info.get('poster_path'), # <-- 关键字段！
+                                "in_library": True,
+                                "ignore_reason": None
+                            }
+                            metadata_batch.append(season_record)
+                            
+                            # 继续构建用于分集查找的映射 (原有逻辑)
                             tmdb_children_map[f"S{s_num_map}"] = season_info
                             tmdb_season_details = tmdb.get_tv_season_details(series_tmdb_id, s_num_map, processor.tmdb_api_key)
                             if tmdb_season_details and 'episodes' in tmdb_season_details:
@@ -386,6 +402,14 @@ def task_populate_metadata_cache(processor, batch_size: int = 50, force_full_upd
                                     e_num_map = episode_info.get('episode_number')
                                     if e_num_map is None: continue
                                     tmdb_children_map[f"S{s_num_map}E{e_num_map}"] = episode_info
+                    
+                    if not all_episode_versions: continue
+
+                    episodes_grouped_by_number = defaultdict(list)
+                    for ep_version in all_episode_versions:
+                        s_num, e_num = ep_version.get("ParentIndexNumber"), ep_version.get("IndexNumber")
+                        if s_num is not None and e_num is not None:
+                            episodes_grouped_by_number[(s_num, e_num)].append(ep_version)
 
                     for (s_num, e_num), versions_of_episode in episodes_grouped_by_number.items():
                         representative_episode = versions_of_episode[0]

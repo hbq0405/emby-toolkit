@@ -329,32 +329,24 @@ def init_db():
                     )
                 """)
 
-                logger.trace("  ➜ 正在创建 'resubscribe_cache' 表...")
+                logger.trace("  ➜ 正在创建 'resubscribe_index' 表...")
                 cursor.execute("""
-                    CREATE TABLE IF NOT EXISTS resubscribe_cache (
-                        item_id TEXT PRIMARY KEY,
-                        emby_item_id TEXT,
-                        series_id TEXT,  
-                        season_number INTEGER,
-                        item_name TEXT,
-                        tmdb_id TEXT,
-                        item_type TEXT,
-                        status TEXT DEFAULT 'unknown', -- 新增状态字段: 'ok', 'needed', 'subscribed'
+                    CREATE TABLE IF NOT EXISTS resubscribe_index (
+                        tmdb_id TEXT NOT NULL,
+                        item_type TEXT NOT NULL,
+                        -- ★★★ 核心修复：为 season_number 提供一个默认值，以满足主键的 NOT NULL 约束 ★★★
+                        season_number INTEGER NOT NULL DEFAULT -1, -- 对于电影，我们将使用-1作为占位符
+
+                        status TEXT NOT NULL,
                         reason TEXT,
-                        resolution_display TEXT,
-                        quality_display TEXT,
-                        effect_display TEXT,
-                        audio_display TEXT,
-                        subtitle_display TEXT,
-                        audio_languages_raw JSONB,
-                        subtitle_languages_raw JSONB,
-                        last_checked_at TIMESTAMP WITH TIME ZONE,
-                        source_library_id TEXT,
-                        path TEXT,
-                        filename TEXT
+                        matched_rule_id INTEGER,
+                        last_checked_at TIMESTAMP WITH TIME ZONE DEFAULT NOW(),
+
+                        -- 主键保持不变，但现在 season_number 有了默认值，不会再插入 NULL
+                        PRIMARY KEY (tmdb_id, item_type, season_number)
                     )
                 """)
-                cursor.execute("CREATE INDEX IF NOT EXISTS idx_resubscribe_cache_status ON resubscribe_cache (status);")
+                cursor.execute("CREATE INDEX IF NOT EXISTS idx_resubscribe_index_status ON resubscribe_index (status);")
 
                 logger.trace("  ➜ 正在创建 'cleanup_index' 表 ...")
                 cursor.execute("""
@@ -636,7 +628,8 @@ def init_db():
                         'watchlist',
                         'tracked_actor_media',
                         'subscription_requests',
-                        'media_cleanup_tasks'
+                        'media_cleanup_tasks',
+                        'resubscribe_cache'
                     ]
                     for table in deprecated_tables:
                         logger.trace(f"    ➜ [数据库清理] 正在尝试移除废弃的表: '{table}'...")

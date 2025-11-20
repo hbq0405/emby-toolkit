@@ -3,7 +3,7 @@ import psycopg2
 from psycopg2.extras import Json, execute_values
 import logging
 import json
-from typing import List, Dict, Any, Optional
+from typing import List, Dict, Any, Optional, Tuple
 from datetime import datetime, timezone
 
 from .connection import get_db_connection
@@ -119,248 +119,239 @@ def update_resubscribe_rules_order(ordered_ids: List[int]) -> bool:
         logger.error(f"  ➜ 批量更新洗版规则顺序时失败: {e}", exc_info=True)
         raise
 
-# --- 缓存管理 (Cache Management) ---
-def get_all_resubscribe_cache() -> List[Dict[str, Any]]:
-    
-    try:
-        with get_db_connection() as conn:
-            cursor = conn.cursor()
-            cursor.execute("SELECT * FROM resubscribe_cache ORDER BY item_name")
-            return [dict(row) for row in cursor.fetchall()]
-    except Exception as e:
-        logger.error(f"  ➜ 获取洗版缓存失败: {e}", exc_info=True)
-        return []
-
-def upsert_resubscribe_cache_batch(items_data: List[Dict[str, Any]]):
-    """
-    【V3 - 剧集分季修复版】
-    批量插入或更新洗版缓存表。
-    - 核心修复：确保 SQL 语句和数据准备过程都包含了 series_id 和 season_number 字段。
-    - 使用更现代的 execute_batch 方法以提高兼容性。
-    """
+def upsert_resubscribe_index_batch(items_data: List[Dict[str, Any]]):
+    """批量插入或更新洗版索引表。"""
     if not items_data:
         return
 
-    # ★★★ 1. 更新 SQL 语句以包含新字段 ★★★
     sql = """
-        INSERT INTO resubscribe_cache (
-            item_id, emby_item_id, item_name, tmdb_id, item_type, status, reason,
-            resolution_display, quality_display, effect_display, audio_display, subtitle_display,
-            audio_languages_raw, subtitle_languages_raw, last_checked_at,
-            matched_rule_id, matched_rule_name, source_library_id, path, filename,
-            series_id, season_number
+        INSERT INTO resubscribe_index (
+            tmdb_id, item_type, season_number, status, reason, matched_rule_id, last_checked_at
         )
         VALUES (
-            %(item_id)s, %(emby_item_id)s, %(item_name)s, %(tmdb_id)s, %(item_type)s, %(status)s, %(reason)s,
-            %(resolution_display)s, %(quality_display)s, %(effect_display)s, %(audio_display)s, %(subtitle_display)s,
-            %(audio_languages_raw)s, %(subtitle_languages_raw)s, NOW(),
-            %(matched_rule_id)s, %(matched_rule_name)s, %(source_library_id)s, %(path)s, %(filename)s,
-            %(series_id)s, %(season_number)s
+            %(tmdb_id)s, %(item_type)s, %(season_number)s, %(status)s, %(reason)s, %(matched_rule_id)s, NOW()
         )
-        ON CONFLICT (item_id) DO UPDATE SET
-            emby_item_id = EXCLUDED.emby_item_id,
-            item_name = EXCLUDED.item_name,
-            tmdb_id = EXCLUDED.tmdb_id,
-            item_type = EXCLUDED.item_type,
+        ON CONFLICT (tmdb_id, item_type, season_number) DO UPDATE SET
             status = EXCLUDED.status,
             reason = EXCLUDED.reason,
-            resolution_display = EXCLUDED.resolution_display,
-            quality_display = EXCLUDED.quality_display,
-            effect_display = EXCLUDED.effect_display,
-            audio_display = EXCLUDED.audio_display,
-            subtitle_display = EXCLUDED.subtitle_display,
-            audio_languages_raw = EXCLUDED.audio_languages_raw,
-            subtitle_languages_raw = EXCLUDED.subtitle_languages_raw,
-            last_checked_at = NOW(),
             matched_rule_id = EXCLUDED.matched_rule_id,
-            matched_rule_name = EXCLUDED.matched_rule_name,
-            source_library_id = EXCLUDED.source_library_id,
-            path = EXCLUDED.path,
-            filename = EXCLUDED.filename,
-            series_id = EXCLUDED.series_id,          -- 新增字段
-            season_number = EXCLUDED.season_number;   -- 新增字段
+            last_checked_at = NOW();
     """
     
-    # ★★★ 2. 准备数据，确保每个字典都包含所有键，即使是 None ★★★
-    # 这是为了让 execute_batch 能够正常工作
-    prepared_items = []
-    for item in items_data:
-        # 确保所有可能的键都存在，为缺失的键提供默认值 None
-        full_item = {
-            'item_id': item.get('item_id'),
-            'emby_item_id': item.get('emby_item_id'),
-            'item_name': item.get('item_name'),
-            'tmdb_id': item.get('tmdb_id'),
-            'item_type': item.get('item_type'),
-            'status': item.get('status'),
-            'reason': item.get('reason'),
-            'resolution_display': item.get('resolution_display'),
-            'quality_display': item.get('quality_display'),
-            'effect_display': item.get('effect_display'),
-            'audio_display': item.get('audio_display'),
-            'subtitle_display': item.get('subtitle_display'),
-            'audio_languages_raw': Json(item.get('audio_languages_raw')),
-            'subtitle_languages_raw': Json(item.get('subtitle_languages_raw')),
-            'matched_rule_id': item.get('matched_rule_id'),
-            'matched_rule_name': item.get('matched_rule_name'),
-            'source_library_id': item.get('source_library_id'),
-            'path': item.get('path'),
-            'filename': item.get('filename'),
-            'series_id': item.get('series_id'), 
-            'season_number': item.get('season_number') 
-        }
-        prepared_items.append(full_item)
-
     try:
         with get_db_connection() as conn:
             with conn.cursor() as cursor:
-                # ★★★ 3. 使用更现代、更推荐的 execute_batch 方法 ★★★
                 from psycopg2.extras import execute_batch
-                execute_batch(cursor, sql, prepared_items, page_size=500)
+                execute_batch(cursor, sql, items_data, page_size=500)
             conn.commit()
-        logger.info(f"成功向 resubscribe_cache 表中写入/更新了 {len(items_data)} 条记录。")
+        logger.info(f"成功向 resubscribe_index 表中写入/更新了 {len(items_data)} 条记录。")
     except Exception as e:
-        logger.error(f"  ➜ 批量更新洗版缓存失败: {e}", exc_info=True)
+        logger.error(f"  ➜ 批量更新洗版索引失败: {e}", exc_info=True)
         raise
 
-def update_resubscribe_item_status(item_id: str, new_status: str) -> bool:
-    
-    try:
-        with get_db_connection() as conn:
-            cursor = conn.cursor()
-            cursor.execute(
-                "UPDATE resubscribe_cache SET status = %s WHERE item_id = %s",
-                (new_status, item_id)
-            )
-            conn.commit()
-            return cursor.rowcount > 0
-    except Exception as e:
-        logger.error(f"  ➜ 更新洗版缓存状态失败 for item {item_id}: {e}", exc_info=True)
-        return False
+# ★★★ 为前端获取完整海报墙数据的函数 ★★★
+def get_resubscribe_library_status() -> List[Dict[str, Any]]:
+    """
+    【V8 - 智能海报回退最终版】
+    - 为季优先获取自己的海报，如果不存在，则回退到父剧集的海报。
+    """
+    sql = """
+    SELECT
+        idx.tmdb_id,
+        idx.item_type,
+        idx.season_number,
+        idx.status,
+        idx.reason,
+        idx.matched_rule_id,
+        
+        CASE
+            WHEN idx.item_type = 'Season' THEN series_meta.title || ' - 第 ' || idx.season_number || ' 季'
+            ELSE movie_meta.title
+        END AS item_name,
+        
+        -- ★★★ 核心修复 1/2: 实现智能海报回退逻辑 ★★★
+        CASE
+            WHEN idx.item_type = 'Season' THEN COALESCE(season_meta.poster_path, series_meta.poster_path)
+            ELSE movie_meta.poster_path
+        END AS poster_path,
+        
+        COALESCE(movie_meta.asset_details_json, episode_meta.asset_details_json) -> 0 AS asset_details
 
-def delete_resubscribe_cache_by_rule_id(rule_id: int) -> int:
+    FROM resubscribe_index AS idx
     
+    -- 用于获取电影信息
+    LEFT JOIN media_metadata AS movie_meta 
+        ON idx.tmdb_id = movie_meta.tmdb_id AND idx.item_type = 'Movie' AND movie_meta.item_type = 'Movie'
+        
+    -- 用于获取剧集信息 (剧集名和备用海报)
+    LEFT JOIN media_metadata AS series_meta
+        ON idx.tmdb_id = series_meta.tmdb_id AND idx.item_type = 'Season' AND series_meta.item_type = 'Series'
+
+    -- ★★★ 新增JOIN: 专门用于获取“季”本身的信息 (首选海报) ★★★
+    LEFT JOIN media_metadata AS season_meta
+        ON idx.tmdb_id = season_meta.parent_series_tmdb_id
+        AND idx.season_number = season_meta.season_number
+        AND idx.item_type = 'Season'
+        AND season_meta.item_type = 'Season'
+
+    -- 用于获取季的代表性资产信息
+    LEFT JOIN LATERAL (
+        SELECT asset_details_json
+        FROM media_metadata
+        WHERE parent_series_tmdb_id = idx.tmdb_id
+          AND season_number = idx.season_number
+          AND item_type = 'Episode'
+        ORDER BY episode_number ASC
+        LIMIT 1
+    ) AS episode_meta ON idx.item_type = 'Season'
+    
+    ORDER BY item_name;
+    """
+    
+    results = []
     try:
         with get_db_connection() as conn:
             cursor = conn.cursor()
-            cursor.execute("DELETE FROM resubscribe_cache WHERE matched_rule_id = %s", (rule_id,))
+            cursor.execute(sql)
+            rows = cursor.fetchall()
+            
+            for row in rows:
+                row_dict = dict(row)
+                asset = row_dict.pop('asset_details') or {}
+                
+                final_item = {
+                    "item_id": f"{row_dict['tmdb_id']}-{row_dict['item_type']}-{row_dict['season_number'] if row_dict['season_number'] != -1 else ''}".rstrip('-'),
+                    "tmdb_id": row_dict['tmdb_id'],
+                    "item_type": row_dict['item_type'],
+                    "season_number": row_dict['season_number'] if row_dict['season_number'] != -1 else None,
+                    "status": row_dict['status'],
+                    "reason": row_dict['reason'],
+                    "matched_rule_id": row_dict['matched_rule_id'],
+                    "item_name": row_dict['item_name'],
+                    
+                    # ★★★ 核心修复 2/2: poster_path 现在是智能选择的结果 ★★★
+                    "poster_path": row_dict['poster_path'],
+                    
+                    "resolution_display": asset.get('resolution_display', 'Unknown'),
+                    "quality_display": asset.get('quality_display', 'Unknown'),
+                    "effect_display": asset.get('effect_display', ['SDR']),
+                    "audio_display": asset.get('audio_display', '无'),
+                    "subtitle_display": asset.get('subtitle_display', '无'),
+                }
+                results.append(final_item)
+        return results
+    except Exception as e:
+        logger.error(f"  ➜ 获取洗版海报墙状态失败: {e}", exc_info=True)
+        return []
+    
+def delete_resubscribe_index_by_rule_id(rule_id: int) -> int:
+    """【新】删除规则时，联动删除其关联的洗版索引。"""
+    try:
+        with get_db_connection() as conn:
+            cursor = conn.cursor()
+            cursor.execute("DELETE FROM resubscribe_index WHERE matched_rule_id = %s", (rule_id,))
             deleted_count = cursor.rowcount
             conn.commit()
-            logger.info(f"  ➜ 联动删除了 {deleted_count} 条与规则ID {rule_id} 关联的洗版缓存。")
+            logger.info(f"  ➜ 联动删除了 {deleted_count} 条与规则ID {rule_id} 关联的洗版索引。")
             return deleted_count
     except Exception as e:
-        logger.error(f"  ➜ 根据规则ID {rule_id} 删除洗版缓存时失败: {e}", exc_info=True)
+        logger.error(f"  ➜ 根据规则ID {rule_id} 删除洗版索引时失败: {e}", exc_info=True)
         raise
 
-def delete_resubscribe_cache_for_unwatched_libraries(watched_library_ids: List[str]) -> int:
-    
-    if not watched_library_ids:
-        sql = "DELETE FROM resubscribe_cache"
-        params = []
-    else:
-        sql = "DELETE FROM resubscribe_cache WHERE source_library_id IS NOT NULL AND source_library_id NOT IN %s"
-        params = [tuple(watched_library_ids)]
-    
-    try:
-        with get_db_connection() as conn:
-            cursor = conn.cursor()
-            cursor.execute(sql, params)
-            deleted_count = cursor.rowcount
-            conn.commit()
-            if deleted_count > 0:
-                logger.info(f"  ➜ 成功删除了 {deleted_count} 条来自无效媒体库的陈旧洗版缓存。")
-            return deleted_count
-    except Exception as e:
-        logger.error(f"  ➜ 清理无效洗版缓存时失败: {e}", exc_info=True)
-        raise
-
-def get_resubscribe_cache_item(item_id: str) -> Optional[Dict[str, Any]]:
-    
-    try:
-        with get_db_connection() as conn:
-            cursor = conn.cursor()
-            cursor.execute("SELECT * FROM resubscribe_cache WHERE item_id = %s", (item_id,))
-            row = cursor.fetchone()
-            return dict(row) if row else None
-    except Exception as e:
-        logger.error(f"  ➜ 获取单个洗版缓存项 {item_id} 失败: {e}", exc_info=True)
-        return None
-
-def get_resubscribe_rule_by_id(rule_id: int) -> Optional[Dict[str, Any]]:
-    
-    try:
-        with get_db_connection() as conn:
-            cursor = conn.cursor()
-            cursor.execute("SELECT * FROM resubscribe_rules WHERE id = %s", (rule_id,))
-            row = cursor.fetchone()
-            return dict(row) if row else None
-    except Exception as e:
-        logger.error(f"  ➜ 获取单个洗版规则 {rule_id} 失败: {e}", exc_info=True)
-        return None
-    
-def delete_resubscribe_cache_item(item_id: str) -> bool:
-    
-    try:
-        with get_db_connection() as conn:
-            cursor = conn.cursor()
-            cursor.execute("DELETE FROM resubscribe_cache WHERE item_id = %s", (item_id,))
-            conn.commit()
-            return cursor.rowcount > 0
-    except Exception as e:
-        logger.error(f"  ➜ 删除单条洗版缓存项 {item_id} 失败: {e}", exc_info=True)
-        return False
-    
-def batch_update_resubscribe_cache_status(item_ids: List[str], new_status: str) -> int:
-    
-    if not item_ids or not new_status:
+def batch_update_resubscribe_index_status(item_keys: List[Tuple[str, str, Optional[int]]], new_status: str) -> int:
+    """【新】根据复合主键列表，批量更新索引状态。"""
+    if not item_keys or not new_status:
         return 0
     try:
         with get_db_connection() as conn:
             cursor = conn.cursor()
-            sql = "UPDATE resubscribe_cache SET status = %s WHERE item_id = ANY(%s)"
-            cursor.execute(sql, (new_status, item_ids))
+            # 使用 VALUES 子句和 JOIN 来进行高效的批量更新
+            sql = """
+                UPDATE resubscribe_index AS t
+                SET status = %s
+                FROM (VALUES %s) AS v(tmdb_id, item_type, season_number)
+                WHERE t.tmdb_id = v.tmdb_id 
+                  AND t.item_type = v.item_type
+                  AND (t.season_number = v.season_number OR (t.season_number IS NULL AND v.season_number IS NULL));
+            """
+            from psycopg2.extras import execute_values
+            execute_values(cursor, sql, item_keys, template=None, page_size=500)
             updated_count = cursor.rowcount
             conn.commit()
-            logger.info(f"  ➜ 成功将 {updated_count} 个洗版缓存项的状态批量更新为 '{new_status}'。")
+            logger.info(f"  ➜ 成功将 {updated_count} 个洗版索引项的状态批量更新为 '{new_status}'。")
             return updated_count
     except Exception as e:
-        logger.error(f"  ➜ 批量更新洗版缓存状态时失败: {e}", exc_info=True)
+        logger.error(f"  ➜ 批量更新洗版索引状态时失败: {e}", exc_info=True)
         return 0
     
-def delete_resubscribe_cache_items_batch(item_ids: List[str]) -> int:
-    """ 根据 Item ID 列表批量删除缓存记录 """
-    if not item_ids:
-        return 0
+def get_all_resubscribe_index_keys() -> set:
+    """【新】高效获取所有已索引项目的唯一键集合，用于清理比对。"""
+    sql = "SELECT tmdb_id, item_type, season_number FROM resubscribe_index;"
+    keys = set()
     try:
         with get_db_connection() as conn:
             cursor = conn.cursor()
-            # 使用 ANY(%s) 语法高效处理列表
-            sql = "DELETE FROM resubscribe_cache WHERE item_id = ANY(%s)"
-            cursor.execute(sql, (item_ids,))
-            deleted_count = cursor.rowcount
-            conn.commit()
-            if deleted_count > 0:
-                logger.info(f"  ➜ [快速扫描清理] 成功批量删除了 {deleted_count} 条陈旧的洗版缓存。")
-            return deleted_count
+            cursor.execute(sql)
+            for row in cursor.fetchall():
+                if row['item_type'] == 'Movie':
+                    keys.add(row['tmdb_id'])
+                elif row['item_type'] == 'Season':
+                    keys.add(f"{row['tmdb_id']}-S{row['season_number']}")
+        return keys
     except Exception as e:
-        logger.error(f"  ➜ 批量删除洗版缓存时失败: {e}", exc_info=True)
+        logger.error(f"  ➜ 获取所有洗版索引键时失败: {e}", exc_info=True)
+        return set()
+
+def delete_resubscribe_index_by_keys(keys: List[str]) -> int:
+    """【新】根据统一格式的键列表，批量删除索引记录。"""
+    if not keys:
         return 0
     
-def clear_resubscribe_cache_except_ignored() -> int:
+    # 将 'tmdb_id-S_num' 格式的键解析回 (tmdb_id, item_type, season_number) 的元组
+    records_to_delete = []
+    for key in keys:
+        if '-S' in key:
+            parts = key.split('-S')
+            if len(parts) == 2:
+                records_to_delete.append((parts[0], 'Season', int(parts[1])))
+        else:
+            records_to_delete.append((key, 'Movie', None))
+
+    deleted_count = 0
+    try:
+        with get_db_connection() as conn:
+            with conn.cursor() as cursor:
+                # 使用 DELETE ... WHERE (cols) IN ... 语法进行高效批量删除
+                sql = "DELETE FROM resubscribe_index WHERE (tmdb_id, item_type, season_number) IN %s"
+                from psycopg2.extras import execute_values
+                # execute_values 会自动处理 NULL 的情况
+                deleted_count = execute_values(cursor, sql, records_to_delete, page_size=500)
+        if deleted_count > 0:
+            logger.info(f"  ➜ 成功清理了 {deleted_count} 条陈旧的洗版索引。")
+        return deleted_count
+    except Exception as e:
+        logger.error(f"  ➜ 批量删除洗版索引时失败: {e}", exc_info=True)
+        return 0
+    
+def delete_resubscribe_index_by_rule_id(rule_id: int) -> int:
     """
-    【深度扫描专用】清空洗版缓存表中所有不是 'ignored' 状态的记录。
+    【新】当删除一个规则时，联动删除 resubscribe_index 表中所有与之关联的索引记录。
     返回被删除的记录数。
     """
+    if not rule_id:
+        return 0
+    
     try:
         with get_db_connection() as conn:
-            cursor = conn.cursor()
-            sql = "DELETE FROM resubscribe_cache WHERE status != 'ignored'"
-            cursor.execute(sql)
-            deleted_count = cursor.rowcount
-            conn.commit()
-            if deleted_count > 0:
-                logger.info(f"  ➜ [深度扫描] 成功清空了 {deleted_count} 条非忽略状态的旧缓存。")
-            return deleted_count
+            with conn.cursor() as cursor:
+                sql = "DELETE FROM resubscribe_index WHERE matched_rule_id = %s"
+                cursor.execute(sql, (rule_id,))
+                deleted_count = cursor.rowcount
+                conn.commit()
+                if deleted_count > 0:
+                    logger.info(f"  ➜ 联动删除了 {deleted_count} 条与规则ID {rule_id} 关联的洗版索引。")
+                return deleted_count
     except Exception as e:
-        logger.error(f"  ➜ [深度扫描] 清空洗版缓存时失败: {e}", exc_info=True)
-        return 0
+        logger.error(f"  ➜ 根据规则ID {rule_id} 删除洗版索引时失败: {e}", exc_info=True)
+        # 发生错误时抛出异常，让上层调用者知道操作失败
+        raise
