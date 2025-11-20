@@ -137,6 +137,9 @@ def task_update_resubscribe_cache(processor, force_full_update: bool = False):
         cache_update_batch = []
         processed_count = 0
         
+        # +++ 添加一个计数器用于调试 +++
+        debug_skip_counter = defaultdict(int)
+
         # 将索引项按电影和剧集分组
         movies_to_process = [item for item in items_to_process_index if item.get('Type') == 'Movie']
         series_episodes_map = defaultdict(list)
@@ -161,6 +164,26 @@ def task_update_resubscribe_cache(processor, force_full_update: bool = False):
             processed_count += 1
             progress = int(20 + (processed_count / total) * 80)
             task_manager.update_status_from_thread(progress, f"({processed_count}/{total}) 正在分析: {movie_index.get('Name')}")
+
+            # +++ 添加详细的电影调试日志 +++
+            movie_name_for_log = movie_index.get('Name', '未知电影')
+            source_lib_id = movie_index.get('_SourceLibraryId')
+            tmdb_id = movie_index.get('ProviderIds', {}).get('Tmdb')
+            
+            rule = library_to_rule_map.get(source_lib_id)
+            if not rule:
+                debug_skip_counter['movie_no_rule'] += 1
+                continue
+
+            metadata = metadata_map.get(tmdb_id)
+            if not metadata:
+                debug_skip_counter['movie_no_metadata'] += 1
+                continue
+                
+            if not metadata.get('asset_details_json'):
+                debug_skip_counter['movie_no_asset_details'] += 1
+                continue
+            # +++ 调试日志结束 +++
 
             tmdb_id = movie_index.get('ProviderIds', {}).get('Tmdb')
             metadata = metadata_map.get(tmdb_id)
@@ -189,6 +212,27 @@ def task_update_resubscribe_cache(processor, force_full_update: bool = False):
             processed_count += 1
             progress = int(20 + (processed_count / total) * 80)
             task_manager.update_status_from_thread(progress, f"({processed_count}/{total}) 正在分析: {series_index.get('Name')}")
+
+            # +++ 添加详细的剧集调试日志 +++
+            series_name_for_log = series_index.get('Name', '未知剧集')
+            source_lib_id = series_index.get('_SourceLibraryId')
+            tmdb_id = series_index.get('ProviderIds', {}).get('Tmdb')
+
+            rule = library_to_rule_map.get(source_lib_id)
+            if not rule:
+                debug_skip_counter['series_no_rule'] += 1
+                continue
+
+            series_metadata = metadata_map.get(tmdb_id)
+            if not series_metadata:
+                debug_skip_counter['series_no_metadata'] += 1
+                continue
+
+            episodes_for_series = episodes_map.get(tmdb_id)
+            if not episodes_for_series:
+                debug_skip_counter['series_no_episodes_in_map'] += 1
+                continue
+            # +++ 调试日志结束 +++
 
             tmdb_id = series_index.get('ProviderIds', {}).get('Tmdb')
             series_metadata = metadata_map.get(tmdb_id)
@@ -228,6 +272,14 @@ def task_update_resubscribe_cache(processor, force_full_update: bool = False):
 
         if cache_update_batch:
             resubscribe_db.upsert_resubscribe_cache_batch(cache_update_batch)
+
+        # +++ 添加最终的调试统计信息输出 +++
+        if debug_skip_counter:
+            logger.warning("--- 洗版扫描跳过项统计 ---")
+            for reason, count in debug_skip_counter.items():
+                logger.warning(f"  ➜ 原因: '{reason}', 跳过数量: {count}")
+        logger.warning("--------------------------")
+        # +++ 调试统计结束 +++
             
         final_message = "媒体洗版状态刷新完成！"
         if processor.is_stop_requested(): final_message = "任务已中止。"
