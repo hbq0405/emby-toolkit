@@ -443,31 +443,45 @@ def get_emby_libraries(emby_server_url, emby_api_key, user_id):
 def get_all_library_versions(
     base_url: str,
     api_key: str,
-    user_id: str, # 参数保留，但内部不再使用
+    user_id: str,
     library_ids: List[str],
     media_type_filter: str,
-    fields: str
+    fields: str,
+    # ★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★
+    # ★★★ 新增功能 1/3: 增加一个可选的回调函数参数 ★★★
+    # ★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★
+    update_status_callback: Optional[Callable[[int, str], None]] = None
 ) -> List[Dict[str, Any]]:
     """
-    【最终修正版 V2】
-    彻底修正：移除 UserId 参数，以获取服务器级的、未经聚合的原始媒体项列表。
-    这才是解决多版本问题的根本方法。
+    - 获取服务器级的、未经聚合的原始媒体项列表。
     """
     all_items = []
     session = requests.Session()
     api_timeout = config_manager.APP_CONFIG.get(constants.CONFIG_OPTION_EMBY_API_TIMEOUT, 60)
     
-    logger.info(f"  ➜ [系统级原始视图模式] 开始从 {len(library_ids)} 个媒体库中获取所有独立文件版本...")
+    total_libraries = len(library_ids)
+    processed_libraries = 0
+    
+    log_message = f"  ➜ 开始从 {total_libraries} 个媒体库中获取所有媒体项..."
+    logger.info(log_message)
+    if update_status_callback:
+        # 初始状态
+        update_status_callback(1, "正在连接 Emby 并准备获取媒体库索引...")
 
     for lib_id in library_ids:
         start_index = 0
-        limit = 500
+        limit = 500 # 每次请求500个项目
+        
+        processed_libraries += 1
+        if update_status_callback:
+            # 进度计算：假设网络请求占总任务的80%，这里按已处理的库的比例计算
+            progress = int((processed_libraries / total_libraries) * 80)
+            update_status_callback(progress, f"正在索引媒体库 {processed_libraries}/{total_libraries}...")
         
         while True:
             api_url = f"{base_url.rstrip('/')}/Items"
             params = {
                 "api_key": api_key,
-                # "UserId": user_id,  # <-- ★★★ 彻底移除这一行，这是所有问题的根源 ★★★
                 "ParentId": lib_id,
                 "IncludeItemTypes": media_type_filter,
                 "Recursive": "true",
@@ -484,10 +498,8 @@ def get_all_library_versions(
                 if not items_in_batch:
                     break
 
-                # ★★★ 核心修复：为每个项目注入来源库ID ★★★
                 for item in items_in_batch:
                     item['_SourceLibraryId'] = lib_id
-                # ★★★ 修复结束 ★★★
 
                 all_items.extend(items_in_batch)
                 start_index += len(items_in_batch)
@@ -496,10 +508,16 @@ def get_all_library_versions(
                     break
 
             except requests.RequestException as e:
-                logger.error(f"  ➜ [系统级原始视图模式] 从媒体库 {lib_id} 获取数据时出错: {e}")
+                logger.error(f"  ➜ 从媒体库 {lib_id} 获取数据时出错: {e}")
                 break
     
-    logger.info(f"  ➜ [系统级原始视图模式] 获取完成，共找到 {len(all_items)} 个独立文件版本。")
+    log_message = f"  ➜ 获取完成，共找到 {len(all_items)} 个独立文件版本。"
+    logger.info(log_message)
+    
+    if update_status_callback:
+        # 标志着网络请求阶段结束，即将进入本地计算
+        update_status_callback(80, "媒体库索引完成，正在进行本地数据比对...")
+        
     return all_items
 # ✨✨✨ 获取项目，并为每个项目添加来源库ID ✨✨✨
 def get_emby_library_items(

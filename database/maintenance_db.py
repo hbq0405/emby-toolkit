@@ -163,10 +163,10 @@ def correct_all_sequences() -> list:
             tables_with_sequences = cursor.fetchall()
 
             if not tables_with_sequences:
-                logger.info("未找到任何使用自增序列的表，无需校准。")
+                logger.info("  ➜ 未找到任何使用自增序列的表，无需校准。")
                 return []
 
-            logger.info(f"开始校准 {len(tables_with_sequences)} 个表的自增序列...")
+            logger.info(f"  ➜ 开始校准 {len(tables_with_sequences)} 个表的自增序列...")
 
             for row in tables_with_sequences:
                 table_name = row['table_name']
@@ -194,7 +194,7 @@ def correct_all_sequences() -> list:
 
         except Exception as e:
             conn.rollback()
-            logger.error(f"校准自增序列时发生严重错误: {e}", exc_info=True)
+            logger.error(f"  ➜ 校准自增序列时发生严重错误: {e}", exc_info=True)
             raise
 
 def get_dashboard_stats() -> dict:

@@ -62,7 +62,8 @@ def task_update_resubscribe_cache(processor): # <--- 移除 force_full_update �
         emby_index = emby.get_all_library_versions(
             base_url=processor.emby_url, api_key=processor.emby_api_key, user_id=processor.emby_user_id,
             media_type_filter="Movie,Series,Episode", library_ids=list(all_target_lib_ids),
-            fields="Id,Type,ProviderIds,SeriesId,ParentIndexNumber,IndexNumber,_SourceLibraryId,Name"
+            fields="Id,Type,ProviderIds,SeriesId,ParentIndexNumber,IndexNumber,_SourceLibraryId,Name",
+            update_status_callback=task_manager.update_status_from_thread
         ) or []
 
         # --- 步骤 3: 加载数据库元数据 (保持不变) ---
