@@ -130,7 +130,13 @@
                       </div>
                       <n-divider style="margin: 4px 0;" />
                       <n-text :depth="2" class="info-text">分辨率: {{ item.resolution_display }}</n-text>
-                      <n-text :depth="2" class="info-text">质量: {{ item.quality_display }}</n-text>
+                      <n-tooltip :disabled="!item.release_group_raw || item.release_group_raw.length === 0">
+                        <template #trigger>
+                          <n-text :depth="2" class="info-text">质量: {{ item.quality_display }}</n-text>
+                        </template>
+                        发布组: {{ item.release_group_raw.join(', ') }}
+                      </n-tooltip>
+                      <n-text :depth="2" class="info-text">编码: {{ item.codec_display }}</n-text>
                       <n-text :depth="2" class="info-text">特效: {{ Array.isArray(item.effect_display) ? item.effect_display.join(', ') : item.effect_display }}</n-text>
                       <n-tooltip><template #trigger><n-text :depth="2" class="info-text" :line-clamp="1">音轨: {{ item.audio_display }}</n-text></template>{{ item.audio_display }}</n-tooltip>
                       <n-tooltip><template #trigger><n-text :depth="2" class="info-text" :line-clamp="1">字幕: {{ item.subtitle_display }}</n-text></template>{{ item.subtitle_display }}</n-tooltip>
@@ -284,7 +290,7 @@ const getStatusInfo = (status) => {
     case 'needed': return { text: '需洗版', type: 'warning' };
     case 'subscribed': return { text: '已订阅', type: 'info' };
     case 'ignored': return { text: '已忽略', type: 'tertiary' };
-    case 'ok': default: return { text: '质量达标', type: 'success' };
+    case 'ok': default: return { text: '已达标', type: 'success' };
   }
 };
 
@@ -615,8 +621,8 @@ watch(() => props.taskStatus, (newStatus, oldStatus) => {
 
 .card-poster-container { 
   flex-shrink: 0; 
-  width: 150px; /* 这里调整海报宽度 */
-  height: 225px; /* 这里调整海报高度 */
+  width: 160px; /* 这里调整海报宽度 */
+  height: 240px; /* 这里调整海报高度 */
   overflow: hidden; 
   border-radius: 4px; 
 } 

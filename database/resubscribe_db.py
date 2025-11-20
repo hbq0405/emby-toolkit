@@ -34,7 +34,8 @@ def _prepare_rule_data_for_db(rule_data: Dict[str, Any]) -> Dict[str, Any]:
     jsonb_fields = [
         'target_library_ids', 'resubscribe_audio_missing_languages',
         'resubscribe_subtitle_missing_languages', 'resubscribe_quality_include',
-        'resubscribe_effect_include'
+        'resubscribe_effect_include',
+        'resubscribe_codec_include'
     ]
     for field in jsonb_fields:
         if field in data_to_save and data_to_save[field] is not None:
@@ -174,10 +175,11 @@ def _format_library_status_results(rows: List[Dict]) -> List[Dict]:
             "poster_path": row_dict['poster_path'],
             "resolution_display": asset.get('resolution_display', 'Unknown'),
             "quality_display": asset.get('quality_display', 'Unknown'),
+            "release_group_raw": asset.get('release_group_raw', '无'),
+            "codec_display": asset.get('codec_display', 'unknown'),
             "effect_display": asset.get('effect_display', ['SDR']),
             "audio_display": asset.get('audio_display', '无'),
             "subtitle_display": asset.get('subtitle_display', '无'),
-            # ★★★ 为订阅 payload 提供关键数据 ★★★
             "filename": os.path.basename(asset.get('path', '')) if asset.get('path') else None,
             "emby_item_id": asset.get('emby_item_id')
         }

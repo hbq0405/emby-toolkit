@@ -419,42 +419,114 @@ def _item_needs_resubscribe(asset_details: dict, rule: dict, media_metadata: Opt
 
     # --- 2. 质量检查 (直接使用 quality_display) ---
     try:
+        # 检查规则是否启用了质量洗版
         if rule.get("resubscribe_quality_enabled"):
-            required_list = rule.get("resubscribe_quality_include", [])
-            if isinstance(required_list, list) and required_list:
-                required_list_lower = [str(q).lower() for q in required_list]
-                current_quality = asset_details.get('quality_display', '').lower()
-                if not any(term in current_quality for term in required_list_lower):
+            # 获取规则中要求的质量列表，例如 ['BluRay', 'WEB-DL']
+            required_qualities = rule.get("resubscribe_quality_include", [])
+            
+            # 仅当规则中明确配置了要求时，才执行检查
+            if required_qualities:
+                # 1. 定义权威的“质量金字塔”等级（数字越大，等级越高）
+                QUALITY_HIERARCHY = {
+                    'remux': 6,
+                    'bluray': 5,
+                    'web-dl': 4,
+                    'webrip': 3,
+                    'hdtv': 2,
+                    'dvdrip': 1,
+                    'unknown': 0
+                }
+
+                # 2. 计算规则要求的“最高目标等级”
+                #    例如，如果规则是 ['BluRay', 'WEB-DL']，那么目标就是达到 BluRay (等级5)
+                highest_required_tier = 0
+                for req_quality in required_qualities:
+                    highest_required_tier = max(highest_required_tier, QUALITY_HIERARCHY.get(req_quality.lower(), 0))
+
+                # 3. 获取当前文件经过分析后得出的“质量标签”
+                current_quality_tag = asset_details.get('quality_display', 'Unknown').lower()
+                
+                # 4. 计算当前文件所处的“实际质量等级”
+                current_actual_tier = QUALITY_HIERARCHY.get(current_quality_tag, 0)
+
+                # 5. 最终裁决：如果文件的实际等级 < 规则的最高目标等级，则判定为不达标
+                if current_actual_tier < highest_required_tier:
                     reasons.append("质量不符")
     except Exception as e:
         logger.warning(f"  ➜ [质量检查] 处理时发生错误: {e}")
 
     # --- 3. 特效检查 (直接使用 effect_display) ---
     try:
+        # 检查规则是否启用了特效洗版
         if rule.get("resubscribe_effect_enabled"):
-            # 规则中存储的是 'dovi', 'hdr', 'hdr10+' 等
-            required_effects = set(rule.get("resubscribe_effect_include", []))
+            # 获取规则中要求的特效列表，例如 ['dovi_p8', 'hdr10+']
+            required_effects = rule.get("resubscribe_effect_include", [])
+            
+            # 仅当规则中明确配置了要求时，才执行检查
             if required_effects:
-                # asset_details.effect_display 中是 ['Dolby Vision', 'HDR']
-                current_effects_raw = asset_details.get('effect_display', [])
+                # 1. 定义权威的“特效金字塔”等级（数字越大，等级越高）
+                #    这个层级严格对应 helpers.py 中 _get_standardized_effect 的输出
+                EFFECT_HIERARCHY = {
+                    "dovi_p8": 7,
+                    "dovi_p7": 6,
+                    "dovi_p5": 5,
+                    "dovi_other": 4,
+                    "hdr10+": 3,
+                    "hdr": 2,
+                    "sdr": 1
+                }
+
+                # 2. 计算规则要求的“最高目标等级”
+                #    例如，如果规则是 ['hdr', 'dovi_p5']，那么目标就是达到 d_p5 (等级5)
+                highest_required_tier = 0
+                for req_effect in required_effects:
+                    highest_required_tier = max(highest_required_tier, EFFECT_HIERARCHY.get(req_effect.lower(), 0))
+
+                # 3. 获取当前文件经过 helpers.py 分析后得出的“权威特效标识”
+                #    asset_details['effect_display'] 现在存储的是 'dovi_p8' 这样的精确字符串
+                current_effect_tag = asset_details.get('effect_display', 'sdr')
                 
-                # 将 asset_details 中的显示名，标准化为与规则中一致的关键字
-                current_effects_normalized = set()
-                for effect in current_effects_raw:
-                    eff_lower = effect.lower()
-                    if 'dolby' in eff_lower or 'dovi' in eff_lower:
-                        current_effects_normalized.add('dovi')
-                    elif 'hdr10+' in eff_lower:
-                        current_effects_normalized.add('hdr10+')
-                    elif 'hdr' in eff_lower:
-                        current_effects_normalized.add('hdr')
-                
-                # 检查当前媒体的特效集合，是否与规则要求的特效集合有任何交集
-                # 如果没有任何交集，说明不满足规则
-                if not current_effects_normalized.intersection(required_effects):
-                    reasons.append("特效不符")
+                # 4. 计算当前文件所处的“实际特效等级”
+                current_actual_tier = EFFECT_HIERARCHY.get(current_effect_tag.lower(), 1) # 默认为sdr等级
+
+                # 5. 最终裁决：如果文件的实际等级 < 规则的最高目标等级，则判定为不达标
+                if current_actual_tier < highest_required_tier:
+                    reasons.append("特效不达标")
     except Exception as e:
         logger.warning(f"  ➜ [特效检查] 处理时发生错误: {e}")
+
+    # --- 4. 编码检查 ---
+    try:
+        # 检查规则是否启用了编码洗版
+        if rule.get("resubscribe_codec_enabled"):
+            # 获取规则中要求的编码列表，例如 ['hevc']
+            required_codecs = rule.get("resubscribe_codec_include", [])
+            
+            if required_codecs:
+                # 1. 定义“编码金字塔”等级（数字越大，等级越高）
+                #    为常见别名设置相同等级，增强兼容性
+                CODEC_HIERARCHY = {
+                    'hevc': 2, 'h265': 2,
+                    'h264': 1, 'avc': 1,
+                    'unknown': 0
+                }
+
+                # 2. 计算规则要求的“最高目标等级”
+                highest_required_tier = 0
+                for req_codec in required_codecs:
+                    highest_required_tier = max(highest_required_tier, CODEC_HIERARCHY.get(req_codec.lower(), 0))
+
+                # 3. 获取当前文件经过分析后得出的“编码标签”
+                current_codec_tag = asset_details.get('codec_display', 'unknown').lower()
+                
+                # 4. 计算当前文件所处的“实际编码等级”
+                current_actual_tier = CODEC_HIERARCHY.get(current_codec_tag, 0)
+
+                # 5. 最终裁决：如果文件的实际等级 < 规则的最高目标等级，则判定为不达标
+                if current_actual_tier < highest_required_tier:
+                    reasons.append("编码不符")
+    except Exception as e:
+        logger.warning(f"  ➜ [编码检查] 处理时发生错误: {e}")
 
     # --- 4. 文件大小检查 (直接使用 size_bytes) ---
     try:
@@ -482,23 +554,72 @@ def _item_needs_resubscribe(asset_details: dict, rule: dict, media_metadata: Opt
     
     # --- 6. 音轨检查 (直接使用 audio_languages_raw) ---
     try:
-        if rule.get("resubscribe_audio_enabled") and not is_exempted:
-            required_langs = set(rule.get("resubscribe_audio_missing_languages", []))
-            if 'chi' in required_langs or 'yue' in required_langs:
-                detected_audio_langs = set(asset_details.get('audio_languages_raw', []))
-                if 'chi' not in detected_audio_langs and 'yue' not in detected_audio_langs:
-                    reasons.append("缺中文音轨")
+        if rule.get("resubscribe_audio_enabled"):
+            required_langs = rule.get("resubscribe_audio_missing_languages", [])
+            if required_langs:
+                current_audio_display = asset_details.get('audio_display', '')
+                # 1. 净化：将 "国语, 英语" 或 "国语，英语" 都拆分成干净的列表 ['国语', '英语']
+                #    使用正则表达式替换所有可能的逗号和多个空格
+                existing_langs_set = set(re.split(r'[,\s，]+', current_audio_display))
+                
+                AUDIO_DISPLAY_MAP = {'chi': '国语', 'yue': '粤语', 'eng': '英语', 'jpn': '日语'}
+                
+                for lang_code in required_langs:
+                    if lang_code in ['chi', 'yue'] and is_exempted:
+                        continue
+                    
+                    display_name = AUDIO_DISPLAY_MAP.get(lang_code)
+                    # 2. 比对：在净化后的集合中进行绝对可靠的比对
+                    if display_name and display_name not in existing_langs_set:
+                        reasons.append(f"缺{display_name}音轨")
     except Exception as e:
         logger.warning(f"  ➜ [音轨检查] 处理时发生未知错误: {e}")
 
-    # --- 7. 字幕检查 (直接使用 subtitle_languages_raw) ---
+    # --- 7. 字幕检查 (装甲版) ---
     try:
-        if rule.get("resubscribe_subtitle_enabled") and not is_exempted:
-            required_langs = set(rule.get("resubscribe_subtitle_missing_languages", []))
-            if 'chi' in required_langs:
-                detected_subtitle_langs = set(asset_details.get('subtitle_languages_raw', []))
-                if 'chi' not in detected_subtitle_langs and 'yue' not in detected_subtitle_langs:
-                    reasons.append("缺中文字幕")
+        if rule.get("resubscribe_subtitle_enabled"):
+            required_langs = rule.get("resubscribe_subtitle_missing_languages", [])
+            if required_langs:
+                current_subtitle_display = asset_details.get('subtitle_display', '')
+                existing_langs_set = set(re.split(r'[,\s，]+', current_subtitle_display))
+                SUB_DISPLAY_MAP = {'chi': '中字', 'yue': '粤字', 'eng': '英文', 'jpn': '日文'}
+                
+                for lang_code in required_langs:
+                    if lang_code in ['chi', 'yue'] and is_exempted:
+                        continue
+                        
+                    display_name = SUB_DISPLAY_MAP.get(lang_code)
+                    
+                    # ★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★
+                    # ★★★ 魔法日志开始 ★★★
+                    # ★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★
+                    # 只在处理“阿丽塔”并且要检查“英文”时触发，避免刷屏
+                    if '阿丽塔' in item_name and display_name == '英文':
+                        logger.critical("="*80)
+                        logger.critical(">>> [魔法日志]：进入《阿丽塔》英文规则判断 <<<")
+                        logger.critical(f"  - [原始字符串]   current_subtitle_display: {current_subtitle_display}")
+                        logger.critical(f"  - [原始类型]     type(current_subtitle_display): {type(current_subtitle_display)}")
+                        logger.critical(f"  - [字节级表示]   repr(current_subtitle_display): {repr(current_subtitle_display)}")
+                        logger.critical(f"  - [净化后集合]   existing_langs_set: {existing_langs_set}")
+                        logger.critical(f"  - [要查找的目标] display_name: '{display_name}'")
+                        
+                        check_result = display_name not in existing_langs_set
+                        
+                        logger.critical(f"  - [判断表达式]   '{display_name}' not in {existing_langs_set}")
+                        logger.critical(f"  - [判断结果]     Check Result: {check_result}")
+                        
+                        if check_result:
+                            logger.critical("  - [最终结论]     程序认为【缺少】英文字幕，即将添加原因。")
+                        else:
+                            logger.critical("  - [最终结论]     程序认为【不缺】英文字幕，判断正确。")
+                        logger.critical("="*80)
+                    # ★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★
+                    # ★★★ 魔法日志结束 ★★★
+                    # ★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★
+
+                    if display_name and display_name not in existing_langs_set:
+                        reasons.append(f"缺{display_name}字幕")
+
     except Exception as e:
         logger.warning(f"  ➜ [字幕检查] 处理时发生未知错误: {e}")
                  
@@ -512,22 +633,27 @@ def _item_needs_resubscribe(asset_details: dict, rule: dict, media_metadata: Opt
 
 def _is_exempted_from_chinese_check(media_streams: list, media_metadata: Optional[dict]) -> bool:
     """
+    【V2 - 修正版】
     判断一个媒体是否应该免除中文音轨/字幕的检查（例如，本身就是国产影视剧）。
-    这个函数保持原样，因为它依赖的是媒体元数据，而不是文件技术细节。
+    此判断【严格只依赖】媒体的元数据，避免因文件内容变化导致逻辑悖论。
     """
     import re
+    # 定义华语地区集合，用于判断出品国家
     CHINESE_SPEAKING_REGIONS = {'中国', '中国大陆', '香港', '中国香港', '台湾', '中国台湾', '新加坡'}
+    
+    # 1. 如果出品国家/地区在华语地区列表中，则豁免检查
     if media_metadata and media_metadata.get('countries_json'):
-        if not set(media_metadata['countries_json']).isdisjoint(CHINESE_SPEAKING_REGIONS): return True
+        # 使用 isdisjoint 判断两个集合是否有交集，比循环更高效
+        if not set(media_metadata['countries_json']).isdisjoint(CHINESE_SPEAKING_REGIONS):
+            return True
+            
+    # 2. 如果原始标题中包含至少两个汉字，则豁免检查
     if media_metadata and (original_title := media_metadata.get('original_title')):
-        if len(re.findall(r'[\u4e00-\u9fff]', original_title)) >= 2: return True
+        # 使用正则表达式查找中文字符
+        if len(re.findall(r'[\u4e00-\u9fff]', original_title)) >= 2:
+            return True
     
-    # 即使元数据不明确，也最后检查一下媒体流自身是否包含中文信息
-    detected_audio_langs = _get_detected_languages_from_streams(media_streams, 'Audio')
-    if 'chi' in detected_audio_langs or 'yue' in detected_audio_langs: return True
-    detected_subtitle_langs = _get_detected_languages_from_streams(media_streams, 'Subtitle')
-    if 'chi' in detected_subtitle_langs or 'yue' in detected_subtitle_langs: return True
-    
+    # 如果以上条件都不满足，则不豁免，必须进行中文音轨/字幕检查
     return False
 
 def build_resubscribe_payload(item_details: dict, rule: Optional[dict]) -> Optional[dict]:
@@ -566,9 +692,8 @@ def build_resubscribe_payload(item_details: dict, rule: Optional[dict]) -> Optio
         else:
             logger.error(f"严重错误：项目 '{item_name}' 类型为 'Season' 但未找到 'season_number'！")
 
-    # ★★★ 核心修改：直接从 item_details 获取预先分析好的发布组 ★★★
+    # --- 排除原发布组 ---
     exclusion_keywords_list = item_details.get('release_group_raw', [])
-    
     if exclusion_keywords_list:
         # 使用正向先行断言实现 AND 逻辑
         and_regex_parts = [f"(?=.*{re.escape(k)})" for k in exclusion_keywords_list]
@@ -576,7 +701,6 @@ def build_resubscribe_payload(item_details: dict, rule: Optional[dict]) -> Optio
         logger.info(f"  ➜ 精准排除模式：已为《{item_name}》生成 AND 逻辑正则: {payload['exclude']}")
     else:
         logger.info(f"  ✅ 未找到预分析的发布组，不添加排除规则。")
-    # ★★★ 修改结束 ★★★
 
     use_custom_subscribe = config_manager.APP_CONFIG.get(constants.CONFIG_OPTION_USE_CUSTOM_RESUBSCRIBE, False)
     if not use_custom_subscribe or not rule:
@@ -599,6 +723,33 @@ def build_resubscribe_payload(item_details: dict, rule: Optional[dict]) -> Optio
         if isinstance(quality_list, list) and quality_list:
             payload['quality'] = ",".join(quality_list)
             logger.info(f"  ➜ 《{item_name}》按规则 '{rule_name}' 追加过滤器 - 质量: {payload['quality']}")
+
+    # --- 编码订阅逻辑 ---
+    try:
+        if rule.get("resubscribe_codec_enabled"):
+            codec_list = rule.get("resubscribe_codec_include", [])
+            if isinstance(codec_list, list) and codec_list:
+                # 定义编码到正则表达式关键字的映射，增强匹配成功率
+                CODEC_REGEX_MAP = {
+                    'hevc': ['hevc', 'h265', 'x265'],
+                    'h264': ['h264', 'avc', 'x264']
+                }
+                
+                # 根据用户选择，构建一个大的 OR 正则组
+                # 例如，如果用户选了 'hevc'，最终会生成 (hevc|h265|x265)
+                regex_parts = []
+                for codec in codec_list:
+                    if codec.lower() in CODEC_REGEX_MAP:
+                        regex_parts.extend(CODEC_REGEX_MAP[codec.lower()])
+                
+                if regex_parts:
+                    # 将所有关键字用 | 连接，并放入一个正向先行断言中
+                    # 这意味着“标题中必须包含这些关键字中的任意一个”
+                    include_regex = f"(?=.*({'|'.join(regex_parts)}))"
+                    final_include_lookaheads.append(include_regex)
+                    logger.info(f"  ➜ 《{item_name}》按规则 '{rule_name}' 追加编码过滤器: {include_regex}")
+    except Exception as e:
+        logger.warning(f"  ➜ [编码订阅] 构建正则时发生错误: {e}")
     
     # --- 特效订阅逻辑 (实战优化) ---
     if rule.get("resubscribe_effect_enabled"):

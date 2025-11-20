@@ -26,7 +26,7 @@ def get_db_connection() -> psycopg2.extensions.connection:
             user=cfg.get(constants.CONFIG_OPTION_DB_USER),
             password=cfg.get(constants.CONFIG_OPTION_DB_PASSWORD),
             dbname=cfg.get(constants.CONFIG_OPTION_DB_NAME),
-            cursor_factory=RealDictCursor  # ★★★ 关键：让返回的每一行都是字典
+            cursor_factory=RealDictCursor
         )
         return conn
     except psycopg2.Error as e:
@@ -325,7 +325,9 @@ def init_db():
                         resubscribe_effect_include JSONB,
                         resubscribe_filesize_enabled BOOLEAN DEFAULT FALSE,
                         resubscribe_filesize_operator TEXT DEFAULT 'lt', 
-                        resubscribe_filesize_threshold_gb REAL DEFAULT 10.0 
+                        resubscribe_filesize_threshold_gb REAL DEFAULT 10.0,
+                        resubscribe_codec_enabled BOOLEAN DEFAULT FALSE,
+                        resubscribe_codec_include JSONB 
                     )
                 """)
 
@@ -533,7 +535,9 @@ def init_db():
                             "resubscribe_subtitle_effect_only": "BOOLEAN DEFAULT FALSE",
                             "resubscribe_filesize_enabled": "BOOLEAN DEFAULT FALSE",
                             "resubscribe_filesize_operator": "TEXT DEFAULT 'lt'",
-                            "resubscribe_filesize_threshold_gb": "REAL DEFAULT 10.0"
+                            "resubscribe_filesize_threshold_gb": "REAL DEFAULT 10.0",
+                            "resubscribe_codec_enabled": "BOOLEAN DEFAULT FALSE",
+                            "resubscribe_codec_include": "JSONB"
                         },
                         'user_templates': {
                             "source_emby_user_id": "TEXT",

@@ -112,36 +112,90 @@ def _extract_exclusion_keywords_from_filename(filename: str) -> List[str]:
 
     return []
 
-def _get_standardized_effect(path_lower: str, video_stream: Optional[Dict]) -> List[str]:
+def get_keywords_by_group_name(group_name: str) -> List[str]:
     """
-    - 优先、贪婪地从文件名中解析所有特效，因为文件名信息最全。
-    - 如果文件名没有信息，再从 API 的视频流中补充。
-    - 返回一个特效列表，例如 ["Dolby Vision", "HDR"]。
+    根据发布组的中文名（或其他键名），反查其在 RELEASE_GROUPS 中对应的所有关键词/别名。
+    
+    :param group_name: 发布组的键名，例如 "朋友"
+    :return: 对应的关键词列表，例如 ['FRDS', 'Yumi', 'cXcY']。如果找不到则返回空列表。
     """
-    effects = set()
+    if not group_name:
+        return []
+    # 使用 .get() 方法安全地获取值，如果找不到键，则返回一个空列表
+    return RELEASE_GROUPS.get(group_name, [])
 
-    # 1. 文件名优先，贪婪模式
-    if "dovi" in path_lower or "dolbyvision" in path_lower or "dv" in path_lower:
-        effects.add("Dolby Vision")
+def build_exclusion_regex_from_groups(group_names: List[str]) -> str:
+    """
+    接收一个发布组名称的列表，查询它们所有的关键词，并构建一个单一的、
+    用于排除的 OR 正则表达式。
+    
+    :param group_names: 发布组名称列表，例如 ["朋友", "春天"]
+    :return: 一个正则表达式字符串，例如 "(?:FRDS|Yumi|cXcY|CMCT(?:A|V)?|Oldboys|...)"
+             如果列表为空或未找到任何关键词，则返回空字符串。
+    """
+    if not group_names:
+        return ""
+
+    all_keywords = []
+    # 遍历传入的每一个组名
+    for group_name in group_names:
+        # 调用我们之前的反查函数，获取该组的所有关键词
+        keywords = get_keywords_by_group_name(group_name)
+        if keywords:
+            all_keywords.extend(keywords)
+
+    if not all_keywords:
+        return ""
+
+    # 使用 | (OR) 将所有关键词连接起来，并用一个非捕获组 (?:...) 包裹
+    # 这意味着“只要标题中包含任意一个关键词，就匹配成功”
+    return f"(?:{'|'.join(all_keywords)})"
+
+def _get_standardized_effect(path_lower: str, video_stream: Optional[Dict]) -> str:
+    """
+    【V9 - 全局·智能文件名识别增强版】
+    - 这是一个全局函数，可被项目中所有需要特效识别的地方共享调用。
+    - 增强了文件名识别逻辑：当文件名同时包含 "dovi" 和 "hdr" 时，智能判断为 davi_p8。
+    - 调整了判断顺序，确保更精确的规则优先执行。
+    """
+    
+    # 1. 优先从文件名判断 (逻辑增强)
+    if ("dovi" in path_lower or "dolbyvision" in path_lower or "dv" in path_lower) and "hdr" in path_lower:
+        return "dovi_p8"
+    if any(s in path_lower for s in ["dovi p7", "dovi.p7", "dv.p7", "profile 7", "profile7"]):
+        return "dovi_p7"
+    if any(s in path_lower for s in ["dovi p5", "dovi.p5", "dv.p5", "profile 5", "profile5"]):
+        return "dovi_p5"
+    if ("dovi" in path_lower or "dolbyvision" in path_lower) and "hdr" in path_lower:
+        return "dovi_p8"
+    if "dovi" in path_lower or "dolbyvision" in path_lower:
+        return "dovi_other"
     if "hdr10+" in path_lower or "hdr10plus" in path_lower:
-        effects.add("HDR10+")
-    # 确保文件名里有hdr，但又不是hdr10+
-    if "hdr" in path_lower and "hdr10+" not in path_lower and "hdr10plus" not in path_lower:
-        effects.add("HDR")
+        return "hdr10+"
+    if "hdr" in path_lower:
+        return "hdr"
 
-    # 2. 如果文件名没信息，再从 API 补充
-    if not effects and video_stream:
-        if video_stream.get("BitDepth") == 10:
-            effects.add("HDR")
-        if (video_range := video_stream.get("VideoRange")):
-            if "hdr" in video_range.lower() or "pq" in video_range.lower():
-                effects.add("HDR")
+    # 2. 如果文件名没有信息，再对视频流进行精确分析
+    if video_stream and isinstance(video_stream, dict):
+        all_stream_info = []
+        for key, value in video_stream.items():
+            all_stream_info.append(str(key).lower())
+            if isinstance(value, str):
+                all_stream_info.append(value.lower())
+        combined_info = " ".join(all_stream_info)
 
-    # 3. 如果最终什么都没有，才默认为 SDR
-    if not effects:
-        effects.add("SDR")
-        
-    return sorted(list(effects))
+        if "doviprofile81" in combined_info: return "DoVi_P8"
+        if "doviprofile76" in combined_info: return "DoVi_P7"
+        if "doviprofile5" in combined_info: return "DoVi_P5"
+        if any(s in combined_info for s in ["dvhe.08", "dvh1.08"]): return "DoVi_P8"
+        if any(s in combined_info for s in ["dvhe.07", "dvh1.07"]): return "DoVi_P7"
+        if any(s in combined_info for s in ["dvhe.05", "dvh1.05"]): return "DoVi_P5"
+        if "dovi" in combined_info or "dolby" in combined_info or "dolbyvision" in combined_info: return "DoVi"
+        if "hdr10+" in combined_info or "hdr10plus" in combined_info: return "HDR10+"
+        if "hdr" in combined_info: return "HDR"
+
+    # 3. 默认是SDR
+    return "SDR"
 
 def _extract_quality_tag_from_filename(filename_lower: str) -> str:
     """
@@ -223,7 +277,30 @@ def analyze_media_asset(item_details: dict) -> dict:
             resolution_str = "720p"
 
     quality_str = _extract_quality_tag_from_filename(file_name_lower)
-    effect_list = _get_standardized_effect(file_name_lower, video_stream)
+    
+    # ★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★
+    # ★★★ 核心修复 1/2: 特效和编码的大小写标准化 ★★★
+    # ★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★
+    
+    # 1. 获取权威的、细分的特效标签 (例如 'dovi_p8')
+    effect_tag = _get_standardized_effect(file_name_lower, video_stream)
+    
+    # 2. 将其转换为您期望的、标准化的显示格式
+    EFFECT_DISPLAY_MAP = {
+        "dovi_p8": "DoVi_P8", "dovi_p7": "DoVi_P7", "dovi_p5": "DoVi_P5",
+        "dovi_other": "DoVi", "hdr10+": "HDR10+", "hdr": "HDR", "sdr": "SDR"
+    }
+    effect_display_str = EFFECT_DISPLAY_MAP.get(effect_tag, effect_tag) # 如果没匹配到，显示原始tag
+
+    # 3. 获取原始编码，并将其转换为标准显示格式
+    codec_str = 'UNKNOWN'
+    if video_stream and video_stream.get('Codec'):
+        raw_codec = video_stream.get('Codec').lower()
+        CODEC_DISPLAY_MAP = {
+            'hevc': 'HEVC', 'h265': 'HEVC',
+            'h264': 'H.264', 'avc': 'H.264'
+        }
+        codec_str = CODEC_DISPLAY_MAP.get(raw_codec, raw_codec.upper()) # 未知编码则直接转大写
 
     detected_audio_langs = _get_detected_languages_from_streams(media_streams, 'Audio')
     AUDIO_DISPLAY_MAP = {'chi': '国语', 'yue': '粤语', 'eng': '英语', 'jpn': '日语'}
@@ -236,13 +313,13 @@ def analyze_media_asset(item_details: dict) -> dict:
     SUB_DISPLAY_MAP = {'chi': '中字', 'yue': '粤字', 'eng': '英文', 'jpn': '日文'}
     subtitle_str = ', '.join(sorted([SUB_DISPLAY_MAP.get(lang, lang) for lang in detected_sub_langs])) or '无'
 
-    # 保持发布组大小写
     release_group_list = _extract_exclusion_keywords_from_filename(file_name)
 
     return {
         "resolution_display": resolution_str,
         "quality_display": quality_str,
-        "effect_display": effect_list,
+        "effect_display": effect_display_str, # ★★★ 核心修复 2/2: 使用新的标准大写字符串
+        "codec_display": codec_str,          # ★★★ 使用新的标准大写字符串
         "audio_display": audio_str,
         "subtitle_display": subtitle_str,
         "audio_languages_raw": list(detected_audio_langs),

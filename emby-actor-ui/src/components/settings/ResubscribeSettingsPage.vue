@@ -125,7 +125,7 @@
                <template #header-extra>
                 <n-switch v-model:value="currentRule.resubscribe_quality_enabled" @click.stop />
               </template>
-              <n-form-item label="当文件名【不包含】以下任一关键词时洗版" label-placement="top">
+              <n-form-item label="当媒体质量【低于】所选最高等级时洗版" label-placement="top">
                 <n-select
                   v-model:value="currentRule.resubscribe_quality_include"
                   multiple tag filterable placeholder="可选择或自由输入"
@@ -135,11 +135,24 @@
               </n-form-item>
             </n-collapse-item>
 
+            <n-collapse-item title="按编码洗版">
+               <template #header-extra>
+                <n-switch v-model:value="currentRule.resubscribe_codec_enabled" @click.stop />
+              </template>
+              <n-form-item label="当视频编码【低于】所选最高等级时洗版" label-placement="top">
+                <n-select
+                  v-model:value="currentRule.resubscribe_codec_include"
+                  multiple tag filterable placeholder="选择期望的编码等级"
+                  :options="codecOptions"
+                  :disabled="!currentRule.resubscribe_codec_enabled"
+                />
+              </n-form-item>
+            </n-collapse-item>
+
             <n-collapse-item title="按特效洗版">
                <template #header-extra>
                 <n-switch v-model:value="currentRule.resubscribe_effect_enabled" @click.stop />
               </template>
-              <!-- ★★★ 核心修改 1/3: 更新提示文本 ★★★ -->
               <n-form-item label="当媒体特效【低于】所选最高等级时洗版" label-placement="top">
                 <n-select
                   v-model:value="currentRule.resubscribe_effect_include"
@@ -222,7 +235,7 @@ import { ref, onMounted, computed, nextTick } from 'vue';
 import axios from 'axios';
 import { 
   NCard, NSpace, NSwitch, NButton, useMessage, NSpin, NIcon, NPopconfirm, NModal, NForm, 
-  NFormItem, NInput, NSelect, NDivider, NCollapse, NCollapseItem, NTag, NEmpty, NTooltip
+  NFormItem, NInput, NSelect, NDivider, NCollapse, NCollapseItem, NTag, NEmpty, NTooltip, NInputNumber
 } from 'naive-ui';
 import draggable from 'vuedraggable';
 import { 
@@ -272,7 +285,11 @@ const qualityOptions = ref([
   { label: 'HDTV', value: 'HDTV' },
 ]);
 
-// ★★★ 核心修改 2/3: 更新特效选项列表 ★★★
+const codecOptions = ref([
+  { label: 'HEVC (H.265)', value: 'hevc' },
+  { label: 'H.264 (AVC)', value: 'h264' },
+]);
+
 const effectOptions = ref([
   { label: 'DoVi Profile 8 (HDR10 兼容)', value: 'dovi_p8' },
   { label: 'DoVi Profile 7 (蓝光标准)', value: 'dovi_p7' },
@@ -341,7 +358,12 @@ const openRuleModal = async (rule = null) => {
       resubscribe_resolution_threshold: 1920, resubscribe_audio_enabled: false,
       resubscribe_audio_missing_languages: [], resubscribe_subtitle_enabled: false,
       resubscribe_subtitle_missing_languages: [], resubscribe_quality_enabled: false,
-      resubscribe_quality_include: [], resubscribe_effect_enabled: false,
+      resubscribe_quality_include: [], 
+      
+      resubscribe_codec_enabled: false,
+      resubscribe_codec_include: [],
+
+      resubscribe_effect_enabled: false,
       resubscribe_effect_include: [],
       resubscribe_subtitle_effect_only: false,
       resubscribe_filesize_enabled: false,
@@ -350,7 +372,6 @@ const openRuleModal = async (rule = null) => {
     };
   }
 
-  // ★★★ 核心修改 3/3: 兼容旧的 '杜比视界' 和 'HDR' 值 ★★★
   if (currentRule.value.resubscribe_effect_include) {
     const legacyMap = { '杜比视界': 'dovi_other', 'HDR': 'hdr' };
     currentRule.value.resubscribe_effect_include = currentRule.value.resubscribe_effect_include.map(
@@ -380,7 +401,6 @@ const saveRule = async () => {
     if (!errors) {
       saving.value = true;
       try {
-        // 保存时数据已经是 'dovi_p8' 格式，无需转换
         if (isEditing.value) {
           await axios.put(`/api/resubscribe/rules/${currentRule.value.id}`, currentRule.value);
           message.success('规则已更新！');
