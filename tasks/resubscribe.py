@@ -77,10 +77,11 @@ def task_update_resubscribe_cache(processor, force_full_update: bool = False):
             return
 
         logger.info(f"  ➜ 正在从本地数据库批量获取 {len(tmdb_ids_in_scope)} 个媒体项的详细元数据...")
-        all_metadata_from_db = media_db.get_media_details_by_tmdb_ids(list(tmdb_ids_in_scope))
-        metadata_map = {meta['tmdb_id']: meta for meta in all_metadata_from_db}
+        metadata_map = media_db.get_media_details_by_tmdb_ids(list(tmdb_ids_in_scope))
         
-        series_tmdb_ids = {meta['tmdb_id'] for meta in all_metadata_from_db if meta['item_type'] == 'Series'}
+        series_tmdb_ids = {
+            meta['tmdb_id'] for meta in metadata_map.values() if meta.get('item_type') == 'Series'
+        }
         all_episodes_from_db = media_db.get_episodes_for_series(list(series_tmdb_ids))
         episodes_map = defaultdict(list)
         for ep in all_episodes_from_db:
