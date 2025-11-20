@@ -447,9 +447,6 @@ def get_all_library_versions(
     library_ids: List[str],
     media_type_filter: str,
     fields: str,
-    # ★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★
-    # ★★★ 新增功能 1/3: 增加一个可选的回调函数参数 ★★★
-    # ★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★
     update_status_callback: Optional[Callable[[int, str], None]] = None
 ) -> List[Dict[str, Any]]:
     """
@@ -459,64 +456,68 @@ def get_all_library_versions(
     session = requests.Session()
     api_timeout = config_manager.APP_CONFIG.get(constants.CONFIG_OPTION_EMBY_API_TIMEOUT, 60)
     
-    total_libraries = len(library_ids)
-    processed_libraries = 0
-    
-    log_message = f"  ➜ 开始从 {total_libraries} 个媒体库中获取所有媒体项..."
-    logger.info(log_message)
+    total_items_to_fetch = 0
+    logger.info("  ➜ 开始预计算所有目标库的总项目数...")
     if update_status_callback:
-        # 初始状态
-        update_status_callback(1, "正在连接 Emby 并准备获取媒体库索引...")
+        update_status_callback(1, "正在计算媒体库总项目数...")
 
     for lib_id in library_ids:
+        try:
+            count_url = f"{base_url.rstrip('/')}/Items"
+            count_params = {
+                "api_key": api_key, "ParentId": lib_id, "IncludeItemTypes": media_type_filter,
+                "Recursive": "true", "Limit": 0  # Limit=0 只返回总数，速度极快
+            }
+            response = session.get(count_url, params=count_params, timeout=api_timeout)
+            response.raise_for_status()
+            count = response.json().get("TotalRecordCount", 0)
+            total_items_to_fetch += count
+        except requests.RequestException as e:
+            logger.warning(f"  ➜ 预计算媒体库 {lib_id} 的项目总数时失败: {e}，总数可能不准。")
+            continue
+    
+    logger.info(f"  ➜ 预计算完成，所有目标库共包含约 {total_items_to_fetch} 个媒体项。")
+
+    # ★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★
+    total_processed_items = 0
+    
+    for lib_id in library_ids:
         start_index = 0
-        limit = 500 # 每次请求500个项目
-        
-        processed_libraries += 1
-        if update_status_callback:
-            # 进度计算：假设网络请求占总任务的80%，这里按已处理的库的比例计算
-            progress = int((processed_libraries / total_libraries) * 80)
-            update_status_callback(progress, f"正在索引媒体库 {processed_libraries}/{total_libraries}...")
+        limit = 500
         
         while True:
             api_url = f"{base_url.rstrip('/')}/Items"
             params = {
-                "api_key": api_key,
-                "ParentId": lib_id,
-                "IncludeItemTypes": media_type_filter,
-                "Recursive": "true",
-                "Fields": fields,
-                "StartIndex": start_index,
-                "Limit": limit
+                "api_key": api_key, "ParentId": lib_id, "IncludeItemTypes": media_type_filter,
+                "Recursive": "true", "Fields": fields, "StartIndex": start_index, "Limit": limit
             }
-            
             try:
                 response = session.get(api_url, params=params, timeout=api_timeout)
                 response.raise_for_status()
                 items_in_batch = response.json().get("Items", [])
-                
-                if not items_in_batch:
-                    break
+                if not items_in_batch: break
 
-                for item in items_in_batch:
-                    item['_SourceLibraryId'] = lib_id
-
+                for item in items_in_batch: item['_SourceLibraryId'] = lib_id
                 all_items.extend(items_in_batch)
                 start_index += len(items_in_batch)
                 
-                if len(items_in_batch) < limit:
-                    break
+                total_processed_items += len(items_in_batch)
+                if update_status_callback and total_items_to_fetch > 0:
+                    # 进度计算：网络请求阶段占总进度的 80%
+                    progress = int((total_processed_items / total_items_to_fetch) * 80)
+                    # 确保进度不会超过80%
+                    progress = min(progress, 80) 
+                    update_status_callback(progress, f"正在索引 {total_processed_items}/{total_items_to_fetch} 个媒体项...")
 
+                if len(items_in_batch) < limit: break
             except requests.RequestException as e:
                 logger.error(f"  ➜ 从媒体库 {lib_id} 获取数据时出错: {e}")
                 break
     
-    log_message = f"  ➜ 获取完成，共找到 {len(all_items)} 个独立文件版本。"
-    logger.info(log_message)
+    logger.info(f"  ➜ 获取完成，共找到 {len(all_items)} 个媒体项。")
     
     if update_status_callback:
-        # 标志着网络请求阶段结束，即将进入本地计算
-        update_status_callback(80, "媒体库索引完成，正在进行本地数据比对...")
+        update_status_callback(80, "媒体项索引完成，即将进行本地数据比对...")
         
     return all_items
 # ✨✨✨ 获取项目，并为每个项目添加来源库ID ✨✨✨
