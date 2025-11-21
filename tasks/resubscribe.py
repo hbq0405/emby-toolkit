@@ -443,44 +443,43 @@ def _item_needs_resubscribe(asset_details: dict, rule: dict, media_metadata: Opt
     # --- 5. 音轨和字幕检查 (豁免逻辑) ---
     is_exempted = _is_exempted_from_chinese_check(asset_details.get('media_streams', []), media_metadata)
     
-    # --- 6. 音轨检查 (直接使用 audio_languages_raw) ---
+    # --- 6. 音轨检查 (V2 - 基于原始数据) ---
     try:
         if rule.get("resubscribe_audio_enabled"):
             required_langs = rule.get("resubscribe_audio_missing_languages", [])
             if required_langs:
-                current_audio_display = asset_details.get('audio_display', '')
-                # 1. 净化：将 "国语, 英语" 或 "国语，英语" 都拆分成干净的列表 ['国语', '英语']
-                #    使用正则表达式替换所有可能的逗号和多个空格
-                existing_langs_set = set(re.split(r'[,\s，]+', current_audio_display))
+                # ★★★ 核心修复：直接使用原始语言代码列表进行判断 ★★★
+                existing_audio_codes = set(asset_details.get('audio_languages_raw', []))
                 
                 for lang_code in required_langs:
-                    if lang_code in ['chi', 'yue'] and is_exempted:
+                    if lang_code in ['chi', 'yue', 'kor'] and is_exempted:
                         continue
                     
-                    display_name = AUDIO_DISPLAY_MAP.get(lang_code)
-                    # 2. 比对：在净化后的集合中进行绝对可靠的比对
-                    if display_name and display_name not in existing_langs_set:
+                    # 直接判断标准代码是否存在
+                    if lang_code not in existing_audio_codes:
+                        # 获取显示名称仅用于生成原因，不参与逻辑判断
+                        display_name = AUDIO_DISPLAY_MAP.get(lang_code, lang_code)
                         reasons.append(f"缺{display_name}音轨")
     except Exception as e:
         logger.warning(f"  ➜ [音轨检查] 处理时发生未知错误: {e}")
 
-    # --- 7. 字幕检查 (装甲版) ---
+    # --- 7. 字幕检查 (V2 - 基于原始数据) ---
     try:
         if rule.get("resubscribe_subtitle_enabled"):
             required_langs = rule.get("resubscribe_subtitle_missing_languages", [])
             if required_langs:
-                current_subtitle_display = asset_details.get('subtitle_display', '')
-                existing_langs_set = set(re.split(r'[,\s，]+', current_subtitle_display))
+                # ★★★ 核心修复：直接使用原始语言代码列表进行判断 ★★★
+                existing_subtitle_codes = set(asset_details.get('subtitle_languages_raw', []))
                 
                 for lang_code in required_langs:
-                    if lang_code in ['chi', 'yue'] and is_exempted:
+                    if lang_code in ['chi', 'yue', 'kor'] and is_exempted:
                         continue
-                        
-                    display_name = SUB_DISPLAY_MAP.get(lang_code)
                     
-                    if display_name and display_name not in existing_langs_set:
+                    # 直接判断标准代码是否存在
+                    if lang_code not in existing_subtitle_codes:
+                        # 获取显示名称仅用于生成原因，不参与逻辑判断
+                        display_name = SUB_DISPLAY_MAP.get(lang_code, lang_code)
                         reasons.append(f"缺{display_name}字幕")
-
     except Exception as e:
         logger.warning(f"  ➜ [字幕检查] 处理时发生未知错误: {e}")
                  
