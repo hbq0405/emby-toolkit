@@ -528,7 +528,9 @@ def get_release_group_ranking(limit: int = 5) -> list: # 默认值也改成5
             release_group,
             COUNT(*) AS count
         FROM (
-            SELECT jsonb_array_elements_text(asset -> 'release_group_raw') AS release_group
+            SELECT 
+                jsonb_array_elements_text(asset -> 'release_group_raw') AS release_group,
+                (asset ->> 'date_added_to_library')::timestamptz AS asset_added_at
             FROM (
                 SELECT jsonb_array_elements(asset_details_json) AS asset
                 FROM media_metadata
@@ -536,11 +538,11 @@ def get_release_group_ranking(limit: int = 5) -> list: # 默认值也改成5
                     in_library = TRUE 
                     AND asset_details_json IS NOT NULL 
                     AND jsonb_array_length(asset_details_json) > 0
-                    -- ★★★ 核心修复：使用时区转换来获取正确的“今天” ★★★
-                    AND (date_added AT TIME ZONE 'UTC' AT TIME ZONE %(timezone)s)::date = (NOW() AT TIME ZONE %(timezone)s)::date
             ) AS assets
         ) AS release_groups
-        WHERE release_group IS NOT NULL AND release_group != ''
+        WHERE 
+            release_group IS NOT NULL AND release_group != ''
+            AND (asset_added_at AT TIME ZONE 'UTC' AT TIME ZONE %(timezone)s)::date = (NOW() AT TIME ZONE %(timezone)s)::date
         GROUP BY release_group
         ORDER BY count DESC
         LIMIT %(limit)s;

@@ -356,10 +356,17 @@ def parse_full_asset_details(item_details: dict) -> dict:
             "release_group_raw": [], # 在空结构中也包含新字段
         }
 
+    date_added_to_library = item_details.get("DateCreated")
+
     asset = {
-        "emby_item_id": item_details.get("Id"), "path": item_details.get("Path", ""),
-        "size_bytes": item_details.get("Size"), "container": item_details.get("Container"),
-        "video_codec": None, "audio_tracks": [], "subtitles": []
+        "emby_item_id": item_details.get("Id"), 
+        "path": item_details.get("Path", ""),
+        "size_bytes": item_details.get("Size"), 
+        "container": item_details.get("Container"),
+        "video_codec": None, 
+        "audio_tracks": [], 
+        "subtitles": [],
+        "date_added_to_library": date_added_to_library 
     }
     media_streams = item_details.get("MediaStreams", [])
     for stream in media_streams:
