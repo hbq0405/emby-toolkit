@@ -519,7 +519,7 @@ def cleanup_deleted_media_item(item_id: str, item_name: str, item_type: str, ser
     except Exception as e:
         logger.error(f"清理被删除的媒体项 {item_id} 时发生严重数据库错误: {e}", exc_info=True)
 
-def get_release_group_ranking(limit: int = 5) -> list: # 默认值也改成5
+def get_release_group_ranking(limit: int = 5) -> list:
     """
     统计【当天入库】的发布组作品（文件）数量，并返回排名前N的列表。
     """
@@ -528,20 +528,20 @@ def get_release_group_ranking(limit: int = 5) -> list: # 默认值也改成5
             release_group,
             COUNT(*) AS count
         FROM (
-            SELECT 
+            SELECT
                 jsonb_array_elements_text(asset -> 'release_group_raw') AS release_group,
                 ((asset ->> 'date_added_to_library')::timestamp AT TIME ZONE 'UTC') AS asset_added_at_utc
             FROM (
                 SELECT jsonb_array_elements(asset_details_json) AS asset
                 FROM media_metadata
-                WHERE 
-                    in_library = TRUE 
-                    AND asset_details_json IS NOT NULL 
+                WHERE
+                    in_library = TRUE
+                    AND asset_details_json IS NOT NULL
                     AND jsonb_array_length(asset_details_json) > 0
-                    AND asset_details_json::text LIKE '%date_added_to_library%'
+                    AND asset_details_json::text LIKE %s
             ) AS assets
         ) AS release_groups
-        WHERE 
+        WHERE
             release_group IS NOT NULL AND release_group != ''
             AND (asset_added_at_utc AT TIME ZONE %s)::date = (NOW() AT TIME ZONE %s)::date
         GROUP BY release_group
@@ -551,10 +551,9 @@ def get_release_group_ranking(limit: int = 5) -> list: # 默认值也改成5
     try:
         with get_db_connection() as conn:
             with conn.cursor() as cursor:
-                params = (constants.TIMEZONE, constants.TIMEZONE, limit)
-                
+                like_pattern = '%date_added_to_library%'
+                params = (like_pattern, constants.TIMEZONE, constants.TIMEZONE, limit)
                 cursor.execute(query, params)
-                
                 results = cursor.fetchall()
                 return [dict(row) for row in results]
     except Exception as e:
