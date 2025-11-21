@@ -496,6 +496,7 @@ def init_db():
                             "first_requested_at": "TIMESTAMP WITH TIME ZONE",
                             "last_subscribed_at": "TIMESTAMP WITH TIME ZONE",
                             "pre_processed_at": "TIMESTAMP WITH TIME ZONE",
+                            "created_at": "TIMESTAMP WITH TIME ZONE",
                             "translated_title": "TEXT",
                             "translated_overview": "TEXT",
                             "pre_cached_tags_json": "JSONB",
