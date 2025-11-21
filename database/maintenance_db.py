@@ -12,6 +12,7 @@ from .connection import get_db_connection
 from .log_db import LogDBManager
 from .collection_db import remove_tmdb_id_from_all_collections
 from .media_db import get_tmdb_id_from_emby_id
+import constants
 
 logger = logging.getLogger(__name__)
 
@@ -522,7 +523,7 @@ def get_release_group_ranking(limit: int = 5) -> list: # 默认值也改成5
     """
     统计【当天入库】的发布组作品（文件）数量，并返回排名前N的列表。
     """
-    query = """
+    query = f"""
         SELECT
             release_group,
             COUNT(*) AS count
@@ -535,21 +536,22 @@ def get_release_group_ranking(limit: int = 5) -> list: # 默认值也改成5
                     in_library = TRUE 
                     AND asset_details_json IS NOT NULL 
                     AND jsonb_array_length(asset_details_json) > 0
-                    -- ★★★ 核心修改：只筛选 date_added 是今天的记录 ★★★
-                    AND date_added::date = CURRENT_DATE
+                    AND (date_added AT TIME ZONE 'UTC' AT TIME ZONE %(timezone)s)::date = (NOW() AT TIME ZONE %(timezone)s)::date
             ) AS assets
         ) AS release_groups
         WHERE release_group IS NOT NULL AND release_group != ''
         GROUP BY release_group
         ORDER BY count DESC
-        LIMIT %s;
+        LIMIT %(limit)s;
     """
     try:
         with get_db_connection() as conn:
             with conn.cursor() as cursor:
-                cursor.execute(query, (limit,))
+                # ★★★ 2/2: 核心修正 - 使用您已有的 TIMEZONE 常量 ★★★
+                params = {'timezone': constants.TIMEZONE, 'limit': limit}
+                cursor.execute(query, params)
                 results = cursor.fetchall()
-                return [dict(row) for row in results]
+                return [dict(row) for row] in results]
     except Exception as e:
         logger.error(f"获取【每日】发布组排行时发生数据库错误: {e}", exc_info=True)
         return []
