@@ -1621,11 +1621,10 @@ def update_emby_item_details(item_id: str, new_data: Dict[str, Any], emby_server
     except Exception as e:
         logger.error(f"更新项目详情时发生未知错误 (ID: {item_id}): {e}", exc_info=True)
         return False
-    
-def delete_item(item_id: str, emby_server_url: str, emby_api_key: str, user_id: str) -> bool:
+# --- 删除媒体项神医接口 ---    
+def delete_item_sy(item_id: str, emby_server_url: str, emby_api_key: str, user_id: str) -> bool:
     """
-    【V-Final Frontier 终极版】
-    通过模拟管理员登录获取临时 AccessToken 来执行删除，绕过永久 API Key 的权限问题。
+    删除媒体项神医接口
     """
     logger.warning(f"  ➜ 检测到删除请求，将尝试使用 [自动登录] 执行...")
 
@@ -1661,7 +1660,45 @@ def delete_item(item_id: str, emby_server_url: str, emby_api_key: str, user_id: 
     except Exception as e:
         logger.error(f"  ✅ 使用临时令牌删除 Emby 媒体项 ID: {item_id} 时发生未知错误: {e}")
         return False
+# --- 删除媒体项官方接口 ---
+def delete_item(item_id: str, emby_server_url: str, emby_api_key: str, user_id: str) -> bool:
+    """
+    删除媒体项官方接口
+    """
+    logger.warning(f"  ➜ 检测到删除请求，将尝试使用 [自动登录] 执行...")
+
+    # 1. 登录获取临时令牌
+    access_token, logged_in_user_id = get_admin_access_token()
     
+    if not access_token:
+        logger.error("无法获取临时 AccessToken，删除操作中止。请检查管理员账号密码是否正确。")
+        return False
+
+    # 2. 使用临时令牌执行删除
+    # 使用最被社区推荐的 POST /Items/{Id}/Delete 接口
+    api_url = f"{emby_server_url.rstrip('/')}/Items/{item_id}/Delete"
+    
+    headers = {
+        'X-Emby-Token': access_token  # ★ 使用临时的 AccessToken
+    }
+    
+    params = {
+        'UserId': logged_in_user_id # ★ 使用登录后返回的 UserId
+    }
+    
+    api_timeout = config_manager.APP_CONFIG.get(constants.CONFIG_OPTION_EMBY_API_TIMEOUT, 60)
+    
+    try:
+        response = requests.post(api_url, headers=headers, params=params, timeout=api_timeout)
+        response.raise_for_status()
+        logger.info(f"  ✅ 成功删除 Emby 媒体项 ID: {item_id}。")
+        return True
+    except requests.exceptions.HTTPError as e:
+        logger.error(f"  ✅ 使用临时令牌删除 Emby 媒体项 ID: {item_id} 时发生HTTP错误: {e.response.status_code} - {e.response.text}")
+        return False
+    except Exception as e:
+        logger.error(f"  ✅ 使用临时令牌删除 Emby 媒体项 ID: {item_id} 时发生未知错误: {e}")
+        return False    
 # --- 清理幽灵演员 ---
 def delete_person_custom_api(base_url: str, api_key: str, person_id: str) -> bool:
     """
