@@ -222,7 +222,8 @@ class MediaProcessor:
                 keywords_data = series_details.get('keywords', {})
                 keywords = [k['name'] for k in (keywords_data.get('keywords', []) or keywords_data.get('results', []))]
                 series_record['keywords_json'] = json.dumps(keywords, ensure_ascii=False)
-                series_record['original_language'] = series_details.get('original_language')
+                languages_list = series_details.get('languages', [])
+                series_record['original_language'] = languages_list[0] if languages_list else None
                 if item_details_from_emby:
                     series_record['in_library'] = True
                     series_record['subscription_status'] = 'NONE'
