@@ -224,13 +224,13 @@
             </n-grid>
             <n-divider /> <!-- 可以加一个分割线，让布局更清晰 -->
             <div class="section-container">
-              <div class="section-title">发布组 (Top 5)</div>
+              <div class="section-title">发布组 (Top {{ stats.release_group_ranking?.length || 0 }})</div>
               <n-space vertical :size="12" style="width: 100%;">
                 <div v-if="!stats.release_group_ranking || stats.release_group_ranking.length === 0">
                   <n-empty description="暂无发布组统计数据" />
                 </div>
                 <div v-else v-for="(group, index) in stats.release_group_ranking" :key="group.release_group" class="ranking-item">
-                  <span class="ranking-index">#{{ index + 1 }}</span>
+                  <span class="ranking-index">{{ index + 1 }}</span>
                   <span class="ranking-name">{{ group.release_group }}</span>
                   <span class="ranking-count">{{ group.count }} 部</span>
                   <n-progress
@@ -463,12 +463,14 @@ onMounted(() => {
 .ranking-index {
   font-weight: bold;
   color: var(--n-text-color-2);
-  width: 30px;
+  width: 25px; /* 减小宽度 */
+  text-align: right; /* 右对齐 */
+  padding-right: 8px; /* 增加与名称的间距 */
   flex-shrink: 0;
 }
 .ranking-name {
   font-weight: 500;
-  width: 120px; /* 可根据需要调整宽度 */
+  width: 100px; /* 调整宽度 */
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
@@ -476,8 +478,9 @@ onMounted(() => {
 }
 .ranking-count {
   color: var(--n-text-color-3);
-  width: 60px;
-  text-align: right;
+  width: 80px; /* 增加宽度以容纳 "xxxx 部" */
+  text-align: left; /* 改为左对齐，紧跟在名称后面 */
+  padding-left: 16px; /* 增加与名称的间距 */
   flex-shrink: 0;
 }
 </style>
