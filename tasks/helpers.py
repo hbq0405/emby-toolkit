@@ -99,22 +99,29 @@ RELEASE_GROUPS: Dict[str, List[str]] = {
 
 def _extract_exclusion_keywords_from_filename(filename: str) -> List[str]:
     """
-    基于 RELEASE_GROUPS 字典中的别名匹配文件名，找到发布组名（中文），大小写保留。
+    【V2 - 正则修复版】
+    基于 RELEASE_GROUPS 字典中的别名匹配文件名，找到发布组名（中文）。
+    此版本能正确处理正则表达式别名。
     """
     if not filename:
         return []
+    # 我们需要原始大小写的文件名（不含扩展名）来进行正则匹配
     name_part = os.path.splitext(filename)[0]
-    filename_upper = name_part.upper()
 
     for group_name, alias_list in RELEASE_GROUPS.items():
         for alias in alias_list:
-            # 去除常见正则符号，方便转大写进行简单包含匹配
-            alias_plain = re.sub(r'[\?\:\(\)\[\]\{\}\|\*\+\^\\\$\.]', '', alias).upper()
-            if alias_plain and alias_plain in filename_upper:
-                return [group_name]
-        # 额外判断组名本身（如含英文）是否出现在文件名中
-        group_name_upper = group_name.upper()
-        if group_name_upper in filename_upper:
+            try:
+                # 核心修复：使用 re.search 来正确评估正则表达式
+                # re.IGNORECASE 可以在匹配时忽略大小写
+                if re.search(alias, name_part, re.IGNORECASE):
+                    return [group_name]
+            except re.error as e:
+                # 如果正则表达式本身有语法错误，记录日志并跳过
+                logger.warning(f"RELEASE_GROUPS 中存在无效的正则表达式: '{alias}' for group '{group_name}'. Error: {e}")
+                continue
+        
+        # 保留对组名本身的检查（例如 "MTeam"）
+        if group_name.upper() in name_part.upper():
             return [group_name]
 
     return []
