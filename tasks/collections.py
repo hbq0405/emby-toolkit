@@ -263,83 +263,6 @@ def _perform_list_collection_health_check(
         "generated_media_info_json": json.dumps(tmdb_items, ensure_ascii=False)
     }
 
-# ✨ 辅助函数，并发刷新合集使用
-def _process_single_collection_concurrently(collection_data: dict, tmdb_api_key: str) -> dict:
-    """
-    【V7 - 增加垃圾数据过滤器】
-    """
-    collection_id = collection_data['Id']
-    collection_name = collection_data.get('Name', '')
-    today_str = datetime.now().strftime('%Y-%m-%d')
-    item_type = 'Movie'
-    
-    emby_movie_tmdb_ids = {str(id) for id in collection_data.get("ExistingMovieTmdbIds", [])}
-    
-    in_library_count = len(emby_movie_tmdb_ids)
-    status, has_missing = "ok", False
-    provider_ids = collection_data.get("ProviderIds", {})
-    all_movies_with_status = []
-    
-    tmdb_id = provider_ids.get("TmdbCollection") or provider_ids.get("TmdbCollectionId") or provider_ids.get("Tmdb")
-
-    if not tmdb_id:
-        status = "unlinked"
-    else:
-        details = tmdb.get_collection_details(int(tmdb_id), tmdb_api_key)
-        if not details or "parts" not in details:
-            status = "tmdb_error"
-        else:
-            previous_movies_map = {}
-            with connection.get_db_connection() as conn:
-                cursor = conn.cursor()
-                cursor.execute("SELECT missing_movies_json FROM collections_info WHERE emby_collection_id = %s", (collection_id,))
-                row = cursor.fetchone()
-                if row and row.get('missing_movies_json'):
-                    try:
-                        previous_movies_map = {str(m['tmdb_id']): m for m in row['missing_movies_json']}
-                    except (TypeError, KeyError): 
-                        logger.warning(f"解析合集 '{collection_name}' 的历史数据时格式不兼容，将忽略。")
-            
-            for movie in details.get("parts", []):
-                # ★★★ 核心过滤点 3/3: 在这个辅助函数中也加入过滤器 ★★★
-                if not movie.get("release_date") or not movie.get("poster_path"): 
-                    continue
-
-                movie_tmdb_id = str(movie.get("id"))
-                
-                movie_status = "unknown"
-                if movie_tmdb_id in emby_movie_tmdb_ids:
-                    movie_status = "in_library"
-                elif movie.get("release_date", '') > today_str:
-                    movie_status = "unreleased"
-                elif previous_movies_map.get(movie_tmdb_id, {}).get('status') == 'subscribed':
-                    movie_status = "subscribed"
-                else:
-                    movie_status = "missing"
-
-                all_movies_with_status.append({
-                    "tmdb_id": movie_tmdb_id, "title": movie.get("title", ""), 
-                    "release_date": movie.get("release_date"), "poster_path": movie.get("poster_path"), 
-                    "status": movie_status
-                })
-            
-            if any(m['status'] == 'missing' for m in all_movies_with_status):
-                has_missing = True
-                status = "has_missing"
-
-    image_tag = collection_data.get("ImageTags", {}).get("Primary")
-    poster_path = f"/Items/{collection_id}/Images/Primary?tag={image_tag}" if image_tag else None
-
-    return {
-        "emby_collection_id": collection_id, "name": collection_name, 
-        "tmdb_collection_id": tmdb_id, "item_type": item_type,
-        "status": status, "has_missing": has_missing, 
-        "missing_movies_json": json.dumps(all_movies_with_status, ensure_ascii=False), 
-        "last_checked_at": datetime.now(timezone.utc), 
-        "poster_path": poster_path, 
-        "in_library_count": in_library_count
-    }
-
 # ★★★ 刷新合集的后台任务函数 ★★★
 def task_refresh_collections(processor):
     """
@@ -562,7 +485,25 @@ def task_process_all_custom_collections(processor):
 
                 collection_db.update_custom_collection_sync_results(collection_id, update_data)
 
-                # ... (后续封面生成和延时逻辑 - 不变) ...
+                # ★★★ 封面生成逻辑 - 调用 ★★★
+                if cover_service and emby_collection_id:
+                    try:
+                        library_info = emby.get_emby_item_details(emby_collection_id, processor.emby_url, processor.emby_api_key, processor.emby_user_id)
+                        if library_info:
+                            latest_collection_info = collection_db.get_custom_collection_by_id(collection_id)
+                            item_count_to_pass = _get_cover_badge_text_for_collection(latest_collection_info)
+                            cover_service.generate_for_library(
+                                emby_server_id='main_emby', library=library_info,
+                                item_count=item_count_to_pass, content_types=definition.get('item_type', ['Movie'])
+                            )
+                    except Exception as e_cover:
+                        logger.error(f"为合集 '{collection_name}' 生成封面时出错: {e_cover}", exc_info=True)
+
+                # 如果刚刚处理的是一个猫眼榜单，就主动休息几秒，避免对猫眼服务器造成压力
+                if collection['type'] == 'list' and collection['definition_json'].get('url', '').startswith('maoyan://'):
+                    delay_seconds = 10
+                    logger.info(f"  ➜ 已处理一个猫眼榜单，为避免触发反爬机制，将主动降温 {delay_seconds} 秒...")
+                    time.sleep(delay_seconds)
                 
             except Exception as e_coll:
                 logger.error(f"处理合集 '{collection_name}' (ID: {collection_id}) 时发生错误: {e_coll}", exc_info=True)
@@ -684,7 +625,23 @@ def process_single_custom_collection(processor, custom_collection_id: int):
 
         collection_db.update_custom_collection_sync_results(custom_collection_id, update_data)
 
-        # ... (步骤 6: 封面生成 - 不变) ...
+        # ======================================================================
+        # 步骤 6: 封面生成
+        # ======================================================================
+        try:
+            cover_config = settings_db.get_setting('cover_generator_config') or {}
+            if cover_config.get("enabled") and emby_collection_id:
+                cover_service = CoverGeneratorService(config=cover_config)
+                library_info = emby.get_emby_item_details(emby_collection_id, processor.emby_url, processor.emby_api_key, processor.emby_user_id)
+                if library_info:
+                    latest_collection_info = collection_db.get_custom_collection_by_id(custom_collection_id)
+                    item_count_to_pass = _get_cover_badge_text_for_collection(latest_collection_info)
+                    cover_service.generate_for_library(
+                        emby_server_id='main_emby', library=library_info,
+                        item_count=item_count_to_pass, content_types=definition.get('item_type', ['Movie'])
+                    )
+        except Exception as e_cover:
+            logger.error(f"为合集 '{collection_name}' 生成封面时发生错误: {e_cover}", exc_info=True)
         
         task_manager.update_status_from_thread(100, "单个自定义合集同步完成！")
         logger.info(f"--- '{task_name}' 任务成功完成 ---")
