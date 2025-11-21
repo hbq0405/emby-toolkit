@@ -209,7 +209,6 @@ def init_db():
                         release_year INTEGER,
                         poster_path TEXT,
                         rating REAL,
-                        vote_count INTEGER,
                         popularity REAL,
                         official_rating TEXT,
                         genres_json JSONB,
@@ -648,7 +647,8 @@ def init_db():
                             'tags_json',
                             'paths_json',
                             'backdrop_path',
-                            'runtime_minutes'
+                            'runtime_minutes',
+                            'vote_count'
                         ],
                         'custom_collections': [
                             'generated_emby_ids_json' # <-- 在这里添加了废弃的列！
