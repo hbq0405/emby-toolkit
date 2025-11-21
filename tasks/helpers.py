@@ -17,9 +17,15 @@ AUDIO_SUBTITLE_KEYWORD_MAP = {
     "yue": ["Cantonese", "YUE", "粤语"],
     "eng": ["English", "ENG", "英语"],
     "jpn": ["Japanese", "JPN", "日语"],
+    "kor": ["Korean", "KOR", "韩语"],
     "sub_chi": ["CHS", "CHT", "中字", "简中", "繁中", "简", "繁"],
     "sub_eng": ["ENG", "英字"],
+    "sub_jpn": ["JPN", "日字", "日文"],
+    "sub_kor": ["KOR", "韩字", "韩文"],
 }
+
+AUDIO_DISPLAY_MAP = {'chi': '国语', 'yue': '粤语', 'eng': '英语', 'jpn': '日语', 'kor': '韩语'}
+SUB_DISPLAY_MAP = {'chi': '简体', 'yue': '繁体', 'eng': '英文', 'jpn': '日文', 'kor': '韩文'}
 
 RELEASE_GROUPS: Dict[str, List[str]] = {
     "0ff": ['FF(?:(?:A|WE)B|CD|E(?:DU|B)|TV)'],
@@ -234,7 +240,8 @@ def _get_detected_languages_from_streams(
     standard_codes = {
         'chi': {'chi', 'zho', 'chs', 'cht', 'zh-cn', 'zh-hans', 'zh-sg', 'cmn', 'yue'},
         'eng': {'eng'},
-        'jpn': {'jpn'}
+        'jpn': {'jpn'},
+        'kor': {'kor'},
     }
     
     for stream in media_streams:
@@ -310,7 +317,6 @@ def analyze_media_asset(item_details: dict) -> dict:
     if 'chi' not in detected_sub_langs and 'yue' not in detected_sub_langs and any(
         s.get('IsExternal') for s in media_streams if s.get('Type') == 'Subtitle'):
         detected_sub_langs.add('chi')
-    SUB_DISPLAY_MAP = {'chi': '简体', 'yue': '繁体', 'eng': '英文', 'jpn': '日文'}
     subtitle_str = ', '.join(sorted([SUB_DISPLAY_MAP.get(lang, lang) for lang in detected_sub_langs])) or '无'
 
     release_group_list = _extract_exclusion_keywords_from_filename(file_name)

@@ -302,9 +302,14 @@ const effectOptions = ref([
 const languageOptions = ref([
     { label: '国语 (chi)', value: 'chi' }, { label: '粤语 (yue)', value: 'yue' },
     { label: '英语 (eng)', value: 'eng' }, { label: '日语 (jpn)', value: 'jpn' },
+    { label: '韩语 (kor)', value: 'kor' }, // <--- ★★★ 新增韩语音轨
 ]);
 const subtitleLanguageOptions = ref([
-    { label: '中字 (chi)', value: 'chi' }, { label: '英字 (eng)', value: 'eng' },
+    { label: '简体 (chi)', value: 'chi' }, // <--- (建议) 修改标签以匹配后端
+    { label: '繁体 (yue)', value: 'yue' }, // <--- (建议) 补上繁体
+    { label: '英文 (eng)', value: 'eng' }, // <--- (建议) 修改标签以匹配后端
+    { label: '日文 (jpn)', value: 'jpn' }, // <--- (建议) 补上日文
+    { label: '韩文 (kor)', value: 'kor' }, // <--- ★★★ 新增韩文字幕
 ]);
 
 const loadData = async () => {
@@ -368,7 +373,8 @@ const openRuleModal = async (rule = null) => {
       resubscribe_subtitle_effect_only: false,
       resubscribe_filesize_enabled: false,
       resubscribe_filesize_operator: 'lt', 
-      resubscribe_filesize_threshold_gb: null, 
+      resubscribe_filesize_threshold_gb: null,
+      resubscribe_subtitle_skip_if_audio_exists: false, 
     };
   }
 

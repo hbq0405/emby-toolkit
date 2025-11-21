@@ -24,7 +24,9 @@ from .helpers import (
     _get_detected_languages_from_streams, 
     _get_standardized_effect, 
     _extract_quality_tag_from_filename,
-    AUDIO_SUBTITLE_KEYWORD_MAP
+    AUDIO_SUBTITLE_KEYWORD_MAP,
+    AUDIO_DISPLAY_MAP,            
+    SUB_DISPLAY_MAP
 )
 
 logger = logging.getLogger(__name__)
@@ -451,8 +453,6 @@ def _item_needs_resubscribe(asset_details: dict, rule: dict, media_metadata: Opt
                 #    使用正则表达式替换所有可能的逗号和多个空格
                 existing_langs_set = set(re.split(r'[,\s，]+', current_audio_display))
                 
-                AUDIO_DISPLAY_MAP = {'chi': '国语', 'yue': '粤语', 'eng': '英语', 'jpn': '日语'}
-                
                 for lang_code in required_langs:
                     if lang_code in ['chi', 'yue'] and is_exempted:
                         continue
@@ -471,7 +471,6 @@ def _item_needs_resubscribe(asset_details: dict, rule: dict, media_metadata: Opt
             if required_langs:
                 current_subtitle_display = asset_details.get('subtitle_display', '')
                 existing_langs_set = set(re.split(r'[,\s，]+', current_subtitle_display))
-                SUB_DISPLAY_MAP = {'chi': '简体', 'yue': '繁体', 'eng': '英文', 'jpn': '日文'}
                 
                 for lang_code in required_langs:
                     if lang_code in ['chi', 'yue'] and is_exempted:
