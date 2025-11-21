@@ -272,38 +272,26 @@ def get_resolution_distribution() -> List[Dict[str, Any]]:
     """获取在库媒体的分辨率分布，用于生成图表。"""
     sql = """
         SELECT 
-            -- ★★★ 核心修复：使用更健壮的 CASE 逻辑 ★★★
-            CASE
-                WHEN COALESCE(asset ->> 'resolution_display', '其他') = '2160p' THEN '2160p'
-                WHEN COALESCE(asset ->> 'resolution_display', '其他') = '1080p' THEN '1080p'
-                WHEN COALESCE(asset ->> 'resolution_display', '其他') = '720p'  THEN '720p'
-                ELSE '其他'
-            END as resolution_group,
+            -- 提取 asset_details_json 数组中第一个元素的 resolution_display 字段
+            (jsonb_array_elements(asset_details_json) ->> 'resolution_display') as resolution,
             COUNT(*) as count
         FROM 
-            media_metadata,
-            jsonb_array_elements(asset_details_json) as asset
+            media_metadata
         WHERE 
             in_library = TRUE 
             AND item_type IN ('Movie', 'Episode')
             AND asset_details_json IS NOT NULL
             AND jsonb_array_length(asset_details_json) > 0
         GROUP BY 
-            resolution_group
-        ORDER BY
-            CASE
-                WHEN resolution_group = '2160p' THEN 1
-                WHEN resolution_group = '1080p' THEN 2
-                WHEN resolution_group = '720p'  THEN 3
-                ELSE 4
-            END;
+            resolution
+        ORDER BY 
+            count DESC;
     """
     try:
         with get_db_connection() as conn:
             with conn.cursor() as cursor:
                 cursor.execute(sql)
-                # 返回的字段名已统一为 'resolution'
-                return [{'resolution': row['resolution_group'], 'count': row['count']} for row in cursor.fetchall()]
+                return [dict(row) for row in cursor.fetchall()]
     except Exception as e:
         logger.error(f"DB: 获取分辨率分布数据失败: {e}", exc_info=True)
         return []
