@@ -209,12 +209,29 @@
                <template #header-extra>
                 <n-switch v-model:value="currentRule.resubscribe_subtitle_enabled" @click.stop />
               </template>
-              <n-form-item label="当缺少以下字幕时洗版 (3字母代码)" label-placement="top">
+              <n-form-item label="当缺少以下字幕时洗版" label-placement="top">
                 <n-select
                   v-model:value="currentRule.resubscribe_subtitle_missing_languages"
                   multiple tag
                   :options="subtitleLanguageOptions"
                   :disabled="!currentRule.resubscribe_subtitle_enabled"
+                />
+              </n-form-item>
+              <n-form-item :disabled="!currentRule.resubscribe_subtitle_enabled">
+                <template #label>
+                  <n-space align="center">
+                    <span>豁免规则</span>
+                    <n-tooltip trigger="hover">
+                      <template #trigger>
+                        <n-icon :component="AlertIcon" style="color: var(--n-info-color);" />
+                      </template>
+                      开启后，如果媒体文件已包含与所缺字幕语言相同的音轨（如已有国语音轨），<br>
+                      则系统将不再认为它缺少中文字幕。
+                    </n-tooltip>
+                  </n-space>
+                </template>
+                <n-switch 
+                  v-model:value="currentRule.resubscribe_subtitle_skip_if_audio_exists"
                 />
               </n-form-item>
             </n-collapse-item>

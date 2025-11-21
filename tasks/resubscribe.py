@@ -468,16 +468,24 @@ def _item_needs_resubscribe(asset_details: dict, rule: dict, media_metadata: Opt
         if rule.get("resubscribe_subtitle_enabled"):
             required_langs = rule.get("resubscribe_subtitle_missing_languages", [])
             if required_langs:
-                # ★★★ 核心修复：直接使用原始语言代码列表进行判断 ★★★
                 existing_subtitle_codes = set(asset_details.get('subtitle_languages_raw', []))
                 
                 for lang_code in required_langs:
                     if lang_code in ['chi', 'yue', 'kor'] and is_exempted:
                         continue
                     
-                    # 直接判断标准代码是否存在
+                    # ★★★ 新功能逻辑开始 ★★★
+                    # 检查规则是否开启了“音轨豁免”功能
+                    if rule.get("resubscribe_subtitle_skip_if_audio_exists", False):
+                        # 获取已存在的音轨语言代码
+                        existing_audio_codes = asset_details.get('audio_languages_raw', [])
+                        # 如果要求的字幕语言 (如 'chi') 已经存在于音轨中
+                        if lang_code in existing_audio_codes:
+                            continue # 则跳过对这条字幕的检查，相当于豁免
+                    # ★★★ 新功能逻辑结束 ★★★
+                    
+                    # 如果未被豁免，且字幕确实不存在
                     if lang_code not in existing_subtitle_codes:
-                        # 获取显示名称仅用于生成原因，不参与逻辑判断
                         display_name = SUB_DISPLAY_MAP.get(lang_code, lang_code)
                         reasons.append(f"缺{display_name}字幕")
     except Exception as e:

@@ -327,7 +327,8 @@ def init_db():
                         resubscribe_filesize_operator TEXT DEFAULT 'lt', 
                         resubscribe_filesize_threshold_gb REAL DEFAULT 10.0,
                         resubscribe_codec_enabled BOOLEAN DEFAULT FALSE,
-                        resubscribe_codec_include JSONB 
+                        resubscribe_codec_include JSONB,
+                        resubscribe_subtitle_skip_if_audio_exists BOOLEAN DEFAULT FALSE 
                     )
                 """)
 
