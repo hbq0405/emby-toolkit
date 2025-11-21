@@ -32,7 +32,7 @@ def _prepare_data_for_insert(table_name: str, table_data: List[Dict[str, Any]]) 
         'custom_collections': {'definition_json', 'allowed_user_ids', 'generated_media_info_json'},
         'user_collection_cache': {'visible_emby_ids_json'},
         'media_metadata': {
-            'emby_item_ids_json', 'paths_json', 'subscription_sources_json', 
+            'emby_item_ids_json', 'subscription_sources_json', 
             'pre_cached_tags_json', 'pre_cached_extra_json', 'genres_json', 
             'actors_json', 'directors_json', 'studios_json', 'countries_json', 
             'keywords_json', 'next_episode_to_air_json', 'last_episode_to_air_json',

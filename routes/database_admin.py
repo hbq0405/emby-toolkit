@@ -48,6 +48,7 @@ def api_get_database_stats():
                 "series_in_library": raw_stats.get('media_series_in_library', 0),
                 "episodes_in_library": raw_stats.get('media_episodes_in_library', 0),
                 "missing_total": raw_stats.get('media_missing_total', 0),
+                "resolution_stats": raw_stats.get('resolution_distribution', []),
             },
             'system': {
                 "actor_mappings_total": raw_stats.get('actor_mappings_linked', 0) + raw_stats.get('actor_mappings_unlinked', 0),

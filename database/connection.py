@@ -186,7 +186,6 @@ def init_db():
                         in_library BOOLEAN DEFAULT FALSE NOT NULL,
                         emby_item_ids_json JSONB NOT NULL DEFAULT '[]'::jsonb,
                         date_added TIMESTAMP WITH TIME ZONE,
-                        paths_json JSONB,
                         asset_details_json JSONB,
 
                         -- 订阅与状态管理
@@ -485,6 +484,8 @@ def init_db():
 
                     schema_upgrades = {
                         'media_metadata': {
+                            "imdb_id": "TEXT",
+                            "tvdb_id": "TEXT",
                             "asset_details_json": "JSONB",
                             "last_updated_at": "TIMESTAMP WITH TIME ZONE",
                             "overview": "TEXT",
@@ -646,7 +647,8 @@ def init_db():
                         'media_metadata': [
                             'emby_item_id',
                             'emby_children_details_json',
-                            'tags_json'
+                            'tags_json',
+                            'paths_json'
                         ],
                         'custom_collections': [
                             'generated_emby_ids_json' # <-- 在这里添加了废弃的列！

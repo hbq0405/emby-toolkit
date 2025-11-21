@@ -254,7 +254,12 @@ def get_dashboard_stats() -> dict:
             with conn.cursor() as cursor:
                 cursor.execute(sql)
                 result = cursor.fetchone()
-                return dict(result) if result else {}
+                if result:
+                    stats_dict = dict(result)
+                    stats_dict['resolution_distribution'] = get_resolution_distribution()
+                    return stats_dict
+                else:
+                    return {}
     except psycopg2.Error as e:
         # 保留这个有用的警告，以防万一
         if "watchlist" in str(e):
@@ -262,6 +267,34 @@ def get_dashboard_stats() -> dict:
         else:
             logger.error(f"执行聚合统计查询时出错: {e}")
         return {}
+    
+def get_resolution_distribution() -> List[Dict[str, Any]]:
+    """获取在库媒体的分辨率分布，用于生成图表。"""
+    sql = """
+        SELECT 
+            -- 提取 asset_details_json 数组中第一个元素的 resolution_display 字段
+            (jsonb_array_elements(asset_details_json) ->> 'resolution_display') as resolution,
+            COUNT(*) as count
+        FROM 
+            media_metadata
+        WHERE 
+            in_library = TRUE 
+            AND item_type IN ('Movie', 'Episode')
+            AND asset_details_json IS NOT NULL
+            AND jsonb_array_length(asset_details_json) > 0
+        GROUP BY 
+            resolution
+        ORDER BY 
+            count DESC;
+    """
+    try:
+        with get_db_connection() as conn:
+            with conn.cursor() as cursor:
+                cursor.execute(sql)
+                return [dict(row) for row in cursor.fetchall()]
+    except Exception as e:
+        logger.error(f"DB: 获取分辨率分布数据失败: {e}", exc_info=True)
+        return []
 
 def get_all_table_names() -> List[str]:
     """

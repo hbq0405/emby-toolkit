@@ -35,7 +35,7 @@
             <span class="card-title">核心数据</span>
           </template>
           <n-space vertical :size="20">
-            <!-- 顶部关键指标 -->
+            <!-- 顶部关键指标 (保持不变) -->
             <n-grid :cols="2" :x-gap="12">
               <n-gi>
                 <n-statistic label="已缓存媒体" class="centered-statistic">
@@ -51,57 +51,39 @@
 
             <n-divider />
 
-            <!-- 媒体细分 -->
+            <!-- ★★★ 新的媒体库概览，包含饼图 ★★★ -->
             <div>
-              <div class="section-title">媒体</div>
-              <n-space justify="space-around" style="width: 100%; margin-top: 12px;">
-                <n-statistic label="电影" class="centered-statistic">
-                  <template #prefix>
-                    <n-icon-wrapper :size="20" :border-radius="5" color="#3366FF44">
-                      <n-icon :size="14" :component="FilmIcon" color="#3366FF" />
-                    </n-icon-wrapper>
-                  </template>
-                  {{ stats.media_library?.movies_in_library || 0 }}
-                </n-statistic>
-                <n-statistic label="剧集" class="centered-statistic">
-                  <template #prefix>
-                    <n-icon-wrapper :size="20" :border-radius="5" color="#33CC9944">
-                      <n-icon :size="14" :component="TvIcon" color="#33CC99" />
-                    </n-icon-wrapper>
-                  </template>
-                  {{ stats.media_library?.series_in_library || 0 }}
-                </n-statistic>
-                <n-statistic label="总集数" class="centered-statistic">
-                  <template #prefix>
-                    <n-icon-wrapper :size="20" :border-radius="5" color="#99999944">
-                      <n-icon :size="14" :component="AlbumsOutline" color="#999999" />
-                    </n-icon-wrapper>
-                  </template>
-                  {{ stats.media_library?.episodes_in_library || 0 }}
-                </n-statistic>
-                <n-statistic label="预缓存" class="centered-statistic">
-                  <template #prefix>
-                    <n-icon-wrapper :size="20" :border-radius="5" color="#FFCC3344">
-                      <n-icon :size="14" :component="FolderOpenOutline" color="#FFCC33" />
-                    </n-icon-wrapper>
-                  </template>
-                  {{ stats.media_library?.missing_total || 0 }}
-                </n-statistic>
-              </n-space>
+              <div class="section-title">媒体库概览</div>
+              <n-grid :cols="2" :x-gap="24" style="margin-top: 12px; align-items: center;">
+                <n-gi>
+                  <v-chart class="chart" :option="resolutionChartOptions" autoresize style="height: 180px;" />
+                </n-gi>
+                <n-gi>
+                  <n-space vertical justify="center" style="height: 100%;">
+                    <n-statistic label="电影" :value="stats.media_library?.movies_in_library || 0" />
+                    <n-statistic label="剧集" :value="stats.media_library?.series_in_library || 0" />
+                    <n-statistic label="总集数" :value="stats.media_library?.episodes_in_library || 0" />
+                  </n-space>
+                </n-gi>
+              </n-grid>
             </div>
 
-            <!-- 演员细分 -->
+            <!-- ★★★ 新的演员关联进度条 ★★★ -->
             <div>
-              <div class="section-title">演员</div>
-              <n-space justify="space-around" style="width: 100%; margin-top: 12px;">
-                <n-statistic label="已关联" class="centered-statistic" :value="stats.system?.actor_mappings_linked || 0" />
-                <n-statistic label="未关联" class="centered-statistic" :value="stats.system?.actor_mappings_unlinked || 0" />
-              </n-space>
+              <div class="section-title">演员关联进度</div>
+              <n-progress
+                type="line"
+                :percentage="((stats.system?.actor_mappings_linked || 0) / (stats.system?.actor_mappings_total || 1)) * 100"
+                indicator-placement="inside"
+                processing
+              >
+                {{ stats.system?.actor_mappings_linked || 0 }} / {{ stats.system?.actor_mappings_total || 0 }}
+              </n-progress>
             </div>
 
             <n-divider />
 
-            <!-- 系统日志与缓存 -->
+            <!-- 系统日志与缓存 (保持不变) -->
             <div>
               <div class="section-title">系统日志与缓存</div>
               <n-space justify="space-around" style="width: 100%; margin-top: 12px;">
@@ -253,6 +235,14 @@ import {
   AlbumsOutline 
 } from '@vicons/ionicons5';
 import LogViewer from './LogViewer.vue';
+import { NProgress } from 'naive-ui'; // 额外导入进度条组件
+import { use } from 'echarts/core';
+import { CanvasRenderer } from 'echarts/renderers';
+import { PieChart } from 'echarts/charts';
+import { TitleComponent, TooltipComponent, LegendComponent } from 'echarts/components';
+import VChart from 'vue-echarts';
+
+use([ CanvasRenderer, PieChart, TitleComponent, TooltipComponent, LegendComponent ]);
 
 const props = defineProps({
   taskStatus: {
@@ -304,6 +294,51 @@ const fetchStats = async () => {
     loading.value = false;
   }
 };
+
+const resolutionChartOptions = computed(() => {
+  const chartData = stats.value.media_library?.resolution_stats || [];
+  return {
+    tooltip: {
+      trigger: 'item',
+      formatter: '{b}: {c} ({d}%)'
+    },
+    legend: {
+      orient: 'vertical',
+      left: 'left',
+      textStyle: {
+        color: '#ccc'
+      }
+    },
+    series: [
+      {
+        name: '分辨率',
+        type: 'pie',
+        radius: ['40%', '70%'],
+        avoidLabelOverlap: false,
+        itemStyle: {
+          borderRadius: 10,
+          borderColor: '#18181c',
+          borderWidth: 2
+        },
+        label: {
+          show: false,
+          position: 'center'
+        },
+        emphasis: {
+          label: {
+            show: true,
+            fontSize: '20',
+            fontWeight: 'bold'
+          }
+        },
+        labelLine: {
+          show: false
+        },
+        data: chartData.map(item => ({ value: item.count, name: item.resolution || '未知' }))
+      }
+    ]
+  };
+});
 
 onMounted(() => {
   fetchStats();
