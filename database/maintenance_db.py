@@ -272,11 +272,11 @@ def get_resolution_distribution() -> List[Dict[str, Any]]:
     """获取在库媒体的分辨率分布，用于生成图表。"""
     sql = """
         SELECT 
-            -- ★★★ 核心修复：使用 COALESCE 处理 NULL, 使用 UPPER 处理大小写 ★★★
+            -- ★★★ 核心修复：使用更健壮的 CASE 逻辑 ★★★
             CASE
-                WHEN UPPER(COALESCE(asset ->> 'resolution_display', '未知')) = '2160P' THEN '2160p'
-                WHEN UPPER(COALESCE(asset ->> 'resolution_display', '未知')) = '1080P' THEN '1080p'
-                WHEN UPPER(COALESCE(asset ->> 'resolution_display', '未知')) = '720P'  THEN '720p'
+                WHEN COALESCE(asset ->> 'resolution_display', '其他') = '2160p' THEN '2160p'
+                WHEN COALESCE(asset ->> 'resolution_display', '其他') = '1080p' THEN '1080p'
+                WHEN COALESCE(asset ->> 'resolution_display', '其他') = '720p'  THEN '720p'
                 ELSE '其他'
             END as resolution_group,
             COUNT(*) as count

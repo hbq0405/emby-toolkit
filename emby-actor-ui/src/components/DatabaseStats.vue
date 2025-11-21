@@ -63,6 +63,14 @@
                     <n-statistic label="电影" :value="stats.media_library?.movies_in_library || 0" />
                     <n-statistic label="剧集" :value="stats.media_library?.series_in_library || 0" />
                     <n-statistic label="总集数" :value="stats.media_library?.episodes_in_library || 0" />
+                    <n-statistic label="预缓存" class="centered-statistic">
+                      <template #prefix>
+                        <n-icon-wrapper :size="20" :border-radius="5" color="#FFCC3344">
+                          <n-icon :size="14" :component="FolderOpenOutline" color="#FFCC33" />
+                        </n-icon-wrapper>
+                      </template>
+                      {{ stats.media_library?.missing_total || 0 }}
+                    </n-statistic>
                   </n-space>
                 </n-gi>
               </n-grid>
@@ -145,13 +153,6 @@
                   <div class="stat-item">
                     <div class="stat-item-label">待洗版</div>
                     <div class="stat-item-value">{{ stats.subscriptions_card?.resubscribe.pending || 0 }}</div>
-                  </div>
-                </n-gi>
-                <n-gi class="stat-block">
-                  <div class="stat-block-title">预缓存媒体</div>
-                  <div class="stat-item">
-                    <div class="stat-item-label">待入库</div>
-                    <div class="stat-item-value">{{ stats.media_library?.missing_total || 0 }}</div>
                   </div>
                 </n-gi>
                 <!-- Block 2: 原生合集 -->
@@ -304,12 +305,12 @@ const fetchStats = async () => {
 
 const resolutionChartOptions = computed(() => {
   const chartData = stats.value.media_library?.resolution_stats || [];
+  // 确保即使没有数据，图表也不会崩溃
+  if (!chartData.length) {
+    return { series: [{ type: 'pie', data: [{ value: 1, name: '无数据' }] }] };
+  }
   return {
-    color: [ '#5470C6', '#91CC75', '#FAC858', '#73C0DE' ], 
-    tooltip: {
-      trigger: 'item',
-      formatter: '{b}: {c} ({d}%)'
-    },
+    color: [ '#5470C6', '#91CC75', '#FAC858', '#73C0DE' ], // 漂亮的颜色
     tooltip: {
       trigger: 'item',
       formatter: '{b}: {c} ({d}%)'
@@ -317,35 +318,27 @@ const resolutionChartOptions = computed(() => {
     legend: {
       orient: 'vertical',
       left: 'left',
+      top: 'center', // 垂直居中
       textStyle: {
-        color: '#ccc'
-      }
+        color: '#ccc' // 图例文字颜色
+      },
+      // ★★★ 核心修复：从数据动态生成图例 ★★★
+      data: chartData.map(item => item.resolution || '未知')
     },
     series: [
       {
         name: '分辨率',
         type: 'pie',
-        radius: ['40%', '70%'],
+        radius: ['50%', '70%'], // 调整内外半径，让环形更美观
+        center: ['70%', '50%'], // 将饼图向右移动，给图例留出空间
         avoidLabelOverlap: false,
         itemStyle: {
-          borderRadius: 10,
+          borderRadius: 8,
           borderColor: '#18181c',
           borderWidth: 2
         },
-        label: {
-          show: false,
-          position: 'center'
-        },
-        emphasis: {
-          label: {
-            show: true,
-            fontSize: '20',
-            fontWeight: 'bold'
-          }
-        },
-        labelLine: {
-          show: false
-        },
+        label: { show: false },
+        labelLine: { show: false },
         data: chartData.map(item => ({ value: item.count, name: item.resolution || '未知' }))
       }
     ]
