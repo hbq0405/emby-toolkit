@@ -310,7 +310,7 @@ def analyze_media_asset(item_details: dict) -> dict:
     if 'chi' not in detected_sub_langs and 'yue' not in detected_sub_langs and any(
         s.get('IsExternal') for s in media_streams if s.get('Type') == 'Subtitle'):
         detected_sub_langs.add('chi')
-    SUB_DISPLAY_MAP = {'chi': '中字', 'yue': '粤字', 'eng': '英文', 'jpn': '日文'}
+    SUB_DISPLAY_MAP = {'chi': '简体', 'yue': '繁体', 'eng': '英文', 'jpn': '日文'}
     subtitle_str = ', '.join(sorted([SUB_DISPLAY_MAP.get(lang, lang) for lang in detected_sub_langs])) or '无'
 
     release_group_list = _extract_exclusion_keywords_from_filename(file_name)

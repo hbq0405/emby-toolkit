@@ -471,7 +471,7 @@ def _item_needs_resubscribe(asset_details: dict, rule: dict, media_metadata: Opt
             if required_langs:
                 current_subtitle_display = asset_details.get('subtitle_display', '')
                 existing_langs_set = set(re.split(r'[,\s，]+', current_subtitle_display))
-                SUB_DISPLAY_MAP = {'chi': '中字', 'yue': '粤字', 'eng': '英文', 'jpn': '日文'}
+                SUB_DISPLAY_MAP = {'chi': '简体', 'yue': '繁体', 'eng': '英文', 'jpn': '日文'}
                 
                 for lang_code in required_langs:
                     if lang_code in ['chi', 'yue'] and is_exempted:
@@ -479,34 +479,6 @@ def _item_needs_resubscribe(asset_details: dict, rule: dict, media_metadata: Opt
                         
                     display_name = SUB_DISPLAY_MAP.get(lang_code)
                     
-                    # ★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★
-                    # ★★★ 魔法日志开始 ★★★
-                    # ★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★
-                    # 只在处理“阿丽塔”并且要检查“英文”时触发，避免刷屏
-                    # 只在处理“阿丽塔”并且要检查“中字”时触发，避免刷屏
-                    # if '阿丽塔' in item_name and display_name == '中字':
-                    #     logger.critical("="*80)
-                    #     logger.critical(">>> [魔法日志]：进入《阿丽塔》中字规则判断 <<<")
-                    #     logger.critical(f"  - [原始字符串]   current_subtitle_display: {current_subtitle_display}")
-                    #     logger.critical(f"  - [原始类型]     type(current_subtitle_display): {type(current_subtitle_display)}")
-                    #     logger.critical(f"  - [字节级表示]   repr(current_subtitle_display): {repr(current_subtitle_display)}")
-                    #     logger.critical(f"  - [净化后集合]   existing_langs_set: {existing_langs_set}")
-                    #     logger.critical(f"  - [要查找的目标] display_name: '{display_name}'")
-                        
-                    #     check_result = display_name not in existing_langs_set
-                        
-                    #     logger.critical(f"  - [判断表达式]   '{display_name}' not in {existing_langs_set}")
-                    #     logger.critical(f"  - [判断结果]     Check Result: {check_result}")
-                        
-                    #     if check_result:
-                    #         logger.critical("  - [最终结论]     程序认为【缺少】中文字幕，即将添加原因。")
-                    #     else:
-                    #         logger.critical("  - [最终结论]     程序认为【不缺】中文字幕，判断正确。")
-                    #     logger.critical("="*80)
-                    # ★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★
-                    # ★★★ 魔法日志结束 ★★★
-                    # ★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★
-
                     if display_name and display_name not in existing_langs_set:
                         reasons.append(f"缺{display_name}字幕")
 
