@@ -118,16 +118,9 @@
                     <n-space vertical size="small">
                       <n-tag :type="getStatusInfo(item.status).type" size="small">
                         {{ getStatusInfo(item.status).text }}
+                        <!-- 仅当状态为 'needed' 时，才在标签内部显示原因 -->
+                        <span v-if="item.status === 'needed'">: {{ item.reason }}</span>
                       </n-tag>
-                      <div>
-                        <n-tooltip v-if="item.status === 'needed'">
-                          <template #trigger>
-                            <n-text :depth="3" class="reason-text" :line-clamp="2">原因: {{ item.reason }}</n-text>
-                          </template>
-                          {{ item.reason }}
-                        </n-tooltip>
-                        <n-text v-else :depth="3" class="reason-text" :line-clamp="2" style="visibility: hidden;">占位</n-text>
-                      </div>
                       <n-divider style="margin: 4px 0;" />
                       <n-text :depth="2" class="info-text">分辨率: {{ item.resolution_display }}</n-text>
                       <n-tooltip :disabled="!item.release_group_raw || item.release_group_raw.length === 0">
@@ -629,8 +622,8 @@ watch(() => props.taskStatus, (newStatus, oldStatus) => {
 
 .card-poster-container { 
   flex-shrink: 0; 
-  width: 160px; /* 这里调整海报宽度 */
-  height: 240px; /* 这里调整海报高度 */
+  width: 150px; /* 这里调整海报宽度 */
+  height: 225px; /* 这里调整海报高度 */
   overflow: hidden; 
   border-radius: 4px; 
 } 
