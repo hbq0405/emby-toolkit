@@ -170,18 +170,27 @@ def get_resubscribe_library_status(where_clause: str = "", params: tuple = ()) -
             all_tmdb_ids = list({str(item['tmdb_id']) for item in index_items})
             metadata_sql = """
                 SELECT 
-                    tmdb_id, item_type, title, poster_path, season_number, 
+                    tmdb_id, item_type, title, poster_path, season_number, episode_number,
                     parent_series_tmdb_id, emby_item_ids_json,
                     (asset_details_json -> 0) as asset_details
                 FROM media_metadata
-                WHERE tmdb_id = ANY(%s) OR parent_series_tmdb_id = ANY(%s);
+                WHERE tmdb_id = ANY(%(ids)s) OR parent_series_tmdb_id = ANY(%(ids)s);
             """
-            cursor.execute(metadata_sql, (all_tmdb_ids, all_tmdb_ids))
+            cursor.execute(metadata_sql, {'ids': all_tmdb_ids})
             
-            # 建立高效的查找字典
-            metadata_map = {row['tmdb_id']: row for row in cursor.fetchall()}
-            # 再为季建立一个 "父ID-季号" -> 季元数据 的映射
-            season_map = {f"{row['parent_series_tmdb_id']}-S{row['season_number']}": row for row in metadata_map.values() if row['item_type'] == 'Season'}
+            # 建立高效的查找字典 (已修复)
+            all_metadata_rows = cursor.fetchall()
+            metadata_map = {row['tmdb_id']: row for row in all_metadata_rows}
+            season_map = {f"{row['parent_series_tmdb_id']}-S{row['season_number']}": row for row in all_metadata_rows if row['item_type'] == 'Season'}
+            
+            # ★★★ 新增：为“集”建立查找字典 ★★★
+            episode_map = {}
+            for row in all_metadata_rows:
+                if row['item_type'] == 'Episode':
+                    key = f"{row['parent_series_tmdb_id']}-S{row['season_number']}"
+                    if key not in episode_map:
+                        episode_map[key] = []
+                    episode_map[key].append(row)
 
             # 步骤 3: 在Python中进行无错误的合并
             final_results = []
@@ -200,7 +209,20 @@ def get_resubscribe_library_status(where_clause: str = "", params: tuple = ()) -
                 if not meta: continue
 
                 # ▼▼▼ 核心修复：确保所有ID都来自正确的源头 ▼▼▼
-                asset = meta.get('asset_details') or {}
+                asset = {}
+                if item_type == 'Movie':
+                    asset = meta.get('asset_details') or {}
+                elif item_type == 'Season':
+                    # ★★★ 修复：对于季，查找其下属的第一集来获取媒体信息 ★★★
+                    season_key = f"{tmdb_id}-S{item['season_number']}"
+                    episodes_for_season = episode_map.get(season_key)
+                    if episodes_for_season:
+                        # 按集号排序，找到第一集
+                        first_episode = sorted(episodes_for_season, key=lambda x: x.get('episode_number', 0))[0]
+                        asset = first_episode.get('asset_details') or {}
+                    else:
+                        # 如果找不到任何集（异常情况），则行为降级
+                        asset = meta.get('asset_details') or {}
                 series_meta = metadata_map.get(meta.get('parent_series_tmdb_id')) if item_type == 'Season' else None
                 
                 item_name = meta.get('title')
