@@ -18,7 +18,8 @@ AUDIO_SUBTITLE_KEYWORD_MAP = {
     "eng": ["English", "ENG", "英语"],
     "jpn": ["Japanese", "JPN", "日语"],
     "kor": ["Korean", "KOR", "韩语"],
-    "sub_chi": ["CHS", "CHT", "中字", "简中", "繁中", "简", "繁"],
+    "sub_chi": ["CHS", "SC", "GB", "简体", "简中", "简", "中字"], 
+    "sub_yue": ["CHT", "TC", "BIG5", "繁體", "繁体", "繁"], 
     "sub_eng": ["ENG", "英字"],
     "sub_jpn": ["JPN", "日字", "日文"],
     "sub_kor": ["KOR", "韩字", "韩文"],
@@ -238,7 +239,8 @@ def _get_detected_languages_from_streams(
 ) -> set:
     detected_langs = set()
     standard_codes = {
-        'chi': {'chi', 'zho', 'chs', 'cht', 'zh-cn', 'zh-hans', 'zh-sg', 'cmn', 'yue'},
+        'chi': {'chi', 'zho', 'chs', 'zh-cn', 'zh-hans', 'zh-sg', 'cmn'}, 
+        'yue': {'yue', 'cht'}, 
         'eng': {'eng'},
         'jpn': {'jpn'},
         'kor': {'kor'},
