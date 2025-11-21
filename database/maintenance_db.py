@@ -405,7 +405,6 @@ def cleanup_deleted_media_item(item_id: str, item_name: str, item_type: str, ser
         elif item_type == "Season":
             with get_db_connection() as conn:
                 with conn.cursor() as cursor:
-                    # 1. 直接通过被删除季的 Emby ID，在数据库中找到它的记录
                     cursor.execute(
                         """
                         SELECT parent_series_tmdb_id, season_number 
@@ -418,16 +417,24 @@ def cleanup_deleted_media_item(item_id: str, item_name: str, item_type: str, ser
 
                     if not record or not record['parent_series_tmdb_id'] or record['season_number'] is None:
                         logger.warning(f"  ➜ 无法在数据库中找到季 Emby ID {item_id} 的父剧集信息，清理中止。")
-                        # 尝试将这个未知的季本身标记为“不在库”，作为最后的补救措施
                         cursor.execute("UPDATE media_metadata SET in_library = FALSE, emby_item_ids_json = '[]'::jsonb WHERE emby_item_ids_json @> %s::jsonb", (json.dumps([item_id]),))
                         conn.commit()
                         return
 
                     series_tmdb_id = record['parent_series_tmdb_id']
                     season_number = record['season_number']
-                    logger.info(f"  ➜ 目标是剧集 ({item_name}) 的第 {season_number} 季。")
+                    
+                    series_title_for_log = f"TMDB ID: {series_tmdb_id}" 
+                    try:
+                        cursor.execute("SELECT title FROM media_metadata WHERE tmdb_id = %s AND item_type = 'Series'", (series_tmdb_id,))
+                        series_record = cursor.fetchone()
+                        if series_record and series_record['title']:
+                            series_title_for_log = series_record['title']
+                    except Exception:
+                        pass # 查询失败不影响主流程，使用备用值即可
+                    
+                    logger.info(f"  ➜ 目标是剧集 ({series_title_for_log}) 的第 {season_number} 季。")
 
-                    # 2. 将该季本身及其所有分集都标记为“不在库”
                     cursor.execute(
                         """
                         UPDATE media_metadata 
@@ -439,7 +446,6 @@ def cleanup_deleted_media_item(item_id: str, item_name: str, item_type: str, ser
                     updated_count = cursor.rowcount
                     logger.info(f"  ➜ 已将被删除的第 {season_number} 季及其所有分集 ({updated_count} 个条目) 标记为“不在库中”。")
 
-                    # 3. 检查这部剧是否还有其他任何一集在库
                     cursor.execute(
                         "SELECT COUNT(*) as count FROM media_metadata WHERE parent_series_tmdb_id = %s AND item_type = 'Episode' AND in_library = TRUE",
                         (series_tmdb_id,)
@@ -447,11 +453,11 @@ def cleanup_deleted_media_item(item_id: str, item_name: str, item_type: str, ser
                     remaining_episodes = cursor.fetchone()['count']
 
                     if remaining_episodes == 0:
-                        logger.warning(f"  ➜ 剧集 ({item_name}) 的最后一季已被删除，该剧集将被视为离线，将执行完整清理。")
+                        logger.warning(f"  ➜ 剧集 ({series_title_for_log}) 的最后一季已被删除，该剧集将被视为离线，将执行完整清理。")
                         target_tmdb_id = series_tmdb_id
                         target_item_type = "Series"
                     else:
-                        logger.info(f"  ➜ 剧集 ({item_name}) 仍有 {remaining_episodes} 集在库，不执行剧集清理。")
+                        logger.info(f"  ➜ 剧集 ({series_title_for_log}) 仍有 {remaining_episodes} 集在库，不执行剧集清理。")
                         conn.commit()
                         return
 
@@ -491,11 +497,11 @@ def cleanup_deleted_media_item(item_id: str, item_name: str, item_type: str, ser
                     remaining_episodes = cursor.fetchone()['count']
 
                     if remaining_episodes == 0:
-                        logger.warning(f"  ➜ 剧集 ({item_name}) 的最后一集已被删除，该剧集将被视为离线，将执行完整清理。")
+                        logger.warning(f"  ➜ 剧集 (TMDB ID: {series_tmdb_id}) 的最后一集已被删除，该剧集将被视为离线，将执行完整清理。")
                         target_tmdb_id = series_tmdb_id
                         target_item_type = "Series"
                     else:
-                        logger.info(f"  ➜ 剧集 ({item_name}) 仍有 {remaining_episodes} 集在库，不执行剧集清理。")
+                        logger.info(f"  ➜ 剧集 (TMDB ID: {series_tmdb_id}) 仍有 {remaining_episodes} 集在库，不执行剧集清理。")
                         conn.commit() # 只提交分集状态的更新
                         return
         
