@@ -523,7 +523,7 @@ def get_release_group_ranking(limit: int = 5) -> list: # 默认值也改成5
     """
     统计【当天入库】的发布组作品（文件）数量，并返回排名前N的列表。
     """
-    query = f"""
+    query = """
         SELECT
             release_group,
             COUNT(*) AS count
@@ -538,22 +538,23 @@ def get_release_group_ranking(limit: int = 5) -> list: # 默认值也改成5
                     in_library = TRUE 
                     AND asset_details_json IS NOT NULL 
                     AND jsonb_array_length(asset_details_json) > 0
-                    -- 优化：预先过滤掉不含时间戳的旧数据，提高查询效率
                     AND asset_details_json::text LIKE '%date_added_to_library%'
             ) AS assets
         ) AS release_groups
         WHERE 
             release_group IS NOT NULL AND release_group != ''
-            AND (asset_added_at_utc AT TIME ZONE %(timezone)s)::date = (NOW() AT TIME ZONE %(timezone)s)::date
+            AND (asset_added_at_utc AT TIME ZONE %s)::date = (NOW() AT TIME ZONE %s)::date
         GROUP BY release_group
         ORDER BY count DESC
-        LIMIT %(limit)s;
+        LIMIT %s;
     """
     try:
         with get_db_connection() as conn:
             with conn.cursor() as cursor:
-                params = {'timezone': constants.TIMEZONE, 'limit': limit}
+                params = (constants.TIMEZONE, constants.TIMEZONE, limit)
+                
                 cursor.execute(query, params)
+                
                 results = cursor.fetchall()
                 return [dict(row) for row in results]
     except Exception as e:
