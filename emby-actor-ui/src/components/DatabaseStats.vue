@@ -224,7 +224,7 @@
             </n-grid>
             <n-divider /> <!-- 可以加一个分割线，让布局更清晰 -->
             <div class="section-container">
-              <div class="section-title">发布组 (Top {{ stats.release_group_ranking?.length || 0 }})</div>
+              <div class="section-title">今日发布组 (Top {{ stats.release_group_ranking?.length || 0 }})</div>
               <n-space vertical :size="12" style="width: 100%;">
                 <div v-if="!stats.release_group_ranking || stats.release_group_ranking.length === 0">
                   <n-empty description="暂无发布组统计数据" />
