@@ -93,35 +93,21 @@ def get_media_details(tmdb_id: str, item_type: str) -> Optional[Dict[str, Any]]:
 
 def get_media_details_by_tmdb_ids(tmdb_ids: List[str]) -> Dict[str, Dict[str, Any]]:
     """
-    【V3.1 - 健壮性与调试增强版】
-    - 增加日志记录传入的ID数量和样本。
-    - 确保参数被正确适配。
+    【V3 - 新增核心工具】根据 TMDB ID 列表，批量获取 media_metadata 表中的完整记录。
+    返回一个以 tmdb_id 为键，整行记录字典为值的 map，方便快速查找。
     """
     if not tmdb_ids:
         return {}
     
-    # ★★★ 1. 添加关键调试日志 ★★★
-    logger.info(f"  ➜ [DB_DEBUG] get_media_details_by_tmdb_ids 接收到 {len(tmdb_ids)} 个ID进行查询。样本: {tmdb_ids[:5]}")
-
     media_map = {}
     try:
         with get_db_connection() as conn:
-            with conn.cursor() as cursor:
-                sql = "SELECT * FROM media_metadata WHERE tmdb_id = ANY(%s)"
-                
-                # ★★★ 2. 确保 tmdb_ids 是一个列表 (虽然调用方已经保证了，但这里再次确认) ★★★
-                params = [str(tid) for tid in tmdb_ids]
-                
-                cursor.execute(sql, (params,)) # 保持 (list,) 的标准传参方式
-                
-                rows = cursor.fetchall()
-
-                # ★★★ 3. 添加关键调试日志 ★★★
-                logger.info(f"  ➜ [DB_DEBUG] SQL查询执行完毕，返回了 {len(rows)} 行数据。")
-
-                for row in rows:
-                    # ★★★ 4. 确保从数据库返回的键也是字符串 ★★★
-                    media_map[str(row['tmdb_id'])] = dict(row)
+            cursor = conn.cursor()
+            sql = "SELECT * FROM media_metadata WHERE tmdb_id = ANY(%s)"
+            cursor.execute(sql, (tmdb_ids,))
+            rows = cursor.fetchall()
+            for row in rows:
+                media_map[row['tmdb_id']] = dict(row)
         return media_map
     except psycopg2.Error as e:
         logger.error(f"根据TMDb ID列表批量获取媒体详情时出错: {e}", exc_info=True)
