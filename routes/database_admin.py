@@ -81,8 +81,9 @@ def api_get_database_stats():
                 
                 'quota': {'available': available_quota, 'consumed': consumed_quota}
             },
+            'release_group_ranking': maintenance_db.get_release_group_ranking(5),
+            'historical_release_group_ranking': maintenance_db.get_historical_release_group_ranking(5)
         }
-        stats['release_group_ranking'] = maintenance_db.get_release_group_ranking(5)
         return jsonify({"status": "success", "data": stats})
     except Exception as e:
         logger.error(f"获取数据库统计信息时发生严重错误: {e}", exc_info=True)

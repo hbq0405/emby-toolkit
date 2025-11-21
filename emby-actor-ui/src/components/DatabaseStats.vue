@@ -1,7 +1,8 @@
-<!-- src/components/DatabaseStats.vue (最终修复版 - 正序日志) -->
+<!-- src/components/DatabaseStats.vue (最终炫酷版 - 双排行榜) -->
 <template>
  <n-layout content-style="padding: 24px;">
   <div>
+    <!-- ... (页面头部保持不变) ... -->
     <n-page-header title="数据看板" subtitle="了解您媒体库的核心数据统计" style="margin-bottom: 24px;">
       <template #extra>
         <n-button-group>
@@ -28,14 +29,14 @@
 
     <n-grid v-else :x-gap="24" :y-gap="24" :cols="4" responsive="screen" item-responsive>
       
-      <!-- 核心卡片 1: 核心数据缓存 -->
+      <!-- ... (左侧核心数据卡片保持不变) ... -->
       <n-gi span="4 l:2">
         <n-card :bordered="false" class="dashboard-card">
           <template #header>
             <span class="card-title">核心数据</span>
           </template>
           <n-space vertical :size="20">
-            <!-- 顶部关键指标 (保持不变) -->
+            <!-- 顶部关键指标 -->
             <n-grid :cols="2" :x-gap="12">
               <n-gi>
                 <n-statistic label="已缓存媒体" class="centered-statistic">
@@ -51,7 +52,7 @@
 
             <n-divider />
 
-            <!-- ★★★ 新的媒体库概览，包含饼图 ★★★ -->
+            <!-- 媒体库概览 -->
             <div>
               <div class="section-title">媒体库概览</div>
               <n-grid :cols="2" :x-gap="24" style="margin-top: 12px; align-items: center;">
@@ -60,17 +61,10 @@
                 </n-gi>
                 <n-gi>
                   <n-space vertical justify="center" style="height: 100%;">
-                    <!-- 使用 2x2 网格来展示核心统计数据 -->
                     <n-grid :cols="2" :x-gap="12" :y-gap="16">
-                      <n-gi>
-                        <n-statistic label="电影" :value="stats.media_library?.movies_in_library || 0" />
-                      </n-gi>
-                      <n-gi>
-                        <n-statistic label="剧集" :value="stats.media_library?.series_in_library || 0" />
-                      </n-gi>
-                      <n-gi>
-                        <n-statistic label="总集数" :value="stats.media_library?.episodes_in_library || 0" />
-                      </n-gi>
+                      <n-gi><n-statistic label="电影" :value="stats.media_library?.movies_in_library || 0" /></n-gi>
+                      <n-gi><n-statistic label="剧集" :value="stats.media_library?.series_in_library || 0" /></n-gi>
+                      <n-gi><n-statistic label="总集数" :value="stats.media_library?.episodes_in_library || 0" /></n-gi>
                       <n-gi>
                         <n-statistic label="预缓存">
                           <template #prefix>
@@ -87,7 +81,7 @@
               </n-grid>
             </div>
 
-            <!-- ★★★ 新的演员关联进度条 ★★★ -->
+            <!-- 演员关联进度 -->
             <div>
               <div class="section-title">演员关联进度</div>
               <n-progress
@@ -95,6 +89,7 @@
                 :percentage="((stats.system?.actor_mappings_linked || 0) / (stats.system?.actor_mappings_total || 1)) * 100"
                 indicator-placement="inside"
                 processing
+                :color="themeVars.primaryColor"
               >
                 {{ stats.system?.actor_mappings_linked || 0 }} / {{ stats.system?.actor_mappings_total || 0 }}
               </n-progress>
@@ -102,7 +97,7 @@
 
             <n-divider />
 
-            <!-- 系统日志与缓存 (保持不变) -->
+            <!-- 系统日志与缓存 -->
             <div>
               <div class="section-title">系统日志与缓存</div>
               <n-space justify="space-around" style="width: 100%; margin-top: 12px;">
@@ -122,35 +117,22 @@
             <span class="card-title">智能订阅</span>
           </template>
           <n-space vertical :size="24" class="subscription-center-card">
+            <!-- ... (媒体追踪、自动化订阅、订阅配额部分保持不变) ... -->
             <div class="section-container">
               <div class="section-title">媒体追踪</div>
               <n-grid :cols="2" :x-gap="12">
                 <n-gi class="stat-block">
                   <div class="stat-block-title">追剧订阅</div>
                   <div class="stat-item-group">
-                    <div class="stat-item">
-                      <div class="stat-item-label">追剧中</div>
-                      <div class="stat-item-value">{{ stats.subscriptions_card?.watchlist.watching || 0 }}</div>
-                    </div>
-                    <div class="stat-item">
-                      <div class="stat-item-label">已暂停</div>
-                      <div class="stat-item-value">{{ stats.subscriptions_card?.watchlist.paused || 0 }}</div>
-                    </div>
+                    <div class="stat-item"><div class="stat-item-label">追剧中</div><div class="stat-item-value">{{ stats.subscriptions_card?.watchlist.watching || 0 }}</div></div>
+                    <div class="stat-item"><div class="stat-item-label">已暂停</div><div class="stat-item-value">{{ stats.subscriptions_card?.watchlist.paused || 0 }}</div></div>
                   </div>
                 </n-gi>
                 <n-gi class="stat-block">
                   <div class="stat-block-title">演员订阅</div>
                   <div class="stat-item-group">
-                    <div class="stat-item">
-                      <div class="stat-item-label">已订阅</div>
-                      <div class="stat-item-value">{{ stats.subscriptions_card?.actors.subscriptions || 0 }}</div>
-                    </div>
-                    <div class="stat-item">
-                      <div class="stat-item-label">作品入库</div>
-                      <div class="stat-item-value">
-                        {{ stats.subscriptions_card?.actors.tracked_in_library || 0 }} / {{ stats.subscriptions_card?.actors.tracked_total || 0 }}
-                      </div>
-                    </div>
+                    <div class="stat-item"><div class="stat-item-label">已订阅</div><div class="stat-item-value">{{ stats.subscriptions_card?.actors.subscriptions || 0 }}</div></div>
+                    <div class="stat-item"><div class="stat-item-label">作品入库</div><div class="stat-item-value">{{ stats.subscriptions_card?.actors.tracked_in_library || 0 }} / {{ stats.subscriptions_card?.actors.tracked_total || 0 }}</div></div>
                   </div>
                 </n-gi>
               </n-grid>
@@ -158,102 +140,95 @@
             <div class="section-container">
              <div class="section-title">自动化订阅</div>
               <n-grid :cols="3" :x-gap="12">
-                <!-- Block 1: 洗版任务 -->
                 <n-gi class="stat-block">
                   <div class="stat-block-title">洗版任务</div>
-                  <div class="stat-item">
-                    <div class="stat-item-label">待洗版</div>
-                    <div class="stat-item-value">{{ stats.subscriptions_card?.resubscribe.pending || 0 }}</div>
-                  </div>
+                  <div class="stat-item"><div class="stat-item-label">待洗版</div><div class="stat-item-value">{{ stats.subscriptions_card?.resubscribe.pending || 0 }}</div></div>
                 </n-gi>
-                <!-- Block 2: 原生合集 -->
                 <n-gi class="stat-block">
                   <div class="stat-block-title">原生合集</div>
                   <div class="stat-item-group">
-                    <div class="stat-item">
-                      <div class="stat-item-label">总数</div>
-                      <div class="stat-item-value">{{ stats.subscriptions_card?.native_collections.total || 0 }}</div>
-                    </div>
-                    <div class="stat-item">
-                      <div class="stat-item-label">待补全合集</div>
-                      <div class="stat-item-value">{{ stats.subscriptions_card?.native_collections.count || 0 }}</div>
-                    </div>
-                    <div class="stat-item">
-                      <div class="stat-item-label">共缺失</div>
-                      <div class="stat-item-value">{{ stats.subscriptions_card?.native_collections.missing_items || 0 }}</div>
-                    </div>
+                    <div class="stat-item"><div class="stat-item-label">总数</div><div class="stat-item-value">{{ stats.subscriptions_card?.native_collections.total || 0 }}</div></div>
+                    <div class="stat-item"><div class="stat-item-label">待补全合集</div><div class="stat-item-value">{{ stats.subscriptions_card?.native_collections.count || 0 }}</div></div>
+                    <div class="stat-item"><div class="stat-item-label">共缺失</div><div class="stat-item-value">{{ stats.subscriptions_card?.native_collections.missing_items || 0 }}</div></div>
                   </div>
                 </n-gi>
-                <!-- Block 3: 自建合集 -->
                 <n-gi class="stat-block">
                   <div class="stat-block-title">自建合集</div>
                   <div class="stat-item-group">
-                    <div class="stat-item">
-                      <div class="stat-item-label">总数</div>
-                      <div class="stat-item-value">{{ stats.subscriptions_card?.custom_collections.total || 0 }}</div>
-                    </div>
-                    <div class="stat-item">
-                      <div class="stat-item-label">待补全合集</div>
-                      <div class="stat-item-value">{{ stats.subscriptions_card?.custom_collections.count || 0 }}</div>
-                    </div>
-                    <div class="stat-item">
-                      <div class="stat-item-label">共缺失</div>
-                      <div class="stat-item-value">{{ stats.subscriptions_card?.custom_collections.missing_items || 0 }}</div>
-                    </div>
+                    <div class="stat-item"><div class="stat-item-label">总数</div><div class="stat-item-value">{{ stats.subscriptions_card?.custom_collections.total || 0 }}</div></div>
+                    <div class="stat-item"><div class="stat-item-label">待补全合集</div><div class="stat-item-value">{{ stats.subscriptions_card?.custom_collections.count || 0 }}</div></div>
+                    <div class="stat-item"><div class="stat-item-label">共缺失</div><div class="stat-item-value">{{ stats.subscriptions_card?.custom_collections.missing_items || 0 }}</div></div>
                   </div>
                 </n-gi>
               </n-grid>
             </div>
             <n-divider />
             <n-grid :cols="3" :x-gap="12" class="quota-grid">
-              <n-gi class="quota-label-container">
-                <span>订阅配额</span>
-              </n-gi>
-              <n-gi class="stat-block">
-                <div class="stat-item">
-                  <div class="stat-item-label">今日已用</div>
-                  <div class="stat-item-value">{{ stats.subscriptions_card?.quota.consumed || 0 }}</div>
-                </div>
-              </n-gi>
-              <n-gi class="stat-block">
-                <div class="stat-item">
-                  <div class="stat-item-label">今日剩余</div>
-                  <div class="stat-item-value">{{ stats.subscriptions_card?.quota.available || 0 }}</div>
-                </div>
-              </n-gi>
+              <n-gi class="quota-label-container"><span>订阅配额</span></n-gi>
+              <n-gi class="stat-block"><div class="stat-item"><div class="stat-item-label">今日已用</div><div class="stat-item-value">{{ stats.subscriptions_card?.quota.consumed || 0 }}</div></div></n-gi>
+              <n-gi class="stat-block"><div class="stat-item"><div class="stat-item-label">今日剩余</div><div class="stat-item-value">{{ stats.subscriptions_card?.quota.available || 0 }}</div></div></n-gi>
             </n-grid>
-            <n-divider /> <!-- 可以加一个分割线，让布局更清晰 -->
+            <n-divider />
+
+            <!-- ★★★ 核心修改: 发布组统计区，使用2列排行榜布局 ★★★ -->
             <div class="section-container">
-              <div class="section-title">今日发布组 (Top {{ stats.release_group_ranking?.length || 0 }})</div>
-              <n-space vertical :size="12" style="width: 100%;">
-                <div v-if="!stats.release_group_ranking || stats.release_group_ranking.length === 0">
-                  <n-empty description="暂无发布组统计数据" />
-                </div>
-                <div v-else v-for="(group, index) in stats.release_group_ranking" :key="group.release_group" class="ranking-item">
-                  <span class="ranking-index">{{ index + 1 }}</span>
-                  <span class="ranking-name">{{ group.release_group }}</span>
-                  <span class="ranking-count">{{ group.count }} 部</span>
-                  <n-progress
-                    type="line"
-                    :percentage="(group.count / (stats.release_group_ranking[0]?.count || 1)) * 100"
-                    :show-indicator="false"
-                    :height="8"
-                    style="flex-grow: 1; margin: 0 12px;"
-                  />
-                </div>
-              </n-space>
+              <n-grid :cols="2" :x-gap="24" responsive="screen" item-responsive>
+                <!-- 左列：今日排行 -->
+                <n-gi span="2 m:1">
+                  <div class="section-title">今日发布组 (Top {{ stats.release_group_ranking?.length || 0 }})</div>
+                  <n-space vertical :size="12" style="width: 100%;">
+                    <div v-if="!stats.release_group_ranking || stats.release_group_ranking.length === 0">
+                      <n-empty description="今日暂无入库" />
+                    </div>
+                    <div v-else v-for="(group, index) in stats.release_group_ranking" :key="group.release_group" class="ranking-item">
+                      <span class="ranking-index">{{ index + 1 }}</span>
+                      <span class="ranking-name">{{ group.release_group }}</span>
+                      <span class="ranking-count">{{ group.count }} 部</span>
+                      <n-progress
+                        type="line"
+                        :percentage="(group.count / (stats.release_group_ranking[0]?.count || 1)) * 100"
+                        :show-indicator="false"
+                        :height="8"
+                        style="flex-grow: 1; margin: 0 12px;"
+                        :color="themeVars.primaryColor"
+                      />
+                    </div>
+                  </n-space>
+                </n-gi>
+
+                <!-- 右列：历史排行 -->
+                <n-gi span="2 m:1">
+                  <div class="section-title">历史发布组 (Top {{ stats.historical_release_group_ranking?.length || 0 }})</div>
+                  <n-space vertical :size="12" style="width: 100%;">
+                    <div v-if="!stats.historical_release_group_ranking || stats.historical_release_group_ranking.length === 0">
+                      <n-empty description="暂无历史数据" />
+                    </div>
+                    <div v-else v-for="(group, index) in stats.historical_release_group_ranking" :key="group.release_group" class="ranking-item">
+                      <span class="ranking-index">{{ index + 1 }}</span>
+                      <span class="ranking-name">{{ group.release_group }}</span>
+                      <span class="ranking-count">{{ group.count }} 部</span>
+                      <n-progress
+                        type="line"
+                        :percentage="(group.count / (stats.historical_release_group_ranking[0]?.count || 1)) * 100"
+                        :show-indicator="false"
+                        :height="8"
+                        style="flex-grow: 1; margin: 0 12px;"
+                        :color="themeVars.primaryColor"
+                      />
+                    </div>
+                  </n-space>
+                </n-gi>
+              </n-grid>
             </div>
           </n-space>
         </n-card>
       </n-gi>
 
     </n-grid>
-    <!-- 实时日志查看器模态框 -->
+    <!-- ... (模态框部分保持不变) ... -->
     <n-modal v-model:show="isRealtimeLogVisible" preset="card" style="width: 80%; max-width: 900px;" title="实时任务日志" class="modal-card-lite">
        <n-log ref="logRef" :log="logContent" trim class="log-panel" style="height: 60vh;"/>
     </n-modal>
-
-    <!-- 历史日志查看器组件 -->
     <LogViewer v-model:show="isHistoryLogVisible" />
   </div>
   </n-layout>
@@ -264,35 +239,27 @@ import { ref, onMounted, computed, watch, nextTick } from 'vue';
 import axios from 'axios';
 import { 
   NPageHeader, NGrid, NGi, NCard, NStatistic, NSpin, NAlert, NIcon, NSpace, NDivider, NIconWrapper,
-  NLog, NButton, NModal, NButtonGroup
+  NLog, NButton, NModal, NButtonGroup, useThemeVars
 } from 'naive-ui';
 import { 
-  FilmOutline as FilmIcon, 
-  TvOutline as TvIcon, 
-  FolderOpenOutline, 
-  ReaderOutline, 
-  ArchiveOutline,
-  AlbumsOutline 
+  FolderOpenOutline, ReaderOutline, ArchiveOutline
 } from '@vicons/ionicons5';
 import LogViewer from './LogViewer.vue';
-import { NProgress } from 'naive-ui'; // 额外导入进度条组件
+import { NProgress, NEmpty } from 'naive-ui'; // 导入 NEmpty
 import { use } from 'echarts/core';
 import { CanvasRenderer } from 'echarts/renderers';
 import { PieChart } from 'echarts/charts';
 import { TitleComponent, TooltipComponent, LegendComponent } from 'echarts/components';
 import VChart from 'vue-echarts';
 
+// ... (use Echarts 保持不变)
 use([ CanvasRenderer, PieChart, TitleComponent, TooltipComponent, LegendComponent ]);
 
 const props = defineProps({
   taskStatus: {
     type: Object,
     required: true,
-    default: () => ({
-      is_running: false,
-      current_action: '空闲',
-      logs: []
-    })
+    default: () => ({ is_running: false, current_action: '空闲', logs: [] })
   }
 });
 
@@ -300,19 +267,15 @@ const loading = ref(true);
 const error = ref(null);
 const stats = ref({});
 const logRef = ref(null);
-
 const isRealtimeLogVisible = ref(false);
 const isHistoryLogVisible = ref(false);
+const themeVars = useThemeVars();
 
-// ★★★ 核心修改 1/2: 移除 .reverse()，让日志正序显示 ★★★
 const logContent = computed(() => props.taskStatus?.logs?.join('\n') || '等待任务日志...');
 
-// ★★★ 核心修改 2/2: 将滚动位置从 'top' 改为 'bottom' ★★★
-// 当日志更新或实时日志模态框可见时，滚动到底部以查看最新日志
 watch([() => props.taskStatus.logs, isRealtimeLogVisible], async ([, isVisible]) => {
   if (isVisible) {
     await nextTick();
-    // 滚动到底部，而不是顶部
     logRef.value?.scrollTo({ position: 'bottom', slient: true });
   }
 }, { deep: true });
@@ -337,38 +300,27 @@ const fetchStats = async () => {
 
 const resolutionChartOptions = computed(() => {
   const chartData = stats.value.media_library?.resolution_stats || [];
-  // 确保即使没有数据，图表也不会崩溃
   if (!chartData.length) {
     return { series: [{ type: 'pie', data: [{ value: 1, name: '无数据' }] }] };
   }
   return {
-    color: [ '#5470C6', '#91CC75', '#FAC858', '#73C0DE' ], // 漂亮的颜色
-    tooltip: {
-      trigger: 'item',
-      formatter: '{b}: {c} ({d}%)'
-    },
+    color: [ '#5470C6', '#91CC75', '#FAC858', '#73C0DE' ],
+    tooltip: { trigger: 'item', formatter: '{b}: {c} ({d}%)' },
     legend: {
       orient: 'vertical',
       left: 'left',
-      top: 'center', // 垂直居中
-      textStyle: {
-        color: '#ccc' // 图例文字颜色
-      },
-      // ★★★ 核心修复：从数据动态生成图例 ★★★
+      top: 'center',
+      textStyle: { color: '#ccc' },
       data: chartData.map(item => item.resolution || '未知')
     },
     series: [
       {
         name: '分辨率',
         type: 'pie',
-        radius: ['50%', '70%'], // 调整内外半径，让环形更美观
-        center: ['70%', '50%'], // 将饼图向右移动，给图例留出空间
+        radius: ['50%', '70%'],
+        center: ['70%', '50%'],
         avoidLabelOverlap: false,
-        itemStyle: {
-          borderRadius: 8,
-          borderColor: '#18181c',
-          borderWidth: 2
-        },
+        itemStyle: { borderRadius: 8, borderColor: '#18181c', borderWidth: 2 },
         label: { show: false },
         labelLine: { show: false },
         data: chartData.map(item => ({ value: item.count, name: item.resolution || '未知' }))
@@ -384,103 +336,23 @@ onMounted(() => {
 
 <style scoped>
 /* ... (样式部分保持不变) ... */
-.loading-container, .error-container {
-  display: flex;
-  flex-direction: column;
-  justify-content: center;
-  align-items: center;
-  height: 400px;
-}
-.centered-statistic {
-  text-align: center;
-}
-.stat-value {
-  font-size: 1.8em;
-  font-weight: 600;
-  line-height: 1.2;
-}
-.log-panel {
-  font-size: 13px;
-  line-height: 1.6;
-  background-color: transparent;
-}
-.subscription-center-card {
-  width: 100%;
-}
-.section-container {
-  width: 100%;
-}
-.section-title {
-  font-size: 16px;
-  font-weight: 600;
-  color: var(--n-title-text-color);
-  margin-bottom: 16px;
-}
-.stat-block {
-  text-align: center;
-}
-.stat-block-title {
-  font-size: 14px;
-  color: var(--n-text-color-2);
-  margin-bottom: 12px;
-}
-.stat-item-group {
-  display: flex;
-  justify-content: center;
-  gap: 32px;
-}
-.stat-item {
-  text-align: center;
-}
-.stat-item-label {
-  font-size: 13px;
-  color: var(--n-text-color-3);
-  margin-bottom: 4px;
-}
-.stat-item-value {
-  font-size: 24px;
-  font-weight: 600;
-  line-height: 1.1;
-  color: var(--n-statistic-value-text-color);
-}
-.quota-grid {
-  align-items: center;
-}
-.quota-label-container {
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  font-weight: 600;
-  font-size: 14px;
-  color: var(--n-text-color-2);
-}
-.ranking-item {
-  display: flex;
-  align-items: center;
-  width: 100%;
-  font-size: 14px;
-}
-.ranking-index {
-  font-weight: bold;
-  color: var(--n-text-color-2);
-  width: 25px; /* 减小宽度 */
-  text-align: right; /* 右对齐 */
-  padding-right: 8px; /* 增加与名称的间距 */
-  flex-shrink: 0;
-}
-.ranking-name {
-  font-weight: 500;
-  width: 100px; /* 调整宽度 */
-  white-space: nowrap;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  flex-shrink: 0;
-}
-.ranking-count {
-  color: var(--n-text-color-3);
-  width: 80px; /* 增加宽度以容纳 "xxxx 部" */
-  text-align: left; /* 改为左对齐，紧跟在名称后面 */
-  padding-left: 16px; /* 增加与名称的间距 */
-  flex-shrink: 0;
-}
+.loading-container, .error-container { display: flex; flex-direction: column; justify-content: center; align-items: center; height: 400px; }
+.centered-statistic { text-align: center; }
+.stat-value { font-size: 1.8em; font-weight: 600; line-height: 1.2; }
+.log-panel { font-size: 13px; line-height: 1.6; background-color: transparent; }
+.subscription-center-card { width: 100%; }
+.section-container { width: 100%; }
+.section-title { font-size: 16px; font-weight: 600; color: var(--n-title-text-color); margin-bottom: 16px; }
+.stat-block { text-align: center; }
+.stat-block-title { font-size: 14px; color: var(--n-text-color-2); margin-bottom: 12px; }
+.stat-item-group { display: flex; justify-content: center; gap: 32px; }
+.stat-item { text-align: center; }
+.stat-item-label { font-size: 13px; color: var(--n-text-color-3); margin-bottom: 4px; }
+.stat-item-value { font-size: 24px; font-weight: 600; line-height: 1.1; color: var(--n-statistic-value-text-color); }
+.quota-grid { align-items: center; }
+.quota-label-container { display: flex; align-items: center; justify-content: center; font-weight: 600; font-size: 14px; color: var(--n-text-color-2); }
+.ranking-item { display: flex; align-items: center; width: 100%; font-size: 14px; }
+.ranking-index { font-weight: bold; color: var(--n-text-color-2); width: 25px; text-align: right; padding-right: 8px; flex-shrink: 0; }
+.ranking-name { font-weight: 500; width: 100px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; flex-shrink: 0; }
+.ranking-count { color: var(--n-text-color-3); width: 80px; text-align: left; padding-left: 16px; flex-shrink: 0; }
 </style>

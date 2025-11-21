@@ -559,3 +559,45 @@ def get_release_group_ranking(limit: int = 5) -> list:
     except Exception as e:
         logger.error(f"获取【每日】发布组排行时发生数据库错误: {e}", exc_info=True)
         return []
+    
+def get_historical_release_group_ranking(limit: int = 5) -> list:
+    """
+    统计【历史入库】的所有发布组作品（文件）数量，并返回总排名前N的列表。
+    """
+    # 这个查询与 get_release_group_ranking 几乎一样，但没有按“当天”过滤
+    query = """
+        SELECT
+            release_group,
+            COUNT(*) AS count
+        FROM (
+            SELECT 
+                jsonb_array_elements_text(asset -> 'release_group_raw') AS release_group
+            FROM (
+                SELECT jsonb_array_elements(asset_details_json) AS asset
+                FROM media_metadata
+                WHERE 
+                    in_library = TRUE 
+                    AND asset_details_json IS NOT NULL 
+                    AND jsonb_array_length(asset_details_json) > 0
+                    -- 仍然检查 date_added_to_library 字段是否存在，以确保是有效入库记录
+                    AND asset_details_json::text LIKE %s
+            ) AS assets
+        ) AS release_groups
+        WHERE 
+            release_group IS NOT NULL AND release_group != ''
+        GROUP BY release_group
+        ORDER BY count DESC
+        LIMIT %s;
+    """
+    try:
+        with get_db_connection() as conn:
+            with conn.cursor() as cursor:
+                # 参数减少了，因为不再需要时区
+                like_pattern = '%date_added_to_library%'
+                params = (like_pattern, limit)
+                cursor.execute(query, params)
+                results = cursor.fetchall()
+                return [dict(row) for row in results]
+    except Exception as e:
+        logger.error(f"获取【历史】发布组排行时发生数据库错误: {e}", exc_info=True)
+        return []
