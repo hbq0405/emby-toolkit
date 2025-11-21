@@ -208,7 +208,9 @@ def init_db():
                         release_date DATE,
                         release_year INTEGER,
                         poster_path TEXT,
+                        runtime_minutes INTEGER,
                         rating REAL,
+                        vote_count INTEGER,
                         popularity REAL,
                         official_rating TEXT,
                         genres_json JSONB,
@@ -504,6 +506,7 @@ def init_db():
                             "poster_path": "TEXT",
                             "total_seasons": "INTEGER",
                             "total_episodes": "INTEGER",
+                            "runtime_minutes": "INTEGER",
                             "next_episode_to_air_json": "JSONB",
                             "last_episode_to_air_json": "JSONB",
                             "is_airing": "BOOLEAN DEFAULT FALSE NOT NULL",
@@ -646,9 +649,7 @@ def init_db():
                             'emby_children_details_json',
                             'tags_json',
                             'paths_json',
-                            'backdrop_path',
-                            'runtime_minutes',
-                            'vote_count'
+                            'backdrop_path'
                         ],
                         'custom_collections': [
                             'generated_emby_ids_json' # <-- 在这里添加了废弃的列！
