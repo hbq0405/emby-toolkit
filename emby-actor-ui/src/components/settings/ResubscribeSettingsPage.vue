@@ -361,7 +361,7 @@ const openRuleModal = async (rule = null) => {
   saving.value = true; 
   
   try {
-    const libsRes = await axios.get('/api/resubscribe/libraries');
+    const libsRes = await axios.get('/api/config/cover_generator/libraries');
     allEmbyLibraries.value = libsRes.data;
   } catch (error) {
     message.error('获取媒体库列表失败！');
