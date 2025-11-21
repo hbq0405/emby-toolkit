@@ -147,6 +147,13 @@
                     <div class="stat-item-value">{{ stats.subscriptions_card?.resubscribe.pending || 0 }}</div>
                   </div>
                 </n-gi>
+                <n-gi class="stat-block">
+                  <div class="stat-block-title">预缓存媒体</div>
+                  <div class="stat-item">
+                    <div class="stat-item-label">待入库</div>
+                    <div class="stat-item-value">{{ stats.media_library?.missing_total || 0 }}</div>
+                  </div>
+                </n-gi>
                 <!-- Block 2: 原生合集 -->
                 <n-gi class="stat-block">
                   <div class="stat-block-title">原生合集</div>
@@ -298,6 +305,11 @@ const fetchStats = async () => {
 const resolutionChartOptions = computed(() => {
   const chartData = stats.value.media_library?.resolution_stats || [];
   return {
+    color: [ '#5470C6', '#91CC75', '#FAC858', '#73C0DE' ], 
+    tooltip: {
+      trigger: 'item',
+      formatter: '{b}: {c} ({d}%)'
+    },
     tooltip: {
       trigger: 'item',
       formatter: '{b}: {c} ({d}%)'

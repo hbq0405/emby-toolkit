@@ -272,16 +272,16 @@ def get_resolution_distribution() -> List[Dict[str, Any]]:
     """获取在库媒体的分辨率分布，用于生成图表。"""
     sql = """
         SELECT 
-            -- ★★★ 核心修复：使用 CASE 语句对分辨率进行归类 ★★★
+            -- ★★★ 核心修复：使用 COALESCE 处理 NULL, 使用 UPPER 处理大小写 ★★★
             CASE
-                WHEN (asset ->> 'resolution_display') IN ('2160p', '1080p', '720p') 
-                THEN (asset ->> 'resolution_display')
+                WHEN UPPER(COALESCE(asset ->> 'resolution_display', '未知')) = '2160P' THEN '2160p'
+                WHEN UPPER(COALESCE(asset ->> 'resolution_display', '未知')) = '1080P' THEN '1080p'
+                WHEN UPPER(COALESCE(asset ->> 'resolution_display', '未知')) = '720P'  THEN '720p'
                 ELSE '其他'
             END as resolution_group,
             COUNT(*) as count
         FROM 
             media_metadata,
-            -- 将 asset_details_json 数组展开成多行，每行代表一个文件版本
             jsonb_array_elements(asset_details_json) as asset
         WHERE 
             in_library = TRUE 
@@ -291,11 +291,10 @@ def get_resolution_distribution() -> List[Dict[str, Any]]:
         GROUP BY 
             resolution_group
         ORDER BY
-            -- 自定义排序，确保主流分辨率在前，其他在后
             CASE
                 WHEN resolution_group = '2160p' THEN 1
                 WHEN resolution_group = '1080p' THEN 2
-                WHEN resolution_group = '720p' THEN 3
+                WHEN resolution_group = '720p'  THEN 3
                 ELSE 4
             END;
     """
@@ -303,7 +302,7 @@ def get_resolution_distribution() -> List[Dict[str, Any]]:
         with get_db_connection() as conn:
             with conn.cursor() as cursor:
                 cursor.execute(sql)
-                # ★★★ 字段名已从 'resolution' 改为 'resolution_group' ★★★
+                # 返回的字段名已统一为 'resolution'
                 return [{'resolution': row['resolution_group'], 'count': row['count']} for row in cursor.fetchall()]
     except Exception as e:
         logger.error(f"DB: 获取分辨率分布数据失败: {e}", exc_info=True)
