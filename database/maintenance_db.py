@@ -518,21 +518,25 @@ def cleanup_deleted_media_item(item_id: str, item_name: str, item_type: str, ser
     except Exception as e:
         logger.error(f"清理被删除的媒体项 {item_id} 时发生严重数据库错误: {e}", exc_info=True)
 
-def get_release_group_ranking(limit: int = 10) -> list:
+def get_release_group_ranking(limit: int = 5) -> list: # 默认值也改成5
     """
-    统计发布组的作品（文件）数量，并返回排名前N的列表。
+    统计【当天入库】的发布组作品（文件）数量，并返回排名前N的列表。
     """
     query = """
         SELECT
             release_group,
             COUNT(*) AS count
         FROM (
-            -- 步骤1: 解开所有在库媒体的 asset_details_json 数组
             SELECT jsonb_array_elements_text(asset -> 'release_group_raw') AS release_group
             FROM (
                 SELECT jsonb_array_elements(asset_details_json) AS asset
                 FROM media_metadata
-                WHERE in_library = TRUE AND asset_details_json IS NOT NULL AND jsonb_array_length(asset_details_json) > 0
+                WHERE 
+                    in_library = TRUE 
+                    AND asset_details_json IS NOT NULL 
+                    AND jsonb_array_length(asset_details_json) > 0
+                    -- ★★★ 核心修改：只筛选 date_added 是今天的记录 ★★★
+                    AND date_added::date = CURRENT_DATE
             ) AS assets
         ) AS release_groups
         WHERE release_group IS NOT NULL AND release_group != ''
@@ -545,8 +549,7 @@ def get_release_group_ranking(limit: int = 10) -> list:
             with conn.cursor() as cursor:
                 cursor.execute(query, (limit,))
                 results = cursor.fetchall()
-                # 将 psycopg2 的 Row 对象转换为标准的字典列表
                 return [dict(row) for row in results]
     except Exception as e:
-        logger.error(f"获取发布组排行时发生数据库错误: {e}", exc_info=True)
+        logger.error(f"获取【每日】发布组排行时发生数据库错误: {e}", exc_info=True)
         return []
