@@ -204,6 +204,7 @@ def init_db():
                         -- 核心与扩展元数据
                         title TEXT,
                         original_title TEXT,
+                        original_language TEXT,
                         overview TEXT,
                         release_date DATE,
                         release_year INTEGER,
@@ -481,6 +482,7 @@ def init_db():
 
                     schema_upgrades = {
                         'media_metadata': {
+                            "original_language": "TEXT",
                             "imdb_id": "TEXT",
                             "tvdb_id": "TEXT",
                             "asset_details_json": "JSONB",

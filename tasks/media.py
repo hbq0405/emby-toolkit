@@ -333,6 +333,7 @@ def task_populate_metadata_cache(processor, batch_size: int = 50, force_full_upd
                 if tmdb_details:
                     top_level_record['overview'] = tmdb_details.get('overview') or item.get('Overview')
                     top_level_record['poster_path'] = tmdb_details.get('poster_path')
+                    top_level_record['original_language'] = tmdb_details.get('original_language')
                     top_level_record['studios_json'] = json.dumps([s['name'] for s in tmdb_details.get('production_companies', [])], ensure_ascii=False)
                     directors, countries, keywords = [], [], []
                     if item_type == 'Movie':

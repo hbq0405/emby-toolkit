@@ -222,6 +222,7 @@ class MediaProcessor:
                 keywords_data = series_details.get('keywords', {})
                 keywords = [k['name'] for k in (keywords_data.get('keywords', []) or keywords_data.get('results', []))]
                 series_record['keywords_json'] = json.dumps(keywords, ensure_ascii=False)
+                series_record['original_language'] = series_details.get('original_language')
                 if item_details_from_emby:
                     series_record['in_library'] = True
                     series_record['subscription_status'] = 'NONE'
@@ -259,6 +260,7 @@ class MediaProcessor:
             # ... (批量写入数据库) ...
             all_possible_columns = [
                 "tmdb_id", "item_type", "title", "original_title", "overview", "release_date", "release_year",
+                "original_language",
                 "poster_path", "rating", "actors_json", "parent_series_tmdb_id", "season_number", "episode_number",
                 "in_library", "subscription_status", "subscription_sources_json", "emby_item_ids_json", "date_added",
                 "official_rating", "unified_rating",
@@ -297,6 +299,7 @@ class MediaProcessor:
                     keywords_data = record.get('keywords', {})
                     keywords = [k['name'] for k in (keywords_data.get('keywords', {}) or keywords_data.get('results', []))]
                     db_row_complete['keywords_json'] = json.dumps(keywords, ensure_ascii=False)
+                    db_row_complete['original_language'] = record.get('original_language')
                 data_for_batch.append(db_row_complete)
 
             cols_str = ", ".join(all_possible_columns)

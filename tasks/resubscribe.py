@@ -440,30 +440,25 @@ def _item_needs_resubscribe(asset_details: dict, rule: dict, media_metadata: Opt
     except (ValueError, TypeError, IndexError) as e:
         logger.warning(f"  ➜ [文件大小检查] 处理时发生错误: {e}")
 
-    # --- 5. 音轨和字幕检查 (豁免逻辑) ---
-    is_exempted = _is_exempted_from_chinese_check(asset_details.get('media_streams', []), media_metadata)
-    
-    # --- 6. 音轨检查 (V2 - 基于原始数据) ---
+    # --- 5. 音轨检查 (V3 - 集成通用豁免) ---
     try:
         if rule.get("resubscribe_audio_enabled"):
             required_langs = rule.get("resubscribe_audio_missing_languages", [])
             if required_langs:
-                # ★★★ 核心修复：直接使用原始语言代码列表进行判断 ★★★
                 existing_audio_codes = set(asset_details.get('audio_languages_raw', []))
                 
                 for lang_code in required_langs:
-                    if lang_code in ['chi', 'yue', 'kor'] and is_exempted:
+                    # ★★★ 核心修改：在循环内部调用新的豁免函数 ★★★
+                    if _is_exempted_from_language_check(media_metadata, lang_code):
                         continue
                     
-                    # 直接判断标准代码是否存在
                     if lang_code not in existing_audio_codes:
-                        # 获取显示名称仅用于生成原因，不参与逻辑判断
                         display_name = AUDIO_DISPLAY_MAP.get(lang_code, lang_code)
                         reasons.append(f"缺{display_name}音轨")
     except Exception as e:
         logger.warning(f"  ➜ [音轨检查] 处理时发生未知错误: {e}")
 
-    # --- 7. 字幕检查 (V2 - 基于原始数据) ---
+    # --- 6. 字幕检查 (V3 - 集成通用豁免) ---
     try:
         if rule.get("resubscribe_subtitle_enabled"):
             required_langs = rule.get("resubscribe_subtitle_missing_languages", [])
@@ -471,7 +466,8 @@ def _item_needs_resubscribe(asset_details: dict, rule: dict, media_metadata: Opt
                 existing_subtitle_codes = set(asset_details.get('subtitle_languages_raw', []))
                 
                 for lang_code in required_langs:
-                    if lang_code in ['chi', 'yue', 'kor'] and is_exempted:
+                    # ★★★ 核心修改：在循环内部调用新的豁免函数 ★★★
+                    if _is_exempted_from_language_check(media_metadata, lang_code):
                         continue
                     
                     # ★★★ 新功能逻辑开始 ★★★
@@ -499,29 +495,39 @@ def _item_needs_resubscribe(asset_details: dict, rule: dict, media_metadata: Opt
         logger.debug(f"  ➜ 《{item_name}》质量达标。")
         return False, ""
 
-def _is_exempted_from_chinese_check(media_streams: list, media_metadata: Optional[dict]) -> bool:
+def _is_exempted_from_language_check(media_metadata: Optional[dict], language_code_to_check: str) -> bool:
     """
-    【V2 - 修正版】
-    判断一个媒体是否应该免除中文音轨/字幕的检查（例如，本身就是国产影视剧）。
-    此判断【严格只依赖】媒体的元数据，避免因文件内容变化导致逻辑悖论。
+    【V3 - 通用语言豁免版】
+    判断一个媒体是否应该免除对特定语言（音轨/字幕）的检查。
+    主要依据媒体的原始语言元数据。
     """
-    import re
-    # 定义华语地区集合，用于判断出品国家
-    CHINESE_SPEAKING_REGIONS = {'中国', '中国大陆', '香港', '中国香港', '台湾', '中国台湾', '新加坡'}
-    
-    # 1. 如果出品国家/地区在华语地区列表中，则豁免检查
-    if media_metadata and media_metadata.get('countries_json'):
-        # 使用 isdisjoint 判断两个集合是否有交集，比循环更高效
-        if not set(media_metadata['countries_json']).isdisjoint(CHINESE_SPEAKING_REGIONS):
+    if not media_metadata:
+        return False
+
+    # 1. 定义 TMDB 语言代码到我们内部代码的映射
+    LANG_CODE_MAP = {
+        'zh': 'chi', 'cn': 'chi', 'cmn': 'chi',
+        'yue': 'yue', 'hk': 'yue',
+        'en': 'eng',
+        'ja': 'jpn',
+        'ko': 'kor',
+        # ...可以根据需要添加更多映射...
+    }
+
+    # 2. 优先使用 original_language 进行判断 (最可靠)
+    if original_lang := media_metadata.get('original_language'):
+        mapped_lang = LANG_CODE_MAP.get(original_lang.lower())
+        if mapped_lang and mapped_lang == language_code_to_check:
             return True
-            
-    # 2. 如果原始标题中包含至少两个汉字，则豁免检查
-    if media_metadata and (original_title := media_metadata.get('original_title')):
-        # 使用正则表达式查找中文字符
-        if len(re.findall(r'[\u4e00-\u9fff]', original_title)) >= 2:
-            return True
+
+    # 3. 其次，使用原始标题中的 CJK 字符作为中文/日文/韩文的辅助判断
+    if language_code_to_check in ['chi', 'jpn', 'kor']:
+        if original_title := media_metadata.get('original_title'):
+            # 使用正则表达式查找中日韩字符
+            if len(re.findall(r'[\u4e00-\u9fff]', original_title)) >= 2:
+                return True
     
-    # 如果以上条件都不满足，则不豁免，必须进行中文音轨/字幕检查
+    # 默认不豁免
     return False
 
 def build_resubscribe_payload(item_details: dict, rule: Optional[dict]) -> Optional[dict]:
