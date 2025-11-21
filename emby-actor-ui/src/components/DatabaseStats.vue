@@ -60,17 +60,28 @@
                 </n-gi>
                 <n-gi>
                   <n-space vertical justify="center" style="height: 100%;">
-                    <n-statistic label="电影" :value="stats.media_library?.movies_in_library || 0" />
-                    <n-statistic label="剧集" :value="stats.media_library?.series_in_library || 0" />
-                    <n-statistic label="总集数" :value="stats.media_library?.episodes_in_library || 0" />
-                    <n-statistic label="预缓存" class="centered-statistic">
-                      <template #prefix>
-                        <n-icon-wrapper :size="20" :border-radius="5" color="#FFCC3344">
-                          <n-icon :size="14" :component="FolderOpenOutline" color="#FFCC33" />
-                        </n-icon-wrapper>
-                      </template>
-                      {{ stats.media_library?.missing_total || 0 }}
-                    </n-statistic>
+                    <!-- 使用 2x2 网格来展示核心统计数据 -->
+                    <n-grid :cols="2" :x-gap="12" :y-gap="16">
+                      <n-gi>
+                        <n-statistic label="电影" :value="stats.media_library?.movies_in_library || 0" />
+                      </n-gi>
+                      <n-gi>
+                        <n-statistic label="剧集" :value="stats.media_library?.series_in_library || 0" />
+                      </n-gi>
+                      <n-gi>
+                        <n-statistic label="总集数" :value="stats.media_library?.episodes_in_library || 0" />
+                      </n-gi>
+                      <n-gi>
+                        <n-statistic label="预缓存">
+                          <template #prefix>
+                            <n-icon-wrapper :size="20" :border-radius="5" color="#FFCC3344">
+                              <n-icon :size="14" :component="FolderOpenOutline" color="#FFCC33" />
+                            </n-icon-wrapper>
+                          </template>
+                          {{ stats.media_library?.missing_total || 0 }}
+                        </n-statistic>
+                      </n-gi>
+                    </n-grid>
                   </n-space>
                 </n-gi>
               </n-grid>

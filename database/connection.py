@@ -522,16 +522,6 @@ def init_db():
                             "watchlist_missing_info_json": "JSONB",
                             "watchlist_is_airing": "BOOLEAN DEFAULT FALSE"
                         },
-                        'resubscribe_cache': {
-                            "emby_item_id": "TEXT",
-                            "series_id": "TEXT",  
-                            "season_number": "INTEGER",  
-                            "matched_rule_id": "INTEGER",
-                            "matched_rule_name": "TEXT",
-                            "source_library_id": "TEXT",
-                            "path": "TEXT",
-                            "filename": "TEXT"
-                        },
                         'resubscribe_rules': {
                             "resubscribe_subtitle_effect_only": "BOOLEAN DEFAULT FALSE",
                             "resubscribe_filesize_enabled": "BOOLEAN DEFAULT FALSE",

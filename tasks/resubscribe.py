@@ -289,11 +289,11 @@ def _item_needs_resubscribe(asset_details: dict, rule: dict, media_metadata: Opt
                 "4K": 4,
                 "1080p": 3,
                 "720p": 2,
-                # 其他较低的分辨率都视为等级 1
+                "未知": 1,
             }
             
             # 获取当前媒体的清晰度等级
-            current_res_str = asset_details.get('resolution_display', 'Unknown')
+            current_res_str = asset_details.get('resolution_display', '未知')
             current_tier = RESOLUTION_ORDER.get(current_res_str, 1)
 
             # 获取规则要求的清晰度等级
