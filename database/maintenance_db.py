@@ -425,7 +425,7 @@ def cleanup_deleted_media_item(item_id: str, item_name: str, item_type: str, ser
 
                     series_tmdb_id = record['parent_series_tmdb_id']
                     season_number = record['season_number']
-                    logger.info(f"  ➜ 目标是剧集 (TMDB ID: {series_tmdb_id}) 的第 {season_number} 季。")
+                    logger.info(f"  ➜ 目标是剧集 ({item_name}) 的第 {season_number} 季。")
 
                     # 2. 将该季本身及其所有分集都标记为“不在库”
                     cursor.execute(
@@ -447,11 +447,11 @@ def cleanup_deleted_media_item(item_id: str, item_name: str, item_type: str, ser
                     remaining_episodes = cursor.fetchone()['count']
 
                     if remaining_episodes == 0:
-                        logger.warning(f"  ➜ 剧集 (TMDB ID: {series_tmdb_id}) 的最后一季已被删除，该剧集将被视为离线，将执行完整清理。")
+                        logger.warning(f"  ➜ 剧集 ({item_name}) 的最后一季已被删除，该剧集将被视为离线，将执行完整清理。")
                         target_tmdb_id = series_tmdb_id
                         target_item_type = "Series"
                     else:
-                        logger.info(f"  ➜ 剧集 (TMDB ID: {series_tmdb_id}) 仍有 {remaining_episodes} 集在库，不执行剧集清理。")
+                        logger.info(f"  ➜ 剧集 ({item_name}) 仍有 {remaining_episodes} 集在库，不执行剧集清理。")
                         conn.commit()
                         return
 
@@ -491,11 +491,11 @@ def cleanup_deleted_media_item(item_id: str, item_name: str, item_type: str, ser
                     remaining_episodes = cursor.fetchone()['count']
 
                     if remaining_episodes == 0:
-                        logger.warning(f"  ➜ 剧集 (TMDB ID: {series_tmdb_id}) 的最后一集已被删除，该剧集将被视为离线，将执行完整清理。")
+                        logger.warning(f"  ➜ 剧集 ({item_name}) 的最后一集已被删除，该剧集将被视为离线，将执行完整清理。")
                         target_tmdb_id = series_tmdb_id
                         target_item_type = "Series"
                     else:
-                        logger.info(f"  ➜ 剧集 (TMDB ID: {series_tmdb_id}) 仍有 {remaining_episodes} 集在库，不执行剧集清理。")
+                        logger.info(f"  ➜ 剧集 ({item_name}) 仍有 {remaining_episodes} 集在库，不执行剧集清理。")
                         conn.commit() # 只提交分集状态的更新
                         return
         
