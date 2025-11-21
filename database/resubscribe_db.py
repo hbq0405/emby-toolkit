@@ -400,3 +400,19 @@ def get_all_needed_resubscribe_items() -> List[Dict[str, Any]]:
     """获取所有状态为 'needed' 的项目的完整信息。"""
     where_clause = "WHERE idx.status = 'needed'"
     return get_resubscribe_library_status(where_clause)
+
+def get_current_index_statuses() -> Dict[Tuple[str, str, int], str]:
+    """获取所有索引项的当前状态，用于保留用户操作。"""
+    sql = "SELECT tmdb_id, item_type, season_number, status FROM resubscribe_index;"
+    statuses = {}
+    try:
+        with get_db_connection() as conn:
+            cursor = conn.cursor()
+            cursor.execute(sql)
+            for row in cursor.fetchall():
+                key = (str(row['tmdb_id']), row['item_type'], int(row['season_number']))
+                statuses[key] = row['status']
+        return statuses
+    except Exception as e:
+        logger.error(f"  ➜ 获取所有洗版索引状态时失败: {e}", exc_info=True)
+        return {}

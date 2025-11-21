@@ -125,6 +125,10 @@ def task_update_resubscribe_cache(processor): # <--- 移除 force_full_update �
         index_update_batch = []
         processed_count = 0
 
+        # ★★★在处理前，预先加载所有已存在的状态 ★★★
+        logger.info("  ➜ 正在获取当前所有项目的状态以保留用户操作...")
+        current_statuses = resubscribe_db.get_current_index_statuses()
+
         # --- 6a. 处理所有电影 ---
         for movie_index in movies_to_process:
             if processor.is_stop_requested(): break
@@ -146,6 +150,11 @@ def task_update_resubscribe_cache(processor): # <--- 移除 force_full_update �
             asset = metadata['asset_details_json'][0]
             needs, reason = _item_needs_resubscribe(asset, rule, metadata)
             status = 'needed' if needs else 'ok'
+
+            # ★★★ 检查现有状态，如果已被用户操作，则跳过 ★★★
+            item_key = (str(tmdb_id), "Movie", -1)
+            if current_statuses.get(item_key) in ['ignored', 'subscribed']:
+                continue # 尊重用户的忽略或已订阅状态，不进行覆盖
             
             index_update_batch.append({
                 "tmdb_id": tmdb_id, "item_type": "Movie", "season_number": -1,
@@ -184,6 +193,11 @@ def task_update_resubscribe_cache(processor): # <--- 移除 force_full_update �
                 asset = representative_episode_meta['asset_details_json'][0]
                 needs, reason = _item_needs_resubscribe(asset, rule, series_metadata)
                 status = 'needed' if needs else 'ok'
+
+                # ★★★ 检查现有状态，如果已被用户操作，则跳过 ★★★
+                item_key = (str(tmdb_id), "Season", int(season_num))
+                if current_statuses.get(item_key) in ['ignored', 'subscribed']:
+                    continue # 尊重用户的忽略或已订阅状态，不进行覆盖
 
                 index_update_batch.append({
                     "tmdb_id": tmdb_id, "item_type": "Season", "season_number": season_num,
@@ -257,79 +271,6 @@ def task_delete_batch(processor, item_ids: List[str]):
 # ======================================================================
 # 内部辅助函数
 # ======================================================================
-
-def _process_single_item_for_cache(processor, item_base_info: dict, library_to_rule_map: dict) -> Optional[List[dict]]:
-    """在线程中处理单个媒体项（电影或剧集）的分析逻辑。"""
-    item_id = item_base_info.get('Id')
-    item_name = item_base_info.get('Name')
-    source_lib_id = item_base_info.get('_SourceLibraryId')
-
-    try:
-        applicable_rule = library_to_rule_map.get(source_lib_id)
-        if not applicable_rule:
-            return [{"item_id": item_id, "status": 'ok', "reason": "无匹配规则"}]
-        
-        item_details = emby.get_emby_item_details(item_id, processor.emby_url, processor.emby_api_key, processor.emby_user_id)
-        if not item_details: return None
-        
-        tmdb_id = item_details.get("ProviderIds", {}).get("Tmdb")
-        media_metadata = media_db.get_media_details_by_tmdb_ids([tmdb_id]) if tmdb_id else None
-        item_type = item_details.get('Type')
-
-        if item_type == 'Series':
-            seasons = emby.get_series_seasons(item_id, processor.emby_url, processor.emby_api_key, processor.emby_user_id)
-            if not seasons: return None
-
-            season_cache_results = []
-            for season in seasons:
-                season_number = season.get('IndexNumber')
-                season_id = season.get('Id')
-                if season_number is None or season_id is None: continue
-
-                season_item_id = f"{item_id}-S{season_number}"
-                
-                first_episode_details = None
-                first_episode_list = emby.get_season_children(season_id, processor.emby_url, processor.emby_api_key, processor.emby_user_id, fields="Id", limit=1)
-                if first_episode_list and (first_episode_id := first_episode_list[0].get('Id')):
-                    first_episode_details = emby.get_emby_item_details(first_episode_id, processor.emby_url, processor.emby_api_key, processor.emby_user_id)
-
-                if not first_episode_details:
-                    needs_resubscribe, reason, analysis_data = False, "季内容为空", {}
-                else:
-                    needs_resubscribe, reason = _item_needs_resubscribe(first_episode_details, applicable_rule, media_metadata)
-                    analysis_data = analyze_media_asset(first_episode_details)
-
-                new_status = 'needed' if needs_resubscribe else 'ok'
-                
-                season_cache_item = {
-                    "item_id": season_item_id, "emby_item_id": season_id, "series_id": item_id,
-                    "season_number": season_number, "item_name": f"{item_name} - 第 {season_number} 季",
-                    "tmdb_id": tmdb_id, "item_type": "Season", "status": new_status, "reason": reason,
-                    **analysis_data,
-                    "matched_rule_id": applicable_rule.get('id'), "matched_rule_name": applicable_rule.get('name'),
-                    "source_library_id": source_lib_id,
-                    "path": first_episode_details.get('Path') if first_episode_details else None,
-                    "filename": os.path.basename(first_episode_details.get('Path', '')) if first_episode_details else None
-                }
-                season_cache_results.append(season_cache_item)
-            return season_cache_results
-        else: # Movie
-            needs_resubscribe, reason = _item_needs_resubscribe(item_details, applicable_rule, media_metadata)
-            new_status = 'needed' if needs_resubscribe else 'ok'
-            analysis_data = analyze_media_asset(item_details)
-            
-            return [{
-                "item_id": item_id, "emby_item_id": item_id, "item_name": item_name, "tmdb_id": tmdb_id,
-                "item_type": item_type, "status": new_status, "reason": reason,
-                **analysis_data,
-                "matched_rule_id": applicable_rule.get('id'), "matched_rule_name": applicable_rule.get('name'),
-                "source_library_id": source_lib_id,
-                "path": item_details.get('Path'), "filename": os.path.basename(item_details.get('Path', ''))
-            }]
-    except Exception as e:
-        logger.error(f"  ➜ 处理项目 '{item_name}' (ID: {item_id}) 时线程内发生错误: {e}", exc_info=True)
-        return None
-
 def _item_needs_resubscribe(asset_details: dict, rule: dict, media_metadata: Optional[dict]) -> tuple[bool, str]:
     """
     【V5 - 终极修正版】
