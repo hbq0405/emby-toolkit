@@ -15,7 +15,7 @@ import handler.emby as emby
 import handler.moviepilot as moviepilot
 import config_manager 
 import constants  
-from database import resubscribe_db, settings_db, media_db
+from database import resubscribe_db, settings_db, media_db, maintenance_db
 
 # 从 helpers 导入的辅助函数和常量
 from .helpers import (
@@ -261,7 +261,17 @@ def task_delete_batch(processor, item_ids: List[str]):
             continue
         
         if emby.delete_item(id_to_delete, processor.emby_url, processor.emby_api_key, processor.emby_user_id):
-            # 删除成功后，使用内部ID从我们的索引中移除记录
+            try:
+                item_type = item.get('item_type')
+                logger.info(f"  ➜ 源文件删除成功，开始为 Emby ID {id_to_delete} (Name: {item_name}) 执行数据库善后清理...")
+                maintenance_db.cleanup_deleted_media_item(
+                    item_id=id_to_delete,
+                    item_name=item_name,
+                    item_type=item_type
+                )
+                logger.info(f"  ➜ Emby ID {id_to_delete} 的善后清理已完成。")
+            except Exception as cleanup_e:
+                logger.error(f"  ➜ 执行善后清理 media item {id_to_delete} 时发生错误: {cleanup_e}", exc_info=True)
             resubscribe_db.delete_resubscribe_cache_item(internal_item_id)
             deleted_count += 1
         
@@ -732,6 +742,17 @@ def _execute_resubscribe(processor, task_name: str, target):
             if rule and rule.get('delete_after_resubscribe'):
                 id_to_delete = item.get('emby_item_id') or item_id
                 if emby.delete_item(id_to_delete, processor.emby_url, processor.emby_api_key, processor.emby_user_id):
+                    try:
+                        item_type = item.get('item_type')
+                        logger.info(f"  ➜ 源文件删除成功，开始为 Emby ID {id_to_delete} (Name: {item_name}) 执行数据库善后清理...")
+                        maintenance_db.cleanup_deleted_media_item(
+                            item_id=id_to_delete,
+                            item_name=item_name,
+                            item_type=item_type
+                        )
+                        logger.info(f"  ➜ Emby ID {id_to_delete} 的善后清理已完成。")
+                    except Exception as cleanup_e:
+                        logger.error(f"  ➜ 执行善后清理 media item {id_to_delete} 时发生错误: {cleanup_e}", exc_info=True)
                     resubscribe_db.delete_resubscribe_cache_item(item_id)
                     deleted_count += 1
                 else:

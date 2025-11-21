@@ -657,9 +657,21 @@ def task_execute_cleanup(processor, task_ids: List[int], **kwargs):
                     )
                     if success:
                         deleted_count += 1
-                        logger.info(f"    ➜ 成功删除 ID: {version_id_to_check}")
+                        logger.info(f"  ➜ 成功删除 ID: {version_id_to_check}")
+                        try:
+                            # 使用从循环外层获取的 item_name 和 task['item_type']
+                            logger.info(f"  ➜ 开始为 Emby ID {version_id_to_check} (Name: {item_name}) 执行数据库善后清理...")
+                            maintenance_db.cleanup_deleted_media_item(
+                                item_id=version_id_to_check,
+                                item_name=item_name,
+                                item_type=task['item_type'] # 使用任务中的 item_type
+                            )
+                            logger.info(f"  ➜ Emby ID {version_id_to_check} 的善后清理已完成。")
+                        except Exception as cleanup_e:
+                            # 善后失败不应中断主流程，只记录错误
+                            logger.error(f"  ➜ 执行善后清理 media item {version_id_to_check} 时发生错误: {cleanup_e}", exc_info=True)
                     else:
-                        logger.error(f"    ➜ 删除 ID: {version_id_to_check} 失败！")
+                        logger.error(f"  ➜ 删除 ID: {version_id_to_check} 失败！")
             
             processed_task_ids.append(task['id'])
 

@@ -10,7 +10,7 @@ import handler.moviepilot as moviepilot
 import extensions
 import handler.emby as emby
 from extensions import admin_required, task_lock_required
-from database import resubscribe_db, settings_db
+from database import resubscribe_db, settings_db, maintenance_db
 
 resubscribe_bp = Blueprint('resubscribe', __name__, url_prefix='/api/resubscribe')
 logger = logging.getLogger(__name__)
@@ -188,8 +188,25 @@ def resubscribe_single_item():
                     resubscribe_db.update_resubscribe_item_status(item_id, 'subscribed')
                     message += " 但无法删除源文件，因Emby ID为空。"
                 elif emby.delete_item(id_to_delete, processor.emby_url, processor.emby_api_key, processor.emby_user_id):
-                    resubscribe_db.delete_resubscribe_cache_item(item_id)
                     message += " 源文件已根据规则删除。"
+                    
+                    # ★★★ 在删除成功后，调用善后清理函数 ★★★
+                    try:
+                        item_type = item_details.get('item_type')
+                        logger.info(f"源文件删除成功，开始为 Emby ID {id_to_delete} (Name: {item_name}) 执行数据库善后清理...")
+                        maintenance_db.cleanup_deleted_media_item(
+                            item_id=id_to_delete,
+                            item_name=item_name,
+                            item_type=item_type
+                        )
+                        message += " 数据库记录已同步更新。"
+                        logger.info(f"Emby ID {id_to_delete} 的善后清理已完成。")
+                    except Exception as cleanup_e:
+                        logger.error(f"执行善后清理 media item {id_to_delete} 时发生错误: {cleanup_e}", exc_info=True)
+                        message += " 但数据库善后清理时发生错误，请检查日志。"
+
+                    # 最终，将该项从洗版索引中彻底删除
+                    resubscribe_db.delete_resubscribe_cache_item(item_id)
                 else:
                     resubscribe_db.update_resubscribe_item_status(item_id, 'subscribed')
                     message += " 但删除Emby源文件时失败。"
