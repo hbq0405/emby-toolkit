@@ -227,10 +227,10 @@ def _extract_quality_tag_from_filename(filename_lower: str) -> str:
     return "Unknown"
 
 def _get_resolution_tier(width: int, height: int) -> tuple[int, str]:
-    if width >= 3800 or height >= 2100: return 4, "2160p"
-    if width >= 1900 or height >= 1000: return 3, "1080p"
-    if width >= 1200 or height >= 700: return 2, "720p"
-    if height > 0: return 1, f"{height}p"
+    if width >= 3800: return 4, "4K"
+    if width >= 1900: return 3, "1080p"
+    if width >= 1200: return 2, "720p"
+    if width >= 700: return 1, "480p"  # 常见480p宽度为720或854
     return 0, "Unknown"
 
 def _get_detected_languages_from_streams(
@@ -279,11 +279,13 @@ def analyze_media_asset(item_details: dict) -> dict:
         _, resolution_str = _get_resolution_tier(video_stream["Width"], video_stream.get("Height", 0))
     if resolution_str == "Unknown":
         if "2160p" in file_name_lower or "4k" in file_name_lower:
-            resolution_str = "2160p"
+            resolution_str = "4K"
         elif "1080p" in file_name_lower:
             resolution_str = "1080p"
         elif "720p" in file_name_lower:
             resolution_str = "720p"
+        elif "480p" in file_name_lower: 
+            resolution_str = "480p"
 
     quality_str = _extract_quality_tag_from_filename(file_name_lower)
     
@@ -312,7 +314,6 @@ def analyze_media_asset(item_details: dict) -> dict:
         codec_str = CODEC_DISPLAY_MAP.get(raw_codec, raw_codec.upper()) # 未知编码则直接转大写
 
     detected_audio_langs = _get_detected_languages_from_streams(media_streams, 'Audio')
-    AUDIO_DISPLAY_MAP = {'chi': '国语', 'yue': '粤语', 'eng': '英语', 'jpn': '日语'}
     audio_str = ', '.join(sorted([AUDIO_DISPLAY_MAP.get(lang, lang) for lang in detected_audio_langs])) or '无'
 
     detected_sub_langs = _get_detected_languages_from_streams(media_streams, 'Subtitle')
