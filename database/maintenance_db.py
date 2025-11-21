@@ -536,6 +536,7 @@ def get_release_group_ranking(limit: int = 5) -> list: # 默认值也改成5
                     in_library = TRUE 
                     AND asset_details_json IS NOT NULL 
                     AND jsonb_array_length(asset_details_json) > 0
+                    -- ★★★ 核心修复：使用时区转换来获取正确的“今天” ★★★
                     AND (date_added AT TIME ZONE 'UTC' AT TIME ZONE %(timezone)s)::date = (NOW() AT TIME ZONE %(timezone)s)::date
             ) AS assets
         ) AS release_groups
@@ -547,11 +548,10 @@ def get_release_group_ranking(limit: int = 5) -> list: # 默认值也改成5
     try:
         with get_db_connection() as conn:
             with conn.cursor() as cursor:
-                # ★★★ 2/2: 核心修正 - 使用您已有的 TIMEZONE 常量 ★★★
                 params = {'timezone': constants.TIMEZONE, 'limit': limit}
                 cursor.execute(query, params)
                 results = cursor.fetchall()
-                return [dict(row) for row] in results]
+                return [dict(row) for row in results]
     except Exception as e:
         logger.error(f"获取【每日】发布组排行时发生数据库错误: {e}", exc_info=True)
         return []
