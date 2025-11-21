@@ -139,6 +139,10 @@ def task_update_resubscribe_cache(processor): # <--- 移除 force_full_update �
             if not all([tmdb_id, metadata, rule]) or not metadata.get('asset_details_json'):
                 continue
             
+            if metadata.get('item_type') != 'Movie':
+                logger.warning(f"  ➜ 检测到项目 '{metadata.get('title')}' (TMDB ID: {tmdb_id}) 被Emby错误识别为电影，实际类型为 '{metadata.get('item_type')}'。已跳过。")
+                continue
+
             asset = metadata['asset_details_json'][0]
             needs, reason = _item_needs_resubscribe(asset, rule, metadata)
             status = 'needed' if needs else 'ok'
