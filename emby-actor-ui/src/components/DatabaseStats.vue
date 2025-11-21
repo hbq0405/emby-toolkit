@@ -222,6 +222,27 @@
                 </div>
               </n-gi>
             </n-grid>
+            <n-divider /> <!-- 可以加一个分割线，让布局更清晰 -->
+            <div class="section-container">
+              <div class="section-title">发布组 (Top 5)</div>
+              <n-space vertical :size="12" style="width: 100%;">
+                <div v-if="!stats.release_group_ranking || stats.release_group_ranking.length === 0">
+                  <n-empty description="暂无发布组统计数据" />
+                </div>
+                <div v-else v-for="(group, index) in stats.release_group_ranking" :key="group.release_group" class="ranking-item">
+                  <span class="ranking-index">#{{ index + 1 }}</span>
+                  <span class="ranking-name">{{ group.release_group }}</span>
+                  <span class="ranking-count">{{ group.count }} 部</span>
+                  <n-progress
+                    type="line"
+                    :percentage="(group.count / (stats.release_group_ranking[0]?.count || 1)) * 100"
+                    :show-indicator="false"
+                    :height="8"
+                    style="flex-grow: 1; margin: 0 12px;"
+                  />
+                </div>
+              </n-space>
+            </div>
           </n-space>
         </n-card>
       </n-gi>
@@ -432,5 +453,31 @@ onMounted(() => {
   font-weight: 600;
   font-size: 14px;
   color: var(--n-text-color-2);
+}
+.ranking-item {
+  display: flex;
+  align-items: center;
+  width: 100%;
+  font-size: 14px;
+}
+.ranking-index {
+  font-weight: bold;
+  color: var(--n-text-color-2);
+  width: 30px;
+  flex-shrink: 0;
+}
+.ranking-name {
+  font-weight: 500;
+  width: 120px; /* 可根据需要调整宽度 */
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  flex-shrink: 0;
+}
+.ranking-count {
+  color: var(--n-text-color-3);
+  width: 60px;
+  text-align: right;
+  flex-shrink: 0;
 }
 </style>
