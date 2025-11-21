@@ -325,7 +325,7 @@ def _item_needs_resubscribe(asset_details: dict, rule: dict, media_metadata: Opt
                     'webrip': 3,
                     'hdtv': 2,
                     'dvdrip': 1,
-                    'unknown': 0
+                    '未知': 0
                 }
 
                 # 2. 计算规则要求的“最高目标等级”
@@ -335,7 +335,7 @@ def _item_needs_resubscribe(asset_details: dict, rule: dict, media_metadata: Opt
                     highest_required_tier = max(highest_required_tier, QUALITY_HIERARCHY.get(req_quality.lower(), 0))
 
                 # 3. 获取当前文件经过分析后得出的“质量标签”
-                current_quality_tag = asset_details.get('quality_display', 'Unknown').lower()
+                current_quality_tag = asset_details.get('quality_display', '未知').lower()
                 
                 # 4. 计算当前文件所处的“实际质量等级”
                 current_actual_tier = QUALITY_HIERARCHY.get(current_quality_tag, 0)
@@ -399,7 +399,7 @@ def _item_needs_resubscribe(asset_details: dict, rule: dict, media_metadata: Opt
                 CODEC_HIERARCHY = {
                     'hevc': 2, 'h265': 2,
                     'h264': 1, 'avc': 1,
-                    'unknown': 0
+                    '未知': 0
                 }
 
                 # 2. 计算规则要求的“最高目标等级”
@@ -408,7 +408,7 @@ def _item_needs_resubscribe(asset_details: dict, rule: dict, media_metadata: Opt
                     highest_required_tier = max(highest_required_tier, CODEC_HIERARCHY.get(req_codec.lower(), 0))
 
                 # 3. 获取当前文件经过分析后得出的“编码标签”
-                current_codec_tag = asset_details.get('codec_display', 'unknown').lower()
+                current_codec_tag = asset_details.get('codec_display', '未知').lower()
                 
                 # 4. 计算当前文件所处的“实际编码等级”
                 current_actual_tier = CODEC_HIERARCHY.get(current_codec_tag, 0)

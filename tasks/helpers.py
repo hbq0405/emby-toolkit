@@ -206,7 +206,7 @@ def _get_standardized_effect(path_lower: str, video_stream: Optional[Dict]) -> s
 
 def _extract_quality_tag_from_filename(filename_lower: str) -> str:
     """
-    从文件名中提取质量标签，如果找不到，则返回 'Unknown'。
+    从文件名中提取质量标签，如果找不到，则返回 '未知'。
     """
     QUALITY_HIERARCHY = [
         ('remux', 'Remux'),
@@ -224,7 +224,7 @@ def _extract_quality_tag_from_filename(filename_lower: str) -> str:
         if tag in filename_lower:
             return display
             
-    return "Unknown"
+    return "未知"
 
 def _get_resolution_tier(width: int, height: int) -> tuple[int, str]:
     if width >= 3800: return 4, "4K"
@@ -274,7 +274,7 @@ def analyze_media_asset(item_details: dict) -> dict:
     file_name_lower = file_name.lower()
 
     video_stream = next((s for s in media_streams if s.get('Type') == 'Video'), None)
-    resolution_str = "Unknown"
+    resolution_str = "未知"
     if video_stream and video_stream.get("Width"):
         _, resolution_str = _get_resolution_tier(video_stream["Width"], video_stream.get("Height", 0))
     if resolution_str == "未知":
@@ -304,7 +304,7 @@ def analyze_media_asset(item_details: dict) -> dict:
     effect_display_str = EFFECT_DISPLAY_MAP.get(effect_tag, effect_tag) # 如果没匹配到，显示原始tag
 
     # 3. 获取原始编码，并将其转换为标准显示格式
-    codec_str = 'UNKNOWN'
+    codec_str = '未知'
     if video_stream and video_stream.get('Codec'):
         raw_codec = video_stream.get('Codec').lower()
         CODEC_DISPLAY_MAP = {
@@ -343,7 +343,7 @@ def parse_full_asset_details(item_details: dict) -> dict:
             "emby_item_id": item_details.get("Id"), "path": item_details.get("Path", ""),
             "size_bytes": None, "container": None, "video_codec": None,
             "audio_tracks": [], "subtitles": [],
-            "resolution_display": "Unknown", "quality_display": "Unknown",
+            "resolution_display": "未知", "quality_display": "未知",
             "effect_display": ["SDR"], "audio_display": "无", "subtitle_display": "无",
             "audio_languages_raw": [], "subtitle_languages_raw": [],
             "release_group_raw": [], # 在空结构中也包含新字段
