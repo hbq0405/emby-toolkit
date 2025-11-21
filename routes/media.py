@@ -466,8 +466,13 @@ def api_unified_subscription_status():
                         logger.error(f"API /subscription/status: {error_msg}")
                         continue
 
-                request_db.set_media_status_none(
-                    tmdb_ids=[tmdb_id], item_type=item_type
+                request_db.set_media_status_ignored(
+                    tmdb_ids=[tmdb_id], 
+                    item_type=item_type,
+                    # 提供一个清晰的忽略原因
+                    ignore_reason='手动取消订阅',
+                    # 传递媒体信息，保持函数调用格式一致
+                    media_info_list=[req] 
                 )
                 processed_count += 1
 
