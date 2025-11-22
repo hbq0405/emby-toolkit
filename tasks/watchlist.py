@@ -216,10 +216,10 @@ def task_scan_library_gaps(processor):
             target_series.append(s)
 
         if skipped_watching_count > 0:
-            logger.info(f"  ➜ 根据策略，已跳过 {skipped_watching_count} 部正在追剧或暂停的剧集。")
+            logger.info(f"  ➜ 跳过 {skipped_watching_count} 部正在追剧或暂停的剧集。")
             
         if skipped_ignored_count > 0:
-            logger.info(f"  ➜ 根据策略，已跳过 {skipped_ignored_count} 部用户已标记为“忽略”的剧集。")
+            logger.info(f"  ➜ 跳过 {skipped_ignored_count} 部用户已标记为“忽略”的剧集。")
 
         if not target_series:
             progress_updater(100, "任务完成：没有符合条件（已完结/未追踪 且 未忽略）的剧集需要扫描。")
@@ -263,7 +263,7 @@ def task_scan_library_gaps(processor):
             
         total_seasons_to_sub = len(incomplete_seasons)
         logger.info(f"  ➜ 本地分析完成！共发现 {total_seasons_to_sub} 个分集不完整的季需要重新订阅。")
-        progress_updater(80, f"发现 {total_seasons_to_sub} 个不完整的季，准备提交订阅...")
+        progress_updater(80, f"发现 {total_seasons_to_sub} 个不完整的季，准备提交订阅请求...")
 
         series_info_map = {s['tmdb_id']: s for s in target_series if s.get('tmdb_id')}
         media_info_batch_for_sub = []
