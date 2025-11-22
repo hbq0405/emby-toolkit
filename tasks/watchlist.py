@@ -154,7 +154,7 @@ def task_add_all_series_to_watchlist(processor):
                     # 直接调用 task_process_watchlist，并把正确的处理器实例传给它
                     task_process_watchlist(
                         processor=watchlist_proc, 
-                        item_id=None, 
+                        tmdb_id=None, 
                         force_full_update=False
                     )
                     final_message = "自动化流程完成：扫描与追剧检查均已结束。"
