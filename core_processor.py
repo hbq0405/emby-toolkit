@@ -234,7 +234,22 @@ class MediaProcessor:
 
                 for season in seasons_details:
                     if season.get('season_number', 0) == 0: continue
-                    records_to_upsert.append({"tmdb_id": str(season.get('id')), "item_type": "Season", "parent_series_tmdb_id": str(series_details.get('id')), "title": season.get('name'), "overview": season.get('overview'), "release_date": season.get('air_date'), "poster_path": season.get('poster_path'), "season_number": season.get('season_number')})
+                    
+                    # 没有季海报就用父剧海报
+                    season_poster = season.get('poster_path')
+                    if not season_poster:
+                        season_poster = series_details.get('poster_path')
+
+                    records_to_upsert.append({
+                        "tmdb_id": str(season.get('id')), 
+                        "item_type": "Season", 
+                        "parent_series_tmdb_id": str(series_details.get('id')), 
+                        "title": season.get('name'), 
+                        "overview": season.get('overview'), 
+                        "release_date": season.get('air_date'), 
+                        "poster_path": season_poster, 
+                        "season_number": season.get('season_number')
+                    })
                 
                 # ★★★  遍历 TMDb 元数据列表，并从中查找 Emby 版本进行聚合 ★★★
                 for episode in episodes_details:
