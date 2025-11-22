@@ -60,9 +60,8 @@ def execute_cleanup_tasks():
     if not task_ids or not isinstance(task_ids, list):
         return jsonify({"error": "缺少或无效的 task_ids 参数"}), 400
 
-    # ★★★ 注意：这里调用的后台任务名 task_execute_cleanup 是在 tasks/maintenance.py 中定义的，我们假设它不变 ★★★
     task_manager.submit_task(
-        'execute_cleanup', # task_name
+        task_execute_cleanup, 
         f"执行 {len(task_ids)} 项媒体去重",
         task_ids=task_ids
     )
@@ -99,14 +98,13 @@ def delete_cleanup_tasks():
 @processor_ready_required
 def clear_all_cleanup_tasks():
     try:
-        # ★★★ 调用新函数 ★★★
         all_pending_tasks = maintenance_db.get_all_cleanup_index()
         task_ids = [task['id'] for task in all_pending_tasks]
         if not task_ids:
             return jsonify({"message": "没有发现待处理的清理任务。"}), 200
 
         task_manager.submit_task(
-            'execute_cleanup',
+            task_execute_cleanup,
             f"一键执行所有 {len(task_ids)} 项媒体去重",
             task_ids=task_ids
         )
