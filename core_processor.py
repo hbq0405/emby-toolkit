@@ -2617,7 +2617,7 @@ class MediaProcessor:
                             all_episode_versions = emby.get_all_library_versions(
                                 base_url=self.emby_url, api_key=self.emby_api_key, user_id=self.emby_user_id,
                                 media_type_filter="Episode", parent_id=item_id,
-                                fields="Id,ProviderIds,MediaStreams,Container,Size,Path"
+                                fields="Id,ProviderIds,MediaStreams,Container,Size,Path,DateCreated"
                             ) or []
 
                             episodes_grouped_by_tmdb_id = defaultdict(list)
