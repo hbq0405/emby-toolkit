@@ -442,7 +442,7 @@ def batch_update_gaps_info(gaps_data: Dict[str, List[int]]):
 
 def get_all_series_for_watchlist_scan() -> List[Dict[str, Any]]:
     """
-    【新】为“一键扫描”任务从数据库获取所有剧集的基本信息。
+    为“一键扫描”任务从数据库获取所有剧集的基本信息。
     """
     try:
         with get_db_connection() as conn:
@@ -455,12 +455,12 @@ def get_all_series_for_watchlist_scan() -> List[Dict[str, Any]]:
             cursor.execute(sql)
             return [dict(row) for row in cursor.fetchall()]
     except Exception as e:
-        logger.error(f"为一键扫描任务获取所有剧集时出错: {e}", exc_info=True)
+        logger.error(f"  ➜ 为一键扫描任务获取所有剧集时出错: {e}", exc_info=True)
         return []
 
 def batch_set_series_watching(tmdb_ids: List[str]):
     """
-    【新】批量将一组指定的剧集状态更新为“追剧中”。
+    批量将一组指定的剧集状态更新为“追剧中”。
     同时会重置暂停日期和强制完结标记。
     """
     if not tmdb_ids:
@@ -480,15 +480,15 @@ def batch_set_series_watching(tmdb_ids: List[str]):
             """
             cursor.execute(sql, (tmdb_ids,))
             conn.commit()
-            logger.info(f"成功将 {cursor.rowcount} 部剧集的状态批量更新为“追剧中”。")
+            logger.info(f"  ➜ 成功将 {cursor.rowcount} 部剧集的状态批量更新为“追剧中”。")
     except Exception as e:
         conn.rollback()
-        logger.error(f"批量更新剧集为“追剧中”时出错: {e}", exc_info=True)
+        logger.error(f"  ➜ 批量更新剧集为“追剧中”时出错: {e}", exc_info=True)
         raise
 
 def sync_seasons_watching_status(parent_tmdb_id: str, active_season_numbers: List[int], series_status: str):
     """
-    【新架构】同步更新指定剧集下所有季的追剧状态。
+    同步更新指定剧集下所有季的追剧状态。
     
     逻辑：
     1. 如果剧集本身是 'Completed' (已完结)，则将该剧所有季标记为 'Completed'。
@@ -512,7 +512,7 @@ def sync_seasons_watching_status(parent_tmdb_id: str, active_season_numbers: Lis
                 """
                 cursor.execute(sql, (parent_tmdb_id,))
                 if cursor.rowcount > 0:
-                    logger.info(f"DB: 将剧集 {parent_tmdb_id} 的所有季状态更新为 'Completed'。")
+                    logger.info(f"  ➜ 将剧集 {parent_tmdb_id} 的所有季状态更新为 'Completed'。")
 
             # 场景 B: 剧集正在追/暂停 -> 区分活跃季和过往季
             else:
@@ -541,8 +541,8 @@ def sync_seasons_watching_status(parent_tmdb_id: str, active_season_numbers: Lis
                     """
                     cursor.execute(update_active_sql, (parent_tmdb_id, active_season_numbers))
                     
-                logger.info(f"DB: 更新剧集 {parent_tmdb_id} 的季状态: 活跃季 {active_season_numbers} -> Watching，旧季 -> Completed。")
+                logger.info(f"  ➜ 更新剧集 {parent_tmdb_id} 的季状态: 活跃季 {active_season_numbers} -> Watching，旧季 -> Completed。")
 
             conn.commit()
     except Exception as e:
-        logger.error(f"DB: 同步剧集 {parent_tmdb_id} 的季状态时出错: {e}", exc_info=True)
+        logger.error(f"  ➜ 同步剧集 {parent_tmdb_id} 的季状态时出错: {e}", exc_info=True)
