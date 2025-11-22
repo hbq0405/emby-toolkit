@@ -292,21 +292,6 @@ def update_resubscribe_item_status(item_id: str, new_status: str) -> bool:
         logger.error(f"  ➜ 更新项目 {item_id} 状态时失败: {e}", exc_info=True)
         return False
 
-def delete_resubscribe_cache_item(item_id: str) -> bool:
-    """根据前端 item_id 删除单个索引项。"""
-    key_tuple = _parse_item_id(item_id)
-    if not key_tuple: return False
-    
-    try:
-        with get_db_connection() as conn:
-            cursor = conn.cursor()
-            sql = "DELETE FROM resubscribe_index WHERE tmdb_id = %s AND item_type = %s AND season_number = %s"
-            cursor.execute(sql, key_tuple)
-            return cursor.rowcount > 0
-    except Exception as e:
-        logger.error(f"  ➜ 删除项目 {item_id} 时失败: {e}", exc_info=True)
-        return False
-
 def delete_resubscribe_index_by_rule_id(rule_id: int) -> int:
     try:
         with get_db_connection() as conn:

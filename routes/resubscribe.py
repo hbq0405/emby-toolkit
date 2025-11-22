@@ -205,8 +205,6 @@ def resubscribe_single_item():
                         logger.error(f"执行善后清理 media item {id_to_delete} 时发生错误: {cleanup_e}", exc_info=True)
                         message += " 但数据库善后清理时发生错误，请检查日志。"
 
-                    # 最终，将该项从洗版索引中彻底删除
-                    resubscribe_db.delete_resubscribe_cache_item(item_id)
                 else:
                     resubscribe_db.update_resubscribe_item_status(item_id, 'subscribed')
                     message += " 但删除Emby源文件时失败。"

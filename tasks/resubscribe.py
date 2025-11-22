@@ -272,7 +272,6 @@ def task_delete_batch(processor, item_ids: List[str]):
                 logger.info(f"  ➜ Emby ID {id_to_delete} 的善后清理已完成。")
             except Exception as cleanup_e:
                 logger.error(f"  ➜ 执行善后清理 media item {id_to_delete} 时发生错误: {cleanup_e}", exc_info=True)
-            resubscribe_db.delete_resubscribe_cache_item(internal_item_id)
             deleted_count += 1
         
         time.sleep(0.5)
@@ -753,7 +752,6 @@ def _execute_resubscribe(processor, task_name: str, target):
                         logger.info(f"  ➜ Emby ID {id_to_delete} 的善后清理已完成。")
                     except Exception as cleanup_e:
                         logger.error(f"  ➜ 执行善后清理 media item {id_to_delete} 时发生错误: {cleanup_e}", exc_info=True)
-                    resubscribe_db.delete_resubscribe_cache_item(item_id)
                     deleted_count += 1
                 else:
                     resubscribe_db.update_resubscribe_item_status(item_id, 'subscribed')

@@ -385,15 +385,13 @@ def cleanup_deleted_media_item(item_id: str, item_name: str, item_type: str, ser
 
     try:
         # ======================================================================
-        # 步骤 1: ID 转换与目标确定 (The Translation & Targeting)
-        # 无论删除的是什么，我们都需要找到它对应的 tmdb_id 和顶层剧集的 tmdb_id
+        # 步骤 1: ID 转换与目标确定
         # ======================================================================
         
         target_tmdb_id: Optional[str] = None
         target_item_type: Optional[str] = None
 
         if item_type in ["Movie", "Series"]:
-            # 如果删除的是电影或剧集本身，直接用它的 Emby ID 反查 TMDB ID
             target_tmdb_id = get_tmdb_id_from_emby_id(item_id)
             target_item_type = item_type
             if target_tmdb_id:
@@ -431,10 +429,11 @@ def cleanup_deleted_media_item(item_id: str, item_name: str, item_type: str, ser
                         if series_record and series_record['title']:
                             series_title_for_log = series_record['title']
                     except Exception:
-                        pass # 查询失败不影响主流程，使用备用值即可
+                        pass
                     
                     logger.info(f"  ➜ 目标是剧集 ({series_title_for_log}) 的第 {season_number} 季。")
 
+                    # 1. 标记元数据离线
                     cursor.execute(
                         """
                         UPDATE media_metadata 
@@ -446,6 +445,15 @@ def cleanup_deleted_media_item(item_id: str, item_name: str, item_type: str, ser
                     updated_count = cursor.rowcount
                     logger.info(f"  ➜ 已将被删除的第 {season_number} 季及其所有分集 ({updated_count} 个条目) 标记为“不在库中”。")
 
+                    # 2. ★★★ 精准删除该季的洗版规则 ★★★
+                    cursor.execute(
+                        "DELETE FROM resubscribe_index WHERE tmdb_id = %s AND item_type = 'Season' AND season_number = %s",
+                        (series_tmdb_id, season_number)
+                    )
+                    if cursor.rowcount > 0:
+                        logger.info(f"  ➜ 已精准移除第 {season_number} 季的洗版缓存。")
+
+                    # 3. 检查整部剧是否还活着
                     cursor.execute(
                         "SELECT COUNT(*) as count FROM media_metadata WHERE parent_series_tmdb_id = %s AND item_type = 'Episode' AND in_library = TRUE",
                         (series_tmdb_id,)
@@ -457,15 +465,13 @@ def cleanup_deleted_media_item(item_id: str, item_name: str, item_type: str, ser
                         target_tmdb_id = series_tmdb_id
                         target_item_type = "Series"
                     else:
-                        logger.info(f"  ➜ 剧集 ({series_title_for_log}) 仍有 {remaining_episodes} 集在库，不执行剧集清理。")
+                        logger.info(f"  ➜ 剧集 ({series_title_for_log}) 仍有 {remaining_episodes} 集在库，不执行整剧清理。")
                         conn.commit()
                         return
 
         elif item_type == "Episode":
-            # 如果删除的是一集，我们需要判断它是不是这一季/这部剧的最后一集
             with get_db_connection() as conn:
                 with conn.cursor() as cursor:
-                    # 1. 根据被删除集的 Emby ID，找到它在数据库中的记录，从而获取它的父剧集 TMDB ID
                     cursor.execute(
                         "SELECT parent_series_tmdb_id FROM media_metadata WHERE emby_item_ids_json @> %s::jsonb AND item_type = 'Episode'",
                         (json.dumps([item_id]),)
@@ -474,7 +480,6 @@ def cleanup_deleted_media_item(item_id: str, item_name: str, item_type: str, ser
                     
                     if not record or not record['parent_series_tmdb_id']:
                         logger.warning(f"  ➜ 无法找到分集 Emby ID {item_id} 的父剧集信息，无法判断是否需要清理剧集。")
-                        # 即使找不到父剧集，我们仍然需要将这一集本身标记为“不在库”
                         cursor.execute("UPDATE media_metadata SET in_library = FALSE, emby_item_ids_json = '[]'::jsonb WHERE emby_item_ids_json @> %s::jsonb", (json.dumps([item_id]),))
                         conn.commit()
                         logger.info(f"  ➜ 已将被删除的分集 (Emby ID: {item_id}) 标记为“不在库中”。")
@@ -482,14 +487,12 @@ def cleanup_deleted_media_item(item_id: str, item_name: str, item_type: str, ser
 
                     series_tmdb_id = record['parent_series_tmdb_id']
                     
-                    # 2. 将被删除的这一集标记为“不在库”
                     cursor.execute(
                         "UPDATE media_metadata SET in_library = FALSE, emby_item_ids_json = '[]'::jsonb WHERE emby_item_ids_json @> %s::jsonb",
                         (json.dumps([item_id]),)
                     )
                     logger.info(f"  ➜ 已将被删除的分集 '{item_name}' (Emby ID: {item_id}) 标记为“不在库中”。")
 
-                    # 3. 检查这部剧是否还有其他任何一集在库
                     cursor.execute(
                         "SELECT COUNT(*) as count FROM media_metadata WHERE parent_series_tmdb_id = %s AND item_type = 'Episode' AND in_library = TRUE",
                         (series_tmdb_id,)
@@ -502,15 +505,14 @@ def cleanup_deleted_media_item(item_id: str, item_name: str, item_type: str, ser
                         target_item_type = "Series"
                     else:
                         logger.info(f"  ➜ 剧集 (TMDB ID: {series_tmdb_id}) 仍有 {remaining_episodes} 集在库，不执行剧集清理。")
-                        conn.commit() # 只提交分集状态的更新
+                        conn.commit()
                         return
         
-        # 如果经过上面的逻辑，没有确定要清理的目标，就直接返回
         if not target_tmdb_id:
             return
 
         # ======================================================================
-        # 步骤 2: 执行统一的、基于 TMDB_ID 的清理操作
+        # 步骤 2: 执行统一的、基于 TMDB_ID 的清理操作 (针对整部剧/电影离线)
         # ======================================================================
         logger.info(f"--- 开始对 TMDB ID: {target_tmdb_id} (Type: {target_item_type}) 执行统一清理 ---")
         
@@ -518,12 +520,7 @@ def cleanup_deleted_media_item(item_id: str, item_name: str, item_type: str, ser
             with conn.cursor() as cursor:
                 log_manager = LogDBManager()
                 
-                # 1. 清理处理日志 (注意：日志表可能仍在使用 emby_id，需要确认)
-                # 假设日志表也应该用 tmdb_id 关联
-                # log_manager.remove_from_processed_log_by_tmdb_id(cursor, target_tmdb_id)
-                
-                # 2. 更新 media_metadata 状态 (核心操作)
-                # 不仅更新顶层项目，还更新所有以它为父项目的子项目
+                # 2. 更新 media_metadata 状态
                 sql_update_status = """
                     UPDATE media_metadata 
                     SET in_library = FALSE, emby_item_ids_json = '[]'::jsonb
@@ -533,7 +530,7 @@ def cleanup_deleted_media_item(item_id: str, item_name: str, item_type: str, ser
                 if cursor.rowcount > 0:
                     logger.info(f"  ➜ 已在 media_metadata 中将 {cursor.rowcount} 个相关记录标记为“不在库中”。")
 
-                # 3. 清理 watchlist (假设 watchlist.item_id 现在是 tmdb_id)
+                # 3. 清理 watchlist
                 sql_reset_watchlist = """
                     UPDATE media_metadata
                     SET watching_status = 'NONE'
@@ -546,9 +543,16 @@ def cleanup_deleted_media_item(item_id: str, item_name: str, item_type: str, ser
                 if cursor.rowcount > 0:
                     logger.info(f"  ➜ 已将该剧集的智能追剧状态重置为'NONE'。")
 
-                # 4. 清理resubscribe_index 
-                cursor.execute("DELETE FROM resubscribe_index WHERE tmdb_id = %s", (target_tmdb_id,))
-                if cursor.rowcount > 0: logger.info(f"  ➜ 已从媒体洗版缓存中移除。")
+                # 4. 清理 resubscribe_index (整部剧/电影离线时的清理)
+                if target_item_type == 'Movie':
+                    # 电影：只删 Movie 类型
+                    cursor.execute("DELETE FROM resubscribe_index WHERE tmdb_id = %s AND item_type = 'Movie'", (target_tmdb_id,))
+                else:
+                    # 剧集：整部剧都没了，删除该 ID 下的所有 Season 规则
+                    cursor.execute("DELETE FROM resubscribe_index WHERE tmdb_id = %s AND item_type = 'Season'", (target_tmdb_id,))
+                
+                if cursor.rowcount > 0: 
+                    logger.info(f"  ➜ 已从媒体洗版缓存中移除 {cursor.rowcount} 条记录 (整部离线)。")
 
                 # 5. 清理用户权限缓存 
                 sql_cleanup_user_cache = """
@@ -563,14 +567,12 @@ def cleanup_deleted_media_item(item_id: str, item_name: str, item_type: str, ser
                     WHERE 
                         visible_emby_ids_json @> %s::jsonb;
                 """
-                # 使用被删除项的 Emby Item ID (函数入口传入的 item_id) 来执行清理
                 cursor.execute(sql_cleanup_user_cache, (item_id, json.dumps([item_id])))
                 if cursor.rowcount > 0:
                     logger.info(f"  ➜ 已从 {cursor.rowcount} 条用户权限缓存中移除了已被删除的 Emby ID: {item_id}。")
 
                 conn.commit()
 
-        # 在主事务之外调用，因为它自己管理事务
         remove_tmdb_id_from_all_collections(target_tmdb_id)
         
         logger.info(f"--- 对 TMDB ID: {target_tmdb_id} 的清理已全部完成 ---")
