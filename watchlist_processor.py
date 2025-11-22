@@ -344,7 +344,8 @@ class WatchlistProcessor:
                 paused_until,
                 last_episode_to_air_json,
                 watchlist_tmdb_status AS tmdb_status,
-                watchlist_missing_info_json AS missing_info_json
+                watchlist_missing_info_json AS missing_info_json,
+                subscription_status
             FROM media_metadata
         """
         

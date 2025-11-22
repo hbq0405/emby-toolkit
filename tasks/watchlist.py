@@ -192,21 +192,37 @@ def task_scan_library_gaps(processor):
             include_all_series=True
         )
         
+        # ======================================================================
+        # ★★★ 核心修改：过滤逻辑 ★★★
+        # ======================================================================
         target_series = []
-        skipped_count = 0
+        skipped_watching_count = 0
+        skipped_ignored_count = 0
         
         for s in all_series_in_libs:
             status = s.get('status')
+            sub_status = s.get('subscription_status') 
+            
+            # 1. 跳过正在追或暂停的 (由主任务负责)
             if status in [STATUS_WATCHING, STATUS_PAUSED]:
-                skipped_count += 1
-            else:
-                target_series.append(s)
+                skipped_watching_count += 1
+                continue
+                
+            # 2. ★★★ 跳过已忽略的 (尊重用户选择) ★★★
+            if sub_status == 'IGNORED':
+                skipped_ignored_count += 1
+                continue
+                
+            target_series.append(s)
 
-        if skipped_count > 0:
-            logger.info(f"  ➜ 根据策略，已跳过 {skipped_count} 部正在追剧或暂停的剧集（交由主追剧任务负责）。")
+        if skipped_watching_count > 0:
+            logger.info(f"  ➜ 根据策略，已跳过 {skipped_watching_count} 部正在追剧或暂停的剧集。")
+            
+        if skipped_ignored_count > 0:
+            logger.info(f"  ➜ 根据策略，已跳过 {skipped_ignored_count} 部用户已标记为“忽略”的剧集。")
 
         if not target_series:
-            progress_updater(100, "任务完成：没有符合条件（已完结或未追踪）的剧集需要扫描。")
+            progress_updater(100, "任务完成：没有符合条件（已完结/未追踪 且 未忽略）的剧集需要扫描。")
             return
         
         all_series_tmdb_ids = [s['tmdb_id'] for s in target_series if s.get('tmdb_id')]
