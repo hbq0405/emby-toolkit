@@ -27,67 +27,101 @@ def json_datetime_serializer(obj):
         return obj.isoformat()
     raise TypeError(f"Object of type {type(obj).__name__} is not JSON serializable")
 
-# --- 数据看板 ---
-@db_admin_bp.route('/database/stats', methods=['GET'])
+# --- 数据看板 (拆分版 API) ---
+@db_admin_bp.route('/database/stats/core', methods=['GET'])
 @any_login_required
-def api_get_database_stats():
+def api_get_stats_core():
     try:
-        # ### 核心修改：调用新的数据库函数 ###
-        raw_stats = maintenance_db.get_dashboard_stats()
-        if not raw_stats:
-            raise RuntimeError("未能从数据库获取统计数据。")
+        data = maintenance_db.get_stats_core()
+        return jsonify({"status": "success", "data": data})
+    except Exception as e:
+        logger.error(f"获取核心统计失败: {e}")
+        return jsonify({"status": "error", "data": {}}), 500
 
+@db_admin_bp.route('/database/stats/library', methods=['GET'])
+@any_login_required
+def api_get_stats_library():
+    try:
+        data = maintenance_db.get_stats_library()
+        # 格式化一下分辨率数据以匹配前端预期
+        formatted_data = {
+            "movies_in_library": data.get('media_movies_in_library', 0),
+            "series_in_library": data.get('media_series_in_library', 0),
+            "episodes_in_library": data.get('media_episodes_in_library', 0),
+            "missing_total": data.get('media_missing_total', 0),
+            "resolution_stats": data.get('resolution_stats', [])
+        }
+        return jsonify({"status": "success", "data": formatted_data})
+    except Exception as e:
+        logger.error(f"获取媒体库统计失败: {e}")
+        return jsonify({"status": "error", "data": {}}), 500
+
+@db_admin_bp.route('/database/stats/system', methods=['GET'])
+@any_login_required
+def api_get_stats_system():
+    try:
+        raw = maintenance_db.get_stats_system()
+        formatted_data = {
+            "actor_mappings_total": raw.get('actor_mappings_linked', 0) + raw.get('actor_mappings_unlinked', 0),
+            "actor_mappings_linked": raw.get('actor_mappings_linked', 0),
+            "actor_mappings_unlinked": raw.get('actor_mappings_unlinked', 0),
+            "translation_cache_count": raw.get('translation_cache_count', 0),
+            "processed_log_count": raw.get('processed_log_count', 0),
+            "failed_log_count": raw.get('failed_log_count', 0),
+        }
+        return jsonify({"status": "success", "data": formatted_data})
+    except Exception as e:
+        logger.error(f"获取系统统计失败: {e}")
+        return jsonify({"status": "error", "data": {}}), 500
+
+@db_admin_bp.route('/database/stats/subscription', methods=['GET'])
+@any_login_required
+def api_get_stats_subscription():
+    try:
+        raw = maintenance_db.get_stats_subscription()
+        
+        # 计算配额
         available_quota = settings_db.get_subscription_quota()
         total_quota = config_manager.APP_CONFIG.get(constants.CONFIG_OPTION_RESUBSCRIBE_DAILY_CAP, 200)
         consumed_quota = max(0, total_quota - available_quota)
 
-        stats = {
-            'media_library': {
-                "cached_total": raw_stats.get('media_cached_total', 0),
-                "movies_in_library": raw_stats.get('media_movies_in_library', 0),
-                "series_in_library": raw_stats.get('media_series_in_library', 0),
-                "episodes_in_library": raw_stats.get('media_episodes_in_library', 0),
-                "missing_total": raw_stats.get('media_missing_total', 0),
-                "resolution_stats": raw_stats.get('resolution_distribution', []),
+        formatted_data = {
+            'watchlist': {'watching': raw.get('watchlist_active', 0), 'paused': raw.get('watchlist_paused', 0)},
+            'actors': {
+                'subscriptions': raw.get('actor_subscriptions_active', 0), 
+                'tracked_total': raw.get('actor_works_total', 0), 
+                'tracked_in_library': raw.get('actor_works_in_library', 0)
             },
-            'system': {
-                "actor_mappings_total": raw_stats.get('actor_mappings_linked', 0) + raw_stats.get('actor_mappings_unlinked', 0),
-                "actor_mappings_linked": raw_stats.get('actor_mappings_linked', 0),
-                "actor_mappings_unlinked": raw_stats.get('actor_mappings_unlinked', 0),
-                "translation_cache_count": raw_stats.get('translation_cache_count', 0),
-                "processed_log_count": raw_stats.get('processed_log_count', 0),
-                "failed_log_count": raw_stats.get('failed_log_count', 0),
+            'resubscribe': {'pending': raw.get('resubscribe_pending', 0)},
+            'native_collections': {
+                'total': raw.get('native_collections_total', 0), 
+                'count': raw.get('native_collections_with_missing', 0),
+                'missing_items': raw.get('native_collections_missing_items', 0) or 0
             },
-            'subscriptions_card': {
-                'watchlist': {'watching': raw_stats.get('watchlist_active', 0), 'paused': raw_stats.get('watchlist_paused', 0)},
-                'actors': {
-                    'subscriptions': raw_stats.get('actor_subscriptions_active', 0), 
-                    'tracked_total': raw_stats.get('actor_works_total', 0), 
-                    'tracked_in_library': raw_stats.get('actor_works_in_library', 0)
-                },
-                'resubscribe': {'pending': raw_stats.get('resubscribe_pending', 0)},
-                
-                'native_collections': {
-                    'total': raw_stats.get('native_collections_total', 0), 
-                    'count': raw_stats.get('native_collections_with_missing', 0),
-                    'missing_items': raw_stats.get('native_collections_missing_items', 0) or 0
-                },
-                
-                'custom_collections': {
-                    'total': raw_stats.get('custom_collections_total', 0), 
-                    'count': raw_stats.get('custom_collections_with_missing', 0),
-                    'missing_items': raw_stats.get('custom_collections_missing_items', 0) or 0
-                },
-                
-                'quota': {'available': available_quota, 'consumed': consumed_quota}
+            'custom_collections': {
+                'total': raw.get('custom_collections_total', 0), 
+                'count': raw.get('custom_collections_with_missing', 0),
+                'missing_items': raw.get('custom_collections_missing_items', 0) or 0
             },
+            'quota': {'available': available_quota, 'consumed': consumed_quota}
+        }
+        return jsonify({"status": "success", "data": formatted_data})
+    except Exception as e:
+        logger.error(f"获取订阅统计失败: {e}")
+        return jsonify({"status": "error", "data": {}}), 500
+
+@db_admin_bp.route('/database/stats/rankings', methods=['GET'])
+@any_login_required
+def api_get_stats_rankings():
+    try:
+        data = {
             'release_group_ranking': maintenance_db.get_release_group_ranking(5),
             'historical_release_group_ranking': maintenance_db.get_historical_release_group_ranking(5)
         }
-        return jsonify({"status": "success", "data": stats})
+        return jsonify({"status": "success", "data": data})
     except Exception as e:
-        logger.error(f"获取数据库统计信息时发生严重错误: {e}", exc_info=True)
-        return jsonify({"error": "获取数据库统计信息时发生服务器内部错误"}), 500
+        logger.error(f"获取排行统计失败: {e}")
+        return jsonify({"status": "error", "data": {}}), 500
 
 # --- 数据库表管理 ---
 @db_admin_bp.route('/database/tables', methods=['GET'])

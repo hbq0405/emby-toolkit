@@ -198,41 +198,60 @@ def correct_all_sequences() -> list:
             logger.error(f"  ➜ 校准自增序列时发生严重错误: {e}", exc_info=True)
             raise
 
-def get_dashboard_stats() -> dict:
-    """
-    执行一个聚合查询，获取数据看板所需的所有统计数据。
-    """
-    # ★★★ 核心修正：将 watchlist 相关的查询指向 media_metadata 表 ★★★
+# ======================================================================
+# 模块: 数据看板统计 (拆分版)
+# ======================================================================
+
+def _execute_single_row_query(sql_query: str) -> dict:
+    """辅助函数：执行返回单行结果的查询"""
+    try:
+        with get_db_connection() as conn:
+            with conn.cursor() as cursor:
+                cursor.execute(sql_query)
+                result = cursor.fetchone()
+                return dict(result) if result else {}
+    except Exception as e:
+        logger.error(f"统计查询出错: {e}")
+        return {}
+
+def get_stats_core() -> dict:
+    """1. 核心头部数据 (极快)"""
     sql = """
     SELECT
-        -- 核心数据: 已缓存媒体 (只统计顶层项目)
         (SELECT COUNT(*) FROM media_metadata WHERE item_type IN ('Movie', 'Series')) AS media_cached_total,
-        
-        -- 核心数据: 已归档演员 (逻辑不变)
-        (SELECT COUNT(*) FROM person_identity_map) AS actor_mappings_total,
-        
-        -- 媒体细分: 在库电影数 (逻辑不变)
+        (SELECT COUNT(*) FROM person_identity_map) AS actor_mappings_total
+    """
+    return _execute_single_row_query(sql)
+
+def get_stats_library() -> dict:
+    """2. 媒体库概览 (较快)"""
+    sql = """
+    SELECT
         (SELECT COUNT(*) FROM media_metadata WHERE item_type = 'Movie' AND in_library = TRUE) AS media_movies_in_library,
-        
-        -- 媒体细分: 在库剧集数 (逻辑不变)
         (SELECT COUNT(*) FROM media_metadata WHERE item_type = 'Series' AND in_library = TRUE) AS media_series_in_library,
-        
-        -- 媒体细分: 在库总集数 (逻辑不变)
         (SELECT COUNT(*) FROM media_metadata WHERE item_type = 'Episode' AND in_library = TRUE) AS media_episodes_in_library,
-        
-        -- 媒体细分: 预缓存 (修正：只统计不在库的顶层项目)
-        (SELECT COUNT(*) FROM media_metadata WHERE in_library = FALSE AND item_type IN ('Movie', 'Series')) AS media_missing_total,
-        
-        -- 演员细分 (逻辑不变)
+        (SELECT COUNT(*) FROM media_metadata WHERE in_library = FALSE AND item_type IN ('Movie', 'Series')) AS media_missing_total
+    """
+    data = _execute_single_row_query(sql)
+    data['resolution_stats'] = get_resolution_distribution() # 复用现有的分辨率函数
+    return data
+
+def get_stats_system() -> dict:
+    """3. 系统日志与缓存 (快)"""
+    sql = """
+    SELECT
         (SELECT COUNT(*) FROM person_identity_map WHERE emby_person_id IS NOT NULL) AS actor_mappings_linked,
         (SELECT COUNT(*) FROM person_identity_map WHERE emby_person_id IS NULL) AS actor_mappings_unlinked,
-        
-        -- 系统日志与缓存 (逻辑不变)
         (SELECT COUNT(*) FROM translation_cache) AS translation_cache_count,
         (SELECT COUNT(*) FROM processed_log) AS processed_log_count,
-        (SELECT COUNT(*) FROM failed_log) AS failed_log_count,
-        
-        -- 智能订阅 (逻辑不变)
+        (SELECT COUNT(*) FROM failed_log) AS failed_log_count
+    """
+    return _execute_single_row_query(sql)
+
+def get_stats_subscription() -> dict:
+    """4. 智能订阅 (最慢，涉及 JSONB 和复杂聚合)"""
+    sql = """
+    SELECT
         (SELECT COUNT(*) FROM media_metadata WHERE watching_status = 'Watching') AS watchlist_active,
         (SELECT COUNT(*) FROM media_metadata WHERE watching_status = 'Paused') AS watchlist_paused,
         (SELECT COUNT(*) FROM actor_subscriptions WHERE status = 'active') AS actor_subscriptions_active,
@@ -240,34 +259,15 @@ def get_dashboard_stats() -> dict:
         (SELECT COUNT(*) FROM media_metadata WHERE subscription_sources_json @> '[{"type": "actor_subscription"}]'::jsonb AND in_library = TRUE) AS actor_works_in_library,
         (SELECT COUNT(*) FROM resubscribe_index WHERE status ILIKE 'needed') AS resubscribe_pending,
         
-        -- ★★★ 原生合集统计 (原 collections_info 表) - 新增总数统计 ★★★
         (SELECT COUNT(*) FROM collections_info) AS native_collections_total,
         (SELECT COUNT(*) FROM collections_info WHERE has_missing = TRUE) AS native_collections_with_missing,
         (SELECT SUM(jsonb_array_length(missing_movies_json)) FROM collections_info WHERE has_missing = TRUE) AS native_collections_missing_items,
         
-        -- ★★★ 自建合集统计 (custom_collections 表) - 新增总数统计 ★★★
         (SELECT COUNT(*) FROM custom_collections) AS custom_collections_total,
         (SELECT COUNT(*) FROM custom_collections WHERE missing_count > 0) AS custom_collections_with_missing,
-        (SELECT SUM(missing_count) FROM custom_collections WHERE missing_count > 0) AS custom_collections_missing_items;
+        (SELECT SUM(missing_count) FROM custom_collections WHERE missing_count > 0) AS custom_collections_missing_items
     """
-    try:
-        with get_db_connection() as conn:
-            with conn.cursor() as cursor:
-                cursor.execute(sql)
-                result = cursor.fetchone()
-                if result:
-                    stats_dict = dict(result)
-                    stats_dict['resolution_distribution'] = get_resolution_distribution()
-                    return stats_dict
-                else:
-                    return {}
-    except psycopg2.Error as e:
-        # 保留这个有用的警告，以防万一
-        if "watchlist" in str(e):
-             logger.warning(f"聚合统计查询失败，可能是由于旧的数据库结构: {e}。这通常在升级后自动解决。")
-        else:
-            logger.error(f"执行聚合统计查询时出错: {e}")
-        return {}
+    return _execute_single_row_query(sql)
     
 def get_resolution_distribution() -> List[Dict[str, Any]]:
     """获取在库媒体的分辨率分布，用于生成图表。"""
@@ -295,6 +295,89 @@ def get_resolution_distribution() -> List[Dict[str, Any]]:
                 return [dict(row) for row in cursor.fetchall()]
     except Exception as e:
         logger.error(f"DB: 获取分辨率分布数据失败: {e}", exc_info=True)
+        return []
+
+def get_release_group_ranking(limit: int = 5) -> list:
+    """
+    统计【当天入库】的发布组作品（文件）数量，并返回排名前N的列表。
+    """
+    query = """
+        SELECT
+            release_group,
+            COUNT(*) AS count
+        FROM (
+            SELECT
+                jsonb_array_elements_text(asset -> 'release_group_raw') AS release_group,
+                ((asset ->> 'date_added_to_library')::timestamp AT TIME ZONE 'UTC') AS asset_added_at_utc
+            FROM (
+                SELECT jsonb_array_elements(asset_details_json) AS asset
+                FROM media_metadata
+                WHERE
+                    in_library = TRUE
+                    AND asset_details_json IS NOT NULL
+                    AND jsonb_array_length(asset_details_json) > 0
+                    AND asset_details_json::text LIKE %s
+            ) AS assets
+        ) AS release_groups
+        WHERE
+            release_group IS NOT NULL AND release_group != ''
+            AND (asset_added_at_utc AT TIME ZONE %s)::date = (NOW() AT TIME ZONE %s)::date
+        GROUP BY release_group
+        ORDER BY count DESC
+        LIMIT %s;
+    """
+    try:
+        with get_db_connection() as conn:
+            with conn.cursor() as cursor:
+                like_pattern = '%date_added_to_library%'
+                params = (like_pattern, constants.TIMEZONE, constants.TIMEZONE, limit)
+                cursor.execute(query, params)
+                results = cursor.fetchall()
+                return [dict(row) for row in results]
+    except Exception as e:
+        logger.error(f"获取【每日】发布组排行时发生数据库错误: {e}", exc_info=True)
+        return []
+    
+def get_historical_release_group_ranking(limit: int = 5) -> list:
+    """
+    统计【历史入库】的所有发布组作品（文件）数量，并返回总排名前N的列表。
+    """
+    # 这个查询与 get_release_group_ranking 几乎一样，但没有按“当天”过滤
+    query = """
+        SELECT
+            release_group,
+            COUNT(*) AS count
+        FROM (
+            SELECT 
+                jsonb_array_elements_text(asset -> 'release_group_raw') AS release_group
+            FROM (
+                SELECT jsonb_array_elements(asset_details_json) AS asset
+                FROM media_metadata
+                WHERE 
+                    in_library = TRUE 
+                    AND asset_details_json IS NOT NULL 
+                    AND jsonb_array_length(asset_details_json) > 0
+                    -- 仍然检查 date_added_to_library 字段是否存在，以确保是有效入库记录
+                    AND asset_details_json::text LIKE %s
+            ) AS assets
+        ) AS release_groups
+        WHERE 
+            release_group IS NOT NULL AND release_group != ''
+        GROUP BY release_group
+        ORDER BY count DESC
+        LIMIT %s;
+    """
+    try:
+        with get_db_connection() as conn:
+            with conn.cursor() as cursor:
+                # 参数减少了，因为不再需要时区
+                like_pattern = '%date_added_to_library%'
+                params = (like_pattern, limit)
+                cursor.execute(query, params)
+                results = cursor.fetchall()
+                return [dict(row) for row in results]
+    except Exception as e:
+        logger.error(f"获取【历史】发布组排行时发生数据库错误: {e}", exc_info=True)
         return []
 
 def get_all_table_names() -> List[str]:
@@ -561,85 +644,3 @@ def cleanup_deleted_media_item(item_id: str, item_name: str, item_type: str, ser
     except Exception as e:
         logger.error(f"清理被删除的媒体项 {item_id} 时发生严重数据库错误: {e}", exc_info=True)
 
-def get_release_group_ranking(limit: int = 5) -> list:
-    """
-    统计【当天入库】的发布组作品（文件）数量，并返回排名前N的列表。
-    """
-    query = """
-        SELECT
-            release_group,
-            COUNT(*) AS count
-        FROM (
-            SELECT
-                jsonb_array_elements_text(asset -> 'release_group_raw') AS release_group,
-                ((asset ->> 'date_added_to_library')::timestamp AT TIME ZONE 'UTC') AS asset_added_at_utc
-            FROM (
-                SELECT jsonb_array_elements(asset_details_json) AS asset
-                FROM media_metadata
-                WHERE
-                    in_library = TRUE
-                    AND asset_details_json IS NOT NULL
-                    AND jsonb_array_length(asset_details_json) > 0
-                    AND asset_details_json::text LIKE %s
-            ) AS assets
-        ) AS release_groups
-        WHERE
-            release_group IS NOT NULL AND release_group != ''
-            AND (asset_added_at_utc AT TIME ZONE %s)::date = (NOW() AT TIME ZONE %s)::date
-        GROUP BY release_group
-        ORDER BY count DESC
-        LIMIT %s;
-    """
-    try:
-        with get_db_connection() as conn:
-            with conn.cursor() as cursor:
-                like_pattern = '%date_added_to_library%'
-                params = (like_pattern, constants.TIMEZONE, constants.TIMEZONE, limit)
-                cursor.execute(query, params)
-                results = cursor.fetchall()
-                return [dict(row) for row in results]
-    except Exception as e:
-        logger.error(f"获取【每日】发布组排行时发生数据库错误: {e}", exc_info=True)
-        return []
-    
-def get_historical_release_group_ranking(limit: int = 5) -> list:
-    """
-    统计【历史入库】的所有发布组作品（文件）数量，并返回总排名前N的列表。
-    """
-    # 这个查询与 get_release_group_ranking 几乎一样，但没有按“当天”过滤
-    query = """
-        SELECT
-            release_group,
-            COUNT(*) AS count
-        FROM (
-            SELECT 
-                jsonb_array_elements_text(asset -> 'release_group_raw') AS release_group
-            FROM (
-                SELECT jsonb_array_elements(asset_details_json) AS asset
-                FROM media_metadata
-                WHERE 
-                    in_library = TRUE 
-                    AND asset_details_json IS NOT NULL 
-                    AND jsonb_array_length(asset_details_json) > 0
-                    -- 仍然检查 date_added_to_library 字段是否存在，以确保是有效入库记录
-                    AND asset_details_json::text LIKE %s
-            ) AS assets
-        ) AS release_groups
-        WHERE 
-            release_group IS NOT NULL AND release_group != ''
-        GROUP BY release_group
-        ORDER BY count DESC
-        LIMIT %s;
-    """
-    try:
-        with get_db_connection() as conn:
-            with conn.cursor() as cursor:
-                # 参数减少了，因为不再需要时区
-                like_pattern = '%date_added_to_library%'
-                params = (like_pattern, limit)
-                cursor.execute(query, params)
-                results = cursor.fetchall()
-                return [dict(row) for row in results]
-    except Exception as e:
-        logger.error(f"获取【历史】发布组排行时发生数据库错误: {e}", exc_info=True)
-        return []
