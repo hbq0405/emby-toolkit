@@ -521,16 +521,12 @@ def api_unified_subscription_status():
 @admin_required
 def api_get_all_subscriptions_for_management():
     """
-    为前端“统一订阅”页面提供所有非在库媒体项的数据。
-    【V2 - 数据增强版】
-    - 在返回数据前，会解析 subscription_sources_json。
-    - 如果来源是 'user_request'，会根据 user_id 查找用户名并附加到来源对象中。
+    为前端“统一订阅”页面提供所有有订阅状态媒体项的数据。
     """
     try:
         # 1. 从数据库获取原始数据
-        items = media_db.get_all_non_library_media()
+        items = media_db.get_all_subscriptions()
 
-        # 2. ★★★ 核心修改 2/2: 数据增强逻辑 ★★★
         # 遍历每个媒体项，处理其来源信息
         for item in items:
             sources = item.get('subscription_sources_json')

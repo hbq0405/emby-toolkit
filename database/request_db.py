@@ -96,41 +96,12 @@ def set_media_status_wanted(
 ):
     """
     将媒体状态设置为 'WANTED'。
-    【V6 - 终极正确版】海报回退逻辑自给自足，不再依赖调用方。
     """
     data_to_upsert = _prepare_media_data_for_upsert(tmdb_ids, item_type, source, media_info_list)
     if not data_to_upsert: return
     try:
         with get_db_connection() as conn:
-            # ★★★★★★★★★★★★★★★ 终极核心修复：海报回退逻辑自给自足 ★★★★★★★★★★★★★★★
-            # 1. 筛选出所有没有海报的“季”类型项目
-            seasons_missing_poster = [
-                item for item in data_to_upsert 
-                if item.get("item_type") == "Season" 
-                and not item.get("poster_path") 
-                and item.get("parent_series_tmdb_id")
-            ]
-
-            if seasons_missing_poster:
-                # 2. 收集所有需要查询的父剧集ID
-                parent_ids = list({item['parent_series_tmdb_id'] for item in seasons_missing_poster})
-                
-                # 3. 自己动手，去数据库查出所有父剧集的海报
-                with conn.cursor() as cursor:
-                    cursor.execute(
-                        "SELECT tmdb_id, poster_path FROM media_metadata WHERE tmdb_id = ANY(%s) AND item_type = 'Series'", 
-                        (parent_ids,)
-                    )
-                    parent_poster_map = {row['tmdb_id']: row['poster_path'] for row in cursor.fetchall()}
-                
-                # 4. 遍历没有海报的季，为它们“偷”来父剧集的海报
-                for item in seasons_missing_poster:
-                    fallback_poster = parent_poster_map.get(item['parent_series_tmdb_id'])
-                    if fallback_poster:
-                        item['poster_path'] = fallback_poster
-                        logger.info(f"  ➜ [海报回退] 为季《{item.get('title', '未知')}》填充父剧集海报。")
-            # ★★★★★★★★★★★★★★★ 海报回退逻辑结束 ★★★★★★★★★★★★★★★
-
+            
             with conn.cursor() as cursor:
                 from psycopg2.extras import execute_batch
                 if force_unignore:

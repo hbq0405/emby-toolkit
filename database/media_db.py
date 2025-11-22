@@ -276,9 +276,9 @@ def ensure_media_record_exists(media_info_list: List[Dict[str, Any]]):
         logger.error(f"  ➜ [元数据注册] 确保媒体记录存在时发生错误: {e}", exc_info=True)
         raise
 
-def get_all_non_library_media() -> List[Dict[str, Any]]:
+def get_all_subscriptions() -> List[Dict[str, Any]]:
     """
-    【V3.1 - 链接修复版】获取所有不在媒体库中的媒体项，用于前端统一管理。
+    获取所有有订阅状态的媒体项，用于前端统一管理。
     当项目类型为 Season 时，会自动查询并拼接父剧集的标题，并额外提供父剧集的TMDb ID用于生成正确的链接。
     """
     sql = """

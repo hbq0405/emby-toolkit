@@ -200,8 +200,7 @@ def task_reprocess_all_review_items(processor):
 # ★★★ 重量级的元数据缓存填充任务 ★★★
 def task_populate_metadata_cache(processor, batch_size: int = 50, force_full_update: bool = False):
     """
-    【V15 - 双向差异感知版】
-    - 修复：快速同步模式下，无法检测到“子集删除”的问题。
+    - 重量级的元数据缓存填充任务。
     - 逻辑升级：
       1. 记录本次扫描到的所有 Emby ID。
       2. 计算 (库内已知 ID - 本次扫描 ID) = 已删除的 ID。
@@ -504,6 +503,12 @@ def task_populate_metadata_cache(processor, batch_size: int = 50, force_full_upd
                             
                             if matched_emby_seasons:
                                 real_season_tmdb_id = str(s_info.get('id'))
+
+                                # 优先使用季海报，如果没有则回退使用父剧集海报
+                                season_poster = s_info.get('poster_path')
+                                if not season_poster and tmdb_details:
+                                    season_poster = tmdb_details.get('poster_path')
+                                    
                                 season_record = {
                                     "tmdb_id": real_season_tmdb_id,
                                     "item_type": "Season",
