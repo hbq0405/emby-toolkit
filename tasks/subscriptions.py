@@ -468,6 +468,10 @@ def task_auto_subscribe(processor):
                         source_display_parts.append(f"演员订阅({source.get('name', '未知')})")
                     elif source_type in ['collection', 'native_collection']:
                         source_display_parts.append(f"合集({source.get('name', '未知')})")
+                    elif source_type == 'gap_scan':
+                        source_display_parts.append("缺集扫描")
+                    elif source_type == 'watchlist':
+                        source_display_parts.append("追剧补全")
                 
                 source_display = ", ".join(set(source_display_parts)) or "未知来源"
                 subscription_details.append({'source': source_display, 'item': item_display_name})
