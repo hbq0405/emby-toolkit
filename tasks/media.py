@@ -508,7 +508,7 @@ def task_populate_metadata_cache(processor, batch_size: int = 50, force_full_upd
                                 season_poster = s_info.get('poster_path')
                                 if not season_poster and tmdb_details:
                                     season_poster = tmdb_details.get('poster_path')
-                                    
+
                                 season_record = {
                                     "tmdb_id": real_season_tmdb_id,
                                     "item_type": "Season",
@@ -516,7 +516,7 @@ def task_populate_metadata_cache(processor, batch_size: int = 50, force_full_upd
                                     "season_number": s_num,
                                     "title": s_info.get('name'),
                                     "overview": s_info.get('overview'),
-                                    "poster_path": s_info.get('poster_path'),
+                                    "poster_path": season_poster,
                                     "in_library": True,
                                     "emby_item_ids_json": json.dumps([s.get('Id') for s in matched_emby_seasons]),
                                     "ignore_reason": None
