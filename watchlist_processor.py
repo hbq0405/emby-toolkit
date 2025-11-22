@@ -9,7 +9,7 @@ from datetime import datetime, timedelta, timezone
 import threading
 
 # 导入我们需要的辅助模块
-from database import connection, media_db, request_db
+from database import connection, media_db, request_db, watchlist_db
 import constants
 import handler.tmdb as tmdb
 import handler.emby as emby
@@ -576,6 +576,34 @@ class WatchlistProcessor:
             "is_airing": is_truly_airing
         }
         self._update_watchlist_entry(tmdb_id, item_name, updates_to_db)
+
+        active_seasons = set()
+        
+        # 规则 A: 如果有明确的下一集待播，该集所属的季肯定是活跃的
+        if real_next_episode_to_air and real_next_episode_to_air.get('season_number'):
+            active_seasons.add(real_next_episode_to_air['season_number'])
+            
+        # 规则 B: 如果有缺失的集（补番），这些集所属的季也是活跃的
+        if missing_info.get('missing_episodes'):
+            for ep in missing_info['missing_episodes']:
+                if ep.get('season_number'):
+                    active_seasons.add(ep['season_number'])
+                    
+        # 规则 C: 如果有整季缺失，且该季已播出，也视为活跃
+        if missing_info.get('missing_seasons'):
+            for s in missing_info['missing_seasons']:
+                # 简单的判断：如果季有播出日期且在今天之前，算活跃（需要补）
+                if s.get('air_date') and s.get('season_number'):
+                    try:
+                        s_date = datetime.strptime(s['air_date'], '%Y-%m-%d').date()
+                        if s_date <= today:
+                            active_seasons.add(s['season_number'])
+                    except ValueError:
+                        pass
+
+        # 调用 DB 模块进行批量更新
+        # 注意：如果 final_status 是 Completed，DB函数会自动处理所有季为Completed
+        watchlist_db.sync_seasons_watching_status(tmdb_id, list(active_seasons), final_status)
 
         # 步骤6：把需要订阅的剧加入待订阅队列
         today = datetime.now(timezone.utc).date()

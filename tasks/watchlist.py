@@ -177,46 +177,55 @@ def task_add_all_series_to_watchlist(processor):
 # ★★★ 全新、独立的媒体库缺集扫描任务 ★★★
 def task_scan_library_gaps(processor):
     """
-    【V10 - 健壮最终版】
-    - 修复了因数据库返回 NULL 导致的 TypeError。
-    - 修复了海报回退异常的问题。
+    - 缺集扫描任务,只检查已完结或未追踪的剧集，跳过正在追或暂停的剧集 ★★★
     """
     task_name = "媒体库缺集扫描"
-    logger.info(f"--- 开始执行 '{task_name}' 任务 (高效模式) ---")
+    logger.info(f"--- 开始执行 '{task_name}' 任务 ---")
     
     def progress_updater(progress, message):
         task_manager.update_status_from_thread(progress, message)
 
     try:
-        # ... (步骤1 的代码保持不变) ...
         progress_updater(5, "正在确定媒体库扫描范围...")
         all_series_in_libs = processor._get_series_to_process(
             where_clause="", 
             include_all_series=True
         )
-        if not all_series_in_libs:
-            progress_updater(100, "任务完成：在指定的媒体库中未找到任何剧集。")
+        
+        target_series = []
+        skipped_count = 0
+        
+        for s in all_series_in_libs:
+            status = s.get('status')
+            if status in [STATUS_WATCHING, STATUS_PAUSED]:
+                skipped_count += 1
+            else:
+                target_series.append(s)
+
+        if skipped_count > 0:
+            logger.info(f"  ➜ 根据策略，已跳过 {skipped_count} 部正在追剧或暂停的剧集（交由主追剧任务负责）。")
+
+        if not target_series:
+            progress_updater(100, "任务完成：没有符合条件（已完结或未追踪）的剧集需要扫描。")
             return
         
-        all_series_tmdb_ids = [s['tmdb_id'] for s in all_series_in_libs if s.get('tmdb_id')]
+        all_series_tmdb_ids = [s['tmdb_id'] for s in target_series if s.get('tmdb_id')]
         if not all_series_tmdb_ids:
-            progress_updater(100, "任务完成：媒体库中的剧集均缺少有效的 TMDb ID。")
+            progress_updater(100, "任务完成：符合条件的剧集均缺少有效的 TMDb ID。")
             return
 
-        total_series = len(all_series_in_libs)
-        logger.info(f"  ➜ 发现 {total_series} 部剧集，即将开始本地数据库分析...")
+        total_series = len(target_series)
+        logger.info(f"  ➜ 发现 {total_series} 部符合条件的剧集，即将开始本地数据库分析...")
         progress_updater(20, f"正在对 {total_series} 部剧集进行本地缺集分析...")
 
-        # 步骤 2: 调用我们刚刚修复的、更强大的数据库函数
         incomplete_seasons = watchlist_db.find_detailed_missing_episodes(all_series_tmdb_ids)
 
-        # 步骤 3: 更新前端显示状态
         progress_updater(60, "分析完成，正在更新前端显示状态...")
         gaps_by_series = {}
         for season_info in incomplete_seasons:
             series_id = season_info['parent_series_tmdb_id']
             season_num = season_info['season_number']
-            # ★★★ 修复1/2: 增加对 None 的保护，虽然数据库层已经修复，但这里多一层保险更安全 ★★★
+            # ★★★ 修复1/2: 增加对 None 的保护 ★★★
             missing_eps = sorted(season_info.get('missing_episodes') or [])
             gaps_by_series.setdefault(series_id, []).append({
                 "season": season_num,
@@ -233,15 +242,14 @@ def task_scan_library_gaps(processor):
             logger.info("  ➜ 成功将最新的详细缺集信息同步到所有被扫描的剧集中。")
 
         if not incomplete_seasons:
-            progress_updater(100, "分析完成：媒体库中所有剧集的季都是完整的。")
+            progress_updater(100, "分析完成：目标剧集的所有季都是完整的。")
             return
             
         total_seasons_to_sub = len(incomplete_seasons)
         logger.info(f"  ➜ 本地分析完成！共发现 {total_seasons_to_sub} 个分集不完整的季需要重新订阅。")
         progress_updater(80, f"发现 {total_seasons_to_sub} 个不完整的季，准备提交订阅...")
 
-        # 步骤 4: 准备订阅数据
-        series_info_map = {s['tmdb_id']: s for s in all_series_in_libs if s.get('tmdb_id')}
+        series_info_map = {s['tmdb_id']: s for s in target_series if s.get('tmdb_id')}
         media_info_batch_for_sub = []
         
         for i, season_info in enumerate(incomplete_seasons):
@@ -256,13 +264,12 @@ def task_scan_library_gaps(processor):
             series_info = series_info_map.get(series_tmdb_id)
             series_title = series_info.get('item_name', '未知剧集') if series_info else '未知剧集'
             
-            # ★★★ 修复2/2: 将数据库查出来的海报路径，传递给订阅信息 ★★★
             media_info_batch_for_sub.append({
                 'tmdb_id': season_tmdb_id,
                 'title': f"{series_title} - 第 {season_num} 季",
                 'parent_series_tmdb_id': series_tmdb_id,
                 'season_number': season_num,
-                'poster_path': season_info.get('season_poster_path') # <--- 新增的字段
+                'poster_path': season_info.get('season_poster_path') 
             })
 
         if media_info_batch_for_sub:
