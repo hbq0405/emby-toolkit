@@ -121,6 +121,18 @@ def task_manual_subscribe_batch(processor, subscribe_requests: List[Dict]):
 
             # --- 逻辑分支开始 ---
             if item_type == 'Series':
+                # 如果是未发行的剧集，直接跳过，保留 user_portal 设置的 PENDING_RELEASE 状态
+                series_details = tmdb.get_tv_details(int(tmdb_id), tmdb_api_key)
+                if series_details:
+                    first_air_date = series_details.get('first_air_date')
+                    if first_air_date:
+                        try:
+                            air_date_obj = datetime.strptime(first_air_date, '%Y-%m-%d').date()
+                            if air_date_obj > date.today():
+                                logger.warning(f"  ➜ 剧集《{item_title_for_log}》首播日期 ({first_air_date}) 未到，跳过订阅。")
+                                continue # 跳过本次循环，success 保持为 False，不会更新数据库为 SUBSCRIBED
+                        except (ValueError, TypeError):
+                            pass
                 # --- 路径 A: 整剧订阅 (逻辑特殊，单独处理) ---
                 series_info = {"tmdb_id": int(tmdb_id), "item_name": item_title_for_log}
                 success = moviepilot.smart_subscribe_series(series_info, config) is not None
