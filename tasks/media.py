@@ -350,6 +350,12 @@ def task_populate_metadata_cache(processor, batch_size: int = 50, force_full_upd
         
         # 5. 处理顶层离线 (整部剧或电影被删)
         keys_to_delete = db_top_level_keys - emby_top_level_keys
+        # 如果一个剧集被标记为 dirty (有分集消失)，但该剧集本身未出现在本次扫描中 (emby_top_level_keys)，
+        # 说明该剧集已彻底失效或改名，必须将其加入删除队列，否则其残留的分集永远无法被清理。
+        for dirty_pid in dirty_series_tmdb_ids:
+            if (dirty_pid, 'Series') not in emby_top_level_keys:
+                logger.info(f"  ➜ 发现残留的脏剧集 ID {dirty_pid} 未在本次扫描中出现，将强制清理其关联项。")
+                keys_to_delete.add((dirty_pid, 'Series'))
         if keys_to_delete:
             count_top_offline = len(keys_to_delete)
             total_offline_count += count_top_offline
