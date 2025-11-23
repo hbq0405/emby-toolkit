@@ -516,13 +516,24 @@ def task_populate_metadata_cache(processor, batch_size: int = 50, force_full_upd
                     
                     if tmdb_details and 'seasons' in tmdb_details:
                         for s_info in tmdb_details.get('seasons', []):
-                            s_num = s_info.get('season_number')
-                            if s_num is None: continue
-                            matched_emby_seasons = [s for s in my_seasons if s.get('IndexNumber') == s_num]
+                            # ★★★ 强制转 int，防止类型不匹配 ★★★
+                            try:
+                                s_num = int(s_info.get('season_number'))
+                            except (ValueError, TypeError):
+                                continue
+                            
+                            # 匹配 Emby 季时也强制转 int
+                            matched_emby_seasons = []
+                            for s in my_seasons:
+                                try:
+                                    if int(s.get('IndexNumber')) == s_num:
+                                        matched_emby_seasons.append(s)
+                                except (ValueError, TypeError):
+                                    continue
                             
                             if matched_emby_seasons:
+                                processed_season_numbers.add(s_num) # 标记已处理
                                 real_season_tmdb_id = str(s_info.get('id'))
-
                                 # 优先使用季海报，如果没有则回退使用父剧集海报
                                 season_poster = s_info.get('poster_path')
                                 if not season_poster and tmdb_details:
@@ -555,8 +566,12 @@ def task_populate_metadata_cache(processor, batch_size: int = 50, force_full_upd
 
                     # ★★★ B. 兜底处理：Emby 有但 TMDb 没有的季 (修复死循环的关键) ★★★
                     for s in my_seasons:
-                        s_num = s.get('IndexNumber')
-                        if s_num is not None and s_num not in processed_season_numbers:
+                        try:
+                            s_num = int(s.get('IndexNumber'))
+                        except (ValueError, TypeError):
+                            continue
+
+                        if s_num not in processed_season_numbers:
                             # 这是一个 TMDb 不知道的“孤儿季”，必须强制入库
                             fallback_season_tmdb_id = f"{tmdb_id_str}-S{s_num}"
                             season_record = {
