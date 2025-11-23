@@ -444,51 +444,61 @@ def get_all_library_versions(
     base_url: str,
     api_key: str,
     user_id: str,
-    library_ids: List[str],
     media_type_filter: str,
     fields: str,
+    library_ids: Optional[List[str]] = None,
+    parent_id: Optional[str] = None,
     update_status_callback: Optional[Callable[[int, str], None]] = None
 ) -> List[Dict[str, Any]]:
     """
     - 获取服务器级的、未经聚合的原始媒体项列表。
+    - 支持扫描指定媒体库列表 (library_ids) 或指定父对象 (parent_id)。
     """
     all_items = []
     session = requests.Session()
     api_timeout = config_manager.APP_CONFIG.get(constants.CONFIG_OPTION_EMBY_API_TIMEOUT, 60)
     
+    target_ids = []
+    if parent_id:
+        target_ids = [parent_id]
+    elif library_ids:
+        target_ids = library_ids
+    
+    if not target_ids:
+        return []
+
     total_items_to_fetch = 0
-    logger.info("  ➜ 开始预计算所有目标库的总项目数...")
+    logger.info("  ➜ 开始预计算所有目标项目的总数...")
     if update_status_callback:
         update_status_callback(1, "正在计算媒体库总项目数...")
 
-    for lib_id in library_ids:
+    for target_id in target_ids: 
         try:
             count_url = f"{base_url.rstrip('/')}/Items"
             count_params = {
-                "api_key": api_key, "ParentId": lib_id, "IncludeItemTypes": media_type_filter,
-                "Recursive": "true", "Limit": 0  # Limit=0 只返回总数，速度极快
+                "api_key": api_key, "ParentId": target_id, "IncludeItemTypes": media_type_filter,
+                "Recursive": "true", "Limit": 0 
             }
             response = session.get(count_url, params=count_params, timeout=api_timeout)
             response.raise_for_status()
             count = response.json().get("TotalRecordCount", 0)
             total_items_to_fetch += count
         except requests.RequestException as e:
-            logger.warning(f"  ➜ 预计算媒体库 {lib_id} 的项目总数时失败: {e}，总数可能不准。")
+            logger.warning(f"  ➜ 预计算目标 {target_id} 的项目总数时失败: {e}，总数可能不准。")
             continue
     
-    logger.info(f"  ➜ 预计算完成，所有目标库共包含约 {total_items_to_fetch} 个媒体项。")
+    logger.info(f"  ➜ 预计算完成，所有目标共包含约 {total_items_to_fetch} 个媒体项。")
 
-    # ★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★
     total_processed_items = 0
     
-    for lib_id in library_ids:
+    for target_id in target_ids: 
         start_index = 0
         limit = 500
         
         while True:
             api_url = f"{base_url.rstrip('/')}/Items"
             params = {
-                "api_key": api_key, "ParentId": lib_id, "IncludeItemTypes": media_type_filter,
+                "api_key": api_key, "ParentId": target_id, "IncludeItemTypes": media_type_filter,
                 "Recursive": "true", "Fields": fields, "StartIndex": start_index, "Limit": limit
             }
             try:
@@ -497,7 +507,7 @@ def get_all_library_versions(
                 items_in_batch = response.json().get("Items", [])
                 if not items_in_batch: break
 
-                for item in items_in_batch: item['_SourceLibraryId'] = lib_id
+                for item in items_in_batch: item['_SourceLibraryId'] = target_id
                 all_items.extend(items_in_batch)
                 start_index += len(items_in_batch)
                 
@@ -511,7 +521,7 @@ def get_all_library_versions(
 
                 if len(items_in_batch) < limit: break
             except requests.RequestException as e:
-                logger.error(f"  ➜ 从媒体库 {lib_id} 获取数据时出错: {e}")
+                logger.error(f"  ➜ 从媒体库 {target_id} 获取数据时出错: {e}")
                 break
     
     logger.info(f"  ➜ 获取完成，共找到 {len(all_items)} 个媒体项。")
