@@ -343,6 +343,12 @@ const getYear = (media) => {
   if (!dateStr) return '';
   return new Date(dateStr).getFullYear();
 };
+const genreOptions = computed(() => {
+  return genres.value.map(item => ({
+    label: item.name, // 显示的文字 (例如: 动作)
+    value: item.id    // 绑定的值 (例如: 28)
+  }));
+});
 const fetchGenres = async () => {  
   try {
     const endpoint = mediaType.value === 'movie' 
