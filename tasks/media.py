@@ -512,6 +512,7 @@ def task_populate_metadata_cache(processor, batch_size: int = 50, force_full_upd
                         my_episodes.extend(series_to_episode_map.get(s_id, []))
                     
                     tmdb_children_map = {}
+                    processed_season_numbers = set()
                     
                     if tmdb_details and 'seasons' in tmdb_details:
                         for s_info in tmdb_details.get('seasons', []):
@@ -552,6 +553,28 @@ def task_populate_metadata_cache(processor, batch_size: int = 50, force_full_upd
                                                     tmdb_children_map[f"S{s_num}E{ep.get('episode_number')}"] = ep
                                     except: pass
 
+                    # ★★★ B. 兜底处理：Emby 有但 TMDb 没有的季 (修复死循环的关键) ★★★
+                    for s in my_seasons:
+                        s_num = s.get('IndexNumber')
+                        if s_num is not None and s_num not in processed_season_numbers:
+                            # 这是一个 TMDb 不知道的“孤儿季”，必须强制入库
+                            fallback_season_tmdb_id = f"{tmdb_id_str}-S{s_num}"
+                            season_record = {
+                                "tmdb_id": fallback_season_tmdb_id,
+                                "item_type": "Season",
+                                "parent_series_tmdb_id": tmdb_id_str,
+                                "season_number": s_num,
+                                "title": s.get('Name') or f"Season {s_num}",
+                                "overview": None,
+                                "poster_path": tmdb_details.get('poster_path') if tmdb_details else None,
+                                "in_library": True,
+                                "emby_item_ids_json": json.dumps([s.get('Id')]),
+                                "ignore_reason": "Local Season Only"
+                            }
+                            metadata_batch.append(season_record)
+                            processed_season_numbers.add(s_num) # 防止重复
+
+                    # C. 处理分集
                     ep_grouped = defaultdict(list)
                     for ep in my_episodes:
                         s_n, e_n = ep.get('ParentIndexNumber'), ep.get('IndexNumber')
