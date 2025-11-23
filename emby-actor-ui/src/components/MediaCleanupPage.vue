@@ -188,7 +188,11 @@ const seriesColumns = computed(() => [
         data: rowData.episodes,
         size: 'small',
         bordered: false,
-        rowKey: row => row.id
+        bottomBordered: false, // 去除底部边框
+        showHeader: false,     // ★★★ 核心修改 1：隐藏中间层的表头，减少视觉干扰 ★★★
+        rowKey: row => row.id,
+        // 给展开区域加一点内边距，使其更有层次感
+        style: { padding: '4px 24px 4px 48px', backgroundColor: 'rgba(255, 255, 255, 0.02)' } 
       });
     }
   },
@@ -244,73 +248,139 @@ const pagination = computed(() => {
   };
 });
 
-// --- 4. 渲染函数和常量 ---
+// 定义版本详情表格的列结构
+const createVersionColumns = (bestVersionId) => [
+  {
+    title: '状态',
+    key: 'status',
+    width: 60,
+    align: 'center',
+    render(row) {
+      const isBest = row.id === bestVersionId;
+      return h(NIcon, { 
+        component: isBest ? KeepIcon : DeleteIcon, 
+        color: isBest ? 'var(--n-success-color)' : 'var(--n-error-color)', 
+        size: 20 
+      });
+    }
+  },
+  {
+    title: '分辨率',
+    key: 'resolution',
+    width: 90,
+    render: (row) => row.resolution ? h(NTag, { size: 'small', bordered: false }, { default: () => row.resolution }) : '-'
+  },
+  {
+    title: '质量',
+    key: 'quality',
+    width: 100,
+    render: (row) => row.quality ? h(NTag, { size: 'small', bordered: false, type: 'info' }, { default: () => row.quality.toUpperCase() }) : '-'
+  },
+  {
+    title: '特效',
+    key: 'effect',
+    width: 100,
+    render: (row) => {
+      const effect = formatEffectTagForDisplay(row.effect);
+      return effect !== 'SDR' 
+        ? h(NTag, { size: 'small', bordered: false, type: 'warning' }, { default: () => effect }) 
+        : h(NText, { depth: 3, style: 'font-size: 12px' }, { default: () => 'SDR' });
+    }
+  },
+  {
+    title: '码率',
+    key: 'video_bitrate_mbps',
+    width: 100,
+    render: (row) => row.video_bitrate_mbps ? h(NTag, { size: 'small', bordered: false, color: { color: '#fafafa', textColor: '#333' } }, { default: () => `${row.video_bitrate_mbps} Mbps` }) : '-'
+  },
+  {
+    title: '色深',
+    key: 'bit_depth',
+    width: 80,
+    render: (row) => row.bit_depth ? h(NTag, { size: 'small', bordered: false, color: { color: '#e6f7ff', textColor: '#1890ff' } }, { default: () => `${row.bit_depth}bit` }) : '-'
+  },
+  {
+    title: '帧率',
+    key: 'frame_rate',
+    width: 80,
+    render: (row) => row.frame_rate ? h(NTag, { size: 'small', bordered: false, color: { color: '#fff7e6', textColor: '#fa8c16' } }, { default: () => `${Math.round(row.frame_rate)}fps` }) : '-'
+  },
+  {
+    title: '时长',
+    key: 'runtime_minutes',
+    width: 90,
+    render: (row) => row.runtime_minutes ? h(NTag, { size: 'small', bordered: false, color: { color: '#f6ffed', textColor: '#52c41a' } }, { default: () => `${row.runtime_minutes}min` }) : '-'
+  },
+  {
+    title: '大小',
+    key: 'filesize',
+    width: 100,
+    render: (row) => h(NTag, { size: 'small', bordered: false, type: 'success' }, { default: () => formatBytes(row.filesize) })
+  },
+  {
+    title: '路径',
+    key: 'path',
+    minWidth: 200,
+    ellipsis: {
+      tooltip: true
+    },
+    render: (row) => h(NText, { depth: 3, style: 'font-size: 12px; font-family: monospace;' }, { default: () => row.path })
+  }
+];
 
-// 统一的版本渲染函数，用于电影行和展开的剧集行
+// ★★★ 核心修改：renderVersions 现在返回一个 NDataTable ★★★
 const renderVersions = (row) => {
   const versions = row.versions_info_json || [];
   
-  const getVersionDisplayInfo = (v) => ({
-    resolution: v.resolution || 'Unknown',
-    quality: (v.quality || 'Unknown').toUpperCase(),
-    effect: formatEffectTagForDisplay(v.effect),
-    size: formatBytes(v.filesize || 0)
-  });
-
+  // 排序：保留的版本排在第一位
   const sortedVersions = [...versions].sort((a, b) => {
     if (a.id === row.best_version_id) return -1;
     if (b.id === row.best_version_id) return 1;
     return 0;
   });
 
-  return h(NSpace, { vertical: true, size: 'small' }, {
-    default: () => sortedVersions.map(v => {
-      const isBest = v.id === row.best_version_id;
-      const icon = isBest ? KeepIcon : DeleteIcon;
-      const iconColor = isBest ? 'var(--n-success-color)' : 'var(--n-error-color)';
-      const tooltipText = isBest ? '保留此版本' : '删除此版本';
-      const displayInfo = getVersionDisplayInfo(v);
-      
-      return h(NTooltip, null, {
-        trigger: () => h('div', { style: 'display: flex; align-items: center; gap: 8px;' }, [
-          h(NIcon, { component: icon, color: iconColor, size: 16 }),
-          h(NSpace, { size: 'small' }, {
-            default: () => [
-              h(NTag, { size: 'small', bordered: false }, { default: () => displayInfo.resolution }),
-              h(NTag, { size: 'small', bordered: false, type: 'info' }, { default: () => displayInfo.quality }),
-              h(NTag, { size: 'small', bordered: false, type: 'warning' }, { default: () => displayInfo.effect }),
-              h(NTag, { size: 'small', bordered: false, type: 'success' }, { default: () => displayInfo.size }),
-            ]
-          }),
-          h(NText, { style: `font-weight: ${isBest ? 'bold' : 'normal'}; margin-left: 8px;` }, { 
-            default: () => v.Path || v.path 
-          })
-        ]),
-        default: () => tooltipText
-      });
-    })
+  // 直接返回一个表格组件
+  return h(NDataTable, {
+    columns: createVersionColumns(row.best_version_id),
+    data: sortedVersions,
+    size: 'small',        // 紧凑模式
+    singleLine: false,    // 允许换行（虽然我们主要靠 ellipsis）
+    bordered: false,      // 无边框，融入背景
+    bottomBordered: false,// 去除底部边框
+    rowKey: (v) => v.id,
+    style: {
+      marginTop: '4px',
+      marginBottom: '4px',
+      '--n-td-padding': '4px 8px', // 进一步压缩单元格内边距
+      '--n-th-padding': '4px 8px',
+      background: 'transparent'    // 透明背景
+    }
   });
 };
 
 // 内层展开表格的列定义
 const episodeColumns = [
   {
-    title: '媒体项',
+    // title: '媒体项', // 表头已隐藏，title 不再重要
     key: 'item_name',
+    width: 100, // ★★★ 核心修改 2：给左侧分集号固定宽度，防止挤压右侧表格 ★★★
+    align: 'center',
     render(row) {
       let displayName = row.item_name;
+      // 尝试提取 S01E01
       if (row.item_type === 'Episode' && row.season_number !== undefined && row.episode_number !== undefined) {
           const season = String(row.season_number).padStart(2, '0');
           const episode = String(row.episode_number).padStart(2, '0');
-          displayName = `S${season}E${episode} - ${row.item_name}`;
+          // 使用 Tag 样式显示分集号，更醒目
+          return h(NTag, { bordered: false, type: 'default' }, { default: () => `S${season}E${episode}` });
       }
       return h('span', displayName);
     }
   },
   {
-    title: '版本详情',
+    // title: '版本详情',
     key: 'versions_info_json',
-    render: renderVersions // 直接复用渲染函数
+    render: renderVersions // 复用渲染函数
   }
 ];
 

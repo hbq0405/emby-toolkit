@@ -18,7 +18,7 @@ from .watchlist import task_process_watchlist, task_run_new_season_check, task_s
 from .collections import task_refresh_collections, task_process_all_custom_collections, process_single_custom_collection
 from .subscriptions import task_auto_subscribe, task_manual_subscribe_batch
 from .covers import task_generate_all_covers, task_generate_all_custom_collection_covers
-from .maintenance import task_scan_for_cleanup_issues 
+from .cleanup import task_scan_for_cleanup_issues 
 from .users import task_sync_all_user_data, task_check_expired_users
 from .discover import task_update_daily_theme
 from .resubscribe import task_update_resubscribe_cache, task_resubscribe_library

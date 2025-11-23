@@ -28,7 +28,17 @@
                 <n-text :depth="3" class="rule-description">{{ getRuleDescription(rule.id) }}</n-text>
               </div>
               <n-space class="rule-actions">
-                <n-button v-if="rule.id !== 'filesize'" text @click="openEditModal(rule)">
+                <n-radio-group 
+                  v-if="['runtime', 'filesize', 'bitrate', 'bit_depth', 'frame_rate'].includes(rule.id)" 
+                  v-model:value="rule.priority" 
+                  size="small" 
+                  style="margin-right: 12px;"
+                >
+                  <n-radio-button value="desc">{{ getDescLabel(rule.id) }}</n-radio-button>
+                  <n-radio-button value="asc">{{ getAscLabel(rule.id) }}</n-radio-button>
+                </n-radio-group>
+                <!-- 只有拥有 priority 属性的规则才显示编辑按钮 -->
+                <n-button v-if="rule.priority && Array.isArray(rule.priority)" text @click="openEditModal(rule)">
                   <template #icon><n-icon :component="EditIcon" /></template>
                 </n-button>
                 <n-switch v-model:value="rule.enabled" />
@@ -95,14 +105,12 @@ import { ref, onMounted, defineEmits, computed } from 'vue';
 import axios from 'axios';
 import { 
   NCard, NSpace, NSwitch, NButton, useMessage, NSpin, NIcon, NModal, NTag, NText,
-  // 确保引入了新组件
   NSelect, NFormItem, NDivider, NTooltip
 } from 'naive-ui';
 import draggable from 'vuedraggable';
 import { 
   Pencil as EditIcon, 
   Move as DragHandleIcon,
-  // 引入帮助图标
   HelpCircleOutline as HelpIcon 
 } from '@vicons/ionicons5';
 
@@ -117,17 +125,19 @@ const currentEditingRule = ref({ priority: [] });
 const allLibraries = ref([]);
 const selectedLibraryIds = ref([]);
 
-// ★★★ 核心修复 1/3: 拆分并合并加载状态，确保健壮性 ★★★
 const isRulesLoading = ref(true);
 const isLibrariesLoading = ref(true);
 const loading = computed(() => isRulesLoading.value || isLibrariesLoading.value);
 
-
 const RULE_METADATA = {
-  quality: { name: "按质量", description: "比较文件名中的质量标签 (如 Remux, BluRay)。" },
-  resolution: { name: "按分辨率", description: "比较视频的分辨率 (如 2160p, 1080p)。" },
+  runtime: { name: "按时长", description: "根据视频时长选择。" },
   effect: { name: "按特效", description: "比较视频的特效等级 (如 DoVi Profile 8, HDR)。" },
-  filesize: { name: "按文件大小", description: "如果以上规则都无法区分，则保留文件体积更大的版本。" }
+  resolution: { name: "按分辨率", description: "比较视频的分辨率 (如 2160p, 1080p)。" },
+  bit_depth: { name: "按色深", description: "优先保留 10bit/12bit 版本，减少色彩断层。" },
+  bitrate: { name: "按码率", description: "根据码率大小选择。" },
+  quality: { name: "按质量", description: "比较文件名中的质量标签 (如 Remux, BluRay)。" },
+  frame_rate: { name: "按帧率", description: "根据帧率版本选择。" },
+  filesize: { name: "按文件大小", description: "根据视频文件大小选择。" }
 };
 
 const getRuleDisplayName = (id) => RULE_METADATA[id]?.name || id;
@@ -152,7 +162,29 @@ const formatEffectPriority = (priorityArray, to = 'display') => {
     });
 };
 
-// ★★★ 核心修复 2/3: 重写数据加载函数，增加 finally 块 ★★★
+// ★★★ 新增：根据规则ID返回人性化的按钮文案 ★★★
+const getDescLabel = (id) => {
+  switch (id) {
+    case 'filesize': return '保留最大';
+    case 'runtime': return '保留最长';
+    case 'bitrate': return '保留最高';
+    case 'bit_depth': return '保留高位';
+    case 'frame_rate': return '保留高帧';
+    default: return '保留大/高';
+  }
+};
+
+const getAscLabel = (id) => {
+  switch (id) {
+    case 'filesize': return '保留最小';
+    case 'runtime': return '保留最短';
+    case 'bitrate': return '保留最低';
+    case 'bit_depth': return '保留低位';
+    case 'frame_rate': return '保留低帧';
+    default: return '保留小/低';
+  }
+};
+
 const fetchSettings = async () => {
   isRulesLoading.value = true;
   isLibrariesLoading.value = true;
@@ -168,6 +200,11 @@ const fetchSettings = async () => {
         if (rule.id === 'effect' && Array.isArray(rule.priority)) {
             return { ...rule, priority: formatEffectPriority(rule.priority, 'display') };
         }
+        
+        const numericRules = ['runtime', 'filesize', 'bitrate', 'bit_depth', 'frame_rate'];
+        if (numericRules.includes(rule.id) && !rule.priority) {
+            return { ...rule, priority: 'desc' }; // 默认为降序（保大）
+        }
         return rule;
     });
 
@@ -177,21 +214,23 @@ const fetchSettings = async () => {
 
   } catch (error) {
     message.error('加载设置失败！请确保后端服务正常。');
-    // 加载失败时也要提供默认规则
+    // ★★★ 核心修改 2: 更新默认规则列表，包含新规则 ★★★
     rules.value = [
-        { id: 'quality', enabled: true, priority: ['Remux', 'BluRay', 'WEB-DL', 'HDTV'] },
-        { id: 'resolution', enabled: true, priority: ['2160p', '1080p', '720p'] },
+        { id: 'runtime', enabled: true, priority: 'desc' },
         { id: 'effect', enabled: true, priority: ['DoVi P8', 'DoVi P7', 'DoVi P5', 'DoVi (Other)', 'HDR10+', 'HDR', 'SDR'] },
+        { id: 'resolution', enabled: true, priority: ['4K', '1080p', '720p', '480p'] },
+        { id: 'bit_depth', enabled: true, priority: 'desc' },
+        { id: 'bitrate', enabled: true, priority: 'desc' },
+        { id: 'quality', enabled: true, priority: ['Remux', 'BluRay', 'WEB-DL', 'HDTV'] },
+        { id: 'frame_rate', enabled: false, priority: 'desc' },
         { id: 'filesize', enabled: true, priority: 'desc' },
     ];
   } finally {
-    // 无论成功或失败，最后都必须把加载状态关掉！
     isRulesLoading.value = false;
     isLibrariesLoading.value = false;
   }
 };
 
-// ★★★ 核心修复 3/3: 更新保存函数，使其发送完整数据 ★★★
 const saveSettings = async () => {
   saving.value = true;
   try {
@@ -202,7 +241,6 @@ const saveSettings = async () => {
       return rule;
     });
 
-    // 构造包含规则和媒体库ID的完整数据体
     const payload = {
       rules: rulesToSave,
       library_ids: selectedLibraryIds.value

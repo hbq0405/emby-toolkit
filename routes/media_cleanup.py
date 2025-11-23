@@ -4,11 +4,10 @@ from flask import Blueprint, jsonify, request
 from extensions import task_lock_required, processor_ready_required
 
 import task_manager
-from tasks import task_execute_cleanup, task_scan_for_cleanup_issues
-from database import (
-    maintenance_db,
-    settings_db
-)
+# ★★★ 修改导入：从 tasks.cleanup 导入 ★★★
+from tasks.cleanup import task_execute_cleanup, task_scan_for_cleanup_issues
+# ★★★ 修改导入：导入新的 cleanup_db ★★★
+from database import cleanup_db, settings_db
 from database.connection import get_db_connection
 import logging
 
@@ -75,7 +74,7 @@ def ignore_cleanup_tasks():
         return jsonify({"error": "缺少或无效的 task_ids 参数"}), 400
     try:
         # ★★★ 调用新函数 ★★★
-        updated_count = maintenance_db.batch_update_cleanup_index_status(task_ids, 'ignored')
+        updated_count = cleanup_db.batch_update_cleanup_index_status(task_ids, 'ignored')
         return jsonify({"message": f"成功忽略 {updated_count} 个任务。"}), 200
     except Exception as e:
         return jsonify({"error": f"忽略任务时失败: {e}"}), 500
@@ -88,7 +87,7 @@ def delete_cleanup_tasks():
         return jsonify({"error": "缺少或无效的 task_ids 参数"}), 400
     try:
         # ★★★ 调用新函数 ★★★
-        deleted_count = maintenance_db.batch_delete_cleanup_index(task_ids)
+        deleted_count = cleanup_db.batch_delete_cleanup_index(task_ids)
         return jsonify({"message": f"成功删除 {deleted_count} 个任务。"}), 200
     except Exception as e:
         return jsonify({"error": f"删除任务时失败: {e}"}), 500
@@ -98,7 +97,7 @@ def delete_cleanup_tasks():
 @processor_ready_required
 def clear_all_cleanup_tasks():
     try:
-        all_pending_tasks = maintenance_db.get_all_cleanup_index()
+        all_pending_tasks = cleanup_db.get_all_cleanup_index()
         task_ids = [task['id'] for task in all_pending_tasks]
         if not task_ids:
             return jsonify({"message": "没有发现待处理的清理任务。"}), 200
@@ -117,17 +116,23 @@ def clear_all_cleanup_tasks():
 def get_cleanup_settings():
     """获取所有媒体去重设置（包括规则和指定的媒体库）。"""
     try:
-        # --- Part 1: 获取规则 (逻辑与之前完全相同) ---
+        # --- Part 1: 获取规则 ---
         default_rules_map = {
-            "quality": {"id": "quality", "enabled": True, "priority": ["Remux", "BluRay", "WEB-DL", "HDTV"]},
-            "resolution": {"id": "resolution", "enabled": True, "priority": ["2160p", "1080p", "720p"]},
+            "runtime": {"id": "runtime", "enabled": True, "priority": "desc"},
             "effect": {
                 "id": "effect", 
                 "enabled": True, 
                 "priority": ["dovi_p8", "dovi_p7", "dovi_p5", "dovi_other", "hdr10+", "hdr", "sdr"]
             },
+            # ★★★ 修改 1: 更新默认值 (2160p -> 4K, 新增 480p) ★★★
+            "resolution": {"id": "resolution", "enabled": True, "priority": ["4K", "1080p", "720p", "480p"]},
+            "bit_depth": {"id": "bit_depth", "enabled": True, "priority": "desc"},
+            "bitrate": {"id": "bitrate", "enabled": True, "priority": "desc"},
+            "quality": {"id": "quality", "enabled": True, "priority": ["Remux", "BluRay", "WEB-DL", "HDTV"]},
+            "frame_rate": {"id": "frame_rate", "enabled": False, "priority": "desc"},
             "filesize": {"id": "filesize", "enabled": True, "priority": "desc"}
         }
+        
         saved_rules_list = settings_db.get_setting('media_cleanup_rules')
         
         if not saved_rules_list:
@@ -135,9 +140,12 @@ def get_cleanup_settings():
         else:
             final_rules = []
             saved_rules_map = {rule['id']: rule for rule in saved_rules_list}
+            
             for saved_rule in saved_rules_list:
                 rule_id = saved_rule['id']
                 merged_rule = {**default_rules_map.get(rule_id, {}), **saved_rule}
+                
+                # --- 特效规则的清洗逻辑 (保持不变) ---
                 if rule_id == 'effect' and 'priority' in merged_rule and isinstance(merged_rule['priority'], list):
                     saved_priority = merged_rule['priority']
                     default_priority = default_rules_map['effect']['priority']
@@ -155,7 +163,39 @@ def get_cleanup_settings():
                             final_priority.append(new_item)
                             saved_priority_set.add(new_item)
                     merged_rule['priority'] = final_priority
+
+                # ★★★ 修改 2: 新增分辨率规则的清洗逻辑 (迁移旧数据) ★★★
+                elif rule_id == 'resolution' and 'priority' in merged_rule and isinstance(merged_rule['priority'], list):
+                    saved_priority = merged_rule['priority']
+                    new_priority = []
+                    
+                    # 1. 遍历用户保存的列表，执行替换
+                    for p in saved_priority:
+                        p_str = str(p).lower()
+                        if p_str == '2160p':
+                            new_priority.append('4K') # 替换旧的
+                        elif p_str == '4k':
+                            new_priority.append('4K') # 保持已有的
+                        else:
+                            new_priority.append(p)    # 保持其他 (1080p, 720p)
+                    
+                    # 2. 检查并补全 480p (如果用户列表里没有)
+                    if '480p' not in new_priority:
+                        new_priority.append('480p')
+                    
+                    # 3. 去重 (防止替换后出现重复)
+                    final_res_priority = []
+                    seen = set()
+                    for p in new_priority:
+                        if p not in seen:
+                            final_res_priority.append(p)
+                            seen.add(p)
+                            
+                    merged_rule['priority'] = final_res_priority
+
                 final_rules.append(merged_rule)
+            
+            # 补全用户数据库中缺失的新规则 (比如 bit_depth 是新加的)
             saved_ids = set(saved_rules_map.keys())
             for key, default_rule in default_rules_map.items():
                 if key not in saved_ids:
