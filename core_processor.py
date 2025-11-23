@@ -147,6 +147,9 @@ class MediaProcessor:
         """
         - 实时元数据写入。
         """
+        if not item_details_from_emby:
+            logger.error("  ➜ 写入元数据缓存失败：缺少 Emby 详情数据。")
+            return
         def get_representative_runtime(emby_items, tmdb_runtime):
             if not emby_items:
                 return tmdb_runtime
@@ -181,14 +184,13 @@ class MediaProcessor:
                 actors_relation = [{"tmdb_id": int(p.get("id")), "character": p.get("character"), "order": p.get("order")} for p in final_processed_cast if p.get("id")]
                 movie_record['actors_json'] = json.dumps(actors_relation, ensure_ascii=False)
                 if douban_rating is not None: movie_record['rating'] = douban_rating
-                if item_details_from_emby:
-                    movie_record['in_library'] = True
-                    movie_record['subscription_status'] = 'NONE'
-                    movie_record['emby_item_ids_json'] = json.dumps([item_details_from_emby.get('Id')])
-                    movie_record['date_added'] = item_details_from_emby.get("DateCreated")
-                    movie_record['ignore_reason'] = None
-                    asset_details = parse_full_asset_details(item_details_from_emby)
-                    movie_record['asset_details_json'] = json.dumps([asset_details], ensure_ascii=False)
+                movie_record['in_library'] = True
+                movie_record['subscription_status'] = 'NONE'
+                movie_record['emby_item_ids_json'] = json.dumps([item_details_from_emby.get('Id')])
+                movie_record['date_added'] = item_details_from_emby.get("DateCreated")
+                movie_record['ignore_reason'] = None
+                asset_details = parse_full_asset_details(item_details_from_emby)
+                movie_record['asset_details_json'] = json.dumps([asset_details], ensure_ascii=False)
                 
                 records_to_upsert.append(movie_record)
 
@@ -200,14 +202,13 @@ class MediaProcessor:
 
                 # ★★★  2: 获取并预处理所有 Emby 分集文件版本 ★★★
                 emby_episode_versions = []
-                if item_details_from_emby:
-                    series_id = item_details_from_emby.get('Id')
-                    logger.info(f"  ➜ 正在为剧集 '{item_details_from_emby.get('Name')}' 获取所有分集文件版本...")
-                    emby_episode_versions = emby.get_all_library_versions(
-                        base_url=self.emby_url, api_key=self.emby_api_key, user_id=self.emby_user_id,
-                        media_type_filter="Episode", parent_id=series_id,
-                        fields="Id,Type,ParentIndexNumber,IndexNumber,MediaStreams,Container,Size,Path,ProviderIds,RunTimeTicks"
-                    ) or []
+                series_id = item_details_from_emby.get('Id')
+                logger.info(f"  ➜ 正在为剧集 '{item_details_from_emby.get('Name')}' 获取所有分集文件版本...")
+                emby_episode_versions = emby.get_all_library_versions(
+                    base_url=self.emby_url, api_key=self.emby_api_key, user_id=self.emby_user_id,
+                    media_type_filter="Episode", parent_id=series_id,
+                    fields="Id,Type,ParentIndexNumber,IndexNumber,MediaStreams,Container,Size,Path,ProviderIds,RunTimeTicks"
+                ) or []
 
                 episodes_grouped_by_number = defaultdict(list)
                 for ep_version in emby_episode_versions:
@@ -242,12 +243,11 @@ class MediaProcessor:
                 series_record['keywords_json'] = json.dumps(keywords, ensure_ascii=False)
                 languages_list = series_details.get('languages', [])
                 series_record['original_language'] = languages_list[0] if languages_list else None
-                if item_details_from_emby:
-                    series_record['in_library'] = True
-                    series_record['subscription_status'] = 'NONE'
-                    series_record['emby_item_ids_json'] = json.dumps([item_details_from_emby.get('Id')])
-                    series_record['date_added'] = item_details_from_emby.get("DateCreated")
-                    series_record['ignore_reason'] = None
+                series_record['in_library'] = True
+                series_record['subscription_status'] = 'NONE'
+                series_record['emby_item_ids_json'] = json.dumps([item_details_from_emby.get('Id')])
+                series_record['date_added'] = item_details_from_emby.get("DateCreated")
+                series_record['ignore_reason'] = None
                 records_to_upsert.append(series_record)
 
                 for season in seasons_details:
@@ -368,12 +368,8 @@ class MediaProcessor:
             placeholders_str = ", ".join([f"%({col})s" for col in all_possible_columns])
             cols_to_update = [col for col in all_possible_columns if col not in ['tmdb_id', 'item_type']]
             
-            if item_details_from_emby:
-                cols_to_protect = ['subscription_sources_json']
-                timestamp_field = "last_synced_at"
-            else:
-                cols_to_protect = ['subscription_status', 'subscription_sources_json', 'in_library']
-                timestamp_field = "pre_processed_at"
+            cols_to_protect = ['subscription_sources_json']
+            timestamp_field = "last_synced_at"
             
             for col in cols_to_protect:
                 if col in cols_to_update: cols_to_update.remove(col)
@@ -2794,114 +2790,6 @@ class MediaProcessor:
         except Exception as e:
             logger.error(f"  ➜ {log_prefix} 为 '{item_name_for_log}' 更新覆盖缓存文件时发生错误: {e}", exc_info=True)
 
-    def pre_process_media_metadata(self, tmdb_id: str, item_type: str, item_name_for_log: str):
-        """
-        【V2 - 豆瓣集成版】只处理演员表并更新数据库，不与Emby或文件系统交互。
-        此版本重新集成了豆瓣作为核心数据源，以实现高质量的预处理。
-        """
-        logger.info(f"--- 开始为 '{item_name_for_log}' (TMDb ID: {tmdb_id}) 执行元数据预处理 ---")
-        
-        if not self.tmdb_api_key:
-            logger.error("  ➜ 预处理失败：未配置 TMDb API Key。")
-            return
-
-        try:
-            # 1. 从 TMDb 获取权威的最新数据
-            authoritative_cast_source = []
-            tmdb_details_for_extra = None
-            
-            logger.info(f"  ➜ 步骤 1/4: 正在从 TMDb 获取基础元数据...")
-            if item_type == "Movie":
-                movie_details = tmdb.get_movie_details(tmdb_id, self.tmdb_api_key)
-                if movie_details:
-                    tmdb_details_for_extra = movie_details
-                    authoritative_cast_source = movie_details.get("credits", {}).get("cast", [])
-            elif item_type == "Series":
-                aggregated_tmdb_data = tmdb.aggregate_full_series_data_from_tmdb(int(tmdb_id), self.tmdb_api_key)
-                if aggregated_tmdb_data:
-                    tmdb_details_for_extra = aggregated_tmdb_data.get("series_details")
-                    all_episodes = list(aggregated_tmdb_data.get("episodes_details", {}).values())
-                    authoritative_cast_source = _aggregate_series_cast_from_tmdb_data(aggregated_tmdb_data["series_details"], all_episodes)
-            
-            if not authoritative_cast_source:
-                logger.warning(f"  ➜ 从 TMDb 获取演员数据失败或返回为空，预处理中止。")
-                return
-
-            # ★★★ 新增：集成豆瓣数据获取 ★★★
-            logger.info(f"  ➜ 步骤 2/4: 正在从豆瓣获取中文演员表及评分...")
-            douban_cast_raw = []
-            douban_id = None
-            douban_type = None
-            
-            if self.douban_api and tmdb_details_for_extra:
-                # 从 TMDb 数据中提取用于豆瓣匹配的信息
-                imdb_id = None
-                if item_type == "Movie":
-                    imdb_id = tmdb_details_for_extra.get("imdb_id")
-                elif item_type == "Series":
-                    imdb_id = tmdb_details_for_extra.get("external_ids", {}).get("imdb_id")
-
-                release_date_str = tmdb_details_for_extra.get("release_date") or tmdb_details_for_extra.get("first_air_date", "")
-                year = release_date_str.split('-')[0] if release_date_str else ""
-
-                # 调用豆瓣API进行匹配和数据获取
-                match_info = self.douban_api.match_info(name=item_name_for_log, imdbid=imdb_id, mtype=item_type, year=year)
-                if match_info and not match_info.get("error") and match_info.get("id"):
-                    douban_id = match_info["id"]
-                    douban_type = match_info.get("type")
-                    logger.info(f"  ➜ 豆瓣匹配成功: ID {douban_id}, 类型 {douban_type}")
-                    
-                    acting_data = self.douban_api.get_acting(name=item_name_for_log, douban_id_override=douban_id, mtype=douban_type)
-                    if acting_data and "cast" in acting_data:
-                        douban_cast_raw = acting_data["cast"]
-                        logger.info(f"  ➜ 成功从豆瓣获取到 {len(douban_cast_raw)} 位演职员信息。")
-                else:
-                    logger.warning(f"  ➜ 未能从豆瓣匹配到 '{item_name_for_log}' 的信息。")
-            else:
-                logger.info("  ➜ 豆瓣API未启用或缺少TMDb详细信息，跳过豆瓣处理。")
-
-            douban_rating = None
-            if self.douban_api and douban_id and douban_type:
-                details_data = self.douban_api._get_subject_details(douban_id, douban_type)
-                if details_data and not details_data.get("error"):
-                    rating_str = details_data.get("rating", {}).get("value")
-                    if rating_str:
-                        try: douban_rating = float(rating_str)
-                        except (ValueError, TypeError): pass
-
-            # 2. 调用核心演员处理逻辑，现在包含了豆瓣数据
-            with get_central_db_connection() as conn:
-                with conn.cursor() as cursor:
-                    logger.info(f"  ➜ 步骤 3/4: 开始核心处理流程 (TMDb: {len(authoritative_cast_source)} 人, 豆瓣: {len(douban_cast_raw)} 人)...")
-                    final_processed_cast = self._process_cast_list(
-                        tmdb_cast_people=authoritative_cast_source,
-                        emby_cast_people=[], # 预处理阶段，没有Emby演员
-                        douban_cast_list=douban_cast_raw, # ★ 传入豆瓣数据
-                        item_details_from_emby={"Name": item_name_for_log, "Genres": []}, # 模拟一个基础对象
-                        cursor=cursor,
-                        tmdb_api_key=self.tmdb_api_key,
-                        stop_event=self.get_stop_event()
-                    )
-
-                    # 3. 将处理结果写入数据库
-                    logger.info(f"  ➜ 步骤 4/4: 正在将处理结果写入数据库...")
-                    if final_processed_cast:
-                        self._upsert_media_metadata(
-                            cursor=cursor,
-                            item_type=item_type,
-                            final_processed_cast=final_processed_cast,
-                            source_data_package=tmdb_details_for_extra,
-                            item_details_from_emby=None,
-                            douban_rating=douban_rating
-                        )
-                        conn.commit()
-                    else:
-                        logger.error("  ➜ 核心演员处理流程未能生成有效的最终演员列表。")
-
-            logger.info(f"--- 成功完成 '{item_name_for_log}' 的元数据预处理 ---")
-
-        except Exception as e:
-            logger.error(f"为 '{item_name_for_log}' 执行元数据预处理时发生严重错误: {e}", exc_info=True)
 
     def close(self):
         if self.douban_api: self.douban_api.close()

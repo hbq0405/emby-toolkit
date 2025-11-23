@@ -459,6 +459,7 @@ def task_populate_metadata_cache(processor, batch_size: int = 50, force_full_upd
                     "tmdb_id": tmdb_id_str, "item_type": item_type, "title": item.get('Name'),
                     "original_title": item.get('OriginalTitle'), "release_year": item.get('ProductionYear'),
                     "in_library": True, 
+                    "subscription_status": "NONE",
                     "emby_item_ids_json": json.dumps(list(set(v.get('Id') for v in item_group if v.get('Id'))), ensure_ascii=False),
                     "asset_details_json": json.dumps(asset_details_list, ensure_ascii=False),
                     "rating": item.get('CommunityRating'),
@@ -548,6 +549,7 @@ def task_populate_metadata_cache(processor, batch_size: int = 50, force_full_upd
                                     "overview": s_info.get('overview'),
                                     "poster_path": season_poster,
                                     "in_library": True,
+                                    "subscription_status": "NONE",
                                     "emby_item_ids_json": json.dumps([s.get('Id') for s in matched_emby_seasons]),
                                     "ignore_reason": None
                                 }
@@ -583,6 +585,7 @@ def task_populate_metadata_cache(processor, batch_size: int = 50, force_full_upd
                                 "overview": None,
                                 "poster_path": tmdb_details.get('poster_path') if tmdb_details else None,
                                 "in_library": True,
+                                "subscription_status": "NONE",
                                 "emby_item_ids_json": json.dumps([s.get('Id')]),
                                 "ignore_reason": "Local Season Only"
                             }

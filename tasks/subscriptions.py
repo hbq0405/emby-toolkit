@@ -173,20 +173,6 @@ def task_manual_subscribe_batch(processor, subscribe_requests: List[Dict]):
                     item_type=item_type, 
                 )
                 
-                # 应用元数据预处理的“绿色通道”逻辑
-                if item_type == 'Season':
-                    logger.info(f"  ➜ 手动订阅的季《{item_title_for_log}》元数据被视为最新，跳过本次预处理。")
-                else:
-                    try:
-                        logger.info(f"  ➜ 正在为《{parent_title_for_preprocess}》启动后台元数据预处理...")
-                        processor.pre_process_media_metadata(
-                            tmdb_id=str(parent_tmdb_id_for_preprocess), 
-                            item_type=preprocess_type,
-                            item_name_for_log=parent_title_for_preprocess
-                        )
-                    except Exception as e_preprocess:
-                        logger.error(f"  ➜ 为《{item_title_for_log}》执行元数据预处理时失败: {e_preprocess}", exc_info=True)
-                
                 processed_count += 1
             else:
                 logger.error(f"  ➜ 订阅《{item_title_for_log}》失败，请检查 MoviePilot 日志。")
@@ -198,45 +184,6 @@ def task_manual_subscribe_batch(processor, subscribe_requests: List[Dict]):
     except Exception as e:
         logger.error(f"  ➜ {task_name} 任务失败: {e}", exc_info=True)
         task_manager.update_status_from_thread(-1, f"错误: {e}")
-
-def _run_post_subscription_tasks(processor, item: Dict[str, Any], series_name: str = ""):
-    """
-    执行订阅成功后的所有附加任务，例如元数据预处理。
-    内置了“绿色通道”检查和独立的异常处理。
-    """
-    # a. 绿色通道检查
-    sources = item.get('subscription_sources_json', [])
-    is_from_gap_scan = any(source.get('type') == 'gap_scan' for source in sources)
-
-    if is_from_gap_scan:
-        logger.info(f"  ➜ 《{item['title']}》的订阅源为 'gap_scan'，元数据已是最新，跳过本次预处理。")
-        return # 直接返回，不执行任何操作
-
-    # b. 执行预处理（自带保险丝）
-    try:
-        logger.info(f"  ➜ 订阅成功，正在为《{item['title']}》启动后台元数据预处理...")
-        item_tmdb_id = str(item['tmdb_id'])
-        item_type = item['item_type']
-        
-        if item_type == 'Season':
-            parent_series_tmdb_id = item.get('parent_series_tmdb_id')
-            if parent_series_tmdb_id:
-                processor.pre_process_media_metadata(
-                    tmdb_id=str(parent_series_tmdb_id), 
-                    item_type='Series',
-                    item_name_for_log=series_name
-                )
-            else:
-                logger.warning(f"  ➜ 预处理跳过：季订阅《{item['title']}》缺少父剧集ID。")
-        else:
-            processor.pre_process_media_metadata(
-                tmdb_id=item_tmdb_id, 
-                item_type=item_type,
-                item_name_for_log=item['title']
-            )
-    except Exception as e_preprocess:
-        # 这里的 except 只捕获预处理的失败，不会影响主循环
-        logger.error(f"  ➜ 为《{item['title']}》执行元数据预处理时失败: {e_preprocess}", exc_info=True)
 
 # ★★★ 自动订阅任务 ★★★
 def task_auto_subscribe(processor):
@@ -440,9 +387,6 @@ def task_auto_subscribe(processor):
 
                 # b. 扣除配额
                 settings_db.decrement_subscription_quota()
-
-                # c. 立即触发元数据预处理
-                _run_post_subscription_tasks(processor, item, series_name)
 
                 # d. 准备通知 (智能拼接通知标题)
                 item_display_name = ""
