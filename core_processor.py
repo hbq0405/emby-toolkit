@@ -160,6 +160,7 @@ class MediaProcessor:
                 movie_record = source_data_package.copy()
                 movie_record['item_type'] = 'Movie'
                 movie_record['tmdb_id'] = str(movie_record.get('id'))
+                movie_record['runtime_minutes'] = movie_record.get('runtime')
                 actors_relation = [{"tmdb_id": int(p.get("id")), "character": p.get("character"), "order": p.get("order")} for p in final_processed_cast if p.get("id")]
                 movie_record['actors_json'] = json.dumps(actors_relation, ensure_ascii=False)
                 if douban_rating is not None: movie_record['rating'] = douban_rating
@@ -253,7 +254,7 @@ class MediaProcessor:
                 
                 # ★★★  遍历 TMDb 元数据列表，并从中查找 Emby 版本进行聚合 ★★★
                 for episode in episodes_details:
-                    episode_record = {"tmdb_id": str(episode.get('id')), "item_type": "Episode", "parent_series_tmdb_id": str(series_details.get('id')), "title": episode.get('name'), "overview": episode.get('overview'), "release_date": episode.get('air_date'), "season_number": episode.get('season_number'), "episode_number": episode.get('episode_number')}
+                    episode_record = {"tmdb_id": str(episode.get('id')), "item_type": "Episode", "parent_series_tmdb_id": str(series_details.get('id')), "title": episode.get('name'), "overview": episode.get('overview'), "release_date": episode.get('air_date'), "season_number": episode.get('season_number'), "episode_number": episode.get('episode_number'), "runtime_minutes": episode.get('runtime')}
                     
                     s_num = episode.get('season_number')
                     e_num = episode.get('episode_number')
@@ -281,7 +282,8 @@ class MediaProcessor:
                 "in_library", "subscription_status", "subscription_sources_json", "emby_item_ids_json", "date_added",
                 "official_rating", "unified_rating",
                 "genres_json", "directors_json", "studios_json", "countries_json", "keywords_json", "ignore_reason",
-                "asset_details_json"
+                "asset_details_json",
+                "runtime_minutes"
             ]
             data_for_batch = []
             for record in records_to_upsert:
@@ -2574,6 +2576,7 @@ class MediaProcessor:
                             "emby_item_ids_json": json.dumps([emby_episode.get("Id")]),
                             "title": tmdb_details.get("name"), "overview": tmdb_details.get("overview"),
                             "release_date": tmdb_details.get("air_date"),
+                            "runtime_minutes": tmdb_details.get("runtime"),
                             "asset_details_json": json.dumps([asset_details], ensure_ascii=False)
                         }
                         metadata_batch.append(metadata_to_add)

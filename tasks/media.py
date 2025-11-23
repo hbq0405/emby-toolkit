@@ -456,6 +456,8 @@ def task_populate_metadata_cache(processor, batch_size: int = 50, force_full_upd
                     top_record['poster_path'] = tmdb_details.get('poster_path')
                     top_record['overview'] = tmdb_details.get('overview')
                     top_record['studios_json'] = json.dumps([s['name'] for s in tmdb_details.get('production_companies', [])], ensure_ascii=False)
+                    if item_type == 'Movie':
+                        top_record['runtime_minutes'] = tmdb_details.get('runtime')
                     
                     directors, countries, keywords = [], [], []
                     if item_type == 'Movie':
@@ -560,6 +562,7 @@ def task_populate_metadata_cache(processor, batch_size: int = 50, force_full_upd
                             child_record['title'] = tmdb_ep_info.get('name')
                             child_record['overview'] = tmdb_ep_info.get('overview')
                             child_record['poster_path'] = tmdb_ep_info.get('still_path')
+                            child_record['runtime_minutes'] = tmdb_ep_info.get('runtime')
                         else:
                             child_record['tmdb_id'] = f"{tmdb_id_str}-S{s_n}E{e_n}"
                             child_record['title'] = versions[0].get('Name')
