@@ -134,6 +134,7 @@ const RULE_METADATA = {
   effect: { name: "按特效", description: "比较视频的特效等级 (如 DoVi Profile 8, HDR)。" },
   resolution: { name: "按分辨率", description: "比较视频的分辨率 (如 2160p, 1080p)。" },
   bit_depth: { name: "按色深", description: "优先保留 10bit/12bit 版本，减少色彩断层。" },
+  codec: { name: "按编码", description: "比较视频编码格式 (如 AV1, HEVC, H.264)。" },
   bitrate: { name: "按码率", description: "根据码率大小选择。" },
   quality: { name: "按质量", description: "比较文件名中的质量标签 (如 Remux, BluRay)。" },
   frame_rate: { name: "按帧率", description: "根据帧率版本选择。" },
@@ -218,8 +219,9 @@ const fetchSettings = async () => {
     rules.value = [
         { id: 'runtime', enabled: true, priority: 'desc' },
         { id: 'effect', enabled: true, priority: ['DoVi P8', 'DoVi P7', 'DoVi P5', 'DoVi (Other)', 'HDR10+', 'HDR', 'SDR'] },
-        { id: 'resolution', enabled: true, priority: ['4K', '1080p', '720p', '480p'] },
+        { id: 'resolution', enabled: true, priority: ['4k', '1080p', '720p', '480p'] },
         { id: 'bit_depth', enabled: true, priority: 'desc' },
+        { id: 'codec', enabled: true, priority: ['AV1', 'HEVC', 'H.264', 'VP9'] },
         { id: 'bitrate', enabled: true, priority: 'desc' },
         { id: 'quality', enabled: true, priority: ['Remux', 'BluRay', 'WEB-DL', 'HDTV'] },
         { id: 'frame_rate', enabled: false, priority: 'desc' },

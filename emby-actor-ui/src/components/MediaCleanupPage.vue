@@ -287,10 +287,18 @@ const createVersionColumns = (bestVersionId) => [
         : h(NText, { depth: 3, style: 'font-size: 12px' }, { default: () => 'SDR' });
     }
   },
+  // ★★★ 新增：编码列 ★★★
+  {
+    title: '编码',
+    key: 'codec',
+    width: 80,
+    render: (row) => row.codec ? h(NTag, { size: 'small', bordered: false, color: { color: '#f5f5f5', textColor: '#666' } }, { default: () => row.codec }) : '-'
+  },
   {
     title: '码率',
     key: 'video_bitrate_mbps',
     width: 100,
+    // 直接读取原始字段 video_bitrate_mbps 并加上单位
     render: (row) => row.video_bitrate_mbps ? h(NTag, { size: 'small', bordered: false, color: { color: '#fafafa', textColor: '#333' } }, { default: () => `${row.video_bitrate_mbps} Mbps` }) : '-'
   },
   {
@@ -341,10 +349,10 @@ const renderVersions = (row) => {
 
   // 直接返回一个表格组件
   return h(NDataTable, {
-    columns: createVersionColumns(row.best_version_id),
-    data: sortedVersions,
+    columns: createVersionColumns(row.best_version_id), // 传入最佳ID用于判断图标
+    data: sortedVersions, // 直接传入原始数据
     size: 'small',        // 紧凑模式
-    singleLine: false,    // 允许换行（虽然我们主要靠 ellipsis）
+    singleLine: false,    // 允许换行
     bordered: false,      // 无边框，融入背景
     bottomBordered: false,// 去除底部边框
     rowKey: (v) => v.id,

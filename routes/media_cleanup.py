@@ -124,9 +124,9 @@ def get_cleanup_settings():
                 "enabled": True, 
                 "priority": ["dovi_p8", "dovi_p7", "dovi_p5", "dovi_other", "hdr10+", "hdr", "sdr"]
             },
-            # ★★★ 修改 1: 更新默认值 (2160p -> 4K, 新增 480p) ★★★
             "resolution": {"id": "resolution", "enabled": True, "priority": ["4K", "1080p", "720p", "480p"]},
             "bit_depth": {"id": "bit_depth", "enabled": True, "priority": "desc"},
+            "codec": {"id": "codec", "enabled": True, "priority": ["AV1", "HEVC", "H.264", "VP9"]},
             "bitrate": {"id": "bitrate", "enabled": True, "priority": "desc"},
             "quality": {"id": "quality", "enabled": True, "priority": ["Remux", "BluRay", "WEB-DL", "HDTV"]},
             "frame_rate": {"id": "frame_rate", "enabled": False, "priority": "desc"},
@@ -182,6 +182,16 @@ def get_cleanup_settings():
                     # 2. 检查并补全 480p (如果用户列表里没有)
                     if '480p' not in new_priority:
                         new_priority.append('480p')
+
+                # ★★★编码规则的清洗逻辑 (迁移旧数据/标准化) ★★★
+                elif rule_id == 'codec' and 'priority' in merged_rule and isinstance(merged_rule['priority'], list):
+                    saved_priority = merged_rule['priority']
+                    new_priority = []
+                    for p in saved_priority:
+                        p_str = str(p).upper()
+                        if p_str in ['H265', 'X265']: new_priority.append('HEVC')
+                        elif p_str in ['H264', 'X264', 'AVC']: new_priority.append('H.264')
+                        else: new_priority.append(p) # 保持原样 (如 AV1, VP9)
                     
                     # 3. 去重 (防止替换后出现重复)
                     final_res_priority = []

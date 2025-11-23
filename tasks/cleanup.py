@@ -24,7 +24,8 @@ def _get_properties_for_comparison(version: Dict) -> Dict:
     if not version or not isinstance(version, dict):
         return {
             'id': None, 'quality': 'unknown', 'resolution': 'unknown', 'effect': 'sdr', 'filesize': 0,
-            'video_bitrate_mbps': 0, 'bit_depth': 8, 'frame_rate': 0, 'runtime_minutes': 0
+            'video_bitrate_mbps': 0, 'bit_depth': 8, 'frame_rate': 0, 'runtime_minutes': 0,
+            'codec': 'unknown' 
         }
 
     # 获取特效优先级配置
@@ -64,7 +65,8 @@ def _get_properties_for_comparison(version: Dict) -> Dict:
         "video_bitrate_mbps": version.get("video_bitrate_mbps") or 0,
         "bit_depth": version.get("bit_depth") or 8,
         "frame_rate": version.get("frame_rate") or 0,
-        "runtime_minutes": version.get("runtime_minutes") or 0
+        "runtime_minutes": version.get("runtime_minutes") or 0,
+        "codec": version.get("codec_display", "unknown")
     }
 
 def _compare_versions(v1: Dict[str, Any], v2: Dict[str, Any], rules: List[Dict[str, Any]]) -> int:
@@ -137,11 +139,36 @@ def _compare_versions(v1: Dict[str, Any], v2: Dict[str, Any], rules: List[Dict[s
             val2 = v2.get(rule_type)
             priority_list = rule.get("priority", [])
             
-            # 预处理 priority_list 以匹配数据格式
-            if rule_type == "quality":
+            # ★★★ 核心修复：分辨率标准化 ★★★
+            if rule_type == "resolution":
+                # 定义一个简单的标准化函数
+                def normalize_res(res):
+                    s = str(res).lower()
+                    if s == '2160p': return '4k'
+                    return s
+                
+                # 1. 标准化优先级列表 (把用户设置里的 2160p 变成 4k)
+                priority_list = [normalize_res(p) for p in priority_list]
+                # 2. 标准化实际值 (把资产里的 4K 变成 4k，或者 2160p 变成 4k)
+                val1 = normalize_res(val1)
+                val2 = normalize_res(val2)
+
+            # 预处理 priority_list 以匹配数据格式 (质量和特效的逻辑保持不变)
+            elif rule_type == "quality":
                 priority_list = [str(p).lower().replace("bluray", "blu-ray").replace("webdl", "web-dl") for p in priority_list]
             elif rule_type == "effect":
                 priority_list = [str(p).lower().replace(" ", "_") for p in priority_list]
+
+            elif rule_type == "codec":
+                def normalize_codec(c):
+                    s = str(c).upper()
+                    if s in ['H265', 'X265']: return 'HEVC'
+                    if s in ['H264', 'X264', 'AVC']: return 'H.264'
+                    return s
+                
+                priority_list = [normalize_codec(p) for p in priority_list]
+                val1 = normalize_codec(val1)
+                val2 = normalize_codec(val2)
 
             try:
                 idx1 = priority_list.index(val1) if val1 in priority_list else 999
@@ -163,9 +190,10 @@ def _determine_best_version_by_rules(versions: List[Dict[str, Any]]) -> Optional
         rules = [
             {"id": "runtime", "enabled": True}, # 时长优先
             {"id": "effect", "enabled": True, "priority": ["dovi_p8", "dovi_p7", "dovi_p5", "dovi_other", "hdr10+", "hdr", "sdr"]},
-            {"id": "resolution", "enabled": True, "priority": ["4K", "1080p", "720p", "480p"]},
+            {"id": "resolution", "enabled": True, "priority": ["4k", "1080p", "720p", "480p"]},
             {"id": "bit_depth", "enabled": True}, # 色深
             {"id": "bitrate", "enabled": True},   # 码率
+            {"id": "codec", "enabled": True, "priority": ["AV1", "HEVC", "H.264", "VP9"]},
             {"id": "quality", "enabled": True, "priority": ["remux", "blu-ray", "web-dl", "hdtv"]},
             {"id": "frame_rate", "enabled": False}, # 帧率默认关闭
             {"id": "filesize", "enabled": True}
@@ -271,11 +299,11 @@ def task_scan_for_cleanup_issues(processor):
                     'quality': props.get('quality'), # 使用标准化后的
                     'resolution': props.get('resolution'),
                     'effect': props.get('effect'),
-                    # 传递新属性给前端展示
                     'video_bitrate_mbps': props.get('video_bitrate_mbps'),
                     'bit_depth': props.get('bit_depth'),
                     'frame_rate': props.get('frame_rate'),
-                    'runtime_minutes': props.get('runtime_minutes')
+                    'runtime_minutes': props.get('runtime_minutes'),
+                    'codec': props.get('codec')
                 })
 
             cleanup_index_entries.append({

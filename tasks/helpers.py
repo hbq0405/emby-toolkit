@@ -234,7 +234,7 @@ def _extract_quality_tag_from_filename(filename_lower: str) -> str:
     return "未知"
 
 def _get_resolution_tier(width: int, height: int) -> tuple[int, str]:
-    if width >= 3800: return 4, "4K"
+    if width >= 3800: return 4, "4k"
     if width >= 1900: return 3, "1080p"
     if width >= 1200: return 2, "720p"
     if width >= 700: return 1, "480p"  # 常见480p宽度为720或854
@@ -285,8 +285,8 @@ def analyze_media_asset(item_details: dict) -> dict:
     if video_stream and video_stream.get("Width"):
         _, resolution_str = _get_resolution_tier(video_stream["Width"], video_stream.get("Height", 0))
     if resolution_str == "未知":
-        if "2160p" in file_name_lower or "4k" in file_name_lower:
-            resolution_str = "4K"
+        if "2160p" in file_name_lower or "4K" in file_name_lower:
+            resolution_str = "4k"
         elif "1080p" in file_name_lower:
             resolution_str = "1080p"
         elif "720p" in file_name_lower:
