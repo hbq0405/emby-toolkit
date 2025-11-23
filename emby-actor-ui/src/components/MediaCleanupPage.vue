@@ -178,9 +178,10 @@ const groupedTasks = computed(() => {
 
 // 主表格的列定义
 const seriesColumns = computed(() => [
-  { type: 'selection' },
+  { type: 'selection', width: 40 }, // 给勾选框固定宽度
   { 
     type: 'expand',
+    width: 40, // 给展开按钮固定宽度
     expandable: (rowData) => !rowData.isMovie, // 电影行不可展开
     renderExpand: (rowData) => {
       return h(NDataTable, {
@@ -188,37 +189,40 @@ const seriesColumns = computed(() => [
         data: rowData.episodes,
         size: 'small',
         bordered: false,
-        bottomBordered: false, // 去除底部边框
-        showHeader: false,     // ★★★ 核心修改 1：隐藏中间层的表头，减少视觉干扰 ★★★
+        bottomBordered: false,
+        showHeader: false,
         rowKey: row => row.id,
-        // 给展开区域加一点内边距，使其更有层次感
         style: { padding: '4px 24px 4px 48px', backgroundColor: 'rgba(255, 255, 255, 0.02)' } 
       });
     }
   },
   {
-    title: '剧集 / 电影',
-    key: 'seriesName',
+    title: '媒体详情',
+    key: 'details',
     render(row) {
+      // 1. 标题部分 (图标 + 片名 + 数量)
       const iconComponent = row.isMovie ? MovieIcon : SeriesIcon;
-      return h(NSpace, { align: 'center' }, {
+      const headerNode = h(NSpace, { align: 'center', style: 'margin-bottom: 12px;' }, {
         default: () => [
-          h(NIcon, { component: iconComponent, size: 20 }),
-          h('strong', row.seriesName),
-          h(NTag, { type: 'info', round: true, size: 'small' }, { default: () => `${row.episodes.length} 项` }),
+          h(NIcon, { component: iconComponent, size: 24, color: '#2080f0' }), // 图标稍微大一点，加个颜色
+          h('span', { style: 'font-size: 18px; font-weight: bold;' }, row.seriesName), // 片名加大加粗
+          h(NTag, { type: 'info', round: true, size: 'small', bordered: false }, { default: () => `${row.episodes.length} 项` }),
         ]
       });
-    }
-  },
-  {
-    title: '版本详情',
-    key: 'movieVersionsInfo',
-    render(row) {
-      if (!row.isMovie || !row.episodes || row.episodes.length === 0) {
-        return null; // 如果不是电影或者没有版本信息，则不显示
+
+      // 2. 表格部分 (仅电影显示，剧集在展开行里)
+      let tableNode = null;
+      if (row.isMovie && row.episodes && row.episodes.length > 0) {
+        const movieTask = row.episodes[0];
+        // 直接调用之前的 renderVersions，它现在返回的是一个 NDataTable
+        tableNode = renderVersions(movieTask);
       }
-      const movieTask = row.episodes[0]; 
-      return renderVersions(movieTask); // 复用渲染函数
+
+      // 3. 垂直堆叠返回
+      return h('div', { style: 'padding: 8px 0;' }, [
+        headerNode,
+        tableNode
+      ]);
     }
   }
 ]);
@@ -248,121 +252,136 @@ const pagination = computed(() => {
   };
 });
 
-// 定义版本详情表格的列结构
-const createVersionColumns = (bestVersionId) => [
-  {
-    title: '状态',
-    key: 'status',
-    width: 60,
-    align: 'center',
-    render(row) {
-      const isBest = row.id === bestVersionId;
-      return h(NIcon, { 
-        component: isBest ? KeepIcon : DeleteIcon, 
-        color: isBest ? 'var(--n-success-color)' : 'var(--n-error-color)', 
-        size: 20 
-      });
-    }
-  },
-  {
-    title: '分辨率',
-    key: 'resolution',
-    width: 90,
-    render: (row) => row.resolution ? h(NTag, { size: 'small', bordered: false }, { default: () => row.resolution }) : '-'
-  },
-  {
-    title: '质量',
-    key: 'quality',
-    width: 100,
-    render: (row) => row.quality ? h(NTag, { size: 'small', bordered: false, type: 'info' }, { default: () => row.quality.toUpperCase() }) : '-'
-  },
-  {
-    title: '特效',
-    key: 'effect',
-    width: 100,
-    render: (row) => {
-      const effect = formatEffectTagForDisplay(row.effect);
-      return effect !== 'SDR' 
-        ? h(NTag, { size: 'small', bordered: false, type: 'warning' }, { default: () => effect }) 
-        : h(NText, { depth: 3, style: 'font-size: 12px' }, { default: () => 'SDR' });
-    }
-  },
-  // ★★★ 新增：编码列 ★★★
-  {
-    title: '编码',
-    key: 'codec',
-    width: 80,
-    render: (row) => row.codec ? h(NTag, { size: 'small', bordered: false, color: { color: '#f5f5f5', textColor: '#666' } }, { default: () => row.codec }) : '-'
-  },
-  {
-    title: '码率',
-    key: 'video_bitrate_mbps',
-    width: 100,
-    // 直接读取原始字段 video_bitrate_mbps 并加上单位
-    render: (row) => row.video_bitrate_mbps ? h(NTag, { size: 'small', bordered: false, color: { color: '#fafafa', textColor: '#333' } }, { default: () => `${row.video_bitrate_mbps} Mbps` }) : '-'
-  },
-  {
-    title: '色深',
-    key: 'bit_depth',
-    width: 80,
-    render: (row) => row.bit_depth ? h(NTag, { size: 'small', bordered: false, color: { color: '#e6f7ff', textColor: '#1890ff' } }, { default: () => `${row.bit_depth}bit` }) : '-'
-  },
-  {
-    title: '帧率',
-    key: 'frame_rate',
-    width: 80,
-    render: (row) => row.frame_rate ? h(NTag, { size: 'small', bordered: false, color: { color: '#fff7e6', textColor: '#fa8c16' } }, { default: () => `${Math.round(row.frame_rate)}fps` }) : '-'
-  },
-  {
-    title: '时长',
-    key: 'runtime_minutes',
-    width: 90,
-    render: (row) => row.runtime_minutes ? h(NTag, { size: 'small', bordered: false, color: { color: '#f6ffed', textColor: '#52c41a' } }, { default: () => `${row.runtime_minutes}min` }) : '-'
-  },
-  {
-    title: '大小',
-    key: 'filesize',
-    width: 100,
-    render: (row) => h(NTag, { size: 'small', bordered: false, type: 'success' }, { default: () => formatBytes(row.filesize) })
-  },
-  {
-    title: '路径',
-    key: 'path',
-    minWidth: 200,
-    ellipsis: {
-      tooltip: true
-    },
-    render: (row) => h(NText, { depth: 3, style: 'font-size: 12px; font-family: monospace;' }, { default: () => row.path })
+const parseBestIds = (rawId) => {
+  if (!rawId) return [];
+  try {
+    // 尝试解析 JSON (例如 '["123", "456"]')
+    const parsed = JSON.parse(rawId);
+    if (Array.isArray(parsed)) return parsed;
+    return [rawId]; // 如果解析出来不是数组，就当单ID处理
+  } catch (e) {
+    // 解析失败，说明是普通字符串 ID (例如 "123")
+    return [rawId];
   }
-];
+};
 
+// 定义版本详情表格的列结构
+const createVersionColumns = (bestVersionIdRaw) => {
+  // 1. 先解析出所有的最佳ID列表
+  const bestIds = parseBestIds(bestVersionIdRaw);
+
+  return [
+    {
+      title: '状态',
+      key: 'status',
+      width: 60,
+      align: 'center',
+      render(row) {
+        // 2. 判断当前行ID是否在最佳列表中
+        const isBest = bestIds.includes(row.id);
+        return h(NIcon, { 
+          component: isBest ? KeepIcon : DeleteIcon, 
+          color: isBest ? 'var(--n-success-color)' : 'var(--n-error-color)', 
+          size: 20 
+        });
+      }
+    },
+    {
+      title: 'ID',
+      key: 'id',
+      width: 90,
+      render: (row) => h(NTag, { size: 'small', bordered: false, type: 'default' }, { default: () => row.id })
+    },
+    {
+      title: '分辨率',
+      key: 'resolution',
+      width: 90,
+      render: (row) => row.resolution ? h(NTag, { size: 'small', bordered: false }, { default: () => row.resolution }) : '-'
+    },
+    {
+      title: '质量',
+      key: 'quality',
+      width: 100,
+      render: (row) => row.quality ? h(NTag, { size: 'small', bordered: false, type: 'info' }, { default: () => row.quality.toUpperCase() }) : '-'
+    },
+    {
+      title: '特效',
+      key: 'effect',
+      width: 100,
+      render: (row) => {
+        const effect = formatEffectTagForDisplay(row.effect);
+        return effect !== 'SDR' 
+          ? h(NTag, { size: 'small', bordered: false, type: 'warning' }, { default: () => effect }) 
+          : h(NText, { depth: 3, style: 'font-size: 12px' }, { default: () => 'SDR' });
+      }
+    },
+    // ★★★ 新增：编码列 ★★★
+    {
+      title: '编码',
+      key: 'codec',
+      width: 80,
+      render: (row) => row.codec ? h(NTag, { size: 'small', bordered: false, color: { color: '#f5f5f5', textColor: '#666' } }, { default: () => row.codec }) : '-'
+    },
+    {
+      title: '码率',
+      key: 'video_bitrate_mbps',
+      width: 100,
+      // 直接读取原始字段 video_bitrate_mbps 并加上单位
+      render: (row) => row.video_bitrate_mbps ? h(NTag, { size: 'small', bordered: false, color: { color: '#fafafa', textColor: '#333' } }, { default: () => `${row.video_bitrate_mbps} Mbps` }) : '-'
+    },
+    {
+      title: '色深',
+      key: 'bit_depth',
+      width: 80,
+      render: (row) => row.bit_depth ? h(NTag, { size: 'small', bordered: false, color: { color: '#e6f7ff', textColor: '#1890ff' } }, { default: () => `${row.bit_depth}bit` }) : '-'
+    },
+    {
+      title: '帧率',
+      key: 'frame_rate',
+      width: 80,
+      render: (row) => row.frame_rate ? h(NTag, { size: 'small', bordered: false, color: { color: '#fff7e6', textColor: '#fa8c16' } }, { default: () => `${Math.round(row.frame_rate)}fps` }) : '-'
+    },
+    {
+      title: '时长',
+      key: 'runtime_minutes',
+      width: 90,
+      render: (row) => row.runtime_minutes ? h(NTag, { size: 'small', bordered: false, color: { color: '#f6ffed', textColor: '#52c41a' } }, { default: () => `${row.runtime_minutes}min` }) : '-'
+    },
+    {
+      title: '大小',
+      key: 'filesize',
+      width: 100,
+      render: (row) => h(NTag, { size: 'small', bordered: false, type: 'success' }, { default: () => formatBytes(row.filesize) })
+    },
+    {
+      title: '路径',
+      key: 'path',
+      minWidth: 200,
+      ellipsis: {
+        tooltip: true
+      },
+      render: (row) => h(NText, { depth: 3, style: 'font-size: 12px; font-family: monospace;' }, { default: () => row.path })
+    }
+  ];
+};
 // ★★★ 核心修改：renderVersions 现在返回一个 NDataTable ★★★
 const renderVersions = (row) => {
   const versions = row.versions_info_json || [];
-  
-  // 排序：保留的版本排在第一位
+  const bestIds = parseBestIds(row.best_version_id);
+
+  // 排序：保留的版本排在前面
   const sortedVersions = [...versions].sort((a, b) => {
-    if (a.id === row.best_version_id) return -1;
-    if (b.id === row.best_version_id) return 1;
+    const aIsBest = bestIds.includes(a.id);
+    const bIsBest = bestIds.includes(b.id);
+    if (aIsBest && !bIsBest) return -1;
+    if (!aIsBest && bIsBest) return 1;
     return 0;
   });
 
-  // 直接返回一个表格组件
   return h(NDataTable, {
-    columns: createVersionColumns(row.best_version_id), // 传入最佳ID用于判断图标
-    data: sortedVersions, // 直接传入原始数据
-    size: 'small',        // 紧凑模式
-    singleLine: false,    // 允许换行
-    bordered: false,      // 无边框，融入背景
-    bottomBordered: false,// 去除底部边框
-    rowKey: (v) => v.id,
-    style: {
-      marginTop: '4px',
-      marginBottom: '4px',
-      '--n-td-padding': '4px 8px', // 进一步压缩单元格内边距
-      '--n-th-padding': '4px 8px',
-      background: 'transparent'    // 透明背景
-    }
+    columns: createVersionColumns(row.best_version_id), // 传入原始值即可，里面会解析
+    data: sortedVersions,
+    // ...
   });
 };
 

@@ -2,10 +2,11 @@
 # 媒体去重与版本管理专属任务模块
 
 import logging
+import json
 from functools import cmp_to_key
 from typing import List, Dict, Any, Optional
 from psycopg2 import sql
-
+from collections import defaultdict
 import task_manager
 import handler.emby as emby
 from database import connection, cleanup_db, settings_db, maintenance_db
@@ -54,7 +55,8 @@ def _get_properties_for_comparison(version: Dict) -> Dict:
         if standardized_effects:
             # 选出优先级最高的一个特效
             best_effect = min(standardized_effects, key=lambda e: effect_priority.index(e) if e in effect_priority else 999)
-
+    raw_id = version.get("emby_item_id")
+    int_id = int(raw_id) if raw_id and str(raw_id).isdigit() else 0
     return {
         "id": version.get("emby_item_id"),
         "path": version.get("path"),
@@ -66,7 +68,9 @@ def _get_properties_for_comparison(version: Dict) -> Dict:
         "bit_depth": version.get("bit_depth") or 8,
         "frame_rate": version.get("frame_rate") or 0,
         "runtime_minutes": version.get("runtime_minutes") or 0,
-        "codec": version.get("codec_display", "unknown")
+        "codec": version.get("codec_display", "unknown"),
+        "date_added": version.get("date_added_to_library") or "",
+        "int_id": int_id
     }
 
 def _compare_versions(v1: Dict[str, Any], v2: Dict[str, Any], rules: List[Dict[str, Any]]) -> int:
@@ -178,6 +182,28 @@ def _compare_versions(v1: Dict[str, Any], v2: Dict[str, Any], rules: List[Dict[s
             except (ValueError, TypeError):
                 continue
 
+        # --- 7. 按入库时间 (Date Added / ID) ---
+        elif rule_type == 'date_added':
+            # 1. 优先比较日期字符串 (ISO格式字符串可以直接比较大小)
+            d1 = v1.get('date_added')
+            d2 = v2.get('date_added')
+            
+            if d1 and d2 and d1 != d2:
+                if preference == 'asc':
+                    return 1 if d1 < d2 else -1 # 保留最早入库 (Oldest)
+                else:
+                    return 1 if d1 > d2 else -1 # 保留最新入库 (Newest)
+            
+            # 2. 如果日期相同或无效，使用 ID 进行兜底比较
+            id1 = v1.get('int_id')
+            id2 = v2.get('int_id')
+            
+            if id1 != id2:
+                if preference == 'asc':
+                    return 1 if id1 < id2 else -1 # 保留ID小的 (最早)
+                else:
+                    return 1 if id1 > id2 else -1 # 保留ID大的 (最新)
+
     return 0
 
 def _determine_best_version_by_rules(versions: List[Dict[str, Any]]) -> Optional[str]:
@@ -196,7 +222,8 @@ def _determine_best_version_by_rules(versions: List[Dict[str, Any]]) -> Optional
             {"id": "codec", "enabled": True, "priority": ["AV1", "HEVC", "H.264", "VP9"]},
             {"id": "quality", "enabled": True, "priority": ["remux", "blu-ray", "web-dl", "hdtv"]},
             {"id": "frame_rate", "enabled": False}, # 帧率默认关闭
-            {"id": "filesize", "enabled": True}
+            {"id": "filesize", "enabled": True},
+            {"id": "date_added", "enabled": True, "priority": "asc"}
         ]
 
     # 提取属性
@@ -227,6 +254,7 @@ def task_scan_for_cleanup_issues(processor):
 
     try:
         library_ids_to_scan = settings_db.get_setting('media_cleanup_library_ids') or []
+        keep_one_per_res = settings_db.get_setting('media_cleanup_keep_one_per_res') or False
         
         if library_ids_to_scan:
             logger.info(f"  ➜ 将仅扫描指定的 {len(library_ids_to_scan)} 个媒体库。")
@@ -286,7 +314,53 @@ def task_scan_for_cleanup_issues(processor):
             task_manager.update_status_from_thread(progress, f"({i+1}/{total_items}) 正在分析: {display_title}")
 
             versions_from_db = item['asset_details_json']
-            best_id = _determine_best_version_by_rules(versions_from_db)
+            raw_versions = item['asset_details_json']
+            unique_versions_map = {}
+            for v in raw_versions:
+                eid = v.get('emby_item_id')
+                if eid:
+                    unique_versions_map[eid] = v
+            
+            versions_from_db = list(unique_versions_map.values())
+
+            # ★★★ 二次检查：去重后如果只剩1个版本，说明是脏数据，直接跳过 ★★★
+            if len(versions_from_db) < 2: continue
+
+            # =================================================
+            # ★★★ 核心逻辑分叉 ★★★
+            # =================================================
+            best_id_or_ids = None
+            
+            if keep_one_per_res:
+                # --- 模式 A: 保留每种分辨率的最佳版本 ---
+                
+                # 1. 按分辨率分组
+                res_groups = defaultdict(list)
+                for v in versions_from_db:
+                    # 获取标准化后的分辨率 (例如 "4K", "1080p")
+                    props = _get_properties_for_comparison(v)
+                    res_key = props.get('resolution', 'unknown')
+                    res_groups[res_key].append(v)
+                
+                # 2. 在每组内选出最佳
+                best_ids_set = set()
+                for res, group_versions in res_groups.items():
+                    best_in_group = _determine_best_version_by_rules(group_versions)
+                    if best_in_group:
+                        best_ids_set.add(best_in_group)
+                
+                # 3. 判断是否需要清理
+                # 如果选出的最佳版本数量 等于 总版本数量，说明每个版本都是它那个分辨率的独苗，无需清理
+                if len(best_ids_set) == len(versions_from_db):
+                    continue 
+                
+                # 4. 将多个 ID 序列化为 JSON 字符串存储
+                # 数据库字段 best_version_id 是 TEXT 类型，存 JSON 字符串完全没问题
+                best_id_or_ids = json.dumps(list(best_ids_set))
+                
+            else:
+                # --- 模式 B: 传统模式 (只留一个) ---
+                best_id_or_ids = _determine_best_version_by_rules(versions_from_db)
 
             # 构建前端展示用的精简信息
             versions_for_frontend = []
@@ -310,7 +384,7 @@ def task_scan_for_cleanup_issues(processor):
                 "tmdb_id": item['tmdb_id'], 
                 "item_type": item['item_type'],
                 "versions_info_json": versions_for_frontend,
-                "best_version_id": best_id,
+                "best_version_id": best_id_or_ids,
             })
 
         task_manager.update_status_from_thread(90, f"分析完成，正在写入数据库...")

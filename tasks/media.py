@@ -446,7 +446,7 @@ def task_populate_metadata_cache(processor, batch_size: int = 50, force_full_upd
                     "tmdb_id": tmdb_id_str, "item_type": item_type, "title": item.get('Name'),
                     "original_title": item.get('OriginalTitle'), "release_year": item.get('ProductionYear'),
                     "in_library": True, 
-                    "emby_item_ids_json": json.dumps([v.get('Id') for v in item_group if v.get('Id')], ensure_ascii=False),
+                    "emby_item_ids_json": json.dumps(list(set(v.get('Id') for v in item_group if v.get('Id'))), ensure_ascii=False),
                     "asset_details_json": json.dumps(asset_details_list, ensure_ascii=False),
                     "rating": item.get('CommunityRating'),
                     "date_added": item.get('DateCreated'),

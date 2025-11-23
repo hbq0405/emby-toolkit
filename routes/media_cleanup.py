@@ -130,7 +130,8 @@ def get_cleanup_settings():
             "bitrate": {"id": "bitrate", "enabled": True, "priority": "desc"},
             "quality": {"id": "quality", "enabled": True, "priority": ["Remux", "BluRay", "WEB-DL", "HDTV"]},
             "frame_rate": {"id": "frame_rate", "enabled": False, "priority": "desc"},
-            "filesize": {"id": "filesize", "enabled": True, "priority": "desc"}
+            "filesize": {"id": "filesize", "enabled": True, "priority": "desc"},
+            "date_added": {"id": "date_added", "enabled": True, "priority": "asc"}
         }
         
         saved_rules_list = settings_db.get_setting('media_cleanup_rules')
@@ -214,10 +215,16 @@ def get_cleanup_settings():
         # --- Part 2: 新增 - 获取已保存的媒体库ID列表 ---
         saved_library_ids = settings_db.get_setting('media_cleanup_library_ids') or []
 
-        # --- Part 3: 将规则和媒体库ID合并到一个对象中返回给前端 ---
+        # --- Part 3:：获取“分分辨率保留”开关 ★★★
+        keep_one_per_res = settings_db.get_setting('media_cleanup_keep_one_per_res')
+        if keep_one_per_res is None:
+            keep_one_per_res = False # 默认关闭，保持原有逻辑
+
+        # --- Part 4: 将规则和媒体库ID合并到一个对象中返回给前端 ---
         return jsonify({
             "rules": final_rules,
-            "library_ids": saved_library_ids
+            "library_ids": saved_library_ids,
+            "keep_one_per_res": keep_one_per_res
         })
         
     except Exception as e:
@@ -233,6 +240,7 @@ def save_cleanup_settings():
 
     new_rules = data.get('rules')
     library_ids = data.get('library_ids')
+    keep_one_per_res = data.get('keep_one_per_res')
 
     if not isinstance(new_rules, list):
         return jsonify({"error": "无效的规则格式，'rules' 必须是一个列表。"}), 400
@@ -244,6 +252,7 @@ def save_cleanup_settings():
         # 分别保存规则和媒体库ID到数据库
         settings_db.save_setting('media_cleanup_rules', new_rules)
         settings_db.save_setting('media_cleanup_library_ids', library_ids)
+        settings_db.save_setting('media_cleanup_keep_one_per_res', bool(keep_one_per_res))
         
         return jsonify({"message": "清理设置已成功保存！"}), 200
     except Exception as e:
