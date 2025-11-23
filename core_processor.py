@@ -147,10 +147,21 @@ class MediaProcessor:
         """
         - 实时元数据写入。
         """
-        def get_best_runtime(emby_data, tmdb_runtime):
-            if emby_data and emby_data.get('RunTimeTicks'):
-                # 1分钟 = 600,000,000 Ticks，四舍五入
-                return round(emby_data['RunTimeTicks'] / 600000000)
+        def get_representative_runtime(emby_items, tmdb_runtime):
+            if not emby_items:
+                return tmdb_runtime
+            
+            # 收集所有版本的时长
+            runtimes = []
+            for item in emby_items:
+                if item.get('RunTimeTicks'):
+                    runtimes.append(round(item['RunTimeTicks'] / 600000000))
+            
+            # 如果有 Emby 数据，取最大值（通常大家希望看到加长版/导演剪辑版的时长）
+            if runtimes:
+                return max(runtimes)
+            
+            # 兜底
             return tmdb_runtime
         try:
             from psycopg2.extras import execute_batch
@@ -165,8 +176,8 @@ class MediaProcessor:
                 movie_record = source_data_package.copy()
                 movie_record['item_type'] = 'Movie'
                 movie_record['tmdb_id'] = str(movie_record.get('id'))
-                tmdb_runtime = movie_record.get('runtime')
-                movie_record['runtime_minutes'] = get_best_runtime(item_details_from_emby, tmdb_runtime)
+                final_runtime = get_representative_runtime([item_details_from_emby], movie_record.get('runtime'))
+                movie_record['runtime_minutes'] = final_runtime
                 actors_relation = [{"tmdb_id": int(p.get("id")), "character": p.get("character"), "order": p.get("order")} for p in final_processed_cast if p.get("id")]
                 movie_record['actors_json'] = json.dumps(actors_relation, ensure_ascii=False)
                 if douban_rating is not None: movie_record['rating'] = douban_rating
@@ -278,6 +289,8 @@ class MediaProcessor:
                             # 1分钟 = 600,000,000 Ticks
                             final_runtime = round(emby_data['RunTimeTicks'] / 600000000)
 
+                    final_runtime = get_representative_runtime(versions_of_episode, episode.get('runtime'))
+
                     # 4. 现在再创建记录，把算好的 final_runtime 放进去
                     episode_record = {
                         "tmdb_id": str(episode.get('id')), 
@@ -288,7 +301,7 @@ class MediaProcessor:
                         "release_date": episode.get('air_date'), 
                         "season_number": s_num, 
                         "episode_number": e_num,
-                        "runtime_minutes": final_runtime  # <--- 这里填入我们刚才计算好的时长
+                        "runtime_minutes": final_runtime
                     }
                     
                     # 5. 补充 Emby 资产信息 (逻辑不变)

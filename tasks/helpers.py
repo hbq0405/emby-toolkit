@@ -296,10 +296,6 @@ def analyze_media_asset(item_details: dict) -> dict:
 
     quality_str = _extract_quality_tag_from_filename(file_name_lower)
     
-    # ★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★
-    # ★★★ 核心修复 1/2: 特效和编码的大小写标准化 ★★★
-    # ★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★
-    
     # 1. 获取权威的、细分的特效标签 (例如 'dovi_p8')
     effect_tag = _get_standardized_effect(file_name_lower, video_stream)
     
@@ -312,13 +308,44 @@ def analyze_media_asset(item_details: dict) -> dict:
 
     # 3. 获取原始编码，并将其转换为标准显示格式
     codec_str = '未知'
+    CODEC_DISPLAY_MAP = {
+        'hevc': 'HEVC', 'h265': 'HEVC', 'x265': 'HEVC',
+        'h264': 'H.264', 'avc': 'H.264', 'x264': 'H.264',
+        'vp9': 'VP9', 'av1': 'AV1'
+    }
+    
+    # 1. 优先从流获取
     if video_stream and video_stream.get('Codec'):
         raw_codec = video_stream.get('Codec').lower()
-        CODEC_DISPLAY_MAP = {
-            'hevc': 'HEVC', 'h265': 'HEVC',
-            'h264': 'H.264', 'avc': 'H.264'
+        codec_str = CODEC_DISPLAY_MAP.get(raw_codec, raw_codec.upper())
+    # 2. 流获取失败，从文件名猜测
+    else:
+        for key, val in CODEC_DISPLAY_MAP.items():
+            # 简单的包含判断，比如 "x265"
+            if key in file_name_lower:
+                codec_str = val
+                break
+
+    detected_audio_langs = _get_detected_languages_from_streams(media_streams, 'Audio')
+    audio_str = ', '.join(sorted([AUDIO_DISPLAY_MAP.get(lang, lang) for lang in detected_audio_langs]))
+    
+    # ★★★ 核心修改：增强音频 (Audio) 的文件名兜底 ★★★
+    # 如果 Emby 没分析出音轨，尝试从文件名提取常见音频格式作为展示
+    if not audio_str:
+        audio_keywords = {
+            'truehd': 'TrueHD', 'atmos': 'Atmos', 
+            'dts-hd': 'DTS-HD', 'dts': 'DTS', 
+            'ac3': 'AC3', 'eac3': 'EAC3', 'dd+': 'Dolby Digital+',
+            'aac': 'AAC', 'flac': 'FLAC'
         }
-        codec_str = CODEC_DISPLAY_MAP.get(raw_codec, raw_codec.upper()) # 未知编码则直接转大写
+        found_audios = []
+        for k, v in audio_keywords.items():
+            if k in file_name_lower:
+                found_audios.append(v)
+        if found_audios:
+            audio_str = " | ".join(found_audios) # 用竖线分隔，表示这是文件名猜的
+        else:
+            audio_str = '无' # 真的猜不到了
 
     detected_audio_langs = _get_detected_languages_from_streams(media_streams, 'Audio')
     audio_str = ', '.join(sorted([AUDIO_DISPLAY_MAP.get(lang, lang) for lang in detected_audio_langs])) or '无'
@@ -345,6 +372,10 @@ def analyze_media_asset(item_details: dict) -> dict:
 
 def parse_full_asset_details(item_details: dict) -> dict:
     """视频流分析主函数"""
+    # 提取并计算时长 (分钟)
+    runtime_ticks = item_details.get('RunTimeTicks')
+    runtime_min = round(runtime_ticks / 600000000) if runtime_ticks else None
+
     if not item_details or "MediaStreams" not in item_details:
         return {
             "emby_item_id": item_details.get("Id"), "path": item_details.get("Path", ""),
@@ -353,7 +384,8 @@ def parse_full_asset_details(item_details: dict) -> dict:
             "resolution_display": "未知", "quality_display": "未知",
             "effect_display": ["SDR"], "audio_display": "无", "subtitle_display": "无",
             "audio_languages_raw": [], "subtitle_languages_raw": [],
-            "release_group_raw": [], # 在空结构中也包含新字段
+            "release_group_raw": [],
+            "runtime_minutes": runtime_min,
         }
 
     date_added_to_library = item_details.get("DateCreated")
@@ -364,22 +396,41 @@ def parse_full_asset_details(item_details: dict) -> dict:
         "size_bytes": item_details.get("Size"), 
         "container": item_details.get("Container"),
         "video_codec": None, 
+        "video_bitrate_mbps": None, # 视频码率 (Mbps)
+        "bit_depth": None,          # 色深 (8/10/12)
+        "frame_rate": None,         # 帧率
         "audio_tracks": [], 
         "subtitles": [],
-        "date_added_to_library": date_added_to_library 
+        "date_added_to_library": date_added_to_library,
+        "runtime_minutes": runtime_min 
     }
     media_streams = item_details.get("MediaStreams", [])
     for stream in media_streams:
         stream_type = stream.get("Type")
         if stream_type == "Video":
             asset["video_codec"] = stream.get("Codec")
-            # 顺便把宽高也存进去
             asset["width"] = stream.get("Width")
             asset["height"] = stream.get("Height")
+            if stream.get("BitRate"):
+                asset["video_bitrate_mbps"] = round(stream.get("BitRate") / 1000000, 1)
+            asset["bit_depth"] = stream.get("BitDepth")
+            asset["frame_rate"] = stream.get("AverageFrameRate") or stream.get("RealFrameRate")
         elif stream_type == "Audio":
-            asset["audio_tracks"].append({"language": stream.get("Language"), "codec": stream.get("Codec"), "channels": stream.get("Channels"), "display_title": stream.get("DisplayTitle")})
+            asset["audio_tracks"].append({
+                "language": stream.get("Language"), 
+                "codec": stream.get("Codec"), 
+                "channels": stream.get("Channels"), 
+                "display_title": stream.get("DisplayTitle"),
+                "is_default": stream.get("IsDefault")
+            })
         elif stream_type == "Subtitle":
-            asset["subtitles"].append({"language": stream.get("Language"), "display_title": stream.get("DisplayTitle")})
+            asset["subtitles"].append({
+                "language": stream.get("Language"), 
+                "display_title": stream.get("DisplayTitle"),
+                "is_forced": stream.get("IsForced"),  
+                "format": stream.get("Codec") 
+            })
+            
 
     display_tags = analyze_media_asset(item_details)
     asset.update(display_tags)
