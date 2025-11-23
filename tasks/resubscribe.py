@@ -24,6 +24,7 @@ from .helpers import (
     _get_detected_languages_from_streams, 
     _get_standardized_effect, 
     _extract_quality_tag_from_filename,
+    build_exclusion_regex_from_groups,
     AUDIO_SUBTITLE_KEYWORD_MAP,
     AUDIO_DISPLAY_MAP,            
     SUB_DISPLAY_MAP
@@ -576,12 +577,18 @@ def build_resubscribe_payload(item_details: dict, rule: Optional[dict]) -> Optio
             logger.error(f"严重错误：项目 '{item_name}' 类型为 'Season' 但未找到 'season_number'！")
 
     # --- 排除原发布组 ---
-    exclusion_keywords_list = item_details.get('release_group_raw', [])
-    if exclusion_keywords_list:
-        # 使用正向先行断言实现 AND 逻辑
-        and_regex_parts = [f"(?=.*{re.escape(k)})" for k in exclusion_keywords_list]
-        payload['exclude'] = "".join(and_regex_parts)
-        logger.info(f"  ➜ 精准排除模式：已为《{item_name}》生成 AND 逻辑正则: {payload['exclude']}")
+    detected_group_names = item_details.get('release_group_raw', [])
+    
+    if detected_group_names:
+        # 调用 helper 反查这些组名对应的所有关键词（如 FRDS, Yumi, CMCT...）
+        # 并生成一个 OR 正则，例如: (?:FRDS|Yumi|cXcY|CMCT(?:A|V)?)
+        exclusion_regex = build_exclusion_regex_from_groups(detected_group_names)
+        
+        if exclusion_regex:
+            payload['exclude'] = exclusion_regex
+            logger.info(f"  ➜ 精准排除模式：已为《{item_name}》生成排除正则: {payload['exclude']}")
+        else:
+            logger.warning(f"  ⚠ 虽然检测到发布组 {detected_group_names}，但无法生成对应的正则关键词。")
     else:
         logger.info(f"  ✅ 未找到预分析的发布组，不添加排除规则。")
 
