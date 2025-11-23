@@ -206,6 +206,7 @@ def task_populate_metadata_cache(processor, batch_size: int = 50, force_full_upd
       2. 计算 (库内已知 ID - 本次扫描 ID) = 已删除的 ID。
       3. 如果发现已删除的 ID，反查其所属的父级剧集，并将该剧集标记为“待更新”。
       4. 这样即使只删了一集，该剧集也会进入处理队列，从而触发子集离线清理逻辑。
+      5. 【修复】增加对未识别分集（无季号/集号）的过滤，防止死循环。
     """
     task_name = "同步媒体元数据"
     sync_mode = "深度同步 (全量)" if force_full_update else "快速同步 (增量)"
@@ -278,7 +279,7 @@ def task_populate_metadata_cache(processor, batch_size: int = 50, force_full_upd
             item_emby_id = str(item.get("Id"))
             tmdb_id = item.get("ProviderIds", {}).get("Tmdb")
             
-            # --- 正向差异检测 (新增) ---
+            # --- 正向差异检测 ---
             is_new_item = False
             if not force_full_update:
                 if item_emby_id not in known_emby_ids:
@@ -299,7 +300,9 @@ def task_populate_metadata_cache(processor, batch_size: int = 50, force_full_upd
                 s_id = str(item.get('SeriesId') or item.get('ParentId'))
                 if s_id: 
                     series_to_seasons_map[s_id].append(item)
-                    if is_new_item and s_id in emby_sid_to_tmdb_id:
+                    # 只有当季号存在时，才允许触发更新
+                    has_valid_index = item.get('IndexNumber') is not None
+                    if is_new_item and s_id in emby_sid_to_tmdb_id and has_valid_index:
                         dirty_series_tmdb_ids.add(emby_sid_to_tmdb_id[s_id])
 
             # C. 子集媒体 (Episode)
@@ -307,10 +310,12 @@ def task_populate_metadata_cache(processor, batch_size: int = 50, force_full_upd
                 s_id = str(item.get('SeriesId'))
                 if s_id: 
                     series_to_episode_map[s_id].append(item)
-                    if is_new_item and s_id in emby_sid_to_tmdb_id:
+                    # 只有当季号和集号都存在时，才允许触发更新
+                    has_valid_index = item.get('ParentIndexNumber') is not None and item.get('IndexNumber') is not None
+                    if is_new_item and s_id in emby_sid_to_tmdb_id and has_valid_index:
                         dirty_series_tmdb_ids.add(emby_sid_to_tmdb_id[s_id])
 
-        # ★★★ 反向差异检测 (删除) - V15 核心新增 ★★★
+        # ★★★ 反向差异检测 (删除) ★★★
         if not force_full_update:
             # 算出哪些 ID 在库里有，但 Emby 没扫到
             missing_emby_ids = known_emby_ids - current_scan_emby_ids
@@ -350,12 +355,13 @@ def task_populate_metadata_cache(processor, batch_size: int = 50, force_full_upd
         
         # 5. 处理顶层离线 (整部剧或电影被删)
         keys_to_delete = db_top_level_keys - emby_top_level_keys
-        # 如果一个剧集被标记为 dirty (有分集消失)，但该剧集本身未出现在本次扫描中 (emby_top_level_keys)，
-        # 说明该剧集已彻底失效或改名，必须将其加入删除队列，否则其残留的分集永远无法被清理。
+
+        # 处理孤儿分集 
         for dirty_pid in dirty_series_tmdb_ids:
             if (dirty_pid, 'Series') not in emby_top_level_keys:
                 logger.info(f"  ➜ 发现残留的脏剧集 ID {dirty_pid} 未在本次扫描中出现，将强制清理其关联项。")
                 keys_to_delete.add((dirty_pid, 'Series'))
+
         if keys_to_delete:
             count_top_offline = len(keys_to_delete)
             total_offline_count += count_top_offline
@@ -373,6 +379,7 @@ def task_populate_metadata_cache(processor, batch_size: int = 50, force_full_upd
                         (i_type, id_list)
                     )
                     if i_type == 'Series':
+                        # 级联清理分集
                         cursor.execute(
                             "UPDATE media_metadata SET in_library = FALSE, emby_item_ids_json = '[]'::jsonb, asset_details_json = '[]'::jsonb WHERE parent_series_tmdb_id = ANY(%s)",
                             (id_list,)
