@@ -241,7 +241,7 @@ def task_populate_metadata_cache(processor, batch_size: int = 50, force_full_upd
             base_url=processor.emby_url, api_key=processor.emby_api_key, user_id=processor.emby_user_id,
             media_type_filter="Movie,Series,Season,Episode",
             library_ids=libs_to_process_ids,
-            fields="ProviderIds,Type,DateCreated,Name,OriginalTitle,PremiereDate,CommunityRating,Genres,Studios,Tags,DateModified,OfficialRating,ProductionYear,Path,PrimaryImageAspectRatio,Overview,MediaStreams,Container,Size,SeriesId,ParentIndexNumber,IndexNumber,ParentId",
+            fields="ProviderIds,Type,DateCreated,Name,OriginalTitle,PremiereDate,CommunityRating,Genres,Studios,Tags,DateModified,OfficialRating,ProductionYear,Path,PrimaryImageAspectRatio,Overview,MediaStreams,Container,Size,SeriesId,ParentIndexNumber,IndexNumber,ParentId,RunTimeTicks",
             update_status_callback=task_manager.update_status_from_thread
         ) or []
         
@@ -440,6 +440,8 @@ def task_populate_metadata_cache(processor, batch_size: int = 50, force_full_upd
                 if item_type == "Movie":
                     asset_details_list = [parse_full_asset_details(v) for v in item_group]
 
+                emby_runtime = round(item['RunTimeTicks'] / 600000000) if item.get('RunTimeTicks') else None
+
                 top_record = {
                     "tmdb_id": tmdb_id_str, "item_type": item_type, "title": item.get('Name'),
                     "original_title": item.get('OriginalTitle'), "release_year": item.get('ProductionYear'),
@@ -450,7 +452,8 @@ def task_populate_metadata_cache(processor, batch_size: int = 50, force_full_upd
                     "date_added": item.get('DateCreated'),
                     "genres_json": json.dumps(item.get('Genres', []), ensure_ascii=False),
                     "official_rating": item.get('OfficialRating'), 
-                    "unified_rating": get_unified_rating(item.get('OfficialRating'))
+                    "unified_rating": get_unified_rating(item.get('OfficialRating')),
+                    "runtime_minutes": emby_runtime if (item_type == 'Movie' and emby_runtime) else tmdb_details.get('runtime') if (item_type == 'Movie' and tmdb_details) else None
                 }
                 if tmdb_details:
                     top_record['poster_path'] = tmdb_details.get('poster_path')
@@ -543,6 +546,8 @@ def task_populate_metadata_cache(processor, batch_size: int = 50, force_full_upd
                             ep_grouped[(s_n, e_n)].append(ep)
                     
                     for (s_n, e_n), versions in ep_grouped.items():
+                        emby_ep = versions[0]
+                        emby_ep_runtime = round(emby_ep['RunTimeTicks'] / 600000000) if emby_ep.get('RunTimeTicks') else None
                         lookup_key = f"S{s_n}E{e_n}"
                         tmdb_ep_info = tmdb_children_map.get(lookup_key)
                         
@@ -562,11 +567,12 @@ def task_populate_metadata_cache(processor, batch_size: int = 50, force_full_upd
                             child_record['title'] = tmdb_ep_info.get('name')
                             child_record['overview'] = tmdb_ep_info.get('overview')
                             child_record['poster_path'] = tmdb_ep_info.get('still_path')
-                            child_record['runtime_minutes'] = tmdb_ep_info.get('runtime')
+                            child_record['runtime_minutes'] = emby_ep_runtime if emby_ep_runtime else tmdb_ep_info.get('runtime')
                         else:
                             child_record['tmdb_id'] = f"{tmdb_id_str}-S{s_n}E{e_n}"
                             child_record['title'] = versions[0].get('Name')
                             child_record['overview'] = versions[0].get('Overview')
+                            child_record['runtime_minutes'] = emby_ep_runtime
                         
                         metadata_batch.append(child_record)
 

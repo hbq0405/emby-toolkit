@@ -147,6 +147,11 @@ class MediaProcessor:
         """
         - 实时元数据写入。
         """
+        def get_best_runtime(emby_data, tmdb_runtime):
+            if emby_data and emby_data.get('RunTimeTicks'):
+                # 1分钟 = 600,000,000 Ticks，四舍五入
+                return round(emby_data['RunTimeTicks'] / 600000000)
+            return tmdb_runtime
         try:
             from psycopg2.extras import execute_batch
             
@@ -160,7 +165,8 @@ class MediaProcessor:
                 movie_record = source_data_package.copy()
                 movie_record['item_type'] = 'Movie'
                 movie_record['tmdb_id'] = str(movie_record.get('id'))
-                movie_record['runtime_minutes'] = movie_record.get('runtime')
+                tmdb_runtime = movie_record.get('runtime')
+                movie_record['runtime_minutes'] = get_best_runtime(item_details_from_emby, tmdb_runtime)
                 actors_relation = [{"tmdb_id": int(p.get("id")), "character": p.get("character"), "order": p.get("order")} for p in final_processed_cast if p.get("id")]
                 movie_record['actors_json'] = json.dumps(actors_relation, ensure_ascii=False)
                 if douban_rating is not None: movie_record['rating'] = douban_rating
@@ -254,13 +260,38 @@ class MediaProcessor:
                 
                 # ★★★  遍历 TMDb 元数据列表，并从中查找 Emby 版本进行聚合 ★★★
                 for episode in episodes_details:
-                    episode_record = {"tmdb_id": str(episode.get('id')), "item_type": "Episode", "parent_series_tmdb_id": str(series_details.get('id')), "title": episode.get('name'), "overview": episode.get('overview'), "release_date": episode.get('air_date'), "season_number": episode.get('season_number'), "episode_number": episode.get('episode_number'), "runtime_minutes": episode.get('runtime')}
-                    
+                    # 1. 先提取季号和集号 (提到前面来)
                     s_num = episode.get('season_number')
                     e_num = episode.get('episode_number')
                     
+                    # 2. 先查找 Emby 版本 (提到前面来)
                     versions_of_episode = episodes_grouped_by_number.get((s_num, e_num))
+
+                    # 3. ★★★ 计算时长逻辑 (Emby > TMDB) ★★★
+                    # 默认使用 TMDB 的时长
+                    final_runtime = episode.get('runtime')
                     
+                    # 如果找到了 Emby 文件，且文件里有真实时长，则覆盖
+                    if versions_of_episode:
+                        emby_data = versions_of_episode[0]
+                        if emby_data.get('RunTimeTicks'):
+                            # 1分钟 = 600,000,000 Ticks
+                            final_runtime = round(emby_data['RunTimeTicks'] / 600000000)
+
+                    # 4. 现在再创建记录，把算好的 final_runtime 放进去
+                    episode_record = {
+                        "tmdb_id": str(episode.get('id')), 
+                        "item_type": "Episode", 
+                        "parent_series_tmdb_id": str(series_details.get('id')), 
+                        "title": episode.get('name'), 
+                        "overview": episode.get('overview'), 
+                        "release_date": episode.get('air_date'), 
+                        "season_number": s_num, 
+                        "episode_number": e_num,
+                        "runtime_minutes": final_runtime  # <--- 这里填入我们刚才计算好的时长
+                    }
+                    
+                    # 5. 补充 Emby 资产信息 (逻辑不变)
                     if versions_of_episode:
                         all_emby_ids = [v.get('Id') for v in versions_of_episode]
                         all_asset_details = [parse_full_asset_details(v) for v in versions_of_episode]
@@ -2539,7 +2570,7 @@ class MediaProcessor:
                 new_episodes_details = emby.get_emby_items_by_id(
                     base_url=self.emby_url, api_key=self.emby_api_key, user_id=self.emby_user_id,
                     item_ids=episode_ids_to_add, 
-                    fields="Id,Type,ParentIndexNumber,IndexNumber,Name,OriginalTitle,PremiereDate,ProviderIds,MediaStreams,Container,Size,Path,DateCreated"
+                    fields="Id,Type,ParentIndexNumber,IndexNumber,Name,OriginalTitle,PremiereDate,ProviderIds,MediaStreams,Container,Size,Path,DateCreated,RunTimeTicks"
                 )
                 
                 if not new_episodes_details:
@@ -2568,6 +2599,7 @@ class MediaProcessor:
                             continue
                         
                         asset_details = parse_full_asset_details(emby_episode)
+                        emby_runtime = round(emby_episode['RunTimeTicks'] / 600000000) if emby_episode.get('RunTimeTicks') else None
                         metadata_to_add = {
                             "tmdb_id": str(tmdb_details.get("id")), "item_type": "Episode",
                             "parent_series_tmdb_id": str(series_tmdb_id),
@@ -2576,7 +2608,7 @@ class MediaProcessor:
                             "emby_item_ids_json": json.dumps([emby_episode.get("Id")]),
                             "title": tmdb_details.get("name"), "overview": tmdb_details.get("overview"),
                             "release_date": tmdb_details.get("air_date"),
-                            "runtime_minutes": tmdb_details.get("runtime"),
+                            "runtime_minutes": emby_runtime if emby_runtime else tmdb_details.get("runtime"),
                             "asset_details_json": json.dumps([asset_details], ensure_ascii=False)
                         }
                         metadata_batch.append(metadata_to_add)
