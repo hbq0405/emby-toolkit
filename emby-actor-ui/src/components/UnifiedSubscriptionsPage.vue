@@ -223,7 +223,8 @@ const SOURCE_TYPE_MAP = {
   'api_unified_status_change_ignored': '手动忽略',
   'manual_admin_op': '手动处理',
   'auto_ignored': '自动忽略',
-  'gap_scan': '缺集的季'
+  'gap_scan': '缺集的季',
+  'admin_rejection': '管理员拒绝'
 };
 
 const sourceFilterOptions = computed(() => {
