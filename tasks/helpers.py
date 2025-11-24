@@ -50,7 +50,7 @@ RELEASE_GROUPS: Dict[str, List[str]] = {
     "hdbd": [],
     "hdchina": ['HDC(?:hina|TV|)', 'k9611', 'tudou', 'iHD'],
     "杜比": ['D(?:ream|BTV)', '(?:HD|QHstudI)o'],
-    "红豆饭": ['beAst(?:TV|)'],
+    "红豆饭": ['beAst(?:TV|)', 'HDFans'],
     "家园": ['HDH(?:ome|Pad|TV|WEB|)'],
     "hdpt": ['HDPT(?:Web|)'],
     "天空": ['HDS(?:ky|TV|Pad|WEB|)', 'AQLJ'],
