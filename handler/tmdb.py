@@ -428,7 +428,7 @@ def find_person_by_external_id(external_id: str, api_key: str, source: str = "im
     tmdb_base_url = get_tmdb_api_base_url()
     api_url = f"{tmdb_base_url}/find/{external_id}"
     params = {"api_key": api_key, "external_source": source, "language": "en-US"}
-    logger.debug(f"TMDb: 正在通过 {source} '{external_id}' 查找人物...")
+    logger.debug(f"  ➜ TMDb: 正在通过 {source} '{external_id}' 查找人物...")
     try:
         proxies = config_manager.get_proxies_for_requests()
         response = requests.get(api_url, params=params, timeout=10, proxies=proxies)

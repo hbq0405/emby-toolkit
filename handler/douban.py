@@ -462,7 +462,7 @@ class DoubanApi:
             return self._make_error_dict("invalid_param", f"无效的名人 celebrity_id: {celebrity_id}")
         
         detail_url = DoubanApi._urls["celebrity_detail"] % celebrity_id
-        logger.debug(f"获取豆瓣演员详情: {detail_url}")
+        logger.debug(f"  ➜ 获取豆瓣演员详情: {detail_url}")
         details = self.__invoke(detail_url)
         return details
     
