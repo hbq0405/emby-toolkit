@@ -179,11 +179,10 @@
                           block 
                           @click="handleSubscribe(currentRecommendation)" 
                           :loading="subscribingId === currentRecommendation.id"
-                          :disabled="isTaskRunning"
                           style="margin-top: 24px;"
                         >
                           <template #icon><n-icon :component="HeartOutline" /></template>
-                          {{ isTaskRunning ? '后台任务处理中...' : '想看这个' }}
+                          想看这个
                         </n-button>
                     </div>
                 </div>
@@ -226,31 +225,22 @@
                 <span class="media-year">{{ getYear(media) }}</span>
               </div>
               <div v-if="!media.in_library" 
-                  class="action-icon" 
-                  :class="{ 'is-disabled': isTaskRunning }"
-                  @click.stop="handleSubscribe(media)">
+                class="action-icon" 
+                @click.stop="handleSubscribe(media)">
                 <n-spin :show="subscribingId === media.id" size="small">
                   <n-icon size="24">
-                    
-                    <!-- 1. 沙漏图标 (不可点击状态) -->
-                    <!-- 条件：已订阅 OR 待上映 OR (普通用户 AND (已请求 OR 想看)) -->
+                    <!-- 图标逻辑保持不变 -->
                     <HourglassOutline 
                       v-if="['SUBSCRIBED', 'PENDING_RELEASE'].includes(media.subscription_status) || 
                             (!isPrivilegedUser && ['REQUESTED', 'WANTED'].includes(media.subscription_status))" 
                       color="#888" 
                       style="cursor: not-allowed;" 
                     />
-
-                    <!-- 2. 闪电图标 (管理员可操作状态) -->
-                    <!-- 条件：管理员 AND (想看 OR 已请求) -->
                     <LightningIcon 
                       v-else-if="isPrivilegedUser && ['WANTED', 'REQUESTED'].includes(media.subscription_status)" 
                       color="#f0a020" 
                     />
-
-                    <!-- 3. 爱心图标 (默认可订阅状态) -->
                     <HeartOutline v-else />
-
                   </n-icon>
                 </n-spin>
               </div>
@@ -296,12 +286,6 @@ const isPrivilegedUser = computed(() => {
 const embyServerUrl = ref('');
 const embyServerId = ref('');
 const loading = ref(false);
-// ★★★ 接收全局任务状态 ★★★
-const props = defineProps({
-  taskStatus: Object
-});
-
-const isTaskRunning = computed(() => props.taskStatus && props.taskStatus.is_running);
 const subscribingId = ref(null);
 const mediaType = ref('movie');
 const genres = ref([]);
@@ -514,11 +498,6 @@ const updateMediaStatus = (mediaId, newStatus) => {
 };
 
 const handleSubscribe = async (media) => {
-  // 1. 基础拦截
-  if (isTaskRunning.value) {
-    message.warning('后台有任务正在运行，请稍后再试。');
-    return;
-  }
   if (subscribingId.value === media.id) return;
 
   const originalStatus = media.subscription_status || 'NONE';
