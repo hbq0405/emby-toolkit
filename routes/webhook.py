@@ -426,27 +426,29 @@ def _enqueue_webhook_event(item_id, item_name, item_type):
 
 def _wait_for_stream_data_and_enqueue(item_id, item_name, item_type):
     """
-    预检视频流数据（带并发限制版）。
+    预检视频流数据（优化并发版）。
     """
-    # 只有电影和剧集分集需要检查流数据
     if item_type not in ['Movie', 'Episode']:
         _enqueue_webhook_event(item_id, item_name, item_type)
         return
 
-    # ★★★ 核心修改：使用信号量上下文管理器 ★★★
-    # 如果当前已有 5 个任务在检查，第 6 个任务会在这里“阻塞”等待，
-    # 直到前面有任务完成（无论成功还是超时）释放锁。
-    # 注意：这里的阻塞是 Greenlet 级别的，不会阻塞 Flask 主线程。
-    with STREAM_CHECK_SEMAPHORE:
-        logger.info(f"  ➜ [预检] 开始检查 '{item_name}' (ID:{item_id}) 的视频流数据...")
+    logger.info(f"  ➜ [预检] 开始检查 '{item_name}' (ID:{item_id}) 的视频流数据...")
 
-        app_config = config_manager.APP_CONFIG
-        emby_url = app_config.get("emby_server_url")
-        emby_key = app_config.get("emby_api_key")
-        emby_user_id = extensions.media_processor_instance.emby_user_id
+    app_config = config_manager.APP_CONFIG
+    emby_url = app_config.get("emby_server_url")
+    emby_key = app_config.get("emby_api_key")
+    emby_user_id = extensions.media_processor_instance.emby_user_id
 
-        for i in range(STREAM_CHECK_MAX_RETRIES):
-            try:
+    # ★★★ 核心修改：移除最外层的 with STREAM_CHECK_SEMAPHORE ★★★
+    # 让所有任务都能进入循环，而不是在门口排队
+
+    for i in range(STREAM_CHECK_MAX_RETRIES):
+        try:
+            item_details = None
+            
+            # ★★★ 核心修改：只在发起 API 请求时占用信号量 ★★★
+            # 这样查完就释放，别人就能查，不会因为我在 sleep 而阻塞别人
+            with STREAM_CHECK_SEMAPHORE:
                 item_details = emby.get_emby_item_details(
                     item_id=item_id,
                     emby_server_url=emby_url,
@@ -455,40 +457,41 @@ def _wait_for_stream_data_and_enqueue(item_id, item_name, item_type):
                     fields="MediaSources"
                 )
 
-                if not item_details:
-                    logger.warning(f"  ➜ [预检] 无法获取 '{item_name}' 详情，可能已被删除。停止等待。")
-                    return
+            if not item_details:
+                logger.warning(f"  ➜ [预检] 无法获取 '{item_name}' 详情，可能已被删除。停止等待。")
+                return
 
-                media_sources = item_details.get("MediaSources", [])
-                has_valid_video_stream = False
-                
-                if media_sources:
-                    for source in media_sources:
-                        media_streams = source.get("MediaStreams", [])
-                        for stream in media_streams:
-                            if stream.get("Type") == "Video":
-                                if stream.get("Codec") or stream.get("Width"):
-                                    has_valid_video_stream = True
-                                    break
-                        if has_valid_video_stream:
-                            break
-                
-                if has_valid_video_stream:
-                    logger.info(f"  ➜ [预检] 成功检测到 '{item_name}' 的视频流数据 (耗时: {i * STREAM_CHECK_INTERVAL}s)，加入队列。")
-                    _enqueue_webhook_event(item_id, item_name, item_type)
-                    return
-                
-                # 还没准备好，释放 CPU 给其他协程，稍后重试
-                logger.debug(f"  ➜ [预检] '{item_name}' 暂无视频流数据，等待重试 ({i+1}/{STREAM_CHECK_MAX_RETRIES})...")
-                sleep(STREAM_CHECK_INTERVAL + random.uniform(0, 2))
+            media_sources = item_details.get("MediaSources", [])
+            has_valid_video_stream = False
+            
+            if media_sources:
+                for source in media_sources:
+                    media_streams = source.get("MediaStreams", [])
+                    for stream in media_streams:
+                        if stream.get("Type") == "Video":
+                            if stream.get("Codec") or stream.get("Width"):
+                                has_valid_video_stream = True
+                                break
+                    if has_valid_video_stream:
+                        break
+            
+            if has_valid_video_stream:
+                logger.info(f"  ➜ [预检] 成功检测到 '{item_name}' 的视频流数据 (耗时: {i * STREAM_CHECK_INTERVAL}s)，加入队列。")
+                _enqueue_webhook_event(item_id, item_name, item_type)
+                return
+            
+            # ★★★ sleep 在锁外面执行 ★★★
+            # 此时我不占用 API 额度，其他任务可以利用这段时间去查 Emby
+            logger.debug(f"  ➜ [预检] '{item_name}' 暂无视频流数据，等待重试 ({i+1}/{STREAM_CHECK_MAX_RETRIES})...")
+            sleep(STREAM_CHECK_INTERVAL + random.uniform(0, 2))
 
-            except Exception as e:
-                logger.error(f"  ➜ [预检] 检查 '{item_name}' 时发生错误: {e}")
-                sleep(STREAM_CHECK_INTERVAL + random.uniform(0, 2))
+        except Exception as e:
+            logger.error(f"  ➜ [预检] 检查 '{item_name}' 时发生错误: {e}")
+            sleep(STREAM_CHECK_INTERVAL + random.uniform(0, 2))
 
-        # 超时强制入库
-        logger.warning(f"  ➜ [预检] 超时！在 {STREAM_CHECK_MAX_RETRIES * STREAM_CHECK_INTERVAL} 秒内未提取到 '{item_name}' 的视频流数据。强制加入队列。")
-        _enqueue_webhook_event(item_id, item_name, item_type)
+    # 超时强制入库
+    logger.warning(f"  ➜ [预检] 超时！在 {STREAM_CHECK_MAX_RETRIES * STREAM_CHECK_INTERVAL} 秒内未提取到 '{item_name}' 的视频流数据。强制加入队列。")
+    _enqueue_webhook_event(item_id, item_name, item_type)
 
 # --- Webhook 路由 ---
 @webhook_bp.route('/webhook/emby', methods=['POST'])

@@ -2621,6 +2621,44 @@ class MediaProcessor:
                 if not new_episodes_details:
                     logger.warning(f"  ➜ {log_prefix} [增量模式] 无法从Emby获取新分集的详情，任务中止。")
                     return
+                
+                # 分集视频流质检
+                for ep in new_episodes_details:
+                    has_valid_video = False
+                    media_sources = ep.get("MediaSources", []) # 注意：get_emby_items_by_id 返回的结构可能直接包含 MediaStreams，也可能在 MediaSources 里，视 Emby 版本而定。
+                    # 通常 get_emby_items_by_id 如果指定了 MediaStreams 字段，会直接返回在根对象或 MediaSources 中
+                    # 这里做一个兼容性检查
+                    streams = ep.get("MediaStreams", [])
+                    if not streams and media_sources:
+                        streams = media_sources[0].get("MediaStreams", [])
+                    
+                    for stream in streams:
+                        if stream.get("Type") == "Video":
+                            has_valid_video = True
+                            break
+                    
+                    if not has_valid_video:
+                        s_num = ep.get("ParentIndexNumber", "?")
+                        e_num = ep.get("IndexNumber", "?")
+                        ep_name = ep.get("Name", "未知分集")
+                        
+                        # 构造明确的错误原因
+                        fail_reason = f"S{s_num}E{e_num} ({ep_name}) 缺失视频流数据"
+                        logger.warning(f"  ➜ [质检失败] 剧集《{series_details.get('Name')}》的分集 {fail_reason}。")
+                        
+                        # ★★★ 关键：记录在父剧集 ID 上 ★★★
+                        # 这样在待复核列表中，你会看到这部剧，原因是“S01E05 缺失视频流...”
+                        with get_central_db_connection() as conn:
+                            self.log_db_manager.save_to_failed_log(
+                                conn.cursor(), 
+                                item_id,  # 使用父剧集 ID
+                                series_details.get('Name'), 
+                                fail_reason, 
+                                "Series", 
+                                score=0.0
+                            )
+                            # 同时也标记为已处理（防止重复），但在UI中可见
+                            self._mark_item_as_processed(conn.cursor(), item_id, series_details.get('Name'), score=0.0)
 
                 metadata_batch = []
                 episodes_by_season = defaultdict(list)
