@@ -152,103 +152,97 @@ def upsert_resubscribe_index_batch(items_data: List[Dict[str, Any]]):
         raise
 
 def get_resubscribe_library_status(where_clause: str = "", params: tuple = ()) -> List[Dict[str, Any]]:
-    """【V11 - 拨乱反正最终版】废除所有复杂JOIN，回归简单、高效、正确的查询逻辑。"""
+    """
+    【V12 - SQL原生性能优化版】
+    将 Python 内存中的数据拼接逻辑下沉到数据库层。
+    使用 SQL JOIN 和子查询直接获取所需数据，避免传输大量无用的分集元数据。
+    """
     try:
         with get_db_connection() as conn:
             cursor = conn.cursor()
 
-            # 步骤 1: 快速获取所有索引项
-            index_sql = f"""
-                SELECT tmdb_id, item_type, season_number, status, reason, matched_rule_id
-                FROM resubscribe_index AS idx {where_clause}
-            """
-            cursor.execute(index_sql, params)
-            index_items = cursor.fetchall()
-            if not index_items: return []
-
-            # 步骤 2: 批量获取所有相关的元数据
-            all_tmdb_ids = list({str(item['tmdb_id']) for item in index_items})
-            metadata_sql = """
+            # 核心优化思路：
+            # 1. 主表 resubscribe_index (idx)
+            # 2. 关联 media_metadata (m) 获取自身信息
+            # 3. 关联 media_metadata (parent) 获取父剧集信息 (仅当 item_type='Season' 时有用)
+            # 4. 使用子查询高效获取季的第一集 asset_details，无需加载所有分集
+            
+            sql = f"""
                 SELECT 
-                    tmdb_id, item_type, title, poster_path, season_number, episode_number,
-                    parent_series_tmdb_id, emby_item_ids_json,
-                    (asset_details_json -> 0) as asset_details
-                FROM media_metadata
-                WHERE tmdb_id = ANY(%(ids)s) OR parent_series_tmdb_id = ANY(%(ids)s);
+                    idx.tmdb_id, 
+                    idx.item_type, 
+                    idx.season_number, 
+                    idx.status, 
+                    idx.reason, 
+                    idx.matched_rule_id,
+                    
+                    -- 智能获取名称：如果是季，拼接 '剧集名 - 季名'；否则直接用标题
+                    COALESCE(
+                        CASE WHEN idx.item_type = 'Season' THEN parent.title || ' - ' || m.title
+                             ELSE m.title 
+                        END, 
+                        '未知项目'
+                    ) as item_name,
+
+                    -- 智能获取海报：优先用自己的，没有则用父剧集的
+                    COALESCE(m.poster_path, parent.poster_path) as poster_path,
+
+                    -- 获取 Emby ID (取数组第一个)
+                    m.emby_item_ids_json->>0 as emby_item_id,
+                    parent.emby_item_ids_json->>0 as series_emby_id,
+
+                    -- ★★★ 核心优化：直接在数据库层提取资产详情 ★★★
+                    CASE 
+                        -- 电影：直接取 asset_details_json 第一个元素
+                        WHEN idx.item_type = 'Movie' THEN m.asset_details_json->0
+                        
+                        -- 季：使用子查询找到该季的第一集 (episode_number 最小的)，取其资产详情
+                        WHEN idx.item_type = 'Season' THEN (
+                            SELECT ep.asset_details_json->0
+                            FROM media_metadata ep
+                            WHERE ep.parent_series_tmdb_id = m.parent_series_tmdb_id
+                              AND ep.season_number = m.season_number
+                              AND ep.item_type = 'Episode'
+                            ORDER BY ep.episode_number ASC
+                            LIMIT 1
+                        )
+                    END as asset_details
+
+                FROM resubscribe_index idx
+                -- 关联自身元数据
+                LEFT JOIN media_metadata m 
+                    ON idx.tmdb_id = m.tmdb_id AND idx.item_type = m.item_type
+                -- 关联父剧集元数据 (用于季的海报和标题回退)
+                LEFT JOIN media_metadata parent 
+                    ON m.parent_series_tmdb_id = parent.tmdb_id AND parent.item_type = 'Series'
+                
+                {where_clause}
             """
-            cursor.execute(metadata_sql, {'ids': all_tmdb_ids})
             
-            # 建立高效的查找字典 (已修复)
-            all_metadata_rows = cursor.fetchall()
-            metadata_map = {row['tmdb_id']: row for row in all_metadata_rows}
-            season_map = {f"{row['parent_series_tmdb_id']}-S{row['season_number']}": row for row in all_metadata_rows if row['item_type'] == 'Season'}
+            cursor.execute(sql, params)
+            rows = cursor.fetchall()
             
-            # ★★★ 新增：为“集”建立查找字典 ★★★
-            episode_map = {}
-            for row in all_metadata_rows:
-                if row['item_type'] == 'Episode':
-                    key = f"{row['parent_series_tmdb_id']}-S{row['season_number']}"
-                    if key not in episode_map:
-                        episode_map[key] = []
-                    episode_map[key].append(row)
-
-            # 步骤 3: 在Python中进行无错误的合并
+            # Python 侧只负责极其轻量的格式化，不再进行循环查找
             final_results = []
-            for item in index_items:
-                tmdb_id = item['tmdb_id']
-                item_type = item['item_type']
+            for row in rows:
+                asset = row.get('asset_details') or {}
                 
-                meta = None
-                if item_type == 'Movie':
-                    meta = metadata_map.get(tmdb_id)
-                elif item_type == 'Season':
-                    # 使用新的 season_map 来精确查找季的元数据
-                    season_key = f"{tmdb_id}-S{item['season_number']}"
-                    meta = season_map.get(season_key)
-
-                if not meta: continue
-
-                # ▼▼▼ 核心修复：确保所有ID都来自正确的源头 ▼▼▼
-                asset = {}
-                if item_type == 'Movie':
-                    asset = meta.get('asset_details') or {}
-                elif item_type == 'Season':
-                    # ★★★ 修复：对于季，查找其下属的第一集来获取媒体信息 ★★★
-                    season_key = f"{tmdb_id}-S{item['season_number']}"
-                    episodes_for_season = episode_map.get(season_key)
-                    if episodes_for_season:
-                        # 按集号排序，找到第一集
-                        first_episode = sorted(episodes_for_season, key=lambda x: x.get('episode_number', 0))[0]
-                        asset = first_episode.get('asset_details') or {}
-                    else:
-                        # 如果找不到任何集（异常情况），则行为降级
-                        asset = meta.get('asset_details') or {}
-                series_meta = metadata_map.get(meta.get('parent_series_tmdb_id')) if item_type == 'Season' else None
-                
-                item_name = meta.get('title')
-                if item_type == 'Season' and series_meta:
-                    item_name = f"{series_meta.get('title', '')} - {meta.get('title', '')}"
-
-                poster_path = meta.get('poster_path')
-                if item_type == 'Season' and not poster_path and series_meta:
-                    poster_path = series_meta.get('poster_path')
-
-                # 直接从季/电影自己的元数据中获取官方Emby ID
-                emby_ids = meta.get('emby_item_ids_json', [])
-                final_emby_id = emby_ids[0] if emby_ids else None
-                
-                series_emby_ids = (series_meta or {}).get('emby_item_ids_json', [])
-                series_emby_id = series_emby_ids[0] if series_emby_ids else None
-                # ▲▲▲ 修复结束 ▲▲▲
-
-                final_results.append({
-                    "item_id": f"{tmdb_id}-{item_type}" + (f"-S{item['season_number']}" if item_type == 'Season' else ""),
-                    "tmdb_id": tmdb_id,
-                    "item_type": item_type,
-                    "conceptual_type": "Series" if item_type == 'Season' else "Movie",
-                    "season_number": item['season_number'] if item_type == 'Season' else None,
-                    "status": item['status'], "reason": item['reason'], "matched_rule_id": item['matched_rule_id'],
-                    "item_name": item_name, "poster_path": poster_path,
+                # 构建前端需要的对象
+                item = {
+                    "item_id": f"{row['tmdb_id']}-{row['item_type']}" + (f"-S{row['season_number']}" if row['item_type'] == 'Season' else ""),
+                    "tmdb_id": row['tmdb_id'],
+                    "item_type": row['item_type'],
+                    "conceptual_type": "Series" if row['item_type'] == 'Season' else "Movie",
+                    "season_number": row['season_number'] if row['item_type'] == 'Season' else None,
+                    "status": row['status'],
+                    "reason": row['reason'],
+                    "matched_rule_id": row['matched_rule_id'],
+                    "item_name": row['item_name'],
+                    "poster_path": row['poster_path'],
+                    "emby_item_id": row['emby_item_id'],
+                    "series_emby_id": row['series_emby_id'],
+                    
+                    # 资产详情解包
                     "resolution_display": asset.get('resolution_display', 'Unknown'),
                     "quality_display": asset.get('quality_display', 'Unknown'),
                     "release_group_raw": asset.get('release_group_raw', '无'),
@@ -256,16 +250,16 @@ def get_resubscribe_library_status(where_clause: str = "", params: tuple = ()) -
                     "effect_display": asset.get('effect_display', ['SDR']),
                     "audio_display": asset.get('audio_display', '无'),
                     "subtitle_display": asset.get('subtitle_display', '无'),
-                    "filename": os.path.basename(asset.get('path', '')) if asset.get('path') else None,
-                    "emby_item_id": final_emby_id,
-                    "series_emby_id": series_emby_id
-                })
-            
-            final_results.sort(key=lambda x: x['item_name'])
+                    "filename": os.path.basename(asset.get('path', '')) if asset.get('path') else None
+                }
+                final_results.append(item)
+
+            # 排序 (Python 的 Timsort 非常快，这里排序开销很小)
+            final_results.sort(key=lambda x: x['item_name'] or "")
             return final_results
 
     except Exception as e:
-        logger.error(f"  ➜ 获取洗版海报墙状态失败 (拨乱反正版): {e}", exc_info=True)
+        logger.error(f"  ➜ 获取洗版海报墙状态失败 (SQL优化版): {e}", exc_info=True)
         return []
 
 def get_resubscribe_cache_item(item_id: str) -> Optional[Dict[str, Any]]:

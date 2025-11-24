@@ -546,15 +546,16 @@ def init_db():
                 try:
                     cursor.execute("CREATE INDEX IF NOT EXISTS idx_mm_in_library ON media_metadata (in_library);")
                     cursor.execute("CREATE INDEX IF NOT EXISTS idx_mm_release_year ON media_metadata (release_year);")
-                    cursor.execute("CREATE INDEX IF NOT EXISTS idx_mm_series_status ON media_metadata (tmdb_status) WHERE item_type = 'Series';")
                     cursor.execute("CREATE INDEX IF NOT EXISTS idx_mm_parent_series ON media_metadata (parent_series_tmdb_id);")
                     cursor.execute("CREATE INDEX IF NOT EXISTS idx_mm_subscription_status ON media_metadata (subscription_status) WHERE in_library = FALSE;")
-                    cursor.execute("CREATE INDEX IF NOT EXISTS idx_mm_pre_processing_needed ON media_metadata (pre_processed_at) WHERE subscription_status = 'SUBSCRIBED' AND pre_processed_at IS NULL;")
                     cursor.execute("CREATE INDEX IF NOT EXISTS idx_mm_emby_ids_gin ON media_metadata USING GIN(emby_item_ids_json);")
                     cursor.execute("CREATE INDEX IF NOT EXISTS idx_mm_subscription_sources_gin ON media_metadata USING GIN(subscription_sources_json);")
-                except Exception as e_index:
-                    logger.error(f"  ➜ 创建 'emby_item_id' 索引时出错: {e_index}", exc_info=True)
+                    cursor.execute("CREATE INDEX IF NOT EXISTS idx_mm_parent_series_season ON media_metadata (parent_series_tmdb_id, season_number);")
+                    cursor.execute("CREATE INDEX IF NOT EXISTS idx_mm_item_type ON media_metadata (item_type);")
+                    cursor.execute("CREATE INDEX IF NOT EXISTS idx_ri_tmdb_type ON resubscribe_index (tmdb_id, item_type);")
 
+                except Exception as e_index:
+                    logger.error(f"  ➜ 创建索引时出错: {e_index}", exc_info=True)
                 # ======================================================================
                 # ★★★ 数据库自动修正补丁 (START) ★★★
                 # 修正 'media_metadata.in_library' 字段错误的默认值

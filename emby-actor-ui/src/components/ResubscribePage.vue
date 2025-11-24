@@ -328,8 +328,18 @@ watch(filteredItems, (newFilteredItems) => {
 }, { immediate: true });
 
 onMounted(async () => {
-  await fetchData();
-  await fetchRules(); // 在组件挂载时获取规则列表
+  // 使用 Promise.all 并行发送请求，减少总等待时间
+  isLoading.value = true;
+  try {
+    await Promise.all([
+      fetchData(),
+      fetchRules()
+    ]);
+  } catch (e) {
+    console.error("初始化数据加载失败", e);
+  } finally {
+    isLoading.value = false;
+  }
 });
 onUnmounted(() => { if (observer) observer.disconnect(); });
 
