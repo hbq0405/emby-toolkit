@@ -226,35 +226,29 @@
                 <span class="media-year">{{ getYear(media) }}</span>
               </div>
               <div v-if="!media.in_library" 
-                class="action-icon" 
-                :class="{ 'is-disabled': isTaskRunning }"
-                @click.stop="handleSubscribe(media)">
+                  class="action-icon" 
+                  :class="{ 'is-disabled': isTaskRunning }"
+                  @click.stop="handleSubscribe(media)">
                 <n-spin :show="subscribingId === media.id" size="small">
                   <n-icon size="24">
-                    <!-- 
-                      后端返回的状态:
-                      'NONE', 'WANTED', 'SUBSCRIBED', 'IGNORED', 'PENDING_RELEASE', 'REQUESTED'
-                    -->
+                    
+                    <!-- 1. 沙漏图标 (不可点击状态) -->
+                    <!-- 条件：已订阅 OR 待上映 OR (普通用户 AND (已请求 OR 想看)) -->
+                    <HourglassOutline 
+                      v-if="['SUBSCRIBED', 'PENDING_RELEASE'].includes(media.subscription_status) || 
+                            (!isPrivilegedUser && ['REQUESTED', 'WANTED'].includes(media.subscription_status))" 
+                      color="#888" 
+                      style="cursor: not-allowed;" 
+                    />
 
-                    <!-- 场景 1: 已提交订阅 (SUBSCRIBED) 或 未上映 (PENDING_RELEASE) -->
-                    <!-- 显示灰色沙漏，所有用户都不可点击 -->
-                    <HourglassOutline v-if="media.subscription_status === 'SUBSCRIBED' || media.subscription_status === 'PENDING_RELEASE'" 
-                                      color="#888" 
-                                      style="cursor: not-allowed;" />
+                    <!-- 2. 闪电图标 (管理员可操作状态) -->
+                    <!-- 条件：管理员 AND (想看 OR 已请求) -->
+                    <LightningIcon 
+                      v-else-if="isPrivilegedUser && ['WANTED', 'REQUESTED'].includes(media.subscription_status)" 
+                      color="#f0a020" 
+                    />
 
-                    <!-- 场景 2: 待管理员审核 (REQUESTED) -->
-                    <!-- 普通用户显示灰色沙漏，不可点击 -->
-                    <HourglassOutline v-else-if="media.subscription_status === 'REQUESTED' && !isPrivilegedUser" 
-                                      color="#888" 
-                                      style="cursor: not-allowed;" />
-
-                    <!-- 场景 3: 待订阅 (WANTED) 或 待管理员审核 (REQUESTED, 且是特权用户) -->
-                    <!-- 特权用户看到黄色闪电，可点击，触发订阅 -->
-                    <LightningIcon v-else-if="media.subscription_status === 'WANTED' || (media.subscription_status === 'REQUESTED' && isPrivilegedUser)" 
-                                  color="#f0a020" />
-
-                    <!-- 场景 4: 默认状态 (NONE, IGNORED, 或其他未知状态) -->
-                    <!-- 显示空心，所有人可点击，触发订阅 -->
+                    <!-- 3. 爱心图标 (默认可订阅状态) -->
                     <HeartOutline v-else />
 
                   </n-icon>
@@ -498,51 +492,54 @@ const fetchRecommendationPool = async () => {
   }
 };
 
-// 定义一个能正确触发响应式的辅助函数
+// 定义更新状态的辅助函数 (放在 handleSubscribe 上面)
 const updateMediaStatus = (mediaId, newStatus) => {
-  // 更新结果列表 (results) 中的项目
-  const indexInResults = results.value.findIndex(m => m.id === mediaId);
-  if (indexInResults !== -1) {
-    // 创建一个新对象来替换旧对象，这是确保 Vue 响应式系统能够检测到变化的关键
-    results.value[indexInResults] = { 
-      ...results.value[indexInResults], 
+  // 1. 更新结果列表 (results)
+  const index = results.value.findIndex(m => m.id === mediaId);
+  if (index !== -1) {
+    // ★ 关键点：创建一个新对象来替换旧对象，确保 Vue 能检测到变化
+    results.value[index] = { 
+      ...results.value[index], 
       subscription_status: newStatus 
     };
   }
 
-  // 如果“每日推荐”中的项目是同一个，也更新它的状态
+  // 2. 更新每日推荐 (currentRecommendation)
   if (currentRecommendation.value && currentRecommendation.value.id === mediaId) {
-    // 对于单个 ref 对象，直接修改其属性是响应式的
-    currentRecommendation.value.subscription_status = newStatus;
+    currentRecommendation.value = {
+      ...currentRecommendation.value,
+      subscription_status: newStatus
+    };
   }
 };
 
 const handleSubscribe = async (media) => {
-  // ★ 核心入口检查：如果全局有任务在运行，直接阻止并提示 ★
+  // 1. 基础拦截
   if (isTaskRunning.value) {
     message.warning('后台有任务正在运行，请稍后再试。');
     return;
   }
-
-  // 如果正在进行API调用，则直接返回
-  if (subscribingId.value) return;
+  if (subscribingId.value === media.id) return;
 
   const originalStatus = media.subscription_status || 'NONE';
 
-  // .前置状态检查
+  // 2. 状态拦截
   if (originalStatus === 'SUBSCRIBED' || originalStatus === 'PENDING_RELEASE') {
     return;
   }
-  if (originalStatus === 'REQUESTED' && !isPrivilegedUser.value) {
+  if (!isPrivilegedUser.value && (originalStatus === 'REQUESTED' || originalStatus === 'WANTED')) {
     return;
   }
 
+  // 3. 乐观更新 (点击瞬间变图标)
   subscribingId.value = media.id;
+  const optimisticStatus = isPrivilegedUser.value ? 'WANTED' : 'REQUESTED';
+  updateMediaStatus(media.id, optimisticStatus);
 
   try {
+    // 4. 发送请求
     const itemTypeForApi = (media.media_type === 'tv' ? 'Series' : 'Movie') || (mediaType.value === 'movie' ? 'Movie' : 'Series');
-    const shouldTriggerTaskImmediately = isPrivilegedUser.value && ['WANTED', 'REQUESTED', 'NONE', 'IGNORED'].includes(originalStatus);
-
+    
     const portalResponse = await axios.post('/api/portal/subscribe', {
       tmdb_id: media.id,
       item_type: itemTypeForApi,
@@ -550,27 +547,46 @@ const handleSubscribe = async (media) => {
     });
 
     message.success(portalResponse.data.message);
-    const newStatusFromServer = portalResponse.data.status;
     
-    // ★★★ 3. 修改：调用新的、响应式的辅助函数 ★★★
-    updateMediaStatus(media.id, newStatusFromServer);
+    // ★★★ 核心修复开始 ★★★
+    // 不要盲目信任后端返回的 status，因为它可能是旧的或者空的。
+    // 如果是普通用户，且请求成功了，那么状态一定是 'REQUESTED'。
+    let finalStatus = portalResponse.data.status;
 
+    if (!isPrivilegedUser.value) {
+      // 强制修正普通用户的状态
+      finalStatus = 'REQUESTED';
+    } else {
+      // 特权用户如果后端没返回有效状态，兜底为 WANTED
+      if (!finalStatus || finalStatus === 'NONE') {
+        finalStatus = 'WANTED';
+      }
+    }
+    
+    // 应用最终状态
+    updateMediaStatus(media.id, finalStatus);
+    // ★★★ 核心修复结束 ★★★
+
+    // 5. (仅管理员) 立即触发后台任务
+    const shouldTriggerTaskImmediately = isPrivilegedUser.value && ['WANTED', 'REQUESTED', 'NONE', 'IGNORED'].includes(originalStatus);
+    
     if (shouldTriggerTaskImmediately) {
       message.info('已提交到后台立即处理...');
       const requestItem = { tmdb_id: media.id, item_type: itemTypeForApi, title: media.title || media.name };
       const taskPayload = { task_name: 'manual_subscribe_batch', subscribe_requests: [requestItem] };
       
-      // ★★★ 4. 修改：再次调用辅助函数进行乐观更新，现在它能正确刷新UI了 ★★★
+      // 再次更新为已订阅
       updateMediaStatus(media.id, 'SUBSCRIBED');
       
       axios.post('/api/tasks/run', taskPayload)
         .catch(taskError => {
-          // 如果触发任务失败，状态回滚到之前的状态
-          updateMediaStatus(media.id, newStatusFromServer); 
+          // 任务失败回滚到上一步的状态
+          updateMediaStatus(media.id, finalStatus); 
           message.error(taskError.response?.data?.message || '提交立即处理任务失败。');
         });
     }
 
+    // 移除每日推荐
     if (currentRecommendation.value && currentRecommendation.value.id === media.id) {
       const poolIndex = recommendationPool.value.findIndex(item => item.id === media.id);
       if (poolIndex !== -1) { recommendationPool.value.splice(poolIndex, 1); }
@@ -578,6 +594,9 @@ const handleSubscribe = async (media) => {
     }
 
   } catch (error) {
+    // 6. 错误回滚
+    console.error(error);
+    updateMediaStatus(media.id, originalStatus);
     message.error(error.response?.data?.message || '提交请求失败');
   } finally {
     subscribingId.value = null;
