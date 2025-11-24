@@ -9,6 +9,7 @@ from datetime import datetime, timezone
 from flask import Blueprint, request, jsonify
 from typing import Optional, List
 from gevent import spawn_later
+from gevent import spawn_later, spawn, sleep
 
 import task_manager
 import handler.emby as emby
@@ -41,6 +42,9 @@ WEBHOOK_BATCH_DEBOUNCER = None
 UPDATE_DEBOUNCE_TIMERS = {}
 UPDATE_DEBOUNCE_LOCK = threading.Lock()
 UPDATE_DEBOUNCE_TIME = 15
+# --- 视频流预检常量 ---
+STREAM_CHECK_MAX_RETRIES = 12  # 最大重试次数 (12次 * 5秒 = 60秒)
+STREAM_CHECK_INTERVAL = 5      # 每次轮询间隔(秒)
 
 def _handle_full_processing_flow(processor: 'MediaProcessor', item_id: str, force_full_update: bool, new_episode_ids: Optional[List[str]] = None):
     """
@@ -405,6 +409,91 @@ def _trigger_images_update_task(item_id, item_name, update_description, sync_tim
         sync_timestamp_iso=sync_timestamp_iso
     )
 
+def _enqueue_webhook_event(item_id, item_name, item_type):
+    """
+    将事件加入批量处理队列，并管理防抖计时器。
+    """
+    global WEBHOOK_BATCH_DEBOUNCER
+    with WEBHOOK_BATCH_LOCK:
+        WEBHOOK_BATCH_QUEUE.append((item_id, item_name, item_type))
+        logger.debug(f"  ➜ [队列] 项目 '{item_name}' ({item_type}) 已加入处理队列。当前积压: {len(WEBHOOK_BATCH_QUEUE)}")
+        
+        if WEBHOOK_BATCH_DEBOUNCER is None or WEBHOOK_BATCH_DEBOUNCER.ready():
+            logger.info(f"  ➜ [队列] 启动批量处理计时器，将在 {WEBHOOK_BATCH_DEBOUNCE_TIME} 秒后执行。")
+            WEBHOOK_BATCH_DEBOUNCER = spawn_later(WEBHOOK_BATCH_DEBOUNCE_TIME, _process_batch_webhook_events)
+        else:
+            logger.debug("  ➜ [队列] 批量处理计时器运行中，等待合并。")
+
+def _wait_for_stream_data_and_enqueue(item_id, item_name, item_type):
+    """
+    预检视频流数据。
+    对于 strm 或新入库视频，Emby 可能还没提取出 MediaStreams。
+    此函数会轮询检查，直到获取到流数据或超时，然后再加入处理队列。
+    """
+    # 只有电影和剧集分集需要检查流数据，其他类型直接放行
+    if item_type not in ['Movie', 'Episode']:
+        _enqueue_webhook_event(item_id, item_name, item_type)
+        return
+
+    logger.info(f"  ➜ [流预检] 开始检查 '{item_name}' (ID:{item_id}) 的视频流数据...")
+
+    # 获取配置用于API调用
+    app_config = config_manager.APP_CONFIG
+    emby_url = app_config.get("emby_server_url")
+    emby_key = app_config.get("emby_api_key")
+    # 这里随便用一个管理员ID即可，或者用 processor 的 user_id
+    emby_user_id = extensions.media_processor_instance.emby_user_id
+
+    for i in range(STREAM_CHECK_MAX_RETRIES):
+        try:
+            # 获取详情，专门请求 MediaSources 字段
+            item_details = emby.get_emby_item_details(
+                item_id=item_id,
+                emby_server_url=emby_url,
+                emby_api_key=emby_key,
+                user_id=emby_user_id,
+                fields="MediaSources"
+            )
+
+            if not item_details:
+                logger.warning(f"  ➜ [流预检] 无法获取 '{item_name}' 详情，可能已被删除。停止等待。")
+                return
+
+            media_sources = item_details.get("MediaSources", [])
+            has_valid_video_stream = False
+            
+            # 检查是否有有效的视频流
+            if media_sources:
+                for source in media_sources:
+                    media_streams = source.get("MediaStreams", [])
+                    for stream in media_streams:
+                        # 检查类型为 Video 且具备关键信息 (如 Codec 或 Width)
+                        if stream.get("Type") == "Video":
+                            # 只要有 Codec 或者 Width，说明神医插件或Emby原生分析已经跑过了
+                            if stream.get("Codec") or stream.get("Width"):
+                                has_valid_video_stream = True
+                                break
+                    if has_valid_video_stream:
+                        break
+            
+            if has_valid_video_stream:
+                logger.info(f"  ➜ [流预检] 成功检测到 '{item_name}' 的视频流数据 (耗时: {i * STREAM_CHECK_INTERVAL}s)，加入队列。")
+                _enqueue_webhook_event(item_id, item_name, item_type)
+                return
+            
+            # 如果还没准备好，等待
+            logger.debug(f"  ➜ [流预检] '{item_name}' 暂无视频流数据，等待重试 ({i+1}/{STREAM_CHECK_MAX_RETRIES})...")
+            sleep(STREAM_CHECK_INTERVAL)
+
+        except Exception as e:
+            logger.error(f"  ➜ [流预检] 检查 '{item_name}' 时发生错误: {e}")
+            # 出错不中断，继续重试，或者直接break看策略，这里选择继续等待下一次
+            sleep(STREAM_CHECK_INTERVAL)
+
+    # 如果循环结束还没拿到，打印警告并强制入库
+    logger.warning(f"  ➜ [流预检] 超时！在 {STREAM_CHECK_MAX_RETRIES * STREAM_CHECK_INTERVAL} 秒内未提取到 '{item_name}' 的视频流数据。强制加入队列，资产数据可能不完整。")
+    _enqueue_webhook_event(item_id, item_name, item_type)
+
 # --- Webhook 路由 ---
 @webhook_bp.route('/webhook/emby', methods=['POST'])
 @extensions.processor_ready_required
@@ -577,19 +666,10 @@ def emby_webhook():
                 return jsonify({"status": "error_processing_remove_event", "error": str(e)}), 500
     
     if event_type in ["item.add", "library.new"]:
-        description = data.get("Description", "")
-        global WEBHOOK_BATCH_DEBOUNCER
-        with WEBHOOK_BATCH_LOCK:
-            WEBHOOK_BATCH_QUEUE.append((original_item_id, original_item_name, original_item_type))
-            logger.debug(f"  ➜ Webhook事件 '{event_type}' (项目: {original_item_name}) 已添加到批量队列。当前队列大小: {len(WEBHOOK_BATCH_QUEUE)}")
-            
-            if WEBHOOK_BATCH_DEBOUNCER is None or WEBHOOK_BATCH_DEBOUNCER.ready():
-                logger.info(f"  ➜ 启动 Webhook 批量处理 debouncer，将在 {WEBHOOK_BATCH_DEBOUNCE_TIME} 秒后执行。")
-                WEBHOOK_BATCH_DEBOUNCER = spawn_later(WEBHOOK_BATCH_DEBOUNCE_TIME, _process_batch_webhook_events)
-            else:
-                logger.debug("  ➜ Webhook 批量处理 debouncer 正在运行中，事件已加入队列。")
+        spawn(_wait_for_stream_data_and_enqueue, original_item_id, original_item_name, original_item_type)
         
-        return jsonify({"status": "added_to_batch_queue", "item_id": original_item_id}), 202
+        logger.info(f"  ➜ Webhook: 收到入库事件 '{original_item_name}'，已启动后台流数据预检任务。")
+        return jsonify({"status": "processing_started_with_stream_check", "item_id": original_item_id}), 202
 
     # --- 为 metadata.update 和 image.update 事件准备通用变量 ---
     id_to_process = original_item_id
