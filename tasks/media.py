@@ -179,7 +179,7 @@ def task_reprocess_all_review_items(processor):
         # +++ 核心修改 2：在循环中解包 item_id 和 item_name +++
         for i, item in enumerate(all_items):
             if processor.is_stop_requested():
-                logger.info("任务被中止。")
+                logger.info("  🚫 任务被中止。")
                 break
             
             item_id = item['id']

@@ -52,12 +52,12 @@ def _handle_full_processing_flow(processor: 'MediaProcessor', item_id: str, forc
     包括：元数据处理 -> 自定义合集匹配 -> 封面生成。
     """
     if not processor:
-        logger.error(f"完整处理流程中止：核心处理器 (MediaProcessor) 未初始化。")
+        logger.error(f"  🚫 完整处理流程中止：核心处理器 (MediaProcessor) 未初始化。")
         return
 
     item_details = emby.get_emby_item_details(item_id, processor.emby_url, processor.emby_api_key, processor.emby_user_id)
     if not item_details:
-        logger.error(f"  ➜ 无法获取项目 {item_id} 的详情，任务中止。")
+        logger.error(f"  🚫 无法获取项目 {item_id} 的详情，任务中止。")
         return
     
     item_name_for_log = item_details.get("Name", f"ID:{item_id}")
@@ -93,7 +93,7 @@ def _handle_full_processing_flow(processor: 'MediaProcessor', item_id: str, forc
         
         # 再次检查，如果连实时构建都失败，才放弃
         if not item_metadata or not item_metadata.get('item_type'):
-            logger.error(f"  ➜ 无法确定媒体项 {tmdb_id} 的类型，合集匹配中止。")
+            logger.error(f"  🚫 无法确定媒体项 {tmdb_id} 的类型，合集匹配中止。")
             return
 
         # ▼▼▼ 步骤 1: 将获取媒体库信息的逻辑提前 ▼▼▼

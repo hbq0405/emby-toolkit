@@ -730,7 +730,7 @@ class MediaProcessor:
         # --- 现有媒体项处理循环 ---
         for i, item in enumerate(all_items):
             if self.is_stop_requested():
-                logger.warning("  ⏹️ 全库扫描任务已被用户中止。")
+                logger.warning("  🚫 全库扫描任务已被用户中止。")
                 break # 使用 break 优雅地退出循环
             
             item_id = item.get('Id')
@@ -2375,7 +2375,7 @@ class MediaProcessor:
                 logger.info(f"  ➜ {log_prefix} 开始为 '{item_name_for_log}' 下载 {len(images_to_sync)} 张主图片至覆盖缓存")
                 for image_type, filename in images_to_sync.items():
                     if self.is_stop_requested():
-                        logger.warning(f"  ➜ {log_prefix} 收到停止信号，中止图片下载。")
+                        logger.warning(f"  🚫 {log_prefix} 收到停止信号，中止图片下载。")
                         return False
                     emby.download_emby_image(item_id, image_type, os.path.join(image_override_dir, filename), self.emby_url, self.emby_api_key)
             
@@ -2396,7 +2396,7 @@ class MediaProcessor:
 
                 for child in children_to_process:
                     if self.is_stop_requested():
-                        logger.warning(f"  ➜ {log_prefix} 收到停止信号，中止子项目图片下载。")
+                        logger.warning(f"  🚫 {log_prefix} 收到停止信号，中止子项目图片下载。")
                         return False
                     child_type, child_id = child.get("Type"), child.get("Id")
                     if child_type == "Season":
@@ -2604,7 +2604,7 @@ class MediaProcessor:
                 # --- 模式一：精准分集追加  ---
                 series_details = emby.get_emby_item_details(item_id, self.emby_url, self.emby_api_key, self.emby_user_id, fields="ProviderIds,Name")
                 if not series_details:
-                    logger.error(f"  ➜ {log_prefix} [增量模式] 无法获取父剧集 {item_id} 的详情，任务中止。")
+                    logger.error(f"  🚫 {log_prefix} [增量模式] 无法获取父剧集 {item_id} 的详情，任务中止。")
                     return
                 
                 series_tmdb_id = series_details.get("ProviderIds", {}).get("Tmdb")
@@ -2619,7 +2619,7 @@ class MediaProcessor:
                 )
                 
                 if not new_episodes_details:
-                    logger.warning(f"  ➜ {log_prefix} [增量模式] 无法从Emby获取新分集的详情，任务中止。")
+                    logger.warning(f"  🚫 {log_prefix} [增量模式] 无法从Emby获取新分集的详情，任务中止。")
                     return
                 
                 # 分集视频流质检

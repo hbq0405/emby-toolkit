@@ -68,7 +68,7 @@ def _task_run_chain_internal(processor, task_name: str, sequence_config_key: str
         for i, task_key in enumerate(task_sequence):
             if main_processor.is_stop_requested():
                 if not timeout_triggered.is_set():
-                    logger.warning(f"'{task_name}' 被用户手动中止。")
+                    logger.warning(f"  🚫 '{task_name}' 被用户手动中止。")
                 break
 
             task_info = registry.get(task_key)

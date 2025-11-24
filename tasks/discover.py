@@ -144,7 +144,7 @@ def task_replenish_recommendation_pool(processor):
 
         current_theme_index = settings_db.get_setting('recommendation_theme_index')
         if current_theme_index is None:
-            logger.warning("  ➜ 补充任务中止：未找到当前推荐主题索引。请先执行一次每日推荐更新任务。")
+            logger.warning("  🚫 补充任务中止：未找到当前推荐主题索引。请先执行一次每日推荐更新任务。")
             return
 
         theme_list = list(DAILY_THEME.items())

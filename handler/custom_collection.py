@@ -310,7 +310,7 @@ class ListImporter:
                     discover_data = tmdb.discover_tv_tmdb(self.tmdb_api_key, params)
                     item_type_for_result = 'Series'
                 else:
-                    logger.warning(f"  ➜ 无法从URL '{url}' 判断是电影还是电视剧，discover任务中止。")
+                    logger.warning(f"  🚫 无法从URL '{url}' 判断是电影还是电视剧，discover任务中止。")
                     break
 
                 if not discover_data or not discover_data.get('results'):

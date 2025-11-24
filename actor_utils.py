@@ -780,7 +780,7 @@ def enrich_all_actor_aliases_task(
             # ▲▲▲ 新增结束 ▲▲▲
 
     except InterruptedError:
-        logger.info("演员数据补充任务被中止。")
+        logger.info("  🚫 演员数据补充任务被中止。")
         if conn: conn.rollback()
     except Exception as e:
         logger.error(f"演员数据补充任务发生严重错误: {e}", exc_info=True)

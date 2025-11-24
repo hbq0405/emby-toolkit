@@ -424,7 +424,7 @@ def task_execute_cleanup(processor, task_ids: List[int], **kwargs):
         processed_task_ids = []
         for i, task in enumerate(tasks_to_execute):
             if processor.is_stop_requested():
-                logger.warning("任务被用户中止。")
+                logger.warning("  🚫 任务被用户中止。")
                 break
             
             with connection.get_db_connection() as conn:

@@ -718,7 +718,7 @@ def refresh_emby_item_metadata(item_emby_id: str,
         logger.trace(f"  ➜ 正在为 {log_identifier} 获取当前详情...")
         item_data = get_emby_item_details(item_emby_id, emby_server_url, emby_api_key, user_id_for_ops)
         if not item_data:
-            logger.error(f"  ➜ 无法获取 {log_identifier} 的详情，所有操作中止。")
+            logger.error(f"  🚫 无法获取 {log_identifier} 的详情，所有操作中止。")
             return False
 
         item_needs_update = False
@@ -784,7 +784,7 @@ def get_all_persons_from_emby(
     - 同样切换到 /Items 端点并移除了 UserId 参数。
     """
     if not user_id:
-        logger.error("获取所有演员需要提供 User ID，但未提供。任务中止。")
+        logger.error("  🚫 获取所有演员需要提供 User ID，但未提供。任务中止。")
         return
 
     library_ids = config_manager.APP_CONFIG.get(constants.CONFIG_OPTION_EMBY_LIBRARIES_TO_PROCESS)
@@ -872,7 +872,7 @@ def get_all_persons_from_emby(
 
     while True:
         if stop_event and stop_event.is_set():
-            logger.info("Emby Person 获取任务被中止。")
+            logger.info("  🚫 Emby Person 获取任务被中止。")
             return
 
         request_params = params.copy()
@@ -1351,14 +1351,14 @@ def empty_collection_in_emby(collection_id: str, base_url: str, api_key: str, us
     member_ids = get_collection_members(collection_id, base_url, api_key, user_id)
     
     if member_ids is None:
-        logger.error("  - 无法获取合集成员，清空操作中止。")
+        logger.error("  🚫 无法获取合集成员，清空操作中止。")
         return False
         
     if not member_ids:
         logger.info("  - 合集本身已为空，无需清空。")
         return True
 
-    logger.trace(f"  - 正在从合集 {collection_id} 中移除 {len(member_ids)} 个成员...")
+    logger.trace(f"  ➜ 正在从合集 {collection_id} 中移除 {len(member_ids)} 个成员...")
     success = remove_items_from_collection(collection_id, member_ids, base_url, api_key)
     
     if success:
@@ -1602,7 +1602,7 @@ def update_emby_item_details(item_id: str, new_data: Dict[str, Any], emby_server
     try:
         current_item_details = get_emby_item_details(item_id, emby_server_url, emby_api_key, user_id)
         if not current_item_details:
-            logger.error(f"更新前无法获取项目 {item_id} 的详情，操作中止。")
+            logger.error(f"  🚫 更新前无法获取项目 {item_id} 的详情，操作中止。")
             return False
         
         item_name_for_log = current_item_details.get("Name", f"ID:{item_id}")
@@ -1640,7 +1640,7 @@ def delete_item_sy(item_id: str, emby_server_url: str, emby_api_key: str, user_i
     access_token, logged_in_user_id = get_admin_access_token()
     
     if not access_token:
-        logger.error("无法获取临时 AccessToken，删除操作中止。请检查管理员账号密码是否正确。")
+        logger.error("  🚫 无法获取临时 AccessToken，删除操作中止。请检查管理员账号密码是否正确。")
         return False
 
     # 2. 使用临时令牌执行删除
@@ -1679,7 +1679,7 @@ def delete_item(item_id: str, emby_server_url: str, emby_api_key: str, user_id: 
     access_token, logged_in_user_id = get_admin_access_token()
     
     if not access_token:
-        logger.error("无法获取临时 AccessToken，删除操作中止。请检查管理员账号密码是否正确。")
+        logger.error("  🚫 无法获取临时 AccessToken，删除操作中止。请检查管理员账号密码是否正确。")
         return False
 
     # 2. 使用临时令牌执行删除
@@ -1720,7 +1720,7 @@ def delete_person_custom_api(base_url: str, api_key: str, person_id: str) -> boo
     access_token, logged_in_user_id = get_admin_access_token()
     
     if not access_token:
-        logger.error("无法获取临时 AccessToken，删除演员操作中止。请检查管理员账号密码是否正确。")
+        logger.error("  🚫 无法获取临时 AccessToken，删除演员操作中止。请检查管理员账号密码是否正确。")
         return False
 
     # 2. 使用临时令牌执行删除
@@ -2246,7 +2246,7 @@ def delete_emby_user(user_id: str) -> bool:
     access_token, _ = get_admin_access_token()
     
     if not access_token:
-        logger.error("  ➜ 无法获取管理员 AccessToken，删除用户操作中止。")
+        logger.error("  🚫 无法获取管理员 AccessToken，删除用户操作中止。")
         return False
 
     api_url = f"{base_url.rstrip('/')}/Users/{user_id}"

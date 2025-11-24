@@ -455,7 +455,7 @@ class WatchlistProcessor:
         logger.debug(f"  ➜ 正在从TMDb API获取 '{item_name}' 的最新详情...")
         latest_series_data = tmdb.get_tv_details(tmdb_id, self.tmdb_api_key)
         if not latest_series_data:
-            logger.error(f"  ➜ 无法获取 '{item_name}' 的TMDb详情，本次处理中止。")
+            logger.error(f"  🚫 无法获取 '{item_name}' 的TMDb详情，本次处理中止。")
             return
         
         all_tmdb_episodes = []
@@ -783,7 +783,7 @@ class WatchlistProcessor:
 
         for i, series in enumerate(series_to_process):
             if self.is_stop_requested():
-                logger.info("  ➜ 追剧列表更新任务被中止。")
+                logger.info("  🚫 追剧列表更新任务被中止。")
                 break
             
             if self.progress_callback:
