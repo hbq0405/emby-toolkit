@@ -179,8 +179,6 @@ def init_db():
                         -- 核心标识符
                         tmdb_id TEXT NOT NULL,
                         item_type TEXT NOT NULL, -- 'Movie', 'Series', 'Season', 'Episode'
-                        imdb_id TEXT UNIQUE,
-                        tvdb_id TEXT,
 
                         -- 媒体库状态
                         in_library BOOLEAN DEFAULT FALSE NOT NULL,
@@ -193,13 +191,6 @@ def init_db():
                         subscription_sources_json JSONB NOT NULL DEFAULT '[]'::jsonb,
                         first_requested_at TIMESTAMP WITH TIME ZONE,
                         last_subscribed_at TIMESTAMP WITH TIME ZONE,
-
-                        -- 预处理与缓存
-                        pre_processed_at TIMESTAMP WITH TIME ZONE,
-                        translated_title TEXT,
-                        translated_overview TEXT,
-                        pre_cached_tags_json JSONB,
-                        pre_cached_extra_json JSONB,
 
                         -- 核心与扩展元数据
                         title TEXT,
@@ -220,19 +211,14 @@ def init_db():
                         keywords_json JSONB,
                         last_updated_at TIMESTAMP WITH TIME ZONE DEFAULT NOW(),
                         ignore_reason TEXT,
+                        pre_cached_tags_json JSONB,
 
                         -- 剧集专属与层级数据
-                        tmdb_status TEXT,
-                        total_seasons INTEGER,
-                        total_episodes INTEGER,
-                        next_episode_to_air_json JSONB,
-                        last_episode_to_air_json JSONB,
-                        is_airing BOOLEAN DEFAULT FALSE NOT NULL,
                         parent_series_tmdb_id TEXT,
                         season_number INTEGER,
                         episode_number INTEGER,
                                
-                        -- ★★★ 追剧专属字段 ★★★
+                        -- 追剧专属字段
                         watching_status TEXT DEFAULT 'NONE', -- 'NONE', 'Watching', 'Paused', 'Completed'
                         paused_until DATE,
                         force_ended BOOLEAN DEFAULT FALSE,
@@ -241,6 +227,7 @@ def init_db():
                         watchlist_next_episode_json JSONB,
                         watchlist_missing_info_json JSONB,
                         watchlist_is_airing BOOLEAN DEFAULT FALSE,
+                        last_episode_to_air_json JSONB,
 
                         -- 内部管理字段
                         last_synced_at TIMESTAMP WITH TIME ZONE,
@@ -483,8 +470,6 @@ def init_db():
                     schema_upgrades = {
                         'media_metadata': {
                             "original_language": "TEXT",
-                            "imdb_id": "TEXT",
-                            "tvdb_id": "TEXT",
                             "asset_details_json": "JSONB",
                             "last_updated_at": "TIMESTAMP WITH TIME ZONE",
                             "overview": "TEXT",
@@ -497,20 +482,11 @@ def init_db():
                             "subscription_sources_json": "JSONB NOT NULL DEFAULT '[]'::jsonb",
                             "first_requested_at": "TIMESTAMP WITH TIME ZONE",
                             "last_subscribed_at": "TIMESTAMP WITH TIME ZONE",
-                            "pre_processed_at": "TIMESTAMP WITH TIME ZONE",
                             "created_at": "TIMESTAMP WITH TIME ZONE",
-                            "translated_title": "TEXT",
-                            "translated_overview": "TEXT",
                             "pre_cached_tags_json": "JSONB",
-                            "pre_cached_extra_json": "JSONB",
-                            "tmdb_status": "TEXT",
                             "poster_path": "TEXT",
-                            "total_seasons": "INTEGER",
-                            "total_episodes": "INTEGER",
                             "runtime_minutes": "INTEGER",
-                            "next_episode_to_air_json": "JSONB",
                             "last_episode_to_air_json": "JSONB",
-                            "is_airing": "BOOLEAN DEFAULT FALSE NOT NULL",
                             "parent_series_tmdb_id": "TEXT",
                             "season_number": "INTEGER",
                             "episode_number": "INTEGER",
@@ -642,7 +618,18 @@ def init_db():
                             'paths_json',
                             'backdrop_path',
                             'vote_count',
-                            'popularity'
+                            'popularity',
+                            'imdb_id',
+                            'tvdb_id',
+                            'pre_processed_at',
+                            'pre_cached_extra_json',
+                            'translated_title',
+                            'translated_overview',
+                            'tmdb_status',
+                            'next_episode_to_air_json',
+                            'is_airing',
+                            'total_seasons',
+                            'total_episodes'
                         ],
                         'custom_collections': [
                             'generated_emby_ids_json' # <-- 在这里添加了废弃的列！
