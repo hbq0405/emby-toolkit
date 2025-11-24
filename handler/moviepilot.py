@@ -174,26 +174,86 @@ def smart_subscribe_series(series_info: dict, config: Dict[str, Any]) -> Optiona
     successful_subscriptions = []
 
     def _is_season_fully_aired(tv_id: int, s_num: int, api_key: str) -> bool:
-        """辅助函数：检查一季是否已完全播出。"""
-        season_details = tmdb.get_season_details_tmdb(tv_id, s_num, api_key)
-        if not season_details or not season_details.get('episodes'):
-            logger.warning(f"  ➜ 无法获取 TMDB ID {tv_id} 第 {s_num} 季的剧集列表，无法判断是否完结。")
-            return False
-        
-        last_episode = season_details['episodes'][-1]
-        air_date_str = last_episode.get('air_date')
-        if not air_date_str:
-            logger.warning(f"  ➜ TMDB ID {tv_id} 第 {s_num} 季最后一集缺少播出日期。")
-            return False
-
+        """
+        辅助函数：检查一季是否已完全播出。
+        逻辑优先级：
+        1. TMDb 剧集状态为 Ended/Canceled -> 完结
+        2. 最后一集播出日期在今天之前 -> 完结
+        3. 最后一集日期未知，但最近播出的一集超过30天 -> 完结
+        4. 无法确认是在播状态 -> 默认视为完结
+        """
         try:
-            air_date = datetime.strptime(air_date_str, '%Y-%m-%d').date()
-            is_aired = air_date < datetime.now().date()
-            logger.info(f"  ➜ 检查 '{title}' S{s_num} 是否完结: 最后一集播出日期 {air_date_str}，是否已播出: {is_aired}")
-            return is_aired
-        except ValueError:
-            logger.error(f"  ➜ 解析播出日期 '{air_date_str}' 时出错。")
-            return False
+            today = datetime.now().date()
+
+            # 1. 优先检查剧集整体状态 (TMDb Status)
+            show_details = tmdb.get_tv_details(tv_id, api_key)
+            if show_details:
+                status = show_details.get('status', '')
+                # Ended: 已完结, Canceled: 被砍
+                if status in ['Ended', 'Canceled']:
+                    logger.info(f"  ➜ 剧集 (ID: {tv_id}) TMDb状态为 '{status}'，直接判定 S{s_num} 已完结。")
+                    return True
+
+            # 2. 获取分季详情
+            season_details = tmdb.get_season_details_tmdb(tv_id, s_num, api_key)
+            if not season_details or not season_details.get('episodes'):
+                logger.warning(f"  ➜ 无法获取 TMDB ID {tv_id} S{s_num} 的剧集列表，默认判定为已完结。")
+                return True
+            
+            episodes = season_details['episodes']
+            if not episodes:
+                return True
+
+            # 3. 检查最后一集播出时间
+            last_episode = episodes[-1]
+            last_air_date_str = last_episode.get('air_date')
+
+            if last_air_date_str:
+                try:
+                    last_air_date = datetime.strptime(last_air_date_str, '%Y-%m-%d').date()
+                    # 如果最后一集日期 < 今天，说明已播完 -> 完结
+                    if last_air_date < today:
+                        logger.info(f"  ➜ S{s_num} 最后一集于 {last_air_date} 播出 (已过)，判定已完结。")
+                        return True
+                    # 如果最后一集日期 >= 今天，说明还没播完 -> 未完结
+                    else:
+                        logger.info(f"  ➜ S{s_num} 最后一集将于 {last_air_date} 播出 (未到)，判定未完结。")
+                        return False
+                except ValueError:
+                    logger.warning(f"  ➜ 解析最后一集日期 '{last_air_date_str}' 失败，进入30天规则判断。")
+
+            # 4. 30天规则 / 缺失数据处理
+            # 如果最后一集没有日期(TBA)，倒序寻找最近一个有播出日期的集数
+            for ep in reversed(episodes):
+                air_date_str = ep.get('air_date')
+                if air_date_str:
+                    try:
+                        air_date = datetime.strptime(air_date_str, '%Y-%m-%d').date()
+                        
+                        # 如果发现列表中有未来的集数，肯定没完结
+                        if air_date >= today:
+                            logger.info(f"  ➜ S{s_num} 检测到未来排期 ({air_date})，判定未完结。")
+                            return False
+                        
+                        # 检查最近播出的一集是否超过30天
+                        days_diff = (today - air_date).days
+                        if days_diff > 30:
+                            logger.info(f"  ➜ S{s_num} 最近一集播出 ({air_date}) 已超30天，判定已完结。")
+                            return True
+                        else:
+                            # 30天内有更新，且最后一集日期未知(TBA)，通常视为正在连载中
+                            logger.info(f"  ➜ S{s_num} 最近一集播出 ({air_date}) 在30天内，判定为连载中。")
+                            return False
+                    except ValueError:
+                        continue
+            
+            # 5. 兜底：既没有状态，也没有任何有效的播出日期数据 -> 视为已完结
+            logger.info(f"  ➜ S{s_num} 缺乏有效播出数据，默认判定已完结。")
+            return True
+
+        except Exception as e:
+            logger.error(f"  ➜ 判断 S{s_num} 是否完结时发生错误: {e}，为防止漏洗版，默认判定已完结。")
+            return True
 
     # --- 情况一：标题中未解析出季号 ---
     if season_num is None:

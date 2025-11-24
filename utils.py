@@ -21,7 +21,6 @@ except ImportError:
 
 def parse_series_title_and_season(title: str) -> Tuple[Optional[str], Optional[int]]:
     """
-    【中央工具函数 - V2 优化版】
     从一个可能包含季号的剧集标题中，解析出基础剧名和季号。
     - 修复了对 "你好, 星期六" 等包含中文数字的普通标题的误判问题。
     - 强制要求中文数字季号前必须有 "第" 或 "部" 等关键字。

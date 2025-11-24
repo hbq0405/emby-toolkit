@@ -59,6 +59,7 @@ RELEASE_GROUPS: Dict[str, List[str]] = {
     "hdvideo": [],
     "hdzone": ['HDZ(?:one|)'],
     "憨憨": ['HHWEB'],
+    "末日": ['AGSV(PT|WEB|MUS)'],
     "hitpt": [],
     "htpt": ['HTPT'],
     "iptorrents": [],
