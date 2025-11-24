@@ -115,9 +115,6 @@ def init_db():
                         PRIMARY KEY (user_id, item_id)
                     )
                 """)
-                # 为常用查询创建索引
-                cursor.execute("CREATE INDEX IF NOT EXISTS idx_umd_user_id ON user_media_data (user_id);")
-                cursor.execute("CREATE INDEX IF NOT EXISTS idx_umd_last_updated ON user_media_data (last_updated_at);")
 
                 logger.trace("  ➜ 正在创建 'collections_info' 表 ...")
                 cursor.execute("""
@@ -157,8 +154,6 @@ def init_db():
                         sort_order INTEGER NOT NULL DEFAULT 0
                     )
                 """)
-                cursor.execute("CREATE INDEX IF NOT EXISTS idx_cc_type ON custom_collections (type);")
-                cursor.execute("CREATE INDEX IF NOT EXISTS idx_cc_status ON custom_collections (status);")
 
                 logger.trace("  ➜ 正在创建 'user_collection_cache' 表 (虚拟库权限预计算)...")
                 cursor.execute("""
@@ -171,7 +166,6 @@ def init_db():
                         PRIMARY KEY (user_id, collection_id)
                     )
                 """)
-                cursor.execute("CREATE INDEX IF NOT EXISTS idx_ucc_user_coll ON user_collection_cache (user_id, collection_id);")
 
                 logger.trace("  ➜ 正在创建 'media_metadata' 表...")
                 cursor.execute("""
@@ -286,7 +280,6 @@ def init_db():
                         config_min_vote_count INTEGER NOT NULL DEFAULT 10
                     )
                 """)
-                cursor.execute("CREATE INDEX IF NOT EXISTS idx_as_status ON actor_subscriptions (status)")
 
                 logger.trace("  ➜ 正在创建 'resubscribe_rules' 表 (多规则洗版)...")
                 cursor.execute("""
@@ -332,7 +325,6 @@ def init_db():
                         PRIMARY KEY (tmdb_id, item_type, season_number)
                     )
                 """)
-                cursor.execute("CREATE INDEX IF NOT EXISTS idx_resubscribe_index_status ON resubscribe_index (status);")
 
                 logger.trace("  ➜ 正在创建 'cleanup_index' 表 ...")
                 cursor.execute("""
@@ -357,7 +349,6 @@ def init_db():
                         UNIQUE (tmdb_id, item_type)
                     )
                 """)
-                cursor.execute("CREATE INDEX IF NOT EXISTS idx_cleanup_index_status ON cleanup_index (status);")
 
                 logger.trace("  ➜ 正在创建 'user_templates' 表 (用户权限模板)...")
                 cursor.execute("""
@@ -393,7 +384,6 @@ def init_db():
                         FOREIGN KEY(template_id) REFERENCES user_templates(id) ON DELETE CASCADE
                     )
                 """)
-                cursor.execute("CREATE INDEX IF NOT EXISTS idx_invitations_token ON invitations (token);")
 
                 logger.trace("  ➜ 正在创建 'emby_users_extended' 表 (用户扩展信息)...")
                 cursor.execute("""
@@ -409,51 +399,12 @@ def init_db():
                         FOREIGN KEY(template_id) REFERENCES user_templates(id) ON DELETE SET NULL
                     )
                 """)
-                cursor.execute("CREATE INDEX IF NOT EXISTS idx_eue_status ON emby_users_extended (status);")
-                cursor.execute("CREATE INDEX IF NOT EXISTS idx_eue_expiration_date ON emby_users_extended (expiration_date);")
 
-                # --- 2. 执行平滑升级检查 ---
+                # ======================================================================
+                # ★★★ 数据库平滑升级 (START) ★★★
+                # 此处代码用于新增在新版本中添加的列。
+                # ======================================================================
                 logger.trace("  ➜ 开始执行数据库表结构升级检查...")
-                
-                # --- 2.1 移除 actor_metadata 的外键约束 (如果存在) ---
-                try:
-                    logger.trace("  ➜ [数据库升级] 正在检查并移除 'actor_metadata' 的外键约束...")
-                    cursor.execute("""
-                        SELECT conname FROM pg_constraint
-                        WHERE conrelid = 'actor_metadata'::regclass
-                          AND confrelid = 'person_identity_map'::regclass
-                          AND contype = 'f';
-                    """)
-                    constraint = cursor.fetchone()
-                    if constraint:
-                        constraint_name = constraint['conname']
-                        logger.info(f"    ➜ [数据库升级] 检测到旧的外键约束 '{constraint_name}'，正在移除...")
-                        cursor.execute(f"ALTER TABLE actor_metadata DROP CONSTRAINT IF EXISTS {constraint_name};")
-                        logger.info(f"    ➜ [数据库升级] 约束 '{constraint_name}' 移除成功。")
-                    else:
-                        logger.trace("    ➜ 'actor_metadata' 表无外键约束，无需升级。")
-                except Exception as e_fk:
-                    logger.error(f"  ➜ [数据库升级] 检查或移除外键时出错: {e_fk}", exc_info=True)
-
-                # --- 2.2 移除 person_identity_map.emby_person_id 的 NOT NULL 约束 (如果存在) ---
-                try:
-                    logger.trace("  ➜ [数据库升级] 正在检查 'person_identity_map.emby_person_id' 的 NOT NULL 约束...")
-                    cursor.execute("""
-                        SELECT is_nullable 
-                        FROM information_schema.columns 
-                        WHERE table_name = 'person_identity_map' AND column_name = 'emby_person_id';
-                    """)
-                    column_info = cursor.fetchone()
-                    if column_info and column_info['is_nullable'] == 'NO':
-                        logger.trace("    ➜ [数据库升级] 检测到 'emby_person_id' 字段存在 NOT NULL 约束，正在移除...")
-                        cursor.execute("ALTER TABLE person_identity_map ALTER COLUMN emby_person_id DROP NOT NULL;")
-                        logger.trace("    ➜ [数据库升级] 约束移除成功。")
-                    else:
-                        logger.trace("    ➜ 'emby_person_id' 字段已允许为空，无需升级。")
-                except Exception as e_not_null:
-                    logger.error(f"  ➜ [数据库升级] 检查或移除 NOT NULL 约束时出错: {e_not_null}", exc_info=True)
-
-                # --- 2.3 检查并添加所有缺失的列 ---
                 try:
                     cursor.execute("""
                         SELECT table_name, column_name
@@ -541,54 +492,38 @@ def init_db():
                 except Exception as e_alter:
                     logger.error(f"  ➜ [数据库升级] 检查或添加新字段时出错: {e_alter}", exc_info=True)
                 
-                # --- 2.4 确保索引存在 ---
+                # ======================================================================
+                # ★★★ 统一创建验证所有索引 ★★★
+                # 此处代码用于集中创建所有表需要的索引。
+                # ======================================================================
                 logger.trace("  ➜ 正在创建/验证所有索引...")
                 try:
+                    # 1. 【核心状态】用于快速筛选“库内存在”和“不在库”的项目
                     cursor.execute("CREATE INDEX IF NOT EXISTS idx_mm_in_library ON media_metadata (in_library);")
+                    
+                    # 2. 【排序与筛选】用于海报墙按年份排序
                     cursor.execute("CREATE INDEX IF NOT EXISTS idx_mm_release_year ON media_metadata (release_year);")
+                    
+                    # 3. 【层级关系】查找某部剧的所有季和集 (非常重要！)
                     cursor.execute("CREATE INDEX IF NOT EXISTS idx_mm_parent_series ON media_metadata (parent_series_tmdb_id);")
+                    
+                    # 4. 【订阅系统】查找“想看”或“待发布”的项目
                     cursor.execute("CREATE INDEX IF NOT EXISTS idx_mm_subscription_status ON media_metadata (subscription_status) WHERE in_library = FALSE;")
+                    
+                    # 5. 【JSON加速】用于根据 Emby ID 反查 TMDb ID (GIN 索引)
                     cursor.execute("CREATE INDEX IF NOT EXISTS idx_mm_emby_ids_gin ON media_metadata USING GIN(emby_item_ids_json);")
                     cursor.execute("CREATE INDEX IF NOT EXISTS idx_mm_subscription_sources_gin ON media_metadata USING GIN(subscription_sources_json);")
+
+                    # 6. 【洗版/性能优化】(这是我们刚加的“增肌”部分)
+                    # 加速 "查找某部剧的第几季" (JOIN 优化)
                     cursor.execute("CREATE INDEX IF NOT EXISTS idx_mm_parent_series_season ON media_metadata (parent_series_tmdb_id, season_number);")
+                    # 加速 "只看电影" 或 "只看剧集" 的筛选
                     cursor.execute("CREATE INDEX IF NOT EXISTS idx_mm_item_type ON media_metadata (item_type);")
+                    # 加速 resubscribe_index 表的查询
                     cursor.execute("CREATE INDEX IF NOT EXISTS idx_ri_tmdb_type ON resubscribe_index (tmdb_id, item_type);")
 
                 except Exception as e_index:
                     logger.error(f"  ➜ 创建索引时出错: {e_index}", exc_info=True)
-                # ======================================================================
-                # ★★★ 数据库自动修正补丁 (START) ★★★
-                # 修正 'media_metadata.in_library' 字段错误的默认值
-                # ======================================================================
-                logger.trace("  ➜ [数据库修正] 正在检查并修正 'media_metadata.in_library' 的默认值...")
-                try:
-                    # 查询 information_schema 来获取列的当前默认值
-                    cursor.execute("""
-                        SELECT column_default
-                        FROM information_schema.columns
-                        WHERE table_schema = current_schema()
-                          AND table_name = 'media_metadata'
-                          AND column_name = 'in_library';
-                    """)
-                    result = cursor.fetchone()
-                    current_default = result['column_default'] if result else None
-
-                    # 如果默认值是 'true' 或包含 'true' (例如 'true::boolean')，则修正它
-                    if current_default and 'true' in current_default.lower():
-                        logger.warning(f"    ➜ [数据库修正] 检测到 'in_library' 字段的默认值为不正确的 '{current_default}'。正在修正...")
-                        
-                        # 执行 ALTER COLUMN 命令来设置正确的默认值
-                        cursor.execute("ALTER TABLE media_metadata ALTER COLUMN in_library SET DEFAULT FALSE;")
-                        
-                        logger.info("    ➜ [数据库修正] 成功将 'in_library' 的默认值修正为 FALSE。")
-                    else:
-                        logger.trace("    ➜ 'in_library' 字段的默认值正确，无需修正。")
-
-                except Exception as e_fix:
-                    logger.error(f"  ➜ [数据库修正] 修正 'in_library' 默认值时出错: {e_fix}", exc_info=True)
-                # ======================================================================
-                # ★★★ 数据库自动修正补丁 (END) ★★★
-
                 logger.trace("  ➜ 数据库升级检查完成。")
 
                 # ======================================================================
@@ -648,7 +583,6 @@ def init_db():
                 except Exception as e_cleanup:
                     logger.error(f"  ➜ [数据库清理] 清理废弃对象时发生错误: {e_cleanup}", exc_info=True)
                 # ======================================================================
-                # ★★★ 数据库废弃对象清理补丁 (END) ★★★
 
             conn.commit()
             logger.info("  ➜ PostgreSQL 数据库初始化完成，所有表结构已创建/验证。")
