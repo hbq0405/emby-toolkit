@@ -438,7 +438,7 @@ def _wait_for_stream_data_and_enqueue(item_id, item_name, item_type):
     # 直到前面有任务完成（无论成功还是超时）释放锁。
     # 注意：这里的阻塞是 Greenlet 级别的，不会阻塞 Flask 主线程。
     with STREAM_CHECK_SEMAPHORE:
-        logger.info(f"  ➜ [流预检] 开始检查 '{item_name}' (ID:{item_id}) 的视频流数据...")
+        logger.info(f"  ➜ [预检] 开始检查 '{item_name}' (ID:{item_id}) 的视频流数据...")
 
         app_config = config_manager.APP_CONFIG
         emby_url = app_config.get("emby_server_url")
@@ -456,7 +456,7 @@ def _wait_for_stream_data_and_enqueue(item_id, item_name, item_type):
                 )
 
                 if not item_details:
-                    logger.warning(f"  ➜ [流预检] 无法获取 '{item_name}' 详情，可能已被删除。停止等待。")
+                    logger.warning(f"  ➜ [预检] 无法获取 '{item_name}' 详情，可能已被删除。停止等待。")
                     return
 
                 media_sources = item_details.get("MediaSources", [])
@@ -474,20 +474,20 @@ def _wait_for_stream_data_and_enqueue(item_id, item_name, item_type):
                             break
                 
                 if has_valid_video_stream:
-                    logger.info(f"  ➜ [流预检] 成功检测到 '{item_name}' 的视频流数据 (耗时: {i * STREAM_CHECK_INTERVAL}s)，加入队列。")
+                    logger.info(f"  ➜ [预检] 成功检测到 '{item_name}' 的视频流数据 (耗时: {i * STREAM_CHECK_INTERVAL}s)，加入队列。")
                     _enqueue_webhook_event(item_id, item_name, item_type)
                     return
                 
                 # 还没准备好，释放 CPU 给其他协程，稍后重试
-                logger.debug(f"  ➜ [流预检] '{item_name}' 暂无视频流数据，等待重试 ({i+1}/{STREAM_CHECK_MAX_RETRIES})...")
+                logger.debug(f"  ➜ [预检] '{item_name}' 暂无视频流数据，等待重试 ({i+1}/{STREAM_CHECK_MAX_RETRIES})...")
                 sleep(STREAM_CHECK_INTERVAL + random.uniform(0, 2))
 
             except Exception as e:
-                logger.error(f"  ➜ [流预检] 检查 '{item_name}' 时发生错误: {e}")
+                logger.error(f"  ➜ [预检] 检查 '{item_name}' 时发生错误: {e}")
                 sleep(STREAM_CHECK_INTERVAL + random.uniform(0, 2))
 
         # 超时强制入库
-        logger.warning(f"  ➜ [流预检] 超时！在 {STREAM_CHECK_MAX_RETRIES * STREAM_CHECK_INTERVAL} 秒内未提取到 '{item_name}' 的视频流数据。强制加入队列。")
+        logger.warning(f"  ➜ [预检] 超时！在 {STREAM_CHECK_MAX_RETRIES * STREAM_CHECK_INTERVAL} 秒内未提取到 '{item_name}' 的视频流数据。强制加入队列。")
         _enqueue_webhook_event(item_id, item_name, item_type)
 
 # --- Webhook 路由 ---

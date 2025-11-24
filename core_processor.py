@@ -1105,7 +1105,7 @@ class MediaProcessor:
                 # 优先级：视频流缺失 > 评分过低
                 if not stream_check_passed:
                     # 情况 A: 视频流缺失 -> 强制待复核
-                    logger.warning(f"  ➜ 《{item_name_for_log}》因缺失视频流数据，需重新处理。")
+                    logger.warning(f"  ➜ [质检]《{item_name_for_log}》因缺失视频流数据，需重新处理。")
                     self.log_db_manager.save_to_failed_log(cursor, item_id, item_name_for_log, stream_fail_reason, item_type, score=0.0)
                     # 标记为已处理，防止重复循环，但在UI中会显示在“待复核”列表
                     self._mark_item_as_processed(cursor, item_id, item_name_for_log, score=0.0)
@@ -1113,7 +1113,7 @@ class MediaProcessor:
                 elif processing_score < min_score_for_review:
                     # 情况 B: 评分过低 -> 待复核
                     reason = f"处理评分 ({processing_score:.2f}) 低于阈值 ({min_score_for_review})。"
-                    logger.warning(f"  ➜ 《{item_name_for_log}》处理质量不佳，已标记为【待复核】。原因: {reason}")
+                    logger.warning(f"  ➜ [质检]《{item_name_for_log}》处理质量不佳，已标记为【待复核】。原因: {reason}")
                     self.log_db_manager.save_to_failed_log(cursor, item_id, item_name_for_log, reason, item_type, score=processing_score)
                     self._mark_item_as_processed(cursor, item_id, item_name_for_log, score=processing_score)
                     

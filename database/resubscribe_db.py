@@ -359,8 +359,16 @@ def delete_resubscribe_index_by_keys(keys: List[str]) -> int:
     try:
         with get_db_connection() as conn:
             with conn.cursor() as cursor:
-                sql = "DELETE FROM resubscribe_index WHERE (tmdb_id, item_type, season_number) IN %s"
+                sql = """
+                    DELETE FROM resubscribe_index t
+                    USING (VALUES %s) AS v(tmdb_id, item_type, season_number)
+                    WHERE t.tmdb_id = v.tmdb_id 
+                      AND t.item_type = v.item_type 
+                      AND t.season_number = v.season_number
+                """
                 execute_values(cursor, sql, records_to_delete, page_size=500)
+                # ★★★ 修改结束 ★★★
+                
                 deleted_count = cursor.rowcount
                 conn.commit()
                 return deleted_count
