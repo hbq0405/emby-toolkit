@@ -296,7 +296,7 @@ def _item_needs_resubscribe(asset_details: dict, rule: dict, media_metadata: Opt
         if rule.get("resubscribe_resolution_enabled"):
             # 定义清晰度等级的顺序
             RESOLUTION_ORDER = {
-                "4K": 4,
+                "4k": 4,
                 "1080p": 3,
                 "720p": 2,
                 "未知": 1,
