@@ -153,7 +153,6 @@ def upsert_resubscribe_index_batch(items_data: List[Dict[str, Any]]):
 
 def get_resubscribe_library_status(where_clause: str = "", params: tuple = ()) -> List[Dict[str, Any]]:
     """
-    【V12 - SQL原生性能优化版】
     将 Python 内存中的数据拼接逻辑下沉到数据库层。
     使用 SQL JOIN 和子查询直接获取所需数据，避免传输大量无用的分集元数据。
     """
@@ -161,11 +160,10 @@ def get_resubscribe_library_status(where_clause: str = "", params: tuple = ()) -
         with get_db_connection() as conn:
             cursor = conn.cursor()
 
-            # 核心优化思路：
-            # 1. 主表 resubscribe_index (idx)
-            # 2. 关联 media_metadata (m) 获取自身信息
-            # 3. 关联 media_metadata (parent) 获取父剧集信息 (仅当 item_type='Season' 时有用)
-            # 4. 使用子查询高效获取季的第一集 asset_details，无需加载所有分集
+            # 核心修复：优化 JOIN 条件
+            # 1. 对于电影：直接匹配 tmdb_id
+            # 2. 对于季：resubscribe_index 的 tmdb_id 其实是 parent_series_tmdb_id，
+            #    所以要用 parent_series_tmdb_id 和 season_number 组合去匹配 media_metadata
             
             sql = f"""
                 SELECT 
@@ -176,7 +174,7 @@ def get_resubscribe_library_status(where_clause: str = "", params: tuple = ()) -
                     idx.reason, 
                     idx.matched_rule_id,
                     
-                    -- 智能获取名称：如果是季，拼接 '剧集名 - 季名'；否则直接用标题
+                    -- 智能获取名称
                     COALESCE(
                         CASE WHEN idx.item_type = 'Season' THEN parent.title || ' - ' || m.title
                              ELSE m.title 
@@ -184,19 +182,19 @@ def get_resubscribe_library_status(where_clause: str = "", params: tuple = ()) -
                         '未知项目'
                     ) as item_name,
 
-                    -- 智能获取海报：优先用自己的，没有则用父剧集的
+                    -- 智能获取海报
                     COALESCE(m.poster_path, parent.poster_path) as poster_path,
 
-                    -- 获取 Emby ID (取数组第一个)
+                    -- 获取 Emby ID
                     m.emby_item_ids_json->>0 as emby_item_id,
                     parent.emby_item_ids_json->>0 as series_emby_id,
 
-                    -- ★★★ 核心优化：直接在数据库层提取资产详情 ★★★
+                    -- 获取资产详情
                     CASE 
-                        -- 电影：直接取 asset_details_json 第一个元素
+                        -- 电影：直接取
                         WHEN idx.item_type = 'Movie' THEN m.asset_details_json->0
                         
-                        -- 季：使用子查询找到该季的第一集 (episode_number 最小的)，取其资产详情
+                        -- 季：查找该季第一集的资产
                         WHEN idx.item_type = 'Season' THEN (
                             SELECT ep.asset_details_json->0
                             FROM media_metadata ep
@@ -209,10 +207,16 @@ def get_resubscribe_library_status(where_clause: str = "", params: tuple = ()) -
                     END as asset_details
 
                 FROM resubscribe_index idx
-                -- 关联自身元数据
-                LEFT JOIN media_metadata m 
-                    ON idx.tmdb_id = m.tmdb_id AND idx.item_type = m.item_type
-                -- 关联父剧集元数据 (用于季的海报和标题回退)
+                
+                -- ★★★ 核心修复开始 ★★★
+                LEFT JOIN media_metadata m ON (
+                    (idx.item_type = 'Movie' AND idx.tmdb_id = m.tmdb_id AND m.item_type = 'Movie')
+                    OR
+                    (idx.item_type = 'Season' AND idx.tmdb_id = m.parent_series_tmdb_id AND idx.season_number = m.season_number AND m.item_type = 'Season')
+                )
+                -- ★★★ 核心修复结束 ★★★
+
+                -- 关联父剧集 (仅用于季的标题/海报回退)
                 LEFT JOIN media_metadata parent 
                     ON m.parent_series_tmdb_id = parent.tmdb_id AND parent.item_type = 'Series'
                 
@@ -222,12 +226,10 @@ def get_resubscribe_library_status(where_clause: str = "", params: tuple = ()) -
             cursor.execute(sql, params)
             rows = cursor.fetchall()
             
-            # Python 侧只负责极其轻量的格式化，不再进行循环查找
             final_results = []
             for row in rows:
                 asset = row.get('asset_details') or {}
                 
-                # 构建前端需要的对象
                 item = {
                     "item_id": f"{row['tmdb_id']}-{row['item_type']}" + (f"-S{row['season_number']}" if row['item_type'] == 'Season' else ""),
                     "tmdb_id": row['tmdb_id'],
@@ -241,8 +243,6 @@ def get_resubscribe_library_status(where_clause: str = "", params: tuple = ()) -
                     "poster_path": row['poster_path'],
                     "emby_item_id": row['emby_item_id'],
                     "series_emby_id": row['series_emby_id'],
-                    
-                    # 资产详情解包
                     "resolution_display": asset.get('resolution_display', 'Unknown'),
                     "quality_display": asset.get('quality_display', 'Unknown'),
                     "release_group_raw": asset.get('release_group_raw', '无'),
@@ -254,12 +254,11 @@ def get_resubscribe_library_status(where_clause: str = "", params: tuple = ()) -
                 }
                 final_results.append(item)
 
-            # 排序 (Python 的 Timsort 非常快，这里排序开销很小)
             final_results.sort(key=lambda x: x['item_name'] or "")
             return final_results
 
     except Exception as e:
-        logger.error(f"  ➜ 获取洗版海报墙状态失败 (SQL优化版): {e}", exc_info=True)
+        logger.error(f"  ➜ 获取洗版海报墙状态失败 (SQL修复版): {e}", exc_info=True)
         return []
 
 def get_resubscribe_cache_item(item_id: str) -> Optional[Dict[str, Any]]:
