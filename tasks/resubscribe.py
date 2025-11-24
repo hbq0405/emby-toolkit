@@ -299,7 +299,8 @@ def _item_needs_resubscribe(asset_details: dict, rule: dict, media_metadata: Opt
                 "4k": 4,
                 "1080p": 3,
                 "720p": 2,
-                "未知": 1,
+                "480p": 1,
+                "未知": 0,
             }
             
             # 获取当前媒体的清晰度等级
@@ -312,6 +313,7 @@ def _item_needs_resubscribe(asset_details: dict, rule: dict, media_metadata: Opt
             if required_width >= 3800: required_tier = 4
             elif required_width >= 1900: required_tier = 3
             elif required_width >= 1200: required_tier = 2
+            elif required_width >= 700: required_tier = 1
 
             if current_tier < required_tier:
                 reasons.append("分辨率不达标")
