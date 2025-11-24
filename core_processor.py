@@ -1056,8 +1056,33 @@ class MediaProcessor:
                     douban_rating=douban_rating
                 )
                 
-                # 步骤 3.5: 根据处理质量评分，决定写入“已处理”或“失败”日志
+                # ======================================================================
+                # 步骤 3.5: 综合质检 (视频流检查 + 演员匹配度评分)
+                # ======================================================================
                 logger.info(f"  ➜ 正在评估《{item_name_for_log}》的处理质量...")
+                
+                # --- 1. 视频流数据完整性检查 (仅针对 Movie 和 Episode) ---
+                stream_check_passed = True
+                stream_fail_reason = ""
+                
+                if item_type in ['Movie', 'Episode']:
+                    has_valid_video = False
+                    media_sources = item_details_from_emby.get("MediaSources", [])
+                    if media_sources:
+                        for source in media_sources:
+                            for stream in source.get("MediaStreams", []):
+                                # 只要发现一个类型为 Video 的流，就认为通过
+                                if stream.get("Type") == "Video":
+                                    has_valid_video = True
+                                    break
+                            if has_valid_video: break
+                    
+                    if not has_valid_video:
+                        stream_check_passed = False
+                        stream_fail_reason = "缺失视频流数据 (可能是strm文件未提取或分析未完成)"
+                        logger.warning(f"  ➜ [质检失败] 《{item_name_for_log}》未检测到视频流。")
+
+                # --- 2. 演员处理质量评分 ---
                 genres = item_details_from_emby.get("Genres", [])
                 is_animation = "Animation" in genres or "动画" in genres or "Documentary" in genres or "纪录" in genres
                 
@@ -1076,14 +1101,25 @@ class MediaProcessor:
                 
                 min_score_for_review = float(self.config.get("min_score_for_review", constants.DEFAULT_MIN_SCORE_FOR_REVIEW))
                 
-                if processing_score < min_score_for_review:
+                # --- 3. 最终判定与日志写入 ---
+                # 优先级：视频流缺失 > 评分过低
+                if not stream_check_passed:
+                    # 情况 A: 视频流缺失 -> 强制待复核
+                    logger.warning(f"  ➜ 《{item_name_for_log}》因缺失视频流数据，需重新处理。")
+                    self.log_db_manager.save_to_failed_log(cursor, item_id, item_name_for_log, stream_fail_reason, item_type, score=0.0)
+                    # 标记为已处理，防止重复循环，但在UI中会显示在“待复核”列表
+                    self._mark_item_as_processed(cursor, item_id, item_name_for_log, score=0.0)
+                    
+                elif processing_score < min_score_for_review:
+                    # 情况 B: 评分过低 -> 待复核
                     reason = f"处理评分 ({processing_score:.2f}) 低于阈值 ({min_score_for_review})。"
-                    logger.warning(f"  ➜ 《{item_name_for_log}》处理质量不佳，已标记待复核。原因: {reason}")
+                    logger.warning(f"  ➜ 《{item_name_for_log}》处理质量不佳，已标记为【待复核】。原因: {reason}")
                     self.log_db_manager.save_to_failed_log(cursor, item_id, item_name_for_log, reason, item_type, score=processing_score)
-                    logger.info(f"  ➜ 同时将《{item_name_for_log}》标记为已处理，锁定状态等待手动复核。")
                     self._mark_item_as_processed(cursor, item_id, item_name_for_log, score=processing_score)
+                    
                 else:
-                    logger.info(f"  ➜ 《{item_name_for_log}》处理质量良好 (评分: {processing_score:.2f})，已标记已处理。")
+                    # 情况 C: 一切正常 -> 移除待复核标记（如果之前有）
+                    logger.info(f"  ➜ 《{item_name_for_log}》质检通过 (评分: {processing_score:.2f})，标记为已处理。")
                     self._mark_item_as_processed(cursor, item_id, item_name_for_log, score=processing_score)
                     self.log_db_manager.remove_from_failed_log(cursor, item_id)
                 
