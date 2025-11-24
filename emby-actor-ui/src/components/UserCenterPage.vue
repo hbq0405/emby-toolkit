@@ -6,8 +6,12 @@
       
       <!-- ==================== 左侧卡片: 账户详情 ==================== -->
       <n-gi :span="1">
-        <n-card :loading="loading" title="账户详情" class="dashboard-card">
-          
+        <n-card :bordered="false" class="dashboard-card">
+          <template #header>
+            <span class="card-title">账户详情</span>
+            <!-- 局部 Loading 指示器 -->
+            <n-spin v-if="loading.core || loading.library || loading.system" size="small" style="float: right" />
+          </template>
           <!-- ★★★ 核心修正: 使用 v-if 和 v-else 来切换显示内容 ★★★ -->
           <div v-if="accountInfo">
             <n-descriptions label-placement="left" bordered :column="1">
@@ -111,7 +115,12 @@
 
       <!-- ==================== 右侧卡片: 订阅历史 ==================== -->
       <n-gi :span="1">
-        <n-card :loading="loading" title="订阅历史" class="dashboard-card">
+        <n-card :bordered="false" class="dashboard-card">
+          <template #header>
+            <span class="card-title">订阅历史</span>
+            <!-- 局部 Loading 指示器 -->
+            <n-spin v-if="loading.core || loading.library || loading.system" size="small" style="float: right" />
+          </template>
           <n-data-table
             :columns="historyColumns"
             :data="subscriptionHistory"
