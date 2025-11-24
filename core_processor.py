@@ -418,11 +418,11 @@ class MediaProcessor:
                 cursor.execute("DELETE FROM processed_log")
                 # with 语句会自动处理 conn.commit()
             
-            logger.info("数据库中的已处理记录已清除。")
+            logger.info("  ➜ 数据库中的已处理记录已清除。")
 
             # 2. 清空内存缓存
             self.processed_items_cache.clear()
-            logger.info("内存中的已处理记录缓存已清除。")
+            logger.info("  ➜ 内存中的已处理记录缓存已清除。")
 
         except Exception as e:
             logger.error(f"清除数据库或内存已处理记录时失败: {e}", exc_info=True)
@@ -730,7 +730,7 @@ class MediaProcessor:
         # --- 现有媒体项处理循环 ---
         for i, item in enumerate(all_items):
             if self.is_stop_requested():
-                logger.warning("全库扫描任务已被用户中止。")
+                logger.warning("  ⏹️ 全库扫描任务已被用户中止。")
                 break # 使用 break 优雅地退出循环
             
             item_id = item.get('Id')
