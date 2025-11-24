@@ -234,7 +234,7 @@ def task_populate_metadata_cache(processor, batch_size: int = 50, force_full_upd
                     WHERE in_library = TRUE
                 """)
                 known_emby_ids = set(row['emby_id'] for row in cursor.fetchall())
-            logger.info(f"  ➜ 基准建立完成，库内已知 {len(known_emby_ids)} 个 Emby 媒体项 ID。")
+            logger.info(f"  ➜ 本地数据库在线 {len(known_emby_ids)} 个媒体项。")
 
         # 2. 扫描 Emby
         task_manager.update_status_from_thread(10, f"阶段2/3: 扫描 Emby 并计算差异...")
@@ -345,7 +345,7 @@ def task_populate_metadata_cache(processor, batch_size: int = 50, force_full_upd
                         logger.info(f"  ➜ 因内容删除，{len(affected_parents)} 部剧集被标记为待刷新。")
                         dirty_series_tmdb_ids.update(affected_parents)
 
-        logger.info(f"  ➜ Emby 扫描完成，共 {scan_count} 个项。共 {len(dirty_series_tmdb_ids)} 部剧集涉及变更(新增/删除)。")
+        logger.info(f"  ➜ Emby 扫描完成，共 {scan_count} 个项。有 {len(dirty_series_tmdb_ids)} 部剧集涉及变更(新增/删除)。")
 
         # 4. 数据库比对 (用于检测顶层离线)
         with connection.get_db_connection() as conn:
