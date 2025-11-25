@@ -1030,9 +1030,9 @@ class MediaProcessor:
                                     if aid in tmdb_to_emby_map:
                                         actor['emby_person_id'] = tmdb_to_emby_map[aid]
                             else:
-                                logger.warning("  ➜ Override 文件中未找到有效的演员列表，跳过反哺。")
+                                logger.warning("  ➜ [反哺模式] 覆盖缓存文件中未找到有效的演员列表，跳过反哺。")
                     except Exception as e:
-                        logger.warning(f"  ➜ [反哺模式] 读取 Override 文件失败: {e}")
+                        logger.warning(f"  ➜ [反哺模式] 读取覆盖缓存文件失败: {e}")
 
             # 3.完整模式
             if final_processed_cast is None:
