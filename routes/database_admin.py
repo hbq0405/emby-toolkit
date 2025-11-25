@@ -86,7 +86,11 @@ def api_get_stats_subscription():
         consumed_quota = max(0, total_quota - available_quota)
 
         formatted_data = {
-            'watchlist': {'watching': raw.get('watchlist_active', 0), 'paused': raw.get('watchlist_paused', 0)},
+            'watchlist': {
+                'watching': raw.get('watchlist_active', 0),
+                'paused': raw.get('watchlist_paused', 0),
+                'completed': raw.get('watchlist_completed', 0) # ★★★ 新增这一行 ★★★
+            },
             'actors': {
                 'subscriptions': raw.get('actor_subscriptions_active', 0), 
                 'tracked_total': raw.get('actor_works_total', 0), 

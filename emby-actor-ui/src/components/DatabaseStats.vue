@@ -119,9 +119,26 @@
               <n-grid :cols="2" :x-gap="12">
                 <n-gi class="stat-block">
                   <div class="stat-block-title">追剧订阅</div>
-                  <div class="stat-item-group">
-                    <div class="stat-item"><div class="stat-item-label">追剧中</div><div class="stat-item-value">{{ stats.subscriptions_card.watchlist.watching }}</div></div>
-                    <div class="stat-item"><div class="stat-item-label">已暂停</div><div class="stat-item-value">{{ stats.subscriptions_card.watchlist.paused }}</div></div>
+                  <div class="stat-item-group" style="gap: 16px; justify-content: space-around;">
+                    <div class="stat-item">
+                      <div class="stat-item-label">追剧中</div>
+                      <div class="stat-item-value" style="color: var(--n-primary-color);">
+                        {{ stats.subscriptions_card.watchlist.watching }}
+                      </div>
+                    </div>
+                    <div class="stat-item">
+                      <div class="stat-item-label">已暂停</div>
+                      <div class="stat-item-value" style="color: var(--n-warning-color);">
+                        {{ stats.subscriptions_card.watchlist.paused }}
+                      </div>
+                    </div>
+                    <!-- ★★★ 新增：已完结 ★★★ -->
+                    <div class="stat-item">
+                      <div class="stat-item-label">已完结</div>
+                      <div class="stat-item-value" style="color: var(--n-success-color);">
+                        {{ stats.subscriptions_card.watchlist.completed }}
+                      </div>
+                    </div>
                   </div>
                 </n-gi>
                 <n-gi class="stat-block">
@@ -271,7 +288,7 @@ const stats = reactive({
   media_library: { cached_total: 0, movies_in_library: 0, series_in_library: 0, episodes_in_library: 0, missing_total: 0, resolution_stats: [] },
   system: { actor_mappings_total: 0, actor_mappings_linked: 0, actor_mappings_unlinked: 0, translation_cache_count: 0, processed_log_count: 0, failed_log_count: 0 },
   subscriptions_card: {
-    watchlist: { watching: 0, paused: 0 },
+    watchlist: { watching: 0, paused: 0, completed: 0 },
     actors: { subscriptions: 0, tracked_total: 0, tracked_in_library: 0 },
     resubscribe: { pending: 0 },
     native_collections: { total: 0, count: 0, missing_items: 0 },

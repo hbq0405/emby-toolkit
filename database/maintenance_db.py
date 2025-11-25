@@ -135,26 +135,88 @@ def get_stats_system() -> dict:
     """
     return _execute_single_row_query(sql)
 
-def get_stats_subscription() -> dict:
-    """4. 智能订阅 (最慢，涉及 JSONB 和复杂聚合)"""
-    sql = """
-    SELECT
-        (SELECT COUNT(*) FROM media_metadata WHERE watching_status = 'Watching') AS watchlist_active,
-        (SELECT COUNT(*) FROM media_metadata WHERE watching_status = 'Paused') AS watchlist_paused,
-        (SELECT COUNT(*) FROM actor_subscriptions WHERE status = 'active') AS actor_subscriptions_active,
-        (SELECT COUNT(*) FROM media_metadata WHERE subscription_sources_json @> '[{"type": "actor_subscription"}]'::jsonb) AS actor_works_total,
-        (SELECT COUNT(*) FROM media_metadata WHERE subscription_sources_json @> '[{"type": "actor_subscription"}]'::jsonb AND in_library = TRUE) AS actor_works_in_library,
-        (SELECT COUNT(*) FROM resubscribe_index WHERE status ILIKE 'needed') AS resubscribe_pending,
-        
-        (SELECT COUNT(*) FROM collections_info) AS native_collections_total,
-        (SELECT COUNT(*) FROM collections_info WHERE has_missing = TRUE) AS native_collections_with_missing,
-        (SELECT SUM(jsonb_array_length(missing_movies_json)) FROM collections_info WHERE has_missing = TRUE) AS native_collections_missing_items,
-        
-        (SELECT COUNT(*) FROM custom_collections) AS custom_collections_total,
-        (SELECT COUNT(*) FROM custom_collections WHERE missing_count > 0) AS custom_collections_with_missing,
-        (SELECT SUM(missing_count) FROM custom_collections WHERE missing_count > 0) AS custom_collections_missing_items
+def get_stats_subscription():
     """
-    return _execute_single_row_query(sql)
+    获取订阅相关的统计数据 (最终修正：限制为 Series 类型，防止统计季层级)
+    """
+    try:
+        with get_db_connection() as conn:
+            with conn.cursor() as cursor:
+                # 1. 追剧统计
+                # 修正：增加 AND item_type = 'Series'，只统计剧集层级，排除季和集
+                cursor.execute("""
+                    SELECT 
+                        COUNT(*) FILTER (WHERE TRIM(watching_status) ILIKE 'Watching') as watching,
+                        COUNT(*) FILTER (WHERE TRIM(watching_status) ILIKE 'Paused') as paused,
+                        COUNT(*) FILTER (WHERE TRIM(watching_status) ILIKE 'Completed') as completed
+                    FROM media_metadata
+                    WHERE watching_status IS NOT NULL 
+                      AND watching_status NOT ILIKE 'NONE'
+                      AND item_type = 'Series'
+                """)
+                watchlist_row = cursor.fetchone()
+                
+                # 2. 演员订阅统计
+                cursor.execute("SELECT COUNT(*) FROM actor_subscriptions WHERE status = 'active'")
+                actor_sub_count = cursor.fetchone()['count']
+
+                # 保持修复：使用 @> 操作符，避免 SQL 报错
+                cursor.execute("""
+                    SELECT 
+                        COUNT(*) as total,
+                        COUNT(*) FILTER (WHERE in_library = TRUE) as in_lib
+                    FROM media_metadata 
+                    WHERE subscription_sources_json @> '["Actor"]'::jsonb
+                """)
+                actor_works_row = cursor.fetchone()
+
+                # 3. 洗版统计
+                cursor.execute("SELECT COUNT(*) FROM resubscribe_index WHERE status = 'pending'")
+                resub_pending = cursor.fetchone()['count']
+
+                # 4. 原生合集统计
+                cursor.execute("""
+                    SELECT 
+                        COUNT(*) as total,
+                        COUNT(*) FILTER (WHERE has_missing = TRUE) as with_missing,
+                        COALESCE(SUM((jsonb_array_length(missing_movies_json))), 0) as missing_items
+                    FROM collections_info
+                """)
+                native_col_row = cursor.fetchone()
+
+                # 5. 自建合集统计
+                cursor.execute("""
+                    SELECT 
+                        COUNT(*) as total,
+                        COUNT(*) FILTER (WHERE missing_count > 0) as with_missing,
+                        COALESCE(SUM(missing_count), 0) as missing_items
+                    FROM custom_collections
+                    WHERE status = 'active'
+                """)
+                custom_col_row = cursor.fetchone()
+
+                return {
+                    'watchlist_active': watchlist_row['watching'],
+                    'watchlist_paused': watchlist_row['paused'],
+                    'watchlist_completed': watchlist_row['completed'],
+                    
+                    'actor_subscriptions_active': actor_sub_count,
+                    'actor_works_total': actor_works_row['total'],
+                    'actor_works_in_library': actor_works_row['in_lib'],
+                    
+                    'resubscribe_pending': resub_pending,
+                    
+                    'native_collections_total': native_col_row['total'],
+                    'native_collections_with_missing': native_col_row['with_missing'],
+                    'native_collections_missing_items': native_col_row['missing_items'],
+                    
+                    'custom_collections_total': custom_col_row['total'],
+                    'custom_collections_with_missing': custom_col_row['with_missing'],
+                    'custom_collections_missing_items': custom_col_row['missing_items']
+                }
+    except Exception as e:
+        logger.error(f"获取订阅统计失败: {e}", exc_info=True)
+        return {}
     
 def get_resolution_distribution() -> List[Dict[str, Any]]:
     """获取在库媒体的分辨率分布，用于生成图表。"""
@@ -315,12 +377,15 @@ def prepare_for_library_rebuild() -> Dict[str, Dict]:
         'emby_users', 'emby_users_extended', 'user_media_data', 'user_collection_cache',
         'collections_info', 'watchlist', 'resubscribe_index', 'media_cleanup_tasks'
     ]
+
+    # media_metadata 对应字段改成列表，其他保持字符串方便兼容
     columns_to_reset = {
-        'media_metadata': 'emby_item_id', 'person_identity_map': 'emby_person_id',
+        'media_metadata': ['emby_item_ids_json', 'asset_details_json'],
+        'person_identity_map': 'emby_person_id',
         'custom_collections': 'emby_collection_id'
     }
-    results = {"truncated_tables": {}, "updated_columns": {}}
 
+    results = {"truncated_tables": {}, "updated_columns": {}}
     try:
         with get_db_connection() as conn:
             with conn.cursor() as cursor:
@@ -330,17 +395,24 @@ def prepare_for_library_rebuild() -> Dict[str, Dict]:
                     query = sql.SQL("TRUNCATE TABLE {table} RESTART IDENTITY CASCADE;").format(table=sql.Identifier(table_name))
                     cursor.execute(query)
                     results["truncated_tables"][table_name] = "清空成功"
-                
+
                 logger.info("第二步：开始断开元数据与 Emby ID 的关联...")
-                for table_name, column_name in columns_to_reset.items():
-                    logger.warning(f"  ➜ 正在重置表 '{table_name}' 中的 '{column_name}' 字段...")
-                    query = sql.SQL("UPDATE {table} SET {column} = NULL WHERE {column} IS NOT NULL;").format(
-                        table=sql.Identifier(table_name), column=sql.Identifier(column_name)
-                    )
-                    cursor.execute(query)
-                    affected_rows = cursor.rowcount
-                    results["updated_columns"][f"{table_name}.{column_name}"] = f"重置了 {affected_rows} 行"
-                    logger.info(f"    ➜ 操作完成，影响了 {affected_rows} 行。")
+
+                for table_name, columns in columns_to_reset.items():
+                    # 判断 columns 是否为列表，如果是则循环，否则直接处理
+                    if not isinstance(columns, (list, tuple)):
+                        columns = [columns]
+
+                    for column_name in columns:
+                        logger.warning(f"  ➜ 正在重置表 '{table_name}' 中的 '{column_name}' 字段...")
+                        query = sql.SQL("UPDATE {table} SET {column} = NULL WHERE {column} IS NOT NULL;").format(
+                            table=sql.Identifier(table_name), column=sql.Identifier(column_name)
+                        )
+                        cursor.execute(query)
+                        affected_rows = cursor.rowcount
+                        key = f"{table_name}.{column_name}"
+                        results["updated_columns"][key] = f"重置了 {affected_rows} 行"
+                        logger.info(f"    ➜ 操作完成，影响了 {affected_rows} 行。")
         return results
     except Exception as e:
         logger.error(f"执行 prepare_for_library_rebuild 时发生严重错误: {e}", exc_info=True)
