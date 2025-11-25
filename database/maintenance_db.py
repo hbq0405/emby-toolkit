@@ -371,48 +371,91 @@ def export_tables_data(tables_to_export: List[str]) -> Dict[str, List[Dict]]:
 
 def prepare_for_library_rebuild() -> Dict[str, Dict]:
     """
-    【高危】执行为 Emby 媒体库重建做准备的所有数据库操作。
+    【高危 - 修复版】执行为 Emby 媒体库重建做准备的所有数据库操作。
+    1. 清空 Emby 专属数据表 (用户、播放状态、缓存)。
+    2. 重置核心元数据表中的 Emby 关联字段 (ID、资产详情、在库状态)。
+    3. 重置追剧状态。
     """
+    # 1. 需要被 TRUNCATE (清空) 的表
     tables_to_truncate = [
-        'emby_users', 'emby_users_extended', 'user_media_data', 'user_collection_cache',
-        'collections_info', 'watchlist', 'resubscribe_index', 'media_cleanup_tasks'
+        'emby_users', 
+        'emby_users_extended', 
+        'user_media_data', 
+        'user_collection_cache',
+        'collections_info', 
+        'resubscribe_index', 
+        'cleanup_index' 
     ]
 
-    # media_metadata 对应字段改成列表，其他保持字符串方便兼容
-    columns_to_reset = {
-        'media_metadata': ['emby_item_ids_json', 'asset_details_json'],
-        'person_identity_map': 'emby_person_id',
-        'custom_collections': 'emby_collection_id'
-    }
-
-    results = {"truncated_tables": {}, "updated_columns": {}}
+    results = {"truncated_tables": [], "updated_rows": {}}
+    
     try:
         with get_db_connection() as conn:
             with conn.cursor() as cursor:
                 logger.info("第一步：开始清空 Emby 专属数据表...")
                 for table_name in tables_to_truncate:
-                    logger.warning(f"  ➜ 正在清空表: {table_name}")
-                    query = sql.SQL("TRUNCATE TABLE {table} RESTART IDENTITY CASCADE;").format(table=sql.Identifier(table_name))
-                    cursor.execute(query)
-                    results["truncated_tables"][table_name] = "清空成功"
-
-                logger.info("第二步：开始断开元数据与 Emby ID 的关联...")
-
-                for table_name, columns in columns_to_reset.items():
-                    # 判断 columns 是否为列表，如果是则循环，否则直接处理
-                    if not isinstance(columns, (list, tuple)):
-                        columns = [columns]
-
-                    for column_name in columns:
-                        logger.warning(f"  ➜ 正在重置表 '{table_name}' 中的 '{column_name}' 字段...")
-                        query = sql.SQL("UPDATE {table} SET {column} = NULL WHERE {column} IS NOT NULL;").format(
-                            table=sql.Identifier(table_name), column=sql.Identifier(column_name)
-                        )
+                    # 检查表是否存在，防止报错
+                    cursor.execute("SELECT to_regclass(%s)", (table_name,))
+                    result = cursor.fetchone()
+                    if result and result.get('to_regclass'):
+                        logger.warning(f"  ➜ 正在清空表: {table_name}")
+                        query = sql.SQL("TRUNCATE TABLE {table} RESTART IDENTITY CASCADE;").format(table=sql.Identifier(table_name))
                         cursor.execute(query)
-                        affected_rows = cursor.rowcount
-                        key = f"{table_name}.{column_name}"
-                        results["updated_columns"][key] = f"重置了 {affected_rows} 行"
-                        logger.info(f"    ➜ 操作完成，影响了 {affected_rows} 行。")
+                        results["truncated_tables"].append(table_name)
+                    else:
+                        logger.warning(f"  ➜ 表 {table_name} 不存在，跳过清空。")
+
+                logger.info("第二步：重置 media_metadata 表中的 Emby 关联字段...")
+                # ★★★ 核心修复：针对 JSONB 字段设置 '[]'，针对状态字段重置 ★★★
+                cursor.execute("""
+                    UPDATE media_metadata
+                    SET 
+                        -- 1. 核心关联字段
+                        in_library = FALSE,
+                        emby_item_ids_json = '[]'::jsonb,  -- 设置为空数组，而不是 NULL
+                        asset_details_json = NULL,         -- 资产详情可以为 NULL
+                        date_added = NULL,
+                        
+                        -- 2. 追剧状态重置 (库都没了，追剧状态自然要重置)
+                        watching_status = 'NONE',
+                        paused_until = NULL,
+                        force_ended = FALSE,
+                        watchlist_is_airing = FALSE,
+                        watchlist_next_episode_json = NULL,
+                        watchlist_missing_info_json = NULL,
+                        
+                        -- 3. 更新时间戳
+                        last_updated_at = NOW()
+                    WHERE 
+                        in_library = TRUE 
+                        OR emby_item_ids_json::text != '[]'
+                        OR watching_status != 'NONE';
+                """)
+                results["updated_rows"]["media_metadata"] = cursor.rowcount
+                logger.info(f"  ➜ media_metadata 表重置完成，影响了 {cursor.rowcount} 行。")
+
+                logger.info("第三步：重置 演员映射表 (person_identity_map)...")
+                cursor.execute("""
+                    UPDATE person_identity_map 
+                    SET emby_person_id = NULL 
+                    WHERE emby_person_id IS NOT NULL;
+                """)
+                results["updated_rows"]["person_identity_map"] = cursor.rowcount
+
+                logger.info("第四步：重置 自建合集表 (custom_collections)...")
+                cursor.execute("""
+                    UPDATE custom_collections 
+                    SET 
+                        emby_collection_id = NULL,
+                        in_library_count = 0,
+                        missing_count = 0
+                    WHERE emby_collection_id IS NOT NULL;
+                """)
+                results["updated_rows"]["custom_collections"] = cursor.rowcount
+
+            conn.commit()
+            logger.info("  ➜ 数据库重置操作全部完成。")
+            
         return results
     except Exception as e:
         logger.error(f"执行 prepare_for_library_rebuild 时发生严重错误: {e}", exc_info=True)
