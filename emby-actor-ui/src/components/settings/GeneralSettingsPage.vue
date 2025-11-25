@@ -418,6 +418,17 @@
                         <n-button @click="showExportModal" :loading="isExporting" class="action-button"><template #icon><n-icon :component="ExportIcon" /></template>导出数据</n-button>
                         <n-upload :custom-request="handleCustomImportRequest" :show-file-list="false" accept=".json.gz"><n-button :loading="isImporting" class="action-button"><template #icon><n-icon :component="ImportIcon" /></template>导入数据</n-button></n-upload>
                         <n-button @click="showClearTablesModal" :loading="isClearing" class="action-button" type="error" ghost><template #icon><n-icon :component="ClearIcon" /></template>清空指定表</n-button>
+                        <n-popconfirm @positive-click="handleCleanupOfflineMedia">
+                          <template #trigger>
+                            <n-button type="warning" ghost :loading="isCleaningOffline" class="action-button">
+                              <template #icon><n-icon :component="OfflineIcon" /></template>
+                              清理离线媒体
+                            </n-button>
+                          </template>
+                          确定要清理离线媒体数据吗？<br />
+                          这将删除所有 <b>不在库</b> 且 <b>未订阅/未追剧</b> 的元数据记录。<br />
+                          <span style="font-size: 0.9em; color: gray;">此操作用于数据库瘦身，不会影响现有媒体或正在追的剧。</span>
+                        </n-popconfirm>
                         <n-popconfirm @positive-click="handleCorrectSequences">
                           <template #trigger>
                             <n-button type="warning" ghost :loading="isCorrecting" class="action-button">
@@ -440,7 +451,7 @@
                           重置Emby数据
                         </n-button>
                       </n-space>
-                      <p class="description-text"><b>导出：</b>将数据库中的一个或多个表备份为 JSON.GZ 文件。<br><b>导入：</b>从 JSON.GZ 备份文件中恢复数据。<br><b>清空：</b>删除指定表中的所有数据，此操作不可逆。<br><b>校准：</b>修复导入数据可能引起的自增序号错乱的问题。<br><b>重置：</b>在重建 Emby 媒体库后，使用此功能清空所有旧的 Emby 关联数据（用户、合集、播放状态等），并保留核心元数据，以便后续重新扫描和关联。</p>
+                      <p class="description-text"><b>导出：</b>将数据库中的一个或多个表备份为 JSON.GZ 文件。<br><b>导入：</b>从 JSON.GZ 备份文件中恢复数据。<br><b>清空：</b>删除指定表中的所有数据，此操作不可逆。<br><b>清理离线：</b>移除已删除且无订阅状态的残留记录，给数据库瘦身。<br><b>校准：</b>修复导入数据可能引起的自增序号错乱的问题。<br><b>重置：</b>在重建 Emby 媒体库后，使用此功能清空所有旧的 Emby 关联数据（用户、合集、播放状态等），并保留核心元数据，以便后续重新扫描和关联。</p>
                     </n-space>
                   </n-card>
                 </n-gi>
@@ -641,7 +652,8 @@ import {
   TrashOutline as ClearIcon,
   BuildOutline as BuildIcon,
   AlertCircleOutline as AlertIcon,
-  SyncOutline as SyncIcon
+  SyncOutline as SyncIcon,
+  CloudOfflineOutline as OfflineIcon
 } from '@vicons/ionicons5';
 import { useConfig } from '../../composables/useConfig.js';
 import axios from 'axios';
@@ -741,6 +753,7 @@ let unwatchGlobal = null;
 let unwatchEmbyConfig = null;
 const isTestingProxy = ref(false);
 const embyUserIdRegex = /^[a-f0-9]{32}$/i;
+const isCleaningOffline = ref(false);
 const isInvalidUserId = computed(() => {
   if (!configModel.value || !configModel.value.emby_user_id) return false;
   return configModel.value.emby_user_id.trim() !== '' && !embyUserIdRegex.test(configModel.value.emby_user_id);
@@ -1075,6 +1088,26 @@ const startImportProcess = () => {
     isImporting.value = false;
     fileToImport.value = null;
   });
+};
+
+// <--- 清理离线媒体
+const handleCleanupOfflineMedia = async () => {
+  isCleaningOffline.value = true;
+  try {
+    const response = await axios.post('/api/actions/cleanup-offline-media');
+    const stats = response.data.data || {};
+    const deletedCount = stats.media_metadata_deleted || 0;
+    
+    if (deletedCount > 0) {
+      message.success(`瘦身成功！已清除 ${deletedCount} 条无效的离线记录。`);
+    } else {
+      message.success('数据库非常干净，没有发现需要清理的离线记录。');
+    }
+  } catch (error) {
+    message.error(error.response?.data?.error || '清理失败，请检查后端日志。');
+  } finally {
+    isCleaningOffline.value = false;
+  }
 };
 
 const selectAllForImport = () => tablesToImport.value = [...tablesInBackupFile.value];

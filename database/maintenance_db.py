@@ -603,3 +603,62 @@ def cleanup_deleted_media_item(item_id: str, item_name: str, item_type: str, ser
     except Exception as e:
         logger.error(f"清理被删除的媒体项 {item_id} 时发生严重数据库错误: {e}", exc_info=True)
 
+def cleanup_offline_media() -> Dict[str, int]:
+    """
+    【新增】清理所有“不在库”且“无订阅/追剧状态”的媒体元数据。
+    用于给数据库瘦身，移除不再需要的离线缓存。
+    """
+    results = {
+        "media_metadata_deleted": 0,
+        "resubscribe_index_cleaned": 0,
+        "cleanup_index_cleaned": 0
+    }
+    
+    try:
+        with get_db_connection() as conn:
+            with conn.cursor() as cursor:
+                # 1. 核心清理：删除 media_metadata 中符合条件的记录
+                # 条件：
+                #   - in_library = FALSE (不在库)
+                #   - subscription_status = 'NONE' (无订阅)
+                #   - watching_status = 'NONE' (无追剧状态 - 防止误删正在追但暂时缺集的内容)
+                logger.info("正在执行离线媒体清理任务...")
+                
+                cursor.execute("""
+                    DELETE FROM media_metadata
+                    WHERE in_library = FALSE
+                      AND subscription_status = 'NONE'
+                      AND (watching_status IS NULL OR watching_status = 'NONE');
+                """)
+                results["media_metadata_deleted"] = cursor.rowcount
+                logger.info(f"  ➜ 已从 media_metadata 删除 {results['media_metadata_deleted']} 条无效离线记录。")
+
+                # 2. 级联清理：清理 resubscribe_index 中的孤儿记录
+                # (即：主表中已经不存在，但洗版表中还残留的记录)
+                cursor.execute("""
+                    DELETE FROM resubscribe_index ri
+                    WHERE NOT EXISTS (
+                        SELECT 1 FROM media_metadata mm
+                        WHERE mm.tmdb_id = ri.tmdb_id AND mm.item_type = ri.item_type
+                    );
+                """)
+                results["resubscribe_index_cleaned"] = cursor.rowcount
+                
+                # 3. 级联清理：清理 cleanup_index 中的孤儿记录
+                cursor.execute("""
+                    DELETE FROM cleanup_index ci
+                    WHERE NOT EXISTS (
+                        SELECT 1 FROM media_metadata mm
+                        WHERE mm.tmdb_id = ci.tmdb_id AND mm.item_type = ci.item_type
+                    );
+                """)
+                results["cleanup_index_cleaned"] = cursor.rowcount
+
+            conn.commit()
+            logger.info(f"离线媒体清理完成。统计: {results}")
+            return results
+
+    except Exception as e:
+        logger.error(f"执行离线媒体清理时发生错误: {e}", exc_info=True)
+        raise
+

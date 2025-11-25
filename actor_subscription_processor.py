@@ -154,8 +154,8 @@ class ActorSubscriptionProcessor:
             # 1. 执行廉价的本地规则过滤（不含番位）
             is_kept, reason = self._filter_work_and_get_reason(work, sub_config, check_order=False)
             if not is_kept:
-                # ★★★ 核心修改：将具体原因注入到 media_info 中 ★★★
                 media_info['reason'] = reason
+                media_info['overview'] = None 
                 return {"action": "ignore", "tmdb_id": tmdb_id, "item_type": media_type, "media_info": media_info}
 
             # 2. 获取番位信息
@@ -164,8 +164,8 @@ class ActorSubscriptionProcessor:
             # 3. 执行包含番位的最终过滤
             is_kept_final, reason_final = self._filter_work_and_get_reason(enriched_work, sub_config, check_order=True)
             if not is_kept_final:
-                # ★★★ 核心修改：将具体原因注入到 media_info 中 ★★★
                 media_info['reason'] = reason_final
+                media_info['overview'] = None
                 return {"action": "ignore", "tmdb_id": tmdb_id, "item_type": media_type, "media_info": media_info}
 
             # 4. 决定最终状态
@@ -245,6 +245,7 @@ class ActorSubscriptionProcessor:
                             media_info = self._prepare_media_dict_for_upsert(work)
                             # 忽略原因
                             media_info['reason'] = "错误的词条"
+                            media_info['overview'] = None
                             ignored_due_to_bad_entry.append({
                                 'tmdb_id': tmdb_id,
                                 'item_type': media_type,

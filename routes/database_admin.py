@@ -436,3 +436,31 @@ def api_prepare_for_library_rebuild():
     except Exception as e:
         logger.error(f"API 调用 api_prepare_for_library_rebuild 时发生严重错误: {e}", exc_info=True)
         return jsonify({"error": "服务器在处理时发生内部错误，操作可能未完全执行。"}), 500
+    
+# --- 清理离线媒体 (数据库瘦身) ---
+@db_admin_bp.route('/actions/cleanup-offline-media', methods=['POST'])
+@admin_required
+def api_cleanup_offline_media():
+    """
+    触发清理离线媒体的任务。
+    """
+    logger.info("接收到清理离线媒体请求。")
+    try:
+        # 调用维护模块的函数
+        stats = maintenance_db.cleanup_offline_media()
+        
+        deleted_count = stats.get('media_metadata_deleted', 0)
+        
+        if deleted_count > 0:
+            message = f"瘦身成功！已清除 {deleted_count} 条无用的离线媒体记录。"
+        else:
+            message = "数据库很干净，没有发现需要清理的离线记录。"
+            
+        return jsonify({
+            "message": message,
+            "data": stats
+        }), 200
+        
+    except Exception as e:
+        logger.error(f"API调用 api_cleanup_offline_media 时发生错误: {e}", exc_info=True)
+        return jsonify({"error": "服务器在处理时发生内部错误"}), 500
