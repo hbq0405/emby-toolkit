@@ -52,7 +52,7 @@ def task_update_resubscribe_cache(processor):
         
         # ★★★ UX优化核心：启动时强制固定延时 1.5秒 ★★★
         # 这足以让前端轮询捕获到 "Running" 状态，从而触发后续的列表自动刷新
-        time.sleep(1.5) 
+        time.sleep(0.5) 
         
         all_enabled_rules = [rule for rule in resubscribe_db.get_all_resubscribe_rules() if rule.get('enabled')]
         
