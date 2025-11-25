@@ -113,29 +113,6 @@ def get_media_details_by_tmdb_ids(tmdb_ids: List[str]) -> Dict[str, Dict[str, An
         logger.error(f"根据TMDb ID列表批量获取媒体详情时出错: {e}", exc_info=True)
         return {}
 
-def get_episodes_for_series(series_tmdb_ids: List[str]) -> List[Dict[str, Any]]:
-    """
-    【新增】根据父剧集的 TMDB ID 列表，批量获取所有相关的分集记录。
-    """
-    if not series_tmdb_ids:
-        return []
-    
-    try:
-        with get_db_connection() as conn:
-            with conn.cursor() as cursor:
-                sql = """
-                    SELECT * 
-                    FROM media_metadata 
-                    WHERE parent_series_tmdb_id = ANY(%s) 
-                      AND item_type = 'Episode'
-                """
-                cursor.execute(sql, (series_tmdb_ids,))
-                # 返回一个字典列表，供 resubscribe.py 使用
-                return [dict(row) for row in cursor.fetchall()]
-    except Exception as e:
-        logger.error(f"  ➜ 根据剧集ID列表批量获取分集详情时失败: {e}", exc_info=True)
-        return []
-
 def get_all_media_metadata(item_type: str = 'Movie') -> List[Dict[str, Any]]:
     """从媒体元数据缓存表中获取指定类型的所有记录。"""
     
