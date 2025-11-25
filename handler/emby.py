@@ -468,7 +468,7 @@ def get_all_library_versions(
         return []
 
     total_items_to_fetch = 0
-    logger.info("  ➜ 开始获取所有在库项目的总数...")
+    logger.info("  ➜ 开始获取所有在库媒体项...")
     if update_status_callback:
         update_status_callback(1, "正在计算媒体库总项目数...")
 
