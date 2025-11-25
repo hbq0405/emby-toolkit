@@ -1068,29 +1068,42 @@ class MediaProcessor:
             with get_central_db_connection() as conn:
                 cursor = conn.cursor()
 
-                # 步骤 3.1: 写入 override 文件
-                self.sync_single_item_assets(
-                    item_id=item_id,
-                    update_description="主流程处理完成",
-                    final_cast_override=final_processed_cast,
-                    douban_rating_override=douban_rating
-                )
+                # ★★★ 核心区分逻辑 ★★★
+                # 1. 数据库缓存模式: cache_row 是数据库行对象，没有 'source' 字段
+                # 2. 反哺模式: cache_row 是我们手动创建的 {'source': 'override_file'}
+                is_feedback_mode = cache_row and isinstance(cache_row, dict) and cache_row.get('source') == 'override_file'
 
-                # 步骤 3.2: 通过 API 实时更新 Emby 演员库中的名字
-                self._update_emby_person_names_from_final_cast(final_processed_cast, item_name_for_log)
+                if is_feedback_mode:
+                    # --- 分支 A: 反哺模式 (极速恢复) ---
+                    # 既然本地文件存在且被认为是完美的，说明 Emby 端的数据和图片也已经是好的
+                    # 我们只需要把数据写回工具的数据库即可，跳过所有 API 调用和文件 IO
+                    logger.info(f"  ➜ [反哺模式] 检测到完美本地数据，跳过图片下载、文件写入及 Emby 刷新。")
+                
+                else:
+                    # --- 分支 B: 正常处理模式 (或数据库缓存模式) ---
+                    # 步骤 3.1: 写入 override 文件
+                    self.sync_single_item_assets(
+                        item_id=item_id,
+                        update_description="主流程处理完成",
+                        final_cast_override=final_processed_cast,
+                        douban_rating_override=douban_rating
+                    )
 
-                # 步骤 3.3: 通知 Emby 刷新
-                logger.info(f"  ➜ 处理完成，正在通知 Emby 刷新...")
-                emby.refresh_emby_item_metadata(
-                    item_emby_id=item_id,
-                    emby_server_url=self.emby_url,
-                    emby_api_key=self.emby_api_key,
-                    user_id_for_ops=self.emby_user_id,
-                    replace_all_metadata_param=True, 
-                    item_name_for_log=item_name_for_log
-                )
+                    # 步骤 3.2: 通过 API 实时更新 Emby 演员库中的名字
+                    self._update_emby_person_names_from_final_cast(final_processed_cast, item_name_for_log)
 
-                # 步骤 3.4: 更新我们自己的数据库缓存
+                    # 步骤 3.3: 通知 Emby 刷新
+                    logger.info(f"  ➜ 处理完成，正在通知 Emby 刷新...")
+                    emby.refresh_emby_item_metadata(
+                        item_emby_id=item_id,
+                        emby_server_url=self.emby_url,
+                        emby_api_key=self.emby_api_key,
+                        user_id_for_ops=self.emby_user_id,
+                        replace_all_metadata_param=True, 
+                        item_name_for_log=item_name_for_log
+                    )
+
+                # 步骤 3.4: 更新我们自己的数据库缓存 (这是反哺模式的核心目的，必须执行)
                 self._upsert_media_metadata(
                     cursor=cursor,
                     item_type=item_type,
