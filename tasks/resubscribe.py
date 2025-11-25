@@ -38,10 +38,10 @@ logger = logging.getLogger(__name__)
 
 def task_update_resubscribe_cache(processor): 
     """
-    【V7 - 纯本地计算版 + UX优化】
-    完全脱离 Emby API，直接基于 media_metadata 数据库中的 asset_details_json (含 source_library_id) 进行计算。
-    极速、高效。
-    * 增加了微小的延时，以便前端UI能捕捉到进度变化。
+    【V8 - 极速版 + 固定UX延时】
+    1. 纯本地计算，不再请求 Emby API。
+    2. 移除循环内的线性延时，大库处理速度飞快。
+    3. 仅在任务启动和结束时增加固定延时，确保前端能捕获状态变化。
     """
     task_name = "刷新媒体洗版状态"
     logger.info(f"--- 开始执行 '{task_name}' 任务 (纯本地模式) ---")
@@ -49,8 +49,10 @@ def task_update_resubscribe_cache(processor):
     try:
         # --- 步骤 1: 加载规则 ---
         task_manager.update_status_from_thread(0, "正在加载规则...")
-        # 给前端一点反应时间
-        time.sleep(0.5) 
+        
+        # ★★★ UX优化核心：启动时强制固定延时 1.5秒 ★★★
+        # 这足以让前端轮询捕获到 "Running" 状态，从而触发后续的列表自动刷新
+        time.sleep(1.5) 
         
         all_enabled_rules = [rule for rule in resubscribe_db.get_all_resubscribe_rules() if rule.get('enabled')]
         
@@ -110,19 +112,20 @@ def task_update_resubscribe_cache(processor):
         processed_count = 0
         current_statuses = resubscribe_db.get_current_index_statuses()
 
+        # 动态计算进度条更新频率，避免大库刷屏
+        # 至少每50个更新一次，最多每500个更新一次
+        update_interval = max(50, min(500, total // 20))
+
         # ====== 4a. 处理所有电影 ======
         for movie in all_movies:
             if processor.is_stop_requested(): break
             processed_count += 1
             
-            # ★★★ UX优化：每处理一个稍微停顿一下，让进度条平滑滚动 ★★★
-            # 0.002秒 * 1000部电影 = 2秒，既不慢也能看清进度
-            time.sleep(0.002) 
+            # ★★★ 移除循环内的 sleep，全速运行 ★★★
 
-            # 每 20 个更新一次进度条，避免频繁发送 WebSocket 消息
-            if processed_count % 20 == 0:
+            if processed_count % update_interval == 0:
                 progress = int(10 + (processed_count / total) * 85)
-                task_manager.update_status_from_thread(progress, f"正在分析电影: {movie['title']}")
+                task_manager.update_status_from_thread(progress, f"正在分析: {movie['title']}")
 
             assets = movie.get('asset_details_json')
             if not assets: continue
@@ -147,10 +150,6 @@ def task_update_resubscribe_cache(processor):
 
         # ====== 4b. 处理所有剧集 ======
         if all_series:
-            # 稍微停顿，模拟阶段切换
-            time.sleep(0.2)
-            task_manager.update_status_from_thread(int(10 + (processed_count / total) * 85), "正在加载分集数据...")
-            
             series_tmdb_ids = [str(s['tmdb_id']) for s in all_series]
             all_episodes_simple = resubscribe_db.fetch_episodes_simple_batch(series_tmdb_ids)
             
@@ -162,12 +161,11 @@ def task_update_resubscribe_cache(processor):
                 if processor.is_stop_requested(): break
                 processed_count += 1
                 
-                # ★★★ UX优化：剧集处理稍微复杂点，给多一点时间 ★★★
-                time.sleep(0.005)
+                # ★★★ 移除循环内的 sleep，全速运行 ★★★
 
-                if processed_count % 5 == 0:
+                if processed_count % update_interval == 0:
                     progress = int(10 + (processed_count / total) * 85)
-                    task_manager.update_status_from_thread(progress, f"正在分析剧集: {series['title']}")
+                    task_manager.update_status_from_thread(progress, f"正在分析: {series['title']}")
 
                 tmdb_id = str(series['tmdb_id'])
                 episodes = episodes_map.get(tmdb_id)
@@ -215,13 +213,14 @@ def task_update_resubscribe_cache(processor):
                     })
 
         if index_update_batch:
-            task_manager.update_status_from_thread(95, f"正在保存 {len(index_update_batch)} 条结果...")
+            task_manager.update_status_from_thread(98, f"正在保存 {len(index_update_batch)} 条结果...")
             resubscribe_db.upsert_resubscribe_index_batch(index_update_batch)
-            # 保存数据库也给一点时间
-            time.sleep(0.5)
             
         final_message = "媒体洗版状态刷新完成！"
         if processor.is_stop_requested(): final_message = "任务已中止。"
+        
+        # ★★★ UX优化：结束前稍微停顿 0.5秒，让用户看到 100% ★★★
+        time.sleep(0.5)
         task_manager.update_status_from_thread(100, final_message)
 
     except Exception as e:
