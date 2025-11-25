@@ -171,7 +171,7 @@ def get_stats_subscription():
                 actor_works_row = cursor.fetchone()
 
                 # 3. 洗版统计
-                cursor.execute("SELECT COUNT(*) FROM resubscribe_index WHERE status = 'pending'")
+                cursor.execute("SELECT COUNT(*) FROM resubscribe_index WHERE status = 'needed'")
                 resub_pending = cursor.fetchone()['count']
 
                 # 4. 原生合集统计
