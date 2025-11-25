@@ -967,7 +967,7 @@ class MediaProcessor:
 
             # 1.尝试元数据缓存
             if not force_full_update:
-                logger.info(f"  ➜ [缓存模式] 尝试从元数据缓存加载 '{item_name_for_log}'...")
+                logger.info(f"  ➜ [缓存模式] 尝试从数据库缓存加载 '{item_name_for_log}'...")
                 try:
                     with get_central_db_connection() as conn:
                         cursor = conn.cursor()
