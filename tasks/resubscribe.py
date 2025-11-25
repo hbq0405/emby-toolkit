@@ -38,9 +38,10 @@ logger = logging.getLogger(__name__)
 
 def task_update_resubscribe_cache(processor): 
     """
-    【V7 - 纯本地计算版】
+    【V7 - 纯本地计算版 + UX优化】
     完全脱离 Emby API，直接基于 media_metadata 数据库中的 asset_details_json (含 source_library_id) 进行计算。
     极速、高效。
+    * 增加了微小的延时，以便前端UI能捕捉到进度变化。
     """
     task_name = "刷新媒体洗版状态"
     logger.info(f"--- 开始执行 '{task_name}' 任务 (纯本地模式) ---")
@@ -48,6 +49,9 @@ def task_update_resubscribe_cache(processor):
     try:
         # --- 步骤 1: 加载规则 ---
         task_manager.update_status_from_thread(0, "正在加载规则...")
+        # 给前端一点反应时间
+        time.sleep(0.5) 
+        
         all_enabled_rules = [rule for rule in resubscribe_db.get_all_resubscribe_rules() if rule.get('enabled')]
         
         library_to_rule_map = {}
@@ -63,9 +67,8 @@ def task_update_resubscribe_cache(processor):
             return
 
         # --- 步骤 2: 从本地数据库获取全量媒体数据 ---
-        task_manager.update_status_from_thread(10, "正在从本地数据库加载媒体索引...")
+        task_manager.update_status_from_thread(5, "正在从本地数据库加载媒体索引...")
         
-        # 使用 resubscribe_db 的专用函数获取数据
         all_movies = resubscribe_db.fetch_all_active_movies_for_analysis()
         all_series = resubscribe_db.fetch_all_active_series_for_analysis()
 
@@ -74,30 +77,24 @@ def task_update_resubscribe_cache(processor):
             return
 
         # --- 步骤 3: 预处理与清理 ---
-        logger.info("  ➜ 正在比对并清理陈旧的洗版索引...")
+        task_manager.update_status_from_thread(10, "正在比对并清理陈旧索引...")
         
-        # 获取数据库中现有的所有索引 Key
         indexed_keys = resubscribe_db.get_all_resubscribe_index_keys()
-        
-        # 构建当前活跃的 Key 集合
         current_active_keys = set()
         active_series_tmdb_ids = set()
 
         for m in all_movies:
             current_active_keys.add(str(m['tmdb_id']))
-        
         for s in all_series:
             active_series_tmdb_ids.add(str(s['tmdb_id']))
         
-        # 找出需要删除的 Key
         keys_to_delete = []
         for key in indexed_keys:
-            if '-S' in key: # Season key: tmdbid-Sxx
+            if '-S' in key: 
                 tmdb_id = key.split('-')[0]
-                # 如果剧集本身都不在了，那么它的季索引也应该删除
                 if tmdb_id not in active_series_tmdb_ids:
                     keys_to_delete.append(key)
-            else: # Movie key
+            else: 
                 if key not in current_active_keys:
                     keys_to_delete.append(key)
         
@@ -111,37 +108,34 @@ def task_update_resubscribe_cache(processor):
         
         index_update_batch = []
         processed_count = 0
-        
-        # 加载当前状态以保留用户操作 (ignored/subscribed)
         current_statuses = resubscribe_db.get_current_index_statuses()
 
         # ====== 4a. 处理所有电影 ======
         for movie in all_movies:
             if processor.is_stop_requested(): break
             processed_count += 1
-            if processed_count % 100 == 0:
-                task_manager.update_status_from_thread(int(10 + (processed_count / total) * 90), f"正在分析: {movie['title']}")
+            
+            # ★★★ UX优化：每处理一个稍微停顿一下，让进度条平滑滚动 ★★★
+            # 0.002秒 * 1000部电影 = 2秒，既不慢也能看清进度
+            time.sleep(0.002) 
+
+            # 每 20 个更新一次进度条，避免频繁发送 WebSocket 消息
+            if processed_count % 20 == 0:
+                progress = int(10 + (processed_count / total) * 85)
+                task_manager.update_status_from_thread(progress, f"正在分析电影: {movie['title']}")
 
             assets = movie.get('asset_details_json')
             if not assets: continue
             
-            # ★★★ 核心：从 Asset 中获取 Library ID ★★★
-            # 假设第一个版本代表了该电影所属的库
             source_lib_id = assets[0].get('source_library_id')
-            if not source_lib_id: 
-                # 兼容旧数据：如果没有 source_library_id，则跳过，等待下次 media 任务刷新
-                continue 
+            if not source_lib_id: continue 
 
             rule = library_to_rule_map.get(source_lib_id)
-            if not rule: continue # 该库没有配置洗版规则
+            if not rule: continue 
 
-            # 检查是否需要洗版
-            # movie 字典包含: tmdb_id, title, item_type, original_language, asset_details_json
-            # _item_needs_resubscribe 需要 metadata 字典来获取 title 和 original_language
             needs, reason = _item_needs_resubscribe(assets[0], rule, movie)
             status = 'needed' if needs else 'ok'
 
-            # 检查用户是否已手动忽略或订阅
             item_key = (str(movie['tmdb_id']), "Movie", -1)
             if current_statuses.get(item_key) in ['ignored', 'subscribed']:
                 continue 
@@ -152,18 +146,14 @@ def task_update_resubscribe_cache(processor):
             })
 
         # ====== 4b. 处理所有剧集 ======
-        # 剧集处理逻辑：
-        # 1. 剧集本身没有 Asset，需要查分集。
-        # 2. 通过分集的 source_library_id 确定剧集所属库。
-        # 3. 按季分组，每季选一集作为代表进行画质/音轨检查。
-
         if all_series:
-            series_tmdb_ids = [str(s['tmdb_id']) for s in all_series]
+            # 稍微停顿，模拟阶段切换
+            time.sleep(0.2)
+            task_manager.update_status_from_thread(int(10 + (processed_count / total) * 85), "正在加载分集数据...")
             
-            # 批量获取所有相关分集（只含必要字段）
+            series_tmdb_ids = [str(s['tmdb_id']) for s in all_series]
             all_episodes_simple = resubscribe_db.fetch_episodes_simple_batch(series_tmdb_ids)
             
-            # 按剧集ID分组分集
             episodes_map = defaultdict(list)
             for ep in all_episodes_simple:
                 episodes_map[ep['parent_series_tmdb_id']].append(ep)
@@ -171,15 +161,18 @@ def task_update_resubscribe_cache(processor):
             for series in all_series:
                 if processor.is_stop_requested(): break
                 processed_count += 1
-                if processed_count % 20 == 0:
-                    task_manager.update_status_from_thread(int(10 + (processed_count / total) * 90), f"正在分析: {series['title']}")
+                
+                # ★★★ UX优化：剧集处理稍微复杂点，给多一点时间 ★★★
+                time.sleep(0.005)
+
+                if processed_count % 5 == 0:
+                    progress = int(10 + (processed_count / total) * 85)
+                    task_manager.update_status_from_thread(progress, f"正在分析剧集: {series['title']}")
 
                 tmdb_id = str(series['tmdb_id'])
                 episodes = episodes_map.get(tmdb_id)
                 if not episodes: continue
 
-                # ★★★ 核心：通过分集反查剧集的 Library ID ★★★
-                # 找到第一个有 asset 且有 source_library_id 的分集
                 source_lib_id = None
                 for ep in episodes:
                     assets = ep.get('asset_details_json')
@@ -187,17 +180,14 @@ def task_update_resubscribe_cache(processor):
                         source_lib_id = assets[0].get('source_library_id')
                         break
                 
-                if not source_lib_id: continue # 无法确定该剧集的库
-                
+                if not source_lib_id: continue
                 rule = library_to_rule_map.get(source_lib_id)
                 if not rule: continue
 
-                # 按季分组处理
                 episodes_by_season = defaultdict(list)
                 for ep in episodes:
                     episodes_by_season[ep.get('season_number')].append(ep)
 
-                # 剧集元数据包装，用于豁免检查
                 series_meta_wrapper = {
                     'title': series['title'],
                     'tmdb_id': tmdb_id,
@@ -207,12 +197,8 @@ def task_update_resubscribe_cache(processor):
 
                 for season_num, eps_in_season in episodes_by_season.items():
                     if season_num is None: continue
-                    
-                    # 选第一集做代表
-                    # 排序确保取到 episode_number 最小的
                     eps_in_season.sort(key=lambda x: x.get('episode_number', 0))
                     rep_ep = eps_in_season[0]
-                    
                     assets = rep_ep.get('asset_details_json')
                     if not assets: continue
 
@@ -229,10 +215,12 @@ def task_update_resubscribe_cache(processor):
                     })
 
         if index_update_batch:
-            logger.info(f"  ➜ 正在更新 {len(index_update_batch)} 条洗版状态记录...")
+            task_manager.update_status_from_thread(95, f"正在保存 {len(index_update_batch)} 条结果...")
             resubscribe_db.upsert_resubscribe_index_batch(index_update_batch)
+            # 保存数据库也给一点时间
+            time.sleep(0.5)
             
-        final_message = "媒体洗版状态刷新完成（本地模式）！"
+        final_message = "媒体洗版状态刷新完成！"
         if processor.is_stop_requested(): final_message = "任务已中止。"
         task_manager.update_status_from_thread(100, final_message)
 
