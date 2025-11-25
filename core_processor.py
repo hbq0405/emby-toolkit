@@ -800,16 +800,8 @@ class MediaProcessor:
             )
         else:
             # 如果是电影或其他类型，使用原来的函数
-            required_fields = (
-                "ProviderIds,People,MediaSources,MediaStreams,Path,Container,Size,"
-                "RunTimeTicks,Genres,Studios,Tags,ProductionCountries,Overview,"
-                "CommunityRating,OfficialRating,OriginalTitle,PremiereDate,"
-                "DateCreated,ProductionYear,_SourceLibraryId"
-            )
-            
             item_details = emby.get_emby_item_details(
-                emby_item_id, self.emby_url, self.emby_api_key, self.emby_user_id,
-                fields=required_fields
+                emby_item_id, self.emby_url, self.emby_api_key, self.emby_user_id
             )
         if not item_details:
             logger.error(f"process_single_item: 无法获取 Emby 项目 {emby_item_id} 的详情。")

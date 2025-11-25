@@ -136,7 +136,7 @@ def get_emby_item_details(item_id: str, emby_server_url: str, emby_api_key: str,
     if fields:
         fields_to_request = fields
     else:
-        fields_to_request = "ProviderIds,People,Path,OriginalTitle,DateCreated,PremiereDate,ProductionYear,ChildCount,RecursiveItemCount,Overview,CommunityRating,OfficialRating,Genres,Studios,Taglines,MediaStreams"
+        fields_to_request = "ProviderIds,People,Path,OriginalTitle,DateCreated,PremiereDate,ProductionYear,ChildCount,RecursiveItemCount,Overview,CommunityRating,OfficialRating,Genres,Studios,Taglines,MediaStreams,_SourceLibraryId"
 
     params = {
         "api_key": emby_api_key,
@@ -1469,7 +1469,7 @@ def get_emby_items_by_id(
         params = {
             "api_key": api_key,
             "Ids": ",".join(batch_ids), # 只使用当前批次的ID
-            "Fields": fields or "ProviderIds,UserData,Name,ProductionYear,CommunityRating,DateCreated,PremiereDate,Type,RecursiveItemCount,SortName"
+            "Fields": fields or "ProviderIds,UserData,Name,ProductionYear,CommunityRating,DateCreated,PremiereDate,Type,RecursiveItemCount,SortName,_SourceLibraryId"
             # ★★★ 核心修正: 不再传递 UserId。演员等Person对象是全局的，使用UserId会导致查询失败。★★★
         }
 
