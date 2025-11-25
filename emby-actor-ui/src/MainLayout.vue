@@ -11,6 +11,25 @@
           Emby Toolkit
         </span>
           <div style="display: flex; align-items: center; gap: 16px;">
+            <!-- 只有管理员可见 -->
+            <n-button-group v-if="authStore.isAdmin" size="small">
+              <n-tooltip>
+                <template #trigger>
+                  <n-button @click="isRealtimeLogVisible = true" circle>
+                    <template #icon><n-icon :component="ReaderOutline" /></template>
+                  </n-button>
+                </template>
+                实时日志
+              </n-tooltip>
+              <n-tooltip>
+                <template #trigger>
+                  <n-button @click="isHistoryLogVisible = true" circle>
+                    <template #icon><n-icon :component="ArchiveOutline" /></template>
+                  </n-button>
+                </template>
+                历史日志
+              </n-tooltip>
+            </n-button-group>
             <!-- 用户名下拉菜单 -->
             <n-dropdown 
               v-if="authStore.isLoggedIn" 
@@ -139,20 +158,28 @@
     >
       <ChangePassword @password-changed="showPasswordModal = false" />
     </n-modal>
+    <!-- 实时日志模态框 -->
+    <n-modal v-model:show="isRealtimeLogVisible" preset="card" style="width: 80%; max-width: 900px;" title="实时任务日志" class="modal-card-lite">
+       <n-log ref="logRef" :log="logContent" trim class="log-panel" style="height: 60vh; font-size: 13px; line-height: 1.6;"/>
+    </n-modal>
+
+    <!-- 历史日志模态框 -->
+    <LogViewer v-model:show="isHistoryLogVisible" />
   </n-layout>
 </template>
 
 <script setup>
-import { ref, computed, h } from 'vue';
+import { ref, computed, h, watch, nextTick } from 'vue';
 import { useRouter, useRoute } from 'vue-router';
 import {
   NLayout, NLayoutHeader, NLayoutSider, NLayoutContent,
   NMenu, NSwitch, NIcon, NModal, NDropdown, NButton,
-  NSelect, NTooltip, NCard, NText, NProgress
+  NSelect, NTooltip, NCard, NText, NProgress, NButtonGroup, NLog
 } from 'naive-ui';
 import { useAuthStore } from './stores/auth';
 import { themes } from './theme.js';
 import ChangePassword from './components/settings/ChangePassword.vue';
+import LogViewer from './components/LogViewer.vue';
 import {
   AnalyticsOutline as StatsIcon,
   ListOutline as ReviewListIcon,
@@ -175,8 +202,10 @@ import {
   PeopleCircleOutline as UserManagementIcon,
   PersonCircleOutline as UserCenterIcon,
   FilmOutline as DiscoverIcon,
-  ArchiveOutline as UnifiedSubIcon
+  ArchiveOutline as UnifiedSubIcon,
+  ReaderOutline,
 } from '@vicons/ionicons5';
+import { ArchiveOutline } from '@vicons/ionicons5'; 
 import { Password24Regular as PasswordIcon } from '@vicons/fluent';
 import axios from 'axios';
 import { useMessage, useDialog } from 'naive-ui';
@@ -209,6 +238,10 @@ const showPasswordModal = ref(false);
 const collapsed = ref(false);
 const activeMenuKey = computed(() => route.name);
 const appVersion = ref(__APP_VERSION__);
+// ★★★ 日志相关状态 ★★★
+const isRealtimeLogVisible = ref(false);
+const isHistoryLogVisible = ref(false);
+const logRef = ref(null);
 
 // 3. 从 theme.js 动态生成选项
 const themeOptions = [
@@ -222,6 +255,17 @@ const themeOptions = [
 
 // 4. 所有函数
 const renderIcon = (iconComponent) => () => h(NIcon, null, { default: () => h(iconComponent) });
+
+// 计算实时日志内容
+const logContent = computed(() => props.taskStatus?.logs?.join('\n') || '等待任务日志...');
+
+// 监听日志变化，自动滚动到底部
+watch([() => props.taskStatus?.logs, isRealtimeLogVisible], async ([, isVisible]) => {
+  if (isVisible) {
+    await nextTick();
+    logRef.value?.scrollTo({ position: 'bottom', slient: true });
+  }
+}, { deep: true });
 
 const userOptions = computed(() => {
   const options = [];

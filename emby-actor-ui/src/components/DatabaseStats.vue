@@ -4,18 +4,6 @@
   <div>
     <!-- 头部保持不变 -->
     <n-page-header title="数据看板" subtitle="了解您媒体库的核心数据统计" style="margin-bottom: 24px;">
-      <template #extra>
-        <n-button-group>
-          <n-button @click="isRealtimeLogVisible = true">
-            <template #icon><n-icon :component="ReaderOutline" /></template>
-            实时日志
-          </n-button>
-          <n-button @click="isHistoryLogVisible = true">
-            <template #icon><n-icon :component="ArchiveOutline" /></template>
-            历史日志
-          </n-button>
-        </n-button-group>
-      </template>
     </n-page-header>
     
     <!-- 移除全局 loading 和 error 遮罩，改为局部加载或默认值显示 -->
@@ -238,11 +226,6 @@
       </n-gi>
 
     </n-grid>
-    <!-- 模态框部分保持不变 -->
-    <n-modal v-model:show="isRealtimeLogVisible" preset="card" style="width: 80%; max-width: 900px;" title="实时任务日志" class="modal-card-lite">
-       <n-log ref="logRef" :log="logContent" trim class="log-panel" style="height: 60vh;"/>
-    </n-modal>
-    <LogViewer v-model:show="isHistoryLogVisible" />
   </div>
   </n-layout>
 </template>
@@ -251,13 +234,12 @@
 import { ref, onMounted, computed, watch, nextTick, reactive } from 'vue';
 import axios from 'axios';
 import { 
-  NPageHeader, NGrid, NGi, NCard, NStatistic, NSpin, NAlert, NIcon, NSpace, NDivider, NIconWrapper,
-  NLog, NButton, NModal, NButtonGroup, useThemeVars, NProgress, NEmpty
+  NPageHeader, NGrid, NGi, NCard, NStatistic, NSpin, NIcon, NSpace, NDivider, NIconWrapper,
+  NProgress, NEmpty, useThemeVars 
 } from 'naive-ui';
 import { 
-  FolderOpenOutline, ReaderOutline, ArchiveOutline
+  FolderOpenOutline
 } from '@vicons/ionicons5';
-import LogViewer from './LogViewer.vue';
 import { use } from 'echarts/core';
 import { CanvasRenderer } from 'echarts/renderers';
 import { PieChart } from 'echarts/charts';
@@ -265,14 +247,6 @@ import { TitleComponent, TooltipComponent, LegendComponent } from 'echarts/compo
 import VChart from 'vue-echarts';
 
 use([ CanvasRenderer, PieChart, TitleComponent, TooltipComponent, LegendComponent ]);
-
-const props = defineProps({
-  taskStatus: {
-    type: Object,
-    required: true,
-    default: () => ({ is_running: false, current_action: '空闲', logs: [] })
-  }
-});
 
 // 细粒度的 Loading 状态
 const loading = reactive({
@@ -299,19 +273,7 @@ const stats = reactive({
   historical_release_group_ranking: []
 });
 
-const logRef = ref(null);
-const isRealtimeLogVisible = ref(false);
-const isHistoryLogVisible = ref(false);
 const themeVars = useThemeVars();
-
-const logContent = computed(() => props.taskStatus?.logs?.join('\n') || '等待任务日志...');
-
-watch([() => props.taskStatus.logs, isRealtimeLogVisible], async ([, isVisible]) => {
-  if (isVisible) {
-    await nextTick();
-    logRef.value?.scrollTo({ position: 'bottom', slient: true });
-  }
-}, { deep: true });
 
 // 独立的 Fetch 函数
 const fetchCore = async () => {
