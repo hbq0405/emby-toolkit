@@ -190,6 +190,7 @@ class MediaProcessor:
                 movie_record['date_added'] = item_details_from_emby.get("DateCreated")
                 movie_record['ignore_reason'] = None
                 asset_details = parse_full_asset_details(item_details_from_emby)
+                asset_details['source_library_id'] = item_details_from_emby.get('_SourceLibraryId')
                 movie_record['asset_details_json'] = json.dumps([asset_details], ensure_ascii=False)
                 
                 records_to_upsert.append(movie_record)
@@ -207,7 +208,7 @@ class MediaProcessor:
                 emby_episode_versions = emby.get_all_library_versions(
                     base_url=self.emby_url, api_key=self.emby_api_key, user_id=self.emby_user_id,
                     media_type_filter="Episode", parent_id=series_id,
-                    fields="Id,Type,ParentIndexNumber,IndexNumber,MediaStreams,Container,Size,Path,ProviderIds,RunTimeTicks"
+                    fields="Id,Type,ParentIndexNumber,IndexNumber,MediaStreams,Container,Size,Path,ProviderIds,RunTimeTicks,_SourceLibraryId"
                 ) or []
 
                 episodes_grouped_by_number = defaultdict(list)
@@ -307,7 +308,11 @@ class MediaProcessor:
                     # 5. 补充 Emby 资产信息 (逻辑不变)
                     if versions_of_episode:
                         all_emby_ids = [v.get('Id') for v in versions_of_episode]
-                        all_asset_details = [parse_full_asset_details(v) for v in versions_of_episode]
+                        all_asset_details = []
+                        for v in versions_of_episode:
+                            details = parse_full_asset_details(v)
+                            details['source_library_id'] = v.get('_SourceLibraryId')
+                            all_asset_details.append(details)
                         
                         episode_record['asset_details_json'] = json.dumps(all_asset_details, ensure_ascii=False)
                         episode_record['emby_item_ids_json'] = json.dumps(all_emby_ids)
@@ -2693,7 +2698,7 @@ class MediaProcessor:
                 new_episodes_details = emby.get_emby_items_by_id(
                     base_url=self.emby_url, api_key=self.emby_api_key, user_id=self.emby_user_id,
                     item_ids=episode_ids_to_add, 
-                    fields="Id,Type,ParentIndexNumber,IndexNumber,Name,OriginalTitle,PremiereDate,ProviderIds,MediaStreams,Container,Size,Path,DateCreated,RunTimeTicks"
+                    fields="Id,Type,ParentIndexNumber,IndexNumber,Name,OriginalTitle,PremiereDate,ProviderIds,MediaStreams,Container,Size,Path,DateCreated,RunTimeTicks,_SourceLibraryId"
                 )
                 
                 if not new_episodes_details:
@@ -2760,6 +2765,7 @@ class MediaProcessor:
                             continue
                         
                         asset_details = parse_full_asset_details(emby_episode)
+                        asset_details['source_library_id'] = emby_episode.get('_SourceLibraryId')
                         emby_runtime = round(emby_episode['RunTimeTicks'] / 600000000) if emby_episode.get('RunTimeTicks') else None
                         metadata_to_add = {
                             "tmdb_id": str(tmdb_details.get("id")), "item_type": "Episode",
@@ -2793,7 +2799,7 @@ class MediaProcessor:
 
             else:
                 # --- 模式二：常规元数据刷新 ---
-                fields_to_get = "ProviderIds,Type,Name,OriginalTitle,Overview,Tags,OfficialRating,MediaStreams,Container,Size,Path"
+                fields_to_get = "ProviderIds,Type,Name,OriginalTitle,Overview,Tags,OfficialRating,MediaStreams,Container,Size,Path,_SourceLibraryId"
                 item_details = emby.get_emby_item_details(item_id, self.emby_url, self.emby_api_key, self.emby_user_id, fields=fields_to_get)
                 if not item_details:
                     logger.warning(f"  ➜ {log_prefix} 无法获取项目 {item_id} 的详情，跳过。")
@@ -2817,6 +2823,7 @@ class MediaProcessor:
                         
                         if item_type == 'Movie':
                             asset_details = parse_full_asset_details(item_details)
+                            asset_details['source_library_id'] = item_details.get('_SourceLibraryId')
                             updates["asset_details_json"] = json.dumps([asset_details], ensure_ascii=False)
                         
                         set_clauses = [f"{key} = %s" for key in updates.keys()]
@@ -2828,7 +2835,7 @@ class MediaProcessor:
                             all_episode_versions = emby.get_all_library_versions(
                                 base_url=self.emby_url, api_key=self.emby_api_key, user_id=self.emby_user_id,
                                 media_type_filter="Episode", parent_id=item_id,
-                                fields="Id,ProviderIds,MediaStreams,Container,Size,Path,DateCreated"
+                                fields="Id,ProviderIds,MediaStreams,Container,Size,Path,DateCreated,_SourceLibraryId"
                             ) or []
 
                             episodes_grouped_by_tmdb_id = defaultdict(list)
@@ -2838,7 +2845,11 @@ class MediaProcessor:
 
                             if episodes_grouped_by_tmdb_id:
                                 for ep_tmdb_id, versions in episodes_grouped_by_tmdb_id.items():
-                                    asset_details = [parse_full_asset_details(v) for v in versions]
+                                    asset_details_list = []
+                                    for v in versions:
+                                        details = parse_full_asset_details(v)
+                                        details['source_library_id'] = v.get('_SourceLibraryId')
+                                        asset_details_list.append(details)
                                     asset_json = json.dumps(asset_details, ensure_ascii=False)
                                     
                                     cursor.execute(
