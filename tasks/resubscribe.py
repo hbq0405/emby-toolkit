@@ -44,7 +44,7 @@ def task_update_resubscribe_cache(processor):
     3. 仅在任务启动和结束时增加固定延时，确保前端能捕获状态变化。
     """
     task_name = "刷新媒体洗版状态"
-    logger.info(f"--- 开始执行 '{task_name}' 任务 (纯本地模式) ---")
+    logger.info(f"--- 开始执行 '{task_name}' 任务 ---")
     
     try:
         # --- 步骤 1: 加载规则 ---
@@ -52,7 +52,7 @@ def task_update_resubscribe_cache(processor):
         
         # ★★★ UX优化核心：启动时强制固定延时 1.5秒 ★★★
         # 这足以让前端轮询捕获到 "Running" 状态，从而触发后续的列表自动刷新
-        time.sleep(0.5) 
+        time.sleep(0.5) # 减速齿轮
         
         all_enabled_rules = [rule for rule in resubscribe_db.get_all_resubscribe_rules() if rule.get('enabled')]
         
@@ -218,9 +218,7 @@ def task_update_resubscribe_cache(processor):
             
         final_message = "媒体洗版状态刷新完成！"
         if processor.is_stop_requested(): final_message = "任务已中止。"
-        
-        # ★★★ UX优化：结束前稍微停顿 0.5秒，让用户看到 100% ★★★
-        time.sleep(0.5)
+        time.sleep(0.5) # 给用户点时间欣赏下1秒破百的超跑速度
         task_manager.update_status_from_thread(100, final_message)
 
     except Exception as e:

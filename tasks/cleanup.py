@@ -3,6 +3,7 @@
 
 import logging
 import json
+import time
 from functools import cmp_to_key
 from typing import List, Dict, Any, Optional
 from psycopg2 import sql
@@ -251,6 +252,7 @@ def task_scan_for_cleanup_issues(processor):
     task_name = "扫描媒体库重复项"
     logger.info(f"--- 开始执行 '{task_name}' 任务 ---")
     task_manager.update_status_from_thread(0, "正在准备扫描...")
+    time.sleep(0.5) # 减速齿轮
 
     try:
         library_ids_to_scan = settings_db.get_setting('media_cleanup_library_ids') or []
@@ -395,6 +397,7 @@ def task_scan_for_cleanup_issues(processor):
             cleanup_db.batch_upsert_cleanup_index(cleanup_index_entries)
 
         final_message = f"扫描完成！共发现 {len(cleanup_index_entries)} 组需要清理的多版本媒体。"
+        time.sleep(0.5) # 给用户点时间欣赏下1秒破百的超跑速度
         task_manager.update_status_from_thread(100, final_message)
         logger.info(f"--- '{task_name}' 任务成功完成 ---")
 
