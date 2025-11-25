@@ -425,9 +425,11 @@
                               清理离线媒体
                             </n-button>
                           </template>
-                          确定要清理离线媒体数据吗？<br />
-                          这将删除所有 <b>不在库</b> 且 <b>未订阅/未追剧</b> 的元数据记录。<br />
-                          <span style="font-size: 0.9em; color: gray;">此操作用于数据库瘦身，不会影响现有媒体或正在追的剧。</span>
+                          <div style="max-width: 300px">
+                            <p style="margin: 0 0 4px 0">确定要清理离线媒体数据吗？</p>
+                            <p style="margin: 0 0 4px 0">这将删除所有 <b>不在库</b> 的元数据缓存。</p>
+                            <span style="font-size: 0.9em; color: gray;">此操作用于数据库瘦身，不会影响已入库媒体项。</span>
+                          </div>
                         </n-popconfirm>
                         <n-popconfirm @positive-click="handleCorrectSequences">
                           <template #trigger>
