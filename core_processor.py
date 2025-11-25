@@ -982,17 +982,42 @@ class MediaProcessor:
                         if override_data:
                             cast_data = (override_data.get('casts', {}) or override_data.get('credits', {})).get('cast', [])
                             if cast_data:
-                                logger.info(f"  ➜ [快速模式] 成功从文件加载 {len(cast_data)} 位演员，将激活反哺/极速模式...")
+                                logger.info(f"  ➜ [快速模式] 成功从文件加载 {len(cast_data)} 位演员，将激活反哺数据库...")
                                 final_processed_cast = cast_data
                                 douban_rating = override_data.get('vote_average')
                                 
-                                # 关键设置：
-                                # 1.以此为源更新数据库
+                                # 关键设置 1: 以此为源更新数据库
                                 tmdb_details_for_extra = override_data 
-                                # 2.标记源为文件，后续阶段3会跳过文件写入，实现极致性能
+                                
+                                # =========================================================
+                                # ★★★ 填补盲区：如果是剧集，必须把分集文件也读进来！ ★★★
+                                # =========================================================
+                                if item_type == "Series":
+                                    logger.info("  ➜ [快速模式] 检测到剧集，正在聚合本地分集元数据以恢复数据库记录...")
+                                    episodes_details_map = {}
+                                    # 扫描 override 目录下的所有文件
+                                    try:
+                                        for fname in os.listdir(target_override_dir):
+                                            if fname.startswith("season-") and fname.endswith(".json") and fname != "series.json":
+                                                ep_path = os.path.join(target_override_dir, fname)
+                                                ep_data = _read_local_json(ep_path)
+                                                if ep_data:
+                                                    # 构造一个唯一的key，方便后续转list
+                                                    key = f"S{ep_data.get('season_number')}E{ep_data.get('episode_number')}"
+                                                    episodes_details_map[key] = ep_data
+                                        
+                                        # 将聚合好的分集数据塞回 tmdb_details_for_extra
+                                        # 这样 _upsert_media_metadata 就能读到 episodes_details 并写入数据库了
+                                        if episodes_details_map:
+                                            tmdb_details_for_extra['episodes_details'] = episodes_details_map
+                                            logger.info(f"  ➜ [快速模式] 成功聚合了 {len(episodes_details_map)} 个分集的元数据。")
+                                    except Exception as e_ep:
+                                        logger.warning(f"  ➜ [快速模式] 聚合分集数据时发生小错误: {e_ep}")
+
+                                # 关键设置 2: 标记源为文件
                                 cache_row = {'source': 'override_file'} 
 
-                                # 补充：简单的 ID 映射，让内存对象更完整
+                                # 补充：简单的 ID 映射
                                 tmdb_to_emby_map = {}
                                 for person in item_details_from_emby.get("People", []):
                                     pid = (person.get("ProviderIds") or {}).get("Tmdb")
