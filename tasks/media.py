@@ -242,7 +242,7 @@ def task_populate_metadata_cache(processor, batch_size: int = 50, force_full_upd
             base_url=processor.emby_url, api_key=processor.emby_api_key, user_id=processor.emby_user_id,
             media_type_filter="Movie,Series,Season,Episode",
             library_ids=libs_to_process_ids,
-            fields="ProviderIds,Type,DateCreated,Name,OriginalTitle,PremiereDate,CommunityRating,Genres,Studios,Tags,DateModified,OfficialRating,ProductionYear,Path,PrimaryImageAspectRatio,Overview,MediaStreams,Container,Size,SeriesId,ParentIndexNumber,IndexNumber,ParentId,RunTimeTicks",
+            fields="ProviderIds,Type,DateCreated,Name,OriginalTitle,PremiereDate,CommunityRating,Genres,Studios,Tags,DateModified,OfficialRating,ProductionYear,Path,PrimaryImageAspectRatio,Overview,MediaStreams,Container,Size,SeriesId,ParentIndexNumber,IndexNumber,ParentId,RunTimeTicks,_SourceLibraryId",
             update_status_callback=task_manager.update_status_from_thread
         ) or []
         
@@ -451,7 +451,11 @@ def task_populate_metadata_cache(processor, batch_size: int = 50, force_full_upd
                 # --- 1. 构建顶层记录 ---
                 asset_details_list = []
                 if item_type == "Movie":
-                    asset_details_list = [parse_full_asset_details(v) for v in item_group]
+                    asset_details_list = []
+                    for v in item_group:
+                        details = parse_full_asset_details(v)
+                        details['source_library_id'] = v.get('_SourceLibraryId') 
+                        asset_details_list.append(details)
 
                 emby_runtime = round(item['RunTimeTicks'] / 600000000) if item.get('RunTimeTicks') else None
 
@@ -605,6 +609,12 @@ def task_populate_metadata_cache(processor, batch_size: int = 50, force_full_upd
                         lookup_key = f"S{s_n}E{e_n}"
                         tmdb_ep_info = tmdb_children_map.get(lookup_key)
                         
+                        ep_asset_details_list = []
+                        for v in versions:
+                            details = parse_full_asset_details(v)
+                            details['source_library_id'] = v.get('_SourceLibraryId')
+                            ep_asset_details_list.append(details)
+
                         child_record = {
                             "item_type": "Episode",
                             "parent_series_tmdb_id": tmdb_id_str,
@@ -612,7 +622,7 @@ def task_populate_metadata_cache(processor, batch_size: int = 50, force_full_upd
                             "episode_number": e_n,
                             "in_library": True,
                             "emby_item_ids_json": json.dumps([v.get('Id') for v in versions]),
-                            "asset_details_json": json.dumps([parse_full_asset_details(v) for v in versions], ensure_ascii=False),
+                            "asset_details_json": json.dumps(ep_asset_details_list, ensure_ascii=False),
                             "ignore_reason": None
                         }
 

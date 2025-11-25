@@ -402,3 +402,64 @@ def get_current_index_statuses() -> Dict[Tuple[str, str, int], str]:
     except Exception as e:
         logger.error(f"  ➜ 获取所有洗版索引状态时失败: {e}", exc_info=True)
         return {}
+    
+# ======================================================================
+# ★★★ 纯本地洗版计算专用查询函数 ★★★
+# ======================================================================
+
+def fetch_all_active_movies_for_analysis() -> List[Dict[str, Any]]:
+    """
+    获取所有在库电影及其资产详情，用于本地洗版计算。
+    返回字段: tmdb_id, title, item_type, asset_details_json, original_language
+    """
+    try:
+        with get_db_connection() as conn:
+            cursor = conn.cursor()
+            cursor.execute("""
+                SELECT tmdb_id, title, item_type, asset_details_json, original_language
+                FROM media_metadata 
+                WHERE item_type = 'Movie' AND in_library = TRUE
+            """)
+            return [dict(row) for row in cursor.fetchall()]
+    except Exception as e:
+        logger.error(f"  ➜ 获取所有在库电影进行分析时失败: {e}", exc_info=True)
+        return []
+
+def fetch_all_active_series_for_analysis() -> List[Dict[str, Any]]:
+    """
+    获取所有在库剧集基本信息。
+    返回字段: tmdb_id, title, item_type, original_language
+    """
+    try:
+        with get_db_connection() as conn:
+            cursor = conn.cursor()
+            cursor.execute("""
+                SELECT tmdb_id, title, item_type, original_language
+                FROM media_metadata 
+                WHERE item_type = 'Series' AND in_library = TRUE
+            """)
+            return [dict(row) for row in cursor.fetchall()]
+    except Exception as e:
+        logger.error(f"  ➜ 获取所有在库剧集进行分析时失败: {e}", exc_info=True)
+        return []
+
+def fetch_episodes_simple_batch(series_tmdb_ids: List[str]) -> List[Dict[str, Any]]:
+    """
+    批量获取指定剧集的所有分集（仅含必要字段），用于确定库ID和季信息。
+    返回字段: parent_series_tmdb_id, season_number, episode_number, asset_details_json
+    """
+    if not series_tmdb_ids: return []
+    try:
+        with get_db_connection() as conn:
+            cursor = conn.cursor()
+            cursor.execute("""
+                SELECT parent_series_tmdb_id, season_number, episode_number, asset_details_json
+                FROM media_metadata 
+                WHERE item_type = 'Episode' 
+                  AND in_library = TRUE
+                  AND parent_series_tmdb_id = ANY(%s)
+            """, (series_tmdb_ids,))
+            return [dict(row) for row in cursor.fetchall()]
+    except Exception as e:
+        logger.error(f"  ➜ 批量获取分集信息时失败: {e}", exc_info=True)
+        return []
