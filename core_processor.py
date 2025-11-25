@@ -959,15 +959,15 @@ class MediaProcessor:
                     logger.debug("  ➜ (预检查) 所有源数据中的演员均有头像，无需预先移除。")
                 
             # ======================================================================
-            # 阶段 2: 数据来源二选一
+            # 阶段 2: 数据来源三选一
             # ======================================================================
             final_processed_cast = None
             douban_rating = None
             cache_row = None # 用于后续判断是否走了快速模式
 
-            # 1.尝试快速模式
+            # 1.尝试元数据缓存
             if not force_full_update:
-                logger.info(f"  ➜ 尝试从元数据缓存加载 '{item_name_for_log}'...")
+                logger.info(f"  ➜ [缓存模式] 尝试从元数据缓存加载 '{item_name_for_log}'...")
                 try:
                     with get_central_db_connection() as conn:
                         cursor = conn.cursor()
@@ -981,16 +981,60 @@ class MediaProcessor:
                         cache_row = cursor.fetchone()
 
                         if cache_row:
-                            logger.info(f"  ➜ 成功命中有效缓存！将从数据库恢复演员数据...")
+                            logger.info(f"  ➜ [缓存模式] 成功命中有效缓存！将从数据库恢复演员数据...")
                             slim_actors_from_cache = cache_row["actors_json"]
                             final_processed_cast = self.actor_db_manager.rehydrate_slim_actors(cursor, slim_actors_from_cache)
                             douban_rating = cache_row.get("rating")
 
                 except Exception as e_cache:
-                    logger.warning(f"  ➜ 加载缓存失败: {e_cache}。将回退到深度模式。")
+                    logger.warning(f"  ➜ [缓存模式] 加载缓存失败: {e_cache}。将回退到深度模式。")
                     final_processed_cast = None
 
-            # 2.完整模式
+            # 2.尝试覆盖缓存
+            if final_processed_cast is None and not force_full_update:
+                cache_folder_name = "tmdb-movies2" if item_type == "Movie" else "tmdb-tv"
+                target_override_dir = os.path.join(self.local_data_path, "override", cache_folder_name, tmdb_id)
+                main_json_filename = "all.json" if item_type == "Movie" else "series.json"
+                override_json_path = os.path.join(target_override_dir, main_json_filename)
+
+                if os.path.exists(override_json_path):
+                    logger.info(f"  ➜ [反哺模式] 未命中数据库缓存，但发现本地覆盖缓存文件: {override_json_path}")
+                    try:
+                        override_data = _read_local_json(override_json_path)
+                        if override_data:
+                            # 提取演员表
+                            cast_data = (override_data.get('casts', {}) or override_data.get('credits', {})).get('cast', [])
+                            
+                            if cast_data:
+                                logger.info(f"  ➜ [反哺模式] 成功从覆盖缓存文件加载 {len(cast_data)} 位演员数据，将反哺回数据库...")
+                                final_processed_cast = cast_data
+                                douban_rating = override_data.get('vote_average')
+                                
+                                # ★★★ 关键 1：将 override 数据作为源数据包 ★★★
+                                # 这样后续的 _upsert_media_metadata 就会把这份完美数据（简介、分级等）写入数据库
+                                tmdb_details_for_extra = override_data
+                                
+                                # ★★★ 关键 2：标记为命中缓存 ★★★
+                                # 这样后续的质检流程会直接给 10.0 分，不再进行画蛇添足的检查
+                                cache_row = {'source': 'override_file'}
+
+                                # 补充：尝试简单的 ID 映射 (TMDb -> Emby)，让内存中的数据对象更完整
+                                # 虽然写入数据库不强依赖它，但对日志和后续逻辑有好处
+                                tmdb_to_emby_map = {}
+                                for person in item_details_from_emby.get("People", []):
+                                    pid = (person.get("ProviderIds") or {}).get("Tmdb")
+                                    if pid: tmdb_to_emby_map[str(pid)] = person.get("Id")
+                                
+                                for actor in final_processed_cast:
+                                    aid = str(actor.get('id'))
+                                    if aid in tmdb_to_emby_map:
+                                        actor['emby_person_id'] = tmdb_to_emby_map[aid]
+                            else:
+                                logger.warning("  ➜ Override 文件中未找到有效的演员列表，跳过反哺。")
+                    except Exception as e:
+                        logger.warning(f"  ➜ [反哺模式] 读取 Override 文件失败: {e}")
+
+            # 3.完整模式
             if final_processed_cast is None:
                 logger.info(f"  ➜ 未命中缓存或强制重处理，开始处理演员表...")
                 
