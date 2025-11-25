@@ -199,7 +199,8 @@ class MediaProcessor:
                 # ★★★  1: 恢复 TMDb 元数据列表的定义 ★★★
                 series_details = source_data_package.get("series_details", source_data_package)
                 seasons_details = source_data_package.get("seasons_details", series_details.get("seasons", []))
-                episodes_details = list(source_data_package.get("episodes_details", {}).values()) # <--- 恢复这行
+                episodes_details = list(source_data_package.get("episodes_details", {}).values()) 
+                parent_library_id = item_details_from_emby.get('_SourceLibraryId')
 
                 # ★★★  2: 获取并预处理所有 Emby 分集文件版本 ★★★
                 emby_episode_versions = []
@@ -311,7 +312,10 @@ class MediaProcessor:
                         all_asset_details = []
                         for v in versions_of_episode:
                             details = parse_full_asset_details(v)
-                            details['source_library_id'] = v.get('_SourceLibraryId')
+                            
+                            # 强制使用父剧集的 Library ID。
+                            details['source_library_id'] = parent_library_id
+                            
                             all_asset_details.append(details)
                         
                         episode_record['asset_details_json'] = json.dumps(all_asset_details, ensure_ascii=False)
@@ -806,6 +810,20 @@ class MediaProcessor:
         if not item_details:
             logger.error(f"process_single_item: 无法获取 Emby 项目 {emby_item_id} 的详情。")
             return False
+        
+        # 补全 _SourceLibraryId：因为单项获取接口不包含此字段，需通过路径反查
+        if not item_details.get('_SourceLibraryId'):
+            lib_info = emby.get_library_root_for_item(
+                item_id=emby_item_id,
+                base_url=self.emby_url,
+                api_key=self.emby_api_key,
+                user_id=self.emby_user_id
+            )
+            if lib_info and lib_info.get('Id'):
+                item_details['_SourceLibraryId'] = lib_info['Id']
+                logger.debug(f"  ➜ 已为 '{item_details.get('Name')}' 补全媒体库ID: {lib_info['Id']}")
+            else:
+                logger.warning(f"  ➜ 无法确定 '{item_details.get('Name')}' 所属的媒体库ID。")
 
         # 4. 将任务交给核心处理函数
         return self._process_item_core_logic(
@@ -2690,6 +2708,12 @@ class MediaProcessor:
                     logger.error(f"  🚫 {log_prefix} [增量模式] 无法获取父剧集 {item_id} 的详情，任务中止。")
                     return
                 
+                # 1. 先获取父剧集的 Library ID
+                parent_library_id = None
+                lib_info = emby.get_library_root_for_item(item_id, self.emby_url, self.emby_api_key, self.emby_user_id)
+                if lib_info:
+                    parent_library_id = lib_info.get('Id')
+                
                 series_tmdb_id = series_details.get("ProviderIds", {}).get("Tmdb")
                 if not series_tmdb_id:
                     logger.error(f"  ➜ {log_prefix} [增量模式] 父剧集 '{series_details.get('Name')}' 缺少 TMDb ID，无法关联分集。")
@@ -2765,7 +2789,7 @@ class MediaProcessor:
                             continue
                         
                         asset_details = parse_full_asset_details(emby_episode)
-                        asset_details['source_library_id'] = emby_episode.get('_SourceLibraryId')
+                        asset_details['source_library_id'] = emby_episode.get('_SourceLibraryId') or parent_library_id
                         emby_runtime = round(emby_episode['RunTimeTicks'] / 600000000) if emby_episode.get('RunTimeTicks') else None
                         metadata_to_add = {
                             "tmdb_id": str(tmdb_details.get("id")), "item_type": "Episode",
@@ -2810,6 +2834,12 @@ class MediaProcessor:
                 if not tmdb_id or item_type not in ['Movie', 'Series']:
                     logger.warning(f"  ➜ {log_prefix} 项目 '{item_details.get('Name')}' 不是电影或剧集，或缺少TMDb ID，跳过。")
                     return
+                
+                # 如果 API 没返回 _SourceLibraryId，手动计算
+                if not item_details.get('_SourceLibraryId'):
+                    lib_info = emby.get_library_root_for_item(item_id, self.emby_url, self.emby_api_key, self.emby_user_id)
+                    if lib_info:
+                        item_details['_SourceLibraryId'] = lib_info.get('Id')
 
                 with get_central_db_connection() as conn:
                     with conn.cursor() as cursor:
@@ -2843,12 +2873,14 @@ class MediaProcessor:
                                 if ep_tmdb_id := ep_version.get("ProviderIds", {}).get("Tmdb"):
                                     episodes_grouped_by_tmdb_id[str(ep_tmdb_id)].append(ep_version)
 
+                            parent_lib_id = item_details.get('_SourceLibraryId')
+
                             if episodes_grouped_by_tmdb_id:
                                 for ep_tmdb_id, versions in episodes_grouped_by_tmdb_id.items():
                                     asset_details_list = []
                                     for v in versions:
                                         details = parse_full_asset_details(v)
-                                        details['source_library_id'] = v.get('_SourceLibraryId')
+                                        details['source_library_id'] = v.get('_SourceLibraryId') or parent_lib_id
                                         asset_details_list.append(details)
                                     asset_json = json.dumps(asset_details, ensure_ascii=False)
                                     
