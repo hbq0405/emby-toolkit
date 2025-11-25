@@ -57,7 +57,7 @@ def request_subscription():
         'title': details.get('title') or details.get('name') or item_name,
         'original_title': details.get('original_title') or details.get('original_name'),
         'release_date': details.get('release_date') or details.get('first_air_date'),
-        'poster_path': details.get('poster_path'), 'overview': details.get('overview')
+        'poster_path': details.get('poster_path'), 'overview': None
     }
 
     if is_vip or is_emby_admin:
