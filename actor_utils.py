@@ -412,7 +412,6 @@ def enrich_all_actor_aliases_task(
     force_full_update: bool = False
 ):
     """
-    【V9 - 终极防御性修复版】
     - 解决了在合并IMDb冲突记录时，由于emby_person_id等其他ID已存在于第三方记录而导致的二次唯一键冲突。
     - 合并逻辑现在会预先检查每个待合并的ID，如果发现新冲突，会尝试将冲突的ID从其旧记录中剥离，再赋给新记录。
     - 增强了日志记录，清晰地展示了每一步合并决策。
@@ -426,7 +425,7 @@ def enrich_all_actor_aliases_task(
     if run_duration_minutes > 0:
         end_time = start_time + run_duration_minutes * 60
         end_time_str = datetime.fromtimestamp(end_time).strftime('%Y-%m-%d %H:%M:%S')
-        logger.info(f"任务将运行 {run_duration_minutes} 分钟，预计在 {end_time_str} 左右自动停止。")
+        logger.info(f"  ➜ 任务将运行 {run_duration_minutes} 分钟，预计在 {end_time_str} 左右自动停止。")
 
     SYNC_INTERVAL_DAYS = sync_interval_days
     logger.info(f"  ➜ 同步冷却时间为 {SYNC_INTERVAL_DAYS} 天。")
@@ -471,7 +470,7 @@ def enrich_all_actor_aliases_task(
 
                 for i in range(0, total_tmdb, CHUNK_SIZE):
                     if (stop_event and stop_event.is_set()) or (time.time() >= end_time):
-                        logger.info("达到运行时长或收到停止信号，在 TMDb 下批次开始前结束。")
+                        logger.info("  🚫 达到运行时长或收到停止信号，在 TMDb 下批次开始前结束。")
                         break
 
                     progress = 5 + int((i / total_tmdb) * 55)
@@ -555,7 +554,7 @@ def enrich_all_actor_aliases_task(
                                     ON CONFLICT (tmdb_id) DO UPDATE SET {update_str}, last_updated_at = NOW()
                                 """
                                 cursor.executemany(sql_upsert_metadata, metadata_to_commit)
-                                logger.trace(f"成功批量写入 {len(metadata_to_commit)} 条演员元数据。")
+                                logger.trace(f"  ➜ 成功批量写入 {len(metadata_to_commit)} 条演员元数据。")
 
                             for imdb_id, tmdb_id in imdb_updates_to_commit:
                                 try:
@@ -574,7 +573,7 @@ def enrich_all_actor_aliases_task(
                                         source_actor = cursor.fetchone()
 
                                         if not target_actor or not source_actor or source_actor['map_id'] == target_actor['map_id']:
-                                            logger.warning(f"  ➜ 合并中止：源或目标记录不存在，或它们本就是同一条记录。")
+                                            logger.warning(f"  🚫 合并中止：源或目标记录不存在，或它们本就是同一条记录。")
                                             continue
 
                                         target_map_id = target_actor['map_id']
@@ -623,7 +622,7 @@ def enrich_all_actor_aliases_task(
                             logger.info("  ✅ 数据库更改已成功提交。")
 
                         except Exception as db_e:
-                            logger.error(f"数据库操作失败: {db_e}", exc_info=True)
+                            logger.error(f"  ➜ 数据库操作失败: {db_e}", exc_info=True)
                             conn.rollback()
             else:
                 logger.info("  ➜ 没有需要从 TMDb 补充或清理的演员。")
@@ -710,10 +709,10 @@ def enrich_all_actor_aliases_task(
 
                     except Exception as e:
                         conn.rollback()
-                        logger.error(f"处理演员 '{actor_primary_name}' (Douban: {actor_douban_id}) 时发生错误: {e}")
+                        logger.error(f"  ➜ 处理演员 '{actor_primary_name}' (Douban: {actor_douban_id}) 时发生错误: {e}")
                 
                 conn.commit()
-                logger.info(f"豆瓣信息补充完成，本轮共处理 {processed_count} 个。")
+                logger.info(f"  ➜ 豆瓣信息补充完成，本轮共处理 {processed_count} 个。")
             else:
                 logger.info("  ➜ 没有需要从豆瓣补充 IMDb ID 的演员。")
             # ▲▲▲ (此部分为您原始代码，保持不变) ▲▲▲
@@ -772,7 +771,7 @@ def enrich_all_actor_aliases_task(
 
                     except Exception as e:
                         conn.rollback()
-                        logger.error(f"为演员 '{actor_primary_name}' (Douban: {actor_douban_id}) 补充头像时发生错误: {e}")
+                        logger.error(f"  ➜ 为演员 '{actor_primary_name}' (Douban: {actor_douban_id}) 补充头像时发生错误: {e}")
                 
                 conn.commit()
             else:
@@ -783,7 +782,7 @@ def enrich_all_actor_aliases_task(
         logger.info("  🚫 演员数据补充任务被中止。")
         if conn: conn.rollback()
     except Exception as e:
-        logger.error(f"演员数据补充任务发生严重错误: {e}", exc_info=True)
+        logger.error(f"  ➜ 演员数据补充任务发生严重错误: {e}", exc_info=True)
         if conn: conn.rollback()
     finally:
         # 将关闭操作移到 finally 块，确保无论如何都能执行
