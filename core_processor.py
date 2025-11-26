@@ -273,14 +273,19 @@ class MediaProcessor:
                 # ★★★ 3. 处理季 (Season) ★★★
                 for season in seasons_details:
                     s_num = season.get('season_number')
-                    if s_num is None: continue # 跳过无效数据
+                    if s_num is None: continue 
                     
+                    try:
+                        s_num_int = int(s_num)
+                    except ValueError:
+                        continue
+
                     season_poster = season.get('poster_path')
                     if not season_poster:
                         season_poster = series_details.get('poster_path')
 
-                    # 匹配 Emby 季ID
-                    matched_emby_seasons = seasons_grouped_by_number.get(s_num, [])
+                    # 匹配 Emby 季ID (使用 int 键)
+                    matched_emby_seasons = seasons_grouped_by_number.get(s_num_int, [])
 
                     records_to_upsert.append({
                         "tmdb_id": str(season.get('id')), 
