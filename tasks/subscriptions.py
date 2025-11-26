@@ -131,6 +131,15 @@ def task_manual_subscribe_batch(processor, subscribe_requests: List[Dict]):
                     if use_gap_fill_resubscribe:
                         logger.info(f"  ➜ 检测到洗版开关已开启，为《{parent_title}》第 {season_num} 季启用洗版模式。")
                         mp_payload["best_version"] = 1
+                    elif "best_version" not in mp_payload:
+                        
+                        if check_series_completion(
+                            tmdb_id=int(parent_tmdb_id),
+                            api_key=tmdb_api_key,
+                            season_number=int(season_num),
+                            series_name=parent_title
+                        ):
+                            mp_payload["best_version"] = 1
 
                     parent_tmdb_id_for_preprocess = parent_tmdb_id
                     parent_title_for_preprocess = parent_title
