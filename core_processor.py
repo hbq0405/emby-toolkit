@@ -145,8 +145,7 @@ class MediaProcessor:
         douban_rating: Optional[float] = None
     ):
         """
-        - 实时元数据写入 (修复版 V2)。
-        - 修复：使用 get_series_children 替代通用扫描，确保剧集首次入库时能正确获取到季和集信息。
+        - 实时元数据写入。
         """
         if not item_details_from_emby:
             logger.error("  ➜ 写入元数据缓存失败：缺少 Emby 详情数据。")
@@ -193,14 +192,16 @@ class MediaProcessor:
             elif item_type == "Series":
                 series_details = source_data_package.get("series_details", source_data_package)
                 seasons_details = source_data_package.get("seasons_details", series_details.get("seasons", []))
+                # ★★★ 关键：如果第一步修复了，这里就能取到数据；否则这里是空的 ★★★
                 episodes_details = list(source_data_package.get("episodes_details", {}).values()) 
+                
                 parent_library_id = item_details_from_emby.get('_SourceLibraryId')
                 series_id = item_details_from_emby.get('Id')
 
-                # ★★★ 1. 获取并预处理所有 Emby 分集 (核心修复：使用 get_series_children) ★★★
+                # ★★★ 1. 获取并预处理所有 Emby 分集 (使用 get_series_children 确保完整性) ★★★
                 logger.info(f"  ➜ 正在为剧集 '{item_details_from_emby.get('Name')}' 获取所有分集资产信息...")
                 
-                # 定义需要的字段，确保包含资产信息
+                # 显式请求需要的字段
                 ep_fields = "Id,ParentIndexNumber,IndexNumber,MediaStreams,Container,Size,Path,ProviderIds,RunTimeTicks,DateCreated"
                 
                 emby_episode_versions = emby.get_series_children(
@@ -215,7 +216,7 @@ class MediaProcessor:
                 episodes_grouped_by_number = defaultdict(list)
                 for ep_version in emby_episode_versions:
                     try:
-                        # 注入 Library ID，因为 get_series_children 返回的项可能没有这个字段
+                        # 注入 Library ID
                         if parent_library_id:
                             ep_version['_SourceLibraryId'] = parent_library_id
                             
@@ -232,7 +233,7 @@ class MediaProcessor:
                     series_name_for_log=item_details_from_emby.get('Name')
                 ) or []
                 
-                emby_seasons_map = {} # {season_number: emby_season_item}
+                emby_seasons_map = {} 
                 for es in emby_seasons_list:
                     try:
                         idx = int(es.get("IndexNumber"))
@@ -303,6 +304,9 @@ class MediaProcessor:
                     records_to_upsert.append(season_record)
                 
                 # ★★★ 4. 处理分集 (Episode) ★★★
+                if not episodes_details:
+                    logger.warning(f"  ➜ [警告] 剧集 '{series_details.get('name')}' 的分集列表为空。请检查第一步修复是否已应用。")
+
                 for episode in episodes_details:
                     try:
                         s_num = int(episode.get('season_number'))
@@ -310,6 +314,7 @@ class MediaProcessor:
                     except (ValueError, TypeError):
                         continue
                     
+                    # 查找 Emby 版本
                     versions_of_episode = episodes_grouped_by_number.get((s_num, e_num))
 
                     final_runtime = episode.get('runtime')
@@ -335,6 +340,7 @@ class MediaProcessor:
                         "emby_item_ids_json": '[]'
                     }
                     
+                    # 补充 Emby 资产信息
                     if versions_of_episode:
                         all_emby_ids = [v.get('Id') for v in versions_of_episode]
                         all_asset_details = []
@@ -976,6 +982,9 @@ class MediaProcessor:
                     aggregated_tmdb_data = tmdb.aggregate_full_series_data_from_tmdb(int(tmdb_id), self.tmdb_api_key)
                     if aggregated_tmdb_data:
                         tmdb_details_for_extra = aggregated_tmdb_data.get("series_details")
+                        tmdb_details_for_extra['episodes_details'] = aggregated_tmdb_data.get("episodes_details")
+                        tmdb_details_for_extra['seasons_details'] = aggregated_tmdb_data.get("seasons_details")
+                        
                         all_episodes = list(aggregated_tmdb_data.get("episodes_details", {}).values())
                         authoritative_cast_source = _aggregate_series_cast_from_tmdb_data(aggregated_tmdb_data["series_details"], all_episodes)
             else:

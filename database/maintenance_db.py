@@ -594,24 +594,34 @@ def cleanup_deleted_media_item(item_id: str, item_name: str, item_type: str, ser
             
             with get_db_connection() as conn:
                 with conn.cursor() as cursor:
-                    # 1. 再次确保主记录状态 (双重保险)
+                    # 1. 标记主条目离线
                     cursor.execute(
                         "UPDATE media_metadata SET in_library = FALSE, emby_item_ids_json = '[]'::jsonb, asset_details_json = NULL WHERE tmdb_id = %s AND item_type = %s",
                         (target_tmdb_id_for_full_cleanup, target_item_type_for_full_cleanup)
                     )
 
-                    # 2. 清理 watchlist
-                    sql_reset_watchlist = """
-                        UPDATE media_metadata
-                        SET watching_status = 'NONE'
-                        WHERE 
-                            tmdb_id = %s 
-                            AND item_type = 'Series' 
-                            AND watching_status != 'NONE'
-                    """
-                    cursor.execute(sql_reset_watchlist, (target_tmdb_id_for_full_cleanup,))
-                    if cursor.rowcount > 0:
-                        logger.info(f"  ➜ 已将该剧集的智能追剧状态重置为'NONE'。")
+                    # ★★★ 新增：如果是剧集，必须级联标记所有子项（季、集）离线 ★★★
+                    if target_item_type_for_full_cleanup == 'Series':
+                        cursor.execute(
+                            """
+                            UPDATE media_metadata 
+                            SET in_library = FALSE, emby_item_ids_json = '[]'::jsonb, asset_details_json = NULL 
+                            WHERE parent_series_tmdb_id = %s AND item_type IN ('Season', 'Episode')
+                            """,
+                            (target_tmdb_id_for_full_cleanup,)
+                        )
+                        logger.info(f"  ➜ 已级联标记该剧集下的 {cursor.rowcount} 个子项(季/集)为离线。")
+
+                    # 2. 清理 watchlist (仅针对剧集)
+                    if target_item_type_for_full_cleanup == 'Series':
+                        sql_reset_watchlist = """
+                            UPDATE media_metadata
+                            SET watching_status = 'NONE'
+                            WHERE tmdb_id = %s AND item_type = 'Series' AND watching_status != 'NONE'
+                        """
+                        cursor.execute(sql_reset_watchlist, (target_tmdb_id_for_full_cleanup,))
+                        if cursor.rowcount > 0:
+                            logger.info(f"  ➜ 已将该剧集的智能追剧状态重置为'NONE'。")
 
                     # 3. 清理 resubscribe_index
                     if target_item_type_for_full_cleanup == 'Movie':
