@@ -285,6 +285,9 @@ const isPrivilegedUser = computed(() => {
 });
 const embyServerUrl = ref('');
 const embyServerId = ref('');
+// ★ 新增：注册重定向 URL
+const registrationRedirectUrl = ref('');
+
 const loading = ref(false);
 const subscribingId = ref(null);
 const mediaType = ref('movie');
@@ -409,6 +412,8 @@ const fetchEmbyConfig = async () => {
     const response = await axios.get('/api/config');
     embyServerUrl.value = response.data.emby_server_url;
     embyServerId.value = response.data.emby_server_id;
+    // ★ 获取 registration_redirect_url
+    registrationRedirectUrl.value = response.data.registration_redirect_url;
   } catch (error) {
     console.error('获取 Emby 配置失败:', error);
     message.error('获取 Emby 配置失败');
@@ -585,9 +590,17 @@ const handleSubscribe = async (media) => {
 // ... (所有剩余的辅助函数和生命周期钩子保持不变) ...
 const onImageError = (e) => { e.target.src = '/default-avatar.png'; };
 const handleClickCard = (media) => {
-  if (media.in_library && embyServerUrl.value && media.emby_item_id && embyServerId.value) {
-    const embyDetailUrl = `${embyServerUrl.value}/web/index.html#!/item?id=${media.emby_item_id}&serverId=${embyServerId.value}`;
-    window.open(embyDetailUrl, '_blank');
+  // ★ 修改后的跳转逻辑
+  if (media.in_library && media.emby_item_id && embyServerId.value) {
+    // 优先使用 registrationRedirectUrl，如果没有则使用 embyServerUrl
+    let baseUrl = registrationRedirectUrl.value || embyServerUrl.value;
+
+    if (baseUrl) {
+      // 去除末尾斜杠，防止双斜杠
+      baseUrl = baseUrl.replace(/\/+$/, '');
+      const embyDetailUrl = `${baseUrl}/web/index.html#!/item?id=${media.emby_item_id}&serverId=${embyServerId.value}`;
+      window.open(embyDetailUrl, '_blank');
+    }
   } else {
     const mediaTypeForUrl = media.media_type || mediaType.value;
     const tmdbDetailUrl = `https://www.themoviedb.org/${mediaTypeForUrl}/${media.id}`;
