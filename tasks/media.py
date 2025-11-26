@@ -221,19 +221,23 @@ def task_populate_metadata_cache(processor, batch_size: int = 50, force_full_upd
         if not libs_to_process_ids:
             raise ValueError("未在配置中指定要处理的媒体库。")
 
-        # 1. 获取数据库中所有已知的 Emby ID (用于比对)
-        known_emby_ids = set()
+        # 1. 获取数据库中所有已知的 Emby ID 及其在线状态 (用于比对)
+        # 修改：使用字典存储状态，而不仅仅是ID集合
+        known_emby_status = {} 
         if not force_full_update:
             with connection.get_db_connection() as conn:
                 cursor = conn.cursor()
+                # ★★★ 核心修改：移除 WHERE in_library = TRUE，获取全量状态以便精准判断 ★★★
                 cursor.execute("""
-                    SELECT jsonb_array_elements_text(emby_item_ids_json) AS emby_id
+                    SELECT jsonb_array_elements_text(emby_item_ids_json) AS emby_id, in_library
                     FROM media_metadata 
-                    WHERE in_library = TRUE
                 """)
-                # 使用 set 存储 ID，内存占用极小 (50万个ID约占用 50MB)
-                known_emby_ids = set(row['emby_id'] for row in cursor.fetchall())
-            logger.info(f"  ➜ 本地数据库在线 {len(known_emby_ids)} 个媒体项。")
+                # 构建 { 'emby_id': True/False } 的映射
+                known_emby_status = {row['emby_id']: row['in_library'] for row in cursor.fetchall()}
+            
+            # 统计当前在线的数量用于日志
+            active_count = sum(1 for v in known_emby_status.values() if v)
+            logger.info(f"  ➜ 本地数据库已知 {len(known_emby_status)} 个ID (其中在线: {active_count})。")
 
         # 2. 扫描 Emby (流式处理)
         task_manager.update_status_from_thread(10, f"阶段2/3: 扫描 Emby 并计算差异...")
@@ -274,15 +278,18 @@ def task_populate_metadata_cache(processor, batch_size: int = 50, force_full_upd
             item_type = item.get("Type")
             tmdb_id = item.get("ProviderIds", {}).get("Tmdb")
             
-            # 建立 Series ID -> TMDb ID 映射 (轻量级)
+            # --- 核心优化：即时丢弃判断 ---
             if item_type == "Series" and tmdb_id:
                 emby_sid_to_tmdb_id[item_id] = str(tmdb_id)
 
             # --- 核心优化：即时丢弃判断 ---
-            # 如果不是强制全量更新，且 ID 已知，则视为“干净”，直接跳过存储详细信息
-            # 注意：我们只记录 ID 到 current_scan_emby_ids 用于后续的删除检测
-            if not force_full_update and item_id in known_emby_ids:
-                continue
+            # ★★★ 核心修复2：显式检查 in_library 状态 ★★★
+            # 只有当 ID 存在于数据库中，且状态明确为 True (在线) 时，才视为“干净”并跳过
+            # 如果 ID 存在但状态为 False (离线)，则视为“重新上线”，不跳过，继续处理
+            if not force_full_update:
+                is_known_and_active = known_emby_status.get(item_id) is True
+                if is_known_and_active:
+                    continue
 
             # --- 以下逻辑仅针对 新增 或 变更 的项目 ---
             is_new_item = True # 能走到这里说明是新的或者强制更新的
