@@ -3,7 +3,7 @@
 from flask import Blueprint, request, jsonify
 import logging
 from typing import List, Tuple, Optional
-
+import time
 import tasks
 import task_manager
 import handler.moviepilot as moviepilot
@@ -175,6 +175,25 @@ def resubscribe_single_item():
         if not payload:
             return jsonify({"error": "构建订阅请求失败，请检查日志。"}), 500
         
+        # ======================================================================
+        # ★★★ 核心修改：先尝试取消旧订阅，确保洗版参数生效 ★★★
+        # ======================================================================
+        try:
+            tmdb_id = item_details.get('tmdb_id')
+            item_type = item_details.get('item_type')
+            season_number = item_details.get('season_number') if item_type == 'Season' else None
+            
+            logger.info(f"API: [单项洗版预处理] 正在检查并清理《{item_name}》的旧订阅...")
+            
+            if moviepilot.cancel_subscription(str(tmdb_id), item_type, processor.config, season=season_number):
+                logger.info(f"API: 旧订阅清理指令已发送，等待 2 秒以确保 MoviePilot 数据库同步...")
+                time.sleep(2) # <--- 增加延时，防止竞态条件
+            else:
+                logger.warning(f"API: 旧订阅清理失败（可能是网络问题），尝试强行提交新订阅...")
+        except Exception as e:
+            logger.error(f"API: [单项洗版预处理] 清理旧订阅时发生错误: {e}，继续尝试提交...")
+        # ======================================================================
+
         # 发送订阅
         if moviepilot.subscribe_with_custom_payload(payload, processor.config):
             settings_db.decrement_subscription_quota()
