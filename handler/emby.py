@@ -533,7 +533,7 @@ def get_all_library_versions(
 def fetch_all_emby_items_generator(base_url: str, api_key: str, library_ids: list, fields: str):
     """
     生成器：分页从 Emby 获取所有项目。
-    优化：逐个库遍历，并自动注入 _SourceLibraryId。
+    优化：逐个库遍历，并自动注入 _SourceLibraryId，解决资产数据缺失来源库ID的问题。
     """
     limit = 1000 
     headers = {
@@ -588,10 +588,11 @@ def fetch_all_emby_items_generator(base_url: str, api_key: str, library_ids: lis
                     
                 start_index += params['Limit']
                 
+                # 主动 GC，防止大循环内存累积
                 if start_index % 5000 == 0:
                     gc.collect()
                 
-                time.sleep(0.2)
+                time.sleep(0.1) # 稍微歇一下
                     
             except Exception as e:
                 logger.error(f"分页获取 Emby 项目失败 (Lib: {lib_id}, Index: {start_index}): {e}")
