@@ -578,7 +578,7 @@ def init_db():
                             cursor.execute(f"ALTER TABLE {table_name} DROP COLUMN IF EXISTS {column_name};")
                             logger.trace(f"    ➜ [数据库清理] 移除 '{table_name}.{column_name}' 列的操作已执行。")
 
-                    logger.info("  ➜ [数据库清理] 废弃对象清理完成。")
+                    logger.trace("  ➜ [数据库清理] 废弃对象清理完成。")
 
                 except Exception as e_cleanup:
                     logger.error(f"  ➜ [数据库清理] 清理废弃对象时发生错误: {e_cleanup}", exc_info=True)
