@@ -145,27 +145,22 @@ class MediaProcessor:
         douban_rating: Optional[float] = None
     ):
         """
-        - 实时元数据写入。
+        - 实时元数据写入 (修复版)。
+        - 修复：剧集首次入库时，季和集未正确标记为在库，且缺失资产数据的问题。
         """
         if not item_details_from_emby:
             logger.error("  ➜ 写入元数据缓存失败：缺少 Emby 详情数据。")
             return
+        
         def get_representative_runtime(emby_items, tmdb_runtime):
-            if not emby_items:
-                return tmdb_runtime
-            
-            # 收集所有版本的时长
+            if not emby_items: return tmdb_runtime
             runtimes = []
             for item in emby_items:
                 if item.get('RunTimeTicks'):
                     runtimes.append(round(item['RunTimeTicks'] / 600000000))
-            
-            # 如果有 Emby 数据，取最大值（通常大家希望看到加长版/导演剪辑版的时长）
-            if runtimes:
-                return max(runtimes)
-            
-            # 兜底
+            if runtimes: return max(runtimes)
             return tmdb_runtime
+
         try:
             from psycopg2.extras import execute_batch
             
@@ -196,15 +191,13 @@ class MediaProcessor:
                 records_to_upsert.append(movie_record)
 
             elif item_type == "Series":
-                # ★★★  1: 恢复 TMDb 元数据列表的定义 ★★★
                 series_details = source_data_package.get("series_details", source_data_package)
                 seasons_details = source_data_package.get("seasons_details", series_details.get("seasons", []))
                 episodes_details = list(source_data_package.get("episodes_details", {}).values()) 
                 parent_library_id = item_details_from_emby.get('_SourceLibraryId')
-
-                # ★★★  2: 获取并预处理所有 Emby 分集文件版本 ★★★
-                emby_episode_versions = []
                 series_id = item_details_from_emby.get('Id')
+
+                # ★★★ 1. 获取并预处理所有 Emby 分集 (强制 Int 键) ★★★
                 logger.info(f"  ➜ 正在为剧集 '{item_details_from_emby.get('Name')}' 获取所有分集文件版本...")
                 emby_episode_versions = emby.get_all_library_versions(
                     base_url=self.emby_url, api_key=self.emby_api_key, user_id=self.emby_user_id,
@@ -214,11 +207,28 @@ class MediaProcessor:
 
                 episodes_grouped_by_number = defaultdict(list)
                 for ep_version in emby_episode_versions:
-                    s_num = ep_version.get("ParentIndexNumber")
-                    e_num = ep_version.get("IndexNumber")
-                    if s_num is not None and e_num is not None:
+                    try:
+                        s_num = int(ep_version.get("ParentIndexNumber"))
+                        e_num = int(ep_version.get("IndexNumber"))
                         episodes_grouped_by_number[(s_num, e_num)].append(ep_version)
+                    except (ValueError, TypeError):
+                        continue
+
+                # ★★★ 2. 获取并预处理所有 Emby 季 (新增逻辑) ★★★
+                emby_seasons_list = emby.get_series_seasons(
+                    series_id=series_id, base_url=self.emby_url, 
+                    api_key=self.emby_api_key, user_id=self.emby_user_id,
+                    series_name_for_log=item_details_from_emby.get('Name')
+                ) or []
                 
+                emby_seasons_map = {} # {season_number: emby_season_item}
+                for es in emby_seasons_list:
+                    try:
+                        idx = int(es.get("IndexNumber"))
+                        emby_seasons_map[idx] = es
+                    except (ValueError, TypeError):
+                        continue
+
                 # ... (构建 series_record ) ...
                 series_record = {
                     "item_type": "Series", "tmdb_id": str(series_details.get('id')), "title": series_details.get('name'),
@@ -252,15 +262,17 @@ class MediaProcessor:
                 series_record['ignore_reason'] = None
                 records_to_upsert.append(series_record)
 
+                # ★★★ 3. 处理季 (Season) - 关联 Emby ID ★★★
                 for season in seasons_details:
-                    if season.get('season_number', 0) == 0: continue
+                    s_num = season.get('season_number')
+                    if s_num is None: continue
                     
                     # 没有季海报就用父剧海报
                     season_poster = season.get('poster_path')
                     if not season_poster:
                         season_poster = series_details.get('poster_path')
 
-                    records_to_upsert.append({
+                    season_record = {
                         "tmdb_id": str(season.get('id')), 
                         "item_type": "Season", 
                         "parent_series_tmdb_id": str(series_details.get('id')), 
@@ -268,32 +280,38 @@ class MediaProcessor:
                         "overview": season.get('overview'), 
                         "release_date": season.get('air_date'), 
                         "poster_path": season_poster, 
-                        "season_number": season.get('season_number')
-                    })
-                
-                # ★★★  遍历 TMDb 元数据列表，并从中查找 Emby 版本进行聚合 ★★★
-                for episode in episodes_details:
-                    # 1. 先提取季号和集号 (提到前面来)
-                    s_num = episode.get('season_number')
-                    e_num = episode.get('episode_number')
+                        "season_number": s_num,
+                        "in_library": False, # 默认 False
+                        "emby_item_ids_json": '[]'
+                    }
+
+                    # 检查 Emby 中是否存在该季
+                    if s_num in emby_seasons_map:
+                        emby_season = emby_seasons_map[s_num]
+                        season_record['in_library'] = True
+                        season_record['emby_item_ids_json'] = json.dumps([emby_season.get('Id')])
                     
-                    # 2. 先查找 Emby 版本 (提到前面来)
+                    records_to_upsert.append(season_record)
+                
+                # ★★★ 4. 处理分集 (Episode) - 强制 Int 匹配 ★★★
+                for episode in episodes_details:
+                    try:
+                        s_num = int(episode.get('season_number'))
+                        e_num = int(episode.get('episode_number'))
+                    except (ValueError, TypeError):
+                        continue
+                    
+                    # 查找 Emby 版本 (使用 Int 键)
                     versions_of_episode = episodes_grouped_by_number.get((s_num, e_num))
 
-                    # 3. ★★★ 计算时长逻辑 (Emby > TMDB) ★★★
-                    # 默认使用 TMDB 的时长
                     final_runtime = episode.get('runtime')
-                    
-                    # 如果找到了 Emby 文件，且文件里有真实时长，则覆盖
                     if versions_of_episode:
                         emby_data = versions_of_episode[0]
                         if emby_data.get('RunTimeTicks'):
-                            # 1分钟 = 600,000,000 Ticks
                             final_runtime = round(emby_data['RunTimeTicks'] / 600000000)
 
                     final_runtime = get_representative_runtime(versions_of_episode, episode.get('runtime'))
 
-                    # 4. 现在再创建记录，把算好的 final_runtime 放进去
                     episode_record = {
                         "tmdb_id": str(episode.get('id')), 
                         "item_type": "Episode", 
@@ -303,19 +321,19 @@ class MediaProcessor:
                         "release_date": episode.get('air_date'), 
                         "season_number": s_num, 
                         "episode_number": e_num,
-                        "runtime_minutes": final_runtime
+                        "runtime_minutes": final_runtime,
+                        "in_library": False,
+                        "asset_details_json": '[]',
+                        "emby_item_ids_json": '[]'
                     }
                     
-                    # 5. 补充 Emby 资产信息 (逻辑不变)
+                    # 补充 Emby 资产信息
                     if versions_of_episode:
                         all_emby_ids = [v.get('Id') for v in versions_of_episode]
                         all_asset_details = []
                         for v in versions_of_episode:
                             details = parse_full_asset_details(v)
-                            
-                            # 强制使用父剧集的 Library ID。
                             details['source_library_id'] = parent_library_id
-                            
                             all_asset_details.append(details)
                         
                         episode_record['asset_details_json'] = json.dumps(all_asset_details, ensure_ascii=False)
@@ -327,7 +345,7 @@ class MediaProcessor:
             if not records_to_upsert:
                 return
 
-            # ... (批量写入数据库) ...
+            # ... (批量写入数据库 - 保持不变) ...
             all_possible_columns = [
                 "tmdb_id", "item_type", "title", "original_title", "overview", "release_date", "release_year",
                 "original_language",
