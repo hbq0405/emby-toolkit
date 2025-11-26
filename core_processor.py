@@ -145,8 +145,8 @@ class MediaProcessor:
         douban_rating: Optional[float] = None
     ):
         """
-        - 实时元数据写入 (修复版)。
-        - 修复：剧集首次入库时，季和集未正确标记为在库，且缺失资产数据的问题。
+        - 实时元数据写入 (修复版 V2)。
+        - 修复：使用 get_series_children 替代通用扫描，确保剧集首次入库时能正确获取到季和集信息。
         """
         if not item_details_from_emby:
             logger.error("  ➜ 写入元数据缓存失败：缺少 Emby 详情数据。")
@@ -197,24 +197,35 @@ class MediaProcessor:
                 parent_library_id = item_details_from_emby.get('_SourceLibraryId')
                 series_id = item_details_from_emby.get('Id')
 
-                # ★★★ 1. 获取并预处理所有 Emby 分集 (强制 Int 键) ★★★
-                logger.info(f"  ➜ 正在为剧集 '{item_details_from_emby.get('Name')}' 获取所有分集文件版本...")
-                emby_episode_versions = emby.get_all_library_versions(
-                    base_url=self.emby_url, api_key=self.emby_api_key, user_id=self.emby_user_id,
-                    media_type_filter="Episode", parent_id=series_id,
-                    fields="Id,Type,ParentIndexNumber,IndexNumber,MediaStreams,Container,Size,Path,ProviderIds,RunTimeTicks,_SourceLibraryId"
+                # ★★★ 1. 获取并预处理所有 Emby 分集 (核心修复：使用 get_series_children) ★★★
+                logger.info(f"  ➜ 正在为剧集 '{item_details_from_emby.get('Name')}' 获取所有分集资产信息...")
+                
+                # 定义需要的字段，确保包含资产信息
+                ep_fields = "Id,ParentIndexNumber,IndexNumber,MediaStreams,Container,Size,Path,ProviderIds,RunTimeTicks,DateCreated"
+                
+                emby_episode_versions = emby.get_series_children(
+                    series_id=series_id,
+                    base_url=self.emby_url, 
+                    api_key=self.emby_api_key, 
+                    user_id=self.emby_user_id,
+                    include_item_types="Episode",
+                    fields=ep_fields
                 ) or []
 
                 episodes_grouped_by_number = defaultdict(list)
                 for ep_version in emby_episode_versions:
                     try:
+                        # 注入 Library ID，因为 get_series_children 返回的项可能没有这个字段
+                        if parent_library_id:
+                            ep_version['_SourceLibraryId'] = parent_library_id
+                            
                         s_num = int(ep_version.get("ParentIndexNumber"))
                         e_num = int(ep_version.get("IndexNumber"))
                         episodes_grouped_by_number[(s_num, e_num)].append(ep_version)
                     except (ValueError, TypeError):
                         continue
 
-                # ★★★ 2. 获取并预处理所有 Emby 季 (新增逻辑) ★★★
+                # ★★★ 2. 获取并预处理所有 Emby 季 ★★★
                 emby_seasons_list = emby.get_series_seasons(
                     series_id=series_id, base_url=self.emby_url, 
                     api_key=self.emby_api_key, user_id=self.emby_user_id,
@@ -262,12 +273,11 @@ class MediaProcessor:
                 series_record['ignore_reason'] = None
                 records_to_upsert.append(series_record)
 
-                # ★★★ 3. 处理季 (Season) - 关联 Emby ID ★★★
+                # ★★★ 3. 处理季 (Season) ★★★
                 for season in seasons_details:
                     s_num = season.get('season_number')
                     if s_num is None: continue
                     
-                    # 没有季海报就用父剧海报
                     season_poster = season.get('poster_path')
                     if not season_poster:
                         season_poster = series_details.get('poster_path')
@@ -281,11 +291,10 @@ class MediaProcessor:
                         "release_date": season.get('air_date'), 
                         "poster_path": season_poster, 
                         "season_number": s_num,
-                        "in_library": False, # 默认 False
+                        "in_library": False, 
                         "emby_item_ids_json": '[]'
                     }
 
-                    # 检查 Emby 中是否存在该季
                     if s_num in emby_seasons_map:
                         emby_season = emby_seasons_map[s_num]
                         season_record['in_library'] = True
@@ -293,7 +302,7 @@ class MediaProcessor:
                     
                     records_to_upsert.append(season_record)
                 
-                # ★★★ 4. 处理分集 (Episode) - 强制 Int 匹配 ★★★
+                # ★★★ 4. 处理分集 (Episode) ★★★
                 for episode in episodes_details:
                     try:
                         s_num = int(episode.get('season_number'))
@@ -301,7 +310,6 @@ class MediaProcessor:
                     except (ValueError, TypeError):
                         continue
                     
-                    # 查找 Emby 版本 (使用 Int 键)
                     versions_of_episode = episodes_grouped_by_number.get((s_num, e_num))
 
                     final_runtime = episode.get('runtime')
@@ -327,7 +335,6 @@ class MediaProcessor:
                         "emby_item_ids_json": '[]'
                     }
                     
-                    # 补充 Emby 资产信息
                     if versions_of_episode:
                         all_emby_ids = [v.get('Id') for v in versions_of_episode]
                         all_asset_details = []
