@@ -7,7 +7,7 @@ from typing import Optional, Dict, Any, List
 import logging
 from datetime import datetime, timedelta
 
-from handler.tmdb import get_movie_details
+from handler.tmdb import get_movie_details, get_tv_details
 import constants
 
 logger = logging.getLogger(__name__)
@@ -499,4 +499,91 @@ def is_movie_subscribable(movie_id: int, api_key: str, config: dict) -> bool:
             return False
 
     logger.warning(f"电影 {log_identifier} 未找到数字版或任何有效的影院上映日期，默认其不适合订阅。")
+    return False
+
+# +++ 剧集完结状态检查 (共享逻辑) +++
+def check_series_completion(tmdb_id: int, api_key: str, season_number: Optional[int] = None, series_name: str = "未知剧集") -> bool:
+    """
+    检查剧集或特定季是否已完结。
+    用于判断是否开启洗版模式 (best_version=1)。
+    
+    逻辑：
+    1. 剧集状态为 Ended/Canceled -> 视为完结
+    2. 最后一集播出日期已过 -> 视为完结
+    3. 最后一集播出超过30天 (防止数据缺失) -> 视为完结
+    4. 获取不到数据 -> 为了防止漏洗版，默认视为完结
+    """
+    if not api_key:
+        return False
+
+    today = datetime.now().date()
+    
+    try:
+        # 1. 优先检查剧集整体状态
+        show_details = get_tv_details(tmdb_id, api_key)
+
+        if show_details:
+            status = show_details.get('status', '')
+            if status in ['Ended', 'Canceled']:
+                logger.info(f"  ➜ 剧集《{series_name}》TMDb状态为 '{status}'，判定第 {season_number if season_number else 'All'} 季已完结。")
+                return True
+
+        # 2. 如果是查询特定季
+        if season_number is not None:
+            season_details = get_tv_details(tmdb_id, season_number, api_key)
+            
+            if not season_details or not season_details.get('episodes'):
+                logger.warning(f"  ➜ 无法获取《{series_name}》第 {season_number} 季详情，默认判定为已完结。")
+                return True
+            
+            episodes = season_details['episodes']
+            if not episodes:
+                return True
+
+            # A. 检查最后一集播出时间
+            last_episode = episodes[-1]
+            last_air_date_str = last_episode.get('air_date')
+
+            if last_air_date_str:
+                try:
+                    last_air_date = datetime.strptime(last_air_date_str, '%Y-%m-%d').date()
+                    if last_air_date <= today:
+                        logger.info(f"  ➜ 《{series_name}》第 {season_number} 季最后一集于 {last_air_date} 播出 (已过)，判定已完结。")
+                        return True
+                    else:
+                        logger.info(f"  ➜ 《{series_name}》第 {season_number} 季最后一集将于 {last_air_date} 播出 (未到)，判定未完结。")
+                        return False
+                except ValueError:
+                    pass
+
+            # B. 30天规则 (倒序检查)
+            for ep in reversed(episodes):
+                air_date_str = ep.get('air_date')
+                if air_date_str:
+                    try:
+                        air_date = datetime.strptime(air_date_str, '%Y-%m-%d').date()
+                        if air_date > today: return False # 有一集没播就是没完结
+                        
+                        if (today - air_date).days > 30:
+                            logger.info(f"  ➜ 《{series_name}》第 {season_number} 季最近一集播出 ({air_date}) 已超30天，判定已完结。")
+                            return True
+                    except ValueError:
+                        continue
+            
+            return True # 默认兜底
+
+        else:
+            # 3. 查询整剧 (Series类型) 且状态未 Ended
+            if show_details and (last_episode_to_air := show_details.get('last_episode_to_air')):
+                last_air_date_str = last_episode_to_air.get('air_date')
+                if last_air_date_str:
+                    last_air_date = datetime.strptime(last_air_date_str, '%Y-%m-%d').date()
+                    if last_air_date <= today:
+                        logger.info(f"  ➜ 剧集《{series_name}》的最新一集已播出，判定为可洗版状态。")
+                        return True
+                        
+    except Exception as e:
+        logger.warning(f"  ➜ 检查《{series_name}》完结状态失败: {e}，默认判定为已完结。")
+        return True
+    
     return False

@@ -17,8 +17,8 @@ import handler.tmdb as tmdb
 import handler.moviepilot as moviepilot
 import task_manager
 from handler import telegram
-from database import connection, settings_db, resubscribe_db, request_db, user_db, media_db
-from .helpers import _get_standardized_effect, _extract_quality_tag_from_filename, is_movie_subscribable
+from database import settings_db, request_db, user_db, media_db
+from .helpers import is_movie_subscribable, check_series_completion
 
 logger = logging.getLogger(__name__)
 
@@ -37,42 +37,6 @@ AUDIO_SUBTITLE_KEYWORD_MAP = {
     "sub_chi": ["CHS", "CHT", "中字", "简中", "繁中", "简", "繁"],
     "sub_eng": ["ENG", "英字"],
 }
-
-# --- 辅助函数：检查剧集或特定季是否完结，并返回洗版标志 ---
-def _check_and_get_series_best_version_flag(series_tmdb_id: int, tmdb_api_key: str, season_number: Optional[int] = None, series_name: str = "未知剧集") -> Optional[int]:
-    """
-    辅助函数：检查剧集或特定季是否完结，并返回洗版标志。
-    """
-    if not tmdb_api_key:
-        return None
-    
-    today = date.today()
-    try:
-        if season_number is not None:
-            # 检查单季是否完结
-            season_details = tmdb.get_tv_details(series_tmdb_id, season_number, tmdb_api_key)
-            if season_details and season_details.get('episodes'):
-                last_episode = season_details['episodes'][-1]
-                last_air_date_str = last_episode.get('air_date')
-                if last_air_date_str:
-                    last_air_date = datetime.strptime(last_air_date_str, '%Y-%m-%d').date()
-                    if last_air_date <= today:
-                        logger.info(f"  ➜ 《{series_name}》第 {season_number} 季已完结，将以洗版模式订阅。")
-                        return 1
-        else:
-            series_details = tmdb.get_tv_details(series_tmdb_id, tmdb_api_key)
-            if series_details and (last_episode_to_air := series_details.get('last_episode_to_air')):
-                last_air_date_str = last_episode_to_air.get('air_date')
-                if last_air_date_str:
-                    last_air_date = datetime.strptime(last_air_date_str, '%Y-%m-%d').date()
-                    if last_air_date <= today:
-                        logger.info(f"  ➜ 剧集《{series_name}》的最后一集已播出，将以洗版模式订阅。")
-                        return 1
-                        
-    except Exception as e_tmdb:
-        logger.warning(f"  ➜ 获取《{series_name}》详情失败: {e_tmdb}，将以普通模式订阅。")
-    
-    return None
 
 # ★★★ 手动动订阅任务 ★★★
 def task_manual_subscribe_batch(processor, subscribe_requests: List[Dict]):
@@ -382,6 +346,16 @@ def task_auto_subscribe(processor):
                     if is_from_gap_scan and use_gap_fill_resubscribe:
                         logger.info(f"  ➜ 检测到缺集扫描来源，且洗版开关已开启，为《{series_name}》第 {season_num} 季启用洗版模式。")
                         mp_payload["best_version"] = 1
+
+                    elif "best_version" not in mp_payload:
+                        # 如果已完结，则开启洗版模式
+                        if check_series_completion(
+                            int(parent_tmdb_id), 
+                            tmdb_api_key, 
+                            season_number=season_num, 
+                            series_name=series_name
+                        ):
+                            mp_payload["best_version"] = 1
                     
                     success = moviepilot.subscribe_with_custom_payload(mp_payload, config)
                 else:

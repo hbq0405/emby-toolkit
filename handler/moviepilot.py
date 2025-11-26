@@ -9,6 +9,7 @@ from datetime import datetime
 import handler.tmdb as tmdb
 import constants
 import utils 
+from tasks import helpers
 
 logger = logging.getLogger(__name__)
 
@@ -214,71 +215,6 @@ def smart_subscribe_series(series_info: dict, config: Dict[str, Any]) -> Optiona
     base_name, season_num = utils.parse_series_title_and_season(title)
     successful_subscriptions = []
 
-    def _is_season_fully_aired(tv_id: int, s_num: int, api_key: str) -> bool:
-        """
-        辅助函数：检查一季是否已完全播出。
-        """
-        try:
-            today = datetime.now().date()
-
-            # 1. 优先检查剧集整体状态 (TMDb Status)
-            show_details = tmdb.get_tv_details(tv_id, api_key)
-            if show_details:
-                status = show_details.get('status', '')
-                if status in ['Ended', 'Canceled']:
-                    logger.info(f"  ➜ 剧集 (ID: {tv_id}) TMDb状态为 '{status}'，直接判定 S{s_num} 已完结。")
-                    return True
-
-            # 2. 获取分季详情
-            season_details = tmdb.get_season_details_tmdb(tv_id, s_num, api_key)
-            if not season_details or not season_details.get('episodes'):
-                logger.warning(f"  ➜ 无法获取 TMDB ID {tv_id} S{s_num} 的剧集列表，默认判定为已完结。")
-                return True
-            
-            episodes = season_details['episodes']
-            if not episodes:
-                return True
-
-            # 3. 检查最后一集播出时间
-            last_episode = episodes[-1]
-            last_air_date_str = last_episode.get('air_date')
-
-            if last_air_date_str:
-                try:
-                    last_air_date = datetime.strptime(last_air_date_str, '%Y-%m-%d').date()
-                    if last_air_date < today:
-                        logger.info(f"  ➜ S{s_num} 最后一集于 {last_air_date} 播出 (已过)，判定已完结。")
-                        return True
-                    else:
-                        logger.info(f"  ➜ S{s_num} 最后一集将于 {last_air_date} 播出 (未到)，判定未完结。")
-                        return False
-                except ValueError:
-                    pass
-
-            # 4. 30天规则 / 缺失数据处理
-            for ep in reversed(episodes):
-                air_date_str = ep.get('air_date')
-                if air_date_str:
-                    try:
-                        air_date = datetime.strptime(air_date_str, '%Y-%m-%d').date()
-                        if air_date >= today:
-                            return False
-                        
-                        days_diff = (today - air_date).days
-                        if days_diff > 30:
-                            logger.info(f"  ➜ S{s_num} 最近一集播出 ({air_date}) 已超30天，判定已完结。")
-                            return True
-                        else:
-                            return False
-                    except ValueError:
-                        continue
-            
-            return True
-
-        except Exception as e:
-            logger.error(f"  ➜ 判断 S{s_num} 是否完结时发生错误: {e}，为防止漏洗版，默认判定已完结。")
-            return True
-
     # --- 情况一：标题中未解析出季号 ---
     if season_num is None:
         logger.info(f"'{title}'  ➜ 未指定季号，正在查询TMDb以决定订阅策略...")
@@ -294,7 +230,13 @@ def smart_subscribe_series(series_info: dict, config: Dict[str, Any]) -> Optiona
             logger.info(f"'{series_name}'  ➜ 是多季剧集，将为所有 {len(seasons_to_subscribe)} 个季分别提交订阅。")
             for season in seasons_to_subscribe:
                 current_season_num = season['season_number']
-                best_version = 1 if _is_season_fully_aired(tmdb_id, current_season_num, tmdb_api_key) else None
+                is_completed = helpers.check_series_completion(
+                    tmdb_id=tmdb_id, 
+                    api_key=tmdb_api_key, 
+                    season_number=current_season_num, 
+                    series_name=series_name
+                )
+                best_version = 1 if is_completed else None
                 
                 mp_payload = {
                     "name": series_name,
@@ -316,7 +258,13 @@ def smart_subscribe_series(series_info: dict, config: Dict[str, Any]) -> Optiona
             best_version = None
             if seasons_to_subscribe:
                 s_num_to_check = seasons_to_subscribe[0]['season_number']
-                best_version = 1 if _is_season_fully_aired(tmdb_id, s_num_to_check, tmdb_api_key) else None
+                is_completed = helpers.check_series_completion(
+                    tmdb_id=tmdb_id, 
+                    api_key=tmdb_api_key, 
+                    season_number=s_num_to_check, 
+                    series_name=series_name
+                )
+                best_version = 1 if is_completed else None
 
             mp_payload = {"name": series_name, "tmdbid": tmdb_id, "type": "电视剧"}
             if best_version:
@@ -332,7 +280,13 @@ def smart_subscribe_series(series_info: dict, config: Dict[str, Any]) -> Optiona
     # --- 情况二：标题中已解析出季号 ---
     else:
         logger.info(f"'{title}'  ➜ 已解析出季号: {season_num}，执行单季订阅。")
-        best_version = 1 if _is_season_fully_aired(tmdb_id, season_num, tmdb_api_key) else None
+        is_completed = helpers.check_series_completion(
+            tmdb_id=tmdb_id, 
+            api_key=tmdb_api_key, 
+            season_number=season_num, 
+            series_name=title 
+        )
+        best_version = 1 if is_completed else None
         
         parent_name = base_name
         parent_tmdb_id = tmdb_id
