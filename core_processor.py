@@ -145,9 +145,8 @@ class MediaProcessor:
         douban_rating: Optional[float] = None
     ):
         """
-        - 实时元数据写入 (V3 - 终极稳健版)。
-        - 修复：采用“父凭子贵”逻辑，只要有分集，季就强制在库。
-        - 优化：一次 API 调用同时获取季和集，减少网络开销，避免数据不同步。
+        - 实时元数据写入 (最终修复版)。
+        - 修复：确保剧集首次入库时，季和集能正确标记为在库，并写入资产数据。
         """
         if not item_details_from_emby:
             logger.error("  ➜ 写入元数据缓存失败：缺少 Emby 详情数据。")
@@ -193,59 +192,57 @@ class MediaProcessor:
 
             elif item_type == "Series":
                 series_details = source_data_package.get("series_details", source_data_package)
-                seasons_details = source_data_package.get("seasons_details")
-                if not seasons_details:
-                    seasons_details = series_details.get("seasons", [])
+                seasons_details = source_data_package.get("seasons_details", series_details.get("seasons", []))
+                # ★★★ 关键：如果第一步修复了，这里就能取到数据；否则这里是空的 ★★★
                 episodes_details = list(source_data_package.get("episodes_details", {}).values()) 
                 
                 parent_library_id = item_details_from_emby.get('_SourceLibraryId')
                 series_id = item_details_from_emby.get('Id')
 
-                # ★★★ 1. 一次性获取所有子项 (季 + 集) ★★★
-                logger.info(f"  ➜ 正在为剧集 '{item_details_from_emby.get('Name')}' 获取所有季和分集信息...")
+                # ★★★ 1. 获取并预处理所有 Emby 分集 (使用 get_series_children 确保完整性) ★★★
+                logger.info(f"  ➜ 正在为剧集 '{item_details_from_emby.get('Name')}' 获取所有分集资产信息...")
                 
-                # 请求所有必要字段
-                child_fields = "Id,Type,ParentIndexNumber,IndexNumber,MediaStreams,Container,Size,Path,ProviderIds,RunTimeTicks,DateCreated"
+                # 显式请求需要的字段
+                ep_fields = "Id,ParentIndexNumber,IndexNumber,MediaStreams,Container,Size,Path,ProviderIds,RunTimeTicks,DateCreated"
                 
-                all_children = emby.get_series_children(
+                emby_episode_versions = emby.get_series_children(
                     series_id=series_id,
                     base_url=self.emby_url, 
                     api_key=self.emby_api_key, 
                     user_id=self.emby_user_id,
-                    include_item_types="Season,Episode", # 同时获取
-                    fields=child_fields
+                    include_item_types="Episode",
+                    fields=ep_fields
                 ) or []
 
-                # --- 2. 构建索引 ---
-                emby_seasons_map = {}           # {season_num: season_item}
-                episodes_grouped_by_number = defaultdict(list) # {(s_num, e_num): [ep_items]}
-                seasons_with_episodes = set()   # {season_num} - 记录哪些季下面有分集
-
-                for child in all_children:
-                    # 注入 Library ID
-                    if parent_library_id:
-                        child['_SourceLibraryId'] = parent_library_id
-                    
-                    ctype = child.get("Type")
-                    
-                    if ctype == "Season":
-                        try:
-                            idx = int(child.get("IndexNumber"))
-                            emby_seasons_map[idx] = child
-                        except (ValueError, TypeError):
-                            logger.debug(f"  ➜ 跳过无索引号的季对象: {child.get('Name')} (ID: {child.get('Id')})")
-                            continue
+                episodes_grouped_by_number = defaultdict(list)
+                for ep_version in emby_episode_versions:
+                    try:
+                        # 注入 Library ID
+                        if parent_library_id:
+                            ep_version['_SourceLibraryId'] = parent_library_id
                             
-                    elif ctype == "Episode":
-                        try:
-                            s_num = int(child.get("ParentIndexNumber"))
-                            e_num = int(child.get("IndexNumber"))
-                            episodes_grouped_by_number[(s_num, e_num)].append(child)
-                            seasons_with_episodes.add(s_num) # 标记该季有分集
-                        except (ValueError, TypeError):
-                            continue
+                        s_num = int(ep_version.get("ParentIndexNumber"))
+                        e_num = int(ep_version.get("IndexNumber"))
+                        episodes_grouped_by_number[(s_num, e_num)].append(ep_version)
+                    except (ValueError, TypeError):
+                        continue
 
-                # ... (构建 series_record - 保持不变) ...
+                # ★★★ 2. 获取并预处理所有 Emby 季 ★★★
+                emby_seasons_list = emby.get_series_seasons(
+                    series_id=series_id, base_url=self.emby_url, 
+                    api_key=self.emby_api_key, user_id=self.emby_user_id,
+                    series_name_for_log=item_details_from_emby.get('Name')
+                ) or []
+                
+                emby_seasons_map = {} 
+                for es in emby_seasons_list:
+                    try:
+                        idx = int(es.get("IndexNumber"))
+                        emby_seasons_map[idx] = es
+                    except (ValueError, TypeError):
+                        continue
+
+                # ... (构建 series_record ) ...
                 series_record = {
                     "item_type": "Series", "tmdb_id": str(series_details.get('id')), "title": series_details.get('name'),
                     "original_title": series_details.get('original_name'), "overview": series_details.get('overview'),
@@ -278,7 +275,7 @@ class MediaProcessor:
                 series_record['ignore_reason'] = None
                 records_to_upsert.append(series_record)
 
-                # ★★★ 3. 处理季 (Season) - 逻辑增强 ★★★
+                # ★★★ 3. 处理季 (Season) ★★★
                 for season in seasons_details:
                     s_num = season.get('season_number')
                     if s_num is None: continue
@@ -300,23 +297,17 @@ class MediaProcessor:
                         "emby_item_ids_json": '[]'
                     }
 
-                    # 判定逻辑：
-                    # 1. 找到了 Emby 季对象 -> 在库
-                    # 2. 没找到季对象，但找到了该季的分集 -> 强制在库 (父凭子贵)
-                    emby_season = emby_seasons_map.get(s_num)
-                    has_episodes = s_num in seasons_with_episodes
-
-                    if emby_season:
+                    if s_num in emby_seasons_map:
+                        emby_season = emby_seasons_map[s_num]
                         season_record['in_library'] = True
                         season_record['emby_item_ids_json'] = json.dumps([emby_season.get('Id')])
-                    elif has_episodes:
-                        # 这是一个“隐形季”（有分集但没季条目），我们标记为在库，但没有ID
-                        season_record['in_library'] = True
-                        # emby_item_ids_json 保持为空数组
                     
                     records_to_upsert.append(season_record)
                 
                 # ★★★ 4. 处理分集 (Episode) ★★★
+                if not episodes_details:
+                    logger.warning(f"  ➜ [警告] 剧集 '{series_details.get('name')}' 的分集列表为空。请检查第一步修复是否已应用。")
+
                 for episode in episodes_details:
                     try:
                         s_num = int(episode.get('season_number'))
@@ -324,6 +315,7 @@ class MediaProcessor:
                     except (ValueError, TypeError):
                         continue
                     
+                    # 查找 Emby 版本
                     versions_of_episode = episodes_grouped_by_number.get((s_num, e_num))
 
                     final_runtime = episode.get('runtime')
@@ -349,6 +341,7 @@ class MediaProcessor:
                         "emby_item_ids_json": '[]'
                     }
                     
+                    # 补充 Emby 资产信息
                     if versions_of_episode:
                         all_emby_ids = [v.get('Id') for v in versions_of_episode]
                         all_asset_details = []
