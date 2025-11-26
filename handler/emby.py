@@ -3,6 +3,7 @@
 import requests
 import concurrent.futures
 import os
+import gc
 import shutil
 import time
 import threading
@@ -528,6 +529,73 @@ def get_all_library_versions(
         update_status_callback(80, "媒体项索引完成，即将进行本地数据比对...")
         
     return all_items
+# --- 分页生成器 ---
+def fetch_all_emby_items_generator(base_url: str, api_key: str, library_ids: list, fields: str):
+    """
+    生成器：分页从 Emby 获取所有项目。
+    优化：逐个库遍历，并自动注入 _SourceLibraryId。
+    """
+    limit = 1000 
+    headers = {
+        'X-Emby-Token': api_key,
+        'Content-Type': 'application/json'
+    }
+    url = f"{base_url.rstrip('/')}/Items"
+
+    # 确保 library_ids 是列表
+    target_libs = library_ids if library_ids else [None]
+
+    for lib_id in target_libs:
+        start_index = 0
+        while True:
+            params = {
+                'Recursive': 'true',
+                'Fields': fields,
+                'StartIndex': start_index,
+                'Limit': limit,
+                'IncludeItemTypes': "Movie,Series,Season,Episode",
+            }
+            if lib_id:
+                params['ParentId'] = lib_id
+
+            try:
+                # 增加超时时间
+                response = requests.get(url, params=params, headers=headers, timeout=45)
+                
+                # 简单的 500 错误重试逻辑
+                if response.status_code == 500:
+                    time.sleep(2)
+                    params['Limit'] = 500
+                    response = requests.get(url, params=params, headers=headers, timeout=60)
+
+                response.raise_for_status()
+                data = response.json()
+                items = data.get('Items', [])
+                
+                if not items:
+                    break
+                    
+                for item in items:
+                    # ★★★ 核心修复：在这里直接注入来源库 ID ★★★
+                    # 这样后续处理 asset_details 时就能直接读到了，无需反查
+                    if lib_id:
+                        item['_SourceLibraryId'] = lib_id
+                    
+                    yield item
+                
+                if len(items) < params['Limit']:
+                    break
+                    
+                start_index += params['Limit']
+                
+                if start_index % 5000 == 0:
+                    gc.collect()
+                
+                time.sleep(0.2)
+                    
+            except Exception as e:
+                logger.error(f"分页获取 Emby 项目失败 (Lib: {lib_id}, Index: {start_index}): {e}")
+                break
 # ✨✨✨ 获取项目，并为每个项目添加来源库ID ✨✨✨
 def get_emby_library_items(
     base_url: str,

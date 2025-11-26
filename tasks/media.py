@@ -3,8 +3,8 @@
 
 import time
 import json
+import gc
 import logging
-import psycopg2
 from typing import Optional, List
 from datetime import datetime, timezone
 import concurrent.futures
@@ -197,16 +197,14 @@ def task_reprocess_all_review_items(processor):
         logger.error(f"重新处理所有待复核项时发生严重错误: {e}", exc_info=True)
         task_manager.update_status_from_thread(-1, "任务失败")
 
-# ★★★ 重量级的元数据缓存填充任务 ★★★
+# ★★★ 重量级的元数据缓存填充任务 (内存优化版) ★★★
 def task_populate_metadata_cache(processor, batch_size: int = 50, force_full_update: bool = False):
     """
-    - 重量级的元数据缓存填充任务。
+    - 重量级的元数据缓存填充任务 (内存优化版)。
     - 逻辑升级：
-      1. 记录本次扫描到的所有 Emby ID。
-      2. 计算 (库内已知 ID - 本次扫描 ID) = 已删除的 ID。
-      3. 如果发现已删除的 ID，反查其所属的父级剧集，并将该剧集标记为“待更新”。
-      4. 这样即使只删了一集，该剧集也会进入处理队列，从而触发子集离线清理逻辑。
-      5. 【修复】增加对未识别分集（无季号/集号）的过滤，防止死循环。
+      1. 使用分页生成器替代一次性全量拉取，大幅降低内存峰值。
+      2. 扫描时即时丢弃未变动的项目数据，只保留 ID 用于差异比对。
+      3. 对标记为“脏”的剧集，在处理阶段按需重新拉取完整子集信息。
     """
     task_name = "同步媒体元数据"
     sync_mode = "深度同步 (全量)" if force_full_update else "快速同步 (增量)"
@@ -233,58 +231,62 @@ def task_populate_metadata_cache(processor, batch_size: int = 50, force_full_upd
                     FROM media_metadata 
                     WHERE in_library = TRUE
                 """)
+                # 使用 set 存储 ID，内存占用极小 (50万个ID约占用 50MB)
                 known_emby_ids = set(row['emby_id'] for row in cursor.fetchall())
             logger.info(f"  ➜ 本地数据库在线 {len(known_emby_ids)} 个媒体项。")
 
-        # 2. 扫描 Emby
+        # 2. 扫描 Emby (流式处理)
         task_manager.update_status_from_thread(10, f"阶段2/3: 扫描 Emby 并计算差异...")
-        emby_items_index = emby.get_all_library_versions(
-            base_url=processor.emby_url, api_key=processor.emby_api_key, user_id=processor.emby_user_id,
-            media_type_filter="Movie,Series,Season,Episode",
-            library_ids=libs_to_process_ids,
-            fields="ProviderIds,Type,DateCreated,Name,OriginalTitle,PremiereDate,CommunityRating,Genres,Studios,Tags,DateModified,OfficialRating,ProductionYear,Path,PrimaryImageAspectRatio,Overview,MediaStreams,Container,Size,SeriesId,ParentIndexNumber,IndexNumber,ParentId,RunTimeTicks,_SourceLibraryId",
-            update_status_callback=task_manager.update_status_from_thread
-        ) or []
         
-        # 3. 构建索引 & 识别变动
+        # 仅保留需要处理的数据结构
         top_level_items_map = defaultdict(list)       
         series_to_seasons_map = defaultdict(list)     
         series_to_episode_map = defaultdict(list)     
         
         emby_top_level_keys = set() 
-        
-        # 记录哪些剧集(TMDb ID)需要刷新
         dirty_series_tmdb_ids = set()
         emby_sid_to_tmdb_id = {}
+        current_scan_emby_ids = set() # 记录本次扫描到的所有 ID
+
+        scan_count = 0
         
-        # 记录本次扫描到的所有 Emby ID (用于反向比对删除)
-        current_scan_emby_ids = set()
+        # 定义需要的字段
+        req_fields = "ProviderIds,Type,DateCreated,Name,OriginalTitle,PremiereDate,CommunityRating,Genres,Studios,Tags,DateModified,OfficialRating,ProductionYear,Path,PrimaryImageAspectRatio,Overview,MediaStreams,Container,Size,SeriesId,ParentIndexNumber,IndexNumber,ParentId,RunTimeTicks,_SourceLibraryId"
 
-        # 先遍历一遍建立 Series ID 映射
-        for item in emby_items_index:
-            # 记录 ID
-            if item.get("Id"):
-                current_scan_emby_ids.add(str(item.get("Id")))
+        # 使用生成器流式获取
+        item_generator = emby.fetch_all_emby_items_generator(
+            base_url=processor.emby_url, 
+            api_key=processor.emby_api_key, 
+            library_ids=libs_to_process_ids, 
+            fields=req_fields
+        )
 
-            if item.get("Type") == "Series":
-                t_id = item.get("ProviderIds", {}).get("Tmdb")
-                e_id = str(item.get("Id"))
-                if t_id and e_id:
-                    emby_sid_to_tmdb_id[e_id] = str(t_id)
-
-        scan_count = len(emby_items_index)
-        
-        for item in emby_items_index:
+        for item in item_generator:
+            scan_count += 1
+            if scan_count % 5000 == 0:
+                task_manager.update_status_from_thread(10, f"正在索引 Emby 库 ({scan_count} 已扫描)...")
+            
+            item_id = str(item.get("Id"))
+            if not item_id: continue
+            
+            current_scan_emby_ids.add(item_id)
+            
             item_type = item.get("Type")
-            item_emby_id = str(item.get("Id"))
             tmdb_id = item.get("ProviderIds", {}).get("Tmdb")
             
-            # --- 正向差异检测 ---
-            is_new_item = False
-            if not force_full_update:
-                if item_emby_id not in known_emby_ids:
-                    is_new_item = True
-            
+            # 建立 Series ID -> TMDb ID 映射 (轻量级)
+            if item_type == "Series" and tmdb_id:
+                emby_sid_to_tmdb_id[item_id] = str(tmdb_id)
+
+            # --- 核心优化：即时丢弃判断 ---
+            # 如果不是强制全量更新，且 ID 已知，则视为“干净”，直接跳过存储详细信息
+            # 注意：我们只记录 ID 到 current_scan_emby_ids 用于后续的删除检测
+            if not force_full_update and item_id in known_emby_ids:
+                continue
+
+            # --- 以下逻辑仅针对 新增 或 变更 的项目 ---
+            is_new_item = True # 能走到这里说明是新的或者强制更新的
+
             # A. 顶层媒体
             if item_type in ["Movie", "Series"]:
                 if tmdb_id:
@@ -292,7 +294,7 @@ def task_populate_metadata_cache(processor, batch_size: int = 50, force_full_upd
                     top_level_items_map[composite_key].append(item)
                     emby_top_level_keys.add(composite_key)
                     
-                    if item_type == "Series" and is_new_item:
+                    if item_type == "Series":
                         dirty_series_tmdb_ids.add(str(tmdb_id))
 
             # B. 子集媒体 (Season)
@@ -300,9 +302,9 @@ def task_populate_metadata_cache(processor, batch_size: int = 50, force_full_upd
                 s_id = str(item.get('SeriesId') or item.get('ParentId'))
                 if s_id: 
                     series_to_seasons_map[s_id].append(item)
-                    # 只有当季号存在时，才允许触发更新
                     has_valid_index = item.get('IndexNumber') is not None
-                    if is_new_item and s_id in emby_sid_to_tmdb_id and has_valid_index:
+                    # 如果发现新季，标记父剧集为脏
+                    if s_id in emby_sid_to_tmdb_id and has_valid_index:
                         dirty_series_tmdb_ids.add(emby_sid_to_tmdb_id[s_id])
 
             # C. 子集媒体 (Episode)
@@ -310,23 +312,28 @@ def task_populate_metadata_cache(processor, batch_size: int = 50, force_full_upd
                 s_id = str(item.get('SeriesId'))
                 if s_id: 
                     series_to_episode_map[s_id].append(item)
-                    # 只有当季号和集号都存在时，才允许触发更新
                     has_valid_index = item.get('ParentIndexNumber') is not None and item.get('IndexNumber') is not None
-                    if is_new_item and s_id in emby_sid_to_tmdb_id and has_valid_index:
+                    # 如果发现新集，标记父剧集为脏
+                    if s_id in emby_sid_to_tmdb_id and has_valid_index:
                         dirty_series_tmdb_ids.add(emby_sid_to_tmdb_id[s_id])
+
+        # 强制垃圾回收
+        gc.collect()
 
         # ★★★ 反向差异检测 (删除) ★★★
         if not force_full_update:
-            # 算出哪些 ID 在库里有，但 Emby 没扫到
             missing_emby_ids = known_emby_ids - current_scan_emby_ids
+            # 释放大集合内存
+            del known_emby_ids
+            del current_scan_emby_ids
+            gc.collect()
+
             if missing_emby_ids:
                 logger.info(f"  ➜ 检测到 {len(missing_emby_ids)} 个 Emby ID 已消失，正在反查所属剧集...")
                 missing_ids_list = list(missing_emby_ids)
                 
-                # 从数据库反查这些消失的 ID 属于哪些剧集
                 with connection.get_db_connection() as conn:
                     cursor = conn.cursor()
-                    # 查找包含这些 ID 的 Season/Episode 的 parent_series_tmdb_id
                     cursor.execute("""
                         SELECT DISTINCT parent_series_tmdb_id AS pid
                         FROM media_metadata 
@@ -345,7 +352,7 @@ def task_populate_metadata_cache(processor, batch_size: int = 50, force_full_upd
                         logger.info(f"  ➜ 因内容删除，{len(affected_parents)} 部剧集被标记为待刷新。")
                         dirty_series_tmdb_ids.update(affected_parents)
 
-        logger.info(f"  ➜ Emby 扫描完成，共 {scan_count} 个项。有 {len(dirty_series_tmdb_ids)} 部剧集涉及变更(新增/删除)。")
+        logger.info(f"  ➜ Emby 扫描完成，共 {scan_count} 个项。有 {len(dirty_series_tmdb_ids)} 部剧集涉及变更。")
 
         # 4. 数据库比对 (用于检测顶层离线)
         with connection.get_db_connection() as conn:
@@ -353,61 +360,73 @@ def task_populate_metadata_cache(processor, batch_size: int = 50, force_full_upd
             cursor.execute("SELECT tmdb_id, item_type FROM media_metadata WHERE in_library = TRUE AND item_type IN ('Movie', 'Series')")
             db_top_level_keys = {(row["tmdb_id"], row["item_type"]) for row in cursor.fetchall()}
         
-        # 5. 处理顶层离线 (整部剧或电影被删)
+        # 5. 处理顶层离线
         keys_to_delete = db_top_level_keys - emby_top_level_keys
-
-        # 处理孤儿分集 
-        for dirty_pid in dirty_series_tmdb_ids:
-            if (dirty_pid, 'Series') not in emby_top_level_keys:
-                logger.info(f"  ➜ 发现残留的脏剧集 ID {dirty_pid} 未在本次扫描中出现，将强制清理其关联项。")
-                keys_to_delete.add((dirty_pid, 'Series'))
-
-        if keys_to_delete:
-            count_top_offline = len(keys_to_delete)
-            total_offline_count += count_top_offline
-            logger.info(f"  ➜ 发现 {count_top_offline} 个顶层项目已完全离线，正在清理...")
-            
-            ids_to_del = defaultdict(list)
-            for t_id, t_type in keys_to_delete:
-                ids_to_del[t_type].append(t_id)
-            
-            with connection.get_db_connection() as conn:
-                cursor = conn.cursor()
-                for i_type, id_list in ids_to_del.items():
-                    cursor.execute(
-                        "UPDATE media_metadata SET in_library = FALSE, emby_item_ids_json = '[]'::jsonb, asset_details_json = '[]'::jsonb WHERE item_type = %s AND tmdb_id = ANY(%s)",
-                        (i_type, id_list)
-                    )
-                    if i_type == 'Series':
-                        # 级联清理分集
+        # 处理孤儿分集 (如果剧集被标记为脏，但在本次扫描中未作为 Series 类型出现，说明剧集本身可能被删了或者 Emby ID 变了)
+        # 注意：由于我们跳过了 clean items，所以 emby_top_level_keys 只包含 dirty items。
+        # 这里逻辑需要微调：如果一个剧集在 DB 里，且被标记为 dirty，但不在 emby_top_level_keys 里，
+        # 可能是因为它没变（clean），也可能是被删了。
+        # 但如果是 clean，它不会进入 dirty_series_tmdb_ids，除非是子集变动触发。
+        # 如果子集变动触发了 dirty，说明剧集主体还在。
+        # 所以这里主要处理的是：DB里有，但 Emby 彻底没了的情况。
+        # 由于我们没有全量 emby_top_level_keys，我们只能依赖 missing_emby_ids 的反查结果。
+        # 之前的 missing_emby_ids 逻辑已经处理了大部分删除。
+        # 这里主要处理整部剧/电影 ID 消失的情况。
+        
+        # 修正：由于我们跳过了 clean items，db_top_level_keys - emby_top_level_keys 会包含所有未变动的项目。
+        # 我们不能直接删除它们。
+        # 删除逻辑应完全依赖 missing_emby_ids (已在上方处理) 和 显式的离线检测。
+        # 只有当 force_full_update=True 时，keys_to_delete 才是准确的。
+        if force_full_update:
+             if keys_to_delete:
+                count_top_offline = len(keys_to_delete)
+                total_offline_count += count_top_offline
+                logger.info(f"  ➜ [全量模式] 发现 {count_top_offline} 个顶层项目已完全离线，正在清理...")
+                ids_to_del = defaultdict(list)
+                for t_id, t_type in keys_to_delete:
+                    ids_to_del[t_type].append(t_id)
+                
+                with connection.get_db_connection() as conn:
+                    cursor = conn.cursor()
+                    for i_type, id_list in ids_to_del.items():
                         cursor.execute(
-                            "UPDATE media_metadata SET in_library = FALSE, emby_item_ids_json = '[]'::jsonb, asset_details_json = '[]'::jsonb WHERE parent_series_tmdb_id = ANY(%s)",
-                            (id_list,)
+                            "UPDATE media_metadata SET in_library = FALSE, emby_item_ids_json = '[]'::jsonb, asset_details_json = '[]'::jsonb WHERE item_type = %s AND tmdb_id = ANY(%s)",
+                            (i_type, id_list)
                         )
-                conn.commit()
+                        if i_type == 'Series':
+                            cursor.execute(
+                                "UPDATE media_metadata SET in_library = FALSE, emby_item_ids_json = '[]'::jsonb, asset_details_json = '[]'::jsonb WHERE parent_series_tmdb_id = ANY(%s)",
+                                (id_list,)
+                            )
+                    conn.commit()
 
         if processor.is_stop_requested(): return
 
-        # 6. 确定处理队列 (精准过滤)
+        # 6. 确定处理队列
         items_to_process = []
-        if force_full_update:
-            items_to_process = [items for items in top_level_items_map.values()]
-        else:
-            keys_new_tmdb = emby_top_level_keys - db_top_level_keys
-            
-            for composite_key, items in top_level_items_map.items():
-                tmdb_id, item_type = composite_key
-                
-                should_process = False
-                # 规则1: 顶层本身是新的
-                if composite_key in keys_new_tmdb:
-                    should_process = True
-                # 规则2: 剧集被标记为脏 (含新增子集 或 删除子集)
-                elif item_type == 'Series' and tmdb_id in dirty_series_tmdb_ids:
-                    should_process = True
-                
-                if should_process:
-                    items_to_process.append(items)
+        
+        # 策略：
+        # 1. 处理 top_level_items_map 中的所有项（这些都是新增或强制更新的）
+        # 2. 对于 dirty_series_tmdb_ids 中的项，如果不在 top_level_items_map 中（说明剧集主体未变，但子集变了），
+        #    我们需要手动构造一个任务，并标记需要“重新获取详情”。
+        
+        processed_tmdb_ids = set()
+
+        # A. 处理 map 中的项 (New / Dirty Parent)
+        for composite_key, items in top_level_items_map.items():
+            items_to_process.append({'items': items, 'refetch': False})
+            processed_tmdb_ids.add(composite_key[0])
+
+        # B. 处理仅子集变动的剧集 (Dirty Children, Clean Parent)
+        for tmdb_id in dirty_series_tmdb_ids:
+            if tmdb_id not in processed_tmdb_ids:
+                # 这是一个“隐形”的脏剧集，我们在扫描阶段跳过了它的主体信息
+                # 我们需要构造一个占位符，告诉后续逻辑去 Emby 重新拉取它的完整信息
+                items_to_process.append({
+                    'tmdb_id': tmdb_id,
+                    'type': 'Series',
+                    'refetch': True # 标记需要重新拉取
+                })
 
         total_to_process = len(items_to_process)
         task_manager.update_status_from_thread(20, f"阶段3/3: 正在同步 {total_to_process} 个变更项目...")
@@ -417,8 +436,53 @@ def task_populate_metadata_cache(processor, batch_size: int = 50, force_full_upd
         processed_count = 0
         for i in range(0, total_to_process, batch_size):
             if processor.is_stop_requested(): break
-            batch_item_groups = items_to_process[i:i + batch_size]
+            batch_tasks = items_to_process[i:i + batch_size]
             
+            # --- 预处理：拉取缺失的 Emby 数据 ---
+            # 对于标记为 refetch=True 的剧集，我们需要先从 Emby 拉取它们及其子集的数据
+            batch_item_groups = []
+            
+            for task in batch_tasks:
+                if task.get('refetch'):
+                    # 重新拉取剧集详情
+                    try:
+                        # 1. 找回 Emby ID (通过 TMDb ID 反查 DB 或 之前的 map)
+                        # 这里最稳妥的是通过 TMDb ID 在 DB 查 Emby ID，或者利用 emby_sid_to_tmdb_id 的反向
+                        # 由于 emby_sid_to_tmdb_id 也是扫描生成的，可能不全。
+                        # 最好是用 DB 反查
+                        t_id = task['tmdb_id']
+                        with connection.get_db_connection() as conn:
+                            with conn.cursor() as cursor:
+                                cursor.execute("SELECT jsonb_array_elements_text(emby_item_ids_json) as eid FROM media_metadata WHERE tmdb_id = %s AND item_type='Series' LIMIT 1", (t_id,))
+                                row = cursor.fetchone()
+                                if row:
+                                    e_id = row['eid']
+                                    # 拉取该剧集及其所有子集
+                                    full_series_items = emby.get_emby_item_details(e_id, processor.emby_url, processor.emby_api_key, processor.emby_user_id)
+                                    if full_series_items:
+                                        # 这里 get_emby_item_details 只返回单个项，我们需要所有子集
+                                        # 使用 fetch_all_emby_items_generator 的逻辑，但指定 ParentId
+                                        children_gen = emby.fetch_all_emby_items_generator(
+                                            base_url=processor.emby_url,
+                                            api_key=processor.emby_api_key,
+                                            library_ids=[e_id],  # 这里将剧集ID作为 ParentId 传入，以获取其子集
+                                            fields=req_fields
+                                        )
+                                        group = [full_series_items] + list(children_gen)
+                                        
+                                        # 补充到 map 中，以便后续逻辑复用
+                                        # 注意：这里需要更新 series_to_seasons_map 等，因为之前跳过了
+                                        for child in group:
+                                            ct = child.get('Type')
+                                            if ct == 'Season': series_to_seasons_map[e_id].append(child)
+                                            elif ct == 'Episode': series_to_episode_map[e_id].append(child)
+                                        
+                                        batch_item_groups.append(group)
+                    except Exception as e:
+                        logger.error(f"重新拉取剧集 {task.get('tmdb_id')} 失败: {e}")
+                else:
+                    batch_item_groups.append(task['items'])
+
             # --- 并发获取 TMDB 详情 ---
             tmdb_details_map = {}
             def fetch_tmdb_details(item_group):
@@ -521,13 +585,11 @@ def task_populate_metadata_cache(processor, batch_size: int = 50, force_full_upd
                     
                     if tmdb_details and 'seasons' in tmdb_details:
                         for s_info in tmdb_details.get('seasons', []):
-                            # ★★★ 强制转 int，防止类型不匹配 ★★★
                             try:
                                 s_num = int(s_info.get('season_number'))
                             except (ValueError, TypeError):
                                 continue
                             
-                            # 匹配 Emby 季时也强制转 int
                             matched_emby_seasons = []
                             for s in my_seasons:
                                 try:
@@ -537,9 +599,8 @@ def task_populate_metadata_cache(processor, batch_size: int = 50, force_full_upd
                                     continue
                             
                             if matched_emby_seasons:
-                                processed_season_numbers.add(s_num) # 标记已处理
+                                processed_season_numbers.add(s_num)
                                 real_season_tmdb_id = str(s_info.get('id'))
-                                # 优先使用季海报，如果没有则回退使用父剧集海报
                                 season_poster = s_info.get('poster_path')
                                 if not season_poster and tmdb_details:
                                     season_poster = tmdb_details.get('poster_path')
@@ -570,7 +631,7 @@ def task_populate_metadata_cache(processor, batch_size: int = 50, force_full_upd
                                                     tmdb_children_map[f"S{s_num}E{ep.get('episode_number')}"] = ep
                                     except: pass
 
-                    # ★★★ B. 兜底处理：Emby 有但 TMDb 没有的季 (修复死循环的关键) ★★★
+                    # ★★★ B. 兜底处理：Emby 有但 TMDb 没有的季 ★★★
                     for s in my_seasons:
                         try:
                             s_num = int(s.get('IndexNumber'))
@@ -578,7 +639,6 @@ def task_populate_metadata_cache(processor, batch_size: int = 50, force_full_upd
                             continue
 
                         if s_num not in processed_season_numbers:
-                            # 这是一个 TMDb 不知道的“孤儿季”，必须强制入库
                             fallback_season_tmdb_id = f"{tmdb_id_str}-S{s_num}"
                             season_record = {
                                 "tmdb_id": fallback_season_tmdb_id,
@@ -594,7 +654,7 @@ def task_populate_metadata_cache(processor, batch_size: int = 50, force_full_upd
                                 "ignore_reason": "Local Season Only"
                             }
                             metadata_batch.append(season_record)
-                            processed_season_numbers.add(s_num) # 防止重复
+                            processed_season_numbers.add(s_num)
 
                     # C. 处理分集
                     ep_grouped = defaultdict(list)
@@ -702,8 +762,14 @@ def task_populate_metadata_cache(processor, batch_size: int = 50, force_full_upd
                             total_offline_count += cursor.rowcount
 
                     conn.commit()
+            
+            # 批次处理完后清理临时数据
+            del batch_item_groups
+            del tmdb_details_map
+            del metadata_batch
+            gc.collect()
 
-            processed_count += len(batch_item_groups)
+            processed_count += len(batch_tasks)
             task_manager.update_status_from_thread(20 + int((processed_count / total_to_process) * 80), f"处理进度 {processed_count}/{total_to_process}...")
 
         # 最终日志

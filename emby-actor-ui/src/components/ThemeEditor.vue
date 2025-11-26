@@ -3,7 +3,6 @@
   <n-modal :show="show" preset="card" style="width: 90%; max-width: 800px;" title="主题设计工坊" :bordered="false" size="huge" :mask-closable="false" @update:show="handleClose">
     <template #header-extra>
       <n-space>
-        <!-- ★★★ 新增：删除按钮，带二次确认功能 ★★★ -->
         <n-popconfirm
           @positive-click="handleDelete"
           :positive-button-props="{ type: 'error' }"
@@ -39,6 +38,20 @@
         </n-tab-pane>
         <n-tab-pane name="cards" tab="卡片样式">
            <n-grid :cols="2" :x-gap="24">
+            <!-- ★★★ 新增：卡片大小滑块 (跨两列) ★★★ -->
+            <n-gi :span="2">
+              <n-form-item label="卡片整体缩放 (0.8x - 1.2x)">
+                <n-slider 
+                  v-model:value="cardScale" 
+                  :min="0.8" 
+                  :max="1.2" 
+                  :step="0.05" 
+                  :marks="{ 1: '默认' }"
+                  :format-tooltip="(v) => `${Math.round(v * 100)}%`"
+                />
+              </n-form-item>
+            </n-gi>
+            
             <n-gi><n-form-item label="卡片背景"><n-color-picker v-model:value="editableTheme.custom['--card-bg-color']" /></n-form-item></n-gi>
             <n-gi><n-form-item label="卡片边框"><n-color-picker v-model:value="editableTheme.custom['--card-border-color']" /></n-form-item></n-gi>
             <n-gi><n-form-item label="卡片阴影"><n-color-picker v-model:value="editableTheme.custom['--card-shadow-color']" /></n-form-item></n-gi>
@@ -53,8 +66,8 @@
 </template>
 
 <script setup>
-import { ref, watch } from 'vue';
-import { NModal, NButton, NSpace, NTabs, NTabPane, NGrid, NGi, NFormItem, NColorPicker, NSpin, useMessage, NPopconfirm } from 'naive-ui';
+import { ref, watch, computed } from 'vue'; // ★★★ 引入 computed
+import { NModal, NButton, NSpace, NTabs, NTabPane, NGrid, NGi, NFormItem, NColorPicker, NSpin, useMessage, NPopconfirm, NSlider } from 'naive-ui'; // ★★★ 引入 NSlider
 import { cloneDeep } from 'lodash-es';
 
 const props = defineProps({
@@ -63,10 +76,25 @@ const props = defineProps({
   isDark: Boolean,
 });
 
-// ★★★ 新增 emit 事件 ★★★
 const emit = defineEmits(['update:show', 'save', 'update:preview', 'delete-custom-theme']);
 const message = useMessage();
 const editableTheme = ref(null);
+
+// ★★★ 新增：计算属性处理卡片缩放 ★★★
+// 作用：将 CSS 变量 (可能是字符串或未定义) 转换为 Slider 需要的数字，反之亦然
+const cardScale = computed({
+  get() {
+    if (!editableTheme.value || !editableTheme.value.custom) return 1;
+    const val = editableTheme.value.custom['--card-scale'];
+    // 如果未定义，默认为 1
+    return val ? parseFloat(val) : 1;
+  },
+  set(val) {
+    if (editableTheme.value && editableTheme.value.custom) {
+      editableTheme.value.custom['--card-scale'] = val;
+    }
+  }
+});
 
 watch(() => props.show, (newVal) => {
   if (newVal && props.initialTheme) {
@@ -95,7 +123,6 @@ const handleReset = () => {
     message.info('已撤销本次更改。');
 };
 
-// ★★★ 新增：删除处理函数 ★★★
 const handleDelete = () => {
   emit('delete-custom-theme');
 };

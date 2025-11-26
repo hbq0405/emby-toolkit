@@ -1,4 +1,8 @@
 /* global.css */
+/* ★★★ 1. 在最顶部添加默认值，防止报错 ★★★ */
+:root {
+  --card-scale: 1;
+}
 .n-card.dashboard-card {
   background: var(--card-bg-color) !important;
   border: 1px solid var(--card-border-color) !important;
@@ -12,9 +16,14 @@
   display: flex !important;
   flex-direction: column !important;
   opacity: 0;
-  transform: translateY(20px);
+  /* 使用 zoom 可以让卡片变大时自动撑开布局，不会重叠 */
+  zoom: var(--card-scale); 
+
+  /* 注意：transform 会和下面的 animation 冲突，所以这里推荐用 zoom */
+  transform: translateY(20px); 
   animation: card-fade-in 0.5s ease-out forwards;
 }
+
 .dashboard-card > .n-card__content {
   flex-grow: 1 !important;
   display: flex !important;
