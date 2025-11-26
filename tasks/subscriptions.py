@@ -12,6 +12,7 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 # 导入需要的底层模块和共享实例
 import config_manager
 import constants
+import utils
 import handler.emby as emby
 import handler.tmdb as tmdb
 import handler.moviepilot as moviepilot
@@ -320,17 +321,20 @@ def task_auto_subscribe(processor):
                 series_info = {"tmdb_id": int(item['tmdb_id']), "item_name": item['title']}
                 success = moviepilot.smart_subscribe_series(series_info, config) is not None
 
-            # ★★★ 新增：处理季订阅的专属逻辑 ★★★
+            #  处理季订阅的专属逻辑 
             elif item_type == 'Season':
                 parent_tmdb_id = item.get('parent_series_tmdb_id')
                 season_num = item.get('season_number')
                 
-                # ★ 核心修改：不再相信传入的 title，而是主动查询父剧集标题 ★
+                # 不再相信传入的 title，而是主动查询父剧集标题
                 series_name = media_db.get_series_title_by_tmdb_id(parent_tmdb_id)
 
-                # 如果因为某种原因查不到父剧名，就使用季自己的标题作为最后的备用方案
+                # 如果因为某种原因查不到父剧名，尝试从标题解析，最后才用原始标题
                 if not series_name:
-                    series_name = item.get('title')
+                    raw_title = item.get('title', '')
+                    # 利用 utils 解析出不带季号的干净名字
+                    parsed_name, _ = utils.parse_series_title_and_season(raw_title)
+                    series_name = parsed_name if parsed_name else raw_title
 
                 if parent_tmdb_id and season_num is not None:
                     logger.info(f"  ➜ 检测到季订阅请求：为剧集《{series_name}》(ID: {parent_tmdb_id}) 订阅第 {season_num} 季。")

@@ -280,11 +280,13 @@ def smart_subscribe_series(series_info: dict, config: Dict[str, Any]) -> Optiona
     # --- 情况二：标题中已解析出季号 ---
     else:
         logger.info(f"'{title}'  ➜ 已解析出季号: {season_num}，执行单季订阅。")
+        clean_name = base_name if base_name else title
+
         is_completed = helpers.check_series_completion(
             tmdb_id=tmdb_id, 
             api_key=tmdb_api_key, 
             season_number=season_num, 
-            series_name=title 
+            series_name=clean_name 
         )
         best_version = 1 if is_completed else None
         
