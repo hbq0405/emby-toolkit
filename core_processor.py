@@ -242,6 +242,7 @@ class MediaProcessor:
                             episodes_grouped_by_number[(s_num, e_num)].append(child)
                             seasons_with_episodes.add(s_num) # 标记该季有分集
                         except (ValueError, TypeError):
+                            logger.debug(f"  ➜ 跳过无索引号的季对象: {child.get('Name')} (ID: {child.get('Id')})")
                             continue
 
                 # ... (构建 series_record - 保持不变) ...
