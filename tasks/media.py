@@ -329,9 +329,15 @@ def task_populate_metadata_cache(processor, batch_size: int = 50, force_full_upd
 
         # ★★★ 反向差异检测 (删除) ★★★
         if not force_full_update:
-            missing_emby_ids = known_emby_ids - current_scan_emby_ids
-            # 释放大集合内存
-            del known_emby_ids
+            # 1. 先提取出数据库中原本标记为“在线”的所有 ID
+            active_db_ids = {k for k, v in known_emby_status.items() if v is True}
+            
+            # 2. 计算差异：原本在线 - 本次扫描到的
+            missing_emby_ids = active_db_ids - current_scan_emby_ids
+            
+            # 释放内存
+            del known_emby_status
+            del active_db_ids
             del current_scan_emby_ids
             gc.collect()
 
