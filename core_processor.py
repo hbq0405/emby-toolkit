@@ -2756,7 +2756,7 @@ class MediaProcessor:
                 new_episodes_details = emby.get_emby_items_by_id(
                     base_url=self.emby_url, api_key=self.emby_api_key, user_id=self.emby_user_id,
                     item_ids=episode_ids_to_add, 
-                    fields="Id,Type,ParentIndexNumber,IndexNumber,Name,OriginalTitle,PremiereDate,ProviderIds,MediaStreams,Container,Size,Path,DateCreated,RunTimeTicks,_SourceLibraryId"
+                    fields="Id,Type,ParentId,ParentIndexNumber,IndexNumber,Name,OriginalTitle,PremiereDate,ProviderIds,MediaStreams,Container,Size,Path,DateCreated,RunTimeTicks,_SourceLibraryId"
                 )
                 
                 if not new_episodes_details:
@@ -2814,6 +2814,24 @@ class MediaProcessor:
                     )
                     if not season_details_from_tmdb or not season_details_from_tmdb.get("episodes"):
                         continue
+
+                    emby_season_id = emby_episodes_in_season[0].get('ParentId')
+                    
+                    season_record = {
+                        "tmdb_id": str(season_details_from_tmdb.get("id")),
+                        "item_type": "Season",
+                        "parent_series_tmdb_id": str(series_tmdb_id),
+                        "season_number": season_num,
+                        "title": season_details_from_tmdb.get("name"),
+                        "overview": season_details_from_tmdb.get("overview"),
+                        "release_date": season_details_from_tmdb.get("air_date"),
+                        "poster_path": season_details_from_tmdb.get("poster_path"),
+                        "in_library": True,
+                        "subscription_status": "NONE",
+                        "emby_item_ids_json": json.dumps([emby_season_id]) if emby_season_id else '[]'
+                    }
+                    metadata_batch.append(season_record)
+
                     tmdb_episode_map = {ep.get("episode_number"): ep for ep in season_details_from_tmdb["episodes"]}
 
                     for emby_episode in emby_episodes_in_season:
