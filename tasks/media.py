@@ -414,6 +414,9 @@ def task_populate_metadata_cache(processor, batch_size: int = 50, force_full_upd
                                 row = cursor.fetchone()
                                 if row:
                                     e_id = row['eid']
+                                    # 在重新填充前，先清空该剧集的旧数据，防止重复 ★★★
+                                    series_to_seasons_map[e_id] = []
+                                    series_to_episode_map[e_id] = []
                                     # 重新拉取剧集详情
                                     full_series_items = emby.get_emby_item_details(e_id, processor.emby_url, processor.emby_api_key, processor.emby_user_id)
                                     if full_series_items:
