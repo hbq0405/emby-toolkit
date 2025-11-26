@@ -758,7 +758,7 @@ def _execute_resubscribe(processor, task_name: str, target):
         # ★★★ 先尝试取消旧订阅，确保洗版参数生效 ★★★
         # ======================================================================
         try:
-            logger.info(f"  ➜ [洗版预处理] 正在检查并清理《{item_name}》的旧订阅...")
+            logger.info(f"  ➜ 正在检查并清理《{item_name}》的旧订阅...")
             
             # 调用 moviepilot.cancel_subscription
             # 即使订阅不存在，该函数也会返回 True，所以直接调用即可
@@ -769,7 +769,7 @@ def _execute_resubscribe(processor, task_name: str, target):
                 logger.warning(f"  ➜ 旧订阅清理失败（可能是网络问题），尝试强行提交新订阅...")
                 
         except Exception as e:
-            logger.error(f"  ➜ [洗版预处理] 清理旧订阅时发生错误: {e}，继续尝试提交...")
+            logger.error(f"  ➜ 清理旧订阅时发生错误: {e}，继续尝试提交...")
         # ======================================================================
 
         # 提交新订阅

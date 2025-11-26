@@ -183,15 +183,15 @@ def resubscribe_single_item():
             item_type = item_details.get('item_type')
             season_number = item_details.get('season_number') if item_type == 'Season' else None
             
-            logger.info(f"API: [单项洗版预处理] 正在检查并清理《{item_name}》的旧订阅...")
+            logger.info(f"  ➜ 正在检查并清理《{item_name}》的旧订阅...")
             
             if moviepilot.cancel_subscription(str(tmdb_id), item_type, processor.config, season=season_number):
-                logger.info(f"API: 旧订阅清理指令已发送，等待 2 秒以确保 MoviePilot 数据库同步...")
+                logger.info(f"  ➜  旧订阅清理指令已发送，等待 2 秒以确保 MoviePilot 数据库同步...")
                 time.sleep(2) # <--- 增加延时，防止竞态条件
             else:
-                logger.warning(f"API: 旧订阅清理失败（可能是网络问题），尝试强行提交新订阅...")
+                logger.warning(f"  ➜ 旧订阅清理失败（可能是网络问题），尝试强行提交新订阅...")
         except Exception as e:
-            logger.error(f"API: [单项洗版预处理] 清理旧订阅时发生错误: {e}，继续尝试提交...")
+            logger.error(f"  ➜ 清理旧订阅时发生错误: {e}，继续尝试提交...")
         # ======================================================================
 
         # 发送订阅
