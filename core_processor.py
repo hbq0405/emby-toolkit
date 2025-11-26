@@ -1035,24 +1035,41 @@ class MediaProcessor:
                                 if item_type == "Series":
                                     logger.info("  ➜ [快速模式] 检测到剧集，正在聚合本地分集元数据以恢复数据库记录...")
                                     episodes_details_map = {}
+                                    seasons_details_list = [] # [新增] 用于存储季数据
+                                    
                                     # 扫描 override 目录下的所有文件
                                     try:
                                         for fname in os.listdir(target_override_dir):
+                                            full_path = os.path.join(target_override_dir, fname)
+                                            
+                                            # 1. 聚合分集文件 (season-X-episode-Y.json)
                                             if fname.startswith("season-") and fname.endswith(".json") and "-episode-" in fname:
-                                                ep_path = os.path.join(target_override_dir, fname)
-                                                ep_data = _read_local_json(ep_path)
+                                                ep_data = _read_local_json(full_path)
                                                 if ep_data:
                                                     # 构造一个唯一的key，方便后续转list
                                                     key = f"S{ep_data.get('season_number')}E{ep_data.get('episode_number')}"
                                                     episodes_details_map[key] = ep_data
+                                            
+                                            # 2. [新增] 聚合季文件 (season-X.json)，排除 series.json 和分集文件
+                                            elif fname.startswith("season-") and fname.endswith(".json") and "-episode-" not in fname:
+                                                season_data = _read_local_json(full_path)
+                                                if season_data:
+                                                    seasons_details_list.append(season_data)
                                         
                                         # 将聚合好的分集数据塞回 tmdb_details_for_extra
-                                        # 这样 _upsert_media_metadata 就能读到 episodes_details 并写入数据库了
                                         if episodes_details_map:
                                             tmdb_details_for_extra['episodes_details'] = episodes_details_map
                                             logger.info(f"  ➜ [快速模式] 成功聚合了 {len(episodes_details_map)} 个分集的元数据。")
+                                        
+                                        # [新增] 将聚合好的季数据塞回 tmdb_details_for_extra
+                                        if seasons_details_list:
+                                            # 按季号排序，确保顺序正确
+                                            seasons_details_list.sort(key=lambda x: x.get('season_number', 0))
+                                            tmdb_details_for_extra['seasons_details'] = seasons_details_list
+                                            logger.info(f"  ➜ [快速模式] 成功聚合了 {len(seasons_details_list)} 个季度的元数据。")
+
                                     except Exception as e_ep:
-                                        logger.warning(f"  ➜ [快速模式] 聚合分集数据时发生小错误: {e_ep}")
+                                        logger.warning(f"  ➜ [快速模式] 聚合分集/季数据时发生小错误: {e_ep}")
 
                                 # 关键设置 2: 标记源为文件
                                 cache_row = {'source': 'override_file'} 
