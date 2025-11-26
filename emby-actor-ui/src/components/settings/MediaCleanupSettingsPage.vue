@@ -192,10 +192,10 @@ const RULE_METADATA = {
   effect: { name: "按特效", description: "比较视频的特效等级 (如 DoVi Profile 8, HDR)。" },
   resolution: { name: "按分辨率", description: "比较视频的分辨率 (如 2160p, 1080p)。" },
   bit_depth: { name: "按色深", description: "按色深选择。" },
-  bitrate: { name: "按码率", description: "优先保留视频码率更高的版本 (画质更好)。" },
+  bitrate: { name: "按码率", description: "按码率选择。" },
   quality: { name: "按质量", description: "比较文件名中的质量标签 (如 Remux, BluRay)。" },
-  frame_rate: { name: "按帧率", description: "优先保留高帧率版本 (如 60fps > 24fps)。" },
-  filesize: { name: "按文件大小", description: "如果以上规则都无法区分，则保留文件体积更大的版本。" },
+  frame_rate: { name: "按帧率", description: "按帧率选择。" },
+  filesize: { name: "按文件大小", description: "按视频大小选择。" },
   codec: { name: "按编码", description: "比较视频编码格式 (如 AV1, HEVC, H.264)。" },
   date_added: { name: "按入库时间", description: "最终兜底规则。根据入库时间（或ID大小）决定去留。" }
 };
