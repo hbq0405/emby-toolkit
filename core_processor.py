@@ -225,11 +225,13 @@ class MediaProcessor:
                     if s_num is not None and e_num is not None:
                         episodes_grouped_by_number[(s_num, e_num)].append(ep_version)
                 
-                # ★★★ 2. 新增：获取所有 Emby 季版本用于匹配 ★★★
-                emby_season_versions = emby.get_all_library_versions(
-                    base_url=self.emby_url, api_key=self.emby_api_key, user_id=self.emby_user_id,
-                    media_type_filter="Season", parent_id=series_id,
-                    fields="Id,IndexNumber"
+                # ★★★ 获取所有 Emby 季版本用于匹配 ★★★
+                emby_season_versions = emby.get_series_seasons(
+                    series_id=series_id,
+                    base_url=self.emby_url,
+                    api_key=self.emby_api_key,
+                    user_id=self.emby_user_id,
+                    series_name_for_log=series_details.get('name')
                 ) or []
                 seasons_grouped_by_number = defaultdict(list)
                 for s_ver in emby_season_versions:
