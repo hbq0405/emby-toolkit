@@ -214,6 +214,7 @@ const historyColumns = [
         IGNORED: { type: 'error', text: '已忽略' },
         SUBSCRIBED: { type: 'info', text: '已订阅' }, 
         PENDING_RELEASE: { type: 'error', text: '未上映' },
+        NONE: { type: 'warning', text: '已取消' },
       };
       const s = statusMap[row.status] || { type: 'default', text: row.status }; // 如果有未知状态，直接显示
       return h(NTag, { type: s.type, bordered: false }, { default: () => s.text });
