@@ -2669,21 +2669,34 @@ class MediaProcessor:
 
         updated_children_count = 0
         try:
-            files_to_process = []
+            files_to_process = set() # 使用集合去重
+                
             if episode_ids_to_sync:
                 id_set = set(episode_ids_to_sync)
                 for child in children_from_emby:
+                    # 如果是目标分集
                     if child.get("Id") in id_set and child.get("Type") == "Episode":
                         s_num = child.get('ParentIndexNumber')
                         e_num = child.get('IndexNumber')
-                        if s_num is not None and e_num is not None:
-                            files_to_process.append(f"season-{s_num}-episode-{e_num}.json")
+                        
+                        if s_num is not None:
+                            # 1. 添加分集文件
+                            if e_num is not None:
+                                files_to_process.add(f"season-{s_num}-episode-{e_num}.json")
+                            
+                            # 2. ★★★ 核心修复：顺便把该分集所属的“季”文件也加进去 ★★★
+                            files_to_process.add(f"season-{s_num}.json")
             else:
-                for filename in os.listdir(target_dir):
-                    if filename.startswith("season-") and filename.endswith(".json") and filename != "series.json":
-                        files_to_process.append(filename)
+                # 全量模式/元数据同步模式：
+                # 改为遍历 Emby 中的所有子项，而不是只看本地有什么文件。
+                # 这样可以确保：如果 Emby 有新季/集，而本地 override 缺文件，会自动从 source 补齐。
+                for key in child_data_map.keys():
+                    files_to_process.add(f"{key}.json")
 
-            for filename in files_to_process:
+            # 转回列表并排序，保证处理顺序一致
+            sorted_files_to_process = sorted(list(files_to_process))
+
+            for filename in sorted_files_to_process:
                 child_json_path = os.path.join(target_dir, filename)
                 
                 # ▼▼▼ 核心修改 2/3: 检查-复制-修改 逻辑 ▼▼▼
