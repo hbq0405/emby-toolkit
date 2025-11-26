@@ -193,7 +193,9 @@ class MediaProcessor:
 
             elif item_type == "Series":
                 series_details = source_data_package.get("series_details", source_data_package)
-                seasons_details = source_data_package.get("seasons_details", series_details.get("seasons", []))
+                seasons_details = source_data_package.get("seasons_details")
+                if not seasons_details:
+                    seasons_details = series_details.get("seasons", [])
                 episodes_details = list(source_data_package.get("episodes_details", {}).values()) 
                 
                 parent_library_id = item_details_from_emby.get('_SourceLibraryId')

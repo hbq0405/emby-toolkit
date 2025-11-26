@@ -137,7 +137,7 @@ def get_emby_item_details(item_id: str, emby_server_url: str, emby_api_key: str,
     if fields:
         fields_to_request = fields
     else:
-        fields_to_request = "ProviderIds,People,Path,OriginalTitle,DateCreated,PremiereDate,ProductionYear,ChildCount,RecursiveItemCount,Overview,CommunityRating,OfficialRating,Genres,Studios,Taglines,MediaStreams"
+        fields_to_request = "Type,ProviderIds,People,Path,OriginalTitle,DateCreated,PremiereDate,ProductionYear,ChildCount,RecursiveItemCount,Overview,CommunityRating,OfficialRating,Genres,Studios,Taglines,MediaStreams"
 
     params = {
         "api_key": emby_api_key,
@@ -989,6 +989,7 @@ def get_series_children(
         "IncludeItemTypes": include_item_types,
         "Recursive": "true",
         "Fields": fields,
+        "Limit": 10000
     }
     
     logger.debug(f"  ➜ 准备获取剧集 {log_identifier} 的子项目 (类型: {include_item_types})...")
