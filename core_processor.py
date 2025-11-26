@@ -219,6 +219,18 @@ class MediaProcessor:
                     if s_num is not None and e_num is not None:
                         episodes_grouped_by_number[(s_num, e_num)].append(ep_version)
                 
+                # 获取并预处理所有 Emby 季(Season)版本 ★★★
+                emby_season_versions = emby.get_all_library_versions(
+                    base_url=self.emby_url, api_key=self.emby_api_key, user_id=self.emby_user_id,
+                    media_type_filter="Season", parent_id=series_id,
+                    fields="Id,IndexNumber"
+                ) or []
+                
+                seasons_grouped_by_number = defaultdict(list)
+                for s_ver in emby_season_versions:
+                    if s_ver.get("IndexNumber") is not None:
+                        seasons_grouped_by_number[s_ver.get("IndexNumber")].append(s_ver)
+
                 # ... (构建 series_record ) ...
                 series_record = {
                     "item_type": "Series", "tmdb_id": str(series_details.get('id')), "title": series_details.get('name'),
@@ -260,6 +272,8 @@ class MediaProcessor:
                     if not season_poster:
                         season_poster = series_details.get('poster_path')
 
+                    # 查找对应的 Emby 季对象
+                    matched_emby_seasons = seasons_grouped_by_number.get(s_num, [])
                     records_to_upsert.append({
                         "tmdb_id": str(season.get('id')), 
                         "item_type": "Season", 
@@ -268,7 +282,9 @@ class MediaProcessor:
                         "overview": season.get('overview'), 
                         "release_date": season.get('air_date'), 
                         "poster_path": season_poster, 
-                        "season_number": season.get('season_number')
+                        "season_number": season.get('season_number'),
+                        "in_library": bool(matched_emby_seasons),
+                        "emby_item_ids_json": json.dumps([s['Id'] for s in matched_emby_seasons]) if matched_emby_seasons else '[]'
                     })
                 
                 # ★★★  遍历 TMDb 元数据列表，并从中查找 Emby 版本进行聚合 ★★★
