@@ -744,21 +744,50 @@ def _execute_resubscribe(processor, task_name: str, target):
 
         item_id = item.get('item_id')
         item_name = item.get('item_name')
+        tmdb_id = item.get('tmdb_id')
+        item_type = item.get('item_type') # Movie, Season
+        season_number = item.get('season_number') if item_type == 'Season' else None
+
         task_manager.update_status_from_thread(int((i / total) * 100), f"({i+1}/{total}) [配额:{current_quota}] 正在订阅: {item_name}")
 
         rule = next((r for r in all_rules if r['id'] == item.get('matched_rule_id')), None)
         payload = build_resubscribe_payload(item, rule)
         if not payload: continue
 
+        try:
+            # 转换 item_type 为 MP 识别的类型逻辑在 moviepilot.py 内部处理
+            # 这里我们只需要传递原始 item_type (Movie/Season)
+            
+            # 注意：cancel_subscription 内部已经处理了 404 (不存在) 的情况并返回 True
+            # 所以我们不需要先 check_subscription_exists 再 cancel
+            # 直接 cancel 即可，效率最高
+            
+            logger.info(f"  ➜ [洗版预处理] 尝试清理《{item_name}》的现有订阅...")
+            
+            # 调用 moviepilot.cancel_subscription
+            # 注意：item_type 在这里是 'Movie' 或 'Season'
+            # moviepilot.cancel_subscription 会根据这些参数调用 DELETE 接口
+            if moviepilot.cancel_subscription(str(tmdb_id), item_type, config, season=season_number):
+                logger.debug(f"  ➜ 旧订阅清理完毕（或不存在），准备提交新订阅。")
+            else:
+                logger.warning(f"  ➜ 旧订阅清理失败（可能是网络问题），尝试强行提交新订阅...")
+                
+        except Exception as e:
+            logger.error(f"  ➜ [洗版预处理] 清理旧订阅时发生错误: {e}，继续尝试提交...")
+        # ======================================================================
+
+        # 提交新订阅
         if moviepilot.subscribe_with_custom_payload(payload, config):
             settings_db.decrement_subscription_quota()
             resubscribed_count += 1
             
+            # 处理“洗版后删除”逻辑
             if rule and rule.get('delete_after_resubscribe'):
                 id_to_delete = item.get('emby_item_id') or item_id
+                # 注意：这里调用 emby.delete_item
                 if emby.delete_item(id_to_delete, processor.emby_url, processor.emby_api_key, processor.emby_user_id):
                     try:
-                        item_type = item.get('item_type')
+                        # 数据库清理逻辑...
                         logger.info(f"  ➜ 源文件删除成功，开始为 Emby ID {id_to_delete} (Name: {item_name}) 执行数据库善后清理...")
                         maintenance_db.cleanup_deleted_media_item(
                             item_id=id_to_delete,
@@ -770,8 +799,10 @@ def _execute_resubscribe(processor, task_name: str, target):
                         logger.error(f"  ➜ 执行善后清理 media item {id_to_delete} 时发生错误: {cleanup_e}", exc_info=True)
                     deleted_count += 1
                 else:
+                    # 删除失败，标记为已订阅，避免重复尝试
                     resubscribe_db.update_resubscribe_item_status(item_id, 'subscribed')
             else:
+                # 正常标记为已订阅
                 resubscribe_db.update_resubscribe_item_status(item_id, 'subscribed')
             
             if i < total - 1: time.sleep(delay)

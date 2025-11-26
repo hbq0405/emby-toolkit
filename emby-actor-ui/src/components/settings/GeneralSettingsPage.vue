@@ -89,7 +89,7 @@
                       <!-- ▼▼▼ 修改点1: Emby URL 增加重启提示 ▼▼▼ -->
                       <n-form-item-grid-item>
                         <template #label>
-                          <n-space align="center">
+                          <div style="display: flex; align-items: center; justify-content: flex-end; width: 100%;">
                             <span>Emby 服务器 URL</span>
                             <n-tooltip trigger="hover">
                               <template #trigger>
@@ -97,7 +97,7 @@
                               </template>
                               此项修改需要重启容器才能生效。
                             </n-tooltip>
-                          </n-space>
+                          </div>
                         </template>
                         <n-input v-model:value="configModel.emby_server_url" placeholder="例如: http://localhost:8096" />
                       </n-form-item-grid-item>
@@ -167,42 +167,34 @@
                         <n-switch v-model:value="configModel.proxy_enabled" />
                         <template #feedback><n-text depth="3" style="font-size:0.8em;">开启后，自动将自建合集虚拟成媒体库，用下方设置的端口访问。</n-text></template>
                       </n-form-item-grid-item>
-                      <n-form-item-grid-item label="合并原生媒体库" path="proxy_merge_native_libraries">
-                        <n-switch v-model:value="configModel.proxy_merge_native_libraries" :disabled="!configModel.proxy_enabled"/>
-                        <template #feedback><n-text depth="3" style="font-size:0.8em;">开启后，将在虚拟库列表合并显示您在 Emby 中配置的原生媒体库。</n-text></template>
-                      </n-form-item-grid-item>
-                      <n-form-item-grid-item label="原生媒体库显示位置" path="proxy_native_view_order">
-                        <n-radio-group v-model:value="configModel.proxy_native_view_order" :disabled="!configModel.proxy_enabled || !configModel.proxy_merge_native_libraries">
-                          <n-radio value="before">显示在虚拟库前面</n-radio>
-                          <n-radio value="after">显示在虚拟库后面</n-radio>
-                        </n-radio-group>
-                      </n-form-item-grid-item>
                       <n-form-item-grid-item>
                         <template #label>
-                          <n-space align="center">
+                          <!-- 增加了 justify-content: flex-end 和 width: 100% -->
+                          <div style="display: flex; align-items: center; justify-content: flex-end; width: 100%;">
                             <span>虚拟库访问端口</span>
                             <n-tooltip trigger="hover">
                               <template #trigger>
-                                <n-icon :component="AlertIcon" class="info-icon" />
+                                <n-icon :component="AlertIcon" class="info-icon" style="margin-left: 4px;" />
                               </template>
                               此项修改需要重启容器才能生效。
                             </n-tooltip>
-                          </n-space>
+                          </div>
                         </template>
                         <n-input-number v-model:value="configModel.proxy_port" :min="1025" :max="65535" :disabled="!configModel.proxy_enabled"/>
                         <template #feedback><n-text depth="3" style="font-size:0.8em;">非host模式需要映射。</n-text></template>
                       </n-form-item-grid-item>
                       <n-form-item-grid-item>
                         <template #label>
-                          <n-space align="center">
+                          <!-- 同样增加了 justify-content: flex-end 和 width: 100% -->
+                          <div style="display: flex; align-items: center; justify-content: flex-end; width: 100%;">
                             <span>302重定向服务地址</span>
-                             <n-tooltip trigger="hover">
+                            <n-tooltip trigger="hover">
                               <template #trigger>
-                                <n-icon :component="AlertIcon" class="info-icon" />
+                                <n-icon :component="AlertIcon" class="info-icon" style="margin-left: 4px;" />
                               </template>
                               此项修改需要重启容器才能生效。
                             </n-tooltip>
-                          </n-space>
+                          </div>
                         </template>
                         <n-input 
                           v-model:value="configModel.proxy_302_redirect_url" 
@@ -215,7 +207,16 @@
                           </n-text>
                         </template>
                       </n-form-item-grid-item>
-
+                      <n-form-item-grid-item label="合并原生媒体库" path="proxy_merge_native_libraries">
+                        <n-switch v-model:value="configModel.proxy_merge_native_libraries" :disabled="!configModel.proxy_enabled"/>
+                        <template #feedback><n-text depth="3" style="font-size:0.8em;">开启后，将在虚拟库列表合并显示您在 Emby 中配置的原生媒体库。</n-text></template>
+                      </n-form-item-grid-item>
+                      <n-form-item-grid-item label="原生媒体库显示位置" path="proxy_native_view_order">
+                        <n-radio-group v-model:value="configModel.proxy_native_view_order" :disabled="!configModel.proxy_enabled || !configModel.proxy_merge_native_libraries">
+                          <n-radio value="before">显示在虚拟库前面</n-radio>
+                          <n-radio value="after">显示在虚拟库后面</n-radio>
+                        </n-radio-group>
+                      </n-form-item-grid-item>
                       <n-divider title-placement="left" style="margin-top: 10px;">选择合并显示的原生媒体库</n-divider>
 
                       <n-form-item-grid-item 

@@ -12,124 +12,43 @@ import utils
 
 logger = logging.getLogger(__name__)
 
-def subscribe_movie_to_moviepilot(movie_info: dict, config: Dict[str, Any], best_version: Optional[int] = None) -> bool:
-    """一个独立的、可复用的函数，用于订阅单部电影到MoviePilot。"""
+# ======================================================================
+# 核心基础函数 (Token管理与API请求)
+# ======================================================================
+
+def _get_access_token(config: Dict[str, Any]) -> Optional[str]:
+    """
+    【内部辅助】获取 MoviePilot 的 Access Token。
+    """
     try:
         moviepilot_url = config.get(constants.CONFIG_OPTION_MOVIEPILOT_URL, '').rstrip('/')
         mp_username = config.get(constants.CONFIG_OPTION_MOVIEPILOT_USERNAME, '')
         mp_password = config.get(constants.CONFIG_OPTION_MOVIEPILOT_PASSWORD, '')
+        
         if not all([moviepilot_url, mp_username, mp_password]):
-            logger.warning("MoviePilot订阅跳过：配置不完整。")
-            return False
+            # 仅在第一次调用或配置缺失时记录警告，避免刷屏
+            return None
 
         login_url = f"{moviepilot_url}/api/v1/login/access-token"
         login_data = {"username": mp_username, "password": mp_password}
+        
+        # 设置超时
         login_response = requests.post(login_url, data=login_data, timeout=10)
         login_response.raise_for_status()
-        access_token = login_response.json().get("access_token")
-        if not access_token:
-            logger.error("  ➜ MoviePilot订阅失败：认证失败，未能获取到 Token。")
-            return False
-
-        subscribe_url = f"{moviepilot_url}/api/v1/subscribe/"
-        subscribe_headers = {"Authorization": f"Bearer {access_token}"}
-        subscribe_payload = {
-            "name": movie_info['title'],
-            "tmdbid": int(movie_info['tmdb_id']),
-            "type": "电影"
-        }
         
-        if best_version is not None:
-            subscribe_payload["best_version"] = best_version
-            logger.info(f"  ➜ 本次订阅为洗版订阅")
-        
-        logger.info(f"  ➜ 正在向 MoviePilot 提交订阅: '{movie_info['title']}'")
-        sub_response = requests.post(subscribe_url, headers=subscribe_headers, json=subscribe_payload, timeout=15)
-        
-        if sub_response.status_code in [200, 201, 204]:
-            logger.info(f"  ✅ MoviePilot 已接受订阅任务。")
-            return True
-        else:
-            logger.error(f"  ➜ 失败！MoviePilot 返回错误: {sub_response.status_code} - {sub_response.text}")
-            return False
+        return login_response.json().get("access_token")
     except Exception as e:
-        logger.error(f"  ➜ 订阅电影到MoviePilot过程中发生网络或认证错误: {e}")
-        return False
-
-def subscribe_series_to_moviepilot(series_info: dict, season_number: Optional[int], config: Dict[str, Any], best_version: Optional[int] = None) -> bool:
-    """一个独立的、可复用的函数，用于订阅单季或整部剧集到MoviePilot。"""
-    try:
-        moviepilot_url = config.get(constants.CONFIG_OPTION_MOVIEPILOT_URL, '').rstrip('/')
-        mp_username = config.get(constants.CONFIG_OPTION_MOVIEPILOT_USERNAME, '')
-        mp_password = config.get(constants.CONFIG_OPTION_MOVIEPILOT_PASSWORD, '')
-        if not all([moviepilot_url, mp_username, mp_password]):
-            logger.warning("MoviePilot订阅跳过：配置不完整。")
-            return False
-
-        login_url = f"{moviepilot_url}/api/v1/login/access-token"
-        login_data = {"username": mp_username, "password": mp_password}
-        login_response = requests.post(login_url, data=login_data, timeout=10)
-        login_response.raise_for_status()
-        access_token = login_response.json().get("access_token")
-        if not access_token:
-            logger.error("  ➜ MoviePilot订阅失败：认证失败，未能获取到 Token。")
-            return False
-
-        series_title = series_info.get('title') or series_info.get('item_name')
-        if not series_title:
-            logger.error(f"  ➜ MoviePilot订阅失败：传入的 series_info 字典中缺少 'title' 或 'item_name' 键。字典内容: {series_info}")
-            return False
-
-        subscribe_url = f"{moviepilot_url}/api/v1/subscribe/"
-        subscribe_headers = {"Authorization": f"Bearer {access_token}"}
-        subscribe_payload = {
-            "name": series_title,
-            "tmdbid": int(series_info['tmdb_id']),
-            "type": "电视剧"
-        }
-        if season_number is not None:
-            subscribe_payload["season"] = season_number
-        
-        if best_version is not None:
-            subscribe_payload["best_version"] = best_version
-            logger.info(f"  ➜ 本次订阅为洗版订阅")
-
-        log_message = f"  ➜ 正在向 MoviePilot 提交订阅: '{series_title}'"
-        if season_number is not None:
-            log_message += f" 第 {season_number} 季"
-        logger.info(log_message)
-        
-        sub_response = requests.post(subscribe_url, headers=subscribe_headers, json=subscribe_payload, timeout=15)
-        
-        if sub_response.status_code in [200, 201, 204]:
-            logger.info(f"  ✅ MoviePilot 已接受订阅任务。")
-            return True
-        else:
-            logger.error(f"  ➜ 失败！MoviePilot 返回错误: {sub_response.status_code} - {sub_response.text}")
-            return False
-            
-    except KeyError as e:
-        logger.error(f"  ➜ 订阅剧集到MoviePilot时发生KeyError: 键 {e} 不存在。传入的字典: {series_info}", exc_info=True)
-        return False
-    except Exception as e:
-        logger.error(f"  ➜ 订阅剧集到MoviePilot过程中发生未知错误: {e}", exc_info=True)
-        return False
+        logger.error(f"  ➜ 获取 MoviePilot Token 失败: {e}")
+        return None
 
 def subscribe_with_custom_payload(payload: dict, config: Dict[str, Any]) -> bool:
-    """一个通用的订阅函数，直接接收一个完整的订阅 payload。"""
+    """
+    【核心订阅函数】直接接收一个完整的订阅 payload 并提交。
+    所有其他订阅函数最终都应调用此函数。
+    """
     try:
         moviepilot_url = config.get(constants.CONFIG_OPTION_MOVIEPILOT_URL, '').rstrip('/')
-        mp_username = config.get(constants.CONFIG_OPTION_MOVIEPILOT_USERNAME, '')
-        mp_password = config.get(constants.CONFIG_OPTION_MOVIEPILOT_PASSWORD, '')
-        if not all([moviepilot_url, mp_username, mp_password]):
-            logger.warning("  ➜ MoviePilot订阅跳过：配置不完整。")
-            return False
-
-        login_url = f"{moviepilot_url}/api/v1/login/access-token"
-        login_data = {"username": mp_username, "password": mp_password}
-        login_response = requests.post(login_url, data=login_data, timeout=10)
-        login_response.raise_for_status()
-        access_token = login_response.json().get("access_token")
+        access_token = _get_access_token(config)
         if not access_token:
             logger.error("  ➜ MoviePilot订阅失败：认证失败，未能获取到 Token。")
             return False
@@ -139,30 +58,152 @@ def subscribe_with_custom_payload(payload: dict, config: Dict[str, Any]) -> bool
 
         logger.trace(f"  ➜ 最终发送给 MoviePilot 的 Payload: {json.dumps(payload, ensure_ascii=False)}")
         
-        # 直接使用传入的 payload
         sub_response = requests.post(subscribe_url, headers=subscribe_headers, json=payload, timeout=15)
         
         if sub_response.status_code in [200, 201, 204]:
             logger.info(f"  ✅ MoviePilot 已接受订阅任务。")
             return True
         else:
-            logger.error(f"  ➜ 失败！MoviePilot 返回错误: {sub_response.status_code} - {sub_response.text}")
+            # 尝试解析错误信息
+            try:
+                err_msg = sub_response.json().get('detail') or sub_response.text
+            except:
+                err_msg = sub_response.text
+            logger.error(f"  ➜ 失败！MoviePilot 返回错误: {sub_response.status_code} - {err_msg}")
             return False
     except Exception as e:
         logger.error(f"  ➜ 使用自定义Payload订阅到MoviePilot时发生错误: {e}", exc_info=True)
         return False
+
+def cancel_subscription(tmdb_id: str, item_type: str, config: Dict[str, Any], season: Optional[int] = None) -> bool:
+    """
+    【取消订阅】根据 TMDB ID 和类型取消订阅。
+    用于洗版前清理旧的普通订阅，确保新的洗版订阅生效。
+    """
+    try:
+        moviepilot_url = config.get(constants.CONFIG_OPTION_MOVIEPILOT_URL, '').rstrip('/')
+        access_token = _get_access_token(config)
+        if not access_token:
+            logger.error("  ➜ MoviePilot 取消订阅失败：认证失败。")
+            return False
+
+        # 构造 mediaid (格式: tmdb:12345)
+        media_id_for_api = f"tmdb:{tmdb_id}"
+        cancel_url = f"{moviepilot_url}/api/v1/subscribe/media/{media_id_for_api}"
+        
+        params = {}
+        # 仅当类型为剧集/季且指定了季号时，才传递 season 参数
+        # 注意：item_type 可能是 'Series', 'Season' 或 'Movie'
+        if item_type in ['Series', 'Season'] and season is not None:
+            params['season'] = season
+        
+        headers = {"Authorization": f"Bearer {access_token}"}
+
+        logger.info(f"  ➜ 正在向 MoviePilot 发送取消订阅请求: {media_id_for_api} (Season: {season if season is not None else 'All'})")
+
+        response = requests.delete(cancel_url, headers=headers, params=params, timeout=15)
+        
+        # 200/204: 删除成功
+        if response.status_code in [200, 204]:
+            logger.info(f"  ✅ MoviePilot 已成功取消订阅: {media_id_for_api}")
+            return True
+        # 404: 订阅本来就不存在，视为成功
+        elif response.status_code == 404:
+            logger.info(f"  ✅ MoviePilot 中未找到订阅 {media_id_for_api}，无需取消。")
+            return True
+        else:
+            logger.error(f"  ➜ MoviePilot 取消订阅失败！API 返回: {response.status_code} - {response.text}")
+            return False
+
+    except Exception as e:
+        logger.error(f"  ➜ 调用 MoviePilot 取消订阅 API 时发生网络或未知错误: {e}", exc_info=True)
+        return False
+
+def check_subscription_exists(tmdb_id: str, item_type: str, config: Dict[str, Any], season: Optional[int] = None) -> bool:
+    """
+    【查询订阅】检查订阅是否存在。
+    """
+    try:
+        moviepilot_url = config.get(constants.CONFIG_OPTION_MOVIEPILOT_URL, '').rstrip('/')
+        access_token = _get_access_token(config)
+        if not access_token:
+            return False
+
+        media_id_param = f"tmdb:{tmdb_id}"
+        api_url = f"{moviepilot_url}/api/v1/subscribe/media/{media_id_param}"
+        headers = {"Authorization": f"Bearer {access_token}"}
+        
+        params = {}
+        if item_type in ['Series', 'Season'] and season is not None:
+            params['season'] = season
+
+        response = requests.get(api_url, headers=headers, params=params, timeout=15)
+        
+        if response.status_code == 200:
+            data = response.json()
+            if data and data.get('id'):
+                return True
+        return False
+    except Exception as e:
+        logger.warning(f"  ➜ 检查 MoviePilot 订阅状态时发生错误: {e}")
+        return False
+
+# ======================================================================
+# 业务封装函数 (保持原有逻辑，底层复用 subscribe_with_custom_payload)
+# ======================================================================
+
+def subscribe_movie_to_moviepilot(movie_info: dict, config: Dict[str, Any], best_version: Optional[int] = None) -> bool:
+    """订阅单部电影"""
+    payload = {
+        "name": movie_info['title'],
+        "tmdbid": int(movie_info['tmdb_id']),
+        "type": "电影"
+    }
+    if best_version is not None:
+        payload["best_version"] = best_version
+        logger.info(f"  ➜ 本次订阅为洗版订阅 (best_version={best_version})")
+        
+    logger.info(f"  ➜ 正在向 MoviePilot 提交电影订阅: '{movie_info['title']}'")
+    return subscribe_with_custom_payload(payload, config)
+
+def subscribe_series_to_moviepilot(series_info: dict, season_number: Optional[int], config: Dict[str, Any], best_version: Optional[int] = None) -> bool:
+    """订阅单季或整部剧集"""
+    title = series_info.get('title') or series_info.get('item_name')
+    if not title:
+        logger.error(f"  ➜ 订阅失败：缺少标题。信息: {series_info}")
+        return False
+
+    payload = {
+        "name": title,
+        "tmdbid": int(series_info['tmdb_id']),
+        "type": "电视剧"
+    }
+    if season_number is not None:
+        payload["season"] = season_number
     
+    if best_version is not None:
+        payload["best_version"] = best_version
+        logger.info(f"  ➜ 本次订阅为洗版订阅 (best_version={best_version})")
+
+    log_msg = f"  ➜ 正在向 MoviePilot 提交剧集订阅: '{title}'"
+    if season_number is not None:
+        log_msg += f" 第 {season_number} 季"
+    logger.info(log_msg)
+    
+    return subscribe_with_custom_payload(payload, config)
+
+# ======================================================================
+# 复杂业务逻辑：智能多季订阅 (完全保留原有逻辑)
+# ======================================================================
+
 def smart_subscribe_series(series_info: dict, config: Dict[str, Any]) -> Optional[List[Dict[str, Any]]]:
     """
     【智能多季订阅 & 洗版增强】
     解析剧集信息，然后调用 MoviePilot 订阅。
     - 如果标题不含季号，且TMDb显示为多季剧集，则自动订阅所有季。
     - 订阅时会检查该季是否已完结（最后一集已播出），完结则自动添加 best_version=1。
-    - 成功后，返回一个包含所有成功订阅工单信息的列表，供上层写入数据库。
-    - 失败则返回 None。
     """
     tmdb_id = series_info.get('tmdb_id')
-    # ★★★ 核心修正：同时检查 'item_name' 和 'title' 两个键 ★★★
     title = series_info.get('item_name') or series_info.get('title')
     tmdb_api_key = config.get(constants.CONFIG_OPTION_TMDB_API_KEY)
     
@@ -176,11 +217,6 @@ def smart_subscribe_series(series_info: dict, config: Dict[str, Any]) -> Optiona
     def _is_season_fully_aired(tv_id: int, s_num: int, api_key: str) -> bool:
         """
         辅助函数：检查一季是否已完全播出。
-        逻辑优先级：
-        1. TMDb 剧集状态为 Ended/Canceled -> 完结
-        2. 最后一集播出日期在今天之前 -> 完结
-        3. 最后一集日期未知，但最近播出的一集超过30天 -> 完结
-        4. 无法确认是在播状态 -> 默认视为完结
         """
         try:
             today = datetime.now().date()
@@ -189,7 +225,6 @@ def smart_subscribe_series(series_info: dict, config: Dict[str, Any]) -> Optiona
             show_details = tmdb.get_tv_details(tv_id, api_key)
             if show_details:
                 status = show_details.get('status', '')
-                # Ended: 已完结, Canceled: 被砍
                 if status in ['Ended', 'Canceled']:
                     logger.info(f"  ➜ 剧集 (ID: {tv_id}) TMDb状态为 '{status}'，直接判定 S{s_num} 已完结。")
                     return True
@@ -211,44 +246,33 @@ def smart_subscribe_series(series_info: dict, config: Dict[str, Any]) -> Optiona
             if last_air_date_str:
                 try:
                     last_air_date = datetime.strptime(last_air_date_str, '%Y-%m-%d').date()
-                    # 如果最后一集日期 < 今天，说明已播完 -> 完结
                     if last_air_date < today:
                         logger.info(f"  ➜ S{s_num} 最后一集于 {last_air_date} 播出 (已过)，判定已完结。")
                         return True
-                    # 如果最后一集日期 >= 今天，说明还没播完 -> 未完结
                     else:
                         logger.info(f"  ➜ S{s_num} 最后一集将于 {last_air_date} 播出 (未到)，判定未完结。")
                         return False
                 except ValueError:
-                    logger.warning(f"  ➜ 解析最后一集日期 '{last_air_date_str}' 失败，进入30天规则判断。")
+                    pass
 
             # 4. 30天规则 / 缺失数据处理
-            # 如果最后一集没有日期(TBA)，倒序寻找最近一个有播出日期的集数
             for ep in reversed(episodes):
                 air_date_str = ep.get('air_date')
                 if air_date_str:
                     try:
                         air_date = datetime.strptime(air_date_str, '%Y-%m-%d').date()
-                        
-                        # 如果发现列表中有未来的集数，肯定没完结
                         if air_date >= today:
-                            logger.info(f"  ➜ S{s_num} 检测到未来排期 ({air_date})，判定未完结。")
                             return False
                         
-                        # 检查最近播出的一集是否超过30天
                         days_diff = (today - air_date).days
                         if days_diff > 30:
                             logger.info(f"  ➜ S{s_num} 最近一集播出 ({air_date}) 已超30天，判定已完结。")
                             return True
                         else:
-                            # 30天内有更新，且最后一集日期未知(TBA)，通常视为正在连载中
-                            logger.info(f"  ➜ S{s_num} 最近一集播出 ({air_date}) 在30天内，判定为连载中。")
                             return False
                     except ValueError:
                         continue
             
-            # 5. 兜底：既没有状态，也没有任何有效的播出日期数据 -> 视为已完结
-            logger.info(f"  ➜ S{s_num} 缺乏有效播出数据，默认判定已完结。")
             return True
 
         except Exception as e:
@@ -336,55 +360,3 @@ def smart_subscribe_series(series_info: dict, config: Dict[str, Any]) -> Optiona
             })
 
     return successful_subscriptions if successful_subscriptions else None
-
-def cancel_subscription(tmdb_id: str, item_type: str, config: Dict[str, Any], season: Optional[int] = None) -> bool:
-    """
-    调用 MoviePilot 的 API 来取消一个订阅。
-    """
-    try:
-        moviepilot_url = config.get(constants.CONFIG_OPTION_MOVIEPILOT_URL, '').rstrip('/')
-        mp_username = config.get(constants.CONFIG_OPTION_MOVIEPILOT_USERNAME, '')
-        mp_password = config.get(constants.CONFIG_OPTION_MOVIEPILOT_PASSWORD, '')
-        if not all([moviepilot_url, mp_username, mp_password]):
-            logger.warning("  ➜ MoviePilot 取消订阅跳过：配置不完整。")
-            return False
-
-        # 1. 登录获取 Token
-        login_url = f"{moviepilot_url}/api/v1/login/access-token"
-        login_data = {"username": mp_username, "password": mp_password}
-        login_response = requests.post(login_url, data=login_data, timeout=10)
-        login_response.raise_for_status()
-        access_token = login_response.json().get("access_token")
-        if not access_token:
-            logger.error("  ➜ MoviePilot 取消订阅失败：认证失败。")
-            return False
-
-        # 2. 构造 mediaid 和 URL
-        media_id_for_api = f"tmdb:{tmdb_id}"
-        cancel_url = f"{moviepilot_url}/api/v1/subscribe/media/{media_id_for_api}"
-        params = {}
-        if item_type == 'Series' and season is not None:
-            params['season'] = season
-        
-        headers = {"Authorization": f"Bearer {access_token}"}
-
-        logger.info(f"  ➜ 正在向 MoviePilot 发送取消订阅请求: {media_id_for_api} (Season: {season or 'N/A'})")
-
-        # 3. 发送 DELETE 请求
-        response = requests.delete(cancel_url, headers=headers, params=params, timeout=15)
-        
-        # MP 的 DELETE 成功时通常返回 200 或 204 (No Content)
-        if response.status_code in [200, 204]:
-            logger.info(f"  ✅ MoviePilot 已成功取消订阅: {media_id_for_api}")
-            return True
-        # 如果返回 404，说明 MP 那边本来就没有这个订阅，也算“取消成功”
-        elif response.status_code == 404:
-            logger.info(f"  ✅ MoviePilot 中未找到订阅 {media_id_for_api}，视为取消成功。")
-            return True
-        else:
-            logger.error(f"  ➜ MoviePilot 取消订阅失败！API 返回: {response.status_code} - {response.text}")
-            return False
-
-    except Exception as e:
-        logger.error(f"  ➜ 调用 MoviePilot 取消订阅 API 时发生网络或未知错误: {e}", exc_info=True)
-        return False
