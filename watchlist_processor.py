@@ -480,14 +480,12 @@ class WatchlistProcessor:
 
             # 定义要更新的字段 (TMDb 字段 -> JSON 字段)
             fields_to_update = {
-                "overview": "overview",
-                "vote_average": "vote_average",
-                "poster_path": "poster_path",
-                "backdrop_path": "backdrop_path",
-                "first_air_date": "release_date", # Series
-                "air_date": "release_date",       # Episode/Season
-                "still_path": "still_path",
-                "runtime": "runtime"
+                "overview": "overview",           # 简介：TMDb 更新最快
+                "poster_path": "poster_path",     # 海报路径
+                "backdrop_path": "backdrop_path", # 背景图路径
+                "still_path": "still_path",       # 剧照路径
+                "first_air_date": "release_date", # 首播日期 (Series)
+                "air_date": "release_date"        # 播出日期 (Episode/Season)
             }
 
             # 差异化保护：只有非 series.json 才允许更新标题
@@ -545,8 +543,6 @@ class WatchlistProcessor:
             "overview": latest_series_data.get("overview"),
             "poster_path": latest_series_data.get("poster_path"),
             "release_date": latest_series_data.get("first_air_date"),
-            "rating": latest_series_data.get("vote_average"),
-            "official_rating": None, 
             "original_language": latest_series_data.get("original_language"),
         }
         media_db.update_media_metadata_fields(tmdb_id, 'Series', series_updates)
