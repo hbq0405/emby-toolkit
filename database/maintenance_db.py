@@ -166,7 +166,7 @@ def get_stats_subscription():
                         COUNT(*) as total,
                         COUNT(*) FILTER (WHERE in_library = TRUE) as in_lib
                     FROM media_metadata 
-                    WHERE subscription_sources_json @> '[{"type": "Actor"}]'::jsonb
+                    WHERE subscription_sources_json @> '[{"type": "actor_subscription"}]'::jsonb
                 """)
                 actor_works_row = cursor.fetchone()
 
