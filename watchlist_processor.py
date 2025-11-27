@@ -655,7 +655,7 @@ class WatchlistProcessor:
                 else:
                     final_status = STATUS_PAUSED
                     paused_until_date = today + timedelta(days=7)
-                    logger.info(f"  🔄 [判定] 剧集无未来待播信息，但上一集在15天内播出，临时暂停7天以待数据更新。")
+                    logger.info(f"  ⏸️ [判定] 剧集无未来待播信息，但上一集在15天内播出，临时暂停7天以待数据更新。")
             except ValueError:
                 final_status = STATUS_PAUSED
                 paused_until_date = today + timedelta(days=7)
