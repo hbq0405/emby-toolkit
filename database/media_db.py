@@ -608,16 +608,47 @@ def get_series_local_episodes_overview(parent_tmdb_id: str) -> list:
         logger.error(f"从本地数据库获取剧集 {parent_tmdb_id} 的分集元数据时失败: {e}")
         return []
 
-def update_episode_overview(emby_item_id: str, overview: str):
-    """【新】当成功注入简介到Emby后，同步更新本地数据库的记录。"""
-    if not emby_item_id or not overview:
+def update_media_metadata_fields(tmdb_id: str, item_type: str, updates: Dict[str, Any]):
+    """
+    【V2 - 通用元数据更新】
+    根据传入的 updates 字典，动态更新指定媒体的字段。
+    常态化更新逻辑：更新除片名/演员表之外的所有元数据。
+    """
+    if not tmdb_id or not item_type or not updates:
         return
+
+    # ★★★ 核心保护机制 ★★★
+    # 过滤掉空键，并强制移除不允许更新的敏感字段
+    # title: 保护用户/Emby修改过的中文标题
+    # actors_json: 保护演员表（通常由专门的演员任务处理）
+    # tmdb_id/item_type: 主键不能改
+    safe_updates = {
+        k: v for k, v in updates.items() 
+        if k not in ['title', 'actors_json', 'tmdb_id', 'item_type']
+    }
+    
+    if not safe_updates:
+        return
+
     try:
         with get_db_connection() as conn:
-            cursor = conn.cursor()
-            # 使用 JSONB 包含操作符 @> 来查找对应的记录
-            sql = "UPDATE media_metadata SET overview = %s WHERE emby_item_ids_json @> %s::jsonb AND item_type = 'Episode'"
-            cursor.execute(sql, (overview, json.dumps([emby_item_id])))
+            with conn.cursor() as cursor:
+                # 动态构建 SET 子句
+                set_clauses = [f"{key} = %s" for key in safe_updates.keys()]
+                # 总是更新时间戳
+                set_clauses.append("last_updated_at = NOW()")
+                
+                sql = f"""
+                    UPDATE media_metadata 
+                    SET {', '.join(set_clauses)}
+                    WHERE tmdb_id = %s AND item_type = %s
+                """
+                
+                # 构建参数列表：更新值 + WHERE条件值
+                params = list(safe_updates.values())
+                params.extend([tmdb_id, item_type])
+                
+                cursor.execute(sql, tuple(params))
             conn.commit()
     except Exception as e:
-        logger.error(f"更新分集 {emby_item_id} 的本地简介缓存时失败: {e}")
+        logger.error(f"更新媒体 {tmdb_id} ({item_type}) 的元数据字段时失败: {e}", exc_info=True)

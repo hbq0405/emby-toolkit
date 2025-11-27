@@ -11,6 +11,7 @@ import threading
 # 导入我们需要的辅助模块
 from database import connection, media_db, request_db, watchlist_db
 import constants
+import extensions
 import handler.tmdb as tmdb
 import handler.emby as emby
 import logging
@@ -456,11 +457,68 @@ class WatchlistProcessor:
         logger.info(f"  ➜ 媒体库过滤完成：数据库中发现 {len(all_candidate_series)} 个候选项目，最终匹配到 {len(final_series_to_process)} 个。")
         
         return final_series_to_process
+
+    def _save_local_json(self, relative_path: str, new_data: Dict[str, Any]):
+        """
+        保存数据到本地 JSON 缓存文件 (智能合并模式)。
+        - 如果文件存在：读取并更新指定字段，保护 'name'/'title' 和 'credits'/'casts' 不被覆盖。
+        - 如果文件不存在：创建新文件。
+        """
+        if not self.local_data_path:
+            return
+
+        full_path = os.path.join(self.local_data_path, relative_path)
+        
+        try:
+            # 确保目录存在
+            os.makedirs(os.path.dirname(full_path), exist_ok=True)
             
+            final_data = {}
+            
+            # 1. 尝试读取现有文件
+            if os.path.exists(full_path):
+                try:
+                    with open(full_path, 'r', encoding='utf-8') as f:
+                        final_data = json.load(f)
+                except Exception:
+                    final_data = {} # 读取失败则视为新文件
+
+            # 2. 准备要更新的字段映射 (TMDb 字段 -> JSON 字段)
+            # 注意：这里我们显式不包含 'name'/'title' 和 'credits'/'casts'，以保护本地修改
+            fields_to_update = {
+                "overview": "overview",
+                "vote_average": "vote_average",
+                "poster_path": "poster_path",
+                "backdrop_path": "backdrop_path",
+                "first_air_date": "release_date", # Series
+                "air_date": "release_date",       # Episode/Season
+                "still_path": "still_path",
+                "runtime": "runtime"
+            }
+
+            # 3. 如果是新文件，必须写入 name 和 credits (否则文件不完整)
+            if not final_data:
+                final_data = new_data
+                # 修正一些键名差异
+                if 'name' in new_data: final_data['name'] = new_data['name']
+                if 'first_air_date' in new_data: final_data['release_date'] = new_data['first_air_date']
+                if 'air_date' in new_data: final_data['release_date'] = new_data['air_date']
+            else:
+                # 4. 如果是现有文件，执行合并 (只更新允许的字段)
+                for tmdb_key, json_key in fields_to_update.items():
+                    if tmdb_key in new_data and new_data[tmdb_key] is not None:
+                        final_data[json_key] = new_data[tmdb_key]
+
+            # 5. 写入文件
+            with open(full_path, 'w', encoding='utf-8') as f:
+                json.dump(final_data, f, ensure_ascii=False, indent=4)
+            
+        except Exception as e:
+            logger.error(f"写入本地缓存文件失败: {full_path}, 错误: {e}")
+
     # ★★★ 核心处理逻辑：单个剧集的所有操作在此完成 ★★★
     def _process_one_series(self, series_data: Dict[str, Any]):
         tmdb_id = series_data['tmdb_id']
-        # ★★★ 关键修改：emby_item_ids_json 是一个列表，我们取第一个作为代表ID ★★★
         emby_ids = series_data.get('emby_item_ids_json', [])
         item_id = emby_ids[0] if emby_ids else None
         item_name = series_data['item_name']
@@ -468,8 +526,6 @@ class WatchlistProcessor:
         
         logger.info(f"  ➜ 【追剧检查】正在处理: '{item_name}' (TMDb ID: {tmdb_id})")
 
-        # 步骤1: 存活检查 (这一步可以简化或移除，因为已经在任务开始时批量过滤了)
-        # 为保持单项刷新的健壮性，我们保留一个简单的ID存在性检查
         if not item_id:
             logger.warning(f"  ➜ 剧集 '{item_name}' 在数据库中没有关联的 Emby ID，跳过。")
             return
@@ -478,29 +534,94 @@ class WatchlistProcessor:
             logger.warning("  ➜ 未配置TMDb API Key，跳过。")
             return
 
-        # 步骤2: 从TMDb获取权威数据 (逻辑不变)
-        logger.debug(f"  ➜ 正在从TMDb API获取 '{item_name}' 的最新详情...")
+        # ======================================================================
+        # ★★★ 动作 1: 调用核心处理器同步元数据文件 (不含图片) ★★★
+        # 这一步会确保 override 目录存在，并从 Emby 同步当前状态到文件
+        # ======================================================================
+        if extensions.core_processor_instance:
+            # 获取 Emby 详情 (sync_item_metadata 需要)
+            item_details = emby.get_emby_item_details(
+                item_id, self.emby_url, self.emby_api_key, self.emby_user_id,
+                fields="ProviderIds,Type,Name,OriginalTitle,Overview,OfficialRating,PremiereDate"
+            )
+            if item_details:
+                # logger.debug(f"  ➜ 调用核心处理器初始化/同步元数据文件...")
+                extensions.media_processor_instance.sync_item_metadata(item_details, tmdb_id)
+
+        # 步骤2: 从TMDb获取权威数据
         latest_series_data = tmdb.get_tv_details(tmdb_id, self.tmdb_api_key)
         if not latest_series_data:
             logger.error(f"  🚫 无法获取 '{item_name}' 的TMDb详情，本次处理中止。")
             return
         
+        # ======================================================================
+        # ★★★ 动作 2: 将 TMDb 最新数据合并写入本地 JSON (series.json) ★★★
+        # 此时文件可能已由动作1创建，我们只更新 overview/rating 等，保护 title/cast
+        # ======================================================================
+        self._save_local_json(f"tmdb/override/tmdb-tv/{tmdb_id}/series.json", latest_series_data)
+
+        # ======================================================================
+        # ★★★ 动作 3: 常态化刷新 Series 数据库元数据 ★★★
+        # ======================================================================
+        series_updates = {
+            "original_title": latest_series_data.get("original_name"),
+            "overview": latest_series_data.get("overview"),
+            "poster_path": latest_series_data.get("poster_path"),
+            "release_date": latest_series_data.get("first_air_date"),
+            "rating": latest_series_data.get("vote_average"),
+            "official_rating": None, 
+            "original_language": latest_series_data.get("original_language"),
+        }
+        media_db.update_media_metadata_fields(tmdb_id, 'Series', series_updates)
+
+        # 获取所有季和集的数据
         all_tmdb_episodes = []
         for season_summary in latest_series_data.get("seasons", []):
             season_num = season_summary.get("season_number")
             if season_num is None or season_num == 0: continue
+            
+            # 获取分季详情
             season_details = tmdb.get_season_details_tmdb(tmdb_id, season_num, self.tmdb_api_key)
-            if season_details and season_details.get("episodes"):
-                all_tmdb_episodes.extend(season_details.get("episodes", []))
+            
+            if season_details:
+                # ======================================================================
+                # ★★★ 动作 4: 合并写入本地 JSON (season-X.json) ★★★
+                # ======================================================================
+                self._save_local_json(f"tmdb/override/tmdb-tv/{tmdb_id}/season-{season_num}.json", season_details)
+
+                if season_details.get("episodes"):
+                    all_tmdb_episodes.extend(season_details.get("episodes", []))
+                    
+                    # ======================================================================
+                    # ★★★ 动作 5: 合并写入本地 JSON (season-X-episode-Y.json) ★★★
+                    # ======================================================================
+                    for ep in season_details["episodes"]:
+                        ep_num = ep.get("episode_number")
+                        if ep_num is not None:
+                            self._save_local_json(
+                                f"tmdb/override/tmdb-tv/{tmdb_id}/season-{season_num}-episode-{ep_num}.json", 
+                                ep
+                            )
+            
             time.sleep(0.1)
 
-        # ★★★ 步骤3: 从本地数据库获取媒体库数据 (核心重构) ★★★
-        # 不再调用 emby.get_series_children，而是调用 media_db
-        emby_seasons = media_db.get_series_local_children_info(tmdb_id)
-        # ★★★ 同时，获取本地分集元数据用于后续的简介注入检查 ★★★
-        local_episodes_metadata = media_db.get_series_local_episodes_overview(tmdb_id)
+        # ======================================================================
+        # ★★★ 动作 6: 通知 Emby 刷新元数据 ★★★
+        # 神医插件会拦截此请求，读取我们刚刚更新的 JSON 文件
+        # ======================================================================
+        emby.refresh_emby_item_metadata(
+            item_emby_id=item_id,
+            emby_server_url=self.emby_url,
+            emby_api_key=self.emby_api_key,
+            user_id_for_ops=self.emby_user_id,
+            replace_all_metadata_param=True,
+            item_name_for_log=item_name
+        )
 
-        # 步骤4: 计算状态和缺失信息 (逻辑不变)
+        # 步骤3: 从本地数据库获取媒体库数据
+        emby_seasons = media_db.get_series_local_children_info(tmdb_id)
+
+        # 步骤4: 计算状态和缺失信息
         new_tmdb_status = latest_series_data.get("status")
         is_ended_on_tmdb = new_tmdb_status in ["Ended", "Canceled"]
         
@@ -509,17 +630,18 @@ class WatchlistProcessor:
         has_missing_media = bool(missing_info["missing_seasons"] or missing_info["missing_episodes"])
 
         today_str = datetime.now(timezone.utc).date().isoformat()
-        aired_episodes = [ep for ep in all_tmdb_episodes if ep.get('air_date') and ep['air_date'] <= today_str]
-        has_complete_metadata = self._check_all_episodes_have_overview(aired_episodes)
+        # has_complete_metadata = self._check_all_episodes_have_overview(aired_episodes) 
+        # 既然我们已经全量刷新了元数据，这里默认元数据是完整的
+        has_complete_metadata = True 
 
         last_episode_to_air = latest_series_data.get("last_episode_to_air")
-        final_status = STATUS_WATCHING # 默认是追剧中
+        final_status = STATUS_WATCHING 
         paused_until_date = None
         today = datetime.now(timezone.utc).date()
 
-        # 步骤A: 预处理 - 确定是否存在一个“有效的、未来的”下一集
+        # 步骤A: 预处理
         effective_next_episode = None
-        effective_next_episode_air_date = None  # <-- 新增一个变量来存储date对象
+        effective_next_episode_air_date = None
         if real_next_episode_to_air and (air_date_str := real_next_episode_to_air.get('air_date')):
             try:
                 air_date = datetime.strptime(air_date_str, '%Y-%m-%d').date()
@@ -527,16 +649,11 @@ class WatchlistProcessor:
                     effective_next_episode = real_next_episode_to_air
                     effective_next_episode_air_date = air_date 
             except (ValueError, TypeError):
-                logger.warning(f"  ➜ 解析待播日期 '{air_date_str}' 失败，将忽略此下一集信息。")
+                pass
 
-        # 步骤B: 进入全新的、不会被短路的主决策链
-        # 规则1：硬性完结条件 (最高优先级)
+        # 步骤B: 状态决策链
         if is_ended_on_tmdb and has_complete_metadata:
             final_status = STATUS_COMPLETED
-            logger.info(f"  ➜ [判定] 剧集在TMDb已完结且元数据完整，状态变更为: {translate_internal_status(final_status)}")
-
-        # 规则2：如果存在一个“有效的、未来的”下一集
-        # 规则2：如果存在一个“有效的、未来的”下一集
         elif effective_next_episode:
             air_date = effective_next_episode_air_date 
             days_until_air = (air_date - today).days
@@ -544,54 +661,35 @@ class WatchlistProcessor:
 
             if days_until_air <= 3:
                 final_status = STATUS_WATCHING
-                logger.info(f"  ➜ [判定] 下一集在未来3天内播出，状态保持为: {translate_internal_status(final_status)}。")
             elif 3 < days_until_air <= 90:
                 if episode_number is not None and int(episode_number) == 1:
-                    final_status = STATUS_COMPLETED
-                    logger.warning(f"  ➜ [判定] 下一集是新季首播，在 {days_until_air} 天后播出。当前季已完结，状态变更为“已完结”。")
+                    final_status = STATUS_COMPLETED 
                 else:
                     final_status = STATUS_PAUSED
                     paused_until_date = air_date - timedelta(days=1)
-                    logger.info(f"  ➜ [判定] 下一集 (非首集) 在 {days_until_air} 天后播出，状态变更为: {translate_internal_status(final_status)}，暂停至 {paused_until_date}。")
-            else: # days_until_air > 90
+            else: 
                 final_status = STATUS_COMPLETED
-                logger.warning(f"  ➜ [判定] 下一集在 {days_until_air} 天后播出，超过90天阈值，状态强制变更为“已完结”。")
-
-        # 规则3：“僵尸剧”判断 (现在可以被正确地执行了)
-        # 只有在没有“未来下一集”的情况下，才会进入此分支
         elif last_episode_to_air and (last_air_date_str := last_episode_to_air.get('air_date')):
             try:
                 last_air_date = datetime.strptime(last_air_date_str, '%Y-%m-%d').date()
                 days_since_last_air = (today - last_air_date).days
-                
-                # 使用一个更宽容的阈值，比如30天，来应对TMDb更新不及时的情况
                 if days_since_last_air > 30:
                     final_status = STATUS_COMPLETED
-                    logger.warning(f"  ➜ [判定-僵尸剧] 剧集无未来待播信息，且最后一集播出已超过60天（TMDb数据为 {last_air_date_str}），状态强制变更为“已完结”。")
                 else:
                     final_status = STATUS_PAUSED
                     paused_until_date = today + timedelta(days=7)
-                    logger.info(f"  ➜ [判定] 剧集无未来待播信息，但上一集在30天内播出，临时暂停7天以待数据更新。")
             except ValueError:
                 final_status = STATUS_PAUSED
                 paused_until_date = today + timedelta(days=7)
-                logger.warning(f"  ➜ [判定] 剧集上次播出日期格式错误，为安全起见，执行默认的7天暂停。")
-
-        # 规则4：绝对的后备方案
         else:
             final_status = STATUS_PAUSED
             paused_until_date = today + timedelta(days=7)
-            logger.info(f"  ➜ [判定-后备] 剧集完全缺失播出日期数据，为安全起见，执行默认的7天暂停以待数据更新。")
 
-        # 规则5：强制完结标志拥有最高优先级
         if is_force_ended and final_status != STATUS_COMPLETED:
             final_status = STATUS_COMPLETED
             paused_until_date = None
-            logger.warning(f"  ➜ [强制完结生效] 最终状态被覆盖为 '已完结'。")
 
-        # 只有当内部状态是“追剧中”或“已暂停”时，才认为它在“连载中”
         is_truly_airing = final_status in [STATUS_WATCHING, STATUS_PAUSED]
-        logger.info(f"  ➜ 最终判定 '{item_name}' 的真实连载状态为: {is_truly_airing} (内部状态: {translate_internal_status(final_status)})")
 
         # 步骤5: 更新追剧数据库
         updates_to_db = {
@@ -605,36 +703,22 @@ class WatchlistProcessor:
         }
         self._update_watchlist_entry(tmdb_id, item_name, updates_to_db)
 
+        # 更新季的活跃状态
         active_seasons = set()
-        
-        # 规则 A: 如果有明确的下一集待播，该集所属的季肯定是活跃的
         if real_next_episode_to_air and real_next_episode_to_air.get('season_number'):
             active_seasons.add(real_next_episode_to_air['season_number'])
-            
-        # 规则 B: 如果有缺失的集（补番），这些集所属的季也是活跃的
         if missing_info.get('missing_episodes'):
             for ep in missing_info['missing_episodes']:
-                if ep.get('season_number'):
-                    active_seasons.add(ep['season_number'])
-                    
-        # 规则 C: 如果有整季缺失，且该季已播出，也视为活跃
+                if ep.get('season_number'): active_seasons.add(ep['season_number'])
         if missing_info.get('missing_seasons'):
             for s in missing_info['missing_seasons']:
-                # 简单的判断：如果季有播出日期且在今天之前，算活跃（需要补）
                 if s.get('air_date') and s.get('season_number'):
                     try:
                         s_date = datetime.strptime(s['air_date'], '%Y-%m-%d').date()
-                        if s_date <= today:
-                            active_seasons.add(s['season_number'])
-                    except ValueError:
-                        pass
+                        if s_date <= today: active_seasons.add(s['season_number'])
+                    except ValueError: pass
 
-        # 调用 DB 模块进行批量更新
-        # 注意：如果 final_status 是 Completed，DB函数会自动处理所有季为Completed
         watchlist_db.sync_seasons_watching_status(tmdb_id, list(active_seasons), final_status)
-
-        # 步骤6：把需要订阅的剧加入待订阅队列
-        today = datetime.now(timezone.utc).date()
 
         # ★★★ 场景一：补旧番 - 只处理已完结剧集中，已播出的缺失季 ★★★
         if final_status == STATUS_COMPLETED and has_missing_media:
@@ -734,58 +818,14 @@ class WatchlistProcessor:
                         media_info_list=[media_info]
                     )
 
-        # 步骤7: 命令Emby刷新自己，并同步更新内存中的`emby_children`
-        logger.debug(f"  ➜ 开始检查并注入缺失的分集简介到 Emby...")
-        tmdb_episodes_map = {
-            f"S{ep.get('season_number')}E{ep.get('episode_number')}": ep
-            for ep in all_tmdb_episodes
-            if ep.get('season_number') is not None and ep.get('episode_number') is not None
-        }
-
-        # 使用从本地数据库获取的 local_episodes_metadata
-        for local_episode in local_episodes_metadata:
-            if not local_episode.get("overview"): # 只处理本地记录里没有简介的
-                s_num = local_episode.get("season_number")
-                e_num = local_episode.get("episode_number")
-                
-                if s_num is None or e_num is None: continue
-
-                ep_key = f"S{s_num}E{e_num}"
-                ep_name_for_log = f"S{s_num:02d}E{e_num:02d}"
-                
-                tmdb_data_for_episode = tmdb_episodes_map.get(ep_key)
-                if tmdb_data_for_episode and (overview := tmdb_data_for_episode.get("overview")):
-                    emby_episode_id = local_episode.get("emby_item_id")
-                    if not emby_episode_id: continue
-
-                    logger.info(f"  ➜ 发现分集 '{ep_name_for_log}' (ID: {emby_episode_id}) 缺少简介，准备从TMDb注入...")
-                    data_to_inject = {"Name": tmdb_data_for_episode.get("name"), "Overview": overview}
-                    
-                    success = emby.update_emby_item_details(
-                        item_id=emby_episode_id, new_data=data_to_inject,
-                        emby_server_url=self.emby_url, emby_api_key=self.emby_api_key,
-                        user_id=self.emby_user_id
-                    )
-                    if success:
-                        logger.info(f"  ➜ Emby 分集 '{ep_name_for_log}' 简介更新成功。")
-                        # ★★★ 可以在此更新本地数据库的 'overview' 字段，形成闭环 ★★★
-                        media_db.update_episode_overview(emby_episode_id, overview)
-                    else:
-                        logger.error(f"  ➜ 更新 Emby 分集 '{ep_name_for_log}' 简介失败。")
-        
-        logger.info(f"  ➜ 分集简介检查与注入流程完成。")
-
-        # 步骤8：更新媒体数据缓存
+        # 步骤8：更新媒体数据缓存 (全量刷新子项目)
         try:
-            logger.debug(f"  ➜ 正在为 '{item_name}' 更新 '媒体数据缓存' 中的子项目详情...")
-            
             media_db.sync_series_children_metadata(
                 parent_tmdb_id=tmdb_id,
                 seasons=latest_series_data.get("seasons", []),
                 episodes=all_tmdb_episodes,
                 local_in_library_info=emby_seasons
             )
-            
         except Exception as e_sync:
             logger.error(f"  ➜ [追剧联动] 在同步 '{item_name}' 的子项目详情到 '媒体数据缓存' 时发生错误: {e_sync}", exc_info=True)
 
