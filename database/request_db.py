@@ -96,6 +96,9 @@ def set_media_status_wanted(
 ):
     """
     将媒体状态设置为 'WANTED'。
+    【核心修复】智能复活逻辑：
+    - 允许复活因“番位/评分”等规则被自动忽略的项目（软忽略）。
+    - 禁止复活被用户手动忽略的项目（硬忽略，特征是 ignore_reason = '手动忽略'）。
     """
     data_to_upsert = _prepare_media_data_for_upsert(tmdb_ids, item_type, source, media_info_list)
     if not data_to_upsert: return
@@ -104,13 +107,16 @@ def set_media_status_wanted(
             
             with conn.cursor() as cursor:
                 from psycopg2.extras import execute_batch
+                
                 if force_unignore:
+                    # 强制模式（通常是用户手动点击订阅）：无条件覆盖
                     sql = """
                         UPDATE media_metadata SET subscription_status = 'WANTED', subscription_sources_json = subscription_sources_json || %(source)s::jsonb, ignore_reason = NULL, last_synced_at = NOW()
                         WHERE tmdb_id = %(tmdb_id)s AND item_type = %(item_type)s AND subscription_status = 'IGNORED' AND NOT (subscription_sources_json @> %(source)s::jsonb);
                     """
                     execute_batch(cursor, sql, data_to_upsert)
                 else:
+                    # 自动模式：执行智能判断
                     sql = """
                         INSERT INTO media_metadata (tmdb_id, item_type, subscription_status, subscription_sources_json, first_requested_at, title, original_title, release_date, poster_path, season_number, parent_series_tmdb_id, overview)
                         VALUES (%(tmdb_id)s, %(item_type)s, 'WANTED', %(source)s::jsonb, NOW(), %(title)s, %(original_title)s, %(release_date)s, %(poster_path)s, %(season_number)s, %(parent_series_tmdb_id)s, %(overview)s)
@@ -122,10 +128,26 @@ def set_media_status_wanted(
                             parent_series_tmdb_id = COALESCE(EXCLUDED.parent_series_tmdb_id, media_metadata.parent_series_tmdb_id),
                             poster_path = COALESCE(EXCLUDED.poster_path, media_metadata.poster_path)
                         WHERE
-                            media_metadata.subscription_status NOT IN ('SUBSCRIBED', 'IGNORED')
+                            -- 1. 绝对不覆盖已订阅/已完成的项目
+                            media_metadata.subscription_status != 'SUBSCRIBED'
                             AND (
+                                -- 2. 防止重复添加完全相同的源
                                 NOT (media_metadata.subscription_sources_json @> EXCLUDED.subscription_sources_json)
-                                OR EXCLUDED.subscription_sources_json->0->>'type' = 'gap_scan'
+                                
+                                AND (
+                                    -- 3.A 正常情况：非忽略状态，允许更新
+                                    media_metadata.subscription_status != 'IGNORED'
+                                    
+                                    -- 3.B 特殊豁免：如果是 gap_scan (缺集扫描)，拥有最高权限，允许复活
+                                    OR EXCLUDED.subscription_sources_json->0->>'type' = 'gap_scan'
+
+                                    -- 3.C ★★★ 智能复活核心 ★★★
+                                    -- 如果是 IGNORED，但原因【不是】'手动忽略'，则视为“软忽略”，允许复活
+                                    OR (
+                                        media_metadata.subscription_status = 'IGNORED'
+                                        AND (media_metadata.ignore_reason IS NULL OR media_metadata.ignore_reason != '手动忽略')
+                                    )
+                                )
                             );
                     """
                     execute_batch(cursor, sql, data_to_upsert)
