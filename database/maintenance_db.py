@@ -160,13 +160,13 @@ def get_stats_subscription():
                 cursor.execute("SELECT COUNT(*) FROM actor_subscriptions WHERE status = 'active'")
                 actor_sub_count = cursor.fetchone()['count']
 
-                # 保持修复：使用 @> 操作符，避免 SQL 报错
+                # 使用 @> 操作符匹配包含 {"type": "Actor"} 对象的数组
                 cursor.execute("""
                     SELECT 
                         COUNT(*) as total,
                         COUNT(*) FILTER (WHERE in_library = TRUE) as in_lib
                     FROM media_metadata 
-                    WHERE subscription_sources_json @> '["Actor"]'::jsonb
+                    WHERE subscription_sources_json @> '[{"type": "Actor"}]'::jsonb
                 """)
                 actor_works_row = cursor.fetchone()
 
