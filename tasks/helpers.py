@@ -518,77 +518,89 @@ def check_series_completion(tmdb_id: int, api_key: str, season_number: Optional[
 
     today = datetime.now().date()
     
+    # ★★★ 定义缓冲天数 ★★★
+    BUFFER_DAYS = 7 
+    
     try:
         # 1. 优先检查剧集整体状态
         show_details = get_tv_details(tmdb_id, api_key)
 
         if show_details:
             status = show_details.get('status', '')
+            # 只有明确标记为 Ended 或 Canceled 才直接算完结
             if status in ['Ended', 'Canceled']:
                 logger.info(f"  ➜ 剧集《{series_name}》TMDb状态为 '{status}'，判定第 {season_number if season_number else 'All'} 季已完结。")
                 return True
 
         # 2. 如果是查询特定季
         if season_number is not None:
-            # 调用正确的获取分季详情函数
             season_details = get_tv_season_details(tmdb_id, season_number, api_key)
             
-            # 获取不到详情，视为未完结 (False) 
             if not season_details:
                 logger.warning(f"  ➜ 无法获取《{series_name}》第 {season_number} 季详情，为安全起见，判定为未完结 (不洗版)。")
                 return False
             
             episodes = season_details.get('episodes')
-            # ★★★ 修改点 2：没有集数信息 (如未开播的空季)，视为未完结 (False) ★★★
             if not episodes:
                 logger.warning(f"  ➜ 《{series_name}》第 {season_number} 季暂无集数信息，判定为未完结 (不洗版)。")
                 return False
 
-            # A. 检查最后一集播出时间
+            # A. 检查最后一集播出时间 (增加缓冲期)
             last_episode = episodes[-1]
             last_air_date_str = last_episode.get('air_date')
 
             if last_air_date_str:
                 try:
                     last_air_date = datetime.strptime(last_air_date_str, '%Y-%m-%d').date()
-                    if last_air_date <= today:
-                        logger.info(f"  ➜ 《{series_name}》第 {season_number} 季最后一集于 {last_air_date} 播出 (已过)，判定已完结。")
+                    
+                    # ★★★ 核心修改：加上缓冲期判断 ★★★
+                    # 只有当 (最后一集日期 + 7天) 仍然早于或等于今天，才算完结。
+                    # 例子：11月27日首播，today是27日。 27 <= 27-7 (20日) -> False。判定为未完结。正确！
+                    if last_air_date <= today - timedelta(days=BUFFER_DAYS):
+                        logger.info(f"  ➜ 《{series_name}》第 {season_number} 季最后一集于 {last_air_date} 播出 (已过缓冲期)，判定已完结。")
                         return True
                     else:
-                        logger.info(f"  ➜ 《{series_name}》第 {season_number} 季最后一集将于 {last_air_date} 播出 (未到)，判定未完结。")
+                        # 即使播出了，如果没过缓冲期，也视为未完结，方便追更或等待Pack
+                        status_desc = "已播出但未过缓冲期" if last_air_date <= today else "尚未播出"
+                        logger.info(f"  ➜ 《{series_name}》第 {season_number} 季最后一集日期为 {last_air_date} ({status_desc})，判定未完结。")
                         return False
                 except ValueError:
                     pass
 
-            # B. 30天规则 (倒序检查)
+            # B. 30天规则 (倒序检查) - 针对数据缺失严重的“僵尸剧”
+            # 如果最后一集没有日期，或者上面的判断没通过，我们再看看是不是所有有日期的集都播完很久了
             for ep in reversed(episodes):
                 air_date_str = ep.get('air_date')
                 if air_date_str:
                     try:
                         air_date = datetime.strptime(air_date_str, '%Y-%m-%d').date()
-                        if air_date > today: return False # 有一集没播就是没完结
+                        # 只要有一集是未来播出的，那肯定没完结
+                        if air_date > today: return False 
                         
+                        # 如果最近的一集都播出超过30天了，那大概率是完结了（或者断更了）
                         if (today - air_date).days > 30:
                             logger.info(f"  ➜ 《{series_name}》第 {season_number} 季最近一集播出 ({air_date}) 已超30天，判定已完结。")
                             return True
+                        # 如果最近一集在30天内，说明可能还在更，或者刚更完，走普通订阅更稳妥
+                        else:
+                            return False
                     except ValueError:
                         continue
             
-            # 如果有集数但都没有播出日期，保守判定为未完结
             return False 
 
         else:
-            # 3. 查询整剧 (Series类型) 且状态未 Ended
+            # 3. 查询整剧 (Series类型)
             if show_details and (last_episode_to_air := show_details.get('last_episode_to_air')):
                 last_air_date_str = last_episode_to_air.get('air_date')
                 if last_air_date_str:
                     last_air_date = datetime.strptime(last_air_date_str, '%Y-%m-%d').date()
-                    if last_air_date <= today:
-                        logger.info(f"  ➜ 剧集《{series_name}》的最新一集已播出，判定为可洗版状态。")
+                    # 整剧同样增加缓冲期
+                    if last_air_date <= today - timedelta(days=BUFFER_DAYS):
+                        logger.info(f"  ➜ 剧集《{series_name}》的最新一集已播出并过缓冲期，判定为可洗版状态。")
                         return True
                         
     except Exception as e:
-        # 发生异常时，视为未完结 (False) 
         logger.warning(f"  ➜ 检查《{series_name}》完结状态失败: {e}，为安全起见，默认判定为未完结。")
         return False
     
