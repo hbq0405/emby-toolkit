@@ -461,9 +461,7 @@ class WatchlistProcessor:
     def _save_local_json(self, relative_path: str, new_data: Dict[str, Any]):
         """
         保存数据到本地 JSON 缓存文件 (智能合并模式)。
-        - 如果文件存在：读取并更新指定字段。
         - ★★★ 智能保护：'series.json' 不更新 'name'，但 'season-*.json' 会更新 'name'。
-        - 如果文件不存在：创建新文件。
         """
         if not self.local_data_path:
             return
@@ -471,22 +469,17 @@ class WatchlistProcessor:
         full_path = os.path.join(self.local_data_path, relative_path)
         filename = os.path.basename(full_path)
         
-        try:
-            # 确保目录存在
-            os.makedirs(os.path.dirname(full_path), exist_ok=True)
-            
-            final_data = {}
-            
-            # 1. 尝试读取现有文件
-            if os.path.exists(full_path):
-                try:
-                    with open(full_path, 'r', encoding='utf-8') as f:
-                        final_data = json.load(f)
-                except Exception:
-                    final_data = {} # 读取失败则视为新文件
+        # ★★★ 关键检查：如果文件不存在，直接放弃，绝不创建“残缺”文件 ★★★
+        if not os.path.exists(full_path):
+            logger.trace(f"  ➜ 本地缓存文件不存在，跳过更新: {filename}")
+            return
 
-            # 2. 准备要更新的字段映射 (TMDb 字段 -> JSON 字段)
-            # 基础字段（所有类型都更新）
+        try:
+            # 读取现有文件
+            with open(full_path, 'r', encoding='utf-8') as f:
+                final_data = json.load(f)
+
+            # 定义要更新的字段 (TMDb 字段 -> JSON 字段)
             fields_to_update = {
                 "overview": "overview",
                 "vote_average": "vote_average",
@@ -498,31 +491,27 @@ class WatchlistProcessor:
                 "runtime": "runtime"
             }
 
-            # ★★★ 核心修改：差异化保护策略 ★★★
-            # 只有 series.json (剧集本体) 需要保护标题不被覆盖
-            # season-X.json (季) 和 season-X-episode-Y.json (集) 应该更新标题(name)
-            if filename != 'series.json':
+            # 差异化保护：只有非 series.json 才允许更新标题
+            if 'series.json' not in filename:
                 fields_to_update["name"] = "name"
 
-            # 3. 如果是新文件，必须写入 name 和 credits (否则文件不完整)
-            if not final_data:
-                final_data = new_data
-                # 修正一些键名差异
-                if 'name' in new_data: final_data['name'] = new_data['name']
-                if 'first_air_date' in new_data: final_data['release_date'] = new_data['first_air_date']
-                if 'air_date' in new_data: final_data['release_date'] = new_data['air_date']
-            else:
-                # 4. 如果是现有文件，执行合并 (只更新允许的字段)
-                for tmdb_key, json_key in fields_to_update.items():
-                    if tmdb_key in new_data and new_data[tmdb_key] is not None:
+            # 执行合并更新
+            updated = False
+            for tmdb_key, json_key in fields_to_update.items():
+                if tmdb_key in new_data and new_data[tmdb_key] is not None:
+                    # 只有值真的变了才更新，减少文件IO
+                    if final_data.get(json_key) != new_data[tmdb_key]:
                         final_data[json_key] = new_data[tmdb_key]
+                        updated = True
 
-            # 5. 写入文件
-            with open(full_path, 'w', encoding='utf-8') as f:
-                json.dump(final_data, f, ensure_ascii=False, indent=4)
+            # 只有发生变更时才写入
+            if updated:
+                with open(full_path, 'w', encoding='utf-8') as f:
+                    json.dump(final_data, f, ensure_ascii=False, indent=4)
+                logger.debug(f"  ➜ 已刷新本地元数据: {filename}")
             
         except Exception as e:
-            logger.error(f"写入本地缓存文件失败: {full_path}, 错误: {e}")
+            logger.error(f"更新本地缓存文件失败: {full_path}, 错误: {e}")
 
     # ★★★ 核心处理逻辑：单个剧集的所有操作在此完成 ★★★
     def _process_one_series(self, series_data: Dict[str, Any]):
@@ -566,7 +555,7 @@ class WatchlistProcessor:
         # ★★★ 动作 2: 将 TMDb 最新数据合并写入本地 JSON (series.json) ★★★
         # 此时文件可能已由动作1创建，我们只更新 overview/rating 等，保护 title/cast
         # ======================================================================
-        self._save_local_json(f"tmdb/override/tmdb-tv/{tmdb_id}/series.json", latest_series_data)
+        self._save_local_json(f"override/tmdb-tv/{tmdb_id}/series.json", latest_series_data)
 
         # ======================================================================
         # ★★★ 动作 3: 常态化刷新 Series 数据库元数据 ★★★
@@ -595,7 +584,7 @@ class WatchlistProcessor:
                 # ======================================================================
                 # ★★★ 动作 4: 合并写入本地 JSON (season-X.json) ★★★
                 # ======================================================================
-                self._save_local_json(f"tmdb/override/tmdb-tv/{tmdb_id}/season-{season_num}.json", season_details)
+                self._save_local_json(f"override/tmdb-tv/{tmdb_id}/season-{season_num}.json", season_details)
 
                 if season_details.get("episodes"):
                     all_tmdb_episodes.extend(season_details.get("episodes", []))
@@ -607,7 +596,7 @@ class WatchlistProcessor:
                         ep_num = ep.get("episode_number")
                         if ep_num is not None:
                             self._save_local_json(
-                                f"tmdb/override/tmdb-tv/{tmdb_id}/season-{season_num}-episode-{ep_num}.json", 
+                                f"override/tmdb-tv/{tmdb_id}/season-{season_num}-episode-{ep_num}.json", 
                                 ep
                             )
             
