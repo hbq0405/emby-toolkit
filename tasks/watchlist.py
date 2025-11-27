@@ -74,84 +74,35 @@ def task_add_all_series_to_watchlist(processor):
     logger.info(f"--- 开始执行 '{task_name}' 任务 (高效模式) ---")
     
     try:
-        # ----------------------------------------------------------------------
-        # 步骤 1: 确定处理范围 (媒体库过滤)
-        # ----------------------------------------------------------------------
-        task_manager.update_status_from_thread(5, "正在确定媒体库扫描范围...")
+        # 1. 确定处理范围 (媒体库过滤)
+        task_manager.update_status_from_thread(10, "正在读取配置...")
         library_ids_to_process = processor.config.get(constants.CONFIG_OPTION_EMBY_LIBRARIES_TO_PROCESS, [])
-        valid_emby_ids = None # None 表示不过滤，处理所有库的剧集
-
+        
         if library_ids_to_process:
-            logger.info(f"  ➜ 已启用媒体库过滤器，将从 {len(library_ids_to_process)} 个指定库中进行筛选...")
-            valid_emby_ids = set()
-            for lib_id in library_ids_to_process:
-                series_ids_in_lib = emby.get_library_series_ids(
-                    library_id=lib_id, emby_server_url=processor.emby_url,
-                    emby_api_key=processor.emby_api_key, user_id=processor.emby_user_id
-                )
-                valid_emby_ids.update(series_ids_in_lib)
-            logger.info(f"  ➜ 成功从 Emby 获取到 {len(valid_emby_ids)} 个有效的剧集 ID 用于过滤。")
+            logger.info(f"  ➜ 已启用媒体库过滤器: {library_ids_to_process}")
         else:
-            logger.info("  ➜ 未指定媒体库，将扫描数据库中所有的剧集。")
+            logger.info("  ➜ 未指定媒体库，将处理所有剧集。")
 
-        # ----------------------------------------------------------------------
-        # 步骤 2: 从本地数据库获取所有剧集
-        # ----------------------------------------------------------------------
-        task_manager.update_status_from_thread(20, "正在从本地数据库查询所有剧集...")
-        all_series_from_db = watchlist_db.get_all_series_for_watchlist_scan()
-        if not all_series_from_db:
-            task_manager.update_status_from_thread(100, "任务完成：本地数据库中没有任何剧集记录。")
-            return
-
-        # ----------------------------------------------------------------------
-        # 步骤 3: 根据媒体库ID进行筛选
-        # ----------------------------------------------------------------------
-        task_manager.update_status_from_thread(40, f"正在从 {len(all_series_from_db)} 条记录中筛选...")
-        series_to_process = []
-        if valid_emby_ids is not None:
-            for series in all_series_from_db:
-                emby_ids_in_db = series.get('emby_item_ids_json', [])
-                if isinstance(emby_ids_in_db, list) and any(eid in valid_emby_ids for eid in emby_ids_in_db):
-                    series_to_process.append(series)
-        else:
-            # 如果不过滤，则处理所有从数据库查出来的剧集
-            series_to_process = all_series_from_db
+        # 2. 执行数据库原子更新
+        task_manager.update_status_from_thread(30, "正在数据库中执行批量更新...")
         
-        total_to_add = len(series_to_process)
-        if not series_to_process:
-            task_manager.update_status_from_thread(100, "任务完成：筛选后没有需要标记为“追剧中”的剧集。")
-            return
-            
-        logger.info(f"  ➜ 筛选完成，共 {total_to_add} 部剧集将被标记为“追剧中”。")
-
-        # ----------------------------------------------------------------------
-        # 步骤 4: 准备数据并批量写入数据库
-        # ----------------------------------------------------------------------
-        task_manager.update_status_from_thread(60, f"准备将 {total_to_add} 部剧集批量更新为“追剧中”...")
-        
-        # 我们只需要 tmdb_id 列表来进行更新
-        tmdb_ids_to_update = [s['tmdb_id'] for s in series_to_process]
-
         try:
-            watchlist_db.batch_set_series_watching(tmdb_ids_to_update)
+            # ★★★ 核心变化：直接调用新函数，传入库 ID 列表即可 ★★★
+            updated_count = watchlist_db.batch_set_series_watching_by_libraries(library_ids_to_process)
         except Exception as e_db:
-            raise RuntimeError(f"数据库批量更新状态时发生错误: {e_db}")
+            raise RuntimeError(f"数据库执行失败: {e_db}")
 
-        scan_complete_message = f"扫描完成！已将 {total_to_add} 部库内剧集全部标记为“追剧中”。"
+        scan_complete_message = f"扫描完成！共更新了 {updated_count} 部剧集为“追剧中”。"
         logger.info(scan_complete_message)
         
-        # ----------------------------------------------------------------------
-        # 步骤 5: 触发后续的追剧检查任务链 (逻辑不变)
-        # ----------------------------------------------------------------------
-        if total_to_add > 0:
+        # 3. 触发后续任务链 (逻辑保持不变)
+        if updated_count > 0:
             logger.info("--- 任务链：即将自动触发【检查所有在追剧集】任务 ---")
-            task_manager.update_status_from_thread(99, "扫描完成，正在启动追剧检查...")
-            time.sleep(2) # 给前端一点反应时间
+            task_manager.update_status_from_thread(99, "状态更新完成，正在启动追剧检查...")
+            time.sleep(2)
             try:
-                # ★★★ 核心修复：从 extensions 获取正确的 WatchlistProcessor 实例 ★★★
                 watchlist_proc = extensions.watchlist_processor_instance
                 if watchlist_proc:
-                    # 直接调用 task_process_watchlist，并把正确的处理器实例传给它
                     task_process_watchlist(
                         processor=watchlist_proc, 
                         tmdb_id=None, 
@@ -160,13 +111,12 @@ def task_add_all_series_to_watchlist(processor):
                     final_message = "自动化流程完成：扫描与追剧检查均已结束。"
                     task_manager.update_status_from_thread(100, final_message)
                 else:
-                    # 这是一个健壮性检查，防止实例未被正确初始化
-                    raise RuntimeError("WatchlistProcessor 未初始化，无法执行链式任务。")
+                    raise RuntimeError("WatchlistProcessor 未初始化。")
             except Exception as e_chain:
-                 logger.error(f"执行链式任务【检查所有在追剧集】时失败: {e_chain}", exc_info=True)
+                 logger.error(f"执行链式任务失败: {e_chain}", exc_info=True)
                  task_manager.update_status_from_thread(-1, f"链式任务失败: {e_chain}")
         else:
-            final_message = "任务完成！没有发现可新增或需要更新状态的剧集。"
+            final_message = "任务完成！没有发现需要更新状态的剧集。"
             logger.info(final_message)
             task_manager.update_status_from_thread(100, final_message)
 
@@ -177,71 +127,48 @@ def task_add_all_series_to_watchlist(processor):
 # ★★★ 全新、独立的媒体库缺集扫描任务 ★★★
 def task_scan_library_gaps(processor):
     """
-    - 缺集扫描任务,只检查已完结或未追踪的剧集，跳过正在追或暂停的剧集 ★★★
+    【V2 - 数据库直通版】
+    - 缺集扫描任务。
+    - 优化：直接从数据库获取符合条件（已完结/未追踪 + 未忽略 + 指定库）的剧集，
+      不再获取全量数据后在 Python 中过滤。
     """
     task_name = "媒体库缺集扫描"
-    logger.info(f"--- 开始执行 '{task_name}' 任务 ---")
+    logger.info(f"--- 开始执行 '{task_name}' 任务 (高效模式) ---")
     
     def progress_updater(progress, message):
         task_manager.update_status_from_thread(progress, message)
 
     try:
-        progress_updater(5, "正在确定媒体库扫描范围...")
-        all_series_in_libs = processor._get_series_to_process(
-            where_clause="", 
-            include_all_series=True
-        )
+        # 1. 获取配置的媒体库
+        progress_updater(5, "正在读取配置...")
+        library_ids = processor.config.get(constants.CONFIG_OPTION_EMBY_LIBRARIES_TO_PROCESS, [])
         
-        # ======================================================================
-        # ★★★ 核心修改：过滤逻辑 ★★★
-        # ======================================================================
-        target_series = []
-        skipped_watching_count = 0
-        skipped_ignored_count = 0
-        
-        for s in all_series_in_libs:
-            status = s.get('status')
-            sub_status = s.get('subscription_status') 
-            
-            # 1. 跳过正在追或暂停的 (由主任务负责)
-            if status in [STATUS_WATCHING, STATUS_PAUSED]:
-                skipped_watching_count += 1
-                continue
-                
-            # 2. ★★★ 跳过已忽略的 (尊重用户选择) ★★★
-            if sub_status == 'IGNORED':
-                skipped_ignored_count += 1
-                continue
-                
-            target_series.append(s)
+        if library_ids:
+            logger.info(f"  ➜ 已启用媒体库过滤器: {library_ids}")
 
-        if skipped_watching_count > 0:
-            logger.info(f"  ➜ 跳过 {skipped_watching_count} 部正在追剧或暂停的剧集。")
-            
-        if skipped_ignored_count > 0:
-            logger.info(f"  ➜ 跳过 {skipped_ignored_count} 部用户已标记为“忽略”的剧集。")
+        # 2. ★★★ 核心优化：直接从数据库获取目标剧集 ★★★
+        progress_updater(10, "正在从数据库筛选目标剧集...")
+        target_series = watchlist_db.get_gap_scan_candidates(library_ids)
 
         if not target_series:
             progress_updater(100, "任务完成：没有符合条件（已完结/未追踪 且 未忽略）的剧集需要扫描。")
             return
         
-        all_series_tmdb_ids = [s['tmdb_id'] for s in target_series if s.get('tmdb_id')]
-        if not all_series_tmdb_ids:
-            progress_updater(100, "任务完成：符合条件的剧集均缺少有效的 TMDb ID。")
-            return
-
         total_series = len(target_series)
-        logger.info(f"  ➜ 发现 {total_series} 部符合条件的剧集，即将开始本地数据库分析...")
-        progress_updater(20, f"正在对 {total_series} 部剧集进行本地缺集分析...")
+        logger.info(f"  ➜ 数据库筛选完成，发现 {total_series} 部符合条件的剧集。")
+        
+        all_series_tmdb_ids = [s['tmdb_id'] for s in target_series if s.get('tmdb_id')]
 
+        # 3. 执行本地缺集分析 (逻辑保持不变，但输入数据更精准了)
+        progress_updater(20, f"正在对 {total_series} 部剧集进行本地缺集分析...")
         incomplete_seasons = watchlist_db.find_detailed_missing_episodes(all_series_tmdb_ids)
 
+        # 4. 更新前端显示状态 (逻辑保持不变)
         progress_updater(60, "分析完成，正在更新前端显示状态...")
         gaps_by_series = {}
         for season_info in incomplete_seasons:
             series_id = season_info['parent_series_tmdb_id']
             season_num = season_info['season_number']
-            # ★★★ 修复1/2: 增加对 None 的保护 ★★★
             missing_eps = sorted(season_info.get('missing_episodes') or [])
             gaps_by_series.setdefault(series_id, []).append({
                 "season": season_num,
@@ -261,6 +188,7 @@ def task_scan_library_gaps(processor):
             progress_updater(100, "分析完成：目标剧集的所有季都是完整的。")
             return
             
+        # 5. 提交订阅请求 (逻辑保持不变)
         total_seasons_to_sub = len(incomplete_seasons)
         logger.info(f"  ➜ 本地分析完成！共发现 {total_seasons_to_sub} 个分集不完整的季需要重新订阅。")
         progress_updater(80, f"发现 {total_seasons_to_sub} 个不完整的季，准备提交订阅请求...")
@@ -274,7 +202,6 @@ def task_scan_library_gaps(processor):
             season_tmdb_id = season_info['season_tmdb_id']
             
             if not season_tmdb_id: 
-                logger.warning(f"剧集 {series_tmdb_id} 的第 {season_num} 季缺少季TMDb ID，无法订阅。")
                 continue
 
             series_info = series_info_map.get(series_tmdb_id)

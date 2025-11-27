@@ -3,7 +3,7 @@ import psycopg2
 import logging
 import json
 from datetime import datetime
-from typing import Optional, Dict, Any, List
+from typing import Optional, Dict, Any, List, Set
 
 from .connection import get_db_connection
 from . import media_db, request_db
@@ -777,3 +777,64 @@ def get_unique_official_ratings():
             ORDER BY rating;
         """)
         return [row['rating'] for row in cursor.fetchall()]
+
+def get_tmdb_ids_by_library_ids(library_ids: List[str]) -> set:
+    """
+    【数据库优化核心】根据 Emby 媒体库 ID 获取所有符合条件的 TMDB ID。
+    逻辑：
+    1. 电影：直接检查 asset_details_json 中的 source_library_id。
+    2. 剧集：检查 Episode 的 asset_details_json，并返回其 parent_series_tmdb_id。
+    """
+    if not library_ids:
+        return set()
+
+    # 确保 ID 是字符串格式
+    target_lib_ids = [str(lib_id) for lib_id in library_ids]
+    valid_tmdb_ids = set()
+
+    # SQL 逻辑：
+    # 1. 必须在库中 (in_library = TRUE)
+    # 2. 类型必须是 电影 或 单集 (因为只有单集才有文件资产信息)
+    # 3. asset_details_json 必须包含指定的 library_id
+    sql = """
+        SELECT 
+            tmdb_id, 
+            item_type, 
+            parent_series_tmdb_id
+        FROM media_metadata
+        WHERE 
+            in_library = TRUE
+            AND item_type IN ('Movie', 'Episode') 
+            AND asset_details_json IS NOT NULL
+            AND jsonb_typeof(asset_details_json) = 'array'
+            AND EXISTS (
+                SELECT 1
+                FROM jsonb_array_elements(asset_details_json) AS elem
+                WHERE elem->>'source_library_id' = ANY(%s)
+            );
+    """
+
+    try:
+        with get_db_connection() as conn:
+            with conn.cursor() as cursor:
+                cursor.execute(sql, (target_lib_ids,))
+                rows = cursor.fetchall()
+                
+                for row in rows:
+                    item_type = row['item_type']
+                    
+                    if item_type == 'Movie':
+                        # 电影直接添加自身的 TMDB ID
+                        valid_tmdb_ids.add(str(row['tmdb_id']))
+                    elif item_type == 'Episode':
+                        # 剧集通过单集反查父剧集的 TMDB ID
+                        parent_id = row.get('parent_series_tmdb_id')
+                        if parent_id:
+                            valid_tmdb_ids.add(str(parent_id))
+                            
+        logger.info(f"  -> 库筛选优化: 从本地数据库匹配到 {len(valid_tmdb_ids)} 个位于指定库 ({library_ids}) 的媒体项。")
+        return valid_tmdb_ids
+
+    except Exception as e:
+        logger.error(f"根据库 ID 筛选媒体时发生数据库错误: {e}", exc_info=True)
+        return set()

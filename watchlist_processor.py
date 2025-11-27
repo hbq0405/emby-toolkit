@@ -359,30 +359,28 @@ class WatchlistProcessor:
             self.progress_callback = None
 
     def _get_series_to_process(self, where_clause: str, tmdb_id: Optional[str] = None, include_all_series: bool = False) -> List[Dict[str, Any]]:
-        """【V4 - 终极修复版】正确使用 tmdb_id 进行单项查找。"""
-        
-        base_query = """
-            SELECT 
-                tmdb_id,
-                title AS item_name,
-                watching_status AS status,
-                emby_item_ids_json, -- ★★★ 获取完整的JSON数组
-                force_ended,
-                paused_until,
-                last_episode_to_air_json,
-                watchlist_tmdb_status AS tmdb_status,
-                watchlist_missing_info_json AS missing_info_json,
-                subscription_status
-            FROM media_metadata
+        """
+        【V5 - 数据库直通版】
+        - 单项刷新：直接查 DB。
+        - 批量刷新：直接调用 DB 函数，支持 SQL 级媒体库过滤，移除 Emby API 调用。
         """
         
-        # ★★★ 核心修复：单项刷新时，直接用 tmdb_id 查询数据库 ★★★
+        # 1. 单项刷新逻辑 (保持不变)
         if tmdb_id:
             try:
                 with connection.get_db_connection() as conn:
                     cursor = conn.cursor()
-                    query = f"{base_query} WHERE item_type = 'Series' AND tmdb_id = %s"
-                    cursor.execute(query, (tmdb_id,))
+                    # 这里需要手动写全字段，或者复用 watchlist_db 的逻辑，为了简单保持原样
+                    base_query = """
+                        SELECT 
+                            tmdb_id, title AS item_name, watching_status AS status,
+                            emby_item_ids_json, force_ended, paused_until,
+                            last_episode_to_air_json, watchlist_tmdb_status AS tmdb_status,
+                            watchlist_missing_info_json AS missing_info_json, subscription_status
+                        FROM media_metadata
+                        WHERE item_type = 'Series' AND tmdb_id = %s
+                    """
+                    cursor.execute(base_query, (tmdb_id,))
                     result = [dict(row) for row in cursor.fetchall()]
                     if not result:
                         logger.warning(f"  ➜ 数据库中未找到 TMDb ID 为 {tmdb_id} 的追剧记录。")
@@ -391,71 +389,33 @@ class WatchlistProcessor:
                 logger.error(f"为 tmdb_id {tmdb_id} 获取追剧信息时发生数据库错误: {e}", exc_info=True)
                 return []
 
-        # --- 以下为批量刷新的逻辑，保持不变 ---
+        # 2. 批量刷新逻辑 (优化后)
         selected_libraries = self.config.get(constants.CONFIG_OPTION_EMBY_LIBRARIES_TO_PROCESS, [])
         
-        if not selected_libraries:
-            try:
-                with connection.get_db_connection() as conn:
-                    cursor = conn.cursor()
-                    final_where = "WHERE item_type = 'Series'"
-                    if not include_all_series:
-                        final_where += " AND watching_status != 'NONE'"
-                    
-                    if where_clause:
-                        final_where += f" AND ({where_clause.replace('WHERE', '').strip()})"
-                    
-                    query = f"{base_query} {final_where}"
-                    cursor.execute(query)
-                    return [dict(row) for row in cursor.fetchall()]
-            except Exception as e:
-                logger.error(f"获取全部追剧列表时发生数据库错误: {e}")
-                return []
-
-        logger.info(f"  ➜ 已启用媒体库过滤器，开始从 {len(selected_libraries)} 个选定媒体库中获取剧集ID...")
+        # 构建 SQL 条件片段
+        conditions = []
         
-        valid_series_ids_from_emby = set()
-        for lib_id in selected_libraries:
-            series_ids_in_lib = emby.get_library_series_ids(
-                library_id=lib_id,
-                emby_server_url=self.emby_url,
-                emby_api_key=self.emby_api_key,
-                user_id=self.emby_user_id
-            )
-            valid_series_ids_from_emby.update(series_ids_in_lib)
-        
-        if not valid_series_ids_from_emby:
-            logger.warning("  ➜ 从所选媒体库中未能获取到任何剧集ID，本次任务将不处理任何项目。")
-            return []
+        # 处理 include_all_series 逻辑
+        if not include_all_series:
+            conditions.append("watching_status != 'NONE'")
             
-        logger.info(f"  ➜ 成功从Emby获取到 {len(valid_series_ids_from_emby)} 个有效的剧集ID，开始匹配数据库...")
-
-        try:
-            with connection.get_db_connection() as conn:
-                cursor = conn.cursor()
-                final_where = "WHERE item_type = 'Series'"
-                if not include_all_series:
-                    final_where += " AND watching_status != 'NONE'"
-
-                if where_clause:
-                    final_where += f" AND ({where_clause.replace('WHERE', '').strip()})"
-                
-                query = f"{base_query} {final_where}"
-                cursor.execute(query)
-                all_candidate_series = [dict(row) for row in cursor.fetchall()]
-        except Exception as e:
-            logger.error(f"过滤前获取追剧列表时发生数据库错误: {e}")
-            return []
-            
-        final_series_to_process = []
-        for series in all_candidate_series:
-            emby_ids = series.get('emby_item_ids_json', [])
-            if isinstance(emby_ids, list) and any(eid in valid_series_ids_from_emby for eid in emby_ids):
-                final_series_to_process.append(series)
+        # 处理传入的 where_clause (例如: "WHERE watching_status = 'Watching'")
+        if where_clause:
+            # 去掉 "WHERE" 前缀，只保留条件部分
+            clean_clause = where_clause.replace('WHERE', '', 1).strip()
+            if clean_clause:
+                conditions.append(clean_clause)
         
-        logger.info(f"  ➜ 媒体库过滤完成：数据库中发现 {len(all_candidate_series)} 个候选项目，最终匹配到 {len(final_series_to_process)} 个。")
+        final_condition_sql = " AND ".join(conditions) if conditions else ""
+
+        if selected_libraries:
+            logger.info(f"  ➜ 已启用媒体库过滤器 ({len(selected_libraries)} 个库)，正在数据库中筛选...")
         
-        return final_series_to_process
+        # ★★★ 核心调用：直接使用 DB 函数进行筛选 ★★★
+        return watchlist_db.get_series_by_dynamic_condition(
+            condition_sql=final_condition_sql,
+            library_ids=selected_libraries
+        )
 
     def _save_local_json(self, relative_path: str, new_data: Dict[str, Any]):
         """

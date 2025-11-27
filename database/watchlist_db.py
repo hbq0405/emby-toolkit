@@ -546,3 +546,197 @@ def sync_seasons_watching_status(parent_tmdb_id: str, active_season_numbers: Lis
             conn.commit()
     except Exception as e:
         logger.error(f"  ➜ 同步剧集 {parent_tmdb_id} 的季状态时出错: {e}", exc_info=True)
+
+def batch_set_series_watching_by_libraries(library_ids: Optional[List[str]] = None) -> int:
+    """
+    批量将剧集标记为“追剧中”。
+    优化点：
+    1. 如果 library_ids 为空，直接更新所有剧集。
+    2. 如果指定了 library_ids，直接在数据库内部通过 asset_details_json 筛选，
+       无需 Python 介入，也无需调用 Emby API。
+    3. 自动处理剧集顶层没有资产数据的情况（通过 Episode 反查）。
+    """
+    try:
+        with get_db_connection() as conn:
+            cursor = conn.cursor()
+            
+            # --- 情况 A: 未指定媒体库，更新所有剧集 ---
+            if not library_ids:
+                sql = """
+                    UPDATE media_metadata
+                    SET watching_status = 'Watching',
+                        paused_until = NULL,
+                        force_ended = FALSE
+                    WHERE item_type = 'Series'
+                      AND watching_status != 'Watching'; -- 避免重复更新
+                """
+                cursor.execute(sql)
+                updated_count = cursor.rowcount
+                logger.info(f"DB (新架构): 已将所有库内剧集 ({updated_count} 部) 标记为“追剧中”。")
+                return updated_count
+
+            # --- 情况 B: 指定了媒体库，进行精确筛选更新 ---
+            else:
+                # 确保 ID 是字符串
+                target_lib_ids = [str(lib_id) for lib_id in library_ids]
+                
+                # SQL 逻辑：
+                # 更新那些 "自己属于该库" 或者 "有单集属于该库" 的剧集
+                sql = """
+                    UPDATE media_metadata
+                    SET watching_status = 'Watching',
+                        paused_until = NULL,
+                        force_ended = FALSE
+                    WHERE item_type = 'Series'
+                      AND watching_status != 'Watching'
+                      AND tmdb_id IN (
+                          -- 1. 查找单集在指定库中的剧集 (反查 parent_series_tmdb_id)
+                          SELECT DISTINCT parent_series_tmdb_id
+                          FROM media_metadata
+                          WHERE item_type = 'Episode'
+                            AND in_library = TRUE
+                            AND asset_details_json IS NOT NULL
+                            AND EXISTS (
+                                SELECT 1
+                                FROM jsonb_array_elements(asset_details_json) AS elem
+                                WHERE elem->>'source_library_id' = ANY(%s)
+                            )
+                          
+                          UNION
+                          
+                          -- 2. 查找剧集本身在指定库中的剧集 (防备某些情况下 Series 也有资产信息)
+                          SELECT tmdb_id
+                          FROM media_metadata
+                          WHERE item_type = 'Series'
+                            AND in_library = TRUE
+                            AND asset_details_json IS NOT NULL
+                            AND EXISTS (
+                                SELECT 1
+                                FROM jsonb_array_elements(asset_details_json) AS elem
+                                WHERE elem->>'source_library_id' = ANY(%s)
+                            )
+                      );
+                """
+                # 需要传两次参数，因为有两个子查询用了 ANY(%s)
+                cursor.execute(sql, (target_lib_ids, target_lib_ids))
+                updated_count = cursor.rowcount
+                logger.info(f"DB (新架构): 已将指定库 {library_ids} 中的 {updated_count} 部剧集标记为“追剧中”。")
+                return updated_count
+
+    except Exception as e:
+        logger.error(f"DB (新架构): 按库批量更新剧集状态时出错: {e}", exc_info=True)
+        raise
+
+def _build_library_filter_sql(library_ids: List[str]) -> str:
+    """
+    (内部辅助) 构建用于筛选媒体库的 SQL 片段。
+    逻辑：剧集本身在库中 OR 剧集的任意一集在库中。
+    """
+    # 确保 ID 是字符串
+    lib_ids_str = [str(lid) for lid in library_ids]
+    # 将列表转为 SQL 数组字符串，例如: '{123, 456}'
+    array_literal = "{" + ",".join(lib_ids_str) + "}"
+    
+    return f"""
+        AND tmdb_id IN (
+            -- 1. 通过单集反查
+            SELECT DISTINCT parent_series_tmdb_id
+            FROM media_metadata
+            WHERE item_type = 'Episode'
+              AND in_library = TRUE
+              AND asset_details_json IS NOT NULL
+              AND EXISTS (
+                  SELECT 1
+                  FROM jsonb_array_elements(asset_details_json) AS elem
+                  WHERE elem->>'source_library_id' = ANY('{array_literal}'::text[])
+              )
+            
+            UNION
+            
+            -- 2. 直接查剧集 (防备 Series 也有资产信息)
+            SELECT tmdb_id
+            FROM media_metadata
+            WHERE item_type = 'Series'
+              AND in_library = TRUE
+              AND asset_details_json IS NOT NULL
+              AND EXISTS (
+                  SELECT 1
+                  FROM jsonb_array_elements(asset_details_json) AS elem
+                  WHERE elem->>'source_library_id' = ANY('{array_literal}'::text[])
+              )
+        )
+    """
+
+def get_gap_scan_candidates(library_ids: Optional[List[str]] = None) -> List[Dict[str, Any]]:
+    """
+    【新架构】获取“缺集扫描”任务的候选剧集。
+    
+    筛选条件（全部在 SQL 中完成）：
+    1. item_type = 'Series'
+    2. 状态不是 'Watching' 或 'Paused' (由主任务负责)
+    3. 订阅状态不是 'IGNORED' (尊重用户选择)
+    4. (可选) 属于指定的媒体库
+    """
+    base_sql = """
+        SELECT tmdb_id, title as item_name, watching_status as status, subscription_status
+        FROM media_metadata
+        WHERE item_type = 'Series'
+          AND watching_status NOT IN ('Watching', 'Paused')
+          AND subscription_status != 'IGNORED'
+    """
+    
+    if library_ids:
+        base_sql += _build_library_filter_sql(library_ids)
+        
+    try:
+        with get_db_connection() as conn:
+            cursor = conn.cursor()
+            cursor.execute(base_sql)
+            return [dict(row) for row in cursor.fetchall()]
+    except Exception as e:
+        logger.error(f"DB (新架构): 获取缺集扫描候选列表时出错: {e}", exc_info=True)
+        return []
+
+def get_series_by_dynamic_condition(condition_sql: str, library_ids: Optional[List[str]] = None) -> List[Dict[str, Any]]:
+    """
+    【新架构】根据动态条件获取剧集列表（用于 WatchlistProcessor）。
+    
+    :param condition_sql: 例如 "watching_status = 'Watching'" 或 "force_ended = FALSE"
+    :param library_ids: 可选的媒体库 ID 列表
+    """
+    # 基础查询字段，与原 _get_series_to_process 保持一致
+    base_sql = """
+        SELECT 
+            tmdb_id,
+            title AS item_name,
+            watching_status AS status,
+            emby_item_ids_json,
+            force_ended,
+            paused_until,
+            last_episode_to_air_json,
+            watchlist_tmdb_status AS tmdb_status,
+            watchlist_missing_info_json AS missing_info_json,
+            subscription_status
+        FROM media_metadata
+        WHERE item_type = 'Series'
+    """
+    
+    # 拼接动态条件
+    if condition_sql:
+        # 简单的防注入处理：确保 condition_sql 不包含分号等危险字符，
+        # 但由于这是内部调用，主要依赖调用方传入正确的 SQL 片段。
+        # 这里假设 condition_sql 是类似 "watching_status = '...'" 的片段
+        base_sql += f" AND ({condition_sql})"
+    
+    # 拼接媒体库过滤
+    if library_ids:
+        base_sql += _build_library_filter_sql(library_ids)
+        
+    try:
+        with get_db_connection() as conn:
+            cursor = conn.cursor()
+            cursor.execute(base_sql)
+            return [dict(row) for row in cursor.fetchall()]
+    except Exception as e:
+        logger.error(f"DB (新架构): 根据动态条件获取剧集时出错: {e}", exc_info=True)
+        return []

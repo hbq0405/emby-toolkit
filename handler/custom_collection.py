@@ -837,39 +837,29 @@ class FilterEngine:
 
         all_media_metadata = []
 
+        # 指定媒体库
         if library_ids and isinstance(library_ids, list) and len(library_ids) > 0:
-            # --- 分支1：从指定的媒体库加载数据 ---
-            logger.info(f"  ➜ 已指定 {len(library_ids)} 个媒体库作为筛选范围。")
+            logger.info(f"  ➜ 已指定 {len(library_ids)} 个媒体库，正在从本地数据库筛选...")
             
-            cfg = config_manager.APP_CONFIG
-            emby_url = cfg.get('emby_server_url')
-            emby_key = cfg.get('emby_api_key')
-            emby_user_id = cfg.get('emby_user_id')
-            if not all([emby_url, emby_key, emby_user_id]):
-                logger.error("  ➜ Emby服务器配置不完整，无法从指定媒体库筛选。")
-                return []
-            emby_items = emby.get_emby_library_items(
-                base_url=emby_url, api_key=emby_key, user_id=emby_user_id,
-                library_ids=library_ids, media_type_filter=",".join(item_types_to_process)
-            )
-            if not emby_items:
-                logger.warning("  ➜ 从指定的媒体库中未能获取到任何媒体项。")
-                return []
-            tmdb_ids_from_libs = [
-                item['ProviderIds']['Tmdb']
-                for item in emby_items
-                if item.get('ProviderIds', {}).get('Tmdb')
-            ]
-            if not tmdb_ids_from_libs:
-                logger.warning("  ➜ 指定媒体库中的项目均缺少TMDb ID，无法进行筛选。")
-                return []
+            # 1. 获取符合库条件的 TMDB ID 集合
+            tmdb_ids_in_libs = collection_db.get_tmdb_ids_by_library_ids(library_ids)
             
-            logger.info(f"  ➜ 正在从本地缓存中查询这 {len(tmdb_ids_from_libs)} 个项目的元数据...")
-            for item_type in item_types_to_process:
-                media_metadata_map = media_db.get_media_details_by_tmdb_ids(tmdb_ids_from_libs)
-                metadata_for_type = [v for v in media_metadata_map.values() if v.get('item_type') == item_type]
-                all_media_metadata.extend(metadata_for_type)
+            if not tmdb_ids_in_libs:
+                logger.warning("  ➜ 指定的媒体库中未找到任何符合条件的媒体项。")
+                return []
 
+            # 2. 批量获取这些 ID 的详细元数据
+            # 注意：get_media_details_by_tmdb_ids 返回的是 {tmdb_id: metadata} 字典
+            media_metadata_map = media_db.get_media_details_by_tmdb_ids(list(tmdb_ids_in_libs))
+            
+            # 3. 按需要的类型过滤并添加到总列表
+            for item_type in item_types_to_process:
+                metadata_for_type = [
+                    meta for meta in media_metadata_map.values() 
+                    if meta.get('item_type') == item_type
+                ]
+                all_media_metadata.extend(metadata_for_type)
+        # 未指定媒体库
         else:
             # --- 分支2：保持原有逻辑，扫描全库 ---
             logger.info("  ➜ 未指定媒体库，将扫描所有媒体库的元数据缓存...")
