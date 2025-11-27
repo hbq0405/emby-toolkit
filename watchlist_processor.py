@@ -11,7 +11,6 @@ import threading
 # 导入我们需要的辅助模块
 from database import connection, media_db, request_db, watchlist_db
 import constants
-import extensions
 import handler.tmdb as tmdb
 import handler.emby as emby
 import logging
@@ -531,35 +530,16 @@ class WatchlistProcessor:
             logger.warning("  ➜ 未配置TMDb API Key，跳过。")
             return
 
-        # ======================================================================
-        # ★★★ 动作 1: 调用核心处理器同步元数据文件 (不含图片) ★★★
-        # 这一步会确保 override 目录存在，并从 Emby 同步当前状态到文件
-        # ======================================================================
-        # if extensions.core_processor_instance:
-        #     # 获取 Emby 详情 (sync_item_metadata 需要)
-        #     item_details = emby.get_emby_item_details(
-        #         item_id, self.emby_url, self.emby_api_key, self.emby_user_id,
-        #         fields="ProviderIds,Type,Name,OriginalTitle,Overview,OfficialRating,PremiereDate"
-        #     )
-        #     if item_details:
-        #         # logger.debug(f"  ➜ 调用核心处理器初始化/同步元数据文件...")
-        #         extensions.media_processor_instance.sync_item_metadata(item_details, tmdb_id)
-
-        # 步骤2: 从TMDb获取权威数据
+        # 从TMDb获取最新元数据
         latest_series_data = tmdb.get_tv_details(tmdb_id, self.tmdb_api_key)
         if not latest_series_data:
             logger.error(f"  🚫 无法获取 '{item_name}' 的TMDb详情，本次处理中止。")
             return
         
-        # ======================================================================
-        # ★★★ 动作 2: 将 TMDb 最新数据合并写入本地 JSON (series.json) ★★★
-        # 此时文件可能已由动作1创建，我们只更新 overview/rating 等，保护 title/cast
-        # ======================================================================
+        # 将 TMDb 最新数据合并写入本地 JSON (series.json) 
         self._save_local_json(f"override/tmdb-tv/{tmdb_id}/series.json", latest_series_data)
 
-        # ======================================================================
-        # ★★★ 动作 3: 常态化刷新 Series 数据库元数据 ★★★
-        # ======================================================================
+        # 将 TMDb 最新数据写入数据库
         series_updates = {
             "original_title": latest_series_data.get("original_name"),
             "overview": latest_series_data.get("overview"),
@@ -581,17 +561,13 @@ class WatchlistProcessor:
             season_details = tmdb.get_season_details_tmdb(tmdb_id, season_num, self.tmdb_api_key)
             
             if season_details:
-                # ======================================================================
-                # ★★★ 动作 4: 合并写入本地 JSON (season-X.json) ★★★
-                # ======================================================================
+                #  合并写入本地 JSON (season-X.json) 
                 self._save_local_json(f"override/tmdb-tv/{tmdb_id}/season-{season_num}.json", season_details)
 
                 if season_details.get("episodes"):
                     all_tmdb_episodes.extend(season_details.get("episodes", []))
                     
-                    # ======================================================================
-                    # ★★★ 动作 5: 合并写入本地 JSON (season-X-episode-Y.json) ★★★
-                    # ======================================================================
+                    # 合并写入本地 JSON (season-X-episode-Y.json)
                     for ep in season_details["episodes"]:
                         ep_num = ep.get("episode_number")
                         if ep_num is not None:
@@ -602,10 +578,7 @@ class WatchlistProcessor:
             
             time.sleep(0.1)
 
-        # ======================================================================
-        # ★★★ 动作 6: 通知 Emby 刷新元数据 ★★★
-        # 神医插件会拦截此请求，读取我们刚刚更新的 JSON 文件
-        # ======================================================================
+        # 通知 Emby 刷新元数据 
         emby.refresh_emby_item_metadata(
             item_emby_id=item_id,
             emby_server_url=self.emby_url,
@@ -627,7 +600,6 @@ class WatchlistProcessor:
         has_missing_media = bool(missing_info["missing_seasons"] or missing_info["missing_episodes"])
 
         today_str = datetime.now(timezone.utc).date().isoformat()
-        # has_complete_metadata = self._check_all_episodes_have_overview(aired_episodes) 
         # 既然我们已经全量刷新了元数据，这里默认元数据是完整的
         has_complete_metadata = True 
 
@@ -688,7 +660,7 @@ class WatchlistProcessor:
 
         is_truly_airing = final_status in [STATUS_WATCHING, STATUS_PAUSED]
 
-        # 步骤5: 更新追剧数据库
+        # 更新追剧数据库
         updates_to_db = {
             "status": final_status,
             "paused_until": paused_until_date.isoformat() if paused_until_date else None,
@@ -737,9 +709,9 @@ class WatchlistProcessor:
                         # 准备媒体信息
                         season_tmdb_id = str(season.get('id'))
                         media_info = {
-                            'tmdb_id': season_tmdb_id, # ★★★ BUG修复：使用季的TMDB ID作为键 ★★★
-                            'item_type': 'Season',     # 概念修正
-                            'title': f"{item_name} {season.get('name', f'第 {season_num} 季')}", # 标题构建更健壮
+                            'tmdb_id': season_tmdb_id, 
+                            'item_type': 'Season',     
+                            'title': f"{item_name} {season.get('name', f'第 {season_num} 季')}", 
                             'original_title': latest_series_data.get('original_name'),
                             'release_date': season.get('air_date'),
                             'poster_path': season.get('poster_path'),
@@ -749,8 +721,8 @@ class WatchlistProcessor:
                         
                         # 推送需求
                         request_db.set_media_status_wanted(
-                            tmdb_ids=str(season.get('id')), # ★★★ 核心修正：使用季的真实 TMDB ID ★★★
-                            item_type='Season',             # ★★★ 核心修正：类型明确为 Season ★★★
+                            tmdb_ids=str(season.get('id')), 
+                            item_type='Season',             
                             source={"type": "watchlist", "reason": "missing_completed_season", "item_id": item_id},
                             media_info_list=[media_info]
                         )
@@ -784,7 +756,6 @@ class WatchlistProcessor:
                     'parent_series_tmdb_id': tmdb_id
                 }
                 
-                # ★★★★★★★★★★★★★★★ 核心修复：智能分拣状态 ★★★★★★★★★★★★★★★
                 air_date_str = season.get('air_date')
                 is_pending = False
                 if air_date_str:
@@ -815,7 +786,7 @@ class WatchlistProcessor:
                         media_info_list=[media_info]
                     )
 
-        # 步骤8：更新媒体数据缓存 (全量刷新子项目)
+        # 更新媒体数据缓存 (全量刷新子项目)
         try:
             media_db.sync_series_children_metadata(
                 parent_tmdb_id=tmdb_id,
