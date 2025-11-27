@@ -542,7 +542,7 @@ class WatchlistProcessor:
             "original_title": latest_series_data.get("original_name"),
             "overview": latest_series_data.get("overview"),
             "poster_path": latest_series_data.get("poster_path"),
-            "release_date": latest_series_data.get("first_air_date"),
+            "release_date": latest_series_data.get("first_air_date") or None,
             "original_language": latest_series_data.get("original_language"),
         }
         media_db.update_media_metadata_fields(tmdb_id, 'Series', series_updates)
