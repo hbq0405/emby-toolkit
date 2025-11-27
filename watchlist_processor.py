@@ -119,7 +119,7 @@ class WatchlistProcessor:
 
     # ★★★ 核心修改 2: 重构自动添加追剧列表的函数 ★★★
     def add_series_to_watchlist(self, item_details: Dict[str, Any]):
-        """【新架构】将新剧集添加/更新到 media_metadata 表并标记为追剧。"""
+        """ 将新剧集添加/更新到 media_metadata 表并标记为追剧。"""
         if item_details.get("Type") != "Series": return
         tmdb_id = item_details.get("ProviderIds", {}).get("Tmdb")
         item_name = item_details.get("Name")
@@ -147,16 +147,17 @@ class WatchlistProcessor:
                         internal_status = STATUS_WATCHING
                 except (ValueError, TypeError):
                     pass
-
+        is_airing = (internal_status == STATUS_WATCHING)
         try:
             with connection.get_db_connection() as conn:
                 with conn.cursor() as cursor:
-                    # 使用 UPSERT 逻辑
+                    # 使用 UPSERT 逻辑，同时更新 watchlist_is_airing
                     sql = """
-                        INSERT INTO media_metadata (tmdb_id, item_type, title, watching_status, emby_item_ids_json)
-                        VALUES (%s, 'Series', %s, %s, %s)
+                        INSERT INTO media_metadata (tmdb_id, item_type, title, watching_status, watchlist_is_airing, emby_item_ids_json)
+                        VALUES (%s, 'Series', %s, %s, %s, %s)
                         ON CONFLICT (tmdb_id, item_type) DO UPDATE SET
                             watching_status = EXCLUDED.watching_status,
+                            watchlist_is_airing = EXCLUDED.watchlist_is_airing,
                             -- 智能合并 Emby ID
                             emby_item_ids_json = (
                                 SELECT jsonb_agg(DISTINCT elem)
@@ -167,11 +168,11 @@ class WatchlistProcessor:
                                 ) AS combined
                             );
                     """
-                    cursor.execute(sql, (tmdb_id, item_name, internal_status, json.dumps([item_id])))
+                    cursor.execute(sql, (tmdb_id, item_name, internal_status, is_airing, json.dumps([item_id])))
                     
                     if cursor.rowcount > 0:
                         log_status_translated = translate_internal_status(internal_status)
-                        logger.info(f"  ➜ 剧集 '{item_name}' 已自动加入追剧列表，初始状态为: {log_status_translated}。")
+                        logger.info(f"  ➜ 剧集 '{item_name}' 已自动加入追剧列表，初始状态为: {log_status_translated} (连载中: {is_airing})。")
                 conn.commit()
         except Exception as e:
             logger.error(f"自动添加剧集 '{item_name}' 到追剧列表时发生数据库错误: {e}", exc_info=True)
