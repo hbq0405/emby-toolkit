@@ -79,7 +79,6 @@ def subscribe_with_custom_payload(payload: dict, config: Dict[str, Any]) -> bool
 def cancel_subscription(tmdb_id: str, item_type: str, config: Dict[str, Any], season: Optional[int] = None) -> bool:
     """
     【取消订阅】根据 TMDB ID 和类型取消订阅。
-    用于洗版前清理旧的普通订阅，确保新的洗版订阅生效。
     """
     try:
         moviepilot_url = config.get(constants.CONFIG_OPTION_MOVIEPILOT_URL, '').rstrip('/')
@@ -88,36 +87,76 @@ def cancel_subscription(tmdb_id: str, item_type: str, config: Dict[str, Any], se
             logger.error("  ➜ MoviePilot 取消订阅失败：认证失败。")
             return False
 
-        # 构造 mediaid (格式: tmdb:12345)
-        media_id_for_api = f"tmdb:{tmdb_id}"
-        cancel_url = f"{moviepilot_url}/api/v1/subscribe/media/{media_id_for_api}"
-        
-        params = {}
-        # 仅当类型为剧集/季且指定了季号时，才传递 season 参数
-        # 注意：item_type 可能是 'Series', 'Season' 或 'Movie'
-        if item_type in ['Series', 'Season'] and season is not None:
-            params['season'] = season
-        
-        headers = {"Authorization": f"Bearer {access_token}"}
+        # 内部函数：执行单次取消请求
+        def _do_cancel_request(target_season: Optional[int]) -> bool:
+            media_id_for_api = f"tmdb:{tmdb_id}"
+            cancel_url = f"{moviepilot_url}/api/v1/subscribe/media/{media_id_for_api}"
+            
+            params = {}
+            if target_season is not None:
+                params['season'] = target_season
+            
+            headers = {"Authorization": f"Bearer {access_token}"}
+            
+            season_log = f" Season {target_season}" if target_season is not None else ""
+            logger.info(f"  ➜ 正在向 MoviePilot 发送取消订阅请求: {media_id_for_api}{season_log}")
 
-        logger.info(f"  ➜ 正在向 MoviePilot 发送取消订阅请求: {media_id_for_api} (Season: {season if season is not None else 'All'})")
+            try:
+                response = requests.delete(cancel_url, headers=headers, params=params, timeout=15)
+                if response.status_code in [200, 204]:
+                    logger.info(f"  ✅ MoviePilot 已成功取消订阅: {media_id_for_api}{season_log}")
+                    return True
+                elif response.status_code == 404:
+                    logger.info(f"  ✅ MoviePilot 中未找到订阅 {media_id_for_api}{season_log}，无需取消。")
+                    return True
+                else:
+                    logger.error(f"  ➜ MoviePilot 取消订阅失败！API 返回: {response.status_code} - {response.text}")
+                    return False
+            except Exception as req_e:
+                logger.error(f"  ➜ 请求 MoviePilot API 发生异常: {req_e}")
+                return False
 
-        response = requests.delete(cancel_url, headers=headers, params=params, timeout=15)
-        
-        # 200/204: 删除成功
-        if response.status_code in [200, 204]:
-            logger.info(f"  ✅ MoviePilot 已成功取消订阅: {media_id_for_api}")
-            return True
-        # 404: 订阅本来就不存在，视为成功
-        elif response.status_code == 404:
-            logger.info(f"  ✅ MoviePilot 中未找到订阅 {media_id_for_api}，无需取消。")
-            return True
-        else:
-            logger.error(f"  ➜ MoviePilot 取消订阅失败！API 返回: {response.status_code} - {response.text}")
-            return False
+        # --- 逻辑分支 ---
+
+        # 情况 1: 电影，或者指定了具体季号的剧集 -> 直接取消
+        if item_type == 'Movie' or season is not None:
+            return _do_cancel_request(season)
+
+        # 情况 2: 剧集 (Series) 且未指定季号 -> 查询 TMDb 遍历取消所有季
+        if item_type == 'Series':
+            tmdb_api_key = config.get(constants.CONFIG_OPTION_TMDB_API_KEY)
+            if not tmdb_api_key:
+                logger.error("  ➜ 取消剧集订阅失败：未配置 TMDb API Key，无法获取分季信息。")
+                return False
+
+            logger.info(f"  ➜ 正在查询 TMDb 获取剧集 (ID: {tmdb_id}) 的所有季信息，以便逐个取消...")
+            series_details = tmdb.get_tv_details(tmdb_id, tmdb_api_key)
+            
+            if not series_details:
+                logger.error(f"  ➜ 无法从 TMDb 获取剧集详情，取消订阅中止。")
+                return False
+
+            seasons = series_details.get('seasons', [])
+            if not seasons:
+                logger.warning(f"  ➜ 该剧集在 TMDb 上没有季信息，尝试直接取消整剧。")
+                return _do_cancel_request(None)
+
+            all_success = True
+            # 遍历所有季
+            for s in seasons:
+                s_num = s.get('season_number')
+                # 只处理 season_number > 0 的季，跳过第0季 ★★★
+                if s_num is not None and s_num > 0:
+                    if not _do_cancel_request(s_num):
+                        all_success = False
+            
+            return all_success
+
+        # 默认 fallback
+        return _do_cancel_request(None)
 
     except Exception as e:
-        logger.error(f"  ➜ 调用 MoviePilot 取消订阅 API 时发生网络或未知错误: {e}", exc_info=True)
+        logger.error(f"  ➜ 调用 MoviePilot 取消订阅 API 时发生未知错误: {e}", exc_info=True)
         return False
 
 def check_subscription_exists(tmdb_id: str, item_type: str, config: Dict[str, Any], season: Optional[int] = None) -> bool:
