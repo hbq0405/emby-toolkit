@@ -878,7 +878,14 @@ class FilterEngine:
                 tmdb_id = media_metadata.get('tmdb_id')
                 item_type = media_metadata.get('item_type')
                 if tmdb_id and item_type:
-                    matched_items.append({'id': str(tmdb_id), 'type': item_type})
+                    emby_ids = media_metadata.get('emby_item_ids_json')
+                    first_emby_id = emby_ids[0] if emby_ids and isinstance(emby_ids, list) else None
+                    
+                    matched_items.append({
+                        'id': str(tmdb_id), 
+                        'type': item_type,
+                        'emby_id': first_emby_id 
+                    })
                     
         unique_items = list({f"{item['type']}-{item['id']}": item for item in matched_items}.values())
         logger.info(f"  ➜ 筛选完成！共找到 {len(unique_items)} 部匹配的媒体项目。")

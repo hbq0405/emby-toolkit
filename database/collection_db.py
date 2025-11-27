@@ -832,9 +832,29 @@ def get_tmdb_ids_by_library_ids(library_ids: List[str]) -> set:
                         if parent_id:
                             valid_tmdb_ids.add(str(parent_id))
                             
-        logger.info(f"  -> 库筛选优化: 从本地数据库匹配到 {len(valid_tmdb_ids)} 个位于指定库 ({library_ids}) 的媒体项。")
+        logger.info(f"  ➜ 从本地数据库匹配到 {len(valid_tmdb_ids)} 个位于指定库 ({library_ids}) 的媒体项。")
         return valid_tmdb_ids
 
     except Exception as e:
         logger.error(f"根据库 ID 筛选媒体时发生数据库错误: {e}", exc_info=True)
         return set()
+    
+def get_all_local_emby_users() -> List[Dict[str, Any]]:
+    """
+    【性能优化】从本地数据库获取 Emby 用户列表。
+    返回格式经过转换，以兼容 Emby API 的返回结构。
+    """
+    try:
+        with get_db_connection() as conn:
+            cursor = conn.cursor()
+            cursor.execute("SELECT id, name, is_administrator FROM emby_users")
+            rows = cursor.fetchall()
+            
+            return [{
+                'Id': row['id'], 
+                'Name': row['name'],
+                'Policy': {'IsAdministrator': row['is_administrator']} 
+            } for row in rows]
+    except Exception as e:
+        logger.error(f"从本地数据库获取用户失败: {e}", exc_info=True)
+        return []

@@ -5,9 +5,10 @@ import json
 import logging
 import pytz
 import time
+import requests
 from datetime import datetime, timezone
 from concurrent.futures import ThreadPoolExecutor, as_completed
-from typing import Dict, Any
+from typing import Dict, Any, List, Set
 
 # 导入需要的底层模块和共享实例
 import handler.emby as emby
@@ -110,7 +111,7 @@ def _perform_list_collection_health_check(
     except Exception as e_db:
         logger.error(f"  -> 获取在库季列表时发生数据库错误: {e_db}", exc_info=True)
 
-    in_library_top_level_tmdb_ids = set(tmdb_to_emby_item_map.keys())
+    in_library_keys = set(tmdb_to_emby_item_map.keys())
     missing_released_items = []
     missing_unreleased_items = []
     # 新增一个列表，专门存放需要确保存在的父剧集信息 
@@ -127,9 +128,18 @@ def _perform_list_collection_health_check(
             if (tmdb_id, season_num) in in_library_seasons_set:
                 is_in_library = True
         else:
-            original_id = corrected_id_to_original_id_map.get(tmdb_id, tmdb_id)
-            if tmdb_id in in_library_top_level_tmdb_ids or original_id in in_library_top_level_tmdb_ids:
+            current_key = f"{tmdb_id}_{media_type}"
+            if current_key in in_library_keys:
                 is_in_library = True
+            
+            # 2. 检查原始 ID (如果有修正)
+            # 注意：修正通常只修正 ID，类型一般不变，或者修正字典里包含了类型
+            # 这里简化处理，假设类型不变
+            original_id = corrected_id_to_original_id_map.get(tmdb_id)
+            if not is_in_library and original_id:
+                original_key = f"{original_id}_{media_type}"
+                if original_key in in_library_keys:
+                    is_in_library = True
         
         if is_in_library:
             continue
@@ -263,6 +273,47 @@ def _perform_list_collection_health_check(
         "generated_media_info_json": json.dumps(tmdb_items, ensure_ascii=False)
     }
 
+# --- 精准权限检查辅助函数 ---
+def _check_user_access_batch(base_url: str, api_key: str, user_id: str, item_ids: List[str]) -> Set[str]:
+    """
+    精准查询：检查指定用户对一组特定 Item ID 的访问权限。
+    比查询用户全量权限快得多。
+    """
+    if not item_ids:
+        return set()
+    
+    # 如果 ID 数量太多（例如超过 200），URL 可能会过长，分批处理
+    chunk_size = 150
+    accessible_ids = set()
+    
+    # 简单的分批逻辑
+    for i in range(0, len(item_ids), chunk_size):
+        chunk = item_ids[i:i + chunk_size]
+        ids_str = ",".join(chunk)
+        
+        # 构造请求：只查询这些 ID，且只返回 Id 字段
+        url = f"{base_url}/Users/{user_id}/Items"
+        params = {
+            'Ids': ids_str,
+            'Fields': 'Id',
+            'Recursive': 'true'
+        }
+        headers = {'X-Emby-Token': api_key}
+        
+        try:
+            response = requests.get(url, params=params, headers=headers, timeout=10)
+            if response.status_code == 200:
+                data = response.json()
+                # Emby 返回的 Items 列表就是该用户能看到的那些
+                for item in data.get('Items', []):
+                    accessible_ids.add(item['Id'])
+            else:
+                logger.warning(f"查询用户 {user_id} 权限失败: {response.status_code}")
+        except Exception as e:
+            logger.error(f"查询用户 {user_id} 权限时出错: {e}")
+            
+    return accessible_ids
+
 # ★★★ 刷新合集的后台任务函数 ★★★
 def task_refresh_collections(processor):
     """
@@ -364,27 +415,34 @@ def update_user_permissions_for_collection(collection_id: int, global_ordered_em
 # ★★★ 一键生成所有合集的后台任务 ★★★
 def task_process_all_custom_collections(processor):
     """
-    - 【最终修正版】一键生成所有合集的后台任务。
+    【V5 - 极致优化版】一键生成所有合集的后台任务。
+    优化点：
+    1. 用户列表优先查本地数据库。
+    2. 移除全量权限预计算，改为针对每个合集进行“按需精准权限检查”。
+    3. 管理员用户直接跳过检查。
     """
     task_name = "生成所有自建合集"
     logger.info(f"--- 开始执行 '{task_name}' 任务 ---")
 
     try:
-        # ... (步骤 1 & 2: 获取权限和合集数据 - 不变) ...
-        task_manager.update_status_from_thread(0, "正在获取所有Emby用户及权限...")
-        all_emby_users = emby.get_all_emby_users_from_server(processor.emby_url, processor.emby_api_key)
+        # ======================================================================
+        # 步骤 1: 获取用户列表 (优化：优先查本地 DB)
+        # ======================================================================
+        task_manager.update_status_from_thread(0, "正在获取所有Emby用户...")
+        
+        all_emby_users = collection_db.get_all_local_emby_users()
+        
+        if all_emby_users:
+            logger.info(f"  ➜ 成功从本地数据库加载了 {len(all_emby_users)} 个用户。")
+        else:
+            logger.info("  ➜ 本地数据库未找到用户数据，正在回退到 Emby API 获取...")
+            all_emby_users = emby.get_all_emby_users_from_server(processor.emby_url, processor.emby_api_key)
+            
         if not all_emby_users: raise RuntimeError("无法从Emby获取用户列表")
         
-        user_permissions_map = {}
-        with ThreadPoolExecutor(max_workers=10) as executor:
-            future_to_user = {executor.submit(emby.get_all_accessible_item_ids_for_user_optimized, processor.emby_url, processor.emby_api_key, user['Id']): user for user in all_emby_users}
-            for future in as_completed(future_to_user):
-                user = future_to_user[future]
-                try:
-                    permission_set = future.result()
-                    if permission_set is not None: user_permissions_map[user['Id']] = permission_set
-                except Exception as e: logger.error(f"为用户 '{user['Name']}' 获取权限时出错: {e}")
-        
+        # ======================================================================
+        # 步骤 2: 获取合集定义 & 预加载全库数据
+        # ======================================================================
         task_manager.update_status_from_thread(10, "正在获取所有启用的合集定义...")
         active_collections = collection_db.get_all_active_custom_collections()
         if not active_collections:
@@ -392,10 +450,12 @@ def task_process_all_custom_collections(processor):
             return
 
         total_collections = len(active_collections)
-        task_manager.update_status_from_thread(12, "正在从Emby获取全库媒体数据...")
+        
+        task_manager.update_status_from_thread(12, "正在从本地数据库加载全量媒体映射...")
         libs_to_process_ids = processor.config.get("libraries_to_process", [])
-        all_emby_items = emby.get_emby_library_items(base_url=processor.emby_url, api_key=processor.emby_api_key, user_id=processor.emby_user_id, media_type_filter="Movie,Series", library_ids=libs_to_process_ids) or []
-        tmdb_to_emby_item_map = {item['ProviderIds']['Tmdb']: item for item in all_emby_items if item.get('ProviderIds', {}).get('Tmdb')}
+        
+        # 获取全量映射
+        tmdb_to_emby_item_map = media_db.get_tmdb_to_emby_map(library_ids=libs_to_process_ids)
         
         task_manager.update_status_from_thread(15, "正在从Emby获取现有合集列表...")
         all_emby_collections = emby.get_all_collections_from_emby_generic(base_url=processor.emby_url, api_key=processor.emby_api_key, user_id=processor.emby_user_id) or []
@@ -424,7 +484,7 @@ def task_process_all_custom_collections(processor):
             try:
                 definition = collection['definition_json']
                 
-                # --- A. 计算并【立即标准化】媒体列表 ---
+                # --- A. 计算并标准化媒体列表 ---
                 raw_tmdb_items = []
                 if collection['type'] == 'list':
                     importer = ListImporter(processor.tmdb_api_key)
@@ -437,10 +497,8 @@ def task_process_all_custom_collections(processor):
                 
                 tmdb_items = [
                     {
-                        # ★★★ 核心修正：将所有源头获取的ID强制转换为字符串 ★★★
                         'tmdb_id': str(item.get('id')),
                         'media_type': item.get('type'),
-                        # 使用字典解包的技巧，如果 'season' 存在，就把它加进去
                         **({'season': item['season']} if 'season' in item and item.get('season') is not None else {})
                     }
                     for item in raw_tmdb_items
@@ -450,16 +508,64 @@ def task_process_all_custom_collections(processor):
                     logger.warning(f"合集 '{collection_name}' 未生成任何媒体ID，跳过。")
                     continue
 
-                global_ordered_emby_ids = [tmdb_to_emby_item_map[item['tmdb_id']]['Id'] for item in tmdb_items if item['tmdb_id'] in tmdb_to_emby_item_map]
+                # --- B. 映射 Emby ID ---
+                global_ordered_emby_ids = []
+                for item in tmdb_items:
+                    # 1. 优先用 FilterEngine 自带的
+                    if item.get('emby_id'):
+                        global_ordered_emby_ids.append(item['emby_id'])
+                    else:
+                        # 2. 查全量映射表 (使用组合键)
+                        key = f"{item['tmdb_id']}_{item['media_type']}"
+                        if key in tmdb_to_emby_item_map:
+                            global_ordered_emby_ids.append(tmdb_to_emby_item_map[key]['Id'])
 
+                # --- C. 更新 Emby 合集 ---
                 emby_collection_id = emby.create_or_update_collection_with_emby_ids(
                     collection_name=collection_name, emby_ids_in_library=global_ordered_emby_ids, 
                     base_url=processor.emby_url, api_key=processor.emby_api_key, user_id=processor.emby_user_id,
                     prefetched_collection_map=prefetched_collection_map
                 )
 
-                update_user_permissions_for_collection(collection_id, global_ordered_emby_ids, user_permissions_map)
+                # --- D. 【优化核心】按需计算用户权限 ---
+                # 这里将原本在循环外的全量计算，移到了循环内，但变成了“精准打击”
+                current_collection_permissions = {}
+                
+                if not global_ordered_emby_ids:
+                    for user in all_emby_users:
+                        current_collection_permissions[user['Id']] = set()
+                else:
+                    with ThreadPoolExecutor(max_workers=10) as executor:
+                        future_to_user = {}
+                        for user in all_emby_users:
+                            user_id = user['Id']
+                            is_admin = user.get('Policy', {}).get('IsAdministrator', False)
+                            
+                            if is_admin:
+                                # 管理员免检
+                                current_collection_permissions[user_id] = set(global_ordered_emby_ids)
+                            else:
+                                # 普通用户精准查
+                                future = executor.submit(
+                                    _check_user_access_batch, 
+                                    processor.emby_url, 
+                                    processor.emby_api_key, 
+                                    user_id, 
+                                    global_ordered_emby_ids
+                                )
+                                future_to_user[future] = user
+                        
+                        for future in as_completed(future_to_user):
+                            user = future_to_user[future]
+                            try:
+                                current_collection_permissions[user['Id']] = future.result()
+                            except Exception as e:
+                                logger.error(f"检查用户 '{user['Name']}' 对合集 '{collection_name}' 的权限时出错: {e}")
+                                current_collection_permissions[user['Id']] = set()
 
+                update_user_permissions_for_collection(collection_id, global_ordered_emby_ids, current_collection_permissions)
+
+                # --- E. 更新数据库状态 ---
                 update_data = {
                     "emby_collection_id": emby_collection_id,
                     "item_type": json.dumps(definition.get('item_type', ['Movie'])),
@@ -470,7 +576,7 @@ def task_process_all_custom_collections(processor):
                 if collection['type'] == 'list':
                     health_check_results = _perform_list_collection_health_check(
                         tmdb_items=tmdb_items,
-                        tmdb_to_emby_item_map=tmdb_to_emby_item_map,
+                        tmdb_to_emby_item_map=tmdb_to_emby_item_map, 
                         corrected_id_to_original_id_map=corrected_id_to_original_id_map,
                         collection_db_record=collection,
                         tmdb_api_key=processor.tmdb_api_key
@@ -485,7 +591,7 @@ def task_process_all_custom_collections(processor):
 
                 collection_db.update_custom_collection_sync_results(collection_id, update_data)
 
-                # ★★★ 封面生成逻辑 - 调用 ★★★
+                # --- F. 封面生成 ---
                 if cover_service and emby_collection_id:
                     try:
                         library_info = emby.get_emby_item_details(emby_collection_id, processor.emby_url, processor.emby_api_key, processor.emby_user_id)
@@ -499,7 +605,7 @@ def task_process_all_custom_collections(processor):
                     except Exception as e_cover:
                         logger.error(f"为合集 '{collection_name}' 生成封面时出错: {e_cover}", exc_info=True)
 
-                # 如果刚刚处理的是一个猫眼榜单，就主动休息几秒，避免对猫眼服务器造成压力
+                # 猫眼榜单降温
                 if collection['type'] == 'list' and collection['definition_json'].get('url', '').startswith('maoyan://'):
                     delay_seconds = 10
                     logger.info(f"  ➜ 已处理一个猫眼榜单，为避免触发反爬机制，将主动降温 {delay_seconds} 秒...")
@@ -522,39 +628,44 @@ def task_process_all_custom_collections(processor):
 # --- 处理单个自定义合集的核心任务 ---
 def process_single_custom_collection(processor, custom_collection_id: int):
     """
-    - 【最终修正版】处理单个自定义合集的核心任务
+    - 【极致优化版】处理单个自定义合集的核心任务
+    - 优化点：权限计算后移，管理员免查，普通用户按需查。
     """
     task_name = f"生成单个自建合集 (ID: {custom_collection_id})"
     logger.info(f"--- 开始执行 '{task_name}' 任务 ---")
     
     try:
-        # ... (步骤 1 & 2: 获取用户权限和合集定义 - 这部分代码不变)
-        task_manager.update_status_from_thread(0, "正在获取所有Emby用户及权限...")
-        all_emby_users = emby.get_all_emby_users_from_server(processor.emby_url, processor.emby_api_key)
+        # ------------------------------------------------------------------
+        # 步骤 1: 获取用户列表 (从本地 DB)
+        # ------------------------------------------------------------------
+        task_manager.update_status_from_thread(0, "正在获取所有Emby用户...")
+        all_emby_users = collection_db.get_all_local_emby_users()
+        
+        if not all_emby_users:
+            logger.info("  ➜ 本地数据库未找到用户数据，回退到 Emby API 获取...")
+            all_emby_users = emby.get_all_emby_users_from_server(processor.emby_url, processor.emby_api_key)
+            
         if not all_emby_users: raise RuntimeError("无法获取用户列表")
         
-        user_permissions_map = {}
-        with ThreadPoolExecutor(max_workers=10) as executor:
-            future_to_user = {executor.submit(emby.get_all_accessible_item_ids_for_user_optimized, processor.emby_url, processor.emby_api_key, user['Id']): user for user in all_emby_users}
-            for future in as_completed(future_to_user):
-                user = future_to_user[future]
-                try:
-                    permission_set = future.result()
-                    if permission_set is not None: user_permissions_map[user['Id']] = permission_set
-                except Exception as e: logger.error(f"为用户 '{user['Name']}' 获取权限时出错: {e}")
-        
-        task_manager.update_status_from_thread(20, "正在读取合集定义...")
+        logger.info(f"  ➜ 成功从本地数据库加载了 {len(all_emby_users)} 个用户。")
+
+        # ★★★ 注意：这里不再预先计算所有用户的全量权限，直接跳过耗时的步骤 ★★★
+
+        # ------------------------------------------------------------------
+        # 步骤 2: 读取合集定义
+        # ------------------------------------------------------------------
+        task_manager.update_status_from_thread(10, "正在读取合集定义...")
         collection = collection_db.get_custom_collection_by_id(custom_collection_id)
         if not collection: raise ValueError(f"未找到ID为 {custom_collection_id} 的自定义合集。")
         collection_name = collection['name']
         
-        # ======================================================================
-        # 步骤 3: 计算媒体列表并【立即标准化】
-        # ======================================================================
-        task_manager.update_status_from_thread(30, f"正在为《{collection_name}》计算媒体列表...")
+        # ------------------------------------------------------------------
+        # 步骤 3: 计算媒体列表
+        # ------------------------------------------------------------------
+        task_manager.update_status_from_thread(20, f"正在为《{collection_name}》计算媒体列表...")
         definition = collection['definition_json']
         
-        # 3.1 获取原始数据 (键名为 id, type)
+        # 3.1 获取原始数据
         raw_tmdb_items = []
         if collection['type'] == 'list':
             importer = ListImporter(processor.tmdb_api_key)
@@ -563,15 +674,15 @@ def process_single_custom_collection(processor, custom_collection_id: int):
             engine = FilterEngine()
             raw_tmdb_items = engine.execute_filter(definition)
 
-        # 3.2 应用修正 (修正会保留 id, type 键名)
+        # 3.2 应用修正
         raw_tmdb_items, corrected_id_to_original_id_map = _apply_id_corrections(raw_tmdb_items, definition, collection_name)
         
         tmdb_items = [
             {
-                # ★★★ 核心修正：将所有源头获取的ID强制转换为字符串 ★★★
                 'tmdb_id': str(item.get('id')),
                 'media_type': item.get('type'),
-                # ...
+                'emby_id': item.get('emby_id'),
+                **({'season': item['season']} if 'season' in item and item.get('season') is not None else {})
             }
             for item in raw_tmdb_items
         ]
@@ -581,23 +692,93 @@ def process_single_custom_collection(processor, custom_collection_id: int):
             task_manager.update_status_from_thread(100, "该合集未匹配到任何媒体。")
             return
 
-        # ... (后续步骤使用标准化的 tmdb_items)
-        libs_to_process_ids = processor.config.get("libraries_to_process", [])
-        all_emby_items = emby.get_emby_library_items(base_url=processor.emby_url, api_key=processor.emby_api_key, user_id=processor.emby_user_id, media_type_filter="Movie,Series", library_ids=libs_to_process_ids) or []
-        tmdb_to_emby_item_map = {item['ProviderIds']['Tmdb']: item for item in all_emby_items if item.get('ProviderIds', {}).get('Tmdb')}
+        # ------------------------------------------------------------------
+        # 步骤 4: 映射到 Emby ID
+        # ------------------------------------------------------------------
+        # 找出哪些项目还缺 Emby ID
+        # 1. 找出哪些项目还缺 Emby ID (主要是榜单类合集)
+        items_needing_lookup = [
+            item for item in tmdb_items 
+            if not item.get('emby_id')
+        ]
         
-        # 在这里，我们使用 tmdb_items 里的 'tmdb_id' 键
-        global_ordered_emby_ids = [tmdb_to_emby_item_map[item['tmdb_id']]['Id'] for item in tmdb_items if item['tmdb_id'] in tmdb_to_emby_item_map]
+        lookup_map = {}
+        if items_needing_lookup:
+            # ★★★ 调用修正后的函数 ★★★
+            lookup_map = media_db.get_emby_ids_for_items(items_needing_lookup)
+            
+        global_ordered_emby_ids = []
+        for item in tmdb_items:
+            # 情况 A: FilterEngine 直接给出的
+            if item.get('emby_id'):
+                global_ordered_emby_ids.append(item['emby_id'])
+            
+            # 情况 B: 榜单类，查库找到的
+            else:
+                # ★★★ 使用组合键查找 ★★★
+                key = f"{item['tmdb_id']}_{item['media_type']}"
+                if key in lookup_map:
+                    global_ordered_emby_ids.append(lookup_map[key]['Id'])
 
-        task_manager.update_status_from_thread(70, "正在Emby中创建/更新合集...")
+        # ------------------------------------------------------------------
+        # 步骤 5: 在 Emby 中创建/更新合集
+        # ------------------------------------------------------------------
+        task_manager.update_status_from_thread(60, "正在Emby中创建/更新合集...")
         emby_collection_id = emby.create_or_update_collection_with_emby_ids(
             collection_name=collection_name, emby_ids_in_library=global_ordered_emby_ids, 
             base_url=processor.emby_url, api_key=processor.emby_api_key, user_id=processor.emby_user_id
         )
 
-        task_manager.update_status_from_thread(90, "正在为所有用户更新此合集的权限缓存...")
+        # ------------------------------------------------------------------
+        # 步骤 6: 【优化核心】按需计算用户权限
+        # ------------------------------------------------------------------
+        task_manager.update_status_from_thread(80, "正在智能更新用户权限缓存...")
+        
+        user_permissions_map = {}
+        
+        # 如果合集是空的，所有用户都看空列表，不需要查 API
+        if not global_ordered_emby_ids:
+            for user in all_emby_users:
+                user_permissions_map[user['Id']] = set()
+        else:
+            # 并发处理权限检查
+            with ThreadPoolExecutor(max_workers=10) as executor:
+                future_to_user = {}
+                
+                for user in all_emby_users:
+                    user_id = user['Id']
+                    is_admin = user.get('Policy', {}).get('IsAdministrator', False)
+                    
+                    if is_admin:
+                        # ★★★ 优化 A: 管理员直接拥有全部权限，无需 API 请求 ★★★
+                        logger.debug(f"    -> 用户 '{user['Name']}' 是管理员，自动授予全部权限。")
+                        user_permissions_map[user_id] = set(global_ordered_emby_ids)
+                    else:
+                        # ★★★ 优化 B: 普通用户只查这几十个 ID 的权限 ★★★
+                        future = executor.submit(
+                            _check_user_access_batch, 
+                            processor.emby_url, 
+                            processor.emby_api_key, 
+                            user_id, 
+                            global_ordered_emby_ids
+                        )
+                        future_to_user[future] = user
+
+                for future in as_completed(future_to_user):
+                    user = future_to_user[future]
+                    try:
+                        allowed_ids = future.result()
+                        user_permissions_map[user['Id']] = allowed_ids
+                    except Exception as e:
+                        logger.error(f"检查用户 '{user['Name']}' 的权限时出错: {e}")
+                        # 出错时保守处理：认为无权限
+                        user_permissions_map[user['Id']] = set()
+
         update_user_permissions_for_collection(custom_collection_id, global_ordered_emby_ids, user_permissions_map)
 
+        # ------------------------------------------------------------------
+        # 步骤 7: 更新数据库状态 & 封面生成 (保持不变)
+        # ------------------------------------------------------------------
         update_data = {
             "emby_collection_id": emby_collection_id,
             "item_type": json.dumps(definition.get('item_type', ['Movie'])),
@@ -606,17 +787,15 @@ def process_single_custom_collection(processor, custom_collection_id: int):
         }
 
         if collection['type'] == 'list':
-            # 将【标准化的 tmdb_items】传入健康检查函数，这样就不会再有 KeyError
             health_check_results = _perform_list_collection_health_check(
                 tmdb_items=tmdb_items,
-                tmdb_to_emby_item_map=tmdb_to_emby_item_map,
+                tmdb_to_emby_item_map=lookup_map,
                 corrected_id_to_original_id_map=corrected_id_to_original_id_map,
                 collection_db_record=collection,
                 tmdb_api_key=processor.tmdb_api_key
             )
             update_data.update(health_check_results)
         else:
-            # 对于筛选合集，也保存标准化的列表
             update_data.update({
                 "health_status": "ok", 
                 "missing_count": 0,
@@ -625,9 +804,7 @@ def process_single_custom_collection(processor, custom_collection_id: int):
 
         collection_db.update_custom_collection_sync_results(custom_collection_id, update_data)
 
-        # ======================================================================
-        # 步骤 6: 封面生成
-        # ======================================================================
+        # 封面生成逻辑
         try:
             cover_config = settings_db.get_setting('cover_generator_config') or {}
             if cover_config.get("enabled") and emby_collection_id:

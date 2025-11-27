@@ -1421,7 +1421,7 @@ def create_or_update_collection_with_emby_ids(
     user_id: str,
     prefetched_collection_map: Optional[dict] = None
 ) -> Optional[str]:
-    logger.info(f"  ➜ 开始在Emby中处理名为 '{collection_name}' 的合集 (基于 Emby ID)...")
+    logger.info(f"  ➜ 开始在Emby中处理名为 '{collection_name}' 的合集...")
     
     try:
         desired_emby_ids = emby_ids_in_library

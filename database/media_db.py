@@ -652,3 +652,122 @@ def update_media_metadata_fields(tmdb_id: str, item_type: str, updates: Dict[str
             conn.commit()
     except Exception as e:
         logger.error(f"更新媒体 {tmdb_id} ({item_type}) 的元数据字段时失败: {e}", exc_info=True)
+
+def get_tmdb_to_emby_map(library_ids: Optional[List[str]] = None) -> Dict[str, Dict[str, Any]]:
+    """
+    【性能优化 - 修正版】直接从数据库生成全量映射表。
+    Key 格式升级为 "{tmdb_id}_{item_type}"，防止 ID 冲突。
+    """
+    try:
+        with get_db_connection() as conn:
+            cursor = conn.cursor()
+            
+            # 基础 SQL：增加 item_type
+            sql = """
+                SELECT tmdb_id, item_type, emby_item_ids_json 
+                FROM media_metadata 
+                WHERE in_library = TRUE 
+                  AND emby_item_ids_json IS NOT NULL 
+                  AND jsonb_array_length(emby_item_ids_json) > 0
+            """
+            
+            params = []
+            if library_ids:
+                lib_ids_str = [str(lid) for lid in library_ids]
+                array_literal = "{" + ",".join(lib_ids_str) + "}"
+                sql += f"""
+                    AND asset_details_json IS NOT NULL
+                    AND EXISTS (
+                        SELECT 1 
+                        FROM jsonb_array_elements(asset_details_json) AS elem
+                        WHERE elem->>'source_library_id' = ANY(%s::text[])
+                    )
+                """
+                params.append(array_literal)
+            
+            cursor.execute(sql, tuple(params))
+            rows = cursor.fetchall()
+            
+            mapping = {}
+            for row in rows:
+                tmdb_id = row['tmdb_id']
+                item_type = row['item_type']
+                emby_ids = row['emby_item_ids_json']
+                
+                if tmdb_id and item_type and emby_ids:
+                    # ★★★ 使用组合键 ★★★
+                    key = f"{tmdb_id}_{item_type}"
+                    mapping[key] = {'Id': emby_ids[0]}
+                    
+            logger.debug(f"  ➜ 从数据库加载了 {len(mapping)} 条 TMDb->Emby 映射关系。")
+            return mapping
+
+    except Exception as e:
+        logger.error(f"从数据库生成 TMDb->Emby 映射时出错: {e}", exc_info=True)
+        return {}
+    
+def get_emby_ids_for_items(items: List[Dict[str, str]]) -> Dict[str, Dict[str, Any]]:
+    """
+    【修正版】根据 (tmdb_id, item_type) 组合，精准查询对应的 Emby ID。
+    解决 TMDb ID 在电影和剧集间不唯一的问题。
+    
+    :param items: 包含 [{'tmdb_id': '...', 'media_type': '...'}, ...] 的列表
+    :return: 返回字典，Key 为 "{tmdb_id}_{item_type}" 组合键，Value 为 {'Id': emby_id}
+    """
+    if not items:
+        return {}
+
+    # 过滤掉无效数据，并准备查询参数
+    # 注意：数据库里的 item_type 是 'Series'，而有些来源可能是 'TV'，这里假设传入前已标准化
+    # 之前的代码中 ListImporter 已经把 'tv' 转为了 'Series'，这里直接用
+    query_pairs = []
+    for item in items:
+        tid = item.get('tmdb_id')
+        mtype = item.get('media_type')
+        if tid and mtype:
+            query_pairs.append((str(tid), mtype))
+
+    if not query_pairs:
+        return {}
+
+    try:
+        with get_db_connection() as conn:
+            cursor = conn.cursor()
+            
+            # 构造 SQL：WHERE (tmdb_id, item_type) IN (('1', 'Movie'), ('2', 'Series'), ...)
+            # psycopg2 的 execute 能够处理元组列表作为 IN 的参数，但需要一点技巧
+            # 这里我们使用 mogrify 或者直接构造参数列表
+            
+            # 为了兼容性和安全性，我们生成对应数量的占位符
+            placeholders = ",".join(["(%s, %s)"] * len(query_pairs))
+            sql = f"""
+                SELECT tmdb_id, item_type, emby_item_ids_json 
+                FROM media_metadata 
+                WHERE (tmdb_id, item_type) IN ({placeholders})
+                  AND emby_item_ids_json IS NOT NULL 
+                  AND jsonb_array_length(emby_item_ids_json) > 0
+            """
+            
+            # 扁平化参数列表: [id1, type1, id2, type2, ...]
+            flat_params = [val for pair in query_pairs for val in pair]
+            
+            cursor.execute(sql, tuple(flat_params))
+            rows = cursor.fetchall()
+            
+            mapping = {}
+            for row in rows:
+                tmdb_id = row['tmdb_id']
+                item_type = row['item_type']
+                emby_ids = row['emby_item_ids_json']
+                
+                if tmdb_id and item_type and emby_ids:
+                    # ★★★ 使用组合键，防止 ID 冲突 ★★★
+                    key = f"{tmdb_id}_{item_type}"
+                    mapping[key] = {'Id': emby_ids[0]}
+            
+            logger.debug(f"  ➜ [精准映射] 请求查询 {len(query_pairs)} 个项目，成功匹配到 {len(mapping)} 个 Emby ID。")
+            return mapping
+
+    except Exception as e:
+        logger.error(f"精准查询 Emby ID (带类型) 时出错: {e}", exc_info=True)
+        return {}
