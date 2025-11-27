@@ -7,7 +7,7 @@ from typing import Optional, Dict, Any, List
 import logging
 from datetime import datetime, timedelta
 
-from handler.tmdb import get_movie_details, get_tv_details
+from handler.tmdb import get_movie_details, get_tv_details, get_tv_season_details
 import constants
 
 logger = logging.getLogger(__name__)
@@ -530,15 +530,19 @@ def check_series_completion(tmdb_id: int, api_key: str, season_number: Optional[
 
         # 2. 如果是查询特定季
         if season_number is not None:
-            season_details = get_tv_details(tmdb_id, season_number, api_key)
+            # 调用正确的获取分季详情函数
+            season_details = get_tv_season_details(tmdb_id, season_number, api_key)
             
-            if not season_details or not season_details.get('episodes'):
-                logger.warning(f"  ➜ 无法获取《{series_name}》第 {season_number} 季详情，默认判定为已完结。")
-                return True
+            # 获取不到详情，视为未完结 (False) 
+            if not season_details:
+                logger.warning(f"  ➜ 无法获取《{series_name}》第 {season_number} 季详情，为安全起见，判定为未完结 (不洗版)。")
+                return False
             
-            episodes = season_details['episodes']
+            episodes = season_details.get('episodes')
+            # ★★★ 修改点 2：没有集数信息 (如未开播的空季)，视为未完结 (False) ★★★
             if not episodes:
-                return True
+                logger.warning(f"  ➜ 《{series_name}》第 {season_number} 季暂无集数信息，判定为未完结 (不洗版)。")
+                return False
 
             # A. 检查最后一集播出时间
             last_episode = episodes[-1]
@@ -570,7 +574,8 @@ def check_series_completion(tmdb_id: int, api_key: str, season_number: Optional[
                     except ValueError:
                         continue
             
-            return True # 默认兜底
+            # 如果有集数但都没有播出日期，保守判定为未完结
+            return False 
 
         else:
             # 3. 查询整剧 (Series类型) 且状态未 Ended
@@ -583,7 +588,8 @@ def check_series_completion(tmdb_id: int, api_key: str, season_number: Optional[
                         return True
                         
     except Exception as e:
-        logger.warning(f"  ➜ 检查《{series_name}》完结状态失败: {e}，默认判定为已完结。")
-        return True
+        # 发生异常时，视为未完结 (False) 
+        logger.warning(f"  ➜ 检查《{series_name}》完结状态失败: {e}，为安全起见，默认判定为未完结。")
+        return False
     
     return False
