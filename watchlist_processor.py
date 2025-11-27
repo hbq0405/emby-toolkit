@@ -604,7 +604,7 @@ class WatchlistProcessor:
         paused_until_date = None
         today = datetime.now(timezone.utc).date()
 
-        # 步骤A: 预处理
+        # 步骤A: 预处理 - 确定是否存在一个“有效的、未来的”下一集
         effective_next_episode = None
         effective_next_episode_air_date = None
         if real_next_episode_to_air and (air_date_str := real_next_episode_to_air.get('air_date')):
@@ -616,9 +616,13 @@ class WatchlistProcessor:
             except (ValueError, TypeError):
                 pass
 
-        # 步骤B: 状态决策链
+        # 步骤B: 进入全新的、不会被短路的主决策链
+        # 规则1：硬性完结条件 (最高优先级)
         if is_ended_on_tmdb and has_complete_metadata:
             final_status = STATUS_COMPLETED
+            logger.info(f"  ➜ [判定] 剧集在TMDb已完结且元数据完整，状态变更为: {translate_internal_status(final_status)}")
+
+        # 规则2：如果存在一个“有效的、未来的”下一集
         elif effective_next_episode:
             air_date = effective_next_episode_air_date 
             days_until_air = (air_date - today).days
@@ -626,35 +630,51 @@ class WatchlistProcessor:
 
             if days_until_air <= 3:
                 final_status = STATUS_WATCHING
+                logger.info(f"  ➜ [判定] 下一集在未来3天内播出，状态保持为: {translate_internal_status(final_status)}。")
             elif 3 < days_until_air <= 90:
                 if episode_number is not None and int(episode_number) == 1:
-                    final_status = STATUS_COMPLETED 
+                    final_status = STATUS_COMPLETED
+                    logger.info(f"  🔄 [判定] 下一集是新季首播，在 {days_until_air} 天后播出。当前季已完结，状态变更为“已完结”。") 
                 else:
                     final_status = STATUS_PAUSED
                     paused_until_date = air_date - timedelta(days=1)
+                    logger.info(f"  ⏸️ [判定] 下一集 (非首集) 在 {days_until_air} 天后播出，状态变更为: {translate_internal_status(final_status)}，暂停至 {paused_until_date}。")
             else: 
                 final_status = STATUS_COMPLETED
+                logger.info(f"  🔄 [判定] 下一集在 {days_until_air} 天后播出，超过90天阈值，状态强制变更为“已完结”。")
+
+        # 规则3：“僵尸剧”判断 
+        # 只有在没有“未来下一集”的情况下，才会进入此分支
         elif last_episode_to_air and (last_air_date_str := last_episode_to_air.get('air_date')):
             try:
                 last_air_date = datetime.strptime(last_air_date_str, '%Y-%m-%d').date()
                 days_since_last_air = (today - last_air_date).days
-                if days_since_last_air > 30:
+                if days_since_last_air > 15:
                     final_status = STATUS_COMPLETED
+                    logger.info(f"  🔄 [判定-僵尸剧] 剧集无未来待播信息，且最后一集播出已超过15天（TMDb数据为 {last_air_date_str}），状态强制变更为“已完结”。")
                 else:
                     final_status = STATUS_PAUSED
                     paused_until_date = today + timedelta(days=7)
+                    logger.info(f"  🔄 [判定] 剧集无未来待播信息，但上一集在15天内播出，临时暂停7天以待数据更新。")
             except ValueError:
                 final_status = STATUS_PAUSED
                 paused_until_date = today + timedelta(days=7)
+                logger.info(f"  ⏸️ [判定] 剧集上次播出日期格式错误，为安全起见，执行默认的7天暂停。")
+        
+        # 规则4：绝对的后备方案
         else:
             final_status = STATUS_PAUSED
             paused_until_date = today + timedelta(days=7)
+            logger.info(f"  ➜ [判定-后备] 剧集完全缺失播出日期数据，为安全起见，执行默认的7天暂停以待数据更新。")
 
         if is_force_ended and final_status != STATUS_COMPLETED:
             final_status = STATUS_COMPLETED
             paused_until_date = None
+            logger.warning(f"  🔄 [强制完结生效] 最终状态被覆盖为 '已完结'。")
 
+        # 只有当内部状态是“追剧中”或“已暂停”时，才认为它在“连载中”
         is_truly_airing = final_status in [STATUS_WATCHING, STATUS_PAUSED]
+        logger.info(f"  ➜ 最终判定 '{item_name}' 的真实连载状态为: {is_truly_airing} (内部状态: {translate_internal_status(final_status)})")
 
         # 更新追剧数据库
         updates_to_db = {
@@ -670,11 +690,14 @@ class WatchlistProcessor:
 
         # 更新季的活跃状态
         active_seasons = set()
+        # 规则 A: 如果有明确的下一集待播，该集所属的季肯定是活跃的
         if real_next_episode_to_air and real_next_episode_to_air.get('season_number'):
             active_seasons.add(real_next_episode_to_air['season_number'])
+        # 规则 B: 如果有缺失的集（补番），这些集所属的季也是活跃的
         if missing_info.get('missing_episodes'):
             for ep in missing_info['missing_episodes']:
                 if ep.get('season_number'): active_seasons.add(ep['season_number'])
+        # 规则 C: 如果有整季缺失，且该季已播出，也视为活跃
         if missing_info.get('missing_seasons'):
             for s in missing_info['missing_seasons']:
                 if s.get('air_date') and s.get('season_number'):
@@ -683,6 +706,7 @@ class WatchlistProcessor:
                         if s_date <= today: active_seasons.add(s['season_number'])
                     except ValueError: pass
 
+        # 调用 DB 模块进行批量更新
         watchlist_db.sync_seasons_watching_status(tmdb_id, list(active_seasons), final_status)
 
         # ★★★ 场景一：补旧番 - 只处理已完结剧集中，已播出的缺失季 ★★★
