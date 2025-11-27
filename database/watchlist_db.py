@@ -512,7 +512,7 @@ def sync_seasons_watching_status(parent_tmdb_id: str, active_season_numbers: Lis
                 """
                 cursor.execute(sql, (parent_tmdb_id,))
                 if cursor.rowcount > 0:
-                    logger.info(f"  ➜ 将剧集 {parent_tmdb_id} 的所有季状态更新为 'Completed'。")
+                    logger.info(f"  ➜ 将剧集 {parent_tmdb_id} 的所有季状态更新为 '已完结'。")
 
             # 场景 B: 剧集正在追/暂停 -> 区分活跃季和过往季
             else:
@@ -541,7 +541,7 @@ def sync_seasons_watching_status(parent_tmdb_id: str, active_season_numbers: Lis
                     """
                     cursor.execute(update_active_sql, (parent_tmdb_id, active_season_numbers))
                     
-                logger.info(f"  ➜ 更新剧集 {parent_tmdb_id} 的季状态: 活跃季 {active_season_numbers} -> Watching，旧季 -> Completed。")
+                logger.info(f"  ➜ 更新剧集 {parent_tmdb_id} 的季状态: 新季 {active_season_numbers} -> 追剧中，旧季 -> 已完结。")
 
             conn.commit()
     except Exception as e:
