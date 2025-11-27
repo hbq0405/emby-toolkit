@@ -290,8 +290,8 @@ class WatchlistProcessor:
                             air_date = datetime.strptime(air_date_str, '%Y-%m-%d').date()
                             days_until_air = (air_date - today).days
                             
-                            # 如果新季在未来10天内（包括今天）上线，直接将其加入待发布订阅列表
-                            if 0 <= days_until_air <= 10:
+                            # 如果新季在未来7天内（包括今天）上线，直接将其加入待发布订阅列表
+                            if 0 <= days_until_air <= 7:
                                 revived_count += 1
                                 logger.info(f"  ➜ 发现《{series_name}》的新季 (S{new_season_to_check_num}) 将在 {days_until_air} 天后上线，准备提交预订阅！")
                                 
@@ -316,6 +316,32 @@ class WatchlistProcessor:
                                     media_info_list=[media_info]
                                 )
                                 logger.info(f"  ➜ 已成功为《{series_name}》 S{new_season_to_check_num} 创建“待上映”订阅。")
+
+                                # 3. 立即更新本地数据库状态为“追剧中” 
+                                updates = {
+                                    "is_airing": True,
+                                    "force_ended": False, # 核心：移除强制完结标记
+                                    "tmdb_status": "Returning Series"
+                                }
+
+                                # 决策逻辑：
+                                # 如果已经上映，或者未来3天内上映 -> 设为 Watching (高亮显示)
+                                # 如果还有很久才上映 -> 设为 Paused 并设置 paused_until (低调等待)
+                                if days_until_air <= 3:
+                                    updates["status"] = STATUS_WATCHING
+                                    updates["paused_until"] = None
+                                    log_status = "追剧中 (Watching)"
+                                else:
+                                    updates["status"] = STATUS_PAUSED
+                                    updates["paused_until"] = air_date.isoformat()
+                                    log_status = f"已暂停 (Paused) 至 {air_date_str}"
+
+                                self._update_watchlist_entry(series['tmdb_id'], series_name, updates)
+                                
+                                # 同时更新季的活跃状态 (注意：如果设为Paused，季也会被标记为Paused，这是符合预期的)
+                                watchlist_db.sync_seasons_watching_status(series['tmdb_id'], [new_season_to_check_num], updates["status"])
+                                
+                                logger.info(f"  ➜ 已成功复活《{series_name}》：状态更新为 '{log_status}'，并已提交 S{new_season_to_check_num} 的订阅请求。")
 
                         except ValueError:
                             logger.warning(f"  ➜ 解析《{series_name}》新季的播出日期 '{air_date_str}' 失败。")
