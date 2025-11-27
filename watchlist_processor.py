@@ -538,15 +538,15 @@ class WatchlistProcessor:
         # ★★★ 动作 1: 调用核心处理器同步元数据文件 (不含图片) ★★★
         # 这一步会确保 override 目录存在，并从 Emby 同步当前状态到文件
         # ======================================================================
-        if extensions.core_processor_instance:
-            # 获取 Emby 详情 (sync_item_metadata 需要)
-            item_details = emby.get_emby_item_details(
-                item_id, self.emby_url, self.emby_api_key, self.emby_user_id,
-                fields="ProviderIds,Type,Name,OriginalTitle,Overview,OfficialRating,PremiereDate"
-            )
-            if item_details:
-                # logger.debug(f"  ➜ 调用核心处理器初始化/同步元数据文件...")
-                extensions.media_processor_instance.sync_item_metadata(item_details, tmdb_id)
+        # if extensions.core_processor_instance:
+        #     # 获取 Emby 详情 (sync_item_metadata 需要)
+        #     item_details = emby.get_emby_item_details(
+        #         item_id, self.emby_url, self.emby_api_key, self.emby_user_id,
+        #         fields="ProviderIds,Type,Name,OriginalTitle,Overview,OfficialRating,PremiereDate"
+        #     )
+        #     if item_details:
+        #         # logger.debug(f"  ➜ 调用核心处理器初始化/同步元数据文件...")
+        #         extensions.media_processor_instance.sync_item_metadata(item_details, tmdb_id)
 
         # 步骤2: 从TMDb获取权威数据
         latest_series_data = tmdb.get_tv_details(tmdb_id, self.tmdb_api_key)
