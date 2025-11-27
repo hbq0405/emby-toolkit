@@ -461,13 +461,15 @@ class WatchlistProcessor:
     def _save_local_json(self, relative_path: str, new_data: Dict[str, Any]):
         """
         保存数据到本地 JSON 缓存文件 (智能合并模式)。
-        - 如果文件存在：读取并更新指定字段，保护 'name'/'title' 和 'credits'/'casts' 不被覆盖。
+        - 如果文件存在：读取并更新指定字段。
+        - ★★★ 智能保护：'series.json' 不更新 'name'，但 'season-*.json' 会更新 'name'。
         - 如果文件不存在：创建新文件。
         """
         if not self.local_data_path:
             return
 
         full_path = os.path.join(self.local_data_path, relative_path)
+        filename = os.path.basename(full_path)
         
         try:
             # 确保目录存在
@@ -484,7 +486,7 @@ class WatchlistProcessor:
                     final_data = {} # 读取失败则视为新文件
 
             # 2. 准备要更新的字段映射 (TMDb 字段 -> JSON 字段)
-            # 注意：这里我们显式不包含 'name'/'title' 和 'credits'/'casts'，以保护本地修改
+            # 基础字段（所有类型都更新）
             fields_to_update = {
                 "overview": "overview",
                 "vote_average": "vote_average",
@@ -495,6 +497,12 @@ class WatchlistProcessor:
                 "still_path": "still_path",
                 "runtime": "runtime"
             }
+
+            # ★★★ 核心修改：差异化保护策略 ★★★
+            # 只有 series.json (剧集本体) 需要保护标题不被覆盖
+            # season-X.json (季) 和 season-X-episode-Y.json (集) 应该更新标题(name)
+            if filename != 'series.json':
+                fields_to_update["name"] = "name"
 
             # 3. 如果是新文件，必须写入 name 和 credits (否则文件不完整)
             if not final_data:
