@@ -91,6 +91,13 @@ def unified_login():
             session.permanent = True
             logger.info(f"  ➜ 用户 '{username}' 作为 Emby 用户登录成功。")
 
+            # --- 轻量级同步用户数据 ---
+            try:
+                # 仅同步基础信息，确保数据库里有这个人
+                user_db.upsert_emby_users_batch([user_info])
+            except Exception as e:
+                logger.warning(f"  ➜ 登录时同步用户基础信息失败: {e}")
+
             can_subscribe_without_review = user_db.get_user_subscription_permission(session['emby_user_id'])
             
             return jsonify({

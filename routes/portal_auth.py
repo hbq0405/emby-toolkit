@@ -5,6 +5,7 @@ from flask import Blueprint, request, jsonify, session
 # 导入我们正确的认证函数和装饰器
 import handler.emby as emby
 from extensions import emby_login_required
+from database import user_db
 
 # 创建蓝图
 portal_auth_bp = Blueprint('portal_auth_bp', __name__, url_prefix='/api/portal')
@@ -20,7 +21,7 @@ def portal_login():
     if not username or password is None:
         return jsonify({"status": "error", "message": "用户名和密码不能为空"}), 400
 
-    # 1. 直接调用 emby_handler 中的函数，它会自己处理所有细节
+    # 1. 直接调用 emby_handler 中的函数
     auth_result = emby.authenticate_emby_user(username, password)
 
     if not auth_result:
@@ -33,6 +34,18 @@ def portal_login():
 
     if not emby_user_id:
         return jsonify({"status": "error", "message": "认证成功但无法获取用户ID"}), 500
+
+    # --- 轻量级同步用户数据 ---
+    try:
+        # 仅将当前用户的【基础信息】(ID, Name, Admin状态等) 写入本地数据库
+        # 这样后续代码查询 user_db 时就不会因为找不到 ID 而报错了
+        # 这是一个极快的操作，不会阻塞登录
+        user_db.upsert_emby_users_batch([user_info])
+        logger.info(f"已更新本地用户缓存: {username} (ID: {emby_user_id})")
+    except Exception as e:
+        # 即使写入失败也不要阻断登录，只记录警告
+        logger.warning(f"登录时同步用户基础信息失败: {e}")
+    # ---------------------------
 
     # 3. 使用独立的 session key 来存储 Emby 用户信息
     session['emby_user_id'] = emby_user_id
