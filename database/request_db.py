@@ -96,27 +96,35 @@ def set_media_status_wanted(
 ):
     """
     将媒体状态设置为 'WANTED'。
-    【核心修复】智能复活逻辑：
-    - 允许复活因“番位/评分”等规则被自动忽略的项目（软忽略）。
-    - 禁止复活被用户手动忽略的项目（硬忽略，特征是 ignore_reason = '手动忽略'）。
+    【核心修复 V2】智能防御逻辑：
+    1. 绝对不覆盖已订阅 (SUBSCRIBED) 的项目。
+    2. 默认不覆盖已入库 (in_library=TRUE) 的项目，★除非是洗版请求 (resubscribe)★。
     """
     data_to_upsert = _prepare_media_data_for_upsert(tmdb_ids, item_type, source, media_info_list)
     if not data_to_upsert: return
     try:
         with get_db_connection() as conn:
-            
             with conn.cursor() as cursor:
                 from psycopg2.extras import execute_batch
                 
                 if force_unignore:
-                    # 强制模式（通常是用户手动点击订阅）：无条件覆盖
+                    # 强制模式（用户手动点击）：允许覆盖
                     sql = """
-                        UPDATE media_metadata SET subscription_status = 'WANTED', subscription_sources_json = subscription_sources_json || %(source)s::jsonb, ignore_reason = NULL, last_synced_at = NOW()
-                        WHERE tmdb_id = %(tmdb_id)s AND item_type = %(item_type)s AND subscription_status = 'IGNORED' AND NOT (subscription_sources_json @> %(source)s::jsonb);
+                        UPDATE media_metadata 
+                        SET subscription_status = 'WANTED', 
+                            subscription_sources_json = subscription_sources_json || %(source)s::jsonb, 
+                            ignore_reason = NULL, 
+                            last_synced_at = NOW()
+                        WHERE tmdb_id = %(tmdb_id)s 
+                          AND item_type = %(item_type)s 
+                          AND subscription_status = 'IGNORED' 
+                          -- 用户手动点击时，通常也允许覆盖已入库状态（比如手动洗版）
+                          -- 所以这里不加 in_library 限制，或者根据需求加
+                          AND NOT (subscription_sources_json @> %(source)s::jsonb);
                     """
                     execute_batch(cursor, sql, data_to_upsert)
                 else:
-                    # 自动模式：执行智能判断
+                    # 自动模式：
                     sql = """
                         INSERT INTO media_metadata (tmdb_id, item_type, subscription_status, subscription_sources_json, first_requested_at, title, original_title, release_date, poster_path, season_number, parent_series_tmdb_id, overview)
                         VALUES (%(tmdb_id)s, %(item_type)s, 'WANTED', %(source)s::jsonb, NOW(), %(title)s, %(original_title)s, %(release_date)s, %(poster_path)s, %(season_number)s, %(parent_series_tmdb_id)s, %(overview)s)
@@ -130,19 +138,30 @@ def set_media_status_wanted(
                         WHERE
                             -- 1. 绝对不覆盖已订阅/已完成的项目
                             media_metadata.subscription_status != 'SUBSCRIBED'
+                            
+                            -- 2. ★★★ 智能防线：已入库项目保护 ★★★
+                            -- 规则：如果已入库，则禁止更新，除非是 洗版 或 缺集扫描
                             AND (
-                                -- 2. 防止重复添加完全相同的源
+                                media_metadata.in_library = FALSE
+                                OR
+                                EXCLUDED.subscription_sources_json->0->>'type' IN ('resubscribe', 'gap_scan')
+                            )
+                            
+                            AND (
+                                -- 3. 防止重复添加完全相同的源
                                 NOT (media_metadata.subscription_sources_json @> EXCLUDED.subscription_sources_json)
                                 
                                 AND (
-                                    -- 3.A 正常情况：非忽略状态，允许更新
+                                    -- 4.A 正常情况：非忽略状态，允许更新
                                     media_metadata.subscription_status != 'IGNORED'
                                     
-                                    -- 3.B 特殊豁免：如果是 gap_scan (缺集扫描)，拥有最高权限，允许复活
+                                    -- 4.B 特殊豁免：如果是 gap_scan (缺集扫描)，拥有最高权限，允许复活
                                     OR EXCLUDED.subscription_sources_json->0->>'type' = 'gap_scan'
+                                    
+                                    -- 4.C 特殊豁免：如果是 resubscribe (洗版)，也允许复活
+                                    OR EXCLUDED.subscription_sources_json->0->>'type' = 'resubscribe'
 
-                                    -- 3.C ★★★ 智能复活核心 ★★★
-                                    -- 如果是 IGNORED，但原因【不是】'手动忽略'，则视为“软忽略”，允许复活
+                                    -- 4.D 智能复活：软忽略允许复活
                                     OR (
                                         media_metadata.subscription_status = 'IGNORED'
                                         AND (media_metadata.ignore_reason IS NULL OR media_metadata.ignore_reason != '手动忽略')
@@ -152,7 +171,7 @@ def set_media_status_wanted(
                     """
                     execute_batch(cursor, sql, data_to_upsert)
                 
-                if cursor.rowcount <= 0: logger.info(f"  ➜ [状态执行] 操作完成，但没有行受到影响（可能因为不满足前置条件）。")
+                if cursor.rowcount <= 0: logger.info(f"  ➜ [状态执行] 操作完成，但没有行受到影响（可能因为已入库，或不满足前置条件）。")
     except Exception as e:
         logger.error(f"  ➜ [状态执行] 更新媒体状态为 'WANTED' 时发生错误: {e}", exc_info=True)
         raise
