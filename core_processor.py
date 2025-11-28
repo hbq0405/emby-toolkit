@@ -1139,23 +1139,6 @@ class MediaProcessor:
             if final_processed_cast is None:
                 logger.info(f"  ➜ 未命中缓存或强制重处理，开始处理演员表...")
 
-                # 只有真正进入完整模式，且是剧集时，才去执行这个昂贵的操作
-                if item_type == "Series":
-                    logger.info(f"  ➜ [完整模式] 检测到剧集，正在从 Emby 聚合所有分集的演员数据...")
-                    # 调用聚合函数获取完整数据
-                    full_series_details = emby.get_emby_series_details_with_full_cast(
-                        series_id=item_id,
-                        emby_server_url=self.emby_url,
-                        emby_api_key=self.emby_api_key,
-                        user_id=self.emby_user_id
-                    )
-                    # 如果获取成功，覆盖掉之前的简略版 item_details_from_emby
-                    if full_series_details:
-                        item_details_from_emby = full_series_details
-                        # 更新一下计数变量，以便后续评分使用
-                        all_emby_people_for_count = item_details_from_emby.get("People", [])
-                        original_emby_actor_count = len([p for p in all_emby_people_for_count if p.get("Type") == "Actor"])
-                
                 with get_central_db_connection() as conn:
                     cursor = conn.cursor()
                     
