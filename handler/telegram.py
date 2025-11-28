@@ -184,7 +184,23 @@ def send_media_notification(item_details: dict, notification_type: str = 'new', 
             else:
                 send_telegram_message(global_channel_id, caption)
 
-        # --- 7. 发送个人订阅到货通知 ---
+        # --- 7. 发送管理员通知 (新增逻辑) ---
+        # 逻辑：如果管理员没有配置频道，或者管理员想接收所有入库通知，但又不想和个人订阅通知重复
+        admin_chat_id = user_db.get_admin_telegram_chat_ids()
+        if admin_chat_id:
+            # 检查管理员是否也是该媒体的订阅者
+            is_admin_subscriber = str(admin_chat_id) in {str(sid) for sid in subscriber_chat_ids}
+            
+            # 只有当管理员不是订阅者时，才发送全局入库通知
+            # (如果是订阅者，后面会发送更详细的“您的订阅已入库”通知)
+            if not is_admin_subscriber:
+                logger.info(f"  ➜ 正在向管理员 {admin_chat_id} 发送全局入库通知...")
+                if photo_url:
+                    send_telegram_photo(admin_chat_id, photo_url, caption)
+                else:
+                    send_telegram_message(admin_chat_id, caption)
+
+        # --- 8. 发送个人订阅到货通知 ---
         if subscriber_chat_ids:
             personal_caption_map = {
                 'new': f"✅ *您的订阅已入库*\n\n{caption}",
