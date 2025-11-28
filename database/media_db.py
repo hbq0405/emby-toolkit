@@ -800,6 +800,38 @@ def get_emby_ids_for_items(items: List[Dict[str, str]]) -> Dict[str, Dict[str, A
         logger.error(f"精准查询 Emby ID (带类型) 时出错: {e}", exc_info=True)
         return {}
     
+def get_series_average_runtime(parent_tmdb_id: str) -> float:
+    """
+    计算指定剧集下所有分集（Episode）的平均时长。
+    优先使用 runtime_minutes，如果为0或空，尝试解析 asset_details_json。
+    """
+    if not parent_tmdb_id:
+        return 0.0
+        
+    try:
+        with get_db_connection() as conn:
+            cursor = conn.cursor()
+            # 逻辑：
+            # 1. 筛选该剧集下的所有 Episode
+            # 2. 优先取 runtime_minutes
+            # 3. 如果 runtime_minutes 无效，尝试从 asset_details_json 取 (这里简化处理，主要依赖 runtime_minutes，因为入库时已处理过)
+            # 4. 计算平均值
+            sql = """
+                SELECT AVG(runtime_minutes) as avg_runtime
+                FROM media_metadata
+                WHERE parent_series_tmdb_id = %s 
+                  AND item_type = 'Episode' 
+                  AND runtime_minutes > 0
+            """
+            cursor.execute(sql, (str(parent_tmdb_id),))
+            row = cursor.fetchone()
+            if row and row['avg_runtime']:
+                return float(row['avg_runtime'])
+            return 0.0
+    except Exception as e:
+        logger.error(f"计算剧集 {parent_tmdb_id} 平均时长时出错: {e}")
+        return 0.0
+    
 def get_runtimes_for_series_list(tmdb_ids: List[str]) -> Dict[str, float]:
     """
     只计算指定 ID 列表中的剧集平均时长。

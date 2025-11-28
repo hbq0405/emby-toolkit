@@ -812,6 +812,7 @@ class FilterEngine:
                     threshold_minutes = float(value)
                     item_runtime = 0.0
                     
+                    # 1. 电影处理逻辑 (不变)
                     if item_metadata.get('item_type') == 'Movie':
                         item_runtime = float(item_metadata.get('runtime_minutes') or 0)
                         if item_runtime <= 0:
@@ -819,11 +820,22 @@ class FilterEngine:
                             if assets and isinstance(assets, list) and len(assets) > 0:
                                 item_runtime = float(assets[0].get('runtime_minutes') or 0)
 
+                    # 2. 剧集处理逻辑 (★★★ 核心修改 ★★★)
                     elif item_metadata.get('item_type') == 'Series':
                         tmdb_id = str(item_metadata.get('tmdb_id'))
-                        # ★★★ 直接从预热好的字典里取值，纳秒级速度 ★★★
-                        item_runtime = self.series_runtime_cache.get(tmdb_id, 0.0)
+                        
+                        # A. 优先尝试从缓存获取 (用于批量生成任务，极速)
+                        if self.series_runtime_cache and tmdb_id in self.series_runtime_cache:
+                            item_runtime = self.series_runtime_cache[tmdb_id]
+                        
+                        # B. 如果缓存未命中，说明是实时入库匹配 (单次查询，性能无损)
+                        else:
+                            # 调用我们在第一步中添加的单项查询函数
+                            # 注意：确保文件头部 import 了 media_db
+                            item_runtime = media_db.get_series_average_runtime(tmdb_id)
+                            logger.debug(f"    ➜ [实时筛选] 剧集 {tmdb_id} 实时计算平均时长: {item_runtime} 分钟")
                     
+                    # 3. 执行比较 (不变)
                     if op == 'gte': 
                         if item_runtime >= threshold_minutes: match = True
                     elif op == 'lte': 
