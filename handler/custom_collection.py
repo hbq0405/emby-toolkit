@@ -831,7 +831,6 @@ class FilterEngine:
                         # B. 如果缓存未命中，说明是实时入库匹配 (单次查询，性能无损)
                         else:
                             # 调用我们在第一步中添加的单项查询函数
-                            # 注意：确保文件头部 import 了 media_db
                             item_runtime = media_db.get_series_average_runtime(tmdb_id)
                             logger.debug(f"    ➜ [实时筛选] 剧集 {tmdb_id} 实时计算平均时长: {item_runtime} 分钟")
                     

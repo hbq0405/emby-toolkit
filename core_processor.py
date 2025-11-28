@@ -806,27 +806,10 @@ class MediaProcessor:
             return False
 
         # 3. 获取Emby详情，这是后续所有操作的基础
-        item_details_precheck = emby.get_emby_item_details(emby_item_id, self.emby_url, self.emby_api_key, self.emby_user_id, fields="Type")
-        if not item_details_precheck:
-            logger.error(f"process_single_item: 无法获取 Emby 项目 {emby_item_id} 的基础详情。")
-            return False
-
-        item_type = item_details_precheck.get("Type")
-        item_details = None
-
-        if item_type == "Series":
-            # 如果是剧集，调用我们新的聚合函数
-            item_details = emby.get_emby_series_details_with_full_cast(
-                series_id=emby_item_id,
-                emby_server_url=self.emby_url,
-                emby_api_key=self.emby_api_key,
-                user_id=self.emby_user_id
-            )
-        else:
-            # 如果是电影或其他类型，使用原来的函数
-            item_details = emby.get_emby_item_details(
-                emby_item_id, self.emby_url, self.emby_api_key, self.emby_user_id
-            )
+        item_details = emby.get_emby_item_details(
+            emby_item_id, self.emby_url, self.emby_api_key, self.emby_user_id
+        )
+        
         if not item_details:
             logger.error(f"process_single_item: 无法获取 Emby 项目 {emby_item_id} 的详情。")
             return False
@@ -1155,6 +1138,23 @@ class MediaProcessor:
             # 2.完整模式
             if final_processed_cast is None:
                 logger.info(f"  ➜ 未命中缓存或强制重处理，开始处理演员表...")
+
+                # 只有真正进入完整模式，且是剧集时，才去执行这个昂贵的操作
+                if item_type == "Series":
+                    logger.info(f"  ➜ [完整模式] 检测到剧集，正在从 Emby 聚合所有分集的演员数据...")
+                    # 调用聚合函数获取完整数据
+                    full_series_details = emby.get_emby_series_details_with_full_cast(
+                        series_id=item_id,
+                        emby_server_url=self.emby_url,
+                        emby_api_key=self.emby_api_key,
+                        user_id=self.emby_user_id
+                    )
+                    # 如果获取成功，覆盖掉之前的简略版 item_details_from_emby
+                    if full_series_details:
+                        item_details_from_emby = full_series_details
+                        # 更新一下计数变量，以便后续评分使用
+                        all_emby_people_for_count = item_details_from_emby.get("People", [])
+                        original_emby_actor_count = len([p for p in all_emby_people_for_count if p.get("Type") == "Actor"])
                 
                 with get_central_db_connection() as conn:
                     cursor = conn.cursor()
