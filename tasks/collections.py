@@ -70,7 +70,8 @@ def _perform_list_collection_health_check(
     tmdb_api_key: str
 ) -> dict:
     """
-    榜单健康检查
+    榜单健康检查 (修复版)
+    适配 {tmdb_id}_{item_type} 格式的映射键。
     """
     collection_id = collection_db_record.get('id')
     collection_name = collection_db_record.get('name', '未知合集')
@@ -78,29 +79,22 @@ def _perform_list_collection_health_check(
 
     # 获取上一次同步时生成的媒体列表 
     old_media_map = {}
-    # 从数据库记录中获取历史数据
     historical_data = collection_db_record.get('generated_media_info_json')
     
     if historical_data:
         try:
             old_items = []
-            # ★★★ 核心修正：检查数据类型 ★★★
-            # 如果是字符串，说明是旧格式或者意外情况，我们手动解析
             if isinstance(historical_data, str):
                 old_items = json.loads(historical_data)
-            # 如果已经是列表，说明数据库驱动已经帮我们解析好了，直接用
             elif isinstance(historical_data, list):
                 old_items = historical_data
             
             if old_items:
-                # 我们需要 TMDB ID 和 item_type 来执行清理
                 old_media_map = {str(item['tmdb_id']): item['media_type'] for item in old_items}
-
         except (json.JSONDecodeError, KeyError, TypeError) as e:
-            # 这里的日志现在能更精确地反映问题
-            logger.warning(f"  -> 解析合集 '{collection_name}' 的历史媒体列表时失败或格式不兼容: {e}，将跳过来源清理。")
+            logger.warning(f"  -> 解析合集 '{collection_name}' 的历史媒体列表时失败: {e}")
 
-    # 提前加载所有在库的“季”的信息，用于快速比对
+    # 提前加载所有在库的“季”的信息
     in_library_seasons_set = set()
     try:
         with connection.get_db_connection() as conn:
@@ -111,10 +105,11 @@ def _perform_list_collection_health_check(
     except Exception as e_db:
         logger.error(f"  -> 获取在库季列表时发生数据库错误: {e_db}", exc_info=True)
 
+    # ★★★ 核心修复：获取所有在库的 Key 集合 (格式: id_type) ★★★
     in_library_keys = set(tmdb_to_emby_item_map.keys())
+    
     missing_released_items = []
     missing_unreleased_items = []
-    # 新增一个列表，专门存放需要确保存在的父剧集信息 
     parent_series_to_ensure_exist = []
     today_str = datetime.now().strftime('%Y-%m-%d')
 
@@ -124,22 +119,30 @@ def _perform_list_collection_health_check(
         season_num = item_def.get('season')
 
         is_in_library = False
-        if season_num is not None and media_type == 'Series':
+        
+        # 1. 如果 FilterEngine 已经直接给出了 emby_id，那肯定在库
+        if item_def.get('emby_id'):
+            is_in_library = True
+        
+        # 2. 季的判断逻辑 (保持不变)
+        elif season_num is not None and media_type == 'Series':
             if (tmdb_id, season_num) in in_library_seasons_set:
                 is_in_library = True
+        
+        # 3. 顶层项目 (电影/剧集) 的判断逻辑
         else:
+            # ★★★ 修复点：构造组合键进行查找 ★★★
             current_key = f"{tmdb_id}_{media_type}"
+            
             if current_key in in_library_keys:
                 is_in_library = True
-            
-            # 2. 检查原始 ID (如果有修正)
-            # 注意：修正通常只修正 ID，类型一般不变，或者修正字典里包含了类型
-            # 这里简化处理，假设类型不变
-            original_id = corrected_id_to_original_id_map.get(tmdb_id)
-            if not is_in_library and original_id:
-                original_key = f"{original_id}_{media_type}"
-                if original_key in in_library_keys:
-                    is_in_library = True
+            else:
+                # 尝试检查修正前的原始 ID
+                original_id = corrected_id_to_original_id_map.get(tmdb_id)
+                if original_id:
+                    original_key = f"{original_id}_{media_type}"
+                    if original_key in in_library_keys:
+                        is_in_library = True
         
         if is_in_library:
             continue
