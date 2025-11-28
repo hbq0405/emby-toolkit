@@ -184,7 +184,7 @@ def send_media_notification(item_details: dict, notification_type: str = 'new', 
             else:
                 send_telegram_message(global_channel_id, caption)
 
-        # --- 7. 发送管理员通知 (新增逻辑) ---
+        # --- 7. 发送管理员通知 ---
         # 逻辑：如果管理员没有配置频道，或者管理员想接收所有入库通知，但又不想和个人订阅通知重复
         all_admin_chat_ids = set(user_db.get_admin_telegram_chat_ids())
 
