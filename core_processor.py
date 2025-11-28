@@ -274,6 +274,9 @@ class MediaProcessor:
 
                 # ★★★ 3. 处理季 (Season) ★★★
                 for season in seasons_details:
+                    # 安全检查：如果 season 不是字典（例如是整数），则跳过
+                    if not isinstance(season, dict):
+                        continue
                     s_num = season.get('season_number')
                     if s_num is None: continue 
                     
