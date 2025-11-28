@@ -977,6 +977,40 @@ class MediaProcessor:
                 if source_json_data:
                     tmdb_details_for_extra = source_json_data
                     authoritative_cast_source = (source_json_data.get("casts", {}) or source_json_data.get("credits", {})).get("cast", [])
+                    # 如果是剧集，必须聚合 Cache 目录下的分集数据
+                    if item_type == "Series":
+                        logger.info("  ➜ 检测到剧集，正在聚合 Cache 分集元数据以完善数据库记录...")
+                        episodes_details_map = {}
+                        seasons_details_list = []
+                        
+                        try:
+                            # 扫描 source_cache_dir (即 tmdb-tv/ID 目录)
+                            for fname in os.listdir(source_cache_dir):
+                                full_path = os.path.join(source_cache_dir, fname)
+                                
+                                # 1. 聚合分集文件
+                                if fname.startswith("season-") and fname.endswith(".json") and "-episode-" in fname:
+                                    ep_data = _read_local_json(full_path)
+                                    if ep_data:
+                                        key = f"S{ep_data.get('season_number')}E{ep_data.get('episode_number')}"
+                                        episodes_details_map[key] = ep_data
+                                
+                                # 2. 聚合季文件 (排除 series.json 和分集文件)
+                                elif fname.startswith("season-") and fname.endswith(".json") and "-episode-" not in fname:
+                                    season_data = _read_local_json(full_path)
+                                    if season_data:
+                                        seasons_details_list.append(season_data)
+                            
+                            # 将聚合好的数据塞入对象，供 _upsert_media_metadata 使用
+                            if episodes_details_map:
+                                tmdb_details_for_extra['episodes_details'] = episodes_details_map
+                            
+                            if seasons_details_list:
+                                seasons_details_list.sort(key=lambda x: x.get('season_number', 0))
+                                tmdb_details_for_extra['seasons_details'] = seasons_details_list
+                                
+                        except Exception as e_agg:
+                            logger.warning(f"  ➜ [标准模式] 聚合 Cache 分集数据时发生错误: {e_agg}")
                 else:
                     logger.error(f"  ➜ 元数据文件 '{source_json_path}' 无效或为空，无法处理 '{item_name_for_log}'。")
                     return False
