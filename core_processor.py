@@ -881,7 +881,9 @@ class MediaProcessor:
             authoritative_cast_source = []
             tmdb_details_for_extra = None # 用于内部缓存
 
-            # 步骤1:检查json是否缺失
+            # =========================================================
+            # ★★★ 步骤1:检查json是否缺失 ★★★
+            # =========================================================
             cache_folder_name = "tmdb-movies2" if item_type == "Movie" else "tmdb-tv"
             source_cache_dir = os.path.join(self.local_data_path, "cache", cache_folder_name, tmdb_id)
             main_json_filename = "all.json" if item_type == "Movie" else "series.json"
@@ -955,70 +957,71 @@ class MediaProcessor:
                 logger.error(f"  ➜ 等待超时，元数据文件仍未生成。无法继续处理 '{item_name_for_log}'，已跳过。")
                 return False
 
+            # =========================================================
+            # ★★★ 步骤 2: 确定元数据骨架 ★★★
+            # =========================================================
+            logger.info(f"  ➜ 正在预读本地 Cache 文件以构建元数据骨架...")
+            source_json_data = _read_local_json(source_json_path)
+            
+            if source_json_data:
+                tmdb_details_for_extra = source_json_data
+                # 默认演员表也来自本地（会被强制更新覆盖）
+                authoritative_cast_source = (source_json_data.get("casts", {}) or source_json_data.get("credits", {})).get("cast", [])
 
-            # 步骤3：如果是强制重处理就从TMDb拉取最新元数据，否则直接用本地的元数据。
+                # ★★★ 关键修复：如果是剧集，必须在此处聚合分集和季数据 ★★★
+                # 这样保证了 tmdb_details_for_extra 里的 seasons_details 永远是字典列表，防止 int 报错
+                if item_type == "Series":
+                    logger.info("  ➜ 检测到剧集，正在聚合本地分集元数据...")
+                    episodes_details_map = {}
+                    seasons_details_list = []
+                    try:
+                        # 扫描目录聚合 season-X.json 和 season-X-episode-Y.json
+                        for fname in os.listdir(source_cache_dir):
+                            full_path = os.path.join(source_cache_dir, fname)
+                            if fname.startswith("season-") and fname.endswith(".json"):
+                                data = _read_local_json(full_path)
+                                if data:
+                                    if "-episode-" in fname: # 分集
+                                        key = f"S{data.get('season_number')}E{data.get('episode_number')}"
+                                        episodes_details_map[key] = data
+                                    else: # 季
+                                        seasons_details_list.append(data)
+                        
+                        # 将聚合好的数据塞回骨架
+                        if episodes_details_map: tmdb_details_for_extra['episodes_details'] = episodes_details_map
+                        if seasons_details_list: 
+                            seasons_details_list.sort(key=lambda x: x.get('season_number', 0))
+                            tmdb_details_for_extra['seasons_details'] = seasons_details_list
+                    except Exception as e_agg:
+                        logger.warning(f"  ➜ 聚合本地分集数据时发生错误: {e_agg}")
+            else:
+                # 如果连本地文件都没有，那就真的没法弄了
+                logger.error(f"  ➜ 严重错误：找不到本地元数据文件 '{source_json_path}'，无法进行处理。")
+                return False
+
+            # 如果是强制更新，从 API 获取最新演员表来替换上面的默认演员表
             if force_full_update and self.tmdb_api_key:
-                logger.info(f"  ➜ [深度更新模式] 正在从 TMDB 获取最新演员表...")
+                logger.info(f"  ➜ [深度更新模式] 正在从 TMDB 获取最新演员表 (仅更新演员，保留本地元数据结构)...")
+                
                 if item_type == "Movie":
                     movie_details = tmdb.get_movie_details(tmdb_id, self.tmdb_api_key)
                     if movie_details and movie_details.get("credits", {}).get("cast"):
-                        tmdb_details_for_extra = movie_details
+                        # ★★★ 关键：只替换演员表，不替换 tmdb_details_for_extra ★★★
                         authoritative_cast_source = movie_details["credits"]["cast"]
-                        logger.info(f"  ➜ 成功从 TMDb 获取到 {len(authoritative_cast_source)} 位演员的最新数据。")
-                    else:
-                        logger.warning(f"  ➜ 从 TMDb 获取演员数据失败或返回为空，将回退到本地数据。")
+                        logger.info(f"  ➜ 成功从 TMDb 获取到 {len(authoritative_cast_source)} 位最新演员。")
+                
                 elif item_type == "Series":
+                    # 剧集依然需要聚合 API 数据来获得完整的演员（包括客串）
                     aggregated_tmdb_data = tmdb.aggregate_full_series_data_from_tmdb(int(tmdb_id), self.tmdb_api_key)
                     if aggregated_tmdb_data:
-                        tmdb_details_for_extra = aggregated_tmdb_data
                         all_episodes = list(aggregated_tmdb_data.get("episodes_details", {}).values())
+                        # ★★★ 关键：只计算并替换演员表，不替换 tmdb_details_for_extra ★★★
                         authoritative_cast_source = _aggregate_series_cast_from_tmdb_data(aggregated_tmdb_data["series_details"], all_episodes)
-            else:
-                # 在文件模式下，直接读取我们已经确认存在的文件
-                logger.info(f"  ➜ 正在从 cache 文件中预读演员表...")
-                source_json_data = _read_local_json(source_json_path)
-                if source_json_data:
-                    tmdb_details_for_extra = source_json_data
-                    authoritative_cast_source = (source_json_data.get("casts", {}) or source_json_data.get("credits", {})).get("cast", [])
-                    # 如果是剧集，必须聚合 Cache 目录下的分集数据
-                    if item_type == "Series":
-                        logger.info("  ➜ 检测到剧集，正在聚合 Cache 分集元数据以完善数据库记录...")
-                        episodes_details_map = {}
-                        seasons_details_list = []
-                        
-                        try:
-                            # 扫描 source_cache_dir (即 tmdb-tv/ID 目录)
-                            for fname in os.listdir(source_cache_dir):
-                                full_path = os.path.join(source_cache_dir, fname)
-                                
-                                # 1. 聚合分集文件
-                                if fname.startswith("season-") and fname.endswith(".json") and "-episode-" in fname:
-                                    ep_data = _read_local_json(full_path)
-                                    if ep_data:
-                                        key = f"S{ep_data.get('season_number')}E{ep_data.get('episode_number')}"
-                                        episodes_details_map[key] = ep_data
-                                
-                                # 2. 聚合季文件 (排除 series.json 和分集文件)
-                                elif fname.startswith("season-") and fname.endswith(".json") and "-episode-" not in fname:
-                                    season_data = _read_local_json(full_path)
-                                    if season_data:
-                                        seasons_details_list.append(season_data)
-                            
-                            # 将聚合好的数据塞入对象，供 _upsert_media_metadata 使用
-                            if episodes_details_map:
-                                tmdb_details_for_extra['episodes_details'] = episodes_details_map
-                            
-                            if seasons_details_list:
-                                seasons_details_list.sort(key=lambda x: x.get('season_number', 0))
-                                tmdb_details_for_extra['seasons_details'] = seasons_details_list
-                                
-                        except Exception as e_agg:
-                            logger.warning(f"  ➜ [标准模式] 聚合 Cache 分集数据时发生错误: {e_agg}")
-                else:
-                    logger.error(f"  ➜ 元数据文件 '{source_json_path}' 无效或为空，无法处理 '{item_name_for_log}'。")
-                    return False
+                        logger.info(f"  ➜ 成功从 TMDb 聚合了 {len(authoritative_cast_source)} 位最新演员。")
                 
-            # 移除无头像演员
+            # =========================================================
+            # ★★★ 步骤 3: 移除无头像演员 ★★★
+            # =========================================================
             if self.config.get(constants.CONFIG_OPTION_REMOVE_ACTORS_WITHOUT_AVATARS, True) and authoritative_cast_source:
                 original_count = len(authoritative_cast_source)
                 
@@ -1035,9 +1038,9 @@ class MediaProcessor:
                 else:
                     logger.debug("  ➜ (预检查) 所有源数据中的演员均有头像，无需预先移除。")
                 
-            # ======================================================================
-            # 阶段 2: 数据来源
-            # ======================================================================
+            # =========================================================
+            # ★★★ 步骤 4:  数据来源 ★★★
+            # =========================================================
             final_processed_cast = None
             douban_rating = None
             cache_row = None 
@@ -1174,9 +1177,9 @@ class MediaProcessor:
                         stop_event=self.get_stop_event()
                     )
 
-            # ======================================================================
-            # 阶段 3: 统一的收尾流程 (无论来源，必须执行)
-            # ======================================================================
+            # =========================================================
+            # ★★★ 步骤 5: 统一的收尾流程 ★★★
+            # =========================================================
             if final_processed_cast is None:
                 raise ValueError("未能生成有效的最终演员列表。")
 
@@ -1196,7 +1199,7 @@ class MediaProcessor:
                 
                 else:
                     # --- 分支 B: 正常处理模式 (或数据库缓存模式) ---
-                    # 步骤 3.1: 写入 override 文件
+                    # 写入 override 文件
                     self.sync_single_item_assets(
                         item_id=item_id,
                         update_description="主流程处理完成",
@@ -1204,10 +1207,10 @@ class MediaProcessor:
                         douban_rating_override=douban_rating
                     )
 
-                    # 步骤 3.2: 通过 API 实时更新 Emby 演员库中的名字
+                    # 通过 API 实时更新 Emby 演员库中的名字
                     self._update_emby_person_names_from_final_cast(final_processed_cast, item_name_for_log)
 
-                    # 步骤 3.3: 通知 Emby 刷新
+                    # 通知 Emby 刷新
                     logger.info(f"  ➜ 处理完成，正在通知 Emby 刷新...")
                     emby.refresh_emby_item_metadata(
                         item_emby_id=item_id,
@@ -1218,7 +1221,7 @@ class MediaProcessor:
                         item_name_for_log=item_name_for_log
                     )
 
-                # 步骤 3.4: 更新我们自己的数据库缓存 (这是反哺模式的核心目的，必须执行)
+                # 更新我们自己的数据库缓存 (这是反哺模式的核心目的，必须执行)
                 self._upsert_media_metadata(
                     cursor=cursor,
                     item_type=item_type,
@@ -1228,9 +1231,7 @@ class MediaProcessor:
                     douban_rating=douban_rating
                 )
                 
-                # ======================================================================
-                # 步骤 3.5: 综合质检 (视频流检查 + 演员匹配度评分)
-                # ======================================================================
+                # 综合质检 (视频流检查 + 演员匹配度评分)
                 logger.info(f"  ➜ 正在评估《{item_name_for_log}》的处理质量...")
                 
                 # --- 1. 视频流数据完整性检查 (仅针对 Movie 和 Episode) ---
@@ -1254,7 +1255,7 @@ class MediaProcessor:
                         stream_fail_reason = "缺失视频流数据 (可能是strm文件未提取或分析未完成)"
                         logger.warning(f"  ➜ [质检失败] 《{item_name_for_log}》未检测到视频流。")
 
-                # --- 2. 演员处理质量评分 ---
+                # 演员处理质量评分
                 genres = item_details_from_emby.get("Genres", [])
                 is_animation = "Animation" in genres or "动画" in genres or "Documentary" in genres or "纪录" in genres
                 
@@ -1273,7 +1274,7 @@ class MediaProcessor:
                 
                 min_score_for_review = float(self.config.get("min_score_for_review", constants.DEFAULT_MIN_SCORE_FOR_REVIEW))
                 
-                # --- 3. 最终判定与日志写入 ---
+                # 最终判定与日志写入 ---
                 # 优先级：视频流缺失 > 评分过低
                 if not stream_check_passed:
                     # 情况 A: 视频流缺失 -> 强制待复核
