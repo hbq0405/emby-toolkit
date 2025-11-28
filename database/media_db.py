@@ -656,7 +656,6 @@ def update_media_metadata_fields(tmdb_id: str, item_type: str, updates: Dict[str
 def get_tmdb_to_emby_map(library_ids: Optional[List[str]] = None) -> Dict[str, Dict[str, Any]]:
     """
     【性能优化 - 修正版】直接从数据库生成全量映射表。
-    Key 格式升级为 "{tmdb_id}_{item_type}"，防止 ID 冲突。
     """
     try:
         with get_db_connection() as conn:
@@ -695,7 +694,6 @@ def get_tmdb_to_emby_map(library_ids: Optional[List[str]] = None) -> Dict[str, D
                 emby_ids = row['emby_item_ids_json']
                 
                 if tmdb_id and item_type and emby_ids:
-                    # ★★★ 使用组合键 ★★★
                     key = f"{tmdb_id}_{item_type}"
                     mapping[key] = {'Id': emby_ids[0]}
                     
