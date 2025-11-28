@@ -445,8 +445,8 @@ def task_process_all_custom_collections(processor):
 
         # 3. 加载全量映射 (带类型)
         task_manager.update_status_from_thread(12, "正在从本地数据库加载全量媒体映射...")
-        libs_to_process_ids = processor.config.get("libraries_to_process", [])
-        tmdb_to_emby_item_map = media_db.get_tmdb_to_emby_map(library_ids=libs_to_process_ids)
+        # libs_to_process_ids = processor.config.get("libraries_to_process", [])
+        tmdb_to_emby_item_map = media_db.get_tmdb_to_emby_map(library_ids=None)
         
         # 4. 获取现有合集列表
         task_manager.update_status_from_thread(15, "正在从Emby获取现有合集列表...")
