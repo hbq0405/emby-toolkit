@@ -967,7 +967,7 @@ class MediaProcessor:
                 elif item_type == "Series":
                     aggregated_tmdb_data = tmdb.aggregate_full_series_data_from_tmdb(int(tmdb_id), self.tmdb_api_key)
                     if aggregated_tmdb_data:
-                        tmdb_details_for_extra = aggregated_tmdb_data.get("series_details")
+                        tmdb_details_for_extra = aggregated_tmdb_data
                         all_episodes = list(aggregated_tmdb_data.get("episodes_details", {}).values())
                         authoritative_cast_source = _aggregate_series_cast_from_tmdb_data(aggregated_tmdb_data["series_details"], all_episodes)
             else:
