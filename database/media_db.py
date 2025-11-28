@@ -655,13 +655,15 @@ def update_media_metadata_fields(tmdb_id: str, item_type: str, updates: Dict[str
 
 def get_tmdb_to_emby_map(library_ids: Optional[List[str]] = None) -> Dict[str, Dict[str, Any]]:
     """
-    【性能优化 - 修正版】直接从数据库生成全量映射表。
+    【性能优化 - 修正版 V2】直接从数据库生成全量映射表。
+    Key 格式升级为 "{tmdb_id}_{item_type}"。
+    修复了启用媒体库过滤时，剧集(Series)因没有资产信息而被错误过滤的问题。
     """
     try:
         with get_db_connection() as conn:
             cursor = conn.cursor()
             
-            # 基础 SQL：增加 item_type
+            # 基础 SQL
             sql = """
                 SELECT tmdb_id, item_type, emby_item_ids_json 
                 FROM media_metadata 
@@ -673,16 +675,43 @@ def get_tmdb_to_emby_map(library_ids: Optional[List[str]] = None) -> Dict[str, D
             params = []
             if library_ids:
                 lib_ids_str = [str(lid) for lid in library_ids]
-                array_literal = "{" + ",".join(lib_ids_str) + "}"
-                sql += f"""
-                    AND asset_details_json IS NOT NULL
-                    AND EXISTS (
-                        SELECT 1 
-                        FROM jsonb_array_elements(asset_details_json) AS elem
-                        WHERE elem->>'source_library_id' = ANY(%s::text[])
+                # 构造 SQL 数组参数
+                
+                # ★★★ 核心修复：针对 Movie 和 Series 使用不同的过滤逻辑 ★★★
+                # Movie: 直接检查自身的 asset_details_json
+                # Series: 检查是否有子集(Episode)在指定库中
+                sql += """
+                    AND (
+                        (
+                            item_type = 'Movie' 
+                            AND asset_details_json IS NOT NULL
+                            AND EXISTS (
+                                SELECT 1 
+                                FROM jsonb_array_elements(asset_details_json) AS elem
+                                WHERE elem->>'source_library_id' = ANY(%s)
+                            )
+                        )
+                        OR
+                        (
+                            item_type = 'Series'
+                            AND tmdb_id IN (
+                                SELECT DISTINCT parent_series_tmdb_id
+                                FROM media_metadata
+                                WHERE item_type = 'Episode'
+                                  AND in_library = TRUE
+                                  AND asset_details_json IS NOT NULL
+                                  AND EXISTS (
+                                      SELECT 1 
+                                      FROM jsonb_array_elements(asset_details_json) AS elem
+                                      WHERE elem->>'source_library_id' = ANY(%s)
+                                  )
+                            )
+                        )
                     )
                 """
-                params.append(array_literal)
+                # 需要传入两次 library_ids，分别给 Movie 和 Series 的子查询使用
+                params.append(lib_ids_str)
+                params.append(lib_ids_str)
             
             cursor.execute(sql, tuple(params))
             rows = cursor.fetchall()
@@ -694,10 +723,11 @@ def get_tmdb_to_emby_map(library_ids: Optional[List[str]] = None) -> Dict[str, D
                 emby_ids = row['emby_item_ids_json']
                 
                 if tmdb_id and item_type and emby_ids:
+                    # 使用组合键
                     key = f"{tmdb_id}_{item_type}"
                     mapping[key] = {'Id': emby_ids[0]}
                     
-            logger.debug(f"  ➜ 从数据库加载了 {len(mapping)} 条 TMDb->Emby 映射关系。")
+            logger.info(f"  ➜ 从数据库加载了 {len(mapping)} 条 TMDb->Emby 映射关系。")
             return mapping
 
     except Exception as e:
