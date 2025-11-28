@@ -197,7 +197,7 @@ def find_list_collections_containing_tmdb_id(tmdb_id: str) -> List[Dict[str, Any
             cursor.execute(sql, (json.dumps([tmdb_id]),))
             collections = [dict(row) for row in cursor.fetchall()]
     except psycopg2.Error as e:
-        logger.error(f"查找包含 TMDB ID {tmdb_id} 的榜单合集时出错: {e}", exc_info=True)
+        logger.error(f"  ➜ 查找包含 TMDB ID {tmdb_id} 的榜单合集时出错: {e}", exc_info=True)
     return collections
 
 def remove_tmdb_id_from_all_collections(tmdb_id_to_remove: str):
@@ -218,9 +218,9 @@ def remove_tmdb_id_from_all_collections(tmdb_id_to_remove: str):
             """
             cursor.execute(sql, (tmdb_id_to_remove, json.dumps([tmdb_id_to_remove])))
             if cursor.rowcount > 0:
-                logger.info(f"已从 {cursor.rowcount} 个自定义合集的缓存中移除了 TMDB ID: {tmdb_id_to_remove}。")
+                logger.info(f"  ➜ 已从 {cursor.rowcount} 个自定义合集的缓存中移除了 TMDB ID: {tmdb_id_to_remove}。")
     except psycopg2.Error as e:
-        logger.error(f"从所有合集缓存中移除 TMDB ID {tmdb_id_to_remove} 时失败: {e}", exc_info=True)
+        logger.error(f"  ➜ 从所有合集缓存中移除 TMDB ID {tmdb_id_to_remove} 时失败: {e}", exc_info=True)
 
 def apply_and_persist_media_correction(collection_id: int, old_tmdb_id: str, new_tmdb_id: str, season_number: Optional[int] = None) -> Optional[Dict[str, Any]]:
     """
@@ -301,7 +301,7 @@ def apply_and_persist_media_correction(collection_id: int, old_tmdb_id: str, new
                         'release_date': season_details.get("air_date", '')
                     }
                     media_db.ensure_media_record_exists([parent_media_info, season_media_info])
-                    logger.info(f"    ➜ 已确保父剧 '{parent_details.get('name')}' 和季 '{season_details.get('name')}' 的记录存在。")
+                    logger.info(f"  ➜ 已确保父剧 '{parent_details.get('name')}' 和季 '{season_details.get('name')}' 的记录存在。")
 
                     # 步骤 B: 现在可以安全地为“季”条目更新订阅状态
                     release_date = season_details.get("air_date", '')
@@ -354,11 +354,11 @@ def apply_and_persist_media_correction(collection_id: int, old_tmdb_id: str, new
                 pass
 
             conn.commit()
-            logger.info(f"成功为合集 {collection_id} 应用状态继承式修正：{old_tmdb_id} -> {new_tmdb_id} (季: {season_number})")
+            logger.info(f"  ➜ 成功为合集 {collection_id} 应用状态继承式修正：{old_tmdb_id} -> {new_tmdb_id} (季: {season_number})")
             return corrected_item_for_return
 
     except Exception as e:
-        logger.error(f"DB: 应用媒体修正时发生严重错误，事务已回滚: {e}", exc_info=True)
+        logger.error(f"  ➜ 应用媒体修正时发生严重错误，事务已回滚: {e}", exc_info=True)
         if conn: conn.rollback()
         raise
     finally:
@@ -455,13 +455,13 @@ def match_and_update_list_collections_on_item_add(new_item_tmdb_id: str, new_ite
                         })
 
                     except Exception as e_inner:
-                        logger.error(f"处理合集《{collection_name}》时发生内部错误: {e_inner}", exc_info=True)
+                        logger.error(f"  ➜ 处理合集《{collection_name}》时发生内部错误: {e_inner}", exc_info=True)
                         continue
 
         return collections_to_update_in_emby
 
     except psycopg2.Error as e_db:
-        logger.error(f"匹配和更新榜单合集时发生数据库错误: {e_db}", exc_info=True)
+        logger.error(f"  ➜ 匹配和更新榜单合集时发生数据库错误: {e_db}", exc_info=True)
         raise
 
 def append_item_to_filter_collection_db(collection_id: int, new_item_tmdb_id: str, new_item_emby_id: str, collection_name: str, item_name: str) -> bool:
@@ -485,12 +485,12 @@ def append_item_to_filter_collection_db(collection_id: int, new_item_tmdb_id: st
                 # ★★★ 核心修复 1/3: 将 JSON 字段解析为 TMDB ID 字符串列表 ★★★
                 tmdb_id_list = row.get('generated_media_info_json') or []
                 if not isinstance(tmdb_id_list, list):
-                    logger.warning(f"合集《{collection_name}》的缓存格式不正确，将被重置。")
+                    logger.warning(f"  ➜ 合集《{collection_name}》的缓存格式不正确，将被重置。")
                     tmdb_id_list = []
                 
                 # 防重复检查
                 if str(new_item_tmdb_id) in tmdb_id_list:
-                    logger.debug(f"媒体项 (TMDb ID: {new_item_tmdb_id}) 已存在于合集《{collection_name}》的缓存中，跳过追加。")
+                    logger.debug(f"  ➜ 媒体项 (TMDb ID: {new_item_tmdb_id}) 已存在于合集《{collection_name}》的缓存中，跳过追加。")
                     return True
 
                 # ★★★ 核心修复 2/3: 只追加 TMDB ID 字符串 ★★★
@@ -512,7 +512,7 @@ def append_item_to_filter_collection_db(collection_id: int, new_item_tmdb_id: st
 
     except Exception as e:
         # with conn: 会自动回滚事务
-        logger.error(f"向筛选合集《{collection_name}》的缓存追加媒体项时发生数据库错误: {e}", exc_info=True)
+        logger.error(f"  ➜ 向筛选合集《{collection_name}》的缓存追加媒体项时发生数据库错误: {e}", exc_info=True)
         return False
 
 def update_user_caches_on_item_add(
@@ -609,19 +609,19 @@ def get_unique_genres() -> List[str]:
                             if genre:
                                 unique_genres.add(genre.strip())
                     except TypeError:
-                        logger.warning(f"处理 genres_json 时遇到意外的类型错误，内容: {genres}")
+                        logger.warning(f"  ➜ 处理 genres_json 时遇到意外的类型错误，内容: {genres}")
                         continue
                         
         sorted_genres = sorted(list(unique_genres))
-        logger.trace(f"从数据库中成功提取出 {len(sorted_genres)} 个唯一的电影类型。")
+        logger.trace(f"  ➜ 从数据库中成功提取出 {len(sorted_genres)} 个唯一的电影类型。")
         return sorted_genres
         
     except psycopg2.Error as e:
-        logger.error(f"提取唯一电影类型时发生数据库错误: {e}", exc_info=True)
+        logger.error(f"  ➜ 提取唯一电影类型时发生数据库错误: {e}", exc_info=True)
         return []
 
 def get_unique_studios() -> List[str]:
-    """【V3 - PG JSON 兼容版】从 media_metadata 表中提取所有不重复的工作室。"""
+    """从 media_metadata 表中提取所有不重复的工作室。"""
     
     unique_studios = set()
     try:
@@ -638,19 +638,19 @@ def get_unique_studios() -> List[str]:
                             if studio:
                                 unique_studios.add(studio.strip())
                     except TypeError:
-                        logger.warning(f"处理 studios_json 时遇到意外的类型错误，内容: {studios}")
+                        logger.warning(f"  ➜ 处理 studios_json 时遇到意外的类型错误，内容: {studios}")
                         continue
                         
         sorted_studios = sorted(list(unique_studios))
-        logger.trace(f"从数据库中成功提取出 {len(sorted_studios)} 个跨电影和电视剧的唯一工作室。")
+        logger.trace(f"  ➜ 从数据库中成功提取出 {len(sorted_studios)} 个跨电影和电视剧的唯一工作室。")
         return sorted_studios
         
     except psycopg2.Error as e:
-        logger.error(f"提取唯一工作室时发生数据库错误: {e}", exc_info=True)
+        logger.error(f"  ➜ 提取唯一工作室时发生数据库错误: {e}", exc_info=True)
         return []
 
 def get_unique_tags() -> List[str]:
-    """【V2 - PG JSON 兼容版】从 media_metadata 表中提取所有不重复的标签。"""
+    """ 从 media_metadata 表中提取所有不重复的标签。"""
     
     unique_tags = set()
     try:
@@ -667,19 +667,19 @@ def get_unique_tags() -> List[str]:
                             if tag:
                                 unique_tags.add(tag.strip())
                     except TypeError:
-                        logger.warning(f"处理 pre_cached_tags_json 时遇到意外的类型错误，内容: {tags}")
+                        logger.warning(f"  ➜ 处理 pre_cached_tags_json 时遇到意外的类型错误，内容: {tags}")
                         continue
                         
         sorted_tags = sorted(list(unique_tags))
-        logger.trace(f"从数据库中成功提取出 {len(sorted_tags)} 个唯一的标签。")
+        logger.trace(f"  ➜ 从数据库中成功提取出 {len(sorted_tags)} 个唯一的标签。")
         return sorted_tags
         
     except psycopg2.Error as e:
-        logger.error(f"提取唯一标签时发生数据库错误: {e}", exc_info=True)
+        logger.error(f"  ➜ 提取唯一标签时发生数据库错误: {e}", exc_info=True)
         return []
 
 def search_unique_studios(search_term: str, limit: int = 20) -> List[str]:
-    """(V3 - 智能排序版) 搜索工作室并优先返回以 search_term 开头的结果。"""
+    """ 搜索工作室并优先返回以 search_term 开头的结果。"""
     
     if not search_term:
         return []
@@ -702,7 +702,7 @@ def search_unique_studios(search_term: str, limit: int = 20) -> List[str]:
             contains_matches.append(studio)
             
     final_matches = starts_with_matches + contains_matches
-    logger.trace(f"智能搜索 '{search_term}'，找到 {len(final_matches)} 个匹配项。")
+    logger.trace(f"  ➜ 智能搜索 '{search_term}'，找到 {len(final_matches)} 个匹配项。")
     return final_matches[:limit]
 
 def search_unique_actors(search_term: str, limit: int = 20) -> List[str]:
@@ -759,11 +759,11 @@ def search_unique_actors(search_term: str, limit: int = 20) -> List[str]:
                 contains_matches.append(name)
         
         final_matches = starts_with_matches + contains_matches
-        logger.trace(f"双语搜索演员 '{search_term}'，找到 {len(final_matches)} 个匹配项。")
+        logger.trace(f"  ➜ 双语搜索演员 '{search_term}'，找到 {len(final_matches)} 个匹配项。")
         return final_matches[:limit]
         
     except psycopg2.Error as e:
-        logger.error(f"提取并搜索唯一演员时发生数据库错误: {e}", exc_info=True)
+        logger.error(f"  ➜ 提取并搜索唯一演员时发生数据库错误: {e}", exc_info=True)
         return []
 
 def get_unique_official_ratings():
@@ -780,7 +780,7 @@ def get_unique_official_ratings():
 
 def get_tmdb_ids_by_library_ids(library_ids: List[str]) -> set:
     """
-    【数据库优化核心】根据 Emby 媒体库 ID 获取所有符合条件的 TMDB ID。
+    根据 Emby 媒体库 ID 获取所有符合条件的 TMDB ID。
     逻辑：
     1. 电影：直接检查 asset_details_json 中的 source_library_id。
     2. 剧集：检查 Episode 的 asset_details_json，并返回其 parent_series_tmdb_id。
@@ -836,7 +836,7 @@ def get_tmdb_ids_by_library_ids(library_ids: List[str]) -> set:
         return valid_tmdb_ids
 
     except Exception as e:
-        logger.error(f"根据库 ID 筛选媒体时发生数据库错误: {e}", exc_info=True)
+        logger.error(f"  ➜ 根据库 ID 筛选媒体时发生数据库错误: {e}", exc_info=True)
         return set()
     
 def get_all_local_emby_users() -> List[Dict[str, Any]]:
@@ -856,5 +856,5 @@ def get_all_local_emby_users() -> List[Dict[str, Any]]:
                 'Policy': {'IsAdministrator': row['is_administrator']} 
             } for row in rows]
     except Exception as e:
-        logger.error(f"从本地数据库获取用户失败: {e}", exc_info=True)
+        logger.error(f"  ➜ 从本地数据库获取用户失败: {e}", exc_info=True)
         return []
