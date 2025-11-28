@@ -418,14 +418,17 @@ def update_user_permissions_for_collection(collection_id: int, global_ordered_em
 # ★★★ 一键生成所有合集的后台任务 ★★★
 def task_process_all_custom_collections(processor):
     """
-    【V6 - 批量任务修复版】一键生成所有合集的后台任务。
-    修复了 emby_id 透传丢失和组合键匹配的问题。
+    一键生成所有合集的后台任务。
+    修复点：
+    1. 显式回写 emby_id 到 item 对象，确保健康检查统计正确。
+    2. 入库前清洗数据，generated_media_info_json 不再存储冗余的 emby_id。
+    3. 保持了组合键匹配和权限优化。
     """
     task_name = "生成所有自建合集"
     logger.info(f"--- 开始执行 '{task_name}' 任务 ---")
 
     try:
-        # 1. 获取用户列表 (优先查本地 DB)
+        # 1. 获取用户列表
         task_manager.update_status_from_thread(0, "正在获取所有Emby用户...")
         all_emby_users = collection_db.get_all_local_emby_users()
         if not all_emby_users:
@@ -443,10 +446,9 @@ def task_process_all_custom_collections(processor):
         # 3. 加载全量映射 (带类型)
         task_manager.update_status_from_thread(12, "正在从本地数据库加载全量媒体映射...")
         libs_to_process_ids = processor.config.get("libraries_to_process", [])
-        # 获取全量映射 (Key 是 "id_type")
         tmdb_to_emby_item_map = media_db.get_tmdb_to_emby_map(library_ids=libs_to_process_ids)
         
-        # 4. 获取现有合集列表 (用于增量更新判断)
+        # 4. 获取现有合集列表
         task_manager.update_status_from_thread(15, "正在从Emby获取现有合集列表...")
         all_emby_collections = emby.get_all_collections_from_emby_generic(base_url=processor.emby_url, api_key=processor.emby_api_key, user_id=processor.emby_user_id) or []
         prefetched_collection_map = {coll.get('Name', '').lower(): coll for coll in all_emby_collections}
@@ -484,13 +486,14 @@ def task_process_all_custom_collections(processor):
                     engine = FilterEngine()
                     raw_tmdb_items = engine.execute_filter(definition)
 
+                # 应用修正 (修正后的 ID 会直接体现在 raw_tmdb_items 中)
                 raw_tmdb_items, corrected_id_to_original_id_map = _apply_id_corrections(raw_tmdb_items, definition, collection_name)
                 
                 tmdb_items = [
                     {
                         'tmdb_id': str(item.get('id')),
                         'media_type': item.get('type'),
-                        'emby_id': item.get('emby_id'), 
+                        'emby_id': item.get('emby_id'), # 只有 FilterEngine 会带这个
                         **({'season': item['season']} if 'season' in item and item.get('season') is not None else {})
                     }
                     for item in raw_tmdb_items
@@ -503,14 +506,18 @@ def task_process_all_custom_collections(processor):
                 # --- B. 映射 Emby ID (适配组合键) ---
                 global_ordered_emby_ids = []
                 for item in tmdb_items:
-                    # 1. 优先用 FilterEngine 自带的 (筛选类合集)
+                    # 1. 优先用 FilterEngine 自带的
                     if item.get('emby_id'):
                         global_ordered_emby_ids.append(item['emby_id'])
                     else:
-                        # 2. 查全量映射表 (榜单类合集) - ★★★ 使用组合键 ★★★
+                        # 2. 查全量映射表 (使用组合键)
                         key = f"{item['tmdb_id']}_{item['media_type']}"
                         if key in tmdb_to_emby_item_map:
-                            global_ordered_emby_ids.append(tmdb_to_emby_item_map[key]['Id'])
+                            found_id = tmdb_to_emby_item_map[key]['Id']
+                            # ★★★ 修复 1: 必须把找到的 ID 回写到 item 对象中 ★★★
+                            # 这样后续的健康检查函数才能正确识别它“已在库”
+                            item['emby_id'] = found_id 
+                            global_ordered_emby_ids.append(found_id)
 
                 # --- C. 更新 Emby 合集 ---
                 emby_collection_id = emby.create_or_update_collection_with_emby_ids(
@@ -553,6 +560,18 @@ def task_process_all_custom_collections(processor):
                 update_user_permissions_for_collection(collection_id, global_ordered_emby_ids, current_collection_permissions)
 
                 # --- E. 更新数据库状态 ---
+                
+                # 准备纯净的 DB 数据 (剔除 emby_id) 
+                items_for_db = []
+                for item in tmdb_items:
+                    clean_item = {
+                        'tmdb_id': item['tmdb_id'],
+                        'media_type': item['media_type']
+                    }
+                    if 'season' in item:
+                        clean_item['season'] = item['season']
+                    items_for_db.append(clean_item)
+
                 update_data = {
                     "emby_collection_id": emby_collection_id,
                     "item_type": json.dumps(definition.get('item_type', ['Movie'])),
@@ -561,19 +580,23 @@ def task_process_all_custom_collections(processor):
                 }
 
                 if collection['type'] == 'list':
+                    # 注意：这里传入 tmdb_items (包含 emby_id) 给健康检查，保证统计正确
                     health_check_results = _perform_list_collection_health_check(
-                        tmdb_items=tmdb_items,
+                        tmdb_items=tmdb_items, 
                         tmdb_to_emby_item_map=tmdb_to_emby_item_map, 
                         corrected_id_to_original_id_map=corrected_id_to_original_id_map,
                         collection_db_record=collection,
                         tmdb_api_key=processor.tmdb_api_key
                     )
+                    # 覆盖掉 health_check_results 里的 generated_media_info_json
+                    # 使用我们清洗过的 items_for_db
+                    health_check_results['generated_media_info_json'] = json.dumps(items_for_db, ensure_ascii=False)
                     update_data.update(health_check_results)
                 else:
                     update_data.update({
                         "health_status": "ok", 
                         "missing_count": 0,
-                        "generated_media_info_json": json.dumps(tmdb_items, ensure_ascii=False)
+                        "generated_media_info_json": json.dumps(items_for_db, ensure_ascii=False) # 使用清洗后的数据
                     })
 
                 collection_db.update_custom_collection_sync_results(collection_id, update_data)
