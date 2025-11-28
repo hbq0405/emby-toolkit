@@ -949,7 +949,8 @@ const submitFixMatch = async (payload) => {
 const ruleConfig = {
   title: { label: '标题', type: 'text', operators: ['contains', 'does_not_contain', 'starts_with', 'ends_with'] },
   actors: { label: '演员', type: 'text', operators: ['contains', 'is_one_of', 'is_none_of', 'is_primary'] }, 
-  directors: { label: '导演', type: 'text', operators: ['contains', 'is_one_of', 'is_none_of', 'is_primary'] }, 
+  directors: { label: '导演', type: 'text', operators: ['contains', 'is_one_of', 'is_none_of', 'is_primary'] },
+  runtime: { label: '时长(分钟)', type: 'number', operators: ['gte', 'lte'] }, 
   release_year: { label: '年份', type: 'number', operators: ['gte', 'lte', 'eq'] },
   rating: { label: '评分', type: 'number', operators: ['gte', 'lte'] },
   genres: { label: '类型', type: 'select', operators: ['contains', 'is_one_of', 'is_none_of', 'is_primary'] }, 

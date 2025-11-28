@@ -668,6 +668,7 @@ class FilterEngine:
     """
     def __init__(self):
         self.airing_series_ids = None
+        self.series_runtime_cache = {}
 
     def _get_airing_ids(self): # ◀◀◀ 函数名也改了
         """辅助函数，带缓存地获取连载中ID"""
@@ -805,6 +806,32 @@ class FilterEngine:
                     elif op == 'ends_with':
                         if item_title_lower.endswith(value_lower): match = True
             
+            # 处理时长筛选 
+            elif field == 'runtime':
+                try:
+                    threshold_minutes = float(value)
+                    item_runtime = 0.0
+                    
+                    if item_metadata.get('item_type') == 'Movie':
+                        item_runtime = float(item_metadata.get('runtime_minutes') or 0)
+                        if item_runtime <= 0:
+                            assets = item_metadata.get('asset_details_json')
+                            if assets and isinstance(assets, list) and len(assets) > 0:
+                                item_runtime = float(assets[0].get('runtime_minutes') or 0)
+
+                    elif item_metadata.get('item_type') == 'Series':
+                        tmdb_id = str(item_metadata.get('tmdb_id'))
+                        # ★★★ 直接从预热好的字典里取值，纳秒级速度 ★★★
+                        item_runtime = self.series_runtime_cache.get(tmdb_id, 0.0)
+                    
+                    if op == 'gte': 
+                        if item_runtime >= threshold_minutes: match = True
+                    elif op == 'lte': 
+                        if item_runtime > 0 and item_runtime <= threshold_minutes: match = True
+                        
+                except (ValueError, TypeError):
+                    pass
+
             else:
                 actual_item_value = item_metadata.get(field)
                 if actual_item_value is not None:
@@ -866,6 +893,23 @@ class FilterEngine:
             for item_type in item_types_to_process:
                 all_media_metadata.extend(media_db.get_all_media_metadata(item_type=item_type))
 
+        if all_media_metadata:
+            # 1. 挑出所有剧集的 TMDB ID
+            series_ids_to_fetch = [
+                str(m['tmdb_id']) 
+                for m in all_media_metadata 
+                if m.get('item_type') == 'Series' and m.get('tmdb_id')
+            ]
+            
+            # 2. 如果本次筛选包含剧集，且规则里有时长筛选，则进行精准预取
+            # (为了简单稳健，只要有剧集就预取，开销极小)
+            if series_ids_to_fetch:
+                logger.info(f"  ➜ 正在为本次筛选范围内的 {len(series_ids_to_fetch)} 部剧集精准计算平均时长...")
+                start_time = datetime.now()
+                self.series_runtime_cache = media_db.get_runtimes_for_series_list(series_ids_to_fetch)
+                duration = (datetime.now() - start_time).total_seconds()
+                logger.info(f"  ➜ 时长计算完成，耗时 {duration:.3f}秒。")
+        
         # --- 后续的筛选逻辑保持不变 ---
         matched_items = []
         if not all_media_metadata:

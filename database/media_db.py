@@ -799,3 +799,33 @@ def get_emby_ids_for_items(items: List[Dict[str, str]]) -> Dict[str, Dict[str, A
     except Exception as e:
         logger.error(f"精准查询 Emby ID (带类型) 时出错: {e}", exc_info=True)
         return {}
+    
+def get_runtimes_for_series_list(tmdb_ids: List[str]) -> Dict[str, float]:
+    """
+    只计算指定 ID 列表中的剧集平均时长。
+    利用索引精准打击，避免全表扫描。
+    """
+    if not tmdb_ids:
+        return {}
+        
+    try:
+        with get_db_connection() as conn:
+            cursor = conn.cursor()
+            sql = """
+                SELECT parent_series_tmdb_id, AVG(runtime_minutes) as avg_runtime
+                FROM media_metadata
+                WHERE item_type = 'Episode' 
+                  AND runtime_minutes > 0
+                  AND parent_series_tmdb_id = ANY(%s)
+                GROUP BY parent_series_tmdb_id
+            """
+            cursor.execute(sql, (tmdb_ids,))
+            rows = cursor.fetchall()
+            
+            return {
+                str(row['parent_series_tmdb_id']): float(row['avg_runtime']) 
+                for row in rows
+            }
+    except Exception as e:
+        logger.error(f"批量计算指定剧集平均时长时出错: {e}")
+        return {}
