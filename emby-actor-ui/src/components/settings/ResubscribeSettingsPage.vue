@@ -116,7 +116,7 @@
                 <div style="font-size: 12px; color: #888; margin-bottom: 8px;">
                   <n-icon :component="AlertIcon" style="vertical-align: text-bottom; margin-right: 4px;" />
                   当剧集内出现版本混杂时（如 4K 与 1080p 混在一起），触发洗版以统一版本。<br>
-                  如果启用自定义洗版订阅，需要一起开启其他洗版规则，让系统知道洗成什么版本。
+                  如果启用自定义洗版订阅，需要一起开启其他洗版规则（仅提供洗版参数），让系统知道洗成什么版本。
                 </div>
                 <n-space>
                   <n-checkbox 

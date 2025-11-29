@@ -188,27 +188,30 @@ def task_update_resubscribe_cache(processor):
                     assets = rep_ep.get('asset_details_json')
                     if not assets: continue
 
-                    # --- 1. 检查质量是否达标 (有 -> 优) ---
-                    needs_upgrade, upgrade_reason = _item_needs_resubscribe(assets[0], rule, series_meta_wrapper)
+                    # ==================================================================
+                    # ★★★ 一致性检查模式 vs 质量升级模式 ★★★
+                    # ==================================================================
                     
-                    # --- 2. 检查一致性 (混杂 -> 纯净) ---
-                    needs_consistency_fix = False
-                    consistency_reason = ""
-                    
-                    # 只有当不需要升级质量时，才检查一致性
-                    if not needs_upgrade:
-                        needs_consistency_fix, consistency_reason = _check_season_consistency(eps_in_season, rule)
+                    status = 'ok'
+                    reason = ""
 
-                    # --- 3. 综合判定 ---
-                    if needs_upgrade:
-                        status = 'needed'
-                        reason = upgrade_reason
-                    elif needs_consistency_fix:
-                        status = 'needed'
-                        reason = consistency_reason
+                    # 模式 A: 开启了一致性检查
+                    # 逻辑：只检查是否混杂。忽略分辨率/质量是否达标。
+                    #      只有当发现混杂时，才标记为 needed。
+                    #      (规则里的分辨率/质量配置仅用于生成洗版时的 Payload)
+                    if rule.get('consistency_check_enabled'):
+                        needs_fix, fix_reason = _check_season_consistency(eps_in_season, rule)
+                        if needs_fix:
+                            status = 'needed'
+                            reason = fix_reason
+                    
+                    # 模式 B: 普通洗版模式 (有 -> 优)
+                    # 逻辑：检查分辨率、质量、特效等是否满足规则要求。
                     else:
-                        status = 'ok'
-                        reason = ""
+                        needs_upgrade, upgrade_reason = _item_needs_resubscribe(assets[0], rule, series_meta_wrapper)
+                        if needs_upgrade:
+                            status = 'needed'
+                            reason = upgrade_reason
 
                     item_key_tuple = (tmdb_id, "Season", int(season_num))
                     # 如果用户已经手动忽略或已订阅，且本次计算结果依然是 needed，则跳过更新，保持原状
