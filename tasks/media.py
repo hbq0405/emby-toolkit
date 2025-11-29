@@ -260,8 +260,9 @@ def task_populate_metadata_cache(processor, batch_size: int = 50, force_full_upd
         top_level_items_map = defaultdict(list)       
         series_to_seasons_map = defaultdict(list)     
         series_to_episode_map = defaultdict(list)     
-        
-        # ★★★ 核心修改：使用复合键集合记录脏数据 ★★★
+        # ★★★ 定义 ID 到 库ID 的映射字典 ★★★
+        emby_id_to_lib_id = {}
+        # ★★★ 使用复合键集合记录脏数据 ★★★
         dirty_keys = set() # Set of (tmdb_id, item_type)
         
         current_scan_emby_ids = set() 
@@ -284,7 +285,7 @@ def task_populate_metadata_cache(processor, batch_size: int = 50, force_full_upd
             
             item_id = str(item.get("Id"))
             if not item_id: continue
-            
+            emby_id_to_lib_id[item_id] = item.get('_SourceLibraryId')
             current_scan_emby_ids.add(item_id)
             
             item_type = item.get("Type")
@@ -421,6 +422,12 @@ def task_populate_metadata_cache(processor, batch_size: int = 50, force_full_upd
                     
                     if not top_items: continue
 
+                    # 因为 get_emby_items_by_id 重新拉取的数据没有这个字段，我们需要从之前的映射中补回去
+                    for item in top_items:
+                        eid = str(item.get('Id'))
+                        if eid in emby_id_to_lib_id:
+                            item['_SourceLibraryId'] = emby_id_to_lib_id[eid]
+
                     # 2. 如果是剧集，还需要拉取每个剧集的子集
                     if item_type == 'Series':
                         full_group = []
@@ -439,6 +446,11 @@ def task_populate_metadata_cache(processor, batch_size: int = 50, force_full_upd
                         )
                         
                         children_list = list(children_gen)
+                        for child in children_list:
+                            parent_series_id = str(child.get('SeriesId') or child.get('ParentId'))
+                            if parent_series_id and parent_series_id in emby_id_to_lib_id:
+                                real_lib_id = emby_id_to_lib_id[parent_series_id]
+                                child['_SourceLibraryId'] = real_lib_id 
                         full_group.extend(children_list)
                         
                         # 重新填充 map

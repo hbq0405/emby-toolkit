@@ -708,9 +708,9 @@ def build_resubscribe_payload(item_details: dict, rule: Optional[dict]) -> Optio
     should_exclude_current_groups = True
     
     # 如果规则存在，且开启了一致性检查，则不排除原发布组
-    if rule and rule.get('consistency_check_enabled'):
+    if item_type == "Season":
         should_exclude_current_groups = False
-        logger.info(f"  ➜ [一致性模式] 跳过排除原发布组，以确保能搜索到用于统一版本的资源。")
+        logger.info(f"  ➜ 剧集洗版跳过排除原发布组。")
 
     if should_exclude_current_groups:
         # --- 原有的排除逻辑 (放入 if 块内) ---
