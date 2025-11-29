@@ -114,6 +114,9 @@
                   <div v-else-if="item.status === 'ignored'" class="poster-stamp stamp-ignored">
                     求放过
                   </div>
+                  <div v-else-if="item.status === 'subscribed'" class="poster-stamp stamp-subscribed">
+                    洗白白
+                  </div>
                 </div>
 
                 <div class="card-content-container">
@@ -123,7 +126,7 @@
                   <div class="card-status-area">
                     <n-space vertical size="small">
                       
-                      <!-- 情况 A: 需洗版 (红色高亮) -->
+                      <!-- A. 需洗版 (红) -->
                       <div v-if="item.status === 'needed'" class="reason-text-wrapper text-needed">
                         <n-icon :component="AlertCircleOutline" style="margin-right: 4px; flex-shrink: 0;" />
                         <n-ellipsis :tooltip="true" style="max-width: 100%">
@@ -131,11 +134,19 @@
                         </n-ellipsis>
                       </div>
 
-                      <!-- 情况 B: 已忽略 (灰色显示，保留原因) -->
+                      <!-- B. 已忽略 (灰+删除线) -->
                       <div v-else-if="item.status === 'ignored'" class="reason-text-wrapper text-ignored">
                         <n-icon :component="AlertCircleOutline" style="margin-right: 4px; flex-shrink: 0;" />
                         <n-ellipsis :tooltip="true" style="max-width: 100%">
                           (已忽略) {{ item.reason }}
+                        </n-ellipsis>
+                      </div>
+
+                      <!-- C. 已订阅 (蓝+进行时) -->
+                      <div v-else-if="item.status === 'subscribed'" class="reason-text-wrapper text-subscribed">
+                        <n-icon :component="SyncOutline" style="margin-right: 4px; flex-shrink: 0;" />
+                        <n-ellipsis :tooltip="true" style="max-width: 100%">
+                          (洗版中) {{ item.reason }}
                         </n-ellipsis>
                       </div>
 
@@ -762,6 +773,17 @@ watch(() => props.taskStatus, (newStatus, oldStatus) => {
   font-weight: bold;
   font-size: 0.9em;
   line-height: 1.2;
+}
+
+.stamp-subscribed {
+  border-color: #2080f0; /* Naive UI 的 Primary Blue */
+  color: #2080f0;
+  transform: translate(-50%, -50%) rotate(-5deg); /* 稍微正一点，表示“正事已办” */
+}
+
+/* ★★★ 蓝色文字 ★★★ */
+.text-subscribed {
+  color: #2080f0;
 }
 
 /* ★★★ 红色文字 ★★★ */
