@@ -677,20 +677,28 @@ def build_resubscribe_payload(item_details: dict, rule: Optional[dict]) -> Optio
             logger.error(f"严重错误：项目 '{item_name}' 类型为 'Season' 但未找到 'season_number'！")
 
     # --- 排除原发布组 ---
-    detected_group_names = item_details.get('release_group_raw', [])
+    should_exclude_current_groups = True
     
-    if detected_group_names:
-        # 调用 helper 反查这些组名对应的所有关键词（如 FRDS, Yumi, CMCT...）
-        # 并生成一个 OR 正则，例如: (?:FRDS|Yumi|cXcY|CMCT(?:A|V)?)
-        exclusion_regex = build_exclusion_regex_from_groups(detected_group_names)
+    # 如果规则存在，且开启了一致性检查，则不排除原发布组
+    if rule and rule.get('consistency_check_enabled'):
+        should_exclude_current_groups = False
+        logger.info(f"  ➜ [一致性模式] 跳过排除原发布组，以确保能搜索到用于统一版本的资源。")
+
+    if should_exclude_current_groups:
+        # --- 原有的排除逻辑 (放入 if 块内) ---
+        detected_group_names = item_details.get('release_group_raw', [])
         
-        if exclusion_regex:
-            payload['exclude'] = exclusion_regex
-            logger.info(f"  ➜ 精准排除模式：已为《{item_name}》生成排除正则: {payload['exclude']}")
+        if detected_group_names:
+            # 调用 helper 反查这些组名对应的所有关键词
+            exclusion_regex = build_exclusion_regex_from_groups(detected_group_names)
+            
+            if exclusion_regex:
+                payload['exclude'] = exclusion_regex
+                logger.info(f"  ➜ 精准排除模式：已为《{item_name}》生成排除正则: {payload['exclude']}")
+            else:
+                logger.warning(f"  ⚠ 虽然检测到发布组 {detected_group_names}，但无法生成对应的正则关键词。")
         else:
-            logger.warning(f"  ⚠ 虽然检测到发布组 {detected_group_names}，但无法生成对应的正则关键词。")
-    else:
-        logger.info(f"  ✅ 未找到预分析的发布组，不添加排除规则。")
+            logger.info(f"  ✅ 未找到预分析的发布组，不添加排除规则。")
 
     use_custom_subscribe = config_manager.APP_CONFIG.get(constants.CONFIG_OPTION_USE_CUSTOM_RESUBSCRIBE, False)
     if not use_custom_subscribe or not rule:
