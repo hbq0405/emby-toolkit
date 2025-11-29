@@ -595,7 +595,7 @@ def _check_season_consistency(episodes: List[dict], rule: dict) -> tuple[bool, s
         reasons.append(f"分辨率混杂({','.join(stats['resolution'])})")
     
     if len(stats["group"]) > 1:
-        reasons.append(f"制作组混杂({','.join(stats['group'])})")
+        reasons.append(f"发布组混杂({','.join(stats['group'])})")
         
     if len(stats["codec"]) > 1:
         reasons.append(f"编码混杂({','.join(stats['codec'])})")
