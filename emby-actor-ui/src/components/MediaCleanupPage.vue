@@ -429,21 +429,13 @@ const fetchData = async () => {
 };
 
 // 触发后台扫描任务
-const triggerScan = () => {
-  dialog.info({
-    title: '确认开始扫描',
-    content: '扫描会检查全库媒体的重复项问题，根据媒体库大小可能需要一些时间。确定要开始吗？',
-    positiveText: '开始扫描',
-    negativeText: '取消',
-    onPositiveClick: async () => {
-      try {
-        await axios.post('/api/tasks/run', { task_name: 'scan-cleanup-issues' });
-        message.success('扫描任务已提交到后台，请稍后查看任务状态。');
-      } catch (err) {
-        message.error(err.response?.data?.error || '提交扫描任务失败。');
-      }
-    }
-  });
+const triggerScan = async () => {
+  try {
+    await axios.post('/api/tasks/run', { task_name: 'scan-cleanup-issues' });
+    message.success('扫描任务已提交到后台，请稍后查看任务状态。');
+  } catch (err) {
+    message.error(err.response?.data?.error || '提交扫描任务失败。');
+  }
 };
 
 // 处理批量操作
