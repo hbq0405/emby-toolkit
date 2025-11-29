@@ -203,7 +203,7 @@ def resubscribe_single_item():
             if rule and rule.get('delete_after_resubscribe'):
                 id_to_delete = item_details.get('emby_item_id')
                 if not id_to_delete:
-                    logger.error(f"无法删除 '{item_name}'：emby_item_id 为空。")
+                    logger.error(f"  ➜ 无法删除 '{item_name}'：emby_item_id 为空。")
                     resubscribe_db.update_resubscribe_item_status(item_id, 'subscribed')
                     message += " 但无法删除源文件，因Emby ID为空。"
                 elif emby.delete_item(id_to_delete, processor.emby_url, processor.emby_api_key, processor.emby_user_id):
@@ -212,14 +212,14 @@ def resubscribe_single_item():
                     # ★★★ 在删除成功后，调用善后清理函数 ★★★
                     try:
                         item_type = item_details.get('item_type')
-                        logger.info(f"源文件删除成功，开始为 Emby ID {id_to_delete} (Name: {item_name}) 执行数据库善后清理...")
+                        logger.info(f"  ➜ 源文件删除成功，开始为 Emby ID {id_to_delete} (Name: {item_name}) 执行数据库善后清理...")
                         maintenance_db.cleanup_deleted_media_item(
                             item_id=id_to_delete,
                             item_name=item_name,
                             item_type=item_type
                         )
                         message += " 数据库记录已同步更新。"
-                        logger.info(f"Emby ID {id_to_delete} 的善后清理已完成。")
+                        logger.info(f"  ➜ Emby ID {id_to_delete} 的善后清理已完成。")
                     except Exception as cleanup_e:
                         logger.error(f"执行善后清理 media item {id_to_delete} 时发生错误: {cleanup_e}", exc_info=True)
                         message += " 但数据库善后清理时发生错误，请检查日志。"
