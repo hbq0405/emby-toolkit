@@ -108,8 +108,6 @@
               <div class="card-body-wrapper">
                 <div class="card-poster-container" @click.stop="handleCardClick($event, item, index)">
                   <n-image lazy :src="getPosterUrl(item)" class="card-poster" object-fit="cover" />
-                  
-                  <!-- ★★★ 修改点 1: 新增“不通过”印章 ★★★ -->
                   <div v-if="item.status === 'needed'" class="poster-stamp">
                     不通过
                   </div>
@@ -122,12 +120,10 @@
                   <div class="card-status-area">
                     <n-space vertical size="small">
                       
-                      <!-- ★★★ 修改点 2: 状态显示逻辑重构 ★★★ -->
-                      <!-- 如果是 needed，直接显示红色原因文字，不显示 Tag -->
                       <div v-if="item.status === 'needed'" class="reason-text-wrapper">
                         <n-icon :component="AlertCircleOutline" color="#d03050" style="margin-right: 4px; flex-shrink: 0;" />
                         <n-ellipsis :tooltip="true" style="max-width: 100%">
-                          {{ formatReason(item.reason) }}
+                          {{ item.reason }}
                         </n-ellipsis>
                       </div>
 
@@ -295,12 +291,6 @@ const getStatusInfo = (status) => {
     case 'ignored': return { text: '已忽略', type: 'tertiary' };
     case 'ok': default: return { text: '已达标', type: 'success' };
   }
-};
-
-const formatReason = (reason) => {
-  if (!reason) return '';
-  // 使用正则替换掉中文或英文冒号及前面的部分
-  return reason.replace(/一致性校验失败[:：]\s*/g, '');
 };
 
 const fetchData = async () => {

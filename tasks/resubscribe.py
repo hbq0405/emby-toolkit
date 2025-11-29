@@ -582,10 +582,7 @@ def _check_season_consistency(episodes: List[dict], rule: dict) -> tuple[bool, s
 
         # 3. 编码
         if rule.get('consistency_must_match_codec'):
-            codec = asset.get('video_codec', 'Unknown')
-            # 简单归一化
-            if codec in ['h264', 'avc']: codec = 'h264'
-            elif codec in ['hevc', 'h265']: codec = 'hevc'
+            codec = asset.get('codec_display', 'Unknown')
             stats["codec"].add(codec)
 
     reasons = []
@@ -601,7 +598,7 @@ def _check_season_consistency(episodes: List[dict], rule: dict) -> tuple[bool, s
         reasons.append(f"编码混杂({','.join(stats['codec'])})")
 
     if reasons:
-        return True, "一致性校验失败: " + "; ".join(reasons)
+        return True, "; ".join(reasons)
     
     return False, ""
 

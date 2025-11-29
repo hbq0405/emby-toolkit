@@ -116,26 +116,26 @@
                 <div style="font-size: 12px; color: #888; margin-bottom: 8px;">
                   <n-icon :component="AlertIcon" style="vertical-align: text-bottom; margin-right: 4px;" />
                   当剧集内出现版本混杂时（如 4K 与 1080p 混在一起），触发洗版以统一版本。<br>
-                  建议同时开启“分辨率”或“质量”限制，以便系统知道该统一成高配还是低配。
+                  如果启用自定义洗版订阅，需要一起开启其他洗版规则，让系统知道洗成什么版本。
                 </div>
                 <n-space>
                   <n-checkbox 
                     v-model:checked="currentRule.consistency_must_match_resolution"
                     :disabled="!currentRule.consistency_check_enabled"
                   >
-                    强制同分辨率
+                    检查分辨率
                   </n-checkbox>
                   <n-checkbox 
                     v-model:checked="currentRule.consistency_must_match_group"
                     :disabled="!currentRule.consistency_check_enabled"
                   >
-                    强制同制作组
+                    检查发布组
                   </n-checkbox>
                   <n-checkbox 
                     v-model:checked="currentRule.consistency_must_match_codec"
                     :disabled="!currentRule.consistency_check_enabled"
                   >
-                    强制同编码
+                    检查编码
                   </n-checkbox>
                 </n-space>
               </n-space>

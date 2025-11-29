@@ -176,8 +176,11 @@ def get_resubscribe_library_status(where_clause: str = "", params: tuple = ()) -
                     
                     -- 智能获取名称
                     COALESCE(
-                        CASE WHEN idx.item_type = 'Season' THEN parent.title || ' - ' || m.title
-                             ELSE m.title 
+                        CASE 
+                            -- 如果是季，强制拼接为：父剧集标题 + ' - 第 ' + 季号 + ' 季'
+                            WHEN idx.item_type = 'Season' THEN parent.title || ' - 第 ' || idx.season_number || ' 季'
+                            -- 如果是电影，保持原样
+                            ELSE m.title 
                         END, 
                         '未知项目'
                     ) as item_name,
