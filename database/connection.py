@@ -305,7 +305,11 @@ def init_db():
                         resubscribe_filesize_threshold_gb REAL DEFAULT 10.0,
                         resubscribe_codec_enabled BOOLEAN DEFAULT FALSE,
                         resubscribe_codec_include JSONB,
-                        resubscribe_subtitle_skip_if_audio_exists BOOLEAN DEFAULT FALSE 
+                        resubscribe_subtitle_skip_if_audio_exists BOOLEAN DEFAULT FALSE,
+                        consistency_check_enabled BOOLEAN DEFAULT FALSE,
+                        consistency_must_match_resolution BOOLEAN DEFAULT FALSE,
+                        consistency_must_match_group BOOLEAN DEFAULT FALSE,
+                        consistency_must_match_code BOOLEAN DEFAULT FALSE
                     )
                 """)
 
@@ -458,7 +462,11 @@ def init_db():
                             "resubscribe_filesize_threshold_gb": "REAL DEFAULT 10.0",
                             "resubscribe_codec_enabled": "BOOLEAN DEFAULT FALSE",
                             "resubscribe_codec_include": "JSONB",
-                            "resubscribe_subtitle_skip_if_audio_exists": "BOOLEAN DEFAULT FALSE"
+                            "resubscribe_subtitle_skip_if_audio_exists": "BOOLEAN DEFAULT FALSE",
+                            "consistency_check_enabled": "BOOLEAN DEFAULT FALSE", # 总开关
+                            "consistency_must_match_resolution": "BOOLEAN DEFAULT FALSE", # 必须同分辨率
+                            "consistency_must_match_group": "BOOLEAN DEFAULT FALSE",      # 必须同制作组
+                            "consistency_must_match_codec": "BOOLEAN DEFAULT FALSE"       # 必须同编码
                         },
                         'user_templates': {
                             "source_emby_user_id": "TEXT",

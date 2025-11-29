@@ -143,6 +143,13 @@ def task_update_resubscribe_cache(processor):
                     progress = int(10 + (processed_count / total) * 85)
                     task_manager.update_status_from_thread(progress, f"正在分析: {series['title']}")
 
+                # 如果剧集状态是 'Watching'(正在追) 或 'Paused'(暂停追)，则跳过洗版检测
+                watching_status = series.get('watching_status', 'NONE')
+                if watching_status in ['Watching', 'Paused']:
+                    # 仅在调试模式记录，避免日志刷屏，或者使用 info 记录
+                    logger.debug(f"  ➜ 剧集《{series['title']}》处于 '{watching_status}' 状态，跳过洗版检测。")
+                    continue
+                
                 tmdb_id = str(series['tmdb_id'])
                 episodes = episodes_map.get(tmdb_id)
                 if not episodes: continue
@@ -172,8 +179,7 @@ def task_update_resubscribe_cache(processor):
                 for season_num, eps_in_season in episodes_by_season.items():
                     if season_num is None: continue
                     
-                    # ★★★ 标记：该季命中了规则，是有效的 ★★★
-                    # 注意：Key 格式必须与 resubscribe_db.get_all_resubscribe_index_keys 返回的一致
+                    # 标记 Key
                     season_key_str = f"{tmdb_id}-S{season_num}"
                     valid_keys_in_current_run.add(season_key_str)
 
@@ -182,12 +188,34 @@ def task_update_resubscribe_cache(processor):
                     assets = rep_ep.get('asset_details_json')
                     if not assets: continue
 
-                    needs, reason = _item_needs_resubscribe(assets[0], rule, series_meta_wrapper)
-                    status = 'needed' if needs else 'ok'
+                    # --- 1. 检查质量是否达标 (有 -> 优) ---
+                    needs_upgrade, upgrade_reason = _item_needs_resubscribe(assets[0], rule, series_meta_wrapper)
+                    
+                    # --- 2. 检查一致性 (混杂 -> 纯净) ---
+                    needs_consistency_fix = False
+                    consistency_reason = ""
+                    
+                    # 只有当不需要升级质量时，才检查一致性
+                    if not needs_upgrade:
+                        needs_consistency_fix, consistency_reason = _check_season_consistency(eps_in_season, rule)
+
+                    # --- 3. 综合判定 ---
+                    if needs_upgrade:
+                        status = 'needed'
+                        reason = upgrade_reason
+                    elif needs_consistency_fix:
+                        status = 'needed'
+                        reason = consistency_reason
+                    else:
+                        status = 'ok'
+                        reason = ""
 
                     item_key_tuple = (tmdb_id, "Season", int(season_num))
-                    if current_statuses.get(item_key_tuple) in ['ignored', 'subscribed']:
+                    # 如果用户已经手动忽略或已订阅，且本次计算结果依然是 needed，则跳过更新，保持原状
+                    # 注意：如果本次计算结果变成了 ok (例如用户手动洗版完成了)，则应该更新数据库把状态改为 ok
+                    if status == 'needed' and current_statuses.get(item_key_tuple) in ['ignored', 'subscribed']:
                         continue 
+                    # ★★★ 补回的代码 END ★★★
 
                     index_update_batch.append({
                         "tmdb_id": tmdb_id, "item_type": "Season", "season_number": season_num,
@@ -513,6 +541,69 @@ def _item_needs_resubscribe(asset_details: dict, rule: dict, media_metadata: Opt
     else:
         logger.debug(f"  ➜ 《{item_name}》质量达标。")
         return False, ""
+
+def _check_season_consistency(episodes: List[dict], rule: dict) -> tuple[bool, str]:
+    """
+    检查整季的一致性。
+    返回: (是否需要洗版, 原因)
+    """
+    # 如果规则没开启一致性检查，直接通过
+    if not rule.get('consistency_check_enabled'):
+        return False, ""
+
+    # 收集该季所有集的属性
+    stats = {
+        "resolution": set(),
+        "group": set(),
+        "codec": set()
+    }
+    
+    # 忽略只有一集的情况（无法比较一致性）
+    if len(episodes) < 2:
+        return False, ""
+
+    for ep in episodes:
+        assets = ep.get('asset_details_json')
+        if not assets: continue
+        asset = assets[0] # 取主文件
+
+        # 1. 分辨率
+        if rule.get('consistency_must_match_resolution'):
+            res = asset.get('resolution_display', 'Unknown')
+            stats["resolution"].add(res)
+
+        # 2. 制作组 (取第一个识别到的组)
+        if rule.get('consistency_must_match_group'):
+            groups = asset.get('release_group_raw', [])
+            group = groups[0] if groups else 'Unknown'
+            # 忽略 Unknown，避免因为识别失败导致的误报
+            if group != 'Unknown':
+                stats["group"].add(group)
+
+        # 3. 编码
+        if rule.get('consistency_must_match_codec'):
+            codec = asset.get('video_codec', 'Unknown')
+            # 简单归一化
+            if codec in ['h264', 'avc']: codec = 'h264'
+            elif codec in ['hevc', 'h265']: codec = 'hevc'
+            stats["codec"].add(codec)
+
+    reasons = []
+    
+    # 判定逻辑
+    if len(stats["resolution"]) > 1:
+        reasons.append(f"分辨率混杂({','.join(stats['resolution'])})")
+    
+    if len(stats["group"]) > 1:
+        reasons.append(f"制作组混杂({','.join(stats['group'])})")
+        
+    if len(stats["codec"]) > 1:
+        reasons.append(f"编码混杂({','.join(stats['codec'])})")
+
+    if reasons:
+        return True, "一致性校验失败: " + "; ".join(reasons)
+    
+    return False, ""
 
 def _is_exempted_from_language_check(media_metadata: Optional[dict], language_code_to_check: str) -> bool:
     """

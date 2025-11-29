@@ -434,7 +434,7 @@ def fetch_all_active_series_for_analysis() -> List[Dict[str, Any]]:
         with get_db_connection() as conn:
             cursor = conn.cursor()
             cursor.execute("""
-                SELECT tmdb_id, title, item_type, original_language
+                SELECT tmdb_id, title, item_type, original_language, watching_status
                 FROM media_metadata 
                 WHERE item_type = 'Series' AND in_library = TRUE
             """)

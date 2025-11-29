@@ -108,6 +108,11 @@
               <div class="card-body-wrapper">
                 <div class="card-poster-container" @click.stop="handleCardClick($event, item, index)">
                   <n-image lazy :src="getPosterUrl(item)" class="card-poster" object-fit="cover" />
+                  
+                  <!-- ★★★ 修改点 1: 新增“不通过”印章 ★★★ -->
+                  <div v-if="item.status === 'needed'" class="poster-stamp">
+                    不通过
+                  </div>
                 </div>
 
                 <div class="card-content-container">
@@ -116,11 +121,21 @@
                   </div>
                   <div class="card-status-area">
                     <n-space vertical size="small">
-                      <n-tag :type="getStatusInfo(item.status).type" size="small">
+                      
+                      <!-- ★★★ 修改点 2: 状态显示逻辑重构 ★★★ -->
+                      <!-- 如果是 needed，直接显示红色原因文字，不显示 Tag -->
+                      <div v-if="item.status === 'needed'" class="reason-text-wrapper">
+                        <n-icon :component="AlertCircleOutline" color="#d03050" style="margin-right: 4px; flex-shrink: 0;" />
+                        <n-ellipsis :tooltip="true" style="max-width: 100%">
+                          {{ formatReason(item.reason) }}
+                        </n-ellipsis>
+                      </div>
+
+                      <!-- 其他状态保持原样显示 Tag -->
+                      <n-tag v-else :type="getStatusInfo(item.status).type" size="small">
                         {{ getStatusInfo(item.status).text }}
-                        <!-- 仅当状态为 'needed' 时，才在标签内部显示原因 -->
-                        <span v-if="item.status === 'needed'">: {{ item.reason }}</span>
                       </n-tag>
+
                       <n-divider style="margin: 4px 0;" />
                       <n-text :depth="2" class="info-text">分辨率: {{ item.resolution_display }}</n-text>
                       <n-tooltip :disabled="!item.release_group_raw || item.release_group_raw.length === 0">
@@ -181,7 +196,7 @@ import axios from 'axios';
 // ★★★ 1/4: 导入新增的 Naive UI 组件 ★★★
 import { NLayout, NPageHeader, NDivider, NEmpty, NTag, NButton, NSpace, NIcon, useMessage, NGrid, NGi, NCard, NImage, NEllipsis, NSpin, NAlert, NRadioGroup, NRadioButton, NModal, NTooltip, NText, NDropdown, useDialog, NCheckbox, NInput, NSelect, NButtonGroup } from 'naive-ui';
 // ★★★ 2/4: 导入新增的图标 ★★★
-import { SyncOutline, TrashOutline, ArrowUpOutline as ArrowUpIcon, ArrowDownOutline as ArrowDownIcon } from '@vicons/ionicons5';
+import { SyncOutline, TrashOutline, ArrowUpOutline as ArrowUpIcon, ArrowDownOutline as ArrowDownIcon, AlertCircleOutline } from '@vicons/ionicons5';
 import { useConfig } from '../composables/useConfig.js';
 import ResubscribeSettingsPage from './settings/ResubscribeSettingsPage.vue';
 
@@ -280,6 +295,12 @@ const getStatusInfo = (status) => {
     case 'ignored': return { text: '已忽略', type: 'tertiary' };
     case 'ok': default: return { text: '已达标', type: 'success' };
   }
+};
+
+const formatReason = (reason) => {
+  if (!reason) return '';
+  // 使用正则替换掉中文或英文冒号及前面的部分
+  return reason.replace(/一致性校验失败[:：]\s*/g, '');
 };
 
 const fetchData = async () => {
@@ -685,5 +706,50 @@ watch(() => props.taskStatus, (newStatus, oldStatus) => {
     align-items: center;
     text-align: center;
   }
+}
+.card-poster-container { 
+  flex-shrink: 0; 
+  width: 150px; 
+  height: 225px; 
+  overflow: hidden; 
+  border-radius: 4px; 
+  position: relative; /* 确保印章可以绝对定位 */
+} 
+
+/* ★★★ 新增：印章样式 ★★★ */
+.poster-stamp {
+  position: absolute;
+  top: 50%;
+  left: 50%;
+  transform: translate(-50%, -50%) rotate(-15deg); /* 居中并旋转 */
+  
+  border: 3px solid #d03050; /* 红色边框 */
+  color: #d03050;            /* 红色文字 */
+  font-weight: 900;
+  font-size: 1.4rem;
+  letter-spacing: 2px;
+  padding: 4px 12px;
+  border-radius: 8px;
+  
+  background-color: rgba(255, 255, 255, 0.85); /* 半透明白色背景，增加对比度 */
+  box-shadow: 0 4px 15px rgba(0,0,0,0.3);
+  
+  z-index: 5;
+  pointer-events: none; /* 让点击事件穿透印章，不影响点击海报 */
+  white-space: nowrap;
+  user-select: none;
+  
+  /* 增加一点类似印章的做旧感（可选） */
+  opacity: 0.9;
+}
+
+/* ★★★ 新增：原因文字样式 ★★★ */
+.reason-text-wrapper {
+  display: flex;
+  align-items: center;
+  color: #d03050; /* 醒目的红色 */
+  font-weight: bold;
+  font-size: 0.9em;
+  line-height: 1.2;
 }
 </style>

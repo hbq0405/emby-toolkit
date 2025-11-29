@@ -108,6 +108,38 @@
 
           <!-- 洗版条件 -->
           <n-collapse>
+            <n-collapse-item title="按一致性洗版 (剧集专用)">
+               <template #header-extra>
+                <n-switch v-model:value="currentRule.consistency_check_enabled" @click.stop />
+              </template>
+              <n-space vertical>
+                <div style="font-size: 12px; color: #888; margin-bottom: 8px;">
+                  <n-icon :component="AlertIcon" style="vertical-align: text-bottom; margin-right: 4px;" />
+                  当剧集内出现版本混杂时（如 4K 与 1080p 混在一起），触发洗版以统一版本。<br>
+                  建议同时开启“分辨率”或“质量”限制，以便系统知道该统一成高配还是低配。
+                </div>
+                <n-space>
+                  <n-checkbox 
+                    v-model:checked="currentRule.consistency_must_match_resolution"
+                    :disabled="!currentRule.consistency_check_enabled"
+                  >
+                    强制同分辨率
+                  </n-checkbox>
+                  <n-checkbox 
+                    v-model:checked="currentRule.consistency_must_match_group"
+                    :disabled="!currentRule.consistency_check_enabled"
+                  >
+                    强制同制作组
+                  </n-checkbox>
+                  <n-checkbox 
+                    v-model:checked="currentRule.consistency_must_match_codec"
+                    :disabled="!currentRule.consistency_check_enabled"
+                  >
+                    强制同编码
+                  </n-checkbox>
+                </n-space>
+              </n-space>
+            </n-collapse-item>
             <n-collapse-item title="按分辨率洗版">
               <template #header-extra>
                 <n-switch v-model:value="currentRule.resubscribe_resolution_enabled" @click.stop />
@@ -252,7 +284,7 @@ import { ref, onMounted, computed, nextTick } from 'vue';
 import axios from 'axios';
 import { 
   NCard, NSpace, NSwitch, NButton, useMessage, NSpin, NIcon, NPopconfirm, NModal, NForm, 
-  NFormItem, NInput, NSelect, NDivider, NCollapse, NCollapseItem, NTag, NEmpty, NTooltip, NInputNumber
+  NFormItem, NInput, NSelect, NDivider, NCollapse, NCollapseItem, NTag, NEmpty, NTooltip, NInputNumber, NCheckbox
 } from 'naive-ui';
 import draggable from 'vuedraggable';
 import { 
@@ -376,7 +408,12 @@ const openRuleModal = async (rule = null) => {
   } else {
     currentRule.value = {
       name: '', enabled: true, target_library_ids: [],
-      delete_after_resubscribe: false, resubscribe_resolution_enabled: false,
+      delete_after_resubscribe: false,
+      consistency_check_enabled: false,
+      consistency_must_match_resolution: false,
+      consistency_must_match_group: false,
+      consistency_must_match_codec: false, 
+      resubscribe_resolution_enabled: false,
       resubscribe_resolution_threshold: 1920, resubscribe_audio_enabled: false,
       resubscribe_audio_missing_languages: [], resubscribe_subtitle_enabled: false,
       resubscribe_subtitle_missing_languages: [], resubscribe_quality_enabled: false,
