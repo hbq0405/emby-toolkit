@@ -108,8 +108,11 @@
               <div class="card-body-wrapper">
                 <div class="card-poster-container" @click.stop="handleCardClick($event, item, index)">
                   <n-image lazy :src="getPosterUrl(item)" class="card-poster" object-fit="cover" />
-                  <div v-if="item.status === 'needed'" class="poster-stamp">
+                  <div v-if="item.status === 'needed'" class="poster-stamp stamp-needed">
                     不通过
+                  </div>
+                  <div v-else-if="item.status === 'ignored'" class="poster-stamp stamp-ignored">
+                    求放过
                   </div>
                 </div>
 
@@ -120,10 +123,19 @@
                   <div class="card-status-area">
                     <n-space vertical size="small">
                       
-                      <div v-if="item.status === 'needed'" class="reason-text-wrapper">
-                        <n-icon :component="AlertCircleOutline" color="#d03050" style="margin-right: 4px; flex-shrink: 0;" />
+                      <!-- 情况 A: 需洗版 (红色高亮) -->
+                      <div v-if="item.status === 'needed'" class="reason-text-wrapper text-needed">
+                        <n-icon :component="AlertCircleOutline" style="margin-right: 4px; flex-shrink: 0;" />
                         <n-ellipsis :tooltip="true" style="max-width: 100%">
                           {{ item.reason }}
+                        </n-ellipsis>
+                      </div>
+
+                      <!-- 情况 B: 已忽略 (灰色显示，保留原因) -->
+                      <div v-else-if="item.status === 'ignored'" class="reason-text-wrapper text-ignored">
+                        <n-icon :component="AlertCircleOutline" style="margin-right: 4px; flex-shrink: 0;" />
+                        <n-ellipsis :tooltip="true" style="max-width: 100%">
+                          (已忽略) {{ item.reason }}
                         </n-ellipsis>
                       </div>
 
@@ -711,35 +723,55 @@ watch(() => props.taskStatus, (newStatus, oldStatus) => {
   position: absolute;
   top: 50%;
   left: 50%;
-  transform: translate(-50%, -50%) rotate(-15deg); /* 居中并旋转 */
+  transform: translate(-50%, -50%) rotate(-15deg);
   
-  border: 3px solid #d03050; /* 红色边框 */
-  color: #d03050;            /* 红色文字 */
   font-weight: 900;
   font-size: 1.4rem;
   letter-spacing: 2px;
   padding: 4px 12px;
   border-radius: 8px;
-  
-  background-color: rgba(255, 255, 255, 0.85); /* 半透明白色背景，增加对比度 */
+  background-color: rgba(255, 255, 255, 0.85);
   box-shadow: 0 4px 15px rgba(0,0,0,0.3);
-  
   z-index: 5;
-  pointer-events: none; /* 让点击事件穿透印章，不影响点击海报 */
+  pointer-events: none;
   white-space: nowrap;
   user-select: none;
-  
-  /* 增加一点类似印章的做旧感（可选） */
   opacity: 0.9;
+  
+  /* 基础边框，具体颜色由子类决定 */
+  border: 3px solid; 
 }
 
-/* ★★★ 新增：原因文字样式 ★★★ */
+/* ★★★ 红色印章：不通过 ★★★ */
+.stamp-needed {
+  border-color: #d03050;
+  color: #d03050;
+}
+
+/* ★★★ 灰色印章：求放过 ★★★ */
+.stamp-ignored {
+  border-color: #888; /* 深灰色 */
+  color: #888;
+  font-size: 1.2rem; /*稍微小一点点，显得卑微一点 */
+  transform: translate(-50%, -50%) rotate(10deg); /* 换个角度，显得随性一点 */
+}
+
 .reason-text-wrapper {
   display: flex;
   align-items: center;
-  color: #d03050; /* 醒目的红色 */
   font-weight: bold;
   font-size: 0.9em;
   line-height: 1.2;
+}
+
+/* ★★★ 红色文字 ★★★ */
+.text-needed {
+  color: #d03050;
+}
+
+/* ★★★ 灰色文字 ★★★ */
+.text-ignored {
+  color: #999; /* 浅灰色，降低视觉干扰 */
+  text-decoration: line-through; /* 加个删除线，表示“这问题虽然在，但我不在乎” */
 }
 </style>
