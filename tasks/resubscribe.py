@@ -117,24 +117,31 @@ def task_update_resubscribe_cache(processor):
 
             final_status = None
             
-            # 1. 如果物理状态是 needed
-            if needs:
-                # 如果用户之前忽略或订阅了，保持原状态
-                if existing_status in ['ignored', 'subscribed']:
-                    final_status = existing_status
+            # 场景 A: 之前已订阅 (Subscribed)
+            if existing_status == 'subscribed':
+                if not needs:
+                    # 物理状态变好了 (OK) -> 任务完成，移除记录
+                    final_status = None
+                else:
+                    # 物理状态还是差 (Needed) -> 说明还在下载或洗版失败，保持“已订阅”状态
+                    final_status = 'subscribed'
+
+            # 场景 B: 物理状态需要洗版 (Needed)
+            elif needs:
+                # 如果用户之前忽略了，保持忽略
+                if existing_status == 'ignored':
+                    final_status = 'ignored'
+                # 否则标记为需要洗版
                 else:
                     final_status = 'needed'
             
-            # 2. 如果物理状态是 ok
+            # 场景 C: 物理状态达标 (OK)
             else:
-                # 如果之前是 ignored 或 subscribed，但现在变好了(ok)，说明可能用户手动洗版了
-                # 这种情况下，我们不再保留它，让它从数据库消失
-                # (如果你希望保留 'subscribed' 记录作为历史，可以在这里改，但通常没必要)
+                # 既然达标了，不管之前是什么状态，都直接清理掉
                 final_status = None 
 
-            # 只有确定有状态（不是 None/ok）才入库
             if final_status:
-                keys_to_keep_in_db.add(item_key_tuple[0]) # 记录 TMDB ID
+                keys_to_keep_in_db.add(item_key_tuple[0])
                 index_update_batch.append({
                     "tmdb_id": movie['tmdb_id'], "item_type": "Movie", "season_number": -1,
                     "status": final_status, "reason": reason, "matched_rule_id": rule.get('id')
@@ -219,17 +226,28 @@ def task_update_resubscribe_cache(processor):
                     
                     final_status = None
 
-                    if status_calculated == 'needed':
-                        if existing_status in ['ignored', 'subscribed']:
-                            final_status = existing_status
+                    # 场景 A: 之前已订阅 (Subscribed)
+                    if existing_status == 'subscribed':
+                        if status_calculated == 'ok':
+                            # 物理状态变好了 (OK) -> 任务完成，移除记录
+                            final_status = None
+                        else:
+                            # 物理状态还是差 (Needed) -> 保持“已订阅”状态
+                            final_status = 'subscribed'
+
+                    # 场景 B: 物理状态需要洗版 (Needed)
+                    elif status_calculated == 'needed':
+                        if existing_status == 'ignored':
+                            final_status = 'ignored'
                         else:
                             final_status = 'needed'
+                    
+                    # 场景 C: 物理状态达标 (OK)
                     else:
-                        # 物理状态是 ok，直接丢弃（不入库），除非你想保留历史记录
                         final_status = None
 
                     if final_status:
-                        # 记录 Key (注意：这里要用组合Key格式，用于后续清理)
+                        # 记录 Key
                         keys_to_keep_in_db.add(f"{tmdb_id}-S{season_num}")
                         
                         index_update_batch.append({
