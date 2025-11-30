@@ -99,7 +99,6 @@ CONFIG_OPTION_AUTOSUB_ENABLED = "autosub_enabled" # 智能订阅总开关
 CONFIG_OPTION_GAP_FILL_RESUBSCRIBE_ENABLED = "gap_fill_resubscribe_enabled"
 CONFIG_OPTION_RESUBSCRIBE_DAILY_CAP = "resubscribe_daily_cap"
 CONFIG_OPTION_RESUBSCRIBE_DELAY_SECONDS = "resubscribe_delay_seconds"
-CONFIG_OPTION_USE_CUSTOM_RESUBSCRIBE = "use_custom_resubscribe"
 CONFIG_OPTION_MOVIE_SUBSCRIPTION_DELAY_DAYS = "movie_subscription_delay_days"
 CONFIG_OPTION_AUTOCANCEL_SUBSCRIBED_DAYS = "autocancel_subscribed_days"
 

@@ -30,9 +30,13 @@
               <n-icon class="drag-handle" :component="DragHandleIcon" size="20" />
               <div class="rule-details">
                 <span class="rule-name">{{ rule.name }}</span>
-                <n-tag :type="getLibraryTagType(rule.target_library_ids)" size="small">
-                  {{ getLibraryCountText(rule.target_library_ids) }}
-                </n-tag>
+                <n-space size="small" style="margin-top: 4px;">
+                  <n-tag :type="getLibraryTagType(rule.target_library_ids)" size="small">
+                    {{ getLibraryCountText(rule.target_library_ids) }}
+                  </n-tag>
+                  <n-tag v-if="rule.auto_resubscribe" type="info" size="small" bordered>自动洗版</n-tag>
+                  <n-tag v-if="rule.custom_resubscribe_enabled" type="warning" size="small" bordered>精准模式</n-tag>
+                </n-space>
               </div>
               <n-space class="rule-actions">
                 <n-switch v-model:value="rule.enabled" @update:value="toggleRuleStatus(rule)" />
@@ -55,12 +59,15 @@
       <n-empty v-if="rules.length === 0" description="还没有任何规则，快新增一个吧！" />
 
       <!-- 规则编辑/新增弹窗 -->
-      <n-modal v-model:show="showModal" preset="card" style="width: 600px;" :title="modalTitle">
-        <n-form ref="formRef" :model="currentRule" :rules="formRules">
+      <n-modal v-model:show="showModal" preset="card" style="width: 650px;" :title="modalTitle">
+        <n-form ref="formRef" :model="currentRule" :rules="formRules" label-placement="left" label-width="auto">
+          
+          <!-- 基础信息 -->
+          <n-divider title-placement="left" style="margin-top: 0; font-size: 12px; color: #999;">基础配置</n-divider>
           <n-form-item path="name" label="规则名称">
             <n-input v-model:value="currentRule.name" placeholder="例如：4K Remux 收藏规则" />
           </n-form-item>
-          <n-form-item path="target_library_ids" label="应用到以下媒体库">
+          <n-form-item path="target_library_ids" label="应用媒体库">
             <n-select
               v-model:value="currentRule.target_library_ids"
               multiple
@@ -69,44 +76,88 @@
               placeholder="选择一个或多个媒体库"
             />
           </n-form-item>
-          <n-form-item>
-            <template #label>
-              <n-space align="center">
-                <span>订阅成功后删除Emby中的媒体项</span>
-                <n-tooltip trigger="hover" v-if="!isEmbyAdminConfigured">
-                  <template #trigger>
-                    <n-icon :component="AlertIcon" style="color: var(--n-warning-color);" />
-                  </template>
-                  请先在 设置 -> Emby & 虚拟库 标签页中，配置“管理员登录凭证”。
-                </n-tooltip>
+
+          <!-- 自动化配置 (新增区域) -->
+          <n-divider title-placement="left" style="font-size: 12px; color: #999;">自动化与执行策略</n-divider>
+          
+          <n-space vertical size="large">
+            <!-- 开关组 1: 自动洗版 -->
+            <n-space align="center" justify="space-between">
+              <n-space vertical size="small" style="gap: 2px;">
+                <n-space align="center">
+                  <span>自动洗版</span>
+                  <n-tooltip trigger="hover">
+                    <template #trigger>
+                      <n-icon :component="AlertIcon" style="color: var(--n-info-color); cursor: help;" />
+                    </template>
+                    开启后，当检测到媒体需要洗版时，会自动将其加入“统一订阅”队列。<br>
+                    若关闭，仅会在列表中标记为“需洗版”，等待人工手动点击。
+                  </n-tooltip>
+                </n-space>
+                <span style="font-size: 12px; color: #999;">检测到不达标时自动加入统一订阅队列。</span>
               </n-space>
-            </template>
-            <n-switch 
-              v-model:value="currentRule.delete_after_resubscribe"
-              :disabled="!isEmbyAdminConfigured"
-              @update:value="handleDeleteSwitchChange"
-            />
-          </n-form-item>
+              <n-switch v-model:value="currentRule.auto_resubscribe" />
+            </n-space>
+
+            <!-- 开关组 2: 自定义洗版 (精准模式) -->
+            <n-space align="center" justify="space-between">
+              <n-space vertical size="small" style="gap: 2px;">
+                <n-space align="center">
+                  <span>自定义洗版</span>
+                  <n-tooltip trigger="hover">
+                    <template #trigger>
+                      <n-icon :component="AlertIcon" style="color: var(--n-info-color); cursor: help;" />
+                    </template>
+                    <b>开启：</b>将根据下方配置的条件（如分辨率、特效、编码）生成精准的订阅参数发送给 MoviePilot。<br>
+                    <b>关闭：</b>仅发送洗版订阅请求，具体下载什么版本由 MoviePilot 的全局洗版规则决定。
+                  </n-tooltip>
+                </n-space>
+                <span style="font-size: 12px; color: #999;">强制下载符合下方条件的文件，而非MP默认策略</span>
+              </n-space>
+              <n-switch v-model:value="currentRule.custom_resubscribe_enabled" />
+            </n-space>
+
+            <!-- 开关组 3: 洗版后删除 -->
+            <n-space align="center" justify="space-between">
+              <n-space vertical size="small" style="gap: 2px;">
+                <n-space align="center">
+                  <span>删除旧文件</span>
+                  <n-tooltip trigger="hover" v-if="!isEmbyAdminConfigured">
+                    <template #trigger>
+                      <n-icon :component="AlertIcon" style="color: var(--n-warning-color);" />
+                    </template>
+                    请先在 设置 -> Emby & 虚拟库 标签页中，配置“管理员登录凭证”。
+                  </n-tooltip>
+                </n-space>
+                <span style="font-size: 12px; color: #999;">订阅成功后，自动删除 Emby 中的旧媒体项，仅手动洗版生效。</span>
+              </n-space>
+              <n-switch 
+                v-model:value="currentRule.delete_after_resubscribe"
+                :disabled="!isEmbyAdminConfigured"
+                @update:value="handleDeleteSwitchChange"
+              />
+            </n-space>
+          </n-space>
+
+          <n-divider title-placement="left" style="font-size: 12px; color: #999;">洗版触发条件与参数</n-divider>
+          
           <n-form-item>
-            <template #label>
+             <template #label>
               <n-space align="center">
-                <span>特效字幕</span>
+                <span>特效字幕参数</span>
                 <n-tooltip trigger="hover">
                   <template #trigger>
                     <n-icon :component="AlertIcon" style="color: var(--n-info-color);" />
                   </template>
-                  勾选后，订阅时将要求字幕包含“特效”关键字，需开启自定义洗版订阅。<br>
-                  注意：此选项仅影响订阅参数，不影响筛选逻辑。
+                  勾选后，订阅时将要求字幕包含“特效”关键字。<br>
+                  注意：此选项仅在“精准洗版”开启时生效，用于生成订阅参数。
                 </n-tooltip>
               </n-space>
             </template>
-            <n-switch 
-              v-model:value="currentRule.resubscribe_subtitle_effect_only"
-            />
+            <n-switch v-model:value="currentRule.resubscribe_subtitle_effect_only" />
           </n-form-item>
-          <n-divider />
 
-          <!-- 洗版条件 -->
+          <!-- 洗版条件折叠面板 -->
           <n-collapse>
             <n-collapse-item title="按一致性洗版 (剧集专用)">
                <template #header-extra>
@@ -116,7 +167,7 @@
                 <div style="font-size: 12px; color: #888; margin-bottom: 8px;">
                   <n-icon :component="AlertIcon" style="vertical-align: text-bottom; margin-right: 4px;" />
                   当剧集内出现版本混杂时（如 4K 与 1080p 混在一起），触发洗版以统一版本。<br>
-                  如果启用自定义洗版订阅，需要一起开启其他洗版规则（仅提供洗版参数），让系统知道洗成什么版本。
+                  建议开启“精准洗版”并配置下方参数，明确统一的目标版本。
                 </div>
                 <n-space>
                   <n-checkbox 
@@ -351,14 +402,14 @@ const effectOptions = ref([
 const languageOptions = ref([
     { label: '国语 (chi)', value: 'chi' }, { label: '粤语 (yue)', value: 'yue' },
     { label: '英语 (eng)', value: 'eng' }, { label: '日语 (jpn)', value: 'jpn' },
-    { label: '韩语 (kor)', value: 'kor' }, // <--- ★★★ 新增韩语音轨
+    { label: '韩语 (kor)', value: 'kor' }, 
 ]);
 const subtitleLanguageOptions = ref([
-    { label: '简体 (chi)', value: 'chi' }, // <--- (建议) 修改标签以匹配后端
-    { label: '繁体 (yue)', value: 'yue' }, // <--- (建议) 补上繁体
-    { label: '英文 (eng)', value: 'eng' }, // <--- (建议) 修改标签以匹配后端
-    { label: '日文 (jpn)', value: 'jpn' }, // <--- (建议) 补上日文
-    { label: '韩文 (kor)', value: 'kor' }, // <--- ★★★ 新增韩文字幕
+    { label: '简体 (chi)', value: 'chi' }, 
+    { label: '繁体 (yue)', value: 'yue' }, 
+    { label: '英文 (eng)', value: 'eng' }, 
+    { label: '日文 (jpn)', value: 'jpn' }, 
+    { label: '韩文 (kor)', value: 'kor' }, 
 ]);
 
 const loadData = async () => {
@@ -408,6 +459,10 @@ const openRuleModal = async (rule = null) => {
   } else {
     currentRule.value = {
       name: '', enabled: true, target_library_ids: [],
+      // ★★★ 新增字段初始化 ★★★
+      auto_resubscribe: false,
+      custom_resubscribe_enabled: false,
+      
       delete_after_resubscribe: false,
       consistency_check_enabled: false,
       consistency_must_match_resolution: false,

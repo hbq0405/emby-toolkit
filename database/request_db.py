@@ -521,3 +521,35 @@ def get_stale_subscribed_media(threshold_days: int) -> List[Dict[str, Any]]:
     except Exception as e:
         logger.error(f"DB: 查询超时的订阅媒体时失败: {e}", exc_info=True)
         return []
+    
+def remove_sources_by_type(tmdb_id: str, item_type: str, target_source_type: str):
+    """
+    从指定媒体的 subscription_sources_json 中移除所有 type 等于 target_source_type 的条目。
+    用于确保自动洗版请求是覆盖更新，而不是追加。
+    """
+    if not all([tmdb_id, item_type, target_source_type]):
+        return
+
+    try:
+        with get_db_connection() as conn:
+            with conn.cursor() as cursor:
+                # 使用 PostgreSQL 的 JSONB 函数进行过滤重建
+                # 逻辑：将数组展开 -> 过滤掉 type 匹配的项 -> 重新聚合 -> 如果结果为空则返回空数组
+                sql = """
+                    UPDATE media_metadata
+                    SET subscription_sources_json = COALESCE(
+                        (
+                            SELECT jsonb_agg(elem)
+                            FROM jsonb_array_elements(subscription_sources_json) elem
+                            WHERE elem->>'type' != %s
+                        ),
+                        '[]'::jsonb
+                    )
+                    WHERE tmdb_id = %s AND item_type = %s;
+                """
+                cursor.execute(sql, (target_source_type, tmdb_id, item_type))
+                # 这里的更新不需要改变 subscription_status，因为紧接着就会调用 set_media_status_wanted
+                
+    except Exception as e:
+        logger.error(f"DB: 移除媒体 {tmdb_id} 的 '{target_source_type}' 类型来源时出错: {e}", exc_info=True)
+        raise

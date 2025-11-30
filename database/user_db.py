@@ -561,7 +561,51 @@ def get_user_account_details(user_id: str) -> Optional[Dict[str, Any]]:
     except Exception as e:
         logger.error(f"DB: 查询用户 {user_id} 的账户详情失败: {e}", exc_info=True)
         raise
+
+def upsert_emby_users_extended_batch_sync(users_data: List[Dict[str, Any]]):
+    """
+    同步 Emby 用户的扩展信息。
+    主要用于：
+    1. 确保 emby_users 表中的用户在 emby_users_extended 中也有记录。
+    2. 回填 registration_date (来自 Emby 的 DateCreated)。
+    3. 新发现的用户状态默认为 'active'。
+    """
+    if not users_data:
+        return
+
+    # SQL 逻辑：
+    # 插入时：设置 emby_user_id, registration_date, status='active', created_by='sync'
+    # 冲突时：只更新 registration_date (以 Emby 为准)，保留原有的 status, expiration_date, template_id
+    sql = """
+        INSERT INTO emby_users_extended (emby_user_id, registration_date, status, created_by)
+        VALUES %s
+        ON CONFLICT (emby_user_id) DO UPDATE SET
+            registration_date = EXCLUDED.registration_date;
+    """
     
+    values_to_insert = []
+    for user in users_data:
+        user_id = user.get('Id')
+        # Emby API 返回的创建时间通常是 'DateCreated'
+        date_created = user.get('DateCreated') 
+        
+        if user_id:
+            values_to_insert.append((
+                user_id,
+                date_created, # 如果是 None，数据库会存为 NULL
+                'active',     # 默认状态
+                'system_sync' # 创建者标记
+            ))
+
+    try:
+        with get_db_connection() as conn:
+            cursor = conn.cursor()
+            execute_values(cursor, sql, values_to_insert, page_size=100)
+            conn.commit()
+            logger.debug(f"DB: 已同步 {len(values_to_insert)} 条用户扩展信息(注册时间)。")
+    except Exception as e:
+        logger.error(f"DB: 批量同步用户扩展信息失败: {e}", exc_info=True)
+        raise
 # ======================================================================
 # 模块: 用户通知
 # ======================================================================

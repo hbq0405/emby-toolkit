@@ -205,7 +205,7 @@ import {
   ArchiveOutline as UnifiedSubIcon,
   ReaderOutline,
 } from '@vicons/ionicons5';
-import { ArchiveOutline } from '@vicons/ionicons5'; 
+import { ArchiveOutline, LibraryOutline, BookmarksOutline, SettingsOutline } from '@vicons/ionicons5'; 
 import { Password24Regular as PasswordIcon } from '@vicons/fluent';
 import axios from 'axios';
 import { useMessage, useDialog } from 'naive-ui';
@@ -376,7 +376,8 @@ const menuOptions = computed(() => {
       { 
         label: '整理', 
         key: 'group-management', 
-        type: 'group', 
+        // type: 'group',  <--- 【关键修改】删除这一行
+        icon: renderIcon(LibraryOutline), // <--- 【新增】添加图标
         children: [ 
           { label: '原生合集', key: 'Collections', icon: renderIcon(CollectionsIcon) }, 
           { label: '自建合集', key: 'CustomCollectionsManager', icon: renderIcon(CustomCollectionsIcon) }, 
@@ -388,7 +389,8 @@ const menuOptions = computed(() => {
       { 
         label: '订阅', 
         key: 'group-subscriptions', 
-        type: 'group', 
+        // type: 'group', <--- 【关键修改】删除这一行
+        icon: renderIcon(BookmarksOutline), // <--- 【新增】添加图标
         children: [ 
           { label: '智能追剧', key: 'Watchlist', icon: renderIcon(WatchlistIcon) }, 
           { label: '演员订阅', key: 'ActorSubscriptions', icon: renderIcon(ActorSubIcon) }, 
@@ -399,7 +401,8 @@ const menuOptions = computed(() => {
       { 
         label: '系统', 
         key: 'group-system', 
-        type: 'group', 
+        // type: 'group', <--- 【关键修改】删除这一行
+        icon: renderIcon(SettingsOutline), // <--- 【新增】添加图标
         children: [ 
           { label: '用户管理', key: 'UserManagement', icon: renderIcon(UserManagementIcon) },
           { label: '通用设置', key: 'settings-general', icon: renderIcon(GeneralIcon) }, 

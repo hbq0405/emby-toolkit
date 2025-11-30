@@ -306,6 +306,8 @@ def init_db():
                         resubscribe_codec_enabled BOOLEAN DEFAULT FALSE,
                         resubscribe_codec_include JSONB,
                         resubscribe_subtitle_skip_if_audio_exists BOOLEAN DEFAULT FALSE,
+                        auto_resubscribe BOOLEAN DEFAULT FALSE, 
+                        custom_resubscribe_enabled BOOLEAN DEFAULT FALSE, 
                         consistency_check_enabled BOOLEAN DEFAULT FALSE,
                         consistency_must_match_resolution BOOLEAN DEFAULT FALSE,
                         consistency_must_match_group BOOLEAN DEFAULT FALSE,
@@ -393,7 +395,7 @@ def init_db():
                 cursor.execute("""
                     CREATE TABLE IF NOT EXISTS emby_users_extended (
                         emby_user_id TEXT PRIMARY KEY,
-                        status TEXT NOT NULL DEFAULT 'pending', -- 状态: pending(待审批), active(激活), expired(过期), disabled(禁用)
+                        status TEXT NOT NULL DEFAULT 'active', -- active(激活), expired(过期), disabled(禁用)
                         registration_date TIMESTAMP WITH TIME ZONE DEFAULT NOW(),
                         expiration_date TIMESTAMP WITH TIME ZONE, -- 核心字段：用户的到期时间
                         notes TEXT,
@@ -463,6 +465,8 @@ def init_db():
                             "resubscribe_codec_enabled": "BOOLEAN DEFAULT FALSE",
                             "resubscribe_codec_include": "JSONB",
                             "resubscribe_subtitle_skip_if_audio_exists": "BOOLEAN DEFAULT FALSE",
+                            "auto_resubscribe": "BOOLEAN DEFAULT FALSE",
+                            "custom_resubscribe_enabled": "BOOLEAN DEFAULT FALSE",
                             "consistency_check_enabled": "BOOLEAN DEFAULT FALSE", # 总开关
                             "consistency_must_match_resolution": "BOOLEAN DEFAULT FALSE", # 必须同分辨率
                             "consistency_must_match_group": "BOOLEAN DEFAULT FALSE",      # 必须同制作组
@@ -500,6 +504,21 @@ def init_db():
                 except Exception as e_alter:
                     logger.error(f"  ➜ [数据库升级] 检查或添加新字段时出错: {e_alter}", exc_info=True)
                 
+                # ======================================================================
+                # ★★★ 修复：用户状态默认值修正补丁 ★★★
+                # ======================================================================
+                try:
+                    # 1. 修改列的默认值定义
+                    cursor.execute("ALTER TABLE emby_users_extended ALTER COLUMN status SET DEFAULT 'active'")
+                    
+                    # 2. 将现有的 'pending' 状态全部刷为 'active'
+                    cursor.execute("UPDATE emby_users_extended SET status = 'active' WHERE status = 'pending'")
+                    
+                    # 3. 确保 registration_date 列存在 (虽然之前应该有了，但为了保险)
+                    # Emby API 返回的是 DateCreated，我们需要存入 registration_date
+                except Exception as e_fix_status:
+                    logger.trace(f"  ➜ [数据库修正] 尝试修改用户默认状态失败 (可能是已修改): {e_fix_status}")
+
                 # ======================================================================
                 # ★★★ 统一创建验证所有索引 ★★★
                 # 此处代码用于集中创建所有表需要的索引。

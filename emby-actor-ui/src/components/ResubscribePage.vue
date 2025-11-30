@@ -31,6 +31,7 @@
             <n-radio-group v-model:value="filter" size="small">
               <n-radio-button value="all">全部</n-radio-button>
               <n-radio-button value="needed">需洗版</n-radio-button>
+              <n-radio-button value="auto">自动洗版</n-radio-button>
               <n-radio-button value="ignored">已忽略</n-radio-button>
             </n-radio-group>
             <n-button @click="showSettingsModal = true">洗版规则设定</n-button>
@@ -117,6 +118,9 @@
                   <div v-else-if="item.status === 'subscribed'" class="poster-stamp stamp-subscribed">
                     洗白白
                   </div>
+                  <div v-else-if="item.status === 'auto_subscribed'" class="poster-stamp stamp-auto">
+                    处理中
+                  </div>
                 </div>
 
                 <div class="card-content-container">
@@ -150,6 +154,13 @@
                         </n-ellipsis>
                       </div>
 
+                      <div v-else-if="item.status === 'auto_subscribed'" class="reason-text-wrapper text-auto">
+                        <n-icon :component="SyncOutline" style="margin-right: 4px; flex-shrink: 0;" />
+                        <n-ellipsis :tooltip="true" style="max-width: 100%">
+                          (自动洗版中) {{ item.reason }}
+                        </n-ellipsis>
+                      </div>
+
                       <!-- 其他状态保持原样显示 Tag -->
                       <n-tag v-else :type="getStatusInfo(item.status).type" size="small">
                         {{ getStatusInfo(item.status).text }}
@@ -177,6 +188,7 @@
                   <n-button v-if="item.status === 'needed'" size="small" type="primary" @click.stop="resubscribeItem(item)" :loading="subscribing[item.item_id]">洗版</n-button>
                   <n-button v-if="item.status === 'needed'" size="small" @click.stop="ignoreItem(item)">忽略</n-button>
                   <n-button v-if="item.status === 'subscribed'" size="small" type="info" disabled>已订阅</n-button>
+                  <n-button v-if="item.status === 'auto_subscribed'" size="small" type="primary" dashed disabled>处理中</n-button>
                   <n-button v-if="item.status === 'ignored'" size="small" type="tertiary" @click.stop="unignoreItem(item)">取消忽略</n-button>
                   
                   <n-divider v-if="item.status !== 'ok'" vertical />
@@ -268,6 +280,8 @@ const filteredItems = computed(() => {
     items = items.filter(item => item.status === 'needed');
   } else if (filter.value === 'ignored') {
     items = items.filter(item => item.status === 'ignored');
+  } else if (filter.value === 'auto') { 
+    items = items.filter(item => item.status === 'auto_subscribed');
   }
 
   // 2. 按名称搜索 (新增逻辑)
@@ -311,6 +325,7 @@ const getStatusInfo = (status) => {
   switch (status) {
     case 'needed': return { text: '需洗版', type: 'warning' };
     case 'subscribed': return { text: '已订阅', type: 'info' };
+    case 'auto_subscribed': return { text: '自动洗版', type: 'primary' };
     case 'ignored': return { text: '已忽略', type: 'tertiary' };
     case 'ok': default: return { text: '已达标', type: 'success' };
   }
@@ -781,6 +796,14 @@ watch(() => props.taskStatus, (newStatus, oldStatus) => {
   transform: translate(-50%, -50%) rotate(-5deg); /* 稍微正一点，表示“正事已办” */
 }
 
+/* ★★★ 紫色印章：全自动 ★★★ */
+.stamp-auto {
+  border-color: #8a2be2; /* 蓝紫色 */
+  color: #8a2be2;
+  transform: translate(-50%, -50%) rotate(5deg); /* 稍微歪一点 */
+  background-color: rgba(240, 230, 255, 0.9); /* 淡紫色背景 */
+}
+
 /* ★★★ 蓝色文字 ★★★ */
 .text-subscribed {
   color: #2080f0;
@@ -795,5 +818,10 @@ watch(() => props.taskStatus, (newStatus, oldStatus) => {
 .text-ignored {
   color: #999; /* 浅灰色，降低视觉干扰 */
   text-decoration: line-through; /* 加个删除线，表示“这问题虽然在，但我不在乎” */
+}
+
+/* ★★★ 紫色文字 ★★★ */
+.text-auto {
+  color: #8a2be2;
 }
 </style>

@@ -302,16 +302,6 @@
                       </template>
                     </n-form-item-grid-item>
 
-                    <n-form-item-grid-item label="启用自定义洗版订阅" path="use_custom_resubscribe">
-                      <n-switch v-model:value="configModel.use_custom_resubscribe" :disabled="!isMoviePilotConfigured" />
-                      <template #feedback>
-                        <n-text depth="3" style="font-size:0.8em;">
-                          <b>开启：</b>根据“媒体洗版”页面的规则，发送带分辨率/质量等参数的精确订阅。<br>
-                          <b>关闭：</b>使用 MoviePilot 的全局洗版功能，忽略本地规则中的具体参数。
-                        </n-text>
-                      </template>
-                    </n-form-item-grid-item>
-
                     <n-form-item-grid-item label="对缺集的季启用洗版订阅" path="gap_fill_resubscribe_enabled">
                       <!-- ★ 1. v-model 绑定到新的配置项 ★ -->
                       <n-switch v-model:value="configModel.gap_fill_resubscribe_enabled" :disabled="!isMoviePilotConfigured" />

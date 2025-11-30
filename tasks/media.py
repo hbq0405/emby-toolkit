@@ -513,6 +513,16 @@ def task_populate_metadata_cache(processor, batch_size: int = 50, force_full_upd
 
                 emby_runtime = round(item['RunTimeTicks'] / 600000000) if item.get('RunTimeTicks') else None
 
+                # 提取发行日期 
+                emby_date = item.get('PremiereDate')
+                tmdb_date = None
+                if tmdb_details:
+                    if item_type == 'Movie': 
+                        tmdb_date = tmdb_details.get('release_date')
+                    elif item_type == 'Series': 
+                        tmdb_date = tmdb_details.get('first_air_date')
+                
+                final_release_date = emby_date or tmdb_date
                 top_record = {
                     "tmdb_id": tmdb_id_str, "item_type": item_type, "title": item.get('Name'),
                     "original_title": item.get('OriginalTitle'), "release_year": item.get('ProductionYear'),
@@ -522,6 +532,7 @@ def task_populate_metadata_cache(processor, batch_size: int = 50, force_full_upd
                     "asset_details_json": json.dumps(asset_details_list, ensure_ascii=False),
                     "rating": item.get('CommunityRating'),
                     "date_added": item.get('DateCreated'),
+                    "release_date": final_release_date,
                     "genres_json": json.dumps(item.get('Genres', []), ensure_ascii=False),
                     "official_rating": item.get('OfficialRating'), 
                     "unified_rating": get_unified_rating(item.get('OfficialRating')),
@@ -595,6 +606,22 @@ def task_populate_metadata_cache(processor, batch_size: int = 50, force_full_upd
                                 if not season_poster and tmdb_details:
                                     season_poster = tmdb_details.get('poster_path')
 
+                                # 提取季发行日期
+                                s_release_date = s_info.get('air_date')
+                                
+                                if not s_release_date and matched_emby_seasons:
+                                    s_release_date = matched_emby_seasons[0].get('PremiereDate')
+                                
+                                # 核心逻辑：如果还没找到，遍历该季下的分集找最早的
+                                if not s_release_date:
+                                    # 筛选出属于当前季(s_num)且有日期的分集
+                                    ep_dates = [
+                                        e.get('PremiereDate') for e in my_episodes 
+                                        if e.get('ParentIndexNumber') == s_num and e.get('PremiereDate')
+                                    ]
+                                    if ep_dates:
+                                        # 取最早的日期作为季的发行日期
+                                        s_release_date = min(ep_dates)
                                 season_record = {
                                     "tmdb_id": real_season_tmdb_id,
                                     "item_type": "Season",
@@ -604,6 +631,7 @@ def task_populate_metadata_cache(processor, batch_size: int = 50, force_full_upd
                                     "overview": s_info.get('overview'),
                                     "poster_path": season_poster,
                                     "in_library": True,
+                                    "release_date": s_release_date,
                                     "subscription_status": "NONE",
                                     "emby_item_ids_json": json.dumps([s.get('Id') for s in matched_emby_seasons]),
                                     "ignore_reason": None
@@ -629,6 +657,15 @@ def task_populate_metadata_cache(processor, batch_size: int = 50, force_full_upd
                             continue
 
                         if s_num not in processed_season_numbers:
+                            # 兜底逻辑也加上分集日期推断 
+                            s_release_date = s.get('PremiereDate')
+                            if not s_release_date:
+                                ep_dates = [
+                                    e.get('PremiereDate') for e in my_episodes 
+                                    if e.get('ParentIndexNumber') == s_num and e.get('PremiereDate')
+                                ]
+                                if ep_dates:
+                                    s_release_date = min(ep_dates)
                             fallback_season_tmdb_id = f"{tmdb_id_str}-S{s_num}"
                             season_record = {
                                 "tmdb_id": fallback_season_tmdb_id,
@@ -639,6 +676,7 @@ def task_populate_metadata_cache(processor, batch_size: int = 50, force_full_upd
                                 "overview": None,
                                 "poster_path": tmdb_details.get('poster_path') if tmdb_details else None,
                                 "in_library": True,
+                                "release_date": s_release_date,
                                 "subscription_status": "NONE",
                                 "emby_item_ids_json": json.dumps([s.get('Id')]),
                                 "ignore_reason": "Local Season Only"
@@ -665,12 +703,17 @@ def task_populate_metadata_cache(processor, batch_size: int = 50, force_full_upd
                             details['source_library_id'] = v.get('_SourceLibraryId')
                             ep_asset_details_list.append(details)
 
+                        # 提取分集发行日期 
+                        ep_release_date = emby_ep.get('PremiereDate')
+                        if not ep_release_date and tmdb_ep_info:
+                            ep_release_date = tmdb_ep_info.get('air_date')
                         child_record = {
                             "item_type": "Episode",
                             "parent_series_tmdb_id": tmdb_id_str,
                             "season_number": s_n,
                             "episode_number": e_n,
                             "in_library": True,
+                            "release_date": ep_release_date,
                             "emby_item_ids_json": json.dumps([v.get('Id') for v in versions]),
                             "asset_details_json": json.dumps(ep_asset_details_list, ensure_ascii=False),
                             "ignore_reason": None
@@ -709,7 +752,10 @@ def task_populate_metadata_cache(processor, batch_size: int = 50, force_full_upd
                             
                             update_clauses = []
                             for col in columns:
-                                if col in ('tmdb_id', 'item_type', 'subscription_sources_json'): continue
+                                # 在 UPDATE 时排除 订阅状态和订阅来源
+                                if col in ('tmdb_id', 'item_type', 'subscription_sources_json', 'subscription_status'): 
+                                    continue
+                                
                                 update_clauses.append(f"{col} = EXCLUDED.{col}")
                             
                             sql = f"""

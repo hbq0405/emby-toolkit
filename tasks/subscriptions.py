@@ -1,19 +1,15 @@
 # tasks/subscriptions.py
 # 智能订阅与媒体洗版任务模块
-import re
-import os
 import json
-import time
 import logging
 from datetime import datetime, date
-from typing import List, Optional, Dict, Any
+from typing import List, Dict
 from concurrent.futures import ThreadPoolExecutor, as_completed 
 
 # 导入需要的底层模块和共享实例
 import config_manager
 import constants
 import utils
-import handler.emby as emby
 import handler.tmdb as tmdb
 import handler.moviepilot as moviepilot
 import task_manager
@@ -29,14 +25,20 @@ EFFECT_KEYWORD_MAP = {
 }
 
 AUDIO_SUBTITLE_KEYWORD_MAP = {
-    # 音轨关键词
+    # --- 音轨关键词 ---
     "chi": ["Mandarin", "CHI", "ZHO", "国语", "国配", "国英双语", "公映", "台配", "京译", "上译", "央译"],
     "yue": ["Cantonese", "YUE", "粤语"],
     "eng": ["English", "ENG", "英语"],
     "jpn": ["Japanese", "JPN", "日语"],
-    # 字幕关键词 (可以和音轨共用，也可以分开定义)
-    "sub_chi": ["CHS", "CHT", "中字", "简中", "繁中", "简", "繁"],
-    "sub_eng": ["ENG", "英字"],
+    "kor": ["Korean", "KOR", "韩语"], # 新增韩语音轨
+    
+    # --- 字幕关键词 ---
+    # 注意：resubscribe.py 会通过 "sub_" + 语言代码 来查找这里
+    "sub_chi": ["CHS", "CHT", "中字", "简中", "繁中", "简", "繁", "Chinese"],
+    "sub_eng": ["ENG", "英字", "English"],
+    "sub_jpn": ["JPN", "日字", "日文", "Japanese"], # 新增日文字幕
+    "sub_kor": ["KOR", "韩字", "韩文", "Korean"],   # 新增韩文字幕
+    "sub_yue": ["CHT", "繁中", "繁体", "Cantonese"], # 新增粤语字幕(通常是繁体)
 }
 
 # ★★★ 手动动订阅任务 ★★★
@@ -61,9 +63,10 @@ def task_manual_subscribe_batch(processor, subscribe_requests: List[Dict]):
         processed_count = 0
 
         for i, req in enumerate(subscribe_requests):
-            tmdb_id = req.get('tmdb_id')
+            tmdb_id = req.get('tmdb_id') # 注意：对于季，这里已经是 Series ID
             item_type = req.get('item_type')
             item_title_for_log = req.get('title', f"ID: {tmdb_id}")
+            season_number = req.get('season_number')
 
             if not tmdb_id or not item_type:
                 logger.warning(f"跳过一个无效的订阅请求: {req}")
@@ -80,13 +83,48 @@ def task_manual_subscribe_batch(processor, subscribe_requests: List[Dict]):
 
             success = False
             
-            parent_tmdb_id_for_preprocess = tmdb_id
-            parent_title_for_preprocess = item_title_for_log
-            preprocess_type = item_type
+            # ==================================================================
+            # 1. 尝试获取数据库中已存在的自定义 Payload (精准洗版)
+            # ==================================================================
+            custom_payload = None
+            try:
+                # 为了查库（获取 subscription_sources_json），我们需要找到 media_metadata 中对应的记录
+                # media_metadata 中季是按 SeasonID 或 SeriesID_Sn 存储的，所以这里还是需要转换一下 ID 用于查询
+                query_id = str(tmdb_id)
+                if item_type == 'Season' and season_number is not None:
+                    real_season_id = request_db.get_season_tmdb_id(query_id, season_number)
+                    if real_season_id:
+                        query_id = real_season_id
+                    else:
+                        query_id = f"{query_id}_S{season_number}"
 
-            # --- 逻辑分支开始 ---
-            if item_type == 'Series':
-                # 如果是未发行的剧集，直接跳过，保留 user_portal 设置的 PENDING_RELEASE 状态
+                sources = request_db.get_subscribers_by_tmdb_id(query_id, item_type)
+                
+                if sources:
+                    if isinstance(sources, str):
+                        try: sources = json.loads(sources)
+                        except: sources = []
+                    
+                    resub_source = next((s for s in sources if isinstance(s, dict) and s.get('type') == 'resubscribe' and s.get('payload')), None)
+                    if resub_source:
+                        custom_payload = resub_source['payload']
+                        if 'tmdbid' in custom_payload:
+                            custom_payload['tmdbid'] = int(custom_payload['tmdbid'])
+            except Exception as e:
+                logger.warning(f"  ⚠ 尝试获取自定义Payload时出错: {e}")
+
+            # ==================================================================
+            # 2. 执行订阅
+            # ==================================================================
+
+            # 分支 A: 使用自定义 Payload (精准洗版)
+            if custom_payload:
+                logger.info(f"  ➜ 检测到《{item_title_for_log}》包含自定义洗版 Payload，将执行精准洗版订阅。")
+                success = moviepilot.subscribe_with_custom_payload(custom_payload, config)
+
+            # 分支 B: 常规逻辑 (Series - 整剧)
+            elif item_type == 'Series':
+                # ... (保留 Series 检查逻辑)
                 series_details = tmdb.get_tv_details(int(tmdb_id), tmdb_api_key)
                 if series_details:
                     first_air_date = series_details.get('first_air_date')
@@ -95,15 +133,15 @@ def task_manual_subscribe_batch(processor, subscribe_requests: List[Dict]):
                             air_date_obj = datetime.strptime(first_air_date, '%Y-%m-%d').date()
                             if air_date_obj > date.today():
                                 logger.warning(f"  ➜ 剧集《{item_title_for_log}》首播日期 ({first_air_date}) 未到，跳过订阅。")
-                                continue # 跳过本次循环，success 保持为 False，不会更新数据库为 SUBSCRIBED
+                                continue 
                         except (ValueError, TypeError):
                             pass
-                # --- 路径 A: 整剧订阅 (逻辑特殊，单独处理) ---
+                
                 series_info = {"tmdb_id": int(tmdb_id), "item_name": item_title_for_log}
                 success = moviepilot.smart_subscribe_series(series_info, config) is not None
             
+            # 分支 C: 常规逻辑 (Movie / Season)
             else:
-                # --- 路径 B: 电影或季订阅 (可以统一处理) ---
                 mp_payload = {}
                 
                 if item_type == 'Movie':
@@ -113,39 +151,35 @@ def task_manual_subscribe_batch(processor, subscribe_requests: List[Dict]):
                     mp_payload = {"name": item_title_for_log, "tmdbid": int(tmdb_id), "type": "电影"}
 
                 elif item_type == 'Season':
-                    media_info = media_db.get_media_details(tmdb_id, item_type)
-                    if not media_info:
-                        logger.error(f"  ➜ 订阅失败：无法在数据库中找到季 {item_title_for_log} (ID: {tmdb_id}) 的元数据。")
-                        continue
+                    # ★★★ 核心修复：直接使用传入的 Series ID 和 Season Number ★★★
+                    if season_number is not None:
+                        # 尝试从标题中提取干净的剧集名称 (例如 "蜗居 第1季" -> "蜗居")
+                        series_name, _ = utils.parse_series_title_and_season(item_title_for_log)
+                        if not series_name: 
+                            series_name = item_title_for_log
 
-                    parent_tmdb_id = media_info.get('parent_series_tmdb_id')
-                    season_num = media_info.get('season_number')
-                    parent_title = media_db.get_series_title_by_tmdb_id(parent_tmdb_id) or '未知剧集'
-
-                    if not parent_tmdb_id or season_num is None:
-                        logger.error(f"  ➜ 订阅失败：季 {item_title_for_log} 的父剧集信息不完整。")
-                        continue
-                    
-                    mp_payload = {"name": parent_title, "tmdbid": int(parent_tmdb_id), "type": "电视剧", "season": int(season_num)}
-                    
-                    if use_gap_fill_resubscribe:
-                        logger.info(f"  ➜ 检测到洗版开关已开启，为《{parent_title}》第 {season_num} 季启用洗版模式。")
-                        mp_payload["best_version"] = 1
-                    elif "best_version" not in mp_payload:
+                        mp_payload = {
+                            "name": series_name,
+                            "tmdbid": int(tmdb_id), # 这里已经是 Series ID 了，直接用！
+                            "type": "电视剧",
+                            "season": int(season_number)
+                        }
                         
-                        if check_series_completion(
-                            tmdb_id=int(parent_tmdb_id),
-                            api_key=tmdb_api_key,
-                            season_number=int(season_num),
-                            series_name=parent_title
-                        ):
+                        if use_gap_fill_resubscribe:
+                            logger.info(f"  ➜ 检测到洗版开关已开启，为《{series_name}》第 {season_number} 季启用洗版模式。")
                             mp_payload["best_version"] = 1
+                        elif "best_version" not in mp_payload:
+                            if check_series_completion(
+                                tmdb_id=int(tmdb_id), # Series ID
+                                api_key=tmdb_api_key,
+                                season_number=int(season_number),
+                                series_name=series_name
+                            ):
+                                mp_payload["best_version"] = 1
+                    else:
+                        logger.error(f"  ➜ 订阅失败：季《{item_title_for_log}》缺少季号信息。")
+                        continue
 
-                    parent_tmdb_id_for_preprocess = parent_tmdb_id
-                    parent_title_for_preprocess = parent_title
-                    preprocess_type = 'Series'
-                
-                # ★★★ 核心修复：在这里统一调用，确保电影和季的订阅都被执行 ★★★
                 if mp_payload:
                     success = moviepilot.subscribe_with_custom_payload(mp_payload, config)
 
@@ -154,8 +188,11 @@ def task_manual_subscribe_batch(processor, subscribe_requests: List[Dict]):
                 logger.info(f"  ✅ 《{item_title_for_log}》订阅成功！")
                 settings_db.decrement_subscription_quota()
                 
+                # 更新状态时，尽量使用查询用的 ID (query_id)，确保能更新到正确的 Season 记录
+                target_id_for_update = query_id if (item_type == 'Season' and 'query_id' in locals()) else str(tmdb_id)
+                
                 request_db.set_media_status_subscribed(
-                    tmdb_ids=[str(tmdb_id)],
+                    tmdb_ids=[target_id_for_update],
                     item_type=item_type, 
                 )
                 
@@ -316,63 +353,61 @@ def task_auto_subscribe(processor):
             # 2.3 执行订阅
             success = False
             item_type = item['item_type']
-
             series_name = ""
-
             mp_payload = {}
-            best_version_flag = None
-
-            if item_type == 'Movie':
-                mp_payload = {"name": item['title'], "tmdbid": int(item['tmdb_id']), "type": "电影"}
-                success = moviepilot.subscribe_with_custom_payload(mp_payload, config)
-
-            elif item_type == 'Series':
-                series_info = {"tmdb_id": int(item['tmdb_id']), "item_name": item['title']}
-                success = moviepilot.smart_subscribe_series(series_info, config) is not None
-
-            #  处理季订阅的专属逻辑 
-            elif item_type == 'Season':
-                parent_tmdb_id = item.get('parent_series_tmdb_id')
-                season_num = item.get('season_number')
-                
-                # 不再相信传入的 title，而是主动查询父剧集标题
-                series_name = media_db.get_series_title_by_tmdb_id(parent_tmdb_id)
-
-                # 如果因为某种原因查不到父剧名，尝试从标题解析，最后才用原始标题
-                if not series_name:
-                    raw_title = item.get('title', '')
-                    # 利用 utils 解析出不带季号的干净名字
-                    parsed_name, _ = utils.parse_series_title_and_season(raw_title)
-                    series_name = parsed_name if parsed_name else raw_title
-
-                if parent_tmdb_id and season_num is not None:
-                    logger.info(f"  ➜ 检测到季订阅请求：为剧集《{series_name}》(ID: {parent_tmdb_id}) 订阅第 {season_num} 季。")
-                    mp_payload = {
-                        "name": series_name,
-                        "tmdbid": int(parent_tmdb_id),
-                        "type": "电视剧",
-                        "season": season_num
-                    }
-                    sources = item.get('subscription_sources_json', [])
-                    is_from_gap_scan = any(source.get('type') == 'gap_scan' for source in sources)
-                    
-                    if is_from_gap_scan and use_gap_fill_resubscribe:
-                        logger.info(f"  ➜ 检测到缺集扫描来源，且洗版开关已开启，为《{series_name}》第 {season_num} 季启用洗版模式。")
-                        mp_payload["best_version"] = 1
-
-                    elif "best_version" not in mp_payload:
-                        # 如果已完结，则开启洗版模式
-                        if check_series_completion(
-                            int(parent_tmdb_id), 
-                            tmdb_api_key, 
-                            season_number=season_num, 
-                            series_name=series_name
-                        ):
-                            mp_payload["best_version"] = 1
-                    
+            
+            # ★★★ 新增：检查是否包含洗版专用的 Payload ★★★
+            sources = item.get('subscription_sources_json', [])
+            resub_source = next((s for s in sources if s.get('type') == 'resubscribe'), None)
+            custom_payload = resub_source.get('payload') if resub_source else None
+            
+            # 如果存在自定义 Payload，直接使用它 (这是最高优先级)
+            if custom_payload:
+                logger.info(f"  ➜ 检测到《{item['title']}》包含自定义洗版 Payload，将执行精准洗版订阅。")
+                success = moviepilot.subscribe_with_custom_payload(custom_payload, config)
+            
+            else:
+                if item_type == 'Movie':
+                    mp_payload = {"name": item['title'], "tmdbid": int(item['tmdb_id']), "type": "电影"}
                     success = moviepilot.subscribe_with_custom_payload(mp_payload, config)
-                else:
-                    success = False
+
+                elif item_type == 'Series':
+                    series_info = {"tmdb_id": int(item['tmdb_id']), "item_name": item['title']}
+                    success = moviepilot.smart_subscribe_series(series_info, config) is not None
+
+                elif item_type == 'Season':
+                    parent_tmdb_id = item.get('parent_series_tmdb_id')
+                    season_num = item.get('season_number')
+                    
+                    series_name = media_db.get_series_title_by_tmdb_id(parent_tmdb_id)
+                    if not series_name:
+                         raw_title = item.get('title', '')
+                         parsed_name, _ = utils.parse_series_title_and_season(raw_title)
+                         series_name = parsed_name if parsed_name else raw_title
+
+                    if parent_tmdb_id and season_num is not None:
+                        mp_payload = {
+                            "name": series_name,
+                            "tmdbid": int(parent_tmdb_id),
+                            "type": "电视剧",
+                            "season": season_num
+                        }
+                        
+                        # 检查是否是缺集扫描或普通洗版(无Payload)
+                        is_gap_or_resub = any(source.get('type') in ['gap_scan', 'resubscribe'] for source in sources)
+                        
+                        # 如果是洗版/缺集，但没有自定义Payload，我们默认加上 best_version=1
+                        # 这样 MP 会根据其全局规则尝试寻找更好的版本
+                        if is_gap_or_resub:
+                             mp_payload["best_version"] = 1
+                        elif "best_version" not in mp_payload:
+                            # 完结检测逻辑
+                            if check_series_completion(int(parent_tmdb_id), tmdb_api_key, season_number=season_num, series_name=series_name):
+                                mp_payload["best_version"] = 1
+                        
+                        success = moviepilot.subscribe_with_custom_payload(mp_payload, config)
+                    else:
+                        success = False
 
             # 2.4 根据订阅结果更新状态和发送通知
             if success:
@@ -402,7 +437,10 @@ def task_auto_subscribe(processor):
                 source_display_parts = []
                 for source in sources:
                     source_type = source.get('type')
-                    if source_type == 'user_request' and (user_id := source.get('user_id')):
+                    if source_type == 'resubscribe':
+                        rule_name = source.get('rule_name', '未知规则')
+                        source_display_parts.append(f"自动洗版({rule_name})")
+                    elif source_type == 'user_request' and (user_id := source.get('user_id')):
                         if user_id not in notifications_to_send:
                             notifications_to_send[user_id] = []
                         notifications_to_send[user_id].append(item['title'])

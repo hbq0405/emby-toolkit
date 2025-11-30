@@ -56,7 +56,13 @@ def task_sync_all_user_data(processor):
         if not all_users:
             task_manager.update_status_from_thread(100, "任务完成：Emby中没有任何用户。")
             return
+        
+        # 3.1 同步基础信息 (ID, Name, IsAdmin...)
         user_db.upsert_emby_users_batch(all_users)
+
+        # 3.2 ★★★ 新增：同步扩展信息 (Registration Date, 确保有记录) ★★★
+        task_manager.update_status_from_thread(8, "正在同步用户注册时间与扩展状态...")
+        user_db.upsert_emby_users_extended_batch_sync(all_users)
         
         # 步骤 4: 循环同步每个用户的媒体播放状态 (此逻辑保持不变)
         total_users = len(all_users)

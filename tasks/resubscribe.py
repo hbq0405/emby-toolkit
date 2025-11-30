@@ -15,7 +15,7 @@ import handler.emby as emby
 import handler.moviepilot as moviepilot
 import config_manager 
 import constants  
-from database import resubscribe_db, settings_db, maintenance_db
+from database import resubscribe_db, settings_db, maintenance_db, request_db
 
 # 从 helpers 导入的辅助函数和常量
 from .helpers import (
@@ -77,8 +77,7 @@ def task_update_resubscribe_cache(processor):
             task_manager.update_status_from_thread(100, "任务完成：本地数据库为空。")
             return
 
-        # ★★★ 修改点 1: 变量名改为 keys_to_keep_in_db (需要在数据库中保留的键) ★★★
-        # 只有 needed, ignored, subscribed 的项目会被加入此集合
+        # 只有 needed, ignored, subscribed, auto_subscribed 的项目会被加入此集合
         keys_to_keep_in_db = set()
 
         # --- 步骤 3: 全量处理流程 ---
@@ -99,6 +98,12 @@ def task_update_resubscribe_cache(processor):
                 progress = int(10 + (processed_count / total) * 85)
                 task_manager.update_status_from_thread(progress, f"正在分析: {movie['title']}")
 
+            # 跳过多版本
+            emby_ids = movie.get('emby_item_ids_json')
+            if emby_ids and len(emby_ids) > 1:
+                logger.debug(f"  ➜ 跳过电影《{movie['title']}》: 检测到多版本 (Count: {len(emby_ids)})，无法确定洗版目标。")
+                continue
+            
             assets = movie.get('asset_details_json')
             if not assets: continue
             
@@ -120,24 +125,34 @@ def task_update_resubscribe_cache(processor):
             # 场景 A: 之前已订阅 (Subscribed)
             if existing_status == 'subscribed':
                 if not needs:
-                    # 物理状态变好了 (OK) -> 任务完成，移除记录
-                    final_status = None
+                    final_status = None # 变好了，移除
                 else:
-                    # 物理状态还是差 (Needed) -> 说明还在下载或洗版失败，保持“已订阅”状态
-                    final_status = 'subscribed'
+                    final_status = 'subscribed' # 还在洗，保持
 
-            # 场景 B: 物理状态需要洗版 (Needed)
             elif needs:
-                # 如果用户之前忽略了，保持忽略
                 if existing_status == 'ignored':
                     final_status = 'ignored'
-                # 否则标记为需要洗版
                 else:
-                    final_status = 'needed'
+                    # 判断是否自动洗版 
+                    if rule.get('auto_resubscribe'):
+                        final_status = 'auto_subscribed'
+                        # 触发自动订阅逻辑 (推送到 WANTED)
+                        _handle_auto_resubscribe_trigger(
+                            item_details={
+                                'tmdb_id': movie['tmdb_id'],
+                                'item_type': 'Movie',
+                                'item_name': movie['title'],
+                                'season_number': None,
+                                'release_group_raw': assets[0].get('release_group_raw', [])
+                            },
+                            rule=rule,
+                            reason=reason
+                        )
+                    else:
+                        final_status = 'needed'
             
             # 场景 C: 物理状态达标 (OK)
             else:
-                # 既然达标了，不管之前是什么状态，都直接清理掉
                 final_status = None 
 
             if final_status:
@@ -198,8 +213,21 @@ def task_update_resubscribe_cache(processor):
                 for season_num, eps_in_season in episodes_by_season.items():
                     if season_num is None: continue
                     
+                    # 跳过多版本
+                    has_multi_version_episode = False
+                    for ep in eps_in_season:
+                        ep_ids = ep.get('emby_item_ids_json')
+                        if ep_ids and len(ep_ids) > 1:
+                            has_multi_version_episode = True
+                            break
+                    
+                    if has_multi_version_episode:
+                        logger.debug(f"  ➜ 跳过剧集《{series['title']}》第 {season_num} 季: 检测到分集存在多版本，无法执行洗版。")
+                        continue
+                    
                     eps_in_season.sort(key=lambda x: x.get('episode_number', 0))
                     rep_ep = eps_in_season[0]
+                    season_tmdb_id = rep_ep.get('season_tmdb_id')
                     assets = rep_ep.get('asset_details_json')
                     if not assets: continue
 
@@ -226,21 +254,37 @@ def task_update_resubscribe_cache(processor):
                     
                     final_status = None
 
-                    # 场景 A: 之前已订阅 (Subscribed)
+                    # 场景 A: 之前已订阅
                     if existing_status == 'subscribed':
                         if status_calculated == 'ok':
-                            # 物理状态变好了 (OK) -> 任务完成，移除记录
                             final_status = None
                         else:
-                            # 物理状态还是差 (Needed) -> 保持“已订阅”状态
                             final_status = 'subscribed'
 
-                    # 场景 B: 物理状态需要洗版 (Needed)
+                    # 场景 B: 需要洗版
                     elif status_calculated == 'needed':
                         if existing_status == 'ignored':
                             final_status = 'ignored'
                         else:
                             final_status = 'needed'
+
+                            if rule.get('auto_resubscribe'):
+                                final_status = 'auto_subscribed'
+                                # 触发自动订阅逻辑
+                                _handle_auto_resubscribe_trigger(
+                                    item_details={
+                                        'tmdb_id': tmdb_id,
+                                        'season_tmdb_id': season_tmdb_id,
+                                        'item_type': 'Season',
+                                        'item_name': f"{series['title']} - 第{season_num}季",
+                                        'season_number': season_num,
+                                        'release_group_raw': assets[0].get('release_group_raw', [])
+                                    },
+                                    rule=rule,
+                                    reason=reason_calculated
+                                )
+                            else:
+                                final_status = 'needed'
                     
                     # 场景 C: 物理状态达标 (OK)
                     else:
@@ -277,7 +321,7 @@ def task_update_resubscribe_cache(processor):
         final_message = "媒体洗版状态刷新完成！"
         if processor.is_stop_requested(): final_message = "任务已中止。"
         
-        time.sleep(0.5)
+        time.sleep(1)
         task_manager.update_status_from_thread(100, final_message)
 
     except Exception as e:
@@ -349,6 +393,65 @@ def task_delete_batch(processor, item_ids: List[str]):
 # ======================================================================
 # 内部辅助函数
 # ======================================================================
+# 辅助函数：处理自动洗版触发 
+def _handle_auto_resubscribe_trigger(item_details: dict, rule: dict, reason: str):
+    """
+    当发现项目需要洗版且规则开启了自动洗版时，将其推送到统一订阅队列 (WANTED)。
+    """
+    try:
+        tmdb_id = str(item_details['tmdb_id']) # Series ID
+        item_type = item_details['item_type']
+        season_number = item_details.get('season_number')
+        season_tmdb_id = item_details.get('season_tmdb_id') # <--- 获取传入的季 ID
+
+        # ★★★ 核心修复：确定存储 ID ★★★
+        storage_tmdb_id = tmdb_id
+        
+        if item_type == 'Season' and season_number is not None:
+            if season_tmdb_id:
+                # 优先使用数据库中已存在的原生季 ID
+                storage_tmdb_id = str(season_tmdb_id)
+            else:
+                # 兜底：如果数据库里没有季的条目（极少见），使用复合 ID
+                storage_tmdb_id = f"{tmdb_id}_S{season_number}"
+                logger.warning(f"  ⚠ 剧集 {tmdb_id} 第 {season_number} 季未关联到原生ID，使用复合ID: {storage_tmdb_id}")
+
+        # 1. 构建 Source 对象
+        source = {
+            "type": "resubscribe",
+            "rule_id": rule.get('id'),
+            "rule_name": rule.get('name'),
+            "reason": reason,
+            "created_at": time.time()
+        }
+
+        # 2. 如果开启了自定义洗版，生成 Payload
+        if rule.get('custom_resubscribe_enabled'):
+            payload = build_resubscribe_payload(item_details, rule)
+            if payload:
+                source['payload'] = payload
+        
+        # 3. 清理旧来源
+        request_db.remove_sources_by_type(storage_tmdb_id, item_type, 'resubscribe')
+
+        # 4. 推送到 media_metadata 表
+        request_db.set_media_status_wanted(
+            tmdb_ids=storage_tmdb_id, 
+            item_type=item_type,
+            source=source,
+            media_info_list=[{
+                'tmdb_id': storage_tmdb_id, 
+                'title': item_details['item_name'],
+                'season_number': season_number,
+                'parent_series_tmdb_id': tmdb_id if item_type == 'Season' else None,
+                'reason': reason
+            }]
+        )
+        logger.info(f"  ➜ [自动洗版] 已更新《{item_details['item_name']}》的洗版请求 (WANTED)。")
+
+    except Exception as e:
+        logger.error(f"  ➜ [自动洗版] 触发失败: {e}", exc_info=True)
+
 def _item_needs_resubscribe(asset_details: dict, rule: dict, media_metadata: Optional[dict]) -> tuple[bool, str]:
     """
     【V5 - 终极修正版】
@@ -728,8 +831,7 @@ def build_resubscribe_payload(item_details: dict, rule: Optional[dict]) -> Optio
         else:
             logger.info(f"  ✅ 未找到预分析的发布组，不添加排除规则。")
 
-    use_custom_subscribe = config_manager.APP_CONFIG.get(constants.CONFIG_OPTION_USE_CUSTOM_RESUBSCRIBE, False)
-    if not use_custom_subscribe or not rule:
+    if not rule:
         return payload
 
     rule_name = rule.get('name', '未知规则')

@@ -218,6 +218,7 @@ const SOURCE_TYPE_MAP = {
   'native_collection': '原生合集',
   'manual_add': '手动添加',
   'watchlist': '智能追剧',
+  'resubscribe': '自动洗版',
   'admin_approval': '管理员审核',
   'batch_admin_op': '批量处理',
   'api_unified_status_change_ignored': '手动忽略',

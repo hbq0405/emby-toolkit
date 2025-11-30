@@ -413,13 +413,13 @@ def get_current_index_statuses() -> Dict[Tuple[str, str, int], str]:
 def fetch_all_active_movies_for_analysis() -> List[Dict[str, Any]]:
     """
     获取所有在库电影及其资产详情，用于本地洗版计算。
-    返回字段: tmdb_id, title, item_type, asset_details_json, original_language
+    返回字段: tmdb_id, title, item_type, asset_details_json, original_language, emby_item_ids_json
     """
     try:
         with get_db_connection() as conn:
             cursor = conn.cursor()
             cursor.execute("""
-                SELECT tmdb_id, title, item_type, asset_details_json, original_language
+                SELECT tmdb_id, title, item_type, asset_details_json, original_language, emby_item_ids_json
                 FROM media_metadata 
                 WHERE item_type = 'Movie' AND in_library = TRUE
             """)
@@ -449,18 +449,30 @@ def fetch_all_active_series_for_analysis() -> List[Dict[str, Any]]:
 def fetch_episodes_simple_batch(series_tmdb_ids: List[str]) -> List[Dict[str, Any]]:
     """
     批量获取指定剧集的所有分集（仅含必要字段），用于确定库ID和季信息。
-    返回字段: parent_series_tmdb_id, season_number, episode_number, asset_details_json
+    返回字段: season_tmdb_id, parent_series_tmdb_id, season_number, episode_number, asset_details_json, emby_item_ids_json
     """
     if not series_tmdb_ids: return []
     try:
         with get_db_connection() as conn:
             cursor = conn.cursor()
+            # 使用别名 e (Episode) 和 s (Season) 进行关联
             cursor.execute("""
-                SELECT parent_series_tmdb_id, season_number, episode_number, asset_details_json
-                FROM media_metadata 
-                WHERE item_type = 'Episode' 
-                  AND in_library = TRUE
-                  AND parent_series_tmdb_id = ANY(%s)
+                SELECT 
+                    e.parent_series_tmdb_id, 
+                    e.season_number, 
+                    e.episode_number, 
+                    e.asset_details_json, 
+                    e.emby_item_ids_json,
+                    s.tmdb_id AS season_tmdb_id
+                FROM media_metadata e
+                LEFT JOIN media_metadata s ON (
+                    s.parent_series_tmdb_id = e.parent_series_tmdb_id 
+                    AND s.season_number = e.season_number 
+                    AND s.item_type = 'Season'
+                )
+                WHERE e.item_type = 'Episode' 
+                  AND e.in_library = TRUE
+                  AND e.parent_series_tmdb_id = ANY(%s)
             """, (series_tmdb_ids,))
             return [dict(row) for row in cursor.fetchall()]
     except Exception as e:
