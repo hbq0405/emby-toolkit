@@ -30,15 +30,15 @@ AUDIO_SUBTITLE_KEYWORD_MAP = {
     "yue": ["Cantonese", "YUE", "粤语"],
     "eng": ["English", "ENG", "英语"],
     "jpn": ["Japanese", "JPN", "日语"],
-    "kor": ["Korean", "KOR", "韩语"], # 新增韩语音轨
+    "kor": ["Korean", "KOR", "韩语"], 
     
     # --- 字幕关键词 ---
     # 注意：resubscribe.py 会通过 "sub_" + 语言代码 来查找这里
     "sub_chi": ["CHS", "CHT", "中字", "简中", "繁中", "简", "繁", "Chinese"],
     "sub_eng": ["ENG", "英字", "English"],
-    "sub_jpn": ["JPN", "日字", "日文", "Japanese"], # 新增日文字幕
-    "sub_kor": ["KOR", "韩字", "韩文", "Korean"],   # 新增韩文字幕
-    "sub_yue": ["CHT", "繁中", "繁体", "Cantonese"], # 新增粤语字幕(通常是繁体)
+    "sub_jpn": ["JPN", "日字", "日文", "Japanese"], 
+    "sub_kor": ["KOR", "韩字", "韩文", "Korean"],   
+    "sub_yue": ["CHT", "繁中", "繁体", "Cantonese"], 
 }
 
 # ★★★ 手动动订阅任务 ★★★
@@ -105,11 +105,16 @@ def task_manual_subscribe_batch(processor, subscribe_requests: List[Dict]):
                         try: sources = json.loads(sources)
                         except: sources = []
                     
+                    # 1. 检查是否有自定义 Payload
                     resub_source = next((s for s in sources if isinstance(s, dict) and s.get('type') == 'resubscribe' and s.get('payload')), None)
                     if resub_source:
                         custom_payload = resub_source['payload']
                         if 'tmdbid' in custom_payload:
                             custom_payload['tmdbid'] = int(custom_payload['tmdbid'])
+                    
+                    # 2. 检查是否是洗版或缺集扫描来源
+                    is_gap_or_resub = any(s.get('type') in ['gap_scan', 'resubscribe'] for s in sources if isinstance(s, dict))
+
             except Exception as e:
                 logger.warning(f"  ⚠ 尝试获取自定义Payload时出错: {e}")
 
@@ -119,69 +124,76 @@ def task_manual_subscribe_batch(processor, subscribe_requests: List[Dict]):
 
             # 分支 A: 使用自定义 Payload (精准洗版)
             if custom_payload:
-                logger.info(f"  ➜ 检测到《{item_title_for_log}》包含自定义洗版 Payload，将执行精准洗版订阅。")
+                logger.info(f"  ➜ 检测到《{item_title_for_log}》包含自定义洗版参数，将执行精准洗版订阅。")
                 success = moviepilot.subscribe_with_custom_payload(custom_payload, config)
 
-            # 分支 B: 常规逻辑 (Series - 整剧)
-            elif item_type == 'Series':
-                # ... (保留 Series 检查逻辑)
-                series_details = tmdb.get_tv_details(int(tmdb_id), tmdb_api_key)
-                if series_details:
-                    first_air_date = series_details.get('first_air_date')
-                    if first_air_date:
-                        try:
-                            air_date_obj = datetime.strptime(first_air_date, '%Y-%m-%d').date()
-                            if air_date_obj > date.today():
-                                logger.warning(f"  ➜ 剧集《{item_title_for_log}》首播日期 ({first_air_date}) 未到，跳过订阅。")
-                                continue 
-                        except (ValueError, TypeError):
-                            pass
+            # 分支 B: 剧集/季 处理逻辑
+            # 只要有 season_number，或者 item_type 明确是 'Season'，都走分季订阅逻辑
+            elif item_type == 'Series' or item_type == 'Season':
+                # 查库获取 season_number，并把 tmdb_id 修正为 Series ID (因为订阅接口要用 Series ID)
+                if item_type == 'Season' and season_number is None:
+                    season_info = media_db.get_media_details(str(tmdb_id), 'Season')
+                    if season_info:
+                        season_number = season_info.get('season_number')
+                        parent_id = season_info.get('parent_series_tmdb_id')
+                        if parent_id:
+                            tmdb_id = parent_id # ★ 关键：切换为父剧集 ID
+                            logger.trace(f"  ➜ 从数据库获取到季号: {season_number}，并将 ID 修正为父剧集 ID: {tmdb_id}")
                 
-                series_info = {"tmdb_id": int(tmdb_id), "item_name": item_title_for_log}
-                success = moviepilot.smart_subscribe_series(series_info, config) is not None
-            
-            # 分支 C: 常规逻辑 (Movie / Season)
-            else:
-                mp_payload = {}
-                
-                if item_type == 'Movie':
-                    if not is_movie_subscribable(int(tmdb_id), tmdb_api_key, config): 
-                        logger.warning(f"  ➜ 电影《{item_title_for_log}》不满足发行日期条件，跳过订阅。")
-                        continue
-                    mp_payload = {"name": item_title_for_log, "tmdbid": int(tmdb_id), "type": "电影"}
-
-                elif item_type == 'Season':
-                    # ★★★ 核心修复：直接使用传入的 Series ID 和 Season Number ★★★
-                    if season_number is not None:
-                        # 尝试从标题中提取干净的剧集名称 (例如 "蜗居 第1季" -> "蜗居")
-                        series_name, _ = utils.parse_series_title_and_season(item_title_for_log)
-                        if not series_name: 
-                            series_name = item_title_for_log
-
-                        mp_payload = {
-                            "name": series_name,
-                            "tmdbid": int(tmdb_id), # 这里已经是 Series ID 了，直接用！
-                            "type": "电视剧",
-                            "season": int(season_number)
-                        }
-                        
-                        if use_gap_fill_resubscribe:
-                            logger.info(f"  ➜ 检测到洗版开关已开启，为《{series_name}》第 {season_number} 季启用洗版模式。")
-                            mp_payload["best_version"] = 1
-                        elif "best_version" not in mp_payload:
-                            if check_series_completion(
-                                tmdb_id=int(tmdb_id), # Series ID
-                                api_key=tmdb_api_key,
-                                season_number=int(season_number),
-                                series_name=series_name
-                            ):
+                # 情况 1: 分季订阅 (有季号)
+                if season_number is not None:
+                    # 获取干净的剧集标题
+                    series_name = media_db.get_series_title_by_tmdb_id(str(tmdb_id))
+                    mp_payload = {
+                        "name": series_name,
+                        "tmdbid": int(tmdb_id), # 无论是 Series 还是 Season，这里传进来的都是 Series ID
+                        "type": "电视剧",
+                        "season": int(season_number)
+                    }
+                    
+                    # 如果是洗版/缺集来源，或者全局开关开启，强制 best_version=1
+                    if use_gap_fill_resubscribe or is_gap_or_resub:
+                        logger.info(f"  ➜ 检测到洗版/缺集来源或全局开关，为《{series_name}》第 {season_number} 季启用洗版模式。")
+                        mp_payload["best_version"] = 1
+                    elif "best_version" not in mp_payload:
+                        # 完结检测逻辑 (保持不变)
+                        if check_series_completion(int(tmdb_id), tmdb_api_key, season_number=season_number, series_name=series_name):
                                 mp_payload["best_version"] = 1
-                    else:
-                        logger.error(f"  ➜ 订阅失败：季《{item_title_for_log}》缺少季号信息。")
-                        continue
-
-                if mp_payload:
+                    
                     success = moviepilot.subscribe_with_custom_payload(mp_payload, config)
+
+                # 情况 2: 整剧订阅 (没有季号，且类型是 Series)
+                elif item_type == 'Series':
+                    series_details = tmdb.get_tv_details(int(tmdb_id), tmdb_api_key)
+                    if series_details:
+                        first_air_date = series_details.get('first_air_date')
+                        if first_air_date:
+                            try:
+                                air_date_obj = datetime.strptime(first_air_date, '%Y-%m-%d').date()
+                                if air_date_obj > date.today():
+                                    logger.warning(f"  ➜ 剧集《{item_title_for_log}》首播日期 ({first_air_date}) 未到，跳过订阅。")
+                                    continue 
+                            except (ValueError, TypeError):
+                                pass
+                    
+                    series_info = {"tmdb_id": int(tmdb_id), "item_name": item_title_for_log}
+                    success = moviepilot.smart_subscribe_series(series_info, config) is not None
+                
+                else:
+                    # 理论上不应该走到这里 (item_type='Season' 但没有 season_number)
+                    logger.error(f"  ➜ 订阅失败：季《{item_title_for_log}》缺少季号信息。")
+                    continue
+            
+            # 分支 C: 电影 处理逻辑
+            elif item_type == 'Movie':
+                if not is_movie_subscribable(int(tmdb_id), tmdb_api_key, config): 
+                    logger.warning(f"  ➜ 电影《{item_title_for_log}》不满足发行日期条件，跳过订阅。")
+                    continue
+                mp_payload = {"name": item_title_for_log, "tmdbid": int(tmdb_id), "type": "电影"}
+                if is_gap_or_resub:
+                    logger.info(f"  ➜ 检测到洗版来源，为电影《{item_title_for_log}》启用洗版模式。")
+                    mp_payload["best_version"] = 1
+                success = moviepilot.subscribe_with_custom_payload(mp_payload, config)
 
             # --- 统一的后续处理 ---
             if success:

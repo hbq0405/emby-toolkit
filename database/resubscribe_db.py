@@ -326,6 +326,7 @@ def batch_update_resubscribe_index_status(item_keys: List[Tuple[str, str, int]],
         return 0
     
 def get_all_resubscribe_index_keys() -> set:
+    """获取所有洗版索引"""
     sql = "SELECT tmdb_id, item_type, season_number FROM resubscribe_index;"
     keys = set()
     try:

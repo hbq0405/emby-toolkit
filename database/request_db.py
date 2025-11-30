@@ -243,16 +243,23 @@ def set_media_status_subscribed(
                             -- 2. 特殊情况：季 (Season) 往往是虚拟容器，允许更新
                             OR media_metadata.item_type = 'Season'
                             
-                            -- 3. ★★★ 核心修复：如果是洗版或缺集扫描，允许更新已入库项目 ★★★
+                            -- 3. 洗版豁免：如果是洗版或缺集扫描 (传入了新的 source)，允许更新已入库项目
                             OR EXCLUDED.subscription_sources_json->0->>'type' IN ('resubscribe', 'gap_scan')
+
+                            -- 4. 状态流转豁免
+                            -- 如果当前已经是 WANTED 状态，说明之前已通过检查，允许流转到 SUBSCRIBED
+                            OR media_metadata.subscription_status = 'WANTED'
                         )
                         AND (
-                            EXCLUDED.subscription_sources_json = '[]'::jsonb 
-                            OR NOT (media_metadata.subscription_sources_json @> EXCLUDED.subscription_sources_json)
+                            (
+                                EXCLUDED.subscription_sources_json = '[]'::jsonb 
+                                OR NOT (media_metadata.subscription_sources_json @> EXCLUDED.subscription_sources_json)
+                            )
+                            OR media_metadata.subscription_status != 'SUBSCRIBED'
                         );
                 """
                 execute_batch(cursor, sql, data_to_upsert)
-                if cursor.rowcount <= 0: logger.info(f"  ➜ [状态执行] 操作完成，但没有行受到影响（可能因为已入库且非洗版，或源已存在）。")
+                if cursor.rowcount <= 0: logger.info(f"  ➜ [状态执行] 操作完成，但没有行受到影响（可能因为已入库且非洗版，或状态已是 SUBSCRIBED）。")
     except Exception as e:
         logger.error(f"  ➜ [状态执行] 更新媒体状态为 'SUBSCRIBED' 时发生错误: {e}", exc_info=True)
         raise
