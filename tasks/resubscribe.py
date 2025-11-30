@@ -38,7 +38,7 @@ logger = logging.getLogger(__name__)
 
 def task_update_resubscribe_cache(processor): 
     """
-    - 刷新洗版状态 (优化版：不存储 ok 状态)
+    - 刷新洗版状态 (优化版：状态保护与自动清理)
     """
     task_name = "刷新媒体洗版状态"
     logger.info(f"--- 开始执行 '{task_name}' 任务 ---")
@@ -78,6 +78,7 @@ def task_update_resubscribe_cache(processor):
             return
 
         # 只有 needed, ignored, subscribed, auto_subscribed 的项目会被加入此集合
+        # 凡是不在此集合中的（即已达标 ok 的），最后都会被清理掉
         keys_to_keep_in_db = set()
 
         # --- 步骤 3: 全量处理流程 ---
@@ -101,7 +102,6 @@ def task_update_resubscribe_cache(processor):
             # 跳过多版本
             emby_ids = movie.get('emby_item_ids_json')
             if emby_ids and len(emby_ids) > 1:
-                logger.debug(f"  ➜ 跳过电影《{movie['title']}》: 检测到多版本 (Count: {len(emby_ids)})，无法确定洗版目标。")
                 continue
             
             assets = movie.get('asset_details_json')
@@ -113,30 +113,39 @@ def task_update_resubscribe_cache(processor):
             rule = library_to_rule_map.get(source_lib_id)
             if not rule: continue 
 
-            # 计算物理状态
+            # 计算物理状态 (True=需要洗版, False=已达标)
             needs, reason = _item_needs_resubscribe(assets[0], rule, movie)
             
-            # ★★★ 修改点 2: 状态判定逻辑 ★★★
+            # 获取数据库中的当前状态
             item_key_tuple = (str(movie['tmdb_id']), "Movie", -1)
             existing_status = current_statuses.get(item_key_tuple)
 
-            final_status = None
-            
-            # 场景 A: 之前已订阅 (Subscribed)
-            if existing_status == 'subscribed':
-                if not needs:
-                    final_status = None # 变好了，移除
-                else:
-                    final_status = 'subscribed' # 还在洗，保持
+            # ★★★ 核心逻辑优化 ★★★
+            if not needs:
+                # 物理文件已达标 (OK)
+                # 策略：不加入 keys_to_keep_in_db，也不加入 update_batch。
+                # 结果：如果数据库里有它，最后会被 cleanup 逻辑删除；如果没它，就不添加。
+                continue
 
-            elif needs:
-                if existing_status == 'ignored':
-                    final_status = 'ignored'
-                else:
-                    # 判断是否自动洗版 
-                    if rule.get('auto_resubscribe'):
-                        final_status = 'auto_subscribed'
-                        # 触发自动订阅逻辑 (推送到 WANTED)
+            # 物理文件依然不达标 (Needed)
+            final_status = 'needed' # 默认值
+
+            if existing_status in ['subscribed', 'auto_subscribed']:
+                # 场景 A: 已经在洗版流程中 (等待下载或入库)
+                # 策略：保持原状态，防止重复提交或重置
+                final_status = existing_status
+            
+            elif existing_status == 'ignored':
+                # 场景 B: 用户已手动忽略
+                # 策略：保持忽略
+                final_status = 'ignored'
+            
+            else:
+                # 场景 C: 新发现的不达标项目，或者之前是 needed
+                if rule.get('auto_resubscribe'):
+                    final_status = 'auto_subscribed'
+                    # 只有当状态发生变化（从 None/needed -> auto_subscribed）时，才触发 webhook
+                    if existing_status != 'auto_subscribed':
                         _handle_auto_resubscribe_trigger(
                             item_details={
                                 'tmdb_id': movie['tmdb_id'],
@@ -148,19 +157,15 @@ def task_update_resubscribe_cache(processor):
                             rule=rule,
                             reason=reason
                         )
-                    else:
-                        final_status = 'needed'
-            
-            # 场景 C: 物理状态达标 (OK)
-            else:
-                final_status = None 
+                else:
+                    final_status = 'needed'
 
-            if final_status:
-                keys_to_keep_in_db.add(item_key_tuple[0])
-                index_update_batch.append({
-                    "tmdb_id": movie['tmdb_id'], "item_type": "Movie", "season_number": -1,
-                    "status": final_status, "reason": reason, "matched_rule_id": rule.get('id')
-                })
+            # 只要还需要洗版（或正在洗版），就保留在数据库中
+            keys_to_keep_in_db.add(item_key_tuple[0])
+            index_update_batch.append({
+                "tmdb_id": movie['tmdb_id'], "item_type": "Movie", "season_number": -1,
+                "status": final_status, "reason": reason, "matched_rule_id": rule.get('id')
+            })
 
         # ====== 3b. 处理所有剧集 ======
         if all_series:
@@ -222,7 +227,6 @@ def task_update_resubscribe_cache(processor):
                             break
                     
                     if has_multi_version_episode:
-                        logger.debug(f"  ➜ 跳过剧集《{series['title']}》第 {season_num} 季: 检测到分集存在多版本，无法执行洗版。")
                         continue
                     
                     eps_in_season.sort(key=lambda x: x.get('episode_number', 0))
@@ -235,42 +239,40 @@ def task_update_resubscribe_cache(processor):
                     status_calculated = 'ok'
                     reason_calculated = ""
 
-                    # 模式 A: 一致性检查
                     if rule.get('consistency_check_enabled'):
                         needs_fix, fix_reason = _check_season_consistency(eps_in_season, rule)
                         if needs_fix:
                             status_calculated = 'needed'
                             reason_calculated = fix_reason
-                    # 模式 B: 质量升级
                     else:
                         needs_upgrade, upgrade_reason = _item_needs_resubscribe(assets[0], rule, series_meta_wrapper)
                         if needs_upgrade:
                             status_calculated = 'needed'
                             reason_calculated = upgrade_reason
 
-                    # --- ★★★ 修改点 3: 数据库状态判定 ★★★ ---
+                    # --- ★★★ 核心逻辑优化 ★★★ ---
                     item_key_tuple = (tmdb_id, "Season", int(season_num))
                     existing_status = current_statuses.get(item_key_tuple)
                     
-                    final_status = None
+                    if status_calculated == 'ok':
+                        # 物理文件已达标，跳过（后续会被清理）
+                        continue
 
-                    # 场景 A: 之前已订阅
-                    if existing_status == 'subscribed':
-                        if status_calculated == 'ok':
-                            final_status = None
-                        else:
-                            final_status = 'subscribed'
+                    # 物理文件不达标
+                    final_status = 'needed'
 
-                    # 场景 B: 需要洗版
-                    elif status_calculated == 'needed':
-                        if existing_status == 'ignored':
-                            final_status = 'ignored'
-                        else:
-                            final_status = 'needed'
-
-                            if rule.get('auto_resubscribe'):
-                                final_status = 'auto_subscribed'
-                                # 触发自动订阅逻辑
+                    if existing_status in ['subscribed', 'auto_subscribed']:
+                        # 保护进行中状态
+                        final_status = existing_status
+                    
+                    elif existing_status == 'ignored':
+                        final_status = 'ignored'
+                    
+                    else:
+                        # 新增或 needed
+                        if rule.get('auto_resubscribe'):
+                            final_status = 'auto_subscribed'
+                            if existing_status != 'auto_subscribed':
                                 _handle_auto_resubscribe_trigger(
                                     item_details={
                                         'tmdb_id': tmdb_id,
@@ -283,25 +285,19 @@ def task_update_resubscribe_cache(processor):
                                     rule=rule,
                                     reason=reason_calculated
                                 )
-                            else:
-                                final_status = 'needed'
-                    
-                    # 场景 C: 物理状态达标 (OK)
-                    else:
-                        final_status = None
+                        else:
+                            final_status = 'needed'
 
-                    if final_status:
-                        # 记录 Key
-                        keys_to_keep_in_db.add(f"{tmdb_id}-S{season_num}")
-                        
-                        index_update_batch.append({
-                            "tmdb_id": tmdb_id, "item_type": "Season", "season_number": season_num,
-                            "status": final_status, "reason": reason_calculated, "matched_rule_id": rule.get('id')
-                        })
+                    # 保留并更新
+                    keys_to_keep_in_db.add(f"{tmdb_id}-S{season_num}")
+                    index_update_batch.append({
+                        "tmdb_id": tmdb_id, "item_type": "Season", "season_number": season_num,
+                        "status": final_status, "reason": reason_calculated, "matched_rule_id": rule.get('id')
+                    })
 
         # --- 步骤 4: 执行数据库更新与清理 ---
         
-        # 4.1 更新有效记录 (needed / ignored / subscribed)
+        # 4.1 更新有效记录
         if index_update_batch:
             task_manager.update_status_from_thread(95, f"正在保存 {len(index_update_batch)} 条结果...")
             resubscribe_db.upsert_resubscribe_index_batch(index_update_batch)
