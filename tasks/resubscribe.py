@@ -142,6 +142,7 @@ def task_update_resubscribe_cache(processor):
             
             else:
                 # 场景 C: 新发现的不达标项目，或者之前是 needed
+                logger.info(f"  ➜ 《{movie['title']}》需要洗版。原因: {reason}")
                 if rule.get('auto_resubscribe'):
                     final_status = 'auto_subscribed'
                     # 只有当状态发生变化（从 None/needed -> auto_subscribed）时，才触发 webhook
@@ -270,6 +271,7 @@ def task_update_resubscribe_cache(processor):
                     
                     else:
                         # 新增或 needed
+                        logger.info(f"  ➜ 《{series['title']} - 第{season_num}季》需要洗版。原因: {reason_calculated}")
                         if rule.get('auto_resubscribe'):
                             final_status = 'auto_subscribed'
                             if existing_status != 'auto_subscribed':
@@ -666,7 +668,6 @@ def _item_needs_resubscribe(asset_details: dict, rule: dict, media_metadata: Opt
                  
     if reasons:
         final_reason = "; ".join(sorted(list(set(reasons))))
-        logger.info(f"  ➜ 《{item_name}》需要洗版。原因: {final_reason}")
         return True, final_reason
     else:
         logger.debug(f"  ➜ 《{item_name}》质量达标。")
