@@ -297,34 +297,63 @@ def set_media_status_ignored(
 
 def set_media_status_none(
     tmdb_ids: Union[str, List[str]], 
-    item_type: str
+    item_type: str,
+    media_info_list: Optional[List[Dict[str, Any]]] = None # ★★★ 新增参数 ★★★
 ):
     """
     将媒体状态设置为 'NONE'。
+    如果提供了 media_info_list，则执行 UPSERT (不存在则插入，存在则更新)。
+    如果没有提供 media_info_list，则仅执行 UPDATE (仅更新已存在的记录)。
     """
-    data_to_upsert = _prepare_media_data_for_upsert(tmdb_ids, item_type)
+    # 准备数据 (注意：这里我们不传递 source，因为 NONE 状态通常意味着清空 source)
+    data_to_upsert = _prepare_media_data_for_upsert(tmdb_ids, item_type, None, media_info_list)
     if not data_to_upsert: return
 
     logger.info(f"  ➜ [状态执行] 准备将 {len(data_to_upsert)} 个媒体 (类型: {item_type}) 的状态更新为 'NONE'...")
+    
     try:
         with get_db_connection() as conn:
             with conn.cursor() as cursor:
                 from psycopg2.extras import execute_batch
-                sql = """
-                    UPDATE media_metadata
-                    SET
-                        subscription_status = 'NONE',
-                        subscription_sources_json = '[]'::jsonb,
-                        ignore_reason = NULL,
-                        last_synced_at = NOW()
-                    WHERE
-                        tmdb_id = %(tmdb_id)s AND item_type = %(item_type)s;
-                """
-                execute_batch(cursor, sql, data_to_upsert)
-                if cursor.rowcount > 0:
-                    logger.info(f"  ➜ [状态执行] 成功，影响了 {cursor.rowcount} 行。")
+                
+                # ★★★ 策略分叉 ★★★
+                if media_info_list:
+                    # 模式 A: UPSERT (用于创建占位符或更新)
+                    # 必须包含 title 等必填字段，由调用方保证 media_info_list 的完整性
+                    sql = """
+                        INSERT INTO media_metadata (tmdb_id, item_type, subscription_status, subscription_sources_json, title, original_title, release_date, poster_path, season_number, parent_series_tmdb_id, overview)
+                        VALUES (%(tmdb_id)s, %(item_type)s, 'NONE', '[]'::jsonb, %(title)s, %(original_title)s, %(release_date)s, %(poster_path)s, %(season_number)s, %(parent_series_tmdb_id)s, %(overview)s)
+                        ON CONFLICT (tmdb_id, item_type) DO UPDATE SET
+                            subscription_status = 'NONE',
+                            subscription_sources_json = '[]'::jsonb,
+                            ignore_reason = NULL,
+                            last_synced_at = NOW(),
+                            -- 可选：更新元数据
+                            title = COALESCE(EXCLUDED.title, media_metadata.title),
+                            poster_path = COALESCE(EXCLUDED.poster_path, media_metadata.poster_path),
+                            parent_series_tmdb_id = COALESCE(EXCLUDED.parent_series_tmdb_id, media_metadata.parent_series_tmdb_id)
+                    """
+                    execute_batch(cursor, sql, data_to_upsert)
+                    logger.info(f"  ➜ [状态执行] (UPSERT) 成功处理了 {len(data_to_upsert)} 行。")
+                    
                 else:
-                    logger.info(f"  ➜ [状态执行] 操作完成，但没有行受到影响（可能因为不满足前置条件）。")
+                    # 模式 B: UPDATE ONLY (用于取消订阅)
+                    sql = """
+                        UPDATE media_metadata
+                        SET
+                            subscription_status = 'NONE',
+                            subscription_sources_json = '[]'::jsonb,
+                            ignore_reason = NULL,
+                            last_synced_at = NOW()
+                        WHERE
+                            tmdb_id = %(tmdb_id)s AND item_type = %(item_type)s;
+                    """
+                    execute_batch(cursor, sql, data_to_upsert)
+                    if cursor.rowcount > 0:
+                        logger.info(f"  ➜ [状态执行] (UPDATE) 成功，影响了 {cursor.rowcount} 行。")
+                    else:
+                        logger.info(f"  ➜ [状态执行] 操作完成，但没有行受到影响（可能记录不存在）。")
+                        
     except Exception as e:
         logger.error(f"  ➜ [状态执行] 更新媒体状态为 'NONE' 时发生错误: {e}", exc_info=True)
         raise
