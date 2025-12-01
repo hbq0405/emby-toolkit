@@ -2,6 +2,13 @@
 <template>
   <div style="padding: 24px;"> 
     <n-page-header :title="`欢迎回来, ${authStore.username}`" subtitle="在这里查看您的账户信息" />
+    <n-grid :cols="5" style="margin-top: 24px; text-align: center;">
+      <n-gi><n-statistic label="总申请" :value="stats.total" /></n-gi>
+      <n-gi><n-statistic label="已完成" :value="stats.completed" style="--n-value-text-color: var(--n-success-color)" /></n-gi>
+      <n-gi><n-statistic label="处理中" :value="stats.processing" style="--n-value-text-color: var(--n-info-color)" /></n-gi>
+      <n-gi><n-statistic label="待审核" :value="stats.pending" style="--n-value-text-color: var(--n-warning-color)" /></n-gi>
+      <n-gi><n-statistic label="未通过" :value="stats.failed" style="--n-value-text-color: var(--n-error-color)" /></n-gi>
+    </n-grid>
     <n-grid cols="2" :x-gap="24" :y-gap="24" style="margin-top: 24px;">
       
       <!-- ==================== 左侧卡片: 账户详情 ==================== -->
@@ -117,9 +124,17 @@
       <n-gi :span="1">
         <n-card :bordered="false" class="dashboard-card">
           <template #header>
-            <span class="card-title">订阅历史</span>
-            <!-- 局部 Loading 指示器 -->
-            <n-spin v-if="loading.core || loading.library || loading.system" size="small" style="float: right" />
+            <div style="display: flex; justify-content: space-between; align-items: center;">
+              <span class="card-title">订阅历史</span>
+              <!-- 新增筛选器 -->
+              <n-radio-group v-model:value="filterStatus" size="small">
+                <n-radio-button value="all">全部</n-radio-button>
+                <n-radio-button value="completed">已完成</n-radio-button>
+                <n-radio-button value="processing">处理中</n-radio-button>
+                <n-radio-button value="pending">待审核</n-radio-button>
+                <n-radio-button value="failed">未通过</n-radio-button>
+              </n-radio-group>
+            </div>
           </template>
           <n-data-table
             :columns="historyColumns"
@@ -151,7 +166,8 @@ import { useAuthStore } from '../stores/auth';
 // ★ 修正: 导入所有需要的组件，并移除不再使用的 NStatistic
 import { 
   NPageHeader, NCard, NDescriptions, NDescriptionsItem, NTag, NEmpty, NGrid, NGi, 
-  NDataTable, NInputGroup, NInput, NButton, NText, useMessage, NPagination 
+  NDataTable, NInputGroup, NInput, NButton, NText, useMessage, NPagination, 
+  NStatistic, NRadioGroup, NRadioButton
 } from 'naive-ui';
 const authStore = useAuthStore();
 const loading = ref(true);
@@ -166,6 +182,8 @@ const isFetchingBotLink = ref(false);
 const currentPage = ref(1);
 const pageSize = ref(10); // 每页显示10条
 const totalRecords = ref(0);
+const stats = ref({ total: 0, completed: 0, processing: 0, pending: 0, failed: 0 });
+const filterStatus = ref('all');
 
 // 将状态文本映射到 Naive UI 的类型
 const statusMap = {
@@ -258,6 +276,16 @@ const openBotChat = async () => {
   }
 };
 
+// 获取统计函数
+const fetchStats = async () => {
+  try {
+    const res = await axios.get('/api/portal/subscription-stats');
+    stats.value = res.data;
+  } catch (e) {
+    console.error("获取统计失败", e);
+  }
+};
+
 // 获取订阅历史的函数，现在支持分页
 const fetchSubscriptionHistory = async (page = 1) => {
   loading.value = true;
@@ -266,6 +294,7 @@ const fetchSubscriptionHistory = async (page = 1) => {
       params: {
         page: page,
         page_size: pageSize.value,
+        status: filterStatus.value,
       },
     });
     subscriptionHistory.value = response.data.items;
@@ -279,6 +308,12 @@ const fetchSubscriptionHistory = async (page = 1) => {
   }
 };
 
+// 监听筛选变化 (放在 fetchSubscriptionHistory 定义之后)
+import { watch } from 'vue';
+watch(filterStatus, () => {
+  fetchSubscriptionHistory(1); 
+});
+
 // ★ 修正: 完整的 onMounted 逻辑
 onMounted(async () => {
   try {
@@ -291,7 +326,7 @@ onMounted(async () => {
     if (accountInfo.value) {
         telegramChatId.value = accountInfo.value.telegram_chat_id || '';
     }
-    
+    fetchStats();
     // 首次加载订阅历史
     await fetchSubscriptionHistory();
 

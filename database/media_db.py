@@ -298,46 +298,50 @@ def get_all_subscriptions() -> List[Dict[str, Any]]:
         logger.error(f"DB: 获取所有非在库媒体失败: {e}", exc_info=True)
         return []
     
-def get_user_request_history(user_id: str, page: int = 1, page_size: int = 10) -> tuple[List[Dict[str, Any]], int]:
-    """
-    【V2 - 分页功能修复版】
-    获取指定用户的订阅请求历史，支持分页，并返回总记录数。
-    """
+def get_user_request_history(user_id: str, page: int = 1, page_size: int = 10, status_filter: str = 'all') -> tuple[List[Dict[str, Any]], int]:
     offset = (page - 1) * page_size
-    
-    # ★★★ 核心修改 1/3: 准备用于查询的 source filter ★★★
     source_filter = json.dumps([{"type": "user_request", "user_id": user_id}])
 
-    # ★★★ 核心修改 2/3: 增加一个查询总记录数的 SQL ★★★
-    count_sql = """
-        SELECT COUNT(*) 
-        FROM media_metadata
-        WHERE subscription_sources_json @> %s::jsonb;
-    """
+    conditions = ["subscription_sources_json @> %s::jsonb"]
+    params = [source_filter]
+
+    if status_filter == 'completed':
+        conditions.append("in_library = TRUE")
+    elif status_filter == 'pending':
+        conditions.append("in_library = FALSE AND subscription_status = 'REQUESTED'")
+    elif status_filter == 'processing':
+        conditions.append("in_library = FALSE AND subscription_status IN ('WANTED', 'SUBSCRIBED', 'PENDING_RELEASE')")
+    elif status_filter == 'failed':
+        conditions.append("in_library = FALSE AND subscription_status IN ('IGNORED', 'NONE')")
     
-    # ★★★ 核心修改 3/3: 在查询数据的 SQL 中加入 LIMIT 和 OFFSET ★★★
-    data_sql = """
+    where_sql = " AND ".join(conditions)
+
+    count_sql = f"SELECT COUNT(*) FROM media_metadata WHERE {where_sql};"
+    
+    data_sql = f"""
         SELECT 
             tmdb_id, item_type, title, 
             subscription_status as status, 
-            in_library, -- <--- 把这个字段也拿出来
+            in_library, 
             first_requested_at as requested_at, 
             ignore_reason as notes
         FROM media_metadata
-        WHERE subscription_sources_json @> %s::jsonb
+        WHERE {where_sql}
         ORDER BY first_requested_at DESC
         LIMIT %s OFFSET %s;
     """
+    
     try:
         with get_db_connection() as conn:
             cursor = conn.cursor()
             
-            # 先获取总数
-            cursor.execute(count_sql, (source_filter,))
+            # 执行 Count
+            cursor.execute(count_sql, tuple(params))
             total_records = cursor.fetchone()['count']
             
-            # 再获取分页数据
-            cursor.execute(data_sql, (source_filter, page_size, offset))
+            # 执行 Data (追加分页参数)
+            data_params = params + [page_size, offset]
+            cursor.execute(data_sql, tuple(data_params))
             rows = cursor.fetchall()
             history = []
             for row in rows:
@@ -861,3 +865,37 @@ def get_runtimes_for_series_list(tmdb_ids: List[str]) -> Dict[str, float]:
     except Exception as e:
         logger.error(f"批量计算指定剧集平均时长时出错: {e}")
         return {}
+    
+def get_user_request_stats(user_id: str) -> Dict[str, int]:
+    """获取用户订阅请求的统计信息"""
+    source_filter = json.dumps([{"type": "user_request", "user_id": user_id}])
+    sql = """
+        SELECT in_library, subscription_status, COUNT(*) as count
+        FROM media_metadata
+        WHERE subscription_sources_json @> %s::jsonb
+        GROUP BY in_library, subscription_status;
+    """
+    stats = {'total': 0, 'completed': 0, 'processing': 0, 'pending': 0, 'failed': 0}
+    
+    try:
+        with get_db_connection() as conn:
+            cursor = conn.cursor()
+            cursor.execute(sql, (source_filter,))
+            for row in cursor.fetchall():
+                count = row['count']
+                stats['total'] += count
+                
+                if row['in_library']:
+                    stats['completed'] += count
+                else:
+                    status = row['subscription_status']
+                    if status == 'REQUESTED':
+                        stats['pending'] += count
+                    elif status in ['WANTED', 'SUBSCRIBED', 'PENDING_RELEASE']:
+                        stats['processing'] += count
+                    elif status in ['IGNORED', 'NONE']:
+                        stats['failed'] += count
+        return stats
+    except Exception as e:
+        logger.error(f"DB: 获取用户统计失败: {e}", exc_info=True)
+        return stats

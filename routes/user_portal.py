@@ -164,13 +164,15 @@ def get_account_info():
 @user_portal_bp.route('/subscription-history', methods=['GET'])
 @emby_login_required
 def get_subscription_history():
-    """获取当前用户的订阅历史记录，支持分页。"""
     emby_user_id = session['emby_user_id']
     page = request.args.get('page', 1, type=int)
     page_size = request.args.get('page_size', 10, type=int)
+    # 新增获取 status 参数
+    status_filter = request.args.get('status', 'all') 
     
     try:
-        history, total_records = media_db.get_user_request_history(emby_user_id, page, page_size)
+        # 传递 status_filter 给数据库函数
+        history, total_records = media_db.get_user_request_history(emby_user_id, page, page_size, status_filter)
         return jsonify({
             "items": history,
             "total_records": total_records,
@@ -228,3 +230,11 @@ def get_telegram_bot_info():
         logger.error(f"调用 Telegram getMe API 失败: {e}")
         # 将具体的网络错误（如超时）作为 error 字段返回
         return jsonify({"bot_username": None, "error": f"网络请求失败: {str(e)}"})
+
+@user_portal_bp.route('/subscription-stats', methods=['GET'])
+@emby_login_required
+def get_subscription_stats():
+    """获取当前用户的订阅统计数据"""
+    emby_user_id = session['emby_user_id']
+    stats = media_db.get_user_request_stats(emby_user_id)
+    return jsonify(stats)
