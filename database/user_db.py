@@ -532,35 +532,37 @@ def get_user_subscription_permission(user_id: str) -> bool:
         logger.error(f"DB: 查询用户 {user_id} 的订阅权限失败: {e}", exc_info=True)
         return False # 出错时，保守地返回 False
     
-def get_user_account_details(user_id: str) -> Optional[Dict[str, Any]]:
+def get_user_account_details(emby_user_id: str) -> Optional[Dict[str, Any]]:
     """
     根据用户ID，查询其在 emby_users_extended 表中的信息，并关联 user_templates 表获取模板详情。
     """
     sql = """
-        SELECT
-            ue.status,
-            ue.registration_date,
-            ue.expiration_date,
-            ue.telegram_chat_id,
-            ut.name as template_name,
-            ut.description as template_description,
-            ut.allow_unrestricted_subscriptions
-        FROM
-            emby_users_extended ue
-        LEFT JOIN
-            user_templates ut ON ue.template_id = ut.id
-        WHERE
-            ue.emby_user_id = %s;
+        SELECT 
+            u.id, 
+            u.name, 
+            u.is_administrator,
+            u.profile_image_tag,  -- <--- 必须添加这一行！！！
+            e.status, 
+            e.registration_date, 
+            e.expiration_date, 
+            e.notes,
+            e.telegram_chat_id, -- 顺便确认下这个有没有
+            t.name as template_name,
+            t.description as template_description,
+            t.allow_unrestricted_subscriptions
+        FROM emby_users u
+        LEFT JOIN emby_users_extended e ON u.id = e.emby_user_id
+        LEFT JOIN user_templates t ON e.template_id = t.id
+        WHERE u.id = %s
     """
     try:
         with get_db_connection() as conn:
-            cursor = conn.cursor()
-            cursor.execute(sql, (user_id,))
-            result = cursor.fetchone()
-            return dict(result) if result else None
+            with conn.cursor() as cursor:
+                cursor.execute(sql, (emby_user_id,))
+                return cursor.fetchone()
     except Exception as e:
-        logger.error(f"DB: 查询用户 {user_id} 的账户详情失败: {e}", exc_info=True)
-        raise
+        logger.error(f"获取用户 {emby_user_id} 详情失败: {e}")
+        return None
 
 def upsert_emby_users_extended_batch_sync(users_data: List[Dict[str, Any]]):
     """
@@ -910,3 +912,15 @@ def get_username_by_id(user_id: str) -> Optional[str]:
                 return record['name'] if record else None
     except Exception:
         return None
+    
+def update_user_image_tag(emby_user_id: str, new_tag: str):
+    """更新用户的头像 Tag"""
+    sql = "UPDATE emby_users SET profile_image_tag = %s, last_updated_at = NOW() WHERE id = %s"
+    try:
+        with get_db_connection() as conn:
+            with conn.cursor() as cursor:
+                cursor.execute(sql, (new_tag, emby_user_id))
+        return True
+    except Exception as e:
+        logger.error(f"更新用户 {emby_user_id} 头像 Tag 失败: {e}")
+        return False

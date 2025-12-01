@@ -9,6 +9,7 @@ from database import user_db, settings_db, media_db, request_db
 import config_manager     # ★ 2. 导入配置管理器，因为 MP 处理器需要它
 import constants
 import handler.tmdb as tmdb
+import handler.emby as emby
 from handler.telegram import send_telegram_message
 from routes.discover import check_and_replenish_pool
 
@@ -238,3 +239,54 @@ def get_subscription_stats():
     emby_user_id = session['emby_user_id']
     stats = media_db.get_user_request_stats(emby_user_id)
     return jsonify(stats)
+
+@user_portal_bp.route('/upload-avatar', methods=['POST'])
+@emby_login_required
+def upload_avatar():
+    """上传用户头像"""
+    if 'avatar' not in request.files:
+        return jsonify({"status": "error", "message": "未找到文件"}), 400
+    
+    file = request.files['avatar']
+    if file.filename == '':
+        return jsonify({"status": "error", "message": "未选择文件"}), 400
+
+    # 读取文件内容
+    file_content = file.read()
+    # 限制文件大小 (例如 5MB)
+    if len(file_content) > 5 * 1024 * 1024:
+        return jsonify({"status": "error", "message": "图片大小不能超过 5MB"}), 400
+
+    emby_user_id = session['emby_user_id']
+    
+    # 1. 上传到 Emby
+    # 注意：这里假设 config_manager 已正确配置
+    success = emby.upload_user_image(
+        config_manager.APP_CONFIG['emby_server_url'],
+        config_manager.APP_CONFIG['emby_api_key'],
+        emby_user_id,
+        file_content,
+        file.mimetype or 'image/jpeg'
+    )
+
+    if not success:
+        return jsonify({"status": "error", "message": "上传到 Emby 服务器失败"}), 500
+
+    # 2. 立即从 Emby 获取最新的 ImageTag (因为上传后 Tag 会变)
+    user_info = emby.get_user_info_from_server(
+        config_manager.APP_CONFIG['emby_server_url'],
+        config_manager.APP_CONFIG['emby_api_key'],
+        emby_user_id
+    )
+    
+    new_tag = None
+    if user_info:
+        new_tag = user_info.get('PrimaryImageTag')
+        # 3. 更新本地数据库
+        user_db.update_user_image_tag(emby_user_id, new_tag)
+
+    return jsonify({
+        "status": "ok", 
+        "message": "头像上传成功", 
+        "new_tag": new_tag
+    })

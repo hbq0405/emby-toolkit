@@ -4,6 +4,7 @@ import requests
 import concurrent.futures
 import os
 import gc
+import base64
 import shutil
 import time
 import threading
@@ -2299,3 +2300,57 @@ def authenticate_emby_user(username: str, password: str) -> Optional[Dict[str, A
     except Exception as e:
         logger.error(f"  ➜ 认证用户 '{username}' 时发生未知错误: {e}", exc_info=True)
         return None
+    
+def upload_user_image(base_url, api_key, user_id, image_data, content_type):
+    """
+    上传用户头像到 Emby 服务器。
+    策略：使用 /Users 接口 + Base64 编码。
+    """
+    # 1. 构造 URL：改回 /Users 接口
+    base_url = base_url.rstrip('/')
+    url = f"{base_url}/Users/{user_id}/Images/Primary"
+    
+    # 2. Base64 编码
+    try:
+        b64_data = base64.b64encode(image_data)
+    except Exception as e:
+        logger.error(f"图片 Base64 编码失败: {e}")
+        return False
+
+    headers = {
+        'X-Emby-Token': api_key,
+        'Content-Type': content_type # 保持 image/jpeg 或 image/png，Emby靠这个识别文件后缀
+    }
+    
+    # 3. (可选) 先尝试删除旧头像，防止覆盖失败
+    try:
+        requests.delete(url, headers=headers, timeout=10)
+    except Exception:
+        pass # 删除失败也不影响，可能是本来就没有头像
+
+    # 4. 发送上传请求
+    try:
+        # 增加超时时间
+        response = requests.post(url, headers=headers, data=b64_data, timeout=60)
+        response.raise_for_status()
+        return True
+    except Exception as e:
+        error_msg = str(e)
+        if hasattr(e, 'response') and e.response is not None:
+            error_msg += f" | Response: {e.response.text}"
+        logger.error(f"向 Emby 上传用户 {user_id} 头像失败: {error_msg}")
+        return False
+
+def get_user_info_from_server(base_url, api_key, user_id):
+    """
+    从 Emby 服务器获取单个用户的最新信息（主要为了获取新的 ImageTag）。
+    """
+    url = f"{base_url}/Users/{user_id}"
+    headers = {'X-Emby-Token': api_key}
+    try:
+        response = requests.get(url, headers=headers, timeout=10)
+        if response.status_code == 200:
+            return response.json()
+    except Exception as e:
+        logger.error(f"从 Emby 获取用户 {user_id} 信息失败: {e}")
+    return None

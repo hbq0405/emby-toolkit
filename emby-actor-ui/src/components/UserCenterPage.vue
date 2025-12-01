@@ -21,102 +21,139 @@
           </template>
           <!-- ★★★ 核心修正: 使用 v-if 和 v-else 来切换显示内容 ★★★ -->
           <div v-if="accountInfo">
-            <n-descriptions label-placement="left" bordered :column="1">
-              <!-- 账户状态 -->
-              <n-descriptions-item label="账户状态">
-                <n-tag :type="statusType">{{ statusText }}</n-tag>
-              </n-descriptions-item>
-              <!-- 注册时间 -->
-              <n-descriptions-item label="注册时间">
-                {{ new Date(accountInfo.registration_date).toLocaleString() }}
-              </n-descriptions-item>
-              <!-- 到期时间 -->
-              <n-descriptions-item label="到期时间">
-                {{ accountInfo.expiration_date ? new Date(accountInfo.expiration_date).toLocaleString() : '永久有效' }}
-              </n-descriptions-item>
-              <!-- 账号等级 -->
-              <n-descriptions-item label="账户等级">
-                <!-- 如果 authStore 说当前用户是管理员，就优先显示“管理员” -->
-                <strong v-if="authStore.isAdmin">管理员</strong>
-                <!-- 否则，才显示从后端获取的模板名称 -->
-                <strong v-else>{{ accountInfo.template_name || '未分配' }}</strong>
-              </n-descriptions-item>
+            
+            <!-- ★★★ 修改：使用 Flex 容器实现左右布局 ★★★ -->
+            <div class="profile-layout">
               
-              <!-- 等级说明 -->
-              <n-descriptions-item label="等级说明">
-                <!-- 同样，管理员有专属的说明 -->
-                <span v-if="authStore.isAdmin">拥有系统所有管理权限</span>
-                <span v-else>{{ accountInfo.template_description || '无' }}</span>
-              </n-descriptions-item>
-              
-              <!-- 订阅权限 -->
-              <n-descriptions-item label="订阅权限">
-                <!-- 管理员永远显示“免审核订阅” -->
-                <n-tag v-if="authStore.isAdmin" type="success">
-                  免审核订阅
-                </n-tag>
-                <!-- 其他用户则根据后端返回的权限来显示 -->
-                <n-tag v-else :type="accountInfo.allow_unrestricted_subscriptions ? 'success' : 'warning'">
-                  {{ accountInfo.allow_unrestricted_subscriptions ? '免审核订阅' : '需管理员审核' }}
-                </n-tag>
-              </n-descriptions-item>
-              <!-- Telegram Chat ID -->
-              <n-descriptions-item label="Telegram Chat ID">
-                <n-input-group>
-                  <n-input
-                    v-model:value="telegramChatId"
-                    placeholder="用于接收个人订阅通知"
-                  />
-                  <n-button
-                    type="primary"
-                    ghost
-                    :loading="isSavingChatId"
-                    @click="saveChatId"
-                  >
-                    保存
-                  </n-button>
-                </n-input-group>
-              </n-descriptions-item>
-              <n-descriptions-item v-if="accountInfo && accountInfo.telegram_channel_id" label="全局通知">
-                <n-button 
-                  text 
-                  type="primary" 
-                  tag="a"
-                  :href="globalChannelLink"  
-                  target="_blank"
-                >
-                  点击加入频道/群组
-                </n-button>
-                <template #feedback>
-                  <n-text depth="3" style="font-size:0.8em;">
-                    加入官方频道，获取新片入库等全局动态。
-                  </n-text>
-                </template>
-              </n-descriptions-item>
-            </n-descriptions>
+              <!-- 左侧：详细信息表格 (占据剩余空间) -->
+              <div class="profile-info">
+                <n-descriptions label-placement="left" bordered :column="1" size="small">
+                  <!-- 账户状态 -->
+                  <n-descriptions-item label="账户状态">
+                    <n-tag :type="statusType" size="small">{{ statusText }}</n-tag>
+                  </n-descriptions-item>
+                  <!-- 注册时间 -->
+                  <n-descriptions-item label="注册时间">
+                    {{ new Date(accountInfo.registration_date).toLocaleString() }}
+                  </n-descriptions-item>
+                  <!-- 到期时间 -->
+                  <n-descriptions-item label="到期时间">
+                    {{ accountInfo.expiration_date ? new Date(accountInfo.expiration_date).toLocaleString() : '永久有效' }}
+                  </n-descriptions-item>
+                  <!-- 账号等级 -->
+                  <n-descriptions-item label="账户等级">
+                    <strong v-if="authStore.isAdmin">管理员</strong>
+                    <strong v-else>{{ accountInfo.template_name || '未分配' }}</strong>
+                  </n-descriptions-item>
+                  
+                  <!-- 等级说明 -->
+                  <n-descriptions-item label="等级说明">
+                    <span v-if="authStore.isAdmin">拥有系统所有管理权限</span>
+                    <span v-else>{{ accountInfo.template_description || '无' }}</span>
+                  </n-descriptions-item>
+                  
+                  <!-- 订阅权限 -->
+                  <n-descriptions-item label="订阅权限">
+                    <n-tag v-if="authStore.isAdmin" type="success" size="small">
+                      免审核订阅
+                    </n-tag>
+                    <n-tag v-else :type="accountInfo.allow_unrestricted_subscriptions ? 'success' : 'warning'" size="small">
+                      {{ accountInfo.allow_unrestricted_subscriptions ? '免审核订阅' : '需管理员审核' }}
+                    </n-tag>
+                  </n-descriptions-item>
+                  <!-- Telegram Chat ID -->
+                  <n-descriptions-item label="Telegram Chat ID">
+                    <n-input-group>
+                      <n-input
+                        v-model:value="telegramChatId"
+                        placeholder="用于接收通知"
+                        size="small"
+                      />
+                      <n-button
+                        type="primary"
+                        ghost
+                        :loading="isSavingChatId"
+                        @click="saveChatId"
+                        size="small"
+                      >
+                        保存
+                      </n-button>
+                    </n-input-group>
+                  </n-descriptions-item>
+                  <n-descriptions-item v-if="accountInfo && accountInfo.telegram_channel_id" label="全局通知">
+                    <n-button 
+                      text 
+                      type="primary" 
+                      tag="a"
+                      :href="globalChannelLink"  
+                      target="_blank"
+                      size="small"
+                    >
+                      点击加入频道/群组
+                    </n-button>
+                  </n-descriptions-item>
+                </n-descriptions>
 
-            <!-- 引导文字区域 -->
-            <div style="margin-top: 12px;">
-              <n-text depth="3" style="font-size:0.8em; line-height: 1.6;">
-                1. 点击按钮
-                <n-button 
-                  text 
-                  type="primary" 
-                  :loading="isFetchingBotLink"
-                  @click="openBotChat" 
-                  style="font-weight: bold; text-decoration: underline;"
-                >
-                  与机器人对话
-                </n-button>
-                并发送 <code>/start</code><br>
-                2. 再向 <a href="https://t.me/userinfobot" target="_blank" style="color: var(--n-primary-color);">@userinfobot</a> 获取您的数字 ID 并粘贴于此。
-              </n-text>
+                <!-- 引导文字区域 (放在左侧底部) -->
+                <div style="margin-top: 12px;">
+                  <n-text depth="3" style="font-size:0.8em; line-height: 1.6;">
+                    1. 点击按钮
+                    <n-button 
+                      text 
+                      type="primary" 
+                      :loading="isFetchingBotLink"
+                      @click="openBotChat" 
+                      style="font-weight: bold; text-decoration: underline;"
+                      size="small"
+                    >
+                      与机器人对话
+                    </n-button>
+                    并发送 <code>/start</code><br>
+                    2. 再向 <a href="https://t.me/userinfobot" target="_blank" style="color: var(--n-primary-color);">@userinfobot</a> 获取您的数字 ID 并粘贴于此。
+                  </n-text>
+                </div>
+              </div>
+
+              <!-- 右侧：头像显示与上传区域 (固定宽度) -->
+              <div class="profile-avatar-section">
+                <n-tooltip trigger="hover" placement="left">
+                  <template #trigger>
+                    <div class="avatar-wrapper" @click="triggerFileUpload">
+                      <n-avatar
+                        :size="100"
+                        :src="avatarUrl"
+                        :fallback-src="null"
+                        object-fit="cover"
+                        style="cursor: pointer; background-color: transparent;"
+                      >
+                        <span v-if="!avatarUrl" style="font-size: 40px;">
+                          {{ authStore.username ? authStore.username.charAt(0).toUpperCase() : 'U' }}
+                        </span>
+                      </n-avatar>
+                      <!-- 悬浮遮罩 -->
+                      <div class="avatar-overlay">
+                        <n-icon size="30" color="white"><CloudUploadOutline /></n-icon>
+                      </div>
+                      <!-- 隐藏的文件输入框 -->
+                      <input 
+                        type="file" 
+                        ref="fileInput" 
+                        style="display: none" 
+                        accept="image/png, image/jpeg, image/jpg"
+                        @change="handleAvatarChange"
+                      />
+                    </div>
+                  </template>
+                  点击更换头像
+                </n-tooltip>
+                <div class="username-text">
+                  {{ authStore.username }}
+                </div>
+              </div>
+
             </div>
           </div>
-          
-          <!-- 当 accountInfo 为空时，显示这个 n-empty -->
           <n-empty v-else description="未能加载您的账户信息，请联系管理员。" />
-
         </n-card>
       </n-gi>
 
@@ -167,8 +204,9 @@ import { useAuthStore } from '../stores/auth';
 import { 
   NPageHeader, NCard, NDescriptions, NDescriptionsItem, NTag, NEmpty, NGrid, NGi, 
   NDataTable, NInputGroup, NInput, NButton, NText, useMessage, NPagination, 
-  NStatistic, NRadioGroup, NRadioButton
+  NStatistic, NRadioGroup, NRadioButton, NAvatar, NIcon, NDivider, NTooltip
 } from 'naive-ui';
+import { CloudUploadOutline } from '@vicons/ionicons5';
 const authStore = useAuthStore();
 const loading = ref(true);
 const accountInfo = ref(null);
@@ -178,12 +216,64 @@ const isSavingChatId = ref(false);
 const message = useMessage();
 const isFetchingBotLink = ref(false);
 
+
 // 分页相关状态
 const currentPage = ref(1);
 const pageSize = ref(10); // 每页显示10条
 const totalRecords = ref(0);
 const stats = ref({ total: 0, completed: 0, processing: 0, pending: 0, failed: 0 });
 const filterStatus = ref('all');
+const fileInput = ref(null);
+
+// ★★★ 计算头像 URL ★★★
+const avatarUrl = computed(() => {
+  const tag = accountInfo.value?.profile_image_tag;
+  const userId = accountInfo.value?.id; // 确保后端返回了 id
+  
+  if (userId && tag) {
+    return `/image_proxy/Users/${userId}/Images/Primary?tag=${tag}`;
+  }
+  return null;
+});
+
+const triggerFileUpload = () => {
+  fileInput.value?.click();
+};
+
+const handleAvatarChange = async (event) => {
+  const file = event.target.files[0];
+  if (!file) return;
+
+  if (!['image/jpeg', 'image/png', 'image/jpg'].includes(file.type)) {
+    message.error('只支持 JPG/PNG 格式的图片');
+    return;
+  }
+
+  const formData = new FormData();
+  formData.append('avatar', file);
+
+  const loadingMsg = message.loading('正在上传头像...', { duration: 0 });
+  
+  try {
+    const res = await axios.post('/api/portal/upload-avatar', formData, {
+      headers: { 'Content-Type': 'multipart/form-data' }
+    });
+    
+    loadingMsg.destroy();
+    message.success('头像更新成功！');
+    
+    // 更新本地数据，触发头像刷新
+    if (accountInfo.value && res.data.new_tag) {
+      accountInfo.value.profile_image_tag = res.data.new_tag;
+    }
+    
+  } catch (error) {
+    loadingMsg.destroy();
+    message.error(error.response?.data?.message || '上传失败');
+  } finally {
+    event.target.value = ''; // 清空 input
+  }
+};
 
 // 将状态文本映射到 Naive UI 的类型
 const statusMap = {
@@ -338,3 +428,93 @@ onMounted(async () => {
   }
 });
 </script>
+<style scoped>
+/* ★★★ 新增布局样式 ★★★ */
+.profile-layout {
+  display: flex;
+  gap: 20px; /* 左右间距 */
+  align-items: flex-start; /* 顶部对齐 */
+}
+
+.profile-info {
+  flex: 1; /* 左侧占据剩余空间 */
+  min-width: 0; /* 防止内容溢出 */
+}
+
+.profile-avatar-section {
+  width: 120px; /* 右侧固定宽度 */
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  padding-top: 10px; /* 稍微下移一点，与表格对齐 */
+}
+
+.username-text {
+  margin-top: 12px;
+  font-weight: bold;
+  font-size: 1.2em;
+  text-align: center;
+  word-break: break-all;
+}
+
+/* 头像包装器 */
+.avatar-wrapper {
+  position: relative;
+  border-radius: 0px; 
+  overflow: hidden;
+  transition: transform 0.2s;
+  box-shadow: 0 4px 12px rgba(0,0,0,0.1);
+  
+  /* ★★★ 核心修改：使用 Flex 布局 ★★★ */
+  display: flex;            /* 这一行是关键，消除行内元素间隙 */
+  justify-content: center;  /* 居中 */
+  align-items: center;      /* 居中 */
+  line-height: 0;           /* 双重保险，强制行高为0 */
+  width: fit-content;       /* 确保容器紧贴内容 */
+  margin: 0 auto;           /* 确保在父容器中居中 */
+}
+
+.avatar-wrapper:hover {
+  transform: scale(1.05);
+}
+
+/* 悬浮遮罩 */
+.avatar-overlay {
+  position: absolute;
+  top: 0;
+  left: 0;
+  width: 100%;
+  height: 100%;
+  background-color: rgba(0, 0, 0, 0.4);
+  display: flex;
+  justify-content: center;
+  align-items: center;
+  opacity: 0;
+  transition: opacity 0.2s;
+  /* ★★★ 修改：保持与 wrapper 一致 ★★★ */
+  border-radius: 0px;
+}
+
+/* ★★★ 新增：强制消除图片底部的白边 ★★★ */
+.avatar-wrapper :deep(img) {
+  display: block !important; /* 强制块级显示，消除文字基线间隙 */
+  width: 100%;
+  height: 100%;
+  object-fit: cover; /* 确保图片填满容器 */
+}
+
+.avatar-wrapper:hover .avatar-overlay {
+  opacity: 1;
+}
+
+/* 响应式调整：手机端自动变回上下布局 */
+@media (max-width: 600px) {
+  .profile-layout {
+    flex-direction: column-reverse; /* 手机上头像在上面可能更好，或者用 column */
+    align-items: center;
+  }
+  .profile-avatar-section {
+    margin-bottom: 20px;
+  }
+}
+</style>
