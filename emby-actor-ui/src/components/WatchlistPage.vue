@@ -152,7 +152,7 @@
                       <!-- 1. 待播集数 -->
                       <div v-if="nextEpisode(item)?.name" class="info-line">
                         <n-icon :component="TvIcon" class="icon-fix" />
-                        <n-text :depth="3">下一集: {{ nextEpisode(item).name }}</n-text>
+                        <n-text :depth="3">待播集: {{ nextEpisode(item).name }}</n-text>
                       </div>
 
                       <!-- 2. 播出时间 -->
