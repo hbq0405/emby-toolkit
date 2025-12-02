@@ -251,7 +251,7 @@ class WatchlistProcessor:
 
     # ★★★ 专门用于“已完结剧集”预定新季的任务方法 ★★★
     def run_new_season_check_task(self, progress_callback: callable):
-        """ 低频扫描所有已完结剧集，发现即将播出的新季，并为其创建预订阅请求。"""
+        """ 低频扫描所有已完结剧集，全量刷新元数据，发现即将播出的新季并预订。"""
         self.progress_callback = progress_callback
         task_name = "已完结剧集新季预定"
         self.progress_callback(0, "准备开始预定检查...")
@@ -262,7 +262,7 @@ class WatchlistProcessor:
                 self.progress_callback(100, "没有需要检查的已完结剧集。")
                 return
 
-            logger.info(f"开始低频检查 {total} 部已完结剧集是否有新季上线...")
+            logger.info(f"开始低频检查 {total} 部已完结剧集是否有新季上线 (含全量元数据刷新)...")
             self.progress_callback(10, f"发现 {total} 部已完结剧集，开始检查...")
             revived_count = 0
             today = datetime.now(timezone.utc).date()
@@ -271,11 +271,22 @@ class WatchlistProcessor:
                 if self.is_stop_requested(): break
                 progress = 10 + int(((i + 1) / total) * 90)
                 series_name = series['item_name']
-                self.progress_callback(progress, f"检查中: {series_name[:20]}... ({i+1}/{total})")
+                tmdb_id = series['tmdb_id']
+                emby_ids = series.get('emby_item_ids_json', [])
+                item_id = emby_ids[0] if emby_ids else None
+                
+                self.progress_callback(progress, f"刷新并检查: {series_name[:20]}... ({i+1}/{total})")
 
-                tmdb_details = tmdb.get_tv_details(series['tmdb_id'], self.tmdb_api_key)
-                if not tmdb_details: continue
+                # ★★★ 调用通用辅助函数刷新元数据 ★★★
+                # 这会自动更新 DB、JSON 和 Emby
+                refresh_result = self._refresh_series_metadata(tmdb_id, series_name, item_id)
+                
+                if not refresh_result:
+                    continue # 刷新失败，跳过本剧集
+                
+                tmdb_details, _ = refresh_result
 
+                # --- 以下是新季判断逻辑 ---
                 last_episode_info = series.get('last_episode_to_air_json')
                 old_season_number = 0
                 if last_episode_info and isinstance(last_episode_info, dict):
@@ -285,7 +296,9 @@ class WatchlistProcessor:
 
                 if new_total_seasons > old_season_number:
                     new_season_to_check_num = old_season_number + 1
-                    season_details = tmdb.get_tv_season_details(series['tmdb_id'], new_season_to_check_num, self.tmdb_api_key)
+                    # 获取新季详情 (虽然 _refresh_series_metadata 已经获取过并存了 JSON，但为了逻辑清晰，这里再调一次 API 或者读缓存皆可)
+                    # 考虑到 _refresh_series_metadata 已经缓存了 season-X.json，这里其实可以读本地，但为了代码简单，直接调 tmdb 库
+                    season_details = tmdb.get_tv_season_details(tmdb_id, new_season_to_check_num, self.tmdb_api_key)
                     
                     if season_details and (air_date_str := season_details.get('air_date')):
                         try:
@@ -306,7 +319,7 @@ class WatchlistProcessor:
                                     'release_date': season_details.get('air_date'),
                                     'poster_path': season_details.get('poster_path'),
                                     'season_number': new_season_to_check_num,
-                                    'parent_series_tmdb_id': series['tmdb_id'],
+                                    'parent_series_tmdb_id': tmdb_id,
                                     'overview': season_details.get('overview')
                                 }
                                 
@@ -314,7 +327,7 @@ class WatchlistProcessor:
                                 request_db.set_media_status_pending_release(
                                     tmdb_ids=season_tmdb_id,
                                     item_type='Season',
-                                    source={"type": "watchlist", "reason": "revived_season", "item_id": series['tmdb_id']},
+                                    source={"type": "watchlist", "reason": "revived_season", "item_id": tmdb_id},
                                     media_info_list=[media_info]
                                 )
                                 logger.info(f"  ➜ 已成功为《{series_name}》 S{new_season_to_check_num} 创建“待上映”订阅。")
@@ -326,9 +339,6 @@ class WatchlistProcessor:
                                     "tmdb_status": "Returning Series"
                                 }
 
-                                # 决策逻辑：
-                                # 如果已经上映，或者未来3天内上映 -> 设为 Watching (高亮显示)
-                                # 如果还有很久才上映 -> 设为 Paused 并设置 paused_until (低调等待)
                                 if days_until_air <= 3:
                                     updates["status"] = STATUS_WATCHING
                                     updates["paused_until"] = None
@@ -338,10 +348,8 @@ class WatchlistProcessor:
                                     updates["paused_until"] = air_date.isoformat()
                                     log_status = f"已暂停 (Paused) 至 {air_date_str}"
 
-                                self._update_watchlist_entry(series['tmdb_id'], series_name, updates)
-                                
-                                # 同时更新季的活跃状态 (注意：如果设为Paused，季也会被标记为Paused，这是符合预期的)
-                                watchlist_db.sync_seasons_watching_status(series['tmdb_id'], [new_season_to_check_num], updates["status"])
+                                self._update_watchlist_entry(tmdb_id, series_name, updates)
+                                watchlist_db.sync_seasons_watching_status(tmdb_id, [new_season_to_check_num], updates["status"])
                                 
                                 logger.info(f"  ➜ 已成功复活《{series_name}》：状态更新为 '{log_status}'，并已提交 S{new_season_to_check_num} 的订阅请求。")
 
@@ -350,7 +358,7 @@ class WatchlistProcessor:
                 
                 time.sleep(1) # 保持适当的API请求间隔
             
-            final_message = f"复活检查完成。共发现并订阅了 {revived_count} 部剧集的待播新季。"
+            final_message = f"复活检查完成。共刷新 {total} 部剧集，复活 {revived_count} 部。"
             self.progress_callback(100, final_message)
 
         except Exception as e:
@@ -471,6 +479,82 @@ class WatchlistProcessor:
         except Exception as e:
             logger.error(f"更新本地缓存文件失败: {full_path}, 错误: {e}")
 
+    # --- 通用的元数据刷新辅助函数 ---
+    def _refresh_series_metadata(self, tmdb_id: str, item_name: str, item_id: Optional[str]) -> Optional[tuple]:
+        """
+        通用辅助函数：
+        1. 获取 TMDb 最新剧集详情
+        2. 更新本地 JSON 缓存 (series.json)
+        3. 更新数据库基础字段
+        4. 获取并缓存所有季/集详情 (season-X.json)
+        5. 通知 Emby 刷新元数据
+        
+        返回: (latest_series_data, all_tmdb_episodes) 或 None
+        """
+        if not self.tmdb_api_key:
+            logger.warning("  ➜ 未配置TMDb API Key，跳过元数据刷新。")
+            return None
+
+        # 1. 从TMDb获取最新元数据
+        latest_series_data = tmdb.get_tv_details(tmdb_id, self.tmdb_api_key)
+        if not latest_series_data:
+            logger.error(f"  🚫 无法获取 '{item_name}' 的TMDb详情，元数据刷新中止。")
+            return None
+        
+        # 2. 将 TMDb 最新数据合并写入本地 JSON (series.json) 
+        self._save_local_json(f"override/tmdb-tv/{tmdb_id}/series.json", latest_series_data)
+
+        # 3. 将 TMDb 最新数据写入数据库
+        series_updates = {
+            "original_title": latest_series_data.get("original_name"),
+            "overview": latest_series_data.get("overview"),
+            "poster_path": latest_series_data.get("poster_path"),
+            "release_date": latest_series_data.get("first_air_date") or None,
+            "original_language": latest_series_data.get("original_language"),
+        }
+        media_db.update_media_metadata_fields(tmdb_id, 'Series', series_updates)
+
+        # 4. 获取所有季和集的数据
+        all_tmdb_episodes = []
+        # 优化：并行获取或者按需获取，这里保持原逻辑
+        for season_summary in latest_series_data.get("seasons", []):
+            season_num = season_summary.get("season_number")
+            if season_num is None or season_num == 0: continue
+            
+            # 获取分季详情
+            season_details = tmdb.get_season_details_tmdb(tmdb_id, season_num, self.tmdb_api_key)
+            
+            if season_details:
+                # 合并写入本地 JSON (season-X.json) 
+                self._save_local_json(f"override/tmdb-tv/{tmdb_id}/season-{season_num}.json", season_details)
+
+                if season_details.get("episodes"):
+                    all_tmdb_episodes.extend(season_details.get("episodes", []))
+                    
+                    # 合并写入本地 JSON (season-X-episode-Y.json)
+                    for ep in season_details["episodes"]:
+                        ep_num = ep.get("episode_number")
+                        if ep_num is not None:
+                            self._save_local_json(
+                                f"override/tmdb-tv/{tmdb_id}/season-{season_num}-episode-{ep_num}.json", 
+                                ep
+                            )
+            # 避免请求过快
+            time.sleep(0.1)
+
+        # 5. 通知 Emby 刷新元数据 (如果提供了 Emby ID)
+        if item_id:
+            emby.refresh_emby_item_metadata(
+                item_emby_id=item_id,
+                emby_server_url=self.emby_url,
+                emby_api_key=self.emby_api_key,
+                user_id_for_ops=self.emby_user_id,
+                replace_all_metadata_param=True,
+                item_name_for_log=item_name
+            )
+        
+        return latest_series_data, all_tmdb_episodes
+
     # ★★★ 核心处理逻辑：单个剧集的所有操作在此完成 ★★★
     def _process_one_series(self, series_data: Dict[str, Any]):
         tmdb_id = series_data['tmdb_id']
@@ -485,70 +569,17 @@ class WatchlistProcessor:
             logger.warning(f"  ➜ 剧集 '{item_name}' 在数据库中没有关联的 Emby ID，跳过。")
             return
 
-        if not self.tmdb_api_key:
-            logger.warning("  ➜ 未配置TMDb API Key，跳过。")
-            return
-
-        # 从TMDb获取最新元数据
-        latest_series_data = tmdb.get_tv_details(tmdb_id, self.tmdb_api_key)
-        if not latest_series_data:
-            logger.error(f"  🚫 无法获取 '{item_name}' 的TMDb详情，本次处理中止。")
-            return
+        # 调用通用辅助函数刷新元数据
+        refresh_result = self._refresh_series_metadata(tmdb_id, item_name, item_id)
+        if not refresh_result:
+            return # 刷新失败，中止后续逻辑
         
-        # 将 TMDb 最新数据合并写入本地 JSON (series.json) 
-        self._save_local_json(f"override/tmdb-tv/{tmdb_id}/series.json", latest_series_data)
+        latest_series_data, all_tmdb_episodes = refresh_result
 
-        # 将 TMDb 最新数据写入数据库
-        series_updates = {
-            "original_title": latest_series_data.get("original_name"),
-            "overview": latest_series_data.get("overview"),
-            "poster_path": latest_series_data.get("poster_path"),
-            "release_date": latest_series_data.get("first_air_date") or None,
-            "original_language": latest_series_data.get("original_language"),
-        }
-        media_db.update_media_metadata_fields(tmdb_id, 'Series', series_updates)
-
-        # 获取所有季和集的数据
-        all_tmdb_episodes = []
-        for season_summary in latest_series_data.get("seasons", []):
-            season_num = season_summary.get("season_number")
-            if season_num is None or season_num == 0: continue
-            
-            # 获取分季详情
-            season_details = tmdb.get_season_details_tmdb(tmdb_id, season_num, self.tmdb_api_key)
-            
-            if season_details:
-                #  合并写入本地 JSON (season-X.json) 
-                self._save_local_json(f"override/tmdb-tv/{tmdb_id}/season-{season_num}.json", season_details)
-
-                if season_details.get("episodes"):
-                    all_tmdb_episodes.extend(season_details.get("episodes", []))
-                    
-                    # 合并写入本地 JSON (season-X-episode-Y.json)
-                    for ep in season_details["episodes"]:
-                        ep_num = ep.get("episode_number")
-                        if ep_num is not None:
-                            self._save_local_json(
-                                f"override/tmdb-tv/{tmdb_id}/season-{season_num}-episode-{ep_num}.json", 
-                                ep
-                            )
-            
-            time.sleep(0.1)
-
-        # 通知 Emby 刷新元数据 
-        emby.refresh_emby_item_metadata(
-            item_emby_id=item_id,
-            emby_server_url=self.emby_url,
-            emby_api_key=self.emby_api_key,
-            user_id_for_ops=self.emby_user_id,
-            replace_all_metadata_param=True,
-            item_name_for_log=item_name
-        )
-
-        # 步骤3: 从本地数据库获取媒体库数据
+        # 从本地数据库获取媒体库数据
         emby_seasons = media_db.get_series_local_children_info(tmdb_id)
 
-        # 步骤4: 计算状态和缺失信息
+        # 计算状态和缺失信息
         new_tmdb_status = latest_series_data.get("status")
         is_ended_on_tmdb = new_tmdb_status in ["Ended", "Canceled"]
         
