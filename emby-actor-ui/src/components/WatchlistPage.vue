@@ -147,8 +147,6 @@
                           {{ getSmartTMDbStatusText(item) }}
                         </n-tag>
                       </n-space>
-
-                      <n-tag v-if="hasMissing(item)" type="warning" size="small" round>{{ getMissingCountText(item) }}</n-tag>
                       <!-- 1. 待播集数 -->
                       <div v-if="nextEpisode(item)?.name" class="info-line">
                         <n-icon :component="TvIcon" class="icon-fix" />
@@ -174,19 +172,20 @@
                   
                   <!-- 底部按钮 -->
                   <div class="card-actions">
-                    <n-tooltip>
+                    <!-- 只有 hasMissing 为真时才显示，且颜色改为 warning -->
+                    <n-tooltip v-if="hasMissing(item)">
                       <template #trigger>
                         <n-button
-                          type="primary"
+                          type="warning"
                           size="small"
                           circle
                           @click="() => openMissingInfoModal(item)"
-                          :disabled="!hasMissing(item)"
                         >
                           <template #icon><n-icon :component="EyeIcon" /></template>
                         </n-button>
                       </template>
-                      查看缺失详情
+                      <!-- 悬停时显示具体缺什么，例如：缺 1 季 | 有分集缺失 -->
+                      {{ getMissingCountText(item) }} (点击查看详情)
                     </n-tooltip>
                     <n-tooltip>
                       <template #trigger>
