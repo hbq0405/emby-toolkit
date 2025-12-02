@@ -475,10 +475,11 @@ def is_movie_subscribable(movie_id: int, api_key: str, config: dict) -> bool:
 
     for country_releases in release_info:
         for release in country_releases.get("release_dates", []):
-            if release.get("type") == 4:
-                logger.info(f"  ➜ 成功: 电影 {log_identifier} 已有数字版发行记录，适合订阅。")
+            release_type = release.get("type")
+            if release_type in [4, 5]:
+                logger.info(f"  ➜ 成功: 电影 {log_identifier} 已有数字版/光盘发行记录 (Type {release_type})，适合订阅。")
                 return True
-            if release.get("type") == 3:
+            if release_type in [1, 2, 3]:
                 try:
                     release_date_str = release.get("release_date", "").split("T")[0]
                     if release_date_str:
