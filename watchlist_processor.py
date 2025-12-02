@@ -683,13 +683,13 @@ class WatchlistProcessor:
                         # 如果当前集号等于(或大于)总集数，说明是最后一集
                         if total_ep_count > 0 and last_e_num >= total_ep_count:
                             is_season_finale = True
-                            logger.info(f"  🏁 [判定-规则3] 检测到 S{last_s_num}E{last_e_num} 是本季第 {last_e_num}/{total_ep_count} 集，判定为本季大结局。")
+                            logger.info(f"  🏁 [判定-规则4] 检测到 S{last_s_num}E{last_e_num} 是本季第 {last_e_num}/{total_ep_count} 集，判定为本季大结局。")
 
             if is_season_finale:
                 # ★★★ 如果是本季大结局，直接完结，不再等待30天 ★★★
                 final_status = STATUS_COMPLETED
                 paused_until_date = None
-                logger.info(f"  ✅ [判定-规则3] 当前季已完结，且暂无下一季排期，状态变更为“已完结” (等待新季复活)。")
+                logger.info(f"  ✅ [判定-规则4] 当前季已完结，且暂无下一季排期，状态变更为“已完结” (等待新季复活)。")
 
             elif last_air_date:
                 days_since_last = (today - last_air_date).days
@@ -698,13 +698,13 @@ class WatchlistProcessor:
                 if days_since_last > 30:
                     final_status = STATUS_COMPLETED
                     paused_until_date = None
-                    logger.info(f"  🔄 [判定-规则3] 无待播集信息，且上一集已播出 {days_since_last} 天 (>30天)，判定已完结。")
+                    logger.info(f"  🔄 [判定-规则4] 无待播集信息，且上一集已播出 {days_since_last} 天 (>30天)，判定已完结。")
                 
                 # 子规则 B: 距上一集播出在一个月内 -> 保持追剧
                 else:
                     final_status = STATUS_WATCHING
                     paused_until_date = None
-                    logger.info(f"  👀 [判定-规则3] 无待播集信息，但上一集仅播出 {days_since_last} 天 (<=30天)，保持“追剧中”状态以等待更新。")
+                    logger.info(f"  👀 [判定-规则4] 无待播集信息，但上一集仅播出 {days_since_last} 天 (<=30天)，保持“追剧中”状态以等待更新。")
 
                     # ★★★ 停更报警逻辑 (保留之前的修复) ★★★
                     if days_since_last > 8: # 仅在第8天通知
