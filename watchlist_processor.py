@@ -612,15 +612,40 @@ class WatchlistProcessor:
 
         # 规则3: 下一集无准确日期 (或无下一集信息)
         else:
-            # 获取上一集的播出时间用于判断僵尸剧
+            # 获取上一集的播出信息
             last_air_date = None
-            if last_episode_to_air and (last_date_str := last_episode_to_air.get('air_date')):
-                try:
-                    last_air_date = datetime.strptime(last_date_str, '%Y-%m-%d').date()
-                except ValueError:
-                    pass
-            
-            if last_air_date:
+            is_season_finale = False # 标记是否为本季大结局
+
+            if last_episode_to_air:
+                # 1. 解析日期
+                if (last_date_str := last_episode_to_air.get('air_date')):
+                    try:
+                        last_air_date = datetime.strptime(last_date_str, '%Y-%m-%d').date()
+                    except ValueError:
+                        pass
+                
+                # 2. ★★★ 核心新增：检测是否为本季大结局 ★★★
+                # 逻辑：如果 上一集集号 >= 该季总集数，则认为本季已完结
+                last_s_num = last_episode_to_air.get('season_number')
+                last_e_num = last_episode_to_air.get('episode_number')
+                
+                if last_s_num and last_e_num:
+                    # 从 series 详情的 seasons 列表中找到对应季的信息
+                    season_info = next((s for s in latest_series_data.get('seasons', []) if s.get('season_number') == last_s_num), None)
+                    if season_info:
+                        total_ep_count = season_info.get('episode_count', 0)
+                        # 如果当前集号等于(或大于)总集数，说明是最后一集
+                        if total_ep_count > 0 and last_e_num >= total_ep_count:
+                            is_season_finale = True
+                            logger.info(f"  🏁 [判定-规则3] 检测到 S{last_s_num}E{last_e_num} 是本季第 {last_e_num}/{total_ep_count} 集，判定为本季大结局。")
+
+            if is_season_finale:
+                # ★★★ 如果是本季大结局，直接完结，不再等待30天 ★★★
+                final_status = STATUS_COMPLETED
+                paused_until_date = None
+                logger.info(f"  ✅ [判定-规则3] 当前季已完结，且暂无下一季排期，状态变更为“已完结” (等待新季复活)。")
+
+            elif last_air_date:
                 days_since_last = (today - last_air_date).days
                 
                 # 子规则 A: 距上一集播出超过一个月(30天) -> 判定已完结
@@ -635,24 +660,15 @@ class WatchlistProcessor:
                     paused_until_date = None
                     logger.info(f"  👀 [判定-规则3] 无待播集信息，但上一集仅播出 {days_since_last} 天 (<=30天)，保持“追剧中”状态以等待更新。")
 
-                    # ★★★ 新增逻辑：如果刚好超过一周 (第8天)，通知管理员人工检查 ★★★
-                    # 注意：这里使用 == 8 是为了避免每天运行脚本时重复发送通知。
-                    # 如果你的脚本不是每天运行，可以将范围扩大，例如 8 <= days_since_last <= 10
-                    if days_since_last > 8:
+                    # ★★★ 停更报警逻辑 (保留之前的修复) ★★★
+                    if days_since_last > 8: # 仅在第8天通知
                         logger.info(f"  🔔 [通知] 剧集 '{item_name}' 停更已满一周，正在发送管理员通知...")
                         try:
                             admin_ids = user_db.get_admin_telegram_chat_ids()
                             if admin_ids:
-                                # 1. 转义剧集名称
                                 safe_name = telegram.escape_markdown(item_name)
-                                
-                                # 2. 组合并转义日期行 (处理 '-' 和 '()')
-                                # 原文: 2025-12-02 (8天前) -> 转义后: 2025\-12\-02 \(8天前\)
                                 raw_date_line = f"{last_date_str} ({days_since_last}天前)"
                                 safe_date_line = telegram.escape_markdown(raw_date_line)
-
-                                # 3. 构建消息
-                                # 注意：最后一句的句号 '.' 也是保留字符，我这里直接手动加了反斜杠 \.
                                 msg_text = (
                                     f"⚠️ *追剧停更预警*\n\n"
                                     f"📺 *剧集*: {safe_name}\n"
@@ -666,7 +682,7 @@ class WatchlistProcessor:
                             logger.error(f"  ❌ 发送停更通知失败: {e}")
 
             else:
-                # 极端情况：既没有下一集，也没有上一集时间 -> 默认保持追剧
+                # 极端情况
                 final_status = STATUS_WATCHING
                 paused_until_date = None
                 logger.info(f"  👀 [判定-规则3] 缺乏播出日期数据，默认保持“追剧中”状态。")
