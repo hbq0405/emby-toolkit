@@ -55,6 +55,19 @@ def save_setting(setting_key: str, value: Dict[str, Any]):
         logger.error(f"  ➜ 保存设置 '{setting_key}' 时失败: {e}", exc_info=True)
         raise
 
+def delete_setting(setting_key: str) -> bool:
+    """从 app_settings 表中删除一个设置项。"""
+    try:
+        with get_db_connection() as conn:
+            cursor = conn.cursor()
+            cursor.execute("DELETE FROM app_settings WHERE setting_key = %s", (setting_key,))
+            conn.commit()
+            logger.info(f"  ➜ 成功删除设置 '{setting_key}'。")
+            return True
+    except Exception as e:
+        logger.error(f"  ➜ 删除设置 '{setting_key}' 时失败: {e}", exc_info=True)
+        return False
+
 # --- 全局订阅配额管理器 ---
 def get_subscription_quota() -> int:
     """【V3 - 终极健壮版】获取当前可用的订阅配额。"""

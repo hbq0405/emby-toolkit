@@ -287,62 +287,35 @@ def save_config(new_config: Dict[str, Any]):
 # ★★★ 保存自定义主题 ★★★
 def save_custom_theme(theme_data: dict):
     """
-    将一个字典（自定义主题对象）保存为 config/custom_theme.json 文件。
+    将自定义主题保存到数据库 app_settings 表中。
     """
-    # 使用已经定义好的 PERSISTENT_DATA_PATH 来构建路径
-    custom_theme_path = os.path.join(PERSISTENT_DATA_PATH, 'custom_theme.json')
     try:
-        with open(custom_theme_path, 'w', encoding='utf-8') as f:
-            json.dump(theme_data, f, ensure_ascii=False, indent=4)
-        logger.info(f"  ➜ 自定义主题已成功写入到: {custom_theme_path}")
+        settings_db.save_setting('custom_theme', theme_data)
+        logger.info(f"  ➜ 自定义主题已成功保存到数据库。")
     except Exception as e:
-        logger.error(f"  ➜ 写入自定义主题文件失败: {e}", exc_info=True)
+        logger.error(f"  ➜ 保存自定义主题到数据库失败: {e}", exc_info=True)
         raise
-# ★★★ 加载自定义主题 ★★★
+
+# ★★★ 加载自定义主题 (数据库版) ★★★
 def load_custom_theme() -> dict:
     """
-    从 config/custom_theme.json 文件加载自定义主题。
-    如果文件不存在，返回一个空字典。
+    从数据库加载自定义主题。
     """
-    # 使用已经定义好的 PERSISTENT_DATA_PATH 来构建路径
-    custom_theme_path = os.path.join(PERSISTENT_DATA_PATH, 'custom_theme.json')
-    if not os.path.exists(custom_theme_path):
-        return {}
-    
     try:
-        with open(custom_theme_path, 'r', encoding='utf-8') as f:
-            theme_data = json.load(f)
-            if isinstance(theme_data, dict):
-                logger.debug(f"  ➜ 成功从 {custom_theme_path} 加载自定义主题。")
-                return theme_data
-            else:
-                logger.warning(f"  ➜ 自定义主题文件 {custom_theme_path} 内容格式不正确，不是一个JSON对象。")
-                return {}
-    except json.JSONDecodeError:
-        logger.error(f"  ➜ 解析自定义主题文件 {custom_theme_path} 失败，请检查JSON格式。")
+        theme_data = settings_db.get_setting('custom_theme')
+        if theme_data:
+            return theme_data
         return {}
     except Exception as e:
-        logger.error(f"  ➜ 读取自定义主题文件时发生未知错误: {e}", exc_info=True)
+        logger.error(f"  ➜ 加载自定义主题失败: {e}", exc_info=True)
         return {}
-# ★★★ 删除自定义主题 ★★★    
+
+# ★★★ 删除自定义主题 (数据库版) ★★★    
 def delete_custom_theme() -> bool:
     """
-    删除 custom_theme.json 文件。
-    
-    :return: 如果文件被成功删除或文件本就不存在，返回 True。如果删除失败，返回 False。
+    从数据库中删除自定义主题。
     """
-    # ★★★ 核心修正：使用已经定义好的 PERSISTENT_DATA_PATH ★★★
-    theme_file_path = os.path.join(PERSISTENT_DATA_PATH, 'custom_theme.json')
-    try:
-        if os.path.exists(theme_file_path):
-            os.remove(theme_file_path)
-            logger.info(f"  ✅ 成功删除自定义主题文件: {theme_file_path}")
-        else:
-            logger.info("  ➜ 尝试删除自定义主题文件，但文件本就不存在。")
-        return True
-    except OSError as e:
-        logger.error(f"  ➜ 删除自定义主题文件时发生 I/O 错误: {e}", exc_info=True)
-        return False
+    return settings_db.delete_setting('custom_theme')
     
 # --- 代理小助手 ---
 def get_proxies_for_requests() -> Optional[Dict[str, str]]:
