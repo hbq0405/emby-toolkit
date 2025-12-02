@@ -16,12 +16,30 @@
   display: flex !important;
   flex-direction: column !important;
   opacity: 0;
+  font-size: calc(14px * var(--card-scale, 1));
   /* 使用 zoom 可以让卡片变大时自动撑开布局，不会重叠 */
-  zoom: var(--card-scale); 
-
   /* 注意：transform 会和下面的 animation 冲突，所以这里推荐用 zoom */
   transform: translateY(20px); 
   animation: card-fade-in 0.5s ease-out forwards;
+}
+
+/* 2. 优化系列卡片 (横向布局) 的样式，防止被压扁 */
+.n-card.dashboard-card.series-card > .n-card__content {
+  flex-direction: row !important;
+  justify-content: flex-start !important;
+  padding: 12px !important;
+  gap: 16px !important; /* 增加一点间距 */
+  overflow: hidden; /* 防止内容溢出 */
+}
+
+/* 3. 锁定海报图片的尺寸，防止它被拉伸 */
+.card-poster-container {
+  flex-shrink: 0; /* 禁止海报缩小 */
+  /* 让海报大小也随比例缩放 */
+  width: calc(120px * var(--card-scale, 1)) !important; 
+  height: calc(180px * var(--card-scale, 1)) !important;
+  overflow: hidden;
+  border-radius: 8px;
 }
 
 .dashboard-card > .n-card__content {

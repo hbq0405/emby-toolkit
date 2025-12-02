@@ -69,15 +69,21 @@
       <div v-if="isLoading" class="center-container"><n-spin size="large" /></div>
       <div v-else-if="error" class="center-container"><n-alert title="加载错误" type="error">{{ error }}</n-alert></div>
       <div v-else-if="filteredItems.length > 0">
-        <n-grid cols="1 s:1 m:2 l:3 xl:4" :x-gap="20" :y-gap="20" responsive="screen">
-          <n-gi v-for="(item, i) in renderedItems" :key="item.tmdb_id + item.item_type">
+        
+        <!-- ★★★ Grid 容器 ★★★ -->
+        <div class="responsive-grid">
+          <div 
+            v-for="(item, i) in renderedItems" 
+            :key="item.tmdb_id + item.item_type" 
+            class="grid-item"
+          >
             <n-card class="dashboard-card series-card" :bordered="false">
+              <!-- 绝对定位元素 -->
               <n-checkbox
                 :checked="selectedItems.some(sel => sel.tmdb_id === item.tmdb_id && sel.item_type === item.item_type)"
                 @update:checked="(checked, event) => toggleSelection(item, event, i)"
                 class="card-checkbox"
               />
-              <!-- ★★★ 新增：右上角类型图标 ★★★ -->
               <div class="card-type-icon">
                 <n-tooltip trigger="hover">
                   <template #trigger>
@@ -86,73 +92,86 @@
                   {{ item.item_type === 'Movie' ? '电影' : '剧集' }}
                 </n-tooltip>
               </div>
-              <div class="card-poster-container">
-                <n-image lazy :src="getPosterUrl(item.poster_path)" class="card-poster" object-fit="cover">
-                  <template #placeholder><div class="poster-placeholder"><n-icon :component="TvIcon" size="32" /></div></template>
-                </n-image>
-              </div>
-              <div class="card-content-container">
-                <div class="card-header">
-                  <n-ellipsis class="card-title" :tooltip="{ style: { maxWidth: '300px' } }">{{ item.title }}</n-ellipsis>
-                </div>
-                <div class="card-status-area">
-                  <n-space vertical size="small">
-                    <n-tag round size="tiny" :type="statusInfo(item.subscription_status).type">
-                      <template #icon><n-icon :component="statusInfo(item.subscription_status).icon" /></template>
-                      {{ statusInfo(item.subscription_status).text }}
-                    </n-tag>
-                    <n-tag v-if="item.subscription_status === 'IGNORED' && item.ignore_reason" type="error" size="small" round>
-                      原因: {{ item.ignore_reason }}
-                    </n-tag>
-                    <n-text :depth="3" class="info-text">
-                      <n-icon :component="CalendarIcon" /> {{ formatAirDate(item.release_date) }}
-                    </n-text>
-                    <n-text v-if="item.subscription_status === 'SUBSCRIBED'" :depth="3" class="info-text">
-                      <n-icon :component="TimeIcon" /> 订阅于: {{ formatTimestamp(item.last_subscribed_at) }}
-                    </n-text>
-                    <n-text v-else :depth="3" class="info-text">
-                      <n-icon :component="TimeIcon" /> 请求于: {{ formatTimestamp(item.first_requested_at) }}
-                    </n-text>
-                    <n-ellipsis :tooltip="{ style: { maxWidth: '300px' } }" :line-clamp="1" class="info-text">
-                      <n-icon :component="SourceIcon" /> {{ formatSources(item.subscription_sources_json) }}
-                    </n-ellipsis>
-                  </n-space>
-                </div>
-                <div class="card-actions">
-                  <n-button-group size="small">
-                    <template v-if="item.subscription_status === 'WANTED'">
-                      <n-button @click="() => subscribeItem(item)" type="primary" ghost>
-                        订阅
-                      </n-button>
-                      <n-button @click="() => updateItemStatus(item, 'IGNORED')" type="error" ghost>
-                        忽略
-                      </n-button>
-                    </template>
 
-                    <template v-else-if="item.subscription_status === 'SUBSCRIBED' || item.subscription_status === 'PENDING_RELEASE'">
-                      <n-button @click="() => updateItemStatus(item, 'IGNORED')" type="error" ghost>
-                        忽略
-                      </n-button>
-                      <n-button @click="() => updateItemStatus(item, 'NONE')">
-                        取消订阅
-                      </n-button>
-                    </template>
+              <!-- ★★★ 核心修复：必须有这个 card-inner-layout 包裹层，才能实现左右布局 ★★★ -->
+              <div class="card-inner-layout">
+                
+                <!-- 左侧：海报 -->
+                <div class="card-poster-container">
+                  <n-image lazy :src="getPosterUrl(item.poster_path)" class="card-poster" object-fit="cover">
+                    <template #placeholder><div class="poster-placeholder"><n-icon :component="TvIcon" size="32" /></div></template>
+                  </n-image>
+                </div>
 
-                    <template v-else-if="item.subscription_status === 'IGNORED'">
-                      <n-button @click="() => updateItemStatus(item, 'WANTED', true)" type="primary" ghost>
-                        取消忽略
-                      </n-button>
-                    </template>
-                  </n-button-group>
-                  <n-tooltip>
-                    <template #trigger><n-button text tag="a" :href="getTMDbLink(item)" target="_blank"><template #icon><n-icon :component="TMDbIcon" size="18" /></template></n-button></template>
-                    在 TMDb 中打开
-                  </n-tooltip>
+                <!-- 右侧：内容 -->
+                <div class="card-content-container">
+                  <div class="card-header">
+                    <n-ellipsis class="card-title" :tooltip="{ style: { maxWidth: '300px' } }">{{ item.title }}</n-ellipsis>
+                  </div>
+                  <div class="card-status-area">
+                    <n-space vertical size="small">
+                      <n-tag round size="tiny" :type="statusInfo(item.subscription_status).type">
+                        <template #icon><n-icon :component="statusInfo(item.subscription_status).icon" /></template>
+                        {{ statusInfo(item.subscription_status).text }}
+                      </n-tag>
+                      <n-tag v-if="item.subscription_status === 'IGNORED' && item.ignore_reason" type="error" size="small" round>
+                        原因: {{ item.ignore_reason }}
+                      </n-tag>
+                      <n-text :depth="3" class="info-text">
+                        <n-icon :component="CalendarIcon" /> {{ formatAirDate(item.release_date) }}
+                      </n-text>
+                      <n-text v-if="item.subscription_status === 'SUBSCRIBED'" :depth="3" class="info-text">
+                        <n-icon :component="TimeIcon" /> 订阅于: {{ formatTimestamp(item.last_subscribed_at) }}
+                      </n-text>
+                      <n-text v-else :depth="3" class="info-text">
+                        <n-icon :component="TimeIcon" /> 请求于: {{ formatTimestamp(item.first_requested_at) }}
+                      </n-text>
+                      <n-ellipsis :tooltip="{ style: { maxWidth: '300px' } }" :line-clamp="1" class="info-text">
+                        <n-icon :component="SourceIcon" /> {{ formatSources(item.subscription_sources_json) }}
+                      </n-ellipsis>
+                    </n-space>
+                  </div>
+                  
+                  <!-- 底部按钮 -->
+                  <div class="card-actions">
+                    <n-button-group size="small">
+                      <template v-if="item.subscription_status === 'WANTED'">
+                        <n-button @click="() => subscribeItem(item)" type="primary" ghost>
+                          订阅
+                        </n-button>
+                        <n-button @click="() => updateItemStatus(item, 'IGNORED')" type="error" ghost>
+                          忽略
+                        </n-button>
+                      </template>
+
+                      <template v-else-if="item.subscription_status === 'SUBSCRIBED' || item.subscription_status === 'PENDING_RELEASE'">
+                        <n-button @click="() => updateItemStatus(item, 'IGNORED')" type="error" ghost>
+                          忽略
+                        </n-button>
+                        <n-button @click="() => updateItemStatus(item, 'NONE')">
+                          取消订阅
+                        </n-button>
+                      </template>
+
+                      <template v-else-if="item.subscription_status === 'IGNORED'">
+                        <n-button @click="() => updateItemStatus(item, 'WANTED', true)" type="primary" ghost>
+                          取消忽略
+                        </n-button>
+                      </template>
+                    </n-button-group>
+                    <n-tooltip>
+                      <template #trigger><n-button text tag="a" :href="getTMDbLink(item)" target="_blank"><template #icon><n-icon :component="TMDbIcon" size="18" /></template></n-button></template>
+                      在 TMDb 中打开
+                    </n-tooltip>
+                  </div>
                 </div>
               </div>
+              <!-- 布局结束 -->
+
             </n-card>
-          </n-gi>
-        </n-grid>
+          </div>
+        </div>
+        
         <div ref="loaderRef" class="loader-trigger">
           <n-spin v-if="hasMore" size="small" />
         </div>
@@ -165,8 +184,7 @@
 <script setup>
 import { ref, onMounted, onBeforeUnmount, h, computed, watch } from 'vue';
 import axios from 'axios';
-import { NLayout, NPageHeader, NDivider, NEmpty, NTag, NButton, NSpace, NIcon, useMessage, useDialog, NTooltip, NGrid, NGi, NCard, NImage, NEllipsis, NSpin, NAlert, NRadioGroup, NRadioButton, NCheckbox, NDropdown, NInput, NSelect, NButtonGroup } from 'naive-ui';
-// ★★★ 核心修改 1：导入电影图标 ★★★
+import { NLayout, NPageHeader, NDivider, NEmpty, NTag, NButton, NSpace, NIcon, useMessage, useDialog, NTooltip, NCard, NImage, NEllipsis, NSpin, NAlert, NRadioGroup, NRadioButton, NCheckbox, NDropdown, NInput, NSelect, NButtonGroup } from 'naive-ui';
 import { SyncOutline, TvOutline as TvIcon, FilmOutline as FilmIcon, CalendarOutline as CalendarIcon, TimeOutline as TimeIcon, ArrowUpOutline as ArrowUpIcon, ArrowDownOutline as ArrowDownIcon, CaretDownOutline as CaretDownIcon, CheckmarkCircleOutline as WantedIcon, HourglassOutline as PendingIcon, BanOutline as IgnoredIcon, DownloadOutline as SubscribedIcon, PersonCircleOutline as SourceIcon } from '@vicons/ionicons5';
 import { format } from 'date-fns'
 
@@ -245,7 +263,6 @@ const sourceFilterOptions = computed(() => {
   return options;
 });
 
-// ✨✨✨ 动态批量操作 ✨✨✨
 const batchActions = computed(() => {
   switch (filterStatus.value) {
     case 'WANTED':
@@ -329,11 +346,9 @@ const getTMDbLink = (item) => {
   if (item.item_type === 'Movie') {
     return `https://www.themoviedb.org/movie/${item.tmdb_id}`;
   }
-  // 对于剧集或季，都使用 series_tmdb_id (后端已提供)
   if (item.series_tmdb_id) {
     return `https://www.themoviedb.org/tv/${item.series_tmdb_id}`;
   }
-  // 安全回退
   return `https://www.themoviedb.org/`;
 };
 
@@ -600,56 +615,112 @@ watch(loaderRef, (newEl, oldEl) => {
 </script>
 
 <style scoped>
-/* ... (已有样式保持不变) ... */
-.watchlist-page { padding: 0 10px; }
+/* 页面基础 */
+.watchlist-page, .unified-subscriptions-page { padding: 0 10px; }
 .center-container { display: flex; justify-content: center; align-items: center; height: calc(100vh - 200px); }
+
+/* ★★★ Grid 布局 ★★★ */
+.responsive-grid {
+  display: grid;
+  gap: 16px;
+  /* 320px 基准宽度 */
+  grid-template-columns: repeat(auto-fill, minmax(calc(320px * var(--card-scale, 1)), 1fr));
+}
+
+.grid-item {
+  height: 100%;
+  min-width: 0;
+}
+
+/* ★★★ 卡片容器 ★★★ */
 .series-card {
+  cursor: pointer;
+  transition: transform 0.2s ease-in-out, box-shadow 0.2s ease-in-out;
+  height: 100%;
   position: relative;
+  
+  /* ★★★ 核心 1：设定基准字号，所有内部元素都将基于此缩放 ★★★ */
+  font-size: calc(14px * var(--card-scale, 1)); 
+  
+  border-radius: calc(12px * var(--card-scale, 1));
+  overflow: hidden; 
+  border: 1px solid var(--n-border-color);
 }
-.card-checkbox {
-  position: absolute;
-  top: 8px;
-  left: 8px;
-  z-index: 10;
-  background-color: rgba(255, 255, 255, 0.7);
-  border-radius: 50%;
-  padding: 4px;
-  --n-color-checked: var(--n-color-primary-hover);
-  --n-border-radius: 50%;
-  opacity: 0;
-  visibility: hidden;
-  transition: opacity 0.2s ease-in-out, visibility 0.2s ease-in-out;
+
+.series-card:hover {
+  transform: translateY(-4px);
 }
-/* ★★★ 核心修改 2：为右上角图标添加样式 ★★★ */
-.card-type-icon {
-  position: absolute;
-  top: 8px;
-  right: 8px;
-  z-index: 10;
-  background-color: rgba(0, 0, 0, 0.5);
-  color: white;
-  border-radius: 4px;
-  padding: 4px 5px;
+
+.card-selected {
+  outline: 2px solid var(--n-color-primary);
+  outline-offset: -2px;
+}
+
+/* ★★★ 核心 2：强制 Naive UI 组件跟随缩放 ★★★ */
+/* 这段代码强制卡片内的所有文本、按钮、标签都继承上面的 font-size */
+.series-card :deep(.n-card__content),
+.series-card :deep(.n-button),
+.series-card :deep(.n-tag),
+.series-card :deep(.n-text),
+.series-card :deep(.n-ellipsis) {
+  font-size: inherit !important; 
+}
+
+/* 调整图标大小以适应缩放 */
+.series-card :deep(.n-icon) {
+  font-size: 1.2em !important; 
+}
+
+/* 恢复内边距 */
+.series-card.dashboard-card > :deep(.n-card__content) {
+  padding: calc(10px * var(--card-scale, 1)) !important; 
+  display: flex !important;
+  flex-direction: column !important;
+  height: 100% !important;
+}
+
+/* ★★★ 内部布局：左右拉伸 ★★★ */
+.card-inner-layout {
   display: flex;
-  align-items: center;
-  justify-content: center;
-  line-height: 1;
+  flex-direction: row;
+  height: 100%;
+  width: 100%;
+  /* 关键：让海报和内容等高 */
+  align-items: stretch; 
+  gap: calc(12px * var(--card-scale, 1));
 }
-.series-card:hover .card-checkbox,
-.card-checkbox.n-checkbox--checked {
-  opacity: 1;
-  visibility: visible;
-}
+
+/* ★★★ 海报区域 ★★★ */
 .card-poster-container {
-  flex-shrink: 0;
-  width: 160px;
-  height: 240px;
+  flex-shrink: 0; 
+  /* 宽度随比例缩放 */
+  width: calc(130px * var(--card-scale, 1));
+  /* 关键：高度设为 100%，让它自动填满父容器（父容器高度由右侧文字撑开） */
+  height: auto; 
+  min-height: 100%; 
+  
+  position: relative;
+  background-color: rgba(0,0,0,0.1);
+  border-radius: 8px;
   overflow: hidden;
+  box-shadow: 0 2px 8px rgba(0,0,0,0.1);
 }
+
 .card-poster {
   width: 100%;
   height: 100%;
+  display: block;
 }
+
+.card-poster :deep(img) {
+  width: 100%;
+  height: 100%;
+  /* 关键：Cover 模式，确保填满且不变形 */
+  object-fit: cover !important; 
+  display: block;
+  border-radius: 0 !important;
+}
+
 .poster-placeholder {
   display: flex;
   align-items: center;
@@ -657,66 +728,171 @@ watch(loaderRef, (newEl, oldEl) => {
   width: 100%;
   height: 100%;
   background-color: var(--n-action-color);
+  color: var(--n-text-color-disabled);
 }
+
+/* ★★★ 内容区域 ★★★ */
 .card-content-container {
   flex-grow: 1;
   display: flex;
   flex-direction: column;
-  padding: 12px 8px 12px 0;
+  justify-content: space-between;
   min-width: 0;
+  padding: 0;
 }
+
+.content-top {
+  display: flex;
+  flex-direction: column;
+  gap: calc(4px * var(--card-scale, 1));
+}
+
 .card-header {
   display: flex;
   justify-content: space-between;
   align-items: flex-start;
   gap: 8px;
-  flex-shrink: 0;
+  margin-bottom: calc(4px * var(--card-scale, 1));
 }
+
 .card-title {
   font-weight: 600;
-  font-size: 1.1em;
+  /* 标题稍微大一点 */
+  font-size: 1.1em !important; 
   line-height: 1.3;
+  display: -webkit-box;
+  -webkit-line-clamp: 2;
+  line-clamp: 2;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
 }
+
 .card-status-area {
   flex-grow: 1;
-  padding-top: 8px;
+  display: flex;
+  flex-direction: column;
+  gap: 4px; /* 元素间距 */
 }
-.last-checked-text {
-  display: block;
-  font-size: 0.8em;
-  margin-top: 6px;
-}
-.next-episode-text {
+
+.last-checked-text, .next-episode-text, .info-text {
   display: flex;
   align-items: center;
   gap: 4px;
-  font-size: 0.8em;
+  /* 辅助文字稍微小一点 */
+  font-size: 0.9em !important; 
+  line-height: 1.4;
+  opacity: 0.8;
 }
-.card-actions {
+
+/* ★★★ 底部按钮区域 ★★★ */
+.card-actions, .card-actions-bottom {
+  margin-top: auto; 
+  padding-top: calc(8px * var(--card-scale, 1));
   border-top: 1px solid var(--n-border-color);
-  padding-top: 8px;
-  margin-top: 8px;
   display: flex;
-  justify-content: space-around;
+  justify-content: center; 
   align-items: center;
-  flex-shrink: 0;
+  gap: calc(8px * var(--card-scale, 1));
 }
+
+/* 强制按钮变小以适应 */
+.card-actions :deep(.n-button) {
+  padding: 0 6px;
+  height: 24px; /* 强制限制高度，防止撑开 */
+  font-size: 0.9em !important;
+}
+
+/* 复选框 */
+.card-checkbox {
+  position: absolute;
+  top: 6px;
+  left: 6px;
+  z-index: 10;
+  background-color: rgba(255, 255, 255, 0.9);
+  border-radius: 50%;
+  padding: 2px;
+  opacity: 0;
+  transition: opacity 0.2s;
+  box-shadow: 0 2px 5px rgba(0,0,0,0.2);
+}
+
+.card-type-icon {
+  position: absolute;
+  top: 6px;
+  right: 6px;
+  z-index: 10;
+  background-color: rgba(0, 0, 0, 0.6);
+  color: white;
+  border-radius: 4px;
+  padding: 4px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  line-height: 1;
+  backdrop-filter: blur(2px);
+}
+
+.series-card:hover .card-checkbox, 
+.card-checkbox.n-checkbox--checked { 
+  opacity: 1; 
+  visibility: visible; 
+}
+
+/* 信息网格 (ResubscribePage用) */
+.meta-info-grid {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  margin-top: calc(4px * var(--card-scale, 1));
+}
+
+.ellipsis {
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  display: block;
+}
+
+/* 印章样式 */
+.poster-stamp {
+  position: absolute;
+  top: 50%;
+  left: 50%;
+  transform: translate(-50%, -50%) rotate(-15deg);
+  font-weight: 900;
+  font-size: 1.1em !important; 
+  letter-spacing: 1px;
+  padding: 2px 8px;
+  border-radius: 6px;
+  background-color: rgba(255, 255, 255, 0.95);
+  box-shadow: 0 4px 15px rgba(0,0,0,0.3);
+  z-index: 5;
+  pointer-events: none;
+  white-space: nowrap;
+  border: 3px solid;
+}
+.stamp-needed { border-color: #d03050; color: #d03050; }
+.stamp-ignored { border-color: #888; color: #888; transform: translate(-50%, -50%) rotate(10deg); font-size: 1rem; }
+.stamp-subscribed { border-color: #2080f0; color: #2080f0; transform: translate(-50%, -50%) rotate(-5deg); }
+.stamp-auto { border-color: #8a2be2; color: #8a2be2; transform: translate(-50%, -50%) rotate(5deg); }
+
+/* 状态文字颜色 */
+.reason-text-wrapper { display: flex; align-items: center; gap: 4px; font-size: 0.9em !important; font-weight: 500; }
+.text-needed { color: #d03050; }
+.text-ignored { color: #999; text-decoration: line-through; }
+.text-subscribed { color: #2080f0; }
+.text-auto { color: #8a2be2; }
+
 .loader-trigger {
   height: 50px;
   display: flex;
   justify-content: center;
   align-items: center;
 }
-.series-card.dashboard-card > :deep(.n-card__content) {
-  flex-direction: row !important;
-  justify-content: flex-start !important;
-  padding: 12px !important;
-  gap: 12px !important;
-}
-.info-text {
-  display: flex;
-  align-items: center;
-  gap: 4px;
-  font-size: 0.85em;
+
+/* 手机端适配 */
+@media (max-width: 600px) {
+  .responsive-grid { grid-template-columns: 1fr !important; }
+  .card-poster-container { width: 100px; min-height: 150px; }
 }
 </style>

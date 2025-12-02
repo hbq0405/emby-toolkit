@@ -102,86 +102,106 @@
       <div v-if="isLoading" class="center-container"><n-spin size="large" /></div>
       <div v-else-if="error" class="center-container"><n-alert title="加载错误" type="error" style="max-width: 500px;">{{ error }}</n-alert></div>
       <div v-else-if="filteredWatchlist.length > 0">
-        <n-grid cols="1 s:1 m:2 l:3 xl:4" :x-gap="20" :y-gap="20" responsive="screen">
-          <n-gi v-for="(item, i) in renderedWatchlist" :key="item.tmdb_id">
+        
+        <!-- Grid 容器 -->
+        <div class="responsive-grid">
+          <div 
+            v-for="(item, i) in renderedWatchlist" 
+            :key="item.tmdb_id" 
+            class="grid-item"
+          >
             <n-card class="dashboard-card series-card" :bordered="false">
               <n-checkbox
                 :checked="selectedItems.includes(item.tmdb_id)"
                 @update:checked="(checked, event) => toggleSelection(item.tmdb_id, event, i)"
                 class="card-checkbox"
               />
-              <div class="card-poster-container">
-                <n-image lazy :src="getPosterUrl(item.emby_item_ids_json)" class="card-poster" object-fit="cover">
-                  <template #placeholder><div class="poster-placeholder"><n-icon :component="TvIcon" size="32" /></div></template>
-                </n-image>
-              </div>
-              <div class="card-content-container">
-                <div class="card-header">
-                  <n-ellipsis class="card-title" :tooltip="{ style: { maxWidth: '300px' } }">{{ item.item_name }}</n-ellipsis>
-                  <n-popconfirm @positive-click="() => removeFromWatchlist(item.tmdb_id, item.item_name)">
-                    <template #trigger><n-button text type="error" circle title="移除" size="tiny"><template #icon><n-icon :component="TrashIcon" /></template></n-button></template>
-                    确定要从追剧列表中移除《{{ item.item_name }}》吗？
-                  </n-popconfirm>
+              
+              <!-- ★★★ 核心结构：card-inner-layout 包裹层 ★★★ -->
+              <div class="card-inner-layout">
+                
+                <!-- 左侧海报 -->
+                <div class="card-poster-container">
+                  <n-image lazy :src="getPosterUrl(item.emby_item_ids_json)" class="card-poster" object-fit="cover">
+                    <template #placeholder><div class="poster-placeholder"><n-icon :component="TvIcon" size="32" /></div></template>
+                  </n-image>
                 </div>
-                <div class="card-status-area">
-                  <n-space vertical size="small">
-                    <n-space align="center" :wrap="false">
-                      <n-button round size="tiny" :type="statusInfo(item.status).type" @click="() => updateStatus(item.tmdb_id, statusInfo(item.status).next)" :title="`点击切换到 '${statusInfo(item.status).nextText}'`">
-                        <template #icon><n-icon :component="statusInfo(item.status).icon" /></template>
-                        {{ statusInfo(item.status).text }}
-                      </n-button>
-                      <n-tag v-if="item.tmdb_status" size="small" :bordered="false" :type="getSmartTMDbStatusType(item)">
-                        {{ getSmartTMDbStatusText(item) }}
-                      </n-tag>
-                    </n-space>
 
-                    <n-tag v-if="hasMissing(item)" type="warning" size="small" round>{{ getMissingCountText(item) }}</n-tag>
-                    <n-text v-if="nextEpisode(item)?.name" :depth="3" class="next-episode-text">
-                      <n-icon :component="CalendarIcon" /> 播出时间: {{ nextEpisode(item).name }} ({{ formatAirDate(nextEpisode(item).air_date) }})
-                    </n-text>
-                    <n-text :depth="3" class="last-checked-text">上次检查: {{ formatTimestamp(item.last_checked_at) }}</n-text>
-                  </n-space>
-                </div>
-                <div class="card-actions">
-                  <n-tooltip>
-                    <template #trigger>
-                      <n-button
-                        type="primary"
-                        size="small"
-                        circle
-                        @click="() => openMissingInfoModal(item)"
-                        :disabled="!hasMissing(item)"
-                      >
-                        <template #icon><n-icon :component="EyeIcon" /></template>
-                      </n-button>
-                    </template>
-                    查看缺失详情
-                  </n-tooltip>
-                  <n-tooltip>
-                    <template #trigger>
-                      <n-button
-                        circle
-                        :loading="refreshingItems[item.tmdb_id]"
-                        @click="() => triggerSingleRefresh(item.tmdb_id, item.item_name)"
-                      >
-                        <template #icon><n-icon :component="SyncOutline" /></template>
-                      </n-button>
-                    </template>
-                    立即刷新此剧集
-                  </n-tooltip>
-                  <n-tooltip>
-                    <template #trigger><n-button text @click="openInEmby(item.emby_item_ids_json)"><template #icon><n-icon :component="EmbyIcon" size="18" /></template></n-button></template>
-                    在 Emby 中打开
-                  </n-tooltip>
-                  <n-tooltip>
-                    <template #trigger><n-button text tag="a" :href="`https://www.themoviedb.org/tv/${item.tmdb_id}`" target="_blank"><template #icon><n-icon :component="TMDbIcon" size="18" /></template></n-button></template>
-                    在 TMDb 中打开
-                  </n-tooltip>
+                <!-- 右侧内容 -->
+                <div class="card-content-container">
+                  <div class="card-header">
+                    <n-ellipsis class="card-title" :tooltip="{ style: { maxWidth: '300px' } }">{{ item.item_name }}</n-ellipsis>
+                    <n-popconfirm @positive-click="() => removeFromWatchlist(item.tmdb_id, item.item_name)">
+                      <template #trigger><n-button text type="error" circle title="移除" size="tiny"><template #icon><n-icon :component="TrashIcon" /></template></n-button></template>
+                      确定要从追剧列表中移除《{{ item.item_name }}》吗？
+                    </n-popconfirm>
+                  </div>
+                  <div class="card-status-area">
+                    <n-space vertical size="small">
+                      <n-space align="center" :wrap="false">
+                        <n-button round size="tiny" :type="statusInfo(item.status).type" @click="() => updateStatus(item.tmdb_id, statusInfo(item.status).next)" :title="`点击切换到 '${statusInfo(item.status).nextText}'`">
+                          <template #icon><n-icon :component="statusInfo(item.status).icon" /></template>
+                          {{ statusInfo(item.status).text }}
+                        </n-button>
+                        <n-tag v-if="item.tmdb_status" size="small" :bordered="false" :type="getSmartTMDbStatusType(item)">
+                          {{ getSmartTMDbStatusText(item) }}
+                        </n-tag>
+                      </n-space>
+
+                      <n-tag v-if="hasMissing(item)" type="warning" size="small" round>{{ getMissingCountText(item) }}</n-tag>
+                      <n-text v-if="nextEpisode(item)?.name" :depth="3" class="next-episode-text">
+                        <n-icon :component="CalendarIcon" /> 播出时间: {{ nextEpisode(item).name }} ({{ formatAirDate(nextEpisode(item).air_date) }})
+                      </n-text>
+                      <n-text :depth="3" class="last-checked-text">上次检查: {{ formatTimestamp(item.last_checked_at) }}</n-text>
+                    </n-space>
+                  </div>
+                  
+                  <!-- 底部按钮 -->
+                  <div class="card-actions">
+                    <n-tooltip>
+                      <template #trigger>
+                        <n-button
+                          type="primary"
+                          size="small"
+                          circle
+                          @click="() => openMissingInfoModal(item)"
+                          :disabled="!hasMissing(item)"
+                        >
+                          <template #icon><n-icon :component="EyeIcon" /></template>
+                        </n-button>
+                      </template>
+                      查看缺失详情
+                    </n-tooltip>
+                    <n-tooltip>
+                      <template #trigger>
+                        <n-button
+                          circle
+                          :loading="refreshingItems[item.tmdb_id]"
+                          @click="() => triggerSingleRefresh(item.tmdb_id, item.item_name)"
+                        >
+                          <template #icon><n-icon :component="SyncOutline" /></template>
+                        </n-button>
+                      </template>
+                      立即刷新此剧集
+                    </n-tooltip>
+                    <n-tooltip>
+                      <template #trigger><n-button text @click="openInEmby(item.emby_item_ids_json)"><template #icon><n-icon :component="EmbyIcon" size="18" /></template></n-button></template>
+                      在 Emby 中打开
+                    </n-tooltip>
+                    <n-tooltip>
+                      <template #trigger><n-button text tag="a" :href="`https://www.themoviedb.org/tv/${item.tmdb_id}`" target="_blank"><template #icon><n-icon :component="TMDbIcon" size="18" /></template></n-button></template>
+                      在 TMDb 中打开
+                    </n-tooltip>
+                  </div>
                 </div>
               </div>
+              <!-- 布局结束 -->
+
             </n-card>
-          </n-gi>
-        </n-grid>
+          </div>
+        </div>
+        <!-- Grid 结束 -->
+
         <div ref="loaderRef" class="loader-trigger">
           <n-spin v-if="hasMore" size="small" />
         </div>
@@ -201,7 +221,6 @@
           </n-tab-pane>
           <n-tab-pane name="gaps" :tab="`缺集的季 (${missingData.seasons_with_gaps.length})`" :disabled="missingData.seasons_with_gaps.length === 0">
             <n-list bordered>
-              <!-- 循环遍历 seasons_with_gaps 数组中的每个对象 -->
               <n-list-item v-for="gap in missingData.seasons_with_gaps" :key="gap.season">
                 <n-space vertical>
                   <div><n-tag type="error">第 {{ gap.season }} 季</n-tag> 存在分集缺失</div>
@@ -215,15 +234,16 @@
     </n-modal>
   </n-layout>
 </template>
+
 <script setup>
 import { ref, onMounted, onBeforeUnmount, h, computed, watch } from 'vue';
 import axios from 'axios';
-import { NLayout, NPageHeader, NDivider, NEmpty, NTag, NButton, NSpace, NIcon, useMessage, useDialog, NPopconfirm, NTooltip, NGrid, NGi, NCard, NImage, NEllipsis, NSpin, NAlert, NRadioGroup, NRadioButton, NModal, NTabs, NTabPane, NList, NListItem, NCheckbox, NDropdown, NInput, NSelect, NButtonGroup } from 'naive-ui';
+import { NLayout, NPageHeader, NDivider, NEmpty, NTag, NButton, NSpace, NIcon, useMessage, useDialog, NPopconfirm, NTooltip, NCard, NImage, NEllipsis, NSpin, NAlert, NRadioGroup, NRadioButton, NModal, NTabs, NTabPane, NList, NListItem, NCheckbox, NDropdown, NInput, NSelect, NButtonGroup } from 'naive-ui';
 import { SyncOutline, TvOutline as TvIcon, TrashOutline as TrashIcon, EyeOutline as EyeIcon, CalendarOutline as CalendarIcon, PlayCircleOutline as WatchingIcon, PauseCircleOutline as PausedIcon, CheckmarkCircleOutline as CompletedIcon, ScanCircleOutline as ScanIcon, CaretDownOutline as CaretDownIcon, FlashOffOutline as ForceEndIcon, ArrowUpOutline as ArrowUpIcon, ArrowDownOutline as ArrowDownIcon, DownloadOutline as DownloadIcon } from '@vicons/ionicons5';
 import { format, parseISO } from 'date-fns';
 import { useConfig } from '../composables/useConfig.js';
 
-// ... (图标定义部分保持不变) ...
+// ... (Script 逻辑保持不变) ...
 const EmbyIcon = () => h('svg', { xmlns: "http://www.w3.org/2000/svg", viewBox: "0 0 48 48", width: "18", height: "18" }, [
   h('path', { d: "M24,4.2c-11,0-19.8,8.9-19.8,19.8S13,43.8,24,43.8s19.8-8.9,19.8-19.8S35,4.2,24,4.2z M24,39.8c-8.7,0-15.8-7.1-15.8-15.8S15.3,8.2,24,8.2s15.8,7.1,15.8,15.8S32.7,39.8,24,39.8z", fill: "currentColor" }),
   h('polygon', { points: "22.2,16.4 22.2,22.2 16.4,22.2 16.4,25.8 22.2,25.8 22.2,31.6 25.8,31.6 25.8,25.8 31.6,31.6 31.6,22.2 25.8,22.2 25.8,16.4 ", fill: "currentColor" })
@@ -263,7 +283,6 @@ const filterGaps = ref('all');
 const sortKey = ref('last_checked_at');
 const sortOrder = ref('desc');
 
-// ★★★ 新增：用于控制模态框中 Tabs 的 ref ★★★
 const activeTab = ref('seasons');
 
 const hasMissingSeasons = (item) => {
@@ -292,7 +311,6 @@ const getMissingCountText = (item) => {
   return parts.join(' | ');
 };
 
-// ... (Computed 属性部分保持不变) ...
 const statusFilterOptions = [
   { label: '所有状态', value: 'all' },
   { label: '追剧中', value: 'Watching' },
@@ -443,7 +461,6 @@ const nextEpisode = (item) => {
   return item.next_episode_to_air || null;
 };
 
-// ... (方法和生命周期钩子部分保持不变) ...
 const toggleSelection = (itemId, event, index) => {
   if (!event) return;
   if (event.shiftKey && lastSelectedIndex.value !== null) {
@@ -691,20 +708,16 @@ const triggerAllWatchlistUpdate = async () => {
   }
 };
 
-// ★★★ 核心修复：重写 openMissingInfoModal 函数 ★★★
 const openMissingInfoModal = (item) => {
   selectedSeries.value = item;
-  
-  // 智能计算默认激活的标签页
   const info = item.missing_info || {};
   if (info.missing_seasons && info.missing_seasons.length > 0) {
     activeTab.value = 'seasons';
   } else if (info.seasons_with_gaps && info.seasons_with_gaps.length > 0) {
     activeTab.value = 'gaps';
   } else {
-    activeTab.value = 'seasons'; // 默认回退到第一个
+    activeTab.value = 'seasons';
   }
-  
   showModal.value = true;
 };
 
@@ -745,47 +758,114 @@ watch(loaderRef, (newEl, oldEl) => {
   if (newEl && observer) observer.observe(newEl);
 });
 </script>
+
 <style scoped>
+/* 页面基础 */
 .watchlist-page { padding: 0 10px; }
 .center-container { display: flex; justify-content: center; align-items: center; height: calc(100vh - 200px); }
-/* 卡片样式，为 checkbox 定位做准备 */
+
+/* ★★★ Grid 布局 ★★★ */
+.responsive-grid {
+  display: grid;
+  gap: 16px;
+  /* 320px 基准宽度 */
+  grid-template-columns: repeat(auto-fill, minmax(calc(320px * var(--card-scale, 1)), 1fr));
+}
+
+.grid-item {
+  height: 100%;
+  min-width: 0;
+}
+
+/* ★★★ 卡片容器 ★★★ */
 .series-card {
+  cursor: pointer;
+  transition: transform 0.2s ease-in-out, box-shadow 0.2s ease-in-out;
+  height: 100%;
   position: relative;
+  
+  /* ★★★ 核心 1：设定基准字号，所有内部元素都将基于此缩放 ★★★ */
+  font-size: calc(14px * var(--card-scale, 1)); 
+  
+  border-radius: calc(12px * var(--card-scale, 1));
+  overflow: hidden; 
+  border: 1px solid var(--n-border-color);
 }
-/* 【修改】Checkbox 样式，默认隐藏，鼠标悬浮或已选中时显示 */
-.card-checkbox {
-  position: absolute;
-  top: 8px;
-  left: 8px;
-  z-index: 10;
-  background-color: rgba(255, 255, 255, 0.7);
-  border-radius: 50%;
-  padding: 4px;
-  --n-color-checked: var(--n-color-primary-hover);
-  --n-border-radius: 50%;
-  /* 默认隐藏并添加过渡效果 */
-  opacity: 0;
-  visibility: hidden;
-  transition: opacity 0.2s ease-in-out, visibility 0.2s ease-in-out;
+
+.series-card:hover {
+  transform: translateY(-4px);
 }
-/* 鼠标悬浮于卡片上时，或当多选框自身被勾选时，显示它 */
-/* 注意: .n-checkbox--checked 是 Naive UI 内部用于标记“已选中”状态的类 */
-.series-card:hover .card-checkbox,
-.card-checkbox.n-checkbox--checked {
-  opacity: 1;
-  visibility: visible;
+
+.card-selected {
+  outline: 2px solid var(--n-color-primary);
+  outline-offset: -2px;
 }
-/* 【终极修复】为海报容器添加 overflow: hidden，裁剪掉溢出的图片部分，防止其挤压右侧内容 */
+
+/* ★★★ 核心 2：强制 Naive UI 组件跟随缩放 ★★★ */
+/* 这段代码强制卡片内的所有文本、按钮、标签都继承上面的 font-size */
+.series-card :deep(.n-card__content),
+.series-card :deep(.n-button),
+.series-card :deep(.n-tag),
+.series-card :deep(.n-text),
+.series-card :deep(.n-ellipsis) {
+  font-size: inherit !important; 
+}
+
+/* 调整图标大小以适应缩放 */
+.series-card :deep(.n-icon) {
+  font-size: 1.2em !important; 
+}
+
+/* 恢复内边距 */
+.series-card.dashboard-card > :deep(.n-card__content) {
+  padding: calc(10px * var(--card-scale, 1)) !important; 
+  display: flex !important;
+  flex-direction: column !important;
+  height: 100% !important;
+}
+
+/* ★★★ 内部布局：左右拉伸 ★★★ */
+.card-inner-layout {
+  display: flex;
+  flex-direction: row;
+  height: 100%;
+  width: 100%;
+  /* 关键：让海报和内容等高 */
+  align-items: stretch; 
+  gap: calc(12px * var(--card-scale, 1));
+}
+
+/* ★★★ 海报区域 ★★★ */
 .card-poster-container {
-  flex-shrink: 0;
-  width: 160px;
-  height: 240px;
+  flex-shrink: 0; 
+  /* 宽度随比例缩放 */
+  width: calc(130px * var(--card-scale, 1));
+  /* 关键：高度设为 100%，让它自动填满父容器（父容器高度由右侧文字撑开） */
+  height: auto; 
+  min-height: 100%; 
+  
+  position: relative;
+  background-color: rgba(0,0,0,0.1);
+  border-radius: 8px;
   overflow: hidden;
+  box-shadow: 0 2px 8px rgba(0,0,0,0.1);
 }
+
 .card-poster {
   width: 100%;
   height: 100%;
+  display: block;
 }
+
+.card-poster :deep(img) {
+  width: 100%;
+  height: 100%;
+  /* 关键：Cover 模式，确保填满且不变形 */
+  object-fit: cover !important; 
+  display: block;
+  border-radius: 0 !important;
+}
+
 .poster-placeholder {
   display: flex;
   align-items: center;
@@ -793,78 +873,104 @@ watch(loaderRef, (newEl, oldEl) => {
   width: 100%;
   height: 100%;
   background-color: var(--n-action-color);
+  color: var(--n-text-color-disabled);
 }
-/* 【布局优化】减小右侧内边距，给内容更多空间 */
+
+/* ★★★ 内容区域 ★★★ */
 .card-content-container {
   flex-grow: 1;
   display: flex;
   flex-direction: column;
-  padding: 12px 8px 12px 0;
+  justify-content: space-between;
   min-width: 0;
+  padding: 0;
 }
+
 .card-header {
   display: flex;
   justify-content: space-between;
   align-items: flex-start;
   gap: 8px;
-  flex-shrink: 0;
+  margin-bottom: calc(4px * var(--card-scale, 1));
 }
+
 .card-title {
   font-weight: 600;
-  font-size: 1.1em;
+  /* 标题稍微大一点 */
+  font-size: 1.1em !important; 
   line-height: 1.3;
+  display: -webkit-box;
+  -webkit-line-clamp: 2;
+  line-clamp: 2;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
 }
+
 .card-status-area {
   flex-grow: 1;
-  padding-top: 8px;
+  display: flex;
+  flex-direction: column;
+  gap: 4px; /* 元素间距 */
 }
-.last-checked-text {
-  display: block;
-  font-size: 0.8em;
-  margin-top: 6px;
-}
-.next-episode-text {
+
+.last-checked-text, .next-episode-text, .info-text {
   display: flex;
   align-items: center;
   gap: 4px;
-  font-size: 0.8em;
+  /* 辅助文字稍微小一点 */
+  font-size: 0.9em !important; 
+  line-height: 1.4;
+  opacity: 0.8;
 }
-/* 【最终优化】将按钮改为环绕对齐，使其均匀分布 */
+
+/* ★★★ 底部按钮区域 ★★★ */
 .card-actions {
+  margin-top: auto; 
+  padding-top: calc(8px * var(--card-scale, 1));
   border-top: 1px solid var(--n-border-color);
-  padding-top: 8px;
-  margin-top: 8px;
   display: flex;
-  justify-content: space-around;
+  justify-content: center; 
   align-items: center;
-  flex-shrink: 0;
+  gap: calc(8px * var(--card-scale, 1));
 }
+
+/* 强制按钮变小以适应 */
+.card-actions :deep(.n-button) {
+  padding: 0 6px;
+  height: 24px; /* 强制限制高度，防止撑开 */
+  font-size: 0.9em !important;
+}
+
+/* 复选框 */
+.card-checkbox {
+  position: absolute;
+  top: 6px;
+  left: 6px;
+  z-index: 10;
+  background-color: rgba(255, 255, 255, 0.9);
+  border-radius: 50%;
+  padding: 2px;
+  opacity: 0;
+  transition: opacity 0.2s;
+  box-shadow: 0 2px 5px rgba(0,0,0,0.2);
+}
+
+.series-card:hover .card-checkbox, 
+.card-checkbox.n-checkbox--checked { 
+  opacity: 1; 
+  visibility: visible; 
+}
+
 .loader-trigger {
   height: 50px;
   display: flex;
   justify-content: center;
   align-items: center;
 }
-/*
-  【布局终极修正】
-  此样式块专门用于对抗 .dashboard-card 的全局布局设置。
-  它使用 :deep() 来穿透组件，并用 !important 强制覆盖，
-  确保追剧列表的卡片内容区（.n-card__content）采用我们期望的水平布局。
-*/
-.series-card.dashboard-card > :deep(.n-card__content) {
-  /* 核心：强制将 flex 方向从全局的 "column" 改为 "row" */
-  flex-direction: row !important;
-  /* 
-    重置对齐方式。
-    全局的 "space-between" 在水平布局下会导致元素被拉开，
-    我们把它改回默认的起始对齐。
-  */
-  justify-content: flex-start !important;
-  /* 
-    重置内边距和间距，以匹配你在 template 中最初的设定。
-    这确保了海报和右侧内容区之间有正确的空隙。
-  */
-  padding: 12px !important;
-  gap: 12px !important;
+
+/* 手机端适配 */
+@media (max-width: 600px) {
+  .responsive-grid { grid-template-columns: 1fr !important; }
+  .card-poster-container { width: 100px; min-height: 150px; }
 }
 </style>

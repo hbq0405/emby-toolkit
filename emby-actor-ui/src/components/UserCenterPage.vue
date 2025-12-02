@@ -22,10 +22,46 @@
           <!-- ★★★ 核心修正: 使用 v-if 和 v-else 来切换显示内容 ★★★ -->
           <div v-if="accountInfo">
             
-            <!-- ★★★ 修改：使用 Flex 容器实现左右布局 ★★★ -->
             <div class="profile-layout">
               
-              <!-- 左侧：详细信息表格 (占据剩余空间) -->
+              <!-- 第一部分：头像显示与上传区域 (现在放在上面) -->
+              <div class="profile-avatar-section">
+                <n-tooltip trigger="hover" placement="right">
+                  <template #trigger>
+                    <div class="avatar-wrapper" @click="triggerFileUpload">
+                      <n-avatar
+                        :size="120"
+                        :src="avatarUrl"
+                        :fallback-src="null"
+                        object-fit="cover"
+                        style="cursor: pointer; background-color: transparent;"
+                      >
+                        <span v-if="!avatarUrl" style="font-size: 40px;">
+                          {{ authStore.username ? authStore.username.charAt(0).toUpperCase() : 'U' }}
+                        </span>
+                      </n-avatar>
+                      <!-- 悬浮遮罩 -->
+                      <div class="avatar-overlay">
+                        <n-icon size="30" color="white"><CloudUploadOutline /></n-icon>
+                      </div>
+                      <!-- 隐藏的文件输入框 -->
+                      <input 
+                        type="file" 
+                        ref="fileInput" 
+                        style="display: none" 
+                        accept="image/png, image/jpeg, image/jpg"
+                        @change="handleAvatarChange"
+                      />
+                    </div>
+                  </template>
+                  点击更换头像
+                </n-tooltip>
+                <div class="username-text">
+                  {{ authStore.username }}
+                </div>
+              </div>
+
+              <!-- 第二部分：详细信息表格 (现在放在下面) -->
               <div class="profile-info">
                 <n-descriptions label-placement="left" bordered :column="1" size="small">
                   <!-- 账户状态 -->
@@ -94,7 +130,7 @@
                   </n-descriptions-item>
                 </n-descriptions>
 
-                <!-- 引导文字区域 (放在左侧底部) -->
+                <!-- 引导文字区域 -->
                 <div style="margin-top: 12px;">
                   <n-text depth="3" style="font-size:0.8em; line-height: 1.6;">
                     1. 点击按钮
@@ -113,44 +149,6 @@
                   </n-text>
                 </div>
               </div>
-
-              <!-- 右侧：头像显示与上传区域 (固定宽度) -->
-              <div class="profile-avatar-section">
-                <n-tooltip trigger="hover" placement="left">
-                  <template #trigger>
-                    <div class="avatar-wrapper" @click="triggerFileUpload">
-                      <n-avatar
-                        :size="150"
-                        :src="avatarUrl"
-                        :fallback-src="null"
-                        object-fit="cover"
-                        style="cursor: pointer; background-color: transparent;"
-                      >
-                        <span v-if="!avatarUrl" style="font-size: 40px;">
-                          {{ authStore.username ? authStore.username.charAt(0).toUpperCase() : 'U' }}
-                        </span>
-                      </n-avatar>
-                      <!-- 悬浮遮罩 -->
-                      <div class="avatar-overlay">
-                        <n-icon size="30" color="white"><CloudUploadOutline /></n-icon>
-                      </div>
-                      <!-- 隐藏的文件输入框 -->
-                      <input 
-                        type="file" 
-                        ref="fileInput" 
-                        style="display: none" 
-                        accept="image/png, image/jpeg, image/jpg"
-                        @change="handleAvatarChange"
-                      />
-                    </div>
-                  </template>
-                  点击更换头像
-                </n-tooltip>
-                <div class="username-text">
-                  {{ authStore.username }}
-                </div>
-              </div>
-
             </div>
           </div>
           <n-empty v-else description="未能加载您的账户信息，请联系管理员。" />
@@ -429,30 +427,30 @@ onMounted(async () => {
 });
 </script>
 <style scoped>
-/* ★★★ 新增布局样式 ★★★ */
+/* ★★★ 修改布局样式为上下结构 ★★★ */
 .profile-layout {
   display: flex;
-  gap: 20px; /* 左右间距 */
-  align-items: flex-start; /* 顶部对齐 */
-}
-
-.profile-info {
-  flex: 1; /* 左侧占据剩余空间 */
-  min-width: 0; /* 防止内容溢出 */
+  flex-direction: column; /* 垂直排列 */
+  align-items: center;    /* 水平居中 */
+  gap: 24px;              /* 上下间距 */
 }
 
 .profile-avatar-section {
-  width: 170px; /* 右侧固定宽度 */
+  width: 100%;            /* 占满宽度 */
   display: flex;
   flex-direction: column;
-  align-items: center;
-  padding-top: 10px; /* 稍微下移一点，与表格对齐 */
+  align-items: center;    /* 头像居中 */
+  margin-bottom: 10px;
+}
+
+.profile-info {
+  width: 100%;            /* 表格占满宽度 */
 }
 
 .username-text {
-  margin-top: 12px;
+  margin-top: 16px;
   font-weight: bold;
-  font-size: 1.2em;
+  font-size: 1.4em;       /* 稍微加大字体 */
   text-align: center;
   word-break: break-all;
 }
@@ -460,18 +458,17 @@ onMounted(async () => {
 /* 头像包装器 */
 .avatar-wrapper {
   position: relative;
-  border-radius: 0px; 
+  border-radius: 50%;     /* 建议：上下结构时圆形头像通常更好看，如果想保持方形可删掉此行 */
   overflow: hidden;
   transition: transform 0.2s;
   box-shadow: 0 4px 12px rgba(0,0,0,0.1);
   
-  /* ★★★ 核心修改：使用 Flex 布局 ★★★ */
-  display: flex;            /* 这一行是关键，消除行内元素间隙 */
-  justify-content: center;  /* 居中 */
-  align-items: center;      /* 居中 */
-  line-height: 0;           /* 双重保险，强制行高为0 */
-  width: fit-content;       /* 确保容器紧贴内容 */
-  margin: 0 auto;           /* 确保在父容器中居中 */
+  display: flex;            
+  justify-content: center;  
+  align-items: center;      
+  line-height: 0;           
+  width: fit-content;       
+  margin: 0 auto;           
 }
 
 .avatar-wrapper:hover {
@@ -491,30 +488,19 @@ onMounted(async () => {
   align-items: center;
   opacity: 0;
   transition: opacity 0.2s;
-  /* ★★★ 修改：保持与 wrapper 一致 ★★★ */
-  border-radius: 0px;
+  border-radius: 50%; /* 保持与 wrapper 一致，如果是方形请改为 0px */
 }
 
-/* ★★★ 新增：强制消除图片底部的白边 ★★★ */
+/* 消除图片底部白边 */
 .avatar-wrapper :deep(img) {
-  display: block !important; /* 强制块级显示，消除文字基线间隙 */
+  display: block !important; 
   width: 100%;
   height: 100%;
-  object-fit: cover; /* 确保图片填满容器 */
+  object-fit: cover; 
 }
 
 .avatar-wrapper:hover .avatar-overlay {
   opacity: 1;
 }
 
-/* 响应式调整：手机端自动变回上下布局 */
-@media (max-width: 600px) {
-  .profile-layout {
-    flex-direction: column-reverse; /* 手机上头像在上面可能更好，或者用 column */
-    align-items: center;
-  }
-  .profile-avatar-section {
-    margin-bottom: 20px;
-  }
-}
 </style>

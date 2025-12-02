@@ -1,4 +1,4 @@
-<!-- src/components/ResubscribePage.vue (生产力终极版) -->
+<!-- src/components/ResubscribePage.vue -->
 <template>
   <n-layout content-style="padding: 24px;">
     <div class="resubscribe-page">
@@ -48,7 +48,7 @@
         </template>
       </n-page-header>
 
-      <!-- ★★★ START: 新增的筛选和排序控件 ★★★ -->
+      <!-- 筛选栏 -->
       <n-space justify="space-between" align="center" style="margin-top: 24px; margin-bottom: -12px;">
         <n-input
           v-model:value="searchQuery"
@@ -86,132 +86,141 @@
           </n-button-group>
         </n-space>
       </n-space>
-      <!-- ★★★ END: 新增的筛选和排序控件 ★★★ -->
 
       <n-divider />
 
       <div v-if="isLoading" class="center-container"><n-spin size="large" /></div>
       <div v-else-if="error" class="center-container"><n-alert title="加载错误" type="error">{{ error }}</n-alert></div>
       <div v-else-if="displayedItems.length > 0">
-        <n-grid cols="1 s:2 m:2 l:3 xl:4 2xl:5" :x-gap="20" :y-gap="20" responsive="screen">
-          <n-gi v-for="(item, index) in displayedItems" :key="item.item_id">
-            <n-card 
-              class="dashboard-card series-card" 
-              :bordered="false"
-              :class="{ 'card-selected': selectedItems.has(item.item_id) }"
-              @click="handleCardClick($event, item, index)"
-            >
-              <n-checkbox
-                class="card-checkbox"
-                :checked="selectedItems.has(item.item_id)"
-              />
+      
+      <!-- ★★★ Grid 容器 ★★★ -->
+      <div class="responsive-grid">
+        <div 
+          v-for="(item, index) in displayedItems" 
+          :key="item.item_id" 
+          class="grid-item"
+        >
+          <n-card 
+            class="dashboard-card series-card" 
+            :bordered="false"
+            :class="{ 'card-selected': selectedItems.has(item.item_id) }"
+            @click="handleCardClick($event, item, index)"
+          >
+            <n-checkbox
+              class="card-checkbox"
+              :checked="selectedItems.has(item.item_id)"
+            />
+            
+            <!-- ★★★ 核心结构：card-inner-layout 包裹层 ★★★ -->
+            <div class="card-inner-layout">
               
-              <div class="card-body-wrapper">
-                <div class="card-poster-container" @click.stop="handleCardClick($event, item, index)">
-                  <n-image lazy :src="getPosterUrl(item)" class="card-poster" object-fit="cover" />
-                  <div v-if="item.status === 'needed'" class="poster-stamp stamp-needed">
-                    不通过
-                  </div>
-                  <div v-else-if="item.status === 'ignored'" class="poster-stamp stamp-ignored">
-                    求放过
-                  </div>
-                  <div v-else-if="item.status === 'subscribed'" class="poster-stamp stamp-subscribed">
-                    洗白白
-                  </div>
-                  <div v-else-if="item.status === 'auto_subscribed'" class="poster-stamp stamp-auto">
-                    处理中
-                  </div>
-                </div>
+              <!-- 左侧海报 -->
+              <div class="card-poster-container" @click.stop="handleCardClick($event, item, index)">
+                <n-image 
+                  lazy 
+                  :src="getPosterUrl(item)" 
+                  class="card-poster" 
+                  object-fit="cover"
+                  preview-disabled
+                >
+                  <template #placeholder><div class="poster-placeholder"></div></template>
+                </n-image>
+                
+                <!-- 印章 (洗版页面特有) -->
+                <div v-if="item.status === 'needed'" class="poster-stamp stamp-needed">不通过</div>
+                <div v-else-if="item.status === 'ignored'" class="poster-stamp stamp-ignored">求放过</div>
+                <div v-else-if="item.status === 'subscribed'" class="poster-stamp stamp-subscribed">洗版中</div>
+                <div v-else-if="item.status === 'auto_subscribed'" class="poster-stamp stamp-auto">处理中</div>
+              </div>
 
-                <div class="card-content-container">
+              <!-- 右侧内容 -->
+              <div class="card-content-container">
+                
+                <div class="content-top">
                   <div class="card-header">
-                    <n-ellipsis class="card-title">{{ item.item_name }}</n-ellipsis>
+                    <n-ellipsis class="card-title" :tooltip="{ style: { maxWidth: '300px' } }">
+                      {{ item.item_name }}
+                    </n-ellipsis>
                   </div>
+                  
                   <div class="card-status-area">
-                    <n-space vertical size="small">
-                      
-                      <!-- A. 需洗版 (红) -->
+                    <n-space vertical size="small" :wrap="false">
+                      <!-- 状态文本 -->
                       <div v-if="item.status === 'needed'" class="reason-text-wrapper text-needed">
-                        <n-icon :component="AlertCircleOutline" style="margin-right: 4px; flex-shrink: 0;" />
-                        <n-ellipsis :tooltip="true" style="max-width: 100%">
-                          {{ item.reason }}
-                        </n-ellipsis>
+                        <n-icon :component="AlertCircleOutline" />
+                        <n-ellipsis :tooltip="true">{{ item.reason }}</n-ellipsis>
                       </div>
-
-                      <!-- B. 已忽略 (灰+删除线) -->
                       <div v-else-if="item.status === 'ignored'" class="reason-text-wrapper text-ignored">
-                        <n-icon :component="AlertCircleOutline" style="margin-right: 4px; flex-shrink: 0;" />
-                        <n-ellipsis :tooltip="true" style="max-width: 100%">
-                          (已忽略) {{ item.reason }}
-                        </n-ellipsis>
+                        <n-icon :component="AlertCircleOutline" />
+                        <n-ellipsis :tooltip="true">(已忽略) {{ item.reason }}</n-ellipsis>
                       </div>
-
-                      <!-- C. 已订阅 (蓝+进行时) -->
                       <div v-else-if="item.status === 'subscribed'" class="reason-text-wrapper text-subscribed">
-                        <n-icon :component="SyncOutline" style="margin-right: 4px; flex-shrink: 0;" />
-                        <n-ellipsis :tooltip="true" style="max-width: 100%">
-                          (洗版中) {{ item.reason }}
-                        </n-ellipsis>
+                        <n-icon :component="SyncOutline" />
+                        <n-ellipsis :tooltip="true">(洗版中) {{ item.reason }}</n-ellipsis>
                       </div>
-
                       <div v-else-if="item.status === 'auto_subscribed'" class="reason-text-wrapper text-auto">
-                        <n-icon :component="SyncOutline" style="margin-right: 4px; flex-shrink: 0;" />
-                        <n-ellipsis :tooltip="true" style="max-width: 100%">
-                          (自动洗版中) {{ item.reason }}
-                        </n-ellipsis>
+                        <n-icon :component="SyncOutline" />
+                        <n-ellipsis :tooltip="true">(自动) {{ item.reason }}</n-ellipsis>
                       </div>
-
-                      <!-- 其他状态保持原样显示 Tag -->
-                      <n-tag v-else :type="getStatusInfo(item.status).type" size="small">
+                      <n-tag v-else :type="getStatusInfo(item.status).type" size="small" round>
                         {{ getStatusInfo(item.status).text }}
                       </n-tag>
 
-                      <n-divider style="margin: 4px 0;" />
-                      <n-text :depth="2" class="info-text">分辨率: {{ item.resolution_display }}</n-text>
-                      <n-tooltip :disabled="!item.release_group_raw || item.release_group_raw.length === 0">
-                        <template #trigger>
-                          <n-text :depth="2" class="info-text">质量: {{ item.quality_display }}</n-text>
-                        </template>
-                        发布组: {{ item.release_group_raw.join(', ') }}
-                      </n-tooltip>
-                      <n-text :depth="2" class="info-text">编码: {{ item.codec_display }}</n-text>
-                      <n-text :depth="2" class="info-text">特效: {{ Array.isArray(item.effect_display) ? item.effect_display.join(', ') : item.effect_display }}</n-text>
-                      <n-tooltip><template #trigger><n-text :depth="2" class="info-text" :line-clamp="1">音轨: {{ item.audio_display }}</n-text></template>{{ item.audio_display }}</n-tooltip>
-                      <n-tooltip><template #trigger><n-text :depth="2" class="info-text" :line-clamp="1">字幕: {{ item.subtitle_display }}</n-text></template>{{ item.subtitle_display }}</n-tooltip>
+                      <!-- 媒体信息 (紧凑展示) -->
+                      <div class="meta-info-grid">
+                        <n-text :depth="3" class="info-text">分辨率: {{ item.resolution_display }}</n-text>
+                        
+                        <n-tooltip trigger="hover" placement="top-start" :disabled="!item.release_group_raw || item.release_group_raw.length === 0">
+                            <template #trigger>
+                              <n-text :depth="3" class="info-text">质量: {{ item.quality_display }}</n-text>
+                            </template>
+                            发布组: {{ item.release_group_raw ? item.release_group_raw.join(', ') : '' }}
+                        </n-tooltip>
+
+                        <n-text :depth="3" class="info-text">编码: {{ item.codec_display }}</n-text>
+                        <n-text :depth="3" class="info-text">特效: {{ Array.isArray(item.effect_display) ? item.effect_display.join(', ') : item.effect_display }}</n-text>
+                        
+                        <n-tooltip trigger="hover" placement="top-start">
+                            <template #trigger><n-text :depth="3" class="info-text ellipsis">音轨: {{ item.audio_display }}</n-text></template>
+                            {{ item.audio_display }}
+                        </n-tooltip>
+                        <n-tooltip trigger="hover" placement="top-start">
+                            <template #trigger><n-text :depth="3" class="info-text ellipsis">字幕: {{ item.subtitle_display }}</n-text></template>
+                            {{ item.subtitle_display }}
+                        </n-tooltip>
+                      </div>
                     </n-space>
                   </div>
                 </div>
-              </div>
 
-              <div class="card-actions">
-                <n-space align="center">
-                  <n-button v-if="item.status === 'needed'" size="small" type="primary" @click.stop="resubscribeItem(item)" :loading="subscribing[item.item_id]">洗版</n-button>
-                  <n-button v-if="item.status === 'needed'" size="small" @click.stop="ignoreItem(item)">忽略</n-button>
-                  <n-button v-if="item.status === 'subscribed'" size="small" type="info" disabled>已订阅</n-button>
-                  <n-button v-if="item.status === 'auto_subscribed'" size="small" type="primary" dashed disabled>处理中</n-button>
-                  <n-button v-if="item.status === 'ignored'" size="small" type="tertiary" @click.stop="unignoreItem(item)">取消忽略</n-button>
-                  
-                  <n-divider v-if="item.status !== 'ok'" vertical />
+                <!-- 底部按钮 -->
+                <div class="card-actions-bottom">
+                  <n-space align="center" justify="center" size="small" :wrap="false">
+                      <n-button v-if="item.status === 'needed'" size="tiny" type="primary" ghost @click.stop="resubscribeItem(item)" :loading="subscribing[item.item_id]">洗版</n-button>
+                      <n-button v-if="item.status === 'needed'" size="tiny" @click.stop="ignoreItem(item)">忽略</n-button>
+                      <n-button v-if="item.status === 'ignored'" size="tiny" @click.stop="unignoreItem(item)">恢复</n-button>
+                      
+                      <n-tooltip><template #trigger>
+                        <n-button text type="error" @click.stop="deleteItem(item)"><n-icon :component="TrashOutline" size="18" /></n-button>
+                      </template>删除</n-tooltip>
+                      <n-button text @click.stop="openInEmby(item)"><n-icon :component="EmbyIcon" size="18" /></n-button>
+                      <n-button text tag="a" :href="`https://www.themoviedb.org/${item.item_type === 'Movie' ? 'movie' : 'tv'}/${item.tmdb_id}`" target="_blank" @click.stop><n-icon :component="TMDbIcon" size="18" /></n-button>
+                  </n-space>
+                </div>
 
-                  <n-tooltip>
-                    <template #trigger>
-                      <n-button text type="error" @click.stop="deleteItem(item)">
-                        <template #icon><n-icon :component="TrashOutline" size="18" /></template>
-                      </n-button>
-                    </template>
-                    删除
-                  </n-tooltip>
-                  <n-button text @click.stop="openInEmby(item)"><template #icon><n-icon :component="EmbyIcon" size="18" /></template></n-button>
-                  <n-button text tag="a" :href="`https://www.themoviedb.org/${item.item_type === 'Movie' ? 'movie' : 'tv'}/${item.tmdb_id}`" target="_blank" @click.stop><template #icon><n-icon :component="TMDbIcon" size="18" /></template></n-button>
-                </n-space>
               </div>
-            </n-card>
-          </n-gi>
-        </n-grid>
-        <div ref="loaderTrigger" class="loader-trigger">
-          <n-spin v-if="displayedItems.length < filteredItems.length" />
+            </div>
+            <!-- 布局结束 -->
+
+          </n-card>
         </div>
       </div>
+      <!-- Grid 结束 -->
+
+      <div ref="loaderTrigger" class="loader-trigger">
+        <n-spin v-if="displayedItems.length < filteredItems.length" size="small" />
+      </div>
+    </div>
       <div v-else class="center-container"><n-empty description="缓存为空，或当前筛选条件下无项目。" size="huge" /></div>
     </div>
 
@@ -224,9 +233,7 @@
 <script setup>
 import { ref, onMounted, onUnmounted, computed, h, watch, nextTick } from 'vue';
 import axios from 'axios';
-// ★★★ 1/4: 导入新增的 Naive UI 组件 ★★★
 import { NLayout, NPageHeader, NDivider, NEmpty, NTag, NButton, NSpace, NIcon, useMessage, NGrid, NGi, NCard, NImage, NEllipsis, NSpin, NAlert, NRadioGroup, NRadioButton, NModal, NTooltip, NText, NDropdown, useDialog, NCheckbox, NInput, NSelect, NButtonGroup } from 'naive-ui';
-// ★★★ 2/4: 导入新增的图标 ★★★
 import { SyncOutline, TrashOutline, ArrowUpOutline as ArrowUpIcon, ArrowDownOutline as ArrowDownIcon, AlertCircleOutline } from '@vicons/ionicons5';
 import { useConfig } from '../composables/useConfig.js';
 import ResubscribeSettingsPage from './settings/ResubscribeSettingsPage.vue';
@@ -252,18 +259,17 @@ const PAGE_SIZE = 24;
 const selectedItems = ref(new Set());
 const lastSelectedIndex = ref(-1);
 
-// ★★★ 3/4: 新增用于筛选和排序的状态 ★★★
 const searchQuery = ref('');
 const sortBy = ref('item_name');
 const sortOrder = ref('asc');
-const mediaTypeFilter = ref(null); // 新增：媒体类型筛选
-const mediaTypeOptions = ref([ // 新增：媒体类型选项
+const mediaTypeFilter = ref(null); 
+const mediaTypeOptions = ref([ 
   { label: '全部类型', value: null },
   { label: '电影', value: 'Movie' },
   { label: '剧集', value: 'Series' },
 ]);
-const ruleFilter = ref(null); // 新增：洗版规则筛选
-const ruleOptions = ref([{ label: '全部规则', value: null }]); // 新增：洗版规则选项
+const ruleFilter = ref(null); 
+const ruleOptions = ref([{ label: '全部规则', value: null }]); 
 
 const sortOptions = ref([
   { label: '按名称', value: 'item_name' },
@@ -271,11 +277,9 @@ const sortOptions = ref([
 
 const isTaskRunning = (taskName) => props.taskStatus.is_running && props.taskStatus.current_action.includes(taskName);
 
-// ★★★ 4/4: 核心修改 - 增强 filteredItems 计算属性，集成所有筛选和排序逻辑 ★★★
 const filteredItems = computed(() => {
   let items = [...allItems.value];
 
-  // 1. 按状态筛选 (原有逻辑)
   if (filter.value === 'needed') {
     items = items.filter(item => item.status === 'needed');
   } else if (filter.value === 'ignored') {
@@ -284,37 +288,30 @@ const filteredItems = computed(() => {
     items = items.filter(item => item.status === 'auto_subscribed');
   }
 
-  // 2. 按名称搜索 (新增逻辑)
   if (searchQuery.value) {
     const query = searchQuery.value.toLowerCase();
     items = items.filter(item => item.item_name.toLowerCase().includes(query));
   }
 
-  // 3. 按媒体类型筛选 (新增逻辑)
   if (mediaTypeFilter.value) {
     items = items.filter(item => item.conceptual_type === mediaTypeFilter.value);
   }
 
-  // 4. 按洗版规则筛选 (新增逻辑)
   if (ruleFilter.value !== null) {
     items = items.filter(item => item.matched_rule_id === ruleFilter.value);
   }
 
-  // 5. 排序 (新增逻辑)
   items.sort((a, b) => {
     const valA = a[sortBy.value];
     const valB = b[sortBy.value];
     
     let comparison = 0;
-    // 优先处理中文字符串排序
     if (typeof valA === 'string' && typeof valB === 'string') {
       comparison = valA.localeCompare(valB, 'zh-Hans-CN');
     } else {
-      // 其他类型的备用排序
       comparison = valA > valB ? 1 : (valA < valB ? -1 : 0);
     }
     
-    // 根据升序或降序返回结果
     return sortOrder.value === 'desc' ? -comparison : comparison;
   });
 
@@ -367,17 +364,14 @@ const setupObserver = () => {
   });
 };
 
-// 监听 filteredItems 的变化，当筛选或排序条件改变时，重置 displayedItems 并重新设置观察者
 watch(filteredItems, (newFilteredItems) => {
   displayedItems.value = newFilteredItems.slice(0, PAGE_SIZE);
-  // 重置多选状态
   selectedItems.value.clear();
   lastSelectedIndex.value = -1;
   setupObserver();
 }, { immediate: true });
 
 onMounted(async () => {
-  // 使用 Promise.all 并行发送请求，减少总等待时间
   isLoading.value = true;
   try {
     await Promise.all([
@@ -408,7 +402,6 @@ const handleCardClick = (event, item, index) => {
   const itemId = item.item_id;
   const isSelected = selectedItems.value.has(itemId);
 
-  // 查找当前 item 在 displayedItems 中的实际索引
   const displayedIndex = displayedItems.value.findIndex(d => d.item_id === itemId);
 
   if (event.shiftKey && lastSelectedIndex.value !== -1) {
@@ -572,12 +565,9 @@ const triggerRefreshStatus = async () => {
 const triggerResubscribeAll = async () => { try { await axios.post('/api/resubscribe/resubscribe_all'); message.success('一键洗版任务已提交，请稍后查看任务状态。'); } catch (err) { message.error(err.response?.data?.error || '提交一键洗版任务失败。'); }};
 const resubscribeItem = async (item) => { subscribing.value[item.item_id] = true; try { const response = await axios.post('/api/resubscribe/resubscribe_item', { item_id: item.item_id, item_name: item.item_name, tmdb_id: item.tmdb_id, item_type: item.item_type, }); message.success(response.data.message); const itemInList = allItems.value.find(i => i.item_id === item.item_id); if (itemInList) { itemInList.status = 'subscribed'; } } catch (err) { message.error(err.response?.data?.error || '洗版订阅失败。'); } finally { subscribing.value[item.item_id] = false; }};
 const getPosterUrl = (item) => {
-  // ★★★ 核心修复：使用 item.poster_path 拼接 TMDB 图片地址 ★★★
   if (item.poster_path) {
-    // 您可以根据需要选择不同的图片尺寸，w500 是一个常用的尺寸
     return `https://image.tmdb.org/t/p/w500${item.poster_path}`;
   }
-  // 如果没有海报路径，可以返回一个占位图或者空字符串
   return ''; 
 };
 const openInEmby = (item) => {
@@ -589,12 +579,9 @@ const openInEmby = (item) => {
   }
 
   let targetEmbyId = null;
-  // 判断媒体类型来决定使用哪个ID
   if (item.item_type === 'Movie') {
-    // 如果是电影，直接使用它自己的 emby_item_id
     targetEmbyId = item.emby_item_id;
   } else if (item.item_type === 'Season') {
-    // 如果是季，使用我们从后端新获取的父剧集ID (series_emby_id)
     targetEmbyId = item.series_emby_id;
   }
 
@@ -636,192 +623,268 @@ watch(() => props.taskStatus, (newStatus, oldStatus) => {
 </script>
 
 <style scoped>
-.card-checkbox {
-  position: absolute;
-  top: 8px;
-  left: 8px;
-  z-index: 10;
-  background-color: rgba(24, 24, 28, 0.75);
-  border-radius: 50%;
-  padding: 4px;
-  --n-color-checked: var(--n-color-primary-hover);
-  --n-border-radius: 50%;
-  
-  opacity: 0;
-  visibility: hidden;
-  transition: opacity 0.2s ease-in-out, visibility 0.2s ease-in-out;
+/* 页面基础 */
+.resubscribe-page { padding: 0 10px; }
+.center-container { display: flex; justify-content: center; align-items: center; height: calc(100vh - 200px); }
+
+/* ★★★ Grid 布局 ★★★ */
+.responsive-grid {
+  display: grid;
+  gap: 16px;
+  /* 320px 基准宽度 */
+  grid-template-columns: repeat(auto-fill, minmax(calc(320px * var(--card-scale, 1)), 1fr));
 }
-.series-card:hover .card-checkbox,
-.card-selected .card-checkbox {
-  opacity: 1;
-  visibility: visible;
+
+.grid-item {
+  height: 100%;
+  min-width: 0;
 }
-.card-selected {
-  outline: 2px solid var(--n-color-primary-hover);
-  outline-offset: 2px;
-}
+
+/* ★★★ 卡片容器 ★★★ */
 .series-card {
   cursor: pointer;
-  transition: transform 0.2s ease-in-out;
-  display: flex; /* 使用flex布局 */
-  flex-direction: column; /* 垂直排列 */
-  height: 100%; /* 确保卡片填满网格单元 */
+  transition: transform 0.2s ease-in-out, box-shadow 0.2s ease-in-out;
+  height: 100%;
+  position: relative;
+  
+  /* ★★★ 核心 1：设定基准字号，所有内部元素都将基于此缩放 ★★★ */
+  font-size: calc(14px * var(--card-scale, 1)); 
+  
+  border-radius: calc(12px * var(--card-scale, 1));
+  overflow: hidden; 
+  border: 1px solid var(--n-border-color);
 }
+
 .series-card:hover {
   transform: translateY(-4px);
 }
-.center-container { display: flex; justify-content: center; align-items: center; height: calc(100vh - 250px); }
 
-.card-body-wrapper {
-  display: flex;
-  gap: 12px;
-  flex-grow: 1; /* 让内容区占据剩余空间 */
-  min-height: 0;
+.card-selected {
+  outline: 2px solid var(--n-color-primary);
+  outline-offset: -2px;
 }
 
-.card-poster-container { 
-  flex-shrink: 0; 
-  width: 150px; /* 这里调整海报宽度 */
-  height: 225px; /* 这里调整海报高度 */
-  overflow: hidden; 
-  border-radius: 4px; 
-} 
-.card-poster { width: 100%; height: 100%; }
-.card-content-container { 
-  flex-grow: 1; 
-  display: flex; 
-  flex-direction: column; 
-  padding: 0;
-  min-width: 0; 
-}
-.card-header { display: flex; justify-content: space-between; align-items: flex-start; gap: 8px; flex-shrink: 0; }
-.card-title { font-weight: 600; font-size: 1.05em; line-height: 1.3; }
-.card-status-area { flex-grow: 1; padding-top: 8px; }
-.reason-text { font-size: 0.85em; }
-.info-text { font-size: 0.85em; }
-.loader-trigger { height: 50px; display: flex; justify-content: center; align-items: center; }
-
-.card-actions { 
-  border-top: 1px solid var(--n-border-color); 
-  padding-top: 12px; 
-  margin-top: auto; /* 关键：将操作区推到底部 */
-  flex-shrink: 0; 
-  display: flex;
-  justify-content: center;
+/* ★★★ 核心 2：强制 Naive UI 组件跟随缩放 ★★★ */
+/* 这段代码强制卡片内的所有文本、按钮、标签都继承上面的 font-size */
+.series-card :deep(.n-card__content),
+.series-card :deep(.n-button),
+.series-card :deep(.n-tag),
+.series-card :deep(.n-text),
+.series-card :deep(.n-ellipsis) {
+  font-size: inherit !important; 
 }
 
-.series-card.dashboard-card > :deep(.n-card__content) { 
-  display: flex; /* 确保内容区也是flex */
+/* 调整图标大小以适应缩放 */
+.series-card :deep(.n-icon) {
+  font-size: 1.2em !important; 
+}
+
+/* 恢复内边距 */
+.series-card.dashboard-card > :deep(.n-card__content) {
+  padding: calc(10px * var(--card-scale, 1)) !important; 
+  display: flex !important;
   flex-direction: column !important;
-  justify-content: flex-start !important; 
-  padding: 12px !important; 
-  gap: 12px !important; /* 调整内部间距 */
-  height: 100%; /* 继承高度 */
+  height: 100% !important;
 }
 
-/* 响应式调整，让小屏幕下卡片更好看 */
-@media (max-width: 640px) {
-  .card-body-wrapper {
-    flex-direction: column;
-    align-items: center;
-  }
-  .card-poster-container {
-    width: 160px;
-    height: 240px;
-  }
-  .card-content-container {
-    width: 100%;
-    align-items: center;
-    text-align: center;
-  }
+/* ★★★ 内部布局：左右拉伸 ★★★ */
+.card-inner-layout {
+  display: flex;
+  flex-direction: row;
+  height: 100%;
+  width: 100%;
+  /* 关键：让海报和内容等高 */
+  align-items: stretch; 
+  gap: calc(12px * var(--card-scale, 1));
 }
-.card-poster-container { 
+
+/* ★★★ 海报区域 ★★★ */
+.card-poster-container {
   flex-shrink: 0; 
-  width: 150px; 
-  height: 225px; 
-  overflow: hidden; 
-  border-radius: 4px; 
-  position: relative; /* 确保印章可以绝对定位 */
-} 
+  /* 宽度随比例缩放 */
+  width: calc(130px * var(--card-scale, 1));
+  /* 关键：高度设为 100%，让它自动填满父容器（父容器高度由右侧文字撑开） */
+  height: auto; 
+  min-height: 100%; 
+  
+  position: relative;
+  background-color: rgba(0,0,0,0.1);
+  border-radius: 8px;
+  overflow: hidden;
+  box-shadow: 0 2px 8px rgba(0,0,0,0.1);
+}
 
-/* ★★★ 新增：印章样式 ★★★ */
+.card-poster {
+  width: 100%;
+  height: 100%;
+  display: block;
+}
+
+.card-poster :deep(img) {
+  width: 100%;
+  height: 100%;
+  /* 关键：Cover 模式，确保填满且不变形 */
+  object-fit: cover !important; 
+  display: block;
+  border-radius: 0 !important;
+}
+
+.poster-placeholder {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 100%;
+  height: 100%;
+  background-color: var(--n-action-color);
+  color: var(--n-text-color-disabled);
+}
+
+/* ★★★ 内容区域 ★★★ */
+.card-content-container {
+  flex-grow: 1;
+  display: flex;
+  flex-direction: column;
+  justify-content: space-between;
+  min-width: 0;
+  padding: 0;
+}
+
+.content-top {
+  display: flex;
+  flex-direction: column;
+  gap: calc(4px * var(--card-scale, 1));
+}
+
+.card-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: flex-start;
+  gap: 8px;
+  margin-bottom: calc(4px * var(--card-scale, 1));
+}
+
+.card-title {
+  font-weight: 600;
+  /* 标题稍微大一点 */
+  font-size: 1.1em !important; 
+  line-height: 1.3;
+  display: -webkit-box;
+  -webkit-line-clamp: 2;
+  line-clamp: 2;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+}
+
+.card-status-area {
+  flex-grow: 1;
+  display: flex;
+  flex-direction: column;
+  gap: 4px; /* 元素间距 */
+}
+
+.last-checked-text, .next-episode-text, .info-text {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  /* 辅助文字稍微小一点 */
+  font-size: 0.9em !important; 
+  line-height: 1.4;
+  opacity: 0.8;
+}
+
+/* ★★★ 底部按钮区域 ★★★ */
+.card-actions, .card-actions-bottom {
+  margin-top: auto; 
+  padding-top: calc(8px * var(--card-scale, 1));
+  border-top: 1px solid var(--n-border-color);
+  display: flex;
+  justify-content: center; 
+  align-items: center;
+  gap: calc(8px * var(--card-scale, 1));
+}
+
+/* 强制按钮变小以适应 */
+.card-actions-bottom :deep(.n-button) {
+  padding: 0 6px;
+  height: 24px; /* 强制限制高度，防止撑开 */
+  font-size: 0.9em !important;
+}
+
+/* 复选框 */
+.card-checkbox {
+  position: absolute;
+  top: 6px;
+  left: 6px;
+  z-index: 10;
+  background-color: rgba(255, 255, 255, 0.9);
+  border-radius: 50%;
+  padding: 2px;
+  opacity: 0;
+  transition: opacity 0.2s;
+  box-shadow: 0 2px 5px rgba(0,0,0,0.2);
+}
+
+.series-card:hover .card-checkbox, 
+.card-checkbox.n-checkbox--checked { 
+  opacity: 1; 
+  visibility: visible; 
+}
+
+/* 信息网格 (ResubscribePage用) */
+.meta-info-grid {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  margin-top: calc(4px * var(--card-scale, 1));
+}
+
+.ellipsis {
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  display: block;
+}
+
+/* 印章样式 */
 .poster-stamp {
   position: absolute;
   top: 50%;
   left: 50%;
   transform: translate(-50%, -50%) rotate(-15deg);
-  
   font-weight: 900;
-  font-size: 1.4rem;
-  letter-spacing: 2px;
-  padding: 4px 12px;
-  border-radius: 8px;
-  background-color: rgba(255, 255, 255, 0.85);
+  font-size: 1.1em !important; 
+  letter-spacing: 1px;
+  padding: 2px 8px;
+  border-radius: 6px;
+  background-color: rgba(255, 255, 255, 0.95);
   box-shadow: 0 4px 15px rgba(0,0,0,0.3);
   z-index: 5;
   pointer-events: none;
   white-space: nowrap;
-  user-select: none;
-  opacity: 0.9;
-  
-  /* 基础边框，具体颜色由子类决定 */
-  border: 3px solid; 
+  border: 3px solid;
 }
+.stamp-needed { border-color: #d03050; color: #d03050; }
+.stamp-ignored { border-color: #888; color: #888; transform: translate(-50%, -50%) rotate(10deg); font-size: 1rem; }
+.stamp-subscribed { border-color: #2080f0; color: #2080f0; transform: translate(-50%, -50%) rotate(-5deg); }
+.stamp-auto { border-color: #8a2be2; color: #8a2be2; transform: translate(-50%, -50%) rotate(5deg); }
 
-/* ★★★ 红色印章：不通过 ★★★ */
-.stamp-needed {
-  border-color: #d03050;
-  color: #d03050;
-}
+/* 状态文字颜色 */
+.reason-text-wrapper { display: flex; align-items: center; gap: 4px; font-size: 0.9em !important; font-weight: 500; }
+.text-needed { color: #d03050; }
+.text-ignored { color: #999; text-decoration: line-through; }
+.text-subscribed { color: #2080f0; }
+.text-auto { color: #8a2be2; }
 
-/* ★★★ 灰色印章：求放过 ★★★ */
-.stamp-ignored {
-  border-color: #888; /* 深灰色 */
-  color: #888;
-  font-size: 1.2rem; /*稍微小一点点，显得卑微一点 */
-  transform: translate(-50%, -50%) rotate(10deg); /* 换个角度，显得随性一点 */
-}
-
-.reason-text-wrapper {
+.loader-trigger {
+  height: 50px;
   display: flex;
+  justify-content: center;
   align-items: center;
-  font-weight: bold;
-  font-size: 0.9em;
-  line-height: 1.2;
 }
 
-.stamp-subscribed {
-  border-color: #2080f0; /* Naive UI 的 Primary Blue */
-  color: #2080f0;
-  transform: translate(-50%, -50%) rotate(-5deg); /* 稍微正一点，表示“正事已办” */
-}
-
-/* ★★★ 紫色印章：全自动 ★★★ */
-.stamp-auto {
-  border-color: #8a2be2; /* 蓝紫色 */
-  color: #8a2be2;
-  transform: translate(-50%, -50%) rotate(5deg); /* 稍微歪一点 */
-  background-color: rgba(240, 230, 255, 0.9); /* 淡紫色背景 */
-}
-
-/* ★★★ 蓝色文字 ★★★ */
-.text-subscribed {
-  color: #2080f0;
-}
-
-/* ★★★ 红色文字 ★★★ */
-.text-needed {
-  color: #d03050;
-}
-
-/* ★★★ 灰色文字 ★★★ */
-.text-ignored {
-  color: #999; /* 浅灰色，降低视觉干扰 */
-  text-decoration: line-through; /* 加个删除线，表示“这问题虽然在，但我不在乎” */
-}
-
-/* ★★★ 紫色文字 ★★★ */
-.text-auto {
-  color: #8a2be2;
+/* 手机端适配 */
+@media (max-width: 600px) {
+  .responsive-grid { grid-template-columns: 1fr !important; }
+  .card-poster-container { width: 100px; min-height: 150px; }
 }
 </style>
