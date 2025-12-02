@@ -9,10 +9,11 @@ from datetime import datetime, timedelta, timezone
 import threading
 
 # 导入我们需要的辅助模块
-from database import connection, media_db, request_db, watchlist_db
+from database import connection, media_db, request_db, watchlist_db, user_db
 import constants
 import handler.tmdb as tmdb
 import handler.emby as emby
+import handler.telegram as telegram
 import logging
 
 logger = logging.getLogger(__name__)
@@ -590,14 +591,20 @@ class WatchlistProcessor:
             episode_number = effective_next_episode.get('episode_number')
             season_number = effective_next_episode.get('season_number')
 
-            # 子规则: 下一集是新季第一集 且 日期在一个月(30天)以后 -> 判定当前季完结
-            # 逻辑：当前季看完了，下一季还早，先归档为“已完结”，等run_new_season_check_task去复活
+            # 子规则 A: 下一集是新季第一集 且 日期在一个月(30天)以后 -> 判定当前季完结
             if episode_number == 1 and days_until_air > 30:
                 final_status = STATUS_COMPLETED
                 paused_until_date = None
                 logger.info(f"  🔄 [判定-规则2] 下一集 (S{season_number}E{episode_number}) 是新季首播且在 {days_until_air} 天后 (>30天) 播出，判定当前季已完结。")
             
-            # 子规则: 其他情况 (季中集 或 新季首播但在30天内) -> 暂停至播出日期
+            # ★★★ 子规则 B (优化): 3天内就要播出 (或已播出但未下载) -> 设为“追剧中” ★★★
+            # 这样在UI上会高亮显示，且确保高频检查资源
+            elif days_until_air <= 3:
+                final_status = STATUS_WATCHING
+                paused_until_date = None
+                logger.info(f"  👀 [判定-规则2] 下一集 (S{season_number}E{episode_number}) 即将在 {days_until_air} 天内播出 (或已播出)，保持“追剧中”状态以及时更新资源。")
+
+            # 子规则 C: 还有很久才播出 -> 暂停至播出日期
             else:
                 final_status = STATUS_PAUSED
                 paused_until_date = air_date 
@@ -615,18 +622,41 @@ class WatchlistProcessor:
             
             if last_air_date:
                 days_since_last = (today - last_air_date).days
-                # 子规则: 距上一集播出超过一个月(30天) -> 判定已完结
+                
+                # 子规则 A: 距上一集播出超过一个月(30天) -> 判定已完结
                 if days_since_last > 30:
                     final_status = STATUS_COMPLETED
                     paused_until_date = None
                     logger.info(f"  🔄 [判定-规则3] 无待播集信息，且上一集已播出 {days_since_last} 天 (>30天)，判定已完结。")
+                
+                # 子规则 B: 距上一集播出在一个月内 -> 保持追剧
                 else:
-                    # 子规则: 距上一集播出在一个月内 -> 保持追剧
                     final_status = STATUS_WATCHING
                     paused_until_date = None
                     logger.info(f"  👀 [判定-规则3] 无待播集信息，但上一集仅播出 {days_since_last} 天 (<=30天)，保持“追剧中”状态以等待更新。")
+
+                    # ★★★ 新增逻辑：如果刚好超过一周 (第8天)，通知管理员人工检查 ★★★
+                    # 注意：这里使用 == 8 是为了避免每天运行脚本时重复发送通知。
+                    # 如果你的脚本不是每天运行，可以将范围扩大，例如 8 <= days_since_last <= 10
+                    if days_since_last == 8:
+                        logger.info(f"  🔔 [通知] 剧集 '{item_name}' 停更已满一周，正在发送管理员通知...")
+                        try:
+                            admin_ids = user_db.get_admin_telegram_chat_ids()
+                            if admin_ids:
+                                msg_text = (
+                                    f"⚠️ *追剧停更预警*\n\n"
+                                    f"📺 *剧集*: {telegram.escape_markdown(item_name)}\n"
+                                    f"📅 *上一集*: {last_date_str} ({days_since_last}天前)\n"
+                                    f"❓ *状态*: TMDb无后续排期\n\n"
+                                    f"该剧已停更超过一周且无新数据，请人工检查是否已完结。"
+                                )
+                                for admin_id in admin_ids:
+                                    telegram.send_telegram_message(admin_id, msg_text)
+                        except Exception as e:
+                            logger.error(f"  ❌ 发送停更通知失败: {e}")
+
             else:
-                # 极端情况：既没有下一集，也没有上一集时间 (可能是数据缺失) -> 默认保持追剧
+                # 极端情况：既没有下一集，也没有上一集时间 -> 默认保持追剧
                 final_status = STATUS_WATCHING
                 paused_until_date = None
                 logger.info(f"  👀 [判定-规则3] 缺乏播出日期数据，默认保持“追剧中”状态。")
