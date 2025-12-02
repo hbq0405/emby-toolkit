@@ -638,7 +638,7 @@ class WatchlistProcessor:
                     # ★★★ 新增逻辑：如果刚好超过一周 (第8天)，通知管理员人工检查 ★★★
                     # 注意：这里使用 == 8 是为了避免每天运行脚本时重复发送通知。
                     # 如果你的脚本不是每天运行，可以将范围扩大，例如 8 <= days_since_last <= 10
-                    if days_since_last == 8:
+                    if days_since_last > 8:
                         logger.info(f"  🔔 [通知] 剧集 '{item_name}' 停更已满一周，正在发送管理员通知...")
                         try:
                             admin_ids = user_db.get_admin_telegram_chat_ids()
