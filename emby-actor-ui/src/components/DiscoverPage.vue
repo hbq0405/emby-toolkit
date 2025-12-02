@@ -231,13 +231,13 @@
                   <n-icon size="24">
                     <!-- 图标逻辑保持不变 -->
                     <HourglassOutline 
-                      v-if="['SUBSCRIBED', 'PENDING_RELEASE'].includes(media.subscription_status) || 
-                            (!isPrivilegedUser && ['REQUESTED', 'WANTED'].includes(media.subscription_status))" 
+                      v-if="['SUBSCRIBED', 'PENDING_RELEASE', 'WANTED'].includes(media.subscription_status) || 
+                            (!isPrivilegedUser && media.subscription_status === 'REQUESTED')" 
                       color="#888" 
                       style="cursor: not-allowed;" 
                     />
                     <LightningIcon 
-                      v-else-if="isPrivilegedUser && ['WANTED', 'REQUESTED'].includes(media.subscription_status)" 
+                      v-else-if="isPrivilegedUser && media.subscription_status === 'REQUESTED'" 
                       color="#f0a020" 
                     />
                     <HeartOutline v-else />
