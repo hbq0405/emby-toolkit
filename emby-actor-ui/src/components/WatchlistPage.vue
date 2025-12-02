@@ -149,13 +149,26 @@
                       </n-space>
 
                       <n-tag v-if="hasMissing(item)" type="warning" size="small" round>{{ getMissingCountText(item) }}</n-tag>
-                      <n-text v-if="nextEpisode(item)?.name" :depth="3" class="next-episode-text">
-                        <n-icon :component="CalendarIcon" /> 待播集: {{ nextEpisode(item).name }}
-                        <span style="display: block; padding-left: 18px; margin-top: 2px;">
-                          ({{ formatAirDate(nextEpisode(item).air_date) }})
-                        </span>
-                      </n-text>
-                      <n-text :depth="3" class="last-checked-text">上次检查: {{ formatTimestamp(item.last_checked_at) }}</n-text>
+                      <!-- 1. 待播集数 -->
+                      <div v-if="nextEpisode(item)?.name" class="info-line">
+                        <n-icon :component="TvIcon" class="icon-fix" />
+                        <n-text :depth="3">下一集: {{ nextEpisode(item).name }}</n-text>
+                      </div>
+
+                      <!-- 2. 播出时间 -->
+                      <div v-if="nextEpisode(item)?.name" class="info-line">
+                        <n-icon :component="CalendarIcon" class="icon-fix" />
+                        <n-text :depth="3">
+                          <!-- 修改点：内容使用三元运算符，有日期显示日期，无日期显示“待定” -->
+                          播出时间: {{ nextEpisode(item).air_date ? formatAirDate(nextEpisode(item).air_date) : '待定' }}
+                        </n-text>
+                      </div>
+
+                      <!-- 3. 上次检查 -->
+                      <div class="info-line">
+                        <n-icon :component="TimeIcon" class="icon-fix" />
+                        <n-text :depth="3">上次检查: {{ formatTimestamp(item.last_checked_at) }}</n-text>
+                      </div>
                     </n-space>
                   </div>
                   
@@ -242,7 +255,7 @@
 import { ref, onMounted, onBeforeUnmount, h, computed, watch } from 'vue';
 import axios from 'axios';
 import { NLayout, NPageHeader, NDivider, NEmpty, NTag, NButton, NSpace, NIcon, useMessage, useDialog, NPopconfirm, NTooltip, NCard, NImage, NEllipsis, NSpin, NAlert, NRadioGroup, NRadioButton, NModal, NTabs, NTabPane, NList, NListItem, NCheckbox, NDropdown, NInput, NSelect, NButtonGroup } from 'naive-ui';
-import { SyncOutline, TvOutline as TvIcon, TrashOutline as TrashIcon, EyeOutline as EyeIcon, CalendarOutline as CalendarIcon, PlayCircleOutline as WatchingIcon, PauseCircleOutline as PausedIcon, CheckmarkCircleOutline as CompletedIcon, ScanCircleOutline as ScanIcon, CaretDownOutline as CaretDownIcon, FlashOffOutline as ForceEndIcon, ArrowUpOutline as ArrowUpIcon, ArrowDownOutline as ArrowDownIcon, DownloadOutline as DownloadIcon } from '@vicons/ionicons5';
+import { SyncOutline, TvOutline as TvIcon, TrashOutline as TrashIcon, EyeOutline as EyeIcon, CalendarOutline as CalendarIcon, TimeOutline as TimeIcon, PlayCircleOutline as WatchingIcon, PauseCircleOutline as PausedIcon, CheckmarkCircleOutline as CompletedIcon, ScanCircleOutline as ScanIcon, CaretDownOutline as CaretDownIcon, FlashOffOutline as ForceEndIcon, ArrowUpOutline as ArrowUpIcon, ArrowDownOutline as ArrowDownIcon, DownloadOutline as DownloadIcon } from '@vicons/ionicons5';
 import { format, parseISO } from 'date-fns';
 import { useConfig } from '../composables/useConfig.js';
 
@@ -969,6 +982,19 @@ watch(loaderRef, (newEl, oldEl) => {
   display: flex;
   justify-content: center;
   align-items: center;
+}
+
+.info-line {
+  display: flex;
+  align-items: center; /* 垂直居中对齐 */
+  line-height: 1.5;    /* 适当的行高 */
+}
+
+.icon-fix {
+  margin-right: 6px;   /* 图标和文字之间的间距 */
+  font-size: 14px;     /* 调整图标大小与文字协调，根据需要微调 */
+  color: var(--n-text-color-3); /* 让图标颜色也跟随 depth=3 变淡，或者直接删掉这行用默认色 */
+  opacity: 0.6;        /* 或者用透明度来模拟 depth=3 的效果 */
 }
 
 /* 手机端适配 */
