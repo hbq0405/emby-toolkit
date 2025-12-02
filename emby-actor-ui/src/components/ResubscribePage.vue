@@ -168,8 +168,10 @@
 
                       <!-- 媒体信息 (紧凑展示) -->
                       <div class="meta-info-grid">
+                        <!-- 第一行左：分辨率 -->
                         <n-text :depth="3" class="info-text">分辨率: {{ item.resolution_display }}</n-text>
                         
+                        <!-- 第一行右：质量 -->
                         <n-tooltip trigger="hover" placement="top-start" :disabled="!item.release_group_raw || item.release_group_raw.length === 0">
                             <template #trigger>
                               <n-text :depth="3" class="info-text">质量: {{ item.quality_display }}</n-text>
@@ -177,15 +179,21 @@
                             发布组: {{ item.release_group_raw ? item.release_group_raw.join(', ') : '' }}
                         </n-tooltip>
 
+                        <!-- 第二行左：编码 -->
                         <n-text :depth="3" class="info-text">编码: {{ item.codec_display }}</n-text>
+                        
+                        <!-- 第二行右：特效 -->
                         <n-text :depth="3" class="info-text">特效: {{ Array.isArray(item.effect_display) ? item.effect_display.join(', ') : item.effect_display }}</n-text>
                         
+                        <!-- 第三行全宽：音轨 -->
                         <n-tooltip trigger="hover" placement="top-start">
-                            <template #trigger><n-text :depth="3" class="info-text ellipsis">音轨: {{ item.audio_display }}</n-text></template>
+                            <template #trigger><n-text :depth="3" class="info-text ellipsis full-width-item">音轨: {{ item.audio_display }}</n-text></template>
                             {{ item.audio_display }}
                         </n-tooltip>
+                        
+                        <!-- 第四行全宽：字幕 -->
                         <n-tooltip trigger="hover" placement="top-start">
-                            <template #trigger><n-text :depth="3" class="info-text ellipsis">字幕: {{ item.subtitle_display }}</n-text></template>
+                            <template #trigger><n-text :depth="3" class="info-text ellipsis full-width-item">字幕: {{ item.subtitle_display }}</n-text></template>
                             {{ item.subtitle_display }}
                         </n-tooltip>
                       </div>
@@ -832,10 +840,19 @@ watch(() => props.taskStatus, (newStatus, oldStatus) => {
 
 /* 信息网格 (ResubscribePage用) */
 .meta-info-grid {
-  display: flex;
-  flex-direction: column;
-  gap: 2px;
+  display: grid;
+  grid-template-columns: 1fr 1fr; /* 强制分为两列，宽度相等 */
+  gap: 2px 8px; /* 行间距 2px，列间距 8px */
   margin-top: calc(4px * var(--card-scale, 1));
+}
+
+/* 新增：让音轨和字幕跨越两列 */
+.full-width-item {
+  grid-column: span 2;
+}
+
+.info-text {
+  min-width: 0; 
 }
 
 .ellipsis {
