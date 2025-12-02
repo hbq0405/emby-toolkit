@@ -643,12 +643,22 @@ class WatchlistProcessor:
                         try:
                             admin_ids = user_db.get_admin_telegram_chat_ids()
                             if admin_ids:
+                                # 1. 转义剧集名称
+                                safe_name = telegram.escape_markdown(item_name)
+                                
+                                # 2. 组合并转义日期行 (处理 '-' 和 '()')
+                                # 原文: 2025-12-02 (8天前) -> 转义后: 2025\-12\-02 \(8天前\)
+                                raw_date_line = f"{last_date_str} ({days_since_last}天前)"
+                                safe_date_line = telegram.escape_markdown(raw_date_line)
+
+                                # 3. 构建消息
+                                # 注意：最后一句的句号 '.' 也是保留字符，我这里直接手动加了反斜杠 \.
                                 msg_text = (
                                     f"⚠️ *追剧停更预警*\n\n"
-                                    f"📺 *剧集*: {telegram.escape_markdown(item_name)}\n"
-                                    f"📅 *上一集*: {last_date_str} ({days_since_last}天前)\n"
+                                    f"📺 *剧集*: {safe_name}\n"
+                                    f"📅 *上一集*: {safe_date_line}\n"
                                     f"❓ *状态*: TMDb无后续排期\n\n"
-                                    f"该剧已停更超过一周且无新数据，请人工检查是否已完结。"
+                                    f"该剧已停更超过一周且无新数据，请人工检查是否已完结\\."
                                 )
                                 for admin_id in admin_ids:
                                     telegram.send_telegram_message(admin_id, msg_text)
