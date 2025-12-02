@@ -150,7 +150,10 @@
 
                       <n-tag v-if="hasMissing(item)" type="warning" size="small" round>{{ getMissingCountText(item) }}</n-tag>
                       <n-text v-if="nextEpisode(item)?.name" :depth="3" class="next-episode-text">
-                        <n-icon :component="CalendarIcon" /> 播出时间: {{ nextEpisode(item).name }} ({{ formatAirDate(nextEpisode(item).air_date) }})
+                        <n-icon :component="CalendarIcon" /> 待播集: {{ nextEpisode(item).name }}
+                        <span style="display: block; padding-left: 18px; margin-top: 2px;">
+                          ({{ formatAirDate(nextEpisode(item).air_date) }})
+                        </span>
                       </n-text>
                       <n-text :depth="3" class="last-checked-text">上次检查: {{ formatTimestamp(item.last_checked_at) }}</n-text>
                     </n-space>
