@@ -120,7 +120,7 @@
                   <template #trigger>
                     <div class="avatar-wrapper" @click="triggerFileUpload">
                       <n-avatar
-                        :size="100"
+                        :size="150"
                         :src="avatarUrl"
                         :fallback-src="null"
                         object-fit="cover"
@@ -442,7 +442,7 @@ onMounted(async () => {
 }
 
 .profile-avatar-section {
-  width: 120px; /* 右侧固定宽度 */
+  width: 170px; /* 右侧固定宽度 */
   display: flex;
   flex-direction: column;
   align-items: center;
