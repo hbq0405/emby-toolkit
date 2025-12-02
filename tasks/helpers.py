@@ -450,7 +450,7 @@ def is_movie_subscribable(movie_id: int, api_key: str, config: dict) -> bool:
     delay_days = config.get(constants.CONFIG_OPTION_MOVIE_SUBSCRIPTION_DELAY_DAYS, 30)
 
     # 初始日志仍然使用ID，因为此时我们还没有片名
-    logger.debug(f"检查电影 (ID: {movie_id}) 是否适合订阅 (延迟天数: {delay_days})...")
+    logger.debug(f"  ➜ 检查电影 (ID: {movie_id}) 是否适合订阅 (延迟天数: {delay_days})...")
 
     details = get_movie_details(
         movie_id=movie_id,
@@ -462,12 +462,12 @@ def is_movie_subscribable(movie_id: int, api_key: str, config: dict) -> bool:
     log_identifier = f"《{details.get('title')}》" if details and details.get('title') else f"(ID: {movie_id})"
 
     if not details:
-        logger.warning(f"无法获取电影 {log_identifier} 的详情，默认其不适合订阅。")
+        logger.warning(f"  ➜ 无法获取电影 {log_identifier} 的详情，默认其不适合订阅。")
         return False
 
     release_info = details.get("release_dates", {}).get("results", [])
     if not release_info:
-        logger.warning(f"电影 {log_identifier} 未找到任何地区的发行日期信息，默认其不适合订阅。")
+        logger.warning(f"  ➜ 电影 {log_identifier} 未找到任何地区的发行日期信息，默认其不适合订阅。")
         return False
 
     earliest_theatrical_date = None
@@ -487,7 +487,7 @@ def is_movie_subscribable(movie_id: int, api_key: str, config: dict) -> bool:
                         if earliest_theatrical_date is None or current_release_date < earliest_theatrical_date:
                             earliest_theatrical_date = current_release_date
                 except (ValueError, TypeError):
-                    logger.warning(f"解析电影 {log_identifier} 的上映日期 '{release.get('release_date')}' 时出错。")
+                    logger.warning(f"  ➜ 解析电影 {log_identifier} 的上映日期 '{release.get('release_date')}' 时出错。")
                     continue
 
     if earliest_theatrical_date:
@@ -499,7 +499,7 @@ def is_movie_subscribable(movie_id: int, api_key: str, config: dict) -> bool:
             logger.info(f"  ➜ 失败: 电影 {log_identifier} 最早于 {days_since_release} 天前在影院上映，未满配置的 {delay_days} 天，不适合订阅。")
             return False
 
-    logger.warning(f"电影 {log_identifier} 未找到数字版或任何有效的影院上映日期，默认其不适合订阅。")
+    logger.warning(f"  ➜ 电影 {log_identifier} 未找到数字版或任何有效的影院上映日期，默认其不适合订阅。")
     return False
 
 # +++ 剧集完结状态检查 (共享逻辑) +++
