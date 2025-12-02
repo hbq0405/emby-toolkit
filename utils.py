@@ -261,6 +261,7 @@ KEYWORD_TRANSLATION_MAP = {
     "神话": "mythology",
     "超级英雄": "superhero",
     "平行宇宙": "parallel universe",
+    "漫改": "based on comic",
 
     # --- 恐怖/惊悚元素 ---
     "丧尸": "zombie",
