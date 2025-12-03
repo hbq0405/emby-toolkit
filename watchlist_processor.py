@@ -597,6 +597,7 @@ class WatchlistProcessor:
         new_tmdb_status = latest_series_data.get("status")
         is_ended_on_tmdb = new_tmdb_status in ["Ended", "Canceled"]
         
+        # 依然计算缺失信息，用于后续的“补旧番”订阅，但不影响状态判定
         real_next_episode_to_air = self._calculate_real_next_episode(all_tmdb_episodes, emby_seasons)
         missing_info = self._calculate_missing_info(latest_series_data.get('seasons', []), all_tmdb_episodes, emby_seasons)
         has_missing_media = bool(missing_info["missing_seasons"] or missing_info["missing_episodes"])
@@ -606,7 +607,7 @@ class WatchlistProcessor:
         paused_until_date = None
         today = datetime.now(timezone.utc).date()
 
-        # 步骤A: 预处理 - 确定是否存在一个“有效的、未来的”下一集
+        # 预处理：确定是否存在一个“有效的、未来的”下一集
         effective_next_episode = None
         effective_next_episode_air_date = None
         if real_next_episode_to_air and (air_date_str := real_next_episode_to_air.get('air_date')):
@@ -618,120 +619,117 @@ class WatchlistProcessor:
             except (ValueError, TypeError):
                 pass
 
-        # 规则1: 完美完结 (TMDb 完结 且 本地已集齐) -> 进冷宫
-        if is_ended_on_tmdb and not has_missing_media:
+        # 预处理：检查是否为本季大结局
+        is_season_finale = False
+        last_date_str = None # 用于日志
+        if last_episode_to_air:
+            last_date_str = last_episode_to_air.get('air_date')
+            last_s_num = last_episode_to_air.get('season_number')
+            last_e_num = last_episode_to_air.get('episode_number')
+            
+            if last_s_num and last_e_num:
+                season_info = next((s for s in latest_series_data.get('seasons', []) if s.get('season_number') == last_s_num), None)
+                if season_info:
+                    total_ep_count = season_info.get('episode_count', 0)
+                    # 如果当前集号等于(或大于)总集数，说明是最后一集
+                    if total_ep_count > 0 and last_e_num >= total_ep_count:
+                        is_season_finale = True
+
+        # ==============================================================================
+        # ★★★ 重构后的状态判定逻辑 ★★★
+        # ==============================================================================
+
+        # 规则 1: TMDb 状态已完结 -> 直接完结 (不考虑本地是否集齐)
+        if is_ended_on_tmdb:
             final_status = STATUS_COMPLETED
             paused_until_date = None
-            logger.info(f"  🏁 [判定-规则1] 剧集已完结且本地已集齐，标记为“已完结”。")
+            logger.info(f"  🏁 [判定-规则1] TMDb状态为 '{new_tmdb_status}'，判定为“已完结”。")
 
-        # 规则2: 完结但未集齐 (TMDb 完结 但 本地缺集) -> 保持追剧！
-        elif is_ended_on_tmdb and has_missing_media:
-            final_status = STATUS_WATCHING
+        # 规则 2: 本季大结局已播出 (且无明确下一集) -> 直接完结 (不考虑本地是否集齐)
+        elif is_season_finale and not effective_next_episode:
+            final_status = STATUS_COMPLETED
             paused_until_date = None
-            logger.info(f"  👀 [判定-规则2] 剧集在TMDb已完结，但本地尚有缺失 (如大结局未入库)，保持“追剧中”以等待补齐。")
+            logger.info(f"  🏁 [判定-规则2] 检测到上一集是本季大结局，且无后续排期，判定为“已完结” (等待新季复活)。")
 
-        # 规则3: 连载中 - 下一集有明确播出日期
-        elif effective_next_episode:
-            air_date = effective_next_episode_air_date
-            days_until_air = (air_date - today).days
-            episode_number = effective_next_episode.get('episode_number')
-            season_number = effective_next_episode.get('season_number')
-
-            # 子规则 A: 下一集是新季第一集 且 日期在一个月(30天)以后 -> 判定当前季完结
-            if episode_number == 1 and days_until_air > 30:
-                final_status = STATUS_COMPLETED
-                paused_until_date = None
-                logger.info(f"  🔄 [判定-规则3] 下一集 (S{season_number}E{episode_number}) 是新季首播且在 {days_until_air} 天后 (>30天) 播出，判定当前季已完结。")
-            
-            # ★★★ 子规则 B (优化): 3天内就要播出 (或已播出但未下载) -> 设为“追剧中” ★★★
-            # 这样在UI上会高亮显示，且确保高频检查资源
-            elif days_until_air <= 3:
-                final_status = STATUS_WATCHING
-                paused_until_date = None
-                logger.info(f"  👀 [判定-规则3] 下一集 (S{season_number}E{episode_number}) 即将在 {days_until_air} 天内播出 (或已播出)，保持“追剧中”状态以及时更新资源。")
-
-            # 子规则 C: 还有很久才播出 -> 暂停至播出日期
-            else:
-                final_status = STATUS_PAUSED
-                paused_until_date = air_date 
-                logger.info(f"  ⏸️ [判定-规则3] 下一集 (S{season_number}E{episode_number}) 将在 {days_until_air} 天后 ({air_date}) 播出，暂停至该日期。")
-
-        # 规则4: 连载中 - 无下一集信息 (或信息不全)
+        # 规则 3: 连载中逻辑 (保持原有逻辑)
         else:
-            # 获取上一集的播出信息
-            last_air_date = None
-            is_season_finale = False # 标记是否为本季大结局
+            # 情况 A: 下一集有明确播出日期
+            if effective_next_episode:
+                air_date = effective_next_episode_air_date
+                days_until_air = (air_date - today).days
+                episode_number = effective_next_episode.get('episode_number')
+                season_number = effective_next_episode.get('season_number')
 
-            if last_episode_to_air:
-                # 1. 解析日期
-                if (last_date_str := last_episode_to_air.get('air_date')):
+                # 子规则 A: 下一集是新季第一集 且 日期在一个月(30天)以后 -> 判定当前季完结
+                if episode_number == 1 and days_until_air > 30:
+                    final_status = STATUS_COMPLETED
+                    paused_until_date = None
+                    logger.info(f"  🔄 [判定-连载中] 下一集 (S{season_number}E{episode_number}) 是新季首播且在 {days_until_air} 天后 (>30天) 播出，判定当前季已完结。")
+                
+                # 子规则 B: 3天内就要播出 (或已播出但未下载) -> 设为“追剧中”
+                elif days_until_air <= 3:
+                    final_status = STATUS_WATCHING
+                    paused_until_date = None
+                    logger.info(f"  👀 [判定-连载中] 下一集 (S{season_number}E{episode_number}) 即将在 {days_until_air} 天内播出 (或已播出)，保持“追剧中”。")
+
+                # 子规则 C: 还有很久才播出 -> 暂停至播出日期
+                else:
+                    final_status = STATUS_PAUSED
+                    paused_until_date = air_date 
+                    logger.info(f"  ⏸️ [判定-连载中] 下一集 (S{season_number}E{episode_number}) 将在 {days_until_air} 天后 ({air_date}) 播出，暂停至该日期。")
+
+            # 情况 B: 无下一集信息 (或信息不全)
+            else:
+                last_air_date = None
+                if last_date_str:
                     try:
                         last_air_date = datetime.strptime(last_date_str, '%Y-%m-%d').date()
                     except ValueError:
                         pass
-                
-                # 2. ★★★ 核心新增：检测是否为本季大结局 ★★★
-                # 逻辑：如果 上一集集号 >= 该季总集数，则认为本季已完结
-                last_s_num = last_episode_to_air.get('season_number')
-                last_e_num = last_episode_to_air.get('episode_number')
-                
-                if last_s_num and last_e_num:
-                    # 从 series 详情的 seasons 列表中找到对应季的信息
-                    season_info = next((s for s in latest_series_data.get('seasons', []) if s.get('season_number') == last_s_num), None)
-                    if season_info:
-                        total_ep_count = season_info.get('episode_count', 0)
-                        # 如果当前集号等于(或大于)总集数，说明是最后一集
-                        if total_ep_count > 0 and last_e_num >= total_ep_count:
-                            is_season_finale = True
-                            logger.info(f"  🏁 [判定-规则4] 检测到 S{last_s_num}E{last_e_num} 是本季第 {last_e_num}/{total_ep_count} 集，判定为本季大结局。")
 
-            if is_season_finale:
-                # ★★★ 如果是本季大结局，直接完结，不再等待30天 ★★★
-                final_status = STATUS_COMPLETED
-                paused_until_date = None
-                logger.info(f"  ✅ [判定-规则4] 当前季已完结，且暂无下一季排期，状态变更为“已完结” (等待新季复活)。")
+                if last_air_date:
+                    days_since_last = (today - last_air_date).days
+                    
+                    # 子规则 A: 距上一集播出超过一个月(30天) -> 判定已完结
+                    if days_since_last > 30:
+                        final_status = STATUS_COMPLETED
+                        paused_until_date = None
+                        logger.info(f"  🔄 [判定-连载中] 无待播集信息，且上一集已播出 {days_since_last} 天 (>30天)，判定已完结。")
+                    
+                    # 子规则 B: 距上一集播出在一个月内 -> 保持追剧
+                    else:
+                        final_status = STATUS_WATCHING
+                        paused_until_date = None
+                        logger.info(f"  👀 [判定-连载中] 无待播集信息，但上一集仅播出 {days_since_last} 天 (<=30天)，保持“追剧中”。")
 
-            elif last_air_date:
-                days_since_last = (today - last_air_date).days
-                
-                # 子规则 A: 距上一集播出超过一个月(30天) -> 判定已完结
-                if days_since_last > 30:
-                    final_status = STATUS_COMPLETED
-                    paused_until_date = None
-                    logger.info(f"  🔄 [判定-规则4] 无待播集信息，且上一集已播出 {days_since_last} 天 (>30天)，判定已完结。")
-                
-                # 子规则 B: 距上一集播出在一个月内 -> 保持追剧
+                        # 停更报警逻辑
+                        if days_since_last > 8:
+                            logger.info(f"  🔔 [通知] 剧集 '{item_name}' 停更已满一周，正在发送管理员通知...")
+                            try:
+                                admin_ids = user_db.get_admin_telegram_chat_ids()
+                                if admin_ids:
+                                    safe_name = telegram.escape_markdown(item_name)
+                                    raw_date_line = f"{last_date_str} ({days_since_last}天前)"
+                                    safe_date_line = telegram.escape_markdown(raw_date_line)
+                                    msg_text = (
+                                        f"⚠️ *追剧停更预警*\n\n"
+                                        f"📺 *剧集*: {safe_name}\n"
+                                        f"📅 *上一集*: {safe_date_line}\n"
+                                        f"❓ *状态*: TMDb无后续排期\n\n"
+                                        f"该剧已停更超过一周且无新数据，请人工检查是否已完结\\."
+                                    )
+                                    for admin_id in admin_ids:
+                                        telegram.send_telegram_message(admin_id, msg_text)
+                            except Exception as e:
+                                logger.error(f"  ❌ 发送停更通知失败: {e}")
                 else:
+                    # 极端情况：无任何日期信息
                     final_status = STATUS_WATCHING
                     paused_until_date = None
-                    logger.info(f"  👀 [判定-规则4] 无待播集信息，但上一集仅播出 {days_since_last} 天 (<=30天)，保持“追剧中”状态以等待更新。")
+                    logger.info(f"  👀 [判定-连载中] 缺乏播出日期数据，默认保持“追剧中”状态。")
 
-                    # ★★★ 停更报警逻辑 (保留之前的修复) ★★★
-                    if days_since_last > 8: # 仅在第8天通知
-                        logger.info(f"  🔔 [通知] 剧集 '{item_name}' 停更已满一周，正在发送管理员通知...")
-                        try:
-                            admin_ids = user_db.get_admin_telegram_chat_ids()
-                            if admin_ids:
-                                safe_name = telegram.escape_markdown(item_name)
-                                raw_date_line = f"{last_date_str} ({days_since_last}天前)"
-                                safe_date_line = telegram.escape_markdown(raw_date_line)
-                                msg_text = (
-                                    f"⚠️ *追剧停更预警*\n\n"
-                                    f"📺 *剧集*: {safe_name}\n"
-                                    f"📅 *上一集*: {safe_date_line}\n"
-                                    f"❓ *状态*: TMDb无后续排期\n\n"
-                                    f"该剧已停更超过一周且无新数据，请人工检查是否已完结\\."
-                                )
-                                for admin_id in admin_ids:
-                                    telegram.send_telegram_message(admin_id, msg_text)
-                        except Exception as e:
-                            logger.error(f"  ❌ 发送停更通知失败: {e}")
+        # ==============================================================================
 
-            else:
-                # 极端情况
-                final_status = STATUS_WATCHING
-                paused_until_date = None
-                logger.info(f"  👀 [判定-规则3] 缺乏播出日期数据，默认保持“追剧中”状态。")
         # 手动强制完结
         if is_force_ended and final_status != STATUS_COMPLETED:
             final_status = STATUS_COMPLETED
@@ -776,6 +774,8 @@ class WatchlistProcessor:
         watchlist_db.sync_seasons_watching_status(tmdb_id, list(active_seasons), final_status)
 
         # ★★★ 场景一：补旧番 - 只处理已完结剧集中，已播出的缺失季 ★★★
+        # 注意：由于现在 TMDb Ended 状态会直接导致 final_status = COMPLETED，
+        # 所以即使本地缺集，也会进入这个分支，从而正确触发“补旧番”逻辑。
         if final_status == STATUS_COMPLETED and has_missing_media:
             logger.info(f"  ➜ 《{item_name}》为已完结状态，开始检查可补全的缺失季...")
             
@@ -850,11 +850,9 @@ class WatchlistProcessor:
                         if air_date > today:
                             is_pending = True
                     except ValueError:
-                        # 日期格式错误，按已上映处理
                         pass
                 
                 if is_pending:
-                    # 如果是未来的季，则标记为 PENDING_RELEASE
                     logger.info(f"  ➜ 发现未上映的缺失季 S{season_num} (播出日期: {air_date_str})，将状态设为 PENDING_RELEASE。")
                     request_db.set_media_status_pending_release(
                         tmdb_ids=season_tmdb_id,
@@ -863,7 +861,6 @@ class WatchlistProcessor:
                         media_info_list=[media_info]
                     )
                 else:
-                    # 如果是已上映或日期未知的季，则标记为 WANTED
                     logger.info(f"  ➜ 发现已上映的缺失季 S{season_num}，将状态设为 WANTED。")
                     request_db.set_media_status_wanted(
                         tmdb_ids=season_tmdb_id,
