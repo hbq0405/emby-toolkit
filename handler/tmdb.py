@@ -431,7 +431,7 @@ def find_person_by_external_id(external_id: str, api_key: str, source: str = "im
     logger.debug(f"  ➜ TMDb: 正在通过 {source} '{external_id}' 查找人物...")
     try:
         proxies = config_manager.get_proxies_for_requests()
-        response = requests.get(api_url, params=params, timeout=10, proxies=proxies)
+        response = tmdb_session.get(api_url, params=params, timeout=15, proxies=proxies)
         response.raise_for_status()
         data = response.json()
         person_results = data.get("person_results", [])
@@ -443,7 +443,6 @@ def find_person_by_external_id(external_id: str, api_key: str, source: str = "im
         tmdb_name = person_found.get('name')
         logger.debug(f"  ➜ 查找成功: 找到了 '{tmdb_name}' (TMDb ID: {person_found.get('id')})")
 
-        # ★★★★★★★★★★★★★★★ 精简后的精确验证逻辑 ★★★★★★★★★★★★★★★
         if names_for_verification:
             # 1. 标准化 TMDb 返回的英文名
             normalized_tmdb_name = normalize_name_for_matching(tmdb_name)
@@ -640,14 +639,23 @@ def get_tmdb_id_by_imdb_id(imdb_id: str, api_key: str, media_type: str) -> Optio
         "api_key": api_key,
         "external_source": "imdb_id"
     }
-    resp = requests.get(url, params=params)
-    if resp.status_code == 200:
-        data = resp.json()
-        if media_type.lower() == 'movie' and data.get('movie_results'):
-            return data['movie_results'][0].get('id')
-        elif media_type.lower() == 'series' or media_type.lower() == 'tv':
-            if data.get('tv_results'):
-                return data['tv_results'][0].get('id')
+    
+    try:
+        # ✅ 修复：获取代理配置
+        proxies = config_manager.get_proxies_for_requests()
+        # ✅ 修复：使用全局 session (带重试功能) 并传入 proxies
+        resp = tmdb_session.get(url, params=params, proxies=proxies, timeout=15)
+        
+        if resp.status_code == 200:
+            data = resp.json()
+            if media_type.lower() == 'movie' and data.get('movie_results'):
+                return data['movie_results'][0].get('id')
+            elif media_type.lower() in ['series', 'tv']:
+                if data.get('tv_results'):
+                    return data['tv_results'][0].get('id')
+    except Exception as e:
+        logger.error(f"通过 IMDb ID 获取 TMDb ID 失败: {e}")
+        
     return None
 
 def get_list_details_tmdb(list_id: int, api_key: str, page: int = 1) -> Optional[Dict[str, Any]]:
