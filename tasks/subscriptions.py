@@ -497,7 +497,7 @@ def task_auto_subscribe(processor):
 
         if subscription_details:
             # ★★★ 核心修改 1/3: 调整标题，使用更通用的措辞 ★★★
-            header = f"✅ *统一订阅任务完成，成功处理 {len(subscription_details)} 项:*"
+            header = f"  ✅ *统一订阅任务完成，成功处理 {len(subscription_details)} 项:*"
             
             item_lines = []
             for detail in subscription_details:
