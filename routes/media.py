@@ -517,29 +517,51 @@ def api_unified_subscription_status():
     else:
         return jsonify({"error": "没有有效的媒体项被成功处理。", "errors": errors}), 400
 
-@media_api_bp.route('/subscriptions/all', methods=['GET'])
+@media_api_bp.route('/subscriptions/list', methods=['GET'])
 @admin_required
-def api_get_all_subscriptions_for_management():
+def api_get_subscriptions_list():
     """
-    为前端“统一订阅”页面提供所有有订阅状态媒体项的数据。
+    【V2 - 高性能版】
+    支持按状态过滤和分页获取订阅列表。
+    参数:
+      - status: 逗号分隔的状态字符串 (例如: "WANTED,PENDING_RELEASE")
+      - page: 页码 (默认 1)
+      - page_size: 每页数量 (默认 20)
     """
     try:
-        # 1. 从数据库获取原始数据
-        items = media_db.get_all_subscriptions()
+        # 1. 解析参数
+        status_param = request.args.get('status', '')
+        page = int(request.args.get('page', 1))
+        page_size = int(request.args.get('page_size', 20))
 
-        # 遍历每个媒体项，处理其来源信息
+        # 如果没有传 status，默认获取所有活跃状态 (不含 IGNORED 和 NONE)
+        # 这样前端如果不改代码，默认也不会加载庞大的 IGNORED 列表
+        if not status_param:
+            statuses = ['WANTED', 'PENDING_RELEASE', 'SUBSCRIBED']
+        else:
+            statuses = [s.strip().upper() for s in status_param.split(',') if s.strip()]
+
+        # 2. 调用数据库查询
+        items, total_count = media_db.get_filtered_subscriptions(statuses, page, page_size)
+
+        # 3. 数据增强 (解析用户名)
+        # 注意：现在只处理当前页的几十条数据，速度极快
         for item in items:
             sources = item.get('subscription_sources_json')
             if isinstance(sources, list):
                 for source in sources:
-                    # 如果来源是用户请求，并且有 user_id
                     if source.get('type') == 'user_request' and (user_id := source.get('user_id')):
-                        # 根据 user_id 查询用户名，并将其添加到 source 字典中
-                        # 使用 'user' 作为键名，以匹配前端已有的逻辑
                         source['user'] = user_db.get_username_by_id(user_id) or '未知用户'
 
-        # 3. 返回增强后的数据
-        return jsonify(items)
+        # 4. 返回带分页信息的结构
+        return jsonify({
+            "items": items,
+            "total": total_count,
+            "page": page,
+            "page_size": page_size,
+            "total_pages": (total_count + page_size - 1) // page_size
+        })
+
     except Exception as e:
-        logger.error(f"API /subscriptions/all 获取数据失败: {e}", exc_info=True)
+        logger.error(f"API /subscriptions/list 获取数据失败: {e}", exc_info=True)
         return jsonify({"error": "获取订阅列表时发生服务器内部错误"}), 500
