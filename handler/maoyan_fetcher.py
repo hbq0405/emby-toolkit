@@ -25,6 +25,7 @@ def trace(self, message, *args, **kws):
 logging.Logger.trace = trace
 
 try:
+    import config_manager
     import handler.tmdb as tmdb
     from tasks.helpers import parse_series_title_and_season
 except ImportError as e:
@@ -187,7 +188,7 @@ def main():
     parser.add_argument('--types', nargs='+', default=['movie'], help="要获取的榜单类型 (例如: movie web-heat zongyi)。")
     parser.add_argument('--platform', default='all', help="平台来源 (all, tencent, iqiyi, youku, mango)。")
     args = parser.parse_args()
-
+    config_manager.load_config()
     logger.info(f"开始执行猫眼榜单数据抓取和匹配任务 (平台: {args.platform})...")
     
     movie_titles, tv_titles = get_maoyan_rank_titles(args.types, args.platform, args.num)
