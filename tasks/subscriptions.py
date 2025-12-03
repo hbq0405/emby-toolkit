@@ -211,7 +211,7 @@ def task_manual_subscribe_batch(processor, subscribe_requests: List[Dict]):
             else:
                 logger.error(f"  ➜ 订阅《{item_title_for_log}》失败，请检查 MoviePilot 日志。")
         
-        final_message = f"  手动订阅任务完成，成功处理 {processed_count}/{total_items} 个项目。"
+        final_message = f"  ✅ 手动订阅任务完成，成功处理 {processed_count}/{total_items} 个项目。"
         task_manager.update_status_from_thread(100, final_message)
         logger.info(f"--- '{task_name}' 任务执行完毕 ---")
 
