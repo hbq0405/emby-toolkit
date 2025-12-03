@@ -2300,7 +2300,40 @@ def authenticate_emby_user(username: str, password: str) -> Optional[Dict[str, A
     except Exception as e:
         logger.error(f"  ➜ 认证用户 '{username}' 时发生未知错误: {e}", exc_info=True)
         return None
+def test_connection(url: str, api_key: str) -> dict:
+    """
+    测试给定的 URL 和 Key 是否能连通 Emby。
+    用于设置页面验证配置有效性。
+    """
+    if not url or not api_key:
+        return {'success': False, 'error': 'URL 或 API Key 为空'}
+
+    # 去掉末尾斜杠，确保格式统一
+    url = url.rstrip('/')
     
+    # 使用 System/Info 端点，这是一个轻量级且通常开放的端点
+    endpoint = f"{url}/emby/System/Info"
+    params = {'api_key': api_key}
+    
+    try:
+        # 设置较短的超时时间，避免前端长时间等待
+        resp = requests.get(endpoint, params=params, timeout=10)
+        
+        if resp.status_code == 200:
+            return {'success': True}
+        elif resp.status_code == 401:
+            return {'success': False, 'error': 'API Key 无效或无权限'}
+        elif resp.status_code == 404:
+            return {'success': False, 'error': '找不到 Emby 服务器 (404)，请检查 URL'}
+        else:
+            return {'success': False, 'error': f'连接失败 (HTTP {resp.status_code})'}
+            
+    except requests.exceptions.ConnectionError:
+        return {'success': False, 'error': '无法连接到服务器，请检查 URL 或网络'}
+    except requests.exceptions.Timeout:
+        return {'success': False, 'error': '连接超时'}
+    except Exception as e:
+        return {'success': False, 'error': str(e)}   
 def upload_user_image(base_url, api_key, user_id, image_data, content_type):
     """
     上传用户头像到 Emby 服务器。

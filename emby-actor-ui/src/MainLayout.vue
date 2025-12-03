@@ -1,3 +1,4 @@
+<!-- src/MainLayout.vue -->
 <template>
   <n-layout style="height: 100vh;">
     <n-layout-header :bordered="false" class="app-header">
@@ -38,7 +39,6 @@
               @select="handleUserSelect"
             >
               <div style="display: flex; align-items: center; cursor: pointer; gap: 4px;">
-                <!-- ★★★ 2. 用户名直接从 store 的计算属性获取 ★★★ -->
                 <span style="font-size: 14px;">欢迎, {{ authStore.username }}</span>
                 <svg xmlns="http://www.w3.org/2000/svg" width="1em" height="1em" viewBox="0 0 24 24"><path fill="currentColor" d="m7 10l5 5l5-5z"></path></svg>
               </div>
@@ -54,7 +54,7 @@
               size="small"
               style="width: 120px;"
             />
-            <!-- ★★★ 编辑按钮入口 ★★★ -->
+            <!-- 编辑按钮入口 -->
             <n-tooltip v-if="props.selectedTheme === 'custom'">
               <template #trigger>
                 <n-button @click="emit('edit-custom-theme')" circle size="small">
@@ -112,7 +112,7 @@
         content-style="padding: 24px; transition: background-color 0.3s;"
         :native-scrollbar="false"
       >
-      <!-- ★★★ 任务状态 ★★★ -->
+      <!-- 任务状态 -->
       <div class="status-display-area" v-if="authStore.isAdmin && props.taskStatus && props.taskStatus.current_action !== '空闲'">
         <n-card size="small" :bordered="false" style="margin-bottom: 15px;">
           <p style="margin: 0; font-size: 0.9em; display: flex; align-items: center; justify-content: space-between; gap: 16px;">
@@ -148,16 +148,9 @@
         </div>
       </n-layout-content>
     </n-layout>
-    <n-modal 
-      v-model:show="showPasswordModal"
-      preset="card"
-      style="width: 90%; max-width: 500px;"
-      title="修改密码"
-      :bordered="false"
-      size="huge"
-    >
-      <ChangePassword @password-changed="showPasswordModal = false" />
-    </n-modal>
+    
+    <!-- 移除了修改密码模态框，因为现在没有本地密码了 -->
+    
     <!-- 实时日志模态框 -->
     <n-modal v-model:show="isRealtimeLogVisible" preset="card" style="width: 80%; max-width: 900px;" title="实时任务日志" class="modal-card-lite">
        <n-log ref="logRef" :log="logContent" trim class="log-panel" style="height: 60vh; font-size: 13px; line-height: 1.6;"/>
@@ -178,13 +171,10 @@ import {
 } from 'naive-ui';
 import { useAuthStore } from './stores/auth';
 import { themes } from './theme.js';
-import ChangePassword from './components/settings/ChangePassword.vue';
 import LogViewer from './components/LogViewer.vue';
 import {
   AnalyticsOutline as StatsIcon,
   ListOutline as ReviewListIcon,
-  ServerOutline as EmbyIcon,
-  KeyOutline as ApiIcon,
   TimerOutline as SchedulerIcon,
   OptionsOutline as GeneralIcon,
   LogOutOutline as LogoutIcon,
@@ -204,9 +194,11 @@ import {
   FilmOutline as DiscoverIcon,
   ArchiveOutline as UnifiedSubIcon,
   ReaderOutline,
+  LibraryOutline, 
+  BookmarksOutline, 
+  SettingsOutline,
+  ArchiveOutline
 } from '@vicons/ionicons5';
-import { ArchiveOutline, LibraryOutline, BookmarksOutline, SettingsOutline } from '@vicons/ionicons5'; 
-import { Password24Regular as PasswordIcon } from '@vicons/fluent';
 import axios from 'axios';
 import { useMessage, useDialog } from 'naive-ui';
 import logo from './assets/logo.png'
@@ -222,6 +214,7 @@ const triggerStopTask = async () => {
     message.error(error.response?.data?.error || '发送停止任务请求失败，请查看日志。');
   }
 };
+
 // 1. 定义 props 和 emits
 const props = defineProps({
   isDark: Boolean,
@@ -234,11 +227,10 @@ const emit = defineEmits(['update:is-dark', 'update:selected-theme', 'edit-custo
 const router = useRouter(); 
 const route = useRoute(); 
 const authStore = useAuthStore();
-const showPasswordModal = ref(false);
 const collapsed = ref(false);
 const activeMenuKey = computed(() => route.name);
 const appVersion = ref(__APP_VERSION__);
-// ★★★ 日志相关状态 ★★★
+// 日志相关状态
 const isRealtimeLogVisible = ref(false);
 const isHistoryLogVisible = ref(false);
 const logRef = ref(null);
@@ -270,16 +262,7 @@ watch([() => props.taskStatus?.logs, isRealtimeLogVisible], async ([, isVisible]
 const userOptions = computed(() => {
   const options = [];
 
-  // 规则1: 只有本地管理员才能看到“修改密码”
-  if (authStore.userType === 'local_admin') {
-    options.push({
-      label: '修改密码',
-      key: 'change-password',
-      icon: renderIcon(PasswordIcon)
-    });
-  }
-
-  // 规则2: 只要是管理员（本地或Emby），就能看到“重启容器”
+  // 规则1: 只要是管理员，就能看到“重启容器”
   if (authStore.isAdmin) {
     options.push({
       label: '重启容器',
@@ -293,7 +276,7 @@ const userOptions = computed(() => {
     options.push({ type: 'divider', key: 'd1' });
   }
 
-  // 规则3: 只要登录了，就能看到“退出登录”
+  // 规则2: 只要登录了，就能看到“退出登录”
   options.push({
     label: '退出登录',
     key: 'logout',
@@ -303,39 +286,32 @@ const userOptions = computed(() => {
   return options;
 });
 
-// ▼▼▼ 修改点1: 创建一个健壮的、可复用的重启函数 ▼▼▼
 const triggerRestart = async () => {
   message.info('正在发送重启指令...');
   try {
     await axios.post('/api/system/restart');
-    // 请求已发出，即使下面因网络中断而报错，也视为成功启动了重启流程
     message.success('重启指令已发送，应用正在后台重启。请稍后手动刷新页面。', { duration: 10000 });
   } catch (error) {
-    // 如果有响应体，说明是后端明确返回的错误
     if (error.response) {
       message.error(error.response.data.error || '发送重启请求失败，请查看日志。');
     } else {
-      // 否则，大概率是预期的网络中断，这是重启成功的标志
       message.success('重启指令已发送，应用正在后台重启。请稍后手动刷新页面。', { duration: 10000 });
     }
   }
 };
 
-// ▼▼▼ 修改点2: 更新 handleUserSelect 以调用新函数 ▼▼▼
 const handleUserSelect = async (key) => {
-  if (key === 'change-password') {
-    showPasswordModal.value = true;
-  } else if (key === 'restart-container') {
+  if (key === 'restart-container') {
     dialog.warning({
       title: '确认重启容器',
       content: '确定要重启容器吗？应用将在短时间内无法访问，重启后需要手动刷新页面。',
       positiveText: '确定重启',
       negativeText: '取消',
-      onPositiveClick: triggerRestart, // 直接调用优化后的函数
+      onPositiveClick: triggerRestart, 
     });
   } else if (key === 'logout') {
     await authStore.logout();
-    router.push({ name: 'Login' }); // 添加导航到登录页
+    router.push({ name: 'Login' }); 
   }
 };
 
@@ -345,12 +321,12 @@ const menuOptions = computed(() => {
     label: '发现', 
     key: 'group-discovery', 
     type: 'group', 
-    children: [] // 先创建一个空的孩子列表
+    children: [] 
   };
 
   // 2. 根据用户类型，动态地往这个组里添加菜单项
   
-  // 规则1: 如果用户是任何类型的管理员，就添加“数据看板”
+  // 规则1: 如果用户是管理员，就添加“数据看板”
   if (authStore.isAdmin) {
     discoveryGroup.children.push({ 
       label: '数据看板', 
@@ -359,8 +335,9 @@ const menuOptions = computed(() => {
     });
   }
 
-  // 规则2: ★★★ 只有当用户是 Emby 用户时，才添加“影视探索”和“用户中心” ★★★
-  if (authStore.userType === 'emby_user') {
+  // 规则2: 只要是登录用户，都应该能看到“用户中心”和“影视探索”
+  // (即使是管理员，也是 Emby 用户，也应该能用这些功能)
+  if (authStore.isLoggedIn) {
     discoveryGroup.children.push(
       { label: '用户中心', key: 'UserCenter', icon: renderIcon(UserCenterIcon) },
       { label: '影视探索', key: 'Discover', icon: renderIcon(DiscoverIcon) }
@@ -376,8 +353,7 @@ const menuOptions = computed(() => {
       { 
         label: '整理', 
         key: 'group-management', 
-        // type: 'group',  <--- 【关键修改】删除这一行
-        icon: renderIcon(LibraryOutline), // <--- 【新增】添加图标
+        icon: renderIcon(LibraryOutline), 
         children: [ 
           { label: '原生合集', key: 'Collections', icon: renderIcon(CollectionsIcon) }, 
           { label: '自建合集', key: 'CustomCollectionsManager', icon: renderIcon(CustomCollectionsIcon) }, 
@@ -389,8 +365,7 @@ const menuOptions = computed(() => {
       { 
         label: '订阅', 
         key: 'group-subscriptions', 
-        // type: 'group', <--- 【关键修改】删除这一行
-        icon: renderIcon(BookmarksOutline), // <--- 【新增】添加图标
+        icon: renderIcon(BookmarksOutline), 
         children: [ 
           { label: '智能追剧', key: 'Watchlist', icon: renderIcon(WatchlistIcon) }, 
           { label: '演员订阅', key: 'ActorSubscriptions', icon: renderIcon(ActorSubIcon) }, 
@@ -401,8 +376,7 @@ const menuOptions = computed(() => {
       { 
         label: '系统', 
         key: 'group-system', 
-        // type: 'group', <--- 【关键修改】删除这一行
-        icon: renderIcon(SettingsOutline), // <--- 【新增】添加图标
+        icon: renderIcon(SettingsOutline), 
         children: [ 
           { label: '用户管理', key: 'UserManagement', icon: renderIcon(UserManagementIcon) },
           { label: '通用设置', key: 'settings-general', icon: renderIcon(GeneralIcon) }, 

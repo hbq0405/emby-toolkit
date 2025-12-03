@@ -1,174 +1,208 @@
 # routes/unified_auth.py
 
 import logging
-import os
+import secrets
+import time
 from flask import Blueprint, request, jsonify, session
-from werkzeug.security import generate_password_hash, check_password_hash 
 import config_manager
 import constants
 import handler.emby as emby
 from database import user_db
-from extensions import login_required
 
 unified_auth_bp = Blueprint('unified_auth_bp', __name__, url_prefix='/api/auth')
 logger = logging.getLogger(__name__)
 
-DEFAULT_INITIAL_PASSWORD = "password"
+# --- 内存存储：灾难恢复令牌 ---
+# 结构: { 'token_string': expiry_timestamp }
+RECOVERY_TOKENS = {}
 
-def init_auth():
-    """初始化认证系统，仅在数据库没有用户时创建默认用户。"""
-    auth_enabled = config_manager.APP_CONFIG.get(constants.CONFIG_OPTION_AUTH_ENABLED, False)
-    if not auth_enabled:
-        logger.info("用户认证功能未启用。")
-        return
+def clean_expired_tokens():
+    """清理过期的令牌"""
+    now = time.time()
+    expired = [t for t, exp in RECOVERY_TOKENS.items() if now > exp]
+    for t in expired:
+        del RECOVERY_TOKENS[t]
 
-    try:
-        # ### 核心修改：调用新的数据库函数 ###
-        if user_db.get_user_count() > 0:
-            logger.info("  ➜ 数据库中已存在用户，跳过初始用户创建。")
-            return
+@unified_auth_bp.route('/check_status', methods=['GET'])
+def check_system_status():
+    """
+    【前端入口检查】
+    前端 App.vue 加载时首先调用此接口，决定跳转到哪个页面。
+    """
+    # 1. 检查系统是否已配置
+    if not config_manager.is_system_configured():
+        return jsonify({
+            "status": "setup_required", 
+            "message": "系统未配置"
+        }), 200
+    
+    # 2. 检查是否已登录
+    if 'emby_user_id' in session:
+        return jsonify({
+            "status": "logged_in",
+            "user": {
+                "id": session['emby_user_id'],
+                "name": session.get('emby_username'),
+                "is_admin": session.get('emby_is_admin', False)
+            }
+        }), 200
 
-        logger.info("  ➜ 数据库中未发现任何用户，开始创建初始管理员账户。")
-        
-        env_username = os.environ.get("AUTH_USERNAME")
-        username = env_username.strip() if env_username else config_manager.APP_CONFIG.get(constants.CONFIG_OPTION_AUTH_USERNAME, constants.DEFAULT_USERNAME).strip()
-        password_hash = generate_password_hash(DEFAULT_INITIAL_PASSWORD)
-        
-        # ### 核心修改：调用新的数据库函数 ###
-        user_db.create_initial_admin_user(username, password_hash)
-        
-        logger.critical("=" * 60)
-        logger.critical(f"首次运行，已为用户 '{username}' 自动生成初始密码。")
-        logger.critical(f"用户名: {username}")
-        logger.critical(f"初始密码: {DEFAULT_INITIAL_PASSWORD}")
-        logger.critical("请使用此密码登录，并修改密码。")
-        logger.critical("=" * 60)
-
-    except Exception as e:
-        logger.error(f"初始化认证系统时发生错误: {e}", exc_info=True)
+    # 3. 既已配置又未登录 -> 需要登录
+    return jsonify({"status": "login_required"}), 200
 
 @unified_auth_bp.route('/login', methods=['POST'])
-def unified_login():
-    """【统一登录接口】"""
+def emby_only_login():
+    """
+    【纯 Emby 登录接口】
+    """
     data = request.json
     username = data.get('username')
     password = data.get('password')
-    login_type = data.get('loginType')
 
-    if not all([username, password, login_type]):
-        return jsonify({"status": "error", "message": "缺少用户名、密码或登录类型"}), 400
+    # 双重检查：如果系统没配置，不允许登录，强制去设置
+    if not config_manager.is_system_configured():
+        return jsonify({
+            "status": "error", 
+            "code": "SETUP_REQUIRED", 
+            "message": "系统尚未配置 Emby 连接"
+        }), 428 # 428 Precondition Required
 
-    session.clear()
-
-    if login_type == 'local':
-        try:
-            # ### 核心修改：调用新的数据库函数 ###
-            local_user = user_db.get_local_user_by_username(username)
-            if local_user and check_password_hash(local_user['password_hash'], password):
-                session['user_id'] = local_user['id']
-                session['username'] = local_user['username']
-                session.permanent = True
-                logger.info(f"  ➜ 用户 '{username}' 作为本地管理员登录成功。")
-                
-                return jsonify({
-                    "status": "ok",
-                    "user": { 
-                        "name": local_user['username'], "user_type": "local_admin", 
-                        "is_admin": True, "allow_unrestricted_subscriptions": True 
-                    }
-                }), 200
-        except Exception as e:
-            logger.error(f"  ➜ 本地认证时数据库出错: {e}", exc_info=True)
-            return jsonify({"status": "error", "message": "服务器内部错误"}), 500
-
-    elif login_type == 'emby':
-        auth_result = emby.authenticate_emby_user(username, password)
-        if auth_result:
-            user_info = auth_result.get('User', {})
-            session['emby_user_id'] = user_info.get('Id')
-            session['emby_username'] = user_info.get('Name')
-            session['emby_is_admin'] = user_info.get('Policy', {}).get('IsAdministrator', False)
-            session.permanent = True
-            logger.info(f"  ➜ 用户 '{username}' 作为 Emby 用户登录成功。")
-
-            # --- 轻量级同步用户数据 ---
-            try:
-                # 仅同步基础信息，确保数据库里有这个人
-                user_db.upsert_emby_users_batch([user_info])
-            except Exception as e:
-                logger.warning(f"  ➜ 登录时同步用户基础信息失败: {e}")
-
-            can_subscribe_without_review = user_db.get_user_subscription_permission(session['emby_user_id'])
-            
-            return jsonify({
-                "status": "ok",
-                "user": {
-                    "id": session['emby_user_id'], "name": session['emby_username'],
-                    "user_type": "emby_user", "is_admin": session['emby_is_admin'],
-                    "allow_unrestricted_subscriptions": can_subscribe_without_review
-                }
-            }), 200
-
-    logger.warning(f"  ➜ 用户 '{username}' 使用 '{login_type}' 方式登录失败。")
-    return jsonify({"status": "error", "message": "用户名或密码错误"}), 401
-
-@unified_auth_bp.route('/status', methods=['GET'])
-def unified_status():
-    """【统一状态接口】"""
-    is_local_admin_logged_in = 'user_id' in session
-    is_emby_user_logged_in = 'emby_user_id' in session
+    # 调用 Emby 验证
+    auth_result = emby.authenticate_emby_user(username, password)
     
-    response = {"logged_in": is_local_admin_logged_in or is_emby_user_logged_in, "user": {}}
+    if not auth_result:
+        return jsonify({
+            "status": "error", 
+            "message": "登录失败：用户名/密码错误，或无法连接 Emby 服务器"
+        }), 401
 
-    if is_local_admin_logged_in:
-        response["user"] = {
-            "name": session.get('username'), "user_type": "local_admin",
-            "is_admin": True, "allow_unrestricted_subscriptions": True
+    user_info = auth_result.get('User', {})
+    user_id = user_info.get('Id')
+    
+    # 同步用户基础信息到本地数据库
+    try:
+        user_db.upsert_emby_users_batch([user_info])
+    except Exception as e:
+        logger.warning(f"登录时同步用户信息失败: {e}")
+
+    # 设置 Session
+    session.clear() 
+    session['emby_user_id'] = user_id
+    session['emby_username'] = user_info.get('Name')
+    session['emby_is_admin'] = user_info.get('Policy', {}).get('IsAdministrator', False)
+    session.permanent = True
+
+    logger.info(f"Emby 用户 '{session['emby_username']}' 登录成功。")
+    
+    # 获取用户权限信息
+    can_subscribe = user_db.get_user_subscription_permission(user_id)
+    
+    return jsonify({
+        "status": "ok",
+        "user": {
+            "id": user_id,
+            "name": session['emby_username'],
+            "is_admin": session['emby_is_admin'],
+            "allow_unrestricted_subscriptions": can_subscribe,
+            "user_type": "emby_user" # 前端兼容字段
         }
-    elif is_emby_user_logged_in:
-        can_subscribe_without_review = user_db.get_user_subscription_permission(session['emby_user_id'])
-        response["user"] = {
-            "id": session.get('emby_user_id'), "name": session.get('emby_username'),
-            "user_type": "emby_user", "is_admin": session.get('emby_is_admin'),
-            "allow_unrestricted_subscriptions": can_subscribe_without_review
-        }
-    return jsonify(response)
+    }), 200
+
+# ==========================================
+#  设置与灾难恢复逻辑
+# ==========================================
+
+@unified_auth_bp.route('/request_recovery', methods=['POST'])
+def request_recovery_token():
+    """
+    【步骤1】用户请求重置连接。
+    生成一个 Token 打印到日志，不返回给前端。
+    """
+    clean_expired_tokens()
+    
+    # 生成 6 位随机字符作为令牌
+    token = secrets.token_hex(3).upper() 
+    # 有效期 5 分钟
+    RECOVERY_TOKENS[token] = time.time() + 300 
+    
+    logger.critical("=" * 60)
+    logger.critical(f"【安全警告】收到重置连接配置的请求。")
+    logger.critical(f"若这是您本人的操作，请在页面输入以下安全令牌以进入设置模式:")
+    logger.critical(f"安全令牌:  {token}")
+    logger.critical(f"令牌有效期: 5 分钟")
+    logger.critical("=" * 60)
+    
+    return jsonify({
+        "status": "ok", 
+        "message": "安全令牌已发送至服务器控制台日志(Docker Logs)，请查阅并输入。"
+    }), 200
+
+@unified_auth_bp.route('/verify_recovery', methods=['POST'])
+def verify_recovery_token():
+    """
+    【步骤2】验证令牌。
+    如果通过，给予临时 Session 权限进入设置页面。
+    """
+    data = request.json
+    token = data.get('token', '').strip().upper()
+    
+    clean_expired_tokens()
+    
+    if token in RECOVERY_TOKENS:
+        del RECOVERY_TOKENS[token] # 一次性使用
+        session['is_setup_mode'] = True # 标记：允许访问 setup 接口
+        return jsonify({"status": "ok", "message": "验证成功"}), 200
+    
+    return jsonify({"status": "error", "message": "令牌无效或已过期"}), 403
+
+@unified_auth_bp.route('/setup', methods=['POST'])
+def save_emby_config():
+    """
+    【步骤3】保存 Emby 配置。
+    仅在 (系统未配置) 或 (拥有 setup_mode 权限) 时允许调用。
+    """
+    # 权限检查
+    is_configured = config_manager.is_system_configured()
+    has_setup_permission = session.get('is_setup_mode')
+    
+    if is_configured and not has_setup_permission:
+        return jsonify({"status": "error", "message": "系统已配置，且无重置权限"}), 403
+
+    data = request.json
+    url = data.get('url')
+    api_key = data.get('api_key')
+
+    if not url or not api_key:
+        return jsonify({"status": "error", "message": "URL 和 API Key 不能为空"}), 400
+
+    # 1. 验证连接有效性
+    logger.info(f"正在测试新的 Emby 配置: {url}")
+    test_result = emby.test_connection(url, api_key) 
+    
+    if not test_result['success']:
+        return jsonify({
+            "status": "error", 
+            "message": f"连接测试失败: {test_result.get('error')}"
+        }), 400
+
+    # 2. 保存配置
+    new_config = {
+        constants.CONFIG_OPTION_EMBY_SERVER_URL: url,
+        constants.CONFIG_OPTION_EMBY_API_KEY: api_key
+    }
+    try:
+        config_manager.save_config(new_config)
+    except Exception as e:
+        logger.error(f"保存配置失败: {e}")
+        return jsonify({"status": "error", "message": "保存配置失败，请检查日志"}), 500
+    
+    # 3. 清除设置模式标记
+    session.pop('is_setup_mode', None)
+    
+    logger.info("Emby 配置已更新，系统进入正常模式。")
+    return jsonify({"status": "ok", "message": "配置保存成功，请登录"}), 200
 
 @unified_auth_bp.route('/logout', methods=['POST'])
-def unified_logout():
-    """【统一登出接口】"""
+def logout():
     session.clear()
-    return jsonify({"status": "ok", "message": "登出成功"})
-
-@unified_auth_bp.route('/change_password', methods=['POST'])
-@login_required
-def change_password():
-    """修改本地管理员的密码。"""
-    data = request.json
-    current_password = data.get('current_password')
-    new_password = data.get('new_password')
-
-    if not current_password or not new_password or len(new_password) < 6:
-        return jsonify({"error": "缺少参数或新密码长度不足6位"}), 400
-
-    user_id = session.get('user_id')
-    if not user_id:
-        return jsonify({"error": "未授权或会话已过期"}), 401
-
-    try:
-        # ### 核心修改：调用新的数据库函数 ###
-        user = user_db.get_local_user_by_id(user_id)
-
-        if not user or not check_password_hash(user['password_hash'], current_password):
-            return jsonify({"error": "当前密码不正确"}), 403
-
-        new_password_hash = generate_password_hash(new_password)
-        # ### 核心修改：调用新的数据库函数 ###
-        user_db.update_local_user_password(user_id, new_password_hash)
-
-    except Exception as e:
-        logger.error(f"修改密码时发生数据库错误: {e}", exc_info=True)
-        return jsonify({"error": "服务器内部错误"}), 500
-
-    logger.info(f"用户 '{user['username']}' 成功修改密码。")
-    return jsonify({"message": "密码修改成功"})
+    return jsonify({"status": "ok"})

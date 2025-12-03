@@ -68,14 +68,6 @@ def init_db():
                     )
                 """)
                 cursor.execute("""
-                    CREATE TABLE IF NOT EXISTS users (
-                        id SERIAL PRIMARY KEY, 
-                        username TEXT UNIQUE NOT NULL, 
-                        password_hash TEXT NOT NULL, 
-                        created_at TIMESTAMP WITH TIME ZONE DEFAULT NOW()
-                    )
-                """)
-                cursor.execute("""
                     CREATE TABLE IF NOT EXISTS translation_cache (
                         original_text TEXT PRIMARY KEY, 
                         translated_text TEXT, 
@@ -565,7 +557,8 @@ def init_db():
                         'tracked_actor_media',
                         'subscription_requests',
                         'media_cleanup_tasks',
-                        'resubscribe_cache'
+                        'resubscribe_cache',
+                        'users'
                     ]
                     for table in deprecated_tables:
                         logger.trace(f"    ➜ [数据库清理] 正在尝试移除废弃的表: '{table}'...")

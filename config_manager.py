@@ -331,3 +331,10 @@ def get_proxies_for_requests() -> Optional[Dict[str, str]]:
             "https": proxy_url,
         }
     return None
+
+def is_system_configured() -> bool:
+    """检查是否已配置 Emby 基础连接信息"""
+    url = APP_CONFIG.get(constants.CONFIG_OPTION_EMBY_SERVER_URL)
+    key = APP_CONFIG.get(constants.CONFIG_OPTION_EMBY_API_KEY)
+    # 简单的判断：URL和Key都不为空
+    return bool(url and key and url.strip() and key.strip())

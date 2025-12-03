@@ -1,7 +1,7 @@
 <!-- src/components/UserCenterPage.vue (账户信息版) -->
 <template>
   <div style="padding: 24px;"> 
-    <n-page-header :title="`欢迎回来, ${authStore.username}`" subtitle="在这里查看您的账户信息" />
+    <n-page-header :title="`欢迎回来, ${accountInfo?.name || authStore.username}`" subtitle="在这里查看您的账户信息" />
     <n-grid :cols="5" style="margin-top: 24px; text-align: center;">
       <n-gi><n-statistic label="总申请" :value="stats.total" /></n-gi>
       <n-gi><n-statistic label="已完成" :value="stats.completed" style="--n-value-text-color: var(--n-success-color)" /></n-gi>
@@ -57,7 +57,7 @@
                   点击更换头像
                 </n-tooltip>
                 <div class="username-text">
-                  {{ authStore.username }}
+                  {{ accountInfo?.name || authStore.username }}
                 </div>
               </div>
 

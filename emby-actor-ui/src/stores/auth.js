@@ -1,83 +1,69 @@
 // src/stores/auth.js
-
 import { defineStore } from 'pinia';
-import { ref, computed } from 'vue'; // ★ 导入 computed
+import { ref, computed } from 'vue';
 import axios from 'axios';
 
 export const useAuthStore = defineStore('auth', () => {
-  // --- State ---
-  // ★ 1. 不再只存 username，而是存整个 user 对象和登录状态
   const isLoggedIn = ref(false);
-  const user = ref({}); // { name: 'xxx', user_type: 'emby_user', is_admin: true, ... }
+  const user = ref({}); 
+  const systemStatus = ref('unknown');
 
-  // --- Getters (Computed Properties) ---
-  // ★ 2. 创建一些方便的计算属性，让组件使用起来更简单
-  const username = computed(() => user.value?.name || null);
-  const userType = computed(() => user.value?.user_type || null);
-  // ★ 智能判断是否为管理员：本地管理员 或 Emby管理员
-  const isAdmin = computed(() => {
-    if (userType.value === 'local_admin') return true;
-    if (userType.value === 'emby_user' && user.value?.is_admin) return true;
-    return false;
+  const username = computed(() => {
+    return user.value?.name || user.value?.username || '未登录';
   });
 
-  const canSubscribeWithoutReview = computed(() => user.value?.allow_unrestricted_subscriptions || false);
+  const isAdmin = computed(() => user.value?.is_admin || false);
+  
+  // 为了兼容旧代码，加一个 userType
+  const userType = computed(() => user.value?.user_type || 'emby_user');
 
-  // --- Actions ---
   async function checkAuthStatus() {
     try {
-      const response = await axios.get('/api/auth/status');
-      isLoggedIn.value = response.data.logged_in;
-      user.value = response.data.user || {};
-      // ★★★ 如果后端明确说未登录，就抛出错误，让路由守卫能捕获到 ★★★
-      if (!isLoggedIn.value) {
-        throw new Error("User not logged in");
+      const response = await axios.get('/api/auth/check_status');
+      const status = response.data.status;
+      systemStatus.value = status;
+
+      if (status === 'logged_in') {
+        isLoggedIn.value = true;
+        user.value = response.data.user || {};
+      } else {
+        isLoggedIn.value = false;
+        user.value = {};
+        // 这里可以抛出特定错误供路由守卫捕获，或者直接返回状态
+        if (status === 'setup_required') {
+           throw new Error('SETUP_REQUIRED');
+        }
       }
+      return status;
     } catch (error) {
-      console.error('检查认证状态失败:', error);
-      // ★★★ 捕获到任何错误，都坚决地把状态设置为未登录 ★★★
       isLoggedIn.value = false;
-      user.value = {};
-      // 把错误继续抛出去
       throw error;
     }
   }
 
   async function login(credentials) {
-    try {
-      const response = await axios.post('/api/auth/login', credentials);
-      isLoggedIn.value = true;
-      user.value = response.data.user || {};
-    } catch (error) {
-      // 登录失败时，确保状态被清理
-      isLoggedIn.value = false;
-      user.value = {};
-      throw error; // 把错误继续抛出去给组件处理
-    }
+    const response = await axios.post('/api/auth/login', credentials);
+    isLoggedIn.value = true;
+    // 确保把后端返回的 user 对象完整存进去
+    user.value = response.data.user || {};
   }
 
   async function logout() {
-    try {
-      await axios.post('/api/auth/logout');
-    } catch (error) {
-      console.error("登出时后端发生错误:", error);
-    } finally {
-      // 无论如何都清理前端状态
-      isLoggedIn.value = false;
-      user.value = {};
-    }
+    await axios.post('/api/auth/logout');
+    isLoggedIn.value = false;
+    user.value = {};
+    systemStatus.value = 'login_required';
   }
 
-  // --- Return ---
   return {
     isLoggedIn,
     user,
-    username, // 暴露计算属性
-    userType, // 暴露计算属性
-    isAdmin,  // 暴露计算属性
-    canSubscribeWithoutReview,
+    username, // 导出修复后的计算属性
+    isAdmin,
+    userType,
+    systemStatus,
     checkAuthStatus,
     login,
-    logout,
+    logout
   };
 });

@@ -53,7 +53,7 @@ from routes.resubscribe import resubscribe_bp
 from routes.media_cleanup import media_cleanup_bp
 from routes.user_management import user_management_bp
 from routes.webhook import webhook_bp
-from routes.unified_auth import unified_auth_bp, init_auth
+from routes.unified_auth import unified_auth_bp
 from routes.user_portal import user_portal_bp
 from routes.discover import discover_bp
 # --- 核心模块导入 ---
@@ -69,7 +69,19 @@ logger = logging.getLogger(__name__)
 logging.getLogger("apscheduler.scheduler").setLevel(logging.WARNING)
 logging.getLogger('werkzeug').setLevel(logging.ERROR)
 app = Flask(__name__, static_folder='static')
-app.secret_key = os.urandom(24)
+# --- 优化 Session 密钥持久化 ---
+secret_file_path = os.path.join(config_manager.PERSISTENT_DATA_PATH, '.flask_secret')
+if os.path.exists(secret_file_path):
+    with open(secret_file_path, 'rb') as f:
+        app.secret_key = f.read()
+else:
+    secret_key = os.urandom(24)
+    app.secret_key = secret_key
+    try:
+        with open(secret_file_path, 'wb') as f:
+            f.write(secret_key)
+    except Exception as e:
+        logger.warning(f"无法保存 Session 密钥，重启后用户需重新登录: {e}")
 
 #过滤底层日志
 logging.getLogger("requests").setLevel(logging.WARNING)
@@ -104,7 +116,6 @@ def save_config_and_reload(new_config: Dict[str, Any]):
         
         # 步骤 2: 执行所有依赖于新配置的重新初始化逻辑
         initialize_processors()
-        init_auth()
         
         scheduler_manager.update_all_scheduled_jobs()
         
@@ -338,7 +349,6 @@ def main_app_start():
     connection.init_db()
 
     ensure_cover_generator_fonts()
-    init_auth()
     initialize_processors()
     task_manager.start_task_worker_if_not_running()
     scheduler_manager.start()

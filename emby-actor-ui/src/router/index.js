@@ -18,6 +18,7 @@ import CoverGeneratorConfig from '../components/CoverGeneratorConfig.vue';
 import UserManagementPage from '../components/UserManagementPage.vue';
 import DiscoverPage from '../components/DiscoverPage.vue';
 import UserCenterPage from '../components/UserCenterPage.vue'
+import SetupPage from '../components/Setup.vue';
 
 // --- 2. 定义路由规则 (带 meta.public 标签) ---
 const routes = [
@@ -28,6 +29,15 @@ const routes = [
     meta: { 
       requiresAuth: false,
       public: true // <-- ★★★ 在这里打上“公共页面”标签 ★★★
+    },
+  },
+  {
+    path: '/setup',
+    name: 'Setup',
+    component: SetupPage,
+    meta: { 
+      requiresAuth: false,
+      public: true // 必须是公开的，否则死循环
     },
   },
   {
@@ -152,46 +162,52 @@ const routes = [
   },
 ];
 
-// --- 3, 4, 5. 创建实例、路由守卫、导出 (保持不变) ---
 const router = createRouter({
   history: createWebHistory(import.meta.env.BASE_URL),
   routes,
   scrollBehavior: () => ({ top: 0 })
 });
 
+// --- 3. 路由守卫 (核心修改) ---
 router.beforeEach(async (to, from, next) => {
   const authStore = useAuthStore();
 
-  // 规则1: 如果要去的是公共页面 (我们用 !requiresAuth 判断)，直接放行
-  if (!to.meta.requiresAuth) {
+  // 1. 如果是公共页面 (Login, Setup, Register)，直接放行
+  if (to.meta.public) {
     next();
     return;
   }
 
-  // 规则2: 如果要去的是受保护页面，我们必须先确定身份
-  // 如果前端状态已知是已登录，直接放行 (这是为了优化，避免每次都请求后端)
+  // 2. 如果前端状态已知已登录，直接放行
   if (authStore.isLoggedIn) {
     next();
     return;
   }
 
-  // 规则3: 如果前端状态是未登录 (比如刚刷新页面)，必须向后端验证
+  // 3. 前端状态未登录，向后端检查状态
   try {
-    // 我们等待 checkAuthStatus 执行完毕
     await authStore.checkAuthStatus();
 
-    // 验证完毕后，再次检查 store 的状态
     if (authStore.isLoggedIn) {
-      // 如果后端说你确实登录了，放行
       next();
     } else {
-      // 如果后端说你没登录，踢回登录页
+      // 没登录，去登录页
       next({ name: 'Login' });
     }
   } catch (error) {
-    // 如果 checkAuthStatus 本身就出错了 (比如网络问题或403)，
-    // 说明 session 肯定无效，同样踢回登录页
-    next({ name: 'Login' });
+    // ★★★ 核心逻辑：捕获 SETUP_REQUIRED 错误 ★★★
+    // 这个错误是由 auth.js 中的 checkAuthStatus 抛出的
+    if (error.message === 'SETUP_REQUIRED') {
+      // 如果目标已经是 Setup 页面，就不要再跳了，防止死循环（虽然上面 meta.public 已经挡了一层，但双重保险）
+      if (to.name === 'Setup') {
+        next();
+      } else {
+        next({ name: 'Setup' });
+      }
+    } else {
+      // 其他错误（如网络错误、未登录），去登录页
+      next({ name: 'Login' });
+    }
   }
 });
 
