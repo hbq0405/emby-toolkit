@@ -16,7 +16,7 @@ from gevent import subprocess, Timeout
 import handler.tmdb as tmdb
 import handler.emby as emby
 import config_manager
-import utils
+from tasks.helpers import parse_series_title_and_season
 from database import collection_db, watchlist_db, media_db
 from handler.douban import DoubanApi
 from handler.tmdb import search_media, get_tv_details
@@ -484,7 +484,7 @@ class ListImporter:
         elif item_type == 'Series':
             # ★★★ 核心修正区域开始 ★★★
             # 1. 无论如何，先解析标题，分离出基础剧名和可能的季号
-            show_name_parsed, season_number_to_validate = utils.parse_series_title_and_season(title)
+            show_name_parsed, season_number_to_validate = parse_series_title_and_season(title, api_key=self.tmdb_api_key)
             # 如果解析失败（比如标题里没季号），就用原始标题去搜，保证健壮性
             show_name = show_name_parsed if show_name_parsed else title
             
@@ -500,7 +500,7 @@ class ListImporter:
                 logger.warning(f"  ➜ 剧集标题 '{title}' (搜索词: '{show_name}'){year_info} 未能在TMDb上找到匹配项。")
                 return None
             
-            # 3. 【关键】遍历搜索结果，寻找精确匹配项，而不是直接用第一个
+            # 3. 【关键】遍历搜索结果，寻找精确匹配项
             series_result = None
             norm_show_name = normalize_string(show_name)
             
@@ -510,16 +510,16 @@ class ListImporter:
                 if normalize_string(result_name) == norm_show_name:
                     series_result = result
                     logger.debug(f"  ➜ 剧集 '{show_name}' 通过【精确规范匹配】找到了基础剧集: {result.get('name')} (ID: {result.get('id')})")
-                    break # 找到了最完美的匹配，停止遍历
+                    break 
             
-            # 4. 如果没有找到精确匹配，则回退到使用第一个（最相关）的结果
+            # 4. 如果没有找到精确匹配，则回退到使用第一个
             if not series_result:
                 series_result = results[0]
                 logger.warning(f"  ➜ 剧集 '{show_name}' 未找到精确匹配项，将【回退使用】最相关的搜索结果: {series_result.get('name')} (ID: {series_result.get('id')})")
 
             series_id = str(series_result.get('id'))
             
-            # 5. 后续逻辑保持不变：验证季号
+            # 5. 验证季号
             if season_number_to_validate is None:
                 logger.debug(f"  ➜ 剧集标题 '{title}' 成功匹配到: {series_result.get('name')} (ID: {series_id})")
                 return series_id, 'Series'
@@ -534,7 +534,6 @@ class ListImporter:
             
             logger.warning(f"  ➜ 验证失败！剧集 '{show_name}' (ID: {series_id}) 存在，但未找到第 {season_number_to_validate} 季。")
             return None
-            # ★★★ 核心修正区域结束 ★★★
             
         return None
 
@@ -586,7 +585,7 @@ class ListImporter:
 
                 cleaned_title_for_parsing = re.sub(r'^\s*\d+\.\s*', '', title)
                 cleaned_title_for_parsing = re.sub(r'\s*\(\d{4}\)$', '', cleaned_title_for_parsing).strip()
-                _, season_number = utils.parse_series_title_and_season(cleaned_title_for_parsing)
+                _, season_number = parse_series_title_and_season(cleaned_title_for_parsing, api_key=self.tmdb_api_key)
 
                 def create_result(tmdb_id, item_type):
                     result = {'id': tmdb_id, 'type': item_type}

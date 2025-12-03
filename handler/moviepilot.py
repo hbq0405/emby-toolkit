@@ -8,7 +8,6 @@ from datetime import datetime
 
 import handler.tmdb as tmdb
 import constants
-import utils 
 from tasks import helpers
 
 logger = logging.getLogger(__name__)
@@ -251,7 +250,7 @@ def smart_subscribe_series(series_info: dict, config: Dict[str, Any]) -> Optiona
         logger.error(f"  ➜ 智能订阅失败：缺少 tmdb_id, item_name/title 或 tmdb_api_key。")
         return None
 
-    base_name, season_num = utils.parse_series_title_and_season(title)
+    base_name, season_num = helpers.parse_series_title_and_season(title, tmdb_api_key)
     successful_subscriptions = []
 
     # --- 情况一：标题中未解析出季号 ---

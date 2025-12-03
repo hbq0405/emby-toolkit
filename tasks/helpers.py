@@ -3,11 +3,11 @@
 
 import os
 import re
-from typing import Optional, Dict, Any, List
+from typing import Optional, Dict, Tuple, List
 import logging
 from datetime import datetime, timedelta
 
-from handler.tmdb import get_movie_details, get_tv_details, get_tv_season_details
+from handler.tmdb import get_movie_details, get_tv_details, get_tv_season_details, search_tv_shows
 import constants
 
 logger = logging.getLogger(__name__)
@@ -97,6 +97,18 @@ RELEASE_GROUPS: Dict[str, List[str]] = {
     "forge": ['FROG(?:E|Web|)'],
     "ubits": ['UB(?:its|WEB|TV)'],
 }
+
+def normalize_full_width_chars(text: str) -> str:
+    """将字符串中的全角字符（数字、字母、冒号）转换为半角。"""
+    if not text:
+        return ""
+    # 全角空格
+    text = text.replace('\u3000', ' ')
+    # 全角数字、字母、冒号的转换表
+    full_width = "０１２３４５６７８９ＡＢＣＤＥＦＧＨＩＪＫＬＭＮＯＰＱＲＳＴＵＶＷＸＹＺａｂｃｄｅｆｇｈｉｊｋｌｍｎｏｐｑｒｓｔｕｖｗｘｙｚ： "
+    half_width = "0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz: "
+    translation_table = str.maketrans(full_width, half_width)
+    return text.translate(translation_table)
 
 def _extract_exclusion_keywords_from_filename(filename: str) -> List[str]:
     """
@@ -606,3 +618,130 @@ def check_series_completion(tmdb_id: int, api_key: str, season_number: Optional[
         return False
     
     return False
+
+def parse_series_title_and_season(title: str, api_key: str = None) -> Tuple[Optional[str], Optional[int]]:
+    """
+    从一个可能包含季号的剧集标题中，解析出基础剧名和季号。
+    
+    增强功能：
+    针对 "唐朝诡事录之长安" 这种 "主标题之副标题" 格式：
+    1. 尝试拆分主标题和副标题。
+    2. 如果提供了 api_key，会去 TMDb 搜索主标题，并检查副标题是否对应某一季。
+    """
+    if not title:
+        return None, None
+        
+    normalized_title = normalize_full_width_chars(title)
+
+    # --- 1. 优先处理 "主标题之副标题" 格式 (新增逻辑) ---
+    # 很多国产季播剧使用这种格式，如《唐朝诡事录之长安》(S3)、《大宋少年志之...》
+    if '之' in normalized_title:
+        # 简单的拆分，只分割第一个'之'，防止副标题里也有之
+        parts = normalized_title.split('之', 1)
+        if len(parts) == 2:
+            parent_candidate = parts[0].strip()
+            subtitle_candidate = parts[1].strip()
+            
+            # 只有当主标题长度大于1时才处理（避免误伤《云之羽》、《之乎者也》等）
+            if len(parent_candidate) > 1 and subtitle_candidate:
+                matched_season = None
+                
+                # 如果有 API Key，尝试通过 TMDb 确认季号
+                if api_key:
+                    try:
+                        # 1. 搜索主标题 (例如 "唐朝诡事录")
+                        search_results = search_tv_shows(parent_candidate, api_key)
+                        if search_results:
+                            # 假设第一个结果就是我们要找的剧
+                            tv_id = search_results[0]['id']
+                            # 2. 获取该剧的所有季信息
+                            tv_details = get_tv_details(tv_id, api_key, append_to_response="seasons")
+                            
+                            if tv_details and 'seasons' in tv_details:
+                                for season in tv_details['seasons']:
+                                    season_name = season.get('name', '')
+                                    season_num = season.get('season_number')
+                                    
+                                    # 3. 比对副标题是否在季名中
+                                    # 情况A: 季名就是 "唐朝诡事录之长安" -> 包含 "长安"
+                                    # 情况B: 季名就是 "长安"
+                                    if season_num and season_num > 0:
+                                        if subtitle_candidate in season_name:
+                                            logger.info(f"  ➜ 标题解析成功: '{title}' -> 匹配到《{parent_candidate}》第 {season_num} 季 (季名: {season_name})")
+                                            return parent_candidate, season_num
+                    except Exception as e:
+                        logger.warning(f"  ➜ 解析 '之' 字标题时 TMDb 查询失败: {e}")
+
+                # 如果没有 API Key 或者 API 没匹配到，但格式非常像季播剧
+                # 我们返回主标题，季号设为 None。
+                # 这样系统至少会去搜索 "唐朝诡事录"，而不是搜不到 "唐朝诡事录之长安"
+                # (前提是主标题看起来像个正经名字)
+                logger.debug(f"  ➜ 识别到 '之' 字结构，提取主标题: '{parent_candidate}' (原标题: {title})")
+                # 这里不直接返回，而是继续往下走，万一后面有更明确的 "S2" 标记
+                # 但我们可以把这个作为备选结果
+                # 策略：如果后面的正则都没匹配到，就返回这个拆分结果
+                
+                # 为了不破坏原有逻辑，我们在这里做一个临时返回，
+                # 但仅当后面的标准正则失败时生效。
+                # 简单起见，如果 API 没匹配到，我们暂时不强制截断，
+                # 因为像 "云之羽" 这种剧，截断了就错了。
+                # 除非我们非常确定。
+                pass
+
+    # --- 2. 标准正则匹配 (原有逻辑) ---
+    roman_map = {'I': 1, 'II': 2, 'III': 3, 'IV': 4, 'V': 5, 'VI': 6, 'VII': 7, 'VIII': 8, 'IX': 9, 'X': 10}
+    chinese_map = {'一': 1, '二': 2, '三': 3, '四': 4, '五': 5, '六': 6, '七': 7, '八': 8, '九': 9, '十': 10}
+
+    patterns = [
+        # 模式1: 最优先匹配 "第X季" 或 "Season X"
+        re.compile(r'^(.*?)\s*(?:第([一二三四五六七八九十\d]+)季|Season\s*(\d+))', re.IGNORECASE),
+        
+        # 模式2: 匹配年份 (如 "2024")
+        re.compile(r'^(.*?)\s+((?:19|20)\d{2})$'),
+        
+        # 模式3: 中文数字(带前缀) 或 罗马/阿拉伯数字
+        re.compile(r'^(.*?)\s*(?:[第部]\s*([一二三四五六七八九十])|([IVX\d]+))(?:[:\s-]|$)')
+    ]
+
+    for pattern in patterns:
+        match = pattern.match(normalized_title)
+        if not match: continue
+        
+        groups = [g for g in match.groups() if g is not None]
+        if len(groups) < 2: continue
+        
+        base_name, season_str = groups[0].strip(), groups[1].strip()
+
+        # 健壮性检查
+        if (not base_name and len(normalized_title) < 8) or (len(base_name) <= 1 and season_str.isdigit()):
+            continue
+
+        season_num = 0
+        if season_str.isdigit(): season_num = int(season_str)
+        elif season_str.upper() in roman_map: season_num = roman_map[season_str.upper()]
+        elif season_str in chinese_map: season_num = chinese_map[season_str]
+
+        if season_num > 0:
+            for suffix in ["系列", "合集"]:
+                if base_name.endswith(suffix): base_name = base_name[:-len(suffix)]
+            return base_name, season_num
+
+    # --- 3. 兜底逻辑：如果正则没匹配到，但之前识别到了 "之" ---
+    if '之' in normalized_title:
+        parts = normalized_title.split('之', 1)
+        if len(parts) == 2:
+            parent = parts[0].strip()
+            # 再次检查长度，防止误伤
+            if len(parent) >= 2:
+                # 如果 API Key 存在但上面没匹配到季号，说明 TMDb 可能还没更新这一季，或者这根本不是季播剧。
+                # 但为了能搜到东西，返回父标题通常比返回全名更安全（对于搜索而言）。
+                # 风险提示：如果《云之羽》没被正则匹配（它确实不会被匹配），这里会返回 "云"。
+                # 改进：检查副标题是否像是一个“篇章名”。
+                # 这种启发式规则很难完美，建议仅在有 API 确认时才返回季号，
+                # 或者返回 (parent, None) 让调用者决定。
+                
+                # 最终决定：如果没有 API 确认，不轻易截断，除非用户明确希望这种行为。
+                # 鉴于您的需求是 "截取...精确搜索"，我们返回父标题，季号为 None。
+                return parent, None
+
+    return None, None

@@ -9,13 +9,12 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 # 导入需要的底层模块和共享实例
 import config_manager
 import constants
-import utils
 import handler.tmdb as tmdb
 import handler.moviepilot as moviepilot
 import task_manager
 from handler import telegram
 from database import settings_db, request_db, user_db, media_db
-from .helpers import is_movie_subscribable, check_series_completion
+from .helpers import is_movie_subscribable, check_series_completion, parse_series_title_and_season
 
 logger = logging.getLogger(__name__)
 
@@ -394,7 +393,7 @@ def task_auto_subscribe(processor):
                     series_name = media_db.get_series_title_by_tmdb_id(parent_tmdb_id)
                     if not series_name:
                          raw_title = item.get('title', '')
-                         parsed_name, _ = utils.parse_series_title_and_season(raw_title)
+                         parsed_name, _ = parse_series_title_and_season(raw_title, tmdb_api_key)
                          series_name = parsed_name if parsed_name else raw_title
 
                     if parent_tmdb_id and season_num is not None:

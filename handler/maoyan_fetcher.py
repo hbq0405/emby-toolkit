@@ -13,9 +13,20 @@ import re
 # -- 关键：确保可以导入项目中的其他模块 --
 sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
+# 定义 TRACE 级别 (通常为 5)
+TRACE_LEVEL_NUM = 5
+logging.addLevelName(TRACE_LEVEL_NUM, "TRACE")
+
+def trace(self, message, *args, **kws):
+    if self.isEnabledFor(TRACE_LEVEL_NUM):
+        self._log(TRACE_LEVEL_NUM, message, args, **kws)
+
+# 将 trace 方法绑定到 Logger 类
+logging.Logger.trace = trace
+
 try:
     import handler.tmdb as tmdb
-    from utils import parse_series_title_and_season
+    from tasks.helpers import parse_series_title_and_season
 except ImportError as e:
     print(f"错误：缺少 必要 模块。请确保路径正确。详细信息: {e}")
     sys.exit(1)
@@ -132,7 +143,7 @@ def match_titles_to_tmdb(titles: List[Dict], item_type: str, tmdb_api_key: str) 
         elif item_type == 'Series':
             logger.info(f"正在为 Series '{title}' 搜索TMDb匹配...")
             
-            base_name, season_num = parse_series_title_and_season(title)
+            base_name, season_num = parse_series_title_and_season(title, api_key=tmdb_api_key)
             show_name = base_name if base_name else title
             logger.info(f"  ➜ 标题 '{title}' 解析为: 剧名='{show_name}', 季号='{season_num}'")
             

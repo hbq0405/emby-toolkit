@@ -11,6 +11,7 @@ from enum import Enum
 import concurrent.futures 
 
 import handler.tmdb as tmdb
+from tasks.helpers import parse_series_title_and_season
 from database.connection import get_db_connection
 from database import media_db, request_db, actor_db
 import constants
@@ -234,7 +235,7 @@ class ActorSubscriptionProcessor:
                         is_standalone_season_entry = False
                         if media_type == MediaType.SERIES.value:
                             title = work.get('name', '')
-                            base_name, season_num = utils.parse_series_title_and_season(title)
+                            base_name, season_num = parse_series_title_and_season(title, self.tmdb_api_key)
                             # 只要能解析出季号，就认定为不规范条目
                             if base_name and season_num:
                                 is_standalone_season_entry = True
