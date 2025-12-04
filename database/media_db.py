@@ -253,22 +253,12 @@ def ensure_media_record_exists(media_info_list: List[Dict[str, Any]]):
         logger.error(f"  ➜ [元数据注册] 确保媒体记录存在时发生错误: {e}", exc_info=True)
         raise
 
-def get_filtered_subscriptions(statuses: List[str]) -> List[Dict[str, Any]]:
+def get_all_subscriptions() -> List[Dict[str, Any]]:
     """
-    【V2 - 无分页全量版】
-    根据状态列表获取所有订阅项。
-    移除分页以支持前端进行全量数据的来源筛选。
-    返回: items_list
+    获取所有有订阅状态的媒体项，用于前端统一管理。
+    当项目类型为 Season 时，会自动查询并拼接父剧集的标题，并额外提供父剧集的TMDb ID用于生成正确的链接。
     """
-    if not statuses:
-        return []
-
-    # 基础 SQL 结构
-    base_where = "m1.subscription_status = ANY(%s)"
-    
-    # 获取数据 (带父剧集信息拼接)
-    # 移除 LIMIT 和 OFFSET
-    data_sql = f"""
+    sql = """
         SELECT 
             m1.tmdb_id, 
             m1.item_type, 
@@ -284,9 +274,9 @@ def get_filtered_subscriptions(statuses: List[str]) -> List[Dict[str, Any]]:
             m1.first_requested_at,
             m1.last_subscribed_at,
             CASE
-                WHEN m1.item_type = 'Series' THEN m1.tmdb_id 
-                WHEN m1.item_type = 'Season' THEN m1.parent_series_tmdb_id 
-                ELSE NULL 
+                WHEN m1.item_type = 'Series' THEN m1.tmdb_id -- 如果是剧集本身，父ID就是自己
+                WHEN m1.item_type = 'Season' THEN m1.parent_series_tmdb_id -- 如果是季，就用parent_series_tmdb_id
+                ELSE NULL -- 电影没有父剧集ID
             END AS series_tmdb_id
         FROM 
             media_metadata AS m1
@@ -295,23 +285,17 @@ def get_filtered_subscriptions(statuses: List[str]) -> List[Dict[str, Any]]:
         ON 
             m1.parent_series_tmdb_id = m2.tmdb_id AND m2.item_type = 'Series'
         WHERE 
-            {base_where}
+            m1.subscription_status IN ('WANTED', 'PENDING_RELEASE', 'IGNORED', 'SUBSCRIBED')
         ORDER BY 
             m1.first_requested_at DESC;
     """
-    
     try:
         with get_db_connection() as conn:
             cursor = conn.cursor()
-            
-            # 执行 Data
-            cursor.execute(data_sql, (statuses,))
-            items = [dict(row) for row in cursor.fetchall()]
-            
-            return items
-            
+            cursor.execute(sql)
+            return [dict(row) for row in cursor.fetchall()]
     except Exception as e:
-        logger.error(f"DB: 获取过滤订阅列表失败 (Statuses: {statuses}): {e}", exc_info=True)
+        logger.error(f"DB: 获取所有非在库媒体失败: {e}", exc_info=True)
         return []
     
 def get_user_request_history(user_id: str, page: int = 1, page_size: int = 10, status_filter: str = 'all') -> tuple[List[Dict[str, Any]], int]:

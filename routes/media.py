@@ -517,44 +517,29 @@ def api_unified_subscription_status():
     else:
         return jsonify({"error": "没有有效的媒体项被成功处理。", "errors": errors}), 400
 
-@media_api_bp.route('/subscriptions/list', methods=['GET'])
+@media_api_bp.route('/subscriptions/all', methods=['GET'])
 @admin_required
-def api_get_subscriptions_list():
+def api_get_all_subscriptions_for_management():
     """
-    【V2 - 全量数据版】
-    支持按状态过滤获取订阅列表。
-    已移除后端分页，一次性返回所有数据，以便前端进行来源(Source)筛选。
-    参数:
-      - status: 逗号分隔的状态字符串 (例如: "WANTED,PENDING_RELEASE")
+    为前端“统一订阅”页面提供所有有订阅状态媒体项的数据。
     """
     try:
-        # 1. 解析参数
-        status_param = request.args.get('status', '')
-        # page 和 page_size 参数不再使用，但为了兼容前端请求不报错，这里不做处理或忽略
+        # 1. 从数据库获取原始数据
+        items = media_db.get_all_subscriptions()
 
-        # 如果没有传 status，默认获取所有活跃状态 (不含 IGNORED 和 NONE)
-        if not status_param:
-            statuses = ['WANTED', 'PENDING_RELEASE', 'SUBSCRIBED']
-        else:
-            statuses = [s.strip().upper() for s in status_param.split(',') if s.strip()]
-
-        # 2. 调用数据库查询 (不再传分页参数)
-        items = media_db.get_filtered_subscriptions(statuses)
-
-        # 3. 数据增强 (解析用户名)
+        # 遍历每个媒体项，处理其来源信息
         for item in items:
             sources = item.get('subscription_sources_json')
             if isinstance(sources, list):
                 for source in sources:
+                    # 如果来源是用户请求，并且有 user_id
                     if source.get('type') == 'user_request' and (user_id := source.get('user_id')):
+                        # 根据 user_id 查询用户名，并将其添加到 source 字典中
+                        # 使用 'user' 作为键名，以匹配前端已有的逻辑
                         source['user'] = user_db.get_username_by_id(user_id) or '未知用户'
 
-        # 4. 返回结构
-        return jsonify({
-            "items": items,
-            "total": len(items)
-        })
-
+        # 3. 返回增强后的数据
+        return jsonify(items)
     except Exception as e:
-        logger.error(f"API /subscriptions/list 获取数据失败: {e}", exc_info=True)
+        logger.error(f"API /subscriptions/all 获取数据失败: {e}", exc_info=True)
         return jsonify({"error": "获取订阅列表时发生服务器内部错误"}), 500
