@@ -218,7 +218,6 @@ def _resync_primary_key_sequence(cursor, table_name: str):
     """
     # ★★★ 在这里注册新表的 SERIAL 主键 ★★★
     PRIMARY_KEY_COLUMNS = {
-        'users': 'id',
         'custom_collections': 'id',
         'person_identity_map': 'map_id',
         'actor_subscriptions': 'id',
@@ -273,7 +272,6 @@ def task_import_database(processor, file_content: str, tables_to_import: List[st
         'collections_info': '电影合集信息', 
         'processed_log': '已处理列表', 
         'failed_log': '待复核列表',
-        'users': '用户账户', 
         'custom_collections': '自建合集', 
         'media_metadata': '媒体元数据',
         'app_settings': '应用设置', 
@@ -298,13 +296,12 @@ def task_import_database(processor, file_content: str, tables_to_import: List[st
             order = {
                 # --- 级别 0: 无任何依赖的核心表 ---
                 'person_identity_map': 0,
-                'users': 1,
-                'user_templates': 2,
-                'emby_users': 3,
+                'user_templates': 1,
+                'emby_users': 2,
 
                 # --- 级别 1: 依赖级别 0 的表 ---
-                'emby_users_extended': 4,
-                'invitations': 5,
+                'emby_users_extended': 3,
+                'invitations': 4,
                 'actor_subscriptions': 10,
 
                 # --- 级别 2: 依赖更早级别的表 ---
