@@ -5,11 +5,10 @@ import logging
 import psycopg2 
 
 # 导入需要的模块
- 
 import config_manager
 import handler.tmdb as tmdb
 import task_manager
-from database import settings_db, actor_db, media_db, request_db
+from database import settings_db, actor_db
 from extensions import admin_required, processor_ready_required
 
 # 1. 创建演员订阅蓝图
@@ -189,37 +188,3 @@ def refresh_single_actor_subscription(sub_id):
     )
     
     return jsonify({"message": f"刷新演员 {actor_name} 作品的任务已提交！"}), 202
-
-# ★★★ 智能恢复（重新评估）单个作品状态的 API 端点 ★★★
-@actor_subscriptions_bp.route('/media/<int:media_id>/re-evaluate', methods=['POST'])
-@admin_required
-def api_re_evaluate_tracked_media(): # ★ 2. 移除函数参数
-    """将一个“已忽略”或“缺失”的媒体项恢复到 'WANTED' 状态，以便重新评估。"""
-    
-    # ★ 3. 从 request.json 中获取参数
-    data = request.json
-    tmdb_id = data.get('tmdb_id')
-    item_type = data.get('item_type')
-
-    if not tmdb_id or not item_type:
-        return jsonify({"error": "请求体中必须包含 'tmdb_id' 和 'item_type'"}), 400
-
-    try:
-        media_map = media_db.get_media_details_by_tmdb_ids([tmdb_id])
-        media_info = media_map.get(tmdb_id)
-        if not media_info:
-            return jsonify({"error": "未找到指定的媒体项"}), 404
-
-        # 核心操作：将状态改为 WANTED
-        request_db.set_media_status_wanted(
-            tmdb_ids=[tmdb_id],
-            item_type=item_type,
-            source={"type": "manual_re_evaluate"},
-            force_unignore=True
-        )
-        
-        message = f"《{media_info['title']}》已恢复评估！下次演员扫描时将自动更新其最新状态。"
-        return jsonify({"message": message, "new_status": "WANTED"})
-    except Exception as e:
-        logger.error(f"恢复媒体项 {tmdb_id} 状态失败: {e}", exc_info=True)
-        return jsonify({"error": "恢复状态时发生未知的服务器错误"}), 500

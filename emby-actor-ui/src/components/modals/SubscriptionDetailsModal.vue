@@ -15,7 +15,7 @@
       <n-tabs type="line" animated default-value="tracking">
         <n-tab-pane name="tracking" tab="追踪列表">
           <div v-if="subscriptionData.tracked_media && subscriptionData.tracked_media.length > 0">
-            <!-- ▼▼▼ 核心修正：使用新的分组和标签页 ▼▼▼ -->
+            <!-- ▼▼▼ 核心修正：移除已忽略标签页 ▼▼▼ -->
             <n-tabs type="segment" size="small" v-model:value="activeTab" animated>
               
               <!-- 待处理 (WANTED, MISSING) -->
@@ -31,11 +31,6 @@
               <!-- 待发行 (PENDING_RELEASE) -->
               <n-tab-pane v-if="pendingReleaseMedia.length > 0" name="pending-release" :tab="`待发行 (${pendingReleaseMedia.length})`">
                 <n-data-table :columns="createColumns()" :data="pendingReleaseMedia" :pagination="{ pageSize: 10 }" :bordered="false" size="small" />
-              </n-tab-pane>
-
-              <!-- 已忽略 (IGNORED) -->
-              <n-tab-pane v-if="ignoredMedia.length > 0" name="ignored" :tab="`已忽略 (${ignoredMedia.length})`">
-                <n-data-table :columns="createColumns()" :data="ignoredMedia" :pagination="{ pageSize: 10 }" :bordered="false" size="small" />
               </n-tab-pane>
 
             </n-tabs>
@@ -100,7 +95,7 @@ const subscriptionData = ref(null);
 const editableConfig = ref({});
 const activeTab = ref('pending') // 默认打开“待处理”
 
-// ▼▼▼ 核心修正：重新定义分组逻辑 ▼▼▼
+// ▼▼▼ 核心修正：移除 ignoredMedia 计算属性 ▼▼▼
 const processedMedia = computed(() => 
   subscriptionData.value?.tracked_media.filter(m => ['IN_LIBRARY', 'SUBSCRIBED'].includes(m.status)) || []
 );
@@ -109,9 +104,6 @@ const pendingMedia = computed(() =>
 );
 const pendingReleaseMedia = computed(() => 
   subscriptionData.value?.tracked_media.filter(m => m.status === 'PENDING_RELEASE') || []
-);
-const ignoredMedia = computed(() => 
-  subscriptionData.value?.tracked_media.filter(m => m.status === 'IGNORED') || []
 );
 
 const createColumns = () => {
@@ -165,6 +157,7 @@ const createColumns = () => {
           'WANTED': { type: 'warning', text: '等待订阅' },
           'PENDING_RELEASE': { type: 'default', text: '待发行' },
           'MISSING': { type: 'error', text: '缺失' },
+          // 虽然不再显示列表，但保留映射以防万一有旧数据混入其他列表
           'IGNORED': { type: 'default', text: '已忽略' },
         };
         const info = statusMap[row.status] || { type: 'error', text: '未知' };
@@ -173,24 +166,16 @@ const createColumns = () => {
     }
   ];
 
-  if (activeTab.value === 'ignored') {
-    columns.push({
-      title: '忽略原因',
-      key: 'ignore_reason',
-      width: 250,
-      ellipsis: { tooltip: true }
-    });
-  }
+  // ▼▼▼ 核心修正：移除 ignore_reason 列的添加逻辑 ▼▼▼
 
   columns.push({
     title: '操作',
     key: 'actions',
-    width: 120, // 宽度可以适当减小
+    width: 120,
     render(row) {
       const buttons = [];
 
-      // ▼▼▼ 核心修改：移除所有手动操作按钮，只保留查看链接 ▼▼▼
-      // --- 按钮 1: Emby 链接 (逻辑不变) ---
+      // --- 按钮 1: Emby 链接 ---
       if (
         row.status === 'IN_LIBRARY' && 
         row.emby_item_id && 
@@ -205,7 +190,7 @@ const createColumns = () => {
         ));
       }
 
-      // --- 按钮 2: TMDb 链接 (逻辑不变) ---
+      // --- 按钮 2: TMDb 链接 ---
       if (row.tmdb_media_id) {
         const mediaTypeForUrl = row.media_type.toLowerCase() === 'series' ? 'tv' : 'movie';
         const tmdbUrl = `https://www.themoviedb.org/${mediaTypeForUrl}/${row.tmdb_media_id}`;
@@ -215,7 +200,6 @@ const createColumns = () => {
           [h(NButton, { size: 'tiny', type: 'tertiary' }, { default: () => 'TMDb' })]
         ));
       }
-      // ▲▲▲ 修改结束 ▲▲▲
 
       return h(NSpace, null, { default: () => buttons });
     },
@@ -237,12 +221,11 @@ const fetchDetails = async (id) => {
 
     await nextTick();
 
-    // ▼▼▼ 核心修正：更新智能选择标签页的逻辑 ▼▼▼
+    // ▼▼▼ 核心修正：移除 ignored 标签页的优先级判断 ▼▼▼
     const tabPriority = [
       { name: 'pending', data: pendingMedia.value },
       { name: 'processed', data: processedMedia.value },
       { name: 'pending-release', data: pendingReleaseMedia.value },
-      { name: 'ignored', data: ignoredMedia.value },
     ];
     // ▲▲▲ 修正结束 ▲▲▲
 

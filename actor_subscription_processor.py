@@ -262,13 +262,7 @@ class ActorSubscriptionProcessor:
                     
                     # ★ 批量处理因条目不规范而被忽略的作品
                     if ignored_due_to_bad_entry:
-                        logger.info(f"  ➜ [阶段 2/4] {len(ignored_due_to_bad_entry)} 部新作品因条目不规范而被忽略，将批量更新状态...")
-                        request_db.set_media_status_ignored(
-                            tmdb_ids=[item['tmdb_id'] for item in ignored_due_to_bad_entry],
-                            item_type=MediaType.SERIES.value, # 这些必然是剧集
-                            source=subscription_source,
-                            media_info_list=[item['media_info'] for item in ignored_due_to_bad_entry]
-                        )
+                        logger.info(f"  ➜ [阶段 2/4] {len(ignored_due_to_bad_entry)} 部新作品因条目不规范而被忽略。")
 
                     if in_library_media_to_update:
                         logger.info(f"  ➜ [阶段 2/4] {len(in_library_media_to_update)} 部新作品已在库，将批量更新其订阅源...")
@@ -321,12 +315,7 @@ class ActorSubscriptionProcessor:
 
                         for item_type, items in actions_by_type["ignore"].items():
                             if items:
-                                request_db.set_media_status_ignored(
-                                    tmdb_ids=[r['tmdb_id'] for r in items],
-                                    item_type=item_type,
-                                    source=subscription_source,
-                                    media_info_list=[r['media_info'] for r in items]
-                                )
+                                logger.info(f"  ➜ [阶段 3/4] {len(items)} 部作品因不满足订阅规则被忽略 (类型: {item_type})。")
 
                     # --- 步骤 5 & 6: 清理和更新缓存 (逻辑不变) ---
                     if removed_work_ids:
