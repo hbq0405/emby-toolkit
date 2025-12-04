@@ -193,6 +193,7 @@ import {
   PersonCircleOutline as UserCenterIcon,
   FilmOutline as DiscoverIcon,
   ArchiveOutline as UnifiedSubIcon,
+  CompassOutline, // 新增：引入指南针图标用于“发现”
   ReaderOutline,
   LibraryOutline, 
   BookmarksOutline, 
@@ -227,7 +228,8 @@ const emit = defineEmits(['update:is-dark', 'update:selected-theme', 'edit-custo
 const router = useRouter(); 
 const route = useRoute(); 
 const authStore = useAuthStore();
-const collapsed = ref(false);
+// 修改：默认折叠侧边栏
+const collapsed = ref(true);
 const activeMenuKey = computed(() => route.name);
 const appVersion = ref(__APP_VERSION__);
 // 日志相关状态
@@ -317,10 +319,12 @@ const handleUserSelect = async (key) => {
 
 const menuOptions = computed(() => {
   // 1. 先定义一个基础菜单组
+  // 修改：添加 icon，移除 type: 'group' 以保持与其他一级菜单风格一致（可折叠）
   const discoveryGroup = { 
     label: '发现', 
     key: 'group-discovery', 
-    type: 'group', 
+    icon: renderIcon(CompassOutline), // 使用指南针图标
+    // type: 'group', // 移除此行，使其变为带图标的子菜单样式
     children: [] 
   };
 
