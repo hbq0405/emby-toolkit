@@ -18,9 +18,19 @@ logger = logging.getLogger(__name__)
 
 # ========== 配置 ==========
 POSTER_GEN_CONFIG = {
-    "ROWS": 3, "COLS": 3, "MARGIN": 22, "CORNER_RADIUS": 46.1, "ROTATION_ANGLE": -15.8,
-    "START_X": 835, "START_Y": -362, "COLUMN_SPACING": 100, "SAVE_COLUMNS": True,
-    "CELL_WIDTH": 410, "CELL_HEIGHT": 610, "CANVAS_WIDTH": 1920, "CANVAS_HEIGHT": 1080,
+    "ROWS": 3, 
+    "COLS": 3, 
+    "MARGIN": 22, 
+    "CORNER_RADIUS": 46.1, 
+    "ROTATION_ANGLE": -15.8,
+    "START_X": 1050, 
+    "START_Y": -362, 
+    "COLUMN_SPACING": 100, 
+    "SAVE_COLUMNS": True,
+    "CELL_WIDTH": 410, 
+    "CELL_HEIGHT": 610, 
+    "CANVAS_WIDTH": 1920, 
+    "CANVAS_HEIGHT": 1080,
 }
 
 # ========== 辅助函数 (从单图风格文件中复制过来) ==========
