@@ -93,7 +93,6 @@ def api_get_stats_subscription():
             },
             'actors': {
                 'subscriptions': raw.get('actor_subscriptions_active', 0), 
-                'tracked_total': raw.get('actor_works_total', 0), 
                 'tracked_in_library': raw.get('actor_works_in_library', 0)
             },
             'resubscribe': {'pending': raw.get('resubscribe_pending', 0)},

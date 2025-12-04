@@ -143,7 +143,7 @@ def get_stats_subscription():
         with get_db_connection() as conn:
             with conn.cursor() as cursor:
                 # 1. 追剧统计
-                # 修正：增加 AND item_type = 'Series'，只统计剧集层级，排除季和集
+                # 增加 AND item_type = 'Series'，只统计剧集层级，排除季和集
                 cursor.execute("""
                     SELECT 
                         COUNT(*) FILTER (WHERE TRIM(watching_status) ILIKE 'Watching') as watching,
@@ -160,13 +160,13 @@ def get_stats_subscription():
                 cursor.execute("SELECT COUNT(*) FROM actor_subscriptions WHERE status = 'active'")
                 actor_sub_count = cursor.fetchone()['count']
 
-                # 使用 @> 操作符匹配包含 {"type": "Actor"} 对象的数组
+                # 只统计 in_library = TRUE 的项目，不再计算总数
                 cursor.execute("""
                     SELECT 
-                        COUNT(*) as total,
-                        COUNT(*) FILTER (WHERE in_library = TRUE) as in_lib
+                        COUNT(*) as in_lib
                     FROM media_metadata 
                     WHERE subscription_sources_json @> '[{"type": "actor_subscription"}]'::jsonb
+                      AND in_library = TRUE
                 """)
                 actor_works_row = cursor.fetchone()
 
@@ -201,7 +201,6 @@ def get_stats_subscription():
                     'watchlist_completed': watchlist_row['completed'],
                     
                     'actor_subscriptions_active': actor_sub_count,
-                    'actor_works_total': actor_works_row['total'],
                     'actor_works_in_library': actor_works_row['in_lib'],
                     
                     'resubscribe_pending': resub_pending,

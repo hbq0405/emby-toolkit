@@ -133,7 +133,7 @@
                   <div class="stat-block-title">演员订阅</div>
                   <div class="stat-item-group">
                     <div class="stat-item"><div class="stat-item-label">已订阅</div><div class="stat-item-value">{{ stats.subscriptions_card.actors.subscriptions }}</div></div>
-                    <div class="stat-item"><div class="stat-item-label">作品入库</div><div class="stat-item-value">{{ stats.subscriptions_card.actors.tracked_in_library }} / {{ stats.subscriptions_card.actors.tracked_total }}</div></div>
+                    <div class="stat-item"><div class="stat-item-label">作品入库</div><div class="stat-item-value">{{ stats.subscriptions_card.actors.tracked_in_library }}</div></div>
                   </div>
                 </n-gi>
               </n-grid>
