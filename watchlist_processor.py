@@ -13,6 +13,7 @@ from database import connection, media_db, request_db, watchlist_db, user_db
 import constants
 import handler.tmdb as tmdb
 import handler.emby as emby
+import handler.moviepilot as moviepilot
 import handler.telegram as telegram
 import logging
 
