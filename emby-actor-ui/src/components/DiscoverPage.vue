@@ -211,40 +211,53 @@
 
     <!-- 结果展示区域 -->
     <n-spin :show="loading && results.length === 0">
-      <n-grid :x-gap="16" :y-gap="24" responsive="screen" cols="10" style="margin-top: 24px;">
+      <n-grid :x-gap="16" :y-gap="24" responsive="screen" cols="2 s:3 m:4 l:5 xl:6 2xl:8" style="margin-top: 24px;">
         <n-gi v-for="media in results" :key="media.id">
-          <n-card class="dashboard-card media-card" content-style="padding: 0; position: relative; overflow: hidden;" @click="handleClickCard(media)">
-            <img :src="media.poster_path ? `https://image.tmdb.org/t/p/w500${media.poster_path}` : '/path/to/default/image.png'" class="media-poster">
-            <div v-if="media.in_library" class="ribbon"><span>已入库</span></div>
-            <div v-if="media.vote_average" class="rating-badge">
-              {{ media.vote_average.toFixed(1) }}
-            </div>
-            <div class="hover-overlay">
-              <div class="overlay-info">
-                <span class="media-title">{{ media.title || media.name }}</span>
-                <span class="media-year">{{ getYear(media) }}</span>
+          <n-card class="dashboard-card media-card" content-style="padding: 0; position: relative;" @click="handleClickCard(media)">
+            
+            <!-- 1. 海报容器 -->
+            <div class="poster-wrapper">
+              <img :src="media.poster_path ? `https://image.tmdb.org/t/p/w500${media.poster_path}` : '/default-poster.png'" class="media-poster" @error="onImageError">
+              
+              <!-- 2. 状态缎带 (优先级：已入库 > 各种订阅状态) -->
+              <div v-if="media.in_library" class="ribbon ribbon-green"><span>已入库</span></div>
+              <div v-else-if="media.subscription_status === 'SUBSCRIBED'" class="ribbon ribbon-blue"><span>已订阅</span></div>
+              <div v-else-if="media.subscription_status === 'WANTED'" class="ribbon ribbon-purple"><span>待订阅</span></div>
+              <div v-else-if="media.subscription_status === 'REQUESTED'" class="ribbon ribbon-orange"><span>待审核</span></div>
+              <div v-else-if="media.subscription_status === 'PENDING_RELEASE'" class="ribbon ribbon-grey"><span>未发行</span></div>
+              <div v-else-if="media.subscription_status === 'IGNORED'" class="ribbon ribbon-dark"><span>已忽略</span></div>
+
+              <!-- 3. 评分角标 -->
+              <div v-if="media.vote_average" class="rating-badge">
+                {{ media.vote_average.toFixed(1) }}
               </div>
-              <div v-if="!media.in_library" 
-                class="action-icon" 
-                @click.stop="handleSubscribe(media)">
+
+              <!-- 4. 交互图标 (仅特定状态显示) -->
+              <!-- 逻辑：
+                   1. 特权用户 & 状态是 REQUESTED -> 显示闪电 (加速)
+                   2. 无状态 或 NONE -> 显示空心心 (订阅)
+                   3. 其他情况 -> 不显示图标 (状态由缎带展示)
+              -->
+              <div 
+                v-if="(isPrivilegedUser && media.subscription_status === 'REQUESTED') || (!media.subscription_status || media.subscription_status === 'NONE')"
+                class="action-btn"
+                @click.stop="handleSubscribe(media)"
+              >
                 <n-spin :show="subscribingId === media.id" size="small">
-                  <n-icon size="24">
-                    <!-- 图标逻辑保持不变 -->
-                    <HourglassOutline 
-                      v-if="['SUBSCRIBED', 'PENDING_RELEASE', 'WANTED'].includes(media.subscription_status) || 
-                            (!isPrivilegedUser && media.subscription_status === 'REQUESTED')" 
-                      color="#888" 
-                      style="cursor: not-allowed;" 
-                    />
-                    <LightningIcon 
-                      v-else-if="isPrivilegedUser && media.subscription_status === 'REQUESTED'" 
-                      color="#f0a020" 
-                    />
+                  <n-icon size="24" color="#fff" class="shadow-icon">
+                    <LightningIcon v-if="isPrivilegedUser && media.subscription_status === 'REQUESTED'" color="#f0a020" />
                     <HeartOutline v-else />
                   </n-icon>
                 </n-spin>
               </div>
             </div>
+
+            <!-- 5. 固定显示的标题和年份 (海报下方) -->
+            <div class="media-info">
+              <div class="media-title" :title="media.title || media.name">{{ media.title || media.name }}</div>
+              <div class="media-year">{{ getYear(media) }}</div>
+            </div>
+
           </n-card>
         </n-gi>
       </n-grid>
@@ -649,24 +662,106 @@ onUnmounted(() => { if (observer) { observer.disconnect(); } });
 </script>
 
 <style scoped>
-/* 样式代码完全不变 */
+/* 卡片基础 */
 .media-card {
   cursor: pointer;
   transition: transform 0.3s ease, box-shadow 0.3s ease;
   border-radius: 8px;
-  box-shadow: 0 4px 8px rgba(0,0,0,0.1);
+  box-shadow: 0 2px 6px rgba(0,0,0,0.08);
   overflow: hidden;
+  height: 100%;
+  display: flex;
+  flex-direction: column;
 }
 .media-card:hover {
-  transform: translateY(-8px);
-  box-shadow: 0 8px 16px rgba(0,0,0,0.2);
+  transform: translateY(-4px);
+  box-shadow: 0 8px 16px rgba(0,0,0,0.15);
+}
+
+/* 海报区域 */
+.poster-wrapper {
+  position: relative;
+  width: 100%;
+  aspect-ratio: 2 / 3;
+  overflow: hidden;
 }
 .media-poster {
   width: 100%;
-  aspect-ratio: 2 / 3;
+  height: 100%;
   object-fit: cover;
   display: block;
+  transition: transform 0.3s ease;
 }
+.media-card:hover .media-poster {
+  transform: scale(1.05); /* 悬停时海报微放大 */
+}
+
+/* 底部信息区域 (固定显示) */
+.media-info {
+  padding: 10px 8px;
+  background-color: var(--n-card-color);
+  flex-grow: 1;
+  display: flex;
+  flex-direction: column;
+  justify-content: flex-start;
+}
+.media-title {
+  font-weight: 600;
+  font-size: 0.95em;
+  line-height: 1.3;
+  margin-bottom: 4px;
+  /* 限制显示2行，超出省略 */
+  display: -webkit-box;
+  -webkit-line-clamp: 2;
+  line-clamp: 2;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+}
+.media-year {
+  font-size: 0.85em;
+  color: var(--n-text-color-3);
+}
+
+/* 评分角标 */
+.rating-badge {
+  position: absolute;
+  top: 6px;
+  right: 6px;
+  background-color: rgba(0, 0, 0, 0.75);
+  color: #f7b824; /* 星星黄 */
+  padding: 2px 6px;
+  border-radius: 4px;
+  font-size: 12px;
+  font-weight: bold;
+  backdrop-filter: blur(2px);
+  box-shadow: 0 2px 4px rgba(0,0,0,0.3);
+}
+
+/* 交互按钮 (右下角悬浮) */
+.action-btn {
+  position: absolute;
+  bottom: 8px;
+  right: 8px;
+  width: 36px;
+  height: 36px;
+  border-radius: 50%;
+  background-color: rgba(0, 0, 0, 0.6);
+  backdrop-filter: blur(4px);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  transition: transform 0.2s ease, background-color 0.2s;
+  z-index: 10;
+}
+.action-btn:hover {
+  transform: scale(1.1);
+  background-color: rgba(0, 0, 0, 0.8);
+}
+.shadow-icon {
+  filter: drop-shadow(0 2px 2px rgba(0,0,0,0.5));
+}
+
+/* ★★★ 缎带系统 ★★★ */
 .ribbon {
   position: absolute;
   top: -4px;
@@ -674,79 +769,33 @@ onUnmounted(() => { if (observer) { observer.disconnect(); } });
   width: 60px;
   height: 60px;
   overflow: hidden;
+  z-index: 5;
 }
 .ribbon span {
   position: absolute;
   display: block;
   width: 85px;
   padding: 4px 0;
-  background-color: #67c23a;
-  box-shadow: 0 5px 10px rgba(0,0,0,0.1);
+  box-shadow: 0 3px 6px rgba(0,0,0,0.2);
   color: #fff;
   font-size: 9px;
   font-weight: bold;
-  text-shadow: 0 1px 1px rgba(0,0,0,0.2);
+  text-shadow: 0 1px 1px rgba(0,0,0,0.3);
   text-transform: uppercase;
   text-align: center;
   left: -20px;
   top: 14px;
   transform: rotate(-45deg);
 }
-.rating-badge {
-  position: absolute;
-  top: 6px;
-  right: 6px;
-  background-color: rgba(0, 0, 0, 0.75);
-  color: #fff;
-  padding: 2px 6px;
-  border-radius: 3px;
-  font-size: 14px;
-  font-weight: bold;
-  backdrop-filter: blur(4px);
-}
-.hover-overlay {
-  position: absolute;
-  bottom: 0;
-  left: 0;
-  right: 0;
-  background: linear-gradient(to top, rgba(0,0,0,0.9) 0%, rgba(0,0,0,0) 100%);
-  color: white;
-  padding: 40px 12px 12px 12px;
-  display: flex;
-  justify-content: space-between;
-  align-items: flex-end;
-  transform: translateY(100%);
-  opacity: 0;
-  transition: transform 0.3s ease, opacity 0.3s ease;
-}
-.media-card:hover .hover-overlay {
-  transform: translateY(0);
-  opacity: 1;
-}
-.overlay-info {
-  display: flex;
-  flex-direction: column;
-  gap: 2px;
-  width: calc(100% - 30px);
-}
-.media-title {
-  font-weight: bold;
-  font-size: 1.2em;
-  white-space: nowrap;
-  overflow: hidden;
-  text-overflow: ellipsis;
-}
-.media-year {
-  font-size: 1em;
-  color: #ccc;
-}
-.action-icon {
-  color: #fff;
-  transition: transform 0.2s ease;
-}
-.action-icon:hover {
-  transform: scale(1.2);
-}
+
+/* 缎带颜色定义 */
+.ribbon-green span { background-color: #67c23a; } /* 已入库 - 绿色 */
+.ribbon-blue span { background-color: #409eff; }  /* 已订阅 - 蓝色 */
+.ribbon-purple span { background-color: #722ed1; } /* 待订阅 (WANTED) - 紫色 */
+.ribbon-orange span { background-color: #e6a23c; } /* 待审核 (REQUESTED) - 橙色 */
+.ribbon-grey span { background-color: #909399; }   /* 未发行 - 灰色 */
+.ribbon-dark span { background-color: #303133; }   /* 已忽略 - 深灰 */
+
 /* ★★★ “每日推荐”的专属样式 ★★★ */
 /* 1. 卡片和内容区的基础设置 (不变) */
 .recommendation-content {
