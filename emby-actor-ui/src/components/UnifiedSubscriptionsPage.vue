@@ -30,6 +30,21 @@
                 <template #icon><n-icon :component="CaretDownIcon" /></template>
               </n-button>
             </n-dropdown>
+            <n-popconfirm
+              v-if="filterStatus === 'IGNORED' && filteredItems.length > 0"
+              @positive-click="handleClearAllIgnored"
+              negative-text="取消"
+              positive-text="确定删除"
+            >
+              <template #trigger>
+                <n-button type="error" ghost>
+                  <template #icon><n-icon :component="TrashIcon" /></template>
+                  清空当前列表 ({{ filteredItems.length }})
+                </n-button>
+              </template>
+              确定要从数据库中<b style="color: red">物理删除</b>当前筛选出的 {{ filteredItems.length }} 条记录吗？<br/>
+              <span style="font-size: 12px; color: gray;">删除后无法恢复，且下次扫描可能会再次发现这些项目。</span>
+            </n-popconfirm>
             <n-radio-group v-model:value="filterStatus" size="small">
               <n-radio-button value="WANTED">待订阅</n-radio-button>
               <n-radio-button value="SUBSCRIBED">已订阅</n-radio-button> 
@@ -185,7 +200,7 @@
 import { ref, onMounted, onBeforeUnmount, h, computed, watch } from 'vue';
 import axios from 'axios';
 import { NLayout, NPageHeader, NDivider, NEmpty, NTag, NButton, NSpace, NIcon, useMessage, useDialog, NTooltip, NCard, NImage, NEllipsis, NSpin, NAlert, NRadioGroup, NRadioButton, NCheckbox, NDropdown, NInput, NSelect, NButtonGroup } from 'naive-ui';
-import { SyncOutline, TvOutline as TvIcon, FilmOutline as FilmIcon, CalendarOutline as CalendarIcon, TimeOutline as TimeIcon, ArrowUpOutline as ArrowUpIcon, ArrowDownOutline as ArrowDownIcon, CaretDownOutline as CaretDownIcon, CheckmarkCircleOutline as WantedIcon, HourglassOutline as PendingIcon, BanOutline as IgnoredIcon, DownloadOutline as SubscribedIcon, PersonCircleOutline as SourceIcon } from '@vicons/ionicons5';
+import { SyncOutline, TvOutline as TvIcon, FilmOutline as FilmIcon, CalendarOutline as CalendarIcon, TimeOutline as TimeIcon, ArrowUpOutline as ArrowUpIcon, ArrowDownOutline as ArrowDownIcon, CaretDownOutline as CaretDownIcon, CheckmarkCircleOutline as WantedIcon, HourglassOutline as PendingIcon, BanOutline as IgnoredIcon, DownloadOutline as SubscribedIcon, PersonCircleOutline as SourceIcon, TrashOutline as TrashIcon } from '@vicons/ionicons5';
 import { format } from 'date-fns'
 
 // 图标定义
@@ -560,6 +575,44 @@ const formatSources = (sources) => {
   return `来源: ${typeText}${detail ? ` - ${detail}` : ''}`;
 };
 
+// ★★★ 新增：处理一键清空逻辑 ★★★
+const handleClearAllIgnored = async () => {
+  // 1. 获取当前筛选出的所有项目的 ID
+  const itemsToDelete = filteredItems.value.map(item => ({
+    tmdb_id: item.tmdb_id,
+    item_type: item.item_type
+  }));
+
+  if (itemsToDelete.length === 0) return;
+
+  try {
+    isLoading.value = true; // 显示加载状态
+    
+    // 2. 发送请求
+    const response = await axios.post('/api/media/batch_delete', {
+      items: itemsToDelete
+    });
+
+    message.success(response.data.message || '删除成功');
+
+    // 3. 更新本地数据 (Optimistic UI Update)
+    // 创建一个 Set 用于快速查找已删除的 ID
+    const deletedKeys = new Set(itemsToDelete.map(i => `${i.tmdb_id}-${i.item_type}`));
+    
+    // 从 rawItems 中移除这些项
+    rawItems.value = rawItems.value.filter(item => 
+      !deletedKeys.has(`${item.tmdb_id}-${item.item_type}`)
+    );
+    
+    // 清空选择
+    selectedItems.value = [];
+
+  } catch (err) {
+    message.error(err.response?.data?.error || '批量删除失败');
+  } finally {
+    isLoading.value = false;
+  }
+};
 
 const formatAirDate = (dateString) => {
   if (!dateString) return 'N/A';

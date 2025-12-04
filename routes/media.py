@@ -543,3 +543,26 @@ def api_get_all_subscriptions_for_management():
     except Exception as e:
         logger.error(f"API /subscriptions/all 获取数据失败: {e}", exc_info=True)
         return jsonify({"error": "获取订阅列表时发生服务器内部错误"}), 500
+
+@media_api_bp.route('/media/batch_delete', methods=['POST'])
+@admin_required
+def api_batch_delete_media():
+    """
+    接收包含 {tmdb_id, item_type} 的列表，从数据库物理删除这些记录。
+    """
+    data = request.json
+    items_to_delete = data.get('items')
+
+    if not isinstance(items_to_delete, list) or not items_to_delete:
+        return jsonify({"error": "请求体必须包含非空的 'items' 列表"}), 400
+
+    try:
+        deleted_count = media_db.delete_media_metadata_batch(items_to_delete)
+        logger.info(f"API: 已物理删除 {deleted_count} 条媒体元数据记录。")
+        return jsonify({
+            "message": f"成功删除了 {deleted_count} 条记录。",
+            "deleted_count": deleted_count
+        })
+    except Exception as e:
+        logger.error(f"API /media/batch_delete 发生错误: {e}", exc_info=True)
+        return jsonify({"error": "删除操作发生内部错误"}), 500

@@ -899,3 +899,43 @@ def get_user_request_stats(user_id: str) -> Dict[str, int]:
     except Exception as e:
         logger.error(f"DB: 获取用户统计失败: {e}", exc_info=True)
         return stats
+    
+def delete_media_metadata_batch(items: List[Dict[str, str]]) -> int:
+    """
+    【新增】批量物理删除媒体元数据。
+    仅删除 in_library = FALSE 的记录，防止误删已入库项目。
+    """
+    if not items:
+        return 0
+
+    # 提取 (tmdb_id, item_type) 元组列表
+    targets = []
+    for item in items:
+        if item.get('tmdb_id') and item.get('item_type'):
+            targets.append((str(item.get('tmdb_id')), item.get('item_type')))
+
+    if not targets:
+        return 0
+
+    try:
+        with get_db_connection() as conn:
+            with conn.cursor() as cursor:
+                # 构造 SQL：WHERE (tmdb_id, item_type) IN ((id1, type1), (id2, type2)...)
+                # 且必须不在库中
+                placeholders = ",".join(["(%s, %s)"] * len(targets))
+                sql = f"""
+                    DELETE FROM media_metadata 
+                    WHERE (tmdb_id, item_type) IN ({placeholders})
+                      AND in_library = FALSE
+                """
+                
+                # 扁平化参数
+                flat_params = [val for pair in targets for val in pair]
+                
+                cursor.execute(sql, tuple(flat_params))
+                deleted_count = cursor.rowcount
+                conn.commit()
+                return deleted_count
+    except Exception as e:
+        logger.error(f"DB: 批量物理删除媒体元数据失败: {e}", exc_info=True)
+        return 0
