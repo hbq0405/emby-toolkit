@@ -211,15 +211,22 @@
 
     <!-- 结果展示区域 -->
     <n-spin :show="loading && results.length === 0">
-      <n-grid :x-gap="16" :y-gap="24" responsive="screen" cols="2 s:3 m:4 l:5 xl:6 2xl:8" style="margin-top: 24px;">
-        <n-gi v-for="media in results" :key="media.id">
+      
+      <!-- ★★★ 核心修改：使用 CSS Grid 容器替代 n-grid ★★★ -->
+      <div class="responsive-grid">
+        <div 
+          v-for="media in results" 
+          :key="media.id" 
+          class="grid-item"
+        >
           <n-card class="dashboard-card media-card" content-style="padding: 0; position: relative;" @click="handleClickCard(media)">
             
-            <!-- 1. 海报容器 -->
+            <!-- 海报容器 (包含所有元素) -->
             <div class="poster-wrapper">
-              <img :src="media.poster_path ? `https://image.tmdb.org/t/p/w500${media.poster_path}` : '/default-poster.png'" class="media-poster" @error="onImageError">
+              <!-- 图片源保持 w300 或 w500 均可，视卡片大小而定 -->
+              <img :src="media.poster_path ? `https://image.tmdb.org/t/p/w300${media.poster_path}` : '/default-poster.png'" class="media-poster" @error="onImageError">
               
-              <!-- 2. 状态缎带 (优先级：已入库 > 各种订阅状态) -->
+              <!-- 1. 状态缎带 -->
               <div v-if="media.in_library" class="ribbon ribbon-green"><span>已入库</span></div>
               <div v-else-if="media.subscription_status === 'SUBSCRIBED'" class="ribbon ribbon-blue"><span>已订阅</span></div>
               <div v-else-if="media.subscription_status === 'WANTED'" class="ribbon ribbon-purple"><span>待订阅</span></div>
@@ -227,40 +234,38 @@
               <div v-else-if="media.subscription_status === 'PENDING_RELEASE'" class="ribbon ribbon-grey"><span>未发行</span></div>
               <div v-else-if="media.subscription_status === 'IGNORED'" class="ribbon ribbon-dark"><span>已忽略</span></div>
 
-              <!-- 3. 评分角标 -->
+              <!-- 2. 评分角标 -->
               <div v-if="media.vote_average" class="rating-badge">
                 {{ media.vote_average.toFixed(1) }}
               </div>
 
-              <!-- 4. 交互图标 (仅特定状态显示) -->
-              <!-- 逻辑：
-                   1. 特权用户 & 状态是 REQUESTED -> 显示闪电 (加速)
-                   2. 无状态 或 NONE -> 显示空心心 (订阅)
-                   3. 其他情况 -> 不显示图标 (状态由缎带展示)
-              -->
-              <div 
-                v-if="(isPrivilegedUser && media.subscription_status === 'REQUESTED') || (!media.subscription_status || media.subscription_status === 'NONE')"
-                class="action-btn"
-                @click.stop="handleSubscribe(media)"
-              >
-                <n-spin :show="subscribingId === media.id" size="small">
-                  <n-icon size="24" color="#fff" class="shadow-icon">
-                    <LightningIcon v-if="isPrivilegedUser && media.subscription_status === 'REQUESTED'" color="#f0a020" />
-                    <HeartOutline v-else />
-                  </n-icon>
-                </n-spin>
+              <!-- 3. 底部遮罩信息区 (上浮式) -->
+              <div class="overlay-info">
+                <div class="text-content">
+                  <div class="media-title" :title="media.title || media.name">{{ media.title || media.name }}</div>
+                  <div class="media-year">{{ getYear(media) }}</div>
+                </div>
+
+                <!-- 4. 交互图标 -->
+                <div 
+                  v-if="!media.in_library && ((isPrivilegedUser && media.subscription_status === 'REQUESTED') || (!media.subscription_status || media.subscription_status === 'NONE'))"
+                  class="action-btn"
+                  @click.stop="handleSubscribe(media)"
+                >
+                  <n-spin :show="subscribingId === media.id" size="small">
+                    <n-icon size="18" color="#fff" class="shadow-icon">
+                      <LightningIcon v-if="isPrivilegedUser && media.subscription_status === 'REQUESTED'" color="#f0a020" />
+                      <HeartOutline v-else />
+                    </n-icon>
+                  </n-spin>
+                </div>
               </div>
-            </div>
 
-            <!-- 5. 固定显示的标题和年份 (海报下方) -->
-            <div class="media-info">
-              <div class="media-title" :title="media.title || media.name">{{ media.title || media.name }}</div>
-              <div class="media-year">{{ getYear(media) }}</div>
             </div>
-
           </n-card>
-        </n-gi>
-      </n-grid>
+        </div>
+      </div>
+
     </n-spin>
 
     <div v-if="isLoadingMore" style="text-align: center; padding: 20px;">
@@ -662,27 +667,47 @@ onUnmounted(() => { if (observer) { observer.disconnect(); } });
 </script>
 
 <style scoped>
+/* ★★★ 核心布局：响应式 Grid ★★★ */
+.responsive-grid {
+  display: grid;
+  gap: 16px; /* 卡片间距 */
+  margin-top: 24px;
+  /* 
+     自动填充列数 
+     minmax(150px, 1fr): 卡片最小 150px，最大自动拉伸
+     150px 是一个适合竖向海报的宽度，手机上能显示2列，大屏能显示很多列
+  */
+  grid-template-columns: repeat(auto-fill, minmax(150px, 1fr));
+}
+
+.grid-item {
+  min-width: 0; /* 防止内容溢出 */
+  height: 100%;
+}
+
 /* 卡片基础 */
 .media-card {
   cursor: pointer;
-  transition: transform 0.3s ease, box-shadow 0.3s ease;
+  transition: transform 0.2s ease, box-shadow 0.2s ease;
   border-radius: 8px;
-  box-shadow: 0 2px 6px rgba(0,0,0,0.08);
+  box-shadow: 0 2px 4px rgba(0,0,0,0.1);
   overflow: hidden;
   height: 100%;
+  background-color: #222; /* 深色底，防止图片加载闪烁 */
   display: flex;
   flex-direction: column;
 }
 .media-card:hover {
   transform: translateY(-4px);
-  box-shadow: 0 8px 16px rgba(0,0,0,0.15);
+  box-shadow: 0 8px 16px rgba(0,0,0,0.3);
+  z-index: 10;
 }
 
 /* 海报区域 */
 .poster-wrapper {
   position: relative;
   width: 100%;
-  aspect-ratio: 2 / 3;
+  aspect-ratio: 2 / 3; /* 强制保持海报比例 */
   overflow: hidden;
 }
 .media-poster {
@@ -693,33 +718,46 @@ onUnmounted(() => { if (observer) { observer.disconnect(); } });
   transition: transform 0.3s ease;
 }
 .media-card:hover .media-poster {
-  transform: scale(1.05); /* 悬停时海报微放大 */
+  transform: scale(1.05);
 }
 
-/* 底部信息区域 (固定显示) */
-.media-info {
-  padding: 10px 8px;
-  background-color: var(--n-card-color);
-  flex-grow: 1;
+/* ★★★ 底部遮罩信息区 (上浮式) ★★★ */
+.overlay-info {
+  position: absolute;
+  bottom: 0;
+  left: 0;
+  right: 0;
+  /* 渐变背景，保证文字清晰 */
+  background: linear-gradient(to top, rgba(0,0,0,0.9) 0%, rgba(0,0,0,0.6) 50%, transparent 100%);
+  padding: 40px 8px 8px 8px; 
   display: flex;
-  flex-direction: column;
-  justify-content: flex-start;
+  justify-content: space-between;
+  align-items: flex-end;
+  pointer-events: none; /* 让点击穿透 */
 }
+
+.text-content {
+  flex: 1;
+  min-width: 0;
+  margin-right: 4px;
+}
+
 .media-title {
-  font-weight: 600;
+  color: #fff;
+  font-weight: bold;
   font-size: 0.95em;
-  line-height: 1.3;
-  margin-bottom: 4px;
-  /* 限制显示2行，超出省略 */
-  display: -webkit-box;
-  -webkit-line-clamp: 2;
-  line-clamp: 2;
-  -webkit-box-orient: vertical;
+  line-height: 1.2;
+  margin-bottom: 2px;
+  text-shadow: 0 1px 2px rgba(0,0,0,0.8);
+  white-space: nowrap;
   overflow: hidden;
+  text-overflow: ellipsis;
 }
+
 .media-year {
-  font-size: 0.85em;
-  color: var(--n-text-color-3);
+  color: rgba(255, 255, 255, 0.85);
+  font-size: 0.8em;
+  text-shadow: 0 1px 2px rgba(0,0,0,0.8);
 }
 
 /* 评分角标 */
@@ -727,45 +765,51 @@ onUnmounted(() => { if (observer) { observer.disconnect(); } });
   position: absolute;
   top: 6px;
   right: 6px;
-  background-color: rgba(0, 0, 0, 0.75);
-  color: #f7b824; /* 星星黄 */
-  padding: 2px 6px;
+  background-color: rgba(0, 0, 0, 0.65);
+  color: #f7b824;
+  padding: 2px 5px;
   border-radius: 4px;
-  font-size: 12px;
+  font-size: 11px;
   font-weight: bold;
   backdrop-filter: blur(2px);
-  box-shadow: 0 2px 4px rgba(0,0,0,0.3);
+  box-shadow: 0 1px 2px rgba(0,0,0,0.3);
+  z-index: 5;
 }
 
-/* 交互按钮 (右下角悬浮) */
+/* 交互按钮 (无背景纯图标版) */
 .action-btn {
-  position: absolute;
-  bottom: 8px;
-  right: 8px;
-  width: 36px;
-  height: 36px;
-  border-radius: 50%;
-  background-color: rgba(0, 0, 0, 0.6);
-  backdrop-filter: blur(4px);
+  pointer-events: auto;
+  width: 30px;
+  height: 30px;
+  /* 移除背景色和圆角边框视觉 */
+  background-color: transparent; 
+  backdrop-filter: none;
+  border-radius: 50%; /* 保留圆角是为了点击热区是圆的，虽然看不见 */
+  
   display: flex;
   align-items: center;
   justify-content: center;
-  transition: transform 0.2s ease, background-color 0.2s;
-  z-index: 10;
-}
-.action-btn:hover {
-  transform: scale(1.1);
-  background-color: rgba(0, 0, 0, 0.8);
-}
-.shadow-icon {
-  filter: drop-shadow(0 2px 2px rgba(0,0,0,0.5));
+  transition: transform 0.2s ease;
+  flex-shrink: 0;
 }
 
-/* ★★★ 缎带系统 ★★★ */
+.action-btn:hover {
+  /* 悬停时只放大，不显示背景 */
+  transform: scale(1.2);
+  background-color: transparent;
+}
+
+/* 加强阴影，确保在白色海报上也能看清 */
+.shadow-icon {
+  /* 之前的阴影较淡，现在加深并扩散一点 */
+  filter: drop-shadow(0 0 3px rgba(0,0,0,0.9));
+}
+
+/* ★★★ 缎带系统 (适配竖版卡片) ★★★ */
 .ribbon {
   position: absolute;
-  top: -4px;
-  left: -4px;
+  top: -3px;
+  left: -3px;
   width: 60px;
   height: 60px;
   overflow: hidden;
@@ -775,29 +819,28 @@ onUnmounted(() => { if (observer) { observer.disconnect(); } });
   position: absolute;
   display: block;
   width: 85px;
-  padding: 4px 0;
-  box-shadow: 0 3px 6px rgba(0,0,0,0.2);
+  padding: 3px 0;
+  box-shadow: 0 2px 4px rgba(0,0,0,0.2);
   color: #fff;
-  font-size: 9px;
+  font-size: 10px;
   font-weight: bold;
   text-shadow: 0 1px 1px rgba(0,0,0,0.3);
   text-transform: uppercase;
   text-align: center;
-  left: -20px;
-  top: 14px;
+  left: -16px;
+  top: 10px;
   transform: rotate(-45deg);
 }
 
-/* 缎带颜色定义 */
-.ribbon-green span { background-color: #67c23a; } /* 已入库 - 绿色 */
-.ribbon-blue span { background-color: #409eff; }  /* 已订阅 - 蓝色 */
-.ribbon-purple span { background-color: #722ed1; } /* 待订阅 (WANTED) - 紫色 */
-.ribbon-orange span { background-color: #e6a23c; } /* 待审核 (REQUESTED) - 橙色 */
-.ribbon-grey span { background-color: #909399; }   /* 未发行 - 灰色 */
-.ribbon-dark span { background-color: #303133; }   /* 已忽略 - 深灰 */
+/* 缎带颜色 */
+.ribbon-green span { background-color: #67c23a; }
+.ribbon-blue span { background-color: #409eff; }
+.ribbon-purple span { background-color: #722ed1; }
+.ribbon-orange span { background-color: #e6a23c; }
+.ribbon-grey span { background-color: #909399; }
+.ribbon-dark span { background-color: #303133; }
 
 /* ★★★ “每日推荐”的专属样式 ★★★ */
-/* 1. 卡片和内容区的基础设置 (不变) */
 .recommendation-content {
   display: flex;
   flex-direction: column;
