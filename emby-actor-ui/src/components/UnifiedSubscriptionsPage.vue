@@ -6,9 +6,9 @@
         <template #title>
           <n-space align="center">
             <span>统一订阅管理</span>
-            <!-- 显示总数 (后端返回的 total) -->
-            <n-tag v-if="totalItems > 0" type="info" round :bordered="false" size="small">
-              共 {{ totalItems }} 项
+            <!-- 显示总数 -->
+            <n-tag v-if="rawItems.length > 0" type="info" round :bordered="false" size="small">
+              共 {{ rawItems.length }} 项
             </n-tag>
           </n-space>
         </template>
@@ -41,7 +41,7 @@
             
             <n-tooltip>
               <template #trigger>
-                <n-button @click="refreshList" :loading="isLoading" circle>
+                <n-button @click="fetchData" :loading="isLoading" circle>
                   <template #icon><n-icon :component="SyncOutline" /></template>
                 </n-button>
               </template>
@@ -54,7 +54,7 @@
 
       <!-- 客户端筛选工具栏 (针对已加载的数据) -->
       <n-space :wrap="true" :size="[20, 12]" style="margin-bottom: 20px;">
-        <n-input v-model:value="searchQuery" placeholder="按名称搜索已加载项..." clearable style="min-width: 200px;" />
+        <n-input v-model:value="searchQuery" placeholder="按名称搜索..." clearable style="min-width: 200px;" />
         <n-select v-model:value="filterType" :options="typeFilterOptions" style="min-width: 140px;" />
         <n-select v-model:value="filterSource" :options="sourceFilterOptions" style="min-width: 160px;" clearable placeholder="按来源筛选" />
         <n-select v-model:value="sortKey" :options="sortKeyOptions" style="min-width: 160px;" />
@@ -71,7 +71,7 @@
       </n-space>
 
       <!-- 列表区域 -->
-      <div v-if="isLoading && rawItems.length === 0" class="center-container"><n-spin size="large" /></div>
+      <div v-if="isLoading" class="center-container"><n-spin size="large" /></div>
       <div v-else-if="error" class="center-container"><n-alert title="加载错误" type="error">{{ error }}</n-alert></div>
       <div v-else-if="filteredItems.length > 0 || rawItems.length > 0">
         
@@ -173,14 +173,7 @@
           </div>
         </div>
         
-        <!-- 无限滚动触发器 -->
-        <div ref="loaderRef" class="loader-trigger">
-          <n-space v-if="isLoadingMore" align="center">
-            <n-spin size="small" />
-            <n-text depth="3">加载更多...</n-text>
-          </n-space>
-          <n-text v-else-if="!hasMore" depth="3">没有更多了</n-text>
-        </div>
+        <!-- 已移除无限滚动触发器 -->
       </div>
       <div v-else class="center-container"><n-empty :description="emptyStateDescription" size="huge" /></div>
     </div>
@@ -188,13 +181,13 @@
 </template>
 
 <script setup>
-import { ref, onMounted, onBeforeUnmount, h, computed, watch, nextTick } from 'vue';
+import { ref, onMounted, h, computed, watch } from 'vue';
 import axios from 'axios';
 import { NLayout, NPageHeader, NDivider, NEmpty, NTag, NButton, NSpace, NIcon, useMessage, useDialog, NTooltip, NCard, NImage, NEllipsis, NSpin, NAlert, NRadioGroup, NRadioButton, NCheckbox, NDropdown, NInput, NSelect, NButtonGroup, NText } from 'naive-ui';
 import { SyncOutline, TvOutline as TvIcon, FilmOutline as FilmIcon, CalendarOutline as CalendarIcon, TimeOutline as TimeIcon, ArrowUpOutline as ArrowUpIcon, ArrowDownOutline as ArrowDownIcon, CaretDownOutline as CaretDownIcon, CheckmarkCircleOutline as WantedIcon, HourglassOutline as PendingIcon, BanOutline as IgnoredIcon, DownloadOutline as SubscribedIcon, PersonCircleOutline as SourceIcon } from '@vicons/ionicons5';
 import { format } from 'date-fns'
 
-// 图标定义 (保持不变)
+// 图标定义
 const TMDbIcon = () => h('svg', { xmlns: "http://www.w3.org/2000/svg", viewBox: "0 0 512 512", width: "18", height: "18" }, [
   h('path', { d: "M256 512A256 256 0 1 0 256 0a256 256 0 1 0 0 512zM133.2 176.6a22.4 22.4 0 1 1 0-44.8 22.4 22.4 0 1 1 0 44.8zm63.3-22.4a22.4 22.4 0 1 1 44.8 0 22.4 22.4 0 1 1 -44.8 0zm74.8 108.2c-27.5-3.3-50.2-26-53.5-53.5a8 8 0 0 1 16-.6c2.3 19.3 18.8 34 38.1 31.7a8 8 0 0 1 7.4 8c-2.3.3-4.5.4-6.8.4zm-74.8-108.2a22.4 22.4 0 1 1 44.8 0 22.4 22.4 0 1 1 -44.8 0zm149.7 22.4a22.4 22.4 0 1 1 0-44.8 22.4 22.4 0 1 1 0 44.8zM133.2 262.6a22.4 22.4 0 1 1 0-44.8 22.4 22.4 0 1 1 0 44.8zm63.3-22.4a22.4 22.4 0 1 1 44.8 0 22.4 22.4 0 1 1 -44.8 0zm74.8 108.2c-27.5-3.3-50.2-26-53.5-53.5a8 8 0 0 1 16-.6c2.3 19.3 18.8 34 38.1 31.7a8 8 0 0 1 7.4 8c-2.3.3-4.5.4-6.8.4zm-74.8-108.2a22.4 22.4 0 1 1 44.8 0 22.4 22.4 0 1 1 -44.8 0zm149.7 22.4a22.4 22.4 0 1 1 0-44.8 22.4 22.4 0 1 1 0 44.8z", fill: "#01b4e4" })
 ]);
@@ -202,20 +195,10 @@ const TMDbIcon = () => h('svg', { xmlns: "http://www.w3.org/2000/svg", viewBox: 
 const message = useMessage();
 const dialog = useDialog();
 
-// ★★★ 数据状态管理 ★★★
-const rawItems = ref([]); // 当前已加载的所有数据
-const isLoading = ref(false); // 初始加载或重置时的 loading
-const isLoadingMore = ref(false); // 滚动加载时的 loading
+// ★★★ 数据状态管理 (无分页) ★★★
+const rawItems = ref([]); // 当前加载的所有数据
+const isLoading = ref(false);
 const error = ref(null);
-
-// ★★★ 分页状态 ★★★
-const currentPage = ref(1);
-const pageSize = ref(50); // 每页加载数量
-const totalItems = ref(0); // 后端返回的总数
-const hasMore = computed(() => rawItems.value.length < totalItems.value);
-
-const loaderRef = ref(null);
-let observer = null;
 
 const selectedItems = ref([]);
 const lastSelectedIndex = ref(null);
@@ -298,9 +281,8 @@ const batchActions = computed(() => {
   }
 });
 
-// ★★★ 客户端筛选逻辑 (针对已加载的数据) ★★★
+// ★★★ 客户端筛选逻辑 (针对已加载的全量数据) ★★★
 const filteredItems = computed(() => {
-  // 注意：不再过滤 filterStatus，因为 rawItems 已经是后端按 status 过滤好的了
   let list = [...rawItems.value];
 
   if (searchQuery.value) {
@@ -318,7 +300,7 @@ const filteredItems = computed(() => {
     );
   }
 
-  // 客户端排序 (针对已加载数据)
+  // 客户端排序
   list.sort((a, b) => {
     let valA, valB;
     switch (sortKey.value) {
@@ -356,66 +338,37 @@ const emptyStateDescription = computed(() => {
   return '当前列表为空。';
 });
 
-// ★★★ 核心数据获取逻辑 ★★★
-const fetchData = async (reset = false) => {
-  if (reset) {
-    isLoading.value = true;
-    currentPage.value = 1;
-    rawItems.value = [];
-    selectedItems.value = []; // 切换状态时清空选中
-  } else {
-    isLoadingMore.value = true;
-  }
-  
+// ★★★ 核心数据获取逻辑 (全量获取) ★★★
+const fetchData = async () => {
+  isLoading.value = true;
   error.value = null;
-
+  selectedItems.value = []; // 刷新时清空选中，防止操作已消失的项
+  
   try {
-    // 调用新的分页接口
+    // 调用接口，不再传递分页参数
     const response = await axios.get('/api/subscriptions/list', {
       params: {
         status: filterStatus.value, // 核心：传给后端进行过滤
-        page: currentPage.value,
-        page_size: pageSize.value
       }
     });
 
-    const { items, total } = response.data;
-    totalItems.value = total;
-
-    if (reset) {
-      rawItems.value = items;
-    } else {
-      // 避免重复添加 (理论上后端分页不会重复，但为了稳健)
-      const existingIds = new Set(rawItems.value.map(i => `${i.tmdb_id}-${i.item_type}`));
-      const newItems = items.filter(i => !existingIds.has(`${i.tmdb_id}-${i.item_type}`));
-      rawItems.value.push(...newItems);
-    }
+    const { items } = response.data;
+    // 直接全量替换
+    rawItems.value = items;
 
   } catch (err) {
     error.value = err.response?.data?.error || '获取订阅列表失败。';
   } finally {
     isLoading.value = false;
-    isLoadingMore.value = false;
   }
 };
 
-// 刷新按钮
-const refreshList = () => fetchData(true);
-
-// 监听状态切换，重置并重新加载
+// 监听状态切换，重新加载
 watch(filterStatus, () => {
-  fetchData(true);
+  fetchData();
 });
 
-// 加载更多
-const loadMore = () => {
-  if (hasMore.value && !isLoading.value && !isLoadingMore.value) {
-    currentPage.value++;
-    fetchData(false);
-  }
-};
-
-// --- 以下为辅助函数和操作逻辑 (基本保持不变) ---
+// --- 以下为辅助函数和操作逻辑 ---
 
 const getTMDbLink = (item) => {
   if (item.item_type === 'Movie') {
@@ -522,12 +475,11 @@ const handleBatchAction = (key) => {
         // 乐观更新 UI
         const selectedKeys = new Set(selectedItems.value.map(item => `${item.tmdb_id}-${item.item_type}`));
         
-        // 如果操作后的状态不等于当前过滤状态，则从列表中移除 (例如在 WANTED 列表点了忽略)
+        // 如果操作后的状态不等于当前过滤状态，则从列表中移除
         if (action.optimistic_status !== filterStatus.value) {
            rawItems.value = rawItems.value.filter(item => !selectedKeys.has(`${item.tmdb_id}-${item.item_type}`));
-           totalItems.value -= selectedKeys.size; // 更新总数
         } else {
-           // 状态没变 (极少情况)，或者只是更新属性
+           // 状态没变，或者只是更新属性
            rawItems.value.forEach(item => {
             if (selectedKeys.has(`${item.tmdb_id}-${item.item_type}`)) {
               item.subscription_status = action.optimistic_status;
@@ -561,12 +513,11 @@ const subscribeItem = async (item) => {
     });
     message.success('订阅任务已提交到后台！');
     
-    // 乐观更新：如果当前不是 SUBSCRIBED 列表，则移除
+    // 乐观更新
     if (filterStatus.value !== 'SUBSCRIBED') {
       const index = rawItems.value.findIndex(i => i.tmdb_id === item.tmdb_id && i.item_type === item.item_type);
       if (index > -1) {
         rawItems.value.splice(index, 1);
-        totalItems.value--;
       }
     }
   } catch (err) {
@@ -591,12 +542,11 @@ const updateItemStatus = async (item, newStatus, forceUnignore = false) => {
     await axios.post('/api/subscription/status', { requests: [requestItem] });
     message.success('状态更新成功！');
 
-    // 乐观更新：如果新状态不等于当前过滤状态，则移除
+    // 乐观更新
     if (newStatus !== filterStatus.value) {
       const index = rawItems.value.findIndex(i => i.tmdb_id === item.tmdb_id && i.item_type === item.item_type);
       if (index > -1) {
         rawItems.value.splice(index, 1);
-        totalItems.value--;
       }
     }
   } catch (err) {
@@ -639,29 +589,7 @@ const statusInfo = (status) => {
 };
 
 onMounted(() => {
-  fetchData(true); // 初始加载
-  
-  observer = new IntersectionObserver(
-    (entries) => {
-      if (entries[0].isIntersecting) {
-        loadMore();
-      }
-    },
-    { root: null, rootMargin: '200px', threshold: 0.1 }
-  );
-  
-  nextTick(() => {
-    if (loaderRef.value) observer.observe(loaderRef.value);
-  });
-});
-
-onBeforeUnmount(() => {
-  if (observer) observer.disconnect();
-});
-
-watch(loaderRef, (newEl, oldEl) => {
-  if (oldEl && observer) observer.unobserve(oldEl);
-  if (newEl && observer) observer.observe(newEl);
+  fetchData(); // 初始加载
 });
 </script>
 
@@ -853,14 +781,6 @@ watch(loaderRef, (newEl, oldEl) => {
 .card-checkbox.n-checkbox--checked { 
   opacity: 1; 
   visibility: visible; 
-}
-
-.loader-trigger {
-  height: 50px;
-  display: flex;
-  justify-content: center;
-  align-items: center;
-  margin-top: 20px;
 }
 
 @media (max-width: 600px) {

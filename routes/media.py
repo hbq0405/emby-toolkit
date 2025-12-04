@@ -521,31 +521,27 @@ def api_unified_subscription_status():
 @admin_required
 def api_get_subscriptions_list():
     """
-    【V2 - 高性能版】
-    支持按状态过滤和分页获取订阅列表。
+    【V2 - 全量数据版】
+    支持按状态过滤获取订阅列表。
+    已移除后端分页，一次性返回所有数据，以便前端进行来源(Source)筛选。
     参数:
       - status: 逗号分隔的状态字符串 (例如: "WANTED,PENDING_RELEASE")
-      - page: 页码 (默认 1)
-      - page_size: 每页数量 (默认 20)
     """
     try:
         # 1. 解析参数
         status_param = request.args.get('status', '')
-        page = int(request.args.get('page', 1))
-        page_size = int(request.args.get('page_size', 20))
+        # page 和 page_size 参数不再使用，但为了兼容前端请求不报错，这里不做处理或忽略
 
         # 如果没有传 status，默认获取所有活跃状态 (不含 IGNORED 和 NONE)
-        # 这样前端如果不改代码，默认也不会加载庞大的 IGNORED 列表
         if not status_param:
             statuses = ['WANTED', 'PENDING_RELEASE', 'SUBSCRIBED']
         else:
             statuses = [s.strip().upper() for s in status_param.split(',') if s.strip()]
 
-        # 2. 调用数据库查询
-        items, total_count = media_db.get_filtered_subscriptions(statuses, page, page_size)
+        # 2. 调用数据库查询 (不再传分页参数)
+        items = media_db.get_filtered_subscriptions(statuses)
 
         # 3. 数据增强 (解析用户名)
-        # 注意：现在只处理当前页的几十条数据，速度极快
         for item in items:
             sources = item.get('subscription_sources_json')
             if isinstance(sources, list):
@@ -553,13 +549,12 @@ def api_get_subscriptions_list():
                     if source.get('type') == 'user_request' and (user_id := source.get('user_id')):
                         source['user'] = user_db.get_username_by_id(user_id) or '未知用户'
 
-        # 4. 返回带分页信息的结构
+        # 4. 返回结构
+        # 虽然移除了分页，但为了保持前端接口响应结构的一致性，
+        # 我们依然返回 total 等字段，只是 total 等于当前列表长度。
         return jsonify({
             "items": items,
-            "total": total_count,
-            "page": page,
-            "page_size": page_size,
-            "total_pages": (total_count + page_size - 1) // page_size
+            "total": len(items)
         })
 
     except Exception as e:

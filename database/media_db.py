@@ -253,24 +253,21 @@ def ensure_media_record_exists(media_info_list: List[Dict[str, Any]]):
         logger.error(f"  ➜ [元数据注册] 确保媒体记录存在时发生错误: {e}", exc_info=True)
         raise
 
-def get_filtered_subscriptions(statuses: List[str], page: int = 1, page_size: int = 50) -> tuple[List[Dict[str, Any]], int]:
+def get_filtered_subscriptions(statuses: List[str]) -> List[Dict[str, Any]]:
     """
-    【V2 - 分页过滤版】
-    根据状态列表和分页参数获取订阅项。
-    返回: (items_list, total_count)
+    【V2 - 无分页全量版】
+    根据状态列表获取所有订阅项。
+    移除分页以支持前端进行全量数据的来源筛选。
+    返回: items_list
     """
     if not statuses:
-        return [], 0
+        return []
 
-    offset = (page - 1) * page_size
-    
     # 基础 SQL 结构
     base_where = "m1.subscription_status = ANY(%s)"
     
-    # 1. 获取总数 (用于前端分页)
-    count_sql = f"SELECT COUNT(*) FROM media_metadata m1 WHERE {base_where}"
-    
-    # 2. 获取数据 (带父剧集信息拼接)
+    # 获取数据 (带父剧集信息拼接)
+    # 移除 LIMIT 和 OFFSET
     data_sql = f"""
         SELECT 
             m1.tmdb_id, 
@@ -300,27 +297,22 @@ def get_filtered_subscriptions(statuses: List[str], page: int = 1, page_size: in
         WHERE 
             {base_where}
         ORDER BY 
-            m1.first_requested_at DESC
-        LIMIT %s OFFSET %s;
+            m1.first_requested_at DESC;
     """
     
     try:
         with get_db_connection() as conn:
             cursor = conn.cursor()
             
-            # 执行 Count
-            cursor.execute(count_sql, (statuses,))
-            total_count = cursor.fetchone()['count']
-            
             # 执行 Data
-            cursor.execute(data_sql, (statuses, page_size, offset))
+            cursor.execute(data_sql, (statuses,))
             items = [dict(row) for row in cursor.fetchall()]
             
-            return items, total_count
+            return items
             
     except Exception as e:
         logger.error(f"DB: 获取过滤订阅列表失败 (Statuses: {statuses}): {e}", exc_info=True)
-        return [], 0
+        return []
     
 def get_user_request_history(user_id: str, page: int = 1, page_size: int = 10, status_filter: str = 'all') -> tuple[List[Dict[str, Any]], int]:
     offset = (page - 1) * page_size
