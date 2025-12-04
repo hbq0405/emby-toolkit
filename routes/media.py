@@ -550,8 +550,6 @@ def api_get_subscriptions_list():
                         source['user'] = user_db.get_username_by_id(user_id) or '未知用户'
 
         # 4. 返回结构
-        # 虽然移除了分页，但为了保持前端接口响应结构的一致性，
-        # 我们依然返回 total 等字段，只是 total 等于当前列表长度。
         return jsonify({
             "items": items,
             "total": len(items)
