@@ -175,14 +175,14 @@
                     <n-space vertical size="small">
                       <!-- 1. 顶部状态按钮 (保持不变) -->
                       <n-space align="center" :wrap="false">
-                        <!-- ★★★ 情况 A: 已完结视图 (聚合卡片) - 使用精致状态 ★★★ -->
+                        <!-- 已完结视图 (聚合卡片) -->
                         <template v-if="currentView === 'completed'">
                           <n-tag round size="small" :bordered="false" :type="getSeriesStatusUI(item).type">
                             <template #icon><n-icon :component="getSeriesStatusUI(item).icon" /></template>
                             {{ getSeriesStatusUI(item).text }}
                           </n-tag>
                         </template>
-                        <!-- ★★★ 情况 B: 追剧中视图 (分季卡片) - 保持原有交互逻辑 ★★★ -->
+                        <!-- 追剧中视图 (分季卡片) -->
                         <template v-else>
                           <n-button round size="tiny" :type="statusInfo(item.status).type" @click="() => updateStatus(item.tmdb_id, statusInfo(item.status).next)" :title="`点击切换到 '${statusInfo(item.status).nextText}'`">
                             <template #icon><n-icon :component="statusInfo(item.status).icon" /></template>
@@ -194,35 +194,57 @@
                         </template>
                       </n-space>
 
-                      <!-- 2. 聚合信息 (仅在已完结且聚合时显示，保持不变) -->
-                      <div v-if="item.is_aggregated" class="info-line">
-                        <n-icon :component="CollectionsIcon" class="icon-fix" />
-                        <n-text :depth="3">
-                          包含: {{ item.included_seasons.length }} 个季度 (S{{ Math.min(...item.included_seasons) }}-S{{ Math.max(...item.included_seasons) }})
-                        </n-text>
-                      </div>
+                      <!-- ★★★ 2. 聚合信息展示区 (仅聚合卡片显示) ★★★ -->
+                      <template v-if="item.is_aggregated">
+                        <!-- A. 包含 (已入库) -->
+                        <div v-if="item.seasons_contains && item.seasons_contains.length > 0" class="info-line">
+                          <n-icon :component="CollectionsIcon" class="icon-fix" />
+                          <n-text :depth="3">
+                            包含: {{ item.seasons_contains.length }} 个季度 ({{ formatSeasonRange(item.seasons_contains) }})
+                          </n-text>
+                        </div>
 
-                      <!-- ★★★ 3. 待播集数 (修改：非已完结视图才显示) ★★★ -->
-                      <div v-if="currentView !== 'completed' && nextEpisode(item)?.name" class="info-line">
-                        <n-icon :component="TvIcon" class="icon-fix" />
-                        <n-text :depth="3" style="flex: 1; min-width: 0;">
-                          <n-ellipsis>待播集: {{ nextEpisode(item).name }}</n-ellipsis>
-                        </n-text>
-                      </div>
+                        <!-- B. 连载 (在库且活跃) - 绿色高亮 -->
+                        <div v-if="item.seasons_airing && item.seasons_airing.length > 0" class="info-line">
+                          <n-icon :component="WatchingIcon" class="icon-fix" style="color: var(--n-success-color)" />
+                          <n-text :depth="3" style="color: var(--n-success-color)">
+                            连载: {{ item.seasons_airing.length }} 个季度 ({{ formatSeasonRange(item.seasons_airing) }})
+                          </n-text>
+                        </div>
 
-                      <!-- ★★★ 4. 播出时间 (修改：非已完结视图才显示) ★★★ -->
-                      <div v-if="currentView !== 'completed' && nextEpisode(item)?.name" class="info-line">
-                        <n-icon :component="CalendarIcon" class="icon-fix" />
-                        <n-text :depth="3">
-                          播出时间: {{ nextEpisode(item).air_date ? formatAirDate(nextEpisode(item).air_date) : '待定' }}
-                        </n-text>
-                      </div>
+                        <!-- C. 缺失 (未入库) - 红色高亮 -->
+                        <div v-if="item.seasons_missing && item.seasons_missing.length > 0" class="info-line">
+                          <n-icon :component="DownloadIcon" class="icon-fix" style="color: var(--n-error-color)" />
+                          <n-text :depth="3" style="color: var(--n-error-color)">
+                            缺失: {{ item.seasons_missing.length }} 个季度 ({{ formatSeasonRange(item.seasons_missing) }})
+                          </n-text>
+                        </div>
+                      </template>
 
-                      <!-- ★★★ 5. 上次检查 (修改：非已完结视图才显示) ★★★ -->
-                      <div v-if="currentView !== 'completed'" class="info-line">
-                        <n-icon :component="TimeIcon" class="icon-fix" />
-                        <n-text :depth="3">上次检查: {{ formatTimestamp(item.last_checked_at) }}</n-text>
-                      </div>
+                      <!-- ★★★ 3. 单季详细信息 (仅非聚合卡片显示) ★★★ -->
+                      <template v-else>
+                        <!-- 待播集数 -->
+                        <div v-if="nextEpisode(item)?.name" class="info-line">
+                          <n-icon :component="TvIcon" class="icon-fix" />
+                          <n-text :depth="3" style="flex: 1; min-width: 0;">
+                            <n-ellipsis>待播集: {{ nextEpisode(item).name }}</n-ellipsis>
+                          </n-text>
+                        </div>
+
+                        <!-- 播出时间 -->
+                        <div v-if="nextEpisode(item)?.name" class="info-line">
+                          <n-icon :component="CalendarIcon" class="icon-fix" />
+                          <n-text :depth="3">
+                            播出时间: {{ nextEpisode(item).air_date ? formatAirDate(nextEpisode(item).air_date) : '待定' }}
+                          </n-text>
+                        </div>
+
+                        <!-- 上次检查 -->
+                        <div class="info-line">
+                          <n-icon :component="TimeIcon" class="icon-fix" />
+                          <n-text :depth="3">上次检查: {{ formatTimestamp(item.last_checked_at) }}</n-text>
+                        </div>
+                      </template>
                     </n-space>
                   </div>
                   
@@ -497,22 +519,36 @@ const filteredWatchlist = computed(() => {
         groups[pid] = { 
           ...season, 
           item_name: season.item_name.replace(/ 第 \d+ 季$/, ''),
-          
-          // ★★★ 核心修改：直接使用剧集层面的数据，不再累加 ★★★
           collected_count: season.series_collected_count || 0,
           total_count: season.series_total_episodes || 0,
-          
-          // ★★★ 核心修改：状态判断使用剧集层面的状态 ★★★
-          // 这里的 status 字段会传给 getSeriesStatusUI 使用
           status: season.series_status, 
-          
           is_aggregated: true,
-          included_seasons: []
+          
+          // ★★★ 初始化分类数组 ★★★
+          seasons_contains: [], // 已入库 (in_library=TRUE)
+          seasons_missing: [],  // 缺失 (in_library=FALSE)
+          seasons_airing: []    // 连载中 (in_library=TRUE 且 状态活跃)
         };
       }
-      // 只需要收集季号，不需要累加进度了
-      groups[pid].included_seasons.push(season.season_number);
       
+      // ★★★ 分类逻辑 ★★★
+      // 1. 判断是否在库：只要收集数 > 0 就算在库 (或者你可以用 season.collected_count === season.total_count 来判断全收集)
+      // 这里按你的要求：in_library=TRUE (即 collected_count > 0)
+      const isInLibrary = (season.collected_count > 0);
+      
+      if (isInLibrary) {
+        groups[pid].seasons_contains.push(season.season_number);
+        
+        // 2. 判断是否连载中：在库 且 状态是 Watching/Paused
+        if (season.status === 'Watching' || season.status === 'Paused') {
+           groups[pid].seasons_airing.push(season.season_number);
+        }
+      } else {
+        // 3. 缺失：完全没入库
+        groups[pid].seasons_missing.push(season.season_number);
+      }
+      
+      // 更新时间取最新的
       if (new Date(season.last_checked_at) > new Date(groups[pid].last_checked_at)) {
         groups[pid].last_checked_at = season.last_checked_at;
       }
@@ -564,6 +600,28 @@ const filteredWatchlist = computed(() => {
 
   return list;
 });
+
+// 辅助函数：将数字数组格式化为范围字符串 (如 "S1-S4, S6")
+const formatSeasonRange = (numbers) => {
+  if (!numbers || numbers.length === 0) return '';
+  // 排序
+  const sorted = [...numbers].sort((a, b) => a - b);
+  const ranges = [];
+  let start = sorted[0];
+  let prev = sorted[0];
+
+  for (let i = 1; i < sorted.length; i++) {
+    if (sorted[i] === prev + 1) {
+      prev = sorted[i];
+    } else {
+      ranges.push(start === prev ? `S${start}` : `S${start}-S${prev}`);
+      start = sorted[i];
+      prev = sorted[i];
+    }
+  }
+  ranges.push(start === prev ? `S${start}` : `S${start}-S${prev}`);
+  return ranges.join(', ');
+};
 
 // 计算剧集层面的精致状态 
 const getSeriesStatusUI = (item) => {
