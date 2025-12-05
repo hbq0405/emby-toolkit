@@ -185,6 +185,7 @@
                       type="line" 
                       :percentage="calculateProgress(item)" 
                       :status="getProgressStatus(item)"
+                      :color="getProgressColor(item)"
                       :height="2" 
                       :show-indicator="false"
                       :border-radius="0"
@@ -274,7 +275,7 @@
 <script setup>
 import { ref, onMounted, onBeforeUnmount, h, computed, watch } from 'vue';
 import axios from 'axios';
-import { NLayout, NPageHeader, NDivider, NEmpty, NTag, NButton, NSpace, NIcon, useMessage, useDialog, NPopconfirm, NTooltip, NCard, NImage, NEllipsis, NSpin, NAlert, NRadioGroup, NRadioButton, NModal, NTabs, NTabPane, NList, NListItem, NCheckbox, NDropdown, NInput, NSelect, NButtonGroup, NProgress } from 'naive-ui';
+import { NLayout, NPageHeader, NDivider, NEmpty, NTag, NButton, NSpace, NIcon, useMessage, useDialog, NPopconfirm, NTooltip, NCard, NImage, NEllipsis, NSpin, NAlert, NRadioGroup, NRadioButton, NModal, NTabs, NTabPane, NList, NListItem, NCheckbox, NDropdown, NInput, NSelect, NButtonGroup, NProgress, useThemeVars } from 'naive-ui';
 import { SyncOutline, TvOutline as TvIcon, TrashOutline as TrashIcon, EyeOutline as EyeIcon, CalendarOutline as CalendarIcon, TimeOutline as TimeIcon, PlayCircleOutline as WatchingIcon, PauseCircleOutline as PausedIcon, CheckmarkCircleOutline as CompletedIcon, ScanCircleOutline as ScanIcon, CaretDownOutline as CaretDownIcon, FlashOffOutline as ForceEndIcon, ArrowUpOutline as ArrowUpIcon, ArrowDownOutline as ArrowDownIcon, DownloadOutline as DownloadIcon } from '@vicons/ionicons5';
 import { format, parseISO } from 'date-fns';
 import { useConfig } from '../composables/useConfig.js';
@@ -308,7 +309,7 @@ const displayCount = ref(30);
 const INCREMENT = 30;
 const loaderRef = ref(null);
 let observer = null;
-
+const themeVars = useThemeVars();
 const selectedItems = ref([]);
 const lastSelectedIndex = ref(null);
 
@@ -784,6 +785,15 @@ const getProgressStatus = (item) => {
   return 'default'; // 使用默认主题色 (Primary)
 };
 
+const getProgressColor = (item) => {
+  const p = calculateProgress(item);
+  // 如果进度 >= 100，返回 undefined，让组件自动变绿 (Success状态)
+  if (p >= 100) return undefined;
+  
+  // 如果未完成，返回当前主题的主色调
+  return themeVars.value.primaryColor;
+};
+
 onMounted(() => {
   fetchWatchlist();
   observer = new IntersectionObserver(
@@ -1058,12 +1068,6 @@ watch(loaderRef, (newEl, oldEl) => {
   font-size: 14px;     /* 调整图标大小与文字协调，根据需要微调 */
   color: var(--n-text-color-3); /* 让图标颜色也跟随 depth=3 变淡，或者直接删掉这行用默认色 */
   opacity: 0.6;        /* 或者用透明度来模拟 depth=3 的效果 */
-}
-
-/* ★★★ 修复：强制将未完成的进度条填充色改为主题色 ★★★ */
-/* 逻辑：找到 .progress-separator 下的进度条，如果它不是 success (绿色) 状态，就强制把填充条改为 primary (主题色) */
-.progress-separator :deep(.n-progress:not(.n-progress--status-success) .n-progress-graph-line-fill) {
-  background-color: var(--n-color-primary) !important;
 }
 
 /* ★★★ 修复进度条背景色在亮色模式下看不清的问题 ★★★ */
