@@ -450,7 +450,7 @@ const batchActions = computed(() => {
 const filteredWatchlist = computed(() => {
   let list = rawWatchlist.value;
 
-  // 1. 基础过滤：搜索
+  // 1. 基础过滤：搜索 (通用)
   if (searchQuery.value) {
     const query = searchQuery.value.toLowerCase();
     list = list.filter(item => item.item_name.toLowerCase().includes(query));
@@ -458,19 +458,25 @@ const filteredWatchlist = computed(() => {
 
   // 2. 视图分流
   if (currentView.value === 'inProgress') {
-    // --- 追剧中视图：显示单季卡片 ---
+    // --- 追剧中视图 ---
     list = list.filter(item => item.status === 'Watching' || item.status === 'Paused');
     
     if (filterStatus.value !== 'all') {
       list = list.filter(item => item.status === filterStatus.value);
     }
+    // 追剧中：应用缺季筛选
     if (filterMissing.value !== 'all') {
       const hasMissingValue = filterMissing.value === 'yes';
       list = list.filter(item => hasMissingSeasons(item) === hasMissingValue);
     }
+    // 追剧中：应用缺集筛选
+    if (filterGaps.value !== 'all') {
+       const hasGapsValue = filterGaps.value === 'yes';
+       list = list.filter(item => hasGaps(item) === hasGapsValue);
+    }
 
   } else if (currentView.value === 'completed') {
-    // --- ★★★ 已完结视图：聚合逻辑 ★★★ ---
+    // --- 已完结视图：聚合逻辑 ---
     
     // A. 先筛选出所有已完结的季
     let completedSeasons = list.filter(item => item.status === 'Completed');
@@ -480,26 +486,19 @@ const filteredWatchlist = computed(() => {
     completedSeasons.forEach(season => {
       const pid = season.parent_tmdb_id;
       if (!groups[pid]) {
-        // 初始化聚合对象，克隆第一季的数据作为底板
         groups[pid] = { 
           ...season, 
-          // 移除 " 第 X 季" 后缀，还原剧名
           item_name: season.item_name.replace(/ 第 \d+ 季$/, ''),
-          // 重置计数器
           collected_count: 0,
           total_count: 0,
-          // 标记这是个聚合体
           is_aggregated: true,
-          // 记录包含哪些季
           included_seasons: []
         };
       }
-      // 累加数据
       groups[pid].collected_count += (season.collected_count || 0);
       groups[pid].total_count += (season.total_count || 0);
       groups[pid].included_seasons.push(season.season_number);
       
-      // 更新时间取最新的那一季
       if (new Date(season.last_checked_at) > new Date(groups[pid].last_checked_at)) {
         groups[pid].last_checked_at = season.last_checked_at;
       }
@@ -508,14 +507,23 @@ const filteredWatchlist = computed(() => {
     // C. 转回数组
     list = Object.values(groups);
 
-    // D. 聚合后的筛选 (可选)
+    // ★★★ 修复：在聚合后，重新应用筛选逻辑 ★★★
+    
+    // 1. 缺季筛选 (Missing Seasons)
+    // 注意：missing_info 来自父剧集，所以聚合对象的 missing_info 是准确的
+    if (filterMissing.value !== 'all') {
+      const hasMissingValue = filterMissing.value === 'yes';
+      list = list.filter(item => hasMissingSeasons(item) === hasMissingValue);
+    }
+
+    // 2. 缺集筛选 (Gaps)
     if (filterGaps.value !== 'all') {
        const hasGapsValue = filterGaps.value === 'yes';
        list = list.filter(item => hasGaps(item) === hasGapsValue);
     }
   }
 
-  // 3. 排序 (保持不变)
+  // 3. 排序 (通用)
   list.sort((a, b) => {
     let valA, valB;
     switch (sortKey.value) {
@@ -523,7 +531,7 @@ const filteredWatchlist = computed(() => {
         valA = a.item_name || '';
         valB = b.item_name || '';
         return sortOrder.value === 'asc' ? valA.localeCompare(valB) : valB.localeCompare(valA);
-      case 'added_at': // 注意：聚合后 added_at 可能不准，建议按 last_checked_at
+      case 'added_at':
         valA = a.added_at ? new Date(a.added_at).getTime() : 0;
         valB = b.added_at ? new Date(b.added_at).getTime() : 0;
         break;
