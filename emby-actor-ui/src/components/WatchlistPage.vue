@@ -182,6 +182,13 @@
                           {{ getSmartTMDbStatusText(item) }}
                         </n-tag>
                       </n-space>
+                      <!-- 如果是聚合卡片，显示包含的季 -->
+                      <div v-if="item.is_aggregated" class="info-line">
+                        <n-icon :component="CollectionsIcon" class="icon-fix" /> <!-- 需要引入 CollectionsIcon -->
+                        <n-text :depth="3">
+                          包含: {{ item.included_seasons.length }} 个季度 (S{{ Math.min(...item.included_seasons) }}-S{{ Math.max(...item.included_seasons) }})
+                        </n-text>
+                      </div>
                       <!-- 1. 待播集数 -->
                       <div v-if="nextEpisode(item)?.name" class="info-line">
                         <n-icon :component="TvIcon" class="icon-fix" />
@@ -242,8 +249,8 @@
                       <template #trigger>
                         <n-button
                           circle
-                          :loading="refreshingItems[item.tmdb_id]"
-                          @click="() => triggerSingleRefresh(item.tmdb_id, item.item_name)"
+                          :loading="refreshingItems[item.parent_tmdb_id]" 
+                          @click="() => triggerSingleRefresh(item.parent_tmdb_id, item.item_name)"
                         >
                           <template #icon><n-icon :component="SyncOutline" /></template>
                         </n-button>
@@ -305,7 +312,7 @@
 import { ref, onMounted, onBeforeUnmount, h, computed, watch } from 'vue';
 import axios from 'axios';
 import { NLayout, NPageHeader, NDivider, NEmpty, NTag, NButton, NSpace, NIcon, useMessage, useDialog, NPopconfirm, NTooltip, NCard, NImage, NEllipsis, NSpin, NAlert, NRadioGroup, NRadioButton, NModal, NTabs, NTabPane, NList, NListItem, NCheckbox, NDropdown, NInput, NSelect, NButtonGroup, NProgress, useThemeVars, NPopover, NInputNumber } from 'naive-ui';
-import { SyncOutline, TvOutline as TvIcon, TrashOutline as TrashIcon, EyeOutline as EyeIcon, CalendarOutline as CalendarIcon, TimeOutline as TimeIcon, PlayCircleOutline as WatchingIcon, PauseCircleOutline as PausedIcon, CheckmarkCircleOutline as CompletedIcon, ScanCircleOutline as ScanIcon, CaretDownOutline as CaretDownIcon, FlashOffOutline as ForceEndIcon, ArrowUpOutline as ArrowUpIcon, ArrowDownOutline as ArrowDownIcon, DownloadOutline as DownloadIcon } from '@vicons/ionicons5';
+import { SyncOutline, TvOutline as TvIcon, TrashOutline as TrashIcon, EyeOutline as EyeIcon, CalendarOutline as CalendarIcon, TimeOutline as TimeIcon, PlayCircleOutline as WatchingIcon, PauseCircleOutline as PausedIcon, CheckmarkCircleOutline as CompletedIcon, ScanCircleOutline as ScanIcon, CaretDownOutline as CaretDownIcon, FlashOffOutline as ForceEndIcon, ArrowUpOutline as ArrowUpIcon, ArrowDownOutline as ArrowDownIcon, DownloadOutline as DownloadIcon, AlbumsOutline as CollectionsIcon } from '@vicons/ionicons5';
 import { format, parseISO } from 'date-fns';
 import { useConfig } from '../composables/useConfig.js';
 
@@ -441,31 +448,72 @@ const batchActions = computed(() => {
 const filteredWatchlist = computed(() => {
   let list = rawWatchlist.value;
 
-  if (currentView.value === 'inProgress') {
-    list = list.filter(item => item.status === 'Watching' || item.status === 'Paused');
-  } else if (currentView.value === 'completed') {
-    list = list.filter(item => item.status === 'Completed');
-  }
-
+  // 1. 基础过滤：搜索
   if (searchQuery.value) {
     const query = searchQuery.value.toLowerCase();
     list = list.filter(item => item.item_name.toLowerCase().includes(query));
   }
 
-  if (currentView.value === 'inProgress' && filterStatus.value !== 'all') {
-    list = list.filter(item => item.status === filterStatus.value);
+  // 2. 视图分流
+  if (currentView.value === 'inProgress') {
+    // --- 追剧中视图：显示单季卡片 ---
+    list = list.filter(item => item.status === 'Watching' || item.status === 'Paused');
+    
+    if (filterStatus.value !== 'all') {
+      list = list.filter(item => item.status === filterStatus.value);
+    }
+    if (filterMissing.value !== 'all') {
+      const hasMissingValue = filterMissing.value === 'yes';
+      list = list.filter(item => hasMissingSeasons(item) === hasMissingValue);
+    }
+
+  } else if (currentView.value === 'completed') {
+    // --- ★★★ 已完结视图：聚合逻辑 ★★★ ---
+    
+    // A. 先筛选出所有已完结的季
+    let completedSeasons = list.filter(item => item.status === 'Completed');
+
+    // B. 按 Parent ID 聚合
+    const groups = {};
+    completedSeasons.forEach(season => {
+      const pid = season.parent_tmdb_id;
+      if (!groups[pid]) {
+        // 初始化聚合对象，克隆第一季的数据作为底板
+        groups[pid] = { 
+          ...season, 
+          // 移除 " 第 X 季" 后缀，还原剧名
+          item_name: season.item_name.replace(/ 第 \d+ 季$/, ''),
+          // 重置计数器
+          collected_count: 0,
+          total_count: 0,
+          // 标记这是个聚合体
+          is_aggregated: true,
+          // 记录包含哪些季
+          included_seasons: []
+        };
+      }
+      // 累加数据
+      groups[pid].collected_count += (season.collected_count || 0);
+      groups[pid].total_count += (season.total_count || 0);
+      groups[pid].included_seasons.push(season.season_number);
+      
+      // 更新时间取最新的那一季
+      if (new Date(season.last_checked_at) > new Date(groups[pid].last_checked_at)) {
+        groups[pid].last_checked_at = season.last_checked_at;
+      }
+    });
+
+    // C. 转回数组
+    list = Object.values(groups);
+
+    // D. 聚合后的筛选 (可选)
+    if (filterGaps.value !== 'all') {
+       const hasGapsValue = filterGaps.value === 'yes';
+       list = list.filter(item => hasGaps(item) === hasGapsValue);
+    }
   }
 
-  if (filterMissing.value !== 'all') {
-    const hasMissingValue = filterMissing.value === 'yes';
-    list = list.filter(item => hasMissingSeasons(item) === hasMissingValue);
-  }
-
-  if (currentView.value === 'completed' && filterGaps.value !== 'all') {
-      const hasGapsValue = filterGaps.value === 'yes';
-      list = list.filter(item => hasGaps(item) === hasGapsValue);
-  }
-
+  // 3. 排序 (保持不变)
   list.sort((a, b) => {
     let valA, valB;
     switch (sortKey.value) {
@@ -473,7 +521,7 @@ const filteredWatchlist = computed(() => {
         valA = a.item_name || '';
         valB = b.item_name || '';
         return sortOrder.value === 'asc' ? valA.localeCompare(valB) : valB.localeCompare(valA);
-      case 'added_at':
+      case 'added_at': // 注意：聚合后 added_at 可能不准，建议按 last_checked_at
         valA = a.added_at ? new Date(a.added_at).getTime() : 0;
         valB = b.added_at ? new Date(b.added_at).getTime() : 0;
         break;
