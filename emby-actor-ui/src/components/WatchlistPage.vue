@@ -185,7 +185,6 @@
                       type="line" 
                       :percentage="calculateProgress(item)" 
                       :status="getProgressStatus(item)"
-                      :color="getProgressColor(item)"
                       :height="2" 
                       :show-indicator="false"
                       :border-radius="0"
@@ -785,18 +784,6 @@ const getProgressStatus = (item) => {
   return 'default'; // 使用默认主题色 (Primary)
 };
 
-// 控制进度条颜色
-const getProgressColor = (item) => {
-  const p = calculateProgress(item);
-  // 1. 如果进度达到 100%，返回 undefined
-  //    这样会让组件使用 status="success" 的默认绿色，表示“完成”
-  if (p >= 100) return undefined;
-  
-  // 2. 如果未完成，强制使用 CSS 变量 var(--n-color-primary)
-  //    这个变量会自动跟随你右上角选择的主题颜色变化
-  return 'var(--n-color-primary)';
-};
-
 onMounted(() => {
   fetchWatchlist();
   observer = new IntersectionObserver(
@@ -1071,6 +1058,12 @@ watch(loaderRef, (newEl, oldEl) => {
   font-size: 14px;     /* 调整图标大小与文字协调，根据需要微调 */
   color: var(--n-text-color-3); /* 让图标颜色也跟随 depth=3 变淡，或者直接删掉这行用默认色 */
   opacity: 0.6;        /* 或者用透明度来模拟 depth=3 的效果 */
+}
+
+/* ★★★ 修复：强制将未完成的进度条填充色改为主题色 ★★★ */
+/* 逻辑：找到 .progress-separator 下的进度条，如果它不是 success (绿色) 状态，就强制把填充条改为 primary (主题色) */
+.progress-separator :deep(.n-progress:not(.n-progress--status-success) .n-progress-graph-line-fill) {
+  background-color: var(--n-color-primary) !important;
 }
 
 /* ★★★ 修复进度条背景色在亮色模式下看不清的问题 ★★★ */
