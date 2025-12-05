@@ -166,7 +166,7 @@
                 <div class="card-content-container">
                   <div class="card-header">
                     <n-ellipsis class="card-title" :tooltip="{ style: { maxWidth: '300px' } }">{{ item.item_name }}</n-ellipsis>
-                    <n-popconfirm @positive-click="() => removeFromWatchlist(item.tmdb_id, item.item_name)">
+                    <n-popconfirm @positive-click="() => removeFromWatchlist(item.parent_tmdb_id, item.item_name)">
                       <template #trigger><n-button text type="error" circle title="移除" size="tiny"><template #icon><n-icon :component="TrashIcon" /></template></n-button></template>
                       确定要从追剧列表中移除《{{ item.item_name }}》吗？
                     </n-popconfirm>
@@ -612,15 +612,25 @@ const toggleSelection = (itemId, event, index) => {
 };
 
 const handleBatchAction = (key) => {
+  // ★★★ 通用逻辑：将选中的“季ID”转换为去重后的“父剧集ID” ★★★
+  const getParentIds = () => {
+    // 1. 在原始列表中找到选中的那些项目
+    const selectedItemObjects = rawWatchlist.value.filter(i => selectedItems.value.includes(i.tmdb_id));
+    // 2. 提取 parent_tmdb_id 并去重 (Set)
+    return [...new Set(selectedItemObjects.map(i => i.parent_tmdb_id))];
+  };
+
   if (key === 'forceEnd') {
+    const parentIds = getParentIds(); // 获取剧集ID
     dialog.warning({
       title: '确认操作',
-      content: `确定要将选中的 ${selectedItems.value.length} 部剧集标记为“强制完结”吗？`,
+      content: `确定要将选中的 ${parentIds.length} 部剧集标记为“强制完结”吗？`,
       positiveText: '确定',
       negativeText: '取消',
       onPositiveClick: async () => {
         try {
-          const response = await axios.post('/api/watchlist/batch_force_end', { item_ids: selectedItems.value });
+          // ★★★ 传 parentIds 给后端 ★★★
+          const response = await axios.post('/api/watchlist/batch_force_end', { item_ids: parentIds });
           message.success(response.data.message || '批量操作成功！');
           await fetchWatchlist();
           selectedItems.value = [];
@@ -631,16 +641,21 @@ const handleBatchAction = (key) => {
     });
   }
   else if (key === 'rewatch') {
+    const parentIds = getParentIds(); // 获取剧集ID
     dialog.info({
       title: '确认操作',
-      content: `确定要将选中的 ${selectedItems.value.length} 部剧集的状态改回“追剧中”吗？`,
+      content: `确定要将选中的 ${parentIds.length} 部剧集的状态改回“追剧中”吗？`,
       positiveText: '确定',
       negativeText: '取消',
       onPositiveClick: async () => {
         try {
-          const response = await axios.post('/api/watchlist/batch_update_status', { item_ids: selectedItems.value, new_status: 'Watching' });
+          // ★★★ 传 parentIds 给后端 ★★★
+          const response = await axios.post('/api/watchlist/batch_update_status', { item_ids: parentIds, new_status: 'Watching' });
           message.success(response.data.message || '批量操作成功！');
-          currentView.value = 'inProgress';
+          // 重新追剧后，通常希望留在当前视图或刷新列表，这里简单刷新即可
+          await fetchWatchlist(); 
+          selectedItems.value = [];
+          currentView.value = 'inProgress'; // 自动切回追剧中视图方便查看
         } catch (err) {
           message.error(err.response?.data?.error || '批量操作失败。');
         }
@@ -648,15 +663,17 @@ const handleBatchAction = (key) => {
     });
   }
   else if (key === 'remove') {
+    const parentIds = getParentIds(); // 获取剧集ID
     dialog.warning({
       title: '确认移除',
-      content: `确定要从追剧列表中移除选中的 ${selectedItems.value.length} 个项目吗？此操作不可恢复。`,
+      content: `确定要从追剧列表中移除选中的 ${parentIds.length} 个项目吗？此操作不可恢复。`,
       positiveText: '确定移除',
       negativeText: '取消',
       onPositiveClick: async () => {
         try {
+          // ★★★ 传 parentIds 给后端 ★★★
           const response = await axios.post('/api/watchlist/batch_remove', {
-            item_ids: selectedItems.value
+            item_ids: parentIds
           });
           message.success(response.data.message || '批量移除成功！');
           await fetchWatchlist();
@@ -810,11 +827,16 @@ const updateStatus = async (itemId, newStatus) => {
   }
 };
 
-const removeFromWatchlist = async (itemId, itemName) => {
+const removeFromWatchlist = async (seriesId, itemName) => {
   try {
-    await axios.post(`/api/watchlist/remove/${itemId}`);
+    await axios.post(`/api/watchlist/remove/${seriesId}`);
     message.success(`已将《${itemName}》从追剧列表移除。`);
-    rawWatchlist.value = rawWatchlist.value.filter(i => i.tmdb_id !== itemId);
+    
+    // ★★★ 修正：比对 parent_tmdb_id，把该剧的所有季都移出视图 ★★★
+    rawWatchlist.value = rawWatchlist.value.filter(i => i.parent_tmdb_id !== seriesId);
+    
+    // 如果是在已完结视图（聚合模式），也需要确保清理干净
+    selectedItems.value = []; 
   } catch (err) {
     message.error(err.response?.data?.error || '移除失败。');
   }
