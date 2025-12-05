@@ -124,7 +124,7 @@ def add_item_to_watchlist(tmdb_id: str, item_name: str) -> bool:
             
             return True
     except Exception as e:
-        logger.error(f"DB (新架构): 添加 '{item_name}' 到追剧列表失败: {e}", exc_info=True)
+        logger.error(f"  ➜ 添加 '{item_name}' 到追剧列表失败: {e}", exc_info=True)
         raise
 
 def update_watchlist_item_status(tmdb_id: str, new_status: str) -> bool:
@@ -162,7 +162,7 @@ def update_watchlist_item_status(tmdb_id: str, new_status: str) -> bool:
             cursor.execute(sql, tuple(values))
             return cursor.rowcount > 0
     except Exception as e:
-        logger.error(f"DB (新架构): 更新追剧状态 {tmdb_id} 失败: {e}", exc_info=True)
+        logger.error(f"  ➜ 更新追剧状态 {tmdb_id} 失败: {e}", exc_info=True)
         raise
 
 def remove_item_from_watchlist(tmdb_id: str) -> bool:
@@ -197,7 +197,7 @@ def remove_item_from_watchlist(tmdb_id: str) -> bool:
             cursor.execute(sql, (tmdb_id, tmdb_id))
             return cursor.rowcount > 0
     except Exception as e:
-        logger.error(f"DB (新架构): 从追剧列表移除项目 {tmdb_id} 时失败: {e}", exc_info=True)
+        logger.error(f"  ➜ 从追剧列表移除项目 {tmdb_id} 时失败: {e}", exc_info=True)
         raise
 
 def get_watchlist_item_name(tmdb_id: str) -> Optional[str]:
@@ -209,7 +209,7 @@ def get_watchlist_item_name(tmdb_id: str) -> Optional[str]:
             row = cursor.fetchone()
             return row['title'] if row else None
     except Exception as e:
-        logger.warning(f"DB (新架构): 获取项目 {tmdb_id} 名称时出错: {e}")
+        logger.warning(f"  ➜ 获取项目 {tmdb_id} 名称时出错: {e}")
         return None
 
 def batch_force_end_watchlist_items(tmdb_ids: List[str]) -> int:
@@ -241,10 +241,10 @@ def batch_force_end_watchlist_items(tmdb_ids: List[str]) -> int:
             
             updated_count = cursor.rowcount
             if updated_count > 0:
-                logger.info(f"DB (新架构): 批量强制完结了 {len(tmdb_ids)} 个剧集系列，共影响 {updated_count} 条记录(含子项)。")
+                logger.info(f"  ➜ 批量强制完结了 {len(tmdb_ids)} 个剧集系列，共影响 {updated_count} 条记录(含子项)。")
             return updated_count
     except Exception as e:
-        logger.error(f"DB (新架构): 批量强制完结追剧项目时发生错误: {e}", exc_info=True)
+        logger.error(f"  ➜ 批量强制完结追剧项目时发生错误: {e}", exc_info=True)
         raise
 
 def batch_update_watchlist_status(item_ids: list, new_status: str) -> int:
@@ -291,11 +291,11 @@ def batch_update_watchlist_status(item_ids: list, new_status: str) -> int:
             cursor.execute(sql, tuple(values))
             conn.commit()
             
-            logger.info(f"DB (新架构): 成功将 {len(item_ids)} 个剧集系列的状态批量更新为 '{new_status}'，共影响 {cursor.rowcount} 条记录。")
+            logger.info(f"  ➜ 成功将 {len(item_ids)} 个剧集系列的状态批量更新为 '{new_status}'，共影响 {cursor.rowcount} 条记录。")
             return cursor.rowcount
             
     except Exception as e:
-        logger.error(f"DB (新架构): 批量更新项目状态时数据库出错: {e}", exc_info=True)
+        logger.error(f"  ➜ 批量更新项目状态时数据库出错: {e}", exc_info=True)
         raise
 
 def get_watching_tmdb_ids() -> set:
@@ -309,7 +309,7 @@ def get_watching_tmdb_ids() -> set:
             for row in rows:
                 watching_ids.add(str(row['tmdb_id']))
     except Exception as e:
-        logger.error(f"DB (新架构): 从数据库获取正在追看的TMDB ID时出错: {e}", exc_info=True)
+        logger.error(f"  ➜ 从数据库获取正在追看的TMDB ID时出错: {e}", exc_info=True)
     return watching_ids
 
 def get_airing_series_tmdb_ids() -> set:
@@ -326,10 +326,10 @@ def get_airing_series_tmdb_ids() -> set:
             rows = cursor.fetchall()
             for row in rows:
                 airing_ids.add(str(row['tmdb_id']))
-        logger.debug(f"DB (新架构): 通过 watchlist_is_airing 标志查询到 {len(airing_ids)} 个“连载中”的剧集。")
+        logger.debug(f"  ➜ 通过 watchlist_is_airing 标志查询到 {len(airing_ids)} 个“连载中”的剧集。")
         return airing_ids
     except Exception as e:
-        logger.error(f"DB (新架构): 从数据库获取“连载中”剧集ID时出错: {e}", exc_info=True)
+        logger.error(f"  ➜ 从数据库获取“连载中”剧集ID时出错: {e}", exc_info=True)
         return set()
     
 def get_watchlist_item_details(tmdb_id: str) -> Optional[Dict[str, Any]]:
@@ -353,7 +353,7 @@ def get_watchlist_item_details(tmdb_id: str) -> Optional[Dict[str, Any]]:
             row = cursor.fetchone()
             return dict(row) if row else None
     except Exception as e:
-        logger.error(f"DB (新架构): 获取项目 {tmdb_id} 详情时出错: {e}", exc_info=True)
+        logger.error(f"  ➜ 获取项目 {tmdb_id} 详情时出错: {e}", exc_info=True)
         return None
 
 def remove_seasons_from_gaps_list(tmdb_id: str, seasons_to_remove: List[int]):
@@ -383,9 +383,9 @@ def remove_seasons_from_gaps_list(tmdb_id: str, seasons_to_remove: List[int]):
                     (updated_json_str, tmdb_id)
                 )
             conn.commit()
-            logger.info(f"DB (新架构): 已为项目 {tmdb_id} 更新缺集标记，移除了季: {seasons_to_remove}")
+            logger.info(f"  ➜ 已为项目 {tmdb_id} 更新缺集标记，移除了季: {seasons_to_remove}")
     except Exception as e:
-        logger.error(f"DB (新架构): 更新项目 {tmdb_id} 的缺集标记时出错: {e}", exc_info=True)
+        logger.error(f"  ➜ 更新项目 {tmdb_id} 的缺集标记时出错: {e}", exc_info=True)
 
 def batch_remove_from_watchlist(tmdb_ids: List[str]) -> int:
     """
@@ -432,10 +432,10 @@ def batch_remove_from_watchlist(tmdb_ids: List[str]) -> int:
             removed_count = cursor.rowcount
             if removed_count > 0:
                 # 日志现在应该反映出操作的范围更广了
-                logger.info(f"DB (新架构): 成功从追剧列表批量移除了 {len(tmdb_ids)} 个剧集，并重置了总共 {removed_count} 个相关条目（包括子项）的追剧和订阅状态。")
+                logger.info(f"  ➜ 成功从追剧列表批量移除了 {len(tmdb_ids)} 个剧集，并重置了总共 {removed_count} 个相关条目（包括子项）的追剧和订阅状态。")
             return removed_count
     except Exception as e:
-        logger.error(f"DB (新架构): 批量移除追剧项目时发生错误: {e}", exc_info=True)
+        logger.error(f"  ➜ 批量移除追剧项目时发生错误: {e}", exc_info=True)
         raise
 
 def find_detailed_missing_episodes(series_tmdb_ids: List[str]) -> List[Dict[str, Any]]:
@@ -718,11 +718,11 @@ def batch_set_series_watching_by_libraries(library_ids: Optional[List[str]] = No
                 cursor.execute(sql, (target_tmdb_ids, target_tmdb_ids))
 
             updated_count = cursor.rowcount
-            logger.info(f"DB (新架构): 已将指定库中的剧集及其子项标记为“追剧中”，影响行数: {updated_count}。")
+            logger.info(f"  ➜ 已将指定库中的剧集及其子项标记为“追剧中”，影响行数: {updated_count}。")
             return updated_count
 
     except Exception as e:
-        logger.error(f"DB (新架构): 按库批量更新剧集状态时出错: {e}", exc_info=True)
+        logger.error(f"  ➜ 按库批量更新剧集状态时出错: {e}", exc_info=True)
         raise
 
 def _build_library_filter_sql(library_ids: List[str]) -> str:
@@ -792,7 +792,7 @@ def get_gap_scan_candidates(library_ids: Optional[List[str]] = None) -> List[Dic
             cursor.execute(base_sql)
             return [dict(row) for row in cursor.fetchall()]
     except Exception as e:
-        logger.error(f"DB (新架构): 获取缺集扫描候选列表时出错: {e}", exc_info=True)
+        logger.error(f"  ➜ 获取缺集扫描候选列表时出错: {e}", exc_info=True)
         return []
 
 def get_series_by_dynamic_condition(condition_sql: str, library_ids: Optional[List[str]] = None) -> List[Dict[str, Any]]:
@@ -836,5 +836,5 @@ def get_series_by_dynamic_condition(condition_sql: str, library_ids: Optional[Li
             cursor.execute(base_sql)
             return [dict(row) for row in cursor.fetchall()]
     except Exception as e:
-        logger.error(f"DB (新架构): 根据动态条件获取剧集时出错: {e}", exc_info=True)
+        logger.error(f"  ➜ 根据动态条件获取剧集时出错: {e}", exc_info=True)
         return []
