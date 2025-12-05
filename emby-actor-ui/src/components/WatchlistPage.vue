@@ -188,9 +188,6 @@
                             <template #icon><n-icon :component="statusInfo(item.status).icon" /></template>
                             {{ statusInfo(item.status).text }}
                           </n-button>
-                          <n-tag v-if="item.tmdb_status" size="small" :bordered="false" :type="getSmartTMDbStatusType(item)">
-                            {{ getSmartTMDbStatusText(item) }}
-                          </n-tag>
                         </template>
                       </n-space>
 
