@@ -1060,6 +1060,18 @@ watch(loaderRef, (newEl, oldEl) => {
   opacity: 0.6;        /* 或者用透明度来模拟 depth=3 的效果 */
 }
 
+/* ★★★ 修复进度条背景色在亮色模式下看不清的问题 ★★★ */
+.progress-separator :deep(.n-progress-graph-line-rail) {
+  /* 亮色模式：使用深一点的灰色 (黑色的 15% 透明度) */
+  background-color: rgba(0, 0, 0, 0.15) !important; 
+}
+
+/* 暗色模式适配 */
+html.dark .progress-separator :deep(.n-progress-graph-line-rail) {
+  /* 暗色模式：使用浅一点的半透明白 (白色的 20% 透明度) */
+  background-color: rgba(255, 255, 255, 0.2) !important;
+}
+
 /* 手机端适配 */
 @media (max-width: 600px) {
   .responsive-grid { grid-template-columns: 1fr !important; }
