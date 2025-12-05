@@ -26,7 +26,7 @@ def get_all_watchlist_items() -> List[Dict[str, Any]]:
             s.season_number,
             p.tmdb_id as parent_tmdb_id,
             s.release_date as release_year,
-            p.watching_status as status,
+            COALESCE(NULLIF(s.watching_status, 'NONE'), p.watching_status) as status,
             p.watchlist_last_checked_at as last_checked_at,
             p.watchlist_next_episode_json as next_episode_to_air_json,
             p.watchlist_missing_info_json as missing_info_json,
@@ -540,13 +540,6 @@ def batch_set_series_watching(tmdb_ids: List[str]):
 def sync_seasons_watching_status(parent_tmdb_id: str, active_season_numbers: List[int], series_status: str):
     """
     同步更新指定剧集下所有季的追剧状态。
-    
-    逻辑：
-    1. 如果剧集本身是 'Completed' (已完结)，则将该剧所有季标记为 'Completed'。
-    2. 如果剧集是 'Watching' (追剧中) 或 'Paused':
-       - 在 active_season_numbers 列表中的季 -> 标记为 'Watching'
-       - 不在列表中，且季号小于列表最大值的季 -> 标记为 'Completed' (视为补完)
-       - 其他情况 (如未来的季) -> 保持原状或设为 'NONE'
     """
     try:
         with get_db_connection() as conn:
@@ -559,40 +552,41 @@ def sync_seasons_watching_status(parent_tmdb_id: str, active_season_numbers: Lis
                     SET watching_status = 'Completed'
                     WHERE parent_series_tmdb_id = %s 
                       AND item_type = 'Season'
-                      AND watching_status != 'Completed'; -- 避免重复更新
+                      AND watching_status != 'Completed';
                 """
                 cursor.execute(sql, (parent_tmdb_id,))
-                if cursor.rowcount > 0:
-                    logger.info(f"  ➜ 将剧集 {parent_tmdb_id} 的所有季状态更新为 '已完结'。")
 
             # 场景 B: 剧集正在追/暂停 -> 区分活跃季和过往季
             else:
-                # 1. 先将所有季重置为 'Completed' (假设非活跃的都是看完了的)
-                #    注意：这里加了一个条件，只更新季号小于等于当前最大活跃季号的，避免把还没出的未来季标记为完结
-                max_active_season = max(active_season_numbers) if active_season_numbers else 9999
+                # 1. 找出当前最大的活跃季号 (例如怪奇物语是 5)
+                max_active_season = max(active_season_numbers) if active_season_numbers else 0
                 
-                reset_sql = """
-                    UPDATE media_metadata
-                    SET watching_status = 'Completed'
-                    WHERE parent_series_tmdb_id = %s 
-                      AND item_type = 'Season'
-                      AND season_number <= %s
-                      AND watching_status != 'Completed';
-                """
-                cursor.execute(reset_sql, (parent_tmdb_id, max_active_season))
+                # 2. 【旧季】小于最大活跃季号的 -> 标记为 'Completed'
+                #    (例如 S1-S4 设为 Completed)
+                if max_active_season > 0:
+                    reset_sql = """
+                        UPDATE media_metadata
+                        SET watching_status = 'Completed'
+                        WHERE parent_series_tmdb_id = %s 
+                          AND item_type = 'Season'
+                          AND season_number < %s  -- 注意这里是 < (小于)
+                          AND watching_status != 'Completed';
+                    """
+                    cursor.execute(reset_sql, (parent_tmdb_id, max_active_season))
                 
-                # 2. 将活跃季标记为 'Watching'
+                # 3. 【活跃季】在列表中的季 -> 标记为 series_status (Watching 或 Paused)
+                #    (例如 S5 设为 Paused)
                 if active_season_numbers:
                     update_active_sql = """
                         UPDATE media_metadata
-                        SET watching_status = 'Watching'
+                        SET watching_status = %s  -- ★★★ 关键：使用传入的 series_status ★★★
                         WHERE parent_series_tmdb_id = %s 
                           AND item_type = 'Season'
                           AND season_number = ANY(%s);
                     """
-                    cursor.execute(update_active_sql, (parent_tmdb_id, active_season_numbers))
+                    cursor.execute(update_active_sql, (series_status, parent_tmdb_id, active_season_numbers))
                     
-                logger.info(f"  ➜ 更新剧集 {parent_tmdb_id} 的季状态: 新季 {active_season_numbers} -> 追剧中，旧季 -> 已完结。")
+                logger.info(f"  ➜ 更新剧集 {parent_tmdb_id} 的季状态: 活跃季 {active_season_numbers} -> {series_status}，旧季 -> 已完结。")
 
             conn.commit()
     except Exception as e:
