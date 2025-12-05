@@ -414,13 +414,14 @@ def get_current_index_statuses() -> Dict[Tuple[str, str, int], str]:
 def fetch_all_active_movies_for_analysis() -> List[Dict[str, Any]]:
     """
     获取所有在库电影及其资产详情，用于本地洗版计算。
-    返回字段: tmdb_id, title, item_type, asset_details_json, original_language, emby_item_ids_json
+    返回字段: tmdb_id, title, item_type, asset_details_json, original_language, emby_item_ids_json, rating
     """
     try:
         with get_db_connection() as conn:
             cursor = conn.cursor()
+            # ★★★ 修改点：增加了 rating 字段 ★★★
             cursor.execute("""
-                SELECT tmdb_id, title, item_type, asset_details_json, original_language, emby_item_ids_json
+                SELECT tmdb_id, title, item_type, asset_details_json, original_language, emby_item_ids_json, rating
                 FROM media_metadata 
                 WHERE item_type = 'Movie' AND in_library = TRUE
             """)
@@ -432,13 +433,14 @@ def fetch_all_active_movies_for_analysis() -> List[Dict[str, Any]]:
 def fetch_all_active_series_for_analysis() -> List[Dict[str, Any]]:
     """
     获取所有在库剧集基本信息。
-    返回字段: tmdb_id, title, item_type, original_language
+    返回字段: tmdb_id, title, item_type, original_language, watching_status, rating
     """
     try:
         with get_db_connection() as conn:
             cursor = conn.cursor()
+            # ★★★ 修改点：增加了 rating 字段 ★★★
             cursor.execute("""
-                SELECT tmdb_id, title, item_type, original_language, watching_status
+                SELECT tmdb_id, title, item_type, original_language, watching_status, rating
                 FROM media_metadata 
                 WHERE item_type = 'Series' AND in_library = TRUE
             """)
@@ -478,4 +480,26 @@ def fetch_episodes_simple_batch(series_tmdb_ids: List[str]) -> List[Dict[str, An
             return [dict(row) for row in cursor.fetchall()]
     except Exception as e:
         logger.error(f"  ➜ 批量获取分集信息时失败: {e}", exc_info=True)
+        return []
+    
+def get_episode_ids_for_season(parent_tmdb_id: str, season_number: int) -> List[str]:
+    """
+    【删除专用】获取指定季下的所有分集的 Emby ID。
+    用于逐集删除以规避风控。
+    """
+    try:
+        with get_db_connection() as conn:
+            cursor = conn.cursor()
+            cursor.execute("""
+                SELECT emby_item_ids_json->>0 as emby_id
+                FROM media_metadata
+                WHERE parent_series_tmdb_id = %s
+                  AND season_number = %s
+                  AND item_type = 'Episode'
+                  AND in_library = TRUE
+            """, (parent_tmdb_id, season_number))
+            # 过滤掉 None，返回纯 ID 列表
+            return [row['emby_id'] for row in cursor.fetchall() if row['emby_id']]
+    except Exception as e:
+        logger.error(f"  ➜ 获取分集ID列表失败: {e}", exc_info=True)
         return []

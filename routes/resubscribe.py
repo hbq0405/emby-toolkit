@@ -119,10 +119,10 @@ def trigger_refresh_status():
     try:
         task_manager.submit_task(
             tasks.task_update_resubscribe_cache, 
-            task_name="刷新媒体洗版状态",
+            task_name="刷新媒体整理",
             processor_type='media'
         )
-        return jsonify({"message": "刷新媒体洗版状态任务已提交！"}), 202
+        return jsonify({"message": "刷新媒体整理任务已提交！"}), 202
     except Exception as e:
         return jsonify({"error": f"提交任务失败: {e}"}), 500
 
@@ -141,104 +141,6 @@ def trigger_resubscribe_all():
     except Exception as e:
         return jsonify({"error": f"提交任务失败: {e}"}), 500
 
-@resubscribe_bp.route('/resubscribe_item', methods=['POST'])
-@admin_required
-def resubscribe_single_item():
-    """为单个媒体项触发洗版订阅。"""
-    data = request.json
-    item_id = data.get('item_id')
-    if not item_id:
-        return jsonify({"error": "请求中缺少必要的 item_id 参数"}), 400
-
-    try:
-        # 检查订阅配额
-        if settings_db.get_subscription_quota() <= 0:
-            return jsonify({"error": "今日订阅配额已用尽，请明天再试。"}), 429
-
-        # 检查核心处理器
-        processor = extensions.media_processor_instance
-        if not processor:
-            return jsonify({"error": "核心处理器未初始化"}), 503
-            
-        # 从数据库获取完整的项目详情，确保数据准确
-        item_details = resubscribe_db.get_resubscribe_cache_item(item_id)
-        if not item_details:
-            return jsonify({"error": f"数据库中未找到 Item ID 为 {item_id} 的缓存记录。"}), 404
-        
-        item_name = item_details.get('item_name', '未知项目')
-        
-        # 获取匹配的规则
-        rule = resubscribe_db.get_resubscribe_rule_by_id(item_details['matched_rule_id']) if item_details.get('matched_rule_id') else None
-        
-        # 构建订阅请求
-        payload = tasks.build_resubscribe_payload(item_details, rule)
-        if not payload:
-            return jsonify({"error": "构建订阅请求失败，请检查日志。"}), 500
-        
-        # ======================================================================
-        # ★★★ 核心修改：先尝试取消旧订阅，确保洗版参数生效 ★★★
-        # ======================================================================
-        try:
-            tmdb_id = item_details.get('tmdb_id')
-            item_type = item_details.get('item_type')
-            season_number = item_details.get('season_number') if item_type == 'Season' else None
-            
-            logger.info(f"  ➜ 正在检查并清理《{item_name}》的旧订阅...")
-            
-            if moviepilot.cancel_subscription(str(tmdb_id), item_type, processor.config, season=season_number):
-                logger.info(f"  ➜  旧订阅清理指令已发送，等待 2 秒以确保 MoviePilot 数据库同步...")
-                time.sleep(2) # <--- 增加延时，防止竞态条件
-            else:
-                logger.warning(f"  ➜ 旧订阅清理失败（可能是网络问题），尝试强行提交新订阅...")
-        except Exception as e:
-            logger.error(f"  ➜ 清理旧订阅时发生错误: {e}，继续尝试提交...")
-        # ======================================================================
-
-        # 发送订阅
-        if moviepilot.subscribe_with_custom_payload(payload, processor.config):
-            settings_db.decrement_subscription_quota()
-            message = f"《{item_name}》的洗版请求已成功提交！"
-            
-            # 检查是否需要删除源文件
-            if rule and rule.get('delete_after_resubscribe'):
-                id_to_delete = item_details.get('emby_item_id')
-                if not id_to_delete:
-                    logger.error(f"  ➜ 无法删除 '{item_name}'：emby_item_id 为空。")
-                    resubscribe_db.update_resubscribe_item_status(item_id, 'subscribed')
-                    message += " 但无法删除源文件，因Emby ID为空。"
-                elif emby.delete_item(id_to_delete, processor.emby_url, processor.emby_api_key, processor.emby_user_id):
-                    message += " 源文件已根据规则删除。"
-                    
-                    # ★★★ 在删除成功后，调用善后清理函数 ★★★
-                    try:
-                        item_type = item_details.get('item_type')
-                        logger.info(f"  ➜ 源文件删除成功，开始为 Emby ID {id_to_delete} (Name: {item_name}) 执行数据库善后清理...")
-                        maintenance_db.cleanup_deleted_media_item(
-                            item_id=id_to_delete,
-                            item_name=item_name,
-                            item_type=item_type
-                        )
-                        message += " 数据库记录已同步更新。"
-                        logger.info(f"  ➜ Emby ID {id_to_delete} 的善后清理已完成。")
-                    except Exception as cleanup_e:
-                        logger.error(f"执行善后清理 media item {id_to_delete} 时发生错误: {cleanup_e}", exc_info=True)
-                        message += " 但数据库善后清理时发生错误，请检查日志。"
-
-                else:
-                    resubscribe_db.update_resubscribe_item_status(item_id, 'subscribed')
-                    message += " 但删除Emby源文件时失败。"
-            else:
-                # 仅更新状态为“已订阅”
-                resubscribe_db.update_resubscribe_item_status(item_id, 'subscribed')
-
-            return jsonify({"message": message})
-        else:
-            return jsonify({"error": "提交洗版请求失败..."}), 500
-            
-    except Exception as e:
-        logger.error(f"API: 处理单独洗版请求时发生未知错误: {e}", exc_info=True)
-        return jsonify({"error": f"处理请求时发生服务器内部错误: {e}"}), 500
-    
 @resubscribe_bp.route('/libraries', methods=['GET'])
 @admin_required
 def get_emby_libraries_for_rules():
@@ -302,13 +204,13 @@ def batch_action():
             # 提交后台任务时，仍然使用原始的 item_id 列表
             task_manager.submit_task(
                 tasks.task_resubscribe_batch,
-                task_name="批量媒体洗版",
+                task_name="批量媒体整理",
                 processor_type='media',
                 item_ids=item_ids
             )
             # 乐观更新UI，将状态设置为“已订阅”
             resubscribe_db.batch_update_resubscribe_index_status(item_keys_for_db, 'subscribed')
-            return jsonify({"message": "批量订阅任务已提交到后台！"}), 202
+            return jsonify({"message": "批量整理任务已提交到后台！"}), 202
 
         elif action == 'ignore':
             updated_count = resubscribe_db.batch_update_resubscribe_index_status(item_keys_for_db, 'ignored')
@@ -318,16 +220,6 @@ def batch_action():
             updated_count = resubscribe_db.batch_update_resubscribe_index_status(item_keys_for_db, 'ok')
             return jsonify({"message": f"成功取消忽略了 {updated_count} 个媒体项。"})
         
-        elif action == 'delete':
-            # 提交后台任务时，也使用原始的 item_id 列表
-            task_manager.submit_task(
-                tasks.task_delete_batch,
-                task_name="批量删除媒体",
-                processor_type='media',
-                item_ids=item_ids
-            )
-            return jsonify({"message": "批量删除任务已提交到后台！"}), 202
-
     except Exception as e:
         logger.error(f"API: 处理批量操作 '{action}' 时失败: {e}", exc_info=True)
         return jsonify({"error": "服务器内部错误"}), 500

@@ -392,7 +392,8 @@ const menuOptions = computed(() => {
         children: [ 
           { label: '原生合集', key: 'Collections', icon: renderIcon(CollectionsIcon) }, 
           { label: '自建合集', key: 'CustomCollectionsManager', icon: renderIcon(CustomCollectionsIcon) }, 
-          { label: '媒体去重', key: 'MediaCleanupPage', icon: renderIcon(CleanupIcon) }, 
+          { label: '媒体去重', key: 'MediaCleanupPage', icon: renderIcon(CleanupIcon) },
+          { label: '媒体整理', key: 'ResubscribePage', icon: renderIcon(ResubscribeIcon) },  
           { label: '封面生成', key: 'CoverGeneratorConfig', icon: renderIcon(PaletteIcon) }, 
           { label: '手动处理', key: 'ReviewList', icon: renderIcon(ReviewListIcon) }, 
         ] 
@@ -404,7 +405,6 @@ const menuOptions = computed(() => {
         children: [ 
           { label: '智能追剧', key: 'Watchlist', icon: renderIcon(WatchlistIcon) }, 
           { label: '演员订阅', key: 'ActorSubscriptions', icon: renderIcon(ActorSubIcon) }, 
-          { label: '媒体洗版', key: 'ResubscribePage', icon: renderIcon(ResubscribeIcon) }, 
           { label: '统一订阅', key: 'UnifiedSubscriptions', icon: renderIcon(UnifiedSubIcon) },
         ] 
       },

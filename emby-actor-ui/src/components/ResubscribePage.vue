@@ -5,16 +5,16 @@
       <n-page-header>
         <template #title>
           <n-space align="center">
-            <span>媒体洗版</span>
+            <span>媒体整理</span>
             <n-tag v-if="allItems.length > 0" type="info" round :bordered="false" size="small">
               {{ filteredItems.length }} / {{ allItems.length }} 项
             </n-tag>
           </n-space>
         </template>
         <n-alert title="操作提示" type="info" style="margin-top: 24px;">
-          <li>先进行洗版规则设定，然后点击刷新按钮扫描全库媒体项，扫描完会自动刷新页面并展示所有需要处理的媒体项。</li>
-          <li>按住Shift键可以进行多选然后批量操作。</li>
-          <li>本模块所有涉及删除的功能都是删除Emby的媒体项和媒体文件，危险操作，慎用！！！</li>
+          <li>先设定规则，然后点击刷新按钮扫描全库。</li>
+          <li>点击 <b>“整理”</b> 按钮将根据匹配到的规则执行操作：可能是 <b>洗版订阅</b>，也可能是 <b>直接删除</b>（取决于规则设定）。</li>
+          <li>按住 Shift 键可以进行多选。</li>
         </n-alert>
         <template #extra>
           <n-space>
@@ -30,15 +30,15 @@
 
             <n-radio-group v-model:value="filter" size="small">
               <n-radio-button value="all">全部</n-radio-button>
-              <n-radio-button value="needed">需洗版</n-radio-button>
-              <n-radio-button value="auto">自动洗版</n-radio-button>
+              <n-radio-button value="needed">需处理</n-radio-button>
+              <n-radio-button value="auto">自动处理</n-radio-button>
               <n-radio-button value="ignored">已忽略</n-radio-button>
             </n-radio-group>
-            <n-button @click="showSettingsModal = true">洗版规则设定</n-button>
-            <n-button type="warning" @click="triggerResubscribeAll" :loading="isTaskRunning('全库媒体洗版')">一键洗版全部</n-button>
+            <n-button @click="showSettingsModal = true">规则设定</n-button>
+            <n-button type="warning" @click="triggerResubscribeAll" :loading="isTaskRunning('全库媒体洗版')">一键整理全部</n-button>
             <n-tooltip trigger="hover">
               <template #trigger>
-                <n-button type="primary" @click="triggerRefreshStatus" :loading="isTaskRunning('刷新媒体洗版状态')" circle>
+                <n-button type="primary" @click="triggerRefreshStatus" :loading="isTaskRunning('刷新媒体整理')" circle>
                   <template #icon><n-icon :component="SyncOutline" /></template>
                 </n-button>
               </template>
@@ -126,11 +126,11 @@
                   <template #placeholder><div class="poster-placeholder"></div></template>
                 </n-image>
                 
-                <!-- 印章 (洗版页面特有) -->
-                <div v-if="item.status === 'needed'" class="poster-stamp stamp-needed">不通过</div>
-                <div v-else-if="item.status === 'ignored'" class="poster-stamp stamp-ignored">求放过</div>
-                <div v-else-if="item.status === 'subscribed'" class="poster-stamp stamp-subscribed">洗版中</div>
-                <div v-else-if="item.status === 'auto_subscribed'" class="poster-stamp stamp-auto">处理中</div>
+                <!-- 印章 -->
+                <div v-if="item.status === 'needed'" class="poster-stamp stamp-needed">需处理</div>
+                <div v-else-if="item.status === 'ignored'" class="poster-stamp stamp-ignored">已忽略</div>
+                <div v-else-if="item.status === 'subscribed'" class="poster-stamp stamp-subscribed">处理中</div>
+                <div v-else-if="item.status === 'auto_subscribed'" class="poster-stamp stamp-auto">自动中</div>
               </div>
 
               <!-- 右侧内容 -->
@@ -156,7 +156,7 @@
                       </div>
                       <div v-else-if="item.status === 'subscribed'" class="reason-text-wrapper text-subscribed">
                         <n-icon :component="SyncOutline" />
-                        <n-ellipsis :tooltip="true">(洗版中) {{ item.reason }}</n-ellipsis>
+                        <n-ellipsis :tooltip="true">(处理中) {{ item.reason }}</n-ellipsis>
                       </div>
                       <div v-else-if="item.status === 'auto_subscribed'" class="reason-text-wrapper text-auto">
                         <n-icon :component="SyncOutline" />
@@ -168,10 +168,8 @@
 
                       <!-- 媒体信息 (紧凑展示) -->
                       <div class="meta-info-grid">
-                        <!-- 第一行左：分辨率 -->
                         <n-text :depth="3" class="info-text">分辨率: {{ item.resolution_display }}</n-text>
                         
-                        <!-- 第一行右：质量 -->
                         <n-tooltip trigger="hover" placement="top-start" :disabled="!item.release_group_raw || item.release_group_raw.length === 0">
                             <template #trigger>
                               <n-text :depth="3" class="info-text">质量: {{ item.quality_display }}</n-text>
@@ -179,19 +177,14 @@
                             发布组: {{ item.release_group_raw ? item.release_group_raw.join(', ') : '' }}
                         </n-tooltip>
 
-                        <!-- 第二行左：编码 -->
                         <n-text :depth="3" class="info-text">编码: {{ item.codec_display }}</n-text>
-                        
-                        <!-- 第二行右：特效 -->
                         <n-text :depth="3" class="info-text">特效: {{ Array.isArray(item.effect_display) ? item.effect_display.join(', ') : item.effect_display }}</n-text>
                         
-                        <!-- 第三行全宽：音轨 -->
                         <n-tooltip trigger="hover" placement="top-start">
                             <template #trigger><n-text :depth="3" class="info-text ellipsis full-width-item">音轨: {{ item.audio_display }}</n-text></template>
                             {{ item.audio_display }}
                         </n-tooltip>
                         
-                        <!-- 第四行全宽：字幕 -->
                         <n-tooltip trigger="hover" placement="top-start">
                             <template #trigger><n-text :depth="3" class="info-text ellipsis full-width-item">字幕: {{ item.subtitle_display }}</n-text></template>
                             {{ item.subtitle_display }}
@@ -204,13 +197,11 @@
                 <!-- 底部按钮 -->
                 <div class="card-actions-bottom">
                   <n-space align="center" justify="center" size="small" :wrap="false">
-                      <n-button v-if="item.status === 'needed'" size="tiny" type="primary" ghost @click.stop="resubscribeItem(item)" :loading="subscribing[item.item_id]">洗版</n-button>
+                      <!-- 核心修改：按钮改为“整理”，移除删除按钮 -->
+                      <n-button v-if="item.status === 'needed'" size="tiny" type="primary" ghost @click.stop="resubscribeItem(item)" :loading="subscribing[item.item_id]">整理</n-button>
                       <n-button v-if="item.status === 'needed'" size="tiny" @click.stop="ignoreItem(item)">忽略</n-button>
                       <n-button v-if="item.status === 'ignored'" size="tiny" @click.stop="unignoreItem(item)">恢复</n-button>
                       
-                      <n-tooltip><template #trigger>
-                        <n-button text type="error" @click.stop="deleteItem(item)"><n-icon :component="TrashOutline" size="18" /></n-button>
-                      </template>删除</n-tooltip>
                       <n-button text @click.stop="openInEmby(item)"><n-icon :component="EmbyIcon" size="18" /></n-button>
                       <n-button text tag="a" :href="`https://www.themoviedb.org/${item.item_type === 'Movie' ? 'movie' : 'tv'}/${item.tmdb_id}`" target="_blank" @click.stop><n-icon :component="TMDbIcon" size="18" /></n-button>
                   </n-space>
@@ -232,7 +223,7 @@
       <div v-else class="center-container"><n-empty description="缓存为空，或当前筛选条件下无项目。" size="huge" /></div>
     </div>
 
-    <n-modal v-model:show="showSettingsModal" preset="card" style="width: 90%; max-width: 800px;" title="洗版规则设定">
+    <n-modal v-model:show="showSettingsModal" preset="card" style="width: 90%; max-width: 800px;" title="规则设定">
       <ResubscribeSettingsPage @saved="handleSettingsSaved" />
     </n-modal>
   </n-layout>
@@ -242,7 +233,7 @@
 import { ref, onMounted, onUnmounted, computed, h, watch, nextTick } from 'vue';
 import axios from 'axios';
 import { NLayout, NPageHeader, NDivider, NEmpty, NTag, NButton, NSpace, NIcon, useMessage, NGrid, NGi, NCard, NImage, NEllipsis, NSpin, NAlert, NRadioGroup, NRadioButton, NModal, NTooltip, NText, NDropdown, useDialog, NCheckbox, NInput, NSelect, NButtonGroup } from 'naive-ui';
-import { SyncOutline, TrashOutline, ArrowUpOutline as ArrowUpIcon, ArrowDownOutline as ArrowDownIcon, AlertCircleOutline } from '@vicons/ionicons5';
+import { SyncOutline, ArrowUpOutline as ArrowUpIcon, ArrowDownOutline as ArrowDownIcon, AlertCircleOutline } from '@vicons/ionicons5';
 import { useConfig } from '../composables/useConfig.js';
 import ResubscribeSettingsPage from './settings/ResubscribeSettingsPage.vue';
 
@@ -328,9 +319,9 @@ const filteredItems = computed(() => {
 
 const getStatusInfo = (status) => {
   switch (status) {
-    case 'needed': return { text: '需洗版', type: 'warning' };
-    case 'subscribed': return { text: '已订阅', type: 'info' };
-    case 'auto_subscribed': return { text: '自动洗版', type: 'primary' };
+    case 'needed': return { text: '需处理', type: 'warning' };
+    case 'subscribed': return { text: '已提交', type: 'info' };
+    case 'auto_subscribed': return { text: '自动处理', type: 'primary' };
     case 'ignored': return { text: '已忽略', type: 'tertiary' };
     case 'ok': default: return { text: '已达标', type: 'success' };
   }
@@ -346,7 +337,7 @@ const fetchData = async () => {
     allItems.value = response.data;
   } catch (err)
  {
-    error.value = err.response?.data?.error || '获取洗版状态失败。';
+    error.value = err.response?.data?.error || '获取状态失败。';
   } finally {
     isLoading.value = false;
   }
@@ -402,7 +393,7 @@ const fetchRules = async () => {
       value: rule.id
     }))];
   } catch (err) {
-    message.error('获取洗版规则列表失败。');
+    message.error('获取规则列表失败。');
   }
 };
 
@@ -436,26 +427,21 @@ const batchActions = computed(() => {
   if (filter.value === 'ignored') {
     actions.push({ label: '批量取消忽略', key: 'unignore', disabled: noSelection });
   } else {
-    actions.push({ label: '批量订阅', key: 'subscribe', disabled: noSelection });
+    // 核心修改：重命名为批量整理
+    actions.push({ label: '批量整理', key: 'subscribe', disabled: noSelection });
     actions.push({ label: '批量忽略', key: 'ignore', disabled: noSelection });
   }
-  actions.push({ label: '批量删除', key: 'delete', props: { type: 'error' }, disabled: noSelection });
+  // 移除批量删除
   actions.push({ type: 'divider', key: 'd1' });
 
   if (filter.value === 'needed') {
-    actions.push({ label: '一键忽略当前页所有“需洗版”项', key: 'oneclick-ignore' });
+    actions.push({ label: '一键忽略当前页所有“需处理”项', key: 'oneclick-ignore' });
   }
   if (filter.value === 'ignored') {
     actions.push({ label: '一键取消忽略当前页所有项', key: 'oneclick-unignore' });
   }
   
-  if (filter.value === 'needed' || filter.value === 'ignored') {
-      actions.push({ 
-          label: `一键删除当前页所有“${filter.value === 'needed' ? '需洗版' : '已忽略'}”项`, 
-          key: 'oneclick-delete',
-          props: { type: 'error' } 
-      });
-  }
+  // 移除一键删除
   
   return actions;
 });
@@ -476,7 +462,7 @@ const handleBatchAction = (key) => {
 };
 
 const sendBatchActionRequest = async (actionKey, ids, isOneClick) => {
-  const actionMap = { subscribe: 'subscribe', ignore: 'ignore', unignore: 'ok', delete: 'delete' };
+  const actionMap = { subscribe: 'subscribe', ignore: 'ignore', unignore: 'ok' };
   const action = actionMap[actionKey];
 
   try {
@@ -488,7 +474,7 @@ const sendBatchActionRequest = async (actionKey, ids, isOneClick) => {
     if (!isOneClick) {
       const optimisticStatusMap = { subscribe: 'subscribed', ignore: 'ignored', unignore: 'ok' };
       const optimisticStatus = optimisticStatusMap[actionKey];
-      if (optimisticStatus === 'ok' || actionKey === 'delete') {
+      if (optimisticStatus === 'ok') {
         allItems.value = allItems.value.filter(i => !ids.includes(i.item_id));
       } else {
         ids.forEach(id => {
@@ -506,18 +492,8 @@ const sendBatchActionRequest = async (actionKey, ids, isOneClick) => {
 };
 
 const executeBatchAction = async (actionKey, ids, isOneClick) => {
-  if (actionKey === 'delete' || actionKey === 'oneclick-delete') {
-    const countText = isOneClick ? `当前视图下所有` : `${ids.length}`;
-    dialog.warning({
-      title: '高危操作确认',
-      content: `确定要永久删除选中的 ${countText} 个媒体项吗？此操作会从 Emby 和硬盘中删除文件，且不可恢复！`,
-      positiveText: '我确定，删除！',
-      negativeText: '取消',
-      onPositiveClick: () => { sendBatchActionRequest(actionKey, ids, isOneClick); }
-    });
-  } else {
-    sendBatchActionRequest(actionKey, ids, isOneClick);
-  }
+  // 移除删除确认逻辑，直接发送请求（因为现在是“整理”，具体行为由后端规则决定）
+  sendBatchActionRequest(actionKey, ids, isOneClick);
 };
 
 const ignoreItem = async (item) => {
@@ -543,24 +519,7 @@ const unignoreItem = async (item) => {
   }
 };
 
-const deleteItem = (item) => {
-  dialog.warning({
-    title: '高危操作确认',
-    content: `确定要永久删除《${item.item_name}》吗？此操作会从 Emby 和硬盘中删除文件，且不可恢复！`,
-    positiveText: '我确定，删除！',
-    negativeText: '取消',
-    onPositiveClick: async () => {
-      try {
-        await axios.post('/api/resubscribe/batch_action', { item_ids: [item.item_id], action: 'delete' });
-        message.success(`《${item.item_name}》已删除。`);
-        allItems.value = allItems.value.filter(i => i.item_id !== item.item_id);
-        selectedItems.value.delete(item.item_id);
-      } catch (err) {
-        message.error(err.response?.data?.error || '删除失败。');
-      }
-    }
-  });
-};
+// 移除 deleteItem 函数
 
 const triggerRefreshStatus = async () => {
   try {
@@ -570,8 +529,29 @@ const triggerRefreshStatus = async () => {
     message.error(err.response?.data?.error || '提交刷新任务失败。');
   }
 };
-const triggerResubscribeAll = async () => { try { await axios.post('/api/resubscribe/resubscribe_all'); message.success('一键洗版任务已提交，请稍后查看任务状态。'); } catch (err) { message.error(err.response?.data?.error || '提交一键洗版任务失败。'); }};
-const resubscribeItem = async (item) => { subscribing.value[item.item_id] = true; try { const response = await axios.post('/api/resubscribe/resubscribe_item', { item_id: item.item_id, item_name: item.item_name, tmdb_id: item.tmdb_id, item_type: item.item_type, }); message.success(response.data.message); const itemInList = allItems.value.find(i => i.item_id === item.item_id); if (itemInList) { itemInList.status = 'subscribed'; } } catch (err) { message.error(err.response?.data?.error || '洗版订阅失败。'); } finally { subscribing.value[item.item_id] = false; }};
+const triggerResubscribeAll = async () => { try { await axios.post('/api/resubscribe/resubscribe_all'); message.success('一键整理任务已提交，请稍后查看任务状态。'); } catch (err) { message.error(err.response?.data?.error || '提交一键整理任务失败。'); }};
+const resubscribeItem = async (item) => {
+  subscribing.value[item.item_id] = true;
+  try {
+    const response = await axios.post('/api/resubscribe/batch_action', {
+      item_ids: [item.item_id],
+      action: 'subscribe' 
+    });
+    
+    message.success("整理任务已提交");
+
+    const itemInList = allItems.value.find(i => i.item_id === item.item_id);
+    if (itemInList) {
+      // 暂时设为 'subscribed'，前端会显示为“处理中”
+      // 等后台任务跑完，如果是删除操作，刷新后该条目会自动消失
+      itemInList.status = 'subscribed'; 
+    }
+  } catch (err) {
+    message.error(err.response?.data?.error || '整理请求失败。');
+  } finally {
+    subscribing.value[item.item_id] = false;
+  }
+};
 const getPosterUrl = (item) => {
   if (item.poster_path) {
     return `https://image.tmdb.org/t/p/w500${item.poster_path}`;
@@ -605,21 +585,26 @@ const openInEmby = (item) => {
   }
   window.open(finalUrl, '_blank');
 };
-const handleSettingsSaved = (payload = {}) => {
-  showSettingsModal.value = false;
+const handleSettingsSaved = async (payload = {}) => {
+  showSettingsModal.value = false; // 关闭弹窗
+  
+  // 如果是删除规则（或者调整顺序），后端数据已经变了
   if (payload.needsRefresh) {
-    message.info('规则已删除，正在刷新媒体列表...');
-    fetchData();
+    // 直接重新拉取列表（这是一个极快的读库操作，瞬间完成）
+    await fetchData(); 
+    message.success('规则已更新，列表已刷新。');
   } else {
-    message.info('洗版规则已更新。请在需要时手动扫描媒体库以应用更改。');
+    // 如果只是修改了规则内容（但没删），可能需要提示用户手动扫描
+    message.success('规则已保存。如需应用新规则，请点击“扫描媒体库”按钮。');
   }
 };
 
 watch(() => props.taskStatus, (newStatus, oldStatus) => {
   if (oldStatus.is_running && !newStatus.is_running) {
     const relevantActions = [
-      '刷新媒体洗版状态', 
-      '全库媒体洗版',   
+      '刷新媒体整理', 
+      '批量媒体整理',
+      '批量删除媒体'   
     ];
     
     if (relevantActions.some(action => oldStatus.current_action.includes(action))) {

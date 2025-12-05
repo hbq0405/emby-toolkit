@@ -3,7 +3,7 @@
     <n-space vertical :size="24">
       <n-card :bordered="false">
         <template #header>
-          <span style="font-size: 1.2em; font-weight: bold;">媒体洗版规则</span>
+          <span style="font-size: 1.2em; font-weight: bold;">媒体库规则管理</span>
         </template>
         <template #header-extra>
           <n-button type="primary" @click="openRuleModal()">
@@ -12,42 +12,42 @@
           </n-button>
         </template>
         <p style="margin-top: 0; color: #888;">
-          规则将按列表顺序（从上到下）进行匹配，媒体项会应用匹配到的第一个规则。拖拽规则可以调整优先级。
+          规则不仅用于洗版，也可以用于自动化清理低质量或低评分的媒体。
         </p>
       </n-card>
 
       <!-- 规则列表 -->
-      <draggable
-        v-model="rules"
-        item-key="id"
-        handle=".drag-handle"
-        @end="onDragEnd"
-        class="rules-list"
-      >
+      <draggable v-model="rules" item-key="id" handle=".drag-handle" @end="onDragEnd" class="rules-list">
         <template #item="{ element: rule }">
-          <n-card class="rule-card" :key="rule.id">
+          <n-card class="rule-card" :key="rule.id" size="small">
             <div class="rule-content">
               <n-icon class="drag-handle" :component="DragHandleIcon" size="20" />
               <div class="rule-details">
-                <span class="rule-name">{{ rule.name }}</span>
+                <div style="display: flex; align-items: center; gap: 8px;">
+                  <span class="rule-name">{{ rule.name }}</span>
+                  <!-- 类型标签 -->
+                  <n-tag v-if="rule.rule_type === 'delete'" type="error" size="small" round>仅删除</n-tag>
+                  <n-tag v-else type="primary" size="small" round>洗版</n-tag>
+                </div>
                 <n-space size="small" style="margin-top: 4px;">
-                  <n-tag :type="getLibraryTagType(rule.target_library_ids)" size="small">
+                  <n-tag :type="getLibraryTagType(rule.target_library_ids)" size="small" :bordered="false">
                     {{ getLibraryCountText(rule.target_library_ids) }}
                   </n-tag>
-                  <n-tag v-if="rule.auto_resubscribe" type="info" size="small" bordered>自动洗版</n-tag>
-                  <n-tag v-if="rule.custom_resubscribe_enabled" type="warning" size="small" bordered>精准模式</n-tag>
+                  <n-tag v-if="rule.rule_type !== 'delete' && rule.auto_resubscribe" type="info" size="small" bordered>自动洗版</n-tag>
+                  <n-tag v-if="rule.filter_rating_enabled" type="warning" size="small" bordered>评分&lt;{{ rule.filter_rating_min }}</n-tag>
                 </n-space>
               </div>
               <n-space class="rule-actions">
-                <n-switch v-model:value="rule.enabled" @update:value="toggleRuleStatus(rule)" />
+                <n-switch v-model:value="rule.enabled" @update:value="toggleRuleStatus(rule)" size="small">
+                   <template #checked>启用</template>
+                   <template #unchecked>禁用</template>
+                </n-switch>
                 <n-button text @click="openRuleModal(rule)">
                   <template #icon><n-icon :component="EditIcon" /></template>
                 </n-button>
                 <n-popconfirm @positive-click="deleteRule(rule.id)">
                   <template #trigger>
-                    <n-button text type="error">
-                      <template #icon><n-icon :component="DeleteIcon" /></template>
-                    </n-button>
+                    <n-button text type="error"><template #icon><n-icon :component="DeleteIcon" /></template></n-button>
                   </template>
                   确定要删除规则 “{{ rule.name }}” 吗？
                 </n-popconfirm>
@@ -56,273 +56,279 @@
           </n-card>
         </template>
       </draggable>
-      <n-empty v-if="rules.length === 0" description="还没有任何规则，快新增一个吧！" />
+      <n-empty v-if="rules.length === 0" description="暂无规则" />
 
-      <!-- 规则编辑/新增弹窗 -->
-      <n-modal v-model:show="showModal" preset="card" style="width: 650px;" :title="modalTitle">
-        <n-form ref="formRef" :model="currentRule" :rules="formRules" label-placement="left" label-width="auto">
+      <!-- 规则弹窗 -->
+      <n-modal v-model:show="showModal" preset="card" style="width: 900px;" :title="modalTitle">
+        <n-form ref="formRef" :model="currentRule" :rules="formRules" label-placement="top">
           
-          <!-- 基础信息 -->
-          <n-divider title-placement="left" style="margin-top: 0; font-size: 12px; color: #999;">基础配置</n-divider>
-          <n-form-item path="name" label="规则名称">
-            <n-input v-model:value="currentRule.name" placeholder="例如：4K Remux 收藏规则" />
-          </n-form-item>
-          <n-form-item path="target_library_ids" label="应用媒体库">
-            <n-select
-              v-model:value="currentRule.target_library_ids"
-              multiple
-              filterable
-              :options="availableLibraryOptions"
-              placeholder="选择一个或多个媒体库"
-            />
-          </n-form-item>
-
-          <!-- 自动化配置 (新增区域) -->
-          <n-divider title-placement="left" style="font-size: 12px; color: #999;">自动化与执行策略</n-divider>
-          
-          <n-space vertical size="large">
-            <!-- 开关组 1: 自动洗版 -->
-            <n-space align="center" justify="space-between">
-              <n-space vertical size="small" style="gap: 2px;">
-                <n-space align="center">
-                  <span>自动洗版</span>
-                  <n-tooltip trigger="hover">
-                    <template #trigger>
-                      <n-icon :component="AlertIcon" style="color: var(--n-info-color); cursor: help;" />
-                    </template>
-                    开启后，当检测到媒体需要洗版时，会自动将其加入“统一订阅”队列。<br>
-                    若关闭，仅会在列表中标记为“需洗版”，等待人工手动点击。
-                  </n-tooltip>
-                </n-space>
-                <span style="font-size: 12px; color: #999;">检测到不达标时自动加入统一订阅队列。</span>
-              </n-space>
-              <n-switch v-model:value="currentRule.auto_resubscribe" />
-            </n-space>
-
-            <!-- 开关组 2: 自定义洗版 (精准模式) -->
-            <n-space align="center" justify="space-between">
-              <n-space vertical size="small" style="gap: 2px;">
-                <n-space align="center">
-                  <span>自定义洗版</span>
-                  <n-tooltip trigger="hover">
-                    <template #trigger>
-                      <n-icon :component="AlertIcon" style="color: var(--n-info-color); cursor: help;" />
-                    </template>
-                    <b>开启：</b>将根据下方配置的条件（如分辨率、特效、编码）生成精准的订阅参数发送给 MoviePilot。<br>
-                    <b>关闭：</b>仅发送洗版订阅请求，具体下载什么版本由 MoviePilot 的全局洗版规则决定。
-                  </n-tooltip>
-                </n-space>
-                <span style="font-size: 12px; color: #999;">强制下载符合下方条件的文件，而非MP默认策略</span>
-              </n-space>
-              <n-switch v-model:value="currentRule.custom_resubscribe_enabled" />
-            </n-space>
-
-            <!-- 开关组 3: 洗版后删除 -->
-            <n-space align="center" justify="space-between">
-              <n-space vertical size="small" style="gap: 2px;">
-                <n-space align="center">
-                  <span>删除旧文件</span>
-                  <n-tooltip trigger="hover" v-if="!isEmbyAdminConfigured">
-                    <template #trigger>
-                      <n-icon :component="AlertIcon" style="color: var(--n-warning-color);" />
-                    </template>
-                    请先在 设置 -> Emby & 虚拟库 标签页中，配置“管理员登录凭证”。
-                  </n-tooltip>
-                </n-space>
-                <span style="font-size: 12px; color: #999;">订阅成功后，自动删除 Emby 中的旧媒体项，仅手动洗版生效。</span>
-              </n-space>
-              <n-switch 
-                v-model:value="currentRule.delete_after_resubscribe"
-                :disabled="!isEmbyAdminConfigured"
-                @update:value="handleDeleteSwitchChange"
-              />
-            </n-space>
-          </n-space>
-
-          <n-divider title-placement="left" style="font-size: 12px; color: #999;">洗版触发条件与参数</n-divider>
-          
-          <n-form-item>
-             <template #label>
-              <n-space align="center">
-                <span>特效字幕参数</span>
-                <n-tooltip trigger="hover">
-                  <template #trigger>
-                    <n-icon :component="AlertIcon" style="color: var(--n-info-color);" />
-                  </template>
-                  勾选后，订阅时将要求字幕包含“特效”关键字。<br>
-                  注意：此选项仅在“精准洗版”开启时生效，用于生成订阅参数。
-                </n-tooltip>
-              </n-space>
-            </template>
-            <n-switch v-model:value="currentRule.resubscribe_subtitle_effect_only" />
-          </n-form-item>
-
-          <!-- 洗版条件折叠面板 -->
-          <n-collapse>
-            <n-collapse-item title="按一致性洗版 (剧集专用)">
-               <template #header-extra>
-                <n-switch v-model:value="currentRule.consistency_check_enabled" @click.stop />
-              </template>
-              <n-space vertical>
-                <div style="font-size: 12px; color: #888; margin-bottom: 8px;">
-                  <n-icon :component="AlertIcon" style="vertical-align: text-bottom; margin-right: 4px;" />
-                  当剧集内出现版本混杂时（如 4K 与 1080p 混在一起），触发洗版以统一版本。<br>
-                  建议开启“精准洗版”并配置下方参数，明确统一的目标版本。
-                </div>
-                <n-space>
-                  <n-checkbox 
-                    v-model:checked="currentRule.consistency_must_match_resolution"
-                    :disabled="!currentRule.consistency_check_enabled"
-                  >
-                    检查分辨率
-                  </n-checkbox>
-                  <n-checkbox 
-                    v-model:checked="currentRule.consistency_must_match_group"
-                    :disabled="!currentRule.consistency_check_enabled"
-                  >
-                    检查发布组
-                  </n-checkbox>
-                  <n-checkbox 
-                    v-model:checked="currentRule.consistency_must_match_codec"
-                    :disabled="!currentRule.consistency_check_enabled"
-                  >
-                    检查编码
-                  </n-checkbox>
-                </n-space>
-              </n-space>
-            </n-collapse-item>
-            <n-collapse-item title="按分辨率洗版">
-              <template #header-extra>
-                <n-switch v-model:value="currentRule.resubscribe_resolution_enabled" @click.stop />
-              </template>
-              <n-form-item label="洗版分辨率阈值 (宽度)" label-placement="left">
-                <n-select
-                  v-model:value="currentRule.resubscribe_resolution_threshold"
-                  :options="resolutionOptions"
-                  :disabled="!currentRule.resubscribe_resolution_enabled"
-                />
-              </n-form-item>
-            </n-collapse-item>
-            
-            <n-collapse-item title="按质量洗版">
-               <template #header-extra>
-                <n-switch v-model:value="currentRule.resubscribe_quality_enabled" @click.stop />
-              </template>
-              <n-form-item label="当媒体质量【低于】所选最高等级时洗版" label-placement="top">
-                <n-select
-                  v-model:value="currentRule.resubscribe_quality_include"
-                  multiple tag filterable placeholder="可选择或自由输入"
-                  :options="qualityOptions"
-                  :disabled="!currentRule.resubscribe_quality_enabled"
-                />
-              </n-form-item>
-            </n-collapse-item>
-
-            <n-collapse-item title="按编码洗版">
-               <template #header-extra>
-                <n-switch v-model:value="currentRule.resubscribe_codec_enabled" @click.stop />
-              </template>
-              <n-form-item label="当视频编码【低于】所选最高等级时洗版" label-placement="top">
-                <n-select
-                  v-model:value="currentRule.resubscribe_codec_include"
-                  multiple tag filterable placeholder="选择期望的编码等级"
-                  :options="codecOptions"
-                  :disabled="!currentRule.resubscribe_codec_enabled"
-                />
-              </n-form-item>
-            </n-collapse-item>
-
-            <n-collapse-item title="按特效洗版">
-               <template #header-extra>
-                <n-switch v-model:value="currentRule.resubscribe_effect_enabled" @click.stop />
-              </template>
-              <n-form-item label="当媒体特效【低于】所选最高等级时洗版" label-placement="top">
-                <n-select
-                  v-model:value="currentRule.resubscribe_effect_include"
-                  multiple tag filterable placeholder="选择期望的特效等级"
-                  :options="effectOptions"
-                  :disabled="!currentRule.resubscribe_effect_enabled"
-                />
-              </n-form-item>
-            </n-collapse-item>
-
-            <n-collapse-item title="按文件大小洗版">
-              <template #header-extra>
-                <n-switch v-model:value="currentRule.resubscribe_filesize_enabled" @click.stop />
-              </template>
-              <n-space vertical>
-                <n-form-item label="洗版条件" label-placement="left">
-                  <n-select
-                    v-model:value="currentRule.resubscribe_filesize_operator"
-                    :options="filesizeOperatorOptions"
-                    :disabled="!currentRule.resubscribe_filesize_enabled"
-                    style="width: 120px; margin-right: 8px;"
-                  />
-                  <n-input-number
-                    v-model:value="currentRule.resubscribe_filesize_threshold_gb"
-                    :min="0"
-                    :step="0.1"
-                    :disabled="!currentRule.resubscribe_filesize_enabled"
-                    placeholder="输入大小"
-                  >
-                    <template #suffix>GB</template>
-                  </n-input-number>
-                </n-form-item>
-                <p style="margin: 0; font-size: 12px; color: #888;">
-                  提示：对于剧集，将按单集平均大小进行判断。
-                </p>
-              </n-space>
-            </n-collapse-item>
-
-            <n-collapse-item title="按音轨洗版">
-               <template #header-extra>
-                <n-switch v-model:value="currentRule.resubscribe_audio_enabled" @click.stop />
-              </template>
-              <n-form-item label="当缺少以下音轨时洗版 (3字母代码)" label-placement="top">
-                <n-select
-                  v-model:value="currentRule.resubscribe_audio_missing_languages"
-                  multiple tag
-                  :options="languageOptions"
-                  :disabled="!currentRule.resubscribe_audio_enabled"
-                />
-              </n-form-item>
-            </n-collapse-item>
-
-            <n-collapse-item title="按字幕洗版">
-               <template #header-extra>
-                <n-switch v-model:value="currentRule.resubscribe_subtitle_enabled" @click.stop />
-              </template>
-              <n-form-item label="当缺少以下字幕时洗版" label-placement="top">
-                <n-select
-                  v-model:value="currentRule.resubscribe_subtitle_missing_languages"
-                  multiple tag
-                  :options="subtitleLanguageOptions"
-                  :disabled="!currentRule.resubscribe_subtitle_enabled"
-                />
-              </n-form-item>
-              <n-form-item :disabled="!currentRule.resubscribe_subtitle_enabled">
-                <template #label>
-                  <n-space align="center">
-                    <span>豁免规则</span>
-                    <n-tooltip trigger="hover">
-                      <template #trigger>
-                        <n-icon :component="AlertIcon" style="color: var(--n-info-color);" />
+          <!-- 1. 顶部：基础信息与模式选择 -->
+          <n-grid :x-gap="24" :y-gap="24" :cols="2">
+            <n-gi :span="2">
+              <n-card size="small" embedded :bordered="false" style="background: var(--n-action-color);">
+                <n-grid :cols="2" :x-gap="24">
+                  <n-gi>
+                    <n-form-item path="name" label="规则名称">
+                      <n-input v-model:value="currentRule.name" placeholder="例如：清理低分烂片 / 4K洗版" />
+                    </n-form-item>
+                  </n-gi>
+                  <n-gi>
+                    <n-form-item path="target_library_ids" label="应用媒体库">
+                      <n-select
+                        v-model:value="currentRule.target_library_ids"
+                        multiple filterable :options="availableLibraryOptions"
+                        placeholder="选择媒体库"
+                      />
+                    </n-form-item>
+                  </n-gi>
+                  <n-gi :span="2">
+                    <n-form-item label="规则模式">
+                      <n-radio-group v-model:value="currentRule.rule_type" name="ruleTypeGroup" size="large">
+                        <n-radio-button value="resubscribe">
+                          <n-icon :component="SyncIcon" style="vertical-align: text-bottom; margin-right: 4px;" />
+                          洗版模式
+                        </n-radio-button>
+                        <n-radio-button value="delete">
+                          <n-icon :component="TrashIcon" style="vertical-align: text-bottom; margin-right: 4px;" />
+                          删除模式
+                        </n-radio-button>
+                      </n-radio-group>
+                      <template #feedback>
+                        <span v-if="currentRule.rule_type === 'resubscribe'" style="color: var(--n-text-color-3);">
+                          检测到不达标时，自动或手动触发 MoviePilot 订阅以获取更好版本。
+                        </span>
+                        <span v-else style="color: var(--n-error-color);">
+                          检测到符合条件（如低分、低画质）时，直接执行删除操作，<b>不进行订阅</b>。
+                        </span>
                       </template>
-                      开启后，如果媒体文件已包含与所缺字幕语言相同的音轨（如已有国语音轨），<br>
-                      则系统将不再认为它缺少中文字幕。
-                    </n-tooltip>
-                  </n-space>
+                    </n-form-item>
+                  </n-gi>
+                </n-grid>
+              </n-card>
+            </n-gi>
+
+            <!-- 2. 左侧列：筛选条件 (Condition) -->
+            <n-gi>
+              <n-card title="筛选条件 (命中规则的条件)" size="small" segmented>
+                <template #header-extra>
+                  <n-tag type="warning" size="small" :bordered="false">满足任一条件即命中</n-tag>
                 </template>
-                <n-switch 
-                  v-model:value="currentRule.resubscribe_subtitle_skip_if_audio_exists"
-                />
-              </n-form-item>
-            </n-collapse-item>
-          </n-collapse>
+                
+                <n-space vertical size="large">
+                  <!-- 评分过滤 -->
+                  <div class="filter-item" v-if="currentRule.rule_type === 'delete'">
+                    <n-checkbox v-model:checked="currentRule.filter_rating_enabled">
+                      <span style="font-weight: bold;">按评分筛选</span>
+                    </n-checkbox>
+                    <div v-if="currentRule.filter_rating_enabled" class="filter-content">
+                      <n-form-item label="当 TMDB 评分低于此值时" :show-feedback="false">
+                        <n-input-number v-model:value="currentRule.filter_rating_min" :min="0" :max="10" :step="0.1" style="width: 100%;">
+                          <template #suffix>分</template>
+                        </n-input-number>
+                      </n-form-item>
+                    </div>
+                  </div>
+
+                  <!-- 分辨率 -->
+                  <div class="filter-item">
+                    <n-checkbox v-model:checked="currentRule.resubscribe_resolution_enabled">
+                      <span style="font-weight: bold;">按分辨率筛选</span>
+                    </n-checkbox>
+                    <div v-if="currentRule.resubscribe_resolution_enabled" class="filter-content">
+                      <n-select v-model:value="currentRule.resubscribe_resolution_threshold" :options="resolutionOptions" placeholder="选择阈值" />
+                      <div class="tip">当分辨率低于此值时命中</div>
+                    </div>
+                  </div>
+
+                  <!-- 质量 -->
+                  <div class="filter-item">
+                    <n-checkbox v-model:checked="currentRule.resubscribe_quality_enabled">
+                      <span style="font-weight: bold;">按质量筛选</span>
+                    </n-checkbox>
+                    <div v-if="currentRule.resubscribe_quality_enabled" class="filter-content">
+                      <n-select v-model:value="currentRule.resubscribe_quality_include" multiple tag :options="qualityOptions" placeholder="选择质量" />
+                      <div class="tip">当质量低于选中的最高项时命中</div>
+                    </div>
+                  </div>
+
+                  <!-- 编码 -->
+                  <div class="filter-item">
+                    <n-checkbox v-model:checked="currentRule.resubscribe_codec_enabled">
+                      <span style="font-weight: bold;">按编码筛选</span>
+                    </n-checkbox>
+                    <div v-if="currentRule.resubscribe_codec_enabled" class="filter-content">
+                      <n-select v-model:value="currentRule.resubscribe_codec_include" multiple tag :options="codecOptions" placeholder="选择编码" />
+                    </div>
+                  </div>
+
+                  <!-- 特效 (仅洗版模式建议开启，但删除模式也可以用) -->
+                  <div class="filter-item">
+                    <n-checkbox v-model:checked="currentRule.resubscribe_effect_enabled">
+                      <span style="font-weight: bold;">按特效筛选</span>
+                    </n-checkbox>
+                    <div v-if="currentRule.resubscribe_effect_enabled" class="filter-content">
+                      <n-select v-model:value="currentRule.resubscribe_effect_include" multiple tag :options="effectOptions" />
+                    </div>
+                  </div>
+                  
+                  <!-- 文件大小 -->
+                  <div class="filter-item">
+                    <n-checkbox v-model:checked="currentRule.resubscribe_filesize_enabled">
+                      <span style="font-weight: bold;">按文件大小筛选</span>
+                    </n-checkbox>
+                    <div v-if="currentRule.resubscribe_filesize_enabled" class="filter-content">
+                      <n-input-group>
+                        <n-select v-model:value="currentRule.resubscribe_filesize_operator" :options="filesizeOperatorOptions" style="width: 30%;" />
+                        <n-input-number v-model:value="currentRule.resubscribe_filesize_threshold_gb" :step="0.1" style="width: 70%;">
+                          <template #suffix>GB</template>
+                        </n-input-number>
+                      </n-input-group>
+                    </div>
+                  </div>
+                  <!-- 按音轨筛选 -->
+                  <div class="filter-item">
+                    <n-checkbox v-model:checked="currentRule.resubscribe_audio_enabled">
+                      <span style="font-weight: bold;">按音轨筛选 (缺音轨)</span>
+                    </n-checkbox>
+                    <div v-if="currentRule.resubscribe_audio_enabled" class="filter-content">
+                      <n-form-item label="当缺少以下音轨时命中" :show-feedback="false">
+                        <n-select
+                          v-model:value="currentRule.resubscribe_audio_missing_languages"
+                          multiple tag
+                          :options="languageOptions"
+                          placeholder="选择语言 (如: 国语)"
+                        />
+                      </n-form-item>
+                    </div>
+                  </div>
+
+                  <!-- 按字幕筛选 -->
+                  <div class="filter-item">
+                    <n-checkbox v-model:checked="currentRule.resubscribe_subtitle_enabled">
+                      <span style="font-weight: bold;">按字幕筛选 (缺字幕)</span>
+                    </n-checkbox>
+                    <div v-if="currentRule.resubscribe_subtitle_enabled" class="filter-content">
+                      <n-form-item label="当缺少以下字幕时命中" :show-feedback="false">
+                        <n-select
+                          v-model:value="currentRule.resubscribe_subtitle_missing_languages"
+                          multiple tag
+                          :options="subtitleLanguageOptions"
+                          placeholder="选择语言 (如: 简体中文)"
+                        />
+                      </n-form-item>
+                      
+                      <!-- 字幕豁免规则 -->
+                      <div style="margin-top: 8px;">
+                        <n-checkbox v-model:checked="currentRule.resubscribe_subtitle_skip_if_audio_exists">
+                          <span style="font-size: 12px;">豁免：如果已存在同语言音轨则忽略缺字幕</span>
+                        </n-checkbox>
+                        <div class="tip" style="margin-left: 24px;">
+                          例如：缺中字，但已有国语音轨，则视为达标。
+                        </div>
+                      </div>
+                    </div>
+                  </div>
+                  <!-- 剧集一致性筛选 -->
+                  <div class="filter-item">
+                    <n-checkbox v-model:checked="currentRule.consistency_check_enabled">
+                      <span style="font-weight: bold;">剧集一致性筛选 (仅剧集)</span>
+                    </n-checkbox>
+                    <div v-if="currentRule.consistency_check_enabled" class="filter-content">
+                      <div class="tip" style="margin-bottom: 8px;">当检测到季内版本混杂时命中规则：</div>
+                      <n-space vertical>
+                        <n-checkbox v-model:checked="currentRule.consistency_must_match_resolution">
+                          分辨率不统一 (如 4K 与 1080p 混杂)
+                        </n-checkbox>
+                        <n-checkbox v-model:checked="currentRule.consistency_must_match_group">
+                          制作组不统一 (如不同压制组混杂)
+                        </n-checkbox>
+                        <n-checkbox v-model:checked="currentRule.consistency_must_match_codec">
+                          编码不统一 (如 HEVC 与 AVC 混杂)
+                        </n-checkbox>
+                      </n-space>
+                    </div>
+                  </div>
+                </n-space>
+              </n-card>
+            </n-gi>
+
+            <!-- 3. 右侧列：执行动作 (Action) -->
+            <n-gi>
+              <n-card title="执行动作" size="small" segmented style="height: 100%;">
+                
+                <!-- 模式 A: 洗版设置 -->
+                <div v-if="currentRule.rule_type === 'resubscribe'">
+                  <n-form-item label="自动洗版">
+                    <n-space align="center">
+                      <n-switch v-model:value="currentRule.auto_resubscribe" />
+                      <span class="tip">命中后自动加入订阅队列</span>
+                    </n-space>
+                  </n-form-item>
+                  <n-form-item label="自定义洗版">
+                    <n-space align="center">
+                      <n-switch v-model:value="currentRule.custom_resubscribe_enabled" />
+                      <span class="tip">开启后，将根据规则生成订阅参数。</span>
+                    </n-space>
+                  </n-form-item>
+                  
+                  <n-form-item label="洗版后删除旧文件">
+                    <n-space align="center">
+                      <n-switch v-model:value="currentRule.delete_after_resubscribe" :disabled="!isEmbyAdminConfigured" />
+                      <span class="tip">仅手动洗版生效。</span>
+                      <span class="tip" v-if="!isEmbyAdminConfigured" style="color: var(--n-warning-color);">需配置 Emby 管理员账号</span>
+                    </n-space>
+                  </n-form-item>
+
+                  <n-form-item label="特效字幕">
+                    <n-checkbox v-model:checked="currentRule.resubscribe_subtitle_effect_only">订阅时要求包含特效字幕</n-checkbox>
+                  </n-form-item>
+                </div>
+
+                <!-- 模式 B: 删除设置 -->
+                <div v-else>
+                  <n-alert type="error" :show-icon="true" style="margin-bottom: 16px;">
+                    危险操作：符合左侧条件的项目将被直接删除！
+                  </n-alert>
+
+                  <n-form-item label="删除策略">
+                    <n-radio-group v-model:value="currentRule.delete_mode">
+                      <n-space vertical>
+                        <n-radio value="episode">
+                          逐集删除 (安全模式)
+                          <div class="tip">
+                            推荐。找出该季下的所有单集，<b>一集一集</b>地删除。<br>
+                            配合下方的延迟设置，可有效避免网盘API风控。
+                          </div>
+                        </n-radio>
+                        <n-radio value="series">
+                          整季/剧删除 (快速模式)
+                          <div class="tip">
+                            直接删除整季或整部剧。<br>
+                            速度快，但一次性删除大量文件可能触发网盘限制。
+                          </div>
+                        </n-radio>
+                      </n-space>
+                    </n-radio-group>
+                  </n-form-item>
+
+                  <n-form-item label="删除间隔延迟 (秒)">
+                    <n-input-number v-model:value="currentRule.delete_delay_seconds" :min="0" :step="1" />
+                    <template #feedback>
+                      <span class="tip">每删除一个文件后等待的时间。网盘用户建议设置 5-10 秒以上。</span>
+                    </template>
+                  </n-form-item>
+                </div>
+
+              </n-card>
+            </n-gi>
+          </n-grid>
+
         </n-form>
         <template #footer>
-          <n-button @click="showModal = false">取消</n-button>
-          <n-button type="primary" @click="saveRule" :loading="saving">保存</n-button>
+          <n-space justify="end">
+            <n-button @click="showModal = false">取消</n-button>
+            <n-button type="primary" @click="saveRule" :loading="saving">保存规则</n-button>
+          </n-space>
         </template>
       </n-modal>
 
@@ -334,22 +340,22 @@
 import { ref, onMounted, computed, nextTick } from 'vue';
 import axios from 'axios';
 import { 
-  NCard, NSpace, NSwitch, NButton, useMessage, NSpin, NIcon, NPopconfirm, NModal, NForm, 
-  NFormItem, NInput, NSelect, NDivider, NCollapse, NCollapseItem, NTag, NEmpty, NTooltip, NInputNumber, NCheckbox
+  useMessage, NTag, NIcon, NGrid, NGi, NRadioGroup, NRadioButton, NRadio, NInputGroup, NCheckbox, NAlert
 } from 'naive-ui';
 import draggable from 'vuedraggable';
 import { 
-  Add as AddIcon, Pencil as EditIcon, Trash as DeleteIcon, Move as DragHandleIcon, AlertCircleOutline as AlertIcon, 
+  Add as AddIcon, Pencil as EditIcon, Trash as DeleteIcon, Move as DragHandleIcon, 
+  Sync as SyncIcon, TrashBin as TrashIcon
 } from '@vicons/ionicons5';
+
+// ... (引入其他必要的组件)
 
 const message = useMessage();
 const emit = defineEmits(['saved']);
 const embyAdminUser = ref('');
 const embyAdminPass = ref('');
 
-const isEmbyAdminConfigured = computed(() => {
-  return embyAdminUser.value && embyAdminPass.value;
-});
+const isEmbyAdminConfigured = computed(() => embyAdminUser.value && embyAdminPass.value);
 const loading = ref(true);
 const saving = ref(false);
 const showModal = ref(false);
@@ -367,6 +373,7 @@ const formRules = {
   target_library_ids: { type: 'array', required: true, message: '请至少选择一个媒体库', trigger: 'change' },
 };
 
+// 选项定义
 const filesizeOperatorOptions = ref([
   { label: '小于', value: 'lt' },
   { label: '大于', value: 'gt' },
@@ -400,8 +407,10 @@ const effectOptions = ref([
 ]);
 
 const languageOptions = ref([
-    { label: '国语 (chi)', value: 'chi' }, { label: '粤语 (yue)', value: 'yue' },
-    { label: '英语 (eng)', value: 'eng' }, { label: '日语 (jpn)', value: 'jpn' },
+    { label: '国语 (chi)', value: 'chi' }, 
+    { label: '粤语 (yue)', value: 'yue' },
+    { label: '英语 (eng)', value: 'eng' }, 
+    { label: '日语 (jpn)', value: 'jpn' },
     { label: '韩语 (kor)', value: 'kor' }, 
 ]);
 const subtitleLanguageOptions = ref([
@@ -419,96 +428,56 @@ const loadData = async () => {
       axios.get('/api/resubscribe/rules'),
       axios.get('/api/config')
     ]);
-    
     rules.value = rulesRes.data;
     embyAdminUser.value = configRes.data.emby_admin_user;
     embyAdminPass.value = configRes.data.emby_admin_pass;
-
   } catch (error) {
-    message.error('加载基础数据失败，请检查网络或后端日志。');
+    message.error('加载数据失败');
   } finally {
     loading.value = false;
   }
 };
 
-const handleDeleteSwitchChange = (value) => {
-  if (value && !isEmbyAdminConfigured.value) {
-    message.warning('请先在 设置 -> Emby & 虚拟库 标签页中，配置“管理员登录凭证”，否则删除功能无法生效。');
-    nextTick(() => {
-      currentRule.value.delete_after_resubscribe = false;
-    });
-  }
-};
-
 const openRuleModal = async (rule = null) => {
-  saving.value = true; 
-  
+  // 加载媒体库列表
   try {
     const libsRes = await axios.get('/api/config/cover_generator/libraries');
     allEmbyLibraries.value = libsRes.data;
-  } catch (error) {
-    message.error('获取媒体库列表失败！');
-    saving.value = false;
-    return;
-  } finally {
-    saving.value = false;
-  }
+  } catch (e) {}
 
   if (rule) {
     currentRule.value = JSON.parse(JSON.stringify(rule));
+    // 兼容旧数据
+    if (!currentRule.value.rule_type) currentRule.value.rule_type = 'resubscribe';
   } else {
     currentRule.value = {
       name: '', enabled: true, target_library_ids: [],
-      // ★★★ 新增字段初始化 ★★★
-      auto_resubscribe: false,
-      custom_resubscribe_enabled: false,
+      rule_type: 'resubscribe', // 默认为洗版
       
-      delete_after_resubscribe: false,
-      consistency_check_enabled: false,
-      consistency_must_match_resolution: false,
-      consistency_must_match_group: false,
-      consistency_must_match_codec: false, 
-      resubscribe_resolution_enabled: false,
-      resubscribe_resolution_threshold: 1920, resubscribe_audio_enabled: false,
-      resubscribe_audio_missing_languages: [], resubscribe_subtitle_enabled: false,
-      resubscribe_subtitle_missing_languages: [], resubscribe_quality_enabled: false,
-      resubscribe_quality_include: [], 
+      // 筛选条件
+      filter_rating_enabled: false, filter_rating_min: 0,
+      resubscribe_resolution_enabled: false, resubscribe_resolution_threshold: 1920,
+      resubscribe_quality_enabled: false, resubscribe_quality_include: [],
+      resubscribe_codec_enabled: false, resubscribe_codec_include: [],
+      resubscribe_effect_enabled: false, resubscribe_effect_include: [],
+      resubscribe_filesize_enabled: false, resubscribe_filesize_operator: 'lt', resubscribe_filesize_threshold_gb: null,
       
-      resubscribe_codec_enabled: false,
-      resubscribe_codec_include: [],
-
-      resubscribe_effect_enabled: false,
-      resubscribe_effect_include: [],
+      // 洗版动作
+      auto_resubscribe: false, custom_resubscribe_enabled: false, delete_after_resubscribe: false,
       resubscribe_subtitle_effect_only: false,
-      resubscribe_filesize_enabled: false,
-      resubscribe_filesize_operator: 'lt', 
-      resubscribe_filesize_threshold_gb: null,
-      resubscribe_subtitle_skip_if_audio_exists: false, 
+      consistency_check_enabled: false, consistency_must_match_resolution: false, consistency_must_match_group: false,
+
+      // 删除动作
+      delete_mode: 'episode', delete_delay_seconds: 5
     };
   }
-
-  if (currentRule.value.resubscribe_effect_include) {
-    const legacyMap = { '杜比视界': 'dovi_other', 'HDR': 'hdr' };
-    currentRule.value.resubscribe_effect_include = currentRule.value.resubscribe_effect_include.map(
-      val => legacyMap[val] || val
-    );
-  }
-
   showModal.value = true;
 };
 
 const availableLibraryOptions = computed(() => {
-  if (!rules.value || !allEmbyLibraries.value) {
-    return [];
-  }
-
-  const assignedIdsByOtherRules = new Set(
-    rules.value
-      .filter(rule => rule.id !== currentRule.value.id)
-      .flatMap(rule => rule.target_library_ids || [])
-  );
-
-  return allEmbyLibraries.value.filter(lib => !assignedIdsByOtherRules.has(lib.value));
+  if (!rules.value || !allEmbyLibraries.value) return [];
+  const assignedIds = new Set(rules.value.filter(r => r.id !== currentRule.value.id).flatMap(r => r.target_library_ids || []));
+  return allEmbyLibraries.value.filter(lib => !assignedIds.has(lib.value));
 });
 
 const saveRule = async () => {
@@ -516,18 +485,15 @@ const saveRule = async () => {
     if (!errors) {
       saving.value = true;
       try {
-        if (isEditing.value) {
-          await axios.put(`/api/resubscribe/rules/${currentRule.value.id}`, currentRule.value);
-          message.success('规则已更新！');
-        } else {
-          await axios.post('/api/resubscribe/rules', currentRule.value);
-          message.success('规则已创建！');
-        }
+        const api = isEditing.value ? axios.put : axios.post;
+        const url = isEditing.value ? `/api/resubscribe/rules/${currentRule.value.id}` : '/api/resubscribe/rules';
+        await api(url, currentRule.value);
+        message.success('规则保存成功');
         showModal.value = false;
         loadData();
         emit('saved', { needsRefresh: false });
       } catch (error) {
-        message.error(error.response?.data?.error || '保存失败，请检查后端日志。');
+        message.error('保存失败');
       } finally {
         saving.value = false;
       }
@@ -535,78 +501,46 @@ const saveRule = async () => {
   });
 };
 
-const deleteRule = async (ruleId) => {
+const deleteRule = async (id) => {
   try {
-    await axios.delete(`/api/resubscribe/rules/${ruleId}`);
-    message.success('规则已删除！');
+    await axios.delete(`/api/resubscribe/rules/${id}`);
+    message.success('规则已删除');
     loadData();
-    emit('saved', { needsRefresh: true });
-  } catch (error) {
-    message.error('删除失败，请检查后端日志。');
-  }
+  } catch (e) { message.error('删除失败'); }
 };
 
 const toggleRuleStatus = async (rule) => {
   try {
     await axios.put(`/api/resubscribe/rules/${rule.id}`, { enabled: rule.enabled });
-    message.success(`规则 “${rule.name}” 已${rule.enabled ? '启用' : '禁用'}`);
-    emit('saved', { needsRefresh: false });
-  } catch (error) {
-    message.error('状态更新失败');
-    rule.enabled = !rule.enabled;
-  }
+    message.success('状态已更新');
+  } catch (e) { rule.enabled = !rule.enabled; }
 };
 
 const onDragEnd = async () => {
-  const orderedIds = rules.value.map(r => r.id);
   try {
-    await axios.post('/api/resubscribe/rules/order', orderedIds);
-    message.success('规则优先级已更新！');
-    emit('saved', { needsRefresh: false });
-  } catch (error) {
-    message.error('顺序保存失败，将刷新列表。');
-    loadData();
-  }
+    await axios.post('/api/resubscribe/rules/order', rules.value.map(r => r.id));
+    message.success('顺序已更新');
+  } catch (e) {}
 };
 
-const getLibraryCountText = (libs) => {
-  if (!libs || libs.length === 0) return '未指定媒体库';
-  return `应用于 ${libs.length} 个媒体库`;
-};
-const getLibraryTagType = (libs) => {
-  return (!libs || libs.length === 0) ? 'error' : 'success';
-};
+const getLibraryCountText = (libs) => (!libs || libs.length === 0) ? '未指定' : `${libs.length} 个库`;
+const getLibraryTagType = (libs) => (!libs || libs.length === 0) ? 'error' : 'default';
 
 onMounted(loadData);
 </script>
 
 <style scoped>
-.rules-list {
-  display: flex;
-  flex-direction: column;
-  gap: 12px;
-}
-.rule-card {
-  cursor: pointer;
-}
-.rule-content {
-  display: flex;
-  align-items: center;
-  gap: 16px;
-}
-.drag-handle {
-  cursor: grab;
-  color: #888;
-}
-.rule-details {
-  flex-grow: 1;
-  display: flex;
-  flex-direction: column;
-}
-.rule-name {
-  font-weight: bold;
-}
-.rule-actions {
-  margin-left: auto;
-}
+.rules-list { display: flex; flex-direction: column; gap: 12px; }
+.rule-card { cursor: move; }
+.rule-content { display: flex; align-items: center; gap: 16px; }
+.drag-handle { cursor: grab; color: #888; }
+.rule-details { flex-grow: 1; }
+.rule-name { font-weight: bold; font-size: 1.05em; }
+.rule-actions { margin-left: auto; }
+
+/* Filter Styles */
+.filter-item { margin-bottom: 12px; padding-bottom: 12px; border-bottom: 1px dashed #eee; }
+.filter-item:last-child { border-bottom: none; margin-bottom: 0; padding-bottom: 0; }
+.filter-content { margin-top: 8px; margin-left: 24px; }
+.tip { font-size: 12px; color: #999; margin-top: 4px; }
 </style>

@@ -40,7 +40,7 @@ def task_update_resubscribe_cache(processor):
     """
     - 刷新洗版状态 (优化版：状态保护与自动清理)
     """
-    task_name = "刷新媒体洗版状态"
+    task_name = "刷新媒体整理"
     logger.info(f"--- 开始执行 '{task_name}' 任务 ---")
     
     try:
@@ -142,7 +142,7 @@ def task_update_resubscribe_cache(processor):
             
             else:
                 # 场景 C: 新发现的不达标项目，或者之前是 needed
-                logger.info(f"  ➜ 《{movie['title']}》需要洗版。原因: {reason}")
+                logger.info(f"  ➜ 《{movie['title']}》需要处理。原因: {reason}")
                 if rule.get('auto_resubscribe'):
                     final_status = 'auto_subscribed'
                     # 只有当状态发生变化（从 None/needed -> auto_subscribed）时，才触发 webhook
@@ -213,7 +213,8 @@ def task_update_resubscribe_cache(processor):
                     'title': series['title'],
                     'tmdb_id': tmdb_id,
                     'item_type': 'Series',
-                    'original_language': series.get('original_language')
+                    'original_language': series.get('original_language'),
+                    'rating': series.get('rating')
                 }
 
                 for season_num, eps_in_season in episodes_by_season.items():
@@ -271,7 +272,7 @@ def task_update_resubscribe_cache(processor):
                     
                     else:
                         # 新增或 needed
-                        logger.info(f"  ➜ 《{series['title']} - 第{season_num}季》需要洗版。原因: {reason_calculated}")
+                        logger.info(f"  ➜ 《{series['title']} - 第{season_num}季》需要处理。原因: {reason_calculated}")
                         if rule.get('auto_resubscribe'):
                             final_status = 'auto_subscribed'
                             if existing_status != 'auto_subscribed':
@@ -331,62 +332,12 @@ def task_update_resubscribe_cache(processor):
 # ======================================================================
 
 def task_resubscribe_library(processor):
-    """【V2 - 独立重构版】一键洗版所有状态为 'needed' 的项目。"""
-    _execute_resubscribe(processor, "一键媒体洗版", "needed")
+    """一键媒体整理所有状态为 'needed' 的项目。"""
+    _execute_resubscribe(processor, "一键媒体整理", "needed")
 
 def task_resubscribe_batch(processor, item_ids: List[str]):
-    """【V2 - 独立重构版】精准洗版指定的项目。"""
-    _execute_resubscribe(processor, "批量媒体洗版", item_ids)
-
-# ======================================================================
-# 核心任务：批量删除
-# ======================================================================
-
-def task_delete_batch(processor, item_ids: List[str]):
-    """【V3 - ID安全版】精准删除指定的项目，并增加ID有效性检查。"""
-    task_name = "批量删除媒体"
-    logger.info(f"--- 开始执行 '{task_name}' 任务 (精准模式) ---")
-    
-    items_to_delete = resubscribe_db.get_resubscribe_items_by_ids(item_ids)
-    total = len(items_to_delete)
-    if total == 0:
-        task_manager.update_status_from_thread(100, "任务完成：选中的项目中没有可删除的项。")
-        return
-
-    deleted_count = 0
-    for i, item in enumerate(items_to_delete):
-        if processor.is_stop_requested(): break
-        
-        internal_item_id = item.get('item_id') # 这是我们内部的ID，用于日志和数据库操作
-        item_name = item.get('item_name')
-        task_manager.update_status_from_thread(int((i / total) * 100), f"({i+1}/{total}) 正在删除: {item_name}")
-        
-        # 只使用 emby_item_id，并进行严格检查 
-        id_to_delete = item.get('emby_item_id')
-        
-        # 健壮性检查：如果ID无效或格式错误，则跳过并记录错误
-        if not id_to_delete or not str(id_to_delete).isdigit():
-            logger.error(f"  ➜ 无法删除 '{item_name}'：获取到的Emby ID无效 ('{id_to_delete}')。跳过此项。")
-            continue
-        
-        if emby.delete_item(id_to_delete, processor.emby_url, processor.emby_api_key, processor.emby_user_id):
-            try:
-                item_type = item.get('item_type')
-                logger.info(f"  ➜ 源文件删除成功，开始为 Emby ID {id_to_delete} (Name: {item_name}) 执行数据库善后清理...")
-                maintenance_db.cleanup_deleted_media_item(
-                    item_id=id_to_delete,
-                    item_name=item_name,
-                    item_type=item_type
-                )
-                logger.info(f"  ➜ Emby ID {id_to_delete} 的善后清理已完成。")
-            except Exception as cleanup_e:
-                logger.error(f"  ➜ 执行善后清理 media item {id_to_delete} 时发生错误: {cleanup_e}", exc_info=True)
-            deleted_count += 1
-        
-        time.sleep(0.5)
-
-    final_message = f"批量删除任务完成！成功删除了 {deleted_count} 个媒体项。"
-    task_manager.update_status_from_thread(100, final_message)
+    """精准媒体整理指定的项目。"""
+    _execute_resubscribe(processor, "批量媒体整理", item_ids)
 
 # ======================================================================
 # 内部辅助函数
@@ -458,6 +409,21 @@ def _item_needs_resubscribe(asset_details: dict, rule: dict, media_metadata: Opt
     item_name = media_metadata.get('title', '未知项目')
     reasons = []
 
+    # ==================== 评分检查 ====================
+    try:
+        if rule.get("filter_rating_enabled"):
+            # 获取媒体评分 (优先取 rating，没有则 0)
+            current_rating = media_metadata.get('rating', 0) or 0
+            threshold = float(rule.get("filter_rating_min", 0))
+            
+            # 逻辑：如果是洗版模式，通常是“低于X分”可能不适用（洗版通常是为了更好画质）。
+            # 但如果是删除模式，“低于X分”就是核心需求。
+            # 这里统一逻辑：如果 评分 < 阈值，则命中规则。
+            if current_rating < threshold:
+                reasons.append(f"评分过低({current_rating} < {threshold})")
+    except Exception as e:
+        logger.warning(f"  ➜ [评分检查] 处理时发生错误: {e}")
+    
     # --- 1. 分辨率检查 (直接使用 resolution_display) ---
     try:
         if rule.get("resubscribe_resolution_enabled"):
@@ -939,7 +905,7 @@ def build_resubscribe_payload(item_details: dict, rule: Optional[dict]) -> Optio
     return payload
 
 def _execute_resubscribe(processor, task_name: str, target):
-    """执行洗版订阅的通用函数。"""
+    """执行媒体整理的通用函数。"""
     logger.info(f"--- 开始执行 '{task_name}' 任务 ---")
     
     if isinstance(target, str) and target == "needed":
@@ -977,6 +943,92 @@ def _execute_resubscribe(processor, task_name: str, target):
         task_manager.update_status_from_thread(int((i / total) * 100), f"({i+1}/{total}) [配额:{current_quota}] 正在订阅: {item_name}")
 
         rule = next((r for r in all_rules if r['id'] == item.get('matched_rule_id')), None)
+        if not rule: continue
+
+        # ==================== 分支逻辑 ====================
+        rule_type = rule.get('rule_type', 'resubscribe')
+
+        # --- 分支 1: 仅删除模式 ---
+        if rule_type == 'delete':
+            delete_mode = rule.get('delete_mode', 'episode') # 'episode' (逐集) or 'series' (整锅端)
+            delay_seconds = int(rule.get('delete_delay_seconds', 0))
+            
+            # 1. 确定要删除的目标 ID 列表
+            ids_to_delete_queue = []
+            main_target_id = item.get('emby_item_id') # 季ID 或 电影ID
+            
+            # 如果是电影，无论什么模式，都只有一个 ID
+            if item_type == 'Movie':
+                if main_target_id:
+                    ids_to_delete_queue.append(main_target_id)
+            
+            # 如果是季 (Season)
+            elif item_type == 'Season':
+                if delete_mode == 'series':
+                    # 模式 A: 整季删除 (直接删季 ID)
+                    if main_target_id:
+                        ids_to_delete_queue.append(main_target_id)
+                else:
+                    # 模式 B: 逐集删除 (查询所有集 ID)
+                    tmdb_id = item.get('tmdb_id')
+                    season_number = item.get('season_number')
+                    episode_ids = resubscribe_db.get_episode_ids_for_season(tmdb_id, season_number)
+                    
+                    if episode_ids:
+                        ids_to_delete_queue.extend(episode_ids)
+                        logger.info(f"  ➜ [防风控] 已获取《{item_name}》下的 {len(episode_ids)} 个分集，将逐一删除。")
+                    else:
+                        # 如果没找到分集（可能是空季），则回退到删除季本身
+                        if main_target_id:
+                            ids_to_delete_queue.append(main_target_id)
+
+            if not ids_to_delete_queue:
+                logger.warning(f"  ➜ 无法执行删除 {item_name}: 未找到有效的 Emby ID。")
+                continue
+
+            # 2. 执行删除队列
+            success_count = 0
+            total_files = len(ids_to_delete_queue)
+            
+            task_manager.update_status_from_thread(int((i / total) * 100), f"正在清理: {item_name} ({total_files}个文件)")
+
+            for idx, target_id in enumerate(ids_to_delete_queue):
+                if processor.is_stop_requested(): break
+                
+                # 执行删除
+                if emby.delete_item(target_id, processor.emby_url, processor.emby_api_key, processor.emby_user_id):
+                    success_count += 1
+                    logger.info(f"    - 已删除文件 ({idx+1}/{total_files}): ID {target_id}")
+                else:
+                    logger.error(f"    - 删除失败: ID {target_id}")
+
+                # ★★★ 核心：防风控延迟 ★★★
+                if delay_seconds > 0 and idx < total_files - 1:
+                    time.sleep(delay_seconds)
+
+            # 3. 善后处理
+            if success_count > 0:
+                # 如果是逐集删除模式，删完所有集后，尝试把那个空的“季”文件夹也删了（清理垃圾）
+                if item_type == 'Season' and delete_mode == 'episode' and main_target_id:
+                    try:
+                        logger.info(f"    - 分集清理完毕，正在移除空的季容器: {main_target_id}")
+                        emby.delete_item(main_target_id, processor.emby_url, processor.emby_api_key, processor.emby_user_id)
+                    except:
+                        pass # 删不掉也无所谓，Emby 扫库后会自动处理
+
+                # 数据库清理
+                try:
+                    maintenance_db.cleanup_deleted_media_item(main_target_id, item_name, item_type)
+                except Exception as e:
+                    logger.error(f"  ➜ 善后清理失败: {e}")
+                
+                deleted_count += 1
+                # 从洗版索引中移除
+                resubscribe_db.delete_resubscribe_index_by_keys([item.get('tmdb_id') if item_type == 'Movie' else f"{item.get('tmdb_id')}-S{item.get('season_number')}"])
+            
+            continue # 删除模式结束，跳过后续逻辑
+        
+        # --- 分支 2: 洗版模式 ---
         payload = build_resubscribe_payload(item, rule)
         if not payload: continue
 

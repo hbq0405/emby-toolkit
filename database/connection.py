@@ -305,7 +305,12 @@ def init_db():
                         consistency_check_enabled BOOLEAN DEFAULT FALSE,
                         consistency_must_match_resolution BOOLEAN DEFAULT FALSE,
                         consistency_must_match_group BOOLEAN DEFAULT FALSE,
-                        consistency_must_match_code BOOLEAN DEFAULT FALSE
+                        consistency_must_match_code BOOLEAN DEFAULT FALSE,
+                        rule_type TEXT DEFAULT 'resubscribe',           
+                        filter_rating_enabled BOOLEAN DEFAULT FALSE, 
+                        filter_rating_min REAL DEFAULT 0,  
+                        delete_mode TEXT DEFAULT 'episode',          
+                        delete_delay_seconds INTEGER DEFAULT 0         
                     )
                 """)
 
@@ -463,10 +468,15 @@ def init_db():
                             "resubscribe_subtitle_skip_if_audio_exists": "BOOLEAN DEFAULT FALSE",
                             "auto_resubscribe": "BOOLEAN DEFAULT FALSE",
                             "custom_resubscribe_enabled": "BOOLEAN DEFAULT FALSE",
-                            "consistency_check_enabled": "BOOLEAN DEFAULT FALSE", # 总开关
-                            "consistency_must_match_resolution": "BOOLEAN DEFAULT FALSE", # 必须同分辨率
-                            "consistency_must_match_group": "BOOLEAN DEFAULT FALSE",      # 必须同制作组
-                            "consistency_must_match_codec": "BOOLEAN DEFAULT FALSE"       # 必须同编码
+                            "consistency_check_enabled": "BOOLEAN DEFAULT FALSE",
+                            "consistency_must_match_resolution": "BOOLEAN DEFAULT FALSE", 
+                            "consistency_must_match_group": "BOOLEAN DEFAULT FALSE",
+                            "consistency_must_match_codec": "BOOLEAN DEFAULT FALSE",
+                            "rule_type": "TEXT DEFAULT 'resubscribe'",           
+                            "filter_rating_enabled": "BOOLEAN DEFAULT FALSE",    
+                            "filter_rating_min": "REAL DEFAULT 0",               
+                            "delete_mode": "TEXT DEFAULT 'episode'",             
+                            "delete_delay_seconds": "INTEGER DEFAULT 0"          
                         },
                         'user_templates': {
                             "source_emby_user_id": "TEXT",
