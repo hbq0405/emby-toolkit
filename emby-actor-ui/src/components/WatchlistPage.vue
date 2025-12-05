@@ -569,41 +569,24 @@ const filteredWatchlist = computed(() => {
 // 计算剧集层面的精致状态 
 const getSeriesStatusUI = (item) => {
   const tmdbStatus = item.tmdb_status;
-  const nextEp = item.next_episode_to_air; // 格式如: { air_date: '2025-12-25', ... }
-  const today = new Date();
+  const internalStatus = item.status; // 'Watching', 'Paused', 'Completed'
 
-  // 1. 彻底完结
+  // 1. 彻底完结 (TMDb 说了算)
+  // 只要 TMDb 说结束了，那就是结束了，不管本地状态如何
   if (tmdbStatus === 'Ended' || tmdbStatus === 'Canceled') {
     return { text: '已完结', type: 'default', icon: CompletedIcon, color: undefined };
   }
 
-  // 2. 检查待播信息 (针对 Returning Series / In Production)
-  if (nextEp && nextEp.air_date) {
-    const airDate = new Date(nextEp.air_date);
-    
-    // 计算距离今天的天数
-    const diffTime = airDate - today;
-    const diffDays = Math.ceil(diffTime / (1000 * 60 * 60 * 24));
-
-    // 逻辑 A: 如果下一集在未来
-    if (diffDays > 0) {
-        // 如果在 7 天内播出 -> 视为“已回归/热播中” (绿色)
-        if (diffDays <= 7) {
-            return { text: '已回归', type: 'success', icon: WatchingIcon, color: undefined };
-        }
-        // 如果在 7 天后 (比如明年) -> 视为“待回归/休刊中” (黄色)
-        else {
-            return { text: '待回归', type: 'warning', icon: PausedIcon, color: undefined };
-        }
-    }
-    
-    // 逻辑 B: 如果下一集日期是今天或过去（说明数据可能有滞后，或者就是今天播）
-    // 只要有 next_episode 且日期已到，通常意味着新季已经开始了 -> “已回归”
+  // 2. 活跃状态 (用户/内部状态说了算)
+  // 只要内部状态是 'Watching'(追剧中) 或 'Paused'(已暂停，通常是因为有定档日期但未到)，
+  // 都视为“已回归”或“连载中”，用绿色高亮，表示这剧“活着”。
+  if (internalStatus === 'Watching' || internalStatus === 'Paused') {
     return { text: '已回归', type: 'success', icon: WatchingIcon, color: undefined };
   }
 
-  // 3. 状态是 Returning 但没有下一集信息
-  // 这种情况通常是休刊期，或者下一季还没定档 -> “待回归”
+  // 3. 休刊状态
+  // 内部状态是 'Completed' (说明当前出的都看完了)，但 TMDb 说是 'Returning Series'，
+  // 说明处于休刊期，或者下一季还没定档 -> 显示黄色“待回归”
   if (tmdbStatus === 'Returning Series' || tmdbStatus === 'In Production' || tmdbStatus === 'Planned') {
      return { text: '待回归', type: 'warning', icon: PausedIcon, color: undefined };
   }
