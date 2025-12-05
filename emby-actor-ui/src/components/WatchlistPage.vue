@@ -173,6 +173,7 @@
                   </div>
                   <div class="card-status-area">
                     <n-space vertical size="small">
+                      <!-- 1. 顶部状态按钮 (保持不变) -->
                       <n-space align="center" :wrap="false">
                         <n-button round size="tiny" :type="statusInfo(item.status).type" @click="() => updateStatus(item.tmdb_id, statusInfo(item.status).next)" :title="`点击切换到 '${statusInfo(item.status).nextText}'`">
                           <template #icon><n-icon :component="statusInfo(item.status).icon" /></template>
@@ -182,32 +183,33 @@
                           {{ getSmartTMDbStatusText(item) }}
                         </n-tag>
                       </n-space>
-                      <!-- 如果是聚合卡片，显示包含的季 -->
+
+                      <!-- 2. 聚合信息 (仅在已完结且聚合时显示，保持不变) -->
                       <div v-if="item.is_aggregated" class="info-line">
-                        <n-icon :component="CollectionsIcon" class="icon-fix" /> <!-- 需要引入 CollectionsIcon -->
+                        <n-icon :component="CollectionsIcon" class="icon-fix" />
                         <n-text :depth="3">
                           包含: {{ item.included_seasons.length }} 个季度 (S{{ Math.min(...item.included_seasons) }}-S{{ Math.max(...item.included_seasons) }})
                         </n-text>
                       </div>
-                      <!-- 1. 待播集数 -->
-                      <div v-if="nextEpisode(item)?.name" class="info-line">
+
+                      <!-- ★★★ 3. 待播集数 (修改：非已完结视图才显示) ★★★ -->
+                      <div v-if="currentView !== 'completed' && nextEpisode(item)?.name" class="info-line">
                         <n-icon :component="TvIcon" class="icon-fix" />
                         <n-text :depth="3" style="flex: 1; min-width: 0;">
                           <n-ellipsis>待播集: {{ nextEpisode(item).name }}</n-ellipsis>
                         </n-text>
                       </div>
 
-                      <!-- 2. 播出时间 -->
-                      <div v-if="nextEpisode(item)?.name" class="info-line">
+                      <!-- ★★★ 4. 播出时间 (修改：非已完结视图才显示) ★★★ -->
+                      <div v-if="currentView !== 'completed' && nextEpisode(item)?.name" class="info-line">
                         <n-icon :component="CalendarIcon" class="icon-fix" />
                         <n-text :depth="3">
-                          <!-- 修改点：内容使用三元运算符，有日期显示日期，无日期显示“待定” -->
                           播出时间: {{ nextEpisode(item).air_date ? formatAirDate(nextEpisode(item).air_date) : '待定' }}
                         </n-text>
                       </div>
 
-                      <!-- 3. 上次检查 -->
-                      <div class="info-line">
+                      <!-- ★★★ 5. 上次检查 (修改：非已完结视图才显示) ★★★ -->
+                      <div v-if="currentView !== 'completed'" class="info-line">
                         <n-icon :component="TimeIcon" class="icon-fix" />
                         <n-text :depth="3">上次检查: {{ formatTimestamp(item.last_checked_at) }}</n-text>
                       </div>
