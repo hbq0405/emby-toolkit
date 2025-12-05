@@ -504,18 +504,6 @@ class WatchlistProcessor:
         # 2. 将 TMDb 最新数据合并写入本地 JSON (series.json) 
         self._save_local_json(f"override/tmdb-tv/{tmdb_id}/series.json", latest_series_data)
 
-        # 先查一下数据库，看看是否锁定了总集数
-        is_locked = False
-        try:
-            with connection.get_db_connection() as conn:
-                cursor = conn.cursor()
-                cursor.execute("SELECT total_episodes_locked FROM media_metadata WHERE tmdb_id = %s AND item_type = 'Series'", (tmdb_id,))
-                row = cursor.fetchone()
-                if row and row['total_episodes_locked']:
-                    is_locked = True
-        except Exception:
-            pass
-
         # 3. 将 TMDb 最新数据写入数据库 (Series 层级)
         series_updates = {
             "original_title": latest_series_data.get("original_name"),
