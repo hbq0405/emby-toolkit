@@ -11,6 +11,48 @@
           />
           Emby Toolkit
         </span>
+        <!-- ★★★ 中间：任务状态 (新增位置) ★★★ -->
+        <div 
+          v-if="authStore.isAdmin && props.taskStatus && props.taskStatus.current_action !== '空闲'"
+          class="header-task-status"
+        >
+          <div class="status-content">
+            <n-text class="status-text">
+              <n-spin size="small" style="margin-right: 8px; vertical-align: middle;" />
+              <strong style="color: #2080f0;">{{ props.taskStatus.current_action }}</strong>
+              <span class="status-divider">-</span>
+              <span class="status-message">{{ props.taskStatus.message }}</span>
+            </n-text>
+            
+            <!-- 进度条 -->
+            <n-progress
+              v-if="props.taskStatus.is_running && props.taskStatus.progress >= 0"
+              type="line"
+              :percentage="props.taskStatus.progress"
+              :show-indicator="false"
+              processing
+              status="info"
+              style="width: 100px; margin: 0 12px;"
+            />
+
+            <!-- 停止按钮 -->
+            <n-tooltip trigger="hover">
+              <template #trigger>
+                <n-button
+                  v-if="props.taskStatus.is_running"
+                  type="error"
+                  size="tiny"
+                  circle
+                  secondary
+                  @click="triggerStopTask"
+                >
+                  <template #icon><n-icon :component="StopIcon" /></template>
+                </n-button>
+              </template>
+              停止任务
+            </n-tooltip>
+          </div>
+        </div>
           <div style="display: flex; align-items: center; gap: 16px;">
             <!-- 只有管理员可见 -->
             <n-button-group v-if="authStore.isAdmin" size="small">
@@ -112,35 +154,6 @@
         content-style="padding: 24px; transition: background-color 0.3s;"
         :native-scrollbar="false"
       >
-      <!-- 任务状态 -->
-      <div class="status-display-area" v-if="authStore.isAdmin && props.taskStatus && props.taskStatus.current_action !== '空闲'">
-        <n-card size="small" :bordered="false" style="margin-bottom: 15px;">
-          <p style="margin: 0; font-size: 0.9em; display: flex; align-items: center; justify-content: space-between; gap: 16px;">
-            <span style="flex-grow: 1;">
-              <strong>任务状态:</strong>
-              <n-text type="info">{{ props.taskStatus.current_action }}</n-text> -
-              <n-text type="info" :depth="2">{{ props.taskStatus.message }}</n-text>
-              <n-progress
-                  v-if="props.taskStatus.is_running && props.taskStatus.progress >= 0 && props.taskStatus.progress <= 100"
-                  type="line"
-                  :percentage="props.taskStatus.progress"
-                  :indicator-placement="'inside'"
-                  processing
-                  style="margin-top: 5px;"
-              />
-            </span>
-            <n-button
-              v-if="props.taskStatus.is_running"
-              type="error"
-              size="small"
-              @click="triggerStopTask"
-              ghost
-            >
-              <template #icon><n-icon :component="StopIcon" /></template>
-            </n-button>
-          </p>
-        </n-card>
-      </div>  
       <div class="page-content-inner-wrapper">
           <router-view v-slot="slotProps">
             <component :is="slotProps.Component" :task-status="props.taskStatus" />
@@ -416,4 +429,62 @@ const setRandomTheme = () => {
 .n-menu .n-menu-item-group-title { font-size: 12px; font-weight: 500; color: #8e8e93; padding-left: 24px; margin-top: 16px; margin-bottom: 8px; }
 .n-menu .n-menu-item-group:first-child .n-menu-item-group-title { margin-top: 0; }
 html.dark .n-menu .n-menu-item-group-title { color: #828287; }
+/* ★★★ 新增样式：Header 中的任务状态条 ★★★ */
+.header-task-status {
+  flex: 1;
+  display: flex;
+  justify-content: center; /* 居中显示 */
+  align-items: center;
+  margin: 0 20px;
+  overflow: hidden;
+}
+
+.status-content {
+  display: flex;
+  align-items: center;
+  background-color: rgba(0, 0, 0, 0.03); /* 轻微背景色区分 */
+  padding: 4px 12px;
+  border-radius: 20px;
+  border: 1px solid rgba(0, 0, 0, 0.05);
+  max-width: 100%;
+}
+
+/* 暗色模式适配 */
+html.dark .status-content {
+  background-color: rgba(255, 255, 255, 0.05);
+  border: 1px solid rgba(255, 255, 255, 0.05);
+}
+
+.status-text {
+  font-size: 13px;
+  display: flex;
+  align-items: center;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.status-divider {
+  margin: 0 6px;
+  opacity: 0.5;
+}
+
+.status-message {
+  opacity: 0.8;
+  max-width: 200px; /* 限制消息最大宽度，防止挤压 */
+  overflow: hidden;
+  text-overflow: ellipsis;
+  display: inline-block;
+  vertical-align: bottom;
+}
+
+/* 移动端适配：屏幕太窄时隐藏消息详情，只留动作和进度条 */
+@media (max-width: 768px) {
+  .status-message, .status-divider {
+    display: none;
+  }
+  .header-task-status {
+    margin: 0 8px;
+  }
+}
 </style>
