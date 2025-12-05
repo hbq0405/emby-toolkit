@@ -22,30 +22,23 @@ def get_all_watchlist_items() -> List[Dict[str, Any]]:
         SELECT 
             s.tmdb_id, 
             'Season' as item_type,
-            -- ★★★ 1. 标题格式化：剧名 + 第 X 季 ★★★
             p.title || ' 第 ' || s.season_number || ' 季' as item_name,
             s.season_number,
-            p.tmdb_id as parent_tmdb_id, -- 保留父ID方便跳转
-            s.release_date as release_year, -- 季的发行时间
-            
-            -- 状态继承父剧集，但也可以根据季的播出时间微调
+            p.tmdb_id as parent_tmdb_id,
+            s.release_date as release_year,
             p.watching_status as status,
             p.watchlist_last_checked_at as last_checked_at,
-            
-            -- 下一集信息 (这里简化处理，依然取剧集的下一集，或者你可以根据季号过滤)
             p.watchlist_next_episode_json as next_episode_to_air_json,
             p.watchlist_missing_info_json as missing_info_json,
             p.emby_item_ids_json,
             
-            -- ★★★ 2. 核心：基于季的进度统计 ★★★
-            -- 分子：该季已入库的集数
+            -- 统计数据
             (SELECT COUNT(*) FROM media_metadata e 
              WHERE e.parent_series_tmdb_id = s.parent_series_tmdb_id 
                AND e.season_number = s.season_number 
                AND e.item_type = 'Episode' 
                AND e.in_library = TRUE) as collected_count,
                
-            -- 分母：该季的总集数 (优先用锁定的，否则用TMDB的，防止为0)
             COALESCE(NULLIF(s.total_episodes, 0), 
                 (SELECT COUNT(*) FROM media_metadata e 
                  WHERE e.parent_series_tmdb_id = s.parent_series_tmdb_id 
@@ -53,26 +46,40 @@ def get_all_watchlist_items() -> List[Dict[str, Any]]:
                    AND e.item_type = 'Episode')
             ) as total_count,
             
-            -- 是否锁定
             s.total_episodes_locked
 
         FROM media_metadata s
         JOIN media_metadata p ON s.parent_series_tmdb_id = p.tmdb_id
         WHERE 
             s.item_type = 'Season'
-            AND s.season_number > 0 -- 忽略特别篇(第0季)
+            AND s.season_number > 0
             AND p.item_type = 'Series'
-            AND p.watching_status = 'Watching' -- 只看正在追的剧
             
-            -- ★★★ 3. 过滤逻辑：只显示“没收集齐”的季 ★★★
-            -- 如果你想看所有季，把下面这几行注释掉即可
+            -- ★★★ 修复 1：不再只查 Watching，只要不是 NONE 都查 ★★★
+            AND p.watching_status != 'NONE'
+            
+            -- ★★★ 修复 2：优化显示逻辑，防止剧集消失 ★★★
             AND (
-                s.total_episodes = 0 -- 数据不全的显示
-                OR 
-                (SELECT COUNT(*) FROM media_metadata e 
-                 WHERE e.parent_series_tmdb_id = s.parent_series_tmdb_id 
-                   AND e.season_number = s.season_number 
-                   AND e.in_library = TRUE) < s.total_episodes
+                -- A. 数据不全的季 (必须显示)
+                (s.total_episodes = 0 OR 
+                 (SELECT COUNT(*) FROM media_metadata e 
+                  WHERE e.parent_series_tmdb_id = s.parent_series_tmdb_id 
+                    AND e.season_number = s.season_number 
+                    AND e.in_library = TRUE) < s.total_episodes)
+                
+                OR
+                
+                -- B. 或者是该剧的“最后一季” (即使集齐了也要显示，代表最新进度)
+                s.season_number = (
+                    SELECT MAX(season_number) FROM media_metadata m3 
+                    WHERE m3.parent_series_tmdb_id = p.tmdb_id 
+                      AND m3.item_type = 'Season'
+                )
+                
+                OR
+                
+                -- C. 或者剧集本身是“已完结”或“已暂停”状态 (全部显示，方便查看历史)
+                p.watching_status IN ('Completed', 'Paused')
             )
             
         ORDER BY p.first_requested_at DESC, s.season_number ASC;

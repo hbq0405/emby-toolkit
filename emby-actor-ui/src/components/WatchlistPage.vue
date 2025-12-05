@@ -128,36 +128,37 @@
                   
                   <!-- 海报上的集数浮层 -->
                   <div class="poster-overlay">
-                    <!-- 使用 Popover 实现点击修改 -->
-                    <n-popover trigger="click" placement="top" @update:show="(show) => { if(show) tempTotalEpisodes = item.total_count }">
-                      <template #trigger>
-                        <span class="episode-count clickable-count" title="点击修正总集数">
-                          {{ item.collected_count || 0 }} / {{ item.total_count || 0 }}
-                        </span>
-                      </template>
-                      
-                      <!-- 弹出层内容 -->
-                      <div style="display: flex; flex-direction: column; gap: 8px; width: 180px;">
-                        <n-text strong depth="1">修正总集数</n-text>
-                        <n-input-number 
-                          v-model:value="tempTotalEpisodes" 
-                          size="small" 
-                          :min="item.collected_count || 0"
-                          placeholder="输入实际集数"
-                        />
-                        <n-space justify="end" size="small">
-                          <n-button size="tiny" @click="tempTotalEpisodes = item.collected_count">
-                            填入当前
-                          </n-button>
-                          <n-button type="primary" size="tiny" @click="saveTotalEpisodes(item)">
-                            保存
-                          </n-button>
-                        </n-space>
-                        <n-text depth="3" style="font-size: 12px;">
-                          * 保存后将锁定该数字，不再随 TMDb 更新。
-                        </n-text>
-                      </div>
-                    </n-popover>
+                    <div class="overlay-content" @click.stop>
+                      <n-popover trigger="click" placement="top" style="padding: 10px;">
+                        <template #trigger>
+                          <span class="episode-count clickable-count" title="点击修正总集数">
+                            {{ item.collected_count || 0 }} / {{ item.total_count || 0 }}
+                          </span>
+                        </template>
+                        
+                        <!-- 弹出层内容保持不变 -->
+                        <div style="display: flex; flex-direction: column; gap: 8px; width: 180px;">
+                          <n-text strong depth="1">修正总集数</n-text>
+                          <n-input-number 
+                            v-model:value="tempTotalEpisodes" 
+                            size="small" 
+                            :min="item.collected_count || 0"
+                            placeholder="输入实际集数"
+                          />
+                          <n-space justify="end" size="small">
+                            <n-button size="tiny" @click="tempTotalEpisodes = item.collected_count">
+                              填入当前
+                            </n-button>
+                            <n-button type="primary" size="tiny" @click="saveTotalEpisodes(item)">
+                              保存
+                            </n-button>
+                          </n-space>
+                          <n-text depth="3" style="font-size: 12px;">
+                            * 保存后将锁定该数字。
+                          </n-text>
+                        </div>
+                      </n-popover>
+                    </div>
                   </div>
                 </div>
 
@@ -975,6 +976,11 @@ watch(loaderRef, (newEl, oldEl) => {
   font-weight: 600;
   text-align: right; /* 数字靠右显示 */
   pointer-events: none; /* 确保不阻挡点击 */
+}
+/* ★★★ 新增：恢复内部内容的点击响应 ★★★ */
+.overlay-content {
+  pointer-events: auto; /* 恢复鼠标响应 */
+  display: inline-block; /* 保持布局紧凑 */
 }
 
 .episode-count {
