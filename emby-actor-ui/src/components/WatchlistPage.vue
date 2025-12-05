@@ -569,27 +569,47 @@ const filteredWatchlist = computed(() => {
 // 计算剧集层面的精致状态 
 const getSeriesStatusUI = (item) => {
   const tmdbStatus = item.tmdb_status;
-  
+  const nextEp = item.next_episode_to_air; // 格式如: { air_date: '2025-12-25', ... }
+  const today = new Date();
+
   // 1. 彻底完结
   if (tmdbStatus === 'Ended' || tmdbStatus === 'Canceled') {
     return { text: '已完结', type: 'default', icon: CompletedIcon, color: undefined };
   }
-  
-  // 2. 连载中 (Returning Series)
-  if (tmdbStatus === 'Returning Series' || tmdbStatus === 'In Production') {
-    // 判断依据：如果有待播集信息，或者状态被标记为 Watching，说明新季已出或即将出
-    const hasNewContent = item.next_episode_to_air || item.status === 'Watching';
+
+  // 2. 检查待播信息 (针对 Returning Series / In Production)
+  if (nextEp && nextEp.air_date) {
+    const airDate = new Date(nextEp.air_date);
     
-    if (hasNewContent) {
-      return { text: '已回归', type: 'success', icon: WatchingIcon, color: undefined };
-    } else {
-      // 否则就是休刊期
-      return { text: '待回归', type: 'warning', icon: PausedIcon, color: undefined };
+    // 计算距离今天的天数
+    const diffTime = airDate - today;
+    const diffDays = Math.ceil(diffTime / (1000 * 60 * 60 * 24));
+
+    // 逻辑 A: 如果下一集在未来
+    if (diffDays > 0) {
+        // 如果在 7 天内播出 -> 视为“已回归/热播中” (绿色)
+        if (diffDays <= 7) {
+            return { text: '已回归', type: 'success', icon: WatchingIcon, color: undefined };
+        }
+        // 如果在 7 天后 (比如明年) -> 视为“待回归/休刊中” (黄色)
+        else {
+            return { text: '待回归', type: 'warning', icon: PausedIcon, color: undefined };
+        }
     }
+    
+    // 逻辑 B: 如果下一集日期是今天或过去（说明数据可能有滞后，或者就是今天播）
+    // 只要有 next_episode 且日期已到，通常意味着新季已经开始了 -> “已回归”
+    return { text: '已回归', type: 'success', icon: WatchingIcon, color: undefined };
   }
-  
-  // 3. 其他情况 (如 Pilot, Planned)
-  return { text: '连载中', type: 'info', icon: TvIcon, color: undefined };
+
+  // 3. 状态是 Returning 但没有下一集信息
+  // 这种情况通常是休刊期，或者下一季还没定档 -> “待回归”
+  if (tmdbStatus === 'Returning Series' || tmdbStatus === 'In Production' || tmdbStatus === 'Planned') {
+     return { text: '待回归', type: 'warning', icon: PausedIcon, color: undefined };
+  }
+
+  // 4. 兜底 (其他未知状态)
+  return { text: '已完结', type: 'default', icon: CompletedIcon, color: undefined };
 };
 
 const renderedWatchlist = computed(() => {
