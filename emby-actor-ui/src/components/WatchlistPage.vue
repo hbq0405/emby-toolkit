@@ -129,14 +129,20 @@
                   <!-- 海报上的集数浮层 -->
                   <div class="poster-overlay">
                     <div class="overlay-content" @click.stop>
-                      <n-popover trigger="click" placement="top" style="padding: 10px;">
+                      <n-popover 
+                        trigger="click" 
+                        placement="top" 
+                        style="padding: 10px;"
+                        v-model:show="item.show_edit_popover"
+                        @update:show="(show) => { if(show) tempTotalEpisodes = item.total_count || item.collected_count }"
+                      >
                         <template #trigger>
                           <span class="episode-count clickable-count" title="点击修正总集数">
                             {{ item.collected_count || 0 }} / {{ item.total_count || 0 }}
                           </span>
                         </template>
                         
-                        <!-- 弹出层内容保持不变 -->
+                        <!-- 修正总集数 -->
                         <div style="display: flex; flex-direction: column; gap: 8px; width: 180px;">
                           <n-text strong depth="1">修正总集数</n-text>
                           <n-input-number 
@@ -146,6 +152,9 @@
                             placeholder="输入实际集数"
                           />
                           <n-space justify="end" size="small">
+                            <!-- 取消按钮 (可选，点击关闭) -->
+                            <n-button size="tiny" @click="item.show_edit_popover = false">取消</n-button>
+                            
                             <n-button size="tiny" @click="tempTotalEpisodes = item.collected_count">
                               填入当前
                             </n-button>
@@ -1011,19 +1020,16 @@ const getProgressColor = (item) => {
 // 修正总集数
 const saveTotalEpisodes = async (item) => {
   const newTotal = tempTotalEpisodes.value || item.collected_count;
-  
   try {
     await axios.post('/api/watchlist/update_total_episodes', {
       tmdb_id: item.tmdb_id,
       total_episodes: newTotal,
-      item_type: 'Season' // ★★★ 明确指定我们要改的是季 ★★★
+      item_type: 'Season'
     });
     message.success(`已将《${item.item_name}》总集数修正为 ${newTotal}`);
-    
-    // 更新视图
     item.total_count = newTotal;
-    // 强制刷新进度条状态
-    item.total_episodes_locked = true; 
+    item.total_episodes_locked = true;
+    item.show_edit_popover = false; 
   } catch (err) {
     message.error('修正失败');
   }
