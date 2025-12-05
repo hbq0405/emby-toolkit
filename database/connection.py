@@ -214,6 +214,7 @@ def init_db():
                         watchlist_missing_info_json JSONB,
                         watchlist_is_airing BOOLEAN DEFAULT FALSE,
                         last_episode_to_air_json JSONB,
+                        total_episodes INTEGER DEFAULT 0,
 
                         -- 内部管理字段
                         last_synced_at TIMESTAMP WITH TIME ZONE,
@@ -447,7 +448,8 @@ def init_db():
                             "watchlist_tmdb_status": "TEXT",
                             "watchlist_next_episode_json": "JSONB",
                             "watchlist_missing_info_json": "JSONB",
-                            "watchlist_is_airing": "BOOLEAN DEFAULT FALSE"
+                            "watchlist_is_airing": "BOOLEAN DEFAULT FALSE",
+                            "total_episodes": "INTEGER DEFAULT 0"
                         },
                         'resubscribe_rules': {
                             "resubscribe_subtitle_effect_only": "BOOLEAN DEFAULT FALSE",
@@ -584,8 +586,7 @@ def init_db():
                             'tmdb_status',
                             'next_episode_to_air_json',
                             'is_airing',
-                            'total_seasons',
-                            'total_episodes'
+                            'total_seasons'
                         ],
                         'custom_collections': [
                             'generated_emby_ids_json' # <-- 在这里添加了废弃的列！

@@ -511,7 +511,8 @@ class WatchlistProcessor:
             "poster_path": latest_series_data.get("poster_path"),
             "release_date": latest_series_data.get("first_air_date") or None,
             "original_language": latest_series_data.get("original_language"),
-            "watchlist_tmdb_status": latest_series_data.get("status")
+            "watchlist_tmdb_status": latest_series_data.get("status"),
+            "total_episodes": latest_series_data.get("number_of_episodes", 0)
         }
         media_db.update_media_metadata_fields(tmdb_id, 'Series', series_updates)
 

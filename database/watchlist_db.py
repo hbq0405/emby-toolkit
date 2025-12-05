@@ -29,13 +29,21 @@ def get_all_watchlist_items() -> List[Dict[str, Any]]:
             watchlist_missing_info_json as missing_info_json,
             watchlist_is_airing as is_airing,
             emby_item_ids_json,
+            
+            -- ★★★ 1. 分子：本地已入库的集数 ★★★
             (SELECT COUNT(*) FROM media_metadata m2 
              WHERE m2.parent_series_tmdb_id = media_metadata.tmdb_id 
                AND m2.item_type = 'Episode' 
                AND m2.in_library = TRUE) as collected_count,
-            (SELECT COUNT(*) FROM media_metadata m2 
-             WHERE m2.parent_series_tmdb_id = media_metadata.tmdb_id 
-               AND m2.item_type = 'Episode') as total_count
+
+            -- ★★★ 2. 分母：优先使用从 TMDB 获取的 total_episodes ★★★
+            -- 如果 total_episodes 为 0 或 NULL (还没刷新过)，则回退到使用本地记录数，避免除以0
+            COALESCE(NULLIF(total_episodes, 0), (
+                SELECT COUNT(*) FROM media_metadata m2 
+                WHERE m2.parent_series_tmdb_id = media_metadata.tmdb_id 
+                AND m2.item_type = 'Episode'
+            )) as total_count
+
         FROM media_metadata
         WHERE item_type = 'Series' AND watching_status != 'NONE'
         ORDER BY first_requested_at DESC;
