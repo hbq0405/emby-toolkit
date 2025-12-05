@@ -125,6 +125,13 @@
                   <n-image lazy :src="getPosterUrl(item.emby_item_ids_json)" class="card-poster" object-fit="cover">
                     <template #placeholder><div class="poster-placeholder"><n-icon :component="TvIcon" size="32" /></div></template>
                   </n-image>
+                  
+                  <!-- 海报上的集数浮层 -->
+                  <div class="poster-overlay">
+                    <span class="episode-count">
+                      {{ item.collected_count || 0 }} / {{ item.total_count || 0 }}
+                    </span>
+                  </div>
                 </div>
 
                 <!-- 右侧内容 -->
@@ -172,6 +179,18 @@
                     </n-space>
                   </div>
                   
+                  <!-- 进度条作为分隔线 -->
+                  <div class="progress-separator">
+                    <n-progress 
+                      type="line" 
+                      :percentage="calculateProgress(item)" 
+                      :status="getProgressStatus(item)"
+                      :height="2" 
+                      :show-indicator="false"
+                      :border-radius="0"
+                    />
+                  </div>
+
                   <!-- 底部按钮 -->
                   <div class="card-actions">
                     <!-- 只有 hasMissing 为真时才显示，且颜色改为 warning -->
@@ -255,7 +274,7 @@
 <script setup>
 import { ref, onMounted, onBeforeUnmount, h, computed, watch } from 'vue';
 import axios from 'axios';
-import { NLayout, NPageHeader, NDivider, NEmpty, NTag, NButton, NSpace, NIcon, useMessage, useDialog, NPopconfirm, NTooltip, NCard, NImage, NEllipsis, NSpin, NAlert, NRadioGroup, NRadioButton, NModal, NTabs, NTabPane, NList, NListItem, NCheckbox, NDropdown, NInput, NSelect, NButtonGroup } from 'naive-ui';
+import { NLayout, NPageHeader, NDivider, NEmpty, NTag, NButton, NSpace, NIcon, useMessage, useDialog, NPopconfirm, NTooltip, NCard, NImage, NEllipsis, NSpin, NAlert, NRadioGroup, NRadioButton, NModal, NTabs, NTabPane, NList, NListItem, NCheckbox, NDropdown, NInput, NSelect, NButtonGroup, NProgress } from 'naive-ui';
 import { SyncOutline, TvOutline as TvIcon, TrashOutline as TrashIcon, EyeOutline as EyeIcon, CalendarOutline as CalendarIcon, TimeOutline as TimeIcon, PlayCircleOutline as WatchingIcon, PauseCircleOutline as PausedIcon, CheckmarkCircleOutline as CompletedIcon, ScanCircleOutline as ScanIcon, CaretDownOutline as CaretDownIcon, FlashOffOutline as ForceEndIcon, ArrowUpOutline as ArrowUpIcon, ArrowDownOutline as ArrowDownIcon, DownloadOutline as DownloadIcon } from '@vicons/ionicons5';
 import { format, parseISO } from 'date-fns';
 import { useConfig } from '../composables/useConfig.js';
@@ -749,6 +768,22 @@ watch(() => props.taskStatus.is_running, (isRunning, wasRunning) => {
   }
 });
 
+// 计算进度百分比
+const calculateProgress = (item) => {
+  const total = item.total_count || 0;
+  const collected = item.collected_count || 0;
+  if (total === 0) return 0;
+  const percent = (collected / total) * 100;
+  return Math.min(percent, 100); // 封顶 100%
+};
+
+// 根据进度返回颜色状态
+const getProgressStatus = (item) => {
+  const p = calculateProgress(item);
+  if (p >= 100) return 'success';
+  return 'default'; // 使用默认主题色 (Primary)
+};
+
 onMounted(() => {
   fetchWatchlist();
   observer = new IntersectionObserver(
@@ -868,6 +903,34 @@ watch(loaderRef, (newEl, oldEl) => {
   box-shadow: 0 2px 8px rgba(0,0,0,0.1);
 }
 
+/* 新增：海报浮层 */
+.poster-overlay {
+  position: absolute;
+  bottom: 0;
+  left: 0;
+  right: 0;
+  padding: 20px 6px 4px 6px; /* 上方留出空间给渐变 */
+  background: linear-gradient(to top, rgba(0,0,0,0.8) 0%, rgba(0,0,0,0.4) 60%, transparent 100%);
+  color: white;
+  font-size: 0.85em;
+  font-weight: 600;
+  text-align: right; /* 数字靠右显示 */
+  pointer-events: none; /* 确保不阻挡点击 */
+}
+
+.episode-count {
+  text-shadow: 0 1px 2px rgba(0,0,0,0.8);
+  font-family: monospace; /* 等宽字体让数字对齐更好看 */
+}
+
+/* ★★★ 进度条分隔线 ★★★ */
+.progress-separator {
+  margin-top: auto; /* 将进度条推到底部 */
+  padding-top: 8px;
+  width: 100%;
+  opacity: 0.8;
+}
+
 .card-poster {
   width: 100%;
   height: 100%;
@@ -943,8 +1006,7 @@ watch(loaderRef, (newEl, oldEl) => {
 /* ★★★ 底部按钮区域 ★★★ */
 .card-actions {
   margin-top: auto; 
-  padding-top: calc(8px * var(--card-scale, 1));
-  border-top: 1px solid var(--n-border-color);
+  padding-top: 6px;
   display: flex;
   justify-content: center; 
   align-items: center;

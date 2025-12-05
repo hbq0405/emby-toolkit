@@ -16,7 +16,7 @@ def get_all_watchlist_items() -> List[Dict[str, Any]]:
     """ 获取所有被追踪的剧集项目。"""
     sql = """
         SELECT 
-            tmdb_id, -- ★★★ 直接使用 tmdb_id 作为主键 ★★★
+            tmdb_id, 
             item_type, 
             title as item_name, 
             release_year,
@@ -28,7 +28,14 @@ def get_all_watchlist_items() -> List[Dict[str, Any]]:
             watchlist_next_episode_json as next_episode_to_air_json,
             watchlist_missing_info_json as missing_info_json,
             watchlist_is_airing as is_airing,
-            emby_item_ids_json -- 保留这个字段，以防前端其他地方需要
+            emby_item_ids_json,
+            (SELECT COUNT(*) FROM media_metadata m2 
+             WHERE m2.parent_series_tmdb_id = media_metadata.tmdb_id 
+               AND m2.item_type = 'Episode' 
+               AND m2.in_library = TRUE) as collected_count,
+            (SELECT COUNT(*) FROM media_metadata m2 
+             WHERE m2.parent_series_tmdb_id = media_metadata.tmdb_id 
+               AND m2.item_type = 'Episode') as total_count
         FROM media_metadata
         WHERE item_type = 'Series' AND watching_status != 'NONE'
         ORDER BY first_requested_at DESC;
