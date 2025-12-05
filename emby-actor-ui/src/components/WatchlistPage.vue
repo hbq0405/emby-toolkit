@@ -185,6 +185,7 @@
                       type="line" 
                       :percentage="calculateProgress(item)" 
                       :status="getProgressStatus(item)"
+                      :color="getProgressColor(item)"
                       :height="2" 
                       :show-indicator="false"
                       :border-radius="0"
@@ -782,6 +783,18 @@ const getProgressStatus = (item) => {
   const p = calculateProgress(item);
   if (p >= 100) return 'success';
   return 'default'; // 使用默认主题色 (Primary)
+};
+
+// 控制进度条颜色
+const getProgressColor = (item) => {
+  const p = calculateProgress(item);
+  // 1. 如果进度达到 100%，返回 undefined
+  //    这样会让组件使用 status="success" 的默认绿色，表示“完成”
+  if (p >= 100) return undefined;
+  
+  // 2. 如果未完成，强制使用 CSS 变量 var(--n-color-primary)
+  //    这个变量会自动跟随你右上角选择的主题颜色变化
+  return 'var(--n-color-primary)';
 };
 
 onMounted(() => {
