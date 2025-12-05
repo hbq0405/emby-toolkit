@@ -175,13 +175,23 @@
                     <n-space vertical size="small">
                       <!-- 1. 顶部状态按钮 (保持不变) -->
                       <n-space align="center" :wrap="false">
-                        <n-button round size="tiny" :type="statusInfo(item.status).type" @click="() => updateStatus(item.tmdb_id, statusInfo(item.status).next)" :title="`点击切换到 '${statusInfo(item.status).nextText}'`">
-                          <template #icon><n-icon :component="statusInfo(item.status).icon" /></template>
-                          {{ statusInfo(item.status).text }}
-                        </n-button>
-                        <n-tag v-if="item.tmdb_status" size="small" :bordered="false" :type="getSmartTMDbStatusType(item)">
-                          {{ getSmartTMDbStatusText(item) }}
-                        </n-tag>
+                        <!-- ★★★ 情况 A: 已完结视图 (聚合卡片) - 使用精致状态 ★★★ -->
+                        <template v-if="currentView === 'completed'">
+                          <n-tag round size="small" :bordered="false" :type="getSeriesStatusUI(item).type">
+                            <template #icon><n-icon :component="getSeriesStatusUI(item).icon" /></template>
+                            {{ getSeriesStatusUI(item).text }}
+                          </n-tag>
+                        </template>
+                        <!-- ★★★ 情况 B: 追剧中视图 (分季卡片) - 保持原有交互逻辑 ★★★ -->
+                        <template v-else>
+                          <n-button round size="tiny" :type="statusInfo(item.status).type" @click="() => updateStatus(item.tmdb_id, statusInfo(item.status).next)" :title="`点击切换到 '${statusInfo(item.status).nextText}'`">
+                            <template #icon><n-icon :component="statusInfo(item.status).icon" /></template>
+                            {{ statusInfo(item.status).text }}
+                          </n-button>
+                          <n-tag v-if="item.tmdb_status" size="small" :bordered="false" :type="getSmartTMDbStatusType(item)">
+                            {{ getSmartTMDbStatusText(item) }}
+                          </n-tag>
+                        </template>
                       </n-space>
 
                       <!-- 2. 聚合信息 (仅在已完结且聚合时显示，保持不变) -->
@@ -492,7 +502,12 @@ const filteredWatchlist = computed(() => {
           collected_count: 0,
           total_count: 0,
           is_aggregated: true,
-          included_seasons: []
+          included_seasons: [],
+          // ★★★ 确保继承父剧集的关键状态字段 ★★★
+          tmdb_status: season.tmdb_status, 
+          next_episode_to_air: season.next_episode_to_air,
+          // 如果有任意一季是 Watching，整体就算 Watching (虽然在已完结视图里通常都是 Completed)
+          status: season.status 
         };
       }
       groups[pid].collected_count += (season.collected_count || 0);
@@ -550,6 +565,32 @@ const filteredWatchlist = computed(() => {
 
   return list;
 });
+
+// 计算剧集层面的精致状态 
+const getSeriesStatusUI = (item) => {
+  const tmdbStatus = item.tmdb_status;
+  
+  // 1. 彻底完结
+  if (tmdbStatus === 'Ended' || tmdbStatus === 'Canceled') {
+    return { text: '已完结', type: 'default', icon: CompletedIcon, color: undefined };
+  }
+  
+  // 2. 连载中 (Returning Series)
+  if (tmdbStatus === 'Returning Series' || tmdbStatus === 'In Production') {
+    // 判断依据：如果有待播集信息，或者状态被标记为 Watching，说明新季已出或即将出
+    const hasNewContent = item.next_episode_to_air || item.status === 'Watching';
+    
+    if (hasNewContent) {
+      return { text: '已回归', type: 'success', icon: WatchingIcon, color: undefined };
+    } else {
+      // 否则就是休刊期
+      return { text: '待回归', type: 'warning', icon: PausedIcon, color: undefined };
+    }
+  }
+  
+  // 3. 其他情况 (如 Pilot, Planned)
+  return { text: '连载中', type: 'info', icon: TvIcon, color: undefined };
+};
 
 const renderedWatchlist = computed(() => {
   return filteredWatchlist.value.slice(0, displayCount.value);
