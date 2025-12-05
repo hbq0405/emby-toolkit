@@ -623,27 +623,36 @@ const formatSeasonRange = (numbers) => {
 // 计算剧集层面的精致状态 
 const getSeriesStatusUI = (item) => {
   const tmdbStatus = item.tmdb_status;
-  // 注意：这里的 item.status 已经是我们在聚合时赋值的 series_status 了
-  const internalStatus = item.status; 
+  const internalStatus = item.status; // 'Watching', 'Paused', 'Completed'
+  const nextEp = item.next_episode_to_air; // 后端传来的下一集信息
 
-  // 1. 只要内部状态是 追剧中(Watching) 或 暂停中(Paused) -> 视为【已回归】
+  // 1. 活跃状态 (用户/内部状态说了算)
+  // 只要还在追或者暂停中，说明这剧是“活”的 -> 绿色【已回归】
   if (internalStatus === 'Watching' || internalStatus === 'Paused') {
     return { text: '已回归', type: 'success', icon: WatchingIcon, color: undefined };
   }
 
-  // 2. 如果内部状态是 Completed
+  // 2. 内部已完结 (当前库里的都看完了)
   if (internalStatus === 'Completed') {
-      // 2.1 TMDb 是 Returning Series -> 【待回归】
-      if (tmdbStatus === 'Returning Series' || tmdbStatus === 'In Production' || tmdbStatus === 'Planned') {
-          return { text: '待回归', type: 'warning', icon: PausedIcon, color: undefined };
+      // 2.1 彻底完结 -> 灰色【已完结】
+      if (tmdbStatus === 'Ended' || tmdbStatus === 'Canceled') {
+          return { text: '已完结', type: 'default', icon: CompletedIcon, color: undefined };
       }
-      // 2.2 TMDb 是 Ended -> 【已完结】
-      else {
+
+      // 2.2 TMDb 说是 Returning，但我们需要证据
+      if (tmdbStatus === 'Returning Series' || tmdbStatus === 'In Production' || tmdbStatus === 'Planned') {
+          // ★★★ 关键判断：必须有下一集的数据 (定档或预排期) ★★★
+          // 只有真的有下一集信息，才值得显示“待回归”
+          if (nextEp && nextEp.air_date) {
+               return { text: '待回归', type: 'warning', icon: PausedIcon, color: undefined };
+          }
+          
+          // 如果 TMDb 说是 Returning 但没有任何下一集数据 -> 视为【已完结】(避免被 TMDb 误导)
           return { text: '已完结', type: 'default', icon: CompletedIcon, color: undefined };
       }
   }
 
-  // 兜底
+  // 3. 兜底
   return { text: '已完结', type: 'default', icon: CompletedIcon, color: undefined };
 };
 
