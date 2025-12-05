@@ -524,50 +524,6 @@ def get_all_children_for_series_batch(parent_series_tmdb_ids: List[str]) -> set:
         logger.error(f"DB: 批量查询剧集子项ID时失败: {e}", exc_info=True)
         return set()
 
-def batch_insert_media_metadata(records: List[Dict[str, Any]]):
-    """
-    使用 ON CONFLICT DO NOTHING 高效地批量插入媒体元数据记录。
-    如果记录已存在，则直接跳过，不做任何操作。
-    """
-    if not records:
-        return
-
-    try:
-        with get_db_connection() as conn:
-            with conn.cursor() as cursor:
-                from psycopg2.extras import execute_values
-                
-                sql = """
-                    INSERT INTO media_metadata (
-                        tmdb_id, item_type, parent_series_tmdb_id, title, overview, 
-                        release_date, poster_path, season_number, episode_number, in_library
-                    ) VALUES %s
-                    ON CONFLICT (tmdb_id, item_type) DO NOTHING;
-                """
-                
-                # 准备数据元组列表
-                data_tuples = [
-                    (
-                        str(rec.get("id")), # TMDb ID
-                        'Season' if rec.get("episode_count") is not None else 'Episode', # Item Type
-                        rec.get("parent_series_tmdb_id"), # Parent Series TMDB ID
-                        rec.get("name"), # Title
-                        rec.get("overview"), # Overview
-                        rec.get("air_date"), # Release Date
-                        rec.get("poster_path"), # Poster Path
-                        rec.get("season_number"), # Season Number
-                        rec.get("episode_number"), # Episode Number
-                        False # in_library, 默认为 False
-                    ) for rec in records
-                ]
-
-                execute_values(cursor, sql, data_tuples, page_size=1000)
-                logger.info(f"  ➜ [元数据补全] 尝试批量插入 {len(data_tuples)} 条缺失的子项记录，成功影响了 {cursor.rowcount} 行。")
-
-    except Exception as e:
-        logger.error(f"  ➜ [元数据补全] 批量插入缺失的子项记录时发生错误: {e}", exc_info=True)
-        raise
-
 def get_series_local_children_info(parent_tmdb_id: str) -> dict:
     """
     【新】从本地数据库获取一个剧集在媒体库中的结构信息。
