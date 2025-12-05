@@ -264,7 +264,7 @@
                       在 Emby 中打开
                     </n-tooltip>
                     <n-tooltip>
-                      <template #trigger><n-button text tag="a" :href="`https://www.themoviedb.org/tv/${item.tmdb_id}`" target="_blank"><template #icon><n-icon :component="TMDbIcon" size="18" /></template></n-button></template>
+                      <template #trigger><n-button text tag="a" :href="`https://www.themoviedb.org/tv/${item.parent_tmdb_id}`" target="_blank"><template #icon><n-icon :component="TMDbIcon" size="18" /></template></n-button></template>
                       在 TMDb 中打开
                     </n-tooltip>
                   </div>
