@@ -376,22 +376,21 @@ def sync_series_children_metadata(parent_tmdb_id: str, seasons: List[Dict], epis
     # 1. 准备所有季的记录
     for season in seasons:
         season_num = season.get('season_number')
-        # ★★★ 核心修改：直接从 TMDb 数据中获取真实的季 ID ★★★
         season_tmdb_id = season.get('id')
 
-        # 如果季号或真实 ID 不存在，则跳过此记录，保证数据完整性
         if season_num is None or season_num == 0 or not season_tmdb_id:
             continue
         
-        # 判断本季是否在库的逻辑保持不变
         is_season_in_library = season_num in local_in_library_info
         
         records_to_upsert.append({
-            "tmdb_id": str(season_tmdb_id), "item_type": "Season", # <-- 使用修正后的真实 ID
+            "tmdb_id": str(season_tmdb_id), "item_type": "Season",
             "parent_series_tmdb_id": parent_tmdb_id, "title": season.get('name'),
             "overview": season.get('overview'), "release_date": season.get('air_date'),
             "poster_path": season.get('poster_path'), "season_number": season_num,
-            "in_library": is_season_in_library
+            "in_library": is_season_in_library,
+            # ★★★ 新增：获取季的总集数 ★★★
+            "total_episodes": season.get('episode_count', 0)
         })
 
     # 2. 准备所有集的记录
@@ -402,7 +401,6 @@ def sync_series_children_metadata(parent_tmdb_id: str, seasons: List[Dict], epis
         season_num = episode.get('season_number')
         episode_num = episode.get('episode_number')
 
-        # ★★★ 核心修改 2/4: 判断本集是否在库 ★★★
         is_episode_in_library = season_num in local_in_library_info and episode_num in local_in_library_info.get(season_num, set())
 
         records_to_upsert.append({
@@ -410,7 +408,9 @@ def sync_series_children_metadata(parent_tmdb_id: str, seasons: List[Dict], epis
             "parent_series_tmdb_id": parent_tmdb_id, "title": episode.get('name'),
             "overview": episode.get('overview'), "release_date": episode.get('air_date'),
             "season_number": season_num, "episode_number": episode_num,
-            "in_library": is_episode_in_library # <-- 使用判断结果
+            "in_library": is_episode_in_library,
+            # ★★★ 新增：单集没有总集数概念，设为 0 以保持字典结构一致 ★★★
+            "total_episodes": 0 
         })
 
     if not records_to_upsert:
@@ -422,14 +422,16 @@ def sync_series_children_metadata(parent_tmdb_id: str, seasons: List[Dict], epis
             with conn.cursor() as cursor:
                 from psycopg2.extras import execute_batch
                 
-                # ★★★ 核心修改 3/4: SQL语句的 ON CONFLICT 部分，也要更新 in_library 状态 ★★★
+                # ★★★ 修改 SQL：添加 total_episodes 字段 ★★★
                 sql = """
                     INSERT INTO media_metadata (
                         tmdb_id, item_type, parent_series_tmdb_id, title, overview, 
-                        release_date, poster_path, season_number, episode_number, in_library
+                        release_date, poster_path, season_number, episode_number, in_library,
+                        total_episodes  -- <--- 1. 添加列名
                     ) VALUES (
                         %(tmdb_id)s, %(item_type)s, %(parent_series_tmdb_id)s, %(title)s, %(overview)s,
-                        %(release_date)s, %(poster_path)s, %(season_number)s, %(episode_number)s, %(in_library)s
+                        %(release_date)s, %(poster_path)s, %(season_number)s, %(episode_number)s, %(in_library)s,
+                        %(total_episodes)s -- <--- 2. 添加占位符
                     )
                     ON CONFLICT (tmdb_id, item_type) DO UPDATE SET
                         parent_series_tmdb_id = EXCLUDED.parent_series_tmdb_id,
@@ -439,11 +441,11 @@ def sync_series_children_metadata(parent_tmdb_id: str, seasons: List[Dict], epis
                         poster_path = EXCLUDED.poster_path,
                         season_number = EXCLUDED.season_number,
                         episode_number = EXCLUDED.episode_number,
-                        in_library = EXCLUDED.in_library, -- <-- 关键！确保更新时也同步在库状态
+                        in_library = EXCLUDED.in_library,
+                        total_episodes = EXCLUDED.total_episodes, -- <--- 3. 添加更新逻辑
                         last_synced_at = NOW();
                 """
                 
-                # ★★★ 核心修改 4/4: 确保 in_library 字段被正确填充 ★★★
                 data_for_batch = []
                 for rec in records_to_upsert:
                     data_for_batch.append({
@@ -452,11 +454,13 @@ def sync_series_children_metadata(parent_tmdb_id: str, seasons: List[Dict], epis
                         "title": rec.get("title"), "overview": rec.get("overview"),
                         "release_date": rec.get("release_date"), "poster_path": rec.get("poster_path"),
                         "season_number": rec.get("season_number"), "episode_number": rec.get("episode_number"),
-                        "in_library": rec.get("in_library", False) # <-- 确保这个值被正确传入
+                        "in_library": rec.get("in_library", False),
+                        # ★★★ 新增：传入 total_episodes ★★★
+                        "total_episodes": rec.get("total_episodes", 0)
                     })
 
                 execute_batch(cursor, sql, data_for_batch)
-                logger.info(f"  ➜ [追剧联动] 成功为剧集 {parent_tmdb_id} 智能同步了 {len(data_for_batch)} 个子项目的元数据和在库状态。")
+                logger.info(f"  ➜ [追剧联动] 成功为剧集 {parent_tmdb_id} 智能同步了 {len(data_for_batch)} 个子项目的元数据(含集数)和在库状态。")
 
     except Exception as e:
         logger.error(f"  ➜ [追剧联动] 在同步剧集 {parent_tmdb_id} 的子项目时发生错误: {e}", exc_info=True)
