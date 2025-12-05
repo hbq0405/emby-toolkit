@@ -11,15 +11,33 @@
           />
           Emby Toolkit
         </span>
-        <!-- ★★★ 中间：任务状态 (新增位置) ★★★ -->
+        <!-- 任务状态 -->
         <div 
-          v-if="authStore.isAdmin && props.taskStatus && props.taskStatus.current_action !== '空闲'"
+          v-if="authStore.isAdmin && props.taskStatus && props.taskStatus.current_action !== '空闲' && props.taskStatus.current_action !== '无'"
           class="header-task-status"
         >
           <div class="status-content">
             <n-text class="status-text">
-              <n-spin size="small" style="margin-right: 8px; vertical-align: middle;" />
-              <strong style="color: #2080f0;">{{ props.taskStatus.current_action }}</strong>
+              <!-- 1. 只有 is_running 为 true 时才转圈 -->
+              <n-spin 
+                v-if="props.taskStatus.is_running" 
+                size="small" 
+                style="margin-right: 8px; vertical-align: middle;" 
+              />
+              
+              <!-- 2. 如果没运行（空闲/等待），显示一个静止的图标（这里复用了已引入的 SchedulerIcon） -->
+              <n-icon 
+                v-else 
+                :component="SchedulerIcon" 
+                size="18" 
+                style="margin-right: 8px; vertical-align: middle; opacity: 0.6;" 
+              />
+
+              <!-- 3. 文字颜色也可以优化一下：运行时蓝色，空闲时灰色 -->
+              <strong :style="{ color: props.taskStatus.is_running ? '#2080f0' : 'inherit' }">
+                {{ props.taskStatus.current_action }}
+              </strong>
+              
               <span class="status-divider">-</span>
               <span class="status-message">{{ props.taskStatus.message }}</span>
             </n-text>
