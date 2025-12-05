@@ -189,6 +189,7 @@
                       :height="2" 
                       :show-indicator="false"
                       :border-radius="0"
+                      :processing="calculateProgress(item) < 100"
                     />
                   </div>
 
