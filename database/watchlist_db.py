@@ -14,9 +14,8 @@ logger = logging.getLogger(__name__)
 
 def get_all_watchlist_items() -> List[Dict[str, Any]]:
     """ 
-    【V3 - 季级别重构】
-    获取所有正在追的“季”。
-    逻辑：查找所有处于 Watching 状态的剧集，并返回其下所有“未完结”或“正在连载”的季。
+    【V5 - 终极修复版】
+    增加剧集层面的状态和统计数据，用于前端聚合展示。
     """
     sql = """
         SELECT 
@@ -26,13 +25,20 @@ def get_all_watchlist_items() -> List[Dict[str, Any]]:
             s.season_number,
             p.tmdb_id as parent_tmdb_id,
             s.release_date as release_year,
+            
+            -- 季的状态 (用于筛选)
             COALESCE(NULLIF(s.watching_status, 'NONE'), p.watching_status) as status,
+            
+            -- ★★★ 新增 1：剧集层面的状态 (用于已完结卡片的 UI 判断) ★★★
+            p.watching_status as series_status,
+
             p.watchlist_last_checked_at as last_checked_at,
             p.watchlist_next_episode_json as next_episode_to_air_json,
             p.watchlist_missing_info_json as missing_info_json,
             p.emby_item_ids_json,
+            p.watchlist_tmdb_status as tmdb_status, -- 确保拿到剧集的 TMDb 状态
             
-            -- 统计数据
+            -- 季层面的统计 (用于追剧视图)
             (SELECT COUNT(*) FROM media_metadata e 
              WHERE e.parent_series_tmdb_id = s.parent_series_tmdb_id 
                AND e.season_number = s.season_number 
@@ -46,6 +52,14 @@ def get_all_watchlist_items() -> List[Dict[str, Any]]:
                    AND e.item_type = 'Episode')
             ) as total_count,
             
+            -- ★★★ 新增 2：剧集层面的统计 (用于已完结视图的进度条) ★★★
+            (SELECT COUNT(*) FROM media_metadata e 
+             WHERE e.parent_series_tmdb_id = p.tmdb_id 
+               AND e.item_type = 'Episode' 
+               AND e.in_library = TRUE) as series_collected_count,
+               
+            p.total_episodes as series_total_episodes,
+            
             s.total_episodes_locked
 
         FROM media_metadata s
@@ -54,34 +68,21 @@ def get_all_watchlist_items() -> List[Dict[str, Any]]:
             s.item_type = 'Season'
             AND s.season_number > 0
             AND p.item_type = 'Series'
-            
-            -- ★★★ 修复 1：不再只查 Watching，只要不是 NONE 都查 ★★★
             AND p.watching_status != 'NONE'
-            
-            -- ★★★ 修复 2：优化显示逻辑，防止剧集消失 ★★★
             AND (
-                -- A. 数据不全的季 (必须显示)
                 (s.total_episodes = 0 OR 
                  (SELECT COUNT(*) FROM media_metadata e 
                   WHERE e.parent_series_tmdb_id = s.parent_series_tmdb_id 
                     AND e.season_number = s.season_number 
                     AND e.in_library = TRUE) < s.total_episodes)
-                
                 OR
-                
-                -- B. 或者是该剧的“最后一季” (即使集齐了也要显示，代表最新进度)
                 s.season_number = (
                     SELECT MAX(season_number) FROM media_metadata m3 
                     WHERE m3.parent_series_tmdb_id = p.tmdb_id 
                       AND m3.item_type = 'Season'
                 )
-                
-                OR
-                
-                -- C. 或者剧集本身是“已完结”或“已暂停”状态 (全部显示，方便查看历史)
-                p.watching_status IN ('Completed', 'Paused')
+                OR p.watching_status IN ('Completed', 'Paused')
             )
-            
         ORDER BY p.first_requested_at DESC, s.season_number ASC;
     """
     try:
@@ -90,7 +91,7 @@ def get_all_watchlist_items() -> List[Dict[str, Any]]:
             cursor.execute(sql)
             return [dict(row) for row in cursor.fetchall()]
     except Exception as e:
-        logger.error(f"DB: 获取追剧列表(季级别)失败: {e}", exc_info=True)
+        logger.error(f"DB: 获取追剧列表失败: {e}", exc_info=True)
         raise
 
 def add_item_to_watchlist(tmdb_id: str, item_name: str) -> bool:

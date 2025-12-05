@@ -488,10 +488,8 @@ const filteredWatchlist = computed(() => {
   } else if (currentView.value === 'completed') {
     // --- 已完结视图：聚合逻辑 ---
     
-    // A. 先筛选出所有已完结的季
     let completedSeasons = list.filter(item => item.status === 'Completed');
 
-    // B. 按 Parent ID 聚合
     const groups = {};
     completedSeasons.forEach(season => {
       const pid = season.parent_tmdb_id;
@@ -499,19 +497,20 @@ const filteredWatchlist = computed(() => {
         groups[pid] = { 
           ...season, 
           item_name: season.item_name.replace(/ 第 \d+ 季$/, ''),
-          collected_count: 0,
-          total_count: 0,
+          
+          // ★★★ 核心修改：直接使用剧集层面的数据，不再累加 ★★★
+          collected_count: season.series_collected_count || 0,
+          total_count: season.series_total_episodes || 0,
+          
+          // ★★★ 核心修改：状态判断使用剧集层面的状态 ★★★
+          // 这里的 status 字段会传给 getSeriesStatusUI 使用
+          status: season.series_status, 
+          
           is_aggregated: true,
-          included_seasons: [],
-          // ★★★ 确保继承父剧集的关键状态字段 ★★★
-          tmdb_status: season.tmdb_status, 
-          next_episode_to_air: season.next_episode_to_air,
-          // 如果有任意一季是 Watching，整体就算 Watching (虽然在已完结视图里通常都是 Completed)
-          status: season.status 
+          included_seasons: []
         };
       }
-      groups[pid].collected_count += (season.collected_count || 0);
-      groups[pid].total_count += (season.total_count || 0);
+      // 只需要收集季号，不需要累加进度了
       groups[pid].included_seasons.push(season.season_number);
       
       if (new Date(season.last_checked_at) > new Date(groups[pid].last_checked_at)) {
@@ -569,29 +568,27 @@ const filteredWatchlist = computed(() => {
 // 计算剧集层面的精致状态 
 const getSeriesStatusUI = (item) => {
   const tmdbStatus = item.tmdb_status;
-  const internalStatus = item.status; // 'Watching', 'Paused', 'Completed'
+  // 注意：这里的 item.status 已经是我们在聚合时赋值的 series_status 了
+  const internalStatus = item.status; 
 
-  // 1. 彻底完结 (TMDb 说了算)
-  // 只要 TMDb 说结束了，那就是结束了，不管本地状态如何
-  if (tmdbStatus === 'Ended' || tmdbStatus === 'Canceled') {
-    return { text: '已完结', type: 'default', icon: CompletedIcon, color: undefined };
-  }
-
-  // 2. 活跃状态 (用户/内部状态说了算)
-  // 只要内部状态是 'Watching'(追剧中) 或 'Paused'(已暂停，通常是因为有定档日期但未到)，
-  // 都视为“已回归”或“连载中”，用绿色高亮，表示这剧“活着”。
+  // 1. 只要内部状态是 追剧中(Watching) 或 暂停中(Paused) -> 视为【已回归】
   if (internalStatus === 'Watching' || internalStatus === 'Paused') {
     return { text: '已回归', type: 'success', icon: WatchingIcon, color: undefined };
   }
 
-  // 3. 休刊状态
-  // 内部状态是 'Completed' (说明当前出的都看完了)，但 TMDb 说是 'Returning Series'，
-  // 说明处于休刊期，或者下一季还没定档 -> 显示黄色“待回归”
-  if (tmdbStatus === 'Returning Series' || tmdbStatus === 'In Production' || tmdbStatus === 'Planned') {
-     return { text: '待回归', type: 'warning', icon: PausedIcon, color: undefined };
+  // 2. 如果内部状态是 Completed
+  if (internalStatus === 'Completed') {
+      // 2.1 TMDb 是 Returning Series -> 【待回归】
+      if (tmdbStatus === 'Returning Series' || tmdbStatus === 'In Production' || tmdbStatus === 'Planned') {
+          return { text: '待回归', type: 'warning', icon: PausedIcon, color: undefined };
+      }
+      // 2.2 TMDb 是 Ended -> 【已完结】
+      else {
+          return { text: '已完结', type: 'default', icon: CompletedIcon, color: undefined };
+      }
   }
 
-  // 4. 兜底 (其他未知状态)
+  // 兜底
   return { text: '已完结', type: 'default', icon: CompletedIcon, color: undefined };
 };
 
