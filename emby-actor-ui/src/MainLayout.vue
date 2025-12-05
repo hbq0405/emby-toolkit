@@ -86,7 +86,7 @@
           </div>
       </div>
     </n-layout-header>
-    <n-layout has-sider>
+    <n-layout has-sider style="height: calc(100vh - 60px);">
       <n-layout-sider
         :bordered="false"
         collapse-mode="width"
