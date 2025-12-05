@@ -928,15 +928,29 @@ const fetchWatchlist = async () => {
 };
 
 const updateStatus = async (itemId, newStatus) => {
+  // 1. 先找到当前点击的那个对象 (itemId 是季ID)
   const item = rawWatchlist.value.find(i => i.tmdb_id === itemId);
   if (!item) return;
+
+  // 记录旧状态用于回滚
   const oldStatus = item.status;
-  item.status = newStatus;
+  const parentId = item.parent_tmdb_id; // 获取父剧集ID
+
+  // 2. 本地乐观更新：把该剧集下所有季的状态都改了
+  // (因为状态是跟着剧走的，改了剧的状态，所有季都应该变)
+  const relatedItems = rawWatchlist.value.filter(i => i.parent_tmdb_id === parentId);
+  relatedItems.forEach(i => i.status = newStatus);
+
   try {
-    await axios.post('/api/watchlist/update_status', { item_id: itemId, new_status: newStatus });
+    // 3. 发送请求：★ 关键点：传 parent_tmdb_id 给后端 ★
+    await axios.post('/api/watchlist/update_status', { 
+      item_id: parentId, 
+      new_status: newStatus 
+    });
     message.success('状态更新成功！');
   } catch (err) {
-    item.status = oldStatus;
+    // 4. 失败回滚：把所有相关季的状态改回去
+    relatedItems.forEach(i => i.status = oldStatus);
     message.error(err.response?.data?.error || '更新状态失败。');
   }
 };
