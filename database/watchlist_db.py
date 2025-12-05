@@ -247,11 +247,11 @@ def batch_force_end_watchlist_items(tmdb_ids: List[str]) -> int:
         logger.error(f"DB (新架构): 批量强制完结追剧项目时发生错误: {e}", exc_info=True)
         raise
 
-def batch_update_watchlist_status(tmdb_ids: list, new_status: str) -> int:
+def batch_update_watchlist_status(item_ids: list, new_status: str) -> int:
     """
     批量更新指定项目ID列表的追剧状态。
     """
-    if not tmdb_ids:
+    if not item_ids:
         return 0
     try:
         with get_db_connection() as conn:
@@ -272,7 +272,7 @@ def batch_update_watchlist_status(tmdb_ids: list, new_status: str) -> int:
             # 构建参数值：先放入 SET 的值
             values = list(updates.values())
             
-            # ★★★ 核心修复：SQL 条件覆盖父子层级 ★★★
+            # ★★★ 级联更新 SQL ★★★
             sql = f"""
                 UPDATE media_metadata 
                 SET {', '.join(set_clauses)} 
@@ -284,14 +284,14 @@ def batch_update_watchlist_status(tmdb_ids: list, new_status: str) -> int:
                     (parent_series_tmdb_id = ANY(%s))
             """
             
-            # 追加 WHERE 子句的参数 (两次 tmdb_ids)
-            values.append(tmdb_ids)
-            values.append(tmdb_ids)
+            # 追加 WHERE 子句的参数 (两次 item_ids)
+            values.append(item_ids)
+            values.append(item_ids)
             
             cursor.execute(sql, tuple(values))
             conn.commit()
             
-            logger.info(f"DB (新架构): 成功将 {len(tmdb_ids)} 个剧集系列的状态批量更新为 '{new_status}'，共影响 {cursor.rowcount} 条记录。")
+            logger.info(f"DB (新架构): 成功将 {len(item_ids)} 个剧集系列的状态批量更新为 '{new_status}'，共影响 {cursor.rowcount} 条记录。")
             return cursor.rowcount
             
     except Exception as e:
