@@ -215,6 +215,7 @@ def init_db():
                         watchlist_is_airing BOOLEAN DEFAULT FALSE,
                         last_episode_to_air_json JSONB,
                         total_episodes INTEGER DEFAULT 0,
+                        total_episodes_locked BOOLEAN DEFAULT FALSE,
 
                         -- 内部管理字段
                         last_synced_at TIMESTAMP WITH TIME ZONE,
@@ -449,7 +450,8 @@ def init_db():
                             "watchlist_next_episode_json": "JSONB",
                             "watchlist_missing_info_json": "JSONB",
                             "watchlist_is_airing": "BOOLEAN DEFAULT FALSE",
-                            "total_episodes": "INTEGER DEFAULT 0"
+                            "total_episodes": "INTEGER DEFAULT 0",
+                            "total_episodes_locked": "BOOLEAN DEFAULT FALSE"
                         },
                         'resubscribe_rules': {
                             "resubscribe_subtitle_effect_only": "BOOLEAN DEFAULT FALSE",

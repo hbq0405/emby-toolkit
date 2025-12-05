@@ -427,11 +427,11 @@ def sync_series_children_metadata(parent_tmdb_id: str, seasons: List[Dict], epis
                     INSERT INTO media_metadata (
                         tmdb_id, item_type, parent_series_tmdb_id, title, overview, 
                         release_date, poster_path, season_number, episode_number, in_library,
-                        total_episodes  -- <--- 1. 添加列名
+                        total_episodes
                     ) VALUES (
                         %(tmdb_id)s, %(item_type)s, %(parent_series_tmdb_id)s, %(title)s, %(overview)s,
                         %(release_date)s, %(poster_path)s, %(season_number)s, %(episode_number)s, %(in_library)s,
-                        %(total_episodes)s -- <--- 2. 添加占位符
+                        %(total_episodes)s
                     )
                     ON CONFLICT (tmdb_id, item_type) DO UPDATE SET
                         parent_series_tmdb_id = EXCLUDED.parent_series_tmdb_id,
@@ -442,7 +442,13 @@ def sync_series_children_metadata(parent_tmdb_id: str, seasons: List[Dict], epis
                         season_number = EXCLUDED.season_number,
                         episode_number = EXCLUDED.episode_number,
                         in_library = EXCLUDED.in_library,
-                        total_episodes = EXCLUDED.total_episodes, -- <--- 3. 添加更新逻辑
+                        
+                        -- ★★★ 核心逻辑：如果已锁定，则保持原值；否则更新为新值 ★★★
+                        total_episodes = CASE 
+                            WHEN media_metadata.total_episodes_locked = TRUE THEN media_metadata.total_episodes
+                            ELSE EXCLUDED.total_episodes
+                        END,
+                        
                         last_synced_at = NOW();
                 """
                 

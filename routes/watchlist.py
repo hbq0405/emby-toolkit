@@ -227,3 +227,32 @@ def api_batch_remove_from_watchlist():
     except Exception as e:
         logger.error(f"批量移除项目时发生未知错误: {e}", exc_info=True)
         return jsonify({"error": "批量移除项目时发生未知的服务器内部错误"}), 500
+    
+@watchlist_bp.route('/update_total_episodes', methods=['POST'])
+@admin_required
+def api_update_total_episodes():
+    data = request.json
+    tmdb_id = data.get('tmdb_id')
+    total_episodes = data.get('total_episodes')
+    
+    # ★★★ 新增：前端传 item_type，默认为 Series 以兼容旧代码，但现在我们主要用 Season ★★★
+    item_type = data.get('item_type', 'Season') 
+
+    if not tmdb_id or total_episodes is None:
+        return jsonify({"error": "参数无效"}), 400
+
+    try:
+        with watchlist_db.get_db_connection() as conn:
+            cursor = conn.cursor()
+            # 更新集数 并 开启锁定
+            sql = """
+                UPDATE media_metadata
+                SET total_episodes = %s, total_episodes_locked = TRUE
+                WHERE tmdb_id = %s AND item_type = %s
+            """
+            cursor.execute(sql, (total_episodes, tmdb_id, item_type))
+            conn.commit()
+            return jsonify({"message": f"已修正总集数为 {total_episodes} 并锁定。"}), 200
+    except Exception as e:
+        logger.error(f"手动更新总集数失败: {e}", exc_info=True)
+        return jsonify({"error": "数据库更新失败"}), 500

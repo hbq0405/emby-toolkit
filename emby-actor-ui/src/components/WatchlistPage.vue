@@ -128,9 +128,36 @@
                   
                   <!-- 海报上的集数浮层 -->
                   <div class="poster-overlay">
-                    <span class="episode-count">
-                      {{ item.collected_count || 0 }} / {{ item.total_count || 0 }}
-                    </span>
+                    <!-- 使用 Popover 实现点击修改 -->
+                    <n-popover trigger="click" placement="top" @update:show="(show) => { if(show) tempTotalEpisodes = item.total_count }">
+                      <template #trigger>
+                        <span class="episode-count clickable-count" title="点击修正总集数">
+                          {{ item.collected_count || 0 }} / {{ item.total_count || 0 }}
+                        </span>
+                      </template>
+                      
+                      <!-- 弹出层内容 -->
+                      <div style="display: flex; flex-direction: column; gap: 8px; width: 180px;">
+                        <n-text strong depth="1">修正总集数</n-text>
+                        <n-input-number 
+                          v-model:value="tempTotalEpisodes" 
+                          size="small" 
+                          :min="item.collected_count || 0"
+                          placeholder="输入实际集数"
+                        />
+                        <n-space justify="end" size="small">
+                          <n-button size="tiny" @click="tempTotalEpisodes = item.collected_count">
+                            填入当前
+                          </n-button>
+                          <n-button type="primary" size="tiny" @click="saveTotalEpisodes(item)">
+                            保存
+                          </n-button>
+                        </n-space>
+                        <n-text depth="3" style="font-size: 12px;">
+                          * 保存后将锁定该数字，不再随 TMDb 更新。
+                        </n-text>
+                      </div>
+                    </n-popover>
                   </div>
                 </div>
 
@@ -276,7 +303,7 @@
 <script setup>
 import { ref, onMounted, onBeforeUnmount, h, computed, watch } from 'vue';
 import axios from 'axios';
-import { NLayout, NPageHeader, NDivider, NEmpty, NTag, NButton, NSpace, NIcon, useMessage, useDialog, NPopconfirm, NTooltip, NCard, NImage, NEllipsis, NSpin, NAlert, NRadioGroup, NRadioButton, NModal, NTabs, NTabPane, NList, NListItem, NCheckbox, NDropdown, NInput, NSelect, NButtonGroup, NProgress, useThemeVars } from 'naive-ui';
+import { NLayout, NPageHeader, NDivider, NEmpty, NTag, NButton, NSpace, NIcon, useMessage, useDialog, NPopconfirm, NTooltip, NCard, NImage, NEllipsis, NSpin, NAlert, NRadioGroup, NRadioButton, NModal, NTabs, NTabPane, NList, NListItem, NCheckbox, NDropdown, NInput, NSelect, NButtonGroup, NProgress, useThemeVars, NPopover, NInputNumber } from 'naive-ui';
 import { SyncOutline, TvOutline as TvIcon, TrashOutline as TrashIcon, EyeOutline as EyeIcon, CalendarOutline as CalendarIcon, TimeOutline as TimeIcon, PlayCircleOutline as WatchingIcon, PauseCircleOutline as PausedIcon, CheckmarkCircleOutline as CompletedIcon, ScanCircleOutline as ScanIcon, CaretDownOutline as CaretDownIcon, FlashOffOutline as ForceEndIcon, ArrowUpOutline as ArrowUpIcon, ArrowDownOutline as ArrowDownIcon, DownloadOutline as DownloadIcon } from '@vicons/ionicons5';
 import { format, parseISO } from 'date-fns';
 import { useConfig } from '../composables/useConfig.js';
@@ -320,7 +347,7 @@ const filterMissing = ref('all');
 const filterGaps = ref('all');
 const sortKey = ref('last_checked_at');
 const sortOrder = ref('desc');
-
+const tempTotalEpisodes = ref(0);
 const activeTab = ref('seasons');
 
 const hasMissingSeasons = (item) => {
@@ -795,6 +822,27 @@ const getProgressColor = (item) => {
   return themeVars.value.primaryColor;
 };
 
+// 修正总集数
+const saveTotalEpisodes = async (item) => {
+  const newTotal = tempTotalEpisodes.value || item.collected_count;
+  
+  try {
+    await axios.post('/api/watchlist/update_total_episodes', {
+      tmdb_id: item.tmdb_id,
+      total_episodes: newTotal,
+      item_type: 'Season' // ★★★ 明确指定我们要改的是季 ★★★
+    });
+    message.success(`已将《${item.item_name}》总集数修正为 ${newTotal}`);
+    
+    // 更新视图
+    item.total_count = newTotal;
+    // 强制刷新进度条状态
+    item.total_episodes_locked = true; 
+  } catch (err) {
+    message.error('修正失败');
+  }
+};
+
 onMounted(() => {
   fetchWatchlist();
   observer = new IntersectionObserver(
@@ -1081,6 +1129,16 @@ watch(loaderRef, (newEl, oldEl) => {
 html.dark .progress-separator :deep(.n-progress-graph-line-rail) {
   /* 暗色模式：使用浅一点的半透明白 (白色的 20% 透明度) */
   background-color: rgba(255, 255, 255, 0.2) !important;
+}
+
+.clickable-count {
+  cursor: pointer;
+  border-bottom: 1px dashed rgba(255,255,255,0.5); /* 加个虚线底边提示可点 */
+  transition: all 0.2s;
+}
+.clickable-count:hover {
+  color: var(--n-color-primary);
+  border-bottom-color: var(--n-color-primary);
 }
 
 /* 手机端适配 */

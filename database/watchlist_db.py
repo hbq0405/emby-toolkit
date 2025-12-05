@@ -13,40 +13,69 @@ logger = logging.getLogger(__name__)
 # ======================================================================
 
 def get_all_watchlist_items() -> List[Dict[str, Any]]:
-    """ 获取所有被追踪的剧集项目。"""
+    """ 
+    【V3 - 季级别重构】
+    获取所有正在追的“季”。
+    逻辑：查找所有处于 Watching 状态的剧集，并返回其下所有“未完结”或“正在连载”的季。
+    """
     sql = """
         SELECT 
-            tmdb_id, 
-            item_type, 
-            title as item_name, 
-            release_year,
-            watching_status as status,
-            paused_until, 
-            force_ended, 
-            watchlist_last_checked_at as last_checked_at,
-            watchlist_tmdb_status as tmdb_status,
-            watchlist_next_episode_json as next_episode_to_air_json,
-            watchlist_missing_info_json as missing_info_json,
-            watchlist_is_airing as is_airing,
-            emby_item_ids_json,
+            s.tmdb_id, 
+            'Season' as item_type,
+            -- ★★★ 1. 标题格式化：剧名 + 第 X 季 ★★★
+            p.title || ' 第 ' || s.season_number || ' 季' as item_name,
+            s.season_number,
+            p.tmdb_id as parent_tmdb_id, -- 保留父ID方便跳转
+            s.release_date as release_year, -- 季的发行时间
             
-            -- ★★★ 1. 分子：本地已入库的集数 ★★★
-            (SELECT COUNT(*) FROM media_metadata m2 
-             WHERE m2.parent_series_tmdb_id = media_metadata.tmdb_id 
-               AND m2.item_type = 'Episode' 
-               AND m2.in_library = TRUE) as collected_count,
+            -- 状态继承父剧集，但也可以根据季的播出时间微调
+            p.watching_status as status,
+            p.watchlist_last_checked_at as last_checked_at,
+            
+            -- 下一集信息 (这里简化处理，依然取剧集的下一集，或者你可以根据季号过滤)
+            p.watchlist_next_episode_json as next_episode_to_air_json,
+            p.watchlist_missing_info_json as missing_info_json,
+            p.emby_item_ids_json,
+            
+            -- ★★★ 2. 核心：基于季的进度统计 ★★★
+            -- 分子：该季已入库的集数
+            (SELECT COUNT(*) FROM media_metadata e 
+             WHERE e.parent_series_tmdb_id = s.parent_series_tmdb_id 
+               AND e.season_number = s.season_number 
+               AND e.item_type = 'Episode' 
+               AND e.in_library = TRUE) as collected_count,
+               
+            -- 分母：该季的总集数 (优先用锁定的，否则用TMDB的，防止为0)
+            COALESCE(NULLIF(s.total_episodes, 0), 
+                (SELECT COUNT(*) FROM media_metadata e 
+                 WHERE e.parent_series_tmdb_id = s.parent_series_tmdb_id 
+                   AND e.season_number = s.season_number 
+                   AND e.item_type = 'Episode')
+            ) as total_count,
+            
+            -- 是否锁定
+            s.total_episodes_locked
 
-            -- ★★★ 2. 分母：优先使用从 TMDB 获取的 total_episodes ★★★
-            -- 如果 total_episodes 为 0 或 NULL (还没刷新过)，则回退到使用本地记录数，避免除以0
-            COALESCE(NULLIF(total_episodes, 0), (
-                SELECT COUNT(*) FROM media_metadata m2 
-                WHERE m2.parent_series_tmdb_id = media_metadata.tmdb_id 
-                AND m2.item_type = 'Episode'
-            )) as total_count
-
-        FROM media_metadata
-        WHERE item_type = 'Series' AND watching_status != 'NONE'
-        ORDER BY first_requested_at DESC;
+        FROM media_metadata s
+        JOIN media_metadata p ON s.parent_series_tmdb_id = p.tmdb_id
+        WHERE 
+            s.item_type = 'Season'
+            AND s.season_number > 0 -- 忽略特别篇(第0季)
+            AND p.item_type = 'Series'
+            AND p.watching_status = 'Watching' -- 只看正在追的剧
+            
+            -- ★★★ 3. 过滤逻辑：只显示“没收集齐”的季 ★★★
+            -- 如果你想看所有季，把下面这几行注释掉即可
+            AND (
+                s.total_episodes = 0 -- 数据不全的显示
+                OR 
+                (SELECT COUNT(*) FROM media_metadata e 
+                 WHERE e.parent_series_tmdb_id = s.parent_series_tmdb_id 
+                   AND e.season_number = s.season_number 
+                   AND e.in_library = TRUE) < s.total_episodes
+            )
+            
+        ORDER BY p.first_requested_at DESC, s.season_number ASC;
     """
     try:
         with get_db_connection() as conn:
@@ -54,7 +83,7 @@ def get_all_watchlist_items() -> List[Dict[str, Any]]:
             cursor.execute(sql)
             return [dict(row) for row in cursor.fetchall()]
     except Exception as e:
-        logger.error(f"DB (新架构): 获取追剧列表失败: {e}", exc_info=True)
+        logger.error(f"DB: 获取追剧列表(季级别)失败: {e}", exc_info=True)
         raise
 
 def add_item_to_watchlist(tmdb_id: str, item_name: str) -> bool:
