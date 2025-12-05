@@ -1,7 +1,7 @@
 <!-- src/App.vue -->
 <template>
   <n-config-provider :theme="isDarkTheme ? darkTheme : undefined" :theme-overrides="currentNaiveTheme" :locale="zhCN" :date-locale="dateZhCN">
-    <n-message-provider>
+    <n-message-provider placement="bottom-right">
       <n-dialog-provider>
         <AppContent />
       </n-dialog-provider>
