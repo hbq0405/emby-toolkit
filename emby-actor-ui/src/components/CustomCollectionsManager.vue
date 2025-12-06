@@ -612,10 +612,25 @@
                     </div>
                   </div>
 
+                  <!-- ★★★ 悬停操作层：包含搜索和修正 ★★★ -->
                   <div class="movie-actions-overlay">
                     <n-space>
-                      <n-button circle secondary @click="openTmdbSearch(media.title)"><template #icon><n-icon :component="SearchIcon" /></template></n-button>
-                      <n-button circle type="primary" @click="handleFixMatchClick(media)"><template #icon><n-icon :component="FixIcon" /></template></n-button>
+                      <n-tooltip trigger="hover">
+                        <template #trigger>
+                          <n-button circle secondary @click="openTmdbSearch(media.title)">
+                            <template #icon><n-icon :component="SearchIcon" /></template>
+                          </n-button>
+                        </template>
+                        TMDb 搜索
+                      </n-tooltip>
+                      <n-tooltip trigger="hover">
+                        <template #trigger>
+                          <n-button circle type="primary" @click="handleFixMatchClick(media)">
+                            <template #icon><n-icon :component="FixIcon" /></template>
+                          </n-button>
+                        </template>
+                        修正匹配
+                      </n-tooltip>
                     </n-space>
                   </div>
                 </div>
@@ -642,10 +657,25 @@
                     </div>
                   </div>
 
+                  <!-- ★★★ 悬停操作层：包含搜索和修正 ★★★ -->
                   <div class="movie-actions-overlay">
                     <n-space>
-                      <n-button circle secondary @click="openTmdbSearch(media.title)"><template #icon><n-icon :component="SearchIcon" /></template></n-button>
-                      <n-button circle type="primary" @click="handleFixMatchClick(media)"><template #icon><n-icon :component="FixIcon" /></template></n-button>
+                      <n-tooltip trigger="hover">
+                        <template #trigger>
+                          <n-button circle secondary @click="openTmdbSearch(media.title)">
+                            <template #icon><n-icon :component="SearchIcon" /></template>
+                          </n-button>
+                        </template>
+                        TMDb 搜索
+                      </n-tooltip>
+                      <n-tooltip trigger="hover">
+                        <template #trigger>
+                          <n-button circle type="primary" @click="handleFixMatchClick(media)">
+                            <template #icon><n-icon :component="FixIcon" /></template>
+                          </n-button>
+                        </template>
+                        修正匹配
+                      </n-tooltip>
                     </n-space>
                   </div>
                 </div>
@@ -672,10 +702,25 @@
                     </div>
                   </div>
 
+                  <!-- ★★★ 悬停操作层：包含搜索和修正 ★★★ -->
                   <div class="movie-actions-overlay">
                     <n-space>
-                      <n-button circle secondary @click="openTmdbSearch(media.title)"><template #icon><n-icon :component="SearchIcon" /></template></n-button>
-                      <n-button circle type="primary" @click="handleFixMatchClick(media)"><template #icon><n-icon :component="FixIcon" /></template></n-button>
+                      <n-tooltip trigger="hover">
+                        <template #trigger>
+                          <n-button circle secondary @click="openTmdbSearch(media.title)">
+                            <template #icon><n-icon :component="SearchIcon" /></template>
+                          </n-button>
+                        </template>
+                        TMDb 搜索
+                      </n-tooltip>
+                      <n-tooltip trigger="hover">
+                        <template #trigger>
+                          <n-button circle type="primary" @click="handleFixMatchClick(media)">
+                            <template #icon><n-icon :component="FixIcon" /></template>
+                          </n-button>
+                        </template>
+                        修正匹配
+                      </n-tooltip>
                     </n-space>
                   </div>
                 </div>
