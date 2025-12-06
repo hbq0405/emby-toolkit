@@ -604,6 +604,14 @@ class WatchlistProcessor:
         has_missing_media = bool(missing_info["missing_seasons"] or missing_info["missing_episodes"])
 
         last_episode_to_air = latest_series_data.get("last_episode_to_air")
+        # =========== 提前计算距离上一集的天数 ===========
+        days_since_last = 9999 # 默认给一个很大的值
+        if last_episode_to_air and (last_date_str := last_episode_to_air.get('air_date')):
+            try:
+                last_air_date_obj = datetime.strptime(last_date_str, '%Y-%m-%d').date()
+                days_since_last = (today - last_air_date_obj).days
+            except ValueError:
+                pass
         final_status = STATUS_WATCHING 
         paused_until_date = None
         today = datetime.now(timezone.utc).date()
@@ -635,7 +643,7 @@ class WatchlistProcessor:
                     # 只有当该季总集数大于5时，才敢断定这是大结局。
                     # 如果总集数为1，极大概率是新季刚开播 TMDb 还没更新后续集数，
                     # 此时应跳过大结局判定，让其落入后续的“最近播出”逻辑保持 Watching 状态。
-                    if total_ep_count > 5 and last_e_num >= total_ep_count:
+                    if total_ep_count > 1 and last_e_num >= total_ep_count:
                         is_season_finale = True
 
         # ==============================================================================
@@ -650,9 +658,21 @@ class WatchlistProcessor:
 
         # 规则 2: 本季大结局已播出 (且无明确下一集) -> 直接完结 (不考虑本地是否集齐)
         elif is_season_finale and not effective_next_episode:
-            final_status = STATUS_COMPLETED
-            paused_until_date = None
-            logger.info(f"  🏁 [判定-规则2] 检测到上一集是本季大结局，且无后续排期，判定为“已完结” (等待新季复活)。")
+            # 定义：是否为“疑似数据缺失”的短季
+            # 如果是连载剧，且当前季总集数 <= 3，极大概率是 TMDb 还没更新后续集数
+            is_suspiciously_short = (new_tmdb_status == "Returning Series" and total_ep_count <= 3)
+            
+            # 场景 A: 连载剧 + 集数很少 + 最近7天播出 -> 认为是数据滞后，保持追剧
+            if is_suspiciously_short and days_since_last <= 7:
+                final_status = STATUS_WATCHING
+                paused_until_date = None
+                logger.info(f"  🛡️ [安全锁生效] 虽检测到疑似大结局 (S{last_s_num}E{last_e_num})，但该季仅 {total_ep_count} 集且刚播出 {days_since_last} 天，判定为数据滞后，保持“追剧中”。")
+            
+            # 场景 B: 其他情况 (明确已完结 / 集数很多 / 播出很久) -> 判定完结
+            else:
+                final_status = STATUS_COMPLETED
+                paused_until_date = None
+                logger.info(f"  🏁 [判定-规则2] 本季大结局 (S{last_s_num}E{last_e_num}) 已播出，判定为“已完结”。")
 
         # 规则 3: 连载中逻辑 (保持原有逻辑)
         else:
@@ -683,15 +703,7 @@ class WatchlistProcessor:
 
             # 情况 B: 无下一集信息 (或信息不全)
             else:
-                last_air_date = None
-                if last_date_str:
-                    try:
-                        last_air_date = datetime.strptime(last_date_str, '%Y-%m-%d').date()
-                    except ValueError:
-                        pass
-
-                if last_air_date:
-                    days_since_last = (today - last_air_date).days
+                if days_since_last != 9999:
                     
                     # 子规则 A: 距上一集播出超过一个月(30天) -> 判定已完结
                     if days_since_last > 30:
