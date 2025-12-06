@@ -632,8 +632,10 @@ class WatchlistProcessor:
                 season_info = next((s for s in latest_series_data.get('seasons', []) if s.get('season_number') == last_s_num), None)
                 if season_info:
                     total_ep_count = season_info.get('episode_count', 0)
-                    # 如果当前集号等于(或大于)总集数，说明是最后一集
-                    if total_ep_count > 0 and last_e_num >= total_ep_count:
+                    # 只有当该季总集数大于5时，才敢断定这是大结局。
+                    # 如果总集数为1，极大概率是新季刚开播 TMDb 还没更新后续集数，
+                    # 此时应跳过大结局判定，让其落入后续的“最近播出”逻辑保持 Watching 状态。
+                    if total_ep_count > 5 and last_e_num >= total_ep_count:
                         is_season_finale = True
 
         # ==============================================================================
