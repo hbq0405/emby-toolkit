@@ -261,7 +261,7 @@
                       :percentage="calculateProgress(item)" 
                       :status="getProgressStatus(item)"
                       :color="getProgressColor(item)"
-                      :height="2" 
+                      :height="3" 
                       :show-indicator="false"
                       :border-radius="0"
                       :processing="calculateProgress(item) < 100"
@@ -1367,6 +1367,63 @@ html.dark .progress-separator :deep(.n-progress-graph-line-rail) {
 .clickable-count:hover {
   color: var(--n-color-primary);
   border-bottom-color: var(--n-color-primary);
+}
+
+/* =========================================
+   优雅的激光进度条特效
+   ========================================= */
+
+/* 1. 给进度条本身加一点点光晕，让它看起来像发光的灯管，而不是死板的色块 */
+.progress-separator :deep(.n-progress-graph-line-fill) {
+  box-shadow: 0 0 4px currentColor; /* 跟随进度条颜色发光 */
+  transition: all 0.3s cubic-bezier(0.4, 0, 0.2, 1);
+}
+
+/* 2. 重写“处理中(processing)”的跑马灯动画 
+   原理：创建一个高亮的白色透明渐变层，快速划过进度条
+*/
+.progress-separator :deep(.n-progress .n-progress-graph-line-fill.n-progress-graph-line-fill--processing)::after {
+  content: "";
+  position: absolute;
+  top: 0;
+  left: 0;
+  bottom: 0;
+  right: 0;
+  /* 核心：高亮流光渐变 (透明 -> 亮白半透明 -> 透明) */
+  background: linear-gradient(
+    90deg, 
+    transparent 0%, 
+    rgba(255, 255, 255, 0.6) 30%, 
+    rgba(255, 255, 255, 0.9) 50%, 
+    rgba(255, 255, 255, 0.6) 70%, 
+    transparent 100%
+  );
+  /* 确保流光层比进度条本身大一点，产生溢出光感 */
+  transform: skewX(-20deg) translateX(-150%); 
+  animation: elegant-shimmer 1.5s infinite cubic-bezier(0.2, 0, 0.2, 1);
+  z-index: 1;
+}
+
+/* 定义动画关键帧 */
+@keyframes elegant-shimmer {
+  0% {
+    transform: skewX(-20deg) translateX(-150%);
+  }
+  50% {
+    /* 中间稍微慢一点，更有质感 */
+    transform: skewX(-20deg) translateX(50%);
+  }
+  100% {
+    transform: skewX(-20deg) translateX(250%);
+  }
+}
+
+/* 3. 优化背景槽的质感 (让未完成部分更深邃，对比度更高) */
+.progress-separator :deep(.n-progress-graph-line-rail) {
+  background-color: rgba(0, 0, 0, 0.08) !important; /* 亮色模式更淡 */
+}
+html.dark .progress-separator :deep(.n-progress-graph-line-rail) {
+  background-color: rgba(255, 255, 255, 0.15) !important; /* 暗色模式增加对比 */
 }
 
 /* 手机端适配 */
