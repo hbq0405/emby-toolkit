@@ -699,31 +699,6 @@ def update_user_template_details(template_id, name, description, default_expirat
 # 模块: 邀请链接管理 (Invitations)
 # ======================================================================
 
-def create_invitation_link(template_id, expiration_days, link_expires_in_days) -> str:
-    """创建一个新的邀请链接，并返回生成的token。"""
-    try:
-        with get_db_connection() as conn:
-            with conn.cursor() as cursor:
-                final_expiration_days = expiration_days
-                if final_expiration_days is None:
-                    cursor.execute("SELECT default_expiration_days FROM user_templates WHERE id = %s", (template_id,))
-                    template = cursor.fetchone()
-                    if not template:
-                        raise ValueError("模板不存在")
-                    final_expiration_days = template['default_expiration_days']
-                
-                token = str(uuid.uuid4())
-                expires_at = datetime.now(timezone.utc) + timedelta(days=link_expires_in_days)
-                
-                cursor.execute(
-                    "INSERT INTO invitations (token, template_id, expiration_days, expires_at, status) VALUES (%s, %s, %s, %s, 'active')",
-                    (token, template_id, final_expiration_days, expires_at)
-                )
-                return token
-    except Exception as e:
-        logger.error(f"创建邀请链接时出错: {e}", exc_info=True)
-        raise
-
 def create_invitation_links_batch(template_id, expiration_days, link_expires_in_days, count=1) -> List[str]:
     """批量创建邀请链接，并返回生成的token列表。"""
     try:
