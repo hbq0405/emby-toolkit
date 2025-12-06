@@ -369,63 +369,48 @@ class WatchlistProcessor:
 
     def _get_series_to_process(self, where_clause: str, tmdb_id: Optional[str] = None, include_all_series: bool = False) -> List[Dict[str, Any]]:
         """
-        【V5 - 数据库直通版】
-        - 单项刷新：直接查 DB。
-        - 批量刷新：直接调用 DB 函数，支持 SQL 级媒体库过滤，移除 Emby API 调用。
+        【V6 - 数据库统一版】
+        - 无论是单项刷新还是批量刷新，统一调用 watchlist_db 接口。
         """
         
-        # 1. 单项刷新逻辑 (保持不变)
+        # 1. 准备参数
+        target_library_ids = None
+        target_condition = None
+
+        # 2. 如果是单项刷新 (tmdb_id 存在)
         if tmdb_id:
-            try:
-                with connection.get_db_connection() as conn:
-                    cursor = conn.cursor()
-                    # 这里需要手动写全字段，或者复用 watchlist_db 的逻辑，为了简单保持原样
-                    base_query = """
-                        SELECT 
-                            tmdb_id, title AS item_name, watching_status AS status,
-                            emby_item_ids_json, force_ended, paused_until,
-                            last_episode_to_air_json, watchlist_tmdb_status AS tmdb_status,
-                            watchlist_missing_info_json AS missing_info_json, subscription_status,
-                            total_episodes, 
-                            total_episodes_locked
-                        FROM media_metadata
-                        WHERE item_type = 'Series' AND tmdb_id = %s
-                    """
-                    cursor.execute(base_query, (tmdb_id,))
-                    result = [dict(row) for row in cursor.fetchall()]
-                    if not result:
-                        logger.warning(f"  ➜ 数据库中未找到 TMDb ID 为 {tmdb_id} 的追剧记录。")
-                    return result
-            except Exception as e:
-                logger.error(f"为 tmdb_id {tmdb_id} 获取追剧信息时发生数据库错误: {e}", exc_info=True)
-                return []
+            # 单项刷新时，我们不需要 library_ids 和 where_clause
+            # 因为我们就是想强制刷新这一部，不管它在哪个库，也不管它是什么状态
+            pass 
 
-        # 2. 批量刷新逻辑 (优化后)
-        selected_libraries = self.config.get(constants.CONFIG_OPTION_EMBY_LIBRARIES_TO_PROCESS, [])
-        
-        # 构建 SQL 条件片段
-        conditions = []
-        
-        # 处理 include_all_series 逻辑
-        if not include_all_series:
-            conditions.append("watching_status != 'NONE'")
+        # 3. 如果是批量刷新
+        else:
+            # 获取配置的媒体库
+            target_library_ids = self.config.get(constants.CONFIG_OPTION_EMBY_LIBRARIES_TO_PROCESS, [])
+            if target_library_ids:
+                logger.info(f"  ➜ 已启用媒体库过滤器 ({len(target_library_ids)} 个库)，正在数据库中筛选...")
+
+            # 构建 SQL 条件片段
+            conditions = []
             
-        # 处理传入的 where_clause (例如: "WHERE watching_status = 'Watching'")
-        if where_clause:
-            # 去掉 "WHERE" 前缀，只保留条件部分
-            clean_clause = where_clause.replace('WHERE', '', 1).strip()
-            if clean_clause:
-                conditions.append(clean_clause)
-        
-        final_condition_sql = " AND ".join(conditions) if conditions else ""
+            # 处理 include_all_series 逻辑
+            if not include_all_series:
+                conditions.append("watching_status != 'NONE'")
+                
+            # 处理传入的 where_clause (例如: "WHERE watching_status = 'Watching'")
+            if where_clause:
+                # 去掉 "WHERE" 前缀，只保留条件部分
+                clean_clause = where_clause.replace('WHERE', '', 1).strip()
+                if clean_clause:
+                    conditions.append(clean_clause)
+            
+            target_condition = " AND ".join(conditions) if conditions else ""
 
-        if selected_libraries:
-            logger.info(f"  ➜ 已启用媒体库过滤器 ({len(selected_libraries)} 个库)，正在数据库中筛选...")
-        
-        # ★★★ 核心调用：直接使用 DB 函数进行筛选 ★★★
+        # 4. 统一调用数据库接口
         return watchlist_db.get_series_by_dynamic_condition(
-            condition_sql=final_condition_sql,
-            library_ids=selected_libraries
+            condition_sql=target_condition,
+            library_ids=target_library_ids,
+            tmdb_id=tmdb_id
         )
 
     def _save_local_json(self, relative_path: str, new_data: Dict[str, Any]):

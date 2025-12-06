@@ -795,14 +795,15 @@ def get_gap_scan_candidates(library_ids: Optional[List[str]] = None) -> List[Dic
         logger.error(f"  ➜ 获取缺集扫描候选列表时出错: {e}", exc_info=True)
         return []
 
-def get_series_by_dynamic_condition(condition_sql: str, library_ids: Optional[List[str]] = None) -> List[Dict[str, Any]]:
+def get_series_by_dynamic_condition(condition_sql: str = None, library_ids: Optional[List[str]] = None, tmdb_id: Optional[str] = None) -> List[Dict[str, Any]]:
     """
     根据动态条件获取剧集列表（用于 WatchlistProcessor）。
     
-    :param condition_sql: 例如 "watching_status = 'Watching'" 或 "force_ended = FALSE"
+    :param condition_sql: SQL 条件片段，例如 "watching_status = 'Watching'"
     :param library_ids: 可选的媒体库 ID 列表
+    :param tmdb_id: 可选，指定单个 TMDb ID (如果指定，通常会忽略其他过滤条件)
     """
-    # 基础查询字段，与原 _get_series_to_process 保持一致
+    # 基础查询字段 (已包含 total_episodes 和 total_episodes_locked)
     base_sql = """
         SELECT 
             tmdb_id,
@@ -821,21 +822,27 @@ def get_series_by_dynamic_condition(condition_sql: str, library_ids: Optional[Li
         WHERE item_type = 'Series'
     """
     
-    # 拼接动态条件
-    if condition_sql:
-        # 简单的防注入处理：确保 condition_sql 不包含分号等危险字符，
-        # 但由于这是内部调用，主要依赖调用方传入正确的 SQL 片段。
-        # 这里假设 condition_sql 是类似 "watching_status = '...'" 的片段
-        base_sql += f" AND ({condition_sql})"
-    
-    # 拼接媒体库过滤
-    if library_ids:
-        base_sql += _build_library_filter_sql(library_ids)
+    params = []
+
+    # 1. 优先处理单项查询
+    if tmdb_id:
+        base_sql += " AND tmdb_id = %s"
+        params.append(tmdb_id)
+    else:
+        # 2. 只有在非单项查询时，才应用状态过滤和库过滤
+        # 拼接动态条件
+        if condition_sql:
+            base_sql += f" AND ({condition_sql})"
+        
+        # 拼接媒体库过滤
+        if library_ids:
+            base_sql += _build_library_filter_sql(library_ids)
         
     try:
         with get_db_connection() as conn:
             cursor = conn.cursor()
-            cursor.execute(base_sql)
+            # 使用参数化查询执行
+            cursor.execute(base_sql, tuple(params))
             return [dict(row) for row in cursor.fetchall()]
     except Exception as e:
         logger.error(f"  ➜ 根据动态条件获取剧集时出错: {e}", exc_info=True)
