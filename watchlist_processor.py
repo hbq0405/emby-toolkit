@@ -385,7 +385,9 @@ class WatchlistProcessor:
                             tmdb_id, title AS item_name, watching_status AS status,
                             emby_item_ids_json, force_ended, paused_until,
                             last_episode_to_air_json, watchlist_tmdb_status AS tmdb_status,
-                            watchlist_missing_info_json AS missing_info_json, subscription_status
+                            watchlist_missing_info_json AS missing_info_json, subscription_status,
+                            total_episodes, 
+                            total_episodes_locked
                         FROM media_metadata
                         WHERE item_type = 'Series' AND tmdb_id = %s
                     """
