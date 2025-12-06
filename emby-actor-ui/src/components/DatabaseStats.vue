@@ -183,6 +183,11 @@
                     </div>
                     <div v-else v-for="(group, index) in stats.release_group_ranking" :key="group.release_group" class="ranking-item">
                       <span class="ranking-index">{{ index + 1 }}</span>
+                      <img 
+                        :src="getIconPath(group.release_group)" 
+                        class="site-icon"
+                        @error="handleIconError"
+                      />
                       <span class="ranking-name">{{ group.release_group }}</span>
                       <span class="ranking-count">{{ group.count }} 部</span>
                       <n-progress
@@ -206,6 +211,11 @@
                     </div>
                     <div v-else v-for="(group, index) in stats.historical_release_group_ranking" :key="group.release_group" class="ranking-item">
                       <span class="ranking-index">{{ index + 1 }}</span>
+                      <img 
+                        :src="getIconPath(group.release_group)" 
+                        class="site-icon"
+                        @error="handleIconError"
+                      />
                       <span class="ranking-name">{{ group.release_group }}</span>
                       <span class="ranking-count">{{ group.count }} 部</span>
                       <n-progress
@@ -352,6 +362,22 @@ const resolutionChartOptions = computed(() => {
   };
 });
 
+const getIconPath = (groupName) => {
+  if (!groupName) return '';
+  // 这里假设图标文件名就是发布组名字，例如 "HDSky.png"
+  // 如果名字里有空格，可能需要处理一下，例如 .replace(/\s+/g, '')
+  return `/icons/site/${groupName}.ico`; 
+};
+
+// 新增：图标加载失败时的处理（隐藏或显示默认图标）
+const handleIconError = (e) => {
+  // 方式 A: 加载失败直接隐藏图标
+  e.target.style.display = 'none';
+  
+  // 方式 B: 加载失败显示一个默认图标 (取消注释使用)
+  // e.target.src = '/icons/default.png';
+};
+
 onMounted(() => {
   // 并发请求，互不阻塞
   fetchCore();
@@ -379,6 +405,13 @@ onMounted(() => {
 .stat-item-value { font-size: 24px; font-weight: 600; line-height: 1.1; color: var(--n-statistic-value-text-color); }
 .quota-grid { align-items: center; }
 .quota-label-container { display: flex; align-items: center; justify-content: center; font-weight: 600; font-size: 14px; color: var(--n-text-color-2); }
+.site-icon {
+  width: 18px;       /* 图标宽度 */
+  height: 18px;      /* 图标高度 */
+  margin-right: 8px; /* 图标和名称之间的间距 */
+  object-fit: contain;
+  border-radius: 2px; /* 可选：圆角 */
+}
 .ranking-item { display: flex; align-items: center; width: 100%; font-size: 14px; }
 .ranking-index { font-weight: bold; color: var(--n-text-color-2); width: 25px; text-align: right; padding-right: 8px; flex-shrink: 0; }
 .ranking-name { font-weight: 500; width: 100px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; flex-shrink: 0; }
