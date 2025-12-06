@@ -263,8 +263,9 @@
                       :show-indicator="false"
                       :border-radius="0"
                       :processing="calculateProgress(item) < 100"
+                      class="aurora-progress"
+                      :color="calculateProgress(item) < 100 ? 'transparent' : undefined"
                       :status="getProgressStatus(item)"
-                      :color="getProgressColor(item)"
                     />
                   </div>
 
@@ -1367,58 +1368,6 @@ html.dark .progress-separator :deep(.n-progress-graph-line-rail) {
 .clickable-count:hover {
   color: var(--n-color-primary);
   border-bottom-color: var(--n-color-primary);
-}
-
-/* =========================================
-   极光流光进度条 (Aurora Flow)
-   ========================================= */
-
-/* 1. 针对“进行中”的状态，强制使用流光渐变 */
-.progress-separator :deep(.n-progress .n-progress-graph-line-fill.n-progress-graph-line-fill--processing) {
-  /* 
-     定义渐变色：
-     这里用了 4 段色值：主色 -> 亮青(提亮) -> 骚紫(醒目) -> 主色(闭环)
-     你可以根据喜好修改中间的颜色，建议选高饱和度的亮色
-  */
-  background-image: linear-gradient(
-    90deg, 
-    var(--n-color-primary) 0%, 
-    #00d2ff 50%,    /* 亮青色，非常刺眼 */
-    #ff0099 75%,    /* 玫红色，对比强烈 */
-    var(--n-color-primary) 100%
-  ) !important;
-  
-  /* 拉大背景尺寸，以便进行移动动画 */
-  background-size: 200% 100%;
-  
-  /* 执行流动动画 */
-  animation: aurora-flow 2s linear infinite;
-  
-  /* 加一点点同色系外发光，增加“溢出”感 */
-  box-shadow: 0 0 4px rgba(0, 210, 255, 0.6);
-}
-
-/* 2. 去掉原本 Naive UI 自带的白色波纹动画，因为我们的渐变已经在动了，叠加会乱 */
-.progress-separator :deep(.n-progress .n-progress-graph-line-fill.n-progress-graph-line-fill--processing)::after {
-  display: none;
-}
-
-/* 3. 定义流动关键帧 */
-@keyframes aurora-flow {
-  0% {
-    background-position: 100% 0;
-  }
-  100% {
-    background-position: -100% 0;
-  }
-}
-
-/* 4. 优化背景槽颜色 (保持不变) */
-.progress-separator :deep(.n-progress-graph-line-rail) {
-  background-color: rgba(0, 0, 0, 0.1) !important;
-}
-html.dark .progress-separator :deep(.n-progress-graph-line-rail) {
-  background-color: rgba(255, 255, 255, 0.2) !important;
 }
 
 /* 手机端适配 */
