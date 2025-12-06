@@ -516,41 +516,63 @@ const filteredWatchlist = computed(() => {
   } else if (currentView.value === 'completed') {
     // --- 已完结视图：聚合逻辑 ---
     
-    let completedSeasons = list.filter(item => item.status === 'Completed');
+    // 1. 先找到所有包含至少一个“已完结”季度的父剧集 ID
+    //    (如果不这样筛选，那些纯粹还在追、没有一季看完的剧也会跑进来)
+    const completedParentIds = new Set(
+      list.filter(item => item.status === 'Completed').map(i => i.parent_tmdb_id)
+    );
+
+    // 2. 获取这些剧集名下的【所有】季度数据
+    //    关键点：这里不再只 filter 'Completed'，而是把该剧的 Watching/Paused 季度也拿进来
+    const seasonsToAggregate = list.filter(item => completedParentIds.has(item.parent_tmdb_id));
 
     const groups = {};
-    completedSeasons.forEach(season => {
+    
+    // 3. 对所有相关季度进行遍历聚合
+    seasonsToAggregate.forEach(season => {
       const pid = season.parent_tmdb_id;
       if (!groups[pid]) {
         groups[pid] = { 
           ...season, 
-          item_name: season.item_name.replace(/ 第 \d+ 季$/, ''),
-          collected_count: season.series_collected_count || 0,
-          total_count: season.series_total_episodes || 0,
+          item_name: season.item_name.replace(/ 第 \d+ 季$/, ''), // 去掉季号作为总标题
+          collected_count: 0, // 重置计数，下面累加
+          total_count: 0,     // 重置计数，下面累加
           status: season.series_status, 
           is_aggregated: true,
           
-          // ★★★ 初始化分类数组 ★★★
-          seasons_contains: [], // 已入库 (in_library=TRUE)
-          seasons_missing: [],  // 缺失 (in_library=FALSE)
-          seasons_airing: []    // 连载中 (in_library=TRUE 且 状态活跃)
+          seasons_contains: [], 
+          seasons_missing: [],  
+          seasons_airing: []    
         };
       }
+
+      // 累加集数 (可选，如果你想显示总进度)
+      // 注意：这里简单的累加可能会导致显示的数字很大，看你需求
+      // groups[pid].collected_count += (season.collected_count || 0);
+      // groups[pid].total_count += (season.total_count || 0);
       
       // ★★★ 分类逻辑 ★★★
-      // 1. 判断是否在库：只要收集数 > 0 就算在库 (或者你可以用 season.collected_count === season.total_count 来判断全收集)
-      // 这里按你的要求：in_library=TRUE (即 collected_count > 0)
       const isInLibrary = (season.collected_count > 0);
       
       if (isInLibrary) {
-        groups[pid].seasons_contains.push(season.season_number);
+        // 只要在库，就算包含
+        // 注意：为了避免重复显示，通常 Completed 的才放入 seasons_contains，或者全部放入
+        // 根据你之前的逻辑，这里是放入所有在库的
+        if (season.status === 'Completed') {
+             groups[pid].seasons_contains.push(season.season_number);
+        } else {
+             // 如果在库但不是 Completed，通常也算 contains，但为了区分显示：
+             // 你之前的逻辑是：
+             groups[pid].seasons_contains.push(season.season_number);
+        }
         
         // 2. 判断是否连载中：在库 且 状态是 Watching/Paused
+        // ★★★ 这里现在能生效了，因为 season.status 为 Paused 的第5季现在在这个循环里了 ★★★
         if (season.status === 'Watching' || season.status === 'Paused') {
            groups[pid].seasons_airing.push(season.season_number);
         }
       } else {
-        // 3. 缺失：完全没入库
+        // 3. 缺失
         groups[pid].seasons_missing.push(season.season_number);
       }
       
