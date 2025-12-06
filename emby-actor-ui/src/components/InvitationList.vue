@@ -15,6 +15,7 @@
       :data="invitations"
       :loading="loading"
       :row-key="row => row.id"
+      :pagination="{ pageSize: 10 }" 
     />
 
     <n-modal
@@ -33,6 +34,18 @@
             :options="templateOptions"
           />
         </n-form-item>
+        
+        <!-- ★★★ 新增：生成数量 ★★★ -->
+        <n-form-item label="生成数量" path="count">
+          <n-input-number
+            v-model:value="formModel.count"
+            :min="1"
+            :max="100"
+            style="width: 100%"
+            placeholder="一次生成多少个链接"
+          />
+        </n-form-item>
+
         <n-form-item label="用户有效期(天)" path="expiration_days">
           <n-input-number
             v-model:value="formModel.expiration_days"
@@ -69,7 +82,7 @@ import {
 } from '@vicons/ionicons5';
 import dayjs from 'dayjs';
 
-// --- API (可以移到单独的文件) ---
+// --- API ---
 const api = {
   getInvitations: () => fetch('/api/admin/invitations').then(res => res.json()),
   deleteInvitation: (id) => fetch(`/api/admin/invitations/${id}`, { method: 'DELETE' }),
@@ -91,20 +104,25 @@ const isModalVisible = ref(false);
 const formRef = ref(null);
 const formModel = ref({
   template_id: null,
+  count: 1, // ★★★ 默认数量为 1
   expiration_days: null,
   link_expires_in_days: 7,
 });
 
-// ★★★★★★★★★★★★★★★★★★★
-// ★★★   核心修复点   ★★★
-// ★★★★★★★★★★★★★★★★★★★
 const rules = {
   template_id: {
-    type: 'number', // 明确类型为 number，这样 null 就无法通过验证
+    type: 'number',
     required: true,
     message: '请选择一个用户模板',
     trigger: ['blur', 'change'],
   },
+  count: {
+    type: 'number',
+    required: true,
+    min: 1,
+    message: '数量至少为 1',
+    trigger: ['blur', 'change'],
+  }
 };
 
 const templateOptions = computed(() =>
@@ -148,6 +166,7 @@ const handleDelete = async (id) => {
 const handleCreate = () => {
   formModel.value = {
     template_id: null,
+    count: 1, // 重置为 1
     expiration_days: null,
     link_expires_in_days: 7,
   };
@@ -161,25 +180,33 @@ const handleOk = (e) => {
       try {
         const response = await api.createInvitation(formModel.value);
         if (response.status === 'ok') {
-          const newLink = response.invite_link;
+          // ★★★ 修改：处理返回的链接列表 ★★★
+          const links = response.invite_links || [response.invite_link];
+          const linksText = links.join('\n');
+          const count = links.length;
+
           dialog.success({
-            title: '创建成功！',
+            title: `成功创建 ${count} 个邀请链接！`,
             content: () => h('div', null, [
-              h('p', null, '新的邀请链接已生成：'),
+              h('p', null, '请复制以下链接：'),
               h(NInput, {
-                value: newLink,
+                value: linksText,
+                type: 'textarea', // 使用文本域以支持多行
+                autosize: { minRows: 2, maxRows: 10 },
                 readonly: true,
-                suffix: () => h(NTooltip, null, {
-                  trigger: () => h(NButton, {
-                    text: true,
+              }),
+              h('div', { style: 'margin-top: 10px; text-align: right;' }, [
+                 h(NButton, {
+                    type: 'primary',
+                    size: 'small',
                     onClick: () => {
-                      navigator.clipboard.writeText(newLink);
-                      message.success('已复制到剪贴板');
+                      copyToClipboard(linksText);
                     }
-                  }, { icon: () => h(NIcon, { component: CopyIcon }) }),
-                  default: () => '复制链接'
-                })
-              })
+                  }, { 
+                    icon: () => h(NIcon, { component: CopyIcon }),
+                    default: () => '一键复制所有' 
+                  })
+              ])
             ]),
           });
           isModalVisible.value = false;
@@ -195,35 +222,28 @@ const handleOk = (e) => {
 };
 
 const copyToClipboard = (textToCopy) => {
-  // 优先使用 navigator.clipboard API (需要 HTTPS 或 localhost)
   if (navigator.clipboard && window.isSecureContext) {
     navigator.clipboard.writeText(textToCopy)
       .then(() => {
-        message.success('邀请链接已复制到剪贴板！');
+        message.success('已复制到剪贴板！');
       })
       .catch(err => {
         message.error('自动复制失败，请手动复制。');
         console.error('Clipboard API failed: ', err);
       });
   } else {
-    // 降级方案：使用一个临时的 textarea 元素
     const textArea = document.createElement('textarea');
     textArea.value = textToCopy;
-    
-    // 避免在屏幕上闪烁
     textArea.style.position = 'absolute';
     textArea.style.left = '-9999px';
-    
     document.body.appendChild(textArea);
     textArea.focus();
     textArea.select();
-    
     try {
       document.execCommand('copy');
-      message.success('邀请链接已复制到剪贴板！');
+      message.success('已复制到剪贴板！');
     } catch (err) {
       message.error('复制失败，请手动复制。');
-      console.error('Fallback copy failed: ', err);
     } finally {
       document.body.removeChild(textArea);
     }
@@ -238,7 +258,7 @@ const createColumns = () => [
     render: (row) => {
       const fullLink = `${window.location.origin}/register/invite/${row.token}`;
       return h(NSpace, { align: 'center' }, () => [
-        h('span', { style: { maxWidth: '200px', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' } }, fullLink),
+        h('span', { style: { maxWidth: '200px', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', display: 'inline-block' } }, fullLink),
         h(NTooltip, null, {
           trigger: () => h(NButton, {
             size: 'small',
@@ -253,6 +273,7 @@ const createColumns = () => [
   {
     title: '状态',
     key: 'status',
+    width: 80,
     render: (row) => {
       let type = 'default';
       let text = row.status;
@@ -262,16 +283,18 @@ const createColumns = () => [
       return h(NTag, { type }, () => text.toUpperCase());
     }
   },
-  { title: '关联模板', key: 'template_name' },
-  { title: '用户有效期(天)', key: 'expiration_days' },
+  { title: '关联模板', key: 'template_name', width: 120, ellipsis: true },
+  { title: '用户有效期(天)', key: 'expiration_days', width: 120 },
   {
     title: '链接到期时间',
     key: 'expires_at',
+    width: 160,
     render: (row) => row.expires_at ? dayjs(row.expires_at).format('YYYY-MM-DD HH:mm') : '-'
   },
   {
     title: '操作',
     key: 'action',
+    width: 80,
     render: (row) => {
       if (row.status === 'active') {
         return h(NPopconfirm, {

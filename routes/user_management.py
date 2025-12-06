@@ -143,15 +143,35 @@ def create_invitation():
     template_id = data.get('template_id')
     expiration_days = data.get('expiration_days')
     link_expires_in_days = data.get('link_expires_in_days', 7)
+    # ★★★ 新增：获取生成数量，默认为 1 ★★★
+    count = int(data.get('count', 1))
 
     if not template_id:
         return jsonify({"status": "error", "message": "必须选择一个模板"}), 400
+    
+    if count < 1:
+        return jsonify({"status": "error", "message": "生成数量必须大于 0"}), 400
 
     try:
-        token = user_db.create_invitation_link(template_id, expiration_days, link_expires_in_days)
+        # ★★★ 修改：调用批量生成函数 ★★★
+        tokens = user_db.create_invitation_links_batch(template_id, expiration_days, link_expires_in_days, count)
+        
         app_base_url = config_manager.APP_CONFIG.get("app_base_url", request.host_url.rstrip('/'))
-        invite_link = f"{app_base_url}/register/invite/{token}"
-        return jsonify({"status": "ok", "invite_link": invite_link}), 201
+        
+        # 生成完整的链接列表
+        invite_links = [f"{app_base_url}/register/invite/{token}" for token in tokens]
+        
+        # 为了兼容旧的前端逻辑（如果只生成1个），同时也返回单个 invite_link
+        response_data = {
+            "status": "ok", 
+            "invite_links": invite_links, # 新字段：列表
+            "count": len(invite_links)
+        }
+        
+        if len(invite_links) == 1:
+            response_data["invite_link"] = invite_links[0] # 兼容旧字段
+
+        return jsonify(response_data), 201
     except Exception as e:
         return jsonify({"status": "error", "message": str(e)}), 500
 

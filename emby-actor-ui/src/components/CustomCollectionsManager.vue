@@ -572,7 +572,7 @@
                     <n-space>
                       <n-tooltip trigger="hover">
                         <template #trigger>
-                          <n-button circle secondary @click="openTmdbSearch(media.title)">
+                          <n-button circle color="#ffffff" text-color="#000000" @click="openTmdbSearch(media.title)">
                             <template #icon><n-icon :component="SearchIcon" /></template>
                           </n-button>
                         </template>
@@ -617,7 +617,7 @@
                     <n-space>
                       <n-tooltip trigger="hover">
                         <template #trigger>
-                          <n-button circle secondary @click="openTmdbSearch(media.title)">
+                          <n-button circle color="#ffffff" text-color="#000000" @click="openTmdbSearch(media.title)">
                             <template #icon><n-icon :component="SearchIcon" /></template>
                           </n-button>
                         </template>
@@ -662,7 +662,7 @@
                     <n-space>
                       <n-tooltip trigger="hover">
                         <template #trigger>
-                          <n-button circle secondary @click="openTmdbSearch(media.title)">
+                          <n-button circle color="#ffffff" text-color="#000000" @click="openTmdbSearch(media.title)">
                             <template #icon><n-icon :component="SearchIcon" /></template>
                           </n-button>
                         </template>
@@ -707,7 +707,7 @@
                     <n-space>
                       <n-tooltip trigger="hover">
                         <template #trigger>
-                          <n-button circle secondary @click="openTmdbSearch(media.title)">
+                          <n-button circle color="#ffffff" text-color="#000000" @click="openTmdbSearch(media.title)">
                             <template #icon><n-icon :component="SearchIcon" /></template>
                           </n-button>
                         </template>

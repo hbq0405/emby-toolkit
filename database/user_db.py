@@ -724,6 +724,45 @@ def create_invitation_link(template_id, expiration_days, link_expires_in_days) -
         logger.error(f"创建邀请链接时出错: {e}", exc_info=True)
         raise
 
+def create_invitation_links_batch(template_id, expiration_days, link_expires_in_days, count=1) -> List[str]:
+    """批量创建邀请链接，并返回生成的token列表。"""
+    try:
+        with get_db_connection() as conn:
+            with conn.cursor() as cursor:
+                # 1. 获取模板信息 (只查一次)
+                final_expiration_days = expiration_days
+                if final_expiration_days is None:
+                    cursor.execute("SELECT default_expiration_days FROM user_templates WHERE id = %s", (template_id,))
+                    template = cursor.fetchone()
+                    if not template:
+                        raise ValueError("模板不存在")
+                    final_expiration_days = template['default_expiration_days']
+                
+                # 2. 准备批量插入的数据
+                expires_at = datetime.now(timezone.utc) + timedelta(days=link_expires_in_days)
+                tokens = []
+                values_to_insert = []
+                
+                for _ in range(count):
+                    token = str(uuid.uuid4())
+                    tokens.append(token)
+                    values_to_insert.append((
+                        token, 
+                        template_id, 
+                        final_expiration_days, 
+                        expires_at, 
+                        'active'
+                    ))
+                
+                # 3. 执行批量插入
+                sql = "INSERT INTO invitations (token, template_id, expiration_days, expires_at, status) VALUES %s"
+                execute_values(cursor, sql, values_to_insert)
+                
+                return tokens
+    except Exception as e:
+        logger.error(f"批量创建邀请链接时出错: {e}", exc_info=True)
+        raise
+
 def get_all_invitation_links() -> List[Dict]:
     """获取所有邀请链接及其关联的模板名称。"""
     try:
