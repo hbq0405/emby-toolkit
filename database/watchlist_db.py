@@ -847,3 +847,32 @@ def get_series_by_dynamic_condition(condition_sql: str = None, library_ids: Opti
     except Exception as e:
         logger.error(f"  ➜ 根据动态条件获取剧集时出错: {e}", exc_info=True)
         return []
+    
+def get_series_seasons_lock_info(parent_tmdb_id: str) -> Dict[int, Dict[str, Any]]:
+    """
+    获取指定剧集所有季的锁定状态信息。
+    返回格式: { 季号: {'locked': True, 'count': 20}, ... }
+    """
+    try:
+        with get_db_connection() as conn:
+            cursor = conn.cursor()
+            sql = """
+                SELECT season_number, total_episodes, total_episodes_locked
+                FROM media_metadata
+                WHERE parent_series_tmdb_id = %s AND item_type = 'Season'
+            """
+            cursor.execute(sql, (parent_tmdb_id,))
+            rows = cursor.fetchall()
+            
+            result = {}
+            for row in rows:
+                s_num = row.get('season_number')
+                if s_num is not None:
+                    result[s_num] = {
+                        'locked': row.get('total_episodes_locked', False),
+                        'count': row.get('total_episodes', 0)
+                    }
+            return result
+    except Exception as e:
+        logger.error(f"  ➜ 获取剧集 {parent_tmdb_id} 的分季锁定信息时出错: {e}", exc_info=True)
+        return {}

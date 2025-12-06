@@ -581,28 +581,46 @@ class WatchlistProcessor:
         
         latest_series_data, all_tmdb_episodes, emby_seasons = refresh_result
 
-        # ==================== 新增：总集数锁定过滤器 ====================
+        # ==================== 季总集数锁定过滤器 ====================
         # 如果总集数被锁定，我们需要剔除 TMDb 返回的“多余”集数
         # 这样后续的“下一集计算”和“缺集计算”就不会看到这些不存在的集了
         try:
-            db_fresh_info = watchlist_db.get_watchlist_item_details(tmdb_id)
-            is_locked = db_fresh_info.get('total_episodes_locked', False)
-            locked_total = db_fresh_info.get('total_episodes', 0)
+            # 1. 获取所有季的锁定配置
+            seasons_lock_map = watchlist_db.get_series_seasons_lock_info(tmdb_id)
             
-            logger.info(f"  🔍 [锁定检查] '{item_name}' 数据库状态 -> 锁定: {is_locked}, 设定总集数: {locked_total}")
+            if seasons_lock_map:
+                filtered_episodes = []
+                discarded_count = 0
+                
+                for ep in all_tmdb_episodes:
+                    s_num = ep.get('season_number')
+                    e_num = ep.get('episode_number')
+                    
+                    # 获取该季的锁定配置
+                    lock_info = seasons_lock_map.get(s_num)
+                    
+                    # 判断逻辑：
+                    # 如果该季存在锁定配置，且已开启锁定，且当前集号 > 锁定集数 -> 剔除
+                    if lock_info and lock_info.get('locked') and e_num > lock_info.get('count', 0):
+                        discarded_count += 1
+                        # 仅在第一次剔除时打印详细日志，避免刷屏
+                        if discarded_count == 1:
+                            logger.info(f"  🔒 [分季锁定生效] S{s_num} 锁定为 {lock_info['count']} 集，正在剔除 TMDb 多余集数 (如 S{s_num}E{e_num})...")
+                        continue
+                    
+                    # 否则保留该集
+                    filtered_episodes.append(ep)
+                
+                if discarded_count > 0:
+                    logger.info(f"  🗑️ 共剔除了 {discarded_count} 个不符合分季锁定规则的集。")
+                    all_tmdb_episodes = filtered_episodes
+            
+            else:
+                # 如果没查到任何季信息（罕见），就不做过滤
+                pass
 
-            if is_locked:
-                specials = [ep for ep in all_tmdb_episodes if ep.get('season_number') == 0]
-                regular_episodes = [ep for ep in all_tmdb_episodes if ep.get('season_number') != 0]
-                regular_episodes.sort(key=lambda x: (x.get('season_number', 0), x.get('episode_number', 0)))
-                
-                if len(regular_episodes) > locked_total:
-                    logger.info(f"  🔒 [锁定生效] 正在剔除多余集数...")
-                    regular_episodes = regular_episodes[:locked_total]
-                
-                all_tmdb_episodes = specials + regular_episodes
         except Exception as e:
-            logger.error(f"  ⚠️ 检查锁定状态时出错: {e}")
+            logger.error(f"  ⚠️ 执行分季锁定过滤时出错: {e}", exc_info=True)
 
         # 计算状态和缺失信息
         new_tmdb_status = latest_series_data.get("status")
