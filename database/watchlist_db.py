@@ -28,16 +28,16 @@ def get_all_watchlist_items() -> List[Dict[str, Any]]:
             -- 季的状态 (用于筛选)
             COALESCE(NULLIF(s.watching_status, 'NONE'), p.watching_status) as status,
             
-            -- ★★★ 新增 1：剧集层面的状态 (用于已完结卡片的 UI 判断) ★★★
+            -- 剧集层面的状态
             p.watching_status as series_status,
 
             p.watchlist_last_checked_at as last_checked_at,
             p.watchlist_next_episode_json as next_episode_to_air_json,
             p.watchlist_missing_info_json as missing_info_json,
             p.emby_item_ids_json,
-            p.watchlist_tmdb_status as tmdb_status, -- 确保拿到剧集的 TMDb 状态
+            p.watchlist_tmdb_status as tmdb_status,
             
-            -- 季层面的统计 (用于追剧视图)
+            -- 统计字段... (保持不变)
             (SELECT COUNT(*) FROM media_metadata e 
              WHERE e.parent_series_tmdb_id = s.parent_series_tmdb_id 
                AND e.season_number = s.season_number 
@@ -51,14 +51,12 @@ def get_all_watchlist_items() -> List[Dict[str, Any]]:
                    AND e.item_type = 'Episode')
             ) as total_count,
             
-            -- ★★★ 新增 2：剧集层面的统计 (用于已完结视图的进度条) ★★★
             (SELECT COUNT(*) FROM media_metadata e 
              WHERE e.parent_series_tmdb_id = p.tmdb_id 
                AND e.item_type = 'Episode' 
                AND e.in_library = TRUE) as series_collected_count,
                
             p.total_episodes as series_total_episodes,
-            
             s.total_episodes_locked
 
         FROM media_metadata s
@@ -69,18 +67,25 @@ def get_all_watchlist_items() -> List[Dict[str, Any]]:
             AND p.item_type = 'Series'
             AND p.watching_status != 'NONE'
             AND (
+                -- 1. 缺集 (未集齐) -> 显示
                 (s.total_episodes = 0 OR 
                  (SELECT COUNT(*) FROM media_metadata e 
                   WHERE e.parent_series_tmdb_id = s.parent_series_tmdb_id 
                     AND e.season_number = s.season_number 
                     AND e.in_library = TRUE) < s.total_episodes)
                 OR
+                -- 2. 最新季 -> 显示
                 s.season_number = (
                     SELECT MAX(season_number) FROM media_metadata m3 
                     WHERE m3.parent_series_tmdb_id = p.tmdb_id 
                       AND m3.item_type = 'Season'
                 )
-                OR p.watching_status IN ('Completed', 'Paused')
+                OR 
+                -- 3. 剧集整体已完结或暂停 -> 显示
+                p.watching_status IN ('Completed', 'Paused')
+                
+                -- 季本身已完结 -> 显示 
+                OR s.watching_status = 'Completed'
             )
         ORDER BY p.first_requested_at DESC, s.season_number ASC;
     """
