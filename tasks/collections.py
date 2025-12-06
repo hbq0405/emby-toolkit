@@ -24,41 +24,53 @@ logger = logging.getLogger(__name__)
 # 辅助函数应用修正
 def _apply_id_corrections(tmdb_items: list, definition: dict, collection_name: str) -> tuple[list, dict]:
     """
-    【V2 - 完整修正版】
-    应用合集定义中的ID修正规则，并完整保留季号信息。
-    :return: 一个元组，包含 (修正后的tmdb_items列表, 新ID到旧ID的映射字典)
+    【V3 - 标题修正支持版】
+    应用合集定义中的修正规则 (支持 ID 修正和 标题 修正)。
     """
     corrections = definition.get('corrections', {})
     corrected_id_to_original_id_map = {}
+    
     if corrections:
         logger.info(f"  -> 检测到合集 '{collection_name}' 存在 {len(corrections)} 条修正规则，正在应用...")
+        
         for item in tmdb_items:
-            original_id_str = str(item.get('id'))
-            if original_id_str in corrections:
-                corrected_value = corrections[original_id_str]
-                logger.info(f"    -> 应用修正: 将源 ID {original_id_str} 替换为 {corrected_value}")
-                
+            original_id_str = str(item.get('id')) if item.get('id') else None
+            original_title = item.get('title')
+            
+            correction_found = None
+            
+            # 1. 优先尝试 ID 匹配
+            if original_id_str and original_id_str in corrections:
+                correction_found = corrections[original_id_str]
+                logger.info(f"    -> [ID修正] 将源 ID {original_id_str} 替换为 {correction_found}")
+            
+            # 2. 如果没有 ID 匹配，尝试 标题 匹配
+            elif original_title:
+                title_key = f"title:{original_title}"
+                if title_key in corrections:
+                    correction_found = corrections[title_key]
+                    logger.info(f"    -> [标题修正] 将标题 '{original_title}' 映射为 ID {correction_found}")
+
+            # 3. 应用修正
+            if correction_found:
                 new_id = None
-                # ▼▼▼ 核心修复 ▼▼▼
-                if isinstance(corrected_value, dict):
-                    # 同时提取 tmdb_id 和 season
-                    new_id = corrected_value.get('tmdb_id')
-                    new_season = corrected_value.get('season')
-                    
-                    if new_id:
-                        item['id'] = new_id
-                    # 如果有季号信息，也更新到 item 中
-                    if new_season is not None:
-                        item['season'] = new_season
+                new_season = None
+                
+                if isinstance(correction_found, dict):
+                    new_id = correction_found.get('tmdb_id')
+                    new_season = correction_found.get('season')
                 else:
-                    # 兼容旧的纯ID修正
-                    new_id = corrected_value
-                    item['id'] = new_id
-                # ▲▲▲ 修复结束 ▲▲▲
+                    new_id = correction_found
                 
                 if new_id:
-                    corrected_id_to_original_id_map[str(new_id)] = original_id_str
-                    
+                    item['id'] = new_id
+                    # 记录映射关系，用于后续健康检查 (如果是标题修正，original_id 可能为 None，这里主要用于 ID 修正的去重逻辑)
+                    if original_id_str:
+                        corrected_id_to_original_id_map[str(new_id)] = original_id_str
+                
+                if new_season is not None:
+                    item['season'] = new_season
+
     return tmdb_items, corrected_id_to_original_id_map
 
 # 辅助函数榜单健康检查
@@ -145,6 +157,11 @@ def _perform_list_collection_health_check(
                         is_in_library = True
         
         if is_in_library:
+            continue
+
+        # ★★★ 新增：如果 tmdb_id 为空，直接跳过 TMDb 查询，防止报错 ★★★
+        # 这些项目会保留在 generated_media_info_json 中，但不会被计入 missing_count (因为无法获取元数据)
+        if not tmdb_id or tmdb_id == 'None':
             continue
 
         try:
@@ -491,9 +508,10 @@ def task_process_all_custom_collections(processor):
                 
                 tmdb_items = [
                     {
-                        'tmdb_id': str(item.get('id')),
+                        'tmdb_id': str(item.get('id')) if item.get('id') else None, # 允许 None
                         'media_type': item.get('type'),
-                        'emby_id': item.get('emby_id'), # 只有 FilterEngine 会带这个
+                        'emby_id': item.get('emby_id'),
+                        'title': item.get('title'), # <--- 关键！保留原始标题
                         **({'season': item['season']} if 'season' in item and item.get('season') is not None else {})
                     }
                     for item in raw_tmdb_items
@@ -566,7 +584,8 @@ def task_process_all_custom_collections(processor):
                 for item in tmdb_items:
                     clean_item = {
                         'tmdb_id': item['tmdb_id'],
-                        'media_type': item['media_type']
+                        'media_type': item['media_type'],
+                        'title': item.get('title')
                     }
                     if 'season' in item:
                         clean_item['season'] = item['season']
@@ -677,6 +696,7 @@ def process_single_custom_collection(processor, custom_collection_id: int):
                 'tmdb_id': str(item.get('id')),
                 'media_type': item.get('type'),
                 'emby_id': item.get('emby_id'), 
+                'title': item.get('title'),
                 **({'season': item['season']} if 'season' in item and item.get('season') is not None else {})
             }
             for item in raw_tmdb_items
@@ -750,7 +770,8 @@ def process_single_custom_collection(processor, custom_collection_id: int):
         for item in tmdb_items:
             clean_item = {
                 'tmdb_id': item['tmdb_id'],
-                'media_type': item['media_type']
+                'media_type': item['media_type'],
+                'title': item.get('title')
             }
             if 'season' in item:
                 clean_item['season'] = item['season']

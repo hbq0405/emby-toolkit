@@ -253,7 +253,6 @@ def api_delete_custom_collection(collection_id):
 @admin_required
 def api_get_custom_collection_status(collection_id):
     """
-    【V8 - 键名完全修正版】
     修复了因键名不统一 (tmdb_id vs id) 导致的 KeyError。
     """
     try:
@@ -266,49 +265,69 @@ def api_get_custom_collection_status(collection_id):
             collection['media_items'] = []
             return jsonify(collection)
 
-        # ▼▼▼ 修正 1/3：使用正确的键名 'tmdb_id' 来提取所有ID ▼▼▼
-        tmdb_ids = [str(item['tmdb_id']) for item in definition_list if 'tmdb_id' in item]
+        # 提取有效的 TMDB ID 进行查询
+        tmdb_ids = [str(item['tmdb_id']) for item in definition_list if item.get('tmdb_id')]
         
         media_in_db_map = media_db.get_media_details_by_tmdb_ids([tmdb_ids])
         
         final_media_list = []
         for item_def in definition_list:
-            # 安全地获取值，防止因个别数据格式错误导致整个接口崩溃
-            tmdb_id = str(item_def.get('tmdb_id'))
-            if not tmdb_id:
-                continue
-
-            # ▼▼▼ 修正 2/3：使用正确的键名 'media_type' ▼▼▼
+            tmdb_id = item_def.get('tmdb_id')
+            if tmdb_id and str(tmdb_id).lower() != 'none':
+                tmdb_id_str = str(tmdb_id)
+            else:
+                tmdb_id_str = None
+            
             media_type = item_def.get('media_type')
             season_number = item_def.get('season')
+            
+            # ★★★ 获取原始标题 (这是 ListImporter 存进去的) ★★★
+            source_title = item_def.get('title') 
 
-            if tmdb_id in media_in_db_map:
-                db_record = media_in_db_map[tmdb_id]
-                status = "missing"  # 默认状态，WANTED 和 NONE 都会落入此分类
+            # 情况 1: 完全未识别
+            if not tmdb_id_str:
+                final_media_list.append({
+                    "tmdb_id": None,
+                    "emby_id": None,
+                    "title": source_title or "未知标题", # 显示原始标题
+                    "original_title": source_title,      # 专门传给前端用于搜索
+                    "release_date": "",
+                    "poster_path": None,
+                    "status": "unidentified",
+                    "media_type": media_type,
+                    "season": season_number
+                })
+                continue
+
+            # ★★★ 情况 2: 已识别，检查库内状态 ★★★
+            if tmdb_id_str in media_in_db_map:
+                db_record = media_in_db_map[tmdb_id_str]
+                status = "missing"
                 if db_record.get('in_library'):
                     status = "in_library"
                 elif db_record.get('subscription_status') == 'SUBSCRIBED':
-                    # 只有 SUBSCRIBED 才算作真正的“已订阅”
                     status = "subscribed"
                 elif db_record.get('subscription_status') == 'IGNORED':
                     status = "ignored"
                 
                 final_media_list.append({
-                    "tmdb_id": tmdb_id,
+                    "tmdb_id": tmdb_id_str,
                     "emby_id": db_record.get('emby_item_id'),
-                    "title": db_record.get('title') or db_record.get('original_title', f"媒体 {tmdb_id}"),
+                    "title": db_record.get('title') or db_record.get('original_title'), # 这是 TMDb 的标题
+                    "original_title": source_title, # ★★★ 新增：这是榜单里的原始标题 ★★★
                     "release_date": db_record.get('release_date').strftime('%Y-%m-%d') if db_record.get('release_date') else '',
                     "poster_path": db_record.get('poster_path'),
                     "status": status,
-                    # ▼▼▼ 修正 3/3：确保返回的 media_type 也是正确的 ▼▼▼
                     "media_type": media_type,
                     "season": season_number
                 })
             else:
+                # ★★★ 情况 3: 有 ID 但本地没缓存 (罕见，视为 Missing) ★★★
                 final_media_list.append({
-                    "tmdb_id": tmdb_id,
+                    "tmdb_id": tmdb_id_str,
                     "emby_id": None,
-                    "title": item_def.get('title') or f"未知媒体 (ID: {tmdb_id})",
+                    "title": source_title or f"未知媒体 (ID: {tmdb_id_str})", # 没缓存时优先显示原始标题
+                    "original_title": source_title, # ★★★ 新增 ★★★
                     "release_date": item_def.get('release_date', ''),
                     "poster_path": item_def.get('poster_path'),
                     "status": "missing",
@@ -355,35 +374,43 @@ def api_update_custom_collection_media_status(collection_id):
 @admin_required
 def api_fix_media_match_in_custom_collection(collection_id):
     """
-    【V2 - 季号支持版】修正榜单合集中一个错误的媒体匹配项。
+    修正榜单合集中一个错误的媒体匹配项。
+    支持通过 old_tmdb_id (修正错误匹配) 或 old_title (修正未识别) 进行定位。
     """
     data = request.json
     old_tmdb_id = data.get('old_tmdb_id')
     new_tmdb_id = data.get('new_tmdb_id')
-    # ★★★ 新增：从请求中获取可选的季号 ★★★
     season_number = data.get('season_number')
+    # ★★★ 新增：获取旧标题 ★★★
+    old_title = data.get('old_title')
 
-    if not all([old_tmdb_id, new_tmdb_id]):
-        return jsonify({"error": "请求无效: 缺少 old_tmdb_id 或 new_tmdb_id"}), 400
+    # 校验：新ID必须有，旧ID和旧标题至少要有一个
+    if not new_tmdb_id:
+        return jsonify({"error": "请求无效: 缺少 new_tmdb_id"}), 400
+    
+    if not old_tmdb_id and not old_title:
+        return jsonify({"error": "请求无效: 必须提供 old_tmdb_id 或 old_title 以定位项目"}), 400
 
     try:
-        # ★★★ 将季号传递给数据库处理函数 ★★★
+        # ★★★ 将 old_title 也传给数据库函数 ★★★
         corrected_item = collection_db.apply_and_persist_media_correction(
             collection_id=collection_id,
-            old_tmdb_id=str(old_tmdb_id),
+            old_tmdb_id=str(old_tmdb_id) if old_tmdb_id else None,
             new_tmdb_id=str(new_tmdb_id),
-            season_number=season_number 
+            season_number=season_number,
+            old_title=old_title 
         )
+        
         if corrected_item:
             return jsonify({
                 "message": "修正成功！",
                 "corrected_item": corrected_item
             })
         else:
-            return jsonify({"error": "修正失败，可能是TMDb ID无效或数据库错误"}), 404
+            return jsonify({"error": "修正失败，未找到对应的媒体项"}), 404
     except Exception as e:
         logger.error(f"修正合集 {collection_id} 媒体匹配时出错: {e}", exc_info=True)
-        return jsonify({"error": "服务器内部错误"}), 500
+        return jsonify({"error": f"服务器内部错误: {str(e)}"}), 500
 
 # --- 提取国家列表 ---
 @custom_collections_bp.route('/config/countries', methods=['GET'])

@@ -502,126 +502,183 @@
       <div v-if="isLoadingDetails" class="center-container"><n-spin size="large" /></div>
       <div v-else-if="selectedCollectionDetails">
         <n-tabs type="line" animated>
-          <n-tab-pane name="missing" :tab="`缺失${mediaTypeName} (${missingMediaInModal.length})`">
-            <n-empty v-if="missingMediaInModal.length === 0" :description="`太棒了！没有已上映的缺失${mediaTypeName}。`" style="margin-top: 40px;"></n-empty>
-            <n-grid v-else cols="2 s:3 m:4 l:5 xl:6" :x-gap="16" :y-gap="16" responsive="screen">
-              <n-gi v-for="media in missingMediaInModal" :key="media.tmdb_id">
-                <n-card class="movie-card" content-style="padding: 0;">
-                  <template #cover><img :src="getTmdbImageUrl(media.poster_path)" class="movie-poster" /></template>
-                  <div class="movie-info">
+          <!-- 1. 未识别 -->
+          <n-tab-pane name="unidentified" :tab="`未识别 (${unidentifiedMediaInModal.length})`">
+            <n-empty v-if="unidentifiedMediaInModal.length === 0" description="完美！所有项目都已成功识别。" style="margin-top: 40px;"></n-empty>
+            <n-grid v-else cols="2 s:3 m:4 l:5 xl:6" :x-gap="12" :y-gap="12" responsive="screen">
+              <n-gi v-for="(media, index) in unidentifiedMediaInModal" :key="index">
+                <div class="movie-card">
+                  <!-- 角标 -->
+                  <div class="status-badge unidentified">未识别</div>
+                  
+                  <!-- 占位图 -->
+                  <div class="poster-placeholder">
+                    <n-icon :component="HelpIcon" size="48" />
+                  </div>
+
+                  <!-- 底部文字遮罩 -->
+                  <div class="movie-info-overlay">
                     <div class="movie-title">
                       {{ media.title }}
-                        <span v-if="media.season"> 第 {{ media.season }} 季</span>
-                        <br />
-                      ({{ extractYear(media.release_date) || '未知年份' }})
+                      <span v-if="media.season"> 第 {{ media.season }} 季</span>
                     </div>
+                    <div class="movie-year">匹配失败</div>
                   </div>
-                  <template #action>
-                    <n-button-group style="width: 100%;">
-                      <n-tooltip>
-                        <template #trigger>
-                          <n-button @click="handleFixMatchClick(media)" size="small" block>
-                            <template #icon><n-icon :component="FixIcon" /></template>
-                            修正匹配
-                          </n-button>
-                        </template>
-                        修正错误的媒体匹配
-                      </n-tooltip>
-                    </n-button-group>
-                  </template>
-                </n-card>
+
+                  <!-- 悬停操作层 -->
+                  <div class="movie-actions-overlay">
+                    <n-button circle type="primary" @click="openTmdbSearch(media.title)">
+                      <template #icon><n-icon :component="SearchIcon" /></template>
+                    </n-button>
+                    <n-button round type="warning" @click="handleFixMatchClick(media)">
+                      修正匹配
+                    </n-button>
+                  </div>
+                </div>
               </n-gi>
             </n-grid>
           </n-tab-pane>
-          
-          <n-tab-pane name="in_library" :tab="`已入库 (${inLibraryMediaInModal.length})`">
-             <n-empty v-if="inLibraryMediaInModal.length === 0" :description="`该合集在媒体库中没有任何${mediaTypeName}。`" style="margin-top: 40px;"></n-empty>
-            <n-grid v-else cols="2 s:3 m:4 l:5 xl:6" :x-gap="16" :y-gap="16" responsive="screen">
-              <n-gi v-for="media in inLibraryMediaInModal" :key="media.tmdb_id">
-                <n-card class="movie-card" content-style="padding: 0;">
-                  <template #cover><img :src="getTmdbImageUrl(media.poster_path)" class="movie-poster" /></template>
-                  <div class="movie-info">
-                    <div class="movie-title">
-                      {{ media.title }}
-                        <span v-if="media.season"> 第 {{ media.season }} 季</span>
-                        <br />
-                      ({{ extractYear(media.release_date) || '未知年份' }})
+
+          <!-- 2. 缺失 (Missing) -->
+          <n-tab-pane name="missing" :tab="`缺失${mediaTypeName} (${missingMediaInModal.length})`">
+            <n-empty v-if="missingMediaInModal.length === 0" :description="`太棒了！没有已上映的缺失${mediaTypeName}。`" style="margin-top: 40px;"></n-empty>
+            <n-grid v-else cols="2 s:3 m:4 l:5 xl:6" :x-gap="12" :y-gap="12" responsive="screen">
+              <n-gi v-for="(media, index) in missingMediaInModal" :key="index">
+                <div class="movie-card">
+                  <!-- 角标 -->
+                  <div class="status-badge missing">缺失</div>
+
+                  <!-- 海报 -->
+                  <img :src="getTmdbImageUrl(media.poster_path)" class="movie-poster" loading="lazy" />
+
+                  <!-- 底部文字遮罩 -->
+                  <div class="movie-info-overlay">
+                    <!-- 标题 + 季号 -->
+                    <div class="movie-title" :title="media.title">
+                      {{ media.title }}<span v-if="media.season"> 第 {{ media.season }} 季</span>
+                    </div>
+                    <!-- 年份 -->
+                    <div class="movie-year">
+                      {{ extractYear(media.release_date) || '未知年份' }}
+                    </div>
+                    <!-- 原始标题 (仅当不一致时显示) -->
+                    <div v-if="media.original_title && media.original_title !== media.title" class="original-source-title">
+                      {{ media.original_title }}
                     </div>
                   </div>
-                   <template #action>
-                    <n-button-group style="width: 100%;">
-                      <n-tooltip>
+
+                  <!-- 悬停操作层 -->
+                  <div class="movie-actions-overlay">
+                    <n-space>
+                      <n-tooltip trigger="hover">
                         <template #trigger>
-                          <n-button type="success" size="small" style="width: 50%;" disabled>
-                            <template #icon><n-icon :component="CheckmarkCircle" /></template>
+                          <n-button circle secondary @click="openTmdbSearch(media.title)">
+                            <template #icon><n-icon :component="SearchIcon" /></template>
                           </n-button>
                         </template>
-                        已在库
+                        TMDb 搜索
                       </n-tooltip>
-                      <n-tooltip>
+                      <n-tooltip trigger="hover">
                         <template #trigger>
-                          <n-button @click="handleFixMatchClick(media)" size="small" style="width: 50%;">
+                          <n-button circle type="primary" @click="handleFixMatchClick(media)">
                             <template #icon><n-icon :component="FixIcon" /></template>
                           </n-button>
                         </template>
                         修正匹配
                       </n-tooltip>
-                    </n-button-group>
-                  </template>
-                </n-card>
+                    </n-space>
+                  </div>
+                </div>
               </n-gi>
             </n-grid>
           </n-tab-pane>
 
-          <n-tab-pane name="unreleased" :tab="`未上映 (${unreleasedMediaInModal.length})`">
-            <n-empty v-if="unreleasedMediaInModal.length === 0" :description="`该合集没有已知的未上映${mediaTypeName}。`" style="margin-top: 40px;"></n-empty>
-            <n-grid v-else cols="2 s:3 m:4 l:5 xl:6" :x-gap="16" :y-gap="16" responsive="screen">
-              <n-gi v-for="media in unreleasedMediaInModal" :key="media.tmdb_id">
-                <n-card class="movie-card" content-style="padding: 0;">
-                  <template #action>
-                    <n-tooltip>
-                      <template #trigger>
-                        <n-button @click="handleFixMatchClick(media)" size="small" block>
-                          <template #icon><n-icon :component="FixIcon" /></template>
-                          修正匹配
-                        </n-button>
-                      </template>
-                      修正错误的媒体匹配
-                    </n-tooltip>
-                  </template>
-                </n-card>
-              </n-gi>
-            </n-grid>
-          </n-tab-pane>
-
-          <n-tab-pane name="subscribed" :tab="`已订阅 (${subscribedMediaInModal.length})`">
-            <n-empty v-if="subscribedMediaInModal.length === 0" :description="`你没有订阅此合集中的任何${mediaTypeName}。`" style="margin-top: 40px;"></n-empty>
-            <n-grid v-else cols="2 s:3 m:4 l:5 xl:6" :x-gap="16" :y-gap="16" responsive="screen">
-              <n-gi v-for="media in subscribedMediaInModal" :key="media.tmdb_id">
-                <n-card class="movie-card" content-style="padding: 0;">
-                  <template #cover><img :src="getTmdbImageUrl(media.poster_path)" class="movie-poster" /></template>
-                  <div class="movie-info">
+          <!-- 3. 已入库 (In Library) -->
+          <n-tab-pane name="in_library" :tab="`已入库 (${inLibraryMediaInModal.length})`">
+             <n-empty v-if="inLibraryMediaInModal.length === 0" :description="`该合集在媒体库中没有任何${mediaTypeName}。`" style="margin-top: 40px;"></n-empty>
+             <n-grid v-else cols="2 s:3 m:4 l:5 xl:6" :x-gap="12" :y-gap="12" responsive="screen">
+              <n-gi v-for="(media, index) in inLibraryMediaInModal" :key="index">
+                <div class="movie-card">
+                  <div class="status-badge in_library">已入库</div>
+                  <img :src="getTmdbImageUrl(media.poster_path)" class="movie-poster" loading="lazy" />
+                  
+                  <div class="movie-info-overlay">
                     <div class="movie-title">
-                      {{ media.title }}
-                        <span v-if="media.season"> 第 {{ media.season }} 季</span>
-                        <br />
-                      ({{ extractYear(media.release_date) || '未知年份' }})
+                      {{ media.title }}<span v-if="media.season"> 第 {{ media.season }} 季</span>
+                    </div>
+                    <div class="movie-year">{{ extractYear(media.release_date) || '未知年份' }}</div>
+                    <div v-if="media.original_title && media.original_title !== media.title" class="original-source-title">
+                      {{ media.original_title }}
                     </div>
                   </div>
-                  <template #action>
-                    <n-button-group style="width: 100%;">
-                      <n-tooltip>
-                        <template #trigger>
-                          <n-button @click="handleFixMatchClick(media)" size="small" block>
-                            <template #icon><n-icon :component="FixIcon" /></template>
-                            修正匹配
-                          </n-button>
-                        </template>
-                        修正错误的媒体匹配
-                      </n-tooltip>
-                    </n-button-group>
-                  </template>
-                </n-card>
+
+                  <div class="movie-actions-overlay">
+                    <n-space>
+                      <n-button circle secondary @click="openTmdbSearch(media.title)"><template #icon><n-icon :component="SearchIcon" /></template></n-button>
+                      <n-button circle type="primary" @click="handleFixMatchClick(media)"><template #icon><n-icon :component="FixIcon" /></template></n-button>
+                    </n-space>
+                  </div>
+                </div>
+              </n-gi>
+            </n-grid>
+          </n-tab-pane>
+
+          <!-- 4. 未上映 (Unreleased) -->
+          <n-tab-pane name="unreleased" :tab="`未上映 (${unreleasedMediaInModal.length})`">
+            <n-empty v-if="unreleasedMediaInModal.length === 0" :description="`该合集没有已知的未上映${mediaTypeName}。`" style="margin-top: 40px;"></n-empty>
+             <n-grid v-else cols="2 s:3 m:4 l:5 xl:6" :x-gap="12" :y-gap="12" responsive="screen">
+              <n-gi v-for="(media, index) in unreleasedMediaInModal" :key="index">
+                <div class="movie-card">
+                  <div class="status-badge unreleased">未上映</div>
+                  <img :src="getTmdbImageUrl(media.poster_path)" class="movie-poster" loading="lazy" />
+                  
+                  <div class="movie-info-overlay">
+                    <div class="movie-title">
+                      {{ media.title }}<span v-if="media.season"> 第 {{ media.season }} 季</span>
+                    </div>
+                    <div class="movie-year">{{ extractYear(media.release_date) || '未知年份' }}</div>
+                    <div v-if="media.original_title && media.original_title !== media.title" class="original-source-title">
+                      {{ media.original_title }}
+                    </div>
+                  </div>
+
+                  <div class="movie-actions-overlay">
+                    <n-space>
+                      <n-button circle secondary @click="openTmdbSearch(media.title)"><template #icon><n-icon :component="SearchIcon" /></template></n-button>
+                      <n-button circle type="primary" @click="handleFixMatchClick(media)"><template #icon><n-icon :component="FixIcon" /></template></n-button>
+                    </n-space>
+                  </div>
+                </div>
+              </n-gi>
+            </n-grid>
+          </n-tab-pane>
+
+          <!-- 5. 已订阅 (Subscribed) -->
+          <n-tab-pane name="subscribed" :tab="`已订阅 (${subscribedMediaInModal.length})`">
+            <n-empty v-if="subscribedMediaInModal.length === 0" :description="`你没有订阅此合集中的任何${mediaTypeName}。`" style="margin-top: 40px;"></n-empty>
+             <n-grid v-else cols="2 s:3 m:4 l:5 xl:6" :x-gap="12" :y-gap="12" responsive="screen">
+              <n-gi v-for="(media, index) in subscribedMediaInModal" :key="index">
+                <div class="movie-card">
+                  <div class="status-badge subscribed">已订阅</div>
+                  <img :src="getTmdbImageUrl(media.poster_path)" class="movie-poster" loading="lazy" />
+                  
+                  <div class="movie-info-overlay">
+                    <div class="movie-title">
+                      {{ media.title }}<span v-if="media.season"> 第 {{ media.season }} 季</span>
+                    </div>
+                    <div class="movie-year">{{ extractYear(media.release_date) || '未知年份' }}</div>
+                    <div v-if="media.original_title && media.original_title !== media.title" class="original-source-title">
+                      {{ media.original_title }}
+                    </div>
+                  </div>
+
+                  <div class="movie-actions-overlay">
+                    <n-space>
+                      <n-button circle secondary @click="openTmdbSearch(media.title)"><template #icon><n-icon :component="SearchIcon" /></template></n-button>
+                      <n-button circle type="primary" @click="handleFixMatchClick(media)"><template #icon><n-icon :component="FixIcon" /></template></n-button>
+                    </n-space>
+                  </div>
+                </div>
               </n-gi>
             </n-grid>
           </n-tab-pane>
@@ -801,6 +858,7 @@ import {
   HelpCircleOutline as HelpIcon,
   ImageOutline as CoverIcon,
   BuildOutline as FixIcon,
+  SearchOutline as SearchIcon,
 } from '@vicons/ionicons5';
 
 // ===================================================================
@@ -856,6 +914,29 @@ const isSearchingDirectors = ref(false);
 const directorOptions = ref([]);
 const tmdbCountryOptions = ref([]);
 const isLoadingTmdbCountries = ref(false);
+const unidentifiedMediaInModal = computed(() => filterMediaByStatus('unidentified'));
+
+const openTmdbSearch = (mediaOrTitle) => {
+  let query = '';
+  
+  if (typeof mediaOrTitle === 'string') {
+    // 如果传的是字符串 (旧写法)，直接用
+    query = mediaOrTitle;
+  } else if (mediaOrTitle && typeof mediaOrTitle === 'object') {
+    // 如果传的是对象 (新写法)，优先用 original_title
+    query = mediaOrTitle.original_title || mediaOrTitle.title;
+  }
+
+  if (!query) {
+    message.warning('没有可搜索的标题');
+    return;
+  }
+  
+  // 移除可能干扰搜索的季号信息 (例如 "怪奇物语 第五季" -> "怪奇物语")
+  const cleanTitle = query.replace(/\s*(第\s*\d+\s*季|Season\s*\d+).*/i, '').trim();
+  
+  window.open(`https://www.themoviedb.org/search?query=${encodeURIComponent(cleanTitle)}`, '_blank');
+};
 
 const getInitialDiscoverParams = () => ({
   type: 'movie', sort_by: 'popularity.desc', release_year_gte: null, release_year_lte: null,
@@ -908,11 +989,25 @@ const handleFixMatchClick = (media) => {
         return false;
       }
       
-      // ★★★ 构造包含季号的 payload
+      // ★★★ 核心修改：构造 Payload ★★★
       const payload = {
-        old_tmdb_id: media.tmdb_id,
         new_tmdb_id: newTmdbId.value,
       };
+
+      // 检查当前的 tmdb_id 是否有效
+      // 如果是 null, undefined, 空字符串, 或者字符串 "None"，则视为无效
+      const currentId = media.tmdb_id;
+      const isValidId = currentId && String(currentId).toLowerCase() !== 'none';
+
+      if (isValidId) {
+        // 情况 A: 修正已识别但错误的匹配 -> 传 old_tmdb_id
+        payload.old_tmdb_id = currentId;
+      } else {
+        // 情况 B: 修正未识别的项目 -> 传 old_title
+        // 优先使用 original_title (源标题)，如果没有则使用 title
+        payload.old_title = media.original_title || media.title;
+      }
+
       if (isSeries && newSeasonNumber.value !== null && newSeasonNumber.value !== '') {
         payload.season_number = newSeasonNumber.value;
       }
@@ -2005,71 +2100,143 @@ createRuleWatcher(() => currentCollection.value.definition.dynamic_rules);
 .custom-collections-manager {
   padding: 0 10px;
 }
+
+/* ★★★ 卡片容器：强制 2:3 比例，去除内边距 ★★★ */
 .movie-card {
-  overflow: hidden;
   border-radius: 8px;
+  overflow: hidden;
+  position: relative;
+  aspect-ratio: 2 / 3; /* 强制海报比例 */
+  background-color: #202023;
+  transition: transform 0.2s, box-shadow 0.2s;
+  cursor: default;
 }
+
+.movie-card:hover {
+  transform: translateY(-4px);
+  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.5);
+  z-index: 2;
+}
+
+/* ★★★ 海报图片：铺满容器 ★★★ */
 .movie-poster {
   width: 100%;
-  height: auto;
-  aspect-ratio: 2 / 3;
+  height: 100%;
   object-fit: cover;
+  display: block;
+  transition: transform 0.3s;
 }
-.movie-info {
-  padding: 8px;
-  text-align: center;
+
+/* 悬停时海报微放大，增加呼吸感 */
+.movie-card:hover .movie-poster {
+  transform: scale(1.05);
 }
+
+/* ★★★ 底部渐变遮罩 (核心) ★★★ */
+.movie-info-overlay {
+  position: absolute;
+  bottom: 0;
+  left: 0;
+  right: 0;
+  padding: 60px 10px 10px 10px; /* 上方留出空间给渐变 */
+  /* 黑色渐变：从透明到黑色，保证文字清晰 */
+  background: linear-gradient(to top, rgba(0, 0, 0, 0.95) 0%, rgba(0, 0, 0, 0.7) 60%, transparent 100%);
+  color: #fff;
+  pointer-events: none; /* 让鼠标事件穿透到下层，防止遮挡点击 */
+  z-index: 10;
+}
+
+/* ★★★ 标题样式 ★★★ */
 .movie-title {
-  font-size: 13px;
+  font-size: 14px;
+  font-weight: bold;
   line-height: 1.3;
-  height: 3.9em; /* 3 lines */
+  text-shadow: 0 1px 2px rgba(0,0,0,0.8);
+  
+  /* 限制最多显示 2 行 */
   overflow: hidden;
   text-overflow: ellipsis;
   display: -webkit-box;
-  line-clamp: 3;
-  -webkit-line-clamp: 3;
+  -webkit-line-clamp: 2;
+  line-clamp: 2;
   -webkit-box-orient: vertical;
 }
-.center-container {
-  display: flex;
-  justify-content: center;
-  align-items: center;
-  height: 200px;
-}
-.drag-handle:hover {
-  color: #2080f0;
+
+/* ★★★ 年份样式 ★★★ */
+.movie-year {
+  font-size: 12px;
+  color: #ddd; /* 稍微灰一点 */
+  margin-top: 2px;
+  font-weight: 500;
 }
 
-.search-results-box {
-  width: 100%;
-  max-height: 220px;
-  overflow-y: auto;
-  border: 1px solid #48484e;
-  border-radius: 3px;
-  margin-top: 4px;
-  background: #242428;
-}
-.search-result-item {
-  padding: 8px 12px;
-  cursor: pointer;
-  transition: background-color 0.2s;
-}
-.search-result-item:hover {
-  background-color: #3a3a40;
-}
-.person-item {
-  display: flex;
-  align-items: center;
-}
-.person-info {
-  display: flex;
-  flex-direction: column;
-}
-.known-for {
-  font-size: 12px;
+/* ★★★ 原始标题样式 (优雅的第二行) ★★★ */
+.original-source-title {
+  font-size: 11px;
+  color: #aaa;
+  margin-top: 2px;
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
-  max-width: 250px; /* 防止代表作过长撑开布局 */
+  opacity: 0.8;
+}
+
+/* ★★★ 悬停操作层 (默认隐藏) ★★★ */
+.movie-actions-overlay {
+  position: absolute;
+  inset: 0; /* 铺满整个卡片 */
+  background: rgba(0, 0, 0, 0.6); /* 半透明黑底 */
+  backdrop-filter: blur(2px); /* 轻微毛玻璃 */
+  display: flex;
+  flex-direction: column;
+  justify-content: center;
+  align-items: center;
+  gap: 12px;
+  opacity: 0;
+  transition: opacity 0.2s ease-in-out;
+  z-index: 20;
+}
+
+.movie-card:hover .movie-actions-overlay {
+  opacity: 1;
+}
+
+/* ★★★ 左上角状态角标 (仿参考图) ★★★ */
+.status-badge {
+  position: absolute;
+  top: 10px;
+  left: -30px;
+  width: 100px;
+  height: 24px;
+  background-color: #666;
+  color: #fff;
+  font-size: 12px;
+  font-weight: bold;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  transform: rotate(-45deg); /* 旋转45度 */
+  box-shadow: 0 2px 4px rgba(0,0,0,0.3);
+  z-index: 15;
+  pointer-events: none;
+}
+
+/* 不同状态的颜色 */
+.status-badge.in_library { background-color: #63e2b7; color: #000; } /* Naive UI Success Green */
+.status-badge.missing { background-color: #e88080; } /* Naive UI Error Red */
+.status-badge.subscribed { background-color: #f2c97d; color: #000; } /* Naive UI Warning */
+.status-badge.unreleased { background-color: #8a8a8a; }
+.status-badge.unidentified { background-color: #d03050; }
+
+/* 占位符样式 */
+.poster-placeholder {
+  width: 100%;
+  height: 100%;
+  background-color: #2d2d30;
+  display: flex;
+  flex-direction: column;
+  justify-content: center;
+  align-items: center;
+  color: #666;
 }
 </style>

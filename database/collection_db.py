@@ -222,11 +222,10 @@ def remove_tmdb_id_from_all_collections(tmdb_id_to_remove: str):
     except psycopg2.Error as e:
         logger.error(f"  ➜ 从所有合集缓存中移除 TMDB ID {tmdb_id_to_remove} 时失败: {e}", exc_info=True)
 
-def apply_and_persist_media_correction(collection_id: int, old_tmdb_id: str, new_tmdb_id: str, season_number: Optional[int] = None) -> Optional[Dict[str, Any]]:
+def apply_and_persist_media_correction(collection_id: int, old_tmdb_id: Optional[str], new_tmdb_id: str, season_number: Optional[int] = None, old_title: Optional[str] = None) -> Optional[Dict[str, Any]]:
     """
-    【V4 - 职责分离最终版】
-    - 遵循“职责分离”原则，调用专属函数 ensure_media_record_exists 来创建记录。
-    - update_subscription_status 只负责更新状态，不再承担创建职责。
+    支持通过 TMDb ID 或 标题 定位并修正媒体项。
+    包含完整的元数据获取和状态更新逻辑。
     """
     conn = None
     try:
@@ -234,127 +233,189 @@ def apply_and_persist_media_correction(collection_id: int, old_tmdb_id: str, new
         with conn.cursor() as cursor:
             conn.autocommit = False
 
-            # === Part 1 & 2: 更新定义、决策状态 (逻辑不变) ===
+            # === Part 1: 锁定并读取记录 ===
             cursor.execute("SELECT definition_json, generated_media_info_json FROM custom_collections WHERE id = %s FOR UPDATE", (collection_id,))
             row = cursor.fetchone()
             if not row: return None
+            
             definition = row.get('definition_json') or {}
             definition_list = row.get('generated_media_info_json') or []
-            item_type = 'Movie'
+            
+            target_item = None
+            
+            # === Part 2: 在缓存列表中查找目标项目 (支持 ID 或 标题) ===
             for item in definition_list:
-                if str(item.get('tmdb_id')) == str(old_tmdb_id):
-                    item_type = item.get('media_type', 'Movie')
-                    item['tmdb_id'] = new_tmdb_id
-                    if season_number is not None: item['season'] = int(season_number)
-                    else: item.pop('season', None)
+                # 1. 优先尝试 ID 匹配 (如果提供了 old_tmdb_id)
+                if old_tmdb_id and str(item.get('tmdb_id')) == str(old_tmdb_id):
+                    target_item = item
                     break
+                
+                # 2. 如果 ID 没匹配上（或没提供），尝试 标题 匹配
+                # 注意：未识别项目的 tmdb_id 通常为 None 或 "None"
+                current_id = str(item.get('tmdb_id')) if item.get('tmdb_id') else 'None'
+                if not old_tmdb_id and old_title:
+                    # 只有当当前项没有有效ID，且标题匹配时才算数
+                    if current_id.lower() == 'none' and item.get('title') == old_title:
+                        target_item = item
+                        break
+            
+            if not target_item:
+                logger.warning(f"  ➜ 修正失败：在合集 {collection_id} 中未找到 ID={old_tmdb_id} 或 Title={old_title} 的项目。")
+                return None
+
+            # 获取旧的媒体类型，用于后续逻辑
+            item_type = target_item.get('media_type', 'Movie')
+
+            # === Part 3: 更新内存中的项目数据 ===
+            target_item['tmdb_id'] = new_tmdb_id
+            if season_number is not None: 
+                target_item['season'] = int(season_number)
+            else: 
+                target_item.pop('season', None)
+
+            # === Part 4: 更新修正规则 (Corrections) ===
             corrections = definition.get('corrections', {})
+            
+            # 构造修正后的值
             correction_value = {"tmdb_id": str(new_tmdb_id)}
-            if season_number is not None: correction_value['season'] = int(season_number)
-            corrections[str(old_tmdb_id)] = correction_value
+            if season_number is not None: 
+                correction_value['season'] = int(season_number)
+            
+            # 构造修正规则的 Key
+            if old_tmdb_id:
+                # 传统方式：Key 是旧 ID
+                correction_key = str(old_tmdb_id)
+            else:
+                # 新方式：Key 是 "title:原始标题"
+                correction_key = f"title:{old_title}"
+            
+            corrections[correction_key] = correction_value
             definition['corrections'] = corrections
-            cursor.execute("UPDATE custom_collections SET definition_json = %s, generated_media_info_json = %s WHERE id = %s", (json.dumps(definition, ensure_ascii=False), json.dumps(definition_list, ensure_ascii=False), collection_id))
-            
-            cursor.execute("SELECT in_library, subscription_status FROM media_metadata WHERE tmdb_id = %s AND item_type = %s", (old_tmdb_id, item_type))
-            old_item_record = cursor.fetchone()
-            inherited_target_status = 'NONE'
-            if old_item_record:
-                status = old_item_record['subscription_status']
-                inherited_target_status = 'WANTED' if old_item_record['in_library'] or status in ['WANTED', 'SUBSCRIBED'] else 'NONE'
 
-            # === Part 3: 执行状态变更 (★★★ 采用新逻辑 ★★★) ===
+            # === Part 5: 写回数据库 ===
+            cursor.execute(
+                "UPDATE custom_collections SET definition_json = %s, generated_media_info_json = %s WHERE id = %s", 
+                (json.dumps(definition, ensure_ascii=False), json.dumps(definition_list, ensure_ascii=False), collection_id)
+            )
             
-            # 3.1 废弃旧条目
-            if old_tmdb_id != new_tmdb_id:
-                request_db.set_media_status_ignored(
-                    tmdb_ids=[old_tmdb_id], item_type=item_type, ignore_reason=f"修正为 {new_tmdb_id}"
-                )
+            # === Part 6: 状态继承与新媒体入库 (核心逻辑) ===
+            
+            # 6.1 如果有旧 ID，且旧 ID 不等于新 ID，将旧 ID 设为忽略
+            if old_tmdb_id and old_tmdb_id != new_tmdb_id:
+                 request_db.set_media_status_ignored(tmdb_ids=[old_tmdb_id], item_type=item_type, ignore_reason=f"修正为 {new_tmdb_id}")
 
+            # 6.2 准备 API Key 和 来源信息
+            api_key = config_manager.APP_CONFIG.get(constants.CONFIG_OPTION_TMDB_API_KEY)
+            subscription_source = {"type": "collection_correction", "id": collection_id, "name": definition.get('name', '')}
+            
             corrected_item_for_return = {}
-            
-            if inherited_target_status == 'WANTED':
-                api_key = config_manager.APP_CONFIG.get(constants.CONFIG_OPTION_TMDB_API_KEY)
-                subscription_source = {"type": "collection_correction", "id": collection_id, "name": definition.get('name', '')}
 
-                # --- 【分支：修正为某一季】 ---
-                if season_number is not None:
-                    # 步骤 A: 确保父剧和子季的元数据记录都存在
-                    parent_details = tmdb.get_tv_details(int(new_tmdb_id), api_key)
-                    if not parent_details: raise ValueError(f"无法获取父剧 {new_tmdb_id} 详情")
-                    season_details = tmdb.get_tv_season_details(int(new_tmdb_id), season_number, api_key)
-                    if not season_details: raise ValueError(f"无法获取季 {season_number} 详情")
+            # 6.3 处理新 ID 的入库和状态更新
+            # --- 【分支 A：修正为某一季】 ---
+            if season_number is not None:
+                # A1. 获取父剧详情
+                parent_details = tmdb.get_tv_details(int(new_tmdb_id), api_key)
+                if not parent_details: raise ValueError(f"无法获取父剧 {new_tmdb_id} 详情")
+                
+                # A2. 获取季详情
+                season_details = tmdb.get_tv_season_details(int(new_tmdb_id), season_number, api_key)
+                if not season_details: raise ValueError(f"无法获取季 {season_number} 详情")
 
-                    parent_media_info = {
-                        'tmdb_id': new_tmdb_id, 
-                        'item_type': 'Series', 
-                        'title': parent_details.get('name'),
-                        'original_title': parent_details.get('original_name'),
-                        'release_date': parent_details.get('first_air_date'),
-                        'overview': parent_details.get('overview'),
-                        'poster_path': parent_details.get("poster_path")
-                    }
-                    season_tmdb_id = str(season_details.get('id'))
-                    season_media_info = {
-                        'tmdb_id': season_tmdb_id, 'item_type': 'Season', 'title': season_details.get('name'),
-                        'poster_path': season_details.get("poster_path") or parent_details.get("poster_path"),
-                        'parent_series_tmdb_id': new_tmdb_id, 'season_number': season_number,
-                        'release_date': season_details.get("air_date", '')
-                    }
-                    media_db.ensure_media_record_exists([parent_media_info, season_media_info])
-                    logger.info(f"  ➜ 已确保父剧 '{parent_details.get('name')}' 和季 '{season_details.get('name')}' 的记录存在。")
+                # A3. 构造元数据对象
+                parent_media_info = {
+                    'tmdb_id': new_tmdb_id, 
+                    'item_type': 'Series', 
+                    'title': parent_details.get('name'),
+                    'original_title': parent_details.get('original_name'),
+                    'release_date': parent_details.get('first_air_date'),
+                    'overview': parent_details.get('overview'),
+                    'poster_path': parent_details.get("poster_path")
+                }
+                season_tmdb_id = str(season_details.get('id'))
+                season_media_info = {
+                    'tmdb_id': season_tmdb_id, 
+                    'item_type': 'Season', 
+                    'title': season_details.get('name'),
+                    'poster_path': season_details.get("poster_path") or parent_details.get("poster_path"),
+                    'parent_series_tmdb_id': new_tmdb_id, 
+                    'season_number': season_number,
+                    'release_date': season_details.get("air_date", '')
+                }
+                
+                # A4. 确保记录存在
+                media_db.ensure_media_record_exists([parent_media_info, season_media_info])
 
-                    # 步骤 B: 现在可以安全地为“季”条目更新订阅状态
-                    release_date = season_details.get("air_date", '')
-                    final_subscription_status = 'PENDING_RELEASE' if release_date and release_date > datetime.now().strftime('%Y-%m-%d') else 'WANTED'
-                    if final_subscription_status == 'PENDING_RELEASE':
-                        request_db.set_media_status_pending_release(
-                            tmdb_ids=[season_tmdb_id], item_type='Season',
-                            source=subscription_source, media_info_list=[season_media_info]
-                        )
-                    else:
-                        request_db.set_media_status_wanted(
-                            tmdb_ids=[season_tmdb_id], item_type='Season',
-                            source=subscription_source, media_info_list=[season_media_info]
-                        )
-                    
-                    final_ui_status = 'unreleased' if final_subscription_status == 'PENDING_RELEASE' else 'subscribed'
-                    corrected_item_for_return = {
-                        "tmdb_id": new_tmdb_id, "title": f"{parent_details.get('name')} - 第 {season_number} 季",
-                        "release_date": release_date, "poster_path": season_media_info['poster_path'], 
-                        "status": final_ui_status, "media_type": "Series", "season": int(season_number)
-                    }
-
-                # --- 【分支：电影或整剧修正】 ---
+                # A5. 更新订阅状态
+                release_date = season_details.get("air_date", '')
+                final_subscription_status = 'PENDING_RELEASE' if release_date and release_date > datetime.now().strftime('%Y-%m-%d') else 'WANTED'
+                
+                if final_subscription_status == 'PENDING_RELEASE':
+                    request_db.set_media_status_pending_release(
+                        tmdb_ids=[season_tmdb_id], item_type='Season',
+                        source=subscription_source, media_info_list=[season_media_info]
+                    )
                 else:
-                    details = tmdb.get_tv_details(int(new_tmdb_id), api_key) if item_type == 'Series' else tmdb.get_movie_details(int(new_tmdb_id), api_key)
-                    if not details: raise ValueError(f"无法获取 {new_tmdb_id} 详情")
-                    
-                    media_info = {'tmdb_id': new_tmdb_id, 'item_type': item_type, 'title': details.get('title') or details.get('name'), 'poster_path': details.get("poster_path"), 'release_date': details.get("release_date") or details.get("first_air_date", '')}
-                    media_db.ensure_media_record_exists([media_info])
-                    
-                    release_date = media_info['release_date']
-                    final_subscription_status = 'PENDING_RELEASE' if release_date and release_date > datetime.now().strftime('%Y-%m-%d') else 'WANTED'
-                    if final_subscription_status == 'PENDING_RELEASE':
-                        request_db.set_media_status_pending_release(
-                            tmdb_ids=[new_tmdb_id], item_type=item_type,
-                            source=subscription_source, media_info_list=[media_info]
-                        )
-                    else:
-                        request_db.set_media_status_wanted(
-                            tmdb_ids=[new_tmdb_id], item_type=item_type,
-                            source=subscription_source, media_info_list=[media_info]
-                        )
-                    
-                    final_ui_status = 'unreleased' if final_subscription_status == 'PENDING_RELEASE' else 'subscribed'
-                    corrected_item_for_return = {"tmdb_id": new_tmdb_id, "title": media_info['title'], "release_date": media_info['release_date'], "poster_path": media_info['poster_path'], "status": final_ui_status, "media_type": item_type}
-            
-            else: # 如果继承状态是 NONE
-                # 只需要确保记录存在即可，不需要更新状态
-                # ... (这部分逻辑可以根据需要细化，但目前框架已正确)
-                pass
+                    request_db.set_media_status_wanted(
+                        tmdb_ids=[season_tmdb_id], item_type='Season',
+                        source=subscription_source, media_info_list=[season_media_info]
+                    )
+                
+                final_ui_status = 'unreleased' if final_subscription_status == 'PENDING_RELEASE' else 'subscribed'
+                corrected_item_for_return = {
+                    "tmdb_id": new_tmdb_id, 
+                    "title": f"{parent_details.get('name')} - 第 {season_number} 季",
+                    "release_date": release_date, 
+                    "poster_path": season_media_info['poster_path'], 
+                    "status": final_ui_status, 
+                    "media_type": "Series", 
+                    "season": int(season_number)
+                }
+
+            # --- 【分支 B：电影或整剧修正】 ---
+            else:
+                # B1. 获取详情
+                details = tmdb.get_tv_details(int(new_tmdb_id), api_key) if item_type == 'Series' else tmdb.get_movie_details(int(new_tmdb_id), api_key)
+                if not details: raise ValueError(f"无法获取 {new_tmdb_id} 详情")
+                
+                # B2. 构造元数据
+                media_info = {
+                    'tmdb_id': new_tmdb_id, 
+                    'item_type': item_type, 
+                    'title': details.get('title') or details.get('name'), 
+                    'poster_path': details.get("poster_path"), 
+                    'release_date': details.get("release_date") or details.get("first_air_date", '')
+                }
+                
+                # B3. 确保记录存在
+                media_db.ensure_media_record_exists([media_info])
+                
+                # B4. 更新订阅状态
+                release_date = media_info['release_date']
+                final_subscription_status = 'PENDING_RELEASE' if release_date and release_date > datetime.now().strftime('%Y-%m-%d') else 'WANTED'
+                
+                if final_subscription_status == 'PENDING_RELEASE':
+                    request_db.set_media_status_pending_release(
+                        tmdb_ids=[new_tmdb_id], item_type=item_type,
+                        source=subscription_source, media_info_list=[media_info]
+                    )
+                else:
+                    request_db.set_media_status_wanted(
+                        tmdb_ids=[new_tmdb_id], item_type=item_type,
+                        source=subscription_source, media_info_list=[media_info]
+                    )
+                
+                final_ui_status = 'unreleased' if final_subscription_status == 'PENDING_RELEASE' else 'subscribed'
+                corrected_item_for_return = {
+                    "tmdb_id": new_tmdb_id, 
+                    "title": media_info['title'], 
+                    "release_date": media_info['release_date'], 
+                    "poster_path": media_info['poster_path'], 
+                    "status": final_ui_status, 
+                    "media_type": item_type
+                }
 
             conn.commit()
-            logger.info(f"  ➜ 成功为合集 {collection_id} 应用状态继承式修正：{old_tmdb_id} -> {new_tmdb_id} (季: {season_number})")
+            logger.info(f"  ➜ 成功为合集 {collection_id} 应用修正：Key='{correction_key}' -> {new_tmdb_id} (季: {season_number})")
             return corrected_item_for_return
 
     except Exception as e:
