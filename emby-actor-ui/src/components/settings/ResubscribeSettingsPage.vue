@@ -126,6 +126,11 @@
                           <template #suffix>分</template>
                         </n-input-number>
                       </n-form-item>
+                      <div style="margin-top: 8px;">
+                        <n-checkbox v-model:checked="currentRule.filter_rating_ignore_zero">
+                          <span style="font-size: 12px;">忽略 0 分 (保护无评分的新片)</span>
+                        </n-checkbox>
+                      </div>
                     </div>
                   </div>
 
@@ -455,7 +460,7 @@ const openRuleModal = async (rule = null) => {
       rule_type: 'resubscribe', // 默认为洗版
       
       // 筛选条件
-      filter_rating_enabled: false, filter_rating_min: 0,
+      filter_rating_enabled: false, filter_rating_min: 0, filter_rating_ignore_zero: false,
       resubscribe_resolution_enabled: false, resubscribe_resolution_threshold: 1920,
       resubscribe_quality_enabled: false, resubscribe_quality_include: [],
       resubscribe_codec_enabled: false, resubscribe_codec_include: [],

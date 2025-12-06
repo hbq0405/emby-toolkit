@@ -415,11 +415,13 @@ def _item_needs_resubscribe(asset_details: dict, rule: dict, media_metadata: Opt
             # 获取媒体评分 (优先取 rating，没有则 0)
             current_rating = media_metadata.get('rating', 0) or 0
             threshold = float(rule.get("filter_rating_min", 0))
+            ignore_zero = rule.get("filter_rating_ignore_zero", False)
             
-            # 逻辑：如果是洗版模式，通常是“低于X分”可能不适用（洗版通常是为了更好画质）。
-            # 但如果是删除模式，“低于X分”就是核心需求。
-            # 这里统一逻辑：如果 评分 < 阈值，则命中规则。
-            if current_rating < threshold:
+            # 1. 如果评分为 0 且开启了“忽略0分”，则跳过（视为达标/不命中规则）
+            # 2. 否则，如果 评分 < 阈值，则命中规则
+            if current_rating == 0 and ignore_zero:
+                logger.debug(f"  ➜ [评分检查] 《{item_name}》评分为0，但规则设定忽略0分，跳过评分检查。")
+            elif current_rating < threshold:
                 reasons.append(f"评分过低({current_rating} < {threshold})")
     except Exception as e:
         logger.warning(f"  ➜ [评分检查] 处理时发生错误: {e}")

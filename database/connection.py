@@ -310,7 +310,8 @@ def init_db():
                         filter_rating_enabled BOOLEAN DEFAULT FALSE, 
                         filter_rating_min REAL DEFAULT 0,  
                         delete_mode TEXT DEFAULT 'episode',          
-                        delete_delay_seconds INTEGER DEFAULT 0         
+                        delete_delay_seconds INTEGER DEFAULT 0,
+                        filter_rating_ignore_zero BOOLEAN DEFAULT FALSE         
                     )
                 """)
 
@@ -476,7 +477,8 @@ def init_db():
                             "filter_rating_enabled": "BOOLEAN DEFAULT FALSE",    
                             "filter_rating_min": "REAL DEFAULT 0",               
                             "delete_mode": "TEXT DEFAULT 'episode'",             
-                            "delete_delay_seconds": "INTEGER DEFAULT 0"          
+                            "delete_delay_seconds": "INTEGER DEFAULT 0",  
+                            "filter_rating_ignore_zero": "BOOLEAN DEFAULT FALSE"
                         },
                         'user_templates': {
                             "source_emby_user_id": "TEXT",
