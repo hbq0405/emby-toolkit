@@ -181,52 +181,16 @@ const handleOk = (e) => {
         const response = await api.createInvitation(formModel.value);
         
         if (response.status === 'ok') {
-          // 1. 确保获取到的是数组
-          const links = response.invite_links || (response.invite_link ? [response.invite_link] : []);
+          // 获取生成数量，用于提示
+          const count = response.count || (response.invite_links ? response.invite_links.length : 1);
           
-          if (links.length === 0) {
-            throw new Error('后端未返回任何链接');
-          }
-
-          // 2. 显式生成要显示的文本
-          const finalLinksText = links.join('\n');
-          const count = links.length;
-
-          // 3. 弹窗显示
-          dialog.success({
-            title: `成功创建 ${count} 个邀请链接！`,
-            content: () => h('div', null, [
-              h('p', null, '请复制以下链接：'),
-              // 显示链接的文本域
-              h(NInput, {
-                value: finalLinksText, // 绑定生成的文本
-                type: 'textarea',
-                autosize: { minRows: 2, maxRows: 10 },
-                readonly: true,
-              }),
-              // 按钮区域
-              h('div', { style: 'margin-top: 10px; text-align: right;' }, [
-                 h(NButton, {
-                    type: 'primary',
-                    size: 'small',
-                    // ★★★ 核心修复：直接使用闭包中确定的 finalLinksText 变量 ★★★
-                    onClick: () => {
-                      // 再次确认内容不为空
-                      if (finalLinksText) {
-                        copyToClipboard(finalLinksText);
-                      } else {
-                        message.error('没有内容可复制');
-                      }
-                    }
-                  }, { 
-                    icon: () => h(NIcon, { component: CopyIcon }),
-                    default: () => '一键复制所有' 
-                  })
-              ])
-            ]),
-          });
+          // 1. 直接提示成功
+          message.success(`成功创建 ${count} 个邀请链接！`);
           
+          // 2. 直接关闭模态框
           isModalVisible.value = false;
+          
+          // 3. 刷新列表 (新链接会出现在最上面)
           fetchData();
         } else {
           throw new Error(response.message || '创建失败');
