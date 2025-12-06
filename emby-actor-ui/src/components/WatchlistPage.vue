@@ -546,10 +546,9 @@ const filteredWatchlist = computed(() => {
         };
       }
 
-      // 累加集数 (可选，如果你想显示总进度)
-      // 注意：这里简单的累加可能会导致显示的数字很大，看你需求
-      // groups[pid].collected_count += (season.collected_count || 0);
-      // groups[pid].total_count += (season.total_count || 0);
+      // 累加集数
+      groups[pid].collected_count += (season.collected_count || 0);
+      groups[pid].total_count += (season.total_count || 0);
       
       // ★★★ 分类逻辑 ★★★
       const isInLibrary = (season.collected_count > 0);
@@ -562,12 +561,10 @@ const filteredWatchlist = computed(() => {
              groups[pid].seasons_contains.push(season.season_number);
         } else {
              // 如果在库但不是 Completed，通常也算 contains，但为了区分显示：
-             // 你之前的逻辑是：
              groups[pid].seasons_contains.push(season.season_number);
         }
         
         // 2. 判断是否连载中：在库 且 状态是 Watching/Paused
-        // ★★★ 这里现在能生效了，因为 season.status 为 Paused 的第5季现在在这个循环里了 ★★★
         if (season.status === 'Watching' || season.status === 'Paused') {
            groups[pid].seasons_airing.push(season.season_number);
         }
@@ -585,8 +582,6 @@ const filteredWatchlist = computed(() => {
     // C. 转回数组
     list = Object.values(groups);
 
-    // ★★★ 修复：在聚合后，重新应用筛选逻辑 ★★★
-    
     // 1. 缺季筛选 (Missing Seasons)
     // 注意：missing_info 来自父剧集，所以聚合对象的 missing_info 是准确的
     if (filterMissing.value !== 'all') {
