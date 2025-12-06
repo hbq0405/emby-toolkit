@@ -594,6 +594,28 @@ class WatchlistProcessor:
         
         latest_series_data, all_tmdb_episodes, emby_seasons = refresh_result
 
+        # ==================== 新增：总集数锁定过滤器 ====================
+        # 如果总集数被锁定，我们需要剔除 TMDb 返回的“多余”集数
+        # 这样后续的“下一集计算”和“缺集计算”就不会看到这些不存在的集了
+        if series_data.get('total_episodes_locked'):
+            locked_total = series_data.get('total_episodes', 0)
+            
+            # 1. 分离特别篇 (Season 0) 和 正片 (Season > 0)
+            # 通常 Total Episodes 只统计正片，所以特别篇我们不做限制，原样保留
+            specials = [ep for ep in all_tmdb_episodes if ep.get('season_number') == 0]
+            regular_episodes = [ep for ep in all_tmdb_episodes if ep.get('season_number') != 0]
+            
+            # 2. 对正片按 S-E 排序，确保截取的是前 N 集
+            regular_episodes.sort(key=lambda x: (x.get('season_number', 0), x.get('episode_number', 0)))
+            
+            # 3. 执行截断
+            if len(regular_episodes) > locked_total:
+                logger.info(f"  🔒 剧集 '{item_name}' 总集数锁定为 {locked_total}，正在剔除 TMDb 多余的 {len(regular_episodes) - locked_total} 集...")
+                regular_episodes = regular_episodes[:locked_total]
+            
+            # 4. 重组列表
+            all_tmdb_episodes = specials + regular_episodes
+
         # 计算状态和缺失信息
         new_tmdb_status = latest_series_data.get("status")
         is_ended_on_tmdb = new_tmdb_status in ["Ended", "Canceled"]

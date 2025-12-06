@@ -814,7 +814,9 @@ def get_series_by_dynamic_condition(condition_sql: str, library_ids: Optional[Li
             last_episode_to_air_json,
             watchlist_tmdb_status AS tmdb_status,
             watchlist_missing_info_json AS missing_info_json,
-            subscription_status
+            subscription_status,
+            total_episodes,
+            total_episodes_locked
         FROM media_metadata
         WHERE item_type = 'Series'
     """
