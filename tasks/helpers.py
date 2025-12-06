@@ -635,20 +635,17 @@ def parse_series_title_and_season(title: str, api_key: str = None) -> Tuple[Opti
     normalized_title = normalize_full_width_chars(title)
 
     # --- 1. 优先处理 "主标题之副标题" 格式 (严格校验逻辑) ---
-    # 仅当提供了 API Key 时才尝试这种高风险解析
     if '之' in normalized_title and api_key:
         parts = normalized_title.split('之', 1)
         if len(parts) == 2:
             parent_candidate = parts[0].strip()
             subtitle_candidate = parts[1].strip()
             
-            # 只有当主标题长度大于1时才处理（避免误伤《云之羽》等）
             if len(parent_candidate) > 1 and subtitle_candidate:
                 try:
-                    # A. 搜索主标题 (例如 "唐朝诡事录")
+                    # A. 搜索主标题
                     search_results = search_tv_shows(parent_candidate, api_key)
                     
-                    # 只有搜到了结果，才继续验证
                     if search_results:
                         # 假设第一个结果就是我们要找的剧
                         tv_id = search_results[0]['id']
@@ -660,15 +657,13 @@ def parse_series_title_and_season(title: str, api_key: str = None) -> Tuple[Opti
                                 season_name = season.get('name', '')
                                 season_num = season.get('season_number')
                                 
-                                # C. 严格比对：副标题必须包含在季名中
-                                # 例如：季名 "唐朝诡事录之西行"，副标题 "西行" -> 匹配成功
+                                # C. 严格比对
                                 if season_num and season_num > 0:
                                     if subtitle_candidate in season_name:
-                                        logger.info(f"  ➜ [智能解析] 成功将 '{title}' 解析为《{parent_candidate}》第 {season_num} 季 (匹配季名: {season_name})")
-                                        return parent_candidate, season_num
+                                        logger.info(f"  ➜ [智能解析] 成功将 '{title}' 解析为《{parent_candidate}》第 {season_num} 季 (匹配季名: {season_name}, ID: {tv_id})")
+                                        # ★★★ 修改点：直接返回 ID ★★★
+                                        return parent_candidate, season_num, str(tv_id)
                                         
-                    # 如果代码走到这里，说明虽然有'之'，但没匹配到任何季信息
-                    # 此时记录日志，并放弃拆分，防止将 "亦舞之城" 错误拆分为 "亦舞"
                     logger.debug(f"  ➜ [智能解析] '{title}' 包含'之'字，但未匹配到TMDb季信息，将作为完整剧名处理。")
                     
                 except Exception as e:
@@ -713,10 +708,7 @@ def parse_series_title_and_season(title: str, api_key: str = None) -> Tuple[Opti
         if season_num > 0:
             for suffix in ["系列", "合集"]:
                 if base_name.endswith(suffix): base_name = base_name[:-len(suffix)]
-            return base_name, season_num
+            return base_name, season_num, None
 
     # --- 3. 最终返回 ---
-    # 如果所有尝试都失败（既不是"之"字季播剧，也没有"S2"标记）
-    # 返回 None, None。调用方会因此使用原始的完整标题进行搜索。
-    # 对于 "亦舞之城"，这里返回 (None, None)，于是系统会搜索 "亦舞之城"，这是正确的。
-    return None, None
+    return None, None, None
