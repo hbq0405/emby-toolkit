@@ -302,32 +302,55 @@ def api_get_custom_collection_status(collection_id):
             # ★★★ 情况 2: 已识别，检查库内状态 ★★★
             if tmdb_id_str in media_in_db_map:
                 db_record = media_in_db_map[tmdb_id_str]
-                status = "missing"
-                if db_record.get('in_library'):
-                    status = "in_library"
-                elif db_record.get('subscription_status') == 'SUBSCRIBED':
-                    status = "subscribed"
-                elif db_record.get('subscription_status') == 'IGNORED':
-                    status = "ignored"
                 
-                final_media_list.append({
-                    "tmdb_id": tmdb_id_str,
-                    "emby_id": db_record.get('emby_item_id'),
-                    "title": db_record.get('title') or db_record.get('original_title'), # 这是 TMDb 的标题
-                    "original_title": source_title, # ★★★ 新增：这是榜单里的原始标题 ★★★
-                    "release_date": db_record.get('release_date').strftime('%Y-%m-%d') if db_record.get('release_date') else '',
-                    "poster_path": db_record.get('poster_path'),
-                    "status": status,
-                    "media_type": media_type,
-                    "season": season_number
-                })
+                # ===========================
+                # ★★★ 核心修复：类型一致性校验 ★★★
+                # ===========================
+                db_item_type = db_record.get('item_type')
+                target_type = media_type or 'Movie' # 榜单定义的类型，默认为 Movie
+
+                # 只有当 类型匹配 时（例如都是 Movie），才使用数据库记录
+                if db_item_type == target_type:
+                    status = "missing"
+                    if db_record.get('in_library'):
+                        status = "in_library"
+                    elif db_record.get('subscription_status') == 'SUBSCRIBED':
+                        status = "subscribed"
+                    elif db_record.get('subscription_status') == 'IGNORED':
+                        status = "ignored"
+                    
+                    final_media_list.append({
+                        "tmdb_id": tmdb_id_str,
+                        "emby_id": db_record.get('emby_item_id'),
+                        "title": db_record.get('title') or db_record.get('original_title'),
+                        "original_title": source_title,
+                        "release_date": db_record.get('release_date').strftime('%Y-%m-%d') if db_record.get('release_date') else '',
+                        "poster_path": db_record.get('poster_path'),
+                        "status": status,
+                        "media_type": media_type,
+                        "season": season_number
+                    })
+                else:
+                    # ★★★ 类型不匹配（ID撞车），强制回退到使用榜单原始信息 ★★★
+                    # 这样就不会显示成“第41集...”了，而是显示榜单里的电影名，状态为 missing
+                    final_media_list.append({
+                        "tmdb_id": tmdb_id_str,
+                        "emby_id": None,
+                        "title": source_title or f"未知媒体 (ID: {tmdb_id_str})", # 优先显示原始标题
+                        "original_title": source_title,
+                        "release_date": item_def.get('release_date', ''),
+                        "poster_path": item_def.get('poster_path'),
+                        "status": "missing",
+                        "media_type": media_type,
+                        "season": season_number
+                    })
             else:
                 # ★★★ 情况 3: 有 ID 但本地没缓存 (罕见，视为 Missing) ★★★
                 final_media_list.append({
                     "tmdb_id": tmdb_id_str,
                     "emby_id": None,
-                    "title": source_title or f"未知媒体 (ID: {tmdb_id_str})", # 没缓存时优先显示原始标题
-                    "original_title": source_title, # ★★★ 新增 ★★★
+                    "title": source_title or f"未知媒体 (ID: {tmdb_id_str})",
+                    "original_title": source_title,
                     "release_date": item_def.get('release_date', ''),
                     "poster_path": item_def.get('poster_path'),
                     "status": "missing",
