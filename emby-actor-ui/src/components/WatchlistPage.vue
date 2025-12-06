@@ -259,13 +259,12 @@
                     <n-progress 
                       type="line" 
                       :percentage="calculateProgress(item)" 
+                      :status="getProgressStatus(item)"
+                      :color="getProgressColor(item)"
                       :height="3" 
                       :show-indicator="false"
                       :border-radius="0"
                       :processing="calculateProgress(item) < 100"
-                      class="aurora-progress"
-                      :color="calculateProgress(item) < 100 ? 'transparent' : undefined"
-                      :status="getProgressStatus(item)"
                     />
                   </div>
 
