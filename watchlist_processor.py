@@ -603,8 +603,13 @@ class WatchlistProcessor:
         missing_info = self._calculate_missing_info(latest_series_data.get('seasons', []), all_tmdb_episodes, emby_seasons)
         has_missing_media = bool(missing_info["missing_seasons"] or missing_info["missing_episodes"])
 
+         # 1. 第一步：必须先定义 today，否则后面计算日期差会报错
+        today = datetime.now(timezone.utc).date()
+
+        # 2. 第二步：获取上一集信息
         last_episode_to_air = latest_series_data.get("last_episode_to_air")
-        # =========== 提前计算距离上一集的天数 ===========
+        
+        # 3. 第三步：计算距离上一集播出的天数 (依赖 today)
         days_since_last = 9999 # 默认给一个很大的值
         if last_episode_to_air and (last_date_str := last_episode_to_air.get('air_date')):
             try:
@@ -614,7 +619,6 @@ class WatchlistProcessor:
                 pass
         final_status = STATUS_WATCHING 
         paused_until_date = None
-        today = datetime.now(timezone.utc).date()
 
         # 预处理：确定是否存在一个“有效的、未来的”下一集
         effective_next_episode = None
@@ -836,8 +840,6 @@ class WatchlistProcessor:
         elif final_status in [STATUS_WATCHING, STATUS_PAUSED] and has_missing_media:
             logger.info(f"  ➜ 《{item_name}》为在追状态，将订阅所有缺失内容...")
             
-            today = datetime.now(timezone.utc).date()
-
             # a. 处理缺失的整季
             for season in missing_info.get("missing_seasons", []):
                 season_num = season.get('season_number')
