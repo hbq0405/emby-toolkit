@@ -494,13 +494,7 @@ class ListImporter:
         
         elif item_type == 'Series':
             # 1. 解析标题
-            show_name_parsed, season_number_to_validate, direct_tmdb_id = parse_series_title_and_season(title, api_key=self.tmdb_api_key)
-            # 如果有直接确定的 ID，立即返回，跳过所有搜索 
-            if direct_tmdb_id:
-                logger.info(f"  ➜ [智能解析] 标题 '{title}' 已在解析阶段精准锁定 ID: {direct_tmdb_id} (第 {season_number_to_validate} 季)，跳过搜索。")
-                return direct_tmdb_id, 'Series', season_number_to_validate
-            
-            # --- 以下逻辑仅在正则匹配（无ID）或解析失败时执行 ---
+            show_name_parsed, season_number_to_validate = parse_series_title_and_season(title, api_key=self.tmdb_api_key)
             show_name = show_name_parsed if show_name_parsed else title
             
             # 2. 搜索
@@ -725,17 +719,17 @@ class ListImporter:
                             for item_type in types_to_check:
                                 match_result = self._match_title_to_tmdb(original_title, item_type, year=year)
                                 if match_result:
-                                    tmdb_id, matched_type, matched_season = match_result
+                                    tmdb_id, matched_type = match_result
                                     logger.info(f"  ➜ 豆瓣备用方案(3b)成功！通过 original_title '{original_title}' 匹配成功。")
-                                    return create_result(tmdb_id, matched_type, matched_season)
+                                    return create_result(tmdb_id, matched_type)
 
                 logger.debug(f"  ➜ 所有优先方案均失败，尝试不带年份进行最后的回退搜索: '{original_source_title}'")
                 for item_type in types_to_check:
                     match_result = self._match_title_to_tmdb(cleaned_title, item_type, year=None)
                     if match_result:
-                        tmdb_id, matched_type, matched_season = match_result
+                        tmdb_id, matched_type = match_result
                         logger.warning(f"  ➜ 注意：'{original_source_title}' 在最后的回退搜索中匹配成功，但年份可能不准。")
-                        return create_result(tmdb_id, matched_type, matched_season)
+                        return create_result(tmdb_id, matched_type)
 
                 logger.error(f"  ➜ 彻底失败：所有方案都无法为 '{original_source_title}' 找到匹配项。")
                 return fallback_result
