@@ -252,9 +252,14 @@ class ListImporter:
                     # 将TMDb的 'tv' 映射为我们系统内部的 'Series'
                     item_type_mapped = 'Series' if media_type == 'tv' else 'Movie'
 
+                    title = item.get('title') if item_type_mapped == 'Movie' else item.get('name')
+
                     if tmdb_id:
-                        # ★★★ 直接生成包含精确ID和类型的字典，无需后续匹配 ★★★
-                        all_items.append({'id': str(tmdb_id), 'type': item_type_mapped})
+                        all_items.append({
+                            'id': str(tmdb_id), 
+                            'type': item_type_mapped,
+                            'title': title # 新增字段
+                        })
 
                 current_page += 1
 
@@ -334,7 +339,13 @@ class ListImporter:
                     
                     tmdb_id = item.get('id')
                     if tmdb_id and item_type_for_result:
-                        all_items.append({'id': str(tmdb_id), 'type': item_type_for_result})
+                        title = item.get('title') if item_type_for_result == 'Movie' else item.get('name')
+                        
+                        all_items.append({
+                            'id': str(tmdb_id), 
+                            'type': item_type_for_result,
+                            'title': title
+                        })
                 
                 current_page += 1
 

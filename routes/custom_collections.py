@@ -6,7 +6,7 @@ import json
 import psycopg2
 import pytz
 from datetime import datetime
-from database import user_db, collection_db, settings_db, media_db
+from database import user_db, collection_db, connection
 import config_manager
 import handler.emby as emby
 from tasks.helpers import is_movie_subscribable
@@ -253,7 +253,10 @@ def api_delete_custom_collection(collection_id):
 @admin_required
 def api_get_custom_collection_status(collection_id):
     """
-    修复了因键名不统一 (tmdb_id vs id) 导致的 KeyError。
+    获取合集详情 (V4 - 终极修复版)
+    1. 修复了 ID 撞车问题 (使用组合键)。
+    2. 修复了探索助手榜单无标题导致的“未知媒体”问题 (实时补全)。
+    3. 修复了混合榜单类型判断错误的问题 (严格遵循 item_def)。
     """
     try:
         collection = collection_db.get_custom_collection_by_id(collection_id)
@@ -265,23 +268,91 @@ def api_get_custom_collection_status(collection_id):
             collection['media_items'] = []
             return jsonify(collection)
 
-        # 提取有效的 TMDB ID 进行查询
-        tmdb_ids = [str(item['tmdb_id']) for item in definition_list if item.get('tmdb_id')]
+        # 1. 提取所有有效的 TMDB ID
+        tmdb_ids = [str(item['tmdb_id']) for item in definition_list if item.get('tmdb_id') and str(item.get('tmdb_id')).lower() != 'none']
         
-        media_in_db_map = media_db.get_media_details_by_tmdb_ids([tmdb_ids])
-        
+        # 2. 批量查询本地数据库，构建组合键映射
+        media_in_db_map = {}
+        if tmdb_ids:
+            try:
+                with connection.get_db_connection() as conn:
+                    with conn.cursor() as cursor:
+                        cursor.execute("SELECT * FROM media_metadata WHERE tmdb_id = ANY(%s)", (tmdb_ids,))
+                        rows = cursor.fetchall()
+                        for row in rows:
+                            unique_key = f"{row['tmdb_id']}_{row['item_type']}"
+                            media_in_db_map[unique_key] = dict(row)
+            except Exception as e_db:
+                logger.error(f"查询媒体元数据失败: {e_db}")
+
+        # ==============================================================================
+        # ★★★ 核心修复：实时补全缺失的元数据 ★★★
+        # ==============================================================================
+        # 找出那些在 definition_list 里有 ID，但在 media_in_db_map 里找不到对应类型记录的项目
+        items_needing_fetch = []
+        for item in definition_list:
+            tmdb_id = str(item.get('tmdb_id'))
+            if not tmdb_id or tmdb_id.lower() == 'none': continue
+            
+            media_type = item.get('media_type') or 'Movie'
+            target_key = f"{tmdb_id}_{media_type}"
+            
+            if target_key not in media_in_db_map:
+                items_needing_fetch.append(item)
+
+        if items_needing_fetch:
+            logger.info(f"  ➜ 合集详情：发现 {len(items_needing_fetch)} 个项目本地无缓存，正在实时获取元数据...")
+            api_key = config_manager.APP_CONFIG.get('tmdb_api_key')
+            
+            # 限制实时获取数量，防止超时
+            items_to_process = items_needing_fetch[:15]
+            
+            from handler.tmdb import get_movie_details, get_tv_details
+            
+            for item in items_to_process:
+                tmdb_id = str(item.get('tmdb_id'))
+                media_type = item.get('media_type') or 'Movie'
+                
+                try:
+                    details = None
+                    if media_type == 'Series':
+                        details = get_tv_details(tmdb_id, api_key)
+                    else:
+                        details = get_movie_details(tmdb_id, api_key)
+                    
+                    if details:
+                        temp_record = {
+                            'tmdb_id': str(details.get('id')),
+                            'item_type': media_type,
+                            'title': details.get('title') or details.get('name'),
+                            'original_title': details.get('original_title') or details.get('original_name'),
+                            'release_date': datetime.strptime(details.get('release_date') or details.get('first_air_date') or '1900-01-01', '%Y-%m-%d') if (details.get('release_date') or details.get('first_air_date')) else None,
+                            'poster_path': details.get('poster_path'),
+                            'in_library': False,
+                            'subscription_status': 'NONE',
+                            'emby_item_id': None
+                        }
+                        # 补入 map
+                        unique_key = f"{tmdb_id}_{media_type}"
+                        media_in_db_map[unique_key] = temp_record
+                        
+                except Exception as e_fetch:
+                    logger.warning(f"  ➜ 实时获取 TMDb ID {tmdb_id} ({media_type}) 详情失败: {e_fetch}")
+
+        # ==============================================================================
+
         final_media_list = []
         for item_def in definition_list:
             tmdb_id = item_def.get('tmdb_id')
+            
             if tmdb_id and str(tmdb_id).lower() != 'none':
                 tmdb_id_str = str(tmdb_id)
             else:
                 tmdb_id_str = None
             
-            media_type = item_def.get('media_type')
+            # ★★★ 严格使用 item_def 中的类型 ★★★
+            media_type = item_def.get('media_type') or 'Movie'
             season_number = item_def.get('season')
-            
-            # ★★★ 获取原始标题 (这是 ListImporter 存进去的) ★★★
             source_title = item_def.get('title') 
 
             # 情况 1: 完全未识别
@@ -289,8 +360,8 @@ def api_get_custom_collection_status(collection_id):
                 final_media_list.append({
                     "tmdb_id": None,
                     "emby_id": None,
-                    "title": source_title or "未知标题", # 显示原始标题
-                    "original_title": source_title,      # 专门传给前端用于搜索
+                    "title": source_title or "未知标题",
+                    "original_title": source_title,
                     "release_date": "",
                     "poster_path": None,
                     "status": "unidentified",
@@ -299,53 +370,39 @@ def api_get_custom_collection_status(collection_id):
                 })
                 continue
 
-            # ★★★ 情况 2: 已识别，检查库内状态 ★★★
-            if tmdb_id_str in media_in_db_map:
-                db_record = media_in_db_map[tmdb_id_str]
+            # ★★★ 使用组合键查找 ★★★
+            target_key = f"{tmdb_id_str}_{media_type}"
+            
+            if target_key in media_in_db_map:
+                db_record = media_in_db_map[target_key]
                 
-                # ===========================
-                # ★★★ 核心修复：类型一致性校验 ★★★
-                # ===========================
-                db_item_type = db_record.get('item_type')
-                target_type = media_type or 'Movie' # 榜单定义的类型，默认为 Movie
-
-                # 只有当 类型匹配 时（例如都是 Movie），才使用数据库记录
-                if db_item_type == target_type:
-                    status = "missing"
-                    if db_record.get('in_library'):
-                        status = "in_library"
-                    elif db_record.get('subscription_status') == 'SUBSCRIBED':
-                        status = "subscribed"
-                    elif db_record.get('subscription_status') == 'IGNORED':
-                        status = "ignored"
-                    
-                    final_media_list.append({
-                        "tmdb_id": tmdb_id_str,
-                        "emby_id": db_record.get('emby_item_id'),
-                        "title": db_record.get('title') or db_record.get('original_title'),
-                        "original_title": source_title,
-                        "release_date": db_record.get('release_date').strftime('%Y-%m-%d') if db_record.get('release_date') else '',
-                        "poster_path": db_record.get('poster_path'),
-                        "status": status,
-                        "media_type": media_type,
-                        "season": season_number
-                    })
+                status = "missing"
+                if db_record.get('in_library'):
+                    status = "in_library"
+                elif db_record.get('subscription_status') == 'SUBSCRIBED':
+                    status = "subscribed"
+                elif db_record.get('subscription_status') == 'IGNORED':
+                    status = "ignored"
+                
+                r_date = db_record.get('release_date')
+                if isinstance(r_date, datetime):
+                    r_date_str = r_date.strftime('%Y-%m-%d')
                 else:
-                    # ★★★ 类型不匹配（ID撞车），强制回退到使用榜单原始信息 ★★★
-                    # 这样就不会显示成“第41集...”了，而是显示榜单里的电影名，状态为 missing
-                    final_media_list.append({
-                        "tmdb_id": tmdb_id_str,
-                        "emby_id": None,
-                        "title": source_title or f"未知媒体 (ID: {tmdb_id_str})", # 优先显示原始标题
-                        "original_title": source_title,
-                        "release_date": item_def.get('release_date', ''),
-                        "poster_path": item_def.get('poster_path'),
-                        "status": "missing",
-                        "media_type": media_type,
-                        "season": season_number
-                    })
+                    r_date_str = str(r_date) if r_date else ''
+
+                final_media_list.append({
+                    "tmdb_id": tmdb_id_str,
+                    "emby_id": db_record.get('emby_item_id'),
+                    "title": db_record.get('title') or db_record.get('original_title'),
+                    "original_title": source_title, # 如果榜单没存标题，这里可能是 None，前端会处理
+                    "release_date": r_date_str,
+                    "poster_path": db_record.get('poster_path'),
+                    "status": status,
+                    "media_type": media_type,
+                    "season": season_number
+                })
             else:
-                # ★★★ 情况 3: 有 ID 但本地没缓存 (罕见，视为 Missing) ★★★
+                # 情况 3: 确实没查到 (且实时补全也失败了)
                 final_media_list.append({
                     "tmdb_id": tmdb_id_str,
                     "emby_id": None,
