@@ -227,7 +227,6 @@ def batch_force_end_watchlist_items(tmdb_ids: List[str]) -> int:
         with get_db_connection() as conn:
             cursor = conn.cursor()
             
-            # ★★★ 核心修复：使用 OR 逻辑同时匹配父剧集和子项 ★★★
             sql = """
                 UPDATE media_metadata
                 SET watching_status = 'Completed',
@@ -237,8 +236,8 @@ def batch_force_end_watchlist_items(tmdb_ids: List[str]) -> int:
                     -- 1. 匹配剧集本身
                     (tmdb_id = ANY(%s) AND item_type = 'Series')
                     OR
-                    -- 2. 匹配该剧集下的所有子项 (季、集)
-                    (parent_series_tmdb_id = ANY(%s))
+                    -- 2. 匹配该剧集下的季 (排除集)
+                    (parent_series_tmdb_id = ANY(%s) AND item_type = 'Season')
             """
             # 注意：需要传入两次 tmdb_ids，分别对应两个 ANY(%s)
             cursor.execute(sql, (tmdb_ids, tmdb_ids))
@@ -246,7 +245,7 @@ def batch_force_end_watchlist_items(tmdb_ids: List[str]) -> int:
             
             updated_count = cursor.rowcount
             if updated_count > 0:
-                logger.info(f"  ➜ 批量强制完结了 {len(tmdb_ids)} 个剧集系列，共影响 {updated_count} 条记录(含子项)。")
+                logger.info(f"  ➜ 批量强制完结了 {len(tmdb_ids)} 个剧集系列，共更新 {updated_count} 条记录(含季)。")
             return updated_count
     except Exception as e:
         logger.error(f"  ➜ 批量强制完结追剧项目时发生错误: {e}", exc_info=True)
@@ -277,7 +276,6 @@ def batch_update_watchlist_status(item_ids: list, new_status: str) -> int:
             # 构建参数值：先放入 SET 的值
             values = list(updates.values())
             
-            # ★★★ 级联更新 SQL ★★★
             sql = f"""
                 UPDATE media_metadata 
                 SET {', '.join(set_clauses)} 
@@ -285,8 +283,8 @@ def batch_update_watchlist_status(item_ids: list, new_status: str) -> int:
                     -- 1. 匹配剧集本身
                     (tmdb_id = ANY(%s) AND item_type = 'Series')
                     OR
-                    -- 2. 匹配该剧集下的所有子项
-                    (parent_series_tmdb_id = ANY(%s))
+                    -- 2. 匹配该剧集下的季 (排除集)
+                    (parent_series_tmdb_id = ANY(%s) AND item_type = 'Season')
             """
             
             # 追加 WHERE 子句的参数 (两次 item_ids)
@@ -296,7 +294,7 @@ def batch_update_watchlist_status(item_ids: list, new_status: str) -> int:
             cursor.execute(sql, tuple(values))
             conn.commit()
             
-            logger.info(f"  ➜ 成功将 {len(item_ids)} 个剧集系列的状态批量更新为 '{new_status}'，共影响 {cursor.rowcount} 条记录。")
+            logger.info(f"  ➜ 成功将 {len(item_ids)} 个剧集系列的状态批量更新为 '{new_status}'，共更新 {cursor.rowcount} 条记录(含季)。")
             return cursor.rowcount
             
     except Exception as e:
