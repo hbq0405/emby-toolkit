@@ -59,11 +59,11 @@ def task_update_daily_theme(processor):
 
             candidate_movies = [
                 movie for movie in popular_movies
-                if str(movie["id"]) not in library_items_map
+                if f"{movie['id']}_Movie" not in library_items_map
                 and str(movie["id"]) not in subscription_statuses
-                and movie.get("poster_path") # 过滤无海报
-                and contains_chinese(movie.get('title') or movie.get('name')) # 过滤无中文名
-                and movie.get("overview", "").strip() # 过滤无简介
+                and movie.get("poster_path") 
+                and contains_chinese(movie.get('title') or movie.get('name')) 
+                and movie.get("overview", "").strip() 
             ]
 
             if not candidate_movies:
@@ -182,7 +182,7 @@ def task_replenish_recommendation_pool(processor):
         
         candidate_movies = [
             movie for movie in new_movies
-            if str(movie["id"]) not in library_items_map
+            if f"{movie['id']}_Movie" not in library_items_map
             and str(movie["id"]) not in current_pool_ids
             and str(movie["id"]) not in subscription_statuses
             and movie.get("poster_path")

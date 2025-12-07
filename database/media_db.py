@@ -10,6 +10,7 @@ logger = logging.getLogger(__name__)
 def check_tmdb_ids_in_library(tmdb_ids: List[str], item_type: str) -> Dict[str, str]:
     """
     接收 TMDb ID 列表，返回一个字典，映射 TMDb ID 到 Emby Item ID。
+    ★ 修正：返回的 Key 格式为 "{tmdb_id}_{item_type}"，以确保唯一性。
     """
     if not tmdb_ids:
         return {}
@@ -23,9 +24,10 @@ def check_tmdb_ids_in_library(tmdb_ids: List[str], item_type: str) -> Dict[str, 
             result = {}
             for row in cursor.fetchall():
                 tmdb_id = row['tmdb_id']
-                emby_ids = row['emby_item_ids_json']  # 这已经是个列表
-                if emby_ids:   # 只保存非空列表
-                    result[tmdb_id] = emby_ids
+                emby_ids = row['emby_item_ids_json']
+                if emby_ids:
+                    key = f"{tmdb_id}_{item_type}"
+                    result[key] = emby_ids
             return result
     except Exception as e:
         logger.error(f"DB: 检查 TMDb ID 是否在库时失败: {e}", exc_info=True)

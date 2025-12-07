@@ -20,16 +20,6 @@ def _filter_and_enrich_results(tmdb_data: dict, current_user_id: str, db_item_ty
     if not tmdb_data or not tmdb_data.get("results"):
         return {"results": [], "total_pages": 0}
 
-    # # 步骤 1: 过滤掉没有海报的结果
-    # original_results = tmdb_data.get("results", [])
-    # results_with_poster = [item for item in original_results if item.get("poster_path")]
-
-    # # 步骤 2: 过滤掉没有中文元数据的结果
-    # final_filtered_results = [
-    #     item for item in results_with_poster 
-    #     if contains_chinese(item.get('title') or item.get('name'))
-    # ]
-    
     # 步骤 1: 过滤掉没有海报的结果
     original_results = tmdb_data.get("results", [])
     final_filtered_results = [item for item in original_results if item.get("poster_path")]
@@ -40,19 +30,23 @@ def _filter_and_enrich_results(tmdb_data: dict, current_user_id: str, db_item_ty
     # 步骤 3: 附加数据库信息
     tmdb_ids = [str(item.get("id")) for item in final_filtered_results]
     
+    # 获取在库状态映射表 (现在 Key 是 "id_type")
     library_items_map = media_db.check_tmdb_ids_in_library(tmdb_ids, item_type=db_item_type)
     
-    # ★★★ 核心修改：调用新的全局状态查询函数，不再传入 current_user_id ★★★
+    # 获取订阅状态 (假设 request_db 内部处理了类型或仅基于ID，如果 request_db 也有同样问题建议一并修改，这里仅展示 discover 的适配)
     subscription_statuses = request_db.get_global_subscription_statuses_by_tmdb_ids(tmdb_ids)
 
     media_type_for_frontend = 'movie' if db_item_type == 'Movie' else 'tv'
 
     for item in final_filtered_results:
         tmdb_id_str = str(item.get("id"))
-        item["in_library"] = tmdb_id_str in library_items_map
-        item["emby_item_id"] = library_items_map.get(tmdb_id_str)
+        
+        # ★★★ 修改点：构建复合键进行查找 ★★★
+        lookup_key = f"{tmdb_id_str}_{db_item_type}"
+        
+        item["in_library"] = lookup_key in library_items_map
+        item["emby_item_id"] = library_items_map.get(lookup_key)
         item["subscription_status"] = subscription_statuses.get(tmdb_id_str, None)
-        # ★★★ 把标签贴上！ ★★★
         item["media_type"] = media_type_for_frontend
     
     tmdb_data["results"] = final_filtered_results
