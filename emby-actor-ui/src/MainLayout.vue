@@ -394,7 +394,6 @@ const menuOptions = computed(() => {
           { label: '自建合集', key: 'CustomCollectionsManager', icon: renderIcon(CustomCollectionsIcon) }, 
           { label: '媒体去重', key: 'MediaCleanupPage', icon: renderIcon(CleanupIcon) },
           { label: '媒体整理', key: 'ResubscribePage', icon: renderIcon(ResubscribeIcon) },  
-          { label: '封面生成', key: 'CoverGeneratorConfig', icon: renderIcon(PaletteIcon) }, 
           { label: '手动处理', key: 'ReviewList', icon: renderIcon(ReviewListIcon) }, 
         ] 
       },
@@ -413,9 +412,10 @@ const menuOptions = computed(() => {
         key: 'group-system', 
         icon: renderIcon(SettingsOutline), 
         children: [ 
-          { label: '用户管理', key: 'UserManagement', icon: renderIcon(UserManagementIcon) },
           { label: '通用设置', key: 'settings-general', icon: renderIcon(GeneralIcon) }, 
-          { label: '任务中心', key: 'settings-scheduler', icon: renderIcon(SchedulerIcon) }, 
+          { label: '用户管理', key: 'UserManagement', icon: renderIcon(UserManagementIcon) },
+          { label: '任务中心', key: 'settings-scheduler', icon: renderIcon(SchedulerIcon) },
+          { label: '封面生成', key: 'CoverGeneratorConfig', icon: renderIcon(PaletteIcon) }, 
           { label: '查看更新', key: 'Releases', icon: renderIcon(AboutIcon) }, 
         ] 
       }

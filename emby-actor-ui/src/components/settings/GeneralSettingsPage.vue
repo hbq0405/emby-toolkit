@@ -242,24 +242,27 @@
               </n-grid>
             </n-tab-pane>
 
-            <!-- ================== 标签页 3: 智能服务 ================== -->
+            <!-- ================== 标签页 3: 智能服务  ================== -->
             <n-tab-pane name="services" tab="智能服务">
-              <n-grid cols="1 l:2" :x-gap="24" :y-gap="24" responsive="screen">
+              <!-- ★★★ 修改点1: cols 改为 "1 l:3"，总共3列 ★★★ -->
+              <n-grid cols="1 l:3" :x-gap="24" :y-gap="24" responsive="screen">
+                
+                <!-- 左侧: AI翻译 (保持占 1 列) -->
                 <n-gi>
-                  <n-card :bordered="false" class="dashboard-card">
+                  <n-card :bordered="false" class="dashboard-card" style="height: 100%;">
                     <template #header><span class="card-title">AI翻译</span></template>
                     <template #header-extra>
                       <n-space align="center">
                         <n-switch v-model:value="configModel.ai_translation_enabled" />
-                        <a href="https://cloud.siliconflow.cn/i/GXIrubbL" target="_blank" style="font-size: 0.85em; color: var(--n-primary-color); text-decoration: underline;">注册硅基流动，新人送2000万tokens</a>
+                        <a href="https://cloud.siliconflow.cn/i/GXIrubbL" target="_blank" style="font-size: 0.85em; color: var(--n-primary-color); text-decoration: underline;">注册硅基流动</a>
                       </n-space>
                     </template>
                     <div class="ai-settings-wrapper" :class="{ 'content-disabled': !configModel.ai_translation_enabled }">
                       <n-form-item label="AI翻译模式" path="ai_translation_mode">
                         <n-radio-group v-model:value="configModel.ai_translation_mode" name="ai_translation_mode" :disabled="!configModel.ai_translation_enabled">
-                          <n-space><n-radio value="fast">翻译模式 (速度优先)</n-radio><n-radio value="quality">顾问模式 (质量优先)</n-radio></n-space>
+                          <n-space vertical><n-radio value="fast">翻译模式 (速度优先)</n-radio><n-radio value="quality">顾问模式 (质量优先)</n-radio></n-space>
                         </n-radio-group>
-                        <template #feedback><n-text depth="3" style="font-size:0.8em;"><b>翻译模式：</b>采用三段式翻译，依次用普通模式、音译模式、顾问模式进行翻译。<br><b>顾问模式：</b>结合上下文翻译，准确率更高，但无缓存，耗时且成本高，适合手动处理单项媒体。</n-text></template>
+                        <template #feedback><n-text depth="3" style="font-size:0.8em;"><b>顾问模式：</b>结合上下文翻译，准确率更高，但无缓存，耗时且成本高。</n-text></template>
                       </n-form-item>
                       <n-form-item label="AI 服务商" path="ai_provider"><n-select v-model:value="configModel.ai_provider" :options="aiProviderOptions" :disabled="!configModel.ai_translation_enabled"/></n-form-item>
                       <n-form-item label="API Key" path="ai_api_key"><n-input type="password" show-password-on="mousedown" v-model:value="configModel.ai_api_key" placeholder="输入你的 API Key" :disabled="!configModel.ai_translation_enabled"/></n-form-item>
@@ -268,73 +271,85 @@
                     </div>
                   </n-card>
                 </n-gi>
-                <n-gi>
-                  <n-card :bordered="false" class="dashboard-card">
+
+                <!-- 右侧: MoviePilot订阅 (占 2 列) -->
+                <!-- ★★★ 修改点2: span="1 l:2" 让其在大屏占2列 ★★★ -->
+                <n-gi span="1 l:2">
+                  <n-card :bordered="false" class="dashboard-card" style="height: 100%;">
                     <template #header><span class="card-title">MoviePilot订阅</span></template>
-                    <n-form-item-grid-item label="MoviePilot URL" path="moviepilot_url"><n-input v-model:value="configModel.moviepilot_url" placeholder="例如: http://192.168.1.100:3000"/></n-form-item-grid-item>
-                    <n-form-item-grid-item label="用户名" path="moviepilot_username"><n-input v-model:value="configModel.moviepilot_username" placeholder="输入 MoviePilot 的登录用户名"/></n-form-item-grid-item>
-                    <n-form-item-grid-item label="密码" path="moviepilot_password"><n-input type="password" show-password-on="mousedown" v-model:value="configModel.moviepilot_password" placeholder="输入 MoviePilot 的登录密码"/></n-form-item-grid-item>
                     
-                    <n-divider title-placement="left" style="margin-top: 20px; margin-bottom: 20px;">智能订阅与洗版</n-divider>
-                    
-                    <n-form-item-grid-item label="启用智能订阅" path="autosub_enabled">
-                      <n-switch v-model:value="configModel.autosub_enabled" :disabled="!isMoviePilotConfigured" />
-                      <template #feedback><n-text depth="3" style="font-size:0.8em;">总开关。开启后，智能订阅定时任务才会真正执行订阅操作。</n-text></template>
-                    </n-form-item-grid-item>
+                    <!-- ★★★ 修改点3: 内部使用 Grid 布局实现双列内容，压缩高度 ★★★ -->
+                    <n-grid cols="1 m:2" :x-gap="24" responsive="screen">
+                      
+                      <!-- 1. 连接设置区域 -->
+                      <n-gi span="1 m:2">
+                        <n-form-item-grid-item label="MoviePilot URL" path="moviepilot_url">
+                          <n-input v-model:value="configModel.moviepilot_url" placeholder="例如: http://192.168.1.100:3000"/>
+                        </n-form-item-grid-item>
+                      </n-gi>
+                      <n-gi>
+                        <n-form-item-grid-item label="用户名" path="moviepilot_username">
+                          <n-input v-model:value="configModel.moviepilot_username" placeholder="登录用户名"/>
+                        </n-form-item-grid-item>
+                      </n-gi>
+                      <n-gi>
+                        <n-form-item-grid-item label="密码" path="moviepilot_password">
+                          <n-input type="password" show-password-on="mousedown" v-model:value="configModel.moviepilot_password" placeholder="登录密码"/>
+                        </n-form-item-grid-item>
+                      </n-gi>
 
-                    <n-form-item-grid-item label="上映延迟订阅天数" path="movie_subscription_delay_days">
-                      <n-input-number v-model:value="configModel.movie_subscription_delay_days" :min="0" :disabled="!isMoviePilotConfigured" />
-                      <template #feedback>
-                        <n-text depth="3" style="font-size:0.8em;">
-                          电影在影院上映指定天数后，才允许订阅，有数字发行的无视此设定。<br>
-                          <b>设置为 0 表示上映当天即可订阅。</b>
-                        </n-text>
-                      </template>
-                    </n-form-item-grid-item>
+                      <!-- 分割线 -->
+                      <n-gi span="1 m:2">
+                        <n-divider title-placement="left" style="margin: 10px 0 20px 0;">智能订阅与洗版规则</n-divider>
+                      </n-gi>
 
-                    <n-form-item-grid-item label="订阅超时自动取消 (天)" path="autocancel_subscribed_days">
-                      <n-input-number v-model:value="configModel.autocancel_subscribed_days" :min="0" :disabled="!isMoviePilotConfigured" />
-                      <template #feedback>
-                        <n-text depth="3" style="font-size:0.8em;">
-                          发行时间超过1年且超过设置天数仍未入库的媒体，自动取消其在 MoviePilot 的订阅。<br>
-                          <b>设置为 0 表示禁用此功能。</b>
-                        </n-text>
-                      </template>
-                    </n-form-item-grid-item>
+                      <!-- 2. 规则区域 (左右并排) -->
+                      <n-gi>
+                        <n-form-item-grid-item label="启用智能订阅" path="autosub_enabled">
+                          <n-switch v-model:value="configModel.autosub_enabled" :disabled="!isMoviePilotConfigured" />
+                          <template #feedback><n-text depth="3" style="font-size:0.8em;">总开关。开启后定时任务才会执行。</n-text></template>
+                        </n-form-item-grid-item>
+                      </n-gi>
+                      <n-gi>
+                        <n-form-item-grid-item label="对缺集的季启用洗版订阅" path="gap_fill_resubscribe_enabled">
+                          <n-switch v-model:value="configModel.gap_fill_resubscribe_enabled" :disabled="!isMoviePilotConfigured" />
+                          <template #feedback><n-text depth="3" style="font-size:0.8em;">开启：整季洗版；关闭：仅补齐缺失集。</n-text></template>
+                        </n-form-item-grid-item>
+                      </n-gi>
 
-                    <n-form-item-grid-item label="对缺集的季启用洗版订阅" path="gap_fill_resubscribe_enabled">
-                      <!-- ★ 1. v-model 绑定到新的配置项 ★ -->
-                      <n-switch v-model:value="configModel.gap_fill_resubscribe_enabled" :disabled="!isMoviePilotConfigured" />
-                      <template #feedback>
-                        <n-text depth="3" style="font-size:0.8em;">
-                          当“统一订阅处理”任务订阅缺集的季时：<br>
-                          <b>开启：</b>将向 MoviePilot 提交<b>整季洗版</b>订阅请求，获取完整的版本。<br>
-                          <b>关闭：</b>将向 MoviePilot 提交<b>普通订阅</b>请求，MoviePilot 将只下载本地缺失的集。
-                        </n-text>
-                      </template>
-                    </n-form-item-grid-item>
+                      <n-gi>
+                        <n-form-item-grid-item label="上映延迟订阅天数" path="movie_subscription_delay_days">
+                          <n-input-number v-model:value="configModel.movie_subscription_delay_days" :min="0" :disabled="!isMoviePilotConfigured" style="width: 100%;" />
+                          <template #feedback><n-text depth="3" style="font-size:0.8em;">影院上映N天后才订阅 (0为不限制)。</n-text></template>
+                        </n-form-item-grid-item>
+                      </n-gi>
+                      <n-gi>
+                        <n-form-item-grid-item label="订阅超时自动取消 (天)" path="autocancel_subscribed_days">
+                          <n-input-number v-model:value="configModel.autocancel_subscribed_days" :min="0" :disabled="!isMoviePilotConfigured" style="width: 100%;" />
+                          <template #feedback><n-text depth="3" style="font-size:0.8em;">老电影超过N天未入库自动取消 (0为禁用)。</n-text></template>
+                        </n-form-item-grid-item>
+                      </n-gi>
 
-                    <!-- ★★★ 核心修改：在这里添加阀门设置 ★★★ -->
-                    <n-divider title-placement="left" style="margin-top: 20px; margin-bottom: 20px;">每日订阅额度</n-divider>
+                      <!-- 分割线 -->
+                      <n-gi span="1 m:2">
+                        <n-divider title-placement="left" style="margin: 10px 0 20px 0;">每日订阅额度</n-divider>
+                      </n-gi>
 
-                    <n-form-item-grid-item label="每日订阅上限" path="resubscribe_daily_cap">
-                      <n-input-number v-model:value="configModel.resubscribe_daily_cap" :min="1" :disabled="!isMoviePilotConfigured" />
-                      <template #feedback>
-                        <n-text depth="3" style="font-size:0.8em;">
-                          若每日订阅的项目超过此数量，任务将自动中止，每天0点重置。
-                        </n-text>
-                      </template>
-                    </n-form-item-grid-item>
+                      <!-- 3. 额度区域 (左右并排) -->
+                      <n-gi>
+                        <n-form-item-grid-item label="每日订阅上限" path="resubscribe_daily_cap">
+                          <n-input-number v-model:value="configModel.resubscribe_daily_cap" :min="1" :disabled="!isMoviePilotConfigured" style="width: 100%;" />
+                          <template #feedback><n-text depth="3" style="font-size:0.8em;">超过数量停止任务，0点重置。</n-text></template>
+                        </n-form-item-grid-item>
+                      </n-gi>
+                      <n-gi>
+                        <n-form-item-grid-item label="订阅请求间隔 (秒)" path="resubscribe_delay_seconds">
+                          <n-input-number v-model:value="configModel.resubscribe_delay_seconds" :min="0.1" :step="0.1" :disabled="!isMoviePilotConfigured" style="width: 100%;" />
+                          <template #feedback><n-text depth="3" style="font-size:0.8em;">避免请求过快冲击服务器。</n-text></template>
+                        </n-form-item-grid-item>
+                      </n-gi>
 
-                    <n-form-item-grid-item label="订阅请求间隔 (秒)" path="resubscribe_delay_seconds">
-                      <n-input-number v-model:value="configModel.resubscribe_delay_seconds" :min="0.1" :step="0.1" :disabled="!isMoviePilotConfigured" />
-                      <template #feedback>
-                        <n-text depth="3" style="font-size:0.8em;">
-                          每次成功提交订阅后，等待指定的秒数再提交下一个，以避免对MoviePilot服务器造成冲击。
-                        </n-text>
-                      </template>
-                    </n-form-item-grid-item>
-
+                    </n-grid>
                   </n-card>
                 </n-gi>
               </n-grid>
