@@ -476,27 +476,27 @@ def add_subscription_source(tmdb_id: str, item_type: str, source: Dict[str, Any]
         # 向上抛出异常，以便外部事务可以回滚
         raise
 
-def get_global_subscription_statuses_by_tmdb_ids(tmdb_ids: List[str]) -> Dict[str, str]:
+def get_global_subscription_statuses_by_tmdb_ids(tmdb_ids: List[str], item_type: str) -> Dict[str, str]:
     """
-    【新】根据 TMDb ID 列表，高效查询每个ID的订阅状态。
+    根据 TMDb ID 列表和类型，高效查询每个ID的订阅状态。
     返回一个字典，键为 tmdb_id，值为简化后的状态 ('SUBSCRIBED', 'REQUESTED', 'NONE')。
     """
-    if not tmdb_ids:
+    if not tmdb_ids or not item_type:
         return {}
 
     sql = """
         SELECT tmdb_id, subscription_status
         FROM media_metadata
-        WHERE tmdb_id = ANY(%s);
+        WHERE tmdb_id = ANY(%s) AND item_type = %s;
     """
     status_map = {}
     try:
         with get_db_connection() as conn:
             with conn.cursor() as cursor:
-                cursor.execute(sql, (tmdb_ids,))
+                cursor.execute(sql, (tmdb_ids, item_type))
                 rows = cursor.fetchall()
                 for row in rows:
-                    status_map[row['tmdb_id']] = row['subscription_status']
+                    status_map[str(row['tmdb_id'])] = row['subscription_status']
     except Exception as e:
         logger.error(f"DB: 批量查询 TMDb IDs 的全局状态失败: {e}", exc_info=True)
     

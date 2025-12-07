@@ -55,7 +55,7 @@ def task_update_daily_theme(processor):
             tmdb_ids = [str(movie["id"]) for movie in popular_movies]
 
             library_items_map = media_db.check_tmdb_ids_in_library(tmdb_ids, item_type='Movie')
-            subscription_statuses = request_db.get_global_subscription_statuses_by_tmdb_ids(tmdb_ids)
+            subscription_statuses = request_db.get_global_subscription_statuses_by_tmdb_ids(tmdb_ids, item_type='Movie')
 
             candidate_movies = [
                 movie for movie in popular_movies
@@ -178,7 +178,7 @@ def task_replenish_recommendation_pool(processor):
         new_tmdb_ids = [str(movie["id"]) for movie in new_movies]
         
         library_items_map = media_db.check_tmdb_ids_in_library(new_tmdb_ids, item_type='Movie')
-        subscription_statuses = request_db.get_global_subscription_statuses_by_tmdb_ids(new_tmdb_ids)
+        subscription_statuses = request_db.get_global_subscription_statuses_by_tmdb_ids(new_tmdb_ids, item_type='Movie')
         
         candidate_movies = [
             movie for movie in new_movies

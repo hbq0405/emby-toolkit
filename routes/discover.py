@@ -34,7 +34,7 @@ def _filter_and_enrich_results(tmdb_data: dict, current_user_id: str, db_item_ty
     library_items_map = media_db.check_tmdb_ids_in_library(tmdb_ids, item_type=db_item_type)
     
     # 获取订阅状态 (假设 request_db 内部处理了类型或仅基于ID，如果 request_db 也有同样问题建议一并修改，这里仅展示 discover 的适配)
-    subscription_statuses = request_db.get_global_subscription_statuses_by_tmdb_ids(tmdb_ids)
+    subscription_statuses = request_db.get_global_subscription_statuses_by_tmdb_ids(tmdb_ids, item_type=db_item_type)
 
     media_type_for_frontend = 'movie' if db_item_type == 'Movie' else 'tv'
 
