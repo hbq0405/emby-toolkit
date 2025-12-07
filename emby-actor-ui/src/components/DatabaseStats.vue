@@ -371,11 +371,18 @@ const getIconPath = (groupName) => {
 
 // 新增：图标加载失败时的处理（隐藏或显示默认图标）
 const handleIconError = (e) => {
-  // 方式 A: 加载失败直接隐藏图标
-  e.target.style.display = 'none';
-  
-  // 方式 B: 加载失败显示一个默认图标 (取消注释使用)
-  // e.target.src = '/icons/default.png';
+  const defaultIcon = '/icons/site/pt.ico';
+
+  // 防止死循环：如果当前加载失败的已经是默认图标 (pt.ico)，则不再重试，直接隐藏
+  // 注意：e.target.src 获取的是完整 URL (http://...), 所以用 includes 判断
+  if (e.target.src.includes('pt.ico')) {
+    e.target.style.display = 'none';
+  } else {
+    // 否则将图片源替换为默认图标
+    e.target.src = defaultIcon;
+    // 确保图片是显示状态 (防止之前被设置为 none)
+    e.target.style.display = 'inline-block'; 
+  }
 };
 
 onMounted(() => {
