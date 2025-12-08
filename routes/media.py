@@ -615,8 +615,8 @@ def api_get_subscription_strategy():
                 'movie_protection_days': 180,
                 'movie_search_window_days': 1,
                 'movie_pause_days': 7,
-                'delay_subscription_days': 0,
-                'subscription_timeout_days': 90
+                'delay_subscription_days': 30,
+                'subscription_timeout_days': 3
             }
         return jsonify(config)
     except Exception as e:
