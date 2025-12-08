@@ -780,9 +780,6 @@ class WatchlistProcessor:
                 s_num = season['season_number']
                 ep_count = season.get('episode_count', 0)
                 
-                # ==============================================================
-                # ★★★ 核心优化：一致性检查 ★★★
-                # ==============================================================
                 # 如果本地已集齐且版本统一，则直接跳过，不再折腾
                 if self._check_season_consistency(tmdb_id, s_num, ep_count):
                     continue
