@@ -609,13 +609,9 @@ class WatchlistProcessor:
             return False
 
     # ★★★ 辅助方法：同步状态给 MoviePilot ★★★
-    def _sync_status_to_moviepilot(self, tmdb_id: str, series_name: str, series_details: Dict[str, Any], final_status: str):
+    def _sync_status_to_moviepilot(self, tmdb_id: str, series_name: str, series_details: Dict[str, Any], final_status: str, old_status: str = None):
         """
         根据最终计算出的 watching_status，调用 MP 接口更新订阅状态。
-        映射关系：
-        - Pending -> P (待定)
-        - Paused  -> S (暂停, 需检查配置开关)
-        - Watching -> R (运行中)
         """
         try:
             # 1. 确定 MP 目标状态
@@ -630,25 +626,36 @@ class WatchlistProcessor:
                 if enable_auto_pause:
                     target_mp_status = 'S'
                 else:
-                    target_mp_status = 'R' # 如果没开自动暂停，MP 依然保持 Running
+                    target_mp_status = 'R'
             elif final_status == STATUS_WATCHING:
                 target_mp_status = 'R'
             else:
-                # Completed 或其他状态，通常不主动干涉 MP，或者设为 S
                 return
 
             # 2. 找出需要更新的季
-            # 通常我们更新“最新季”或者“当前活跃季”
-            # 为保险起见，我们可以遍历所有未完结的季进行更新，或者只更新最后一季
-            # 这里策略是：更新所有季号 > 0 的季。MP 接口如果找不到订阅会忽略，所以多发几个请求没关系。
             seasons = series_details.get('seasons', [])
             for season in seasons:
                 s_num = season.get('season_number')
                 if s_num and s_num > 0:
                     # 调用 MP 接口
                     if moviepilot.update_subscription_status(int(tmdb_id), s_num, target_mp_status, self.config):
-                        if target_mp_status != 'R': # R 是常态，不打印
-                            logger.info(f"  ➜ [MP同步] 《{series_name}》S{s_num} -> {target_mp_status} (因本地状态: {final_status})")
+                        
+                        should_log = False
+                        log_msg = ""
+
+                        if target_mp_status != 'R':
+                            # 非 R 状态（P 或 S），始终打印
+                            should_log = True
+                            status_desc = "待定(P)" if target_mp_status == 'P' else "暂停(S)"
+                            log_msg = f"  ➜ [MP同步] 《{series_name}》S{s_num} -> {status_desc} (因本地状态: {translate_internal_status(final_status)})"
+                        
+                        elif target_mp_status == 'R' and old_status == STATUS_PENDING:
+                            # 如果是从 Pending 恢复到 R，必须打印！
+                            should_log = True
+                            log_msg = f"  ➜ [MP同步] 《{series_name}》S{s_num} -> 恢复订阅(R) (已解除待定状态)"
+
+                        if should_log:
+                            logger.info(log_msg)
 
         except Exception as e:
             logger.warning(f"同步状态给 MoviePilot 时出错: {e}")
@@ -989,7 +996,13 @@ class WatchlistProcessor:
         # ======================================================================
         # ★★★ 新增：MP 状态接管与同步 (自动待定 & 自动暂停) ★★★
         # ======================================================================
-        self._sync_status_to_moviepilot(tmdb_id, item_name, latest_series_data, final_status)
+        self._sync_status_to_moviepilot(
+            tmdb_id=tmdb_id, 
+            series_name=item_name, 
+            series_details=latest_series_data, 
+            final_status=final_status,
+            old_status=old_status
+        )
 
         # ★★★ 场景一：补旧番 - 只处理已完结剧集中，已播出的缺失季 ★★★
         # 注意：由于现在 TMDb Ended 状态会直接导致 final_status = COMPLETED，
