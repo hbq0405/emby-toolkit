@@ -242,7 +242,7 @@
                       <div class="tip">
                         当检测到某季存在中间断档（如只有第1、3集，缺第2集）时命中。<br>
                         <span style="color: var(--n-warning-color);" v-if="currentRule.rule_type === 'delete'">
-                          配合“删除模式”可实现一键清理残缺季，以便重新洗版。
+                          适合转存大包清理残缺剧集。
                         </span>
                       </div>
                     </div>
