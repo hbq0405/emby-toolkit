@@ -393,20 +393,31 @@ def update_subscription_status(tmdb_id: int, season: int, status: str, config: D
         status_params = {"state": status}
         requests.put(status_url, headers=headers, params=status_params, timeout=10)
         
-        # 3. ★★★ 新增：如果提供了 total_episodes，更新订阅详情 ★★★
+        # 3. 如果提供了 total_episodes，更新订阅详情 ★★★
         if total_episodes is not None:
-            # A. 获取完整的订阅详情 (为了拿到其他字段，防止覆盖为空)
+            # A. 获取完整的订阅详情
             detail_url = f"{moviepilot_url}/api/v1/subscribe/{sub_id}"
             detail_res = requests.get(detail_url, headers=headers, timeout=10)
             
             if detail_res.status_code == 200:
                 sub_data = detail_res.json()
                 
-                # 只有当当前集数不等于目标集数时才更新，减少请求
-                if sub_data.get('total_episode') != total_episodes:
+                old_total = sub_data.get('total_episode', 0)
+                old_lack = sub_data.get('lack_episode', 0)
+                
+                # 只有当当前集数不等于目标集数时才更新
+                if old_total != total_episodes:
                     # B. 修改总集数
                     sub_data['total_episode'] = total_episodes
                     
+                    if old_total > total_episodes:
+                        diff = old_total - total_episodes
+                        # 确保不小于 0
+                        new_lack = max(0, old_lack - diff)
+                        sub_data['lack_episode'] = new_lack
+                        
+                        logger.info(f"  ➜ [MP修正] 自动修正缺失集数: {old_lack} -> {new_lack} (因总集数 {old_total}->{total_episodes})")
+
                     # C. 提交更新 (PUT /api/v1/subscribe/)
                     update_url = f"{moviepilot_url}/api/v1/subscribe/"
                     update_res = requests.put(update_url, headers=headers, json=sub_data, timeout=10)

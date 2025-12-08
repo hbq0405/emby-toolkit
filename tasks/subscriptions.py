@@ -112,33 +112,6 @@ def _subscribe_full_series_with_logic(tmdb_id: int, series_name: str, config: Di
             if moviepilot.subscribe_with_custom_payload(mp_payload, config):
                 any_success = True
                 
-                # 1. 获取真实 ID (TMDb Season ID)
-                target_id = str(season.get('id'))
-                if not target_id:
-                    target_id = f"{tmdb_id}_S{s_num}"
-
-                # 2. 构造 media_info 并写入数据库 (SUBSCRIBED)
-                media_info_list = [{
-                    'tmdb_id': target_id,
-                    'title': f"{final_series_name} S{s_num}",
-                    'parent_series_tmdb_id': str(tmdb_id),
-                    'season_number': s_num,
-                    'item_type': 'Season'
-                }]
-                request_db.set_media_status_subscribed(
-                    tmdb_ids=[target_id],
-                    item_type='Season',
-                    media_info_list=media_info_list
-                )
-                
-                # ★★★ 关键步骤 2：显式设置季的状态 ★★★
-                target_status = 'Pending' if is_pending else 'Watching'
-                watchlist_db.update_watching_status_by_tmdb_id(target_id, 'Season', target_status)
-                
-                # 如果是待定，额外处理虚标集数
-                if is_pending:
-                    watchlist_db.update_specific_season_total_episodes(str(tmdb_id), s_num, fake_total)
-
         return any_success
 
     except Exception as e:
@@ -308,40 +281,16 @@ def task_manual_subscribe_batch(processor, subscribe_requests: List[Dict]):
                 
                 # 2. 如果是 电影 (Movie) 或 单季 (Season 或 Series带季号)
                 else:
-                    # 确定用于更新 DB 的 ID 和 类型
-                    # 如果是季，尝试使用之前计算的 query_id (真实季ID)，否则用 SeriesID_Sxx
-                    # 注意：手动订阅时，item_type 可能是 'Series' 但带了 season_number，这时应视为 'Season' 处理
+                    if item_type == 'Movie':
+                        request_db.set_media_status_subscribed(
+                            tmdb_ids=[str(tmdb_id)],
+                            item_type='Movie', 
+                        )
                     
-                    real_item_type = item_type
-                    target_id = str(tmdb_id)
-                    
-                    if season_number is not None:
-                        real_item_type = 'Season'
-                        if 'query_id' in locals() and query_id:
-                             target_id = query_id
-                        else:
-                             target_id = f"{tmdb_id}_S{season_number}"
-                    
-                    # 更新订阅状态 (Subscription Status) -> SUBSCRIBED
-                    request_db.set_media_status_subscribed(
-                        tmdb_ids=[target_id],
-                        item_type=real_item_type, 
-                    )
-                    
-                    # ★★★ 状态同步：单季订阅成功后，更新追剧状态 ★★★
-                    if real_item_type == 'Season':
-                        # A. 激活父剧集
+                    elif item_type == 'Season' or (item_type == 'Series' and season_number is not None):
+                        # ★★★ 仅保留：激活父剧集 ★★★
+                        # 确保用户能在追剧列表中看到这部剧
                         watchlist_db.add_item_to_watchlist(str(tmdb_id), series_name)
-                        
-                        # B. 设置当前季状态
-                        target_status = 'Pending' if is_pending else 'Watching'
-                        
-                        # 确保 ID 有效 (纯数字 ID 才能更新 watching_status)
-                        if target_id.isdigit():
-                            watchlist_db.update_watching_status_by_tmdb_id(target_id, 'Season', target_status)
-                            
-                            if is_pending:
-                                watchlist_db.update_specific_season_total_episodes(str(tmdb_id), int(season_number), fake_total)
 
                 processed_count += 1
             else:
@@ -595,24 +544,19 @@ def task_auto_subscribe(processor):
             if success:
                 logger.info(f"  ✅ 《{item['title']}》订阅成功！")
                 
-                # 如果是整剧订阅，_subscribe_full_series_with_logic 已经处理了 DB 写入
-                if item_type != 'Series':
+                # ★★★ 修改：只处理 Movie 的订阅状态更新 ★★★
+                if item_type == 'Movie':
                     request_db.set_media_status_subscribed(
                         tmdb_ids=item['tmdb_id'], 
-                        item_type=item_type,
+                        item_type='Movie',
                     )
-                    
-                    # ★★★ 状态同步：单季订阅成功后，更新状态 ★★★
-                    if item_type == 'Season':
-                        # A. 激活父剧集
-                        watchlist_db.add_item_to_watchlist(str(parent_tmdb_id), series_name)
-                        
-                        # B. 设置当前季状态
-                        target_status = 'Pending' if is_pending else 'Watching'
-                        watchlist_db.update_watching_status_by_tmdb_id(str(item['tmdb_id']), item_type, target_status)
-                        
-                        if is_pending:
-                            watchlist_db.update_specific_season_total_episodes(str(parent_tmdb_id), season_num, fake_total)
+                
+                elif item_type == 'Season':
+                    watchlist_db.add_item_to_watchlist(str(parent_tmdb_id), series_name)
+                    request_db.set_media_status_subscribed(
+                        tmdb_ids=item['tmdb_id'], 
+                        item_type='Season',
+                    )
 
                 # b. 扣除配额
                 settings_db.decrement_subscription_quota()
