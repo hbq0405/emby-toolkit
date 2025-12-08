@@ -354,7 +354,7 @@
        <n-form label-placement="left" label-width="auto">
          <n-divider title-placement="left" style="margin-top: 0">自动化状态管理</n-divider>
          
-         <n-form-item label="自动待定 (Pending)">
+         <n-form-item label="自动待定">
            <n-space vertical>
              <n-switch v-model:value="watchlistConfig.auto_pending.enabled">
                 <template #checked>已启用</template>
@@ -362,14 +362,12 @@
              </n-switch>
              <n-collapse-transition :show="watchlistConfig.auto_pending.enabled">
                <n-space vertical style="padding-top: 10px">
-                 <!-- ★★★ 修改文案：上线...天内 ★★★ -->
                  <n-input-group>
                    <n-input-group-label>上线</n-input-group-label>
                    <n-input-number v-model:value="watchlistConfig.auto_pending.days" :min="1" style="width: 80px" size="small" />
                    <n-input-group-label>天内</n-input-group-label>
                  </n-input-group>
                  
-                 <!-- ★★★ 修改文案：或集数...集以下 ★★★ -->
                  <n-input-group>
                    <n-input-group-label>或集数</n-input-group-label>
                    <n-input-number v-model:value="watchlistConfig.auto_pending.episodes" :min="1" style="width: 80px" size="small" />
@@ -377,14 +375,14 @@
                  </n-input-group>
                  
                  <n-text depth="3" style="font-size: 12px">
-                   * 满足任一条件即设为“待定”，防止元数据滞后导致过早完成订阅。
+                   * 满足任一条件即设为“待定”，待定状态不影响订阅搜索，只是防止过早完成订阅。
                  </n-text>
                </n-space>
              </n-collapse-transition>
            </n-space>
          </n-form-item>
 
-         <n-form-item label="自动暂停 (Pause)">
+         <n-form-item label="自动暂停">
             <n-space vertical>
               <n-switch v-model:value="watchlistConfig.auto_pause" />
               <n-text depth="3" style="font-size: 12px">
@@ -408,7 +406,7 @@
            <n-space vertical>
              <n-switch v-model:value="watchlistConfig.gap_fill_resubscribe" />
              <n-text depth="3" style="font-size: 12px">
-               * 发现中间缺集时，使用洗版模式订阅缺失的季。
+               * 发现中间缺集时，使用洗版模式订阅缺集的季，不勾选将采用普通订阅模式只下载缺失的集。
              </n-text>
            </n-space>
          </n-form-item>
