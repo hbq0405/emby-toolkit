@@ -915,14 +915,14 @@ class WatchlistProcessor:
             else:
                 if days_since_last != 9999:
                     
-                    # 子规则 A: 大结局已播出且已入库，但 TMDb 尚未更新状态为 Ended，且无后续排期。
-                    # 设置 7 天缓冲期是为了防止周更剧数据更新延迟导致的误判。
+                    # 子规则 A: 本地已集齐 + 停更 > 7天 -> 完美完结
+                    # (逻辑不变：我都下完了，且一周没动静，肯定是完结了)
                     if real_next_episode_to_air is None and days_since_last > 7:
                         final_status = STATUS_COMPLETED
                         paused_until_date = None
                         logger.info(f"  🔄 [判定-已完结] 本地已集齐所有剧集，且上一集已播出 {days_since_last} 天 (>7天) 无后续排期，判定为“已完结” 。")
                     
-                    # 子规则 B: 距上一集播出超过一个月(30天) -> 判定已完结
+                    # 逻辑：虽然没集齐，但只要还在 30 天内，我就当你还在连载，只是可能断更了。
                     elif days_since_last <= 30:
                         final_status = STATUS_WATCHING
                         paused_until_date = None
@@ -950,12 +950,12 @@ class WatchlistProcessor:
                             except Exception as e:
                                 logger.error(f"  ❌ 发送停更通知失败: {e}")
 
-                    # ★★★ 最后的兜底：超过 30 天 ★★★
                     # 逻辑：报警也没人管，时间也超了，判定为烂尾/完结。
                     else:
                         final_status = STATUS_COMPLETED
                         paused_until_date = None
                         logger.info(f"  🔄 [判定-已完结] 无待播集信息，且上一集已播出 {days_since_last} 天 (>30天)，超过观察期，判定已完结。")
+                
                 else:
                     # 极端情况：无任何日期信息
                     final_status = STATUS_WATCHING
