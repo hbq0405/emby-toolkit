@@ -923,20 +923,14 @@ class WatchlistProcessor:
                         logger.info(f"  🔄 [判定-已完结] 本地已集齐所有剧集，且上一集已播出 {days_since_last} 天 (>7天) 无后续排期，判定为“已完结” 。")
                     
                     # 子规则 B: 距上一集播出超过一个月(30天) -> 判定已完结
-                    if days_since_last > 30:
-                        final_status = STATUS_COMPLETED
-                        paused_until_date = None
-                        logger.info(f"  🔄 [判定-已完结] 无待播集信息，且上一集已播出 {days_since_last} 天 (>30天)，判定已完结。")
-                    
-                    # 子规则 C: 距上一集播出在一个月内 -> 保持追剧
-                    else:
+                    elif days_since_last <= 30:
                         final_status = STATUS_WATCHING
                         paused_until_date = None
                         logger.info(f"  👀 [判定-连载中] 无待播集信息，但上一集仅播出 {days_since_last} 天 (<=30天)，保持“追剧中”。")
 
-                        # 停更报警逻辑
+                        # 停更报警逻辑：超过8天没动静，喊人来看
                         if days_since_last > 8:
-                            logger.info(f"  🔔 [通知] 剧集 '{item_name}' 停更已满一周，正在发送管理员通知...")
+                            logger.info(f"  🔔 [通知] 剧集 '{item_name}' 停更已满一周 ({days_since_last}天)，正在发送管理员通知...")
                             try:
                                 admin_ids = user_db.get_admin_telegram_chat_ids()
                                 if admin_ids:
@@ -948,12 +942,20 @@ class WatchlistProcessor:
                                         f"📺 *剧集*: {safe_name}\n"
                                         f"📅 *上一集*: {safe_date_line}\n"
                                         f"❓ *状态*: TMDb无后续排期\n\n"
-                                        f"该剧已停更超过一周且无新数据，请人工检查是否已完结\\."
+                                        f"该剧已停更超过一周，系统将在停更满30天后自动完结。\n"
+                                        f"请人工确认是否已完结。"
                                     )
                                     for admin_id in admin_ids:
                                         telegram.send_telegram_message(admin_id, msg_text)
                             except Exception as e:
                                 logger.error(f"  ❌ 发送停更通知失败: {e}")
+
+                    # ★★★ 最后的兜底：超过 30 天 ★★★
+                    # 逻辑：报警也没人管，时间也超了，判定为烂尾/完结。
+                    else:
+                        final_status = STATUS_COMPLETED
+                        paused_until_date = None
+                        logger.info(f"  🔄 [判定-已完结] 无待播集信息，且上一集已播出 {days_since_last} 天 (>30天)，超过观察期，判定已完结。")
                 else:
                     # 极端情况：无任何日期信息
                     final_status = STATUS_WATCHING
