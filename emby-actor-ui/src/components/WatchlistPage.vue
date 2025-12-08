@@ -619,7 +619,7 @@ const filteredWatchlist = computed(() => {
   // 2. 视图分流
   if (currentView.value === 'inProgress') {
     // --- 追剧中视图 ---
-    list = list.filter(item => item.status === 'Watching' || item.status === 'Paused');
+    list = list.filter(item => ['Watching', 'Paused', 'Pending'].includes(item.status));
     
     if (filterStatus.value !== 'all') {
       list = list.filter(item => item.status === filterStatus.value);

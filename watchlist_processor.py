@@ -198,13 +198,15 @@ class WatchlistProcessor:
                     logger.info("  ➜ 已启用【深度模式】，将刷新所有追剧列表中的项目。")
                 else:
                     today_str = datetime.now(timezone.utc).date().isoformat()
-                    where_clause = f"WHERE watching_status = '{STATUS_WATCHING}' OR (watching_status = '{STATUS_PAUSED}' AND paused_until <= '{today_str}')"
+                    where_clause = f"""
+                        WHERE watching_status = '{STATUS_WATCHING}' 
+                           OR watching_status = '{STATUS_PENDING}' 
+                           OR (watching_status = '{STATUS_PAUSED}' AND paused_until <= '{today_str}')
+                    """
 
-            # ★★★★★★★★★★★★★★★ 终极修复 3/3: 将 tmdb_id 传递给数据获取函数 ★★★★★★★★★★★★★★★
             active_series = self._get_series_to_process(where_clause, tmdb_id=tmdb_id)
             
             if active_series:
-                # ... (后续的并发处理逻辑完全不变) ...
                 total = len(active_series)
                 self.progress_callback(5, f"开始并发处理 {total} 部剧集...")
                 
