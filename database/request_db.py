@@ -526,14 +526,19 @@ def get_subscribers_by_tmdb_id(tmdb_id: str, item_type: str) -> List[Dict[str, A
         logger.error(f"DB: 根据 TMDb ID [{tmdb_id}] 查询订阅者失败: {e}", exc_info=True)
         return []
     
-def get_stale_subscribed_media(threshold_days: int) -> List[Dict[str, Any]]:
+def get_stale_subscribed_media(threshold_days: int, protection_days: int) -> List[Dict[str, Any]]:
     """
-    获取所有状态为 'SUBSCRIBED'、发行时间超过3个月，且订阅时间超过指定天数的媒体项。
+    获取所有状态为 'SUBSCRIBED' 且满足以下条件的媒体项：
+    1. 订阅时间超过 threshold_days (超时)
+    2. 发行时间超过 protection_days (已过新片保护期)
     """
     if threshold_days <= 0:
         return []
 
-    sql = """
+    # 确保保护期至少为 0
+    protection_days = max(0, protection_days)
+
+    sql = f"""
         SELECT 
             tmdb_id, 
             item_type, 
@@ -545,14 +550,14 @@ def get_stale_subscribed_media(threshold_days: int) -> List[Dict[str, Any]]:
         WHERE 
             subscription_status = 'SUBSCRIBED'
             AND last_subscribed_at IS NOT NULL
-            AND NOW() - last_subscribed_at > INTERVAL '%s days'
+            AND NOW() - last_subscribed_at > INTERVAL '{threshold_days} days'
             AND release_date IS NOT NULL
-            AND release_date < NOW() - INTERVAL '3 months';
+            AND release_date < NOW() - INTERVAL '{protection_days} days';
     """
     try:
         with get_db_connection() as conn:
             with conn.cursor() as cursor:
-                cursor.execute(sql, (threshold_days,))
+                cursor.execute(sql)
                 return cursor.fetchall()
     except Exception as e:
         logger.error(f"DB: 查询超时的订阅媒体时失败: {e}", exc_info=True)
@@ -619,3 +624,98 @@ def get_season_tmdb_id(parent_tmdb_id: str, season_number: int) -> Optional[str]
     except Exception as e:
         logger.error(f"DB: 查询季 ID (Series:{parent_tmdb_id} S{season_number}) 失败: {e}", exc_info=True)
         return None
+    
+def get_movies_to_pause(search_window_days: int, protection_days: int) -> List[Dict[str, Any]]:
+    """
+    获取需要暂停搜索的电影。
+    条件：
+    1. 状态为 SUBSCRIBED
+    2. 未入库
+    3. 订阅时间超过 search_window_days (搜索窗口期)
+    4. 发行日期在 protection_days 内 (保护期内的新片才进行呼吸式搜索，老片直接由超时规则取消)
+    """
+    # 防止参数为0导致SQL错误
+    search_window_days = max(1, search_window_days)
+    protection_days = max(30, protection_days)
+
+    sql = f"""
+        SELECT tmdb_id, title
+        FROM media_metadata
+        WHERE item_type = 'Movie'
+          AND subscription_status = 'SUBSCRIBED'
+          AND in_library = FALSE
+          AND last_subscribed_at < NOW() - INTERVAL '{search_window_days} days'
+          AND release_date > NOW() - INTERVAL '{protection_days} days';
+    """
+    try:
+        with get_db_connection() as conn:
+            with conn.cursor() as cursor:
+                cursor.execute(sql)
+                return cursor.fetchall()
+    except Exception as e:
+        logger.error(f"DB: 获取待暂停电影失败: {e}")
+        return []
+
+def get_movies_to_revive() -> List[Dict[str, Any]]:
+    """
+    获取需要复活的电影。
+    条件：
+    1. 状态为 PAUSED
+    2. 暂停结束时间 (paused_until) 已过
+    """
+    sql = """
+        SELECT tmdb_id, title
+        FROM media_metadata
+        WHERE item_type = 'Movie'
+          AND subscription_status = 'PAUSED'
+          AND paused_until <= NOW();
+    """
+    try:
+        with get_db_connection() as conn:
+            with conn.cursor() as cursor:
+                cursor.execute(sql)
+                return cursor.fetchall()
+    except Exception as e:
+        logger.error(f"DB: 获取待复活电影失败: {e}")
+        return []
+
+def update_movie_status_paused(tmdb_ids: List[str], pause_days: int):
+    """
+    批量将电影状态设为 PAUSED，并设定复活时间。
+    ★ 优化：引入随机抖动，防止同一天大规模复活。
+    """
+    if not tmdb_ids: return
+    try:
+        with get_db_connection() as conn:
+            with conn.cursor() as cursor:
+                # ★★★ 核心修改：增加随机偏移量 ★★★
+                # 逻辑：基础暂停天数 + (0 到 2 天之间的随机时间)
+                # 这样复活时间会分散在 [pause_days, pause_days + 2] 这个区间内
+                sql = f"""
+                    UPDATE media_metadata
+                    SET subscription_status = 'PAUSED',
+                        paused_until = NOW() + INTERVAL '{pause_days} days' + (random() * INTERVAL '2 days')
+                    WHERE tmdb_id = ANY(%s) AND item_type = 'Movie'
+                """
+                cursor.execute(sql, (tmdb_ids,))
+            conn.commit()
+    except Exception as e:
+        logger.error(f"DB: 批量暂停电影失败: {e}")
+
+def update_movie_status_revived(tmdb_ids: List[str]):
+    """批量将电影状态设为 SUBSCRIBED，并重置订阅时间"""
+    if not tmdb_ids: return
+    try:
+        with get_db_connection() as conn:
+            with conn.cursor() as cursor:
+                sql = """
+                    UPDATE media_metadata
+                    SET subscription_status = 'SUBSCRIBED',
+                        last_subscribed_at = NOW(), -- 重置时间，开启新一轮搜索窗口
+                        paused_until = NULL
+                    WHERE tmdb_id = ANY(%s) AND item_type = 'Movie'
+                """
+                cursor.execute(sql, (tmdb_ids,))
+            conn.commit()
+    except Exception as e:
+        logger.error(f"DB: 批量复活电影失败: {e}")

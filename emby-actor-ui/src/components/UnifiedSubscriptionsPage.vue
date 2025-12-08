@@ -48,6 +48,7 @@
             <n-radio-group v-model:value="filterStatus" size="small">
               <n-radio-button value="WANTED">待订阅</n-radio-button>
               <n-radio-button value="SUBSCRIBED">已订阅</n-radio-button> 
+              <n-radio-button value="PAUSED">已暂停</n-radio-button>
               <n-radio-button value="PENDING_RELEASE">未上映</n-radio-button>
               <n-radio-button value="IGNORED">已忽略</n-radio-button>
             </n-radio-group>
@@ -59,6 +60,10 @@
               </template>
               刷新列表
             </n-tooltip>
+            <n-button @click="showStrategyModal = true" type="warning" ghost>
+              <template #icon><n-icon :component="SettingsIcon" /></template>
+              策略配置
+            </n-button>
           </n-space>
         </template>
       </n-page-header>
@@ -138,6 +143,9 @@
                       <n-text v-if="item.subscription_status === 'SUBSCRIBED'" :depth="3" class="info-text">
                         <n-icon :component="TimeIcon" /> 订阅于: {{ formatTimestamp(item.last_subscribed_at) }}
                       </n-text>
+                      <n-text v-else-if="item.subscription_status === 'PAUSED'" :depth="3" class="info-text" style="color: var(--n-warning-color);">
+                        <n-icon :component="TimeIcon" /> 复活于: {{ formatTimestamp(item.paused_until) }}
+                      </n-text>
                       <n-text v-else :depth="3" class="info-text">
                         <n-icon :component="TimeIcon" /> 请求于: {{ formatTimestamp(item.first_requested_at) }}
                       </n-text>
@@ -168,6 +176,18 @@
                         </n-button>
                       </template>
 
+                      <template v-else-if="item.subscription_status === 'PAUSED'">
+                        <n-button @click="() => updateItemStatus(item, 'SUBSCRIBED')" type="primary" ghost>
+                          恢复搜索
+                        </n-button>
+                        <n-button @click="() => updateItemStatus(item, 'IGNORED')" type="error" ghost>
+                          忽略
+                        </n-button>
+                        <n-button @click="() => updateItemStatus(item, 'NONE')">
+                          取消
+                        </n-button>
+                      </template>
+
                       <template v-else-if="item.subscription_status === 'IGNORED'">
                         <n-button @click="() => updateItemStatus(item, 'WANTED', true)" type="primary" ghost>
                           取消忽略
@@ -193,6 +213,48 @@
       </div>
       <div v-else class="center-container"><n-empty :description="emptyStateDescription" size="huge" /></div>
     </div>
+    <n-modal v-model:show="showStrategyModal" preset="card" title="订阅策略配置" style="width: 600px;">
+      <n-form label-placement="left" label-width="auto" require-mark-placement="right-hanging">
+        
+        <n-divider title-placement="left">电影订阅策略 (剧集由智能追剧策略管理)</n-divider>
+        <n-alert type="info" :show-icon="false" style="margin-bottom: 16px;">
+          针对新片，采用“搜索 N 天 -> 暂停 M 天”的循环机制，大幅降低 MoviePilot 搜索压力。
+        </n-alert>
+        
+        <n-form-item label="新片保护期 (天)">
+          <n-input-number v-model:value="strategyConfig.movie_protection_days" :min="0" />
+          <template #feedback>发布时间在此天数内的电影启用间歇性搜索机制。超过此天数则视为老片，不再暂停，直接由超时规则处理。</template>
+        </n-form-item>
+        
+        <n-form-item label="搜索窗口期 (天)">
+          <n-input-number v-model:value="strategyConfig.movie_search_window_days" :min="1" />
+          <template #feedback>每次复活后，连续搜索的天数 (建议 1 天)。</template>
+        </n-form-item>
+        
+        <n-form-item label="暂停周期 (天)">
+          <n-input-number v-model:value="strategyConfig.movie_pause_days" :min="1" />
+          <template #feedback>搜索无果后，暂停搜索的天数 (建议 7 天)。</template>
+        </n-form-item>
+
+        <n-form-item label="延迟订阅 (天)">
+          <n-input-number v-model:value="strategyConfig.delay_subscription_days" :min="0" />
+          <template #feedback>电影上映后 N 天才允许订阅 (0 表示不延迟)。</template>
+        </n-form-item>
+        
+        <n-form-item label="超时取消 (天)">
+          <n-input-number v-model:value="strategyConfig.subscription_timeout_days" :min="0" />
+          <template #feedback>订阅超过 N 天仍未入库，自动取消订阅 (0 表示不自动取消)。</template>
+        </n-form-item>
+
+      </n-form>
+      
+      <template #footer>
+        <n-space justify="end">
+          <n-button @click="showStrategyModal = false">取消</n-button>
+          <n-button type="primary" @click="saveStrategyConfig" :loading="savingStrategy">保存配置</n-button>
+        </n-space>
+      </template>
+    </n-modal>
   </n-layout>
 </template>
 
@@ -200,7 +262,7 @@
 import { ref, onMounted, onBeforeUnmount, h, computed, watch } from 'vue';
 import axios from 'axios';
 import { NLayout, NPageHeader, NDivider, NEmpty, NTag, NButton, NSpace, NIcon, useMessage, useDialog, NTooltip, NCard, NImage, NEllipsis, NSpin, NAlert, NRadioGroup, NRadioButton, NCheckbox, NDropdown, NInput, NSelect, NButtonGroup } from 'naive-ui';
-import { SyncOutline, TvOutline as TvIcon, FilmOutline as FilmIcon, CalendarOutline as CalendarIcon, TimeOutline as TimeIcon, ArrowUpOutline as ArrowUpIcon, ArrowDownOutline as ArrowDownIcon, CaretDownOutline as CaretDownIcon, CheckmarkCircleOutline as WantedIcon, HourglassOutline as PendingIcon, BanOutline as IgnoredIcon, DownloadOutline as SubscribedIcon, PersonCircleOutline as SourceIcon, TrashOutline as TrashIcon } from '@vicons/ionicons5';
+import { SyncOutline, TvOutline as TvIcon, FilmOutline as FilmIcon, CalendarOutline as CalendarIcon, TimeOutline as TimeIcon, ArrowUpOutline as ArrowUpIcon, ArrowDownOutline as ArrowDownIcon, CaretDownOutline as CaretDownIcon, CheckmarkCircleOutline as WantedIcon, HourglassOutline as PendingIcon, BanOutline as IgnoredIcon, DownloadOutline as SubscribedIcon, PersonCircleOutline as SourceIcon, TrashOutline as TrashIcon, SettingsOutline as SettingsIcon, PauseCircleOutline as PausedIcon } from '@vicons/ionicons5';
 import { format } from 'date-fns'
 
 // 图标定义
@@ -229,6 +291,40 @@ const filterType = ref('all');
 const filterSource = ref(null);
 const sortKey = ref('first_requested_at');
 const sortOrder = ref('desc');
+
+const showStrategyModal = ref(false);
+const savingStrategy = ref(false);
+const strategyConfig = ref({
+  movie_protection_days: 180,
+  movie_search_window_days: 1,
+  movie_pause_days: 7,
+  delay_subscription_days: 0,
+  subscription_timeout_days: 3
+});
+
+// 加载配置
+const loadStrategyConfig = async () => {
+  try {
+    const res = await axios.get('/api/subscription/strategy');
+    strategyConfig.value = res.data;
+  } catch (e) {
+    message.error('加载策略配置失败');
+  }
+};
+
+// 保存配置
+const saveStrategyConfig = async () => {
+  savingStrategy.value = true;
+  try {
+    await axios.post('/api/subscription/strategy', strategyConfig.value);
+    message.success('策略配置已保存');
+    showStrategyModal.value = false;
+  } catch (e) {
+    message.error('保存失败');
+  } finally {
+    savingStrategy.value = false;
+  }
+};
 
 const typeFilterOptions = [
   { label: '所有类型', value: 'all' },
@@ -290,6 +386,12 @@ const batchActions = computed(() => {
       return [
         { label: '批量忽略', key: 'ignore', icon: () => h(NIcon, { component: IgnoredIcon }) },
         { label: '批量取消订阅', key: 'cancel', icon: () => h(NIcon, { component: TvIcon }) },
+      ];
+    case 'PAUSED':
+      return [
+        { label: '批量恢复', key: 'resume', icon: () => h(NIcon, { component: SubscribedIcon }) }, 
+        { label: '批量忽略', key: 'ignore', icon: () => h(NIcon, { component: IgnoredIcon }) },
+        { label: '批量取消', key: 'cancel', icon: () => h(NIcon, { component: TrashIcon }) },
       ];
     case 'IGNORED':
       return [
@@ -427,6 +529,14 @@ const handleBatchAction = (key) => {
       endpoint: '/api/subscription/status',
       getParams: () => ({ requests: selectedItems.value.map(item => ({...item, new_status: 'NONE'})) }),
       optimistic_status: 'NONE'
+    },
+    'resume': { 
+      title: '批量恢复', 
+      content: `确定要立即唤醒选中的 ${selectedItems.value.length} 个媒体项并重新开始搜索吗？`, 
+      endpoint: '/api/subscription/status',
+      // 恢复 = 设置为 SUBSCRIBED
+      getParams: () => ({ requests: selectedItems.value.map(item => ({...item, new_status: 'SUBSCRIBED'})) }),
+      optimistic_status: 'SUBSCRIBED'
     },
     'unignore': { 
       title: '批量取消忽略', 
@@ -629,6 +739,7 @@ const statusInfo = (status) => {
     'SUBSCRIBED': { type: 'primary', text: '已订阅', icon: SubscribedIcon },
     'PENDING_RELEASE': { type: 'info', text: '未上映', icon: PendingIcon },
     'IGNORED': { type: 'error', text: '已忽略', icon: IgnoredIcon },
+    'PAUSED': { type: 'warning', text: '已暂停', icon: PausedIcon },
   };
   return map[status] || { type: 'default', text: '未知', icon: TvIcon };
 };
@@ -648,6 +759,7 @@ const fetchData = async () => {
 
 onMounted(() => {
   fetchData();
+  loadStrategyConfig();
   observer = new IntersectionObserver(
     (entries) => {
       if (entries[0].isIntersecting) loadMore();

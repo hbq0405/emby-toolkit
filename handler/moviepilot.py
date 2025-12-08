@@ -357,9 +357,11 @@ def smart_subscribe_series(series_info: dict, config: Dict[str, Any]) -> Optiona
 
     return successful_subscriptions if successful_subscriptions else None
 
-def update_subscription_status(tmdb_id: int, season: int, status: str, config: Dict[str, Any], total_episodes: Optional[int] = None) -> bool:
+def update_subscription_status(tmdb_id: int, season: Optional[int], status: str, config: Dict[str, Any], total_episodes: Optional[int] = None) -> bool:
     """
-    调用 MoviePilot 接口更新订阅状态，并可选更新总集数。
+    调用 MoviePilot 接口更新订阅状态。
+    兼容电影 (season=None) 和 剧集 (season=int)。
+    status: 'R' (运行/订阅), 'S' (暂停/停止), 'P' (待定)
     """
     try:
         moviepilot_url = config.get(constants.CONFIG_OPTION_MOVIEPILOT_URL, '').rstrip('/')
@@ -373,7 +375,9 @@ def update_subscription_status(tmdb_id: int, season: int, status: str, config: D
         media_id_param = f"tmdb:{tmdb_id}"
         get_url = f"{moviepilot_url}/api/v1/subscribe/media/{media_id_param}"
         get_params = {}
-        if season:
+        
+        # ★★★ 修改点：只有当 season 有值时才传参，电影不传 season ★★★
+        if season is not None:
             get_params['season'] = season
         
         get_res = requests.get(get_url, headers=headers, params=get_params, timeout=10)
@@ -385,10 +389,10 @@ def update_subscription_status(tmdb_id: int, season: int, status: str, config: D
                 sub_id = data.get('id')
         
         if not sub_id:
+            # 如果没找到订阅ID，说明可能还没订阅，或者已经被删除了
             return False
 
-        # 2. 更新状态 (PUT /api/v1/subscribe/status/{subid})
-        # 这一步保持不变，先更新状态
+        # 2. 更新状态
         status_url = f"{moviepilot_url}/api/v1/subscribe/status/{sub_id}"
         status_params = {"state": status}
         requests.put(status_url, headers=headers, params=status_params, timeout=10)

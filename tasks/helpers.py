@@ -460,7 +460,9 @@ def is_movie_subscribable(movie_id: int, api_key: str, config: dict) -> bool:
         logger.error("TMDb API Key 未提供，无法检查电影是否可订阅。")
         return False
 
-    delay_days = config.get(constants.CONFIG_OPTION_MOVIE_SUBSCRIPTION_DELAY_DAYS, 30)
+    strategy = settings_db.get_setting('subscription_strategy_config') or {}
+    # 优先使用数据库配置，没有则使用默认值
+    delay_days = int(strategy.get('delay_subscription_days', 0))
 
     # 初始日志仍然使用ID，因为此时我们还没有片名
     logger.debug(f"  ➜ 检查电影 (ID: {movie_id}) 是否适合订阅 (延迟天数: {delay_days})...")

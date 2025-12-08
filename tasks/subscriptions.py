@@ -312,8 +312,19 @@ def task_auto_subscribe(processor):
     task_name = "统一订阅处理"
     logger.info(f"--- 开始执行 '{task_name}' 任务 ---")
     
-    task_manager.update_status_from_thread(0, "正在启动统一订阅处理器...")
+    task_manager.update_status_from_thread(0, "正在加载订阅策略...")
     config = config_manager.APP_CONFIG
+    
+    # 1. 加载策略配置 (优先从数据库读取，如果没有则使用默认值)
+    strategy_config = settings_db.get_setting('subscription_strategy_config') or {}
+    
+    # 默认策略参数
+    cancel_threshold_days = int(strategy_config.get('subscription_timeout_days', 3)) # 默认3天超时
+    movie_protection_days = int(strategy_config.get('movie_protection_days', 180))    # 默认半年新片保护
+    movie_search_window = int(strategy_config.get('movie_search_window_days', 1))     # 默认搜索1天
+    movie_pause_days = int(strategy_config.get('movie_pause_days', 7))                # 默认暂停7天
+    
+    # 兼容旧的全局开关 (如果用户还没配置过策略，可以回退读取 config.ini，或者直接用默认值)
     if not config.get(constants.CONFIG_OPTION_AUTOSUB_ENABLED):
         logger.info("  ➜ 订阅总开关未开启，任务跳过。")
         task_manager.update_status_from_thread(100, "任务跳过：总开关未开启")
@@ -326,13 +337,11 @@ def task_auto_subscribe(processor):
         # ======================================================================
         # 阶段 1 - 清理超时订阅 
         # ======================================================================
-        cancel_threshold_days = config.get(constants.CONFIG_OPTION_AUTOCANCEL_SUBSCRIBED_DAYS, 0)
-        
         if cancel_threshold_days > 0:
             logger.info(f"  ➜ 正在检查超过 {cancel_threshold_days} 天仍未入库的订阅...")
             task_manager.update_status_from_thread(2, "正在清理超时订阅...")
             
-            stale_items = request_db.get_stale_subscribed_media(cancel_threshold_days)
+            stale_items = request_db.get_stale_subscribed_media(cancel_threshold_days, movie_protection_days)
             
             if stale_items:
                 logger.warning(f"  ➜ 发现 {len(stale_items)} 个超时订阅，将尝试取消它们。")
@@ -392,7 +401,56 @@ def task_auto_subscribe(processor):
                 logger.info("  ➜ 未发现超时订阅。")
 
         # ======================================================================
-        # 阶段 2 - 执行常规订阅 
+        # 阶段 2 - 电影呼吸灯维护 (新增逻辑)
+        # ======================================================================
+        # 仅当配置有效时执行
+        if movie_protection_days > 0 and movie_pause_days > 0:
+            logger.info(f"  ➜ [策略] 执行电影间歇性搜索维护...")
+            
+            # 2.1 复活 (Revive: PAUSED -> SUBSCRIBED)
+            # 对应 MP 状态: 'S' -> 'R'
+            movies_to_revive = request_db.get_movies_to_revive()
+            if movies_to_revive:
+                revived_ids = []
+                for movie in movies_to_revive:
+                    tmdb_id = movie['tmdb_id']
+                    title = movie['title']
+                    
+                    # ★★★ 修改：直接更新状态为 'R' (Run) ★★★
+                    # season=None 表示电影
+                    if moviepilot.update_subscription_status(int(tmdb_id), None, 'R', config):
+                        revived_ids.append(tmdb_id)
+                    else:
+                        # 如果更新失败（比如MP里订阅丢了），尝试重新订阅兜底
+                        logger.warning(f"    - 《{title}》状态切换失败，尝试重新提交订阅...")
+                        if moviepilot.subscribe_with_custom_payload({"tmdbid": int(tmdb_id), "type": "电影"}, config):
+                            revived_ids.append(tmdb_id)
+                
+                if revived_ids:
+                    request_db.update_movie_status_revived(revived_ids)
+                    logger.info(f"  ✅ 成功复活 {len(revived_ids)} 部电影 (MP状态->R)。")
+
+            # 2.2 暂停 (Pause: SUBSCRIBED -> PAUSED)
+            # 对应 MP 状态: 'R' -> 'S'
+            movies_to_pause = request_db.get_movies_to_pause(search_window_days=movie_search_window, protection_days=movie_protection_days)
+            if movies_to_pause:
+                paused_ids = []
+                for movie in movies_to_pause:
+                    tmdb_id = movie['tmdb_id']
+                    title = movie['title']
+                    
+                    # ★★★ 修改：直接更新状态为 'S' (Stop/Pause) ★★★
+                    if moviepilot.update_subscription_status(int(tmdb_id), None, 'S', config):
+                        paused_ids.append(tmdb_id)
+                    else:
+                        logger.warning(f"    - 《{title}》暂停失败 (MP请求错误或订阅不存在)。")
+                
+                if paused_ids:
+                    request_db.update_movie_status_paused(paused_ids, pause_days=movie_pause_days)
+                    logger.info(f"  💤 成功暂停 {len(paused_ids)} 部暂无资源的新片 (MP状态->S)。")
+        
+        # ======================================================================
+        # 阶段 3 - 执行常规订阅 
         # ======================================================================
         logger.info("  ➜ 正在检查未上映...")
         promoted_count = media_db.promote_pending_to_wanted()

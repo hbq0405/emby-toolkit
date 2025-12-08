@@ -490,6 +490,40 @@ def api_unified_subscription_status():
                     request_db.set_media_status_subscribed(
                         tmdb_ids=[tmdb_id], item_type=item_type, source=source, media_info_list=[req]
                     )
+                    try:
+                        config = config_manager.APP_CONFIG
+                        
+                        # A. 准备参数
+                        mp_tmdb_id = tmdb_id
+                        mp_season = None
+                        
+                        # 如果是季，需要获取父剧集ID
+                        if item_type == 'Season':
+                            media_details_map = media_db.get_media_details_by_tmdb_ids([tmdb_id])
+                            details = media_details_map.get(tmdb_id, {})
+                            if details.get('parent_series_tmdb_id'):
+                                mp_tmdb_id = details['parent_series_tmdb_id']
+                                mp_season = details.get('season_number')
+
+                        # B. 调用 MP 接口切换状态为 'R' (Run)
+                        # 注意：这里我们尝试直接切换状态。如果 MP 里订阅丢了，update 会返回 False
+                        if not moviepilot.update_subscription_status(int(mp_tmdb_id), mp_season, 'R', config):
+                            logger.warning(f"  ➜ [状态同步] 切换 MP 状态失败 (可能订阅不存在)，尝试重新提交订阅...")
+                            
+                            # C. 兜底：如果切换失败，说明 MP 里可能没有这个订阅，执行重新订阅
+                            payload = {
+                                "tmdbid": int(mp_tmdb_id),
+                                "type": "电影" if item_type == 'Movie' else "电视剧"
+                            }
+                            if mp_season is not None:
+                                payload['season'] = mp_season
+                                
+                            moviepilot.subscribe_with_custom_payload(payload, config)
+                        else:
+                            logger.info(f"  ➜ [状态同步] 已通知 MP 恢复搜索 (状态 S -> R): {mp_tmdb_id}")
+
+                    except Exception as e_sync:
+                        logger.error(f"  ➜ [状态同步] 恢复 MoviePilot 订阅状态时出错: {e_sync}")
                 elif new_status.upper() == 'IGNORED':
                     request_db.set_media_status_ignored(
                         tmdb_ids=[tmdb_id], item_type=item_type, source=source, media_info_list=[req],
@@ -566,3 +600,42 @@ def api_batch_delete_media():
     except Exception as e:
         logger.error(f"API /media/batch_delete 发生错误: {e}", exc_info=True)
         return jsonify({"error": "删除操作发生内部错误"}), 500
+    
+@media_api_bp.route('/subscription/strategy', methods=['GET'])
+@admin_required
+def api_get_subscription_strategy():
+    """获取订阅策略配置"""
+    try:
+        from database import settings_db
+        config = settings_db.get_setting('subscription_strategy_config')
+        
+        # 如果数据库为空，返回默认值
+        if not config:
+            config = {
+                'movie_protection_days': 180,
+                'movie_search_window_days': 1,
+                'movie_pause_days': 7,
+                'delay_subscription_days': 0,
+                'subscription_timeout_days': 90
+            }
+        return jsonify(config)
+    except Exception as e:
+        logger.error(f"获取订阅策略失败: {e}")
+        return jsonify({"error": "获取配置失败"}), 500
+
+@media_api_bp.route('/subscription/strategy', methods=['POST'])
+@admin_required
+def api_save_subscription_strategy():
+    """保存订阅策略配置"""
+    try:
+        from database import settings_db
+        data = request.json
+        # 简单的校验
+        if not isinstance(data, dict):
+            return jsonify({"error": "无效的配置格式"}), 400
+            
+        settings_db.save_setting('subscription_strategy_config', data)
+        return jsonify({"message": "策略配置已保存"})
+    except Exception as e:
+        logger.error(f"保存订阅策略失败: {e}")
+        return jsonify({"error": "保存配置失败"}), 500

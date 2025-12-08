@@ -279,9 +279,9 @@
             <!-- ================== 标签页 3: 智能服务  ================== -->
             <n-tab-pane name="services" tab="智能服务">
               <!-- ★★★ 修改点1: cols 改为 "1 l:3"，总共3列 ★★★ -->
-              <n-grid cols="1 l:3" :x-gap="24" :y-gap="24" responsive="screen">
+              <n-grid cols="1 l:2" :x-gap="24" :y-gap="24" responsive="screen">
                 
-                <!-- 左侧: AI翻译 (保持占 1 列) -->
+                <!-- 左侧: AI翻译 -->
                 <n-gi>
                   <n-card :bordered="false" class="dashboard-card" style="height: 100%;">
                     <template #header><span class="card-title">AI翻译</span></template>
@@ -306,9 +306,8 @@
                   </n-card>
                 </n-gi>
 
-                <!-- 右侧: MoviePilot订阅 (占 2 列) -->
-                <!-- ★★★ 修改点2: span="1 l:2" 让其在大屏占2列 ★★★ -->
-                <n-gi span="1 l:2">
+                <!-- 右侧: MoviePilot订阅 -->
+                <n-gi>
                   <n-card :bordered="false" class="dashboard-card" style="height: 100%;">
                     <template #header><span class="card-title">MoviePilot订阅</span></template>
                     
@@ -321,39 +320,21 @@
                           <n-input v-model:value="configModel.moviepilot_url" placeholder="例如: http://192.168.1.100:3000"/>
                         </n-form-item-grid-item>
                       </n-gi>
-                      <n-gi>
+                      <n-gi span="1 m:2">
                         <n-form-item-grid-item label="用户名" path="moviepilot_username">
                           <n-input v-model:value="configModel.moviepilot_username" placeholder="登录用户名"/>
                         </n-form-item-grid-item>
                       </n-gi>
-                      <n-gi>
+                      <n-gi span="1 m:2">
                         <n-form-item-grid-item label="密码" path="moviepilot_password">
                           <n-input type="password" show-password-on="mousedown" v-model:value="configModel.moviepilot_password" placeholder="登录密码"/>
                         </n-form-item-grid-item>
                       </n-gi>
 
-                      <!-- 分割线 -->
-                      <n-gi span="1 m:2">
-                        <n-divider title-placement="left" style="margin: 10px 0 20px 0;">智能订阅与洗版规则</n-divider>
-                      </n-gi>
-
-                      <!-- 2. 规则区域 (左右并排) -->
                       <n-gi span="1 m:2">
                         <n-form-item-grid-item label="启用智能订阅" path="autosub_enabled">
                           <n-switch v-model:value="configModel.autosub_enabled" :disabled="!isMoviePilotConfigured" />
                           <template #feedback><n-text depth="3" style="font-size:0.8em;">总开关。开启后定时任务才会执行。</n-text></template>
-                        </n-form-item-grid-item>
-                      </n-gi>
-                      <n-gi>
-                        <n-form-item-grid-item label="上映延迟订阅天数" path="movie_subscription_delay_days">
-                          <n-input-number v-model:value="configModel.movie_subscription_delay_days" :min="0" :disabled="!isMoviePilotConfigured" style="width: 100%;" />
-                          <template #feedback><n-text depth="3" style="font-size:0.8em;">影院上映N天后才订阅 (0为不限制)。</n-text></template>
-                        </n-form-item-grid-item>
-                      </n-gi>
-                      <n-gi>
-                        <n-form-item-grid-item label="订阅超时自动取消 (天)" path="autocancel_subscribed_days">
-                          <n-input-number v-model:value="configModel.autocancel_subscribed_days" :min="0" :disabled="!isMoviePilotConfigured" style="width: 100%;" />
-                          <template #feedback><n-text depth="3" style="font-size:0.8em;">老电影超过N天未入库自动取消 (0为禁用)。</n-text></template>
                         </n-form-item-grid-item>
                       </n-gi>
 
@@ -375,7 +356,6 @@
                           <template #feedback><n-text depth="3" style="font-size:0.8em;">避免请求过快冲击服务器。</n-text></template>
                         </n-form-item-grid-item>
                       </n-gi>
-
                     </n-grid>
                   </n-card>
                 </n-gi>

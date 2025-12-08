@@ -173,7 +173,7 @@ def init_db():
                         asset_details_json JSONB,
 
                         -- 订阅与状态管理
-                        subscription_status TEXT NOT NULL DEFAULT 'NONE', -- 'NONE', 'WANTED', 'SUBSCRIBED', 'IGNORED', 'PENDING_RELEASE', 'REQUESTED'
+                        subscription_status TEXT NOT NULL DEFAULT 'NONE', -- 'NONE', 'WANTED', 'SUBSCRIBED', 'IGNORED', 'PENDING_RELEASE', 'REQUESTED', 'PAUSED'
                         subscription_sources_json JSONB NOT NULL DEFAULT '[]'::jsonb,
                         first_requested_at TIMESTAMP WITH TIME ZONE,
                         last_subscribed_at TIMESTAMP WITH TIME ZONE,
