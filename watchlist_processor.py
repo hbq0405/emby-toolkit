@@ -689,6 +689,70 @@ class WatchlistProcessor:
         except Exception as e:
             logger.warning(f"同步状态给 MoviePilot 时出错: {e}")
 
+    def _check_season_consistency(self, tmdb_id: str, season_number: int, expected_episode_count: int) -> bool:
+        """
+        检查指定季的本地文件是否满足“无需洗版”的条件：
+        1. 集数已齐 (本地集数 >= TMDb集数)
+        2. 一致性达标 (分辨率、制作组、编码 必须完全统一)
+        """
+        try:
+            with connection.get_db_connection() as conn:
+                cursor = conn.cursor()
+                # 获取该季所有集的文件资产信息
+                sql = """
+                    SELECT asset_details_json 
+                    FROM media_metadata 
+                    WHERE parent_series_tmdb_id = %s 
+                      AND season_number = %s 
+                      AND item_type = 'Episode'
+                      AND in_library = TRUE
+                """
+                cursor.execute(sql, (tmdb_id, season_number))
+                rows = cursor.fetchall()
+
+            # 1. 检查集数是否集齐
+            local_count = len(rows)
+            if local_count < expected_episode_count:
+                logger.info(f"  🔍 [一致性检查] S{season_number} 尚未集齐 (本地:{local_count} / TMDb:{expected_episode_count})，需要洗版补全。")
+                return False
+
+            # 2. 检查一致性 (分辨率、制作组、编码)
+            resolutions = set()
+            groups = set()
+            codecs = set()
+
+            for row in rows:
+                assets = row.get('asset_details_json')
+                if not assets: continue
+                
+                # 取主文件 (第一个)
+                main_asset = assets[0]
+                
+                resolutions.add(main_asset.get('resolution_display', 'Unknown'))
+                codecs.add(main_asset.get('codec_display', 'Unknown'))
+                
+                # 制作组处理：取第一个识别到的组，如果没有则标记为 Unknown
+                raw_groups = main_asset.get('release_group_raw', [])
+                group_name = raw_groups[0] if raw_groups else 'Unknown'
+                groups.add(group_name)
+
+            # 判定逻辑：所有集合长度必须为 1 (即只有一种规格)
+            is_consistent = (len(resolutions) == 1 and len(groups) == 1 and len(codecs) == 1)
+            
+            if is_consistent:
+                # 获取唯一的那个规格，用于日志展示
+                res = list(resolutions)[0]
+                grp = list(groups)[0]
+                logger.info(f"  ✅ [一致性检查] S{season_number} 完美达标 (集齐且统一): [{res} / {grp}]，跳过洗版。")
+                return True
+            else:
+                logger.info(f"  ⚠️ [一致性检查] S{season_number} 版本混杂，需要洗版。分布: 分辨率{resolutions}, 制作组{groups}, 编码{codecs}")
+                return False
+
+        except Exception as e:
+            logger.error(f"  ❌ 检查 S{season_number} 一致性时出错: {e}")
+            return False # 出错默认不跳过，继续洗版以防万一
+
     def _handle_auto_resub_ended(self, tmdb_id: str, series_name: str, series_details: Dict[str, Any]):
         """
         当剧集自然完结时：
@@ -714,6 +778,14 @@ class WatchlistProcessor:
 
             for season in valid_seasons:
                 s_num = season['season_number']
+                ep_count = season.get('episode_count', 0)
+                
+                # ==============================================================
+                # ★★★ 核心优化：一致性检查 ★★★
+                # ==============================================================
+                # 如果本地已集齐且版本统一，则直接跳过，不再折腾
+                if self._check_season_consistency(tmdb_id, s_num, ep_count):
+                    continue
                 
                 # --- A. 取消旧订阅 ---
                 moviepilot.cancel_subscription(tmdb_id, 'Series', self.config, season=s_num)
