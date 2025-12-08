@@ -986,7 +986,7 @@ class WatchlistProcessor:
                 logger.info(f"  🏁 [判定-本地已集齐] 满足完结策略，判定“已完结”。")
 
         # 规则 2: TMDb 状态已完结 -> 直接完结 (不考虑本地是否集齐)
-        if is_ended_on_tmdb:
+        elif is_ended_on_tmdb:
             final_status = STATUS_COMPLETED
             paused_until_date = None
             logger.info(f"  🏁 [判定-规则1] TMDb状态为 '{new_tmdb_status}'，判定为“已完结”。")
