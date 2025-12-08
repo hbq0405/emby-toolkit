@@ -430,8 +430,8 @@ const fetchEmbyConfig = async () => {
     const response = await axios.get('/api/config');
     embyServerUrl.value = response.data.emby_server_url;
     embyServerId.value = response.data.emby_server_id;
-    // ★ 获取 registration_redirect_url
-    registrationRedirectUrl.value = response.data.registration_redirect_url;
+    // ★ 获取 emby_public_url
+    registrationRedirectUrl.value = response.data.emby_public_url;
   } catch (error) {
     console.error('获取 Emby 配置失败:', error);
     message.error('获取 Emby 配置失败');

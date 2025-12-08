@@ -233,6 +233,20 @@
                       </div>
                     </div>
                   </div>
+                  <!-- 筛选缺集的季 -->
+                  <div class="filter-item">
+                    <n-checkbox v-model:checked="currentRule.filter_missing_episodes_enabled">
+                      <span style="font-weight: bold;">筛选缺集的季 (仅剧集)</span>
+                    </n-checkbox>
+                    <div v-if="currentRule.filter_missing_episodes_enabled" class="filter-content">
+                      <div class="tip">
+                        当检测到某季存在中间断档（如只有第1、3集，缺第2集）时命中。<br>
+                        <span style="color: var(--n-warning-color);" v-if="currentRule.rule_type === 'delete'">
+                          配合“删除模式”可实现一键清理残缺季，以便重新洗版。
+                        </span>
+                      </div>
+                    </div>
+                  </div>
                   <!-- 剧集一致性筛选 -->
                   <div class="filter-item">
                     <n-checkbox v-model:checked="currentRule.consistency_check_enabled">
@@ -466,6 +480,7 @@ const openRuleModal = async (rule = null) => {
       resubscribe_codec_enabled: false, resubscribe_codec_include: [],
       resubscribe_effect_enabled: false, resubscribe_effect_include: [],
       resubscribe_filesize_enabled: false, resubscribe_filesize_operator: 'lt', resubscribe_filesize_threshold_gb: null,
+      filter_missing_episodes_enabled: false,
       
       // 洗版动作
       auto_resubscribe: false, custom_resubscribe_enabled: false, delete_after_resubscribe: false,

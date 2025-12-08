@@ -58,6 +58,7 @@ BOOTSTRAP_CONFIG_DEF = {
 DYNAMIC_CONFIG_DEF = {
     # [Emby]
     constants.CONFIG_OPTION_EMBY_SERVER_URL: (constants.CONFIG_SECTION_EMBY, 'string', ""),
+    constants.CONFIG_OPTION_EMBY_PUBLIC_URL: (constants.CONFIG_SECTION_EMBY, 'string', ""),
     constants.CONFIG_OPTION_EMBY_API_KEY: (constants.CONFIG_SECTION_EMBY, 'string', ""),
     constants.CONFIG_OPTION_EMBY_USER_ID: (constants.CONFIG_SECTION_EMBY, 'string', ""),
     constants.CONFIG_OPTION_EMBY_API_TIMEOUT: (constants.CONFIG_SECTION_EMBY, 'int', 60),
@@ -135,7 +136,6 @@ DYNAMIC_CONFIG_DEF = {
     # [Logging]
     constants.CONFIG_OPTION_LOG_ROTATION_SIZE_MB: (constants.CONFIG_SECTION_LOGGING, 'int', constants.DEFAULT_LOG_ROTATION_SIZE_MB),
     constants.CONFIG_OPTION_LOG_ROTATION_BACKUPS: (constants.CONFIG_SECTION_LOGGING, 'int', constants.DEFAULT_LOG_ROTATION_BACKUPS),
-    constants.CONFIG_OPTION_REGISTRATION_REDIRECT_URL: (constants.CONFIG_SECTION_USER_MANAGEMENT, 'string', ""),
 
     # [Telegram]
     constants.CONFIG_OPTION_TELEGRAM_BOT_TOKEN: (constants.CONFIG_SECTION_TELEGRAM, 'password', ""),

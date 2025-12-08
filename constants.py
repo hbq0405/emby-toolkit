@@ -50,6 +50,7 @@ CONFIG_OPTION_PROXY_NATIVE_VIEW_ORDER = "proxy_native_view_order"  # str, 'befor
 # ==============================================================================
 CONFIG_SECTION_EMBY = "Emby"
 CONFIG_OPTION_EMBY_SERVER_URL = "emby_server_url"       # Emby服务器地址
+CONFIG_OPTION_EMBY_PUBLIC_URL = "emby_public_url"       # Emby公网地址
 CONFIG_OPTION_EMBY_API_KEY = "emby_api_key"             # Emby API密钥
 CONFIG_OPTION_EMBY_USER_ID = "emby_user_id"             # 用于操作的Emby用户ID
 CONFIG_OPTION_EMBY_API_TIMEOUT = "emby_api_timeout"     # Emby API 超时时间 
@@ -156,10 +157,6 @@ CONFIG_SECTION_AUTH = "Authentication"
 CONFIG_OPTION_AUTH_ENABLED = "auth_enabled"
 CONFIG_OPTION_AUTH_USERNAME = "username"
 DEFAULT_USERNAME = "admin"
-
-# ★★★ Emby：用户管理相关配置 ★★★
-CONFIG_SECTION_USER_MANAGEMENT = "UserManagement"
-CONFIG_OPTION_REGISTRATION_REDIRECT_URL = "registration_redirect_url"
 
 # --- 语言代码 ---
 CHINESE_LANG_CODES = ["zh", "zh-cn", "zh-hans", "cmn", "yue", "cn", "zh-sg", "zh-tw", "zh-hk"]

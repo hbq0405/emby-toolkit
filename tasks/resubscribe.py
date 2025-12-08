@@ -15,7 +15,7 @@ import handler.emby as emby
 import handler.moviepilot as moviepilot
 import config_manager 
 import constants  
-from database import resubscribe_db, settings_db, maintenance_db, request_db
+from database import resubscribe_db, settings_db, maintenance_db, request_db, watchlist_db
 
 # 从 helpers 导入的辅助函数和常量
 from .helpers import (
@@ -219,7 +219,30 @@ def task_update_resubscribe_cache(processor):
 
                 for season_num, eps_in_season in episodes_by_season.items():
                     if season_num is None: continue
+                    # 排除第0季 (通常不计算缺集)
+                    if int(season_num) == 0:
+                        continue
+
+                    # ==========================================================
+                    # ★★★ 新增：内存中计算是否缺集 (复用 watchlist 的逻辑) ★★★
+                    # ==========================================================
+                    has_gaps = False
+                    # 1. 筛选出有实体文件的集 (排除只有元数据但没文件的)
+                    valid_eps = [
+                        e for e in eps_in_season 
+                        if e.get('episode_number') and e.get('asset_details_json')
+                    ]
                     
+                    if valid_eps:
+                        # 2. 获取当前有的最大集号
+                        max_ep = max(e['episode_number'] for e in valid_eps)
+                        # 3. 获取当前有的总集数
+                        count_ep = len(valid_eps)
+                        # 4. 核心逻辑：如果 最大集号 > 总集数，说明中间肯定缺了
+                        #    (例如：有1, 3集。max=3, count=2。3 > 2，缺集成立)
+                        if max_ep > count_ep:
+                            has_gaps = True
+                    # ==========================================================
                     # 跳过多版本
                     has_multi_version_episode = False
                     for ep in eps_in_season:
@@ -241,13 +264,21 @@ def task_update_resubscribe_cache(processor):
                     status_calculated = 'ok'
                     reason_calculated = ""
 
+                    # 构建一个专用的 context 对象传进去
+                    current_season_wrapper = series_meta_wrapper.copy()
+                    current_season_wrapper.update({
+                        'item_type': 'Season',
+                        'season_number': int(season_num),
+                        'has_gaps': has_gaps  # <--- 传入计算结果
+                    })
+
                     if rule.get('consistency_check_enabled'):
                         needs_fix, fix_reason = _check_season_consistency(eps_in_season, rule)
                         if needs_fix:
                             status_calculated = 'needed'
                             reason_calculated = fix_reason
                     else:
-                        needs_upgrade, upgrade_reason = _item_needs_resubscribe(assets[0], rule, series_meta_wrapper)
+                        needs_upgrade, upgrade_reason = _item_needs_resubscribe(assets[0], rule, current_season_wrapper)
                         if needs_upgrade:
                             status_calculated = 'needed'
                             reason_calculated = upgrade_reason
@@ -409,6 +440,8 @@ def _item_needs_resubscribe(asset_details: dict, rule: dict, media_metadata: Opt
     item_name = media_metadata.get('title', '未知项目')
     reasons = []
 
+    tmdb_id = str(media_metadata.get('tmdb_id', ''))
+    item_type = media_metadata.get('item_type', '')
     # ==================== 评分检查 ====================
     try:
         if rule.get("filter_rating_enabled"):
@@ -633,6 +666,15 @@ def _item_needs_resubscribe(asset_details: dict, rule: dict, media_metadata: Opt
                         reasons.append(f"缺{display_name}字幕")
     except Exception as e:
         logger.warning(f"  ➜ [字幕检查] 处理时发生未知错误: {e}")
+
+    # --- 6.缺集检查 (仅限剧集) ---
+    try:
+        if rule.get("filter_missing_episodes_enabled") and media_metadata.get('item_type') == 'Season':
+            if media_metadata.get('has_gaps'):
+                reasons.append("存在中间缺集")
+                    
+    except Exception as e:
+        logger.warning(f"  ➜ [缺集检查] 处理时发生错误: {e}")
                  
     if reasons:
         final_reason = "; ".join(sorted(list(set(reasons))))
