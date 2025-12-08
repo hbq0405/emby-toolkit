@@ -879,3 +879,23 @@ def get_series_seasons_lock_info(parent_tmdb_id: str) -> Dict[int, Dict[str, Any
     except Exception as e:
         logger.error(f"  ➜ 获取剧集 {parent_tmdb_id} 的分季锁定信息时出错: {e}", exc_info=True)
         return {}
+    
+def update_specific_season_total_episodes(parent_tmdb_id: str, season_number: int, total: int):
+    """
+    更新指定剧集特定季的总集数。
+    用于“自动待定”功能中虚标季的集数。
+    """
+    try:
+        with get_db_connection() as conn:
+            cursor = conn.cursor()
+            sql = """
+                UPDATE media_metadata
+                SET total_episodes = %s
+                WHERE parent_series_tmdb_id = %s 
+                  AND item_type = 'Season' 
+                  AND season_number = %s
+            """
+            cursor.execute(sql, (total, parent_tmdb_id, season_number))
+            conn.commit()
+    except Exception as e:
+        logger.error(f"更新季 {parent_tmdb_id} S{season_number} 总集数失败: {e}")

@@ -1008,13 +1008,24 @@ class WatchlistProcessor:
             # 获取配置的默认集数，默认为 99
             fake_total = int(auto_pending_cfg.get('default_total_episodes', 99))
             
-            # 只有当当前 TMDb 返回的集数小于这个虚标值时才覆盖
-            # (防止 TMDb 已经更新到 200 集了，我们却给改成 99)
             current_tmdb_total = latest_series_data.get('number_of_episodes', 0)
             
             if current_tmdb_total < fake_total:
+                # 1. 更新 Series 记录 (保持原样)
                 updates_to_db['total_episodes'] = fake_total
-                logger.debug(f"  ➜ 将《{item_name}》的总集数临时显示为 {fake_total} (待定中)")
+                
+                # 2. ★★★ 新增：同时更新最新一季的 Season 记录 ★★★
+                # 只有更新了 Season 记录，前端分季卡片才会显示虚标集数
+                seasons = latest_series_data.get('seasons', [])
+                # 过滤掉第0季，按季号倒序找到最新季
+                valid_seasons = sorted([s for s in seasons if s.get('season_number', 0) > 0], 
+                                       key=lambda x: x['season_number'], reverse=True)
+                
+                if valid_seasons:
+                    latest_season_num = valid_seasons[0]['season_number']
+                    # 调用 DB 更新
+                    watchlist_db.update_specific_season_total_episodes(tmdb_id, latest_season_num, fake_total)
+                    logger.debug(f"  ➜ 已同步更新 S{latest_season_num} 的总集数为 {fake_total}")
         self._update_watchlist_entry(tmdb_id, item_name, updates_to_db)
 
         # 更新季的活跃状态

@@ -487,25 +487,28 @@ const showConfigModal = ref(false);
 const configSaving = ref(false);
 
 const watchlistConfig = ref({
-  auto_pending: { enabled: false, days: 30, episodes: 1 },
+  auto_pending: { 
+      enabled: false, 
+      days: 30, 
+      episodes: 1, 
+      default_total_episodes: 99
+  },
   auto_pause: false,
   auto_resub_ended: false,
   gap_fill_resubscribe: false
 });
 
-// ★★★ 新增：配置相关方法 ★★★
 const openConfigModal = async () => {
   showConfigModal.value = true;
   try {
-    // 调用刚才在后端新增的接口
     const { data } = await axios.get('/api/watchlist/settings');
     if (data) {
-       // 赋值给响应式对象
        watchlistConfig.value = {
          auto_pending: { 
            enabled: data.auto_pending?.enabled ?? false,
            days: data.auto_pending?.days ?? 30,
-           episodes: data.auto_pending?.episodes ?? 1
+           episodes: data.auto_pending?.episodes ?? 1,
+           default_total_episodes: data.auto_pending?.default_total_episodes ?? 99
          },
          auto_pause: data.auto_pause ?? false,
          auto_resub_ended: data.auto_resub_ended ?? false,
@@ -513,8 +516,7 @@ const openConfigModal = async () => {
        };
     }
   } catch (e) {
-    message.error('获取配置失败');
-    console.error(e);
+    console.warn('获取追剧配置失败或无配置，使用默认值', e);
   }
 };
 
