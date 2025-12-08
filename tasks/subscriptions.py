@@ -106,45 +106,40 @@ def _subscribe_full_series_with_logic(tmdb_id: int, series_name: str, config: Di
             if moviepilot.subscribe_with_custom_payload(mp_payload, config):
                 any_success = True
                 
-                # ★★★ 更新本地数据库 ★★★
-                # 1. 标记为已订阅
-                # 注意：这里我们构造一个临时的 query_id 用于更新季的状态
-                # 如果数据库里还没有这个季的记录，set_media_status_subscribed 会创建它
-                # 但为了保险，我们通常用 SeriesID_Sxx 或者直接用 SeriesID (如果 request_db 支持)
-                # 这里为了简单，我们假设 request_db 能处理，或者我们只更新 watching_status
-                
-                # 尝试获取季的真实 ID (如果存在)
-                season_tmdb_id = request_db.get_season_tmdb_id(str(tmdb_id), s_num)
-                target_id = season_tmdb_id if season_tmdb_id else f"{tmdb_id}_S{s_num}" # 临时 ID
-                
-                # 只有当获取到了真实的纯数字 ID 时，才能有效更新 watching_status
-                # 如果是新剧，可能还没有季的记录。
-                # 策略：先调用 set_media_status_subscribed (它会创建记录)，然后再更新状态
-                
-                # 构造一个虚拟的 media_info 用于创建记录
+                # 1. 优先从 TMDb API 数据中直接获取季的 ID
+                # season 是从 tmdb.get_tv_details 返回的，里面包含 'id'
+                target_id = str(season.get('id'))
+                if not target_id:
+                    # 兜底：如果 API 没返回 ID，才使用拼接格式
+                    target_id = f"{tmdb_id}_S{s_num}"
+
+                # 2. 构造 media_info
                 media_info_list = [{
-                    'tmdb_id': str(target_id), # 注意：如果这里用非数字ID，request_db 需要能处理
+                    'tmdb_id': target_id,
                     'title': f"{final_series_name} S{s_num}",
                     'parent_series_tmdb_id': str(tmdb_id),
                     'season_number': s_num,
                     'item_type': 'Season'
                 }]
                 
-                # 如果 target_id 不是纯数字（即数据库里没查到），set_media_status_subscribed 可能会插入一条带 _Sxx 后缀的记录
-                # 这在 media_metadata 表设计中通常是不推荐的（tmdb_id 应该是纯数字）。
-                # 但为了不破坏现有逻辑，我们这里只处理“待定”的状态更新。
+                # 3. ★★★ 关键修复：调用函数写入数据库 ★★★
+                # 这会创建或更新记录，将状态设为 SUBSCRIBED
+                request_db.set_media_status_subscribed(
+                    tmdb_ids=[target_id],
+                    item_type='Season',
+                    media_info_list=media_info_list
+                )
                 
-                # 如果是待定，且我们能确定季的 ID (或者父剧集 ID)，则更新
+                # 4. 如果是待定，更新状态和集数
                 if is_pending:
-                    # 尝试更新季 (如果存在)
-                    if season_tmdb_id:
-                        watchlist_db.update_watching_status_by_tmdb_id(season_tmdb_id, 'Season', 'Pending')
-                        watchlist_db.update_specific_season_total_episodes(str(tmdb_id), s_num, fake_total)
+                    # 更新 watching_status 为 Pending
+                    watchlist_db.update_watching_status_by_tmdb_id(target_id, 'Season', 'Pending')
                     
-                    # 无论如何，激活父剧集
+                    # 更新虚标集数
+                    watchlist_db.update_specific_season_total_episodes(str(tmdb_id), s_num, fake_total)
+                    
+                    # 激活父剧集
                     watchlist_db.add_item_to_watchlist(str(tmdb_id), final_series_name)
-                    # 如果父剧集本身就是新的，可能也需要设为 Pending？
-                    # 通常我们只让季 Pending，父剧集保持 Watching 以便在列表中显示。
 
         return any_success
 
