@@ -275,22 +275,13 @@ def task_manual_subscribe_batch(processor, subscribe_requests: List[Dict]):
                 logger.info(f"  ✅ 《{item_title_for_log}》订阅成功！")
                 settings_db.decrement_subscription_quota()
                 
-                # 1. 如果是整剧订阅 (Series 且无季号)，_subscribe_full_series_with_logic 已处理 DB，跳过
-                if item_type == 'Series' and season_number is None:
-                    pass
+                # 更新状态时，尽量使用查询用的 ID (query_id)，确保能更新到正确的 Season 记录
+                target_id_for_update = query_id if (item_type == 'Season' and 'query_id' in locals()) else str(tmdb_id)
                 
-                # 2. 如果是 电影 (Movie) 或 单季 (Season 或 Series带季号)
-                else:
-                    if item_type == 'Movie':
-                        request_db.set_media_status_subscribed(
-                            tmdb_ids=[str(tmdb_id)],
-                            item_type='Movie', 
-                        )
-                    
-                    elif item_type == 'Season' or (item_type == 'Series' and season_number is not None):
-                        # ★★★ 仅保留：激活父剧集 ★★★
-                        # 确保用户能在追剧列表中看到这部剧
-                        watchlist_db.add_item_to_watchlist(str(tmdb_id), series_name)
+                request_db.set_media_status_subscribed(
+                    tmdb_ids=[target_id_for_update],
+                    item_type=item_type, 
+                )
 
                 processed_count += 1
             else:
