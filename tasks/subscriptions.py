@@ -67,6 +67,8 @@ def task_manual_subscribe_batch(processor, subscribe_requests: List[Dict]):
             item_type = req.get('item_type')
             item_title_for_log = req.get('title', f"ID: {tmdb_id}")
             season_number = req.get('season_number')
+            is_pending = False
+            fake_total = 0
 
             if not tmdb_id or not item_type:
                 logger.warning(f"跳过一个无效的订阅请求: {req}")
@@ -150,7 +152,7 @@ def task_manual_subscribe_batch(processor, subscribe_requests: List[Dict]):
                         "type": "电视剧",
                         "season": int(season_number)
                     }
-                    # 初始待定判断
+                    # 初始状态判断
                     is_pending, fake_total = should_mark_as_pending(int(tmdb_id), int(season_number), tmdb_api_key)
                     if is_pending:
                         mp_payload["status"] = "P"
@@ -180,7 +182,12 @@ def task_manual_subscribe_batch(processor, subscribe_requests: List[Dict]):
                                     continue 
                             except (ValueError, TypeError):
                                 pass
-                    
+                    # 初始状态判断
+                    is_pending, fake_total = should_mark_as_pending(int(tmdb_id), int(season_number), tmdb_api_key)
+                    if is_pending:
+                        mp_payload["status"] = "P"
+                        mp_payload["total_episode"] = fake_total
+                        logger.info(f"  🛡️ [自动待定] 手动订阅《{series_name}》S{season_number} 符合条件，初始状态将设为 '待定(P)'。")
                     series_info = {"tmdb_id": int(tmdb_id), "item_name": item_title_for_log}
                     success = moviepilot.smart_subscribe_series(series_info, config) is not None
                 
@@ -212,7 +219,27 @@ def task_manual_subscribe_batch(processor, subscribe_requests: List[Dict]):
                     tmdb_ids=[target_id_for_update],
                     item_type=item_type, 
                 )
-                
+                # 如果判定为待定，立即更新本地 DB 的追剧状态和集数
+                if is_pending:
+                    # A. 更新 watching_status 为 'Pending'
+                    # 注意：target_id_for_update 必须是纯数字 ID 才能更新成功
+                    if target_id_for_update.isdigit():
+                        watchlist_db.update_watching_status_by_tmdb_id(
+                            target_id_for_update, 
+                            item_type, 
+                            'Pending'
+                        )
+                        
+                        # B. 更新虚标集数 (仅针对季)
+                        if item_type == 'Season' and season_number is not None:
+                            watchlist_db.update_specific_season_total_episodes(
+                                str(tmdb_id), # 父剧集 ID
+                                int(season_number), 
+                                fake_total
+                            )
+                            
+                            # C. 激活父剧集 (确保在追剧列表中可见)
+                            watchlist_db.add_item_to_watchlist(str(tmdb_id), series_name)
                 processed_count += 1
             else:
                 logger.error(f"  ➜ 订阅《{item_title_for_log}》失败，请检查 MoviePilot 日志。")
