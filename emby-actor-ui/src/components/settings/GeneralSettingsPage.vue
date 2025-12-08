@@ -311,13 +311,6 @@
                         </n-form-item-grid-item>
                       </n-gi>
                       <n-gi>
-                        <n-form-item-grid-item label="对缺集的季启用洗版订阅" path="gap_fill_resubscribe_enabled">
-                          <n-switch v-model:value="configModel.gap_fill_resubscribe_enabled" :disabled="!isMoviePilotConfigured" />
-                          <template #feedback><n-text depth="3" style="font-size:0.8em;">开启：整季洗版；关闭：仅补齐缺失集。</n-text></template>
-                        </n-form-item-grid-item>
-                      </n-gi>
-
-                      <n-gi>
                         <n-form-item-grid-item label="上映延迟订阅天数" path="movie_subscription_delay_days">
                           <n-input-number v-model:value="configModel.movie_subscription_delay_days" :min="0" :disabled="!isMoviePilotConfigured" style="width: 100%;" />
                           <template #feedback><n-text depth="3" style="font-size:0.8em;">影院上映N天后才订阅 (0为不限制)。</n-text></template>
