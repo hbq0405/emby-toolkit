@@ -283,6 +283,12 @@ def smart_subscribe_series(series_info: dict, config: Dict[str, Any]) -> Optiona
                     "type": "电视剧",
                     "season": current_season_num
                 }
+                # 初始状态判断
+                is_pending, fake_total = should_mark_as_pending(int(tmdb_id), current_season_num, tmdb_api_key)
+                if is_pending:
+                    mp_payload["status"] = "P"
+                    mp_payload["total_episode"] = fake_total
+                    logger.info(f"  🛡️ [自动待定] 智能订阅《{series_name}》S{current_season_num}，初始设为 '待定(P)'。")
                 if best_version:
                     mp_payload["best_version"] = best_version
 
@@ -306,6 +312,12 @@ def smart_subscribe_series(series_info: dict, config: Dict[str, Any]) -> Optiona
                 best_version = 1 if is_completed else None
 
             mp_payload = {"name": series_name, "tmdbid": tmdb_id, "type": "电视剧"}
+            # 初始状态判断
+            is_pending, fake_total = should_mark_as_pending(int(tmdb_id), current_season_num, tmdb_api_key)
+            if is_pending:
+                mp_payload["status"] = "P"
+                mp_payload["total_episode"] = fake_total
+                logger.info(f"  🛡️ [自动待定] 智能订阅《{series_name}》S{current_season_num}，初始设为 '待定(P)'。")
             if best_version:
                 mp_payload["best_version"] = best_version
             

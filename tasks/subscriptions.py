@@ -182,12 +182,7 @@ def task_manual_subscribe_batch(processor, subscribe_requests: List[Dict]):
                                     continue 
                             except (ValueError, TypeError):
                                 pass
-                    # 初始状态判断
-                    is_pending, fake_total = should_mark_as_pending(int(tmdb_id), int(season_number), tmdb_api_key)
-                    if is_pending:
-                        mp_payload["status"] = "P"
-                        mp_payload["total_episode"] = fake_total
-                        logger.info(f"  🛡️ [自动待定] 手动订阅《{series_name}》S{season_number} 符合条件，初始状态将设为 '待定(P)'。")
+                    
                     series_info = {"tmdb_id": int(tmdb_id), "item_name": item_title_for_log}
                     success = moviepilot.smart_subscribe_series(series_info, config) is not None
                 
