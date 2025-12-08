@@ -275,6 +275,7 @@ def get_all_subscriptions() -> List[Dict[str, Any]]:
             m1.subscription_sources_json,
             m1.first_requested_at,
             m1.last_subscribed_at,
+            m1.paused_until,
             CASE
                 WHEN m1.item_type = 'Series' THEN m1.tmdb_id -- 如果是剧集本身，父ID就是自己
                 WHEN m1.item_type = 'Season' THEN m1.parent_series_tmdb_id -- 如果是季，就用parent_series_tmdb_id
