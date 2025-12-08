@@ -218,17 +218,18 @@
         
         <n-divider title-placement="left">电影订阅策略 (剧集由智能追剧策略管理)</n-divider>
         <n-alert type="info" :show-icon="false" style="margin-bottom: 16px;">
-          针对新片，采用“搜索 N 天 -> 暂停 M 天”的循环机制，大幅降低 MoviePilot 搜索压力。
+          <li>新片，采用“搜索 N 天 -> 暂停 M 天”的循环机制，大幅降低 MoviePilot 搜索压力。</li>
+          <li>老片，采用“搜索 N 天 -> 取消订阅”</li>
         </n-alert>
         
         <n-form-item label="新片保护期 (天)">
           <n-input-number v-model:value="strategyConfig.movie_protection_days" :min="0" />
-          <template #feedback>发布时间在此天数内的电影启用间歇性搜索机制。超过此天数则视为老片，不再暂停，直接由超时规则处理。</template>
+          <template #feedback>发布时间在此天数内的电影启用间歇性搜索机制。超过此天数则视为老片，不再暂停，直接取消订阅。</template>
         </n-form-item>
         
         <n-form-item label="搜索窗口期 (天)">
           <n-input-number v-model:value="strategyConfig.movie_search_window_days" :min="1" />
-          <template #feedback>每次复活后，连续搜索的天数 (建议 1 天)。</template>
+          <template #feedback>新增订阅以及每次复活后，连续搜索的天数 (建议 1 天)。</template>
         </n-form-item>
         
         <n-form-item label="暂停周期 (天)">
@@ -240,12 +241,6 @@
           <n-input-number v-model:value="strategyConfig.delay_subscription_days" :min="0" />
           <template #feedback>电影上映后 N 天才允许订阅 (0 表示不延迟)。</template>
         </n-form-item>
-        
-        <n-form-item label="超时取消 (天)">
-          <n-input-number v-model:value="strategyConfig.subscription_timeout_days" :min="0" />
-          <template #feedback>订阅超过 N 天仍未入库，自动取消订阅 (0 表示不自动取消)。</template>
-        </n-form-item>
-
       </n-form>
       
       <template #footer>
@@ -299,7 +294,6 @@ const strategyConfig = ref({
   movie_search_window_days: 1,
   movie_pause_days: 7,
   delay_subscription_days: 0,
-  subscription_timeout_days: 3
 });
 
 // 加载配置

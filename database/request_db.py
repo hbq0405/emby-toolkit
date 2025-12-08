@@ -526,13 +526,13 @@ def get_subscribers_by_tmdb_id(tmdb_id: str, item_type: str) -> List[Dict[str, A
         logger.error(f"DB: 根据 TMDb ID [{tmdb_id}] 查询订阅者失败: {e}", exc_info=True)
         return []
     
-def get_stale_subscribed_media(threshold_days: int, protection_days: int) -> List[Dict[str, Any]]:
+def get_stale_subscribed_media(movie_search_window: int, protection_days: int) -> List[Dict[str, Any]]:
     """
     获取所有状态为 'SUBSCRIBED' 且满足以下条件的媒体项：
     1. 订阅时间超过 threshold_days (超时)
     2. 发行时间超过 protection_days (已过新片保护期)
     """
-    if threshold_days <= 0:
+    if movie_search_window <= 0:
         return []
 
     # 确保保护期至少为 0
@@ -550,7 +550,7 @@ def get_stale_subscribed_media(threshold_days: int, protection_days: int) -> Lis
         WHERE 
             subscription_status = 'SUBSCRIBED'
             AND last_subscribed_at IS NOT NULL
-            AND NOW() - last_subscribed_at > INTERVAL '{threshold_days} days'
+            AND NOW() - last_subscribed_at > INTERVAL '{movie_search_window} days'
             AND release_date IS NOT NULL
             AND release_date < NOW() - INTERVAL '{protection_days} days';
     """

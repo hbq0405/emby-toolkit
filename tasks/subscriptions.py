@@ -319,7 +319,6 @@ def task_auto_subscribe(processor):
     strategy_config = settings_db.get_setting('subscription_strategy_config') or {}
     
     # 默认策略参数
-    cancel_threshold_days = int(strategy_config.get('subscription_timeout_days', 3)) # 默认3天超时
     movie_protection_days = int(strategy_config.get('movie_protection_days', 180))    # 默认半年新片保护
     movie_search_window = int(strategy_config.get('movie_search_window_days', 1))     # 默认搜索1天
     movie_pause_days = int(strategy_config.get('movie_pause_days', 7))                # 默认暂停7天
@@ -337,11 +336,11 @@ def task_auto_subscribe(processor):
         # ======================================================================
         # 阶段 1 - 清理超时订阅 
         # ======================================================================
-        if cancel_threshold_days > 0:
-            logger.info(f"  ➜ 正在检查超过 {cancel_threshold_days} 天仍未入库的订阅...")
+        if movie_search_window > 0:
+            logger.info(f"  ➜ 正在检查超过 {movie_search_window} 天仍未入库的订阅...")
             task_manager.update_status_from_thread(2, "正在清理超时订阅...")
             
-            stale_items = request_db.get_stale_subscribed_media(cancel_threshold_days, movie_protection_days)
+            stale_items = request_db.get_stale_subscribed_media(movie_search_window, movie_protection_days)
             
             if stale_items:
                 logger.warning(f"  ➜ 发现 {len(stale_items)} 个超时订阅，将尝试取消它们。")
@@ -394,18 +393,18 @@ def task_auto_subscribe(processor):
                     if admin_chat_ids:
                         items_list_str = "\n".join([f"· `{item}`" for item in cancelled_for_report])
                         message_text = (f"🚫 *自动取消了 {len(cancelled_for_report)} 个超时订阅*\n\n"
-                                        f"下列项目因超过 {cancel_threshold_days} 天未入库而被自动取消：\n{items_list_str}")
+                                        f"下列项目因超过 {movie_search_window} 天未入库而被自动取消：\n{items_list_str}")
                         for admin_id in admin_chat_ids:
                             telegram.send_telegram_message(admin_id, message_text, disable_notification=True)
             else:
                 logger.info("  ➜ 未发现超时订阅。")
 
         # ======================================================================
-        # 阶段 2 - 电影呼吸灯维护 (新增逻辑)
+        # 阶段 2 - 电影间歇性订阅搜索
         # ======================================================================
         # 仅当配置有效时执行
         if movie_protection_days > 0 and movie_pause_days > 0:
-            logger.info(f"  ➜ [策略] 执行电影间歇性搜索维护...")
+            logger.info(f"  ➜ [策略] 执行电影间歇性订阅搜索维护...")
             
             # 2.1 复活 (Revive: PAUSED -> SUBSCRIBED)
             # 对应 MP 状态: 'S' -> 'R'
