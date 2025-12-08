@@ -40,6 +40,118 @@ AUDIO_SUBTITLE_KEYWORD_MAP = {
     "sub_yue": ["CHT", "繁中", "繁体", "Cantonese"], 
 }
 
+def _subscribe_full_series_with_logic(tmdb_id: int, series_name: str, config: Dict, tmdb_api_key: str, use_gap_fill_resubscribe: bool = False) -> bool:
+    """
+    处理整部剧集的订阅：
+    1. 查询 TMDb 获取所有季。
+    2. 遍历所有季。
+    3. 仅对【最后一季】检查是否需要“自动待定”。
+    4. 逐季提交订阅并更新本地数据库。
+    """
+    try:
+        # 1. 获取剧集详情
+        series_details = tmdb.get_tv_details(tmdb_id, tmdb_api_key)
+        if not series_details:
+            logger.error(f"  ➜ 无法获取剧集 ID {tmdb_id} 的详情，跳过订阅。")
+            return False
+
+        # 规范化名称
+        final_series_name = series_details.get('name', series_name)
+        
+        # 2. 获取所有有效季 (Season > 0)
+        seasons = series_details.get('seasons', [])
+        valid_seasons = sorted([s for s in seasons if s.get('season_number', 0) > 0], key=lambda x: x['season_number'])
+        
+        if not valid_seasons:
+            logger.warning(f"  ➜ 剧集《{final_series_name}》没有有效的季信息，尝试直接订阅整剧。")
+            # 兜底：直接订阅 ID
+            return moviepilot.subscribe_with_custom_payload({"name": final_series_name, "tmdbid": tmdb_id, "type": "电视剧"}, config)
+
+        # 3. 确定最后一季的季号
+        last_season_num = valid_seasons[-1]['season_number']
+        any_success = False
+
+        logger.info(f"  ➜ 正在处理《{final_series_name}》的 {len(valid_seasons)} 个季 (S{valid_seasons[0]['season_number']} - S{last_season_num})...")
+
+        # 4. 遍历逐个订阅
+        for season in valid_seasons:
+            s_num = season['season_number']
+            
+            mp_payload = {
+                "name": final_series_name,
+                "tmdbid": tmdb_id,
+                "type": "电视剧",
+                "season": s_num
+            }
+            
+            is_pending = False
+            fake_total = 0
+
+            # ★★★ 核心逻辑：只检查最后一季是否需要待定 ★★★
+            if s_num == last_season_num:
+                is_pending, fake_total = should_mark_as_pending(tmdb_id, s_num, tmdb_api_key)
+                if is_pending:
+                    mp_payload["status"] = "P"
+                    mp_payload["total_episode"] = fake_total
+                    logger.info(f"  🛡️ [自动待定] S{s_num} 是最新季且符合条件，初始状态设为 '待定(P)'。")
+
+            # 洗版/完结检测 (非待定状态下才考虑 BestVersion，或者由 MP 处理)
+            if not is_pending:
+                if use_gap_fill_resubscribe:
+                    mp_payload["best_version"] = 1
+                elif check_series_completion(tmdb_id, tmdb_api_key, season_number=s_num, series_name=final_series_name):
+                    mp_payload["best_version"] = 1
+
+            # 提交订阅
+            if moviepilot.subscribe_with_custom_payload(mp_payload, config):
+                any_success = True
+                
+                # ★★★ 更新本地数据库 ★★★
+                # 1. 标记为已订阅
+                # 注意：这里我们构造一个临时的 query_id 用于更新季的状态
+                # 如果数据库里还没有这个季的记录，set_media_status_subscribed 会创建它
+                # 但为了保险，我们通常用 SeriesID_Sxx 或者直接用 SeriesID (如果 request_db 支持)
+                # 这里为了简单，我们假设 request_db 能处理，或者我们只更新 watching_status
+                
+                # 尝试获取季的真实 ID (如果存在)
+                season_tmdb_id = request_db.get_season_tmdb_id(str(tmdb_id), s_num)
+                target_id = season_tmdb_id if season_tmdb_id else f"{tmdb_id}_S{s_num}" # 临时 ID
+                
+                # 只有当获取到了真实的纯数字 ID 时，才能有效更新 watching_status
+                # 如果是新剧，可能还没有季的记录。
+                # 策略：先调用 set_media_status_subscribed (它会创建记录)，然后再更新状态
+                
+                # 构造一个虚拟的 media_info 用于创建记录
+                media_info_list = [{
+                    'tmdb_id': str(target_id), # 注意：如果这里用非数字ID，request_db 需要能处理
+                    'title': f"{final_series_name} S{s_num}",
+                    'parent_series_tmdb_id': str(tmdb_id),
+                    'season_number': s_num,
+                    'item_type': 'Season'
+                }]
+                
+                # 如果 target_id 不是纯数字（即数据库里没查到），set_media_status_subscribed 可能会插入一条带 _Sxx 后缀的记录
+                # 这在 media_metadata 表设计中通常是不推荐的（tmdb_id 应该是纯数字）。
+                # 但为了不破坏现有逻辑，我们这里只处理“待定”的状态更新。
+                
+                # 如果是待定，且我们能确定季的 ID (或者父剧集 ID)，则更新
+                if is_pending:
+                    # 尝试更新季 (如果存在)
+                    if season_tmdb_id:
+                        watchlist_db.update_watching_status_by_tmdb_id(season_tmdb_id, 'Season', 'Pending')
+                        watchlist_db.update_specific_season_total_episodes(str(tmdb_id), s_num, fake_total)
+                    
+                    # 无论如何，激活父剧集
+                    watchlist_db.add_item_to_watchlist(str(tmdb_id), final_series_name)
+                    # 如果父剧集本身就是新的，可能也需要设为 Pending？
+                    # 通常我们只让季 Pending，父剧集保持 Watching 以便在列表中显示。
+
+        return any_success
+
+    except Exception as e:
+        logger.error(f"处理整剧订阅逻辑时出错: {e}", exc_info=True)
+        return False
+
 # ★★★ 手动动订阅任务 ★★★
 def task_manual_subscribe_batch(processor, subscribe_requests: List[Dict]):
     """
@@ -183,8 +295,13 @@ def task_manual_subscribe_batch(processor, subscribe_requests: List[Dict]):
                             except (ValueError, TypeError):
                                 pass
                     
-                    series_info = {"tmdb_id": int(tmdb_id), "item_name": item_title_for_log}
-                    success = moviepilot.smart_subscribe_series(series_info, config) is not None
+                    success = _subscribe_full_series_with_logic(
+                        tmdb_id=int(tmdb_id),
+                        series_name=item_title_for_log,
+                        config=config,
+                        tmdb_api_key=tmdb_api_key,
+                        use_gap_fill_resubscribe=use_gap_fill_resubscribe
+                    )
                 
                 else:
                     # 理论上不应该走到这里 (item_type='Season' 但没有 season_number)
@@ -412,8 +529,13 @@ def task_auto_subscribe(processor):
                     success = moviepilot.subscribe_with_custom_payload(mp_payload, config)
 
                 elif item_type == 'Series':
-                    series_info = {"tmdb_id": int(item['tmdb_id']), "item_name": item['title']}
-                    success = moviepilot.smart_subscribe_series(series_info, config) is not None
+                    success = _subscribe_full_series_with_logic(
+                        tmdb_id=int(item['tmdb_id']),
+                        series_name=item['title'],
+                        config=config,
+                        tmdb_api_key=tmdb_api_key,
+                        use_gap_fill_resubscribe=use_gap_fill_resubscribe
+                    )
 
                 elif item_type == 'Season':
                     parent_tmdb_id = item.get('parent_series_tmdb_id')

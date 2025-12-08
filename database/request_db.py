@@ -589,3 +589,33 @@ def remove_sources_by_type(tmdb_id: str, item_type: str, target_source_type: str
     except Exception as e:
         logger.error(f"DB: 移除媒体 {tmdb_id} 的 '{target_source_type}' 类型来源时出错: {e}", exc_info=True)
         raise
+
+def get_season_tmdb_id(parent_tmdb_id: str, season_number: int) -> Optional[str]:
+    """
+    根据父剧集ID和季号，查询该季在 media_metadata 表中的 tmdb_id。
+    用于在订阅任务中定位具体的季记录，以便更新状态。
+    """
+    if not parent_tmdb_id or season_number is None:
+        return None
+        
+    try:
+        with get_db_connection() as conn:
+            cursor = conn.cursor()
+            sql = """
+                SELECT tmdb_id 
+                FROM media_metadata 
+                WHERE parent_series_tmdb_id = %s 
+                  AND season_number = %s 
+                  AND item_type = 'Season' 
+                LIMIT 1
+            """
+            cursor.execute(sql, (parent_tmdb_id, season_number))
+            row = cursor.fetchone()
+            
+            if row and row.get('tmdb_id'):
+                return str(row['tmdb_id'])
+            return None
+            
+    except Exception as e:
+        logger.error(f"DB: 查询季 ID (Series:{parent_tmdb_id} S{season_number}) 失败: {e}", exc_info=True)
+        return None
