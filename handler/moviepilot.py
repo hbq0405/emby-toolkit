@@ -355,12 +355,9 @@ def smart_subscribe_series(series_info: dict, config: Dict[str, Any]) -> Optiona
 
     return successful_subscriptions if successful_subscriptions else None
 
-def update_subscription_status(tmdb_id: int, season: int, status: str, config: Dict[str, Any]) -> bool:
+def update_subscription_status(tmdb_id: int, season: int, status: str, config: Dict[str, Any], total_episodes: Optional[int] = None) -> bool:
     """
-    调用 MoviePilot 接口更新订阅状态。
-    步骤：
-    1. 根据 tmdb_id 和 season 查询订阅详情，获取 subid。
-    2. 调用 PUT /api/v1/subscribe/status/{subid}?state={status} 更新状态。
+    调用 MoviePilot 接口更新订阅状态，并可选更新总集数。
     """
     try:
         moviepilot_url = config.get(constants.CONFIG_OPTION_MOVIEPILOT_URL, '').rstrip('/')
@@ -370,48 +367,55 @@ def update_subscription_status(tmdb_id: int, season: int, status: str, config: D
         
         headers = {"Authorization": f"Bearer {access_token}"}
 
-        # -------------------------------------------------------
-        # 第一步：查询订阅 ID (subid)
-        # -------------------------------------------------------
+        # 1. 查询订阅 ID (subid)
         media_id_param = f"tmdb:{tmdb_id}"
-        # 使用查询接口获取订阅详情
         get_url = f"{moviepilot_url}/api/v1/subscribe/media/{media_id_param}"
         get_params = {}
         if season:
             get_params['season'] = season
         
-        # logger.debug(f"正在查询订阅ID: {get_url} params={get_params}")
         get_res = requests.get(get_url, headers=headers, params=get_params, timeout=10)
         
         sub_id = None
         if get_res.status_code == 200:
             data = get_res.json()
-            # 确保返回的是字典且包含 id
             if data and isinstance(data, dict):
                 sub_id = data.get('id')
         
         if not sub_id:
-            # 如果查不到订阅ID，说明没订阅，自然无法更新状态，直接返回 False (但不报错)
-            # logger.debug(f"未找到订阅: tmdb:{tmdb_id} season:{season}")
             return False
 
-        # -------------------------------------------------------
-        # 第二步：调用 PUT 接口更新状态
-        # -------------------------------------------------------
-        # 接口: PUT /api/v1/subscribe/status/{subid}
-        # 参数: state (Query Parameter)
-        update_url = f"{moviepilot_url}/api/v1/subscribe/status/{sub_id}"
-        update_params = {"state": status}
+        # 2. 更新状态 (PUT /api/v1/subscribe/status/{subid})
+        # 这一步保持不变，先更新状态
+        status_url = f"{moviepilot_url}/api/v1/subscribe/status/{sub_id}"
+        status_params = {"state": status}
+        requests.put(status_url, headers=headers, params=status_params, timeout=10)
         
-        # logger.debug(f"正在更新订阅状态: {update_url} state={status}")
-        response = requests.put(update_url, headers=headers, params=update_params, timeout=10)
-        
-        if response.status_code in [200, 204]:
-            return True
-        else:
-            logger.warning(f"  ➜ 更新 MP 订阅状态失败: {response.status_code} - {response.text}")
-            return False
+        # 3. ★★★ 新增：如果提供了 total_episodes，更新订阅详情 ★★★
+        if total_episodes is not None:
+            # A. 获取完整的订阅详情 (为了拿到其他字段，防止覆盖为空)
+            detail_url = f"{moviepilot_url}/api/v1/subscribe/{sub_id}"
+            detail_res = requests.get(detail_url, headers=headers, timeout=10)
+            
+            if detail_res.status_code == 200:
+                sub_data = detail_res.json()
+                
+                # 只有当当前集数不等于目标集数时才更新，减少请求
+                if sub_data.get('total_episode') != total_episodes:
+                    # B. 修改总集数
+                    sub_data['total_episode'] = total_episodes
+                    
+                    # C. 提交更新 (PUT /api/v1/subscribe/)
+                    update_url = f"{moviepilot_url}/api/v1/subscribe/"
+                    update_res = requests.put(update_url, headers=headers, json=sub_data, timeout=10)
+                    
+                    if update_res.status_code in [200, 204]:
+                        logger.info(f"  ➜ [MP同步] 已将 MP 订阅 (ID:{sub_id}) 的总集数更新为 {total_episodes}")
+                    else:
+                        logger.warning(f"  ➜ 更新 MP 总集数失败: {update_res.status_code} - {update_res.text}")
+
+        return True
 
     except Exception as e:
-        logger.error(f"  ➜ 调用 MoviePilot 更新状态接口出错: {e}")
+        logger.error(f"  ➜ 调用 MoviePilot 更新接口出错: {e}")
         return False

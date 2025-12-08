@@ -373,6 +373,18 @@
                    <n-input-number v-model:value="watchlistConfig.auto_pending.episodes" :min="1" style="width: 80px" size="small" />
                    <n-input-group-label>集以下</n-input-group-label>
                  </n-input-group>
+
+                 <n-input-group style="margin-top: 8px">
+                   <n-input-group-label>待定显示集数</n-input-group-label>
+                   <n-input-number 
+                     v-model:value="watchlistConfig.auto_pending.default_total_episodes" 
+                     :min="1" 
+                     :default-value="99"
+                     style="width: 80px" 
+                     size="small" 
+                   />
+                   <n-input-group-label>集</n-input-group-label>
+                 </n-input-group>
                  
                  <n-text depth="3" style="font-size: 12px">
                    * 满足任一条件即设为“待定”，待定状态不影响订阅搜索，只是防止过早完成订阅。

@@ -269,7 +269,12 @@ def api_watchlist_settings():
     
     # 默认配置结构
     default_config = {
-        "auto_pending": {"enabled": False, "days": 30, "episodes": 1},
+        "auto_pending": {
+            "enabled": False, 
+            "days": 7, 
+            "episodes": 5,
+            "default_total_episodes": 99 
+        },
         "auto_pause": False,
         "auto_resub_ended": False,
         "gap_fill_resubscribe": False
