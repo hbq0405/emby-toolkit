@@ -5,10 +5,11 @@ import os
 import re
 from typing import Optional, Dict, Tuple, List
 import logging
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 
-from handler.tmdb import get_movie_details, get_tv_details, get_tv_season_details, search_tv_shows
+from handler.tmdb import get_movie_details, get_tv_details, get_tv_season_details, search_tv_shows, get_tv_season_details
 import constants
+from database import settings_db
 
 logger = logging.getLogger(__name__)
 
@@ -720,3 +721,48 @@ def parse_series_title_and_season(title: str, api_key: str = None) -> Tuple[Opti
     # 返回 None, None。调用方会因此使用原始的完整标题进行搜索。
     # 对于 "亦舞之城"，这里返回 (None, None)，于是系统会搜索 "亦舞之城"，这是正确的。
     return None, None
+
+def should_mark_as_pending(tmdb_id: int, season_number: int, api_key: str) -> tuple[bool, int]:
+    """
+    检查指定季是否满足“自动待定”条件。
+    返回: (是否待定, 虚标总集数)
+    """
+    try:
+        # 1. 读取配置
+        watchlist_cfg = settings_db.get_setting('watchlist_config') or {}
+        auto_pending_cfg = watchlist_cfg.get('auto_pending', {})
+        
+        if not auto_pending_cfg.get('enabled', False):
+            return False, 0
+
+        threshold_days = int(auto_pending_cfg.get('days', 30))
+        threshold_episodes = int(auto_pending_cfg.get('episodes', 1))
+        fake_total = int(auto_pending_cfg.get('default_total_episodes', 99))
+        
+        # 2. 获取 TMDb 季详情
+        # 注意：这里需要实时查询 TMDb，因为本地数据可能不全
+        season_details = get_tv_season_details(tmdb_id, season_number, api_key)
+        if not season_details:
+            return False, 0
+
+        air_date_str = season_details.get('air_date')
+        episode_count = len(season_details.get('episodes', [])) # 或者用 episodes 列表长度更准
+        # 也可以用 season_details.get('episodes') 里的计数，有些接口返回结构不同，注意兼容
+        
+        if air_date_str:
+            try:
+                air_date = datetime.strptime(air_date_str, '%Y-%m-%d').date()
+                today = datetime.now(timezone.utc).date()
+                days_diff = (today - air_date).days
+                
+                # 逻辑：上线时间在阈值内 OR 集数很少
+                if (0 <= days_diff <= threshold_days) or (episode_count <= threshold_episodes):
+                    return True, fake_total
+            except ValueError:
+                pass
+                
+        return False, 0
+
+    except Exception as e:
+        # logger.warning(f"检查待定条件失败: {e}") # 避免循环引用 logger，可以忽略或 print
+        return False, 0

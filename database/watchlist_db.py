@@ -899,3 +899,25 @@ def update_specific_season_total_episodes(parent_tmdb_id: str, season_number: in
             conn.commit()
     except Exception as e:
         logger.error(f"更新季 {parent_tmdb_id} S{season_number} 总集数失败: {e}")
+
+def update_watching_status_by_tmdb_id(tmdb_id: str, item_type: str, new_status: str):
+    """
+    用于订阅任务中，将刚订阅的项目立即标记为 'Pending' (待定) 或其他状态。
+    """
+    try:
+        with get_db_connection() as conn:
+            cursor = conn.cursor()
+            # 同时也更新 watchlist_last_checked_at 以便排序
+            sql = """
+                UPDATE media_metadata 
+                SET watching_status = %s, 
+                    watchlist_last_checked_at = NOW(),
+                    force_ended = FALSE,
+                    paused_until = NULL
+                WHERE tmdb_id = %s AND item_type = %s
+            """
+            cursor.execute(sql, (new_status, tmdb_id, item_type))
+            conn.commit()
+            logger.debug(f"  ➜ 已更新 {tmdb_id} ({item_type}) 的追剧状态为 {new_status}")
+    except Exception as e:
+        logger.error(f"更新追剧状态失败: {e}")

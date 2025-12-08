@@ -13,8 +13,8 @@ import handler.tmdb as tmdb
 import handler.moviepilot as moviepilot
 import task_manager
 from handler import telegram
-from database import settings_db, request_db, user_db, media_db
-from .helpers import is_movie_subscribable, check_series_completion, parse_series_title_and_season
+from database import settings_db, request_db, user_db, media_db, watchlist_db
+from .helpers import is_movie_subscribable, check_series_completion, parse_series_title_and_season, should_mark_as_pending
 
 logger = logging.getLogger(__name__)
 
@@ -150,7 +150,12 @@ def task_manual_subscribe_batch(processor, subscribe_requests: List[Dict]):
                         "type": "电视剧",
                         "season": int(season_number)
                     }
-                    
+                    # 初始待定判断
+                    is_pending, fake_total = should_mark_as_pending(int(tmdb_id), int(season_number), tmdb_api_key)
+                    if is_pending:
+                        mp_payload["status"] = "P"
+                        mp_payload["total_episode"] = fake_total
+                        logger.info(f"  🛡️ [自动待定] 手动订阅《{series_name}》S{season_number} 符合条件，初始状态将设为 '待定(P)'。")
                     # 如果是洗版/缺集来源，或者全局开关开启，强制 best_version=1
                     if use_gap_fill_resubscribe or is_gap_or_resub:
                         logger.info(f"  ➜ 检测到洗版/缺集来源或全局开关，为《{series_name}》第 {season_number} 季启用洗版模式。")
@@ -406,6 +411,14 @@ def task_auto_subscribe(processor):
                             "season": season_num
                         }
                         
+                        # 初始待定判断 
+                        is_pending, fake_total = should_mark_as_pending(int(parent_tmdb_id), season_num, tmdb_api_key)
+                        
+                        if is_pending:
+                            mp_payload["status"] = "P" # 初始状态设为待定
+                            mp_payload["total_episode"] = fake_total # 初始集数设为虚标值
+                            logger.info(f"  🛡️ [自动待定] 新订阅《{series_name}》S{season_num} 符合条件，初始状态将设为 '待定(P)'，集数 {fake_total}。")
+
                         # 1. 检查具体的来源类型
                         is_explicit_resub = any(source.get('type') == 'resubscribe' for source in sources)
                         is_gap_scan = any(source.get('type') == 'gap_scan' for source in sources)
@@ -430,6 +443,18 @@ def task_auto_subscribe(processor):
                                 mp_payload["best_version"] = 1
                         
                         success = moviepilot.subscribe_with_custom_payload(mp_payload, config)
+                        # 如果待定，更新本地 DB 状态为 PENDING_METADATA
+                        if is_pending:
+                                watchlist_db.update_watching_status_by_tmdb_id(
+                                    str(item['tmdb_id']), # 或者是 parent_tmdb_id，取决于当前上下文是季还是剧
+                                    'Pending'
+                                )
+                                
+                                # 我们还需要把父剧集设为 Watching (或 Pending)
+                                if item_type == 'Season':
+                                    parent_id = item.get('parent_series_tmdb_id')
+                                    if parent_id:
+                                        watchlist_db.add_item_to_watchlist(str(parent_id), series_name)
                     else:
                         success = False
 
