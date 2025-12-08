@@ -601,19 +601,11 @@ def task_auto_subscribe(processor):
             if success:
                 logger.info(f"  ✅ 《{item['title']}》订阅成功！")
                 
-                # ★★★ 修改：只处理 Movie 的订阅状态更新 ★★★
-                if item_type == 'Movie':
-                    request_db.set_media_status_subscribed(
-                        tmdb_ids=item['tmdb_id'], 
-                        item_type='Movie',
-                    )
-                
-                elif item_type == 'Season':
-                    watchlist_db.add_item_to_watchlist(str(parent_tmdb_id), series_name)
-                    request_db.set_media_status_subscribed(
-                        tmdb_ids=item['tmdb_id'], 
-                        item_type='Season',
-                    )
+                # a. 将状态从 WANTED 更新为 SUBSCRIBED
+                request_db.set_media_status_subscribed(
+                    tmdb_ids=item['tmdb_id'], # 更新的是季/电影自己的记录
+                    item_type=item_type,
+                )
 
                 # b. 扣除配额
                 settings_db.decrement_subscription_quota()
