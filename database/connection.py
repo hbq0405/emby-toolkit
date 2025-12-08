@@ -205,7 +205,7 @@ def init_db():
                         episode_number INTEGER,
                                
                         -- 追剧专属字段
-                        watching_status TEXT DEFAULT 'NONE', -- 'NONE', 'Watching', 'Paused', 'Completed'
+                        watching_status TEXT DEFAULT 'NONE', -- 'NONE', 'Watching', 'Paused', 'Completed', 'Pending'
                         paused_until DATE,
                         force_ended BOOLEAN DEFAULT FALSE,
                         watchlist_last_checked_at TIMESTAMP WITH TIME ZONE,

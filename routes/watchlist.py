@@ -8,7 +8,7 @@ from datetime import datetime, date
 import task_manager
 import extensions
 from extensions import admin_required, task_lock_required
-from database import watchlist_db
+from database import watchlist_db, settings_db
 # 1. 创建追剧列表蓝图
 watchlist_bp = Blueprint('watchlist', __name__, url_prefix='/api/watchlist')
 
@@ -79,7 +79,7 @@ def api_update_watchlist_status():
     item_id = data.get('item_id')
     new_status = data.get('new_status')
 
-    if not item_id or new_status not in ['Watching', 'Ended', 'Paused']:
+    if not item_id or new_status not in ['Watching', 'Ended', 'Paused', 'Pending', 'Completed']:
         return jsonify({"error": "请求参数无效"}), 400
 
     logger.info(f"  ➜ API (Blueprint): 收到请求，将项目 {item_id} 的追剧状态更新为 '{new_status}'。")
@@ -256,3 +256,49 @@ def api_update_total_episodes():
     except Exception as e:
         logger.error(f"手动更新总集数失败: {e}", exc_info=True)
         return jsonify({"error": "数据库更新失败"}), 500
+    
+@watchlist_bp.route('/settings', methods=['GET', 'POST'])
+@admin_required
+def api_watchlist_settings():
+    """
+    GET: 获取追剧策略配置
+    POST: 保存追剧策略配置
+    配置直接存储在 app_settings 表的 'watchlist_config' 键中
+    """
+    CONFIG_KEY = 'watchlist_config'
+    
+    # 默认配置结构
+    default_config = {
+        "auto_pending": {"enabled": False, "days": 30, "episodes": 1},
+        "auto_pause": False,
+        "auto_resub_ended": False,
+        "gap_fill_resubscribe": False
+    }
+
+    if request.method == 'GET':
+        try:
+            # 直接从数据库读取
+            saved_config = settings_db.get_setting(CONFIG_KEY) or {}
+            # 合并默认值，确保字段完整
+            final_config = {**default_config, **saved_config}
+            # 特殊处理嵌套字典 (auto_pending)
+            if "auto_pending" in saved_config and isinstance(saved_config["auto_pending"], dict):
+                final_config["auto_pending"] = {**default_config["auto_pending"], **saved_config["auto_pending"]}
+            
+            return jsonify(final_config), 200
+        except Exception as e:
+            logger.error(f"获取追剧配置失败: {e}", exc_info=True)
+            return jsonify({"error": "获取配置失败"}), 500
+
+    elif request.method == 'POST':
+        try:
+            new_config = request.json
+            if not isinstance(new_config, dict):
+                return jsonify({"error": "配置格式错误"}), 400
+            
+            # 保存到数据库
+            settings_db.save_setting(CONFIG_KEY, new_config)
+            return jsonify({"message": "追剧策略配置已保存"}), 200
+        except Exception as e:
+            logger.error(f"保存追剧配置失败: {e}", exc_info=True)
+            return jsonify({"error": "保存配置失败"}), 500

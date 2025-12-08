@@ -9,10 +9,11 @@ from datetime import datetime, timedelta, timezone
 import threading
 
 # 导入我们需要的辅助模块
-from database import connection, media_db, request_db, watchlist_db, user_db
+from database import connection, media_db, request_db, watchlist_db, user_db, settings_db
 import constants
 import handler.tmdb as tmdb
 import handler.emby as emby
+import handler.moviepilot as moviepilot
 import handler.telegram as telegram
 import logging
 
@@ -29,12 +30,14 @@ TMDB_STATUS_TRANSLATION = {
 INTERNAL_STATUS_TRANSLATION = {
     'Watching': '追剧中',
     'Paused': '已暂停',
-    'Completed': '已完结'
+    'Completed': '已完结',
+    'Pending': '待定中'
 }
 # ★★★ 定义状态常量，便于维护 ★★★
 STATUS_WATCHING = 'Watching'
 STATUS_PAUSED = 'Paused'
 STATUS_COMPLETED = 'Completed'
+STATUS_PENDING = 'Pending'
 def translate_status(status: str) -> str:
     """一个简单的辅助函数，用于翻译状态，如果找不到翻译则返回原文。"""
     return TMDB_STATUS_TRANSLATION.get(status, status)
@@ -559,6 +562,142 @@ class WatchlistProcessor:
         
         # 返回 emby_seasons_state 供后续逻辑使用，避免重复查询
         return latest_series_data, all_tmdb_episodes, emby_seasons_state
+    
+    # ★★★ 辅助方法：检查是否满足自动待定条件 ★★★
+    def _check_auto_pending_condition(self, series_details: Dict[str, Any]) -> bool:
+        try:
+            watchlist_cfg = settings_db.get_setting('watchlist_config') or {}
+            auto_pending_cfg = watchlist_cfg.get('auto_pending', {})
+            
+            if not auto_pending_cfg.get('enabled', False):
+                return False
+
+            threshold_days = int(auto_pending_cfg.get('days', 30))
+            threshold_episodes = int(auto_pending_cfg.get('episodes', 1))
+            today = datetime.now(timezone.utc).date()
+
+            # 检查逻辑：
+            # 找到最新的一季（通常是最后一季），检查其上映时间和集数
+            seasons = series_details.get('seasons', [])
+            if not seasons: return False
+            
+            # 过滤掉第0季，按季号倒序
+            valid_seasons = sorted([s for s in seasons if s.get('season_number', 0) > 0], 
+                                   key=lambda x: x['season_number'], reverse=True)
+            
+            if not valid_seasons: return False
+            
+            latest_season = valid_seasons[0]
+            air_date_str = latest_season.get('air_date')
+            episode_count = latest_season.get('episode_count', 0)
+
+            if air_date_str:
+                air_date = datetime.strptime(air_date_str, '%Y-%m-%d').date()
+                days_diff = (today - air_date).days
+                
+                # ★★★ 修改：将 and 改为 or ★★★
+                # 逻辑：上线时间在阈值内 OR 集数很少 (满足任一条件即待定)
+                # days_diff >= 0 确保是已上映的
+                if (0 <= days_diff <= threshold_days) or (episode_count <= threshold_episodes):
+                    return True
+            
+            return False
+        except Exception as e:
+            logger.warning(f"检查自动待定条件时出错: {e}")
+            return False
+
+    # ★★★ 辅助方法：同步状态给 MoviePilot ★★★
+    def _sync_status_to_moviepilot(self, tmdb_id: str, series_name: str, series_details: Dict[str, Any], final_status: str):
+        """
+        根据最终计算出的 watching_status，调用 MP 接口更新订阅状态。
+        映射关系：
+        - Pending -> P (待定)
+        - Paused  -> S (暂停, 需检查配置开关)
+        - Watching -> R (运行中)
+        """
+        try:
+            # 1. 确定 MP 目标状态
+            target_mp_status = 'R' # 默认为 Running
+            
+            watchlist_cfg = settings_db.get_setting('watchlist_config') or {}
+            enable_auto_pause = watchlist_cfg.get('auto_pause', False)
+
+            if final_status == STATUS_PENDING:
+                target_mp_status = 'P'
+            elif final_status == STATUS_PAUSED:
+                if enable_auto_pause:
+                    target_mp_status = 'S'
+                else:
+                    target_mp_status = 'R' # 如果没开自动暂停，MP 依然保持 Running
+            elif final_status == STATUS_WATCHING:
+                target_mp_status = 'R'
+            else:
+                # Completed 或其他状态，通常不主动干涉 MP，或者设为 S
+                return
+
+            # 2. 找出需要更新的季
+            # 通常我们更新“最新季”或者“当前活跃季”
+            # 为保险起见，我们可以遍历所有未完结的季进行更新，或者只更新最后一季
+            # 这里策略是：更新所有季号 > 0 的季。MP 接口如果找不到订阅会忽略，所以多发几个请求没关系。
+            seasons = series_details.get('seasons', [])
+            for season in seasons:
+                s_num = season.get('season_number')
+                if s_num and s_num > 0:
+                    # 调用 MP 接口
+                    if moviepilot.update_subscription_status(int(tmdb_id), s_num, target_mp_status, self.config):
+                        if target_mp_status != 'R': # R 是常态，不打印
+                            logger.info(f"  ➜ [MP同步] 《{series_name}》S{s_num} -> {target_mp_status} (因本地状态: {final_status})")
+
+        except Exception as e:
+            logger.warning(f"同步状态给 MoviePilot 时出错: {e}")
+
+    def _handle_auto_resub_ended(self, tmdb_id: str, series_name: str, series_details: Dict[str, Any]):
+        """
+        当剧集自然完结时：
+        1. 遍历所有季。
+        2. 立即调用 MP 取消旧订阅。
+        3. 立即调用 MP 发起洗版订阅 (BestVersion=1)。
+        """
+        try:
+            # 1. 读取配置
+            watchlist_cfg = settings_db.get_setting('watchlist_config') or {}
+            if not watchlist_cfg.get('auto_resub_ended', False):
+                return
+
+            logger.info(f"  🎉 剧集《{series_name}》已自然完结，正在立即执行洗版流程...")
+
+            seasons = series_details.get('seasons', [])
+            if not seasons:
+                logger.warning(f"  ⚠️ 无法获取《{series_name}》的分季信息，跳过洗版。")
+                return
+
+            # 2. 遍历所有有效季 (跳过第0季)
+            valid_seasons = sorted([s for s in seasons if s.get('season_number', 0) > 0], key=lambda x: x['season_number'])
+
+            for season in valid_seasons:
+                s_num = season['season_number']
+                
+                # --- A. 取消旧订阅 ---
+                moviepilot.cancel_subscription(tmdb_id, 'Series', self.config, season=s_num)
+                
+                # --- B. 发起新订阅 (洗版) ---
+                payload = {
+                    "name": series_name,
+                    "tmdbid": int(tmdb_id),
+                    "type": "电视剧",
+                    "season": s_num,
+                    "best_version": 1 # ★ 核心：洗版模式
+                }
+                
+                if moviepilot.subscribe_with_custom_payload(payload, self.config):
+                    logger.info(f"  ➜ [完结洗版] 《{series_name}》S{s_num} 已提交洗版订阅。")
+                else:
+                    logger.error(f"  ❌ [完结洗版] 《{series_name}》S{s_num} 提交失败。")
+
+            logger.info(f"  ✅ 《{series_name}》全剧洗版请求处理完毕。")
+
+        except Exception as e:
+            logger.error(f"  ⚠️ 执行完结自动洗版逻辑时出错: {e}", exc_info=True)
 
     # ★★★ 核心处理逻辑：单个剧集的所有操作在此完成 ★★★
     def _process_one_series(self, series_data: Dict[str, Any]):
@@ -566,6 +705,7 @@ class WatchlistProcessor:
         emby_ids = series_data.get('emby_item_ids_json', [])
         item_id = emby_ids[0] if emby_ids else None
         item_name = series_data['item_name']
+        old_status = series_data.get('status')
         is_force_ended = bool(series_data.get('force_ended', False))
         
         logger.info(f"  ➜ 【追剧检查】正在处理: '{item_name}' (TMDb ID: {tmdb_id})")
@@ -782,7 +922,13 @@ class WatchlistProcessor:
                     paused_until_date = None
                     logger.info(f"  👀 [判定-连载中] 缺乏播出日期数据，默认保持“追剧中”状态。")
 
-        # ==============================================================================
+        # 自动待定 (Auto Pending) 覆盖逻辑
+        # 只有当剧集处于“连载中”或“暂停”状态时，才检查是否需要转为“待定”
+        if final_status in [STATUS_WATCHING, STATUS_PAUSED]:
+            if self._check_auto_pending_condition(latest_series_data):
+                final_status = STATUS_PENDING
+                paused_until_date = None # 待定状态不需要暂停时间
+                logger.info(f"  🛡️ [自动待定生效] 《{item_name}》满足新剧保护条件，状态强制设为 '待定 (Pending)'。")
 
         # 手动强制完结
         if is_force_ended and final_status != STATUS_COMPLETED:
@@ -791,8 +937,19 @@ class WatchlistProcessor:
             logger.warning(f"  🔄 [强制完结生效] 最终状态被覆盖为 '已完结'。")
 
         # 只有当内部状态是“追剧中”或“已暂停”时，才认为它在“连载中”
-        is_truly_airing = final_status in [STATUS_WATCHING, STATUS_PAUSED]
+        is_truly_airing = final_status in [STATUS_WATCHING, STATUS_PAUSED, STATUS_PENDING]
         logger.info(f"  ➜ 最终判定 '{item_name}' 的真实连载状态为: {is_truly_airing} (内部状态: {translate_internal_status(final_status)})")
+
+        # ======================================================================
+        # ★★★ 完结自动洗版逻辑 ★★★
+        # ======================================================================
+        # 触发条件：
+        # 1. 新状态是“已完结”
+        # 2. 旧状态是“追剧中”、“已暂停”或“待定” (即之前是在追的)
+        # 3. 并非强制完结 (强制完结通常是人工干预，不应自动洗版)
+        if final_status == STATUS_COMPLETED and old_status in [STATUS_WATCHING, STATUS_PAUSED, STATUS_PENDING] and not is_force_ended:
+            # 传入 latest_series_data 以便获取分季信息
+            self._handle_auto_resub_ended(tmdb_id, item_name, latest_series_data)
 
         # 更新追剧数据库
         updates_to_db = {
@@ -826,6 +983,11 @@ class WatchlistProcessor:
 
         # 调用 DB 模块进行批量更新
         watchlist_db.sync_seasons_watching_status(tmdb_id, list(active_seasons), final_status)
+
+        # ======================================================================
+        # ★★★ 新增：MP 状态接管与同步 (自动待定 & 自动暂停) ★★★
+        # ======================================================================
+        self._sync_status_to_moviepilot(tmdb_id, item_name, latest_series_data, final_status)
 
         # ★★★ 场景一：补旧番 - 只处理已完结剧集中，已播出的缺失季 ★★★
         # 注意：由于现在 TMDb Ended 状态会直接导致 final_status = COMPLETED，

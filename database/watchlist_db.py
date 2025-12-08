@@ -137,7 +137,7 @@ def update_watchlist_item_status(tmdb_id: str, new_status: str) -> bool:
     更新单个剧集项目的追剧状态。
     """
     updates = {"watching_status": new_status}
-    if new_status == 'Watching':
+    if new_status in ['Watching', 'Pending']:
         updates["force_ended"] = False
         updates["paused_until"] = None
     

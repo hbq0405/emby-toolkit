@@ -53,6 +53,10 @@
               <template #icon><n-icon :component="SyncOutline" /></template>
               刷新追剧
             </n-button>
+            <n-button size="small" @click="openConfigModal">
+              <template #icon><n-icon :component="SettingsIcon" /></template>
+              策略配置
+            </n-button>
           </n-space>
         </template>
       </n-page-header>
@@ -345,14 +349,86 @@
         </n-tabs>
       </div>
     </n-modal>
+    <!-- ★★★ 新增：追剧策略配置模态框 ★★★ -->
+    <n-modal v-model:show="showConfigModal" preset="card" title="追剧策略配置" style="width: 500px">
+       <n-form label-placement="left" label-width="auto">
+         <n-divider title-placement="left" style="margin-top: 0">自动化状态管理</n-divider>
+         
+         <n-form-item label="自动待定 (Pending)">
+           <n-space vertical>
+             <n-switch v-model:value="watchlistConfig.auto_pending.enabled">
+                <template #checked>已启用</template>
+                <template #unchecked>已禁用</template>
+             </n-switch>
+             <n-collapse-transition :show="watchlistConfig.auto_pending.enabled">
+               <n-space vertical style="padding-top: 10px">
+                 <!-- ★★★ 修改文案：上线...天内 ★★★ -->
+                 <n-input-group>
+                   <n-input-group-label>上线</n-input-group-label>
+                   <n-input-number v-model:value="watchlistConfig.auto_pending.days" :min="1" style="width: 80px" size="small" />
+                   <n-input-group-label>天内</n-input-group-label>
+                 </n-input-group>
+                 
+                 <!-- ★★★ 修改文案：或集数...集以下 ★★★ -->
+                 <n-input-group>
+                   <n-input-group-label>或集数</n-input-group-label>
+                   <n-input-number v-model:value="watchlistConfig.auto_pending.episodes" :min="1" style="width: 80px" size="small" />
+                   <n-input-group-label>集以下</n-input-group-label>
+                 </n-input-group>
+                 
+                 <n-text depth="3" style="font-size: 12px">
+                   * 满足任一条件即设为“待定”，防止元数据滞后导致过早完成订阅。
+                 </n-text>
+               </n-space>
+             </n-collapse-transition>
+           </n-space>
+         </n-form-item>
+
+         <n-form-item label="自动暂停 (Pause)">
+            <n-space vertical>
+              <n-switch v-model:value="watchlistConfig.auto_pause" />
+              <n-text depth="3" style="font-size: 12px">
+                * 当下一集播出时间在未来较远时，自动暂停追剧用以减少不必要的搜索。
+              </n-text>
+            </n-space>
+         </n-form-item>
+
+         <n-divider title-placement="left">订阅与洗版</n-divider>
+
+         <n-form-item label="完结自动洗版">
+           <n-space vertical>
+             <n-switch v-model:value="watchlistConfig.auto_resub_ended" />
+             <n-text depth="3" style="font-size: 12px">
+               * 剧集完结后，自动删除旧订阅并提交“洗版订阅”。
+             </n-text>
+           </n-space>
+         </n-form-item>
+
+         <n-form-item label="缺集自动洗版">
+           <n-space vertical>
+             <n-switch v-model:value="watchlistConfig.gap_fill_resubscribe" />
+             <n-text depth="3" style="font-size: 12px">
+               * 发现中间缺集时，使用洗版模式订阅缺失的季。
+             </n-text>
+           </n-space>
+         </n-form-item>
+
+       </n-form>
+       <template #footer>
+         <n-space justify="end">
+           <n-button @click="showConfigModal = false">取消</n-button>
+           <n-button type="primary" :loading="configSaving" @click="saveConfig">保存配置</n-button>
+         </n-space>
+       </template>
+    </n-modal>
   </n-layout>
 </template>
 
 <script setup>
 import { ref, onMounted, onBeforeUnmount, h, computed, watch } from 'vue';
 import axios from 'axios';
-import { NLayout, NPageHeader, NDivider, NEmpty, NTag, NButton, NSpace, NIcon, useMessage, useDialog, NPopconfirm, NTooltip, NCard, NImage, NEllipsis, NSpin, NAlert, NRadioGroup, NRadioButton, NModal, NTabs, NTabPane, NList, NListItem, NCheckbox, NDropdown, NInput, NSelect, NButtonGroup, NProgress, useThemeVars, NPopover, NInputNumber } from 'naive-ui';
-import { SyncOutline, TvOutline as TvIcon, TrashOutline as TrashIcon, EyeOutline as EyeIcon, CalendarOutline as CalendarIcon, TimeOutline as TimeIcon, PlayCircleOutline as WatchingIcon, PauseCircleOutline as PausedIcon, CheckmarkCircleOutline as CompletedIcon, ScanCircleOutline as ScanIcon, CaretDownOutline as CaretDownIcon, FlashOffOutline as ForceEndIcon, ArrowUpOutline as ArrowUpIcon, ArrowDownOutline as ArrowDownIcon, DownloadOutline as DownloadIcon, AlbumsOutline as CollectionsIcon } from '@vicons/ionicons5';
+import { NLayout, NPageHeader, NDivider, NEmpty, NTag, NButton, NSpace, NIcon, useMessage, useDialog, NPopconfirm, NTooltip, NCard, NImage, NEllipsis, NSpin, NAlert, NRadioGroup, NRadioButton, NModal, NTabs, NTabPane, NList, NListItem, NCheckbox, NDropdown, NInput, NSelect, NButtonGroup, NProgress, useThemeVars, NPopover, NInputNumber, NForm, NFormItem, NSwitch, NInputGroup, NInputGroupLabel, NCollapseTransition, NText } from 'naive-ui';
+import { SyncOutline, TvOutline as TvIcon, TrashOutline as TrashIcon, EyeOutline as EyeIcon, CalendarOutline as CalendarIcon, TimeOutline as TimeIcon, PlayCircleOutline as WatchingIcon, PauseCircleOutline as PausedIcon, CheckmarkCircleOutline as CompletedIcon, ScanCircleOutline as ScanIcon, CaretDownOutline as CaretDownIcon, FlashOffOutline as ForceEndIcon, ArrowUpOutline as ArrowUpIcon, ArrowDownOutline as ArrowDownIcon, DownloadOutline as DownloadIcon, AlbumsOutline as CollectionsIcon, SettingsOutline as SettingsIcon, HourglassOutline as PendingIcon } from '@vicons/ionicons5';
 import { format, parseISO } from 'date-fns';
 import { useConfig } from '../composables/useConfig.js';
 
@@ -397,6 +473,53 @@ const sortKey = ref('last_checked_at');
 const sortOrder = ref('desc');
 const tempTotalEpisodes = ref(0);
 const activeTab = ref('seasons');
+const showConfigModal = ref(false);
+const configSaving = ref(false);
+
+const watchlistConfig = ref({
+  auto_pending: { enabled: false, days: 30, episodes: 1 },
+  auto_pause: false,
+  auto_resub_ended: false,
+  gap_fill_resubscribe: false
+});
+
+// ★★★ 新增：配置相关方法 ★★★
+const openConfigModal = async () => {
+  showConfigModal.value = true;
+  try {
+    // 调用刚才在后端新增的接口
+    const { data } = await axios.get('/api/watchlist/settings');
+    if (data) {
+       // 赋值给响应式对象
+       watchlistConfig.value = {
+         auto_pending: { 
+           enabled: data.auto_pending?.enabled ?? false,
+           days: data.auto_pending?.days ?? 30,
+           episodes: data.auto_pending?.episodes ?? 1
+         },
+         auto_pause: data.auto_pause ?? false,
+         auto_resub_ended: data.auto_resub_ended ?? false,
+         gap_fill_resubscribe: data.gap_fill_resubscribe ?? false
+       };
+    }
+  } catch (e) {
+    message.error('获取配置失败');
+    console.error(e);
+  }
+};
+
+const saveConfig = async () => {
+  configSaving.value = true;
+  try {
+    await axios.post('/api/watchlist/settings', watchlistConfig.value);
+    message.success('配置保存成功');
+    showConfigModal.value = false;
+  } catch (e) {
+    message.error('保存失败: ' + (e.response?.data?.error || e.message));
+  } finally {
+    configSaving.value = false;
+  }
+};
 
 const hasMissingSeasons = (item) => {
   const data = item.missing_info;
@@ -428,6 +551,7 @@ const statusFilterOptions = [
   { label: '所有状态', value: 'all' },
   { label: '追剧中', value: 'Watching' },
   { label: '已暂停', value: 'Paused' },
+  { label: '待定中', value: 'Pending' },
 ];
 const missingFilterOptions = computed(() => {
     return [
@@ -649,31 +773,27 @@ const formatSeasonRange = (numbers) => {
 // 计算剧集层面的精致状态 
 const getSeriesStatusUI = (item) => {
   const tmdbStatus = item.tmdb_status;
-  const internalStatus = item.status; // 'Watching', 'Paused', 'Completed'
+  const internalStatus = item.status; // 'Watching', 'Paused', 'Completed', 'Pending'
   const nextEp = item.next_episode_to_air; // 后端传来的下一集信息
 
-  // 1. 活跃状态 (用户/内部状态说了算)
-  // 只要还在追或者暂停中，说明这剧是“活”的 -> 绿色【已回归】
+  if (internalStatus === 'Pending') {
+    return { text: '待定中', type: 'info', icon: PendingIcon, color: undefined };
+  }
+
   if (internalStatus === 'Watching' || internalStatus === 'Paused') {
     return { text: '已回归', type: 'success', icon: WatchingIcon, color: undefined };
   }
 
-  // 2. 内部已完结 (当前库里的都看完了)
   if (internalStatus === 'Completed') {
-      // 2.1 彻底完结 -> 灰色【已完结】
       if (tmdbStatus === 'Ended' || tmdbStatus === 'Canceled') {
           return { text: '已完结', type: 'default', icon: CompletedIcon, color: undefined };
       }
 
-      // 2.2 TMDb 说是 Returning，但我们需要证据
       if (tmdbStatus === 'Returning Series' || tmdbStatus === 'In Production' || tmdbStatus === 'Planned') {
-          // ★★★ 关键判断：必须有下一集的数据 (定档或预排期) ★★★
-          // 只有真的有下一集信息，才值得显示“待回归”
           if (nextEp && nextEp.air_date) {
                return { text: '待回归', type: 'warning', icon: PausedIcon, color: undefined };
           }
           
-          // 如果 TMDb 说是 Returning 但没有任何下一集数据 -> 视为【已完结】(避免被 TMDb 误导)
           return { text: '已完结', type: 'default', icon: CompletedIcon, color: undefined };
       }
   }
@@ -908,6 +1028,7 @@ const statusInfo = (status) => {
     'Watching': { type: 'success', text: '追剧中', icon: WatchingIcon, next: 'Paused', nextText: '暂停' },
     'Paused': { type: 'warning', text: '已暂停', icon: PausedIcon, next: 'Watching', nextText: '继续追' },
     'Completed': { type: 'default', text: '已完结', icon: CompletedIcon, next: 'Watching', nextText: '重新追' },
+    'Pending': { type: 'info', text: '待定中', icon: PendingIcon, next: 'Watching', nextText: '强制追剧' },
   };
   return map[status] || map['Paused'];
 };

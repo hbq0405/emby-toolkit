@@ -58,7 +58,8 @@ def task_manual_subscribe_batch(processor, subscribe_requests: List[Dict]):
     try:
         config = config_manager.APP_CONFIG
         tmdb_api_key = config.get(constants.CONFIG_OPTION_TMDB_API_KEY)
-        use_gap_fill_resubscribe = config.get(constants.CONFIG_OPTION_GAP_FILL_RESUBSCRIBE_ENABLED, False)
+        watchlist_cfg = settings_db.get_setting('watchlist_config') or {}
+        use_gap_fill_resubscribe = watchlist_cfg.get('gap_fill_resubscribe', False)
         processed_count = 0
 
         for i, req in enumerate(subscribe_requests):
@@ -237,7 +238,8 @@ def task_auto_subscribe(processor):
         return
 
     try:
-        use_gap_fill_resubscribe = config.get(constants.CONFIG_OPTION_GAP_FILL_RESUBSCRIBE_ENABLED, False)
+        watchlist_cfg = settings_db.get_setting('watchlist_config') or {}
+        use_gap_fill_resubscribe = watchlist_cfg.get('gap_fill_resubscribe', False)
         # ======================================================================
         # 阶段 1 - 清理超时订阅 
         # ======================================================================
@@ -404,15 +406,26 @@ def task_auto_subscribe(processor):
                             "season": season_num
                         }
                         
-                        # 检查是否是缺集扫描或普通洗版(无Payload)
-                        is_gap_or_resub = any(source.get('type') in ['gap_scan', 'resubscribe'] for source in sources)
+                        # 1. 检查具体的来源类型
+                        is_explicit_resub = any(source.get('type') == 'resubscribe' for source in sources)
+                        is_gap_scan = any(source.get('type') == 'gap_scan' for source in sources)
                         
-                        # 如果是洗版/缺集，但没有自定义Payload，我们默认加上 best_version=1
-                        # 这样 MP 会根据其全局规则尝试寻找更好的版本
-                        if is_gap_or_resub:
-                             mp_payload["best_version"] = 1
+                        # 2. 应用订阅策略
+                        if is_explicit_resub:
+                            # 情况 A: 明确的洗版规则触发 -> 强制 best_version=1
+                            mp_payload["best_version"] = 1
+                            logger.info(f"  ➜ 触发自动洗版规则，为《{series_name}》S{season_num} 启用洗版模式。")
+                            
+                        elif is_gap_scan:
+                            # 情况 B: 缺集扫描触发 -> 根据配置决定是否 best_version=1
+                            if use_gap_fill_resubscribe:
+                                mp_payload["best_version"] = 1
+                                logger.info(f"  ➜ 触发缺集扫描且配置开启，为《{series_name}》S{season_num} 启用洗版模式。")
+                            else:
+                                logger.info(f"  ➜ 触发缺集扫描 (配置未开启洗版)，为《{series_name}》S{season_num} 执行普通订阅。")
+                                
                         elif "best_version" not in mp_payload:
-                            # 完结检测逻辑
+                            # 情况 C: 普通订阅 -> 检查是否完结，完结则洗版
                             if check_series_completion(int(parent_tmdb_id), tmdb_api_key, season_number=season_num, series_name=series_name):
                                 mp_payload["best_version"] = 1
                         
