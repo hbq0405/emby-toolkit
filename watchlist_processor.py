@@ -926,16 +926,72 @@ class WatchlistProcessor:
                         is_season_finale = True
 
         # ==============================================================================
+        # ★★★ 激进完结策略 ★★★
+        # ==============================================================================
+        is_aggressive_completed = False
+        
+        # 1. 获取阈值
+        watchlist_cfg = settings_db.get_setting('watchlist_config') or {}
+        auto_pending_cfg = watchlist_cfg.get('auto_pending', {})
+        aggressive_threshold = int(auto_pending_cfg.get('episodes', 5)) 
+        
+        # 2. 获取 TMDb 记录的总集数
+        current_total_episodes = latest_series_data.get('number_of_episodes', 0)
+
+        # 3. 计算本地已入库的正片总集数
+        local_total_episodes = 0
+        if emby_seasons:
+            for s_num, ep_set in emby_seasons.items():
+                if s_num > 0: local_total_episodes += len(ep_set)
+        
+        # 4. 判断逻辑
+        # 前置条件: 总集数超过阈值 (防止误伤短剧，短剧交给后续的7天规则处理)
+        if current_total_episodes > aggressive_threshold:
+            
+            # ★★★ 修正点：获取最新播出集的集号 ★★★
+            last_ep_number = 0
+            last_air_date = None
+            if last_episode_to_air:
+                last_ep_number = last_episode_to_air.get('episode_number', 0)
+                if date_str := last_episode_to_air.get('air_date'):
+                    try:
+                        last_air_date = datetime.strptime(date_str, '%Y-%m-%d').date()
+                    except ValueError: pass
+
+            # 条件 A: 时间维度 (最后一集已播出)
+            # 逻辑：最新播出的集号 >= 总集数 AND 播出日期 <= 今天
+            if last_ep_number >= current_total_episodes and last_air_date and last_air_date <= today:
+                is_aggressive_completed = True
+                logger.info(f"  🚀 《{item_name}》大结局(E{last_ep_number})已播出，判定完结。")
+            
+            # 条件 B: 收藏维度 (本地已集齐)
+            # 逻辑：本地集数 >= TMDb总集数
+            elif not is_aggressive_completed and local_total_episodes >= current_total_episodes:
+                is_aggressive_completed = True
+                logger.info(f"  🚀 《{item_name}》本地已集齐 {local_total_episodes}/{current_total_episodes} 集，判定完结。")
+
+        # ==============================================================================
         # ★★★ 重构后的状态判定逻辑 ★★★
         # ==============================================================================
 
-        # 规则 1: TMDb 状态已完结 -> 直接完结 (不考虑本地是否集齐)
+        # 规则 1: 激进策略优先 -> 直接完结
+        if is_aggressive_completed:
+            final_status = STATUS_COMPLETED
+            paused_until_date = None
+            
+            # 补充日志：解释为什么这么做
+            if real_next_episode_to_air:
+                logger.info(f"  🏁 [判定-TMDb已完结] 虽本地缺集，但满足完结策略，强制判定“已完结”以触发洗版(抢完结包)。")
+            else:
+                logger.info(f"  🏁 [判定-本地已集齐] 满足完结策略，判定“已完结”。")
+
+        # 规则 2: TMDb 状态已完结 -> 直接完结 (不考虑本地是否集齐)
         if is_ended_on_tmdb:
             final_status = STATUS_COMPLETED
             paused_until_date = None
             logger.info(f"  🏁 [判定-规则1] TMDb状态为 '{new_tmdb_status}'，判定为“已完结”。")
 
-        # 规则 2: 本季大结局已播出 (且无明确下一集) -> 直接完结 (不考虑本地是否集齐)
+        # 规则 3: 本季大结局已播出 (且无明确下一集) -> 直接完结 (不考虑本地是否集齐)
         elif is_season_finale and not effective_next_episode:
             # 定义：是否为“疑似数据缺失”的短季
             # 如果是连载剧，且当前季总集数 <= 3，极大概率是 TMDb 还没更新后续集数
@@ -953,7 +1009,7 @@ class WatchlistProcessor:
                 paused_until_date = None
                 logger.info(f"  🏁 [判定-规则2] 本季大结局 (S{last_s_num}E{last_e_num}) 已播出，判定为“已完结”。")
 
-        # 规则 3: 连载中逻辑 (保持原有逻辑)
+        # 规则 4: 连载中逻辑 (保持原有逻辑)
         else:
             # 情况 A: 下一集有明确播出日期
             if effective_next_episode:
