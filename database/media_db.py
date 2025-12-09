@@ -908,3 +908,43 @@ def delete_media_metadata_batch(items: List[Dict[str, str]]) -> int:
     except Exception as e:
         logger.error(f"DB: 批量物理删除媒体元数据失败: {e}", exc_info=True)
         return 0
+    
+def batch_ensure_basic_movies(movies_list: List[Dict[str, Any]]):
+    """
+    批量插入基础电影条目。
+    如果记录已存在（无论是已入库还是已订阅），则忽略（DO NOTHING），保留现有数据。
+    如果不存在，则插入基础信息（标题、海报、上映日期），并将 in_library 设为 FALSE。
+    """
+    if not movies_list:
+        return
+
+    # 准备插入的数据，确保字段完整
+    data_to_insert = []
+    for m in movies_list:
+        data_to_insert.append({
+            'tmdb_id': str(m['tmdb_id']),
+            'item_type': 'Movie',
+            'title': m.get('title'),
+            'original_title': m.get('original_title'),
+            'release_date': m.get('release_date') or None, # 处理空字符串
+            'poster_path': m.get('poster_path'),
+            'overview': m.get('overview'),
+            'in_library': False, # 默认为不在库
+            'subscription_status': 'NONE'
+        })
+
+    sql = """
+        INSERT INTO media_metadata 
+        (tmdb_id, item_type, title, original_title, release_date, poster_path, overview, in_library, subscription_status, last_updated_at)
+        VALUES (%(tmdb_id)s, %(item_type)s, %(title)s, %(original_title)s, %(release_date)s, %(poster_path)s, %(overview)s, %(in_library)s, %(subscription_status)s, NOW())
+        ON CONFLICT (tmdb_id, item_type) DO NOTHING;
+    """
+
+    try:
+        with get_db_connection() as conn:
+            cursor = conn.cursor()
+            from psycopg2.extras import execute_batch
+            execute_batch(cursor, sql, data_to_insert)
+            conn.commit()
+    except Exception as e:
+        logger.error(f"批量插入基础电影条目时出错: {e}", exc_info=True)

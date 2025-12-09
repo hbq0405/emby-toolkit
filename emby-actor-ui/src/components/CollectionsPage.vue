@@ -1,4 +1,4 @@
-<!-- src/components/CollectionsPage.vue (状态显示优化最终版) -->
+<!-- src/components/CollectionsPage.vue -->
 <template>
   <n-layout content-style="padding: 24px;">
     <div class="collections-page">
@@ -42,7 +42,7 @@
         </n-alert>
       </n-page-header>
 
-      <!-- ★★★ 排序和筛选控件 ★★★ -->
+      <!-- 排序和筛选控件 -->
       <n-space :wrap="true" :size="[20, 12]" style="margin-top: 24px; margin-bottom: 24px;">
         <n-input v-model:value="searchQuery" placeholder="按名称搜索..." clearable style="min-width: 200px;" />
         
@@ -74,53 +74,85 @@
       <div v-else-if="error" class="center-container"><n-alert title="加载错误" type="error" style="max-width: 500px;">{{ error }}</n-alert></div>
       
       <div v-else-if="filteredAndSortedCollections.length > 0">
-        <n-grid cols="1 s:2 m:3 l:4 xl:5" :x-gap="20" :y-gap="20" responsive="screen">
-          <n-gi v-for="(item, i) in renderedCollections" :key="item.emby_collection_id">
+        
+        <!-- 合集卡片 -->
+        <div class="responsive-grid">
+          <div 
+            v-for="(item, i) in renderedCollections" 
+            :key="item.emby_collection_id"
+            class="grid-item"
+          >
             <n-card 
               class="dashboard-card series-card" 
               :bordered="false" 
-              content-style="display: flex; padding: 0; gap: 16px;"
-              :class="{ selected: selectedCollectionIds.includes(item.emby_collection_id) }"
-              @click="toggleSelection(item.emby_collection_id, $event, i)"
               hoverable
+              @click="openMissingMoviesModal(item)"
             >
-              <n-checkbox
-                :checked="selectedCollectionIds.includes(item.emby_collection_id)"
-                @update:checked="(checked, event) => toggleSelection(item.emby_collection_id, event, i)"
-                class="card-checkbox"
-              />
-              <div class="card-poster-container"><n-image lazy :src="getCollectionPosterUrl(item.poster_path)" class="card-poster" object-fit="cover"><template #placeholder><div class="poster-placeholder"><n-icon :component="AlbumsIcon" size="32" /></div></template></n-image></div>
-              <div class="card-content-container">
-                <div class="card-header"><n-ellipsis class="card-title" :tooltip="{ style: { maxWidth: '300px' } }">{{ item.name }}</n-ellipsis></div>
-                <div class="card-status-area">
-                  <n-space align="center">
-                    <n-tooltip :disabled="!isTooltipNeeded(item)">
-                    <template #trigger>
-                      <n-tag :type="getStatusTagType(item)" round>
-                        {{ getShortStatusText(item) }}
-                      </n-tag>
-                    </template>
-                    {{ getFullStatusText(item) }}
-                  </n-tooltip>
-                    <n-text :depth="3" class="last-checked-text">上次检查: {{ formatTimestamp(item.last_checked_at) }}</n-text>
-                  </n-space>
+              
+              <!-- ★★★ 内部布局：左右结构 ★★★ -->
+              <div class="card-inner-layout">
+                
+                <!-- 左侧：海报 -->
+                <div class="card-poster-container">
+                  <n-image lazy :src="getCollectionPosterUrl(item.poster_path)" class="card-poster" object-fit="cover">
+                    <template #placeholder><div class="poster-placeholder"><n-icon :component="AlbumsIcon" size="32" /></div></template>
+                  </n-image>
                 </div>
-                <div class="card-actions">
-                  <n-tooltip>
-                    <template #trigger>
-                      <n-button type="primary" size="small" circle @click.stop="() => openMissingMoviesModal(item)">
-                        <template #icon><n-icon :component="EyeIcon" /></template>
-                      </n-button>
-                    </template>
-                    查看详情
-                  </n-tooltip>
-                  <n-tooltip><template #trigger><n-button text @click.stop="openInEmby(item.emby_collection_id)"><template #icon><n-icon :component="EmbyIcon" size="18" /></template></n-button></template>在 Emby 中打开</n-tooltip>
-                  <n-tooltip><template #trigger><n-button text tag="a" :href="`https://www.themoviedb.org/collection/${item.tmdb_collection_id}`" target="_blank" :disabled="!item.tmdb_collection_id" @click.stop><template #icon><n-icon :component="TMDbIcon" size="18" /></template></n-button></template>在 TMDb 中打开</n-tooltip>
+
+                <!-- 右侧：内容 -->
+                <div class="card-content-container">
+                  <div class="card-header">
+                    <n-ellipsis class="card-title" :tooltip="{ style: { maxWidth: '300px' } }">{{ item.name }}</n-ellipsis>
+                  </div>
+
+                  <!-- 统计数据展示区 -->
+                  <div class="card-stats-grid">
+                    <div class="stat-item missing" v-if="(item.statistics?.missing || 0) > 0">
+                      <span class="stat-label">缺失</span>
+                      <span class="stat-value">{{ item.statistics.missing }}</span>
+                    </div>
+                    <div class="stat-item in-library" v-if="(item.statistics?.in_library || 0) > 0">
+                      <span class="stat-label">入库</span>
+                      <span class="stat-value">{{ item.statistics.in_library }}</span>
+                    </div>
+                    <div class="stat-item subscribed" v-if="(item.statistics?.subscribed || 0) > 0">
+                      <span class="stat-label">订阅</span>
+                      <span class="stat-value">{{ item.statistics.subscribed }}</span>
+                    </div>
+                    <div class="stat-item unreleased" v-if="(item.statistics?.unreleased || 0) > 0">
+                      <span class="stat-label">未映</span>
+                      <span class="stat-value">{{ item.statistics.unreleased }}</span>
+                    </div>
+                    <div class="stat-item complete" v-if="(item.statistics?.missing || 0) === 0 && (item.statistics?.unreleased || 0) === 0 && (item.statistics?.subscribed || 0) === 0 && (item.statistics?.in_library || 0) > 0">
+                      <n-icon :component="CheckmarkCircle" /> <span style="margin-left: 4px;">已完整</span>
+                    </div>
+                  </div>
+
+                  <div class="card-status-area">
+                    <n-text :depth="3" class="last-checked-text">上次检查: {{ formatTimestamp(item.last_checked_at) }}</n-text>
+                  </div>
+
+                  <!-- 底部按钮 -->
+                  <div class="card-actions">
+                    <n-tooltip>
+                      <template #trigger>
+                        <n-button type="primary" ghost size="small" @click.stop="() => openMissingMoviesModal(item)">
+                          <template #icon><n-icon :component="EyeIcon" /></template>
+                          详情
+                        </n-button>
+                      </template>
+                      查看详情
+                    </n-tooltip>
+                    
+                    <!-- 外部链接按钮需要 @click.stop 防止触发卡片点击 -->
+                    <n-tooltip><template #trigger><n-button text @click.stop="openInEmby(item.emby_collection_id)"><template #icon><n-icon :component="EmbyIcon" size="18" /></template></n-button></template>在 Emby 中打开</n-tooltip>
+                    <n-tooltip><template #trigger><n-button text tag="a" :href="`https://www.themoviedb.org/collection/${item.tmdb_collection_id}`" target="_blank" :disabled="!item.tmdb_collection_id" @click.stop><template #icon><n-icon :component="TMDbIcon" size="18" /></template></n-button></template>在 TMDb 中打开</n-tooltip>
+                  </div>
                 </div>
               </div>
             </n-card>
-          </n-gi>
-        </n-grid>
+          </div>
+        </div>
 
         <div ref="loaderRef" class="loader-trigger">
           <n-spin v-if="hasMore" size="small" />
@@ -130,7 +162,7 @@
       <div v-else class="center-container"><n-empty :description="emptyStateDescription" size="huge" /></div>
     </div>
 
-    <!-- 详情模态框 -->
+    <!-- 详情模态框 (保持不变) -->
     <n-modal 
       v-model:show="showModal" 
       preset="card" 
@@ -140,20 +172,13 @@
       :bordered="false" 
       size="huge"
     >
+      <!-- ... (模态框内容保持不变，包含之前的 Tab 样式修复) ... -->
       <div class="dashboard-card" v-if="selectedCollection" style="display: flex; flex-direction: column; height: 100%;">
-        <!-- 
-          pane-style 是关键：
-          flex: 1 -> 占满剩余高度
-          overflow-y: auto -> 内容溢出时显示滚动条
-          padding: 20px -> 补回因为 modal content padding:0 去掉的内边距
-        -->
         <n-tabs 
           type="line" 
           animated 
           style="height: 100%; display: flex; flex-direction: column;" 
-          pane-style="flex: 1; overflow-y: auto; padding: 20px; box-sizing: border-box;"
         >
-          
           <!-- 缺失影片 Tab -->
           <n-tab-pane name="missing" :tab="`缺失影片 (${missingMoviesInModal.length})`">
             <n-empty v-if="missingMoviesInModal.length === 0" description="太棒了！没有已上映的缺失影片。" style="margin-top: 40px;"></n-empty>
@@ -198,11 +223,20 @@
                   <div class="movie-actions-overlay">
                     <n-tooltip trigger="hover">
                       <template #trigger>
-                        <n-button circle color="#ffffff" text-color="#000000" tag="a" :href="`https://www.themoviedb.org/movie/${movie.tmdb_id}`" target="_blank">
+                        <n-button 
+                          v-if="movie.emby_id"
+                          circle color="#ffffff" text-color="#000000" tag="a" :href="getEmbyUrl(movie.emby_id)" target="_blank"
+                        >
+                          <template #icon><n-icon :component="EmbyIcon" /></template>
+                        </n-button>
+                        <n-button 
+                          v-else
+                          circle color="#ffffff" text-color="#000000" tag="a" :href="`https://www.themoviedb.org/movie/${movie.tmdb_id}`" target="_blank"
+                        >
                           <template #icon><n-icon :component="SearchIcon" /></template>
                         </n-button>
                       </template>
-                      在 TMDb 查看
+                      {{ movie.emby_id ? '在 Emby 中查看' : '在 TMDb 查看' }}
                     </n-tooltip>
                   </div>
                 </div>
@@ -270,6 +304,7 @@
 </template>
 
 <script setup>
+// ... (Script 部分保持不变，逻辑无需修改) ...
 import { ref, onMounted, onBeforeUnmount, computed, watch, h } from 'vue';
 import axios from 'axios';
 import { NLayout, NPageHeader, NEmpty, NTag, NButton, NSpace, NIcon, useMessage, useDialog, NTooltip, NGrid, NGi, NCard, NImage, NEllipsis, NSpin, NAlert, NModal, NTabs, NTabPane, NPopconfirm, NCheckbox, NDropdown, NInput, NSelect, NButtonGroup } from 'naive-ui';
@@ -289,7 +324,6 @@ const collections = ref([]);
 const isInitialLoading = ref(true);
 const isRefreshing = ref(false);
 const error = ref(null);
-const subscribing = ref({}); // 订阅状态不再需要，但暂时保留以防万一
 const showModal = ref(false);
 const selectedCollection = ref(null);
 const displayCount = ref(50);
@@ -297,8 +331,6 @@ const INCREMENT = 50;
 const loaderRef = ref(null);
 let observer = null;
 
-const selectedCollectionIds = ref([]);
-const lastSelectedIndex = ref(null);
 
 const searchQuery = ref('');
 const filterStatus = ref('all');
@@ -318,46 +350,6 @@ const sortKeyOptions = [
   { label: '按上次检查时间', value: 'last_checked_at' },
 ];
 
-const toggleSelection = (collectionId, event, index) => {
-  if (!event) return;
-  
-  if (event.target.closest('.n-checkbox')) {
-    event.stopPropagation();
-  }
-
-  if (event.shiftKey && lastSelectedIndex.value !== null) {
-    const start = Math.min(lastSelectedIndex.value, index);
-    const end = Math.max(lastSelectedIndex.value, index);
-    const idsInRange = renderedCollections.value.slice(start, end + 1).map(c => c.emby_collection_id);
-    
-    const isCurrentlySelected = selectedCollectionIds.value.includes(collectionId);
-    const willSelect = !isCurrentlySelected;
-
-    if (willSelect) {
-      const newSet = new Set(selectedCollectionIds.value);
-      idsInRange.forEach(id => newSet.add(id));
-      selectedCollectionIds.value = Array.from(newSet);
-    } else {
-      selectedCollectionIds.value = selectedCollectionIds.value.filter(id => !idsInRange.includes(id));
-    }
-  } else {
-    const idx = selectedCollectionIds.value.indexOf(collectionId);
-    if (idx > -1) {
-      selectedCollectionIds.value.splice(idx, 1);
-    } else {
-      selectedCollectionIds.value.push(collectionId);
-    }
-  }
-  lastSelectedIndex.value = index;
-};
-
-const batchActions = computed(() => []); // 移除批量操作
-
-const handleBatchAction = (key) => {
-  // 批量操作已移除，此函数不再需要实际逻辑
-  message.info('批量操作功能已转移到统一订阅处理模块。');
-};
-
 const getMovieCountByStatus = (collection, status) => {
   if (!collection || !Array.isArray(collection.movies)) return 0;
   return collection.movies.filter(m => m.status === status).length;
@@ -371,74 +363,60 @@ const globalStats = computed(() => {
     totalUnreleased: 0,
     totalSubscribed: 0,
   };
-
-  // ★★★ 第二重保险：在使用前检查 collections.value 是否为数组 ★★★
-  if (!Array.isArray(collections.value)) {
-    return stats;
-  }
-
+  if (!Array.isArray(collections.value)) return stats;
   stats.totalCollections = collections.value.length;
-
   for (const collection of collections.value) {
-    const missingCount = getMovieCountByStatus(collection, 'missing');
-    if (missingCount > 0) {
+    const s = collection.statistics || { missing: 0, unreleased: 0, subscribed: 0 };
+    if (s.missing > 0) {
       stats.collectionsWithMissing++;
-      stats.totalMissingMovies += missingCount;
+      stats.totalMissingMovies += s.missing;
     }
-    stats.totalUnreleased += getMovieCountByStatus(collection, 'unreleased');
-    stats.totalSubscribed += getMovieCountByStatus(collection, 'subscribed') + getMovieCountByStatus(collection, 'paused');
+    stats.totalUnreleased += s.unreleased;
+    stats.totalSubscribed += s.subscribed;
   }
   return stats;
 });
 
 const filteredAndSortedCollections = computed(() => {
-  // ★★★ 第二重保险：在使用前检查 collections.value 是否为数组 ★★★
-  if (!Array.isArray(collections.value)) {
-    return [];
-  }
-  
+  if (!Array.isArray(collections.value)) return [];
   let list = [...collections.value];
-
   if (searchQuery.value) {
     const query = searchQuery.value.toLowerCase();
-    list = list.filter(item => item.name.toLowerCase().includes(query));
+    list = list.filter(item => item.name && item.name.toLowerCase().includes(query));
   }
-
   switch (filterStatus.value) {
     case 'has_missing':
-      list = list.filter(item => item.has_missing);
+      list = list.filter(item => (item.statistics?.missing || 0) > 0);
       break;
     case 'complete':
-      list = list.filter(item => !item.has_missing && item.status !== 'unlinked' && item.status !== 'tmdb_error');
+      list = list.filter(item => (item.statistics?.missing || 0) === 0);
       break;
     case 'has_subscribed':
-      list = list.filter(item => getMovieCountByStatus(item, 'subscribed') + getMovieCountByStatus(item, 'paused') > 0);
+      list = list.filter(item => (item.statistics?.subscribed || 0) > 0);
       break;
     case 'has_unreleased':
-      list = list.filter(item => getMovieCountByStatus(item, 'unreleased') > 0);
+      list = list.filter(item => (item.statistics?.unreleased || 0) > 0);
       break;
   }
-
   list.sort((a, b) => {
     let valA, valB;
     switch (sortKey.value) {
       case 'name':
         valA = a.name || '';
         valB = b.name || '';
-        return sortOrder.value === 'asc' ? valA.localeCompare(valB) : valB.localeCompare(a);
+        return sortOrder.value === 'asc' ? valA.localeCompare(valB) : valB.localeCompare(valA);
       case 'last_checked_at':
         valA = a.last_checked_at ? new Date(a.last_checked_at).getTime() : 0;
         valB = b.last_checked_at ? new Date(b.last_checked_at).getTime() : 0;
         break;
       case 'missing_count':
       default:
-        valA = a.missing_count || 0;
-        valB = b.missing_count || 0;
+        valA = a.statistics?.missing || 0;
+        valB = b.statistics?.missing || 0;
         break;
     }
     return sortOrder.value === 'asc' ? valA - valB : valB - valA;
   });
-
   return list;
 });
 
@@ -479,23 +457,9 @@ const loadCachedData = async () => {
     displayCount.value = 50;
   } catch (err) {
     error.value = err.response?.data?.error || '无法加载合集数据。';
-    // ★★★ 第一重保险：如果加载失败，确保 collections 是一个安全的空数组 ★★★
     collections.value = [];
   } finally {
     isInitialLoading.value = false;
-  }
-};
-
-const subscribeAllMissingMovies = async () => {
-  isSubscribingAll.value = true;
-  try {
-    const response = await axios.post('/api/collections/subscribe_missing');
-    message.success(response.data.message || '操作成功！');
-    await loadCachedData();
-  } catch (err) {
-    message.error(err.response?.data?.error || '一键订阅操作失败。');
-  } finally {
-    isSubscribingAll.value = false;
   }
 };
 
@@ -551,11 +515,9 @@ const openInEmby = (itemId) => {
   if (url !== '#') { window.open(url, '_blank'); }
 };
 
-// ★★★ 额外修复：修正时间戳格式化函数 ★★★
 const formatTimestamp = (timestamp) => {
   if (!timestamp) return '从未';
   try {
-    // 后端现在返回 ISO 字符串, new Date() 可以直接解析
     return format(new Date(timestamp), 'MM-dd HH:mm');
   } catch (e) {
     return 'N/A';
@@ -566,66 +528,11 @@ const getCollectionPosterUrl = (posterPath) => {
   if (!posterPath) {
     return '/img/poster-placeholder.png';
   }
-  // 1. 构建完整的 TMDB 图片 URL
   const fullTmdbUrl = `https://image.tmdb.org/t/p/w300${posterPath}`;
-  // 2. 使用通用的、正确的代理接口来请求这个 URL
   return `/api/image_proxy?url=${encodeURIComponent(fullTmdbUrl)}`;
 };
 const getTmdbImageUrl = (posterPath) => posterPath ? `https://image.tmdb.org/t/p/w300${posterPath}` : '/img/poster-placeholder.png';
 
-const getStatusTagType = (collection) => {
-  if (collection.status === 'unlinked' || collection.status === 'tmdb_error') return 'error';
-  if (collection.has_missing) return 'warning';
-  if (getMovieCountByStatus(collection, 'subscribed') > 0) return 'default';
-  if (getMovieCountByStatus(collection, 'unreleased') > 0) return 'info';
-  return 'success';
-};
-
-const getFullStatusText = (collection) => {
-  if (collection.status === 'unlinked') return '未关联TMDb';
-  if (collection.status === 'tmdb_error') return 'TMDb错误';
-  
-  const missingCount = collection.missing_count || 0;
-  if (missingCount > 0) {
-    return `缺失 ${missingCount} 部`;
-  }
-
-  const parts = [];
-  const inLibraryCount = collection.in_library_count || 0;
-  const unreleasedCount = getMovieCountByStatus(collection, 'unreleased');
-  const subscribedCount = getMovieCountByStatus(collection, 'subscribed');
-  
-  if (inLibraryCount > 0) parts.push(`已入库 ${inLibraryCount} 部`);
-  if (unreleasedCount > 0) parts.push(`未上映 ${unreleasedCount} 部`);
-  if (subscribedCount > 0) parts.push(`已订阅 ${subscribedCount} 部`);
-  
-  return parts.join(' | ') || '已完整';
-};
-
-const getShortStatusText = (collection) => {
-  if (collection.status === 'unlinked') return '未关联TMDb';
-  if (collection.status === 'tmdb_error') return 'TMDb错误';
-
-  const missingCount = collection.missing_count || 0;
-  if (missingCount > 0) {
-    return `缺失 ${missingCount} 部`;
-  }
-
-  const subscribedCount = getMovieCountByStatus(collection, 'subscribed');
-  if (subscribedCount > 0) {
-    return `已订阅 ${subscribedCount} 部`;
-  }
-
-  const unreleasedCount = getMovieCountByStatus(collection, 'unreleased');
-  if (unreleasedCount > 0) {
-    return `未上映 ${unreleasedCount} 部`;
-  }
-
-  const inLibraryCount = collection.in_library_count || 0;
-  return `已入库 ${inLibraryCount} 部`;
-};
-
-const isTooltipNeeded = (collection) => getFullStatusText(collection) !== getShortStatusText(collection);
 const extractYear = (dateStr) => {
   if (!dateStr) return null;
   return dateStr.substring(0, 4);
@@ -636,67 +543,243 @@ const extractYear = (dateStr) => {
 .collections-page { padding: 0 10px; }
 .center-container { display: flex; justify-content: center; align-items: center; height: calc(100vh - 200px); }
 
-/* 原有的合集卡片样式保持不变 */
-.series-card {
-  position: relative;
-  transition: transform 0.2s ease-in-out, box-shadow 0.2s ease-in-out;
-}
-.series-card.selected {
-  transform: translateY(-4px);
-  box-shadow: 0 4px 12px 0 var(--n-color-target);
-}
-.card-checkbox {
-  position: absolute;
-  top: 8px;
-  left: 8px;
-  z-index: 10;
-  background-color: rgba(255, 255, 255, 0.7);
-  border-radius: 50%;
-  padding: 4px;
-  --n-color-checked: var(--n-color-primary-hover);
-  --n-border-radius: 50%;
-  opacity: 0;
-  visibility: hidden;
-  transition: opacity 0.2s ease-in-out, visibility 0.2s ease-in-out;
-}
-.series-card:hover .card-checkbox,
-.series-card.selected .card-checkbox {
-  opacity: 1;
-  visibility: visible;
+/* ★★★ Grid 布局 ★★★ */
+.responsive-grid {
+  display: grid;
+  gap: 16px;
+  /* 320px 基准宽度 */
+  grid-template-columns: repeat(auto-fill, minmax(calc(320px * var(--card-scale, 1)), 1fr));
 }
 
-.card-poster-container { flex-shrink: 0; width: 120px; height: 180px; }
-.card-poster { width: 100%; height: 100%; }
-.poster-placeholder { display: flex; align-items: center; justify-content: center; width: 100%; height: 100%; background-color: var(--n-action-color); }
-.card-content-container { flex-grow: 1; display: flex; flex-direction: column; padding: 12px 12px 12px 0; min-width: 0; }
-.card-header { display: flex; justify-content: space-between; align-items: flex-start; gap: 8px; flex-shrink: 0; }
-.card-title { font-weight: 600; font-size: 1.1em; line-height: 1.3; }
-.card-status-area { flex-grow: 1; padding-top: 8px; }
-.last-checked-text { display: block; font-size: 0.8em; margin-top: 6px; }
-.card-actions { border-top: 1px solid var(--n-border-color); padding-top: 8px; margin-top: 8px; display: flex; justify-content: space-around; align-items: center; flex-shrink: 0; }
+.grid-item {
+  height: 100%;
+  min-width: 0;
+}
+
+/* ★★★ 卡片容器 ★★★ */
+.series-card {
+  cursor: pointer;
+  transition: transform 0.2s ease-in-out, box-shadow 0.2s ease-in-out;
+  height: 100%;
+  position: relative;
+  
+  /* ★★★ 核心 1：设定基准字号，所有内部元素都将基于此缩放 ★★★ */
+  font-size: calc(14px * var(--card-scale, 1)); 
+  
+  border-radius: calc(12px * var(--card-scale, 1));
+  overflow: hidden; 
+  border: 1px solid var(--n-border-color);
+}
+
+.series-card:hover {
+  transform: translateY(-4px);
+}
+
+/* ★★★ 核心 2：强制 Naive UI 组件跟随缩放 ★★★ */
+.series-card :deep(.n-card__content),
+.series-card :deep(.n-button),
+.series-card :deep(.n-tag),
+.series-card :deep(.n-text),
+.series-card :deep(.n-ellipsis) {
+  font-size: inherit !important; 
+}
+
+/* 调整图标大小以适应缩放 */
+.series-card :deep(.n-icon) {
+  font-size: 1.2em !important; 
+}
+
+/* 恢复内边距 */
+.series-card.dashboard-card > :deep(.n-card__content) {
+  padding: calc(10px * var(--card-scale, 1)) !important; 
+  display: flex !important;
+  flex-direction: column !important;
+  height: 100% !important;
+}
+
+/* ★★★ 内部布局：左右拉伸 ★★★ */
+.card-inner-layout {
+  display: flex;
+  flex-direction: row;
+  height: 100%;
+  width: 100%;
+  align-items: stretch; 
+  gap: calc(12px * var(--card-scale, 1));
+}
+
+/* ★★★ 海报区域 ★★★ */
+.card-poster-container {
+  flex-shrink: 0; 
+  width: calc(130px * var(--card-scale, 1));
+  height: auto; 
+  min-height: 100%; 
+  position: relative;
+  background-color: rgba(0,0,0,0.1);
+  border-radius: 8px;
+  overflow: hidden;
+  box-shadow: 0 2px 8px rgba(0,0,0,0.1);
+}
+
+.card-poster {
+  width: 100%;
+  height: 100%;
+  display: block;
+}
+
+.card-poster :deep(img) {
+  width: 100%;
+  height: 100%;
+  object-fit: cover !important; 
+  display: block;
+  border-radius: 0 !important;
+}
+
+.poster-placeholder {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 100%;
+  height: 100%;
+  background-color: var(--n-action-color);
+  color: var(--n-text-color-disabled);
+}
+
+/* ★★★ 内容区域 ★★★ */
+.card-content-container {
+  flex-grow: 1;
+  display: flex;
+  flex-direction: column;
+  justify-content: space-between;
+  min-width: 0;
+  padding: 0;
+}
+
+.card-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: flex-start;
+  gap: 8px;
+  margin-bottom: calc(4px * var(--card-scale, 1));
+}
+
+.card-title {
+  font-weight: 600;
+  font-size: 1.1em !important; 
+  line-height: 1.3;
+  display: -webkit-box;
+  -webkit-line-clamp: 2;
+  line-clamp: 2;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+}
+
+/* 统计数据网格 */
+.card-stats-grid {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin-top: 8px;
+  margin-bottom: 4px;
+}
+
+.stat-item {
+  display: flex;
+  align-items: center;
+  font-size: 0.9em !important; /* 跟随缩放 */
+  padding: 2px 8px;
+  border-radius: 4px;
+  font-weight: 500;
+  line-height: 1.5;
+}
+
+.stat-label { margin-right: 4px; opacity: 0.8; }
+.stat-value { font-weight: bold; }
+
+.stat-item.missing { background-color: rgba(208, 48, 80, 0.1); color: #d03050; }
+.stat-item.in-library { background-color: rgba(24, 160, 88, 0.1); color: #18a058; }
+.stat-item.subscribed { background-color: rgba(240, 160, 32, 0.1); color: #f0a020; }
+.stat-item.unreleased { background-color: rgba(32, 128, 240, 0.1); color: #2080f0; }
+.stat-item.complete { background-color: rgba(24, 160, 88, 0.1); color: #18a058; width: 100%; justify-content: center; }
+
+.card-status-area {
+  flex-grow: 1;
+  display: flex;
+  flex-direction: column;
+  justify-content: flex-end; /* 底部对齐 */
+  gap: 4px;
+}
+
+.last-checked-text {
+  font-size: 0.85em !important;
+  opacity: 0.8;
+}
+
+/* ★★★ 底部按钮区域 ★★★ */
+.card-actions {
+  margin-top: auto; 
+  padding-top: calc(8px * var(--card-scale, 1));
+  border-top: 1px solid var(--n-border-color);
+  display: flex;
+  justify-content: space-around; 
+  align-items: center;
+  gap: calc(4px * var(--card-scale, 1));
+}
+
+.card-actions :deep(.n-button) {
+  padding: 0 6px;
+  height: 24px;
+  font-size: 0.9em !important;
+}
+
 .loader-trigger {
   height: 50px;
   display: flex;
   justify-content: center;
   align-items: center;
 }
-.series-card.dashboard-card > :deep(.n-card__content) {
-  flex-direction: row !important;
-  justify-content: flex-start !important;
-  padding: 12px !important;
-  gap: 12px !important;
+
+/* 手机端适配 */
+@media (max-width: 600px) {
+  .responsive-grid { grid-template-columns: 1fr !important; }
+  .card-poster-container { width: 100px; min-height: 150px; }
 }
 
 /* =========================================
-   ▼▼▼ 新增/修改：模态框内的电影海报墙样式 ▼▼▼
+   ▼▼▼ 模态框内的电影海报墙样式 ▼▼▼
    ========================================= */
 
-/* 卡片容器：强制 2:3 比例，去除内边距 */
+/* 1. 强制 Tabs 的内容包装器占满剩余高度 */
+:deep(.n-tabs-pane-wrapper) {
+  flex: 1;
+  overflow: hidden;
+}
+
+/* 2. 给滚动区域增加内边距 */
+:deep(.n-tab-pane) {
+  height: 100%;
+  overflow-y: auto;
+  padding: 20px 24px !important; 
+  box-sizing: border-box;
+}
+
+/* 3. 滚动条样式 */
+:deep(.n-tab-pane)::-webkit-scrollbar {
+  width: 6px;
+}
+:deep(.n-tab-pane)::-webkit-scrollbar-thumb {
+  background-color: rgba(255, 255, 255, 0.2);
+  border-radius: 3px;
+}
+:deep(.n-tab-pane)::-webkit-scrollbar-track {
+  background-color: transparent;
+}
+
+/* 卡片容器：强制 2:3 比例 */
 .movie-card {
   border-radius: 8px;
   overflow: hidden;
   position: relative;
-  aspect-ratio: 2 / 3; /* 强制海报比例 */
+  aspect-ratio: 2 / 3; 
   background-color: #202023;
   transition: transform 0.2s, box-shadow 0.2s;
   cursor: default;
@@ -708,46 +791,39 @@ const extractYear = (dateStr) => {
   z-index: 2;
 }
 
-/* 海报图片：铺满容器 */
 .movie-poster {
   width: 100%;
   height: 100%;
   display: block;
 }
-/* 修复 n-image 内部 img 的样式 */
 .movie-poster :deep(img) {
   width: 100%;
   height: 100%;
   object-fit: cover;
   transition: transform 0.3s;
 }
-
-/* 悬停时海报微放大 */
 .movie-card:hover .movie-poster :deep(img) {
   transform: scale(1.05);
 }
 
-/* 底部渐变遮罩 (核心) */
+/* 底部渐变遮罩 */
 .movie-info-overlay {
   position: absolute;
   bottom: 0;
   left: 0;
   right: 0;
-  padding: 60px 10px 10px 10px; /* 上方留出空间给渐变 */
-  /* 黑色渐变：从透明到黑色，保证文字清晰 */
+  padding: 60px 10px 10px 10px;
   background: linear-gradient(to top, rgba(0, 0, 0, 0.95) 0%, rgba(0, 0, 0, 0.7) 60%, transparent 100%);
   color: #fff;
-  pointer-events: none; /* 让鼠标事件穿透到下层 */
+  pointer-events: none;
   z-index: 10;
 }
 
-/* 标题样式 */
 .movie-title {
   font-size: 14px;
   font-weight: bold;
   line-height: 1.3;
   text-shadow: 0 1px 2px rgba(0,0,0,0.8);
-  /* 限制最多显示 2 行 */
   overflow: hidden;
   text-overflow: ellipsis;
   display: -webkit-box;
@@ -756,7 +832,6 @@ const extractYear = (dateStr) => {
   -webkit-box-orient: vertical;
 }
 
-/* 年份样式 */
 .movie-year {
   font-size: 12px;
   color: #ddd;
@@ -764,12 +839,12 @@ const extractYear = (dateStr) => {
   font-weight: 500;
 }
 
-/* 悬停操作层 (默认隐藏) */
+/* 悬停操作层 */
 .movie-actions-overlay {
   position: absolute;
-  inset: 0; /* 铺满整个卡片 */
-  background: rgba(0, 0, 0, 0.6); /* 半透明黑底 */
-  backdrop-filter: blur(2px); /* 轻微毛玻璃 */
+  inset: 0;
+  background: rgba(0, 0, 0, 0.6);
+  backdrop-filter: blur(2px);
   display: flex;
   flex-direction: column;
   justify-content: center;
@@ -798,16 +873,14 @@ const extractYear = (dateStr) => {
   display: flex;
   align-items: center;
   justify-content: center;
-  transform: rotate(-45deg); /* 旋转45度 */
+  transform: rotate(-45deg);
   box-shadow: 0 2px 4px rgba(0,0,0,0.3);
   z-index: 15;
   pointer-events: none;
 }
 
-/* 不同状态的颜色 */
-.status-badge.in_library { background-color: #63e2b7; color: #000; } /* Naive UI Success Green */
-.status-badge.missing { background-color: #e88080; } /* Naive UI Error Red */
-.status-badge.subscribed { background-color: #f2c97d; color: #000; } /* Naive UI Warning */
+.status-badge.in_library { background-color: #63e2b7; color: #000; }
+.status-badge.missing { background-color: #e88080; }
+.status-badge.subscribed { background-color: #f2c97d; color: #000; }
 .status-badge.unreleased { background-color: #8a8a8a; }
-
 </style>

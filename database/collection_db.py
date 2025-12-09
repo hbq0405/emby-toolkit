@@ -19,21 +19,20 @@ logger = logging.getLogger(__name__)
 # ======================================================================
 
 def upsert_native_collection(collection_data: Dict[str, Any]):
-    """ 写入或更新一条原生合集信息。"""
+    """ 
+    只写入合集的基础信息和包含的 TMDB ID 列表。
+    统计数据由读取时动态计算。
+    """
     sql = """
         INSERT INTO collections_info 
-        (emby_collection_id, name, tmdb_collection_id, status, has_missing, 
-        missing_movies_json, last_checked_at, poster_path, in_library_count)
-        VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s)
+        (emby_collection_id, name, tmdb_collection_id, last_checked_at, poster_path, all_tmdb_ids_json)
+        VALUES (%s, %s, %s, %s, %s, %s)
         ON CONFLICT (emby_collection_id) DO UPDATE SET
             name = EXCLUDED.name,
             tmdb_collection_id = EXCLUDED.tmdb_collection_id,
-            status = EXCLUDED.status,
-            has_missing = EXCLUDED.has_missing,
-            missing_movies_json = EXCLUDED.missing_movies_json,
             last_checked_at = EXCLUDED.last_checked_at,
             poster_path = EXCLUDED.poster_path,
-            in_library_count = EXCLUDED.in_library_count;
+            all_tmdb_ids_json = EXCLUDED.all_tmdb_ids_json;
     """
     try:
         with get_db_connection() as conn:
@@ -42,12 +41,9 @@ def upsert_native_collection(collection_data: Dict[str, Any]):
                 collection_data.get('emby_collection_id'),
                 collection_data.get('name'),
                 collection_data.get('tmdb_collection_id'),
-                collection_data.get('status'),
-                collection_data.get('has_missing'),
-                json.dumps(collection_data.get('missing_tmdb_ids', []), ensure_ascii=False),
                 datetime.now(),
                 collection_data.get('poster_path'),
-                collection_data.get('in_library_count')
+                json.dumps(collection_data.get('all_tmdb_ids', []), ensure_ascii=False)
             ))
     except psycopg2.Error as e:
         logger.error(f"写入原生合集信息时发生数据库错误: {e}", exc_info=True)
@@ -62,6 +58,43 @@ def get_all_native_collections() -> List[Dict[str, Any]]:
             return [dict(row) for row in cursor.fetchall()]
     except Exception as e:
         logger.error(f"DB: 读取所有原生合集时发生错误: {e}", exc_info=True)
+        return []
+
+def get_all_missing_movies_in_collections() -> List[Dict[str, Any]]:
+    """
+    直接在数据库层面完成以下操作：
+    1. 展开所有原生合集中的 TMDB ID。
+    2. 关联 media_metadata 表。
+    3. 筛选出 item_type='Movie' AND in_library=FALSE AND subscription_status='NONE' 的项目。
+    """
+    # 利用 PostgreSQL 的 jsonb_array_elements_text 函数高效展开 JSON 数组
+    sql = """
+        WITH all_collection_ids AS (
+            SELECT DISTINCT jsonb_array_elements_text(all_tmdb_ids_json) AS tmdb_id
+            FROM collections_info
+            WHERE all_tmdb_ids_json IS NOT NULL
+        )
+        SELECT 
+            m.tmdb_id, 
+            m.title, 
+            m.original_title, 
+            m.release_date, 
+            m.poster_path, 
+            m.overview
+        FROM media_metadata m
+        JOIN all_collection_ids c ON m.tmdb_id = c.tmdb_id
+        WHERE 
+            m.item_type = 'Movie' 
+            AND m.in_library = FALSE 
+            AND m.subscription_status = 'NONE';
+    """
+    try:
+        with get_db_connection() as conn:
+            cursor = conn.cursor()
+            cursor.execute(sql)
+            return [dict(row) for row in cursor.fetchall()]
+    except Exception as e:
+        logger.error(f"查询合集缺失电影时发生数据库错误: {e}", exc_info=True)
         return []
 
 # ======================================================================

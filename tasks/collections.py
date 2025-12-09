@@ -348,7 +348,7 @@ def _check_user_access_batch(base_url: str, api_key: str, user_id: str, item_ids
             
     return accessible_ids
 
-# ★★★ 刷新合集的后台任务函数 ★★★
+# ★★★ 刷新原生合集的后台任务函数 ★★★
 def task_refresh_collections(processor):
     """
     后台任务：启动原生合集扫描。
@@ -357,10 +357,10 @@ def task_refresh_collections(processor):
     task_name = "刷新原生合集"
     logger.info(f"--- 开始执行 '{task_name}' 任务 (新架构) ---")
     try:
-        task_manager.update_status_from_thread(0, "正在扫描原生合集并检查缺失...")
+        def progress_callback(percent, message):
+            task_manager.update_status_from_thread(percent, message)
         
-        # ★★★ 核心修正：所有复杂逻辑都已封装到 handler 中 ★★★
-        collections.sync_and_subscribe_native_collections()
+        collections.sync_and_subscribe_native_collections(progress_callback=progress_callback)
         
         task_manager.update_status_from_thread(100, "原生合集扫描与订阅任务完成。")
         logger.info(f"--- '{task_name}' 任务成功完成 ---")

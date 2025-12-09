@@ -114,14 +114,9 @@ def init_db():
                         emby_collection_id TEXT PRIMARY KEY,
                         name TEXT,
                         tmdb_collection_id TEXT,
-                        status TEXT,
-                        has_missing BOOLEAN, 
-                        -- ★★★ 只存储缺失电影的 TMDB ID 列表, e.g., ["123", "456"] ★★★
-                        missing_movies_json JSONB,
                         last_checked_at TIMESTAMP WITH TIME ZONE,
-                        poster_path TEXT,
                         item_type TEXT DEFAULT 'Movie' NOT NULL,
-                        in_library_count INTEGER DEFAULT 0
+                        all_tmdb_ids_json JSONB
                     );
                 """)
 
@@ -482,6 +477,9 @@ def init_db():
                             "filter_rating_ignore_zero": "BOOLEAN DEFAULT FALSE",
                             "filter_missing_episodes_enabled": "BOOLEAN DEFAULT FALSE"
                         },
+                        'collections_info': {
+                            "all_tmdb_ids_json": "JSONB" 
+                        },
                         'user_templates': {
                             "source_emby_user_id": "TEXT",
                             "emby_configuration_json": "JSONB",
@@ -603,6 +601,12 @@ def init_db():
                             'next_episode_to_air_json',
                             'is_airing',
                             'total_seasons'
+                        ],
+                        'collections_info': [
+                            'status', 
+                            'has_missing', 
+                            'missing_movies_json', 
+                            'in_library_count'
                         ],
                         'custom_collections': [
                             'generated_emby_ids_json' # <-- 在这里添加了废弃的列！
