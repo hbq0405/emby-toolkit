@@ -202,6 +202,14 @@ def assemble_all_collection_details() -> List[Dict[str, Any]]:
 
             tmdb_id = str(movie_part['id'])
             db_info = db_media_map.get(tmdb_id)
+
+            poster_path = movie_part.get('poster_path') or db_info.get('poster_path')
+            release_date = movie_part.get('release_date') or db_info.get('release_date')
+            
+            if not poster_path or poster_path.strip() == '':
+                continue
+            if not release_date or release_date.strip() == '':
+                continue
             
             status = 'missing'
             if db_info:
