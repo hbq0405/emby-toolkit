@@ -210,6 +210,8 @@ def assemble_all_collection_details() -> List[Dict[str, Any]]:
                     status = 'in_library'
                 elif db_status == 'SUBSCRIBED':
                     status = 'subscribed'
+                elif db_status == 'PAUSED':
+                    status = 'paused'
                 elif db_status == 'PENDING_RELEASE':
                     status = 'unreleased'
             else:

@@ -313,7 +313,7 @@ def get_user_request_history(user_id: str, page: int = 1, page_size: int = 10, s
     elif status_filter == 'pending':
         conditions.append("in_library = FALSE AND subscription_status = 'REQUESTED'")
     elif status_filter == 'processing':
-        conditions.append("in_library = FALSE AND subscription_status IN ('WANTED', 'SUBSCRIBED', 'PENDING_RELEASE')")
+        conditions.append("in_library = FALSE AND subscription_status IN ('WANTED', 'SUBSCRIBED', 'PAUSED', 'PENDING_RELEASE')")
     elif status_filter == 'failed':
         conditions.append("in_library = FALSE AND subscription_status IN ('IGNORED', 'NONE')")
     
