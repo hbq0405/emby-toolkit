@@ -161,7 +161,10 @@ def subscribe_all_missing_in_native_collections():
             'release_date': r_date_str,
             'poster_path': movie.get('poster_path'),
             'overview': movie.get('overview'),
-            'source': {'type': 'native_collection_batch', 'name': 'coll_names'}
+            'source': {
+                'type': 'native_collection_batch',  
+                'name': coll_names                  
+            }
         }
 
         if r_date_str and r_date_str > today_str:
