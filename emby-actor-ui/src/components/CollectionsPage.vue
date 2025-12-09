@@ -321,7 +321,7 @@ const globalStats = computed(() => {
       stats.totalMissingMovies += missingCount;
     }
     stats.totalUnreleased += getMovieCountByStatus(collection, 'unreleased');
-    stats.totalSubscribed += getMovieCountByStatus(collection, 'subscribed');
+    stats.totalSubscribed += getMovieCountByStatus(collection, 'subscribed') + getMovieCountByStatus(collection, 'paused');
   }
   return stats;
 });
@@ -347,7 +347,7 @@ const filteredAndSortedCollections = computed(() => {
       list = list.filter(item => !item.has_missing && item.status !== 'unlinked' && item.status !== 'tmdb_error');
       break;
     case 'has_subscribed':
-      list = list.filter(item => getMovieCountByStatus(item, 'subscribed') > 0);
+      list = list.filter(item => getMovieCountByStatus(item, 'subscribed') + getMovieCountByStatus(item, 'paused') > 0);
       break;
     case 'has_unreleased':
       list = list.filter(item => getMovieCountByStatus(item, 'unreleased') > 0);
@@ -402,7 +402,7 @@ const unreleasedMoviesInModal = computed(() => {
 });
 const subscribedMoviesInModal = computed(() => {
   if (!selectedCollection.value || !Array.isArray(selectedCollection.value.movies)) return [];
-  return selectedCollection.value.movies.filter(movie => movie.status === 'subscribed');
+  return selectedCollection.value.movies.filter(movie => movie.status === 'subscribed' || movie.status === 'paused');
 });
 
 const loadCachedData = async () => {
