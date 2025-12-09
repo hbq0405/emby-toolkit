@@ -688,10 +688,21 @@ const extractYear = (dateStr) => {
 /* 左上角标签 */
 .poster-tag {
   position: absolute;
-  top: 6px;
-  left: 6px;
-  z-index: 2;
-  filter: drop-shadow(0 2px 4px rgba(0,0,0,0.3));
+  top: 10px;
+  left: -30px;
+  width: 100px;
+  height: 24px;
+  background-color: #666;
+  color: #fff;
+  font-size: 12px;
+  font-weight: bold;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  transform: rotate(-45deg); /* 旋转45度 */
+  box-shadow: 0 2px 4px rgba(0,0,0,0.3);
+  z-index: 15;
+  pointer-events: none;
 }
 
 /* 底部文字信息区域 */
