@@ -42,8 +42,6 @@
     创建一个 `docker-compose.yml` 文件，内容如下：
 
     ```yaml
-    version: '3.8'
-
     services:
       # --- 1. Emby-Toolkit 主程序 ---
       emby-toolkit:
@@ -60,7 +58,6 @@
         environment:
           - APP_DATA_DIR=/config                      # 持久化目录
           - TZ=Asia/Shanghai                          # 设置容器时区
-          - AUTH_USERNAME=admin                       # 用户名可任意设置，密码在程序首次运行会生成初始密码：password
           - PUID=1000                                 # 设置为你的用户ID，建议与宿主机用户ID保持一致
           - PGID=1000                                 # 设置为DOCKER组ID (一键更新用，‘grep docker /etc/group’可以查询)
           - UMASK=022                                 # 设置文件权限掩码，建议022
