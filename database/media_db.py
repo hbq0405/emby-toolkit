@@ -860,7 +860,7 @@ def get_user_request_stats(user_id: str) -> Dict[str, int]:
                     status = row['subscription_status']
                     if status == 'REQUESTED':
                         stats['pending'] += count
-                    elif status in ['WANTED', 'SUBSCRIBED', 'PENDING_RELEASE']:
+                    elif status in ['WANTED', 'SUBSCRIBED', 'PENDING_RELEASE', 'PAUSED']:
                         stats['processing'] += count
                     elif status in ['IGNORED', 'NONE']:
                         stats['failed'] += count
