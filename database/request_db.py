@@ -137,7 +137,7 @@ def set_media_status_wanted(
                             poster_path = COALESCE(EXCLUDED.poster_path, media_metadata.poster_path)
                         WHERE
                             -- 1. 绝对不覆盖已订阅/已完成的项目
-                            media_metadata.subscription_status != 'SUBSCRIBED'
+                            media_metadata.subscription_status NOT IN ('SUBSCRIBED', 'PAUSED')
                             
                             -- 2. ★★★ 智能防线：已入库项目保护 ★★★
                             -- 规则：如果已入库，则禁止更新，除非是 洗版 或 缺集扫描
@@ -199,7 +199,7 @@ def set_media_status_pending_release(
                         subscription_sources_json = media_metadata.subscription_sources_json || EXCLUDED.subscription_sources_json,
                         first_requested_at = COALESCE(media_metadata.first_requested_at, EXCLUDED.first_requested_at),
                         ignore_reason = NULL, parent_series_tmdb_id = COALESCE(EXCLUDED.parent_series_tmdb_id, media_metadata.parent_series_tmdb_id)
-                    WHERE media_metadata.in_library = FALSE AND media_metadata.subscription_status NOT IN ('SUBSCRIBED', 'WANTED')
+                    WHERE media_metadata.in_library = FALSE AND media_metadata.subscription_status NOT IN ('SUBSCRIBED', 'WANTED', 'PAUSED')
                       AND (EXCLUDED.subscription_sources_json = '[]'::jsonb OR NOT (media_metadata.subscription_sources_json @> EXCLUDED.subscription_sources_json));
                 """
                 execute_batch(cursor, sql, data_to_upsert)
@@ -391,7 +391,7 @@ def get_global_request_status_by_tmdb_id(tmdb_id: str) -> Optional[str]:
             if not result: return None
             
             status = result['subscription_status']
-            if status in ['WANTED', 'SUBSCRIBED', 'PENDING_RELEASE']: return 'approved'
+            if status in ['WANTED', 'SUBSCRIBED', 'PENDING_RELEASE', 'PAUSED']: return 'approved'
             if status == 'REQUESTED': return 'pending'
             return None
     except Exception as e:

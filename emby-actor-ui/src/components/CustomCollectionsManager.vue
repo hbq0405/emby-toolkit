@@ -1605,14 +1605,24 @@ const mediaTypeName = computed(() => {
 });
 
 const filterMediaByStatus = (status) => {
-  if (!selectedCollectionDetails.value || !Array.isArray(selectedCollectionDetails.value.media_items)) return [];
-  return selectedCollectionDetails.value.media_items.filter(media => media.status === status);
+  if (
+    !selectedCollectionDetails.value ||
+    !Array.isArray(selectedCollectionDetails.value.media_items)
+  ) return [];
+
+  if (Array.isArray(status)) {
+    return selectedCollectionDetails.value.media_items.filter(media =>
+      status.includes(media.status)
+    );
+  } else {
+    return selectedCollectionDetails.value.media_items.filter(media => media.status === status);
+  }
 };
 
 const missingMediaInModal = computed(() => filterMediaByStatus('missing'));
 const inLibraryMediaInModal = computed(() => filterMediaByStatus('in_library'));
 const unreleasedMediaInModal = computed(() => filterMediaByStatus('unreleased'));
-const subscribedMediaInModal = computed(() => filterMediaByStatus('subscribed'));
+const subscribedMediaInModal = computed(() => filterMediaByStatus(['subscribed', 'paused']));
 
 const fetchCollections = async () => {
   isLoading.value = true;
