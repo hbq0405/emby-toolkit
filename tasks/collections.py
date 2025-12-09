@@ -117,8 +117,18 @@ def _perform_list_collection_health_check(
     except Exception as e_db:
         logger.error(f"  -> 获取在库季列表时发生数据库错误: {e_db}", exc_info=True)
 
-    # ★★★ 核心修复：获取所有在库的 Key 集合 (格式: id_type) ★★★
+    # 获取所有在库的 Key 集合 (格式: id_type)
     in_library_keys = set(tmdb_to_emby_item_map.keys())
+
+    subscribed_or_paused_keys = set()
+    try:
+        with connection.get_db_connection() as conn:
+            cursor = conn.cursor()
+            cursor.execute("SELECT tmdb_id, item_type FROM media_metadata WHERE subscription_status IN ('SUBSCRIBED', 'PAUSED', 'WANTED', 'IGNORED', 'PENDING_RELEASE')")
+            for row in cursor.fetchall():
+                subscribed_or_paused_keys.add(f"{row['tmdb_id']}_{row['item_type']}")
+    except Exception as e_sub:
+        logger.error(f"  -> 获取订阅状态时发生数据库错误: {e_sub}", exc_info=True)
     
     missing_released_items = []
     missing_unreleased_items = []
@@ -159,8 +169,12 @@ def _perform_list_collection_health_check(
         if is_in_library:
             continue
 
-        # ★★★ 新增：如果 tmdb_id 为空，直接跳过 TMDb 查询，防止报错 ★★★
-        # 这些项目会保留在 generated_media_info_json 中，但不会被计入 missing_count (因为无法获取元数据)
+        check_sub_key = f"{tmdb_id}_{media_type}"
+        if check_sub_key in subscribed_or_paused_keys:
+            # 如果是季维度的请求，且父剧集已暂停/订阅，通常也应跳过（视具体需求而定，这里采取保守策略跳过）
+            continue
+        
+        # 如果 tmdb_id 为空，直接跳过 TMDb 查询，防止报错 
         if not tmdb_id or tmdb_id == 'None':
             continue
 
