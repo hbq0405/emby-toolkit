@@ -196,12 +196,8 @@ def assemble_all_collection_details() -> List[Dict[str, Any]]:
     for collection in all_collections_from_db:
         final_movie_list = []
         for movie_part in collection.get('tmdb_parts', []):
-            # ★★★ 核心过滤点 2/3: 在组装前端数据时再次过滤 ★★★
-            # if not movie_part.get('poster_path') or not movie_part.get('release_date'):
-                # continue
-
             tmdb_id = str(movie_part['id'])
-            db_info = db_media_map.get(tmdb_id)
+            db_info = db_media_map.get(tmdb_id, {})
 
             poster_path = movie_part.get('poster_path') or db_info.get('poster_path')
             release_date = movie_part.get('release_date') or db_info.get('release_date')
