@@ -229,6 +229,7 @@
               <!-- 1. 状态缎带 -->
               <div v-if="media.in_library" class="ribbon ribbon-green"><span>已入库</span></div>
               <div v-else-if="media.subscription_status === 'SUBSCRIBED'" class="ribbon ribbon-blue"><span>已订阅</span></div>
+              <div v-else-if="media.subscription_status === 'PAUSED'" class="ribbon ribbon-blue"><span>已暂停</span></div>
               <div v-else-if="media.subscription_status === 'WANTED'" class="ribbon ribbon-purple"><span>待订阅</span></div>
               <div v-else-if="media.subscription_status === 'REQUESTED'" class="ribbon ribbon-orange"><span>待审核</span></div>
               <div v-else-if="media.subscription_status === 'PENDING_RELEASE'" class="ribbon ribbon-grey"><span>未发行</span></div>
