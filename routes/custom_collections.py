@@ -381,6 +381,8 @@ def api_get_custom_collection_status(collection_id):
                     status = "in_library"
                 elif db_record.get('subscription_status') == 'SUBSCRIBED':
                     status = "subscribed"
+                elif db_record.get('subscription_status') == 'PAUSED':
+                    status = "paused"
                 elif db_record.get('subscription_status') == 'IGNORED':
                     status = "ignored"
                 
