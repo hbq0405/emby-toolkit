@@ -423,32 +423,6 @@ def api_get_custom_collection_status(collection_id):
         logger.error(f"实时生成合集状态 {collection_id} 时出错: {e}", exc_info=True)
         return jsonify({"error": "服务器内部错误"}), 500
 
-# --- 更新自定义合集中单个媒体项状态 ---
-@custom_collections_bp.route('/<int:collection_id>/media_status', methods=['POST'])
-@admin_required
-def api_update_custom_collection_media_status(collection_id):
-    """更新自定义合集中单个媒体项的状态 (e.g., subscribed -> missing)"""
-    data = request.json
-    media_tmdb_id = data.get('tmdb_id')
-    new_status = data.get('new_status')
-
-    if not all([media_tmdb_id, new_status]):
-        return jsonify({"error": "请求无效: 缺少 tmdb_id 或 new_status"}), 400
-
-    try:
-        success = collection_db.update_single_media_status_in_custom_collection(
-            collection_id=collection_id,
-            media_tmdb_id=str(media_tmdb_id),
-            new_status=new_status
-        )
-        if success:
-            return jsonify({"message": "状态更新成功"})
-        else:
-            return jsonify({"error": "更新失败，未找到对应的媒体项或合集"}), 404
-    except Exception as e:
-        logger.error(f"更新自定义合集 {collection_id} 中媒体状态时出错: {e}", exc_info=True)
-        return jsonify({"error": "服务器内部错误"}), 500
-    
 # --- 修正榜单合集中的媒体匹配 ---
 @custom_collections_bp.route('/<int:collection_id>/fix_match', methods=['POST'])
 @admin_required

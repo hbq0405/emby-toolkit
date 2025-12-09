@@ -1707,19 +1707,6 @@ const handleSyncAll = async () => {
   }
 };
 
-const updateMediaStatus = async (media, newStatus) => {
-  try {
-    await axios.post(`/api/custom_collections/${selectedCollectionDetails.value.id}/media_status`, {
-      tmdb_id: media.tmdb_id,
-      new_status: newStatus
-    });
-    media.status = newStatus;
-    message.success(`状态已更新为: ${newStatus}`);
-  } catch (err) {
-    message.error(err.response?.data?.error || '更新状态失败');
-  }
-};
-
 const triggerMetadataSync = async () => {
   isSyncingMetadata.value = true;
   try {
