@@ -130,73 +130,102 @@
       <div v-else class="center-container"><n-empty :description="emptyStateDescription" size="huge" /></div>
     </div>
 
-    <n-modal v-model:show="showModal" preset="card" style="width: 90%; max-width: 1200px;" :title="selectedCollection ? `详情 - ${selectedCollection.name}` : ''" :bordered="false" size="huge">
-      <div v-if="selectedCollection">
-        <n-tabs type="line" animated>
+    <!-- 详情模态框 -->
+    <n-modal 
+      v-model:show="showModal" 
+      preset="card" 
+      style="width: 90%; max-width: 1200px; height: 80vh; display: flex; flex-direction: column;" 
+      content-style="overflow: hidden; display: flex; flex-direction: column;"
+      :title="selectedCollection ? `详情 - ${selectedCollection.name}` : ''" 
+      :bordered="false" 
+      size="huge"
+    >
+      <div v-if="selectedCollection" style="flex: 1; overflow: hidden; display: flex; flex-direction: column;">
+        <n-tabs type="line" animated style="height: 100%; display: flex; flex-direction: column;" pane-style="flex: 1; overflow-y: auto; padding-right: 4px;">
+          
+          <!-- 缺失影片 Tab -->
           <n-tab-pane name="missing" :tab="`缺失影片 (${missingMoviesInModal.length})`">
             <n-empty v-if="missingMoviesInModal.length === 0" description="太棒了！没有已上映的缺失影片。" style="margin-top: 40px;"></n-empty>
-            <n-grid v-else cols="2 s:3 m:4 l:5 xl:6" :x-gap="16" :y-gap="16" responsive="screen">
-              <n-gi v-for="movie in missingMoviesInModal" :key="movie.tmdb_id">
-                <n-card class="movie-card" content-style="padding: 0;">
-                  <template #cover><img :src="getTmdbImageUrl(movie.poster_path)" class="movie-poster" /></template>
-                  <div class="movie-info"><div class="movie-title">{{ movie.title }}<br />({{ extractYear(movie.release_date) || '未知年份' }})</div></div>
-                  <template #action>
-                    <n-tag type="warning" size="small" style="width: 100%; justify-content: center;">
-                      <template #icon><n-icon :component="CloudDownloadIcon" /></template>
-                      待订阅
-                    </n-tag>
-                  </template>
-                </n-card>
-              </n-gi>
-            </n-grid>
+            <div v-else class="poster-grid">
+              <div v-for="movie in missingMoviesInModal" :key="movie.tmdb_id" class="poster-item">
+                <n-image lazy :src="getTmdbImageUrl(movie.poster_path)" class="poster-img" object-fit="cover" preview-disabled>
+                  <template #placeholder><div class="poster-placeholder-inner"></div></template>
+                </n-image>
+                <!-- 左上角标签 -->
+                <div class="poster-tag">
+                  <n-tag type="warning" :bordered="false" size="small">待订阅</n-tag>
+                </div>
+                <!-- 底部文字信息 -->
+                <div class="poster-info">
+                  <div class="poster-title">{{ movie.title }}</div>
+                  <div class="poster-year">{{ extractYear(movie.release_date) || '未知年份' }}</div>
+                </div>
+              </div>
+            </div>
           </n-tab-pane>
           
+          <!-- 已入库 Tab -->
           <n-tab-pane name="in_library" :tab="`已入库 (${inLibraryMoviesInModal.length})`">
              <n-empty v-if="inLibraryMoviesInModal.length === 0" description="该合集在媒体库中没有任何影片。" style="margin-top: 40px;"></n-empty>
-            <n-grid v-else cols="2 s:3 m:4 l:5 xl:6" :x-gap="16" :y-gap="16" responsive="screen">
-              <n-gi v-for="movie in inLibraryMoviesInModal" :key="movie.tmdb_id">
-                <n-card class="movie-card" content-style="padding: 0;">
-                  <template #cover><img :src="getTmdbImageUrl(movie.poster_path)" class="movie-poster" /></template>
-                  <div class="movie-info"><div class="movie-title">{{ movie.title }}<br />({{ extractYear(movie.release_date) || '未知年份' }})</div></div>
-                   <template #action>
-                    <n-tag type="success" size="small" style="width: 100%; justify-content: center;">
-                      <template #icon><n-icon :component="CheckmarkCircle" /></template>
-                      已在库
-                    </n-tag>
-                  </template>
-                </n-card>
-              </n-gi>
-            </n-grid>
+             <div v-else class="poster-grid">
+              <div v-for="movie in inLibraryMoviesInModal" :key="movie.tmdb_id" class="poster-item">
+                <n-image lazy :src="getTmdbImageUrl(movie.poster_path)" class="poster-img" object-fit="cover" preview-disabled />
+                <div class="poster-tag">
+                  <n-tag type="success" :bordered="false" size="small">已入库</n-tag>
+                </div>
+                <div class="poster-info">
+                  <div class="poster-title">{{ movie.title }}</div>
+                  <div class="poster-year">{{ extractYear(movie.release_date) || '未知年份' }}</div>
+                </div>
+              </div>
+            </div>
           </n-tab-pane>
 
+          <!-- 未上映 Tab -->
           <n-tab-pane name="unreleased" :tab="`未上映 (${unreleasedMoviesInModal.length})`">
             <n-empty v-if="unreleasedMoviesInModal.length === 0" description="该合集没有已知的未上映影片。" style="margin-top: 40px;"></n-empty>
-            <n-grid v-else cols="2 s:3 m:4 l:5 xl:6" :x-gap="16" :y-gap="16" responsive="screen">
-              <n-gi v-for="movie in unreleasedMoviesInModal" :key="movie.tmdb_id">
-                <n-card class="movie-card" content-style="padding: 0;">
-                  <template #cover><img :src="getTmdbImageUrl(movie.poster_path)" class="movie-poster"></template>
-                  <div class="movie-info"><div class="movie-title">{{ movie.title }}<br />({{ extractYear(movie.release_date) || '未知年份' }})</div></div>
-                </n-card>
-              </n-gi>
-            </n-grid>
+            <div v-else class="poster-grid">
+              <div v-for="movie in unreleasedMoviesInModal" :key="movie.tmdb_id" class="poster-item">
+                <n-image lazy :src="getTmdbImageUrl(movie.poster_path)" class="poster-img" object-fit="cover" preview-disabled />
+                <div class="poster-tag">
+                  <n-tag type="info" :bordered="false" size="small">未上映</n-tag>
+                </div>
+                <div class="poster-info">
+                  <div class="poster-title">{{ movie.title }}</div>
+                  <div class="poster-year">{{ extractYear(movie.release_date) || '未知年份' }}</div>
+                </div>
+              </div>
+            </div>
           </n-tab-pane>
 
+          <!-- 已订阅 Tab -->
           <n-tab-pane name="subscribed" :tab="`已订阅 (${subscribedMoviesInModal.length})`">
             <n-empty v-if="subscribedMoviesInModal.length === 0" description="你没有订阅此合集中的任何影片。" style="margin-top: 40px;"></n-empty>
-            <n-grid v-else cols="2 s:3 m:4 l:5 xl:6" :x-gap="16" :y-gap="16" responsive="screen">
-              <n-gi v-for="movie in subscribedMoviesInModal" :key="movie.tmdb_id">
-                <n-card class="movie-card" content-style="padding: 0;">
-                  <template #cover><img :src="getTmdbImageUrl(movie.poster_path)" class="movie-poster" /></template>
-                  <div class="movie-info"><div class="movie-title">{{ movie.title }}<br />({{ extractYear(movie.release_date) || '未知年份' }})</div></div>
-                  <template #action>
-                    <n-button @click="unsubscribeMovie(movie)" type="warning" size="small" block ghost>
-                      <template #icon><n-icon :component="CloseCircleIcon" /></template>
-                      取消订阅
-                    </n-button>
-                  </template>
-                </n-card>
-              </n-gi>
-            </n-grid>
+            <div v-else class="poster-grid">
+              <div v-for="movie in subscribedMoviesInModal" :key="movie.tmdb_id" class="poster-item group">
+                <n-image lazy :src="getTmdbImageUrl(movie.poster_path)" class="poster-img" object-fit="cover" preview-disabled />
+                <div class="poster-tag">
+                  <n-tag type="primary" :bordered="false" size="small">已订阅</n-tag>
+                </div>
+                <div class="poster-info">
+                  <div class="poster-title">{{ movie.title }}</div>
+                  <div class="poster-year">{{ extractYear(movie.release_date) || '未知年份' }}</div>
+                </div>
+                
+                <!-- 悬停显示操作遮罩 -->
+                <div class="poster-hover-overlay">
+                  <n-popconfirm @positive-click="unsubscribeMovie(movie)">
+                    <template #trigger>
+                      <n-button type="error" size="small" round>
+                        <template #icon><n-icon :component="CloseCircleIcon" /></template>
+                        取消订阅
+                      </n-button>
+                    </template>
+                    确定要取消订阅《{{ movie.title }}》吗？
+                  </n-popconfirm>
+                </div>
+              </div>
+            </div>
           </n-tab-pane>
         </n-tabs>
       </div>
@@ -630,5 +659,126 @@ const extractYear = (dateStr) => {
   justify-content: flex-start !important;
   padding: 12px !important;
   gap: 12px !important;
+}
+/* 网格布局容器 */
+.poster-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(140px, 1fr)); /* 自动适应宽度，最小140px */
+  gap: 16px;
+  padding-bottom: 20px;
+}
+
+/* 单个海报项容器 */
+.poster-item {
+  position: relative;
+  aspect-ratio: 2 / 3; /* 强制电影海报比例 */
+  border-radius: 8px;
+  overflow: hidden;
+  background-color: #f0f0f0;
+  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.1);
+  transition: transform 0.2s ease, box-shadow 0.2s ease;
+  cursor: default;
+}
+
+.poster-item:hover {
+  transform: translateY(-4px);
+  box-shadow: 0 8px 16px rgba(0, 0, 0, 0.2);
+}
+
+/* 海报图片 */
+.poster-img {
+  width: 100%;
+  height: 100%;
+  display: block;
+}
+/* 修复 n-image 内部 img 的样式 */
+.poster-img :deep(img) {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+}
+
+/* 左上角标签 */
+.poster-tag {
+  position: absolute;
+  top: 6px;
+  left: 6px;
+  z-index: 2;
+  filter: drop-shadow(0 2px 4px rgba(0,0,0,0.3));
+}
+
+/* 底部文字信息区域 */
+.poster-info {
+  position: absolute;
+  bottom: 0;
+  left: 0;
+  right: 0;
+  padding: 40px 8px 8px 8px; /* 顶部留出空间给渐变 */
+  /* 黑色渐变背景，确保白字可见 */
+  background: linear-gradient(to top, rgba(0, 0, 0, 0.9) 0%, rgba(0, 0, 0, 0.6) 50%, transparent 100%);
+  color: white;
+  z-index: 2;
+  pointer-events: none; /* 让点击穿透（如果有点击事件的话） */
+}
+
+.poster-title {
+  font-size: 14px;
+  font-weight: bold;
+  line-height: 1.2;
+  margin-bottom: 2px;
+  /* 限制显示两行 */
+  display: -webkit-box;
+  -webkit-line-clamp: 2;
+  line-clamp: 2;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+  text-shadow: 0 1px 2px rgba(0,0,0,0.8);
+}
+
+.poster-year {
+  font-size: 12px;
+  opacity: 0.8;
+  font-weight: normal;
+}
+
+/* 悬停操作遮罩 (用于取消订阅等) */
+.poster-hover-overlay {
+  position: absolute;
+  top: 0;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  background-color: rgba(0, 0, 0, 0.6);
+  backdrop-filter: blur(2px);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  opacity: 0;
+  transition: opacity 0.2s ease;
+  z-index: 3;
+}
+
+.poster-item:hover .poster-hover-overlay {
+  opacity: 1;
+}
+
+.poster-placeholder-inner {
+  width: 100%;
+  height: 100%;
+  background-color: #e0e0e0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+/* 响应式调整 */
+@media (max-width: 600px) {
+  .poster-grid {
+    grid-template-columns: repeat(auto-fill, minmax(100px, 1fr));
+    gap: 10px;
+  }
+  .poster-title {
+    font-size: 12px;
+  }
 }
 </style>
