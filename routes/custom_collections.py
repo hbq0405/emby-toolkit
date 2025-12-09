@@ -385,6 +385,8 @@ def api_get_custom_collection_status(collection_id):
                     status = "paused"
                 elif db_record.get('subscription_status') == 'IGNORED':
                     status = "ignored"
+                elif db_record.get('subscription_status') == 'PENDING_RELEASE':
+                    status = "unreleased"
                 
                 r_date = db_record.get('release_date')
                 if isinstance(r_date, datetime):
