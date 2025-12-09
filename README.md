@@ -74,14 +74,14 @@
             condition: service_healthy
       # --- 2. PostgreSQL 数据库服务 ---
       db:
-        image: postgres:16-alpine
+        image: postgres:18
         container_name: emby-toolkit-db
         restart: unless-stopped
         network_mode: bridge
         volumes:
           # 将数据库的持久化数据存储在名为 'postgres_data' 的Docker卷中
           # 这可以确保即使删除了容器，数据库数据也不会丢失
-          - postgres_data:/var/lib/postgresql/data
+          - postgres_data:/var/lib/postgresql
         environment:
           # --- 数据库认证配置 (核心) ---
           # 这些值必须与上面的 'emby-toolkit' 服务中的环境变量完全匹配
