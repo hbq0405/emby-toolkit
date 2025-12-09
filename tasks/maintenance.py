@@ -23,7 +23,7 @@ def _prepare_data_for_insert(table_name: str, table_data: List[Dict[str, Any]]) 
     """
     JSONB_COLUMNS = {
         'app_settings': {'value_json'},
-        'collections_info': {'missing_movies_json'},
+        'collections_info': {'all_tmdb_ids_json'},
         'custom_collections': {'definition_json', 'allowed_user_ids', 'generated_media_info_json'},
         'user_collection_cache': {'visible_emby_ids_json'},
         'media_metadata': {
