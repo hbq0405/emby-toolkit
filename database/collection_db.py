@@ -62,15 +62,15 @@ def get_all_native_collections() -> List[Dict[str, Any]]:
 
 def get_all_missing_movies_in_collections() -> List[Dict[str, Any]]:
     """
-    直接在数据库层面完成以下操作：
-    1. 展开所有原生合集中的 TMDB ID。
+    1. 展开所有原生合集中的 TMDB ID 和 合集名称。
     2. 关联 media_metadata 表。
-    3. 筛选出 item_type='Movie' AND in_library=FALSE AND subscription_status='NONE' 的项目。
+    3. 筛选缺失电影，并聚合其所属的合集名称 (处理一部电影属于多个合集的情况)。
     """
-    # 利用 PostgreSQL 的 jsonb_array_elements_text 函数高效展开 JSON 数组
     sql = """
-        WITH all_collection_ids AS (
-            SELECT DISTINCT jsonb_array_elements_text(all_tmdb_ids_json) AS tmdb_id
+        WITH expanded_collections AS (
+            SELECT 
+                name,
+                jsonb_array_elements_text(all_tmdb_ids_json) AS tmdb_id
             FROM collections_info
             WHERE all_tmdb_ids_json IS NOT NULL
         )
@@ -80,13 +80,15 @@ def get_all_missing_movies_in_collections() -> List[Dict[str, Any]]:
             m.original_title, 
             m.release_date, 
             m.poster_path, 
-            m.overview
+            m.overview,
+            STRING_AGG(DISTINCT ec.name, ', ') as collection_names
         FROM media_metadata m
-        JOIN all_collection_ids c ON m.tmdb_id = c.tmdb_id
+        JOIN expanded_collections ec ON m.tmdb_id = ec.tmdb_id
         WHERE 
             m.item_type = 'Movie' 
             AND m.in_library = FALSE 
-            AND m.subscription_status = 'NONE';
+            AND m.subscription_status = 'NONE'
+        GROUP BY m.tmdb_id; -- 根据主键分组，其他字段自动依附
     """
     try:
         with get_db_connection() as conn:

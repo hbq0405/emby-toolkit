@@ -151,7 +151,8 @@ def subscribe_all_missing_in_native_collections():
         # 处理日期类型 (数据库可能返回 date 对象)
         r_date = movie.get('release_date')
         r_date_str = str(r_date) if r_date else None
-        
+        # ★★★ 获取合集名称 ★★★
+        coll_names = movie.get('collection_names', '原生合集')
         # 构造标准 media_info
         media_info = {
             'tmdb_id': movie['tmdb_id'],
@@ -160,7 +161,7 @@ def subscribe_all_missing_in_native_collections():
             'release_date': r_date_str,
             'poster_path': movie.get('poster_path'),
             'overview': movie.get('overview'),
-            'source': {'type': 'native_collection_batch', 'name': '原生合集补全'}
+            'source': {'type': 'native_collection_batch', 'name': 'coll_names'}
         }
 
         if r_date_str and r_date_str > today_str:

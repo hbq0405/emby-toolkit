@@ -338,7 +338,7 @@ const SOURCE_TYPE_MAP = {
   'user_request': '用户请求',
   'actor_subscription': '演员订阅',
   'collection': '自建合集',
-  'native_collection': '原生合集',
+  'native_collection_batch': '原生合集',
   'manual_add': '手动添加',
   'watchlist': '智能追剧',
   'resubscribe': '自动洗版',
