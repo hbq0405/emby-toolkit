@@ -68,12 +68,22 @@ def get_all_missing_movies_in_collections() -> List[Dict[str, Any]]:
     """
     sql = """
         WITH expanded_collections AS (
+            -- 1. 展开：将合集 ID 列表炸开成多行 (合集名, tmdb_id)
             SELECT 
                 name,
                 jsonb_array_elements_text(all_tmdb_ids_json) AS tmdb_id
             FROM collections_info
             WHERE all_tmdb_ids_json IS NOT NULL
+        ),
+        aggregated_names AS (
+            -- 2. 聚合：按 tmdb_id 分组，把合集名拼起来
+            SELECT 
+                tmdb_id,
+                STRING_AGG(DISTINCT name, ', ') as collection_names
+            FROM expanded_collections
+            GROUP BY tmdb_id
         )
+        -- 3. 查询：关联媒体表，不再需要 GROUP BY
         SELECT 
             m.tmdb_id, 
             m.title, 
@@ -81,14 +91,13 @@ def get_all_missing_movies_in_collections() -> List[Dict[str, Any]]:
             m.release_date, 
             m.poster_path, 
             m.overview,
-            STRING_AGG(DISTINCT ec.name, ', ') as collection_names
+            an.collection_names
         FROM media_metadata m
-        JOIN expanded_collections ec ON m.tmdb_id = ec.tmdb_id
+        JOIN aggregated_names an ON m.tmdb_id = an.tmdb_id
         WHERE 
             m.item_type = 'Movie' 
             AND m.in_library = FALSE 
-            AND m.subscription_status = 'NONE'
-        GROUP BY m.tmdb_id; -- 根据主键分组，其他字段自动依附
+            AND m.subscription_status = 'NONE';
     """
     try:
         with get_db_connection() as conn:
