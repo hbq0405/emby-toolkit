@@ -211,19 +211,6 @@
                   <div class="poster-title">{{ movie.title }}</div>
                   <div class="poster-year">{{ extractYear(movie.release_date) || '未知年份' }}</div>
                 </div>
-                
-                <!-- 悬停显示操作遮罩 -->
-                <div class="poster-hover-overlay">
-                  <n-popconfirm @positive-click="unsubscribeMovie(movie)">
-                    <template #trigger>
-                      <n-button type="error" size="small" round>
-                        <template #icon><n-icon :component="CloseCircleIcon" /></template>
-                        取消订阅
-                      </n-button>
-                    </template>
-                    确定要取消订阅《{{ movie.title }}》吗？
-                  </n-popconfirm>
-                </div>
               </div>
             </div>
           </n-tab-pane>
@@ -739,23 +726,6 @@ const extractYear = (dateStr) => {
   font-size: 12px;
   opacity: 0.8;
   font-weight: normal;
-}
-
-/* 悬停操作遮罩 (用于取消订阅等) */
-.poster-hover-overlay {
-  position: absolute;
-  top: 0;
-  left: 0;
-  right: 0;
-  bottom: 0;
-  background-color: rgba(0, 0, 0, 0.6);
-  backdrop-filter: blur(2px);
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  opacity: 0;
-  transition: opacity 0.2s ease;
-  z-index: 3;
 }
 
 .poster-item:hover .poster-hover-overlay {
