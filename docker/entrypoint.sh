@@ -41,10 +41,14 @@ INFO "→ 生成 Nginx 配置文件..."
 python3 /app/web_app.py generate-nginx-config
 INFO "→ Nginx 配置文件生成完毕。"
 
-# 3. 启动 Nginx 服务
-# Nginx 也需要以 root 身份启动
-INFO "→ 在后台启动 Nginx 服务..."
-nginx -g "daemon off;" &
+# 3. 启动 Nginx 服务 (修改了这里)
+# 检查生成的配置文件，如果包含禁用标记，则不启动 Nginx
+if grep -q "# Proxy disabled" /etc/nginx/conf.d/default.conf; then
+    INFO "→ 检测到反向代理未启用，跳过启动 Nginx 服务。"
+else
+    INFO "→ 在后台启动 Nginx 服务..."
+    nginx -g "daemon off;" &
+fi
 
 # 4. 启动主应用
 # 在这里，我们才使用 gosu 将权限降级为普通用户，以保证应用运行时的安全

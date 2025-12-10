@@ -116,19 +116,34 @@
                 
                 <n-space vertical size="large">
                   <!-- 评分过滤 -->
-                  <div class="filter-item" v-if="currentRule.rule_type === 'delete'">
+                  <div class="filter-item">
                     <n-checkbox v-model:checked="currentRule.filter_rating_enabled">
                       <span style="font-weight: bold;">按评分筛选</span>
                     </n-checkbox>
                     <div v-if="currentRule.filter_rating_enabled" class="filter-content">
-                      <n-form-item label="当 TMDB 评分低于此值时" :show-feedback="false">
+                      <n-form-item label="当评分低于此值时" :show-feedback="false">
                         <n-input-number v-model:value="currentRule.filter_rating_min" :min="0" :max="10" :step="0.1" style="width: 100%;">
                           <template #suffix>分</template>
                         </n-input-number>
                       </n-form-item>
+                      
+                      <!-- 动态提示文案 -->
+                      <div class="tip" style="margin-top: 8px;">
+                        <template v-if="currentRule.rule_type === 'delete'">
+                          <n-tag type="error" size="small" :bordered="false">删除模式</n-tag>
+                          命中规则：评分低于设定值时，<b>执行删除</b>。
+                        </template>
+                        <template v-else>
+                          <n-tag type="info" size="small" :bordered="false">洗版模式</n-tag>
+                          豁免规则：评分低于设定值时，<b>忽略该片</b>（即使画质不达标也不洗版）。
+                        </template>
+                      </div>
+
                       <div style="margin-top: 8px;">
                         <n-checkbox v-model:checked="currentRule.filter_rating_ignore_zero">
-                          <span style="font-size: 12px;">忽略 0 分 (保护无评分的新片)</span>
+                          <span style="font-size: 12px;">
+                            {{ currentRule.rule_type === 'delete' ? '忽略 0 分 (保护无评分的新片不被删)' : '忽略 0 分 (允许无评分的新片洗版)' }}
+                          </span>
                         </n-checkbox>
                       </div>
                     </div>

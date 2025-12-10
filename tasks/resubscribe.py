@@ -442,6 +442,7 @@ def _item_needs_resubscribe(asset_details: dict, rule: dict, media_metadata: Opt
 
     tmdb_id = str(media_metadata.get('tmdb_id', ''))
     item_type = media_metadata.get('item_type', '')
+    rule_type = rule.get('rule_type', 'resubscribe')
     # ==================== 评分检查 ====================
     try:
         if rule.get("filter_rating_enabled"):
@@ -450,14 +451,28 @@ def _item_needs_resubscribe(asset_details: dict, rule: dict, media_metadata: Opt
             threshold = float(rule.get("filter_rating_min", 0))
             ignore_zero = rule.get("filter_rating_ignore_zero", False)
             
-            # 1. 如果评分为 0 且开启了“忽略0分”，则跳过（视为达标/不命中规则）
-            # 2. 否则，如果 评分 < 阈值，则命中规则
+            is_low_rating = False
             if current_rating == 0 and ignore_zero:
                 logger.debug(f"  ➜ [评分检查] 《{item_name}》评分为0，但规则设定忽略0分，跳过评分检查。")
             elif current_rating < threshold:
-                reasons.append(f"评分过低({current_rating} < {threshold})")
+                is_low_rating = True
+
+            if is_low_rating:
+                if rule_type == 'delete':
+                    # 【删除模式】：评分低 -> 命中规则 -> 需要删除
+                    reasons.append(f"评分过低({current_rating} < {threshold})")
+                else:
+                    # 【洗版模式】：评分低 -> 忽略 -> 不需要洗版
+                    # 直接返回 False，不再检查分辨率等其他条件
+                    logger.info(f"  ➜ [评分检查] 《{item_name}》评分({current_rating})低于阈值({threshold})，跳过洗版。")
+                    return False, "" 
+
     except Exception as e:
         logger.warning(f"  ➜ [评分检查] 处理时发生错误: {e}")
+    
+    # 如果是删除模式，且已经因为评分低命中了，直接返回（避免继续检查画质）
+    if rule_type == 'delete' and reasons:
+        return True, "; ".join(reasons)
     
     # --- 1. 分辨率检查 (直接使用 resolution_display) ---
     try:

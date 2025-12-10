@@ -186,10 +186,20 @@ def ensure_nginx_config():
     """
     【Jinja2 容器集成版】使用 Jinja2 模板引擎，生成供容器内 Nginx 使用的配置文件。
     """
+    final_config_path = '/etc/nginx/conf.d/default.conf'
+    # 检查开关
+    if not config_manager.APP_CONFIG.get(constants.CONFIG_OPTION_PROXY_ENABLED):
+        logger.info("反向代理功能未启用，正在清理 Nginx 默认配置以释放端口...")
+        try:
+            # 写入空文件，相当于禁用了 Nginx 的默认站点
+            with open(final_config_path, 'w') as f:
+                f.write("# Proxy disabled in config.ini") 
+            return
+        except Exception as e:
+            logger.warning(f"清理 Nginx 默认配置失败: {e}")
+            return
     logger.info("正在生成 Nginx 配置文件...")
     
-    # ★★★ 核心修改 1: 配置文件路径改为容器内 Nginx 的标准路径 ★★★
-    final_config_path = '/etc/nginx/conf.d/default.conf'
     template_dir = os.path.join(os.getcwd(), 'templates', 'nginx')
     template_filename = 'emby_proxy.conf.template'
 
@@ -357,18 +367,19 @@ def main_app_start():
         if config_manager.APP_CONFIG.get(constants.CONFIG_OPTION_PROXY_ENABLED):
             try:
                 internal_proxy_port = 7758
-                logger.trace(f"🚀 [GEVENT] 反向代理服务即将启动，监听内部端口: {internal_proxy_port}")
+                external_port = config_manager.APP_CONFIG.get(constants.CONFIG_OPTION_PROXY_PORT, 8097)
+                logger.info(f"  🚀 [虚拟库] 服务器已启动 (容器监听端口: {external_port})")
                 proxy_server = WSGIServer(('0.0.0.0', internal_proxy_port), proxy_app, handler_class=WebSocketHandler)
                 proxy_server.serve_forever()
             except Exception as e:
-                logger.error(f"启动反向代理服务失败: {e}", exc_info=True)
+                logger.error(f"启动虚拟库服务失败: {e}", exc_info=True)
         else:
-            logger.info("反向代理功能未在配置中启用。")
+            logger.info("虚拟库未在配置中启用。")
 
     gevent.spawn(run_proxy_server)
 
     main_app_port = int(constants.WEB_APP_PORT)
-    logger.info(f"  ✅ 主应用服务器启动完成，监听端口: {main_app_port}")
+    logger.info(f"  ✅ [主应用] 服务器已启动 (容器监听端口: {main_app_port})")
     
     class NullLogger:
         def write(self, data): pass
