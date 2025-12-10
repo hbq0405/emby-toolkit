@@ -174,13 +174,33 @@ def get_stats_subscription():
                 cursor.execute("SELECT COUNT(*) FROM resubscribe_index WHERE status IN ('needed', 'auto_subscribed')")
                 resub_pending = cursor.fetchone()['count']
 
-                # 4. 原生合集统计
+                # 4. 原生合集统计 (实时计算)
+                # 逻辑：展开 collections_info 中的 TMDB ID -> 关联 media_metadata -> 筛选不在库且无订阅状态的电影
                 cursor.execute("""
+                    WITH expanded_ids AS (
+                        -- 1. 展开所有合集的 TMDB ID
+                        SELECT 
+                            emby_collection_id,
+                            jsonb_array_elements_text(all_tmdb_ids_json) AS tmdb_id
+                        FROM collections_info
+                        WHERE all_tmdb_ids_json IS NOT NULL
+                    ),
+                    calc_missing AS (
+                        -- 2. 关联媒体表，找出真正缺失的项目
+                        -- 定义：类型为电影 + 不在库 + 未订阅 (NONE)
+                        SELECT 
+                            e.emby_collection_id
+                        FROM expanded_ids e
+                        JOIN media_metadata m ON e.tmdb_id = m.tmdb_id
+                        WHERE 
+                            m.item_type = 'Movie' 
+                            AND m.in_library = FALSE 
+                            AND m.subscription_status = 'NONE'
+                    )
                     SELECT 
-                        COUNT(*) as total,
-                        COUNT(*) FILTER (WHERE has_missing = TRUE) as with_missing,
-                        COALESCE(SUM((jsonb_array_length(missing_movies_json))), 0) as missing_items
-                    FROM collections_info
+                        (SELECT COUNT(*) FROM collections_info) as total,
+                        (SELECT COUNT(DISTINCT emby_collection_id) FROM calc_missing) as with_missing,
+                        (SELECT COUNT(*) FROM calc_missing) as missing_items;
                 """)
                 native_col_row = cursor.fetchone()
 
