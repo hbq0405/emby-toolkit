@@ -178,29 +178,32 @@ def get_stats_subscription():
                 # 逻辑：展开 collections_info 中的 TMDB ID -> 关联 media_metadata -> 筛选不在库且无订阅状态的电影
                 cursor.execute("""
                     WITH expanded_ids AS (
-                        -- 1. 展开所有合集的 TMDB ID
+                        -- 1. 展开所有合集的 TMDB ID，并确保是数组类型
                         SELECT 
                             emby_collection_id,
                             jsonb_array_elements_text(all_tmdb_ids_json) AS tmdb_id
                         FROM collections_info
-                        WHERE all_tmdb_ids_json IS NOT NULL
+                        WHERE all_tmdb_ids_json IS NOT NULL AND jsonb_typeof(all_tmdb_ids_json) = 'array'
                     ),
-                    calc_missing AS (
-                        -- 2. 关联媒体表，找出真正缺失的项目
-                        -- 定义：类型为电影 + 不在库 + 未订阅 (NONE)
+                    missing_pairs AS (
+                        -- 2. 关联媒体表，找出真正缺失的项目 (Collection ID, TMDB ID) 对
+                        -- 定义：类型为电影 + 不在库 + 未订阅 (NONE 或 NULL)
                         SELECT 
-                            e.emby_collection_id
+                            e.emby_collection_id,
+                            e.tmdb_id
                         FROM expanded_ids e
                         JOIN media_metadata m ON e.tmdb_id = m.tmdb_id
                         WHERE 
                             m.item_type = 'Movie' 
                             AND m.in_library = FALSE 
-                            AND m.subscription_status = 'NONE'
+                            AND COALESCE(m.subscription_status, 'NONE') = 'NONE'
                     )
                     SELECT 
                         (SELECT COUNT(*) FROM collections_info) as total,
-                        (SELECT COUNT(DISTINCT emby_collection_id) FROM calc_missing) as with_missing,
-                        (SELECT COUNT(*) FROM calc_missing) as missing_items;
+                        -- 统计有多少个合集存在缺失 (按合集ID去重)
+                        (SELECT COUNT(DISTINCT emby_collection_id) FROM missing_pairs) as with_missing,
+                        -- 统计总共缺失多少部电影 (按TMDB ID去重，避免一部电影在多个合集中被重复计算)
+                        (SELECT COUNT(DISTINCT tmdb_id) FROM missing_pairs) as missing_items;
                 """)
                 native_col_row = cursor.fetchone()
 
