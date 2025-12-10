@@ -187,7 +187,7 @@ def task_update_resubscribe_cache(processor):
 
                 # 追更保护
                 watching_status = series.get('watching_status', 'NONE')
-                if watching_status in ['Watching', 'Paused']:
+                if watching_status in ['Watching', 'Paused', 'Pending']:
                     continue
 
                 tmdb_id = str(series['tmdb_id'])
