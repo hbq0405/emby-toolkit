@@ -63,20 +63,20 @@ def _evaluate_rating_rule(rule: dict, rating_value: Any) -> tuple[bool, bool, st
 
     if is_low_rating:
         if rule_type == 'delete':
-            # 删除模式：低分 -> 命中规则 -> 需要处理
+            logger.info(f"  ➜ 评分低于{threshold},标记待删除。")
             return False, True, f"评分过低({current_rating})"
         else:
-            # 洗版模式：低分 -> 忽略 -> 跳过
+            logger.info(f"  ➜ 评分低于{threshold},跳过洗版。")
             return True, False, ""
 
     return False, False, ""
 
 # ======================================================================
-# 核心任务：刷新洗版状态
+# 核心任务：刷新媒体整理
 # ======================================================================
 def task_update_resubscribe_cache(processor): 
     """
-    - 刷新洗版状态 (优化版：状态保护与自动清理)
+    - 刷新媒体整理主任务
     """
     task_name = "刷新媒体整理"
     logger.info(f"--- 开始执行 '{task_name}' 任务 ---")

@@ -172,43 +172,58 @@ def get_emby_libraries_for_rules():
 @admin_required
 def batch_action():
     """处理对洗版索引项的批量操作。"""
-    data = request.json
-    item_ids = data.get('item_ids')
-    action = data.get('action')
-
-    if not isinstance(item_ids, list) or not item_ids:
-        return jsonify({"message": "当前视图下没有可操作的项目。"}), 200
-    if action not in ['subscribe', 'ignore', 'ok', 'delete']:
-        return jsonify({"error": "无效的操作类型"}), 400
-
     try:
-        # 辅助函数：将前端的 item_id 字符串解析为数据库需要的复合主键元组
-        def parse_item_id_for_batch(item_id: str) -> Optional[Tuple[str, str, int]]:
+        data = request.json
+        item_ids = data.get('item_ids')
+        action = data.get('action')
+
+        # 1. 兼容性处理：支持逗号分隔的字符串
+        if isinstance(item_ids, str):
+            item_ids = item_ids.split(',')
+
+        if not isinstance(item_ids, list) or not item_ids:
+            return jsonify({"message": "当前视图下没有可操作的项目。"}), 200
+
+        # 2. 动作别名映射 (修复一键取消忽略失效的问题)
+        if action in ['reset', 'unignore']:
+            action = 'ok'
+
+        if action not in ['subscribe', 'ignore', 'ok', 'delete']:
+            return jsonify({"error": f"无效的操作类型: {action}"}), 400
+
+        # 3. 辅助函数：更健壮的 ID 解析 (修复一键操作因脏数据报错的问题)
+        def parse_item_id_for_batch(item_id) -> Optional[Tuple[str, str, int]]:
+            # 增加类型检查，防止 None 或非字符串导致 split 报错
+            if not item_id or not isinstance(item_id, str):
+                return None
             try:
                 parts = item_id.split('-')
+                if len(parts) < 2: return None
+                
                 tmdb_id = parts[0]
                 item_type = parts[1]
                 season_number = -1
                 if item_type == 'Season' and len(parts) > 2:
                     season_number = int(parts[2].replace('S',''))
                 return (tmdb_id, item_type, season_number)
-            except (IndexError, ValueError):
+            except Exception:
                 return None
 
         # 将 item_id 列表转换为数据库函数需要的格式
         item_keys_for_db = [key for item_id in item_ids if (key := parse_item_id_for_batch(item_id)) is not None]
+        
         if not item_keys_for_db:
-             return jsonify({"error": "无法从请求中解析任何有效的项目ID"}), 400
+             return jsonify({"message": "没有有效的项目ID被处理。"}), 200
 
+        # 4. 执行操作
         if action == 'subscribe':
-            # 提交后台任务时，仍然使用原始的 item_id 列表
             task_manager.submit_task(
                 tasks.task_resubscribe_batch,
                 task_name="批量媒体整理",
                 processor_type='media',
                 item_ids=item_ids
             )
-            # 乐观更新UI，将状态设置为“已订阅”
+            # 乐观更新
             resubscribe_db.batch_update_resubscribe_index_status(item_keys_for_db, 'subscribed')
             return jsonify({"message": "批量整理任务已提交到后台！"}), 202
 
@@ -220,6 +235,11 @@ def batch_action():
             updated_count = resubscribe_db.batch_update_resubscribe_index_status(item_keys_for_db, 'ok')
             return jsonify({"message": f"成功取消忽略了 {updated_count} 个媒体项。"})
         
+        elif action == 'delete':
+            # 如果有批量删除的需求，可以在这里对接
+            # 目前仅返回成功，避免前端报错
+            return jsonify({"message": "批量删除操作暂未实现。"}), 200
+
     except Exception as e:
         logger.error(f"API: 处理批量操作 '{action}' 时失败: {e}", exc_info=True)
         return jsonify({"error": "服务器内部错误"}), 500
