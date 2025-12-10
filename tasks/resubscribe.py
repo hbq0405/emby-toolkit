@@ -32,19 +32,9 @@ from .helpers import (
 
 logger = logging.getLogger(__name__)
 
-def _evaluate_rating_rule(rule: dict, rating_value: Any) -> tuple[bool, bool, str]:
+def _evaluate_rating_rule(rule: dict, rating_value: Any, item_name: str) -> tuple[bool, bool, str]:
     """
     【辅助函数】评估评分规则。
-    
-    参数:
-        rule: 规则字典
-        rating_value: 媒体评分 (可能是 None, float, int)
-        
-    返回:
-        (should_skip, is_needed, reason)
-        - should_skip: True 表示在洗版模式下评分过低，应直接跳过该项目。
-        - is_needed:   True 表示在删除模式下评分过低，应标记为需要处理(删除)。
-        - reason:      原因描述。
     """
     if not rule.get("filter_rating_enabled"):
         return False, False, ""
@@ -55,7 +45,6 @@ def _evaluate_rating_rule(rule: dict, rating_value: Any) -> tuple[bool, bool, st
     rule_type = rule.get('rule_type', 'resubscribe')
 
     is_low_rating = False
-    # 0分保护逻辑
     if current_rating == 0 and ignore_zero:
         pass 
     elif current_rating < threshold:
@@ -63,10 +52,12 @@ def _evaluate_rating_rule(rule: dict, rating_value: Any) -> tuple[bool, bool, st
 
     if is_low_rating:
         if rule_type == 'delete':
-            logger.info(f"  ➜ 评分低于{threshold},标记待删除。")
+            # 删除模式
+            logger.info(f"  ➜ [评分检查] 《{item_name}》评分({current_rating})低于阈值({threshold})，标记待删除。")
             return False, True, f"评分过低({current_rating})"
         else:
-            logger.info(f"  ➜ 评分低于{threshold},跳过洗版。")
+            # 洗版模式
+            logger.info(f"  ➜ [评分检查] 《{item_name}》评分({current_rating})低于阈值({threshold})，跳过洗版。")
             return True, False, ""
 
     return False, False, ""
@@ -152,7 +143,11 @@ def task_update_resubscribe_cache(processor):
             if not rule: continue 
 
             # ==================== 1. 评分预检查 (调用辅助函数) ====================
-            should_skip, rating_needed, rating_reason = _evaluate_rating_rule(rule, movie.get('rating'))
+            should_skip, rating_needed, rating_reason = _evaluate_rating_rule(
+                rule, 
+                movie.get('rating'), 
+                movie.get('title', '未知电影')
+            )
             
             if should_skip:
                 # 洗版模式下低分，直接忽略
@@ -321,7 +316,13 @@ def task_update_resubscribe_cache(processor):
                     reason_calculated = ""
 
                     # ==================== 1. 评分预检查 (调用辅助函数) ====================
-                    should_skip, rating_needed, rating_reason = _evaluate_rating_rule(rule, current_season_wrapper.get('rating'))
+                    season_display_name = f"{series['title']} - 第{season_num}季"
+
+                    should_skip, rating_needed, rating_reason = _evaluate_rating_rule(
+                        rule, 
+                        current_season_wrapper.get('rating'), 
+                        season_display_name
+                    )
 
                     if should_skip:
                         # 洗版模式下低分，直接忽略本季
