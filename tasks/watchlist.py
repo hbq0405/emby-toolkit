@@ -1,20 +1,15 @@
 # tasks/watchlist.py
 # 智能追剧列表任务模块
-import json
 import time
 import logging
-from typing import Optional, List, Dict, Any
+from typing import Optional
 import concurrent.futures
-from datetime import datetime, timedelta, timezone
 
 # 导入需要的底层模块和共享实例
-import config_manager
 import constants
-import handler.emby as emby
-import handler.tmdb as tmdb
 import extensions
 import task_manager
-from database import connection, watchlist_db, request_db, media_db
+from database import watchlist_db, request_db
 from psycopg2.extras import execute_values
 from watchlist_processor import STATUS_WATCHING, STATUS_PAUSED, STATUS_COMPLETED
 

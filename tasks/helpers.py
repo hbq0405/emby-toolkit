@@ -8,7 +8,6 @@ import logging
 from datetime import datetime, timedelta, timezone
 
 from handler.tmdb import get_movie_details, get_tv_details, get_tv_season_details, search_tv_shows, get_tv_season_details
-import constants
 from database import settings_db
 
 logger = logging.getLogger(__name__)
@@ -375,8 +374,8 @@ def analyze_media_asset(item_details: dict) -> dict:
     return {
         "resolution_display": resolution_str,
         "quality_display": quality_str,
-        "effect_display": effect_display_str, # ★★★ 核心修复 2/2: 使用新的标准大写字符串
-        "codec_display": codec_str,          # ★★★ 使用新的标准大写字符串
+        "effect_display": effect_display_str, 
+        "codec_display": codec_str,          
         "audio_display": audio_str,
         "subtitle_display": subtitle_str,
         "audio_languages_raw": list(detected_audio_langs),

@@ -188,7 +188,7 @@
                       <!-- 1. 启用开关 (左) -->
                       <n-form-item-grid-item label="启用" path="proxy_enabled">
                         <n-switch v-model:value="configModel.proxy_enabled" />
-                        <template #feedback><n-text depth="3" style="font-size:0.8em;">开启后需用下方端口访问。</n-text></template>
+                        <template #feedback><n-text depth="3" style="font-size:0.8em;">开启后需用右侧配置的端口访问。</n-text></template>
                       </n-form-item-grid-item>
 
                       <!-- 2. 端口 (右) -->

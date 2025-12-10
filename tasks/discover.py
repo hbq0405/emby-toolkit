@@ -1,9 +1,10 @@
 # tasks/discover.py
+# 影视探索任务模块
 import logging
 import handler.tmdb as tmdb
-from database import media_db, settings_db, request_db, actor_db # 1. 导入 actor_db
+from database import media_db, settings_db, request_db, actor_db 
 import constants
-from utils import DAILY_THEME, contains_chinese # 2. 导入 contains_chinese
+from utils import DAILY_THEME, contains_chinese 
 
 logger = logging.getLogger(__name__)
 

@@ -6,7 +6,7 @@ import logging
 import pytz
 import time
 import requests
-from datetime import datetime, timezone
+from datetime import datetime
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from typing import Dict, Any, List, Set
 

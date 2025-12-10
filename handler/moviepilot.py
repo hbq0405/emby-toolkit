@@ -3,13 +3,10 @@
 import requests
 import json
 import logging
-from typing import Dict, Any, Optional, Tuple, List
-from datetime import datetime
+from typing import Dict, Any, Optional
 
 import handler.tmdb as tmdb
-from tasks.helpers import should_mark_as_pending
 import constants
-from tasks import helpers
 
 logger = logging.getLogger(__name__)
 
@@ -231,131 +228,6 @@ def subscribe_series_to_moviepilot(series_info: dict, season_number: Optional[in
     logger.info(log_msg)
     
     return subscribe_with_custom_payload(payload, config)
-
-# ======================================================================
-# 复杂业务逻辑：智能多季订阅 (完全保留原有逻辑)
-# ======================================================================
-
-def smart_subscribe_series(series_info: dict, config: Dict[str, Any]) -> Optional[List[Dict[str, Any]]]:
-    """
-    【智能多季订阅 & 洗版增强】
-    解析剧集信息，然后调用 MoviePilot 订阅。
-    - 如果标题不含季号，且TMDb显示为多季剧集，则自动订阅所有季。
-    - 订阅时会检查该季是否已完结（最后一集已播出），完结则自动添加 best_version=1。
-    """
-    tmdb_id = series_info.get('tmdb_id')
-    title = series_info.get('item_name') or series_info.get('title')
-    tmdb_api_key = config.get(constants.CONFIG_OPTION_TMDB_API_KEY)
-    
-    if not all([tmdb_id, title, tmdb_api_key]):
-        logger.error(f"  ➜ 智能订阅失败：缺少 tmdb_id, item_name/title 或 tmdb_api_key。")
-        return None
-
-    base_name, season_num = helpers.parse_series_title_and_season(title, tmdb_api_key)
-    successful_subscriptions = []
-
-    # --- 情况一：标题中未解析出季号 ---
-    if season_num is None:
-        logger.info(f"'{title}'  ➜ 未指定季号，正在查询TMDb以决定订阅策略...")
-        series_details = tmdb.get_tv_details(tmdb_id, tmdb_api_key)
-        if not series_details:
-            logger.error(f"  ➜ 无法从TMDb获取剧集 {title} (ID: {tmdb_id}) 的详情。")
-            return None
-        
-        series_name = series_details.get('name', title)
-        seasons_to_subscribe = [s for s in series_details.get('seasons', []) if s.get('season_number', 0) > 0]
-
-        if len(seasons_to_subscribe) > 1:
-            logger.info(f"'{series_name}'  ➜ 是多季剧集，将为所有 {len(seasons_to_subscribe)} 个季分别提交订阅。")
-            for season in seasons_to_subscribe:
-                current_season_num = season['season_number']
-                is_completed = helpers.check_series_completion(
-                    tmdb_id=tmdb_id, 
-                    api_key=tmdb_api_key, 
-                    season_number=current_season_num, 
-                    series_name=series_name
-                )
-                best_version = 1 if is_completed else None
-                
-                mp_payload = {
-                    "name": series_name,
-                    "tmdbid": tmdb_id,
-                    "type": "电视剧",
-                    "season": current_season_num
-                }
-                if best_version:
-                    mp_payload["best_version"] = best_version
-
-                if subscribe_with_custom_payload(mp_payload, config):
-                    successful_subscriptions.append({
-                        "parent_tmdb_id": str(tmdb_id),
-                        "parsed_series_name": series_name,
-                        "parsed_season_number": current_season_num
-                    })
-        else:
-            logger.info(f"'{series_name}'  ➜ 将作为单季/整部剧集进行订阅。")
-            best_version = None
-            if seasons_to_subscribe:
-                s_num_to_check = seasons_to_subscribe[0]['season_number']
-                is_completed = helpers.check_series_completion(
-                    tmdb_id=tmdb_id, 
-                    api_key=tmdb_api_key, 
-                    season_number=s_num_to_check, 
-                    series_name=series_name
-                )
-                best_version = 1 if is_completed else None
-
-            mp_payload = {"name": series_name, "tmdbid": tmdb_id, "type": "电视剧"}
-
-            if best_version:
-                mp_payload["best_version"] = best_version
-            
-            if subscribe_with_custom_payload(mp_payload, config):
-                 successful_subscriptions.append({
-                    "parent_tmdb_id": str(tmdb_id),
-                    "parsed_series_name": series_name,
-                    "parsed_season_number": seasons_to_subscribe[0]['season_number'] if seasons_to_subscribe else 1
-                })
-
-    # --- 情况二：标题中已解析出季号 ---
-    else:
-        logger.info(f"'{title}'  ➜ 已解析出季号: {season_num}，执行单季订阅。")
-        clean_name = base_name if base_name else title
-
-        is_completed = helpers.check_series_completion(
-            tmdb_id=tmdb_id, 
-            api_key=tmdb_api_key, 
-            season_number=season_num, 
-            series_name=clean_name 
-        )
-        best_version = 1 if is_completed else None
-        
-        parent_name = base_name
-        parent_tmdb_id = tmdb_id
-        search_results = tmdb.search_tv_shows(base_name, tmdb_api_key)
-        if search_results:
-            parent_series = search_results[0]
-            parent_tmdb_id = parent_series.get('id', tmdb_id)
-            parent_name = parent_series.get('name', base_name)
-            logger.info(f"  ➜ 通过TMDb规范化剧集名为: '{parent_name}' (ID: {parent_tmdb_id})")
-
-        mp_payload = {
-            "name": parent_name,
-            "tmdbid": parent_tmdb_id,
-            "type": "电视剧",
-            "season": season_num
-        }
-        if best_version:
-            mp_payload["best_version"] = best_version
-        
-        if subscribe_with_custom_payload(mp_payload, config):
-            successful_subscriptions.append({
-                "parent_tmdb_id": str(parent_tmdb_id),
-                "parsed_series_name": parent_name,
-                "parsed_season_number": season_num
-            })
-
-    return successful_subscriptions if successful_subscriptions else None
 
 def update_subscription_status(tmdb_id: int, season: Optional[int], status: str, config: Dict[str, Any], total_episodes: Optional[int] = None) -> bool:
     """

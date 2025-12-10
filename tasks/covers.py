@@ -1,5 +1,5 @@
 # tasks/covers.py
-# 封面生成与资产同步任务模块
+# 封面生成任务模块
 
 import logging
 

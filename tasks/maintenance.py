@@ -2,12 +2,11 @@
 # 维护性任务模块：数据库导入
 
 import json
-import os
 import logging
 from typing import List, Dict, Any
 
 # 导入需要的底层模块和共享实例
-from database import connection, maintenance_db, settings_db
+from database import connection, maintenance_db
 from psycopg2 import sql
 from psycopg2.extras import execute_values, Json
 

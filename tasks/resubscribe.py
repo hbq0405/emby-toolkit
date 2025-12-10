@@ -1,7 +1,6 @@
 # tasks/resubscribe.py
-# 媒体洗版专属任务模块
+# 媒体整理任务模块
 
-import os
 import re 
 import time
 import logging
@@ -13,9 +12,8 @@ from collections import defaultdict
 import task_manager
 import handler.emby as emby
 import handler.moviepilot as moviepilot
-import config_manager 
 import constants  
-from database import resubscribe_db, settings_db, maintenance_db, request_db, watchlist_db
+from database import resubscribe_db, settings_db, maintenance_db, request_db
 
 # 从 helpers 导入的辅助函数和常量
 from .helpers import (

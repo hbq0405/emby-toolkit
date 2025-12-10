@@ -1,8 +1,7 @@
 # tasks/subscriptions.py
-# 智能订阅与媒体洗版任务模块
+# 智能订阅模块
 import json
 import logging
-from datetime import datetime, date
 from typing import List, Dict
 from concurrent.futures import ThreadPoolExecutor, as_completed 
 
