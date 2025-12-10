@@ -5,7 +5,7 @@ import os
 import re 
 import time
 import logging
-from typing import List, Dict, Optional
+from typing import List, Dict, Optional, Any
 from concurrent.futures import ThreadPoolExecutor, as_completed 
 from collections import defaultdict
 
@@ -32,10 +32,48 @@ from .helpers import (
 
 logger = logging.getLogger(__name__)
 
+def _evaluate_rating_rule(rule: dict, rating_value: Any) -> tuple[bool, bool, str]:
+    """
+    【辅助函数】评估评分规则。
+    
+    参数:
+        rule: 规则字典
+        rating_value: 媒体评分 (可能是 None, float, int)
+        
+    返回:
+        (should_skip, is_needed, reason)
+        - should_skip: True 表示在洗版模式下评分过低，应直接跳过该项目。
+        - is_needed:   True 表示在删除模式下评分过低，应标记为需要处理(删除)。
+        - reason:      原因描述。
+    """
+    if not rule.get("filter_rating_enabled"):
+        return False, False, ""
+
+    current_rating = float(rating_value or 0)
+    threshold = float(rule.get("filter_rating_min", 0))
+    ignore_zero = rule.get("filter_rating_ignore_zero", False)
+    rule_type = rule.get('rule_type', 'resubscribe')
+
+    is_low_rating = False
+    # 0分保护逻辑
+    if current_rating == 0 and ignore_zero:
+        pass 
+    elif current_rating < threshold:
+        is_low_rating = True
+
+    if is_low_rating:
+        if rule_type == 'delete':
+            # 删除模式：低分 -> 命中规则 -> 需要处理
+            return False, True, f"评分过低({current_rating})"
+        else:
+            # 洗版模式：低分 -> 忽略 -> 跳过
+            return True, False, ""
+
+    return False, False, ""
+
 # ======================================================================
 # 核心任务：刷新洗版状态
 # ======================================================================
-
 def task_update_resubscribe_cache(processor): 
     """
     - 刷新洗版状态 (优化版：状态保护与自动清理)
@@ -113,9 +151,19 @@ def task_update_resubscribe_cache(processor):
             rule = library_to_rule_map.get(source_lib_id)
             if not rule: continue 
 
+            # ==================== 1. 评分预检查 (调用辅助函数) ====================
+            should_skip, rating_needed, rating_reason = _evaluate_rating_rule(rule, movie.get('rating'))
+            
+            if should_skip:
+                # 洗版模式下低分，直接忽略
+                continue
+            
             # 计算物理状态 (True=需要洗版, False=已达标)
             needs, reason = _item_needs_resubscribe(assets[0], rule, movie)
-            
+            # 如果评分导致需要删除，强制覆盖状态
+            if rating_needed:
+                needs = True
+                reason = rating_reason
             # 获取数据库中的当前状态
             item_key_tuple = (str(movie['tmdb_id']), "Movie", -1)
             existing_status = current_statuses.get(item_key_tuple)
@@ -260,10 +308,6 @@ def task_update_resubscribe_cache(processor):
                     assets = rep_ep.get('asset_details_json')
                     if not assets: continue
 
-                    # --- 计算物理状态 ---
-                    status_calculated = 'ok'
-                    reason_calculated = ""
-
                     # 构建一个专用的 context 对象传进去
                     current_season_wrapper = series_meta_wrapper.copy()
                     current_season_wrapper.update({
@@ -272,16 +316,37 @@ def task_update_resubscribe_cache(processor):
                         'has_gaps': has_gaps  # <--- 传入计算结果
                     })
 
-                    if rule.get('consistency_check_enabled'):
-                        needs_fix, fix_reason = _check_season_consistency(eps_in_season, rule)
-                        if needs_fix:
-                            status_calculated = 'needed'
-                            reason_calculated = fix_reason
-                    else:
+                    # --- 初始化计算状态 ---
+                    status_calculated = 'ok'
+                    reason_calculated = ""
+
+                    # ==================== 1. 评分预检查 (调用辅助函数) ====================
+                    should_skip, rating_needed, rating_reason = _evaluate_rating_rule(rule, current_season_wrapper.get('rating'))
+
+                    if should_skip:
+                        # 洗版模式下低分，直接忽略本季
+                        continue
+
+                    if rating_needed:
+                        # 删除模式下低分，标记为需要处理
+                        status_calculated = 'needed'
+                        reason_calculated = rating_reason
+
+                    # ==================== 2. 常规洗版检查 ====================
+                    # 只有当前状态还是 ok 时才检查 (即评分没问题)
+                    if status_calculated == 'ok':
                         needs_upgrade, upgrade_reason = _item_needs_resubscribe(assets[0], rule, current_season_wrapper)
                         if needs_upgrade:
                             status_calculated = 'needed'
                             reason_calculated = upgrade_reason
+
+                    # ==================== 3. 一致性检查 ====================
+                    # 只有当前状态还是 ok 且开启了一致性检查时才执行
+                    if status_calculated == 'ok' and rule.get('consistency_check_enabled'):
+                        needs_fix, fix_reason = _check_season_consistency(eps_in_season, rule)
+                        if needs_fix:
+                            status_calculated = 'needed'
+                            reason_calculated = fix_reason
 
                     # --- ★★★ 核心逻辑优化 ★★★ ---
                     item_key_tuple = (tmdb_id, "Season", int(season_num))
@@ -440,40 +505,6 @@ def _item_needs_resubscribe(asset_details: dict, rule: dict, media_metadata: Opt
     item_name = media_metadata.get('title', '未知项目')
     reasons = []
 
-    tmdb_id = str(media_metadata.get('tmdb_id', ''))
-    item_type = media_metadata.get('item_type', '')
-    rule_type = rule.get('rule_type', 'resubscribe')
-    # ==================== 评分检查 ====================
-    try:
-        if rule.get("filter_rating_enabled"):
-            # 获取媒体评分 (优先取 rating，没有则 0)
-            current_rating = media_metadata.get('rating', 0) or 0
-            threshold = float(rule.get("filter_rating_min", 0))
-            ignore_zero = rule.get("filter_rating_ignore_zero", False)
-            
-            is_low_rating = False
-            if current_rating == 0 and ignore_zero:
-                logger.debug(f"  ➜ [评分检查] 《{item_name}》评分为0，但规则设定忽略0分，跳过评分检查。")
-            elif current_rating < threshold:
-                is_low_rating = True
-
-            if is_low_rating:
-                if rule_type == 'delete':
-                    # 【删除模式】：评分低 -> 命中规则 -> 需要删除
-                    reasons.append(f"评分过低({current_rating} < {threshold})")
-                else:
-                    # 【洗版模式】：评分低 -> 忽略 -> 不需要洗版
-                    # 直接返回 False，不再检查分辨率等其他条件
-                    logger.info(f"  ➜ [评分检查] 《{item_name}》评分({current_rating})低于阈值({threshold})，跳过洗版。")
-                    return False, "" 
-
-    except Exception as e:
-        logger.warning(f"  ➜ [评分检查] 处理时发生错误: {e}")
-    
-    # 如果是删除模式，且已经因为评分低命中了，直接返回（避免继续检查画质）
-    if rule_type == 'delete' and reasons:
-        return True, "; ".join(reasons)
-    
     # --- 1. 分辨率检查 (直接使用 resolution_display) ---
     try:
         if rule.get("resubscribe_resolution_enabled"):

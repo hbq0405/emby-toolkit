@@ -219,7 +219,7 @@ class ListImporter:
         return all_items
     
     def _get_items_from_tmdb_list(self, url: str) -> List[Dict[str, str]]:
-        """【新】专门用于解析和分页获取TMDb片单内容的函数"""
+        """专门用于解析和分页获取TMDb片单内容的函数"""
         match = re.search(r'themoviedb\.org/list/(\d+)', url)
         if not match:
             logger.error(f"  ➜ 无法从URL '{url}' 中解析出TMDb片单ID。")
@@ -271,7 +271,7 @@ class ListImporter:
         return all_items
     
     def _get_items_from_tmdb_discover(self, url: str) -> List[Dict[str, str]]:
-        """【V4.2 - 过滤增强版】专门用于解析TMDb Discover URL并获取结果的函数，支持自动分页并过滤无海报/无中文元数据的项目"""
+        """专门用于解析TMDb Discover URL并获取结果的函数，支持自动分页并过滤无海报/无中文元数据的项目"""
         from urllib.parse import urlparse, parse_qs
         from datetime import datetime, timedelta
         import re
@@ -416,11 +416,10 @@ class ListImporter:
         
         return items, source_type
 
-    def _match_title_to_tmdb(self, title: str, item_type: str, year: Optional[str] = None) -> Optional[Tuple[str, str]]:
+    def _match_title_to_tmdb(self, title: str, item_type: str, year: Optional[str] = None) -> Optional[Tuple[str, str, Optional[int]]]:
         """
-        【V3 - 剧集精确匹配最终版】
         - 增加了对剧集搜索结果的精确验证逻辑，避免因TMDb存在不规范条目（如 "剧名2"）时，错误地匹配到非基础剧集。
-        - 统一了返回值格式为元组 (tmdb_id, item_type)。
+        - 统一了返回值格式为元组 (tmdb_id, item_type, season_number)。
         """
         def normalize_string(s: str) -> str:
             if not s: return ""
@@ -569,8 +568,7 @@ class ListImporter:
                 if matched_id:
                     return matched_id, 'Series', season_number_to_validate
 
-                # 2. ★★★ 核心修复：如果带年份验证失败，尝试去掉年份重搜 ★★★
-                # 场景：RSS年份是2025(第三季)，但主剧条目是2022。带年份搜到了错误的2025条目，导致验证失败。
+                # 2. 如果带年份验证失败，尝试去掉年份重搜 
                 if year:
                     logger.info(f"  ➜ 剧集 '{show_name}' 带年份 ({year}) 搜索结果中未找到第 {season_number_to_validate} 季，尝试移除年份重搜...")
                     results_no_year = search_media(show_name, self.tmdb_api_key, 'Series', year=None)
@@ -589,7 +587,7 @@ class ListImporter:
                 logger.warning(f"  ➜ 验证失败！在 '{show_name}' 的所有搜索结果中，均未找到第 {season_number_to_validate} 季。")
                     
                 # ==============================================================================
-                # ★★★ 新增：兜底回退机制 ★★★
+                # ★★★ 兜底回退机制 ★★★
                 # 如果解析后的搜索+验证失败了，尝试用“原始标题”直接搜一次
                 # ==============================================================================
                 if show_name != title:
@@ -719,17 +717,17 @@ class ListImporter:
                             for item_type in types_to_check:
                                 match_result = self._match_title_to_tmdb(original_title, item_type, year=year)
                                 if match_result:
-                                    tmdb_id, matched_type = match_result
+                                    tmdb_id, matched_type, matched_season = match_result
                                     logger.info(f"  ➜ 豆瓣备用方案(3b)成功！通过 original_title '{original_title}' 匹配成功。")
-                                    return create_result(tmdb_id, matched_type)
+                                    return create_result(tmdb_id, matched_type, matched_season)
 
                 logger.debug(f"  ➜ 所有优先方案均失败，尝试不带年份进行最后的回退搜索: '{original_source_title}'")
                 for item_type in types_to_check:
                     match_result = self._match_title_to_tmdb(cleaned_title, item_type, year=None)
                     if match_result:
-                        tmdb_id, matched_type = match_result
+                        tmdb_id, matched_type, matched_season = match_result
                         logger.warning(f"  ➜ 注意：'{original_source_title}' 在最后的回退搜索中匹配成功，但年份可能不准。")
-                        return create_result(tmdb_id, matched_type)
+                        return create_result(tmdb_id, matched_type, matched_season)
 
                 logger.error(f"  ➜ 彻底失败：所有方案都无法为 '{original_source_title}' 找到匹配项。")
                 return fallback_result
@@ -754,7 +752,7 @@ class ListImporter:
                 # 例如: Series-12345-1, Series-12345-2
                 key = f"{item_type}-{tmdb_id}-{season}"
             else:
-                # 2. ★★★ 关键：如果没有 ID，必须用 标题 去重！★★★
+                # 2. 如果没有 ID，必须用 标题 去重！
                 # 例如: unidentified-怪奇物语 第五季
                 # 这样《怪奇物语》和《黑袍纠察队》就不会因为都是 None 而打架了
                 key = f"unidentified-{title}"
