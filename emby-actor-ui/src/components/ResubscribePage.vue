@@ -447,17 +447,40 @@ const batchActions = computed(() => {
 });
 
 const handleBatchAction = (key) => {
-  let ids = Array.from(selectedItems.value);
+  let ids = [];
   let actionKey = key;
   let isOneClick = false;
 
   if (key.startsWith('oneclick-')) {
     isOneClick = true;
-    actionKey = key.split('-')[1];
-    ids = []; 
+    actionKey = key.split('-')[1]; // 提取 'ignore' 或 'unignore'
+    
+    // ★★★ 核心修改：这里不再留空，而是直接获取当前筛选后的所有 ID ★★★
+    // filteredItems 就是你当前页面看到的所有数据（包含搜索、筛选后的结果）
+    ids = filteredItems.value.map(item => item.item_id);
+    
+    if (ids.length === 0) {
+        message.warning("当前筛选条件下没有可操作的项目。");
+        return;
+    }
+    
+    // 增加一个确认弹窗，防止误操作（因为数量可能很大）
+    dialog.warning({
+        title: '批量操作确认',
+        content: `确定要对当前视图下的 ${ids.length} 个项目执行“${actionKey === 'ignore' ? '忽略' : '取消忽略'}”操作吗？`,
+        positiveText: '确定',
+        negativeText: '取消',
+        onPositiveClick: () => {
+            executeBatchAction(actionKey, ids, isOneClick);
+        }
+    });
+    return; // 这里的 return 是为了等待 Dialog 回调，不直接执行下面的代码
+  } else {
+    // 普通的多选操作
+    ids = Array.from(selectedItems.value);
   }
   
-  if (!isOneClick && ids.length === 0) return;
+  if (ids.length === 0) return;
   executeBatchAction(actionKey, ids, isOneClick);
 };
 
