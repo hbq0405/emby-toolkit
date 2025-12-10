@@ -5,7 +5,7 @@ import json
 import os
 import concurrent.futures
 from typing import Optional, Dict, Any, List
-from datetime import datetime, timedelta, timezone
+from datetime import datetime, timezone
 import threading
 
 # 导入我们需要的辅助模块
@@ -1187,60 +1187,40 @@ class WatchlistProcessor:
             old_status=old_status
         )
 
-        # ★★★ 场景一：补旧番 - 只处理已完结剧集中，已播出的缺失季 ★★★
-        # 注意：由于现在 TMDb Ended 状态会直接导致 final_status = COMPLETED，
-        # 所以即使本地缺集，也会进入这个分支，从而正确触发“补旧番”逻辑。
-        if final_status == STATUS_COMPLETED and has_missing_media:
-            logger.info(f"  ➜ 《{item_name}》为已完结状态，开始检查可补全的缺失季...")
-            
-            for season in missing_info.get("missing_seasons", []):
-                season_num = season.get('season_number')
-                air_date_str = season.get('air_date')
-                
-                if season_num is None or not air_date_str:
-                    continue
+        # ======================================================================
+        # ★★★ 缺失内容订阅处理 (重构版：开关控制 + 职责分离) ★★★
+        # ======================================================================
+        
+        # 1. 读取配置开关
+        # 在 settings_db 或 config 中定义 'enable_backfill'，默认为 False (不补旧番)
+        watchlist_cfg = settings_db.get_setting('watchlist_config') or {}
+        enable_backfill = watchlist_cfg.get('enable_backfill', False)
 
-                try:
-                    air_date = datetime.strptime(air_date_str, '%Y-%m-%d').date()
-                    # 关键判断：只有当这一季的播出日期早于或等于今天，才订阅
-                    if air_date <= today:
-                        logger.warning(f"  ➜ 发现已完结的缺失季 S{season_num} (播出日期: {air_date_str})，将状态设为 WANTED。")
-                        
-                        # 准备媒体信息
-                        season_tmdb_id = str(season.get('id'))
-                        media_info = {
-                            'tmdb_id': season_tmdb_id, 
-                            'item_type': 'Season',     
-                            'title': f"{item_name} {season.get('name', f'第 {season_num} 季')}", 
-                            'original_title': latest_series_data.get('original_name'),
-                            'release_date': season.get('air_date'),
-                            'poster_path': season.get('poster_path'),
-                            'overview': season.get('overview'), 
-                            'season_number': season_num
-                        }
-                        
-                        # 推送需求
-                        request_db.set_media_status_wanted(
-                            tmdb_ids=str(season.get('id')), 
-                            item_type='Season',             
-                            source={"type": "watchlist", "reason": "missing_completed_season", "item_id": item_id},
-                            media_info_list=[media_info]
-                        )
-                    else:
-                        logger.info(f"  ➜ 缺失季 S{season_num} 尚未播出 ({air_date_str})，跳过补全订阅。")
-                except ValueError:
-                    logger.warning(f"  ➜ 解析缺失季 S{season_num} 的播出日期 '{air_date_str}' 失败，跳过。")
+        # 2. 计算 TMDb 上的最新季号 (用于区分“旧季”和“新季”)
+        all_seasons = latest_series_data.get('seasons', [])
+        valid_seasons = [s for s in all_seasons if s.get('season_number', 0) > 0]
+        latest_season_num = max((s['season_number'] for s in valid_seasons), default=0)
 
-        # ★★★ 场景二：追新剧 - 为在追/暂停的剧集，订阅所有缺失内容 (保持原逻辑) ★★★
-        elif final_status in [STATUS_WATCHING, STATUS_PAUSED] and has_missing_media:
-            logger.info(f"  ➜ 《{item_name}》为在追状态，将订阅所有缺失内容...")
-            
-            # a. 处理缺失的整季
+        if has_missing_media:
+            # 遍历所有缺失的整季
             for season in missing_info.get("missing_seasons", []):
                 season_num = season.get('season_number')
                 if season_num is None: continue
 
-                # 准备通用的采购单信息
+                # --- 逻辑分支 A: 最新季 (New Season) ---
+                # 你的要求：完全交给 run_new_season_check_task 处理，此处直接忽略。
+                if season_num >= latest_season_num:
+                    # logger.debug(f"  ➜ [逻辑跳过] S{season_num} 是最新季，交由复活任务处理，本流程不执行订阅。")
+                    continue
+
+                # --- 逻辑分支 B: 旧季 (Old Seasons) ---
+                # 你的要求：由开关控制。
+                if not enable_backfill:
+                    # 如果你想看日志确认开关生效，可以取消下面注释
+                    # logger.debug(f"  ➜ [补全跳过] S{season_num} 是旧季且补旧番开关(enable_backfill)未开启。")
+                    continue
+
+                # --- 执行补旧番逻辑 (仅当开关开启 且 是旧季时) ---
                 season_tmdb_id = str(season.get('id'))
                 media_info = {
                     'tmdb_id': season_tmdb_id,
@@ -1254,32 +1234,27 @@ class WatchlistProcessor:
                     'parent_series_tmdb_id': tmdb_id
                 }
                 
+                # 检查播出时间（虽然旧季通常都播完了，但为了严谨还是保留判断）
                 air_date_str = season.get('air_date')
-                is_pending = False
+                is_released = False
                 if air_date_str:
                     try:
                         air_date = datetime.strptime(air_date_str, '%Y-%m-%d').date()
-                        if air_date > today:
-                            is_pending = True
+                        if air_date <= today:
+                            is_released = True
                     except ValueError:
                         pass
                 
-                if is_pending:
-                    logger.info(f"  ➜ 发现未上映的缺失季 S{season_num} (播出日期: {air_date_str})，将状态设为 PENDING_RELEASE。")
-                    request_db.set_media_status_pending_release(
+                if is_released:
+                    # 只有已上映的旧季才补，未上映的旧季(理论不存在)不补
+                    result = request_db.set_media_status_wanted(
                         tmdb_ids=season_tmdb_id,
                         item_type='Season',
-                        source={"type": "watchlist", "reason": "missing_season", "item_id": item_id},
+                        source={"type": "watchlist", "reason": "backfill_old_season", "item_id": item_id},
                         media_info_list=[media_info]
                     )
-                else:
-                    logger.info(f"  ➜ 发现已上映的缺失季 S{season_num}，将状态设为 WANTED。")
-                    request_db.set_media_status_wanted(
-                        tmdb_ids=season_tmdb_id,
-                        item_type='Season',
-                        source={"type": "watchlist", "reason": "missing_season", "item_id": item_id},
-                        media_info_list=[media_info]
-                    )
+                    if result:
+                        logger.info(f"  ➜ 已为《{item_name}》缺失的旧季 S{season_num} 提交下载请求。")
 
     # --- 统一的、公开的追剧处理入口 ★★★
     def process_watching_list(self, item_id: Optional[str] = None):
@@ -1367,21 +1342,3 @@ class WatchlistProcessor:
                         if e_num is not None and e_num not in emby_seasons.get(s_num, set()):
                             missing_info["missing_episodes"].append(episode)
         return missing_info
-
-    def _check_all_episodes_have_overview(self, all_episodes: List[Dict[str, Any]]) -> bool:
-        """检查一个剧集的所有集是否都有简介(overview)。"""
-        if not all_episodes:
-            return True
-
-        # ★★★ 修改：硬编码忽略所有第0季（特别篇）★★★
-        missing_overview_episodes = [
-            f"S{ep.get('season_number', 'N/A'):02d}E{ep.get('episode_number', 'N/A'):02d}"
-            for ep in all_episodes if not ep.get("overview") and ep.get("season_number") != 0
-        ]
-
-        if missing_overview_episodes:
-            logger.warning(f"  ➜ 元数据不完整，以下集缺少简介: {', '.join(missing_overview_episodes)}")
-            return False
-        
-        logger.info("  ➜ 元数据完整性检查通过，所有集都有简介。")
-        return True

@@ -277,7 +277,8 @@ def api_watchlist_settings():
         },
         "auto_pause": False,
         "auto_resub_ended": False,
-        "gap_fill_resubscribe": False
+        "gap_fill_resubscribe": False,
+        "enable_backfill": False
     }
 
     if request.method == 'GET':
