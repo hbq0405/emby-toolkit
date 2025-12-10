@@ -139,4 +139,4 @@ def add_file_handler(log_directory: str,
         logging.error(f"配置日志文件处理器时发生错误: {e}", exc_info=True)
 
 # 启动时打印一条消息，表示基础 logger 已就绪
-logging.info("  ➜ 基础 Logger (控制台/前端/过滤器) 已初始化。")
+logging.debug("  ➜ 基础 Logger (控制台/前端/过滤器) 已初始化。")
