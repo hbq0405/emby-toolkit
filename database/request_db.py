@@ -361,28 +361,6 @@ def set_media_status_none(
         logger.error(f"  ➜ [状态执行] 更新媒体状态为 'NONE' 时发生错误: {e}", exc_info=True)
         raise
 
-def get_pending_requests_for_admin() -> List[Dict[str, Any]]:
-    """获取所有待审批 (REQUESTED) 的订阅请求，并关联用户名。"""
-    sql = """
-        SELECT 
-            m.tmdb_id, m.item_type, m.title, m.release_date, m.poster_path,
-            m.first_requested_at as requested_at,
-            (m.subscription_sources_json -> 0 ->> 'user_id') as emby_user_id,
-            u.name as username
-        FROM media_metadata m
-        LEFT JOIN emby_users u ON (m.subscription_sources_json -> 0 ->> 'user_id') = u.id
-        WHERE m.subscription_status = 'REQUESTED'
-        ORDER BY m.first_requested_at ASC;
-    """
-    try:
-        with get_db_connection() as conn:
-            cursor = conn.cursor()
-            cursor.execute(sql)
-            return [dict(row) for row in cursor.fetchall()]
-    except Exception as e:
-        logger.error(f"DB: 查询待审订阅列表失败: {e}", exc_info=True)
-        return []
-    
 def get_global_request_status_by_tmdb_id(tmdb_id: str) -> Optional[str]:
     """查询单个 TMDb ID 的全局请求/订阅状态。"""
     sql = "SELECT subscription_status FROM media_metadata WHERE tmdb_id = %s LIMIT 1;"

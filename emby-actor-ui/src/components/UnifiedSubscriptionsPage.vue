@@ -46,6 +46,7 @@
               <span style="font-size: 12px; color: gray;">删除后无法恢复，且下次扫描可能会再次发现这些项目。</span>
             </n-popconfirm>
             <n-radio-group v-model:value="filterStatus" size="small">
+              <n-radio-button value="REQUESTED">待审核</n-radio-button>
               <n-radio-button value="WANTED">待订阅</n-radio-button>
               <n-radio-button value="SUBSCRIBED">已订阅</n-radio-button> 
               <n-radio-button value="PAUSED">已暂停</n-radio-button>
@@ -158,6 +159,14 @@
                   <!-- 底部按钮 -->
                   <div class="card-actions">
                     <n-button-group size="small">
+                      <template v-if="item.subscription_status === 'REQUESTED'">
+                        <n-button @click="() => subscribeItem(item)" type="primary" ghost>
+                          批准
+                        </n-button>
+                        <n-button @click="() => updateItemStatus(item, 'IGNORED')" type="error" ghost>
+                          忽略
+                        </n-button>
+                      </template>
                       <template v-if="item.subscription_status === 'WANTED'">
                         <n-button @click="() => subscribeItem(item)" type="primary" ghost>
                           订阅
@@ -251,7 +260,7 @@
 import { ref, onMounted, onBeforeUnmount, h, computed, watch } from 'vue';
 import axios from 'axios';
 import { NLayout, NPageHeader, NDivider, NEmpty, NTag, NButton, NSpace, NIcon, useMessage, useDialog, NTooltip, NCard, NImage, NEllipsis, NSpin, NAlert, NRadioGroup, NRadioButton, NCheckbox, NDropdown, NInput, NSelect, NButtonGroup } from 'naive-ui';
-import { SyncOutline, TvOutline as TvIcon, FilmOutline as FilmIcon, CalendarOutline as CalendarIcon, TimeOutline as TimeIcon, ArrowUpOutline as ArrowUpIcon, ArrowDownOutline as ArrowDownIcon, CaretDownOutline as CaretDownIcon, CheckmarkCircleOutline as WantedIcon, HourglassOutline as PendingIcon, BanOutline as IgnoredIcon, DownloadOutline as SubscribedIcon, PersonCircleOutline as SourceIcon, TrashOutline as TrashIcon, SettingsOutline as SettingsIcon, PauseCircleOutline as PausedIcon } from '@vicons/ionicons5';
+import { SyncOutline, TvOutline as TvIcon, FilmOutline as FilmIcon, CalendarOutline as CalendarIcon, TimeOutline as TimeIcon, ArrowUpOutline as ArrowUpIcon, ArrowDownOutline as ArrowDownIcon, CaretDownOutline as CaretDownIcon, CheckmarkCircleOutline as WantedIcon, HourglassOutline as PendingIcon, BanOutline as IgnoredIcon, DownloadOutline as SubscribedIcon, PersonCircleOutline as SourceIcon, TrashOutline as TrashIcon, SettingsOutline as SettingsIcon, PauseCircleOutline as PausedIcon, ReaderOutline as AuditIcon } from '@vicons/ionicons5';
 import { format } from 'date-fns'
 
 // 图标定义
@@ -367,6 +376,11 @@ const batchActions = computed(() => {
     case 'WANTED':
       return [
         { label: '批量订阅', key: 'subscribe', icon: () => h(NIcon, { component: SubscribedIcon }) },
+        { label: '批量忽略', key: 'ignore', icon: () => h(NIcon, { component: IgnoredIcon }) },
+      ];
+    case 'REQUESTED': 
+      return [
+        { label: '批量批准', key: 'subscribe', icon: () => h(NIcon, { component: SubscribedIcon }) },
         { label: '批量忽略', key: 'ignore', icon: () => h(NIcon, { component: IgnoredIcon }) },
       ];
     case 'SUBSCRIBED':
@@ -726,6 +740,7 @@ const statusInfo = (status) => {
     'PENDING_RELEASE': { type: 'info', text: '未上映', icon: PendingIcon },
     'IGNORED': { type: 'error', text: '已忽略', icon: IgnoredIcon },
     'PAUSED': { type: 'warning', text: '已暂停', icon: PausedIcon },
+    'REQUESTED': { type: 'warning', text: '待审核', icon: AuditIcon },
   };
   return map[status] || { type: 'default', text: '未知', icon: TvIcon };
 };

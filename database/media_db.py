@@ -288,7 +288,7 @@ def get_all_subscriptions() -> List[Dict[str, Any]]:
         ON 
             m1.parent_series_tmdb_id = m2.tmdb_id AND m2.item_type = 'Series'
         WHERE 
-            m1.subscription_status IN ('WANTED', 'PENDING_RELEASE', 'IGNORED', 'SUBSCRIBED', 'PAUSED')
+            m1.subscription_status IN ('REQUESTED', 'WANTED', 'PENDING_RELEASE', 'IGNORED', 'SUBSCRIBED', 'PAUSED')
         ORDER BY 
             m1.first_requested_at DESC;
     """

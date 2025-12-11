@@ -22,9 +22,6 @@
       <n-tab-pane name="user-list" tab="用户列表">
         <UserList />
       </n-tab-pane>
-      <n-tab-pane name="subscription-approval" tab="订阅审核">
-        <SubscriptionApproval />
-      </n-tab-pane>
       <n-tab-pane name="invitation-list" tab="邀请链接">
         <InvitationList />
       </n-tab-pane>
@@ -40,7 +37,6 @@ import { NTabs, NTabPane, NPageHeader, NAlert } from 'naive-ui';
 import UserList from './UserList.vue';
 import InvitationList from './InvitationList.vue';
 import UserTemplates from './UserTemplates.vue';
-import SubscriptionApproval from './SubscriptionApproval.vue';
 </script>
 
 <style scoped>
