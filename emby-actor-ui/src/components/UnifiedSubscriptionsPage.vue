@@ -339,13 +339,11 @@ const SOURCE_TYPE_MAP = {
   'manual_add': '手动添加',
   'watchlist': '智能追剧',
   'resubscribe': '自动洗版',
-  'admin_approval': '管理员审核',
-  'batch_admin_op': '批量处理',
-  'api_unified_status_change_ignored': '手动忽略',
+  'manual_ignore': '手动忽略',
+  'manual_subscribe': '手动订阅',
   'manual_admin_op': '手动处理',
   'auto_ignored': '自动忽略',
-  'gap_scan': '缺集的季',
-  'admin_rejection': '管理员拒绝'
+  'gap_scan': '缺集的季'
 };
 
 const sourceFilterOptions = computed(() => {
