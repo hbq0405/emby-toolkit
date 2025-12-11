@@ -602,7 +602,7 @@ class WatchlistProcessor:
                 # ★★★ 修改：将 and 改为 or ★★★
                 # 逻辑：上线时间在阈值内 OR 集数很少 (满足任一条件即待定)
                 # days_diff >= 0 确保是已上映的
-                if (0 <= days_diff <= threshold_days) or (episode_count <= threshold_episodes):
+                if days_diff >= 0 and ((days_diff <= threshold_days) or (episode_count <= threshold_episodes)):
                     return True
             
             return False
@@ -753,55 +753,35 @@ class WatchlistProcessor:
             logger.error(f"  ❌ 检查 S{season_number} 一致性时出错: {e}")
             return False # 出错默认不跳过，继续洗版以防万一
 
-    def _handle_auto_resub_ended(self, tmdb_id: str, series_name: str, series_details: Dict[str, Any]):
+    def _handle_auto_resub_ended(self, tmdb_id: str, series_name: str, season_number: int, episode_count: int):
         """
-        当剧集自然完结时：
-        1. 遍历所有季。
-        2. 立即调用 MP 取消旧订阅。
-        3. 立即调用 MP 发起洗版订阅 (BestVersion=1)。
+        【重构版】针对指定季进行完结洗版。
+        参数直接传入季号和集数，不再需要在内部计算。
         """
         try:
-            # 1. 读取配置
-            watchlist_cfg = settings_db.get_setting('watchlist_config') or {}
-            if not watchlist_cfg.get('auto_resub_ended', False):
+            logger.info(f"  🎉 剧集《{series_name}》已自然完结，正在对最终季 (S{season_number}) 执行洗版流程...")
+
+            # 1. 直接使用传入的集数进行一致性检查
+            # 如果本地已集齐且版本统一，则直接跳过
+            if self._check_season_consistency(tmdb_id, season_number, episode_count):
                 return
-
-            logger.info(f"  🎉 剧集《{series_name}》已自然完结，正在立即执行洗版流程...")
-
-            seasons = series_details.get('seasons', [])
-            if not seasons:
-                logger.warning(f"  ⚠️ 无法获取《{series_name}》的分季信息，跳过洗版。")
-                return
-
-            # 2. 遍历所有有效季 (跳过第0季)
-            valid_seasons = sorted([s for s in seasons if s.get('season_number', 0) > 0], key=lambda x: x['season_number'])
-
-            for season in valid_seasons:
-                s_num = season['season_number']
-                ep_count = season.get('episode_count', 0)
-                
-                # 如果本地已集齐且版本统一，则直接跳过，不再折腾
-                if self._check_season_consistency(tmdb_id, s_num, ep_count):
-                    continue
-                
-                # --- A. 取消旧订阅 ---
-                moviepilot.cancel_subscription(tmdb_id, 'Series', self.config, season=s_num)
-                
-                # --- B. 发起新订阅 (洗版) ---
-                payload = {
-                    "name": series_name,
-                    "tmdbid": int(tmdb_id),
-                    "type": "电视剧",
-                    "season": s_num,
-                    "best_version": 1 # ★ 核心：洗版模式
-                }
-                
-                if moviepilot.subscribe_with_custom_payload(payload, self.config):
-                    logger.info(f"  ➜ [完结洗版] 《{series_name}》S{s_num} 已提交洗版订阅。")
-                else:
-                    logger.error(f"  ❌ [完结洗版] 《{series_name}》S{s_num} 提交失败。")
-
-            logger.info(f"  ✅ 《{series_name}》全剧洗版请求处理完毕。")
+            
+            # 2. 取消旧订阅
+            moviepilot.cancel_subscription(tmdb_id, 'Series', self.config, season=season_number)
+            
+            # 3. 发起新订阅 (洗版)
+            payload = {
+                "name": series_name,
+                "tmdbid": int(tmdb_id),
+                "type": "电视剧",
+                "season": season_number,
+                "best_version": 1 # ★ 核心：洗版模式
+            }
+            
+            if moviepilot.subscribe_with_custom_payload(payload, self.config):
+                logger.info(f"  ➜ [完结洗版] 《{series_name}》S{season_number} 已提交洗版订阅。")
+            else:
+                logger.error(f"  ❌ [完结洗版] 《{series_name}》S{season_number} 提交失败。")
 
         except Exception as e:
             logger.error(f"  ⚠️ 执行完结自动洗版逻辑时出错: {e}", exc_info=True)
@@ -1112,13 +1092,39 @@ class WatchlistProcessor:
         # ======================================================================
         # ★★★ 完结自动洗版逻辑 ★★★
         # ======================================================================
-        # 触发条件：
-        # 1. 新状态是“已完结”
-        # 2. 旧状态是“追剧中”、“已暂停”或“待定” (即之前是在追的)
-        # 3. 并非强制完结 (强制完结通常是人工干预，不应自动洗版)
         if final_status == STATUS_COMPLETED and old_status in [STATUS_WATCHING, STATUS_PAUSED, STATUS_PENDING] and not is_force_ended:
-            # 传入 latest_series_data 以便获取分季信息
-            self._handle_auto_resub_ended(tmdb_id, item_name, latest_series_data)
+            
+            # ★★★ 优化 1：先检查开关，没开直接跳过，省去后续计算 ★★★
+            if watchlist_cfg.get('auto_resub_ended', False):
+                
+                # 1. 获取分季信息，找到最后一季
+                seasons = latest_series_data.get('seasons', [])
+                valid_seasons = sorted([s for s in seasons if s.get('season_number', 0) > 0], key=lambda x: x['season_number'])
+                
+                if valid_seasons:
+                    target_season = valid_seasons[-1]
+                    last_s_num = target_season.get('season_number')
+                    last_ep_count = target_season.get('episode_count', 0)
+                    
+                    # 2. ★★★ 优化 2：完结时效性检查 (防止老剧误洗) ★★★
+                    should_wash = True
+                    last_air_date_str = target_season.get('air_date')
+                    
+                    if last_air_date_str:
+                        try:
+                            last_air_date = datetime.strptime(last_air_date_str, '%Y-%m-%d').date()
+                            days_since_air = (today - last_air_date).days
+                            
+                            # 如果最后一季首播超过 90 天，视为老剧状态修正，不洗版
+                            if days_since_air > 90:
+                                should_wash = False
+                                logger.info(f"  🛑 [洗版跳过] 《{item_name}》虽状态转为完结，但最终季 S{last_s_num} 首播于 {days_since_air} 天前，判定为老剧状态修正，不执行洗版。")
+                        except ValueError:
+                            pass
+
+                    # 3. 执行洗版 (传入明确参数)
+                    if should_wash:
+                        self._handle_auto_resub_ended(tmdb_id, item_name, last_s_num, last_ep_count)
 
         # 更新追剧数据库
         updates_to_db = {
@@ -1292,8 +1298,12 @@ class WatchlistProcessor:
     # --- 通过对比计算真正的下一待看集 ---
     def _calculate_real_next_episode(self, all_tmdb_episodes: List[Dict], emby_seasons: Dict) -> Optional[Dict]:
         """
-        【逻辑重生】通过对比本地和TMDb全量数据，计算用户真正缺失的第一集。
+        【逻辑重生 - 修正版】通过对比本地和TMDb全量数据，计算用户真正缺失的下一集。
+        ★ 修正：只返回【未来】或【近期(30天内)】的缺失集。
+        ★ 目的：忽略老旧的缺失集（如缺了第一季），防止它们被误判为“待播集”从而导致状态一直显示为“追剧中”。
         """
+        today = datetime.now(timezone.utc).date()
+
         # 1. 获取TMDb上所有非特别季的剧集，并严格按季号、集号排序
         all_episodes_sorted = sorted([
             ep for ep in all_tmdb_episodes 
@@ -1306,12 +1316,23 @@ class WatchlistProcessor:
             e_num = episode.get('episode_number')
             
             if s_num not in emby_seasons or e_num not in emby_seasons.get(s_num, set()):
-                # 找到了！这无论是否播出，都是用户最关心的下一集
-                logger.info(f"  ➜ 找到本地缺失的第一集: S{s_num}E{e_num} ('{episode.get('name')}'), 将其设为待播集。")
-                return episode
-        
-        # 3. 如果循环完成，说明本地拥有TMDb上所有的剧集
-        logger.info("  ➜ 本地媒体库已拥有TMDb上所有剧集，无待播信息。")
+                # ★★★ 核心过滤：检查该缺失集的播出时间 ★★★
+                air_date_str = episode.get('air_date')
+                if air_date_str:
+                    try:
+                        air_date = datetime.strptime(air_date_str, '%Y-%m-%d').date()
+                        # 逻辑：只有当这一集是“未来会播”或者“最近30天刚播”的，才算作有效的“待播/待追”集
+                        # 如果是 1999 年的集数缺失，直接忽略，不让它占据“Next Episode”的位置
+                        if air_date >= today or (today - air_date).days <= 30:
+                            logger.info(f"  ➜ 找到有效的待追新集: S{s_num}E{e_num} (播出日期: {air_date_str})")
+                            return episode
+                        else:
+                            # 虽然缺了这一集，但它太老了，跳过，继续找下一集
+                            continue
+                    except ValueError:
+                        continue
+                
+        # 3. 如果没有找到符合时间条件的缺失集
         return None
     # --- 计算缺失的季和集 ---
     def _calculate_missing_info(self, tmdb_seasons: List[Dict], all_tmdb_episodes: List[Dict], emby_seasons: Dict) -> Dict:

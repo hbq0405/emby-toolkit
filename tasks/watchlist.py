@@ -60,59 +60,42 @@ def task_run_new_season_check(processor):
 # ✨✨✨ 一键添加所有剧集到追剧列表的任务 ✨✨✨
 def task_add_all_series_to_watchlist(processor):
     """
-    【V5 - 高效重构版】
-    - 核心数据源改为本地数据库，极大提升执行速度和稳定性。
-    - 仅在需要按媒体库筛选时，才对 Emby 进行一次性的 ID 批量查询。
-    - 保留了批量写入和任务链的高效特性。
+    【V6 - 存量导入版】
+    - 扫描库内未纳管的剧集，将其直接标记为“已完结”。
+    - 不会自动触发追剧检查，避免老剧被误洗版。
+    - 真正还在连载的剧集，将由“已完结剧集复活检查”任务后续慢慢发现。
     """
     task_name = "一键扫描库内剧集"
-    logger.info(f"--- 开始执行 '{task_name}' 任务 (高效模式) ---")
+    logger.info(f"--- 开始执行 '{task_name}' (存量导入模式) ---")
     
     try:
-        # 1. 确定处理范围 (媒体库过滤)
+        # 1. 读取配置
         task_manager.update_status_from_thread(10, "正在读取配置...")
         library_ids_to_process = processor.config.get(constants.CONFIG_OPTION_EMBY_LIBRARIES_TO_PROCESS, [])
         
         if library_ids_to_process:
             logger.info(f"  ➜ 已启用媒体库过滤器: {library_ids_to_process}")
         else:
-            logger.info("  ➜ 未指定媒体库，将处理所有剧集。")
+            logger.info("  ➜ 未指定媒体库，将扫描所有剧集。")
 
-        # 2. 执行数据库原子更新
-        task_manager.update_status_from_thread(30, "正在数据库中执行批量更新...")
+        # 2. 执行数据库更新 (导入为 Completed)
+        task_manager.update_status_from_thread(30, "正在数据库中执行存量导入...")
         
         try:
-            # ★★★ 核心变化：直接调用新函数，传入库 ID 列表即可 ★★★
-            updated_count = watchlist_db.batch_set_series_watching_by_libraries(library_ids_to_process)
+            # ★★★ 调用新函数：导入为 Completed ★★★
+            updated_count = watchlist_db.batch_import_series_as_completed(library_ids_to_process)
         except Exception as e_db:
             raise RuntimeError(f"数据库执行失败: {e_db}")
 
-        scan_complete_message = f"扫描完成！共更新了 {updated_count} 部剧集为“追剧中”。"
-        logger.info(scan_complete_message)
-        
-        # 3. 触发后续任务链 (逻辑保持不变)
+        # 3. 结束任务 (不再触发追剧检查)
         if updated_count > 0:
-            logger.info("--- 任务链：即将自动触发【检查所有在追剧集】任务 ---")
-            task_manager.update_status_from_thread(99, "状态更新完成，正在启动追剧检查...")
-            time.sleep(2)
-            try:
-                watchlist_proc = extensions.watchlist_processor_instance
-                if watchlist_proc:
-                    task_process_watchlist(
-                        processor=watchlist_proc, 
-                        tmdb_id=None, 
-                        force_full_update=False
-                    )
-                    final_message = "自动化流程完成：扫描与追剧检查均已结束。"
-                    task_manager.update_status_from_thread(100, final_message)
-                else:
-                    raise RuntimeError("WatchlistProcessor 未初始化。")
-            except Exception as e_chain:
-                 logger.error(f"执行链式任务失败: {e_chain}", exc_info=True)
-                 task_manager.update_status_from_thread(-1, f"链式任务失败: {e_chain}")
+            final_message = f"扫描完成！已将 {updated_count} 部新发现的剧集纳入管理（默认为已完结）。"
+            logger.info(f"  ➜ {final_message}")
+            logger.info("  ➜ 提示：如果其中包含连载剧，请等待“已完结剧集复活检查”任务自动修正，或手动使用深度模式刷新。")
+            task_manager.update_status_from_thread(100, final_message)
         else:
-            final_message = "任务完成！没有发现需要更新状态的剧集。"
-            logger.info(final_message)
+            final_message = "扫描完成！没有发现未纳管的剧集。"
+            logger.info(f"  ➜ {final_message}")
             task_manager.update_status_from_thread(100, final_message)
 
     except Exception as e:
