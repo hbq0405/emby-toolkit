@@ -187,17 +187,16 @@ def get_stats_subscription():
                     ),
                     missing_pairs AS (
                         -- 2. 关联媒体表，找出真正缺失的项目 (Collection ID, TMDB ID) 对
-                        -- ★★★ 修复：使用 LEFT JOIN 包含那些在 media_metadata 表中完全不存在的记录 ★★★
+                        -- 使用 LEFT JOIN 包含那些在 media_metadata 表中完全不存在的记录
                         SELECT 
                             e.emby_collection_id,
                             e.tmdb_id
                         FROM expanded_ids e
                         LEFT JOIN media_metadata m ON e.tmdb_id = m.tmdb_id AND m.item_type = 'Movie'
                         WHERE 
-                            -- 条件A: 媒体库中不存在 (要么记录为NULL，要么 in_library 为 FALSE)
+                            -- 核心修改：只要不在库（记录为NULL 或 in_library=FALSE），就算缺失
+                            -- 不再判断 subscription_status，无论是否订阅/忽略，只要没入库都算
                             (m.in_library IS NULL OR m.in_library = FALSE)
-                            -- 条件B: 没有订阅/忽略状态 (要么记录为NULL，要么状态为 NONE)
-                            AND (m.subscription_status IS NULL OR m.subscription_status = 'NONE')
                     )
                     SELECT 
                         (SELECT COUNT(*) FROM collections_info) as total,
