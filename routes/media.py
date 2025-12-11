@@ -371,40 +371,7 @@ def api_search_studios():
 @admin_required
 def api_unified_subscription_status():
     """
-    【V2 - 全能版】统一处理所有媒体项状态变更的唯一入口。
-    取代了旧的 /subscription/status, /cancel, /ignore 三个接口。
-    
-    请求体示例:
-    {
-        "requests": [
-            {
-                "tmdb_id": "123",
-                "item_type": "Movie",
-                "new_status": "WANTED",  // 待订阅
-                "source": {"type": "manual_add"},
-                "title": "一部新电影" 
-            },
-            {
-                "tmdb_id": "456",
-                "item_type": "Series",
-                "new_status": "IGNORED", // 忽略
-                "source": {"type": "manual_ignore"},
-                "ignore_reason": "不喜欢这个系列"
-            },
-            {
-                "tmdb_id": "789",
-                "item_type": "Movie",
-                "new_status": "NONE"     // 取消订阅
-            },
-            {
-                "tmdb_id": "456",
-                "item_type": "Series",
-                "new_status": "WANTED",  // 反悔，取消忽略
-                "source": {"type": "manual_unignore"},
-                "force_unignore": true
-            }
-        ]
-    }
+    统一处理所有媒体项状态变更的唯一入口。
     """
     data = request.json
     requests_list = data.get('requests')
@@ -416,7 +383,7 @@ def api_unified_subscription_status():
     processed_count = 0
     errors = []
     
-    # 定义允许的状态，防止意外的输入
+    # 定义允许的状态
     ALLOWED_STATUSES = ['WANTED', 'SUBSCRIBED', 'IGNORED', 'NONE', 'PENDING_RELEASE']
 
     for req in requests_list:
@@ -424,7 +391,6 @@ def api_unified_subscription_status():
         item_type = req.get('item_type')
         new_status = req.get('new_status')
         
-        # ★★★ 核心升级：从请求体中动态获取 new_status ★★★
         if not all([tmdb_id, item_type, new_status]):
             errors.append(f"无效请求项，缺少 tmdb_id, item_type 或 new_status: {req}")
             continue
@@ -434,119 +400,122 @@ def api_unified_subscription_status():
             continue
 
         try:
-            if new_status.upper() == 'NONE':
+            # ==================================================================
+            # ★★★ 核心修复：统一处理 MoviePilot 的取消订阅逻辑 ★★★
+            # 无论是转为 NONE 还是 IGNORED，只要之前是 SUBSCRIBED，都要取消
+            # ==================================================================
+            if new_status.upper() in ['NONE', 'IGNORED']:
+                # 1. 先查当前状态
                 media_details_map = media_db.get_media_details_by_tmdb_ids([tmdb_id])
-                current_status = media_details_map.get(tmdb_id, {}).get('subscription_status')
+                current_details = media_details_map.get(tmdb_id, {})
+                current_status = current_details.get('subscription_status')
                 
+                # 2. 如果当前是已订阅，则执行取消操作
                 if current_status == 'SUBSCRIBED':
-                    logger.info(f"  ➜ 检测到对已订阅项 (TMDb ID: {tmdb_id}, 类型: {item_type}) 的取消请求...")
+                    logger.info(f"  ➜ 检测到已订阅项 (TMDb ID: {tmdb_id}) 转为 {new_status}，正在取消 MoviePilot 订阅...")
                     
-                    # ★★★ 核心修复：智能判断要发给 MoviePilot 的真实 ID ★★★
-                    id_for_mp = tmdb_id # 默认ID
-                    season_for_mp = None # 默认没有季号
+                    # 智能判断要发给 MoviePilot 的真实 ID
+                    id_for_mp = tmdb_id 
+                    season_for_mp = None 
 
                     if item_type == 'Season':
-                        media_details = media_details_map.get(tmdb_id, {})
-                        parent_id = media_details.get('parent_series_tmdb_id')
-                        season_num = media_details.get('season_number')
+                        parent_id = current_details.get('parent_series_tmdb_id')
+                        season_num = current_details.get('season_number')
                         
                         if parent_id and season_num is not None:
                             id_for_mp = parent_id
                             season_for_mp = season_num
                         else:
-                            error_msg = f"处理季 (TMDb ID: {tmdb_id}) 失败：无法在数据库中找到其父剧集ID或季号。"
+                            error_msg = f"处理季 (TMDb ID: {tmdb_id}) 失败：无法找到父剧集ID或季号。"
                             errors.append(error_msg)
                             logger.error(f"API /subscription/status: {error_msg}")
-                            continue # 跳过这个有问题的请求
+                            continue 
                     
                     config = config_manager.APP_CONFIG
                     if not moviepilot.cancel_subscription(id_for_mp, item_type, config, season_for_mp):
-                        error_msg = f"处理 TMDb ID {tmdb_id} 失败：在 MoviePilot 中取消订阅失败，请检查 MP 日志。"
+                        error_msg = f"处理 TMDb ID {tmdb_id} 失败：MoviePilot 取消订阅失败。"
                         errors.append(error_msg)
                         logger.error(f"API /subscription/status: {error_msg}")
                         continue
+                    else:
+                        logger.info(f"  ➜ MoviePilot 订阅已取消 (ID: {id_for_mp})")
 
+            # ==================================================================
+            # 本地数据库状态更新
+            # ==================================================================
+            if new_status.upper() == 'NONE':
                 request_db.set_media_status_none(
                     tmdb_ids=[tmdb_id], item_type=item_type
                 )
                 processed_count += 1
 
-            else:
-                # --- 其他所有状态 (WANTED, IGNORED 等) ---
-                source = req.get('source', {"type": f"api_unified_status_change_{new_status.lower()}"})
+            elif new_status.upper() == 'IGNORED':
+                source = req.get('source', {"type": "manual_ignore"})
                 ignore_reason = req.get('ignore_reason')
-                force_unignore = req.get('force_unignore', False)
-
-                # ★★★ 如果状态是 IGNORED 且没有提供原因，则设置默认原因 ★★★
-                if new_status.upper() == 'IGNORED' and not ignore_reason:
+                if not ignore_reason:
                     ignore_reason = '手动忽略'
 
-                if new_status.upper() == 'WANTED':
-                    request_db.set_media_status_wanted(
-                        tmdb_ids=[tmdb_id], item_type=item_type, source=source, media_info_list=[req],
-                        force_unignore=force_unignore
-                    )
-                elif new_status.upper() == 'SUBSCRIBED':
-                    request_db.set_media_status_subscribed(
-                        tmdb_ids=[tmdb_id], item_type=item_type, source=source, media_info_list=[req]
-                    )
-                    try:
-                        config = config_manager.APP_CONFIG
-                        
-                        # A. 准备参数
-                        mp_tmdb_id = tmdb_id
-                        mp_season = None
-                        
-                        # 如果是季，需要获取父剧集ID
-                        if item_type == 'Season':
-                            media_details_map = media_db.get_media_details_by_tmdb_ids([tmdb_id])
-                            details = media_details_map.get(tmdb_id, {})
-                            if details.get('parent_series_tmdb_id'):
-                                mp_tmdb_id = details['parent_series_tmdb_id']
-                                mp_season = details.get('season_number')
+                request_db.set_media_status_ignored(
+                    tmdb_ids=[tmdb_id], item_type=item_type, source=source, media_info_list=[req],
+                    ignore_reason=ignore_reason
+                )
+                processed_count += 1
 
-                        # B. 调用 MP 接口切换状态为 'R' (Run)
-                        # 注意：这里我们尝试直接切换状态。如果 MP 里订阅丢了，update 会返回 False
-                        if not moviepilot.update_subscription_status(int(mp_tmdb_id), mp_season, 'R', config):
-                            logger.warning(f"  ➜ [状态同步] 切换 MP 状态失败 (可能订阅不存在)，尝试重新提交订阅...")
-                            
-                            # C. 兜底：如果切换失败，说明 MP 里可能没有这个订阅，执行重新订阅
-                            payload = {
-                                "tmdbid": int(mp_tmdb_id),
-                                "type": "电影" if item_type == 'Movie' else "电视剧"
-                            }
-                            if mp_season is not None:
-                                payload['season'] = mp_season
-                                
-                            moviepilot.subscribe_with_custom_payload(payload, config)
-                        else:
-                            logger.info(f"  ➜ [状态同步] 已通知 MP 恢复搜索 (状态 S -> R): {mp_tmdb_id}")
+            elif new_status.upper() == 'WANTED':
+                source = req.get('source', {"type": "manual_add"})
+                force_unignore = req.get('force_unignore', False)
+                request_db.set_media_status_wanted(
+                    tmdb_ids=[tmdb_id], item_type=item_type, source=source, media_info_list=[req],
+                    force_unignore=force_unignore
+                )
+                processed_count += 1
 
-                    except Exception as e_sync:
-                        logger.error(f"  ➜ [状态同步] 恢复 MoviePilot 订阅状态时出错: {e_sync}")
-                elif new_status.upper() == 'IGNORED':
-                    request_db.set_media_status_ignored(
-                        tmdb_ids=[tmdb_id], item_type=item_type, source=source, media_info_list=[req],
-                        ignore_reason=ignore_reason
-                    )
-                else:
-                    # 理论上不应该走到这里，因为前面已经做了 ALLOWED_STATUSES 校验
-                    logger.warning(f"API /subscription/status: 遇到未处理的状态 '{new_status}' for TMDb ID {tmdb_id}")
-                    errors.append(f"处理 TMDb ID {tmdb_id} 失败：不支持的状态 '{new_status}'")
-                    continue
+            elif new_status.upper() == 'SUBSCRIBED':
+                source = req.get('source', {"type": "manual_subscribe"})
+                request_db.set_media_status_subscribed(
+                    tmdb_ids=[tmdb_id], item_type=item_type, source=source, media_info_list=[req]
+                )
+                # 尝试恢复 MP 订阅状态 (S -> R)
+                try:
+                    config = config_manager.APP_CONFIG
+                    mp_tmdb_id = tmdb_id
+                    mp_season = None
+                    
+                    if item_type == 'Season':
+                        # 这里可能需要重新查一次详情，或者复用上面的 current_details 如果存在
+                        # 为安全起见，重新查一次或优化逻辑。这里简单处理：
+                        media_details_map = media_db.get_media_details_by_tmdb_ids([tmdb_id])
+                        details = media_details_map.get(tmdb_id, {})
+                        if details.get('parent_series_tmdb_id'):
+                            mp_tmdb_id = details['parent_series_tmdb_id']
+                            mp_season = details.get('season_number')
+
+                    if not moviepilot.update_subscription_status(int(mp_tmdb_id), mp_season, 'R', config):
+                        logger.warning(f"  ➜ [状态同步] 切换 MP 状态失败，尝试重新提交订阅...")
+                        payload = {
+                            "tmdbid": int(mp_tmdb_id),
+                            "type": "电影" if item_type == 'Movie' else "电视剧"
+                        }
+                        if mp_season is not None:
+                            payload['season'] = mp_season
+                        moviepilot.subscribe_with_custom_payload(payload, config)
+                    else:
+                        logger.info(f"  ➜ [状态同步] 已通知 MP 恢复搜索: {mp_tmdb_id}")
+
+                except Exception as e_sync:
+                    logger.error(f"  ➜ [状态同步] 恢复 MoviePilot 订阅状态时出错: {e_sync}")
+                
                 processed_count += 1
 
         except Exception as e:
-            error_msg = f"处理 TMDb ID {tmdb_id} ({item_type}) 状态变更为 '{new_status}' 时发生错误: {e}"
+            error_msg = f"处理 TMDb ID {tmdb_id} 状态变更时发生错误: {e}"
             errors.append(error_msg)
             logger.error(f"API /subscription/status 发生错误: {error_msg}", exc_info=True)
 
-    # 统一返回处理结果
     if processed_count > 0:
         message = f"已成功提交 {processed_count} 个媒体项的状态变更请求。"
         if errors:
             message += f" 但有 {len(errors)} 个请求处理失败。"
-        logger.info(f"API: {message}")
         return jsonify({"message": message, "errors": errors}), 200
     else:
         return jsonify({"error": "没有有效的媒体项被成功处理。", "errors": errors}), 400

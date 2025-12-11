@@ -169,10 +169,7 @@
 
                       <template v-else-if="item.subscription_status === 'SUBSCRIBED' || item.subscription_status === 'PENDING_RELEASE'">
                         <n-button @click="() => updateItemStatus(item, 'IGNORED')" type="error" ghost>
-                          忽略
-                        </n-button>
-                        <n-button @click="() => updateItemStatus(item, 'NONE')">
-                          取消订阅
+                          取消订阅 (忽略)
                         </n-button>
                       </template>
 
@@ -181,10 +178,7 @@
                           恢复搜索
                         </n-button>
                         <n-button @click="() => updateItemStatus(item, 'IGNORED')" type="error" ghost>
-                          忽略
-                        </n-button>
-                        <n-button @click="() => updateItemStatus(item, 'NONE')">
-                          取消
+                          取消订阅 (忽略)
                         </n-button>
                       </template>
 
@@ -378,14 +372,12 @@ const batchActions = computed(() => {
     case 'SUBSCRIBED':
     case 'PENDING_RELEASE':
       return [
-        { label: '批量忽略', key: 'ignore', icon: () => h(NIcon, { component: IgnoredIcon }) },
-        { label: '批量取消订阅', key: 'cancel', icon: () => h(NIcon, { component: TvIcon }) },
+        { label: '批量取消订阅 (忽略)', key: 'ignore', icon: () => h(NIcon, { component: IgnoredIcon }) },
       ];
     case 'PAUSED':
       return [
         { label: '批量恢复', key: 'resume', icon: () => h(NIcon, { component: SubscribedIcon }) }, 
-        { label: '批量忽略', key: 'ignore', icon: () => h(NIcon, { component: IgnoredIcon }) },
-        { label: '批量取消', key: 'cancel', icon: () => h(NIcon, { component: TrashIcon }) },
+        { label: '批量取消订阅 (忽略)', key: 'ignore', icon: () => h(NIcon, { component: IgnoredIcon }) },
       ];
     case 'IGNORED':
       return [
