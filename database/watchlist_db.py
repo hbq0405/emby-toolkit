@@ -670,17 +670,13 @@ def sync_seasons_watching_status(parent_tmdb_id: str, active_season_numbers: Lis
 
 def batch_import_series_as_completed(library_ids: Optional[List[str]] = None) -> int:
     """
-    【存量导入模式】批量将未纳管的剧集导入为“已完结”。
+    【存量导入模式】批量将剧集导入为“已完结”。
     
     逻辑：
     1. 仅处理 watching_status 为 'NONE' (或 NULL) 的剧集。
     2. Series -> 'Completed' (默认存量剧集已看完)
     3. Season -> 'Completed' (让前端显示为完结状态)
     4. Episode -> 'NONE' (集不参与状态管理)
-    
-    优势：
-    - 避免触发“完结洗版”逻辑 (因为没有从 Watching -> Completed 的状态跳变)。
-    - 依靠 'run_new_season_check_task' (复活任务) 来发现其中真正还在连载的剧集。
     """
     try:
         with get_db_connection() as conn:
@@ -720,7 +716,6 @@ def batch_import_series_as_completed(library_ids: Optional[List[str]] = None) ->
             ids_to_update = [row['tmdb_id'] for row in rows]
             
             if not ids_to_update:
-                logger.info("  ➜ 扫描完成：没有发现未纳管的存量剧集。")
                 return 0
             
             # --- 第二步：执行导入更新 ---
@@ -755,7 +750,6 @@ def batch_import_series_as_completed(library_ids: Optional[List[str]] = None) ->
             cursor.execute(sql_episodes, (ids_to_update,))
             
             conn.commit()
-            logger.info(f"  ➜ [存量导入] 成功纳管 {len(ids_to_update)} 部剧集，已默认初始化为“已完结”。")
             return len(ids_to_update)
 
     except Exception as e:

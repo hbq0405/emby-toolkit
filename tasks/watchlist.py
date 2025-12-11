@@ -82,19 +82,35 @@ def task_add_all_series_to_watchlist(processor):
         task_manager.update_status_from_thread(30, "正在数据库中执行存量导入...")
         
         try:
-            # ★★★ 调用新函数：导入为 Completed ★★★
             updated_count = watchlist_db.batch_import_series_as_completed(library_ids_to_process)
         except Exception as e_db:
             raise RuntimeError(f"数据库执行失败: {e_db}")
 
-        # 3. 结束任务 (不再触发追剧检查)
+        # 3. 触发后续任务链 (深度模式)
         if updated_count > 0:
-            final_message = f"扫描完成！已将 {updated_count} 部新发现的剧集纳入管理（默认为已完结）。"
-            logger.info(f"  ➜ {final_message}")
-            logger.info("  ➜ 提示：如果其中包含连载剧，请等待“已完结剧集复活检查”任务自动修正，或手动使用深度模式刷新。")
-            task_manager.update_status_from_thread(100, final_message)
+            logger.info(f"  ➜ 扫描到 {updated_count} 部新剧集。正在启动全量深度检查以校准状态...")
+            task_manager.update_status_from_thread(99, "导入完成，正在深度刷新剧集状态...")
+            
+            # 给数据库一点喘息时间
+            time.sleep(2)
+            
+            try:
+                watchlist_proc = extensions.watchlist_processor_instance
+                if watchlist_proc:
+                    task_process_watchlist(
+                        processor=watchlist_proc, 
+                        tmdb_id=None, 
+                        force_full_update=True 
+                    )
+                    final_message = "自动化流程完成：存量导入与全量体检均已结束。"
+                    task_manager.update_status_from_thread(100, final_message)
+                else:
+                    raise RuntimeError("WatchlistProcessor 未初始化。")
+            except Exception as e_chain:
+                 logger.error(f"执行链式任务失败: {e_chain}", exc_info=True)
+                 task_manager.update_status_from_thread(-1, f"链式任务失败: {e_chain}")
         else:
-            final_message = "扫描完成！没有发现未纳管的剧集。"
+            final_message = "扫描完成！没有发现未追踪的剧集。"
             logger.info(f"  ➜ {final_message}")
             task_manager.update_status_from_thread(100, final_message)
 
