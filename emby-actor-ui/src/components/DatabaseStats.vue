@@ -364,24 +364,33 @@ const resolutionChartOptions = computed(() => {
 
 const getIconPath = (groupName) => {
   if (!groupName) return '';
-  // 这里假设图标文件名就是发布组名字，例如 "HDSky.png"
-  // 如果名字里有空格，可能需要处理一下，例如 .replace(/\s+/g, '')
-  return `/icons/site/${groupName}.ico`; 
+  // 1. 优先尝试加载 .png 格式
+  return `/icons/site/${groupName}.png`; 
 };
 
-// 新增：图标加载失败时的处理（隐藏或显示默认图标）
 const handleIconError = (e) => {
+  const img = e.target;
+  const currentSrc = img.src;
   const defaultIcon = '/icons/site/pt.ico';
 
-  // 防止死循环：如果当前加载失败的已经是默认图标 (pt.ico)，则不再重试，直接隐藏
-  // 注意：e.target.src 获取的是完整 URL (http://...), 所以用 includes 判断
-  if (e.target.src.includes('pt.ico')) {
-    e.target.style.display = 'none';
+  // 2. 第一层降级：如果当前是 .png 加载失败，尝试换成 .ico
+  // 使用正则判断结尾，忽略可能存在的 url 参数
+  if (currentSrc.match(/\.png($|\?)/i)) {
+    // 将 .png 替换为 .ico 并重新加载
+    img.src = currentSrc.replace(/\.png/i, '.ico');
+    return;
+  }
+
+  // 3. 第二层降级：如果当前是 .ico 加载失败（且不是默认图标），换成默认图标
+  // 防止死循环：检查当前是否已经是默认图标
+  if (currentSrc.includes('pt.ico')) {
+    // 默认图标也挂了，直接隐藏
+    img.style.display = 'none';
   } else {
-    // 否则将图片源替换为默认图标
-    e.target.src = defaultIcon;
-    // 确保图片是显示状态 (防止之前被设置为 none)
-    e.target.style.display = 'inline-block'; 
+    // 说明自定义的 .ico 也找不到，显示默认图标
+    img.src = defaultIcon;
+    // 确保图片显示（防止之前被隐藏）
+    img.style.display = 'inline-block';
   }
 };
 
