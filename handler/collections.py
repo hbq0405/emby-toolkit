@@ -131,6 +131,7 @@ def sync_and_subscribe_native_collections(progress_callback=None):
 def subscribe_all_missing_in_native_collections():
     """
     把所有原生合集中缺失的电影加入待订阅列表。
+    (修复版：按合集名称分组提交，确保来源标记正确)
     """
     logger.info("--- 开始执行原生合集缺失电影批量待订阅 ---")
     
@@ -143,16 +144,22 @@ def subscribe_all_missing_in_native_collections():
 
     today_str = datetime.now().strftime('%Y-%m-%d')
     
-    requests_released = []
-    requests_unreleased = []
+    # 使用字典按合集名称分组: { '合集名': {'released': [], 'unreleased': []} }
+    grouped_requests = {}
     
-    # 2. 分类 (已上映 vs 未上映)
+    # 2. 遍历并分组
     for movie in missing_movies:
-        # 处理日期类型 (数据库可能返回 date 对象)
+        # 处理日期类型
         r_date = movie.get('release_date')
         r_date_str = str(r_date) if r_date else None
-        # ★★★ 获取合集名称 ★★★
+        
+        # 获取合集名称作为分组键
         coll_names = movie.get('collection_names', '原生合集')
+        
+        # 初始化该合集的列表
+        if coll_names not in grouped_requests:
+            grouped_requests[coll_names] = {'released': [], 'unreleased': []}
+
         # 构造标准 media_info
         media_info = {
             'tmdb_id': movie['tmdb_id'],
@@ -167,35 +174,47 @@ def subscribe_all_missing_in_native_collections():
             }
         }
 
+        # 根据上映日期放入对应列表
         if r_date_str and r_date_str > today_str:
-            requests_unreleased.append(media_info)
+            grouped_requests[coll_names]['unreleased'].append(media_info)
         else:
-            requests_released.append(media_info)
+            grouped_requests[coll_names]['released'].append(media_info)
 
     total_count = 0
     
-    # 3. 批量写入 request_db
-    if requests_released:
-        count = len(requests_released)
-        total_count += count
-        logger.info(f"  ➜ 批量待订阅: {count} 部已上映电影设为 WANTED...")
-        request_db.set_media_status_wanted(
-            tmdb_ids=[m['tmdb_id'] for m in requests_released],
-            item_type='Movie',
-            source=requests_released[0]['source'],
-            media_info_list=requests_released
-        )
+    # 3. 按合集分批写入 request_db
+    for coll_name, queues in grouped_requests.items():
+        # 构造该批次的来源对象
+        batch_source = {
+            'type': 'native_collection_batch',
+            'name': coll_name
+        }
 
-    if requests_unreleased:
-        count = len(requests_unreleased)
-        total_count += count
-        logger.info(f"  ➜ 批量待订阅: {count} 部未上映电影设为 PENDING_RELEASE...")
-        request_db.set_media_status_pending_release(
-            tmdb_ids=[m['tmdb_id'] for m in requests_unreleased],
-            item_type='Movie',
-            source=requests_unreleased[0]['source'],
-            media_info_list=requests_unreleased
-        )
+        # 处理已上映
+        released_list = queues['released']
+        if released_list:
+            count = len(released_list)
+            total_count += count
+            logger.info(f"  ➜ [{coll_name}] 批量待订阅: {count} 部已上映电影设为 WANTED...")
+            request_db.set_media_status_wanted(
+                tmdb_ids=[m['tmdb_id'] for m in released_list],
+                item_type='Movie',
+                source=batch_source, # 修复：使用当前循环的合集名作为来源
+                media_info_list=released_list
+            )
+
+        # 处理未上映
+        unreleased_list = queues['unreleased']
+        if unreleased_list:
+            count = len(unreleased_list)
+            total_count += count
+            logger.info(f"  ➜ [{coll_name}] 批量待订阅: {count} 部未上映电影设为 PENDING_RELEASE...")
+            request_db.set_media_status_pending_release(
+                tmdb_ids=[m['tmdb_id'] for m in unreleased_list],
+                item_type='Movie',
+                source=batch_source, # 修复：使用当前循环的合集名作为来源
+                media_info_list=unreleased_list
+            )
 
     logger.info(f"--- 批量待订阅完成，共处理 {total_count} 部电影 ---")
     
