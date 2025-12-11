@@ -13,9 +13,11 @@
         </template>
         <n-alert title="管理说明" type="info" style="margin-top: 24px;">
           <li>这里汇总了所有通过“用户请求”、“演员订阅”、“合集补全”、“智能追剧”等方式进入待处理队列，但尚未入库的媒体项。</li>
-          <li><b>待订阅 (WANTED):</b> 点击“订阅”可立即提交给下载器。或等待后台“统一订阅任务”处理。</li>
-          <li><b>未上映 (PENDING):</b> 等待上映后，会自动转为“待订阅”的项目。</li>
-          <li><b>已忽略 (IGNORED):</b> 被手动或规则忽略的项目，后台任务会自动跳过它们。</li>
+          <li><b>待审核:</b> 在这里处理普通用户的订阅请求。</li>
+          <li><b>待订阅:</b> 由自动化模块提交的订阅请求。</li>
+          <li><b>已订阅:</b> 已经提交给MP订阅的媒体项。</li>
+          <li><b>未上映:</b> 等待上映后，会自动订阅的项目。</li>
+          <li><b>已忽略:</b> 被手动或规则忽略的项目，后台任务会自动跳过它们。</li>
         </n-alert>
         <template #extra>
           <n-space>
@@ -53,14 +55,6 @@
               <n-radio-button value="PENDING_RELEASE">未上映</n-radio-button>
               <n-radio-button value="IGNORED">已忽略</n-radio-button>
             </n-radio-group>
-            <n-tooltip>
-              <template #trigger>
-                <n-button @click="fetchData" :loading="isLoading" circle>
-                  <template #icon><n-icon :component="SyncOutline" /></template>
-                </n-button>
-              </template>
-              刷新列表
-            </n-tooltip>
             <n-button @click="showStrategyModal = true" type="warning" ghost>
               <template #icon><n-icon :component="SettingsIcon" /></template>
               策略配置
@@ -260,7 +254,7 @@
 import { ref, onMounted, onBeforeUnmount, h, computed, watch } from 'vue';
 import axios from 'axios';
 import { NLayout, NPageHeader, NDivider, NEmpty, NTag, NButton, NSpace, NIcon, useMessage, useDialog, NTooltip, NCard, NImage, NEllipsis, NSpin, NAlert, NRadioGroup, NRadioButton, NCheckbox, NDropdown, NInput, NSelect, NButtonGroup } from 'naive-ui';
-import { SyncOutline, TvOutline as TvIcon, FilmOutline as FilmIcon, CalendarOutline as CalendarIcon, TimeOutline as TimeIcon, ArrowUpOutline as ArrowUpIcon, ArrowDownOutline as ArrowDownIcon, CaretDownOutline as CaretDownIcon, CheckmarkCircleOutline as WantedIcon, HourglassOutline as PendingIcon, BanOutline as IgnoredIcon, DownloadOutline as SubscribedIcon, PersonCircleOutline as SourceIcon, TrashOutline as TrashIcon, SettingsOutline as SettingsIcon, PauseCircleOutline as PausedIcon, ReaderOutline as AuditIcon } from '@vicons/ionicons5';
+import { FilmOutline as FilmIcon, CalendarOutline as CalendarIcon, TimeOutline as TimeIcon, ArrowUpOutline as ArrowUpIcon, ArrowDownOutline as ArrowDownIcon, CaretDownOutline as CaretDownIcon, CheckmarkCircleOutline as WantedIcon, HourglassOutline as PendingIcon, BanOutline as IgnoredIcon, DownloadOutline as SubscribedIcon, PersonCircleOutline as SourceIcon, TrashOutline as TrashIcon, SettingsOutline as SettingsIcon, PauseCircleOutline as PausedIcon, ReaderOutline as AuditIcon } from '@vicons/ionicons5';
 import { format } from 'date-fns'
 
 // 图标定义
@@ -284,7 +278,7 @@ const lastSelectedIndex = ref(null);
 
 // 筛选和排序状态
 const searchQuery = ref('');
-const filterStatus = ref('WANTED');
+const filterStatus = ref('REQUESTED');
 const filterType = ref('all');
 const filterSource = ref(null);
 const sortKey = ref('first_requested_at');
@@ -745,12 +739,28 @@ const statusInfo = (status) => {
   return map[status] || { type: 'default', text: '未知', icon: TvIcon };
 };
 
-const fetchData = async () => {
+
+const TAB_PRIORITY = ['REQUESTED', 'WANTED', 'SUBSCRIBED', 'PAUSED', 'PENDING_RELEASE', 'IGNORED'];
+const fetchData = async (autoSwitchTab = false) => {
   isLoading.value = true;
   error.value = null;
   try {
     const response = await axios.get('/api/subscriptions/all');
     rawItems.value = response.data;
+
+    // ★★★ 新增：自动切换到第一个有内容的标签页 ★★★
+    if (autoSwitchTab) {
+      for (const status of TAB_PRIORITY) {
+        // 检查当前状态是否有对应的媒体项
+        const hasItem = rawItems.value.some(item => item.subscription_status === status);
+        if (hasItem) {
+          filterStatus.value = status;
+          break; // 找到优先级最高的有内容的标签后，立即停止
+        }
+      }
+      // 如果所有状态都没数据，默认会停留在初始值（通常是 REQUESTED 或 WANTED）
+    }
+
   } catch (err) {
     error.value = err.response?.data?.error || '获取订阅列表失败。';
   } finally {
@@ -759,7 +769,9 @@ const fetchData = async () => {
 };
 
 onMounted(() => {
-  fetchData();
+  // 传入 true，表示这是首次加载，需要自动判断标签页
+  fetchData(true); 
+  
   loadStrategyConfig();
   observer = new IntersectionObserver(
     (entries) => {
