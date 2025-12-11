@@ -1298,12 +1298,8 @@ class WatchlistProcessor:
     # --- 通过对比计算真正的下一待看集 ---
     def _calculate_real_next_episode(self, all_tmdb_episodes: List[Dict], emby_seasons: Dict) -> Optional[Dict]:
         """
-        【逻辑重生 - 修正版】通过对比本地和TMDb全量数据，计算用户真正缺失的下一集。
-        ★ 修正：只返回【未来】或【近期(30天内)】的缺失集。
-        ★ 目的：忽略老旧的缺失集（如缺了第一季），防止它们被误判为“待播集”从而导致状态一直显示为“追剧中”。
+        通过对比本地和TMDb全量数据，计算用户真正缺失的第一集。
         """
-        today = datetime.now(timezone.utc).date()
-
         # 1. 获取TMDb上所有非特别季的剧集，并严格按季号、集号排序
         all_episodes_sorted = sorted([
             ep for ep in all_tmdb_episodes 
@@ -1316,23 +1312,12 @@ class WatchlistProcessor:
             e_num = episode.get('episode_number')
             
             if s_num not in emby_seasons or e_num not in emby_seasons.get(s_num, set()):
-                # ★★★ 核心过滤：检查该缺失集的播出时间 ★★★
-                air_date_str = episode.get('air_date')
-                if air_date_str:
-                    try:
-                        air_date = datetime.strptime(air_date_str, '%Y-%m-%d').date()
-                        # 逻辑：只有当这一集是“未来会播”或者“最近30天刚播”的，才算作有效的“待播/待追”集
-                        # 如果是 1999 年的集数缺失，直接忽略，不让它占据“Next Episode”的位置
-                        if air_date >= today or (today - air_date).days <= 30:
-                            logger.info(f"  ➜ 找到有效的待追新集: S{s_num}E{e_num} (播出日期: {air_date_str})")
-                            return episode
-                        else:
-                            # 虽然缺了这一集，但它太老了，跳过，继续找下一集
-                            continue
-                    except ValueError:
-                        continue
-                
-        # 3. 如果没有找到符合时间条件的缺失集
+                # 找到了！这无论是否播出，都是用户最关心的下一集
+                logger.info(f"  ➜ 找到本地缺失的第一集: S{s_num}E{e_num} ('{episode.get('name')}'), 将其设为待播集。")
+                return episode
+        
+        # 3. 如果循环完成，说明本地拥有TMDb上所有的剧集
+        logger.info("  ➜ 本地媒体库已拥有TMDb上所有剧集，无待播信息。")
         return None
     # --- 计算缺失的季和集 ---
     def _calculate_missing_info(self, tmdb_seasons: List[Dict], all_tmdb_episodes: List[Dict], emby_seasons: Dict) -> Dict:
