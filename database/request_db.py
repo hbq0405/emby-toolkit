@@ -164,7 +164,10 @@ def set_media_status_wanted(
                                     -- 4.D 智能复活：软忽略允许复活
                                     OR (
                                         media_metadata.subscription_status = 'IGNORED'
-                                        AND (media_metadata.ignore_reason IS NULL OR media_metadata.ignore_reason != '手动忽略')
+                                        AND (
+                                            media_metadata.ignore_reason IS NULL 
+                                            OR media_metadata.ignore_reason NOT IN ('手动忽略', '订阅超时') -- 这里都是硬忽略
+                                        )
                                     )
                                 )
                             );
