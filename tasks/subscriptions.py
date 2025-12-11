@@ -575,7 +575,8 @@ def task_auto_subscribe(processor):
                         # 如果待定，更新本地 DB 状态为 PENDING_METADATA
                         if is_pending:
                                 watchlist_db.update_watching_status_by_tmdb_id(
-                                    str(item['tmdb_id']), # 或者是 parent_tmdb_id，取决于当前上下文是季还是剧
+                                    str(item['tmdb_id']), 
+                                    item_type,
                                     'Pending'
                                 )
                                 
