@@ -13,8 +13,6 @@ from typing import Dict, Any, List, Set
 # 导入需要的底层模块和共享实例
 import handler.emby as emby
 import task_manager
-import config_manager
-from ai_translator import AITranslator
 import handler.tmdb as tmdb
 from database import collection_db, connection, settings_db, media_db, request_db
 from handler.custom_collection import ListImporter, FilterEngine
@@ -521,44 +519,6 @@ def task_process_all_custom_collections(processor):
 
                 # 应用修正 (修正后的 ID 会直接体现在 raw_tmdb_items 中)
                 raw_tmdb_items, corrected_id_to_original_id_map = _apply_id_corrections(raw_tmdb_items, definition, collection_name)
-                # ==================== ★★★ AI 过滤插件 (新增) ★★★ ====================
-                if definition.get('ai_enabled') and definition.get('ai_prompt'):
-                    ai_prompt = definition.get('ai_prompt')
-                    logger.info(f"  ➜ [AI审阅] 检测到 AI 选片指令，正在筛选 {len(raw_tmdb_items)} 个候选项目...")
-                    
-                    # 1. 实例化 AI
-                    try:
-                        translator = AITranslator(config_manager.APP_CONFIG)
-                        
-                        # 2. 准备精简数据 (只给 AI 看必要的，省 Token)
-                        candidates_for_ai = []
-                        for item in raw_tmdb_items:
-                            candidates_for_ai.append({
-                                "id": str(item.get('id')),
-                                "title": item.get('title'),
-                                "type": item.get('type'),
-                                "year": item.get('year'),
-                                "release_date": item.get('release_date')
-                            })
-                        
-                        # 3. 调用 AI 过滤
-                        filtered_ids = translator.filter_candidates(
-                            candidates=candidates_for_ai, 
-                            user_instruction=ai_prompt
-                        )
-                        
-                        # 4. 应用过滤结果
-                        if filtered_ids:
-                            original_count = len(raw_tmdb_items)
-                            # 只保留 ID 在 filtered_ids 里的项目
-                            raw_tmdb_items = [item for item in raw_tmdb_items if str(item.get('id')) in filtered_ids]
-                            logger.info(f"  ➜ [AI审阅] 完成。从 {original_count} 部中筛选出 {len(raw_tmdb_items)} 部。")
-                        else:
-                            logger.warning("  ➜ [AI审阅] AI 返回了空列表或过滤失败，将保留原始列表。")
-                    
-                    except Exception as e_ai:
-                        logger.error(f"  ➜ [AI审阅] 执行过程中发生错误，跳过筛选: {e_ai}", exc_info=True)
-                # ===================================================================
                 tmdb_items = [
                     {
                         'tmdb_id': str(item.get('id')) if item.get('id') else None, # 允许 None
@@ -742,45 +702,6 @@ def process_single_custom_collection(processor, custom_collection_id: int):
 
         # 3.2 应用修正
         raw_tmdb_items, corrected_id_to_original_id_map = _apply_id_corrections(raw_tmdb_items, definition, collection_name)
-        # ==================== ★★★ AI 过滤插件 (新增) ★★★ ====================
-        if definition.get('ai_enabled') and definition.get('ai_prompt'):
-            ai_prompt = definition.get('ai_prompt')
-            logger.info(f"  ➜ [AI审阅] 检测到 AI 选片指令，正在筛选 {len(raw_tmdb_items)} 个候选项目...")
-            
-            # 1. 实例化 AI
-            try:
-                translator = AITranslator(config_manager.APP_CONFIG)
-                
-                # 2. 准备精简数据 (只给 AI 看必要的，省 Token)
-                candidates_for_ai = []
-                for item in raw_tmdb_items:
-                    candidates_for_ai.append({
-                        "id": str(item.get('id')),
-                        "title": item.get('title'),
-                        "type": item.get('type'),
-                        "year": item.get('year'),
-                        "release_date": item.get('release_date')
-                    })
-                
-                # 3. 调用 AI 过滤
-                filtered_ids = translator.filter_candidates(
-                    candidates=candidates_for_ai, 
-                    user_instruction=ai_prompt
-                )
-                
-                # 4. 应用过滤结果
-                if filtered_ids:
-                    original_count = len(raw_tmdb_items)
-                    # 只保留 ID 在 filtered_ids 里的项目
-                    raw_tmdb_items = [item for item in raw_tmdb_items if str(item.get('id')) in filtered_ids]
-                    logger.info(f"  ➜ [AI审阅] 完成。从 {original_count} 部中筛选出 {len(raw_tmdb_items)} 部。")
-                else:
-                    logger.warning("  ➜ [AI审阅] AI 返回了空列表或过滤失败，将保留原始列表。")
-            
-            except Exception as e_ai:
-                logger.error(f"  ➜ [AI审阅] 执行过程中发生错误，跳过筛选: {e_ai}", exc_info=True)
-        # ===================================================================
-        # 标准化并透传 emby_id
         tmdb_items = [
             {
                 'tmdb_id': str(item.get('id')),
