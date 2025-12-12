@@ -1321,7 +1321,7 @@ class RecommendationEngine:
         
     def generate(self, definition: Dict) -> List[Dict[str, str]]:
         """
-        生成推荐列表的主入口。
+        生成推荐列表的主入口 (配合 media_db 返回字典列表的优化版)。
         """
         target_user_id = definition.get('target_user_id')
         ai_prompt = definition.get('ai_prompt')
@@ -1331,33 +1331,40 @@ class RecommendationEngine:
             logger.error("  ➜ [AI推荐] 未指定目标用户，无法生成推荐。")
             return []
 
-        # 1. 获取用户历史 (好评历史)
-        history = media_db.get_user_positive_history(target_user_id, limit=20)
-        if not history:
+        # 1. 获取用户历史 (现在直接返回包含 tmdb_id 的字典列表)
+        history_items = media_db.get_user_positive_history(target_user_id, limit=20)
+        
+        if not history_items:
             logger.warning(f"  ➜ [AI推荐] 用户 {target_user_id} 没有足够的观看历史。")
             return []
 
-        final_items_map = {} # 用于去重 {tmdb_id: item_dict}
+        # 准备给 LLM 看的纯文本标题列表
+        history_titles_for_llm = []
+        for item in history_items:
+            title = item.get('title')
+            year = item.get('release_year')
+            if year:
+                history_titles_for_llm.append(f"{title} ({year})")
+            else:
+                history_titles_for_llm.append(title)
+
+        final_items_map = {} 
 
         # ==================================================
-        # 策略 A: LLM 推荐 (基于知识库，擅长发现新片)
+        # 策略 A: LLM 推荐
         # ==================================================
-        logger.info(f"  ➜ [AI推荐] 正在调用 LLM 进行推理 (历史: {len(history)} 部)...")
+        logger.info(f"  ➜ [AI推荐] 正在调用 LLM 进行推理...")
         try:
             translator = AITranslator(config_manager.APP_CONFIG)
-            
-            # 技巧：请求数量 = 用户限制 * 1.5，留出匹配失败的余量
             request_limit = min(int(limit * 1.5), 50) 
-            
-            # 动态修改 Prompt 里的数量要求
             instruction_with_limit = f"{ai_prompt or ''} (Please recommend at least {request_limit} items)"
             
-            llm_recommendations = translator.get_recommendations(history, instruction_with_limit)
+            # 传给 LLM 纯文本标题
+            llm_recommendations = translator.get_recommendations(history_titles_for_llm, instruction_with_limit)
             
             if llm_recommendations:
                 logger.info(f"  ➜ [AI推荐] LLM 返回了 {len(llm_recommendations)} 部作品，正在匹配 TMDb ID...")
                 
-                # 并发匹配 TMDb ID
                 with ThreadPoolExecutor(max_workers=5) as executor:
                     def resolve_item(rec_item):
                         title = rec_item.get('title')
@@ -1365,11 +1372,9 @@ class RecommendationEngine:
                         year = str(rec_item.get('year')) if rec_item.get('year') else None
                         item_type = rec_item.get('type', 'Movie')
                         
-                        # 优先用 original_title 搜
                         search_query = original_title if original_title else title
                         match_result = self.list_importer._match_title_to_tmdb(search_query, item_type, year)
                         
-                        # 回退用中文标题搜
                         if not match_result and search_query != title:
                             match_result = self.list_importer._match_title_to_tmdb(title, item_type, year)
 
@@ -1378,13 +1383,11 @@ class RecommendationEngine:
                             return {
                                 'id': tmdb_id,
                                 'type': matched_type,
-                                'title': title, # 这里的 title 是 AI 给的中文名，展示更友好
+                                'title': title, 
                                 'season': season_num,
-                                # 这里的日期暂时留空，后续入库时的健康检查会去 TMDb 查最新的详情
                                 'release_date': None 
                             }
                         else:
-                            logger.debug(f"  ➜ [AI推荐] 未能找到 '{title}' 的 TMDb ID。")
                             return None
 
                     results = executor.map(resolve_item, llm_recommendations)
@@ -1398,21 +1401,18 @@ class RecommendationEngine:
             logger.error(f"  ➜ [AI推荐] LLM 调用失败: {e}")
 
         # ==================================================
-        # 策略 B: 向量推荐 (基于本地相似度，擅长精准匹配)
+        # 策略 B: 向量推荐
         # ==================================================
-        # 只有当用户没有指定特别具体的 Prompt 时，或者 LLM 结果不够时，才启用向量补充
-        # 因为向量搜索不懂 "我要喜剧" 这种指令，它只懂 "像我看过的片子"
         if len(final_items_map) < limit:
             try:
-                # 补充数量 = 目标限制 - 当前已有
                 needed = limit - len(final_items_map)
-                # 多取一点做备选
-                vector_results = self._vector_search(history, limit=needed + 5)
+                # ★★★ 关键：直接把包含 tmdb_id 的字典列表传给向量搜索 ★★★
+                # (前提是你已经应用了我上一条回复中对 _vector_search 的修改)
+                vector_results = self._vector_search(history_items, limit=needed + 5)
                 
                 if vector_results:
                     logger.info(f"  ➜ [AI推荐] 启用向量引擎补充了 {len(vector_results)} 部相似影片。")
                     for v in vector_results:
-                        # 如果 ID 不在 map 里，且 map 还没满
                         if v['id'] not in final_items_map:
                             final_items_map[v['id']] = {
                                 'id': v['id'],
@@ -1421,14 +1421,12 @@ class RecommendationEngine:
                                 'release_date': None
                             }
             except Exception as e:
-                logger.error(f"  ➜ [AI推荐] 向量推荐失败: {e}")
+                logger.error(f"  ➜ [AI推荐] 向量推荐失败: {e}", exc_info=True)
 
         # ==================================================
         # 最终汇总
         # ==================================================
         final_items = list(final_items_map.values())
-        
-        # 再次截断到用户限制的数量
         if limit and isinstance(limit, int):
             final_items = final_items[:limit]
 

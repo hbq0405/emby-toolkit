@@ -949,17 +949,17 @@ def batch_ensure_basic_movies(movies_list: List[Dict[str, Any]]):
     except Exception as e:
         logger.error(f"批量插入基础电影条目时出错: {e}", exc_info=True)
 
-def get_user_positive_history(user_id: str, limit: int = 20) -> List[str]:
+def get_user_positive_history(user_id: str, limit: int = 20) -> List[Dict[str, Any]]:
     """
-    获取指定用户的“好评”观看历史（用于投喂给 AI）。
-    标准：已收藏 OR (已播放 AND (无评分 OR 评分>=7))
+    获取指定用户的“好评”观看历史。
+    修改：返回包含 tmdb_id, item_type, title 的完整字典列表，供 AI 和向量搜索使用。
     """
     try:
         with get_db_connection() as conn:
             cursor = conn.cursor()
-            # 联合查询：从 user_media_data 找记录，从 media_metadata 找标题
+            # ★★★ 修改：SELECT 中增加 tmdb_id 和 item_type ★★★
             cursor.execute("""
-                SELECT m.title, m.release_year
+                SELECT m.tmdb_id, m.item_type, m.title, m.release_year
                 FROM user_media_data u
                 JOIN media_metadata m ON (u.item_id = m.tmdb_id OR m.emby_item_ids_json ? u.item_id)
                 WHERE u.user_id = %s
@@ -967,32 +967,21 @@ def get_user_positive_history(user_id: str, limit: int = 20) -> List[str]:
                       u.is_favorite = TRUE 
                       OR (
                           u.played = TRUE 
-                          -- 假设 user_media_data 表里没有存用户评分，如果有的话最好加上 u.rating >= 7
-                          -- 这里暂时只能依靠“已播放”
                       )
                   )
-                -- 关键修改：让收藏的排在前面，最近播放的排在后面
                 ORDER BY u.is_favorite DESC, u.last_played_date DESC
                 LIMIT %s
             """, (user_id, limit))
             
             rows = cursor.fetchall()
             
-            history = []
-            for row in rows:
-                title = row['title']
-                year = row.get('release_year')
-                if title:
-                    if year:
-                        history.append(f"{title} ({year})")
-                    else:
-                        history.append(title)
+            # 直接返回字典列表
+            history = [dict(row) for row in rows]
             
-            # 调试日志：看看到底查到了没
             if not history:
-                logger.warning(f"  ➜ [数据库] 用户 {user_id} 未查到符合条件的观看历史 (已尝试双重匹配)。")
+                logger.warning(f"  ➜ [数据库] 用户 {user_id} 未查到符合条件的观看历史。")
             else:
-                logger.info(f"  ➜ [数据库] 成功提取用户 {user_id} 的 {len(history)} 条好评历史。")
+                logger.info(f"  ➜ [数据库] 成功提取用户 {user_id} 的 {len(history)} 条好评历史 (含ID)。")
                 
             return history
     except Exception as e:
