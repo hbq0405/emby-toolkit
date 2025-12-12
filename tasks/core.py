@@ -22,6 +22,7 @@ from .cleanup import task_scan_for_cleanup_issues
 from .users import task_sync_all_user_data, task_check_expired_users
 from .discover import task_update_daily_theme
 from .resubscribe import task_update_resubscribe_cache, task_resubscribe_library
+from .vector_tasks import task_generate_embeddings
 
 logger = logging.getLogger(__name__)
 
@@ -195,6 +196,7 @@ def get_task_registry(context: str = 'all'):
         'purge-ghost-actors': (task_purge_ghost_actors, "删除幽灵演员", 'media', True),
         'sync-all-user-data': (task_sync_all_user_data, "同步用户数据", 'media', True),
         'check-expired-users': (task_check_expired_users, "检查过期用户", 'media', True),
+        'generate_embeddings': (task_generate_embeddings, "生成媒体向量", 'media', True),
         
         # --- 不适合任务链的、需要特定参数的任务 ---
         'process_all_custom_collections': (task_process_all_custom_collections, "生成所有自建合集", 'media', False),

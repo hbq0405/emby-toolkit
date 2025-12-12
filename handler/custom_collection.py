@@ -4,6 +4,7 @@ import requests
 import xml.etree.ElementTree as ET
 import re
 import os
+import numpy as np
 import sys
 import gevent
 from typing import List, Dict, Any, Optional, Tuple
@@ -17,7 +18,7 @@ import handler.tmdb as tmdb
 import handler.emby as emby
 import config_manager
 from tasks.helpers import parse_series_title_and_season
-from database import collection_db, watchlist_db, media_db
+from database import collection_db, watchlist_db, media_db, connection
 from handler.douban import DoubanApi
 from handler.tmdb import search_media, get_tv_details
 from ai_translator import AITranslator
@@ -1185,88 +1186,223 @@ class FilterEngine:
     
 class RecommendationEngine:
     """
-    【AI 推荐引擎】
-    负责读取用户历史 -> 调用 AI -> 搜索 TMDb -> 返回结果
+    【AI 推荐引擎 (双模版)】
+    模式 A (LLM): 基于大模型知识库推荐 (适合发现新片)。
+    模式 B (Vector): 基于本地数据库向量相似度推荐 (适合精准匹配口味)。
     """
     def __init__(self, tmdb_api_key: str):
         self.tmdb_api_key = tmdb_api_key
-        self.list_importer = ListImporter(tmdb_api_key) # 复用它的搜索匹配逻辑
+        self.list_importer = ListImporter(tmdb_api_key) # 复用搜索匹配逻辑
 
+    def _vector_search(self, user_history_titles: List[str], limit: int = 10) -> List[Dict]:
+        """
+        【内部方法】基于向量相似度搜索本地数据库。
+        """
+        logger.info("  ➜ [向量搜索] 开始加载向量数据并计算相似度...")
+        
+        try:
+            with connection.get_db_connection() as conn:
+                cursor = conn.cursor()
+                # 1. 获取所有已生成向量的媒体 (仅限有简介且有向量的)
+                cursor.execute("""
+                    SELECT tmdb_id, title, item_type, overview_embedding 
+                    FROM media_metadata 
+                    WHERE overview_embedding IS NOT NULL
+                """)
+                all_data = cursor.fetchall()
+                
+            if not all_data:
+                logger.debug("  ➜ [向量搜索] 数据库中没有向量数据，跳过向量推荐。")
+                return []
+
+            # 2. 构建矩阵
+            ids = []
+            vectors = []
+            titles = []
+            types = []
+            
+            for row in all_data:
+                # JSONB 读出来是 list，转 numpy array
+                vec = row.get('overview_embedding')
+                if vec and len(vec) > 0:
+                    ids.append(str(row['tmdb_id']))
+                    titles.append(row['title'])
+                    types.append(row['item_type'])
+                    vectors.append(np.array(vec, dtype=np.float32))
+            
+            if not vectors:
+                return []
+
+            matrix = np.stack(vectors)
+            # 归一化 (L2 Norm)，确保点积等于余弦相似度
+            norm = np.linalg.norm(matrix, axis=1, keepdims=True)
+            matrix = matrix / (norm + 1e-10)
+
+            # 3. 定位用户口味 (User Profile)
+            user_vectors = []
+            # 简单模糊匹配：在向量库里找到用户看过的片子
+            # (生产环境建议直接传 history_tmdb_ids 进来匹配，这里为了通用性用标题匹配)
+            for idx, title in enumerate(titles):
+                if title and any(h in title for h in user_history_titles):
+                    user_vectors.append(matrix[idx])
+            
+            if not user_vectors:
+                logger.debug("  ➜ [向量搜索] 向量库中未找到用户历史记录的对应向量，无法计算口味。")
+                return []
+            
+            # 计算用户平均向量 (口味中心)
+            user_profile_vector = np.mean(user_vectors, axis=0)
+            user_profile_vector = user_profile_vector / (np.linalg.norm(user_profile_vector) + 1e-10)
+
+            # 4. 计算相似度 (矩阵点积)
+            # scores shape: (N,)
+            scores = np.dot(matrix, user_profile_vector)
+            
+            # 5. 排序取 Top N
+            top_indices = np.argsort(scores)[::-1] # 降序
+            
+            results = []
+            count = 0
+            for idx in top_indices:
+                if count >= limit: break
+                
+                score = float(scores[idx])
+                # 过滤掉相似度过低的
+                if score < 0.45: break 
+                # 过滤掉相似度过高(可能是原片自己)
+                if score > 0.99: continue
+                
+                # 简单的去重：如果标题已经在历史里，跳过
+                if any(h in titles[idx] for h in user_history_titles):
+                    continue
+
+                results.append({
+                    'id': ids[idx],
+                    'type': types[idx],
+                    'title': titles[idx],
+                    'score': score
+                })
+                count += 1
+                
+            logger.info(f"  ➜ [向量搜索] 计算完成，贡献了 {len(results)} 部相似影片。")
+            return results
+
+        except Exception as e:
+            logger.error(f"  ➜ [向量搜索] 发生数学计算错误: {e}")
+            return []
+        
     def generate(self, definition: Dict) -> List[Dict[str, str]]:
+        """
+        生成推荐列表的主入口。
+        """
         target_user_id = definition.get('target_user_id')
         ai_prompt = definition.get('ai_prompt')
         limit = definition.get('limit', 20)
-        
+
         if not target_user_id:
             logger.error("  ➜ [AI推荐] 未指定目标用户，无法生成推荐。")
             return []
 
-        # 1. 获取用户历史
+        # 1. 获取用户历史 (好评历史)
         history = media_db.get_user_positive_history(target_user_id, limit=20)
         if not history:
             logger.warning(f"  ➜ [AI推荐] 用户 {target_user_id} 没有足够的观看历史。")
             return []
 
-        # 2. 调用 AI 获取推荐列表
-        logger.info(f"  ➜ [AI推荐] 正在为用户生成推荐 (历史: {len(history)} 部)...")
+        final_items_map = {} # 用于去重 {tmdb_id: item_dict}
+
+        # ==================================================
+        # 策略 A: LLM 推荐 (基于知识库，擅长发现新片)
+        # ==================================================
+        logger.info(f"  ➜ [AI推荐] 正在调用 LLM 进行推理 (历史: {len(history)} 部)...")
         try:
             translator = AITranslator(config_manager.APP_CONFIG)
-            recommendations = translator.get_recommendations(history, ai_prompt)
+            
+            # 技巧：请求数量 = 用户限制 * 1.5，留出匹配失败的余量
+            request_limit = min(int(limit * 1.5), 50) 
+            
+            # 动态修改 Prompt 里的数量要求
+            instruction_with_limit = f"{ai_prompt or ''} (Please recommend at least {request_limit} items)"
+            
+            llm_recommendations = translator.get_recommendations(history, instruction_with_limit)
+            
+            if llm_recommendations:
+                logger.info(f"  ➜ [AI推荐] LLM 返回了 {len(llm_recommendations)} 部作品，正在匹配 TMDb ID...")
+                
+                # 并发匹配 TMDb ID
+                with ThreadPoolExecutor(max_workers=5) as executor:
+                    def resolve_item(rec_item):
+                        title = rec_item.get('title')
+                        original_title = rec_item.get('original_title')
+                        year = str(rec_item.get('year')) if rec_item.get('year') else None
+                        item_type = rec_item.get('type', 'Movie')
+                        
+                        # 优先用 original_title 搜
+                        search_query = original_title if original_title else title
+                        match_result = self.list_importer._match_title_to_tmdb(search_query, item_type, year)
+                        
+                        # 回退用中文标题搜
+                        if not match_result and search_query != title:
+                            match_result = self.list_importer._match_title_to_tmdb(title, item_type, year)
+
+                        if match_result:
+                            tmdb_id, matched_type, season_num = match_result
+                            return {
+                                'id': tmdb_id,
+                                'type': matched_type,
+                                'title': title, # 这里的 title 是 AI 给的中文名，展示更友好
+                                'season': season_num,
+                                # 这里的日期暂时留空，后续入库时的健康检查会去 TMDb 查最新的详情
+                                'release_date': None 
+                            }
+                        else:
+                            logger.debug(f"  ➜ [AI推荐] 未能找到 '{title}' 的 TMDb ID。")
+                            return None
+
+                    results = executor.map(resolve_item, llm_recommendations)
+                    for res in results:
+                        if res:
+                            final_items_map[res['id']] = res
+            else:
+                logger.warning("  ➜ [AI推荐] LLM 未返回任何有效结果。")
+
         except Exception as e:
-            logger.error(f"  ➜ [AI推荐] AI 调用失败: {e}")
-            return []
+            logger.error(f"  ➜ [AI推荐] LLM 调用失败: {e}")
 
-        if not recommendations:
-            logger.warning("  ➜ [AI推荐] AI 未返回任何推荐结果。")
-            return []
+        # ==================================================
+        # 策略 B: 向量推荐 (基于本地相似度，擅长精准匹配)
+        # ==================================================
+        # 只有当用户没有指定特别具体的 Prompt 时，或者 LLM 结果不够时，才启用向量补充
+        # 因为向量搜索不懂 "我要喜剧" 这种指令，它只懂 "像我看过的片子"
+        if len(final_items_map) < limit:
+            try:
+                # 补充数量 = 目标限制 - 当前已有
+                needed = limit - len(final_items_map)
+                # 多取一点做备选
+                vector_results = self._vector_search(history, limit=needed + 5)
+                
+                if vector_results:
+                    logger.info(f"  ➜ [AI推荐] 启用向量引擎补充了 {len(vector_results)} 部相似影片。")
+                    for v in vector_results:
+                        # 如果 ID 不在 map 里，且 map 还没满
+                        if v['id'] not in final_items_map:
+                            final_items_map[v['id']] = {
+                                'id': v['id'],
+                                'type': v['type'],
+                                'title': v['title'],
+                                'release_date': None
+                            }
+            except Exception as e:
+                logger.error(f"  ➜ [AI推荐] 向量推荐失败: {e}")
 
-        logger.info(f"  ➜ [AI推荐] AI 推荐了 {len(recommendations)} 部作品，正在匹配 TMDb ID...")
-
-        # 3. 将 AI 的推荐结果 (Title) 转换为 TMDb ID
-        # 我们复用 ListImporter 的 _match_title_to_tmdb 方法
-        # 但因为 ListImporter 是设计用来处理 RSS 的，我们需要稍微适配一下
+        # ==================================================
+        # 最终汇总
+        # ==================================================
+        final_items = list(final_items_map.values())
         
-        final_items = []
-        
-        # 使用线程池加速搜索
-        with ThreadPoolExecutor(max_workers=5) as executor:
-            def resolve_item(rec_item):
-                title = rec_item.get('title')
-                original_title = rec_item.get('original_title')
-                year = str(rec_item.get('year')) if rec_item.get('year') else None
-                item_type = rec_item.get('type', 'Movie')
-                
-                # 优先用 original_title 搜，通常更准
-                search_query = original_title if original_title else title
-                
-                # 调用 ListImporter 的匹配逻辑 (需要实例化)
-                # 这里我们直接复用 self.list_importer
-                match_result = self.list_importer._match_title_to_tmdb(search_query, item_type, year)
-                
-                if not match_result and search_query != title:
-                    # 如果用原名没搜到，试着用中文名搜
-                    match_result = self.list_importer._match_title_to_tmdb(title, item_type, year)
-
-                if match_result:
-                    tmdb_id, matched_type, season_num = match_result
-                    return {
-                        'id': tmdb_id,
-                        'type': matched_type,
-                        'title': title,
-                        'season': season_num
-                    }
-                else:
-                    logger.debug(f"  ➜ [AI推荐] 未能找到 '{title}' 的 TMDb ID。")
-                    return None
-
-            results = executor.map(resolve_item, recommendations)
-            for res in results:
-                if res:
-                    final_items.append(res)
-
-        # 4. 数量限制
+        # 再次截断到用户限制的数量
         if limit and isinstance(limit, int):
             final_items = final_items[:limit]
 
-        logger.info(f"  ➜ [AI推荐] 完成。成功匹配 {len(final_items)} 部影片。")
+        logger.info(f"  ➜ [AI推荐] 全部完成。最终生成 {len(final_items)} 部影片。")
         return final_items
