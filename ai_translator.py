@@ -648,64 +648,47 @@ class AITranslator:
     def get_recommendations(self, user_history: List[str], user_instruction: str = None) -> List[Dict[str, Any]]:
         """
         【核心功能】猎手模式：基于用户历史推荐新片。
-        V7 - 严厉教官版 (Strict Schema Enforcement)
+        V4 - 全中文 Prompt 强力纠正版
         """
         if not user_history:
             return []
             
-        # ★★★ V7 修改：像定义数据库表结构一样定义 Prompt ★★★
         system_prompt = """
-你是一个严格执行指令的 JSON 数据生成器，而非聊天助手。
-你的任务是根据用户历史，输出一份标准的影视推荐列表。
+你是一个精通中外影视的资深推荐专家。
+请根据用户的观影历史，推荐 20 到 30 部高质量的电影或剧集。
 
-**【数据契约 (Schema)】**
-列表中的每个对象**必须**严格包含以下 5 个字段，少一个都不行：
-1. `title` (String): **简体中文标题**。如果是国产剧，必须用中文原名。
-2. `original_title` (String): **原始标题**。外语片填原名，国产片填拼音或英文译名。
-3. `year` (Integer): 上映年份。必须是数字。
-4. `type` (String): **必须**是 "Movie" (电影) 或 "Series" (剧集/动画/综艺) 之一。**严禁**使用 "TV", "Show" 等其他词汇。
-5. `reason` (String): 简短推荐理由。
+**【核心铁律 - 违反会导致系统崩溃】**
+1. **标题必须是中文**：`title` 字段**必须**是简体中文。
+2. **国产剧禁止用英文**：对于中国（大陆/香港/台湾）的影视剧，**绝对禁止**使用英文译名，**必须**使用中文原名。
+3. **外语片必须翻译**：对于外语片，必须提供通用的中文译名。
 
-**【严厉警告】**
-- 严禁输出 Markdown 代码块标记（如 ```json）。
-- 严禁输出任何解释性文字。
-- **类型判断必须准确**：不要把《陈情令》标记为 "Movie"，它是 "Series"！
-
-**【标准输出示例】**
-{
-  "recommendations": [
-    {
-      "title": "漫长的季节",
-      "original_title": "The Long Season",
-      "year": 2023,
-      "type": "Series",
-      "reason": "高分悬疑剧"
-    },
-    {
-      "title": "奥本海默",
-      "original_title": "Oppenheimer",
-      "year": 2023,
-      "type": "Movie",
-      "reason": "诺兰导演传记片"
-    }
-  ]
-}
+**JSON 返回格式：**
+[
+  {
+    "title": "漫长的季节", 
+    "original_title": "The Long Season",
+    "year": 2023,
+    "type": "Series", 
+    "reason": "..."
+  }
+]
 """
         
+        # User Content 保持简洁
         history_str = json.dumps(user_history, ensure_ascii=False)
-        user_content = f"用户历史数据: {history_str}\n"
+        user_content = f"用户的高分观影历史: {history_str}\n"
         
         if user_instruction:
-            user_content += f"过滤指令: {user_instruction}\n"
+            user_content += f"用户的特殊要求: {user_instruction}\n"
         else:
-            user_content += "过滤指令: 推荐 20-30 部高分、口碑好、风格相似的作品。\n"
+            user_content += "用户要求: 推荐高分、口碑好、且风格相似的作品。\n"
+            
+        user_content += "\n再次提醒：请务必输出中文标题！国产剧不要输出英文名！"
 
-        # 最后施压
-        user_content += "\n执行任务：生成 JSON 数据。确保 `type` 字段准确区分 Movie 和 Series。"
-
-        logger.info(f"  ➜ [AI推荐] 正在基于 {len(user_history)} 部历史分析 (V7 严格Schema版)...")
+        logger.info(f"  ➜ [AI推荐] 正在基于 {len(user_history)} 部历史分析用户口味 (V5强力纠错版)...")
 
         try:
+            # 调用 AI
             response_text = ""
             if self.provider == 'openai':
                 resp = self.client.chat.completions.create(
@@ -714,9 +697,8 @@ class AITranslator:
                         {"role": "system", "content": system_prompt},
                         {"role": "user", "content": user_content}
                     ],
-                    # 强制 JSON 模式，这是最关键的
                     response_format={"type": "json_object"}, 
-                    temperature=0.5 # 温度适中，保证格式稳定
+                    temperature=0.5 # 稍微降低温度，让它更听话，减少幻觉
                 )
                 response_text = resp.choices[0].message.content
 
@@ -746,9 +728,6 @@ class AITranslator:
             result = _safe_json_loads(response_text)
             
             if isinstance(result, dict):
-                if "recommendations" in result and isinstance(result["recommendations"], list):
-                    return result["recommendations"]
-                # 兜底
                 for key in result:
                     if isinstance(result[key], list):
                         return result[key]
