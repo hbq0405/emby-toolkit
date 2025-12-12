@@ -615,7 +615,7 @@ def task_process_all_custom_collections(processor):
                     "in_library_count": len(global_ordered_emby_ids),
                 }
 
-                if collection['type'] == 'list':
+                if collection['type'] == 'list' or collection['type'] == 'ai_recommendation':
                     # 注意：这里传入 tmdb_items (包含 emby_id) 给健康检查，保证统计正确
                     health_check_results = _perform_list_collection_health_check(
                         tmdb_items=tmdb_items, 
@@ -803,7 +803,7 @@ def process_single_custom_collection(processor, custom_collection_id: int):
             "in_library_count": len(global_ordered_emby_ids),
         }
 
-        if collection['type'] == 'list':
+        if collection['type'] == 'list' or collection['type'] == 'ai_recommendation':
             # 传入完整的 tmdb_items (含 emby_id) 给健康检查，保证统计正确
             health_check_results = _perform_list_collection_health_check(
                 tmdb_items=tmdb_items,
