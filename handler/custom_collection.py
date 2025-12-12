@@ -4,6 +4,7 @@ import requests
 import xml.etree.ElementTree as ET
 import re
 import os
+import time
 import numpy as np
 import sys
 import gevent
@@ -625,7 +626,8 @@ class ListImporter:
         last_source_type = 'mixed'
         
         # 循环调用旧逻辑
-        for url in urls:
+        total_urls = len(urls)
+        for i, url in enumerate(urls):
             # 构造临时定义，只包含单个 URL
             temp_def = definition.copy()
             temp_def['url'] = url
@@ -634,6 +636,13 @@ class ListImporter:
             items, source_type = self._process_single_url(url, temp_def)
             all_items.extend(items)
             last_source_type = source_type
+            
+            # ★★★ 新增：多榜单间的防封控休眠 ★★★
+            # 如果当前是猫眼链接，且不是列表中的最后一个，则强制休眠
+            if isinstance(url, str) and url.startswith('maoyan://'):
+                if i < total_urls - 1:
+                    logger.info(f"  ➜ [防封控] 单个猫眼榜单采集完毕，为安全起见，强制休眠 10 秒后再采集下一个...")
+                    time.sleep(10)
             
         # 统一去重
         unique_items = []

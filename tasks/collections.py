@@ -383,17 +383,24 @@ def _get_cover_badge_text_for_collection(collection_db_info: Dict[str, Any]) -> 
 
     # 只有榜单(list)类型才需要特殊处理角标文字
     if collection_type == 'list':
-        url = definition.get('url', '')
-        # 根据URL或其他特征判断榜单来源
-        if url.startswith('maoyan://'):
-            return '猫眼'
-        elif 'douban.com/doulist' in url:
-            return '豆列'
-        elif 'themoviedb.org/discover/' in url:
-            return '探索'
-        else:
-            # 对于其他所有榜单类型，统一显示为'榜单'
-            return '榜单'
+        raw_url = definition.get('url', '')
+        
+        # ★★★ 修复：统一转为列表处理，兼容 string 和 list ★★★
+        urls = raw_url if isinstance(raw_url, list) else [str(raw_url)]
+        
+        # 遍历所有 URL，只要命中一个特征就返回
+        for u in urls:
+            if not isinstance(u, str): continue
+            
+            if u.startswith('maoyan://'):
+                return '猫眼'
+            elif 'douban.com/doulist' in u:
+                return '豆列'
+            elif 'themoviedb.org/discover/' in u:
+                return '探索'
+        
+        # 对于其他所有榜单类型，统一显示为'榜单'
+        return '榜单'
             
     # 如果不是榜单类型，或者榜单类型不匹配任何特殊规则，则返回数字角标
     return item_count_to_pass
@@ -651,7 +658,15 @@ def task_process_all_custom_collections(processor):
                     except Exception as e_cover:
                         logger.error(f"为合集 '{collection_name}' 生成封面时出错: {e_cover}", exc_info=True)
 
-                if collection['type'] == 'list' and collection['definition_json'].get('url', '').startswith('maoyan://'):
+                is_maoyan = False
+                raw_url = collection['definition_json'].get('url', '')
+                urls = raw_url if isinstance(raw_url, list) else [str(raw_url)]
+                for u in urls:
+                    if isinstance(u, str) and u.startswith('maoyan://'):
+                        is_maoyan = True
+                        break
+                
+                if collection['type'] == 'list' and is_maoyan:
                     time.sleep(10)
                 
             except Exception as e_coll:
