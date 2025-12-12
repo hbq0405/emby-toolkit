@@ -648,7 +648,6 @@ class AITranslator:
     def get_recommendations(self, user_history: List[str], user_instruction: str = None) -> List[Dict[str, Any]]:
         """
         【核心功能】猎手模式：基于用户历史推荐新片。
-        V4 - 全中文 Prompt 强力纠正版
         """
         if not user_history:
             return []
@@ -685,7 +684,7 @@ class AITranslator:
             
         user_content += "\n再次提醒：请务必输出中文标题！国产剧不要输出英文名！"
 
-        logger.info(f"  ➜ [AI推荐] 正在基于 {len(user_history)} 部历史分析用户口味 (V5强力纠错版)...")
+        logger.info(f"  ➜ [智能推荐] 正在基于 {len(user_history)} 部历史分析用户口味...")
 
         try:
             # 调用 AI
@@ -738,7 +737,7 @@ class AITranslator:
             return []
 
         except Exception as e:
-            logger.error(f"  ➜ [AI推荐] 获取推荐失败: {e}", exc_info=True)
+            logger.error(f"  ➜ [智能推荐] 获取推荐失败: {e}", exc_info=True)
             return []
         
     def filter_candidates(self, candidates: List[Dict[str, Any]], user_instruction: str) -> List[str]:
@@ -770,7 +769,7 @@ class AITranslator:
         }
         user_prompt = json.dumps(payload, ensure_ascii=False)
         
-        logger.info(f"  ➜ [AI审阅] 正在根据指令 '{user_instruction}' 筛选 {len(lean_candidates)} 个项目...")
+        logger.info(f"  ➜ [智能审阅] 正在根据指令 '{user_instruction}' 筛选 {len(lean_candidates)} 个项目...")
 
         try:
             response_text = ""
@@ -830,11 +829,11 @@ class AITranslator:
             
             # 如果 AI 返回格式不对，为了安全起见，记录错误并返回空列表（或者原列表，看你策略）
             # 这里我建议返回空，或者记录 error
-            logger.warning(f"  ➜ [AI审阅] AI 返回格式异常: {response_text[:100]}...")
+            logger.warning(f"  ➜ [智能审阅] AI 返回格式异常: {response_text[:100]}...")
             return []
 
         except Exception as e:
-            logger.error(f"  ➜ [AI审阅] 筛选失败: {e}", exc_info=True)
+            logger.error(f"  ➜ [智能审阅] 筛选失败: {e}", exc_info=True)
             # 出错时，为了不阻塞流程，可以选择返回原列表，或者返回空
             # 这里选择返回原列表（假设 AI 挂了就不过滤了）
             return [str(item['id']) for item in candidates]

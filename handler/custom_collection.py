@@ -1338,14 +1338,14 @@ class RecommendationEngine:
         limit = definition.get('limit', 20)
 
         if not target_user_id:
-            logger.error("  ➜ [AI推荐] 未指定目标用户，无法生成推荐。")
+            logger.error("  ➜ [智能推荐] 未指定目标用户，无法生成推荐。")
             return []
 
         # 1. 获取用户历史 (现在直接返回包含 tmdb_id 的字典列表)
         history_items = media_db.get_user_positive_history(target_user_id, limit=20)
         
         if not history_items:
-            logger.warning(f"  ➜ [AI推荐] 用户 {target_user_id} 没有足够的观看历史。")
+            logger.warning(f"  ➜ [智能推荐] 用户 {target_user_id} 没有足够的观看历史。")
             return []
 
         # 准备给 LLM 看的纯文本标题列表
@@ -1363,7 +1363,7 @@ class RecommendationEngine:
         # ==================================================
         # 策略 A: LLM 推荐
         # ==================================================
-        logger.info(f"  ➜ [AI推荐] 正在调用 LLM 进行推理...")
+        logger.info(f"  ➜ [智能推荐] 正在调用 LLM 进行推理...")
         try:
             translator = AITranslator(config_manager.APP_CONFIG)
             request_limit = min(int(limit * 1.5), 50) 
@@ -1373,7 +1373,7 @@ class RecommendationEngine:
             llm_recommendations = translator.get_recommendations(history_titles_for_llm, instruction_with_limit)
             
             if llm_recommendations:
-                logger.info(f"  ➜ [AI推荐] LLM 返回了 {len(llm_recommendations)} 部作品，正在匹配 TMDb ID...")
+                logger.info(f"  ➜ [智能推荐] LLM 返回了 {len(llm_recommendations)} 部作品，正在匹配 TMDb ID...")
                 
                 with ThreadPoolExecutor(max_workers=5) as executor:
                     def resolve_item(rec_item):
@@ -1419,7 +1419,7 @@ class RecommendationEngine:
                             # 第 2 试：如果没搜到，尝试【反向类型】+【首选关键词】
                             # (解决 AI 把电视剧标成电影，或者没标类型的情况)
                             if not match_result:
-                                # logger.debug(f"  ➜ [AI推荐] '{search_query}' 按 {primary_type} 未找到，尝试按 {secondary_type} 搜索...")
+                                # logger.debug(f"  ➜ [智能推荐] '{search_query}' 按 {primary_type} 未找到，尝试按 {secondary_type} 搜索...")
                                 match_result = self.list_importer._match_title_to_tmdb(search_query, secondary_type, year)
 
                             # 第 3 试：如果还没搜到，且关键词不是中文标题，尝试用【中文标题】+【首选类型】搜
@@ -1442,10 +1442,10 @@ class RecommendationEngine:
                                     'release_date': None 
                                 }
                             else:
-                                logger.debug(f"  ➜ [AI推荐] 未能找到 '{title}' (搜: {search_query}) 的 TMDb ID (已尝试电影/剧集跨类型搜索)。")
+                                logger.debug(f"  ➜ [智能推荐] 未能找到 '{title}' (搜: {search_query}) 的 TMDb ID (已尝试电影/剧集跨类型搜索)。")
                                 return None
                         except Exception as e:
-                            logger.error(f"  ➜ [AI推荐] 处理单项 '{rec_item}' 时出错: {e}")
+                            logger.error(f"  ➜ [智能推荐] 处理单项 '{rec_item}' 时出错: {e}")
                             return None
 
                     results = executor.map(resolve_item, llm_recommendations)
@@ -1453,10 +1453,10 @@ class RecommendationEngine:
                         if res:
                             final_items_map[res['id']] = res
             else:
-                logger.warning("  ➜ [AI推荐] LLM 未返回任何有效结果。")
+                logger.warning("  ➜ [智能推荐] LLM 未返回任何有效结果。")
 
         except Exception as e:
-            logger.error(f"  ➜ [AI推荐] LLM 调用失败: {e}")
+            logger.error(f"  ➜ [智能推荐] LLM 调用失败: {e}")
 
         # ==================================================
         # 策略 B: 向量推荐
@@ -1469,7 +1469,7 @@ class RecommendationEngine:
                 vector_results = self._vector_search(history_items, limit=needed + 5)
                 
                 if vector_results:
-                    logger.info(f"  ➜ [AI推荐] 启用向量引擎补充了 {len(vector_results)} 部相似影片。")
+                    logger.info(f"  ➜ [智能推荐] 启用向量引擎补充了 {len(vector_results)} 部相似影片。")
                     for v in vector_results:
                         if v['id'] not in final_items_map:
                             final_items_map[v['id']] = {
@@ -1479,7 +1479,7 @@ class RecommendationEngine:
                                 'release_date': None
                             }
             except Exception as e:
-                logger.error(f"  ➜ [AI推荐] 向量推荐失败: {e}", exc_info=True)
+                logger.error(f"  ➜ [智能推荐] 向量推荐失败: {e}", exc_info=True)
 
         # ==================================================
         # 最终汇总
@@ -1488,5 +1488,5 @@ class RecommendationEngine:
         if limit and isinstance(limit, int):
             final_items = final_items[:limit]
 
-        logger.info(f"  ➜ [AI推荐] 全部完成。最终生成 {len(final_items)} 部影片。")
+        logger.info(f"  ➜ [智能推荐] 全部完成。最终生成 {len(final_items)} 部影片。")
         return final_items
