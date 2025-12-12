@@ -654,22 +654,22 @@ class AITranslator:
             
         # 构造 Prompt
         system_prompt = """
-You are a senior film critic.
-Recommend 20-30 HIGH-QUALITY movies/series based on user history.
+You are a professional movie recommendation engine.
+Your task is to recommend 20 to 30 movies/series based on the user's history.
 
 **CRITICAL RULES:**
-1. **Output Language:** The `title` field MUST be in **Simplified Chinese (简体中文)**. Do NOT use English titles unless the movie has no Chinese name.
-2. **Original Title:** Provide the `original_title` in its native language.
-3. **Quantity:** You MUST recommend at least 20 items.
-4. **Diversity:** Avoid repeating the same franchise.
+1. **Output Language:** The `title` field MUST be in **Simplified Chinese (简体中文)**. Even if the movie is English, you MUST provide its official Chinese translation (e.g., use "黑客帝国" instead of "The Matrix").
+2. **Original Title:** Put the original language title in `original_title`.
+3. **Quantity:** Recommend AT LEAST 20 items.
+4. **Format:** Return a valid JSON List.
 
-**Output Format (JSON List):**
+**JSON Structure:**
 [
   {
-    "title": "漫长的季节",  <-- MUST BE CHINESE
-    "original_title": "The Long Season",
-    "year": 2023,
-    "type": "Series",
+    "title": "白夜追凶",  <-- MUST BE CHINESE
+    "original_title": "Day and Night",
+    "year": 2017,
+    "type": "Series", 
     "reason": "..."
   }
 ]
