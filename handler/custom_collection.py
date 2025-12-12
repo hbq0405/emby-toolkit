@@ -17,6 +17,7 @@ from gevent import subprocess, Timeout
 
 import handler.tmdb as tmdb
 import handler.emby as emby
+import utils
 import config_manager
 from tasks.helpers import parse_series_title_and_season
 from database import collection_db, watchlist_db, media_db, connection
@@ -1376,27 +1377,54 @@ class RecommendationEngine:
                 
                 with ThreadPoolExecutor(max_workers=5) as executor:
                     def resolve_item(rec_item):
-                        title = rec_item.get('title')
-                        original_title = rec_item.get('original_title')
-                        year = str(rec_item.get('year')) if rec_item.get('year') else None
-                        item_type = rec_item.get('type', 'Movie')
-                        
-                        search_query = original_title if original_title else title
-                        match_result = self.list_importer._match_title_to_tmdb(search_query, item_type, year)
-                        
-                        if not match_result and search_query != title:
-                            match_result = self.list_importer._match_title_to_tmdb(title, item_type, year)
+                        try:
+                            # 1. 数据标准化：兼容 字典 和 字符串
+                            title = ""
+                            original_title = ""
+                            year = None
+                            item_type = 'Movie' # 默认为电影
+                            
+                            if isinstance(rec_item, dict):
+                                title = rec_item.get('title')
+                                original_title = rec_item.get('original_title')
+                                year = str(rec_item.get('year')) if rec_item.get('year') else None
+                                item_type = rec_item.get('type', 'Movie')
+                            elif isinstance(rec_item, str):
+                                # 如果 AI 偷懒只返回了字符串列表 ["电影A", "电影B"]
+                                title = rec_item
+                                item_type = 'Movie' # 猜它是电影
+                            
+                            if not title: return None
 
-                        if match_result:
-                            tmdb_id, matched_type, season_num = match_result
-                            return {
-                                'id': tmdb_id,
-                                'type': matched_type,
-                                'title': title, 
-                                'season': season_num,
-                                'release_date': None 
-                            }
-                        else:
+                            # 2. 优先用 original_title 搜 (通常更准)
+                            search_query = original_title if original_title else title
+                            
+                            # 如果 search_query 是英文，且 title 是中文，优先用中文搜 (针对国产剧)
+                            # 简单的判断：如果 title 包含中文，而 search_query 不包含
+                            if utils.contains_chinese(title) and not utils.contains_chinese(search_query):
+                                search_query = title
+
+                            match_result = self.list_importer._match_title_to_tmdb(search_query, item_type, year)
+                            
+                            # 3. 回退搜索：如果没搜到，且刚才用的不是 title，那用 title 再试一次
+                            if not match_result and search_query != title:
+                                match_result = self.list_importer._match_title_to_tmdb(title, item_type, year)
+
+                            if match_result:
+                                tmdb_id, matched_type, season_num = match_result
+                                return {
+                                    'id': tmdb_id,
+                                    'type': matched_type,
+                                    'title': title, 
+                                    'season': season_num,
+                                    'release_date': None 
+                                }
+                            else:
+                                # 记录一下失败的，方便调试
+                                logger.debug(f"  ➜ [AI推荐] 未能找到 '{title}' (搜: {search_query}) 的 TMDb ID。")
+                                return None
+                        except Exception as e:
+                            logger.error(f"  ➜ [AI推荐] 处理单项 '{rec_item}' 时出错: {e}")
                             return None
 
                     results = executor.map(resolve_item, llm_recommendations)
