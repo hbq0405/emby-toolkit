@@ -961,7 +961,11 @@ def get_user_positive_history(user_id: str, limit: int = 20) -> List[str]:
             cursor.execute("""
                 SELECT m.title, m.release_year
                 FROM user_media_data u
-                JOIN media_metadata m ON u.item_id = m.tmdb_id
+                JOIN media_metadata m ON (
+                    u.item_id = m.tmdb_id 
+                    OR 
+                    m.emby_item_ids_json ? u.item_id
+                )
                 WHERE u.user_id = %s
                   AND (
                       u.is_favorite = TRUE 
@@ -972,7 +976,7 @@ def get_user_positive_history(user_id: str, limit: int = 20) -> List[str]:
             """, (user_id, limit))
             
             rows = cursor.fetchall()
-            # 返回格式：["星际穿越 (2014)", "黑客帝国 (1999)"]
+            
             history = []
             for row in rows:
                 title = row['title']
@@ -982,6 +986,13 @@ def get_user_positive_history(user_id: str, limit: int = 20) -> List[str]:
                         history.append(f"{title} ({year})")
                     else:
                         history.append(title)
+            
+            # 调试日志：看看到底查到了没
+            if not history:
+                logger.warning(f"  ➜ [数据库] 用户 {user_id} 未查到符合条件的观看历史 (已尝试双重匹配)。")
+            else:
+                logger.info(f"  ➜ [数据库] 成功提取用户 {user_id} 的 {len(history)} 条好评历史。")
+                
             return history
     except Exception as e:
         logger.error(f"获取用户 {user_id} 的观看历史失败: {e}")
