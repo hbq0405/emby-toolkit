@@ -648,56 +648,49 @@ class AITranslator:
     def get_recommendations(self, user_history: List[str], user_instruction: str = None) -> List[Dict[str, Any]]:
         """
         【核心功能】猎手模式：基于用户历史推荐新片。
-        V4 - 全中文 Prompt 强力纠正版
+        V6 - 结构化 JSON 对象版 (防崩坏 + 防复读)
         """
         if not user_history:
             return []
             
+        # ★★★ V6 修改：移除表格，改用 JSON 结构包裹，更符合模型直觉 ★★★
         system_prompt = """
-你是一个精通中外影视的资深推荐专家。
-请根据用户的观影历史，推荐 20 到 30 部高质量的电影或剧集。
+你是一个影视推荐专家。请根据用户历史推荐 20-30 部影视作品。
 
-**【核心铁律 - 违反会导致系统崩溃】**
-1. **标题必须是中文**：`title` 字段**必须**是简体中文。
-2. **国产剧禁止用英文**：对于中国（大陆/香港/台湾）的影视剧，**绝对禁止**使用英文译名，**必须**使用中文原名。
-3. **外语片必须翻译**：对于外语片，必须提供通用的中文译名。
+**【输出格式要求】**
+请返回一个包含 `recommendations` 键的 JSON 对象。
+{
+  "recommendations": [
+    {
+      "title": "中文标题",
+      "original_title": "原名",
+      "year": 2023,
+      "type": "Movie",
+      "reason": "推荐理由"
+    }
+  ]
+}
 
-**【纠错示范】(请严格模仿右边的写法)**
-❌ 错误写法 | ✅ 正确写法
---- | ---
-{"title": "The Bad Kids"} | {"title": "隐秘的角落"}
-{"title": "Day and Night"} | {"title": "白夜追凶"}
-{"title": "Joy of Life"} | {"title": "庆余年"}
-{"title": "Breaking Bad"} | {"title": "绝命毒师"}
-{"title": "Better Call Saul"} | {"title": "风骚律师"}
-
-**JSON 返回格式：**
-[
-  {
-    "title": "漫长的季节", 
-    "original_title": "The Long Season",
-    "year": 2023,
-    "type": "Series", 
-    "reason": "..."
-  }
-]
+**【关键规则】**
+1. **必须中文**：`title` 字段必须是简体中文。
+   - 遇到 "The Bad Kids" -> 必须输出 "隐秘的角落"
+   - 遇到 "Day and Night" -> 必须输出 "白夜追凶"
+   - 遇到 "Breaking Bad" -> 必须输出 "绝命毒师"
+2. **国产剧**：绝对禁止使用英文译名作为 `title`。
+3. **数量**：列表长度必须大于 20。
 """
         
-        # User Content 保持简洁
         history_str = json.dumps(user_history, ensure_ascii=False)
-        user_content = f"用户的高分观影历史: {history_str}\n"
+        user_content = f"用户历史: {history_str}\n"
         
         if user_instruction:
-            user_content += f"用户的特殊要求: {user_instruction}\n"
+            user_content += f"用户要求: {user_instruction}\n"
         else:
-            user_content += "用户要求: 推荐高分、口碑好、且风格相似的作品。\n"
-            
-        user_content += "\n再次提醒：请务必输出中文标题！国产剧不要输出英文名！"
+            user_content += "用户要求: 推荐高分、口碑好、风格相似的作品。\n"
 
-        logger.info(f"  ➜ [AI推荐] 正在基于 {len(user_history)} 部历史分析用户口味 (V5强力纠错版)...")
+        logger.info(f"  ➜ [AI推荐] 正在基于 {len(user_history)} 部历史分析用户口味 (V6 结构化版)...")
 
         try:
-            # 调用 AI
             response_text = ""
             if self.provider == 'openai':
                 resp = self.client.chat.completions.create(
@@ -707,7 +700,7 @@ class AITranslator:
                         {"role": "user", "content": user_content}
                     ],
                     response_format={"type": "json_object"}, 
-                    temperature=0.5 # 稍微降低温度，让它更听话，减少幻觉
+                    temperature=0.7 # ★★★ 调回 0.7 防止死循环复读
                 )
                 response_text = resp.choices[0].message.content
 
@@ -720,15 +713,16 @@ class AITranslator:
                         {"role": "user", "content": user_content}
                     ],
                     response_format={"type": "json_object"},
-                    temperature=0.5
+                    temperature=0.7
                 )
                 response_text = resp.choices[0].message.content
             
             elif self.provider == 'gemini':
+                # Gemini 也可以用这个 Prompt
                 full_prompt = [system_prompt, user_content]
                 config = genai.types.GenerationConfig(
                     response_mime_type="application/json",
-                    temperature=0.5
+                    temperature=0.7
                 )
                 resp = self.client.generate_content(full_prompt, generation_config=config)
                 response_text = resp.text
@@ -736,11 +730,17 @@ class AITranslator:
             # --- 解析结果 ---
             result = _safe_json_loads(response_text)
             
+            # ★★★ V6 解析逻辑：优先提取 recommendations 键 ★★★
             if isinstance(result, dict):
+                if "recommendations" in result and isinstance(result["recommendations"], list):
+                    return result["recommendations"]
+                
+                # 兜底：如果模型没按套路出牌，还是找列表
                 for key in result:
                     if isinstance(result[key], list):
                         return result[key]
-                return [result]
+                return [result] # 实在不行转单体
+            
             elif isinstance(result, list):
                 return result
             
