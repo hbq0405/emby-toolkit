@@ -169,7 +169,7 @@ def subscribe_all_missing_in_native_collections():
             'poster_path': movie.get('poster_path'),
             'overview': movie.get('overview'),
             'source': {
-                'type': 'native_collection_batch',  
+                'type': 'native_collection',  
                 'name': coll_names                  
             }
         }
@@ -186,7 +186,7 @@ def subscribe_all_missing_in_native_collections():
     for coll_name, queues in grouped_requests.items():
         # 构造该批次的来源对象
         batch_source = {
-            'type': 'native_collection_batch',
+            'type': 'native_collection',
             'name': coll_name
         }
 
