@@ -1196,7 +1196,7 @@ class RecommendationEngine:
         target_user_id = definition.get('target_user_id')
         ai_prompt = definition.get('ai_prompt')
         limit = definition.get('limit', 20)
-
+        
         if not target_user_id:
             logger.error("  ➜ [AI推荐] 未指定目标用户，无法生成推荐。")
             return []

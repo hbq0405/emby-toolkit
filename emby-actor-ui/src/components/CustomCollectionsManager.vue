@@ -2023,6 +2023,9 @@ const columns = [
       } else if (row.type === 'filter') {
         label = '筛选生成';
         tagType = 'default';
+      } else if (row.type === 'ai_recommendation') { 
+        label = '猜你喜欢';
+        tagType = 'primary'; 
       }
       return h(NTag, { type: tagType, bordered: false }, { default: () => label });
     }
@@ -2044,7 +2047,7 @@ const columns = [
   {
     title: '健康检查', key: 'health_check', width: 150,
     render(row) {
-      if (row.type !== 'list') {
+      if (row.type !== 'list' && row.type !== 'ai_recommendation') {
         return h(NText, { depth: 3 }, { default: () => 'N/A' });
       }
       const missingText = row.missing_count > 0 ? ` (${row.missing_count}缺失)` : '';
