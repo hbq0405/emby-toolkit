@@ -598,10 +598,20 @@ class AITranslator:
         try:
             # 1. OpenAI Embedding
             if self.provider == 'openai':
-                # 使用 text-embedding-3-small (性价比最高) 或 text-embedding-ada-002
+                # 默认是 OpenAI 官方模型
+                embedding_model = "text-embedding-3-small"
+                
+                # 如果检测到是硅基流动 (SiliconFlow)，强制使用 BGE-M3
+                # (或者你可以直接把下面这行取消注释，强行写死)
+                if self.base_url and "siliconflow" in self.base_url:
+                    embedding_model = "BAAI/bge-m3"
+                
+                # 如果上面自动检测不准，请直接取消下面这行的注释，手动指定：
+                # embedding_model = "BAAI/bge-m3" 
+
                 response = self.client.embeddings.create(
                     input=text,
-                    model="text-embedding-3-small" 
+                    model=embedding_model 
                 )
                 return response.data[0].embedding
 

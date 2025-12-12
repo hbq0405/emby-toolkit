@@ -961,17 +961,18 @@ def get_user_positive_history(user_id: str, limit: int = 20) -> List[str]:
             cursor.execute("""
                 SELECT m.title, m.release_year
                 FROM user_media_data u
-                JOIN media_metadata m ON (
-                    u.item_id = m.tmdb_id 
-                    OR 
-                    m.emby_item_ids_json ? u.item_id
-                )
+                JOIN media_metadata m ON (u.item_id = m.tmdb_id OR m.emby_item_ids_json ? u.item_id)
                 WHERE u.user_id = %s
                   AND (
                       u.is_favorite = TRUE 
-                      OR (u.played = TRUE)
+                      OR (
+                          u.played = TRUE 
+                          -- 假设 user_media_data 表里没有存用户评分，如果有的话最好加上 u.rating >= 7
+                          -- 这里暂时只能依靠“已播放”
+                      )
                   )
-                ORDER BY u.last_played_date DESC NULLS LAST, u.last_updated_at DESC
+                -- 关键修改：让收藏的排在前面，最近播放的排在后面
+                ORDER BY u.is_favorite DESC, u.last_played_date DESC
                 LIMIT %s
             """, (user_id, limit))
             
