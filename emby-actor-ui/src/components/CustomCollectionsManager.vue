@@ -169,7 +169,7 @@
               style="width: 100%;"
             />
             <template #feedback>
-              仅导入榜单中的前 N 个项目。如果选择了多个榜单，将从每个榜单各取前 N 个。
+              仅导入榜单中的前 N 个项目。如果选择了多个榜单，将从所有榜单取前 N 个。
             </template>
           </n-form-item>
           <n-divider title-placement="left" style="margin-top: 15px;">
@@ -1678,7 +1678,7 @@ const removeRule = (index) => {
 const typeOptions = [
   { label: '通过榜单导入 (RSS/内置)', value: 'list' },
   { label: '通过筛选规则生成', value: 'filter' },
-  { label: 'AI 猜你喜欢 (指定用户)', value: 'ai_recommendation' }
+  { label: '智能推荐 (指定用户)', value: 'ai_recommendation' }
 ];
 
 const formRules = computed(() => {
@@ -2045,7 +2045,7 @@ const columns = [
         label = '筛选生成';
         tagType = 'default';
       } else if (row.type === 'ai_recommendation') {
-        label = '猜你喜欢';
+        label = '智能推荐';
         tagType = 'primary';
       }
 
