@@ -1194,16 +1194,35 @@ class RecommendationEngine:
         self.tmdb_api_key = tmdb_api_key
         self.list_importer = ListImporter(tmdb_api_key) # 复用搜索匹配逻辑
 
-    def _vector_search(self, user_history_titles: List[str], limit: int = 10) -> List[Dict]:
+    def _vector_search(self, user_history_items: List[Dict], limit: int = 10) -> List[Dict]:
         """
         【内部方法】基于向量相似度搜索本地数据库。
+        改进版：优先使用 TMDb ID 进行精确匹配，而非不靠谱的标题匹配。
         """
         logger.info("  ➜ [向量搜索] 开始加载向量数据并计算相似度...")
         
+        # 1. 提取历史记录中的 ID 集合 (用于快速查找)
+        history_tmdb_ids = set()
+        history_titles = set()
+        
+        # 兼容处理：user_history_items 可能是字典列表，也可能是纯标题列表(旧逻辑)
+        for item in user_history_items:
+            if isinstance(item, dict):
+                if item.get('tmdb_id'):
+                    history_tmdb_ids.add(str(item.get('tmdb_id')))
+                if item.get('title'):
+                    history_titles.add(item.get('title'))
+            elif isinstance(item, str):
+                history_titles.add(item)
+
+        if not history_tmdb_ids and not history_titles:
+            logger.warning("  ➜ [向量搜索] 用户历史记录为空或格式无法解析，跳过。")
+            return []
+
         try:
             with connection.get_db_connection() as conn:
                 cursor = conn.cursor()
-                # 1. 获取所有已生成向量的媒体 (仅限有简介且有向量的)
+                # 获取所有已生成向量的媒体
                 cursor.execute("""
                     SELECT tmdb_id, title, item_type, overview_embedding 
                     FROM media_metadata 
@@ -1212,7 +1231,7 @@ class RecommendationEngine:
                 all_data = cursor.fetchall()
                 
             if not all_data:
-                logger.debug("  ➜ [向量搜索] 数据库中没有向量数据，跳过向量推荐。")
+                logger.warning("  ➜ [向量搜索] 数据库中没有向量数据。请先运行“生成媒体向量”任务。")
                 return []
 
             # 2. 构建矩阵
@@ -1222,7 +1241,6 @@ class RecommendationEngine:
             types = []
             
             for row in all_data:
-                # JSONB 读出来是 list，转 numpy array
                 vec = row.get('overview_embedding')
                 if vec and len(vec) > 0:
                     ids.append(str(row['tmdb_id']))
@@ -1234,32 +1252,44 @@ class RecommendationEngine:
                 return []
 
             matrix = np.stack(vectors)
-            # 归一化 (L2 Norm)，确保点积等于余弦相似度
+            # 归一化
             norm = np.linalg.norm(matrix, axis=1, keepdims=True)
             matrix = matrix / (norm + 1e-10)
 
             # 3. 定位用户口味 (User Profile)
             user_vectors = []
-            # 简单模糊匹配：在向量库里找到用户看过的片子
-            # (生产环境建议直接传 history_tmdb_ids 进来匹配，这里为了通用性用标题匹配)
-            for idx, title in enumerate(titles):
-                if title and any(h in title for h in user_history_titles):
+            matched_count = 0
+            
+            # ★★★ 改进的核心：优先匹配 ID ★★★
+            for idx, db_tmdb_id in enumerate(ids):
+                is_match = False
+                
+                # A. ID 精确匹配
+                if db_tmdb_id in history_tmdb_ids:
+                    is_match = True
+                
+                # B. 标题兜底匹配 (如果 ID 没对上，再试标题)
+                elif titles[idx] and any(h_t in titles[idx] for h_t in history_titles):
+                    is_match = True
+                
+                if is_match:
                     user_vectors.append(matrix[idx])
+                    matched_count += 1
             
             if not user_vectors:
-                logger.debug("  ➜ [向量搜索] 向量库中未找到用户历史记录的对应向量，无法计算口味。")
+                logger.warning(f"  ➜ [向量搜索] 匹配失败：用户的 {len(user_history_items)} 条历史记录均未在本地向量库中找到对应数据。")
+                logger.warning(f"    (提示：请检查这些影片是否已入库，且是否已运行'生成媒体向量'任务)")
                 return []
             
-            # 计算用户平均向量 (口味中心)
+            logger.info(f"  ➜ [向量搜索] 成功匹配到 {matched_count} 部历史影片的向量，正在计算推荐...")
+
+            # 计算用户平均向量
             user_profile_vector = np.mean(user_vectors, axis=0)
             user_profile_vector = user_profile_vector / (np.linalg.norm(user_profile_vector) + 1e-10)
 
-            # 4. 计算相似度 (矩阵点积)
-            # scores shape: (N,)
+            # 4. 计算相似度
             scores = np.dot(matrix, user_profile_vector)
-            
-            # 5. 排序取 Top N
-            top_indices = np.argsort(scores)[::-1] # 降序
+            top_indices = np.argsort(scores)[::-1]
             
             results = []
             count = 0
@@ -1267,14 +1297,12 @@ class RecommendationEngine:
                 if count >= limit: break
                 
                 score = float(scores[idx])
-                # 过滤掉相似度过低的
                 if score < 0.45: break 
-                # 过滤掉相似度过高(可能是原片自己)
-                if score > 0.99: continue
+                if score > 0.999: continue # 排除自己
                 
-                # 简单的去重：如果标题已经在历史里，跳过
-                if any(h in titles[idx] for h in user_history_titles):
-                    continue
+                # 排除已看过的 (ID 或 标题)
+                if ids[idx] in history_tmdb_ids: continue
+                if any(h_t in titles[idx] for h_t in history_titles): continue
 
                 results.append({
                     'id': ids[idx],
@@ -1288,7 +1316,7 @@ class RecommendationEngine:
             return results
 
         except Exception as e:
-            logger.error(f"  ➜ [向量搜索] 发生数学计算错误: {e}")
+            logger.error(f"  ➜ [向量搜索] 计算过程发生错误: {e}", exc_info=True)
             return []
         
     def generate(self, definition: Dict) -> List[Dict[str, str]]:
