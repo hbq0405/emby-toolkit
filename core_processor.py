@@ -174,6 +174,26 @@ class MediaProcessor:
                 return
 
             records_to_upsert = []
+
+            # ★★★ 新增：生成向量逻辑 (仅针对 Movie 和 Series) ★★★
+            overview_embedding_json = None
+            if item_type in ["Movie", "Series"] and self.ai_translator:
+                # 优先使用 source_data_package 里的 overview (通常来自 TMDb/本地缓存，质量较高)
+                overview_text = source_data_package.get('overview')
+                # 如果没有，尝试用 Emby 的
+                if not overview_text:
+                    overview_text = item_details_from_emby.get('Overview')
+                
+                if overview_text:
+                    try:
+                        # 检查配置开关 (可选，如果想更严谨的话)
+                        if self.config.get("ai_translation_enabled", False):
+                            embedding = self.ai_translator.generate_embedding(overview_text)
+                            if embedding:
+                                overview_embedding_json = json.dumps(embedding)
+                                logger.info(f"  ➜ 已为 '{item_details_from_emby.get('Name')}' 生成剧情向量。")
+                    except Exception as e_embed:
+                        logger.warning(f"  ➜ 生成向量失败: {e_embed}")
             
             if item_type == "Movie":
                 movie_record = source_data_package.copy()
@@ -192,7 +212,7 @@ class MediaProcessor:
                 asset_details = parse_full_asset_details(item_details_from_emby)
                 asset_details['source_library_id'] = item_details_from_emby.get('_SourceLibraryId')
                 movie_record['asset_details_json'] = json.dumps([asset_details], ensure_ascii=False)
-                
+                movie_record['overview_embedding'] = overview_embedding_json
                 records_to_upsert.append(movie_record)
 
             elif item_type == "Series":
@@ -244,7 +264,8 @@ class MediaProcessor:
                     "original_title": series_details.get('original_name'), "overview": series_details.get('overview'),
                     "release_date": series_details.get('first_air_date'), "poster_path": series_details.get('poster_path'),
                     "rating": douban_rating if douban_rating is not None else series_details.get('vote_average'),
-                    "asset_details_json": '[]'
+                    "asset_details_json": '[]',
+                    "overview_embedding": overview_embedding_json
                 }
                 # ... (中间的 actors_json 等构建代码保持不变) ...
                 actors_relation = [{"tmdb_id": int(p.get("id")), "character": p.get("character"), "order": p.get("order")} for p in final_processed_cast if p.get("id")]
