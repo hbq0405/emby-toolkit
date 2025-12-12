@@ -2005,28 +2005,49 @@ const columns = [
     render: (row) => {
       let label = '未知';
       let tagType = 'default';
+
       if (row.type === 'list') {
-        let url = row.definition?.url || '';
-        if (url.startsWith('maoyan://')) {
+        let urls = row.definition?.url || [];
+
+        // 兼容旧数据字符串，转数组
+        if (typeof urls === 'string' && urls.trim() !== '') {
+          urls = [urls.trim()];
+        } else if (!Array.isArray(urls)) {
+          urls = [];
+        }
+
+        if (urls.length > 1) {
+          // 多个URL或榜单，视为混合榜单
+          label = '混合榜单';
+          tagType = 'warning'; // 你可以改成其它颜色
+        } else if (urls.length === 1) {
+          const url = urls[0];
+          if (url.startsWith('maoyan://')) {
             label = '猫眼榜单';
             tagType = 'error';
-        } else if (url.includes('douban.com/doulist')) {
+          } else if (url.includes('douban.com/doulist')) {
             label = '豆瓣豆列';
             tagType = 'success';
-        } else if (url.includes('themoviedb.org/discover/')) {
+          } else if (url.includes('themoviedb.org/discover/')) {
             label = '探索助手';
             tagType = 'warning';
-        } else {
+          } else {
             label = '榜单导入';
             tagType = 'info';
+          }
+        } else {
+          // 没有URL时，默认标记
+          label = '无榜单URL';
+          tagType = 'default';
         }
       } else if (row.type === 'filter') {
         label = '筛选生成';
         tagType = 'default';
-      } else if (row.type === 'ai_recommendation') { 
+      } else if (row.type === 'ai_recommendation') {
         label = '猜你喜欢';
-        tagType = 'primary'; 
+        tagType = 'primary';
       }
+
       return h(NTag, { type: tagType, bordered: false }, { default: () => label });
     }
   },
