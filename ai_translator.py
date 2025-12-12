@@ -653,47 +653,48 @@ class AITranslator:
         if not user_history:
             return []
             
-        # ★★★ V4 修改：全中文 System Prompt (对 Qwen 效果拔群) ★★★
         system_prompt = """
-你是一个专业的影视推荐引擎。
+你是一个精通中外影视的资深推荐专家。
 请根据用户的观影历史，推荐 20 到 30 部高质量的电影或剧集。
 
-**【绝对强制规则】**
-1. **必须输出中文标题**：`title` 字段必须是**简体中文**。
-   - 错误示例：{"title": "Breaking Bad"}
-   - 正确示例：{"title": "绝命毒师"}
-   - 如果是国产剧，必须用中文原名（如 "白夜追凶" 而不是 "Day and Night"）。
-2. **原名分开存**：将外文原名或拼音放入 `original_title` 字段。
-3. **数量要求**：必须推荐至少 20 部，不要偷懒。
-4. **格式要求**：必须返回标准的 JSON 列表 (List of Objects)。
+**【核心铁律 - 违反会导致系统崩溃】**
+1. **标题必须是中文**：`title` 字段**必须**是简体中文。
+2. **国产剧禁止用英文**：对于中国（大陆/香港/台湾）的影视剧，**绝对禁止**使用英文译名，**必须**使用中文原名。
+3. **外语片必须翻译**：对于外语片，必须提供通用的中文译名。
 
-**JSON 返回格式示例：**
+**【纠错示范】(请严格模仿右边的写法)**
+❌ 错误写法 | ✅ 正确写法
+--- | ---
+{"title": "The Bad Kids"} | {"title": "隐秘的角落"}
+{"title": "Day and Night"} | {"title": "白夜追凶"}
+{"title": "Joy of Life"} | {"title": "庆余年"}
+{"title": "Breaking Bad"} | {"title": "绝命毒师"}
+{"title": "Better Call Saul"} | {"title": "风骚律师"}
+
+**JSON 返回格式：**
 [
   {
     "title": "漫长的季节", 
     "original_title": "The Long Season",
     "year": 2023,
     "type": "Series", 
-    "reason": "根据你喜欢的悬疑风格推荐"
+    "reason": "..."
   }
 ]
 """
         
-        # ★★★ V4 修改：全中文 User Content ★★★
-        # 将历史记录转为 JSON 字符串，防止特殊字符干扰
+        # User Content 保持简洁
         history_str = json.dumps(user_history, ensure_ascii=False)
-        
         user_content = f"用户的高分观影历史: {history_str}\n"
         
         if user_instruction:
             user_content += f"用户的特殊要求: {user_instruction}\n"
         else:
-            user_content += "用户要求: 推荐高分、口碑好、且风格相似的作品。多推荐一些冷门佳作。\n"
+            user_content += "用户要求: 推荐高分、口碑好、且风格相似的作品。\n"
             
-        # 最后再叮嘱一句
-        user_content += "\n请注意：`title` 字段必须是中文！请直接返回 JSON 数据，不要包含 markdown 代码块标记。"
+        user_content += "\n再次提醒：请务必输出中文标题！国产剧不要输出英文名！"
 
-        logger.info(f"  ➜ [AI推荐] 正在基于 {len(user_history)} 部历史分析用户口味 (使用全中文Prompt)...")
+        logger.info(f"  ➜ [AI推荐] 正在基于 {len(user_history)} 部历史分析用户口味 (V5强力纠错版)...")
 
         try:
             # 调用 AI
@@ -706,7 +707,7 @@ class AITranslator:
                         {"role": "user", "content": user_content}
                     ],
                     response_format={"type": "json_object"}, 
-                    temperature=0.7
+                    temperature=0.5 # 稍微降低温度，让它更听话，减少幻觉
                 )
                 response_text = resp.choices[0].message.content
 
@@ -719,7 +720,7 @@ class AITranslator:
                         {"role": "user", "content": user_content}
                     ],
                     response_format={"type": "json_object"},
-                    temperature=0.7
+                    temperature=0.5
                 )
                 response_text = resp.choices[0].message.content
             
@@ -727,7 +728,7 @@ class AITranslator:
                 full_prompt = [system_prompt, user_content]
                 config = genai.types.GenerationConfig(
                     response_mime_type="application/json",
-                    temperature=0.7
+                    temperature=0.5
                 )
                 resp = self.client.generate_content(full_prompt, generation_config=config)
                 response_text = resp.text
