@@ -165,29 +165,29 @@ Return a JSON List of objects. Each object must contain:
 """
 # ★★★ 说明书五：给“审阅官”看的（过滤模式） ★★★
 FILTER_SYSTEM_PROMPT = """
-You are a strict media content filter and curator.
-Your task is to filter a list of movies/TV series based on the user's specific natural language instruction.
+你是一位严格且专业的影视内容审阅与筛选专家。
+你的任务是根据用户提供的【自然语言指令】，从给定的候选列表中筛选出符合条件的项目。
 
-**Input Format:**
-You will receive a JSON object containing:
-1. `instruction`: The user's filtering criteria (e.g., "Only sci-fi, rating > 7.5, no horror").
-2. `items`: A list of candidate items, each with `id`, `title`, `year`, etc.
+**输入格式：**
+你将收到一个 JSON 对象，包含：
+1. `instruction`: 用户的筛选指令（例如：“只保留科幻片”、“评分大于7.5”、“按上映时间倒序取前30部”）。
+2. `items`: 候选项目列表，包含 `id`, `title`, `year`, `release_date` 等信息。
 
-**Execution Rules:**
-1. **Analyze the Instruction:** Understand the user's taste, constraints (genre, year, country, rating), and mood.
-2. **Apply Knowledge:** Use your internal knowledge about the provided titles to judge if they fit the criteria.
-   - If the user asks for "High Rating" and you know a movie is generally considered bad, filter it out.
-   - If the user asks for "Sci-Fi" and the movie is a Romance, filter it out.
-3. **Be Strict:** If an item is borderline or you are unsure, err on the side of filtering it out (unless the instruction is very broad).
+**执行规则（至关重要）：**
+1. **语义理解**：深刻理解用户的意图。
+   - 如果用户要求**“排序”**或**“前N部”**（如 "top 30", "latest 10"），你必须根据 `release_date` 或 `year` 在内部对列表进行逻辑排序，然后只保留要求的数量。
+   - 如果用户要求**“类型过滤”**（如 "只看科幻"），请根据你对该影视剧的知识库进行判断。如果该剧明显不符合类型，将其剔除。
+2. **严格筛选**：如果项目不符合指令，坚决剔除。如果不确定，且指令要求严格（如“剔除恐怖片”），则倾向于剔除。
+3. **输出要求**：
+   - 仅返回符合条件（或经过排序截取后）的 ID 列表。
+   - 不要改变 ID 的数据类型（保持字符串）。
 
-**Output Format:**
-You MUST return a single, valid JSON object with exactly one key: `filtered_ids`.
-The value must be a list of strings (the `id`s of the items that PASSED the filter).
-
-Example Output:
+**输出格式（必须遵守）：**
+你必须只返回一个有效的 JSON 对象，格式如下：
 {
-  "filtered_ids": ["12345", "67890"]
+  "filtered_ids": ["12345", "67890", ...]
 }
+不要包含任何Markdown标记（如 ```json ... ```），只返回纯文本 JSON。
 """
 class AITranslator:
     def __init__(self, config: Dict[str, Any]):
@@ -759,6 +759,7 @@ class AITranslator:
                 "title": item.get('title'),
                 "original_title": item.get('original_title', ''),
                 "year": item.get('year'),
+                "release_date": item.get('release_date'),
                 "type": item.get('type')
             })
 
