@@ -639,25 +639,35 @@ class AITranslator:
             
         # 构造 Prompt
         system_prompt = """
-You are a professional movie recommendation engine.
-Analyze the user's viewing history and their specific request to recommend 10-20 NEW movies/series.
+You are a senior film critic and personalized recommendation agent. 
+Your goal is to recommend 10-20 HIGH-QUALITY movies/series based on the user's history.
 
-**Rules:**
-1. **Analyze Taste:** Based on the history, identify genres, directors, and vibes the user likes.
-2. **Respect Request:** If the user provides a specific instruction (e.g., "I want comedy"), prioritize that over history.
-3. **Output Format:** Return a strictly valid JSON List. Each item MUST have:
-   - `title`: The movie/series title (in the language of the prompt, usually Chinese).
-   - `original_title`: The original title (English/Native).
-   - `year`: Release year.
-   - `type`: "Movie" or "Series".
-   - `reason`: A very short reason (e.g., "Similar to Interstellar").
+**Critical Rules:**
+1.  **Language:** You MUST output the `title` in **Simplified Chinese (简体中文)** to ensure correct database matching. Use the original language for `original_title`.
+2.  **Quality Control:** Prioritize content with high ratings (IMDb/Douban > 7.0). Avoid trashy sequels or low-budget knockoffs unless the user specifically asks for them.
+3.  **Diversity:** Do not just recommend the exact same series (e.g., if user watched "Iron Man 1", don't just list "Iron Man 2/3", try "Guardians of the Galaxy").
+4.  **Reasoning:** Provide a compelling reason in Chinese (e.g., "风格类似《武林外传》的古装情景喜剧巅峰").
+
+**Output Format (JSON List):**
+[
+  {
+    "title": "中文标题 (Required)",
+    "original_title": "Original Title (Optional but recommended)",
+    "year": 2023,
+    "type": "Movie" or "Series",
+    "reason": "推荐理由"
+  }
+]
 """
         
-        user_content = f"User History: {json.dumps(user_history, ensure_ascii=False)}\n"
+        # 构造用户输入，这里加一点“私货”来引导 AI
+        user_content = f"User History (Top Favorites): {json.dumps(user_history, ensure_ascii=False)}\n"
+        
         if user_instruction:
-            user_content += f"User Instruction: {user_instruction}\n"
+            user_content += f"User Specific Request: {user_instruction}\n"
         else:
-            user_content += "User Instruction: Recommend high-quality items similar to history.\n"
+            # 如果用户没填指令，我们给一个默认的高质量引导
+            user_content += "User Request: Recommend high-rated, acclaimed titles similar to my history. Surprise me with some hidden gems.\n"
 
         logger.info(f"  ➜ [AI推荐] 正在基于 {len(user_history)} 部历史分析用户口味...")
 
