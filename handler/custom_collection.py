@@ -20,6 +20,7 @@ from tasks.helpers import parse_series_title_and_season
 from database import collection_db, watchlist_db, media_db
 from handler.douban import DoubanApi
 from handler.tmdb import search_media, get_tv_details
+from ai_translator import AITranslator
 
 logger = logging.getLogger(__name__)
 
@@ -340,11 +341,14 @@ class ListImporter:
                     tmdb_id = item.get('id')
                     if tmdb_id and item_type_for_result:
                         title = item.get('title') if item_type_for_result == 'Movie' else item.get('name')
-                        
+                        date_str = item.get('release_date') if item_type_for_result == 'Movie' else item.get('first_air_date')
+                        year = date_str[:4] if date_str else None
                         all_items.append({
                             'id': str(tmdb_id), 
                             'type': item_type_for_result,
-                            'title': title
+                            'title': title,
+                            'release_date': date_str, 
+                            'year': year
                         })
                 
                 current_page += 1
@@ -607,11 +611,93 @@ class ListImporter:
         return None
 
     def process(self, definition: Dict) -> Tuple[List[Dict[str, str]], str]:
-        url = definition.get('url')
+        raw_url = definition.get('url')
+        urls = []
+        if isinstance(raw_url, list):
+            urls = [u for u in raw_url if u]
+        elif isinstance(raw_url, str) and raw_url:
+            urls = [raw_url]
+            
+        if not urls: return [], 'empty'
+        
+        all_items = []
+        last_source_type = 'mixed'
+        
+        # 循环调用旧逻辑
+        for url in urls:
+            # 构造临时定义，只包含单个 URL
+            temp_def = definition.copy()
+            temp_def['url'] = url
+            
+            # 调用原逻辑
+            items, source_type = self._process_single_url(url, temp_def)
+            all_items.extend(items)
+            last_source_type = source_type
+            
+        # 统一去重
+        unique_items = []
+        seen_keys = set()
+        for item in all_items:
+            tmdb_id = item.get('id')
+            item_type = item.get('type')
+            title = item.get('title')
+            season = item.get('season')
+            
+            if tmdb_id:
+                key = f"{item_type}-{tmdb_id}-{season}"
+            else:
+                key = f"unidentified-{title}"
+            
+            if key not in seen_keys:
+                seen_keys.add(key)
+                unique_items.append(item)
+        
+        # 统一限制数量
+        limit = definition.get('limit')
+        if limit and isinstance(limit, int) and limit > 0:
+            unique_items = unique_items[:limit]
+            
+        # ==================== ★★★ AI 过滤插件 (新增) ★★★ ====================
+        if definition.get('ai_enabled') and definition.get('ai_prompt'):
+            ai_prompt = definition.get('ai_prompt')
+            logger.info(f"  ➜ [AI审阅] 正在根据指令筛选 {len(unique_items)} 个候选项目...")
+            
+            # 1. 准备投喂给 AI 的数据 (只给必要字段以节省 Token)
+            candidates_for_ai = []
+            for item in unique_items:
+                # 这里最好能查一下简单的元数据(类型、简介)，如果 unique_items 里只有 ID 和 Title
+                # 可能需要先调一下 TMDb 接口获取简介，或者让 AI 仅凭标题判断(不太准)
+                # 建议：复用你现有的 media_db 或 tmdb 模块获取简要信息
+                candidates_for_ai.append({
+                    "id": item['id'],
+                    "title": item['title'],
+                    "type": item['type'],
+                    "year": item.get('year')
+                })
+            
+            # 2. 调用 AI (需要在 ai_translator.py 实现 filter_candidates)
+            translator = AITranslator(config_manager.APP_CONFIG)
+            filtered_ids = translator.filter_candidates(
+                candidates=candidates_for_ai, 
+                user_instruction=ai_prompt
+            )
+            
+            # 3. 过滤列表
+            original_count = len(unique_items)
+            unique_items = [item for item in unique_items if item['id'] in filtered_ids]
+            logger.info(f"  ➜ [AI审阅] 完成。从 {original_count} 部中筛选出 {len(unique_items)} 部。")
+        # ===================================================================
+        
+        return unique_items, last_source_type
+
+    def _process_single_url(self, url: str, definition: Dict) -> Tuple[List[Dict[str, str]], str]:
+        definition = definition.copy()
+        definition['url'] = url
         source_type = 'list_rss'
         
         if not url:
             return [], source_type
+            
 
         # ★★★ 核心修正：在这里直接处理猫眼逻辑 ★★★
         if url.startswith('maoyan://'):
@@ -762,7 +848,6 @@ class ListImporter:
                 unique_items.append(item)
                 
         logger.info(f"  ➜ 去重后剩余 {len(unique_items)} 个有效项目。")
-        # ==================== 修复结束 ====================
 
         return unique_items, source_type
 

@@ -127,22 +127,39 @@
         <div v-if="currentCollection.type === 'list'">
           <n-form-item label="榜单来源">
             <n-select
-              v-model:value="selectedBuiltInList"
-              :options="builtInLists"
-              placeholder="选择一个内置榜单或自定义"
+              v-model:value="selectedBuiltInLists"
+              multiple
+              filterable
+              clearable
+              placeholder="可多选，例如同时选择猫眼电影和电视剧"
+              :options="filteredBuiltInLists"
             />
           </n-form-item>
-          <n-form-item label="榜单URL" path="definition.url">
-            <n-input-group>
-              <n-input 
-                v-model:value="currentCollection.definition.url" 
-                :placeholder="urlInputPlaceholder"
-              />
-              <n-button type="primary" ghost @click="openDiscoverHelper">
-                TMDb 探索助手
+          
+          <n-form-item label="自定义榜单URL">
+            <div style="width: 100%;">
+              <div v-for="(urlItem, index) in customUrlList" :key="index" style="margin-bottom: 10px;">
+                <n-input-group>
+                  <n-input 
+                    v-model:value="urlItem.value" 
+                    placeholder="请输入RSS、TMDb片单或Discover链接"
+                  />
+                  <!-- 只有第一个输入框显示 TMDb 助手，或者你可以做成每个都显示 -->
+                  <n-button v-if="index === 0" type="primary" ghost @click="openDiscoverHelper">
+                    TMDb 探索
+                  </n-button>
+                  <n-button type="error" ghost @click="removeCustomUrl(index)" :disabled="customUrlList.length === 1 && !urlItem.value">
+                    <template #icon><n-icon :component="DeleteIcon" /></template>
+                  </n-button>
+                </n-input-group>
+              </div>
+              <n-button dashed block @click="addCustomUrl">
+                <template #icon><n-icon :component="AddIcon" /></template>
+                添加更多 URL
               </n-button>
-            </n-input-group>
+            </div>
           </n-form-item>
+
           <n-form-item label="数量限制" path="definition.limit">
             <n-input-number 
               v-model:value="currentCollection.definition.limit" 
@@ -152,9 +169,39 @@
               style="width: 100%;"
             />
             <template #feedback>
-              仅导入榜单中的前 N 个项目。例如：输入 20 表示只处理 TOP 20。
+              仅导入榜单中的前 N 个项目。如果选择了多个榜单，将从每个榜单各取前 N 个。
             </template>
           </n-form-item>
+          <n-divider title-placement="left" style="margin-top: 15px;">
+            <n-space align="center">
+              <n-icon :component="SparklesIcon" color="#f2c97d" /> <!-- 找个星星图标 -->
+              <span>AI 智能审阅 (实验性)</span>
+            </n-space>
+          </n-divider>
+
+          <n-form-item path="definition.ai_enabled">
+            <template #label>
+              <n-space align="center">
+                <span>启用 AI 选片</span>
+                <n-tooltip trigger="hover">
+                  <template #trigger><n-icon :component="HelpIcon" /></template>
+                  开启后，系统会将榜单抓取到的前 50-100 部影片元数据发送给 AI，由 AI 根据你的指令进行二次筛选。
+                </n-tooltip>
+              </n-space>
+            </template>
+            <n-switch v-model:value="currentCollection.definition.ai_enabled" />
+          </n-form-item>
+
+          <n-collapse-transition :show="currentCollection.definition.ai_enabled">
+            <n-form-item label="AI 选片指令 (Prompt)" path="definition.ai_prompt">
+              <n-input
+                v-model:value="currentCollection.definition.ai_prompt"
+                type="textarea"
+                placeholder="例如：只保留评分 7.0 以上的科幻片；不要恐怖片；如果是国产剧只保留古装类；优先保留近 3 年的作品。"
+                :autosize="{ minRows: 3, maxRows: 6 }"
+              />
+            </n-form-item>
+          </n-collapse-transition>
         </div>
 
         <!-- 筛选规则 (Filter) 类型的表单 -->
@@ -1287,32 +1334,51 @@ const builtInLists = [
   { label: '芒果TV - 网剧', value: 'maoyan://web-tv-mango', contentType: ['Series'] },
   { label: '芒果TV - 综艺', value: 'maoyan://zongyi-mango', contentType: ['Series'] },
 ];
+const filteredBuiltInLists = computed(() => {
+  const result = [];
+  let currentGroup = null;
 
-const selectedBuiltInList = ref('custom');
+  builtInLists.forEach(item => {
+    // 1. 过滤掉 'custom' 选项
+    if (item.value === 'custom') return;
+
+    // 2. 如果是分组标题，创建一个新的分组对象
+    if (item.type === 'group') {
+      currentGroup = { 
+        type: 'group', 
+        label: item.label, 
+        key: item.key, 
+        children: [] 
+      };
+      result.push(currentGroup);
+    } 
+    // 3. 如果是普通选项
+    else {
+      if (currentGroup) {
+        // 如果当前有分组，加入到分组的 children 中
+        currentGroup.children.push(item);
+      } else {
+        // 如果没有分组（比如第一项），直接加入结果数组
+        result.push(item);
+      }
+    }
+  });
+
+  return result;
+});
+const selectedBuiltInLists = ref([]);
+const customUrlList = ref([{ value: '' }]);
+// 计算属性：判断是否为多源模式
+const isMultiSource = computed(() => {
+  const builtInCount = selectedBuiltInLists.value.length;
+  const customCount = customUrlList.value.filter(u => u.value.trim()).length;
+  return (builtInCount + customCount) > 1;
+});
 
 const isContentTypeLocked = computed(() => {
-  return selectedBuiltInList.value !== 'custom' && currentCollection.value.type === 'list';
-});
-
-const urlInputPlaceholder = computed(() => {
-  return selectedBuiltInList.value === 'custom'
-    ? '请输入RSS、TMDb片单或Discover链接'
-    : '已选择内置榜单，URL自动填充';
-});
-
-watch(selectedBuiltInList, (newValue) => {
-  if (newValue && newValue !== 'custom') {
-    currentCollection.value.definition.url = newValue;
-  } else {
-    if (!isEditing.value) {
-      currentCollection.value.definition.url = '';
-    }
-  }
-
-  const selectedOption = builtInLists.find(opt => opt.value === newValue);
-  if (selectedOption && selectedOption.contentType) {
-    currentCollection.value.definition.item_type = selectedOption.contentType;
-  }
+  // 如果选择了任何内置榜单，且当前类型是 list，则锁定内容类型选择
+  // (或者你可以直接返回 false，允许用户在多选模式下自由修改类型)
+  return selectedBuiltInLists.value.length > 0 && currentCollection.value.type === 'list';
 });
 
 const sortFieldOptions = computed(() => {
@@ -1331,7 +1397,10 @@ const sortFieldOptions = computed(() => {
   }
 
   if (currentCollection.value.type === 'list') {
-    options.splice(1, 0, { label: '榜单原始顺序', value: 'original' });
+    // ★★★ 只有单源时才显示原始顺序 ★★★
+    if (!isMultiSource.value) {
+      options.splice(1, 0, { label: '榜单原始顺序', value: 'original' });
+    }
   }
   return options;
 });
@@ -1364,6 +1433,7 @@ const currentCollection = ref(getInitialFormModel());
 
 watch(() => currentCollection.value.type, (newType) => {
   if (isEditing.value) { return; }
+  
   const sharedProps = {
     item_type: ['Movie'],
     default_sort_by: 'none',
@@ -1373,6 +1443,7 @@ watch(() => currentCollection.value.type, (newType) => {
     dynamic_rules: [],
     show_in_latest: true,
   };
+
   if (newType === 'filter') {
     currentCollection.value.definition = {
       ...sharedProps,
@@ -1384,13 +1455,28 @@ watch(() => currentCollection.value.type, (newType) => {
   } else if (newType === 'list') {
     currentCollection.value.definition = { 
       ...sharedProps,
-      url: '',
+      url: [], // ★★★ 必须是数组
       limit: null,
       default_sort_by: 'original', 
     };
-    selectedBuiltInList.value = 'custom';
+    
+    // ★★★ 修正点：这里必须用复数 selectedBuiltInLists，且设为空数组 ★★★
+    selectedBuiltInLists.value = []; 
+    customUrlList.value = [{ value: '' }];
   }
 });
+
+const addCustomUrl = () => {
+  customUrlList.value.push({ value: '' });
+};
+
+const removeCustomUrl = (index) => {
+  if (customUrlList.value.length > 1) {
+    customUrlList.value.splice(index, 1);
+  } else {
+    customUrlList.value[0].value = ''; 
+  }
+};
 
 const fetchEmbyLibraries = async () => {
   isLoadingLibraries.value = true;
@@ -1732,7 +1818,11 @@ const triggerMetadataSync = async () => {
 const handleCreateClick = () => {
   isEditing.value = false;
   currentCollection.value = getInitialFormModel();
-  selectedBuiltInList.value = 'custom';
+  
+  // 重置多选组件
+  selectedBuiltInLists.value = [];
+  customUrlList.value = [{ value: '' }];
+  
   showModal.value = true;
 };
 
@@ -1785,15 +1875,45 @@ const handleEditClick = (row) => {
   }
 
   if (rowCopy.type === 'list') {
-    const url = rowCopy.definition.url || '';
-    const isBuiltIn = builtInLists.some(item => item.value === url);
-    if (isBuiltIn) {
-      selectedBuiltInList.value = url;
-    } else {
-      selectedBuiltInList.value = 'custom';
+    let urls = rowCopy.definition.url;
+    
+    // 兼容旧数据：如果是字符串，转为数组
+    if (typeof urls === 'string') {
+      urls = urls ? [urls] : [];
+    } else if (!Array.isArray(urls)) {
+      urls = [];
     }
+
+    // 分离“内置榜单”和“自定义URL”
+    const builtInValues = new Set(builtInLists.map(i => i.value));
+    
+    const foundBuiltIns = [];
+    const foundCustoms = [];
+
+    urls.forEach(u => {
+      if (builtInValues.has(u)) {
+        foundBuiltIns.push(u);
+      } else {
+        foundCustoms.push({ value: u });
+      }
+    });
+
+    // 赋值给 UI 变量
+    selectedBuiltInLists.value = foundBuiltIns;
+    
+    // 自定义 URL 至少保留一个空框
+    if (foundCustoms.length === 0) {
+      customUrlList.value = [{ value: '' }];
+    } else {
+      customUrlList.value = foundCustoms;
+    }
+  } else {
+    // 如果不是 list 类型，重置为空
+    selectedBuiltInLists.value = [];
+    customUrlList.value = [{ value: '' }];
   }
 
+  currentCollection.value = rowCopy;
   showModal.value = true;
 };
 
@@ -2118,6 +2238,41 @@ watch(selectedActors, (newValue) => {
 
 watch(selectedDirectors, (newValue) => {
   discoverParams.value.with_crew = newValue.map(d => d.value);
+}, { deep: true });
+
+watch(isMultiSource, (isMulti) => {
+  if (isMulti) {
+    // 如果切换到了多源模式，且当前排序是“原始顺序”，则强制重置为“不设置”
+    if (currentCollection.value.definition.default_sort_by === 'original') {
+      currentCollection.value.definition.default_sort_by = 'none';
+      message.info('检测到多个榜单源，排序已自动重置为“不设置” (多榜单无法保持原始顺序)');
+    }
+  }
+});
+
+watch([selectedBuiltInLists, customUrlList], () => {
+  const builtIns = selectedBuiltInLists.value;
+  // 过滤掉空的自定义 URL
+  const customs = customUrlList.value.map(i => i.value.trim()).filter(v => v);
+  
+  // 合并结果
+  const combinedUrls = [...builtIns, ...customs];
+
+  // 存入 definition.url
+  // 注意：为了兼容性，如果只有一个且是字符串，也可以存字符串，但为了多源聚合，建议统一存数组
+  currentCollection.value.definition.url = combinedUrls;
+  
+  // 自动设置 item_type (如果选择了内置榜单，尝试自动推断类型)
+  // 简单的逻辑：只要有一个是 Series，就加上 Series
+  const newItemTypes = new Set(currentCollection.value.definition.item_type || ['Movie']);
+  builtIns.forEach(url => {
+    const option = builtInLists.find(opt => opt.value === url);
+    if (option && option.contentType) {
+      option.contentType.forEach(t => newItemTypes.add(t));
+    }
+  });
+  currentCollection.value.definition.item_type = Array.from(newItemTypes);
+
 }, { deep: true });
 
 onMounted(() => {

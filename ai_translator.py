@@ -2,8 +2,14 @@
 import json
 import re
 import time
-from typing import Optional, Dict, Any, List
+from datetime import datetime
+from typing import Optional, Dict, Any, List, Union
 import logging
+
+try:
+    import numpy as np
+except ImportError:
+    np = None
 
 logger = logging.getLogger(__name__)
 def _safe_json_loads(text: str) -> Optional[Dict]:
@@ -131,6 +137,57 @@ You will receive a JSON object with `context` (containing `title` and `year`) an
 
 **Output Format (MANDATORY):**
 You MUST return a single, valid JSON object mapping each original term to its Chinese translation. NO other text or markdown.
+"""
+
+# ★★★ 说明书四：给“猎手”看的（推荐模式） ★★★
+RECOMMENDATION_SYSTEM_PROMPT = """
+You are a professional movie and TV series recommendation engine that outputs strictly in JSON.
+Your goal is to analyze the user's viewing history and recommend NEW content that they might like.
+
+**Input:**
+You will receive a JSON object containing:
+1. `history`: A list of titles the user has watched and liked.
+2. `avoid_list`: A list of titles to strictly avoid (already in library).
+
+**Your Task:**
+1. Analyze the `history` to determine the user's taste (genres, themes, pacing, directors).
+2. Recommend 5-10 items that fit this taste but are NOT in the `history` or `avoid_list`.
+3. Prioritize high-quality, well-rated content (TMDB rating > 6.5).
+
+**Output Format:**
+Return a JSON List of objects. Each object must contain:
+- `title`: The title of the movie/series (in the requested language, usually Chinese or English).
+- `original_title`: The original title.
+- `year`: Release year (integer).
+- `type`: "Movie" or "Series".
+- `reason`: A short sentence explaining why it fits the user's taste.
+- `tmdb_id`: (Optional) If you know the TMDB ID with high certainty, provide it; otherwise null.
+"""
+# ★★★ 说明书五：给“审阅官”看的（过滤模式） ★★★
+FILTER_SYSTEM_PROMPT = """
+You are a strict media content filter and curator.
+Your task is to filter a list of movies/TV series based on the user's specific natural language instruction.
+
+**Input Format:**
+You will receive a JSON object containing:
+1. `instruction`: The user's filtering criteria (e.g., "Only sci-fi, rating > 7.5, no horror").
+2. `items`: A list of candidate items, each with `id`, `title`, `year`, etc.
+
+**Execution Rules:**
+1. **Analyze the Instruction:** Understand the user's taste, constraints (genre, year, country, rating), and mood.
+2. **Apply Knowledge:** Use your internal knowledge about the provided titles to judge if they fit the criteria.
+   - If the user asks for "High Rating" and you know a movie is generally considered bad, filter it out.
+   - If the user asks for "Sci-Fi" and the movie is a Romance, filter it out.
+3. **Be Strict:** If an item is borderline or you are unsure, err on the side of filtering it out (unless the instruction is very broad).
+
+**Output Format:**
+You MUST return a single, valid JSON object with exactly one key: `filtered_ids`.
+The value must be a list of strings (the `id`s of the items that PASSED the filter).
+
+Example Output:
+{
+  "filtered_ids": ["12345", "67890"]
+}
 """
 class AITranslator:
     def __init__(self, config: Dict[str, Any]):
@@ -525,3 +582,223 @@ class AITranslator:
             if hasattr(e, 'last_response') and e.last_response:
                 return _safe_json_loads(e.last_response.text) or {}
             return {}
+        
+    # ==================================================================
+    # ✨✨✨ 新增功能区：向量化与智能推荐 (The Hunter & Vectorizer) ✨✨✨
+    # ==================================================================
+
+    def generate_embedding(self, text: str) -> Optional[List[float]]:
+        """
+        【核心功能】将文本转化为向量 (Embedding)。
+        用于存入数据库的 overview_embedding 字段，配合 numpy 做相似度搜索。
+        """
+        if not text or not text.strip():
+            return None
+            
+        try:
+            # 1. OpenAI Embedding
+            if self.provider == 'openai':
+                # 使用 text-embedding-3-small (性价比最高) 或 text-embedding-ada-002
+                response = self.client.embeddings.create(
+                    input=text,
+                    model="text-embedding-3-small" 
+                )
+                return response.data[0].embedding
+
+            # 2. 智谱AI Embedding
+            elif self.provider == 'zhipuai':
+                response = self.client.embeddings.create(
+                    model="embedding-2", # 智谱的通用向量模型
+                    input=text
+                )
+                return response.data[0].embedding
+
+            # 3. Google Gemini Embedding
+            elif self.provider == 'gemini':
+                # Gemini 的 embedding 模型通常是 "models/text-embedding-004"
+                result = genai.embed_content(
+                    model="models/text-embedding-004",
+                    content=text,
+                    task_type="retrieval_document",
+                    title="Movie Overview"
+                )
+                return result['embedding']
+
+        except Exception as e:
+            logger.error(f"  ➜ [Embedding] 生成向量失败 ({self.provider}): {e}")
+            return None
+        
+        return None
+
+    def get_recommendations(self, 
+                          user_history: List[str], 
+                          avoid_list: List[str] = None) -> List[Dict[str, Any]]:
+        """
+        【核心功能】猎手模式：基于用户历史推荐新片。
+        """
+        if not user_history:
+            return []
+            
+        avoid_list = avoid_list or []
+        
+        # 构造 Prompt 数据
+        payload = {
+            "history": user_history[:20], # 只取最近20部，避免Token溢出
+            "avoid_list": avoid_list
+        }
+        user_prompt = json.dumps(payload, ensure_ascii=False)
+        
+        logger.info(f"  ➜ [AI推荐] 正在分析用户口味 (基于 {len(user_history)} 部历史)...")
+
+        try:
+            response_text = ""
+            
+            # --- 调用 AI (复用现有的 client) ---
+            if self.provider == 'openai':
+                resp = self.client.chat.completions.create(
+                    model=self.model,
+                    messages=[
+                        {"role": "system", "content": RECOMMENDATION_SYSTEM_PROMPT},
+                        {"role": "user", "content": user_prompt}
+                    ],
+                    response_format={"type": "json_object"},
+                    temperature=0.7 # 推荐需要一点创造性，稍微调高温度
+                )
+                response_text = resp.choices[0].message.content
+
+            elif self.provider == 'zhipuai':
+                resp = self.client.chat.completions.create(
+                    model=self.model,
+                    messages=[
+                        {"role": "system", "content": RECOMMENDATION_SYSTEM_PROMPT},
+                        {"role": "user", "content": user_prompt}
+                    ],
+                    response_format={"type": "json_object"},
+                    temperature=0.7
+                )
+                response_text = resp.choices[0].message.content
+
+            elif self.provider == 'gemini':
+                full_prompt = [RECOMMENDATION_SYSTEM_PROMPT, user_prompt]
+                config = genai.types.GenerationConfig(
+                    response_mime_type="application/json",
+                    temperature=0.7
+                )
+                resp = self.client.generate_content(full_prompt, generation_config=config)
+                response_text = resp.text
+
+            # --- 解析结果 ---
+            result = _safe_json_loads(response_text)
+            
+            # 兼容 AI 可能返回 {"recommendations": [...]} 或直接返回 [...]
+            if isinstance(result, dict):
+                for key in result:
+                    if isinstance(result[key], list):
+                        return result[key]
+                return []
+            elif isinstance(result, list):
+                return result
+            
+            return []
+
+        except Exception as e:
+            logger.error(f"  ➜ [AI推荐] 获取推荐失败: {e}", exc_info=True)
+            return []
+        
+    def filter_candidates(self, candidates: List[Dict[str, Any]], user_instruction: str) -> List[str]:
+        """
+        【核心功能】AI 审阅：根据用户指令过滤候选列表。
+        :param candidates: 候选列表，格式 [{'id': '...', 'title': '...', ...}, ...]
+        :param user_instruction: 用户的自然语言指令
+        :return: 通过筛选的 ID 列表
+        """
+        if not candidates or not user_instruction:
+            return [item['id'] for item in candidates] # 没指令就不过滤，原样返回
+
+        # 1. 数据清洗：只保留 AI 判断需要的核心字段，减少 Token 消耗
+        # 很多榜单抓取回来带了一堆杂七杂八的字段，AI 只需要标题和年份
+        lean_candidates = []
+        for item in candidates:
+            lean_candidates.append({
+                "id": str(item.get('id')), # 确保 ID 是字符串
+                "title": item.get('title'),
+                "original_title": item.get('original_title', ''),
+                "year": item.get('year'),
+                "type": item.get('type')
+            })
+
+        # 2. 构造 Payload
+        payload = {
+            "instruction": user_instruction,
+            "items": lean_candidates
+        }
+        user_prompt = json.dumps(payload, ensure_ascii=False)
+        
+        logger.info(f"  ➜ [AI审阅] 正在根据指令 '{user_instruction}' 筛选 {len(lean_candidates)} 个项目...")
+
+        try:
+            response_text = ""
+            
+            today_str = datetime.now().strftime('%Y-%m-%d')
+        
+            # 动态修改 System Prompt，加上时间上下文
+            dynamic_system_prompt = FILTER_SYSTEM_PROMPT + f"\n\n**Context:**\nToday's Date is: {today_str}.\nIf the user asks to filter 'unreleased' or 'upcoming' items, compare their 'release_date' or 'year' with Today's Date."
+
+            # 2. 构造 Payload
+            payload = {
+                "instruction": user_instruction,
+                "items": lean_candidates
+            }
+            user_prompt = json.dumps(payload, ensure_ascii=False)
+
+            if self.provider == 'openai':
+                resp = self.client.chat.completions.create(
+                    model=self.model,
+                    messages=[
+                        {"role": "system", "content": dynamic_system_prompt},
+                        {"role": "user", "content": user_prompt}
+                    ],
+                    response_format={"type": "json_object"},
+                    temperature=0.1 # 过滤任务要严谨，温度调低
+                )
+                response_text = resp.choices[0].message.content
+
+            elif self.provider == 'zhipuai':
+                resp = self.client.chat.completions.create(
+                    model=self.model,
+                    messages=[
+                        {"role": "system", "content": dynamic_system_prompt},
+                        {"role": "user", "content": user_prompt}
+                    ],
+                    response_format={"type": "json_object"},
+                    temperature=0.1
+                )
+                response_text = resp.choices[0].message.content
+
+            elif self.provider == 'gemini':
+                full_prompt = [dynamic_system_prompt, user_prompt]
+                config = genai.types.GenerationConfig(
+                    response_mime_type="application/json",
+                    temperature=0.1
+                )
+                resp = self.client.generate_content(full_prompt, generation_config=config)
+                response_text = resp.text
+
+            # --- 解析结果 ---
+            result = _safe_json_loads(response_text)
+            
+            if result and 'filtered_ids' in result:
+                passed_ids = result['filtered_ids']
+                # 确保返回的都是字符串 ID
+                return [str(pid) for pid in passed_ids]
+            
+            # 如果 AI 返回格式不对，为了安全起见，记录错误并返回空列表（或者原列表，看你策略）
+            # 这里我建议返回空，或者记录 error
+            logger.warning(f"  ➜ [AI审阅] AI 返回格式异常: {response_text[:100]}...")
+            return []
+
+        except Exception as e:
+            logger.error(f"  ➜ [AI审阅] 筛选失败: {e}", exc_info=True)
+            # 出错时，为了不阻塞流程，可以选择返回原列表，或者返回空
+            # 这里选择返回原列表（假设 AI 挂了就不过滤了）
+            return [str(item['id']) for item in candidates]
