@@ -1378,50 +1378,71 @@ class RecommendationEngine:
                 with ThreadPoolExecutor(max_workers=5) as executor:
                     def resolve_item(rec_item):
                         try:
-                            # 1. 数据标准化：兼容 字典 和 字符串
+                            # 1. 数据标准化
                             title = ""
                             original_title = ""
                             year = None
-                            item_type = 'Movie' # 默认为电影
+                            # 默认先信 AI 的，AI 没说就默认为 Movie
+                            primary_type = 'Movie' 
                             
                             if isinstance(rec_item, dict):
                                 title = rec_item.get('title')
                                 original_title = rec_item.get('original_title')
                                 year = str(rec_item.get('year')) if rec_item.get('year') else None
-                                item_type = rec_item.get('type', 'Movie')
+                                if rec_item.get('type'):
+                                    primary_type = rec_item.get('type')
                             elif isinstance(rec_item, str):
-                                # 如果 AI 偷懒只返回了字符串列表 ["电影A", "电影B"]
                                 title = rec_item
-                                item_type = 'Movie' # 猜它是电影
                             
                             if not title: return None
 
-                            # 2. 优先用 original_title 搜 (通常更准)
+                            # 定义反向类型（如果这次搜Movie失败，下次就搜Series）
+                            secondary_type = 'Series' if primary_type == 'Movie' else 'Movie'
+
+                            # 简单的中文判断
+                            def has_chinese(text):
+                                return any('\u4e00' <= char <= '\u9fff' for char in str(text))
+
+                            # 2. 确定搜索关键词
+                            # 默认用原名搜
                             search_query = original_title if original_title else title
                             
-                            # 如果 search_query 是英文，且 title 是中文，优先用中文搜 (针对国产剧)
-                            # 简单的判断：如果 title 包含中文，而 search_query 不包含
-                            if utils.contains_chinese(title) and not utils.contains_chinese(search_query):
+                            # 特殊优化：如果是国产剧（标题含中文），强行用中文名搜，准确率最高
+                            if has_chinese(title):
                                 search_query = title
 
-                            match_result = self.list_importer._match_title_to_tmdb(search_query, item_type, year)
+                            # --- 核心修改：四重搜索策略 ---
                             
-                            # 3. 回退搜索：如果没搜到，且刚才用的不是 title，那用 title 再试一次
-                            if not match_result and search_query != title:
-                                match_result = self.list_importer._match_title_to_tmdb(title, item_type, year)
+                            # 第 1 试：用【首选类型】+【首选关键词】搜
+                            match_result = self.list_importer._match_title_to_tmdb(search_query, primary_type, year)
+                            
+                            # 第 2 试：如果没搜到，尝试【反向类型】+【首选关键词】
+                            # (解决 AI 把电视剧标成电影，或者没标类型的情况)
+                            if not match_result:
+                                # logger.debug(f"  ➜ [AI推荐] '{search_query}' 按 {primary_type} 未找到，尝试按 {secondary_type} 搜索...")
+                                match_result = self.list_importer._match_title_to_tmdb(search_query, secondary_type, year)
 
+                            # 第 3 试：如果还没搜到，且关键词不是中文标题，尝试用【中文标题】+【首选类型】搜
+                            # (解决英文原名搜不到的情况)
+                            if not match_result and search_query != title:
+                                match_result = self.list_importer._match_title_to_tmdb(title, primary_type, year)
+
+                            # 第 4 试：最后试一次【中文标题】+【反向类型】
+                            if not match_result and search_query != title:
+                                match_result = self.list_importer._match_title_to_tmdb(title, secondary_type, year)
+
+                            # --- 结果处理 ---
                             if match_result:
                                 tmdb_id, matched_type, season_num = match_result
                                 return {
                                     'id': tmdb_id,
-                                    'type': matched_type,
+                                    'type': matched_type, # 注意：这里返回的是实际匹配到的类型
                                     'title': title, 
                                     'season': season_num,
                                     'release_date': None 
                                 }
                             else:
-                                # 记录一下失败的，方便调试
-                                logger.debug(f"  ➜ [AI推荐] 未能找到 '{title}' (搜: {search_query}) 的 TMDb ID。")
+                                logger.debug(f"  ➜ [AI推荐] 未能找到 '{title}' (搜: {search_query}) 的 TMDb ID (已尝试电影/剧集跨类型搜索)。")
                                 return None
                         except Exception as e:
                             logger.error(f"  ➜ [AI推荐] 处理单项 '{rec_item}' 时出错: {e}")
