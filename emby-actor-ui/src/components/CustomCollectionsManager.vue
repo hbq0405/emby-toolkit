@@ -437,6 +437,35 @@
             </div>
           </n-form-item>
         </div>
+        <!-- AI 推荐类型的表单 -->
+        <div v-if="currentCollection.type === 'ai_recommendation'">
+          <n-alert type="info" show-icon style="margin-bottom: 16px;">
+            AI 将分析指定用户的观看历史（收藏或高分播放），自动生成推荐片单。
+          </n-alert>
+
+          <n-form-item label="目标用户" path="definition.target_user_id">
+            <n-select
+              v-model:value="currentCollection.definition.target_user_id"
+              :options="embyUserOptions"
+              placeholder="选择要分析口味的用户"
+              filterable
+              :render-label="renderSelectOptionWithTag"
+            />
+          </n-form-item>
+          
+          <n-form-item label="推荐倾向 (Prompt)" path="definition.ai_prompt">
+            <n-input
+              v-model:value="currentCollection.definition.ai_prompt"
+              type="textarea"
+              placeholder="留空则默认推荐。你可以微调，例如：'最近心情不好，多推点喜剧' 或 '只要电影，不要剧集'。"
+              :autosize="{ minRows: 3, maxRows: 6 }"
+            />
+          </n-form-item>
+          
+          <n-form-item label="推荐数量" path="definition.limit">
+            <n-input-number v-model:value="currentCollection.definition.limit" :default-value="20" :min="5" :max="50" />
+          </n-form-item>
+        </div>
         <n-form-item label="内容排序">
             <n-input-group>
               <n-select
@@ -1452,6 +1481,14 @@ watch(() => currentCollection.value.type, (newType) => {
       target_library_ids: [],
       default_sort_by: 'PremiereDate', 
     };
+  } else if (newType === 'ai_recommendation') {
+    currentCollection.value.definition = {
+        ...sharedProps,
+        target_user_id: null,
+        ai_prompt: '',
+        limit: 20,
+        item_type: ['Movie', 'Series'] // 推荐通常混合类型
+    };
   } else if (newType === 'list') {
     currentCollection.value.definition = { 
       ...sharedProps,
@@ -1639,7 +1676,8 @@ const removeRule = (index) => {
 
 const typeOptions = [
   { label: '通过榜单导入 (RSS/内置)', value: 'list' },
-  { label: '通过筛选规则生成', value: 'filter' }
+  { label: '通过筛选规则生成', value: 'filter' },
+  { label: 'AI 猜你喜欢 (指定用户)', value: 'ai_recommendation' }
 ];
 
 const formRules = computed(() => {

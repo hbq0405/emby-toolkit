@@ -516,6 +516,10 @@ def task_process_all_custom_collections(processor):
                 elif collection['type'] == 'filter':
                     engine = FilterEngine()
                     raw_tmdb_items = engine.execute_filter(definition)
+                elif collection['type'] == 'ai_recommendation':
+                    from handler.custom_collection import RecommendationEngine
+                    rec_engine = RecommendationEngine(processor.tmdb_api_key)
+                    raw_tmdb_items = rec_engine.generate(definition)
 
                 # 应用修正 (修正后的 ID 会直接体现在 raw_tmdb_items 中)
                 raw_tmdb_items, corrected_id_to_original_id_map = _apply_id_corrections(raw_tmdb_items, definition, collection_name)
@@ -699,6 +703,10 @@ def process_single_custom_collection(processor, custom_collection_id: int):
         elif collection['type'] == 'filter':
             engine = FilterEngine()
             raw_tmdb_items = engine.execute_filter(definition)
+        elif collection['type'] == 'ai_recommendation':
+                    from handler.custom_collection import RecommendationEngine
+                    rec_engine = RecommendationEngine(processor.tmdb_api_key)
+                    raw_tmdb_items = rec_engine.generate(definition)
 
         # 3.2 应用修正
         raw_tmdb_items, corrected_id_to_original_id_map = _apply_id_corrections(raw_tmdb_items, definition, collection_name)

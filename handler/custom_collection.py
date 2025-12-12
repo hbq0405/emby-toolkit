@@ -657,35 +657,42 @@ class ListImporter:
         if limit and isinstance(limit, int) and limit > 0:
             unique_items = unique_items[:limit]
             
-        # ==================== ★★★ AI 过滤插件 (新增) ★★★ ====================
+        # ==================== ★★★ AI 过滤插件 (最终版) ★★★ ====================
         if definition.get('ai_enabled') and definition.get('ai_prompt'):
             ai_prompt = definition.get('ai_prompt')
-            logger.info(f"  ➜ [AI审阅] 正在根据指令筛选 {len(unique_items)} 个候选项目...")
+            logger.info(f"  ➜ [AI审阅] 检测到 AI 选片指令，正在筛选 {len(unique_items)} 个候选项目...")
             
-            # 1. 准备投喂给 AI 的数据 (只给必要字段以节省 Token)
-            candidates_for_ai = []
-            for item in unique_items:
-                # 这里最好能查一下简单的元数据(类型、简介)，如果 unique_items 里只有 ID 和 Title
-                # 可能需要先调一下 TMDb 接口获取简介，或者让 AI 仅凭标题判断(不太准)
-                # 建议：复用你现有的 media_db 或 tmdb 模块获取简要信息
-                candidates_for_ai.append({
-                    "id": item['id'],
-                    "title": item['title'],
-                    "type": item['type'],
-                    "year": item.get('year')
-                })
+            try:
+                # 1. 实例化 AI (注意这里必须是 APP_CONFIG)
+                translator = AITranslator(config_manager.APP_CONFIG)
+                
+                # 2. 准备精简数据 (关键：一定要带上 release_date 和 year)
+                candidates_for_ai = []
+                for item in unique_items:
+                    candidates_for_ai.append({
+                        "id": str(item.get('id')),
+                        "title": item.get('title'),
+                        "type": item.get('type'),
+                        "year": item.get('year'),                 # <--- 别漏了
+                        "release_date": item.get('release_date')  # <--- 核心！别漏了
+                    })
+                
+                # 3. 调用 AI 过滤
+                filtered_ids = translator.filter_candidates(
+                    candidates=candidates_for_ai, 
+                    user_instruction=ai_prompt
+                )
+                
+                # 4. 应用过滤结果
+                if filtered_ids:
+                    original_count = len(unique_items)
+                    unique_items = [item for item in unique_items if str(item.get('id')) in filtered_ids]
+                    logger.info(f"  ➜ [AI审阅] 完成。从 {original_count} 部中筛选出 {len(unique_items)} 部。")
+                else:
+                    logger.warning("  ➜ [AI审阅] AI 返回了空列表或过滤失败，将保留原始列表。")
             
-            # 2. 调用 AI (需要在 ai_translator.py 实现 filter_candidates)
-            translator = AITranslator(config_manager.APP_CONFIG)
-            filtered_ids = translator.filter_candidates(
-                candidates=candidates_for_ai, 
-                user_instruction=ai_prompt
-            )
-            
-            # 3. 过滤列表
-            original_count = len(unique_items)
-            unique_items = [item for item in unique_items if item['id'] in filtered_ids]
-            logger.info(f"  ➜ [AI审阅] 完成。从 {original_count} 部中筛选出 {len(unique_items)} 部。")
+            except Exception as e_ai:
+                logger.error(f"  ➜ [AI审阅] 执行过程中发生错误，跳过筛选: {e_ai}", exc_info=True)
         # ===================================================================
         
         return unique_items, last_source_type
@@ -1175,3 +1182,91 @@ class FilterEngine:
                 logger.warning(f"  ➜ 解析合集《{collection_def['name']}》的定义时出错: {e}，跳过。")
                 continue
         return matched_collections
+    
+class RecommendationEngine:
+    """
+    【AI 推荐引擎】
+    负责读取用户历史 -> 调用 AI -> 搜索 TMDb -> 返回结果
+    """
+    def __init__(self, tmdb_api_key: str):
+        self.tmdb_api_key = tmdb_api_key
+        self.list_importer = ListImporter(tmdb_api_key) # 复用它的搜索匹配逻辑
+
+    def generate(self, definition: Dict) -> List[Dict[str, str]]:
+        target_user_id = definition.get('target_user_id')
+        ai_prompt = definition.get('ai_prompt')
+        limit = definition.get('limit', 20)
+
+        if not target_user_id:
+            logger.error("  ➜ [AI推荐] 未指定目标用户，无法生成推荐。")
+            return []
+
+        # 1. 获取用户历史
+        history = media_db.get_user_positive_history(target_user_id, limit=20)
+        if not history:
+            logger.warning(f"  ➜ [AI推荐] 用户 {target_user_id} 没有足够的观看历史。")
+            return []
+
+        # 2. 调用 AI 获取推荐列表
+        logger.info(f"  ➜ [AI推荐] 正在为用户生成推荐 (历史: {len(history)} 部)...")
+        try:
+            translator = AITranslator(config_manager.APP_CONFIG)
+            recommendations = translator.get_recommendations(history, ai_prompt)
+        except Exception as e:
+            logger.error(f"  ➜ [AI推荐] AI 调用失败: {e}")
+            return []
+
+        if not recommendations:
+            logger.warning("  ➜ [AI推荐] AI 未返回任何推荐结果。")
+            return []
+
+        logger.info(f"  ➜ [AI推荐] AI 推荐了 {len(recommendations)} 部作品，正在匹配 TMDb ID...")
+
+        # 3. 将 AI 的推荐结果 (Title) 转换为 TMDb ID
+        # 我们复用 ListImporter 的 _match_title_to_tmdb 方法
+        # 但因为 ListImporter 是设计用来处理 RSS 的，我们需要稍微适配一下
+        
+        final_items = []
+        
+        # 使用线程池加速搜索
+        with ThreadPoolExecutor(max_workers=5) as executor:
+            def resolve_item(rec_item):
+                title = rec_item.get('title')
+                original_title = rec_item.get('original_title')
+                year = str(rec_item.get('year')) if rec_item.get('year') else None
+                item_type = rec_item.get('type', 'Movie')
+                
+                # 优先用 original_title 搜，通常更准
+                search_query = original_title if original_title else title
+                
+                # 调用 ListImporter 的匹配逻辑 (需要实例化)
+                # 这里我们直接复用 self.list_importer
+                match_result = self.list_importer._match_title_to_tmdb(search_query, item_type, year)
+                
+                if not match_result and search_query != title:
+                    # 如果用原名没搜到，试着用中文名搜
+                    match_result = self.list_importer._match_title_to_tmdb(title, item_type, year)
+
+                if match_result:
+                    tmdb_id, matched_type, season_num = match_result
+                    return {
+                        'id': tmdb_id,
+                        'type': matched_type,
+                        'title': title,
+                        'season': season_num
+                    }
+                else:
+                    logger.debug(f"  ➜ [AI推荐] 未能找到 '{title}' 的 TMDb ID。")
+                    return None
+
+            results = executor.map(resolve_item, recommendations)
+            for res in results:
+                if res:
+                    final_items.append(res)
+
+        # 4. 数量限制
+        if limit and isinstance(limit, int):
+            final_items = final_items[:limit]
+
+        logger.info(f"  ➜ [AI推荐] 完成。成功匹配 {len(final_items)} 部影片。")
+        return final_items

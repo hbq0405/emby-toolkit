@@ -948,3 +948,41 @@ def batch_ensure_basic_movies(movies_list: List[Dict[str, Any]]):
             conn.commit()
     except Exception as e:
         logger.error(f"批量插入基础电影条目时出错: {e}", exc_info=True)
+
+def get_user_positive_history(user_id: str, limit: int = 20) -> List[str]:
+    """
+    获取指定用户的“好评”观看历史（用于投喂给 AI）。
+    标准：已收藏 OR (已播放 AND (无评分 OR 评分>=7))
+    """
+    try:
+        with get_db_connection() as conn:
+            cursor = conn.cursor()
+            # 联合查询：从 user_media_data 找记录，从 media_metadata 找标题
+            cursor.execute("""
+                SELECT m.title, m.release_year
+                FROM user_media_data u
+                JOIN media_metadata m ON u.item_id = m.tmdb_id
+                WHERE u.user_id = %s
+                  AND (
+                      u.is_favorite = TRUE 
+                      OR (u.played = TRUE)
+                  )
+                ORDER BY u.last_played_date DESC NULLS LAST, u.last_updated_at DESC
+                LIMIT %s
+            """, (user_id, limit))
+            
+            rows = cursor.fetchall()
+            # 返回格式：["星际穿越 (2014)", "黑客帝国 (1999)"]
+            history = []
+            for row in rows:
+                title = row['title']
+                year = row.get('release_year')
+                if title:
+                    if year:
+                        history.append(f"{title} ({year})")
+                    else:
+                        history.append(title)
+            return history
+    except Exception as e:
+        logger.error(f"获取用户 {user_id} 的观看历史失败: {e}")
+        return []

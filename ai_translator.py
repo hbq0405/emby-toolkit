@@ -630,39 +630,49 @@ class AITranslator:
         
         return None
 
-    def get_recommendations(self, 
-                          user_history: List[str], 
-                          avoid_list: List[str] = None) -> List[Dict[str, Any]]:
+    def get_recommendations(self, user_history: List[str], user_instruction: str = None) -> List[Dict[str, Any]]:
         """
         【核心功能】猎手模式：基于用户历史推荐新片。
         """
         if not user_history:
             return []
             
-        avoid_list = avoid_list or []
+        # 构造 Prompt
+        system_prompt = """
+You are a professional movie recommendation engine.
+Analyze the user's viewing history and their specific request to recommend 10-20 NEW movies/series.
+
+**Rules:**
+1. **Analyze Taste:** Based on the history, identify genres, directors, and vibes the user likes.
+2. **Respect Request:** If the user provides a specific instruction (e.g., "I want comedy"), prioritize that over history.
+3. **Output Format:** Return a strictly valid JSON List. Each item MUST have:
+   - `title`: The movie/series title (in the language of the prompt, usually Chinese).
+   - `original_title`: The original title (English/Native).
+   - `year`: Release year.
+   - `type`: "Movie" or "Series".
+   - `reason`: A very short reason (e.g., "Similar to Interstellar").
+"""
         
-        # 构造 Prompt 数据
-        payload = {
-            "history": user_history[:20], # 只取最近20部，避免Token溢出
-            "avoid_list": avoid_list
-        }
-        user_prompt = json.dumps(payload, ensure_ascii=False)
-        
-        logger.info(f"  ➜ [AI推荐] 正在分析用户口味 (基于 {len(user_history)} 部历史)...")
+        user_content = f"User History: {json.dumps(user_history, ensure_ascii=False)}\n"
+        if user_instruction:
+            user_content += f"User Instruction: {user_instruction}\n"
+        else:
+            user_content += "User Instruction: Recommend high-quality items similar to history.\n"
+
+        logger.info(f"  ➜ [AI推荐] 正在基于 {len(user_history)} 部历史分析用户口味...")
 
         try:
+            # 调用 AI (复用你的 client 逻辑)
             response_text = ""
-            
-            # --- 调用 AI (复用现有的 client) ---
             if self.provider == 'openai':
                 resp = self.client.chat.completions.create(
                     model=self.model,
                     messages=[
-                        {"role": "system", "content": RECOMMENDATION_SYSTEM_PROMPT},
-                        {"role": "user", "content": user_prompt}
+                        {"role": "system", "content": system_prompt},
+                        {"role": "user", "content": user_content}
                     ],
                     response_format={"type": "json_object"},
-                    temperature=0.7 # 推荐需要一点创造性，稍微调高温度
+                    temperature=0.7
                 )
                 response_text = resp.choices[0].message.content
 
@@ -670,8 +680,8 @@ class AITranslator:
                 resp = self.client.chat.completions.create(
                     model=self.model,
                     messages=[
-                        {"role": "system", "content": RECOMMENDATION_SYSTEM_PROMPT},
-                        {"role": "user", "content": user_prompt}
+                        {"role": "system", "content": system_prompt},
+                        {"role": "user", "content": user_content}
                     ],
                     response_format={"type": "json_object"},
                     temperature=0.7
@@ -679,7 +689,7 @@ class AITranslator:
                 response_text = resp.choices[0].message.content
 
             elif self.provider == 'gemini':
-                full_prompt = [RECOMMENDATION_SYSTEM_PROMPT, user_prompt]
+                full_prompt = [system_prompt, user_content]
                 config = genai.types.GenerationConfig(
                     response_mime_type="application/json",
                     temperature=0.7
@@ -689,16 +699,13 @@ class AITranslator:
 
             # --- 解析结果 ---
             result = _safe_json_loads(response_text)
-            
-            # 兼容 AI 可能返回 {"recommendations": [...]} 或直接返回 [...]
             if isinstance(result, dict):
+                # 兼容 {"recommendations": [...]}
                 for key in result:
                     if isinstance(result[key], list):
                         return result[key]
-                return []
             elif isinstance(result, list):
                 return result
-            
             return []
 
         except Exception as e:
