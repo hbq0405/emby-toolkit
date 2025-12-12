@@ -648,46 +648,55 @@ class AITranslator:
     def get_recommendations(self, user_history: List[str], user_instruction: str = None) -> List[Dict[str, Any]]:
         """
         【核心功能】猎手模式：基于用户历史推荐新片。
+        V4 - 全中文 Prompt 强力纠正版
         """
         if not user_history:
             return []
             
-        # 构造 Prompt
+        # ★★★ V4 修改：全中文 System Prompt (对 Qwen 效果拔群) ★★★
         system_prompt = """
-You are a professional movie recommendation engine.
-Your task is to recommend 20 to 30 movies/series based on the user's history.
+你是一个专业的影视推荐引擎。
+请根据用户的观影历史，推荐 20 到 30 部高质量的电影或剧集。
 
-**CRITICAL RULES:**
-1. **Output Language:** The `title` field MUST be in **Simplified Chinese (简体中文)**. Even if the movie is English, you MUST provide its official Chinese translation (e.g., use "黑客帝国" instead of "The Matrix").
-2. **Original Title:** Put the original language title in `original_title`.
-3. **Quantity:** Recommend AT LEAST 20 items.
-4. **Format:** Return a valid JSON List.
+**【绝对强制规则】**
+1. **必须输出中文标题**：`title` 字段必须是**简体中文**。
+   - 错误示例：{"title": "Breaking Bad"}
+   - 正确示例：{"title": "绝命毒师"}
+   - 如果是国产剧，必须用中文原名（如 "白夜追凶" 而不是 "Day and Night"）。
+2. **原名分开存**：将外文原名或拼音放入 `original_title` 字段。
+3. **数量要求**：必须推荐至少 20 部，不要偷懒。
+4. **格式要求**：必须返回标准的 JSON 列表 (List of Objects)。
 
-**JSON Structure:**
+**JSON 返回格式示例：**
 [
   {
-    "title": "白夜追凶",  <-- MUST BE CHINESE
-    "original_title": "Day and Night",
-    "year": 2017,
+    "title": "漫长的季节", 
+    "original_title": "The Long Season",
+    "year": 2023,
     "type": "Series", 
-    "reason": "..."
+    "reason": "根据你喜欢的悬疑风格推荐"
   }
 ]
 """
         
-        # 构造用户输入，这里加一点“私货”来引导 AI
-        user_content = f"User History (Top Favorites): {json.dumps(user_history, ensure_ascii=False)}\n"
+        # ★★★ V4 修改：全中文 User Content ★★★
+        # 将历史记录转为 JSON 字符串，防止特殊字符干扰
+        history_str = json.dumps(user_history, ensure_ascii=False)
+        
+        user_content = f"用户的高分观影历史: {history_str}\n"
         
         if user_instruction:
-            user_content += f"User Specific Request: {user_instruction}\n"
+            user_content += f"用户的特殊要求: {user_instruction}\n"
         else:
-            # 如果用户没填指令，我们给一个默认的高质量引导
-            user_content += "User Request: Recommend high-rated, acclaimed titles similar to my history. Surprise me with some hidden gems.\n"
+            user_content += "用户要求: 推荐高分、口碑好、且风格相似的作品。多推荐一些冷门佳作。\n"
+            
+        # 最后再叮嘱一句
+        user_content += "\n请注意：`title` 字段必须是中文！请直接返回 JSON 数据，不要包含 markdown 代码块标记。"
 
-        logger.info(f"  ➜ [AI推荐] 正在基于 {len(user_history)} 部历史分析用户口味...")
+        logger.info(f"  ➜ [AI推荐] 正在基于 {len(user_history)} 部历史分析用户口味 (使用全中文Prompt)...")
 
         try:
-            # 调用 AI (复用你的 client 逻辑)
+            # 调用 AI
             response_text = ""
             if self.provider == 'openai':
                 resp = self.client.chat.completions.create(
@@ -696,11 +705,12 @@ Your task is to recommend 20 to 30 movies/series based on the user's history.
                         {"role": "system", "content": system_prompt},
                         {"role": "user", "content": user_content}
                     ],
-                    response_format={"type": "json_object"},
+                    response_format={"type": "json_object"}, 
                     temperature=0.7
                 )
                 response_text = resp.choices[0].message.content
 
+            # ... (其他 provider 保持不变) ...
             elif self.provider == 'zhipuai':
                 resp = self.client.chat.completions.create(
                     model=self.model,
@@ -712,7 +722,7 @@ Your task is to recommend 20 to 30 movies/series based on the user's history.
                     temperature=0.7
                 )
                 response_text = resp.choices[0].message.content
-
+            
             elif self.provider == 'gemini':
                 full_prompt = [system_prompt, user_content]
                 config = genai.types.GenerationConfig(
@@ -724,13 +734,15 @@ Your task is to recommend 20 to 30 movies/series based on the user's history.
 
             # --- 解析结果 ---
             result = _safe_json_loads(response_text)
+            
             if isinstance(result, dict):
-                # 兼容 {"recommendations": [...]}
                 for key in result:
                     if isinstance(result[key], list):
                         return result[key]
+                return [result]
             elif isinstance(result, list):
                 return result
+            
             return []
 
         except Exception as e:
