@@ -196,7 +196,7 @@ class AITranslator:
         self.model = config.get("ai_model_name")
         self.base_url = config.get("ai_base_url")
         # 这个prompt现在只用于单文本翻译，作为向后兼容
-        
+        self.embedding_model = config.get("ai_embedding_model")
         if not self.api_key:
             raise ValueError("AI Translator: API Key 未配置。")
             
@@ -596,38 +596,42 @@ class AITranslator:
             return None
             
         try:
-            # 1. OpenAI Embedding
+            # 1. OpenAI Embedding (兼容所有支持 OpenAI 格式的接口)
             if self.provider == 'openai':
-                # 默认是 OpenAI 官方模型
-                embedding_model = "text-embedding-3-small"
+                # ★★★ 优先级 1: 使用配置文件中指定的模型 ★★★
+                model_to_use = self.embedding_model
                 
-                # 如果检测到是硅基流动 (SiliconFlow)，强制使用 BGE-M3
-                # (或者你可以直接把下面这行取消注释，强行写死)
-                if self.base_url and "siliconflow" in self.base_url:
-                    embedding_model = "BAAI/bge-m3"
+                # ★★★ 优先级 2: 自动检测硅基流动 (向下兼容) ★★★
+                if not model_to_use and self.base_url and "siliconflow" in self.base_url:
+                    model_to_use = "BAAI/bge-m3"
                 
-                # 如果上面自动检测不准，请直接取消下面这行的注释，手动指定：
-                # embedding_model = "BAAI/bge-m3" 
+                # ★★★ 优先级 3: 默认使用 OpenAI 官方模型 ★★★
+                if not model_to_use:
+                    model_to_use = "text-embedding-3-small"
+
+                # logger.debug(f"正在使用模型 {model_to_use} 生成向量...") # 调试用
 
                 response = self.client.embeddings.create(
                     input=text,
-                    model=embedding_model 
+                    model=model_to_use 
                 )
                 return response.data[0].embedding
 
             # 2. 智谱AI Embedding
             elif self.provider == 'zhipuai':
+                # 智谱通常只有一个 embedding-2，但也允许用户覆盖
+                model_to_use = self.embedding_model if self.embedding_model else "embedding-2"
                 response = self.client.embeddings.create(
-                    model="embedding-2", # 智谱的通用向量模型
+                    model=model_to_use,
                     input=text
                 )
                 return response.data[0].embedding
 
             # 3. Google Gemini Embedding
             elif self.provider == 'gemini':
-                # Gemini 的 embedding 模型通常是 "models/text-embedding-004"
+                model_to_use = self.embedding_model if self.embedding_model else "models/text-embedding-004"
                 result = genai.embed_content(
-                    model="models/text-embedding-004",
+                    model=model_to_use,
                     content=text,
                     task_type="retrieval_document",
                     title="Movie Overview"
@@ -635,6 +639,7 @@ class AITranslator:
                 return result['embedding']
 
         except Exception as e:
+            # 这里的日志非常重要，能告诉你到底哪个模型报错了
             logger.error(f"  ➜ [Embedding] 生成向量失败 ({self.provider}): {e}")
             return None
         
