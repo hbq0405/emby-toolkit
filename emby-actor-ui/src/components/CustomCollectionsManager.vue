@@ -1407,7 +1407,8 @@ const isMultiSource = computed(() => {
 const isContentTypeLocked = computed(() => {
   // 如果选择了任何内置榜单，且当前类型是 list，则锁定内容类型选择
   // (或者你可以直接返回 false，允许用户在多选模式下自由修改类型)
-  return selectedBuiltInLists.value.length > 0 && currentCollection.value.type === 'list';
+  // return selectedBuiltInLists.value.length > 0 && currentCollection.value.type === 'list';
+  return false
 });
 
 const sortFieldOptions = computed(() => {
