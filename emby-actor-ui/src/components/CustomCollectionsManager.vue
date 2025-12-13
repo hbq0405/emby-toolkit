@@ -1643,7 +1643,7 @@ const fetchCountryOptions = async () => {
 
 const fetchGenreOptions = async () => {
   try {
-    const response = await axios.get('/api/config/genres');
+    const response = await axios.get('/api/custom_collections/config/movie_genres');
     const genreList = response.data; 
     genreOptions.value = genreList.map(name => ({
       label: name,

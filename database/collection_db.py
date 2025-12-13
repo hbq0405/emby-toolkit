@@ -601,8 +601,8 @@ def update_user_caches_on_item_add(
 # 模块: 筛选器
 # ======================================================================
 
-def get_unique_genres() -> List[str]:
-    """【V2 - PG JSON 兼容版】从 media_metadata 表中提取所有不重复的类型。"""
+def get_movie_genres() -> List[str]:
+    """从 media_metadata 表中提取电影所有不重复的类型。"""
     
     unique_genres = set()
     try:
@@ -628,6 +628,35 @@ def get_unique_genres() -> List[str]:
         
     except psycopg2.Error as e:
         logger.error(f"  ➜ 提取唯一电影类型时发生数据库错误: {e}", exc_info=True)
+        return []
+
+def get_tv_genres() -> List[str]:
+    """从 media_metadata 表中提取电视剧所有不重复的类型。"""
+    
+    unique_genres = set()
+    try:
+        with get_db_connection() as conn:
+            cursor = conn.cursor()
+            cursor.execute("SELECT genres_json FROM media_metadata WHERE item_type = 'Series' AND in_library = TRUE")
+            rows = cursor.fetchall()
+            
+            for row in rows:
+                genres = row['genres_json']
+                if genres:
+                    try:
+                        for genre in genres:
+                            if genre:
+                                unique_genres.add(genre.strip())
+                    except TypeError:
+                        logger.warning(f"  ➜ 处理 genres_json 时遇到意外的类型错误，内容: {genres}")
+                        continue
+                        
+        sorted_genres = sorted(list(unique_genres))
+        logger.trace(f"  ➜ 从数据库中成功提取出 {len(sorted_genres)} 个唯一的电视剧类型。")
+        return sorted_genres
+        
+    except psycopg2.Error as e:
+        logger.error(f"  ➜ 提取唯一电视剧类型时发生数据库错误: {e}", exc_info=True)
         return []
 
 def get_unique_studios() -> List[str]:

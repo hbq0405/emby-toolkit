@@ -398,34 +398,3 @@ def restart_container():
         error_msg = f"API: 重启容器时发生未知错误: {e}"
         logger.error(error_msg, exc_info=True)
         return jsonify({"error": f"发生意外错误: {str(e)}"}), 500
-
-# ★★★ 提供电影类型映射的API ★★★
-@system_bp.route('/config/genres', methods=['GET'])
-@admin_required
-def api_get_genres_config():
-    """
-    (V2 - 数据库驱动版)
-    从媒体元数据缓存中动态获取所有唯一的电影类型。
-    """
-    try:
-        # ★★★ 核心修复：直接调用新的数据库函数 ★★★
-        genres = collection_db.get_unique_genres()
-        # API直接返回一个字符串列表，例如 ["动作", "喜剧", "科幻"]
-        return jsonify(genres)
-    except Exception as e:
-        logger.error(f"动态获取电影类型时发生错误: {e}", exc_info=True)
-        return jsonify({"error": "服务器内部错误"}), 500
-    
-# ★★★ 提供电影工作室列表的API ★★★
-@system_bp.route('/config/studios', methods=['GET'])
-@admin_required
-def api_get_studios_config():
-    """
-    从媒体元数据缓存中动态获取所有唯一的工作室。
-    """
-    try:
-        studios = collection_db.get_unique_studios()
-        return jsonify(studios)
-    except Exception as e:
-        logger.error(f"动态获取工作室列表时发生错误: {e}", exc_info=True)
-        return jsonify({"error": "服务器内部错误"}), 500
