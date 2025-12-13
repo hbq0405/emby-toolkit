@@ -377,7 +377,8 @@ class MediaProcessor:
                 "official_rating", "unified_rating",
                 "genres_json", "directors_json", "studios_json", "countries_json", "keywords_json", "ignore_reason",
                 "asset_details_json",
-                "runtime_minutes"
+                "runtime_minutes",
+                "overview_embedding"
             ]
             data_for_batch = []
             for record in records_to_upsert:
