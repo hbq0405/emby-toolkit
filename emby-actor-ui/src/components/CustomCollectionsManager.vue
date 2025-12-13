@@ -264,16 +264,192 @@
                   <div class="rule-value">
                     <!-- ★★★ 务必保留你原有的规则值输入逻辑 ★★★ -->
                     <template v-if="rule.field === 'genres'">
-                      <n-select v-if="['is_one_of', 'is_none_of'].includes(rule.operator)" v-model:value="rule.value" multiple filterable :options="genreOptions" />
-                      <n-select v-else v-model:value="rule.value" filterable :options="genreOptions" />
+                      <n-select
+                        v-if="['is_one_of', 'is_none_of'].includes(rule.operator)"
+                        v-model:value="rule.value"
+                        multiple filterable
+                        placeholder="选择一个或多个类型"
+                        :options="genreOptions"
+                        :disabled="!rule.operator"
+                        style="flex-grow: 1; min-width: 180px;"
+                      />
+                      <n-select
+                        v-else
+                        v-model:value="rule.value"
+                        filterable
+                        placeholder="选择类型"
+                        :options="genreOptions"
+                        :disabled="!rule.operator"
+                        style="flex-grow: 1;"
+                      />
                     </template>
                     <template v-else-if="rule.field === 'countries'">
-                       <n-select v-if="['is_one_of', 'is_none_of'].includes(rule.operator)" v-model:value="rule.value" multiple filterable :options="countryOptions" />
-                       <n-select v-else v-model:value="rule.value" filterable :options="countryOptions" />
+                      <n-select
+                        v-if="['is_one_of', 'is_none_of'].includes(rule.operator)"
+                        v-model:value="rule.value"
+                        multiple filterable
+                        placeholder="选择一个或多个地区"
+                        :options="countryOptions"
+                        :disabled="!rule.operator"
+                        style="flex-grow: 1; min-width: 180px;"
+                      />
+                      <n-select
+                        v-else
+                        v-model:value="rule.value"
+                        filterable
+                        placeholder="选择地区"
+                        :options="countryOptions"
+                        :disabled="!rule.operator"
+                        style="flex-grow: 1;"
+                      />
                     </template>
-                    <!-- ... 其他字段逻辑 ... -->
-                    <n-input v-else-if="!['actors', 'directors', 'studios', 'keywords', 'tags', 'unified_rating', 'release_date', 'date_added', 'rating', 'release_year'].includes(rule.field) && !ruleConfig[rule.field]?.type?.startsWith('single_select')" v-model:value="rule.value" placeholder="值" :disabled="!rule.operator" />
-                     <n-input-number v-if="['release_year', 'rating'].includes(rule.field)" v-model:value="rule.value" :show-button="false" placeholder="数值" />
+                    <template v-else-if="rule.field === 'studios'">
+                      <n-select
+                        v-if="['is_one_of', 'is_none_of'].includes(rule.operator)"
+                        v-model:value="rule.value"
+                        multiple
+                        filterable
+                        remote
+                        placeholder="输入以搜索并添加工作室"
+                        :options="studioOptions"
+                        :loading="isSearchingStudios"
+                        @search="handleStudioSearch"
+                        :disabled="!rule.operator"
+                        style="flex-grow: 1; min-width: 220px;"
+                      />
+                      <n-auto-complete
+                        v-else
+                        v-model:value="rule.value"
+                        :options="studioOptions"
+                        :loading="isSearchingStudios"
+                        placeholder="边输入边搜索工作室"
+                        @update:value="handleStudioSearch"
+                        :disabled="!rule.operator"
+                        clearable
+                      />
+                    </template>
+                    <template v-else-if="rule.field === 'keywords'">
+                      <n-select
+                        v-if="['is_one_of', 'is_none_of'].includes(rule.operator)"
+                        v-model:value="rule.value"
+                        multiple
+                        filterable
+                        placeholder="选择一个或多个关键词"
+                        :options="keywordOptions"
+                        :disabled="!rule.operator"
+                        style="flex-grow: 1; min-width: 220px;"
+                      />
+                      <n-select
+                        v-else
+                        v-model:value="rule.value"
+                        filterable
+                        placeholder="选择一个关键词"
+                        :options="keywordOptions"
+                        :disabled="!rule.operator"
+                        clearable
+                        style="flex-grow: 1;"
+                      />
+                    </template>
+                    <template v-else-if="rule.field === 'tags'">
+                      <n-select
+                        v-if="['is_one_of', 'is_none_of'].includes(rule.operator)"
+                        v-model:value="rule.value"
+                        multiple
+                        filterable
+                        tag
+                        placeholder="选择或输入标签"
+                        :options="tagOptions"
+                        :disabled="!rule.operator"
+                        style="flex-grow: 1; min-width: 220px;"
+                      />
+                      <n-select
+                        v-else
+                        v-model:value="rule.value"
+                        filterable
+                        tag
+                        placeholder="选择或输入一个标签"
+                        :options="tagOptions"
+                        :disabled="!rule.operator"
+                        clearable
+                        style="flex-grow: 1;"
+                      />
+                    </template>
+                    <template v-else-if="rule.field === 'unified_rating'">
+                      <n-select
+                        v-if="['is_one_of', 'is_none_of'].includes(rule.operator)"
+                        v-model:value="rule.value"
+                        multiple
+                        placeholder="选择一个或多个家长分级"
+                        :options="unifiedRatingOptions" 
+                        :disabled="!rule.operator"
+                        style="flex-grow: 1; min-width: 220px;"
+                      />
+                      <n-select
+                        v-else
+                        v-model:value="rule.value"
+                        placeholder="选择一个家长分级"
+                        :options="unifiedRatingOptions" 
+                        :disabled="!rule.operator"
+                        clearable
+                        style="flex-grow: 1;"
+                      />
+                    </template>
+                    <template v-else-if="rule.field === 'actors' || rule.field === 'directors'">
+                      <n-select
+                        :value="getPersonIdsFromRule(rule.value)"
+                        @update:value="(ids, options) => updatePersonRuleValue(rule, options)"
+                        multiple
+                        filterable
+                        remote
+                        :placeholder="rule.field === 'actors' ? '输入以搜索并添加演员' : '输入以搜索并添加导演'"
+                        :options="actorOptions"
+                        :loading="isSearchingActors"
+                        @search="(query) => handlePersonSearch(query, rule)"  
+                        :disabled="!rule.operator"
+                        style="flex-grow: 1; min-width: 220px;"
+                        label-field="name"
+                        value-field="id"
+                        :render-option="renderPersonOption"
+                        :render-tag="renderPersonTag"
+                      />
+                    </template>
+                    <template v-else-if="ruleConfig[rule.field]?.type === 'single_select_boolean'">
+                      <n-select
+                        v-model:value="rule.value"
+                        @update:value="rule.operator = 'is'"
+                        placeholder="选择状态"
+                        :options="[
+                          { label: '连载中', value: true },
+                          { label: '已完结', value: false }
+                        ]"
+                        :disabled="!rule.field"
+                        style="flex-grow: 1; min-width: 180px;"
+                      />
+                      <div style="width: 120px;"></div>
+                    </template>
+                    <n-input-number
+                      v-else-if="['release_date', 'date_added'].includes(rule.field)"
+                      v-model:value="rule.value"
+                      placeholder="天数"
+                      :disabled="!rule.operator"
+                      style="width: 180px;"
+                    >
+                      <template #suffix>天内</template>
+                    </n-input-number>
+                    <n-input-number
+                      v-else-if="['rating', 'release_year'].includes(rule.field)"
+                      v-model:value="rule.value"
+                      placeholder="数值"
+                      :disabled="!rule.operator"
+                      :show-button="false"
+                      style="width: 180px;"
+                    />
+                    <n-input 
+                        v-else-if="!['actors', 'directors'].includes(rule.field)" 
+                        v-model:value="rule.value" 
+                        placeholder="值" 
+                        :disabled="!rule.operator" 
+                    />
                   </div>
 
                   <n-button text type="error" class="rule-delete" @click="removeRule(index)">
