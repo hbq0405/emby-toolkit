@@ -327,6 +327,31 @@
                     <n-input-number v-model:value="currentCollection.definition.limit" :default-value="20" :min="5" :max="50" style="width: 100%;" />
                   </n-form-item>
                 </n-gi>
+                <!-- ★★★ 新增：探索比例滑块 ★★★ -->
+                <n-gi span="2" v-if="currentCollection.type === 'ai_recommendation'">
+                  <n-form-item path="definition.ai_discovery_ratio">
+                    <template #label>
+                      新片探索比例 (LLM权重)
+                      <n-tooltip trigger="hover">
+                        <template #trigger><n-icon :component="HelpIcon" style="margin-left: 4px;" /></template>
+                        比例越高，AI 越倾向于推荐你库里没有的新片（会触发下载）；<br/>
+                        比例越低，越倾向于从你现有的库存中挖掘相似影片（省流量）。
+                      </n-tooltip>
+                    </template>
+                    <n-grid :cols="12" :x-gap="12" style="width: 100%">
+                      <n-gi :span="10">
+                        <n-slider 
+                          v-model:value="currentCollection.definition.ai_discovery_ratio" 
+                          :step="0.05" :min="0" :max="1"
+                          :format-tooltip="val => `${(val * 100).toFixed(0)}%`"
+                        />
+                      </n-gi>
+                      <n-gi :span="2">
+                        <span style="line-height: 34px; margin-left: 8px;">{{ (currentCollection.definition.ai_discovery_ratio * 100).toFixed(0) }}%</span>
+                      </n-gi>
+                    </n-grid>
+                  </n-form-item>
+                </n-gi>
                 <n-gi span="2" v-if="currentCollection.type === 'ai_recommendation'">
                    <n-form-item label="推荐倾向 (Prompt)" path="definition.ai_prompt">
                     <n-input
@@ -1299,6 +1324,7 @@ const getInitialFormModel = () => ({
     dynamic_logic: 'AND',
     dynamic_rules: [],
     show_in_latest: true,
+    ai_discovery_ratio: 0.2,
   }
 });
 const currentCollection = ref(getInitialFormModel());
@@ -1314,6 +1340,7 @@ watch(() => currentCollection.value.type, (newType) => {
     dynamic_logic: 'AND',
     dynamic_rules: [],
     show_in_latest: true,
+    ai_discovery_ratio: 0.2,
   };
 
   if (newType === 'filter') {
@@ -1331,7 +1358,8 @@ watch(() => currentCollection.value.type, (newType) => {
         ai_prompt: '',
         limit: 20,
         item_type: ['Movie', 'Series'],
-        is_global_mode: false 
+        is_global_mode: false,
+        ai_discovery_ratio: 0.2 
     };
   } else if (newType === 'ai_recommendation_global') {
     currentCollection.value.definition = {

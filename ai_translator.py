@@ -645,31 +645,52 @@ class AITranslator:
         
         return None
 
-    def get_recommendations(self, user_history: List[str], user_instruction: str = None) -> List[Dict[str, Any]]:
+    def get_recommendations(self, user_history: List[str], user_instruction: str = None, allowed_types: List[str] = None) -> List[Dict[str, Any]]:
         """
         【核心功能】猎手模式：基于用户历史推荐新片。
         """
         if not user_history:
             return []
             
-        system_prompt = """
-你是一个精通中外影视的资深推荐专家。
-请根据用户的观影历史，推荐 10 到 20 部高质量的电影或剧集。
+        # 构造类型限制的提示词
+        type_constraint_prompt = ""
+        if allowed_types:
+            if len(allowed_types) == 1:
+                if allowed_types[0] == 'Movie':
+                    type_constraint_prompt = "5. **仅推荐电影**：用户只看电影，请不要推荐电视剧。"
+                elif allowed_types[0] == 'Series':
+                    type_constraint_prompt = "5. **仅推荐电视剧**：用户只看剧集，请不要推荐电影。"
+            else:
+                type_constraint_prompt = "5. **类型限制**：请推荐电影或电视剧。"
+
+        # ★★★ 修改 2: 将类型限制加入 System Prompt ★★★
+        system_prompt = f"""
+你是一位精通中外影视的资深推荐专家。
+请根据用户的观影历史，推荐高质量的影视作品。
 
 **【核心铁律 - 违反会导致系统崩溃】**
 1. **标题必须是中文**：`title` 字段**必须**是简体中文。
 2. **国产剧禁止用英文**：对于中国（大陆/香港/台湾）的影视剧，**绝对禁止**使用英文译名，**必须**使用中文原名。
 3. **外语片必须翻译**：对于外语片，必须提供通用的中文译名。
 
+**【防幻觉与准确性规则 - 必须严格遵守】**
+1. **禁止推荐具体季号**：只返回剧集的主标题（例如：返回“白夜追凶”，不要返回“白夜追凶 第二季”）。
+2. **禁止编造续集**：绝对不要捏造TMDb上不存在的续集（例如：不要编造“隐秘的角落4”）。
+3. **禁止重复推荐**：不要推荐同一部剧的多个季，也不要重复推荐同一部剧。
+4. **禁止未来年份**：不要推荐年份超过当前年份（{datetime.now().year}）的作品，除非是即将上映的真实作品。
+5. **推荐相似作品**：如果用户看了一部剧，请推荐**风格相似的其他剧集**，而不是该剧的下一季。
+6. **确保真实存在**：所有推荐的标题必须是真实存在的影视作品。
+{type_constraint_prompt}
+
 **JSON 返回格式：**
 [
-  {
+  {{
     "title": "漫长的季节", 
     "original_title": "The Long Season",
     "year": 2023,
     "type": "Series", 
     "reason": "..."
-  }
+  }}
 ]
 """
         

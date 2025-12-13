@@ -1356,6 +1356,11 @@ class RecommendationEngine:
         target_user_id = definition.get('target_user_id')
         ai_prompt = definition.get('ai_prompt')
         limit = definition.get('limit', 20)
+        discovery_ratio = definition.get('ai_discovery_ratio')
+        if discovery_ratio is None:
+            discovery_ratio = 0.2
+        else:
+            discovery_ratio = float(discovery_ratio)
         
         # 获取用户勾选的合集内容类型
         # 如果前端没传，默认都允许
@@ -1444,89 +1449,99 @@ class RecommendationEngine:
 
             try:
                 translator = AITranslator(config_manager.APP_CONFIG)
-                # 个人模式下，LLM 负责发现新片，请求 70% 的量
-                request_limit = max(int(limit * 0.7), 5)
-                instruction_with_limit = f"{ai_prompt or ''} (Please recommend at least {request_limit} items)"
-                
-                llm_recommendations = translator.get_recommendations(history_titles_for_llm, instruction_with_limit)
-                
-                if llm_recommendations:
-                    logger.info(f"  ➜ [智能推荐] LLM 返回了 {len(llm_recommendations)} 部作品，正在匹配 TMDb ID...")
-                    with ThreadPoolExecutor(max_workers=5) as executor:
-                        def resolve_item(rec_item):
-                            try:
-                                title = ""
-                                original_title = ""
-                                year = None
-                                primary_type = 'Movie' 
-                                
-                                if isinstance(rec_item, dict):
-                                    title = rec_item.get('title')
-                                    original_title = rec_item.get('original_title')
-                                    year = str(rec_item.get('year')) if rec_item.get('year') else None
-                                    if rec_item.get('type'):
-                                        primary_type = rec_item.get('type')
-                                elif isinstance(rec_item, str):
-                                    title = rec_item
-                                
-                                if not title: return None
+                request_limit = int(limit * discovery_ratio)
+                if request_limit > 0:
+                    # 只有当计算出的数量小于 2 且比例不为 0 时，才强制保底为 1 或 2，避免 LLM 报错
+                    # 这里我们简单处理：只要大于 0，就至少请求 1 个
+                    request_limit = max(request_limit, 1)
 
-                                # 搜索策略：如果用户只选了 Movie，就只搜 Movie，不进行反向搜索
-                                # 如果用户只选了 Series，就只搜 Series
-                                # 如果都选了，才进行跨类型搜索
-                                
-                                search_types = []
-                                if 'Movie' in allowed_types and 'Series' in allowed_types:
-                                    search_types = [primary_type, 'Series' if primary_type == 'Movie' else 'Movie']
-                                elif 'Movie' in allowed_types:
-                                    search_types = ['Movie']
-                                elif 'Series' in allowed_types:
-                                    search_types = ['Series']
-                                
-                                match_result = None
-                                
-                                # 定义辅助搜索函数
-                                def has_chinese(text):
-                                    return any('\u4e00' <= char <= '\u9fff' for char in str(text))
-                                search_query = original_title if original_title else title
-                                if has_chinese(title): search_query = title
-
-                                # 遍历允许的类型进行搜索
-                                for try_type in search_types:
-                                    # 1. 搜原名/智能名
-                                    match_result = self.list_importer._match_title_to_tmdb(search_query, try_type, year)
-                                    if match_result: break
+                    instruction_with_limit = f"{ai_prompt or ''} (请推荐至少 {request_limit} 部不同的作品)"
+                    
+                    llm_recommendations = translator.get_recommendations(
+                        user_history=history_titles_for_llm, 
+                        user_instruction=instruction_with_limit,
+                        allowed_types=allowed_types 
+                    )
+                    
+                    if llm_recommendations:
+                        logger.info(f"  ➜ [智能推荐] LLM 返回了 {len(llm_recommendations)} 部作品，正在匹配 TMDb ID...")
+                        with ThreadPoolExecutor(max_workers=5) as executor:
+                            def resolve_item(rec_item):
+                                try:
+                                    title = ""
+                                    original_title = ""
+                                    year = None
+                                    primary_type = 'Movie' 
                                     
-                                    # 2. 搜中文名 (如果不一样)
-                                    if search_query != title:
-                                        match_result = self.list_importer._match_title_to_tmdb(title, try_type, year)
+                                    if isinstance(rec_item, dict):
+                                        title = rec_item.get('title')
+                                        original_title = rec_item.get('original_title')
+                                        year = str(rec_item.get('year')) if rec_item.get('year') else None
+                                        if rec_item.get('type'):
+                                            primary_type = rec_item.get('type')
+                                    elif isinstance(rec_item, str):
+                                        title = rec_item
+                                    
+                                    if not title: return None
+
+                                    # 搜索策略：如果用户只选了 Movie，就只搜 Movie，不进行反向搜索
+                                    # 如果用户只选了 Series，就只搜 Series
+                                    # 如果都选了，才进行跨类型搜索
+                                    
+                                    search_types = []
+                                    if 'Movie' in allowed_types and 'Series' in allowed_types:
+                                        search_types = [primary_type, 'Series' if primary_type == 'Movie' else 'Movie']
+                                    elif 'Movie' in allowed_types:
+                                        search_types = ['Movie']
+                                    elif 'Series' in allowed_types:
+                                        search_types = ['Series']
+                                    
+                                    match_result = None
+                                    
+                                    # 定义辅助搜索函数
+                                    def has_chinese(text):
+                                        return any('\u4e00' <= char <= '\u9fff' for char in str(text))
+                                    search_query = original_title if original_title else title
+                                    if has_chinese(title): search_query = title
+
+                                    # 遍历允许的类型进行搜索
+                                    for try_type in search_types:
+                                        # 1. 搜原名/智能名
+                                        match_result = self.list_importer._match_title_to_tmdb(search_query, try_type, year)
                                         if match_result: break
+                                        
+                                        # 2. 搜中文名 (如果不一样)
+                                        if search_query != title:
+                                            match_result = self.list_importer._match_title_to_tmdb(title, try_type, year)
+                                            if match_result: break
 
-                                if match_result:
-                                    tmdb_id, matched_type, season_num = match_result
-                                    tmdb_id = str(tmdb_id)
-                                    
-                                    # ★★★ 二次校验：确保匹配到的类型在允许范围内 ★★★
-                                    if matched_type not in allowed_types:
-                                        return None
+                                    if match_result:
+                                        tmdb_id, matched_type, season_num = match_result
+                                        tmdb_id = str(tmdb_id)
+                                        
+                                        # ★★★ 二次校验：确保匹配到的类型在允许范围内 ★★★
+                                        if matched_type not in allowed_types:
+                                            return None
 
-                                    if tmdb_id in watched_tmdb_ids:
-                                        return None
-                                    return {
-                                        'id': tmdb_id,
-                                        'type': matched_type,
-                                        'title': title, 
-                                        'season': season_num,
-                                        'release_date': None 
-                                    }
-                                return None
-                            except Exception:
-                                return None
+                                        if tmdb_id in watched_tmdb_ids:
+                                            return None
+                                        return {
+                                            'id': tmdb_id,
+                                            'type': matched_type,
+                                            'title': title, 
+                                            'season': season_num,
+                                            'release_date': None 
+                                        }
+                                    return None
+                                except Exception:
+                                    return None
 
-                        results = executor.map(resolve_item, llm_recommendations)
-                        for res in results:
-                            if res:
-                                final_items_map[res['id']] = res
+                            results = executor.map(resolve_item, llm_recommendations)
+                            for res in results:
+                                if res:
+                                    final_items_map[res['id']] = res
+                else:
+                    logger.info("  ➜ [智能推荐] 用户设置探索比例为 0%...")
             except Exception as e:
                 logger.error(f"  ➜ [智能推荐] LLM 调用失败: {e}")
 
