@@ -2132,7 +2132,7 @@ const columns = [
   {
     title: '健康检查', key: 'health_check', width: 150,
     render(row) {
-      if (!['list', 'ai_recommendation', 'ai_recommendation_global'].includes(row.type)) {
+      if (!['list', 'ai_recommendation'].includes(row.type)) {
         return h(NText, { depth: 3 }, { default: () => 'N/A' });
       }
       const missingText = row.missing_count > 0 ? ` (${row.missing_count}缺失)` : '';

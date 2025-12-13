@@ -624,7 +624,7 @@ def task_process_all_custom_collections(processor):
                     "generated_media_info_json": json.dumps(items_for_db, ensure_ascii=False)
                 }
 
-                if collection['type'] == 'list' or collection['type'] in ('ai_recommendation', 'ai_recommendation_global'):
+                if collection['type'] == 'list' or collection['type'] == 'ai_recommendation':
                     # 注意：这里传入 tmdb_items (包含 emby_id) 给健康检查，保证统计正确
                     _perform_list_collection_health_check(
                         tmdb_items=tmdb_items, 
@@ -811,7 +811,7 @@ def process_single_custom_collection(processor, custom_collection_id: int):
             "generated_media_info_json": json.dumps(items_for_db, ensure_ascii=False)
         }
 
-        if collection['type'] == 'list' or collection['type'] in ('ai_recommendation', 'ai_recommendation_global'):
+        if collection['type'] == 'list' or collection['type'] == 'ai_recommendation':
             _perform_list_collection_health_check(
                 tmdb_items=tmdb_items,
                 tmdb_to_emby_item_map=lookup_map,
