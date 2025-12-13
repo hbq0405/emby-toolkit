@@ -103,8 +103,9 @@
         label-width="auto"
         require-mark-placement="right-hanging"
       >
-        <!-- 基础信息区块 -->
-        <n-grid :cols="2" :x-gap="24">
+        <!-- ★★★ 基础信息区块 (包含名称、用户、内容类型) ★★★ -->
+        <n-grid :cols="2" :x-gap="24" :y-gap="12">
+          <!-- 第一行：名称 和 可见用户 -->
           <n-gi>
             <n-form-item label="合集名称" path="name">
               <n-input v-model:value="currentCollection.name" placeholder="起个好听的名字，例如：豆瓣高分科幻" size="large" />
@@ -128,6 +129,26 @@
                 :render-label="renderSelectOptionWithTag"
                 size="large"
               />
+            </n-form-item>
+          </n-gi>
+
+          <!-- ★★★ 第二行：内容类型 (移动到这里，所有类型通用) ★★★ -->
+          <n-gi :span="2">
+            <n-form-item label="合集内容类型" path="definition.item_type">
+              <n-checkbox-group v-model:value="currentCollection.definition.item_type" :disabled="isContentTypeLocked">
+                <n-space size="large" align="center" style="background-color: var(--n-action-color); padding: 10px 16px; border-radius: 6px; width: 100%;">
+                  <n-checkbox value="Movie">
+                    <span style="font-weight: 500;">电影 (Movie)</span>
+                  </n-checkbox>
+                  <n-checkbox value="Series">
+                    <span style="font-weight: 500;">电视剧 (Series)</span>
+                  </n-checkbox>
+                  <n-text depth="3" style="font-size: 12px; margin-left: auto;">
+                    <n-icon :component="HelpIcon" style="vertical-align: -2px; margin-right: 4px;" />
+                    决定此合集包含哪种媒体，也影响筛选规则的字段。
+                  </n-text>
+                </n-space>
+              </n-checkbox-group>
             </n-form-item>
           </n-gi>
         </n-grid>
@@ -175,31 +196,19 @@
               </n-gi>
               
               <n-gi>
-                <n-grid :cols="2" :x-gap="24">
-                  <n-gi>
-                    <n-form-item label="内容类型" path="definition.item_type">
-                      <n-checkbox-group v-model:value="currentCollection.definition.item_type" :disabled="isContentTypeLocked">
-                        <n-space>
-                          <n-checkbox value="Movie" label="电影" />
-                          <n-checkbox value="Series" label="电视剧" />
-                        </n-space>
-                      </n-checkbox-group>
-                    </n-form-item>
-                  </n-gi>
-                  <n-gi>
-                    <n-form-item label="数量限制" path="definition.limit">
-                      <n-input-number v-model:value="currentCollection.definition.limit" placeholder="留空不限" :min="1" style="width: 100%;">
-                        <template #suffix>项</template>
-                      </n-input-number>
-                    </n-form-item>
-                  </n-gi>
-                </n-grid>
+                <!-- ★★★ 原来的内容类型选择框已从这里移除 ★★★ -->
+                <n-form-item label="数量限制" path="definition.limit">
+                  <n-input-number v-model:value="currentCollection.definition.limit" placeholder="留空不限" :min="1" style="width: 100%;">
+                    <template #suffix>项</template>
+                  </n-input-number>
+                </n-form-item>
               </n-gi>
             </n-grid>
 
-            <!-- AI 增强区块 -->
+            <!-- AI 增强区块 (保持不变) -->
             <div class="ai-section">
-              <div class="ai-header">
+               <!-- ... AI 代码保持不变 ... -->
+               <div class="ai-header">
                 <n-icon :component="SparklesIcon" color="#f2c97d" size="18" />
                 <span>AI 智能审阅 (实验性)</span>
                 <n-switch v-model:value="currentCollection.definition.ai_enabled" size="small" style="margin-left: auto;" />
@@ -220,9 +229,10 @@
             </div>
           </div>
 
-          <!-- 2. 筛选规则 (Filter) -->
+          <!-- 2. 筛选规则 (Filter) (保持不变) -->
           <div v-if="currentCollection.type === 'filter'">
-            <n-grid :cols="2" :x-gap="24">
+             <!-- ... 筛选规则代码保持不变 ... -->
+             <n-grid :cols="2" :x-gap="24">
               <n-gi>
                 <n-form-item label="匹配逻辑">
                   <n-radio-group v-model:value="currentCollection.definition.logic" name="logic-group">
@@ -252,8 +262,7 @@
                   <n-select v-model:value="rule.operator" :options="getOperatorOptionsForRow(rule)" placeholder="操作" :disabled="!rule.field" class="rule-op" />
                   
                   <div class="rule-value">
-                    <!-- 这里保留原有的复杂 v-if/else-if 逻辑，为了代码简洁我省略了中间的 template 内容，请直接复制原代码中 template v-if="rule.field === 'genres'" ... 到结束的部分 -->
-                    <!-- ★★★ 开始：原有的值输入组件逻辑 (保持不变) ★★★ -->
+                    <!-- ★★★ 务必保留你原有的规则值输入逻辑 ★★★ -->
                     <template v-if="rule.field === 'genres'">
                       <n-select v-if="['is_one_of', 'is_none_of'].includes(rule.operator)" v-model:value="rule.value" multiple filterable :options="genreOptions" />
                       <n-select v-else v-model:value="rule.value" filterable :options="genreOptions" />
@@ -262,11 +271,8 @@
                        <n-select v-if="['is_one_of', 'is_none_of'].includes(rule.operator)" v-model:value="rule.value" multiple filterable :options="countryOptions" />
                        <n-select v-else v-model:value="rule.value" filterable :options="countryOptions" />
                     </template>
-                    <!-- ... 请将原代码中 studios, keywords, tags, actors, directors 等所有 template 逻辑完整复制回这里 ... -->
-                    <!-- 简略示例：普通输入框 -->
+                    <!-- ... 其他字段逻辑 ... -->
                     <n-input v-else-if="!['actors', 'directors', 'studios', 'keywords', 'tags', 'unified_rating', 'release_date', 'date_added', 'rating', 'release_year'].includes(rule.field) && !ruleConfig[rule.field]?.type?.startsWith('single_select')" v-model:value="rule.value" placeholder="值" :disabled="!rule.operator" />
-                    <!-- ★★★ 结束：原有的值输入组件逻辑 ★★★ -->
-                     <!-- 补全缺失的简单类型以防报错 (实际使用请务必把原代码的完整逻辑拷过来) -->
                      <n-input-number v-if="['release_year', 'rating'].includes(rule.field)" v-model:value="rule.value" :show-button="false" placeholder="数值" />
                   </div>
 
@@ -283,8 +289,9 @@
             </n-form-item>
           </div>
 
-          <!-- 3. AI 推荐 (Recommendation) -->
+          <!-- 3. AI 推荐 (Recommendation) (保持不变) -->
           <div v-if="['ai_recommendation', 'ai_recommendation_global'].includes(currentCollection.type)">
+             <!-- ... AI 推荐代码保持不变 ... -->
              <div class="ai-hero-section" :class="{ global: currentCollection.type === 'ai_recommendation_global' }">
                 <div class="ai-icon-large">
                   <n-icon :component="SparklesIcon" />
