@@ -1018,3 +1018,40 @@ def get_user_all_interacted_history(user_id: str) -> List[Dict[str, Any]]:
     except Exception as e:
         logger.error(f"获取用户 {user_id} 的全量交互历史失败: {e}")
         return []
+    
+def get_global_popular_items(limit: int = 20) -> List[Dict[str, Any]]:
+    """
+    获取全站最受欢迎的媒体项（基于完整播放的用户数量）。
+    用于“猜大家想看”的种子数据。
+    """
+    try:
+        with get_db_connection() as conn:
+            cursor = conn.cursor()
+            # 逻辑：统计每个 tmdb_id 被多少个不同的 user_id 标记为 played=TRUE
+            cursor.execute("""
+                SELECT 
+                    m.tmdb_id, 
+                    m.item_type, 
+                    m.title, 
+                    m.release_year,
+                    COUNT(DISTINCT u.user_id) as play_count
+                FROM user_media_data u
+                JOIN media_metadata m ON (u.item_id = m.tmdb_id OR m.emby_item_ids_json ? u.item_id)
+                WHERE u.played = TRUE
+                GROUP BY m.tmdb_id, m.item_type, m.title, m.release_year
+                ORDER BY play_count DESC
+                LIMIT %s
+            """, (limit,))
+            
+            rows = cursor.fetchall()
+            history = [dict(row) for row in rows]
+            
+            if history:
+                logger.info(f"  ➜ [数据库] 提取到全站最热 Top {len(history)} 作品 (榜首: {history[0].get('title')}, {history[0].get('play_count')}人看过)。")
+            else:
+                logger.warning("  ➜ [数据库] 全站暂无播放记录，无法生成全局热榜。")
+                
+            return history
+    except Exception as e:
+        logger.error(f"获取全站热门项目失败: {e}")
+        return []

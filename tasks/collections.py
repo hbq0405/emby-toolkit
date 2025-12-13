@@ -402,6 +402,12 @@ def _get_cover_badge_text_for_collection(collection_db_info: Dict[str, Any]) -> 
         # 对于其他所有榜单类型，统一显示为'榜单'
         return '榜单'
             
+    if collection_type == 'ai_recommendation_global':
+        return '热榜'
+    
+    if collection_type == 'ai_recommendation':
+        return '推荐'
+
     # 如果不是榜单类型，或者榜单类型不匹配任何特殊规则，则返回数字角标
     return item_count_to_pass
 
@@ -523,7 +529,7 @@ def task_process_all_custom_collections(processor):
                 elif collection['type'] == 'filter':
                     engine = FilterEngine()
                     raw_tmdb_items = engine.execute_filter(definition)
-                elif collection['type'] == 'ai_recommendation':
+                elif collection['type'] in ('ai_recommendation', 'ai_recommendation_global'):
                     from handler.custom_collection import RecommendationEngine
                     rec_engine = RecommendationEngine(processor.tmdb_api_key)
                     raw_tmdb_items = rec_engine.generate(definition)
@@ -622,7 +628,7 @@ def task_process_all_custom_collections(processor):
                     "in_library_count": len(global_ordered_emby_ids),
                 }
 
-                if collection['type'] == 'list' or collection['type'] == 'ai_recommendation':
+                if collection['type'] == 'list' or collection['type'] in ('ai_recommendation', 'ai_recommendation_global'):
                     # 注意：这里传入 tmdb_items (包含 emby_id) 给健康检查，保证统计正确
                     health_check_results = _perform_list_collection_health_check(
                         tmdb_items=tmdb_items, 
@@ -718,10 +724,10 @@ def process_single_custom_collection(processor, custom_collection_id: int):
         elif collection['type'] == 'filter':
             engine = FilterEngine()
             raw_tmdb_items = engine.execute_filter(definition)
-        elif collection['type'] == 'ai_recommendation':
-                    from handler.custom_collection import RecommendationEngine
-                    rec_engine = RecommendationEngine(processor.tmdb_api_key)
-                    raw_tmdb_items = rec_engine.generate(definition)
+        elif collection['type'] in ('ai_recommendation', 'ai_recommendation_global'):
+            from handler.custom_collection import RecommendationEngine
+            rec_engine = RecommendationEngine(processor.tmdb_api_key)
+            raw_tmdb_items = rec_engine.generate(definition)
 
         # 3.2 应用修正
         raw_tmdb_items, corrected_id_to_original_id_map = _apply_id_corrections(raw_tmdb_items, definition, collection_name)
@@ -818,7 +824,7 @@ def process_single_custom_collection(processor, custom_collection_id: int):
             "in_library_count": len(global_ordered_emby_ids),
         }
 
-        if collection['type'] == 'list' or collection['type'] == 'ai_recommendation':
+        if collection['type'] == 'list' or collection['type'] in ('ai_recommendation', 'ai_recommendation_global'):
             # 传入完整的 tmdb_items (含 emby_id) 给健康检查，保证统计正确
             health_check_results = _perform_list_collection_health_check(
                 tmdb_items=tmdb_items,

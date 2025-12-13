@@ -437,23 +437,37 @@
             </div>
           </n-form-item>
         </div>
-        <!-- AI 推荐类型的表单 -->
-        <div v-if="currentCollection.type === 'ai_recommendation'">
-          <n-alert type="info" show-icon style="margin-bottom: 16px;">
+        <!-- AI 推荐类型的表单 (个人 + 全局) -->
+        <div v-if="['ai_recommendation', 'ai_recommendation_global'].includes(currentCollection.type)">
+          
+          <!-- 个人推荐的提示 -->
+          <n-alert v-if="currentCollection.type === 'ai_recommendation'" type="info" show-icon style="margin-bottom: 16px;">
             AI 将分析指定用户的观看历史（收藏或高分播放），自动生成推荐片单。
           </n-alert>
 
-          <n-form-item label="目标用户" path="definition.target_user_id">
+          <!-- 全局推荐的提示 -->
+          <n-alert v-if="currentCollection.type === 'ai_recommendation_global'" type="success" show-icon style="margin-bottom: 16px;">
+            <template #icon><n-icon :component="SparklesIcon" /></template>
+            AI 将分析全站所有用户的共同喜好（播放次数最多的 Top 20），猜测大众可能喜欢的其他作品。
+          </n-alert>
+
+          <!-- 只有个人推荐才显示用户选择框 -->
+          <n-form-item v-if="currentCollection.type === 'ai_recommendation'" label="目标用户" path="definition.target_user_id">
             <n-select
               v-model:value="currentCollection.definition.target_user_id"
               :options="embyUserOptions"
               placeholder="选择要分析口味的用户"
               filterable
               :render-label="renderSelectOptionWithTag"
+              @update:value="handleTargetUserChange"
             />
           </n-form-item>
           
-          <n-form-item label="推荐倾向 (Prompt)" path="definition.ai_prompt">
+          <n-form-item 
+            v-if="currentCollection.type === 'ai_recommendation'" 
+            label="推荐倾向 (Prompt)" 
+            path="definition.ai_prompt"
+          >
             <n-input
               v-model:value="currentCollection.definition.ai_prompt"
               type="textarea"
@@ -972,14 +986,12 @@ import {
   SyncOutline as SyncIcon,
   EyeOutline as EyeIcon,
   PlayOutline as GenerateIcon,
-  CloudDownloadOutline as CloudDownloadIcon,
-  CheckmarkCircleOutline as CheckmarkCircle,
-  CloseCircleOutline as CloseCircleIcon,
   ReorderFourOutline as DragHandleIcon,
   HelpCircleOutline as HelpIcon,
   ImageOutline as CoverIcon,
   BuildOutline as FixIcon,
   SearchOutline as SearchIcon,
+  SparklesOutline as SparklesIcon,
 } from '@vicons/ionicons5';
 
 // ===================================================================
@@ -1488,7 +1500,17 @@ watch(() => currentCollection.value.type, (newType) => {
         target_user_id: null,
         ai_prompt: '',
         limit: 20,
-        item_type: ['Movie', 'Series'] // 推荐通常混合类型
+        item_type: ['Movie', 'Series'],
+        is_global_mode: false 
+    };
+  } else if (newType === 'ai_recommendation_global') {
+    currentCollection.value.definition = {
+        ...sharedProps,
+        target_user_id: null, // 全局模式不需要用户ID
+        ai_prompt: '',
+        limit: 20,
+        item_type: ['Movie', 'Series'],
+        is_global_mode: true // ★★★ 标记为全局
     };
   } else if (newType === 'list') {
     currentCollection.value.definition = { 
@@ -1678,7 +1700,8 @@ const removeRule = (index) => {
 const typeOptions = [
   { label: '通过榜单导入 (RSS/内置)', value: 'list' },
   { label: '通过筛选规则生成', value: 'filter' },
-  { label: '智能推荐 (指定用户)', value: 'ai_recommendation' }
+  { label: '智能推荐 (指定用户)', value: 'ai_recommendation' },
+  { label: '智能推荐 (全局用户)', value: 'ai_recommendation_global' }
 ];
 
 const formRules = computed(() => {
@@ -1701,6 +1724,9 @@ const formRules = computed(() => {
       },
       trigger: 'change'
     };
+  } else if (currentCollection.value.type === 'ai_recommendation') {
+    // ★★★ 只有个人推荐才必填用户ID
+    baseRules['definition.target_user_id'] = { required: true, message: '请选择目标用户', trigger: ['blur', 'change'] };
   }
   return baseRules;
 });
@@ -2045,7 +2071,10 @@ const columns = [
         label = '筛选生成';
         tagType = 'default';
       } else if (row.type === 'ai_recommendation') {
-        label = '智能推荐';
+        label = '个人推荐';
+        tagType = 'primary';
+      } else if (row.type === 'ai_recommendation_global') {
+        label = '全局推荐';
         tagType = 'primary';
       }
 
@@ -2069,7 +2098,7 @@ const columns = [
   {
     title: '健康检查', key: 'health_check', width: 150,
     render(row) {
-      if (row.type !== 'list' && row.type !== 'ai_recommendation') {
+      if (!['list', 'ai_recommendation', 'ai_recommendation_global'].includes(row.type)) {
         return h(NText, { depth: 3 }, { default: () => 'N/A' });
       }
       const missingText = row.missing_count > 0 ? ` (${row.missing_count}缺失)` : '';
@@ -2271,6 +2300,16 @@ const handleDirectorSearch = (query) => {
       isSearchingDirectors.value = false;
     }
   }, 300);
+};
+
+const handleTargetUserChange = (userId) => {
+  // 只有当选择了有效的用户ID时才执行
+  if (userId) {
+    // 自动将“可见用户”设置为该用户
+    currentCollection.value.allowed_user_ids = [userId];
+    // 强制 UI 刷新（有时候 Vue 对数组深层变动响应不够快，虽然通常不需要）
+    // currentCollection.value = { ...currentCollection.value }; 
+  }
 };
 
 const handleActorSelect = (person) => {

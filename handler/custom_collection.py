@@ -1336,165 +1336,181 @@ class RecommendationEngine:
         
     def generate(self, definition: Dict) -> List[Dict[str, str]]:
         """
-        生成推荐列表的主入口 (配合 media_db 返回字典列表的优化版)。
+        生成推荐列表的主入口
         """
+        is_global_mode = definition.get('is_global_mode', False)
         target_user_id = definition.get('target_user_id')
         ai_prompt = definition.get('ai_prompt')
         limit = definition.get('limit', 20)
 
-        if not target_user_id:
-            logger.error("  ➜ [智能推荐] 未指定目标用户，无法生成推荐。")
-            return []
-
-        # ★★★ 修改 2: 分别获取“上下文历史”和“全量过滤历史” ★★★
-        
-        # 1. 获取用于 LLM 上下文和向量画像计算的“最近历史” (保持 limit=20)
-        context_history_items = media_db.get_user_positive_history(target_user_id, limit=20)
-        
-        if not context_history_items:
-            logger.warning(f"  ➜ [智能推荐] 用户 {target_user_id} 没有足够的观看历史。")
-            return []
-
-        # 2. 获取用于过滤的“全量历史” (设置一个很大的 limit，例如 5000)
-        # 这样才能保证很久以前看过的片子也能被过滤掉
-        full_interaction_items = media_db.get_user_all_interacted_history(target_user_id)
-        
-        # 构建全量已观看 ID 集合
+        context_history_items = []
         watched_tmdb_ids = set()
-        for h_item in full_interaction_items:
-            tmdb_id = h_item.get('tmdb_id')
-            if tmdb_id:
-                watched_tmdb_ids.add(str(tmdb_id))
-        
-        logger.info(f"  ➜ [智能推荐] 已加载全量交互记录，共 {len(watched_tmdb_ids)} 部作品（含未看完）将从推荐中排除。")
 
-        # 准备给 LLM 看的纯文本标题列表 (使用 context_history_items)
-        history_titles_for_llm = []
-        for item in context_history_items:
-            title = item.get('title')
-            year = item.get('release_year')
-            if year:
-                history_titles_for_llm.append(f"{title} ({year})")
-            else:
-                history_titles_for_llm.append(title)
+        # ==================== 1. 数据准备阶段 ====================
+        if is_global_mode:
+            logger.info("  ➜ [智能推荐] 启动【全局推荐】模式 (猜大家想看)...")
+            # 获取全站最热 Top 20 作为种子
+            context_history_items = media_db.get_global_popular_items(limit=20)
+            
+            if not context_history_items:
+                logger.warning("  ➜ [智能推荐] 全站播放数据不足，无法生成全局推荐。")
+                return []
+                
+            # 全局模式下，只排除掉种子数据本身
+            for item in context_history_items:
+                if item.get('tmdb_id'):
+                    watched_tmdb_ids.add(str(item.get('tmdb_id')))
+            
+        else:
+            # 个人模式逻辑
+            if not target_user_id:
+                logger.error("  ➜ [智能推荐] 未指定目标用户且非全局模式，无法生成推荐。")
+                return []
+
+            context_history_items = media_db.get_user_positive_history(target_user_id, limit=20)
+            if not context_history_items:
+                logger.warning(f"  ➜ [智能推荐] 用户 {target_user_id} 没有足够的观看历史。")
+                return []
+
+            full_interaction_items = media_db.get_user_all_interacted_history(target_user_id)
+            for h_item in full_interaction_items:
+                tmdb_id = h_item.get('tmdb_id')
+                if tmdb_id:
+                    watched_tmdb_ids.add(str(tmdb_id))
 
         final_items_map = {} 
 
-        # ==================================================
-        # 策略 A: LLM 推荐
-        # ==================================================
-        logger.info(f"  ➜ [智能推荐] 正在调用 LLM 进行推理...")
-        try:
-            translator = AITranslator(config_manager.APP_CONFIG)
-            request_limit = min(int(limit * 1.5), 20) 
-            instruction_with_limit = f"{ai_prompt or ''} (Please recommend at least {request_limit} items)"
+        # ==================== 2. 核心推荐阶段 ====================
+        
+        # ★★★ 分支 A: 全局模式 (纯向量推荐) ★★★
+        if is_global_mode:
+            logger.info(f"  ➜ [智能推荐] 全局模式：跳过 LLM，完全使用向量引擎推荐 (目标: {limit} 部)...")
             
-            # 传给 LLM 纯文本标题
-            llm_recommendations = translator.get_recommendations(history_titles_for_llm, instruction_with_limit)
+            # 直接调用向量搜索，请求数量稍微多一点作为缓冲
+            vector_results = self._vector_search(
+                user_history_items=context_history_items, 
+                exclusion_ids=watched_tmdb_ids, 
+                limit=limit + 5 
+            )
             
-            if llm_recommendations:
-                logger.info(f"  ➜ [智能推荐] LLM 返回了 {len(llm_recommendations)} 部作品，正在匹配 TMDb ID...")
-                
-                with ThreadPoolExecutor(max_workers=5) as executor:
-                    def resolve_item(rec_item):
-                        try:
-                            # ... (解析逻辑保持不变) ...
-                            title = ""
-                            original_title = ""
-                            year = None
-                            primary_type = 'Movie' 
-                            
-                            if isinstance(rec_item, dict):
-                                title = rec_item.get('title')
-                                original_title = rec_item.get('original_title')
-                                year = str(rec_item.get('year')) if rec_item.get('year') else None
-                                if rec_item.get('type'):
-                                    primary_type = rec_item.get('type')
-                            elif isinstance(rec_item, str):
-                                title = rec_item
-                            
-                            if not title: return None
-
-                            secondary_type = 'Series' if primary_type == 'Movie' else 'Movie'
-                            def has_chinese(text):
-                                return any('\u4e00' <= char <= '\u9fff' for char in str(text))
-
-                            search_query = original_title if original_title else title
-                            if has_chinese(title):
-                                search_query = title
-
-                            # 四重搜索策略 (保持不变)
-                            match_result = self.list_importer._match_title_to_tmdb(search_query, primary_type, year)
-                            if not match_result:
-                                match_result = self.list_importer._match_title_to_tmdb(search_query, secondary_type, year)
-                            if not match_result and search_query != title:
-                                match_result = self.list_importer._match_title_to_tmdb(title, primary_type, year)
-                            if not match_result and search_query != title:
-                                match_result = self.list_importer._match_title_to_tmdb(title, secondary_type, year)
-
-                            # --- 结果处理 ---
-                            if match_result:
-                                tmdb_id, matched_type, season_num = match_result
-                                tmdb_id = str(tmdb_id)
-                                
-                                # ★★★ 这里的过滤现在使用的是全量 watched_tmdb_ids ★★★
-                                if tmdb_id in watched_tmdb_ids:
-                                    logger.info(f"  ➜ [智能推荐] LLM 推荐作品 '{title}' (tmdb_id: {tmdb_id}) 已观看，已过滤。")
-                                    return None
-                                return {
-                                    'id': tmdb_id,
-                                    'type': matched_type,
-                                    'title': title, 
-                                    'season': season_num,
-                                    'release_date': None 
-                                }
-                            else:
-                                logger.debug(f"  ➜ [智能推荐] 未能找到 '{title}' (搜: {search_query}) 的 TMDb ID。")
-                                return None
-                        except Exception as e:
-                            logger.error(f"  ➜ [智能推荐] 处理单项 '{rec_item}' 时出错: {e}")
-                            return None
-
-                    results = executor.map(resolve_item, llm_recommendations)
-                    for res in results:
-                        if res:
-                            final_items_map[res['id']] = res
+            if vector_results:
+                for v in vector_results:
+                    final_items_map[v['id']] = {
+                        'id': v['id'],
+                        'type': v['type'],
+                        'title': v['title'],
+                        'release_date': None
+                    }
             else:
-                logger.warning("  ➜ [智能推荐] LLM 未返回任何有效结果。")
+                logger.warning("  ➜ [智能推荐] 向量引擎未返回任何结果 (可能是数据库无向量数据)。")
 
-        except Exception as e:
-            logger.error(f"  ➜ [智能推荐] LLM 调用失败: {e}")
+        # ★★★ 分支 B: 个人模式 (LLM + 向量混合) ★★★
+        else:
+            # --- 2.1 LLM 推荐 ---
+            logger.info(f"  ➜ [智能推荐] 个人模式：正在调用 LLM 进行推理...")
+            
+            # 准备给 LLM 看的纯文本标题列表
+            history_titles_for_llm = []
+            for item in context_history_items:
+                title = item.get('title')
+                year = item.get('release_year')
+                if year:
+                    history_titles_for_llm.append(f"{title} ({year})")
+                else:
+                    history_titles_for_llm.append(title)
 
-        # ==================================================
-        # 策略 B: 向量推荐
-        # ==================================================
-        if len(final_items_map) < limit:
             try:
-                needed = limit - len(final_items_map)
-                # ★★★ 修改 3: 传入 context_history_items 用于计算画像，传入 watched_tmdb_ids 用于过滤 ★★★
-                vector_results = self._vector_search(
-                    user_history_items=context_history_items, 
-                    exclusion_ids=watched_tmdb_ids, 
-                    limit=needed + 5
-                )
+                translator = AITranslator(config_manager.APP_CONFIG)
+                # 个人模式下，LLM 负责发现新片，请求 70% 的量
+                request_limit = max(int(limit * 0.7), 5)
+                instruction_with_limit = f"{ai_prompt or ''} (Please recommend at least {request_limit} items)"
                 
-                if vector_results:
-                    logger.info(f"  ➜ [智能推荐] 启用向量引擎补充了 {len(vector_results)} 部相似影片。")
-                    for v in vector_results:
-                        # 这里的 id 已经在 _vector_search 内部被 exclusion_ids 过滤过了
-                        if v['id'] not in final_items_map:
-                            final_items_map[v['id']] = {
-                                'id': v['id'],
-                                'type': v['type'],
-                                'title': v['title'],
-                                'release_date': None
-                            }
-            except Exception as e:
-                logger.error(f"  ➜ [智能推荐] 向量推荐失败: {e}", exc_info=True)
+                llm_recommendations = translator.get_recommendations(history_titles_for_llm, instruction_with_limit)
+                
+                if llm_recommendations:
+                    logger.info(f"  ➜ [智能推荐] LLM 返回了 {len(llm_recommendations)} 部作品，正在匹配 TMDb ID...")
+                    with ThreadPoolExecutor(max_workers=5) as executor:
+                        def resolve_item(rec_item):
+                            try:
+                                title = ""
+                                original_title = ""
+                                year = None
+                                primary_type = 'Movie' 
+                                
+                                if isinstance(rec_item, dict):
+                                    title = rec_item.get('title')
+                                    original_title = rec_item.get('original_title')
+                                    year = str(rec_item.get('year')) if rec_item.get('year') else None
+                                    if rec_item.get('type'):
+                                        primary_type = rec_item.get('type')
+                                elif isinstance(rec_item, str):
+                                    title = rec_item
+                                
+                                if not title: return None
 
-        # ==================================================
-        # 最终汇总
-        # ==================================================
+                                secondary_type = 'Series' if primary_type == 'Movie' else 'Movie'
+                                def has_chinese(text):
+                                    return any('\u4e00' <= char <= '\u9fff' for char in str(text))
+
+                                search_query = original_title if original_title else title
+                                if has_chinese(title):
+                                    search_query = title
+
+                                match_result = self.list_importer._match_title_to_tmdb(search_query, primary_type, year)
+                                if not match_result:
+                                    match_result = self.list_importer._match_title_to_tmdb(search_query, secondary_type, year)
+                                if not match_result and search_query != title:
+                                    match_result = self.list_importer._match_title_to_tmdb(title, primary_type, year)
+                                if not match_result and search_query != title:
+                                    match_result = self.list_importer._match_title_to_tmdb(title, secondary_type, year)
+
+                                if match_result:
+                                    tmdb_id, matched_type, season_num = match_result
+                                    tmdb_id = str(tmdb_id)
+                                    if tmdb_id in watched_tmdb_ids:
+                                        return None
+                                    return {
+                                        'id': tmdb_id,
+                                        'type': matched_type,
+                                        'title': title, 
+                                        'season': season_num,
+                                        'release_date': None 
+                                    }
+                                return None
+                            except Exception:
+                                return None
+
+                        results = executor.map(resolve_item, llm_recommendations)
+                        for res in results:
+                            if res:
+                                final_items_map[res['id']] = res
+            except Exception as e:
+                logger.error(f"  ➜ [智能推荐] LLM 调用失败: {e}")
+
+            # --- 2.2 向量推荐 (补充剩余空缺) ---
+            if len(final_items_map) < limit:
+                try:
+                    needed = limit - len(final_items_map)
+                    logger.info(f"  ➜ [智能推荐] 启用向量引擎补充 {needed} 部相似影片...")
+                    vector_results = self._vector_search(
+                        user_history_items=context_history_items, 
+                        exclusion_ids=watched_tmdb_ids, 
+                        limit=needed + 5
+                    )
+                    
+                    if vector_results:
+                        for v in vector_results:
+                            if v['id'] not in final_items_map:
+                                final_items_map[v['id']] = {
+                                    'id': v['id'],
+                                    'type': v['type'],
+                                    'title': v['title'],
+                                    'release_date': None
+                                }
+                except Exception as e:
+                    logger.error(f"  ➜ [智能推荐] 向量推荐失败: {e}", exc_info=True)
+
+        # ==================== 3. 最终汇总 ====================
         final_items = list(final_items_map.values())
         if limit and isinstance(limit, int):
             final_items = final_items[:limit]
