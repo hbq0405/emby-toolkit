@@ -300,12 +300,7 @@ def _perform_list_collection_health_check(
                     except Exception as e_remove:
                         logger.error(f"  -> 清理媒体 {tmdb_id} ({item_type}) 的来源时发生错误: {e_remove}", exc_info=True)
     
-    total_missing = len(missing_released_items) + len(missing_unreleased_items)
-    return {
-        "health_status": "has_missing" if total_missing > 0 else "ok", 
-        "missing_count": total_missing, 
-        "generated_media_info_json": json.dumps(tmdb_items, ensure_ascii=False)
-    }
+    return 
 
 # --- 精准权限检查辅助函数 ---
 def _check_user_access_batch(base_url: str, api_key: str, user_id: str, item_ids: List[str]) -> Set[str]:
@@ -626,27 +621,18 @@ def task_process_all_custom_collections(processor):
                     "item_type": json.dumps(definition.get('item_type', ['Movie'])),
                     "last_synced_at": datetime.now(pytz.utc),
                     "in_library_count": len(global_ordered_emby_ids),
+                    "generated_media_info_json": json.dumps(items_for_db, ensure_ascii=False)
                 }
 
                 if collection['type'] == 'list' or collection['type'] in ('ai_recommendation', 'ai_recommendation_global'):
                     # 注意：这里传入 tmdb_items (包含 emby_id) 给健康检查，保证统计正确
-                    health_check_results = _perform_list_collection_health_check(
+                    _perform_list_collection_health_check(
                         tmdb_items=tmdb_items, 
                         tmdb_to_emby_item_map=tmdb_to_emby_item_map, 
                         corrected_id_to_original_id_map=corrected_id_to_original_id_map,
                         collection_db_record=collection,
                         tmdb_api_key=processor.tmdb_api_key
                     )
-                    # 覆盖掉 health_check_results 里的 generated_media_info_json
-                    # 使用我们清洗过的 items_for_db
-                    health_check_results['generated_media_info_json'] = json.dumps(items_for_db, ensure_ascii=False)
-                    update_data.update(health_check_results)
-                else:
-                    update_data.update({
-                        "health_status": "ok", 
-                        "missing_count": 0,
-                        "generated_media_info_json": json.dumps(items_for_db, ensure_ascii=False) # 使用清洗后的数据
-                    })
 
                 collection_db.update_custom_collection_sync_results(collection_id, update_data)
 
@@ -822,27 +808,19 @@ def process_single_custom_collection(processor, custom_collection_id: int):
             "item_type": json.dumps(definition.get('item_type', ['Movie'])),
             "last_synced_at": datetime.now(pytz.utc),
             "in_library_count": len(global_ordered_emby_ids),
+            "generated_media_info_json": json.dumps(items_for_db, ensure_ascii=False)
         }
 
         if collection['type'] == 'list' or collection['type'] in ('ai_recommendation', 'ai_recommendation_global'):
-            # 传入完整的 tmdb_items (含 emby_id) 给健康检查，保证统计正确
-            health_check_results = _perform_list_collection_health_check(
+            _perform_list_collection_health_check(
                 tmdb_items=tmdb_items,
                 tmdb_to_emby_item_map=lookup_map,
                 corrected_id_to_original_id_map=corrected_id_to_original_id_map,
                 collection_db_record=collection,
                 tmdb_api_key=processor.tmdb_api_key
             )
-            # ★★★ 覆盖掉 generated_media_info_json，使用清洗后的数据 ★★★
-            health_check_results['generated_media_info_json'] = json.dumps(items_for_db, ensure_ascii=False)
-            update_data.update(health_check_results)
-        else:
-            update_data.update({
-                "health_status": "ok", 
-                "missing_count": 0,
-                "generated_media_info_json": json.dumps(items_for_db, ensure_ascii=False) # 使用清洗后的数据
-            })
-
+            # ★★★ 注意：不再写入 missing_count 和 health_status ★★★
+        
         collection_db.update_custom_collection_sync_results(custom_collection_id, update_data)
 
         # 封面生成

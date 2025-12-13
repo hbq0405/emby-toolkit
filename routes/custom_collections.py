@@ -6,7 +6,7 @@ import json
 import psycopg2
 import pytz
 from datetime import datetime
-from database import user_db, collection_db, connection
+from database import user_db, collection_db, connection, media_db
 import config_manager
 import handler.emby as emby
 from tasks.helpers import is_movie_subscribable
@@ -62,14 +62,19 @@ def api_get_emby_users():
 @custom_collections_bp.route('', methods=['GET']) # 原为 '/'
 @admin_required
 def api_get_all_custom_collections():
-    """获取所有自定义合集定义 (V3.1 - 最终修正版)"""
+    """获取所有自定义合集定义 (V5 - 精确类型匹配版)"""
     try:
         beijing_tz = pytz.timezone('Asia/Shanghai')
         collections_from_db = collection_db.get_all_active_custom_collections()
         processed_collections = []
 
+        # ==========================================================
+        # ★★★ 第一阶段：收集所有需要检查的 TMDB ID ★★★
+        # ==========================================================
+        all_tmdb_ids_to_check = []
+        
         for collection in collections_from_db:
-            # --- 处理 definition (这部分逻辑不变) ---
+            # 1. 解析 definition
             definition_data = collection.get('definition_json')
             parsed_definition = {}
             if isinstance(definition_data, str):
@@ -78,38 +83,103 @@ def api_get_all_custom_collections():
                     if isinstance(obj, str): obj = json.loads(obj)
                     if isinstance(obj, dict): parsed_definition = obj
                 except (json.JSONDecodeError, TypeError):
-                    logger.warning(f"  ➜ 合集 '{collection.get('name')}' 的 definition_json 无法解析。")
+                    pass
             elif isinstance(definition_data, dict):
                 parsed_definition = definition_data
             collection['definition'] = parsed_definition
             if 'definition_json' in collection:
                 del collection['definition_json']
 
-            # ==========================================================
-            # ★★★ 修正后的时区转换逻辑 ★★★
-            # ==========================================================
+            # 2. 解析 generated_media_info_json
+            media_info = collection.get('generated_media_info_json')
+            parsed_media_info = []
+            if isinstance(media_info, str):
+                try:
+                    parsed_media_info = json.loads(media_info)
+                except: pass
+            elif isinstance(media_info, list):
+                parsed_media_info = media_info
             
-            # 使用从数据库截图中确认的正确字段名 'last_synced_at'
-            key_for_timestamp = 'last_synced_at' 
+            collection['_parsed_media_info'] = parsed_media_info
+            
+            # 收集 ID (这一步只收集 ID 给 SQL 用，不需要类型)
+            if parsed_media_info:
+                for item in parsed_media_info:
+                    tid = None
+                    if isinstance(item, dict):
+                        tid = item.get('tmdb_id')
+                    elif isinstance(item, str):
+                        tid = item
+                    
+                    if tid:
+                        all_tmdb_ids_to_check.append(str(tid))
 
+        # ==========================================================
+        # ★★★ 第二阶段：批量查询数据库状态 (使用新函数) ★★★
+        # ==========================================================
+        # 返回格式: {'12345_Movie': True, '12345_Series': False}
+        in_library_status_map = {}
+        if all_tmdb_ids_to_check:
+            # 调用我们刚写的新函数
+            in_library_status_map = media_db.get_in_library_status_with_type_bulk(all_tmdb_ids_to_check)
+
+        # ==========================================================
+        # ★★★ 第三阶段：计算每个合集的缺失数 (精确匹配) ★★★
+        # ==========================================================
+        for collection in collections_from_db:
+            c_type = collection.get('type')
+            media_items = collection.get('_parsed_media_info') or []
+            
+            missing_count = 0
+            
+            if c_type in ['list', 'ai_recommendation', 'ai_recommendation_global'] and media_items:
+                for item in media_items:
+                    tmdb_id = None
+                    media_type = 'Movie' # 默认为 Movie
+
+                    if isinstance(item, dict):
+                        tmdb_id = str(item.get('tmdb_id')) if item.get('tmdb_id') else None
+                        media_type = item.get('media_type') or 'Movie'
+                    elif isinstance(item, str):
+                        tmdb_id = item
+                        # 如果是旧数据只有字符串ID，默认当 Movie 处理，或者无法精确匹配
+                    
+                    # 1. 如果没有 ID，算缺失
+                    if not tmdb_id or tmdb_id.lower() == 'none': 
+                        missing_count += 1
+                        continue
+
+                    # 2. ★★★ 核心修复：使用组合键查询 ★★★
+                    target_key = f"{tmdb_id}_{media_type}"
+                    
+                    # 查字典：必须 ID 和 类型 都匹配，且 in_library 为 True 才算在库
+                    is_in_library = in_library_status_map.get(target_key, False)
+                    
+                    if not is_in_library:
+                        missing_count += 1
+            
+            collection['missing_count'] = missing_count
+            collection['health_status'] = 'has_missing' if missing_count > 0 else 'ok'
+            
+            # 清理临时字段
+            if '_parsed_media_info' in collection:
+                del collection['_parsed_media_info']
+            if 'generated_media_info_json' in collection:
+                del collection['generated_media_info_json']
+
+            # --- 时区转换逻辑 (保持不变) ---
+            key_for_timestamp = 'last_synced_at' 
             if key_for_timestamp in collection and collection[key_for_timestamp]:
                 timestamp_val = collection[key_for_timestamp]
                 utc_dt = None
-
-                # 数据库字段是 "timestamp with time zone"，psycopg2 会将其转为带时区的 datetime 对象
                 if isinstance(timestamp_val, datetime):
                     utc_dt = timestamp_val
-                
-                # 为防止意外，也兼容一下字符串格式
                 elif isinstance(timestamp_val, str):
                     try:
                         ts_str_clean = timestamp_val.split('.')[0]
                         naive_dt = datetime.strptime(ts_str_clean, '%Y-%m-%d %H:%M:%S')
                         utc_dt = pytz.utc.localize(naive_dt)
-                    except ValueError:
-                        logger.warning(f"无法将字符串 '{timestamp_val}' 解析为时间，跳过转换。")
-
-                # 如果成功获取到 UTC 时间对象，则进行转换
+                    except ValueError: pass
                 if utc_dt:
                     beijing_dt = utc_dt.astimezone(beijing_tz)
                     collection[key_for_timestamp] = beijing_dt.strftime('%Y-%m-%d %H:%M:%S')
@@ -342,15 +412,16 @@ def api_get_custom_collection_status(collection_id):
         # ==============================================================================
 
         final_media_list = []
+        dynamic_missing_count = 0
+
         for item_def in definition_list:
+            # ... (获取 tmdb_id, media_type, season_number, source_title 的逻辑保持不变) ...
             tmdb_id = item_def.get('tmdb_id')
-            
             if tmdb_id and str(tmdb_id).lower() != 'none':
                 tmdb_id_str = str(tmdb_id)
             else:
                 tmdb_id_str = None
             
-            # ★★★ 严格使用 item_def 中的类型 ★★★
             media_type = item_def.get('media_type') or 'Movie'
             season_number = item_def.get('season')
             source_title = item_def.get('title') 
@@ -368,6 +439,7 @@ def api_get_custom_collection_status(collection_id):
                     "media_type": media_type,
                     "season": season_number
                 })
+                dynamic_missing_count += 1 # 未识别也算缺失
                 continue
 
             # ★★★ 使用组合键查找 ★★★
@@ -388,6 +460,11 @@ def api_get_custom_collection_status(collection_id):
                 elif db_record.get('subscription_status') == 'PENDING_RELEASE':
                     status = "unreleased"
                 
+                # ★★★ 统计缺失项 (missing 或 unreleased 通常都算在健康检查关注范围内，视需求而定) ★★★
+                # 这里我们定义：只要不是 in_library 或 ignored，都算作广义的“缺失/待处理”
+                if status not in ('in_library', 'ignored'):
+                    dynamic_missing_count += 1
+
                 r_date = db_record.get('release_date')
                 if isinstance(r_date, datetime):
                     r_date_str = r_date.strftime('%Y-%m-%d')
@@ -398,7 +475,7 @@ def api_get_custom_collection_status(collection_id):
                     "tmdb_id": tmdb_id_str,
                     "emby_id": db_record.get('emby_item_id'),
                     "title": db_record.get('title') or db_record.get('original_title'),
-                    "original_title": source_title, # 如果榜单没存标题，这里可能是 None，前端会处理
+                    "original_title": source_title, 
                     "release_date": r_date_str,
                     "poster_path": db_record.get('poster_path'),
                     "status": status,
@@ -406,7 +483,7 @@ def api_get_custom_collection_status(collection_id):
                     "season": season_number
                 })
             else:
-                # 情况 3: 确实没查到 (且实时补全也失败了)
+                # 情况 3: 确实没查到
                 final_media_list.append({
                     "tmdb_id": tmdb_id_str,
                     "emby_id": None,
@@ -418,9 +495,15 @@ def api_get_custom_collection_status(collection_id):
                     "media_type": media_type,
                     "season": season_number
                 })
+                dynamic_missing_count += 1
         
         collection['media_items'] = final_media_list
         collection.pop('generated_media_info_json', None)
+        
+        # ★★★ 核心修改：覆盖数据库中的静态值，返回动态计算结果 ★★★
+        collection['missing_count'] = dynamic_missing_count
+        collection['health_status'] = 'has_missing' if dynamic_missing_count > 0 else 'ok'
+
         return jsonify(collection)
             
     except Exception as e:

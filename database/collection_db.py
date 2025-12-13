@@ -206,22 +206,27 @@ def update_custom_collections_order(ordered_ids: List[int]) -> bool:
 def update_custom_collection_sync_results(collection_id: int, update_data: Dict[str, Any]):
     """ 根据同步和计算结果，更新自定义合集的媒体成员列表和统计数据。"""
     
-    # ★★★ 核心修正：确保 last_synced_at 只被赋值一次 ★★★
-    # 1. 制作一个 update_data 的副本，以防修改原始字典
+    # 1. 制作一个 update_data 的副本
     data_to_update = update_data.copy()
     
-    # 2. 如果调用者不小心传入了 last_synced_at，我们把它从字典里移除
-    if 'last_synced_at' in data_to_update:
-        del data_to_update['last_synced_at']
+    # 2. 移除不需要写入数据库的动态计算字段
+    # ★★★ 核心修改：不再持久化存储缺失数量和健康状态，改为读取时动态计算 ★★★
+    keys_to_remove = ['last_synced_at', 'missing_count', 'health_status']
+    for key in keys_to_remove:
+        if key in data_to_update:
+            del data_to_update[key]
 
-    # 3. 现在可以安全地构建 SQL 了
-    set_clauses = [f"{key} = %s" for key in data_to_update.keys()]
-    values = list(data_to_update.values())
+    # 3. 构建 SQL
+    if not data_to_update:
+        # 如果没有要更新的字段（例如只传了被移除的字段），仅更新时间戳
+        sql = "UPDATE custom_collections SET last_synced_at = NOW() WHERE id = %s"
+        values = [collection_id]
+    else:
+        set_clauses = [f"{key} = %s" for key in data_to_update.keys()]
+        values = list(data_to_update.values())
+        sql = f"UPDATE custom_collections SET {', '.join(set_clauses)}, last_synced_at = NOW() WHERE id = %s"
+        values.append(collection_id)
     
-    # 4. 总是由这个函数来负责更新时间戳
-    sql = f"UPDATE custom_collections SET {', '.join(set_clauses)}, last_synced_at = NOW() WHERE id = %s"
-    
-    values.append(collection_id)
     try:
         with get_db_connection() as conn:
             cursor = conn.cursor()
@@ -468,106 +473,6 @@ def apply_and_persist_media_correction(collection_id: int, old_tmdb_id: Optional
         raise
     finally:
         if conn: conn.close()
-
-def match_and_update_list_collections_on_item_add(new_item_tmdb_id: str, new_item_emby_id: str, new_item_name: str) -> List[Dict[str, Any]]:
-    """
-    【V4 - 统计逻辑终极修复版】
-    当新媒体入库时，查找并更新所有匹配的'list'类型合集。
-    - 修复了 in_library_count 统计错误的致命 Bug。
-    """
-    collections_to_update_in_emby = []
-    
-    try:
-        with get_db_connection() as conn:
-            with conn.cursor() as cursor:
-                
-                # 步骤 1: 查找匹配的合集 (这部分逻辑是正确的)
-                sql_find = """
-                    SELECT * FROM custom_collections 
-                    WHERE type = 'list' 
-                      AND status = 'active' 
-                      AND emby_collection_id IS NOT NULL
-                      AND generated_media_info_json @> %s::jsonb
-                """
-                search_payload = json.dumps([{'tmdb_id': str(new_item_tmdb_id)}])
-                cursor.execute(sql_find, (search_payload,))
-                candidate_collections = cursor.fetchall()
-
-                if not candidate_collections:
-                    return []
-
-                for collection_row in candidate_collections:
-                    collection = dict(collection_row)
-                    collection_id = collection['id']
-                    collection_name = collection['name']
-                    
-                    try:
-                        # ★★★ 核心重构开始 ★★★
-                        
-                        # 步骤 2: 获取合集定义中的所有 TMDB ID
-                        media_list_from_db = collection.get('generated_media_info_json') or []
-                        all_tmdb_ids_in_collection = [str(item.get('tmdb_id')) for item in media_list_from_db if item.get('tmdb_id')]
-
-                        if not all_tmdb_ids_in_collection:
-                            continue
-
-                        # 步骤 3: 批量查询这些 ID 的最新在库状态
-                        in_library_status_map = media_db.get_in_library_status_for_tmdb_ids(all_tmdb_ids_in_collection)
-
-                        # 步骤 4: 彻底重建 media_list
-                        rebuilt_media_list = []
-                        new_in_library_count = 0
-                        for item in media_list_from_db:
-                            tmdb_id = str(item.get('tmdb_id'))
-                            if not tmdb_id: continue
-                            
-                            is_in_library = in_library_status_map.get(tmdb_id, False)
-                            
-                            # 更新状态
-                            item['status'] = 'in_library' if is_in_library else 'missing'
-                            
-                            # 如果是刚刚入库的这一项，把 emby_id 也补上
-                            if tmdb_id == str(new_item_tmdb_id):
-                                item['emby_id'] = new_item_emby_id
-                            
-                            rebuilt_media_list.append(item)
-                            
-                            if is_in_library:
-                                new_in_library_count += 1
-
-                        # 步骤 5: 计算全新的、绝对准确的统计数据
-                        new_missing_count = len(rebuilt_media_list) - new_in_library_count
-                        new_health_status = 'has_missing' if new_missing_count > 0 else 'ok'
-                        
-                        # 步骤 6: 将完美的数据写回数据库
-                        new_json_data = json.dumps(rebuilt_media_list, ensure_ascii=False, default=str)
-                        
-                        cursor.execute("""
-                            UPDATE custom_collections
-                            SET generated_media_info_json = %s,
-                                in_library_count = %s,
-                                missing_count = %s,
-                                health_status = %s
-                            WHERE id = %s
-                        """, (new_json_data, new_in_library_count, new_missing_count, new_health_status, collection_id))
-                        
-                        logger.info(f"  ➜ 已全量刷新榜单合集《{collection_name}》的缓存，当前入库/缺失: {new_in_library_count}/{new_missing_count}。")
-
-                        collections_to_update_in_emby.append({
-                            'id': collection_id,
-                            'emby_collection_id': collection['emby_collection_id'],
-                            'name': collection_name
-                        })
-
-                    except Exception as e_inner:
-                        logger.error(f"  ➜ 处理合集《{collection_name}》时发生内部错误: {e_inner}", exc_info=True)
-                        continue
-
-        return collections_to_update_in_emby
-
-    except psycopg2.Error as e_db:
-        logger.error(f"  ➜ 匹配和更新榜单合集时发生数据库错误: {e_db}", exc_info=True)
-        raise
 
 def append_item_to_filter_collection_db(collection_id: int, new_item_tmdb_id: str, new_item_emby_id: str, collection_name: str, item_name: str) -> bool:
     """

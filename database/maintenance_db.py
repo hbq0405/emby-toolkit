@@ -209,14 +209,92 @@ def get_stats_subscription():
 
                 # 5. 自建合集统计
                 cursor.execute("""
-                    SELECT 
-                        COUNT(*) as total,
-                        COUNT(*) FILTER (WHERE missing_count > 0) as with_missing,
-                        COALESCE(SUM(missing_count), 0) as missing_items
-                    FROM custom_collections
+                    SELECT id, type, generated_media_info_json 
+                    FROM custom_collections 
                     WHERE status = 'active'
                 """)
-                custom_col_row = cursor.fetchone()
+                active_collections = cursor.fetchall()
+                
+                custom_total = len(active_collections)
+                custom_with_missing = 0
+                custom_missing_items_set = set() # 存储 "{id}_{type}" 字符串去重
+
+                # 5.2 收集所有需要检查的 ID (SQL查询只需要ID)
+                all_tmdb_ids_to_check = set()
+                for col in active_collections:
+                    if col['type'] not in ['list', 'ai_recommendation', 'ai_recommendation_global']:
+                        continue
+                        
+                    media_list = col['generated_media_info_json']
+                    if not media_list: continue
+                    
+                    if isinstance(media_list, str):
+                        try: media_list = json.loads(media_list)
+                        except: continue
+                    
+                    if isinstance(media_list, list):
+                        for item in media_list:
+                            tid = None
+                            if isinstance(item, dict): tid = item.get('tmdb_id')
+                            elif isinstance(item, str): tid = item
+                            
+                            if tid: all_tmdb_ids_to_check.add(str(tid))
+
+                # 5.3 批量查询在库状态 (★ 必须查 item_type ★)
+                in_library_status_map = {}
+                if all_tmdb_ids_to_check:
+                    cursor.execute("""
+                        SELECT tmdb_id, item_type, in_library 
+                        FROM media_metadata 
+                        WHERE tmdb_id = ANY(%s)
+                    """, (list(all_tmdb_ids_to_check),))
+                    
+                    for row in cursor.fetchall():
+                        # ★ 构造组合键：12345_Movie
+                        key = f"{row['tmdb_id']}_{row['item_type']}"
+                        in_library_status_map[key] = row['in_library']
+
+                # 5.4 计算缺失 (★ 精确比对 ★)
+                for col in active_collections:
+                    if col['type'] not in ['list', 'ai_recommendation', 'ai_recommendation_global']:
+                        continue
+                        
+                    media_list = col['generated_media_info_json']
+                    if not media_list: continue
+                    if isinstance(media_list, str):
+                        try: media_list = json.loads(media_list)
+                        except: continue
+                    
+                    has_missing_in_this_col = False
+                    
+                    for item in media_list:
+                        tid = None
+                        media_type = 'Movie' # 默认类型
+
+                        if isinstance(item, dict): 
+                            tid = item.get('tmdb_id')
+                            media_type = item.get('media_type') or 'Movie'
+                        elif isinstance(item, str): 
+                            tid = item
+                        
+                        if not tid or str(tid).lower() == 'none': 
+                            # 没有ID算缺失
+                            has_missing_in_this_col = True
+                            continue
+                        
+                        # ★ 构造目标键：12345_Series
+                        target_key = f"{tid}_{media_type}"
+                        
+                        # 查字典：必须 ID 和 类型 都匹配，且 in_library 为 True 才算在库
+                        is_in_lib = in_library_status_map.get(target_key, False)
+                        
+                        if not is_in_lib:
+                            has_missing_in_this_col = True
+                            # 加入缺失集合去重 (带类型)
+                            custom_missing_items_set.add(target_key)
+                    
+                    if has_missing_in_this_col:
+                        custom_with_missing += 1
 
                 return {
                     'watchlist_active': watchlist_row['watching'],
@@ -232,9 +310,9 @@ def get_stats_subscription():
                     'native_collections_with_missing': native_col_row['with_missing'],
                     'native_collections_missing_items': native_col_row['missing_items'],
                     
-                    'custom_collections_total': custom_col_row['total'],
-                    'custom_collections_with_missing': custom_col_row['with_missing'],
-                    'custom_collections_missing_items': custom_col_row['missing_items']
+                    'custom_collections_total': custom_total,
+                    'custom_collections_with_missing': custom_with_missing,
+                    'custom_collections_missing_items': len(custom_missing_items_set)
                 }
     except Exception as e:
         logger.error(f"获取订阅统计失败: {e}", exc_info=True)

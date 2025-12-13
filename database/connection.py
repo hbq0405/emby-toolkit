@@ -132,10 +132,8 @@ def init_db():
                         allowed_user_ids JSONB,
                         last_synced_at TIMESTAMP WITH TIME ZONE,
                         created_at TIMESTAMP WITH TIME ZONE DEFAULT NOW(),
-                        health_status TEXT,
                         item_type TEXT,
                         in_library_count INTEGER DEFAULT 0,
-                        missing_count INTEGER DEFAULT 0,
                         generated_media_info_json JSONB,
                         poster_path TEXT,
                         sort_order INTEGER NOT NULL DEFAULT 0
@@ -611,6 +609,8 @@ def init_db():
                             'in_library_count'
                         ],
                         'custom_collections': [
+                            'missing_count',
+                            'health_status',
                             'generated_emby_ids_json' # <-- 在这里添加了废弃的列！
                         ]
                     }
