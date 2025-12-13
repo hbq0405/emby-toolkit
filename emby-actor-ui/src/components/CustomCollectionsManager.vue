@@ -438,20 +438,22 @@
           </n-form-item>
         </div>
         <!-- AI 推荐类型的表单 (个人 + 全局) -->
-        <div v-if="['ai_recommendation', 'ai_recommendation_global'].includes(currentCollection.type)">
+        <div 
+          v-if="['ai_recommendation', 'ai_recommendation_global'].includes(currentCollection.type)"
+          :key="currentCollection.type"
+        >
           
-          <!-- 个人推荐的提示 -->
+          <!-- 提示信息保持不变 -->
           <n-alert v-if="currentCollection.type === 'ai_recommendation'" type="info" show-icon style="margin-bottom: 16px;">
             AI 将分析指定用户的观看历史（收藏或高分播放），自动生成推荐片单。
           </n-alert>
 
-          <!-- 全局推荐的提示 -->
           <n-alert v-if="currentCollection.type === 'ai_recommendation_global'" type="success" show-icon style="margin-bottom: 16px;">
             <template #icon><n-icon :component="SparklesIcon" /></template>
             AI 将分析全站所有用户的共同喜好（播放次数最多的 Top 20），猜测大众可能喜欢的其他作品。
           </n-alert>
 
-          <!-- 只有个人推荐才显示用户选择框 -->
+          <!-- 目标用户选择 (仅个人推荐显示) -->
           <n-form-item v-if="currentCollection.type === 'ai_recommendation'" label="目标用户" path="definition.target_user_id">
             <n-select
               v-model:value="currentCollection.definition.target_user_id"
@@ -463,6 +465,7 @@
             />
           </n-form-item>
           
+          <!-- Prompt 输入框 -->
           <n-form-item 
             v-if="currentCollection.type === 'ai_recommendation'" 
             label="推荐倾向 (Prompt)" 
@@ -476,11 +479,43 @@
             />
           </n-form-item>
           
-          <n-form-item label="推荐数量" path="definition.limit">
-            <n-input-number v-model:value="currentCollection.definition.limit" :default-value="20" :min="5" :max="50" />
-          </n-form-item>
+          <!-- ★★★ 核心修改：使用 Grid 布局实现 1:2 排列 ★★★ -->
+          <n-grid :cols="24" :x-gap="24">
+            <!-- 左侧：推荐数量 (占 8/24 = 1/3) -->
+            <n-form-item-gi :span="8" label="推荐数量" path="definition.limit">
+              <n-input-number 
+                v-model:value="currentCollection.definition.limit" 
+                :default-value="20" 
+                :min="5" 
+                :max="50" 
+                style="width: 100%;" 
+                placeholder="数量"
+              />
+            </n-form-item-gi>
+
+            <!-- 右侧：内容排序 (占 16/24 = 2/3) -->
+            <n-form-item-gi :span="16" label="内容排序">
+              <n-input-group>
+                <n-select
+                  v-model:value="currentCollection.definition.default_sort_by"
+                  :options="sortFieldOptions"
+                  placeholder="排序字段"
+                  style="width: 60%"
+                />
+                <n-select
+                  v-model:value="currentCollection.definition.default_sort_order"
+                  :options="sortOrderOptions"
+                  placeholder="顺序"
+                  style="width: 40%"
+                />
+              </n-input-group>
+            </n-form-item-gi>
+          </n-grid>
         </div>
-        <n-form-item label="内容排序">
+        <n-form-item 
+          label="内容排序" 
+          v-if="!['ai_recommendation', 'ai_recommendation_global'].includes(currentCollection.type)"
+        >
             <n-input-group>
               <n-select
                 v-model:value="currentCollection.definition.default_sort_by"
@@ -495,7 +530,7 @@
                 style="width: 50%"
               />
             </n-input-group>
-          </n-form-item>
+        </n-form-item>
           <n-divider title-placement="left" style="margin-top: 15px;">
             附加功能 (可选)
           </n-divider>

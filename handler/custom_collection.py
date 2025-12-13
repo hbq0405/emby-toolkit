@@ -1342,6 +1342,11 @@ class RecommendationEngine:
         target_user_id = definition.get('target_user_id')
         ai_prompt = definition.get('ai_prompt')
         limit = definition.get('limit', 20)
+        
+        # 获取用户勾选的合集内容类型
+        # 如果前端没传，默认都允许
+        allowed_types = definition.get('item_type', ['Movie', 'Series'])
+        logger.info(f"  ➜ [智能推荐] 用户限制内容类型为: {allowed_types}")
 
         context_history_items = []
         watched_tmdb_ids = set()
@@ -1390,11 +1395,15 @@ class RecommendationEngine:
             vector_results = self._vector_search(
                 user_history_items=context_history_items, 
                 exclusion_ids=watched_tmdb_ids, 
-                limit=limit + 5 
+                limit=limit + 10 
             )
             
             if vector_results:
                 for v in vector_results:
+                    # ★★★ 过滤：必须是用户勾选的类型 ★★★
+                    if v['type'] not in allowed_types:
+                        continue
+                        
                     final_items_map[v['id']] = {
                         'id': v['id'],
                         'type': v['type'],
@@ -1402,7 +1411,7 @@ class RecommendationEngine:
                         'release_date': None
                     }
             else:
-                logger.warning("  ➜ [智能推荐] 向量引擎未返回任何结果 (可能是数据库无向量数据)。")
+                logger.warning("  ➜ [智能推荐] 向量引擎未返回任何结果。")
 
         # ★★★ 分支 B: 个人模式 (LLM + 向量混合) ★★★
         else:
@@ -1448,25 +1457,45 @@ class RecommendationEngine:
                                 
                                 if not title: return None
 
-                                secondary_type = 'Series' if primary_type == 'Movie' else 'Movie'
+                                # 搜索策略：如果用户只选了 Movie，就只搜 Movie，不进行反向搜索
+                                # 如果用户只选了 Series，就只搜 Series
+                                # 如果都选了，才进行跨类型搜索
+                                
+                                search_types = []
+                                if 'Movie' in allowed_types and 'Series' in allowed_types:
+                                    search_types = [primary_type, 'Series' if primary_type == 'Movie' else 'Movie']
+                                elif 'Movie' in allowed_types:
+                                    search_types = ['Movie']
+                                elif 'Series' in allowed_types:
+                                    search_types = ['Series']
+                                
+                                match_result = None
+                                
+                                # 定义辅助搜索函数
                                 def has_chinese(text):
                                     return any('\u4e00' <= char <= '\u9fff' for char in str(text))
-
                                 search_query = original_title if original_title else title
-                                if has_chinese(title):
-                                    search_query = title
+                                if has_chinese(title): search_query = title
 
-                                match_result = self.list_importer._match_title_to_tmdb(search_query, primary_type, year)
-                                if not match_result:
-                                    match_result = self.list_importer._match_title_to_tmdb(search_query, secondary_type, year)
-                                if not match_result and search_query != title:
-                                    match_result = self.list_importer._match_title_to_tmdb(title, primary_type, year)
-                                if not match_result and search_query != title:
-                                    match_result = self.list_importer._match_title_to_tmdb(title, secondary_type, year)
+                                # 遍历允许的类型进行搜索
+                                for try_type in search_types:
+                                    # 1. 搜原名/智能名
+                                    match_result = self.list_importer._match_title_to_tmdb(search_query, try_type, year)
+                                    if match_result: break
+                                    
+                                    # 2. 搜中文名 (如果不一样)
+                                    if search_query != title:
+                                        match_result = self.list_importer._match_title_to_tmdb(title, try_type, year)
+                                        if match_result: break
 
                                 if match_result:
                                     tmdb_id, matched_type, season_num = match_result
                                     tmdb_id = str(tmdb_id)
+                                    
+                                    # ★★★ 二次校验：确保匹配到的类型在允许范围内 ★★★
+                                    if matched_type not in allowed_types:
+                                        return None
+
                                     if tmdb_id in watched_tmdb_ids:
                                         return None
                                     return {
@@ -1495,11 +1524,15 @@ class RecommendationEngine:
                     vector_results = self._vector_search(
                         user_history_items=context_history_items, 
                         exclusion_ids=watched_tmdb_ids, 
-                        limit=needed + 5
+                        limit=needed + 10
                     )
                     
                     if vector_results:
                         for v in vector_results:
+                            # ★★★ 过滤：必须是用户勾选的类型 ★★★
+                            if v['type'] not in allowed_types:
+                                continue
+
                             if v['id'] not in final_items_map:
                                 final_items_map[v['id']] = {
                                     'id': v['id'],
