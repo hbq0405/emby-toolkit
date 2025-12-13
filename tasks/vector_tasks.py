@@ -45,14 +45,14 @@ def task_generate_embeddings(processor):
             logger.info(f"--- {msg} ---")
             return
 
-        logger.info(f"共发现 {total_to_process} 个媒体需要生成向量。")
+        logger.info(f"  👀 共发现 {total_to_process} 个媒体需要生成向量。")
         task_manager.update_status_from_thread(0, f"准备开始，共 {total_to_process} 个任务...")
 
         # 3. 循环处理
         while True:
             # 检查是否停止任务
             if processor.is_stop_requested(): 
-                logger.info("任务已手动停止。")
+                logger.info("  ❌ 任务已手动停止。")
                 break
 
             # 获取需要处理的项目 (分批拉取)
