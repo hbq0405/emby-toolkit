@@ -987,3 +987,34 @@ def get_user_positive_history(user_id: str, limit: int = 20) -> List[Dict[str, A
     except Exception as e:
         logger.error(f"获取用户 {user_id} 的观看历史失败: {e}")
         return []
+    
+def get_user_all_interacted_history(user_id: str) -> List[Dict[str, Any]]:
+    """
+    获取指定用户的所有交互历史（用于去重过滤）。
+    包含：已收藏、已看完、以及【看了一部分但没看完】的所有项目。
+    """
+    try:
+        with get_db_connection() as conn:
+            cursor = conn.cursor()
+            cursor.execute("""
+                SELECT m.tmdb_id
+                FROM user_media_data u
+                JOIN media_metadata m ON (u.item_id = m.tmdb_id OR m.emby_item_ids_json ? u.item_id)
+                WHERE u.user_id = %s
+                  AND (
+                      u.is_favorite = TRUE 
+                      OR u.played = TRUE 
+                      OR u.play_count > 0
+                      OR u.playback_position_ticks > 0  -- ★★★ 关键：只要有播放进度，就视为已阅
+                  )
+            """, (user_id,))
+            
+            rows = cursor.fetchall()
+            # 只需要 ID 用于过滤
+            history = [dict(row) for row in rows]
+            
+            logger.info(f"  ➜ [数据库] 为用户 {user_id} 提取到 {len(history)} 条全量交互记录(含弃坑/未完结)用于去重。")
+            return history
+    except Exception as e:
+        logger.error(f"获取用户 {user_id} 的全量交互历史失败: {e}")
+        return []

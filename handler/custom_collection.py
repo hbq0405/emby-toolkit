@@ -1204,18 +1204,21 @@ class RecommendationEngine:
         self.tmdb_api_key = tmdb_api_key
         self.list_importer = ListImporter(tmdb_api_key) # 复用搜索匹配逻辑
 
-    def _vector_search(self, user_history_items: List[Dict], limit: int = 10) -> List[Dict]:
+    # ★★★ 修改 1: 增加 exclusion_ids 参数 ★★★
+    def _vector_search(self, user_history_items: List[Dict], exclusion_ids: set = None, limit: int = 10) -> List[Dict]:
         """
         【内部方法】基于向量相似度搜索本地数据库。
-        改进版：优先使用 TMDb ID 进行精确匹配，而非不靠谱的标题匹配。
+        改进版：支持传入 exclusion_ids 进行全量去重。
         """
         logger.info("  ➜ [向量搜索] 开始加载向量数据并计算相似度...")
         
-        # 1. 提取历史记录中的 ID 集合 (用于快速查找)
+        if exclusion_ids is None:
+            exclusion_ids = set()
+
+        # 1. 提取历史记录中的 ID 集合 (用于计算画像时的内部去重)
         history_tmdb_ids = set()
         history_titles = set()
         
-        # 兼容处理：user_history_items 可能是字典列表，也可能是纯标题列表(旧逻辑)
         for item in user_history_items:
             if isinstance(item, dict):
                 if item.get('tmdb_id'):
@@ -1270,15 +1273,12 @@ class RecommendationEngine:
             user_vectors = []
             matched_count = 0
             
-            # ★★★ 改进的核心：优先匹配 ID ★★★
             for idx, db_tmdb_id in enumerate(ids):
                 is_match = False
-                
                 # A. ID 精确匹配
                 if db_tmdb_id in history_tmdb_ids:
                     is_match = True
-                
-                # B. 标题兜底匹配 (如果 ID 没对上，再试标题)
+                # B. 标题兜底匹配
                 elif titles[idx] and any(h_t in titles[idx] for h_t in history_titles):
                     is_match = True
                 
@@ -1288,7 +1288,6 @@ class RecommendationEngine:
             
             if not user_vectors:
                 logger.warning(f"  ➜ [向量搜索] 匹配失败：用户的 {len(user_history_items)} 条历史记录均未在本地向量库中找到对应数据。")
-                logger.warning(f"    (提示：请检查这些影片是否已入库，且是否已运行'生成媒体向量'任务)")
                 return []
             
             logger.info(f"  ➜ [向量搜索] 成功匹配到 {matched_count} 部历史影片的向量，正在计算推荐...")
@@ -1310,12 +1309,18 @@ class RecommendationEngine:
                 if score < 0.45: break 
                 if score > 0.999: continue # 排除自己
                 
-                # 排除已看过的 (ID 或 标题)
-                if ids[idx] in history_tmdb_ids: continue
+                current_id = ids[idx]
+                
+                # ★★★ 核心修复：检查 exclusion_ids (全量已观看列表) ★★★
+                if current_id in exclusion_ids:
+                    continue
+
+                # 排除用于生成画像的那些 (双重保险)
+                if current_id in history_tmdb_ids: continue
                 if any(h_t in titles[idx] for h_t in history_titles): continue
 
                 results.append({
-                    'id': ids[idx],
+                    'id': current_id,
                     'type': types[idx],
                     'title': titles[idx],
                     'score': score
@@ -1341,16 +1346,31 @@ class RecommendationEngine:
             logger.error("  ➜ [智能推荐] 未指定目标用户，无法生成推荐。")
             return []
 
-        # 1. 获取用户历史 (现在直接返回包含 tmdb_id 的字典列表)
-        history_items = media_db.get_user_positive_history(target_user_id, limit=20)
+        # ★★★ 修改 2: 分别获取“上下文历史”和“全量过滤历史” ★★★
         
-        if not history_items:
+        # 1. 获取用于 LLM 上下文和向量画像计算的“最近历史” (保持 limit=20)
+        context_history_items = media_db.get_user_positive_history(target_user_id, limit=20)
+        
+        if not context_history_items:
             logger.warning(f"  ➜ [智能推荐] 用户 {target_user_id} 没有足够的观看历史。")
             return []
 
-        # 准备给 LLM 看的纯文本标题列表
+        # 2. 获取用于过滤的“全量历史” (设置一个很大的 limit，例如 5000)
+        # 这样才能保证很久以前看过的片子也能被过滤掉
+        full_interaction_items = media_db.get_user_all_interacted_history(target_user_id)
+        
+        # 构建全量已观看 ID 集合
+        watched_tmdb_ids = set()
+        for h_item in full_interaction_items:
+            tmdb_id = h_item.get('tmdb_id')
+            if tmdb_id:
+                watched_tmdb_ids.add(str(tmdb_id))
+        
+        logger.info(f"  ➜ [智能推荐] 已加载全量交互记录，共 {len(watched_tmdb_ids)} 部作品（含未看完）将从推荐中排除。")
+
+        # 准备给 LLM 看的纯文本标题列表 (使用 context_history_items)
         history_titles_for_llm = []
-        for item in history_items:
+        for item in context_history_items:
             title = item.get('title')
             year = item.get('release_year')
             if year:
@@ -1366,7 +1386,7 @@ class RecommendationEngine:
         logger.info(f"  ➜ [智能推荐] 正在调用 LLM 进行推理...")
         try:
             translator = AITranslator(config_manager.APP_CONFIG)
-            request_limit = min(int(limit * 1.5), 50) 
+            request_limit = min(int(limit * 1.5), 20) 
             instruction_with_limit = f"{ai_prompt or ''} (Please recommend at least {request_limit} items)"
             
             # 传给 LLM 纯文本标题
@@ -1378,11 +1398,10 @@ class RecommendationEngine:
                 with ThreadPoolExecutor(max_workers=5) as executor:
                     def resolve_item(rec_item):
                         try:
-                            # 1. 数据标准化
+                            # ... (解析逻辑保持不变) ...
                             title = ""
                             original_title = ""
                             year = None
-                            # 默认先信 AI 的，AI 没说就默认为 Movie
                             primary_type = 'Movie' 
                             
                             if isinstance(rec_item, dict):
@@ -1396,53 +1415,41 @@ class RecommendationEngine:
                             
                             if not title: return None
 
-                            # 定义反向类型（如果这次搜Movie失败，下次就搜Series）
                             secondary_type = 'Series' if primary_type == 'Movie' else 'Movie'
-
-                            # 简单的中文判断
                             def has_chinese(text):
                                 return any('\u4e00' <= char <= '\u9fff' for char in str(text))
 
-                            # 2. 确定搜索关键词
-                            # 默认用原名搜
                             search_query = original_title if original_title else title
-                            
-                            # 特殊优化：如果是国产剧（标题含中文），强行用中文名搜，准确率最高
                             if has_chinese(title):
                                 search_query = title
 
-                            # --- 核心修改：四重搜索策略 ---
-                            
-                            # 第 1 试：用【首选类型】+【首选关键词】搜
+                            # 四重搜索策略 (保持不变)
                             match_result = self.list_importer._match_title_to_tmdb(search_query, primary_type, year)
-                            
-                            # 第 2 试：如果没搜到，尝试【反向类型】+【首选关键词】
-                            # (解决 AI 把电视剧标成电影，或者没标类型的情况)
                             if not match_result:
-                                # logger.debug(f"  ➜ [智能推荐] '{search_query}' 按 {primary_type} 未找到，尝试按 {secondary_type} 搜索...")
                                 match_result = self.list_importer._match_title_to_tmdb(search_query, secondary_type, year)
-
-                            # 第 3 试：如果还没搜到，且关键词不是中文标题，尝试用【中文标题】+【首选类型】搜
-                            # (解决英文原名搜不到的情况)
                             if not match_result and search_query != title:
                                 match_result = self.list_importer._match_title_to_tmdb(title, primary_type, year)
-
-                            # 第 4 试：最后试一次【中文标题】+【反向类型】
                             if not match_result and search_query != title:
                                 match_result = self.list_importer._match_title_to_tmdb(title, secondary_type, year)
 
                             # --- 结果处理 ---
                             if match_result:
                                 tmdb_id, matched_type, season_num = match_result
+                                tmdb_id = str(tmdb_id)
+                                
+                                # ★★★ 这里的过滤现在使用的是全量 watched_tmdb_ids ★★★
+                                if tmdb_id in watched_tmdb_ids:
+                                    logger.info(f"  ➜ [智能推荐] LLM 推荐作品 '{title}' (tmdb_id: {tmdb_id}) 已观看，已过滤。")
+                                    return None
                                 return {
                                     'id': tmdb_id,
-                                    'type': matched_type, # 注意：这里返回的是实际匹配到的类型
+                                    'type': matched_type,
                                     'title': title, 
                                     'season': season_num,
                                     'release_date': None 
                                 }
                             else:
-                                logger.debug(f"  ➜ [智能推荐] 未能找到 '{title}' (搜: {search_query}) 的 TMDb ID (已尝试电影/剧集跨类型搜索)。")
+                                logger.debug(f"  ➜ [智能推荐] 未能找到 '{title}' (搜: {search_query}) 的 TMDb ID。")
                                 return None
                         except Exception as e:
                             logger.error(f"  ➜ [智能推荐] 处理单项 '{rec_item}' 时出错: {e}")
@@ -1464,13 +1471,17 @@ class RecommendationEngine:
         if len(final_items_map) < limit:
             try:
                 needed = limit - len(final_items_map)
-                # ★★★ 关键：直接把包含 tmdb_id 的字典列表传给向量搜索 ★★★
-                # (前提是你已经应用了我上一条回复中对 _vector_search 的修改)
-                vector_results = self._vector_search(history_items, limit=needed + 5)
+                # ★★★ 修改 3: 传入 context_history_items 用于计算画像，传入 watched_tmdb_ids 用于过滤 ★★★
+                vector_results = self._vector_search(
+                    user_history_items=context_history_items, 
+                    exclusion_ids=watched_tmdb_ids, 
+                    limit=needed + 5
+                )
                 
                 if vector_results:
                     logger.info(f"  ➜ [智能推荐] 启用向量引擎补充了 {len(vector_results)} 部相似影片。")
                     for v in vector_results:
+                        # 这里的 id 已经在 _vector_search 内部被 exclusion_ids 过滤过了
                         if v['id'] not in final_items_map:
                             final_items_map[v['id']] = {
                                 'id': v['id'],

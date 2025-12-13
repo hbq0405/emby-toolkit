@@ -654,7 +654,7 @@ class AITranslator:
             
         system_prompt = """
 你是一个精通中外影视的资深推荐专家。
-请根据用户的观影历史，推荐 20 到 30 部高质量的电影或剧集。
+请根据用户的观影历史，推荐 10 到 20 部高质量的电影或剧集。
 
 **【核心铁律 - 违反会导致系统崩溃】**
 1. **标题必须是中文**：`title` 字段**必须**是简体中文。
@@ -697,7 +697,7 @@ class AITranslator:
                         {"role": "user", "content": user_content}
                     ],
                     response_format={"type": "json_object"}, 
-                    temperature=0.5 # 稍微降低温度，让它更听话，减少幻觉
+                    temperature=0.6 # 稍微降低温度，让它更听话，减少幻觉
                 )
                 response_text = resp.choices[0].message.content
 
