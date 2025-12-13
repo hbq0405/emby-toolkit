@@ -12,6 +12,7 @@ logger = logging.getLogger(__name__)
 def task_generate_embeddings(processor):
     """
     后台任务：为库中缺少向量的媒体生成 Embedding (自动循环直到完成)。
+    条件：in_library = TRUE 且 item_type 为 Movie/Series
     """
     task_name = "生成媒体向量 (Embedding)"
     logger.info(f"--- 开始执行 '{task_name}' ---")
@@ -20,16 +21,41 @@ def task_generate_embeddings(processor):
         # 1. 初始化 AI (使用全局配置)
         translator = AITranslator(config_manager.APP_CONFIG)
         
-        total_processed_count = 0
-        BATCH_SIZE = 50  # 每批处理 50 个，处理完一批提交一次数据库
+        BATCH_SIZE = 50  # 每批处理 50 个
+        total_processed_count = 0 # 本次任务累计处理数
         
+        # 2. 预先统计需要处理的总数，用于计算进度
+        total_to_process = 0
+        with connection.get_db_connection() as conn:
+            with conn.cursor() as cursor:
+                cursor.execute("""
+                    SELECT COUNT(*) 
+                    FROM media_metadata 
+                    WHERE overview IS NOT NULL 
+                      AND overview != '' 
+                      AND overview_embedding IS NULL
+                      AND item_type IN ('Movie', 'Series')
+                      AND in_library = TRUE
+                """)
+                total_to_process = cursor.fetchone()['count']
+
+        if total_to_process == 0:
+            msg = "所有在库媒体均已拥有向量，无需处理。"
+            task_manager.update_status_from_thread(100, msg)
+            logger.info(f"--- {msg} ---")
+            return
+
+        logger.info(f"共发现 {total_to_process} 个媒体需要生成向量。")
+        task_manager.update_status_from_thread(0, f"准备开始，共 {total_to_process} 个任务...")
+
+        # 3. 循环处理
         while True:
             # 检查是否停止任务
             if processor.is_stop_requested(): 
                 logger.info("任务已手动停止。")
                 break
 
-            # 2. 获取需要处理的项目 (分批拉取)
+            # 获取需要处理的项目 (分批拉取)
             items_to_process = []
             with connection.get_db_connection() as conn:
                 cursor = conn.cursor()
@@ -39,8 +65,8 @@ def task_generate_embeddings(processor):
                     WHERE overview IS NOT NULL 
                       AND overview != '' 
                       AND overview_embedding IS NULL
-                      -- ★★★★★ 核心修改：只处理电影和剧集 ★★★★★
                       AND item_type IN ('Movie', 'Series')
+                      AND in_library = TRUE
                     LIMIT {BATCH_SIZE}
                 """)
                 items_to_process = cursor.fetchall()
@@ -51,7 +77,7 @@ def task_generate_embeddings(processor):
 
             logger.info(f"  ➜ 本批次获取 {len(items_to_process)} 个项目，开始生成向量...")
             
-            # 3. 处理当前批次
+            # 处理当前批次
             for i, item in enumerate(items_to_process):
                 if processor.is_stop_requested(): break
                 
@@ -73,20 +99,28 @@ def task_generate_embeddings(processor):
                         conn.commit()
                     total_processed_count += 1
                 else:
-                    # 如果生成失败（比如文本太长或API报错），也要标记一下避免死循环
-                    # 这里我们简单策略：暂时跳过，或者你可以记录一个 failed_flag
-                    logger.warning(f"  -> 项目 {tmdb_id} 向量生成失败，跳过。")
+                    # 如果生成失败，记录日志，但为了防止死循环，建议标记或暂时跳过
+                    # 这里简单处理：仅记录日志，下次循环可能还会取到它（如果一直失败可能会卡住，建议后续增加 failed_count 字段）
+                    logger.warning(f"  -> 项目 {tmdb_id} 向量生成失败。")
                 
+                # 计算并更新进度条
+                # 进度 = (已处理 / 总需处理) * 100
+                # 注意：total_processed_count 是本次运行处理的，total_to_process 是本次运行开始前统计的待处理总数
+                if total_to_process > 0:
+                    progress_percent = int((total_processed_count / total_to_process) * 100)
+                    # 限制最大 99，直到完全结束
+                    progress_percent = min(progress_percent, 99)
+                    
+                    task_manager.update_status_from_thread(
+                        progress_percent, 
+                        f"正在生成向量... ({total_processed_count}/{total_to_process})"
+                    )
+
                 # 稍微睡一下，避免 QPS 爆炸
                 time.sleep(0.1)
 
-            # 更新任务进度条 (显示已处理总数)
-            task_manager.update_status_from_thread(50, f"正在全库扫描... 已生成 {total_processed_count} 个向量")
-
+        # 4. 任务结束
         final_msg = f"向量生成任务结束。本次共新增 {total_processed_count} 个向量。"
-        if total_processed_count == 0:
-            final_msg = "所有媒体均已拥有向量，无需处理。"
-            
         task_manager.update_status_from_thread(100, final_msg)
         logger.info(f"--- {final_msg} ---")
 
