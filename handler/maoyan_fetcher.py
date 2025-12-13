@@ -130,7 +130,13 @@ def match_titles_to_tmdb(titles: List[Dict], item_type: str, tmdb_api_key: str) 
         
         # 准备一个基础对象，包含原始标题
         # ★★★ 核心修改：默认 id 为 None，但保留 title ★★★
-        current_item = {'id': None, 'type': item_type, 'title': title}
+        current_item = {
+            'id': None, 
+            'type': item_type, 
+            'title': title,
+            'release_date': None, 
+            'year': None          
+        }
         
         if item_type == 'Movie':
             logger.info(f"正在为 Movie '{title}' 搜索TMDb匹配...")
@@ -139,6 +145,11 @@ def match_titles_to_tmdb(titles: List[Dict], item_type: str, tmdb_api_key: str) 
                 best_match = results[0]
                 tmdb_id = str(best_match.get('id'))
                 match_name = best_match.get('title')
+                # 获取日期信息
+                date_str = best_match.get('release_date')
+                current_item['release_date'] = date_str
+                if date_str and len(date_str) >= 4:
+                    current_item['year'] = date_str[:4]
                 logger.info(f"  ➜ 匹配成功: {match_name} (ID: {tmdb_id})")
                 current_item['id'] = tmdb_id
             else:
@@ -178,7 +189,10 @@ def match_titles_to_tmdb(titles: List[Dict], item_type: str, tmdb_api_key: str) 
                 logger.warning(f"  ➜ 未找到精确匹配，【回退使用】最相关的结果: {series_result.get('name')} (ID: {series_result.get('id')})")
             
             current_item['id'] = str(series_result.get('id'))
-            
+            date_str = series_result.get('first_air_date')
+            current_item['release_date'] = date_str
+            if date_str and len(date_str) >= 4:
+                current_item['year'] = date_str[:4]
         # 无论是否匹配成功，都加入列表
         matched_items.append(current_item)
             
