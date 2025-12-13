@@ -623,27 +623,41 @@ class ListImporter:
             
         if not urls: return [], 'empty'
         
-        all_items = []
+        # ★★★ 修改 1: 改为列表的列表，暂存每个源的数据 ★★★
+        collected_lists = [] 
         last_source_type = 'mixed'
         
-        # 循环调用旧逻辑
         total_urls = len(urls)
         for i, url in enumerate(urls):
-            # 构造临时定义，只包含单个 URL
             temp_def = definition.copy()
             temp_def['url'] = url
             
-            # 调用原逻辑
+            # 获取单个榜单数据
             items, source_type = self._process_single_url(url, temp_def)
-            all_items.extend(items)
+            
+            # 存入暂存区
+            collected_lists.append(items)
             last_source_type = source_type
             
-            # ★★★ 新增：多榜单间的防封控休眠 ★★★
-            # 如果当前是猫眼链接，且不是列表中的最后一个，则强制休眠
+            # 防封控休眠
             if isinstance(url, str) and url.startswith('maoyan://'):
                 if i < total_urls - 1:
                     logger.info(f"  ➜ [防封控] 单个猫眼榜单采集完毕，为安全起见，强制休眠 10 秒后再采集下一个...")
                     time.sleep(10)
+        
+        # ★★★ 修改 2: 执行“雨露均沾” (Round-Robin) 合并算法 ★★★
+        all_items = []
+        if collected_lists:
+            # 找出最长的那个榜单的长度
+            max_length = max(len(l) for l in collected_lists) if collected_lists else 0
+            
+            # 轮询提取：第1轮取所有榜单的第1个，第2轮取所有榜单的第2个...
+            for i in range(max_length):
+                for sublist in collected_lists:
+                    if i < len(sublist):
+                        all_items.append(sublist[i])
+            
+            logger.info(f"  ➜ 已将 {len(collected_lists)} 个榜单源交叉合并，总计 {len(all_items)} 个候选项。")
             
         # 统一去重
         unique_items = []
@@ -684,8 +698,8 @@ class ListImporter:
                         "id": str(item.get('id')),
                         "title": item.get('title'),
                         "type": item.get('type'),
-                        "year": item.get('year'),                 # <--- 别漏了
-                        "release_date": item.get('release_date')  # <--- 核心！别漏了
+                        "year": item.get('year'),                 
+                        "release_date": item.get('release_date')  
                     })
                 
                 # 3. 调用 AI 过滤

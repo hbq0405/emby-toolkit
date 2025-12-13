@@ -177,7 +177,7 @@
                           >
                             <template #prefix><n-icon :component="LinkIcon" /></template>
                           </n-input>
-                          <n-button v-if="index === 0" type="primary" ghost @click="openDiscoverHelper">
+                          <n-button type="primary" ghost @click="openDiscoverHelper(index)">
                             <template #icon><n-icon :component="SearchIcon" /></template>
                             TMDb 探索
                           </n-button>
@@ -2057,8 +2057,9 @@ const fetchTmdbCountries = async () => {
     isLoadingTmdbCountries.value = false;
   }
 };
-
-const openDiscoverHelper = () => {
+const editingUrlIndex = ref(0);const openDiscoverHelper = (index = 0) => {
+  editingUrlIndex.value = index; 
+  
   discoverParams.value = getInitialDiscoverParams();
   selectedCompanies.value = [];
   selectedActors.value = [];
@@ -2069,15 +2070,32 @@ const openDiscoverHelper = () => {
   actorOptions.value = [];
   directorSearchText.value = '';
   directorOptions.value = [];
+  
   showDiscoverHelper.value = true;
 };
 
 const confirmDiscoverUrl = () => {
-  currentCollection.value.definition.url = generatedDiscoverUrl.value;
+  const newUrl = generatedDiscoverUrl.value;
+  
+  // 1. 更新 UI 绑定的数组 (customUrlList)
+  // 这样页面上的输入框会立即变更为生成的 URL
+  if (customUrlList.value[editingUrlIndex.value]) {
+    customUrlList.value[editingUrlIndex.value].value = newUrl;
+  } else {
+    // 防御性代码：如果索引越界（极少情况），追加一行
+    customUrlList.value.push({ value: newUrl });
+  }
+
+  // 2. 自动勾选内容类型 (保持原有逻辑)
   const itemType = discoverParams.value.type === 'movie' ? 'Movie' : 'Series';
   if (!currentCollection.value.definition.item_type.includes(itemType)) {
-      currentCollection.value.definition.item_type = [itemType];
+      currentCollection.value.definition.item_type.push(itemType); // 注意：这里用 push 更好，防止覆盖已选的其他类型
   }
+  
+  // 注意：不需要手动更新 currentCollection.value.definition.url
+  // 因为我们有 watch([selectedBuiltInLists, customUrlList], ...) 监听器，
+  // 它会自动把 customUrlList 的变化同步到 definition.url 中。
+
   showDiscoverHelper.value = false;
 };
 
