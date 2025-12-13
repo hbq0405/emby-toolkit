@@ -842,6 +842,50 @@
               </n-gi>
             </n-grid>
           </n-tab-pane>
+          <!-- 6. 已忽略 (Subscribed) -->
+          <n-tab-pane name="ignored" :tab="`已忽略 (${ignoredMediaInModal.length})`">
+            <n-empty v-if="ignoredMediaInModal.length === 0" :description="`你没有订阅此合集中的任何${mediaTypeName}。`" style="margin-top: 40px;"></n-empty>
+             <n-grid v-else cols="2 s:3 m:4 l:5 xl:6" :x-gap="12" :y-gap="12" responsive="screen">
+              <n-gi v-for="(media, index) in ignoredMediaInModal" :key="index">
+                <div class="movie-card">
+                  <div class="status-badge ignored">已忽略</div>
+                  <img :src="getTmdbImageUrl(media.poster_path)" class="movie-poster" loading="lazy" />
+                  
+                  <div class="movie-info-overlay">
+                    <div class="movie-title">
+                      {{ media.title }}<span v-if="media.season"> 第 {{ media.season }} 季</span>
+                    </div>
+                    <div class="movie-year">{{ extractYear(media.release_date) || '未知年份' }}</div>
+                    <div v-if="media.original_title && media.original_title !== media.title" class="original-source-title">
+                      {{ media.original_title }}
+                    </div>
+                  </div>
+
+                  <!-- ★★★ 悬停操作层：包含搜索和修正 ★★★ -->
+                  <div class="movie-actions-overlay">
+                    <n-space>
+                      <n-tooltip trigger="hover">
+                        <template #trigger>
+                          <n-button circle color="#ffffff" text-color="#000000" @click="openTmdbSearch(media.title)">
+                            <template #icon><n-icon :component="SearchIcon" /></template>
+                          </n-button>
+                        </template>
+                        TMDb 搜索
+                      </n-tooltip>
+                      <n-tooltip trigger="hover">
+                        <template #trigger>
+                          <n-button circle type="primary" @click="handleFixMatchClick(media)">
+                            <template #icon><n-icon :component="FixIcon" /></template>
+                          </n-button>
+                        </template>
+                        修正匹配
+                      </n-tooltip>
+                    </n-space>
+                  </div>
+                </div>
+              </n-gi>
+            </n-grid>
+          </n-tab-pane>
         </n-tabs>
       </div>
     </n-modal>
@@ -1808,6 +1852,7 @@ const missingMediaInModal = computed(() => filterMediaByStatus('missing'));
 const inLibraryMediaInModal = computed(() => filterMediaByStatus('in_library'));
 const unreleasedMediaInModal = computed(() => filterMediaByStatus('unreleased'));
 const subscribedMediaInModal = computed(() => filterMediaByStatus(['subscribed', 'paused']));
+const ignoredMediaInModal = computed(() => filterMediaByStatus('ignored'));
 
 const fetchCollections = async () => {
   isLoading.value = true;
@@ -2578,6 +2623,7 @@ createRuleWatcher(() => currentCollection.value.definition.dynamic_rules);
 .status-badge.subscribed { background-color: #f2c97d; color: #000; } /* Naive UI Warning */
 .status-badge.unreleased { background-color: #8a8a8a; }
 .status-badge.unidentified { background-color: #d03050; }
+.status-badge.ignored { background-color: #69ace2; }
 
 /* 占位符样式 */
 .poster-placeholder {
