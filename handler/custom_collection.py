@@ -1396,10 +1396,9 @@ class RecommendationEngine:
         
     def generate_user_vector(self, user_id: str, limit: int = 50) -> List[Dict]:
         """
-        【新·个人推荐】千人千面模式
         只使用向量搜索，速度快，适合实时生成。
         """
-        logger.info(f"  ➜ [个人向量推荐] 正在为用户 {user_id} 实时计算...")
+        logger.debug(f"  ➜ [个人向量推荐] 正在为用户 {user_id} 实时计算...")
         
         # 1. 获取用户历史
         # 获取用户看过的、喜欢的 (用于计算口味)
@@ -1426,19 +1425,14 @@ class RecommendationEngine:
 
     def generate(self, definition: Dict) -> List[Dict[str, str]]:
         """
-        【新·全局推荐】生成器入口
-        现在这个函数主要用于后台任务生成“全局推荐”合集。
-        个人推荐不再走这个流程，而是走 API 实时调用 generate_user_vector。
+        推荐生成器。
         """
-        # 强制认为是全局模式，因为个人模式已经剥离出去了
-        # 现在的逻辑是：后台任务只负责生成“全局热榜/AI推荐”这种静态合集
-        
         ai_prompt = definition.get('ai_prompt')
         limit = definition.get('limit', 20)
         discovery_ratio = float(definition.get('ai_discovery_ratio', 0.2))
         allowed_types = definition.get('item_type', ['Movie', 'Series'])
 
-        logger.info("  ➜ [全局智能推荐] 启动 (LLM + 向量混合模式)...")
+        logger.debug("  ➜ [智能推荐] 启动 (LLM + 向量混合模式)...")
 
         # 1. 获取全站热度数据作为上下文
         context_history_items = media_db.get_global_popular_items(limit=20)
@@ -1455,7 +1449,7 @@ class RecommendationEngine:
         final_items_map = {}
 
         # 2. LLM 推荐部分 (用于发现新片)
-        logger.info(f"  ➜ [全局智能推荐] 正在调用 LLM 分析全站口味...")
+        logger.info(f"  ➜ [智能推荐] 正在调用 LLM 分析全站口味...")
         history_titles_for_llm = []
         for item in context_history_items:
             title = item.get('title')
@@ -1566,7 +1560,7 @@ class RecommendationEngine:
         # 3. 向量推荐部分 (用于填充剩余名额)
         if len(final_items_map) < limit:
             needed = limit - len(final_items_map)
-            logger.info(f"  ➜ [全局智能推荐] 启用向量引擎补充 {needed} 部相似影片...")
+            logger.info(f"  ➜ [智能推荐] 启用向量引擎补充 {needed} 部相似影片...")
             vector_results = self._vector_search(
                 user_history_items=context_history_items, 
                 exclusion_ids=watched_tmdb_ids, 
@@ -1579,5 +1573,5 @@ class RecommendationEngine:
                     }
 
         final_items = list(final_items_map.values())[:limit]
-        logger.info(f"  ➜ [全局智能推荐] 完成，生成 {len(final_items)} 部影片。")
+        logger.info(f"  ➜ [智能推荐] 完成，生成 {len(final_items)} 部影片。")
         return final_items
