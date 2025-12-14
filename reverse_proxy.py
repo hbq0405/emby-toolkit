@@ -192,22 +192,6 @@ def _get_final_item_ids_for_view(user_id, collection_info):
                     final_emby_ids = random.sample(valid_candidate_ids, count_to_pick)
                     
                     logger.info(f"  ➜ [个人推荐] 用户 {user_id}: 候选池 {len(candidate_pool)} -> 映射ID {len(all_candidate_emby_ids)} -> 有权限 {len(valid_candidate_ids)} -> 最终抽取 {len(final_emby_ids)}")
-                
-                # (可选) 顺手更新缓存表用于记录日志，这里存的是随机后的结果
-                try:
-                    with get_db_connection() as conn:
-                        with conn.cursor() as cursor:
-                            cursor.execute(
-                                """
-                                INSERT INTO user_recommendation_cache (user_id, type, items_json, created_at)
-                                VALUES (%s, 'vector', %s, NOW())
-                                ON CONFLICT (user_id, type) DO UPDATE SET items_json = EXCLUDED.items_json, created_at = NOW()
-                                """,
-                                (user_id, json.dumps(recommendations))
-                            )
-                            conn.commit()
-                except Exception as db_e:
-                    logger.error(f"  ➜ 更新推荐记录失败: {db_e}")
 
         except Exception as calc_e:
             logger.error(f"  ➜ 实时计算推荐时发生错误: {calc_e}", exc_info=True)
