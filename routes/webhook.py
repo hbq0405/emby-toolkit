@@ -341,12 +341,30 @@ def _process_batch_webhook_events():
                     item_name=parent_name,
                     episode_ids_to_add=episode_ids_to_update 
                 )
-                task_manager.submit_task(
-                    task_process_watchlist,
-                    task_name=f"刷新智能追剧: {parent_name}",
-                    processor_type='watchlist',
-                    tmdb_id=parent_id
-                )
+                series_tmdb_id = None
+                try:
+                    # 获取剧集详情以提取 TMDb ID
+                    series_details = emby.get_emby_item_details(
+                        item_id=parent_id,
+                        emby_server_url=extensions.media_processor_instance.emby_url,
+                        emby_api_key=extensions.media_processor_instance.emby_api_key,
+                        user_id=extensions.media_processor_instance.emby_user_id,
+                        fields="ProviderIds"
+                    )
+                    if series_details:
+                        series_tmdb_id = series_details.get("ProviderIds", {}).get("Tmdb")
+                except Exception as e:
+                    logger.warning(f"  ➜ 获取 '{parent_name}' 的 TMDb ID 失败: {e}")
+
+                if series_tmdb_id:
+                    task_manager.submit_task(
+                        task_process_watchlist,
+                        task_name=f"刷新智能追剧: {parent_name}",
+                        processor_type='watchlist',
+                        tmdb_id=series_tmdb_id 
+                    )
+                else:
+                    logger.warning(f"  ➜ 无法获取 '{parent_name}' 的 TMDb ID，跳过智能追剧刷新。")
             else: # 电影等其他类型
                 logger.info(f"  ➜ 媒体项 '{parent_name}' 已处理过，将触发一次轻量元数据缓存更新。")
                 task_manager.submit_task(
