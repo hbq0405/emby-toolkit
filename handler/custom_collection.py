@@ -1214,42 +1214,29 @@ class RecommendationEngine:
     模式 A (LLM): 基于大模型知识库推荐 (适合发现新片)。
     模式 B (Vector): 基于本地数据库向量相似度推荐 (适合精准匹配口味)。
     """
+    # 定义类级别的缓存变量 (所有实例共享) 
+    _cache_matrix = None
+    _cache_ids = None
+    _cache_titles = None
+    _cache_types = None
+    _cache_timestamp = 0
+    _CACHE_DURATION = 1800 
+
     def __init__(self, tmdb_api_key: str):
         self.tmdb_api_key = tmdb_api_key
         self.list_importer = ListImporter(tmdb_api_key) # 复用搜索匹配逻辑
 
-    # ★★★ 修改 1: 增加 exclusion_ids 参数 ★★★
-    def _vector_search(self, user_history_items: List[Dict], exclusion_ids: set = None, limit: int = 10) -> List[Dict]:
+    def _load_vectors_from_db(self):
         """
-        【内部方法】基于向量相似度搜索本地数据库。
-        改进版：支持传入 exclusion_ids 进行全量去重。
+        【内部方法】从数据库加载向量并构建矩阵 (耗时操作)
         """
-        logger.info("  ➜ [向量搜索] 开始加载向量数据并计算相似度...")
+        logger.info("  ➜ [向量引擎] 缓存失效或为空，正在从数据库全量加载向量数据...")
+        start_t = time.time()
         
-        if exclusion_ids is None:
-            exclusion_ids = set()
-
-        # 1. 提取历史记录中的 ID 集合 (用于计算画像时的内部去重)
-        history_tmdb_ids = set()
-        history_titles = set()
-        
-        for item in user_history_items:
-            if isinstance(item, dict):
-                if item.get('tmdb_id'):
-                    history_tmdb_ids.add(str(item.get('tmdb_id')))
-                if item.get('title'):
-                    history_titles.add(item.get('title'))
-            elif isinstance(item, str):
-                history_titles.add(item)
-
-        if not history_tmdb_ids and not history_titles:
-            logger.warning("  ➜ [向量搜索] 用户历史记录为空或格式无法解析，跳过。")
-            return []
-
         try:
             with connection.get_db_connection() as conn:
                 cursor = conn.cursor()
-                # 获取所有已生成向量的媒体
+                # 只查 Movie 和 Series
                 cursor.execute("""
                     SELECT tmdb_id, title, item_type, overview_embedding 
                     FROM media_metadata 
@@ -1257,12 +1244,10 @@ class RecommendationEngine:
                       AND item_type IN ('Movie', 'Series')
                 """)
                 all_data = cursor.fetchall()
-                
+            
             if not all_data:
-                logger.warning("  ➜ [向量搜索] 数据库中没有向量数据。请先运行“生成媒体向量”任务。")
-                return []
+                return None, None, None, None
 
-            # 2. 构建矩阵
             ids = []
             vectors = []
             titles = []
@@ -1277,60 +1262,121 @@ class RecommendationEngine:
                     vectors.append(np.array(vec, dtype=np.float32))
             
             if not vectors:
-                return []
+                return None, None, None, None
 
+            # 构建矩阵
             matrix = np.stack(vectors)
-            # 归一化
+            # 归一化 (预先做完，计算时就不用做了)
             norm = np.linalg.norm(matrix, axis=1, keepdims=True)
             matrix = matrix / (norm + 1e-10)
 
-            # 3. 定位用户口味 (User Profile)
-            user_vectors = []
-            matched_count = 0
+            logger.info(f"  ➜ [向量引擎] 数据加载完成。共 {len(ids)} 条向量，耗时 {time.time() - start_t:.2f}s。")
+            return matrix, ids, titles, types
+
+        except Exception as e:
+            logger.error(f"  ➜ [向量引擎] 加载数据失败: {e}", exc_info=True)
+            return None, None, None, None
+
+    def _get_vector_data(self):
+        """
+        【内部方法】获取向量数据 (优先读缓存)
+        """
+        now = time.time()
+        # 如果缓存不存在，或者过期了
+        if (RecommendationEngine._cache_matrix is None or 
+            now - RecommendationEngine._cache_timestamp > RecommendationEngine._CACHE_DURATION):
             
+            matrix, ids, titles, types = self._load_vectors_from_db()
+            
+            if matrix is not None:
+                # 更新缓存
+                RecommendationEngine._cache_matrix = matrix
+                RecommendationEngine._cache_ids = ids
+                RecommendationEngine._cache_titles = titles
+                RecommendationEngine._cache_types = types
+                RecommendationEngine._cache_timestamp = now
+        
+        return (RecommendationEngine._cache_matrix, 
+                RecommendationEngine._cache_ids, 
+                RecommendationEngine._cache_titles, 
+                RecommendationEngine._cache_types)
+
+    def _vector_search(self, user_history_items: List[Dict], exclusion_ids: set = None, limit: int = 10) -> List[Dict]:
+        """
+        【内部方法】基于向量相似度搜索本地数据库。
+        """
+        if exclusion_ids is None:
+            exclusion_ids = set()
+
+        # 1. 提取历史记录 ID (用于画像计算)
+        history_tmdb_ids = set()
+        history_titles = set()
+        for item in user_history_items:
+            if isinstance(item, dict):
+                if item.get('tmdb_id'): history_tmdb_ids.add(str(item.get('tmdb_id')))
+                if item.get('title'): history_titles.add(item.get('title'))
+            elif isinstance(item, str):
+                history_titles.add(item)
+
+        if not history_tmdb_ids and not history_titles:
+            return []
+
+        # ★★★ 2. 获取矩阵数据 (走缓存) ★★★
+        matrix, ids, titles, types = self._get_vector_data()
+        
+        if matrix is None:
+            logger.warning("  ➜ [向量搜索] 无法获取向量数据 (数据库为空或加载失败)。")
+            return []
+
+        try:
+            # 3. 定位用户口味 (User Profile)
+            # 这里需要在内存里快速找到用户看过的片子对应的向量
+            # 为了速度，我们可以建立一个临时的 id -> index 映射，或者直接遍历
+            # 由于 ids 列表通常几千几万条，遍历也很快
+            
+            user_vectors = []
+            
+            # 优化：使用 set 加速查找
+            # 注意：ids 和 matrix 是对应的
             for idx, db_tmdb_id in enumerate(ids):
                 is_match = False
-                # A. ID 精确匹配
                 if db_tmdb_id in history_tmdb_ids:
                     is_match = True
-                # B. 标题兜底匹配
                 elif titles[idx] and any(h_t in titles[idx] for h_t in history_titles):
                     is_match = True
                 
                 if is_match:
                     user_vectors.append(matrix[idx])
-                    matched_count += 1
             
             if not user_vectors:
-                logger.warning(f"  ➜ [向量搜索] 匹配失败：用户的 {len(user_history_items)} 条历史记录均未在本地向量库中找到对应数据。")
+                logger.warning(f"  ➜ [向量搜索] 匹配失败：用户的历史记录未在向量库中找到对应数据。")
                 return []
             
-            logger.info(f"  ➜ [向量搜索] 成功匹配到 {matched_count} 部历史影片的向量，正在计算推荐...")
-
             # 计算用户平均向量
             user_profile_vector = np.mean(user_vectors, axis=0)
             user_profile_vector = user_profile_vector / (np.linalg.norm(user_profile_vector) + 1e-10)
 
-            # 4. 计算相似度
+            # 4. 计算相似度 (极速)
             scores = np.dot(matrix, user_profile_vector)
             top_indices = np.argsort(scores)[::-1]
             
             results = []
             count = 0
+            
+            # 5. 提取结果
             for idx in top_indices:
-                if count >= limit: break
+                # 这里的 limit 我们放宽一点，因为外面还要做 random.sample
+                # 如果这里只取 limit 个，外面随机的空间就太小了
+                # 建议取 limit * 5 或者固定取前 200 个
+                if count >= max(limit, 200): break
                 
                 score = float(scores[idx])
                 if score < 0.45: break 
-                if score > 0.999: continue # 排除自己
+                if score > 0.999: continue 
                 
                 current_id = ids[idx]
                 
-                # ★★★ 核心修复：检查 exclusion_ids (全量已观看列表) ★★★
-                if current_id in exclusion_ids:
-                    continue
-
-                # 排除用于生成画像的那些 (双重保险)
+                if current_id in exclusion_ids: continue
                 if current_id in history_tmdb_ids: continue
                 if any(h_t in titles[idx] for h_t in history_titles): continue
 
@@ -1342,7 +1388,6 @@ class RecommendationEngine:
                 })
                 count += 1
                 
-            logger.info(f"  ➜ [向量搜索] 计算完成，贡献了 {len(results)} 部相似影片。")
             return results
 
         except Exception as e:
