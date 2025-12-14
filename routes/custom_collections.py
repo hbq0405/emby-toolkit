@@ -756,7 +756,7 @@ def api_get_keywords_for_filter():
         logger.error(f"获取关键词列表时出错: {e}", exc_info=True)
         return jsonify([]), 500
     
-# ★★★ 提供电影类型映射的API ★★★
+# --- 提供电影类型映射的API ---
 @custom_collections_bp.route('/config/movie_genres', methods=['GET'])
 @admin_required
 def api_get_movie_genres_config():
@@ -764,15 +764,13 @@ def api_get_movie_genres_config():
     从媒体元数据缓存中动态获取所有唯一的电影类型。
     """
     try:
-        # ★★★ 核心修复：直接调用新的数据库函数 ★★★
         genres = collection_db.get_movie_genres()
-        # API直接返回一个字符串列表，例如 ["动作", "喜剧", "科幻"]
         return jsonify(genres)
     except Exception as e:
         logger.error(f"动态获取电影类型时发生错误: {e}", exc_info=True)
         return jsonify({"error": "服务器内部错误"}), 500
     
-# ★★★ 提供电视剧类型映射的API ★★★
+# --- 提供电视剧类型映射的API ---
 @custom_collections_bp.route('/config/tv_genres', methods=['GET'])
 @admin_required
 def api_get_tv_genres_config():
@@ -780,9 +778,7 @@ def api_get_tv_genres_config():
     从媒体元数据缓存中动态获取所有唯一的电视剧类型。
     """
     try:
-        # ★★★ 核心修复：直接调用新的数据库函数 ★★★
         genres = collection_db.get_tv_genres()
-        # API直接返回一个字符串列表，例如 ["动作", "喜剧", "科幻"]
         return jsonify(genres)
     except Exception as e:
         logger.error(f"动态获取电影类型时发生错误: {e}", exc_info=True)
