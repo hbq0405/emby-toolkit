@@ -134,7 +134,7 @@
 
           <!-- ★★★ 第二行：内容类型 (移动到这里，所有类型通用) ★★★ -->
           <n-gi :span="2">
-            <n-form-item label="合集内容类型" path="definition.item_type">
+            <n-form-item label="合集内容" path="definition.item_type">
               <n-checkbox-group v-model:value="currentCollection.definition.item_type" :disabled="isContentTypeLocked">
                 <n-space size="large" align="center" style="background-color: var(--n-action-color); padding: 10px 16px; border-radius: 6px; width: 100%;">
                   <n-checkbox value="Movie">
@@ -1786,7 +1786,7 @@ const formRules = computed(() => {
   const baseRules = {
     name: { required: true, message: '请输入合集名称', trigger: 'blur' },
     type: { required: true, message: '请选择合集类型' },
-    'definition.item_type': { type: 'array', required: true, message: '请至少选择一种合集内容类型' }
+    'definition.item_type': { type: 'array', required: true, message: '请至少选择一种合集内容' }
   };
   if (currentCollection.value.type === 'list') {
     baseRules['definition.url'] = { required: true, message: '请选择一个内置榜单或输入一个自定义URL', trigger: 'blur' };
