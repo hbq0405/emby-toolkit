@@ -253,15 +253,15 @@ def _get_final_item_ids_for_view(user_id, collection_info):
                 final_emby_ids = [eid for eid in final_emby_ids if eid in dynamic_ids_set]
 
     # 2. 权限清洗 (验票)
-    # if collection_type != 'ai_recommendation' and final_emby_ids:
-    #     try:
-    #         base_url, api_key = _get_real_emby_url_and_key()
-    #         valid_items = _fetch_items_in_chunks(base_url, api_key, user_id, final_emby_ids, fields='Id')
-    #         if valid_items is not None:
-    #             valid_id_set = set(item['Id'] for item in valid_items)
-    #             final_emby_ids = [eid for eid in final_emby_ids if eid in valid_id_set]
-    #     except Exception as e:
-    #         logger.error(f"  ➜ [通用权限清洗] 校验出错: {e}")
+    if collection_type != 'ai_recommendation' and final_emby_ids:
+        try:
+            base_url, api_key = _get_real_emby_url_and_key()
+            valid_items = _fetch_items_in_chunks(base_url, api_key, user_id, final_emby_ids, fields='Id')
+            if valid_items is not None:
+                valid_id_set = set(item['Id'] for item in valid_items)
+                final_emby_ids = [eid for eid in final_emby_ids if eid in valid_id_set]
+        except Exception as e:
+            logger.error(f"  ➜ [通用权限清洗] 校验出错: {e}")
 
     return final_emby_ids
 
