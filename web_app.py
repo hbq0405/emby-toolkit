@@ -370,12 +370,15 @@ def main_app_start():
             # 注意：这里不需要 api_key，因为只读库
             engine = RecommendationEngine(tmdb_api_key="dummy")
             engine._get_vector_data()
-            logger.debug("  ✅ 向量数据预加载完成。")
+            logger.debug("  ✅ 向量数据预加载完成，首屏访问将秒开。")
         except Exception as e:
             logger.warning(f"  ⚠️ 向量预加载失败 (不影响启动): {e}")
 
-    # 使用 gevent 异步执行，不阻塞主应用启动
-    gevent.spawn(warmup_vector_cache)
+    # ★★★ 核心修改：加个判断，只有开启了虚拟库才预热 ★★★
+    if config_manager.APP_CONFIG.get(constants.CONFIG_OPTION_PROXY_ENABLED):
+        gevent.spawn(warmup_vector_cache)
+    else:
+        logger.debug("  ❌ 虚拟库功能未启用，跳过向量预加载以节省内存。")
     
     def run_proxy_server():
         if config_manager.APP_CONFIG.get(constants.CONFIG_OPTION_PROXY_ENABLED):
