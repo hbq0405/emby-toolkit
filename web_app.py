@@ -29,7 +29,7 @@ from core_processor import MediaProcessor
 from actor_subscription_processor import ActorSubscriptionProcessor
 from werkzeug.security import generate_password_hash, check_password_hash
 from actor_utils import enrich_all_actor_aliases_task
-
+from handler.custom_collection import RecommendationEngine
 from flask import session
 from croniter import croniter
 from scheduler_manager import scheduler_manager
@@ -362,6 +362,20 @@ def main_app_start():
     initialize_processors()
     task_manager.start_task_worker_if_not_running()
     scheduler_manager.start()
+
+    def warmup_vector_cache():
+        try:
+            logger.debug("  🔥 正在后台预加载向量数据...")
+            # 只需要实例化一个引擎并调用 _get_vector_data 即可触发加载
+            # 注意：这里不需要 api_key，因为只读库
+            engine = RecommendationEngine(tmdb_api_key="dummy")
+            engine._get_vector_data()
+            logger.debug("  ✅ 向量数据预加载完成。")
+        except Exception as e:
+            logger.warning(f"  ⚠️ 向量预加载失败 (不影响启动): {e}")
+
+    # 使用 gevent 异步执行，不阻塞主应用启动
+    gevent.spawn(warmup_vector_cache)
     
     def run_proxy_server():
         if config_manager.APP_CONFIG.get(constants.CONFIG_OPTION_PROXY_ENABLED):

@@ -1230,7 +1230,7 @@ class RecommendationEngine:
         """
         【内部方法】从数据库加载向量并构建矩阵 (耗时操作)
         """
-        logger.info("  ➜ [向量引擎] 缓存失效或为空，正在从数据库全量加载向量数据...")
+        logger.debug("  ➜ [向量引擎] 缓存失效或为空，正在从数据库全量加载向量数据...")
         start_t = time.time()
         
         try:
