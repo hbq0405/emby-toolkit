@@ -198,11 +198,9 @@ def _get_final_item_ids_for_view(user_id, collection_info):
             return []
 
     # ==================================================================
-    # 分支 2: 全局推荐 (LLM + 向量，预生成的静态数据)
+    # 分支 2: 其他合集
     # ==================================================================
     else: 
-        # ★★★ 修改点：ai_recommendation_global 现在走这里 ★★★
-        # 因为后台任务已经生成了 user_collection_cache，直接读它最快、最准！
         try:
             with get_db_connection() as conn:
                 with conn.cursor() as cursor:
@@ -231,17 +229,6 @@ def _get_final_item_ids_for_view(user_id, collection_info):
             if ids_from_local_db is not None:
                 dynamic_ids_set = set(ids_from_local_db)
                 final_emby_ids = [eid for eid in final_emby_ids if eid in dynamic_ids_set]
-
-    # 2. 权限清洗 (验票)
-    # if collection_type != 'ai_recommendation' and final_emby_ids:
-    #     try:
-    #         base_url, api_key = _get_real_emby_url_and_key()
-    #         valid_items = _fetch_items_in_chunks(base_url, api_key, user_id, final_emby_ids, fields='Id')
-    #         if valid_items is not None:
-    #             valid_id_set = set(item['Id'] for item in valid_items)
-    #             final_emby_ids = [eid for eid in final_emby_ids if eid in valid_id_set]
-    #     except Exception as e:
-    #         logger.error(f"  ➜ [通用权限清洗] 校验出错: {e}")
 
     return final_emby_ids
 
