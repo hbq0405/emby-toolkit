@@ -1254,6 +1254,7 @@ class RecommendationEngine:
                     SELECT tmdb_id, title, item_type, overview_embedding 
                     FROM media_metadata 
                     WHERE overview_embedding IS NOT NULL
+                      AND item_type IN ('Movie', 'Series')
                 """)
                 all_data = cursor.fetchall()
                 
