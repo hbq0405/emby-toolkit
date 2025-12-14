@@ -200,29 +200,9 @@ def _get_final_item_ids_for_view(user_id, collection_info):
     # ==================================================================
     # 分支 2: 全局推荐 (LLM + 向量，预生成的静态数据)
     # ==================================================================
-    elif collection_type == 'ai_recommendation_global':
-        raw_json = collection_info.get('generated_media_info_json')
-        if raw_json:
-            items = json.loads(raw_json) if isinstance(raw_json, str) else raw_json
-            if items:
-                items_to_lookup = []
-                for item in items:
-                    tid = item.get('tmdb_id') or item.get('id')
-                    mtype = item.get('media_type') or item.get('type') or item.get('item_type')
-                    if tid and mtype:
-                        items_to_lookup.append({'tmdb_id': str(tid), 'media_type': mtype})
-                
-                if items_to_lookup:
-                    lookup_map = media_db.get_emby_ids_for_items(items_to_lookup)
-                    for item in items_to_lookup:
-                        key = f"{item['tmdb_id']}_{item['media_type']}"
-                        if key in lookup_map:
-                            final_emby_ids.append(lookup_map[key]['Id'])
-
-    # ==================================================================
-    # 分支 3: 普通合集 (List / Filter - 预计算的 Emby ID)
-    # ==================================================================
-    else:
+    else: 
+        # ★★★ 修改点：ai_recommendation_global 现在走这里 ★★★
+        # 因为后台任务已经生成了 user_collection_cache，直接读它最快、最准！
         try:
             with get_db_connection() as conn:
                 with conn.cursor() as cursor:
@@ -234,7 +214,7 @@ def _get_final_item_ids_for_view(user_id, collection_info):
                     if row and row['visible_emby_ids_json']:
                         final_emby_ids = row['visible_emby_ids_json']
         except Exception as e:
-            logger.error(f"  ➜ 查询用户 {user_id} 在合集 {collection_id} 的权限缓存时出错: {e}", exc_info=True)
+            logger.error(f"  ➜ 查询权限缓存出错: {e}")
             return []
 
     # ==================================================================
@@ -253,15 +233,15 @@ def _get_final_item_ids_for_view(user_id, collection_info):
                 final_emby_ids = [eid for eid in final_emby_ids if eid in dynamic_ids_set]
 
     # 2. 权限清洗 (验票)
-    if collection_type != 'ai_recommendation' and final_emby_ids:
-        try:
-            base_url, api_key = _get_real_emby_url_and_key()
-            valid_items = _fetch_items_in_chunks(base_url, api_key, user_id, final_emby_ids, fields='Id')
-            if valid_items is not None:
-                valid_id_set = set(item['Id'] for item in valid_items)
-                final_emby_ids = [eid for eid in final_emby_ids if eid in valid_id_set]
-        except Exception as e:
-            logger.error(f"  ➜ [通用权限清洗] 校验出错: {e}")
+    # if collection_type != 'ai_recommendation' and final_emby_ids:
+    #     try:
+    #         base_url, api_key = _get_real_emby_url_and_key()
+    #         valid_items = _fetch_items_in_chunks(base_url, api_key, user_id, final_emby_ids, fields='Id')
+    #         if valid_items is not None:
+    #             valid_id_set = set(item['Id'] for item in valid_items)
+    #             final_emby_ids = [eid for eid in final_emby_ids if eid in valid_id_set]
+    #     except Exception as e:
+    #         logger.error(f"  ➜ [通用权限清洗] 校验出错: {e}")
 
     return final_emby_ids
 
