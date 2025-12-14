@@ -115,7 +115,7 @@ def api_remove_from_watchlist(item_id):
 @watchlist_bp.route('/refresh/<item_id>', methods=['POST'])
 @admin_required
 def api_trigger_single_watchlist_refresh(item_id):
-    # ★★★★★★★★★★★★★★★ 终极修复 1/3: 明确传递 TMDb ID ★★★★★★★★★★★★★★★
+    """触发单个剧集的刷新任务。"""
     from tasks import task_process_watchlist 
     
     # 明确此时的 item_id 就是 tmdb_id

@@ -19,7 +19,8 @@ from extensions import SYSTEM_UPDATE_MARKERS, SYSTEM_UPDATE_LOCK, RECURSION_SUPP
 from core_processor import MediaProcessor
 from tasks import (
     task_auto_sync_template_on_policy_change, task_sync_metadata_cache,
-    task_sync_all_metadata, task_sync_images, task_apply_main_cast_to_episodes
+    task_sync_all_metadata, task_sync_images, task_apply_main_cast_to_episodes,
+    task_process_watchlist
 )
 from handler.custom_collection import FilterEngine
 from services.cover_generator import CoverGeneratorService
@@ -299,35 +300,6 @@ def _process_batch_webhook_events():
             # 默认情况下，不强制深度更新
             force_full_update_for_new_item = False
             
-            # # 如果是首次入库的剧集，根据是否有缓存决定传递参数
-            # if parent_type == 'Series':
-            #     logger.info(f"  ➜ [前置判断] 检测到新入库剧集 '{parent_name}'，正在检查本地缓存...")
-                
-            #     # 1. 先获取TMDb ID
-            #     item_details_for_check = emby.get_emby_item_details(parent_id, extensions.media_processor_instance.emby_url, extensions.media_processor_instance.emby_api_key, extensions.media_processor_instance.emby_user_id, fields="ProviderIds")
-            #     tmdb_id_for_check = (item_details_for_check.get("ProviderIds", {}) if item_details_for_check else {}).get("Tmdb")
-
-            #     if tmdb_id_for_check:
-            #         try:
-            #             # ★★★ 核心修改：直接调用新的、干净的数据库函数 ★★★
-            #             cache_exists = media_db.does_series_have_valid_actor_cache(tmdb_id_for_check)
-                        
-            #             if cache_exists:
-            #                 logger.info(f"  ➜ [前置判断] 发现有效缓存，不传递深度处理参数。")
-            #                 force_full_update_for_new_item = False
-            #             else:
-            #                 logger.info(f"  ➜ [前置判断] 未发现有效缓存，将传递深度处理参数以获取最全演员表。")
-            #                 force_full_update_for_new_item = True
-                            
-            #         except Exception as e_check:
-            #             # 这里的异常捕获仍然有用，以防万一数据库层抛出未捕获的异常
-            #             logger.error(f"  ➜ [前置判断] 检查缓存时发生意外错误: {e_check}，为保险起见，将启用深度处理模式。")
-            #             force_full_update_for_new_item = True
-            
-            # # 对于电影，永远是 False，走常规流程
-            # else: 
-            #     force_full_update_for_new_item = False
-            
             logger.info(f"  ➜ 为 '{parent_name}' 分派【完整处理】任务 (原因: 首次入库)。")
             task_manager.submit_task(
                 _handle_full_processing_flow,
@@ -359,7 +331,7 @@ def _process_batch_webhook_events():
                     task_name=f"轻量化同步演员表: {parent_name}",
                     processor_type='media',
                     series_id=parent_id,
-                    episode_ids=episode_ids_to_update # <-- 现在传递的是具体的分集ID列表
+                    episode_ids=episode_ids_to_update 
                 )
                 task_manager.submit_task(
                     task_sync_metadata_cache,
@@ -368,6 +340,12 @@ def _process_batch_webhook_events():
                     item_id=parent_id,
                     item_name=parent_name,
                     episode_ids_to_add=episode_ids_to_update 
+                )
+                task_manager.submit_task(
+                    task_process_watchlist,
+                    task_name=f"刷新智能追剧: {parent_name}",
+                    processor_type='watchlist',
+                    tmdb_id=parent_id
                 )
             else: # 电影等其他类型
                 logger.info(f"  ➜ 媒体项 '{parent_name}' 已处理过，将触发一次轻量元数据缓存更新。")
