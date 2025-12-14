@@ -262,24 +262,23 @@
                   <n-select v-model:value="rule.operator" :options="getOperatorOptionsForRow(rule)" placeholder="操作" :disabled="!rule.field" class="rule-op" />
                   
                   <div class="rule-value">
-                    <!-- ★★★ 务必保留你原有的规则值输入逻辑 ★★★ -->
                     <template v-if="rule.field === 'genres'">
                       <n-select
                         v-if="['is_one_of', 'is_none_of'].includes(rule.operator)"
                         v-model:value="rule.value"
                         multiple filterable
-                        placeholder="选择一个或多个类型"
+                        :placeholder="isGenreSelectionDisabled ? '混合类型无法筛选Genre' : '选择一个或多个类型'"
                         :options="genreOptions"
-                        :disabled="!rule.operator"
+                        :disabled="!rule.operator || isGenreSelectionDisabled"
                         style="flex-grow: 1; min-width: 180px;"
                       />
                       <n-select
                         v-else
                         v-model:value="rule.value"
                         filterable
-                        placeholder="选择类型"
+                        :placeholder="isGenreSelectionDisabled ? '混合类型无法筛选Genre' : '选择类型'"
                         :options="genreOptions"
-                        :disabled="!rule.operator"
+                        :disabled="!rule.operator || isGenreSelectionDisabled"
                         style="flex-grow: 1;"
                       />
                     </template>
@@ -1641,18 +1640,50 @@ const fetchCountryOptions = async () => {
   }
 };
 
+const isGenreSelectionDisabled = computed(() => {
+  const types = currentCollection.value.definition?.item_type || [];
+  // 如果选择了超过1种类型（例如既选电影又选剧集），则禁用
+  return types.length > 1;
+});
+
 const fetchGenreOptions = async () => {
+  const types = currentCollection.value.definition?.item_type || [];
+  
+  // 如果选择了多种类型，或者没有选择类型，清空选项并返回
+  if (types.length !== 1) {
+    genreOptions.value = [];
+    return;
+  }
+
+  const type = types[0];
+  let url = '';
+
+  if (type === 'Movie') {
+    url = '/api/custom_collections/config/movie_genres';
+  } else if (type === 'Series') {
+    // 根据通常的API命名规范，剧集类型接口通常为 tv_genres
+    url = '/api/custom_collections/config/tv_genres';
+  }
+
+  if (!url) return;
+
   try {
-    const response = await axios.get('/api/custom_collections/config/movie_genres');
+    const response = await axios.get(url);
     const genreList = response.data; 
     genreOptions.value = genreList.map(name => ({
       label: name,
       value: name
     }));
   } catch (error) {
-    message.error('获取电影类型列表失败。');
+    // 忽略 404 错误，可能是后端还没实现 tv_genres
+    console.warn('获取类型列表失败:', error);
+    genreOptions.value = [];
   }
 };
+
+watch(() => currentCollection.value.definition?.item_type, () => {
+  fetchGenreOptions();
+}, { deep: true });
 
 const fetchTagOptions = async () => {
   try {
@@ -2477,7 +2508,6 @@ watch([selectedBuiltInLists, customUrlList], () => {
 onMounted(() => {
   fetchCollections();
   fetchCountryOptions();
-  fetchGenreOptions();
   fetchTagOptions();
   fetchKeywordOptions();
   fetchUnifiedRatingOptions();
@@ -2485,6 +2515,9 @@ onMounted(() => {
   fetchTmdbGenres();
   fetchTmdbCountries();
   fetchEmbyUsers();
+  if (currentCollection.value.definition?.item_type) {
+      fetchGenreOptions();
+  }
 });
 
 createRuleWatcher(() => currentCollection.value.definition.rules);
