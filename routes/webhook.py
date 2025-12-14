@@ -158,6 +158,8 @@ def _handle_full_processing_flow(processor: 'MediaProcessor', item_id: str, forc
         all_matching_collection_ids = []
         if matching_filter_collections:
             all_matching_collection_ids.extend([c['id'] for c in matching_filter_collections])
+        if updated_list_collections:
+            all_matching_collection_ids.extend([c['id'] for c in updated_list_collections])
 
     except Exception as e:
         logger.error(f"  ➜ 为新入库项目 '{item_name_for_log}' 匹配自定义合集时发生意外错误: {e}", exc_info=True)
