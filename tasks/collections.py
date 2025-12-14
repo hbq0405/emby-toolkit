@@ -375,17 +375,21 @@ def _get_cover_badge_text_for_collection(collection_db_info: Dict[str, Any]) -> 
     
     collection_type = collection_db_info.get('type')
     definition = collection_db_info.get('definition_json', {})
-
     # 只有榜单(list)类型才需要特殊处理角标文字
     if collection_type == 'list':
         raw_url = definition.get('url', '')
         
-        # ★★★ 修复：统一转为列表处理，兼容 string 和 list ★★★
+        # 统一转为列表处理，兼容 string 和 list
         urls = raw_url if isinstance(raw_url, list) else [str(raw_url)]
+        
+        # 如果是多个URL，返回‘混合’
+        if len(urls) > 1:
+            return '混合'
         
         # 遍历所有 URL，只要命中一个特征就返回
         for u in urls:
-            if not isinstance(u, str): continue
+            if not isinstance(u, str): 
+                continue
             
             if u.startswith('maoyan://'):
                 return '猫眼'
@@ -402,7 +406,6 @@ def _get_cover_badge_text_for_collection(collection_db_info: Dict[str, Any]) -> 
     
     if collection_type == 'ai_recommendation':
         return '推荐'
-
     # 如果不是榜单类型，或者榜单类型不匹配任何特殊规则，则返回数字角标
     return item_count_to_pass
 
