@@ -382,30 +382,37 @@ def _get_cover_badge_text_for_collection(collection_db_info: Dict[str, Any]) -> 
         # 统一转为列表处理，兼容 string 和 list
         urls = raw_url if isinstance(raw_url, list) else [str(raw_url)]
         
-        # 如果是多个URL，返回‘混合’
-        if len(urls) > 1:
-            return '混合'
-        
-        # 遍历所有 URL，只要命中一个特征就返回
+        types_found = set()
         for u in urls:
-            if not isinstance(u, str): 
+            if not isinstance(u, str):
                 continue
-            
             if u.startswith('maoyan://'):
-                return '猫眼'
+                types_found.add('猫眼')
             elif 'douban.com/doulist' in u:
-                return '豆列'
+                types_found.add('豆列')
             elif 'themoviedb.org/discover/' in u:
-                return '探索'
-        
-        # 对于其他所有榜单类型，统一显示为'榜单'
-        return '榜单'
+                types_found.add('探索')
+            else:
+                types_found.add('未知')
+
+        # 处理 types_found 集合：
+        # 如果只找到一种类型，并且不是‘未知’，返回该类型
+        # 如果有多种类型或者包含‘未知’，返回‘混合’
+        if len(types_found) == 1 and '未知' not in types_found:
+            return types_found.pop()
+        else:
+            # 多种类型或包含未知，都返回统一‘混合’
+            # 但如果全部是未知（比如urls存在但都没匹配到），则返回‘榜单’
+            if types_found == {'未知'}:
+                return '榜单'
+            return '混合'    
             
     if collection_type == 'ai_recommendation_global':
         return '热榜'
     
     if collection_type == 'ai_recommendation':
         return '推荐'
+    
     # 如果不是榜单类型，或者榜单类型不匹配任何特殊规则，则返回数字角标
     return item_count_to_pass
 
