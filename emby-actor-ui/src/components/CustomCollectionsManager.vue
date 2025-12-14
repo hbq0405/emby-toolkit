@@ -267,7 +267,7 @@
                         v-if="['is_one_of', 'is_none_of'].includes(rule.operator)"
                         v-model:value="rule.value"
                         multiple filterable
-                        :placeholder="isGenreSelectionDisabled ? '混合类型无法筛选Genre' : '选择一个或多个类型'"
+                        :placeholder="isGenreSelectionDisabled ? '不建议混合库应用类型筛选' : '选择一个或多个类型'"
                         :options="genreOptions"
                         :disabled="!rule.operator || isGenreSelectionDisabled"
                         style="flex-grow: 1; min-width: 180px;"
@@ -276,7 +276,7 @@
                         v-else
                         v-model:value="rule.value"
                         filterable
-                        :placeholder="isGenreSelectionDisabled ? '混合类型无法筛选Genre' : '选择类型'"
+                        :placeholder="isGenreSelectionDisabled ? '不建议混合库应用类型筛选' : '选择类型'"
                         :options="genreOptions"
                         :disabled="!rule.operator || isGenreSelectionDisabled"
                         style="flex-grow: 1;"
