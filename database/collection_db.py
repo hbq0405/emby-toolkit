@@ -912,7 +912,7 @@ def match_and_update_list_collections_on_item_add(new_item_tmdb_id: str, new_ite
                 # 步骤 1: 查找匹配的合集 (这部分逻辑是正确的)
                 sql_find = """
                     SELECT * FROM custom_collections 
-                    WHERE type = 'list' 
+                    WHERE type IN ('list', 'ai_recommendation') 
                       AND status = 'active' 
                       AND emby_collection_id IS NOT NULL
                       AND generated_media_info_json @> %s::jsonb
