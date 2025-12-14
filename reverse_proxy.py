@@ -126,7 +126,6 @@ def _get_final_item_ids_for_view(user_id, collection_info):
     collection_type = collection_info.get('type')
     definition = collection_info.get('definition_json') or {}
     
-    # 1. 获取配置的数量限制，默认 50
     try:
         configured_limit = int(definition.get('limit', 50))
     except (ValueError, TypeError):
@@ -138,29 +137,61 @@ def _get_final_item_ids_for_view(user_id, collection_info):
     # 分支 1: 个人推荐 (千人千面 - 实时向量)
     # ==================================================================
     if collection_type == 'ai_recommendation':
-        # ★★★ 修改：彻底移除缓存读取，每次都实时计算 ★★★
-        
         try:
             api_key = config_manager.APP_CONFIG.get("tmdb_api_key")
-            if not api_key:
-                return []
+            if not api_key: return []
 
             engine = RecommendationEngine(api_key)
             
-            # 请求时多要一点点 (Buffer)
-            buffer_limit = configured_limit + 5
-            
-            # 实时计算！
+            # 1. 广撒网：请求 3 倍数量的候选池
             pool_size = max(configured_limit * 3, 60)
-            
-            # 获取候选池 (比如前 150 名)
             candidate_pool = engine.generate_user_vector(user_id, limit=pool_size)
             
             if candidate_pool:
-                # ★★★ 3. 核心修改：精选鱼 (随机抽取) ★★★
-                # 从候选池中，随机抽取 configured_limit 个
-                count_to_pick = min(len(candidate_pool), configured_limit)
-                recommendations = random.sample(candidate_pool, count_to_pick)
+                # 2. 批量转换：将候选池全部转换为 Emby ID
+                # 注意：这里我们先不随机，先把所有可能的 Emby ID 找出来
+                items_to_lookup = []
+                for item in candidate_pool:
+                    tid = item.get('id') or item.get('tmdb_id')
+                    mtype = item.get('type') or item.get('media_type')
+                    if tid and mtype:
+                        items_to_lookup.append({'tmdb_id': str(tid), 'media_type': mtype})
+                
+                all_candidate_emby_ids = []
+                if items_to_lookup:
+                    lookup_map = media_db.get_emby_ids_for_items(items_to_lookup)
+                    # 保持向量搜索结果的顺序（虽然马上要随机了，但保持顺序是个好习惯）
+                    for item in items_to_lookup:
+                        key = f"{item['tmdb_id']}_{item['media_type']}"
+                        if key in lookup_map:
+                            all_candidate_emby_ids.append(lookup_map[key]['Id'])
+                
+                # 3. ★★★ 核心优化：先验票 (权限清洗) ★★★
+                # 拿着这 100 多号人去 Emby 门口问问，谁有票能进？
+                valid_candidate_ids = []
+                if all_candidate_emby_ids:
+                    try:
+                        base_url, emby_api_key = _get_real_emby_url_and_key()
+                        # 只请求 Id 字段，速度极快
+                        valid_items = _fetch_items_in_chunks(
+                            base_url, emby_api_key, user_id, all_candidate_emby_ids, fields='Id'
+                        )
+                        if valid_items:
+                            valid_id_set = set(item['Id'] for item in valid_items)
+                            # 过滤出有权限的 ID
+                            valid_candidate_ids = [eid for eid in all_candidate_emby_ids if eid in valid_id_set]
+                    except Exception as e:
+                        logger.error(f"  ➜ [个人推荐] 权限预校验失败: {e}")
+                        # 如果校验挂了，为了保底，假设都能看（后面还有一道通用防线）
+                        valid_candidate_ids = all_candidate_emby_ids
+
+                # 4. ★★★ 精选鱼：从“合法”池子里随机抽取 ★★★
+                # 现在的 valid_candidate_ids 里的每一个 ID，都是用户确权可看的
+                if valid_candidate_ids:
+                    count_to_pick = min(len(valid_candidate_ids), configured_limit)
+                    final_emby_ids = random.sample(valid_candidate_ids, count_to_pick)
+                    
+                    logger.info(f"  ➜ [个人推荐] 用户 {user_id}: 候选池 {len(candidate_pool)} -> 映射ID {len(all_candidate_emby_ids)} -> 有权限 {len(valid_candidate_ids)} -> 最终抽取 {len(final_emby_ids)}")
                 
                 # (可选) 顺手更新缓存表用于记录日志，这里存的是随机后的结果
                 try:
@@ -177,25 +208,6 @@ def _get_final_item_ids_for_view(user_id, collection_info):
                             conn.commit()
                 except Exception as db_e:
                     logger.error(f"  ➜ 更新推荐记录失败: {db_e}")
-
-                # 开始转换 ID (TMDb -> Emby)
-                items_to_lookup = []
-                for item in recommendations:
-                    tid = item.get('id') or item.get('tmdb_id')
-                    mtype = item.get('type') or item.get('media_type')
-                    if tid and mtype:
-                        items_to_lookup.append({'tmdb_id': str(tid), 'media_type': mtype})
-                
-                if items_to_lookup:
-                    lookup_map = media_db.get_emby_ids_for_items(items_to_lookup)
-                    for item in items_to_lookup:
-                        key = f"{item['tmdb_id']}_{item['media_type']}"
-                        if key in lookup_map:
-                            final_emby_ids.append(lookup_map[key]['Id'])
-                
-                # 这里的截断其实 random.sample 已经做过了，但为了保险保留
-                if len(final_emby_ids) > configured_limit:
-                    final_emby_ids = final_emby_ids[:configured_limit]
 
         except Exception as calc_e:
             logger.error(f"  ➜ 实时计算推荐时发生错误: {calc_e}", exc_info=True)
@@ -257,15 +269,15 @@ def _get_final_item_ids_for_view(user_id, collection_info):
                 final_emby_ids = [eid for eid in final_emby_ids if eid in dynamic_ids_set]
 
     # 2. 权限清洗 (验票)
-    if final_emby_ids:
-        try:
-            base_url, api_key = _get_real_emby_url_and_key()
-            valid_items = _fetch_items_in_chunks(base_url, api_key, user_id, final_emby_ids, fields='Id')
-            if valid_items is not None:
-                valid_id_set = set(item['Id'] for item in valid_items)
-                final_emby_ids = [eid for eid in final_emby_ids if eid in valid_id_set]
-        except Exception as e:
-            logger.error(f"  ➜ [权限清洗] 校验出错: {e}")
+    # if collection_type != 'ai_recommendation' and final_emby_ids:
+    #     try:
+    #         base_url, api_key = _get_real_emby_url_and_key()
+    #         valid_items = _fetch_items_in_chunks(base_url, api_key, user_id, final_emby_ids, fields='Id')
+    #         if valid_items is not None:
+    #             valid_id_set = set(item['Id'] for item in valid_items)
+    #             final_emby_ids = [eid for eid in final_emby_ids if eid in valid_id_set]
+    #     except Exception as e:
+    #         logger.error(f"  ➜ [通用权限清洗] 校验出错: {e}")
 
     return final_emby_ids
 
