@@ -900,7 +900,7 @@ def get_all_local_emby_users() -> List[Dict[str, Any]]:
     
 def match_and_update_list_collections_on_item_add(new_item_tmdb_id: str, new_item_emby_id: str, new_item_name: str) -> List[Dict[str, Any]]:
     """
-    当新媒体入库时，查找并更新所有匹配的 'list' 和 'ai_recommendation' 类型合集。
+    当新媒体入库时，查找并更新所有匹配的 'list' 和 'ai_recommendation_global' 类型合集。
     """
     collections_to_update_in_emby = []
     
@@ -908,10 +908,10 @@ def match_and_update_list_collections_on_item_add(new_item_tmdb_id: str, new_ite
         with get_db_connection() as conn:
             with conn.cursor() as cursor:
                 
-                # 查询 type 为 list 或 ai_recommendation 的合集
+                # 查询 type 为 list 或 ai_recommendation_global 的合集
                 sql_find = """
                     SELECT * FROM custom_collections 
-                    WHERE type IN ('list', 'ai_recommendation')
+                    WHERE type IN ('list', 'ai_recommendation_global')
                       AND status = 'active' 
                       AND emby_collection_id IS NOT NULL
                       AND generated_media_info_json @> %s::jsonb

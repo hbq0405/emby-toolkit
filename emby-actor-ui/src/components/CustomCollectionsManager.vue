@@ -464,79 +464,82 @@
             </n-form-item>
           </div>
 
-          <!-- 3. AI 推荐 (Recommendation) (保持不变) -->
+          <!-- 3. AI 推荐 (Recommendation) -->
           <div v-if="['ai_recommendation', 'ai_recommendation_global'].includes(currentCollection.type)">
-             <!-- ... AI 推荐代码保持不变 ... -->
              <div class="ai-hero-section" :class="{ global: currentCollection.type === 'ai_recommendation_global' }">
                 <div class="ai-icon-large">
                   <n-icon :component="SparklesIcon" />
                 </div>
                 <div class="ai-hero-content">
                   <div class="ai-hero-title">
-                    {{ currentCollection.type === 'ai_recommendation_global' ? '全局智能推荐' : '个人专属推荐' }}
+                    {{ currentCollection.type === 'ai_recommendation_global' ? '全局智能推荐 (LLM + 向量)' : '个人专属推荐 (实时向量)' }}
                   </div>
                   <div class="ai-hero-desc">
                     {{ currentCollection.type === 'ai_recommendation_global' 
-                      ? 'AI 将分析全站用户的共同喜好（Top 20），猜测大众可能喜欢的作品。' 
-                      : 'AI 将分析指定用户的观看历史，量身定制推荐片单。' 
+                      ? 'AI 将分析全站热度数据，结合大模型知识库，生成一份适合大众口味的“猜你喜欢”片单（包含库内未收录的新片）。' 
+                      : '基于访问者的实时观看历史，利用本地向量数据库进行毫秒级匹配。每个用户看到的都是为其量身定制的内容（千人千面）。' 
                     }}
                   </div>
                 </div>
              </div>
 
-             <n-grid :cols="2" :x-gap="24" style="margin-top: 20px;">
-                <n-gi v-if="currentCollection.type === 'ai_recommendation'">
-                  <n-form-item label="目标用户" path="definition.target_user_id">
-                    <n-select
-                      v-model:value="currentCollection.definition.target_user_id"
-                      :options="embyUserOptions"
-                      placeholder="选择要分析的用户"
-                      filterable
-                      :render-label="renderSelectOptionWithTag"
-                      @update:value="handleTargetUserChange"
-                    />
-                  </n-form-item>
-                </n-gi>
+             <n-grid :cols="1" :y-gap="24" style="margin-top: 20px;">
+                <!-- 通用设置：推荐数量 -->
                 <n-gi>
-                   <n-form-item label="推荐数量" path="definition.limit">
-                    <n-input-number v-model:value="currentCollection.definition.limit" :default-value="20" :min="5" :max="50" style="width: 100%;" />
+                   <n-form-item label="推荐数量限制" path="definition.limit">
+                    <n-input-number v-model:value="currentCollection.definition.limit" :default-value="20" :min="5" :max="100" style="width: 100%;">
+                        <template #suffix>部</template>
+                    </n-input-number>
                   </n-form-item>
                 </n-gi>
-                <!-- ★★★ 新增：探索比例滑块 ★★★ -->
-                <n-gi span="2" v-if="currentCollection.type === 'ai_recommendation'">
-                  <n-form-item path="definition.ai_discovery_ratio">
-                    <template #label>
-                      新片探索比例 (LLM权重)
-                      <n-tooltip trigger="hover">
-                        <template #trigger><n-icon :component="HelpIcon" style="margin-left: 4px;" /></template>
-                        比例越高，AI 越倾向于推荐你库里没有的新片（会触发下载）；<br/>
-                        比例越低，越倾向于从你现有的库存中挖掘相似影片（省流量）。
-                      </n-tooltip>
-                    </template>
-                    <n-grid :cols="12" :x-gap="12" style="width: 100%">
-                      <n-gi :span="10">
-                        <n-slider 
-                          v-model:value="currentCollection.definition.ai_discovery_ratio" 
-                          :step="0.05" :min="0" :max="1"
-                          :format-tooltip="val => `${(val * 100).toFixed(0)}%`"
+
+                <!-- ★★★ 只有【全局推荐】才显示以下高级 LLM 选项 ★★★ -->
+                <template v-if="currentCollection.type === 'ai_recommendation_global'">
+                    <n-gi>
+                      <n-form-item path="definition.ai_discovery_ratio">
+                        <template #label>
+                          新片探索比例 (LLM 权重)
+                          <n-tooltip trigger="hover">
+                            <template #trigger><n-icon :component="HelpIcon" style="margin-left: 4px;" /></template>
+                            比例越高，AI 越倾向于推荐你库里没有的新片（会触发订阅下载）；<br/>
+                            比例越低，越倾向于从你现有的库存中挖掘相似影片。
+                          </n-tooltip>
+                        </template>
+                        <n-grid :cols="12" :x-gap="12" style="width: 100%">
+                          <n-gi :span="10">
+                            <n-slider 
+                              v-model:value="currentCollection.definition.ai_discovery_ratio" 
+                              :step="0.05" :min="0" :max="1"
+                              :format-tooltip="val => `${(val * 100).toFixed(0)}%`"
+                            />
+                          </n-gi>
+                          <n-gi :span="2">
+                            <span style="line-height: 34px; margin-left: 8px;">{{ (currentCollection.definition.ai_discovery_ratio * 100).toFixed(0) }}%</span>
+                          </n-gi>
+                        </n-grid>
+                      </n-form-item>
+                    </n-gi>
+                    <n-gi>
+                       <n-form-item label="推荐倾向 (Prompt)" path="definition.ai_prompt">
+                        <n-input
+                          v-model:value="currentCollection.definition.ai_prompt"
+                          type="textarea"
+                          placeholder="可选：微调 LLM 的推荐逻辑，例如 '最近心情不好，多推点喜剧' 或 '只要电影，不要剧集'。"
+                          :autosize="{ minRows: 2, maxRows: 4 }"
                         />
-                      </n-gi>
-                      <n-gi :span="2">
-                        <span style="line-height: 34px; margin-left: 8px;">{{ (currentCollection.definition.ai_discovery_ratio * 100).toFixed(0) }}%</span>
-                      </n-gi>
-                    </n-grid>
-                  </n-form-item>
-                </n-gi>
-                <n-gi span="2" v-if="currentCollection.type === 'ai_recommendation'">
-                   <n-form-item label="推荐倾向 (Prompt)" path="definition.ai_prompt">
-                    <n-input
-                      v-model:value="currentCollection.definition.ai_prompt"
-                      type="textarea"
-                      placeholder="可选：微调推荐逻辑，例如 '最近心情不好，多推点喜剧' 或 '只要电影，不要剧集'。"
-                      :autosize="{ minRows: 2, maxRows: 4 }"
-                    />
-                  </n-form-item>
-                </n-gi>
+                      </n-form-item>
+                    </n-gi>
+                </template>
+                
+                <!-- ★★★ 【个人推荐】显示提示信息 ★★★ -->
+                <template v-else>
+                    <n-gi>
+                        <n-alert type="info" :bordered="false">
+                            无需配置目标用户。系统会在用户访问此合集时，自动读取该用户的观看历史并实时生成推荐结果。
+                        </n-alert>
+                    </n-gi>
+                </template>
+
              </n-grid>
           </div>
         </n-card>
@@ -1573,9 +1576,7 @@ watch(() => currentCollection.value.type, (newType) => {
   } else if (newType === 'ai_recommendation') {
     currentCollection.value.definition = {
         ...sharedProps,
-        target_user_id: null,
-        ai_prompt: '',
-        limit: 20,
+        limit: 50,
         item_type: ['Movie', 'Series'],
         is_global_mode: false,
         ai_discovery_ratio: 0.2 
@@ -1583,11 +1584,11 @@ watch(() => currentCollection.value.type, (newType) => {
   } else if (newType === 'ai_recommendation_global') {
     currentCollection.value.definition = {
         ...sharedProps,
-        target_user_id: null, // 全局模式不需要用户ID
         ai_prompt: '',
         limit: 20,
         item_type: ['Movie', 'Series'],
-        is_global_mode: true // ★★★ 标记为全局
+        is_global_mode: true,
+        ai_discovery_ratio: 0.2 
     };
   } else if (newType === 'list') {
     currentCollection.value.definition = { 
@@ -1833,10 +1834,8 @@ const formRules = computed(() => {
       },
       trigger: 'change'
     };
-  } else if (currentCollection.value.type === 'ai_recommendation') {
-    // ★★★ 只有个人推荐才必填用户ID
-    baseRules['definition.target_user_id'] = { required: true, message: '请选择目标用户', trigger: ['blur', 'change'] };
-  }
+  } 
+  
   return baseRules;
 });
 
@@ -2208,7 +2207,7 @@ const columns = [
   {
     title: '健康检查', key: 'health_check', width: 150,
     render(row) {
-      if (!['list', 'ai_recommendation'].includes(row.type)) {
+      if (!['list', 'ai_recommendation_global'].includes(row.type)) {
         return h(NText, { depth: 3 }, { default: () => 'N/A' });
       }
       const missingText = row.missing_count > 0 ? ` (${row.missing_count}缺失)` : '';

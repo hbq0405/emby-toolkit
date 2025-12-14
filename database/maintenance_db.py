@@ -222,7 +222,7 @@ def get_stats_subscription():
                 # 5.2 收集所有需要检查的 ID (SQL查询只需要ID)
                 all_tmdb_ids_to_check = set()
                 for col in active_collections:
-                    if col['type'] not in ['list', 'ai_recommendation', 'ai_recommendation_global']:
+                    if col['type'] not in ['list', 'ai_recommendation_global']:
                         continue
                         
                     media_list = col['generated_media_info_json']
@@ -256,7 +256,7 @@ def get_stats_subscription():
 
                 # 5.4 计算缺失 (★ 精确比对 ★)
                 for col in active_collections:
-                    if col['type'] not in ['list', 'ai_recommendation', 'ai_recommendation_global']:
+                    if col['type'] not in ['list', 'ai_recommendation_global']:
                         continue
                         
                     media_list = col['generated_media_info_json']

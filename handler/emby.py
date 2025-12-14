@@ -4,6 +4,7 @@ import requests
 import concurrent.futures
 import os
 import gc
+import random
 import base64
 import shutil
 import time
@@ -1343,13 +1344,49 @@ def create_or_update_collection_with_emby_ids(
     base_url: str, 
     api_key: str, 
     user_id: str,
-    prefetched_collection_map: Optional[dict] = None
+    prefetched_collection_map: Optional[dict] = None,
+    allow_empty: bool = False
 ) -> Optional[str]:
     logger.info(f"  ➜ 开始在Emby中处理名为 '{collection_name}' 的合集...")
     
     try:
         desired_emby_ids = emby_ids_in_library
         
+        # ==============================================================================
+        # ★★★ 核心修复：前置“特洛伊木马”逻辑 ★★★
+        # 不管是创建还是更新，只要列表为空且允许为空，就先抓 9 个壮丁
+        # ==============================================================================
+        if not desired_emby_ids and allow_empty:
+            logger.info(f"  ➜ 合集 '{collection_name}' 为空壳模式，正在抓取 9 个随机媒体项作为封面素材...")
+            try:
+                temp_resp = requests.get(
+                    f"{base_url}/Items", 
+                    params={
+                        'api_key': api_key, 
+                        'Limit': 9,             
+                        'Recursive': 'true', 
+                        'IncludeItemTypes': 'Movie,Series',
+                        'SortBy': 'Random',     
+                        'ImageTypes': 'Primary' 
+                    },
+                    timeout=15
+                )
+                
+                if temp_resp.status_code == 200:
+                    items = temp_resp.json().get('Items', [])
+                    if items:
+                        desired_emby_ids = [i['Id'] for i in items]
+                        logger.info(f"  ➜ 成功抓取 {len(desired_emby_ids)} 个随机素材 (将用于填充/轮换封面)。")
+                    else:
+                        logger.warning("  ➜ Emby 返回了空列表，无法获取封面素材。")
+                else:
+                    logger.warning(f"  ➜ 获取随机媒体项失败: {temp_resp.status_code}")
+                    
+            except Exception as e:
+                logger.error(f"  ➜ 获取随机封面素材失败: {e}")
+        
+        # ==============================================================================
+
         collection = prefetched_collection_map.get(collection_name.lower()) if prefetched_collection_map is not None else get_collection_by_name(collection_name, base_url, api_key, user_id)
         
         emby_collection_id = None
@@ -1369,20 +1406,22 @@ def create_or_update_collection_with_emby_ids(
             ids_to_add = list(set_desired - set_current)
 
             if ids_to_remove:
-                logger.info(f"  ➜ 发现 {len(ids_to_remove)} 个项目需要移除...")
+                logger.info(f"  ➜ 发现 {len(ids_to_remove)} 个旧封面素材需要移除...")
                 remove_items_from_collection(emby_collection_id, ids_to_remove, base_url, api_key)
             
             if ids_to_add:
-                logger.info(f"  ➜ 发现 {len(ids_to_add)} 个新项目需要添加...")
+                logger.info(f"  ➜ 发现 {len(ids_to_add)} 个新封面素材需要添加...")
                 add_items_to_collection(emby_collection_id, ids_to_add, base_url, api_key)
 
             if not ids_to_remove and not ids_to_add:
-                logger.info("  ➜ 合集内容已是最新，无需改动。")
+                logger.info("  ➜ 合集封面素材已是最新（随机结果居然一样？），无需改动。")
 
             return emby_collection_id
         else:
             logger.info(f"  ➜ 未找到合集 '{collection_name}'，将开始创建...")
-            if not desired_emby_ids:
+            
+            # 如果经过上面的抓取逻辑后还是空的，且不允许为空，才报错
+            if not desired_emby_ids and not allow_empty:
                 logger.warning(f"合集 '{collection_name}' 在媒体库中没有任何匹配项，跳过创建。")
                 return None
 
@@ -1390,7 +1429,6 @@ def create_or_update_collection_with_emby_ids(
             params = {'api_key': api_key}
             payload = {'Name': collection_name, 'Ids': ",".join(desired_emby_ids)}
             
-            # ★★★ 核心修改: 动态获取超时时间 ★★★
             api_timeout = config_manager.APP_CONFIG.get(constants.CONFIG_OPTION_EMBY_API_TIMEOUT, 60)
             response = requests.post(api_url, params=params, data=payload, timeout=api_timeout)
             response.raise_for_status()

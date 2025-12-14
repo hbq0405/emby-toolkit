@@ -132,7 +132,7 @@ def api_get_all_custom_collections():
             
             missing_count = 0
             
-            if c_type in ['list', 'ai_recommendation', 'ai_recommendation_global'] and media_items:
+            if c_type in ['list', 'ai_recommendation_global'] and media_items:
                 for item in media_items:
                     tmdb_id = None
                     media_type = 'Movie' # 默认为 Movie

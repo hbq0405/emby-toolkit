@@ -140,6 +140,17 @@ def init_db():
                     )
                 """)
 
+                logger.trace("  ➜ 正在创建 'user_recommendation_cache' 表 (千人千面缓存)...")
+                cursor.execute("""
+                    CREATE TABLE IF NOT EXISTS user_recommendation_cache (
+                        user_id TEXT NOT NULL,
+                        type TEXT NOT NULL DEFAULT 'vector', -- 'vector', 'llm' 等，预留扩展
+                        items_json JSONB NOT NULL,
+                        created_at TIMESTAMP WITH TIME ZONE DEFAULT NOW(),
+                        PRIMARY KEY (user_id, type)
+                    )
+                """)
+
                 logger.trace("  ➜ 正在创建 'user_collection_cache' 表 (虚拟库权限预计算)...")
                 cursor.execute("""
                     CREATE TABLE IF NOT EXISTS user_collection_cache (

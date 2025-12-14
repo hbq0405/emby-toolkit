@@ -534,7 +534,7 @@ def task_process_all_custom_collections(processor):
                 elif collection['type'] == 'filter':
                     engine = FilterEngine()
                     raw_tmdb_items = engine.execute_filter(definition)
-                elif collection['type'] in ('ai_recommendation', 'ai_recommendation_global'):
+                elif collection['type'] == 'ai_recommendation_global':
                     from handler.custom_collection import RecommendationEngine
                     rec_engine = RecommendationEngine(processor.tmdb_api_key)
                     raw_tmdb_items = rec_engine.generate(definition)
@@ -552,8 +552,10 @@ def task_process_all_custom_collections(processor):
                     for item in raw_tmdb_items
                 ]
 
-                if not tmdb_items:
+                if not tmdb_items and collection['type'] != 'ai_recommendation':
                     logger.warning(f"合集 '{collection_name}' 未生成任何媒体ID，跳过。")
+                    # 如果是 list 类型且为空，可能需要清空 emby_collection_id 以示状态
+                    # collection_db.update_custom_collection_sync_results(collection_id, {"emby_collection_id": None})
                     continue
 
                 # --- B. 映射 Emby ID (适配组合键) ---
@@ -573,10 +575,15 @@ def task_process_all_custom_collections(processor):
                             global_ordered_emby_ids.append(found_id)
 
                 # --- C. 更新 Emby 合集 ---
+                should_allow_empty = (collection['type'] == 'ai_recommendation')
                 emby_collection_id = emby.create_or_update_collection_with_emby_ids(
-                    collection_name=collection_name, emby_ids_in_library=global_ordered_emby_ids, 
-                    base_url=processor.emby_url, api_key=processor.emby_api_key, user_id=processor.emby_user_id,
-                    prefetched_collection_map=prefetched_collection_map
+                    collection_name=collection_name, 
+                    emby_ids_in_library=global_ordered_emby_ids, 
+                    base_url=processor.emby_url, 
+                    api_key=processor.emby_api_key, 
+                    user_id=processor.emby_user_id,
+                    prefetched_collection_map=prefetched_collection_map,
+                    allow_empty=should_allow_empty 
                 )
 
                 # --- D. 按需计算用户权限 ---
@@ -720,7 +727,7 @@ def process_single_custom_collection(processor, custom_collection_id: int):
         elif collection['type'] == 'filter':
             engine = FilterEngine()
             raw_tmdb_items = engine.execute_filter(definition)
-        elif collection['type'] in ('ai_recommendation', 'ai_recommendation_global'):
+        elif collection['type'] == 'ai_recommendation_global':
             from handler.custom_collection import RecommendationEngine
             rec_engine = RecommendationEngine(processor.tmdb_api_key)
             raw_tmdb_items = rec_engine.generate(definition)
@@ -738,7 +745,7 @@ def process_single_custom_collection(processor, custom_collection_id: int):
             for item in raw_tmdb_items
         ]
 
-        if not tmdb_items:
+        if not tmdb_items and collection['type'] != 'ai_recommendation':
             collection_db.update_custom_collection_sync_results(custom_collection_id, {"emby_collection_id": None})
             task_manager.update_status_from_thread(100, "该合集未匹配到任何媒体。")
             return
@@ -768,9 +775,11 @@ def process_single_custom_collection(processor, custom_collection_id: int):
 
         # 5. 在 Emby 中创建/更新合集
         task_manager.update_status_from_thread(60, "正在Emby中创建/更新合集...")
+        should_allow_empty = (collection['type'] == 'ai_recommendation')
         emby_collection_id = emby.create_or_update_collection_with_emby_ids(
             collection_name=collection_name, emby_ids_in_library=global_ordered_emby_ids, 
-            base_url=processor.emby_url, api_key=processor.emby_api_key, user_id=processor.emby_user_id
+            base_url=processor.emby_url, api_key=processor.emby_api_key, user_id=processor.emby_user_id,
+            allow_empty=should_allow_empty
         )
 
         # 6. 按需计算用户权限

@@ -3,14 +3,18 @@
 import logging
 import requests
 import re
+import random
 import json
 from flask import Flask, request, Response
 from urllib.parse import urlparse, urlunparse
+from datetime import datetime, timedelta
 import time
 import uuid 
 from gevent import spawn, joinall
 from websocket import create_connection
-from database import collection_db, user_db, queries_db
+from database import collection_db, user_db, queries_db, media_db
+from database.connection import get_db_connection
+from handler.custom_collection import RecommendationEngine
 import config_manager
 
 import extensions
@@ -118,45 +122,152 @@ def _fetch_sorted_items_via_emby_proxy(user_id, item_ids, sort_by, sort_order, l
         return {"Items": [], "TotalRecordCount": total_record_count}
 
 def _get_final_item_ids_for_view(user_id, collection_info):
-    """
-    - 直接从 user_collection_cache 表中获取为该用户预计算好的、100%有权限的媒体列表。
-    - 仍然保留了动态用户数据筛选的能力。
-    """
     collection_id = collection_info['id']
+    collection_type = collection_info.get('type')
     definition = collection_info.get('definition_json') or {}
     
-    # --- 步骤 1: 直接从本地数据库中查询用户专属列表 ---
-    from database.connection import get_db_connection
-    base_ordered_emby_ids = []
+    # 1. 获取配置的数量限制，默认 50
     try:
-        with get_db_connection() as conn:
-            with conn.cursor() as cursor:
-                cursor.execute(
-                    "SELECT visible_emby_ids_json FROM user_collection_cache WHERE user_id = %s AND collection_id = %s",
-                    (user_id, collection_id)
-                )
-                row = cursor.fetchone()
-                if row and row['visible_emby_ids_json']:
-                    base_ordered_emby_ids = row['visible_emby_ids_json']
-    except Exception as e:
-        logger.error(f"  ➜ 查询用户 {user_id} 在合集 {collection_id} 的权限缓存时出错: {e}", exc_info=True)
+        configured_limit = int(definition.get('limit', 50))
+    except (ValueError, TypeError):
+        configured_limit = 50
+    
+    final_emby_ids = []
+
+    # ==================================================================
+    # 分支 1: 个人推荐 (千人千面 - 实时向量)
+    # ==================================================================
+    if collection_type == 'ai_recommendation':
+        # ★★★ 修改：彻底移除缓存读取，每次都实时计算 ★★★
+        
+        try:
+            api_key = config_manager.APP_CONFIG.get("tmdb_api_key")
+            if not api_key:
+                return []
+
+            engine = RecommendationEngine(api_key)
+            
+            # 请求时多要一点点 (Buffer)
+            buffer_limit = configured_limit + 5
+            
+            # 实时计算！
+            pool_size = max(configured_limit * 3, 60)
+            
+            # 获取候选池 (比如前 150 名)
+            candidate_pool = engine.generate_user_vector(user_id, limit=pool_size)
+            
+            if candidate_pool:
+                # ★★★ 3. 核心修改：精选鱼 (随机抽取) ★★★
+                # 从候选池中，随机抽取 configured_limit 个
+                count_to_pick = min(len(candidate_pool), configured_limit)
+                recommendations = random.sample(candidate_pool, count_to_pick)
+                
+                # (可选) 顺手更新缓存表用于记录日志，这里存的是随机后的结果
+                try:
+                    with get_db_connection() as conn:
+                        with conn.cursor() as cursor:
+                            cursor.execute(
+                                """
+                                INSERT INTO user_recommendation_cache (user_id, type, items_json, created_at)
+                                VALUES (%s, 'vector', %s, NOW())
+                                ON CONFLICT (user_id, type) DO UPDATE SET items_json = EXCLUDED.items_json, created_at = NOW()
+                                """,
+                                (user_id, json.dumps(recommendations))
+                            )
+                            conn.commit()
+                except Exception as db_e:
+                    logger.error(f"  ➜ 更新推荐记录失败: {db_e}")
+
+                # 开始转换 ID (TMDb -> Emby)
+                items_to_lookup = []
+                for item in recommendations:
+                    tid = item.get('id') or item.get('tmdb_id')
+                    mtype = item.get('type') or item.get('media_type')
+                    if tid and mtype:
+                        items_to_lookup.append({'tmdb_id': str(tid), 'media_type': mtype})
+                
+                if items_to_lookup:
+                    lookup_map = media_db.get_emby_ids_for_items(items_to_lookup)
+                    for item in items_to_lookup:
+                        key = f"{item['tmdb_id']}_{item['media_type']}"
+                        if key in lookup_map:
+                            final_emby_ids.append(lookup_map[key]['Id'])
+                
+                # 这里的截断其实 random.sample 已经做过了，但为了保险保留
+                if len(final_emby_ids) > configured_limit:
+                    final_emby_ids = final_emby_ids[:configured_limit]
+
+        except Exception as calc_e:
+            logger.error(f"  ➜ 实时计算推荐时发生错误: {calc_e}", exc_info=True)
+            return []
+
+    # ==================================================================
+    # 分支 2: 全局推荐 (LLM + 向量，预生成的静态数据)
+    # ==================================================================
+    elif collection_type == 'ai_recommendation_global':
+        raw_json = collection_info.get('generated_media_info_json')
+        if raw_json:
+            items = json.loads(raw_json) if isinstance(raw_json, str) else raw_json
+            if items:
+                items_to_lookup = []
+                for item in items:
+                    tid = item.get('tmdb_id') or item.get('id')
+                    mtype = item.get('media_type') or item.get('type') or item.get('item_type')
+                    if tid and mtype:
+                        items_to_lookup.append({'tmdb_id': str(tid), 'media_type': mtype})
+                
+                if items_to_lookup:
+                    lookup_map = media_db.get_emby_ids_for_items(items_to_lookup)
+                    for item in items_to_lookup:
+                        key = f"{item['tmdb_id']}_{item['media_type']}"
+                        if key in lookup_map:
+                            final_emby_ids.append(lookup_map[key]['Id'])
+
+    # ==================================================================
+    # 分支 3: 普通合集 (List / Filter - 预计算的 Emby ID)
+    # ==================================================================
+    else:
+        try:
+            with get_db_connection() as conn:
+                with conn.cursor() as cursor:
+                    cursor.execute(
+                        "SELECT visible_emby_ids_json FROM user_collection_cache WHERE user_id = %s AND collection_id = %s",
+                        (user_id, collection_id)
+                    )
+                    row = cursor.fetchone()
+                    if row and row['visible_emby_ids_json']:
+                        final_emby_ids = row['visible_emby_ids_json']
+        except Exception as e:
+            logger.error(f"  ➜ 查询用户 {user_id} 在合集 {collection_id} 的权限缓存时出错: {e}", exc_info=True)
+            return []
+
+    # ==================================================================
+    # 通用后续处理: 动态过滤 & 权限清洗
+    # ==================================================================
+    if not final_emby_ids:
         return []
 
-    if not base_ordered_emby_ids:
-        return []
-
-    # --- 步骤 2: 在这个干净的列表上，再执行动态用户数据筛选 (如果需要) ---
-    final_emby_ids_to_process = base_ordered_emby_ids
+    # 1. 动态过滤 (已看/收藏)
     if definition.get('dynamic_filter_enabled'):
         dynamic_rules = definition.get('dynamic_rules', [])
-        ids_from_local_db = user_db.get_item_ids_by_dynamic_rules(user_id, dynamic_rules)
-        
-        if ids_from_local_db is not None:
-            dynamic_ids_set = set(ids_from_local_db)
-            final_emby_ids_to_process = [emby_id for emby_id in base_ordered_emby_ids if emby_id in dynamic_ids_set]
-            logger.trace(f"  ➜ 用户个人行为数据过滤后，媒体项数量从 {len(base_ordered_emby_ids)} 变为 {len(final_emby_ids_to_process)}。")
+        if dynamic_rules:
+            ids_from_local_db = user_db.get_item_ids_by_dynamic_rules(user_id, dynamic_rules)
+            if ids_from_local_db is not None:
+                dynamic_ids_set = set(ids_from_local_db)
+                final_emby_ids = [eid for eid in final_emby_ids if eid in dynamic_ids_set]
 
-    return final_emby_ids_to_process
+    # 2. 权限清洗 (验票)
+    if final_emby_ids:
+        try:
+            base_url, api_key = _get_real_emby_url_and_key()
+            valid_items = _fetch_items_in_chunks(base_url, api_key, user_id, final_emby_ids, fields='Id')
+            if valid_items is not None:
+                valid_id_set = set(item['Id'] for item in valid_items)
+                final_emby_ids = [eid for eid in final_emby_ids if eid in valid_id_set]
+        except Exception as e:
+            logger.error(f"  ➜ [权限清洗] 校验出错: {e}")
+
+    return final_emby_ids
 
 def handle_get_views():
     """
