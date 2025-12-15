@@ -320,7 +320,7 @@ const saveStrategyConfig = async () => {
 const typeFilterOptions = [
   { label: '所有类型', value: 'all' },
   { label: '电影', value: 'Movie' },
-  { label: '剧集', value: 'Series' },
+  { label: '剧集', value: 'Season' },
 ];
 const sortKeyOptions = computed(() => [
   { 
