@@ -2779,6 +2779,33 @@ class MediaProcessor:
         except Exception as e_list:
             logger.error(f"  ➜ {log_prefix} 遍历并更新季/集文件时发生错误: {e_list}", exc_info=True)
 
+    # 提取标签
+    def extract_tag_names(item_data):
+        """
+        兼容新旧版 Emby API 提取标签名。
+        """
+        tags_set = set()
+
+        # 1. 尝试提取 TagItems (新版/详细版)
+        tag_items = item_data.get('TagItems')
+        if isinstance(tag_items, list):
+            for t in tag_items:
+                if isinstance(t, dict):
+                    name = t.get('Name')
+                    if name:
+                        tags_set.add(name)
+                elif isinstance(t, str) and t:
+                    tags_set.add(t)
+        
+        # 2. 尝试提取 Tags (旧版/简略版)
+        tags = item_data.get('Tags')
+        if isinstance(tags, list):
+            for t in tags:
+                if t:
+                    tags_set.add(str(t))
+        
+        return list(tags_set)
+
     # --- 为一个媒体项同步元数据缓存 ---
     def sync_single_item_to_metadata_cache(self, item_id: str, item_name: Optional[str] = None, episode_ids_to_add: Optional[List[str]] = None):
         """
@@ -2931,7 +2958,7 @@ class MediaProcessor:
 
             else:
                 # --- 模式二：常规元数据刷新 ---
-                fields_to_get = "ProviderIds,Type,Name,OriginalTitle,Overview,Tags,OfficialRating,MediaStreams,Container,Size,Path,_SourceLibraryId"
+                fields_to_get = "ProviderIds,Type,Name,OriginalTitle,Overview,TagItems,OfficialRating,MediaStreams,Container,Size,Path,_SourceLibraryId"
                 item_details = emby.get_emby_item_details(item_id, self.emby_url, self.emby_api_key, self.emby_user_id, fields=fields_to_get)
                 if not item_details:
                     logger.warning(f"  ➜ {log_prefix} 无法获取项目 {item_id} 的详情，跳过。")
@@ -2951,11 +2978,35 @@ class MediaProcessor:
 
                 with get_central_db_connection() as conn:
                     with conn.cursor() as cursor:
+                        # 提取标签
+                        def extract_tag_names(item_data):
+                            tags_set = set()
+
+                            # 1. 尝试提取 TagItems (新版/详细版)
+                            tag_items = item_data.get('TagItems')
+                            if isinstance(tag_items, list):
+                                for t in tag_items:
+                                    if isinstance(t, dict):
+                                        name = t.get('Name')
+                                        if name:
+                                            tags_set.add(name)
+                                    elif isinstance(t, str) and t:
+                                        tags_set.add(t)
+                            
+                            # 2. 尝试提取 Tags (旧版/简略版)
+                            tags = item_data.get('Tags')
+                            if isinstance(tags, list):
+                                for t in tags:
+                                    if t:
+                                        tags_set.add(str(t))
+                            
+                            return list(tags_set)
+                        final_tags = extract_tag_names(item_details)
                         updates = {
                             "title": item_details.get('Name'), "original_title": item_details.get('OriginalTitle'),
                             "overview": item_details.get('Overview'), "official_rating": item_details.get('OfficialRating'),
                             "unified_rating": get_unified_rating(item_details.get('OfficialRating')),
-                            "pre_cached_tags_json": json.dumps(item_details.get('Tags', []), ensure_ascii=False),
+                            "pre_cached_tags_json": json.dumps(final_tags, ensure_ascii=False),
                             "last_synced_at": datetime.now(timezone.utc)
                         }
                         
@@ -2990,7 +3041,7 @@ class MediaProcessor:
                                         details = parse_full_asset_details(v)
                                         details['source_library_id'] = v.get('_SourceLibraryId') or parent_lib_id
                                         asset_details_list.append(details)
-                                    asset_json = json.dumps(asset_details, ensure_ascii=False)
+                                    asset_json = json.dumps(asset_details_list, ensure_ascii=False)
                                     
                                     cursor.execute(
                                         "UPDATE media_metadata SET asset_details_json = %s, last_synced_at = NOW() WHERE tmdb_id = %s AND item_type = 'Episode'",

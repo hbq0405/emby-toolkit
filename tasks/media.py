@@ -197,6 +197,33 @@ def task_reprocess_all_review_items(processor):
         logger.error(f"重新处理所有待复核项时发生严重错误: {e}", exc_info=True)
         task_manager.update_status_from_thread(-1, "任务失败")
 
+# 提取标签
+def extract_tag_names(item_data):
+    """
+    兼容新旧版 Emby API 提取标签名。
+    """
+    tags_set = set()
+
+    # 1. 尝试提取 TagItems (新版/详细版)
+    tag_items = item_data.get('TagItems')
+    if isinstance(tag_items, list):
+        for t in tag_items:
+            if isinstance(t, dict):
+                name = t.get('Name')
+                if name:
+                    tags_set.add(name)
+            elif isinstance(t, str) and t:
+                tags_set.add(t)
+    
+    # 2. 尝试提取 Tags (旧版/简略版)
+    tags = item_data.get('Tags')
+    if isinstance(tags, list):
+        for t in tags:
+            if t:
+                tags_set.add(str(t))
+    
+    return list(tags_set)
+
 # ★★★ 重量级的元数据缓存填充任务 (内存优化版) ★★★
 def task_populate_metadata_cache(processor, batch_size: int = 50, force_full_update: bool = False):
     """
@@ -269,7 +296,7 @@ def task_populate_metadata_cache(processor, batch_size: int = 50, force_full_upd
         pending_children = [] 
 
         scan_count = 0
-        req_fields = "ProviderIds,Type,DateCreated,Name,OriginalTitle,PremiereDate,CommunityRating,Genres,Studios,Tags,DateModified,OfficialRating,ProductionYear,Path,PrimaryImageAspectRatio,Overview,MediaStreams,Container,Size,SeriesId,ParentIndexNumber,IndexNumber,ParentId,RunTimeTicks,_SourceLibraryId"
+        req_fields = "ProviderIds,Type,DateCreated,Name,OriginalTitle,PremiereDate,CommunityRating,Genres,Studios,Tags,TagItems,DateModified,OfficialRating,ProductionYear,Path,PrimaryImageAspectRatio,Overview,MediaStreams,Container,Size,SeriesId,ParentIndexNumber,IndexNumber,ParentId,RunTimeTicks,_SourceLibraryId"
 
         item_generator = emby.fetch_all_emby_items_generator(
             base_url=processor.emby_url, 
@@ -534,6 +561,7 @@ def task_populate_metadata_cache(processor, batch_size: int = 50, force_full_upd
                     "date_added": item.get('DateCreated'),
                     "release_date": final_release_date,
                     "genres_json": json.dumps(item.get('Genres', []), ensure_ascii=False),
+                    "pre_cached_tags_json": json.dumps(extract_tag_names(item), ensure_ascii=False),
                     "official_rating": item.get('OfficialRating'), 
                     "unified_rating": get_unified_rating(item.get('OfficialRating')),
                     "runtime_minutes": emby_runtime if (item_type == 'Movie' and emby_runtime) else tmdb_details.get('runtime') if (item_type == 'Movie' and tmdb_details) else None
@@ -634,6 +662,7 @@ def task_populate_metadata_cache(processor, batch_size: int = 50, force_full_upd
                                     "release_date": s_release_date,
                                     "subscription_status": "NONE",
                                     "emby_item_ids_json": json.dumps([s.get('Id') for s in matched_emby_seasons]),
+                                    "pre_cached_tags_json": json.dumps(extract_tag_names(matched_emby_seasons[0]) if matched_emby_seasons else [], ensure_ascii=False),
                                     "ignore_reason": None
                                 }
                                 metadata_batch.append(season_record)
@@ -679,6 +708,7 @@ def task_populate_metadata_cache(processor, batch_size: int = 50, force_full_upd
                                 "release_date": s_release_date,
                                 "subscription_status": "NONE",
                                 "emby_item_ids_json": json.dumps([s.get('Id')]),
+                                "pre_cached_tags_json": json.dumps(extract_tag_names(s), ensure_ascii=False),
                                 "ignore_reason": "Local Season Only"
                             }
                             metadata_batch.append(season_record)
@@ -716,6 +746,7 @@ def task_populate_metadata_cache(processor, batch_size: int = 50, force_full_upd
                             "release_date": ep_release_date,
                             "emby_item_ids_json": json.dumps([v.get('Id') for v in versions]),
                             "asset_details_json": json.dumps(ep_asset_details_list, ensure_ascii=False),
+                            "pre_cached_tags_json": json.dumps(extract_tag_names(versions[0]), ensure_ascii=False),
                             "ignore_reason": None
                         }
 
