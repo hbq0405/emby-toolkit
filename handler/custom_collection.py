@@ -1248,6 +1248,7 @@ class RecommendationEngine:
                     FROM media_metadata 
                     WHERE overview_embedding IS NOT NULL
                       AND item_type IN ('Movie', 'Series')
+                      AND in_library = TRUE
                 """)
                 all_data = cursor.fetchall()
             

@@ -696,16 +696,26 @@ def cleanup_deleted_media_item(item_id: str, item_name: str, item_type: str, ser
                 with conn.cursor() as cursor:
                     # 1. 标记主条目离线
                     cursor.execute(
-                        "UPDATE media_metadata SET in_library = FALSE, emby_item_ids_json = '[]'::jsonb, asset_details_json = NULL WHERE tmdb_id = %s AND item_type = %s",
+                        """
+                        UPDATE media_metadata 
+                        SET in_library = FALSE, 
+                            emby_item_ids_json = '[]'::jsonb, 
+                            asset_details_json = NULL,
+                            overview_embedding = NULL 
+                        WHERE tmdb_id = %s AND item_type = %s
+                        """,
                         (target_tmdb_id_for_full_cleanup, target_item_type_for_full_cleanup)
                     )
 
-                    # ★★★ 新增：如果是剧集，必须级联标记所有子项（季、集）离线 ★★★
+                    # ★★★ 如果是剧集，必须级联标记所有子项（季、集）离线 ★★★
                     if target_item_type_for_full_cleanup == 'Series':
                         cursor.execute(
                             """
                             UPDATE media_metadata 
-                            SET in_library = FALSE, emby_item_ids_json = '[]'::jsonb, asset_details_json = NULL 
+                            SET in_library = FALSE, 
+                                emby_item_ids_json = '[]'::jsonb, 
+                                asset_details_json = NULL,
+                                overview_embedding = NULL 
                             WHERE parent_series_tmdb_id = %s AND item_type IN ('Season', 'Episode')
                             """,
                             (target_tmdb_id_for_full_cleanup,)
