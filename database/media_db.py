@@ -995,7 +995,7 @@ def get_user_positive_history(user_id: str, limit: int = 20) -> List[Dict[str, A
             if not history:
                 logger.warning(f"  ➜ [数据库] 用户 {user_id} 未查到符合条件的观看历史。")
             else:
-                logger.debug(f"  ➜ [数据库] 成功提取用户 {user_id} 的 {len(history)} 条好评历史 (含ID)。")
+                logger.trace(f"  ➜ [数据库] 成功提取用户 {user_id} 的 {len(history)} 条好评历史 (含ID)。")
                 
             return history
     except Exception as e:
@@ -1027,7 +1027,7 @@ def get_user_all_interacted_history(user_id: str) -> List[Dict[str, Any]]:
             # 只需要 ID 用于过滤
             history = [dict(row) for row in rows]
             
-            logger.debug(f"  ➜ [数据库] 为用户 {user_id} 提取到 {len(history)} 条全量交互记录(含弃坑/未完结)用于去重。")
+            logger.trace(f"  ➜ [数据库] 为用户 {user_id} 提取到 {len(history)} 条全量交互记录(含弃坑/未完结)用于去重。")
             return history
     except Exception as e:
         logger.error(f"获取用户 {user_id} 的全量交互历史失败: {e}")
