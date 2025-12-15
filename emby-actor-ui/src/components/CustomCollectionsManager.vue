@@ -1545,7 +1545,7 @@ const getInitialFormModel = () => ({
     dynamic_filter_enabled: false,
     dynamic_logic: 'AND',
     dynamic_rules: [],
-    show_in_latest: true,
+    show_in_latest: false,
     ai_discovery_ratio: 0.2,
   }
 });
@@ -1561,7 +1561,7 @@ watch(() => currentCollection.value.type, (newType) => {
     dynamic_filter_enabled: false,
     dynamic_logic: 'AND',
     dynamic_rules: [],
-    show_in_latest: true,
+    show_in_latest: false,
     ai_discovery_ratio: 0.2,
   };
 
@@ -2019,7 +2019,7 @@ const handleEditClick = (row) => {
   }
 
   if (typeof rowCopy.definition.show_in_latest === 'undefined') {
-    rowCopy.definition.show_in_latest = true;
+    rowCopy.definition.show_in_latest = false;
   }
 
   if (!rowCopy.definition.default_sort_by) {
