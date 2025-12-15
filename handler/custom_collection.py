@@ -910,7 +910,7 @@ class FilterEngine:
             match = False
             
             # 1. 处理列表字段
-            if field in ['actors', 'directors', 'genres', 'countries', 'studios', 'tags', 'keywords']:
+            if field in ['actors', 'directors', 'genres', 'countries', 'studios', 'pre_cached_tags', 'keywords']:
                 item_value_list = item_metadata.get(f"{field}_json")
                 if not item_value_list or not isinstance(item_value_list, list):
                     results.append(False)
