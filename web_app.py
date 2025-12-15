@@ -375,7 +375,9 @@ def main_app_start():
             logger.warning(f"  ⚠️ 向量预加载失败 (不影响启动): {e}")
 
     if config_manager.APP_CONFIG.get(constants.CONFIG_OPTION_PROXY_ENABLED):
-        gevent.spawn(warmup_vector_cache)
+        # 这行代码会启动一个后台死循环，每隔 30 分钟刷新一次数据
+        # 且第一次会立即执行，起到“预热”的作用
+        RecommendationEngine.start_auto_refresh_loop()
     else:
         logger.debug("  ❌ 虚拟库功能未启用，跳过向量预加载以节省内存。")
     

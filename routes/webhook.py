@@ -13,6 +13,7 @@ from gevent.lock import Semaphore
 import task_manager
 import handler.emby as emby
 import config_manager
+import constants
 import handler.telegram as telegram
 import extensions
 from extensions import SYSTEM_UPDATE_MARKERS, SYSTEM_UPDATE_LOCK, RECURSION_SUPPRESSION_WINDOW
@@ -22,7 +23,7 @@ from tasks import (
     task_sync_all_metadata, task_sync_images, task_apply_main_cast_to_episodes,
     task_process_watchlist
 )
-from handler.custom_collection import FilterEngine
+from handler.custom_collection import FilterEngine, RecommendationEngine
 from services.cover_generator import CoverGeneratorService
 from database import collection_db, settings_db, user_db, maintenance_db, media_db
 from database.log_db import LogDBManager
@@ -221,6 +222,17 @@ def _handle_full_processing_flow(processor: 'MediaProcessor', item_id: str, forc
 
     except Exception as e:
         logger.error(f"  ➜ 在新入库后执行精准封面生成或权限补票时发生错误: {e}", exc_info=True)
+
+    # ======================================================================
+    # ★★★ 入库完成后，主动刷新向量推荐引擎缓存 ★★★
+    # ======================================================================
+    if config_manager.APP_CONFIG.get(constants.CONFIG_OPTION_PROXY_ENABLED):
+        try:
+            # 异步执行，不阻塞当前 Webhook 线程
+            spawn(RecommendationEngine.refresh_cache)
+            logger.debug(f"  ➜ [智能推荐] 已触发向量缓存刷新，新入库的 '{item_name_for_log}' 将即刻加入推荐池。")
+        except Exception as e:
+            logger.warning(f"  ➜ [智能推荐] 触发缓存刷新失败: {e}")
 
     logger.trace(f"  ➜ Webhook 任务及所有后续流程完成: '{item_name_for_log}'")
 

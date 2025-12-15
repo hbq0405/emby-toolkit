@@ -5,6 +5,7 @@ import xml.etree.ElementTree as ET
 import re
 import os
 import time
+import gevent
 import numpy as np
 import sys
 import gevent
@@ -17,7 +18,6 @@ from gevent import subprocess, Timeout
 
 import handler.tmdb as tmdb
 import handler.emby as emby
-import utils
 import config_manager
 from tasks.helpers import parse_series_title_and_season
 from database import collection_db, watchlist_db, media_db, connection
@@ -1219,24 +1219,30 @@ class RecommendationEngine:
     _cache_ids = None
     _cache_titles = None
     _cache_types = None
-    _cache_timestamp = 0
-    _CACHE_DURATION = 1800 
+    # 刷新间隔 (秒) - 比如 30 分钟
+    _REFRESH_INTERVAL = 1800 
+    _is_refreshing_loop_running = False 
 
     def __init__(self, tmdb_api_key: str):
         self.tmdb_api_key = tmdb_api_key
         self.list_importer = ListImporter(tmdb_api_key) # 复用搜索匹配逻辑
 
-    def _load_vectors_from_db(self):
+    @classmethod
+    def refresh_cache(cls):
         """
-        【内部方法】从数据库加载向量并构建矩阵 (耗时操作)
+        【类方法】强制刷新缓存 (执行数据库读取和矩阵构建)
         """
-        logger.debug("  ➜ [向量引擎] 缓存失效或为空，正在从数据库全量加载向量数据...")
+        logger.info("  🔄 [向量引擎] 开始后台刷新向量缓存...")
         start_t = time.time()
         
         try:
+            # 实例化一个临时的对象来调用 _load_vectors_from_db (或者把那个函数改成静态方法也可以)
+            # 这里为了复用代码，我们把 _load_vectors_from_db 的逻辑搬过来或者做成静态的
+            # 为了简单，我们直接在这里写逻辑，或者假设 _load_vectors_from_db 变成了 @staticmethod
+            
+            # --- 下面是加载逻辑的复刻 ---
             with connection.get_db_connection() as conn:
                 cursor = conn.cursor()
-                # 只查 Movie 和 Series
                 cursor.execute("""
                     SELECT tmdb_id, title, item_type, overview_embedding 
                     FROM media_metadata 
@@ -1246,13 +1252,10 @@ class RecommendationEngine:
                 all_data = cursor.fetchall()
             
             if not all_data:
-                return None, None, None, None
+                logger.warning("  ⚠️ [向量引擎] 数据库为空，无法刷新缓存。")
+                return
 
-            ids = []
-            vectors = []
-            titles = []
-            types = []
-            
+            ids, vectors, titles, types = [], [], [], []
             for row in all_data:
                 vec = row.get('overview_embedding')
                 if vec and len(vec) > 0:
@@ -1262,40 +1265,56 @@ class RecommendationEngine:
                     vectors.append(np.array(vec, dtype=np.float32))
             
             if not vectors:
-                return None, None, None, None
+                return
 
-            # 构建矩阵
             matrix = np.stack(vectors)
-            # 归一化 (预先做完，计算时就不用做了)
             norm = np.linalg.norm(matrix, axis=1, keepdims=True)
             matrix = matrix / (norm + 1e-10)
+            # ---------------------------
 
-            logger.info(f"  ➜ [向量引擎] 数据加载完成。共 {len(ids)} 条向量，耗时 {time.time() - start_t:.2f}s。")
-            return matrix, ids, titles, types
+            # ★★★ 原子替换：这一瞬间完成更新，不会阻塞读操作 ★★★
+            cls._cache_matrix = matrix
+            cls._cache_ids = ids
+            cls._cache_titles = titles
+            cls._cache_types = types
+            
+            logger.info(f"  ✅ [向量引擎] 缓存刷新完成。共 {len(ids)} 条，耗时 {time.time() - start_t:.2f}s。")
 
         except Exception as e:
-            logger.error(f"  ➜ [向量引擎] 加载数据失败: {e}", exc_info=True)
-            return None, None, None, None
+            logger.error(f"  ❌ [向量引擎] 刷新缓存失败: {e}", exc_info=True)
+
+    @classmethod
+    def start_auto_refresh_loop(cls):
+        """
+        【类方法】启动自动刷新循环
+        """
+        if cls._is_refreshing_loop_running:
+            return
+        
+        cls._is_refreshing_loop_running = True
+        
+        def loop():
+            logger.info("  🚀 [向量引擎] 自动刷新守护线程已启动。")
+            # 第一次立即执行
+            cls.refresh_cache()
+            
+            while True:
+                # 休眠指定间隔
+                gevent.sleep(cls._REFRESH_INTERVAL)
+                # 醒来刷新
+                cls.refresh_cache()
+        
+        gevent.spawn(loop)
 
     def _get_vector_data(self):
         """
-        【内部方法】获取向量数据 (优先读缓存)
+        【内部方法】获取向量数据 (极速版)
         """
-        now = time.time()
-        # 如果缓存不存在，或者过期了
-        if (RecommendationEngine._cache_matrix is None or 
-            now - RecommendationEngine._cache_timestamp > RecommendationEngine._CACHE_DURATION):
+        # 如果缓存还没初始化（比如刚启动还没跑完第一次刷新），就阻塞加载一次
+        if RecommendationEngine._cache_matrix is None:
+            RecommendationEngine.refresh_cache()
             
-            matrix, ids, titles, types = self._load_vectors_from_db()
-            
-            if matrix is not None:
-                # 更新缓存
-                RecommendationEngine._cache_matrix = matrix
-                RecommendationEngine._cache_ids = ids
-                RecommendationEngine._cache_titles = titles
-                RecommendationEngine._cache_types = types
-                RecommendationEngine._cache_timestamp = now
-        
+        # 直接返回，不再判断时间，完全信任后台线程
         return (RecommendationEngine._cache_matrix, 
                 RecommendationEngine._cache_ids, 
                 RecommendationEngine._cache_titles, 
