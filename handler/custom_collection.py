@@ -1219,8 +1219,8 @@ class RecommendationEngine:
     _cache_ids = None
     _cache_titles = None
     _cache_types = None
-    # 刷新间隔 (秒) - 比如 30 分钟
-    _REFRESH_INTERVAL = 1800 
+    # 刷新间隔 (秒) - 比如 4 小时
+    _REFRESH_INTERVAL = 14400
     _is_refreshing_loop_running = False 
 
     def __init__(self, tmdb_api_key: str):

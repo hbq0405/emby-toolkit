@@ -655,6 +655,18 @@ def emby_webhook():
                     item_type=original_item_type,
                     series_id_from_webhook=series_id_from_webhook
                 )
+                # ==============================================================
+                # ★★★ 删除媒体后，也主动刷新向量缓存 (保持缓存纯净) ★★★
+                # ==============================================================
+                if config_manager.APP_CONFIG.get(constants.CONFIG_OPTION_PROXY_ENABLED):
+                    # 只有删除了 Movie 或 Series 才需要刷新，删 Episode 不影响向量库
+                    if original_item_type in ['Movie', 'Series']:
+                        try:
+                            spawn(RecommendationEngine.refresh_cache)
+                            logger.debug(f"  ➜ [智能推荐] 检测到媒体删除，已触发向量缓存刷新。")
+                        except Exception as e:
+                            logger.warning(f"  ➜ [智能推荐] 触发缓存刷新失败: {e}")
+                # ==============================================================
                 return jsonify({"status": "delete_event_processed"}), 200
             except Exception as e:
                 logger.error(f"处理删除事件 for item {original_item_id} 时发生错误: {e}", exc_info=True)
