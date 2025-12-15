@@ -213,7 +213,7 @@ def _get_final_item_ids_for_view(user_id, collection_info):
                             logger.warning(f"  ➜ [个人推荐] 应用默认排序失败: {sort_e}")
                     # ==========================================================
 
-                    logger.info(f"  ➜ [个人推荐] 用户 {user_id}: 候选 {len(candidate_pool)} -> 确权 {len(valid_candidate_ids)} -> 抽取并排序 {len(final_emby_ids)} (锚点: {timestamp_key})")
+                    logger.info(f"  ➜ [个人推荐] 用户 {user_id}: 候选 {len(candidate_pool)} -> 确权 {len(valid_candidate_ids)} -> 随机抽取 {len(final_emby_ids)}")
 
         except Exception as calc_e:
             logger.error(f"  ➜ 实时计算推荐时发生错误: {calc_e}", exc_info=True)
