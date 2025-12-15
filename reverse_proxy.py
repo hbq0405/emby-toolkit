@@ -188,38 +188,29 @@ def _get_final_item_ids_for_view(user_id, collection_info):
                 if valid_candidate_ids:
                     count_to_pick = min(len(valid_candidate_ids), configured_limit)
                     
-                    time_window = 300 
-                    timestamp_key = int(time.time() / time_window)
-                    seed_val = f"{user_id}_{timestamp_key}"
-                    
-                    rng = random.Random(seed_val)
-                    final_emby_ids = rng.sample(valid_candidate_ids, count_to_pick)
+                    # 每次请求（无论是刷新页面还是切换排序），都会从池子里重新捞一批
+                    final_emby_ids = random.sample(valid_candidate_ids, count_to_pick)
                     
                     # ==========================================================
-                    # ★★★ 抽取后，立即应用合集的默认排序 ★★★
+                    # ★★★ 保持：抽取后，立即应用合集的默认排序 ★★★
                     # ==========================================================
                     default_sort_by = definition.get('default_sort_by')
                     default_sort_order = definition.get('default_sort_order', 'Ascending')
 
-                    # 只有当配置了有效的排序字段时才执行
-                    # 'original' 在这里没有意义（因为源头是随机的），所以也跳过
                     if default_sort_by and default_sort_by not in ['none', 'original']:
                         try:
-                            # 利用现有的数据库查询工具进行排序
-                            # 这一步非常快，因为只对 50 个 ID 进行排序
                             sorted_ids = queries_db.get_sorted_and_paginated_ids(
                                 final_emby_ids,
                                 default_sort_by,
                                 default_sort_order,
-                                limit=len(final_emby_ids), # 全排
+                                limit=len(final_emby_ids),
                                 offset=0
                             )
-                            # 如果排序成功返回了数据，就覆盖掉原来的随机顺序
                             if sorted_ids:
                                 final_emby_ids = sorted_ids
-                                logger.debug(f"  ➜ [个人推荐] 已对随机结果应用默认排序: {default_sort_by} ({default_sort_order})")
+                                logger.debug(f"  ➜ [个人推荐] 已对随机结果应用默认排序: {default_sort_by}")
                         except Exception as sort_e:
-                            logger.warning(f"  ➜ [个人推荐] 应用默认排序失败，将保持随机顺序: {sort_e}")
+                            logger.warning(f"  ➜ [个人推荐] 应用默认排序失败: {sort_e}")
                     # ==========================================================
 
                     logger.info(f"  ➜ [个人推荐] 用户 {user_id}: 候选 {len(candidate_pool)} -> 确权 {len(valid_candidate_ids)} -> 抽取并排序 {len(final_emby_ids)} (锚点: {timestamp_key})")
