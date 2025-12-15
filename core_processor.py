@@ -2979,7 +2979,7 @@ class MediaProcessor:
 
             else:
                 # --- 模式二：常规元数据刷新 ---
-                fields_to_get = "ProviderIds,Type,Name,OriginalTitle,Overview,TagItems,OfficialRating,MediaStreams,Container,Size,Path,_SourceLibraryId"
+                fields_to_get = "ProviderIds,Type,Name,OriginalTitle,Overview,Tags,TagItems,OfficialRating,MediaStreams,Container,Size,Path,_SourceLibraryId"
                 item_details = emby.get_emby_item_details(item_id, self.emby_url, self.emby_api_key, self.emby_user_id, fields=fields_to_get)
                 if not item_details:
                     logger.warning(f"  ➜ {log_prefix} 无法获取项目 {item_id} 的详情，跳过。")
