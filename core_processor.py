@@ -38,6 +38,27 @@ except ImportError:
         def get_acting(self, *args, **kwargs): return {}
         def close(self): pass
 
+def extract_tag_names(item_data):
+    """
+    兼容新旧版 Emby API 提取标签名。
+    """
+    tags_set = set()
+    # 1. TagItems
+    tag_items = item_data.get('TagItems')
+    if isinstance(tag_items, list):
+        for t in tag_items:
+            if isinstance(t, dict):
+                name = t.get('Name')
+                if name: tags_set.add(name)
+            elif isinstance(t, str) and t:
+                tags_set.add(t)
+    # 2. Tags
+    tags = item_data.get('Tags')
+    if isinstance(tags, list):
+        for t in tags:
+            if t: tags_set.add(str(t))
+    return list(tags_set)
+
 def _read_local_json(file_path: str) -> Optional[Dict[str, Any]]:
     if not os.path.exists(file_path):
         logger.warning(f"本地元数据文件不存在: {file_path}")
@@ -2978,29 +2999,6 @@ class MediaProcessor:
 
                 with get_central_db_connection() as conn:
                     with conn.cursor() as cursor:
-                        # 提取标签
-                        def extract_tag_names(item_data):
-                            tags_set = set()
-
-                            # 1. 尝试提取 TagItems (新版/详细版)
-                            tag_items = item_data.get('TagItems')
-                            if isinstance(tag_items, list):
-                                for t in tag_items:
-                                    if isinstance(t, dict):
-                                        name = t.get('Name')
-                                        if name:
-                                            tags_set.add(name)
-                                    elif isinstance(t, str) and t:
-                                        tags_set.add(t)
-                            
-                            # 2. 尝试提取 Tags (旧版/简略版)
-                            tags = item_data.get('Tags')
-                            if isinstance(tags, list):
-                                for t in tags:
-                                    if t:
-                                        tags_set.add(str(t))
-                            
-                            return list(tags_set)
                         final_tags = extract_tag_names(item_details)
                         updates = {
                             "title": item_details.get('Name'), "original_title": item_details.get('OriginalTitle'),
