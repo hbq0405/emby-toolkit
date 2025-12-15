@@ -561,7 +561,7 @@ def task_populate_metadata_cache(processor, batch_size: int = 50, force_full_upd
                     "date_added": item.get('DateCreated'),
                     "release_date": final_release_date,
                     "genres_json": json.dumps(item.get('Genres', []), ensure_ascii=False),
-                    "pre_cached_tags_json": json.dumps(extract_tag_names(item), ensure_ascii=False),
+                    "tags_json": json.dumps(extract_tag_names(item), ensure_ascii=False),
                     "official_rating": item.get('OfficialRating'), 
                     "unified_rating": get_unified_rating(item.get('OfficialRating')),
                     "runtime_minutes": emby_runtime if (item_type == 'Movie' and emby_runtime) else tmdb_details.get('runtime') if (item_type == 'Movie' and tmdb_details) else None
@@ -662,7 +662,7 @@ def task_populate_metadata_cache(processor, batch_size: int = 50, force_full_upd
                                     "release_date": s_release_date,
                                     "subscription_status": "NONE",
                                     "emby_item_ids_json": json.dumps([s.get('Id') for s in matched_emby_seasons]),
-                                    "pre_cached_tags_json": json.dumps(extract_tag_names(matched_emby_seasons[0]) if matched_emby_seasons else [], ensure_ascii=False),
+                                    "tags_json": json.dumps(extract_tag_names(matched_emby_seasons[0]) if matched_emby_seasons else [], ensure_ascii=False),
                                     "ignore_reason": None
                                 }
                                 metadata_batch.append(season_record)
@@ -708,7 +708,7 @@ def task_populate_metadata_cache(processor, batch_size: int = 50, force_full_upd
                                 "release_date": s_release_date,
                                 "subscription_status": "NONE",
                                 "emby_item_ids_json": json.dumps([s.get('Id')]),
-                                "pre_cached_tags_json": json.dumps(extract_tag_names(s), ensure_ascii=False),
+                                "tags_json": json.dumps(extract_tag_names(s), ensure_ascii=False),
                                 "ignore_reason": "Local Season Only"
                             }
                             metadata_batch.append(season_record)
@@ -746,7 +746,7 @@ def task_populate_metadata_cache(processor, batch_size: int = 50, force_full_upd
                             "release_date": ep_release_date,
                             "emby_item_ids_json": json.dumps([v.get('Id') for v in versions]),
                             "asset_details_json": json.dumps(ep_asset_details_list, ensure_ascii=False),
-                            "pre_cached_tags_json": json.dumps(extract_tag_names(versions[0]), ensure_ascii=False),
+                            "tags_json": json.dumps(extract_tag_names(versions[0]), ensure_ascii=False),
                             "ignore_reason": None
                         }
 

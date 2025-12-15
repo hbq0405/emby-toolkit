@@ -695,18 +695,18 @@ def get_unique_tags() -> List[str]:
     try:
         with get_db_connection() as conn:
             cursor = conn.cursor()
-            cursor.execute("SELECT pre_cached_tags_json FROM media_metadata WHERE in_library = TRUE")
+            cursor.execute("SELECT tags_json FROM media_metadata WHERE in_library = TRUE")
             rows = cursor.fetchall()
             
             for row in rows:
-                tags = row['pre_cached_tags_json']
+                tags = row['tags_json']
                 if tags:
                     try:
                         for tag in tags:
                             if tag:
                                 unique_tags.add(tag.strip())
                     except TypeError:
-                        logger.warning(f"  ➜ 处理 pre_cached_tags_json 时遇到意外的类型错误，内容: {tags}")
+                        logger.warning(f"  ➜ 处理 tags_json 时遇到意外的类型错误，内容: {tags}")
                         continue
                         
         sorted_tags = sorted(list(unique_tags))

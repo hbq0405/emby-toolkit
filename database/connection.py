@@ -191,7 +191,7 @@ def init_db():
                         keywords_json JSONB,
                         last_updated_at TIMESTAMP WITH TIME ZONE DEFAULT NOW(),
                         ignore_reason TEXT,
-                        pre_cached_tags_json JSONB,
+                        tags_json JSONB,
 
                         -- 剧集专属与层级数据
                         parent_series_tmdb_id TEXT,
@@ -436,7 +436,7 @@ def init_db():
                             "first_requested_at": "TIMESTAMP WITH TIME ZONE",
                             "last_subscribed_at": "TIMESTAMP WITH TIME ZONE",
                             "created_at": "TIMESTAMP WITH TIME ZONE",
-                            "pre_cached_tags_json": "JSONB",
+                            "tags_json": "JSONB",
                             "poster_path": "TEXT",
                             "runtime_minutes": "INTEGER",
                             "last_episode_to_air_json": "JSONB",
@@ -586,7 +586,7 @@ def init_db():
                         'media_metadata': [
                             'emby_item_id',
                             'emby_children_details_json',
-                            'tags_json',
+                            'pre_cached_tags_json',
                             'paths_json',
                             'backdrop_path',
                             'vote_count',

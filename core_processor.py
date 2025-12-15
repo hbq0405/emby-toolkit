@@ -3004,7 +3004,7 @@ class MediaProcessor:
                             "title": item_details.get('Name'), "original_title": item_details.get('OriginalTitle'),
                             "overview": item_details.get('Overview'), "official_rating": item_details.get('OfficialRating'),
                             "unified_rating": get_unified_rating(item_details.get('OfficialRating')),
-                            "pre_cached_tags_json": json.dumps(final_tags, ensure_ascii=False),
+                            "tags_json": json.dumps(final_tags, ensure_ascii=False),
                             "last_synced_at": datetime.now(timezone.utc)
                         }
                         
