@@ -131,6 +131,10 @@ def _get_final_item_ids_for_view(user_id, collection_info):
     except (ValueError, TypeError):
         configured_limit = 50
     
+    allowed_types = definition.get('item_type', ['Movie', 'Series'])
+    if isinstance(allowed_types, str):
+        allowed_types = [allowed_types]
+    
     final_emby_ids = []
 
     # ==================================================================
@@ -145,7 +149,11 @@ def _get_final_item_ids_for_view(user_id, collection_info):
             
             # 1. 广撒网：请求 3 倍数量的候选池
             pool_size = max(configured_limit * 3, 60)
-            candidate_pool = engine.generate_user_vector(user_id, limit=pool_size)
+            candidate_pool = engine.generate_user_vector(
+                user_id, 
+                limit=pool_size, 
+                allowed_types=allowed_types
+            )
             
             if candidate_pool:
                 # 2. 批量转换：将候选池全部转换为 Emby ID

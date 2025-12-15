@@ -1321,10 +1321,14 @@ class RecommendationEngine:
                 RecommendationEngine._cache_titles, 
                 RecommendationEngine._cache_types)
 
-    def _vector_search(self, user_history_items: List[Dict], exclusion_ids: set = None, limit: int = 10) -> List[Dict]:
+    def _vector_search(self, user_history_items: List[Dict], exclusion_ids: set = None, limit: int = 10, allowed_types: List[str] = None) -> List[Dict]:
         """
         【内部方法】基于向量相似度搜索本地数据库。
+        增加 allowed_types 参数进行类型过滤。
         """
+        if exclusion_ids is None: exclusion_ids = set()
+        # 默认允许所有，防止报错
+        if not allowed_types: allowed_types = ['Movie', 'Series']
         if exclusion_ids is None:
             exclusion_ids = set()
 
@@ -1385,11 +1389,14 @@ class RecommendationEngine:
             
             # 5. 提取结果
             for idx in top_indices:
-                # 这里的 limit 我们放宽一点，因为外面还要做 random.sample
-                # 如果这里只取 limit 个，外面随机的空间就太小了
-                # 建议取 limit * 5 或者固定取前 200 个
+                # 这里的 limit 依然放宽，保证后续有足够的随机空间
                 if count >= max(limit, 200): break
                 
+                # ★★★ 核心修复 1：在源头过滤类型 ★★★
+                # 如果当前条目的类型不在允许列表中，直接跳过
+                if types[idx] not in allowed_types:
+                    continue
+
                 score = float(scores[idx])
                 if score < 0.45: break 
                 if score > 0.999: continue 
@@ -1414,7 +1421,7 @@ class RecommendationEngine:
             logger.error(f"  ➜ [向量搜索] 计算过程发生错误: {e}", exc_info=True)
             return []
         
-    def generate_user_vector(self, user_id: str, limit: int = 50) -> List[Dict]:
+    def generate_user_vector(self, user_id: str, limit: int = 50, allowed_types: List[str] = None) -> List[Dict]:
         """
         只使用向量搜索，速度快，适合实时生成。
         """
@@ -1438,7 +1445,8 @@ class RecommendationEngine:
         results = self._vector_search(
             user_history_items=context_history_items,
             exclusion_ids=watched_tmdb_ids,
-            limit=limit
+            limit=limit,
+            allowed_types=allowed_types 
         )
         
         return results
