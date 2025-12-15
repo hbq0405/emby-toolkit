@@ -51,6 +51,17 @@
                   </n-button-group>
                 </n-form-item>
               </n-form>
+              <n-button 
+                type="primary" 
+                ghost 
+                style="width: 100%; margin-top: 8px;" 
+                @click="triggerTaskNow('task-chain-high-freq')"
+                :loading="isTriggeringTask === 'task-chain-high-freq'"
+                :disabled="isBackgroundTaskRunning"
+              >
+                <template #icon><n-icon :component="Play24Regular" /></template>
+                立即执行任务链
+              </n-button>
             </n-space>
           </n-gi>
 
@@ -116,6 +127,17 @@
                     </n-button>
                 </n-form-item>
               </n-form>
+              <n-button 
+                type="primary" 
+                ghost 
+                style="width: 100%; margin-top: 8px;" 
+                @click="triggerTaskNow('task-chain-low-freq')"
+                :loading="isTriggeringTask === 'task-chain-low-freq'"
+                :disabled="isBackgroundTaskRunning"
+              >
+                <template #icon><n-icon :component="Play24Regular" /></template>
+                立即执行任务链
+              </n-button>
             </n-space>
           </n-gi>
 
