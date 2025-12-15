@@ -1591,7 +1591,7 @@ def get_library_root_for_item(item_id: str, base_url: str, api_key: str, user_id
                         best_match_library = lib_data["info"]
         
         if best_match_library:
-            logger.info(f"  ➜ 匹配到媒体库 '{best_match_library.get('Name')}'。")
+            logger.trace(f"  ➜ 匹配到媒体库 '{best_match_library.get('Name')}'。")
             return best_match_library
         else:
             logger.error(f"项目路径 '{item_path}' 未能匹配任何媒体库的源文件夹。")
