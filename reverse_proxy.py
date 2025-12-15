@@ -182,16 +182,47 @@ def _get_final_item_ids_for_view(user_id, collection_info):
                             valid_candidate_ids = [eid for eid in all_candidate_emby_ids if eid in valid_id_set]
                     except Exception as e:
                         logger.error(f"  ➜ [个人推荐] 权限预校验失败: {e}")
-                        # 如果校验挂了，为了保底，假设都能看（后面还有一道通用防线）
                         valid_candidate_ids = all_candidate_emby_ids
 
-                # 4. ★★★ 精选鱼：从“合法”池子里随机抽取 ★★★
-                # 现在的 valid_candidate_ids 里的每一个 ID，都是用户确权可看的
+                # 4. ★★★ 从“合法”池子里随机抽取 ★★★
                 if valid_candidate_ids:
                     count_to_pick = min(len(valid_candidate_ids), configured_limit)
-                    final_emby_ids = random.sample(valid_candidate_ids, count_to_pick)
                     
-                    logger.debug(f"  ➜ [个人推荐] 用户 {user_id}: 候选池 {len(candidate_pool)} -> 映射ID {len(all_candidate_emby_ids)} -> 有权限 {len(valid_candidate_ids)} -> 最终抽取 {len(final_emby_ids)}")
+                    time_window = 300 
+                    timestamp_key = int(time.time() / time_window)
+                    seed_val = f"{user_id}_{timestamp_key}"
+                    
+                    rng = random.Random(seed_val)
+                    final_emby_ids = rng.sample(valid_candidate_ids, count_to_pick)
+                    
+                    # ==========================================================
+                    # ★★★ 抽取后，立即应用合集的默认排序 ★★★
+                    # ==========================================================
+                    default_sort_by = definition.get('default_sort_by')
+                    default_sort_order = definition.get('default_sort_order', 'Ascending')
+
+                    # 只有当配置了有效的排序字段时才执行
+                    # 'original' 在这里没有意义（因为源头是随机的），所以也跳过
+                    if default_sort_by and default_sort_by not in ['none', 'original']:
+                        try:
+                            # 利用现有的数据库查询工具进行排序
+                            # 这一步非常快，因为只对 50 个 ID 进行排序
+                            sorted_ids = queries_db.get_sorted_and_paginated_ids(
+                                final_emby_ids,
+                                default_sort_by,
+                                default_sort_order,
+                                limit=len(final_emby_ids), # 全排
+                                offset=0
+                            )
+                            # 如果排序成功返回了数据，就覆盖掉原来的随机顺序
+                            if sorted_ids:
+                                final_emby_ids = sorted_ids
+                                logger.debug(f"  ➜ [个人推荐] 已对随机结果应用默认排序: {default_sort_by} ({default_sort_order})")
+                        except Exception as sort_e:
+                            logger.warning(f"  ➜ [个人推荐] 应用默认排序失败，将保持随机顺序: {sort_e}")
+                    # ==========================================================
+
+                    logger.info(f"  ➜ [个人推荐] 用户 {user_id}: 候选 {len(candidate_pool)} -> 确权 {len(valid_candidate_ids)} -> 抽取并排序 {len(final_emby_ids)} (锚点: {timestamp_key})")
 
         except Exception as calc_e:
             logger.error(f"  ➜ 实时计算推荐时发生错误: {calc_e}", exc_info=True)
