@@ -115,13 +115,23 @@ def api_delete_collection(emby_collection_id):
 @collections_bp.route('/settings', methods=['GET'])
 @admin_required
 def api_get_collection_settings():
-    """获取合集模块的设置"""
+    """获取合集模块的设置 (结构化配置)"""
     try:
-        # 从数据库读取，默认为 False
-        val = settings_db.get_setting('collection_auto_complete_enabled')
-        return jsonify({
-            "collection_auto_complete_enabled": True if val else False
-        })
+        # 1. 读取大配置对象，如果不存在则给默认值
+        config = settings_db.get_setting('native_collections_config') or {}
+        
+        # 2. 确保返回给前端的数据包含默认字段 (防止前端报错)
+        default_config = {
+            "auto_complete_enabled": False,
+            # 未来可以在这里加更多默认值，例如:
+            # "exclude_genres": [],
+            # "min_rating": 0
+        }
+        
+        # 合并默认值 (数据库里的值覆盖默认值)
+        final_config = {**default_config, **config}
+        
+        return jsonify(final_config)
     except Exception as e:
         logger.error(f"获取合集设置失败: {e}")
         return jsonify({"error": "获取设置失败"}), 500
@@ -129,13 +139,22 @@ def api_get_collection_settings():
 @collections_bp.route('/settings', methods=['POST'])
 @admin_required
 def api_save_collection_settings():
-    """保存合集模块的设置"""
+    """保存合集模块的设置 (支持增量更新)"""
     try:
-        data = request.json
-        if 'collection_auto_complete_enabled' in data:
-            val = data['collection_auto_complete_enabled']
-            settings_db.save_setting('collection_auto_complete_enabled', val)
-            logger.info(f"API: 原生合集自动补全开关已更新为: {val}")
+        new_data = request.json
+        if not isinstance(new_data, dict):
+            return jsonify({"error": "无效的数据格式"}), 400
+
+        # 1. 先读取旧配置
+        current_config = settings_db.get_setting('native_collections_config') or {}
+        
+        # 2. 更新字段 (增量更新，保留旧配置中未修改的字段)
+        current_config.update(new_data)
+        
+        # 3. 保存回数据库
+        settings_db.save_setting('native_collections_config', current_config)
+        
+        logger.info(f"API: 原生合集配置已更新: {current_config}")
             
         return jsonify({"message": "设置已保存"}), 200
     except Exception as e:

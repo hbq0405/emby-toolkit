@@ -512,7 +512,7 @@ const loadCachedData = async () => {
   }
 };
 
-// ★★★ 1. 新增状态变量 ★★★
+/// ★★★ 1. 状态变量 ★★★
 const autoCompleteEnabled = ref(false);
 const isUpdatingSettings = ref(false);
 
@@ -520,28 +520,29 @@ const isUpdatingSettings = ref(false);
 const loadSettings = async () => {
   try {
     const response = await axios.get('/api/collections/settings');
-    autoCompleteEnabled.value = response.data.collection_auto_complete_enabled;
+    // 后端现在返回的是整个对象 { auto_complete_enabled: true, ... }
+    autoCompleteEnabled.value = response.data.auto_complete_enabled;
   } catch (e) {
     console.error("加载合集设置失败", e);
   }
 };
 
-// ★★★ 3. 切换开关 ★★★
+// ★★★ 3. 保存设置 ★★★
 const handleAutoCompleteChange = async (value) => {
   isUpdatingSettings.value = true;
   try {
+    // 发送 JSON 对象
     await axios.post('/api/collections/settings', {
-      collection_auto_complete_enabled: value
+      auto_complete_enabled: value
     });
     autoCompleteEnabled.value = value;
     if (value) {
-      message.success("已开启自动补全：新电影入库将自动触发所属系列的订阅。");
+      message.success("已开启自动补全");
     } else {
-      message.info("已关闭自动补全。");
+      message.info("已关闭自动补全");
     }
   } catch (e) {
     message.error("保存设置失败");
-    // 回滚状态
     autoCompleteEnabled.value = !value;
   } finally {
     isUpdatingSettings.value = false;

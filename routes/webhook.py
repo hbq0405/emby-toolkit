@@ -237,7 +237,10 @@ def _handle_full_processing_flow(processor: 'MediaProcessor', item_id: str, forc
 
         if current_type == 'Movie' and current_tmdb_id:
             # 2. 检查开关
-            if settings_db.get_setting('collection_auto_complete_enabled'):
+            config = settings_db.get_setting('native_collections_config') or {}
+            is_auto_complete_enabled = config.get('auto_complete_enabled', False)
+
+            if is_auto_complete_enabled:
                 logger.info(f"  ➜ [自动补全] 电影 '{current_name}' 处理完毕，正在检查所属合集...")
                 # 直接调用 handler，不需要再起 task，因为当前函数本身就是跑在后台 task 里的
                 collections_handler.check_and_subscribe_collection_from_movie(
