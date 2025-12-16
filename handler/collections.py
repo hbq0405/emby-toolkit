@@ -329,80 +329,61 @@ def assemble_all_collection_details() -> List[Dict[str, Any]]:
     return all_collections
 
 # ★★★ 新增：单合集处理函数 ★★★
-def process_single_collection_by_emby_id(emby_collection_id: str, collection_name: str = "未知合集"):
+def check_and_subscribe_collection_from_movie(movie_tmdb_id: str, movie_name: str):
     """
-    【Webhook专用】处理单个新入库的原生合集。
-    流程：获取详情 -> 入库元数据 -> 标记缺失电影为待订阅。
+    【曲线救国】当一部电影入库时，检查它是否属于某个合集。
+    如果是，则自动触发该合集的缺失订阅流程。
     """
-    logger.info(f"--- 开始处理单个新合集: {collection_name} (ID: {emby_collection_id}) ---")
+    if not movie_tmdb_id: return
+
+    logger.info(f"--- [自动补全] 正在检查新入库电影《{movie_name}》是否属于某个合集 ---")
     
     config = config_manager.APP_CONFIG
     tmdb_api_key = config.get("tmdb_api_key")
+
+    # 1. 查询电影详情 (获取 belongs_to_collection 字段)
+    # 注意：这里调用的是 tmdb 模块的 get_movie_details
+    movie_details = tmdb.get_movie_details(movie_tmdb_id, tmdb_api_key)
+    if not movie_details:
+        logger.warning(f"  ⚠️ 无法从 TMDb 获取电影《{movie_name}》的详情，跳过检查。")
+        return
+
+    collection_info = movie_details.get('belongs_to_collection')
     
-    # 1. 从 Emby 获取该合集的 TMDb ID
-    # 我们直接复用 emby.get_emby_item_details
-    item_details = emby.get_emby_item_details(
-        item_id=emby_collection_id,
-        emby_server_url=config.get('emby_server_url'),
-        emby_api_key=config.get('emby_api_key'),
-        user_id=config.get('emby_user_id'),
-        fields="ProviderIds,Name"
-    )
-    
-    if not item_details:
-        logger.error(f"  🚫 无法获取合集 {collection_name} 的详情，处理中止。")
+    # 2. 如果不属于任何合集，直接结束
+    if not collection_info:
+        logger.info(f"  ➜ 电影《{movie_name}》不属于任何 TMDb 合集，无需补全。")
         return
 
-    tmdb_collection_id = item_details.get("ProviderIds", {}).get("Tmdb")
-    if not tmdb_collection_id:
-        logger.warning(f"  ⚠️ 合集 {collection_name} 没有 TMDb ID，可能是自建合集，跳过处理。")
+    # 3. 获取合集信息
+    coll_id = collection_info.get('id')
+    coll_name = collection_info.get('name')
+    logger.info(f"  ➜ 发现关联: 《{movie_name}》 属于合集 [{coll_name}] (ID: {coll_id})，准备分析缺失...")
+
+    # 4. 获取该合集的完整列表 (Parts)
+    coll_details = tmdb.get_collection_details(str(coll_id), tmdb_api_key)
+    if not coll_details or 'parts' not in coll_details:
+        logger.error(f"  🚫 无法获取合集 [{coll_name}] 的详细列表。")
         return
 
-    # 2. 获取 TMDb 详情 (包含所有电影列表)
-    tmdb_details = tmdb.get_collection_details(tmdb_collection_id, tmdb_api_key)
-    if not tmdb_details or 'parts' not in tmdb_details:
-        logger.error(f"  🚫 无法从 TMDb 获取合集 {tmdb_collection_id} 的详情。")
-        return
-
-    # 3. 提取数据并入库
+    # 5. 格式化数据
     all_parts = []
-    all_tmdb_ids = []
-    
-    for part in tmdb_details.get('parts', []):
+    for part in coll_details.get('parts', []):
+        # 过滤掉没有海报或日期的无效数据
         if not part.get('poster_path') or not part.get('release_date'): continue
         
-        t_id = str(part['id'])
         all_parts.append({
-            'tmdb_id': t_id,
+            'tmdb_id': str(part['id']),
             'title': part['title'],
             'original_title': part.get('original_title'),
             'release_date': part['release_date'],
             'poster_path': part['poster_path'],
             'overview': part.get('overview')
         })
-        all_tmdb_ids.append(t_id)
 
-    if not all_tmdb_ids: 
-        logger.warning(f"  ⚠️ 合集 {collection_name} 中没有有效的电影数据。")
-        return
-
-    # 3.1 确保 media_metadata 存在基础数据
-    media_db.batch_ensure_basic_movies(all_parts)
-
-    # 3.2 写入合集关系表
-    collection_db.upsert_native_collection({
-        'emby_collection_id': emby_collection_id,
-        'name': collection_name,
-        'tmdb_collection_id': str(tmdb_collection_id),
-        'poster_path': tmdb_details.get('poster_path'),
-        'all_tmdb_ids': all_tmdb_ids
-    })
-    
-    logger.info(f"  ✅ 合集 {collection_name} 元数据入库完成，包含 {len(all_tmdb_ids)} 部电影。")
-
-    # 4. 针对该合集执行缺失订阅
-    # 我们需要手动筛选出缺失的，而不是调用全量的 subscribe_all_missing_in_native_collections
-    _subscribe_missing_for_single_collection(collection_name, all_parts)
+    # 6. 调用内部订阅函数执行补全
+    # 这个函数我们在上一步已经定义在 handler/collections.py 内部了
+    _subscribe_missing_for_single_collection(coll_name, all_parts)
 
 def _subscribe_missing_for_single_collection(collection_name: str, all_parts: List[Dict]):
     """

@@ -24,7 +24,7 @@ from tasks import (
     task_process_watchlist
 )
 from handler.custom_collection import FilterEngine, RecommendationEngine
-from handler.collections import check_and_subscribe_collection_from_movie
+from handler import collections as collections_handler
 from services.cover_generator import CoverGeneratorService
 from database import collection_db, settings_db, user_db, maintenance_db, media_db
 from database.log_db import LogDBManager
@@ -675,18 +675,19 @@ def emby_webhook():
     
     if event_type in ["item.add", "library.new"]:
         if original_item_type == 'Movie':
+            # 1. 检查开关：原生合集自动补全
             is_auto_complete_enabled = settings_db.get_setting('collection_auto_complete_enabled')
             
             if not is_auto_complete_enabled:
                 logger.debug(f"  ➜ [自动补全] 检测到新电影入库，但'原生合集自动补全'功能未开启，跳过检查。")
             else:
+                # 2. 执行曲线救国：查 TMDb -> 找合集 -> 补全
                 provider_ids = item_from_webhook.get("ProviderIds", {})
                 tmdb_id = provider_ids.get("Tmdb")
                 
-                # 如果 Webhook 里没带 TMDb ID，可能需要去查一下 (为了稳妥，建议起个任务去查)
                 def _check_collection_task():
-                    # 如果 webhook 里没有 tmdb_id，我们再查一次 Emby
                     final_tmdb_id = tmdb_id
+                    # 如果 webhook 没带 ID，回查 Emby
                     if not final_tmdb_id:
                         details = emby.get_emby_item_details(
                             original_item_id,
@@ -698,21 +699,20 @@ def emby_webhook():
                         if details:
                             final_tmdb_id = details.get("ProviderIds", {}).get("Tmdb")
                     
-                    # 执行检查
                     if final_tmdb_id:
-                        check_and_subscribe_collection_from_movie(
+                        collections_handler.check_and_subscribe_collection_from_movie(
                             movie_tmdb_id=str(final_tmdb_id),
                             movie_name=original_item_name
                         )
                     else:
                         logger.warning(f"  ⚠️ 无法获取新入库电影 '{original_item_name}' 的 TMDb ID，跳过合集检查。")
 
-                # 提交后台任务
                 task_manager.submit_task(
                     _check_collection_task,
                     task_name=f"检查所属合集: {original_item_name}",
                     processor_type='media'
                 )
+
         spawn(_wait_for_stream_data_and_enqueue, original_item_id, original_item_name, original_item_type)
         
         logger.info(f"  ➜ Webhook: 收到入库事件 '{original_item_name}'，已启动后台流数据预检任务。")
