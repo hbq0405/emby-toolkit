@@ -4,7 +4,7 @@ from flask import Blueprint, request, jsonify
 import logging
 
 # 导入需要的模块
-from database import settings_db
+from database import settings_db, collection_db
 from extensions import admin_required, processor_ready_required
 from handler import collections as collections_handler 
 import config_manager
@@ -99,7 +99,7 @@ def api_delete_collection(emby_collection_id):
 
         if delete_success:
             # 4. 可选：清理本地数据库缓存 (如果有的话)
-            # collection_db.delete_by_emby_id(emby_collection_id) 
+            collection_db.delete_by_emby_id(emby_collection_id) 
             # 这里我们不做硬性数据库操作，让前端刷新或下次同步自动处理即可
             return jsonify({"message": "合集已成功从 Emby 删除"}), 200
         else:
