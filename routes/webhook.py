@@ -684,16 +684,14 @@ def emby_webhook():
         if collection_id:
             logger.info(f"  ➜ Webhook: 合集 '{collection_name}' 有成员移除，正在检查合集存活状态...")
             
-            # 启动一个后台任务去检查，避免阻塞 Webhook
             def _check_collection_survival_task(processor=None):
-                # 查 Emby：这个合集还活着吗？
-                # 注意：如果合集因为变空被 Emby 自动删除了，这里会查不到 (返回 None)
                 details = emby.get_emby_item_details(
                     item_id=collection_id,
                     emby_server_url=config_manager.APP_CONFIG.get("emby_server_url"),
                     emby_api_key=config_manager.APP_CONFIG.get("emby_api_key"),
                     user_id=config_manager.APP_CONFIG.get("emby_user_id"),
-                    fields="Id" # 只要能查到 ID 就说明活着
+                    fields="Id",
+                    silent_404=True
                 )
                 
                 if not details:

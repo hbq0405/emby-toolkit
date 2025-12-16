@@ -129,7 +129,7 @@ def get_item_count(base_url: str, api_key: str, user_id: Optional[str], item_typ
         logger.error(f"通过 API 获取 {item_type} 总数时失败: {e}")
         return None
 # ✨✨✨ 获取Emby项目详情 ✨✨✨
-def get_emby_item_details(item_id: str, emby_server_url: str, emby_api_key: str, user_id: str, fields: Optional[str] = None) -> Optional[Dict[str, Any]]:
+def get_emby_item_details(item_id: str, emby_server_url: str, emby_api_key: str, user_id: str, fields: Optional[str] = None, silent_404: bool = False) -> Optional[Dict[str, Any]]:
     if not all([item_id, emby_server_url, emby_api_key, user_id]):
         logger.error("获取Emby项目详情参数不足：缺少ItemID、服务器URL、API Key或UserID。")
         return None
@@ -169,8 +169,10 @@ def get_emby_item_details(item_id: str, emby_server_url: str, emby_api_key: str,
 
     except requests.exceptions.HTTPError as e:
         if e.response.status_code == 404:
-            logger.warning(
-                f"Emby API未找到项目ID: {item_id} (UserID: {user_id})。URL: {e.request.url}")
+            if silent_404:
+                logger.debug(f"Emby API未找到项目ID: {item_id} (预期内的 404，已忽略)。")
+            else:
+                logger.warning(f"Emby API未找到项目ID: {item_id} (UserID: {user_id})。URL: {e.request.url}")
         elif e.response.status_code == 401 or e.response.status_code == 403:
             logger.error(
                 f"获取Emby项目详情时发生认证/授权错误 (ItemID: {item_id}, UserID: {user_id}): {e.response.status_code} - {e.response.text[:200]}. URL: {e.request.url}. 请检查API Key和UserID权限。")
