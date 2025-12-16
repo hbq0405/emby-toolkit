@@ -225,6 +225,29 @@ def _handle_full_processing_flow(processor: 'MediaProcessor', item_id: str, forc
         logger.error(f"  ➜ 在新入库后执行精准封面生成或权限补票时发生错误: {e}", exc_info=True)
 
     # ======================================================================
+    # ★★★ 原生合集自动补全 ★★★
+    # ======================================================================
+    # 此时 item_metadata 已经准备好了，可以直接用
+    try:
+        # 1. 检查类型 (只处理电影)
+        # 注意：item_metadata 是在前面通过 media_db.get_media_details_by_tmdb_ids 获取或构建的
+        current_type = item_metadata.get('item_type')
+        current_tmdb_id = item_metadata.get('tmdb_id')
+        current_name = item_metadata.get('title', item_name)
+
+        if current_type == 'Movie' and current_tmdb_id:
+            # 2. 检查开关
+            if settings_db.get_setting('collection_auto_complete_enabled'):
+                logger.info(f"  ➜ [自动补全] 电影 '{current_name}' 处理完毕，正在检查所属合集...")
+                # 直接调用 handler，不需要再起 task，因为当前函数本身就是跑在后台 task 里的
+                collections_handler.check_and_subscribe_collection_from_movie(
+                    movie_tmdb_id=str(current_tmdb_id),
+                    movie_name=current_name
+                )
+    except Exception as e:
+        logger.warning(f"  ➜ [自动补全] 检查所属合集时发生错误: {e}")
+
+    # ======================================================================
     # ★★★ 入库完成后，主动刷新向量推荐引擎缓存 ★★★
     # ======================================================================
     if config_manager.APP_CONFIG.get(constants.CONFIG_OPTION_PROXY_ENABLED):
@@ -674,45 +697,6 @@ def emby_webhook():
                 return jsonify({"status": "error_processing_remove_event", "error": str(e)}), 500
     
     if event_type in ["item.add", "library.new"]:
-        if original_item_type == 'Movie':
-            # 1. 检查开关：原生合集自动补全
-            is_auto_complete_enabled = settings_db.get_setting('collection_auto_complete_enabled')
-            
-            if not is_auto_complete_enabled:
-                logger.debug(f"  ➜ [自动补全] 检测到新电影入库，但'原生合集自动补全'功能未开启，跳过检查。")
-            else:
-                # 2. 执行曲线救国：查 TMDb -> 找合集 -> 补全
-                provider_ids = item_from_webhook.get("ProviderIds", {})
-                tmdb_id = provider_ids.get("Tmdb")
-                
-                def _check_collection_task(processor=None):
-                    final_tmdb_id = tmdb_id
-                    # 如果 webhook 没带 ID，回查 Emby
-                    if not final_tmdb_id:
-                        details = emby.get_emby_item_details(
-                            original_item_id,
-                            config_manager.APP_CONFIG.get("emby_server_url"),
-                            config_manager.APP_CONFIG.get("emby_api_key"),
-                            config_manager.APP_CONFIG.get("emby_user_id"),
-                            fields="ProviderIds"
-                        )
-                        if details:
-                            final_tmdb_id = details.get("ProviderIds", {}).get("Tmdb")
-                    
-                    if final_tmdb_id:
-                        collections_handler.check_and_subscribe_collection_from_movie(
-                            movie_tmdb_id=str(final_tmdb_id),
-                            movie_name=original_item_name
-                        )
-                    else:
-                        logger.warning(f"  ⚠️ 无法获取新入库电影 '{original_item_name}' 的 TMDb ID，跳过合集检查。")
-
-                task_manager.submit_task(
-                    _check_collection_task,
-                    task_name=f"检查所属合集: {original_item_name}",
-                    processor_type='media'
-                )
-
         spawn(_wait_for_stream_data_and_enqueue, original_item_id, original_item_name, original_item_type)
         
         logger.info(f"  ➜ Webhook: 收到入库事件 '{original_item_name}'，已启动后台流数据预检任务。")
