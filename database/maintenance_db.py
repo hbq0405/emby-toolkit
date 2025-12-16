@@ -825,3 +825,20 @@ def cleanup_offline_media() -> Dict[str, int]:
         logger.error(f"执行离线媒体清理时发生错误: {e}", exc_info=True)
         raise
 
+def clear_all_vectors() -> int:
+    """
+    清空所有已生成的向量数据。
+    场景：用户更换了 Embedding 模型，旧的向量数据不再适用，必须清除。
+    """
+    try:
+        with get_db_connection() as conn:
+            cursor = conn.cursor()
+            # 仅清空 embedding 字段，保留其他元数据
+            cursor.execute("UPDATE media_metadata SET overview_embedding = NULL WHERE overview_embedding IS NOT NULL")
+            count = cursor.rowcount
+            conn.commit()
+            logger.info(f"  ✅ 已清空 {count} 条向量数据。")
+            return count
+    except Exception as e:
+        logger.error(f"清空向量数据失败: {e}", exc_info=True)
+        raise

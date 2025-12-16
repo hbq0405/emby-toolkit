@@ -444,6 +444,19 @@
                             <span style="font-size: 0.9em; color: gray;">此操作用于数据库瘦身，不会影响已入库媒体项。</span>
                           </div>
                         </n-popconfirm>
+                        <n-popconfirm @positive-click="handleClearVectors">
+                          <template #trigger>
+                            <n-button type="warning" ghost :loading="isClearingVectors" class="action-button">
+                              <template #icon><n-icon :component="FlashIcon" /></template>
+                              清空向量数据
+                            </n-button>
+                          </template>
+                          <div style="max-width: 300px">
+                            <p style="margin: 0 0 4px 0; font-weight: bold;">确定要清空所有 AI 向量数据吗？</p>
+                            <p style="margin: 0 0 4px 0;">如果您更换了 <b>Embedding 模型</b>（例如从 OpenAI 更换为本地模型），<span style="color: #d03050;">必须执行此操作</span>。</p>
+                            <span style="font-size: 0.9em; color: gray;">不同模型生成的向量不兼容，混用会导致推荐结果完全错误。清空后需重新扫描生成。</span>
+                          </div>
+                        </n-popconfirm>
                         <n-popconfirm @positive-click="handleCorrectSequences">
                           <template #trigger>
                             <n-button type="warning" ghost :loading="isCorrecting" class="action-button">
@@ -466,7 +479,7 @@
                           重置Emby数据
                         </n-button>
                       </n-space>
-                      <p class="description-text"><b>导出：</b>将数据库中的一个或多个表备份为 JSON.GZ 文件。<br><b>导入：</b>从 JSON.GZ 备份文件中恢复数据。<br><b>清空：</b>删除指定表中的所有数据，此操作不可逆。<br><b>清理离线：</b>移除已删除且无订阅状态的残留记录，给数据库瘦身。<br><b>校准：</b>修复导入数据可能引起的自增序号错乱的问题。<br><b>重置：</b>在重建 Emby 媒体库后，使用此功能清空所有旧的 Emby 关联数据（用户、合集、播放状态等），并保留核心元数据，以便后续重新扫描和关联。</p>
+                      <p class="description-text"><b>导出：</b>将数据库中的一个或多个表备份为 JSON.GZ 文件。<br><b>导入：</b>从 JSON.GZ 备份文件中恢复数据。<br><b>清空：</b>删除指定表中的所有数据，此操作不可逆。<br><b>清空向量：</b>更换ai后，必须执行此操作。不同模型生成的向量不兼容，混用会导致推荐结果完全错误。清空后需重新扫描生成。<br><b>清理离线：</b>移除已删除且无订阅状态的残留记录，给数据库瘦身。<br><b>校准：</b>修复导入数据可能引起的自增序号错乱的问题。<br><b>重置：</b>在重建 Emby 媒体库后，使用此功能清空所有旧的 Emby 关联数据（用户、合集、播放状态等），并保留核心元数据，以便后续重新扫描和关联。</p>
                     </n-space>
                   </n-card>
                 </n-gi>
@@ -654,7 +667,8 @@ import {
   BuildOutline as BuildIcon,
   AlertCircleOutline as AlertIcon,
   SyncOutline as SyncIcon,
-  CloudOfflineOutline as OfflineIcon
+  CloudOfflineOutline as OfflineIcon,
+  FlashOutline as FlashIcon
 } from '@vicons/ionicons5';
 import { useConfig } from '../../composables/useConfig.js';
 import axios from 'axios';
@@ -754,6 +768,7 @@ let unwatchEmbyConfig = null;
 const isTestingProxy = ref(false);
 const embyUserIdRegex = /^[a-f0-9]{32}$/i;
 const isCleaningOffline = ref(false);
+const isClearingVectors = ref(false);
 const isInvalidUserId = computed(() => {
   if (!configModel.value || !configModel.value.emby_user_id) return false;
   return configModel.value.emby_user_id.trim() !== '' && !embyUserIdRegex.test(configModel.value.emby_user_id);
@@ -1107,6 +1122,19 @@ const handleCleanupOfflineMedia = async () => {
     message.error(error.response?.data?.error || '清理失败，请检查后端日志。');
   } finally {
     isCleaningOffline.value = false;
+  }
+};
+
+// <--- 清理向量数据
+const handleClearVectors = async () => {
+  isClearingVectors.value = true;
+  try {
+    const response = await axios.post('/api/actions/clear-vectors');
+    message.success(response.data.message || '向量数据已清空！');
+  } catch (error) {
+    message.error(error.response?.data?.error || '操作失败，请检查后端日志。');
+  } finally {
+    isClearingVectors.value = false;
   }
 };
 

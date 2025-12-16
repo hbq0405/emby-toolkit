@@ -463,3 +463,25 @@ def api_cleanup_offline_media():
     except Exception as e:
         logger.error(f"API调用 api_cleanup_offline_media 时发生错误: {e}", exc_info=True)
         return jsonify({"error": "服务器在处理时发生内部错误"}), 500
+    
+# --- 清空向量数据 ---
+@db_admin_bp.route('/actions/clear-vectors', methods=['POST'])
+@admin_required
+def api_clear_vectors():
+    """
+    触发清空向量数据的任务。
+    """
+    logger.info("  ➜ 接收到清空向量数据请求。")
+    try:
+        count = maintenance_db.clear_all_vectors()
+        
+        if count > 0:
+            message = f"操作成功！已清除 {count} 条旧的向量数据。请重新运行扫描以生成新向量。"
+        else:
+            message = "数据库中没有发现向量数据，无需清理。"
+            
+        return jsonify({"message": message}), 200
+        
+    except Exception as e:
+        logger.error(f"API调用 api_clear_vectors 时发生错误: {e}", exc_info=True)
+        return jsonify({"error": "服务器在处理时发生内部错误"}), 500
