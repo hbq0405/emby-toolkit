@@ -916,7 +916,8 @@ class WatchlistProcessor:
         aggressive_threshold = int(auto_pending_cfg.get('episodes', 5)) 
         
         # 2. 获取 TMDb 记录的总集数
-        current_total_episodes = latest_series_data.get('number_of_episodes', 0)
+        calculated_total = len([ep for ep in all_tmdb_episodes if ep.get('season_number', 0) > 0])
+        current_total_episodes = calculated_total if calculated_total > 0 else latest_series_data.get('number_of_episodes', 0)
 
         # 3. 计算本地已入库的正片总集数
         local_total_episodes = 0
