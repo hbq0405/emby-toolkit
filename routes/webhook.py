@@ -685,7 +685,7 @@ def emby_webhook():
                 provider_ids = item_from_webhook.get("ProviderIds", {})
                 tmdb_id = provider_ids.get("Tmdb")
                 
-                def _check_collection_task():
+                def _check_collection_task(processor=None):
                     final_tmdb_id = tmdb_id
                     # 如果 webhook 没带 ID，回查 Emby
                     if not final_tmdb_id:
