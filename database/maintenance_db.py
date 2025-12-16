@@ -146,7 +146,7 @@ def get_stats_subscription():
                 # 增加 AND item_type = 'Series'，只统计剧集层级，排除季和集
                 cursor.execute("""
                     SELECT 
-                        COUNT(*) FILTER (WHERE TRIM(watching_status) ILIKE 'Watching') as watching,
+                        COUNT(*) FILTER (WHERE TRIM(watching_status) ILIKE 'Watching' OR TRIM(watching_status) ILIKE 'Pending') as watching,
                         COUNT(*) FILTER (WHERE TRIM(watching_status) ILIKE 'Paused') as paused,
                         COUNT(*) FILTER (WHERE TRIM(watching_status) ILIKE 'Completed') as completed
                     FROM media_metadata
