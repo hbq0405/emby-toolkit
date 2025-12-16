@@ -107,6 +107,28 @@ def get_all_missing_movies_in_collections() -> List[Dict[str, Any]]:
     except Exception as e:
         logger.error(f"查询合集缺失电影时发生数据库错误: {e}", exc_info=True)
         return []
+    
+def delete_native_collection_by_emby_id(emby_collection_id: str):
+    """
+    当 Emby 中删除了合集时，同步删除本地数据库记录。
+    """
+    try:
+        with get_db_connection() as conn:
+            cursor = conn.cursor()
+            cursor.execute(
+                "DELETE FROM collections_info WHERE emby_collection_id = %s",
+                (emby_collection_id,)
+            )
+            deleted_count = cursor.rowcount
+            conn.commit()
+            if deleted_count > 0:
+                logger.info(f"  ✅ [同步删除] 已从数据库移除原生合集记录 (Emby ID: {emby_collection_id})")
+            else:
+                logger.debug(f"  ➜ [同步删除] 数据库中未找到 Emby ID 为 {emby_collection_id} 的合集，无需删除。")
+            return deleted_count > 0
+    except Exception as e:
+        logger.error(f"删除原生合集记录失败: {e}", exc_info=True)
+        return False
 
 # ======================================================================
 # 模块: 自定义合集数据访问 (custom_collections)

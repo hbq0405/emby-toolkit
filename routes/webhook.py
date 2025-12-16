@@ -658,7 +658,7 @@ def emby_webhook():
             logger.error(f"  ➜ 通过 Webhook 更新用户媒体数据时失败: {e}", exc_info=True)
             return jsonify({"status": "error_updating_user_data"}), 500
 
-    trigger_events = ["item.add", "library.new", "library.deleted", "metadata.update", "image.update"]
+    trigger_events = ["item.add", "library.new", "library.deleted", "metadata.update", "image.update", "collection.items.removed"]
     if event_type not in trigger_events:
         logger.debug(f"  ➜ Webhook事件 '{event_type}' 不在触发列表 {trigger_events} 中，将被忽略。")
         return jsonify({"status": "event_ignored_not_in_trigger_list"}), 200
@@ -672,6 +672,42 @@ def emby_webhook():
     if not (original_item_id and original_item_type in trigger_types):
         logger.debug(f"  ➜ Webhook事件 '{event_type}' (项目: {original_item_name}, 类型: {original_item_type}) 被忽略。")
         return jsonify({"status": "event_ignored_no_id_or_wrong_type"}), 200
+
+    # ======================================================================
+    # ★★★ 修改点 4：处理 collection.items.removed (检查是否变空消失) ★★★
+    # ======================================================================
+    if event_type == "collection.items.removed":
+        # Emby 发送此事件时，Item 指的是合集本身
+        collection_id = item_from_webhook.get("Id")
+        collection_name = item_from_webhook.get("Name")
+        
+        if collection_id:
+            logger.info(f"  ➜ Webhook: 合集 '{collection_name}' 有成员移除，正在检查合集存活状态...")
+            
+            # 启动一个后台任务去检查，避免阻塞 Webhook
+            def _check_collection_survival_task():
+                # 查 Emby：这个合集还活着吗？
+                # 注意：如果合集因为变空被 Emby 自动删除了，这里会查不到 (返回 None)
+                details = emby.get_emby_item_details(
+                    item_id=collection_id,
+                    emby_server_url=config_manager.APP_CONFIG.get("emby_server_url"),
+                    emby_api_key=config_manager.APP_CONFIG.get("emby_api_key"),
+                    user_id=config_manager.APP_CONFIG.get("emby_user_id"),
+                    fields="Id" # 只要能查到 ID 就说明活着
+                )
+                
+                if not details:
+                    logger.info(f"  🗑️ 合集 '{collection_name}' (ID: {collection_id}) 已在 Emby 中消失 (可能是变空自动删除)，同步删除本地记录...")
+                    collection_db.delete_native_collection_by_emby_id(collection_id)
+                else:
+                    logger.debug(f"  ✅ 合集 '{collection_name}' 依然存在，无需操作。")
+
+            task_manager.submit_task(
+                _check_collection_survival_task,
+                task_name=f"检查合集存活: {collection_name}",
+                processor_type='media'
+            )
+            return jsonify({"status": "collection_removal_check_started"}), 202
 
     if event_type == "library.deleted":
             try:
