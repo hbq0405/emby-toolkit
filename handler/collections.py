@@ -329,10 +329,11 @@ def assemble_all_collection_details() -> List[Dict[str, Any]]:
     return all_collections
 
 # ★★★ 新增：单合集处理函数 ★★★
-def check_and_subscribe_collection_from_movie(movie_tmdb_id: str, movie_name: str):
+def check_and_subscribe_collection_from_movie(movie_tmdb_id: str, movie_name: str, movie_emby_id: str = None):
     """
     【曲线救国】当一部电影入库时，检查它是否属于某个合集。
     如果是，则自动触发该合集的缺失订阅流程。
+    如果 Emby 已经生成了合集，顺便将其入库，实现前端秒显。
     """
     if not movie_tmdb_id: return
 
@@ -341,49 +342,81 @@ def check_and_subscribe_collection_from_movie(movie_tmdb_id: str, movie_name: st
     config = config_manager.APP_CONFIG
     tmdb_api_key = config.get("tmdb_api_key")
 
-    # 1. 查询电影详情 (获取 belongs_to_collection 字段)
-    # 注意：这里调用的是 tmdb 模块的 get_movie_details
+    # 1. 查询 TMDb 详情
     movie_details = tmdb.get_movie_details(movie_tmdb_id, tmdb_api_key)
     if not movie_details:
         logger.warning(f"  ⚠️ 无法从 TMDb 获取电影《{movie_name}》的详情，跳过检查。")
         return
 
     collection_info = movie_details.get('belongs_to_collection')
-    
-    # 2. 如果不属于任何合集，直接结束
     if not collection_info:
         logger.info(f"  ➜ 电影《{movie_name}》不属于任何 TMDb 合集，无需补全。")
         return
 
-    # 3. 获取合集信息
-    coll_id = collection_info.get('id')
-    coll_name = collection_info.get('name')
-    logger.info(f"  ➜ 发现关联: 《{movie_name}》 属于合集 [{coll_name}] (ID: {coll_id})，准备分析缺失...")
+    tmdb_coll_id = str(collection_info.get('id'))
+    tmdb_coll_name = collection_info.get('name')
+    logger.info(f"  ➜ 发现关联: 《{movie_name}》 属于合集 [{tmdb_coll_name}] (ID: {tmdb_coll_id})")
 
-    # 4. 获取该合集的完整列表 (Parts)
-    coll_details = tmdb.get_collection_details(str(coll_id), tmdb_api_key)
+    # 2. 获取该合集的完整列表 (Parts)
+    coll_details = tmdb.get_collection_details(tmdb_coll_id, tmdb_api_key)
     if not coll_details or 'parts' not in coll_details:
-        logger.error(f"  🚫 无法获取合集 [{coll_name}] 的详细列表。")
+        logger.error(f"  🚫 无法获取合集 [{tmdb_coll_name}] 的详细列表。")
         return
 
-    # 5. 格式化数据
+    # 3. 格式化数据
     all_parts = []
+    all_tmdb_ids = []
     for part in coll_details.get('parts', []):
-        # 过滤掉没有海报或日期的无效数据
         if not part.get('poster_path') or not part.get('release_date'): continue
-        
+        t_id = str(part['id'])
         all_parts.append({
-            'tmdb_id': str(part['id']),
+            'tmdb_id': t_id,
             'title': part['title'],
             'original_title': part.get('original_title'),
             'release_date': part['release_date'],
             'poster_path': part['poster_path'],
             'overview': part.get('overview')
         })
+        all_tmdb_ids.append(t_id)
 
-    # 6. 调用内部订阅函数执行补全
-    # 这个函数我们在上一步已经定义在 handler/collections.py 内部了
-    _subscribe_missing_for_single_collection(coll_name, all_parts)
+    # ======================================================================
+    # ★★★ 新增逻辑：反查 Emby 合集并实时入库 ★★★
+    # ======================================================================
+    if movie_emby_id:
+        try:
+            # 查 Emby：这部电影属于哪个 BoxSet？
+            parent_collections = emby.get_collections_containing_item(
+                item_id=movie_emby_id,
+                base_url=config.get('emby_server_url'),
+                api_key=config.get('emby_api_key'),
+                user_id=config.get('emby_user_id')
+            )
+            
+            # 遍历找到匹配 TMDb ID 的那个合集 (通常只有一个)
+            for p_coll in parent_collections:
+                p_provider_ids = p_coll.get("ProviderIds", {})
+                # 确认 Emby 合集的 TMDb ID 与我们查到的一致
+                if str(p_provider_ids.get("Tmdb", "")) == tmdb_coll_id:
+                    logger.info(f"  ✅ [实时同步] Emby 已生成合集 '{p_coll.get('Name')}' (ID: {p_coll.get('Id')})，正在写入数据库...")
+                    
+                    # 1. 确保基础电影数据存在
+                    media_db.batch_ensure_basic_movies(all_parts)
+                    
+                    # 2. 写入合集表 (前端就能看到了！)
+                    collection_db.upsert_native_collection({
+                        'emby_collection_id': p_coll.get('Id'),
+                        'name': p_coll.get('Name'),
+                        'tmdb_collection_id': tmdb_coll_id,
+                        'poster_path': coll_details.get('poster_path'),
+                        'all_tmdb_ids': all_tmdb_ids
+                    })
+                    break
+        except Exception as e:
+            logger.warning(f"  ⚠️ 尝试反查 Emby 合集失败: {e}")
+    # ======================================================================
+
+    # 4. 执行缺失订阅
+    _subscribe_missing_for_single_collection(tmdb_coll_name, all_parts)
 
 def _subscribe_missing_for_single_collection(collection_name: str, all_parts: List[Dict]):
     """

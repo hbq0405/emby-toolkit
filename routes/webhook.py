@@ -242,7 +242,8 @@ def _handle_full_processing_flow(processor: 'MediaProcessor', item_id: str, forc
                 # 直接调用 handler，不需要再起 task，因为当前函数本身就是跑在后台 task 里的
                 collections_handler.check_and_subscribe_collection_from_movie(
                     movie_tmdb_id=str(current_tmdb_id),
-                    movie_name=current_name
+                    movie_name=current_name,
+                    movie_emby_id=item_id
                 )
     except Exception as e:
         logger.warning(f"  ➜ [自动补全] 检查所属合集时发生错误: {e}")

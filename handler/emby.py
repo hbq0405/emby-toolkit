@@ -1242,6 +1242,32 @@ def get_all_native_collections_from_emby(base_url: str, api_key: str, user_id: s
     except requests.RequestException as e:
         logger.error(f"  ➜ 获取原生合集列表时发生严重网络错误: {e}", exc_info=True)
         return []
+# ★★★ 查询包含指定媒体项的合集 ★★★
+def get_collections_containing_item(item_id: str, base_url: str, api_key: str, user_id: str) -> List[Dict[str, Any]]:
+    """
+    查询包含指定 Item ID 的所有合集 (BoxSet)。
+    用于反查某部电影所属的 Emby 合集。
+    """
+    if not all([item_id, base_url, api_key, user_id]):
+        return []
+
+    api_url = f"{base_url.rstrip('/')}/Users/{user_id}/Items"
+    params = {
+        "api_key": api_key,
+        "IncludeItemTypes": "BoxSet", # 只找合集
+        "Recursive": "true",
+        "ListItemIds": item_id,       # ★★★ 核心参数：包含此ID的容器 ★★★
+        "Fields": "ProviderIds,Name"
+    }
+
+    try:
+        api_timeout = config_manager.APP_CONFIG.get(constants.CONFIG_OPTION_EMBY_API_TIMEOUT, 60)
+        response = requests.get(api_url, params=params, timeout=api_timeout)
+        response.raise_for_status()
+        return response.json().get("Items", [])
+    except Exception as e:
+        logger.error(f"反查项目 {item_id} 所属合集失败: {e}")
+        return []
 # ✨✨✨ 获取 Emby 服务器信息 (如 Server ID) ✨✨✨
 def get_emby_server_info(base_url: str, api_key: str) -> Optional[Dict[str, Any]]:
     if not base_url or not api_key:
