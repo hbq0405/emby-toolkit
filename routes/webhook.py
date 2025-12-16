@@ -668,7 +668,7 @@ def emby_webhook():
     original_item_name = item_from_webhook.get("Name", "未知项目")
     original_item_type = item_from_webhook.get("Type")
     
-    trigger_types = ["Movie", "Series", "Episode", "BoxSet", "Folder"]
+    trigger_types = ["Movie", "Series", "Episode", "BoxSet"]
     if not (original_item_id and original_item_type in trigger_types):
         logger.debug(f"  ➜ Webhook事件 '{event_type}' (项目: {original_item_name}, 类型: {original_item_type}) 被忽略。")
         return jsonify({"status": "event_ignored_no_id_or_wrong_type"}), 200
@@ -717,14 +717,12 @@ def emby_webhook():
     if event_type == "library.deleted":
             try:
                 series_id_from_webhook = item_from_webhook.get("SeriesId") if original_item_type == "Episode" else None
-                provider_ids = item_from_webhook.get("ProviderIds", {})
-                tmdb_id = provider_ids.get("Tmdb")
+                # 直接调用新的、干净的数据库函数
                 maintenance_db.cleanup_deleted_media_item(
                     item_id=original_item_id,
                     item_name=original_item_name,
                     item_type=original_item_type,
-                    series_id_from_webhook=series_id_from_webhook,
-                    tmdb_id=tmdb_id
+                    series_id_from_webhook=series_id_from_webhook
                 )
                 # ==============================================================
                 # ★★★ 删除媒体后，也主动刷新向量缓存 (保持缓存纯净) ★★★

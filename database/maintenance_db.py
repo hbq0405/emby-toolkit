@@ -561,7 +561,7 @@ def prepare_for_library_rebuild() -> Dict[str, Dict]:
         logger.error(f"执行 prepare_for_library_rebuild 时发生严重错误: {e}", exc_info=True)
         raise
 
-def cleanup_deleted_media_item(item_id: str, item_name: str, item_type: str, series_id_from_webhook: Optional[str] = None, tmdb_id: Optional[str] = None):
+def cleanup_deleted_media_item(item_id: str, item_name: str, item_type: str, series_id_from_webhook: Optional[str] = None):
     """
     处理一个从 Emby 中被删除的媒体项，同步清除所有相关的数据。
     """
@@ -622,34 +622,6 @@ def cleanup_deleted_media_item(item_id: str, item_name: str, item_type: str, ser
                 if remaining_count is None:
                     logger.warning(f"  ➜ 在数据库中未找到包含 Emby ID {item_id} 的记录，无需清理。")
                     return
-
-                if remaining_count is None:
-                    if tmdb_id:
-                        logger.warning(f"  ➜ 按 Emby ID 查找失败，尝试按 TMDb ID {tmdb_id} 兜底查找...")
-                        cursor.execute(
-                            "SELECT tmdb_id, item_type, in_library FROM media_metadata WHERE tmdb_id = %s",
-                            (str(tmdb_id),)
-                        )
-                        row = cursor.fetchone()
-                        if row:
-                            logger.info(f"  ✅ 兜底成功：找到媒体 '{item_name}' (当前状态: in_library={row['in_library']})。")
-                            # 既然是兜底，说明 Emby ID 对不上，或者已经是 Folder 删除
-                            # 我们直接强制触发“完全清理”逻辑
-                            target_tmdb_id_for_full_cleanup = row['tmdb_id']
-                            target_item_type_for_full_cleanup = row['item_type']
-                            
-                            # 如果它还在库，先标记为不在库
-                            if row['in_library']:
-                                cursor.execute(
-                                    "UPDATE media_metadata SET in_library = FALSE WHERE tmdb_id = %s",
-                                    (target_tmdb_id_for_full_cleanup,)
-                                )
-                        else:
-                            logger.warning(f"  ➜ 兜底查找也未找到 TMDb ID {tmdb_id} 的记录，放弃清理。")
-                            return
-                    else:
-                        logger.warning(f"  ➜ 在数据库中未找到包含 Emby ID {item_id} 的记录，且无 TMDb ID 可供兜底，无需清理。")
-                        return
 
                 # --- 情况 A: 还有其他版本存在 ---
                 if remaining_count > 0:
