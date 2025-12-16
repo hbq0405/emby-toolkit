@@ -441,7 +441,7 @@ def fetch_all_emby_items_generator(base_url: str, api_key: str, library_ids: lis
         'Content-Type': 'application/json'
     }
     url = f"{base_url.rstrip('/')}/Items"
-
+    api_timeout = config_manager.APP_CONFIG.get(constants.CONFIG_OPTION_EMBY_API_TIMEOUT, 60)
     # 确保 library_ids 是列表
     target_libs = library_ids if library_ids else [None]
 
@@ -460,13 +460,13 @@ def fetch_all_emby_items_generator(base_url: str, api_key: str, library_ids: lis
 
             try:
                 # 增加超时时间
-                response = requests.get(url, params=params, headers=headers, timeout=45)
+                response = requests.get(url, params=params, headers=headers, timeout=api_timeout)
                 
                 # 简单的 500 错误重试逻辑
                 if response.status_code == 500:
                     time.sleep(2)
                     params['Limit'] = 500
-                    response = requests.get(url, params=params, headers=headers, timeout=60)
+                    response = requests.get(url, params=params, headers=headers, timeout=api_timeout)
 
                 response.raise_for_status()
                 data = response.json()
