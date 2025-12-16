@@ -327,3 +327,141 @@ def assemble_all_collection_details() -> List[Dict[str, Any]]:
         coll.pop('parsed_ids', None)
 
     return all_collections
+
+# ★★★ 新增：单合集处理函数 ★★★
+def process_single_collection_by_emby_id(emby_collection_id: str, collection_name: str = "未知合集"):
+    """
+    【Webhook专用】处理单个新入库的原生合集。
+    流程：获取详情 -> 入库元数据 -> 标记缺失电影为待订阅。
+    """
+    logger.info(f"--- 开始处理单个新合集: {collection_name} (ID: {emby_collection_id}) ---")
+    
+    config = config_manager.APP_CONFIG
+    tmdb_api_key = config.get("tmdb_api_key")
+    
+    # 1. 从 Emby 获取该合集的 TMDb ID
+    # 我们直接复用 emby.get_emby_item_details
+    item_details = emby.get_emby_item_details(
+        item_id=emby_collection_id,
+        emby_server_url=config.get('emby_server_url'),
+        emby_api_key=config.get('emby_api_key'),
+        user_id=config.get('emby_user_id'),
+        fields="ProviderIds,Name"
+    )
+    
+    if not item_details:
+        logger.error(f"  🚫 无法获取合集 {collection_name} 的详情，处理中止。")
+        return
+
+    tmdb_collection_id = item_details.get("ProviderIds", {}).get("Tmdb")
+    if not tmdb_collection_id:
+        logger.warning(f"  ⚠️ 合集 {collection_name} 没有 TMDb ID，可能是自建合集，跳过处理。")
+        return
+
+    # 2. 获取 TMDb 详情 (包含所有电影列表)
+    tmdb_details = tmdb.get_collection_details(tmdb_collection_id, tmdb_api_key)
+    if not tmdb_details or 'parts' not in tmdb_details:
+        logger.error(f"  🚫 无法从 TMDb 获取合集 {tmdb_collection_id} 的详情。")
+        return
+
+    # 3. 提取数据并入库
+    all_parts = []
+    all_tmdb_ids = []
+    
+    for part in tmdb_details.get('parts', []):
+        if not part.get('poster_path') or not part.get('release_date'): continue
+        
+        t_id = str(part['id'])
+        all_parts.append({
+            'tmdb_id': t_id,
+            'title': part['title'],
+            'original_title': part.get('original_title'),
+            'release_date': part['release_date'],
+            'poster_path': part['poster_path'],
+            'overview': part.get('overview')
+        })
+        all_tmdb_ids.append(t_id)
+
+    if not all_tmdb_ids: 
+        logger.warning(f"  ⚠️ 合集 {collection_name} 中没有有效的电影数据。")
+        return
+
+    # 3.1 确保 media_metadata 存在基础数据
+    media_db.batch_ensure_basic_movies(all_parts)
+
+    # 3.2 写入合集关系表
+    collection_db.upsert_native_collection({
+        'emby_collection_id': emby_collection_id,
+        'name': collection_name,
+        'tmdb_collection_id': str(tmdb_collection_id),
+        'poster_path': tmdb_details.get('poster_path'),
+        'all_tmdb_ids': all_tmdb_ids
+    })
+    
+    logger.info(f"  ✅ 合集 {collection_name} 元数据入库完成，包含 {len(all_tmdb_ids)} 部电影。")
+
+    # 4. 针对该合集执行缺失订阅
+    # 我们需要手动筛选出缺失的，而不是调用全量的 subscribe_all_missing_in_native_collections
+    _subscribe_missing_for_single_collection(collection_name, all_parts)
+
+def _subscribe_missing_for_single_collection(collection_name: str, all_parts: List[Dict]):
+    """
+    【内部辅助】只针对单个合集的电影列表执行缺失订阅检查。
+    """
+    # 1. 查库：哪些已经在库里了，哪些已经订阅了
+    tmdb_ids = [p['tmdb_id'] for p in all_parts]
+    existing_map = media_db.get_media_details_by_tmdb_ids(tmdb_ids)
+    
+    today_str = datetime.now().strftime('%Y-%m-%d')
+    
+    released_missing = []
+    unreleased_missing = []
+    
+    for part in all_parts:
+        t_id = part['tmdb_id']
+        db_item = existing_map.get(t_id)
+        
+        # 检查是否已存在或已订阅
+        if db_item:
+            if db_item.get('in_library'): continue
+            if db_item.get('subscription_status') in ['SUBSCRIBED', 'WANTED', 'PENDING_RELEASE']: continue
+        
+        # 构造 media_info
+        media_info = {
+            'tmdb_id': t_id,
+            'title': part['title'],
+            'original_title': part.get('original_title'),
+            'release_date': part['release_date'],
+            'poster_path': part['poster_path'],
+            'overview': part.get('overview'),
+            'source': {
+                'type': 'native_collection',  
+                'name': collection_name                  
+            }
+        }
+        
+        if part['release_date'] > today_str:
+            unreleased_missing.append(media_info)
+        else:
+            released_missing.append(media_info)
+            
+    # 2. 写入 request_db
+    source = {'type': 'native_collection', 'name': collection_name}
+    
+    if released_missing:
+        logger.info(f"  ➜ [{collection_name}] 自动补全: {len(released_missing)} 部已上映电影设为 WANTED...")
+        request_db.set_media_status_wanted(
+            tmdb_ids=[m['tmdb_id'] for m in released_missing],
+            item_type='Movie',
+            source=source,
+            media_info_list=released_missing
+        )
+        
+    if unreleased_missing:
+        logger.info(f"  ➜ [{collection_name}] 自动补全: {len(unreleased_missing)} 部未上映电影设为 PENDING_RELEASE...")
+        request_db.set_media_status_pending_release(
+            tmdb_ids=[m['tmdb_id'] for m in unreleased_missing],
+            item_type='Movie',
+            source=source,
+            media_info_list=unreleased_missing
+        )

@@ -23,6 +23,7 @@ from tasks import (
     task_sync_all_metadata, task_sync_images, task_apply_main_cast_to_episodes,
     task_process_watchlist
 )
+from handler import collections as collections_handler
 from handler.custom_collection import FilterEngine, RecommendationEngine
 from services.cover_generator import CoverGeneratorService
 from database import collection_db, settings_db, user_db, maintenance_db, media_db
@@ -640,7 +641,7 @@ def emby_webhook():
     original_item_name = item_from_webhook.get("Name", "未知项目")
     original_item_type = item_from_webhook.get("Type")
     
-    trigger_types = ["Movie", "Series", "Episode"]
+    trigger_types = ["Movie", "Series", "Episode", "BoxSet"]
     if not (original_item_id and original_item_type in trigger_types):
         logger.debug(f"  ➜ Webhook事件 '{event_type}' (项目: {original_item_name}, 类型: {original_item_type}) 被忽略。")
         return jsonify({"status": "event_ignored_no_id_or_wrong_type"}), 200
@@ -673,8 +674,26 @@ def emby_webhook():
                 return jsonify({"status": "error_processing_remove_event", "error": str(e)}), 500
     
     if event_type in ["item.add", "library.new"]:
-        spawn(_wait_for_stream_data_and_enqueue, original_item_id, original_item_name, original_item_type)
         
+        if original_item_type == 'BoxSet':
+            logger.info(f"  ➜ Webhook: 检测到新合集 '{original_item_name}' (ID: {original_item_id}) 入库，触发单合集补全流程...")
+            
+            def _auto_subscribe_task():
+                # ★★★ 修改点：调用单合集处理函数 ★★★
+                collections_handler.process_single_collection_by_emby_id(
+                    emby_collection_id=original_item_id,
+                    collection_name=original_item_name
+                )
+
+            task_manager.submit_task(
+                _auto_subscribe_task,
+                task_name=f"自动补全合集: {original_item_name}",
+                processor_type='media'
+            )
+            
+            return jsonify({"status": "boxset_auto_subscribe_started"}), 202
+        
+        spawn(_wait_for_stream_data_and_enqueue, original_item_id, original_item_name, original_item_type)
         logger.info(f"  ➜ Webhook: 收到入库事件 '{original_item_name}'，已启动后台流数据预检任务。")
         return jsonify({"status": "processing_started_with_stream_check", "item_id": original_item_id}), 202
 
