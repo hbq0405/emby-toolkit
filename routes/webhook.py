@@ -717,12 +717,14 @@ def emby_webhook():
     if event_type == "library.deleted":
             try:
                 series_id_from_webhook = item_from_webhook.get("SeriesId") if original_item_type == "Episode" else None
-                # 直接调用新的、干净的数据库函数
+                provider_ids = item_from_webhook.get("ProviderIds", {})
+                tmdb_id = provider_ids.get("Tmdb")
                 maintenance_db.cleanup_deleted_media_item(
                     item_id=original_item_id,
                     item_name=original_item_name,
                     item_type=original_item_type,
-                    series_id_from_webhook=series_id_from_webhook
+                    series_id_from_webhook=series_id_from_webhook,
+                    tmdb_id=tmdb_id
                 )
                 # ==============================================================
                 # ★★★ 删除媒体后，也主动刷新向量缓存 (保持缓存纯净) ★★★
