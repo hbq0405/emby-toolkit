@@ -668,13 +668,13 @@ def emby_webhook():
     original_item_name = item_from_webhook.get("Name", "未知项目")
     original_item_type = item_from_webhook.get("Type")
     
-    trigger_types = ["Movie", "Series", "Episode", "BoxSet"]
+    trigger_types = ["Movie", "Series", "Episode", "BoxSet", "Folder"]
     if not (original_item_id and original_item_type in trigger_types):
         logger.debug(f"  ➜ Webhook事件 '{event_type}' (项目: {original_item_name}, 类型: {original_item_type}) 被忽略。")
         return jsonify({"status": "event_ignored_no_id_or_wrong_type"}), 200
 
     # ======================================================================
-    # ★★★ 修改点 4：处理 collection.items.removed (检查是否变空消失) ★★★
+    # ★★★ 处理 collection.items.removed (检查是否变空消失) ★★★
     # ======================================================================
     if event_type == "collection.items.removed":
         # Emby 发送此事件时，Item 指的是合集本身
