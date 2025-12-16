@@ -98,9 +98,8 @@ def api_delete_collection(emby_collection_id):
         delete_success = emby.delete_item(emby_collection_id, base_url, api_key, user_id)
 
         if delete_success:
-            # 4. 可选：清理本地数据库缓存 (如果有的话)
-            collection_db.delete_by_emby_id(emby_collection_id) 
-            # 这里我们不做硬性数据库操作，让前端刷新或下次同步自动处理即可
+            # 4. 清理本地数据库缓存 
+            collection_db.delete_native_collection_by_emby_id(emby_collection_id)
             return jsonify({"message": "合集已成功从 Emby 删除"}), 200
         else:
             return jsonify({"error": "删除合集失败，请检查 Emby 日志"}), 500
