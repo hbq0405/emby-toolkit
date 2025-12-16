@@ -4,7 +4,7 @@ from flask import Blueprint, request, jsonify
 import logging
 
 # 导入需要的模块
-from database import collection_db, media_db 
+from database import settings_db
 from extensions import admin_required, processor_ready_required
 from handler import collections as collections_handler 
 import config_manager
@@ -108,3 +108,36 @@ def api_delete_collection(emby_collection_id):
     except Exception as e:
         logger.error(f"删除合集时发生严重错误: {e}", exc_info=True)
         return jsonify({"error": f"服务器内部错误: {str(e)}"}), 500
+    
+# ======================================================================
+# ★★★ 新增：合集模块专属设置接口 ★★★
+# ======================================================================
+@collections_bp.route('/settings', methods=['GET'])
+@admin_required
+def api_get_collection_settings():
+    """获取合集模块的设置"""
+    try:
+        # 从数据库读取，默认为 False
+        val = settings_db.get_setting('collection_auto_complete_enabled')
+        return jsonify({
+            "collection_auto_complete_enabled": True if val else False
+        })
+    except Exception as e:
+        logger.error(f"获取合集设置失败: {e}")
+        return jsonify({"error": "获取设置失败"}), 500
+
+@collections_bp.route('/settings', methods=['POST'])
+@admin_required
+def api_save_collection_settings():
+    """保存合集模块的设置"""
+    try:
+        data = request.json
+        if 'collection_auto_complete_enabled' in data:
+            val = data['collection_auto_complete_enabled']
+            settings_db.save_setting('collection_auto_complete_enabled', val)
+            logger.info(f"API: 原生合集自动补全开关已更新为: {val}")
+            
+        return jsonify({"message": "设置已保存"}), 200
+    except Exception as e:
+        logger.error(f"保存合集设置失败: {e}")
+        return jsonify({"error": "保存设置失败"}), 500

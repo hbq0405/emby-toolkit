@@ -27,6 +27,25 @@
         </template>
         <template #extra>
           <n-space>
+            <div style="display: flex; align-items: center; margin-right: 12px;">
+              <n-tooltip trigger="hover">
+                <template #trigger>
+                  <div style="display: flex; align-items: center;">
+                    <n-text depth="3" style="margin-right: 8px; font-size: 12px;">自动发现合集</n-text>
+                    <n-switch 
+                      :value="autoCompleteEnabled" 
+                      @update:value="handleAutoCompleteChange" 
+                      :loading="isUpdatingSettings"
+                      size="small"
+                    >
+                      <template #checked>开启</template>
+                      <template #unchecked>关闭</template>
+                    </n-switch>
+                  </div>
+                </template>
+                开启后，当单部电影入库时，会自动检测其所属系列，<br>并自动订阅该系列中缺失的其他影片。
+              </n-tooltip>
+            </div>
             <n-tooltip>
               <template #trigger>
                 <n-button @click="triggerFullRefresh" :loading="isRefreshing" circle>
@@ -319,7 +338,7 @@
 import { ref, onMounted, onBeforeUnmount, computed, watch, h } from 'vue';
 import axios from 'axios';
 import { NLayout, NPageHeader, NEmpty, NTag, NButton, NSpace, NIcon, useMessage, useDialog, NTooltip, NGrid, NGi, NCard, NImage, NEllipsis, NSpin, NAlert, NModal, NTabs, NTabPane, NPopconfirm, NCheckbox, NDropdown, NInput, NSelect, NButtonGroup } from 'naive-ui';
-import { SyncOutline, AlbumsOutline as AlbumsIcon, EyeOutline as EyeIcon, CloudDownloadOutline as CloudDownloadIcon, CheckmarkCircleOutline as CheckmarkCircle, ArrowUpOutline as ArrowUpIcon, ArrowDownOutline as ArrowDownIcon, SearchOutline as SearchIcon, TrashOutline as TrashIcon } from '@vicons/ionicons5';
+import { SyncOutline, AlbumsOutline as AlbumsIcon, EyeOutline as EyeIcon, CloudDownloadOutline as CloudDownloadIcon, CheckmarkCircleOutline as CheckmarkCircle, ArrowUpOutline as ArrowUpIcon, ArrowDownOutline as ArrowDownIcon, SearchOutline as SearchIcon, TrashOutline as TrashIcon, SettingsOutline as SettingsIcon } from '@vicons/ionicons5';
 import { format } from 'date-fns';
 import { useConfig } from '../composables/useConfig.js';
 
@@ -493,6 +512,42 @@ const loadCachedData = async () => {
   }
 };
 
+// ★★★ 1. 新增状态变量 ★★★
+const autoCompleteEnabled = ref(false);
+const isUpdatingSettings = ref(false);
+
+// ★★★ 2. 加载设置 ★★★
+const loadSettings = async () => {
+  try {
+    const response = await axios.get('/api/collections/settings');
+    autoCompleteEnabled.value = response.data.collection_auto_complete_enabled;
+  } catch (e) {
+    console.error("加载合集设置失败", e);
+  }
+};
+
+// ★★★ 3. 切换开关 ★★★
+const handleAutoCompleteChange = async (value) => {
+  isUpdatingSettings.value = true;
+  try {
+    await axios.post('/api/collections/settings', {
+      collection_auto_complete_enabled: value
+    });
+    autoCompleteEnabled.value = value;
+    if (value) {
+      message.success("已开启自动补全：新电影入库将自动触发所属系列的订阅。");
+    } else {
+      message.info("已关闭自动补全。");
+    }
+  } catch (e) {
+    message.error("保存设置失败");
+    // 回滚状态
+    autoCompleteEnabled.value = !value;
+  } finally {
+    isUpdatingSettings.value = false;
+  }
+};
+
 const triggerFullRefresh = async () => {
   isRefreshing.value = true;
   try {
@@ -507,6 +562,7 @@ const triggerFullRefresh = async () => {
 
 onMounted(() => {
   loadCachedData();
+  loadSettings();
   observer = new IntersectionObserver((entries) => { if (entries[0].isIntersecting) loadMore(); }, { threshold: 1.0 });
   if (loaderRef.value) observer.observe(loaderRef.value);
 });
