@@ -686,6 +686,9 @@ def emby_webhook():
             return jsonify({"status": "ignored_manual_deletion"}), 200
         
         if collection_id:
+            if not collection_db.is_native_collection(collection_id):
+                logger.debug(f"  ➜ Webhook: 忽略合集 '{collection_name}' 的变动 (非原生合集/未托管)。")
+                return jsonify({"status": "ignored_not_native"}), 200
             logger.info(f"  ➜ Webhook: 合集 '{collection_name}' 有成员移除，正在检查合集存活状态...")
             
             def _check_collection_survival_task(processor=None):

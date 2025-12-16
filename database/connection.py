@@ -115,6 +115,7 @@ def init_db():
                         name TEXT,
                         tmdb_collection_id TEXT,
                         last_checked_at TIMESTAMP WITH TIME ZONE,
+                        poster_path TEXT,
                         item_type TEXT DEFAULT 'Movie' NOT NULL,
                         all_tmdb_ids_json JSONB
                     );
@@ -478,6 +479,7 @@ def init_db():
                             "filter_missing_episodes_enabled": "BOOLEAN DEFAULT FALSE"
                         },
                         'collections_info': {
+                            "poster_path": "TEXT",
                             "all_tmdb_ids_json": "JSONB" 
                         },
                         'user_templates': {

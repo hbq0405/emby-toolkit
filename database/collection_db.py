@@ -130,6 +130,21 @@ def delete_native_collection_by_emby_id(emby_collection_id: str):
         logger.error(f"删除原生合集记录失败: {e}", exc_info=True)
         return False
 
+def is_native_collection(emby_collection_id: str) -> bool:
+    """
+    检查指定的 Emby ID 是否存在于原生合集表 (collections_info) 中。
+    """
+    try:
+        with get_db_connection() as conn:
+            cursor = conn.cursor()
+            cursor.execute(
+                "SELECT 1 FROM collections_info WHERE emby_collection_id = %s",
+                (emby_collection_id,)
+            )
+            return cursor.fetchone() is not None
+    except Exception as e:
+        logger.error(f"检查原生合集存在性失败: {e}")
+        return False
 # ======================================================================
 # 模块: 自定义合集数据访问 (custom_collections)
 # ======================================================================

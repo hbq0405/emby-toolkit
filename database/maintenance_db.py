@@ -757,6 +757,41 @@ def cleanup_deleted_media_item(item_id: str, item_name: str, item_type: str, ser
                             visible_emby_ids_json @> %s::jsonb;
                     """
                     cursor.execute(sql_cleanup_user_cache, (item_id, json.dumps([item_id])))
+
+                    # 5. 清理原生合集
+                    if target_item_type_for_full_cleanup == 'Movie':
+                        # 1. 找出包含这部电影的所有原生合集
+                        cursor.execute("""
+                            SELECT emby_collection_id, name, all_tmdb_ids_json
+                            FROM collections_info
+                            WHERE all_tmdb_ids_json @> %s::jsonb
+                        """, (json.dumps([target_tmdb_id_for_full_cleanup]),))
+                        
+                        affected_collections = cursor.fetchall()
+                        
+                        for col in affected_collections:
+                            c_id = col['emby_collection_id']
+                            c_name = col['name']
+                            tmdb_ids = col['all_tmdb_ids_json'] # 这是一个 list
+                            
+                            if not tmdb_ids: continue
+
+                            # 2. 检查该合集里是否还有其他“在库”的电影
+                            # 注意：当前电影刚刚已经被标记为 in_library=FALSE 了，所以不会被统计进去
+                            cursor.execute("""
+                                SELECT 1 
+                                FROM media_metadata 
+                                WHERE tmdb_id = ANY(%s) 
+                                  AND in_library = TRUE
+                                LIMIT 1
+                            """, (tmdb_ids,))
+                            
+                            has_remaining_items = cursor.fetchone()
+                            
+                            # 3. 如果没有剩下的了，说明合集全灭，删除记录
+                            if not has_remaining_items:
+                                logger.info(f"  🗑️ 原生合集 '{c_name}' (ID: {c_id}) 内所有媒体均已离线，正在自动清理该合集记录...")
+                                cursor.execute("DELETE FROM collections_info WHERE emby_collection_id = %s", (c_id,))
                     
                     conn.commit()
 
