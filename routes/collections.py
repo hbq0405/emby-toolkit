@@ -4,10 +4,12 @@ from flask import Blueprint, request, jsonify
 import logging
 
 # 导入需要的模块
-from database import collection_db, media_db # ★★★ 引入新的 media_db 模块
+from database import collection_db, media_db 
 from extensions import admin_required, processor_ready_required
-from handler import collections as collections_handler # ★★★ 引入新的业务逻辑处理器
-from tasks import task_manager # ★★★ 引入任务管理器来触发订阅
+from handler import collections as collections_handler 
+import config_manager
+import constants
+from handler import emby
 
 # 1. 创建电影合集蓝图
 collections_bp = Blueprint('collections', __name__, url_prefix='/api/collections')
@@ -60,3 +62,49 @@ def api_subscribe_missing_movies():
     except Exception as e:
         logger.error(f"执行一键订阅时发生严重错误: {e}", exc_info=True)
         return jsonify({"error": "服务器在处理一键订阅时发生内部错误"}), 500
+    
+# ======================================================================
+# ★★★ 删除合集路由 ★★★
+# ======================================================================
+@collections_bp.route('/<emby_collection_id>', methods=['DELETE'])
+@admin_required
+def api_delete_collection(emby_collection_id):
+    """
+    删除指定的 Emby 合集。
+    逻辑：先清空合集内的所有媒体项 -> 再删除合集条目本身。
+    """
+    logger.info(f"API: 收到删除 Emby 合集请求 (ID: {emby_collection_id})")
+    
+    try:
+        # 1. 获取配置
+        app_config = config_manager.APP_CONFIG
+        base_url = app_config.get(constants.CONFIG_OPTION_EMBY_SERVER_URL)
+        api_key = app_config.get(constants.CONFIG_OPTION_EMBY_API_KEY)
+        user_id = app_config.get(constants.CONFIG_OPTION_EMBY_USER_ID)
+
+        if not all([base_url, api_key, user_id]):
+            return jsonify({"error": "Emby 配置不完整，无法执行删除操作"}), 500
+
+        # 2. 第一步：清空合集 (移除所有成员)
+        # 这一步是为了防止 Emby 只是删除了合集壳子但没解绑关系，或者删除失败
+        logger.info(f"  ➜ [删除合集] 步骤1: 正在清空合集 {emby_collection_id} 的成员...")
+        empty_success = emby.empty_collection_in_emby(emby_collection_id, base_url, api_key, user_id)
+        
+        if not empty_success:
+            logger.warning(f"  ➜ [删除合集] 清空合集成员失败，但将尝试强制删除合集条目。")
+
+        # 3. 第二步：删除合集条目本身
+        logger.info(f"  ➜ [删除合集] 步骤2: 正在删除合集条目 {emby_collection_id}...")
+        delete_success = emby.delete_item(emby_collection_id, base_url, api_key, user_id)
+
+        if delete_success:
+            # 4. 可选：清理本地数据库缓存 (如果有的话)
+            # collection_db.delete_by_emby_id(emby_collection_id) 
+            # 这里我们不做硬性数据库操作，让前端刷新或下次同步自动处理即可
+            return jsonify({"message": "合集已成功从 Emby 删除"}), 200
+        else:
+            return jsonify({"error": "删除合集失败，请检查 Emby 日志"}), 500
+
+    except Exception as e:
+        logger.error(f"删除合集时发生严重错误: {e}", exc_info=True)
+        return jsonify({"error": f"服务器内部错误: {str(e)}"}), 500

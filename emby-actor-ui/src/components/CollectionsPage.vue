@@ -147,6 +147,17 @@
                     <!-- 外部链接按钮需要 @click.stop 防止触发卡片点击 -->
                     <n-tooltip><template #trigger><n-button text @click.stop="openInEmby(item.emby_collection_id)"><template #icon><n-icon :component="EmbyIcon" size="18" /></template></n-button></template>在 Emby 中打开</n-tooltip>
                     <n-tooltip><template #trigger><n-button text tag="a" :href="`https://www.themoviedb.org/collection/${item.tmdb_collection_id}`" target="_blank" :disabled="!item.tmdb_collection_id" @click.stop><template #icon><n-icon :component="TMDbIcon" size="18" /></template></n-button></template>在 TMDb 中打开</n-tooltip>
+                    <n-popconfirm @positive-click="handleDeleteCollection(item)" @click.stop>
+                      <template #trigger>
+                        <n-button text type="error" @click.stop>
+                          <template #icon><n-icon :component="TrashIcon" size="18" /></template>
+                        </n-button>
+                      </template>
+                      <div style="max-width: 240px;">
+                        <p style="margin-bottom: 5px; font-weight: bold;">确定要删除此合集吗？</p>
+                        <p style="font-size: 12px; color: gray;">这将清空合集内的所有影片关联，并从 Emby 中永久删除该合集条目。（不会删除影片文件）</p>
+                      </div>
+                    </n-popconfirm>
                   </div>
                 </div>
               </div>
@@ -308,7 +319,7 @@
 import { ref, onMounted, onBeforeUnmount, computed, watch, h } from 'vue';
 import axios from 'axios';
 import { NLayout, NPageHeader, NEmpty, NTag, NButton, NSpace, NIcon, useMessage, useDialog, NTooltip, NGrid, NGi, NCard, NImage, NEllipsis, NSpin, NAlert, NModal, NTabs, NTabPane, NPopconfirm, NCheckbox, NDropdown, NInput, NSelect, NButtonGroup } from 'naive-ui';
-import { SyncOutline, AlbumsOutline as AlbumsIcon, EyeOutline as EyeIcon, CloudDownloadOutline as CloudDownloadIcon, CheckmarkCircleOutline as CheckmarkCircle, ArrowUpOutline as ArrowUpIcon, ArrowDownOutline as ArrowDownIcon, SearchOutline as SearchIcon } from '@vicons/ionicons5';
+import { SyncOutline, AlbumsOutline as AlbumsIcon, EyeOutline as EyeIcon, CloudDownloadOutline as CloudDownloadIcon, CheckmarkCircleOutline as CheckmarkCircle, ArrowUpOutline as ArrowUpIcon, ArrowDownOutline as ArrowDownIcon, SearchOutline as SearchIcon, TrashOutline as TrashIcon } from '@vicons/ionicons5';
 import { format } from 'date-fns';
 import { useConfig } from '../composables/useConfig.js';
 
@@ -376,6 +387,25 @@ const globalStats = computed(() => {
   }
   return stats;
 });
+
+const handleDeleteCollection = async (collection) => {
+  if (!collection || !collection.emby_collection_id) return;
+  
+  const d = message.loading('正在删除合集，请稍候...', { duration: 0 });
+  
+  try {
+    await axios.delete(`/api/collections/${collection.emby_collection_id}`);
+    d.destroy();
+    message.success(`合集 "${collection.name}" 删除成功！`);
+    
+    // 从本地列表中移除，避免需要刷新页面
+    collections.value = collections.value.filter(c => c.emby_collection_id !== collection.emby_collection_id);
+    
+  } catch (err) {
+    d.destroy();
+    message.error(err.response?.data?.error || '删除失败，请查看日志。');
+  }
+};
 
 const filteredAndSortedCollections = computed(() => {
   if (!Array.isArray(collections.value)) return [];
