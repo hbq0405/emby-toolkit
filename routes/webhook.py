@@ -685,7 +685,7 @@ def emby_webhook():
             logger.info(f"  ➜ Webhook: 合集 '{collection_name}' 有成员移除，正在检查合集存活状态...")
             
             # 启动一个后台任务去检查，避免阻塞 Webhook
-            def _check_collection_survival_task():
+            def _check_collection_survival_task(processor=None):
                 # 查 Emby：这个合集还活着吗？
                 # 注意：如果合集因为变空被 Emby 自动删除了，这里会查不到 (返回 None)
                 details = emby.get_emby_item_details(
