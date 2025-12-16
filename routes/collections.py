@@ -2,10 +2,10 @@
 
 from flask import Blueprint, request, jsonify
 import logging
-
+from gevent import spawn_later
 # 导入需要的模块
 from database import settings_db, collection_db
-from extensions import admin_required, processor_ready_required
+from extensions import admin_required, DELETING_COLLECTIONS
 from handler import collections as collections_handler 
 import config_manager
 import constants
@@ -84,7 +84,10 @@ def api_delete_collection(emby_collection_id):
 
         if not all([base_url, api_key, user_id]):
             return jsonify({"error": "Emby 配置不完整，无法执行删除操作"}), 500
-
+        DELETING_COLLECTIONS.add(emby_collection_id)
+        def _clear_flag():
+            DELETING_COLLECTIONS.discard(emby_collection_id)
+        spawn_later(10, _clear_flag)
         # 2. 第一步：清空合集 (移除所有成员)
         # 这一步是为了防止 Emby 只是删除了合集壳子但没解绑关系，或者删除失败
         logger.info(f"  ➜ [删除合集] 步骤1: 正在清空合集 {emby_collection_id} 的成员...")

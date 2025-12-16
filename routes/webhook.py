@@ -16,7 +16,7 @@ import config_manager
 import constants
 import handler.telegram as telegram
 import extensions
-from extensions import SYSTEM_UPDATE_MARKERS, SYSTEM_UPDATE_LOCK, RECURSION_SUPPRESSION_WINDOW
+from extensions import SYSTEM_UPDATE_MARKERS, SYSTEM_UPDATE_LOCK, RECURSION_SUPPRESSION_WINDOW, DELETING_COLLECTIONS
 from core_processor import MediaProcessor
 from tasks import (
     task_auto_sync_template_on_policy_change, task_sync_metadata_cache,
@@ -680,6 +680,10 @@ def emby_webhook():
         # Emby 发送此事件时，Item 指的是合集本身
         collection_id = item_from_webhook.get("Id")
         collection_name = item_from_webhook.get("Name")
+
+        if collection_id in DELETING_COLLECTIONS:
+            logger.debug(f"  ➜ Webhook: 忽略合集 '{collection_name}' 的移除通知 (正在执行手动删除)。")
+            return jsonify({"status": "ignored_manual_deletion"}), 200
         
         if collection_id:
             logger.info(f"  ➜ Webhook: 合集 '{collection_name}' 有成员移除，正在检查合集存活状态...")

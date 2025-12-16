@@ -107,6 +107,7 @@ watchlist_processor_instance: Optional['WatchlistProcessor'] = None
 actor_subscription_processor_instance: Optional['ActorSubscriptionProcessor'] = None
 EMBY_SERVER_ID: Optional[str] = None
 TASK_REGISTRY = {}
+DELETING_COLLECTIONS = set()
 
 # 为了让类型检查器正常工作
 from typing import TYPE_CHECKING
