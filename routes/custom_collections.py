@@ -2,6 +2,7 @@
 
 from flask import Blueprint, request, jsonify
 import logging
+from gevent import spawn_later
 import json
 import psycopg2
 import pytz
@@ -10,7 +11,7 @@ from database import user_db, collection_db, connection, media_db
 import config_manager
 import handler.emby as emby
 from tasks.helpers import is_movie_subscribable
-from extensions import admin_required, any_login_required
+from extensions import admin_required, any_login_required, DELETING_COLLECTIONS
 from handler.custom_collection import FilterEngine
 from utils import get_country_translation_map, UNIFIED_RATING_CATEGORIES, get_tmdb_country_options, KEYWORD_TRANSLATION_MAP
 from handler.tmdb import get_movie_genres_tmdb, get_tv_genres_tmdb, search_companies_tmdb, search_person_tmdb
@@ -296,7 +297,14 @@ def api_delete_custom_collection(collection_id):
         if emby_id_to_empty:
             logger.info(f"  ➜ 正在删除合集 '{collection_name}' (Emby ID: {emby_id_to_empty})...")
             
-            # ★★★ 调用我们全新的、真正有效的清空函数 ★★★
+            # ★★★ 核心修改：加入“免打扰名单” ★★★
+            # ==================================================================
+            DELETING_COLLECTIONS.add(emby_id_to_empty)
+            
+            # 20秒后移除标记 (自建合集涉及大量成员移除，Webhook可能会飞一会儿，给长一点时间)
+            def _clear_flag():
+                DELETING_COLLECTIONS.discard(emby_id_to_empty)
+            spawn_later(20, _clear_flag)
             emby.empty_collection_in_emby(
                 collection_id=emby_id_to_empty,
                 base_url=config_manager.APP_CONFIG.get('emby_server_url'),
