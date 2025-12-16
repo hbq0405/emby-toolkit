@@ -107,7 +107,6 @@ watchlist_processor_instance: Optional['WatchlistProcessor'] = None
 actor_subscription_processor_instance: Optional['ActorSubscriptionProcessor'] = None
 EMBY_SERVER_ID: Optional[str] = None
 TASK_REGISTRY = {}
-DELETING_COLLECTIONS = set()
 
 # 为了让类型检查器正常工作
 from typing import TYPE_CHECKING
@@ -125,3 +124,5 @@ SYSTEM_UPDATE_MARKERS = {}
 SYSTEM_UPDATE_LOCK = threading.Lock()
 # 抑制窗口期（秒），在这个时间内收到的相同用户的 policyupdated Webhook 将被忽略
 RECURSION_SUPPRESSION_WINDOW = 10
+DELETING_COLLECTIONS = set()
+UPDATING_IMAGES = set()

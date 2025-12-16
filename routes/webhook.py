@@ -16,7 +16,7 @@ import config_manager
 import constants
 import handler.telegram as telegram
 import extensions
-from extensions import SYSTEM_UPDATE_MARKERS, SYSTEM_UPDATE_LOCK, RECURSION_SUPPRESSION_WINDOW, DELETING_COLLECTIONS
+from extensions import SYSTEM_UPDATE_MARKERS, SYSTEM_UPDATE_LOCK, RECURSION_SUPPRESSION_WINDOW, DELETING_COLLECTIONS, UPDATING_IMAGES
 from core_processor import MediaProcessor
 from tasks import (
     task_auto_sync_template_on_policy_change, task_sync_metadata_cache,
@@ -793,6 +793,9 @@ def emby_webhook():
         final_update_description = original_update_description
 
         with UPDATE_DEBOUNCE_LOCK:
+            if id_to_process in UPDATING_IMAGES:
+                logger.debug(f"  ➜ Webhook: 忽略项目 '{name_for_task}' 的图片更新通知 (系统生成的封面)。")
+                return jsonify({"status": "ignored_self_triggered_update"}), 200
             # 3. 检查是否已有计时器
             if id_to_process in UPDATE_DEBOUNCE_TIMERS:
                 old_timer = UPDATE_DEBOUNCE_TIMERS[id_to_process]

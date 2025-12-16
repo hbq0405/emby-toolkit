@@ -7,9 +7,11 @@ import random
 import requests
 from pathlib import Path
 from typing import Dict, Any, List, Tuple, Optional
+from gevent import spawn_later
 
 import config_manager
 import handler.emby as emby 
+from extensions import UPDATING_IMAGES
 from .styles.style_single_1 import create_style_single_1
 from .styles.style_single_2 import create_style_single_2
 from .styles.style_multi_1 import create_style_multi_1
@@ -117,13 +119,11 @@ class CoverGeneratorService:
             media_type_to_fetch = original_types.split(',')[0]
             logger.trace(f"  ➜ 检测到合集 '{library_name}'，为提升性能，将仅使用类型 '{media_type_to_fetch}' 进行查询。")
 
-        # === 核心修改开始 ===
         sort_by_param = "Random"
         sort_order_param = None  # 随机排序不需要顺序
         if self._sort_by != "Random": # 处理 "Latest" 或其他未来可能的排序
             sort_by_param = "DateCreated"
             sort_order_param = "Descending" # 明确指定降序
-        # === 核心修改结束 ===
         
         api_limit = limit * 5 if limit < 10 else limit * 2 
 
@@ -133,7 +133,7 @@ class CoverGeneratorService:
             media_type_filter=media_type_to_fetch,
             fields="Id,Name,Type,ImageTags,BackdropImageTags,DateCreated,PrimaryImageTag,PrimaryImageItemId",
             sort_by=sort_by_param,
-            sort_order=sort_order_param, # ★ 新增此行，明确传递排序顺序
+            sort_order=sort_order_param,
             limit=api_limit,
             force_user_endpoint=True
         )
@@ -197,7 +197,6 @@ class CoverGeneratorService:
             logger.error(f"  ➜ 下载图片失败 ({api_path}): {e}", exc_info=True)
         return None
 
-    # ... (文件末尾的 __generate_image_from_path, __set_library_image, __get_library_title_from_yaml, __prepare_multi_images, __check_custom_image, __download_file, __get_fonts 函数与您提供的原始文件一致，无需修改，此处省略以保持简洁) ...
     def __generate_image_from_path(self, library_name: str, title: Tuple[str, str], image_paths: List[str], item_count: Optional[int] = None) -> bytes:
         logger.trace(f"  ➜ 正在为 '{library_name}' 从本地路径生成封面...")
         zh_font_size = self.config.get("zh_font_size", 1)
@@ -254,6 +253,13 @@ class CoverGeneratorService:
             except Exception as e:
                 logger.error(f"  ➜ 另存封面失败: {e}")
         try:
+            if library_id:
+                UPDATING_IMAGES.add(library_id)
+                
+                # 定义清理函数 (30秒后移除标记，给 Emby 足够的反应时间)
+                def _clear_flag():
+                    UPDATING_IMAGES.discard(library_id)
+                spawn_later(30, _clear_flag)
             response = requests.post(upload_url, data=image_data, headers=headers, timeout=30)
             response.raise_for_status()
             logger.debug(f"  ➜ 成功上传封面到媒体库 '{library['Name']}'。")
