@@ -135,20 +135,38 @@ def search_all_logs():
 @admin_required
 def search_logs_with_context():
     """
-    【V9 - 最终无干扰版】在所有日志文件中定位与关键词匹配的、完整的、未被中断的处理块。
-    此版本能正确忽略在目标块内部出现的、不相关的其他处理块起始标记。
+    【V10 - 智能去噪版】
+    精准截取从 '收到入库事件/手动处理' 到 '后台任务结束' 的完整日志块。
+    自动剔除中间穿插的其他媒体（如 '第 xx 集'）的入库、预检、队列等干扰日志。
     """
     query = request.args.get('q', '').strip()
     if not query:
         return jsonify({"error": "搜索关键词不能为空"}), 400
 
-    START_MARKER = re.compile(r"(开始处理|手动处理)\s'(.+?)'\s\(TMDb ID: \d+\)")
-    END_MARKER = re.compile(r"最终状态: 处理完成\s'(.+?)'")
+    # 1. 定义正则表达式
+    # ---------------------------------------------------------
+    # 捕获组1: 媒体名称
+    
+    # [起点] 匹配: "Webhook: 收到入库事件 'Name'" 或 "手动处理 'Name'"
+    START_MARKER = re.compile(r"(?:Webhook: 收到入库事件|手动处理)\s'(.+?)'")
+    
+    # [终点] 匹配: "后台任务 'Webhook完整处理: Name' 结束"
+    # 注意：日志中结束语包含 "结束，最终状态..."，所以匹配 "结束" 即可
+    END_MARKER = re.compile(r"后台任务 'Webhook完整处理:\s(.+?)'\s结束")
+
+    # [干扰项检测] 
+    # 如果当前行包含以下模式，且名字不是当前追踪的名字，则视为干扰
+    # 涵盖: 入库事件, 队列项目, 预检检测, 开始处理, 处理完成
+    INTERFERENCE_MARKER = re.compile(r"(?:Webhook: 收到入库事件|项目|预检.+?检测到|开始检查|开始处理|处理完成)\s'(.+?)'")
+
+    # [日期提取]
     TIMESTAMP_REGEX = re.compile(r"^(\d{4}-\d{2}-\d{2}\s\d{2}:\d{2}:\d{2})")
+    # ---------------------------------------------------------
 
     found_blocks = []
     
     try:
+        # 按时间倒序获取日志文件（优先看最新的日志）
         all_files = os.listdir(config_manager.LOG_DIRECTORY)
         log_files = sorted([f for f in all_files if f.startswith('app.log')], reverse=True)
 
@@ -156,39 +174,43 @@ def search_logs_with_context():
             full_path = os.path.join(config_manager.LOG_DIRECTORY, filename)
             
             current_block = []
-            active_item_name = None # 状态变量：记录当前正在追踪的片名
+            active_item_name = None # 当前正在追踪的片名 (例如: "方世玉与洪熙官")
 
             try:
                 with open(full_path, 'rt', encoding='utf-8', errors='ignore') as f:
                     for line in f:
-                        line = line.strip()
-                        if not line: continue
+                        line_strip = line.strip()
+                        if not line_strip: continue
 
-                        start_match = START_MARKER.search(line)
-                        end_match = END_MARKER.search(line)
+                        # 尝试匹配起点和终点
+                        start_match = START_MARKER.search(line_strip)
+                        end_match = END_MARKER.search(line_strip)
 
-                        # ★★★★★★★★★★★★★★★ 核心逻辑修正 ★★★★★★★★★★★★★★★
-                        if not active_item_name and start_match:
-                            # 状态：当前未追踪任何块，并且遇到了一个起始标记
-                            start_item_name = start_match.group(2)
-                            if query.lower() in start_item_name.lower():
-                                # 关键词匹配！开始追踪
-                                active_item_name = start_item_name
-                                current_block = [line]
+                        # --- 场景 A: 尚未开始追踪，寻找起点 ---
+                        if not active_item_name:
+                            if start_match:
+                                item_name = start_match.group(1)
+                                # 只有当名字包含搜索关键词时才开始追踪
+                                if query.lower() in item_name.lower():
+                                    active_item_name = item_name
+                                    current_block = [line] # 初始化块
+                            continue
+
+                        # --- 场景 B: 正在追踪中 (active_item_name 有值) ---
                         
-                        elif active_item_name and end_match:
-                            # 状态：正在追踪一个块，并且遇到了一个结束标记
-                            end_item_name = end_match.group(1)
-                            
-                            if end_item_name == active_item_name:
-                                # 完美闭环！保存
+                        # 1. 检查是否是当前追踪对象的【终点】
+                        if end_match:
+                            end_name = end_match.group(1)
+                            if end_name == active_item_name:
+                                # 完美闭环：找到结束语，保存并重置
                                 current_block.append(line)
                                 
+                                # 提取日期
                                 block_date = "Unknown Date"
                                 if current_block:
-                                    match = TIMESTAMP_REGEX.search(current_block[0])
-                                    if match:
-                                        block_date = match.group(1).split(' ')[0]
+                                    date_match = TIMESTAMP_REGEX.search(current_block[0])
+                                    if date_match:
+                                        block_date = date_match.group(1)
 
                                 found_blocks.append({
                                     "file": filename,
@@ -196,23 +218,38 @@ def search_logs_with_context():
                                     "lines": current_block
                                 })
                                 
-                                # 任务完成，重置状态
+                                # 重置状态，继续寻找下一个匹配
                                 active_item_name = None
                                 current_block = []
-                            else:
-                                # 结束的片名不匹配，说明日志错乱，抛弃当前块
-                                active_item_name = None
-                                current_block = []
+                                continue
 
-                        elif active_item_name:
-                            # 状态：正在追踪一个块，当前行是普通日志，追加
-                            current_block.append(line)
-                        
-                        # 如果 active_item_name 为空，且当前行不是匹配的 start_match，则什么都不做，直接忽略
+                        # 2. 智能去噪逻辑 (核心优化)
+                        # 如果行中明确包含了【其他】媒体对象的关键操作日志，则跳过该行
+                        interference_match = INTERFERENCE_MARKER.search(line_strip)
+                        if interference_match:
+                            other_name = interference_match.group(1)
+                            # 如果这行日志提到的名字 不是 当前追踪的名字，那就是干扰项 (例如: '第 15 集')
+                            if other_name != active_item_name:
+                                continue 
+
+                        # 3. 补充逻辑：防止死锁
+                        # 如果遇到了同一个名字的【新的起点】，说明上一次处理可能异常中断了没有打印结束语
+                        # 这种情况下，我们把之前的块作废（或者保存为残缺块），重新开始追踪新的
+                        if start_match:
+                            new_name = start_match.group(1)
+                            if new_name == active_item_name:
+                                # 发现重复起点，重置当前块，从这行重新开始
+                                current_block = [line]
+                                continue
+
+                        # 4. 常规日志：添加到当前块
+                        # 这里包含：通用日志、当前片名的详细日志、以及未被识别为干扰的日志
+                        current_block.append(line)
 
             except Exception as e:
                 logging.warning(f"API: 上下文搜索时无法读取文件 '{filename}': {e}")
         
+        # 按日期倒序排列结果
         found_blocks.sort(key=lambda x: x['date'], reverse=True)
         
         return jsonify(found_blocks)
