@@ -144,6 +144,25 @@ def get_native_collection_by_tmdb_id(tmdb_collection_id: str) -> Optional[Dict[s
             return cursor.fetchone()
     except Exception as e:
         logger.error(f"查询原生合集 (TMDb ID: {tmdb_collection_id}) 失败: {e}")
+
+def is_tmdb_id_in_any_native_collection(tmdb_id: str) -> bool:
+    """
+    检查给定的 TMDb ID (电影) 是否已经包含在本地数据库的某个原生合集中。
+    用于 Webhook 快速熔断，避免重复查询 TMDb。
+    """
+    try:
+        with get_db_connection() as conn:
+            cursor = conn.cursor()
+            # JSONB 查询：检查数组中是否包含该字符串
+            # 注意：all_tmdb_ids_json 存的是字符串列表 ["123", "456"]
+            cursor.execute(
+                "SELECT 1 FROM collections_info WHERE all_tmdb_ids_json @> %s::jsonb LIMIT 1",
+                (json.dumps([str(tmdb_id)]),)
+            )
+            return cursor.fetchone() is not None
+    except Exception as e:
+        logger.error(f"检查 TMDb ID {tmdb_id} 是否在合集中失败: {e}")
+        return False
 # ======================================================================
 # 模块: 自定义合集数据访问 (custom_collections)
 # ======================================================================

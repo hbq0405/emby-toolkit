@@ -328,15 +328,23 @@ def assemble_all_collection_details() -> List[Dict[str, Any]]:
 
     return all_collections
 
-# ★★★ 新增：单合集处理函数 ★★★
+# --- 实时入库合集处理逻辑 ---
 def check_and_subscribe_collection_from_movie(movie_tmdb_id: str, movie_name: str, movie_emby_id: str = None):
     """
-    1. 查 TMDb 确认从属关系。
-    2. 查本地 DB：如果合集已存在，仅更新元数据，跳过 Emby 反查。
-    3. 查 Emby API：如果本地没有，才去反查 Emby 是否生成了合集。
+    1. 查本地 DB：如果该电影已在某个原生合集记录中 -> 直接结束 (省流！)。
+    2. 查 TMDb：确认从属关系。
+    3. 查 Emby API：反查 Emby 是否生成了合集。
     4. 执行缺失订阅。
     """
     if not movie_tmdb_id: return
+
+    # ======================================================================
+    # ★★★ 极速优化：先查本地数据库 ★★★
+    # ======================================================================
+    if collection_db.is_tmdb_id_in_any_native_collection(movie_tmdb_id):
+        logger.info(f"  ⚡ [自动补全] 电影《{movie_name}》所属的合集已在本地数据库中，跳过所有 API 查询。")
+        return
+    # ======================================================================
 
     logger.info(f"--- [自动补全] 正在检查新入库电影《{movie_name}》是否属于某个合集 ---")
     
