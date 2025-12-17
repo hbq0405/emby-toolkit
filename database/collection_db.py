@@ -145,26 +145,27 @@ def get_native_collection_by_tmdb_id(tmdb_collection_id: str) -> Optional[Dict[s
     except Exception as e:
         logger.error(f"查询原生合集 (TMDb ID: {tmdb_collection_id}) 失败: {e}")
 
-def is_tmdb_id_in_any_native_collection(tmdb_id: str) -> bool:
+def touch_native_collection_by_child_id(tmdb_id: str) -> bool:
+    """
+    检查给定的 TMDb ID 是否在某个原生合集中。
+    如果存在，顺便把该合集的 last_checked_at 更新为当前时间。
+    返回: True (存在且已更新) / False (不存在)
+    """
     try:
         with get_db_connection() as conn:
             cursor = conn.cursor()
-            cursor.execute(
-                "SELECT emby_collection_id FROM collections_info WHERE all_tmdb_ids_json @> %s::jsonb LIMIT 1",
-                (json.dumps([str(tmdb_id)]),)
-            )
-            row = cursor.fetchone()
-            if row:
-                emby_collection_id = row[0]
-                cursor.execute(
-                    "UPDATE collections_info SET last_checked_at = %s WHERE emby_collection_id = %s",
-                    (datetime.now(), emby_collection_id)
-                )
-                conn.commit()
-                return True
-            return False
+            # 直接尝试更新，如果匹配到了，rowcount 就会 > 0
+            cursor.execute("""
+                UPDATE collections_info
+                SET last_checked_at = NOW()
+                WHERE all_tmdb_ids_json @> %s::jsonb
+            """, (json.dumps([str(tmdb_id)]),))
+            
+            updated = cursor.rowcount > 0
+            conn.commit()
+            return updated
     except Exception as e:
-        logger.error(f"检查 TMDb ID {tmdb_id} 是否在合集中失败: {e}")
+        logger.error(f"更新合集时间戳 (Child TMDb ID: {tmdb_id}) 失败: {e}")
         return False
 # ======================================================================
 # 模块: 自定义合集数据访问 (custom_collections)

@@ -341,7 +341,7 @@ def check_and_subscribe_collection_from_movie(movie_tmdb_id: str, movie_name: st
     # ======================================================================
     # ★★★ 先查本地数据库 ★★★
     # ======================================================================
-    if collection_db.is_tmdb_id_in_any_native_collection(movie_tmdb_id):
+    if collection_db.touch_native_collection_by_child_id(movie_tmdb_id):
         logger.info(f"  ⚡ 电影《{movie_name}》所属的 TMDb 合集已在本地数据库中，跳过所有 API 查询。")
         return
     # ======================================================================
