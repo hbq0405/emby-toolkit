@@ -14,9 +14,8 @@ from typing import Dict, Any, List, Set
 import handler.emby as emby
 import task_manager
 import handler.tmdb as tmdb
-from database import collection_db, connection, settings_db, media_db, request_db
+from database import connection, custom_collection_db, settings_db, media_db, request_db
 from handler.custom_collection import ListImporter, FilterEngine
-from handler import collections
 from services.cover_generator import CoverGeneratorService
 
 logger = logging.getLogger(__name__)
@@ -343,26 +342,6 @@ def _check_user_access_batch(base_url: str, api_key: str, user_id: str, item_ids
             
     return accessible_ids
 
-# ★★★ 刷新原生合集的后台任务函数 ★★★
-def task_refresh_collections(processor):
-    """
-    后台任务：启动原生合集扫描。
-    职责：只负责调用 handler 层的总指挥函数。
-    """
-    task_name = "刷新原生合集"
-    logger.info(f"--- 开始执行 '{task_name}' 任务 (新架构) ---")
-    try:
-        def progress_callback(percent, message):
-            task_manager.update_status_from_thread(percent, message)
-        
-        collections.sync_and_subscribe_native_collections(progress_callback=progress_callback)
-        
-        task_manager.update_status_from_thread(100, "原生合集扫描与订阅任务完成。")
-        logger.info(f"--- '{task_name}' 任务成功完成 ---")
-    except Exception as e:
-        logger.error(f"执行 '{task_name}' 任务时发生严重错误: {e}", exc_info=True)
-        task_manager.update_status_from_thread(-1, f"任务失败: {e}")
-
 # ★★★ 用于统一处理自定义合集的角标逻辑 ★★★
 def _get_cover_badge_text_for_collection(collection_db_info: Dict[str, Any]) -> Any:
     """
@@ -479,7 +458,7 @@ def task_process_all_custom_collections(processor):
     try:
         # 1. 获取用户列表
         task_manager.update_status_from_thread(0, "正在获取所有Emby用户...")
-        all_emby_users = collection_db.get_all_local_emby_users()
+        all_emby_users = custom_collection_db.get_all_local_emby_users()
         if not all_emby_users:
             logger.info("  ➜ 本地数据库未找到用户数据，回退到 Emby API 获取...")
             all_emby_users = emby.get_all_emby_users_from_server(processor.emby_url, processor.emby_api_key)
@@ -487,7 +466,7 @@ def task_process_all_custom_collections(processor):
 
         # 2. 获取合集定义
         task_manager.update_status_from_thread(10, "正在获取所有启用的合集定义...")
-        active_collections = collection_db.get_all_active_custom_collections()
+        active_collections = custom_collection_db.get_all_active_custom_collections()
         if not active_collections:
             task_manager.update_status_from_thread(100, "没有已启用的合集。")
             return
@@ -651,14 +630,14 @@ def task_process_all_custom_collections(processor):
                         tmdb_api_key=processor.tmdb_api_key
                     )
 
-                collection_db.update_custom_collection_sync_results(collection_id, update_data)
+                custom_collection_db.update_custom_collection_sync_results(collection_id, update_data)
 
                 # --- F. 封面生成 ---
                 if cover_service and emby_collection_id:
                     try:
                         library_info = emby.get_emby_item_details(emby_collection_id, processor.emby_url, processor.emby_api_key, processor.emby_user_id)
                         if library_info:
-                            latest_collection_info = collection_db.get_custom_collection_by_id(collection_id)
+                            latest_collection_info = custom_collection_db.get_custom_collection_by_id(collection_id)
                             item_count_to_pass = _get_cover_badge_text_for_collection(latest_collection_info)
                             cover_service.generate_for_library(
                                 emby_server_id='main_emby', library=library_info,
@@ -703,7 +682,7 @@ def process_single_custom_collection(processor, custom_collection_id: int):
     try:
         # 1. 获取用户列表 (从本地 DB)
         task_manager.update_status_from_thread(0, "正在获取所有Emby用户...")
-        all_emby_users = collection_db.get_all_local_emby_users()
+        all_emby_users = custom_collection_db.get_all_local_emby_users()
         if not all_emby_users:
             logger.info("  ➜ 本地数据库未找到用户数据，回退到 Emby API 获取...")
             all_emby_users = emby.get_all_emby_users_from_server(processor.emby_url, processor.emby_api_key)
@@ -711,7 +690,7 @@ def process_single_custom_collection(processor, custom_collection_id: int):
         
         # 2. 读取合集定义
         task_manager.update_status_from_thread(10, "正在读取合集定义...")
-        collection = collection_db.get_custom_collection_by_id(custom_collection_id)
+        collection = custom_collection_db.get_custom_collection_by_id(custom_collection_id)
         if not collection: raise ValueError(f"未找到ID为 {custom_collection_id} 的自定义合集。")
         collection_name = collection['name']
         
@@ -746,7 +725,7 @@ def process_single_custom_collection(processor, custom_collection_id: int):
         ]
 
         if not tmdb_items and collection['type'] != 'ai_recommendation':
-            collection_db.update_custom_collection_sync_results(custom_collection_id, {"emby_collection_id": None})
+            custom_collection_db.update_custom_collection_sync_results(custom_collection_id, {"emby_collection_id": None})
             task_manager.update_status_from_thread(100, "该合集未匹配到任何媒体。")
             return
 
@@ -840,7 +819,7 @@ def process_single_custom_collection(processor, custom_collection_id: int):
             )
             # ★★★ 注意：不再写入 missing_count 和 health_status ★★★
         
-        collection_db.update_custom_collection_sync_results(custom_collection_id, update_data)
+        custom_collection_db.update_custom_collection_sync_results(custom_collection_id, update_data)
 
         # 封面生成
         try:
@@ -849,7 +828,7 @@ def process_single_custom_collection(processor, custom_collection_id: int):
                 cover_service = CoverGeneratorService(config=cover_config)
                 library_info = emby.get_emby_item_details(emby_collection_id, processor.emby_url, processor.emby_api_key, processor.emby_user_id)
                 if library_info:
-                    latest_collection_info = collection_db.get_custom_collection_by_id(custom_collection_id)
+                    latest_collection_info = custom_collection_db.get_custom_collection_by_id(custom_collection_id)
                     item_count_to_pass = _get_cover_badge_text_for_collection(latest_collection_info)
                     cover_service.generate_for_library(
                         emby_server_id='main_emby', library=library_info,

@@ -4,9 +4,9 @@ from flask import Blueprint, request, jsonify
 import logging
 from gevent import spawn_later
 # 导入需要的模块
-from database import settings_db, collection_db
+from database import custom_collection_db, tmdb_collection_db, settings_db
 from extensions import admin_required, DELETING_COLLECTIONS
-from handler import collections as collections_handler 
+from handler import tmdb_collections as collections_handler 
 import config_manager
 import constants
 from handler import emby
@@ -102,7 +102,7 @@ def api_delete_collection(emby_collection_id):
 
         if delete_success:
             # 4. 清理本地数据库缓存 
-            collection_db.delete_native_collection_by_emby_id(emby_collection_id)
+            tmdb_collection_db.delete_native_collection_by_emby_id(emby_collection_id)
             return jsonify({"message": "合集已成功从 Emby 删除"}), 200
         else:
             return jsonify({"error": "删除合集失败，请检查 Emby 日志"}), 500

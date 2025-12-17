@@ -7,7 +7,7 @@ from datetime import datetime
 import concurrent.futures
 
 # 导入数据访问层和外部 API 处理器
-from database import collection_db, media_db, request_db
+from database import custom_collection_db, tmdb_collection_db, media_db, request_db
 import handler.emby as emby
 import handler.tmdb as tmdb
 import config_manager
@@ -113,7 +113,7 @@ def sync_and_subscribe_native_collections(progress_callback=None):
         media_db.batch_ensure_basic_movies(all_parts)
 
         # C. 写入合集关系表
-        collection_db.upsert_native_collection({
+        tmdb_collection_db.upsert_native_collection({
             'emby_collection_id': emby_collection_id,
             'name': collection.get('name'),
             'tmdb_collection_id': collection.get('tmdb_collection_id'),
@@ -136,7 +136,7 @@ def subscribe_all_missing_in_native_collections():
     logger.info("--- 开始执行原生合集缺失电影批量待订阅 ---")
     
     # 1. 一次性拿到所有缺失的电影
-    missing_movies = collection_db.get_all_missing_movies_in_collections()
+    missing_movies = tmdb_collection_db.get_all_missing_movies_in_collections()
     
     if not missing_movies:
         logger.info("  ➜ 没有发现需要订阅的缺失电影。")
@@ -228,7 +228,7 @@ def assemble_all_collection_details() -> List[Dict[str, Any]]:
     """
     读取时，根据 ID 列表实时去 media_metadata 统计 缺失/入库/订阅/未上映 数量。
     """
-    all_collections = collection_db.get_all_native_collections()
+    all_collections = tmdb_collection_db.get_all_native_collections()
     if not all_collections: return []
 
     # 1. 收集所有 ID
@@ -338,7 +338,7 @@ def check_and_subscribe_collection_from_movie(movie_tmdb_id: str, movie_name: st
     # ======================================================================
     # ★★★ 先查本地数据库 ★★★
     # ======================================================================
-    if collection_db.touch_native_collection_by_child_id(movie_tmdb_id):
+    if tmdb_collection_db.touch_native_collection_by_child_id(movie_tmdb_id):
         logger.info(f"  ⚡ 电影《{movie_name}》所属的 TMDb 合集已在本地数据库中，跳过所有 API 查询。")
         return
     # ======================================================================
@@ -391,7 +391,7 @@ def check_and_subscribe_collection_from_movie(movie_tmdb_id: str, movie_name: st
     # ======================================================================
     # ★★★ 优化核心：先查本地数据库 ★★★
     # ======================================================================
-    local_collection = collection_db.get_native_collection_by_tmdb_id(tmdb_coll_id)
+    local_collection = tmdb_collection_db.get_native_collection_by_tmdb_id(tmdb_coll_id)
     
     if local_collection:
         # --- 分支 A: 本地已有该合集 ---
@@ -399,7 +399,7 @@ def check_and_subscribe_collection_from_movie(movie_tmdb_id: str, movie_name: st
         
         # 虽然跳过了 Emby 查找，但我们还是更新一下数据库里的 all_tmdb_ids
         # 万一 TMDb 刚刚给这个合集加了新续集呢？
-        collection_db.upsert_native_collection({
+        tmdb_collection_db.upsert_native_collection({
             'emby_collection_id': local_collection['emby_collection_id'], # 沿用旧的 Emby ID
             'name': tmdb_coll_name, # 更新名字
             'tmdb_collection_id': tmdb_coll_id,
@@ -424,7 +424,7 @@ def check_and_subscribe_collection_from_movie(movie_tmdb_id: str, movie_name: st
                 if str(p_provider_ids.get("Tmdb", "")) == tmdb_coll_id:
                     logger.info(f"  ✅ Emby 已生成 TMDb 合集 '{p_coll.get('Name')}' (ID: {p_coll.get('Id')})，正在写入数据库...")
                     
-                    collection_db.upsert_native_collection({
+                    tmdb_collection_db.upsert_native_collection({
                         'emby_collection_id': p_coll.get('Id'),
                         'name': p_coll.get('Name'),
                         'tmdb_collection_id': tmdb_coll_id,

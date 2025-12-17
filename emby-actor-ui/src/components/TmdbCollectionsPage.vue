@@ -1,4 +1,4 @@
-<!-- src/components/CollectionsPage.vue -->
+<!-- src/components/TmdbCollectionsPage.vue -->
 <template>
   <n-layout content-style="padding: 24px;">
     <div class="collections-page">

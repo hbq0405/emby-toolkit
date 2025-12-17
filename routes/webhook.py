@@ -24,9 +24,9 @@ from tasks import (
     task_process_watchlist
 )
 from handler.custom_collection import FilterEngine, RecommendationEngine
-from handler import collections as collections_handler
+from handler import tmdb_collections as collections_handler
 from services.cover_generator import CoverGeneratorService
-from database import collection_db, settings_db, user_db, maintenance_db, media_db
+from database import custom_collection_db, tmdb_collection_db, settings_db, user_db, maintenance_db, media_db
 from database.log_db import LogDBManager
 from handler.tmdb import get_movie_details, get_tv_details
 import logging
@@ -127,7 +127,7 @@ def _handle_full_processing_flow(processor: 'MediaProcessor', item_id: str, forc
                 )
                 
                 # ★★★ 核心修复：同步更新我们自己的数据库缓存 ★★★
-                collection_db.append_item_to_filter_collection_db(
+                custom_collection_db.append_item_to_filter_collection_db(
                     collection_id=collection['id'],
                     new_item_tmdb_id=tmdb_id,
                     new_item_emby_id=item_id,
@@ -138,7 +138,7 @@ def _handle_full_processing_flow(processor: 'MediaProcessor', item_id: str, forc
             logger.info(f"  ➜ 《{item_name}》没有匹配到任何筛选类合集。")
 
         # --- 匹配 List (榜单) 类型的合集 ---
-        updated_list_collections = collection_db.match_and_update_list_collections_on_item_add(
+        updated_list_collections = custom_collection_db.match_and_update_list_collections_on_item_add(
             new_item_tmdb_id=tmdb_id,
             new_item_emby_id=item_id,
             new_item_name=item_name
@@ -213,7 +213,7 @@ def _handle_full_processing_flow(processor: 'MediaProcessor', item_id: str, forc
                 "url": processor.emby_url,
                 "api_key": processor.emby_api_key,
             }
-            collection_db.update_user_caches_on_item_add(
+            custom_collection_db.update_user_caches_on_item_add(
                 new_item_emby_id=item_id,
                 new_item_tmdb_id=tmdb_id,
                 new_item_name=item_name,
@@ -699,7 +699,7 @@ def emby_webhook():
                 
                 if not details:
                     logger.info(f"  🗑️ 合集 '{collection_name}' (ID: {collection_id}) 已在 Emby 中消失 (可能是变空自动删除)，同步删除本地记录...")
-                    collection_db.delete_native_collection_by_emby_id(collection_id)
+                    tmdb_collection_db.delete_native_collection_by_emby_id(collection_id)
                 else:
                     logger.debug(f"  ✅ 合集 '{collection_name}' 依然存在，无需操作。")
 

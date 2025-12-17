@@ -39,7 +39,7 @@ import collections # Added for deque
 from gevent import spawn_later # Added for debouncing
 # --- 导入蓝图 ---
 from routes.watchlist import watchlist_bp
-from routes.collections import collections_bp
+from routes.tmdb_collections import collections_bp
 from routes.custom_collections import custom_collections_bp
 from routes.actor_subscriptions import actor_subscriptions_bp
 from routes.logs import logs_bp

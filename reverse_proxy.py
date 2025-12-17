@@ -12,7 +12,7 @@ import time
 import uuid 
 from gevent import spawn, joinall
 from websocket import create_connection
-from database import collection_db, user_db, queries_db, media_db
+from database import custom_collection_db, user_db, queries_db, media_db
 from database.connection import get_db_connection
 from handler.custom_collection import RecommendationEngine
 import config_manager
@@ -284,7 +284,7 @@ def handle_get_views():
         )
         if user_visible_native_libs is None: user_visible_native_libs = []
 
-        collections = collection_db.get_all_active_custom_collections()
+        collections = custom_collection_db.get_all_active_custom_collections()
         fake_views_items = []
         for coll in collections:
             # 1. 物理检查：库在Emby里有实体吗？
@@ -367,7 +367,7 @@ def handle_get_mimicked_library_details(user_id, mimicked_id):
     """
     try:
         real_db_id = from_mimicked_id(mimicked_id)
-        coll = collection_db.get_custom_collection_by_id(real_db_id)
+        coll = custom_collection_db.get_custom_collection_by_id(real_db_id)
         if not coll: return "Not Found", 404
 
         real_server_id = extensions.EMBY_SERVER_ID
@@ -429,7 +429,7 @@ def handle_mimicked_library_metadata_endpoint(path, mimicked_id, params):
 
     try:
         real_db_id = from_mimicked_id(mimicked_id)
-        collection_info = collection_db.get_custom_collection_by_id(real_db_id)
+        collection_info = custom_collection_db.get_custom_collection_by_id(real_db_id)
         if not collection_info or not collection_info.get('emby_collection_id'):
             return Response(json.dumps([]), mimetype='application/json')
 
@@ -462,7 +462,7 @@ def handle_get_mimicked_library_items(user_id, mimicked_id, params):
     """
     try:
         real_db_id = from_mimicked_id(mimicked_id)
-        collection_info = collection_db.get_custom_collection_by_id(real_db_id)
+        collection_info = custom_collection_db.get_custom_collection_by_id(real_db_id)
         if not collection_info:
             return Response(json.dumps({"Items": [], "TotalRecordCount": 0}), mimetype='application/json')
 
@@ -538,7 +538,7 @@ def handle_get_latest_items(user_id, params):
         # ======================================================================
         if virtual_library_id and is_mimicked_id(virtual_library_id):
             real_db_id = from_mimicked_id(virtual_library_id)
-            collection_info = collection_db.get_custom_collection_by_id(real_db_id)
+            collection_info = custom_collection_db.get_custom_collection_by_id(real_db_id)
             if not collection_info: 
                 return Response(json.dumps([]), mimetype='application/json')
 
@@ -583,7 +583,7 @@ def handle_get_latest_items(user_id, params):
             logger.trace(f"  ➜ 正在为用户 {user_id} 处理全局“最新媒体”请求...")
             
             # ★★★ 核心性能优化: 直接从数据库调用新函数，一步到位获取符合条件的合集ID ★★★
-            included_collection_ids = collection_db.get_active_collection_ids_for_latest_view()
+            included_collection_ids = custom_collection_db.get_active_collection_ids_for_latest_view()
 
             if not included_collection_ids:
                 logger.trace(f"  ➜ 用户 {user_id} 没有任何开启了“在首页显示最新”的可见合集。")

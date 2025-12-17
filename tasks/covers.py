@@ -6,9 +6,9 @@ import logging
 # 导入需要的底层模块和共享实例
 import handler.emby as emby
 import task_manager
-from database import settings_db, collection_db
+from database import custom_collection_db, settings_db
 from services.cover_generator import CoverGeneratorService
-from .collections import _get_cover_badge_text_for_collection
+from .custom_collections import _get_cover_badge_text_for_collection
 
 logger = logging.getLogger(__name__)
 
@@ -147,7 +147,7 @@ def task_generate_all_custom_collection_covers(processor):
 
         # 2. 从数据库获取所有已启用的自定义合集
         task_manager.update_status_from_thread(5, "正在获取所有已启用的自建合集...")
-        all_active_collections = collection_db.get_all_active_custom_collections()
+        all_active_collections = custom_collection_db.get_all_active_custom_collections()
         
         # 3. 筛选出那些已经在Emby中成功创建的合集
         collections_to_process = [

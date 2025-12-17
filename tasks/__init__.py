@@ -10,7 +10,8 @@ from .helpers import *
 from .media import *
 from .actors import *
 from .watchlist import *
-from .collections import *
+from .custom_collections import *
+from .tmdb_collections import *
 from .subscriptions import *
 from .maintenance import *
 from .users import *

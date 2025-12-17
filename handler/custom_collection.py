@@ -20,7 +20,7 @@ import handler.tmdb as tmdb
 import handler.emby as emby
 import config_manager
 from tasks.helpers import parse_series_title_and_season
-from database import collection_db, watchlist_db, media_db, connection
+from database import custom_collection_db, watchlist_db, media_db, connection
 from handler.douban import DoubanApi
 from handler.tmdb import search_media, get_tv_details
 from ai_translator import AITranslator
@@ -1103,7 +1103,7 @@ class FilterEngine:
             logger.info(f"  ➜ 已指定 {len(library_ids)} 个媒体库，正在从本地数据库筛选...")
             
             # 1. 获取符合库条件的 TMDB ID 集合
-            tmdb_ids_in_libs = collection_db.get_tmdb_ids_by_library_ids(library_ids)
+            tmdb_ids_in_libs = custom_collection_db.get_tmdb_ids_by_library_ids(library_ids)
             
             if not tmdb_ids_in_libs:
                 logger.warning("  ➜ 指定的媒体库中未找到任何符合条件的媒体项。")
@@ -1175,7 +1175,7 @@ class FilterEngine:
         logger.info(f"  ➜ 正在为{media_type_cn}《{item_metadata.get('title')}》实时匹配自定义合集...")
         matched_collections = []
         all_filter_collections = [
-            c for c in collection_db.get_all_custom_collections() 
+            c for c in custom_collection_db.get_all_custom_collections() 
             if c['type'] == 'filter' and c['status'] == 'active' and c['emby_collection_id']
         ]
         if not all_filter_collections:

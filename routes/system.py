@@ -14,7 +14,7 @@ import config_manager
 import handler.emby as emby
 # 导入共享模块
 import extensions
-from database import collection_db
+from database import custom_collection_db
 from extensions import admin_required, task_lock_required
 import constants
 import handler.github as github

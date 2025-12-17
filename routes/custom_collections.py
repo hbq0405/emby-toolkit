@@ -7,7 +7,7 @@ import json
 import psycopg2
 import pytz
 from datetime import datetime
-from database import user_db, collection_db, connection, media_db
+from database import custom_collection_db, user_db, connection, media_db
 import config_manager
 import handler.emby as emby
 from tasks.helpers import is_movie_subscribable
@@ -66,7 +66,7 @@ def api_get_all_custom_collections():
     """获取所有自定义合集定义 (V5 - 精确类型匹配版)"""
     try:
         beijing_tz = pytz.timezone('Asia/Shanghai')
-        collections_from_db = collection_db.get_all_active_custom_collections()
+        collections_from_db = custom_collection_db.get_all_active_custom_collections()
         processed_collections = []
 
         # ==========================================================
@@ -213,8 +213,8 @@ def api_create_custom_collection():
     allowed_user_ids_json = json.dumps(expanded_user_ids) if isinstance(expanded_user_ids, list) else None
     
     try:
-        collection_id = collection_db.create_custom_collection(name, type, definition_json, allowed_user_ids_json)
-        new_collection = collection_db.get_custom_collection_by_id(collection_id)
+        collection_id = custom_collection_db.create_custom_collection(name, type, definition_json, allowed_user_ids_json)
+        new_collection = custom_collection_db.get_custom_collection_by_id(collection_id)
         return jsonify(new_collection), 201
     except psycopg2.IntegrityError:
         return jsonify({"error": f"创建失败：名为 '{name}' 的合集已存在。"}), 409
@@ -244,12 +244,12 @@ def api_update_custom_collection(collection_id):
         expanded_user_ids = user_db.expand_template_user_ids(allowed_user_ids)
         allowed_user_ids_json = json.dumps(expanded_user_ids) if isinstance(expanded_user_ids, list) else None
         
-        success = collection_db.update_custom_collection(
+        success = custom_collection_db.update_custom_collection(
             collection_id, name, type, definition_json, status, allowed_user_ids_json
         )
         
         if success:
-            updated_collection = collection_db.get_custom_collection_by_id(collection_id)
+            updated_collection = custom_collection_db.get_custom_collection_by_id(collection_id)
             return jsonify(updated_collection)
         else:
             return jsonify({"error": "数据库操作失败，未找到或无法更新该合集"}), 404
@@ -270,7 +270,7 @@ def api_update_custom_collections_order():
         return jsonify({"error": "请求无效: 需要一个ID列表。"}), 400
 
     try:
-        success = collection_db.update_custom_collections_order(ordered_ids)
+        success = custom_collection_db.update_custom_collections_order(ordered_ids)
         if success:
             return jsonify({"message": "合集顺序已成功更新。"}), 200
         else:
@@ -286,7 +286,7 @@ def api_delete_custom_collection(collection_id):
     """【V8 - 最终决战版】通过清空所有成员来联动删除Emby合集"""
     try:
         # 步骤 1: 获取待删除合集的完整信息
-        collection_to_delete = collection_db.get_custom_collection_by_id(collection_id)
+        collection_to_delete = custom_collection_db.get_custom_collection_by_id(collection_id)
         if not collection_to_delete:
             return jsonify({"error": "未找到要删除的合集"}), 404
 
@@ -313,7 +313,7 @@ def api_delete_custom_collection(collection_id):
             )
 
         # 步骤 3: 无论Emby端是否成功，都删除本地数据库中的记录
-        db_success = collection_db.delete_custom_collection(
+        db_success = custom_collection_db.delete_custom_collection(
             collection_id=collection_id
         )
 
@@ -337,7 +337,7 @@ def api_get_custom_collection_status(collection_id):
     3. 修复了混合榜单类型判断错误的问题 (严格遵循 item_def)。
     """
     try:
-        collection = collection_db.get_custom_collection_by_id(collection_id)
+        collection = custom_collection_db.get_custom_collection_by_id(collection_id)
         if not collection:
             return jsonify({"error": "未找到合集"}), 404
         
@@ -542,7 +542,7 @@ def api_fix_media_match_in_custom_collection(collection_id):
 
     try:
         # ★★★ 将 old_title 也传给数据库函数 ★★★
-        corrected_item = collection_db.apply_and_persist_media_correction(
+        corrected_item = custom_collection_db.apply_and_persist_media_correction(
             collection_id=collection_id,
             old_tmdb_id=str(old_tmdb_id) if old_tmdb_id else None,
             new_tmdb_id=str(new_tmdb_id),
@@ -583,7 +583,7 @@ def api_get_countries_for_filter():
 def api_get_tags_for_filter():
     """为筛选器提供一个标签列表。"""
     try:
-        tags = collection_db.get_unique_tags()
+        tags = custom_collection_db.get_unique_tags()
         return jsonify(tags)
     except Exception as e:
         logger.error(f"获取标签列表时出错: {e}", exc_info=True)
@@ -772,7 +772,7 @@ def api_get_movie_genres_config():
     从媒体元数据缓存中动态获取所有唯一的电影类型。
     """
     try:
-        genres = collection_db.get_movie_genres()
+        genres = custom_collection_db.get_movie_genres()
         return jsonify(genres)
     except Exception as e:
         logger.error(f"动态获取电影类型时发生错误: {e}", exc_info=True)
@@ -786,7 +786,7 @@ def api_get_tv_genres_config():
     从媒体元数据缓存中动态获取所有唯一的电视剧类型。
     """
     try:
-        genres = collection_db.get_tv_genres()
+        genres = custom_collection_db.get_tv_genres()
         return jsonify(genres)
     except Exception as e:
         logger.error(f"动态获取电影类型时发生错误: {e}", exc_info=True)

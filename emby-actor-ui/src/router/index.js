@@ -9,7 +9,7 @@ import ReviewList from '../components/ReviewList.vue';
 import SchedulerSettingsPage from '../components/settings/SchedulerSettingsPage.vue';
 import GeneralSettingsPage from '../components/settings/GeneralSettingsPage.vue';
 import WatchlistPage from '../components/WatchlistPage.vue';
-import CollectionsPage from '../components/CollectionsPage.vue';
+import TmdbCollectionsPage from '../components/TmdbCollectionsPage.vue';
 import ActorSubscriptionPage from '../components/ActorSubscriptionPage.vue';
 import ReleasesPage from '../components/ReleasesPage.vue';
 import Login from '../components/Login.vue'; 
@@ -88,7 +88,7 @@ const routes = [
   {
     path: '/collections',
     name: 'Collections',
-    component: CollectionsPage,
+    component: TmdbCollectionsPage,
     meta: { requiresAuth: true },
   },
   {

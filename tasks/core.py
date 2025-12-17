@@ -15,7 +15,8 @@ from .actors import (task_sync_person_map, task_enrich_aliases, task_actor_trans
                      task_purge_ghost_actors)
 from .media import task_role_translation, task_populate_metadata_cache, task_apply_main_cast_to_episodes 
 from .watchlist import task_process_watchlist, task_run_new_season_check, task_scan_library_gaps
-from .collections import task_refresh_collections, task_process_all_custom_collections, process_single_custom_collection
+from .custom_collections import task_process_all_custom_collections, process_single_custom_collection
+from .tmdb_collections import task_refresh_collections
 from .subscriptions import task_auto_subscribe, task_manual_subscribe_batch
 from .covers import task_generate_all_covers, task_generate_all_custom_collection_covers
 from .cleanup import task_scan_for_cleanup_issues 

@@ -10,7 +10,7 @@ from datetime import datetime, timezone
 
 from .connection import get_db_connection
 from .log_db import LogDBManager
-from .collection_db import remove_tmdb_id_from_all_collections
+from .custom_collection_db import remove_tmdb_id_from_all_collections
 from .media_db import get_tmdb_id_from_emby_id
 import constants
 

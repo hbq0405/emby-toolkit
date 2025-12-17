@@ -10,7 +10,7 @@ import config_manager
 import constants
 import task_manager
 import extensions
-from database import collection_db, media_db, user_db, request_db
+from database import custom_collection_db, media_db, user_db, request_db
 import handler.moviepilot as moviepilot
 from extensions import admin_required, processor_ready_required
 from urllib.parse import urlparse
@@ -357,7 +357,7 @@ def api_search_studios():
         return jsonify([])
         
     try:
-        studios = collection_db.search_unique_studios(search_term)
+        studios = custom_collection_db.search_unique_studios(search_term)
         return jsonify(studios)
     except Exception as e:
         logger.error(f"搜索工作室时发生错误: {e}", exc_info=True)
