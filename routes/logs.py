@@ -133,64 +133,87 @@ def search_all_logs():
 
 def render_log_html(blocks, query):
     """
-    辅助函数：将日志块渲染为漂亮的深色主题 HTML
+    辅助函数：将日志块渲染为极简、高亮、去噪的 HTML
     """
     css_styles = """
     <style>
         :root {
             --bg-color: #1e1e1e;
+            --time-color: #6a9955; /* 柔和的绿色时间 */
+            --arrow-color: #569cd6; /* 蓝色箭头 */
             --text-color: #d4d4d4;
-            --block-bg: #252526;
-            --border-color: #333;
-            --accent-color: #007acc;
-            --highlight-bg: #414339;
-            --highlight-text: #f8f8f2;
+            --debug-color: #808080; /* Debug 变暗 */
+            --info-color: #b5cea8;  /* Info 亮色 */
+            --warn-color: #ce9178;
+            --error-color: #f44747;
+            --highlight-bg: #264f78;
         }
         body {
             background-color: var(--bg-color);
             color: var(--text-color);
-            font-family: 'JetBrains Mono', 'Fira Code', Consolas, 'Courier New', monospace;
-            font-size: 14px;
-            line-height: 1.5;
+            font-family: 'JetBrains Mono', 'Fira Code', Consolas, monospace;
+            font-size: 13px;
+            line-height: 1.6;
             margin: 0;
-            padding: 20px;
-            font-style: normal !important; /* 强制去除斜体 */
+            padding: 15px;
+            height: 100vh;
+            box-sizing: border-box;
         }
-        h2 { color: #fff; border-bottom: 1px solid var(--border-color); padding-bottom: 10px; }
-        .summary { margin-bottom: 20px; color: #888; }
+        /* 隐藏滚动条但允许滚动 */
+        ::-webkit-scrollbar { width: 8px; height: 8px; }
+        ::-webkit-scrollbar-track { background: #1e1e1e; }
+        ::-webkit-scrollbar-thumb { background: #424242; border-radius: 4px; }
+        ::-webkit-scrollbar-thumb:hover { background: #4f4f4f; }
+
         .log-block {
-            background-color: var(--block-bg);
-            border: 1px solid var(--border-color);
-            border-radius: 6px;
-            margin-bottom: 20px;
-            box-shadow: 0 4px 6px rgba(0,0,0,0.3);
-            overflow: hidden;
+            margin-bottom: 25px; /* 块之间留出呼吸空间 */
+            border-left: 2px solid #333;
+            padding-left: 10px;
         }
         .block-header {
-            background-color: #333;
-            padding: 8px 15px;
             font-size: 12px;
-            color: #aaa;
-            border-bottom: 1px solid var(--border-color);
-            display: flex;
-            justify-content: space-between;
+            color: #555;
+            margin-bottom: 5px;
+            font-style: italic;
+            border-bottom: 1px dashed #333;
+            padding-bottom: 2px;
+            display: inline-block;
         }
-        .log-content {
-            padding: 10px 15px;
-            white-space: pre-wrap; /* 保留换行 */
-            overflow-x: auto;
+        
+        .line { 
+            display: flex; 
+            align-items: flex-start; /* 顶部对齐 */
         }
-        .line { display: block; }
         .line:hover { background-color: #2a2d2e; }
         
-        /* 语法高亮 */
-        .ts { color: #569cd6; margin-right: 10px; opacity: 0.7; } /* 时间戳 */
-        .level-INFO { color: #4ec9b0; font-weight: bold; }
-        .level-DEBUG { color: #808080; }
-        .level-WARN { color: #ce9178; }
-        .level-ERROR { color: #f44747; font-weight: bold; }
-        .arrow { color: #c586c0; font-weight: bold; } /* ➜ 符号 */
-        .keyword { background-color: var(--highlight-bg); color: var(--highlight-text); border-radius: 2px; padding: 0 2px; }
+        /* 时间列：固定宽度，不换行 */
+        .ts { 
+            color: var(--time-color); 
+            min-width: 70px; 
+            margin-right: 10px; 
+            opacity: 0.8;
+            font-size: 12px;
+            user-select: none; /* 防止复制时把时间也复制进去，看个人喜好 */
+        }
+
+        /* 消息体 */
+        .msg { 
+            white-space: pre-wrap; 
+            word-break: break-all; 
+            flex: 1;
+        }
+
+        /* 级别颜色定义 */
+        .lvl-DEBUG { color: var(--debug-color); }
+        .lvl-INFO { color: var(--info-color); }
+        .lvl-WARNING { color: var(--warn-color); }
+        .lvl-ERROR { color: var(--error-color); font-weight: bold; }
+        
+        /* 搜索高亮 */
+        .keyword { background-color: var(--highlight-bg); color: #fff; border-radius: 2px; }
+        
+        /* 箭头符号优化 */
+        .arrow { color: var(--arrow-color); margin-right: 5px; font-weight: bold;}
     </style>
     """
 
@@ -199,55 +222,66 @@ def render_log_html(blocks, query):
     <html lang="zh-CN">
     <head>
         <meta charset="UTF-8">
-        <title>日志追踪: {html.escape(query)}</title>
         {css_styles}
     </head>
     <body>
-        <h2>🔍 追踪日志: <span style="color: #4ec9b0;">{html.escape(query)}</span></h2>
-        <div class="summary">共找到 {len(blocks)} 个完整处理流程</div>
     """]
+
+    # 正则：提取 时间(Group 2), 级别(Group 4), 消息(Group 5)
+    # 忽略：日期(Group 1), Logger名(Group 3)
+    # 匹配格式示例: 2025-12-17 18:30:58 ,926 - database.actor_db - INFO - -> 消息...
+    LOG_PATTERN = re.compile(r"^(\d{4}-\d{2}-\d{2})\s+(\d{2}:\d{2}:\d{2}),\d+\s+-\s+(.*?)\s+-\s+(INFO|DEBUG|WARNING|ERROR)\s+-\s+(.*)$")
 
     for block in blocks:
         file_name = block['file']
-        date_str = block['date']
-        lines = block['lines']
-        
+        # 既然每行都有时间，块头就不显示日期了，只显示来源文件，极简
         html_content.append(f"""
         <div class="log-block">
-            <div class="block-header">
-                <span>📄 {html.escape(file_name)}</span>
-                <span>📅 {html.escape(date_str)}</span>
-            </div>
-            <div class="log-content">
+            <div class="block-header">📄 {html.escape(file_name)}</div>
         """)
 
-        for line in lines:
-            # 1. HTML 转义，防止脚本注入
-            safe_line = html.escape(line)
-            
-            # 2. 高亮处理
-            # 高亮时间戳 (假设开头是时间)
-            safe_line = re.sub(r'^(\d{4}-\d{2}-\d{2}\s\d{2}:\d{2}:\d{2})', r'<span class="ts">\1</span>', safe_line)
-            
-            # 高亮日志级别
-            safe_line = safe_line.replace('INFO', '<span class="level-INFO">INFO</span>')
-            safe_line = safe_line.replace('DEBUG', '<span class="level-DEBUG">DEBUG</span>')
-            safe_line = safe_line.replace('WARNING', '<span class="level-WARN">WARNING</span>')
-            safe_line = safe_line.replace('ERROR', '<span class="level-ERROR">ERROR</span>')
-            
-            # 高亮特殊符号
-            safe_line = safe_line.replace('➜', '<span class="arrow">➜</span>')
-            
-            # 高亮搜索关键词 (忽略大小写)
-            pattern = re.compile(re.escape(query), re.IGNORECASE)
-            safe_line = pattern.sub(lambda m: f'<span class="keyword">{m.group(0)}</span>', safe_line)
+        for line in block['lines']:
+            line = line.strip()
+            if not line: continue
 
-            html_content.append(f'<span class="line">{safe_line}</span>')
+            match = LOG_PATTERN.match(line)
+            if match:
+                # 提取我们需要的部分
+                time_str = match.group(2) # 18:30:58
+                level = match.group(4)    # INFO
+                message = match.group(5)  # -> 消息内容...
 
-        html_content.append("""
-            </div>
-        </div>
-        """)
+                # 处理消息内容中的 HTML 转义
+                safe_msg = html.escape(message)
+                
+                # 再次美化消息内部：
+                # 1. 高亮箭头
+                safe_msg = safe_msg.replace('➜', '<span class="arrow">➜</span>')
+                safe_msg = safe_msg.replace('-&gt;', '<span class="arrow">➜</span>') # 处理转义后的 ->
+                
+                # 2. 高亮搜索关键词 (忽略大小写)
+                if query:
+                    pattern = re.compile(re.escape(query), re.IGNORECASE)
+                    safe_msg = pattern.sub(lambda m: f'<span class="keyword">{m.group(0)}</span>', safe_msg)
+
+                # 生成行 HTML
+                html_content.append(f"""
+                <div class="line lvl-{level}">
+                    <span class="ts">{time_str}</span>
+                    <span class="msg">{safe_msg}</span>
+                </div>
+                """)
+            else:
+                # 匹配失败（可能是堆栈报错信息），直接显示原样，标红
+                safe_line = html.escape(line)
+                html_content.append(f"""
+                <div class="line lvl-ERROR">
+                    <span class="ts">-----</span>
+                    <span class="msg">{safe_line}</span>
+                </div>
+                """)
+
+        html_content.append("</div>")
 
     html_content.append("</body></html>")
     return "".join(html_content)
