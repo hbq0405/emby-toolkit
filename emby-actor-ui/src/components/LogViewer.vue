@@ -8,7 +8,7 @@
     resizable
   >
     <n-drawer-content title="历史日志查看器" closable>
-      <n-space vertical>
+      <n-space vertical style="height: 100%">
         <!-- 搜索栏 -->
         <n-input-group>
           <n-input
@@ -26,25 +26,45 @@
         <!-- 搜索模式切换 -->
         <n-radio-group v-model:value="searchMode" name="search-mode-radio">
           <n-radio-button value="filter" :disabled="isLoading">
-            筛选模式 (仅显示匹配行)
+            筛选模式 (JSON列表)
           </n-radio-button>
           <n-radio-button value="context" :disabled="isLoading">
-            定位模式 (显示完整处理过程)
+            定位模式 (美化视图)
           </n-radio-button>
         </n-radio-group>
 
         <n-divider style="margin-top: 5px; margin-bottom: 5px;" />
 
         <!-- 结果展示区 -->
-        <n-spin :show="isLoading">
-          <!-- 模式A: 搜索结果视图 -->
-          <div v-if="isSearchMode">
+        <n-spin :show="isLoading" style="height: calc(100vh - 180px)">
+          
+          <!-- ★★★ 场景 1: 定位模式 (HTML iframe 渲染) ★★★ -->
+          <div v-if="isSearchMode && searchMode === 'context'" style="height: 100%">
+             <n-button @click="clearSearch" size="small" style="margin-bottom: 10px;">
+              <template #icon><n-icon :component="ArrowBackOutline" /></template>
+              返回文件浏览
+            </n-button>
+            
+            <div v-if="htmlContent" class="iframe-container">
+              <!-- 使用 srcdoc 直接渲染后端返回的 HTML 字符串 -->
+              <iframe 
+                :srcdoc="htmlContent" 
+                frameborder="0" 
+                width="100%" 
+                height="100%"
+                style="background-color: #1e1e1e;"
+              ></iframe>
+            </div>
+            <n-empty v-else description="未找到匹配的完整处理流程。" style="margin-top: 50px;" />
+          </div>
+
+          <!-- ★★★ 场景 2: 筛选模式 (原有的 JSON 渲染) ★★★ -->
+          <div v-else-if="isSearchMode && searchMode === 'filter'">
             <n-button @click="clearSearch" size="small" style="margin-bottom: 10px;">
               <template #icon><n-icon :component="ArrowBackOutline" /></template>
               返回文件浏览
             </n-button>
             
-            <!-- ★★★ [修改] 将级别class绑定到整行div上 ★★★ -->
             <div v-if="hasSearchResults" class="log-viewer-container">
               <div 
                 v-for="(line, index) in parsedLogResults" 
@@ -65,8 +85,8 @@
             <n-empty v-else description="未找到匹配的日志记录。" style="margin-top: 50px;" />
           </div>
 
-          <!-- 模式B: 文件浏览视图 (默认) -->
-          <div v-else>
+          <!-- ★★★ 场景 3: 文件浏览视图 (默认) ★★★ -->
+          <div v-else style="height: 100%; display: flex; flex-direction: column;">
             <n-select
               v-model:value="selectedFile"
               placeholder="请选择一个日志文件"
@@ -75,8 +95,7 @@
               @update:value="fetchLogContent"
             />
 
-            <!-- ★★★ [修改] 将级别class绑定到整行div上 ★★★ -->
-            <div v-if="logContent" class="log-viewer-container" style="margin-top: 10px;">
+            <div v-if="logContent" class="log-viewer-container" style="margin-top: 10px; flex: 1;">
               <div 
                 v-for="(line, index) in parsedLogContent" 
                 :key="index" 
@@ -126,6 +145,7 @@ const selectedFile = ref(null);
 const logContent = ref('');
 const searchQuery = ref('');
 const searchResults = ref([]);
+const htmlContent = ref(''); // ★ 新增：用于存储后端返回的 HTML 字符串
 const isSearchMode = ref(false);
 const searchMode = ref('context');
 
@@ -140,7 +160,7 @@ const loadingText = computed(() => {
   return '';
 });
 
-// 日志行解析函数 (无需改动)
+// 日志行解析函数 (保持不变，用于普通模式)
 const parseLogLine = (line) => {
   const match = line.match(/^(\d{4}-\d{2}-\d{2}\s(\d{2}:\d{2}:\d{2})),\d+\s-\s.+?\s-\s(DEBUG|INFO|WARNING|ERROR|CRITICAL)\s-\s(.*)$/);
   if (match) {
@@ -154,86 +174,39 @@ const parseLogLine = (line) => {
   return { type: 'raw', content: line };
 };
 
-// 计算属性，用于解析日志内容 (无需改动)
 const parsedLogContent = computed(() => {
   if (!logContent.value) return [];
   return logContent.value.split('\n').map(parseLogLine);
 });
 
-// 计算属性，用于解析搜索结果 (无需改动)
+// ★ 修改：parsedLogResults 只在 filter 模式下工作了
 const parsedLogResults = computed(() => {
-  if (!hasSearchResults.value) return [];
-
-  // 最终要渲染的行数组，每一项都是一个独立的字符串
-  const finalLines = [];
-
-  if (searchMode.value === 'context') {
-    // --- “定位”模式重构 ---
-    finalLines.push(`以“定位”模式找到 ${searchResults.value.length} 个完整处理过程:`);
-    
-    searchResults.value.forEach((block, index) => {
-      // 为每个块添加一个空行作为间距
-      finalLines.push(''); 
-      
-      const datePart = block.date && block.date.includes(' ') ? block.date.split(' ')[0] : block.date;
-      finalLines.push(`--- [ 记录在 ${block.file} 于 ${datePart} ] ---`);
-      
-      // 将块内的所有行逐一添加到最终数组中
-      block.lines.forEach(line => finalLines.push(line));
-      
-      // 在块与块之间添加分隔符，但最后一个块后面不加
-      if (index < searchResults.value.length - 1) {
-        finalLines.push('');
-        finalLines.push('========================================================');
-      }
-    });
-
-  } else {
-    // --- “筛选”模式重构 (核心修复) ---
-    finalLines.push(`以“筛选”模式找到 ${searchResults.value.length} 条结果:`);
-
-    let lastFile = '';
-    let lastDatePart = '';
-
-    searchResults.value.forEach(result => {
-      const currentDatePart = result.date ? result.date.split(' ')[0] : '';
-      
-      // 当文件名或日期变化时，插入一个新的分组头
-      if (result.file !== lastFile || currentDatePart !== lastDatePart) {
-        // 在新的分组头前加一个空行，增加可读性（但不在最开始加）
-        if (finalLines.length > 1) {
-            finalLines.push('');
-        }
-        
-        finalLines.push(`--- [ 记录在 ${result.file} 于 ${currentDatePart || '未知'} ] ---`);
-        
-        lastFile = result.file;
-        lastDatePart = currentDatePart;
-      }
-      
-      // 直接将单条日志内容作为独立一项推入数组
-      finalLines.push(result.content);
-    });
-  }
+  if (!hasSearchResults.value || searchMode.value === 'context') return [];
   
-  // 最后，将这个结构清晰的行数组交给 parseLogLine 进行格式化
+  // 仅处理 filter 模式的逻辑
+  const finalLines = [];
+  finalLines.push(`以“筛选”模式找到 ${searchResults.value.length} 条结果:`);
+  let lastFile = '';
+  searchResults.value.forEach(result => {
+    if (result.file !== lastFile) {
+      if (finalLines.length > 1) finalLines.push('');
+      finalLines.push(`--- [ 文件: ${result.file} ] ---`);
+      lastFile = result.file;
+    }
+    finalLines.push(result.content);
+  });
   return finalLines.map(parseLogLine);
 });
 
-
-// --- Methods --- (无需改动)
+// --- Methods ---
 const fetchLogFiles = async () => {
   isLoadingFiles.value = true;
   try {
     const response = await axios.get('/api/logs/list');
     logFiles.value = response.data;
-    if (!isSearchMode.value && logFiles.value.length > 0) {
-      if (!selectedFile.value) {
-        selectedFile.value = logFiles.value[0];
-        await fetchLogContent(selectedFile.value);
-      }
-    } else if (logFiles.value.length === 0) {
-      logContent.value = '';
+    if (!isSearchMode.value && logFiles.value.length > 0 && !selectedFile.value) {
+      selectedFile.value = logFiles.value[0];
+      await fetchLogContent(selectedFile.value);
     }
   } catch (error) {
     message.error('获取日志文件列表失败！');
@@ -251,12 +224,12 @@ const fetchLogContent = async (filename) => {
     logContent.value = response.data || '（文件为空）';
   } catch (error) {
     message.error(`加载日志 ${filename} 失败！`);
-    logContent.value = `加载文件失败: ${error.response?.data || '未知错误'}`;
   } finally {
     isLoadingContent.value = false;
   }
 };
 
+// ★★★ 核心修改：executeSearch ★★★
 const executeSearch = async () => {
   if (!searchQuery.value.trim()) {
     message.warning('请输入搜索关键词。');
@@ -265,12 +238,35 @@ const executeSearch = async () => {
   isSearching.value = true;
   isSearchMode.value = true;
   searchResults.value = [];
-  const endpoint = searchMode.value === 'context' ? '/api/logs/search_context' : '/api/logs/search';
+  htmlContent.value = ''; // 清空旧 HTML
+
   try {
-    const response = await axios.get(endpoint, { params: { q: searchQuery.value } });
-    searchResults.value = response.data;
+    if (searchMode.value === 'context') {
+      // 1. 定位模式：请求 HTML 格式
+      const response = await axios.get('/api/logs/search_context', { 
+        params: { 
+          q: searchQuery.value,
+          format: 'html' // 告诉后端我要 HTML
+        },
+        responseType: 'text' // 告诉 axios 不要尝试解析 JSON
+      });
+      
+      // 检查是否返回了空结果（后端可能返回空的 HTML 结构，或者我们需要判断长度）
+      // 简单的判断：如果包含 "log-block" 类名，说明有结果
+      if (response.data && response.data.includes('class="log-block"')) {
+        htmlContent.value = response.data;
+      } else {
+        htmlContent.value = ''; // 显示空状态
+      }
+
+    } else {
+      // 2. 筛选模式：保持原有的 JSON 逻辑
+      const response = await axios.get('/api/logs/search', { params: { q: searchQuery.value } });
+      searchResults.value = response.data;
+    }
   } catch (error) {
-    message.error(error.response?.data?.error || '搜索失败！');
+    console.error(error);
+    message.error('搜索失败，请检查后台日志。');
   } finally {
     isSearching.value = false;
   }
@@ -280,12 +276,12 @@ const clearSearch = () => {
   isSearchMode.value = false;
   searchQuery.value = '';
   searchResults.value = [];
+  htmlContent.value = '';
   if (selectedFile.value && !logContent.value) {
     fetchLogContent(selectedFile.value);
   }
 };
 
-// --- Watcher --- (无需改动)
 watch(() => props.show, (newVal) => {
   if (newVal) {
     fetchLogFiles();
@@ -298,49 +294,35 @@ watch(() => props.show, (newVal) => {
 });
 </script>
 
-<!-- ★★★ [修改] 将颜色样式应用到整行 ★★★ -->
 <style scoped>
+/* 保持原有的样式不变，用于普通文件浏览和筛选模式 */
 .log-viewer-container {
   background-color: #282c34;
   font-family: 'Courier New', Courier, monospace;
   font-size: 13px;
   padding: 10px 15px;
   border-radius: 6px;
-  max-height: calc(100vh - 250px);
+  height: 100%; /* 撑满 */
   overflow-y: auto;
   white-space: pre-wrap;
   word-break: break-all;
 }
 
-.log-line {
-  line-height: 1.6;
-  padding: 1px 0;
-  /* 默认文字颜色，会被下面的具体级别覆盖 */
-  color: #abb2bf; 
-}
-
-/* 不同级别的行颜色 */
+.log-line { line-height: 1.6; padding: 1px 0; color: #abb2bf; }
 .log-line.info { color: #98c379; }
 .log-line.warning { color: #e5c07b; }
-.log-line.error,
-.log-line.critical { color: #e06c75; }
+.log-line.error, .log-line.critical { color: #e06c75; }
 .log-line.debug { color: #56b6c2; }
+.log-line.raw { color: #95a5a6; font-style: italic; }
+.timestamp { color: #61afef; margin-right: 1em; }
+.level { font-weight: bold; margin-right: 1em; text-transform: uppercase; }
 
-/* 分隔符等原始行的样式 */
-.log-line.raw {
-  color: #95a5a6;
-  font-style: italic;
-}
-
-/* 时间戳颜色保持独立，不受行颜色影响 */
-.timestamp {
-  color: #61afef;
-  margin-right: 1em;
-}
-
-.level {
-  font-weight: bold;
-  margin-right: 1em;
-  text-transform: uppercase;
+/* ★ 新增：iframe 容器样式 */
+.iframe-container {
+  width: 100%;
+  height: calc(100% - 40px); /* 减去返回按钮的高度 */
+  border-radius: 6px;
+  overflow: hidden;
+  border: 1px solid #333;
 }
 </style>

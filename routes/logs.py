@@ -5,7 +5,7 @@ import logging
 import os
 from werkzeug.utils import secure_filename
 import re
-
+import html
 import config_manager
 from extensions import admin_required
 
@@ -131,42 +131,152 @@ def search_all_logs():
         logging.error(f"API: 全局日志搜索时发生严重错误: {e}", exc_info=True)
         return jsonify({"error": "搜索过程中发生服务器内部错误"}), 500
 
+def render_log_html(blocks, query):
+    """
+    辅助函数：将日志块渲染为漂亮的深色主题 HTML
+    """
+    css_styles = """
+    <style>
+        :root {
+            --bg-color: #1e1e1e;
+            --text-color: #d4d4d4;
+            --block-bg: #252526;
+            --border-color: #333;
+            --accent-color: #007acc;
+            --highlight-bg: #414339;
+            --highlight-text: #f8f8f2;
+        }
+        body {
+            background-color: var(--bg-color);
+            color: var(--text-color);
+            font-family: 'JetBrains Mono', 'Fira Code', Consolas, 'Courier New', monospace;
+            font-size: 14px;
+            line-height: 1.5;
+            margin: 0;
+            padding: 20px;
+            font-style: normal !important; /* 强制去除斜体 */
+        }
+        h2 { color: #fff; border-bottom: 1px solid var(--border-color); padding-bottom: 10px; }
+        .summary { margin-bottom: 20px; color: #888; }
+        .log-block {
+            background-color: var(--block-bg);
+            border: 1px solid var(--border-color);
+            border-radius: 6px;
+            margin-bottom: 20px;
+            box-shadow: 0 4px 6px rgba(0,0,0,0.3);
+            overflow: hidden;
+        }
+        .block-header {
+            background-color: #333;
+            padding: 8px 15px;
+            font-size: 12px;
+            color: #aaa;
+            border-bottom: 1px solid var(--border-color);
+            display: flex;
+            justify-content: space-between;
+        }
+        .log-content {
+            padding: 10px 15px;
+            white-space: pre-wrap; /* 保留换行 */
+            overflow-x: auto;
+        }
+        .line { display: block; }
+        .line:hover { background-color: #2a2d2e; }
+        
+        /* 语法高亮 */
+        .ts { color: #569cd6; margin-right: 10px; opacity: 0.7; } /* 时间戳 */
+        .level-INFO { color: #4ec9b0; font-weight: bold; }
+        .level-DEBUG { color: #808080; }
+        .level-WARN { color: #ce9178; }
+        .level-ERROR { color: #f44747; font-weight: bold; }
+        .arrow { color: #c586c0; font-weight: bold; } /* ➜ 符号 */
+        .keyword { background-color: var(--highlight-bg); color: var(--highlight-text); border-radius: 2px; padding: 0 2px; }
+    </style>
+    """
+
+    html_content = [f"""
+    <!DOCTYPE html>
+    <html lang="zh-CN">
+    <head>
+        <meta charset="UTF-8">
+        <title>日志追踪: {html.escape(query)}</title>
+        {css_styles}
+    </head>
+    <body>
+        <h2>🔍 追踪日志: <span style="color: #4ec9b0;">{html.escape(query)}</span></h2>
+        <div class="summary">共找到 {len(blocks)} 个完整处理流程</div>
+    """]
+
+    for block in blocks:
+        file_name = block['file']
+        date_str = block['date']
+        lines = block['lines']
+        
+        html_content.append(f"""
+        <div class="log-block">
+            <div class="block-header">
+                <span>📄 {html.escape(file_name)}</span>
+                <span>📅 {html.escape(date_str)}</span>
+            </div>
+            <div class="log-content">
+        """)
+
+        for line in lines:
+            # 1. HTML 转义，防止脚本注入
+            safe_line = html.escape(line)
+            
+            # 2. 高亮处理
+            # 高亮时间戳 (假设开头是时间)
+            safe_line = re.sub(r'^(\d{4}-\d{2}-\d{2}\s\d{2}:\d{2}:\d{2})', r'<span class="ts">\1</span>', safe_line)
+            
+            # 高亮日志级别
+            safe_line = safe_line.replace('INFO', '<span class="level-INFO">INFO</span>')
+            safe_line = safe_line.replace('DEBUG', '<span class="level-DEBUG">DEBUG</span>')
+            safe_line = safe_line.replace('WARNING', '<span class="level-WARN">WARNING</span>')
+            safe_line = safe_line.replace('ERROR', '<span class="level-ERROR">ERROR</span>')
+            
+            # 高亮特殊符号
+            safe_line = safe_line.replace('➜', '<span class="arrow">➜</span>')
+            
+            # 高亮搜索关键词 (忽略大小写)
+            pattern = re.compile(re.escape(query), re.IGNORECASE)
+            safe_line = pattern.sub(lambda m: f'<span class="keyword">{m.group(0)}</span>', safe_line)
+
+            html_content.append(f'<span class="line">{safe_line}</span>')
+
+        html_content.append("""
+            </div>
+        </div>
+        """)
+
+    html_content.append("</body></html>")
+    return "".join(html_content)
+
+
 @logs_bp.route('/search_context', methods=['GET'])
 @admin_required
 def search_logs_with_context():
     """
-    【V10 - 智能去噪版】
-    精准截取从 '收到入库事件/手动处理' 到 '后台任务结束' 的完整日志块。
-    自动剔除中间穿插的其他媒体（如 '第 xx 集'）的入库、预检、队列等干扰日志。
+    【V11 - 最终美化版】
+    1. 精准截取 '收到入库' -> '任务结束' 的闭环日志。
+    2. 自动剔除中间乱入的其他媒体日志。
+    3. 支持 format=html 参数，直接返回 VS Code 风格的深色日志页面。
     """
     query = request.args.get('q', '').strip()
+    output_format = request.args.get('format', 'json').lower() # 新增 format 参数
+
     if not query:
         return jsonify({"error": "搜索关键词不能为空"}), 400
 
-    # 1. 定义正则表达式
-    # ---------------------------------------------------------
-    # 捕获组1: 媒体名称
-    
-    # [起点] 匹配: "Webhook: 收到入库事件 'Name'" 或 "手动处理 'Name'"
+    # --- 正则定义 (保持 V10 的精准逻辑) ---
     START_MARKER = re.compile(r"(?:Webhook: 收到入库事件|手动处理)\s'(.+?)'")
-    
-    # [终点] 匹配: "后台任务 'Webhook完整处理: Name' 结束"
-    # 注意：日志中结束语包含 "结束，最终状态..."，所以匹配 "结束" 即可
     END_MARKER = re.compile(r"后台任务 'Webhook完整处理:\s(.+?)'\s结束")
-
-    # [干扰项检测] 
-    # 如果当前行包含以下模式，且名字不是当前追踪的名字，则视为干扰
-    # 涵盖: 入库事件, 队列项目, 预检检测, 开始处理, 处理完成
     INTERFERENCE_MARKER = re.compile(r"(?:Webhook: 收到入库事件|项目|预检.+?检测到|开始检查|开始处理|处理完成)\s'(.+?)'")
-
-    # [日期提取]
     TIMESTAMP_REGEX = re.compile(r"^(\d{4}-\d{2}-\d{2}\s\d{2}:\d{2}:\d{2})")
-    # ---------------------------------------------------------
 
     found_blocks = []
     
     try:
-        # 按时间倒序获取日志文件（优先看最新的日志）
         all_files = os.listdir(config_manager.LOG_DIRECTORY)
         log_files = sorted([f for f in all_files if f.startswith('app.log')], reverse=True)
 
@@ -174,7 +284,7 @@ def search_logs_with_context():
             full_path = os.path.join(config_manager.LOG_DIRECTORY, filename)
             
             current_block = []
-            active_item_name = None # 当前正在追踪的片名 (例如: "方世玉与洪熙官")
+            active_item_name = None 
 
             try:
                 with open(full_path, 'rt', encoding='utf-8', errors='ignore') as f:
@@ -182,30 +292,22 @@ def search_logs_with_context():
                         line_strip = line.strip()
                         if not line_strip: continue
 
-                        # 尝试匹配起点和终点
                         start_match = START_MARKER.search(line_strip)
                         end_match = END_MARKER.search(line_strip)
 
-                        # --- 场景 A: 尚未开始追踪，寻找起点 ---
                         if not active_item_name:
                             if start_match:
                                 item_name = start_match.group(1)
-                                # 只有当名字包含搜索关键词时才开始追踪
                                 if query.lower() in item_name.lower():
                                     active_item_name = item_name
-                                    current_block = [line] # 初始化块
+                                    current_block = [line]
                             continue
 
-                        # --- 场景 B: 正在追踪中 (active_item_name 有值) ---
-                        
-                        # 1. 检查是否是当前追踪对象的【终点】
+                        # --- 正在追踪 ---
                         if end_match:
                             end_name = end_match.group(1)
                             if end_name == active_item_name:
-                                # 完美闭环：找到结束语，保存并重置
                                 current_block.append(line)
-                                
-                                # 提取日期
                                 block_date = "Unknown Date"
                                 if current_block:
                                     date_match = TIMESTAMP_REGEX.search(current_block[0])
@@ -217,43 +319,38 @@ def search_logs_with_context():
                                     "date": block_date,
                                     "lines": current_block
                                 })
-                                
-                                # 重置状态，继续寻找下一个匹配
                                 active_item_name = None
                                 current_block = []
                                 continue
 
-                        # 2. 智能去噪逻辑 (核心优化)
-                        # 如果行中明确包含了【其他】媒体对象的关键操作日志，则跳过该行
+                        # 去噪逻辑
                         interference_match = INTERFERENCE_MARKER.search(line_strip)
                         if interference_match:
                             other_name = interference_match.group(1)
-                            # 如果这行日志提到的名字 不是 当前追踪的名字，那就是干扰项 (例如: '第 15 集')
                             if other_name != active_item_name:
                                 continue 
 
-                        # 3. 补充逻辑：防止死锁
-                        # 如果遇到了同一个名字的【新的起点】，说明上一次处理可能异常中断了没有打印结束语
-                        # 这种情况下，我们把之前的块作废（或者保存为残缺块），重新开始追踪新的
+                        # 防止死锁：遇到同名新起点
                         if start_match:
                             new_name = start_match.group(1)
                             if new_name == active_item_name:
-                                # 发现重复起点，重置当前块，从这行重新开始
                                 current_block = [line]
                                 continue
 
-                        # 4. 常规日志：添加到当前块
-                        # 这里包含：通用日志、当前片名的详细日志、以及未被识别为干扰的日志
                         current_block.append(line)
 
             except Exception as e:
-                logging.warning(f"API: 上下文搜索时无法读取文件 '{filename}': {e}")
+                logging.warning(f"API: 读取文件 '{filename}' 出错: {e}")
         
-        # 按日期倒序排列结果
         found_blocks.sort(key=lambda x: x['date'], reverse=True)
         
-        return jsonify(found_blocks)
+        # --- 关键修改：根据 format 参数返回不同格式 ---
+        if output_format == 'html':
+            html_response = render_log_html(found_blocks, query)
+            return Response(html_response, mimetype='text/html')
+        else:
+            return jsonify(found_blocks)
 
     except Exception as e:
-        logging.error(f"API: 上下文日志搜索时发生严重错误: {e}", exc_info=True)
-        return jsonify({"error": "搜索过程中发生服务器内部错误"}), 500
+        logging.error(f"API: 上下文日志搜索错误: {e}", exc_info=True)
+        return jsonify({"error": "服务器内部错误"}), 500
