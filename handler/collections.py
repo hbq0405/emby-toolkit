@@ -226,11 +226,8 @@ def subscribe_all_missing_in_native_collections():
 
 def assemble_all_collection_details() -> List[Dict[str, Any]]:
     """
-    【V5 - 动态统计版】
     读取时，根据 ID 列表实时去 media_metadata 统计 缺失/入库/订阅/未上映 数量。
     """
-    logger.info("--- 开始组装原生合集详情 (动态统计) ---")
-    
     all_collections = collection_db.get_all_native_collections()
     if not all_collections: return []
 
