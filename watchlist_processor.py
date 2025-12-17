@@ -363,27 +363,18 @@ class WatchlistProcessor:
                                 # C. 更新本地数据库状态
                                 updates = {
                                     "is_airing": True,
-                                    "force_ended": False, # 移除强制完结
-                                    "tmdb_status": "Returning Series"
+                                    "force_ended": False,
+                                    "tmdb_status": "Returning Series",
+                                    "status": STATUS_WATCHING,     # 直接追剧
+                                    "paused_until": None           # 清空暂停时间
                                 }
-
-                                # 如果已经开播，或者3天内开播 -> 追剧中
-                                if days_diff <= 3:
-                                    updates["status"] = STATUS_WATCHING
-                                    updates["paused_until"] = None
-                                    log_status = "追剧中 (Watching)"
-                                else:
-                                    # 还有很久才播 -> 暂停
-                                    updates["status"] = STATUS_PAUSED
-                                    updates["paused_until"] = air_date.isoformat()
-                                    log_status = f"已暂停 (Paused) 至 {air_date_str}"
+                                log_status = "追剧中 (Watching)"
 
                                 self._update_watchlist_entry(tmdb_id, series_name, updates)
                                 watchlist_db.sync_seasons_watching_status(tmdb_id, [new_season_num], updates["status"])
                                 
                                 logger.info(f"  ➜ 已成功复活《{series_name}》：状态更新为 '{log_status}'。")
                                 
-                                # 只要复活了一季，这部剧就算复活了，跳出当前剧集的季循环，处理下一部剧
                                 break 
 
                         except ValueError:
