@@ -18,36 +18,42 @@ logger = logging.getLogger(__name__)
 # 模块: 原生合集数据访问 (collections_info) 
 # ======================================================================
 
-def upsert_native_collection(collection_data: Dict[str, Any]):
-    """ 
-    只写入合集的基础信息和包含的 TMDB ID 列表。
-    统计数据由读取时动态计算。
+def upsert_native_collection(data: Dict[str, Any]):
     """
-    sql = """
-        INSERT INTO collections_info 
-        (emby_collection_id, name, tmdb_collection_id, last_checked_at, poster_path, all_tmdb_ids_json)
-        VALUES (%s, %s, %s, %s, %s, %s)
-        ON CONFLICT (emby_collection_id) DO UPDATE SET
-            name = EXCLUDED.name,
-            tmdb_collection_id = EXCLUDED.tmdb_collection_id,
-            last_checked_at = EXCLUDED.last_checked_at,
-            poster_path = EXCLUDED.poster_path,
-            all_tmdb_ids_json = EXCLUDED.all_tmdb_ids_json;
+    插入或更新原生合集信息。
     """
     try:
         with get_db_connection() as conn:
             cursor = conn.cursor()
-            cursor.execute(sql, (
-                collection_data.get('emby_collection_id'),
-                collection_data.get('name'),
-                collection_data.get('tmdb_collection_id'),
-                datetime.now(),
-                collection_data.get('poster_path'),
-                json.dumps(collection_data.get('all_tmdb_ids', []), ensure_ascii=False)
-            ))
-    except psycopg2.Error as e:
-        logger.error(f"写入原生合集信息时发生数据库错误: {e}", exc_info=True)
-        raise
+            
+            # 准备数据
+            emby_id = data.get('emby_collection_id')
+            name = data.get('name')
+            tmdb_coll_id = data.get('tmdb_collection_id')
+            poster = data.get('poster_path')
+            ids_json = json.dumps(data.get('all_tmdb_ids', []))
+            
+            # ★★★ 核心修改：在 SQL 中直接使用 NOW()，而不是从 Python 传时间 ★★★
+            sql = """
+                INSERT INTO collections_info (
+                    emby_collection_id, name, tmdb_collection_id, 
+                    poster_path, all_tmdb_ids_json, last_checked_at
+                )
+                VALUES (%s, %s, %s, %s, %s, NOW())
+                ON CONFLICT (emby_collection_id) DO UPDATE SET
+                    name = EXCLUDED.name,
+                    tmdb_collection_id = EXCLUDED.tmdb_collection_id,
+                    poster_path = EXCLUDED.poster_path,
+                    all_tmdb_ids_json = EXCLUDED.all_tmdb_ids_json,
+                    last_checked_at = NOW();
+            """
+            
+            cursor.execute(sql, (emby_id, name, tmdb_coll_id, poster, ids_json))
+            conn.commit()
+            return True
+    except Exception as e:
+        logger.error(f"Upsert 原生合集失败: {e}", exc_info=True)
+        return False
 
 def get_all_native_collections() -> List[Dict[str, Any]]:
     """ 获取所有原生合集的基础信息。"""
