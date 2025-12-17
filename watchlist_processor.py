@@ -614,11 +614,9 @@ class WatchlistProcessor:
     def _sync_status_to_moviepilot(self, tmdb_id: str, series_name: str, series_details: Dict[str, Any], final_status: str, old_status: str = None):
         """
         根据最终计算出的 watching_status，调用 MP 接口更新订阅状态及总集数。
+        如果发现 MP 端订阅已不存在，则自动重新发起订阅。
         """
         try:
-            # 1. 确定 MP 目标状态 (Status)
-            target_mp_status = 'R' 
-            
             watchlist_cfg = settings_db.get_setting('watchlist_config') or {}
             enable_auto_pause = watchlist_cfg.get('auto_pause', False)
             auto_pending_cfg = watchlist_cfg.get('auto_pending', {})
@@ -626,65 +624,79 @@ class WatchlistProcessor:
             # 获取配置的虚标集数 (默认99)
             fake_total_episodes = int(auto_pending_cfg.get('default_total_episodes', 99))
 
+            # 1. 确定 MP 目标状态 (Status)
+            target_mp_status = 'R' 
             if final_status == STATUS_PENDING:
                 target_mp_status = 'P'
             elif final_status == STATUS_PAUSED:
-                if enable_auto_pause:
-                    target_mp_status = 'S'
-                else:
-                    target_mp_status = 'R'
+                target_mp_status = 'S' if enable_auto_pause else 'R'
             elif final_status == STATUS_WATCHING:
                 target_mp_status = 'R'
             else:
-                return
+                return # Completed 或其他状态不在此同步
 
-            # 2. 找出需要更新的季
+            # 2. 遍历所有季进行同步
             seasons = series_details.get('seasons', [])
             for season in seasons:
                 s_num = season.get('season_number')
-                # 获取该季的真实集数
+                if not s_num or s_num <= 0:
+                    continue
+
+                # --- A. 订阅存在性检查与自动补订 ---
+                exists = moviepilot.check_subscription_exists(tmdb_id, 'Series', self.config, season=s_num)
+                
+                if not exists:
+                    logger.info(f"  🔍 [MP同步] 发现《{series_name}》S{s_num} 在 MoviePilot 中无活跃订阅，正在自动补订...")
+                    # 重新发起订阅
+                    sub_success = moviepilot.subscribe_series_to_moviepilot(
+                        series_info={'title': series_name, 'tmdb_id': tmdb_id},
+                        season_number=s_num,
+                        config=self.config
+                    )
+                    if not sub_success:
+                        logger.warning(f"  ❌ [MP同步] 尝试为《{series_name}》S{s_num} 补订失败，跳过状态同步。")
+                        continue
+                    logger.info(f"  ✅ [MP同步] 《{series_name}》S{s_num} 补订成功。")
+
+                # --- B. 计算目标总集数 ---
                 real_episode_count = season.get('episode_count', 0)
+                current_target_total = None
+                
+                if target_mp_status == 'P':
+                    current_target_total = fake_total_episodes
+                elif target_mp_status == 'R':
+                    if real_episode_count > 0:
+                        current_target_total = real_episode_count
 
-                if s_num and s_num > 0:
+                # --- C. 执行状态和集数同步 ---
+                sync_success = moviepilot.update_subscription_status(
+                    int(tmdb_id), 
+                    s_num, 
+                    target_mp_status, 
+                    self.config, 
+                    total_episodes=current_target_total
+                )
+
+                if sync_success:
+                    # 日志记录逻辑
+                    should_log = False
+                    log_msg = ""
+
+                    if target_mp_status != 'R':
+                        should_log = True
+                        status_desc = "待定(P)" if target_mp_status == 'P' else "暂停(S)"
+                        ep_msg = f", 集数->{current_target_total}" if current_target_total else ""
+                        log_msg = f"  ➜ [MP同步] 《{series_name}》S{s_num} -> {status_desc}{ep_msg} (原因: {translate_internal_status(final_status)})"
                     
-                    # ★★★ 核心修改：根据状态决定传递给 MP 的总集数 ★★★
-                    current_target_total = None
-                    
-                    if target_mp_status == 'P':
-                        # 待定状态：使用虚标集数 (防止过早完结)
-                        current_target_total = fake_total_episodes
-                    elif target_mp_status == 'R':
-                        # 运行状态：使用 TMDb 真实集数 (修正之前的虚标，防止无效搜索)
-                        # 只有当真实集数 > 0 时才传递，避免 TMDb 数据缺失导致 MP 被置为 0
-                        if real_episode_count > 0:
-                            current_target_total = real_episode_count
+                    elif target_mp_status == 'R' and (old_status == STATUS_PENDING or not exists):
+                        # 如果是刚补订的，或者刚解除待定，打印恢复日志
+                        should_log = True
+                        reason = "重新补订" if not exists else "解除待定"
+                        ep_msg = f", 集数修正->{current_target_total}" if current_target_total else ""
+                        log_msg = f"  ➜ [MP同步] 《{series_name}》S{s_num} -> 恢复订阅(R){ep_msg} (原因: {reason})"
 
-                    # 调用接口
-                    if moviepilot.update_subscription_status(
-                        int(tmdb_id), 
-                        s_num, 
-                        target_mp_status, 
-                        self.config, 
-                        total_episodes=current_target_total # ★ 传入动态计算的集数
-                    ):
-                        
-                        should_log = False
-                        log_msg = ""
-
-                        if target_mp_status != 'R':
-                            should_log = True
-                            status_desc = "待定(P)" if target_mp_status == 'P' else "暂停(S)"
-                            ep_msg = f", 集数->{current_target_total}" if current_target_total else ""
-                            log_msg = f"  ➜ [MP同步] 《{series_name}》S{s_num} -> {status_desc}{ep_msg} (因本地状态: {translate_internal_status(final_status)})"
-                        
-                        elif target_mp_status == 'R' and old_status == STATUS_PENDING:
-                            should_log = True
-                            # 增加集数修正的日志提示
-                            ep_msg = f", 集数修正->{current_target_total}" if current_target_total else ""
-                            log_msg = f"  ➜ [MP同步] 《{series_name}》S{s_num} -> 恢复订阅(R){ep_msg} (已解除待定状态)"
-
-                        if should_log:
-                            logger.info(log_msg)
+                    if should_log:
+                        logger.info(log_msg)
 
         except Exception as e:
             logger.warning(f"同步状态给 MoviePilot 时出错: {e}")
