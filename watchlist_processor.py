@@ -256,11 +256,12 @@ class WatchlistProcessor:
 
     # ★★★ 专门用于“已完结剧集”预定新季的任务方法 ★★★
     def run_new_season_check_task(self, progress_callback: callable):
-        """ 低频扫描所有已完结剧集，全量刷新元数据，发现即将播出的新季并预订。"""
+        """ 低频扫描所有已完结剧集，全量刷新元数据，发现即将播出或已播出的新季并复活。"""
         self.progress_callback = progress_callback
         task_name = "已完结剧集新季预定"
         self.progress_callback(0, "准备开始预定检查...")
         try:
+            # 获取所有标记为“已完结”且非强制完结的剧集
             completed_series = self._get_series_to_process(f"WHERE watching_status = '{STATUS_COMPLETED}' AND force_ended = FALSE")
             total = len(completed_series)
             if not completed_series:
@@ -282,86 +283,113 @@ class WatchlistProcessor:
                 
                 self.progress_callback(progress, f"刷新并检查: {series_name[:20]}... ({i+1}/{total})")
 
-                # ★★★ 调用通用辅助函数刷新元数据 ★★★
-                # 这会自动更新 DB、JSON 和 Emby
+                # 1. 刷新元数据 (获取最新 TMDb 数据 + 本地 Emby 状态)
                 refresh_result = self._refresh_series_metadata(tmdb_id, series_name, item_id)
                 
                 if not refresh_result:
-                    continue # 刷新失败，跳过本剧集
+                    continue 
                 
-                tmdb_details, _, _ = refresh_result
+                tmdb_details, _, emby_seasons_state = refresh_result
 
-                # --- 以下是新季判断逻辑 ---
-                last_episode_info = series.get('last_episode_to_air_json')
-                old_season_number = 0
-                if last_episode_info and isinstance(last_episode_info, dict):
-                    old_season_number = last_episode_info.get('season_number', 0)
+                # 2. 计算本地已有的最大季号 (比依赖 last_episode_to_air 更靠谱)
+                # emby_seasons_state 结构: {1: {e1, e2}, 2: {e1...}}
+                local_max_season = 0
+                if emby_seasons_state:
+                    # 过滤掉第0季，找最大值
+                    valid_local_seasons = [s for s in emby_seasons_state.keys() if s > 0]
+                    if valid_local_seasons:
+                        local_max_season = max(valid_local_seasons)
 
-                new_total_seasons = tmdb_details.get('number_of_seasons', 0)
+                # 3. 获取 TMDb 上的总季数
+                tmdb_seasons = tmdb_details.get('seasons', [])
+                # 过滤掉第0季
+                valid_tmdb_seasons = [s for s in tmdb_seasons if s.get('season_number', 0) > 0]
+                
+                if not valid_tmdb_seasons: continue
+                
+                tmdb_max_season = max((s.get('season_number', 0) for s in valid_tmdb_seasons), default=0)
 
-                if new_total_seasons > old_season_number:
-                    new_season_to_check_num = old_season_number + 1
-                    # 获取新季详情 (虽然 _refresh_series_metadata 已经获取过并存了 JSON，但为了逻辑清晰，这里再调一次 API 或者读缓存皆可)
-                    # 考虑到 _refresh_series_metadata 已经缓存了 season-X.json，这里其实可以读本地，但为了代码简单，直接调 tmdb 库
-                    season_details = tmdb.get_tv_season_details(tmdb_id, new_season_to_check_num, self.tmdb_api_key)
+                # 4. 核心判断：如果有比本地更新的季
+                if tmdb_max_season > local_max_season:
                     
-                    if season_details and (air_date_str := season_details.get('air_date')):
+                    # 遍历所有比本地新的季 (防止漏掉中间的季)
+                    for season_info in valid_tmdb_seasons:
+                        new_season_num = season_info.get('season_number')
+                        
+                        # 只检查比本地新的季
+                        if new_season_num <= local_max_season:
+                            continue
+
+                        air_date_str = season_info.get('air_date')
+                        if not air_date_str:
+                            continue
+
                         try:
                             air_date = datetime.strptime(air_date_str, '%Y-%m-%d').date()
-                            days_until_air = (air_date - today).days
+                            days_diff = (air_date - today).days
                             
-                            # 如果新季在未来7天内（包括今天）上线，直接将其加入待发布订阅列表
-                            if 0 <= days_until_air <= 7:
+                            # ★★★ 核心修复：放宽时间窗口 ★★★
+                            # 1. days_diff >= -30: 允许已经开播 30 天内的新季 (回溯复活)
+                            # 2. days_diff <= 3:  允许未来 3 天内开播的新季 (预定)
+                            if -30 <= days_diff <= 3:
                                 revived_count += 1
-                                logger.info(f"  ➜ 发现《{series_name}》的新季 (S{new_season_to_check_num}) 将在 {days_until_air} 天后上线，准备提交预订阅！")
+                                status_desc = "已开播" if days_diff <= 0 else f"{days_diff}天后开播"
+                                logger.info(f"  ➜ 发现《{series_name}》的新季 (S{new_season_num}) {status_desc}，触发复活流程！")
                                 
-                                # 1. 准备新一季的媒体信息
-                                season_tmdb_id = str(season_details.get('id'))
+                                # --- 复活逻辑 ---
+                                
+                                # A. 准备新一季的媒体信息
+                                season_tmdb_id = str(season_info.get('id'))
                                 media_info = {
                                     'tmdb_id': season_tmdb_id,
                                     'item_type': 'Season',
-                                    'title': f"{series_name} - {season_details.get('name', f'第 {new_season_to_check_num} 季')}",
-                                    'release_date': season_details.get('air_date'),
-                                    'poster_path': season_details.get('poster_path'),
-                                    'season_number': new_season_to_check_num,
+                                    'title': f"{series_name} - {season_info.get('name', f'第 {new_season_num} 季')}",
+                                    'release_date': air_date_str,
+                                    'poster_path': season_info.get('poster_path'),
+                                    'season_number': new_season_num,
                                     'parent_series_tmdb_id': tmdb_id,
-                                    'overview': season_details.get('overview')
+                                    'overview': season_info.get('overview')
                                 }
                                 
-                                # 2. 调用 request_db 将其状态设置为 PENDING_RELEASE
+                                # B. 提交订阅请求 (Request DB)
                                 request_db.set_media_status_pending_release(
                                     tmdb_ids=season_tmdb_id,
                                     item_type='Season',
                                     source={"type": "watchlist", "reason": "revived_season", "item_id": tmdb_id},
                                     media_info_list=[media_info]
                                 )
-                                logger.info(f"  ➜ 已成功为《{series_name}》 S{new_season_to_check_num} 创建“待上映”订阅。")
+                                logger.info(f"  ➜ 已成功为《{series_name}》 S{new_season_num} 创建/更新订阅请求。")
 
-                                # 3. 立即更新本地数据库状态为“追剧中” 
+                                # C. 更新本地数据库状态
                                 updates = {
                                     "is_airing": True,
-                                    "force_ended": False, # 核心：移除强制完结标记
+                                    "force_ended": False, # 移除强制完结
                                     "tmdb_status": "Returning Series"
                                 }
 
-                                if days_until_air <= 3:
+                                # 如果已经开播，或者3天内开播 -> 追剧中
+                                if days_diff <= 3:
                                     updates["status"] = STATUS_WATCHING
                                     updates["paused_until"] = None
                                     log_status = "追剧中 (Watching)"
                                 else:
+                                    # 还有很久才播 -> 暂停
                                     updates["status"] = STATUS_PAUSED
                                     updates["paused_until"] = air_date.isoformat()
                                     log_status = f"已暂停 (Paused) 至 {air_date_str}"
 
                                 self._update_watchlist_entry(tmdb_id, series_name, updates)
-                                watchlist_db.sync_seasons_watching_status(tmdb_id, [new_season_to_check_num], updates["status"])
+                                watchlist_db.sync_seasons_watching_status(tmdb_id, [new_season_num], updates["status"])
                                 
-                                logger.info(f"  ➜ 已成功复活《{series_name}》：状态更新为 '{log_status}'，并已提交 S{new_season_to_check_num} 的订阅请求。")
+                                logger.info(f"  ➜ 已成功复活《{series_name}》：状态更新为 '{log_status}'。")
+                                
+                                # 只要复活了一季，这部剧就算复活了，跳出当前剧集的季循环，处理下一部剧
+                                break 
 
                         except ValueError:
-                            logger.warning(f"  ➜ 解析《{series_name}》新季的播出日期 '{air_date_str}' 失败。")
+                            logger.warning(f"  ➜ 解析《{series_name}》S{new_season_num} 的播出日期 '{air_date_str}' 失败。")
                 
-                time.sleep(1) # 保持适当的API请求间隔
+                time.sleep(1) 
             
             final_message = f"复活检查完成。共刷新 {total} 部剧集，复活 {revived_count} 部。"
             self.progress_callback(100, final_message)

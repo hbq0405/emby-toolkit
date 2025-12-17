@@ -313,7 +313,7 @@ class SchedulerManager:
         )
 
     def update_revival_check_job(self):
-        """根据硬编码的规则，设置每周的新季上线检查任务。"""
+        """根据硬编码的规则，设置每天的新季上线检查任务。"""
         if not self.scheduler.running:
             return
 
@@ -324,7 +324,7 @@ class SchedulerManager:
         except JobLookupError:
             pass 
 
-        cron_str = '0 5 * * sun' 
+        cron_str = '0 5 * * *' 
         registry = tasks.get_task_registry()
         task_info = registry.get('run_new_season_check')
         
