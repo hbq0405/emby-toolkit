@@ -204,29 +204,6 @@
                 </n-form-item>
               </n-gi>
             </n-grid>
-
-            <!-- AI 增强区块 (保持不变) -->
-            <div class="ai-section">
-               <!-- ... AI 代码保持不变 ... -->
-               <div class="ai-header">
-                <n-icon :component="SparklesIcon" color="#f2c97d" size="18" />
-                <span>AI 智能审阅 (实验性)</span>
-                <n-switch v-model:value="currentCollection.definition.ai_enabled" size="small" style="margin-left: auto;" />
-              </div>
-              <n-collapse-transition :show="currentCollection.definition.ai_enabled">
-                <div class="ai-content">
-                  <n-form-item label="AI 选片指令 (Prompt)" path="definition.ai_prompt" :show-label="false">
-                    <n-input
-                      v-model:value="currentCollection.definition.ai_prompt"
-                      type="textarea"
-                      placeholder="告诉 AI 怎么选：'只保留评分 7.0 以上的科幻片；不要恐怖片；如果是国产剧只保留古装类。'"
-                      :autosize="{ minRows: 3, maxRows: 5 }"
-                      class="ai-input"
-                    />
-                  </n-form-item>
-                </div>
-              </n-collapse-transition>
-            </div>
           </div>
 
           <!-- 2. 筛选规则 (Filter) (保持不变) -->

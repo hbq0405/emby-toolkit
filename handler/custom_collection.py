@@ -682,44 +682,6 @@ class ListImporter:
         if limit and isinstance(limit, int) and limit > 0:
             unique_items = unique_items[:limit]
             
-        # ==================== ★★★ AI 过滤插件 (最终版) ★★★ ====================
-        if definition.get('ai_enabled') and definition.get('ai_prompt'):
-            ai_prompt = definition.get('ai_prompt')
-            logger.info(f"  ➜ [AI审阅] 检测到 AI 选片指令，正在筛选 {len(unique_items)} 个候选项目...")
-            
-            try:
-                # 1. 实例化 AI (注意这里必须是 APP_CONFIG)
-                translator = AITranslator(config_manager.APP_CONFIG)
-                
-                # 2. 准备精简数据 (关键：一定要带上 release_date 和 year)
-                candidates_for_ai = []
-                for item in unique_items:
-                    candidates_for_ai.append({
-                        "id": str(item.get('id')),
-                        "title": item.get('title'),
-                        "type": item.get('type'),
-                        "year": item.get('year'),                 
-                        "release_date": item.get('release_date')  
-                    })
-                
-                # 3. 调用 AI 过滤
-                filtered_ids = translator.filter_candidates(
-                    candidates=candidates_for_ai, 
-                    user_instruction=ai_prompt
-                )
-                
-                # 4. 应用过滤结果
-                if filtered_ids:
-                    original_count = len(unique_items)
-                    unique_items = [item for item in unique_items if str(item.get('id')) in filtered_ids]
-                    logger.info(f"  ➜ [AI审阅] 完成。从 {original_count} 部中筛选出 {len(unique_items)} 部。")
-                else:
-                    logger.warning("  ➜ [AI审阅] AI 返回了空列表或过滤失败，将保留原始列表。")
-            
-            except Exception as e_ai:
-                logger.error(f"  ➜ [AI审阅] 执行过程中发生错误，跳过筛选: {e_ai}", exc_info=True)
-        # ===================================================================
-        
         return unique_items, last_source_type
 
     def _process_single_url(self, url: str, definition: Dict) -> Tuple[List[Dict[str, str]], str]:
