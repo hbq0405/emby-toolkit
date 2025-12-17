@@ -614,7 +614,9 @@ class WatchlistProcessor:
     def _sync_status_to_moviepilot(self, tmdb_id: str, series_name: str, series_details: Dict[str, Any], final_status: str, old_status: str = None):
         """
         根据最终计算出的 watching_status，调用 MP 接口更新订阅状态及总集数。
-        如果发现 MP 端订阅已不存在，则自动重新发起订阅。
+        逻辑优化：
+        1. 只要 MP 有订阅，就同步状态（覆盖所有季）。
+        2. 如果 MP 无订阅，仅自动补订【最新季】（防止已完结的老季诈尸）。
         """
         try:
             watchlist_cfg = settings_db.get_setting('watchlist_config') or {}
@@ -624,7 +626,7 @@ class WatchlistProcessor:
             # 获取配置的虚标集数 (默认99)
             fake_total_episodes = int(auto_pending_cfg.get('default_total_episodes', 99))
 
-            # 1. 确定 MP 目标状态 (Status)
+            # 1. 确定 MP 目标状态
             target_mp_status = 'R' 
             if final_status == STATUS_PENDING:
                 target_mp_status = 'P'
@@ -633,32 +635,42 @@ class WatchlistProcessor:
             elif final_status == STATUS_WATCHING:
                 target_mp_status = 'R'
             else:
-                return # Completed 或其他状态不在此同步
+                return 
+
+            # ★★★ 计算最新季号 ★★★
+            all_seasons = series_details.get('seasons', [])
+            valid_seasons = [s for s in all_seasons if s.get('season_number', 0) > 0]
+            latest_season_num = max((s['season_number'] for s in valid_seasons), default=0)
 
             # 2. 遍历所有季进行同步
-            seasons = series_details.get('seasons', [])
-            for season in seasons:
+            for season in all_seasons:
                 s_num = season.get('season_number')
                 if not s_num or s_num <= 0:
                     continue
 
-                # --- A. 订阅存在性检查与自动补订 ---
+                # --- A. 检查订阅是否存在 ---
                 exists = moviepilot.check_subscription_exists(tmdb_id, 'Series', self.config, season=s_num)
                 
+                # --- B. 自动补订逻辑 (核心修改) ---
                 if not exists:
-                    logger.info(f"  🔍 [MP同步] 发现《{series_name}》S{s_num} 在 MoviePilot 中无活跃订阅，正在自动补订...")
-                    # 重新发起订阅
-                    sub_success = moviepilot.subscribe_series_to_moviepilot(
-                        series_info={'title': series_name, 'tmdb_id': tmdb_id},
-                        season_number=s_num,
-                        config=self.config
-                    )
-                    if not sub_success:
-                        logger.warning(f"  ❌ [MP同步] 尝试为《{series_name}》S{s_num} 补订失败，跳过状态同步。")
+                    # 只有【最新季】才允许自动补订
+                    # 逻辑：S1-S3 没了就没了，不补；S4(最新) 没了必须补回来，因为要追更。
+                    if s_num == latest_season_num:
+                        logger.info(f"  🔍 [MP同步] 发现《{series_name}》最新季 S{s_num} 在 MoviePilot 中无活跃订阅，正在自动补订...")
+                        sub_success = moviepilot.subscribe_series_to_moviepilot(
+                            series_info={'title': series_name, 'tmdb_id': tmdb_id},
+                            season_number=s_num,
+                            config=self.config
+                        )
+                        if not sub_success:
+                            logger.warning(f"  ❌ [MP同步] 补订 S{s_num} 失败，跳过。")
+                            continue
+                        logger.info(f"  ✅ [MP同步] 《{series_name}》S{s_num} 补订成功。")
+                    else:
+                        # 旧季不存在，直接跳过，不打扰
                         continue
-                    logger.info(f"  ✅ [MP同步] 《{series_name}》S{s_num} 补订成功。")
 
-                # --- B. 计算目标总集数 ---
+                # --- C. 计算目标总集数 ---
                 real_episode_count = season.get('episode_count', 0)
                 current_target_total = None
                 
@@ -668,7 +680,7 @@ class WatchlistProcessor:
                     if real_episode_count > 0:
                         current_target_total = real_episode_count
 
-                # --- C. 执行状态和集数同步 ---
+                # --- D. 执行状态同步 ---
                 sync_success = moviepilot.update_subscription_status(
                     int(tmdb_id), 
                     s_num, 
@@ -678,7 +690,7 @@ class WatchlistProcessor:
                 )
 
                 if sync_success:
-                    # 日志记录逻辑
+                    # 仅记录有意义的变更日志
                     should_log = False
                     log_msg = ""
 
@@ -688,8 +700,7 @@ class WatchlistProcessor:
                         ep_msg = f", 集数->{current_target_total}" if current_target_total else ""
                         log_msg = f"  ➜ [MP同步] 《{series_name}》S{s_num} -> {status_desc}{ep_msg} (原因: {translate_internal_status(final_status)})"
                     
-                    elif target_mp_status == 'R' and (old_status == STATUS_PENDING or not exists):
-                        # 如果是刚补订的，或者刚解除待定，打印恢复日志
+                    elif target_mp_status == 'R' and (old_status == STATUS_PENDING or (not exists and s_num == latest_season_num)):
                         should_log = True
                         reason = "重新补订" if not exists else "解除待定"
                         ep_msg = f", 集数修正->{current_target_total}" if current_target_total else ""
