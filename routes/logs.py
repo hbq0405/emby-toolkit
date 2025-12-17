@@ -40,15 +40,18 @@ def list_log_files():
 @logs_bp.route('/view', methods=['GET'])
 @admin_required
 def view_log_file():
-    """查看指定日志文件的内容，自动处理 .gz 文件"""
-    # 安全性第一：防止目录遍历攻击
+    """
+    查看指定日志文件的内容
+    支持 format=html 参数，返回美化后的 HTML
+    """
     filename = secure_filename(request.args.get('filename', ''))
+    output_format = request.args.get('format', 'json').lower() # 新增参数
+
     if not filename or not filename.startswith('app.log'):
         abort(403, "禁止访问非日志文件或无效的文件名。")
 
     full_path = os.path.join(config_manager.LOG_DIRECTORY, filename)
 
-    # 再次确认最终路径仍然在合法的日志目录下
     if not os.path.abspath(full_path).startswith(os.path.abspath(config_manager.LOG_DIRECTORY)):
         abort(403, "检测到非法路径访问。")
         
@@ -57,12 +60,26 @@ def view_log_file():
 
     try:
         with open(full_path, 'r', encoding='utf-8', errors='ignore') as f:
-            lines = f.readlines()  # 将所有行读入一个列表
+            lines = f.readlines()
         
-        lines.reverse()  # 反转列表顺序
-        content = "".join(lines)  # 将列表重新组合成一个字符串
+        # ★★★ 核心：倒序排列，最新的在最上面 ★★★
+        lines.reverse() 
         
-        return Response(content, mimetype='text/plain')
+        if output_format == 'html':
+            # 构造一个伪造的 block 结构，以便复用 render_log_html
+            # 这样普通查看和搜索查看的风格就完全一致了
+            fake_blocks = [{
+                'file': filename,
+                'lines': lines # 已经是倒序的了
+            }]
+            # 调用渲染函数 (query为空，不进行高亮)
+            html_response = render_log_html(fake_blocks, query='')
+            return Response(html_response, mimetype='text/html')
+        
+        else:
+            # 保持原有的纯文本/JSON兼容性 (虽然前端可能不再用它了)
+            content = "".join(lines)
+            return Response(content, mimetype='text/plain')
         
     except Exception as e:
         logging.error(f"API: 读取日志文件 '{filename}' 时出错: {e}", exc_info=True)

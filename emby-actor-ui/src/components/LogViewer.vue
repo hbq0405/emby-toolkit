@@ -7,17 +7,12 @@
     placement="right"
     resizable
   >
-    <!-- 
-      1. body-content-style: 强制 Drawer 内部主体变成 Flex 列布局，且高度 100%
-      2. :native-scrollbar="false": 禁用 Drawer 自带的滚动条，交给我们内部容器自己管理滚动
-    -->
     <n-drawer-content 
       title="历史日志查看器" 
       closable 
       :native-scrollbar="false"
       body-content-style="height: 100%; display: flex; flex-direction: column; padding: 0;"
     >
-      <!-- 内部包裹层，负责统一的 Padding -->
       <div class="drawer-inner-wrapper">
         
         <!-- 顶部控制区 -->
@@ -47,11 +42,6 @@
 
         <n-divider style="margin: 10px 0;" />
 
-        <!-- 
-          核心修改区：
-          给 n-spin 加上 class="flex-spin"，配合下方的 CSS 穿透，
-          强行打通高度传递链。
-        -->
         <n-spin :show="isLoading" class="flex-spin">
           
           <!-- 场景 1: 定位模式 (HTML iframe) -->
@@ -59,27 +49,22 @@
              <div class="toolbar">
                <n-button @click="clearSearch" size="tiny" secondary>
                  <template #icon><n-icon :component="ArrowBackOutline" /></template>
-                 返回
+                 返回文件浏览
                </n-button>
                <span class="tip">已隐藏日期与模块名，仅显示核心流</span>
              </div>
             
             <div v-if="htmlContent" class="iframe-wrapper">
-              <iframe 
-                :srcdoc="htmlContent" 
-                frameborder="0" 
-                width="100%" 
-                height="100%"
-              ></iframe>
+              <iframe :srcdoc="htmlContent" frameborder="0" width="100%" height="100%"></iframe>
             </div>
             <n-empty v-else description="未找到匹配的完整处理流程。" style="margin-top: 50px;" />
           </div>
 
-          <!-- 场景 2: 筛选模式 (JSON) -->
+          <!-- 场景 2: 筛选模式 (JSON) - 保持不变，用于快速查看原始行 -->
           <div v-else-if="isSearchMode && searchMode === 'filter'" class="view-container">
             <n-button @click="clearSearch" size="tiny" secondary style="margin-bottom: 5px;">
               <template #icon><n-icon :component="ArrowBackOutline" /></template>
-              返回
+              返回文件浏览
             </n-button>
             
             <div v-if="hasSearchResults" class="log-text-area">
@@ -100,35 +85,28 @@
             <n-empty v-else description="未找到匹配的日志记录。" style="margin-top: 50px;" />
           </div>
 
-          <!-- 场景 3: 文件浏览 (默认) -->
+          <!-- ★★★ 场景 3: 文件浏览 (默认) - 改为 HTML iframe ★★★ -->
           <div v-else class="view-container">
-            <n-select
-              v-model:value="selectedFile"
-              placeholder="请选择日志文件"
-              :options="fileOptions"
-              :loading="isLoadingFiles"
-              @update:value="fetchLogContent"
-              size="small"
-              style="margin-bottom: 5px;"
-            />
+            <div class="toolbar">
+              <n-select
+                v-model:value="selectedFile"
+                placeholder="请选择日志文件"
+                :options="fileOptions"
+                :loading="isLoadingFiles"
+                @update:value="fetchLogContent"
+                size="small"
+                style="width: 200px;"
+              />
+              <span class="tip">最新日志在顶部</span>
+            </div>
 
-            <div v-if="logContent" class="log-text-area">
-              <div 
-                v-for="(line, index) in parsedLogContent" 
-                :key="index" 
-                class="log-line"
-                :class="line.type === 'log' ? line.level.toLowerCase() : 'raw'"
-              >
-                <template v-if="line.type === 'log'">
-                  <span class="timestamp">{{ line.timestamp }}</span>
-                  <span class="level">{{ line.level }}</span>
-                  <span class="message">{{ line.message }}</span>
-                </template>
-                <template v-else>{{ line.content }}</template>
-              </div>
+            <!-- 这里复用 iframe-wrapper -->
+            <div v-if="logContent" class="iframe-wrapper">
+              <iframe :srcdoc="logContent" frameborder="0" width="100%" height="100%"></iframe>
             </div>
             <n-empty v-else description="无数据" style="margin-top: 50px;" />
           </div>
+
           <template #description>{{ loadingText }}</template>
         </n-spin>
       </div>
@@ -155,10 +133,10 @@ const isLoadingContent = ref(false);
 const isSearching = ref(false);
 const logFiles = ref([]);
 const selectedFile = ref(null);
-const logContent = ref('');
+const logContent = ref(''); // 现在这里存储的是 HTML 字符串
 const searchQuery = ref('');
 const searchResults = ref([]);
-const htmlContent = ref('');
+const htmlContent = ref(''); // 搜索结果的 HTML
 const isSearchMode = ref(false);
 const searchMode = ref('context');
 
@@ -167,11 +145,12 @@ const hasSearchResults = computed(() => searchResults.value.length > 0);
 const fileOptions = computed(() => logFiles.value.map(file => ({ label: file, value: file })));
 const loadingText = computed(() => {
   if (isLoadingFiles.value) return '正在获取文件列表...';
-  if (isLoadingContent.value) return '正在加载日志内容...';
-  if (isSearching.value) return `正在以 [${searchMode.value === 'context' ? '定位' : '筛选'}] 模式搜索...`;
+  if (isLoadingContent.value) return '正在渲染日志视图...';
+  if (isSearching.value) return '正在搜索...';
   return '';
 });
 
+// 仅用于筛选模式的简单解析
 const parseLogLine = (line) => {
   const match = line.match(/^(\d{4}-\d{2}-\d{2}\s(\d{2}:\d{2}:\d{2})),\d+\s-\s.+?\s-\s(DEBUG|INFO|WARNING|ERROR|CRITICAL)\s-\s(.*)$/);
   if (match) {
@@ -179,11 +158,6 @@ const parseLogLine = (line) => {
   }
   return { type: 'raw', content: line };
 };
-
-const parsedLogContent = computed(() => {
-  if (!logContent.value) return [];
-  return logContent.value.split('\n').map(parseLogLine);
-});
 
 const parsedLogResults = computed(() => {
   if (!hasSearchResults.value || searchMode.value === 'context') return [];
@@ -217,13 +191,20 @@ const fetchLogFiles = async () => {
   }
 };
 
+// ★★★ 修改：请求 HTML 格式 ★★★
 const fetchLogContent = async (filename) => {
   if (!filename) return;
   isLoadingContent.value = true;
-  logContent.value = `正在加载 ${filename}...`;
+  logContent.value = ''; // 清空旧内容
   try {
-    const response = await axios.get('/api/logs/view', { params: { filename } });
-    logContent.value = response.data || '（文件为空）';
+    const response = await axios.get('/api/logs/view', { 
+      params: { 
+        filename,
+        format: 'html' // 告诉后端我要 HTML
+      },
+      responseType: 'text'
+    });
+    logContent.value = response.data;
   } catch (error) {
     message.error(`加载日志 ${filename} 失败！`);
   } finally {
@@ -287,7 +268,7 @@ watch(() => props.show, (newVal) => {
 </script>
 
 <style scoped>
-/* 1. 确保 Drawer 内部的最外层容器撑满 */
+/* 保持之前的 CSS 样式不变，这里是完美的 */
 .drawer-inner-wrapper {
   height: 100%;
   display: flex;
@@ -296,27 +277,22 @@ watch(() => props.show, (newVal) => {
   box-sizing: border-box;
 }
 
-.header-section {
-  flex-shrink: 0; /* 头部不许压缩 */
-}
+.header-section { flex-shrink: 0; }
 
-/* 2. 强力修复 n-spin 高度塌陷问题 */
 .flex-spin {
-  flex: 1; /* 占据剩余所有空间 */
+  flex: 1;
   display: flex;
   flex-direction: column;
-  overflow: hidden; /* 防止溢出 */
-  min-height: 0; /* Flex 嵌套滚动的关键 */
+  overflow: hidden;
+  min-height: 0;
 }
 
-/* ★★★ CSS 穿透：强制 n-spin 内部容器也撑满 ★★★ */
 :deep(.n-spin-content) {
   height: 100%;
   display: flex;
   flex-direction: column;
 }
 
-/* 3. 视图容器：撑满 n-spin 的内部 */
 .view-container {
   flex: 1;
   display: flex;
@@ -333,29 +309,20 @@ watch(() => props.show, (newVal) => {
   margin-bottom: 8px;
 }
 
-.tip {
-  font-size: 12px;
-  color: #999;
-}
+.tip { font-size: 12px; color: #999; }
 
-/* 4. iframe 容器：绝对撑满，不留白 */
 .iframe-wrapper {
   flex: 1;
   border: 1px solid #333;
   border-radius: 4px;
   overflow: hidden;
   background-color: #1e1e1e;
-  /* 确保 iframe 容器本身有高度 */
-  height: 100%; 
+  height: 100%;
   display: flex;
 }
 
-iframe {
-  flex: 1;
-  display: block;
-}
+iframe { flex: 1; display: block; }
 
-/* 5. 普通日志文本区域 */
 .log-text-area {
   flex: 1;
   background-color: #282c34;
@@ -368,7 +335,6 @@ iframe {
   word-break: break-all;
 }
 
-/* 日志行样式 */
 .log-line { line-height: 1.6; padding: 1px 0; color: #abb2bf; }
 .log-line.info { color: #98c379; }
 .log-line.warning { color: #e5c07b; }
