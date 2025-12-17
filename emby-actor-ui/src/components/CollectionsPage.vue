@@ -364,7 +364,7 @@ let observer = null;
 
 const searchQuery = ref('');
 const filterStatus = ref('all');
-const sortKey = ref('missing_count');
+const sortKey = ref('last_checked_at');
 const sortOrder = ref('desc');
 
 const statusFilterOptions = [
