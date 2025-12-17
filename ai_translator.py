@@ -12,6 +12,7 @@ except ImportError:
     np = None
 
 logger = logging.getLogger(__name__)
+
 def _safe_json_loads(text: str) -> Optional[Dict]:
     """
     一个更安全的 JSON 解析函数，能处理一些常见的AI返回错误。
@@ -27,7 +28,6 @@ def _safe_json_loads(text: str) -> Optional[Dict]:
         logger.debug(f"  ➜ 待修复的原始文本: ```\n{text}\n```")
 
         # 2. 尝试从 markdown 代码块中提取 JSON
-        # AI 经常会返回 ```json ... ``` 这样的格式
         match = re.search(r'```(json)?\s*(\{.*?\})\s*```', text, re.DOTALL)
         if match:
             json_str = match.group(2)
@@ -36,38 +36,30 @@ def _safe_json_loads(text: str) -> Optional[Dict]:
                 return json.loads(json_str)
             except json.JSONDecodeError as inner_e:
                 logger.error(f"提取出的JSON仍然解析失败: {inner_e}")
-                # 即使提取失败，我们依然可以尝试最后的修复
-                text = json_str # 用提取出的内容进行后续修复
+                text = json_str 
 
         # 3. 尝试修复未闭合的 JSON
-        # 找到最后一个 " 或 }，然后截断并尝试补全
         last_quote = text.rfind('"')
         last_brace = text.rfind('}')
         
         if last_brace > last_quote:
-            # 如果 } 是最后一个关键字符，说明结构可能没问题，只是被截断了
-            # 我们直接截取到最后一个 }
             fixed_text = text[:last_brace + 1]
         elif last_quote != -1:
-            # 如果 " 是最后一个，说明一个字符串没闭合
-            # 我们找到这个字符串开始的地方，然后把它整个删掉
             prev_quote = text.rfind('"', 0, last_quote)
             if prev_quote != -1:
-                # 找到 "key": "value... 这种模式，把它删掉
                 comma_before = text.rfind(',', 0, prev_quote)
                 if comma_before != -1:
-                    fixed_text = text[:comma_before] + "\n}" # 删掉最后半个键值对，并补上结尾
-                else: # 如果是第一个键值对
+                    fixed_text = text[:comma_before] + "\n}" 
+                else: 
                     fixed_text = "{}"
             else:
-                fixed_text = text # 无法修复
+                fixed_text = text 
         else:
             fixed_text = text
 
         if fixed_text != text:
             logger.info("尝试进行截断和补全修复...")
             try:
-                # 再试一次！
                 result = json.loads(fixed_text)
                 logger.info("JSON 修复成功！返回部分解析结果。")
                 return result
@@ -76,6 +68,7 @@ def _safe_json_loads(text: str) -> Optional[Dict]:
                 return None
         
         return None
+
 # --- 动态导入所有需要的 SDK ---
 try:
     from openai import OpenAI, APIError, APITimeoutError
@@ -89,12 +82,15 @@ try:
 except ImportError:
     ZHIPUAI_AVAILABLE = False
 
+# ★★★ 修改点 1: 导入新版 Google SDK ★★★
 try:
-    import google.generativeai as genai
+    from google import genai
+    from google.genai import types
     GEMINI_AVAILABLE = True
 except ImportError:
     GEMINI_AVAILABLE = False
 
+# ... (Prompt 常量部分保持不变，此处省略以节省篇幅，请保留原文件中的 Prompt 定义) ...
 # ★★★ 说明书一：给“翻译官”看的（翻译模式） - 已优化 ★★★
 FAST_MODE_SYSTEM_PROMPT = """
 You are a translation API that only returns JSON.
@@ -189,13 +185,13 @@ FILTER_SYSTEM_PROMPT = """
 }
 不要包含任何Markdown标记（如 ```json ... ```），只返回纯文本 JSON。
 """
+
 class AITranslator:
     def __init__(self, config: Dict[str, Any]):
         self.provider = config.get("ai_provider", "openai").lower()
         self.api_key = config.get("ai_api_key")
         self.model = config.get("ai_model_name")
         self.base_url = config.get("ai_base_url")
-        # 这个prompt现在只用于单文本翻译，作为向后兼容
         self.embedding_model = config.get("ai_embedding_model")
         if not self.api_key:
             raise ValueError("AI Translator: API Key 未配置。")
@@ -217,10 +213,10 @@ class AITranslator:
                 logger.info(f"  ➜ 智谱AI 初始化成功")
             
             elif self.provider == 'gemini':
-                if not GEMINI_AVAILABLE: raise ImportError("Google Gemini SDK 未安装")
-                genai.configure(api_key=self.api_key)
-                self.client = genai.GenerativeModel(self.model)
-                logger.info(f"  ➜ Google Gemini 初始化成功")
+                if not GEMINI_AVAILABLE: raise ImportError("Google GenAI SDK (google-genai) 未安装")
+                # ★★★ 修改点 2: 使用新版 Client 初始化 ★★★
+                self.client = genai.Client(api_key=self.api_key)
+                logger.info(f"  ➜ Google Gemini (New SDK) 初始化成功")
 
             else:
                 raise ValueError(f"  ➜ 不支持的AI提供商: {self.provider}")
@@ -228,17 +224,12 @@ class AITranslator:
             logger.error(f"{self.provider.capitalize()} client 初始化失败: {e}")
             raise
 
-    # --- 单文本翻译 (保留，但内部可以调用批量方法以统一逻辑) ---
     def translate(self, text: str) -> Optional[str]:
         if not text or not text.strip():
             return text
-        
-        # 单文本翻译现在可以简单地调用批量翻译，代码更简洁
-        # 如果翻译失败，返回原文
         batch_result = self.batch_translate([text])
         return batch_result.get(text, text)
 
-    # --- ✨✨✨ 翻译调度 ✨✨✨ ---
     def batch_translate(self, 
                         texts: List[str], 
                         mode: str = 'fast',
@@ -250,18 +241,13 @@ class AITranslator:
         
         unique_texts = list(set(texts))
         
-        # 调度员开始看指令
         if mode == 'quality':
-            # 如果指令是“高质量”，就喊“顾问组”来干活
             return self._translate_quality_mode(unique_texts, title, year)
-        # ★★★ 新增调度逻辑 ★★★
         elif mode == 'transliterate':
-            # 如果指令是“强制音译”，就喊“音译组”来干活
             return self._translate_transliterate_mode(unique_texts)
         else:
-            # 其他所有情况（包括默认的'fast'），都喊“翻译组”来干活
             return self._translate_fast_mode(unique_texts)
-    # ★★★ “翻译快做”小组长 (现在负责分批和调度！) ★★★
+
     def _translate_fast_mode(self, texts: List[str]) -> Dict[str, str]:
         CHUNK_SIZE = 50
         REQUEST_INTERVAL = 1.5
@@ -270,18 +256,15 @@ class AITranslator:
         text_chunks = [texts[i:i + CHUNK_SIZE] for i in range(0, len(texts), CHUNK_SIZE)]
         total_chunks = len(text_chunks)
 
-        # ▼▼▼ 只在真正分块时才打印详细日志 ▼▼▼
         if total_chunks > 1:
             logger.info(f"  ➜ [翻译模式] 数据量较大，已自动分块。共 {len(texts)} 个词条，分为 {total_chunks} 个批次，每批最多 {CHUNK_SIZE} 个。")
         else:
             logger.info(f"  ➜ [翻译模式] 开始处理 {len(texts)} 个词条...")
 
-        # 3. 小组长逐个派发任务
         for i, chunk in enumerate(text_chunks):
             if total_chunks > 1:
                 logger.info(f"  ➜ [翻译模式] 正在处理批次 {i + 1}/{total_chunks}")
             
-            # 根据公司（provider）选择不同的员工干活
             result_chunk = {}
             if self.provider == 'openai':
                 result_chunk = self._fast_openai(chunk)
@@ -293,14 +276,12 @@ class AITranslator:
             if result_chunk:
                 all_results.update(result_chunk)
             
-            # 4. 安排休息时间（如果不是最后一批）
             if i < total_chunks - 1:
                 logger.debug(f"  ➜ 批次处理完毕，等待 {REQUEST_INTERVAL} 秒...")
                 time.sleep(REQUEST_INTERVAL)
         
         return all_results
     
-    # ★★★ “强制音译”小组长 ★★★
     def _translate_transliterate_mode(self, texts: List[str]) -> Dict[str, str]:
         CHUNK_SIZE = 50
         REQUEST_INTERVAL = 1.5
@@ -319,7 +300,6 @@ class AITranslator:
                 logger.info(f"  ➜ [音译模式] 正在处理批次 {i + 1}/{total_chunks}")
             
             result_chunk = {}
-            # 根据提供商选择不同的实现
             if self.provider == 'openai':
                 result_chunk = self._transliterate_openai(chunk)
             elif self.provider == 'zhipuai':
@@ -335,7 +315,6 @@ class AITranslator:
         
         return all_results
 
-    # ★★★ “顾问精做”小组长 (同样负责分批和调度！) ★★★
     def _translate_quality_mode(self, texts: List[str], title: Optional[str], year: Optional[int]) -> Dict[str, str]:
         CHUNK_SIZE = 30
         REQUEST_INTERVAL = 1.5
@@ -344,14 +323,11 @@ class AITranslator:
         text_chunks = [texts[i:i + CHUNK_SIZE] for i in range(0, len(texts), CHUNK_SIZE)]
         total_chunks = len(text_chunks)
 
-        # ▼▼▼ 只在真正分块时才打印详细日志 ▼▼▼
         if total_chunks > 1:
             logger.info(f"  ➜ [顾问模式] 数据量较大，已自动分块。共 {len(texts)} 个词条，分为 {total_chunks} 个批次，每批最多 {CHUNK_SIZE} 个。")
         else:
-            # 如果只有一个批次，日志就应该更简洁
             logger.info(f"  ➜ [顾问模式] 开始处理 {len(texts)} 个词条 (上下文: '{title}') ...")
 
-        # 3. 小组长逐个派发任务
         for i, chunk in enumerate(text_chunks):
             if total_chunks > 1:
                 logger.info(f"  ➜ [顾问模式] 正在处理批次 {i + 1}/{total_chunks}")
@@ -367,13 +343,12 @@ class AITranslator:
             if result_chunk:
                 all_results.update(result_chunk)
 
-            # 4. 安排休息时间
             if i < total_chunks - 1:
                 logger.debug(f"  ➜ 批次处理完毕，等待 {REQUEST_INTERVAL} 秒...")
                 time.sleep(REQUEST_INTERVAL)
         
         return all_results
-    # --- 底层员工：具体实现各种模式和提供商的组合 ---
+
     # --- OpenAI 员工 ---
     def _fast_openai(self, texts: List[str]) -> Dict[str, str]:
         if not self.client: return {}
@@ -391,7 +366,7 @@ class AITranslator:
                 timeout=300
             )
             response_content = chat_completion.choices[0].message.content
-            return _safe_json_loads(response_content) or {} # 如果抢救失败，返回一个空字典
+            return _safe_json_loads(response_content) or {}
         except Exception as e:
             logger.error(f"  ➜ [翻译模式-OpenAI] 翻译时发生错误: {e}", exc_info=True)
             return {}
@@ -413,7 +388,7 @@ class AITranslator:
                 timeout=300
             )
             response_content = chat_completion.choices[0].message.content
-            return _safe_json_loads(response_content) or {} # 如果抢救失败，返回一个空字典
+            return _safe_json_loads(response_content) or {}
         except Exception as e:
             logger.error(f"  ➜ [顾问模式-OpenAI] 翻译时发生错误: {e}", exc_info=True)
             return {}
@@ -434,7 +409,7 @@ class AITranslator:
                 response_format={"type": "json_object"}
             )
             response_content = response.choices[0].message.content
-            return _safe_json_loads(response_content) or {} # 如果抢救失败，返回一个空字典
+            return _safe_json_loads(response_content) or {}
         except Exception as e:
             logger.error(f"  ➜ [翻译模式-智谱AI] 翻译时发生错误: {e}", exc_info=True)
             return {}
@@ -455,40 +430,32 @@ class AITranslator:
                 response_format={"type": "json_object"}
             )
             response_content = response.choices[0].message.content
-            return _safe_json_loads(response_content) or {} # 如果抢救失败，返回一个空字典
+            return _safe_json_loads(response_content) or {}
         except Exception as e:
             logger.error(f"  ➜ [顾问模式-智谱AI] 翻译时发生错误: {e}", exc_info=True)
             return {}
 
-    # --- Gemini 员工 ---
+    # --- Gemini 员工 (新版 SDK) ---
     def _fast_gemini(self, texts: List[str]) -> Dict[str, str]:
         if not self.client: return {}
-        # Gemini的System Prompt需要通过GenerationConfig传递
         system_prompt = FAST_MODE_SYSTEM_PROMPT
         user_prompt = json.dumps(texts, ensure_ascii=False)
-        # 将 system prompt 和 user prompt 组合成一个列表传递
-        full_prompt = [system_prompt, user_prompt]
         
-        generation_config = genai.types.GenerationConfig(
+        # ★★★ 修改点 3: 使用新版 Config 和调用方式 ★★★
+        config = types.GenerateContentConfig(
             response_mime_type="application/json",
-            temperature=0.0
+            temperature=0.0,
+            system_instruction=system_prompt
         )
         try:
-            # 注意：新版SDK中，system_instruction在GenerativeModel初始化时设置更佳
-            response = self.client.generate_content(
-                full_prompt,
-                generation_config=generation_config,
-                request_options={'timeout': 300}
+            response = self.client.models.generate_content(
+                model=self.model,
+                contents=user_prompt,
+                config=config
             )
-            # Gemini Pro Vision等模型可能返回分块内容，但文本模型通常直接用 .text
-            # 另外，Gemini的JSON模式输出非常干净，通常不需要_safe_json_loads，但为了保险起见可以加上
             return _safe_json_loads(response.text) or {}
         except Exception as e:
             logger.error(f"  ➜ [翻译模式-Gemini] 翻译时发生错误: {e}", exc_info=True)
-            # 尝试从错误中提取可解析的部分
-            if hasattr(e, 'last_response') and e.last_response:
-                logger.info("  ➜ 尝试从Gemini的错误响应中恢复内容...")
-                return _safe_json_loads(e.last_response.text) or {}
             return {}
 
     def _quality_gemini(self, texts: List[str], title: Optional[str], year: Optional[int]) -> Dict[str, str]:
@@ -496,24 +463,22 @@ class AITranslator:
         system_prompt = QUALITY_MODE_SYSTEM_PROMPT
         user_payload = {"context": {"title": title, "year": year}, "terms": texts}
         user_prompt = json.dumps(user_payload, ensure_ascii=False)
-        full_prompt = [system_prompt, user_prompt]
         
-        generation_config = genai.types.GenerationConfig(
+        # ★★★ 修改点 4: 使用新版 Config 和调用方式 ★★★
+        config = types.GenerateContentConfig(
             response_mime_type="application/json",
-            temperature=0.0
+            temperature=0.0,
+            system_instruction=system_prompt
         )
         try:
-            response = self.client.generate_content(
-                full_prompt,
-                generation_config=generation_config,
-                request_options={'timeout': 300}
+            response = self.client.models.generate_content(
+                model=self.model,
+                contents=user_prompt,
+                config=config
             )
             return _safe_json_loads(response.text) or {}
         except Exception as e:
             logger.error(f"  ➜ [顾问模式-Gemini] 翻译时发生错误: {e}", exc_info=True)
-            if hasattr(e, 'last_response') and e.last_response:
-                logger.info("  ➜ 尝试从Gemini的错误响应中恢复内容...")
-                return _safe_json_loads(e.last_response.text) or {}
             return {}
         
     # ★★★ OpenAI 音译实现 ★★★
@@ -559,57 +524,43 @@ class AITranslator:
             logger.error(f"  ➜ [音译模式-智谱AI] 翻译时发生错误: {e}", exc_info=True)
             return {}
 
-    # ★★★ Gemini 音译实现 ★★★
+    # ★★★ Gemini 音译实现 (新版 SDK) ★★★
     def _transliterate_gemini(self, texts: List[str]) -> Dict[str, str]:
         if not self.client: return {}
         system_prompt = FORCE_TRANSLITERATE_PROMPT
         user_prompt = json.dumps(texts, ensure_ascii=False)
-        full_prompt = [system_prompt, user_prompt]
         
-        generation_config = genai.types.GenerationConfig(
+        # ★★★ 修改点 5: 使用新版 Config 和调用方式 ★★★
+        config = types.GenerateContentConfig(
             response_mime_type="application/json",
-            temperature=0.0
+            temperature=0.0,
+            system_instruction=system_prompt
         )
         try:
-            response = self.client.generate_content(
-                full_prompt,
-                generation_config=generation_config,
-                request_options={'timeout': 300}
+            response = self.client.models.generate_content(
+                model=self.model,
+                contents=user_prompt,
+                config=config
             )
             return _safe_json_loads(response.text) or {}
         except Exception as e:
             logger.error(f"  ➜ [音译模式-Gemini] 翻译时发生错误: {e}", exc_info=True)
-            if hasattr(e, 'last_response') and e.last_response:
-                return _safe_json_loads(e.last_response.text) or {}
             return {}
         
-    # ==================================================================
-    # ✨✨✨ 新增功能区：向量化与智能推荐 (The Hunter & Vectorizer) ✨✨✨
-    # ==================================================================
-
     def generate_embedding(self, text: str) -> Optional[List[float]]:
         """
         【核心功能】将文本转化为向量 (Embedding)。
-        用于存入数据库的 overview_embedding 字段，配合 numpy 做相似度搜索。
         """
         if not text or not text.strip():
             return None
             
         try:
-            # 1. OpenAI Embedding (兼容所有支持 OpenAI 格式的接口)
             if self.provider == 'openai':
-                # ★★★ 优先级 1: 使用配置文件中指定的模型 ★★★
                 model_to_use = self.embedding_model
-                
-                # ★★★ 优先级 2: 自动检测硅基流动 (向下兼容) ★★★
                 if not model_to_use and self.base_url and "siliconflow" in self.base_url:
                     model_to_use = "BAAI/bge-m3"
-                
-                # ★★★ 优先级 3: 默认使用 OpenAI 官方模型 ★★★
                 if not model_to_use:
                     model_to_use = "text-embedding-3-small"
-
-                # logger.debug(f"正在使用模型 {model_to_use} 生成向量...") # 调试用
 
                 response = self.client.embeddings.create(
                     input=text,
@@ -617,9 +568,7 @@ class AITranslator:
                 )
                 return response.data[0].embedding
 
-            # 2. 智谱AI Embedding
             elif self.provider == 'zhipuai':
-                # 智谱通常只有一个 embedding-2，但也允许用户覆盖
                 model_to_use = self.embedding_model if self.embedding_model else "embedding-2"
                 response = self.client.embeddings.create(
                     model=model_to_use,
@@ -627,19 +576,19 @@ class AITranslator:
                 )
                 return response.data[0].embedding
 
-            # 3. Google Gemini Embedding
             elif self.provider == 'gemini':
-                model_to_use = self.embedding_model if self.embedding_model else "models/text-embedding-004"
-                result = genai.embed_content(
+                model_to_use = self.embedding_model if self.embedding_model else "text-embedding-004"
+                # ★★★ 修改点 6: 使用新版 embed_content ★★★
+                # 注意：新版 SDK 中 embed_content 是 models 模块下的方法
+                response = self.client.models.embed_content(
                     model=model_to_use,
-                    content=text,
-                    task_type="retrieval_document",
-                    title="Movie Overview"
+                    contents=text,
+                    config=types.EmbedContentConfig(title="Movie Overview")
                 )
-                return result['embedding']
+                # 新版返回对象包含 embeddings 列表，每个元素有 values 属性
+                return response.embeddings[0].values
 
         except Exception as e:
-            # 这里的日志非常重要，能告诉你到底哪个模型报错了
             logger.error(f"  ➜ [Embedding] 生成向量失败 ({self.provider}): {e}")
             return None
         
@@ -652,7 +601,6 @@ class AITranslator:
         if not user_history:
             return []
             
-        # 构造类型限制的提示词
         type_constraint_prompt = ""
         if allowed_types:
             if len(allowed_types) == 1:
@@ -663,7 +611,6 @@ class AITranslator:
             else:
                 type_constraint_prompt = "5. **类型限制**：请推荐电影或电视剧。"
 
-        # ★★★ 修改 2: 将类型限制加入 System Prompt ★★★
         system_prompt = f"""
 你是一位精通中外影视的资深推荐专家。
 请根据用户的观影历史，推荐高质量的影视作品。
@@ -694,7 +641,6 @@ class AITranslator:
 ]
 """
         
-        # User Content 保持简洁
         history_str = json.dumps(user_history, ensure_ascii=False)
         user_content = f"用户的高分观影历史: {history_str}\n"
         
@@ -708,7 +654,6 @@ class AITranslator:
         logger.info(f"  ➜ [智能推荐] 正在基于 {len(user_history)} 部历史分析用户口味...")
 
         try:
-            # 调用 AI
             response_text = ""
             if self.provider == 'openai':
                 resp = self.client.chat.completions.create(
@@ -718,11 +663,10 @@ class AITranslator:
                         {"role": "user", "content": user_content}
                     ],
                     response_format={"type": "json_object"}, 
-                    temperature=0.6 # 稍微降低温度，让它更听话，减少幻觉
+                    temperature=0.6 
                 )
                 response_text = resp.choices[0].message.content
 
-            # ... (其他 provider 保持不变) ...
             elif self.provider == 'zhipuai':
                 resp = self.client.chat.completions.create(
                     model=self.model,
@@ -736,15 +680,19 @@ class AITranslator:
                 response_text = resp.choices[0].message.content
             
             elif self.provider == 'gemini':
-                full_prompt = [system_prompt, user_content]
-                config = genai.types.GenerationConfig(
+                # ★★★ 修改点 7: 使用新版 Config 和调用方式 ★★★
+                config = types.GenerateContentConfig(
                     response_mime_type="application/json",
-                    temperature=0.5
+                    temperature=0.5,
+                    system_instruction=system_prompt
                 )
-                resp = self.client.generate_content(full_prompt, generation_config=config)
+                resp = self.client.models.generate_content(
+                    model=self.model,
+                    contents=user_content,
+                    config=config
+                )
                 response_text = resp.text
 
-            # --- 解析结果 ---
             result = _safe_json_loads(response_text)
             
             if isinstance(result, dict):
@@ -764,19 +712,14 @@ class AITranslator:
     def filter_candidates(self, candidates: List[Dict[str, Any]], user_instruction: str) -> List[str]:
         """
         【核心功能】AI 审阅：根据用户指令过滤候选列表。
-        :param candidates: 候选列表，格式 [{'id': '...', 'title': '...', ...}, ...]
-        :param user_instruction: 用户的自然语言指令
-        :return: 通过筛选的 ID 列表
         """
         if not candidates or not user_instruction:
-            return [item['id'] for item in candidates] # 没指令就不过滤，原样返回
+            return [item['id'] for item in candidates] 
 
-        # 1. 数据清洗：只保留 AI 判断需要的核心字段，减少 Token 消耗
-        # 很多榜单抓取回来带了一堆杂七杂八的字段，AI 只需要标题和年份
         lean_candidates = []
         for item in candidates:
             lean_candidates.append({
-                "id": str(item.get('id')), # 确保 ID 是字符串
+                "id": str(item.get('id')), 
                 "title": item.get('title'),
                 "original_title": item.get('original_title', ''),
                 "year": item.get('year'),
@@ -784,7 +727,6 @@ class AITranslator:
                 "type": item.get('type')
             })
 
-        # 2. 构造 Payload
         payload = {
             "instruction": user_instruction,
             "items": lean_candidates
@@ -795,18 +737,8 @@ class AITranslator:
 
         try:
             response_text = ""
-            
             today_str = datetime.now().strftime('%Y-%m-%d')
-        
-            # 动态修改 System Prompt，加上时间上下文
             dynamic_system_prompt = FILTER_SYSTEM_PROMPT + f"\n\n**Context:**\nToday's Date is: {today_str}.\nIf the user asks to filter 'unreleased' or 'upcoming' items, compare their 'release_date' or 'year' with Today's Date."
-
-            # 2. 构造 Payload
-            payload = {
-                "instruction": user_instruction,
-                "items": lean_candidates
-            }
-            user_prompt = json.dumps(payload, ensure_ascii=False)
 
             if self.provider == 'openai':
                 resp = self.client.chat.completions.create(
@@ -816,7 +748,7 @@ class AITranslator:
                         {"role": "user", "content": user_prompt}
                     ],
                     response_format={"type": "json_object"},
-                    temperature=0.1 # 过滤任务要严谨，温度调低
+                    temperature=0.1 
                 )
                 response_text = resp.choices[0].message.content
 
@@ -833,29 +765,28 @@ class AITranslator:
                 response_text = resp.choices[0].message.content
 
             elif self.provider == 'gemini':
-                full_prompt = [dynamic_system_prompt, user_prompt]
-                config = genai.types.GenerationConfig(
+                # ★★★ 修改点 8: 使用新版 Config 和调用方式 ★★★
+                config = types.GenerateContentConfig(
                     response_mime_type="application/json",
-                    temperature=0.1
+                    temperature=0.1,
+                    system_instruction=dynamic_system_prompt
                 )
-                resp = self.client.generate_content(full_prompt, generation_config=config)
+                resp = self.client.models.generate_content(
+                    model=self.model,
+                    contents=user_prompt,
+                    config=config
+                )
                 response_text = resp.text
 
-            # --- 解析结果 ---
             result = _safe_json_loads(response_text)
             
             if result and 'filtered_ids' in result:
                 passed_ids = result['filtered_ids']
-                # 确保返回的都是字符串 ID
                 return [str(pid) for pid in passed_ids]
             
-            # 如果 AI 返回格式不对，为了安全起见，记录错误并返回空列表（或者原列表，看你策略）
-            # 这里我建议返回空，或者记录 error
             logger.warning(f"  ➜ [智能审阅] AI 返回格式异常: {response_text[:100]}...")
             return []
 
         except Exception as e:
             logger.error(f"  ➜ [智能审阅] 筛选失败: {e}", exc_info=True)
-            # 出错时，为了不阻塞流程，可以选择返回原列表，或者返回空
-            # 这里选择返回原列表（假设 AI 挂了就不过滤了）
             return [str(item['id']) for item in candidates]
