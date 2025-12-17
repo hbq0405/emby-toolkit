@@ -130,6 +130,20 @@ def delete_native_collection_by_emby_id(emby_collection_id: str):
         logger.error(f"删除原生合集记录失败: {e}", exc_info=True)
         return False
 
+def get_native_collection_by_tmdb_id(tmdb_collection_id: str) -> Optional[Dict[str, Any]]:
+    """
+    根据 TMDb 合集 ID 查找本地数据库中的原生合集记录。
+    """
+    try:
+        with get_db_connection() as conn:
+            cursor = conn.cursor()
+            cursor.execute(
+                "SELECT * FROM collections_info WHERE tmdb_collection_id = %s",
+                (str(tmdb_collection_id),)
+            )
+            return cursor.fetchone()
+    except Exception as e:
+        logger.error(f"查询原生合集 (TMDb ID: {tmdb_collection_id}) 失败: {e}")
 # ======================================================================
 # 模块: 自定义合集数据访问 (custom_collections)
 # ======================================================================
