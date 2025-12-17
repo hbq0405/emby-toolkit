@@ -1,4 +1,4 @@
-# routes/collections.py
+# routes/tmdb_collections.py
 
 from flask import Blueprint, request, jsonify
 import logging

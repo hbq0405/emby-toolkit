@@ -1,5 +1,5 @@
-# tasks/collections.py
-# 原生合集与自建合集任务模块
+# tasks/custom_collections.py
+# 自建合集任务模块
 
 import json
 import logging

@@ -1,4 +1,4 @@
-# handler/collections.py
+# handler/tmdb_collections.py
 
 import logging
 import json

@@ -1,4 +1,4 @@
-# database/collection_db.py
+# database/custom_collection_db.py
 import psycopg2
 import logging
 import json
