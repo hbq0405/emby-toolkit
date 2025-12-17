@@ -339,14 +339,14 @@ def check_and_subscribe_collection_from_movie(movie_tmdb_id: str, movie_name: st
     if not movie_tmdb_id: return
 
     # ======================================================================
-    # ★★★ 极速优化：先查本地数据库 ★★★
+    # ★★★ 先查本地数据库 ★★★
     # ======================================================================
     if collection_db.is_tmdb_id_in_any_native_collection(movie_tmdb_id):
-        logger.info(f"  ⚡ [自动补全] 电影《{movie_name}》所属的合集已在本地数据库中，跳过所有 API 查询。")
+        logger.info(f"  ⚡ 电影《{movie_name}》所属的 TMDb 合集已在本地数据库中，跳过所有 API 查询。")
         return
     # ======================================================================
 
-    logger.info(f"--- [自动补全] 正在检查新入库电影《{movie_name}》是否属于某个合集 ---")
+    logger.info(f"  ➜ 正在检查新入库电影《{movie_name}》是否属于某个 TMDb 合集 ---")
     
     config = config_manager.APP_CONFIG
     tmdb_api_key = config.get("tmdb_api_key")
@@ -359,17 +359,17 @@ def check_and_subscribe_collection_from_movie(movie_tmdb_id: str, movie_name: st
 
     collection_info = movie_details.get('belongs_to_collection')
     if not collection_info:
-        logger.info(f"  ➜ 电影《{movie_name}》不属于任何 TMDb 合集，无需补全。")
+        logger.info(f"  ➜ 电影《{movie_name}》不属于任何 TMDb 合集，无需处理。")
         return
 
     tmdb_coll_id = str(collection_info.get('id'))
     tmdb_coll_name = collection_info.get('name')
-    logger.info(f"  ➜ 发现关联: 《{movie_name}》 属于合集 [{tmdb_coll_name}] (ID: {tmdb_coll_id})")
+    logger.info(f"  ➜ 发现关联: 《{movie_name}》 属于 TMDb 合集 [{tmdb_coll_name}] (ID: {tmdb_coll_id})")
 
     # 2. 获取该合集的完整列表 (Parts) - 这一步不能省，因为要计算缺失
     coll_details = tmdb.get_collection_details(tmdb_coll_id, tmdb_api_key)
     if not coll_details or 'parts' not in coll_details:
-        logger.error(f"  🚫 无法获取合集 [{tmdb_coll_name}] 的详细列表。")
+        logger.error(f"  🚫 无法获取 TMDb 合集 [{tmdb_coll_name}] 的详细列表。")
         return
 
     # 3. 格式化数据
@@ -398,7 +398,7 @@ def check_and_subscribe_collection_from_movie(movie_tmdb_id: str, movie_name: st
     
     if local_collection:
         # --- 分支 A: 本地已有该合集 ---
-        logger.info(f"  ✅ [本地命中] 合集 '{tmdb_coll_name}' 已在数据库中，跳过 Emby 反查，仅更新 TMDb 列表。")
+        logger.info(f"  ✅  TMDb 合集 '{tmdb_coll_name}' 已在数据库中，跳过 Emby 反查，仅更新 TMDb 列表。")
         
         # 虽然跳过了 Emby 查找，但我们还是更新一下数据库里的 all_tmdb_ids
         # 万一 TMDb 刚刚给这个合集加了新续集呢？
@@ -425,7 +425,7 @@ def check_and_subscribe_collection_from_movie(movie_tmdb_id: str, movie_name: st
             for p_coll in parent_collections:
                 p_provider_ids = p_coll.get("ProviderIds", {})
                 if str(p_provider_ids.get("Tmdb", "")) == tmdb_coll_id:
-                    logger.info(f"  ✅ [实时发现] Emby 已生成合集 '{p_coll.get('Name')}' (ID: {p_coll.get('Id')})，正在写入数据库...")
+                    logger.info(f"  ✅ Emby 已生成 TMDb 合集 '{p_coll.get('Name')}' (ID: {p_coll.get('Id')})，正在写入数据库...")
                     
                     collection_db.upsert_native_collection({
                         'emby_collection_id': p_coll.get('Id'),
@@ -438,7 +438,7 @@ def check_and_subscribe_collection_from_movie(movie_tmdb_id: str, movie_name: st
                     break
             
             if not found_in_emby:
-                logger.info(f"  ➜ Emby 尚未生成合集 '{tmdb_coll_name}'，本次仅执行订阅检查。")
+                logger.info(f"  ➜ Emby 尚未生成 TMDb 合集 '{tmdb_coll_name}'，本次仅执行订阅检查。")
 
         except Exception as e:
             logger.warning(f"  ⚠️ 尝试反查 Emby 合集失败: {e}")
@@ -492,7 +492,7 @@ def _subscribe_missing_for_single_collection(collection_name: str, all_parts: Li
     source = {'type': 'native_collection', 'name': collection_name}
     
     if released_missing:
-        logger.info(f"  ➜ [{collection_name}] 自动补全: {len(released_missing)} 部已上映电影设为 WANTED...")
+        logger.info(f"  ➜ [{collection_name}] 自动补全: {len(released_missing)} 部已上映电影设为 待订阅...")
         request_db.set_media_status_wanted(
             tmdb_ids=[m['tmdb_id'] for m in released_missing],
             item_type='Movie',
@@ -501,7 +501,7 @@ def _subscribe_missing_for_single_collection(collection_name: str, all_parts: Li
         )
         
     if unreleased_missing:
-        logger.info(f"  ➜ [{collection_name}] 自动补全: {len(unreleased_missing)} 部未上映电影设为 PENDING_RELEASE...")
+        logger.info(f"  ➜ [{collection_name}] 自动补全: {len(unreleased_missing)} 部未上映电影设为 未上映...")
         request_db.set_media_status_pending_release(
             tmdb_ids=[m['tmdb_id'] for m in unreleased_missing],
             item_type='Movie',

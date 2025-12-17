@@ -225,9 +225,8 @@ def _handle_full_processing_flow(processor: 'MediaProcessor', item_id: str, forc
         logger.error(f"  ➜ 在新入库后执行精准封面生成或权限补票时发生错误: {e}", exc_info=True)
 
     # ======================================================================
-    # ★★★ 原生合集自动补全 ★★★
+    # ★★★  TMDb 合集自动补全 ★★★
     # ======================================================================
-    # 此时 item_metadata 已经准备好了，可以直接用
     try:
         # 1. 检查类型 (只处理电影)
         # 注意：item_metadata 是在前面通过 media_db.get_media_details_by_tmdb_ids 获取或构建的
@@ -241,7 +240,7 @@ def _handle_full_processing_flow(processor: 'MediaProcessor', item_id: str, forc
             is_auto_complete_enabled = config.get('auto_complete_enabled', False)
 
             if is_auto_complete_enabled:
-                logger.info(f"  ➜ [自动补全] 电影 '{current_name}' 处理完毕，正在检查所属合集...")
+                logger.info(f"  ➜ 正在检查电影 '{current_name}' 所属 TMDb 合集...")
                 # 直接调用 handler，不需要再起 task，因为当前函数本身就是跑在后台 task 里的
                 collections_handler.check_and_subscribe_collection_from_movie(
                     movie_tmdb_id=str(current_tmdb_id),
@@ -249,7 +248,7 @@ def _handle_full_processing_flow(processor: 'MediaProcessor', item_id: str, forc
                     movie_emby_id=item_id
                 )
     except Exception as e:
-        logger.warning(f"  ➜ [自动补全] 检查所属合集时发生错误: {e}")
+        logger.warning(f"  ➜ 检查所属 TMDb 合集时发生错误: {e}")
 
     # ======================================================================
     # ★★★ 入库完成后，主动刷新向量推荐引擎缓存 ★★★

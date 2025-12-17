@@ -537,9 +537,9 @@ const handleAutoCompleteChange = async (value) => {
     });
     autoCompleteEnabled.value = value;
     if (value) {
-      message.success("已开启自动补全");
+      message.success("已开启电影入库实时检查所属合集");
     } else {
-      message.info("已关闭自动补全");
+      message.info("已关闭电影入库实时检查所属合集");
     }
   } catch (e) {
     message.error("保存设置失败");
