@@ -159,44 +159,44 @@ class MediaProcessor:
     # --- 实时获取项目的祖先地图和库 GUID ---
     def _get_realtime_ancestor_context(self, item_id: str, source_lib_id: str) -> Tuple[Dict[str, str], Optional[str]]:
         """
-        为实时入库的项目构建爬树所需的上下文。
+        实时获取项目的祖先地图和库 GUID。
         """
         id_to_parent_map = {}
         lib_guid = None
 
         try:
-            # 1. 获取库 GUID (带简单缓存)
+            # 1. 获取库 GUID (复用 handler.emby 现有的逻辑)
             if not hasattr(self, '_lib_guid_cache'):
                 self._lib_guid_cache = TTLCache(maxsize=100, ttl=3600)
             
-            if source_lib_id in self._lib_guid_cache:
+            if source_lib_id and source_lib_id in self._lib_guid_cache:
                 lib_guid = self._lib_guid_cache[source_lib_id]
             else:
-                import requests
-                resp = requests.get(
-                    f"{self.emby_url}/Library/VirtualFolders", 
-                    params={"api_key": self.emby_api_key}, 
-                    timeout=10
-                )
-                if resp.status_code == 200:
-                    for lib in resp.json():
-                        if str(lib.get('ItemId')) == source_lib_id:
-                            lib_guid = str(lib.get('Guid'))
-                            self._lib_guid_cache[source_lib_id] = lib_guid
-                            break
+                # 调用 emby.get_all_libraries_with_paths 获取实时库信息
+                libs_data = emby.get_all_libraries_with_paths(self.emby_url, self.emby_api_key)
+                for lib in libs_data:
+                    info = lib.get('info', {})
+                    if str(info.get('Id')) == source_lib_id:
+                        lib_guid = str(info.get('Guid'))
+                        self._lib_guid_cache[source_lib_id] = lib_guid
+                        break
 
-            # 2. 爬树：获取该项目的所有祖先
-            # 使用 Emby 的 Ancestors 接口一次性拿回整条链，效率最高
-            ancestors_url = f"{self.emby_url}/Users/{self.emby_user_id}/Items/{item_id}/Ancestors"
-            a_resp = requests.get(ancestors_url, params={"api_key": self.emby_api_key}, timeout=10)
-            if a_resp.status_code == 200:
-                ancestors = a_resp.json()
-                # 建立链条：项目 -> 直接父级
+            # 2. 获取祖先链
+            ancestors = emby.get_item_ancestors(
+                item_id=item_id,
+                base_url=self.emby_url,
+                api_key=self.emby_api_key,
+                user_id=self.emby_user_id
+            )
+
+            if ancestors:
+                # 建立父子映射
                 curr_child_id = item_id
                 for ancestor in ancestors:
                     anc_id = str(ancestor.get('Id'))
                     id_to_parent_map[curr_child_id] = anc_id
                     curr_child_id = anc_id
+                logger.debug(f"  ➜ [权限调试] 成功通过 handler 获取了 {len(id_to_parent_map)} 层关系。")
                     
         except Exception as e:
             logger.error(f"  ➜ 实时构建爬树地图失败: {e}")

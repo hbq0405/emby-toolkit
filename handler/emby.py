@@ -2513,3 +2513,26 @@ def get_all_folder_mappings(base_url: str, api_key: str) -> dict:
     except Exception: pass
         
     return folder_map
+
+def get_item_ancestors(item_id: str, base_url: str, api_key: str, user_id: str) -> List[Dict[str, Any]]:
+    """
+    【新增】获取指定项目的所有祖先节点。
+    """
+    if not all([item_id, base_url, api_key, user_id]):
+        return []
+
+    # 自动处理路径规范化
+    url = f"{base_url.rstrip('/')}/emby/Items/{item_id}/Ancestors"
+    params = {
+        "api_key": api_key,
+        "UserId": user_id
+    }
+    
+    try:
+        api_timeout = config_manager.APP_CONFIG.get(constants.CONFIG_OPTION_EMBY_API_TIMEOUT, 20)
+        response = requests.get(url, params=params, timeout=api_timeout)
+        response.raise_for_status()
+        return response.json()
+    except Exception as e:
+        logger.error(f"获取项目 {item_id} 的祖先链失败: {e}")
+        return []
