@@ -443,22 +443,32 @@ def handle_get_latest_items(user_id, params):
             if not collection_info: return Response(json.dumps([]), mimetype='application/json')
 
             definition = collection_info.get('definition_json') or {}
+            if isinstance(definition, str): definition = json.loads(definition)
+            
             if not definition.get('show_in_latest', True):
                 return Response(json.dumps([]), mimetype='application/json')
 
-            # 复用 query_virtual_library_items，强制按时间排序
-            items, _ = queries_db.query_virtual_library_items(
-                rules=definition.get('rules', []),
-                logic=definition.get('logic', 'AND'),
-                user_id=user_id,
-                limit=limit,
-                offset=0,
-                sort_by='DateCreated',
-                sort_order='Descending',
-                item_types=definition.get('item_type', ['Movie']),
-                target_library_ids=definition.get('target_library_ids', [])
+            # 确定排序：如果是纯剧集库，默认使用 DateLastContentAdded
+            item_types = definition.get('item_type', ['Movie'])
+            is_series_only = isinstance(item_types, list) and len(item_types) == 1 and item_types[0] == 'Series'
+            sort_by = 'DateLastContentAdded,DateCreated' if is_series_only else 'DateCreated'
+
+            # SQL 过滤权限和规则
+            items, total_count = queries_db.query_virtual_library_items(
+                rules=definition.get('rules', []), logic=definition.get('logic', 'AND'),
+                user_id=user_id, limit=500, offset=0, # 捞个池子
+                sort_by='DateCreated', sort_order='Descending',
+                item_types=item_types, target_library_ids=definition.get('target_library_ids', [])
             )
-            latest_ids = [i['Id'] for i in items]
+            
+            if not items: return Response(json.dumps([]), mimetype='application/json')
+            final_emby_ids = [i['Id'] for i in items]
+
+            # 统一调用代理排序（处理剧集更新时间）
+            sorted_data = _fetch_sorted_items_via_emby_proxy(
+                user_id, final_emby_ids, sort_by, 'Descending', limit, 0, fields, len(final_emby_ids)
+            )
+            return Response(json.dumps(sorted_data.get("Items", [])), mimetype='application/json')
 
         # 场景二：全局最新 (所有可见合集的聚合)
         elif not virtual_library_id:
