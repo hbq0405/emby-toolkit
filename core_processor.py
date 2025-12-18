@@ -170,7 +170,7 @@ class MediaProcessor:
                 item_id=item_id,
                 base_url=self.emby_url,
                 api_key=self.emby_api_key,
-                user_id=self.self.emby_user_id # 修正：确保传入正确的 user_id
+                user_id=self.emby_user_id 
             )
 
             if ancestors:
