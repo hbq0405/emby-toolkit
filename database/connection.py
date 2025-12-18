@@ -579,11 +579,6 @@ def init_db():
                     # 11. 【跟播系统】加速“正在连载”剧集的筛选
                     cursor.execute("CREATE INDEX IF NOT EXISTS idx_mm_watchlist_airing ON media_metadata (watchlist_is_airing) WHERE item_type = 'Series';")
 
-                    # 12. 【人物映射表优化】加速演员姓名模糊搜索 (用于 actors 筛选)
-                    # 如果你经常搜人名，这个索引对 ILIKE 很有帮助
-                    cursor.execute("CREATE EXTENSION IF NOT EXISTS pg_trgm;") # 启用三元组扩展
-                    cursor.execute("CREATE INDEX IF NOT EXISTS idx_pim_name_trgm ON person_identity_map USING GIST (name gist_trgm_ops);")
-
                 except Exception as e_index:
                     logger.error(f"  ➜ 创建索引时出错: {e_index}", exc_info=True)
                 logger.trace("  ➜ 数据库升级检查完成。")
