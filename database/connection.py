@@ -554,6 +554,36 @@ def init_db():
                     # 加速 resubscribe_index 表的查询
                     cursor.execute("CREATE INDEX IF NOT EXISTS idx_ri_tmdb_type ON resubscribe_index (tmdb_id, item_type);")
 
+                    # 7. 【权限系统核心】加速 ancestor_ids 和 source_library_id 的检索 (GIN 索引)
+                    # 这是解决“灰块”和“权限拦截”性能的关键
+                    cursor.execute("CREATE INDEX IF NOT EXISTS idx_mm_asset_details_gin ON media_metadata USING GIN(asset_details_json);")
+
+                    # 8. 【JSONB 数组筛选】加速 类型、标签、国家、制片厂、关键词的查询
+                    # 使用 GIN 索引配合 jsonb_path_ops，查询速度比普通 GIN 更快
+                    cursor.execute("CREATE INDEX IF NOT EXISTS idx_mm_genres_gin ON media_metadata USING GIN(genres_json jsonb_path_ops);")
+                    cursor.execute("CREATE INDEX IF NOT EXISTS idx_mm_tags_gin ON media_metadata USING GIN(tags_json jsonb_path_ops);")
+                    cursor.execute("CREATE INDEX IF NOT EXISTS idx_mm_countries_gin ON media_metadata USING GIN(countries_json jsonb_path_ops);")
+                    cursor.execute("CREATE INDEX IF NOT EXISTS idx_mm_studios_gin ON media_metadata USING GIN(studios_json jsonb_path_ops);")
+                    cursor.execute("CREATE INDEX IF NOT EXISTS idx_mm_keywords_gin ON media_metadata USING GIN(keywords_json jsonb_path_ops);")
+
+                    # 9. 【复杂对象筛选】加速 导演 和 演员 的 ID 匹配 (@> 运算符)
+                    cursor.execute("CREATE INDEX IF NOT EXISTS idx_mm_directors_gin ON media_metadata USING GIN(directors_json jsonb_path_ops);")
+                    cursor.execute("CREATE INDEX IF NOT EXISTS idx_mm_actors_gin ON media_metadata USING GIN(actors_json jsonb_path_ops);")
+
+                    # 10. 【排序优化】加速海报墙的各种常用排序方式
+                    # 加上 DESC 优化，因为大部分海报墙都是“从新到旧”
+                    cursor.execute("CREATE INDEX IF NOT EXISTS idx_mm_date_added_desc ON media_metadata (date_added DESC);")
+                    cursor.execute("CREATE INDEX IF NOT EXISTS idx_mm_rating_desc ON media_metadata (rating DESC);")
+                    cursor.execute("CREATE INDEX IF NOT EXISTS idx_mm_release_date_desc ON media_metadata (release_date DESC);")
+
+                    # 11. 【跟播系统】加速“正在连载”剧集的筛选
+                    cursor.execute("CREATE INDEX IF NOT EXISTS idx_mm_watchlist_airing ON media_metadata (watchlist_is_airing) WHERE item_type = 'Series';")
+
+                    # 12. 【人物映射表优化】加速演员姓名模糊搜索 (用于 actors 筛选)
+                    # 如果你经常搜人名，这个索引对 ILIKE 很有帮助
+                    cursor.execute("CREATE EXTENSION IF NOT EXISTS pg_trgm;") # 启用三元组扩展
+                    cursor.execute("CREATE INDEX IF NOT EXISTS idx_pim_name_trgm ON person_identity_map USING GIST (name gist_trgm_ops);")
+
                 except Exception as e_index:
                     logger.error(f"  ➜ 创建索引时出错: {e_index}", exc_info=True)
                 logger.trace("  ➜ 数据库升级检查完成。")
