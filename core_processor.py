@@ -157,7 +157,11 @@ class MediaProcessor:
         logger.trace("核心处理器初始化完成。")
 
     # --- 实时获取项目的祖先地图和库 GUID ---
-    id_to_parent_map = {}
+    def _get_realtime_ancestor_context(self, item_id: str, source_lib_id: str) -> Tuple[Dict[str, str], Optional[str]]:
+        """
+        实时获取项目的祖先地图和库 GUID。
+        """
+        id_to_parent_map = {}
         lib_guid = None
 
         try:
