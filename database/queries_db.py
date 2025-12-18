@@ -370,6 +370,13 @@ def query_virtual_library_items(
                 clause = "m.keywords_json ? %s"
                 params.append(value)
 
+        # --- 14. 是否跟播中 (对应数据库 watchlist_is_airing) ---
+        elif field == 'is_in_progress':
+            if op == 'is':
+                # 直接匹配布尔值
+                clause = "m.watchlist_is_airing = %s"
+                params.append(value)
+
         if clause:
             rule_clauses.append(clause)
 
@@ -385,7 +392,8 @@ def query_virtual_library_items(
     # 8. 排序映射
     sort_map = {
         'DateCreated': 'm.date_added',
-        'DatePlayed': 'm.date_added', # 暂无播放时间字段，回退到入库时间
+        'DateLastContentAdded': 'm.last_synced_at',
+        'DatePlayed': 'm.date_added',
         'SortName': 'm.title',
         'ProductionYear': 'm.release_year',
         'CommunityRating': 'm.rating',

@@ -336,9 +336,25 @@ def handle_get_mimicked_library_items(user_id, mimicked_id, params):
         definition = collection_info.get('definition_json') or {}
         collection_type = collection_info.get('type')
 
-        # 统一获取分页和排序参数
-        limit = int(params.get('Limit', 50))
+        # 1. 获取 Emby 客户端请求的分页参数
+        emby_limit = int(params.get('Limit', 50))
         offset = int(params.get('StartIndex', 0))
+        
+        # 2. ★★★ 核心修复：获取合集定义中的硬性数量限制 ★★★
+        defined_limit = definition.get('limit')
+        
+        # 3. 计算实际应该传给 SQL 的 limit
+        if defined_limit is not None:
+            defined_limit = int(defined_limit)
+            # 如果起始偏移量已经超过了定义的上限，直接返回空
+            if offset >= defined_limit:
+                return Response(json.dumps({"Items": [], "TotalRecordCount": defined_limit}), mimetype='application/json')
+            
+            # 实际查询数量不能超过 (定义上限 - 当前偏移量)
+            # 比如定义 20 个，Emby 请求从第 0 个开始要 50 个，那我们只给 20 个
+            actual_query_limit = min(emby_limit, defined_limit - offset)
+        else:
+            actual_query_limit = emby_limit
         sort_by = params.get('SortBy', 'DateCreated')
         sort_order = params.get('SortOrder', 'Descending')
         
@@ -378,7 +394,7 @@ def handle_get_mimicked_library_items(user_id, mimicked_id, params):
             rules=rules,
             logic=logic,
             user_id=user_id,
-            limit=limit,
+            limit=actual_query_limit,
             offset=offset,
             sort_by=sort_by,
             sort_order=sort_order,
@@ -387,8 +403,14 @@ def handle_get_mimicked_library_items(user_id, mimicked_id, params):
             tmdb_ids=tmdb_ids_filter # ★★★ 传入 ID 范围
         )
 
+        if defined_limit is not None:
+            # 总数应该是 (数据库实际总数) 和 (定义上限) 的最小值
+            reported_total_count = min(total_count, defined_limit)
+        else:
+            reported_total_count = total_count
+
         if not items:
-            return Response(json.dumps({"Items": [], "TotalRecordCount": 0}), mimetype='application/json')
+            return Response(json.dumps({"Items": [], "TotalRecordCount": reported_total_count}), mimetype='application/json')
 
         # 拿着 Emby ID 去换取详情 (保持原有逻辑)
         final_emby_ids = [i['Id'] for i in items]
