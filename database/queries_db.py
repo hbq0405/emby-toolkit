@@ -32,7 +32,8 @@ def query_virtual_library_items(
     sort_by: str = 'DateCreated',
     sort_order: str = 'Descending',
     item_types: List[str] = None,
-    target_library_ids: List[str] = None  
+    target_library_ids: List[str] = None,
+    tmdb_ids: List[str] = None  
 ) -> Tuple[List[Dict[str, Any]], int]:
     """
     【核心函数】根据筛选规则 + 用户实时权限，查询媒体项。
@@ -73,7 +74,12 @@ def query_virtual_library_items(
         where_clauses.append("m.item_type = ANY(%s)")
         params.append(item_types)
 
-    # 4. 媒体库过滤
+    # 4. 榜单类过滤
+    if tmdb_ids:
+        where_clauses.append("m.tmdb_id = ANY(%s)")
+        params.append(tmdb_ids)
+
+    # 5. 媒体库过滤
     if target_library_ids:
         # 建议使用更严谨的 EXISTS 语法，防止 asset_details_json 为空时报错
         lib_filter_sql = """

@@ -336,122 +336,75 @@ def handle_get_mimicked_library_items(user_id, mimicked_id, params):
         definition = collection_info.get('definition_json') or {}
         collection_type = collection_info.get('type')
 
-        # 获取分页和排序参数
+        # 统一获取分页和排序参数
         limit = int(params.get('Limit', 50))
         offset = int(params.get('StartIndex', 0))
+        sort_by = params.get('SortBy', 'DateCreated')
+        sort_order = params.get('SortOrder', 'Descending')
         
-        # 确定排序方式
-        defined_sort_by = definition.get('default_sort_by')
-        if defined_sort_by and defined_sort_by != 'none':
-            sort_by = defined_sort_by
-            sort_order = definition.get('default_sort_order', 'Ascending')
-        else:
-            sort_by = params.get('SortBy', 'DateCreated')
-            sort_order = params.get('SortOrder', 'Descending')
-
-        final_emby_ids = []
-        total_count = 0
+        # 准备查询参数
+        rules = definition.get('rules', [])
+        logic = definition.get('logic', 'AND')
+        item_types = definition.get('item_type', ['Movie'])
+        target_library_ids = definition.get('target_library_ids', [])
+        tmdb_ids_filter = None
 
         # ==========================================================
-        # 分支 A: 筛选类 (Filter) -> 走数据库实时查询 (高性能)
+        # 逻辑分发：确定 TMDB ID 范围
         # ==========================================================
         if collection_type == 'filter':
-            rules = definition.get('rules', [])
-            logic = definition.get('logic', 'AND')
-            item_types = definition.get('item_type', ['Movie'])
-            if isinstance(item_types, str): item_types = [item_types]
-            target_library_ids = definition.get('target_library_ids', [])
-            # ★★★ 调用 queries_db 进行实时筛选 + 权限过滤 ★★★
-            items, total_count = queries_db.query_virtual_library_items(
-                rules=rules,
-                logic=logic,
-                user_id=user_id, # 传入用户ID，SQL层自动查Policy
-                limit=limit,
-                offset=offset,
-                sort_by=sort_by,
-                sort_order=sort_order,
-                item_types=item_types,
-                target_library_ids=target_library_ids
-            )
-            final_emby_ids = [i['Id'] for i in items]
-
-        # ==========================================================
-        # 分支 B: 榜单/推荐类 -> 走 Emby 代理 (兼容性)
-        # ==========================================================
+            pass # 筛选类不需要 ID 范围
+            
+        elif collection_type == 'ai_recommendation':
+            # 个人推荐：实时计算 TMDB ID 列表
+            api_key = config_manager.APP_CONFIG.get("tmdb_api_key")
+            if api_key:
+                engine = RecommendationEngine(api_key)
+                # 推荐池可以大一点，交给 SQL 去做最终的权限过滤和 Limit
+                candidate_pool = engine.generate_user_vector(user_id, limit=100, allowed_types=item_types)
+                tmdb_ids_filter = [str(i['id']) for i in candidate_pool]
+            
         else:
-            # 1. 获取全量候选 ID
+            # 榜单类/全局推荐：从缓存中读取 TMDB ID 列表
             raw_items_json = collection_info.get('generated_media_info_json')
-            candidate_ids = []
-            
-            if collection_type == 'ai_recommendation':
-                # AI 推荐依然需要实时计算向量
-                api_key = config_manager.APP_CONFIG.get("tmdb_api_key")
-                if api_key:
-                    engine = RecommendationEngine(api_key)
-                    # 广撒网，获取足够多的候选
-                    pool_size = max(limit * 3, 60)
-                    candidate_pool = engine.generate_user_vector(
-                        user_id, limit=pool_size, allowed_types=definition.get('item_type', ['Movie'])
-                    )
-                    # 转换为 Emby ID
-                    items_to_lookup = [{'tmdb_id': str(i['id']), 'media_type': i['type']} for i in candidate_pool if i.get('id')]
-                    if items_to_lookup:
-                        lookup_map = media_db.get_emby_ids_for_items(items_to_lookup)
-                        for item in items_to_lookup:
-                            key = f"{item['tmdb_id']}_{item['media_type']}"
-                            if key in lookup_map:
-                                candidate_ids.append(lookup_map[key]['Id'])
-            
-            elif raw_items_json:
-                # 榜单类直接读取缓存
+            if raw_items_json:
                 raw_items = json.loads(raw_items_json) if isinstance(raw_items_json, str) else raw_items_json
-                candidate_ids = [i.get('emby_id') for i in raw_items if i.get('emby_id')]
+                tmdb_ids_filter = [str(i.get('tmdb_id')) for i in raw_items if i.get('tmdb_id')]
 
-            if not candidate_ids:
-                return Response(json.dumps({"Items": [], "TotalRecordCount": 0}), mimetype='application/json')
+        # ==========================================================
+        # 统一执行 SQL 查询 (带权限、带分页、带数量限制)
+        # ==========================================================
+        items, total_count = queries_db.query_virtual_library_items(
+            rules=rules,
+            logic=logic,
+            user_id=user_id,
+            limit=limit,
+            offset=offset,
+            sort_by=sort_by,
+            sort_order=sort_order,
+            item_types=item_types,
+            target_library_ids=target_library_ids,
+            tmdb_ids=tmdb_ids_filter # ★★★ 传入 ID 范围
+        )
 
-            # 2. 代理给 Emby 进行排序、分页和权限过滤
-            # Emby 的 GET /Items?Ids=... 会自动过滤掉用户无权访问的项目
-            fields = params.get('Fields', "PrimaryImageAspectRatio,BasicSyncInfo,DateCreated,UserData,SortName")
-            sorted_data = _fetch_sorted_items_via_emby_proxy(
-                user_id, candidate_ids, sort_by, sort_order, limit, offset, fields, len(candidate_ids)
-            )
-            return Response(json.dumps(sorted_data), mimetype='application/json')
+        if not items:
+            return Response(json.dumps({"Items": [], "TotalRecordCount": 0}), mimetype='application/json')
 
-        # --- 通用返回逻辑 (针对 Filter 类) ---
-        if not final_emby_ids:
-            return Response(json.dumps({"Items": [], "TotalRecordCount": total_count}), mimetype='application/json')
-
-        # 拿着 Emby ID 去 Emby 换取详情
+        # 拿着 Emby ID 去换取详情 (保持原有逻辑)
+        final_emby_ids = [i['Id'] for i in items]
         base_url, api_key = _get_real_emby_url_and_key()
         fields = params.get('Fields', "PrimaryImageAspectRatio,BasicSyncInfo,DateCreated,UserData,SortName")
         
         items_from_emby = _fetch_items_in_chunks(base_url, api_key, user_id, final_emby_ids, fields)
         
-        # 保持数据库返回的顺序
+        # 保持 SQL 返回的顺序
         items_map = {item['Id']: item for item in items_from_emby}
         final_items = [items_map[eid] for eid in final_emby_ids if eid in items_map]
-
-        # ★★★ 强化修正逻辑 ★★★
-        real_page_count = len(final_items)
-        expected_page_count = len(final_emby_ids)
-        
-        if real_page_count < expected_page_count:
-            # 发现本页有项目被 Emby 拦截了
-            lost_count = expected_page_count - real_page_count
-            logger.warning(f"  ➜ [权限拦截] 用户 {user_id} 在虚拟库中丢失了 {lost_count} 个项目")
-            
-            # 修正总数：如果总数是 100，本页本该有 50 个但只剩 40 个，总数应降为 90
-            total_count = max(0, total_count - lost_count)
-
-        # 如果最终列表为空，但总数不为0，强制总数为0，防止前端无限加载灰块
-        if not final_items and offset == 0:
-            total_count = 0
 
         return Response(json.dumps({"Items": final_items, "TotalRecordCount": total_count}), mimetype='application/json')
 
     except Exception as e:
-        logger.error(f"  ➜ 处理虚拟库 '{collection_info.get('name', mimicked_id)}' 时发生严重错误: {e}", exc_info=True)
+        logger.error(f"  ➜ 处理虚拟库失败: {e}", exc_info=True)
         return Response(json.dumps({"Items": [], "TotalRecordCount": 0}), mimetype='application/json')
 
 def handle_get_latest_items(user_id, params):
