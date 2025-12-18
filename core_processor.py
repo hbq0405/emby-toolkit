@@ -165,38 +165,43 @@ class MediaProcessor:
         lib_guid = None
 
         try:
-            # 1. 获取库 GUID (复用 handler.emby 现有的逻辑)
-            if not hasattr(self, '_lib_guid_cache'):
-                self._lib_guid_cache = TTLCache(maxsize=100, ttl=3600)
-            
-            if source_lib_id and source_lib_id in self._lib_guid_cache:
-                lib_guid = self._lib_guid_cache[source_lib_id]
-            else:
-                # 调用 emby.get_all_libraries_with_paths 获取实时库信息
-                libs_data = emby.get_all_libraries_with_paths(self.emby_url, self.emby_api_key)
-                for lib in libs_data:
-                    info = lib.get('info', {})
-                    if str(info.get('Id')) == source_lib_id:
-                        lib_guid = str(info.get('Guid'))
-                        self._lib_guid_cache[source_lib_id] = lib_guid
-                        break
-
-            # 2. 获取祖先链
+            # 1. 获取祖先链
             ancestors = emby.get_item_ancestors(
                 item_id=item_id,
                 base_url=self.emby_url,
                 api_key=self.emby_api_key,
-                user_id=self.emby_user_id
+                user_id=self.self.emby_user_id # 修正：确保传入正确的 user_id
             )
 
             if ancestors:
-                # 建立父子映射
                 curr_child_id = item_id
                 for ancestor in ancestors:
                     anc_id = str(ancestor.get('Id'))
+                    anc_type = ancestor.get('Type')
+                    
+                    # ★★★ 核心逻辑：从祖先中直接识别媒体库 ★★★
+                    # 媒体库在祖先链中的类型通常是 'CollectionFolder'
+                    if anc_type == 'CollectionFolder':
+                        lib_guid = ancestor.get('Guid')
+                    
                     id_to_parent_map[curr_child_id] = anc_id
                     curr_child_id = anc_id
-                logger.debug(f"  ➜ [权限调试] 成功通过 handler 获取了 {len(id_to_parent_map)} 层关系。")
+                
+                logger.debug(f"  ➜ [权限调试] 实时解析完成。库GUID: {lib_guid}, 关系链: {len(id_to_parent_map)}层")
+
+            # 2. 兜底逻辑：如果祖先链里没抓到 GUID (极少见)，再尝试从缓存/列表找一次
+            if not lib_guid and source_lib_id:
+                if not hasattr(self, '_lib_guid_cache'): self._lib_guid_cache = TTLCache(maxsize=100, ttl=3600)
+                if source_lib_id in self._lib_guid_cache:
+                    lib_guid = self._lib_guid_cache[source_lib_id]
+                else:
+                    libs_data = emby.get_all_libraries_with_paths(self.emby_url, self.emby_api_key)
+                    for lib in libs_data:
+                        info = lib.get('info', {})
+                        if str(info.get('Id')) == str(source_lib_id):
+                            lib_guid = info.get('Guid')
+                            self._lib_guid_cache[source_lib_id] = lib_guid
+                            break
                     
         except Exception as e:
             logger.error(f"  ➜ 实时构建爬树地图失败: {e}")

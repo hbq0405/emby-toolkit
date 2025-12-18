@@ -782,31 +782,21 @@ def should_mark_as_pending(tmdb_id: int, season_number: int, api_key: str) -> tu
         return False, 0
     
 def calculate_ancestor_ids(item_id: str, id_to_parent_map: dict, library_guid: str) -> List[str]:
-    """
-    【V12 - 全量追溯版】
-    不再跳过 depth 0，确保剧集分类文件夹不被误杀。
-    """
     if not item_id or not id_to_parent_map:
         return []
 
     ancestors = set()
     curr_id = id_to_parent_map.get(item_id)
     
-    while curr_id:
-        # 1. 过滤掉 Emby 根节点 "1"
-        if curr_id == "1":
-            break
-            
-        # ★★★ 核心修改：不再判断 depth，记录所有父级 ★★★
+    while curr_id and curr_id != "1":
         ancestors.add(curr_id)
-        if library_guid:
+        # ★★★ 核心修改：增加严格的 None 字符串过滤 ★★★
+        if library_guid and str(library_guid).lower() != "none":
             ancestors.add(f"{library_guid}_{curr_id}")
         
-        # 继续向上爬
         curr_id = id_to_parent_map.get(curr_id)
     
-    # 2. 最后加上媒体库 GUID
-    if library_guid:
+    if library_guid and str(library_guid).lower() != "none":
         ancestors.add(library_guid)
         
-    return [str(fid) for fid in ancestors if fid and fid != "None"]
+    return [str(fid) for fid in ancestors if fid and str(fid).lower() != "none"]
