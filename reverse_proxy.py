@@ -332,26 +332,31 @@ def handle_get_mimicked_library_items(user_id, mimicked_id, params):
         collection_info = custom_collection_db.get_custom_collection_by_id(real_db_id)
         if not collection_info:
             return Response(json.dumps({"Items": [], "TotalRecordCount": 0}), mimetype='application/json')
-
-        definition = collection_info.get('definition_json') or {}
         collection_type = collection_info.get('type')
+        definition = collection_info.get('definition_json') or {}
+        if isinstance(definition, str):
+            try:
+                definition = json.loads(definition)
+            except:
+                definition = {}
 
-        # 1. 获取 Emby 客户端请求的分页参数
+        # 1. 获取 Emby 客户端请求的参数
         emby_limit = int(params.get('Limit', 50))
         offset = int(params.get('StartIndex', 0))
         
-        # 2. ★★★ 核心修复：获取合集定义中的硬性数量限制 ★★★
+        # 2. 获取合集定义中的 limit (注意数据库里是小写 limit)
         defined_limit = definition.get('limit')
-        
-        # 3. 计算实际应该传给 SQL 的 limit
         if defined_limit is not None:
             defined_limit = int(defined_limit)
-            # 如果起始偏移量已经超过了定义的上限，直接返回空
+        else:
+            # 如果是 AI 推荐且没设上限，给个默认保护值，防止拉取过多
+            defined_limit = 100 if collection_info.get('type') == 'ai_recommendation' else None
+
+        # 3. 计算本次 SQL 真正应该查询的数量
+        if defined_limit is not None:
             if offset >= defined_limit:
+                # 如果翻页已经超过了上限，直接返回空列表，总数依然报上限值
                 return Response(json.dumps({"Items": [], "TotalRecordCount": defined_limit}), mimetype='application/json')
-            
-            # 实际查询数量不能超过 (定义上限 - 当前偏移量)
-            # 比如定义 20 个，Emby 请求从第 0 个开始要 50 个，那我们只给 20 个
             actual_query_limit = min(emby_limit, defined_limit - offset)
         else:
             actual_query_limit = emby_limit
@@ -400,11 +405,10 @@ def handle_get_mimicked_library_items(user_id, mimicked_id, params):
             sort_order=sort_order,
             item_types=item_types,
             target_library_ids=target_library_ids,
-            tmdb_ids=tmdb_ids_filter # ★★★ 传入 ID 范围
+            tmdb_ids=tmdb_ids_filter 
         )
 
         if defined_limit is not None:
-            # 总数应该是 (数据库实际总数) 和 (定义上限) 的最小值
             reported_total_count = min(total_count, defined_limit)
         else:
             reported_total_count = total_count
@@ -423,7 +427,10 @@ def handle_get_mimicked_library_items(user_id, mimicked_id, params):
         items_map = {item['Id']: item for item in items_from_emby}
         final_items = [items_map[eid] for eid in final_emby_ids if eid in items_map]
 
-        return Response(json.dumps({"Items": final_items, "TotalRecordCount": total_count}), mimetype='application/json')
+        return Response(json.dumps({
+            "Items": final_items, 
+            "TotalRecordCount": reported_total_count 
+        }), mimetype='application/json')
 
     except Exception as e:
         logger.error(f"  ➜ 处理虚拟库失败: {e}", exc_info=True)
