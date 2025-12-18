@@ -165,44 +165,50 @@ class MediaProcessor:
         lib_guid = None
 
         try:
-            # 1. 获取祖先链
-            ancestors = emby.get_item_ancestors(
-                item_id=item_id,
-                base_url=self.emby_url,
-                api_key=self.emby_api_key,
-                user_id=self.emby_user_id 
-            )
+            # 1. 库 GUID 缓存逻辑
+            if not hasattr(self, '_lib_guid_cache'): self._lib_guid_cache = TTLCache(maxsize=100, ttl=3600)
+            if source_lib_id in self._lib_guid_cache:
+                lib_guid = self._lib_guid_cache[source_lib_id]
 
-            if ancestors:
-                curr_child_id = item_id
-                for ancestor in ancestors:
-                    anc_id = str(ancestor.get('Id'))
-                    anc_type = ancestor.get('Type')
-                    
-                    # ★★★ 核心逻辑：从祖先中直接识别媒体库 ★★★
-                    # 媒体库在祖先链中的类型通常是 'CollectionFolder'
-                    if anc_type == 'CollectionFolder':
-                        lib_guid = ancestor.get('Guid')
-                    
-                    id_to_parent_map[curr_child_id] = anc_id
-                    curr_child_id = anc_id
+            # 2. 【核心修改】手动向上追溯 ParentId 链条
+            curr_id = item_id
+            # 限制 10 层防止死循环，通常 3-5 层就到顶了
+            for _ in range(10):
+                # 直接调用你 handler.emby 里的标准详情接口
+                # 这样能拿到最真实的数据库 ParentId，不会被 API 过滤
+                details = emby.get_emby_item_details(
+                    curr_id, 
+                    self.emby_url, 
+                    self.emby_api_key, 
+                    self.emby_user_id,
+                    fields="ParentId,Guid,Type",
+                    silent_404=True
+                )
                 
-                logger.debug(f"  ➜ [权限调试] 实时解析完成。库GUID: {lib_guid}, 关系链: {len(id_to_parent_map)}层")
+                if not details:
+                    break
+                
+                p_id = details.get('ParentId')
+                
+                # 识别库节点并提取 GUID
+                # 只要当前节点是 source_lib_id，或者类型是库，就更新 lib_guid
+                if str(curr_id) == str(source_lib_id) or details.get('Type') in ['CollectionFolder', 'UserView']:
+                    if details.get('Guid'):
+                        lib_guid = str(details.get('Guid'))
+                        self._lib_guid_cache[source_lib_id] = lib_guid
 
-            # 2. 兜底逻辑：如果祖先链里没抓到 GUID (极少见)，再尝试从缓存/列表找一次
-            if not lib_guid and source_lib_id:
-                if not hasattr(self, '_lib_guid_cache'): self._lib_guid_cache = TTLCache(maxsize=100, ttl=3600)
-                if source_lib_id in self._lib_guid_cache:
-                    lib_guid = self._lib_guid_cache[source_lib_id]
-                else:
-                    libs_data = emby.get_all_libraries_with_paths(self.emby_url, self.emby_api_key)
-                    for lib in libs_data:
-                        info = lib.get('info', {})
-                        if str(info.get('Id')) == str(source_lib_id):
-                            lib_guid = info.get('Guid')
-                            self._lib_guid_cache[source_lib_id] = lib_guid
-                            break
-                    
+                # 如果没有父级了，或者到了 Emby 根节点 (1)，停止爬升
+                if not p_id or p_id == '1':
+                    break
+                
+                # 记录这一环的父子关系
+                id_to_parent_map[curr_id] = str(p_id)
+                
+                # 向上移动一层
+                curr_id = str(p_id)
+            
+            logger.debug(f"  ➜ [权限调试] 实时爬楼梯完成。库GUID: {lib_guid}, 捕获关系: {len(id_to_parent_map)}层")
+                
         except Exception as e:
             logger.error(f"  ➜ 实时构建爬树地图失败: {e}")
 
