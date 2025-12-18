@@ -1,6 +1,7 @@
 # database/user_db.py
 import psycopg2
 import uuid
+import json
 from psycopg2.extras import execute_values
 import logging
 from typing import List, Dict, Any, Optional, Tuple # 导入 Tuple
@@ -129,25 +130,32 @@ def upsert_emby_users_batch(users_data: List[Dict[str, Any]]):
         return
 
     sql = """
-        INSERT INTO emby_users (id, name, is_administrator, last_seen_at, profile_image_tag, last_updated_at)
+        INSERT INTO emby_users (id, name, is_administrator, last_seen_at, profile_image_tag, policy_json, last_updated_at)
         VALUES %s
         ON CONFLICT (id) DO UPDATE SET
             name = EXCLUDED.name,
             is_administrator = EXCLUDED.is_administrator,
             last_seen_at = EXCLUDED.last_seen_at,
             profile_image_tag = EXCLUDED.profile_image_tag,
+            policy_json = EXCLUDED.policy_json,  
             last_updated_at = EXCLUDED.last_updated_at;
     """
     
     values_to_insert = []
     now_utc = datetime.now(timezone.utc)
+    
     for user in users_data:
+        # 【新增】提取 Policy 并转为 JSON 字符串
+        policy_data = user.get('Policy', {})
+        policy_json_str = json.dumps(policy_data) if policy_data else '{}'
+
         values_to_insert.append((
             user.get('Id'),
             user.get('Name'),
             user.get('Policy', {}).get('IsAdministrator', False),
             user.get('LastActivityDate'),
             user.get('PrimaryImageTag'),
+            policy_json_str,  
             now_utc
         ))
 

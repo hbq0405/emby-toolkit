@@ -481,7 +481,6 @@ def prepare_for_library_rebuild() -> Dict[str, Dict]:
         'emby_users', 
         'emby_users_extended', 
         'user_media_data', 
-        'user_collection_cache',
         'collections_info', 
         'resubscribe_index', 
         'cleanup_index' 
@@ -741,22 +740,6 @@ def cleanup_deleted_media_item(item_id: str, item_name: str, item_type: str, ser
                     
                     if cursor.rowcount > 0: 
                         logger.info(f"  ➜ 已从媒体洗版缓存中移除 {cursor.rowcount} 条记录。")
-
-                    # 4. 清理用户权限缓存 (针对已删除的 Emby ID)
-                    # 注意：这里只清理触发 webhook 的那个 ID，防止误伤
-                    sql_cleanup_user_cache = """
-                        UPDATE user_collection_cache
-                        SET 
-                            visible_emby_ids_json = (
-                                SELECT jsonb_agg(elem)
-                                FROM jsonb_array_elements_text(visible_emby_ids_json) AS elem
-                                WHERE elem != %s
-                            ),
-                            total_count = total_count - 1
-                        WHERE 
-                            visible_emby_ids_json @> %s::jsonb;
-                    """
-                    cursor.execute(sql_cleanup_user_cache, (item_id, json.dumps([item_id])))
 
                     # 5. 清理原生合集
                     if target_item_type_for_full_cleanup == 'Movie':

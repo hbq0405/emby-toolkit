@@ -24,7 +24,7 @@ def _prepare_data_for_insert(table_name: str, table_data: List[Dict[str, Any]]) 
         'app_settings': {'value_json'},
         'collections_info': {'all_tmdb_ids_json'},
         'custom_collections': {'definition_json', 'allowed_user_ids', 'generated_media_info_json'},
-        'user_collection_cache': {'visible_emby_ids_json'},
+        'emby_users': {'policy_json'},
         'media_metadata': {
             'emby_item_ids_json', 'subscription_sources_json', 
             'tags_json', 'genres_json', 
@@ -282,8 +282,7 @@ def task_import_database(processor, file_content: str, tables_to_import: List[st
         'media_cleanup_tasks': '媒体清理任务',
         'user_templates': '用户权限模板', 
         'invitations': '邀请码', 
-        'emby_users_extended': 'Emby用户扩展信息',
-        'user_collection_cache': 'Emby用户权限缓存'
+        'emby_users_extended': 'Emby用户扩展信息'
     }
     summary_lines = []
     conn = None

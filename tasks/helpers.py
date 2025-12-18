@@ -3,7 +3,7 @@
 
 import os
 import re
-from typing import Optional, Dict, Tuple, List
+from typing import Optional, Dict, Tuple, List, Any
 import logging
 from datetime import datetime, timedelta, timezone
 
@@ -383,11 +383,16 @@ def analyze_media_asset(item_details: dict) -> dict:
         "release_group_raw": release_group_list,
     }
 
-def parse_full_asset_details(item_details: dict) -> dict:
+def parse_full_asset_details(item_details: dict, id_to_parent_map: dict = None, library_guid: str = None) -> dict:
     """视频流分析主函数"""
     # 提取并计算时长 (分钟)
     runtime_ticks = item_details.get('RunTimeTicks')
     runtime_min = round(runtime_ticks / 600000000) if runtime_ticks else None
+
+    item_id = str(item_details.get("Id"))
+    ancestors = []
+    if id_to_parent_map and item_id:
+        ancestors = calculate_ancestor_ids(item_id, id_to_parent_map, library_guid)
 
     if not item_details or "MediaStreams" not in item_details:
         return {
@@ -399,6 +404,7 @@ def parse_full_asset_details(item_details: dict) -> dict:
             "audio_languages_raw": [], "subtitle_languages_raw": [],
             "release_group_raw": [],
             "runtime_minutes": runtime_min,
+            "ancestor_ids": ancestors,
         }
 
     date_added_to_library = item_details.get("DateCreated")
@@ -415,8 +421,15 @@ def parse_full_asset_details(item_details: dict) -> dict:
         "audio_tracks": [], 
         "subtitles": [],
         "date_added_to_library": date_added_to_library,
+        "ancestor_ids": ancestors,
         "runtime_minutes": runtime_min 
     }
+    item_id = str(item_details.get("Id"))
+    if id_to_parent_map and item_id:
+        # 调用下面定义的 calculate_ancestor_ids
+        asset["ancestor_ids"] = calculate_ancestor_ids(item_id, id_to_parent_map, library_guid)
+    else:
+        asset["ancestor_ids"] = []
     media_streams = item_details.get("MediaStreams", [])
     for stream in media_streams:
         stream_type = stream.get("Type")
@@ -767,3 +780,33 @@ def should_mark_as_pending(tmdb_id: int, season_number: int, api_key: str) -> tu
     except Exception as e:
         # logger.warning(f"检查待定条件失败: {e}") # 避免循环引用 logger，可以忽略或 print
         return False, 0
+    
+def calculate_ancestor_ids(item_id: str, id_to_parent_map: dict, library_guid: str) -> List[str]:
+    """
+    【V12 - 全量追溯版】
+    不再跳过 depth 0，确保剧集分类文件夹不被误杀。
+    """
+    if not item_id or not id_to_parent_map:
+        return []
+
+    ancestors = set()
+    curr_id = id_to_parent_map.get(item_id)
+    
+    while curr_id:
+        # 1. 过滤掉 Emby 根节点 "1"
+        if curr_id == "1":
+            break
+            
+        # ★★★ 核心修改：不再判断 depth，记录所有父级 ★★★
+        ancestors.add(curr_id)
+        if library_guid:
+            ancestors.add(f"{library_guid}_{curr_id}")
+        
+        # 继续向上爬
+        curr_id = id_to_parent_map.get(curr_id)
+    
+    # 2. 最后加上媒体库 GUID
+    if library_guid:
+        ancestors.add(library_guid)
+        
+    return [str(fid) for fid in ancestors if fid and fid != "None"]

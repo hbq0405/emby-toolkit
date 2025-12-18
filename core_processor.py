@@ -13,7 +13,7 @@ import psycopg2
 # 确保所有依赖都已正确导入
 import handler.emby as emby
 import handler.tmdb as tmdb
-from tasks.helpers import parse_full_asset_details
+from tasks.helpers import parse_full_asset_details, calculate_ancestor_ids
 import utils
 import constants
 import logging
@@ -155,6 +155,54 @@ class MediaProcessor:
         self.processed_items_cache = self._load_processed_log_from_db()
         self.manual_edit_cache = TTLCache(maxsize=10, ttl=600)
         logger.trace("核心处理器初始化完成。")
+
+    # --- 实时获取项目的祖先地图和库 GUID ---
+    def _get_realtime_ancestor_context(self, item_id: str, source_lib_id: str) -> Tuple[Dict[str, str], Optional[str]]:
+        """
+        为实时入库的项目构建爬树所需的上下文。
+        """
+        id_to_parent_map = {}
+        lib_guid = None
+
+        try:
+            # 1. 获取库 GUID (带简单缓存)
+            if not hasattr(self, '_lib_guid_cache'):
+                self._lib_guid_cache = TTLCache(maxsize=100, ttl=3600)
+            
+            if source_lib_id in self._lib_guid_cache:
+                lib_guid = self._lib_guid_cache[source_lib_id]
+            else:
+                import requests
+                resp = requests.get(
+                    f"{self.emby_url}/Library/VirtualFolders", 
+                    params={"api_key": self.emby_api_key}, 
+                    timeout=10
+                )
+                if resp.status_code == 200:
+                    for lib in resp.json():
+                        if str(lib.get('ItemId')) == source_lib_id:
+                            lib_guid = str(lib.get('Guid'))
+                            self._lib_guid_cache[source_lib_id] = lib_guid
+                            break
+
+            # 2. 爬树：获取该项目的所有祖先
+            # 使用 Emby 的 Ancestors 接口一次性拿回整条链，效率最高
+            ancestors_url = f"{self.emby_url}/Users/{self.emby_user_id}/Items/{item_id}/Ancestors"
+            a_resp = requests.get(ancestors_url, params={"api_key": self.emby_api_key}, timeout=10)
+            if a_resp.status_code == 200:
+                ancestors = a_resp.json()
+                # 建立链条：项目 -> 直接父级
+                curr_child_id = item_id
+                for ancestor in ancestors:
+                    anc_id = str(ancestor.get('Id'))
+                    id_to_parent_map[curr_child_id] = anc_id
+                    curr_child_id = anc_id
+                    
+        except Exception as e:
+            logger.error(f"  ➜ 实时构建爬树地图失败: {e}")
+
+        return id_to_parent_map, lib_guid
+
     # --- 更新媒体元数据缓存 ---
     def _upsert_media_metadata(
         self,
@@ -171,22 +219,16 @@ class MediaProcessor:
         if not item_details_from_emby:
             logger.error("  ➜ 写入元数据缓存失败：缺少 Emby 详情数据。")
             return
+        item_id = str(item_details_from_emby.get('Id'))
+        source_lib_id = str(item_details_from_emby.get('_SourceLibraryId'))
+
+        id_to_parent_map, lib_guid = self._get_realtime_ancestor_context(item_id, source_lib_id)
+
         def get_representative_runtime(emby_items, tmdb_runtime):
-            if not emby_items:
-                return tmdb_runtime
-            
-            # 收集所有版本的时长
-            runtimes = []
-            for item in emby_items:
-                if item.get('RunTimeTicks'):
-                    runtimes.append(round(item['RunTimeTicks'] / 600000000))
-            
-            # 如果有 Emby 数据，取最大值（通常大家希望看到加长版/导演剪辑版的时长）
-            if runtimes:
-                return max(runtimes)
-            
-            # 兜底
-            return tmdb_runtime
+            if not emby_items: return tmdb_runtime
+            runtimes = [round(item['RunTimeTicks'] / 600000000) for item in emby_items if item.get('RunTimeTicks')]
+            return max(runtimes) if runtimes else tmdb_runtime
+        
         try:
             from psycopg2.extras import execute_batch
             
@@ -196,7 +238,7 @@ class MediaProcessor:
 
             records_to_upsert = []
 
-            # ★★★ 新增：生成向量逻辑 (仅针对 Movie 和 Series) ★★★
+            # 生成向量逻辑 (仅针对 Movie 和 Series) 
             overview_embedding_json = None
             if item_type in ["Movie", "Series"] and self.ai_translator:
                 # 优先使用 source_data_package 里的 overview (通常来自 TMDb/本地缓存，质量较高)
@@ -220,19 +262,21 @@ class MediaProcessor:
                 movie_record = source_data_package.copy()
                 movie_record['item_type'] = 'Movie'
                 movie_record['tmdb_id'] = str(movie_record.get('id'))
-                final_runtime = get_representative_runtime([item_details_from_emby], movie_record.get('runtime'))
-                movie_record['runtime_minutes'] = final_runtime
-                actors_relation = [{"tmdb_id": int(p.get("id")), "character": p.get("character"), "order": p.get("order")} for p in final_processed_cast if p.get("id")]
-                movie_record['actors_json'] = json.dumps(actors_relation, ensure_ascii=False)
-                if douban_rating is not None: movie_record['rating'] = douban_rating
+                movie_record['runtime_minutes'] = get_representative_runtime([item_details_from_emby], movie_record.get('runtime'))
+                
+                asset_details = parse_full_asset_details(
+                    item_details_from_emby, 
+                    id_to_parent_map=id_to_parent_map, 
+                    library_guid=lib_guid
+                )
+                asset_details['source_library_id'] = source_lib_id
+                
+                movie_record['asset_details_json'] = json.dumps([asset_details], ensure_ascii=False)
+                movie_record['emby_item_ids_json'] = json.dumps([item_id])
+                movie_record['actors_json'] = json.dumps([{"tmdb_id": int(p.get("id")), "character": p.get("character"), "order": p.get("order")} for p in final_processed_cast if p.get("id")], ensure_ascii=False)
                 movie_record['in_library'] = True
                 movie_record['subscription_status'] = 'NONE'
-                movie_record['emby_item_ids_json'] = json.dumps([item_details_from_emby.get('Id')])
                 movie_record['date_added'] = item_details_from_emby.get("DateCreated")
-                movie_record['ignore_reason'] = None
-                asset_details = parse_full_asset_details(item_details_from_emby)
-                asset_details['source_library_id'] = item_details_from_emby.get('_SourceLibraryId')
-                movie_record['asset_details_json'] = json.dumps([asset_details], ensure_ascii=False)
                 movie_record['overview_embedding'] = overview_embedding_json
                 records_to_upsert.append(movie_record)
 
@@ -241,6 +285,16 @@ class MediaProcessor:
                 series_details = source_data_package.get("series_details", source_data_package)
                 seasons_details = source_data_package.get("seasons_details", series_details.get("seasons", []))
                 
+                series_asset_details = []
+                series_path = item_details_from_emby.get('Path')
+                if series_path:
+                    series_asset = {
+                        "path": series_path,
+                        "source_library_id": source_lib_id,
+                        "ancestor_ids": calculate_ancestor_ids(item_id, id_to_parent_map, lib_guid)
+                    }
+                    series_asset_details.append(series_asset)
+
                 # ★★★ 1. 安全获取分集列表 ★★★
                 raw_episodes = source_data_package.get("episodes_details", {})
                 if isinstance(raw_episodes, dict):
@@ -285,7 +339,7 @@ class MediaProcessor:
                     "original_title": series_details.get('original_name'), "overview": series_details.get('overview'),
                     "release_date": series_details.get('first_air_date'), "poster_path": series_details.get('poster_path'),
                     "rating": douban_rating if douban_rating is not None else series_details.get('vote_average'),
-                    "asset_details_json": '[]',
+                    "asset_details_json": json.dumps(series_asset_details, ensure_ascii=False),
                     "overview_embedding": overview_embedding_json
                 }
                 # ... (中间的 actors_json 等构建代码保持不变) ...

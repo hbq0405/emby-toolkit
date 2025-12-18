@@ -692,8 +692,7 @@ const tableInfo = {
   'user_media_data': { cn: 'Emby用户数据', isSharable: false },
   'user_templates': { cn: '用户权限模板', isSharable: false },
   'invitations': { cn: '邀请链接', isSharable: false },
-  'emby_users_extended': { cn: 'Emby用户扩展信息', isSharable: false },
-  'user_collection_cache': { cn: '用户权限缓存', isSharable: false }
+  'emby_users_extended': { cn: 'Emby用户扩展信息', isSharable: false }
 };
 const tableDependencies = {
   'emby_users': ['user_media_data', 'emby_users_extended'],

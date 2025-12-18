@@ -12,7 +12,6 @@ import config_manager
 import handler.emby as emby
 from tasks.helpers import is_movie_subscribable
 from extensions import admin_required, any_login_required, DELETING_COLLECTIONS
-from handler.custom_collection import FilterEngine
 from utils import get_country_translation_map, UNIFIED_RATING_CATEGORIES, get_tmdb_country_options, KEYWORD_TRANSLATION_MAP
 from handler.tmdb import get_movie_genres_tmdb, get_tv_genres_tmdb, search_companies_tmdb, search_person_tmdb
 # 1. 创建自定义合集蓝图
@@ -63,17 +62,12 @@ def api_get_emby_users():
 @custom_collections_bp.route('', methods=['GET']) # 原为 '/'
 @admin_required
 def api_get_all_custom_collections():
-    """获取所有自定义合集定义 (V5 - 精确类型匹配版)"""
+    """获取所有自定义合集定义 (V6 - 轻量化版)"""
     try:
         beijing_tz = pytz.timezone('Asia/Shanghai')
         collections_from_db = custom_collection_db.get_all_active_custom_collections()
         processed_collections = []
 
-        # ==========================================================
-        # ★★★ 第一阶段：收集所有需要检查的 TMDB ID ★★★
-        # ==========================================================
-        all_tmdb_ids_to_check = []
-        
         for collection in collections_from_db:
             # 1. 解析 definition
             definition_data = collection.get('definition_json')
@@ -91,84 +85,11 @@ def api_get_all_custom_collections():
             if 'definition_json' in collection:
                 del collection['definition_json']
 
-            # 2. 解析 generated_media_info_json
-            media_info = collection.get('generated_media_info_json')
-            parsed_media_info = []
-            if isinstance(media_info, str):
-                try:
-                    parsed_media_info = json.loads(media_info)
-                except: pass
-            elif isinstance(media_info, list):
-                parsed_media_info = media_info
-            
-            collection['_parsed_media_info'] = parsed_media_info
-            
-            # 收集 ID (这一步只收集 ID 给 SQL 用，不需要类型)
-            if parsed_media_info:
-                for item in parsed_media_info:
-                    tid = None
-                    if isinstance(item, dict):
-                        tid = item.get('tmdb_id')
-                    elif isinstance(item, str):
-                        tid = item
-                    
-                    if tid:
-                        all_tmdb_ids_to_check.append(str(tid))
-
-        # ==========================================================
-        # ★★★ 第二阶段：批量查询数据库状态 (使用新函数) ★★★
-        # ==========================================================
-        # 返回格式: {'12345_Movie': True, '12345_Series': False}
-        in_library_status_map = {}
-        if all_tmdb_ids_to_check:
-            # 调用我们刚写的新函数
-            in_library_status_map = media_db.get_in_library_status_with_type_bulk(all_tmdb_ids_to_check)
-
-        # ==========================================================
-        # ★★★ 第三阶段：计算每个合集的缺失数 (精确匹配) ★★★
-        # ==========================================================
-        for collection in collections_from_db:
-            c_type = collection.get('type')
-            media_items = collection.get('_parsed_media_info') or []
-            
-            missing_count = 0
-            
-            if c_type in ['list', 'ai_recommendation_global'] and media_items:
-                for item in media_items:
-                    tmdb_id = None
-                    media_type = 'Movie' # 默认为 Movie
-
-                    if isinstance(item, dict):
-                        tmdb_id = str(item.get('tmdb_id')) if item.get('tmdb_id') else None
-                        media_type = item.get('media_type') or 'Movie'
-                    elif isinstance(item, str):
-                        tmdb_id = item
-                        # 如果是旧数据只有字符串ID，默认当 Movie 处理，或者无法精确匹配
-                    
-                    # 1. 如果没有 ID，算缺失
-                    if not tmdb_id or tmdb_id.lower() == 'none': 
-                        missing_count += 1
-                        continue
-
-                    # 2. ★★★ 核心修复：使用组合键查询 ★★★
-                    target_key = f"{tmdb_id}_{media_type}"
-                    
-                    # 查字典：必须 ID 和 类型 都匹配，且 in_library 为 True 才算在库
-                    is_in_library = in_library_status_map.get(target_key, False)
-                    
-                    if not is_in_library:
-                        missing_count += 1
-            
-            collection['missing_count'] = missing_count
-            collection['health_status'] = 'has_missing' if missing_count > 0 else 'ok'
-            
-            # 清理临时字段
-            if '_parsed_media_info' in collection:
-                del collection['_parsed_media_info']
+            # 2. 清理不再需要的字段
             if 'generated_media_info_json' in collection:
                 del collection['generated_media_info_json']
 
-            # --- 时区转换逻辑 (保持不变) ---
+            # 3. 时区转换
             key_for_timestamp = 'last_synced_at' 
             if key_for_timestamp in collection and collection[key_for_timestamp]:
                 timestamp_val = collection[key_for_timestamp]
@@ -184,6 +105,12 @@ def api_get_all_custom_collections():
                 if utc_dt:
                     beijing_dt = utc_dt.astimezone(beijing_tz)
                     collection[key_for_timestamp] = beijing_dt.strftime('%Y-%m-%d %H:%M:%S')
+
+            # ★★★ 移除 missing_count 和 health_status 计算 ★★★
+            # 因为筛选类合集现在是实时的，没有“缺失”的概念。
+            # 榜单类合集的健康状态可以在详情页单独获取，列表页不再展示以提高速度。
+            collection['missing_count'] = 0
+            collection['health_status'] = 'ok'
 
             processed_collections.append(collection)
 
@@ -331,15 +258,22 @@ def api_delete_custom_collection(collection_id):
 @admin_required
 def api_get_custom_collection_status(collection_id):
     """
-    获取合集详情 (V4 - 终极修复版)
-    1. 修复了 ID 撞车问题 (使用组合键)。
-    2. 修复了探索助手榜单无标题导致的“未知媒体”问题 (实时补全)。
-    3. 修复了混合榜单类型判断错误的问题 (严格遵循 item_def)。
+    获取合集详情 (V5 - 仅榜单类有效)
+    筛选类合集不再维护静态列表，因此无法提供详细状态。
     """
     try:
         collection = custom_collection_db.get_custom_collection_by_id(collection_id)
         if not collection:
             return jsonify({"error": "未找到合集"}), 404
+        
+        c_type = collection.get('type')
+        
+        # 如果是筛选类，直接返回空列表，因为它是动态的
+        if c_type == 'filter':
+            collection['media_items'] = []
+            collection['missing_count'] = 0
+            collection['health_status'] = 'dynamic' # 标记为动态合集
+            return jsonify(collection)
         
         definition_list = collection.get('generated_media_info_json') or []
         if not definition_list:

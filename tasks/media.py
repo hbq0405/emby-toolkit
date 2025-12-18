@@ -281,6 +281,11 @@ def task_populate_metadata_cache(processor, batch_size: int = 50, force_full_upd
                 active_count = sum(1 for v in known_emby_status.values() if v)
                 logger.info(f"  ➜ 本地数据库已知 {len(known_emby_status)} 个ID (其中在线: {active_count})。")
 
+        # ★★★ 新增：预加载所有文件夹映射 ★★★
+        logger.info("  ➜ 正在预加载 Emby 文件夹路径映射...")
+        folder_map = emby.get_all_folder_mappings(processor.emby_url, processor.emby_api_key)
+        logger.info(f"  ➜ 加载了 {len(folder_map)} 个文件夹路径节点。")
+
         # --- 2. 扫描 Emby (流式处理) ---
         task_manager.update_status_from_thread(10, f"阶段2/3: 扫描 Emby 并计算差异...")
         
@@ -289,6 +294,19 @@ def task_populate_metadata_cache(processor, batch_size: int = 50, force_full_upd
         series_to_episode_map = defaultdict(list)     
         # ★★★ 定义 ID 到 库ID 的映射字典 ★★★
         emby_id_to_lib_id = {}
+        id_to_parent_map = {}
+        lib_id_to_guid_map = {}
+        try:
+            import requests
+            lib_resp = requests.get(f"{processor.emby_url}/Library/VirtualFolders", params={"api_key": processor.emby_api_key})
+            if lib_resp.status_code == 200:
+                for lib in lib_resp.json():
+                    l_id = str(lib.get('ItemId'))
+                    l_guid = str(lib.get('Guid'))
+                    if l_id and l_guid:
+                        lib_id_to_guid_map[l_id] = l_guid
+        except Exception as e:
+            logger.error(f"获取库 GUID 映射失败: {e}")
         # ★★★ 使用复合键集合记录脏数据 ★★★
         dirty_keys = set() # Set of (tmdb_id, item_type)
         
@@ -306,6 +324,11 @@ def task_populate_metadata_cache(processor, batch_size: int = 50, force_full_upd
         )
 
         for item in item_generator:
+            item_id = str(item.get("Id"))
+            parent_id = str(item.get("ParentId"))
+            if item_id and parent_id:
+                id_to_parent_map[item_id] = parent_id
+            item_type = item.get("Type")
             scan_count += 1
             if scan_count % 5000 == 0:
                 task_manager.update_status_from_thread(10, f"正在索引 Emby 库 ({scan_count} 已扫描)...")
@@ -531,11 +554,21 @@ def task_populate_metadata_cache(processor, batch_size: int = 50, force_full_upd
                 
                 # --- 1. 构建顶层记录 ---
                 asset_details_list = []
-                if item_type == "Movie":
-                    asset_details_list = []
+                if item_type in ["Movie", "Series"]:
                     for v in item_group:
-                        details = parse_full_asset_details(v)
-                        details['source_library_id'] = v.get('_SourceLibraryId') 
+                        # 仅处理当前类型的项目 (防止 Series 组里混入 Season/Episode)
+                        if v.get('Type') != item_type:
+                            continue
+                            
+                        source_lib_id = str(v.get('_SourceLibraryId'))
+                        current_lib_guid = lib_id_to_guid_map.get(source_lib_id)
+
+                        details = parse_full_asset_details(
+                            v, 
+                            id_to_parent_map=id_to_parent_map, 
+                            library_guid=current_lib_guid
+                        )
+                        details['source_library_id'] = source_lib_id
                         asset_details_list.append(details)
 
                 emby_runtime = round(item['RunTimeTicks'] / 600000000) if item.get('RunTimeTicks') else None
@@ -729,8 +762,7 @@ def task_populate_metadata_cache(processor, batch_size: int = 50, force_full_upd
                         
                         ep_asset_details_list = []
                         for v in versions:
-                            details = parse_full_asset_details(v)
-                            details['source_library_id'] = v.get('_SourceLibraryId')
+                            details = parse_full_asset_details(v) 
                             ep_asset_details_list.append(details)
 
                         # 提取分集发行日期 

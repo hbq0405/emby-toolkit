@@ -87,8 +87,12 @@ def init_db():
                 logger.trace("  ➜ 正在创建 'emby_users' 表...")
                 cursor.execute("""
                     CREATE TABLE IF NOT EXISTS emby_users (
-                        id TEXT PRIMARY KEY, name TEXT NOT NULL, is_administrator BOOLEAN,
-                        last_seen_at TIMESTAMP WITH TIME ZONE, profile_image_tag TEXT,
+                        id TEXT PRIMARY KEY, 
+                        name TEXT NOT NULL, 
+                        is_administrator BOOLEAN,
+                        last_seen_at TIMESTAMP WITH TIME ZONE, 
+                        profile_image_tag TEXT,
+                        policy_json JSONB, 
                         last_updated_at TIMESTAMP WITH TIME ZONE DEFAULT NOW()
                     )
                 """)
@@ -138,18 +142,6 @@ def init_db():
                         generated_media_info_json JSONB,
                         poster_path TEXT,
                         sort_order INTEGER NOT NULL DEFAULT 0
-                    )
-                """)
-
-                logger.trace("  ➜ 正在创建 'user_collection_cache' 表 (虚拟库权限预计算)...")
-                cursor.execute("""
-                    CREATE TABLE IF NOT EXISTS user_collection_cache (
-                        user_id TEXT NOT NULL,
-                        collection_id INTEGER NOT NULL,
-                        visible_emby_ids_json JSONB,
-                        total_count INTEGER DEFAULT 0,
-                        last_updated_at TIMESTAMP WITH TIME ZONE DEFAULT NOW(),
-                        PRIMARY KEY (user_id, collection_id)
                     )
                 """)
 
@@ -421,6 +413,9 @@ def init_db():
                         all_existing_columns[table].add(row['column_name'])
 
                     schema_upgrades = {
+                        'emby_users': {
+                            "policy_json": "JSONB"  
+                        },
                         'media_metadata': {
                             "original_language": "TEXT",
                             "asset_details_json": "JSONB",
@@ -576,6 +571,7 @@ def init_db():
                         'subscription_requests',
                         'media_cleanup_tasks',
                         'resubscribe_cache',
+                        'user_collection_cache',
                         'users'
                     ]
                     for table in deprecated_tables:

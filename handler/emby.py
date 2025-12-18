@@ -4,7 +4,7 @@ import requests
 import concurrent.futures
 import os
 import gc
-import random
+import json
 import base64
 import shutil
 import time
@@ -455,7 +455,7 @@ def fetch_all_emby_items_generator(base_url: str, api_key: str, library_ids: lis
                 'Fields': fields,
                 'StartIndex': start_index,
                 'Limit': limit,
-                'IncludeItemTypes': "Movie,Series,Season,Episode",
+                'IncludeItemTypes': "Movie,Series,Season,Episode,Folder,CollectionFolder,UserView",
             }
             if lib_id:
                 params['ParentId'] = lib_id
@@ -2453,3 +2453,63 @@ def get_user_info_from_server(base_url, api_key, user_id):
     except Exception as e:
         logger.error(f"从 Emby 获取用户 {user_id} 信息失败: {e}")
     return None
+
+def get_all_folder_mappings(base_url: str, api_key: str) -> dict:
+    if not base_url or not api_key:
+        return {}
+
+    folder_map = {}
+    api_timeout = config_manager.APP_CONFIG.get(constants.CONFIG_OPTION_EMBY_API_TIMEOUT, 60)
+
+    # --- 阶段 1: 顶层媒体库 (VirtualFolders) ---
+    try:
+        lib_url = f"{base_url.rstrip('/')}/Library/VirtualFolders"
+        response = requests.get(lib_url, params={"api_key": api_key}, timeout=api_timeout)
+        libs = response.json()
+        for lib in libs:
+            guid = lib.get('Guid') or lib.get('ItemId')
+            num_id = lib.get('ItemId')
+            if lib.get('Locations'):
+                for loc in lib.get('Locations'):
+                    norm_loc = os.path.normpath(loc)
+                    folder_map[norm_loc] = {'id': str(num_id), 'guid': str(guid), 'type': 'Library'}
+    except Exception: pass
+
+    # --- 阶段 2: 【新增】权限专用文件夹 (SelectableMediaFolders) ---
+    # 这是抓取 294461 这种权限 ID 的核心逻辑
+    try:
+        sel_url = f"{base_url.rstrip('/')}/Library/SelectableMediaFolders"
+        response = requests.get(sel_url, params={"api_key": api_key}, timeout=api_timeout)
+        selectable_folders = response.json()
+        for folder in selectable_folders:
+            path = folder.get('Path')
+            if path:
+                norm_path = os.path.normpath(path)
+                # 如果该路径已存在，我们更新它，或者添加一个备用 ID 字段
+                if norm_path in folder_map:
+                    folder_map[norm_path]['selectable_id'] = str(folder.get('Id'))
+                else:
+                    folder_map[norm_path] = {
+                        'id': str(folder.get('Id')), 
+                        'guid': str(folder.get('Guid') or ""),
+                        'type': 'SelectableFolder'
+                    }
+        logger.debug(f"  ➜ [权限调试] 已加载 {len(selectable_folders)} 个权限专用文件夹映射。")
+    except Exception as e:
+        logger.error(f"获取 SelectableMediaFolders 失败: {e}")
+
+    # --- 阶段 3: 普通子文件夹 (Items) ---
+    try:
+        items_url = f"{base_url.rstrip('/')}/Items"
+        items_params = {"api_key": api_key, "Recursive": "true", "IsFolder": "true", "Fields": "Path,Id,Guid", "Limit": 10000}
+        response = requests.get(items_url, params=items_params, timeout=api_timeout)
+        items = response.json().get("Items", [])
+        for item in items:
+            path = item.get('Path')
+            if path:
+                norm_path = os.path.normpath(path)
+                if norm_path not in folder_map:
+                    folder_map[norm_path] = {'id': str(item.get('Id')), 'guid': str(item.get('Guid')), 'type': 'Folder'}
+    except Exception: pass
+        
+    return folder_map

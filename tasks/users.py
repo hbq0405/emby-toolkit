@@ -4,6 +4,7 @@
 import time
 import json
 import logging
+from concurrent.futures import ThreadPoolExecutor, as_completed
 
 # 导入需要的底层模块和共享实例
 import handler.emby as emby
@@ -28,16 +29,34 @@ def task_sync_all_user_data(processor):
         emby_key = processor.emby_api_key
         
         # 步骤 1: 从 Emby 获取当前所有用户的权威列表
-        all_users = emby.get_all_emby_users_from_server(emby_url, emby_key)
-        if all_users is None: # API 调用失败
+        all_users_basic = emby.get_all_emby_users_from_server(emby_url, emby_key)
+        if all_users_basic is None: # API 调用失败
             task_manager.update_status_from_thread(-1, "任务失败：无法从Emby获取用户列表。")
             return
         
+        # --- 【新增开始】并发获取完整详情（含 Policy） ---
+        task_manager.update_status_from_thread(2, "正在获取用户详细权限策略...")
+        all_users_full = []
+        
+        def fetch_user_detail(u):
+            # 调用 emby.get_user_details 获取包含 Policy 的完整对象
+            return emby.get_user_details(u['Id'], emby_url, emby_key)
+
+        with ThreadPoolExecutor(max_workers=10) as executor:
+            futures = [executor.submit(fetch_user_detail, u) for u in all_users_basic]
+            for future in as_completed(futures):
+                try:
+                    user_detail = future.result()
+                    if user_detail:
+                        all_users_full.append(user_detail)
+                except Exception:
+                    pass
+
         # 步骤 2: ★★★ 新增：执行清理逻辑 ★★★
         task_manager.update_status_from_thread(5, "正在比对本地与Emby用户差异...")
         
         # a. 获取 Emby 上所有用户的 ID 集合
-        emby_user_ids = {user['Id'] for user in all_users}
+        emby_user_ids = {user['Id'] for user in all_users_basic}
         
         # b. 获取本地数据库中所有用户的 ID 集合
         local_user_ids = user_db.get_all_local_emby_user_ids()
@@ -53,22 +72,22 @@ def task_sync_all_user_data(processor):
             logger.info("  ➜ 本地用户与Emby用户一致，无需清理。")
 
         # 步骤 3: 更新或插入最新的用户信息到本地缓存 (此逻辑保持不变)
-        if not all_users:
+        if not all_users_basic:
             task_manager.update_status_from_thread(100, "任务完成：Emby中没有任何用户。")
             return
         
         # 3.1 同步基础信息 (ID, Name, IsAdmin...)
-        user_db.upsert_emby_users_batch(all_users)
+        user_db.upsert_emby_users_batch(all_users_basic)
 
         # 3.2 ★★★ 新增：同步扩展信息 (Registration Date, 确保有记录) ★★★
         task_manager.update_status_from_thread(8, "正在同步用户注册时间与扩展状态...")
-        user_db.upsert_emby_users_extended_batch_sync(all_users)
+        user_db.upsert_emby_users_extended_batch_sync(all_users_basic)
         
         # 步骤 4: 循环同步每个用户的媒体播放状态 (此逻辑保持不变)
-        total_users = len(all_users)
+        total_users = len(all_users_basic)
         logger.info(f"  ➜ 共找到 {total_users} 个Emby用户，将逐一同步其数据...")
 
-        for i, user in enumerate(all_users):
+        for i, user in enumerate(all_users_basic):
             user_id = user.get('Id')
             user_name = user.get('Name')
             if not user_id: continue
