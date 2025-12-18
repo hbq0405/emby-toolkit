@@ -324,7 +324,7 @@ def handle_mimicked_library_metadata_endpoint(path, mimicked_id, params):
     
 def handle_get_mimicked_library_items(user_id, mimicked_id, params):
     """
-    处理虚拟库（合集）的项目请求，支持权限过滤、数量限制、随机采样。
+    【V7 - 实时架构+原生排序适配版】
     """
     try:
         # 1. 获取合集基础信息
@@ -333,118 +333,96 @@ def handle_get_mimicked_library_items(user_id, mimicked_id, params):
         if not collection_info:
             return Response(json.dumps({"Items": [], "TotalRecordCount": 0}), mimetype='application/json')
 
-        # 2. 解析合集定义 (确保是字典对象)
         definition = collection_info.get('definition_json') or {}
         if isinstance(definition, str):
-            try:
-                definition = json.loads(definition)
-            except Exception as e:
-                logger.error(f"解析合集定义失败: {e}")
-                definition = {}
+            try: definition = json.loads(definition)
+            except: definition = {}
 
         collection_type = collection_info.get('type')
         
-        # 3. 获取分页和排序参数
+        # 2. 获取分页和排序参数
         emby_limit = int(params.get('Limit', 50))
         offset = int(params.get('StartIndex', 0))
         
-        # 确定合集定义的默认排序
         defined_sort_by = definition.get('default_sort_by', 'DateCreated')
         defined_sort_order = definition.get('default_sort_order', 'Descending')
         
-        # 优先听合集定义的，如果定义是 none，则听 Emby 客户端的
+        # 确定最终排序字段
         sort_by = defined_sort_by if defined_sort_by and defined_sort_by != 'none' else params.get('SortBy', 'DateCreated')
         sort_order = defined_sort_order if defined_sort_by and defined_sort_by != 'none' else params.get('SortOrder', 'Descending')
 
-        # 4. 数量限制逻辑 (防止灰块的关键)
+        # ★★★ 核心判断：是否需要 Emby 原生排序 ★★★
+        # 推荐类需要随机采样，DateLastContentAdded 需要 Emby 内部数据
+        is_emby_proxy_sort_required = (
+            collection_type in ['ai_recommendation', 'ai_recommendation_global'] or 
+            'DateLastContentAdded' in sort_by
+        )
+
+        # 3. 数量限制逻辑
         defined_limit = definition.get('limit')
         if defined_limit is not None:
             defined_limit = int(defined_limit)
-            # 如果翻页偏移量已达上限，直接返回空
-            if offset >= defined_limit:
+            if not is_emby_proxy_sort_required and offset >= defined_limit:
                 return Response(json.dumps({"Items": [], "TotalRecordCount": defined_limit}), mimetype='application/json')
-            # 实际查询数量 = min(Emby要的数量, 剩余配额)
-            actual_query_limit = min(emby_limit, defined_limit - offset)
-        else:
-            actual_query_limit = emby_limit
 
-        # 5. 确定查询范围 (TMDB ID 过滤)
+        # 4. 准备 SQL 查询范围
         tmdb_ids_filter = None
         rules = definition.get('rules', [])
         logic = definition.get('logic', 'AND')
         item_types = definition.get('item_type', ['Movie'])
         target_library_ids = definition.get('target_library_ids', [])
 
-        # 针对不同合集类型准备 ID 池
         if collection_type == 'ai_recommendation':
-            # 个人推荐：实时生成大候选池 (300个)
             api_key = config_manager.APP_CONFIG.get("tmdb_api_key")
             if api_key:
                 engine = RecommendationEngine(api_key)
                 candidate_pool = engine.generate_user_vector(user_id, limit=300, allowed_types=item_types)
                 tmdb_ids_filter = [str(i['id']) for i in candidate_pool]
-        
         elif collection_type in ['list', 'ai_recommendation_global']:
-            # 榜单/全局推荐：从缓存读取 TMDB ID
             raw_items_json = collection_info.get('generated_media_info_json')
             if raw_items_json:
                 raw_items = json.loads(raw_items_json) if isinstance(raw_items_json, str) else raw_items_json
                 tmdb_ids_filter = [str(i.get('tmdb_id')) for i in raw_items if i.get('tmdb_id')]
 
-        # 6. 确定是否需要随机采样模式
-        # 推荐类合集：SQL 随机选出 ID，然后再按定义的排序展示
-        is_random_sample_type = collection_type in ['ai_recommendation', 'ai_recommendation_global']
-        sql_sort_by = 'Random' if is_random_sample_type else sort_by
+        # 5. 执行 SQL 查询获取 ID 池
+        # 如果要交给 Emby 排序，SQL 就不负责分页，直接捞出该合集下所有符合权限的 ID
+        sql_limit = defined_limit if is_emby_proxy_sort_required and defined_limit else 5000 if is_emby_proxy_sort_required else min(emby_limit, defined_limit - offset) if defined_limit else emby_limit
+        sql_offset = 0 if is_emby_proxy_sort_required else offset
+        sql_sort = 'Random' if 'ai_recommendation' in collection_type else 'DateCreated' if is_emby_proxy_sort_required else sort_by
 
-        # 7. 执行 SQL 查询 (带权限、带库过滤、带ID池)
         items, total_count = queries_db.query_virtual_library_items(
-            rules=rules,
-            logic=logic,
-            user_id=user_id,
-            limit=actual_query_limit,
-            offset=offset,
-            sort_by=sql_sort_by, # 随机采样或常规排序
-            sort_order=sort_order,
-            item_types=item_types,
-            target_library_ids=target_library_ids,
+            rules=rules, logic=logic, user_id=user_id,
+            limit=sql_limit, offset=sql_offset,
+            sort_by=sql_sort, sort_order=sort_order,
+            item_types=item_types, target_library_ids=target_library_ids,
             tmdb_ids=tmdb_ids_filter
         )
 
-        # 8. 修正对外报告的总数 (防止灰块)
-        if defined_limit is not None:
-            reported_total_count = min(total_count, defined_limit)
-        else:
-            reported_total_count = total_count
+        reported_total_count = min(total_count, defined_limit) if defined_limit else total_count
 
         if not items:
             return Response(json.dumps({"Items": [], "TotalRecordCount": reported_total_count}), mimetype='application/json')
 
-        # 9. 获取详情并返回
         final_emby_ids = [i['Id'] for i in items]
-        fields = params.get('Fields', "PrimaryImageAspectRatio,BasicSyncInfo,DateCreated,UserData,SortName")
+        full_fields = "PrimaryImageAspectRatio,ProviderIds,UserData,Name,ProductionYear,CommunityRating,DateCreated,PremiereDate,Type,RecursiveItemCount,SortName,ChildCount,BasicSyncInfo"
 
-        if is_random_sample_type:
-            # 推荐类：将随机选出的 ID 交给 Emby 代理，按真实排序（如日期）换取详情
+        # 6. 分发结果
+        if is_emby_proxy_sort_required:
+            # 移交排序权给 Emby
             sorted_data = _fetch_sorted_items_via_emby_proxy(
-                user_id, final_emby_ids, sort_by, sort_order, emby_limit, 0, fields, reported_total_count
+                user_id, final_emby_ids, sort_by, sort_order, emby_limit, offset, full_fields, reported_total_count
             )
             return Response(json.dumps(sorted_data), mimetype='application/json')
         else:
-            # 筛选类/榜单类：直接批量获取详情
+            # 本地 SQL 已完成排序和分页，直接批量取详情
             base_url, api_key = _get_real_emby_url_and_key()
-            items_from_emby = _fetch_items_in_chunks(base_url, api_key, user_id, final_emby_ids, fields)
-            
-            # 保持 SQL 返回的顺序
+            items_from_emby = _fetch_items_in_chunks(base_url, api_key, user_id, final_emby_ids, full_fields)
             items_map = {item['Id']: item for item in items_from_emby}
             final_items = [items_map[eid] for eid in final_emby_ids if eid in items_map]
-
-            return Response(json.dumps({
-                "Items": final_items, 
-                "TotalRecordCount": reported_total_count 
-            }), mimetype='application/json')
+            return Response(json.dumps({"Items": final_items, "TotalRecordCount": reported_total_count}), mimetype='application/json')
 
     except Exception as e:
-        logger.error(f"处理虚拟库 '{mimicked_id}' 时发生严重错误: {e}", exc_info=True)
+        logger.error(f"处理虚拟库 '{mimicked_id}' 失败: {e}", exc_info=True)
         return Response(json.dumps({"Items": [], "TotalRecordCount": 0}), mimetype='application/json')
 
 def handle_get_latest_items(user_id, params):

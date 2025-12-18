@@ -392,7 +392,6 @@ def query_virtual_library_items(
     # 8. 排序映射
     sort_map = {
         'DateCreated': 'm.date_added',
-        'DateLastContentAdded': 'm.last_synced_at',
         'DatePlayed': 'm.date_added',
         'SortName': 'm.title',
         'ProductionYear': 'm.release_year',
