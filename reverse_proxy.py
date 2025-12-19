@@ -372,13 +372,19 @@ def handle_get_mimicked_library_items(user_id, mimicked_id, params):
         item_types = definition.get('item_type', ['Movie'])
         target_library_ids = definition.get('target_library_ids', [])
 
-        if collection_type == 'ai_recommendation':
+        if collection_type in ['ai_recommendation', 'ai_recommendation_global']:
             api_key = config_manager.APP_CONFIG.get("tmdb_api_key")
             if api_key:
                 engine = RecommendationEngine(api_key)
-                candidate_pool = engine.generate_user_vector(user_id, limit=300, allowed_types=item_types)
+                if collection_type == 'ai_recommendation':
+                    # 个人推荐：基于用户历史
+                    candidate_pool = engine.generate_user_vector(user_id, limit=300, allowed_types=item_types)
+                else:
+                    # 全局推荐：基于全站热门
+                    candidate_pool = engine.generate_global_vector(limit=300, allowed_types=item_types)
+                
                 tmdb_ids_filter = [str(i['id']) for i in candidate_pool]
-        elif collection_type in ['list', 'ai_recommendation_global']:
+        elif collection_type == 'list':
             raw_items_json = collection_info.get('generated_media_info_json')
             if raw_items_json:
                 raw_items = json.loads(raw_items_json) if isinstance(raw_items_json, str) else raw_items_json

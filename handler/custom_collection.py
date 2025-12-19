@@ -974,6 +974,28 @@ class RecommendationEngine:
         
         return results
 
+    def generate_global_vector(self, limit: int = 300, allowed_types: List[str] = None) -> List[Dict]:
+        """
+        【全局向量推荐】
+        逻辑：全站热门记录 -> 向量引擎 -> 库内 300 个相似项。
+        """
+        logger.debug("  ➜ [全局向量推荐] 正在基于全站热度计算候选池...")
+        
+        # 1. 获取全站热门作为“种子”
+        context_history_items = media_db.get_global_popular_items(limit=20)
+        if not context_history_items:
+            return []
+
+        # 2. 直接调用现有的向量搜索逻辑，在库内捞 300 个
+        # 这样出来的全是“在库媒体”，且数量管饱
+        results = self._vector_search(
+            user_history_items=context_history_items,
+            exclusion_ids=set(), # 全局推荐不需要排除已看
+            limit=limit,
+            allowed_types=allowed_types 
+        )
+        return results
+
     def generate(self, definition: Dict) -> List[Dict[str, str]]:
         """
         推荐生成器。

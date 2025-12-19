@@ -352,22 +352,13 @@
                     </template>
                     <template v-else-if="rule.field === 'unified_rating'">
                       <n-select
-                        v-if="['is_one_of', 'is_none_of'].includes(rule.operator)"
                         v-model:value="rule.value"
-                        multiple
-                        placeholder="选择一个或多个家长分级"
-                        :options="unifiedRatingOptions" 
-                        :disabled="!rule.operator"
-                        style="flex-grow: 1; min-width: 220px;"
-                      />
-                      <n-select
-                        v-else
-                        v-model:value="rule.value"
-                        placeholder="选择一个家长分级"
-                        :options="unifiedRatingOptions" 
+                        :multiple="['is_one_of', 'is_none_of'].includes(rule.operator)"
+                        placeholder="请选择分级"
+                        :options="unifiedRatingOptions"
                         :disabled="!rule.operator"
                         clearable
-                        style="flex-grow: 1;"
+                        style="flex-grow: 1; min-width: 200px;"
                       />
                     </template>
                     <template v-else-if="rule.field === 'actors' || rule.field === 'directors'">
@@ -421,9 +412,9 @@
                       style="width: 180px;"
                     />
                     <n-input 
-                        v-else-if="!['actors', 'directors'].includes(rule.field)" 
+                        v-else-if="!['actors', 'directors', 'unified_rating', 'genres', 'tags'].includes(rule.field)" 
                         v-model:value="rule.value" 
-                        placeholder="值" 
+                        placeholder="请输入值" 
                         :disabled="!rule.operator" 
                     />
                   </div>
@@ -1767,12 +1758,12 @@ const unifiedRatingOptions = ref([]);
 const fetchUnifiedRatingOptions = async () => {
   try {
     const response = await axios.get('/api/custom_collections/config/unified_ratings');
-    unifiedRatingOptions.value = response.data.map(name => ({
+    unifiedRatingOptions.value = response.data.filter(i => i).map(name => ({
       label: name,
       value: name
     }));
   } catch (error) {
-    message.error('获取家长分级列表失败。');
+    console.error('获取家长分级失败', error);
   }
 };
 
