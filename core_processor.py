@@ -186,13 +186,13 @@ class MediaProcessor:
         real_library_id = None
         lib_guid = None
 
-        # 1. 预加载/检查全局库 GUID 映射
+        # 确保全局 GUID 映射已加载
         if not hasattr(self, '_global_lib_guid_map') or not self._global_lib_guid_map:
-            self._refresh_lib_guid_map() # 这个函数见下方
+            self._refresh_lib_guid_map()
 
         try:
             curr_id = item_id
-            # 向上爬最多 10 层
+            # 向上爬最多 10 层，直到找到 ParentId 为 1 的节点（即媒体库节点）
             for _ in range(10):
                 details = emby.get_emby_item_details(
                     curr_id, self.emby_url, self.emby_api_key, self.emby_user_id,
@@ -203,7 +203,7 @@ class MediaProcessor:
                 p_id = details.get('ParentId')
                 if p_id:
                     id_to_parent_map[str(curr_id)] = str(p_id)
-                    # 如果父级是 1，说明当前 curr_id 就是【媒体库 ID】
+                    # ★ 核心逻辑：在 Emby 中，媒体库节点的父级 ID 永远是 "1"
                     if str(p_id) == "1":
                         real_library_id = str(curr_id)
                         break
@@ -211,16 +211,17 @@ class MediaProcessor:
                 else:
                     break
             
-            # 2. 确定最终的库 GUID
-            # 优先使用爬树找出来的 real_library_id
-            target_lib_id = real_library_id or source_lib_id
-            if target_lib_id and str(target_lib_id).lower() != "none":
-                lib_guid = self._global_lib_guid_map.get(str(target_lib_id))
+            # 从全局映射表中查找 GUID
+            if real_library_id:
+                lib_guid = self._global_lib_guid_map.get(real_library_id)
+                if not lib_guid: # 如果没找到，尝试刷新后再找一次
+                    self._refresh_lib_guid_map()
+                    lib_guid = self._global_lib_guid_map.get(real_library_id)
 
         except Exception as e:
             logger.error(f"  ➜ 实时构建爬树地图失败: {e}")
 
-        return id_to_parent_map, lib_guid
+        return id_to_parent_map, lib_guid, real_library_id
 
     # --- 更新媒体元数据缓存 ---
     def _upsert_media_metadata(
@@ -241,9 +242,10 @@ class MediaProcessor:
         item_id = str(item_details_from_emby.get('Id'))
         source_lib_id = str(item_details_from_emby.get('_SourceLibraryId'))
 
-        source_lib_id = item_details_from_emby.get('_SourceLibraryId')
+        id_to_parent_map, lib_guid, real_lib_id = self._get_realtime_ancestor_context(item_id)
 
-        id_to_parent_map, lib_guid = self._get_realtime_ancestor_context(item_id, source_lib_id)
+        # 打印一下调试信息，看看爬到没有
+        logger.info(f"  ➜ [实时入库调试] 爬树结果: LibraryID={real_lib_id}, GUID={lib_guid}")
 
         def get_representative_runtime(emby_items, tmdb_runtime):
             if not emby_items: return tmdb_runtime
@@ -290,7 +292,7 @@ class MediaProcessor:
                     id_to_parent_map=id_to_parent_map, 
                     library_guid=lib_guid
                 )
-                asset_details['source_library_id'] = source_lib_id
+                asset_details['source_library_id'] = real_lib_id
                 
                 movie_record['asset_details_json'] = json.dumps([asset_details], ensure_ascii=False)
                 movie_record['emby_item_ids_json'] = json.dumps([item_id])
