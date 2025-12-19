@@ -154,7 +154,28 @@ class MediaProcessor:
         self._stop_event = threading.Event()
         self.processed_items_cache = self._load_processed_log_from_db()
         self.manual_edit_cache = TTLCache(maxsize=10, ttl=600)
+        self._global_lib_guid_map = {}
+        self._last_lib_map_update = 0
         logger.trace("核心处理器初始化完成。")
+
+    def _refresh_lib_guid_map(self):
+        """从 Emby 实时获取所有媒体库的 ID 到 GUID 映射"""
+        try:
+            # 调用 emby.py 中的函数
+            libs_data = emby.get_all_libraries_with_paths(self.emby_url, self.emby_api_key)
+            new_map = {}
+            for lib in libs_data:
+                info = lib.get('info', {})
+                l_id = str(info.get('Id'))
+                l_guid = str(info.get('Guid'))
+                if l_id and l_guid:
+                    new_map[l_id] = l_guid
+            
+            self._global_lib_guid_map = new_map
+            self._last_lib_map_update = time.time()
+            logger.debug(f"  ➜ 已刷新媒体库 GUID 映射表，共加载 {len(new_map)} 个库。")
+        except Exception as e:
+            logger.error(f"刷新媒体库 GUID 映射失败: {e}")
 
     # --- 实时获取项目的祖先地图和库 GUID ---
     def _get_realtime_ancestor_context(self, item_id: str, source_lib_id: str) -> Tuple[Dict[str, str], Optional[str]]:
@@ -164,56 +185,39 @@ class MediaProcessor:
         id_to_parent_map = {}
         lib_guid = None
 
-        try:
-            # 1. 优先从缓存拿 GUID
-            if not hasattr(self, '_lib_guid_cache'): self._lib_guid_cache = TTLCache(maxsize=100, ttl=3600)
-            if source_lib_id and source_lib_id in self._lib_guid_cache:
-                lib_guid = self._lib_guid_cache[source_lib_id]
+        # 1. 检查缓存是否为空或已过期（例如超过 1 小时）
+        if not self._global_lib_guid_map or (time.time() - self._last_lib_map_update > 3600):
+            self._refresh_lib_guid_map()
 
-            # 2. 手动向上追溯 ParentId 链条
+        # 2. 直接从 Map 中获取 GUID
+        lib_guid = self._global_lib_guid_map.get(str(source_lib_id))
+        
+        # 如果还是没拿到，尝试强制刷新一次（防止新创建的库还没进缓存）
+        if not lib_guid and source_lib_id:
+            self._refresh_lib_guid_map()
+            lib_guid = self._global_lib_guid_map.get(str(source_lib_id))
+
+        # 3. 向上爬树构建父子关系（用于计算 ancestor_ids）
+        try:
             curr_id = item_id
             for _ in range(10):
-                # 请求详情，注意这里增加了 Guid 字段
+                # 实时入库只需要 ParentId 即可，不需要再请求 Guid 字段
                 details = emby.get_emby_item_details(
                     curr_id, 
                     self.emby_url, 
                     self.emby_api_key, 
                     self.emby_user_id,
-                    fields="ParentId,Guid,Type",
+                    fields="ParentId",
                     silent_404=True
                 )
-                
                 if not details: break
                 
                 p_id = details.get('ParentId')
-                curr_type = details.get('Type')
-                curr_guid = details.get('Guid')
-
-                # ★ 核心逻辑：识别库节点
-                # 只要当前节点 ID 等于 source_lib_id，它就是我们要找的“库”
-                if str(curr_id) == str(source_lib_id):
-                    if curr_guid:
-                        lib_guid = str(curr_guid)
-                        self._lib_guid_cache[source_lib_id] = lib_guid
-                
-                # 记录父子关系
                 if p_id and p_id != '1':
                     id_to_parent_map[str(curr_id)] = str(p_id)
                     curr_id = str(p_id)
                 else:
-                    # 爬到头了
                     break
-            
-            # 3. 最后的兜底：如果爬了一圈还没拿到 GUID，调用一次库列表接口
-            if not lib_guid and source_lib_id:
-                libs_data = emby.get_all_libraries_with_paths(self.emby_url, self.emby_api_key)
-                for lib in libs_data:
-                    info = lib.get('info', {})
-                    if str(info.get('Id')) == str(source_lib_id):
-                        lib_guid = info.get('Guid')
-                        self._lib_guid_cache[source_lib_id] = lib_guid
-                        break
-                
         except Exception as e:
             logger.error(f"  ➜ 实时构建爬树地图失败: {e}")
 
