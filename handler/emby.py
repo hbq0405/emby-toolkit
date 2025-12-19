@@ -1570,7 +1570,7 @@ def get_all_libraries_with_paths(base_url: str, api_key: str) -> List[Dict[str, 
 
         libraries_with_paths = []
         for folder in virtual_folders_data:
-            if folder.get("ItemId") and folder.get("CollectionType") != "boxsets":
+            if not folder.get("CollectionType"):
                 continue
 
             lib_id = folder.get("ItemId")
