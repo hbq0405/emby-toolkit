@@ -10,7 +10,6 @@ from datetime import datetime, timezone
 
 from .connection import get_db_connection
 from .log_db import LogDBManager
-from .custom_collection_db import remove_tmdb_id_from_all_collections
 from .media_db import get_tmdb_id_from_emby_id
 import constants
 
@@ -778,7 +777,6 @@ def cleanup_deleted_media_item(item_id: str, item_name: str, item_type: str, ser
                     
                     conn.commit()
 
-            remove_tmdb_id_from_all_collections(target_tmdb_id_for_full_cleanup)
             logger.info(f"--- 对 TMDB ID: {target_tmdb_id_for_full_cleanup} 的完全清理已完成 ---")
 
     except Exception as e:
