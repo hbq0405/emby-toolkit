@@ -370,6 +370,24 @@
                         style="flex-grow: 1;"
                       />
                     </template>
+                    <!-- 新增：分辨率 -->
+                    <template v-else-if="['resolution', 'quality', 'effect', 'audio_lang'].includes(rule.field)">
+                      <n-select
+                        v-model:value="rule.value"
+                        :multiple="['is_one_of', 'is_none_of'].includes(rule.operator)"
+                        :options="
+                          rule.field === 'resolution' ? resolutionOptions :
+                          rule.field === 'quality' ? qualityOptions :
+                          rule.field === 'effect' ? effectOptions :
+                          audioLangOptions
+                        "
+                        :placeholder="'选择' + ruleConfig[rule.field].label"
+                        clearable
+                        filterable
+                        style="flex-grow: 1;"
+                        @update:value="() => { if(!rule.operator) rule.operator = 'eq' }"
+                      />
+                    </template>
                     <template v-else-if="rule.field === 'actors' || rule.field === 'directors'">
                       <n-select
                         :value="getPersonIdsFromRule(rule.value)"
@@ -1240,13 +1258,55 @@ const ruleConfig = {
   studios: { label: '工作室', type: 'select', operators: ['contains', 'is_one_of', 'is_none_of', 'is_primary'] },
   keywords: { label: '关键词', type: 'select', operators: ['contains', 'is_one_of', 'is_none_of'] },
   tags: { label: '标签', type: 'select', operators: ['contains', 'is_one_of', 'is_none_of'] }, 
-  unified_rating: { label: '家长分级', type: 'select', operators: ['is_one_of', 'is_none_of', 'eq'] },
+  unified_rating: { label: '家长分级', type: 'select', operators: ['is_one_of', 'is_none_of'] },
   release_date: { label: '上映于', type: 'date', operators: ['in_last_days', 'not_in_last_days'] },
   date_added: { label: '入库于', type: 'date', operators: ['in_last_days', 'not_in_last_days'] },
   is_in_progress: { label: '追剧状态', type: 'single_select_boolean', operators: ['is'] },
+  resolution: { label: '分辨率', type: 'select', operators: ['eq', 'is_one_of', 'is_none_of'] },
+  quality: { label: '质量标签', type: 'select', operators: ['eq', 'is_one_of', 'is_none_of'] },
+  effect: { label: '视频特效', type: 'select', operators: ['eq', 'is_one_of', 'is_none_of'] },
+  audio_lang: { label: '音轨语言', type: 'select', operators: ['contains', 'is_one_of'] },
   playback_status: { label: '播放状态', type: 'user_data_select', operators: ['is', 'is_not'] },
   is_favorite: { label: '是否收藏', type: 'user_data_bool', operators: ['is', 'is_not'] },
 };
+
+// 分辨率：对应 resolution_display
+const resolutionOptions = [
+  { label: '4K', value: '4k' },
+  { label: '1080P', value: '1080p' },
+  { label: '720P', value: '720p' },
+  { label: '480P', value: '480p' }
+];
+
+// 质量：对应 quality_display
+const qualityOptions = [
+  { label: 'Remux', value: 'Remux' },
+  { label: 'BluRay', value: 'BluRay' },
+  { label: 'WEB-DL', value: 'WEB-DL' },
+  { label: 'WEBrip', value: 'WEBrip' },
+  { label: 'HDTV', value: 'HDTV' },
+  { label: 'DVDrip', value: 'DVDrip' }
+];
+
+// 特效：对应 effect_display
+const effectOptions = [
+  { label: 'SDR', value: 'SDR' },
+  { label: 'HDR', value: 'HDR' },
+  { label: 'HDR10+', value: 'HDR10+' },
+  { label: '杜比视界 (所有)', value: 'DoVi' },
+  { label: 'DoVi P5', value: 'DoVi_P5' },
+  { label: 'DoVi P7', value: 'DoVi_P7' },
+  { label: 'DoVi P8', value: 'DoVi_P8' }
+];
+
+// 音轨：对应 audio_display 里的中文描述
+const audioLangOptions = [
+  { label: '国语', value: '国语' },
+  { label: '粤语', value: '粤语' },
+  { label: '英语', value: '英语' },
+  { label: '日语', value: '日语' },
+  { label: '韩语', value: '韩语' }
+];
 
 const operatorLabels = {
   contains: '包含', does_not_contain: '不包含', starts_with: '开头是', ends_with: '结尾是',    

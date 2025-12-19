@@ -565,6 +565,7 @@ def init_db():
                     cursor.execute("CREATE INDEX IF NOT EXISTS idx_mm_countries_gin ON media_metadata USING GIN(countries_json jsonb_path_ops);")
                     cursor.execute("CREATE INDEX IF NOT EXISTS idx_mm_studios_gin ON media_metadata USING GIN(studios_json jsonb_path_ops);")
                     cursor.execute("CREATE INDEX IF NOT EXISTS idx_mm_keywords_gin ON media_metadata USING GIN(keywords_json jsonb_path_ops);")
+                    cursor.execute("CREATE INDEX IF NOT EXISTS idx_mm_asset_details_gin ON media_metadata USING GIN(asset_details_json);")
 
                     # 9. 【复杂对象筛选】加速 导演 和 演员 的 ID 匹配 (@> 运算符)
                     cursor.execute("CREATE INDEX IF NOT EXISTS idx_mm_directors_gin ON media_metadata USING GIN(directors_json jsonb_path_ops);")

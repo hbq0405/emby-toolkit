@@ -299,6 +299,42 @@ def query_virtual_library_items(
                 clause = "m.watchlist_is_airing = %s"
                 params.append(bool(value))
 
+        # --- 9. 视频流属性筛选 (分辨率、质量、特效、编码) ---
+        asset_map = {
+            'resolution': 'resolution_display',
+            'quality': 'quality_display',
+            'effect': 'effect_display',
+            'codec': 'codec_display'
+        }
+
+        if field in asset_map:
+            json_key = asset_map[field]
+            if op == 'eq':
+                clause = f"EXISTS (SELECT 1 FROM jsonb_array_elements(m.asset_details_json) a WHERE a->>'{json_key}' = %s)"
+                params.append(value)
+            elif op == 'is_one_of':
+                clause = f"EXISTS (SELECT 1 FROM jsonb_array_elements(m.asset_details_json) a WHERE a->>'{json_key}' = ANY(%s))"
+                params.append(list(value))
+            elif op == 'is_none_of':
+                clause = f"NOT EXISTS (SELECT 1 FROM jsonb_array_elements(m.asset_details_json) a WHERE a->>'{json_key}' = ANY(%s))"
+                params.append(list(value))
+
+        # --- 10. 音轨筛选 (全部改为匹配 audio_display 字符串) ---
+        elif field == 'audio_lang':
+            # 因为 audio_display 是 "国语, 英语" 这种格式，所以用 ILIKE 匹配
+            if op in ['contains', 'eq']:
+                clause = f"EXISTS (SELECT 1 FROM jsonb_array_elements(m.asset_details_json) a WHERE a->>'audio_display' ILIKE %s)"
+                params.append(f"%{value}%")
+            elif op == 'is_one_of':
+                # 如果是多选，构造多个 ILIKE 的 OR 关系
+                sub_clauses = []
+                for val in (value if isinstance(value, list) else [value]):
+                    sub_clauses.append(f"a->>'audio_display' ILIKE %s")
+                    params.append(f"%{val}%")
+                
+                if sub_clauses:
+                    clause = f"EXISTS (SELECT 1 FROM jsonb_array_elements(m.asset_details_json) a WHERE ({' OR '.join(sub_clauses)}))"
+
         if clause:
             rule_clauses.append(clause)
 
