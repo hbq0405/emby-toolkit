@@ -370,7 +370,7 @@
                         style="flex-grow: 1;"
                       />
                     </template>
-                    <!-- 新增：分辨率 -->
+                    <!-- 分辨率\质量\特效\音轨 -->
                     <template v-else-if="['resolution', 'quality', 'effect', 'audio_lang'].includes(rule.field)">
                       <n-select
                         v-model:value="rule.value"
@@ -384,7 +384,7 @@
                         :placeholder="'选择' + ruleConfig[rule.field].label"
                         clearable
                         filterable
-                        style="flex-grow: 1;"
+                        style="flex-grow: 1; min-width: 200px;" 
                         @update:value="() => { if(!rule.operator) rule.operator = 'eq' }"
                       />
                     </template>
