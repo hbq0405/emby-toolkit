@@ -183,41 +183,40 @@ class MediaProcessor:
         实时获取项目的祖先地图和库 GUID。
         """
         id_to_parent_map = {}
+        real_library_id = None
         lib_guid = None
 
-        # 1. 检查缓存是否为空或已过期（例如超过 1 小时）
-        if not self._global_lib_guid_map or (time.time() - self._last_lib_map_update > 3600):
-            self._refresh_lib_guid_map()
+        # 1. 预加载/检查全局库 GUID 映射
+        if not hasattr(self, '_global_lib_guid_map') or not self._global_lib_guid_map:
+            self._refresh_lib_guid_map() # 这个函数见下方
 
-        # 2. 直接从 Map 中获取 GUID
-        lib_guid = self._global_lib_guid_map.get(str(source_lib_id))
-        
-        # 如果还是没拿到，尝试强制刷新一次（防止新创建的库还没进缓存）
-        if not lib_guid and source_lib_id:
-            self._refresh_lib_guid_map()
-            lib_guid = self._global_lib_guid_map.get(str(source_lib_id))
-
-        # 3. 向上爬树构建父子关系（用于计算 ancestor_ids）
         try:
             curr_id = item_id
+            # 向上爬最多 10 层
             for _ in range(10):
-                # 实时入库只需要 ParentId 即可，不需要再请求 Guid 字段
                 details = emby.get_emby_item_details(
-                    curr_id, 
-                    self.emby_url, 
-                    self.emby_api_key, 
-                    self.emby_user_id,
-                    fields="ParentId",
-                    silent_404=True
+                    curr_id, self.emby_url, self.emby_api_key, self.emby_user_id,
+                    fields="ParentId", silent_404=True
                 )
                 if not details: break
                 
                 p_id = details.get('ParentId')
-                if p_id and p_id != '1':
+                if p_id:
                     id_to_parent_map[str(curr_id)] = str(p_id)
+                    # 如果父级是 1，说明当前 curr_id 就是【媒体库 ID】
+                    if str(p_id) == "1":
+                        real_library_id = str(curr_id)
+                        break
                     curr_id = str(p_id)
                 else:
                     break
+            
+            # 2. 确定最终的库 GUID
+            # 优先使用爬树找出来的 real_library_id
+            target_lib_id = real_library_id or source_lib_id
+            if target_lib_id and str(target_lib_id).lower() != "none":
+                lib_guid = self._global_lib_guid_map.get(str(target_lib_id))
+
         except Exception as e:
             logger.error(f"  ➜ 实时构建爬树地图失败: {e}")
 
@@ -241,6 +240,8 @@ class MediaProcessor:
             return
         item_id = str(item_details_from_emby.get('Id'))
         source_lib_id = str(item_details_from_emby.get('_SourceLibraryId'))
+
+        source_lib_id = item_details_from_emby.get('_SourceLibraryId')
 
         id_to_parent_map, lib_guid = self._get_realtime_ancestor_context(item_id, source_lib_id)
 
