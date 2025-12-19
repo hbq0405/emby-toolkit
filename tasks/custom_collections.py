@@ -557,23 +557,21 @@ def process_single_custom_collection(processor, custom_collection_id: int):
 
             raw_tmdb_items, corrected_id_to_original_id_map = _apply_id_corrections(raw_tmdb_items, definition, collection_name)
             
-            # 映射 Emby ID (需要全量映射表，这里为了单任务简单，可以实时查或加载)
-            # 为了性能，这里只查需要的
-            items_needing_lookup = [item for item in raw_tmdb_items if not item.get('emby_id')]
-            lookup_map = {}
-            if items_needing_lookup:
-                lookup_map = media_db.get_emby_ids_for_items(items_needing_lookup)
+            # 映射 Emby ID (需要全量映射表)
+            task_manager.update_status_from_thread(15, "正在加载媒体映射表...")
+            # 放弃使用 get_emby_ids_for_items，改用批量任务同款函数
+            tmdb_to_emby_item_map = media_db.get_tmdb_to_emby_map()
 
             tmdb_items = []
             for item in raw_tmdb_items:
-                tmdb_id = str(item.get('id')) if item.get('id') else None
+                tmdb_id = str(item.get('id'))
                 media_type = item.get('type')
-                emby_id = item.get('emby_id')
+                emby_id = None
                 
-                if not emby_id and tmdb_id:
-                    key = f"{tmdb_id}_{media_type}"
-                    if key in lookup_map:
-                        emby_id = lookup_map[key]['Id']
+                # 统一使用 key 匹配
+                key = f"{tmdb_id}_{media_type}"
+                if key in tmdb_to_emby_item_map:
+                    emby_id = tmdb_to_emby_item_map[key]['Id']
                 
                 processed_item = {
                     'tmdb_id': tmdb_id,
@@ -592,7 +590,7 @@ def process_single_custom_collection(processor, custom_collection_id: int):
 
             if collection_type == 'list':
                 # 构造一个临时的 map 传给健康检查
-                tmdb_to_emby_map_full = lookup_map # 复用
+                tmdb_to_emby_map_full = tmdb_to_emby_item_map # 复用
                 _perform_list_collection_health_check(
                     tmdb_items=tmdb_items,
                     tmdb_to_emby_item_map=tmdb_to_emby_map_full,
