@@ -183,19 +183,10 @@ class MediaProcessor:
         实时获取项目的祖先地图和库 GUID。
         """
         id_to_parent_map = {}
-        lib_guid = None
-
-        # 1. 检查缓存是否为空或已过期（例如超过 1 小时）
+        # 1. 获取 GUID 映射 (保持不变)
         if not self._global_lib_guid_map or (time.time() - self._last_lib_map_update > 3600):
             self._refresh_lib_guid_map()
-
-        # 2. 直接从 Map 中获取 GUID
         lib_guid = self._global_lib_guid_map.get(str(source_lib_id))
-        
-        # 如果还是没拿到，尝试强制刷新一次（防止新创建的库还没进缓存）
-        if not lib_guid and source_lib_id:
-            self._refresh_lib_guid_map()
-            lib_guid = self._global_lib_guid_map.get(str(source_lib_id))
 
         # 3. 向上爬树构建父子关系（用于计算 ancestor_ids）
         try:
@@ -213,13 +204,20 @@ class MediaProcessor:
                 if not details: break
                 
                 p_id = details.get('ParentId')
+                if p_id == str(source_lib_id) and lib_guid:
+                    composite_id = f"{lib_guid}_{p_id}"
+                    id_to_parent_map[str(curr_id)] = composite_id
+                    # 同时建立复合 ID 到根的映射，确保 calculate_ancestor_ids 能识别
+                    id_to_parent_map[composite_id] = "1" 
+                    break 
+                
                 if p_id and p_id != '1':
-                    id_to_parent_map[str(curr_id)] = str(p_id)
-                    curr_id = str(p_id)
+                    id_to_parent_map[str(curr_id)] = p_id
+                    curr_id = p_id
                 else:
                     break
         except Exception as e:
-            logger.error(f"  ➜ 实时构建爬树地图失败: {e}")
+            logger.error(f"实时构建爬树地图失败: {e}")
 
         return id_to_parent_map, lib_guid
 
