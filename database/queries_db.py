@@ -181,169 +181,92 @@ def query_virtual_library_items(
         op = rule.get('operator')
         value = rule.get('value')
         
-        if value is None or value == '':
+        # 基础校验：跳过空值
+        if value is None or value == '' or (isinstance(value, list) and len(value) == 0):
             continue
 
         clause = None
         
-        # --- 1. 风格流派 (JSONB 字符串数组) ---
-        if field == 'genres':
-            if op == 'contains' or op == 'eq':
-                clause = "m.genres_json ? %s"
-                params.append(value)
+        # --- 1. 字符串数组类型 (JSONB 数组: genres, tags, studios, countries, keywords) ---
+        # 匹配逻辑：使用 PostgreSQL 的 ? (包含) 和 ?| (包含任一)
+        jsonb_array_fields = ['genres', 'tags', 'studios', 'countries', 'keywords']
+        if field in jsonb_array_fields:
+            column = f"m.{field}_json"
+            if op in ['contains', 'eq']:
+                clause = f"{column} ? %s"
+                params.append(str(value))
             elif op == 'is_one_of':
-                clause = "m.genres_json ?| %s"
+                clause = f"{column} ?| %s"
                 params.append(list(value) if isinstance(value, list) else [value])
             elif op == 'is_none_of':
-                clause = "NOT (m.genres_json ?| %s)"
+                clause = f"NOT ({column} ?| %s)"
                 params.append(list(value) if isinstance(value, list) else [value])
 
-        # --- 2. 标签 (JSONB 字符串数组) ---
-        elif field == 'tags':
-            if op == 'contains' or op == 'eq':
-                clause = "m.tags_json ? %s"
+        # --- 2. 复杂对象数组 (actors, directors) ---
+        # 数据库存储格式: [{"id": 123, "name": "..."}] 或 [{"tmdb_id": 123, ...}]
+        elif field in ['actors', 'directors']:
+            # 提取 ID 列表 (适配前端传来的对象数组)
+            ids = []
+            if isinstance(value, list):
+                ids = [item['id'] if isinstance(item, dict) else item for item in value]
+            elif isinstance(value, dict):
+                ids = [value.get('id')]
+            else:
+                ids = [value]
+            
+            # 过滤掉非数字 ID
+            ids = [int(i) for i in ids if str(i).isdigit()]
+            if not ids: continue
+
+            # 演员表用 tmdb_id，导演表用 id
+            id_key = 'tmdb_id' if field == 'actors' else 'id'
+            
+            if op in ['contains', 'is_one_of', 'eq', 'is_primary']:
+                # 检查 JSONB 数组中是否存在任一元素的 ID 在列表中
+                clause = f"EXISTS (SELECT 1 FROM jsonb_array_elements(m.{field}_json) elem WHERE (elem->>'{id_key}')::int = ANY(%s))"
+                params.append(ids)
+            elif op == 'is_none_of':
+                clause = f"NOT EXISTS (SELECT 1 FROM jsonb_array_elements(m.{field}_json) elem WHERE (elem->>'{id_key}')::int = ANY(%s))"
+                params.append(ids)
+
+        # --- 3. 家长分级 (unified_rating - 字符串匹配) ---
+        # 根据你的图片，这里存的是“青少年”、“成人”等中文
+        elif field == 'unified_rating':
+            if op == 'eq':
+                clause = "m.unified_rating = %s"
                 params.append(value)
             elif op == 'is_one_of':
-                clause = "m.tags_json ?| %s"
+                clause = "m.unified_rating = ANY(%s)"
                 params.append(list(value) if isinstance(value, list) else [value])
             elif op == 'is_none_of':
-                clause = "NOT (m.tags_json ?| %s)"
-                params.append(list(value) if isinstance(value, list) else [value])
-        
-        # --- 3. 制作公司/制片厂 (JSONB 字符串数组) ---
-        elif field == 'studios':
-            if op == 'contains' or op == 'eq':
-                clause = "m.studios_json ? %s"
-                params.append(value)
-            elif op == 'is_one_of':
-                clause = "m.studios_json ?| %s"
+                clause = "m.unified_rating IS NOT NULL AND NOT (m.unified_rating = ANY(%s))"
                 params.append(list(value) if isinstance(value, list) else [value])
 
-        # --- 4. 国家地区 (JSONB 字符串数组) ---
-        elif field == 'countries':
-            if op == 'contains' or op == 'eq':
-                clause = "m.countries_json ? %s"
-                params.append(value)
-            elif op == 'is_one_of':
-                clause = "m.countries_json ?| %s"
-                params.append(list(value) if isinstance(value, list) else [value])
-
-        # --- 5. 导演 (适配前端对象数组格式) ---
-        elif field == 'directors':
-            ids = []
-            names = []
-            
-            # 1. 解析前端传来的复杂 value (可能是对象数组，也可能是字符串)
-            if isinstance(value, list):
-                for item in value:
-                    if isinstance(item, dict) and item.get('id'):
-                        ids.append(item['id'])
-                    elif isinstance(item, str):
-                        names.append(item)
-            elif isinstance(value, dict) and value.get('id'):
-                ids.append(value['id'])
-            else:
-                names.append(str(value))
-
-            # 2. 构建 SQL
-            if ids:
-                # 匹配 ID 数组中的任意一个 (使用 JSONB 包含语法)
-                # 构造类似: (m.directors_json @> '[{"id": 2710}]' OR m.directors_json @> '[{"id": 123}]')
-                id_clauses = []
-                for i in ids:
-                    id_clauses.append("m.directors_json @> %s")
-                    params.append(json.dumps([{"id": int(i)}]))
-                clause = f"({' OR '.join(id_clauses)})"
-            elif names:
-                # 模糊匹配名字
-                name_clauses = []
-                for n in names:
-                    name_clauses.append("EXISTS (SELECT 1 FROM jsonb_array_elements(m.directors_json) d WHERE d->>'name' ILIKE %s)")
-                    params.append(f"%{n}%")
-                clause = f"({' OR '.join(name_clauses)})"
-
-        # --- 6. 演员 (适配前端对象数组格式) ---
-        elif field == 'actors':
-            ids = []
-            names = []
-            
-            if isinstance(value, list):
-                for item in value:
-                    if isinstance(item, dict) and item.get('id'):
-                        ids.append(item['id'])
-                    elif isinstance(item, str):
-                        names.append(item)
-            elif isinstance(value, dict) and value.get('id'):
-                ids.append(value['id'])
-            else:
-                names.append(str(value))
-
-            if ids:
-                # 演员表里存的是 tmdb_id
-                id_clauses = []
-                for i in ids:
-                    id_clauses.append("m.actors_json @> %s")
-                    params.append(json.dumps([{"tmdb_id": int(i)}]))
-                clause = f"({' OR '.join(id_clauses)})"
-            elif names:
-                name_clauses = []
-                for n in names:
-                    name_clauses.append("""
-                    EXISTS (
-                        SELECT 1 FROM jsonb_array_elements(m.actors_json) act
-                        JOIN person_identity_map p ON (act->>'tmdb_id')::int = p.tmdb_person_id
-                        WHERE p.name ILIKE %s OR p.original_text ILIKE %s
-                    )
-                    """)
-                    params.extend([f"%{n}%", f"%{n}%"])
-                clause = f"({' OR '.join(name_clauses)})"
-
-        # --- 7. 时长 (分钟，整数比较) ---
-        elif field == 'runtime':
+        # --- 4. 数值比较 (runtime, release_year, rating) ---
+        elif field in ['runtime', 'release_year', 'rating']:
+            col_map = {'runtime': 'm.runtime_minutes', 'release_year': 'm.release_year', 'rating': 'm.rating'}
+            column = col_map[field]
             try:
-                val_int = int(value)
-                if op == 'gte':
-                    clause = "m.runtime_minutes >= %s"
-                elif op == 'lte':
-                    clause = "m.runtime_minutes <= %s"
-                elif op == 'eq':
-                    clause = "m.runtime_minutes = %s"
-                if clause: params.append(val_int)
-            except (ValueError, TypeError): pass
+                val = float(value)
+                if op == 'gte': clause = f"{column} >= %s"
+                elif op == 'lte': clause = f"{column} <= %s"
+                elif op == 'eq': clause = f"{column} = %s"
+                if clause: params.append(val)
+            except (ValueError, TypeError): continue
 
-        # --- 8. 发行年份 (整数比较) ---
-        elif field == 'release_year':
+        # --- 5. 日期偏移 (date_added, release_date) ---
+        elif field in ['date_added', 'release_date']:
+            column = f"m.{field}"
             try:
-                val_int = int(value)
-                if op == 'eq':
-                    clause = "m.release_year = %s"
-                elif op == 'gte':
-                    clause = "m.release_year >= %s"
-                elif op == 'lte':
-                    clause = "m.release_year <= %s"
-                if clause: params.append(val_int)
-            except (ValueError, TypeError): pass
-        
-        # --- 9. 评分 (浮点数比较) ---
-        elif field == 'rating':
-            try:
-                val_float = float(value)
-                if op == 'gte':
-                    clause = "m.rating >= %s"
-                elif op == 'lte':
-                    clause = "m.rating <= %s"
-                if clause: params.append(val_float)
-            except (ValueError, TypeError): pass
-            
-        # --- 10. 入库时间 (日期运算) ---
-        elif field == 'date_added': 
-            if op == 'in_last_days':
-                try:
-                    days = int(value)
-                    clause = f"m.date_added >= NOW() - INTERVAL '{days} days'"
-                except (ValueError, TypeError): pass
-        
-        # --- 11. 标题 (文本模糊匹配) ---
+                days = int(value)
+                if op == 'in_last_days':
+                    clause = f"{column} >= NOW() - INTERVAL '%s days'"
+                elif op == 'not_in_last_days':
+                    clause = f"{column} < NOW() - INTERVAL '%s days'"
+                if clause: params.append(days)
+            except (ValueError, TypeError): continue
+
+        # --- 6. 文本模糊匹配 (title) ---
         elif field == 'title':
             if op == 'contains':
                 clause = "m.title ILIKE %s"
@@ -351,11 +274,17 @@ def query_virtual_library_items(
             elif op == 'starts_with':
                 clause = "m.title ILIKE %s"
                 params.append(f"{value}%")
+            elif op == 'ends_with':
+                clause = "m.title ILIKE %s"
+                params.append(f"%{value}")
             elif op == 'eq':
                 clause = "m.title = %s"
                 params.append(value)
+            elif op == 'does_not_contain':
+                clause = "m.title NOT ILIKE %s"
+                params.append(f"%{value}%")
 
-        # --- 12. 原始语言 (字符串匹配) ---
+        # --- 7. 原始语言 (original_language) ---
         elif field == 'original_language':
             if op == 'eq':
                 clause = "m.original_language = %s"
@@ -364,26 +293,11 @@ def query_virtual_library_items(
                 clause = "m.original_language = ANY(%s)"
                 params.append(list(value) if isinstance(value, list) else [value])
 
-        # --- 13. 剧情关键词 (JSONB 字符串数组) ---
-        elif field == 'keywords':
-            if op == 'contains' or op == 'eq':
-                clause = "m.keywords_json ? %s"
-                params.append(value)
-            elif op == 'is_one_of':
-                # 使用 PostgreSQL 的 ?| 运算符，检查 JSONB 数组是否包含给定数组中的任何一个元素
-                clause = "m.keywords_json ?| %s"
-                params.append(list(value) if isinstance(value, list) else [value])
-            elif op == 'is_none_of':
-                # 使用 NOT + ?|
-                clause = "NOT (m.keywords_json ?| %s)"
-                params.append(list(value) if isinstance(value, list) else [value])
-
-        # --- 14. 是否跟播中 (对应数据库 watchlist_is_airing) ---
+        # --- 8. 追剧状态 (is_in_progress) ---
         elif field == 'is_in_progress':
             if op == 'is':
-                # 直接匹配布尔值
                 clause = "m.watchlist_is_airing = %s"
-                params.append(value)
+                params.append(bool(value))
 
         if clause:
             rule_clauses.append(clause)
