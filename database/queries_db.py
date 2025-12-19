@@ -366,9 +366,17 @@ def query_virtual_library_items(
 
         # --- 13. 剧情关键词 (JSONB 字符串数组) ---
         elif field == 'keywords':
-            if op == 'contains':
+            if op == 'contains' or op == 'eq':
                 clause = "m.keywords_json ? %s"
                 params.append(value)
+            elif op == 'is_one_of':
+                # 使用 PostgreSQL 的 ?| 运算符，检查 JSONB 数组是否包含给定数组中的任何一个元素
+                clause = "m.keywords_json ?| %s"
+                params.append(list(value) if isinstance(value, list) else [value])
+            elif op == 'is_none_of':
+                # 使用 NOT + ?|
+                clause = "NOT (m.keywords_json ?| %s)"
+                params.append(list(value) if isinstance(value, list) else [value])
 
         # --- 14. 是否跟播中 (对应数据库 watchlist_is_airing) ---
         elif field == 'is_in_progress':
