@@ -10,7 +10,6 @@ logger = logging.getLogger(__name__)
 def check_tmdb_ids_in_library(tmdb_ids: List[str], item_type: str) -> Dict[str, str]:
     """
     接收 TMDb ID 列表，返回一个字典，映射 TMDb ID 到 Emby Item ID。
-    ★ 修正：返回的 Key 格式为 "{tmdb_id}_{item_type}"，以确保唯一性。
     """
     if not tmdb_ids:
         return {}
@@ -33,29 +32,6 @@ def check_tmdb_ids_in_library(tmdb_ids: List[str], item_type: str) -> Dict[str, 
         logger.error(f"DB: 检查 TMDb ID 是否在库时失败: {e}", exc_info=True)
         return {}
     
-def does_series_have_valid_actor_cache(tmdb_id: str) -> bool:
-    """
-    检查一个剧集是否在 media_metadata 中存在有效的演员缓存。
-    "有效"定义为 actors_json 字段存在且不为空数组 '[]'。
-    """
-    if not tmdb_id:
-        return False
-    
-    try:
-        with get_db_connection() as conn:
-            with conn.cursor() as cursor:
-                cursor.execute("""
-                    SELECT 1 FROM media_metadata 
-                    WHERE tmdb_id = %s AND item_type = 'Series'
-                      AND actors_json IS NOT NULL AND actors_json::text != '[]'
-                """, (tmdb_id,))
-                # 如果能查询到一行，说明缓存存在且有效
-                return cursor.fetchone() is not None
-    except Exception as e:
-        logger.error(f"检查剧集 {tmdb_id} 演员缓存时出错: {e}", exc_info=True)
-        # 安全起见，如果查询失败，我们假定缓存不存在，以便触发深度处理
-        return False
-    
 def get_tmdb_id_from_emby_id(emby_id: str) -> Optional[str]:
     """
     根据 Emby ID，从 media_metadata 表中反查出对应的 TMDB ID。
@@ -76,8 +52,7 @@ def get_tmdb_id_from_emby_id(emby_id: str) -> Optional[str]:
 
 def get_media_details(tmdb_id: str, item_type: str) -> Optional[Dict[str, Any]]:
     """
-    【新增】根据完整的复合主键 (tmdb_id, item_type) 获取唯一的一条媒体记录。
-    这是获取单个媒体详情最可靠的方法。
+    根据完整的复合主键 (tmdb_id, item_type) 获取唯一的一条媒体记录。
     """
     if not tmdb_id or not item_type:
         return None
@@ -95,7 +70,7 @@ def get_media_details(tmdb_id: str, item_type: str) -> Optional[Dict[str, Any]]:
 
 def get_media_details_by_tmdb_ids(tmdb_ids: List[str]) -> Dict[str, Dict[str, Any]]:
     """
-    【V3 - 新增核心工具】根据 TMDB ID 列表，批量获取 media_metadata 表中的完整记录。
+    根据 TMDB ID 列表，批量获取 media_metadata 表中的完整记录。
     返回一个以 tmdb_id 为键，整行记录字典为值的 map，方便快速查找。
     """
     if not tmdb_ids:
@@ -115,38 +90,9 @@ def get_media_details_by_tmdb_ids(tmdb_ids: List[str]) -> Dict[str, Dict[str, An
         logger.error(f"根据TMDb ID列表批量获取媒体详情时出错: {e}", exc_info=True)
         return {}
 
-def get_all_media_metadata(item_type: str = 'Movie') -> List[Dict[str, Any]]:
-    """从媒体元数据缓存表中获取指定类型的所有记录。"""
-    
-    try:
-        with get_db_connection() as conn:
-            cursor = conn.cursor()
-            cursor.execute("SELECT * FROM media_metadata WHERE item_type = %s AND in_library = TRUE", (item_type,))
-            rows = cursor.fetchall()
-            return [dict(row) for row in rows]
-    except psycopg2.Error as e:
-        logger.error(f"获取所有媒体元数据时出错 (类型: {item_type}): {e}", exc_info=True)
-        return []
-
-def get_media_in_library_status_by_tmdb_ids(tmdb_ids: List[str]) -> Dict[str, bool]:
-    """ 根据 TMDB ID 列表，批量查询媒体的在库状态。"""
-    if not tmdb_ids: return {}
-    in_library_map = {}
-    try:
-        with get_db_connection() as conn:
-            cursor = conn.cursor()
-            sql = "SELECT tmdb_id FROM media_metadata WHERE tmdb_id = ANY(%s) AND in_library = TRUE AND item_type IN ('Movie', 'Series')"
-            cursor.execute(sql, (tmdb_ids,))
-            for row in cursor.fetchall():
-                in_library_map[row['tmdb_id']] = True
-        return in_library_map
-    except psycopg2.Error as e:
-        logger.error(f"批量获取媒体在库状态时出错: {e}", exc_info=True)
-        return {}
-    
 def get_all_wanted_media() -> List[Dict[str, Any]]:
     """
-    【V2 - 增加父剧信息版】获取所有状态为 'WANTED' 的媒体项。
+    获取所有状态为 'WANTED' 的媒体项。
     为 Season 类型的项目额外提供 parent_series_tmdb_id。
     """
     sql = """
@@ -171,7 +117,7 @@ def get_all_wanted_media() -> List[Dict[str, Any]]:
     
 def promote_pending_to_wanted() -> int:
     """
-    【新增】检查所有状态为 'PENDING_RELEASE' 的媒体项。
+    检查所有状态为 'PENDING_RELEASE' 的媒体项。
     如果其发行日期已到或已过，则将其状态更新为 'WANTED'。
     返回被成功晋升状态的媒体项数量。
     """
@@ -198,7 +144,6 @@ def promote_pending_to_wanted() -> int:
 
 def ensure_media_record_exists(media_info_list: List[Dict[str, Any]]):
     """
-    【V1 - 职责单一版】
     确保媒体元数据记录存在于数据库中。
     - 如果记录不存在，则创建它，订阅状态默认为 'NONE'。
     - 如果记录已存在，则只更新其基础元数据（标题、海报、父子关系等）。
@@ -302,6 +247,9 @@ def get_all_subscriptions() -> List[Dict[str, Any]]:
         return []
     
 def get_user_request_history(user_id: str, page: int = 1, page_size: int = 10, status_filter: str = 'all') -> tuple[List[Dict[str, Any]], int]:
+    """
+    获取用户订阅历史记录。
+    """
     offset = (page - 1) * page_size
     source_filter = json.dumps([{"type": "user_request", "user_id": user_id}])
 
@@ -526,30 +474,9 @@ def get_in_library_status_with_type_bulk(tmdb_ids: list) -> Dict[str, bool]:
         logger.error(f"DB: 批量查询(带类型)在库状态失败: {e}", exc_info=True)
         return {}
     
-def get_all_children_for_series_batch(parent_series_tmdb_ids: List[str]) -> set:
-    """
-    根据父剧集ID列表，批量获取所有已存在的子项（季、集）的TMDB ID。
-    返回一个集合(set)，用于进行高性能的查找。
-    """
-    if not parent_series_tmdb_ids:
-        return set()
-    
-    sql = """
-        SELECT tmdb_id FROM media_metadata 
-        WHERE parent_series_tmdb_id = ANY(%s) AND item_type IN ('Season', 'Episode');
-    """
-    try:
-        with get_db_connection() as conn:
-            with conn.cursor() as cursor:
-                cursor.execute(sql, (parent_series_tmdb_ids,))
-                return {str(row['tmdb_id']) for row in cursor.fetchall()}
-    except Exception as e:
-        logger.error(f"DB: 批量查询剧集子项ID时失败: {e}", exc_info=True)
-        return set()
-
 def get_series_local_children_info(parent_tmdb_id: str) -> dict:
     """
-    【新】从本地数据库获取一个剧集在媒体库中的结构信息。
+    从本地数据库获取一个剧集在媒体库中的结构信息。
     返回与旧版 emby.get_series_children 兼容的格式。
     格式: { season_num: {ep_num1, ep_num2, ...} }
     """
@@ -574,41 +501,14 @@ def get_series_local_children_info(parent_tmdb_id: str) -> dict:
         logger.error(f"从本地数据库获取剧集 {parent_tmdb_id} 的子项目结构时失败: {e}")
         return {}
 
-def get_series_local_episodes_overview(parent_tmdb_id: str) -> list:
-    """
-    【新】从本地数据库获取一个剧集所有分集的元数据，用于检查简介。
-    返回一个字典列表，每个字典包含分集的基本信息。
-    """
-    try:
-        with get_db_connection() as conn:
-            cursor = conn.cursor()
-            sql = """
-                SELECT emby_item_ids_json->>0 AS emby_item_id, season_number, episode_number, overview
-                FROM media_metadata
-                WHERE parent_series_tmdb_id = %s
-                  AND item_type = 'Episode'
-                  AND in_library = TRUE
-            """
-            cursor.execute(sql, (parent_tmdb_id,))
-            return [dict(row) for row in cursor.fetchall()]
-    except Exception as e:
-        logger.error(f"从本地数据库获取剧集 {parent_tmdb_id} 的分集元数据时失败: {e}")
-        return []
-
 def update_media_metadata_fields(tmdb_id: str, item_type: str, updates: Dict[str, Any]):
     """
-    【V2 - 通用元数据更新】
     根据传入的 updates 字典，动态更新指定媒体的字段。
     常态化更新逻辑：更新除片名/演员表之外的所有元数据。
     """
     if not tmdb_id or not item_type or not updates:
         return
 
-    # ★★★ 核心保护机制 ★★★
-    # 过滤掉空键，并强制移除不允许更新的敏感字段
-    # title: 保护用户/Emby修改过的中文标题
-    # actors_json: 保护演员表（通常由专门的演员任务处理）
-    # tmdb_id/item_type: 主键不能改
     safe_updates = {
         k: v for k, v in updates.items() 
         if k not in ['title', 'actors_json', 'tmdb_id', 'item_type']
@@ -642,9 +542,7 @@ def update_media_metadata_fields(tmdb_id: str, item_type: str, updates: Dict[str
 
 def get_tmdb_to_emby_map(library_ids: Optional[List[str]] = None) -> Dict[str, Dict[str, Any]]:
     """
-    【性能优化 - 修正版 V2】直接从数据库生成全量映射表。
-    Key 格式升级为 "{tmdb_id}_{item_type}"。
-    修复了启用媒体库过滤时，剧集(Series)因没有资产信息而被错误过滤的问题。
+    直接从数据库生成全量映射表。
     """
     try:
         with get_db_connection() as conn:
@@ -721,68 +619,6 @@ def get_tmdb_to_emby_map(library_ids: Optional[List[str]] = None) -> Dict[str, D
         logger.error(f"从数据库生成 TMDb->Emby 映射时出错: {e}", exc_info=True)
         return {}
     
-def get_series_average_runtime(parent_tmdb_id: str) -> float:
-    """
-    计算指定剧集下所有分集（Episode）的平均时长。
-    优先使用 runtime_minutes，如果为0或空，尝试解析 asset_details_json。
-    """
-    if not parent_tmdb_id:
-        return 0.0
-        
-    try:
-        with get_db_connection() as conn:
-            cursor = conn.cursor()
-            # 逻辑：
-            # 1. 筛选该剧集下的所有 Episode
-            # 2. 优先取 runtime_minutes
-            # 3. 如果 runtime_minutes 无效，尝试从 asset_details_json 取 (这里简化处理，主要依赖 runtime_minutes，因为入库时已处理过)
-            # 4. 计算平均值
-            sql = """
-                SELECT AVG(runtime_minutes) as avg_runtime
-                FROM media_metadata
-                WHERE parent_series_tmdb_id = %s 
-                  AND item_type = 'Episode' 
-                  AND runtime_minutes > 0
-            """
-            cursor.execute(sql, (str(parent_tmdb_id),))
-            row = cursor.fetchone()
-            if row and row['avg_runtime']:
-                return float(row['avg_runtime'])
-            return 0.0
-    except Exception as e:
-        logger.error(f"计算剧集 {parent_tmdb_id} 平均时长时出错: {e}")
-        return 0.0
-    
-def get_runtimes_for_series_list(tmdb_ids: List[str]) -> Dict[str, float]:
-    """
-    只计算指定 ID 列表中的剧集平均时长。
-    利用索引精准打击，避免全表扫描。
-    """
-    if not tmdb_ids:
-        return {}
-        
-    try:
-        with get_db_connection() as conn:
-            cursor = conn.cursor()
-            sql = """
-                SELECT parent_series_tmdb_id, AVG(runtime_minutes) as avg_runtime
-                FROM media_metadata
-                WHERE item_type = 'Episode' 
-                  AND runtime_minutes > 0
-                  AND parent_series_tmdb_id = ANY(%s)
-                GROUP BY parent_series_tmdb_id
-            """
-            cursor.execute(sql, (tmdb_ids,))
-            rows = cursor.fetchall()
-            
-            return {
-                str(row['parent_series_tmdb_id']): float(row['avg_runtime']) 
-                for row in rows
-            }
-    except Exception as e:
-        logger.error(f"批量计算指定剧集平均时长时出错: {e}")
-        return {}
-    
 def get_user_request_stats(user_id: str) -> Dict[str, int]:
     """获取用户订阅请求的统计信息"""
     source_filter = json.dumps([{"type": "user_request", "user_id": user_id}])
@@ -819,7 +655,7 @@ def get_user_request_stats(user_id: str) -> Dict[str, int]:
     
 def delete_media_metadata_batch(items: List[Dict[str, str]]) -> int:
     """
-    【新增】批量物理删除媒体元数据。
+    【批量物理删除媒体元数据。
     仅删除 in_library = FALSE 的记录，防止误删已入库项目。
     """
     if not items:
