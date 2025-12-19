@@ -1061,7 +1061,7 @@ def get_global_popular_items(limit: int = 20) -> List[Dict[str, Any]]:
             history = [dict(row) for row in rows]
             
             if history:
-                logger.info(f"  ➜ [数据库] 提取到全站最热 Top {len(history)} 作品 (榜首: {history[0].get('title')}, {history[0].get('play_count')}人看过)。")
+                logger.trace(f"  ➜ [数据库] 提取到全站最热 Top {len(history)} 作品 (榜首: {history[0].get('title')}, {history[0].get('play_count')}人看过)。")
             else:
                 logger.warning("  ➜ [数据库] 全站暂无播放记录，无法生成全局热榜。")
                 
