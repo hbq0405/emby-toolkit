@@ -205,10 +205,11 @@ class MediaProcessor:
                 
                 p_id = details.get('ParentId')
                 if p_id == str(source_lib_id) and lib_guid:
+                    # 构造 Emby 特有的复合 ID: GUID_数字ID
                     composite_id = f"{lib_guid}_{p_id}"
-                    id_to_parent_map[str(curr_id)] = composite_id
-                    # 同时建立复合 ID 到根的映射，确保 calculate_ancestor_ids 能识别
-                    id_to_parent_map[composite_id] = "1" 
+                    id_to_parent_map[curr_id] = composite_id
+                    # 复合 ID 的父级是系统根节点 "1"
+                    id_to_parent_map[composite_id] = "1"
                     break 
                 
                 if p_id and p_id != '1':

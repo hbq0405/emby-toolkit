@@ -1575,6 +1575,7 @@ def get_all_libraries_with_paths(base_url: str, api_key: str) -> List[Dict[str, 
 
             lib_id = folder.get("ItemId")
             lib_name = folder.get("Name")
+            lib_guid = folder.get("Guid")
             locations = folder.get("Locations", [])
 
             if lib_id and lib_name and locations:
@@ -1582,6 +1583,7 @@ def get_all_libraries_with_paths(base_url: str, api_key: str) -> List[Dict[str, 
                     "info": {
                         "Name": lib_name,
                         "Id": lib_id,
+                        "Guid": lib_guid,
                         "CollectionType": folder.get("CollectionType")
                     },
                     "paths": locations
