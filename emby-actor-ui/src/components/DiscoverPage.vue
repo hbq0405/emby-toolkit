@@ -244,7 +244,11 @@
               <div class="overlay-info">
                 <div class="text-content">
                   <div class="media-title" :title="media.title || media.name">{{ media.title || media.name }}</div>
-                  <div class="media-year">{{ getYear(media) }}</div>
+                  <div class="media-meta-row">
+                    <span class="media-year">{{ getYear(media) }}</span>
+                    <span v-if="getYear(media) && getGenreNames(media.genre_ids)" class="media-dot">·</span>
+                    <span class="media-genres">{{ getGenreNames(media.genre_ids) }}</span>
+                  </div>
                 </div>
 
                 <!-- 4. 交互图标 -->
@@ -336,6 +340,17 @@ const isLoadingMore = ref(false);
 const searchQuery = ref('');
 const isSearchMode = computed(() => searchQuery.value.trim() !== '');
 const sentinel = ref(null);
+
+// 将 genre_ids 转换为中文名称字符串
+const getGenreNames = (genreIds) => {
+  if (!genreIds || genreIds.length === 0 || genres.value.length === 0) return '';
+  
+  return genreIds
+    .map(id => genres.value.find(g => g.id === id)?.name)
+    .filter(Boolean) // 过滤掉没找到的
+    .slice(0, 2)    // 卡片空间有限，最多显示前两个类型
+    .join(' / ');
+};
 
 // ... (所有 fetch* 和其他辅助函数保持不变) ...
 const getYear = (media) => {
@@ -755,10 +770,33 @@ onUnmounted(() => { if (observer) { observer.disconnect(); } });
   text-overflow: ellipsis;
 }
 
-.media-year {
+.media-meta-row {
+  display: flex;
+  align-items: center;
   color: rgba(255, 255, 255, 0.85);
   font-size: 0.8em;
   text-shadow: 0 1px 2px rgba(0,0,0,0.8);
+  overflow: hidden; /* 整体超出隐藏 */
+}
+
+.media-year {
+  flex-shrink: 0; /* 年份不压缩 */
+}
+
+.media-dot {
+  margin: 0 4px;
+  flex-shrink: 0;
+}
+
+.media-genres {
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis; /* 类型太长时显示省略号 */
+}
+
+/* 稍微调整标题间距 */
+.media-title {
+  margin-bottom: 1px; /* 压缩一下行间距 */
 }
 
 /* 评分角标 */
