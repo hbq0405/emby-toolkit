@@ -615,7 +615,7 @@ class WatchlistProcessor:
                     # 逻辑：S1-S3 没了就没了，不补；S4(最新) 没了必须补回来，因为要追更。
                     if s_num == latest_season_num:
                         if not enable_sync_sub:
-                            logger.debug("  ➜ [MP同步] 模块开关关闭，跳过自动补订。")
+                            logger.debug("  ➜ 自动补订开关关闭，跳过自动补订。")
                             continue
                         logger.info(f"  🔍 [MP同步] 发现《{series_name}》最新季 S{s_num} 在 MoviePilot 中无活跃订阅，正在自动补订...")
                         sub_success = moviepilot.subscribe_series_to_moviepilot(

@@ -488,7 +488,7 @@
                 </n-switch>
               </div>
               <div class="setting-desc">
-                当发现 MoviePilot 中缺失活跃订阅时自动补订。若使用网盘等非 MP 方式追更，请关闭此项。
+                当发现 MoviePilot 中缺失活跃订阅时自动补订。
               </div>
             </div>
           </div>
