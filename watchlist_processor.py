@@ -1241,7 +1241,12 @@ class WatchlistProcessor:
         # ======================================================================
         
         # 1. 读取配置开关
-        # 在 settings_db 或 config 中定义 'enable_backfill'，默认为 False (不补旧番)
+        # A. 全局订阅总开关 (从 self.config 获取)
+        if not self.config.get(constants.CONFIG_OPTION_AUTOSUB_ENABLED):
+            logger.debug("  ➜ 订阅总开关未开启，跳过缺失季订阅检查。")
+            return
+
+        # B. 补旧番功能开关 (从数据库获取)
         watchlist_cfg = settings_db.get_setting('watchlist_config') or {}
         enable_backfill = watchlist_cfg.get('enable_backfill', False)
 
@@ -1257,19 +1262,17 @@ class WatchlistProcessor:
                 if season_num is None: continue
 
                 # --- 逻辑分支 A: 最新季 (New Season) ---
-                # 你的要求：完全交给 run_new_season_check_task 处理，此处直接忽略。
+                # 完全交给 run_new_season_check_task 处理，此处直接忽略。
                 if season_num >= latest_season_num:
-                    # logger.debug(f"  ➜ [逻辑跳过] S{season_num} 是最新季，交由复活任务处理，本流程不执行订阅。")
                     continue
 
                 # --- 逻辑分支 B: 旧季 (Old Seasons) ---
-                # 你的要求：由开关控制。
+                # 你的要求：由 enable_backfill 开关控制。
                 if not enable_backfill:
-                    # 如果你想看日志确认开关生效，可以取消下面注释
-                    # logger.debug(f"  ➜ [补全跳过] S{season_num} 是旧季且补旧番开关(enable_backfill)未开启。")
+                    logger.debug(f"  ➜ S{season_num} 是旧季但自动补全旧季未开启。")
                     continue
 
-                # --- 执行补旧番逻辑 (仅当开关开启 且 是旧季时) ---
+                # --- 执行补旧番逻辑 (仅当全局开启、功能开启、且是旧季时) ---
                 season_tmdb_id = str(season.get('id'))
                 media_info = {
                     'tmdb_id': season_tmdb_id,
@@ -1283,7 +1286,7 @@ class WatchlistProcessor:
                     'parent_series_tmdb_id': tmdb_id
                 }
                 
-                # 检查播出时间（虽然旧季通常都播完了，但为了严谨还是保留判断）
+                # 检查播出时间
                 air_date_str = season.get('air_date')
                 is_released = False
                 if air_date_str:
@@ -1295,7 +1298,6 @@ class WatchlistProcessor:
                         pass
                 
                 if is_released:
-                    # 只有已上映的旧季才补，未上映的旧季(理论不存在)不补
                     result = request_db.set_media_status_wanted(
                         tmdb_ids=season_tmdb_id,
                         item_type='Season',
