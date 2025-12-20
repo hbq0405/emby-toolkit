@@ -475,8 +475,27 @@
           </div>
 
           <n-divider style="margin: 0" />
+          
+          <!-- 5 MoviePilot 自动补订 -->
+          <div class="setting-item">
+            <div class="setting-icon"><n-icon :component="GitNetworkOutline" /></div>
+            <div class="setting-content">
+              <div class="setting-header">
+                <div class="setting-label">MoviePilot 自动补订</div>
+                <n-switch v-model:value="watchlistConfig.sync_mp_subscription" size="small">
+                  <template #checked>开启</template>
+                  <template #unchecked>关闭</template>
+                </n-switch>
+              </div>
+              <div class="setting-desc">
+                当发现 MoviePilot 中缺失活跃订阅时自动补订。若使用网盘等非 MP 方式追更，请关闭此项。
+              </div>
+            </div>
+          </div>
 
-          <!-- 5. 缺集自动洗版 -->
+          <n-divider style="margin: 0" />
+
+          <!-- 6. 缺集自动洗版 -->
           <div class="setting-item">
             <div class="setting-icon"><n-icon :component="GapIcon" /></div>
             <div class="setting-content">
@@ -567,7 +586,8 @@ const watchlistConfig = ref({
   auto_pause: false,
   auto_resub_ended: false,
   gap_fill_resubscribe: false,
-  enable_backfill: false
+  enable_backfill: false,
+  sync_mp_subscription: false
 });
 
 const openConfigModal = async () => {
@@ -585,7 +605,8 @@ const openConfigModal = async () => {
          auto_pause: data.auto_pause ?? false,
          auto_resub_ended: data.auto_resub_ended ?? false,
          gap_fill_resubscribe: data.gap_fill_resubscribe ?? false,
-         enable_backfill: data.enable_backfill ?? false 
+         enable_backfill: data.enable_backfill ?? false,
+         sync_mp_subscription: data.sync_mp_subscription ?? false
        };
     }
   } catch (e) {
