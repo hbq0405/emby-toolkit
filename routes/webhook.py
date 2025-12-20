@@ -605,8 +605,16 @@ def emby_webhook():
 
     item_from_webhook = data.get("Item", {}) if data else {}
     original_item_id = item_from_webhook.get("Id")
-    original_item_name = item_from_webhook.get("Name", "未知项目")
     original_item_type = item_from_webhook.get("Type")
+    
+    # 如果是分集，将名字格式化为 "剧名 - 集名"，方便日志搜索
+    raw_name = item_from_webhook.get("Name", "未知项目")
+    series_name = item_from_webhook.get("SeriesName")
+    
+    if original_item_type == "Episode" and series_name:
+        original_item_name = f"{series_name} - {raw_name}"
+    else:
+        original_item_name = raw_name
     
     trigger_types = ["Movie", "Series", "Episode", "BoxSet"]
     if not (original_item_id and original_item_type in trigger_types):
