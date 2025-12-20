@@ -1133,14 +1133,16 @@ class WatchlistProcessor:
         logger.info(f"  ➜ 最终判定 '{item_name}' 的真实连载状态为: {is_truly_airing} (内部状态: {translate_internal_status(final_status)})")
 
         # ======================================================================
-        # ★★★ 完结自动洗版逻辑 ★★★
+        # ★★★ 完结自动洗版逻辑 (V2 - 完结日精准判定版) ★★★
         # ======================================================================
+        # 1. 状态流转检查：必须是从“活跃”变更为“完结”，且不是手动强制完结
         if final_status == STATUS_COMPLETED and old_status in [STATUS_WATCHING, STATUS_PAUSED, STATUS_PENDING] and not is_force_ended:
             
-            # ★★★ 优化 1：先检查开关，没开直接跳过，省去后续计算 ★★★
-            if watchlist_cfg.get('auto_resub_ended', False):
+            # 2. 读取功能开关 (从数据库配置中获取)
+            watchlist_cfg = settings_db.get_setting('watchlist_config') or {}
+            if watchlist_cfg.get('auto_resub_ended', False): 
                 
-                # 1. 获取分季信息，找到最后一季
+                # 3. 获取最后一季信息
                 seasons = latest_series_data.get('seasons', [])
                 valid_seasons = sorted([s for s in seasons if s.get('season_number', 0) > 0], key=lambda x: x['season_number'])
                 
@@ -1149,25 +1151,38 @@ class WatchlistProcessor:
                     last_s_num = target_season.get('season_number')
                     last_ep_count = target_season.get('episode_count', 0)
                     
-                    # 2. ★★★ 优化 2：完结时效性检查 (防止老剧误洗) ★★★
-                    should_wash = True
-                    last_air_date_str = target_season.get('air_date')
+                    # 4. 获取“最后一集”的实际播出日期
+                    last_ep_info = latest_series_data.get("last_episode_to_air")
+                    actual_finish_date_str = None
                     
-                    if last_air_date_str:
+                    if last_ep_info and last_ep_info.get('season_number') == last_s_num:
+                        actual_finish_date_str = last_ep_info.get('air_date')
+                    else:
+                        actual_finish_date_str = target_season.get('air_date')
+
+                    # 5. 完结时效性检查 (30天准则)
+                    should_wash = True
+                    if actual_finish_date_str:
                         try:
-                            last_air_date = datetime.strptime(last_air_date_str, '%Y-%m-%d').date()
-                            days_since_air = (today - last_air_date).days
+                            finish_date = datetime.strptime(actual_finish_date_str, '%Y-%m-%d').date()
+                            days_since_finish = (today - finish_date).days
                             
-                            # 如果最后一季首播超过 90 天，视为老剧状态修正，不洗版
-                            if days_since_air > 90:
+                            # 如果完结超过 30 天，视为老剧状态修正，不洗版
+                            if days_since_finish > 30:
                                 should_wash = False
-                                logger.info(f"  🛑 [洗版跳过] 《{item_name}》虽状态转为完结，但最终季 S{last_s_num} 首播于 {days_since_air} 天前，判定为老剧状态修正，不执行洗版。")
-                        except ValueError:
+                                logger.info(f"  🛑 《{item_name}》最终集播出已久 ({days_since_finish}天前)，不执行洗版。")
+                            elif days_since_finish < -1:
+                                should_wash = False # 还没播完，不洗
+                        except (ValueError, TypeError):
                             pass
 
-                    # 3. 执行洗版 (传入明确参数)
+                    # 6. 执行洗版
                     if should_wash:
+                        logger.info(f"  🚀 《{item_name}》刚刚播完，准备执行自动洗版订阅...")
                         self._handle_auto_resub_ended(tmdb_id, item_name, last_s_num, last_ep_count)
+            else:
+                # 如果开关没开，可以打印一个 debug 日志（可选）
+                logger.debug(f"  ➜ 《{item_name}》已完结，但 完结自动洗版 开关未开启。")
 
         # 更新追剧数据库
         updates_to_db = {
