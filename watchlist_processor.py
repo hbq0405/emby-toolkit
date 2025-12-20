@@ -82,48 +82,16 @@ class WatchlistProcessor:
 
     # ★★★ 核心修改 1: 重构统一的数据库更新函数 ★★★
     def _update_watchlist_entry(self, tmdb_id: str, item_name: str, updates: Dict[str, Any]):
-        """【新架构】统一更新 media_metadata 表中的追剧信息。"""
-        # 字段名映射：将旧的逻辑键名映射到新的数据库列名
-        column_mapping = {
-            'status': 'watching_status',
-            'paused_until': 'paused_until',
-            'tmdb_status': 'watchlist_tmdb_status',
-            'next_episode_to_air_json': 'watchlist_next_episode_json',
-            'missing_info_json': 'watchlist_missing_info_json',
-            'last_episode_to_air_json': 'last_episode_to_air_json', # 这个字段是主元数据的一部分
-            'is_airing': 'watchlist_is_airing',
-            'force_ended': 'force_ended'
-        }
-        
-        # 使用映射转换 updates 字典
-        db_updates = {column_mapping[k]: v for k, v in updates.items() if k in column_mapping}
-        
-        if not db_updates:
-            logger.warning(f"  ➜ 尝试更新 '{item_name}'，但没有提供有效的更新字段。")
-            return
-
+        """【新架构】直接调用 DB 层更新，不再做字段映射。"""
         try:
-            with connection.get_db_connection() as conn:
-                with conn.cursor() as cursor:
-                    # 使用 NOW() 让数据库自己处理时间，更可靠
-                    db_updates['watchlist_last_checked_at'] = 'NOW()'
-                    
-                    # 动态生成 SET 子句，特殊处理 NOW()
-                    set_clauses = [f"{key} = {value}" if key == 'watchlist_last_checked_at' else f"{key} = %s" for key, value in db_updates.items()]
-                    values = [v for k, v in db_updates.items() if k != 'watchlist_last_checked_at']
-                    values.append(tmdb_id)
-                    
-                    sql = f"UPDATE media_metadata SET {', '.join(set_clauses)} WHERE tmdb_id = %s AND item_type = 'Series'"
-                    
-                    cursor.execute(sql, tuple(values))
-                conn.commit()
-                logger.info(f"  ➜ 成功更新数据库中 '{item_name}' 的追剧信息。")
+            watchlist_db.update_watchlist_metadata(tmdb_id, updates)
+            logger.info(f"  ➜ 成功更新数据库中 '{item_name}' 的追剧信息。")
         except Exception as e:
-            logger.error(f"  更新 '{item_name}' 的追剧信息时数据库出错: {e}", exc_info=True)
+            logger.error(f"  更新 '{item_name}' 追剧信息时出错: {e}")
 
     # ★★★ 核心修改 2: 重构自动添加追剧列表的函数 ★★★
     def add_series_to_watchlist(self, item_details: Dict[str, Any]):
-        """ 将新剧集加入数据库，并立即触发核心状态判定。"""
+        """ 【V14 - 统一判定版】"""
         if item_details.get("Type") != "Series": return
         tmdb_id = item_details.get("ProviderIds", {}).get("Tmdb")
         item_name = item_details.get("Name")
@@ -131,42 +99,23 @@ class WatchlistProcessor:
         if not tmdb_id or not item_name or not item_id: return
 
         try:
-            with connection.get_db_connection() as conn:
-                with conn.cursor() as cursor:
-                    # 1. 插入基础记录，初始状态设为 'NONE' (确保 old_status 绝对安全)
-                    sql = """
-                        INSERT INTO media_metadata (tmdb_id, item_type, title, watching_status, emby_item_ids_json)
-                        VALUES (%s, 'Series', %s, 'NONE', %s)
-                        ON CONFLICT (tmdb_id, item_type) DO UPDATE SET
-                            emby_item_ids_json = (
-                                SELECT jsonb_agg(DISTINCT elem)
-                                FROM (
-                                    SELECT jsonb_array_elements_text(media_metadata.emby_item_ids_json) AS elem
-                                    UNION ALL
-                                    SELECT jsonb_array_elements_text(EXCLUDED.emby_item_ids_json) AS elem
-                                ) AS combined
-                            )
-                        RETURNING watching_status, force_ended, emby_item_ids_json;
-                    """
-                    cursor.execute(sql, (tmdb_id, item_name, json.dumps([item_id])))
-                    row = cursor.fetchone()
-                    
-                    if row:
-                        # 2. 构造一个符合 _process_one_series 格式的字典
-                        series_data = {
-                            'tmdb_id': tmdb_id,
-                            'item_name': item_name,
-                            'status': row[0],       # 这里的 status 就是 old_status
-                            'force_ended': row[1],
-                            'emby_item_ids_json': row[2]
-                        }
-                        # 3. 直接调用核心处理器进行状态校准
-                        # 因为 old_status 是 'NONE'，所以绝对不会触发洗版逻辑
-                        self._process_one_series(series_data)
-                        
-                conn.commit()
+            # 1. 调用 DB 层进行 Upsert，并拿到当前状态
+            db_row = watchlist_db.upsert_series_initial_record(tmdb_id, item_name, item_id)
+            
+            if db_row:
+                # 2. 构造判定数据 (字段名直接对齐数据库)
+                series_data = {
+                    'tmdb_id': tmdb_id,
+                    'item_name': item_name,
+                    'watching_status': db_row['watching_status'], # 👈 修复点：使用字符串 Key
+                    'force_ended': db_row['force_ended'],
+                    'emby_item_ids_json': db_row['emby_item_ids_json']
+                }
+                # 3. 立即触发一次判定流
+                self._process_one_series(series_data)
+                
         except Exception as e:
-            logger.error(f"自动添加剧集 '{item_name}' 时出错: {e}", exc_info=True)
+            logger.error(f"自动添加剧集 '{item_name}' 时出错: {e}")
 
     # --- 核心任务启动器  ---
     def run_regular_processing_task_concurrent(self, progress_callback: callable, tmdb_id: Optional[str] = None, force_full_update: bool = False):
@@ -821,7 +770,7 @@ class WatchlistProcessor:
         emby_ids = series_data.get('emby_item_ids_json', [])
         item_id = emby_ids[0] if emby_ids else None
         item_name = series_data['item_name']
-        old_status = series_data.get('status')
+        old_status = series_data.get('watching_status') 
         is_force_ended = bool(series_data.get('force_ended', False))
         
         logger.info(f"  ➜ 【追剧检查】正在处理: '{item_name}' (TMDb ID: {tmdb_id})")
@@ -1144,13 +1093,13 @@ class WatchlistProcessor:
 
         # 更新追剧数据库
         updates_to_db = {
-            "status": final_status,
+            "watching_status": final_status, 
             "paused_until": paused_until_date.isoformat() if paused_until_date else None,
-            "tmdb_status": new_tmdb_status,
-            "next_episode_to_air_json": json.dumps(real_next_episode_to_air) if real_next_episode_to_air else None,
-            "missing_info_json": json.dumps(missing_info),
+            "watchlist_tmdb_status": new_tmdb_status, 
+            "watchlist_next_episode_json": json.dumps(real_next_episode_to_air) if real_next_episode_to_air else None,
+            "watchlist_missing_info_json": json.dumps(missing_info),
             "last_episode_to_air_json": json.dumps(last_episode_to_air) if last_episode_to_air else None,
-            "is_airing": is_truly_airing
+            "watchlist_is_airing": is_truly_airing
         }
         # 如果是待定状态，强制修改总集数为“虚标”值
         if final_status == STATUS_PENDING:

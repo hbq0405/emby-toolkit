@@ -951,3 +951,71 @@ def update_watching_status_by_tmdb_id(tmdb_id: str, item_type: str, new_status: 
             logger.debug(f"  ➜ 已更新 {tmdb_id} ({item_type}) 的追剧状态为 {new_status}")
     except Exception as e:
         logger.error(f"更新追剧状态失败: {e}")
+
+def upsert_series_initial_record(tmdb_id: str, item_name: str, item_id: str) -> Dict[str, Any]:
+    """
+    【核心】Webhook 入库专用：插入或更新剧集基础记录。
+    返回当前的 watching_status 和 force_ended，供后续判定使用。
+    """
+    sql = """
+        INSERT INTO media_metadata (tmdb_id, item_type, title, watching_status, emby_item_ids_json)
+        VALUES (%s, 'Series', %s, 'NONE', %s)
+        ON CONFLICT (tmdb_id, item_type) DO UPDATE SET
+            emby_item_ids_json = (
+                SELECT jsonb_agg(DISTINCT elem)
+                FROM (
+                    SELECT jsonb_array_elements_text(media_metadata.emby_item_ids_json) AS elem
+                    UNION ALL
+                    SELECT jsonb_array_elements_text(EXCLUDED.emby_item_ids_json) AS elem
+                ) AS combined
+            )
+        RETURNING watching_status, force_ended, emby_item_ids_json;
+    """
+    try:
+        with get_db_connection() as conn:
+            cursor = conn.cursor()
+            cursor.execute(sql, (tmdb_id, item_name, json.dumps([item_id])))
+            row = cursor.fetchone()
+            conn.commit()
+            return dict(row) if row else {}
+    except Exception as e:
+        logger.error(f"DB: 初始入库剧集 {item_name} 失败: {e}")
+        raise
+
+def update_watchlist_metadata(tmdb_id: str, updates: Dict[str, Any]):
+    """
+    【核心】统一更新 media_metadata 表中所有追剧相关的字段。
+    不再需要字段映射，传入的字典 key 必须与数据库列名完全一致。
+    """
+    if not updates:
+        return
+
+    # 自动补充最后检查时间
+    updates['watchlist_last_checked_at'] = 'NOW()'
+    
+    # 动态构建 SET 子句
+    # 特殊处理 NOW()，它不需要占位符 %s
+    set_clauses = []
+    values = []
+    for k, v in updates.items():
+        if v == 'NOW()':
+            set_clauses.append(f"{k} = NOW()")
+        else:
+            set_clauses.append(f"{k} = %s")
+            values.append(v)
+    
+    sql = f"""
+        UPDATE media_metadata 
+        SET {', '.join(set_clauses)} 
+        WHERE tmdb_id = %s AND item_type = 'Series'
+    """
+    values.append(tmdb_id)
+
+    try:
+        with get_db_connection() as conn:
+            cursor = conn.cursor()
+            cursor.execute(sql, tuple(values))
+            conn.commit()
+    except Exception as e:
+        logger.error(f"DB: 更新剧集 {tmdb_id} 追剧元数据失败: {e}")
+        raise
