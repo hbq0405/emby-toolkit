@@ -634,7 +634,7 @@ def init_db():
                         'custom_collections': [
                             'missing_count',
                             'health_status',
-                            'poster_path'
+                            'poster_path',
                             'generated_emby_ids_json' # <-- 在这里添加了废弃的列！
                         ]
                     }
