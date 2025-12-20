@@ -385,7 +385,7 @@ def task_process_all_custom_collections(processor):
                 # ==================================================================
                 # 分支 B: 榜单/推荐类 (List/AI) - 全量模式
                 # ==================================================================
-                elif collection_type in ['list', 'ai_recommendation_global', 'ai_recommendation']:
+                elif collection_type in ['list', 'ai_recommendation_global']:
                     raw_tmdb_items = []
                     if collection_type == 'list':
                         importer = ListImporter(processor.tmdb_api_key)
@@ -434,6 +434,30 @@ def task_process_all_custom_collections(processor):
                         collection_db_record=collection,
                         tmdb_api_key=processor.tmdb_api_key
                     )
+
+                # ==================================================================
+                # 分支 C: 个性化推荐 (AI) - 封面快车道 (不耗 Tokens)
+                # ==================================================================
+                elif collection_type == 'ai_recommendation':
+                    # 后台任务仅为了生成封面，不需要真的调用 LLM
+                    # 直接从数据库随机取 20 个项目作为封面素材
+                    admin_user_id = processor.emby_user_id
+                    target_library_ids = definition.get('target_library_ids', [])
+                    
+                    sample_items, _ = queries_db.query_virtual_library_items(
+                        rules=[], # 无过滤规则
+                        logic='AND',
+                        user_id=admin_user_id,
+                        limit=20, # 取 20 个足够封面轮换了
+                        offset=0,
+                        item_types=definition.get('item_type', ['Movie']),
+                        target_library_ids=target_library_ids
+                    )
+                    
+                    global_ordered_emby_ids = [item['Id'] for item in sample_items]
+                    # 数据库里存个简单的占位，不需要存全量
+                    items_for_db = [{'emby_id': item['Id']} for item in sample_items]
+                    total_count = 0 # 推荐类合集在后台任务中不计总数
 
                 # ==================================================================
                 # 通用后续处理
@@ -546,7 +570,7 @@ def process_single_custom_collection(processor, custom_collection_id: int):
         # ==================================================================
         # 分支 B: 榜单/推荐类 (List/AI) - 全量模式
         # ==================================================================
-        elif collection_type in ['list', 'ai_recommendation_global', 'ai_recommendation']:
+        elif collection_type in ['list', 'ai_recommendation_global']:
             raw_tmdb_items = []
             if collection_type == 'list':
                 importer = ListImporter(processor.tmdb_api_key)
@@ -599,6 +623,30 @@ def process_single_custom_collection(processor, custom_collection_id: int):
                     collection_db_record=collection,
                     tmdb_api_key=processor.tmdb_api_key
                 )
+
+        # ==================================================================
+        # 分支 C: 个性化推荐 (AI) - 封面快车道 (不耗 Tokens)
+        # ==================================================================
+        elif collection_type == 'ai_recommendation':
+            # 后台任务仅为了生成封面，不需要真的调用 LLM
+            # 直接从数据库随机取 20 个项目作为封面素材
+            admin_user_id = processor.emby_user_id
+            target_library_ids = definition.get('target_library_ids', [])
+            
+            sample_items, _ = queries_db.query_virtual_library_items(
+                rules=[], # 无过滤规则
+                logic='AND',
+                user_id=admin_user_id,
+                limit=20, # 取 20 个足够封面轮换了
+                offset=0,
+                item_types=definition.get('item_type', ['Movie']),
+                target_library_ids=target_library_ids
+            )
+            
+            global_ordered_emby_ids = [item['Id'] for item in sample_items]
+            # 数据库里存个简单的占位，不需要存全量
+            items_for_db = [{'emby_id': item['Id']} for item in sample_items]
+            total_count = 0 # 推荐类合集在后台任务中不计总数
 
         if not global_ordered_emby_ids and collection_type != 'ai_recommendation':
              # 如果没找到任何东西，且不是AI推荐（AI推荐允许空），则清空 Emby 实体合集
