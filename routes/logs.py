@@ -251,10 +251,20 @@ def render_log_html(blocks, query):
 
     for block in blocks:
         file_name = block['file']
-        # 既然每行都有时间，块头就不显示日期了，只显示来源文件，极简
+        # ★★★ 新增：获取该块对应的日期 (search_logs_with_context 已经传了这个字段)
+        # 如果是普通查看模式，date 可能不存在，所以用 .get()
+        full_date = block.get('date', '') 
+        
+        # 构造页眉内容
+        header_html = f"📄 {html.escape(file_name)}"
+        if full_date:
+            # 提取日期部分 (YYYY-MM-DD)，因为行内已经有具体时间了
+            date_only = full_date.split(' ')[0] if ' ' in full_date else full_date
+            header_html += f" <span style='margin-left: 12px; color: #888; font-weight: normal;'>📅 {html.escape(date_only)}</span>"
+
         html_content.append(f"""
         <div class="log-block">
-            <div class="block-header">📄 {html.escape(file_name)}</div>
+            <div class="block-header">{header_html}</div>
         """)
 
         for line in block['lines']:
