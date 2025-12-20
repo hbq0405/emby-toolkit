@@ -123,46 +123,21 @@ class WatchlistProcessor:
 
     # ★★★ 核心修改 2: 重构自动添加追剧列表的函数 ★★★
     def add_series_to_watchlist(self, item_details: Dict[str, Any]):
-        """ 将新剧集添加/更新到 media_metadata 表并标记为追剧。"""
+        """ 将新剧集加入数据库，并立即触发核心状态判定。"""
         if item_details.get("Type") != "Series": return
         tmdb_id = item_details.get("ProviderIds", {}).get("Tmdb")
         item_name = item_details.get("Name")
-        item_id = item_details.get("Id") # Emby ID
-        if not tmdb_id or not item_name or not item_id or not self.tmdb_api_key: return
-            
-        tmdb_details = tmdb.get_tv_details(tmdb_id, self.tmdb_api_key)
-        if not tmdb_details: return
+        item_id = item_details.get("Id") 
+        if not tmdb_id or not item_name or not item_id: return
 
-        tmdb_status = tmdb_details.get("status")
-        if not tmdb_status:
-            logger.warning(f"无法确定剧集 '{item_name}' 的TMDb状态，跳过自动添加。")
-            return
-
-        # 保留原有的“冷宫”判断逻辑
-        internal_status = STATUS_COMPLETED
-        today = datetime.now(timezone.utc).date()
-        
-        if tmdb_status in ["Returning Series", "In Production", "Planned"]:
-            next_episode = tmdb_details.get("next_episode_to_air")
-            if next_episode and next_episode.get('air_date'):
-                try:
-                    air_date = datetime.strptime(next_episode['air_date'], '%Y-%m-%d').date()
-                    if (air_date - today).days <= 90:
-                        internal_status = STATUS_WATCHING
-                except (ValueError, TypeError):
-                    pass
-        is_airing = (internal_status == STATUS_WATCHING)
         try:
             with connection.get_db_connection() as conn:
                 with conn.cursor() as cursor:
-                    # 使用 UPSERT 逻辑，同时更新 watchlist_is_airing
+                    # 1. 插入基础记录，初始状态设为 'NONE' (确保 old_status 绝对安全)
                     sql = """
-                        INSERT INTO media_metadata (tmdb_id, item_type, title, watching_status, watchlist_is_airing, emby_item_ids_json)
-                        VALUES (%s, 'Series', %s, %s, %s, %s)
+                        INSERT INTO media_metadata (tmdb_id, item_type, title, watching_status, emby_item_ids_json)
+                        VALUES (%s, 'Series', %s, 'NONE', %s)
                         ON CONFLICT (tmdb_id, item_type) DO UPDATE SET
-                            watching_status = EXCLUDED.watching_status,
-                            watchlist_is_airing = EXCLUDED.watchlist_is_airing,
-                            -- 智能合并 Emby ID
                             emby_item_ids_json = (
                                 SELECT jsonb_agg(DISTINCT elem)
                                 FROM (
@@ -170,16 +145,28 @@ class WatchlistProcessor:
                                     UNION ALL
                                     SELECT jsonb_array_elements_text(EXCLUDED.emby_item_ids_json) AS elem
                                 ) AS combined
-                            );
+                            )
+                        RETURNING watching_status, force_ended, emby_item_ids_json;
                     """
-                    cursor.execute(sql, (tmdb_id, item_name, internal_status, is_airing, json.dumps([item_id])))
+                    cursor.execute(sql, (tmdb_id, item_name, json.dumps([item_id])))
+                    row = cursor.fetchone()
                     
-                    if cursor.rowcount > 0:
-                        log_status_translated = translate_internal_status(internal_status)
-                        logger.info(f"  ➜ 剧集 '{item_name}' 已自动加入追剧列表，初始状态为: {log_status_translated} (连载中: {is_airing})。")
+                    if row:
+                        # 2. 构造一个符合 _process_one_series 格式的字典
+                        series_data = {
+                            'tmdb_id': tmdb_id,
+                            'item_name': item_name,
+                            'status': row[0],       # 这里的 status 就是 old_status
+                            'force_ended': row[1],
+                            'emby_item_ids_json': row[2]
+                        }
+                        # 3. 直接调用核心处理器进行状态校准
+                        # 因为 old_status 是 'NONE'，所以绝对不会触发洗版逻辑
+                        self._process_one_series(series_data)
+                        
                 conn.commit()
         except Exception as e:
-            logger.error(f"自动添加剧集 '{item_name}' 到追剧列表时发生数据库错误: {e}", exc_info=True)
+            logger.error(f"自动添加剧集 '{item_name}' 时出错: {e}", exc_info=True)
 
     # --- 核心任务启动器  ---
     def run_regular_processing_task_concurrent(self, progress_callback: callable, tmdb_id: Optional[str] = None, force_full_update: bool = False):
@@ -1133,16 +1120,16 @@ class WatchlistProcessor:
         logger.info(f"  ➜ 最终判定 '{item_name}' 的真实连载状态为: {is_truly_airing} (内部状态: {translate_internal_status(final_status)})")
 
         # ======================================================================
-        # ★★★ 完结自动洗版逻辑 (V2 - 完结日精准判定版) ★★★
+        # ★★★ 完结自动洗版逻辑 (V4 - 纯状态流转驱动) ★★★
         # ======================================================================
-        # 1. 状态流转检查：必须是从“活跃”变更为“完结”，且不是手动强制完结
+        # 核心逻辑：只有从“活跃追剧状态”转变为“完结状态”时，才视为“新鲜完结”
         if final_status == STATUS_COMPLETED and old_status in [STATUS_WATCHING, STATUS_PAUSED, STATUS_PENDING] and not is_force_ended:
             
-            # 2. 读取功能开关 (从数据库配置中获取)
+            # 检查功能开关
             watchlist_cfg = settings_db.get_setting('watchlist_config') or {}
-            if watchlist_cfg.get('auto_resub_ended', False): 
+            if watchlist_cfg.get('auto_resub_ended', False):
                 
-                # 3. 获取最后一季信息
+                # 获取最后一季信息
                 seasons = latest_series_data.get('seasons', [])
                 valid_seasons = sorted([s for s in seasons if s.get('season_number', 0) > 0], key=lambda x: x['season_number'])
                 
@@ -1151,38 +1138,9 @@ class WatchlistProcessor:
                     last_s_num = target_season.get('season_number')
                     last_ep_count = target_season.get('episode_count', 0)
                     
-                    # 4. 获取“最后一集”的实际播出日期
-                    last_ep_info = latest_series_data.get("last_episode_to_air")
-                    actual_finish_date_str = None
-                    
-                    if last_ep_info and last_ep_info.get('season_number') == last_s_num:
-                        actual_finish_date_str = last_ep_info.get('air_date')
-                    else:
-                        actual_finish_date_str = target_season.get('air_date')
-
-                    # 5. 完结时效性检查 (30天准则)
-                    should_wash = True
-                    if actual_finish_date_str:
-                        try:
-                            finish_date = datetime.strptime(actual_finish_date_str, '%Y-%m-%d').date()
-                            days_since_finish = (today - finish_date).days
-                            
-                            # 如果完结超过 30 天，视为老剧状态修正，不洗版
-                            if days_since_finish > 30:
-                                should_wash = False
-                                logger.info(f"  🛑 《{item_name}》最终集播出已久 ({days_since_finish}天前)，不执行洗版。")
-                            elif days_since_finish < -1:
-                                should_wash = False # 还没播完，不洗
-                        except (ValueError, TypeError):
-                            pass
-
-                    # 6. 执行洗版
-                    if should_wash:
-                        logger.info(f"  🚀 《{item_name}》刚刚播完，准备执行自动洗版订阅...")
-                        self._handle_auto_resub_ended(tmdb_id, item_name, last_s_num, last_ep_count)
-            else:
-                # 如果开关没开，可以打印一个 debug 日志（可选）
-                logger.debug(f"  ➜ 《{item_name}》已完结，但 完结自动洗版 开关未开启。")
+                    # 🚀 直接触发洗版，不再检查 TMDb 的日期（充分信赖本地判定和状态流转）
+                    logger.info(f"  🚀 [完结洗版] 《{item_name}》由 {translate_internal_status(old_status)} 转为完结，立即提交 S{last_s_num} 的洗版订阅。")
+                    self._handle_auto_resub_ended(tmdb_id, item_name, last_s_num, last_ep_count)
 
         # 更新追剧数据库
         updates_to_db = {
