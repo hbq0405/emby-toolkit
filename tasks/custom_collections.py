@@ -447,7 +447,7 @@ def task_process_all_custom_collections(processor):
                     target_library_ids = definition.get('target_library_ids', [])
                     item_types = definition.get('item_type', ['Movie'])
                     
-                    logger.info(f"  ➜ [封面快车道] 正在为《{collection_name}》筛选高颜值素材 (类型: {item_types})...")
+                    logger.info(f"  ➜ 正在为《{collection_name}》筛选封面素材 (类型: {item_types})...")
 
                     # 2. 调用查询引擎：遵守前端规则 + 评分 > 7 (保证封面质量)
                     sample_items, _ = queries_db.query_virtual_library_items(
@@ -656,7 +656,7 @@ def process_single_custom_collection(processor, custom_collection_id: int):
             target_library_ids = definition.get('target_library_ids', [])
             item_types = definition.get('item_type', ['Movie'])
             
-            logger.info(f"  ➜ [封面快车道] 正在为《{collection_name}》筛选高颜值素材 (类型: {item_types})...")
+            logger.info(f"  ➜ 正在为《{collection_name}》筛选封面素材 (类型: {item_types})...")
 
             # 2. 调用查询引擎：遵守前端规则 + 评分 > 7 (保证封面质量)
             sample_items, _ = queries_db.query_virtual_library_items(

@@ -140,7 +140,6 @@ def init_db():
                         item_type TEXT,
                         in_library_count INTEGER DEFAULT 0,
                         generated_media_info_json JSONB,
-                        poster_path TEXT,
                         sort_order INTEGER NOT NULL DEFAULT 0
                     )
                 """)
@@ -635,6 +634,7 @@ def init_db():
                         'custom_collections': [
                             'missing_count',
                             'health_status',
+                            'poster_path'
                             'generated_emby_ids_json' # <-- 在这里添加了废弃的列！
                         ]
                     }
