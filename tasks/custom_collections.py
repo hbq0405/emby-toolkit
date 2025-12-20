@@ -436,28 +436,48 @@ def task_process_all_custom_collections(processor):
                     )
 
                 # ==================================================================
-                # 分支 C: 个性化推荐 (AI) - 封面快车道 (不耗 Tokens)
+                # 分支 C: 个人推荐类 (AI) - 封面快车道 (遵守前端定义的库和类型)
                 # ==================================================================
                 elif collection_type == 'ai_recommendation':
-                    # 后台任务仅为了生成封面，不需要真的调用 LLM
-                    # 直接从数据库随机取 20 个项目作为封面素材
-                    admin_user_id = processor.emby_user_id
-                    target_library_ids = definition.get('target_library_ids', [])
+                    # 💡 核心思路：后台任务仅为生成封面，不调用 LLM 浪费 Tokens。
+                    # 我们直接根据前端定义的 [媒体库] 和 [内容类型] 捞取高分片作为门面。
                     
+                    admin_user_id = processor.emby_user_id
+                    # 1. 提取前端定义的规则
+                    target_library_ids = definition.get('target_library_ids', [])
+                    item_types = definition.get('item_type', ['Movie'])
+                    
+                    logger.info(f"  ➜ [封面快车道] 正在为《{collection_name}》筛选高颜值素材 (类型: {item_types})...")
+
+                    # 2. 调用查询引擎：遵守前端规则 + 评分 > 7 (保证封面质量)
                     sample_items, _ = queries_db.query_virtual_library_items(
-                        rules=[], # 无过滤规则
+                        rules=[{"field": "rating", "operator": "gte", "value": 7}],
                         logic='AND',
                         user_id=admin_user_id,
-                        limit=20, # 取 20 个足够封面轮换了
+                        limit=20, 
                         offset=0,
-                        item_types=definition.get('item_type', ['Movie']),
-                        target_library_ids=target_library_ids
+                        item_types=item_types,         # 👈 遵守前端选的内容类型
+                        target_library_ids=target_library_ids, # 👈 遵守前端选的媒体库
+                        sort_by='random'               # 👈 随机排序，让封面每次更新都有新鲜感
                     )
                     
+                    # 3. 兜底逻辑：如果高分片太少（比如新库），则放宽条件纯随机抓取
+                    if len(sample_items) < 9:
+                        logger.debug(f"  ➜ 高分素材不足，放宽条件抓取...")
+                        sample_items, _ = queries_db.query_virtual_library_items(
+                            rules=[], 
+                            user_id=admin_user_id,
+                            limit=20,
+                            item_types=item_types,
+                            target_library_ids=target_library_ids,
+                            sort_by='random'
+                        )
+
+                    # 4. 填充数据
                     global_ordered_emby_ids = [item['Id'] for item in sample_items]
-                    # 数据库里存个简单的占位，不需要存全量
+                    # 数据库里存个简单的占位，反代层实时访问时会动态生成真正的 AI 列表
                     items_for_db = [{'emby_id': item['Id']} for item in sample_items]
-                    total_count = 0 # 推荐类合集在后台任务中不计总数
+                    total_count = 0 # 个人推荐类在后台任务中不计总数
 
                 # ==================================================================
                 # 通用后续处理
@@ -625,28 +645,48 @@ def process_single_custom_collection(processor, custom_collection_id: int):
                 )
 
         # ==================================================================
-        # 分支 C: 个性化推荐 (AI) - 封面快车道 (不耗 Tokens)
+        # 分支 C: 个人推荐类 (AI) - 封面快车道 (遵守前端定义的库和类型)
         # ==================================================================
         elif collection_type == 'ai_recommendation':
-            # 后台任务仅为了生成封面，不需要真的调用 LLM
-            # 直接从数据库随机取 20 个项目作为封面素材
-            admin_user_id = processor.emby_user_id
-            target_library_ids = definition.get('target_library_ids', [])
+            # 💡 核心思路：后台任务仅为生成封面，不调用 LLM 浪费 Tokens。
+            # 我们直接根据前端定义的 [媒体库] 和 [内容类型] 捞取高分片作为门面。
             
+            admin_user_id = processor.emby_user_id
+            # 1. 提取前端定义的规则
+            target_library_ids = definition.get('target_library_ids', [])
+            item_types = definition.get('item_type', ['Movie'])
+            
+            logger.info(f"  ➜ [封面快车道] 正在为《{collection_name}》筛选高颜值素材 (类型: {item_types})...")
+
+            # 2. 调用查询引擎：遵守前端规则 + 评分 > 7 (保证封面质量)
             sample_items, _ = queries_db.query_virtual_library_items(
-                rules=[], # 无过滤规则
+                rules=[{"field": "rating", "operator": "gte", "value": 7}],
                 logic='AND',
                 user_id=admin_user_id,
-                limit=20, # 取 20 个足够封面轮换了
+                limit=20, 
                 offset=0,
-                item_types=definition.get('item_type', ['Movie']),
-                target_library_ids=target_library_ids
+                item_types=item_types,         # 👈 遵守前端选的内容类型
+                target_library_ids=target_library_ids, # 👈 遵守前端选的媒体库
+                sort_by='random'               # 👈 随机排序，让封面每次更新都有新鲜感
             )
             
+            # 3. 兜底逻辑：如果高分片太少（比如新库），则放宽条件纯随机抓取
+            if len(sample_items) < 9:
+                logger.debug(f"  ➜ 高分素材不足，放宽条件抓取...")
+                sample_items, _ = queries_db.query_virtual_library_items(
+                    rules=[], 
+                    user_id=admin_user_id,
+                    limit=20,
+                    item_types=item_types,
+                    target_library_ids=target_library_ids,
+                    sort_by='random'
+                )
+
+            # 4. 填充数据
             global_ordered_emby_ids = [item['Id'] for item in sample_items]
-            # 数据库里存个简单的占位，不需要存全量
+            # 数据库里存个简单的占位，反代层实时访问时会动态生成真正的 AI 列表
             items_for_db = [{'emby_id': item['Id']} for item in sample_items]
-            total_count = 0 # 推荐类合集在后台任务中不计总数
+            total_count = 0 # 个人推荐类在后台任务中不计总数
 
         if not global_ordered_emby_ids and collection_type != 'ai_recommendation':
              # 如果没找到任何东西，且不是AI推荐（AI推荐允许空），则清空 Emby 实体合集
