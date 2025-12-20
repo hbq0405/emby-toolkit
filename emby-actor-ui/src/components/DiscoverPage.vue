@@ -417,7 +417,7 @@ const fetchDiscoverData = async () => {
         'vote_average.gte': filters.vote_average_gte,
         'with_origin_country': selectedRegions.value.join('|'),
         'with_original_language': selectedLanguage.value,
-        'with_keywords': selectedKeywords.value.join(','),
+        'with_keywords': selectedKeywords.value,
       };
       if (selectedGenres.value.length > 0) {
         if (genreFilterMode.value === 'include') { apiParams.with_genres = selectedGenres.value.join(','); } 

@@ -6,6 +6,23 @@ from .connection import get_db_connection
 
 logger = logging.getLogger(__name__)
 
+def _expand_keyword_labels(value) -> List[str]:
+    """将中文标签展开为英文关键词列表"""
+    from database import settings_db
+    mapping = settings_db.get_setting('keyword_mapping') or {}
+    
+    target_en_keywords = []
+    labels = value if isinstance(value, list) else [value]
+    
+    for label in labels:
+        if label in mapping:
+            # 拿到 en 列表: ["monster"]
+            target_en_keywords.extend(mapping[label].get('en', []))
+        else:
+            # 没映射的才保留原词
+            target_en_keywords.append(label)
+    return list(set(filter(None, target_en_keywords)))
+
 def get_user_allowed_library_ids(user_id: str, emby_url: str, emby_api_key: str) -> List[str]:
     """
     辅助函数：调用 Emby API 获取指定用户有权访问的顶层 View ID 列表。
@@ -187,9 +204,8 @@ def query_virtual_library_items(
 
         clause = None
         
-        # --- 1. 字符串数组类型 (JSONB 数组: genres, tags, studios, countries, keywords) ---
-        # 匹配逻辑：使用 PostgreSQL 的 ? (包含) 和 ?| (包含任一)
-        jsonb_array_fields = ['genres', 'tags', 'studios', 'countries', 'keywords']
+        # --- 1. 基础 JSONB 数组类型 ---
+        jsonb_array_fields = ['genres', 'tags', 'studios', 'countries'] # 👈 删掉 keywords
         if field in jsonb_array_fields:
             column = f"m.{field}_json"
             if op in ['contains', 'eq']:
@@ -202,7 +218,23 @@ def query_virtual_library_items(
                 clause = f"NOT ({column} ?| %s)"
                 params.append(list(value) if isinstance(value, list) else [value])
 
-        # --- 2. 复杂对象数组 (actors, directors) ---
+        # --- 2. 关键词 (Keywords) 专项处理 ★★★ ---
+        elif field == 'keywords':
+            # 调用上面的展开函数，把 "怪兽" 变成 ["monster"]
+            expanded_keywords = _expand_keyword_labels(value)
+            
+            if not expanded_keywords:
+                continue
+
+            if op in ['contains', 'is_one_of', 'eq']:
+                # SQL 变成: keywords_json ?| ARRAY['monster', 'disaster']
+                clause = "m.keywords_json ?| %s"
+                params.append(expanded_keywords)
+            elif op == 'is_none_of':
+                clause = "NOT (m.keywords_json ?| %s)"
+                params.append(expanded_keywords)
+
+        # --- 3. 复杂对象数组 (actors, directors) ---
         # 数据库存储格式: [{"id": 123, "name": "..."}] 或 [{"tmdb_id": 123, ...}]
         elif field in ['actors', 'directors']:
             # 提取 ID 列表 (适配前端传来的对象数组)
@@ -229,7 +261,7 @@ def query_virtual_library_items(
                 clause = f"NOT EXISTS (SELECT 1 FROM jsonb_array_elements(m.{field}_json) elem WHERE (elem->>'{id_key}')::int = ANY(%s))"
                 params.append(ids)
 
-        # --- 3. 家长分级 (unified_rating - 字符串匹配) ---
+        # --- 4. 家长分级 (unified_rating - 字符串匹配) ---
         # 根据你的图片，这里存的是“青少年”、“成人”等中文
         elif field == 'unified_rating':
             if op == 'eq':
@@ -242,7 +274,7 @@ def query_virtual_library_items(
                 clause = "m.unified_rating IS NOT NULL AND NOT (m.unified_rating = ANY(%s))"
                 params.append(list(value) if isinstance(value, list) else [value])
 
-        # --- 4. 数值比较 (runtime, release_year, rating) ---
+        # --- 5. 数值比较 (runtime, release_year, rating) ---
         elif field in ['runtime', 'release_year', 'rating']:
             col_map = {'runtime': 'm.runtime_minutes', 'release_year': 'm.release_year', 'rating': 'm.rating'}
             column = col_map[field]
@@ -254,7 +286,7 @@ def query_virtual_library_items(
                 if clause: params.append(val)
             except (ValueError, TypeError): continue
 
-        # --- 5. 日期偏移 (date_added, release_date) ---
+        # --- 6. 日期偏移 (date_added, release_date) ---
         elif field in ['date_added', 'release_date']:
             column = f"m.{field}"
             try:
@@ -266,7 +298,7 @@ def query_virtual_library_items(
                 if clause: params.append(days)
             except (ValueError, TypeError): continue
 
-        # --- 6. 文本模糊匹配 (title) ---
+        # --- 7. 文本模糊匹配 (title) ---
         elif field == 'title':
             if op == 'contains':
                 clause = "m.title ILIKE %s"
@@ -284,7 +316,7 @@ def query_virtual_library_items(
                 clause = "m.title NOT ILIKE %s"
                 params.append(f"%{value}%")
 
-        # --- 7. 原始语言 (original_language) ---
+        # --- 8. 原始语言 (original_language) ---
         elif field == 'original_language':
             if op == 'eq':
                 clause = "m.original_language = %s"
@@ -293,13 +325,13 @@ def query_virtual_library_items(
                 clause = "m.original_language = ANY(%s)"
                 params.append(list(value) if isinstance(value, list) else [value])
 
-        # --- 8. 追剧状态 (is_in_progress) ---
+        # --- 9. 追剧状态 (is_in_progress) ---
         elif field == 'is_in_progress':
             if op == 'is':
                 clause = "m.watchlist_is_airing = %s"
                 params.append(bool(value))
 
-        # --- 9. 视频流属性筛选 (分辨率、质量、特效、编码) ---
+        # --- 10. 视频流属性筛选 (分辨率、质量、特效、编码) ---
         asset_map = {
             'resolution': 'resolution_display',
             'quality': 'quality_display',
@@ -319,7 +351,7 @@ def query_virtual_library_items(
                 clause = f"NOT EXISTS (SELECT 1 FROM jsonb_array_elements(m.asset_details_json) a WHERE a->>'{json_key}' = ANY(%s))"
                 params.append(list(value))
 
-        # --- 10. 音轨筛选 (全部改为匹配 audio_display 字符串) ---
+        # --- 11. 音轨筛选 (全部改为匹配 audio_display 字符串) ---
         elif field == 'audio_lang':
             # 因为 audio_display 是 "国语, 英语" 这种格式，所以用 ILIKE 匹配
             if op in ['contains', 'eq']:

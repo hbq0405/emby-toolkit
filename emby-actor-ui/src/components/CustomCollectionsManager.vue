@@ -17,6 +17,10 @@
               </template>
               快速同步媒体元数据
             </n-tooltip>
+            <n-button @click="openKeywordManager" secondary type="info">
+              <template #icon><n-icon :component="SparklesIcon" /></template>
+              关键词管理
+            </n-button>
             <n-button type="default" @click="handleGenerateAllCovers" :loading="isGeneratingCovers">
               <template #icon><n-icon :component="CoverIcon" /></template>
               生成所有封面
@@ -886,6 +890,40 @@
         </n-tabs>
       </div>
     </n-modal>
+    <!-- 关键词管理模态框 -->
+    <n-modal v-model:show="showKeywordModal" preset="card" title="关键词映射管理" style="width: 800px;">
+      <n-alert type="warning" :bordered="false" style="margin-bottom: 16px;">
+        映射后的中文标签将作为所有关键词的统一入口，每个中文标签可以映射多个英文关键词和对应的ID，英文逗号分隔。
+      </n-alert>
+      
+      <div style="max-height: 500px; overflow-y: auto; padding-right: 8px;">
+        <n-dynamic-input v-model:value="keywordMappingList" :on-create="() => ({label:'', en:'', ids:''})">
+          <template #default="{ value }">
+            <div style="display: flex; gap: 12px; width: 100%; align-items: center;">
+              <n-input v-model:value="value.label" placeholder="中文标签" style="width: 140px;" />
+              <n-input v-model:value="value.en" placeholder="英文关键词 (英文逗号分隔)" style="flex: 2;" />
+              <n-input v-model:value="value.ids" placeholder="TMDb IDs (英文逗号分隔)" style="flex: 1;" />
+            </div>
+          </template>
+        </n-dynamic-input>
+      </div>
+
+      <template #footer>
+        <n-space justify="space-between" style="width: 100%">
+          <n-button ghost type="warning" @click="handleRestoreDefaults">
+            <template #icon><n-icon :component="SyncIcon" /></template>
+            恢复默认
+          </n-button>
+          
+          <n-space>
+            <n-button @click="showKeywordModal = false">取消</n-button>
+            <n-button type="primary" :loading="isSavingKeywords" @click="saveKeywordMapping">
+              保存映射
+            </n-button>
+          </n-space>
+        </n-space>
+      </template>
+    </n-modal>
     <n-modal
       v-model:show="showDiscoverHelper"
       preset="card"
@@ -1014,6 +1052,21 @@
           <n-select v-model:value="discoverParams.with_original_language" :options="tmdbLanguageOptions" filterable clearable placeholder="不限" />
         </n-form-item>
         
+        <n-form-item label="关键词" label-placement="left">
+          <n-select
+            v-model:value="discoverParams.with_keywords_labels"
+            multiple
+            filterable
+            placeholder="选择你配好的关键词，如：恐怖、丧尸"
+            :options="keywordOptions" 
+          />
+          <template #feedback>
+            <n-text depth="3" style="font-size: 12px;">
+              基于“关键词管理”中的配置，自动转换为 TMDb ID 进行精准筛选。
+            </n-text>
+          </template>
+        </n-form-item>
+
         <n-form-item :label="`最低评分 (当前: ${discoverParams.vote_average_gte})`" label-placement="left">
            <n-slider v-model:value="discoverParams.vote_average_gte" :step="0.5" :min="0" :max="10" />
         </n-form-item>
@@ -1120,6 +1173,10 @@ const directorOptions = ref([]);
 const tmdbCountryOptions = ref([]);
 const isLoadingTmdbCountries = ref(false);
 const unidentifiedMediaInModal = computed(() => filterMediaByStatus('unidentified'));
+const showKeywordModal = ref(false);
+const keywordMappingList = ref([]);
+const isSavingKeywords = ref(false);
+const allKeywordMappings = ref({});
 
 const openTmdbSearch = (mediaOrTitle) => {
   let query = '';
@@ -1148,6 +1205,7 @@ const getInitialDiscoverParams = () => ({
   with_genres: [], without_genres: [], with_runtime_gte: null, with_runtime_lte: null,
   with_companies: [], with_cast: [], with_crew: [], with_origin_country: null,
   with_original_language: null, vote_average_gte: 0, vote_count_gte: 0,
+  with_keywords_labels: [],
 });
 const discoverParams = ref(getInitialDiscoverParams());
 
@@ -1218,6 +1276,72 @@ const handleFixMatchClick = (media) => {
       }
 
       await submitFixMatch(payload);
+    }
+  });
+};
+
+const openKeywordManager = async () => {
+  try {
+    const { data } = await axios.get('/api/custom_collections/config/keyword_mapping');
+    // 转换为数组格式供 n-dynamic-input 使用
+    keywordMappingList.value = Object.entries(data).map(([label, info]) => ({
+      label,
+      en: Array.isArray(info.en) ? info.en.join(', ') : '',
+      ids: Array.isArray(info.ids) ? info.ids.join(', ') : ''
+    }));
+    showKeywordModal.value = true;
+  } catch (e) {
+    message.error('加载失败');
+  }
+};
+
+// 保存函数
+const saveKeywordMapping = async () => {
+  isSavingKeywords.value = true;
+  const payload = {};
+  keywordMappingList.value.forEach(item => {
+    if (item.label.trim()) {
+      payload[item.label.trim()] = {
+        en: item.en.split(',').map(s => s.trim()).filter(s => s),
+        ids: item.ids.toString().split(',').map(s => s.trim()).filter(s => s).map(Number)
+      };
+    }
+  });
+  try {
+    await axios.post('/api/custom_collections/config/keyword_mapping', payload);
+    message.success('关键词映射已更新');
+    showKeywordModal.value = false;
+    // ★ 关键：保存后重新加载下拉框选项 ★
+    await fetchKeywordOptions(); 
+  } catch (e) {
+    message.error('保存失败');
+  } finally {
+    isSavingKeywords.value = false;
+  }
+};
+
+const handleRestoreDefaults = () => {
+  dialog.warning({
+    title: '确认恢复默认',
+    content: '此操作将使用系统预设覆盖您当前的关键词映射，您自定义的修改将丢失。确定要继续吗？',
+    positiveText: '确定恢复',
+    negativeText: '取消',
+    onPositiveClick: async () => {
+      try {
+        // 1. 从后端获取那套“神装”
+        const { data } = await axios.get('/api/custom_collections/config/keyword_mapping/defaults');
+        
+        // 2. 转换为 n-dynamic-input 需要的数组格式
+        keywordMappingList.value = Object.entries(data).map(([label, info]) => ({
+          label,
+          en: Array.isArray(info.en) ? info.en.join(', ') : '',
+          ids: Array.isArray(info.ids) ? info.ids.join(', ') : ''
+        }));
+        
+        message.success('已加载默认预设，请记得点击“保存映射”以最终生效。');
+      } catch (e) {
+        message.error('获取默认配置失败');
+      }
     }
   });
 };
@@ -1319,10 +1443,22 @@ const operatorLabels = {
 
 const fetchKeywordOptions = async () => {
   try {
-    const response = await axios.get('/api/custom_collections/config/keywords');
-    keywordOptions.value = response.data;
+    // ✨ 请求你新写的映射接口
+    const response = await axios.get('/api/custom_collections/config/keyword_mapping');
+    const data = response.data;
+    
+    // 1. 存下全量映射表（供探索助手查 ID 用）
+    allKeywordMappings.value = data;
+    
+    // 2. 生成下拉框选项（供规则筛选和探索助手显示用）
+    keywordOptions.value = Object.keys(data).map(k => ({
+      label: k,
+      value: k
+    })).sort((a, b) => a.label.localeCompare(b.label));
+    
+    console.log('关键词选项已刷新:', keywordOptions.value.length);
   } catch (error) {
-    message.error('获取关键词列表失败。');
+    console.error('获取关键词失败:', error);
   }
 };
 
@@ -2322,7 +2458,11 @@ const generatedDiscoverUrl = computed(() => {
   const params = discoverParams.value;
   const base = `https://www.themoviedb.org/discover/${params.type}`;
   const query = new URLSearchParams();
+  
+  // 1. 基础排序
   query.append('sort_by', params.sort_by);
+  
+  // 2. 处理年份 (电影用 primary_release_date, 电视用 first_air_date)
   if (params.type === 'movie') {
     if (params.release_year_gte) query.append('primary_release_date.gte', `${params.release_year_gte}-01-01`);
     if (params.release_year_lte) query.append('primary_release_date.lte', `${params.release_year_lte}-12-31`);
@@ -2330,19 +2470,42 @@ const generatedDiscoverUrl = computed(() => {
     if (params.release_year_gte) query.append('first_air_date.gte', `${params.release_year_gte}-01-01`);
     if (params.release_year_lte) query.append('first_air_date.lte', `${params.release_year_lte}-12-31`);
   }
-  if (params.with_genres?.length) query.append('with_genres', params.with_genres.join(','));
-  if (params.without_genres?.length) query.append('without_genres', params.without_genres.join(','));
-  if (params.with_companies?.length) query.append('with_companies', params.with_companies.join(','));
-  if (params.with_cast?.length) query.append('with_cast', params.with_cast.join(','));
-  if (params.with_crew?.length) query.append('with_crew', params.with_crew.join(','));
-  if (params.with_origin_country) query.append('with_origin_country', params.with_origin_country);
+
+  // 3. ★★★ 核心重构：处理自定义关键词标签 (不再分流) ★★★
+  if (params.with_keywords_labels && params.with_keywords_labels.length > 0) {
+    let allKeywordIds = [];
+
+    params.with_keywords_labels.forEach(label => {
+      const mapping = allKeywordMappings.value[label];
+      if (mapping && mapping.ids) {
+        // 无论 ID 是多少，统统视为 Keyword ID
+        allKeywordIds = [...allKeywordIds, ...mapping.ids];
+      }
+    });
+    
+    if (allKeywordIds.length > 0) {
+      // 使用 '|' 连接实现 OR 逻辑，URLSearchParams 会自动转义为 %7C
+      query.append('with_keywords', allKeywordIds.join(','));
+    }
+  }
+
+  // 4. 处理原生“风格”选择 (Genres)
+  if (params.with_genres && params.with_genres.length > 0) {
+    // 原生选择通常已经是 ID 数组了
+    query.append('with_genres', params.with_genres.join(','));
+  }
+
+  // 5. 处理排除类型
+  if (params.without_genres && params.without_genres.length > 0) {
+    query.append('without_genres', params.without_genres.join('|'));
+  }
+  
+  // 6. 其他基础过滤
   if (params.with_original_language) query.append('with_original_language', params.with_original_language);
+  if (params.with_origin_country) query.append('with_origin_country', params.with_origin_country);
   if (params.vote_average_gte > 0) query.append('vote_average.gte', params.vote_average_gte);
   if (params.vote_count_gte > 0) query.append('vote_count.gte', params.vote_count_gte);
-  if (params.type === 'tv') {
-    if (params.with_runtime_gte) query.append('with_runtime.gte', params.with_runtime_gte);
-    if (params.with_runtime_lte) query.append('with_runtime.lte', params.with_runtime_lte);
-  }
+
   return `${base}?${query.toString()}`;
 });
 

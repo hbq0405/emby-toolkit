@@ -4,13 +4,33 @@ from flask import Blueprint, jsonify, request, g, session
 
 from extensions import any_login_required
 import handler.tmdb as tmdb
-from utils import KEYWORD_ID_MAP, DAILY_THEME, contains_chinese, get_tmdb_language_options
+from utils import DEFAULT_KEYWORD_MAPPING, contains_chinese, get_tmdb_language_options
 from database import media_db, settings_db, request_db
 from tasks.discover import task_update_daily_theme, task_replenish_recommendation_pool
 import task_manager
 
 discover_bp = Blueprint('discover_bp', __name__, url_prefix='/api/discover')
 logger = logging.getLogger(__name__)
+
+def _expand_keyword_labels_to_ids(labels: list) -> str:
+    """
+    【AND 逻辑版】将中文标签展开为 TMDb 关键词 ID
+    不同标签之间使用 ',' (AND)，标签内部 ID 使用 '|' (OR)
+    """
+    mapping = settings_db.get_setting('keyword_mapping') or DEFAULT_KEYWORD_MAPPING
+    
+    label_groups = []
+    for label in labels:
+        if label in mapping:
+            ids = mapping[label].get('ids', [])
+            if ids:
+                # 同一个标签内的 ID（如“恐怖”口袋里的多个 ID）依然用 OR 连接
+                label_groups.append("|".join([str(_id) for _id in ids]))
+        elif str(label).isdigit():
+            label_groups.append(str(label))
+    
+    # ✨ 核心修改：不同标签组之间用逗号连接，实现 AND 逻辑
+    return ",".join(label_groups)
 
 def _filter_and_enrich_results(tmdb_data: dict, current_user_id: str, db_item_type: str) -> dict:
     """
@@ -56,47 +76,59 @@ def _filter_and_enrich_results(tmdb_data: dict, current_user_id: str, db_item_ty
 @any_login_required
 def discover_movies():
     """
-    【V2 - 支持高级筛选】
+    【V3 - 纯净关键词版 + 异常保护】
     根据前端传来的筛选条件，从 TMDb 发现电影。
     """
     data = request.json
     api_key = tmdb.config_manager.APP_CONFIG.get(tmdb.constants.CONFIG_OPTION_TMDB_API_KEY)
 
     try:
+        # 1. 权限与用户校验
         if 'emby_user_id' not in session:
             return jsonify({"status": "error", "message": "此功能仅对 Emby 用户开放"}), 403
         current_user_id = session['emby_user_id']
 
-        # ★★★ 构建一个干净的参数字典 ★★★
+        # 2. 关键词标签 -> 纯关键词 IDs (调用辅助函数)
+        labels = data.get('with_keywords', [])
+        if isinstance(labels, str): labels = labels.split(',')
+        k_ids_str = _expand_keyword_labels_to_ids(labels)
+
+        # 3. 构建干净的参数字典
         tmdb_params = {
             'sort_by': data.get('sort_by', 'popularity.desc'),
             'page': data.get('page', 1),
             'vote_average.gte': data.get('vote_average.gte', 0),
-            'with_genres': data.get('with_genres', ''),
-            'with_origin_country': data.get('with_origin_country', ''),
-            'with_keywords': data.get('with_keywords', ''),
+            'with_genres': data.get('with_genres', ''), # 页面顶部原生勾选
+            'with_keywords': k_ids_str,                # 映射表生成的 ID
             'without_genres': data.get('without_genres', ''),
             'primary_release_date.gte': data.get('primary_release_date.gte', ''),
             'primary_release_date.lte': data.get('primary_release_date.lte', ''),
             'with_original_language': data.get('with_original_language', ''),
+            'with_origin_country': data.get('with_origin_country', ''),
         }
         
-        # 清理掉值为 None 或空字符串的键，避免发送空参数
+        # 4. 清理空参数
         tmdb_params = {k: v for k, v in tmdb_params.items() if v is not None and v != ''}
 
+        # 5. 调用 TMDb 接口
         tmdb_data = tmdb.discover_movie_tmdb(api_key, tmdb_params)
+        
+        # 6. 附加在库状态和订阅状态
         processed_data = _filter_and_enrich_results(tmdb_data, current_user_id, 'Movie')
+        
         return jsonify(processed_data)
 
     except Exception as e:
-        logger.error(f"TMDb 发现电影时出错: {e}", exc_info=True)
-        return jsonify({"status": "error", "message": "从 TMDb 获取数据失败"}), 500
+        # 记录详细的错误堆栈到日志，方便排查
+        logger.error(f"TMDb 发现电影时发生严重错误: {e}", exc_info=True)
+        # 给前端返回一个友好的错误提示
+        return jsonify({"status": "error", "message": "从 TMDb 获取电影数据失败，请检查网络或配置。"}), 500
 
 @discover_bp.route('/tv', methods=['POST'])
 @any_login_required
 def discover_tv_shows():
     """
-    【V2 - 支持高级筛选】
+    【V3 - 纯净关键词版】
     根据前端传来的筛选条件，从 TMDb 发现电视剧。
     """
     data = request.json
@@ -107,23 +139,32 @@ def discover_tv_shows():
             return jsonify({"status": "error", "message": "此功能仅对 Emby 用户开放"}), 403
         current_user_id = session['emby_user_id']
 
-        # ★★★ 为电视剧构建参数字典 ★★★
+        # ✨ 1. 关键词标签 -> 纯关键词 IDs (调用刚才那个纯净版辅助函数)
+        labels = data.get('with_keywords', [])
+        if isinstance(labels, str): labels = labels.split(',')
+        k_ids_str = _expand_keyword_labels_to_ids(labels)
+
+        # ✨ 2. 为电视剧构建参数字典
         tmdb_params = {
             'sort_by': data.get('sort_by', 'popularity.desc'),
             'page': data.get('page', 1),
             'vote_average.gte': data.get('vote_average.gte', 0),
-            'with_genres': data.get('with_genres', ''),
-            'with_origin_country': data.get('with_origin_country', ''),
-            'with_keywords': data.get('with_keywords', ''),
+            'with_genres': data.get('with_genres', ''), # 页面上方勾选的“风格”
+            'with_keywords': k_ids_str,                # 映射表生成的“关键词”
             'without_genres': data.get('without_genres', ''),
-            'first_air_date.gte': data.get('first_air_date.gte', ''),
+            'first_air_date.gte': data.get('first_air_date.gte', ''), # 👈 注意这里是 first_air_date
             'first_air_date.lte': data.get('first_air_date.lte', ''),
             'with_original_language': data.get('with_original_language', ''),
+            'with_origin_country': data.get('with_origin_country', ''),
         }
         
+        # 清理掉值为 None 或空字符串的键
         tmdb_params = {k: v for k, v in tmdb_params.items() if v is not None and v != ''}
 
+        # 调用 TMDb 电视剧发现接口
         tmdb_data = tmdb.discover_tv_tmdb(api_key, tmdb_params)
+        
+        # 附加在库状态和订阅状态 (类型设为 'Series')
         processed_data = _filter_and_enrich_results(tmdb_data, current_user_id, 'Series')
         return jsonify(processed_data)
 
@@ -197,54 +238,46 @@ def api_get_discover_languages():
 @discover_bp.route('/config/keywords', methods=['GET'])
 @any_login_required
 def api_get_discover_keywords():
-    """为影视探索页面提供专用的、带TMDb ID的关键词列表。"""
     try:
-        # 从 KEYWORD_ID_MAP 构建前端需要的格式
-        keyword_options = [
-            {"label": chinese_name, "value": tmdb_id}
-            for chinese_name, tmdb_id in KEYWORD_ID_MAP.items()
-        ]
-        # 按中文标签排序
-        sorted_options = sorted(keyword_options, key=lambda x: x['label'])
-        return jsonify(sorted_options)
+        mapping = settings_db.get_setting('keyword_mapping') or DEFAULT_KEYWORD_MAPPING
+        options = [{"label": k, "value": k} for k in mapping.keys()]
+        return jsonify(sorted(options, key=lambda x: x['label']))
     except Exception as e:
-        logger.error(f"获取 Discover 关键词列表时出错: {e}", exc_info=True)
         return jsonify([]), 500
     
 @discover_bp.route('/daily_recommendation', methods=['GET'])
 @any_login_required
 def get_recommendation_pool():
     """
-    【V3 - 主动纠正版】
-    读取推荐池。如果发现数据是旧版格式（有池但无主题索引），
-    则主动触发一次全量更新任务，并返回 404，强制前端进入轮询等待。
+    【V4 - 动态主题适配版】
+    读取推荐池，并根据索引从动态映射表中获取主题名称。
     """
     try:
         pool_data = settings_db.get_setting('recommendation_pool')
         theme_index = settings_db.get_setting('recommendation_theme_index')
 
-        # 场景1：池不存在或为空，这是正常的“未生成”状态
+        # 1. 基础检查
         if not pool_data:
             logger.debug("  ➜ 推荐池不存在或为空，返回 404 以触发前端生成任务。")
             return jsonify({"error": "推荐池尚未生成或为空。"}), 404
 
-        # ★★★ 核心逻辑：检测到旧版数据，主动触发更新 ★★★
-        # 如果池子有数据，但是主题索引不存在，说明是旧版数据，必须更新！
-        if pool_data and theme_index is None:
-            logger.warning("  ➜ 检测到旧版推荐池数据（有池但无主题索引），将自动触发一次全量更新任务...")
-            task_manager.submit_task(
-                task_function=task_update_daily_theme,
-                task_name="自动纠正每日推荐数据",
-                processor_type='media'
-            )
-            # 同样返回 404，告诉前端：“数据正在路上，请等待！”
-            return jsonify({"error": "正在更新推荐池数据格式。"}), 404
+        # ✨ 2. 核心修改：从动态映射表中获取主题名称 ✨
+        # 这里的逻辑必须与 tasks/discover.py 保持高度一致
+        mapping = settings_db.get_setting('keyword_mapping') or DEFAULT_KEYWORD_MAPPING
+        
+        # 过滤出有 ID 的项作为轮换池
+        theme_list = [(label, info) for label, info in mapping.items() if info.get('ids')]
 
-        # 场景2：一切正常，数据是新版的
-        theme_list = list(DAILY_THEME.items())
-        theme_name = "今日精选"
-        if theme_index is not None and 0 <= theme_index < len(theme_list):
-            theme_name = theme_list[theme_index][0]
+        theme_name = "今日精选" # 默认兜底名称
+        
+        if theme_index is not None:
+            # 检查索引是否有效（防止用户删除了关键词导致索引越界）
+            if 0 <= theme_index < len(theme_list):
+                theme_name = theme_list[theme_index][0] # 拿到中文标签，如“恐怖”
+            else:
+                # 如果索引失效，通常是因为映射表变动了，这里返回兜底名
+                # 下次后台任务运行时会自动校正索引
+                theme_name = "主题更新中"
 
         response_data = {
             "theme_name": theme_name,

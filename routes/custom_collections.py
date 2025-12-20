@@ -12,7 +12,7 @@ import config_manager
 import handler.emby as emby
 from tasks.helpers import is_movie_subscribable
 from extensions import admin_required, any_login_required, DELETING_COLLECTIONS
-from utils import get_country_translation_map, UNIFIED_RATING_CATEGORIES, get_tmdb_country_options, KEYWORD_TRANSLATION_MAP
+from utils import get_country_translation_map, UNIFIED_RATING_CATEGORIES, get_tmdb_country_options, DEFAULT_KEYWORD_MAPPING
 from handler.tmdb import get_movie_genres_tmdb, get_tv_genres_tmdb, search_companies_tmdb, search_person_tmdb
 # 1. 创建自定义合集蓝图
 custom_collections_bp = Blueprint('custom_collections', __name__, url_prefix='/api/custom_collections')
@@ -24,7 +24,6 @@ GENRE_TRANSLATION_PATCH = {
     "War & Politics": "战争&政治",
     # 以后如果发现其他未翻译的，也可以加在这里
 }
-
 
 # ★★★ 获取 Emby 用户列表 ★★★
 @custom_collections_bp.route('/config/emby_users', methods=['GET'])
@@ -683,19 +682,26 @@ def api_get_tmdb_countries():
 @custom_collections_bp.route('/config/keywords', methods=['GET'])
 @any_login_required
 def api_get_keywords_for_filter():
-    """为筛选器提供一个中英对照的关键词列表。"""
+    """【核心修正】让筛选下拉框也读取自定义映射表"""
     try:
-        # KEYWORD_TRANSLATION_MAP 的格式是 {"中文": "english"}
-        # 我们需要转换成 [{label: "中文", value: "english"}, ...]
+        from database import settings_db
+        # 1. 优先读取数据库里的自定义映射
+        mapping = settings_db.get_setting('keyword_mapping')
+        
+        # 2. 如果没有，用预设兜底
+        if not mapping:
+            mapping = DEFAULT_KEYWORD_MAPPING
+            
+        # 3. 转换为前端下拉框需要的 [{label, value}] 格式
         keyword_options = [
-            {"label": chinese, "value": english}
-            for chinese, english in KEYWORD_TRANSLATION_MAP.items()
+            {"label": label, "value": label}
+            for label in mapping.keys()
         ]
-        # 按中文标签的拼音排序，方便前端查找
-        sorted_options = sorted(keyword_options, key=lambda x: x['label'])
-        return jsonify(sorted_options)
+        
+        # 按中文拼音排序，体验更好
+        return jsonify(sorted(keyword_options, key=lambda x: x['label']))
     except Exception as e:
-        logger.error(f"获取关键词列表时出错: {e}", exc_info=True)
+        logger.error(f"获取关键词列表失败: {e}")
         return jsonify([]), 500
     
 # --- 提供电影类型映射的API ---
@@ -725,3 +731,27 @@ def api_get_tv_genres_config():
     except Exception as e:
         logger.error(f"动态获取电影类型时发生错误: {e}", exc_info=True)
         return jsonify({"error": "服务器内部错误"}), 500
+
+ # --- 获取关键词映射表 ---   
+@custom_collections_bp.route('/config/keyword_mapping', methods=['GET'])
+def api_get_keyword_mapping():
+    from database import settings_db
+    mapping = settings_db.get_setting('keyword_mapping')
+    return jsonify(mapping if mapping else DEFAULT_KEYWORD_MAPPING)
+
+# --- 保存关键词映射表 ---
+@custom_collections_bp.route('/config/keyword_mapping', methods=['POST'])
+@admin_required
+def api_save_keyword_mapping():
+    from database import settings_db
+    data = request.json
+    settings_db.save_setting('keyword_mapping', data)
+    return jsonify({"message": "保存成功"})
+
+# --- 恢复默认关键词映射 ---
+@custom_collections_bp.route('/config/keyword_mapping/defaults', methods=['GET'])
+@admin_required
+def api_get_keyword_defaults():
+    """返回默认关键词映射预设"""
+    # 直接返回文件顶部定义的那个 DEFAULT_KEYWORD_MAPPING
+    return jsonify(DEFAULT_KEYWORD_MAPPING)

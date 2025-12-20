@@ -16,7 +16,7 @@ import handler.tmdb as tmdb
 from database import connection, custom_collection_db, settings_db, media_db, request_db, queries_db
 from handler.custom_collection import ListImporter
 from services.cover_generator import CoverGeneratorService
-import extensions
+
 
 logger = logging.getLogger(__name__)
 

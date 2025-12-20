@@ -4,7 +4,7 @@ import logging
 import handler.tmdb as tmdb
 from database import media_db, settings_db, request_db, actor_db 
 import constants
-from utils import DAILY_THEME, contains_chinese 
+from utils import contains_chinese 
 
 logger = logging.getLogger(__name__)
 
@@ -19,32 +19,40 @@ def task_update_daily_theme(processor):
         api_key = config.get(constants.CONFIG_OPTION_TMDB_API_KEY)
         if not api_key: return
 
-        MIN_POOL_SIZE = 10
-        MAX_PAGES_TO_SCAN = 5
-
-        theme_list = list(DAILY_THEME.items())
+        # ✨ 1. 获取动态映射表 (优先数据库，预设兜底)
+        from utils import DEFAULT_KEYWORD_MAPPING
+        mapping = settings_db.get_setting('keyword_mapping') or DEFAULT_KEYWORD_MAPPING
+        
+        theme_list = [(label, info) for label, info in mapping.items() if info.get('ids')]
         if not theme_list:
-            logger.error("  ➜ 每日推荐失败：主题列表 (DAILY_THEME) 为空，请检查 utils.py。")
+            logger.error("  ➜ 每日推荐失败：关键词映射表为空或未配置 ID。")
             return
 
+        # 2. 计算今日索引
         last_theme_index = settings_db.get_setting('recommendation_theme_index')
-        if last_theme_index is None:
-            last_theme_index = -1
+        if last_theme_index is None: last_theme_index = -1
 
         today_theme_index = (last_theme_index + 1) % len(theme_list)
-        today_theme_name, today_theme_id = theme_list[today_theme_index]
+        today_theme_name, today_theme_info = theme_list[today_theme_index]
         
-        logger.info(f"  ➜ 今日推荐主题: 【{today_theme_name}】 (ID: {today_theme_id})")
+        # ✨ 3. 组装 TMDb 关键词 ID (使用 '|' 实现 OR 逻辑，扩大搜索面)
+        today_theme_ids = "|".join([str(_id) for _id in today_theme_info.get('ids', [])])
+        
+        logger.info(f"  ➜ 今日推荐主题: 【{today_theme_name}】 (IDs: {today_theme_ids})")
 
         recommendation_pool = []
         page_to_fetch = 1
+        MIN_POOL_SIZE = 10
+        MAX_PAGES_TO_SCAN = 5
         
         while len(recommendation_pool) < MIN_POOL_SIZE and page_to_fetch <= MAX_PAGES_TO_SCAN:
             logger.debug(f"  ➜ 正在扫描主题【{today_theme_name}】的第 {page_to_fetch}/{MAX_PAGES_TO_SCAN} 页...")
             
             discover_params = {
-                'with_keywords': today_theme_id, 'sort_by': 'popularity.desc',
-                'page': page_to_fetch, 'include_adult': True
+                'with_keywords': today_theme_ids, 
+                'sort_by': 'popularity.desc',
+                'page': page_to_fetch, 
+                'include_adult': True
             }
             movies_data = tmdb.discover_movie_tmdb(api_key, discover_params)
             
@@ -148,13 +156,18 @@ def task_replenish_recommendation_pool(processor):
             logger.warning("  🚫 补充任务中止：未找到当前推荐主题索引。请先执行一次每日推荐更新任务。")
             return
 
-        theme_list = list(DAILY_THEME.items())
-        if not theme_list or current_theme_index >= len(theme_list):
-            logger.error(f"  ➜ 补充任务失败：主题索引({current_theme_index})无效或主题列表为空。")
+        from routes.custom_collections import DEFAULT_KEYWORD_MAPPING
+        mapping = settings_db.get_setting('keyword_mapping') or DEFAULT_KEYWORD_MAPPING
+        theme_list = [(label, info) for label, info in mapping.items() if info.get('ids')]
+        
+        current_theme_index = settings_db.get_setting('recommendation_theme_index')
+        if current_theme_index is None or current_theme_index >= len(theme_list):
             return
-            
-        current_theme_name, current_theme_id = theme_list[current_theme_index]
-        logger.info(f"  ➜ 当前推荐主题为【{current_theme_name}】，将按此主题进行补充。")
+
+        current_theme_name, current_theme_info = theme_list[current_theme_index]
+        current_theme_ids = "|".join([str(_id) for _id in current_theme_info.get('ids', [])])
+        
+        logger.info(f"  ➜ 当前推荐主题为【{current_theme_name}】，准备补充内容。")
 
         current_pool = pool_check
         current_page_data = settings_db.get_setting('recommendation_pool_page')
@@ -164,7 +177,7 @@ def task_replenish_recommendation_pool(processor):
         logger.debug(f"  ➜ 当前池中有 {len(current_pool)} 部电影，准备从主题【{current_theme_name}】的第 {next_page_to_fetch} 页补充。")
 
         discover_params = {
-            'with_keywords': current_theme_id, 'sort_by': 'popularity.desc',
+            'with_keywords': current_theme_ids, 'sort_by': 'popularity.desc',
             'page': next_page_to_fetch, 'include_adult': True
         }
         more_movies_data = tmdb.discover_movie_tmdb(api_key, discover_params)
