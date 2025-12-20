@@ -217,6 +217,9 @@ def query_virtual_library_items(
             elif op == 'is_none_of':
                 clause = f"NOT ({column} ?| %s)"
                 params.append(list(value) if isinstance(value, list) else [value])
+            elif op == 'is_primary':
+                clause = f"{column}->>0 = %s"
+                params.append(str(value))
 
         # --- 2. 关键词 (Keywords) 专项处理 ★★★ ---
         elif field == 'keywords':
@@ -246,17 +249,27 @@ def query_virtual_library_items(
             else:
                 ids = [value]
             
-            # 过滤掉非数字 ID
             ids = [int(i) for i in ids if str(i).isdigit()]
             if not ids: continue
 
-            # 演员表用 tmdb_id，导演表用 id
             id_key = 'tmdb_id' if field == 'actors' else 'id'
             
-            if op in ['contains', 'is_one_of', 'eq', 'is_primary']:
-                # 检查 JSONB 数组中是否存在任一元素的 ID 在列表中
+            # ✨ 核心修改：处理“主要是”逻辑 (取前三名)
+            if op == 'is_primary':
+                # 逻辑：展开数组并带上序号(ord)，只取序号 <= 3 的元素进行匹配
+                clause = f"""
+                EXISTS (
+                    SELECT 1 FROM jsonb_array_elements(m.{field}_json) WITH ORDINALITY AS t(elem, ord) 
+                    WHERE t.ord <= 2 AND (t.elem->>'{id_key}')::int = ANY(%s)
+                )
+                """
+                params.append(ids)
+                
+            elif op in ['contains', 'is_one_of', 'eq']:
+                # 全表扫描（只要在演职员表里就行）
                 clause = f"EXISTS (SELECT 1 FROM jsonb_array_elements(m.{field}_json) elem WHERE (elem->>'{id_key}')::int = ANY(%s))"
                 params.append(ids)
+                
             elif op == 'is_none_of':
                 clause = f"NOT EXISTS (SELECT 1 FROM jsonb_array_elements(m.{field}_json) elem WHERE (elem->>'{id_key}')::int = ANY(%s))"
                 params.append(ids)

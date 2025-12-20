@@ -174,7 +174,7 @@ DEFAULT_KEYWORD_MAPPING = {
     "功夫": {"en": ["kung fu"], "ids": [780]},
     "古装": {"en": ["costume drama"], "ids": [195013]},
     "仙侠": {"en": ["xianxia"], "ids": [234890]},
-    "恐怖": {"en": ["horror", "clown"], "ids": ["315058", "3199"]},
+    "恐怖": {"en": ["horror", "clown", "macabre"], "ids": ["315058", "3199", "162810"]},
     "惊悚": {"en": ["thriller", "gruesome"], "ids": ["10526", "186416"]},
 }
 
