@@ -385,7 +385,7 @@ def task_process_all_custom_collections(processor):
                 # ==================================================================
                 # 分支 B: 榜单/推荐类 (List/AI) - 全量模式
                 # ==================================================================
-                elif collection_type in ['list', 'ai_recommendation_global']:
+                elif collection_type in ['list', 'ai_recommendation_global', 'ai_recommendation']:
                     raw_tmdb_items = []
                     if collection_type == 'list':
                         importer = ListImporter(processor.tmdb_api_key)
@@ -546,7 +546,7 @@ def process_single_custom_collection(processor, custom_collection_id: int):
         # ==================================================================
         # 分支 B: 榜单/推荐类 (List/AI) - 全量模式
         # ==================================================================
-        elif collection_type in ['list', 'ai_recommendation_global']:
+        elif collection_type in ['list', 'ai_recommendation_global', 'ai_recommendation']:
             raw_tmdb_items = []
             if collection_type == 'list':
                 importer = ListImporter(processor.tmdb_api_key)
