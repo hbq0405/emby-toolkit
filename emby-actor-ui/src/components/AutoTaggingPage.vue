@@ -1,6 +1,6 @@
 <template>
   <n-space vertical size="large">
-    <n-card title="🏷️ 自动打标管理" subtitle="根据媒体库自动为入库影片追加 Emby 标签">
+    <n-card title="🏷️ 自动标签管理" subtitle="根据媒体库自动为入库影片追加 Emby 标签">
       <template #header-extra>
         <n-button type="primary" @click="addRule">添加规则</n-button>
       </template>

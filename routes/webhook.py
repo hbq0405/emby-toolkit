@@ -200,7 +200,7 @@ def _handle_full_processing_flow(processor: 'MediaProcessor', item_id: str, forc
 
 def _handle_immediate_tagging_with_lib(item_id, item_name, lib_id, lib_name):
     """
-    稍微改写一下打标函数，直接接收已经查好的 lib_id，省去重复查询。
+    自动打标。
     """
     try:
         processor = extensions.media_processor_instance
@@ -210,7 +210,7 @@ def _handle_immediate_tagging_with_lib(item_id, item_name, lib_id, lib_name):
             if lib_id in target_libs:
                 tags = rule.get('tags', [])
                 if tags:
-                    logger.info(f"  🏷️ [入口打标] 项目 '{item_name}' 命中库 '{lib_name}' 规则，追加标签: {tags}")
+                    logger.info(f"  🏷️ 媒体项 '{item_name}' 命中库 '{lib_name}' 规则，追加标签: {tags}")
                     emby.add_tags_to_item(item_id, tags, processor.emby_url, processor.emby_api_key, processor.emby_user_id)
                 break
     except Exception as e:
@@ -725,7 +725,7 @@ def emby_webhook():
 
             # 【关键拦截点】
             if lib_id not in allowed_libs:
-                logger.info(f"  ➜ Webhook: 项目 '{original_item_name}' 所属库 '{lib_name}' (ID: {lib_id}) 不在处理范围内，已跳过。")
+                logger.trace(f"  ➜ Webhook: 项目 '{original_item_name}' 所属库 '{lib_name}' (ID: {lib_id}) 不在处理范围内，已跳过。")
                 return jsonify({"status": "ignored_library"}), 200
         else:
             # 如果是 library.new 但查不到路径，通常是 Emby 还没准备好，这种极少数情况建议放行或记录
