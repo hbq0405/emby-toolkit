@@ -70,6 +70,51 @@ def api_get_config():
         logger.error(f"API /api/config (GET) 获取配置时发生错误: {e}", exc_info=True)
         return jsonify({"error": "获取配置信息时发生服务器内部错误"}), 500
 
+# --- AI 测试 ---
+@system_bp.route('/ai/test', methods=['POST'])
+@admin_required
+def api_test_ai_connection():
+    """
+    测试 AI 翻译配置是否有效。
+    接收前端传来的临时配置，尝试翻译一个单词。
+    """
+    from ai_translator import AITranslator
+    
+    # 1. 获取前端传来的配置（可能是还没保存的）
+    test_config = request.json
+    if not test_config:
+        return jsonify({"success": False, "message": "缺少配置数据"}), 400
+
+    logger.info(f"  ➜ 收到 AI 测试请求，提供商: {test_config.get('ai_provider')}")
+
+    try:
+        # 2. 实例化一个临时的翻译器
+        # 注意：AITranslator 初始化时会检查 API Key
+        translator = AITranslator(test_config)
+        
+        # 3. 执行一个简单的翻译任务
+        test_text = "Bald Qiang"
+        # 使用 fast 模式进行测试
+        result = translator.translate(test_text)
+        
+        if result and result != test_text:
+            return jsonify({
+                "success": True, 
+                "message": f"连接成功！测试翻译结果: '{test_text}' ➜ '{result}'"
+            })
+        elif result == test_text:
+             return jsonify({
+                "success": True, 
+                "message": f"连接成功，但 AI 返回了原词（可能模型认为无需翻译）。"
+            })
+        else:
+            return jsonify({"success": False, "message": "AI 未返回有效结果。"}), 500
+
+    except Exception as e:
+        error_msg = str(e)
+        logger.error(f"AI 测试失败: {error_msg}")
+        return jsonify({"success": False, "message": f"测试失败: {error_msg}"}), 500
+
 # --- 代理测试 ---
 @system_bp.route('/proxy/test', methods=['POST'])
 def test_proxy_connection():

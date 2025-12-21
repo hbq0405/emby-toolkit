@@ -287,6 +287,16 @@
                     <template #header><span class="card-title">AI翻译</span></template>
                     <template #header-extra>
                       <n-space align="center">
+                        <n-button 
+                          size="tiny" 
+                          type="primary" 
+                          ghost 
+                          @click="testAI" 
+                          :loading="isTestingAI"
+                          :disabled="!configModel.ai_translation_enabled || !configModel.ai_api_key"
+                        >
+                          测试连接
+                        </n-button>
                         <n-switch v-model:value="configModel.ai_translation_enabled" />
                         <a href="https://cloud.siliconflow.cn/i/GXIrubbL" target="_blank" style="font-size: 0.85em; color: var(--n-primary-color); text-decoration: underline;">注册硅基流动</a>
                       </n-space>
@@ -768,6 +778,7 @@ const isTestingProxy = ref(false);
 const embyUserIdRegex = /^[a-f0-9]{32}$/i;
 const isCleaningOffline = ref(false);
 const isClearingVectors = ref(false);
+const isTestingAI = ref(false);
 const isInvalidUserId = computed(() => {
   if (!configModel.value || !configModel.value.emby_user_id) return false;
   return configModel.value.emby_user_id.trim() !== '' && !embyUserIdRegex.test(configModel.value.emby_user_id);
@@ -816,6 +827,38 @@ const testProxy = async () => {
     message.error(`测试请求失败: ${errorMsg}`);
   } finally {
     isTestingProxy.value = false;
+  }
+};
+const testAI = async () => {
+  if (!configModel.value.ai_api_key) {
+    message.warning('请先填写 API Key 再进行测试。');
+    return;
+  }
+
+  isTestingAI.value = true;
+  try {
+    // 将当前的 configModel 传给后端进行即时测试
+    const response = await axios.post('/api/ai/test', configModel.value);
+    
+    if (response.data.success) {
+      // 使用 dialog 弹出详细结果，看起来更专业
+      dialog.success({
+        title: 'AI 测试成功',
+        content: response.data.message,
+        positiveText: '太棒了'
+      });
+    } else {
+      message.error(`测试失败: ${response.data.message}`);
+    }
+  } catch (error) {
+    const errorMsg = error.response?.data?.message || error.message;
+    dialog.error({
+      title: 'AI 测试失败',
+      content: errorMsg,
+      positiveText: '好吧'
+    });
+  } finally {
+    isTestingAI.value = false;
   }
 };
 const fetchNativeViewsSimple = async () => {
