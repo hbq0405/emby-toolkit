@@ -1100,14 +1100,20 @@ class MediaProcessor:
 
             # 如果是强制更新，从 API 获取最新演员表来替换上面的默认演员表
             if force_full_update and self.tmdb_api_key:
-                logger.info(f"  ➜ [深度更新模式] 正在从 TMDB 获取最新演员表 (仅更新演员，保留本地元数据结构)...")
+                logger.info(f"  ➜ [深度更新模式] 正在从 TMDB 获取最新元数据 (演员表 & 简介)...")
                 
                 if item_type == "Movie":
                     movie_details = tmdb.get_movie_details(tmdb_id, self.tmdb_api_key)
-                    if movie_details and movie_details.get("credits", {}).get("cast"):
-                        # ★★★ 关键：只替换演员表，不替换 tmdb_details_for_extra ★★★
-                        authoritative_cast_source = movie_details["credits"]["cast"]
-                        logger.info(f"  ➜ 成功从 TMDb 获取到 {len(authoritative_cast_source)} 位最新演员。")
+                    if movie_details:
+                        # 1. 刷新演员表
+                        if movie_details.get("credits", {}).get("cast"):
+                            authoritative_cast_source = movie_details["credits"]["cast"]
+                            logger.info(f"  ➜ 成功从 TMDb 获取到 {len(authoritative_cast_source)} 位最新演员。")
+                        
+                        # 2. 刷新简介 
+                        if movie_details.get("overview"):
+                            tmdb_details_for_extra["overview"] = movie_details["overview"]
+                            logger.info(f"  ➜ 成功从 TMDb 刷新了电影简介。")
                 
                 elif item_type == "Series":
                     # 剧集依然需要聚合 API 数据来获得完整的演员（包括客串）
