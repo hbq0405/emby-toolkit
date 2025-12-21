@@ -63,6 +63,23 @@ def _handle_full_processing_flow(processor: 'MediaProcessor', item_id: str, forc
         logger.error(f"  🚫 完整处理流程中止：核心处理器 (MediaProcessor) 未初始化。")
         return
 
+    # 1. 定位该项目所属的媒体库
+    library_info = emby.get_library_root_for_item(item_id, processor.emby_url, processor.emby_api_key, processor.emby_user_id)
+    if not library_info:
+        logger.warning(f"  🚫 Webhook: 无法定位项目 {item_id} 的媒体库，跳过后续处理。")
+        return
+
+    lib_id = library_info.get("Id")
+    lib_name = library_info.get("Name", "未知库")
+    
+    # 2. 获取配置中允许处理的媒体库列表
+    allowed_libs = config_manager.APP_CONFIG.get(constants.CONFIG_OPTION_EMBY_LIBRARIES_TO_PROCESS) or []
+
+    # 3. 执行拦截
+    if lib_id not in allowed_libs:
+        logger.info(f"  ➜ Webhook: 项目所属库 '{lib_name}' (ID: {lib_id}) 不在“处理范围”内，已跳过。")
+        return
+
     item_details = emby.get_emby_item_details(item_id, processor.emby_url, processor.emby_api_key, processor.emby_user_id)
     if not item_details:
         logger.error(f"  🚫 无法获取项目 {item_id} 的详情，任务中止。")
