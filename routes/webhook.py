@@ -709,8 +709,7 @@ def emby_webhook():
     if event_type in ["item.add", "library.new", "metadata.update", "image.update"]:
         processor = extensions.media_processor_instance
         
-        # A. 无论如何，先尝试获取所属库信息
-        # 注意：如果是 Episode，我们需要拿它所属 Series 的库信息，或者直接查 Episode 路径
+        # 获取所属库信息
         library_info = emby.get_library_root_for_item(
             original_item_id, processor.emby_url, processor.emby_api_key, processor.emby_user_id
         )
@@ -720,16 +719,17 @@ def emby_webhook():
             lib_name = library_info.get("Name", "未知库")
             allowed_libs = config_manager.APP_CONFIG.get(constants.CONFIG_OPTION_EMBY_LIBRARIES_TO_PROCESS) or []
 
-            # B. 执行打标（全库生效，不受 allowed_libs 限制）
-            if event_type == "item.add":
+            # 执行打标（全库生效）
+            if event_type in ["item.add", "library.new"]:
                 spawn(_handle_immediate_tagging_with_lib, original_item_id, original_item_name, lib_id, lib_name)
 
-            # C. 【关键拦截点】检查是否在处理范围内
+            # 【关键拦截点】
             if lib_id not in allowed_libs:
-                logger.info(f"  ➜ Webhook: 项目 '{original_item_name}' 所属库 '{lib_name}' 不在整理范围内，已跳过。")
+                logger.info(f"  ➜ Webhook: 项目 '{original_item_name}' 所属库 '{lib_name}' (ID: {lib_id}) 不在处理范围内，已跳过。")
                 return jsonify({"status": "ignored_library"}), 200
         else:
-            logger.warning(f"  ➜ Webhook: 无法定位项目 '{original_item_name}' 的媒体库，为安全起见将继续尝试处理。")
+            # 如果是 library.new 但查不到路径，通常是 Emby 还没准备好，这种极少数情况建议放行或记录
+            logger.warning(f"  ➜ Webhook: 无法定位项目 '{original_item_name}' 的媒体库。")
 
     if event_type in ["item.add", "library.new"]:
         spawn(_wait_for_stream_data_and_enqueue, original_item_id, original_item_name, original_item_type)
