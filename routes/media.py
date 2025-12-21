@@ -107,28 +107,38 @@ def api_update_edited_cast_sa(item_id):
 def proxy_external_image():
     """
     一个安全的通用外部图片代理。
-    【V2 - 修复版】增加了 User-Agent 和 Referer 头，以模拟真实浏览器请求，绕过反爬虫机制。
+    【V3 - 代理适配版】增加了对系统全局代理的支持，解决 TMDb 图片连接重置问题。
     """
     external_url = request.args.get('url')
     if not external_url:
         return jsonify({"error": "缺少 'url' 参数"}), 400
 
     try:
-        # 1. 获取程序配置，以便使用统一的 User-Agent
+        # 1. 获取程序配置
         current_config = config_manager.APP_CONFIG
         user_agent = current_config.get('user_agent', 'Mozilla/5.0')
 
-        # 2. 构造一个看起来更真实的请求头
+        # 2. ★★★ 核心修复：获取系统配置的代理 ★★★
+        proxies = config_manager.get_proxies_for_requests()
+
+        # 3. 构造请求头
         parsed_url = urlparse(external_url)
         headers = {
             'User-Agent': user_agent,
             'Referer': f"{parsed_url.scheme}://{parsed_url.netloc}/"
         }
         
-        logger.debug(f"代理请求外部图片: URL='{external_url}', Headers={headers}")
+        logger.debug(f"代理请求外部图片: URL='{external_url}', 使用代理={bool(proxies)}")
 
-        # 3. 带着伪装的请求头去获取图片
-        response = requests.get(external_url, stream=True, timeout=10, headers=headers)
+        # 4. 带着代理和伪装头去请求
+        # 增加 verify=False 可以防止某些代理抓包导致的 SSL 报错（可选）
+        response = requests.get(
+            external_url, 
+            stream=True, 
+            timeout=15, 
+            headers=headers, 
+            proxies=proxies
+        )
 
         response.raise_for_status()
 
@@ -138,15 +148,14 @@ def proxy_external_image():
             status=response.status_code
         )
     except requests.exceptions.RequestException as e:
+        # 这里的报错就是你看到的那个
         logger.error(f"通用图片代理错误: 无法获取 URL '{external_url}'. 错误: {e}")
+        # 返回一个占位图，省得前端裂图
         return Response(
             b'\x89PNG\r\n\x1a\n\x00\x00\x00\rIHDR\x00\x00\x00\x01\x00\x00\x00\x01\x08\x06\x00\x00\x00\x1f\x15\xc4\x89\x00\x00\x00\nIDATx\x9cc\x00\x01\x00\x00\x05\x00\x01\r\n-\xb4\x00\x00\x00\x00IEND\xaeB`\x82',
             mimetype='image/png',
             status=404
         )
-    except Exception as e:
-        logger.error(f"通用图片代理发生未知错误 for URL '{external_url}'. 错误: {e}", exc_info=True)
-        return jsonify({"error": "代理图片时发生内部错误"}), 500
 
 # 图片代理路由
 @media_proxy_bp.route('/image_proxy/<path:image_path>')
