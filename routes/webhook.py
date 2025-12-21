@@ -63,23 +63,6 @@ def _handle_full_processing_flow(processor: 'MediaProcessor', item_id: str, forc
         logger.error(f"  🚫 完整处理流程中止：核心处理器 (MediaProcessor) 未初始化。")
         return
 
-    # 1. 定位该项目所属的媒体库
-    library_info = emby.get_library_root_for_item(item_id, processor.emby_url, processor.emby_api_key, processor.emby_user_id)
-    if not library_info:
-        logger.warning(f"  🚫 Webhook: 无法定位项目 {item_id} 的媒体库，跳过后续处理。")
-        return
-
-    lib_id = library_info.get("Id")
-    lib_name = library_info.get("Name", "未知库")
-    
-    # 2. 获取配置中允许处理的媒体库列表
-    allowed_libs = config_manager.APP_CONFIG.get(constants.CONFIG_OPTION_EMBY_LIBRARIES_TO_PROCESS) or []
-
-    # 3. 执行拦截
-    if lib_id not in allowed_libs:
-        logger.info(f"  ➜ Webhook: 项目所属库 '{lib_name}' (ID: {lib_id}) 不在“处理范围”内，已跳过。")
-        return
-
     item_details = emby.get_emby_item_details(item_id, processor.emby_url, processor.emby_api_key, processor.emby_user_id)
     if not item_details:
         logger.error(f"  🚫 无法获取项目 {item_id} 的详情，任务中止。")
@@ -215,48 +198,23 @@ def _handle_full_processing_flow(processor: 'MediaProcessor', item_id: str, forc
 
     logger.trace(f"  ➜ Webhook 任务及所有后续流程完成: '{item_name_for_log}'")
 
-def _handle_immediate_tagging(item_id, item_name):
+def _handle_immediate_tagging_with_lib(item_id, item_name, lib_id, lib_name):
     """
-    自动打标。
+    稍微改写一下打标函数，直接接收已经查好的 lib_id，省去重复查询。
     """
     try:
         processor = extensions.media_processor_instance
-        # 1. 获取规则配置
         tagging_config = settings_db.get_setting('auto_tagging_rules') or []
-        if not tagging_config:
-            return
-
-        # 2. 获取该项目所属库 ID
-        library_info = emby.get_library_root_for_item(
-            item_id, processor.emby_url, processor.emby_api_key, processor.emby_user_id
-        )
-        if not library_info:
-            return
-        
-        current_lib_id = library_info.get("Id")
-
-        # 3. 遍历规则（支持多选库）
         for rule in tagging_config:
             target_libs = rule.get('library_ids', [])
-            # 兼容旧的单选字段
-            if not target_libs and rule.get('library_id'):
-                target_libs = [rule.get('library_id')]
-            
-            if current_lib_id in target_libs:
-                tags_to_add = rule.get('tags', [])
-                if tags_to_add:
-                    # 调用我们修正后的 add_tags_to_item
-                    emby.add_tags_to_item(
-                        item_id=item_id,
-                        tags_to_add=tags_to_add,
-                        emby_server_url=processor.emby_url,
-                        emby_api_key=processor.emby_api_key,
-                        user_id=processor.emby_user_id
-                    )
-                # 匹配到一个规则后通常就停止，防止重复打标
-                break 
+            if lib_id in target_libs:
+                tags = rule.get('tags', [])
+                if tags:
+                    logger.info(f"  🏷️ [入口打标] 项目 '{item_name}' 命中库 '{lib_name}' 规则，追加标签: {tags}")
+                    emby.add_tags_to_item(item_id, tags, processor.emby_url, processor.emby_api_key, processor.emby_user_id)
+                break
     except Exception as e:
-        logger.error(f"  🚫 [入口打标] 异常: {e}")
+        logger.error(f"  🚫 [入口打标] 失败: {e}")
 
 # --- 辅助函数 ---
 def _process_batch_webhook_events():
@@ -662,10 +620,11 @@ def emby_webhook():
     if event_type not in trigger_events:
         logger.debug(f"  ➜ Webhook事件 '{event_type}' 不在触发列表 {trigger_events} 中，将被忽略。")
         return jsonify({"status": "event_ignored_not_in_trigger_list"}), 200
-
+    
     item_from_webhook = data.get("Item", {}) if data else {}
     original_item_id = item_from_webhook.get("Id")
     original_item_type = item_from_webhook.get("Type")
+    original_item_name = item_from_webhook.get("Name", "未知项目")
     
     # 如果是分集，将名字格式化为 "剧名 - 集名"，方便日志搜索
     raw_name = item_from_webhook.get("Name", "未知项目")
@@ -746,8 +705,33 @@ def emby_webhook():
                 logger.error(f"处理删除事件 for item {original_item_id} 时发生错误: {e}", exc_info=True)
                 return jsonify({"status": "error_processing_remove_event", "error": str(e)}), 500
     
+    # 过滤不在处理范围的媒体库
+    if event_type in ["item.add", "metadata.update", "image.update"]:
+        processor = extensions.media_processor_instance
+        
+        # A. 无论如何，先尝试获取所属库信息
+        # 注意：如果是 Episode，我们需要拿它所属 Series 的库信息，或者直接查 Episode 路径
+        library_info = emby.get_library_root_for_item(
+            original_item_id, processor.emby_url, processor.emby_api_key, processor.emby_user_id
+        )
+        
+        if library_info:
+            lib_id = library_info.get("Id")
+            lib_name = library_info.get("Name", "未知库")
+            allowed_libs = config_manager.APP_CONFIG.get(constants.CONFIG_OPTION_EMBY_LIBRARIES_TO_PROCESS) or []
+
+            # B. 执行打标（全库生效，不受 allowed_libs 限制）
+            if event_type == "item.add":
+                spawn(_handle_immediate_tagging_with_lib, original_item_id, original_item_name, lib_id, lib_name)
+
+            # C. 【关键拦截点】检查是否在处理范围内
+            if lib_id not in allowed_libs:
+                logger.info(f"  ➜ Webhook: 项目 '{original_item_name}' 所属库 '{lib_name}' 不在整理范围内，已在入口拦截。")
+                return jsonify({"status": "ignored_library"}), 200
+        else:
+            logger.warning(f"  ➜ Webhook: 无法定位项目 '{original_item_name}' 的媒体库，为安全起见将继续尝试处理。")
+
     if event_type in ["item.add", "library.new"]:
-        spawn(_handle_immediate_tagging, original_item_id, original_item_name)
         spawn(_wait_for_stream_data_and_enqueue, original_item_id, original_item_name, original_item_type)
         
         logger.info(f"  ➜ Webhook: 收到入库事件 '{original_item_name}'，已分派打标与预检任务。")
