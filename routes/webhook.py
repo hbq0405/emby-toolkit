@@ -159,7 +159,7 @@ def _handle_full_processing_flow(processor: 'MediaProcessor', item_id: str, forc
             is_auto_complete_enabled = config.get('auto_complete_enabled', False)
 
             if is_auto_complete_enabled:
-                logger.info(f"  ➜ 正在检查电影 '{current_name}' 所属 TMDb 合集...")
+                logger.trace(f"  ➜ 正在检查电影 '{current_name}' 所属 TMDb 合集...")
                 # 直接调用 handler
                 collections_handler.check_and_subscribe_collection_from_movie(
                     movie_tmdb_id=str(current_tmdb_id),
