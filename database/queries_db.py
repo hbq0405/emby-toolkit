@@ -260,7 +260,7 @@ def query_virtual_library_items(
                 clause = f"""
                 EXISTS (
                     SELECT 1 FROM jsonb_array_elements(m.{field}_json) WITH ORDINALITY AS t(elem, ord) 
-                    WHERE t.ord <= 2 AND (t.elem->>'{id_key}')::int = ANY(%s)
+                    WHERE t.ord <= 3 AND (t.elem->>'{id_key}')::int = ANY(%s)
                 )
                 """
                 params.append(ids)
