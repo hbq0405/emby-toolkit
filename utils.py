@@ -151,6 +151,7 @@ RATING_MAP = {
 # --- 关键词预设表 ---
 DEFAULT_KEYWORD_MAPPING = {
     "丧尸": {"en": ["zombie"], "ids": [12377]},
+    "二战": {"en": ["world war ii"], "ids": [1956]},
     "吸血鬼": {"en": ["vampire"], "ids": [3133]},
     "外星人": {"en": ["alien"], "ids": [9951]},
     "漫改": {"en": ["based on comic"], "ids": [9717]},
