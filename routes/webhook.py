@@ -706,7 +706,7 @@ def emby_webhook():
                 return jsonify({"status": "error_processing_remove_event", "error": str(e)}), 500
     
     # 过滤不在处理范围的媒体库
-    if event_type in ["item.add", "metadata.update", "image.update"]:
+    if event_type in ["item.add", "library.new", "metadata.update", "image.update"]:
         processor = extensions.media_processor_instance
         
         # A. 无论如何，先尝试获取所属库信息
@@ -726,7 +726,7 @@ def emby_webhook():
 
             # C. 【关键拦截点】检查是否在处理范围内
             if lib_id not in allowed_libs:
-                logger.info(f"  ➜ Webhook: 项目 '{original_item_name}' 所属库 '{lib_name}' 不在整理范围内，已在入口拦截。")
+                logger.info(f"  ➜ Webhook: 项目 '{original_item_name}' 所属库 '{lib_name}' 不在整理范围内，已跳过。")
                 return jsonify({"status": "ignored_library"}), 200
         else:
             logger.warning(f"  ➜ Webhook: 无法定位项目 '{original_item_name}' 的媒体库，为安全起见将继续尝试处理。")
@@ -734,7 +734,7 @@ def emby_webhook():
     if event_type in ["item.add", "library.new"]:
         spawn(_wait_for_stream_data_and_enqueue, original_item_id, original_item_name, original_item_type)
         
-        logger.info(f"  ➜ Webhook: 收到入库事件 '{original_item_name}'，已分派打标与预检任务。")
+        logger.info(f"  ➜ Webhook: 收到入库事件 '{original_item_name}'，已分派预检任务。")
         return jsonify({"status": "processing_started_with_stream_check", "item_id": original_item_id}), 202
 
     # --- 为 metadata.update 和 image.update 事件准备通用变量 ---
