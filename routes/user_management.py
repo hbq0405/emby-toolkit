@@ -432,8 +432,11 @@ def register_with_invite():
         config = config_manager.APP_CONFIG
         
         # 1. 准备跳转地址
-        custom_redirect_url = config.get(constants.CONFIG_OPTION_emby_public_url)
-        final_redirect_url = custom_redirect_url.strip() or config.get(constants.CONFIG_OPTION_EMBY_SERVER_URL)
+        custom_redirect_url = config.get(constants.CONFIG_OPTION_EMBY_PUBLIC_URL)
+        if custom_redirect_url and custom_redirect_url.strip():
+            final_redirect_url = custom_redirect_url.strip()
+        else:
+            final_redirect_url = config.get(constants.CONFIG_OPTION_EMBY_SERVER_URL)
 
         # 2. 准备有效期显示信息
         expiration_info = "永久有效"
