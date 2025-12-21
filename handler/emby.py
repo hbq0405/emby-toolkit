@@ -139,7 +139,7 @@ def get_emby_item_details(item_id: str, emby_server_url: str, emby_api_key: str,
     if fields:
         fields_to_request = fields
     else:
-        fields_to_request = "Type,ProviderIds,People,Path,OriginalTitle,DateCreated,PremiereDate,ProductionYear,ChildCount,RecursiveItemCount,Overview,CommunityRating,OfficialRating,Genres,Studios,Taglines,MediaStreams"
+        fields_to_request = "Type,ProviderIds,People,Path,OriginalTitle,DateCreated,PremiereDate,ProductionYear,ChildCount,RecursiveItemCount,Overview,CommunityRating,OfficialRating,Genres,Studios,Taglines,MediaStreams,TagItems,Tags"
 
     params = {
         "api_key": emby_api_key,
@@ -1633,38 +1633,51 @@ def get_library_root_for_item(item_id: str, base_url: str, api_key: str, user_id
     
 def update_emby_item_details(item_id: str, new_data: Dict[str, Any], emby_server_url: str, emby_api_key: str, user_id: str) -> bool:
     if not all([item_id, new_data, emby_server_url, emby_api_key, user_id]):
-        logger.error("update_emby_item_details: 参数不足。")
         return False
 
     try:
+        # 1. 获取当前完整详情
         current_item_details = get_emby_item_details(item_id, emby_server_url, emby_api_key, user_id)
         if not current_item_details:
-            logger.error(f"  🚫 更新前无法获取项目 {item_id} 的详情，操作中止。")
             return False
         
-        item_name_for_log = current_item_details.get("Name", f"ID:{item_id}")
-
-        logger.debug(f"准备将以下新数据合并到 '{item_name_for_log}': {new_data}")
+        # 2. 合并新数据
         item_to_update = current_item_details.copy()
         item_to_update.update(new_data)
         
+        # ★★★ 核心修复：踢除所有干扰字段 ★★★
+        # 这些字段是 Emby 生成的，带回去会导致 Tags、People 等字段更新失效或被覆盖
+        black_list = [
+            'TagItems',      # 标签对象列表 (Tags 的死对头)
+            # 'People',        # 演员列表 (除非你是在更新演员，否则不要带回去)
+            'MediaStreams',  # 媒体流信息
+            'MediaSources',  # 媒体源信息
+            'Chapters',      # 章节信息
+            'RecursiveItemCount',
+            'ChildCount',
+            'ImageTags',
+            'SeriesTimerId',
+            'RunTimeTicks'
+        ]
+        
+        for key in black_list:
+            # 只有当 new_data 里没有显式要更新这些字段时，才删除它们
+            if key not in new_data:
+                item_to_update.pop(key, None)
+
+        # 3. 执行 POST
         update_url = f"{emby_server_url.rstrip('/')}/Items/{item_id}"
         params = {"api_key": emby_api_key}
         headers = {'Content-Type': 'application/json'}
 
-        # ★★★ 核心修改: 动态获取超时时间 ★★★
         api_timeout = config_manager.APP_CONFIG.get(constants.CONFIG_OPTION_EMBY_API_TIMEOUT, 60)
         response_post = requests.post(update_url, json=item_to_update, headers=headers, params=params, timeout=api_timeout)
         response_post.raise_for_status()
         
-        logger.info(f"✅ 成功更新项目 '{item_name_for_log}' 的详情。")
         return True
 
-    except requests.exceptions.RequestException as e:
-        logger.error(f"更新项目详情时发生网络错误 (ID: {item_id}): {e}")
-        return False
     except Exception as e:
-        logger.error(f"更新项目详情时发生未知错误 (ID: {item_id}): {e}", exc_info=True)
+        logger.error(f"更新项目详情失败 (ID: {item_id}): {e}")
         return False
 # --- 删除媒体项神医接口 ---    
 def delete_item_sy(item_id: str, emby_server_url: str, emby_api_key: str, user_id: str) -> bool:
@@ -2538,3 +2551,89 @@ def get_item_ancestors(item_id: str, base_url: str, api_key: str, user_id: str) 
     except Exception as e:
         logger.error(f"获取项目 {item_id} 的祖先链失败: {e}")
         return []
+    
+def add_tags_to_item(item_id: str, tags_to_add: List[str], emby_server_url: str, emby_api_key: str, user_id: str) -> bool:
+    if not tags_to_add:
+        return True
+        
+    try:
+        # 1. 显式请求 Tags 和 TagItems
+        item_details = get_emby_item_details(item_id, emby_server_url, emby_api_key, user_id, fields="Tags,TagItems,LockedFields")
+        if not item_details:
+            return False
+            
+        # 2. 【核心增强】双路提取旧标签
+        existing_tags = set()
+        
+        # 从 Tags 字符串列表提取
+        if item_details.get("Tags"):
+            existing_tags.update(item_details["Tags"])
+            
+        # 从 TagItems 对象列表提取 (防止 Tags 字段为空但 TagItems 有值的情况)
+        if item_details.get("TagItems"):
+            for ti in item_details["TagItems"]:
+                if isinstance(ti, dict) and ti.get("Name"):
+                    existing_tags.add(ti["Name"])
+
+        # 3. 合并新标签
+        new_tags_set = existing_tags.copy()
+        added_any = False
+        for t in tags_to_add:
+            if t not in new_tags_set:
+                new_tags_set.add(t)
+                added_any = True
+        
+        if not added_any:
+            logger.trace(f"项目 {item_id} 标签已存在，无需更新。")
+            return True
+
+        # 4. 准备更新负载
+        update_payload = {"Tags": list(new_tags_set)}
+        
+        # 处理锁定逻辑
+        locked_fields = item_details.get("LockedFields", [])
+        if "Tags" in locked_fields:
+            locked_fields.remove("Tags")
+            update_payload["LockedFields"] = locked_fields
+
+        # 5. 调用更新函数
+        return update_emby_item_details(item_id, update_payload, emby_server_url, emby_api_key, user_id)
+
+    except Exception as e:
+        logger.error(f"追加标签失败 (ID: {item_id}): {e}")
+        return False
+    
+def remove_tags_from_item(item_id: str, tags_to_remove: List[str], emby_server_url: str, emby_api_key: str, user_id: str) -> bool:
+    """
+    从 Emby 项目中精准移除指定的标签。
+    """
+    if not tags_to_remove:
+        return True
+        
+    try:
+        # 1. 获取当前标签
+        item_details = get_emby_item_details(item_id, emby_server_url, emby_api_key, user_id, fields="Tags,TagItems")
+        if not item_details:
+            return False
+            
+        # 2. 提取现有标签名
+        existing_tags = set()
+        if item_details.get("Tags"):
+            existing_tags.update(item_details["Tags"])
+        if item_details.get("TagItems"):
+            for ti in item_details["TagItems"]:
+                if isinstance(ti, dict) and ti.get("Name"):
+                    existing_tags.add(ti["Name"])
+
+        # 3. 移除匹配的标签
+        new_tags = [t for t in existing_tags if t not in tags_to_remove]
+        
+        if len(new_tags) == len(existing_tags):
+            return True # 没有匹配到要删除的标签，直接返回
+
+        # 4. 提交更新 (update_emby_item_details 已经处理了 TagItems 冲突)
+        return update_emby_item_details(item_id, {"Tags": new_tags}, emby_server_url, emby_api_key, user_id)
+
+    except Exception as e:
+        logger.error(f"移除标签失败 (ID: {item_id}): {e}")
+        return False

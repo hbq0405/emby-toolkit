@@ -198,6 +198,49 @@ def _handle_full_processing_flow(processor: 'MediaProcessor', item_id: str, forc
 
     logger.trace(f"  ➜ Webhook 任务及所有后续流程完成: '{item_name_for_log}'")
 
+def _handle_immediate_tagging(item_id, item_name):
+    """
+    自动打标。
+    """
+    try:
+        processor = extensions.media_processor_instance
+        # 1. 获取规则配置
+        tagging_config = settings_db.get_setting('auto_tagging_rules') or []
+        if not tagging_config:
+            return
+
+        # 2. 获取该项目所属库 ID
+        library_info = emby.get_library_root_for_item(
+            item_id, processor.emby_url, processor.emby_api_key, processor.emby_user_id
+        )
+        if not library_info:
+            return
+        
+        current_lib_id = library_info.get("Id")
+
+        # 3. 遍历规则（支持多选库）
+        for rule in tagging_config:
+            target_libs = rule.get('library_ids', [])
+            # 兼容旧的单选字段
+            if not target_libs and rule.get('library_id'):
+                target_libs = [rule.get('library_id')]
+            
+            if current_lib_id in target_libs:
+                tags_to_add = rule.get('tags', [])
+                if tags_to_add:
+                    # 调用我们修正后的 add_tags_to_item
+                    emby.add_tags_to_item(
+                        item_id=item_id,
+                        tags_to_add=tags_to_add,
+                        emby_server_url=processor.emby_url,
+                        emby_api_key=processor.emby_api_key,
+                        user_id=processor.emby_user_id
+                    )
+                # 匹配到一个规则后通常就停止，防止重复打标
+                break 
+    except Exception as e:
+        logger.error(f"  🚫 [入口打标] 异常: {e}")
+
 # --- 辅助函数 ---
 def _process_batch_webhook_events():
     global WEBHOOK_BATCH_DEBOUNCER
@@ -687,9 +730,10 @@ def emby_webhook():
                 return jsonify({"status": "error_processing_remove_event", "error": str(e)}), 500
     
     if event_type in ["item.add", "library.new"]:
+        spawn(_handle_immediate_tagging, original_item_id, original_item_name)
         spawn(_wait_for_stream_data_and_enqueue, original_item_id, original_item_name, original_item_type)
         
-        logger.info(f"  ➜ Webhook: 收到入库事件 '{original_item_name}'，已启动后台流数据预检任务。")
+        logger.info(f"  ➜ Webhook: 收到入库事件 '{original_item_name}'，已分派打标与预检任务。")
         return jsonify({"status": "processing_started_with_stream_check", "item_id": original_item_id}), 202
 
     # --- 为 metadata.update 和 image.update 事件准备通用变量 ---

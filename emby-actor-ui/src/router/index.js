@@ -80,6 +80,12 @@ const routes = [
     meta: { requiresAuth: true },
   },
   {
+    path: '/auto-tagging',
+    name: 'AutoTaggingPage',
+    component: () => import('../components/AutoTaggingPage.vue'),
+    meta: { requiresAuth: true },
+  },
+  {
     path: '/watchlist',
     name: 'Watchlist',
     component: WatchlistPage,

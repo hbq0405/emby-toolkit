@@ -10,7 +10,7 @@ import config_manager
 import constants
 import task_manager
 import extensions
-from database import custom_collection_db, media_db, user_db, request_db
+from database import custom_collection_db, media_db, user_db, request_db, settings_db
 import handler.moviepilot as moviepilot
 from extensions import admin_required, processor_ready_required
 from urllib.parse import urlparse
@@ -607,3 +607,57 @@ def api_save_subscription_strategy():
     except Exception as e:
         logger.error(f"保存订阅策略失败: {e}")
         return jsonify({"error": "保存配置失败"}), 500
+    
+@media_api_bp.route('/auto_tagging/rules', methods=['GET'])
+@admin_required
+def get_tagging_rules():
+    rules = settings_db.get_setting('auto_tagging_rules') or []
+    return jsonify(rules)
+
+@media_api_bp.route('/auto_tagging/rules', methods=['POST'])
+@admin_required
+def save_tagging_rules():
+    rules = request.json
+    settings_db.save_setting('auto_tagging_rules', rules)
+    return jsonify({"message": "配置已保存"})
+
+@media_api_bp.route('/auto_tagging/run_now', methods=['POST'])
+@admin_required
+@processor_ready_required
+def run_tagging_now():
+    from tasks import task_bulk_auto_tag
+    data = request.json
+    lib_ids = data.get('library_ids') 
+    tags = data.get('tags')
+    lib_name_display = data.get('library_name', "多个库")
+
+    if not lib_ids or not tags:
+        return jsonify({"error": "参数不完整"}), 400
+
+    task_manager.submit_task(
+        task_bulk_auto_tag,
+        task_name=f"手动补打标签: {lib_name_display}",
+        processor_type='media',
+        library_ids=lib_ids, # 传列表
+        tags=tags
+    )
+    return jsonify({"message": "批量打标任务已启动"})
+
+@media_api_bp.route('/auto_tagging/clear_now', methods=['POST'])
+@admin_required
+@processor_ready_required
+def clear_tagging_now():
+    from tasks import task_bulk_remove_tags
+    data = request.json
+    lib_ids = data.get('library_ids')
+    tags = data.get('tags')
+    lib_name_display = data.get('library_name', "多个库")
+
+    task_manager.submit_task(
+        task_bulk_remove_tags,
+        task_name=f"手动移除标签: {lib_name_display}",
+        processor_type='media',
+        library_ids=lib_ids,
+        tags=tags
+    )
+    return jsonify({"message": "批量移除任务已启动"})

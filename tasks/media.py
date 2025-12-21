@@ -937,3 +937,66 @@ def task_apply_main_cast_to_episodes(processor, series_id: str, episode_ids: lis
     except Exception as e:
         logger.error(f"  ➜ 为剧集 {series_id} 的新分集应用主演员表时发生错误: {e}", exc_info=True)
         raise
+
+# --- 自动打标 ---
+def task_bulk_auto_tag(processor, library_ids: List[str], tags: List[str]):
+    """
+    后台任务：支持为多个媒体库批量打标签。
+    """
+    try:
+        total_libs = len(library_ids)
+        for lib_idx, lib_id in enumerate(library_ids):
+            task_manager.update_status_from_thread(int((lib_idx/total_libs)*100), f"正在扫描第 {lib_idx+1}/{total_libs} 个媒体库...")
+            
+            items = emby.get_emby_library_items(
+                base_url=processor.emby_url,
+                api_key=processor.emby_api_key,
+                library_ids=[lib_id],
+                media_type_filter="Movie,Series,Episode",
+                user_id=processor.emby_user_id
+            )
+            
+            if not items: continue
+
+            for i, item in enumerate(items):
+                if processor.is_stop_requested(): return
+                
+                # 进度显示优化：显示当前库的进度
+                task_manager.update_status_from_thread(
+                    int((lib_idx/total_libs)*100 + (i/len(items))*(100/total_libs)), 
+                    f"库({lib_idx+1}/{total_libs}) 正在打标: {item.get('Name')}"
+                )
+                
+                emby.add_tags_to_item(item.get("Id"), tags, processor.emby_url, processor.emby_api_key, processor.emby_user_id)
+        
+        task_manager.update_status_from_thread(100, "所有选定库批量打标完成")
+    except Exception as e:
+        logger.error(f"批量打标任务失败: {e}")
+        task_manager.update_status_from_thread(-1, "任务异常中止")
+
+def task_bulk_remove_tags(processor, library_ids: List[str], tags: List[str]):
+    """
+    后台任务：从指定媒体库中批量移除特定标签。
+    """
+    try:
+        total_libs = len(library_ids)
+        for lib_idx, lib_id in enumerate(library_ids):
+            items = emby.get_emby_library_items(
+                base_url=processor.emby_url, api_key=processor.emby_api_key,
+                library_ids=[lib_id], media_type_filter="Movie,Series,Episode",
+                user_id=processor.emby_user_id
+            )
+            if not items: continue
+
+            for i, item in enumerate(items):
+                if processor.is_stop_requested(): return
+                task_manager.update_status_from_thread(
+                    int((lib_idx/total_libs)*100 + (i/len(items))*(100/total_libs)), 
+                    f"正在移除标签({lib_idx+1}/{total_libs}): {item.get('Name')}"
+                )
+                emby.remove_tags_from_item(item.get("Id"), tags, processor.emby_url, processor.emby_api_key, processor.emby_user_id)
+        
+        task_manager.update_status_from_thread(100, "批量标签移除完成")
+    except Exception as e:
+        logger.error(f"批量清理任务失败: {e}")
+        task_manager.update_status_from_thread(-1, "清理任务异常中止")
