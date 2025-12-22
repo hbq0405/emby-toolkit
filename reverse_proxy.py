@@ -337,7 +337,8 @@ def handle_mimicked_library_metadata_endpoint(path, mimicked_id, params):
     
 def handle_get_mimicked_library_items(user_id, mimicked_id, params):
     """
-    【V7 - 实时架构+原生排序适配版】
+    【V8 - 实时架构 + 占位海报适配版】
+    支持：实时权限过滤、原生排序、榜单占位符、数量限制
     """
     try:
         # 1. 获取合集基础信息
@@ -345,10 +346,6 @@ def handle_get_mimicked_library_items(user_id, mimicked_id, params):
         collection_info = custom_collection_db.get_custom_collection_by_id(real_db_id)
         if not collection_info:
             return Response(json.dumps({"Items": [], "TotalRecordCount": 0}), mimetype='application/json')
-        
-        # --- 新增: 获取原始榜单 JSON ---
-        raw_list_json = collection_info.get('generated_media_info_json')
-        raw_list = json.loads(raw_list_json) if isinstance(raw_list_json, str) else (raw_list_json or [])
 
         definition = collection_info.get('definition_json') or {}
         if isinstance(definition, str):
@@ -361,6 +358,10 @@ def handle_get_mimicked_library_items(user_id, mimicked_id, params):
         emby_limit = int(params.get('Limit', 50))
         offset = int(params.get('StartIndex', 0))
         
+        defined_limit = definition.get('limit')
+        if defined_limit:
+            defined_limit = int(defined_limit)
+        
         defined_sort_by = definition.get('default_sort_by', 'DateCreated')
         defined_sort_order = definition.get('default_sort_order', 'Descending')
         
@@ -368,135 +369,149 @@ def handle_get_mimicked_library_items(user_id, mimicked_id, params):
         sort_by = defined_sort_by if defined_sort_by and defined_sort_by != 'none' else params.get('SortBy', 'DateCreated')
         sort_order = defined_sort_order if defined_sort_by and defined_sort_by != 'none' else params.get('SortOrder', 'Descending')
 
-        # ★★★ 核心判断：是否需要 Emby 原生排序 ★★★
-        # 推荐类需要随机采样，DateLastContentAdded 需要 Emby 内部数据
+        # 核心判断：是否需要 Emby 原生排序 (推荐类或特定排序字段)
         is_emby_proxy_sort_required = (
             collection_type in ['ai_recommendation', 'ai_recommendation_global'] or 
             'DateLastContentAdded' in sort_by
         )
 
-        # 3. 数量限制逻辑
-        defined_limit = definition.get('limit')
-        if defined_limit is not None:
-            defined_limit = int(defined_limit)
-            if not is_emby_proxy_sort_required and offset >= defined_limit:
-                return Response(json.dumps({"Items": [], "TotalRecordCount": defined_limit}), mimetype='application/json')
-
-        # 4. 准备 SQL 查询范围
+        # 3. 准备基础查询参数
         tmdb_ids_filter = None
         rules = definition.get('rules', [])
         logic = definition.get('logic', 'AND')
         item_types = definition.get('item_type', ['Movie'])
         target_library_ids = definition.get('target_library_ids', [])
 
-        if collection_type in ['ai_recommendation', 'ai_recommendation_global']:
-            api_key = config_manager.APP_CONFIG.get("tmdb_api_key")
-            if api_key:
-                engine = RecommendationEngine(api_key)
-                if collection_type == 'ai_recommendation':
-                    # 个人推荐：基于用户历史
-                    candidate_pool = engine.generate_user_vector(user_id, limit=300, allowed_types=item_types)
-                else:
-                    # 全局推荐：基于全站热门
-                    candidate_pool = engine.generate_global_vector(limit=300, allowed_types=item_types)
-                
-                tmdb_ids_filter = [str(i['id']) for i in candidate_pool]
-        elif collection_type == 'list':
-            raw_items_json = collection_info.get('generated_media_info_json')
-            if raw_items_json:
-                raw_items = json.loads(raw_items_json) if isinstance(raw_items_json, str) else raw_items_json
-                tmdb_ids_filter = [str(i.get('tmdb_id')) for i in raw_items if i.get('tmdb_id')]
-
-        # 5. 执行 SQL 查询获取 ID 池
-        # 如果要交给 Emby 排序，SQL 就不负责分页，直接捞出该合集下所有符合权限的 ID
-        sql_limit = defined_limit if is_emby_proxy_sort_required and defined_limit else 5000 if is_emby_proxy_sort_required else min(emby_limit, defined_limit - offset) if defined_limit else emby_limit
-        sql_offset = 0 if is_emby_proxy_sort_required else offset
-        sql_sort = 'Random' if 'ai_recommendation' in collection_type else 'DateCreated' if is_emby_proxy_sort_required else sort_by
-
-        items, total_count = queries_db.query_virtual_library_items(
-            rules=rules, logic=logic, user_id=user_id,
-            limit=sql_limit, offset=sql_offset,
-            sort_by=sql_sort, sort_order=sort_order,
-            item_types=item_types, target_library_ids=target_library_ids,
-            tmdb_ids=tmdb_ids_filter
-        )
-
-        # A. 建立一个“已入库”的映射表，方便快速查找
-        # 假设 items 里的每个对象现在带了 tmdb_id (如果没有，需要修改 SQL 让它带上)
-        local_tmdb_map = {str(i.get('tmdb_id')): i['Id'] for i in items if i.get('tmdb_id')}
-
-        # B. 找出哪些 TMDb ID 是榜单里有但库里没有的
-        missing_tmdb_ids = [str(i['tmdb_id']) for i in raw_list if str(i.get('tmdb_id')) not in local_tmdb_map]
+        # 4. 分流处理逻辑
         
-        # C. 从数据库批量获取这些缺失项的订阅状态 (WANTED, SUBSCRIBED等)
-        # 你需要在 queries_db 中实现 get_missing_items_metadata
-        status_map = queries_db.get_missing_items_metadata(missing_tmdb_ids)
-
-        # D. 按照榜单原始顺序，构造最终返回给 Emby 客户端的列表
-        final_list_to_process = []
-        for raw_item in raw_list:
-            tid = str(raw_item.get('tmdb_id'))
+        # --- 场景 A: 榜单类 (需要处理占位符) ---
+        if collection_type == 'list':
+            raw_list_json = collection_info.get('generated_media_info_json')
+            raw_list = json.loads(raw_list_json) if isinstance(raw_list_json, str) else (raw_list_json or [])
             
-            if tid in local_tmdb_map:
-                final_list_to_process.append({"is_missing": False, "id": local_tmdb_map[tid]})
-            else:
-                meta = status_map.get(tid, {})
-                status = meta.get('subscription_status', 'WANTED')
-                real_emby_ids = meta.get('emby_item_ids_json', [])
-
-                if status == 'NONE' and real_emby_ids:
-                    # --- ✨ 改进 2：救回真实项的同时，清理掉它的占位海报 ✨ ---
-                    final_list_to_process.append({"is_missing": False, "id": real_emby_ids[0]})
-                    
-                    from handler.poster_generator import cleanup_placeholder
-                    cleanup_placeholder(tid) 
-                else:
-                    final_list_to_process.append({"is_missing": True, "tmdb_id": tid, "status": status})
-
-        # E. 分页截取
-        paged_list = final_list_to_process[offset : offset + emby_limit]
-
-        # F. 填充详情
-        final_items_for_client = []
-        
-        # 批量获取已入库项的 Emby 详情
-        real_ids = [x['id'] for x in paged_list if not x['is_missing']]
-        base_url, api_key = _get_real_emby_url_and_key()
-        full_fields = "PrimaryImageAspectRatio,ProviderIds,UserData,Name,ProductionYear,CommunityRating,Type"
-        emby_details_map = {item['Id']: item for item in _fetch_items_in_chunks(base_url, api_key, user_id, real_ids, full_fields)}
-
-        for entry in paged_list:
-            if not entry['is_missing']:
-                # 放入真实 Emby 对象
-                if entry['id'] in emby_details_map:
-                    final_items_for_client.append(emby_details_map[entry['id']])
-            else:
-                # 放入伪造的“占位”对象
-                tid = entry['tmdb_id']
-                meta = status_map.get(tid, {})
-                status = meta.get('subscription_status', 'WANTED')
+            if raw_list:
+                # 1. 获取该榜单中所有已入库项 (不分页，取全量用于映射)
+                tmdb_ids_in_list = [str(i.get('tmdb_id')) for i in raw_list if i.get('tmdb_id')]
                 
-                fake_item = {
-                    "Name": meta.get('title') or "未知电影",
-                    "ServerId": extensions.EMBY_SERVER_ID,
-                    "Id": to_missing_item_id(tid),
-                    "Type": "Movie",
-                    "ImageTags": {"Primary": f"missing_{status}_{tid}"}, # 这里的 Tag 很重要
-                    "UserData": {"PlaybackPositionTicks": 0, "PlayCount": 0, "IsFavorite": False, "Played": False},
-                    "ProviderIds": {"Tmdb": tid},
-                    "IsFolder": False,
-                    "LocationType": "Virtual"
-                }
-                final_items_for_client.append(fake_item)
+                # 注意：这里 limit 给大一点，确保覆盖榜单长度
+                items_in_db, _ = queries_db.query_virtual_library_items(
+                    rules=rules, logic=logic, user_id=user_id,
+                    limit=2000, offset=0, 
+                    sort_by='DateCreated', sort_order='Descending',
+                    item_types=item_types, target_library_ids=target_library_ids,
+                    tmdb_ids=tmdb_ids_in_list
+                )
+                
+                # 2. 建立 TMDb ID -> Emby ID 的映射
+                # 确保 key 是字符串，value 是 Emby 的真实 ID
+                local_tmdb_map = {str(i['tmdb_id']): i['Id'] for i in items_in_db if i.get('tmdb_id')}
+                
+                # 3. 构造完整视图列表
+                full_view_list = []
+                for raw_item in raw_list:
+                    if defined_limit and len(full_view_list) >= defined_limit:
+                        break
+                    tid = str(raw_item.get('tmdb_id'))
+                    
+                    if tid in local_tmdb_map:
+                        # 已入库：记录真实 Emby ID
+                        full_view_list.append({"is_missing": False, "id": local_tmdb_map[tid], "tmdb_id": tid})
+                    else:
+                        # 未入库：记录 TMDb ID 用于占位
+                        full_view_list.append({"is_missing": True, "tmdb_id": tid})
 
-        # 4. 返回结果
-        return Response(json.dumps({
-            "Items": final_items_for_client, 
-            "TotalRecordCount": len(final_list_to_process) # 总数用榜单总数
-        }), mimetype='application/json')
+                # 4. 分页
+                paged_part = full_view_list[offset : offset + emby_limit]
+                reported_total_count = len(full_view_list)
+
+                # 5. 批量获取详情
+                real_eids = [x['id'] for x in paged_part if not x['is_missing']]
+                missing_tids = [x['tmdb_id'] for x in paged_part if x['is_missing']]
+                
+                # 获取缺失项元数据
+                status_map = queries_db.get_missing_items_metadata(missing_tids)
+                
+                # 获取真实项详情 (必须包含 ImageTags)
+                base_url, api_key = _get_real_emby_url_and_key()
+                full_fields = "PrimaryImageAspectRatio,ImageTags,HasPrimaryImage,ProviderIds,UserData,Name,ProductionYear,CommunityRating,Type"
+                emby_details = _fetch_items_in_chunks(base_url, api_key, user_id, real_eids, full_fields)
+                emby_map = {item['Id']: item for item in emby_details}
+
+                final_items = []
+                for entry in paged_part:
+                    if not entry['is_missing']:
+                        eid = entry['id']
+                        if eid in emby_map:
+                            final_items.append(emby_map[eid])
+                        else:
+                            # 兜底：如果详情获取失败，尝试构造一个基础对象
+                            final_items.append({"Id": eid, "Name": "加载中...", "Type": "Movie"})
+                    else:
+                        # 占位符逻辑 (保持不变)
+                        tid = entry['tmdb_id']
+                        meta = status_map.get(tid, {})
+                        status = meta.get('subscription_status', 'WANTED')
+                        final_items.append({
+                            "Name": meta.get('title', '未知内容'),
+                            "ServerId": extensions.EMBY_SERVER_ID,
+                            "Id": to_missing_item_id(tid),
+                            "Type": "Movie",
+                            "ImageTags": {"Primary": f"missing_{status}_{tid}"},
+                            "HasPrimaryImage": True,
+                            "UserData": {"PlaybackPositionTicks": 0, "PlayCount": 0, "IsFavorite": False, "Played": False},
+                            "ProviderIds": {"Tmdb": tid},
+                            "LocationType": "Virtual"
+                        })
+                
+                return Response(json.dumps({"Items": final_items, "TotalRecordCount": reported_total_count}), mimetype='application/json')
+
+        # --- 场景 B: 筛选/推荐类 (维持 V7 逻辑，不显示占位符) ---
+        else:
+            if collection_type in ['ai_recommendation', 'ai_recommendation_global']:
+                api_key = config_manager.APP_CONFIG.get("tmdb_api_key")
+                if api_key:
+                    engine = RecommendationEngine(api_key)
+                    if collection_type == 'ai_recommendation':
+                        candidate_pool = engine.generate_user_vector(user_id, limit=300, allowed_types=item_types)
+                    else:
+                        candidate_pool = engine.generate_global_vector(limit=300, allowed_types=item_types)
+                    tmdb_ids_filter = [str(i['id']) for i in candidate_pool]
+
+            # 执行 SQL 查询
+            sql_limit = defined_limit if is_emby_proxy_sort_required and defined_limit else 5000 if is_emby_proxy_sort_required else min(emby_limit, defined_limit - offset) if (defined_limit and defined_limit > offset) else emby_limit
+            sql_offset = 0 if is_emby_proxy_sort_required else offset
+            sql_sort = 'Random' if 'ai_recommendation' in collection_type else sort_by
+
+            items, total_count = queries_db.query_virtual_library_items(
+                rules=rules, logic=logic, user_id=user_id,
+                limit=sql_limit, offset=sql_offset,
+                sort_by=sql_sort, sort_order=sort_order,
+                item_types=item_types, target_library_ids=target_library_ids,
+                tmdb_ids=tmdb_ids_filter
+            )
+
+            reported_total_count = min(total_count, defined_limit) if defined_limit else total_count
+
+            if not items:
+                return Response(json.dumps({"Items": [], "TotalRecordCount": reported_total_count}), mimetype='application/json')
+
+            final_emby_ids = [i['Id'] for i in items]
+            full_fields = "PrimaryImageAspectRatio,ImageTags,HasPrimaryImage,ProviderIds,UserData,Name,ProductionYear,CommunityRating,DateCreated,PremiereDate,Type,RecursiveItemCount,SortName,ChildCount,BasicSyncInfo"
+
+            if is_emby_proxy_sort_required:
+                sorted_data = _fetch_sorted_items_via_emby_proxy(
+                    user_id, final_emby_ids, sort_by, sort_order, emby_limit, offset, full_fields, reported_total_count
+                )
+                return Response(json.dumps(sorted_data), mimetype='application/json')
+            else:
+                base_url, api_key = _get_real_emby_url_and_key()
+                items_from_emby = _fetch_items_in_chunks(base_url, api_key, user_id, final_emby_ids, full_fields)
+                items_map = {item['Id']: item for item in items_from_emby}
+                final_items = [items_map[eid] for eid in final_emby_ids if eid in items_map]
+                return Response(json.dumps({"Items": final_items, "TotalRecordCount": reported_total_count}), mimetype='application/json')
 
     except Exception as e:
-        logger.error(f"处理虚拟库占位符失败: {e}", exc_info=True)
+        logger.error(f"处理虚拟库 '{mimicked_id}' 失败: {e}", exc_info=True)
         return Response(json.dumps({"Items": [], "TotalRecordCount": 0}), mimetype='application/json')
 
 def handle_get_latest_items(user_id, params):
@@ -664,30 +679,6 @@ def proxy_all(path):
     # --- 2. HTTP 代理逻辑 ---
     try:
         full_path = f'/{path}'
-
-        # --- ✨ 新增拦截 1: 虚拟项目详情页 ✨ ---
-        # 当用户点击那个带角标的海报时，会触发这里
-        details_match = MIMICKED_ITEM_DETAILS_RE.search(full_path)
-        if details_match:
-            mimicked_id = details_match.group(2)
-            if is_missing_item_id(mimicked_id):
-                tmdb_id = parse_missing_item_id(mimicked_id)
-                # 获取状态信息
-                meta = queries_db.get_missing_items_metadata([tmdb_id]).get(tmdb_id, {})
-                status = meta.get('subscription_status', 'WANTED')
-                
-                # 返回一个虚假的详情 JSON
-                fake_details = {
-                    "Name": meta.get('title') or "未入库项目",
-                    "Id": mimicked_id,
-                    "ServerId": extensions.EMBY_SERVER_ID,
-                    "Type": "Movie",
-                    "ImageTags": {"Primary": f"missing_{status}_{tmdb_id}"},
-                    "Overview": f"【订阅状态：{status}】\n\n此项目目前不在您的媒体库中。系统已自动发现并标记。您可以等待自动下载，或联系管理员。",
-                    "PlayAccess": "None", # 禁止播放
-                    "CanDownload": False
-                }
-                return Response(json.dumps(fake_details), mimetype='application/json')
 
         # --- ✨ 新增拦截 2: 虚拟项目海报图片 ✨ ---
         if path.startswith('emby/Items/') and '/Images/Primary' in path:

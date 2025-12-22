@@ -190,11 +190,19 @@ def _perform_list_collection_health_check(
             
             release_date = details.get("air_date") or details.get("release_date") or details.get("first_air_date", '')
             
+            release_year = None
+            if release_date and '-' in release_date:
+                try:
+                    release_year = int(release_date.split('-')[0])
+                except:
+                    pass
+
             item_details_for_db = {
                 'tmdb_id': str(details.get('id')),
                 'item_type': item_type_for_db,
                 'title': details.get('name') or f"第 {season_num} 季" if item_type_for_db == 'Season' else details.get('title') or details.get('name'),
                 'release_date': release_date,
+                'release_year': release_year, # <--- 补上这一行
                 'poster_path': details.get('poster_path') or details.get('parent_poster_path'),
                 'parent_series_tmdb_id': tmdb_id if item_type_for_db == 'Season' else None,
                 'season_number': details.get('season_number'),

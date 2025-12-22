@@ -69,7 +69,8 @@ def query_virtual_library_items(
     # 我们只查询 emby_item_ids_json[0] 作为 Emby ID 返回，代理层会去换取详情
     base_select = """
         SELECT 
-            m.emby_item_ids_json->>0 as emby_id
+            m.emby_item_ids_json->>0 as emby_id,
+            m.tmdb_id
         FROM media_metadata m
         JOIN emby_users u ON u.id = %s
     """
@@ -439,7 +440,13 @@ def query_virtual_library_items(
                 
                 # 提取 Emby ID 列表并构造返回对象
                 # 返回格式: [{'Id': 'xxx'}, {'Id': 'yyy'}]
-                items = [{'Id': row['emby_id']} for row in rows if row['emby_id']]
+                items = [
+                    {
+                        'Id': row['emby_id'], 
+                        'tmdb_id': row['tmdb_id']  # 加上这一行
+                    } 
+                    for row in rows if row['emby_id']
+                ]
                 
                 return items, total_count
 
@@ -511,12 +518,13 @@ def get_missing_items_metadata(tmdb_ids: List[str]) -> Dict[str, Dict]:
         with get_db_connection() as conn:
             with conn.cursor() as cursor:
                 cursor.execute("""
-                    SELECT tmdb_id, subscription_status, title, poster_path, emby_item_ids_json 
+                    SELECT tmdb_id, subscription_status, title, release_year, poster_path, emby_item_ids_json 
                     FROM media_metadata 
                     WHERE tmdb_id = ANY(%s) AND item_type IN ('Movie', 'Series')
                 """, (tmdb_ids,))
                 rows = cursor.fetchall()
-                return {r['tmdb_id']: dict(r) for r in rows}
+                # 确保 key 是字符串，方便匹配
+                return {str(r['tmdb_id']): dict(r) for r in rows}
     except Exception as e:
         logger.error(f"获取缺失项元数据失败: {e}")
         return {}
