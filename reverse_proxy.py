@@ -409,15 +409,31 @@ def handle_get_mimicked_library_items(user_id, mimicked_id, params):
                 # 3. 构造完整视图列表
                 full_view_list = []
                 for raw_item in raw_list:
+                    # 获取 ID 并进行标准化处理
+                    tid = str(raw_item.get('tmdb_id')) if raw_item.get('tmdb_id') else "None"
+                    eid = raw_item.get('emby_id')
+
+                    # --- 【核心修改：过滤未识别项】 ---
+                    # 如果没有有效的 tmdb_id (None/"None") 且没有 emby_id，说明是未识别媒体，直接跳过
+                    if (not tid or tid.lower() == "none") and not eid:
+                        logger.trace(f"  ➜ 过滤未识别项: {raw_item.get('title')}")
+                        continue
+                    # --------------------------------
+
+                    # 达到合集定义的数量限制则停止
                     if defined_limit and len(full_view_list) >= defined_limit:
                         break
-                    tid = str(raw_item.get('tmdb_id'))
                     
-                    if tid in local_tmdb_map:
-                        # 已入库：记录真实 Emby ID
+                    # 场景 A: 已入库 (优先检查数据库实时映射 local_tmdb_map，确保权限和存在性)
+                    if tid != "None" and tid in local_tmdb_map:
                         full_view_list.append({"is_missing": False, "id": local_tmdb_map[tid], "tmdb_id": tid})
-                    else:
-                        # 未入库：记录 TMDb ID 用于占位
+                    
+                    # 场景 B: 只有 emby_id 但没有 tmdb_id (某些特殊的手动识别项)
+                    elif eid and str(eid) != "None":
+                         full_view_list.append({"is_missing": False, "id": str(eid), "tmdb_id": tid})
+
+                    # 场景 C: 已识别但未入库 (有有效的 tmdb_id)
+                    elif tid != "None":
                         full_view_list.append({"is_missing": True, "tmdb_id": tid})
 
                 # 4. 分页
