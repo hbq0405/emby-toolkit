@@ -504,3 +504,19 @@ def get_sorted_and_paginated_ids(
         logger.error(f"对 ID 列表进行排序分页失败: {e}", exc_info=True)
         # 出错时回退到简单的切片（无排序）
         return item_ids[offset : offset + limit]
+    
+def get_missing_items_metadata(tmdb_ids: List[str]) -> Dict[str, Dict]:
+    if not tmdb_ids: return {}
+    try:
+        with get_db_connection() as conn:
+            with conn.cursor() as cursor:
+                cursor.execute("""
+                    SELECT tmdb_id, subscription_status, title, poster_path, emby_item_ids_json 
+                    FROM media_metadata 
+                    WHERE tmdb_id = ANY(%s) AND item_type IN ('Movie', 'Series')
+                """, (tmdb_ids,))
+                rows = cursor.fetchall()
+                return {r['tmdb_id']: dict(r) for r in rows}
+    except Exception as e:
+        logger.error(f"获取缺失项元数据失败: {e}")
+        return {}

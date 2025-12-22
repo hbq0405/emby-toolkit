@@ -3,16 +3,18 @@
 import logging
 import requests
 import re
-import random
+import os
 import json
 from flask import Flask, request, Response
 from urllib.parse import urlparse, urlunparse
 from datetime import datetime, timedelta
 import time
 import uuid 
+from flask import send_file 
+from handler.poster_generator import get_missing_poster
 from gevent import spawn, joinall
 from websocket import create_connection
-from database import custom_collection_db, user_db, queries_db, media_db
+from database import custom_collection_db, queries_db
 from database.connection import get_db_connection
 from handler.custom_collection import RecommendationEngine
 import config_manager
@@ -21,6 +23,17 @@ import extensions
 import handler.emby as emby
 logger = logging.getLogger(__name__)
 
+MISSING_ID_PREFIX = "-800000_"
+
+def to_missing_item_id(tmdb_id): 
+    return f"{MISSING_ID_PREFIX}{tmdb_id}"
+
+def is_missing_item_id(item_id):
+    return isinstance(item_id, str) and item_id.startswith(MISSING_ID_PREFIX)
+
+def parse_missing_item_id(item_id):
+    # 从 -800000_12345 中提取出 12345
+    return item_id.replace(MISSING_ID_PREFIX, "")
 MIMICKED_ID_BASE = 900000
 def to_mimicked_id(db_id): return str(-(MIMICKED_ID_BASE + db_id))
 def from_mimicked_id(mimicked_id): return -(int(mimicked_id)) - MIMICKED_ID_BASE
@@ -332,6 +345,10 @@ def handle_get_mimicked_library_items(user_id, mimicked_id, params):
         collection_info = custom_collection_db.get_custom_collection_by_id(real_db_id)
         if not collection_info:
             return Response(json.dumps({"Items": [], "TotalRecordCount": 0}), mimetype='application/json')
+        
+        # --- 新增: 获取原始榜单 JSON ---
+        raw_list_json = collection_info.get('generated_media_info_json')
+        raw_list = json.loads(raw_list_json) if isinstance(raw_list_json, str) else (raw_list_json or [])
 
         definition = collection_info.get('definition_json') or {}
         if isinstance(definition, str):
@@ -404,31 +421,82 @@ def handle_get_mimicked_library_items(user_id, mimicked_id, params):
             tmdb_ids=tmdb_ids_filter
         )
 
-        reported_total_count = min(total_count, defined_limit) if defined_limit else total_count
+        # A. 建立一个“已入库”的映射表，方便快速查找
+        # 假设 items 里的每个对象现在带了 tmdb_id (如果没有，需要修改 SQL 让它带上)
+        local_tmdb_map = {str(i.get('tmdb_id')): i['Id'] for i in items if i.get('tmdb_id')}
 
-        if not items:
-            return Response(json.dumps({"Items": [], "TotalRecordCount": reported_total_count}), mimetype='application/json')
+        # B. 找出哪些 TMDb ID 是榜单里有但库里没有的
+        missing_tmdb_ids = [str(i['tmdb_id']) for i in raw_list if str(i.get('tmdb_id')) not in local_tmdb_map]
+        
+        # C. 从数据库批量获取这些缺失项的订阅状态 (WANTED, SUBSCRIBED等)
+        # 你需要在 queries_db 中实现 get_missing_items_metadata
+        status_map = queries_db.get_missing_items_metadata(missing_tmdb_ids)
 
-        final_emby_ids = [i['Id'] for i in items]
-        full_fields = "PrimaryImageAspectRatio,ProviderIds,UserData,Name,ProductionYear,CommunityRating,DateCreated,PremiereDate,Type,RecursiveItemCount,SortName,ChildCount,BasicSyncInfo"
+        # D. 按照榜单原始顺序，构造最终返回给 Emby 客户端的列表
+        final_list_to_process = []
+        for raw_item in raw_list:
+            tid = str(raw_item.get('tmdb_id'))
+            
+            if tid in local_tmdb_map:
+                final_list_to_process.append({"is_missing": False, "id": local_tmdb_map[tid]})
+            else:
+                meta = status_map.get(tid, {})
+                status = meta.get('subscription_status', 'WANTED')
+                real_emby_ids = meta.get('emby_item_ids_json', [])
 
-        # 6. 分发结果
-        if is_emby_proxy_sort_required:
-            # 移交排序权给 Emby
-            sorted_data = _fetch_sorted_items_via_emby_proxy(
-                user_id, final_emby_ids, sort_by, sort_order, emby_limit, offset, full_fields, reported_total_count
-            )
-            return Response(json.dumps(sorted_data), mimetype='application/json')
-        else:
-            # 本地 SQL 已完成排序和分页，直接批量取详情
-            base_url, api_key = _get_real_emby_url_and_key()
-            items_from_emby = _fetch_items_in_chunks(base_url, api_key, user_id, final_emby_ids, full_fields)
-            items_map = {item['Id']: item for item in items_from_emby}
-            final_items = [items_map[eid] for eid in final_emby_ids if eid in items_map]
-            return Response(json.dumps({"Items": final_items, "TotalRecordCount": reported_total_count}), mimetype='application/json')
+                if status == 'NONE' and real_emby_ids:
+                    # --- ✨ 改进 2：救回真实项的同时，清理掉它的占位海报 ✨ ---
+                    final_list_to_process.append({"is_missing": False, "id": real_emby_ids[0]})
+                    
+                    from handler.poster_generator import cleanup_placeholder
+                    cleanup_placeholder(tid) 
+                else:
+                    final_list_to_process.append({"is_missing": True, "tmdb_id": tid, "status": status})
+
+        # E. 分页截取
+        paged_list = final_list_to_process[offset : offset + emby_limit]
+
+        # F. 填充详情
+        final_items_for_client = []
+        
+        # 批量获取已入库项的 Emby 详情
+        real_ids = [x['id'] for x in paged_list if not x['is_missing']]
+        base_url, api_key = _get_real_emby_url_and_key()
+        full_fields = "PrimaryImageAspectRatio,ProviderIds,UserData,Name,ProductionYear,CommunityRating,Type"
+        emby_details_map = {item['Id']: item for item in _fetch_items_in_chunks(base_url, api_key, user_id, real_ids, full_fields)}
+
+        for entry in paged_list:
+            if not entry['is_missing']:
+                # 放入真实 Emby 对象
+                if entry['id'] in emby_details_map:
+                    final_items_for_client.append(emby_details_map[entry['id']])
+            else:
+                # 放入伪造的“占位”对象
+                tid = entry['tmdb_id']
+                meta = status_map.get(tid, {})
+                status = meta.get('subscription_status', 'WANTED')
+                
+                fake_item = {
+                    "Name": meta.get('title') or "未知电影",
+                    "ServerId": extensions.EMBY_SERVER_ID,
+                    "Id": to_missing_item_id(tid),
+                    "Type": "Movie",
+                    "ImageTags": {"Primary": f"missing_{status}_{tid}"}, # 这里的 Tag 很重要
+                    "UserData": {"PlaybackPositionTicks": 0, "PlayCount": 0, "IsFavorite": False, "Played": False},
+                    "ProviderIds": {"Tmdb": tid},
+                    "IsFolder": False,
+                    "LocationType": "Virtual"
+                }
+                final_items_for_client.append(fake_item)
+
+        # 4. 返回结果
+        return Response(json.dumps({
+            "Items": final_items_for_client, 
+            "TotalRecordCount": len(final_list_to_process) # 总数用榜单总数
+        }), mimetype='application/json')
 
     except Exception as e:
-        logger.error(f"处理虚拟库 '{mimicked_id}' 失败: {e}", exc_info=True)
+        logger.error(f"处理虚拟库占位符失败: {e}", exc_info=True)
         return Response(json.dumps({"Items": [], "TotalRecordCount": 0}), mimetype='application/json')
 
 def handle_get_latest_items(user_id, params):
@@ -596,6 +664,58 @@ def proxy_all(path):
     # --- 2. HTTP 代理逻辑 ---
     try:
         full_path = f'/{path}'
+
+        # --- ✨ 新增拦截 1: 虚拟项目详情页 ✨ ---
+        # 当用户点击那个带角标的海报时，会触发这里
+        details_match = MIMICKED_ITEM_DETAILS_RE.search(full_path)
+        if details_match:
+            mimicked_id = details_match.group(2)
+            if is_missing_item_id(mimicked_id):
+                tmdb_id = parse_missing_item_id(mimicked_id)
+                # 获取状态信息
+                meta = queries_db.get_missing_items_metadata([tmdb_id]).get(tmdb_id, {})
+                status = meta.get('subscription_status', 'WANTED')
+                
+                # 返回一个虚假的详情 JSON
+                fake_details = {
+                    "Name": meta.get('title') or "未入库项目",
+                    "Id": mimicked_id,
+                    "ServerId": extensions.EMBY_SERVER_ID,
+                    "Type": "Movie",
+                    "ImageTags": {"Primary": f"missing_{status}_{tmdb_id}"},
+                    "Overview": f"【订阅状态：{status}】\n\n此项目目前不在您的媒体库中。系统已自动发现并标记。您可以等待自动下载，或联系管理员。",
+                    "PlayAccess": "None", # 禁止播放
+                    "CanDownload": False
+                }
+                return Response(json.dumps(fake_details), mimetype='application/json')
+
+        # --- ✨ 新增拦截 2: 虚拟项目海报图片 ✨ ---
+        if path.startswith('emby/Items/') and '/Images/Primary' in path:
+            item_id = path.split('/')[2]
+            if is_missing_item_id(item_id):
+                tmdb_id = parse_missing_item_id(item_id)
+                
+                # --- 核心修复：不再从 Tag 里的字符串解析状态，而是直接查数据库 ---
+                meta_map = queries_db.get_missing_items_metadata([tmdb_id])
+                meta = meta_map.get(tmdb_id, {})
+                
+                # 获取数据库中真实的最新状态
+                current_status = meta.get('subscription_status', 'WANTED')
+                
+                from handler.poster_generator import get_missing_poster
+                img_file_path = get_missing_poster(
+                    tmdb_id=tmdb_id,
+                    status=current_status, # 使用数据库里的真实状态
+                    poster_path=meta.get('poster_path')
+                )
+                
+                if img_file_path and os.path.exists(img_file_path):
+                    # 增加 Cache-Control 头部，防止浏览器本地缓存过久
+                    resp = send_file(img_file_path, mimetype='image/jpeg')
+                    resp.headers['Cache-Control'] = 'no-cache, no-store, must-revalidate'
+                    resp.headers['Pragma'] = 'no-cache'
+                    resp.headers['Expires'] = '0'
+                    return resp
 
         if path.endswith('/Views') and path.startswith('emby/Users/'):
             return handle_get_views()
