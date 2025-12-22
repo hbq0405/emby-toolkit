@@ -704,15 +704,25 @@ def emby_webhook():
             except Exception as e:
                 logger.error(f"处理删除事件 for item {original_item_id} 时发生错误: {e}", exc_info=True)
                 return jsonify({"status": "error_processing_remove_event", "error": str(e)}), 500
-    
     # 过滤不在处理范围的媒体库
     if event_type in ["item.add", "library.new", "metadata.update", "image.update"]:
         processor = extensions.media_processor_instance
         
-        # 获取所属库信息
-        library_info = emby.get_library_root_for_item(
-            original_item_id, processor.emby_url, processor.emby_api_key, processor.emby_user_id
-        )
+        # --- 【新增拦截 1】如果是系统正在生成的封面，直接拦截，不查库，不报错 ---
+        if event_type == "image.update" and original_item_id in UPDATING_IMAGES:
+            logger.debug(f"  ➜ Webhook: 忽略项目 '{original_item_name}' 的图片更新通知 (系统生成的封面)。")
+            return jsonify({"status": "ignored_self_triggered_update"}), 200
+
+        # --- 【新增拦截 2】如果是合集(BoxSet)，它没有物理路径，直接跳过库路径检查 ---
+        if original_item_type == "BoxSet":
+            logger.trace(f"  ➜ Webhook: 项目 '{original_item_name}' 是合集类型，跳过媒体库路径检查。")
+            # 注意：这里不 return，因为后面可能还有合集的处理逻辑
+            library_info = None 
+        else:
+            # 正常的媒体项，才去获取所属库信息
+            library_info = emby.get_library_root_for_item(
+                original_item_id, processor.emby_url, processor.emby_api_key, processor.emby_user_id
+            )
         
         if library_info:
             lib_id = library_info.get("Id")
@@ -727,9 +737,6 @@ def emby_webhook():
             if lib_id not in allowed_libs:
                 logger.trace(f"  ➜ Webhook: 项目 '{original_item_name}' 所属库 '{lib_name}' (ID: {lib_id}) 不在处理范围内，已跳过。")
                 return jsonify({"status": "ignored_library"}), 200
-        else:
-            # 如果是 library.new 但查不到路径，通常是 Emby 还没准备好，这种极少数情况建议放行或记录
-            logger.warning(f"  ➜ Webhook: 无法定位项目 '{original_item_name}' 的媒体库。")
 
     if event_type in ["item.add", "library.new"]:
         spawn(_wait_for_stream_data_and_enqueue, original_item_id, original_item_name, original_item_type)
@@ -786,9 +793,6 @@ def emby_webhook():
         final_update_description = original_update_description
 
         with UPDATE_DEBOUNCE_LOCK:
-            if id_to_process in UPDATING_IMAGES:
-                logger.debug(f"  ➜ Webhook: 忽略项目 '{name_for_task}' 的图片更新通知 (系统生成的封面)。")
-                return jsonify({"status": "ignored_self_triggered_update"}), 200
             # 3. 检查是否已有计时器
             if id_to_process in UPDATE_DEBOUNCE_TIMERS:
                 old_timer = UPDATE_DEBOUNCE_TIMERS[id_to_process]
