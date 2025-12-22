@@ -498,8 +498,22 @@ class MediaProcessor:
                             if tmdb_official_rating: break
                     db_row_complete['official_rating'] = tmdb_official_rating
                     db_row_complete['unified_rating'] = get_unified_rating(tmdb_official_rating)
-                    db_row_complete['genres_json'] = json.dumps([g['name'] for g in record.get('genres', [])], ensure_ascii=False)
-                    db_row_complete['studios_json'] = json.dumps([s['name'] for s in record.get('production_companies', [])], ensure_ascii=False)
+                    genres_raw = record.get('genres', [])
+                    genres_list = []
+                    for g in genres_raw:
+                        if isinstance(g, dict):
+                            genres_list.append(g.get('name'))
+                        elif isinstance(g, str):
+                            genres_list.append(g)
+                    db_row_complete['genres_json'] = json.dumps([n for n in genres_list if n], ensure_ascii=False)
+                    studios_raw = record.get('production_companies', [])
+                    studios_list = []
+                    for s in studios_raw:
+                        if isinstance(s, dict):
+                            studios_list.append(s.get('name'))
+                        elif isinstance(s, str):
+                            studios_list.append(s)
+                    db_row_complete['studios_json'] = json.dumps([n for n in studios_list if n], ensure_ascii=False)
                     crew = record.get("credits", {}).get('crew', [])
                     db_row_complete['directors_json'] = json.dumps([{'id': p.get('id'), 'name': p.get('name')} for p in crew if p.get('job') == 'Director'], ensure_ascii=False)
                     db_row_complete['countries_json'] = json.dumps(translate_country_list([c.get('iso_3166_1') for c in record.get('production_countries', [])]), ensure_ascii=False)
