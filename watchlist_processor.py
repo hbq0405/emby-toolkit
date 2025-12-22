@@ -112,7 +112,7 @@ class WatchlistProcessor:
                     'emby_item_ids_json': db_row['emby_item_ids_json']
                 }
                 # 3. 立即触发一次判定流
-                self._process_one_series(series_data, is_initial_run=True)
+                self._process_one_series(series_data)
                 
         except Exception as e:
             logger.error(f"自动添加剧集 '{item_name}' 时出错: {e}")
@@ -775,7 +775,7 @@ class WatchlistProcessor:
             logger.error(f"  ⚠️ 执行完结自动洗版逻辑时出错: {e}", exc_info=True)
 
     # ★★★ 核心处理逻辑：单个剧集的所有操作在此完成 ★★★
-    def _process_one_series(self, series_data: Dict[str, Any], is_initial_run: bool = False):
+    def _process_one_series(self, series_data: Dict[str, Any]):
         tmdb_id = series_data['tmdb_id']
         emby_ids = series_data.get('emby_item_ids_json', [])
         item_id = emby_ids[0] if emby_ids else None
@@ -1082,7 +1082,7 @@ class WatchlistProcessor:
         # ★★★ 完结自动洗版逻辑 (V4 - 纯状态流转驱动) ★★★
         # ======================================================================
         # 核心逻辑：只有从“活跃追剧状态”转变为“完结状态”时，才视为“新鲜完结”
-        if not is_initial_run and final_status == STATUS_COMPLETED and old_status in [STATUS_WATCHING, STATUS_PAUSED, STATUS_PENDING] and not is_force_ended:
+        if final_status == STATUS_COMPLETED and old_status in [STATUS_WATCHING, STATUS_PAUSED, STATUS_PENDING] and not is_force_ended:
             
             # 检查功能开关
             watchlist_cfg = settings_db.get_setting('watchlist_config') or {}
