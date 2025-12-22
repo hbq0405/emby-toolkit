@@ -456,6 +456,7 @@ def handle_get_mimicked_library_items(user_id, mimicked_id, params):
                             "ServerId": extensions.EMBY_SERVER_ID,
                             "Id": to_missing_item_id(tid),
                             "Type": "Movie",
+                            "ProductionYear": meta.get('release_year'),
                             "ImageTags": {"Primary": f"missing_{status}_{tid}"},
                             "HasPrimaryImage": True,
                             "UserData": {"PlaybackPositionTicks": 0, "PlayCount": 0, "IsFavorite": False, "Played": False},
