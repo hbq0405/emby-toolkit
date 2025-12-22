@@ -518,12 +518,12 @@ def get_missing_items_metadata(tmdb_ids: List[str]) -> Dict[str, Dict]:
         with get_db_connection() as conn:
             with conn.cursor() as cursor:
                 cursor.execute("""
-                    SELECT tmdb_id, subscription_status, title, release_year, poster_path, emby_item_ids_json 
+                    SELECT tmdb_id, subscription_status, title, release_year, 
+                           release_date, item_type, poster_path, emby_item_ids_json 
                     FROM media_metadata 
                     WHERE tmdb_id = ANY(%s) AND item_type IN ('Movie', 'Series')
                 """, (tmdb_ids,))
                 rows = cursor.fetchall()
-                # 确保 key 是字符串，方便匹配
                 return {str(r['tmdb_id']): dict(r) for r in rows}
     except Exception as e:
         logger.error(f"获取缺失项元数据失败: {e}")

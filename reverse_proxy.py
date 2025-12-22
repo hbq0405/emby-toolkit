@@ -463,22 +463,53 @@ def handle_get_mimicked_library_items(user_id, mimicked_id, params):
                             # 兜底：如果详情获取失败，尝试构造一个基础对象
                             final_items.append({"Id": eid, "Name": "加载中...", "Type": "Movie"})
                     else:
-                        # 占位符逻辑 (保持不变)
+                        # 占位符逻辑
                         tid = entry['tmdb_id']
                         meta = status_map.get(tid, {})
                         status = meta.get('subscription_status', 'WANTED')
-                        final_items.append({
+                        
+                        # 动态获取类型，默认为 Movie
+                        db_item_type = meta.get('item_type', 'Movie')
+                        
+                        # 构造占位对象
+                        placeholder = {
                             "Name": meta.get('title', '未知内容'),
                             "ServerId": extensions.EMBY_SERVER_ID,
                             "Id": to_missing_item_id(tid),
-                            "Type": "Movie",
-                            "ProductionYear": meta.get('release_year'),
+                            "Type": db_item_type,
+                            "ProductionYear": int(meta.get('release_year')) if meta.get('release_year') else None,
                             "ImageTags": {"Primary": f"missing_{status}_{tid}"},
                             "HasPrimaryImage": True,
                             "UserData": {"PlaybackPositionTicks": 0, "PlayCount": 0, "IsFavorite": False, "Played": False},
                             "ProviderIds": {"Tmdb": tid},
                             "LocationType": "Virtual"
-                        })
+                        }
+
+                        # 2. 核心修复：处理 PremiereDate (电视剧年份显示的关键)
+                        r_date = meta.get('release_date')
+                        r_year = meta.get('release_year')
+
+                        if r_date:
+                            try:
+                                # 如果是 datetime/date 对象
+                                if hasattr(r_date, 'strftime'):
+                                    placeholder["PremiereDate"] = r_date.strftime('%Y-%m-%dT00:00:00.0000000Z')
+                                else:
+                                    # 如果已经是字符串，确保它是 ISO 格式
+                                    placeholder["PremiereDate"] = str(r_date)
+                            except:
+                                pass
+                        
+                        # 3. 兜底逻辑：如果电视剧没有完整日期，只有年份，构造一个 1 月 1 日的日期
+                        # 这样 Emby 就能从中提取出年份显示在海报下方
+                        if "PremiereDate" not in placeholder and r_year:
+                            placeholder["PremiereDate"] = f"{r_year}-01-01T00:00:00.0000000Z"
+
+                        # 4. 针对电视剧的额外兼容性字段
+                        if db_item_type == 'Series':
+                            placeholder["Status"] = "Released" # 标记为已发布，有助于某些客户端显示
+
+                        final_items.append(placeholder)
                 
                 return Response(json.dumps({"Items": final_items, "TotalRecordCount": reported_total_count}), mimetype='application/json')
 
@@ -701,28 +732,33 @@ def proxy_all(path):
         if path.startswith('emby/Items/') and '/Images/Primary' in path:
             item_id = path.split('/')[2]
             if is_missing_item_id(item_id):
-                tmdb_id = parse_missing_item_id(item_id)
+                # 1. 解析 ID
+                # item_id 可能是 "-800000_241257" 或 "-800000_241257_S_1"
+                combined_id = parse_missing_item_id(item_id)
                 
-                # --- 核心修复：不再从 Tag 里的字符串解析状态，而是直接查数据库 ---
-                meta_map = queries_db.get_missing_items_metadata([tmdb_id])
-                meta = meta_map.get(tmdb_id, {})
+                # 提取真正的 Series TMDB ID
+                series_tid = combined_id.split('_S_')[0] if '_S_' in combined_id else combined_id
                 
-                # 获取数据库中真实的最新状态
-                current_status = meta.get('subscription_status', 'WANTED')
+                # 2. 获取元数据 (始终以“剧”为准)
+                meta_map = queries_db.get_missing_items_metadata([series_tid])
+                meta = meta_map.get(series_tid, {})
                 
+                # 3. 确定状态
+                db_status = meta.get('subscription_status', 'WANTED')
+                current_status = 'WANTED' if db_status == 'NONE' else db_status
+                
+                # 4. 生成/获取海报
                 from handler.poster_generator import get_missing_poster
                 img_file_path = get_missing_poster(
-                    tmdb_id=tmdb_id,
-                    status=current_status, # 使用数据库里的真实状态
-                    poster_path=meta.get('poster_path')
+                    tmdb_id=series_tid, # 传入剧 ID，生成 241257_WANTED.jpg
+                    status=current_status,
+                    poster_path=meta.get('poster_path') # 传入剧的海报路径
                 )
                 
                 if img_file_path and os.path.exists(img_file_path):
-                    # 增加 Cache-Control 头部，防止浏览器本地缓存过久
                     resp = send_file(img_file_path, mimetype='image/jpeg')
+                    # 必须加 no-cache，否则你订阅后，海报上的印章不会从“待订阅”变成“已订阅”
                     resp.headers['Cache-Control'] = 'no-cache, no-store, must-revalidate'
-                    resp.headers['Pragma'] = 'no-cache'
-                    resp.headers['Expires'] = '0'
                     return resp
 
         if path.endswith('/Views') and path.startswith('emby/Users/'):

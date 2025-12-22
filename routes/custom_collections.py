@@ -216,6 +216,14 @@ def api_delete_custom_collection(collection_id):
         if not collection_to_delete:
             return jsonify({"error": "未找到要删除的合集"}), 404
 
+        items_json = collection_to_delete.get('generated_media_info_json')
+        tmdb_to_clean = []
+        if items_json:
+            try:
+                items = json.loads(items_json) if isinstance(items_json, str) else items_json
+                tmdb_to_clean = [str(i['tmdb_id']) for i in items if i.get('tmdb_id')]
+            except: pass
+
         emby_id_to_empty = collection_to_delete.get('emby_collection_id')
         collection_name = collection_to_delete.get('name')
 
@@ -244,6 +252,9 @@ def api_delete_custom_collection(collection_id):
         )
 
         if db_success:
+            from handler.poster_generator import cleanup_placeholder
+            for tid in tmdb_to_clean:
+                cleanup_placeholder(tid) 
             return jsonify({"message": f"自定义合集 '{collection_name}' 已成功联动删除。"}), 200
         else:
             return jsonify({"error": "数据库删除操作失败，请查看日志。"}), 500

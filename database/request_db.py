@@ -48,6 +48,7 @@ def _prepare_media_data_for_upsert(
             "title": media_info.get('title'),
             "original_title": media_info.get('original_title'),
             "release_date": media_info.get('release_date') or None,
+            "release_year": media_info.get('release_year'),
             "poster_path": media_info.get('poster_path'),
             "season_number": media_info.get('season_number') or None,
             "parent_series_tmdb_id": media_info.get('parent_series_tmdb_id') or None,
@@ -126,11 +127,12 @@ def set_media_status_wanted(
                 else:
                     # 自动模式：
                     sql = """
-                        INSERT INTO media_metadata (tmdb_id, item_type, subscription_status, subscription_sources_json, first_requested_at, title, original_title, release_date, poster_path, season_number, parent_series_tmdb_id, overview)
-                        VALUES (%(tmdb_id)s, %(item_type)s, 'WANTED', %(source)s::jsonb, NOW(), %(title)s, %(original_title)s, %(release_date)s, %(poster_path)s, %(season_number)s, %(parent_series_tmdb_id)s, %(overview)s)
+                        INSERT INTO media_metadata (tmdb_id, item_type, subscription_status, subscription_sources_json, first_requested_at, title, original_title, release_date, release_year, poster_path, season_number, parent_series_tmdb_id, overview)
+                        VALUES (%(tmdb_id)s, %(item_type)s, 'WANTED', %(source)s::jsonb, NOW(), %(title)s, %(original_title)s, %(release_date)s, %(release_year)s, %(poster_path)s, %(season_number)s, %(parent_series_tmdb_id)s, %(overview)s)
                         ON CONFLICT (tmdb_id, item_type) DO UPDATE SET
                             subscription_status = 'WANTED',
                             subscription_sources_json = media_metadata.subscription_sources_json || EXCLUDED.subscription_sources_json,
+                            release_year = COALESCE(EXCLUDED.release_year, media_metadata.release_year),
                             first_requested_at = COALESCE(media_metadata.first_requested_at, EXCLUDED.first_requested_at),
                             ignore_reason = NULL, 
                             parent_series_tmdb_id = COALESCE(EXCLUDED.parent_series_tmdb_id, media_metadata.parent_series_tmdb_id),
@@ -195,10 +197,11 @@ def set_media_status_pending_release(
             with conn.cursor() as cursor:
                 from psycopg2.extras import execute_batch
                 sql = """
-                    INSERT INTO media_metadata (tmdb_id, item_type, subscription_status, subscription_sources_json, first_requested_at, title, original_title, release_date, poster_path, season_number, parent_series_tmdb_id, overview)
-                    VALUES (%(tmdb_id)s, %(item_type)s, 'PENDING_RELEASE', %(source)s::jsonb, NOW(), %(title)s, %(original_title)s, %(release_date)s, %(poster_path)s, %(season_number)s, %(parent_series_tmdb_id)s, %(overview)s)
+                    INSERT INTO media_metadata (tmdb_id, item_type, subscription_status, subscription_sources_json, first_requested_at, title, original_title, release_date, release_year, poster_path, season_number, parent_series_tmdb_id, overview)
+                    VALUES (%(tmdb_id)s, %(item_type)s, 'PENDING_RELEASE', %(source)s::jsonb, NOW(), %(title)s, %(original_title)s, %(release_date)s, %(release_year)s, %(poster_path)s, %(season_number)s, %(parent_series_tmdb_id)s, %(overview)s)
                     ON CONFLICT (tmdb_id, item_type) DO UPDATE SET
                         subscription_status = 'PENDING_RELEASE',
+                        release_year = COALESCE(EXCLUDED.release_year, media_metadata.release_year),
                         subscription_sources_json = media_metadata.subscription_sources_json || EXCLUDED.subscription_sources_json,
                         first_requested_at = COALESCE(media_metadata.first_requested_at, EXCLUDED.first_requested_at),
                         ignore_reason = NULL, parent_series_tmdb_id = COALESCE(EXCLUDED.parent_series_tmdb_id, media_metadata.parent_series_tmdb_id)
@@ -324,10 +327,11 @@ def set_media_status_none(
                     # 模式 A: UPSERT (用于创建占位符或更新)
                     # 必须包含 title 等必填字段，由调用方保证 media_info_list 的完整性
                     sql = """
-                        INSERT INTO media_metadata (tmdb_id, item_type, subscription_status, subscription_sources_json, title, original_title, release_date, poster_path, season_number, parent_series_tmdb_id, overview)
-                        VALUES (%(tmdb_id)s, %(item_type)s, 'NONE', '[]'::jsonb, %(title)s, %(original_title)s, %(release_date)s, %(poster_path)s, %(season_number)s, %(parent_series_tmdb_id)s, %(overview)s)
+                        INSERT INTO media_metadata (tmdb_id, item_type, subscription_status, subscription_sources_json, title, original_title, release_date, release_year, poster_path, season_number, parent_series_tmdb_id, overview)
+                        VALUES (%(tmdb_id)s, %(item_type)s, 'NONE', '[]'::jsonb, %(title)s, %(original_title)s, %(release_date)s, %(release_year)s, %(poster_path)s, %(season_number)s, %(parent_series_tmdb_id)s, %(overview)s)
                         ON CONFLICT (tmdb_id, item_type) DO UPDATE SET
                             subscription_status = 'NONE',
+                            release_year = COALESCE(EXCLUDED.release_year, media_metadata.release_year),
                             subscription_sources_json = '[]'::jsonb,
                             ignore_reason = NULL,
                             last_synced_at = NOW(),

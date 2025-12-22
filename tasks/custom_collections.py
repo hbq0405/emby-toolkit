@@ -16,6 +16,7 @@ import handler.tmdb as tmdb
 from database import connection, custom_collection_db, settings_db, media_db, request_db, queries_db
 from handler.custom_collection import ListImporter
 from services.cover_generator import CoverGeneratorService
+from handler.poster_generator import cleanup_placeholder, sync_all_subscription_posters
 
 
 logger = logging.getLogger(__name__)
@@ -274,6 +275,7 @@ def _perform_list_collection_health_check(
                 if item_type:
                     try:
                         request_db.remove_subscription_source(tmdb_id, item_type, source_to_remove)
+                        cleanup_placeholder(tmdb_id)
                     except Exception as e_remove:
                         logger.error(f"  -> 清理媒体 {tmdb_id} ({item_type}) 的来源时发生错误: {e_remove}", exc_info=True)
     return 
@@ -546,7 +548,12 @@ def task_process_all_custom_collections(processor):
         final_message = "所有自建合集均已处理完毕！"
         if processor.is_stop_requested(): final_message = "任务已中止。"
         
-        task_manager.update_status_from_thread(100, final_message)
+        try:
+            sync_all_subscription_posters()
+        except Exception as e:
+            logger.error(f"全量同步占位海报失败: {e}")
+
+        task_manager.update_status_from_thread(100, "所有自建合集及海报同步完毕！")
         logger.info(f"--- '{task_name}' 任务成功完成 ---")
 
     except Exception as e:
@@ -739,7 +746,12 @@ def process_single_custom_collection(processor, custom_collection_id: int):
         except Exception as e_cover:
             logger.error(f"为合集 '{collection_name}' 生成封面时发生错误: {e_cover}", exc_info=True)
         
-        task_manager.update_status_from_thread(100, "单个自定义合集同步完成！")
+        try:
+            sync_all_subscription_posters()
+        except Exception as e:
+            logger.error(f"全量同步占位海报失败: {e}")
+
+        task_manager.update_status_from_thread(100, "自建合集及海报同步完毕！")
         logger.info(f"--- '{task_name}' 任务成功完成 ---")
 
     except Exception as e:
