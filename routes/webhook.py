@@ -635,7 +635,7 @@ def emby_webhook():
     else:
         original_item_name = raw_name
     
-    trigger_types = ["Movie", "Series", "Episode", "BoxSet"]
+    trigger_types = ["Movie", "Series", "Season", "Episode", "BoxSet"]
     if not (original_item_id and original_item_type in trigger_types):
         logger.debug(f"  ➜ Webhook事件 '{event_type}' (项目: {original_item_name}, 类型: {original_item_type}) 被忽略。")
         return jsonify({"status": "event_ignored_no_id_or_wrong_type"}), 200
