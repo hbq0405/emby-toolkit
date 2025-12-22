@@ -203,7 +203,8 @@ def _perform_list_collection_health_check(
                 'item_type': item_type_for_db,
                 'title': details.get('name') or f"第 {season_num} 季" if item_type_for_db == 'Season' else details.get('title') or details.get('name'),
                 'release_date': release_date,
-                'release_year': release_year, # <--- 补上这一行
+                'release_year': release_year, 
+                'overview': details.get('overview'),
                 'poster_path': details.get('poster_path') or details.get('parent_poster_path'),
                 'parent_series_tmdb_id': tmdb_id if item_type_for_db == 'Season' else None,
                 'season_number': details.get('season_number'),

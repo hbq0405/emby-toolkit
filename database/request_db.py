@@ -49,6 +49,7 @@ def _prepare_media_data_for_upsert(
             "original_title": media_info.get('original_title'),
             "release_date": media_info.get('release_date') or None,
             "release_year": media_info.get('release_year'),
+            "overview": media_info.get('overview'),
             "poster_path": media_info.get('poster_path'),
             "season_number": media_info.get('season_number') or None,
             "parent_series_tmdb_id": media_info.get('parent_series_tmdb_id') or None,
@@ -331,6 +332,7 @@ def set_media_status_none(
                         VALUES (%(tmdb_id)s, %(item_type)s, 'NONE', '[]'::jsonb, %(title)s, %(original_title)s, %(release_date)s, %(release_year)s, %(poster_path)s, %(season_number)s, %(parent_series_tmdb_id)s, %(overview)s)
                         ON CONFLICT (tmdb_id, item_type) DO UPDATE SET
                             subscription_status = 'NONE',
+                            overview = COALESCE(EXCLUDED.overview, media_metadata.overview),
                             release_year = COALESCE(EXCLUDED.release_year, media_metadata.release_year),
                             subscription_sources_json = '[]'::jsonb,
                             ignore_reason = NULL,
