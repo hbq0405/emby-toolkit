@@ -229,6 +229,7 @@ def task_populate_metadata_cache(processor, batch_size: int = 50, force_full_upd
     """
     - 重量级的元数据缓存填充任务 (类型安全版)。
     - 修复：彻底解决 TMDb ID 在电影和剧集间冲突的问题。
+    - 修复：完善离线检测逻辑，确保消失的电影/剧集能被正确标记为离线。
     - 逻辑：全程使用 (tmdb_id, item_type) 复合键进行追踪，不再靠猜。
     """
     task_name = "同步媒体元数据"
@@ -399,16 +400,18 @@ def task_populate_metadata_cache(processor, batch_size: int = 50, force_full_upd
             gc.collect()
 
             if missing_emby_ids:
-                logger.info(f"  ➜ 检测到 {len(missing_emby_ids)} 个 Emby ID 已消失，正在反查所属剧集...")
+                logger.info(f"  ➜ 检测到 {len(missing_emby_ids)} 个 Emby ID 已消失，正在处理离线标记...")
                 missing_ids_list = list(missing_emby_ids)
                 
                 with connection.get_db_connection() as conn:
                     cursor = conn.cursor()
+                    
+                    # 查出这些消失ID的身份 (是电影/剧集，还是分集)
+                    # 注意：这里需要查出 tmdb_id 和 item_type
                     cursor.execute("""
-                        SELECT DISTINCT parent_series_tmdb_id AS pid
+                        SELECT tmdb_id, item_type, parent_series_tmdb_id
                         FROM media_metadata 
-                        WHERE item_type IN ('Season', 'Episode') 
-                          AND in_library = TRUE 
+                        WHERE in_library = TRUE 
                           AND EXISTS (
                               SELECT 1 
                               FROM jsonb_array_elements_text(emby_item_ids_json) as eid 
@@ -416,11 +419,38 @@ def task_populate_metadata_cache(processor, batch_size: int = 50, force_full_upd
                           )
                     """, (missing_ids_list,))
                     
-                    # 反查出来的肯定是 Series
-                    affected_parents = set(row['pid'] for row in cursor.fetchall() if row['pid'])
-                    if affected_parents:
-                        for pid in affected_parents:
+                    rows = cursor.fetchall()
+                    
+                    direct_offline_tmdb_ids = [] # 电影或剧集，直接标记离线
+                    affected_parent_ids = set()  # 分集消失，需要刷新父剧集
+                    
+                    for row in rows:
+                        r_type = row['item_type']
+                        r_tmdb = row['tmdb_id']
+                        r_parent = row['parent_series_tmdb_id']
+                        
+                        if r_type in ['Movie', 'Series']:
+                            direct_offline_tmdb_ids.append(r_tmdb)
+                        elif r_type in ['Season', 'Episode'] and r_parent:
+                            affected_parent_ids.add(r_parent)
+
+                    # A. 对于顶层项目 (电影/剧集)，直接在数据库标记离线
+                    if direct_offline_tmdb_ids:
+                        logger.info(f"  ➜ 正在标记 {len(direct_offline_tmdb_ids)} 个顶层项目为离线...")
+                        cursor.execute("""
+                            UPDATE media_metadata
+                            SET in_library = FALSE, emby_item_ids_json = '[]'::jsonb, asset_details_json = '[]'::jsonb
+                            WHERE tmdb_id = ANY(%s) AND item_type IN ('Movie', 'Series')
+                        """, (direct_offline_tmdb_ids,))
+                        total_offline_count += cursor.rowcount # 计入统计
+                        
+                    # B. 对于子集 (季/集)，将父剧集加入脏队列，走后续的扫描流程来清理
+                    if affected_parent_ids:
+                        logger.info(f"  ➜ 因分集消失，将 {len(affected_parent_ids)} 个父剧集加入刷新队列...")
+                        for pid in affected_parent_ids:
                             dirty_keys.add((pid, 'Series'))
+                    
+                    conn.commit()
 
         logger.info(f"  ➜ Emby 扫描完成，共 {scan_count} 个项。有 {len(dirty_keys)} 个项目涉及变更。")
 
