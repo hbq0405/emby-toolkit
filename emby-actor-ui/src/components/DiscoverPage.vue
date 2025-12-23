@@ -590,7 +590,12 @@ const handleSubscribe = async (media) => {
     
     if (shouldTriggerTaskImmediately) {
       message.info('已提交到后台立即处理...');
-      const requestItem = { tmdb_id: media.id, item_type: itemTypeForApi, title: media.title || media.name };
+      const requestItem = { 
+        tmdb_id: media.id, 
+        item_type: itemTypeForApi, 
+        title: media.title || media.name,
+        user_id: authStore.user?.id 
+      };
       const taskPayload = { task_name: 'manual_subscribe_batch', subscribe_requests: [requestItem] };
       
       // 再次更新为已订阅
