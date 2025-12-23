@@ -61,7 +61,7 @@ import constants # 你的常量定义\
 import logging
 from logger_setup import frontend_log_queue, add_file_handler # 日志记录器和前端日志队列
 import config_manager
-from database import connection
+from database import connection, settings_db
 
 import task_manager
 # --- 核心模块导入结束 ---
@@ -141,13 +141,26 @@ def initialize_processors():
     server_id_local = None
     emby_url = current_config.get("emby_server_url")
     emby_key = current_config.get("emby_api_key")
+    
     if emby_url and emby_key:
         server_info = handler.emby.get_emby_server_info(emby_url, emby_key)
         if server_info and server_info.get("Id"):
             server_id_local = server_info.get("Id")
             logger.trace(f"成功获取到 Emby Server ID: {server_id_local}")
+            # --- 缓存 Server ID ---
+            try:
+                settings_db.save_setting("emby_server_id_cache", server_id_local)
+            except Exception as e:
+                logger.warning(f"缓存 Emby Server ID 失败: {e}")
         else:
-            logger.warning("未能获取到 Emby Server ID，跳转链接可能不完整。")
+            logger.warning("未能通过 API 获取 Emby Server ID，尝试读取缓存...")
+            # --- 尝试读取缓存 ---
+            cached_id = settings_db.get_setting("emby_server_id_cache")
+            if cached_id:
+                server_id_local = cached_id
+                logger.info(f"已使用缓存的 Emby Server ID: {server_id_local}")
+            else:
+                logger.warning("缓存中未找到 Emby Server ID，跳转链接可能不完整。")
 
     # 初始化 media_processor_instance_local
     try:
