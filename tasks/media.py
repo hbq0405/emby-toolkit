@@ -274,13 +274,26 @@ def task_populate_metadata_cache(processor, batch_size: int = 50, force_full_upd
 
             # B. 获取在线状态
             if not force_full_update:
+                # 1. 获取用于比对的 ID 映射 (逻辑不变，用于后续计算差异)
                 cursor.execute("""
                     SELECT jsonb_array_elements_text(emby_item_ids_json) AS emby_id, in_library
                     FROM media_metadata 
                 """)
                 known_emby_status = {row['emby_id']: row['in_library'] for row in cursor.fetchall()}
-                active_count = sum(1 for v in known_emby_status.values() if v)
-                logger.info(f"  ➜ 本地数据库已知 {len(known_emby_status)} 个ID (其中在线: {active_count})。")
+                
+                # 2. 【新增】获取真实的数据库统计信息 (用于日志显示)
+                cursor.execute("""
+                    SELECT 
+                        COUNT(*) as total, 
+                        SUM(CASE WHEN in_library THEN 1 ELSE 0 END) as online 
+                    FROM media_metadata
+                """)
+                stat_row = cursor.fetchone()
+                total_items = stat_row['total'] if stat_row else 0
+                online_items = stat_row['online'] if stat_row else 0
+                
+                logger.info(f"  ➜ 本地数据库共存储 {total_items} 个媒体项 (其中在线: {online_items}, 离线: {total_items - online_items})。")
+                logger.info(f"  ➜ 加载了 {len(known_emby_status)} 个有效的 Emby ID 用于比对。")
 
         # ★★★ 新增：预加载所有文件夹映射 ★★★
         logger.info("  ➜ 正在预加载 Emby 文件夹路径映射...")
