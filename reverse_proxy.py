@@ -18,6 +18,7 @@ from database import custom_collection_db, queries_db
 from database.connection import get_db_connection
 from handler.custom_collection import RecommendationEngine
 import config_manager
+import constants
 
 import extensions
 import handler.emby as emby
@@ -386,6 +387,7 @@ def handle_get_mimicked_library_items(user_id, mimicked_id, params):
         
         # --- 场景 A: 榜单类 (需要处理占位符) ---
         if collection_type == 'list':
+            show_placeholders = config_manager.APP_CONFIG.get(constants.CONFIG_OPTION_PROXY_SHOW_MISSING_PLACEHOLDERS, False)
             raw_list_json = collection_info.get('generated_media_info_json')
             raw_list = json.loads(raw_list_json) if isinstance(raw_list_json, str) else (raw_list_json or [])
             
@@ -434,7 +436,8 @@ def handle_get_mimicked_library_items(user_id, mimicked_id, params):
 
                     # 场景 C: 已识别但未入库 (有有效的 tmdb_id)
                     elif tid != "None":
-                        full_view_list.append({"is_missing": True, "tmdb_id": tid})
+                        if show_placeholders:
+                            full_view_list.append({"is_missing": True, "tmdb_id": tid})
 
                 # 4. 分页
                 paged_part = full_view_list[offset : offset + emby_limit]

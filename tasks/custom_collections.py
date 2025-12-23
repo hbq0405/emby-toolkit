@@ -17,7 +17,8 @@ from database import connection, custom_collection_db, settings_db, media_db, re
 from handler.custom_collection import ListImporter
 from services.cover_generator import CoverGeneratorService
 from handler.poster_generator import cleanup_placeholder, sync_all_subscription_posters
-
+import constants
+import config_manager
 
 logger = logging.getLogger(__name__)
 
@@ -550,7 +551,10 @@ def task_process_all_custom_collections(processor):
         if processor.is_stop_requested(): final_message = "任务已中止。"
         
         try:
-            sync_all_subscription_posters()
+            if config_manager.APP_CONFIG.get(constants.CONFIG_OPTION_PROXY_SHOW_MISSING_PLACEHOLDERS, False):
+                sync_all_subscription_posters()
+            else:
+                logger.info("  ➜ 检测到占位海报功能已关闭，跳过海报同步。")
         except Exception as e:
             logger.error(f"全量同步占位海报失败: {e}")
 
@@ -748,7 +752,10 @@ def process_single_custom_collection(processor, custom_collection_id: int):
             logger.error(f"为合集 '{collection_name}' 生成封面时发生错误: {e_cover}", exc_info=True)
         
         try:
-            sync_all_subscription_posters()
+            if config_manager.APP_CONFIG.get(constants.CONFIG_OPTION_PROXY_SHOW_MISSING_PLACEHOLDERS, False):
+                sync_all_subscription_posters()
+            else:
+                logger.info("  ➜ 检测到占位海报功能已关闭，跳过海报同步。")
         except Exception as e:
             logger.error(f"全量同步占位海报失败: {e}")
 

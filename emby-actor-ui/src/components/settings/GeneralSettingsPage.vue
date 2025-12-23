@@ -206,9 +206,16 @@
                         </template>
                         <n-input-number v-model:value="configModel.proxy_port" :min="1025" :max="65535" :disabled="!configModel.proxy_enabled" style="width: 100%;"/>
                       </n-form-item-grid-item>
-
-                      <!-- 3. 302重定向 (占满一行，URL通常较长) -->
-                      <n-form-item-grid-item span="2">
+                      <n-form-item-grid-item label="显示缺失媒体占位符" path="proxy_show_missing_placeholders">
+                        <n-switch v-model:value="configModel.proxy_show_missing_placeholders" :disabled="!configModel.proxy_enabled"/>
+                        <template #feedback>
+                          <n-text depth="3" style="font-size:0.8em;">
+                            在榜单类虚拟库中显示未入库的媒体海报（带状态角标）。
+                          </n-text>
+                        </template>
+                      </n-form-item-grid-item>
+                      <!-- 3. 302重定向  -->
+                      <n-form-item-grid-item>
                         <template #label>
                           <div style="display: flex; align-items: center; justify-content: flex-end; width: 100%;">
                             <span>302重定向服务地址</span>
