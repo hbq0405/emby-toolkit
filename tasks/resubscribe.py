@@ -498,7 +498,6 @@ def _handle_auto_resubscribe_trigger(item_details: dict, rule: dict, reason: str
 
 def _item_needs_resubscribe(asset_details: dict, rule: dict, media_metadata: Optional[dict]) -> tuple[bool, str]:
     """
-    【V5 - 终极修正版】
     完全依赖 asset_details 中预先分析好的数据进行判断，不再进行任何二次解析。
     """
     item_name = media_metadata.get('title', '未知项目')
@@ -731,7 +730,6 @@ def _item_needs_resubscribe(asset_details: dict, rule: dict, media_metadata: Opt
 def _check_season_consistency(episodes: List[dict], rule: dict) -> tuple[bool, str]:
     """
     检查整季的一致性。
-    返回: (是否需要洗版, 原因)
     """
     # 如果规则没开启一致性检查，直接通过
     if not rule.get('consistency_check_enabled'):
