@@ -464,10 +464,9 @@ def task_populate_metadata_cache(processor, batch_size: int = 50, force_full_upd
 
         # ★★★ 打印详细统计日志 ★★★
         logger.info(f"  ➜ Emby 扫描完成，共扫描 {scan_count} 个项。")
-        logger.info(f"    - 已入库且无变更: {skipped_clean}")
-        logger.info(f"    - 跳过(无TMDb ID): {skipped_no_tmdb}")
-        logger.info(f"    - 跳过(非媒体类型): {skipped_other_type}")
-        logger.info(f"    - 涉及变更(脏数据): {len(dirty_keys)}")
+        logger.info(f"    - 已入库: {skipped_clean}")
+        logger.info(f"    - 已跳过: {skipped_no_tmdb + skipped_other_type} (含 {skipped_no_tmdb} 个无ID, {skipped_other_type} 个非媒体)")
+        logger.info(f"    - 需同步: {len(dirty_keys)}")
 
         # --- 4. 确定处理队列 (无需猜测类型) ---
         items_to_process = []
