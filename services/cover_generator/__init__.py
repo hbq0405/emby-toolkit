@@ -8,7 +8,7 @@ import requests
 from pathlib import Path
 from typing import Dict, Any, List, Tuple, Optional
 from gevent import spawn_later
-
+from database import custom_collection_db
 import config_manager
 import handler.emby as emby 
 from extensions import UPDATING_IMAGES
@@ -99,6 +99,65 @@ class CoverGeneratorService:
         api_key = config_manager.APP_CONFIG.get('emby_api_key')
         user_id = config_manager.APP_CONFIG.get('emby_user_id')
 
+        # --- 优先检查是否为本地自定义合集 
+        custom_collection = custom_collection_db.get_custom_collection_by_emby_id(library_id)
+    
+        if custom_collection:
+            logger.info(f"  ➜ 检测到 '{library_name}' 为自定义合集，正在从数据库获取媒体项ID...")
+            try:
+                # 1. 从数据库 JSON 中提取 Emby ID
+                media_info_list = custom_collection.get('generated_media_info_json') or []
+                valid_emby_ids = [
+                    str(item['emby_id']) 
+                    for item in media_info_list 
+                    if item.get('emby_id') and str(item.get('emby_id')).lower() != 'none'
+                ]
+
+                if valid_emby_ids:
+                    logger.trace(f"  ➜ 从数据库中提取到 {len(valid_emby_ids)} 个有效的 Emby ID。")
+                    
+                    # 2. 本地处理排序
+                    if self._sort_by == "Random":
+                        random.shuffle(valid_emby_ids)
+                    
+                    # 3. 截取需要的数量
+                    target_ids = valid_emby_ids[:max(limit * 2, 20)]
+                    ids_str = ",".join(target_ids)
+
+                    # 4. 直接向 Emby 查询这些特定 ID 的详情
+                    url = f"{base_url.rstrip('/')}/Users/{user_id}/Items"
+                    
+                    # ★★★ 修复：使用 Header 传递 Token，并修正参数名 ★★★
+                    headers = {
+                        "X-Emby-Token": api_key,
+                        "Content-Type": "application/json"
+                    }
+                    params = {
+                        'Ids': ids_str,
+                        'Fields': "Id,Name,Type,ImageTags,BackdropImageTags,DateCreated,PrimaryImageTag,PrimaryImageItemId",
+                        # 'api_key': api_key # Header 中已包含，此处可省略，或使用小写 'api_key'
+                    }
+                    
+                    resp = requests.get(url, params=params, headers=headers, timeout=30)
+                    resp.raise_for_status()
+                    data = resp.json()
+                    items_from_emby = data.get('Items', [])
+
+                    # 5. 再次过滤，确保有图片
+                    valid_items = [item for item in items_from_emby if self.__get_image_url(item)]
+                    
+                    if valid_items:
+                        logger.info(f"  ➜ 成功从自定义合集获取到 {len(valid_items)} 个带封面的媒体项。")
+                        return valid_items[:limit]
+                    else:
+                        logger.warning(f"  ➜ 自定义合集 '{library_name}' 中的项目均无有效封面。")
+                        return []
+                else:
+                    logger.warning(f"  ➜ 自定义合集 '{library_name}' 数据库记录中没有有效的 Emby ID (可能尚未同步)。")
+            except Exception as e:
+                logger.error(f"  ➜ 处理自定义合集 '{library_name}' 的本地数据时出错: {e}，将尝试回退到普通模式。", exc_info=True)
+        
+        # 原有逻辑 (作为回退或处理普通库)
         media_type_to_fetch = None
         if content_types:
             media_type_to_fetch = ",".join(content_types)

@@ -570,3 +570,15 @@ def match_and_update_list_collections_on_item_add(new_item_tmdb_id: str, new_ite
     except psycopg2.Error as e_db:
         logger.error(f"  ➜ 匹配和更新榜单合集时发生数据库错误: {e_db}", exc_info=True)
         raise
+
+def get_custom_collection_by_emby_id(emby_collection_id: str) -> Optional[Dict[str, Any]]:
+    """ 根据 Emby Collection ID 获取自定义合集详情 (用于封面生成等)。"""
+    try:
+        with get_db_connection() as conn:
+            cursor = conn.cursor()
+            cursor.execute("SELECT * FROM custom_collections WHERE emby_collection_id = %s", (emby_collection_id,))
+            row = cursor.fetchone()
+            return dict(row) if row else None
+    except psycopg2.Error as e:
+        logger.error(f"根据 Emby ID {emby_collection_id} 获取自定义合集时出错: {e}", exc_info=True)
+        return None
