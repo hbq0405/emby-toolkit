@@ -1,6 +1,7 @@
 # tasks/subscriptions.py
 # 智能订阅模块
 import json
+from datetime import datetime
 import logging
 from typing import List, Dict
 from concurrent.futures import ThreadPoolExecutor, as_completed 
@@ -46,8 +47,10 @@ def _subscribe_full_series_with_logic(tmdb_id: int, series_name: str, config: Di
     处理整部剧集的订阅：
     1. 查询 TMDb 获取所有季。
     2. 遍历所有季。
-    3. 仅对【最后一季】检查是否需要“自动待定”。
-    4. 逐季提交订阅并更新本地数据库。
+    3. 检查是否未上映 -> 设为 PENDING_RELEASE。
+    4. 仅对【最后一季】检查是否需要“自动待定”。
+    5. 检查是否完结/配置开启 -> 决定 best_version。
+    6. 逐季提交订阅并更新本地数据库。
     """
     try:
         # 1. 获取剧集详情
@@ -73,7 +76,6 @@ def _subscribe_full_series_with_logic(tmdb_id: int, series_name: str, config: Di
         any_success = False
 
         # ★★★ 关键步骤 1：先激活父剧集 ★★★
-        # 这会将 Series 设为 Watching，并重置所有已存在的季为 NONE
         watchlist_db.add_item_to_watchlist(str(tmdb_id), final_series_name)
 
         logger.info(f"  ➜ 正在处理《{final_series_name}》的 {len(valid_seasons)} 个季 (S{valid_seasons[0]['season_number']} - S{last_season_num})...")
@@ -81,7 +83,48 @@ def _subscribe_full_series_with_logic(tmdb_id: int, series_name: str, config: Di
         # 4. 遍历逐个订阅
         for season in valid_seasons:
             s_num = season['season_number']
+            s_id = season.get('id') # 季的 TMDb ID
+            air_date_str = season.get('air_date')
             
+            # ==============================================================
+            # 逻辑 A: 检查是否未上映 (Pending Release)
+            # ==============================================================
+            is_future_season = False
+            if air_date_str:
+                try:
+                    air_date = datetime.strptime(air_date_str, "%Y-%m-%d").date()
+                    # 如果首播日期在今天之后（不含今天），则视为未上映
+                    # 你可以根据需要调整为 air_date > datetime.now().date() + timedelta(days=3)
+                    if air_date > datetime.now().date():
+                        is_future_season = True
+                except ValueError:
+                    pass
+            
+            if is_future_season:
+                logger.info(f"  ⏳ 季《{final_series_name}》S{s_num} 尚未播出 ({air_date_str})，状态设为 '待上映'。")
+                
+                # 构造 media_info 用于入库
+                media_info = {
+                    'tmdb_id': str(s_id) if s_id else f"{tmdb_id}_S{s_num}", # 优先使用季的真实ID
+                    'title': season.get('name', f"第 {s_num} 季"),
+                    'season_number': s_num,
+                    'parent_series_tmdb_id': str(tmdb_id),
+                    'release_date': air_date_str,
+                    'poster_path': season.get('poster_path'),
+                    'overview': season.get('overview')
+                }
+                
+                # 更新数据库状态为 PENDING_RELEASE
+                request_db.set_media_status_pending_release(
+                    tmdb_ids=media_info['tmdb_id'],
+                    item_type='Season',
+                    media_info_list=[media_info]
+                )
+                continue # ★ 跳过后续订阅步骤
+
+            # ==============================================================
+            # 逻辑 B: 准备订阅 Payload
+            # ==============================================================
             mp_payload = {
                 "name": final_series_name,
                 "tmdbid": tmdb_id,
@@ -92,7 +135,9 @@ def _subscribe_full_series_with_logic(tmdb_id: int, series_name: str, config: Di
             is_pending = False
             fake_total = 0
 
-            # ★★★ 核心逻辑：只检查最后一季是否需要待定 ★★★
+            # ==============================================================
+            # 逻辑 C: 检查是否需要“自动待定” (仅针对最后一季)
+            # ==============================================================
             if s_num == last_season_num:
                 is_pending, fake_total = should_mark_as_pending(tmdb_id, s_num, tmdb_api_key)
                 if is_pending:
@@ -100,16 +145,37 @@ def _subscribe_full_series_with_logic(tmdb_id: int, series_name: str, config: Di
                     mp_payload["total_episode"] = fake_total
                     logger.info(f"  🛡️ [自动待定] S{s_num} 是最新季且符合条件，初始状态设为 '待定(P)'。")
 
-            # 洗版/完结检测 (非待定状态下才考虑 BestVersion)
+            # ==============================================================
+            # 逻辑 D: 决定 Best Version (洗版/完结检测)
+            # ==============================================================
             if not is_pending:
-                if use_gap_fill_resubscribe:
+                # 逻辑：如果 (全局配置开启) OR (剧集已完结)，则 best_version = 1
+                # 否则 (默认) best_version = 0 (不传即为0)
+                if use_gap_fill_resubscribe or check_series_completion(tmdb_id, tmdb_api_key, season_number=s_num, series_name=final_series_name):
                     mp_payload["best_version"] = 1
-                elif check_series_completion(tmdb_id, tmdb_api_key, season_number=s_num, series_name=final_series_name):
-                    mp_payload["best_version"] = 1
+                else:
+                    # 显式设置为 0 (虽然不传也是 0，但为了逻辑完整性)
+                    mp_payload["best_version"] = 0
 
-            # 提交订阅
+            # ==============================================================
+            # 逻辑 E: 提交订阅
+            # ==============================================================
             if moviepilot.subscribe_with_custom_payload(mp_payload, config):
                 any_success = True
+                
+                # 订阅成功后，更新季的状态为 SUBSCRIBED
+                # 注意：这里我们尽量使用季的 ID 来更新状态，以便精确控制
+                target_s_id = str(s_id) if s_id else f"{tmdb_id}_S{s_num}"
+                request_db.set_media_status_subscribed(
+                    tmdb_ids=[target_s_id],
+                    item_type='Season',
+                    media_info_list=[{
+                        'tmdb_id': target_s_id,
+                        'parent_series_tmdb_id': str(tmdb_id),
+                        'season_number': s_num,
+                        'title': season.get('name')
+                    }]
+                )
                 
         return any_success
 

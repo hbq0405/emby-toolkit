@@ -537,7 +537,7 @@ def check_series_completion(tmdb_id: int, api_key: str, season_number: Optional[
     
     逻辑：
     1. 剧集状态为 Ended/Canceled -> 视为完结
-    2. 最后一集播出日期已过 -> 视为完结
+    2. 最后一集播出日期已过 (<= Today) -> 视为完结
     3. 最后一集播出超过30天 (防止数据缺失) -> 视为完结
     4. 获取不到数据 -> 为了防止漏洗版，默认视为完结
     """
@@ -545,9 +545,6 @@ def check_series_completion(tmdb_id: int, api_key: str, season_number: Optional[
         return False
 
     today = datetime.now().date()
-    
-    # ★★★ 定义缓冲天数 ★★★
-    BUFFER_DAYS = 7 
     
     try:
         # 1. 优先检查剧集整体状态
@@ -573,7 +570,7 @@ def check_series_completion(tmdb_id: int, api_key: str, season_number: Optional[
                 logger.warning(f"  ➜ 《{series_name}》第 {season_number} 季暂无集数信息，判定为未完结 (不洗版)。")
                 return False
 
-            # A. 检查最后一集播出时间 (增加缓冲期)
+            # A. 检查最后一集播出时间 (无缓冲期，播出即完结)
             last_episode = episodes[-1]
             last_air_date_str = last_episode.get('air_date')
 
@@ -581,16 +578,12 @@ def check_series_completion(tmdb_id: int, api_key: str, season_number: Optional[
                 try:
                     last_air_date = datetime.strptime(last_air_date_str, '%Y-%m-%d').date()
                     
-                    # ★★★ 核心修改：加上缓冲期判断 ★★★
-                    # 只有当 (最后一集日期 + 7天) 仍然早于或等于今天，才算完结。
-                    # 例子：11月27日首播，today是27日。 27 <= 27-7 (20日) -> False。判定为未完结。正确！
-                    if last_air_date <= today - timedelta(days=BUFFER_DAYS):
-                        logger.info(f"  ➜ 《{series_name}》第 {season_number} 季最后一集于 {last_air_date} 播出 (已过缓冲期)，判定已完结。")
+                    # ★★★ 修改：移除缓冲期，只要日期 <= 今天，即视为完结 ★★★
+                    if last_air_date <= today:
+                        logger.info(f"  ➜ 《{series_name}》第 {season_number} 季最后一集于 {last_air_date} 播出，判定已完结。")
                         return True
                     else:
-                        # 即使播出了，如果没过缓冲期，也视为未完结，方便追更或等待Pack
-                        status_desc = "已播出但未过缓冲期" if last_air_date <= today else "尚未播出"
-                        logger.info(f"  ➜ 《{series_name}》第 {season_number} 季最后一集日期为 {last_air_date} ({status_desc})，判定未完结。")
+                        logger.info(f"  ➜ 《{series_name}》第 {season_number} 季最后一集将于 {last_air_date} 播出，判定未完结。")
                         return False
                 except ValueError:
                     pass
@@ -623,9 +616,9 @@ def check_series_completion(tmdb_id: int, api_key: str, season_number: Optional[
                 last_air_date_str = last_episode_to_air.get('air_date')
                 if last_air_date_str:
                     last_air_date = datetime.strptime(last_air_date_str, '%Y-%m-%d').date()
-                    # 整剧同样增加缓冲期
-                    if last_air_date <= today - timedelta(days=BUFFER_DAYS):
-                        logger.info(f"  ➜ 剧集《{series_name}》的最新一集已播出并过缓冲期，判定为可洗版状态。")
+                    # 整剧同样移除缓冲期
+                    if last_air_date <= today:
+                        logger.info(f"  ➜ 剧集《{series_name}》的最新一集已播出 ({last_air_date})，判定为可洗版状态。")
                         return True
                         
     except Exception as e:
