@@ -197,11 +197,18 @@
                 <!-- 底部按钮 -->
                 <div class="card-actions-bottom">
                   <n-space align="center" justify="center" size="small" :wrap="false">
-                      <!-- 核心修改：按钮改为“整理”，移除删除按钮 -->
-                      <n-button v-if="item.status === 'needed'" size="tiny" type="primary" ghost @click.stop="resubscribeItem(item)" :loading="subscribing[item.item_id]">整理</n-button>
+                      <n-button 
+                        v-if="item.status === 'needed'" 
+                        size="tiny" 
+                        :type="getActionInfo(item).type" 
+                        ghost 
+                        @click.stop="resubscribeItem(item)" 
+                        :loading="subscribing[item.item_id]"
+                      >
+                        {{ getActionInfo(item).text }}
+                      </n-button>
                       <n-button v-if="item.status === 'needed'" size="tiny" @click.stop="ignoreItem(item)">忽略</n-button>
                       <n-button v-if="item.status === 'ignored'" size="tiny" @click.stop="unignoreItem(item)">恢复</n-button>
-                      
                       <n-button text @click.stop="openInEmby(item)"><n-icon :component="EmbyIcon" size="18" /></n-button>
                       <n-button text tag="a" :href="`https://www.themoviedb.org/${item.item_type === 'Movie' ? 'movie' : 'tv'}/${item.tmdb_id}`" target="_blank" @click.stop><n-icon :component="TMDbIcon" size="18" /></n-button>
                   </n-space>
@@ -514,6 +521,16 @@ const sendBatchActionRequest = async (actionKey, ids, isOneClick) => {
   }
 };
 
+const getActionInfo = (item) => {
+  // 假设后端返回的 item 数据中包含 action 字段
+  // 如果是删除模式
+  if (item.action === 'delete') {
+    return { text: '删除', type: 'error' }; // error 对应红色
+  }
+  // 默认为洗版模式 (type='primary' 对应蓝色/绿色取决于主题)
+  return { text: '洗版', type: 'primary' };
+};
+
 const executeBatchAction = async (actionKey, ids, isOneClick) => {
   // 移除删除确认逻辑，直接发送请求（因为现在是“整理”，具体行为由后端规则决定）
   sendBatchActionRequest(actionKey, ids, isOneClick);
@@ -607,6 +624,13 @@ const openInEmby = (item) => {
     finalUrl += `&serverId=${serverId}`;
   }
   window.open(finalUrl, '_blank');
+};
+const getActionInfo = (item) => {
+  // 如果后端返回的字段名不是 'action'，请在此处修改 (例如 item.rule_mode)
+  if (item.action === 'delete') {
+    return { text: '删除', type: 'error' };
+  }
+  return { text: '洗版', type: 'primary' };
 };
 const handleSettingsSaved = async (payload = {}) => {
   showSettingsModal.value = false; // 关闭弹窗
