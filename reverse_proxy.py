@@ -569,12 +569,27 @@ def handle_get_latest_items(user_id, params):
     """
     获取最新项目。
     利用 queries_db 的排序能力，快速返回结果。
+    【修复版】增加对榜单(list)和AI合集的类型判断，防止无规则合集泄露全局最新数据。
     """
     try:
         base_url, api_key = _get_real_emby_url_and_key()
         virtual_library_id = params.get('ParentId') or params.get('customViewId')
         limit = int(params.get('Limit', 20))
         fields = params.get('Fields', "PrimaryImageAspectRatio,BasicSyncInfo,DateCreated,UserData")
+
+        # --- 辅助函数：获取合集的过滤 ID ---
+        def get_collection_filter_ids(coll_data):
+            c_type = coll_data.get('type')
+            # 1. 榜单类：必须限制在榜单包含的 TMDb ID 范围内
+            if c_type == 'list':
+                raw_json = coll_data.get('generated_media_info_json')
+                raw_list = json.loads(raw_json) if isinstance(raw_json, str) else (raw_json or [])
+                return [str(i.get('tmdb_id')) for i in raw_list if i.get('tmdb_id')]
+            # 2. AI 推荐类：暂不支持“最新”视图 (因为是动态生成的)，返回一个不存在的 ID 防止泄露
+            elif c_type in ['ai_recommendation', 'ai_recommendation_global']:
+                return ["-1"] 
+            # 3. 规则类：返回 None，表示不限制 ID，只走 Rules
+            return None
 
         # 场景一：单个虚拟库的最新
         if virtual_library_id and is_mimicked_id(virtual_library_id):
@@ -588,7 +603,13 @@ def handle_get_latest_items(user_id, params):
             if not definition.get('show_in_latest', True):
                 return Response(json.dumps([]), mimetype='application/json')
 
-            # 确定排序：如果是纯剧集库，默认使用 DateLastContentAdded
+            # --- 修复核心：获取 ID 过滤器 ---
+            tmdb_ids_filter = get_collection_filter_ids(collection_info)
+            # 如果是 AI 合集返回了 ["-1"]，或者榜单为空，直接返回空结果
+            if tmdb_ids_filter is not None and (len(tmdb_ids_filter) == 0 or tmdb_ids_filter == ["-1"]):
+                 return Response(json.dumps([]), mimetype='application/json')
+
+            # 确定排序
             item_types = definition.get('item_type', ['Movie'])
             is_series_only = isinstance(item_types, list) and len(item_types) == 1 and item_types[0] == 'Series'
             sort_by = 'DateLastContentAdded,DateCreated' if is_series_only else 'DateCreated'
@@ -596,15 +617,16 @@ def handle_get_latest_items(user_id, params):
             # SQL 过滤权限和规则
             items, total_count = queries_db.query_virtual_library_items(
                 rules=definition.get('rules', []), logic=definition.get('logic', 'AND'),
-                user_id=user_id, limit=500, offset=0, # 捞个池子
+                user_id=user_id, limit=500, offset=0,
                 sort_by='DateCreated', sort_order='Descending',
-                item_types=item_types, target_library_ids=definition.get('target_library_ids', [])
+                item_types=item_types, target_library_ids=definition.get('target_library_ids', []),
+                tmdb_ids=tmdb_ids_filter  # <--- 传入 TMDb ID 限制
             )
             
             if not items: return Response(json.dumps([]), mimetype='application/json')
             final_emby_ids = [i['Id'] for i in items]
 
-            # 统一调用代理排序（处理剧集更新时间）
+            # 统一调用代理排序
             sorted_data = _fetch_sorted_items_via_emby_proxy(
                 user_id, final_emby_ids, sort_by, 'Descending', limit, 0, fields, len(final_emby_ids)
             )
@@ -617,35 +639,36 @@ def handle_get_latest_items(user_id, params):
             if not included_collection_ids:
                 return Response(json.dumps([]), mimetype='application/json')
             
-            # 这里比较复杂，因为要聚合多个合集的规则。
-            # 简单起见，我们可以循环查询每个合集的前 N 个，然后在内存里合并排序。
-            # 或者，如果 queries_db 支持传入多个合集 ID 进行聚合查询最好。
-            # 目前方案：内存聚合 (性能尚可，因为 limit 通常很小)
-            
             all_latest = []
             for coll_id in included_collection_ids:
                 coll = custom_collection_db.get_custom_collection_by_id(coll_id)
                 if not coll: continue
                 
-                # 检查权限 (简单检查，详细权限在 SQL 里)
+                # 检查权限
                 allowed_users = coll.get('allowed_user_ids')
                 if allowed_users and user_id not in allowed_users: continue
+
+                # --- 修复核心：获取 ID 过滤器 ---
+                tmdb_ids_filter = get_collection_filter_ids(coll)
+                if tmdb_ids_filter is not None and (len(tmdb_ids_filter) == 0 or tmdb_ids_filter == ["-1"]):
+                    continue
 
                 definition = coll.get('definition_json')
                 items, _ = queries_db.query_virtual_library_items(
                     rules=definition.get('rules', []),
                     logic=definition.get('logic', 'AND'),
                     user_id=user_id,
-                    limit=limit, # 每个合集取 limit 个
+                    limit=limit, 
                     offset=0,
                     sort_by='DateCreated',
                     sort_order='Descending',
                     item_types=definition.get('item_type', ['Movie']),
-                    target_library_ids=definition.get('target_library_ids', [])
+                    target_library_ids=definition.get('target_library_ids', []),
+                    tmdb_ids=tmdb_ids_filter # <--- 传入 TMDb ID 限制
                 )
                 all_latest.extend(items)
             
-            # 去重并获取详情以获取日期进行排序
+            # 去重并获取详情
             unique_ids = list({i['Id'] for i in all_latest})
             if not unique_ids: return Response(json.dumps([]), mimetype='application/json')
             
