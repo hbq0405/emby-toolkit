@@ -120,8 +120,9 @@ def _subscribe_full_series_with_logic(tmdb_id: int, series_name: str, config: Di
                 request_db.set_media_status_pending_release(
                     tmdb_ids=media_info['tmdb_id'],
                     item_type='Season',
-                    media_info_list=[media_info],
-                    source=source
+                    source=source,
+                    media_info_list=[media_info]
+                    
                 )
                 continue 
 
@@ -168,6 +169,7 @@ def _subscribe_full_series_with_logic(tmdb_id: int, series_name: str, config: Di
                 request_db.set_media_status_subscribed(
                     tmdb_ids=[target_s_id],
                     item_type='Season',
+                    source=source,
                     media_info_list=[{
                         'tmdb_id': target_s_id,
                         'parent_series_tmdb_id': str(tmdb_id),
@@ -175,7 +177,7 @@ def _subscribe_full_series_with_logic(tmdb_id: int, series_name: str, config: Di
                         'title': season.get('name'),
                         'poster_path': final_poster # ★★★ 写入海报 ★★★
                     }],
-                    source=source
+                    
                 )
                 
         return any_success
