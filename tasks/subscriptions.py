@@ -42,7 +42,7 @@ AUDIO_SUBTITLE_KEYWORD_MAP = {
 
 # ★★★ 内部辅助函数：处理整部剧集的精细化订阅 ★★★
 # ==============================================================================
-def _subscribe_full_series_with_logic(tmdb_id: int, series_name: str, config: Dict, tmdb_api_key: str, use_gap_fill_resubscribe: bool = False) -> bool:
+def _subscribe_full_series_with_logic(tmdb_id: int, series_name: str, config: Dict, tmdb_api_key: str, use_gap_fill_resubscribe: bool = False, source: Dict = None) -> bool:
     """
     处理整部剧集的订阅：
     1. 查询 TMDb 获取所有季。
@@ -120,7 +120,8 @@ def _subscribe_full_series_with_logic(tmdb_id: int, series_name: str, config: Di
                 request_db.set_media_status_pending_release(
                     tmdb_ids=media_info['tmdb_id'],
                     item_type='Season',
-                    media_info_list=[media_info]
+                    media_info_list=[media_info],
+                    source=source
                 )
                 continue 
 
@@ -173,7 +174,8 @@ def _subscribe_full_series_with_logic(tmdb_id: int, series_name: str, config: Di
                         'season_number': s_num,
                         'title': season.get('name'),
                         'poster_path': final_poster # ★★★ 写入海报 ★★★
-                    }]
+                    }],
+                    source=source
                 )
                 
         return any_success
@@ -300,14 +302,15 @@ def task_manual_subscribe_batch(processor, subscribe_requests: List[Dict]):
                     success = moviepilot.subscribe_with_custom_payload(mp_payload, config)
 
                 elif item_type == 'Series':
+                    source = {'type': 'user_request', 'user_id': req.get('user_id')} if req.get('user_id') else None
                     success = _subscribe_full_series_with_logic(
                         tmdb_id=int(tmdb_id),
                         series_name=item_title_for_log,
                         config=config,
                         tmdb_api_key=tmdb_api_key,
-                        use_gap_fill_resubscribe=use_gap_fill_resubscribe
+                        use_gap_fill_resubscribe=use_gap_fill_resubscribe,
+                        source=source
                     )
-                    # ★★★ 修改：如果整剧拆分订阅成功，则隐藏父剧集条目 ★★★
                     if success:
                         request_db.set_media_status_none(str(tmdb_id), 'Series')
                 
