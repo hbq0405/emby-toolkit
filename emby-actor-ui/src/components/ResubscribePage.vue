@@ -521,16 +521,6 @@ const sendBatchActionRequest = async (actionKey, ids, isOneClick) => {
   }
 };
 
-const getActionInfo = (item) => {
-  // 假设后端返回的 item 数据中包含 action 字段
-  // 如果是删除模式
-  if (item.action === 'delete') {
-    return { text: '删除', type: 'error' }; // error 对应红色
-  }
-  // 默认为洗版模式 (type='primary' 对应蓝色/绿色取决于主题)
-  return { text: '洗版', type: 'primary' };
-};
-
 const executeBatchAction = async (actionKey, ids, isOneClick) => {
   // 移除删除确认逻辑，直接发送请求（因为现在是“整理”，具体行为由后端规则决定）
   sendBatchActionRequest(actionKey, ids, isOneClick);
