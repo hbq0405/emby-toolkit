@@ -217,6 +217,14 @@ def task_manual_subscribe_batch(processor, subscribe_requests: List[Dict]):
             item_title_for_log = req.get('title', f"ID: {tmdb_id}")
             season_number = req.get('season_number')
 
+            # ==============================================================
+            # ★★★ 新增：构建来源信息 (放在循环顶部) ★★★
+            # ==============================================================
+            user_id = req.get('user_id')
+            source = None
+            if user_id:
+                source = {'type': 'user_request', 'user_id': user_id}
+
             if not tmdb_id or not item_type:
                 logger.warning(f"跳过一个无效的订阅请求: {req}")
                 continue
