@@ -110,7 +110,7 @@ def task_update_resubscribe_cache(processor):
 
         # --- 步骤 3: 全量处理流程 ---
         total = len(all_movies) + len(all_series)
-        logger.info(f"  ➜ 将对 {len(all_movies)} 部电影和 {len(all_series)} 部剧集进行洗版计算...")
+        logger.info(f"  ➜ 将对 {len(all_movies)} 部电影和 {len(all_series)} 部剧集进行计算...")
         
         index_update_batch = []
         processed_count = 0
