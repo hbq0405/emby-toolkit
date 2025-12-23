@@ -173,6 +173,8 @@ def get_resubscribe_library_status(where_clause: str = "", params: tuple = ()) -
                     idx.status, 
                     idx.reason, 
                     idx.matched_rule_id,
+                    -- ★★★ 新增：关联规则表获取操作类型 ★★★
+                    COALESCE(rr.rule_type, 'resubscribe') as action,
                     
                     -- 智能获取名称
                     COALESCE(
@@ -211,6 +213,9 @@ def get_resubscribe_library_status(where_clause: str = "", params: tuple = ()) -
 
                 FROM resubscribe_index idx
                 
+                -- ★★★ 新增：关联规则表 ★★★
+                LEFT JOIN resubscribe_rules rr ON idx.matched_rule_id = rr.id
+                
                 -- ★★★ 核心修复开始 ★★★
                 LEFT JOIN media_metadata m ON (
                     (idx.item_type = 'Movie' AND idx.tmdb_id = m.tmdb_id AND m.item_type = 'Movie')
@@ -242,6 +247,8 @@ def get_resubscribe_library_status(where_clause: str = "", params: tuple = ()) -
                     "status": row['status'],
                     "reason": row['reason'],
                     "matched_rule_id": row['matched_rule_id'],
+                    # ★★★ 新增：返回 action 字段 ★★★
+                    "action": row['action'],
                     "item_name": row['item_name'],
                     "poster_path": row['poster_path'],
                     "emby_item_id": row['emby_item_id'],
