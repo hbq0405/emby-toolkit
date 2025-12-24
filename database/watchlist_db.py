@@ -828,6 +828,77 @@ def get_gap_scan_candidates(library_ids: Optional[List[str]] = None) -> List[Dic
         logger.error(f"  ➜ 获取缺集扫描候选列表时出错: {e}", exc_info=True)
         return []
 
+def find_missing_old_seasons(library_ids: Optional[List[str]] = None) -> List[Dict[str, Any]]:
+    """
+    【高效补旧番】直接从数据库查找缺失的旧季。
+    逻辑：
+    1. 找出每部剧的最大季号 (Max Season)。
+    2. 找出所有 season_number < Max Season 且 in_library = FALSE 的季。
+    3. 排除被标记为 IGNORED 的季。
+    4. ★新增：必须是已被智能追剧模块接管的剧集 (watching_status != 'NONE')。
+    """
+    try:
+        with get_db_connection() as conn:
+            cursor = conn.cursor()
+            
+            # 基础 SQL：关联查询找出比最大季号小的缺失季
+            sql = """
+                WITH series_max_season AS (
+                    -- 1. 计算每部剧的最大季号
+                    SELECT parent_series_tmdb_id, MAX(season_number) as max_seq
+                    FROM media_metadata
+                    WHERE item_type = 'Season' AND season_number > 0
+                    GROUP BY parent_series_tmdb_id
+                )
+                SELECT 
+                    s.tmdb_id,
+                    s.item_type,
+                    s.title,
+                    s.original_title,
+                    s.season_number,
+                    s.parent_series_tmdb_id,
+                    s.release_date,
+                    s.poster_path,
+                    s.overview,
+                    p.title as series_title -- 获取父剧集标题用于日志或展示
+                FROM media_metadata s
+                JOIN series_max_season ms ON s.parent_series_tmdb_id = ms.parent_series_tmdb_id
+                LEFT JOIN media_metadata p ON s.parent_series_tmdb_id = p.tmdb_id
+                WHERE 
+                    s.item_type = 'Season'
+                    AND s.season_number > 0
+                    AND s.in_library = FALSE          -- 核心：本地没有
+                    AND s.season_number < ms.max_seq  -- 核心：小于最大季号 (即旧季)
+                    AND s.subscription_status != 'IGNORED' -- 尊重用户忽略
+                    
+                    -- ★★★ 新增条件：父剧集必须已被接管 (有状态) ★★★
+                    AND p.watching_status IS NOT NULL 
+                    AND p.watching_status != 'NONE'
+            """
+
+            # 如果指定了媒体库，需要过滤父剧集是否在指定库中
+            params = []
+            if library_ids:
+                lib_ids_str = [str(lid) for lid in library_ids]
+                array_literal = "{" + ",".join(lib_ids_str) + "}"
+                
+                sql += f"""
+                    AND p.in_library = TRUE
+                    AND p.asset_details_json IS NOT NULL
+                    AND EXISTS (
+                        SELECT 1
+                        FROM jsonb_array_elements(p.asset_details_json) AS elem
+                        WHERE elem->>'source_library_id' = ANY('{array_literal}'::text[])
+                    )
+                """
+
+            cursor.execute(sql, tuple(params))
+            return [dict(row) for row in cursor.fetchall()]
+            
+    except Exception as e:
+        logger.error(f"  ➜ 查找缺失旧季时出错: {e}", exc_info=True)
+        return []
+
 def get_series_by_dynamic_condition(condition_sql: str = None, library_ids: Optional[List[str]] = None, tmdb_id: Optional[str] = None) -> List[Dict[str, Any]]:
     """
     根据动态条件获取剧集列表（用于 WatchlistProcessor）。

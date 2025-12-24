@@ -49,6 +49,11 @@
               扫描缺集
             </n-button>
 
+            <n-button size="small" @click="triggerBackfillTask" :loading="isBackfilling">
+              <template #icon><n-icon :component="BackfillIcon" /></template>
+              补全旧季
+            </n-button>
+
             <n-button size="small" @click="triggerAllWatchlistUpdate" :loading="isBatchUpdating">
               <template #icon><n-icon :component="SyncOutline" /></template>
               刷新追剧
@@ -457,26 +462,7 @@
 
           <n-divider style="margin: 0" />
 
-          <!-- 4. 补全旧季 -->
-          <div class="setting-item">
-            <div class="setting-icon"><n-icon :component="BackfillIcon" /></div>
-            <div class="setting-content">
-              <div class="setting-header">
-                <div class="setting-label">自动补全旧季</div>
-                <n-switch v-model:value="watchlistConfig.enable_backfill" size="small">
-                   <template #checked>开启</template>
-                   <template #unchecked>关闭</template>
-                </n-switch>
-              </div>
-              <div class="setting-desc">
-                当发现缺季时，自动订阅。
-              </div>
-            </div>
-          </div>
-
-          <n-divider style="margin: 0" />
-          
-          <!-- 5 MoviePilot 自动补订 -->
+          <!-- 4 MoviePilot 自动补订 -->
           <div class="setting-item">
             <div class="setting-icon"><n-icon :component="MPSyncIcon" /></div>
             <div class="setting-content">
@@ -495,7 +481,7 @@
 
           <n-divider style="margin: 0" />
 
-          <!-- 6. 缺集自动洗版 -->
+          <!-- 5. 缺集自动洗版 -->
           <div class="setting-item">
             <div class="setting-icon"><n-icon :component="GapIcon" /></div>
             <div class="setting-content">
@@ -564,7 +550,7 @@ let observer = null;
 const themeVars = useThemeVars();
 const selectedItems = ref([]);
 const lastSelectedIndex = ref(null);
-
+const isBackfilling = ref(false);
 const searchQuery = ref('');
 const filterStatus = ref('all');
 const filterMissing = ref('all');
@@ -586,7 +572,6 @@ const watchlistConfig = ref({
   auto_pause: false,
   auto_resub_ended: false,
   gap_fill_resubscribe: false,
-  enable_backfill: false,
   sync_mp_subscription: false
 });
 
@@ -625,6 +610,26 @@ const saveConfig = async () => {
   } finally {
     configSaving.value = false;
   }
+};
+
+const triggerBackfillTask = async () => {
+  dialog.info({
+    title: '补全旧季',
+    content: '确定要扫描数据库并自动待订阅所有缺失的旧季吗？\n\n逻辑说明：\n1. 仅针对“非最新季”的缺失季。\n2. 仅针对“未入库”且“未忽略”的季。',
+    positiveText: '确定执行',
+    negativeText: '取消',
+    onPositiveClick: async () => {
+      isBackfilling.value = true;
+      try {
+        const response = await axios.post('/api/tasks/run', { task_name: 'scan_old_seasons_backfill' });
+        message.success(response.data.message || '补全任务已启动！');
+      } catch (err) {
+        message.error(err.response?.data?.error || '启动任务失败。');
+      } finally {
+        isBackfilling.value = false;
+      }
+    }
+  });
 };
 
 const hasMissingSeasons = (item) => {

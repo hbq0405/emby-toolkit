@@ -118,7 +118,7 @@ def task_add_all_series_to_watchlist(processor):
         logger.error(f"执行 '{task_name}' 任务时发生严重错误: {e}", exc_info=True)
         task_manager.update_status_from_thread(-1, f"任务失败: {e}")
 
-# ★★★ 全新、独立的媒体库缺集扫描任务 ★★★
+# --- 缺集扫描任务 ---
 def task_scan_library_gaps(processor):
     """
     【V2 - 数据库直通版】
@@ -222,4 +222,68 @@ def task_scan_library_gaps(processor):
 
     except Exception as e:
         logger.error(f"执行 '{task_name}' 时发生严重错误: {e}", exc_info=True)
+        progress_updater(-1, f"任务失败: {e}")
+
+# --- 补全旧季任务 ---
+def task_scan_old_seasons_backfill(processor):
+    """
+    【数据库直通版】扫描所有剧集，直接订阅缺失的旧季。
+    不依赖 TMDb API，不依赖复杂的 Processor 逻辑。
+    """
+    task_name = "补全旧季"
+    
+    def progress_updater(progress, message):
+        task_manager.update_status_from_thread(progress, message)
+
+    try:
+        logger.info(f"--- 开始执行 '{task_name}' ---")
+        progress_updater(10, "正在分析数据库中的缺失旧季...")
+
+        # 1. 直接从数据库获取列表
+        # 这里可以传入 library_ids 如果需要限制范围，暂默认全量扫描
+        missing_seasons = watchlist_db.find_missing_old_seasons()
+        
+        if not missing_seasons:
+            progress_updater(100, "扫描完成：没有发现缺失的旧季。")
+            return
+
+        total_count = len(missing_seasons)
+        logger.info(f"  ➜ 发现 {total_count} 个缺失的旧季，准备提交订阅...")
+        progress_updater(50, f"发现 {total_count} 个缺失旧季，正在提交请求...")
+
+        # 2. 构造 media_info_list
+        media_info_list = []
+        tmdb_ids = []
+        
+        for s in missing_seasons:
+            tmdb_ids.append(s['tmdb_id'])
+            media_info_list.append({
+                'tmdb_id': s['tmdb_id'],
+                'item_type': 'Season',
+                'title': s.get('title') or f"{s.get('series_title', '未知剧集')} - 第 {s['season_number']} 季",
+                'original_title': s.get('original_title'),
+                'release_date': s.get('release_date'), # 数据库里存的是 date 对象或字符串
+                'poster_path': s.get('poster_path'),
+                'season_number': s['season_number'],
+                'parent_series_tmdb_id': s['parent_series_tmdb_id'],
+                'overview': s.get('overview'),
+                # 可以在这里塞入 reason，request_db 会优先使用
+                'reason': f"backfill_old_season: S{s['season_number']} Missing"
+            })
+
+        # 3. 批量提交订阅
+        if tmdb_ids:
+            request_db.set_media_status_wanted(
+                tmdb_ids=tmdb_ids,
+                item_type='Season',
+                source={"type": "gap_scan", "reason": "backfill_old_season"},
+                media_info_list=media_info_list
+            )
+
+        final_msg = f"任务完成！已为 {total_count} 个旧季提交了订阅请求。"
+        logger.info(f"  ➜ {final_msg}")
+        progress_updater(100, final_msg)
+
+    except Exception as e:
+        logger.error(f"执行 '{task_name}' 时发生错误: {e}", exc_info=True)
         progress_updater(-1, f"任务失败: {e}")

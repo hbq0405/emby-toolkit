@@ -522,8 +522,15 @@ class WatchlistProcessor:
     
     # ★★★ 辅助方法：检查是否满足自动待定条件 ★★★
     def _check_auto_pending_condition(self, series_details: Dict[str, Any], auto_pending_cfg: Dict = None) -> bool:
+        """
+        检查剧集最新季是否满足“自动待定”条件。
+        优化点：
+        1. 使用 UTC 时间，避免时区误差。
+        2. 逻辑与 helpers.py 保持一致 (Days <= Threshold AND Count <= Threshold)。
+        3. 直接使用 series_details 中的 episode_count，无需额外 API 请求。
+        """
         try:
-            # 如果没传配置，尝试读取 (兼容旧调用)
+            # 1. 获取配置
             if auto_pending_cfg is None:
                 watchlist_cfg = settings_db.get_setting('watchlist_config') or {}
                 auto_pending_cfg = watchlist_cfg.get('auto_pending', {})
@@ -533,32 +540,42 @@ class WatchlistProcessor:
 
             threshold_days = int(auto_pending_cfg.get('days', 30))
             threshold_episodes = int(auto_pending_cfg.get('episodes', 1))
+            
+            # 使用 UTC 时间
             today = datetime.now(timezone.utc).date()
 
-            # 检查逻辑：
-            # 找到最新的一季（通常是最后一季），检查其上映时间和集数
+            # 2. 获取季列表
             seasons = series_details.get('seasons', [])
             if not seasons: return False
             
-            # 过滤掉第0季，按季号倒序
+            # 3. 找到“最新”的一季 (过滤掉第0季，按季号倒序取第一个)
             valid_seasons = sorted([s for s in seasons if s.get('season_number', 0) > 0], 
                                    key=lambda x: x['season_number'], reverse=True)
             
             if not valid_seasons: return False
             
             latest_season = valid_seasons[0]
+            
+            # 4. 核心判断
             air_date_str = latest_season.get('air_date')
+            # 直接读取 TMDb 官方提供的该季总集数 (这是最准确的字段)
             episode_count = latest_season.get('episode_count', 0)
 
             if air_date_str:
-                air_date = datetime.strptime(air_date_str, '%Y-%m-%d').date()
-                days_diff = (today - air_date).days
-                
-                # ★★★ 修改：将 or 改为 and ★★★
-                # 逻辑：上线时间在阈值内 OR 集数很少 (满足所有条件即待定)
-                # days_diff >= 0 确保是已上映的
-                if days_diff >= 0 and ((days_diff <= threshold_days) and (episode_count <= threshold_episodes)):
-                    return True
+                try:
+                    air_date = datetime.strptime(air_date_str, '%Y-%m-%d').date()
+                    days_diff = (today - air_date).days
+                    
+                    # 逻辑：
+                    # 1. days_diff >= 0: 必须是已经开播的（未来的剧集由其他逻辑处理）
+                    # 2. days_diff <= threshold_days: 开播时间在观察期内 (如30天)
+                    # 3. episode_count <= threshold_episodes: 集数很少 (如只有1集)
+                    # 只有同时满足这三点，才认为是“刚开播且信息不全”，需要待定
+                    if (days_diff >= 0) and (days_diff <= threshold_days) and (episode_count <= threshold_episodes):
+                        logger.info(f"  🛡️ [自动待定] 触发: S{latest_season.get('season_number')} 上线{days_diff}天, 集数{episode_count} (阈值: {threshold_episodes})")
+                        return True
+                except ValueError:
+                    pass
             
             return False
         except Exception as e:
@@ -1066,7 +1083,7 @@ class WatchlistProcessor:
             if self._check_auto_pending_condition(latest_series_data, auto_pending_cfg):
                 final_status = STATUS_PENDING
                 paused_until_date = None 
-                logger.info(f"  🛡️ [自动待定生效] 《{item_name}》满足新剧保护条件，状态强制设为 '待定 (Pending)'。")
+                #logger.info(f"  🛡️ [自动待定生效] 《{item_name}》满足新剧保护条件，状态强制设为 '待定 (Pending)'。")
 
         # 手动强制完结
         if is_force_ended and final_status != STATUS_COMPLETED:
@@ -1167,77 +1184,6 @@ class WatchlistProcessor:
             final_status=final_status,
             old_status=old_status
         )
-
-        # ======================================================================
-        # ★★★ 缺失内容订阅处理 (重构版：开关控制 + 职责分离) ★★★
-        # ======================================================================
-        
-        # 1. 读取配置开关
-        # A. 全局订阅总开关 (从 self.config 获取)
-        if not self.config.get(constants.CONFIG_OPTION_AUTOSUB_ENABLED):
-            logger.debug("  ➜ 订阅总开关未开启，跳过缺失季订阅检查。")
-            return
-
-        # B. 补旧番功能开关 (从数据库获取)
-        watchlist_cfg = settings_db.get_setting('watchlist_config') or {}
-        enable_backfill = watchlist_cfg.get('enable_backfill', False)
-
-        # 2. 计算 TMDb 上的最新季号 (用于区分“旧季”和“新季”)
-        all_seasons = latest_series_data.get('seasons', [])
-        valid_seasons = [s for s in all_seasons if s.get('season_number', 0) > 0]
-        latest_season_num = max((s['season_number'] for s in valid_seasons), default=0)
-
-        if has_missing_media:
-            # 遍历所有缺失的整季
-            for season in missing_info.get("missing_seasons", []):
-                season_num = season.get('season_number')
-                if season_num is None: continue
-
-                # --- 逻辑分支 A: 最新季 (New Season) ---
-                # 完全交给 run_new_season_check_task 处理，此处直接忽略。
-                if season_num >= latest_season_num:
-                    continue
-
-                # --- 逻辑分支 B: 旧季 (Old Seasons) ---
-                # 你的要求：由 enable_backfill 开关控制。
-                if not enable_backfill:
-                    logger.debug(f"  ➜ S{season_num} 是旧季但自动补全旧季未开启。")
-                    continue
-
-                # --- 执行补旧番逻辑 (仅当全局开启、功能开启、且是旧季时) ---
-                season_tmdb_id = str(season.get('id'))
-                media_info = {
-                    'tmdb_id': season_tmdb_id,
-                    'item_type': 'Season',
-                    'title': f"{item_name} - {season.get('name', f'第 {season_num} 季')}",
-                    'original_title': latest_series_data.get('original_name'),
-                    'release_date': season.get('air_date'),
-                    'poster_path': season.get('poster_path'),
-                    'overview': season.get('overview'), 
-                    'season_number': season_num,
-                    'parent_series_tmdb_id': tmdb_id
-                }
-                
-                # 检查播出时间
-                air_date_str = season.get('air_date')
-                is_released = False
-                if air_date_str:
-                    try:
-                        air_date = datetime.strptime(air_date_str, '%Y-%m-%d').date()
-                        if air_date <= today:
-                            is_released = True
-                    except ValueError:
-                        pass
-                
-                if is_released:
-                    result = request_db.set_media_status_wanted(
-                        tmdb_ids=season_tmdb_id,
-                        item_type='Season',
-                        source={"type": "watchlist", "reason": "backfill_old_season", "item_id": item_id},
-                        media_info_list=[media_info]
-                    )
-                    if result:
-                        logger.info(f"  ➜ 已为《{item_name}》缺失的旧季 S{season_num} 提交下载请求。")
 
     # --- 统一的、公开的追剧处理入口 ★★★
     def process_watching_list(self, item_id: Optional[str] = None):
