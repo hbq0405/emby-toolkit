@@ -84,7 +84,7 @@ def set_media_status_requested(
                       AND (EXCLUDED.subscription_sources_json = '[]'::jsonb OR NOT (media_metadata.subscription_sources_json @> EXCLUDED.subscription_sources_json));
                 """
                 execute_batch(cursor, sql, data_to_upsert)
-                if cursor.rowcount <= 0: logger.info(f"  ➜ [状态执行] 操作完成，但没有行受到影响（可能因为不满足前置条件）。")
+                if cursor.rowcount <= 0: logger.debug(f"  ➜ [状态执行] 操作完成，但没有行受到影响（可能因为不满足前置条件）。")
     except Exception as e:
         logger.error(f"  ➜ [状态执行] 更新媒体状态为 'REQUESTED' 时发生错误: {e}", exc_info=True)
         raise
@@ -177,7 +177,7 @@ def set_media_status_wanted(
                     """
                     execute_batch(cursor, sql, data_to_upsert)
                 
-                if cursor.rowcount <= 0: logger.info(f"  ➜ [状态执行] 操作完成，但没有行受到影响（可能因为已入库，或不满足前置条件）。")
+                if cursor.rowcount <= 0: logger.debug(f"  ➜ [状态执行] 操作完成，但没有行受到影响（可能因为已入库，或不满足前置条件）。")
     except Exception as e:
         logger.error(f"  ➜ [状态执行] 更新媒体状态为 'WANTED' 时发生错误: {e}", exc_info=True)
         raise
@@ -210,7 +210,7 @@ def set_media_status_pending_release(
                       AND (EXCLUDED.subscription_sources_json = '[]'::jsonb OR NOT (media_metadata.subscription_sources_json @> EXCLUDED.subscription_sources_json));
                 """
                 execute_batch(cursor, sql, data_to_upsert)
-                if cursor.rowcount <= 0: logger.info(f"  ➜ [状态执行] 操作完成，但没有行受到影响（可能因为不满足前置条件）。")
+                if cursor.rowcount <= 0: logger.debug(f"  ➜ [状态执行] 操作完成，但没有行受到影响（可能因为不满足前置条件）。")
     except Exception as e:
         logger.error(f"  ➜ [状态执行] 更新媒体状态为 'PENDING_RELEASE' 时发生错误: {e}", exc_info=True)
         raise
@@ -266,7 +266,7 @@ def set_media_status_subscribed(
                         );
                 """
                 execute_batch(cursor, sql, data_to_upsert)
-                if cursor.rowcount <= 0: logger.info(f"  ➜ [状态执行] 操作完成，但没有行受到影响（可能因为已入库且非洗版，或状态已是 SUBSCRIBED）。")
+                if cursor.rowcount <= 0: logger.debug(f"  ➜ [状态执行] 操作完成，但没有行受到影响（可能因为已入库且非洗版，或状态已是 SUBSCRIBED）。")
     except Exception as e:
         logger.error(f"  ➜ [状态执行] 更新媒体状态为 'SUBSCRIBED' 时发生错误: {e}", exc_info=True)
         raise
@@ -297,7 +297,7 @@ def set_media_status_ignored(
                     WHERE (EXCLUDED.subscription_sources_json = '[]'::jsonb OR NOT (media_metadata.subscription_sources_json @> EXCLUDED.subscription_sources_json));
                 """
                 execute_batch(cursor, sql, data_to_upsert)
-                if cursor.rowcount <= 0: logger.info(f"  ➜ [状态执行] 操作完成，但没有行受到影响（可能因为不满足前置条件）。")
+                if cursor.rowcount <= 0: logger.debug(f"  ➜ [状态执行] 操作完成，但没有行受到影响（可能因为不满足前置条件）。")
     except Exception as e:
         logger.error(f"  ➜ [状态执行] 更新媒体状态为 'IGNORED' 时发生错误: {e}", exc_info=True)
         raise
@@ -316,7 +316,7 @@ def set_media_status_none(
     data_to_upsert = _prepare_media_data_for_upsert(tmdb_ids, item_type, None, media_info_list)
     if not data_to_upsert: return
 
-    logger.info(f"  ➜ [状态执行] 准备将 {len(data_to_upsert)} 个媒体 (类型: {item_type}) 的状态更新为 'NONE'...")
+    logger.debug(f"  ➜ [状态执行] 准备将 {len(data_to_upsert)} 个媒体 (类型: {item_type}) 的状态更新为 'NONE'...")
     
     try:
         with get_db_connection() as conn:
@@ -343,7 +343,7 @@ def set_media_status_none(
                             parent_series_tmdb_id = COALESCE(EXCLUDED.parent_series_tmdb_id, media_metadata.parent_series_tmdb_id)
                     """
                     execute_batch(cursor, sql, data_to_upsert)
-                    logger.info(f"  ➜ [状态执行] (UPSERT) 成功处理了 {len(data_to_upsert)} 行。")
+                    logger.debug(f"  ➜ [状态执行] (UPSERT) 成功处理了 {len(data_to_upsert)} 行。")
                     
                 else:
                     # 模式 B: UPDATE ONLY (用于取消订阅)
@@ -359,9 +359,9 @@ def set_media_status_none(
                     """
                     execute_batch(cursor, sql, data_to_upsert)
                     if cursor.rowcount > 0:
-                        logger.info(f"  ➜ [状态执行] (UPDATE) 成功，影响了 {cursor.rowcount} 行。")
+                        logger.debug(f"  ➜ [状态执行] (UPDATE) 成功，影响了 {cursor.rowcount} 行。")
                     else:
-                        logger.info(f"  ➜ [状态执行] 操作完成，但没有行受到影响（可能记录不存在）。")
+                        logger.debug(f"  ➜ [状态执行] 操作完成，但没有行受到影响（可能记录不存在）。")
                         
     except Exception as e:
         logger.error(f"  ➜ [状态执行] 更新媒体状态为 'NONE' 时发生错误: {e}", exc_info=True)
