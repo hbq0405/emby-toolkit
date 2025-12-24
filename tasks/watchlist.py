@@ -276,7 +276,7 @@ def task_scan_old_seasons_backfill(processor):
             request_db.set_media_status_wanted(
                 tmdb_ids=tmdb_ids,
                 item_type='Season',
-                source={"type": "gap_scan", "reason": "backfill_old_season"},
+                source={"type": "scan_old_seasons_backfill", "reason": "backfill_old_season"},
                 media_info_list=media_info_list
             )
 

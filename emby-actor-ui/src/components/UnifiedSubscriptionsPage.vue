@@ -344,7 +344,7 @@ const SOURCE_TYPE_MAP = {
   'manual_admin_op': '手动处理',
   'auto_ignored': '自动忽略',
   'gap_scan': '缺集的季',
-  'backfill_old_season': '补全旧季'
+  'scan_old_seasons_backfill': '补全旧季'
 };
 
 const sourceFilterOptions = computed(() => {
