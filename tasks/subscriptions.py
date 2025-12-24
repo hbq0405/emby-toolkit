@@ -155,8 +155,6 @@ def _subscribe_full_series_with_logic(tmdb_id: int, series_name: str, config: Di
             if not is_pending:
                 if use_gap_fill_resubscribe or check_series_completion(tmdb_id, tmdb_api_key, season_number=s_num, series_name=final_series_name):
                     mp_payload["best_version"] = 1
-                else:
-                    mp_payload["best_version"] = 0
 
             # ==============================================================
             # 逻辑 E: 提交订阅
