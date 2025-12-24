@@ -554,10 +554,10 @@ class WatchlistProcessor:
                 air_date = datetime.strptime(air_date_str, '%Y-%m-%d').date()
                 days_diff = (today - air_date).days
                 
-                # ★★★ 修改：将 and 改为 or ★★★
-                # 逻辑：上线时间在阈值内 OR 集数很少 (满足任一条件即待定)
+                # ★★★ 修改：将 or 改为 and ★★★
+                # 逻辑：上线时间在阈值内 OR 集数很少 (满足所有条件即待定)
                 # days_diff >= 0 确保是已上映的
-                if days_diff >= 0 and ((days_diff <= threshold_days) or (episode_count <= threshold_episodes)):
+                if days_diff >= 0 and ((days_diff <= threshold_days) and (episode_count <= threshold_episodes)):
                     return True
             
             return False
