@@ -752,16 +752,15 @@ def should_mark_as_pending(tmdb_id: int, season_number: int, api_key: str) -> tu
         if not season_details:
             return False, 0
 
+        episode_count = season_details.get('total_episodes', len(season_details.get('episodes', [])))
+
         air_date_str = season_details.get('air_date')
-        episode_count = len(season_details.get('episodes', [])) # 或者用 episodes 列表长度更准
-        # 也可以用 season_details.get('episodes') 里的计数，有些接口返回结构不同，注意兼容
-        
         if air_date_str:
             try:
                 air_date = datetime.strptime(air_date_str, '%Y-%m-%d').date()
                 today = datetime.now(timezone.utc).date()
                 days_diff = (today - air_date).days
-                
+
                 # 逻辑：上线时间在阈值内 AND 集数很少
                 if (0 <= days_diff <= threshold_days) and (episode_count <= threshold_episodes):
                     return True, fake_total
