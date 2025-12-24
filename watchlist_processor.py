@@ -1099,6 +1099,7 @@ class WatchlistProcessor:
         # ★★★ 完结自动洗版逻辑 (V4 - 纯状态流转驱动) ★★★
         # ======================================================================
         # 核心逻辑：只有从“活跃追剧状态”转变为“完结状态”时，才视为“新鲜完结”
+        logger.debug(f"  🔍 [状态流转] 剧名: {item_name}, 旧状态: {old_status}, 新状态: {final_status}")
         if final_status == STATUS_COMPLETED and old_status in [STATUS_WATCHING, STATUS_PAUSED, STATUS_PENDING] and not is_force_ended:
             
             # 检查功能开关

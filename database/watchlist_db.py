@@ -912,7 +912,7 @@ def get_series_by_dynamic_condition(condition_sql: str = None, library_ids: Opti
         SELECT 
             tmdb_id,
             title AS item_name,
-            watching_status AS status,
+            watching_status,
             emby_item_ids_json,
             force_ended,
             paused_until,
