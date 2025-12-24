@@ -230,10 +230,11 @@ def handle_get_views():
             all_native_views = user_visible_native_libs
             raw_selection = config_manager.APP_CONFIG.get('proxy_native_view_selection', '')
             selected_native_view_ids = [x.strip() for x in raw_selection.split(',') if x.strip()] if isinstance(raw_selection, str) else raw_selection
-            if not selected_native_view_ids:
-                native_views_items = all_native_views
-            else:
+            
+            if selected_native_view_ids:
                 native_views_items = [view for view in all_native_views if view.get("Id") in selected_native_view_ids]
+            else:
+                native_views_items = []
         
         final_items = []
         native_order = config_manager.APP_CONFIG.get('proxy_native_view_order', 'before')
