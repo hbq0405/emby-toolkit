@@ -732,6 +732,7 @@ def parse_series_title_and_season(title: str, api_key: str = None) -> Tuple[Opti
 def should_mark_as_pending(tmdb_id: int, season_number: int, api_key: str) -> tuple[bool, int]:
     """
     检查指定季是否满足“自动待定”条件。
+    修复版：改用 get_tv_details 获取整剧信息中的 episode_count 字段，而非计算单季详情的列表长度。
     返回: (是否待定, 虚标总集数)
     """
     try:
@@ -746,23 +747,39 @@ def should_mark_as_pending(tmdb_id: int, season_number: int, api_key: str) -> tu
         threshold_episodes = int(auto_pending_cfg.get('episodes', 1))
         fake_total = int(auto_pending_cfg.get('default_total_episodes', 99))
         
-        # 2. 获取 TMDb 季详情
-        # 注意：这里需要实时查询 TMDb，因为本地数据可能不全
-        season_details = get_tv_season_details(tmdb_id, season_number, api_key)
-        if not season_details:
+        # 2. 获取 TMDb 整剧详情 (比获取单季详情更稳，因为包含明确的 episode_count 字段)
+        show_details = get_tv_details(tmdb_id, api_key)
+        if not show_details:
             return False, 0
 
-        episode_count = season_details.get('total_episodes', len(season_details.get('episodes', [])))
+        # 3. 在整剧详情的 seasons 列表中找到目标季
+        target_season = None
+        seasons = show_details.get('seasons', [])
+        for season in seasons:
+            if season.get('season_number') == season_number:
+                target_season = season
+                break
+        
+        if not target_season:
+            # 如果没找到该季信息，无法判断，默认不待定
+            return False, 0
 
-        air_date_str = season_details.get('air_date')
+        # 4. 获取核心数据
+        air_date_str = target_season.get('air_date')
+        # 直接读取官方提供的该季总集数，而不是计算列表长度
+        episode_count = target_season.get('episode_count', 0)
+        
         if air_date_str:
             try:
                 air_date = datetime.strptime(air_date_str, '%Y-%m-%d').date()
+                # 使用 UTC 时间避免时区导致的日期差异
                 today = datetime.now(timezone.utc).date()
                 days_diff = (today - air_date).days
-
-                # 逻辑：上线时间在阈值内 AND 集数很少
+                
+                # 逻辑：上线时间在阈值内 (例如30天内) AND 集数很少 (例如只有1集)
+                # 这种情况通常意味着是刚出的剧，或者数据还没更新全，或者是试播集
                 if (0 <= days_diff <= threshold_days) and (episode_count <= threshold_episodes):
+                    logger.info(f"  ➜ 触发自动待定: 第{season_number}季 上线{days_diff}天, TMDb记录集数{episode_count} (阈值: {threshold_episodes})")
                     return True, fake_total
             except ValueError:
                 pass
@@ -770,7 +787,7 @@ def should_mark_as_pending(tmdb_id: int, season_number: int, api_key: str) -> tu
         return False, 0
 
     except Exception as e:
-        # logger.warning(f"检查待定条件失败: {e}") # 避免循环引用 logger，可以忽略或 print
+        logger.warning(f"检查待定条件失败: {e}")
         return False, 0
     
 def calculate_ancestor_ids(item_id: str, id_to_parent_map: dict, library_guid: str) -> List[str]:
