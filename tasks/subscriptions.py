@@ -161,25 +161,26 @@ def _subscribe_full_series_with_logic(tmdb_id: int, series_name: str, config: Di
             # ==============================================================
             # 逻辑 E: 提交订阅
             # ==============================================================
-            if moviepilot.subscribe_with_custom_payload(mp_payload, config):
-                any_success = True
-                
-                # 订阅成功后，更新季的状态为 SUBSCRIBED
-                target_s_id = str(s_id) if s_id else f"{tmdb_id}_S{s_num}"
-                request_db.set_media_status_subscribed(
-                    tmdb_ids=[target_s_id],
-                    item_type='Season',
-                    source=source,
-                    media_info_list=[{
+                if moviepilot.subscribe_with_custom_payload(mp_payload, config):
+                    any_success = True
+                    
+                    # 订阅成功后，更新季的状态为 SUBSCRIBED，并写入季发行日期
+                    target_s_id = str(s_id) if s_id else f"{tmdb_id}_S{s_num}"
+                    media_info = {
                         'tmdb_id': target_s_id,
                         'parent_series_tmdb_id': str(tmdb_id),
                         'season_number': s_num,
                         'title': season.get('name'),
-                        'poster_path': final_poster # ★★★ 写入海报 ★★★
-                    }],
+                        'poster_path': final_poster,
+                        'release_date': air_date_str  # 新增季发行日期字段
+                    }
+                    request_db.set_media_status_subscribed(
+                        tmdb_ids=[target_s_id],
+                        item_type='Season',
+                        source=source,
+                        media_info_list=[media_info]
+                    )
                     
-                )
-                
         return any_success
 
     except Exception as e:
@@ -786,4 +787,3 @@ def task_auto_subscribe(processor):
     except Exception as e:
         logger.error(f"  ➜ {task_name} 任务失败: {e}", exc_info=True)
         task_manager.update_status_from_thread(-1, f"错误: {e}")
-
