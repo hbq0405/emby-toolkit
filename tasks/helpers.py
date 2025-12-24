@@ -762,8 +762,8 @@ def should_mark_as_pending(tmdb_id: int, season_number: int, api_key: str) -> tu
                 today = datetime.now(timezone.utc).date()
                 days_diff = (today - air_date).days
                 
-                # 逻辑：上线时间在阈值内 OR 集数很少
-                if (0 <= days_diff <= threshold_days) or (episode_count <= threshold_episodes):
+                # 逻辑：上线时间在阈值内 AND 集数很少
+                if (0 <= days_diff <= threshold_days) and (episode_count <= threshold_episodes):
                     return True, fake_total
             except ValueError:
                 pass
