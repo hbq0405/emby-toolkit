@@ -462,9 +462,6 @@ def handle_get_mimicked_library_items(user_id, mimicked_id, params):
                         eid = entry['id']
                         if eid in emby_map:
                             final_items.append(emby_map[eid])
-                        else:
-                            # 兜底：如果详情获取失败，尝试构造一个基础对象
-                            final_items.append({"Id": eid, "Name": "加载中...", "Type": "Movie"})
                     else:
                         # 占位符逻辑
                         tid = entry['tmdb_id']
