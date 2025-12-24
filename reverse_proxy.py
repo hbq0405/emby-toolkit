@@ -385,17 +385,17 @@ def handle_get_mimicked_library_items(user_id, mimicked_id, params):
 
         # 4. 分流处理逻辑
         
-        # --- 场景 A: 榜单类 (需要处理占位符) ---
+        # --- 场景 A: 榜单类 (需要处理占位符 + 严格权限过滤) ---
         if collection_type == 'list':
             show_placeholders = config_manager.APP_CONFIG.get(constants.CONFIG_OPTION_PROXY_SHOW_MISSING_PLACEHOLDERS, False)
             raw_list_json = collection_info.get('generated_media_info_json')
             raw_list = json.loads(raw_list_json) if isinstance(raw_list_json, str) else (raw_list_json or [])
             
             if raw_list:
-                # 1. 获取该榜单中所有已入库项 (不分页，取全量用于映射)
+                # 1. 获取该榜单中所有涉及的 TMDb ID
                 tmdb_ids_in_list = [str(i.get('tmdb_id')) for i in raw_list if i.get('tmdb_id')]
                 
-                # 注意：这里 limit 给大一点，确保覆盖榜单长度
+                # 2. 【用户视图】获取当前用户有权看到的项目
                 items_in_db, _ = queries_db.query_virtual_library_items(
                     rules=rules, logic=logic, user_id=user_id,
                     limit=2000, offset=0, 
@@ -404,53 +404,68 @@ def handle_get_mimicked_library_items(user_id, mimicked_id, params):
                     tmdb_ids=tmdb_ids_in_list
                 )
                 
-                # 2. 建立 TMDb ID -> Emby ID 的映射
-                # 确保 key 是字符串，value 是 Emby 的真实 ID
+                # 3. 【全局视图】获取Emby中实际存在的项目（忽略用户权限，传入 user_id=None）
+                #    这一步是为了区分 "无权查看" 和 "真的缺失"
+                global_existing_items, _ = queries_db.query_virtual_library_items(
+                    rules=rules, logic=logic, user_id=None, # 关键点：None 表示查询全局
+                    limit=2000, offset=0,
+                    item_types=item_types, target_library_ids=target_library_ids,
+                    tmdb_ids=tmdb_ids_in_list
+                )
+
+                # 4. 建立映射表
+                # 用户可见的 TMDb ID -> Emby ID
                 local_tmdb_map = {str(i['tmdb_id']): i['Id'] for i in items_in_db if i.get('tmdb_id')}
+                # 用户可见的 Emby ID 集合 (用于处理只有 emby_id 的情况)
+                local_emby_id_set = {str(i['Id']) for i in items_in_db}
                 
-                # 3. 构造完整视图列表
+                # 全局存在的 TMDb ID 集合
+                global_tmdb_set = {str(i['tmdb_id']) for i in global_existing_items if i.get('tmdb_id')}
+                # 全局存在的 Emby ID 集合
+                global_emby_id_set = {str(i['Id']) for i in global_existing_items}
+                
+                # 5. 构造完整视图列表
                 full_view_list = []
                 for raw_item in raw_list:
-                    # 获取 ID 并进行标准化处理
                     tid = str(raw_item.get('tmdb_id')) if raw_item.get('tmdb_id') else "None"
-                    eid = raw_item.get('emby_id')
+                    eid = str(raw_item.get('emby_id')) if raw_item.get('emby_id') else "None"
 
-                    # --- 【核心修改：过滤未识别项】 ---
-                    # 如果没有有效的 tmdb_id (None/"None") 且没有 emby_id，说明是未识别媒体，直接跳过
-                    if (not tid or tid.lower() == "none") and not eid:
-                        logger.trace(f"  ➜ 过滤未识别项: {raw_item.get('title')}")
+                    # 过滤无效项
+                    if (not tid or tid.lower() == "none") and (not eid or eid.lower() == "none"):
                         continue
-                    # --------------------------------
 
-                    # 达到合集定义的数量限制则停止
                     if defined_limit and len(full_view_list) >= defined_limit:
                         break
                     
-                    # 场景 A: 已入库 (优先检查数据库实时映射 local_tmdb_map，确保权限和存在性)
+                    # --- 逻辑分支 ---
+
+                    # 分支 1: 用户有权查看 (TMDb ID 匹配)
                     if tid != "None" and tid in local_tmdb_map:
                         full_view_list.append({"is_missing": False, "id": local_tmdb_map[tid], "tmdb_id": tid})
                     
-                    # 场景 B: 只有 emby_id 但没有 tmdb_id (某些特殊的手动识别项)
-                    elif eid and str(eid) != "None":
-                         full_view_list.append({"is_missing": False, "id": str(eid), "tmdb_id": tid})
+                    # 分支 2: 用户有权查看 (Emby ID 匹配 - 针对手动识别项)
+                    elif eid != "None" and eid in local_emby_id_set:
+                         full_view_list.append({"is_missing": False, "id": eid, "tmdb_id": tid})
 
-                    # 场景 C: 已识别但未入库 (有有效的 tmdb_id)
+                    # 分支 3: 项目存在于全局库，但用户无权查看 -> 【关键修复：跳过，不显示占位符】
+                    elif (tid != "None" and tid in global_tmdb_set) or (eid != "None" and eid in global_emby_id_set):
+                        continue 
+
+                    # 分支 4: 项目确实缺失 -> 显示占位符
                     elif tid != "None":
                         if show_placeholders:
                             full_view_list.append({"is_missing": True, "tmdb_id": tid})
 
-                # 4. 分页
+                # 6. 分页
                 paged_part = full_view_list[offset : offset + emby_limit]
                 reported_total_count = len(full_view_list)
 
-                # 5. 批量获取详情
+                # 7. 批量获取详情 (后续代码保持不变...)
                 real_eids = [x['id'] for x in paged_part if not x['is_missing']]
                 missing_tids = [x['tmdb_id'] for x in paged_part if x['is_missing']]
                 
-                # 获取缺失项元数据
                 status_map = queries_db.get_missing_items_metadata(missing_tids)
                 
-                # 获取真实项详情 (必须包含 ImageTags)
                 base_url, api_key = _get_real_emby_url_and_key()
                 full_fields = "PrimaryImageAspectRatio,ImageTags,HasPrimaryImage,ProviderIds,UserData,Name,ProductionYear,CommunityRating,Type"
                 emby_details = _fetch_items_in_chunks(base_url, api_key, user_id, real_eids, full_fields)
@@ -463,15 +478,12 @@ def handle_get_mimicked_library_items(user_id, mimicked_id, params):
                         if eid in emby_map:
                             final_items.append(emby_map[eid])
                     else:
-                        # 占位符逻辑
+                        # 占位符构造逻辑 (保持不变)
                         tid = entry['tmdb_id']
                         meta = status_map.get(tid, {})
                         status = meta.get('subscription_status', 'WANTED')
-                        
-                        # 动态获取类型，默认为 Movie
                         db_item_type = meta.get('item_type', 'Movie')
                         
-                        # 构造占位对象
                         placeholder = {
                             "Name": meta.get('title', '未知内容'),
                             "ServerId": extensions.EMBY_SERVER_ID,
@@ -484,30 +496,19 @@ def handle_get_mimicked_library_items(user_id, mimicked_id, params):
                             "ProviderIds": {"Tmdb": tid},
                             "LocationType": "Virtual"
                         }
-
-                        # 2. 核心修复：处理 PremiereDate (电视剧年份显示的关键)
                         r_date = meta.get('release_date')
                         r_year = meta.get('release_year')
-
                         if r_date:
                             try:
-                                # 如果是 datetime/date 对象
                                 if hasattr(r_date, 'strftime'):
                                     placeholder["PremiereDate"] = r_date.strftime('%Y-%m-%dT00:00:00.0000000Z')
                                 else:
-                                    # 如果已经是字符串，确保它是 ISO 格式
                                     placeholder["PremiereDate"] = str(r_date)
-                            except:
-                                pass
-                        
-                        # 3. 兜底逻辑：如果电视剧没有完整日期，只有年份，构造一个 1 月 1 日的日期
-                        # 这样 Emby 就能从中提取出年份显示在海报下方
+                            except: pass
                         if "PremiereDate" not in placeholder and r_year:
                             placeholder["PremiereDate"] = f"{r_year}-01-01T00:00:00.0000000Z"
-
-                        # 4. 针对电视剧的额外兼容性字段
                         if db_item_type == 'Series':
-                            placeholder["Status"] = "Released" # 标记为已发布，有助于某些客户端显示
+                            placeholder["Status"] = "Released"
 
                         final_items.append(placeholder)
                 
