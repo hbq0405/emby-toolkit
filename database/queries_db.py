@@ -289,14 +289,45 @@ def query_virtual_library_items(
                 params.append(list(value) if isinstance(value, list) else [value])
 
         # --- 5. 数值比较 (runtime, release_year, rating) ---
-        elif field in ['runtime', 'release_year', 'rating']:
-            col_map = {'runtime': 'm.runtime_minutes', 'release_year': 'm.release_year', 'rating': 'm.rating'}
+        elif field == 'runtime':
+            try:
+                val = float(value)
+                # SQL 逻辑：
+                # 1. 如果是 Series：子查询计算该剧集下所有 Episode 的 runtime_minutes 平均值
+                # 2. 如果是 Movie：直接使用自身的 runtime_minutes
+                # 3. 使用 COALESCE(..., 0) 防止 NULL 值导致筛选失效
+                runtime_logic = """
+                (CASE
+                    WHEN m.item_type = 'Series' THEN (
+                        SELECT COALESCE(AVG(ep.runtime_minutes), 0)
+                        FROM media_metadata ep
+                        WHERE ep.parent_series_tmdb_id = m.tmdb_id 
+                          AND ep.item_type = 'Episode'
+                          AND ep.runtime_minutes > 0
+                    )
+                    ELSE COALESCE(m.runtime_minutes, 0)
+                END)
+                """
+                
+                if op == 'gte': clause = f"{runtime_logic} >= %s"
+                elif op == 'lte': clause = f"{runtime_logic} <= %s"
+                elif op == 'eq': clause = f"{runtime_logic} = %s"
+                
+                if clause: params.append(val)
+            except (ValueError, TypeError): continue
+
+        elif field in ['release_year', 'rating']:
+            col_map = {'release_year': 'm.release_year', 'rating': 'm.rating'}
             column = col_map[field]
             try:
                 val = float(value)
-                if op == 'gte': clause = f"{column} >= %s"
-                elif op == 'lte': clause = f"{column} <= %s"
-                elif op == 'eq': clause = f"{column} = %s"
+                # 同样给年份和评分加上 NULL 兜底，防止数据缺失时被漏掉
+                safe_col = f"COALESCE({column}, 0)"
+                
+                if op == 'gte': clause = f"{safe_col} >= %s"
+                elif op == 'lte': clause = f"{safe_col} <= %s"
+                elif op == 'eq': clause = f"{safe_col} = %s"
+                
                 if clause: params.append(val)
             except (ValueError, TypeError): continue
 
