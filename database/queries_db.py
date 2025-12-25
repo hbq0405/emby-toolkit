@@ -172,17 +172,17 @@ def query_virtual_library_items(
         (u.policy_json->'MaxParentalRating' IS NULL)
         OR
         (
-            m.unified_rating IS NOT NULL 
-            AND m.unified_rating ~ '^[0-9]+$' 
-            AND (m.unified_rating)::int <= (u.policy_json->>'MaxParentalRating')::int
+            m.official_rating IS NOT NULL 
+            AND m.official_rating ~ '^[0-9]+$' 
+            AND (m.official_rating)::int <= (u.policy_json->>'MaxParentalRating')::int
         )
     )
     AND NOT (
         (u.policy_json->'BlockUnratedItems' = 'true'::jsonb) 
         AND (
-            m.unified_rating IS NULL 
-            OR m.unified_rating = '' 
-            OR (CASE WHEN m.unified_rating ~ '^[0-9]+$' THEN (m.unified_rating)::int ELSE 0 END) = 0
+            m.official_rating IS NULL 
+            OR m.official_rating = '' 
+            OR (CASE WHEN m.official_rating ~ '^[0-9]+$' THEN (m.official_rating)::int ELSE 0 END) = 0
         )
     )
     """
