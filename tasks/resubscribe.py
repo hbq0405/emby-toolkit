@@ -724,7 +724,7 @@ def _item_needs_resubscribe(asset_details: dict, rule: dict, media_metadata: Opt
         final_reason = "; ".join(sorted(list(set(reasons))))
         return True, final_reason
     else:
-        logger.debug(f"  ➜ 《{item_name}》质量达标。")
+        logger.trace(f"  ➜ 《{item_name}》质量达标。")
         return False, ""
 
 def _check_season_consistency(episodes: List[dict], rule: dict) -> tuple[bool, str]:
