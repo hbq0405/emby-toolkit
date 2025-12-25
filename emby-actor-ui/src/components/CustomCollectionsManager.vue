@@ -1729,7 +1729,6 @@ watch(() => currentCollection.value.type, (newType) => {
   
   const sharedProps = {
     item_type: ['Movie'],
-    default_sort_by: 'none',
     default_sort_order: 'Ascending',
     dynamic_filter_enabled: false,
     dynamic_logic: 'AND',
@@ -1744,7 +1743,7 @@ watch(() => currentCollection.value.type, (newType) => {
       logic: 'AND',
       rules: [{ field: null, operator: null, value: '' }],
       target_library_ids: [],
-      default_sort_by: 'PremiereDate', 
+      default_sort_by: 'none', 
     };
   } else if (newType === 'ai_recommendation') {
     currentCollection.value.definition = {
@@ -1752,7 +1751,8 @@ watch(() => currentCollection.value.type, (newType) => {
         limit: 50,
         item_type: ['Movie', 'Series'],
         is_global_mode: false,
-        ai_discovery_ratio: 0.2 
+        default_sort_by: 'PremiereDate', 
+        default_sort_order: 'Descending', 
     };
   } else if (newType === 'ai_recommendation_global') {
     currentCollection.value.definition = {
@@ -1761,7 +1761,9 @@ watch(() => currentCollection.value.type, (newType) => {
         limit: 20,
         item_type: ['Movie', 'Series'],
         is_global_mode: true,
-        ai_discovery_ratio: 0.2 
+        ai_discovery_ratio: 0.2,
+        default_sort_by: 'PremiereDate', 
+        default_sort_order: 'Descending', 
     };
   } else if (newType === 'list') {
     currentCollection.value.definition = { 
