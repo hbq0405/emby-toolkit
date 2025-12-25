@@ -44,23 +44,116 @@
                   style="font-size: 0.85em; margin-left: 8px; color: var(--n-primary-color); text-decoration: underline;"
                 >逗猫佬</a>。</li>
               <li>在创建或生成“筛选规则”合集前，请先同步演员映射然后点击 <n-icon :component="SyncIcon" /> 按钮快速同步一次最新的媒体库元数据。修改媒体标签等不会变更Emby最后更新时间戳的需要到任务中心运行同步媒体数据并采用深度模式。</li>
-              <li>您可以通过拖动每行最左侧的 <n-icon :component="DragHandleIcon" /> 图标来对合集进行排序，Emby虚拟库实时联动更新排序。</li>
+              <li>您可以通过拖动卡片来对合集进行排序，Emby虚拟库实时联动更新排序。</li>
             </ul>
           </n-alert>
         </template>
       </n-page-header>
 
-      <!-- 2. 数据表格 -->
-      <n-data-table
-        ref="tableRef"
-        :columns="columns"
-        :data="collections"
-        :loading="isLoading || isSavingOrder"
-        :bordered="false"
-        :single-line="false"
-        style="margin-top: 24px;"
-        :row-key="row => row.id"
-      />
+      <!-- 2. 数据展示区 (Grid 布局) -->
+      <div v-if="isLoading" class="center-container">
+        <n-spin size="large" />
+      </div>
+      <div v-else class="custom-grid" ref="gridRef">
+        <div 
+          v-for="item in collections" 
+          :key="item.id" 
+          class="grid-item"
+          :data-id="item.id"
+        >
+          <div 
+            class="collection-card dashboard-card" 
+            :class="{ 'is-paused': item.status === 'paused' }"
+            @click="handleEditClick(item)"
+          >
+            <!-- 背景层：图片或渐变 -->
+            <div class="card-bg">
+              <n-image 
+                v-if="getCardImageUrl(item)" 
+                :src="getCardImageUrl(item)" 
+                class="bg-image" 
+                object-fit="cover" 
+                preview-disabled
+                lazy
+              >
+                <!-- 图片加载失败时显示渐变色兜底 -->
+                <template #placeholder>
+                  <div class="bg-placeholder" :style="{ background: stringToGradient(item.name) }"></div>
+                </template>
+              </n-image>
+              
+              <!-- 如果完全没有图片 URL，直接显示渐变色 -->
+              <div v-else class="bg-placeholder" :style="{ background: stringToGradient(item.name) }">
+                <span class="placeholder-text">{{ item.name.substring(0, 1) }}</span>
+              </div>
+              <!-- ★★★ 修改结束 ★★★ -->
+
+              <div class="bg-overlay"></div>
+            </div>
+
+            <!-- 右上角：内容类型图标 -->
+            <div class="card-type-icons">
+              <n-icon v-if="hasContentType(item, 'Movie')" :component="FilmIcon" title="包含电影" />
+              <n-icon v-if="hasContentType(item, 'Series')" :component="TvIcon" title="包含剧集" />
+            </div>
+
+            <!-- 左下角：主要信息 -->
+            <div class="card-info">
+              <div v-if="!getCardImageUrl(item)" class="card-title" :title="item.name">{{ item.name }}</div>
+              <div class="card-meta">
+                <n-tag size="small" :bordered="false" :type="getTypeTagColor(item.type)" class="mini-tag">
+                  {{ getTypeLabel(item.type) }}
+                </n-tag>
+                <span class="sync-time">
+                  <n-icon :component="TimeIcon" style="vertical-align: -1px; margin-right: 2px;" />
+                  {{ formatTime(item.last_synced_at) }}
+                </span>
+              </div>
+            </div>
+            <!-- 右下角：操作按钮 (悬浮显示) -->
+            <div class="card-actions" @click.stop>
+              <!-- 详情 (仅榜单/推荐类显示) -->
+              <n-tooltip v-if="['list', 'ai_recommendation_global'].includes(item.type)">
+                <template #trigger>
+                  <n-button circle size="small" secondary type="info" @click="openDetailsModal(item)">
+                    <template #icon><n-icon :component="EyeIcon" /></template>
+                  </n-button>
+                </template>
+                查看详情/缺失
+              </n-tooltip>
+
+              <!-- 生成 -->
+              <n-tooltip>
+                <template #trigger>
+                  <n-button circle size="small" secondary type="primary" :loading="syncLoading[item.id]" @click="handleSync(item)">
+                    <template #icon><n-icon :component="GenerateIcon" /></template>
+                  </n-button>
+                </template>
+                立即生成/同步
+              </n-tooltip>
+
+              <!-- 删除 -->
+              <n-popconfirm @positive-click="handleDelete(item)">
+                <template #trigger>
+                  <n-button circle size="small" secondary type="error">
+                    <template #icon><n-icon :component="DeleteIcon" /></template>
+                  </n-button>
+                </template>
+                确定删除合集 "{{ item.name }}" 吗？
+              </n-popconfirm>
+            </div>
+
+            <!-- 暂停状态遮罩文字 -->
+            <div v-if="item.status === 'paused'" class="paused-overlay">
+              PAUSED
+            </div>
+          </div>
+        </div>
+      </div>
+      
+      <!-- 空状态 -->
+      <n-empty v-if="!isLoading && collections.length === 0" description="还没有创建任何合集" style="margin-top: 100px;" />
+
     </div>
 
     <!-- 3. 创建/编辑模态框 -->
@@ -1103,11 +1196,14 @@
 <script setup>
 import { ref, onMounted, h, computed, watch, nextTick } from 'vue';
 import axios from 'axios';
+import { useConfig } from '../composables/useConfig.js';
 import Sortable from 'sortablejs';
+import { formatDistanceToNow } from 'date-fns';
+import { zhCN } from 'date-fns/locale';
 import { 
-  NLayout, NPageHeader, NButton, NIcon, NText, NDataTable, NTag, NSpace,
+  NLayout, NPageHeader, NButton, NIcon, NText, NTag, NSpace,
   useMessage, NPopconfirm, NModal, NForm, NFormItem, NInput, NSelect,
-  NAlert, NRadioGroup, NRadio, NTooltip, NSpin, NGrid, NGi, NCard, NEmpty, useDialog, NTabs, NTabPane, NCheckboxGroup, NCheckbox, NInputNumber, NAutoComplete, NDynamicTags, NInputGroup, NRadioButton, NSlider, NAvatar
+  NAlert, NRadioGroup, NRadio, NTooltip, NSpin, NGrid, NGi, NCard, NEmpty, useDialog, NTabs, NTabPane, NCheckboxGroup, NCheckbox, NInputNumber, NAutoComplete, NDynamicTags, NInputGroup, NRadioButton, NSlider, NAvatar, NImage
 } from 'naive-ui';
 import { 
   AddOutline as AddIcon, 
@@ -1116,7 +1212,6 @@ import {
   SyncOutline as SyncIcon,
   EyeOutline as EyeIcon,
   PlayOutline as GenerateIcon,
-  ReorderFourOutline as DragHandleIcon,
   HelpCircleOutline as HelpIcon,
   ImageOutline as CoverIcon,
   BuildOutline as FixIcon,
@@ -1127,7 +1222,10 @@ import {
   PersonOutline as PersonIcon,
   GlobeOutline as GlobeIcon,
   LinkOutline as LinkIcon,
-  CheckmarkCircle as CheckmarkCircleIcon
+  CheckmarkCircle as CheckmarkCircleIcon,
+  FilmOutline as FilmIcon,
+  TvOutline as TvIcon,
+  TimeOutline as TimeIcon
 } from '@vicons/ionicons5';
 
 // ===================================================================
@@ -1140,7 +1238,7 @@ const showModal = ref(false);
 const isEditing = ref(false);
 const isSaving = ref(false);
 const formRef = ref(null);
-const tableRef = ref(null);
+const gridRef = ref(null); // Grid 容器引用
 const syncLoading = ref({});
 const isSyncingMetadata = ref(false);
 const countryOptions = ref([]);
@@ -1153,7 +1251,6 @@ const keywordOptions = ref([]);
 const showDetailsModal = ref(false);
 const isLoadingDetails = ref(false);
 const selectedCollectionDetails = ref(null);
-const subscribing = ref({});
 const actorOptions = ref([]); 
 const isSearchingActors = ref(false); 
 const isSavingOrder = ref(false);
@@ -1164,7 +1261,7 @@ const embyUserOptions = ref([]);
 const isLoadingEmbyUsers = ref(false);
 const dialog = useDialog();
 const newTmdbId = ref('');
-const newSeasonNumber = ref(null); // ★★★ 新增：为修正匹配弹窗的“季号”输入框创建 ref
+const newSeasonNumber = ref(null);
 let sortableInstance = null;
 
 const showDiscoverHelper = ref(false);
@@ -1188,26 +1285,73 @@ const showKeywordModal = ref(false);
 const keywordMappingList = ref([]);
 const isSavingKeywords = ref(false);
 const allKeywordMappings = ref({});
+const { configModel } = useConfig();
+
+// ===================================================================
+// ▼▼▼ 辅助函数 ▼▼▼
+// ===================================================================
+
+// 判断内容类型
+const hasContentType = (item, type) => {
+  const types = item.definition?.item_type || ['Movie'];
+  return Array.isArray(types) ? types.includes(type) : types === type;
+};
+
+// 获取类型标签文本
+const getTypeLabel = (type) => {
+  const map = {
+    'list': '榜单',
+    'filter': '筛选',
+    'ai_recommendation': '个人推荐',
+    'ai_recommendation_global': '全局推荐'
+  };
+  return map[type] || '未知';
+};
+
+// 获取类型标签颜色
+const getTypeTagColor = (type) => {
+  const map = {
+    'list': 'warning',
+    'filter': 'info',
+    'ai_recommendation': 'success',
+    'ai_recommendation_global': 'primary'
+  };
+  return map[type] || 'default';
+};
+
+// 格式化时间
+const formatTime = (timeStr) => {
+  if (!timeStr) return '从未同步';
+  try {
+    return formatDistanceToNow(new Date(timeStr), { addSuffix: true, locale: zhCN });
+  } catch (e) {
+    return timeStr;
+  }
+};
+
+// 根据字符串生成随机渐变色
+const stringToGradient = (str) => {
+  let hash = 0;
+  for (let i = 0; i < str.length; i++) {
+    hash = str.charCodeAt(i) + ((hash << 5) - hash);
+  }
+  const c1 = Math.abs(hash % 360);
+  const c2 = (c1 + 40) % 360;
+  return `linear-gradient(135deg, hsl(${c1}, 60%, 40%), hsl(${c2}, 60%, 30%))`;
+};
 
 const openTmdbSearch = (mediaOrTitle) => {
   let query = '';
-  
   if (typeof mediaOrTitle === 'string') {
-    // 如果传的是字符串 (旧写法)，直接用
     query = mediaOrTitle;
   } else if (mediaOrTitle && typeof mediaOrTitle === 'object') {
-    // 如果传的是对象 (新写法)，优先用 original_title
     query = mediaOrTitle.original_title || mediaOrTitle.title;
   }
-
   if (!query) {
     message.warning('没有可搜索的标题');
     return;
   }
-  
-  // 移除可能干扰搜索的季号信息 (例如 "怪奇物语 第五季" -> "怪奇物语")
   const cleanTitle = query.replace(/\s*(第\s*\d+\s*季|Season\s*\d+).*/i, '').trim();
-  
   window.open(`https://www.themoviedb.org/search?query=${encodeURIComponent(cleanTitle)}`, '_blank');
 };
 
@@ -1221,18 +1365,15 @@ const getInitialDiscoverParams = () => ({
 const discoverParams = ref(getInitialDiscoverParams());
 
 // ===================================================================
-// ▼▼▼ 所有函数和计算属性 ▼▼▼
+// ▼▼▼ 核心逻辑函数 ▼▼▼
 // ===================================================================
+
 const handleFixMatchClick = (media) => {
-  // ★★★ 每次打开弹窗时，重置所有输入框的值
   newTmdbId.value = '';
   newSeasonNumber.value = null;
-
   const isSeries = authoritativeCollectionType.value === 'Series';
-
   dialog.create({
     title: `修正《${media.title}》的匹配`,
-    // ★★★ 使用 NForm 和 NFormItem 优化弹窗布局
     content: () => h(NForm, { labelPlacement: 'left', labelWidth: 'auto' }, () => [
       h(NFormItem, { label: '当前错误ID' }, () => h(NText, { code: true }, () => media.tmdb_id)),
       h(NFormItem, { label: '正确TMDb ID', required: true }, () => 
@@ -1243,7 +1384,6 @@ const handleFixMatchClick = (media) => {
           autofocus: true
         })
       ),
-      // ★★★ 核心增强：如果是剧集，则显示季号输入框
       isSeries && h(NFormItem, { label: '季号 (可选)' }, () => 
         h(NInputNumber, {
           placeholder: '输入季号，如 2',
@@ -1262,39 +1402,49 @@ const handleFixMatchClick = (media) => {
         message.error('请输入一个有效的纯数字 TMDb ID。');
         return false;
       }
-      
-      // ★★★ 核心修改：构造 Payload ★★★
-      const payload = {
-        new_tmdb_id: newTmdbId.value,
-      };
-
-      // 检查当前的 tmdb_id 是否有效
-      // 如果是 null, undefined, 空字符串, 或者字符串 "None"，则视为无效
+      const payload = { new_tmdb_id: newTmdbId.value };
       const currentId = media.tmdb_id;
       const isValidId = currentId && String(currentId).toLowerCase() !== 'none';
-
       if (isValidId) {
-        // 情况 A: 修正已识别但错误的匹配 -> 传 old_tmdb_id
         payload.old_tmdb_id = currentId;
       } else {
-        // 情况 B: 修正未识别的项目 -> 传 old_title
-        // 优先使用 original_title (源标题)，如果没有则使用 title
         payload.old_title = media.original_title || media.title;
       }
-
       if (isSeries && newSeasonNumber.value !== null && newSeasonNumber.value !== '') {
         payload.season_number = newSeasonNumber.value;
       }
-
       await submitFixMatch(payload);
     }
   });
 };
 
+// 3. 新增：智能获取封面 URL 函数 (替换原有的 getTmdbImageUrl 调用逻辑)
+const getCardImageUrl = (item) => {
+  // 优先级 1: 如果已同步到 Emby，直接使用 Emby 的 Primary 封面 (这就是生成的拼图封面)
+  if (item.emby_collection_id && configModel.value?.emby_server_url && configModel.value?.emby_api_key) {
+    const baseUrl = configModel.value.emby_server_url.replace(/\/$/, '');
+    const apiKey = configModel.value.emby_api_key;
+    // 添加 maxHeight 限制大小，添加 tag 防止缓存旧图 (如果有 emby_image_tag 字段最好，没有也无妨)
+    return `${baseUrl}/Items/${item.emby_collection_id}/Images/Primary?api_key=${apiKey}&maxHeight=600&quality=90`;
+  }
+
+  // 优先级 2: 使用 TMDb 的背景图 (Backdrop) - 适合 16:9
+  if (item.backdrop_path) {
+    return `https://image.tmdb.org/t/p/w780${item.backdrop_path}`;
+  }
+
+  // 优先级 3: 使用 TMDb 的海报图 (Poster)
+  if (item.poster_path) {
+    return `https://image.tmdb.org/t/p/w780${item.poster_path}`;
+  }
+
+  // 都没有则返回 null，显示渐变色
+  return null;
+};
+
 const openKeywordManager = async () => {
   try {
     const { data } = await axios.get('/api/custom_collections/config/keyword_mapping');
-    // 转换为数组格式供 n-dynamic-input 使用
     keywordMappingList.value = Object.entries(data).map(([label, info]) => ({
       label,
       en: Array.isArray(info.en) ? info.en.join(', ') : '',
@@ -1306,7 +1456,6 @@ const openKeywordManager = async () => {
   }
 };
 
-// 保存函数
 const saveKeywordMapping = async () => {
   isSavingKeywords.value = true;
   const payload = {};
@@ -1322,7 +1471,6 @@ const saveKeywordMapping = async () => {
     await axios.post('/api/custom_collections/config/keyword_mapping', payload);
     message.success('关键词映射已更新');
     showKeywordModal.value = false;
-    // ★ 关键：保存后重新加载下拉框选项 ★
     await fetchKeywordOptions(); 
   } catch (e) {
     message.error('保存失败');
@@ -1339,16 +1487,12 @@ const handleRestoreDefaults = () => {
     negativeText: '取消',
     onPositiveClick: async () => {
       try {
-        // 1. 从后端获取那套“神装”
         const { data } = await axios.get('/api/custom_collections/config/keyword_mapping/defaults');
-        
-        // 2. 转换为 n-dynamic-input 需要的数组格式
         keywordMappingList.value = Object.entries(data).map(([label, info]) => ({
           label,
           en: Array.isArray(info.en) ? info.en.join(', ') : '',
           ids: Array.isArray(info.ids) ? info.ids.join(', ') : ''
         }));
-        
         message.success('已加载默认预设，请记得点击“保存映射”以最终生效。');
       } catch (e) {
         message.error('获取默认配置失败');
@@ -1357,25 +1501,21 @@ const handleRestoreDefaults = () => {
   });
 };
 
-// ★★★ 函数现在接收一个完整的 payload 对象
 const submitFixMatch = async (payload) => {
   if (!selectedCollectionDetails.value?.id) return;
   try {
     const response = await axios.post(`/api/custom_collections/${selectedCollectionDetails.value.id}/fix_match`, payload);
     message.success(response.data.message || '修正成功！正在刷新合集详情...');
-
-    // ★★★ 核心修正：调用刷新逻辑，而不是手动 splice ★★★
-    isLoadingDetails.value = true; // 显示加载动画
+    isLoadingDetails.value = true; 
     try {
       const refreshResponse = await axios.get(`/api/custom_collections/${selectedCollectionDetails.value.id}/status`);
       selectedCollectionDetails.value = refreshResponse.data;
     } catch (refreshError) {
       message.error('刷新合集详情失败，请重新打开弹窗。');
-      showDetailsModal.value = false; // 出错时直接关闭弹窗
+      showDetailsModal.value = false; 
     } finally {
-      isLoadingDetails.value = false; // 隐藏加载动画
+      isLoadingDetails.value = false; 
     }
-
   } catch (error) {
     message.error(error.response?.data?.error || '修正失败，请检查后端日志。');
   }
@@ -1406,7 +1546,6 @@ const ruleConfig = {
   is_favorite: { label: '是否收藏', type: 'user_data_bool', operators: ['is', 'is_not'] },
 };
 
-// 分辨率：对应 resolution_display
 const resolutionOptions = [
   { label: '4K', value: '4k' },
   { label: '1080P', value: '1080p' },
@@ -1414,7 +1553,6 @@ const resolutionOptions = [
   { label: '480P', value: '480p' }
 ];
 
-// 质量：对应 quality_display
 const qualityOptions = [
   { label: 'Remux', value: 'Remux' },
   { label: 'BluRay', value: 'BluRay' },
@@ -1424,7 +1562,6 @@ const qualityOptions = [
   { label: 'DVDrip', value: 'DVDrip' }
 ];
 
-// 特效：对应 effect_display
 const effectOptions = [
   { label: 'SDR', value: 'SDR' },
   { label: 'HDR', value: 'HDR' },
@@ -1435,7 +1572,6 @@ const effectOptions = [
   { label: 'DoVi P8', value: 'DoVi_P8' }
 ];
 
-// 音轨：对应 audio_display 里的中文描述
 const audioLangOptions = [
   { label: '国语', value: '国语' },
   { label: '粤语', value: '粤语' },
@@ -1444,7 +1580,6 @@ const audioLangOptions = [
   { label: '韩语', value: '韩语' }
 ];
 
-// 原始语言选项 (ISO 639-1 代码)
 const filterLanguageOptions = [
   { label: '英语 (en)', value: 'en' },
   { label: '中文 (zh)', value: 'zh' },
@@ -1471,20 +1606,13 @@ const operatorLabels = {
 
 const fetchKeywordOptions = async () => {
   try {
-    // ✨ 请求你新写的映射接口
     const response = await axios.get('/api/custom_collections/config/keyword_mapping');
     const data = response.data;
-    
-    // 1. 存下全量映射表（供探索助手查 ID 用）
     allKeywordMappings.value = data;
-    
-    // 2. 生成下拉框选项（供规则筛选和探索助手显示用）
     keywordOptions.value = Object.keys(data).map(k => ({
       label: k,
       value: k
     })).sort((a, b) => a.label.localeCompare(b.label));
-    
-    console.log('关键词选项已刷新:', keywordOptions.value.length);
   } catch (error) {
     console.error('获取关键词失败:', error);
   }
@@ -1542,10 +1670,7 @@ const handleGenerateAllCovers = async () => {
   }
 };
 
-// 自定义渲染下拉选项的函数
 const renderPersonOption = ({ node, option }) => {
-  // 直接将一个 VNode 数组赋值给 node.children
-  // 这样既能自定义内容，又能保留 node 自身的所有交互事件
   node.children = [
     h(NAvatar, {
       src: getTmdbImageUrl(option.profile_path, 'w92'),
@@ -1558,11 +1683,9 @@ const renderPersonOption = ({ node, option }) => {
       h(NText, { depth: 3, style: 'font-size: 12px;' }, { default: () => `代表作: ${option.known_for || '暂无'}` })
     ])
   ];
-  // 务必返回修改后的原始 node
   return node;
 };
 
-// 自定义渲染已选中标签的函数
 const renderPersonTag = ({ option, handleClose }) => {
   return h(
     NTag,
@@ -1573,17 +1696,15 @@ const renderPersonTag = ({ option, handleClose }) => {
         e.stopPropagation();
         handleClose();
       },
-      // 添加一点样式让头像和文字垂直居中
       style: {
         display: 'flex',
         alignItems: 'center',
-        padding: '0 6px 0 2px', // 微调内边距
+        padding: '0 6px 0 2px', 
         height: '24px'
       },
-      round: true // 让标签也变圆角，更美观
+      round: true 
     },
     {
-      // default 插槽返回一个数组，包含头像和名字
       default: () => [
         h(NAvatar, {
           src: getTmdbImageUrl(option.profile_path, 'w92'),
@@ -1591,27 +1712,23 @@ const renderPersonTag = ({ option, handleClose }) => {
           style: 'margin-right: 5px;',
           round: true,
         }),
-        option.name // 演员的名字
+        option.name 
       ]
     }
   );
 };
 
-// ★★★ 自定义 Select 选项的渲染函数 ★★★
 const renderSelectOptionWithTag = (option) => {
-  // option 对象就是我们从后端接收到的 { label, value, is_template_source }
   if (option.is_template_source) {
-    // 如果是模板源，我们返回一个包含标签的 VNode
     return h(
       'div', 
       { style: 'display: flex; justify-content: space-between; align-items: center; width: 100%;' },
       [
-        h('span', null, option.label), // 用户名
-        h(NTag, { type: 'success', size: 'small', bordered: false }, { default: () => '模板源' }) // 标签
+        h('span', null, option.label), 
+        h(NTag, { type: 'success', size: 'small', bordered: false }, { default: () => '模板源' }) 
       ]
     );
   }
-  // 如果不是模板源，就只渲染用户名
   return option.label;
 };
 
@@ -1656,12 +1773,8 @@ const builtInLists = [
 const filteredBuiltInLists = computed(() => {
   const result = [];
   let currentGroup = null;
-
   builtInLists.forEach(item => {
-    // 1. 过滤掉 'custom' 选项
     if (item.value === 'custom') return;
-
-    // 2. 如果是分组标题，创建一个新的分组对象
     if (item.type === 'group') {
       currentGroup = { 
         type: 'group', 
@@ -1670,24 +1783,18 @@ const filteredBuiltInLists = computed(() => {
         children: [] 
       };
       result.push(currentGroup);
-    } 
-    // 3. 如果是普通选项
-    else {
+    } else {
       if (currentGroup) {
-        // 如果当前有分组，加入到分组的 children 中
         currentGroup.children.push(item);
       } else {
-        // 如果没有分组（比如第一项），直接加入结果数组
         result.push(item);
       }
     }
   });
-
   return result;
 });
 const selectedBuiltInLists = ref([]);
 const customUrlList = ref([{ value: '' }]);
-// 计算属性：判断是否为多源模式
 const isMultiSource = computed(() => {
   const builtInCount = selectedBuiltInLists.value.length;
   const customCount = customUrlList.value.filter(u => u.value.trim()).length;
@@ -1695,9 +1802,6 @@ const isMultiSource = computed(() => {
 });
 
 const isContentTypeLocked = computed(() => {
-  // 如果选择了任何内置榜单，且当前类型是 list，则锁定内容类型选择
-  // (或者你可以直接返回 false，允许用户在多选模式下自由修改类型)
-  // return selectedBuiltInLists.value.length > 0 && currentCollection.value.type === 'list';
   return false
 });
 
@@ -1710,14 +1814,11 @@ const sortFieldOptions = computed(() => {
     { label: '社区评分', value: 'CommunityRating' },
     { label: '制作年份', value: 'ProductionYear' },
   ];
-
   const itemTypes = currentCollection.value.definition?.item_type || [];
   if (Array.isArray(itemTypes) && itemTypes.includes('Series')) {
     options.splice(4, 0, { label: '最后一集更新时间', value: 'DateLastContentAdded' });
   }
-
   if (currentCollection.value.type === 'list') {
-    // ★★★ 只有单源时才显示原始顺序 ★★★
     if (!isMultiSource.value) {
       options.splice(1, 0, { label: '榜单原始顺序', value: 'original' });
     }
@@ -1753,7 +1854,6 @@ const currentCollection = ref(getInitialFormModel());
 
 watch(() => currentCollection.value.type, (newType) => {
   if (isEditing.value) { return; }
-  
   const sharedProps = {
     item_type: ['Movie'],
     default_sort_order: 'Ascending',
@@ -1762,7 +1862,6 @@ watch(() => currentCollection.value.type, (newType) => {
     dynamic_rules: [],
     show_in_latest: false,
   };
-
   if (newType === 'filter') {
     currentCollection.value.definition = {
       ...sharedProps,
@@ -1794,12 +1893,10 @@ watch(() => currentCollection.value.type, (newType) => {
   } else if (newType === 'list') {
     currentCollection.value.definition = { 
       ...sharedProps,
-      url: [], // ★★★ 必须是数组
+      url: [], 
       limit: null,
       default_sort_by: 'original', 
     };
-    
-    // ★★★ 修正点：这里必须用复数 selectedBuiltInLists，且设为空数组 ★★★
     selectedBuiltInLists.value = []; 
     customUrlList.value = [{ value: '' }];
   }
@@ -1844,31 +1941,23 @@ const fetchCountryOptions = async () => {
 
 const isGenreSelectionDisabled = computed(() => {
   const types = currentCollection.value.definition?.item_type || [];
-  // 如果选择了超过1种类型（例如既选电影又选剧集），则禁用
   return types.length > 1;
 });
 
 const fetchGenreOptions = async () => {
   const types = currentCollection.value.definition?.item_type || [];
-  
-  // 如果选择了多种类型，或者没有选择类型，清空选项并返回
   if (types.length !== 1) {
     genreOptions.value = [];
     return;
   }
-
   const type = types[0];
   let url = '';
-
   if (type === 'Movie') {
     url = '/api/custom_collections/config/movie_genres';
   } else if (type === 'Series') {
-    // 根据通常的API命名规范，剧集类型接口通常为 tv_genres
     url = '/api/custom_collections/config/tv_genres';
   }
-
   if (!url) return;
-
   try {
     const response = await axios.get(url);
     const genreList = response.data; 
@@ -1877,7 +1966,6 @@ const fetchGenreOptions = async () => {
       value: name
     }));
   } catch (error) {
-    // 忽略 404 错误，可能是后端还没实现 tv_genres
     console.warn('获取类型列表失败:', error);
     genreOptions.value = [];
   }
@@ -1923,40 +2011,30 @@ const handleStudioSearch = (query) => {
 let personSearchTimeout = null;
 
 const handlePersonSearch = (query, rule) => {
-  // 区分是来自筛选规则还是探索助手
   const isFilterRule = !!rule; 
-  
   if (!query) {
-    // 如果清空了搜索框，选项列表里应该只保留已选中的演员
     if (isFilterRule) {
       actorOptions.value = Array.isArray(rule.value) ? rule.value : [];
     } else {
-      actorOptions.value = []; // 探索助手的逻辑
+      actorOptions.value = []; 
     }
     return;
   }
-
   isSearchingActors.value = true;
   if (personSearchTimeout) clearTimeout(personSearchTimeout);
-
   personSearchTimeout = setTimeout(async () => {
     try {
       const response = await axios.get(`/api/custom_collections/config/tmdb_search_persons?q=${query}`);
       const searchResults = response.data || [];
-      
       if (isFilterRule) {
-        // ★★★ 筛选规则的逻辑：合并“已选项”和“新搜索结果” ★★★
         const selectedPersons = Array.isArray(rule.value) ? rule.value : [];
         const selectedIds = new Set(selectedPersons.map(p => p.id));
         const newResults = searchResults.filter(result => !selectedIds.has(result.id));
         actorOptions.value = [...selectedPersons, ...newResults];
       } else {
-        // ★★★ 探索助手的逻辑：直接显示搜索结果 ★★★
         actorOptions.value = searchResults;
-        // 同样，导演搜索也用这个结果
         directorOptions.value = searchResults;
       }
-
     } catch (error) {
       console.error('搜索人物失败:', error);
       if (isFilterRule) {
@@ -1967,23 +2045,17 @@ const handlePersonSearch = (query, rule) => {
       }
     } finally {
       isSearchingActors.value = false;
-      // 探索助手的导演搜索加载状态也一并处理
       isSearchingDirectors.value = false; 
     }
   }, 300);
 };
 
-// 函数1: 从我们的对象数组中，提取出纯 ID 数组，给 n-select 的 :value 使用
 const getPersonIdsFromRule = (value) => {
   if (!Array.isArray(value)) return [];
-  // 确保 value 里的每个元素都是对象，避免对数字调用 .id 出错
   return value.filter(p => typeof p === 'object' && p !== null).map(p => p.id);
 };
 
-// 函数2: 核心！当选项改变时，用 n-select 提供的【完整对象数组】来更新我们的数据
 const updatePersonRuleValue = (rule, selectedOptions) => {
-  // @update:value 传来的第二个参数 (options) 是完整的对象数组
-  // 我们直接用它来覆盖 rule.value，这样就不会丢失任何信息
   rule.value = selectedOptions;
 };
 
@@ -2036,7 +2108,6 @@ const formRules = computed(() => {
       trigger: 'change'
     };
   } 
-  
   return baseRules;
 });
 
@@ -2090,13 +2161,19 @@ const fetchCollections = async () => {
   try {
     const response = await axios.get('/api/custom_collections');
     collections.value = response.data;
-    nextTick(() => {
-      initSortable();
-    });
+    
+    // 1. 先让 loading 结束，触发 v-else 渲染 grid 容器
+    isLoading.value = false; 
+    
+    // 2. 等待 DOM 更新完毕
+    await nextTick(); 
+    
+    // 3. 此时 gridRef.value 才有值，可以安全绑定
+    initSortable();
+    
   } catch (error) {
     message.error('加载自定义合集列表失败。');
-  } finally {
-    isLoading.value = false;
+    isLoading.value = false; // 出错也要关闭 loading
   }
 };
 
@@ -2104,31 +2181,46 @@ const initSortable = () => {
   if (sortableInstance) {
     sortableInstance.destroy();
   }
-  const tbody = tableRef.value?.$el.querySelector('tbody');
-  if (tbody) {
-    sortableInstance = Sortable.create(tbody, {
-      handle: '.drag-handle',
-      animation: 150,
-      onEnd: handleDragEnd,
-    });
-  }
+  const gridEl = gridRef.value;
+  if (!gridEl) return;
+
+  sortableInstance = Sortable.create(gridEl, {
+    animation: 200,
+    draggable: '.grid-item',
+    handle: '.collection-card',
+    
+    filter: '.card-actions, button, .n-button, .n-icon', 
+    preventOnFilter: false, // 允许按钮的点击事件正常触发
+
+    forceFallback: true, 
+    ghostClass: 'sortable-ghost',
+    dragClass: 'sortable-drag',
+    delay: 10, 
+    delayOnTouchOnly: false,
+    onEnd: handleDragEnd,
+  });
 };
 
 const handleDragEnd = async (event) => {
   const { oldIndex, newIndex } = event;
+  // 如果位置没变，直接返回
   if (oldIndex === newIndex) return;
 
+  // 1. 修改本地数组顺序 (让 UI 立即响应)
   const movedItem = collections.value.splice(oldIndex, 1)[0];
   collections.value.splice(newIndex, 0, movedItem);
 
+  // 2. 提取新的 ID 顺序发送给后端
   const orderedIds = collections.value.map(c => c.id);
-  isSavingOrder.value = true;
+  isSavingOrder.value = true; // 可以加个 loading 状态防止连续操作
 
   try {
+    // 调用后端 API 更新顺序
     await axios.post('/api/custom_collections/update_order', { ids: orderedIds });
-    message.success('合集顺序已保存。');
+    message.success('顺序已更新');
   } catch (error) {
-    message.error(error.response?.data?.error || '保存顺序失败，请刷新页面重试。');
+    message.error('保存顺序失败，正在还原...');
+    // 失败时重新拉取列表还原顺序
     fetchCollections();
   } finally {
     isSavingOrder.value = false;
@@ -2193,11 +2285,8 @@ const triggerMetadataSync = async () => {
 const handleCreateClick = () => {
   isEditing.value = false;
   currentCollection.value = getInitialFormModel();
-  
-  // 重置多选组件
   selectedBuiltInLists.value = [];
   customUrlList.value = [{ value: '' }];
-  
   showModal.value = true;
 };
 
@@ -2207,7 +2296,6 @@ const handleEditClick = (row) => {
 
   if (Array.isArray(rowCopy.allowed_user_ids)) {
     const availableOptionsSet = new Set(embyUserOptions.value.map(opt => opt.value));
-    
     rowCopy.allowed_user_ids = rowCopy.allowed_user_ids.filter(id => availableOptionsSet.has(id));
   } else {
     rowCopy.allowed_user_ids = [];
@@ -2232,39 +2320,26 @@ const handleEditClick = (row) => {
 
   currentCollection.value = rowCopy;
 
-  // ★★★ 新增逻辑：为已存在的演员/导演规则，预加载选项数据 ★★★
   if (rowCopy.type === 'filter' && rowCopy.definition?.rules) {
-    // 1. 从所有规则中提取出所有已选的演员/导演
     const initialPersons = rowCopy.definition.rules
       .filter(rule => (rule.field === 'actors' || rule.field === 'directors') && Array.isArray(rule.value))
       .flatMap(rule => rule.value);
-    
-    // 2. 去重，防止同一个演员在多个规则中出现导致重复
     const uniquePersons = Array.from(new Map(initialPersons.map(p => [p.id, p])).values());
-    
-    // 3. 将这些演员信息设置为 actorOptions 的初始值
     actorOptions.value = uniquePersons;
   } else {
-    // 如果不是筛选类型或没有规则，清空选项
     actorOptions.value = [];
   }
 
   if (rowCopy.type === 'list') {
     let urls = rowCopy.definition.url;
-    
-    // 兼容旧数据：如果是字符串，转为数组
     if (typeof urls === 'string') {
       urls = urls ? [urls] : [];
     } else if (!Array.isArray(urls)) {
       urls = [];
     }
-
-    // 分离“内置榜单”和“自定义URL”
     const builtInValues = new Set(builtInLists.map(i => i.value));
-    
     const foundBuiltIns = [];
     const foundCustoms = [];
-
     urls.forEach(u => {
       if (builtInValues.has(u)) {
         foundBuiltIns.push(u);
@@ -2272,18 +2347,13 @@ const handleEditClick = (row) => {
         foundCustoms.push({ value: u });
       }
     });
-
-    // 赋值给 UI 变量
     selectedBuiltInLists.value = foundBuiltIns;
-    
-    // 自定义 URL 至少保留一个空框
     if (foundCustoms.length === 0) {
       customUrlList.value = [{ value: '' }];
     } else {
       customUrlList.value = foundCustoms;
     }
   } else {
-    // 如果不是 list 类型，重置为空
     selectedBuiltInLists.value = [];
     customUrlList.value = [{ value: '' }];
   }
@@ -2324,123 +2394,6 @@ const handleSave = () => {
     }
   });
 };
-
-const columns = [
-  {
-    key: 'drag',
-    width: 50,
-    render: () => h(NIcon, {
-      component: DragHandleIcon,
-      class: 'drag-handle',
-      style: { cursor: 'grab' },
-      size: 20
-    })
-  },
-  { title: '名称', key: 'name', width: 250, ellipsis: { tooltip: true } },
-  { 
-    title: '类型', key: 'type', width: 180,
-    render: (row) => {
-      let label = '未知';
-      let tagType = 'default';
-
-      if (row.type === 'list') {
-        let urls = row.definition?.url || [];
-
-        // 兼容旧数据字符串，转数组
-        if (typeof urls === 'string' && urls.trim() !== '') {
-          urls = [urls.trim()];
-        } else if (!Array.isArray(urls)) {
-          urls = [];
-        }
-
-        if (urls.length > 1) {
-          // 多个URL或榜单，视为混合榜单
-          label = '混合榜单';
-          tagType = 'warning'; // 你可以改成其它颜色
-        } else if (urls.length === 1) {
-          const url = urls[0];
-          if (url.startsWith('maoyan://')) {
-            label = '猫眼榜单';
-            tagType = 'error';
-          } else if (url.includes('douban.com/doulist')) {
-            label = '豆瓣豆列';
-            tagType = 'success';
-          } else if (url.includes('themoviedb.org/discover/')) {
-            label = '探索助手';
-            tagType = 'warning';
-          } else {
-            label = '榜单导入';
-            tagType = 'info';
-          }
-        } else {
-          // 没有URL时，默认标记
-          label = '无榜单URL';
-          tagType = 'default';
-        }
-      } else if (row.type === 'filter') {
-        label = '筛选生成';
-        tagType = 'default';
-      } else if (row.type === 'ai_recommendation') {
-        label = '个人推荐';
-        tagType = 'primary';
-      } else if (row.type === 'ai_recommendation_global') {
-        label = '全局推荐';
-        tagType = 'primary';
-      }
-
-      return h(NTag, { type: tagType, bordered: false }, { default: () => label });
-    }
-  },
-  {
-    title: '内容', key: 'item_type', width: 120,
-    render: (row) => {
-        let itemTypes = row.definition?.item_type || ['Movie'];
-        if (!Array.isArray(itemTypes)) itemTypes = [itemTypes];
-        
-        let label = '电影';
-        const hasMovie = itemTypes.includes('Movie');
-        const hasSeries = itemTypes.includes('Series');
-        if (hasMovie && hasSeries) label = '电影、电视剧';
-        else if (hasSeries) label = '电视剧';
-        return h(NTag, { bordered: false }, { default: () => label });
-    }
-  },
-  {
-    title: '健康检查', key: 'health_check', width: 150,
-    render(row) {
-      if (!['list', 'ai_recommendation_global'].includes(row.type)) {
-        return h(NText, { depth: 3 }, { default: () => 'N/A' });
-      }
-      const missingText = row.missing_count > 0 ? ` (${row.missing_count}缺失)` : '';
-      const buttonType = row.missing_count > 0 ? 'warning' : 'default';
-      return h(NButton, {
-        size: 'small', type: buttonType, ghost: true,
-        onClick: () => openDetailsModal(row)
-      }, { default: () => `查看详情${missingText}`, icon: () => h(NIcon, { component: EyeIcon }) });
-    }
-  },
-  { 
-    title: '状态', key: 'status', width: 90,
-    render: (row) => h(NTag, { type: row.status === 'active' ? 'success' : 'warning', bordered: false }, { default: () => row.status === 'active' ? '启用' : '暂停' })
-  },
-  { 
-    title: '上次同步', key: 'last_synced_at', width: 180,
-    render: (row) => row.last_synced_at || '从未'
-  },
-  {
-    title: '操作', key: 'actions', fixed: 'right', width: 220,
-    render: (row) => h(NSpace, null, {
-      default: () => [
-        h(NButton, { size: 'small', type: 'primary', ghost: true, loading: syncLoading.value[row.id], onClick: () => handleSync(row) }, { icon: () => h(NIcon, { component: GenerateIcon }), default: () => '生成' }),
-        h(NButton, { size: 'small', onClick: () => handleEditClick(row) }, { icon: () => h(NIcon, { component: EditIcon }), default: () => '编辑' }),
-        h(NPopconfirm, { onPositiveClick: () => handleDelete(row) }, {
-          trigger: () => h(NButton, { size: 'small', type: 'error', ghost: true }, { icon: () => h(NIcon, { component: DeleteIcon }), default: () => '删除' }),
-          default: () => `确定删除合集 "${row.name}" 吗？`
-        })
-      ]
-    })
-  }
-];
 
 const getTmdbImageUrl = (posterPath, size = 'w300') => posterPath ? `https://image.tmdb.org/t/p/${size}${posterPath}` : '/img/poster-placeholder.png';
 const extractYear = (dateStr) => dateStr ? dateStr.substring(0, 4) : null;
@@ -2487,10 +2440,8 @@ const generatedDiscoverUrl = computed(() => {
   const base = `https://www.themoviedb.org/discover/${params.type}`;
   const query = new URLSearchParams();
   
-  // 1. 基础排序
   query.append('sort_by', params.sort_by);
   
-  // 2. 处理年份 (电影用 primary_release_date, 电视用 first_air_date)
   if (params.type === 'movie') {
     if (params.release_year_gte) query.append('primary_release_date.gte', `${params.release_year_gte}-01-01`);
     if (params.release_year_lte) query.append('primary_release_date.lte', `${params.release_year_lte}-12-31`);
@@ -2499,36 +2450,27 @@ const generatedDiscoverUrl = computed(() => {
     if (params.release_year_lte) query.append('first_air_date.lte', `${params.release_year_lte}-12-31`);
   }
 
-  // 3. ★★★ 核心重构：处理自定义关键词标签 (不再分流) ★★★
   if (params.with_keywords_labels && params.with_keywords_labels.length > 0) {
     let allKeywordIds = [];
-
     params.with_keywords_labels.forEach(label => {
       const mapping = allKeywordMappings.value[label];
       if (mapping && mapping.ids) {
-        // 无论 ID 是多少，统统视为 Keyword ID
         allKeywordIds = [...allKeywordIds, ...mapping.ids];
       }
     });
-    
     if (allKeywordIds.length > 0) {
-      // 使用 '|' 连接实现 OR 逻辑，URLSearchParams 会自动转义为 %7C
       query.append('with_keywords', allKeywordIds.join(','));
     }
   }
 
-  // 4. 处理原生“风格”选择 (Genres)
   if (params.with_genres && params.with_genres.length > 0) {
-    // 原生选择通常已经是 ID 数组了
     query.append('with_genres', params.with_genres.join(','));
   }
 
-  // 5. 处理排除类型
   if (params.without_genres && params.without_genres.length > 0) {
     query.append('without_genres', params.without_genres.join('|'));
   }
   
-  // 6. 其他基础过滤
   if (params.with_original_language) query.append('with_original_language', params.with_original_language);
   if (params.with_origin_country) query.append('with_origin_country', params.with_origin_country);
   if (params.vote_average_gte > 0) query.append('vote_average.gte', params.vote_average_gte);
@@ -2583,26 +2525,15 @@ const editingUrlIndex = ref(0);const openDiscoverHelper = (index = 0) => {
 
 const confirmDiscoverUrl = () => {
   const newUrl = generatedDiscoverUrl.value;
-  
-  // 1. 更新 UI 绑定的数组 (customUrlList)
-  // 这样页面上的输入框会立即变更为生成的 URL
   if (customUrlList.value[editingUrlIndex.value]) {
     customUrlList.value[editingUrlIndex.value].value = newUrl;
   } else {
-    // 防御性代码：如果索引越界（极少情况），追加一行
     customUrlList.value.push({ value: newUrl });
   }
-
-  // 2. 自动勾选内容类型 (保持原有逻辑)
   const itemType = discoverParams.value.type === 'movie' ? 'Movie' : 'Series';
   if (!currentCollection.value.definition.item_type.includes(itemType)) {
-      currentCollection.value.definition.item_type.push(itemType); // 注意：这里用 push 更好，防止覆盖已选的其他类型
+      currentCollection.value.definition.item_type.push(itemType); 
   }
-  
-  // 注意：不需要手动更新 currentCollection.value.definition.url
-  // 因为我们有 watch([selectedBuiltInLists, customUrlList], ...) 监听器，
-  // 它会自动把 customUrlList 的变化同步到 definition.url 中。
-
   showDiscoverHelper.value = false;
 };
 
@@ -2658,12 +2589,8 @@ const handleDirectorSearch = (query) => {
 };
 
 const handleTargetUserChange = (userId) => {
-  // 只有当选择了有效的用户ID时才执行
   if (userId) {
-    // 自动将“可见用户”设置为该用户
     currentCollection.value.allowed_user_ids = [userId];
-    // 强制 UI 刷新（有时候 Vue 对数组深层变动响应不够快，虽然通常不需要）
-    // currentCollection.value = { ...currentCollection.value }; 
   }
 };
 
@@ -2699,7 +2626,6 @@ watch(selectedDirectors, (newValue) => {
 
 watch(isMultiSource, (isMulti) => {
   if (isMulti) {
-    // 如果切换到了多源模式，且当前排序是“原始顺序”，则强制重置为“不设置”
     if (currentCollection.value.definition.default_sort_by === 'original') {
       currentCollection.value.definition.default_sort_by = 'none';
       message.info('检测到多个榜单源，排序已自动重置为“不设置” (多榜单无法保持原始顺序)');
@@ -2709,18 +2635,9 @@ watch(isMultiSource, (isMulti) => {
 
 watch([selectedBuiltInLists, customUrlList], () => {
   const builtIns = selectedBuiltInLists.value;
-  // 过滤掉空的自定义 URL
   const customs = customUrlList.value.map(i => i.value.trim()).filter(v => v);
-  
-  // 合并结果
   const combinedUrls = [...builtIns, ...customs];
-
-  // 存入 definition.url
-  // 注意：为了兼容性，如果只有一个且是字符串，也可以存字符串，但为了多源聚合，建议统一存数组
   currentCollection.value.definition.url = combinedUrls;
-  
-  // 自动设置 item_type (如果选择了内置榜单，尝试自动推断类型)
-  // 简单的逻辑：只要有一个是 Series，就加上 Series
   const newItemTypes = new Set(currentCollection.value.definition.item_type || ['Movie']);
   builtIns.forEach(url => {
     const option = builtInLists.find(opt => opt.value === url);
@@ -2729,7 +2646,6 @@ watch([selectedBuiltInLists, customUrlList], () => {
     }
   });
   currentCollection.value.definition.item_type = Array.from(newItemTypes);
-
 }, { deep: true });
 
 onMounted(() => {
@@ -2756,13 +2672,246 @@ createRuleWatcher(() => currentCollection.value.definition.dynamic_rules);
 .custom-collections-manager {
   padding: 0 10px;
 }
+.card-actions, .n-button {
+  cursor: pointer !important;
+}
+/* 拖拽手柄样式 */
+.drag-handle {
+  position: absolute;
+  top: 10px;
+  left: 10px; /* 放在左上角，或者你喜欢的任何位置 */
+  z-index: 10;
+  color: rgba(255, 255, 255, 0.6);
+  cursor: grab;
+  padding: 4px;
+  background: rgba(0,0,0,0.3);
+  border-radius: 4px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  transition: color 0.2s, background 0.2s;
+}
 
-/* ★★★ 卡片容器：强制 2:3 比例，去除内边距 ★★★ */
+.drag-handle:hover {
+  color: #fff;
+  background: rgba(0,0,0,0.6);
+}
+
+.drag-handle:active {
+  cursor: grabbing;
+}
+
+/* ★★★ Grid 布局核心 ★★★ */
+.custom-grid {
+  display: grid;
+  /* 基础宽度 280px，根据 cardScale 缩放 */
+  grid-template-columns: repeat(auto-fill, minmax(calc(280px * var(--card-scale, 1)), 1fr));
+  gap: 20px;
+  margin-top: 24px;
+}
+
+.grid-item {
+  /* 确保拖拽时占位正确 */
+  position: relative;
+  touch-action: none;
+}
+
+/* ★★★ 卡片样式 ★★★ */
+.collection-card {
+  position: relative;
+  width: 100%;
+  aspect-ratio: 16 / 9; /* 强制 16:9 */
+  border-radius: 12px;
+  overflow: hidden;
+  cursor: pointer;
+  cursor: grab;
+  box-shadow: 0 4px 12px rgba(0, 0, 0, 0.15);
+  transition: transform 0.2s, box-shadow 0.2s, filter 0.3s;
+  background-color: #202023;
+  border: 1px solid rgba(255, 255, 255, 0.05);
+}
+
+.collection-card:active {
+  cursor: grabbing;
+}
+
+.collection-card:hover {
+  transform: translateY(-4px);
+  box-shadow: 0 12px 24px rgba(0, 0, 0, 0.3);
+  z-index: 2;
+}
+
+/* ★★★ 暂停状态：黑白滤镜 ★★★ */
+.collection-card.is-paused {
+  filter: grayscale(100%);
+  opacity: 0.8;
+}
+.collection-card.is-paused:hover {
+  filter: grayscale(0%); /* 悬停时恢复彩色，方便操作 */
+  opacity: 1;
+}
+
+/* 背景层 */
+.card-bg {
+  position: absolute;
+  inset: 0;
+  z-index: 0;
+}
+
+.bg-image {
+  width: 100%;
+  height: 100%;
+  pointer-events: none;
+}
+/* 深度选择器确保 naive-ui image 组件内部 img 填满 */
+.bg-image :deep(img) {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+}
+
+.bg-placeholder {
+  width: 100%;
+  height: 100%;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+.placeholder-text {
+  font-size: 48px;
+  font-weight: bold;
+  color: rgba(255, 255, 255, 0.2);
+  text-transform: uppercase;
+}
+
+/* 渐变遮罩：保证文字清晰 */
+.bg-overlay {
+  position: absolute;
+  inset: 0;
+  background: linear-gradient(to top, rgba(0, 0, 0, 0.9) 0%, rgba(0, 0, 0, 0.4) 50%, rgba(0, 0, 0, 0.1) 100%);
+}
+
+/* ★★★ 右上角图标 ★★★ */
+.card-type-icons {
+  position: absolute;
+  top: 10px;
+  right: 10px;
+  z-index: 2;
+  display: flex;
+  gap: 6px;
+  color: rgba(255, 255, 255, 0.9);
+  background: rgba(0, 0, 0, 0.5);
+  padding: 4px 8px;
+  border-radius: 20px;
+  backdrop-filter: blur(4px);
+}
+
+/* ★★★ 左下角信息 ★★★ */
+.card-info {
+  position: absolute;
+  bottom: 12px;
+  left: 12px;
+  right: 12px; /* 留出右侧空间给按钮 */
+  z-index: 2;
+  pointer-events: none; /* 让点击穿透 */
+}
+
+.card-title {
+  font-size: calc(16px * var(--card-scale, 1));
+  font-weight: bold;
+  color: #fff;
+  text-shadow: 0 2px 4px rgba(0, 0, 0, 0.8);
+  margin-bottom: 6px;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.card-meta {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.mini-tag {
+  height: 20px;
+  font-size: 11px;
+  opacity: 0.9;
+}
+
+.sync-time {
+  font-size: 11px;
+  color: rgba(255, 255, 255, 0.7);
+}
+
+/* ★★★ 右下角操作按钮 ★★★ */
+.card-actions {
+  position: absolute;
+  bottom: 10px;
+  right: 10px;
+  z-index: 3;
+  display: flex;
+  gap: 8px;
+  opacity: 0; /* 默认隐藏 */
+  transform: translateY(10px);
+  transition: all 0.2s ease;
+}
+
+/* 悬停卡片时显示按钮 */
+.collection-card:hover .card-actions {
+  opacity: 1;
+  transform: translateY(0);
+}
+
+/* 暂停状态遮罩文字 */
+.paused-overlay {
+  position: absolute;
+  top: 50%;
+  left: 50%;
+  transform: translate(-50%, -50%) rotate(-15deg);
+  font-size: 24px;
+  font-weight: 900;
+  color: rgba(255, 255, 255, 0.3);
+  border: 4px solid rgba(255, 255, 255, 0.3);
+  padding: 4px 12px;
+  border-radius: 8px;
+  pointer-events: none;
+  z-index: 1;
+  letter-spacing: 2px;
+}
+
+/* SortableJS 拖拽样式 */
+.sortable-ghost {
+  opacity: 0.4;
+  background: rgba(255, 255, 255, 0.1);
+  border: 2px dashed var(--n-primary-color);
+  border-radius: 12px;
+  pointer-events: none !important;
+}
+.sortable-drag {
+  cursor: grabbing;
+  opacity: 1;
+  background: #202023; /* 保持背景色，防止透明 */
+  box-shadow: 0 16px 32px rgba(0,0,0,0.5); /* 增加阴影，营造浮起感 */
+  transform: scale(1.05); /* 稍微放大 */
+  z-index: 9999; /* 确保在最上层 */
+  pointer-events: none !important;
+}
+
+/* 居中加载容器 */
+.center-container {
+  display: flex;
+  justify-content: center;
+  align-items: center;
+  height: 400px;
+}
+
+/* ... (保留原有的模态框样式) ... */
 .movie-card {
   border-radius: 8px;
   overflow: hidden;
   position: relative;
-  aspect-ratio: 2 / 3; /* 强制海报比例 */
+  aspect-ratio: 2 / 3; 
   background-color: #202023;
   transition: transform 0.2s, box-shadow 0.2s;
   cursor: default;
@@ -2774,7 +2923,6 @@ createRuleWatcher(() => currentCollection.value.definition.dynamic_rules);
   z-index: 2;
 }
 
-/* ★★★ 海报图片：铺满容器 ★★★ */
 .movie-poster {
   width: 100%;
   height: 100%;
@@ -2783,33 +2931,27 @@ createRuleWatcher(() => currentCollection.value.definition.dynamic_rules);
   transition: transform 0.3s;
 }
 
-/* 悬停时海报微放大，增加呼吸感 */
 .movie-card:hover .movie-poster {
   transform: scale(1.05);
 }
 
-/* ★★★ 底部渐变遮罩 (核心) ★★★ */
 .movie-info-overlay {
   position: absolute;
   bottom: 0;
   left: 0;
   right: 0;
-  padding: 60px 10px 10px 10px; /* 上方留出空间给渐变 */
-  /* 黑色渐变：从透明到黑色，保证文字清晰 */
+  padding: 60px 10px 10px 10px; 
   background: linear-gradient(to top, rgba(0, 0, 0, 0.95) 0%, rgba(0, 0, 0, 0.7) 60%, transparent 100%);
   color: #fff;
-  pointer-events: none; /* 让鼠标事件穿透到下层，防止遮挡点击 */
+  pointer-events: none; 
   z-index: 10;
 }
 
-/* ★★★ 标题样式 ★★★ */
 .movie-title {
   font-size: 14px;
   font-weight: bold;
   line-height: 1.3;
   text-shadow: 0 1px 2px rgba(0,0,0,0.8);
-  
-  /* 限制最多显示 2 行 */
   overflow: hidden;
   text-overflow: ellipsis;
   display: -webkit-box;
@@ -2818,15 +2960,13 @@ createRuleWatcher(() => currentCollection.value.definition.dynamic_rules);
   -webkit-box-orient: vertical;
 }
 
-/* ★★★ 年份样式 ★★★ */
 .movie-year {
   font-size: 12px;
-  color: #ddd; /* 稍微灰一点 */
+  color: #ddd; 
   margin-top: 2px;
   font-weight: 500;
 }
 
-/* ★★★ 原始标题样式 (优雅的第二行) ★★★ */
 .original-source-title {
   font-size: 11px;
   color: #aaa;
@@ -2837,12 +2977,11 @@ createRuleWatcher(() => currentCollection.value.definition.dynamic_rules);
   opacity: 0.8;
 }
 
-/* ★★★ 悬停操作层 (默认隐藏) ★★★ */
 .movie-actions-overlay {
   position: absolute;
-  inset: 0; /* 铺满整个卡片 */
-  background: rgba(0, 0, 0, 0.6); /* 半透明黑底 */
-  backdrop-filter: blur(2px); /* 轻微毛玻璃 */
+  inset: 0; 
+  background: rgba(0, 0, 0, 0.6); 
+  backdrop-filter: blur(2px); 
   display: flex;
   flex-direction: column;
   justify-content: center;
@@ -2857,7 +2996,6 @@ createRuleWatcher(() => currentCollection.value.definition.dynamic_rules);
   opacity: 1;
 }
 
-/* ★★★ 左上角状态角标 (仿参考图) ★★★ */
 .status-badge {
   position: absolute;
   top: 10px;
@@ -2871,21 +3009,19 @@ createRuleWatcher(() => currentCollection.value.definition.dynamic_rules);
   display: flex;
   align-items: center;
   justify-content: center;
-  transform: rotate(-45deg); /* 旋转45度 */
+  transform: rotate(-45deg); 
   box-shadow: 0 2px 4px rgba(0,0,0,0.3);
   z-index: 15;
   pointer-events: none;
 }
 
-/* 不同状态的颜色 */
-.status-badge.in_library { background-color: #63e2b7; color: #000; } /* Naive UI Success Green */
-.status-badge.missing { background-color: #e88080; } /* Naive UI Error Red */
-.status-badge.subscribed { background-color: #f2c97d; color: #000; } /* Naive UI Warning */
+.status-badge.in_library { background-color: #63e2b7; color: #000; } 
+.status-badge.missing { background-color: #e88080; } 
+.status-badge.subscribed { background-color: #f2c97d; color: #000; } 
 .status-badge.unreleased { background-color: #8a8a8a; }
 .status-badge.unidentified { background-color: #d03050; }
 .status-badge.ignored { background-color: #69ace2; }
 
-/* 占位符样式 */
 .poster-placeholder {
   width: 100%;
   height: 100%;
@@ -2897,9 +3033,6 @@ createRuleWatcher(() => currentCollection.value.definition.dynamic_rules);
   color: #666;
 }
 
-/* ★★★ 新增：模态框美化样式 ★★★ */
-
-/* 类型选择卡片 */
 .type-selection-section {
   margin-bottom: 20px;
 }
@@ -2964,14 +3097,12 @@ createRuleWatcher(() => currentCollection.value.definition.dynamic_rules);
   color: var(--n-primary-color);
 }
 
-/* 核心配置卡片 */
 .config-card {
-  background-color: var(--n-action-color); /* 稍微深一点的背景 */
+  background-color: var(--n-action-color); 
   border-radius: 8px;
   margin-top: 8px;
 }
 
-/* 榜单 URL 列表 */
 .custom-url-list {
   display: flex;
   flex-direction: column;
@@ -2983,7 +3114,6 @@ createRuleWatcher(() => currentCollection.value.definition.dynamic_rules);
   border-style: dashed;
 }
 
-/* 规则编辑器 */
 .rules-container {
   display: flex;
   flex-direction: column;
@@ -3009,10 +3139,9 @@ createRuleWatcher(() => currentCollection.value.definition.dynamic_rules);
 .rule-value { flex: 1; display: flex; }
 .rule-delete { margin-left: 4px; }
 
-/* AI 区域 */
 .ai-section {
   margin-top: 20px;
-  border: 1px solid rgba(242, 201, 125, 0.3); /* 金色边框 */
+  border: 1px solid rgba(242, 201, 125, 0.3); 
   background: rgba(242, 201, 125, 0.05);
   border-radius: 8px;
   overflow: hidden;
@@ -3030,7 +3159,6 @@ createRuleWatcher(() => currentCollection.value.definition.dynamic_rules);
   padding: 16px;
 }
 
-/* AI Hero (全屏推荐模式) */
 .ai-hero-section {
   display: flex;
   align-items: center;
@@ -3057,7 +3185,6 @@ createRuleWatcher(() => currentCollection.value.definition.dynamic_rules);
   margin-top: 4px;
 }
 
-/* 底部栏 */
 .modal-footer-custom {
   display: flex;
   justify-content: space-between;

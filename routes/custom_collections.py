@@ -64,7 +64,7 @@ def api_get_all_custom_collections():
     """获取所有自定义合集定义 (V6 - 轻量化版)"""
     try:
         beijing_tz = pytz.timezone('Asia/Shanghai')
-        collections_from_db = custom_collection_db.get_all_active_custom_collections()
+        collections_from_db = custom_collection_db.get_all_custom_collections()
         processed_collections = []
 
         for collection in collections_from_db:
