@@ -553,23 +553,25 @@ def handle_get_mimicked_library_items(user_id, mimicked_id, params):
                 items_from_emby = _fetch_items_in_chunks(base_url, api_key, user_id, final_emby_ids, full_fields)
                 items_map = {item['Id']: item for item in items_from_emby}
                 
-                # ★ 修复：过滤掉 Emby 实际没有返回的项目（权限不足或数据错误）
+                # 过滤掉 Emby 实际没有返回的项目
                 final_items = [items_map[eid] for eid in final_emby_ids if eid in items_map]
                 
-                # ★ 核心修复：消除灰色占位符
-                # 如果 SQL 返回了 50 个 ID，但 Emby 只返回了 48 个详情（2个被权限拦截），
-                # 那么 final_items 长度为 48。
-                # 如果我们告诉客户端 TotalRecordCount 是 50，客户端会渲染 50 个格子，最后 2 个就是灰色的。
-                # 我们必须动态调整 reported_total_count。
-                
+                # --- 修复开始 ---
                 expected_count = len(final_emby_ids)
                 actual_count = len(final_items)
                 
                 if actual_count < expected_count:
                     diff = expected_count - actual_count
-                    # 修正总数，减去“幽灵”项目的数量
+                    # 1. 先执行原本的减法修正
                     reported_total_count = max(0, reported_total_count - diff)
-                    logger.debug(f"检测到权限过滤导致的数量差异: SQL={expected_count}, Emby={actual_count}. 修正 TotalRecordCount 为 {reported_total_count}")
+                    logger.debug(f"检测到权限过滤导致的数量差异: SQL={expected_count}, Emby={actual_count}. 初步修正 TotalRecordCount 为 {reported_total_count}")
+
+                    # 2. 【新增】封底保险逻辑
+                    # 如果修正后的总数 <= 请求的限制 (emby_limit)，说明逻辑上不应该存在“下一页”
+                    # 此时必须强制 总数 = 实际数量，否则客户端会渲染出 (总数 - 实际数量) 个灰块
+                    if reported_total_count <= emby_limit:
+                        reported_total_count = actual_count
+                        logger.debug(f"修正后的总数小于分页限制，强制对齐 TotalRecordCount = {actual_count} 以消除灰块")
 
                 return Response(json.dumps({"Items": final_items, "TotalRecordCount": reported_total_count}), mimetype='application/json')
 
