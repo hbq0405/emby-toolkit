@@ -181,19 +181,39 @@ def query_virtual_library_items(
         # C. 分级控制 
         parental_control_sql = """
         (
+            -- 1. 如果没有设置最大分级限制，则允许所有
             (u.policy_json->'MaxParentalRating' IS NULL)
             OR
             (
                 m.official_rating IS NOT NULL 
                 AND (
-                    COALESCE(
-                        NULLIF(REGEXP_REPLACE(m.official_rating, '[^0-9]', '', 'g'), ''), 
-                        '0'
-                    )::int <= (u.policy_json->>'MaxParentalRating')::int
-                )
+                    CASE 
+                        -- 美国电影分级映射 (US)
+                        WHEN m.official_rating = 'G' THEN 0
+                        WHEN m.official_rating = 'PG' THEN 10
+                        WHEN m.official_rating = 'PG-13' THEN 13
+                        WHEN m.official_rating = 'R' THEN 17
+                        WHEN m.official_rating = 'NC-17' THEN 18
+                        
+                        -- 美国电视分级映射 (US-TV)
+                        WHEN m.official_rating = 'TV-Y' THEN 0
+                        WHEN m.official_rating = 'TV-Y7' THEN 7
+                        WHEN m.official_rating = 'TV-G' THEN 0
+                        WHEN m.official_rating = 'TV-PG' THEN 10
+                        WHEN m.official_rating = 'TV-14' THEN 14
+                        WHEN m.official_rating = 'TV-MA' THEN 17
+                        
+                        -- 兜底逻辑：尝试提取字符串中的数字 (适用于 GB-18, DE-16 等格式)
+                        ELSE COALESCE(
+                            NULLIF(REGEXP_REPLACE(m.official_rating, '[^0-9]', '', 'g'), ''), 
+                            '0'
+                        )::int
+                    END
+                ) <= (u.policy_json->>'MaxParentalRating')::int
             )
         )
         AND NOT (
+            -- 2. 处理 "禁止未分级内容" (BlockUnratedItems)
             (
                 jsonb_typeof(u.policy_json->'BlockUnratedItems') = 'array'
                 AND
@@ -203,7 +223,12 @@ def query_virtual_library_items(
             (
                 m.official_rating IS NULL 
                 OR m.official_rating = '' 
-                OR REGEXP_REPLACE(m.official_rating, '[^0-9]', '', 'g') = ''
+                OR m.official_rating = 'NR' -- 增加对 NR 的显式判断
+                OR (
+                    -- 如果不是已知分级且提取不出数字，视为未分级
+                    m.official_rating NOT IN ('G','PG','PG-13','R','NC-17','TV-Y','TV-Y7','TV-G','TV-PG','TV-14','TV-MA')
+                    AND REGEXP_REPLACE(m.official_rating, '[^0-9]', '', 'g') = ''
+                )
             )
         )
         """
