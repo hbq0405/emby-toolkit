@@ -271,7 +271,43 @@ def _process_batch_webhook_events():
         parent_name = item_info['name']
         parent_type = item_info['type']
         
+        # 1. 检查是否已处理
         is_already_processed = parent_id in extensions.media_processor_instance.processed_items_cache
+
+        # 2. 检查数据库是否在线
+        if is_already_processed:
+            # 不在线，需要复活
+            is_online_in_db = media_db.is_emby_id_in_library(parent_id)
+            
+            if not is_online_in_db:
+                logger.info(f"  ➜ ⚠️ 缓存命中 '{parent_name}'，但数据库标记为离线，尝试就地复活...")
+                
+                revive_success = False
+                try:
+                    # 1. 问 Emby 要 TMDb ID (因为数据库断连了，只能问 API)
+                    item_details = emby.get_emby_item_details(
+                        parent_id, 
+                        config_manager.APP_CONFIG.get("emby_server_url"), 
+                        config_manager.APP_CONFIG.get("emby_api_key"), 
+                        fields="ProviderIds"
+                    )
+                    tmdb_id = item_details.get("ProviderIds", {}).get("Tmdb")
+                    
+                    if tmdb_id:
+                        # 2. 尝试复活
+                        revive_success = media_db.revive_series_link(str(tmdb_id), parent_id)
+                    
+                except Exception as e:
+                    logger.error(f"  ➜ 复活尝试异常: {e}")
+
+                # 3. 决策：救活了就继续，救不活就重开
+                if revive_success:
+                    logger.info(f"  ➜ 💉 复活成功，继续执行轻量化追更流程。")
+                    # is_already_processed 保持为 True，进入 else 分支
+                else:
+                    logger.warning(f"  ➜ ⚰️ 复活失败 (可能数据库无记录)，转为完整处理流程。")
+                    is_already_processed = False
+                    extensions.media_processor_instance.processed_items_cache.discard(parent_id)
 
         if not is_already_processed:
             
