@@ -178,60 +178,72 @@ def query_virtual_library_items(
         """
         where_clauses.append(tag_block_sql)
 
-        # C. 分级控制 
+        # C. 分级控制 (最终完善版：支持 US/TV/成人/未分级 映射)
         parental_control_sql = """
+    (
+        -- 1. 如果没有设置最大分级限制，则允许所有
+        (u.policy_json->'MaxParentalRating' IS NULL)
+        OR
         (
-            -- 1. 如果没有设置最大分级限制，则允许所有
-            (u.policy_json->'MaxParentalRating' IS NULL)
-            OR
-            (
-                m.official_rating IS NOT NULL 
-                AND (
-                    CASE 
-                        -- 美国电影分级映射 (US)
-                        WHEN m.official_rating = 'G' THEN 0
-                        WHEN m.official_rating = 'PG' THEN 10
-                        WHEN m.official_rating = 'PG-13' THEN 13
-                        WHEN m.official_rating = 'R' THEN 17
-                        WHEN m.official_rating = 'NC-17' THEN 18
-                        
-                        -- 美国电视分级映射 (US-TV)
-                        WHEN m.official_rating = 'TV-Y' THEN 0
-                        WHEN m.official_rating = 'TV-Y7' THEN 7
-                        WHEN m.official_rating = 'TV-G' THEN 0
-                        WHEN m.official_rating = 'TV-PG' THEN 10
-                        WHEN m.official_rating = 'TV-14' THEN 14
-                        WHEN m.official_rating = 'TV-MA' THEN 17
-                        
-                        -- 兜底逻辑：尝试提取字符串中的数字 (适用于 GB-18, DE-16 等格式)
-                        ELSE COALESCE(
-                            NULLIF(REGEXP_REPLACE(m.official_rating, '[^0-9]', '', 'g'), ''), 
-                            '0'
-                        )::int
-                    END
-                ) <= (u.policy_json->>'MaxParentalRating')::int
-            )
+            m.official_rating IS NOT NULL 
+            AND (
+                CASE 
+                    -- 1. 7级档位 (PG-13 / TV-PG / TV-Y7)
+                    WHEN m.official_rating = 'PG-13' THEN 7
+                    WHEN m.official_rating = 'TV-PG' THEN 7 
+                    WHEN m.official_rating = 'TV-Y7' THEN 7
+                    
+                    -- 2. 8级档位 (TV-14)
+                    WHEN m.official_rating = 'TV-14' THEN 8
+                    
+                    -- 3. 低于7级的档位 (G / PG / TV-G / TV-Y) -> 设为 0 或 6 均可，只要小于7
+                    WHEN m.official_rating IN ('G', 'TV-G', 'TV-Y') THEN 0
+                    WHEN m.official_rating = 'PG' THEN 6 
+                    
+                    -- 4. 高于8级的档位 (R / TV-MA / NC-17) -> 保持标准高数值，确保被拦截
+                    WHEN m.official_rating = 'R' THEN 17
+                    WHEN m.official_rating = 'TV-MA' THEN 17
+                    WHEN m.official_rating = 'NC-17' THEN 18
+                    
+                    -- 成人分级
+                    WHEN m.official_rating IN ('X', 'XXX', 'AO') THEN 18
+                    
+                    -- 未分级 -> 0 (由 BlockUnratedItems 控制)
+                    WHEN m.official_rating IN ('NR', 'UR', 'Unrated', 'Not Rated') THEN 0
+                    
+                    -- 兜底逻辑：提取数字
+                    -- 注意：如果遇到未知的分级，提取出的数字可能与您的系统不符
+                    -- 但对于标准格式通常没问题
+                    ELSE COALESCE(
+                        NULLIF(REGEXP_REPLACE(m.official_rating, '[^0-9]', '', 'g'), ''), 
+                        '0'
+                    )::int
+                END
+            ) <= (u.policy_json->>'MaxParentalRating')::int
         )
-        AND NOT (
-            -- 2. 处理 "禁止未分级内容" (BlockUnratedItems)
-            (
-                jsonb_typeof(u.policy_json->'BlockUnratedItems') = 'array'
-                AND
-                u.policy_json->'BlockUnratedItems' @> to_jsonb(m.item_type)
-            )
+    )
+    AND NOT (
+        -- 2. 处理 "禁止未分级内容" (BlockUnratedItems)
+        (
+            jsonb_typeof(u.policy_json->'BlockUnratedItems') = 'array'
             AND
-            (
-                m.official_rating IS NULL 
-                OR m.official_rating = '' 
-                OR m.official_rating = 'NR' -- 增加对 NR 的显式判断
-                OR (
-                    -- 如果不是已知分级且提取不出数字，视为未分级
-                    m.official_rating NOT IN ('G','PG','PG-13','R','NC-17','TV-Y','TV-Y7','TV-G','TV-PG','TV-14','TV-MA')
-                    AND REGEXP_REPLACE(m.official_rating, '[^0-9]', '', 'g') = ''
+            u.policy_json->'BlockUnratedItems' @> to_jsonb(m.item_type)
+        )
+        AND
+        (
+            m.official_rating IS NULL 
+            OR m.official_rating = '' 
+            OR m.official_rating IN ('NR', 'UR', 'Unrated', 'Not Rated')
+            OR (
+                m.official_rating NOT IN (
+                    'G','PG','PG-13','R','NC-17','X','XXX','AO',
+                    'TV-Y','TV-Y7','TV-G','TV-PG','TV-14','TV-MA'
                 )
+                AND REGEXP_REPLACE(m.official_rating, '[^0-9]', '', 'g') = ''
             )
         )
-        """
+    )
+    """
         where_clauses.append(parental_control_sql)
 
     # ======================================================================
