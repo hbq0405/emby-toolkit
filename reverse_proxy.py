@@ -407,8 +407,9 @@ def handle_get_mimicked_library_items(user_id, mimicked_id, params):
                 
                 # 3. 【全局视图】获取Emby中实际存在的项目（忽略用户权限，传入 user_id=None）
                 #    这一步是为了区分 "无权查看" 和 "真的缺失"
+                admin_user_id = config_manager.APP_CONFIG.get('emby_user_id')
                 global_existing_items, _ = queries_db.query_virtual_library_items(
-                    rules=rules, logic=logic, user_id=None, # 关键点：None 表示查询全局
+                    rules=rules, logic=logic, user_id=admin_user_id, 
                     limit=2000, offset=0,
                     item_types=item_types, target_library_ids=target_library_ids,
                     tmdb_ids=tmdb_ids_in_list
