@@ -371,7 +371,7 @@ def handle_get_mimicked_library_items(user_id, mimicked_id, params):
         sort_by = defined_sort_by if defined_sort_by and defined_sort_by != 'none' else params.get('SortBy', 'DateCreated')
         sort_order = defined_sort_order if defined_sort_by and defined_sort_by != 'none' else params.get('SortOrder', 'Descending')
 
-        # 核心判断：是否需要 Emby 原生排序 (推荐类或特定排序字段)
+        # 核心判断：是否需要 Emby 原生排序
         is_emby_proxy_sort_required = (
             collection_type in ['ai_recommendation', 'ai_recommendation_global'] or 
             'DateLastContentAdded' in sort_by
@@ -406,24 +406,19 @@ def handle_get_mimicked_library_items(user_id, mimicked_id, params):
                 )
                 
                 # 3. 【全局视图】获取Emby中实际存在的项目（忽略用户权限，传入 user_id=None）
-                #    这一步是为了区分 "无权查看" 和 "真的缺失"
-                admin_user_id = config_manager.APP_CONFIG.get('emby_user_id')
+                #    ★ 修复：queries_db.py 现已支持 user_id=None，正确返回全局存在的项目
                 global_existing_items, _ = queries_db.query_virtual_library_items(
-                    rules=rules, logic=logic, user_id=admin_user_id, 
+                    rules=rules, logic=logic, user_id=None, 
                     limit=2000, offset=0,
                     item_types=item_types, target_library_ids=target_library_ids,
                     tmdb_ids=tmdb_ids_in_list
                 )
 
                 # 4. 建立映射表
-                # 用户可见的 TMDb ID -> Emby ID
                 local_tmdb_map = {str(i['tmdb_id']): i['Id'] for i in items_in_db if i.get('tmdb_id')}
-                # 用户可见的 Emby ID 集合 (用于处理只有 emby_id 的情况)
                 local_emby_id_set = {str(i['Id']) for i in items_in_db}
                 
-                # 全局存在的 TMDb ID 集合
                 global_tmdb_set = {str(i['tmdb_id']) for i in global_existing_items if i.get('tmdb_id')}
-                # 全局存在的 Emby ID 集合
                 global_emby_id_set = {str(i['Id']) for i in global_existing_items}
                 
                 # 5. 构造完整视图列表
@@ -432,24 +427,20 @@ def handle_get_mimicked_library_items(user_id, mimicked_id, params):
                     tid = str(raw_item.get('tmdb_id')) if raw_item.get('tmdb_id') else "None"
                     eid = str(raw_item.get('emby_id')) if raw_item.get('emby_id') else "None"
 
-                    # 过滤无效项
                     if (not tid or tid.lower() == "none") and (not eid or eid.lower() == "none"):
                         continue
 
                     if defined_limit and len(full_view_list) >= defined_limit:
                         break
                     
-                    # --- 逻辑分支 ---
-
-                    # 分支 1: 用户有权查看 (TMDb ID 匹配)
+                    # 分支 1: 用户有权查看
                     if tid != "None" and tid in local_tmdb_map:
                         full_view_list.append({"is_missing": False, "id": local_tmdb_map[tid], "tmdb_id": tid})
-                    
-                    # 分支 2: 用户有权查看 (Emby ID 匹配 - 针对手动识别项)
                     elif eid != "None" and eid in local_emby_id_set:
                          full_view_list.append({"is_missing": False, "id": eid, "tmdb_id": tid})
 
-                    # 分支 3: 项目存在于全局库，但用户无权查看 -> 【关键修复：跳过，不显示占位符】
+                    # 分支 3: 项目存在于全局库，但用户无权查看 -> 【跳过，不显示占位符】
+                    # ★ 修复：由于 global_tmdb_set 现在正确包含了所有存在的项目，此判断将生效
                     elif (tid != "None" and tid in global_tmdb_set) or (eid != "None" and eid in global_emby_id_set):
                         continue 
 
@@ -462,7 +453,7 @@ def handle_get_mimicked_library_items(user_id, mimicked_id, params):
                 paged_part = full_view_list[offset : offset + emby_limit]
                 reported_total_count = len(full_view_list)
 
-                # 7. 批量获取详情 (后续代码保持不变...)
+                # 7. 批量获取详情
                 real_eids = [x['id'] for x in paged_part if not x['is_missing']]
                 missing_tids = [x['tmdb_id'] for x in paged_part if x['is_missing']]
                 
@@ -479,6 +470,9 @@ def handle_get_mimicked_library_items(user_id, mimicked_id, params):
                         eid = entry['id']
                         if eid in emby_map:
                             final_items.append(emby_map[eid])
+                        # ★ 注意：如果 Emby 过滤掉了（例如权限变动），这里不添加，也不会显示灰块（因为列表变短了）
+                        # 但如果列表变短导致与 reported_total_count 不符，客户端可能会显示灰块。
+                        # 对于榜单模式，由于我们手动构建列表，通常误差较小。
                     else:
                         # 占位符构造逻辑 (保持不变)
                         tid = entry['tmdb_id']
@@ -516,7 +510,7 @@ def handle_get_mimicked_library_items(user_id, mimicked_id, params):
                 
                 return Response(json.dumps({"Items": final_items, "TotalRecordCount": reported_total_count}), mimetype='application/json')
 
-        # --- 场景 B: 筛选/推荐类 (维持 V7 逻辑，不显示占位符) ---
+        # --- 场景 B: 筛选/推荐类 (修复灰色占位符) ---
         else:
             if collection_type in ['ai_recommendation', 'ai_recommendation_global']:
                 api_key = config_manager.APP_CONFIG.get("tmdb_api_key")
@@ -558,7 +552,25 @@ def handle_get_mimicked_library_items(user_id, mimicked_id, params):
                 base_url, api_key = _get_real_emby_url_and_key()
                 items_from_emby = _fetch_items_in_chunks(base_url, api_key, user_id, final_emby_ids, full_fields)
                 items_map = {item['Id']: item for item in items_from_emby}
+                
+                # ★ 修复：过滤掉 Emby 实际没有返回的项目（权限不足或数据错误）
                 final_items = [items_map[eid] for eid in final_emby_ids if eid in items_map]
+                
+                # ★ 核心修复：消除灰色占位符
+                # 如果 SQL 返回了 50 个 ID，但 Emby 只返回了 48 个详情（2个被权限拦截），
+                # 那么 final_items 长度为 48。
+                # 如果我们告诉客户端 TotalRecordCount 是 50，客户端会渲染 50 个格子，最后 2 个就是灰色的。
+                # 我们必须动态调整 reported_total_count。
+                
+                expected_count = len(final_emby_ids)
+                actual_count = len(final_items)
+                
+                if actual_count < expected_count:
+                    diff = expected_count - actual_count
+                    # 修正总数，减去“幽灵”项目的数量
+                    reported_total_count = max(0, reported_total_count - diff)
+                    logger.debug(f"检测到权限过滤导致的数量差异: SQL={expected_count}, Emby={actual_count}. 修正 TotalRecordCount 为 {reported_total_count}")
+
                 return Response(json.dumps({"Items": final_items, "TotalRecordCount": reported_total_count}), mimetype='application/json')
 
     except Exception as e:

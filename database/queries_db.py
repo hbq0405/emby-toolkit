@@ -43,7 +43,7 @@ def get_user_allowed_library_ids(user_id: str, emby_url: str, emby_api_key: str)
 def query_virtual_library_items(
     rules: List[Dict[str, Any]], 
     logic: str, 
-    user_id: str,
+    user_id: Optional[str],
     limit: int = 50, 
     offset: int = 0,
     sort_by: str = 'DateCreated',
@@ -66,21 +66,34 @@ def query_virtual_library_items(
     """
     
     # 1. 基础 SQL 结构
-    base_select = """
-        SELECT 
-            m.emby_item_ids_json->>0 as emby_id,
-            m.tmdb_id
-        FROM media_metadata m
-        JOIN emby_users u ON u.id = %s
-    """
-    
-    base_count = """
-        SELECT COUNT(*) 
-        FROM media_metadata m
-        JOIN emby_users u ON u.id = %s
-    """
-    
-    params = [user_id]
+    if user_id:
+        base_select = """
+            SELECT 
+                m.emby_item_ids_json->>0 as emby_id,
+                m.tmdb_id
+            FROM media_metadata m
+            JOIN emby_users u ON u.id = %s
+        """
+        base_count = """
+            SELECT COUNT(*) 
+            FROM media_metadata m
+            JOIN emby_users u ON u.id = %s
+        """
+        params = [user_id]
+    else:
+        # --- 修复：支持无用户模式 (全局查询) ---
+        base_select = """
+            SELECT 
+                m.emby_item_ids_json->>0 as emby_id,
+                m.tmdb_id
+            FROM media_metadata m
+        """
+        base_count = """
+            SELECT COUNT(*) 
+            FROM media_metadata m
+        """
+        params = []
+
     where_clauses = []
 
     # 2. 必须在库中
@@ -112,96 +125,89 @@ def query_virtual_library_items(
     # ★★★ 4. 权限控制 (核心逻辑) ★★★
     # ======================================================================
     
-    # A. 文件夹/库权限 (已加固 asset_details_json)
-    folder_perm_sql = """
-    EXISTS (
-        SELECT 1 
-        FROM jsonb_array_elements(COALESCE(m.asset_details_json, '[]'::jsonb)) AS asset
-        WHERE 
-            -- 1. 白名单检查
+    if user_id:
+        # A. 文件夹/库权限
+        folder_perm_sql = """
+        EXISTS (
+            SELECT 1 
+            FROM jsonb_array_elements(COALESCE(m.asset_details_json, '[]'::jsonb)) AS asset
+            WHERE 
+                (
+                    (u.policy_json->'EnableAllFolders' = 'true'::jsonb)
+                    OR
+                    COALESCE(asset->'ancestor_ids', '[]'::jsonb) ?| ARRAY(
+                        SELECT jsonb_array_elements_text(
+                            CASE WHEN jsonb_typeof(u.policy_json->'EnabledFolders') = 'array' 
+                                 THEN u.policy_json->'EnabledFolders' 
+                                 ELSE '[]'::jsonb END
+                        )
+                    )
+                    OR
+                    (asset->>'source_library_id') = ANY(
+                        ARRAY(SELECT jsonb_array_elements_text(
+                            CASE WHEN jsonb_typeof(u.policy_json->'EnabledFolders') = 'array' 
+                                 THEN u.policy_json->'EnabledFolders' 
+                                 ELSE '[]'::jsonb END
+                        ))
+                    )
+                )
+                AND NOT (
+                    COALESCE(asset->'ancestor_ids', '[]'::jsonb) ?| ARRAY(
+                        SELECT jsonb_array_elements_text(
+                            CASE WHEN jsonb_typeof(u.policy_json->'ExcludedSubFolders') = 'array' 
+                                 THEN u.policy_json->'ExcludedSubFolders' 
+                                 ELSE '[]'::jsonb END
+                        )
+                    )
+                )
+        )
+        """
+        where_clauses.append(folder_perm_sql)
+
+        # B. 标签屏蔽
+        tag_block_sql = """
+        NOT (
+            COALESCE(m.tags_json, '[]'::jsonb) ?| ARRAY(
+                SELECT jsonb_array_elements_text(
+                    CASE WHEN jsonb_typeof(u.policy_json->'BlockedTags') = 'array' 
+                         THEN u.policy_json->'BlockedTags' 
+                         ELSE '[]'::jsonb END
+                )
+            )
+        )
+        """
+        where_clauses.append(tag_block_sql)
+
+        # C. 分级控制 
+        parental_control_sql = """
+        (
+            (u.policy_json->'MaxParentalRating' IS NULL)
+            OR
             (
-                (u.policy_json->'EnableAllFolders' = 'true'::jsonb)
-                OR
-                COALESCE(asset->'ancestor_ids', '[]'::jsonb) ?| ARRAY(
-                    SELECT jsonb_array_elements_text(
-                        CASE WHEN jsonb_typeof(u.policy_json->'EnabledFolders') = 'array' 
-                             THEN u.policy_json->'EnabledFolders' 
-                             ELSE '[]'::jsonb END
-                    )
+                m.official_rating IS NOT NULL 
+                AND (
+                    COALESCE(
+                        NULLIF(REGEXP_REPLACE(m.official_rating, '[^0-9]', '', 'g'), ''), 
+                        '0'
+                    )::int <= (u.policy_json->>'MaxParentalRating')::int
                 )
-                OR
-                (asset->>'source_library_id') = ANY(
-                    ARRAY(SELECT jsonb_array_elements_text(
-                        CASE WHEN jsonb_typeof(u.policy_json->'EnabledFolders') = 'array' 
-                             THEN u.policy_json->'EnabledFolders' 
-                             ELSE '[]'::jsonb END
-                    ))
-                )
-            )
-            -- 2. 黑名单检查
-            AND NOT (
-                COALESCE(asset->'ancestor_ids', '[]'::jsonb) ?| ARRAY(
-                    SELECT jsonb_array_elements_text(
-                        CASE WHEN jsonb_typeof(u.policy_json->'ExcludedSubFolders') = 'array' 
-                             THEN u.policy_json->'ExcludedSubFolders' 
-                             ELSE '[]'::jsonb END
-                    )
-                )
-            )
-    )
-    """
-    where_clauses.append(folder_perm_sql)
-
-    # B. 标签屏蔽 (黑名单)
-    tag_block_sql = """
-    NOT (
-        COALESCE(m.tags_json, '[]'::jsonb) ?| ARRAY(
-            SELECT jsonb_array_elements_text(
-                CASE WHEN jsonb_typeof(u.policy_json->'BlockedTags') = 'array' 
-                     THEN u.policy_json->'BlockedTags' 
-                     ELSE '[]'::jsonb END
             )
         )
-    )
-    """
-    where_clauses.append(tag_block_sql)
-
-    # C. 分级控制 
-    parental_control_sql = """
-    (
-        -- 1. 如果没有设置最大分级限制，则允许所有
-        (u.policy_json->'MaxParentalRating' IS NULL)
-        OR
-        (
-            m.official_rating IS NOT NULL 
-            AND (
-                -- 核心修复：提取字符串中的数字进行比较
-                -- 将非数字字符替换为空，然后转 int。如果结果为空(如 "R"级)，则默认为 0 (未分级)
-                COALESCE(
-                    NULLIF(REGEXP_REPLACE(m.official_rating, '[^0-9]', '', 'g'), ''), 
-                    '0'
-                )::int <= (u.policy_json->>'MaxParentalRating')::int
+        AND NOT (
+            (
+                jsonb_typeof(u.policy_json->'BlockUnratedItems') = 'array'
+                AND
+                u.policy_json->'BlockUnratedItems' @> to_jsonb(m.item_type)
             )
-        )
-    )
-    AND NOT (
-        -- 2. 处理 "禁止未分级内容" (BlockUnratedItems)
-        -- 只有当 BlockUnratedItems 是数组且包含当前 item_type 时才生效
-        (
-            jsonb_typeof(u.policy_json->'BlockUnratedItems') = 'array'
             AND
-            u.policy_json->'BlockUnratedItems' @> to_jsonb(m.item_type)
+            (
+                m.official_rating IS NULL 
+                OR m.official_rating = '' 
+                OR REGEXP_REPLACE(m.official_rating, '[^0-9]', '', 'g') = ''
+            )
         )
-        AND
-        (
-            m.official_rating IS NULL 
-            OR m.official_rating = '' 
-            -- 如果提取不出任何数字，也视为未分级
-            OR REGEXP_REPLACE(m.official_rating, '[^0-9]', '', 'g') = ''
-        )
-    )
-    """
-    where_clauses.append(parental_control_sql)
+        """
+        where_clauses.append(parental_control_sql)
 
     # ======================================================================
     # 5. 动态构建筛选规则 SQL
