@@ -574,45 +574,6 @@ def get_all_series_for_watchlist_scan() -> List[Dict[str, Any]]:
         logger.error(f"  ➜ 为一键扫描任务获取所有剧集时出错: {e}", exc_info=True)
         return []
 
-def batch_set_series_watching(tmdb_ids: List[str]):
-    """
-    批量将一组指定的剧集状态更新为“追剧中”。
-    【逻辑修正版】Series->Watching, 子项->NONE。
-    """
-    if not tmdb_ids:
-        return
-    try:
-        with get_db_connection() as conn:
-            cursor = conn.cursor()
-            
-            # 1. 更新 Series -> Watching
-            sql_series = """
-                UPDATE media_metadata
-                SET
-                    watching_status = 'Watching',
-                    paused_until = NULL,
-                    force_ended = FALSE
-                WHERE tmdb_id = ANY(%s) AND item_type = 'Series'
-            """
-            cursor.execute(sql_series, (tmdb_ids,))
-            
-            # 2. 重置子项 (Season/Episode) -> NONE
-            # 避免 Episode 被错误标记为 Watching
-            # 让 Season 回归初始状态，等待 Processor 计算
-            sql_children = """
-                UPDATE media_metadata
-                SET watching_status = 'NONE'
-                WHERE parent_series_tmdb_id = ANY(%s)
-            """
-            cursor.execute(sql_children, (tmdb_ids,))
-            
-            conn.commit()
-            logger.info(f"  ➜ 成功初始化 {len(tmdb_ids)} 部剧集状态，并重置了相关子项。")
-    except Exception as e:
-        conn.rollback()
-        logger.error(f"  ➜ 批量更新剧集为“追剧中”时出错: {e}", exc_info=True)
-        raise
-
 def sync_seasons_watching_status(parent_tmdb_id: str, active_season_numbers: List[int], series_status: str):
     """
     同步更新指定剧集下所有季的追剧状态。
