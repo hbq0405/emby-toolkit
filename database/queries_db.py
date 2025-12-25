@@ -169,20 +169,35 @@ def query_virtual_library_items(
     # C. 分级控制 
     parental_control_sql = """
     (
+        -- 1. 如果没有设置最大分级限制，则允许所有
         (u.policy_json->'MaxParentalRating' IS NULL)
         OR
         (
             m.official_rating IS NOT NULL 
-            AND m.official_rating ~ '^[0-9]+$' 
-            AND (m.official_rating)::int <= (u.policy_json->>'MaxParentalRating')::int
+            AND (
+                -- 核心修复：提取字符串中的数字进行比较
+                -- 将非数字字符替换为空，然后转 int。如果结果为空(如 "R"级)，则默认为 0 (未分级)
+                COALESCE(
+                    NULLIF(REGEXP_REPLACE(m.official_rating, '[^0-9]', '', 'g'), ''), 
+                    '0'
+                )::int <= (u.policy_json->>'MaxParentalRating')::int
+            )
         )
     )
     AND NOT (
-        (u.policy_json->'BlockUnratedItems' = 'true'::jsonb) 
-        AND (
+        -- 2. 处理 "禁止未分级内容" (BlockUnratedItems)
+        -- 只有当 BlockUnratedItems 是数组且包含当前 item_type 时才生效
+        (
+            jsonb_typeof(u.policy_json->'BlockUnratedItems') = 'array'
+            AND
+            u.policy_json->'BlockUnratedItems' @> to_jsonb(m.item_type)
+        )
+        AND
+        (
             m.official_rating IS NULL 
             OR m.official_rating = '' 
-            OR (CASE WHEN m.official_rating ~ '^[0-9]+$' THEN (m.official_rating)::int ELSE 0 END) = 0
+            -- 如果提取不出任何数字，也视为未分级
+            OR REGEXP_REPLACE(m.official_rating, '[^0-9]', '', 'g') = ''
         )
     )
     """
