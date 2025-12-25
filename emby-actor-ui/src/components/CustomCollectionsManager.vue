@@ -283,6 +283,17 @@
                         style="flex-grow: 1;"
                       />
                     </template>
+                    <template v-else-if="rule.field === 'original_language'">
+                      <n-select
+                        v-model:value="rule.value"
+                        :multiple="rule.operator === 'is_one_of'"
+                        :options="filterLanguageOptions"
+                        placeholder="选择原始语言"
+                        clearable
+                        filterable
+                        style="flex-grow: 1; min-width: 180px;"
+                      />
+                    </template>
                     <template v-else-if="rule.field === 'studios'">
                       <n-select
                         v-if="['is_one_of', 'is_none_of'].includes(rule.operator)"
@@ -1379,6 +1390,7 @@ const ruleConfig = {
   rating: { label: '评分', type: 'number', operators: ['gte', 'lte'] },
   genres: { label: '类型', type: 'select', operators: ['contains', 'is_one_of', 'is_none_of', 'is_primary'] }, 
   countries: { label: '国家/地区', type: 'select', operators: ['contains', 'is_one_of', 'is_none_of', 'is_primary'] },
+  original_language: { label: '原始语言', type: 'select', operators: ['eq', 'is_one_of'] },
   studios: { label: '工作室', type: 'select', operators: ['contains', 'is_one_of', 'is_none_of', 'is_primary'] },
   keywords: { label: '关键词', type: 'select', operators: ['contains', 'is_one_of', 'is_none_of'] },
   tags: { label: '标签', type: 'select', operators: ['contains', 'is_one_of', 'is_none_of'] }, 
@@ -1430,6 +1442,22 @@ const audioLangOptions = [
   { label: '英语', value: '英语' },
   { label: '日语', value: '日语' },
   { label: '韩语', value: '韩语' }
+];
+
+// 原始语言选项 (ISO 639-1 代码)
+const filterLanguageOptions = [
+  { label: '英语 (en)', value: 'en' },
+  { label: '中文 (zh)', value: 'zh' },
+  { label: '日语 (ja)', value: 'ja' },
+  { label: '韩语 (ko)', value: 'ko' },
+  { label: '法语 (fr)', value: 'fr' },
+  { label: '德语 (de)', value: 'de' },
+  { label: '俄语 (ru)', value: 'ru' },
+  { label: '西班牙语 (es)', value: 'es' },
+  { label: '意大利语 (it)', value: 'it' },
+  { label: '泰语 (th)', value: 'th' },
+  { label: '粤语 (cn)', value: 'cn' },
+  { label: '印地语 (hi)', value: 'hi' }
 ];
 
 const operatorLabels = {
@@ -1719,7 +1747,6 @@ const getInitialFormModel = () => ({
     dynamic_logic: 'AND',
     dynamic_rules: [],
     show_in_latest: false,
-    ai_discovery_ratio: 0.2,
   }
 });
 const currentCollection = ref(getInitialFormModel());
@@ -1734,7 +1761,6 @@ watch(() => currentCollection.value.type, (newType) => {
     dynamic_logic: 'AND',
     dynamic_rules: [],
     show_in_latest: false,
-    ai_discovery_ratio: 0.2,
   };
 
   if (newType === 'filter') {

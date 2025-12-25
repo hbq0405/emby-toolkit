@@ -66,7 +66,6 @@ def query_virtual_library_items(
     """
     
     # 1. 基础 SQL 结构
-    # 我们只查询 emby_item_ids_json[0] 作为 Emby ID 返回，代理层会去换取详情
     base_select = """
         SELECT 
             m.emby_item_ids_json->>0 as emby_id,
@@ -99,10 +98,10 @@ def query_virtual_library_items(
 
     # 5. 媒体库过滤
     if target_library_ids:
-        # 建议使用更严谨的 EXISTS 语法，防止 asset_details_json 为空时报错
+        # 使用 COALESCE 防止 asset_details_json 为 NULL 导致报错
         lib_filter_sql = """
         EXISTS (
-            SELECT 1 FROM jsonb_array_elements(m.asset_details_json) AS a 
+            SELECT 1 FROM jsonb_array_elements(COALESCE(m.asset_details_json, '[]'::jsonb)) AS a 
             WHERE a->>'source_library_id' = ANY(%s)
         )
         """
@@ -113,16 +112,15 @@ def query_virtual_library_items(
     # ★★★ 4. 权限控制 (核心逻辑) ★★★
     # ======================================================================
     
-    # A. 文件夹/库权限
-    # 逻辑：(允许所有) OR (祖先ID匹配) OR (来源库ID匹配)
+    # A. 文件夹/库权限 (已加固 asset_details_json)
     folder_perm_sql = """
     EXISTS (
         SELECT 1 
-        FROM jsonb_array_elements(m.asset_details_json) AS asset
+        FROM jsonb_array_elements(COALESCE(m.asset_details_json, '[]'::jsonb)) AS asset
         WHERE 
             -- 1. 白名单检查
             (
-                (u.policy_json->'EnableAllFolders' = 'true'::jsonb) -- 安全的布尔判断
+                (u.policy_json->'EnableAllFolders' = 'true'::jsonb)
                 OR
                 COALESCE(asset->'ancestor_ids', '[]'::jsonb) ?| ARRAY(
                     SELECT jsonb_array_elements_text(
@@ -168,19 +166,19 @@ def query_virtual_library_items(
     """
     where_clauses.append(tag_block_sql)
 
-    # C. 分级控制 (Parental Control)
+    # C. 分级控制 
     parental_control_sql = """
     (
         (u.policy_json->'MaxParentalRating' IS NULL)
         OR
         (
             m.unified_rating IS NOT NULL 
-            AND m.unified_rating ~ '^[0-9]+$' -- 确保是数字
+            AND m.unified_rating ~ '^[0-9]+$' 
             AND (m.unified_rating)::int <= (u.policy_json->>'MaxParentalRating')::int
         )
     )
     AND NOT (
-        (u.policy_json->'BlockUnratedItems' = 'true'::jsonb) -- 安全的布尔判断
+        (u.policy_json->'BlockUnratedItems' = 'true'::jsonb) 
         AND (
             m.unified_rating IS NULL 
             OR m.unified_rating = '' 
@@ -199,16 +197,16 @@ def query_virtual_library_items(
         op = rule.get('operator')
         value = rule.get('value')
         
-        # 基础校验：跳过空值
         if value is None or value == '' or (isinstance(value, list) and len(value) == 0):
             continue
 
         clause = None
         
-        # --- 1. 基础 JSONB 数组类型 ---
-        jsonb_array_fields = ['genres', 'tags', 'studios', 'countries'] # 👈 删掉 keywords
+        # --- 1. 基础 JSONB 数组类型 (Genres, Tags, Studios, Countries) ---
+        # ★★★ 修复：增加 COALESCE，防止 NULL 导致排除逻辑失效 ★★★
+        jsonb_array_fields = ['genres', 'tags', 'studios', 'countries']
         if field in jsonb_array_fields:
-            column = f"m.{field}_json"
+            column = f"COALESCE(m.{field}_json, '[]'::jsonb)" # 兜底为数组
             if op in ['contains', 'eq']:
                 clause = f"{column} ? %s"
                 params.append(str(value))
@@ -222,26 +220,22 @@ def query_virtual_library_items(
                 clause = f"{column}->>0 = %s"
                 params.append(str(value))
 
-        # --- 2. 关键词 (Keywords) 专项处理 ★★★ ---
+        # --- 2. 关键词 (Keywords) ---
         elif field == 'keywords':
-            # 调用上面的展开函数，把 "怪兽" 变成 ["monster"]
             expanded_keywords = _expand_keyword_labels(value)
+            if not expanded_keywords: continue
             
-            if not expanded_keywords:
-                continue
-
+            # ★★★ 修复：增加 COALESCE ★★★
+            column = "COALESCE(m.keywords_json, '[]'::jsonb)"
             if op in ['contains', 'is_one_of', 'eq']:
-                # SQL 变成: keywords_json ?| ARRAY['monster', 'disaster']
-                clause = "m.keywords_json ?| %s"
+                clause = f"{column} ?| %s"
                 params.append(expanded_keywords)
             elif op == 'is_none_of':
-                clause = "NOT (m.keywords_json ?| %s)"
+                clause = f"NOT ({column} ?| %s)"
                 params.append(expanded_keywords)
 
-        # --- 3. 复杂对象数组 (actors, directors) ---
-        # 数据库存储格式: [{"id": 123, "name": "..."}] 或 [{"tmdb_id": 123, ...}]
+        # --- 3. 复杂对象数组 (Actors, Directors) ---
         elif field in ['actors', 'directors']:
-            # 提取 ID 列表 (适配前端传来的对象数组)
             ids = []
             if isinstance(value, list):
                 ids = [item['id'] if isinstance(item, dict) else item for item in value]
@@ -249,35 +243,31 @@ def query_virtual_library_items(
                 ids = [value.get('id')]
             else:
                 ids = [value]
-            
             ids = [int(i) for i in ids if str(i).isdigit()]
             if not ids: continue
 
             id_key = 'tmdb_id' if field == 'actors' else 'id'
-            
-            # ✨ 核心修改：处理“主要是”逻辑 (取前三名)
+            # ★★★ 修复：增加 COALESCE，防止 jsonb_array_elements 对 NULL 报错 ★★★
+            safe_column = f"COALESCE(m.{field}_json, '[]'::jsonb)"
+
             if op == 'is_primary':
-                # 逻辑：展开数组并带上序号(ord)，只取序号 <= 3 的元素进行匹配
                 clause = f"""
                 EXISTS (
-                    SELECT 1 FROM jsonb_array_elements(m.{field}_json) WITH ORDINALITY AS t(elem, ord) 
+                    SELECT 1 FROM jsonb_array_elements({safe_column}) WITH ORDINALITY AS t(elem, ord) 
                     WHERE t.ord <= 3 AND (t.elem->>'{id_key}')::int = ANY(%s)
                 )
                 """
                 params.append(ids)
-                
             elif op in ['contains', 'is_one_of', 'eq']:
-                # 全表扫描（只要在演职员表里就行）
-                clause = f"EXISTS (SELECT 1 FROM jsonb_array_elements(m.{field}_json) elem WHERE (elem->>'{id_key}')::int = ANY(%s))"
+                clause = f"EXISTS (SELECT 1 FROM jsonb_array_elements({safe_column}) elem WHERE (elem->>'{id_key}')::int = ANY(%s))"
                 params.append(ids)
-                
             elif op == 'is_none_of':
-                clause = f"NOT EXISTS (SELECT 1 FROM jsonb_array_elements(m.{field}_json) elem WHERE (elem->>'{id_key}')::int = ANY(%s))"
+                clause = f"NOT EXISTS (SELECT 1 FROM jsonb_array_elements({safe_column}) elem WHERE (elem->>'{id_key}')::int = ANY(%s))"
                 params.append(ids)
 
-        # --- 4. 家长分级 (unified_rating - 字符串匹配) ---
-        # 根据你的图片，这里存的是“青少年”、“成人”等中文
+        # --- 4. 家长分级 (Unified Rating) ---
         elif field == 'unified_rating':
+            # ★★★ 修复：处理 NULL 情况 ★★★
             if op == 'eq':
                 clause = "m.unified_rating = %s"
                 params.append(value)
@@ -285,17 +275,15 @@ def query_virtual_library_items(
                 clause = "m.unified_rating = ANY(%s)"
                 params.append(list(value) if isinstance(value, list) else [value])
             elif op == 'is_none_of':
-                clause = "m.unified_rating IS NOT NULL AND NOT (m.unified_rating = ANY(%s))"
+                # 排除选定的，意味着：要么是 NULL，要么不在列表里
+                clause = "(m.unified_rating IS NULL OR NOT (m.unified_rating = ANY(%s)))"
                 params.append(list(value) if isinstance(value, list) else [value])
 
-        # --- 5. 数值比较 (runtime, release_year, rating) ---
+        # --- 5. 数值比较 (Runtime, Year, Rating) ---
+        # ★★★ 修复：电视剧平均时长逻辑 + 空值兜底 ★★★
         elif field == 'runtime':
             try:
                 val = float(value)
-                # SQL 逻辑：
-                # 1. 如果是 Series：子查询计算该剧集下所有 Episode 的 runtime_minutes 平均值
-                # 2. 如果是 Movie：直接使用自身的 runtime_minutes
-                # 3. 使用 COALESCE(..., 0) 防止 NULL 值导致筛选失效
                 runtime_logic = """
                 (CASE
                     WHEN m.item_type = 'Series' THEN (
@@ -308,11 +296,9 @@ def query_virtual_library_items(
                     ELSE COALESCE(m.runtime_minutes, 0)
                 END)
                 """
-                
                 if op == 'gte': clause = f"{runtime_logic} >= %s"
                 elif op == 'lte': clause = f"{runtime_logic} <= %s"
                 elif op == 'eq': clause = f"{runtime_logic} = %s"
-                
                 if clause: params.append(val)
             except (ValueError, TypeError): continue
 
@@ -321,17 +307,15 @@ def query_virtual_library_items(
             column = col_map[field]
             try:
                 val = float(value)
-                # 同样给年份和评分加上 NULL 兜底，防止数据缺失时被漏掉
+                # ★★★ 修复：COALESCE 兜底 ★★★
                 safe_col = f"COALESCE({column}, 0)"
-                
                 if op == 'gte': clause = f"{safe_col} >= %s"
                 elif op == 'lte': clause = f"{safe_col} <= %s"
                 elif op == 'eq': clause = f"{safe_col} = %s"
-                
                 if clause: params.append(val)
             except (ValueError, TypeError): continue
 
-        # --- 6. 日期偏移 (date_added, release_date) ---
+        # --- 6. 日期偏移 ---
         elif field in ['date_added', 'release_date']:
             column = f"m.{field}"
             try:
@@ -343,8 +327,9 @@ def query_virtual_library_items(
                 if clause: params.append(days)
             except (ValueError, TypeError): continue
 
-        # --- 7. 文本模糊匹配 (title) ---
+        # --- 7. 文本模糊匹配 ---
         elif field == 'title':
+            # 标题通常不会为 NULL，但为了保险可以加 COALESCE，不过 ILIKE 对 NULL 只是返回 NULL (False)，通常没问题
             if op == 'contains':
                 clause = "m.title ILIKE %s"
                 params.append(f"%{value}%")
@@ -361,7 +346,7 @@ def query_virtual_library_items(
                 clause = "m.title NOT ILIKE %s"
                 params.append(f"%{value}%")
 
-        # --- 8. 原始语言 (original_language) ---
+        # --- 8. 原始语言 ---
         elif field == 'original_language':
             if op == 'eq':
                 clause = "m.original_language = %s"
@@ -370,47 +355,47 @@ def query_virtual_library_items(
                 clause = "m.original_language = ANY(%s)"
                 params.append(list(value) if isinstance(value, list) else [value])
 
-        # --- 9. 追剧状态 (is_in_progress) ---
+        # --- 9. 追剧状态 ---
         elif field == 'is_in_progress':
             if op == 'is':
                 clause = "m.watchlist_is_airing = %s"
                 params.append(bool(value))
 
-        # --- 10. 视频流属性筛选 (分辨率、质量、特效、编码) ---
+        # --- 10. 视频流属性 (Resolution, Quality, Effect, Codec) ---
         asset_map = {
             'resolution': 'resolution_display',
             'quality': 'quality_display',
             'effect': 'effect_display',
             'codec': 'codec_display'
         }
-
         if field in asset_map:
             json_key = asset_map[field]
+            # ★★★ 修复：增加 COALESCE，防止 asset_details_json 为 NULL 报错 ★★★
+            safe_assets = "COALESCE(m.asset_details_json, '[]'::jsonb)"
+            
             if op == 'eq':
-                clause = f"EXISTS (SELECT 1 FROM jsonb_array_elements(m.asset_details_json) a WHERE a->>'{json_key}' = %s)"
+                clause = f"EXISTS (SELECT 1 FROM jsonb_array_elements({safe_assets}) a WHERE a->>'{json_key}' = %s)"
                 params.append(value)
             elif op == 'is_one_of':
-                clause = f"EXISTS (SELECT 1 FROM jsonb_array_elements(m.asset_details_json) a WHERE a->>'{json_key}' = ANY(%s))"
+                clause = f"EXISTS (SELECT 1 FROM jsonb_array_elements({safe_assets}) a WHERE a->>'{json_key}' = ANY(%s))"
                 params.append(list(value))
             elif op == 'is_none_of':
-                clause = f"NOT EXISTS (SELECT 1 FROM jsonb_array_elements(m.asset_details_json) a WHERE a->>'{json_key}' = ANY(%s))"
+                clause = f"NOT EXISTS (SELECT 1 FROM jsonb_array_elements({safe_assets}) a WHERE a->>'{json_key}' = ANY(%s))"
                 params.append(list(value))
 
-        # --- 11. 音轨筛选 (全部改为匹配 audio_display 字符串) ---
+        # --- 11. 音轨筛选 ---
         elif field == 'audio_lang':
-            # 因为 audio_display 是 "国语, 英语" 这种格式，所以用 ILIKE 匹配
+            safe_assets = "COALESCE(m.asset_details_json, '[]'::jsonb)"
             if op in ['contains', 'eq']:
-                clause = f"EXISTS (SELECT 1 FROM jsonb_array_elements(m.asset_details_json) a WHERE a->>'audio_display' ILIKE %s)"
+                clause = f"EXISTS (SELECT 1 FROM jsonb_array_elements({safe_assets}) a WHERE a->>'audio_display' ILIKE %s)"
                 params.append(f"%{value}%")
             elif op == 'is_one_of':
-                # 如果是多选，构造多个 ILIKE 的 OR 关系
                 sub_clauses = []
                 for val in (value if isinstance(value, list) else [value]):
                     sub_clauses.append(f"a->>'audio_display' ILIKE %s")
                     params.append(f"%{val}%")
-                
                 if sub_clauses:
-                    clause = f"EXISTS (SELECT 1 FROM jsonb_array_elements(m.asset_details_json) a WHERE ({' OR '.join(sub_clauses)}))"
+                    clause = f"EXISTS (SELECT 1 FROM jsonb_array_elements({safe_assets}) a WHERE ({' OR '.join(sub_clauses)}))"
 
         if clause:
             rule_clauses.append(clause)
@@ -436,7 +421,6 @@ def query_virtual_library_items(
     }
     db_sort_col = sort_map.get(sort_by, 'm.date_added')
     
-    # Random 排序不需要 ASC/DESC
     if db_sort_col == 'RANDOM()':
         db_sort_dir = ""
     else:
@@ -446,8 +430,6 @@ def query_virtual_library_items(
     try:
         with get_db_connection() as conn:
             with conn.cursor() as cursor:
-                # A. 获取总数 (用于分页)
-                # 注意：count_sql 的参数和 query_sql 的前缀参数是一样的
                 final_count_sql = f"{base_count} WHERE {full_where}"
                 cursor.execute(final_count_sql, tuple(params))
                 row = cursor.fetchone()
@@ -456,25 +438,21 @@ def query_virtual_library_items(
                 if total_count == 0:
                     return [], 0
 
-                # B. 获取分页数据
                 final_query_sql = f"""
                     {base_select}
                     WHERE {full_where}
                     ORDER BY {db_sort_col} {db_sort_dir}
                     LIMIT %s OFFSET %s
                 """
-                # 添加分页参数
                 query_params = params + [limit, offset]
                 
                 cursor.execute(final_query_sql, tuple(query_params))
                 rows = cursor.fetchall()
                 
-                # 提取 Emby ID 列表并构造返回对象
-                # 返回格式: [{'Id': 'xxx'}, {'Id': 'yyy'}]
                 items = [
                     {
                         'Id': row['emby_id'], 
-                        'tmdb_id': row['tmdb_id']  # 加上这一行
+                        'tmdb_id': row['tmdb_id']
                     } 
                     for row in rows if row['emby_id']
                 ]
