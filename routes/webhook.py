@@ -276,11 +276,10 @@ def _process_batch_webhook_events():
 
         # 2. 检查数据库是否在线
         if is_already_processed:
-            # 不在线，需要复活
             is_online_in_db = media_db.is_emby_id_in_library(parent_id)
-            
+            # 不在线，需要复活
             if not is_online_in_db:
-                logger.info(f"  ➜ ⚠️ 缓存命中 '{parent_name}'，但数据库标记为离线，尝试就地复活...")
+                logger.info(f"  ➜ ⚠️ 缓存命中 '{parent_name}'，但数据库标记为离线，尝试复活...")
                 
                 revive_success = False
                 try:
@@ -308,7 +307,7 @@ def _process_batch_webhook_events():
                     logger.warning(f"  ➜ ⚰️ 复活失败 (可能数据库无记录)，转为完整处理流程。")
                     is_already_processed = False
                     extensions.media_processor_instance.processed_items_cache.discard(parent_id)
-
+        # 3. 完整处理
         if not is_already_processed:
             
             # 默认情况下，不强制深度更新
@@ -322,8 +321,8 @@ def _process_batch_webhook_events():
                 force_full_update=force_full_update_for_new_item,
                 new_episode_ids=list(item_info["episode_ids"]) 
             )
+        # 4. 追更处理
         else:
-            # ★★★ 核心修复：恢复正确的追更处理逻辑 ★★★
             if parent_type == 'Series':
                 episode_ids_to_update = list(item_info["episode_ids"])
                 
