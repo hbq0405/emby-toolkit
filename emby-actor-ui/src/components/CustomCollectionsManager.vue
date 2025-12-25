@@ -435,7 +435,7 @@
                       <template #suffix>天内</template>
                     </n-input-number>
                     <n-input-number
-                      v-else-if="['rating', 'release_year'].includes(rule.field)"
+                      v-else-if="['rating', 'release_year', 'runtime'].includes(rule.field)"
                       v-model:value="rule.value"
                       placeholder="数值"
                       :disabled="!rule.operator"
