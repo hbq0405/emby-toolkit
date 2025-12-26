@@ -1138,7 +1138,9 @@ class MediaProcessor:
                                 logger.info(f"  ➜ [快速模式] 成功从源缓存捞回了 {recovered_count} 个尚未同步的新分集数据。")
                         
                         # 将聚合好的数据塞回骨架
-                        if episodes_details_map: tmdb_details_for_extra['episodes_details'] = episodes_details_map
+                        if episodes_details_map:
+                            tmdb_details_for_extra['episodes_details'] = episodes_details_map
+                            logger.info(f"  ➜ [快速模式] 成功聚合了 {len(episodes_details_map)} 个分集的元数据。")
                         if seasons_details_list: 
                             seasons_details_list.sort(key=lambda x: x.get('season_number', 0))
                             tmdb_details_for_extra['seasons_details'] = seasons_details_list
