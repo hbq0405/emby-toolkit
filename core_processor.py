@@ -1105,6 +1105,48 @@ class MediaProcessor:
                                     else: # 季
                                         seasons_details_list.append(data)
                         
+                        # 针对追更的新分集，强制检查并补全元数据
+                        if specific_episode_ids and self.tmdb_api_key:
+                            logger.info(f"  ➜ [追更补全] 正在检查 {len(specific_episode_ids)} 个新入库分集的元数据完整性...")
+                            
+                            # A. 获取这些 Emby ID 对应的 季号/集号
+                            new_eps_info = emby.get_emby_items_by_id(
+                                base_url=self.emby_url, 
+                                api_key=self.emby_api_key, 
+                                user_id=self.emby_user_id,
+                                item_ids=specific_episode_ids,
+                                fields="ParentIndexNumber,IndexNumber"
+                            )
+                            
+                            fetched_count = 0
+                            for ep in new_eps_info:
+                                s_num = ep.get('ParentIndexNumber')
+                                e_num = ep.get('IndexNumber')
+                                
+                                if s_num is not None and e_num is not None:
+                                    key = f"S{s_num}E{e_num}"
+                                    
+                                    # B. 如果本地缓存里没有这个集的数据 -> 立即从 TMDb 获取
+                                    if key not in episodes_details_map:
+                                        logger.debug(f"    ├─ 本地缺失 S{s_num}E{e_num} 元数据，正在从 TMDb 实时获取...")
+                                        try:
+                                            tmdb_ep_data = tmdb.get_tv_episode_details(tmdb_id, s_num, e_num, self.tmdb_api_key)
+                                            if tmdb_ep_data:
+                                                # C. 补全到内存 Map 中 (确保写入数据库)
+                                                episodes_details_map[key] = tmdb_ep_data
+                                                
+                                                # D. 写入本地 Cache 文件 (确保下次不用再下)
+                                                cache_file_path = os.path.join(source_cache_dir, f"season-{s_num}-episode-{e_num}.json")
+                                                with open(cache_file_path, 'w', encoding='utf-8') as f:
+                                                    json.dump(tmdb_ep_data, f, ensure_ascii=False, indent=4)
+                                                
+                                                fetched_count += 1
+                                        except Exception as e_fetch:
+                                            logger.warning(f"    ⚠️ 获取 S{s_num}E{e_num} TMDb 数据失败: {e_fetch}")
+                            
+                            if fetched_count > 0:
+                                logger.info(f"  ➜ [追更补全] 成功从 TMDb 补充了 {fetched_count} 个新分集的元数据。")
+                        
                         # 将聚合好的数据塞回骨架
                         if episodes_details_map: tmdb_details_for_extra['episodes_details'] = episodes_details_map
                         if seasons_details_list: 

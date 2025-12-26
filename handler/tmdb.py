@@ -407,7 +407,7 @@ def aggregate_full_series_data_from_tmdb(
 # +++ 获取集详情 +++
 def get_episode_details_tmdb(tv_id: int, season_number: int, episode_number: int, api_key: str, append_to_response: Optional[str] = "credits,videos,images,external_ids") -> Optional[Dict[str, Any]]:
     """
-    【新增】获取电视剧某一集的详细信息。
+    获取电视剧某一集的详细信息。
     """
     endpoint = f"/tv/{tv_id}/season/{season_number}/episode/{episode_number}"
     params = {
@@ -416,6 +416,18 @@ def get_episode_details_tmdb(tv_id: int, season_number: int, episode_number: int
     }
     logger.trace(f"  ➜ TMDb API: 获取电视剧 (ID: {tv_id}) S{season_number}E{episode_number} 的详情...")
     return _tmdb_request(endpoint, api_key, params)
+def get_tv_episode_details(tv_id: int, season_number: int, episode_number: int, api_key: str) -> Optional[Dict[str, Any]]:
+    """
+    获取电视剧某一集的详细信息。
+    这是 get_episode_details_tmdb 的一个更简洁的别名，用于简化调用。
+    """
+    return get_episode_details_tmdb(
+        tv_id=tv_id,
+        season_number=season_number,
+        episode_number=episode_number,
+        api_key=api_key,
+        append_to_response=None # 仅获取基础信息，不需要 credits 等额外数据，提高速度
+    )
 # --- 通过外部ID (如 IMDb ID) 在 TMDb 上查找人物 ---
 def find_person_by_external_id(external_id: str, api_key: str, source: str = "imdb_id",
                                names_for_verification: Optional[Dict[str, str]] = None) -> Optional[Dict[str, Any]]:
