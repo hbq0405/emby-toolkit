@@ -94,9 +94,22 @@ def _subscribe_full_series_with_logic(tmdb_id: int, series_name: str, config: Di
             if not air_date_str:
                 logger.debug(f"  ➜ S{s_num} 概要信息缺失发行日期，正在获取详细信息...")
                 season_details_deep = tmdb.get_tv_season_details(tmdb_id, s_num, tmdb_api_key)
+                
                 if season_details_deep:
+                    # 1. 尝试直接获取季日期
                     air_date_str = season_details_deep.get('air_date')
-                    # 顺便补全海报和简介
+                    
+                    # 2. ★★★ 新增：如果季日期仍为空，遍历分集找最早的日期 ★★★
+                    if not air_date_str and 'episodes' in season_details_deep:
+                        episodes = season_details_deep['episodes']
+                        # 提取所有有效的 air_date
+                        valid_dates = [e.get('air_date') for e in episodes if e.get('air_date')]
+                        if valid_dates:
+                            # 取最早的一个日期
+                            air_date_str = min(valid_dates)
+                            logger.debug(f"  ➜ 从分集数据中推断出 S{s_num} 发行日期: {air_date_str}")
+
+                    # 补全海报和简介
                     if not season_poster: season_poster = season_details_deep.get('poster_path')
                     if not season.get('overview'): season['overview'] = season_details_deep.get('overview')
             final_poster = season_poster if season_poster else series_poster
