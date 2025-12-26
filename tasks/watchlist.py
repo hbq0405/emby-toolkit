@@ -16,7 +16,7 @@ from watchlist_processor import STATUS_WATCHING, STATUS_PAUSED, STATUS_COMPLETED
 logger = logging.getLogger(__name__)
 
 # --- 追剧 ---    
-def task_process_watchlist(processor, tmdb_id: Optional[str] = None, force_full_update: bool = False, skip_refresh: bool = False):
+def task_process_watchlist(processor, tmdb_id: Optional[str] = None, force_full_update: bool = False):
     """
     【V9 - 启动器】
     调用处理器实例来执行追剧任务，并处理UI状态更新。
@@ -28,9 +28,8 @@ def task_process_watchlist(processor, tmdb_id: Optional[str] = None, force_full_
     try:
         processor.run_regular_processing_task_concurrent(
             progress_callback=progress_updater, 
-            tmdb_id=tmdb_id, 
-            force_full_update=force_full_update,
-            skip_refresh=skip_refresh
+            tmdb_id=tmdb_id, # <--- 将接收到的 tmdb_id 传递给处理器
+            force_full_update=force_full_update
         )
 
     except Exception as e:

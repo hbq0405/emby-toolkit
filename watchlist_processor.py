@@ -80,19 +80,6 @@ class WatchlistProcessor:
             logger.error(f"读取本地JSON文件失败: {file_path}, 错误: {e}")
             return None
 
-    # --- 从本地数据库加载元数据 ---
-    def _load_series_data_from_db(self, tmdb_id: str) -> Optional[tuple]:
-        """
-        不请求 TMDb，直接从本地 JSON 缓存组装数据。
-        用于 Webhook 触发后的极速状态计算。
-        """
-        try:
-            # 调用刚才在 watchlist_db 中定义的函数
-            return watchlist_db.get_full_series_data_from_db(tmdb_id)
-        except Exception as e:
-            logger.error(f"  ❌ [极速模式] 从数据库加载数据失败: {e}")
-            return None
-
     # ★★★ 核心修改 1: 重构统一的数据库更新函数 ★★★
     def _update_watchlist_entry(self, tmdb_id: str, item_name: str, updates: Dict[str, Any]):
         """【新架构】直接调用 DB 层更新，不再做字段映射。"""
@@ -131,7 +118,7 @@ class WatchlistProcessor:
             logger.error(f"自动添加剧集 '{item_name}' 时出错: {e}")
 
     # --- 核心任务启动器  ---
-    def run_regular_processing_task_concurrent(self, progress_callback: callable, tmdb_id: Optional[str] = None, force_full_update: bool = False, skip_refresh: bool = False):
+    def run_regular_processing_task_concurrent(self, progress_callback: callable, tmdb_id: Optional[str] = None, force_full_update: bool = False):
         """【V3 - 终极修复版】核心任务启动器，正确处理 tmdb_id。"""
         self.progress_callback = progress_callback
         task_name = "并发追剧更新"
@@ -165,7 +152,7 @@ class WatchlistProcessor:
                 def worker_process_series(series: dict):
                     if self.is_stop_requested(): return "任务已停止"
                     try:
-                        self._process_one_series(series, skip_refresh=skip_refresh)
+                        self._process_one_series(series)
                         return "处理成功"
                     except Exception as e:
                         logger.error(f"处理剧集 {series.get('item_name')} 时发生错误: {e}", exc_info=False)
@@ -826,7 +813,7 @@ class WatchlistProcessor:
             logger.error(f"  ⚠️ 执行完结自动洗版逻辑时出错: {e}", exc_info=True)
 
     # ★★★ 核心处理逻辑：单个剧集的所有操作在此完成 ★★★
-    def _process_one_series(self, series_data: Dict[str, Any], skip_refresh: bool = False):
+    def _process_one_series(self, series_data: Dict[str, Any]):
         tmdb_id = series_data['tmdb_id']
         emby_ids = series_data.get('emby_item_ids_json', [])
         item_id = emby_ids[0] if emby_ids else None
@@ -834,27 +821,16 @@ class WatchlistProcessor:
         old_status = series_data.get('watching_status') 
         is_force_ended = bool(series_data.get('force_ended', False))
         
-        logger.info(f"  ➜ 【追剧检查】正在处理: '{item_name}' (TMDb ID: {tmdb_id}) | 模式: {'极速(缓存)' if skip_refresh else '常规(联网)'}")
+        logger.info(f"  ➜ 【追剧检查】正在处理: '{item_name}' (TMDb ID: {tmdb_id})")
 
         if not item_id:
             logger.warning(f"  ➜ 剧集 '{item_name}' 在数据库中没有关联的 Emby ID，跳过。")
             return
 
-        refresh_result = None
-        
-        if skip_refresh:
-            # 极速模式：读本地缓存
-            refresh_result = self._load_series_data_from_db(tmdb_id)
-            
-            if not refresh_result or not refresh_result[0]:
-                logger.warning(f"  🚫 [极速模式] 数据库读取失败 (可能是元数据尚未写入)，本次跳过状态计算。")
-                return 
-        else:
-            # 常规模式：联网刷新
-            refresh_result = self._refresh_series_metadata(tmdb_id, item_name, item_id)
-
+        # 调用通用辅助函数刷新元数据
+        refresh_result = self._refresh_series_metadata(tmdb_id, item_name, item_id)
         if not refresh_result:
-            return 
+            return # 刷新失败，中止后续逻辑
         
         latest_series_data, all_tmdb_episodes, emby_seasons = refresh_result
 

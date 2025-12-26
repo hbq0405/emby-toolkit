@@ -1324,20 +1324,22 @@ class MediaProcessor:
             with get_central_db_connection() as conn:
                 cursor = conn.cursor()
 
-                # ★★★ 核心区分逻辑 ★★★
-                # 1. 数据库缓存模式: cache_row 是数据库行对象，没有 'source' 字段
-                # 2. 反哺模式: cache_row 是我们手动创建的 {'source': 'override_file'}
-                is_feedback_mode = cache_row and isinstance(cache_row, dict) and cache_row.get('source') == 'override_file'
+                is_feedback_mode = (
+                    cache_row 
+                    and isinstance(cache_row, dict) 
+                    and cache_row.get('source') == 'override_file'
+                    and not specific_episode_ids  # <--- 关键：如果有指定分集(追更)，则必须为 False
+                )
 
                 if is_feedback_mode:
-                    # --- 分支 A: 反哺模式 (极速恢复) ---
-                    # 既然本地文件存在且被认为是完美的，说明 Emby 端的数据和图片也已经是好的
-                    # 我们只需要把数据写回工具的数据库即可，跳过所有 API 调用和文件 IO
+                    # --- 分支 A: 纯读取模式 (极速恢复) ---
                     logger.info(f"  ➜ [快速模式] 检测到完美本地数据，跳过图片下载、文件写入及 Emby 刷新。")
                 
                 else:
-                    # --- 分支 B: 正常处理模式 (或数据库缓存模式) ---
+                    # --- 分支 B: 正常处理/追更模式 ---
                     # 写入 override 文件
+                    # 注意：sync_single_item_assets 内部已经有针对 episode_ids_to_sync 的优化，
+                    # 它只会下载新分集的图片，并复制新分集的 JSON，不会重新下载全套图片。
                     self.sync_single_item_assets(
                         item_id=item_id,
                         update_description="主流程处理完成" if not specific_episode_ids else f"追更: {len(specific_episode_ids)}个分集",
