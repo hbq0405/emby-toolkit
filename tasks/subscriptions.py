@@ -88,14 +88,24 @@ def _subscribe_full_series_with_logic(tmdb_id: int, series_name: str, config: Di
             s_id = season.get('id') # 季的 TMDb ID
             air_date_str = season.get('air_date')
             
-            # ★★★ 新增：优先使用季海报，没有则使用剧集海报 ★★★
+            # 优先使用季海报，没有则使用剧集海报
             season_poster = season.get('poster_path')
+            # 如果概要中缺失日期，强制获取季详情 
+            if not air_date_str:
+                logger.debug(f"  ➜ S{s_num} 概要信息缺失发行日期，正在获取详细信息...")
+                season_details_deep = tmdb.get_tv_season_details(tmdb_id, s_num, tmdb_api_key)
+                if season_details_deep:
+                    air_date_str = season_details_deep.get('air_date')
+                    # 顺便补全海报和简介
+                    if not season_poster: season_poster = season_details_deep.get('poster_path')
+                    if not season.get('overview'): season['overview'] = season_details_deep.get('overview')
             final_poster = season_poster if season_poster else series_poster
 
             # ==============================================================
             # 逻辑 A: 检查是否未上映 (Pending Release)
             # ==============================================================
             is_future_season = False
+            # 如果有日期且大于今天，或者干脆没有日期(视为待定/未上映)，都标记为未上映
             if air_date_str:
                 try:
                     air_date = datetime.strptime(air_date_str, "%Y-%m-%d").date()
@@ -103,6 +113,10 @@ def _subscribe_full_series_with_logic(tmdb_id: int, series_name: str, config: Di
                         is_future_season = True
                 except ValueError:
                     pass
+            else:
+                # 如果深挖了详情还是没有日期，通常意味着 TBD (To Be Determined)，也应视为未上映，防止错误订阅
+                is_future_season = True
+                logger.info(f"  ⏳ 季《{final_series_name}》S{s_num} 无发行日期，视为 '待上映'。")
             
             if is_future_season:
                 logger.info(f"  ⏳ 季《{final_series_name}》S{s_num} 尚未播出 ({air_date_str})，状态设为 '待上映'。")
