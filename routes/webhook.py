@@ -84,14 +84,18 @@ def _handle_full_processing_flow(processor: 'MediaProcessor', item_id: str, forc
 
     # 刷新智能追剧状态 
     if item_type == "Series" and tmdb_id:
-        logger.info(f"  ➜ [智能追剧] 触发单项刷新，重新计算状态: {item_name_for_log}")
-        task_manager.submit_task(
-            task_process_watchlist,
-            task_name=f"刷新智能追剧: {item_name_for_log}",
-            processor_type='watchlist', # 指定使用 WatchlistProcessor
-            tmdb_id=str(tmdb_id),
-            skip_refresh=True
-        )
+        if extensions.watchlist_processor_instance:
+            # ★★★ 新增：给数据库一点喘息时间 ★★★
+            sleep(2) 
+            
+            logger.info(f"  ➜ [智能追剧] 触发单项刷新 (极速模式)...")
+            task_manager.submit_task(
+                task_process_watchlist,
+                task_name=f"刷新智能追剧: {item_name_for_log}",
+                processor_type='watchlist', # 指定使用 WatchlistProcessor
+                tmdb_id=str(tmdb_id),
+                skip_refresh=True
+            )
 
     # 3. 后续处理
     if is_new_item:

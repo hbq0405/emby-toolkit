@@ -846,10 +846,9 @@ class WatchlistProcessor:
             # 极速模式：读本地缓存
             refresh_result = self._load_series_data_from_db(tmdb_id)
             
-            # 如果缓存读取失败（比如文件还没生成），回退到常规刷新
-            if not refresh_result:
-                logger.info(f"  ➜ [极速模式] 缓存未命中，自动回退到联网刷新...")
-                refresh_result = self._refresh_series_metadata(tmdb_id, item_name, item_id)
+            if not refresh_result or not refresh_result[0]:
+                logger.warning(f"  🚫 [极速模式] 数据库读取失败 (可能是元数据尚未写入)，本次跳过状态计算。")
+                return 
         else:
             # 常规模式：联网刷新
             refresh_result = self._refresh_series_metadata(tmdb_id, item_name, item_id)
