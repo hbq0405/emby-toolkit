@@ -64,12 +64,14 @@ def _handle_full_processing_flow(processor: 'MediaProcessor', item_id: str, forc
         return
     
     item_name_for_log = item_details.get("Name", f"ID:{item_id}")
+    item_type = item_details.get("Type")
+    tmdb_id = item_details.get("ProviderIds", {}).get("Tmdb")
 
-    # 1. 智能追剧判断 (仅针对新入库剧集)
-    if is_new_item:
+    # 1. 智能追剧判断 - 初始入库
+    if is_new_item and item_type == "Series":
         processor.check_and_add_to_watchlist(item_details)
 
-    # 2. ★★★ 核心调用：统一调用 process_single_item ★★★
+    # 2. 核心调用：统一调用 process_single_item 
     processed_successfully = processor.process_single_item(
         item_id, 
         force_full_update=force_full_update,
@@ -79,6 +81,16 @@ def _handle_full_processing_flow(processor: 'MediaProcessor', item_id: str, forc
     if not processed_successfully:
         logger.warning(f"  ➜ 项目 '{item_name_for_log}' 的元数据处理未成功完成，跳过后续步骤。")
         return
+
+    # 刷新智能追剧状态 
+    if item_type == "Series" and tmdb_id:
+        logger.info(f"  ➜ [智能追剧] 触发单项刷新，重新计算状态: {item_name_for_log}")
+        task_manager.submit_task(
+            task_process_watchlist,
+            task_name=f"刷新智能追剧: {item_name_for_log}",
+            processor_type='watchlist', # 指定使用 WatchlistProcessor
+            tmdb_id=str(tmdb_id)
+        )
 
     # 3. 后续处理
     if is_new_item:
