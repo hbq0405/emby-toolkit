@@ -358,6 +358,8 @@ class MediaProcessor:
                     "original_title": series_details.get('original_name'), "overview": series_details.get('overview'),
                     "release_date": series_details.get('first_air_date'), "poster_path": series_details.get('poster_path'),
                     "rating": douban_rating if douban_rating is not None else series_details.get('vote_average'),
+                    "total_episodes": series_details.get('number_of_episodes', 0),
+                    "watchlist_tmdb_status": series_details.get('status'),
                     "asset_details_json": json.dumps(series_asset_details, ensure_ascii=False),
                     "overview_embedding": overview_embedding_json
                 }
@@ -472,7 +474,9 @@ class MediaProcessor:
                 "genres_json", "directors_json", "studios_json", "countries_json", "keywords_json", "ignore_reason",
                 "asset_details_json",
                 "runtime_minutes",
-                "overview_embedding"
+                "overview_embedding",
+                "total_episodes",
+                "watchlist_tmdb_status"
             ]
             data_for_batch = []
             for record in records_to_upsert:
