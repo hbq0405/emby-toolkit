@@ -317,10 +317,9 @@ def _get_cover_badge_text_for_collection(collection_db_info: Dict[str, Any]) -> 
 # ★★★ 一键生成所有合集的后台任务 (重构版) ★★★
 def task_process_all_custom_collections(processor):
     """
-    一键生成所有合集的后台任务 (轻量化版)。
-    - Filter 类：只计算总数和 9 个样本用于封面，不存储全量 ID。
-    - List 类：保持全量爬取和存储。
-    - 移除所有用户权限计算逻辑。
+    一键生成所有合集的后台任务 (轻量化版 - 仅刷新外部数据源)。
+    - 仅处理 List (榜单) 和 AI Recommendation Global (全局AI)。
+    - 跳过 Filter (筛选) 和 AI Recommendation (个人AI)，因为它们是实时计算的，无需后台刷新。
     """
     task_name = "生成所有自建合集"
     logger.info(f"--- 开始执行 '{task_name}' 任务 ---")
@@ -328,12 +327,21 @@ def task_process_all_custom_collections(processor):
     try:
         # 1. 获取合集定义
         task_manager.update_status_from_thread(10, "正在获取所有启用的合集定义...")
-        active_collections = custom_collection_db.get_all_active_custom_collections()
+        all_collections = custom_collection_db.get_all_active_custom_collections()
+        
+        # --- 过滤逻辑：只保留需要从外部获取数据的类型 ---
+        target_types = {'list', 'ai_recommendation_global'}
+        active_collections = [c for c in all_collections if c['type'] in target_types]
+        
+        skipped_count = len(all_collections) - len(active_collections)
+        if skipped_count > 0:
+            logger.info(f"  -> 已跳过 {skipped_count} 个本地筛选/个人AI类合集 (无需定时刷新)。")
+
         if not active_collections:
-            task_manager.update_status_from_thread(100, "没有已启用的合集。")
+            task_manager.update_status_from_thread(100, "没有需要刷新的榜单或全局推荐合集。")
             return
 
-        # 2. 加载全量映射 (仅用于 List 类合集匹配)
+        # 2. 加载全量映射 (用于匹配本地媒体)
         task_manager.update_status_from_thread(12, "正在从本地数据库加载全量媒体映射...")
         tmdb_to_emby_item_map = media_db.get_tmdb_to_emby_map(library_ids=None)
         
@@ -368,77 +376,51 @@ def task_process_all_custom_collections(processor):
                 items_for_db = []            # 用于存入 generated_media_info_json
                 total_count = 0              # 用于角标
 
-                # ==================================================================
-                # 分支 A: 筛选类 (Filter) - 极速模式
-                # ==================================================================
-                if collection_type == 'filter':
-                    # 使用 SQL 实时查询，只取 9 个样本用于封面
-                    # 传入 admin_user_id 以获取全库视角
-                    admin_user_id = processor.emby_user_id
-                    target_library_ids = definition.get('target_library_ids', [])
-                    # 1. 获取样本和总数
-                    sample_items, total_count = queries_db.query_virtual_library_items(
-                        rules=definition.get('rules', []),
-                        logic=definition.get('logic', 'AND'),
-                        user_id=admin_user_id,
-                        limit=9, # 只取9个用于封面
-                        offset=0,
-                        item_types=definition.get('item_type', ['Movie']),
-                        target_library_ids=target_library_ids
-                    )
+                # 榜单/推荐类 (List/AI Global) - 全量模式
+                raw_tmdb_items = []
+                if collection_type == 'list':
+                    importer = ListImporter(processor.tmdb_api_key)
+                    raw_tmdb_items, _ = importer.process(definition)
+                else:
+                    # ai_recommendation_global
+                    from handler.custom_collection import RecommendationEngine
+                    rec_engine = RecommendationEngine(processor.tmdb_api_key)
+                    raw_tmdb_items = rec_engine.generate(definition)
+
+                # 应用修正
+                raw_tmdb_items, corrected_id_to_original_id_map = _apply_id_corrections(raw_tmdb_items, definition, collection_name)
+                
+                # 映射 Emby ID
+                tmdb_items = []
+                for item in raw_tmdb_items:
+                    tmdb_id = str(item.get('id')) if item.get('id') else None
+                    media_type = item.get('type')
+                    emby_id = item.get('emby_id')
                     
-                    # 2. 准备数据
-                    global_ordered_emby_ids = [item['Id'] for item in sample_items]
+                    if not emby_id and tmdb_id:
+                        key = f"{tmdb_id}_{media_type}"
+                        if key in tmdb_to_emby_item_map:
+                            emby_id = tmdb_to_emby_item_map[key]['Id']
                     
-                    # 构造精简的 DB 存储数据 (只存 Emby ID 即可，反向代理层不读这个)
-                    # 但为了保持格式一致性，我们尽量存点东西
-                    items_for_db = [{'emby_id': item['Id']} for item in sample_items]
-
-                # ==================================================================
-                # 分支 B: 榜单/推荐类 (List/AI) - 全量模式
-                # ==================================================================
-                elif collection_type in ['list', 'ai_recommendation_global']:
-                    raw_tmdb_items = []
-                    if collection_type == 'list':
-                        importer = ListImporter(processor.tmdb_api_key)
-                        raw_tmdb_items, _ = importer.process(definition)
-                    else:
-                        from handler.custom_collection import RecommendationEngine
-                        rec_engine = RecommendationEngine(processor.tmdb_api_key)
-                        raw_tmdb_items = rec_engine.generate(definition)
-
-                    # 应用修正
-                    raw_tmdb_items, corrected_id_to_original_id_map = _apply_id_corrections(raw_tmdb_items, definition, collection_name)
+                    processed_item = {
+                        'tmdb_id': tmdb_id,
+                        'media_type': media_type,
+                        'emby_id': emby_id,
+                        'title': item.get('title'),
+                        **({'season': item['season']} if 'season' in item and item.get('season') is not None else {})
+                    }
+                    tmdb_items.append(processed_item)
                     
-                    # 映射 Emby ID
-                    tmdb_items = []
-                    for item in raw_tmdb_items:
-                        tmdb_id = str(item.get('id')) if item.get('id') else None
-                        media_type = item.get('type')
-                        emby_id = item.get('emby_id')
-                        
-                        if not emby_id and tmdb_id:
-                            key = f"{tmdb_id}_{media_type}"
-                            if key in tmdb_to_emby_item_map:
-                                emby_id = tmdb_to_emby_item_map[key]['Id']
-                        
-                        processed_item = {
-                            'tmdb_id': tmdb_id,
-                            'media_type': media_type,
-                            'emby_id': emby_id,
-                            'title': item.get('title'),
-                            **({'season': item['season']} if 'season' in item and item.get('season') is not None else {})
-                        }
-                        tmdb_items.append(processed_item)
-                        
-                        if emby_id:
-                            global_ordered_emby_ids.append(emby_id)
+                    if emby_id:
+                        global_ordered_emby_ids.append(emby_id)
 
-                    # 榜单类需要全量存储，因为反向代理层无法实时爬虫
-                    items_for_db = tmdb_items
-                    total_count = len(global_ordered_emby_ids)
+                # 榜单/全局AI类需要全量存储，因为反向代理层无法实时爬虫
+                items_for_db = tmdb_items
+                total_count = len(global_ordered_emby_ids)
 
-                    # 执行健康检查 (仅榜单类需要)
+                # 执行健康检查 (榜单类和全局AI推荐都需要)
+                # 作用：对比 TMDB 列表和本地库，自动订阅缺失的媒体
+                if collection_type in ['list', 'ai_recommendation_global']:
                     _perform_list_collection_health_check(
                         tmdb_items=tmdb_items, 
                         tmdb_to_emby_item_map=tmdb_to_emby_item_map, 
@@ -447,64 +429,16 @@ def task_process_all_custom_collections(processor):
                         tmdb_api_key=processor.tmdb_api_key
                     )
 
-                # ==================================================================
-                # 分支 C: 个人推荐类 (AI) - 封面快车道 (遵守前端定义的库和类型)
-                # ==================================================================
-                elif collection_type == 'ai_recommendation':
-                    # 💡 核心思路：后台任务仅为生成封面，不调用 LLM 浪费 Tokens。
-                    # 我们直接根据前端定义的 [媒体库] 和 [内容类型] 捞取高分片作为门面。
-                    
-                    admin_user_id = processor.emby_user_id
-                    # 1. 提取前端定义的规则
-                    target_library_ids = definition.get('target_library_ids', [])
-                    item_types = definition.get('item_type', ['Movie'])
-                    
-                    logger.info(f"  ➜ 正在为《{collection_name}》筛选封面素材 (类型: {item_types})...")
-
-                    # 2. 调用查询引擎：遵守前端规则 + 评分 > 7 (保证封面质量)
-                    sample_items, _ = queries_db.query_virtual_library_items(
-                        rules=[{"field": "rating", "operator": "gte", "value": 7}],
-                        logic='AND',
-                        user_id=admin_user_id,
-                        limit=20, 
-                        offset=0,
-                        item_types=item_types,         # 👈 遵守前端选的内容类型
-                        target_library_ids=target_library_ids, # 👈 遵守前端选的媒体库
-                        sort_by='random'               # 👈 随机排序，让封面每次更新都有新鲜感
-                    )
-                    
-                    # 3. 兜底逻辑：如果高分片太少（比如新库），则放宽条件纯随机抓取
-                    if len(sample_items) < 9:
-                        logger.debug(f"  ➜ 高分素材不足，放宽条件抓取...")
-                        sample_items, _ = queries_db.query_virtual_library_items(
-                            rules=[], 
-                            user_id=admin_user_id,
-                            limit=20,
-                            item_types=item_types,
-                            target_library_ids=target_library_ids,
-                            sort_by='random'
-                        )
-
-                    # 4. 填充数据
-                    global_ordered_emby_ids = [item['Id'] for item in sample_items]
-                    # 数据库里存个简单的占位，反代层实时访问时会动态生成真正的 AI 列表
-                    items_for_db = [{'emby_id': item['Id']} for item in sample_items]
-                    total_count = 0 # 个人推荐类在后台任务中不计总数
-
-                # ==================================================================
-                # 通用后续处理
-                # ==================================================================
-
+                # 后续处理
                 # 1. 更新 Emby 实体合集 (用于封面)
-                should_allow_empty = (collection_type == 'ai_recommendation')
                 emby_collection_id = emby.create_or_update_collection_with_emby_ids(
                     collection_name=collection_name, 
-                    emby_ids_in_library=global_ordered_emby_ids, # 对于 Filter 类，这里只有 9 个
+                    emby_ids_in_library=global_ordered_emby_ids,
                     base_url=processor.emby_url, 
                     api_key=processor.emby_api_key, 
                     user_id=processor.emby_user_id,
                     prefetched_collection_map=prefetched_collection_map,
-                    allow_empty=should_allow_empty 
+                    allow_empty=False 
                 )
 
                 # 2. 更新数据库状态
@@ -547,7 +481,7 @@ def task_process_all_custom_collections(processor):
                 logger.error(f"处理合集 '{collection_name}' (ID: {collection_id}) 时发生错误: {e_coll}", exc_info=True)
                 continue
         
-        final_message = "所有自建合集均已处理完毕！"
+        final_message = "所有外部源合集(List/Global AI)均已处理完毕！"
         if processor.is_stop_requested(): final_message = "任务已中止。"
         
         try:
@@ -558,7 +492,7 @@ def task_process_all_custom_collections(processor):
         except Exception as e:
             logger.error(f"全量同步占位海报失败: {e}")
 
-        task_manager.update_status_from_thread(100, "所有自建合集及海报同步完毕！")
+        task_manager.update_status_from_thread(100, final_message)
         logger.info(f"--- '{task_name}' 任务成功完成 ---")
 
     except Exception as e:
