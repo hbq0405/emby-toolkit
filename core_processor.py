@@ -1095,21 +1095,20 @@ class MediaProcessor:
                     try:
                         # 扫描目录聚合 season-X.json 和 season-X-episode-Y.json
                         for fname in os.listdir(source_cache_dir):
-                            full_path = os.path.join(source_cache_dir, fname)
-                            if fname.startswith("season-") and fname.endswith(".json"):
-                                data = _read_local_json(full_path)
-                                if data:
-                                    if "-episode-" in fname: # 分集
-                                        key = f"S{data.get('season_number')}E{data.get('episode_number')}"
-                                        episodes_details_map[key] = data
-                                    else: # 季
-                                        seasons_details_list.append(data)
+                            full_path = os.path.join(target_override_dir, fname)
+                            if fname.startswith("season-") and fname.endswith(".json") and "-episode-" in fname:
+                                ep_data = _read_local_json(full_path)
+                                if ep_data:
+                                    key = f"S{ep_data.get('season_number')}E{ep_data.get('episode_number')}"
+                                    episodes_details_map[key] = ep_data
+                            elif fname.startswith("season-") and fname.endswith(".json") and "-episode-" not in fname:
+                                season_data = _read_local_json(full_path)
+                                if season_data:
+                                    seasons_details_list.append(season_data)
                         
-                        # 针对追更的新分集，强制检查并补全元数据
-                        if specific_episode_ids and self.tmdb_api_key:
-                            logger.info(f"  ➜ [追更补全] 正在检查 {len(specific_episode_ids)} 个新入库分集的元数据完整性...")
-                            
-                            # A. 获取这些 Emby ID 对应的 季号/集号
+                        # 从 Source 缓存捞回新分集 
+                        if specific_episode_ids:
+                            # 获取新分集的 S/E 信息
                             new_eps_info = emby.get_emby_items_by_id(
                                 base_url=self.emby_url, 
                                 api_key=self.emby_api_key, 
@@ -1118,34 +1117,25 @@ class MediaProcessor:
                                 fields="ParentIndexNumber,IndexNumber"
                             )
                             
-                            fetched_count = 0
+                            recovered_count = 0
                             for ep in new_eps_info:
                                 s_num = ep.get('ParentIndexNumber')
                                 e_num = ep.get('IndexNumber')
-                                
                                 if s_num is not None and e_num is not None:
                                     key = f"S{s_num}E{e_num}"
                                     
-                                    # B. 如果本地缓存里没有这个集的数据 -> 立即从 TMDb 获取
+                                    # 如果 Override 里没有这个集 (说明是刚下载的)
                                     if key not in episodes_details_map:
-                                        logger.debug(f"    ├─ 本地缺失 S{s_num}E{e_num} 元数据，正在从 TMDb 实时获取...")
-                                        try:
-                                            tmdb_ep_data = tmdb.get_tv_episode_details(tmdb_id, s_num, e_num, self.tmdb_api_key)
-                                            if tmdb_ep_data:
-                                                # C. 补全到内存 Map 中 (确保写入数据库)
-                                                episodes_details_map[key] = tmdb_ep_data
-                                                
-                                                # D. 写入本地 Cache 文件 (确保下次不用再下)
-                                                cache_file_path = os.path.join(source_cache_dir, f"season-{s_num}-episode-{e_num}.json")
-                                                with open(cache_file_path, 'w', encoding='utf-8') as f:
-                                                    json.dump(tmdb_ep_data, f, ensure_ascii=False, indent=4)
-                                                
-                                                fetched_count += 1
-                                        except Exception as e_fetch:
-                                            logger.warning(f"    ⚠️ 获取 S{s_num}E{e_num} TMDb 数据失败: {e_fetch}")
+                                        # 去 Source 缓存里找 (步骤2里肯定已经下载好了)
+                                        source_file = os.path.join(source_cache_dir, f"season-{s_num}-episode-{e_num}.json")
+                                        if os.path.exists(source_file):
+                                            ep_data = _read_local_json(source_file)
+                                            if ep_data:
+                                                episodes_details_map[key] = ep_data
+                                                recovered_count += 1
                             
-                            if fetched_count > 0:
-                                logger.info(f"  ➜ [追更补全] 成功从 TMDb 补充了 {fetched_count} 个新分集的元数据。")
+                            if recovered_count > 0:
+                                logger.info(f"  ➜ [快速模式] 成功从源缓存捞回了 {recovered_count} 个尚未同步的新分集数据。")
                         
                         # 将聚合好的数据塞回骨架
                         if episodes_details_map: tmdb_details_for_extra['episodes_details'] = episodes_details_map
