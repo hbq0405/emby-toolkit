@@ -1086,75 +1086,32 @@ class MediaProcessor:
                 # 默认演员表也来自本地（会被强制更新覆盖）
                 authoritative_cast_source = (source_json_data.get("casts", {}) or source_json_data.get("credits", {})).get("cast", [])
 
-                # =========================================================
-                # ★★★ 填补盲区：如果是剧集，必须把分集文件也读进来！ ★★★
-                # =========================================================
+                # ★★★ 关键修复：如果是剧集，必须在此处聚合分集和季数据 ★★★
+                # 这样保证了 tmdb_details_for_extra 里的 seasons_details 永远是字典列表，防止 int 报错
                 if item_type == "Series":
-                    logger.info("  ➜ [快速模式] 检测到剧集，正在聚合本地分集元数据以恢复数据库记录...")
+                    logger.info("  ➜ 检测到剧集，正在聚合本地分集元数据...")
                     episodes_details_map = {}
-                    seasons_details_list = [] 
-                    
-                    # 1. 优先扫描 override 目录 (用户修改过的数据)
+                    seasons_details_list = []
                     try:
-                        # ★★★ 修正：这里必须遍历 target_override_dir ★★★
-                        if os.path.exists(target_override_dir):
-                            for fname in os.listdir(target_override_dir):
-                                full_path = os.path.join(target_override_dir, fname)
-                                if fname.startswith("season-") and fname.endswith(".json") and "-episode-" in fname:
-                                    ep_data = _read_local_json(full_path)
-                                    if ep_data:
-                                        key = f"S{ep_data.get('season_number')}E{ep_data.get('episode_number')}"
-                                        episodes_details_map[key] = ep_data
-                                elif fname.startswith("season-") and fname.endswith(".json") and "-episode-" not in fname:
-                                    season_data = _read_local_json(full_path)
-                                    if season_data:
-                                        seasons_details_list.append(season_data)
+                        # 扫描目录聚合 season-X.json 和 season-X-episode-Y.json
+                        for fname in os.listdir(source_cache_dir):
+                            full_path = os.path.join(source_cache_dir, fname)
+                            if fname.startswith("season-") and fname.endswith(".json"):
+                                data = _read_local_json(full_path)
+                                if data:
+                                    if "-episode-" in fname: # 分集
+                                        key = f"S{data.get('season_number')}E{data.get('episode_number')}"
+                                        episodes_details_map[key] = data
+                                    else: # 季
+                                        seasons_details_list.append(data)
                         
-                        # ==============================================================================
-                        # ★★★ 核心修复：基于文件系统的全量补全 (Source -> Override) ★★★
-                        # ==============================================================================
-                        # 不再依赖 Emby API，直接对比文件目录，绝对可靠且极速
-                        if os.path.exists(source_cache_dir):
-                            recovered_count = 0
-                            for fname in os.listdir(source_cache_dir):
-                                # 只关心分集文件
-                                if fname.startswith("season-") and fname.endswith(".json") and "-episode-" in fname:
-                                    # 解析文件名中的 S 和 E (格式: season-X-episode-Y.json)
-                                    try:
-                                        parts = fname.replace(".json", "").split("-")
-                                        # season-1-episode-5.json -> ['season', '1', 'episode', '5']
-                                        s_num = int(parts[1])
-                                        e_num = int(parts[3])
-                                        key = f"S{s_num}E{e_num}"
-                                        
-                                        # 关键判断：如果 Override 里没有这个集，就从 Source 补进去
-                                        if key not in episodes_details_map:
-                                            source_file = os.path.join(source_cache_dir, fname)
-                                            ep_data = _read_local_json(source_file)
-                                            if ep_data:
-                                                episodes_details_map[key] = ep_data
-                                                recovered_count += 1
-                                    except (IndexError, ValueError):
-                                        continue
-                            
-                            if recovered_count > 0:
-                                logger.info(f"  ➜ [快速模式] 成功从源缓存补全了 {recovered_count} 个新分集的数据。")
-                        # ==============================================================================
-
-                        # 将聚合好的分集数据塞回 tmdb_details_for_extra
-                        if episodes_details_map:
-                            tmdb_details_for_extra['episodes_details'] = episodes_details_map
-                            logger.info(f"  ➜ [快速模式] 最终聚合了 {len(episodes_details_map)} 个分集的元数据。")
-                        
-                        # [新增] 将聚合好的季数据塞回 tmdb_details_for_extra
-                        if seasons_details_list:
-                            # 按季号排序，确保顺序正确
+                        # 将聚合好的数据塞回骨架
+                        if episodes_details_map: tmdb_details_for_extra['episodes_details'] = episodes_details_map
+                        if seasons_details_list: 
                             seasons_details_list.sort(key=lambda x: x.get('season_number', 0))
                             tmdb_details_for_extra['seasons_details'] = seasons_details_list
-                            logger.info(f"  ➜ [快速模式] 成功聚合了 {len(seasons_details_list)} 个季度的元数据。")
-
-                    except Exception as e_ep:
-                        logger.warning(f"  ➜ [快速模式] 聚合分集/季数据时发生小错误: {e_ep}")
+                    except Exception as e_agg:
+                        logger.warning(f"  ➜ 聚合本地分集数据时发生错误: {e_agg}")
             else:
                 # 如果连本地文件都没有，那就真的没法弄了
                 logger.error(f"  ➜ 严重错误：找不到本地元数据文件 '{source_json_path}'，无法进行处理。")
@@ -1242,38 +1199,52 @@ class MediaProcessor:
                                 if item_type == "Series":
                                     logger.info("  ➜ [快速模式] 检测到剧集，正在聚合本地分集元数据以恢复数据库记录...")
                                     episodes_details_map = {}
-                                    seasons_details_list = [] # [新增] 用于存储季数据
+                                    seasons_details_list = [] 
                                     
-                                    # 扫描 override 目录下的所有文件
                                     try:
-                                        for fname in os.listdir(target_override_dir):
-                                            full_path = os.path.join(target_override_dir, fname)
-                                            
-                                            # 1. 聚合分集文件 (season-X-episode-Y.json)
-                                            if fname.startswith("season-") and fname.endswith(".json") and "-episode-" in fname:
-                                                ep_data = _read_local_json(full_path)
-                                                if ep_data:
-                                                    # 构造一个唯一的key，方便后续转list
-                                                    key = f"S{ep_data.get('season_number')}E{ep_data.get('episode_number')}"
-                                                    episodes_details_map[key] = ep_data
-                                            
-                                            # 2. [新增] 聚合季文件 (season-X.json)，排除 series.json 和分集文件
-                                            elif fname.startswith("season-") and fname.endswith(".json") and "-episode-" not in fname:
-                                                season_data = _read_local_json(full_path)
-                                                if season_data:
-                                                    seasons_details_list.append(season_data)
+                                        # 1. 先读 Override (旧的/手动修改过的)
+                                        if os.path.exists(target_override_dir):
+                                            for fname in os.listdir(target_override_dir):
+                                                full_path = os.path.join(target_override_dir, fname)
+                                                if fname.startswith("season-") and fname.endswith(".json"):
+                                                    data = _read_local_json(full_path)
+                                                    if data:
+                                                        if "-episode-" in fname:
+                                                            key = f"S{data.get('season_number')}E{data.get('episode_number')}"
+                                                            episodes_details_map[key] = data
+                                                        else:
+                                                            seasons_details_list.append(data)
                                         
-                                        # 将聚合好的分集数据塞回 tmdb_details_for_extra
+                                        # 2. 再读 Source (新的)，补全 Override 里没有的
+                                        if os.path.exists(source_cache_dir):
+                                            recovered_count = 0
+                                            for fname in os.listdir(source_cache_dir):
+                                                if fname.startswith("season-") and fname.endswith(".json") and "-episode-" in fname:
+                                                    try:
+                                                        parts = fname.replace(".json", "").split("-")
+                                                        s_num = int(parts[1])
+                                                        e_num = int(parts[3])
+                                                        key = f"S{s_num}E{e_num}"
+                                                        
+                                                        # ★ 关键：如果 Override 里没有，就从 Source 拿 ★
+                                                        if key not in episodes_details_map:
+                                                            source_file = os.path.join(source_cache_dir, fname)
+                                                            ep_data = _read_local_json(source_file)
+                                                            if ep_data:
+                                                                episodes_details_map[key] = ep_data
+                                                                recovered_count += 1
+                                                    except: continue
+                                            
+                                            if recovered_count > 0:
+                                                logger.info(f"  ➜ [快速模式] 成功从源缓存补全了 {recovered_count} 个新分集的数据。")
+
+                                        # 3. 塞回骨架
                                         if episodes_details_map:
                                             tmdb_details_for_extra['episodes_details'] = episodes_details_map
-                                            logger.info(f"  ➜ [快速模式] 成功聚合了 {len(episodes_details_map)} 个分集的元数据。")
-                                        
-                                        # [新增] 将聚合好的季数据塞回 tmdb_details_for_extra
+                                            logger.info(f"  ➜ [快速模式] 最终聚合了 {len(episodes_details_map)} 个分集的元数据。")
                                         if seasons_details_list:
-                                            # 按季号排序，确保顺序正确
                                             seasons_details_list.sort(key=lambda x: x.get('season_number', 0))
                                             tmdb_details_for_extra['seasons_details'] = seasons_details_list
-                                            logger.info(f"  ➜ [快速模式] 成功聚合了 {len(seasons_details_list)} 个季度的元数据。")
 
                                     except Exception as e_ep:
                                         logger.warning(f"  ➜ [快速模式] 聚合分集/季数据时发生小错误: {e_ep}")
