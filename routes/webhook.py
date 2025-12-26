@@ -89,7 +89,8 @@ def _handle_full_processing_flow(processor: 'MediaProcessor', item_id: str, forc
             task_process_watchlist,
             task_name=f"刷新智能追剧: {item_name_for_log}",
             processor_type='watchlist', # 指定使用 WatchlistProcessor
-            tmdb_id=str(tmdb_id)
+            tmdb_id=str(tmdb_id),
+            skip_refresh=True
         )
 
     # 3. 后续处理
