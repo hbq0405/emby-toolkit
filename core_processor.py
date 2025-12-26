@@ -920,13 +920,13 @@ class MediaProcessor:
             update_status_callback(100, "全量处理完成")
     
     # --- 核心处理总管 ---
-    def process_single_item(self, emby_item_id: str, force_full_update: bool = False):
+    def process_single_item(self, emby_item_id: str, force_full_update: bool = False, specific_episode_ids: Optional[List[str]] = None):
         """
         【V-API-Ready 最终版 - 带跳过功能】
         入口函数，它会先检查是否需要跳过已处理的项目。
         """
         # 1. 除非强制，否则跳过已处理的
-        if not force_full_update and emby_item_id in self.processed_items_cache:
+        if not force_full_update and not specific_episode_ids and emby_item_id in self.processed_items_cache:
             item_name_from_cache = self.processed_items_cache.get(emby_item_id, f"ID:{emby_item_id}")
             logger.info(f"媒体 '{item_name_from_cache}' 跳过已处理记录。")
             return True
@@ -961,11 +961,12 @@ class MediaProcessor:
         # 4. 将任务交给核心处理函数
         return self._process_item_core_logic(
             item_details_from_emby=item_details,
-            force_full_update=force_full_update
+            force_full_update=force_full_update,
+            specific_episode_ids=specific_episode_ids
         )
 
     # ---核心处理流程 ---
-    def _process_item_core_logic(self, item_details_from_emby: Dict[str, Any], force_full_update: bool = False):
+    def _process_item_core_logic(self, item_details_from_emby: Dict[str, Any], force_full_update: bool = False, specific_episode_ids: Optional[List[str]] = None):
         """
         【V-Final-Architecture-Pro - “设计师”最终版 + 评分机制】
         本函数作为“设计师”，只负责计算和思考，产出“设计图”和“物料清单”，然后全权委托给施工队。
@@ -1321,9 +1322,10 @@ class MediaProcessor:
                     # 写入 override 文件
                     self.sync_single_item_assets(
                         item_id=item_id,
-                        update_description="主流程处理完成",
+                        update_description="主流程处理完成" if not specific_episode_ids else f"追更: {len(specific_episode_ids)}个分集",
                         final_cast_override=final_processed_cast,
-                        douban_rating_override=douban_rating
+                        douban_rating_override=douban_rating,
+                        episode_ids_to_sync=specific_episode_ids 
                     )
 
                     # 通过 API 实时更新 Emby 演员库中的名字

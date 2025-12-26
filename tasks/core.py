@@ -13,7 +13,7 @@ import task_manager
 from .actors import (task_sync_person_map, task_enrich_aliases, task_actor_translation, 
                      task_process_actor_subscriptions, task_purge_unregistered_actors, task_merge_duplicate_actors,
                      task_purge_ghost_actors)
-from .media import task_role_translation, task_populate_metadata_cache, task_apply_main_cast_to_episodes 
+from .media import task_role_translation, task_populate_metadata_cache 
 from .watchlist import task_process_watchlist, task_run_new_season_check, task_scan_library_gaps, task_scan_old_seasons_backfill
 from .custom_collections import task_process_all_custom_collections, process_single_custom_collection
 from .tmdb_collections import task_refresh_collections
@@ -204,7 +204,6 @@ def get_task_registry(context: str = 'all'):
         'process-single-custom-collection': (process_single_custom_collection, "生成单个自建合集", 'media', False),
         'scan-cleanup-issues': (task_scan_for_cleanup_issues, "扫描媒体重复项", 'media', False),
         'run_new_season_check': (task_run_new_season_check, "新季上线检查", 'watchlist', False),
-        'task_apply_main_cast_to_episodes': (task_apply_main_cast_to_episodes, "轻量化同步分集演员表", 'media', False),
         'resubscribe-library': (task_resubscribe_library, "媒体订阅删除", 'media', False),
         'update-daily-theme': (task_update_daily_theme, "更新每日主题", 'media', False),
         'manual_subscribe_batch': (task_manual_subscribe_batch, "手动订阅处理", 'media', False),

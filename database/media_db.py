@@ -857,35 +857,3 @@ def is_emby_id_in_library(emby_id: str) -> bool:
     except Exception as e:
         logger.error(f"检查 Emby ID {emby_id} 在库状态时出错: {e}", exc_info=True)
         return False
-
-def revive_series_link(tmdb_id: str, emby_id: str) -> bool:
-    """
-    洗版复活专用：强制将指定剧集标记为在库。
-    返回: True(复活成功) / False(未找到记录，复活失败)
-    """
-    if not tmdb_id or not emby_id:
-        return False
-
-    try:
-        with get_db_connection() as conn:
-            cursor = conn.cursor()
-            sql = """
-                UPDATE media_metadata 
-                SET in_library = TRUE,
-                    emby_item_ids_json = jsonb_build_array(%s),
-                    last_synced_at = NOW()
-                WHERE tmdb_id = %s AND item_type = 'Series';
-            """
-            cursor.execute(sql, (emby_id, tmdb_id))
-            conn.commit()
-            
-            if cursor.rowcount > 0:
-                logger.info(f"  ✅ [DB复活] 成功修复剧集 (TMDb: {tmdb_id}) 的在线状态。")
-                return True
-            else:
-                logger.warning(f"  ⚠️ [DB复活] 数据库中不存在 TMDb ID 为 {tmdb_id} 的剧集，无法复活。")
-                return False
-                
-    except Exception as e:
-        logger.error(f"复活剧集链接时出错: {e}", exc_info=True)
-        return False

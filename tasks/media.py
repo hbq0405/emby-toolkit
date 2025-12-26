@@ -922,66 +922,6 @@ def task_populate_metadata_cache(processor, batch_size: int = 50, force_full_upd
         logger.error(f"执行 '{task_name}' 任务时发生严重错误: {e}", exc_info=True)
         task_manager.update_status_from_thread(-1, f"任务失败: {e}")
 
-def task_apply_main_cast_to_episodes(processor, series_id: str, episode_ids: list):
-    """
-    【V2 - 文件中心化重构版】
-    轻量级任务：当剧集追更新增分集时，将主项目的完美演员表注入到新分集的 override 元数据文件中。
-    此任务不再读写 Emby API，而是委托核心处理器的 sync_single_item_assets 方法执行精准的文件同步操作。
-    """
-    try:
-        if not episode_ids:
-            logger.info(f"  ➜ 剧集 {series_id} 追更任务跳过：未提供需要更新的分集ID。")
-            return
-        
-        series_details_for_log = emby.get_emby_item_details(series_id, processor.emby_url, processor.emby_api_key, processor.emby_user_id, fields="Name,ProviderIds")
-        series_name = series_details_for_log.get("Name", f"ID:{series_id}") if series_details_for_log else f"ID:{series_id}"
-
-        logger.info(f"  ➜ 追更任务启动：准备为剧集 《{series_name}》 的 {len(episode_ids)} 个新分集同步元数据...")
-
-        processor.sync_single_item_assets(
-            item_id=series_id,
-            update_description=f"追更新增 {len(episode_ids)} 个分集",
-            sync_timestamp_iso=datetime.now(timezone.utc).isoformat(),
-            episode_ids_to_sync=episode_ids
-        )
-
-        logger.info(f"  ➜ 处理完成，正在通知 Emby 刷新...")
-        emby.refresh_emby_item_metadata(
-            item_emby_id=series_id,
-            emby_server_url=processor.emby_url,
-            emby_api_key=processor.emby_api_key,
-            user_id_for_ops=processor.emby_user_id,
-            replace_all_metadata_param=True,
-            item_name_for_log=series_name
-        )
-
-        # TG通知
-        if series_details_for_log:
-            logger.info(f"  ➜ 正在为《{series_name}》触发追更通知...")
-            telegram.send_media_notification(
-                item_details=series_details_for_log,
-                notification_type='update',
-                new_episode_ids=episode_ids
-            )
-
-        # 步骤 3: 更新父剧集在元数据缓存中的 last_synced_at 时间戳 (这个逻辑可以保留)
-        if series_details_for_log:
-            tmdb_id = series_details_for_log.get("ProviderIds", {}).get("Tmdb")
-            if tmdb_id:
-                try:
-                    with connection.get_db_connection() as conn:
-                        with conn.cursor() as cursor:
-                            cursor.execute(
-                                "UPDATE media_metadata SET last_synced_at = %s WHERE tmdb_id = %s AND item_type = 'Series'",
-                                (datetime.now(timezone.utc), tmdb_id)
-                            )
-                except Exception as db_e:
-                    logger.error(f"  ➜ 更新剧集《{series_name}》的时间戳时发生数据库错误: {db_e}", exc_info=True)
-
-    except Exception as e:
-        logger.error(f"  ➜ 为剧集 {series_id} 的新分集应用主演员表时发生错误: {e}", exc_info=True)
-        raise
-
 # --- 自动打标 ---
 def task_bulk_auto_tag(processor, library_ids: List[str], tags: List[str]):
     """

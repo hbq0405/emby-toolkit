@@ -20,7 +20,7 @@ from extensions import SYSTEM_UPDATE_MARKERS, SYSTEM_UPDATE_LOCK, RECURSION_SUPP
 from core_processor import MediaProcessor
 from tasks import (
     task_auto_sync_template_on_policy_change, task_sync_metadata_cache,
-    task_sync_all_metadata, task_sync_images, task_apply_main_cast_to_episodes,
+    task_sync_all_metadata, task_sync_images,
     task_process_watchlist
 )
 from handler.custom_collection import RecommendationEngine
@@ -49,15 +49,10 @@ STREAM_CHECK_MAX_RETRIES = 60   # 最大重试次数
 STREAM_CHECK_INTERVAL = 10      # 每次轮询间隔(秒)
 STREAM_CHECK_SEMAPHORE = Semaphore(5) # 限制并发预检的数量，防止大量入库时查挂 Emby
 
-def _handle_full_processing_flow(processor: 'MediaProcessor', item_id: str, force_full_update: bool, new_episode_ids: Optional[List[str]] = None):
+def _handle_full_processing_flow(processor: 'MediaProcessor', item_id: str, force_full_update: bool, new_episode_ids: Optional[List[str]] = None, is_new_item: bool = True):
     """
-    【Webhook 专用】编排一个新入库媒体项的完整处理流程。
-    V6 - 极简版：
-    1. 元数据处理 (核心)
-    2. 封面生成 (可选)
-    3. 榜单类合集匹配 (List类)
-    4. 移除筛选类合集匹配 (Filter类已改为实时SQL查询，无需入库时匹配)
-    5. 移除权限缓存更新 (权限已改为实时SQL查询)
+    【Webhook 统一入口】
+    统一处理 新入库(New) 和 追更(Update) 两种情况。
     """
     if not processor:
         logger.error(f"  🚫 完整处理流程中止：核心处理器 (MediaProcessor) 未初始化。")
@@ -70,108 +65,115 @@ def _handle_full_processing_flow(processor: 'MediaProcessor', item_id: str, forc
     
     item_name_for_log = item_details.get("Name", f"ID:{item_id}")
 
-    processor.check_and_add_to_watchlist(item_details)
+    # 1. 智能追剧判断 (仅针对新入库剧集)
+    if is_new_item:
+        processor.check_and_add_to_watchlist(item_details)
 
-    processed_successfully = processor.process_single_item(item_id, force_full_update=force_full_update)
+    # 2. ★★★ 核心调用：统一调用 process_single_item ★★★
+    processed_successfully = processor.process_single_item(
+        item_id, 
+        force_full_update=force_full_update,
+        specific_episode_ids=new_episode_ids 
+    )
     
     if not processed_successfully:
         logger.warning(f"  ➜ 项目 '{item_name_for_log}' 的元数据处理未成功完成，跳过后续步骤。")
         return
 
-    try:
-        tmdb_id = item_details.get("ProviderIds", {}).get("Tmdb")
-        item_name = item_details.get("Name", f"ID:{item_id}")
-        
-        # --- 匹配 List (榜单) 类型的合集 (保持不变) ---
-        # 榜单类合集是静态的，需要将新入库的项目加入到 Emby 实体合集中
-        if tmdb_id:
-            updated_list_collections = custom_collection_db.match_and_update_list_collections_on_item_add(
-                new_item_tmdb_id=tmdb_id,
-                new_item_emby_id=item_id,
-                new_item_name=item_name
-            )
+    # 3. 后续处理
+    if is_new_item:
+        try:
+            tmdb_id = item_details.get("ProviderIds", {}).get("Tmdb")
+            item_name = item_details.get("Name", f"ID:{item_id}")
             
-            if updated_list_collections:
-                logger.info(f"  ➜ 《{item_name}》匹配到 {len(updated_list_collections)} 个榜单类合集，正在追加...")
-                for collection_info in updated_list_collections:
-                    emby.append_item_to_collection(
-                        collection_id=collection_info['emby_collection_id'],
-                        item_emby_id=item_id,
-                        base_url=processor.emby_url,
-                        api_key=processor.emby_api_key,
-                        user_id=processor.emby_user_id
-                    )
-
-        # ★★★ 移除 Filter 类合集的匹配逻辑 ★★★
-        # Filter 类合集现在是基于 SQL 实时查询的，不需要在入库时做任何操作。
-        # 只要 media_metadata 表更新了（process_single_item 已完成），SQL 查询自然能查到它。
-
-    except Exception as e:
-        logger.error(f"  ➜ 为新入库项目 '{item_name_for_log}' 匹配榜单合集时发生意外错误: {e}", exc_info=True)
-
-    # --- 封面生成逻辑 (保持不变) ---
-    try:
-        cover_config = settings_db.get_setting('cover_generator_config') or {}
-
-        if cover_config.get("enabled") and cover_config.get("transfer_monitor"):
-            # ... (获取 library_info 的逻辑) ...
-            library_info = emby.get_library_root_for_item(item_id, processor.emby_url, processor.emby_api_key, processor.emby_user_id)
-            
-            if library_info:
-                library_id = library_info.get("Id")
-                library_name = library_info.get("Name", library_id)
-                
-                if library_info.get('CollectionType') in ['movies', 'tvshows', 'boxsets', 'mixed', 'music']:
-                    server_id = 'main_emby'
-                    library_unique_id = f"{server_id}-{library_id}"
-                    if library_unique_id not in cover_config.get("exclude_libraries", []):
-                        # ... (获取 item_count) ...
-                        TYPE_MAP = {'movies': 'Movie', 'tvshows': 'Series', 'music': 'MusicAlbum', 'boxsets': 'BoxSet', 'mixed': 'Movie,Series'}
-                        collection_type = library_info.get('CollectionType')
-                        item_type_to_query = TYPE_MAP.get(collection_type)
-                        item_count = 0
-                        if library_id and item_type_to_query:
-                            item_count = emby.get_item_count(base_url=processor.emby_url, api_key=processor.emby_api_key, user_id=processor.emby_user_id, parent_id=library_id, item_type=item_type_to_query) or 0
-
-                        logger.info(f"  ➜ 正在为媒体库 '{library_name}' 生成封面 (当前实时数量: {item_count}) ---")
-                        cover_service = CoverGeneratorService(config=cover_config)
-                        cover_service.generate_for_library(emby_server_id=server_id, library=library_info, item_count=item_count)
-
-        # ★★★ 移除 update_user_caches_on_item_add 调用 ★★★
-        # 权限现在是实时的，不需要补票了。
-
-    except Exception as e:
-        logger.error(f"  ➜ 在新入库后执行封面生成时发生错误: {e}", exc_info=True)
-
-    # ======================================================================
-    # ★★★  TMDb 合集自动补全 ★★★
-    # ======================================================================
-    try:
-        # 1. 检查类型 (只处理电影)
-        # ★★★ 修复：直接使用 item_details 和 tmdb_id，不再依赖 item_metadata ★★★
-        current_type = item_details.get('Type')
-        current_tmdb_id = tmdb_id  # 这个变量在函数前面已经定义过了
-        current_name = item_name   # 这个变量在函数前面也定义过了
-
-        if current_type == 'Movie' and current_tmdb_id:
-            # 2. 检查开关
-            config = settings_db.get_setting('native_collections_config') or {}
-            is_auto_complete_enabled = config.get('auto_complete_enabled', False)
-
-            if is_auto_complete_enabled:
-                logger.trace(f"  ➜ 正在检查电影 '{current_name}' 所属 TMDb 合集...")
-                # 直接调用 handler
-                collections_handler.check_and_subscribe_collection_from_movie(
-                    movie_tmdb_id=str(current_tmdb_id),
-                    movie_name=current_name,
-                    movie_emby_id=item_id
+            # --- 匹配 List (榜单) 类型的合集 (保持不变) ---
+            # 榜单类合集是静态的，需要将新入库的项目加入到 Emby 实体合集中
+            if tmdb_id:
+                updated_list_collections = custom_collection_db.match_and_update_list_collections_on_item_add(
+                    new_item_tmdb_id=tmdb_id,
+                    new_item_emby_id=item_id,
+                    new_item_name=item_name
                 )
-    except Exception as e:
-        logger.warning(f"  ➜ 检查所属 TMDb 合集时发生错误: {e}")
+                
+                if updated_list_collections:
+                    logger.info(f"  ➜ 《{item_name}》匹配到 {len(updated_list_collections)} 个榜单类合集，正在追加...")
+                    for collection_info in updated_list_collections:
+                        emby.append_item_to_collection(
+                            collection_id=collection_info['emby_collection_id'],
+                            item_emby_id=item_id,
+                            base_url=processor.emby_url,
+                            api_key=processor.emby_api_key,
+                            user_id=processor.emby_user_id
+                        )
 
-    # ======================================================================
-    # ★★★ 入库完成后，主动刷新向量推荐引擎缓存 ★★★
-    # ======================================================================
+            # ★★★ 移除 Filter 类合集的匹配逻辑 ★★★
+            # Filter 类合集现在是基于 SQL 实时查询的，不需要在入库时做任何操作。
+            # 只要 media_metadata 表更新了（process_single_item 已完成），SQL 查询自然能查到它。
+
+        except Exception as e:
+            logger.error(f"  ➜ 为新入库项目 '{item_name_for_log}' 匹配榜单合集时发生意外错误: {e}", exc_info=True)
+
+        # --- 封面生成逻辑 (保持不变) ---
+        try:
+            cover_config = settings_db.get_setting('cover_generator_config') or {}
+
+            if cover_config.get("enabled") and cover_config.get("transfer_monitor"):
+                # ... (获取 library_info 的逻辑) ...
+                library_info = emby.get_library_root_for_item(item_id, processor.emby_url, processor.emby_api_key, processor.emby_user_id)
+                
+                if library_info:
+                    library_id = library_info.get("Id")
+                    library_name = library_info.get("Name", library_id)
+                    
+                    if library_info.get('CollectionType') in ['movies', 'tvshows', 'boxsets', 'mixed', 'music']:
+                        server_id = 'main_emby'
+                        library_unique_id = f"{server_id}-{library_id}"
+                        if library_unique_id not in cover_config.get("exclude_libraries", []):
+                            # ... (获取 item_count) ...
+                            TYPE_MAP = {'movies': 'Movie', 'tvshows': 'Series', 'music': 'MusicAlbum', 'boxsets': 'BoxSet', 'mixed': 'Movie,Series'}
+                            collection_type = library_info.get('CollectionType')
+                            item_type_to_query = TYPE_MAP.get(collection_type)
+                            item_count = 0
+                            if library_id and item_type_to_query:
+                                item_count = emby.get_item_count(base_url=processor.emby_url, api_key=processor.emby_api_key, user_id=processor.emby_user_id, parent_id=library_id, item_type=item_type_to_query) or 0
+
+                            logger.info(f"  ➜ 正在为媒体库 '{library_name}' 生成封面 (当前实时数量: {item_count}) ---")
+                            cover_service = CoverGeneratorService(config=cover_config)
+                            cover_service.generate_for_library(emby_server_id=server_id, library=library_info, item_count=item_count)
+
+            # ★★★ 移除 update_user_caches_on_item_add 调用 ★★★
+            # 权限现在是实时的，不需要补票了。
+
+        except Exception as e:
+            logger.error(f"  ➜ 在新入库后执行封面生成时发生错误: {e}", exc_info=True)
+
+        # ======================================================================
+        # ★★★  TMDb 合集自动补全 ★★★
+        # ======================================================================
+        try:
+            # 1. 检查类型 (只处理电影)
+            # ★★★ 修复：直接使用 item_details 和 tmdb_id，不再依赖 item_metadata ★★★
+            current_type = item_details.get('Type')
+            current_tmdb_id = tmdb_id  # 这个变量在函数前面已经定义过了
+            current_name = item_name   # 这个变量在函数前面也定义过了
+
+            if current_type == 'Movie' and current_tmdb_id:
+                # 2. 检查开关
+                config = settings_db.get_setting('native_collections_config') or {}
+                is_auto_complete_enabled = config.get('auto_complete_enabled', False)
+
+                if is_auto_complete_enabled:
+                    logger.trace(f"  ➜ 正在检查电影 '{current_name}' 所属 TMDb 合集...")
+                    # 直接调用 handler
+                    collections_handler.check_and_subscribe_collection_from_movie(
+                        movie_tmdb_id=str(current_tmdb_id),
+                        movie_name=current_name,
+                        movie_emby_id=item_id
+                    )
+        except Exception as e:
+            logger.warning(f"  ➜ 检查所属 TMDb 合集时发生错误: {e}")
+
+    # 4. 入库完成后，主动刷新向量推荐引擎缓存 ★★★
     if config_manager.APP_CONFIG.get(constants.CONFIG_OPTION_PROXY_ENABLED):
         try:
             # 异步执行，不阻塞当前 Webhook 线程
@@ -182,19 +184,19 @@ def _handle_full_processing_flow(processor: 'MediaProcessor', item_id: str, forc
 
     logger.trace(f"  ➜ Webhook 任务及所有后续流程完成: '{item_name_for_log}'")
 
-    # ======================================================================
-    # ★★★ TG的入库通知 - START ★★★
-    # ======================================================================
+    # 5. ★★★ 通知分流 ★★★
     try:
-        # 直接调用 telegram_handler 中的新函数，传递所需参数
+        # 如果提供了 new_episode_ids，说明是追更通知
+        # 如果 is_new_item 为 True，说明是新入库通知
+        notif_type = 'update' if (new_episode_ids and not is_new_item) else 'new'
+        
         telegram.send_media_notification(
             item_details=item_details, 
-            notification_type='new', 
+            notification_type=notif_type, 
             new_episode_ids=new_episode_ids
         )
-            
     except Exception as e:
-        logger.error(f"触发入库通知时发生错误: {e}", exc_info=True)
+        logger.error(f"触发通知失败: {e}")
 
     logger.trace(f"  ➜ Webhook 任务及所有后续流程完成: '{item_name_for_log}'")
 
@@ -270,114 +272,41 @@ def _process_batch_webhook_events():
     for parent_id, item_info in parent_items.items():
         parent_name = item_info['name']
         parent_type = item_info['type']
+        episode_ids = list(item_info["episode_ids"])
         
         # 1. 检查是否已处理
         is_already_processed = parent_id in extensions.media_processor_instance.processed_items_cache
 
         # 2. 检查数据库是否在线
+        # 2. 检查数据库是否在线 (处理“僵尸数据”)
         if is_already_processed:
+            # 这一步很快，只是查一下 media_metadata 表的 in_library 字段
             is_online_in_db = media_db.is_emby_id_in_library(parent_id)
-            # 不在线，需要复活
+            
+            # ★★★ 优化核心：如果不在线，直接踢出缓存，视为新项目重跑 ★★★
             if not is_online_in_db:
-                logger.info(f"  ➜ ⚠️ 缓存命中 '{parent_name}'，但数据库标记为离线，尝试复活...")
+                logger.info(f"  ➜ ⚠️ 缓存命中 '{parent_name}'，但数据库标记为离线/缺失。清除缓存，触发重新入库流程。")
                 
-                revive_success = False
-                try:
-                    # 1. 问 Emby 要 TMDb ID (因为数据库断连了，只能问 API)
-                    item_details = emby.get_emby_item_details(
-                        parent_id, 
-                        config_manager.APP_CONFIG.get("emby_server_url"), 
-                        config_manager.APP_CONFIG.get("emby_api_key"), 
-                        fields="ProviderIds"
-                    )
-                    tmdb_id = item_details.get("ProviderIds", {}).get("Tmdb")
-                    
-                    if tmdb_id:
-                        # 2. 尝试复活
-                        revive_success = media_db.revive_series_link(str(tmdb_id), parent_id)
-                    
-                except Exception as e:
-                    logger.error(f"  ➜ 复活尝试异常: {e}")
-
-                # 3. 决策：救活了就继续，救不活就重开
-                if revive_success:
-                    logger.info(f"  ➜ 💉 复活成功，继续执行轻量化追更流程。")
-                    # is_already_processed 保持为 True，进入 else 分支
-                else:
-                    logger.warning(f"  ➜ ⚰️ 复活失败 (可能数据库无记录)，转为完整处理流程。")
-                    is_already_processed = False
-                    extensions.media_processor_instance.processed_items_cache.discard(parent_id)
-        # 3. 完整处理
-        if not is_already_processed:
-            
-            # 默认情况下，不强制深度更新
-            force_full_update_for_new_item = False
-            
-            logger.info(f"  ➜ 为 '{parent_name}' 分派【完整处理】任务 (原因: 首次入库)。")
-            task_manager.submit_task(
-                _handle_full_processing_flow,
-                task_name=f"Webhook完整处理: {parent_name}",
-                item_id=parent_id,
-                force_full_update=force_full_update_for_new_item,
-                new_episode_ids=list(item_info["episode_ids"]) 
-            )
-        # 4. 追更处理
-        else:
-            if parent_type == 'Series':
-                episode_ids_to_update = list(item_info["episode_ids"])
+                # 从内存缓存中移除
+                if parent_id in extensions.media_processor_instance.processed_items_cache:
+                    del extensions.media_processor_instance.processed_items_cache[parent_id]
                 
-                # 只有在确实有新分集入库时才执行任务
-                if not episode_ids_to_update:
-                    logger.info(f"  ➜ 剧集 '{parent_name}' 有更新事件，但未发现具体的新增分集，将触发一次轻量元数据缓存更新。")
-                    task_manager.submit_task(
-                        task_sync_metadata_cache,
-                        task_name=f"Webhook元数据更新: {parent_name}",
-                        processor_type='media',
-                        item_id=parent_id,
-                        item_name=parent_name
-                    )
-                    continue
-
-                logger.info(f"  ➜ 为 '{parent_name}' 分派【轻量化更新】任务 (原因: 追更)，将处理 {len(episode_ids_to_update)} 个新分集。")
-                task_manager.submit_task(
-                    task_apply_main_cast_to_episodes,
-                    task_name=f"轻量化同步演员表: {parent_name}",
-                    processor_type='media',
-                    series_id=parent_id,
-                    episode_ids=episode_ids_to_update 
-                )
-                task_manager.submit_task(
-                    task_sync_metadata_cache,
-                    task_name=f"Webhook增量元数据更新: {parent_name}",
-                    processor_type='media',
-                    item_id=parent_id,
-                    item_name=parent_name,
-                    episode_ids_to_add=episode_ids_to_update 
-                )
-                series_tmdb_id = None
-                try:
-                    series_tmdb_id = media_db.get_tmdb_id_from_emby_id(parent_id)
-                except Exception as e:
-                    logger.warning(f"  ➜ 通过 media_db 根据 Emby ID 获取 '{parent_name}' 的 TMDb ID 失败: {e}")
-
-                if series_tmdb_id:
-                    task_manager.submit_task(
-                        task_process_watchlist,
-                        task_name=f"刷新智能追剧: {parent_name}",
-                        processor_type='watchlist',
-                        tmdb_id=series_tmdb_id
-                    )
-                else:
-                    logger.warning(f"  ➜ 无法获取 '{parent_name}' 的 TMDb ID，跳过智能追剧刷新。")
-            else: # 电影等其他类型
-                logger.info(f"  ➜ 媒体项 '{parent_name}' 已处理过，将触发一次轻量元数据缓存更新。")
-                task_manager.submit_task(
-                    task_sync_metadata_cache,
-                    task_name=f"Webhook元数据更新: {parent_name}",
-                    processor_type='media',
-                    item_id=parent_id,
-                    item_name=parent_name
-                )
+                # 标记为未处理，后续逻辑会把它当作“新入库”来执行完整的数据库修复
+                is_already_processed = False
+        # 3. 统一分派任务
+        task_name_prefix = "Webhook追更" if is_already_processed and episode_ids else "Webhook入库"
+        
+        logger.info(f"  ➜ 为 '{parent_name}' 分派任务: {task_name_prefix} (分集数: {len(episode_ids)})")
+        
+        task_manager.submit_task(
+            _handle_full_processing_flow,
+            task_name=f"{task_name_prefix}: {parent_name}",
+            processor_type='media', # 确保传递 processor 实例
+            item_id=parent_id,
+            force_full_update=False, # Webhook 触发通常不需要强制深度刷新 TMDb
+            new_episode_ids=episode_ids if episode_ids else None,
+            is_new_item=not is_already_processed
+        )
 
     logger.info("  ➜ 所有 Webhook 批量任务已成功分派。")
 
