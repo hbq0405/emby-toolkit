@@ -1093,8 +1093,8 @@ class MediaProcessor:
                     seasons_details_list = []
                     # 1. 优先扫描 override 目录 (用户修改过的数据)
                     try:
-                        for fname in os.listdir(target_override_dir):
-                            full_path = os.path.join(target_override_dir, fname)
+                        for fname in os.listdir(source_cache_dir):
+                            full_path = os.path.join(source_cache_dir, fname)
                             if fname.startswith("season-") and fname.endswith(".json") and "-episode-" in fname:
                                 ep_data = _read_local_json(full_path)
                                 if ep_data:
