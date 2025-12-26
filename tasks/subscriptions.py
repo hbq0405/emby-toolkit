@@ -132,7 +132,7 @@ def _subscribe_full_series_with_logic(tmdb_id: int, series_name: str, config: Di
                 logger.info(f"  ⏳ 季《{final_series_name}》S{s_num} 无发行日期，视为 '待上映'。")
             
             if is_future_season:
-                logger.info(f"  ⏳ 季《{final_series_name}》S{s_num} 尚未播出 ({air_date_str})，状态设为 '待上映'。")
+                logger.info(f"  ⏳ 《{final_series_name}》第 {s_num} 季 尚未播出 ({air_date_str})，已加入待上映列表。")
                 
                 media_info = {
                     'tmdb_id': str(s_id) if s_id else f"{tmdb_id}_S{s_num}",
@@ -151,6 +151,7 @@ def _subscribe_full_series_with_logic(tmdb_id: int, series_name: str, config: Di
                     media_info_list=[media_info]
                     
                 )
+                any_success = True
                 continue 
 
             # ==============================================================
