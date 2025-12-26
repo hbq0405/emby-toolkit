@@ -82,16 +82,6 @@ def _handle_full_processing_flow(processor: 'MediaProcessor', item_id: str, forc
         logger.warning(f"  ➜ 项目 '{item_name_for_log}' 的元数据处理未成功完成，跳过后续步骤。")
         return
 
-    # 刷新智能追剧状态 
-    if item_type == "Series" and tmdb_id:
-        logger.info(f"  ➜ [智能追剧] 触发单项刷新 (极速模式)...")
-        task_manager.submit_task(
-            task_process_watchlist,
-            task_name=f"刷新智能追剧: {item_name_for_log}",
-            processor_type='watchlist', 
-            tmdb_id=str(tmdb_id)
-        )
-
     # 3. 后续处理
     if is_new_item:
         try:
@@ -211,6 +201,23 @@ def _handle_full_processing_flow(processor: 'MediaProcessor', item_id: str, forc
         logger.error(f"触发通知失败: {e}")
 
     logger.trace(f"  ➜ Webhook 任务及所有后续流程完成: '{item_name_for_log}'")
+
+    # 刷新智能追剧状态 
+    if item_type == "Series" and tmdb_id:
+        def _async_trigger_watchlist():
+            try:
+                logger.info(f"  ➜ [智能追剧] 触发单项刷新...")
+                task_manager.submit_task(
+                    task_process_watchlist,
+                    task_name=f"刷新智能追剧: {item_name_for_log}",
+                    processor_type='watchlist', 
+                    tmdb_id=str(tmdb_id)
+                )
+            except Exception as e:
+                logger.error(f"  🚫 触发智能追剧任务失败: {e}")
+
+        # 启动协程，不等待结果，直接让当前 Webhook 任务结束
+        spawn(_async_trigger_watchlist)
 
 def _handle_immediate_tagging_with_lib(item_id, item_name, lib_id, lib_name):
     """
