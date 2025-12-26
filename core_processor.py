@@ -1380,18 +1380,16 @@ class MediaProcessor:
                 genres = item_details_from_emby.get("Genres", [])
                 is_animation = "Animation" in genres or "动画" in genres or "Documentary" in genres or "纪录" in genres
                 
-                # 如果走了快速模式，我们认为处理质量是完美的
+                # 无论数据来自 API 还是 本地缓存，都必须接受评分算法的检验。
+                processing_score = actor_utils.evaluate_cast_processing_quality(
+                    final_cast=final_processed_cast, 
+                    original_cast_count=original_emby_actor_count,
+                    expected_final_count=len(final_processed_cast), 
+                    is_animation=is_animation
+                )
+
                 if cache_row:
-                    processing_score = 10.0
-                    logger.info(f"  ➜ [快速模式] 处理质量评分为 10.0 (完美)")
-                else:
-                    # 否则，调用工具函数进行实际评估
-                    processing_score = actor_utils.evaluate_cast_processing_quality(
-                        final_cast=final_processed_cast, 
-                        original_cast_count=original_emby_actor_count,
-                        expected_final_count=len(final_processed_cast), 
-                        is_animation=is_animation
-                    )
+                    logger.info(f"  ➜ [快速模式] 基于缓存数据的实时复核评分: {processing_score:.2f}")
                 
                 min_score_for_review = float(self.config.get("min_score_for_review", constants.DEFAULT_MIN_SCORE_FOR_REVIEW))
                 
@@ -1407,7 +1405,13 @@ class MediaProcessor:
                 elif processing_score < min_score_for_review:
                     # 情况 B: 评分过低 -> 待复核
                     reason = f"处理评分 ({processing_score:.2f}) 低于阈值 ({min_score_for_review})。"
-                    logger.warning(f"  ➜ [质检]《{item_name_for_log}》处理质量不佳，已标记为【待复核】。原因: {reason}")
+                    
+                    # ★★★ 优化日志：如果是快速模式下评分低，提示用户可能缓存有问题 ★★★
+                    if cache_row:
+                        logger.warning(f"  ➜ [质检]《{item_name_for_log}》本地缓存数据质量不佳 (评分: {processing_score:.2f})，已重新标记为【待复核】。")
+                    else:
+                        logger.warning(f"  ➜ [质检]《{item_name_for_log}》处理质量不佳，已标记为【待复核】。原因: {reason}")
+                        
                     self.log_db_manager.save_to_failed_log(cursor, item_id, item_name_for_log, reason, item_type, score=processing_score)
                     self._mark_item_as_processed(cursor, item_id, item_name_for_log, score=processing_score)
                     
