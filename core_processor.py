@@ -1086,8 +1086,7 @@ class MediaProcessor:
                 # 默认演员表也来自本地（会被强制更新覆盖）
                 authoritative_cast_source = (source_json_data.get("casts", {}) or source_json_data.get("credits", {})).get("cast", [])
 
-                # ★★★ 关键修复：如果是剧集，必须在此处聚合分集和季数据 ★★★
-                # 这样保证了 tmdb_details_for_extra 里的 seasons_details 永远是字典列表，防止 int 报错
+                # 如果是剧集，必须把分集文件也读进来
                 if item_type == "Series":
                     logger.info("  ➜ 检测到剧集，正在聚合本地分集元数据...")
                     episodes_details_map = {}
@@ -1095,7 +1094,7 @@ class MediaProcessor:
                     try:
                         # 扫描目录聚合 season-X.json 和 season-X-episode-Y.json
                         for fname in os.listdir(source_cache_dir):
-                            full_path = os.path.join(target_override_dir, fname)
+                            full_path = os.path.join(source_cache_dir, fname)
                             if fname.startswith("season-") and fname.endswith(".json") and "-episode-" in fname:
                                 ep_data = _read_local_json(full_path)
                                 if ep_data:
