@@ -481,7 +481,7 @@ def enrich_all_actor_aliases_task(
                     chunk_num = i//CHUNK_SIZE + 1
                     total_chunks = (total_tmdb + CHUNK_SIZE - 1) // CHUNK_SIZE
                     if update_status_callback:
-                        update_status_callback(progress, f"阶段1/1 (TMDb): 处理批次 {chunk_num}/{total_chunks}")
+                        update_status_callback(progress, f"处理批次 {chunk_num}/{total_chunks}")
 
                     chunk = actors_for_tmdb[i:i + CHUNK_SIZE]
                     logger.info(f"  ➜ 开始处理 TMDb 第 {chunk_num} 批次，共 {len(chunk)} 个演员 ---")
