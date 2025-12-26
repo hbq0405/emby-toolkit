@@ -257,6 +257,27 @@ class WatchlistProcessor:
                             continue
 
                         air_date_str = season_info.get('air_date')
+                        # 如果概要缺失日期，尝试深层查询和分集推断 
+                        if not air_date_str:
+                            logger.debug(f"  ➜ S{new_season_num} 概要信息缺失发行日期，正在获取详细信息以确认是否复活...")
+                            # 调用 TMDb 获取季详情
+                            season_details_deep = tmdb.get_tv_season_details(tmdb_id, new_season_num, self.tmdb_api_key)
+                            
+                            if season_details_deep:
+                                # 1. 尝试直接获取季日期
+                                air_date_str = season_details_deep.get('air_date')
+                                
+                                # 2. 如果季日期仍为空，遍历分集找最早的日期
+                                if not air_date_str and 'episodes' in season_details_deep:
+                                    episodes = season_details_deep['episodes']
+                                    valid_dates = [e.get('air_date') for e in episodes if e.get('air_date')]
+                                    if valid_dates:
+                                        air_date_str = min(valid_dates)
+                                        logger.debug(f"  ➜ 从分集数据中推断出 S{new_season_num} 发行日期: {air_date_str}")
+                                
+                                # 顺便补全海报和简介 (用于后续构建 media_info)
+                                if not season_info.get('poster_path'): season_info['poster_path'] = season_details_deep.get('poster_path')
+                                if not season_info.get('overview'): season_info['overview'] = season_details_deep.get('overview')
                         if not air_date_str:
                             continue
 
