@@ -19,7 +19,7 @@ import extensions
 from extensions import SYSTEM_UPDATE_MARKERS, SYSTEM_UPDATE_LOCK, RECURSION_SUPPRESSION_WINDOW, DELETING_COLLECTIONS, UPDATING_IMAGES
 from core_processor import MediaProcessor
 from tasks import (
-    task_auto_sync_template_on_policy_change, task_sync_metadata_cache,
+    task_auto_sync_template_on_policy_change,
     task_sync_all_metadata, task_sync_images,
     task_process_watchlist
 )

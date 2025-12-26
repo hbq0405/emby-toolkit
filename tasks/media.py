@@ -48,20 +48,6 @@ def task_manual_update(processor, item_id: str, manual_cast_list: list, item_nam
         item_name=item_name
     )
 
-def task_sync_metadata_cache(processor, item_id: str, item_name: str, episode_ids_to_add: Optional[List[str]] = None):
-    """
-    任务：为单个媒体项同步元数据到 media_metadata 数据库表。
-    可根据是否传入 episode_ids_to_add 来决定执行模式。
-    """
-    sync_mode = "精准分集追加" if episode_ids_to_add else "常规元数据刷新"
-    logger.trace(f"  ➜ 任务开始：同步媒体元数据缓存 ({sync_mode}) for '{item_name}' (ID: {item_id})")
-    try:
-        processor.sync_single_item_to_metadata_cache(item_id, item_name=item_name, episode_ids_to_add=episode_ids_to_add)
-        logger.trace(f"  ➜ 任务成功：同步媒体元数据缓存 for '{item_name}'")
-    except Exception as e:
-        logger.error(f"  ➜ 任务失败：同步媒体元数据缓存 for '{item_name}' 时发生错误: {e}", exc_info=True)
-        raise
-
 def task_sync_images(processor, item_id: str, update_description: str, sync_timestamp_iso: str):
     """
     任务：为单个媒体项同步图片和元数据文件到本地 override 目录。
@@ -121,7 +107,6 @@ def task_sync_all_metadata(processor, item_id: str, item_name: str):
         processor.sync_emby_updates_to_override_files(item_details)
 
         # 步骤 3: 调用另一个施工队，更新数据库缓存
-        # 注意：这里我们复用现有的 task_sync_metadata_cache 逻辑
         processor.sync_single_item_to_metadata_cache(item_id, item_name=item_name)
 
         logger.trace(f"  ➜ 任务成功：{log_prefix}")
