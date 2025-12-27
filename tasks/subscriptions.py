@@ -613,15 +613,21 @@ def task_auto_subscribe(processor):
                     success = moviepilot.subscribe_with_custom_payload(mp_payload, config)
 
                 elif item_type == 'Series':
+                    sources = item.get('subscription_sources_json', [])
+                    primary_source = sources[0] if sources else None
                     success = _subscribe_full_series_with_logic(
                         tmdb_id=int(item['tmdb_id']),
                         series_name=item['title'],
                         config=config,
                         tmdb_api_key=tmdb_api_key,
-                        use_gap_fill_resubscribe=use_gap_fill_resubscribe
+                        use_gap_fill_resubscribe=use_gap_fill_resubscribe,
+                        source=primary_source
                     )
                     if success:
-                        request_db.set_media_status_none(str(item['tmdb_id']), 'Series')
+                        request_db.set_media_status_subscribed(
+                            tmdb_ids=[str(item['tmdb_id'])], 
+                            item_type='Series'
+                        )
 
                 elif item_type == 'Season':
                     parent_tmdb_id = item.get('parent_series_tmdb_id')
