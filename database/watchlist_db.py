@@ -616,16 +616,24 @@ def sync_seasons_watching_status(parent_tmdb_id: str, active_season_numbers: Lis
                     cursor.execute(reset_sql, (parent_tmdb_id, max_active_season))
                 
                     # 3. 【最新季】只更新最大那一季 -> 标记为 series_status
+                    # ★★★ 安全锁：严禁将已标记为 'Completed' 的季回滚为 'Watching'/'Paused' ★★★
+                    # 这防止了因 TMDb 数据波动或本地文件临时缺失导致的“诈尸”和重复洗版
                     update_active_sql = """
                         UPDATE media_metadata
                         SET watching_status = %s
                         WHERE parent_series_tmdb_id = %s 
                           AND item_type = 'Season'
-                          AND season_number = %s;
+                          AND season_number = %s
+                          AND watching_status != 'Completed'; 
                     """
                     cursor.execute(update_active_sql, (series_status, parent_tmdb_id, max_active_season))
                     
-                    logger.info(f"  ➜ 更新剧集 {parent_tmdb_id} 的季状态: 最新季 S{max_active_season} -> {series_status}，其余旧季 -> 已完结。")
+                    # 只有当真正更新了行数时（即没有被 Completed 锁挡住），才记录日志，避免误导
+                    if cursor.rowcount > 0:
+                        logger.info(f"  ➜ 更新剧集 {parent_tmdb_id} 的季状态: 最新季 S{max_active_season} -> {series_status}，其余旧季 -> 已完结。")
+                    else:
+                        # 如果 rowcount 为 0，可能是因为该季已经是 Completed 了
+                        logger.debug(f"  🛡️ [安全锁] 剧集 {parent_tmdb_id} S{max_active_season} 已是 完结 状态，拒绝回滚为 {series_status}。")
 
             conn.commit()
     except Exception as e:
