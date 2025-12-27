@@ -133,7 +133,7 @@ class WatchlistProcessor:
                     where_clause = "WHERE force_ended = FALSE"
                     logger.info("  ➜ 已启用【深度模式】，将刷新所有追剧列表中的项目。")
                 else:
-                    today_str = datetime.now(timezone.utc).date().isoformat()
+                    today_str = datetime.now().date().isoformat()
                     where_clause = f"""
                         WHERE watching_status = '{STATUS_WATCHING}' 
                            OR watching_status = '{STATUS_PENDING}' 
