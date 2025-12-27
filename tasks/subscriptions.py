@@ -514,11 +514,23 @@ def task_auto_subscribe(processor):
                     tmdb_id = movie['tmdb_id']
                     title = movie['title']
                     
-                    # ★★★ 修改：直接更新状态为 'S' (Stop/Pause) ★★★
+                    # ★★★ 修改开始：尝试暂停，失败则补订后再次暂停 ★★★
                     if moviepilot.update_subscription_status(int(tmdb_id), None, 'S', config):
                         paused_ids.append(tmdb_id)
                     else:
-                        logger.warning(f"    - 《{title}》暂停失败 (MP请求错误或订阅不存在)。")
+                        logger.warning(f"    - 《{title}》暂停失败 (MP中可能不存在)，尝试重新订阅并同步状态...")
+                        
+                        # 1. 尝试补订 (默认状态通常为 R)
+                        mp_payload = {"name": title, "tmdbid": int(tmdb_id), "type": "电影"}
+                        if moviepilot.subscribe_with_custom_payload(mp_payload, config):
+                            # 2. 补订成功后，再次尝试将其状态更新为 'S'
+                            if moviepilot.update_subscription_status(int(tmdb_id), None, 'S', config):
+                                paused_ids.append(tmdb_id)
+                                logger.info(f"    - ✅ 《{title}》补订并暂停成功。")
+                            else:
+                                logger.warning(f"    - ⚠️ 《{title}》补订成功，但暂停状态同步失败。")
+                        else:
+                            logger.error(f"    - ❌ 《{title}》补订失败，无法执行暂停操作。")
                 
                 if paused_ids:
                     request_db.update_movie_status_paused(paused_ids, pause_days=movie_pause_days)
