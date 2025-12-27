@@ -42,7 +42,7 @@ AUDIO_SUBTITLE_KEYWORD_MAP = {
 
 # ★★★ 内部辅助函数：处理整部剧集的精细化订阅 ★★★
 # ==============================================================================
-def _subscribe_full_series_with_logic(tmdb_id: int, series_name: str, config: Dict, tmdb_api_key: str, use_gap_fill_resubscribe: bool = False, source: Dict = None) -> bool:
+def _subscribe_full_series_with_logic(tmdb_id: int, series_name: str, config: Dict, tmdb_api_key: str, source: Dict = None) -> bool:
     """
     处理整部剧集的订阅：
     1. 查询 TMDb 获取所有季。
@@ -181,7 +181,8 @@ def _subscribe_full_series_with_logic(tmdb_id: int, series_name: str, config: Di
             # 逻辑 D: 决定 Best Version (洗版/完结检测)
             # ==============================================================
             if not is_pending:
-                if use_gap_fill_resubscribe or check_series_completion(tmdb_id, tmdb_api_key, season_number=s_num, series_name=final_series_name):
+                # 只要季没完结，就绝对不能用 best_version=1
+                if check_series_completion(tmdb_id, tmdb_api_key, season_number=s_num, series_name=final_series_name):
                     mp_payload["best_version"] = 1
 
             # ==============================================================
@@ -317,13 +318,11 @@ def task_manual_subscribe_batch(processor, subscribe_requests: List[Dict]):
                 # 3. 处理整剧订阅 (Series)
                 elif item_type == 'Series':
                     # 调用整剧处理逻辑 (内部会遍历所有季)
-                    # 注意：这里我们不再传递 use_gap_fill_resubscribe，让它内部默认 False 即可
                     success = _subscribe_full_series_with_logic(
                         tmdb_id=int(tmdb_id),
                         series_name=item_title_for_log,
                         config=config,
                         tmdb_api_key=tmdb_api_key,
-                        use_gap_fill_resubscribe=False, # 手动整剧订阅，默认不强制所有季洗版，依靠内部的完结检查
                         source=source
                     )
                     if success:
@@ -615,13 +614,22 @@ def task_auto_subscribe(processor):
                 elif item_type == 'Series':
                     sources = item.get('subscription_sources_json', [])
                     primary_source = sources[0] if sources else None
+                    should_force_resub = False
+                    for src in sources:
+                        stype = src.get('type')
+                        if stype == 'resubscribe':
+                            should_force_resub = True
+                            break
+                        if stype == 'gap_scan' and use_gap_fill_resubscribe:
+                            should_force_resub = True
+                            break
+
                     success = _subscribe_full_series_with_logic(
                         tmdb_id=int(item['tmdb_id']),
                         series_name=item['title'],
                         config=config,
                         tmdb_api_key=tmdb_api_key,
-                        use_gap_fill_resubscribe=use_gap_fill_resubscribe,
-                        source=primary_source
+                        source=primary_source 
                     )
                     if success:
                         request_db.set_media_status_subscribed(
