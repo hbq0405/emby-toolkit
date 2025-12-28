@@ -581,7 +581,7 @@ def api_get_emby_libraries_for_filter():
         library_options = []
         for view in all_views:
             collection_type = view.get('CollectionType')
-            if collection_type in ['movies', 'tvshows']:
+            if collection_type in ['movies', 'tvshows', 'mixed']:
                 library_options.append({
                     "label": view.get('Name'),
                     "value": view.get('Id')
