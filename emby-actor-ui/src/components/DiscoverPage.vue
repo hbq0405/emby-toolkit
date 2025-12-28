@@ -101,6 +101,18 @@
                 </n-input-group>
               </n-space>
               <n-space align="center">
+                <label>工作室:</label>
+                <n-select
+                  v-model:value="selectedStudios"
+                  :disabled="isSearchMode"
+                  multiple
+                  filterable
+                  placeholder="选择工作室"
+                  :options="studioOptions"
+                  style="min-width: 300px;"
+                />
+              </n-space>
+              <n-space align="center">
                 <label>关键词:</label>
                 <n-select
                   v-model:value="selectedKeywords"
@@ -322,6 +334,8 @@ const languageOptions = ref([]);
 const selectedLanguage = ref(null);
 const keywordOptions = ref([]); 
 const selectedKeywords = ref([]); 
+const studioOptions = ref([]);
+const selectedStudios = ref([]);
 const genreFilterMode = ref('include'); 
 const yearFrom = ref(null);
 const yearTo = ref(null);
@@ -399,6 +413,14 @@ const fetchKeywords = async () => {
     message.error('加载关键词列表失败');
   }
 };
+const fetchStudios = async () => {
+  try {
+    const response = await axios.get('/api/discover/config/studios');
+    studioOptions.value = response.data;
+  } catch (error) {
+    message.error('加载工作室列表失败');
+  }
+};
 const fetchDiscoverData = async () => {
   if (isLoadingMore.value || loading.value) return;
   if (filters.page === 1) { loading.value = true; } else { isLoadingMore.value = true; }
@@ -418,6 +440,7 @@ const fetchDiscoverData = async () => {
         'with_origin_country': selectedRegions.value.join('|'),
         'with_original_language': selectedLanguage.value,
         'with_keywords': selectedKeywords.value,
+        'with_companies': selectedStudios.value,
       };
       if (selectedGenres.value.length > 0) {
         if (genreFilterMode.value === 'include') { apiParams.with_genres = selectedGenres.value.join(','); } 
@@ -669,13 +692,14 @@ watch(mediaType, () => {
   resetAndFetch();
 });
 watch(searchQuery, (newValue) => { resetAndFetch(); });
-watch([() => filters.sort_by, () => filters.vote_average_gte, selectedGenres, selectedRegions, selectedLanguage, selectedKeywords, genreFilterMode, yearFrom, yearTo], () => { resetAndFetch(); }, { deep: true });
+watch([() => filters.sort_by, () => filters.vote_average_gte, selectedGenres, selectedRegions, selectedLanguage, selectedKeywords, selectedStudios, genreFilterMode, yearFrom, yearTo], () => { resetAndFetch(); }, { deep: true });
 let observer = null;
 onMounted(() => {
   fetchGenres();
   fetchCountries();
   fetchLanguages();
   fetchKeywords();
+  fetchStudios();
   fetchEmbyConfig(); 
   fetchRecommendationPool();
   resetAndFetch();

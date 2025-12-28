@@ -9,7 +9,16 @@ logger = logging.getLogger(__name__)
 def _expand_keyword_labels(value) -> List[str]:
     """将中文标签展开为英文关键词列表"""
     from database import settings_db
-    mapping = settings_db.get_setting('keyword_mapping') or {}
+    mapping_data = settings_db.get_setting('keyword_mapping') or []
+    
+    # 兼容处理：如果是新版 List 格式，转为 Dict 以便查找
+    mapping = {}
+    if isinstance(mapping_data, list):
+        for item in mapping_data:
+            if item.get('label'):
+                mapping[item['label']] = item
+    elif isinstance(mapping_data, dict):
+        mapping = mapping_data
     
     target_en_keywords = []
     labels = value if isinstance(value, list) else [value]
@@ -22,6 +31,36 @@ def _expand_keyword_labels(value) -> List[str]:
             # 没映射的才保留原词
             target_en_keywords.append(label)
     return list(set(filter(None, target_en_keywords)))
+
+def _expand_studio_labels(value) -> List[str]:
+    """
+    【新增】将中文工作室简称展开为英文原名列表
+    例如: 输入 "漫威" -> 返回 ["Marvel Studios"]
+    """
+    from database import settings_db
+    mapping_data = settings_db.get_setting('studio_mapping') or []
+    
+    # 兼容处理：List 转 Dict
+    mapping = {}
+    if isinstance(mapping_data, list):
+        for item in mapping_data:
+            if item.get('label'):
+                mapping[item['label']] = item
+    elif isinstance(mapping_data, dict):
+        mapping = mapping_data
+
+    target_en_names = []
+    labels = value if isinstance(value, list) else [value]
+    
+    for label in labels:
+        if label in mapping:
+            # 拿到 en 列表
+            target_en_names.extend(mapping[label].get('en', []))
+        else:
+            # 没映射的保留原词 (支持用户直接搜英文的情况)
+            target_en_names.append(label)
+            
+    return list(set(filter(None, target_en_names)))
 
 def get_user_allowed_library_ids(user_id: str, emby_url: str, emby_api_key: str) -> List[str]:
     """
@@ -54,15 +93,6 @@ def query_virtual_library_items(
 ) -> Tuple[List[Dict[str, Any]], int]:
     """
     【核心函数】根据筛选规则 + 用户实时权限，查询媒体项。
-    
-    权限逻辑 (SQL层实现):
-    1. 关联 emby_users 表获取 policy_json。
-    2. 检查 EnableAllFolders 是否为 True。
-    3. 检查 asset_details_json 中的 ancestor_ids 是否与 EnabledFolders 有交集。
-    4. 检查 asset_details_json 中的 source_library_id 是否在 EnabledFolders 中 (兼容)。
-    5. 检查 tags_json 是否包含 BlockedTags (黑名单)。
-    
-    返回: (items_list, total_count)
     """
     
     # 1. 基础 SQL 结构
@@ -81,7 +111,6 @@ def query_virtual_library_items(
         """
         params = [user_id]
     else:
-        # --- 修复：支持无用户模式 (全局查询) ---
         base_select = """
             SELECT 
                 m.emby_item_ids_json->>0 as emby_id,
@@ -111,7 +140,6 @@ def query_virtual_library_items(
 
     # 5. 媒体库过滤
     if target_library_ids:
-        # 使用 COALESCE 防止 asset_details_json 为 NULL 导致报错
         lib_filter_sql = """
         EXISTS (
             SELECT 1 FROM jsonb_array_elements(COALESCE(m.asset_details_json, '[]'::jsonb)) AS a 
@@ -178,42 +206,26 @@ def query_virtual_library_items(
         """
         where_clauses.append(tag_block_sql)
 
-        # C. 分级控制 (最终完善版：支持 US/TV/成人/未分级 映射)
+        # C. 分级控制
         parental_control_sql = """
     (
-        -- 1. 如果没有设置最大分级限制，则允许所有
         (u.policy_json->'MaxParentalRating' IS NULL)
         OR
         (
             m.official_rating IS NOT NULL 
             AND (
                 CASE 
-                    -- 1. 7级档位 (PG-13 / TV-PG / TV-Y7)
                     WHEN m.official_rating = 'PG-13' THEN 7
                     WHEN m.official_rating = 'TV-PG' THEN 7 
                     WHEN m.official_rating = 'TV-Y7' THEN 7
-                    
-                    -- 2. 8级档位 (TV-14)
                     WHEN m.official_rating = 'TV-14' THEN 8
-                    
-                    -- 3. 低于7级的档位 (G / PG / TV-G / TV-Y) -> 设为 0 或 6 均可，只要小于7
                     WHEN m.official_rating IN ('G', 'TV-G', 'TV-Y') THEN 0
                     WHEN m.official_rating = 'PG' THEN 6 
-                    
-                    -- 4. 高于8级的档位 (R / TV-MA / NC-17) -> 保持标准高数值，确保被拦截
                     WHEN m.official_rating = 'R' THEN 17
                     WHEN m.official_rating = 'TV-MA' THEN 17
                     WHEN m.official_rating = 'NC-17' THEN 18
-                    
-                    -- 成人分级
                     WHEN m.official_rating IN ('X', 'XXX', 'AO') THEN 18
-                    
-                    -- 未分级 -> 0 (由 BlockUnratedItems 控制)
                     WHEN m.official_rating IN ('NR', 'UR', 'Unrated', 'Not Rated') THEN 0
-                    
-                    -- 兜底逻辑：提取数字
-                    -- 注意：如果遇到未知的分级，提取出的数字可能与您的系统不符
-                    -- 但对于标准格式通常没问题
                     ELSE COALESCE(
                         NULLIF(REGEXP_REPLACE(m.official_rating, '[^0-9]', '', 'g'), ''), 
                         '0'
@@ -223,7 +235,6 @@ def query_virtual_library_items(
         )
     )
     AND NOT (
-        -- 2. 处理 "禁止未分级内容" (BlockUnratedItems)
         (
             jsonb_typeof(u.policy_json->'BlockUnratedItems') = 'array'
             AND
@@ -260,11 +271,11 @@ def query_virtual_library_items(
 
         clause = None
         
-        # --- 1. 基础 JSONB 数组类型 (Genres, Tags, Studios, Countries) ---
-        # ★★★ 修复：增加 COALESCE，防止 NULL 导致排除逻辑失效 ★★★
-        jsonb_array_fields = ['genres', 'tags', 'studios', 'countries']
+        # --- 1. 基础 JSONB 数组类型 (Genres, Tags, Countries) ---
+        # ★★★ 修改：移除 studios，因为它需要特殊处理 ★★★
+        jsonb_array_fields = ['genres', 'tags', 'countries']
         if field in jsonb_array_fields:
-            column = f"COALESCE(m.{field}_json, '[]'::jsonb)" # 兜底为数组
+            column = f"COALESCE(m.{field}_json, '[]'::jsonb)"
             if op in ['contains', 'eq']:
                 clause = f"{column} ? %s"
                 params.append(str(value))
@@ -283,7 +294,6 @@ def query_virtual_library_items(
             expanded_keywords = _expand_keyword_labels(value)
             if not expanded_keywords: continue
             
-            # ★★★ 修复：增加 COALESCE ★★★
             column = "COALESCE(m.keywords_json, '[]'::jsonb)"
             if op in ['contains', 'is_one_of', 'eq']:
                 clause = f"{column} ?| %s"
@@ -292,7 +302,25 @@ def query_virtual_library_items(
                 clause = f"NOT ({column} ?| %s)"
                 params.append(expanded_keywords)
 
-        # --- 3. 复杂对象数组 (Actors, Directors) ---
+        # --- ★★★ 3. 工作室 (Studios) - 新增处理逻辑 ★★★ ---
+        elif field == 'studios':
+            expanded_studios = _expand_studio_labels(value)
+            if not expanded_studios: continue
+            
+            column = "COALESCE(m.studios_json, '[]'::jsonb)"
+            # 因为一个中文可能对应多个英文名，所以 contains/eq 也用 ?| (包含任意一个)
+            if op in ['contains', 'is_one_of', 'eq']:
+                clause = f"{column} ?| %s"
+                params.append(expanded_studios)
+            elif op == 'is_none_of':
+                clause = f"NOT ({column} ?| %s)"
+                params.append(expanded_studios)
+            elif op == 'is_primary':
+                # 主工作室是数组第一个，检查它是否在我们的英文名列表中
+                clause = f"{column}->>0 = ANY(%s)"
+                params.append(expanded_studios)
+
+        # --- 4. 复杂对象数组 (Actors, Directors) ---
         elif field in ['actors', 'directors']:
             ids = []
             if isinstance(value, list):
@@ -305,7 +333,6 @@ def query_virtual_library_items(
             if not ids: continue
 
             id_key = 'tmdb_id' if field == 'actors' else 'id'
-            # ★★★ 修复：增加 COALESCE，防止 jsonb_array_elements 对 NULL 报错 ★★★
             safe_column = f"COALESCE(m.{field}_json, '[]'::jsonb)"
 
             if op == 'is_primary':
@@ -323,9 +350,8 @@ def query_virtual_library_items(
                 clause = f"NOT EXISTS (SELECT 1 FROM jsonb_array_elements({safe_column}) elem WHERE (elem->>'{id_key}')::int = ANY(%s))"
                 params.append(ids)
 
-        # --- 4. 家长分级 (Unified Rating) ---
+        # --- 5. 家长分级 (Unified Rating) ---
         elif field == 'unified_rating':
-            # ★★★ 修复：处理 NULL 情况 ★★★
             if op == 'eq':
                 clause = "m.unified_rating = %s"
                 params.append(value)
@@ -333,12 +359,10 @@ def query_virtual_library_items(
                 clause = "m.unified_rating = ANY(%s)"
                 params.append(list(value) if isinstance(value, list) else [value])
             elif op == 'is_none_of':
-                # 排除选定的，意味着：要么是 NULL，要么不在列表里
                 clause = "(m.unified_rating IS NULL OR NOT (m.unified_rating = ANY(%s)))"
                 params.append(list(value) if isinstance(value, list) else [value])
 
-        # --- 5. 数值比较 (Runtime, Year, Rating) ---
-        # ★★★ 修复：电视剧平均时长逻辑 + 空值兜底 ★★★
+        # --- 6. 数值比较 (Runtime, Year, Rating) ---
         elif field == 'runtime':
             try:
                 val = float(value)
@@ -365,7 +389,6 @@ def query_virtual_library_items(
             column = col_map[field]
             try:
                 val = float(value)
-                # ★★★ 修复：COALESCE 兜底 ★★★
                 safe_col = f"COALESCE({column}, 0)"
                 if op == 'gte': clause = f"{safe_col} >= %s"
                 elif op == 'lte': clause = f"{safe_col} <= %s"
@@ -373,7 +396,7 @@ def query_virtual_library_items(
                 if clause: params.append(val)
             except (ValueError, TypeError): continue
 
-        # --- 6. 日期偏移 ---
+        # --- 7. 日期偏移 ---
         elif field in ['date_added', 'release_date']:
             column = f"m.{field}"
             try:
@@ -385,9 +408,8 @@ def query_virtual_library_items(
                 if clause: params.append(days)
             except (ValueError, TypeError): continue
 
-        # --- 7. 文本模糊匹配 ---
+        # --- 8. 文本模糊匹配 ---
         elif field == 'title':
-            # 标题通常不会为 NULL，但为了保险可以加 COALESCE，不过 ILIKE 对 NULL 只是返回 NULL (False)，通常没问题
             if op == 'contains':
                 clause = "m.title ILIKE %s"
                 params.append(f"%{value}%")
@@ -404,7 +426,7 @@ def query_virtual_library_items(
                 clause = "m.title NOT ILIKE %s"
                 params.append(f"%{value}%")
 
-        # --- 8. 原始语言 ---
+        # --- 9. 原始语言 ---
         elif field == 'original_language':
             if op == 'eq':
                 clause = "m.original_language = %s"
@@ -413,13 +435,13 @@ def query_virtual_library_items(
                 clause = "m.original_language = ANY(%s)"
                 params.append(list(value) if isinstance(value, list) else [value])
 
-        # --- 9. 追剧状态 ---
+        # --- 10. 追剧状态 ---
         elif field == 'is_in_progress':
             if op == 'is':
                 clause = "m.watchlist_is_airing = %s"
                 params.append(bool(value))
 
-        # --- 10. 视频流属性 (Resolution, Quality, Effect, Codec) ---
+        # --- 11. 视频流属性 ---
         asset_map = {
             'resolution': 'resolution_display',
             'quality': 'quality_display',
@@ -428,7 +450,6 @@ def query_virtual_library_items(
         }
         if field in asset_map:
             json_key = asset_map[field]
-            # ★★★ 修复：增加 COALESCE，防止 asset_details_json 为 NULL 报错 ★★★
             safe_assets = "COALESCE(m.asset_details_json, '[]'::jsonb)"
             
             if op == 'eq':
@@ -441,7 +462,7 @@ def query_virtual_library_items(
                 clause = f"NOT EXISTS (SELECT 1 FROM jsonb_array_elements({safe_assets}) a WHERE a->>'{json_key}' = ANY(%s))"
                 params.append(list(value))
 
-        # --- 11. 音轨筛选 ---
+        # --- 12. 音轨筛选 ---
         elif field == 'audio_lang':
             safe_assets = "COALESCE(m.asset_details_json, '[]'::jsonb)"
             if op in ['contains', 'eq']:
@@ -530,13 +551,10 @@ def get_sorted_and_paginated_ids(
 ) -> List[str]:
     """
     辅助函数：对给定的 Emby ID 列表进行排序和分页。
-    主要用于“个人推荐”或“榜单”类合集，这些合集的 ID 列表是预先计算好的，
-    但需要根据前端请求进行排序和分页。
     """
     if not item_ids:
         return []
 
-    # 排序映射
     sort_map = {
         'DateCreated': 'date_added',
         'SortName': 'title',
@@ -555,16 +573,10 @@ def get_sorted_and_paginated_ids(
     try:
         with get_db_connection() as conn:
             with conn.cursor() as cursor:
-                # 使用 jsonb_array_elements 展开 emby_item_ids_json 来匹配
-                # 或者更简单：如果 emby_item_ids_json 包含 item_ids 中的任意一个
-                
-                # 既然我们已经有了明确的 Emby ID 列表，我们可以反查 media_metadata
-                # 注意：media_metadata 存的是 JSON 数组，我们需要匹配数组里包含该 ID 的记录
-                
                 sql = f"""
                     SELECT emby_item_ids_json->>0 as emby_id
                     FROM media_metadata
-                    WHERE emby_item_ids_json ?| %s -- 检查 JSON 数组是否包含列表中的任意 ID
+                    WHERE emby_item_ids_json ?| %s 
                     ORDER BY {db_sort_col} {db_sort_dir}
                     LIMIT %s OFFSET %s
                 """
@@ -576,7 +588,6 @@ def get_sorted_and_paginated_ids(
 
     except Exception as e:
         logger.error(f"对 ID 列表进行排序分页失败: {e}", exc_info=True)
-        # 出错时回退到简单的切片（无排序）
         return item_ids[offset : offset + limit]
     
 def get_missing_items_metadata(tmdb_ids: List[str]) -> Dict[str, Dict]:

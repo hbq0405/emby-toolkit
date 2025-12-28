@@ -7,12 +7,12 @@ import json
 import psycopg2
 import pytz
 from datetime import datetime
-from database import custom_collection_db, user_db, connection, media_db
+from database import custom_collection_db, user_db, connection, settings_db
 import config_manager
 import handler.emby as emby
 from tasks.helpers import is_movie_subscribable
 from extensions import admin_required, any_login_required, DELETING_COLLECTIONS
-from utils import get_country_translation_map, UNIFIED_RATING_CATEGORIES, get_tmdb_country_options, DEFAULT_KEYWORD_MAPPING
+from utils import get_country_translation_map, UNIFIED_RATING_CATEGORIES, get_tmdb_country_options, DEFAULT_KEYWORD_MAPPING, DEFAULT_STUDIO_MAPPING
 from handler.tmdb import get_movie_genres_tmdb, get_tv_genres_tmdb, search_companies_tmdb, search_person_tmdb
 # 1. 创建自定义合集蓝图
 custom_collections_bp = Blueprint('custom_collections', __name__, url_prefix='/api/custom_collections')
@@ -24,6 +24,24 @@ GENRE_TRANSLATION_PATCH = {
     "War & Politics": "战争&政治",
     # 以后如果发现其他未翻译的，也可以加在这里
 }
+
+# 辅助函数：确保数据是列表格式 (用于兼容旧数据)
+def ensure_list_format(data, default_list):
+    if not data:
+        return default_list
+    # 如果是旧的字典格式，转换为列表 (按键名排序，因为字典无序)
+    if isinstance(data, dict):
+        converted = []
+        for label, info in data.items():
+            item = {"label": label}
+            item.update(info)
+            converted.append(item)
+        # 旧数据转换时只能按名称排序，无法恢复用户想要的顺序
+        return sorted(converted, key=lambda x: x['label'])
+    # 如果已经是列表，直接返回 (保留顺序)
+    if isinstance(data, list):
+        return data
+    return default_list
 
 # ★★★ 获取 Emby 用户列表 ★★★
 @custom_collections_bp.route('/config/emby_users', methods=['GET'])
@@ -636,6 +654,28 @@ def api_search_tmdb_companies():
         logger.error(f"搜索 TMDb 电影公司时出错: {e}", exc_info=True)
         return jsonify({"error": "服务器内部错误"}), 500
     
+# --- 给前端筛选器用的工作室列表接口 ---
+@custom_collections_bp.route('/config/studios', methods=['GET'])
+@any_login_required
+def api_get_studios_for_filter():
+    """返回工作室映射的 Label 列表，供筛选下拉框使用"""
+    try:
+        from database import settings_db
+        # 获取完整配置
+        data = settings_db.get_setting('studio_mapping')
+        # 使用之前的辅助函数确保是列表
+        mapping_list = ensure_list_format(data, DEFAULT_STUDIO_MAPPING)
+        
+        # 转换为前端下拉框格式
+        studio_options = [
+            {"label": item['label'], "value": item['label']}
+            for item in mapping_list
+        ]
+        return jsonify(studio_options)
+    except Exception as e:
+        logger.error(f"获取工作室列表失败: {e}")
+        return jsonify([]), 500
+    
 # --- 搜索 TMDb 人物 (演员/导演) ---
 @custom_collections_bp.route('/config/tmdb_search_persons', methods=['GET'])
 @any_login_required
@@ -693,24 +733,18 @@ def api_get_tmdb_countries():
 @custom_collections_bp.route('/config/keywords', methods=['GET'])
 @any_login_required
 def api_get_keywords_for_filter():
-    """【核心修正】让筛选下拉框也读取自定义映射表"""
     try:
-        from database import settings_db
-        # 1. 优先读取数据库里的自定义映射
-        mapping = settings_db.get_setting('keyword_mapping')
+        data = settings_db.get_setting('keyword_mapping')
         
-        # 2. 如果没有，用预设兜底
-        if not mapping:
-            mapping = DEFAULT_KEYWORD_MAPPING
+        # 使用辅助函数处理
+        mapping_list = ensure_list_format(data, DEFAULT_KEYWORD_MAPPING)
             
-        # 3. 转换为前端下拉框需要的 [{label, value}] 格式
+        # 直接按列表顺序返回，不再强制 sort
         keyword_options = [
-            {"label": label, "value": label}
-            for label in mapping.keys()
+            {"label": item['label'], "value": item['label']}
+            for item in mapping_list
         ]
-        
-        # 按中文拼音排序，体验更好
-        return jsonify(sorted(keyword_options, key=lambda x: x['label']))
+        return jsonify(keyword_options)
     except Exception as e:
         logger.error(f"获取关键词列表失败: {e}")
         return jsonify([]), 500
@@ -746,16 +780,15 @@ def api_get_tv_genres_config():
  # --- 获取关键词映射表 ---   
 @custom_collections_bp.route('/config/keyword_mapping', methods=['GET'])
 def api_get_keyword_mapping():
-    from database import settings_db
-    mapping = settings_db.get_setting('keyword_mapping')
-    return jsonify(mapping if mapping else DEFAULT_KEYWORD_MAPPING)
+    data = settings_db.get_setting('keyword_mapping')
+    return jsonify(ensure_list_format(data, DEFAULT_KEYWORD_MAPPING))
 
 # --- 保存关键词映射表 ---
 @custom_collections_bp.route('/config/keyword_mapping', methods=['POST'])
 @admin_required
 def api_save_keyword_mapping():
     from database import settings_db
-    data = request.json
+    data = request.json # 前端现在会发送 List
     settings_db.save_setting('keyword_mapping', data)
     return jsonify({"message": "保存成功"})
 
@@ -763,6 +796,23 @@ def api_save_keyword_mapping():
 @custom_collections_bp.route('/config/keyword_mapping/defaults', methods=['GET'])
 @admin_required
 def api_get_keyword_defaults():
-    """返回默认关键词映射预设"""
-    # 直接返回文件顶部定义的那个 DEFAULT_KEYWORD_MAPPING
     return jsonify(DEFAULT_KEYWORD_MAPPING)
+
+# --- 工作室映射相关路由 ---
+@custom_collections_bp.route('/config/studio_mapping', methods=['GET'])
+def api_get_studio_mapping():
+    from database import settings_db
+    data = settings_db.get_setting('studio_mapping')
+    return jsonify(ensure_list_format(data, DEFAULT_STUDIO_MAPPING))
+
+@custom_collections_bp.route('/config/studio_mapping', methods=['POST'])
+@admin_required
+def api_save_studio_mapping():
+    from database import settings_db
+    data = request.json
+    settings_db.save_setting('studio_mapping', data)
+    return jsonify({"message": "保存成功"})
+@custom_collections_bp.route('/config/studio_mapping/defaults', methods=['GET'])
+@admin_required
+def api_get_studio_defaults():
+    return jsonify(DEFAULT_STUDIO_MAPPING)

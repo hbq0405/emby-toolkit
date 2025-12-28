@@ -17,9 +17,9 @@
               </template>
               快速同步媒体元数据
             </n-tooltip>
-            <n-button @click="openKeywordManager" secondary type="info">
+            <n-button @click="showMappingModal = true" secondary type="info">
               <template #icon><n-icon :component="SparklesIcon" /></template>
-              关键词管理
+              映射管理
             </n-button>
             <n-button type="default" @click="handleGenerateAllCovers" :loading="isGeneratingCovers">
               <template #icon><n-icon :component="CoverIcon" /></template>
@@ -393,24 +393,28 @@
                         v-model:value="rule.value"
                         multiple
                         filterable
-                        remote
-                        placeholder="输入以搜索并添加工作室"
-                        :options="studioOptions"
-                        :loading="isSearchingStudios"
-                        @search="handleStudioSearch"
+                        placeholder="选择已配置的工作室"
+                        :options="studioMappingOptions"
                         :disabled="!rule.operator"
                         style="flex-grow: 1; min-width: 220px;"
                       />
-                      <n-auto-complete
+                      <n-select
                         v-else
                         v-model:value="rule.value"
-                        :options="studioOptions"
-                        :loading="isSearchingStudios"
-                        placeholder="边输入边搜索工作室"
-                        @update:value="handleStudioSearch"
+                        filterable
+                        placeholder="选择已配置的工作室"
+                        :options="studioMappingOptions"
                         :disabled="!rule.operator"
                         clearable
+                        style="flex-grow: 1;"
                       />
+                      <!-- 提示用户去配置 -->
+                      <n-tooltip trigger="hover">
+                        <template #trigger>
+                          <n-icon :component="HelpIcon" style="margin-left: 8px; cursor: help; color: var(--n-text-color-3);" />
+                        </template>
+                        工作室筛选基于“映射管理”中的配置。如需筛选未列出的工作室，请先去添加映射。
+                      </n-tooltip>
                     </template>
                     <template v-else-if="rule.field === 'keywords'">
                       <n-select
@@ -419,7 +423,7 @@
                         multiple
                         filterable
                         placeholder="选择一个或多个关键词"
-                        :options="keywordOptions"
+                        :options="keywordOptions" 
                         :disabled="!rule.operator"
                         style="flex-grow: 1; min-width: 220px;"
                       />
@@ -994,202 +998,22 @@
         </n-tabs>
       </div>
     </n-modal>
-    <!-- 关键词管理模态框 -->
-    <n-modal v-model:show="showKeywordModal" preset="card" title="关键词映射管理" style="width: 800px;">
-      <n-alert type="warning" :bordered="false" style="margin-bottom: 16px;">
-        映射后的中文标签将作为所有关键词的统一入口，每个中文标签可以映射多个英文关键词和对应的ID，英文逗号分隔。
-      </n-alert>
-      
-      <div style="max-height: 500px; overflow-y: auto; padding-right: 8px;">
-        <n-dynamic-input v-model:value="keywordMappingList" :on-create="() => ({label:'', en:'', ids:''})">
-          <template #default="{ value }">
-            <div style="display: flex; gap: 12px; width: 100%; align-items: center;">
-              <n-input v-model:value="value.label" placeholder="中文标签" style="width: 140px;" />
-              <n-input v-model:value="value.en" placeholder="英文关键词 (英文逗号分隔)" style="flex: 2;" />
-              <n-input v-model:value="value.ids" placeholder="TMDb IDs (英文逗号分隔)" style="flex: 1;" />
-            </div>
-          </template>
-        </n-dynamic-input>
-      </div>
-
-      <template #footer>
-        <n-space justify="space-between" style="width: 100%">
-          <n-button ghost type="warning" @click="handleRestoreDefaults">
-            <template #icon><n-icon :component="SyncIcon" /></template>
-            恢复默认
-          </n-button>
-          
-          <n-space>
-            <n-button @click="showKeywordModal = false">取消</n-button>
-            <n-button type="primary" :loading="isSavingKeywords" @click="saveKeywordMapping">
-              保存映射
-            </n-button>
-          </n-space>
-        </n-space>
-      </template>
-    </n-modal>
+    <!-- 映射管理模态框 (包裹新组件) -->
     <n-modal
-      v-model:show="showDiscoverHelper"
+      v-model:show="showMappingModal"
       preset="card"
-      style="width: 90%; max-width: 700px;"
-      title="TMDb 探索助手 ✨"
+      title="映射规则管理"
+      style="width: 900px; max-width: 95%;"
       :bordered="false"
     >
-      <n-space vertical :size="24">
-        <n-form-item label="类型" label-placement="left">
-          <n-radio-group v-model:value="discoverParams.type">
-            <n-radio-button value="movie">电影</n-radio-button>
-            <n-radio-button value="tv">电视剧</n-radio-button>
-          </n-radio-group>
-        </n-form-item>
-
-        <n-form-item label="排序" label-placement="left">
-          <n-select v-model:value="discoverParams.sort_by" :options="tmdbSortOptions" />
-        </n-form-item>
-
-        <n-form-item label="发行年份" label-placement="left">
-          <n-input-group>
-            <n-input-number v-model:value="discoverParams.release_year_gte" placeholder="从 (例如 1990)" :show-button="false" clearable style="width: 50%;" />
-            <n-input-number v-model:value="discoverParams.release_year_lte" placeholder="到 (例如 1999)" :show-button="false" clearable style="width: 50%;" />
-          </n-input-group>
-        </n-form-item>
-
-        <n-form-item label="类型 (可多选)" label-placement="left">
-          <n-select
-            v-model:value="discoverParams.with_genres"
-            multiple filterable
-            placeholder="选择或搜索类型"
-            :options="tmdbGenreOptions"
-            :loading="isLoadingTmdbGenres"
-          />
-        </n-form-item>
-
-        <n-form-item label="排除类型 (可多选)" label-placement="left">
-          <n-select
-            v-model:value="discoverParams.without_genres"
-            multiple
-            filterable
-            placeholder="排除不想要的类型，例如：纪录片, 综艺"
-            :options="tmdbGenreOptions"
-            :loading="isLoadingTmdbGenres"
-          />
-        </n-form-item>
-
-        <n-form-item v-if="discoverParams.type === 'tv'" label="单集时长 (分钟)" label-placement="left">
-          <n-input-group>
-            <n-input-number v-model:value="discoverParams.with_runtime_gte" placeholder="最短" :min="0" :show-button="false" clearable style="width: 50%;" />
-            <n-input-number v-model:value="discoverParams.with_runtime_lte" placeholder="最长" :min="0" :show-button="false" clearable style="width: 50%;" />
-          </n-input-group>
-        </n-form-item>
-
-        <n-form-item label="国家/地区" label-placement="left">
-          <n-select
-            v-model:value="discoverParams.with_origin_country"
-            filterable
-            clearable
-            placeholder="筛选特定的出品国家或地区"
-            :options="tmdbCountryOptions"
-            :loading="isLoadingTmdbCountries"
-          />
-        </n-form-item>
-
-        <!-- 公司/网络 -->
-        <n-form-item label="公司/网络" label-placement="left">
-          <n-input
-            v-model:value="companySearchText"
-            placeholder="搜索电影公司或电视网络，例如：A24, HBO"
-            @update:value="handleCompanySearch"
-            clearable
-          />
-          <div v-if="isSearchingCompanies || companyOptions.length > 0" class="search-results-box">
-            <n-spin v-if="isSearchingCompanies" size="small" />
-            <div v-else v-for="option in companyOptions" :key="option.value" class="search-result-item" @click="handleCompanySelect(option)">
-              {{ option.label }}
-            </div>
-          </div>
-          <n-dynamic-tags v-model:value="selectedCompanies" style="margin-top: 8px;" />
-        </n-form-item>
-
-        <!-- 演员 -->
-        <n-form-item label="演员" label-placement="left">
-          <n-input
-            v-model:value="actorSearchText"
-            placeholder="搜索演员，例如：周星驰"
-            @update:value="(query) => handlePersonSearch(query, null)" 
-            clearable
-          />
-          <div v-if="isSearchingActors || actorOptions.length > 0" class="search-results-box person-results">
-            <n-spin v-if="isSearchingActors" size="small" /> 
-            <div v-else v-for="option in actorOptions" :key="option.id" class="search-result-item person-item" @click="handleActorSelect(option)"> 
-              <n-avatar :size="40" :src="getTmdbImageUrl(option.profile_path, 'w92')" style="margin-right: 12px;" />
-              <div class="person-info">
-                <n-text>{{ option.name }}</n-text>
-                <n-text :depth="3" class="known-for">代表作: {{ option.known_for || '暂无' }}</n-text>
-              </div>
-            </div>
-          </div>
-          <n-dynamic-tags v-model:value="selectedActors" style="margin-top: 8px;" />
-        </n-form-item>
-
-        <!-- 导演 -->
-        <n-form-item label="导演" label-placement="left">
-          <n-input
-            v-model:value="directorSearchText"
-            placeholder="搜索导演，例如：克里斯托弗·诺兰"
-            @update:value="(query) => handlePersonSearch(query, null)" 
-            clearable
-          />
-          <div v-if="isSearchingDirectors || directorOptions.length > 0" class="search-results-box person-results"> 
-            <n-spin v-if="isSearchingDirectors" size="small" /> 
-            <div v-else v-for="option in directorOptions" :key="option.id" class="search-result-item person-item" @click="handleDirectorSelect(option)"> 
-              <n-avatar :size="40" :src="getTmdbImageUrl(option.profile_path, 'w92')" style="margin-right: 12px;" />
-              <div class="person-info">
-                <n-text>{{ option.name }}</n-text>
-                <n-text :depth="3" class="known-for">领域: {{ option.department || '未知' }}</n-text>
-              </div>
-            </div>
-          </div>
-          <n-dynamic-tags v-model:value="selectedDirectors" style="margin-top: 8px;" />
-        </n-form-item>
-
-        <n-form-item label="语言" label-placement="left">
-          <n-select v-model:value="discoverParams.with_original_language" :options="tmdbLanguageOptions" filterable clearable placeholder="不限" />
-        </n-form-item>
-        
-        <n-form-item label="关键词" label-placement="left">
-          <n-select
-            v-model:value="discoverParams.with_keywords_labels"
-            multiple
-            filterable
-            placeholder="选择你配好的关键词，如：恐怖、丧尸"
-            :options="keywordOptions" 
-          />
-          <template #feedback>
-            <n-text depth="3" style="font-size: 12px;">
-              基于“关键词管理”中的配置，自动转换为 TMDb ID 进行精准筛选。
-            </n-text>
-          </template>
-        </n-form-item>
-
-        <n-form-item :label="`最低评分 (当前: ${discoverParams.vote_average_gte})`" label-placement="left">
-           <n-slider v-model:value="discoverParams.vote_average_gte" :step="0.5" :min="0" :max="10" />
-        </n-form-item>
-
-        <n-form-item :label="`最低评分人数 (当前: ${discoverParams.vote_count_gte})`" label-placement="left">
-           <n-slider v-model:value="discoverParams.vote_count_gte" :step="50" :min="0" :max="1000" />
-        </n-form-item>
-
-        <n-form-item label="生成的URL (实时预览)">
-          <n-input :value="generatedDiscoverUrl" type="textarea" :autosize="{ minRows: 3 }" readonly />
-        </n-form-item>
-      </n-space>
-      <template #footer>
-        <n-space justify="end">
-          <n-button @click="showDiscoverHelper = false">取消</n-button>
-          <n-button type="primary" @click="confirmDiscoverUrl">使用这个URL</n-button>
-        </n-space>
-      </template>
+      <!-- 探索助手 -->
+      <MappingManager @close="showMappingModal = false" />
     </n-modal>
+    <TmdbDiscoveryHelper
+      v-model:show="showDiscoverHelper"
+      @confirm="handleDiscoverConfirm"
+    />
+
   </n-layout>
 </template>
 
@@ -1200,6 +1024,8 @@ import { useConfig } from '../composables/useConfig.js';
 import Sortable from 'sortablejs';
 import { formatDistanceToNow } from 'date-fns';
 import { zhCN } from 'date-fns/locale';
+import MappingManager from './modals/MappingManager.vue';
+import TmdbDiscoveryHelper from './modals/TmdbDiscoveryHelper.vue';
 import { 
   NLayout, NPageHeader, NButton, NIcon, NText, NTag, NSpace,
   useMessage, NPopconfirm, NModal, NForm, NFormItem, NInput, NSelect,
@@ -1264,28 +1090,36 @@ const newTmdbId = ref('');
 const newSeasonNumber = ref(null);
 let sortableInstance = null;
 
-const showDiscoverHelper = ref(false);
-const isLoadingTmdbGenres = ref(false);
-const tmdbMovieGenres = ref([]);
-const tmdbTvGenres = ref([]);
-const companySearchText = ref('');
-const selectedCompanies = ref([]);
-const actorSearchText = ref('');
-const selectedActors = ref([]);
-const directorSearchText = ref('');
-const selectedDirectors = ref([]);
-const isSearchingCompanies = ref(false);
-const companyOptions = ref([]);
-const isSearchingDirectors = ref(false);
-const directorOptions = ref([]);
-const tmdbCountryOptions = ref([]);
-const isLoadingTmdbCountries = ref(false);
 const unidentifiedMediaInModal = computed(() => filterMediaByStatus('unidentified'));
-const showKeywordModal = ref(false);
-const keywordMappingList = ref([]);
-const isSavingKeywords = ref(false);
-const allKeywordMappings = ref({});
 const { configModel } = useConfig();
+const showMappingModal = ref(false);
+const studioMappingOptions = ref([]);
+// ★★★ 1. 探索助手控制状态
+const showDiscoverHelper = ref(false);
+const editingUrlIndex = ref(0); // 记录当前正在编辑哪一行 URL
+
+// ★★★ 2. 打开助手
+const openDiscoverHelper = (index = 0) => {
+  editingUrlIndex.value = index;
+  showDiscoverHelper.value = true;
+};
+
+// ★★★ 3. 确认回调
+const handleDiscoverConfirm = (url, type) => {
+  // 1. 填入 URL
+  if (customUrlList.value[editingUrlIndex.value]) {
+    customUrlList.value[editingUrlIndex.value].value = url;
+  } else {
+    customUrlList.value.push({ value: url });
+  }
+
+  // 2. 自动勾选对应的类型 (Movie/Series)
+  const itemType = type === 'movie' ? 'Movie' : 'Series';
+  if (!currentCollection.value.definition.item_type.includes(itemType)) {
+    currentCollection.value.definition.item_type.push(itemType);
+    message.success(`已自动勾选“${itemType === 'Movie' ? '电影' : '电视剧'}”类型`);
+  }
+};
 
 // ===================================================================
 // ▼▼▼ 辅助函数 ▼▼▼
@@ -1362,7 +1196,6 @@ const getInitialDiscoverParams = () => ({
   with_original_language: null, vote_average_gte: 0, vote_count_gte: 0,
   with_keywords_labels: [],
 });
-const discoverParams = ref(getInitialDiscoverParams());
 
 // ===================================================================
 // ▼▼▼ 核心逻辑函数 ▼▼▼
@@ -1440,65 +1273,6 @@ const getCardImageUrl = (item) => {
 
   // 都没有则返回 null，显示渐变色
   return null;
-};
-
-const openKeywordManager = async () => {
-  try {
-    const { data } = await axios.get('/api/custom_collections/config/keyword_mapping');
-    keywordMappingList.value = Object.entries(data).map(([label, info]) => ({
-      label,
-      en: Array.isArray(info.en) ? info.en.join(', ') : '',
-      ids: Array.isArray(info.ids) ? info.ids.join(', ') : ''
-    }));
-    showKeywordModal.value = true;
-  } catch (e) {
-    message.error('加载失败');
-  }
-};
-
-const saveKeywordMapping = async () => {
-  isSavingKeywords.value = true;
-  const payload = {};
-  keywordMappingList.value.forEach(item => {
-    if (item.label.trim()) {
-      payload[item.label.trim()] = {
-        en: item.en.split(',').map(s => s.trim()).filter(s => s),
-        ids: item.ids.toString().split(',').map(s => s.trim()).filter(s => s).map(Number)
-      };
-    }
-  });
-  try {
-    await axios.post('/api/custom_collections/config/keyword_mapping', payload);
-    message.success('关键词映射已更新');
-    showKeywordModal.value = false;
-    await fetchKeywordOptions(); 
-  } catch (e) {
-    message.error('保存失败');
-  } finally {
-    isSavingKeywords.value = false;
-  }
-};
-
-const handleRestoreDefaults = () => {
-  dialog.warning({
-    title: '确认恢复默认',
-    content: '此操作将使用系统预设覆盖您当前的关键词映射，您自定义的修改将丢失。确定要继续吗？',
-    positiveText: '确定恢复',
-    negativeText: '取消',
-    onPositiveClick: async () => {
-      try {
-        const { data } = await axios.get('/api/custom_collections/config/keyword_mapping/defaults');
-        keywordMappingList.value = Object.entries(data).map(([label, info]) => ({
-          label,
-          en: Array.isArray(info.en) ? info.en.join(', ') : '',
-          ids: Array.isArray(info.ids) ? info.ids.join(', ') : ''
-        }));
-        message.success('已加载默认预设，请记得点击“保存映射”以最终生效。');
-      } catch (e) {
-        message.error('获取默认配置失败');
-      }
-    }
-  });
 };
 
 const submitFixMatch = async (payload) => {
@@ -1606,15 +1380,19 @@ const operatorLabels = {
 
 const fetchKeywordOptions = async () => {
   try {
-    const response = await axios.get('/api/custom_collections/config/keyword_mapping');
-    const data = response.data;
-    allKeywordMappings.value = data;
-    keywordOptions.value = Object.keys(data).map(k => ({
-      label: k,
-      value: k
-    })).sort((a, b) => a.label.localeCompare(b.label));
+    const response = await axios.get('/api/custom_collections/config/keywords');
+    keywordOptions.value = response.data;
   } catch (error) {
     console.error('获取关键词失败:', error);
+  }
+};
+
+const fetchStudioMappingOptions = async () => {
+  try {
+    const response = await axios.get('/api/custom_collections/config/studios');
+    studioMappingOptions.value = response.data;
+  } catch (error) {
+    console.error('获取工作室映射失败:', error);
   }
 };
 
@@ -2409,220 +2187,11 @@ const removeDynamicRule = (index) => {
   currentCollection.value.definition.dynamic_rules.splice(index, 1);
 };
 
-const tmdbSortOptions = computed(() => {
-  if (discoverParams.value.type === 'movie') {
-    return [
-      { label: '热度降序', value: 'popularity.desc' }, { label: '热度升序', value: 'popularity.asc' },
-      { label: '评分降序', value: 'vote_average.desc' }, { label: '评分升序', value: 'vote_average.asc' },
-      { label: '上映日期降序', value: 'primary_release_date.desc' }, { label: '上映日期升序', value: 'primary_release_date.asc' },
-    ];
-  } else {
-    return [
-      { label: '热度降序', value: 'popularity.desc' }, { label: '热度升序', value: 'popularity.asc' },
-      { label: '评分降序', value: 'vote_average.desc' }, { label: '评分升序', value: 'vote_average.asc' },
-      { label: '首播日期降序', value: 'first_air_date.desc' }, { label: '首播日期升序', value: 'first_air_date.asc' },
-    ];
-  }
-});
-
-const tmdbLanguageOptions = [
-    { label: '中文', value: 'zh' }, { label: '英文', value: 'en' }, { label: '日文', value: 'ja' },
-    { label: '韩文', value: 'ko' }, { label: '法语', value: 'fr' }, { label: '德语', value: 'de' },
-];
-
-const tmdbGenreOptions = computed(() => {
-  const source = discoverParams.value.type === 'movie' ? tmdbMovieGenres.value : tmdbTvGenres.value;
-  return source.map(g => ({ label: g.name, value: g.id }));
-});
-
-const generatedDiscoverUrl = computed(() => {
-  const params = discoverParams.value;
-  const base = `https://www.themoviedb.org/discover/${params.type}`;
-  const query = new URLSearchParams();
-  
-  query.append('sort_by', params.sort_by);
-  
-  if (params.type === 'movie') {
-    if (params.release_year_gte) query.append('primary_release_date.gte', `${params.release_year_gte}-01-01`);
-    if (params.release_year_lte) query.append('primary_release_date.lte', `${params.release_year_lte}-12-31`);
-  } else {
-    if (params.release_year_gte) query.append('first_air_date.gte', `${params.release_year_gte}-01-01`);
-    if (params.release_year_lte) query.append('first_air_date.lte', `${params.release_year_lte}-12-31`);
-  }
-
-  if (params.with_keywords_labels && params.with_keywords_labels.length > 0) {
-    let allKeywordIds = [];
-    params.with_keywords_labels.forEach(label => {
-      const mapping = allKeywordMappings.value[label];
-      if (mapping && mapping.ids) {
-        allKeywordIds = [...allKeywordIds, ...mapping.ids];
-      }
-    });
-    if (allKeywordIds.length > 0) {
-      query.append('with_keywords', allKeywordIds.join(','));
-    }
-  }
-
-  if (params.with_genres && params.with_genres.length > 0) {
-    query.append('with_genres', params.with_genres.join(','));
-  }
-
-  if (params.without_genres && params.without_genres.length > 0) {
-    query.append('without_genres', params.without_genres.join('|'));
-  }
-  
-  if (params.with_original_language) query.append('with_original_language', params.with_original_language);
-  if (params.with_origin_country) query.append('with_origin_country', params.with_origin_country);
-  if (params.vote_average_gte > 0) query.append('vote_average.gte', params.vote_average_gte);
-  if (params.vote_count_gte > 0) query.append('vote_count.gte', params.vote_count_gte);
-
-  return `${base}?${query.toString()}`;
-});
-
-const fetchTmdbGenres = async () => {
-  isLoadingTmdbGenres.value = true;
-  try {
-    const [movieRes, tvRes] = await Promise.all([
-      axios.get('/api/custom_collections/config/tmdb_movie_genres'),
-      axios.get('/api/custom_collections/config/tmdb_tv_genres')
-    ]);
-    tmdbMovieGenres.value = movieRes.data;
-    tmdbTvGenres.value = tvRes.data;
-  } catch (error) {
-    message.error('获取TMDb类型列表失败，请检查后端日志。');
-  } finally {
-    isLoadingTmdbGenres.value = false;
-  }
-};
-
-const fetchTmdbCountries = async () => {
-  isLoadingTmdbCountries.value = true;
-  try {
-    const response = await axios.get('/api/custom_collections/config/tmdb_countries');
-    tmdbCountryOptions.value = response.data;
-  } catch (error) {
-    message.error('获取国家/地区列表失败。');
-  } finally {
-    isLoadingTmdbCountries.value = false;
-  }
-};
-const editingUrlIndex = ref(0);const openDiscoverHelper = (index = 0) => {
-  editingUrlIndex.value = index; 
-  
-  discoverParams.value = getInitialDiscoverParams();
-  selectedCompanies.value = [];
-  selectedActors.value = [];
-  selectedDirectors.value = [];
-  companySearchText.value = '';
-  companyOptions.value = [];
-  actorSearchText.value = '';
-  actorOptions.value = [];
-  directorSearchText.value = '';
-  directorOptions.value = [];
-  
-  showDiscoverHelper.value = true;
-};
-
-const confirmDiscoverUrl = () => {
-  const newUrl = generatedDiscoverUrl.value;
-  if (customUrlList.value[editingUrlIndex.value]) {
-    customUrlList.value[editingUrlIndex.value].value = newUrl;
-  } else {
-    customUrlList.value.push({ value: newUrl });
-  }
-  const itemType = discoverParams.value.type === 'movie' ? 'Movie' : 'Series';
-  if (!currentCollection.value.definition.item_type.includes(itemType)) {
-      currentCollection.value.definition.item_type.push(itemType); 
-  }
-  showDiscoverHelper.value = false;
-};
-
 watch(() => discoverParams.value.type, () => {
     discoverParams.value.with_genres = [];
     discoverParams.value.with_runtime_gte = null;
     discoverParams.value.with_runtime_lte = null;
 });
-
-let companySearchTimeout = null;
-const handleCompanySearch = (query) => {
-  companySearchText.value = query;
-  if (!query.length) {
-    companyOptions.value = [];
-    return;
-  }
-  isSearchingCompanies.value = true;
-  if (companySearchTimeout) clearTimeout(companySearchTimeout);
-  companySearchTimeout = setTimeout(async () => {
-    try {
-      const response = await axios.get(`/api/custom_collections/config/tmdb_search_companies?q=${query}`);
-      companyOptions.value = response.data.map(c => ({ label: c.name, value: c.id }));
-    } finally {
-      isSearchingCompanies.value = false;
-    }
-  }, 300);
-};
-const handleCompanySelect = (option) => {
-  if (!selectedCompanies.value.some(c => c.value === option.value)) {
-    selectedCompanies.value.push(option);
-  }
-  companySearchText.value = '';
-  companyOptions.value = [];
-};
-
-let directorSearchTimeout = null;
-const handleDirectorSearch = (query) => {
-  directorSearchText.value = query;
-  if (!query.length) {
-    directorOptions.value = [];
-    return;
-  }
-  isSearchingDirectors.value = true;
-  if (directorSearchTimeout) clearTimeout(directorSearchTimeout);
-  directorSearchTimeout = setTimeout(async () => {
-    try {
-      const response = await axios.get(`/api/custom_collections/config/tmdb_search_persons?q=${query}`);
-      directorOptions.value = response.data;
-    } finally {
-      isSearchingDirectors.value = false;
-    }
-  }, 300);
-};
-
-const handleTargetUserChange = (userId) => {
-  if (userId) {
-    currentCollection.value.allowed_user_ids = [userId];
-  }
-};
-
-const handleActorSelect = (person) => {
-  const selection = { label: person.name, value: person.id };
-  if (!selectedActors.value.some(a => a.value === selection.value)) {
-    selectedActors.value.push(selection);
-  }
-  actorSearchText.value = '';
-  actorOptions.value = [];
-};
-
-const handleDirectorSelect = (person) => {
-  const selection = { label: person.name, value: person.id };
-  if (!selectedDirectors.value.some(d => d.value === selection.value)) {
-    selectedDirectors.value.push(selection);
-  }
-  directorSearchText.value = '';
-  directorOptions.value = [];
-};
-
-watch(selectedCompanies, (newValue) => {
-  discoverParams.value.with_companies = newValue.map(c => c.value);
-}, { deep: true });
-
-watch(selectedActors, (newValue) => {
-  discoverParams.value.with_cast = newValue.map(a => a.value);
-}, { deep: true });
-
-watch(selectedDirectors, (newValue) => {
-  discoverParams.value.with_crew = newValue.map(d => d.value);
-}, { deep: true });
 
 watch(isMultiSource, (isMulti) => {
   if (isMulti) {
@@ -2648,15 +2217,22 @@ watch([selectedBuiltInLists, customUrlList], () => {
   currentCollection.value.definition.item_type = Array.from(newItemTypes);
 }, { deep: true });
 
+watch(showMappingModal, (newVal) => {
+  if (!newVal) {
+    // 模态框关闭时，刷新下拉框数据
+    fetchKeywordOptions();
+    fetchStudioMappingOptions();
+  }
+});
+
 onMounted(() => {
   fetchCollections();
   fetchCountryOptions();
   fetchTagOptions();
-  fetchKeywordOptions();
+  fetchKeywordOptions(); 
+  fetchStudioMappingOptions(); 
   fetchUnifiedRatingOptions();
   fetchEmbyLibraries();
-  fetchTmdbGenres();
-  fetchTmdbCountries();
   fetchEmbyUsers();
   if (currentCollection.value.definition?.item_type) {
       fetchGenreOptions();
