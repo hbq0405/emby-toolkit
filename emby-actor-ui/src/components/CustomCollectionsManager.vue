@@ -341,9 +341,9 @@
                         v-if="['is_one_of', 'is_none_of'].includes(rule.operator)"
                         v-model:value="rule.value"
                         multiple filterable
-                        :placeholder="'选择一个或多个类型'"
+                        placeholder="选择一个或多个类型"
                         :options="genreOptions"
-                        :disabled="!rule.operator || isGenreSelectionDisabled"
+                        :disabled="!rule.operator"
                         style="flex-grow: 1; min-width: 180px;"
                       />
                       <n-select
