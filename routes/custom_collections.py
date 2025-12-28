@@ -13,7 +13,7 @@ import handler.emby as emby
 from tasks.helpers import is_movie_subscribable
 from extensions import admin_required, any_login_required, DELETING_COLLECTIONS
 from utils import get_country_translation_map, UNIFIED_RATING_CATEGORIES, get_tmdb_country_options, DEFAULT_KEYWORD_MAPPING, DEFAULT_STUDIO_MAPPING
-from handler.tmdb import get_movie_genres_tmdb, get_tv_genres_tmdb, search_companies_tmdb, search_person_tmdb
+from handler.tmdb import get_movie_genres_tmdb, get_tv_genres_tmdb, search_companies_tmdb, search_person_tmdb, search_tv_tmdb, get_tv_details
 # 1. 创建自定义合集蓝图
 custom_collections_bp = Blueprint('custom_collections', __name__, url_prefix='/api/custom_collections')
 
@@ -642,16 +642,57 @@ def api_get_tmdb_tv_genres():
 @custom_collections_bp.route('/config/tmdb_search_companies', methods=['GET'])
 @any_login_required
 def api_search_tmdb_companies():
-    """为 TMDb 探索助手提供电影公司搜索功能。"""
+    """
+    搜索 TMDb 实体。
+    模式 1 (默认): 搜制作公司 (Company) -> 适用于电影
+    模式 2 (type=network): 搜剧集反查平台 (Network) -> 适用于电视剧
+    """
     query = request.args.get('q', '')
+    search_type = request.args.get('type', 'company') # 新增参数
+    
     if len(query) < 1:
         return jsonify([])
+        
     try:
         api_key = config_manager.APP_CONFIG.get('tmdb_api_key')
-        results = search_companies_tmdb(api_key, query)
-        return jsonify(results or [])
+        
+        if search_type == 'network':
+            # --- 模式 2: 通过搜索电视剧来找 Network ---
+            # 1. 搜剧集
+            tv_results = search_tv_tmdb(api_key, {'query': query})
+            if not tv_results or not tv_results.get('results'):
+                return jsonify([])
+            
+            # 2. 取前 3 个结果，获取详情中的 networks
+            candidates = tv_results['results'][:3]
+            networks_found = {}
+            
+            for tv in candidates:
+                details = get_tv_details(tv['id'], api_key)
+                if details and details.get('networks'):
+                    for net in details['networks']:
+                        # 去重
+                        if net['id'] not in networks_found:
+                            networks_found[net['id']] = {
+                                "id": net['id'],
+                                "name": net['name'],
+                                "logo_path": net['logo_path'],
+                                "origin_country": net['origin_country'],
+                                # 标记来源剧集，方便用户确认
+                                "source_show": tv.get('name') 
+                            }
+            
+            # 格式化返回
+            results = list(networks_found.values())
+            return jsonify(results)
+            
+        else:
+            # --- 模式 1: 原有的搜公司 ---
+            results = search_companies_tmdb(api_key, query)
+            return jsonify(results or [])
+            
     except Exception as e:
-        logger.error(f"搜索 TMDb 电影公司时出错: {e}", exc_info=True)
+        logger.error(f"搜索 TMDb {search_type} 时出错: {e}", exc_info=True)
         return jsonify({"error": "服务器内部错误"}), 500
     
 # --- 给前端筛选器用的工作室列表接口 ---

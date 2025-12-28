@@ -181,22 +181,28 @@ DEFAULT_KEYWORD_MAPPING = [
 
 # --- 工作室预设表 ---
 DEFAULT_STUDIO_MAPPING = [
+    # --- 全球流媒体 (Network IDs) ---
+    {"label": "网飞", "en": ["Netflix"], "ids": [213]},
+    {"label": "HBO", "en": ["HBO"], "ids": [49]},
+    {"label": "Disney+", "en": ["Disney+"], "ids": [2739]},
+    {"label": "Apple TV+", "en": ["Apple TV+"], "ids": [2552]},
+    {"label": "Amazon", "en": ["Amazon Prime Video"], "ids": [1024]},
+    {"label": "Hulu", "en": ["Hulu"], "ids": [453]},
+
+    # --- 国内平台 (Network IDs) ---
+    {"label": "腾讯", "en": ["Tencent Video"], "ids": [2007]},
+    {"label": "爱奇艺", "en": ["iQiyi"], "ids": [1330]},
+    {"label": "优酷", "en": ["Youku"], "ids": [1419]},
+    {"label": "芒果", "en": ["Mango TV", "Hunan TV"], "ids": [1631, 952]},
+    {"label": "央视", "en": ["CCTV"], "ids": [521, 1363]}, 
+    {"label": "浙江卫视", "en": ["Zhejiang Television"], "ids": [989]},
+    {"label": "江苏卫视", "en": ["Jiangsu Television"], "ids": [1055]},
+    # --- 传统制作公司 (Company IDs) ---
+    # 这些通常用于电影，或者作为电视剧的制作方（非播出平台）
     {"label": "漫威", "en": ["Marvel Studios"], "ids": [420]},
-    {"label": "DC", "en": ["DC Films", "DC Entertainment", "DC Comics"], "ids": [128064, 9993, 429]},
-    {"label": "皮克斯", "en": ["Pixar"], "ids": [3]},
-    {"label": "迪士尼", "en": ["Walt Disney Pictures"], "ids": [2]},
-    {"label": "吉卜力", "en": ["Studio Ghibli"], "ids": [10342]},
-    {"label": "A24", "en": ["A24"], "ids": [41077]},
-    {"label": "网飞", "en": ["Netflix"], "ids": [20580]},
-    {"label": "HBO", "en": ["HBO"], "ids": [493]},
-    {"label": "华纳兄弟", "en": ["Warner Bros. Pictures"], "ids": [174]},
-    {"label": "环球影业", "en": ["Universal Pictures"], "ids": [33]},
-    {"label": "索尼影业", "en": ["Sony Pictures"], "ids": [34]},
-    {"label": "派拉蒙", "en": ["Paramount"], "ids": [4]},
-    {"label": "20世纪影业", "en": ["20th Century Studios"], "ids": [127928]},
+    {"label": "DC", "en": ["DC"], "ids": [128064, 9993]},
     {"label": "正午阳光", "en": ["Daylight Entertainment"], "ids": [74209]},
-    {"label": "腾讯视频", "en": ["Tencent Video"], "ids": [103836]},
-    {"label": "爱奇艺", "en": ["iQIYI"], "ids": [105364]},
+    {"label": "A24", "en": ["A24"], "ids": [41077]},
 ]
 
 def get_unified_rating(official_rating_str: str) -> str:

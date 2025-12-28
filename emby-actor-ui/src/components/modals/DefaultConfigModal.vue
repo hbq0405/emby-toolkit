@@ -1,4 +1,4 @@
-<!-- src/components/modals/DefaultConfigModal.vue (已修复) -->
+<!-- src/components/modals/DefaultConfigModal.vue -->
 <template>
   <n-modal
     :show="show"

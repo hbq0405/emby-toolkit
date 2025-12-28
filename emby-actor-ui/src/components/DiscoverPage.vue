@@ -101,13 +101,13 @@
                 </n-input-group>
               </n-space>
               <n-space align="center">
-                <label>工作室:</label>
+                <label>{{ studioLabel }}:</label>
                 <n-select
                   v-model:value="selectedStudios"
                   :disabled="isSearchMode"
                   multiple
                   filterable
-                  placeholder="选择工作室"
+                  :placeholder="`选择${studioLabel} (映射)`"
                   :options="studioOptions"
                   style="min-width: 300px;"
                 />
@@ -354,6 +354,10 @@ const isLoadingMore = ref(false);
 const searchQuery = ref('');
 const isSearchMode = computed(() => searchQuery.value.trim() !== '');
 const sentinel = ref(null);
+
+const studioLabel = computed(() => {
+  return mediaType.value === 'movie' ? '出品公司' : '播出平台';
+});
 
 // 将 genre_ids 转换为中文名称字符串
 const getGenreNames = (genreIds) => {

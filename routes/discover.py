@@ -176,12 +176,12 @@ def discover_tv_shows():
             return jsonify({"status": "error", "message": "此功能仅对 Emby 用户开放"}), 403
         current_user_id = session['emby_user_id']
 
-        # 1. 关键词标签 -> IDs
+        # 1. 关键词
         labels = data.get('with_keywords', [])
         if isinstance(labels, str): labels = labels.split(',')
         k_ids_str = _expand_keyword_labels_to_ids(labels)
 
-        # 2. 工作室标签 -> IDs
+        # 2. 工作室/平台
         studio_labels = data.get('with_companies', [])
         if isinstance(studio_labels, str): studio_labels = studio_labels.split(',')
         c_ids_str = _expand_studio_labels_to_ids(studio_labels)
@@ -193,7 +193,7 @@ def discover_tv_shows():
             'vote_average.gte': data.get('vote_average.gte', 0),
             'with_genres': data.get('with_genres', ''),
             'with_keywords': k_ids_str,
-            'with_companies': c_ids_str,
+            'with_networks': c_ids_str, 
             'without_genres': data.get('without_genres', ''),
             'first_air_date.gte': data.get('first_air_date.gte', ''),
             'first_air_date.lte': data.get('first_air_date.lte', ''),
