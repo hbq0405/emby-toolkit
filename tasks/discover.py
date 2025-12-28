@@ -23,7 +23,15 @@ def task_update_daily_theme(processor):
         from utils import DEFAULT_KEYWORD_MAPPING
         mapping = settings_db.get_setting('keyword_mapping') or DEFAULT_KEYWORD_MAPPING
         
-        theme_list = [(label, info) for label, info in mapping.items() if info.get('ids')]
+        # ★★★ 修复：兼容 List (新版) 和 Dict (旧版) 两种格式 ★★★
+        theme_list = []
+        if isinstance(mapping, list):
+            # 新版 List 格式: [{'label': 'xxx', 'ids': [...]}, ...]
+            theme_list = [(item.get('label'), item) for item in mapping if item.get('ids') and item.get('label')]
+        elif isinstance(mapping, dict):
+            # 旧版 Dict 格式: {'xxx': {'ids': [...]}, ...}
+            theme_list = [(label, info) for label, info in mapping.items() if info.get('ids')]
+
         if not theme_list:
             logger.error("  ➜ 每日推荐失败：关键词映射表为空或未配置 ID。")
             return
@@ -158,7 +166,13 @@ def task_replenish_recommendation_pool(processor):
 
         from routes.custom_collections import DEFAULT_KEYWORD_MAPPING
         mapping = settings_db.get_setting('keyword_mapping') or DEFAULT_KEYWORD_MAPPING
-        theme_list = [(label, info) for label, info in mapping.items() if info.get('ids')]
+        
+        # ★★★ 修复：兼容 List (新版) 和 Dict (旧版) 两种格式 ★★★
+        theme_list = []
+        if isinstance(mapping, list):
+            theme_list = [(item.get('label'), item) for item in mapping if item.get('ids') and item.get('label')]
+        elif isinstance(mapping, dict):
+            theme_list = [(label, info) for label, info in mapping.items() if info.get('ids')]
         
         current_theme_index = settings_db.get_setting('recommendation_theme_index')
         if current_theme_index is None or current_theme_index >= len(theme_list):
