@@ -341,7 +341,7 @@
                         v-if="['is_one_of', 'is_none_of'].includes(rule.operator)"
                         v-model:value="rule.value"
                         multiple filterable
-                        :placeholder="isGenreSelectionDisabled ? '不建议混合库应用类型筛选' : '选择一个或多个类型'"
+                        :placeholder="'选择一个或多个类型'"
                         :options="genreOptions"
                         :disabled="!rule.operator || isGenreSelectionDisabled"
                         style="flex-grow: 1; min-width: 180px;"
@@ -350,9 +350,9 @@
                         v-else
                         v-model:value="rule.value"
                         filterable
-                        :placeholder="isGenreSelectionDisabled ? '不建议混合库应用类型筛选' : '选择类型'"
+                        placeholder="选择类型"
                         :options="genreOptions"
-                        :disabled="!rule.operator || isGenreSelectionDisabled"
+                        :disabled="!rule.operator"
                         style="flex-grow: 1;"
                       />
                     </template>
@@ -1717,29 +1717,42 @@ const fetchCountryOptions = async () => {
   }
 };
 
-const isGenreSelectionDisabled = computed(() => {
-  const types = currentCollection.value.definition?.item_type || [];
-  return types.length > 1;
-});
+const isGenreSelectionDisabled = computed(() => false);
 
 const fetchGenreOptions = async () => {
   const types = currentCollection.value.definition?.item_type || [];
-  if (types.length !== 1) {
+  
+  // 如果没有选择任何类型，清空选项
+  if (types.length === 0) {
     genreOptions.value = [];
     return;
   }
-  const type = types[0];
-  let url = '';
-  if (type === 'Movie') {
-    url = '/api/custom_collections/config/movie_genres';
-  } else if (type === 'Series') {
-    url = '/api/custom_collections/config/tv_genres';
+
+  const promises = [];
+
+  // 根据选中的类型，添加对应的 API 请求
+  if (types.includes('Movie')) {
+    promises.push(axios.get('/api/custom_collections/config/movie_genres').catch(() => ({ data: [] })));
   }
-  if (!url) return;
+  if (types.includes('Series')) {
+    promises.push(axios.get('/api/custom_collections/config/tv_genres').catch(() => ({ data: [] })));
+  }
+
   try {
-    const response = await axios.get(url);
-    const genreList = response.data; 
-    genreOptions.value = genreList.map(name => ({
+    // 并发请求
+    const results = await Promise.all(promises);
+    
+    // 提取所有返回的类型数组并展平
+    const allGenres = results.flatMap(res => res.data || []);
+    
+    // 去重 (使用 Set)
+    const uniqueGenres = [...new Set(allGenres)];
+    
+    // 排序（可选，按拼音或字符顺序）
+    uniqueGenres.sort((a, b) => a.localeCompare(b, 'zh-CN'));
+
+    // 映射为 Naive UI 需要的格式
+    genreOptions.value = uniqueGenres.map(name => ({
       label: name,
       value: name
     }));
