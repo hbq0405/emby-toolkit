@@ -854,11 +854,16 @@ class WatchlistProcessor:
                     
                     # 判断逻辑：
                     # 如果该季存在锁定配置，且已开启锁定，且当前集号 > 锁定集数 -> 剔除
-                    if lock_info and lock_info.get('locked') and e_num > lock_info.get('count', 0):
+                    if (lock_info and 
+                        lock_info.get('locked') and 
+                        e_num is not None and 
+                        e_num > (lock_info.get('count') or 0)):
+                        
                         discarded_count += 1
                         # 仅在第一次剔除时打印详细日志，避免刷屏
                         if discarded_count == 1:
-                            logger.info(f"  🔒 [分季锁定生效] S{s_num} 锁定为 {lock_info['count']} 集，正在剔除 TMDb 多余集数 (如 S{s_num}E{e_num})...")
+                            lock_count = lock_info.get('count') or 0
+                            logger.info(f"  🔒 [分季锁定生效] S{s_num} 锁定为 {lock_count} 集，正在剔除 TMDb 多余集数 (如 S{s_num}E{e_num})...")
                         continue
                     
                     # 否则保留该集
