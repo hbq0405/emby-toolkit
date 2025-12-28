@@ -581,10 +581,7 @@ def api_get_emby_libraries_for_filter():
         library_options = []
         for view in all_views:
             collection_type = view.get('CollectionType')
-            
-            # ★★★ 修复点：放宽过滤逻辑，以包含混合内容库 ★★★
-            # Emby 的混合库 CollectionType 经常是 None 或 'homevideos'
-            if collection_type in ['movies', 'tvshows', 'mixed', 'homevideos'] or not collection_type:
+            if collection_type in ['movies', 'tvshows']:
                 library_options.append({
                     "label": view.get('Name'),
                     "value": view.get('Id')
