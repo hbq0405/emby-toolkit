@@ -736,3 +736,15 @@ def get_popular_movies_tmdb(api_key: str, params: Optional[Dict[str, Any]] = Non
     endpoint = "/movie/popular"
     logger.debug(f"TMDb: 获取热门电影 (参数: {params})")
     return _tmdb_request(endpoint, api_key, params, use_default_language=True)
+
+# --- 搜索电视剧，返回完整响应 ---
+def search_tv_tmdb(api_key: str, params: Dict[str, Any]) -> Optional[Dict[str, Any]]:
+    """
+    搜索电视剧，返回完整响应（包含 results 列表）。
+    用于映射管理中“搜代表剧集”功能。
+    """
+    query = params.get('query')
+    if not query:
+        return None
+    # 复用现有的 search_media_for_discover，它返回完整的 dict
+    return search_media_for_discover(query=query, api_key=api_key, item_type='tv')
