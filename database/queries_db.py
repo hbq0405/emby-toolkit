@@ -6,12 +6,13 @@ from .connection import get_db_connection
 
 logger = logging.getLogger(__name__)
 
-def _expand_keyword_labels(value) -> List[str]:
-    """将中文标签展开为英文关键词列表"""
+def _expand_keyword_labels(value) -> Dict[str, List]:
+    """
+    将中文标签展开为 { 'ids': [...], 'names': [...] }
+    """
     from database import settings_db
     mapping_data = settings_db.get_setting('keyword_mapping') or []
     
-    # 兼容处理：如果是新版 List 格式，转为 Dict 以便查找
     mapping = {}
     if isinstance(mapping_data, list):
         for item in mapping_data:
@@ -20,27 +21,37 @@ def _expand_keyword_labels(value) -> List[str]:
     elif isinstance(mapping_data, dict):
         mapping = mapping_data
     
-    target_en_keywords = []
+    target_ids = []
+    target_names = []
+    
     labels = value if isinstance(value, list) else [value]
     
     for label in labels:
+        # 1. 尝试从映射表中找
         if label in mapping:
-            # 拿到 en 列表: ["monster"]
-            target_en_keywords.extend(mapping[label].get('en', []))
+            item = mapping[label]
+            # 收集 ID (转为字符串以便 SQL 处理)
+            if item.get('ids'):
+                target_ids.extend([str(i) for i in item['ids']])
+            # 收集英文名
+            if item.get('en'):
+                target_names.extend(item['en'])
         else:
-            # 没映射的才保留原词
-            target_en_keywords.append(label)
-    return list(set(filter(None, target_en_keywords)))
+            # 2. 没映射，保留原词作为 Name
+            target_names.append(label)
+            
+    return {
+        'ids': list(set(target_ids)),
+        'names': list(set(filter(None, target_names)))
+    }
 
-def _expand_studio_labels(value) -> List[str]:
+def _expand_studio_labels(value) -> Dict[str, List]:
     """
-    【新增】将中文工作室简称展开为英文原名列表
-    例如: 输入 "漫威" -> 返回 ["Marvel Studios"]
+    将中文工作室展开为 { 'ids': [...], 'names': [...] }
     """
     from database import settings_db
     mapping_data = settings_db.get_setting('studio_mapping') or []
     
-    # 兼容处理：List 转 Dict
     mapping = {}
     if isinstance(mapping_data, list):
         for item in mapping_data:
@@ -49,18 +60,25 @@ def _expand_studio_labels(value) -> List[str]:
     elif isinstance(mapping_data, dict):
         mapping = mapping_data
 
-    target_en_names = []
+    target_ids = []
+    target_names = []
+    
     labels = value if isinstance(value, list) else [value]
     
     for label in labels:
         if label in mapping:
-            # 拿到 en 列表
-            target_en_names.extend(mapping[label].get('en', []))
+            item = mapping[label]
+            if item.get('ids'):
+                target_ids.extend([str(i) for i in item['ids']])
+            if item.get('en'):
+                target_names.extend(item['en'])
         else:
-            # 没映射的保留原词 (支持用户直接搜英文的情况)
-            target_en_names.append(label)
+            target_names.append(label)
             
-    return list(set(filter(None, target_en_names)))
+    return {
+        'ids': list(set(target_ids)),
+        'names': list(set(filter(None, target_names)))
+    }
 
 def get_user_allowed_library_ids(user_id: str, emby_url: str, emby_api_key: str) -> List[str]:
     """
@@ -291,64 +309,89 @@ def query_virtual_library_items(
 
         # --- 2. 关键词 (Keywords) ---
         elif field == 'keywords':
-            expanded_keywords = _expand_keyword_labels(value)
-            if not expanded_keywords: continue
+            expanded = _expand_keyword_labels(value)
+            target_ids = expanded['ids']
+            # 名字转小写以便模糊匹配
+            target_names = [str(n).lower() for n in expanded['names']]
             
-            # 1. 搜索词转小写
-            search_terms = [str(k).lower() for k in expanded_keywords]
+            if not target_ids and not target_names: continue
             
             column = "COALESCE(m.keywords_json, '[]'::jsonb)"
             
-            # 2. 【优化】直接提取 name 字段并转小写匹配
-            # 既然数据已清洗，不再需要 jsonb_typeof 判断
+            # 逻辑：(ID 匹配) OR (Name 匹配)
+            # s->>'id' 取出来是文本，所以我们把 target_ids 也转成了文本
+            match_logic = """
+            (
+                (k->>'id') = ANY(%s) 
+                OR 
+                LOWER(k->>'name') = ANY(%s)
+            )
+            """
+            
             if op in ['contains', 'is_one_of', 'eq']:
                 clause = f"""
                 EXISTS (
                     SELECT 1 FROM jsonb_array_elements({column}) k 
-                    WHERE LOWER(k->>'name') = ANY(%s)
+                    WHERE {match_logic}
                 )
                 """
-                params.append(search_terms)
+                params.extend([target_ids, target_names])
+                
             elif op == 'is_none_of':
                 clause = f"""
                 NOT EXISTS (
                     SELECT 1 FROM jsonb_array_elements({column}) k 
-                    WHERE LOWER(k->>'name') = ANY(%s)
+                    WHERE {match_logic}
                 )
                 """
-                params.append(search_terms)
+                params.extend([target_ids, target_names])
 
         # --- 3. 工作室 (Studios) ---
         elif field == 'studios':
-            expanded_studios = _expand_studio_labels(value)
-            if not expanded_studios: continue
+            expanded = _expand_studio_labels(value)
+            target_ids = expanded['ids']
+            target_names = [str(n).lower() for n in expanded['names']]
             
-            # 1. 搜索词转小写
-            search_terms = [str(s).lower() for s in expanded_studios]
+            if not target_ids and not target_names: continue
             
             column = "COALESCE(m.studios_json, '[]'::jsonb)"
             
-            # 2. 【优化】直接提取 name 字段并转小写匹配
+            match_logic = """
+            (
+                (s->>'id') = ANY(%s) 
+                OR 
+                LOWER(s->>'name') = ANY(%s)
+            )
+            """
+            
             if op in ['contains', 'is_one_of', 'eq']:
                 clause = f"""
                 EXISTS (
                     SELECT 1 FROM jsonb_array_elements({column}) s 
-                    WHERE LOWER(s->>'name') = ANY(%s)
+                    WHERE {match_logic}
                 )
                 """
-                params.append(search_terms)
+                params.extend([target_ids, target_names])
+                
             elif op == 'is_none_of':
                 clause = f"""
                 NOT EXISTS (
                     SELECT 1 FROM jsonb_array_elements({column}) s 
-                    WHERE LOWER(s->>'name') = ANY(%s)
+                    WHERE {match_logic}
                 )
                 """
-                params.append(search_terms)
+                params.extend([target_ids, target_names])
+                
             elif op == 'is_primary':
-                # 主工作室是数组第一个
-                clause = f"LOWER({column}->0->>'name') = ANY(%s)"
-                params.append(search_terms)
+                # 主工作室是数组第0个
+                clause = f"""
+                (
+                    ({column}->0->>'id') = ANY(%s)
+                    OR
+                    LOWER({column}->0->>'name') = ANY(%s)
+                )
+                """
+                params.extend([target_ids, target_names])
 
         # --- 4. 复杂对象数组 (Actors, Directors) ---
         elif field in ['actors', 'directors']:
