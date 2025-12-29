@@ -47,6 +47,16 @@
             设置后将忽略下方的年份筛选。例如设置 7 天，将筛选从明天开始一周内首播的内容。
           </n-text>
         </template>
+        <div style="margin-top: 8px; font-size: 12px; color: #666; background: #f5f5f5; padding: 8px; border-radius: 4px;">
+          <span v-if="params.next_days > 0">
+            🔍 筛选范围: 
+            <strong>{{ calculatedDateRange.start }}</strong> 至 
+            <strong>{{ calculatedDateRange.end }}</strong>
+          </span>
+          <span v-else>
+            ⚠️ "即将上线"模式未启用，当前使用年份筛选。
+          </span>
+        </div>
       </n-form-item>
 
       <!-- 3. 年份范围 (当启用即将上线时禁用) -->
@@ -311,6 +321,32 @@ const formatDateUTC = (date) => {
   return `${y}-${m}-${d}`;
 };
 
+// 辅助函数：格式化日期为 YYYY-MM-DD (直接操作本地日期对象，简单粗暴且有效)
+const formatDateSimple = (date) => {
+  const y = date.getFullYear();
+  const m = String(date.getMonth() + 1).padStart(2, '0');
+  const d = String(date.getDate()).padStart(2, '0');
+  return `${y}-${m}-${d}`;
+};
+
+// 新增：用于 UI 展示和 URL 生成的统一日期计算
+const calculatedDateRange = computed(() => {
+  const now = new Date();
+  
+  // 计算开始日期：今天 + 1天 (即明天)
+  const start = new Date(now);
+  start.setDate(now.getDate() + 1);
+  
+  // 计算结束日期：开始日期 + N天
+  const end = new Date(start);
+  end.setDate(start.getDate() + params.value.next_days);
+  
+  return {
+    start: formatDateSimple(start),
+    end: formatDateSimple(end)
+  };
+});
+
 // --- URL 生成逻辑 ---
 const generatedUrl = computed(() => {
   const p = params.value;
@@ -322,25 +358,10 @@ const generatedUrl = computed(() => {
   const dateField = p.type === 'movie' ? 'primary_release_date' : 'first_air_date';
   
   if (p.next_days > 0) {
-    // ★★★ 核心修复：使用 UTC 时间计算日期 ★★★
-    // 场景：假设你在美国(28号)，中国剧集(29号)已播出。
-    // 旧逻辑：本地28号 + 1天 = 29号 -> 包含已播出的剧。
-    // 新逻辑：UTC通常是29号 + 1天 = 30号 -> 成功排除已播出的剧。
-    const now = new Date();
-    // 构造当前的 UTC 日期对象 (剥离具体时间，只保留日期)
-    const todayUTC = new Date(Date.UTC(now.getFullYear(), now.getMonth(), now.getDate()));
-    
-    // 起始日期：UTC 明天
-    const startDate = new Date(todayUTC);
-    startDate.setUTCDate(todayUTC.getUTCDate() + 1);
-    
-    // 结束日期：UTC 明天 + N 天
-    const endDate = new Date(startDate);
-    endDate.setUTCDate(startDate.getUTCDate() + p.next_days);
-    
-    // 使用 formatDateUTC 确保输出的是 UTC 日期字符串
-    query.append(`${dateField}.gte`, formatDateUTC(startDate));
-    query.append(`${dateField}.lte`, formatDateUTC(endDate));
+    // 直接使用计算好的日期字符串
+    const { start, end } = calculatedDateRange.value;
+    query.append(`${dateField}.gte`, start);
+    query.append(`${dateField}.lte`, end);
   } else {
     // 使用手动年份
     if (p.year_gte) query.append(`${dateField}.gte`, `${p.year_gte}-01-01`);
