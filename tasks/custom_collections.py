@@ -78,30 +78,26 @@ def _perform_list_collection_health_check(
     tmdb_api_key: str
 ) -> dict:
     """
-    榜单健康检查 (仅用于 List 类型)
+    榜单健康检查 (修正版 V2：修复合集定义被错误修改为 Season 类型的问题)
     """
     collection_id = collection_db_record.get('id')
     collection_name = collection_db_record.get('name', '未知合集')
-    logger.info(f"  ➜ 榜单合集 '{collection_name}'，开始进行健康度分析...")
+    logger.info(f"  ➜ 榜单合集 '{collection_name}'，开始进行健康度分析 (Item数: {len(tmdb_items)})...")
 
-    # 获取上一次同步时生成的媒体列表 
+    # 1. 获取上一次同步时生成的媒体列表
     old_media_map = {}
     historical_data = collection_db_record.get('generated_media_info_json')
-    
     if historical_data:
         try:
-            old_items = []
-            if isinstance(historical_data, str):
-                old_items = json.loads(historical_data)
-            elif isinstance(historical_data, list):
-                old_items = historical_data
-            
+            old_items = json.loads(historical_data) if isinstance(historical_data, str) else (historical_data or [])
             if old_items:
-                old_media_map = {str(item['tmdb_id']): item['media_type'] for item in old_items if item.get('tmdb_id')}
+                # 这里的 key 可能是 剧ID (旧版/正确版) 也可能是 季ID (Bug版)
+                # 我们都收集起来，后续清理时会跟 processed_active_ids 对比
+                old_media_map = {str(item['tmdb_id']): item.get('media_type', 'Movie') for item in old_items if item.get('tmdb_id')}
         except Exception as e:
-            logger.warning(f"  -> 解析合集 '{collection_name}' 的历史媒体列表时失败: {e}")
+            logger.warning(f"  -> 解析历史列表失败: {e}")
 
-    # 提前加载所有在库的“季”的信息
+    # 2. 提前加载所有在库的“季”的信息
     in_library_seasons_set = set()
     try:
         with connection.get_db_connection() as conn:
@@ -110,11 +106,12 @@ def _perform_list_collection_health_check(
             for row in cursor.fetchall():
                 in_library_seasons_set.add((row['parent_series_tmdb_id'], row['season_number']))
     except Exception as e_db:
-        logger.error(f"  -> 获取在库季列表时发生数据库错误: {e_db}", exc_info=True)
+        logger.error(f"  -> 获取在库季列表失败: {e_db}")
 
-    # 获取所有在库的 Key 集合 (格式: id_type)
+    # 3. 获取所有在库的 Key 集合
     in_library_keys = set(tmdb_to_emby_item_map.keys())
 
+    # 4. 获取已订阅/暂停的 Key 集合
     subscribed_or_paused_keys = set()
     try:
         with connection.get_db_connection() as conn:
@@ -123,222 +120,183 @@ def _perform_list_collection_health_check(
             for row in cursor.fetchall():
                 subscribed_or_paused_keys.add(f"{row['tmdb_id']}_{row['item_type']}")
     except Exception as e_sub:
-        logger.error(f"  -> 获取订阅状态时发生数据库错误: {e_sub}", exc_info=True)
+        logger.error(f"  -> 获取订阅状态失败: {e_sub}")
     
     missing_released_items = []
     missing_unreleased_items = []
-    parent_series_to_ensure_exist = []
+    parent_series_to_ensure_exist = {} 
     today_str = datetime.now().strftime('%Y-%m-%d')
+    parent_series_cache = {} 
+
+    # 用于记录本次真正处理过的 ID (用于防止误删订阅)
+    processed_active_ids = set()
 
     for item_def in tmdb_items:
-        tmdb_id = str(item_def.get('tmdb_id'))
+        # ★★★ 这里的 tmdb_id 必须保持为 剧集 ID (Series ID) ★★★
+        tmdb_id = str(item_def.get('tmdb_id')) 
+        if not tmdb_id or tmdb_id.lower() == 'none': continue
+
         media_type = item_def.get('media_type')
         season_num = item_def.get('season')
 
+        # 将原始 ID (剧ID/影ID) 加入活跃列表
+        processed_active_ids.add(tmdb_id)
+
+        # --- A. 在库检查 ---
         is_in_library = False
-        
         if item_def.get('emby_id'):
             is_in_library = True
-        elif season_num is not None and media_type == 'Series':
+        elif media_type == 'Series' and season_num is not None:
             if (tmdb_id, season_num) in in_library_seasons_set:
                 is_in_library = True
-        else:
+        
+        if not is_in_library:
             current_key = f"{tmdb_id}_{media_type}"
             if current_key in in_library_keys:
                 is_in_library = True
-            else:
-                original_id = corrected_id_to_original_id_map.get(tmdb_id)
-                if original_id:
-                    original_key = f"{original_id}_{media_type}"
-                    if original_key in in_library_keys:
-                        is_in_library = True
         
-        if is_in_library:
-            continue
+        if is_in_library: continue
 
-        check_sub_key = f"{tmdb_id}_{media_type}"
-        if check_sub_key in subscribed_or_paused_keys:
-            continue
-        
-        if not tmdb_id or tmdb_id == 'None':
-            continue
-
+        # --- C. 获取详情并构建请求 ---
         try:
             details = None
-            # 标记是否需要将该条目本身加入待订阅列表
-            # 默认为 True，如果是整剧拆解模式，则设为 False (因为我们会添加具体的季)
-            add_self_to_missing_list = True 
+            item_type_for_db = media_type
+            
+            # 用于写入 media_metadata 的 ID (如果是季，这里会变成季ID)
+            target_db_id = tmdb_id 
+            
+            # ★★★ 分支 1: 带季号的剧集 (视为季) ★★★
+            if media_type == 'Series' and season_num is not None:
+                parent_id = tmdb_id 
+                item_type_for_db = 'Season'
 
-            if season_num is not None and media_type == 'Series':
-                # ... (原有单季逻辑保持不变) ...
-                details = tmdb.get_tv_season_details(tmdb_id, season_num, tmdb_api_key)
-                if details:
-                    item_type_for_db = 'Season'
-                    parent_details = tmdb.get_tv_details(tmdb_id, tmdb_api_key)
-                    details['parent_series_tmdb_id'] = tmdb_id
-                    details['parent_title'] = parent_details.get('name', '')
-                    details['parent_poster_path'] = parent_details.get('poster_path')
-
-                    parent_series_to_ensure_exist.append({
-                        'tmdb_id': tmdb_id,
-                        'item_type': 'Series',
-                        'title': parent_details.get('name'),
-                        'original_title': parent_details.get('original_name'),
-                        'release_date': parent_details.get('first_air_date'),
-                        'release_year': parent_details.get('first_air_date', '----').split('-')[0],
-                        'poster_path': parent_details.get('poster_path')
-                    })
-            else:
-                # 获取详情
-                details = tmdb.get_movie_details(tmdb_id, tmdb_api_key) if media_type == 'Movie' else tmdb.get_tv_details(tmdb_id, tmdb_api_key)
+                # 1. 获取/缓存父剧集信息
+                if parent_id not in parent_series_cache:
+                    p_details = tmdb.get_tv_details(parent_id, tmdb_api_key)
+                    if p_details:
+                        parent_series_cache[parent_id] = p_details
                 
-                # ★★★ 新增逻辑：如果是整剧，立刻拆解为季 ★★★
-                if details and media_type == 'Series':
-                    # 1. 既然我们要添加具体的季，就不需要订阅 Series 本体了
-                    add_self_to_missing_list = False
-                    
-                    # 2. 确保父剧集元数据存在 (占位)
-                    parent_series_to_ensure_exist.append({
-                        'tmdb_id': tmdb_id,
-                        'item_type': 'Series',
-                        'title': details.get('name'),
-                        'original_title': details.get('original_name'),
-                        'release_date': details.get('first_air_date'),
-                        'release_year': details.get('first_air_date', '----').split('-')[0],
-                        'poster_path': details.get('poster_path')
-                    })
+                parent_details = parent_series_cache.get(parent_id)
+                if not parent_details: continue
 
-                    # 3. 遍历所有季
-                    seasons = details.get('seasons', [])
-                    series_name = details.get('name')
-                    series_poster = details.get('poster_path')
+                # 2. 加入父剧集占位
+                parent_series_to_ensure_exist[parent_id] = {
+                    'tmdb_id': str(parent_id),
+                    'item_type': 'Series',
+                    'title': parent_details.get('name'),
+                    'original_title': parent_details.get('original_name'),
+                    'release_date': parent_details.get('first_air_date'),
+                    'poster_path': parent_details.get('poster_path'),
+                    'overview': parent_details.get('overview')
+                }
+
+                # 3. 获取季详情
+                details = tmdb.get_tv_season_details(parent_id, season_num, tmdb_api_key)
+                if details:
+                    details['parent_series_tmdb_id'] = str(parent_id)
+                    details['parent_title'] = parent_details.get('name')
+                    details['parent_poster_path'] = parent_details.get('poster_path')
                     
-                    for season in seasons:
-                        s_num = season.get('season_number')
-                        # 跳过特别篇 (Season 0) 和 已经在库的季
-                        if s_num is None or s_num == 0: continue
-                        if (tmdb_id, s_num) in in_library_seasons_set: continue
-                        
-                        # 4. 构建季的订阅请求
-                        s_air_date = season.get('air_date')
-                        s_poster = season.get('poster_path') or series_poster
-                        
-                        season_item_for_db = {
-                            'tmdb_id': str(season.get('id')), # 季的 TMDb ID
-                            'item_type': 'Season',
-                            'title': season.get('name') or f"第 {s_num} 季",
-                            'release_date': s_air_date,
-                            'release_year': int(s_air_date.split('-')[0]) if s_air_date else None,
-                            'overview': season.get('overview'),
-                            'poster_path': s_poster,
-                            'parent_series_tmdb_id': tmdb_id,
-                            'season_number': s_num,
-                            'source': { "type": "collection", "id": collection_db_record.get('id'), "name": collection_name }
-                        }
-                        
-                        # 5. 分流：已上映 vs 未上映
-                        if s_air_date and s_air_date > today_str:
-                            missing_unreleased_items.append(season_item_for_db)
-                        else:
-                            missing_released_items.append(season_item_for_db)
+                    # 获取真实的季 ID
+                    real_season_id = str(details.get('id'))
+                    target_db_id = real_season_id
                     
-                    logger.info(f"  -> [智能拆解] 已将剧集《{series_name}》拆解为缺少的季进行订阅。")
+                    # ★★★ 核心修正：只将季 ID 加入保活列表，绝不修改 item_def ★★★
+                    processed_active_ids.add(real_season_id)
+                    
+                    # 二次检查订阅状态 (检查季ID是否已订阅)
+                    s_key = f"{real_season_id}_Season"
+                    if s_key in subscribed_or_paused_keys: continue
+            
+            # 分支 2: 电影
+            elif media_type == 'Movie':
+                if f"{tmdb_id}_Movie" in subscribed_or_paused_keys: continue
+                details = tmdb.get_movie_details(tmdb_id, tmdb_api_key)
+                if details:
+                    target_db_id = str(details.get('id'))
+                    processed_active_ids.add(target_db_id)
 
             if not details: continue
             
-            # 如果 add_self_to_missing_list 为 True，说明是电影或者单季，走原有逻辑
-            if add_self_to_missing_list:
-                release_date = details.get("air_date") or details.get("release_date") or details.get("first_air_date", '')
-                
-                release_year = None
-                if release_date and '-' in release_date:
-                    try:
-                        release_year = int(release_date.split('-')[0])
-                    except:
-                        pass
+            # --- D. 构建数据库记录 (用于订阅) ---
+            release_date = details.get("air_date") or details.get("release_date") or details.get("first_air_date", '')
+            release_year = int(release_date.split('-')[0]) if (release_date and '-' in release_date) else None
 
-                item_details_for_db = {
-                    'tmdb_id': str(details.get('id')),
-                    'item_type': item_type_for_db,
-                    'title': details.get('name') or f"第 {season_num} 季" if item_type_for_db == 'Season' else details.get('title') or details.get('name'),
-                    'release_date': release_date,
-                    'release_year': release_year, 
-                    'overview': details.get('overview'),
-                    'poster_path': details.get('poster_path') or details.get('parent_poster_path'),
-                    'parent_series_tmdb_id': tmdb_id if item_type_for_db == 'Season' else None,
-                    'season_number': details.get('season_number'),
-                    'source': { "type": "collection", "id": collection_db_record.get('id'), "name": collection_name }
-                }
+            item_details_for_db = {
+                'tmdb_id': target_db_id, # 这里存入的是 季ID 或 电影ID
+                'item_type': item_type_for_db, # 这里是 'Season' 或 'Movie'
+                'title': details.get('name') or details.get('title'),
+                'release_date': release_date,
+                'release_year': release_year, 
+                'overview': details.get('overview'),
+                'poster_path': details.get('poster_path') or details.get('parent_poster_path'),
+                'parent_series_tmdb_id': details.get('parent_series_tmdb_id'),
+                'season_number': details.get('season_number'),
+                'source': { "type": "collection", "id": collection_db_record.get('id'), "name": collection_name }
+            }
+            
+            if item_type_for_db == 'Season':
+                item_details_for_db['title'] = details.get('name') or f"第 {season_num} 季"
 
-                if release_date and release_date > today_str:
-                    missing_unreleased_items.append(item_details_for_db)
-                else:
-                    missing_released_items.append(item_details_for_db)
+            # --- E. 分流 ---
+            if release_date and release_date > today_str:
+                missing_unreleased_items.append(item_details_for_db)
+            else:
+                missing_released_items.append(item_details_for_db)
 
         except Exception as e:
-            logger.error(f"为合集 '{collection_name}' 获取 {tmdb_id} (季: {season_num}) 详情时发生异常: {e}", exc_info=True)
+            logger.error(f"处理合集条目 {tmdb_id} ({media_type}) 时出错: {e}")
 
+    # 5. 执行数据库操作 (订阅)
     source_for_subscription = {"type": "collection", "id": collection_db_record.get('id'), "name": collection_name}
 
     if parent_series_to_ensure_exist:
-        unique_parents = {p['tmdb_id']: p for p in parent_series_to_ensure_exist}.values()
-        logger.info(f"  -> 检测到 {len(unique_parents)} 个缺失的父剧集元数据，正在创建占位记录...")
+        logger.info(f"  -> 正在确保 {len(parent_series_to_ensure_exist)} 个父剧集元数据存在...")
         request_db.set_media_status_none(
-            tmdb_ids=[p['tmdb_id'] for p in unique_parents],
+            tmdb_ids=list(parent_series_to_ensure_exist.keys()),
             item_type='Series',
-            media_info_list=list(unique_parents)
+            media_info_list=list(parent_series_to_ensure_exist.values())
         )
 
     def group_and_update(items_list, status):
         if not items_list: return
-        logger.info(f"  -> 检测到 {len(items_list)} 个缺失媒体，将订阅状态设为 '{status}'...")
-        
+        logger.info(f"  -> 将 {len(items_list)} 个缺失媒体设为 '{status}'...")
         requests_by_type = {}
         for item in items_list:
-            item_type = item['item_type']
-            if item_type not in requests_by_type:
-                requests_by_type[item_type] = []
-            requests_by_type[item_type].append(item)
+            itype = item['item_type']
+            if itype not in requests_by_type: requests_by_type[itype] = []
+            requests_by_type[itype].append(item)
             
-        for item_type, requests in requests_by_type.items():
+        for itype, requests in requests_by_type.items():
+            ids = [req['tmdb_id'] for req in requests]
             if status == 'WANTED':
-                request_db.set_media_status_wanted(
-                    tmdb_ids=[req['tmdb_id'] for req in requests],
-                    item_type=item_type,
-                    media_info_list=requests,
-                    source=source_for_subscription
-                )
+                request_db.set_media_status_wanted(ids, itype, media_info_list=requests, source=source_for_subscription)
             elif status == 'PENDING_RELEASE':
-                request_db.set_media_status_pending_release(
-                    tmdb_ids=[req['tmdb_id'] for req in requests],
-                    item_type=item_type,
-                    media_info_list=requests,
-                    source=source_for_subscription
-                )
+                request_db.set_media_status_pending_release(ids, itype, media_info_list=requests, source=source_for_subscription)
 
     group_and_update(missing_released_items, 'WANTED')
     group_and_update(missing_unreleased_items, 'PENDING_RELEASE')
 
+    # 6. 清理已移除的项目
     if old_media_map:
-        new_tmdb_ids = {str(item['tmdb_id']) for item in tmdb_items}
-        removed_tmdb_ids = set(old_media_map.keys()) - new_tmdb_ids
+        # processed_active_ids 包含了：
+        # 1. 列表中的原始 剧集ID (保证剧集本身的订阅不被误删)
+        # 2. 列表中的原始 电影ID
+        # 3. 解析出来的 季ID (保证季的订阅不被误删)
+        # 这样无论 old_media_map 里存的是剧ID还是季ID，只要它在当前列表中有效，就不会被删
+        removed_tmdb_ids = set(old_media_map.keys()) - processed_active_ids
 
         if removed_tmdb_ids:
-            logger.warning(f"  -> 检测到 {len(removed_tmdb_ids)} 个媒体已从合集 '{collection_name}' 中移除，正在清理其订阅来源...")
-            source_to_remove = {
-                "type": "collection", 
-                "id": collection_id, 
-                "name": collection_name
-            }
+            logger.info(f"  -> 清理 {len(removed_tmdb_ids)} 个已从合集中移除的订阅来源...")
+            source_to_remove = {"type": "collection", "id": collection_id, "name": collection_name}
             for tmdb_id in removed_tmdb_ids:
                 item_type = old_media_map.get(tmdb_id)
                 if item_type:
                     try:
                         request_db.remove_subscription_source(tmdb_id, item_type, source_to_remove)
+                        from handler.poster_generator import cleanup_placeholder
                         cleanup_placeholder(tmdb_id)
-                    except Exception as e_remove:
-                        logger.error(f"  -> 清理媒体 {tmdb_id} ({item_type}) 的来源时发生错误: {e_remove}", exc_info=True)
-    return 
+                    except Exception: pass 
 
 def _get_cover_badge_text_for_collection(collection_db_info: Dict[str, Any]) -> Any:
     """
@@ -453,6 +411,49 @@ def task_process_all_custom_collections(processor):
                 for item in raw_tmdb_items:
                     tmdb_id = str(item.get('id')) if item.get('id') else None
                     media_type = item.get('type')
+                    
+                    # ★★★ 新增：如果是 Series 且没有指定季，尝试拆解 ★★★
+                    if media_type == 'Series' and 'season' not in item:
+                        # 尝试获取详情以拆解季
+                        try:
+                            # 只有当它是榜单类时才拆解，AI推荐类通常不需要这么细
+                            if collection_type == 'list':
+                                series_details = tmdb.get_tv_details(tmdb_id, processor.tmdb_api_key)
+                                if series_details and 'seasons' in series_details:
+                                    seasons = series_details['seasons']
+                                    series_name = series_details.get('name')
+                                    
+                                    # 标记是否已添加至少一个季
+                                    added_season = False
+                                    
+                                    for season in seasons:
+                                        s_num = season.get('season_number')
+                                        if s_num is None or s_num == 0: continue
+                                        
+                                        s_id = str(season.get('id'))
+                                        
+                                        # 检查该季是否在库
+                                        emby_id = None
+                                        key = f"{s_id}_Season"
+                                        if key in tmdb_to_emby_item_map:
+                                            emby_id = tmdb_to_emby_item_map[key]['Id']
+                                        
+                                        # 构造季条目
+                                        season_item = {
+                                            'tmdb_id': tmdb_id,
+                                            'media_type': 'Series',
+                                            'emby_id': emby_id,
+                                            'title': series_name,
+                                            'season': s_num
+                                        }
+                                        tmdb_items.append(season_item)
+                                        if emby_id: global_ordered_emby_ids.append(emby_id)
+                                        added_season = True
+                                    
+                                    if added_season:
+                                        continue # 如果成功拆解了季，就跳过原始 Series 条目
+                        except Exception as e_split:
+                            logger.warning(f"拆解剧集 {tmdb_id} 失败，将保留原条目: {e_split}")
                     emby_id = item.get('emby_id')
                     
                     if not emby_id and tmdb_id:
@@ -489,6 +490,8 @@ def task_process_all_custom_collections(processor):
 
                 # 后续处理
                 # 1. 更新 Emby 实体合集 (用于封面)
+                should_allow_empty = (collection_type in ['list', 'ai_recommendation_global'])
+                
                 emby_collection_id = emby.create_or_update_collection_with_emby_ids(
                     collection_name=collection_name, 
                     emby_ids_in_library=global_ordered_emby_ids,
@@ -496,7 +499,7 @@ def task_process_all_custom_collections(processor):
                     api_key=processor.emby_api_key, 
                     user_id=processor.emby_user_id,
                     prefetched_collection_map=prefetched_collection_map,
-                    allow_empty=False 
+                    allow_empty=should_allow_empty  # <--- 传入修改后的标志
                 )
 
                 # 2. 更新数据库状态
@@ -623,6 +626,44 @@ def process_single_custom_collection(processor, custom_collection_id: int):
             for item in raw_tmdb_items:
                 tmdb_id = str(item.get('id'))
                 media_type = item.get('type')
+                if media_type == 'Series' and 'season' not in item and collection_type == 'list':
+                    try:
+                        series_details = tmdb.get_tv_details(tmdb_id, processor.tmdb_api_key)
+                        if series_details and 'seasons' in series_details:
+                            seasons = series_details['seasons']
+                            series_name = series_details.get('name')
+                            
+                            added_season = False
+                            
+                            for season in seasons:
+                                s_num = season.get('season_number')
+                                # 跳过特别篇 (Season 0)
+                                if s_num is None or s_num == 0: continue
+                                
+                                s_id = str(season.get('id'))
+                                
+                                # 检查该季是否在库
+                                emby_id = None
+                                key = f"{s_id}_Season"
+                                if key in tmdb_to_emby_item_map:
+                                    emby_id = tmdb_to_emby_item_map[key]['Id']
+                                
+                                # 构造季条目
+                                season_item = {
+                                    'tmdb_id': tmdb_id,
+                                    'media_type': 'Series',
+                                    'emby_id': emby_id,
+                                    'title': series_name,
+                                    'season': s_num
+                                }
+                                tmdb_items.append(season_item)
+                                if emby_id: global_ordered_emby_ids.append(emby_id)
+                                added_season = True
+                            
+                            if added_season:
+                                continue # 如果成功拆解了季，就跳过原始 Series 条目，进入下一次循环
+                    except Exception as e_split:
+                        logger.warning(f"拆解剧集 {tmdb_id} 失败，将保留原条目: {e_split}")
                 emby_id = None
                 
                 # 统一使用 key 匹配
@@ -707,14 +748,14 @@ def process_single_custom_collection(processor, custom_collection_id: int):
 
         # 5. 在 Emby 中创建/更新合集
         task_manager.update_status_from_thread(60, "正在Emby中创建/更新合集...")
-        should_allow_empty = (collection_type == 'ai_recommendation')
+        should_allow_empty = (collection_type in ['list', 'ai_recommendation', 'ai_recommendation_global'])
         emby_collection_id = emby.create_or_update_collection_with_emby_ids(
             collection_name=collection_name, 
             emby_ids_in_library=global_ordered_emby_ids, 
             base_url=processor.emby_url, 
             api_key=processor.emby_api_key, 
             user_id=processor.emby_user_id,
-            allow_empty=should_allow_empty
+            allow_empty=should_allow_empty 
         )
 
         # 6. 更新数据库状态

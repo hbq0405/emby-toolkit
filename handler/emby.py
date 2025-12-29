@@ -1387,17 +1387,20 @@ def create_or_update_collection_with_emby_ids(
         if not desired_emby_ids and allow_empty:
             logger.info(f"  ➜ 合集 '{collection_name}' 为空壳模式，正在抓取 9 个随机媒体项作为封面素材...")
             try:
+                # 动态获取超时配置
+                api_timeout = config_manager.APP_CONFIG.get(constants.CONFIG_OPTION_EMBY_API_TIMEOUT, 60)
+                
                 temp_resp = requests.get(
-                    f"{base_url}/Items", 
+                    f"{base_url.rstrip('/')}/Items", 
                     params={
                         'api_key': api_key, 
-                        'Limit': 9,             
+                        'Limit': 9,             # 抓9个是为了让默认封面看起来像个九宫格，不那么单调
                         'Recursive': 'true', 
                         'IncludeItemTypes': 'Movie,Series',
-                        'SortBy': 'Random',     
-                        'ImageTypes': 'Primary' 
+                        'SortBy': 'Random',     # 随机抓取
+                        'ImageTypes': 'Primary' # 确保有图
                     },
-                    timeout=15
+                    timeout=api_timeout
                 )
                 
                 if temp_resp.status_code == 200:

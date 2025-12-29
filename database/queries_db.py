@@ -668,14 +668,78 @@ def get_missing_items_metadata(tmdb_ids: List[str]) -> Dict[str, Dict]:
     try:
         with get_db_connection() as conn:
             with conn.cursor() as cursor:
+                # ★★★ 修改开始：支持 Season，并关联父剧集获取标题和海报 ★★★
                 cursor.execute("""
-                    SELECT tmdb_id, subscription_status, title, release_year, 
-                           release_date, item_type, poster_path, emby_item_ids_json 
-                    FROM media_metadata 
-                    WHERE tmdb_id = ANY(%s) AND item_type IN ('Movie', 'Series')
+                    SELECT 
+                        m.tmdb_id, 
+                        m.subscription_status, 
+                        -- 如果是季，拼接父标题 (例如: "某某剧 第 1 季")
+                        CASE 
+                            WHEN m.item_type = 'Season' THEN COALESCE(p.title, '') || ' ' || m.title
+                            ELSE m.title 
+                        END AS title,
+                        m.release_year, 
+                        m.release_date, 
+                        m.item_type, 
+                        -- 如果季海报为空，回退使用父剧集海报
+                        COALESCE(m.poster_path, p.poster_path) AS poster_path, 
+                        m.emby_item_ids_json 
+                    FROM media_metadata m
+                    LEFT JOIN media_metadata p ON m.parent_series_tmdb_id = p.tmdb_id AND p.item_type = 'Series'
+                    WHERE m.tmdb_id = ANY(%s) AND m.item_type IN ('Movie', 'Series', 'Season')
                 """, (tmdb_ids,))
+                # ★★★ 修改结束 ★★★
+                
                 rows = cursor.fetchall()
                 return {str(r['tmdb_id']): dict(r) for r in rows}
     except Exception as e:
         logger.error(f"获取缺失项元数据失败: {e}")
         return {}
+    
+def get_best_metadata_by_tmdb_id(tmdb_id: str) -> Dict[str, Any]:
+    """
+    【反代专用】根据 TMDb ID 获取最佳元数据。
+    逻辑：
+    1. 同时查找该 ID 本身 (Movie/Series) 以及 以该 ID 为父级的子项 (Season)。
+    2. 按状态优先级排序 (SUBSCRIBED > PENDING > WANTED > ...)。
+    3. 返回优先级最高的那条记录的状态和海报。
+    这样即使数据库只存了 Season 的订阅，查 Series ID 也能拿到正确的 PENDING_RELEASE 状态。
+    """
+    if not tmdb_id: return {}
+    
+    try:
+        with get_db_connection() as conn:
+            with conn.cursor() as cursor:
+                sql = """
+                    SELECT 
+                        subscription_status, 
+                        poster_path,
+                        item_type
+                    FROM media_metadata
+                    WHERE tmdb_id = %s 
+                       OR parent_series_tmdb_id = %s
+                    ORDER BY 
+                        -- 1. 状态优先级排序 (数值越小越优先)
+                        CASE subscription_status
+                            WHEN 'SUBSCRIBED' THEN 1
+                            WHEN 'PENDING_RELEASE' THEN 2
+                            WHEN 'WANTED' THEN 3
+                            WHEN 'PAUSED' THEN 4
+                            ELSE 99
+                        END ASC,
+                        -- 2. 如果状态相同，优先取 Series 本身的记录，其次是 Season
+                        CASE item_type
+                            WHEN 'Series' THEN 1
+                            WHEN 'Season' THEN 2
+                            ELSE 3
+                        END ASC
+                    LIMIT 1
+                """
+                cursor.execute(sql, (tmdb_id, tmdb_id))
+                row = cursor.fetchone()
+                if row:
+                    return dict(row)
+    except Exception as e:
+        logger.error(f"获取最佳元数据失败 (ID: {tmdb_id}): {e}")
+        
+    return {}

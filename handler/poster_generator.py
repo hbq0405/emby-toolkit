@@ -115,14 +115,19 @@ def sync_all_subscription_posters():
     # 2. 遍历数据库，生成/校验海报，并记录活跃 ID
     if subscriptions:
         for item in subscriptions:
-            tmdb_id = str(item.get('tmdb_id'))
+            if item.get('item_type') == 'Season' and item.get('series_tmdb_id'):
+                target_id = str(item.get('series_tmdb_id'))
+            else:
+                target_id = str(item.get('tmdb_id'))
             status = item.get('subscription_status')
             
             # 只有这些状态需要占位海报
             if status in ['WANTED', 'SUBSCRIBED', 'PENDING_RELEASE', 'PAUSED', 'IGNORED']:
-                active_tmdb_ids.add(tmdb_id)
+                active_tmdb_ids.add(target_id)
+                
+                # 调用生成函数时，传入归一化后的 target_id (即剧集 ID)
                 get_missing_poster(
-                    tmdb_id=tmdb_id,
+                    tmdb_id=target_id,
                     status=status,
                     poster_path=item.get('poster_path')
                 )

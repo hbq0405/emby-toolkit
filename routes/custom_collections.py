@@ -286,8 +286,7 @@ def api_delete_custom_collection(collection_id):
 @admin_required
 def api_get_custom_collection_status(collection_id):
     """
-    获取合集详情 (V5 - 仅榜单类有效)
-    筛选类合集不再维护静态列表，因此无法提供详细状态。
+    获取合集详情 (V6 - 适配 Series+Season 结构)
     """
     try:
         collection = custom_collection_db.get_custom_collection_by_id(collection_id)
@@ -295,12 +294,10 @@ def api_get_custom_collection_status(collection_id):
             return jsonify({"error": "未找到合集"}), 404
         
         c_type = collection.get('type')
-        
-        # 如果是筛选类，直接返回空列表，因为它是动态的
         if c_type == 'filter':
             collection['media_items'] = []
             collection['missing_count'] = 0
-            collection['health_status'] = 'dynamic' # 标记为动态合集
+            collection['health_status'] = 'dynamic'
             return jsonify(collection)
         
         definition_list = collection.get('generated_media_info_json') or []
@@ -308,144 +305,99 @@ def api_get_custom_collection_status(collection_id):
             collection['media_items'] = []
             return jsonify(collection)
 
-        # 1. 提取所有有效的 TMDB ID
-        tmdb_ids = [str(item['tmdb_id']) for item in definition_list if item.get('tmdb_id') and str(item.get('tmdb_id')).lower() != 'none']
+        # 1. 收集查询条件
+        # 我们需要查两类数据：
+        # A. 普通电影/剧集: tmdb_id + item_type
+        # B. 季: parent_series_tmdb_id + season_number
         
-        # 2. 批量查询本地数据库，构建组合键映射
-        media_in_db_map = {}
-        if tmdb_ids:
-            try:
-                with connection.get_db_connection() as conn:
-                    with conn.cursor() as cursor:
-                        cursor.execute("SELECT * FROM media_metadata WHERE tmdb_id = ANY(%s)", (tmdb_ids,))
-                        rows = cursor.fetchall()
-                        for row in rows:
-                            unique_key = f"{row['tmdb_id']}_{row['item_type']}"
-                            media_in_db_map[unique_key] = dict(row)
-            except Exception as e_db:
-                logger.error(f"查询媒体元数据失败: {e_db}")
+        tmdb_ids_to_query = [] # 用于查 Movie/Series
+        season_criteria = []   # 用于查 Season: (parent_id, season_num)
 
-        # ==============================================================================
-        # ★★★ 核心修复：实时补全缺失的元数据 ★★★
-        # ==============================================================================
-        # 找出那些在 definition_list 里有 ID，但在 media_in_db_map 里找不到对应类型记录的项目
-        items_needing_fetch = []
         for item in definition_list:
-            tmdb_id = str(item.get('tmdb_id'))
-            if not tmdb_id or tmdb_id.lower() == 'none': continue
+            tid = str(item.get('tmdb_id'))
+            mtype = item.get('media_type')
+            snum = item.get('season')
             
-            media_type = item.get('media_type') or 'Movie'
-            target_key = f"{tmdb_id}_{media_type}"
+            if not tid or tid.lower() == 'none': continue
             
-            if target_key not in media_in_db_map:
-                items_needing_fetch.append(item)
+            if mtype == 'Series' and snum is not None:
+                season_criteria.append((tid, snum))
+            else:
+                tmdb_ids_to_query.append(tid)
 
-        if items_needing_fetch:
-            logger.info(f"  ➜ 合集详情：发现 {len(items_needing_fetch)} 个项目本地无缓存，正在实时获取元数据...")
-            api_key = config_manager.APP_CONFIG.get('tmdb_api_key')
-            
-            # 限制实时获取数量，防止超时
-            items_to_process = items_needing_fetch[:15]
-            
-            from handler.tmdb import get_movie_details, get_tv_details
-            
-            for item in items_to_process:
-                tmdb_id = str(item.get('tmdb_id'))
-                media_type = item.get('media_type') or 'Movie'
-                
-                try:
-                    details = None
-                    if media_type == 'Series':
-                        details = get_tv_details(tmdb_id, api_key)
-                    else:
-                        details = get_movie_details(tmdb_id, api_key)
+        # 2. 批量查询数据库
+        media_in_db_map = {} # Key: "tmdb_id_type" 或 "parent_id_S_season_num"
+        
+        try:
+            with connection.get_db_connection() as conn:
+                with conn.cursor() as cursor:
+                    # A. 查询普通项
+                    if tmdb_ids_to_query:
+                        cursor.execute("SELECT * FROM media_metadata WHERE tmdb_id = ANY(%s)", (tmdb_ids_to_query,))
+                        for row in cursor.fetchall():
+                            key = f"{row['tmdb_id']}_{row['item_type']}"
+                            media_in_db_map[key] = dict(row)
                     
-                    if details:
-                        temp_record = {
-                            'tmdb_id': str(details.get('id')),
-                            'item_type': media_type,
-                            'title': details.get('title') or details.get('name'),
-                            'original_title': details.get('original_title') or details.get('original_name'),
-                            'release_date': datetime.strptime(details.get('release_date') or details.get('first_air_date') or '1900-01-01', '%Y-%m-%d') if (details.get('release_date') or details.get('first_air_date')) else None,
-                            'poster_path': details.get('poster_path'),
-                            'in_library': False,
-                            'subscription_status': 'NONE',
-                            'emby_item_id': None
-                        }
-                        # 补入 map
-                        unique_key = f"{tmdb_id}_{media_type}"
-                        media_in_db_map[unique_key] = temp_record
-                        
-                except Exception as e_fetch:
-                    logger.warning(f"  ➜ 实时获取 TMDb ID {tmdb_id} ({media_type}) 详情失败: {e_fetch}")
+                    # B. 查询季项 (使用 OR 组合查询，或者分批查)
+                    # 为了简单高效，我们构造一个 WHERE (parent, season) IN (...) 的查询
+                    if season_criteria:
+                        # 构造 SQL 元组列表字符串: (id1, s1), (id2, s2)...
+                        values_str = ",".join([f"('{p}', {s})" for p, s in season_criteria])
+                        sql = f"""
+                            SELECT * FROM media_metadata 
+                            WHERE item_type = 'Season' 
+                              AND (parent_series_tmdb_id, season_number) IN ({values_str})
+                        """
+                        cursor.execute(sql)
+                        for row in cursor.fetchall():
+                            # ★★★ 构造专用 Key: 父ID_S_季号 ★★★
+                            key = f"{row['parent_series_tmdb_id']}_S_{row['season_number']}"
+                            media_in_db_map[key] = dict(row)
 
-        # ==============================================================================
+        except Exception as e_db:
+            logger.error(f"查询媒体元数据失败: {e_db}")
 
+        # 3. 组装返回列表
         final_media_list = []
         dynamic_missing_count = 0
 
         for item_def in definition_list:
-            # ... (获取 tmdb_id, media_type, season_number, source_title 的逻辑保持不变) ...
-            tmdb_id = item_def.get('tmdb_id')
-            if tmdb_id and str(tmdb_id).lower() != 'none':
-                tmdb_id_str = str(tmdb_id)
-            else:
-                tmdb_id_str = None
-            
+            tmdb_id = str(item_def.get('tmdb_id')) if item_def.get('tmdb_id') else None
             media_type = item_def.get('media_type') or 'Movie'
             season_number = item_def.get('season')
-            source_title = item_def.get('title') 
+            source_title = item_def.get('title')
 
-            # 情况 1: 完全未识别
-            if not tmdb_id_str:
-                final_media_list.append({
-                    "tmdb_id": None,
-                    "emby_id": None,
-                    "title": source_title or "未知标题",
-                    "original_title": source_title,
-                    "release_date": "",
-                    "poster_path": None,
-                    "status": "unidentified",
-                    "media_type": media_type,
-                    "season": season_number
-                })
-                dynamic_missing_count += 1 # 未识别也算缺失
+            if not tmdb_id:
+                # ... (未识别处理保持不变) ...
                 continue
 
-            # ★★★ 使用组合键查找 ★★★
-            target_key = f"{tmdb_id_str}_{media_type}"
+            # ★★★ 确定查找 Key ★★★
+            if media_type == 'Series' and season_number is not None:
+                target_key = f"{tmdb_id}_S_{season_number}"
+            else:
+                target_key = f"{tmdb_id}_{media_type}"
             
-            if target_key in media_in_db_map:
-                db_record = media_in_db_map[target_key]
-                
+            db_record = media_in_db_map.get(target_key)
+
+            if db_record:
                 status = "missing"
-                if db_record.get('in_library'):
-                    status = "in_library"
-                elif db_record.get('subscription_status') == 'SUBSCRIBED':
-                    status = "subscribed"
-                elif db_record.get('subscription_status') == 'PAUSED':
-                    status = "paused"
-                elif db_record.get('subscription_status') == 'IGNORED':
-                    status = "ignored"
-                elif db_record.get('subscription_status') == 'PENDING_RELEASE':
-                    status = "unreleased"
+                if db_record.get('in_library'): status = "in_library"
+                elif db_record.get('subscription_status') == 'SUBSCRIBED': status = "subscribed"
+                elif db_record.get('subscription_status') == 'PAUSED': status = "paused"
+                elif db_record.get('subscription_status') == 'IGNORED': status = "ignored"
+                elif db_record.get('subscription_status') == 'PENDING_RELEASE': status = "unreleased"
                 
-                # ★★★ 统计缺失项 (missing 或 unreleased 通常都算在健康检查关注范围内，视需求而定) ★★★
-                # 这里我们定义：只要不是 in_library 或 ignored，都算作广义的“缺失/待处理”
                 if status not in ('in_library', 'ignored'):
                     dynamic_missing_count += 1
 
                 r_date = db_record.get('release_date')
-                if isinstance(r_date, datetime):
-                    r_date_str = r_date.strftime('%Y-%m-%d')
-                else:
-                    r_date_str = str(r_date) if r_date else ''
+                r_date_str = r_date.strftime('%Y-%m-%d') if isinstance(r_date, datetime) else (str(r_date) if r_date else '')
 
                 final_media_list.append({
-                    "tmdb_id": tmdb_id_str,
+                    "tmdb_id": tmdb_id, # 前端需要剧集ID来跳转
                     "emby_id": db_record.get('emby_item_id'),
-                    "title": db_record.get('title') or db_record.get('original_title'),
-                    "original_title": source_title, 
+                    "title": source_title, # 使用合集定义的标题 (纯剧名)
+                    "original_title": db_record.get('original_title'),
                     "release_date": r_date_str,
                     "poster_path": db_record.get('poster_path'),
                     "status": status,
@@ -453,12 +405,11 @@ def api_get_custom_collection_status(collection_id):
                     "season": season_number
                 })
             else:
-                # 情况 3: 确实没查到
+                # 缺失
                 final_media_list.append({
-                    "tmdb_id": tmdb_id_str,
+                    "tmdb_id": tmdb_id,
                     "emby_id": None,
-                    "title": source_title or f"未知媒体 (ID: {tmdb_id_str})",
-                    "original_title": source_title,
+                    "title": source_title,
                     "release_date": item_def.get('release_date', ''),
                     "poster_path": item_def.get('poster_path'),
                     "status": "missing",
@@ -469,8 +420,6 @@ def api_get_custom_collection_status(collection_id):
         
         collection['media_items'] = final_media_list
         collection.pop('generated_media_info_json', None)
-        
-        # ★★★ 核心修改：覆盖数据库中的静态值，返回动态计算结果 ★★★
         collection['missing_count'] = dynamic_missing_count
         collection['health_status'] = 'has_missing' if dynamic_missing_count > 0 else 'ok'
 

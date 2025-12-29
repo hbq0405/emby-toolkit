@@ -488,6 +488,7 @@ def handle_get_mimicked_library_items(user_id, mimicked_id, params):
                             "ProductionYear": int(meta.get('release_year')) if meta.get('release_year') else None,
                             "ImageTags": {"Primary": f"missing_{status}_{tid}"},
                             "HasPrimaryImage": True,
+                            "PrimaryImageAspectRatio": 0.6666666666666666,
                             "UserData": {"PlaybackPositionTicks": 0, "PlayCount": 0, "IsFavorite": False, "Played": False},
                             "ProviderIds": {"Tmdb": tid},
                             "LocationType": "Virtual"
@@ -773,31 +774,35 @@ def proxy_all(path):
             item_id = path.split('/')[2]
             if is_missing_item_id(item_id):
                 # 1. 解析 ID
-                # item_id 可能是 "-800000_241257" 或 "-800000_241257_S_1"
                 combined_id = parse_missing_item_id(item_id)
                 
-                # 提取真正的 Series TMDB ID
-                series_tid = combined_id.split('_S_')[0] if '_S_' in combined_id else combined_id
+                # 提取纯 TMDb ID (如果是 剧ID_S_季号，取剧ID；如果是纯ID，取纯ID)
+                # 因为我们现在的策略是：海报文件名始终基于 剧集ID (或电影ID)
+                real_tmdb_id = combined_id.split('_S_')[0] if '_S_' in combined_id else combined_id
                 
-                # 2. 获取元数据 (始终以“剧”为准)
-                meta_map = queries_db.get_missing_items_metadata([series_tid])
-                meta = meta_map.get(series_tid, {})
+                # 2. ★★★ 修复：调用智能查询函数获取“最佳状态” ★★★
+                # 即使 combined_id 是剧集ID，而数据库只存了季的 PENDING_RELEASE，
+                # 这个函数也能查出来 PENDING_RELEASE。
+                meta = queries_db.get_best_metadata_by_tmdb_id(real_tmdb_id)
                 
                 # 3. 确定状态
                 db_status = meta.get('subscription_status', 'WANTED')
-                current_status = 'WANTED' if db_status == 'NONE' else db_status
+                # 过滤掉无效状态，兜底为 WANTED
+                current_status = db_status if db_status in ['WANTED', 'SUBSCRIBED', 'PENDING_RELEASE', 'PAUSED', 'IGNORED'] else 'WANTED'
                 
-                # 4. 生成/获取海报
+                # 4. 获取海报
+                # 此时 real_tmdb_id 是剧ID，current_status 是正确的 PENDING_RELEASE
+                # get_missing_poster 会去寻找 {剧ID}_PENDING_RELEASE.jpg
+                # 这正是后台任务生成的那个文件！
                 from handler.poster_generator import get_missing_poster
                 img_file_path = get_missing_poster(
-                    tmdb_id=series_tid, # 传入剧 ID，生成 241257_WANTED.jpg
+                    tmdb_id=real_tmdb_id, 
                     status=current_status,
-                    poster_path=meta.get('poster_path') # 传入剧的海报路径
+                    poster_path=meta.get('poster_path')
                 )
                 
                 if img_file_path and os.path.exists(img_file_path):
                     resp = send_file(img_file_path, mimetype='image/jpeg')
-                    # 必须加 no-cache，否则你订阅后，海报上的印章不会从“待订阅”变成“已订阅”
                     resp.headers['Cache-Control'] = 'no-cache, no-store, must-revalidate'
                     return resp
 
