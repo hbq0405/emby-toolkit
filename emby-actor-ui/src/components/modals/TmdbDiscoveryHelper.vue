@@ -304,6 +304,14 @@ const formatDate = (date) => {
 };
 
 // --- URL 生成逻辑 ---
+const formatDateUTC = (date) => {
+  const y = date.getUTCFullYear();
+  const m = String(date.getUTCMonth() + 1).padStart(2, '0');
+  const d = String(date.getUTCDate()).padStart(2, '0');
+  return `${y}-${m}-${d}`;
+};
+
+// --- URL 生成逻辑 ---
 const generatedUrl = computed(() => {
   const p = params.value;
   const baseUrl = `https://www.themoviedb.org/discover/${p.type}`;
@@ -311,24 +319,28 @@ const generatedUrl = computed(() => {
 
   query.append('sort_by', p.sort_by);
 
-  // ★★★ 日期逻辑：优先处理“未来 N 天” ★★★
   const dateField = p.type === 'movie' ? 'primary_release_date' : 'first_air_date';
   
   if (p.next_days > 0) {
-    // 计算未来日期范围
-    const today = new Date();
+    // ★★★ 核心修复：使用 UTC 时间计算日期 ★★★
+    // 场景：假设你在美国(28号)，中国剧集(29号)已播出。
+    // 旧逻辑：本地28号 + 1天 = 29号 -> 包含已播出的剧。
+    // 新逻辑：UTC通常是29号 + 1天 = 30号 -> 成功排除已播出的剧。
+    const now = new Date();
+    // 构造当前的 UTC 日期对象 (剥离具体时间，只保留日期)
+    const todayUTC = new Date(Date.UTC(now.getFullYear(), now.getMonth(), now.getDate()));
     
-    // ★★★ 修改：起始日期设为明天 (Today + 1) ★★★
-    const startDate = new Date(today);
-    startDate.setDate(today.getDate() + 1);
+    // 起始日期：UTC 明天
+    const startDate = new Date(todayUTC);
+    startDate.setUTCDate(todayUTC.getUTCDate() + 1);
     
-    // 结束日期设为 明天 + N 天 (或者 Today + 1 + N)
-    // 这里我们定义 next_days 为“从明天开始往后数几天”
+    // 结束日期：UTC 明天 + N 天
     const endDate = new Date(startDate);
-    endDate.setDate(startDate.getDate() + p.next_days);
+    endDate.setUTCDate(startDate.getUTCDate() + p.next_days);
     
-    query.append(`${dateField}.gte`, formatDate(startDate));
-    query.append(`${dateField}.lte`, formatDate(endDate));
+    // 使用 formatDateUTC 确保输出的是 UTC 日期字符串
+    query.append(`${dateField}.gte`, formatDateUTC(startDate));
+    query.append(`${dateField}.lte`, formatDateUTC(endDate));
   } else {
     // 使用手动年份
     if (p.year_gte) query.append(`${dateField}.gte`, `${p.year_gte}-01-01`);
