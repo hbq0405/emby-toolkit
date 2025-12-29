@@ -165,9 +165,12 @@ def _perform_list_collection_health_check(
 
         try:
             details = None
-            item_type_for_db = media_type
+            # 标记是否需要将该条目本身加入待订阅列表
+            # 默认为 True，如果是整剧拆解模式，则设为 False (因为我们会添加具体的季)
+            add_self_to_missing_list = True 
 
             if season_num is not None and media_type == 'Series':
+                # ... (原有单季逻辑保持不变) ...
                 details = tmdb.get_tv_season_details(tmdb_id, season_num, tmdb_api_key)
                 if details:
                     item_type_for_db = 'Season'
@@ -186,36 +189,91 @@ def _perform_list_collection_health_check(
                         'poster_path': parent_details.get('poster_path')
                     })
             else:
+                # 获取详情
                 details = tmdb.get_movie_details(tmdb_id, tmdb_api_key) if media_type == 'Movie' else tmdb.get_tv_details(tmdb_id, tmdb_api_key)
+                
+                # ★★★ 新增逻辑：如果是整剧，立刻拆解为季 ★★★
+                if details and media_type == 'Series':
+                    # 1. 既然我们要添加具体的季，就不需要订阅 Series 本体了
+                    add_self_to_missing_list = False
+                    
+                    # 2. 确保父剧集元数据存在 (占位)
+                    parent_series_to_ensure_exist.append({
+                        'tmdb_id': tmdb_id,
+                        'item_type': 'Series',
+                        'title': details.get('name'),
+                        'original_title': details.get('original_name'),
+                        'release_date': details.get('first_air_date'),
+                        'release_year': details.get('first_air_date', '----').split('-')[0],
+                        'poster_path': details.get('poster_path')
+                    })
+
+                    # 3. 遍历所有季
+                    seasons = details.get('seasons', [])
+                    series_name = details.get('name')
+                    series_poster = details.get('poster_path')
+                    
+                    for season in seasons:
+                        s_num = season.get('season_number')
+                        # 跳过特别篇 (Season 0) 和 已经在库的季
+                        if s_num is None or s_num == 0: continue
+                        if (tmdb_id, s_num) in in_library_seasons_set: continue
+                        
+                        # 4. 构建季的订阅请求
+                        s_air_date = season.get('air_date')
+                        s_poster = season.get('poster_path') or series_poster
+                        
+                        season_item_for_db = {
+                            'tmdb_id': str(season.get('id')), # 季的 TMDb ID
+                            'item_type': 'Season',
+                            'title': season.get('name') or f"第 {s_num} 季",
+                            'release_date': s_air_date,
+                            'release_year': int(s_air_date.split('-')[0]) if s_air_date else None,
+                            'overview': season.get('overview'),
+                            'poster_path': s_poster,
+                            'parent_series_tmdb_id': tmdb_id,
+                            'season_number': s_num,
+                            'source': { "type": "collection", "id": collection_db_record.get('id'), "name": collection_name }
+                        }
+                        
+                        # 5. 分流：已上映 vs 未上映
+                        if s_air_date and s_air_date > today_str:
+                            missing_unreleased_items.append(season_item_for_db)
+                        else:
+                            missing_released_items.append(season_item_for_db)
+                    
+                    logger.info(f"  -> [智能拆解] 已将剧集《{series_name}》拆解为缺少的季进行订阅。")
 
             if not details: continue
             
-            release_date = details.get("air_date") or details.get("release_date") or details.get("first_air_date", '')
-            
-            release_year = None
-            if release_date and '-' in release_date:
-                try:
-                    release_year = int(release_date.split('-')[0])
-                except:
-                    pass
+            # 如果 add_self_to_missing_list 为 True，说明是电影或者单季，走原有逻辑
+            if add_self_to_missing_list:
+                release_date = details.get("air_date") or details.get("release_date") or details.get("first_air_date", '')
+                
+                release_year = None
+                if release_date and '-' in release_date:
+                    try:
+                        release_year = int(release_date.split('-')[0])
+                    except:
+                        pass
 
-            item_details_for_db = {
-                'tmdb_id': str(details.get('id')),
-                'item_type': item_type_for_db,
-                'title': details.get('name') or f"第 {season_num} 季" if item_type_for_db == 'Season' else details.get('title') or details.get('name'),
-                'release_date': release_date,
-                'release_year': release_year, 
-                'overview': details.get('overview'),
-                'poster_path': details.get('poster_path') or details.get('parent_poster_path'),
-                'parent_series_tmdb_id': tmdb_id if item_type_for_db == 'Season' else None,
-                'season_number': details.get('season_number'),
-                'source': { "type": "collection", "id": collection_db_record.get('id'), "name": collection_name }
-            }
+                item_details_for_db = {
+                    'tmdb_id': str(details.get('id')),
+                    'item_type': item_type_for_db,
+                    'title': details.get('name') or f"第 {season_num} 季" if item_type_for_db == 'Season' else details.get('title') or details.get('name'),
+                    'release_date': release_date,
+                    'release_year': release_year, 
+                    'overview': details.get('overview'),
+                    'poster_path': details.get('poster_path') or details.get('parent_poster_path'),
+                    'parent_series_tmdb_id': tmdb_id if item_type_for_db == 'Season' else None,
+                    'season_number': details.get('season_number'),
+                    'source': { "type": "collection", "id": collection_db_record.get('id'), "name": collection_name }
+                }
 
-            if release_date and release_date > today_str:
-                missing_unreleased_items.append(item_details_for_db)
-            else:
-                missing_released_items.append(item_details_for_db)
+                if release_date and release_date > today_str:
+                    missing_unreleased_items.append(item_details_for_db)
+                else:
+                    missing_released_items.append(item_details_for_db)
 
         except Exception as e:
             logger.error(f"为合集 '{collection_name}' 获取 {tmdb_id} (季: {season_num}) 详情时发生异常: {e}", exc_info=True)

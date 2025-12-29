@@ -26,15 +26,50 @@
         </n-gi>
       </n-grid>
 
-      <!-- 2. 年份范围 -->
-      <n-form-item label="发行/首播年份">
+      <!-- 2. ★★★ 新增：即将上线 (新剧雷达) ★★★ -->
+      <n-form-item>
+        <template #label>
+          <n-space align="center">
+            <span>📅 即将上线 (未来 N 天)</span>
+            <n-tag type="success" size="small" round v-if="params.next_days > 0">已启用</n-tag>
+          </n-space>
+        </template>
+        <n-grid :cols="4" :x-gap="12">
+          <n-gi :span="3">
+            <n-slider v-model:value="params.next_days" :min="0" :max="90" :step="1" />
+          </n-gi>
+          <n-gi :span="1">
+            <n-input-number v-model:value="params.next_days" size="small" placeholder="0 = 禁用" :min="0" />
+          </n-gi>
+        </n-grid>
+        <template #feedback>
+          <n-text depth="3" style="font-size: 12px;">
+            设置后将忽略下方的年份筛选。例如设置 7 天，将筛选从今天开始一周内首播的内容。
+          </n-text>
+        </template>
+      </n-form-item>
+
+      <!-- 3. 年份范围 (当启用即将上线时禁用) -->
+      <n-form-item label="发行/首播年份" :disabled="params.next_days > 0">
         <n-input-group>
-          <n-input-number v-model:value="params.year_gte" placeholder="起始年份 (如 1990)" :show-button="false" style="width: 50%;" />
-          <n-input-number v-model:value="params.year_lte" placeholder="结束年份 (如 2025)" :show-button="false" style="width: 50%;" />
+          <n-input-number 
+            v-model:value="params.year_gte" 
+            placeholder="起始年份 (如 1990)" 
+            :show-button="false" 
+            style="width: 50%;" 
+            :disabled="params.next_days > 0"
+          />
+          <n-input-number 
+            v-model:value="params.year_lte" 
+            placeholder="结束年份 (如 2025)" 
+            :show-button="false" 
+            style="width: 50%;" 
+            :disabled="params.next_days > 0"
+          />
         </n-input-group>
       </n-form-item>
 
-      <!-- 3. 类型 (Genres) -->
+      <!-- 4. 类型 (Genres) -->
       <n-form-item label="包含/排除类型">
         <n-grid :cols="2" :x-gap="12">
           <n-gi>
@@ -58,22 +93,18 @@
         </n-grid>
       </n-form-item>
 
-      <!-- 4. ★★★ 映射集成：工作室与关键词 ★★★ -->
+      <!-- 5. ★★★ 映射集成：工作室/平台 与 关键词 ★★★ -->
       <n-grid :cols="2" :x-gap="12">
         <n-gi>
-          <n-form-item label="制作公司/工作室 (基于映射)">
+          <!-- 动态 Label -->
+          <n-form-item :label="params.type === 'tv' ? '播出平台/电视网 (Networks)' : '制作公司 (Companies)'">
             <n-select
               v-model:value="params.with_companies_labels"
               multiple filterable
-              placeholder="选择已映射的工作室"
+              :placeholder="params.type === 'tv' ? '选择 Netflix, HBO 等' : '选择 漫威, A24 等'"
               :options="studioOptions"
               :loading="loading.mappings"
             />
-            <template #feedback>
-              <n-text depth="3" style="font-size: 12px;">
-                选中“漫威”将自动转换为 ID 420。如需更多，请去“映射管理”添加。
-              </n-text>
-            </template>
           </n-form-item>
         </n-gi>
         <n-gi>
@@ -85,23 +116,18 @@
               :options="keywordOptions"
               :loading="loading.mappings"
             />
-            <template #feedback>
-              <n-text depth="3" style="font-size: 12px;">
-                选中“丧尸”将自动转换为 ID 12377。
-              </n-text>
-            </template>
           </n-form-item>
         </n-gi>
       </n-grid>
 
-      <!-- 5. 人员搜索 (保持远程搜索) -->
+      <!-- 6. 人员搜索 -->
       <n-grid :cols="2" :x-gap="12">
         <n-gi>
           <n-form-item label="演员">
             <n-select
               v-model:value="params.with_cast"
               multiple filterable remote
-              placeholder="搜演员 (如: 周星驰)"
+              placeholder="搜演员"
               :options="actorOptions"
               :loading="loading.actors"
               @search="handleActorSearch"
@@ -115,7 +141,7 @@
             <n-select
               v-model:value="params.with_crew"
               multiple filterable remote
-              placeholder="搜导演 (如: 诺兰)"
+              placeholder="搜导演"
               :options="directorOptions"
               :loading="loading.directors"
               @search="handleDirectorSearch"
@@ -126,7 +152,7 @@
         </n-gi>
       </n-grid>
 
-      <!-- 6. 地区与语言 -->
+      <!-- 7. 地区与语言 -->
       <n-grid :cols="2" :x-gap="12">
         <n-gi>
           <n-form-item label="国家/地区">
@@ -151,7 +177,7 @@
         </n-gi>
       </n-grid>
 
-      <!-- 7. 评分过滤 -->
+      <!-- 8. 评分过滤 -->
       <n-grid :cols="2" :x-gap="12">
         <n-gi>
           <n-form-item :label="`最低评分: ${params.vote_average}`">
@@ -165,7 +191,7 @@
         </n-gi>
       </n-grid>
 
-      <!-- 8. 结果预览 -->
+      <!-- 9. 结果预览 -->
       <n-form-item label="生成的 URL (实时预览)">
         <n-input 
           :value="generatedUrl" 
@@ -190,7 +216,7 @@
 </template>
 
 <script setup>
-import { ref, computed, watch, onMounted } from 'vue';
+import { ref, computed, watch } from 'vue';
 import axios from 'axios';
 import { CheckmarkCircleOutline as CheckIcon } from '@vicons/ionicons5';
 
@@ -202,16 +228,17 @@ const emit = defineEmits(['update:show', 'confirm']);
 
 // --- 状态定义 ---
 const params = ref({
-  type: 'movie',
+  type: 'tv', // 默认改成 TV 方便测试
   sort_by: 'popularity.desc',
   year_gte: null,
   year_lte: null,
+  next_days: 0, // ★★★ 新增：未来多少天 ★★★
   with_genres: [],
   without_genres: [],
-  with_companies_labels: [], // 存中文 Label
-  with_keywords_labels: [],  // 存中文 Label
-  with_cast: [],             // 存 ID
-  with_crew: [],             // 存 ID
+  with_companies_labels: [], 
+  with_keywords_labels: [],  
+  with_cast: [],             
+  with_crew: [],             
   region: null,
   language: null,
   vote_average: 0,
@@ -234,10 +261,10 @@ const actorOptions = ref([]);
 const directorOptions = ref([]);
 
 // 映射数据 (Label -> IDs)
-const keywordMapping = ref({}); // { "丧尸": [12377], ... }
-const studioMapping = ref({});  // { "漫威": [420], ... }
+const keywordMapping = ref({}); 
+const studioMapping = ref({});  
 
-// 下拉框选项 (Label -> Label)
+// 下拉框选项
 const keywordOptions = computed(() => Object.keys(keywordMapping.value).map(k => ({ label: k, value: k })));
 const studioOptions = computed(() => Object.keys(studioMapping.value).map(k => ({ label: k, value: k })));
 
@@ -268,9 +295,88 @@ const languageOptions = [
   { label: '法语 (fr)', value: 'fr' }
 ];
 
-// --- 数据获取 ---
+// --- 辅助函数：格式化日期 YYYY-MM-DD ---
+const formatDate = (date) => {
+  const y = date.getFullYear();
+  const m = String(date.getMonth() + 1).padStart(2, '0');
+  const d = String(date.getDate()).padStart(2, '0');
+  return `${y}-${m}-${d}`;
+};
 
-// 1. 获取基础配置 (类型、国家)
+// --- URL 生成逻辑 ---
+const generatedUrl = computed(() => {
+  const p = params.value;
+  const baseUrl = `https://www.themoviedb.org/discover/${p.type}`;
+  const query = new URLSearchParams();
+
+  query.append('sort_by', p.sort_by);
+
+  // ★★★ 日期逻辑：优先处理“未来 N 天” ★★★
+  const dateField = p.type === 'movie' ? 'primary_release_date' : 'first_air_date';
+  
+  if (p.next_days > 0) {
+    // 计算未来日期范围
+    const today = new Date();
+    const future = new Date();
+    future.setDate(today.getDate() + p.next_days);
+    
+    query.append(`${dateField}.gte`, formatDate(today));
+    query.append(`${dateField}.lte`, formatDate(future));
+  } else {
+    // 使用手动年份
+    if (p.year_gte) query.append(`${dateField}.gte`, `${p.year_gte}-01-01`);
+    if (p.year_lte) query.append(`${dateField}.lte`, `${p.year_lte}-12-31`);
+  }
+
+  // 类型
+  if (p.with_genres.length) query.append('with_genres', p.with_genres.join(','));
+  if (p.without_genres.length) query.append('without_genres', p.without_genres.join(','));
+
+  // 关键词
+  if (p.with_keywords_labels.length) {
+    const ids = new Set();
+    p.with_keywords_labels.forEach(label => {
+      const mappedIds = keywordMapping.value[label];
+      if (mappedIds) mappedIds.forEach(id => ids.add(id));
+    });
+    if (ids.size) query.append('with_keywords', Array.from(ids).join(',')); 
+  }
+
+  // ★★★ 核心修改：工作室/平台逻辑 ★★★
+  // 如果是 TV，使用 with_networks；如果是 Movie，使用 with_companies
+  if (p.with_companies_labels.length) {
+    const ids = new Set();
+    p.with_companies_labels.forEach(label => {
+      const mappedIds = studioMapping.value[label];
+      if (mappedIds) mappedIds.forEach(id => ids.add(id));
+    });
+    
+    if (ids.size) {
+      const idStr = Array.from(ids).join('|'); // 使用 OR 逻辑
+      if (p.type === 'tv') {
+        // 电视剧：查 Network (播出平台)
+        query.append('with_networks', idStr);
+      } else {
+        // 电影：查 Company (制作公司)
+        query.append('with_companies', idStr);
+      }
+    }
+  }
+
+  // 人员
+  if (p.with_cast.length) query.append('with_cast', p.with_cast.join(','));
+  if (p.with_crew.length) query.append('with_crew', p.with_crew.join(','));
+
+  // 其他
+  if (p.region) query.append('with_origin_country', p.region);
+  if (p.language) query.append('with_original_language', p.language);
+  if (p.vote_average > 0) query.append('vote_average.gte', p.vote_average);
+  if (p.vote_count > 0) query.append('vote_count.gte', p.vote_count);
+
+  return `${baseUrl}?${query.toString()}`;
+});
+
+// --- 数据获取 (保持不变) ---
 const fetchBasicConfigs = async () => {
   loading.value.genres = true;
   loading.value.countries = true;
@@ -289,32 +395,24 @@ const fetchBasicConfigs = async () => {
   }
 };
 
-// 2. ★★★ 获取映射配置 (核心) ★★★
 const fetchMappings = async () => {
   loading.value.mappings = true;
   try {
-    // 调用获取完整映射字典的接口
     const [kwRes, stRes] = await Promise.all([
       axios.get('/api/custom_collections/config/keyword_mapping'),
       axios.get('/api/custom_collections/config/studio_mapping')
     ]);
-    
-    // 处理后端返回的数据 (可能是 List 或 Dict，统一转为 Dict: Label -> IDs)
     const process = (data) => {
       const map = {};
-      // 兼容数组格式
       const list = Array.isArray(data) ? data : Object.entries(data).map(([k, v]) => ({ label: k, ...v }));
-      
       list.forEach(item => {
         if (item.label && item.ids) {
-          // 确保 ids 是数组
           const ids = Array.isArray(item.ids) ? item.ids : [item.ids];
           map[item.label] = ids;
         }
       });
       return map;
     };
-
     keywordMapping.value = process(kwRes.data);
     studioMapping.value = process(stRes.data);
   } finally {
@@ -322,7 +420,6 @@ const fetchMappings = async () => {
   }
 };
 
-// 3. 人员搜索
 let searchTimer = null;
 const searchPerson = (query, targetRef, loadingKey) => {
   if (!query) return;
@@ -340,76 +437,15 @@ const searchPerson = (query, targetRef, loadingKey) => {
 const handleActorSearch = (q) => searchPerson(q, actorOptions, 'actors');
 const handleDirectorSearch = (q) => searchPerson(q, directorOptions, 'directors');
 
-// --- URL 生成逻辑 ---
-const generatedUrl = computed(() => {
-  const p = params.value;
-  const baseUrl = `https://www.themoviedb.org/discover/${p.type}`;
-  const query = new URLSearchParams();
-
-  query.append('sort_by', p.sort_by);
-
-  // 日期
-  if (p.type === 'movie') {
-    if (p.year_gte) query.append('primary_release_date.gte', `${p.year_gte}-01-01`);
-    if (p.year_lte) query.append('primary_release_date.lte', `${p.year_lte}-12-31`);
-  } else {
-    if (p.year_gte) query.append('first_air_date.gte', `${p.year_gte}-01-01`);
-    if (p.year_lte) query.append('first_air_date.lte', `${p.year_lte}-12-31`);
-  }
-
-  // 类型
-  if (p.with_genres.length) query.append('with_genres', p.with_genres.join(','));
-  if (p.without_genres.length) query.append('without_genres', p.without_genres.join(','));
-
-  // ★★★ 映射转换：关键词 Label -> IDs ★★★
-  if (p.with_keywords_labels.length) {
-    const ids = new Set();
-    p.with_keywords_labels.forEach(label => {
-      const mappedIds = keywordMapping.value[label];
-      if (mappedIds) mappedIds.forEach(id => ids.add(id));
-    });
-    if (ids.size) query.append('with_keywords', Array.from(ids).join(',')); // OR 逻辑用逗号? TMDb API: comma=AND, pipe=OR. 
-    // 通常 Discovery 想要的是 "包含这些关键词中的任意一个" 还是 "所有"? 
-    // TMDb 网页版默认行为：逗号是 AND，管道符 | 是 OR。
-    // 这里我们假设用户选多个关键词是想找交集 (AND)，或者我们可以做个开关。
-    // 暂时使用逗号 (AND)，更精准。
-  }
-
-  // ★★★ 映射转换：工作室 Label -> IDs ★★★
-  if (p.with_companies_labels.length) {
-    const ids = new Set();
-    p.with_companies_labels.forEach(label => {
-      const mappedIds = studioMapping.value[label];
-      if (mappedIds) mappedIds.forEach(id => ids.add(id));
-    });
-    if (ids.size) query.append('with_companies', Array.from(ids).join('|')); // 公司通常用 OR (比如 漫威 OR 迪士尼)
-  }
-
-  // 人员
-  if (p.with_cast.length) query.append('with_cast', p.with_cast.join(','));
-  if (p.with_crew.length) query.append('with_crew', p.with_crew.join(','));
-
-  // 其他
-  if (p.region) query.append('with_origin_country', p.region);
-  if (p.language) query.append('with_original_language', p.language);
-  if (p.vote_average > 0) query.append('vote_average.gte', p.vote_average);
-  if (p.vote_count > 0) query.append('vote_count.gte', p.vote_count);
-
-  return `${baseUrl}?${query.toString()}`;
-});
-
-// --- 生命周期 ---
 watch(() => props.show, (val) => {
   if (val) {
-    // 每次打开时刷新映射，确保是最新的
     fetchMappings();
-    // 如果还没加载过基础配置，加载一次
     if (movieGenres.value.length === 0) fetchBasicConfigs();
   }
 });
 
 const handleConfirm = () => {
-  emit('confirm', generatedUrl.value, params.value.type); // 传回 URL 和类型
+  emit('confirm', generatedUrl.value, params.value.type);
   emit('update:show', false);
 };
 </script>
