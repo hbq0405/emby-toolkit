@@ -295,11 +295,23 @@ def query_virtual_library_items(
             if not expanded_keywords: continue
             
             column = "COALESCE(m.keywords_json, '[]'::jsonb)"
+            
+            # 【修复】针对对象数组结构 [{"id":..., "name":"..."}] 进行查询
             if op in ['contains', 'is_one_of', 'eq']:
-                clause = f"{column} ?| %s"
+                clause = f"""
+                EXISTS (
+                    SELECT 1 FROM jsonb_array_elements({column}) k 
+                    WHERE k->>'name' = ANY(%s)
+                )
+                """
                 params.append(expanded_keywords)
             elif op == 'is_none_of':
-                clause = f"NOT ({column} ?| %s)"
+                clause = f"""
+                NOT EXISTS (
+                    SELECT 1 FROM jsonb_array_elements({column}) k 
+                    WHERE k->>'name' = ANY(%s)
+                )
+                """
                 params.append(expanded_keywords)
 
         # --- ★★★ 3. 工作室 (Studios) - 新增处理逻辑 ★★★ ---
@@ -308,16 +320,27 @@ def query_virtual_library_items(
             if not expanded_studios: continue
             
             column = "COALESCE(m.studios_json, '[]'::jsonb)"
-            # 因为一个中文可能对应多个英文名，所以 contains/eq 也用 ?| (包含任意一个)
+            
+            # 【修复】针对对象数组结构 [{"id":..., "name":"..."}] 进行查询
             if op in ['contains', 'is_one_of', 'eq']:
-                clause = f"{column} ?| %s"
+                clause = f"""
+                EXISTS (
+                    SELECT 1 FROM jsonb_array_elements({column}) s 
+                    WHERE s->>'name' = ANY(%s)
+                )
+                """
                 params.append(expanded_studios)
             elif op == 'is_none_of':
-                clause = f"NOT ({column} ?| %s)"
+                clause = f"""
+                NOT EXISTS (
+                    SELECT 1 FROM jsonb_array_elements({column}) s 
+                    WHERE s->>'name' = ANY(%s)
+                )
+                """
                 params.append(expanded_studios)
             elif op == 'is_primary':
-                # 主工作室是数组第一个，检查它是否在我们的英文名列表中
-                clause = f"{column}->>0 = ANY(%s)"
+                # 主工作室是数组第一个，检查它的 name 字段
+                clause = f"{column}->0->>'name' = ANY(%s)"
                 params.append(expanded_studios)
 
         # --- 4. 复杂对象数组 (Actors, Directors) ---
