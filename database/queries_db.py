@@ -294,54 +294,88 @@ def query_virtual_library_items(
             expanded_keywords = _expand_keyword_labels(value)
             if not expanded_keywords: continue
             
+            # 1. 将搜索词转为小写，以便进行忽略大小写匹配
+            search_terms = [str(k).lower() for k in expanded_keywords]
+            
             column = "COALESCE(m.keywords_json, '[]'::jsonb)"
             
-            # 【修复】针对对象数组结构 [{"id":..., "name":"..."}] 进行查询
+            # 2. 构建提取逻辑：自动判断是对象还是字符串，并转为小写
+            extract_logic = """
+                LOWER(
+                    CASE 
+                        WHEN jsonb_typeof(k) = 'object' THEN k->>'name'
+                        WHEN jsonb_typeof(k) = 'string' THEN k#>>'{}'
+                        ELSE '' 
+                    END
+                )
+            """
+            
             if op in ['contains', 'is_one_of', 'eq']:
                 clause = f"""
                 EXISTS (
                     SELECT 1 FROM jsonb_array_elements({column}) k 
-                    WHERE k->>'name' = ANY(%s)
+                    WHERE {extract_logic} = ANY(%s)
                 )
                 """
-                params.append(expanded_keywords)
+                params.append(search_terms)
             elif op == 'is_none_of':
                 clause = f"""
                 NOT EXISTS (
                     SELECT 1 FROM jsonb_array_elements({column}) k 
-                    WHERE k->>'name' = ANY(%s)
+                    WHERE {extract_logic} = ANY(%s)
                 )
                 """
-                params.append(expanded_keywords)
+                params.append(search_terms)
 
-        # --- ★★★ 3. 工作室 (Studios) - 新增处理逻辑 ★★★ ---
+        # --- 3. 工作室 (Studios) ---
         elif field == 'studios':
             expanded_studios = _expand_studio_labels(value)
             if not expanded_studios: continue
             
+            # 1. 将搜索词转为小写
+            search_terms = [str(s).lower() for s in expanded_studios]
+            
             column = "COALESCE(m.studios_json, '[]'::jsonb)"
             
-            # 【修复】针对对象数组结构 [{"id":..., "name":"..."}] 进行查询
+            # 2. 构建提取逻辑：兼容对象({"name":"..."})和字符串("...")
+            extract_logic = """
+                LOWER(
+                    CASE 
+                        WHEN jsonb_typeof(s) = 'object' THEN s->>'name'
+                        WHEN jsonb_typeof(s) = 'string' THEN s#>>'{}'
+                        ELSE '' 
+                    END
+                )
+            """
+            
             if op in ['contains', 'is_one_of', 'eq']:
                 clause = f"""
                 EXISTS (
                     SELECT 1 FROM jsonb_array_elements({column}) s 
-                    WHERE s->>'name' = ANY(%s)
+                    WHERE {extract_logic} = ANY(%s)
                 )
                 """
-                params.append(expanded_studios)
+                params.append(search_terms)
             elif op == 'is_none_of':
                 clause = f"""
                 NOT EXISTS (
                     SELECT 1 FROM jsonb_array_elements({column}) s 
-                    WHERE s->>'name' = ANY(%s)
+                    WHERE {extract_logic} = ANY(%s)
                 )
                 """
-                params.append(expanded_studios)
+                params.append(search_terms)
             elif op == 'is_primary':
-                # 主工作室是数组第一个，检查它的 name 字段
-                clause = f"{column}->0->>'name' = ANY(%s)"
-                params.append(expanded_studios)
+                # 针对主工作室（数组第一个元素）的特殊处理
+                clause = f"""
+                LOWER(
+                    CASE 
+                        WHEN jsonb_typeof({column}->0) = 'object' THEN {column}->0->>'name'
+                        WHEN jsonb_typeof({column}->0) = 'string' THEN {column}->0#>>'{{}}'
+                        ELSE '' 
+                    END
+                ) = ANY(%s)
+                """
+                params.append(search_terms)
 
         # --- 4. 复杂对象数组 (Actors, Directors) ---
         elif field in ['actors', 'directors']:
