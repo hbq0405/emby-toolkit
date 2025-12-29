@@ -44,7 +44,7 @@
         </n-grid>
         <template #feedback>
           <n-text depth="3" style="font-size: 12px;">
-            设置后将忽略下方的年份筛选。例如设置 7 天，将筛选从今天开始一周内首播的内容。
+            设置后将忽略下方的年份筛选。例如设置 7 天，将筛选从明天开始一周内首播的内容。
           </n-text>
         </template>
       </n-form-item>
