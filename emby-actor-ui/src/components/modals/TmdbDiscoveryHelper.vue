@@ -317,11 +317,18 @@ const generatedUrl = computed(() => {
   if (p.next_days > 0) {
     // 计算未来日期范围
     const today = new Date();
-    const future = new Date();
-    future.setDate(today.getDate() + p.next_days);
     
-    query.append(`${dateField}.gte`, formatDate(today));
-    query.append(`${dateField}.lte`, formatDate(future));
+    // ★★★ 修改：起始日期设为明天 (Today + 1) ★★★
+    const startDate = new Date(today);
+    startDate.setDate(today.getDate() + 1);
+    
+    // 结束日期设为 明天 + N 天 (或者 Today + 1 + N)
+    // 这里我们定义 next_days 为“从明天开始往后数几天”
+    const endDate = new Date(startDate);
+    endDate.setDate(startDate.getDate() + p.next_days);
+    
+    query.append(`${dateField}.gte`, formatDate(startDate));
+    query.append(`${dateField}.lte`, formatDate(endDate));
   } else {
     // 使用手动年份
     if (p.year_gte) query.append(`${dateField}.gte`, `${p.year_gte}-01-01`);
