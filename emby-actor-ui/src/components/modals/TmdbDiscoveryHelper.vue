@@ -143,6 +143,7 @@
               @search="handleActorSearch"
               label-field="name"
               value-field="id"
+              :render-label="renderPersonLabel"
             />
           </n-form-item>
         </n-gi>
@@ -157,6 +158,7 @@
               @search="handleDirectorSearch"
               label-field="name"
               value-field="id"
+              :render-label="renderPersonLabel"
             />
           </n-form-item>
         </n-gi>
@@ -226,7 +228,8 @@
 </template>
 
 <script setup>
-import { ref, computed, watch } from 'vue';
+import { ref, computed, watch, h } from 'vue';
+import { NAvatar, NText } from 'naive-ui';
 import axios from 'axios';
 import { CheckmarkCircleOutline as CheckIcon } from '@vicons/ionicons5';
 
@@ -273,6 +276,43 @@ const directorOptions = ref([]);
 // 映射数据 (Label -> IDs)
 const keywordMapping = ref({}); 
 const studioMapping = ref({});  
+
+// 自定义人员选项渲染函数 
+const renderPersonLabel = (option) => {
+  // option 是当前遍历到的演职人员数据对象
+  return h(
+    'div',
+    {
+      style: {
+        display: 'flex',
+        alignItems: 'center',
+        padding: '4px 0'
+      }
+    },
+    [
+      // 1. 头像部分
+      h(NAvatar, {
+        round: true,
+        size: 'small',
+        // 如果有 profile_path 就拼接 TMDb 图片地址，否则 undefined (显示默认占位)
+        src: option.profile_path 
+             ? `https://image.tmdb.org/t/p/w45${option.profile_path}` 
+             : undefined,
+        style: {
+          marginRight: '12px',
+          flexShrink: 0 // 防止头像被挤压
+        }
+      }),
+      
+      // 2. 名字 + 额外信息部分 (可选：可以加个 known_for_department 辅助区分)
+      h('div', { style: { display: 'flex', flexDirection: 'column' } }, [
+        h('span', option.name),
+        // 如果想显示更多区分信息（如职业），可以取消下面注释
+        // h('span', { style: { fontSize: '12px', color: '#999' } }, option.known_for_department)
+      ])
+    ]
+  );
+};
 
 // 下拉框选项
 const keywordOptions = computed(() => Object.keys(keywordMapping.value).map(k => ({ label: k, value: k })));
