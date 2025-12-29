@@ -631,7 +631,10 @@ def task_populate_metadata_cache(processor, batch_size: int = 50, force_full_upd
                 if tmdb_details:
                     top_record['poster_path'] = tmdb_details.get('poster_path')
                     top_record['overview'] = tmdb_details.get('overview')
-                    top_record['studios_json'] = json.dumps([s['name'] for s in tmdb_details.get('production_companies', [])], ensure_ascii=False)
+                    top_record['studios_json'] = json.dumps(
+                        [{'id': s.get('id'), 'name': s.get('name')} for s in tmdb_details.get('production_companies', []) if s.get('name')], 
+                        ensure_ascii=False
+                    )
                     if item_type == 'Movie':
                         top_record['runtime_minutes'] = tmdb_details.get('runtime')
                     
@@ -643,13 +646,13 @@ def task_populate_metadata_cache(processor, batch_size: int = 50, force_full_upd
                         countries = translate_country_list(country_codes)
                         keywords_data = tmdb_details.get('keywords', {})
                         keyword_list = keywords_data.get('keywords', []) if isinstance(keywords_data, dict) else []
-                        keywords = [k['name'] for k in keyword_list if k.get('name')]
+                        keywords = [{'id': k.get('id'), 'name': k.get('name')} for k in keyword_list if k.get('name')]
                     elif item_type == 'Series':
                         directors = [{'id': c.get('id'), 'name': c.get('name')} for c in tmdb_details.get('created_by', [])]
                         countries = translate_country_list(tmdb_details.get('origin_country', []))
                         keywords_data = tmdb_details.get('keywords', {})
                         keyword_list = keywords_data.get('results', []) if isinstance(keywords_data, dict) else []
-                        keywords = [k['name'] for k in keyword_list if k.get('name')]
+                        keywords = [{'id': k.get('id'), 'name': k.get('name')} for k in keyword_list if k.get('name')]
                     top_record['directors_json'] = json.dumps(directors, ensure_ascii=False)
                     top_record['countries_json'] = json.dumps(countries, ensure_ascii=False)
                     top_record['keywords_json'] = json.dumps(keywords, ensure_ascii=False)

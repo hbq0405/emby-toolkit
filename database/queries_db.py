@@ -294,27 +294,18 @@ def query_virtual_library_items(
             expanded_keywords = _expand_keyword_labels(value)
             if not expanded_keywords: continue
             
-            # 1. 将搜索词转为小写，以便进行忽略大小写匹配
+            # 1. 搜索词转小写
             search_terms = [str(k).lower() for k in expanded_keywords]
             
             column = "COALESCE(m.keywords_json, '[]'::jsonb)"
             
-            # 2. 构建提取逻辑：自动判断是对象还是字符串，并转为小写
-            extract_logic = """
-                LOWER(
-                    CASE 
-                        WHEN jsonb_typeof(k) = 'object' THEN k->>'name'
-                        WHEN jsonb_typeof(k) = 'string' THEN k#>>'{}'
-                        ELSE '' 
-                    END
-                )
-            """
-            
+            # 2. 【优化】直接提取 name 字段并转小写匹配
+            # 既然数据已清洗，不再需要 jsonb_typeof 判断
             if op in ['contains', 'is_one_of', 'eq']:
                 clause = f"""
                 EXISTS (
                     SELECT 1 FROM jsonb_array_elements({column}) k 
-                    WHERE {extract_logic} = ANY(%s)
+                    WHERE LOWER(k->>'name') = ANY(%s)
                 )
                 """
                 params.append(search_terms)
@@ -322,7 +313,7 @@ def query_virtual_library_items(
                 clause = f"""
                 NOT EXISTS (
                     SELECT 1 FROM jsonb_array_elements({column}) k 
-                    WHERE {extract_logic} = ANY(%s)
+                    WHERE LOWER(k->>'name') = ANY(%s)
                 )
                 """
                 params.append(search_terms)
@@ -332,27 +323,17 @@ def query_virtual_library_items(
             expanded_studios = _expand_studio_labels(value)
             if not expanded_studios: continue
             
-            # 1. 将搜索词转为小写
+            # 1. 搜索词转小写
             search_terms = [str(s).lower() for s in expanded_studios]
             
             column = "COALESCE(m.studios_json, '[]'::jsonb)"
             
-            # 2. 构建提取逻辑：兼容对象({"name":"..."})和字符串("...")
-            extract_logic = """
-                LOWER(
-                    CASE 
-                        WHEN jsonb_typeof(s) = 'object' THEN s->>'name'
-                        WHEN jsonb_typeof(s) = 'string' THEN s#>>'{}'
-                        ELSE '' 
-                    END
-                )
-            """
-            
+            # 2. 【优化】直接提取 name 字段并转小写匹配
             if op in ['contains', 'is_one_of', 'eq']:
                 clause = f"""
                 EXISTS (
                     SELECT 1 FROM jsonb_array_elements({column}) s 
-                    WHERE {extract_logic} = ANY(%s)
+                    WHERE LOWER(s->>'name') = ANY(%s)
                 )
                 """
                 params.append(search_terms)
@@ -360,21 +341,13 @@ def query_virtual_library_items(
                 clause = f"""
                 NOT EXISTS (
                     SELECT 1 FROM jsonb_array_elements({column}) s 
-                    WHERE {extract_logic} = ANY(%s)
+                    WHERE LOWER(s->>'name') = ANY(%s)
                 )
                 """
                 params.append(search_terms)
             elif op == 'is_primary':
-                # 针对主工作室（数组第一个元素）的特殊处理
-                clause = f"""
-                LOWER(
-                    CASE 
-                        WHEN jsonb_typeof({column}->0) = 'object' THEN {column}->0->>'name'
-                        WHEN jsonb_typeof({column}->0) = 'string' THEN {column}->0#>>'{{}}'
-                        ELSE '' 
-                    END
-                ) = ANY(%s)
-                """
+                # 主工作室是数组第一个
+                clause = f"LOWER({column}->0->>'name') = ANY(%s)"
                 params.append(search_terms)
 
         # --- 4. 复杂对象数组 (Actors, Directors) ---

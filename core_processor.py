@@ -373,13 +373,19 @@ class MediaProcessor:
                             tmdb_official_rating = cr['rating']; break
                 series_record['official_rating'] = tmdb_official_rating
                 series_record['unified_rating'] = get_unified_rating(tmdb_official_rating)
-                series_record['genres_json'] = json.dumps([g['name'] for g in series_details.get('genres', [])], ensure_ascii=False)
+                series_record['studios_json'] = json.dumps(
+                    [{'id': s.get('id'), 'name': s.get('name')} for s in series_details.get('production_companies', []) if s.get('name')], 
+                    ensure_ascii=False
+                )
                 series_record['studios_json'] = json.dumps([s['name'] for s in series_details.get('production_companies', [])], ensure_ascii=False)
                 series_record['directors_json'] = json.dumps([{'id': c.get('id'), 'name': c.get('name')} for c in series_details.get('created_by', [])], ensure_ascii=False)
                 series_record['countries_json'] = json.dumps(translate_country_list(series_details.get('origin_country', [])), ensure_ascii=False)
                 keywords_data = series_details.get('keywords', {})
-                keywords = [k['name'] for k in (keywords_data.get('keywords', []) or keywords_data.get('results', []))]
-                series_record['keywords_json'] = json.dumps(keywords, ensure_ascii=False)
+                raw_keywords = keywords_data.get('keywords', []) or keywords_data.get('results', [])
+                series_record['keywords_json'] = json.dumps(
+                    [{'id': k.get('id'), 'name': k.get('name')} for k in raw_keywords if k.get('name')], 
+                    ensure_ascii=False
+                )
                 languages_list = series_details.get('languages', [])
                 series_record['original_language'] = languages_list[0] if languages_list else None
                 series_record['in_library'] = True
@@ -514,15 +520,28 @@ class MediaProcessor:
                     studios_list = []
                     for s in studios_raw:
                         if isinstance(s, dict):
-                            studios_list.append(s.get('name'))
+                            studios_list.append({'id': s.get('id'), 'name': s.get('name')})
                         elif isinstance(s, str):
-                            studios_list.append(s)
-                    db_row_complete['studios_json'] = json.dumps([n for n in studios_list if n], ensure_ascii=False)
+                            studios_list.append({'id': None, 'name': s})
+                    db_row_complete['studios_json'] = json.dumps([s for s in studios_list if s.get('name')], ensure_ascii=False)
                     crew = record.get("credits", {}).get('crew', [])
                     db_row_complete['directors_json'] = json.dumps([{'id': p.get('id'), 'name': p.get('name')} for p in crew if p.get('job') == 'Director'], ensure_ascii=False)
                     db_row_complete['countries_json'] = json.dumps(translate_country_list([c.get('iso_3166_1') for c in record.get('production_countries', [])]), ensure_ascii=False)
                     keywords_data = record.get('keywords', {})
-                    keywords = [k['name'] for k in (keywords_data.get('keywords', {}) or keywords_data.get('results', []))]
+                    if isinstance(keywords_data, dict):
+                        raw_k_list = keywords_data.get('keywords', []) or keywords_data.get('results', [])
+                    elif isinstance(keywords_data, list):
+                        raw_k_list = keywords_data
+                    else:
+                        raw_k_list = []
+
+                    keywords = []
+                    for k in raw_k_list:
+                        if isinstance(k, dict) and k.get('name'):
+                            keywords.append({'id': k.get('id'), 'name': k.get('name')})
+                        elif isinstance(k, str) and k:
+                             keywords.append({'id': None, 'name': k})
+                             
                     db_row_complete['keywords_json'] = json.dumps(keywords, ensure_ascii=False)
                     db_row_complete['original_language'] = record.get('original_language')
                 data_for_batch.append(db_row_complete)
