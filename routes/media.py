@@ -299,11 +299,12 @@ def api_get_emby_libraries():
     )
 
     if full_libraries_list is not None:
-        # ★★★ 核心修改：在这里进行数据精简，以满足前端UI的需求 ★★★
+        # 过滤掉不需要的类型：音乐(music)、合集(boxsets)、播放列表(playlists)
+        excluded_types = ['music', 'boxsets', 'playlists']
         simplified_libraries = [
             {'Name': item.get('Name'), 'Id': item.get('Id')}
             for item in full_libraries_list
-            if item.get('Name') and item.get('Id')
+            if item.get('Name') and item.get('Id') and item.get('CollectionType') not in excluded_types
         ]
         return jsonify(simplified_libraries)
     else:
