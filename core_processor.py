@@ -234,9 +234,9 @@ class MediaProcessor:
     ):
         """
         - 实时元数据写入。
-        【修复版】
-        1. 电影使用 production_companies，剧集优先使用 networks。
-        2. 区分电影 (keywords) 和剧集 (results) 的关键词结构。
+        【增强修复版 V2】
+        1. 关键词提取采用混合策略，同时查找 results 和 keywords，防止结构不一致导致丢失。
+        2. 剧集工作室优先使用 networks。
         """
         if not item_details_from_emby:
             logger.error("  ➜ 写入元数据缓存失败：缺少 Emby 详情数据。")
@@ -251,7 +251,7 @@ class MediaProcessor:
             runtimes = [round(item['RunTimeTicks'] / 600000000) for item in emby_items if item.get('RunTimeTicks')]
             return max(runtimes) if runtimes else tmdb_runtime
         
-        # ★★★ 内部辅助函数：根据类型精准提取 JSON 字段 ★★★
+        # ★★★ 内部辅助函数：强力提取通用 JSON 字段 ★★★
         def _extract_common_json_fields(details: Dict[str, Any], m_type: str):
             # 1. Genres (类型)
             genres_raw = details.get('genres', [])
@@ -264,13 +264,12 @@ class MediaProcessor:
             # 2. Studios (工作室/制作公司/电视网)
             studios_raw = []
             if m_type == 'Series':
-                # ★★★ 剧集：优先使用 networks (播出平台) ★★★
+                # ★ 剧集：优先使用 networks (播出平台)
                 studios_raw = details.get('networks', [])
-                # 如果没有 networks，兜底使用 production_companies
                 if not studios_raw:
                     studios_raw = details.get('production_companies', [])
             else:
-                # ★★★ 电影：使用 production_companies ★★★
+                # ★ 电影：使用 production_companies
                 studios_raw = details.get('production_companies', [])
             
             studios_list = []
@@ -282,18 +281,15 @@ class MediaProcessor:
             studios_json = json.dumps([s for s in studios_list if s.get('name')], ensure_ascii=False)
 
             # 3. Keywords (关键词)
-            keywords_data = details.get('keywords', {})
+            # 兼容 keywords (dict/list) 和 tags (list)
+            keywords_data = details.get('keywords') or details.get('tags') or []
             raw_k_list = []
             
             if isinstance(keywords_data, dict):
-                if m_type == 'Series':
-                    # ★★★ 剧集：关键词在 results 下 ★★★
-                    raw_k_list = keywords_data.get('results', [])
-                else:
-                    # ★★★ 电影：关键词在 keywords 下 ★★★
-                    raw_k_list = keywords_data.get('keywords', [])
+                # ★★★ 混合策略：不管类型，同时尝试 results 和 keywords ★★★
+                # 这样即使剧集数据意外存成了电影结构（或反之），也能提取到
+                raw_k_list = keywords_data.get('results') or keywords_data.get('keywords') or []
             elif isinstance(keywords_data, list):
-                # 兼容某些特殊情况或本地缓存格式
                 raw_k_list = keywords_data
             
             keywords = []
@@ -305,7 +301,6 @@ class MediaProcessor:
             keywords_json = json.dumps(keywords, ensure_ascii=False)
 
             # 4. Countries (国家)
-            # 剧集通常用 origin_country (list of strings)，电影用 production_countries (list of dicts)
             countries_raw = details.get('production_countries') or details.get('origin_country') or []
             country_codes = []
             for c in countries_raw:
