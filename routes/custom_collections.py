@@ -472,7 +472,7 @@ def api_fix_media_match_in_custom_collection(collection_id):
         logger.error(f"修正合集 {collection_id} 媒体匹配时出错: {e}", exc_info=True)
         return jsonify({"error": f"服务器内部错误: {str(e)}"}), 500
 
-# --- 提取标签列表 ---
+# --- 筛选器用的标签列表 ---
 @custom_collections_bp.route('/config/tags', methods=['GET'])
 @admin_required
 def api_get_tags_for_filter():
@@ -484,6 +484,7 @@ def api_get_tags_for_filter():
         logger.error(f"获取标签列表时出错: {e}", exc_info=True)
         return jsonify([]), 500
 
+# --- 筛选器用的分级列表 ---
 @custom_collections_bp.route('/config/unified_ratings', methods=['GET'])
 @admin_required
 def api_get_unified_ratings_for_filter():
@@ -491,7 +492,7 @@ def api_get_unified_ratings_for_filter():
     # 直接返回我们预定义好的分类列表
     return jsonify(UNIFIED_RATING_CATEGORIES)
 
-# --- 获取 Emby 媒体库列表 ---
+# --- 筛选器用的媒体库列表 ---
 @custom_collections_bp.route('/config/emby_libraries', methods=['GET'])
 @admin_required
 def api_get_emby_libraries_for_filter():
