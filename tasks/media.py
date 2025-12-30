@@ -631,6 +631,8 @@ def task_populate_metadata_cache(processor, batch_size: int = 50, force_full_upd
                 if tmdb_details:
                     top_record['poster_path'] = tmdb_details.get('poster_path')
                     top_record['overview'] = tmdb_details.get('overview')
+                    if tmdb_details.get('vote_average') is not None:
+                        top_record['rating'] = tmdb_details.get('vote_average')
                     # 1. 获取基础制作公司
                     raw_studios = tmdb_details.get('production_companies', []) or []
 
@@ -737,6 +739,7 @@ def task_populate_metadata_cache(processor, batch_size: int = 50, force_full_upd
                                     "title": s_info.get('name'),
                                     "overview": s_info.get('overview'),
                                     "poster_path": season_poster,
+                                    "rating": s_info.get('vote_average'),
                                     "in_library": True,
                                     "release_date": s_release_date,
                                     "subscription_status": "NONE",
@@ -822,6 +825,7 @@ def task_populate_metadata_cache(processor, batch_size: int = 50, force_full_upd
                             "episode_number": e_n,
                             "in_library": True,
                             "release_date": ep_release_date,
+                            "rating": emby_ep.get('CommunityRating'),
                             "emby_item_ids_json": json.dumps([v.get('Id') for v in versions]),
                             "asset_details_json": json.dumps(ep_asset_details_list, ensure_ascii=False),
                             "tags_json": json.dumps(extract_tag_names(versions[0]), ensure_ascii=False),
@@ -834,6 +838,8 @@ def task_populate_metadata_cache(processor, batch_size: int = 50, force_full_upd
                             child_record['overview'] = tmdb_ep_info.get('overview')
                             child_record['poster_path'] = tmdb_ep_info.get('still_path')
                             child_record['runtime_minutes'] = emby_ep_runtime if emby_ep_runtime else tmdb_ep_info.get('runtime')
+                            if tmdb_ep_info.get('vote_average') is not None:
+                                child_record['rating'] = tmdb_ep_info.get('vote_average')
                         else:
                             child_record['tmdb_id'] = f"{tmdb_id_str}-S{s_n}E{e_n}"
                             child_record['title'] = versions[0].get('Name')

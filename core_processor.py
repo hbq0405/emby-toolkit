@@ -229,8 +229,7 @@ class MediaProcessor:
         item_type: str,
         final_processed_cast: List[Dict[str, Any]],
         source_data_package: Optional[Dict[str, Any]],
-        item_details_from_emby: Optional[Dict[str, Any]] = None,
-        douban_rating: Optional[float] = None
+        item_details_from_emby: Optional[Dict[str, Any]] = None
     ):
         """
         - 实时元数据写入。
@@ -359,7 +358,7 @@ class MediaProcessor:
                 movie_record['item_type'] = 'Movie'
                 movie_record['tmdb_id'] = str(movie_record.get('id'))
                 movie_record['runtime_minutes'] = get_representative_runtime([item_details_from_emby], movie_record.get('runtime'))
-                
+                movie_record['rating'] = movie_record.get('vote_average')
                 asset_details = parse_full_asset_details(
                     item_details_from_emby, 
                     id_to_parent_map=id_to_parent_map, 
@@ -422,7 +421,7 @@ class MediaProcessor:
                     "item_type": "Series", "tmdb_id": str(series_details.get('id')), "title": series_details.get('name'),
                     "original_title": series_details.get('original_name'), "overview": series_details.get('overview'),
                     "release_date": series_details.get('first_air_date'), "poster_path": series_details.get('poster_path'),
-                    "rating": douban_rating if douban_rating is not None else series_details.get('vote_average'),
+                    "rating": series_details.get('vote_average'),
                     "total_episodes": series_details.get('number_of_episodes', 0),
                     "watchlist_tmdb_status": series_details.get('status'),
                     "asset_details_json": json.dumps(series_asset_details, ensure_ascii=False),
@@ -780,19 +779,7 @@ class MediaProcessor:
         )
         douban_cast_raw = cast_data.get("cast", [])
 
-        # 3.3 获取详情（为了评分），同样使用可信的类型
-        details_data = self.douban_api._get_subject_details(douban_id, douban_type)
-        douban_rating = None
-        if details_data and not details_data.get("error"):
-            rating_str = details_data.get("rating", {}).get("value")
-            if rating_str:
-                try:
-                    douban_rating = float(rating_str)
-                    logger.info(f"  ➜ 在线获取到豆瓣评分 for '{item_name}': {douban_rating}")
-                except (ValueError, TypeError):
-                    pass
-
-        return douban_cast_raw, douban_rating
+        return douban_cast_raw, None
     
     # --- 通过TmdbID查找映射表 ---
     def _find_person_in_map_by_tmdb_id(self, tmdb_id: str, cursor: psycopg2.extensions.cursor) -> Optional[Dict[str, Any]]:
@@ -1290,7 +1277,6 @@ class MediaProcessor:
             # ★★★ 步骤 4:  数据来源 ★★★
             # =========================================================
             final_processed_cast = None
-            douban_rating = None
             cache_row = None 
             # 1.快速模式
             if not force_full_update:
@@ -1312,7 +1298,6 @@ class MediaProcessor:
                             if cast_data:
                                 logger.info(f"  ➜ [快速模式] 成功从文件加载 {len(cast_data)} 位演员，将激活反哺数据库...")
                                 final_processed_cast = cast_data
-                                douban_rating = override_data.get('vote_average')
                                 
                                 # 关键设置 1: 以此为源更新数据库
                                 tmdb_details_for_extra = override_data 
@@ -1396,7 +1381,7 @@ class MediaProcessor:
                         with get_central_db_connection() as conn:
                             cursor = conn.cursor()
                             cursor.execute("""
-                                SELECT actors_json, rating 
+                                SELECT actors_json 
                                 FROM media_metadata 
                                 WHERE tmdb_id = %s AND item_type = %s
                                   AND actors_json IS NOT NULL AND actors_json::text != '[]'
@@ -1407,9 +1392,6 @@ class MediaProcessor:
                                 logger.info(f"  ➜ [快速模式] 成功命中数据库缓存！")
                                 slim_actors_from_cache = db_row["actors_json"]
                                 final_processed_cast = self.actor_db_manager.rehydrate_slim_actors(cursor, slim_actors_from_cache)
-                                douban_rating = db_row.get("rating")
-                                # 注意：这里 cache_row 是数据库行对象，没有 'source': 'override_file'
-                                # 因此后续阶段3 会执行文件写入，正好实现了“丢失文件自动补全”的功能
                                 cache_row = db_row 
                     except Exception as e_cache:
                         logger.warning(f"  ➜ 加载数据库缓存失败: {e_cache}。")
@@ -1425,8 +1407,7 @@ class MediaProcessor:
                     current_emby_cast_raw = [p for p in all_emby_people if p.get("Type") == "Actor"]
                     emby_config = {"url": self.emby_url, "api_key": self.emby_api_key, "user_id": self.emby_user_id}
                     enriched_emby_cast = self.actor_db_manager.enrich_actors_with_provider_ids(cursor, current_emby_cast_raw, emby_config)
-                    douban_cast_raw, douban_rating_deep = self._get_douban_data_with_local_cache(item_details_from_emby)
-                    douban_rating = douban_rating_deep # 覆盖评分
+                    douban_cast_raw, _ = self._get_douban_data_with_local_cache(item_details_from_emby)
 
                     # 调用核心处理器处理演员表
                     final_processed_cast = self._process_cast_list(
@@ -1468,7 +1449,6 @@ class MediaProcessor:
                         item_id=item_id,
                         update_description="主流程处理完成" if not specific_episode_ids else f"追更: {len(specific_episode_ids)}个分集",
                         final_cast_override=final_processed_cast,
-                        douban_rating_override=douban_rating,
                         episode_ids_to_sync=specific_episode_ids 
                     )
 
@@ -1492,8 +1472,7 @@ class MediaProcessor:
                     item_type=item_type,
                     item_details_from_emby=item_details_from_emby,
                     final_processed_cast=final_processed_cast,
-                    source_data_package=tmdb_details_for_extra,
-                    douban_rating=douban_rating
+                    source_data_package=tmdb_details_for_extra
                 )
                 
                 # 综合质检 (视频流检查 + 演员匹配度评分)
@@ -2641,8 +2620,7 @@ class MediaProcessor:
                                 update_description: Optional[str] = None, 
                                 sync_timestamp_iso: Optional[str] = None,
                                 final_cast_override: Optional[List[Dict[str, Any]]] = None,
-                                episode_ids_to_sync: Optional[List[str]] = None,
-                                douban_rating_override: Optional[float] = None):
+                                episode_ids_to_sync: Optional[List[str]] = None):
         """
         纯粹的项目经理，负责接收设计师的所有材料，并分发给施工队。
         """
@@ -2674,8 +2652,7 @@ class MediaProcessor:
                 item_details, 
                 tmdb_id, 
                 final_cast_override=final_cast_override, 
-                episode_ids_to_sync=episode_ids_to_sync,
-                douban_rating_override=douban_rating_override
+                episode_ids_to_sync=episode_ids_to_sync
             )
 
             # 3. 记录工时
@@ -2809,8 +2786,7 @@ class MediaProcessor:
     # --- 备份元数据 ---
     def sync_item_metadata(self, item_details: Dict[str, Any], tmdb_id: str,
                        final_cast_override: Optional[List[Dict[str, Any]]] = None,
-                       episode_ids_to_sync: Optional[List[str]] = None,
-                       douban_rating_override: Optional[float] = None):
+                       episode_ids_to_sync: Optional[List[str]] = None):
         """
         【V4 - 精装修施工队最终版】
         本函数是唯一的施工队，负责所有 override 文件的读写操作。
@@ -2850,7 +2826,6 @@ class MediaProcessor:
             # 步骤 2: 修改主文件
             with open(main_json_path, 'r+', encoding='utf-8') as f:
                 data = json.load(f)
-                if douban_rating_override is not None: data['vote_average'] = douban_rating_override
                 if 'casts' in data: data['casts']['cast'] = perfect_cast_for_injection
                 else: data.setdefault('credits', {})['cast'] = perfect_cast_for_injection
                 
@@ -2898,10 +2873,7 @@ class MediaProcessor:
         return cast_list
 
     # --- 辅助函数：将演员表注入剧集的季/集JSON文件 ---
-    def _inject_cast_to_series_files(self, target_dir: str, cast_list: List[Dict[str, Any]], series_details: Dict[str, Any], 
-                                     # ▼▼▼ 核心修改 1/3: 增加 source_dir 参数 ▼▼▼
-                                     source_dir: str, 
-                                     episode_ids_to_sync: Optional[List[str]] = None):
+    def _inject_cast_to_series_files(self, target_dir: str, cast_list: List[Dict[str, Any]], series_details: Dict[str, Any], source_dir: str, episode_ids_to_sync: Optional[List[str]] = None):
         """
         辅助函数：将演员表注入剧集的季/集JSON文件。
         """
