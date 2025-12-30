@@ -234,6 +234,7 @@ class MediaProcessor:
     ):
         """
         - 实时元数据写入。
+        【修复版】统一处理 Movie 和 Series 的 Genres, Studios, Keywords 字段，确保写入数据库。
         """
         if not item_details_from_emby:
             logger.error("  ➜ 写入元数据缓存失败：缺少 Emby 详情数据。")
@@ -248,6 +249,48 @@ class MediaProcessor:
             runtimes = [round(item['RunTimeTicks'] / 600000000) for item in emby_items if item.get('RunTimeTicks')]
             return max(runtimes) if runtimes else tmdb_runtime
         
+        # ★★★ 内部辅助函数：统一提取通用 JSON 字段 ★★★
+        def _extract_common_json_fields(details: Dict[str, Any]):
+            # 1. Genres (类型)
+            genres_raw = details.get('genres', [])
+            genres_list = []
+            for g in genres_raw:
+                if isinstance(g, dict): genres_list.append(g.get('name'))
+                elif isinstance(g, str): genres_list.append(g)
+            genres_json = json.dumps([n for n in genres_list if n], ensure_ascii=False)
+
+            # 2. Studios (制作公司)
+            studios_raw = details.get('production_companies', [])
+            studios_list = []
+            for s in studios_raw:
+                if isinstance(s, dict):
+                    studios_list.append({'id': s.get('id'), 'name': s.get('name')})
+                elif isinstance(s, str):
+                    studios_list.append({'id': None, 'name': s})
+            studios_json = json.dumps([s for s in studios_list if s.get('name')], ensure_ascii=False)
+
+            # 3. Keywords (关键词)
+            keywords_data = details.get('keywords', {})
+            raw_k_list = []
+            if isinstance(keywords_data, dict):
+                # TMDb API 结构差异：电影通常在 'keywords' 下，剧集在 'results' 下
+                raw_k_list = keywords_data.get('keywords', []) or keywords_data.get('results', [])
+            elif isinstance(keywords_data, list):
+                raw_k_list = keywords_data
+            
+            keywords = []
+            for k in raw_k_list:
+                if isinstance(k, dict) and k.get('name'):
+                    keywords.append({'id': k.get('id'), 'name': k.get('name')})
+                elif isinstance(k, str) and k:
+                    keywords.append({'id': None, 'name': k})
+            keywords_json = json.dumps(keywords, ensure_ascii=False)
+
+            # 4. Countries (国家)
+            countries_json = json.dumps(translate_country_list([c.get('iso_3166_1') for c in details.get('production_countries', [])]), ensure_ascii=False)
+
+            return genres_json, studios_json, keywords_json, countries_json
+
         try:
             from psycopg2.extras import execute_batch
             
@@ -257,26 +300,21 @@ class MediaProcessor:
 
             records_to_upsert = []
 
-            # 生成向量逻辑 (仅针对 Movie 和 Series) 
+            # 生成向量逻辑
             overview_embedding_json = None
             if item_type in ["Movie", "Series"] and self.ai_translator:
-                # 优先使用 source_data_package 里的 overview (通常来自 TMDb/本地缓存，质量较高)
-                overview_text = source_data_package.get('overview')
-                # 如果没有，尝试用 Emby 的
-                if not overview_text:
-                    overview_text = item_details_from_emby.get('Overview')
-                
-                if overview_text:
+                overview_text = source_data_package.get('overview') or item_details_from_emby.get('Overview')
+                if overview_text and self.config.get("ai_translation_enabled", False):
                     try:
-                        # 检查配置开关 (可选，如果想更严谨的话)
-                        if self.config.get("ai_translation_enabled", False):
-                            embedding = self.ai_translator.generate_embedding(overview_text)
-                            if embedding:
-                                overview_embedding_json = json.dumps(embedding)
-                                logger.info(f"  ➜ 已为 '{item_details_from_emby.get('Name')}' 生成剧情向量。")
+                        embedding = self.ai_translator.generate_embedding(overview_text)
+                        if embedding:
+                            overview_embedding_json = json.dumps(embedding)
                     except Exception as e_embed:
                         logger.warning(f"  ➜ 生成向量失败: {e_embed}")
             
+            # ==================================================================
+            # 处理电影 (Movie)
+            # ==================================================================
             if item_type == "Movie":
                 movie_record = source_data_package.copy()
                 movie_record['item_type'] = 'Movie'
@@ -297,10 +335,36 @@ class MediaProcessor:
                 movie_record['subscription_status'] = 'NONE'
                 movie_record['date_added'] = item_details_from_emby.get("DateCreated")
                 movie_record['overview_embedding'] = overview_embedding_json
+
+                # ★★★ 提取通用字段 (Genres, Studios, Keywords) ★★★
+                g_json, s_json, k_json, c_json = _extract_common_json_fields(source_data_package)
+                movie_record['genres_json'] = g_json
+                movie_record['studios_json'] = s_json
+                movie_record['keywords_json'] = k_json
+                movie_record['countries_json'] = c_json
+
+                # ★★★ 提取分级 (Rating) ★★★
+                tmdb_official_rating = None
+                if source_data_package.get('release_dates', {}).get('results'):
+                    for rd in source_data_package['release_dates']['results']:
+                        if rd.get('iso_3166_1') == 'US':
+                            for release in rd.get('release_dates', []):
+                                if release.get('certification'):
+                                    tmdb_official_rating = release['certification']; break
+                        if tmdb_official_rating: break
+                movie_record['official_rating'] = tmdb_official_rating
+                movie_record['unified_rating'] = get_unified_rating(tmdb_official_rating)
+                
+                # 导演 (电影在 credits.crew 中)
+                crew = source_data_package.get("credits", {}).get('crew', [])
+                movie_record['directors_json'] = json.dumps([{'id': p.get('id'), 'name': p.get('name')} for p in crew if p.get('job') == 'Director'], ensure_ascii=False)
+
                 records_to_upsert.append(movie_record)
 
+            # ==================================================================
+            # 处理剧集 (Series)
+            # ==================================================================
             elif item_type == "Series":
-                # ★★★  1: 恢复 TMDb 元数据列表的定义 ★★★
                 series_details = source_data_package.get("series_details", source_data_package)
                 seasons_details = source_data_package.get("seasons_details", series_details.get("seasons", []))
                 
@@ -314,44 +378,6 @@ class MediaProcessor:
                     }
                     series_asset_details.append(series_asset)
 
-                # ★★★ 1. 安全获取分集列表 ★★★
-                raw_episodes = source_data_package.get("episodes_details", {})
-                if isinstance(raw_episodes, dict):
-                    episodes_details = list(raw_episodes.values())
-                else:
-                    episodes_details = raw_episodes if isinstance(raw_episodes, list) else []
-
-                parent_library_id = item_details_from_emby.get('_SourceLibraryId')
-
-                # 获取所有 Emby 分集版本
-                emby_episode_versions = []
-                series_id = item_details_from_emby.get('Id')
-                emby_episode_versions = emby.get_all_library_versions(
-                    base_url=self.emby_url, api_key=self.emby_api_key, user_id=self.emby_user_id,
-                    media_type_filter="Episode", parent_id=series_id,
-                    fields="Id,Type,ParentIndexNumber,IndexNumber,MediaStreams,Container,Size,Path,ProviderIds,RunTimeTicks,DateCreated,_SourceLibraryId"
-                ) or []
-
-                episodes_grouped_by_number = defaultdict(list)
-                for ep_version in emby_episode_versions:
-                    s_num = ep_version.get("ParentIndexNumber")
-                    e_num = ep_version.get("IndexNumber")
-                    if s_num is not None and e_num is not None:
-                        episodes_grouped_by_number[(s_num, e_num)].append(ep_version)
-                
-                # ★★★ 获取所有 Emby 季版本用于匹配 ★★★
-                emby_season_versions = emby.get_series_seasons(
-                    series_id=series_id,
-                    base_url=self.emby_url,
-                    api_key=self.emby_api_key,
-                    user_id=self.emby_user_id,
-                    series_name_for_log=series_details.get('name')
-                ) or []
-                seasons_grouped_by_number = defaultdict(list)
-                for s_ver in emby_season_versions:
-                    if s_ver.get("IndexNumber") is not None:
-                        seasons_grouped_by_number[s_ver.get("IndexNumber")].append(s_ver)
-
                 # 构建 Series 记录
                 series_record = {
                     "item_type": "Series", "tmdb_id": str(series_details.get('id')), "title": series_details.get('name'),
@@ -363,9 +389,11 @@ class MediaProcessor:
                     "asset_details_json": json.dumps(series_asset_details, ensure_ascii=False),
                     "overview_embedding": overview_embedding_json
                 }
-                # ... (中间的 actors_json 等构建代码保持不变) ...
+                
                 actors_relation = [{"tmdb_id": int(p.get("id")), "character": p.get("character"), "order": p.get("order")} for p in final_processed_cast if p.get("id")]
                 series_record['actors_json'] = json.dumps(actors_relation, ensure_ascii=False)
+                
+                # 分级
                 tmdb_official_rating = None
                 if series_details.get('content_ratings', {}).get('results'):
                     for cr in series_details['content_ratings']['results']:
@@ -373,19 +401,17 @@ class MediaProcessor:
                             tmdb_official_rating = cr['rating']; break
                 series_record['official_rating'] = tmdb_official_rating
                 series_record['unified_rating'] = get_unified_rating(tmdb_official_rating)
-                series_record['studios_json'] = json.dumps(
-                    [{'id': s.get('id'), 'name': s.get('name')} for s in series_details.get('production_companies', []) if s.get('name')], 
-                    ensure_ascii=False
-                )
-                series_record['studios_json'] = json.dumps([s['name'] for s in series_details.get('production_companies', [])], ensure_ascii=False)
+
+                # ★★★ 提取通用字段 (Genres, Studios, Keywords) - 修复了之前的 Bug ★★★
+                g_json, s_json, k_json, c_json = _extract_common_json_fields(series_details)
+                series_record['genres_json'] = g_json
+                series_record['studios_json'] = s_json
+                series_record['keywords_json'] = k_json
+                series_record['countries_json'] = c_json
+                
+                # 创作者/导演 (剧集在 created_by 中)
                 series_record['directors_json'] = json.dumps([{'id': c.get('id'), 'name': c.get('name')} for c in series_details.get('created_by', [])], ensure_ascii=False)
-                series_record['countries_json'] = json.dumps(translate_country_list(series_details.get('origin_country', [])), ensure_ascii=False)
-                keywords_data = series_details.get('keywords', {})
-                raw_keywords = keywords_data.get('keywords', []) or keywords_data.get('results', [])
-                series_record['keywords_json'] = json.dumps(
-                    [{'id': k.get('id'), 'name': k.get('name')} for k in raw_keywords if k.get('name')], 
-                    ensure_ascii=False
-                )
+                
                 languages_list = series_details.get('languages', [])
                 series_record['original_language'] = languages_list[0] if languages_list else None
                 series_record['in_library'] = True
@@ -396,81 +422,89 @@ class MediaProcessor:
                 records_to_upsert.append(series_record)
 
                 # ★★★ 3. 处理季 (Season) ★★★
+                # 获取所有 Emby 季版本用于匹配
+                emby_season_versions = emby.get_series_seasons(
+                    series_id=item_details_from_emby.get('Id'),
+                    base_url=self.emby_url,
+                    api_key=self.emby_api_key,
+                    user_id=self.emby_user_id,
+                    series_name_for_log=series_details.get('name')
+                ) or []
+                seasons_grouped_by_number = defaultdict(list)
+                for s_ver in emby_season_versions:
+                    if s_ver.get("IndexNumber") is not None:
+                        seasons_grouped_by_number[s_ver.get("IndexNumber")].append(s_ver)
+
                 for season in seasons_details:
-                    # 安全检查：如果 season 不是字典（例如是整数），则跳过
-                    if not isinstance(season, dict):
-                        continue
+                    if not isinstance(season, dict): continue
                     s_num = season.get('season_number')
                     if s_num is None: continue 
-                    
-                    try:
-                        s_num_int = int(s_num)
-                    except ValueError:
-                        continue
+                    try: s_num_int = int(s_num)
+                    except ValueError: continue
 
-                    season_poster = season.get('poster_path')
-                    if not season_poster:
-                        season_poster = series_details.get('poster_path')
-
-                    # 匹配 Emby 季ID (使用 int 键)
+                    season_poster = season.get('poster_path') or series_details.get('poster_path')
                     matched_emby_seasons = seasons_grouped_by_number.get(s_num_int, [])
 
                     records_to_upsert.append({
-                        "tmdb_id": str(season.get('id')), 
-                        "item_type": "Season", 
+                        "tmdb_id": str(season.get('id')), "item_type": "Season", 
                         "parent_series_tmdb_id": str(series_details.get('id')), 
-                        "title": season.get('name'), 
-                        "overview": season.get('overview'), 
-                        "release_date": season.get('air_date'), 
-                        "poster_path": season_poster, 
+                        "title": season.get('name'), "overview": season.get('overview'), 
+                        "release_date": season.get('air_date'), "poster_path": season_poster, 
                         "season_number": s_num,
                         "in_library": bool(matched_emby_seasons),
                         "emby_item_ids_json": json.dumps([s['Id'] for s in matched_emby_seasons]) if matched_emby_seasons else '[]'
                     })
                 
                 # ★★★ 4. 处理分集 (Episode) ★★★
-                for episode in episodes_details:
-                    # ★★★ 核心修复：过滤掉混入的季数据（季数据没有 episode_number）★★★
-                    if episode.get('episode_number') is None:
-                        continue
+                raw_episodes = source_data_package.get("episodes_details", {})
+                episodes_details = list(raw_episodes.values()) if isinstance(raw_episodes, dict) else (raw_episodes if isinstance(raw_episodes, list) else [])
+                
+                # 获取所有 Emby 分集版本
+                emby_episode_versions = emby.get_all_library_versions(
+                    base_url=self.emby_url, api_key=self.emby_api_key, user_id=self.emby_user_id,
+                    media_type_filter="Episode", parent_id=item_details_from_emby.get('Id'),
+                    fields="Id,Type,ParentIndexNumber,IndexNumber,MediaStreams,Container,Size,Path,ProviderIds,RunTimeTicks,DateCreated,_SourceLibraryId"
+                ) or []
+                episodes_grouped_by_number = defaultdict(list)
+                for ep_version in emby_episode_versions:
+                    s_num = ep_version.get("ParentIndexNumber")
+                    e_num = ep_version.get("IndexNumber")
+                    if s_num is not None and e_num is not None:
+                        episodes_grouped_by_number[(s_num, e_num)].append(ep_version)
 
+                for episode in episodes_details:
+                    if episode.get('episode_number') is None: continue
                     s_num = episode.get('season_number')
                     e_num = episode.get('episode_number')
-                    
                     versions_of_episode = episodes_grouped_by_number.get((s_num, e_num))
-
                     final_runtime = get_representative_runtime(versions_of_episode, episode.get('runtime'))
 
                     episode_record = {
-                        "tmdb_id": str(episode.get('id')), 
-                        "item_type": "Episode", 
+                        "tmdb_id": str(episode.get('id')), "item_type": "Episode", 
                         "parent_series_tmdb_id": str(series_details.get('id')), 
-                        "title": episode.get('name'), 
-                        "overview": episode.get('overview'), 
+                        "title": episode.get('name'), "overview": episode.get('overview'), 
                         "release_date": episode.get('air_date'), 
-                        "season_number": s_num, 
-                        "episode_number": e_num,
+                        "season_number": s_num, "episode_number": e_num,
                         "runtime_minutes": final_runtime
                     }
-                    
                     if versions_of_episode:
                         all_emby_ids = [v.get('Id') for v in versions_of_episode]
                         all_asset_details = []
                         for v in versions_of_episode:
                             details = parse_full_asset_details(v)
-                            details['source_library_id'] = parent_library_id
+                            details['source_library_id'] = item_details_from_emby.get('_SourceLibraryId')
                             all_asset_details.append(details)
-                        
                         episode_record['asset_details_json'] = json.dumps(all_asset_details, ensure_ascii=False)
                         episode_record['emby_item_ids_json'] = json.dumps(all_emby_ids)
                         episode_record['in_library'] = True
-
                     records_to_upsert.append(episode_record)
 
             if not records_to_upsert:
                 return
 
-            # ... (批量写入数据库) ...
+            # ==================================================================
+            # 批量写入数据库 (逻辑简化，只负责映射)
+            # ==================================================================
             all_possible_columns = [
                 "tmdb_id", "item_type", "title", "original_title", "overview", "release_date", "release_year",
                 "original_language",
@@ -493,57 +527,12 @@ class MediaProcessor:
                 if db_row_complete['subscription_sources_json'] is None: db_row_complete['subscription_sources_json'] = '[]'
                 if db_row_complete['emby_item_ids_json'] is None: db_row_complete['emby_item_ids_json'] = '[]'
 
+                # 提取年份
                 release_date_str = db_row_complete.get('release_date')
                 if release_date_str and len(release_date_str) >= 4:
                     try: db_row_complete['release_year'] = int(release_date_str[:4])
                     except (ValueError, TypeError): pass
-                if record.get('item_type') == 'Movie':
-                    tmdb_official_rating = None
-                    if record.get('release_dates', {}).get('results'):
-                        for rd in record['release_dates']['results']:
-                            if rd.get('iso_3166_1') == 'US':
-                                for release in rd.get('release_dates', []):
-                                    if release.get('certification'):
-                                        tmdb_official_rating = release['certification']; break
-                            if tmdb_official_rating: break
-                    db_row_complete['official_rating'] = tmdb_official_rating
-                    db_row_complete['unified_rating'] = get_unified_rating(tmdb_official_rating)
-                    genres_raw = record.get('genres', [])
-                    genres_list = []
-                    for g in genres_raw:
-                        if isinstance(g, dict):
-                            genres_list.append(g.get('name'))
-                        elif isinstance(g, str):
-                            genres_list.append(g)
-                    db_row_complete['genres_json'] = json.dumps([n for n in genres_list if n], ensure_ascii=False)
-                    studios_raw = record.get('production_companies', [])
-                    studios_list = []
-                    for s in studios_raw:
-                        if isinstance(s, dict):
-                            studios_list.append({'id': s.get('id'), 'name': s.get('name')})
-                        elif isinstance(s, str):
-                            studios_list.append({'id': None, 'name': s})
-                    db_row_complete['studios_json'] = json.dumps([s for s in studios_list if s.get('name')], ensure_ascii=False)
-                    crew = record.get("credits", {}).get('crew', [])
-                    db_row_complete['directors_json'] = json.dumps([{'id': p.get('id'), 'name': p.get('name')} for p in crew if p.get('job') == 'Director'], ensure_ascii=False)
-                    db_row_complete['countries_json'] = json.dumps(translate_country_list([c.get('iso_3166_1') for c in record.get('production_countries', [])]), ensure_ascii=False)
-                    keywords_data = record.get('keywords', {})
-                    if isinstance(keywords_data, dict):
-                        raw_k_list = keywords_data.get('keywords', []) or keywords_data.get('results', [])
-                    elif isinstance(keywords_data, list):
-                        raw_k_list = keywords_data
-                    else:
-                        raw_k_list = []
-
-                    keywords = []
-                    for k in raw_k_list:
-                        if isinstance(k, dict) and k.get('name'):
-                            keywords.append({'id': k.get('id'), 'name': k.get('name')})
-                        elif isinstance(k, str) and k:
-                             keywords.append({'id': None, 'name': k})
-                             
-                    db_row_complete['keywords_json'] = json.dumps(keywords, ensure_ascii=False)
-                    db_row_complete['original_language'] = record.get('original_language')
+                
                 data_for_batch.append(db_row_complete)
 
             cols_str = ", ".join(all_possible_columns)
