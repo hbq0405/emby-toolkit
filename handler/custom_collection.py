@@ -300,14 +300,9 @@ class ListImporter:
     def _get_items_from_tmdb_discover(self, url: str) -> List[Dict[str, str]]:
         """专门用于解析TMDb Discover URL并获取结果的函数"""
         
-        # from datetime import datetime, timedelta # 这些导入可以移除，因为 _process_dynamic_date_placeholders 已经处理
-        # import re # 这些导入可以移除，因为 _process_dynamic_date_placeholders 已经处理
-
-        logger.info(f"  ➜ 检测到TMDb Discover链接，开始动态获取 (支持分页和过滤): {url}")
-        
-        # ★★★ 核心修改：在解析前处理动态日期占位符 ★★★
+        # 在解析前处理动态日期占位符 
         processed_url = self._process_dynamic_date_placeholders(url) 
-        
+        logger.info(f"  ➜ 检测到TMDb Discover链接，开始动态获取 (支持分页和过滤): {url}")
         parsed_url = urlparse(processed_url) # 使用处理后的 URL
         query_params = parse_qs(parsed_url.query)
         params = {k: v[0] for k, v in query_params.items()}
