@@ -255,12 +255,12 @@ def get_all_subscriptions() -> List[Dict[str, Any]]:
 def get_user_request_history(user_id: str, page: int = 1, page_size: int = 10, status_filter: str = 'all') -> tuple[List[Dict[str, Any]], int]:
     """
     获取用户订阅历史记录。
-    ★ 修改：对于 Season 类型，关联查询父剧集标题，显示为 "剧名 第 X 季"
+    ★ 修改：对于 Season 类型，关联查询父剧集标题，并强制格式化为 "剧名 第 X 季"
     """
     offset = (page - 1) * page_size
     source_filter = json.dumps([{"type": "user_request", "user_id": user_id}])
 
-    # ★ 1. 修改条件：给字段加上别名 m1.，因为后面要进行表连接
+    # 1. 修改条件：给字段加上别名 m1.
     conditions = ["m1.subscription_sources_json @> %s::jsonb"]
     params = [source_filter]
 
@@ -275,18 +275,18 @@ def get_user_request_history(user_id: str, page: int = 1, page_size: int = 10, s
     
     where_sql = " AND ".join(conditions)
 
-    # ★ 2. 修改 Count SQL：使用别名 m1
+    # 2. 修改 Count SQL：使用别名 m1
     count_sql = f"SELECT COUNT(*) FROM media_metadata m1 WHERE {where_sql};"
     
-    # ★ 3. 修改 Data SQL：
-    # - 加入 LEFT JOIN media_metadata m2 (用于查找父剧集)
-    # - 使用 CASE WHEN 拼接标题
+    # 3. 修改 Data SQL：
+    # - 使用 LEFT JOIN 关联父剧集
+    # - 使用 CASE WHEN 强制格式化季标题
     data_sql = f"""
         SELECT 
             m1.tmdb_id, 
             m1.item_type, 
             CASE 
-                WHEN m1.item_type = 'Season' AND m2.title IS NOT NULL THEN m2.title || ' ' || m1.title
+                WHEN m1.item_type = 'Season' AND m2.title IS NOT NULL THEN m2.title || ' 第 ' || m1.season_number || ' 季'
                 ELSE m1.title 
             END AS title,
             m1.subscription_status as status, 
@@ -317,19 +317,14 @@ def get_user_request_history(user_id: str, page: int = 1, page_size: int = 10, s
                 history_item = dict(row)
                 
                 # ★★★ 核心逻辑：只翻译在库状态 ★★★
-                # 规则: 只要在库里了，就是“已完成”，这是唯一需要后端翻译的状态。
                 if history_item.get('in_library'):
                     history_item['status'] = 'completed'
-                
-                # 对于所有其他情况 (不在库)，status 字段将保持其在数据库中的原始值
-                # (e.g., 'IGNORED', 'WANTED', 'SUBSCRIBED', 'REQUESTED', 'NONE', etc.)
                 
                 history.append(history_item)
             
             return history, total_records
     except Exception as e:
         logger.error(f"DB: 查询用户 {user_id} 的订阅历史失败: {e}", exc_info=True)
-        # 保持与旧函数一致的返回类型，即使出错
         return [], 0
 
 def sync_series_children_metadata(parent_tmdb_id: str, seasons: List[Dict], episodes: List[Dict], local_in_library_info: Dict[int, set]):
