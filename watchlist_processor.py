@@ -826,6 +826,11 @@ class WatchlistProcessor:
         if not item_id:
             logger.warning(f"  ➜ 剧集 '{item_name}' 在数据库中没有关联的 Emby ID，跳过。")
             return
+        
+        # --- 获取配置 ---
+        watchlist_cfg = settings_db.get_setting('watchlist_config') or {}
+        auto_pending_cfg = watchlist_cfg.get('auto_pending', {})
+        aggressive_threshold = int(auto_pending_cfg.get('episodes', 5)) 
 
         # 调用通用辅助函数刷新元数据
         refresh_result = self._refresh_series_metadata(tmdb_id, item_name, item_id)
@@ -930,33 +935,29 @@ class WatchlistProcessor:
                 season_info = next((s for s in latest_series_data.get('seasons', []) if s.get('season_number') == last_s_num), None)
                 if season_info:
                     total_ep_count = season_info.get('episode_count', 0)
-                    # 只有当该季总集数大于5时，才敢断定这是大结局。
-                    # 如果总集数为1，极大概率是新季刚开播 TMDb 还没更新后续集数，
-                    # 此时应跳过大结局判定，让其落入后续的“最近播出”逻辑保持 Watching 状态。
-                    if total_ep_count > 1 and last_e_num >= total_ep_count:
+                    
+                    # 如果总集数很少（例如3集），可能是新剧刚开播 TMDb 还没更新后续集数，
+                    # 此时应跳过大结局判定，让其落入后续的“最近播出”或“自动待定”逻辑。
+                    if total_ep_count > aggressive_threshold and last_e_num >= total_ep_count:
                         is_season_finale = True
+                        logger.debug(f"  🔍 [预判] S{last_s_num} 总集数({total_ep_count}) > 保护阈值({aggressive_threshold}) 且已播至最后一集，标记为本季大结局。")
 
         # ==============================================================================
         # ★★★ 激进完结策略 ★★★
         # ==============================================================================
         is_aggressive_completed = False
         
-        # 1. 获取阈值
-        watchlist_cfg = settings_db.get_setting('watchlist_config') or {}
-        auto_pending_cfg = watchlist_cfg.get('auto_pending', {})
-        aggressive_threshold = int(auto_pending_cfg.get('episodes', 5)) 
-        
-        # 2. 获取 TMDb 记录的总集数
+        # 1. 获取 TMDb 记录的总集数
         calculated_total = len([ep for ep in all_tmdb_episodes if ep.get('season_number', 0) > 0])
         current_total_episodes = calculated_total if calculated_total > 0 else latest_series_data.get('number_of_episodes', 0)
 
-        # 3. 计算本地已入库的正片总集数
+        # 2. 计算本地已入库的正片总集数
         local_total_episodes = 0
         if emby_seasons:
             for s_num, ep_set in emby_seasons.items():
                 if s_num > 0: local_total_episodes += len(ep_set)
         
-        # 4. 判断逻辑
+        # 3. 判断逻辑
         # 前置条件: 总集数超过阈值 (防止误伤短剧，短剧交给后续的7天规则处理)
         if current_total_episodes > aggressive_threshold:
             
