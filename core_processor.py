@@ -451,7 +451,7 @@ class MediaProcessor:
                 series_record['directors_json'] = json.dumps([{'id': c.get('id'), 'name': c.get('name')} for c in series_details.get('created_by', [])], ensure_ascii=False)
                 
                 languages_list = series_details.get('languages', [])
-                series_record['original_language'] = languages_list[0] if languages_list else None
+                series_record['original_language'] = series_details.get('original_language') or (languages_list[0] if languages_list else None)
                 series_record['in_library'] = True
                 series_record['subscription_status'] = 'NONE'
                 series_record['emby_item_ids_json'] = json.dumps([item_details_from_emby.get('Id')])

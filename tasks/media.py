@@ -266,7 +266,7 @@ def task_populate_metadata_cache(processor, batch_size: int = 50, force_full_upd
                 """)
                 stat_row = cursor.fetchone()
                 total_items = stat_row['total'] if stat_row else 0
-                online_items = stat_row['online'] if stat_row else 0
+                online_items = stat_row['online'] if stat_row and stat_row['online'] is not None else 0
                 
                 logger.info(f"  ➜ 本地数据库共存储 {total_items} 个媒体项 (其中在线: {online_items}, 离线: {total_items - online_items})。")
 
@@ -615,6 +615,7 @@ def task_populate_metadata_cache(processor, batch_size: int = 50, force_full_upd
                 top_record = {
                     "tmdb_id": tmdb_id_str, "item_type": item_type, "title": item.get('Name'),
                     "original_title": item.get('OriginalTitle'), "release_year": item.get('ProductionYear'),
+                    "original_language": tmdb_details.get('original_language') if tmdb_details else None,
                     "in_library": True, 
                     "subscription_status": "NONE",
                     "emby_item_ids_json": json.dumps(list(set(v.get('Id') for v in item_group if v.get('Id') and v.get('Type') == item_type)), ensure_ascii=False),
