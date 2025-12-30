@@ -455,7 +455,19 @@ const generatedUrl = computed(() => {
   if (p.vote_average > 0) query.append('vote_average.gte', p.vote_average);
   if (p.vote_count > 0) query.append('vote_count.gte', p.vote_count);
 
-  return `${baseUrl}?${query.toString()}`;
+  // 1. 先生成标准的编码 URL
+  let finalUrl = `${baseUrl}?${query.toString()}`;
+
+  // 2. ★★★ 核心修复：手动还原被编码的动态占位符 ★★★
+  // 将 %7B 还原为 {
+  // 将 %7D 还原为 }
+  // 将 %2B 还原为 +
+  finalUrl = finalUrl
+    .replace(/%7B/g, '{')
+    .replace(/%7D/g, '}')
+    .replace(/%2B/g, '+');
+
+  return finalUrl;
 });
 
 // --- 数据获取 (保持不变) ---

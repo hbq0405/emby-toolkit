@@ -14,7 +14,7 @@ from datetime import datetime, timedelta
 from concurrent.futures import ThreadPoolExecutor
 from bs4 import BeautifulSoup
 from gevent import subprocess, Timeout
-
+from urllib.parse import urlparse, parse_qs, unquote
 import handler.tmdb as tmdb
 import config_manager
 from tasks.helpers import parse_series_title_and_season
@@ -157,6 +157,7 @@ class ListImporter:
         {tomorrow}
         {tomorrow+N} (例如 {tomorrow+7})
         """
+        url = unquote(url)
         if '{' not in url:
             return url
 
@@ -298,7 +299,7 @@ class ListImporter:
     
     def _get_items_from_tmdb_discover(self, url: str) -> List[Dict[str, str]]:
         """专门用于解析TMDb Discover URL并获取结果的函数"""
-        from urllib.parse import urlparse, parse_qs
+        
         # from datetime import datetime, timedelta # 这些导入可以移除，因为 _process_dynamic_date_placeholders 已经处理
         # import re # 这些导入可以移除，因为 _process_dynamic_date_placeholders 已经处理
 
