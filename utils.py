@@ -1,10 +1,7 @@
 # utils.py (最终智能匹配版)
 
 import re
-import os
-import psycopg2
-from datetime import datetime
-from typing import Optional, List, Dict, Any, Tuple
+from typing import Optional
 from urllib.parse import quote_plus
 import unicodedata
 import logging
@@ -267,7 +264,7 @@ DEFAULT_COUNTRY_MAPPING = [
 # --- 语言预设表 ---
 DEFAULT_LANGUAGE_MAPPING = [
     {"label": "国语", "value": "zh"},
-    {"label": "粤语", "value": "cn"}, # 注意：TMDb/Emby 中粤语代码通常也是 zh，这里 cn 可能是自定义标记
+    {"label": "粤语", "value": "cn"}, 
     {"label": "英语", "value": "en"},
     {"label": "日语", "value": "ja"},
     {"label": "韩语", "value": "ko"},
