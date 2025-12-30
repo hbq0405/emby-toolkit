@@ -628,28 +628,6 @@ def api_search_tmdb_companies():
         logger.error(f"搜索 TMDb {search_type} 时出错: {e}", exc_info=True)
         return jsonify({"error": "服务器内部错误"}), 500
     
-# --- 给前端筛选器用的工作室列表接口 ---
-@custom_collections_bp.route('/config/studios', methods=['GET'])
-@any_login_required
-def api_get_studios_for_filter():
-    """返回工作室映射的 Label 列表，供筛选下拉框使用"""
-    try:
-        from database import settings_db
-        # 获取完整配置
-        data = settings_db.get_setting('studio_mapping')
-        # 使用之前的辅助函数确保是列表
-        mapping_list = ensure_list_format(data, DEFAULT_STUDIO_MAPPING)
-        
-        # 转换为前端下拉框格式
-        studio_options = [
-            {"label": item['label'], "value": item['label']}
-            for item in mapping_list
-        ]
-        return jsonify(studio_options)
-    except Exception as e:
-        logger.error(f"获取工作室列表失败: {e}")
-        return jsonify([]), 500
-    
 # --- 搜索 TMDb 人物 (演员/导演) ---
 @custom_collections_bp.route('/config/tmdb_search_persons', methods=['GET'])
 @any_login_required
@@ -690,50 +668,6 @@ def api_search_tmdb_persons():
         logger.error(f"搜索 TMDb 人物时出错: {e}", exc_info=True)
         return jsonify({"error": "服务器内部错误"}), 500
     
-# --- 获取 TMDb 国家/地区选项列表 ---
-@custom_collections_bp.route('/config/tmdb_countries', methods=['GET'])
-@any_login_required
-def api_get_tmdb_countries():
-    """为 TMDb 探索助手提供国家/地区选项列表 (含ISO代码)。"""
-    try:
-        # 1. 优先从数据库读取
-        data = settings_db.get_setting('country_mapping')
-        # 2. 如果没有，使用默认预设
-        config_list = ensure_list_format(data, DEFAULT_COUNTRY_MAPPING)
-        
-        # 3. 格式化为前端需要的 {label, value}
-        options = []
-        for item in config_list:
-            if item.get('label') and item.get('value'):
-                options.append({
-                    "label": item['label'],
-                    "value": item['value']
-                })
-        return jsonify(options)
-    except Exception as e:
-        logger.error(f"获取 TMDb 国家/地区选项时出错: {e}", exc_info=True)
-        return jsonify({"error": "服务器内部错误"}), 500
-    
-# --- 提取关键词列表 ---
-@custom_collections_bp.route('/config/keywords', methods=['GET'])
-@any_login_required
-def api_get_keywords_for_filter():
-    try:
-        data = settings_db.get_setting('keyword_mapping')
-        
-        # 使用辅助函数处理
-        mapping_list = ensure_list_format(data, DEFAULT_KEYWORD_MAPPING)
-            
-        # 直接按列表顺序返回，不再强制 sort
-        keyword_options = [
-            {"label": item['label'], "value": item['label']}
-            for item in mapping_list
-        ]
-        return jsonify(keyword_options)
-    except Exception as e:
-        logger.error(f"获取关键词列表失败: {e}")
-        return jsonify([]), 500
-    
 # --- 提供电影类型映射的API ---
 @custom_collections_bp.route('/config/movie_genres', methods=['GET'])
 @admin_required
@@ -763,6 +697,8 @@ def api_get_tv_genres_config():
         return jsonify({"error": "服务器内部错误"}), 500
 
  # --- 获取关键词映射表 ---   
+
+# --- 获取关键词映射表 ---
 @custom_collections_bp.route('/config/keyword_mapping', methods=['GET'])
 def api_get_keyword_mapping():
     data = settings_db.get_setting('keyword_mapping')
@@ -777,19 +713,40 @@ def api_save_keyword_mapping():
     settings_db.save_setting('keyword_mapping', data)
     return jsonify({"message": "保存成功"})
 
-# --- 恢复默认关键词映射 ---
+# --- 恢复默认关键词映射表 ---
 @custom_collections_bp.route('/config/keyword_mapping/defaults', methods=['GET'])
 @admin_required
 def api_get_keyword_defaults():
     return jsonify(DEFAULT_KEYWORD_MAPPING)
 
-# --- 工作室映射相关路由 ---
+# --- 筛选器用的关键词列表 ---
+@custom_collections_bp.route('/config/keywords', methods=['GET'])
+@any_login_required
+def api_get_keywords_for_filter():
+    try:
+        data = settings_db.get_setting('keyword_mapping')
+        
+        # 使用辅助函数处理
+        mapping_list = ensure_list_format(data, DEFAULT_KEYWORD_MAPPING)
+            
+        # 直接按列表顺序返回，不再强制 sort
+        keyword_options = [
+            {"label": item['label'], "value": item['label']}
+            for item in mapping_list
+        ]
+        return jsonify(keyword_options)
+    except Exception as e:
+        logger.error(f"获取关键词列表失败: {e}")
+        return jsonify([]), 500
+
+# --- 获取工作室映射表 ---
 @custom_collections_bp.route('/config/studio_mapping', methods=['GET'])
 def api_get_studio_mapping():
     from database import settings_db
     data = settings_db.get_setting('studio_mapping')
     return jsonify(ensure_list_format(data, DEFAULT_STUDIO_MAPPING))
 
+# --- 保存工作室映射表 ---
 @custom_collections_bp.route('/config/studio_mapping', methods=['POST'])
 @admin_required
 def api_save_studio_mapping():
@@ -797,20 +754,43 @@ def api_save_studio_mapping():
     data = request.json
     settings_db.save_setting('studio_mapping', data)
     return jsonify({"message": "保存成功"})
+
+# --- 恢复默认工作室映射表 ---
 @custom_collections_bp.route('/config/studio_mapping/defaults', methods=['GET'])
 @admin_required
 def api_get_studio_defaults():
     return jsonify(DEFAULT_STUDIO_MAPPING)
 
-# ================= 国家/地区映射路由 =================
+# --- 筛选器用的工作室列表接口 ---
+@custom_collections_bp.route('/config/studios', methods=['GET'])
+@any_login_required
+def api_get_studios_for_filter():
+    """返回工作室映射的 Label 列表，供筛选下拉框使用"""
+    try:
+        from database import settings_db
+        # 获取完整配置
+        data = settings_db.get_setting('studio_mapping')
+        # 使用之前的辅助函数确保是列表
+        mapping_list = ensure_list_format(data, DEFAULT_STUDIO_MAPPING)
+        
+        # 转换为前端下拉框格式
+        studio_options = [
+            {"label": item['label'], "value": item['label']}
+            for item in mapping_list
+        ]
+        return jsonify(studio_options)
+    except Exception as e:
+        logger.error(f"获取工作室列表失败: {e}")
+        return jsonify([]), 500
 
+# --- 获取国家映射表 ---
 @custom_collections_bp.route('/config/country_mapping', methods=['GET'])
 def api_get_country_mapping():
-    from database import settings_db
     data = settings_db.get_setting('country_mapping')
     # 如果数据库没数据，返回默认值
     return jsonify(ensure_list_format(data, DEFAULT_COUNTRY_MAPPING))
 
+# --- 保存国家映射表 ---
 @custom_collections_bp.route('/config/country_mapping', methods=['POST'])
 @admin_required
 def api_save_country_mapping():
@@ -821,19 +801,44 @@ def api_save_country_mapping():
     # utils._country_map_cache = None 
     return jsonify({"message": "保存成功"})
 
+# --- 恢复默认国家映射表 ---
 @custom_collections_bp.route('/config/country_mapping/defaults', methods=['GET'])
 @admin_required
 def api_get_country_defaults():
     return jsonify(DEFAULT_COUNTRY_MAPPING)
 
-# ================= 语言映射路由 =================
+# --- 筛选器用的国家列表 ---
+@custom_collections_bp.route('/config/tmdb_countries', methods=['GET'])
+@any_login_required
+def api_get_tmdb_countries():
+    """为 TMDb 探索助手提供国家/地区选项列表 (含ISO代码)。"""
+    try:
+        # 1. 优先从数据库读取
+        data = settings_db.get_setting('country_mapping')
+        # 2. 如果没有，使用默认预设
+        config_list = ensure_list_format(data, DEFAULT_COUNTRY_MAPPING)
+        
+        # 3. 格式化为前端需要的 {label, value}
+        options = []
+        for item in config_list:
+            if item.get('label') and item.get('value'):
+                options.append({
+                    "label": item['label'],
+                    "value": item['value']
+                })
+        return jsonify(options)
+    except Exception as e:
+        logger.error(f"获取 TMDb 国家/地区选项时出错: {e}", exc_info=True)
+        return jsonify({"error": "服务器内部错误"}), 500
 
+# --- 获取语言映射表 ---
 @custom_collections_bp.route('/config/language_mapping', methods=['GET'])
 def api_get_language_mapping():
     from database import settings_db
     data = settings_db.get_setting('language_mapping')
     return jsonify(ensure_list_format(data, DEFAULT_LANGUAGE_MAPPING))
 
+# --- 保存语言映射表 ---
 @custom_collections_bp.route('/config/language_mapping', methods=['POST'])
 @admin_required
 def api_save_language_mapping():
@@ -842,12 +847,13 @@ def api_save_language_mapping():
     settings_db.save_setting('language_mapping', data)
     return jsonify({"message": "保存成功"})
 
+# --- 恢复默认语言映射表 ---
 @custom_collections_bp.route('/config/language_mapping/defaults', methods=['GET'])
 @admin_required
 def api_get_language_defaults():
     return jsonify(DEFAULT_LANGUAGE_MAPPING)
 
-# --- 获取语言选项列表 (新增) ---
+# --- 筛选器用的语言列表 ---
 @custom_collections_bp.route('/config/languages', methods=['GET'])
 @any_login_required
 def api_get_languages_for_filter():
