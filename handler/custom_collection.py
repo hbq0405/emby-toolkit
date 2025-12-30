@@ -302,7 +302,7 @@ class ListImporter:
         
         # 在解析前处理动态日期占位符 
         processed_url = self._process_dynamic_date_placeholders(url) 
-        logger.info(f"  ➜ 检测到TMDb Discover链接，开始动态获取 (支持分页和过滤): {url}")
+        logger.info(f"  ➜ 检测到TMDb Discover链接，开始动态获取 (支持分页和过滤): {processed_url}")
         parsed_url = urlparse(processed_url) # 使用处理后的 URL
         query_params = parse_qs(parsed_url.query)
         params = {k: v[0] for k, v in query_params.items()}
