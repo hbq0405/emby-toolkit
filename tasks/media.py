@@ -16,7 +16,7 @@ import handler.tmdb as tmdb
 import handler.emby as emby
 import handler.telegram as telegram
 from database import connection
-from utils import translate_country_list, get_unified_rating
+from utils import get_unified_rating
 from .helpers import parse_full_asset_details
 
 logger = logging.getLogger(__name__)
@@ -659,14 +659,13 @@ def task_populate_metadata_cache(processor, batch_size: int = 50, force_full_upd
                     if item_type == 'Movie':
                         credits_data = tmdb_details.get("credits", {}) or tmdb_details.get("casts", {})
                         directors = [{'id': p.get('id'), 'name': p.get('name')} for p in credits_data.get('crew', []) if p.get('job') == 'Director']
-                        country_codes = [c.get('iso_3166_1') for c in tmdb_details.get('production_countries', [])]
-                        countries = translate_country_list(country_codes)
+                        countries = [c.get('iso_3166_1') for c in tmdb_details.get('production_countries', []) if c.get('iso_3166_1')]
                         keywords_data = tmdb_details.get('keywords', {})
                         keyword_list = keywords_data.get('keywords', []) if isinstance(keywords_data, dict) else []
                         keywords = [{'id': k.get('id'), 'name': k.get('name')} for k in keyword_list if k.get('name')]
                     elif item_type == 'Series':
                         directors = [{'id': c.get('id'), 'name': c.get('name')} for c in tmdb_details.get('created_by', [])]
-                        countries = translate_country_list(tmdb_details.get('origin_country', []))
+                        countries = tmdb_details.get('origin_country', [])
                         keywords_data = tmdb_details.get('keywords', {})
                         keyword_list = keywords_data.get('results', []) if isinstance(keywords_data, dict) else []
                         keywords = [{'id': k.get('id'), 'name': k.get('name')} for k in keyword_list if k.get('name')]

@@ -23,7 +23,7 @@ from database.log_db import LogDBManager
 from database.connection import get_db_connection as get_central_db_connection
 from cachetools import TTLCache
 from ai_translator import AITranslator
-from utils import translate_country_list, get_unified_rating
+from utils import get_unified_rating
 from watchlist_processor import WatchlistProcessor
 from handler.douban import DoubanApi
 
@@ -322,10 +322,13 @@ class MediaProcessor:
             countries_raw = details.get('production_countries') or details.get('origin_country') or []
             country_codes = []
             for c in countries_raw:
-                if isinstance(c, dict): country_codes.append(c.get('iso_3166_1'))
-                elif isinstance(c, str): country_codes.append(c)
+                if isinstance(c, dict): 
+                    code = c.get('iso_3166_1')
+                    if code: country_codes.append(code)
+                elif isinstance(c, str) and c: 
+                    country_codes.append(c)
             
-            countries_json = json.dumps(translate_country_list(country_codes), ensure_ascii=False)
+            countries_json = json.dumps(country_codes, ensure_ascii=False)
 
             return genres_json, studios_json, keywords_json, countries_json
 
