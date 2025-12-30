@@ -1131,6 +1131,34 @@ class MediaProcessor:
                 # 默认演员表也来自本地（会被强制更新覆盖）
                 authoritative_cast_source = (source_json_data.get("casts", {}) or source_json_data.get("credits", {})).get("cast", [])
 
+                # =========================================================
+                # ★★★ 剧集专属补丁：如果本地缓存缺失关键词，强制在线补充 ★★★
+                # =========================================================
+                if item_type == "Series":
+                    # 检查 keywords 是否为空，或者是否缺少 results (剧集关键词在 results 里)
+                    current_kw = tmdb_details_for_extra.get('keywords')
+                    is_kw_missing = False
+                    
+                    if not current_kw:
+                        is_kw_missing = True
+                    elif isinstance(current_kw, dict) and not current_kw.get('results'):
+                        is_kw_missing = True
+                    
+                    if is_kw_missing and self.tmdb_api_key:
+                        logger.info(f"  ➜ 检测到剧集本地缓存缺失关键词，正在从 TMDb API 补充...")
+                        try:
+                            # 重新获取剧集详情 (假设 get_tv_details 包含 keywords 或 append_to_response)
+                            fresh_data = tmdb.get_tv_details(tmdb_id, self.tmdb_api_key)
+                            
+                            if fresh_data and 'keywords' in fresh_data:
+                                # 内存热修补：补全数据供后续入库使用
+                                tmdb_details_for_extra['keywords'] = fresh_data['keywords']
+                                logger.info(f"  ➜ 成功补充剧集关键词数据。")
+                            else:
+                                logger.debug(f"  ➜ TMDb API 返回的数据中也不包含 keywords。")
+                        except Exception as e_kw:
+                            logger.warning(f"  ➜ 尝试补充剧集关键词失败: {e_kw}")
+
                 # ★★★ 关键修复：如果是剧集，必须在此处聚合分集和季数据 ★★★
                 # 这样保证了 tmdb_details_for_extra 里的 seasons_details 永远是字典列表，防止 int 报错
                 if item_type == "Series":
