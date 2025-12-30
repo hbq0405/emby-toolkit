@@ -255,36 +255,48 @@ def get_all_subscriptions() -> List[Dict[str, Any]]:
 def get_user_request_history(user_id: str, page: int = 1, page_size: int = 10, status_filter: str = 'all') -> tuple[List[Dict[str, Any]], int]:
     """
     获取用户订阅历史记录。
+    ★ 修改：对于 Season 类型，关联查询父剧集标题，显示为 "剧名 第 X 季"
     """
     offset = (page - 1) * page_size
     source_filter = json.dumps([{"type": "user_request", "user_id": user_id}])
 
-    conditions = ["subscription_sources_json @> %s::jsonb"]
+    # ★ 1. 修改条件：给字段加上别名 m1.，因为后面要进行表连接
+    conditions = ["m1.subscription_sources_json @> %s::jsonb"]
     params = [source_filter]
 
     if status_filter == 'completed':
-        conditions.append("in_library = TRUE")
+        conditions.append("m1.in_library = TRUE")
     elif status_filter == 'pending':
-        conditions.append("in_library = FALSE AND subscription_status = 'REQUESTED'")
+        conditions.append("m1.in_library = FALSE AND m1.subscription_status = 'REQUESTED'")
     elif status_filter == 'processing':
-        conditions.append("in_library = FALSE AND subscription_status IN ('WANTED', 'SUBSCRIBED', 'PAUSED', 'PENDING_RELEASE')")
+        conditions.append("m1.in_library = FALSE AND m1.subscription_status IN ('WANTED', 'SUBSCRIBED', 'PAUSED', 'PENDING_RELEASE')")
     elif status_filter == 'failed':
-        conditions.append("in_library = FALSE AND subscription_status IN ('IGNORED', 'NONE')")
+        conditions.append("m1.in_library = FALSE AND m1.subscription_status IN ('IGNORED', 'NONE')")
     
     where_sql = " AND ".join(conditions)
 
-    count_sql = f"SELECT COUNT(*) FROM media_metadata WHERE {where_sql};"
+    # ★ 2. 修改 Count SQL：使用别名 m1
+    count_sql = f"SELECT COUNT(*) FROM media_metadata m1 WHERE {where_sql};"
     
+    # ★ 3. 修改 Data SQL：
+    # - 加入 LEFT JOIN media_metadata m2 (用于查找父剧集)
+    # - 使用 CASE WHEN 拼接标题
     data_sql = f"""
         SELECT 
-            tmdb_id, item_type, title, 
-            subscription_status as status, 
-            in_library, 
-            first_requested_at as requested_at, 
-            ignore_reason as notes
-        FROM media_metadata
+            m1.tmdb_id, 
+            m1.item_type, 
+            CASE 
+                WHEN m1.item_type = 'Season' AND m2.title IS NOT NULL THEN m2.title || ' ' || m1.title
+                ELSE m1.title 
+            END AS title,
+            m1.subscription_status as status, 
+            m1.in_library, 
+            m1.first_requested_at as requested_at, 
+            m1.ignore_reason as notes
+        FROM media_metadata m1
+        LEFT JOIN media_metadata m2 ON m1.parent_series_tmdb_id = m2.tmdb_id AND m2.item_type = 'Series'
         WHERE {where_sql}
-        ORDER BY first_requested_at DESC
+        ORDER BY m1.first_requested_at DESC
         LIMIT %s OFFSET %s;
     """
     
