@@ -1151,9 +1151,38 @@ class MediaProcessor:
                             fresh_data = tmdb.get_tv_details(tmdb_id, self.tmdb_api_key)
                             
                             if fresh_data and 'keywords' in fresh_data:
-                                # 内存热修补：补全数据供后续入库使用
+                                # 1. 内存热修补：补全数据供后续入库使用 (这一步必须做，否则数据库里还是没关键词)
                                 tmdb_details_for_extra['keywords'] = fresh_data['keywords']
-                                logger.info(f"  ➜ 成功补充剧集关键词数据。")
+                                
+                                # =================================================
+                                # ★★★ 修改：仅当覆盖文件已存在时才更新 (不创建新文件) ★★★
+                                # =================================================
+                                try:
+                                    target_override_dir = os.path.join(self.local_data_path, "override", cache_folder_name, tmdb_id)
+                                    override_json_path = os.path.join(target_override_dir, main_json_filename)
+                                    
+                                    # ★ 关键判断：只有文件存在时才执行读取和写入
+                                    if os.path.exists(override_json_path):
+                                        # 1. 读取现有文件
+                                        with open(override_json_path, 'r', encoding='utf-8') as f:
+                                            existing_data = json.load(f)
+                                        
+                                        # 2. 更新关键词
+                                        existing_data['keywords'] = fresh_data['keywords']
+                                        
+                                        # 3. 写回文件
+                                        with open(override_json_path, 'w', encoding='utf-8') as f:
+                                            json.dump(existing_data, f, ensure_ascii=False, indent=2)
+                                            
+                                        logger.info(f"  ➜ 成功补充剧集关键词到现有的覆盖缓存: {override_json_path}")
+                                    else:
+                                        # 文件不存在，什么都不做，保持“不创建”
+                                        pass
+                                        
+                                except Exception as e_save:
+                                    logger.warning(f"  ➜ 更新覆盖缓存文件失败: {e_save}")
+                                # =================================================
+
                             else:
                                 logger.debug(f"  ➜ TMDb API 返回的数据中也不包含 keywords。")
                         except Exception as e_kw:
