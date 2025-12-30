@@ -148,6 +148,47 @@ class ListImporter:
             tmdb_id = tmdb_match.group(1)
         return imdb_id, tmdb_id
     
+    def _process_dynamic_date_placeholders(self, url: str) -> str:
+        """
+        解析包含动态日期占位符的 TMDb URL。
+        支持格式: 
+        {today}
+        {today+N} (例如 {today+7})
+        {tomorrow}
+        {tomorrow+N} (例如 {tomorrow+7})
+        """
+        if '{' not in url:
+            return url
+
+        current_date = datetime.now().date()
+        
+        # 辅助函数：替换占位符
+        def replace_date_placeholder(match):
+            base_type = match.group(1) # 'today' 或 'tomorrow'
+            offset_str = match.group(2) # '+N' 部分 (可选)
+
+            base_date = current_date
+            if base_type == 'tomorrow':
+                base_date += timedelta(days=1) # 如果是 {tomorrow}，则从明天开始计算
+
+            target_date = base_date
+            if offset_str:
+                try:
+                    days_to_add = int(offset_str)
+                    target_date += timedelta(days=days_to_add)
+                except ValueError:
+                    logger.warning(f"  ➜ 无法解析日期偏移量: {offset_str}。")
+                    return match.group(0) # 如果解析失败，返回原始占位符
+            
+            return target_date.isoformat()
+
+        # 正则表达式匹配 {today} {today+N} {tomorrow} {tomorrow+N}
+        # 第1组: 'today' 或 'tomorrow'
+        # 第2组: '+N' 部分 (可选)
+        url = re.sub(r'\{(today|tomorrow)(\+\d+)?\}', replace_date_placeholder, url)
+        
+        return url
+
     def _get_items_from_douban_doulist(self, url: str) -> List[Dict[str, str]]:
         """专门用于解析和分页获取豆瓣豆列内容的函数"""
         all_items = []
@@ -258,27 +299,17 @@ class ListImporter:
     def _get_items_from_tmdb_discover(self, url: str) -> List[Dict[str, str]]:
         """专门用于解析TMDb Discover URL并获取结果的函数"""
         from urllib.parse import urlparse, parse_qs
-        from datetime import datetime, timedelta
-        import re
+        # from datetime import datetime, timedelta # 这些导入可以移除，因为 _process_dynamic_date_placeholders 已经处理
+        # import re # 这些导入可以移除，因为 _process_dynamic_date_placeholders 已经处理
 
         logger.info(f"  ➜ 检测到TMDb Discover链接，开始动态获取 (支持分页和过滤): {url}")
         
-        parsed_url = urlparse(url)
+        # ★★★ 核心修改：在解析前处理动态日期占位符 ★★★
+        processed_url = self._process_dynamic_date_placeholders(url) 
+        
+        parsed_url = urlparse(processed_url) # 使用处理后的 URL
         query_params = parse_qs(parsed_url.query)
         params = {k: v[0] for k, v in query_params.items()}
-
-        today = datetime.now()
-        date_pattern = re.compile(r'{today([+-]\d+)?}')
-
-        for key, value in params.items():
-            match = date_pattern.search(value)
-            if match:
-                offset_str = match.group(1) 
-                target_date = today
-                if offset_str:
-                    days = int(offset_str)
-                    target_date = today + timedelta(days=days)
-                params[key] = value.replace(match.group(0), target_date.strftime('%Y-%m-%d'))
 
         all_items = []
         current_page = 1
@@ -293,10 +324,10 @@ class ListImporter:
                 discover_data = None
                 item_type_for_result = None
 
-                if '/discover/movie' in url:
+                if '/discover/movie' in url: # 注意这里依然使用原始url判断类型
                     discover_data = tmdb.discover_movie_tmdb(self.tmdb_api_key, params)
                     item_type_for_result = 'Movie'
-                elif '/discover/tv' in url:
+                elif '/discover/tv' in url: # 注意这里依然使用原始url判断类型
                     discover_data = tmdb.discover_tv_tmdb(self.tmdb_api_key, params)
                     item_type_for_result = 'Series'
                 else:

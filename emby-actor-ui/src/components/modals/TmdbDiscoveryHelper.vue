@@ -398,10 +398,12 @@ const generatedUrl = computed(() => {
   const dateField = p.type === 'movie' ? 'primary_release_date' : 'first_air_date';
   
   if (p.next_days > 0) {
-    // 直接使用计算好的日期字符串
-    const { start, end } = calculatedDateRange.value;
-    query.append(`${dateField}.gte`, start);
-    query.append(`${dateField}.lte`, end);
+    // ★★★ 核心修改：不再写入死日期，而是写入动态占位符 ★★★
+    // 后端解析时：
+    // {tomorrow} -> 运行时日期的明天
+    // {tomorrow+N} -> 运行时日期的明天 + N天
+    query.append(`${dateField}.gte`, '{tomorrow}');
+    query.append(`${dateField}.lte`, `{tomorrow+${p.next_days}}`);
   } else {
     // 使用手动年份
     if (p.year_gte) query.append(`${dateField}.gte`, `${p.year_gte}-01-01`);
