@@ -251,7 +251,7 @@ class MediaProcessor:
             runtimes = [round(item['RunTimeTicks'] / 600000000) for item in emby_items if item.get('RunTimeTicks')]
             return max(runtimes) if runtimes else tmdb_runtime
         
-        # ★★★ 内部辅助函数：强力提取通用 JSON 字段 ★★★
+        # ★★★ 内部辅助函数：强力提取通用 JSON 字段 (修复版) ★★★
         def _extract_common_json_fields(details: Dict[str, Any], m_type: str):
             # 1. Genres (类型)
             genres_raw = details.get('genres', [])
@@ -262,8 +262,8 @@ class MediaProcessor:
             genres_json = json.dumps([n for n in genres_list if n], ensure_ascii=False)
 
             # 2. Studios (工作室/制作公司/电视网)
-            # ★ 基础：获取制作公司
-            raw_studios = details.get('production_companies', []) or []
+            # ★ 基础：获取制作公司 (使用 or [] 防止 None)
+            raw_studios = details.get('production_companies') or []
             # 确保是列表副本，避免修改原数据
             if isinstance(raw_studios, list):
                 raw_studios = list(raw_studios)
@@ -272,8 +272,8 @@ class MediaProcessor:
 
             if m_type == 'Series':
                 # ★ 剧集：追加 networks (播出平台)
-                networks = details.get('networks', []) or []
-                if networks:
+                networks = details.get('networks') or []
+                if isinstance(networks, list):
                     raw_studios.extend(networks)
             
             # 去重 (使用字典以 ID 为键)
@@ -298,14 +298,17 @@ class MediaProcessor:
             if isinstance(keywords_data, dict):
                 # ★★★ 混合策略：优先根据类型取值，取不到再尝试另一种 ★★★
                 if m_type == 'Series':
+                    # 剧集通常在 'results' 中
                     raw_k_list = keywords_data.get('results')
                 else:
+                    # 电影通常在 'keywords' 中
                     raw_k_list = keywords_data.get('keywords')
                 
                 # 兜底：如果首选键没有数据，尝试另一个 (防止数据结构混乱)
                 if not raw_k_list:
                     raw_k_list = keywords_data.get('results') or keywords_data.get('keywords') or []
             elif isinstance(keywords_data, list):
+                # 如果已经是列表 (可能是本地缓存被扁平化过)，直接使用
                 raw_k_list = keywords_data
             
             keywords = []
