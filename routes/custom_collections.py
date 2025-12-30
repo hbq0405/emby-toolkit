@@ -12,7 +12,7 @@ import config_manager
 import handler.emby as emby
 from tasks.helpers import is_movie_subscribable
 from extensions import admin_required, any_login_required, DELETING_COLLECTIONS
-from utils import get_country_translation_map, UNIFIED_RATING_CATEGORIES, get_tmdb_country_options, DEFAULT_KEYWORD_MAPPING, DEFAULT_STUDIO_MAPPING
+from utils import UNIFIED_RATING_CATEGORIES, DEFAULT_KEYWORD_MAPPING, DEFAULT_STUDIO_MAPPING, DEFAULT_COUNTRY_MAPPING, DEFAULT_LANGUAGE_MAPPING
 from handler.tmdb import get_movie_genres_tmdb, get_tv_genres_tmdb, search_companies_tmdb, search_person_tmdb, search_tv_tmdb, get_tv_details
 # 1. 创建自定义合集蓝图
 custom_collections_bp = Blueprint('custom_collections', __name__, url_prefix='/api/custom_collections')
@@ -472,22 +472,6 @@ def api_fix_media_match_in_custom_collection(collection_id):
         logger.error(f"修正合集 {collection_id} 媒体匹配时出错: {e}", exc_info=True)
         return jsonify({"error": f"服务器内部错误: {str(e)}"}), 500
 
-# --- 提取国家列表 ---
-@custom_collections_bp.route('/config/countries', methods=['GET'])
-@any_login_required
-def api_get_countries_for_filter():
-    """【重构版】为筛选器提供一个纯中文的国家/地区列表。"""
-    try:
-        # get_country_translation_map 返回 {'英文': '中文', ...}
-        # 我们需要的是所有的中文值
-        full_map = get_country_translation_map()
-        # 使用 set 去重，然后排序
-        chinese_names = sorted(list(set(full_map.values())))
-        return jsonify(chinese_names)
-    except Exception as e:
-        logger.error(f"获取国家/地区列表时出错: {e}", exc_info=True)
-        return jsonify([]), 500
-    
 # --- 提取标签列表 ---
 @custom_collections_bp.route('/config/tags', methods=['GET'])
 @admin_required
@@ -712,9 +696,20 @@ def api_search_tmdb_persons():
 def api_get_tmdb_countries():
     """为 TMDb 探索助手提供国家/地区选项列表 (含ISO代码)。"""
     try:
-        # 调用我们刚刚在 utils.py 中创建的新函数
-        country_options = get_tmdb_country_options()
-        return jsonify(country_options)
+        # 1. 优先从数据库读取
+        data = settings_db.get_setting('country_mapping')
+        # 2. 如果没有，使用默认预设
+        config_list = ensure_list_format(data, DEFAULT_COUNTRY_MAPPING)
+        
+        # 3. 格式化为前端需要的 {label, value}
+        options = []
+        for item in config_list:
+            if item.get('label') and item.get('value'):
+                options.append({
+                    "label": item['label'],
+                    "value": item['value']
+                })
+        return jsonify(options)
     except Exception as e:
         logger.error(f"获取 TMDb 国家/地区选项时出错: {e}", exc_info=True)
         return jsonify({"error": "服务器内部错误"}), 500
@@ -806,3 +801,72 @@ def api_save_studio_mapping():
 @admin_required
 def api_get_studio_defaults():
     return jsonify(DEFAULT_STUDIO_MAPPING)
+
+# ================= 国家/地区映射路由 =================
+
+@custom_collections_bp.route('/config/country_mapping', methods=['GET'])
+def api_get_country_mapping():
+    from database import settings_db
+    data = settings_db.get_setting('country_mapping')
+    # 如果数据库没数据，返回默认值
+    return jsonify(ensure_list_format(data, DEFAULT_COUNTRY_MAPPING))
+
+@custom_collections_bp.route('/config/country_mapping', methods=['POST'])
+@admin_required
+def api_save_country_mapping():
+    from database import settings_db
+    data = request.json
+    settings_db.save_setting('country_mapping', data)
+    # 清除 utils 中的缓存 (如果有)
+    # utils._country_map_cache = None 
+    return jsonify({"message": "保存成功"})
+
+@custom_collections_bp.route('/config/country_mapping/defaults', methods=['GET'])
+@admin_required
+def api_get_country_defaults():
+    return jsonify(DEFAULT_COUNTRY_MAPPING)
+
+# ================= 语言映射路由 =================
+
+@custom_collections_bp.route('/config/language_mapping', methods=['GET'])
+def api_get_language_mapping():
+    from database import settings_db
+    data = settings_db.get_setting('language_mapping')
+    return jsonify(ensure_list_format(data, DEFAULT_LANGUAGE_MAPPING))
+
+@custom_collections_bp.route('/config/language_mapping', methods=['POST'])
+@admin_required
+def api_save_language_mapping():
+    from database import settings_db
+    data = request.json
+    settings_db.save_setting('language_mapping', data)
+    return jsonify({"message": "保存成功"})
+
+@custom_collections_bp.route('/config/language_mapping/defaults', methods=['GET'])
+@admin_required
+def api_get_language_defaults():
+    return jsonify(DEFAULT_LANGUAGE_MAPPING)
+
+# --- 获取语言选项列表 (新增) ---
+@custom_collections_bp.route('/config/languages', methods=['GET'])
+@any_login_required
+def api_get_languages_for_filter():
+    """为筛选器提供语言选项列表。"""
+    try:
+        # 1. 优先从数据库读取
+        data = settings_db.get_setting('language_mapping')
+        # 2. 如果没有，使用默认预设
+        config_list = ensure_list_format(data, DEFAULT_LANGUAGE_MAPPING)
+        
+        # 3. 格式化
+        options = []
+        for item in config_list:
+            if item.get('label') and item.get('value'):
+                options.append({
+                    "label": item['label'],
+                    "value": item['value']
+                })
+        return jsonify(options)
+    except Exception as e:
+        logger.error(f"获取语言列表时出错: {e}", exc_info=True)
+        return jsonify([]), 500

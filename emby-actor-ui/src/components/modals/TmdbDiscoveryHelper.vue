@@ -228,7 +228,7 @@
 </template>
 
 <script setup>
-import { ref, computed, watch, h } from 'vue';
+import { ref, computed, watch, h, onMounted } from 'vue';
 import { NAvatar, NText } from 'naive-ui';
 import axios from 'axios';
 import { CheckmarkCircleOutline as CheckIcon } from '@vicons/ionicons5';
@@ -270,6 +270,7 @@ const loading = ref({
 const movieGenres = ref([]);
 const tvGenres = ref([]);
 const countryOptions = ref([]);
+const languageOptions = ref([]);
 const actorOptions = ref([]);
 const directorOptions = ref([]);
 
@@ -335,15 +336,6 @@ const sortOptions = computed(() => {
     { label: '票房/营收降序', value: 'revenue.desc' }
   ];
 });
-
-const languageOptions = [
-  { label: '不限', value: null },
-  { label: '英语 (en)', value: 'en' },
-  { label: '中文 (zh)', value: 'zh' },
-  { label: '日语 (ja)', value: 'ja' },
-  { label: '韩语 (ko)', value: 'ko' },
-  { label: '法语 (fr)', value: 'fr' }
-];
 
 // --- 辅助函数：格式化日期 YYYY-MM-DD ---
 const formatDate = (date) => {
@@ -473,16 +465,36 @@ const generatedUrl = computed(() => {
 // --- 数据获取 (保持不变) ---
 const fetchBasicConfigs = async () => {
   loading.value.genres = true;
-  loading.value.countries = true;
+  loading.value.countries = true; // 复用 loading 状态
   try {
-    const [mvRes, tvRes, cRes] = await Promise.all([
+    // ★★★ 修改 2: 调用 custom_collections 的接口 ★★★
+    const [mvRes, tvRes, cRes, lRes] = await Promise.all([
       axios.get('/api/custom_collections/config/tmdb_movie_genres'),
       axios.get('/api/custom_collections/config/tmdb_tv_genres'),
-      axios.get('/api/custom_collections/config/tmdb_countries')
+      axios.get('/api/custom_collections/config/tmdb_countries'), // 获取国家
+      axios.get('/api/custom_collections/config/languages')       // 获取语言
     ]);
+    
     movieGenres.value = mvRes.data;
     tvGenres.value = tvRes.data;
-    countryOptions.value = cRes.data;
+    
+    // 格式化国家选项
+    countryOptions.value = cRes.data.map(item => ({
+      label: item.label,
+      value: item.value
+    }));
+
+    // ★★★ 修改 3: 格式化语言选项 (显示为 "中文 (zh)" 格式) ★★★
+    languageOptions.value = lRes.data.map(item => ({
+      label: `${item.label} (${item.value})`,
+      value: item.value
+    }));
+    
+    // 添加一个“不限”选项在最前面
+    languageOptions.value.unshift({ label: '不限', value: null });
+
+  } catch (e) {
+    console.error('获取基础配置失败:', e);
   } finally {
     loading.value.genres = false;
     loading.value.countries = false;
@@ -534,7 +546,10 @@ const handleDirectorSearch = (q) => searchPerson(q, directorOptions, 'directors'
 watch(() => props.show, (val) => {
   if (val) {
     fetchMappings();
-    if (movieGenres.value.length === 0) fetchBasicConfigs();
+    // 每次打开都检查一下，如果没有数据就拉取
+    if (movieGenres.value.length === 0 || languageOptions.value.length === 0) {
+        fetchBasicConfigs();
+    }
   }
 });
 

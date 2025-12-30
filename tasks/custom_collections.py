@@ -5,9 +5,8 @@ import json
 import logging
 import pytz
 import time
-import random
 from datetime import datetime
-from typing import Dict, Any, List, Set
+from typing import Dict, Any
 
 # 导入需要的底层模块和共享实例
 import handler.emby as emby

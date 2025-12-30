@@ -4,7 +4,7 @@ from flask import Blueprint, jsonify, request, g, session
 
 from extensions import any_login_required
 import handler.tmdb as tmdb
-from utils import DEFAULT_KEYWORD_MAPPING, DEFAULT_STUDIO_MAPPING, contains_chinese, get_tmdb_language_options
+from utils import DEFAULT_KEYWORD_MAPPING, DEFAULT_STUDIO_MAPPING, contains_chinese, DEFAULT_LANGUAGE_MAPPING
 from database import media_db, settings_db, request_db
 from tasks.discover import task_update_daily_theme, task_replenish_recommendation_pool
 import task_manager
@@ -267,9 +267,24 @@ def search_media_handler():
 def api_get_discover_languages():
     """为影视探索页面提供专用的、友好的常用语言列表。"""
     try:
-        # 直接调用 utils 中的新函数，它已经返回了前端所需的格式
-        language_options = get_tmdb_language_options()
-        return jsonify(language_options)
+        # 1. 优先从数据库读取
+        data = settings_db.get_setting('language_mapping')
+        
+        # 2. 回落到默认值
+        if isinstance(data, list) and data:
+            mapping_list = data
+        else:
+            mapping_list = DEFAULT_LANGUAGE_MAPPING
+
+        # 3. 格式化返回
+        options = []
+        for item in mapping_list:
+            if item.get('label') and item.get('value'):
+                options.append({
+                    "label": item['label'],
+                    "value": item['value']
+                })
+        return jsonify(options)
     except Exception as e:
         logger.error(f"获取 Discover 语言列表时出错: {e}", exc_info=True)
         return jsonify([]), 500

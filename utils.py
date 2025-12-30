@@ -148,6 +148,31 @@ RATING_MAP = {
     'ao': '限制级', 'rp': '限制级', 'ur': '限制级',
 }
 
+def get_unified_rating(official_rating_str: str) -> str:
+    """
+    【V2 - 健壮版】
+    根据 Emby 的 OfficialRating 字符串，返回统一后的分级。
+    能正确处理带国家前缀 (us-R) 和不带前缀 (R) 的各种情况。
+    """
+    if not official_rating_str:
+        return '未知'
+
+    # 先转为小写，方便匹配
+    rating_value = str(official_rating_str).lower()
+
+    # 如果包含国家代码 (e.g., "us-r"), 则提取后面的部分
+    if '-' in rating_value:
+        # 这是一个小技巧，可以安全地处理 "us-r" 和 "pg-13"
+        # 对于 "us-r", parts[-1] 是 "r"
+        # 对于 "pg-13", parts[-1] 是 "13"
+        # 但为了更准确，我们直接检查整个分割后的部分
+        parts = rating_value.split('-', 1)
+        if len(parts) > 1:
+            rating_value = parts[1]
+
+    # 直接在字典中查找处理后的值
+    return RATING_MAP.get(rating_value, '未知')
+
 # --- 关键词预设表 ---
 DEFAULT_KEYWORD_MAPPING = [
     {"label": "丧尸", "en": ["zombie"], "ids": [12377]},
@@ -194,9 +219,10 @@ DEFAULT_STUDIO_MAPPING = [
     {"label": "爱奇艺", "en": ["iQiyi"], "ids": [1330]},
     {"label": "优酷", "en": ["Youku"], "ids": [1419]},
     {"label": "芒果", "en": ["Mango TV", "Hunan TV"], "ids": [1631, 952]},
-    {"label": "央视", "en": ["CCTV"], "ids": [521, 1363]}, 
+    {"label": "央视", "en": ["CCTV-8", "CCTV-1"], "ids": [521, 1363]}, 
     {"label": "浙江卫视", "en": ["Zhejiang Television"], "ids": [989]},
     {"label": "江苏卫视", "en": ["Jiangsu Television"], "ids": [1055]},
+    {"label": "TVB", "en": ["TVB Jade"], "ids": [48]},
     # --- 传统制作公司 (Company IDs) ---
     # 这些通常用于电影，或者作为电视剧的制作方（非播出平台）
     {"label": "漫威", "en": ["Marvel Studios"], "ids": [420]},
@@ -205,165 +231,55 @@ DEFAULT_STUDIO_MAPPING = [
     {"label": "A24", "en": ["A24"], "ids": [41077]},
 ]
 
-def get_unified_rating(official_rating_str: str) -> str:
-    """
-    【V2 - 健壮版】
-    根据 Emby 的 OfficialRating 字符串，返回统一后的分级。
-    能正确处理带国家前缀 (us-R) 和不带前缀 (R) 的各种情况。
-    """
-    if not official_rating_str:
-        return '未知'
+# --- 国家预设表 ---
+DEFAULT_COUNTRY_MAPPING = [
+    {"label": "中国大陆", "value": "CN", "aliases": ["China", "PRC"]},
+    {"label": "中国香港", "value": "HK", "aliases": ["Hong Kong"]},
+    {"label": "中国台湾", "value": "TW", "aliases": ["Taiwan"]},
+    {"label": "美国", "value": "US", "aliases": ["United States of America", "USA"]},
+    {"label": "英国", "value": "GB", "aliases": ["United Kingdom", "UK"]},
+    {"label": "日本", "value": "JP", "aliases": ["Japan"]},
+    {"label": "韩国", "value": "KR", "aliases": ["South Korea", "Korea, Republic of"]},
+    {"label": "法国", "value": "FR", "aliases": ["France"]},
+    {"label": "德国", "value": "DE", "aliases": ["Germany"]},
+    {"label": "意大利", "value": "IT", "aliases": ["Italy"]},
+    {"label": "西班牙", "value": "ES", "aliases": ["Spain"]},
+    {"label": "加拿大", "value": "CA", "aliases": ["Canada"]},
+    {"label": "澳大利亚", "value": "AU", "aliases": ["Australia"]},
+    {"label": "印度", "value": "IN", "aliases": ["India"]},
+    {"label": "俄罗斯", "value": "RU", "aliases": ["Russia"]},
+    {"label": "泰国", "value": "TH", "aliases": ["Thailand"]},
+    {"label": "瑞典", "value": "SE", "aliases": ["Sweden"]},
+    {"label": "丹麦", "value": "DK", "aliases": ["Denmark"]},
+    {"label": "挪威", "value": "NO", "aliases": ["Norway"]},
+    {"label": "荷兰", "value": "NL", "aliases": ["Netherlands"]},
+    {"label": "巴西", "value": "BR", "aliases": ["Brazil"]},
+    {"label": "墨西哥", "value": "MX", "aliases": ["Mexico"]},
+    {"label": "阿根廷", "value": "AR", "aliases": ["Argentina"]},
+    {"label": "新西兰", "value": "NZ", "aliases": ["New Zealand"]},
+    {"label": "爱尔兰", "value": "IE", "aliases": ["Ireland"]},
+    {"label": "新加坡", "value": "SG", "aliases": ["Singapore"]},
+    {"label": "比利时", "value": "BE", "aliases": ["Belgium"]},
+    {"label": "芬兰", "value": "FI", "aliases": ["Finland"]},
+    {"label": "波兰", "value": "PL", "aliases": ["Poland"]},
+]
 
-    # 先转为小写，方便匹配
-    rating_value = str(official_rating_str).lower()
-
-    # 如果包含国家代码 (e.g., "us-r"), 则提取后面的部分
-    if '-' in rating_value:
-        # 这是一个小技巧，可以安全地处理 "us-r" 和 "pg-13"
-        # 对于 "us-r", parts[-1] 是 "r"
-        # 对于 "pg-13", parts[-1] 是 "13"
-        # 但为了更准确，我们直接检查整个分割后的部分
-        parts = rating_value.split('-', 1)
-        if len(parts) > 1:
-            rating_value = parts[1]
-
-    # 直接在字典中查找处理后的值
-    return RATING_MAP.get(rating_value, '未知')
-# --- ★★★ 新增结束 ★★★ ---
-
-_COUNTRY_SOURCE_DATA = {
-    "China": {"chinese_name": "中国大陆", "abbr": "CN"},
-    "Taiwan": {"chinese_name": "中国台湾", "abbr": "TW"},
-    "Hong Kong": {"chinese_name": "中国香港", "abbr": "HK"},
-    "United States of America": {"chinese_name": "美国", "abbr": "US"},
-    "Japan": {"chinese_name": "日本", "abbr": "JP"},
-    "South Korea": {"chinese_name": "韩国", "abbr": "KR"},
-    "United Kingdom": {"chinese_name": "英国", "abbr": "GB"},
-    "France": {"chinese_name": "法国", "abbr": "FR"},
-    "Germany": {"chinese_name": "德国", "abbr": "DE"},
-    "Canada": {"chinese_name": "加拿大", "abbr": "CA"},
-    "India": {"chinese_name": "印度", "abbr": "IN"},
-    "Italy": {"chinese_name": "意大利", "abbr": "IT"},
-    "Spain": {"chinese_name": "西班牙", "abbr": "ES"},
-    "Australia": {"chinese_name": "澳大利亚", "abbr": "AU"},
-    "Russia": {"chinese_name": "俄罗斯", "abbr": "RU"},
-    "Thailand": {"chinese_name": "泰国", "abbr": "TH"},
-    "Sweden": {"chinese_name": "瑞典", "abbr": "SE"},
-    "Denmark": {"chinese_name": "丹麦", "abbr": "DK"},
-    "Mexico": {"chinese_name": "墨西哥", "abbr": "MX"},
-    "Brazil": {"chinese_name": "巴西", "abbr": "BR"},
-    "Argentina": {"chinese_name": "阿根廷", "abbr": "AR"},
-    "Ireland": {"chinese_name": "爱尔兰", "abbr": "IE"},
-    "New Zealand": {"chinese_name": "新西兰", "abbr": "NZ"},
-    "Netherlands": {"chinese_name": "荷兰", "abbr": "NL"},
-    "Singapore": {"chinese_name": "新加坡", "abbr": "SG"},
-    "Belgium": {"chinese_name": "比利时", "abbr": "BE"}
-}
-
-# --- 国家/地区名称映射功能 (已重构) ---
-_country_map_cache = None
-def get_country_translation_map() -> dict:
-    """
-    从 _COUNTRY_SOURCE_DATA 构建并缓存国家/地区反向映射表。
-    """
-    global _country_map_cache
-    if _country_map_cache is not None:
-        return _country_map_cache
-
-    try:
-        reverse_map = {}
-        for english_name, details in _COUNTRY_SOURCE_DATA.items():
-            chinese_name = details.get('chinese_name')
-            abbr = details.get('abbr')
-            if chinese_name:
-                reverse_map[english_name] = chinese_name
-                if abbr:
-                    reverse_map[abbr.lower()] = chinese_name
-        
-        _country_map_cache = reverse_map
-        logger.trace(f"成功从代码中加载并缓存了 {len(reverse_map)} 条国家/地区映射。")
-        return _country_map_cache
-
-    except Exception as e:
-        logger.error(f"从硬编码数据构建国家映射时出错: {e}。")
-        _country_map_cache = {}
-        return {}
-
-def get_tmdb_country_options():
-    """
-    从 _COUNTRY_SOURCE_DATA 生成前端需要的国家/地区选项。
-    """
-    options = []
-    # ★ 现在从常量读取数据
-    for details in _COUNTRY_SOURCE_DATA.values():
-        if details.get('chinese_name') and details.get('abbr'):
-            options.append({
-                "label": details['chinese_name'],
-                "value": details['abbr']
-            })
-    
-    return options
-
-def translate_country_list(country_names_or_codes: list) -> list:
-    """
-    接收一个包含国家英文名或代码的列表，返回一个翻译后的中文名列表。
-    """
-    if not country_names_or_codes:
-        return []
-    
-    translation_map = get_country_translation_map()
-    
-    if not translation_map:
-        return country_names_or_codes
-
-    translated_list = []
-    for item in country_names_or_codes:
-        translated = translation_map.get(item.lower(), translation_map.get(item, item))
-        translated_list.append(translated)
-        
-    return list(dict.fromkeys(translated_list))
-
-# --- 语言名称映射 ---
-LANGUAGE_TRANSLATION_MAP = {
-    "zh": "国语",
-    "cn": "粤语",
-    "en": "英语",
-    "ja": "日语",
-    "ko": "韩语",
-    "fr": "法语",
-    "de": "德语",
-    "es": "西班牙语",
-    "it": "意大利语",
-    "ru": "俄语",
-    "th": "泰语",
-    "hi": "印地语",
-    "pt": "葡萄牙语",
-    "sv": "瑞典语",
-    "da": "丹麦语",
-    "nl": "荷兰语",
-    "no": "挪威语",
-    "fi": "芬兰语",
-    "pl": "波兰语",
-    "tr": "土耳其语",
-    "ar": "阿拉伯语",
-    "he": "希伯来语",
-    "id": "印尼语",
-    "ms": "马来语",
-    "vi": "越南语",
-    "cs": "捷克语",
-    "hu": "匈牙利语",
-    "ro": "罗马尼亚语",
-    "el": "希腊语",
-    "xx": "无语言"
-}
-
-def get_tmdb_language_options():
-    """
-    从硬编码的语言映射表中，生成前端需要的 [{label: '中文', value: '代码'}, ...] 格式。
-    严格保持与 LANGUAGE_TRANSLATION_MAP 字典中定义一致的顺序。
-    """
-    options = [
-        {"label": chinese_name, "value": code}
-        for code, chinese_name in LANGUAGE_TRANSLATION_MAP.items()
-    ]
-    return options
+# --- 语言预设表 ---
+DEFAULT_LANGUAGE_MAPPING = [
+    {"label": "国语", "value": "zh"},
+    {"label": "粤语", "value": "cn"}, # 注意：TMDb/Emby 中粤语代码通常也是 zh，这里 cn 可能是自定义标记
+    {"label": "英语", "value": "en"},
+    {"label": "日语", "value": "ja"},
+    {"label": "韩语", "value": "ko"},
+    {"label": "法语", "value": "fr"},
+    {"label": "德语", "value": "de"},
+    {"label": "西班牙语", "value": "es"},
+    {"label": "意大利语", "value": "it"},
+    {"label": "俄语", "value": "ru"},
+    {"label": "泰语", "value": "th"},
+    {"label": "印地语", "value": "hi"},
+    {"label": "葡萄牙语", "value": "pt"},
+    {"label": "阿拉伯语", "value": "ar"},
+    {"label": "拉丁语", "value": "la"},
+    {"label": "无语言", "value": "xx"},
+]

@@ -1354,20 +1354,20 @@ const audioLangOptions = [
   { label: '韩语', value: '韩语' }
 ];
 
-const filterLanguageOptions = [
-  { label: '英语 (en)', value: 'en' },
-  { label: '中文 (zh)', value: 'zh' },
-  { label: '日语 (ja)', value: 'ja' },
-  { label: '韩语 (ko)', value: 'ko' },
-  { label: '法语 (fr)', value: 'fr' },
-  { label: '德语 (de)', value: 'de' },
-  { label: '俄语 (ru)', value: 'ru' },
-  { label: '西班牙语 (es)', value: 'es' },
-  { label: '意大利语 (it)', value: 'it' },
-  { label: '泰语 (th)', value: 'th' },
-  { label: '粤语 (cn)', value: 'cn' },
-  { label: '印地语 (hi)', value: 'hi' }
-];
+const filterLanguageOptions = ref([]);
+const fetchLanguageOptions = async () => {
+  try {
+    const response = await axios.get('/api/custom_collections/config/languages');
+    // 后端返回 [{label: '中文', value: 'zh'}, ...]
+    // 前端格式化为 "中文 (zh)" 以便展示
+    filterLanguageOptions.value = response.data.map(item => ({
+      label: `${item.label} (${item.value})`,
+      value: item.value
+    }));
+  } catch (error) {
+    console.error('获取语言列表失败:', error);
+  }
+};
 
 const operatorLabels = {
   contains: '包含', does_not_contain: '不包含', starts_with: '开头是', ends_with: '结尾是',    
@@ -1706,11 +1706,10 @@ const fetchEmbyLibraries = async () => {
 
 const fetchCountryOptions = async () => {
   try {
-    const response = await axios.get('/api/custom_collections/config/countries');
-    const countryList = response.data; 
-    countryOptions.value = countryList.map(name => ({
-      label: name,
-      value: name
+    const response = await axios.get('/api/custom_collections/config/tmdb_countries');
+    countryOptions.value = response.data.map(item => ({
+      label: item.label, // 显示：中国大陆
+      value: item.value  // 存储：CN
     }));
   } catch (error) {
     message.error('获取国家/地区列表失败。');
@@ -2235,12 +2234,15 @@ watch(showMappingModal, (newVal) => {
     // 模态框关闭时，刷新下拉框数据
     fetchKeywordOptions();
     fetchStudioMappingOptions();
+    fetchCountryOptions();
+    fetchLanguageOptions()
   }
 });
 
 onMounted(() => {
   fetchCollections();
   fetchCountryOptions();
+  fetchLanguageOptions(); 
   fetchTagOptions();
   fetchKeywordOptions(); 
   fetchStudioMappingOptions(); 
