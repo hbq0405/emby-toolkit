@@ -1150,41 +1150,63 @@ class MediaProcessor:
                             # 重新获取剧集详情 (假设 get_tv_details 包含 keywords 或 append_to_response)
                             fresh_data = tmdb.get_tv_details(tmdb_id, self.tmdb_api_key)
                             
-                            if fresh_data and 'keywords' in fresh_data:
-                                # 1. 内存热修补：补全数据供后续入库使用 (这一步必须做，否则数据库里还是没关键词)
-                                tmdb_details_for_extra['keywords'] = fresh_data['keywords']
-                                
+                            kw_data = fresh_data.get('keywords') if fresh_data else None
+                            
+                            # 只有当关键词数据有效（包含 results 列表且不为空）时才执行更新
+                            if kw_data and isinstance(kw_data, dict) and kw_data.get('results'):
+                                # 1. 内存热修补 (确保数据库能写入)
+                                tmdb_details_for_extra['keywords'] = kw_data
+                                logger.info(f"  ➜ [API] 获取到 {len(kw_data['results'])} 个关键词，准备同步到本地文件...")
+
                                 # =================================================
-                                # ★★★ 修改：仅当覆盖文件已存在时才更新 (不创建新文件) ★★★
+                                # ★★★ 动作 A: 强制修复源缓存文件 (Source Cache) ★★★
+                                # =================================================
+                                try:
+                                    # source_json_path 在上文已定义，直接使用
+                                    if os.path.exists(source_json_path):
+                                        # 先读
+                                        with open(source_json_path, 'r', encoding='utf-8') as f:
+                                            src_data = json.load(f)
+                                        
+                                        # 修改
+                                        src_data['keywords'] = kw_data
+                                        
+                                        # 后写
+                                        with open(source_json_path, 'w', encoding='utf-8') as f:
+                                            json.dump(src_data, f, ensure_ascii=False, indent=2)
+                                        logger.info(f"  ➜ [Source] 已修复源缓存文件: {source_json_path}")
+                                    else:
+                                        logger.warning(f"  ➜ [Source] 源文件不存在，无法修复: {source_json_path}")
+                                except Exception as e_src:
+                                    logger.warning(f"  ➜ [Source] 修复源缓存文件失败: {e_src}")
+
+                                # =================================================
+                                # ★★★ 动作 B: 同步覆盖缓存文件 (Override) ★★★
                                 # =================================================
                                 try:
                                     target_override_dir = os.path.join(self.local_data_path, "override", cache_folder_name, tmdb_id)
                                     override_json_path = os.path.join(target_override_dir, main_json_filename)
                                     
-                                    # ★ 关键判断：只有文件存在时才执行读取和写入
+                                    # 仅当覆盖文件已存在时才更新 (不创建新文件)
                                     if os.path.exists(override_json_path):
-                                        # 1. 读取现有文件
                                         with open(override_json_path, 'r', encoding='utf-8') as f:
                                             existing_data = json.load(f)
                                         
-                                        # 2. 更新关键词
-                                        existing_data['keywords'] = fresh_data['keywords']
+                                        existing_data['keywords'] = kw_data
                                         
-                                        # 3. 写回文件
                                         with open(override_json_path, 'w', encoding='utf-8') as f:
                                             json.dump(existing_data, f, ensure_ascii=False, indent=2)
                                             
-                                        logger.info(f"  ➜ 成功补充剧集关键词到现有的覆盖缓存: {override_json_path}")
+                                        logger.info(f"  ➜ [Override] 已同步关键词到覆盖缓存: {override_json_path}")
                                     else:
-                                        # 文件不存在，什么都不做，保持“不创建”
+                                        # 文件不存在，跳过
                                         pass
                                         
-                                except Exception as e_save:
-                                    logger.warning(f"  ➜ 更新覆盖缓存文件失败: {e_save}")
-                                # =================================================
+                                except Exception as e_ovr:
+                                    logger.warning(f"  ➜ [Override] 同步覆盖缓存文件失败: {e_ovr}")
 
                             else:
-                                logger.debug(f"  ➜ TMDb API 返回的数据中也不包含 keywords。")
+                                logger.warning(f"  ➜ TMDb API 返回了数据，但关键词列表为空 (可能该剧集确实没有关键词)。")
                         except Exception as e_kw:
                             logger.warning(f"  ➜ 尝试补充剧集关键词失败: {e_kw}")
 
