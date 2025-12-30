@@ -234,7 +234,9 @@ class MediaProcessor:
     ):
         """
         - 实时元数据写入。
-        【修复版】统一处理 Movie 和 Series 的 Genres, Studios, Keywords 字段，确保写入数据库。
+        【修复版】
+        1. 电影使用 production_companies，剧集优先使用 networks。
+        2. 区分电影 (keywords) 和剧集 (results) 的关键词结构。
         """
         if not item_details_from_emby:
             logger.error("  ➜ 写入元数据缓存失败：缺少 Emby 详情数据。")
@@ -249,8 +251,8 @@ class MediaProcessor:
             runtimes = [round(item['RunTimeTicks'] / 600000000) for item in emby_items if item.get('RunTimeTicks')]
             return max(runtimes) if runtimes else tmdb_runtime
         
-        # ★★★ 内部辅助函数：统一提取通用 JSON 字段 ★★★
-        def _extract_common_json_fields(details: Dict[str, Any]):
+        # ★★★ 内部辅助函数：根据类型精准提取 JSON 字段 ★★★
+        def _extract_common_json_fields(details: Dict[str, Any], m_type: str):
             # 1. Genres (类型)
             genres_raw = details.get('genres', [])
             genres_list = []
@@ -259,8 +261,18 @@ class MediaProcessor:
                 elif isinstance(g, str): genres_list.append(g)
             genres_json = json.dumps([n for n in genres_list if n], ensure_ascii=False)
 
-            # 2. Studios (制作公司)
-            studios_raw = details.get('production_companies', [])
+            # 2. Studios (工作室/制作公司/电视网)
+            studios_raw = []
+            if m_type == 'Series':
+                # ★★★ 剧集：优先使用 networks (播出平台) ★★★
+                studios_raw = details.get('networks', [])
+                # 如果没有 networks，兜底使用 production_companies
+                if not studios_raw:
+                    studios_raw = details.get('production_companies', [])
+            else:
+                # ★★★ 电影：使用 production_companies ★★★
+                studios_raw = details.get('production_companies', [])
+            
             studios_list = []
             for s in studios_raw:
                 if isinstance(s, dict):
@@ -272,10 +284,16 @@ class MediaProcessor:
             # 3. Keywords (关键词)
             keywords_data = details.get('keywords', {})
             raw_k_list = []
+            
             if isinstance(keywords_data, dict):
-                # TMDb API 结构差异：电影通常在 'keywords' 下，剧集在 'results' 下
-                raw_k_list = keywords_data.get('keywords', []) or keywords_data.get('results', [])
+                if m_type == 'Series':
+                    # ★★★ 剧集：关键词在 results 下 ★★★
+                    raw_k_list = keywords_data.get('results', [])
+                else:
+                    # ★★★ 电影：关键词在 keywords 下 ★★★
+                    raw_k_list = keywords_data.get('keywords', [])
             elif isinstance(keywords_data, list):
+                # 兼容某些特殊情况或本地缓存格式
                 raw_k_list = keywords_data
             
             keywords = []
@@ -287,7 +305,14 @@ class MediaProcessor:
             keywords_json = json.dumps(keywords, ensure_ascii=False)
 
             # 4. Countries (国家)
-            countries_json = json.dumps(translate_country_list([c.get('iso_3166_1') for c in details.get('production_countries', [])]), ensure_ascii=False)
+            # 剧集通常用 origin_country (list of strings)，电影用 production_countries (list of dicts)
+            countries_raw = details.get('production_countries') or details.get('origin_country') or []
+            country_codes = []
+            for c in countries_raw:
+                if isinstance(c, dict): country_codes.append(c.get('iso_3166_1'))
+                elif isinstance(c, str): country_codes.append(c)
+            
+            countries_json = json.dumps(translate_country_list(country_codes), ensure_ascii=False)
 
             return genres_json, studios_json, keywords_json, countries_json
 
@@ -336,8 +361,8 @@ class MediaProcessor:
                 movie_record['date_added'] = item_details_from_emby.get("DateCreated")
                 movie_record['overview_embedding'] = overview_embedding_json
 
-                # ★★★ 提取通用字段 (Genres, Studios, Keywords) ★★★
-                g_json, s_json, k_json, c_json = _extract_common_json_fields(source_data_package)
+                # ★★★ 提取通用字段 (传入 'Movie') ★★★
+                g_json, s_json, k_json, c_json = _extract_common_json_fields(source_data_package, 'Movie')
                 movie_record['genres_json'] = g_json
                 movie_record['studios_json'] = s_json
                 movie_record['keywords_json'] = k_json
@@ -402,8 +427,8 @@ class MediaProcessor:
                 series_record['official_rating'] = tmdb_official_rating
                 series_record['unified_rating'] = get_unified_rating(tmdb_official_rating)
 
-                # ★★★ 提取通用字段 (Genres, Studios, Keywords) - 修复了之前的 Bug ★★★
-                g_json, s_json, k_json, c_json = _extract_common_json_fields(series_details)
+                # ★★★ 提取通用字段 (传入 'Series') ★★★
+                g_json, s_json, k_json, c_json = _extract_common_json_fields(series_details, 'Series')
                 series_record['genres_json'] = g_json
                 series_record['studios_json'] = s_json
                 series_record['keywords_json'] = k_json
@@ -422,7 +447,6 @@ class MediaProcessor:
                 records_to_upsert.append(series_record)
 
                 # ★★★ 3. 处理季 (Season) ★★★
-                # 获取所有 Emby 季版本用于匹配
                 emby_season_versions = emby.get_series_seasons(
                     series_id=item_details_from_emby.get('Id'),
                     base_url=self.emby_url,
@@ -459,7 +483,6 @@ class MediaProcessor:
                 raw_episodes = source_data_package.get("episodes_details", {})
                 episodes_details = list(raw_episodes.values()) if isinstance(raw_episodes, dict) else (raw_episodes if isinstance(raw_episodes, list) else [])
                 
-                # 获取所有 Emby 分集版本
                 emby_episode_versions = emby.get_all_library_versions(
                     base_url=self.emby_url, api_key=self.emby_api_key, user_id=self.emby_user_id,
                     media_type_filter="Episode", parent_id=item_details_from_emby.get('Id'),
@@ -503,7 +526,7 @@ class MediaProcessor:
                 return
 
             # ==================================================================
-            # 批量写入数据库 (逻辑简化，只负责映射)
+            # 批量写入数据库
             # ==================================================================
             all_possible_columns = [
                 "tmdb_id", "item_type", "title", "original_title", "overview", "release_date", "release_year",
