@@ -262,23 +262,33 @@ class MediaProcessor:
             genres_json = json.dumps([n for n in genres_list if n], ensure_ascii=False)
 
             # 2. Studios (工作室/制作公司/电视网)
-            studios_raw = []
-            if m_type == 'Series':
-                # ★ 剧集：优先使用 networks (播出平台)
-                studios_raw = details.get('networks', [])
-                if not studios_raw:
-                    studios_raw = details.get('production_companies', [])
+            # ★ 基础：获取制作公司
+            raw_studios = details.get('production_companies', []) or []
+            # 确保是列表副本，避免修改原数据
+            if isinstance(raw_studios, list):
+                raw_studios = list(raw_studios)
             else:
-                # ★ 电影：使用 production_companies
-                studios_raw = details.get('production_companies', [])
+                raw_studios = []
+
+            if m_type == 'Series':
+                # ★ 剧集：追加 networks (播出平台)
+                networks = details.get('networks', []) or []
+                if networks:
+                    raw_studios.extend(networks)
             
-            studios_list = []
-            for s in studios_raw:
+            # 去重 (使用字典以 ID 为键)
+            unique_studios_map = {}
+            for s in raw_studios:
                 if isinstance(s, dict):
-                    studios_list.append({'id': s.get('id'), 'name': s.get('name')})
-                elif isinstance(s, str):
-                    studios_list.append({'id': None, 'name': s})
-            studios_json = json.dumps([s for s in studios_list if s.get('name')], ensure_ascii=False)
+                    s_id = s.get('id')
+                    s_name = s.get('name')
+                    if s_name:
+                        # 后来的覆盖前面的（通常 Networks 在后，保留 Networks 更合理）
+                        unique_studios_map[s_id] = {'id': s_id, 'name': s_name}
+                elif isinstance(s, str) and s:
+                    unique_studios_map[s] = {'id': None, 'name': s}
+            
+            studios_json = json.dumps(list(unique_studios_map.values()), ensure_ascii=False)
 
             # 3. Keywords (关键词)
             # 兼容 keywords (dict/list) 和 tags (list)
@@ -286,9 +296,15 @@ class MediaProcessor:
             raw_k_list = []
             
             if isinstance(keywords_data, dict):
-                # ★★★ 混合策略：不管类型，同时尝试 results 和 keywords ★★★
-                # 这样即使剧集数据意外存成了电影结构（或反之），也能提取到
-                raw_k_list = keywords_data.get('results') or keywords_data.get('keywords') or []
+                # ★★★ 混合策略：优先根据类型取值，取不到再尝试另一种 ★★★
+                if m_type == 'Series':
+                    raw_k_list = keywords_data.get('results')
+                else:
+                    raw_k_list = keywords_data.get('keywords')
+                
+                # 兜底：如果首选键没有数据，尝试另一个 (防止数据结构混乱)
+                if not raw_k_list:
+                    raw_k_list = keywords_data.get('results') or keywords_data.get('keywords') or []
             elif isinstance(keywords_data, list):
                 raw_k_list = keywords_data
             

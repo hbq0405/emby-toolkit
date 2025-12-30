@@ -631,10 +631,24 @@ def task_populate_metadata_cache(processor, batch_size: int = 50, force_full_upd
                 if tmdb_details:
                     top_record['poster_path'] = tmdb_details.get('poster_path')
                     top_record['overview'] = tmdb_details.get('overview')
-                    top_record['studios_json'] = json.dumps(
-                        [{'id': s.get('id'), 'name': s.get('name')} for s in tmdb_details.get('production_companies', []) if s.get('name')], 
-                        ensure_ascii=False
-                    )
+                    # 1. 获取基础制作公司
+                    raw_studios = tmdb_details.get('production_companies', []) or []
+
+                    # 2. 如果是电视剧，追加 Networks (电视台/流媒体平台)
+                    if item_type == 'Series':
+                        networks = tmdb_details.get('networks', []) or []
+                        raw_studios.extend(networks)
+
+                    # 3. 去重 (使用字典以 ID 为键进行去重) 并格式化
+                    unique_studios_map = {}
+                    for s in raw_studios:
+                        s_id = s.get('id')
+                        s_name = s.get('name')
+                        if s_name:
+                            # 如果 ID 冲突，后来的覆盖前面的（通常 Networks 在后，保留 Networks 更合理）
+                            unique_studios_map[s_id] = {'id': s_id, 'name': s_name}
+
+                    top_record['studios_json'] = json.dumps(list(unique_studios_map.values()), ensure_ascii=False)
                     if item_type == 'Movie':
                         top_record['runtime_minutes'] = tmdb_details.get('runtime')
                     
