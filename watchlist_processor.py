@@ -1051,11 +1051,33 @@ class WatchlistProcessor:
             # 情况 B: 无下一集信息 (或信息不全)
             else:
                 if days_since_last != 9999:
-                    # 逻辑：只要 TMDb 没有下一集的排期，且上一集已经播出了，直接判定完结。
-                    # 无论本地是否缺集（可能是正在洗版被删了），只要没有未来排期，就是 Completed。
-                    final_status = STATUS_COMPLETED
-                    paused_until_date = None
-                    logger.info(f"  🏁 [判定-已完结] 无待播集信息，上一集已播出 {days_since_last} 天。判定为“已完结” (跳过30天缓冲以支持自动洗版)。")
+                    # 1. 获取当前季的 TMDb 总集数
+                    current_season_total = 0
+                    last_s_num = last_episode_to_air.get('season_number')
+                    last_e_num = last_episode_to_air.get('episode_number')
+                    
+                    if last_s_num:
+                        # 从 series_details 的 seasons 列表中找到对应季的 info
+                        season_info = next((s for s in latest_series_data.get('seasons', []) if s.get('season_number') == last_s_num), None)
+                        if season_info:
+                            current_season_total = season_info.get('episode_count', 0)
+
+                    # 2. 核心判断：
+                    # 条件：状态是“连载中” AND (当前季总集数 > 0) AND (已播集号 < 总集数)
+                    # 只要满足这个条件，说明这季还没播完，绝对不能判完结。
+                    if new_tmdb_status == "Returning Series" and last_e_num and current_season_total > 0 and last_e_num < current_season_total:
+                        final_status = STATUS_WATCHING
+                        paused_until_date = None
+                        logger.info(f"  🛡️ [判定-连载中] 虽无未来排期，但本季尚未播完 (进度: S{last_s_num} - {last_e_num}/{current_season_total})，判定为数据滞后，保持“追剧中”。")
+                    
+                    # 否则 -> 判定完结
+                    # 包含情况：
+                    # 1. Status 是 Ended/Canceled (直接完结)
+                    # 2. Status 是 Returning，但已播集数 >= 总集数 (本季完结 -> 视为完结，等待后续复活逻辑)
+                    else:
+                        final_status = STATUS_COMPLETED
+                        paused_until_date = None
+                        logger.info(f"  🏁 [判定-已完结] 无待播集信息，且本季已完结或剧集已完结 (进度: S{last_s_num} - {last_e_num}/{current_season_total})。")
                 
                 else:
                     # 极端情况：无任何日期信息
