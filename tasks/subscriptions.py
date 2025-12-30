@@ -449,7 +449,16 @@ def task_auto_subscribe(processor):
                         if item_type not in cancelled_ids_map:
                             cancelled_ids_map[item_type] = []
                         cancelled_ids_map[item_type].append(item['tmdb_id']) # ★ 注意：这里用原始的 tmdb_id
-                        cancelled_for_report.append(f"《{item['title']}》")
+                        display_title = item['title']
+                        if item_type == 'Season':
+                            parent_id = item.get('parent_series_tmdb_id')
+                            s_num = item.get('season_number')
+                            if parent_id:
+                                series_title = media_db.get_series_title_by_tmdb_id(str(parent_id))
+                                if series_title and s_num is not None:
+                                    display_title = f"{series_title} 第 {s_num} 季"
+                        
+                        cancelled_for_report.append(f"《{display_title}》")
 
                 # 批量更新数据库状态
                 for item_type, tmdb_ids in cancelled_ids_map.items():
@@ -720,9 +729,10 @@ def task_auto_subscribe(processor):
                 item_display_name = ""
                 if item_type == 'Season':
                     season_num = item.get('season_number')
-                    default_season_title = f"第{season_num}季" if season_num is not None else ""
-                    season_display_title = item.get('season_title', default_season_title)
-                    item_display_name = f"剧集《{series_name} - {season_display_title}》"
+                    if season_num is not None:
+                        item_display_name = f"剧集《{series_name} 第 {season_num} 季》"
+                    else:
+                        item_display_name = f"剧集《{series_name}》"
                 else:
                     item_display_name = f"{item_type}《{item['title']}》"
                 
@@ -737,7 +747,15 @@ def task_auto_subscribe(processor):
                     elif source_type == 'user_request' and (user_id := source.get('user_id')):
                         if user_id not in notifications_to_send:
                             notifications_to_send[user_id] = []
-                        notifications_to_send[user_id].append(item['title'])
+                        
+                        # ★★★ 修改：为用户通知构建完整的标题 ★★★
+                        user_notify_title = item['title']
+                        if item_type == 'Season':
+                            season_num = item.get('season_number')
+                            if season_num is not None:
+                                user_notify_title = f"{series_name} 第 {season_num} 季"
+                        
+                        notifications_to_send[user_id].append(user_notify_title)
                         source_display_parts.append(f"用户请求({user_db.get_username_by_id(user_id) or user_id})")
                     elif source_type == 'actor_subscription':
                         source_display_parts.append(f"演员订阅({source.get('name', '未知')})")
