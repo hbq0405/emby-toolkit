@@ -3,7 +3,7 @@ import os
 import requests
 import io
 import glob
-from PIL import Image, ImageDraw, ImageFont
+from PIL import Image, ImageDraw, ImageFont, ImageEnhance
 import config_manager
 from database.connection import get_db_connection
 from database import media_db
@@ -11,7 +11,7 @@ from database import media_db
 STATUS_CONF = {
     'WANTED': {'color': '#2196F3', 'text': '待订阅'},
     'SUBSCRIBED': {'color': '#FF9800', 'text': '已订阅'},
-    'PENDING_RELEASE': {'color': '#9C27B0', 'text': '上线日期'},
+    'PENDING_RELEASE': {'color': '#9C27B0', 'text': '未上映'},
     'PAUSED': {'color': '#9E9E9E', 'text': '暂无资源'},
     'IGNORED': {'color': '#F44336', 'text': '已忽略'}
 }
@@ -30,7 +30,6 @@ def cleanup_placeholder(tmdb_id):
                 (str(tmdb_id),)
             )
             rows = cursor.fetchall()
-            # 如果还有任何类型处于订阅相关状态，则保留海报
             active_statuses = {'WANTED', 'SUBSCRIBED', 'PENDING_RELEASE', 'PAUSED'}
             for row in rows:
                 if row.get('subscription_status') in active_statuses:
@@ -44,8 +43,8 @@ def cleanup_placeholder(tmdb_id):
 
 def get_missing_poster(tmdb_id, status, poster_path, release_date=None):
     """
-    生成单张占位海报 (2025 酷炫流媒体版 - 全状态通用)
-    设计：底部黑色渐变遮罩 + 极简文字 + 状态色条 + 英文副标题
+    生成单张占位海报 (2025 优雅UI卡片版)
+    设计：全图压暗微去色 + 状态色内边框 + 底部悬浮黑玻胶囊
     """
     if status == 'NONE':
         cleanup_placeholder(tmdb_id)
@@ -80,85 +79,87 @@ def get_missing_poster(tmdb_id, status, poster_path, release_date=None):
     # 2. 准备配置
     conf = STATUS_CONF.get(status, STATUS_CONF['WANTED'])
     accent_color = conf['color']
+
+    # --- ★★★ 核心修改 1: 视觉降噪处理 (虚实区分) ★★★ ---
+    # A. 降低饱和度 (0.6): 让颜色不那么艳丽，区别于正片
+    enhancer = ImageEnhance.Color(img)
+    img = enhancer.enhance(0.6)
     
-    # 3. 绘制底部黑色渐变 (Cinematic Gradient)
-    gradient = Image.new('RGBA', img.size, (0,0,0,0))
-    draw_grad = ImageDraw.Draw(gradient)
-    
-    grad_height = int(img.height * 0.55) 
-    start_y = img.height - grad_height
-    
-    for y in range(grad_height):
-        # 保持之前的渐变参数，效果很好
-        alpha = int((y / grad_height) ** 1.2 * 250) 
-        draw_grad.line([(0, start_y + y), (img.width, start_y + y)], fill=(0, 0, 0, alpha))
-        
-    img = Image.alpha_composite(img, gradient)
+    # B. 降低亮度 (0.4): 压暗背景，让白色文字和亮色边框更醒目
+    enhancer = ImageEnhance.Brightness(img)
+    img = enhancer.enhance(0.4)
+
     draw = ImageDraw.Draw(img)
 
-    # 4. 绘制文字和装饰
-    font_path = os.path.join(INTERNAL_DATA_DIR, 'cover_generator', 'fonts', 'zh_font.ttf')
-    
-    try:
-        font_date = ImageFont.truetype(font_path, 62) 
-        font_label = ImageFont.truetype(font_path, 26) 
-    except:
-        font_date = ImageFont.load_default()
-        font_label = ImageFont.load_default()
+    # --- ★★★ 核心修改 2: 状态内边框 (UI感) ★★★ ---
+    # 在四周画一个半透明的有色边框，像取景框一样
+    border_width = 15
+    draw.rectangle(
+        [0, 0, img.width - 1, img.height - 1], 
+        outline=accent_color, 
+        width=border_width
+    )
 
-    # --- ★★★ 核心修改：全状态文案适配 ★★★ ---
-    # 定义副标题映射 (英文装饰，提升质感)
+    # 3. 准备文字
+    font_path = os.path.join(INTERNAL_DATA_DIR, 'cover_generator', 'fonts', 'zh_font.ttf')
+    try:
+        font_main = ImageFont.truetype(font_path, 52) 
+        font_sub = ImageFont.truetype(font_path, 22) 
+    except:
+        font_main = ImageFont.load_default()
+        font_sub = ImageFont.load_default()
+
     sub_text_map = {
-        'WANTED': 'QUEUED',           # 待订阅 -> 队列中
-        'SUBSCRIBED': 'ACTIVE',       # 已订阅 -> 活跃中
-        'PENDING_RELEASE': 'COMING SOON', # 未发行 -> 即将到来
-        'PAUSED': 'NO SOURCES',       # 暂无资源 -> 无资源
-        'IGNORED': 'IGNORED'          # 已忽略 -> 已忽略
+        'WANTED': 'QUEUED',
+        'SUBSCRIBED': 'ACTIVE',
+        'PENDING_RELEASE': 'COMING SOON',
+        'PAUSED': 'NO SOURCES',
+        'IGNORED': 'IGNORED'
     }
 
     if status == 'PENDING_RELEASE' and release_date:
-        # 特殊逻辑：有日期显示日期
         main_text = str(release_date)
-        sub_text = "COMING SOON | 即将上线"
+        sub_text = "COMING SOON"
     else:
-        # 通用逻辑：显示中文状态名
-        main_text = conf['text'] # 如 "待订阅", "已订阅"
-        # 获取对应的英文副标题，如果没有则显示状态码
+        main_text = conf['text']
         sub_text = sub_text_map.get(status, status)
 
-    # --- 布局计算 (保持优化后的参数) ---
-    base_y = img.height - 200
+    # --- ★★★ 核心修改 3: 底部悬浮胶囊 (Floating Capsule) ★★★ ---
     
-    # 1. 装饰线条 (颜色跟随状态变化)
-    line_w = 60
-    line_h = 6
-    line_x = (img.width - line_w) // 2
-    line_y = base_y 
+    # 计算文字大小
+    left, top, right, bottom = draw.textbbox((0, 0), main_text, font=font_main)
+    main_w = right - left
+    main_h = bottom - top
     
+    left, top, right, bottom = draw.textbbox((0, 0), sub_text, font=font_sub)
+    sub_w = right - left
+    sub_h = bottom - top
+
+    # 胶囊尺寸
+    capsule_w = max(main_w, sub_w) + 120 # 左右留白
+    if capsule_w < 300: capsule_w = 300  # 最小宽度
+    capsule_h = main_h + sub_h + 50      # 上下留白
+
+    capsule_x = (img.width - capsule_w) // 2
+    capsule_y = img.height - capsule_h - 100 # 距离底部 100px 悬浮
+
+    # 绘制胶囊背景 (黑色半透明)
     draw.rounded_rectangle(
-        [line_x, line_y, line_x + line_w, line_y + line_h], 
-        radius=3, 
-        fill=accent_color
+        [capsule_x, capsule_y, capsule_x + capsule_w, capsule_y + capsule_h],
+        radius=20,
+        fill=(0, 0, 0, 200), # 黑色背景，透明度 200/255
+        outline=None
     )
 
-    # 2. 主标题 (日期 或 中文状态)
-    left, top, right, bottom = draw.textbbox((0, 0), main_text, font=font_date)
-    text_w = right - left
-    text_h = bottom - top
-    
-    text_y = line_y + 35
-    
-    # 绘制阴影和文字
-    draw.text(((img.width - text_w)/2 + 2, text_y + 3), main_text, font=font_date, fill=(0,0,0,160))
-    draw.text(((img.width - text_w)/2, text_y), main_text, font=font_date, fill="#FFFFFF")
+    # 绘制主标题 (白色)
+    main_x = (img.width - main_w) // 2
+    main_y = capsule_y + 25
+    draw.text((main_x, main_y), main_text, font=font_main, fill="#FFFFFF")
 
-    # 3. 副标题 (英文装饰)
-    left, top, right, bottom = draw.textbbox((0, 0), sub_text, font=font_label)
-    sub_w = right - left
-    
-    sub_y = text_y + text_h + 18
-    
-    draw.text(((img.width - sub_w)/2, sub_y), sub_text, font=font_label, fill="#BBBBBB")
+    # 绘制副标题 (使用状态色，呼应边框)
+    sub_x = (img.width - sub_w) // 2
+    sub_y = main_y + main_h + 8
+    draw.text((sub_x, sub_y), sub_text, font=font_sub, fill=accent_color)
 
     # 5. 保存
     img.convert('RGB').save(cache_path, "JPEG", quality=95)
@@ -166,7 +167,7 @@ def get_missing_poster(tmdb_id, status, poster_path, release_date=None):
 
 def sync_all_subscription_posters():
     """
-    ✨ 增强版：全量同步并清理占位海报
+    全量同步并清理占位海报
     """
     import logging
     logger = logging.getLogger(__name__)
@@ -190,27 +191,21 @@ def sync_all_subscription_posters():
             if status in ['WANTED', 'SUBSCRIBED', 'PENDING_RELEASE', 'PAUSED', 'IGNORED']:
                 active_tmdb_ids.add(target_id)
                 
-                # ★★★ 修改 3: 传入 release_date ★★★
                 get_missing_poster(
                     tmdb_id=target_id,
                     status=status,
                     poster_path=item.get('poster_path'),
-                    release_date=item.get('release_date') # 从数据库字典中获取
+                    release_date=item.get('release_date')
                 )
 
-    # 3. ✨ 垃圾回收阶段：清理孤儿文件
-    # 扫描缓存目录下所有的 jpg 文件
+    # 垃圾回收阶段
     all_cached_files = glob.glob(os.path.join(cache_dir, "*.jpg"))
     cleanup_count = 0
     
     for file_path in all_cached_files:
         filename = os.path.basename(file_path)
-        # 文件名格式通常是: {tmdb_id}_{status}.jpg
-        # 我们提取开头的 tmdb_id
         try:
             file_tmdb_id = filename.split('_')[0]
-            
-            # 如果这个文件的 ID 不在活跃订阅集合里，说明是过期的，直接删除
             if file_tmdb_id not in active_tmdb_ids:
                 os.remove(file_path)
                 cleanup_count += 1
