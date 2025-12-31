@@ -253,15 +253,15 @@ def query_virtual_library_items(
             {rating_expr} IS NOT NULL 
             AND (
                 CASE 
-                    WHEN {rating_expr} = 'PG-13' THEN 7
-                    WHEN {rating_expr} = 'TV-PG' THEN 7 
-                    WHEN {rating_expr} = 'TV-Y7' THEN 7
+                    WHEN {rating_expr} = 'PG-13' THEN 8
+                    WHEN {rating_expr} = 'TV-PG' THEN 5 
+                    WHEN {rating_expr} = 'TV-Y7' THEN 4
                     WHEN {rating_expr} = 'TV-14' THEN 8
-                    WHEN {rating_expr} IN ('G', 'TV-G', 'TV-Y') THEN 0
-                    WHEN {rating_expr} = 'PG' THEN 6 
-                    WHEN {rating_expr} = 'R' THEN 17
-                    WHEN {rating_expr} = 'TV-MA' THEN 17
-                    WHEN {rating_expr} = 'NC-17' THEN 18
+                    WHEN {rating_expr} IN ('G', 'TV-G', 'TV-Y') THEN 1
+                    WHEN {rating_expr} = 'PG' THEN 5 
+                    WHEN {rating_expr} = 'R' THEN 9
+                    WHEN {rating_expr} = 'TV-MA' THEN 9
+                    WHEN {rating_expr} = 'NC-17' THEN 10
                     WHEN {rating_expr} IN ('X', 'XXX', 'AO') THEN 18
                     WHEN {rating_expr} IN ('NR', 'UR', 'Unrated', 'Not Rated') THEN 0
                     ELSE COALESCE(

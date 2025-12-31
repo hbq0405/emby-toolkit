@@ -763,7 +763,7 @@ class MediaProcessor:
                 logger.warning(f"本地豆瓣缓存文件 '{local_json_path}' 无效，将回退到在线API。")
         
         # 3. 如果本地未找到，回退到功能完整的在线API路径
-        logger.info("  ➜ 未找到本地豆瓣缓存，将通过在线API获取演员和评分信息。")
+        logger.info("  ➜ 未找到本地豆瓣缓存，将通过在线API获取演员信息。")
 
         # 3.1 匹配豆瓣ID和类型。现在 match_info 返回的结果是完全可信的。
         match_info_result = self.douban_api.match_info(
