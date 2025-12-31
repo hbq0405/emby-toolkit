@@ -136,7 +136,7 @@ DEFAULT_RATING_MAPPING = {
         {"code": "R", "label": "成人"},
         {"code": "TV-MA", "label": "成人"},
         {"code": "NC-17", "label": "限制级"},
-        {"code": "NR", "label": "限制级"},
+        {"code": "NR", "label": "未知"},
         {"code": "Unrated", "label": "未知"}
     ],
     "JP": [
@@ -156,13 +156,13 @@ DEFAULT_RATING_MAPPING = {
         {"code": "6+", "label": "家长辅导"},
         {"code": "12+", "label": "青少年"},
         {"code": "15+", "label": "成人"},
-        {"code": "18+", "label": "限制级"}
+        {"code": "18+", "label": "成人"}
     ],
     "KR": [
         {"code": "All", "label": "全年龄"},
         {"code": "12", "label": "家长辅导"},
         {"code": "15", "label": "青少年"},
-        {"code": "18", "label": "限制级"},
+        {"code": "18", "label": "成人"},
         {"code": "Restricted", "label": "限制级"}
     ],
     "GB": [
@@ -171,7 +171,7 @@ DEFAULT_RATING_MAPPING = {
         {"code": "12", "label": "青少年"},
         {"code": "12A", "label": "青少年"},
         {"code": "15", "label": "成人"},
-        {"code": "18", "label": "限制级"},
+        {"code": "18", "label": "成人"},
         {"code": "R18", "label": "限制级"}
     ]
 }
