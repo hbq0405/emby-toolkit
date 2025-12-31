@@ -1241,7 +1241,7 @@ class MediaProcessor:
 
             # 如果是强制更新，从 API 获取最新演员表来替换上面的默认演员表
             if force_full_update and self.tmdb_api_key:
-                logger.info(f"  ➜ [深度更新/首次入库] 正在从 TMDb API 拉取全量元数据 (导演/分级/工作室/演员)...")
+                logger.info(f"  ➜ [深度更新] 正在从 TMDb API 拉取全量元数据 ...")
                 
                 if item_type == "Movie":
                     # 获取电影全量详情 (假设 get_movie_details 内部已包含 append_to_response=credits,release_dates,keywords)
