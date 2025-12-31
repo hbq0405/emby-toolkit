@@ -10,11 +10,11 @@ from croniter import croniter
 import re
 
 # 导入我们的任务链执行器和任务注册表
-import tasks
 import config_manager # 导入配置管理器以读取配置
 import constants      # 导入常量以获取时区
 import extensions     # 导入 extensions 以获取共享的处理器实例
 import task_manager   # 导入 task_manager 以提交任务
+from tasks.core import get_task_registry
 
 logger = logging.getLogger(__name__)
 
@@ -241,7 +241,7 @@ class SchedulerManager:
         task_sequence = config.get(sequence_key, [])
 
         if is_enabled and cron_str and task_sequence:
-            registry = tasks.get_task_registry()
+            registry = get_task_registry()
             task_info = registry.get(task_key)
             if not task_info:
                 logger.error(f"设置 '{job_name}' 失败：在任务注册表中未找到任务键 '{task_key}'。")
@@ -325,7 +325,7 @@ class SchedulerManager:
             pass 
 
         cron_str = '0 5 * * *' 
-        registry = tasks.get_task_registry()
+        registry = get_task_registry()
         task_info = registry.get('run_new_season_check')
         
         if not task_info:
@@ -368,7 +368,7 @@ class SchedulerManager:
 
         # 每天凌晨 0 点 5 分执行
         cron_str = '5 0 * * *' 
-        registry = tasks.get_task_registry()
+        registry = get_task_registry()
         task_info = registry.get('update-daily-theme')
         
         if not task_info:

@@ -488,28 +488,32 @@ def get_single_subscription_details(subscription_id: int) -> Optional[Dict[str, 
         with get_db_connection() as conn:
             cursor = conn.cursor()
             
-            # 步骤 1: 获取订阅本身的信息
+            # 步骤 1: 获取订阅本身的信息 (保持不变)
             cursor.execute("SELECT * FROM actor_subscriptions WHERE id = %s", (subscription_id,))
             sub_row = cursor.fetchone()
             if not sub_row:
                 return None
             
-            # ★★★ 步骤 2: 从 media_metadata 表中查询所有被此订阅追踪的媒体 ★★★
-            # 我们使用 JSONB 的 @> 操作符来高效查询
+            # ★★★ 步骤 2: 修改查询逻辑，关联获取父剧集信息 ★★★
             source_filter = json.dumps([{"type": "actor_subscription", "id": subscription_id}])
             cursor.execute(
                 """
                     SELECT 
-                        tmdb_id as tmdb_media_id, 
-                        item_type as media_type,
-                        title, release_date, poster_path,
-                        subscription_status as status,
-                        emby_item_ids_json, -- 用于前端跳转
-                        in_library,
-                        ignore_reason
-                    FROM media_metadata 
-                    WHERE subscription_sources_json @> %s::jsonb
-                    ORDER BY release_date DESC
+                        m.tmdb_id as tmdb_media_id, 
+                        m.item_type as media_type,
+                        m.title, 
+                        m.release_date, 
+                        m.poster_path,
+                        m.subscription_status as status,
+                        m.emby_item_ids_json,
+                        m.in_library,
+                        m.ignore_reason,
+                        m.season_number,          -- 新增：获取季号
+                        p.title as parent_title   -- 新增：获取父剧集标题
+                    FROM media_metadata m
+                    LEFT JOIN media_metadata p ON m.parent_series_tmdb_id = p.tmdb_id
+                    WHERE m.subscription_sources_json @> %s::jsonb
+                    ORDER BY m.release_date DESC
                 """, 
                 (source_filter,)
             )
@@ -517,6 +521,14 @@ def get_single_subscription_details(subscription_id: int) -> Optional[Dict[str, 
             tracked_media = []
             for row in cursor.fetchall():
                 media_item = dict(row)
+                
+                # ★★★ 新增：强制格式化季的标题 (剧名 第 X 季) ★★★
+                if media_item['media_type'] == 'Season':
+                    parent_title = media_item.get('parent_title')
+                    season_num = media_item.get('season_number')
+                    # 只有当父标题和季号都存在时才格式化，否则保持原样
+                    if parent_title and season_num is not None:
+                        media_item['title'] = f"{parent_title} 第 {season_num} 季"
                 
                 # ▼▼▼ 全新的、更精确的状态判断逻辑 ▼▼▼
                 final_status = ''

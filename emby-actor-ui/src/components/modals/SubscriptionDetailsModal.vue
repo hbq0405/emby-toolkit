@@ -133,7 +133,7 @@ const createColumns = () => {
       key: 'media_type', 
       width: 80,
       render(row) {
-        const typeMap = { 'Series': '电视剧', 'Movie': '电影' };
+        const typeMap = { 'Series': '电视剧', 'Movie': '电影', 'Season': '电视剧' };
         return typeMap[row.media_type] || row.media_type;
       }
     },

@@ -164,7 +164,7 @@ def handle_single_actor_subscription(sub_id):
 @actor_subscriptions_bp.route('/<int:sub_id>/refresh', methods=['POST'])
 @admin_required
 def refresh_single_actor_subscription(sub_id):
-    from tasks import task_scan_actor_media 
+    from tasks.actors import task_scan_actor_media 
 
     # ★★★ 核心修改：先从数据库获取订阅详情以拿到演员名 ★★★
     try:

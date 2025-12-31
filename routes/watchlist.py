@@ -116,7 +116,7 @@ def api_remove_from_watchlist(item_id):
 @admin_required
 def api_trigger_single_watchlist_refresh(item_id):
     """触发单个剧集的刷新任务。"""
-    from tasks import task_process_watchlist 
+    from tasks.watchlist import task_process_watchlist 
     
     # 明确此时的 item_id 就是 tmdb_id
     tmdb_id = item_id

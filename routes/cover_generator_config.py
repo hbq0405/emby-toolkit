@@ -6,7 +6,7 @@ from flask import Blueprint, request, jsonify
 from extensions import media_processor_instance
 import config_manager # 导入以获取数据路径
 from extensions import admin_required
-from tasks import get_task_registry
+from tasks.core import get_task_registry
 import handler.emby as emby
 from services.cover_generator.styles.badge_drawer import draw_badge
 from services.cover_generator import CoverGeneratorService 

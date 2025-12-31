@@ -144,9 +144,7 @@ def task_scan_actor_media(processor, subscription_id: int):
         
         sub_processor.run_full_scan_for_actor(
             subscription_id=subscription_id,
-            emby_media_map=emby_media_map,
-            emby_series_seasons_map=emby_series_seasons_map,
-            emby_series_name_to_tmdb_id_map=emby_series_name_to_tmdb_id_map
+            emby_media_map=emby_media_map
         )
         
         task_manager.update_status_from_thread(100, "扫描完成。")

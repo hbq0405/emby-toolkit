@@ -18,11 +18,9 @@ import handler.telegram as telegram
 import extensions
 from extensions import SYSTEM_UPDATE_MARKERS, SYSTEM_UPDATE_LOCK, RECURSION_SUPPRESSION_WINDOW, DELETING_COLLECTIONS, UPDATING_IMAGES
 from core_processor import MediaProcessor
-from tasks import (
-    task_auto_sync_template_on_policy_change,
-    task_sync_all_metadata, task_sync_images,
-    task_process_watchlist
-)
+from tasks.watchlist import task_process_watchlist
+from tasks.users import task_auto_sync_template_on_policy_change
+from tasks.media import task_sync_all_metadata, task_sync_images
 from handler.custom_collection import RecommendationEngine
 from handler import tmdb_collections as collections_handler
 from services.cover_generator import CoverGeneratorService

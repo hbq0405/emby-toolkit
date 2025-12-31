@@ -7,7 +7,7 @@ from flask import Blueprint, request, jsonify
 import task_manager 
 from extensions import admin_required, processor_ready_required, task_lock_required
 # ★★★ 导入任务注册表，这是“翻译”的关键 ★★★
-from tasks import get_task_registry
+from tasks.core import get_task_registry
 
 logger = logging.getLogger(__name__)
 

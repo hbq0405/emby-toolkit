@@ -240,7 +240,7 @@ def api_import_database():
     """
     【V6 - 健壮的 Gzip 导入】接收备份文件和要导入的表名列表...
     """
-    from tasks import task_import_database
+    from tasks.maintenance import task_import_database
     if 'file' not in request.files:
         return jsonify({"error": "请求中未找到文件部分"}), 400
     

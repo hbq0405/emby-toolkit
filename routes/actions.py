@@ -18,7 +18,7 @@ logger = logging.getLogger(__name__)
 @actions_bp.route('/actions/reprocess_item/<item_id>', methods=['POST'])
 @admin_required
 def api_reprocess_item(item_id):
-    from tasks import task_reprocess_single_item # 延迟导入
+    from tasks.media import task_reprocess_single_item # 延迟导入
     import handler.emby as emby
 
     item_details = emby.get_emby_item_details(
@@ -48,7 +48,7 @@ def api_reprocess_item(item_id):
 @task_lock_required
 @processor_ready_required
 def api_reprocess_all_review_items():
-    from tasks import task_reprocess_all_review_items # 延迟导入
+    from tasks.media import task_reprocess_all_review_items # 延迟导入
     success = task_manager.submit_task(task_reprocess_all_review_items, "重新处理所有待复核项", processor_type='media')
     if success:
         return jsonify({"message": "重新处理所有待复核项的任务已提交。"}), 202
@@ -60,7 +60,7 @@ def api_reprocess_all_review_items():
 @admin_required
 @processor_ready_required
 def api_add_all_series_to_watchlist():
-    from tasks import task_add_all_series_to_watchlist # 延迟导入
+    from tasks.watchlist import task_add_all_series_to_watchlist # 延迟导入
     
     success = task_manager.submit_task(
         task_add_all_series_to_watchlist, 

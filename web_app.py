@@ -4,26 +4,19 @@ monkey.patch_all()
 import os
 import sys
 import shutil
-import threading
-from datetime import datetime, timezone # Added timezone for image.update
 from jinja2 import Environment, FileSystemLoader
 from handler.actor_sync import UnifiedSyncHandler
-import handler.emby as emby
-from tasks import *
 import extensions
 from flask import Flask, render_template, request, redirect, url_for, jsonify, flash, stream_with_context, send_from_directory,Response, abort, session
 from werkzeug.utils import safe_join, secure_filename
 from watchlist_processor import WatchlistProcessor
 from datetime import datetime
-import requests
 import handler
 import task_manager
-from handler.douban import DoubanApi
-from tasks import get_task_registry 
-from typing import Optional, Dict, Any, List, Tuple, Union # 确保 List 被导入
+from tasks.core import get_task_registry 
+from typing import Dict, Any
 from apscheduler.schedulers.background import BackgroundScheduler
 from apscheduler.triggers.cron import CronTrigger
-import pytz # 用于处理时区
 import atexit # 用于应用退出处理
 from core_processor import MediaProcessor
 from actor_subscription_processor import ActorSubscriptionProcessor
@@ -35,7 +28,6 @@ from croniter import croniter
 from scheduler_manager import scheduler_manager
 from reverse_proxy import proxy_app
 import logging
-import collections # Added for deque
 from gevent import spawn_later # Added for debouncing
 # --- 导入蓝图 ---
 from routes.watchlist import watchlist_bp

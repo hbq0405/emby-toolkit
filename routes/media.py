@@ -82,7 +82,7 @@ def api_get_media_for_editing(item_id):
 @admin_required
 @processor_ready_required
 def api_update_edited_cast_sa(item_id):
-    from tasks import task_manual_update
+    from tasks.media import task_manual_update
     data = request.json
     if not data or "cast" not in data or not isinstance(data["cast"], list):
         return jsonify({"error": "请求体中缺少有效的 'cast' 列表"}), 400
@@ -635,7 +635,7 @@ def save_tagging_rules():
 @admin_required
 @processor_ready_required
 def run_tagging_now():
-    from tasks import task_bulk_auto_tag
+    from tasks.media import task_bulk_auto_tag
     data = request.json
     lib_ids = data.get('library_ids') 
     tags = data.get('tags')
@@ -657,7 +657,7 @@ def run_tagging_now():
 @admin_required
 @processor_ready_required
 def clear_tagging_now():
-    from tasks import task_bulk_remove_tags
+    from tasks.media import task_bulk_remove_tags
     data = request.json
     lib_ids = data.get('library_ids')
     tags = data.get('tags')
