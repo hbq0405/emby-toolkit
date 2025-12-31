@@ -1241,29 +1241,43 @@ class MediaProcessor:
 
             # 如果是强制更新，从 API 获取最新演员表来替换上面的默认演员表
             if force_full_update and self.tmdb_api_key:
-                logger.info(f"  ➜ [深度更新模式] 正在从 TMDB 获取最新元数据 (演员表 & 简介)...")
+                logger.info(f"  ➜ [深度更新/首次入库] 正在从 TMDb API 拉取全量元数据 (导演/分级/工作室/演员)...")
                 
                 if item_type == "Movie":
-                    movie_details = tmdb.get_movie_details(tmdb_id, self.tmdb_api_key)
-                    if movie_details:
-                        # 1. 刷新演员表
-                        if movie_details.get("credits", {}).get("cast"):
-                            authoritative_cast_source = movie_details["credits"]["cast"]
-                            logger.info(f"  ➜ 成功从 TMDb 获取到 {len(authoritative_cast_source)} 位最新演员。")
+                    # 获取电影全量详情 (假设 get_movie_details 内部已包含 append_to_response=credits,release_dates,keywords)
+                    fresh_data = tmdb.get_movie_details(tmdb_id, self.tmdb_api_key)
+                    if fresh_data:
+                        # 1. ★★★ 核心：全量覆盖骨架 ★★★
+                        # 这将刷新 credits(导演), release_dates(分级), production_companies(工作室), genres, keywords 等
+                        tmdb_details_for_extra.update(fresh_data)
                         
-                        # 2. 刷新简介 
-                        if movie_details.get("overview"):
-                            tmdb_details_for_extra["overview"] = movie_details["overview"]
-                            logger.info(f"  ➜ 成功从 TMDb 刷新了电影简介。")
+                        # 2. 刷新演员表源
+                        if fresh_data.get("credits", {}).get("cast"):
+                            authoritative_cast_source = fresh_data["credits"]["cast"]
+                        
+                        # 日志记录关键信息数量，确保存活
+                        crew_count = len(fresh_data.get('credits', {}).get('crew', []))
+                        rating_data = fresh_data.get('release_dates', {}).get('results', [])
+                        logger.info(f"  ➜ 成功刷新电影元数据: 导演({crew_count}人), 分级数据({len(rating_data)}国), 简介等。")
                 
                 elif item_type == "Series":
-                    # 剧集依然需要聚合 API 数据来获得完整的演员（包括客串）
+                    # 获取剧集全量聚合数据
                     aggregated_tmdb_data = tmdb.aggregate_full_series_data_from_tmdb(int(tmdb_id), self.tmdb_api_key)
                     if aggregated_tmdb_data:
+                        series_details = aggregated_tmdb_data.get("series_details", {})
+                        
+                        # 1. ★★★ 核心：全量覆盖骨架 (剧集层) ★★★
+                        # 这将刷新 created_by(主创), content_ratings(分级), networks(工作室), keywords 等
+                        tmdb_details_for_extra.update(series_details)
+                        
+                        # 2. 刷新演员表源 (聚合所有分集)
                         all_episodes = list(aggregated_tmdb_data.get("episodes_details", {}).values())
-                        # ★★★ 关键：只计算并替换演员表，不替换 tmdb_details_for_extra ★★★
-                        authoritative_cast_source = _aggregate_series_cast_from_tmdb_data(aggregated_tmdb_data["series_details"], all_episodes)
-                        logger.info(f"  ➜ 成功从 TMDb 聚合了 {len(authoritative_cast_source)} 位最新演员。")
+                        authoritative_cast_source = _aggregate_series_cast_from_tmdb_data(series_details, all_episodes)
+                        
+                        # 日志
+                        creators_count = len(series_details.get('created_by', []))
+                        ratings_count = len(series_details.get('content_ratings', {}).get('results', []))
+                        logger.info(f"  ➜ 成功刷新剧集元数据: 主创({creators_count}人), 分级数据({ratings_count}国), 聚合演员({len(authoritative_cast_source)}人)。")
                 
             # =========================================================
             # ★★★ 步骤 3: 移除无头像演员 ★★★
