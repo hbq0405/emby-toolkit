@@ -112,63 +112,122 @@ def normalize_name_for_matching(name: Optional[str]) -> str:
     return ''.join(filter(str.isalnum, ascii_name.lower()))
 
 # --- ★★★ 统一分级映射功能 (V2 - 健壮版) ★★★ ---
-# 1. 定义我们自己的、统一的、友好的分级体系
+# 1. 统一的分级选项 (前端下拉框用)
 UNIFIED_RATING_CATEGORIES = [
     '全年龄', '家长辅导', '青少年', '成人', '限制级', '未知'
 ]
 
-# 2. 创建从 Emby 原始分级到我们统一体系的映射字典
-RATING_MAP = {
-    # --- 全年龄 ---
-    'g': '全年龄', 'tv-g': '全年龄', 'approved': '全年龄', 'e': '全年龄',
-    'u': '全年龄', 'uc': '全年龄',
-    '0': '全年龄', '6': '全年龄', '6+': '全年龄',
-    'all': '全年龄', 'unrated': '全年龄', 'nr': '全年龄',
-    'y': '全年龄', 'tv-y': '全年龄', 'ec': '全年龄',
+# 2. 默认优先级策略 (如果数据库没配置，就用这个)
+# ORIGIN 代表原产国，如果原产国没数据，按顺序找后面的
+DEFAULT_RATING_PRIORITY = ["ORIGIN", "CN", "US", "HK", "TW", "JP", "KR", "GB"]
 
-    # --- 家长辅导 ---
-    'pg': '家长辅导', 'tv-pg': '家长辅导',
-    '7': '家长辅导', 'tv-y7': '家长辅导', 'tv-y7-fv': '家长辅导',
-    '10': '家长辅导',
-
-    # --- 青少年 ---
-    'pg-13': '青少年', 'SG-PG13': '青少年', 't': '青少年',
-    '12': '青少年', '13': '青少年', '14': '青少年', 'tv-14': '青少年',
-    '15': '青少年', '16': '青少年',
-
-    # --- 成人 ---
-    'r': '成人', 'm': '成人', 'ma': '成人', 'tv-ma': '成人',
-    '17': '成人', '18': '成人', '19': '成人',
-
-    # --- 限制级 ---
-    'nc-17': '限制级', 'x': '限制级', 'xxx': '限制级',
-    'ao': '限制级', 'rp': '限制级', 'ur': '限制级',
+# 3. 默认分级映射表 (如果数据库没配置，就用这个)
+# 格式: { 国家代码: [ { code: 原分级, label: 映射中文 }, ... ] }
+DEFAULT_RATING_MAPPING = {
+    "US": [
+        {"code": "G", "label": "全年龄"},
+        {"code": "TV-Y", "label": "全年龄"},
+        {"code": "TV-G", "label": "全年龄"},
+        {"code": "TV-Y7", "label": "家长辅导"},
+        {"code": "PG", "label": "家长辅导"},
+        {"code": "TV-PG", "label": "家长辅导"},
+        {"code": "PG-13", "label": "青少年"},
+        {"code": "TV-14", "label": "青少年"},
+        {"code": "R", "label": "成人"},
+        {"code": "TV-MA", "label": "成人"},
+        {"code": "NC-17", "label": "限制级"},
+        {"code": "NR", "label": "未知"},
+        {"code": "Unrated", "label": "未知"}
+    ],
+    "CN": [
+        # 中国大陆目前没有官方分级，通常留空或设为全年龄
+        {"code": "1", "label": "全年龄"} 
+    ],
+    "JP": [
+        {"code": "G", "label": "全年龄"},
+        {"code": "PG12", "label": "家长辅导"},
+        {"code": "R15+", "label": "成人"},
+        {"code": "R18+", "label": "限制级"}
+    ],
+    "HK": [
+        {"code": "I", "label": "全年龄"},
+        {"code": "IIA", "label": "家长辅导"},
+        {"code": "IIB", "label": "青少年"},
+        {"code": "III", "label": "限制级"}
+    ],
+    "TW": [
+        {"code": "0+", "label": "全年龄"},
+        {"code": "6+", "label": "家长辅导"},
+        {"code": "12+", "label": "青少年"},
+        {"code": "15+", "label": "成人"},
+        {"code": "18+", "label": "限制级"}
+    ],
+    "KR": [
+        {"code": "All", "label": "全年龄"},
+        {"code": "12", "label": "家长辅导"},
+        {"code": "15", "label": "青少年"},
+        {"code": "18", "label": "限制级"},
+        {"code": "Restricted", "label": "限制级"}
+    ],
+    "GB": [
+        {"code": "U", "label": "全年龄"},
+        {"code": "PG", "label": "家长辅导"},
+        {"code": "12", "label": "青少年"},
+        {"code": "12A", "label": "青少年"},
+        {"code": "15", "label": "成人"},
+        {"code": "18", "label": "限制级"},
+        {"code": "R18", "label": "限制级"}
+    ]
 }
 
-def get_unified_rating(official_rating_str: str) -> str:
+def calculate_unified_rating(tmdb_release_dates: dict, origin_country: str, priority_list: list = None, mapping_rules: dict = None) -> str:
     """
-    【V2 - 健壮版】
-    根据 Emby 的 OfficialRating 字符串，返回统一后的分级。
-    能正确处理带国家前缀 (us-R) 和不带前缀 (R) 的各种情况。
+    【核心逻辑】根据优先级和映射表，计算最终的中文分级。
+    
+    :param tmdb_release_dates: TMDb 返回的分级字典 {'US': 'R', 'CN': ''}
+    :param origin_country: 原产国代码 'US'
+    :param priority_list: 优先级列表 (从数据库或默认值传进来)
+    :param mapping_rules: 映射规则字典 (从数据库或默认值传进来)
     """
-    if not official_rating_str:
-        return '未知'
+    # 如果没传配置，使用默认值 (兜底)
+    if priority_list is None: priority_list = DEFAULT_RATING_PRIORITY
+    if mapping_rules is None: mapping_rules = DEFAULT_RATING_MAPPING
 
-    # 先转为小写，方便匹配
-    rating_value = str(official_rating_str).lower()
+    final_rating_code = None
+    selected_country = None
 
-    # 如果包含国家代码 (e.g., "us-r"), 则提取后面的部分
-    if '-' in rating_value:
-        # 这是一个小技巧，可以安全地处理 "us-r" 和 "pg-13"
-        # 对于 "us-r", parts[-1] 是 "r"
-        # 对于 "pg-13", parts[-1] 是 "13"
-        # 但为了更准确，我们直接检查整个分割后的部分
-        parts = rating_value.split('-', 1)
-        if len(parts) > 1:
-            rating_value = parts[1]
+    # 1. 按优先级查找
+    for country in priority_list:
+        target_country = country
+        
+        # 处理动态的 "ORIGIN"
+        if country == 'ORIGIN':
+            if not origin_country: continue
+            target_country = origin_country
+        
+        # 检查是否有该国数据
+        raw_rating = tmdb_release_dates.get(target_country)
+        
+        # 简单的有效性检查 (排除空字符串)
+        if raw_rating and str(raw_rating).strip():
+            final_rating_code = str(raw_rating).strip()
+            selected_country = target_country
+            break 
+    
+    if not final_rating_code:
+        return "未知"
 
-    # 直接在字典中查找处理后的值
-    return RATING_MAP.get(rating_value, '未知')
+    # 2. 进行映射匹配
+    country_rules = mapping_rules.get(selected_country, [])
+    
+    for rule in country_rules:
+        # 不区分大小写比较
+        if rule['code'].lower() == final_rating_code.lower():
+            return rule['label']
+            
+    # 3. 如果没匹配到，尝试通用匹配 (比如有些国家直接用 PG-13 但没在规则里)
+    #    或者直接返回原始代码，让用户知道缺了什么映射
+    return final_rating_code
 
 # --- 关键词预设表 ---
 DEFAULT_KEYWORD_MAPPING = [

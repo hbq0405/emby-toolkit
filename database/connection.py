@@ -174,7 +174,7 @@ def init_db():
                         poster_path TEXT,
                         runtime_minutes INTEGER,
                         rating REAL,
-                        official_rating TEXT,
+                        rating_json JSONB,
                         genres_json JSONB,
                         actors_json JSONB,
                         directors_json JSONB,
@@ -421,8 +421,7 @@ def init_db():
                             "last_updated_at": "TIMESTAMP WITH TIME ZONE",
                             "overview": "TEXT",
                             "overview_embedding": "JSONB",
-                            "official_rating": "TEXT",
-                            "unified_rating": "TEXT",
+                            "rating_json": "JSONB",
                             "keywords_json": "JSONB",
                             "in_library": "BOOLEAN DEFAULT FALSE NOT NULL",
                             "emby_item_ids_json": "JSONB NOT NULL DEFAULT '[]'::jsonb",
@@ -623,7 +622,9 @@ def init_db():
                             'tmdb_status',
                             'next_episode_to_air_json',
                             'is_airing',
-                            'total_seasons'
+                            'total_seasons',
+                            'unified_rating',
+                            'official_rating'
                         ],
                         'collections_info': [
                             'status', 

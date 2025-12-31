@@ -1088,6 +1088,7 @@ const isLoadingEmbyUsers = ref(false);
 const dialog = useDialog();
 const newTmdbId = ref('');
 const newSeasonNumber = ref(null);
+const unifiedRatingOptions = ref([]);
 let sortableInstance = null;
 
 const unidentifiedMediaInModal = computed(() => filterMediaByStatus('unidentified'));
@@ -1849,16 +1850,23 @@ const updatePersonRuleValue = (rule, selectedOptions) => {
   rule.value = selectedOptions;
 };
 
-const unifiedRatingOptions = ref([]);
 const fetchUnifiedRatingOptions = async () => {
   try {
-    const response = await axios.get('/api/custom_collections/config/unified_ratings');
+    // 调用新的 API (我们在 routes/custom_collections.py 中刚刚修改过的)
+    const response = await axios.get('/api/custom_collections/config/unified_ratings_options');
+    
+    // 后端返回的是字符串数组 ['全年龄', '限制级', ...]
+    // 我们将其转换为 Naive UI 需要的 { label, value } 格式
     unifiedRatingOptions.value = response.data.map(name => ({
       label: name,
       value: name
     }));
   } catch (error) {
-    message.error('获取家长分级列表失败。');
+    console.error('获取家长分级列表失败:', error);
+    // 兜底：如果 API 失败，使用默认值 (防止下拉框为空)
+    unifiedRatingOptions.value = [
+      '全年龄', '家长辅导', '青少年', '成人', '限制级', '未知'
+    ].map(name => ({ label: name, value: name }));
   }
 };
 
@@ -2235,7 +2243,8 @@ watch(showMappingModal, (newVal) => {
     fetchKeywordOptions();
     fetchStudioMappingOptions();
     fetchCountryOptions();
-    fetchLanguageOptions()
+    fetchLanguageOptions();
+    fetchUnifiedRatingOptions();
   }
 });
 

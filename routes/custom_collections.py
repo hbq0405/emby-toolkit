@@ -12,7 +12,15 @@ import config_manager
 import handler.emby as emby
 from tasks.helpers import is_movie_subscribable
 from extensions import admin_required, any_login_required, DELETING_COLLECTIONS
-from utils import UNIFIED_RATING_CATEGORIES, DEFAULT_KEYWORD_MAPPING, DEFAULT_STUDIO_MAPPING, DEFAULT_COUNTRY_MAPPING, DEFAULT_LANGUAGE_MAPPING
+from utils import (
+    UNIFIED_RATING_CATEGORIES, 
+    DEFAULT_KEYWORD_MAPPING, 
+    DEFAULT_STUDIO_MAPPING, 
+    DEFAULT_COUNTRY_MAPPING, 
+    DEFAULT_LANGUAGE_MAPPING,
+    DEFAULT_RATING_MAPPING, 
+    DEFAULT_RATING_PRIORITY 
+)
 from handler.tmdb import get_movie_genres_tmdb, get_tv_genres_tmdb, search_companies_tmdb, search_person_tmdb, search_tv_tmdb, get_tv_details
 # 1. 创建自定义合集蓝图
 custom_collections_bp = Blueprint('custom_collections', __name__, url_prefix='/api/custom_collections')
@@ -484,14 +492,6 @@ def api_get_tags_for_filter():
         logger.error(f"获取标签列表时出错: {e}", exc_info=True)
         return jsonify([]), 500
 
-# --- 筛选器用的分级列表 ---
-@custom_collections_bp.route('/config/unified_ratings', methods=['GET'])
-@admin_required
-def api_get_unified_ratings_for_filter():
-    """为筛选器提供一个固定的、统一的分级列表。"""
-    # 直接返回我们预定义好的分类列表
-    return jsonify(UNIFIED_RATING_CATEGORIES)
-
 # --- 筛选器用的媒体库列表 ---
 @custom_collections_bp.route('/config/emby_libraries', methods=['GET'])
 @admin_required
@@ -877,3 +877,134 @@ def api_get_languages_for_filter():
     except Exception as e:
         logger.error(f"获取语言列表时出错: {e}", exc_info=True)
         return jsonify([]), 500
+    
+# ==========================================
+# ★★★ 分级映射表 API (Rating Mapping) ★★★
+# ==========================================
+
+# ==========================================
+# ★★★ 分级标签定义 API (Unified Ratings) ★★★
+# ==========================================
+# 管理用户自定义的中文标签，如 ["全年龄", "限制级", "儿童专区"]
+
+# --- 获取分级标签列表 ---
+@custom_collections_bp.route('/config/unified_ratings', methods=['GET'])
+def api_get_unified_ratings():
+    """获取用户定义的中文分级标签列表。"""
+    data = settings_db.get_setting('unified_ratings')
+    # 如果数据库没数据，使用 utils 中的默认值，并确保格式为 [{label: 'xx'}, ...]
+    return jsonify(ensure_list_format(data, [{"label": l} for l in UNIFIED_RATING_CATEGORIES]))
+
+# --- 保存分级标签列表 ---
+@custom_collections_bp.route('/config/unified_ratings', methods=['POST'])
+@admin_required
+def api_save_unified_ratings():
+    """保存中文分级标签列表。"""
+    data = request.json # Expecting list of {label: 'xxx'}
+    settings_db.save_setting('unified_ratings', data)
+    return jsonify({"message": "分级标签保存成功"})
+
+# --- 恢复默认分级标签 ---
+@custom_collections_bp.route('/config/unified_ratings/defaults', methods=['GET'])
+@admin_required
+def api_get_unified_ratings_defaults():
+    """获取默认的分级标签列表。"""
+    # 将简单的字符串列表转换为前端需要的对象列表格式
+    default_list = [{"label": label} for label in UNIFIED_RATING_CATEGORIES]
+    return jsonify(default_list)
+
+
+# ==========================================
+# ★★★ 分级映射表 API (Rating Mapping) ★★★
+# ==========================================
+# 管理各国分级代码到中文标签的映射，如 US-R -> 限制级
+
+# --- 获取分级映射表 ---
+@custom_collections_bp.route('/config/rating_mapping', methods=['GET'])
+def api_get_rating_mapping():
+    """获取分级映射表。优先读库，无数据则读 utils 默认值。"""
+    data = settings_db.get_setting('rating_mapping')
+    if not data:
+        return jsonify(DEFAULT_RATING_MAPPING)
+    return jsonify(data)
+
+# --- 保存分级映射表 ---
+@custom_collections_bp.route('/config/rating_mapping', methods=['POST'])
+@admin_required
+def api_save_rating_mapping():
+    """保存分级映射表 (字典结构)。"""
+    data = request.json
+    if not isinstance(data, dict):
+        return jsonify({"error": "数据格式错误，必须是字典"}), 400
+    
+    settings_db.save_setting('rating_mapping', data)
+    return jsonify({"message": "分级映射表保存成功"})
+
+# --- 恢复默认分级映射表 ---
+@custom_collections_bp.route('/config/rating_mapping/defaults', methods=['GET'])
+@admin_required
+def api_get_rating_mapping_defaults():
+    """获取 utils 中的默认分级映射表。"""
+    return jsonify(DEFAULT_RATING_MAPPING)
+
+
+# ==========================================
+# ★★★ 分级优先级 API (Rating Priority) ★★★
+# ==========================================
+# 管理查找顺序，如 ['ORIGIN', 'CN', 'US']
+
+# --- 获取分级优先级 ---
+@custom_collections_bp.route('/config/rating_priority', methods=['GET'])
+def api_get_rating_priority():
+    """获取分级优先级列表。优先读库，无数据则读 utils 默认值。"""
+    data = settings_db.get_setting('rating_priority')
+    if not data:
+        return jsonify(DEFAULT_RATING_PRIORITY)
+    return jsonify(data)
+
+# --- 保存分级优先级 ---
+@custom_collections_bp.route('/config/rating_priority', methods=['POST'])
+@admin_required
+def api_save_rating_priority():
+    """保存分级优先级 (列表结构)。"""
+    data = request.json
+    if not isinstance(data, list):
+        return jsonify({"error": "数据格式错误，必须是列表"}), 400
+        
+    settings_db.save_setting('rating_priority', data)
+    return jsonify({"message": "优先级策略保存成功"})
+
+# --- 恢复默认优先级 ---
+@custom_collections_bp.route('/config/rating_priority/defaults', methods=['GET'])
+@admin_required
+def api_get_rating_priority_defaults():
+    """获取 utils 中的默认优先级。"""
+    return jsonify(DEFAULT_RATING_PRIORITY)
+
+
+# ==========================================
+# ★★★ 筛选器专用接口 ★★★
+# ==========================================
+
+@custom_collections_bp.route('/config/unified_ratings_options', methods=['GET'])
+@admin_required
+def api_get_unified_ratings_for_filter():
+    """
+    为前端筛选器提供简单的分级字符串列表。
+    从数据库读取用户自定义的标签，如果为空则回退到默认值。
+    """
+    try:
+        # 1. 读库
+        data = settings_db.get_setting('unified_ratings')
+        
+        # 2. 提取 label
+        if data and isinstance(data, list):
+            options = [item['label'] for item in data if isinstance(item, dict) and item.get('label')]
+            if options:
+                return jsonify(options)
+        
+        # 3. 兜底默认值
+        return jsonify(UNIFIED_RATING_CATEGORIES)
+    except Exception as e:
+        logger.error(f"获取分级列表失败: {e}")
+        return jsonify(UNIFIED_RATING_CATEGORIES)

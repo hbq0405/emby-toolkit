@@ -23,7 +23,6 @@ from database.log_db import LogDBManager
 from database.connection import get_db_connection as get_central_db_connection
 from cachetools import TTLCache
 from ai_translator import AITranslator
-from utils import get_unified_rating
 from watchlist_processor import WatchlistProcessor
 from handler.douban import DoubanApi
 
@@ -385,16 +384,22 @@ class MediaProcessor:
                 movie_record['countries_json'] = c_json
 
                 # ★★★ 提取分级 (Rating) ★★★
-                tmdb_official_rating = None
-                if source_data_package.get('release_dates', {}).get('results'):
-                    for rd in source_data_package['release_dates']['results']:
-                        if rd.get('iso_3166_1') == 'US':
-                            for release in rd.get('release_dates', []):
-                                if release.get('certification'):
-                                    tmdb_official_rating = release['certification']; break
-                        if tmdb_official_rating: break
-                movie_record['official_rating'] = tmdb_official_rating
-                movie_record['unified_rating'] = get_unified_rating(tmdb_official_rating)
+                raw_ratings_map = {}
+                # source_data_package 就是 TMDb 的 movie details
+                results = source_data_package.get('release_dates', {}).get('results', [])
+                for r in results:
+                    country = r.get('iso_3166_1')
+                    if not country: continue
+                    cert = None
+                    for release in r.get('release_dates', []):
+                        if release.get('certification'):
+                            cert = release.get('certification')
+                            break
+                    if cert:
+                        raw_ratings_map[country] = cert
+                
+                # ★★★ 2. 存入 rating_json ★★★
+                movie_record['rating_json'] = json.dumps(raw_ratings_map, ensure_ascii=False)
                 
                 # 导演 (电影在 credits.crew 中)
                 crew = source_data_package.get("credits", {}).get('crew', [])
@@ -435,13 +440,16 @@ class MediaProcessor:
                 series_record['actors_json'] = json.dumps(actors_relation, ensure_ascii=False)
                 
                 # 分级
-                tmdb_official_rating = None
-                if series_details.get('content_ratings', {}).get('results'):
-                    for cr in series_details['content_ratings']['results']:
-                        if cr.get('iso_3166_1') == 'US' and cr.get('rating'):
-                            tmdb_official_rating = cr['rating']; break
-                series_record['official_rating'] = tmdb_official_rating
-                series_record['unified_rating'] = get_unified_rating(tmdb_official_rating)
+                raw_ratings_map = {}
+                results = series_details.get('content_ratings', {}).get('results', [])
+                for r in results:
+                    country = r.get('iso_3166_1')
+                    rating = r.get('rating')
+                    if country and rating:
+                        raw_ratings_map[country] = rating
+                
+                # ★★★ 4. 存入 rating_json ★★★
+                series_record['rating_json'] = json.dumps(raw_ratings_map, ensure_ascii=False)
 
                 # ★★★ 提取通用字段 (传入 'Series') ★★★
                 g_json, s_json, k_json, c_json = _extract_common_json_fields(series_details, 'Series')
@@ -549,7 +557,7 @@ class MediaProcessor:
                 "original_language",
                 "poster_path", "rating", "actors_json", "parent_series_tmdb_id", "season_number", "episode_number",
                 "in_library", "subscription_status", "subscription_sources_json", "emby_item_ids_json", "date_added",
-                "official_rating", "unified_rating",
+                "rating_json",
                 "genres_json", "directors_json", "studios_json", "countries_json", "keywords_json", "ignore_reason",
                 "asset_details_json",
                 "runtime_minutes",
@@ -3039,8 +3047,6 @@ class MediaProcessor:
                         "title": item_details.get('Name'),
                         "original_title": item_details.get('OriginalTitle'),
                         "overview": item_details.get('Overview'),
-                        "official_rating": item_details.get('OfficialRating'),
-                        "unified_rating": get_unified_rating(item_details.get('OfficialRating')),
                         "tags_json": json.dumps(final_tags, ensure_ascii=False),
                         "last_synced_at": datetime.now(timezone.utc)
                     }

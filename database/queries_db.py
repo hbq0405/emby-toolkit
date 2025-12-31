@@ -3,6 +3,7 @@ import logging
 import json
 from typing import List, Dict, Any, Optional, Tuple
 from .connection import get_db_connection
+from database import settings_db
 
 logger = logging.getLogger(__name__)
 
@@ -10,7 +11,6 @@ def _expand_keyword_labels(value) -> Dict[str, List]:
     """
     将中文标签展开为 { 'ids': [...], 'names': [...] }
     """
-    from database import settings_db
     mapping_data = settings_db.get_setting('keyword_mapping') or []
     
     mapping = {}
@@ -49,7 +49,6 @@ def _expand_studio_labels(value) -> Dict[str, List]:
     """
     将中文工作室展开为 { 'ids': [...], 'names': [...] }
     """
-    from database import settings_db
     mapping_data = settings_db.get_setting('studio_mapping') or []
     
     mapping = {}
@@ -79,6 +78,25 @@ def _expand_studio_labels(value) -> Dict[str, List]:
         'ids': list(set(target_ids)),
         'names': list(set(filter(None, target_names)))
     }
+
+def _expand_rating_labels(labels: List[str]) -> List[str]:
+    """
+    将中文分级标签（如 '青少年'）反向展开为所有对应的原始分级代码（如 'PG-13', 'TV-14', '12'）。
+    """
+    # 1. 获取映射表
+    mapping_data = settings_db.get_setting('rating_mapping') or []
+    
+    target_codes = set()
+    
+    # 2. 遍历所有国家的规则，寻找匹配的 label
+    # mapping_data 结构: { "US": [{"code": "R", "label": "限制级"}, ...], ... }
+    for country, rules in mapping_data.items():
+        for rule in rules:
+            if rule.get('label') in labels:
+                if rule.get('code'):
+                    target_codes.add(rule['code'])
+    
+    return list(target_codes)
 
 def get_user_allowed_library_ids(user_id: str, emby_url: str, emby_api_key: str) -> List[str]:
     """
@@ -225,27 +243,29 @@ def query_virtual_library_items(
         where_clauses.append(tag_block_sql)
 
         # C. 分级控制
-        parental_control_sql = """
+        rating_expr = "COALESCE(m.rating_json->>'US', m.rating_json->>'CN', m.rating_json->>'GB', m.rating_json->>'JP', m.rating_json->>'KR')"
+
+        parental_control_sql = f"""
     (
         (u.policy_json->'MaxParentalRating' IS NULL)
         OR
         (
-            m.official_rating IS NOT NULL 
+            {rating_expr} IS NOT NULL 
             AND (
                 CASE 
-                    WHEN m.official_rating = 'PG-13' THEN 7
-                    WHEN m.official_rating = 'TV-PG' THEN 7 
-                    WHEN m.official_rating = 'TV-Y7' THEN 7
-                    WHEN m.official_rating = 'TV-14' THEN 8
-                    WHEN m.official_rating IN ('G', 'TV-G', 'TV-Y') THEN 0
-                    WHEN m.official_rating = 'PG' THEN 6 
-                    WHEN m.official_rating = 'R' THEN 17
-                    WHEN m.official_rating = 'TV-MA' THEN 17
-                    WHEN m.official_rating = 'NC-17' THEN 18
-                    WHEN m.official_rating IN ('X', 'XXX', 'AO') THEN 18
-                    WHEN m.official_rating IN ('NR', 'UR', 'Unrated', 'Not Rated') THEN 0
+                    WHEN {rating_expr} = 'PG-13' THEN 7
+                    WHEN {rating_expr} = 'TV-PG' THEN 7 
+                    WHEN {rating_expr} = 'TV-Y7' THEN 7
+                    WHEN {rating_expr} = 'TV-14' THEN 8
+                    WHEN {rating_expr} IN ('G', 'TV-G', 'TV-Y') THEN 0
+                    WHEN {rating_expr} = 'PG' THEN 6 
+                    WHEN {rating_expr} = 'R' THEN 17
+                    WHEN {rating_expr} = 'TV-MA' THEN 17
+                    WHEN {rating_expr} = 'NC-17' THEN 18
+                    WHEN {rating_expr} IN ('X', 'XXX', 'AO') THEN 18
+                    WHEN {rating_expr} IN ('NR', 'UR', 'Unrated', 'Not Rated') THEN 0
                     ELSE COALESCE(
-                        NULLIF(REGEXP_REPLACE(m.official_rating, '[^0-9]', '', 'g'), ''), 
+                        NULLIF(REGEXP_REPLACE({rating_expr}, '[^0-9]', '', 'g'), ''), 
                         '0'
                     )::int
                 END
@@ -260,15 +280,15 @@ def query_virtual_library_items(
         )
         AND
         (
-            m.official_rating IS NULL 
-            OR m.official_rating = '' 
-            OR m.official_rating IN ('NR', 'UR', 'Unrated', 'Not Rated')
+            {rating_expr} IS NULL 
+            OR {rating_expr} = '' 
+            OR {rating_expr} IN ('NR', 'UR', 'Unrated', 'Not Rated')
             OR (
-                m.official_rating NOT IN (
+                {rating_expr} NOT IN (
                     'G','PG','PG-13','R','NC-17','X','XXX','AO',
                     'TV-Y','TV-Y7','TV-G','TV-PG','TV-14','TV-MA'
                 )
-                AND REGEXP_REPLACE(m.official_rating, '[^0-9]', '', 'g') = ''
+                AND REGEXP_REPLACE({rating_expr}, '[^0-9]', '', 'g') = ''
             )
         )
     )
@@ -425,15 +445,58 @@ def query_virtual_library_items(
 
         # --- 5. 家长分级 (Unified Rating) ---
         elif field == 'unified_rating':
-            if op == 'eq':
-                clause = "m.unified_rating = %s"
-                params.append(value)
-            elif op == 'is_one_of':
-                clause = "m.unified_rating = ANY(%s)"
-                params.append(list(value) if isinstance(value, list) else [value])
+            # 1. 反向展开：中文标签 -> 原始代码列表
+            target_codes = _expand_rating_labels(list(value) if isinstance(value, list) else [value])
+            
+            if not target_codes:
+                # 如果没找到对应的代码，说明这个标签没映射任何分级，理论上查不到数据
+                # 但为了逻辑闭环，我们可以让它查空，或者忽略
+                continue 
+
+            # A. 获取用户配置的优先级 (例如 ['ORIGIN', 'US', 'JP'])
+            priority_list = settings_db.get_setting('rating_priority') or []
+
+            # 2. 构建 SQL
+            # 逻辑：检查 rating_json 的所有 value 中，是否存在于 target_codes 列表中
+            # m.rating_json 是 {"US": "R", ...}
+            # jsonb_each_text(m.rating_json) 会返回 (key, value) 行
+            
+            json_keys = []
+            for p in priority_list:
+                if p == 'ORIGIN':
+                    # 动态获取原产国：从 countries_json 取第一个元素作为 Key
+                    # 语法：m.rating_json ->> (m.countries_json ->> 0)
+                    json_keys.append("m.rating_json->>(m.countries_json->>0)")
+                else:
+                    # 获取指定国家：直接取 Key
+                    # 语法：m.rating_json ->> 'US'
+                    json_keys.append(f"m.rating_json->>'{p}'")
+            
+            # 兜底：如果列表为空，默认取 US
+            if not json_keys:
+                json_keys = ["m.rating_json->>'US'"]
+                
+            # 组合成 SQL 表达式
+            # target_rating_expr 代表了“根据优先级策略最终生效的那个分级代码”
+            target_rating_expr = f"COALESCE({', '.join(json_keys)})"
+
+            # C. 构建查询语句
+            # 逻辑：判断 最终生效的分级代码 是否在 target_codes 列表中
+            
+            if op in ['eq', 'is_one_of']:
+                # 正向筛选 (是...): 
+                # 如果分级为 NULL，NULL = ANY(...) 结果为 NULL (False)。
+                # 只有明确有分级且匹配的才会显示。符合“冷宫”逻辑。
+                clause = f"{target_rating_expr} = ANY(%s)"
+                params.append(target_codes)
+                
             elif op == 'is_none_of':
-                clause = "(m.unified_rating IS NULL OR NOT (m.unified_rating = ANY(%s)))"
-                params.append(list(value) if isinstance(value, list) else [value])
+                # 反向筛选 (不是...):
+                # 旧逻辑: (IS NULL OR NOT MATCH) -> 没分级的也会显示。
+                # 新逻辑: (IS NOT NULL AND NOT MATCH) -> 必须有分级，且不匹配目标，才显示。
+                # 没分级的直接被过滤掉 (打入冷宫)。
+                clause = f"({target_rating_expr} IS NOT NULL AND NOT ({target_rating_expr} = ANY(%s)))"
+                params.append(target_codes)
 
         # --- 6. 数值比较 (Runtime, Year, Rating) ---
         elif field == 'runtime':

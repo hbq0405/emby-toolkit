@@ -107,6 +107,120 @@
         <n-button dashed block class="mt-4" @click="addItem(languageList, 'language')">添加语言</n-button>
       </n-tab-pane>
 
+      <!-- Tab 5: 分级标签 -->
+      <n-tab-pane name="rating_labels" tab="分级标签">
+        <n-alert type="info" :bordered="false" class="mb-4">
+          定义系统中可用的<b>中文分级名称</b>（如“全年龄”、“限制级”）。<br/>
+          这些标签将用于下方的“分级制度”映射以及合集筛选器。
+        </n-alert>
+        <div class="list-header">
+          <div class="col-handle"></div>
+          <div class="col-label" style="flex: 1">中文分级名称</div>
+          <div class="col-action">操作</div>
+        </div>
+        <div ref="ratingLabelListRef" class="sortable-list">
+          <div v-for="(item, index) in ratingLabelList" :key="item.id" class="list-item">
+            <div class="col-handle drag-handle"><n-icon :component="DragIcon" /></div>
+            <div class="col-label">
+              <n-input v-model:value="item.label" placeholder="例如：儿童专区" />
+            </div>
+            <div class="col-action">
+              <n-button circle text type="error" @click="removeItem(ratingLabelList, index)">
+                <n-icon :component="DeleteIcon" />
+              </n-button>
+            </div>
+          </div>
+        </div>
+        <n-button dashed block class="mt-4" @click="addItem(ratingLabelList, 'simple')">添加分级标签</n-button>
+      </n-tab-pane>
+
+      <!-- Tab 6: 分级制度 (映射) -->
+      <n-tab-pane name="ratings" tab="分级制度">
+        <n-alert type="info" :bordered="false" class="mb-4">
+          TMDb 返回各国分级数据。在此定义<b>优先级</b>和<b>中文映射</b>。<br/>
+          系统将按优先级顺序查找分级，并将其转换为对应的中文标签。
+        </n-alert>
+
+        <!-- 1. 优先级策略 -->
+        <n-card size="small" title="优先级策略" class="mb-4" embedded>
+          <template #header-extra>
+            <n-text depth="3" style="font-size: 12px">拖拽调整查找顺序</n-text>
+          </template>
+          <div ref="ratingPriorityRef" class="priority-tags">
+            <n-tag
+              v-for="(country, index) in ratingPriority"
+              :key="country"
+              closable
+              @close="removePriority(index)"
+              class="priority-tag drag-handle"
+              :type="country === 'ORIGIN' ? 'success' : 'default'"
+            >
+              {{ country === 'ORIGIN' ? '原产国 (自动)' : getCountryName(country) }}
+            </n-tag>
+            
+            <!-- 添加优先级的下拉框 -->
+            <n-popselect
+              v-model:value="newPriorityCountry"
+              :options="availablePriorityOptions"
+              trigger="click"
+              @update:value="addPriority"
+              scrollable
+            >
+              <n-button dashed size="small" type="primary">
+                <template #icon><n-icon :component="AddIcon" /></template>
+                添加国家
+              </n-button>
+            </n-popselect>
+          </div>
+        </n-card>
+
+        <!-- 2. 分级映射表 -->
+        <div class="list-header">
+          <div class="col-label" style="flex: 1">国家/地区分级表</div>
+          <div class="col-action">
+            <n-button size="tiny" dashed @click="addRatingCountry">添加国家</n-button>
+          </div>
+        </div>
+
+        <div class="rating-container">
+          <n-collapse display-directive="show" :default-expanded-names="['US']">
+            <n-collapse-item 
+              v-for="(rules, countryCode) in ratingMapping" 
+              :key="countryCode" 
+              :title="getCountryName(countryCode)" 
+              :name="countryCode"
+            >
+              <template #header-extra>
+                <n-button size="tiny" type="error" text @click.stop="removeRatingCountry(countryCode)">删除整组</n-button>
+              </template>
+
+              <!-- 具体分级规则表格 -->
+              <n-dynamic-input 
+                v-model:value="ratingMapping[countryCode]" 
+                :on-create="() => ({ code: '', label: '' })"
+              >
+                <template #default="{ value }">
+                  <div style="display: flex; align-items: center; width: 100%; gap: 10px">
+                    <n-input v-model:value="value.code" placeholder="原始分级 (如 R)" style="flex: 1" />
+                    <div style="width: 20px; text-align: center">➜</div>
+                    
+                    <!-- 动态下拉框 -->
+                    <n-select 
+                      v-model:value="value.label" 
+                      :options="dynamicRatingOptions" 
+                      placeholder="选择中文标签" 
+                      style="flex: 1" 
+                      filterable 
+                      tag 
+                    />
+                  </div>
+                </template>
+              </n-dynamic-input>
+            </n-collapse-item>
+          </n-collapse>
+        </div>
+      </n-tab-pane>
+
     </n-tabs>
 
     <div class="footer-actions">
@@ -122,10 +236,10 @@
 </template>
 
 <script setup>
-import { ref, onMounted, nextTick, watch, onUnmounted } from 'vue';
+import { ref, onMounted, nextTick, watch, onUnmounted, computed, h } from 'vue';
 import axios from 'axios';
 import Sortable from 'sortablejs';
-import { useMessage, useDialog } from 'naive-ui';
+import { useMessage, useDialog, NSelect } from 'naive-ui';
 import { 
   AddOutline as AddIcon, 
   TrashOutline as DeleteIcon, 
@@ -143,6 +257,14 @@ const keywordList = ref([]);
 const studioList = ref([]);
 const countryList = ref([]);
 const languageList = ref([]);
+const ratingLabelList = ref([]); // 新增：分级标签列表
+
+// 分级映射数据
+const ratingMapping = ref({}); // 结构: { "US": [{code: 'R', label: '限制级'}] }
+const ratingPriority = ref([]); // 结构: ['ORIGIN', 'US']
+const newPriorityCountry = ref(null);
+const ratingPriorityRef = ref(null);
+
 const isSaving = ref(false);
 
 // 拖拽 DOM 引用
@@ -150,14 +272,31 @@ const keywordListRef = ref(null);
 const studioListRef = ref(null);
 const countryListRef = ref(null);
 const languageListRef = ref(null);
+const ratingLabelListRef = ref(null);
 
 let sortables = [];
 
 const generateId = () => '_' + Math.random().toString(36).substr(2, 9);
 
+// 动态生成分级下拉框选项
+const dynamicRatingOptions = computed(() => {
+  return ratingLabelList.value
+    .filter(item => item.label && item.label.trim())
+    .map(item => ({
+      label: item.label,
+      value: item.label
+    }));
+});
+
 // 通用数据处理：后端 -> 前端
 const processBackendData = (data, type) => {
   let list = Array.isArray(data) ? data : [];
+  
+  // 兼容旧的字符串列表格式
+  if (list.length > 0 && typeof list[0] === 'string') {
+    list = list.map(s => ({ label: s }));
+  }
+
   return list.map(item => {
     const base = { id: generateId(), label: item.label || '' };
     
@@ -166,6 +305,8 @@ const processBackendData = (data, type) => {
       base.aliases = Array.isArray(item.aliases) ? item.aliases.join(', ') : (item.aliases || '');
     } else if (type === 'language') {
       base.value = item.value || '';
+    } else if (type === 'simple') {
+      // 仅需要 label，已在 base 中处理
     } else {
       base.en = Array.isArray(item.en) ? item.en.join(', ') : (item.en || '');
       base.ids = Array.isArray(item.ids) ? item.ids.join(', ') : (item.ids || '');
@@ -185,6 +326,8 @@ const processFrontendData = (list, type) => {
       base.aliases = item.aliases ? item.aliases.split(',').map(s => s.trim()).filter(s => s) : [];
     } else if (type === 'language') {
       base.value = item.value ? item.value.trim() : '';
+    } else if (type === 'simple') {
+      // 仅需要 label
     } else {
       base.en = item.en ? item.en.split(',').map(s => s.trim()).filter(s => s) : [];
       base.ids = item.ids ? item.ids.toString().split(',').map(s => s.trim()).filter(s => s).map(Number) : [];
@@ -211,23 +354,39 @@ const initSortable = (el, listRef) => {
   return s;
 };
 
+// 分级优先级拖拽初始化
+const setupRatingSortable = () => {
+  if (ratingPriorityRef.value) {
+    const s = Sortable.create(ratingPriorityRef.value, {
+      animation: 150,
+      ghostClass: 'sortable-ghost',
+      onEnd: (evt) => {
+        const item = ratingPriority.value.splice(evt.oldIndex, 1)[0];
+        ratingPriority.value.splice(evt.newIndex, 0, item);
+      }
+    });
+    sortables.push(s);
+  }
+};
+
 // 监听 DOM 变化初始化拖拽
 const setupSortables = () => {
-  // 销毁旧实例
   sortables.forEach(s => s?.destroy());
   sortables = [];
   
   nextTick(() => {
-    // 尝试初始化所有存在的列表 Ref
-    // 注意：在 Naive UI 中，只有当前激活的 Tab Ref 才有值，其他的通常为 null
-    if (keywordListRef.value) initSortable(keywordListRef.value, keywordList);
-    if (studioListRef.value) initSortable(studioListRef.value, studioList);
-    if (countryListRef.value) initSortable(countryListRef.value, countryList);
-    if (languageListRef.value) initSortable(languageListRef.value, languageList);
+    if (activeTab.value === 'ratings') {
+      setupRatingSortable();
+    } else {
+      if (keywordListRef.value) initSortable(keywordListRef.value, keywordList);
+      if (studioListRef.value) initSortable(studioListRef.value, studioList);
+      if (countryListRef.value) initSortable(countryListRef.value, countryList);
+      if (languageListRef.value) initSortable(languageListRef.value, languageList);
+      if (ratingLabelListRef.value) initSortable(ratingLabelListRef.value, ratingLabelList);
+    }
   });
 };
 
-// ★★★ 核心修复：监听 Tab 切换，重新绑定拖拽 ★★★
 watch(activeTab, () => {
   setupSortables();
 });
@@ -235,19 +394,28 @@ watch(activeTab, () => {
 // 初始化数据
 const fetchData = async () => {
   try {
-    const [kwRes, stRes, cnRes, lgRes] = await Promise.all([
+    const [kwRes, stRes, cnRes, lgRes, rMapRes, rPrioRes, rLabelRes] = await Promise.all([
       axios.get('/api/custom_collections/config/keyword_mapping'),
       axios.get('/api/custom_collections/config/studio_mapping'),
       axios.get('/api/custom_collections/config/country_mapping'),
-      axios.get('/api/custom_collections/config/language_mapping')
+      axios.get('/api/custom_collections/config/language_mapping'),
+      axios.get('/api/custom_collections/config/rating_mapping'),
+      axios.get('/api/custom_collections/config/rating_priority'),
+      axios.get('/api/custom_collections/config/unified_ratings')
     ]);
+    
     keywordList.value = processBackendData(kwRes.data, 'keyword');
     studioList.value = processBackendData(stRes.data, 'studio');
     countryList.value = processBackendData(cnRes.data, 'country');
     languageList.value = processBackendData(lgRes.data, 'language');
+    ratingLabelList.value = processBackendData(rLabelRes.data, 'simple');
+    
+    ratingMapping.value = rMapRes.data || {};
+    ratingPriority.value = rPrioRes.data || [];
     
     setupSortables();
   } catch (e) {
+    console.error(e);
     message.error('加载配置失败');
   }
 };
@@ -258,6 +426,8 @@ const addItem = (list, type = 'normal') => {
     item.value = ''; item.aliases = '';
   } else if (type === 'language') {
     item.value = '';
+  } else if (type === 'simple') {
+    // 仅需要 label
   } else {
     item.en = ''; item.ids = '';
   }
@@ -268,16 +438,86 @@ const removeItem = (list, index) => {
   list.splice(index, 1);
 };
 
+// 分级相关辅助函数
+const getCountryName = (code) => {
+  const found = countryList.value.find(c => c.value === code);
+  return found ? `${found.label} (${code})` : code;
+};
+
+const availablePriorityOptions = computed(() => {
+  const opts = countryList.value.map(c => ({ label: c.label, value: c.value }));
+  return opts.filter(o => !ratingPriority.value.includes(o.value));
+});
+
+const addPriority = (val) => {
+  if (val && !ratingPriority.value.includes(val)) {
+    ratingPriority.value.push(val);
+    newPriorityCountry.value = null;
+  }
+};
+
+const removePriority = (index) => {
+  ratingPriority.value.splice(index, 1);
+};
+
+const addRatingCountry = () => {
+  dialog.create({
+    title: '添加分级国家',
+    content: () => h(NSelect, {
+      options: countryList.value.map(c => ({label: c.label, value: c.value})),
+      filterable: true,
+      placeholder: '搜索国家...',
+      onUpdateValue: (v) => {
+        if (!ratingMapping.value[v]) {
+          ratingMapping.value[v] = [{ code: '', label: '全年龄' }];
+        }
+        dialog.destroyAll();
+      }
+    })
+  });
+};
+
+const removeRatingCountry = (code) => {
+  delete ratingMapping.value[code];
+};
+
 const handleRestoreDefaults = () => {
+  // 特殊处理 ratings Tab
+  if (activeTab.value === 'ratings') {
+    dialog.warning({
+      title: '恢复默认预设',
+      content: `确定要恢复【分级制度】的默认预设吗？当前未保存的修改将丢失。`,
+      positiveText: '确定',
+      negativeText: '取消',
+      onPositiveClick: async () => {
+        try {
+          const [rMapRes, rPrioRes] = await Promise.all([
+            axios.get('/api/custom_collections/config/rating_mapping/defaults'),
+            axios.get('/api/custom_collections/config/rating_priority/defaults')
+          ]);
+          ratingMapping.value = rMapRes.data;
+          ratingPriority.value = rPrioRes.data;
+          message.success('已加载默认分级预设，请点击保存以生效');
+          setupSortables();
+        } catch (e) {
+          message.error('获取默认预设失败');
+        }
+      }
+    });
+    return;
+  }
+
   const typeMap = {
     'keywords': { url: 'keyword_mapping', list: keywordList, type: 'keyword' },
     'studios': { url: 'studio_mapping', list: studioList, type: 'studio' },
     'countries': { url: 'country_mapping', list: countryList, type: 'country' },
-    'languages': { url: 'language_mapping', list: languageList, type: 'language' }
+    'languages': { url: 'language_mapping', list: languageList, type: 'language' },
+    'rating_labels': { url: 'unified_ratings', list: ratingLabelList, type: 'simple' }
   };
   
   const current = typeMap[activeTab.value];
-  
+  if (!current) return;
+
   dialog.warning({
     title: '恢复默认预设',
     content: `确定要恢复【${activeTab.value}】的默认预设吗？当前未保存的修改将丢失。`,
@@ -288,7 +528,6 @@ const handleRestoreDefaults = () => {
         const res = await axios.get(`/api/custom_collections/config/${current.url}/defaults`);
         current.list.value = processBackendData(res.data, current.type);
         message.success('已加载默认预设，请点击保存以生效');
-        // 恢复默认后也要重新绑定拖拽，因为 DOM 可能会重绘
         setupSortables();
       } catch (e) {
         message.error('获取默认预设失败');
@@ -304,11 +543,15 @@ const handleSave = async () => {
       axios.post('/api/custom_collections/config/keyword_mapping', processFrontendData(keywordList.value, 'keyword')),
       axios.post('/api/custom_collections/config/studio_mapping', processFrontendData(studioList.value, 'studio')),
       axios.post('/api/custom_collections/config/country_mapping', processFrontendData(countryList.value, 'country')),
-      axios.post('/api/custom_collections/config/language_mapping', processFrontendData(languageList.value, 'language'))
+      axios.post('/api/custom_collections/config/language_mapping', processFrontendData(languageList.value, 'language')),
+      axios.post('/api/custom_collections/config/rating_mapping', ratingMapping.value),
+      axios.post('/api/custom_collections/config/rating_priority', ratingPriority.value),
+      axios.post('/api/custom_collections/config/unified_ratings', processFrontendData(ratingLabelList.value, 'simple'))
     ]);
     message.success('所有映射配置已保存');
     await fetchData();
   } catch (e) {
+    console.error(e);
     message.error('保存失败');
   } finally {
     isSaving.value = false;
@@ -379,5 +622,22 @@ onUnmounted(() => {
   justify-content: space-between;
   padding-top: 16px;
   border-top: 1px solid var(--n-border-color);
+}
+
+/* 优先级标签样式 */
+.priority-tags {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  padding: 8px;
+  background: rgba(0,0,0,0.02);
+  border-radius: 4px;
+}
+.priority-tag { cursor: move; }
+.rating-container {
+  margin-top: 10px;
+  border: 1px solid var(--n-border-color);
+  border-radius: 4px;
+  overflow: hidden;
 }
 </style>

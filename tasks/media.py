@@ -16,7 +16,6 @@ import handler.tmdb as tmdb
 import handler.emby as emby
 import handler.telegram as telegram
 from database import connection
-from utils import get_unified_rating
 from .helpers import parse_full_asset_details
 
 logger = logging.getLogger(__name__)
@@ -208,6 +207,45 @@ def extract_tag_names(item_data):
                 tags_set.add(str(t))
     
     return list(tags_set)
+
+# --- 提取原始分级数据，不进行任何计算 ---
+def _extract_tmdb_ratings_raw(tmdb_details, item_type):
+    """
+    从 TMDb 详情中提取所有国家的分级数据。
+    返回: 字典 { 'US': 'R', 'CN': 'PG-13', ... }
+    """
+    if not tmdb_details:
+        return {}
+
+    ratings_map = {}
+    
+    if item_type == 'Movie':
+        # 电影：在 release_dates 中查找
+        results = tmdb_details.get('release_dates', {}).get('results', [])
+        for r in results:
+            country = r.get('iso_3166_1')
+            if not country: continue
+            
+            # 电影可能有多个发行日期，取第一个有分级的
+            cert = None
+            for release in r.get('release_dates', []):
+                if release.get('certification'):
+                    cert = release.get('certification')
+                    break 
+            
+            if cert:
+                ratings_map[country] = cert
+                
+    elif item_type == 'Series':
+        # 剧集：在 content_ratings 中查找
+        results = tmdb_details.get('content_ratings', {}).get('results', [])
+        for r in results:
+            country = r.get('iso_3166_1')
+            rating = r.get('rating')
+            if country and rating:
+                ratings_map[country] = rating
+
+    return ratings_map
 
 # ★★★ 重量级的元数据缓存填充任务 (内存优化版) ★★★
 def task_populate_metadata_cache(processor, batch_size: int = 50, force_full_update: bool = False):
@@ -612,6 +650,10 @@ def task_populate_metadata_cache(processor, batch_size: int = 50, force_full_upd
                         tmdb_date = tmdb_details.get('first_air_date')
                 
                 final_release_date = emby_date or tmdb_date
+                # 提取全量分级数据
+                raw_ratings_map = _extract_tmdb_ratings_raw(tmdb_details, item_type)
+                # 序列化为 JSON 字符串，准备存入数据库
+                rating_json_str = json.dumps(raw_ratings_map, ensure_ascii=False)
                 top_record = {
                     "tmdb_id": tmdb_id_str, "item_type": item_type, "title": item.get('Name'),
                     "original_title": item.get('OriginalTitle'), "release_year": item.get('ProductionYear'),
@@ -625,8 +667,7 @@ def task_populate_metadata_cache(processor, batch_size: int = 50, force_full_upd
                     "release_date": final_release_date,
                     "genres_json": json.dumps(item.get('Genres', []), ensure_ascii=False),
                     "tags_json": json.dumps(extract_tag_names(item), ensure_ascii=False),
-                    "official_rating": item.get('OfficialRating'), 
-                    "unified_rating": get_unified_rating(item.get('OfficialRating')),
+                    "rating_json": rating_json_str,
                     "runtime_minutes": emby_runtime if (item_type == 'Movie' and emby_runtime) else tmdb_details.get('runtime') if (item_type == 'Movie' and tmdb_details) else None
                 }
                 if tmdb_details:
