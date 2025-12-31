@@ -119,7 +119,7 @@ UNIFIED_RATING_CATEGORIES = [
 
 # 2. 默认优先级策略 (如果数据库没配置，就用这个)
 # ORIGIN 代表原产国，如果原产国没数据，按顺序找后面的
-DEFAULT_RATING_PRIORITY = ["ORIGIN", "CN", "US", "HK", "TW", "JP", "KR", "GB"]
+DEFAULT_RATING_PRIORITY = ["ORIGIN", "US", "HK", "TW", "JP", "KR", "GB"]
 
 # 3. 默认分级映射表 (如果数据库没配置，就用这个)
 # 格式: { 国家代码: [ { code: 原分级, label: 映射中文 }, ... ] }
@@ -136,12 +136,8 @@ DEFAULT_RATING_MAPPING = {
         {"code": "R", "label": "成人"},
         {"code": "TV-MA", "label": "成人"},
         {"code": "NC-17", "label": "限制级"},
-        {"code": "NR", "label": "未知"},
+        {"code": "NR", "label": "限制级"},
         {"code": "Unrated", "label": "未知"}
-    ],
-    "CN": [
-        # 中国大陆目前没有官方分级，通常留空或设为全年龄
-        {"code": "1", "label": "全年龄"} 
     ],
     "JP": [
         {"code": "G", "label": "全年龄"},
@@ -179,55 +175,6 @@ DEFAULT_RATING_MAPPING = {
         {"code": "R18", "label": "限制级"}
     ]
 }
-
-def calculate_unified_rating(tmdb_release_dates: dict, origin_country: str, priority_list: list = None, mapping_rules: dict = None) -> str:
-    """
-    【核心逻辑】根据优先级和映射表，计算最终的中文分级。
-    
-    :param tmdb_release_dates: TMDb 返回的分级字典 {'US': 'R', 'CN': ''}
-    :param origin_country: 原产国代码 'US'
-    :param priority_list: 优先级列表 (从数据库或默认值传进来)
-    :param mapping_rules: 映射规则字典 (从数据库或默认值传进来)
-    """
-    # 如果没传配置，使用默认值 (兜底)
-    if priority_list is None: priority_list = DEFAULT_RATING_PRIORITY
-    if mapping_rules is None: mapping_rules = DEFAULT_RATING_MAPPING
-
-    final_rating_code = None
-    selected_country = None
-
-    # 1. 按优先级查找
-    for country in priority_list:
-        target_country = country
-        
-        # 处理动态的 "ORIGIN"
-        if country == 'ORIGIN':
-            if not origin_country: continue
-            target_country = origin_country
-        
-        # 检查是否有该国数据
-        raw_rating = tmdb_release_dates.get(target_country)
-        
-        # 简单的有效性检查 (排除空字符串)
-        if raw_rating and str(raw_rating).strip():
-            final_rating_code = str(raw_rating).strip()
-            selected_country = target_country
-            break 
-    
-    if not final_rating_code:
-        return "未知"
-
-    # 2. 进行映射匹配
-    country_rules = mapping_rules.get(selected_country, [])
-    
-    for rule in country_rules:
-        # 不区分大小写比较
-        if rule['code'].lower() == final_rating_code.lower():
-            return rule['label']
-            
-    # 3. 如果没匹配到，尝试通用匹配 (比如有些国家直接用 PG-13 但没在规则里)
-    #    或者直接返回原始代码，让用户知道缺了什么映射
-    return final_rating_code
 
 # --- 关键词预设表 ---
 DEFAULT_KEYWORD_MAPPING = [

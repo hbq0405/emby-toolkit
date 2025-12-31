@@ -176,7 +176,7 @@
 
         <!-- 2. 分级映射表 -->
         <div class="list-header">
-          <div class="col-label" style="flex: 1">国家/地区分级表</div>
+          <div class="col-label" style="flex: 1">国家/地区分级表 (跟随优先级排序)</div>
           <div class="col-action">
             <n-button size="tiny" dashed @click="addRatingCountry">添加国家</n-button>
           </div>
@@ -184,8 +184,10 @@
 
         <div class="rating-container">
           <n-collapse display-directive="show" :default-expanded-names="['US']">
+            
+            <!-- ★★★ 核心修改：遍历 sortedMappingKeys 而不是 ratingMapping ★★★ -->
             <n-collapse-item 
-              v-for="(rules, countryCode) in ratingMapping" 
+              v-for="countryCode in sortedMappingKeys" 
               :key="countryCode" 
               :title="getCountryName(countryCode)" 
               :name="countryCode"
@@ -195,16 +197,16 @@
               </template>
 
               <!-- 具体分级规则表格 -->
+              <!-- 注意：这里依然绑定到 ratingMapping 对象上 -->
               <n-dynamic-input 
                 v-model:value="ratingMapping[countryCode]" 
-                :on-create="() => ({ code: '', label: '' })"
+                :on-create="() => ({ code: '', label: '全年龄' })"
               >
                 <template #default="{ value }">
                   <div style="display: flex; align-items: center; width: 100%; gap: 10px">
                     <n-input v-model:value="value.code" placeholder="原始分级 (如 R)" style="flex: 1" />
                     <div style="width: 20px; text-align: center">➜</div>
                     
-                    <!-- 动态下拉框 -->
                     <n-select 
                       v-model:value="value.label" 
                       :options="dynamicRatingOptions" 
@@ -217,6 +219,12 @@
                 </template>
               </n-dynamic-input>
             </n-collapse-item>
+            
+            <!-- 空状态提示 -->
+            <div v-if="sortedMappingKeys.length === 0" style="padding: 20px; text-align: center; color: #999;">
+              请在上方添加国家以配置分级映射
+            </div>
+
           </n-collapse>
         </div>
       </n-tab-pane>
@@ -449,37 +457,57 @@ const availablePriorityOptions = computed(() => {
   return opts.filter(o => !ratingPriority.value.includes(o.value));
 });
 
+const sortedMappingKeys = computed(() => {
+  return ratingPriority.value.filter(code => code !== 'ORIGIN');
+});
+
 const addPriority = (val) => {
   if (val && !ratingPriority.value.includes(val)) {
+    // 1. 加入优先级列表 (上)
     ratingPriority.value.push(val);
+    
+    // 2. 自动初始化映射表 (下)
+    if (!ratingMapping.value[val]) {
+      ratingMapping.value[val] = [{ code: '', label: '全年龄' }];
+    }
+    
     newPriorityCountry.value = null;
   }
 };
 
 const removePriority = (index) => {
+  const codeToRemove = ratingPriority.value[index];
+  
   ratingPriority.value.splice(index, 1);
+  
+  if (codeToRemove !== 'ORIGIN') {
+    delete ratingMapping.value[codeToRemove];
+  }
+};
+
+const removeRatingCountry = (code) => {
+  const index = ratingPriority.value.indexOf(code);
+  if (index !== -1) {
+    removePriority(index); // 直接调用上面的联动删除函数
+  }
 };
 
 const addRatingCountry = () => {
   dialog.create({
     title: '添加分级国家',
     content: () => h(NSelect, {
-      options: countryList.value.map(c => ({label: c.label, value: c.value})),
+      options: availablePriorityOptions.value, // 复用优先级的可选列表
       filterable: true,
       placeholder: '搜索国家...',
       onUpdateValue: (v) => {
-        if (!ratingMapping.value[v]) {
-          ratingMapping.value[v] = [{ code: '', label: '全年龄' }];
-        }
+        addPriority(v); // 直接调用上面的联动添加函数
         dialog.destroyAll();
       }
     })
   });
 };
 
-const removeRatingCountry = (code) => {
-  delete ratingMapping.value[code];
-};
+
 
 const handleRestoreDefaults = () => {
   // 特殊处理 ratings Tab
