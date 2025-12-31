@@ -4,7 +4,7 @@ from flask import Blueprint, jsonify, request, g, session
 
 from extensions import any_login_required
 import handler.tmdb as tmdb
-from utils import DEFAULT_KEYWORD_MAPPING, DEFAULT_STUDIO_MAPPING, contains_chinese, DEFAULT_LANGUAGE_MAPPING
+from utils import DEFAULT_KEYWORD_MAPPING, DEFAULT_STUDIO_MAPPING, contains_chinese, DEFAULT_LANGUAGE_MAPPING, DEFAULT_RATING_MAPPING
 from database import media_db, settings_db, request_db
 from tasks.discover import task_update_daily_theme, task_replenish_recommendation_pool
 import task_manager
@@ -68,6 +68,44 @@ def _expand_studio_labels_to_ids(labels: list) -> str:
     
     # 使用 '|' (OR) 连接所有 ID
     return "|".join(list(set(all_ids)))
+
+def _get_tmdb_rating_params(label: str, item_type: str) -> dict:
+    """
+    将中文分级标签（如 '成人'）转换为 TMDb 的 US 分级参数。
+    """
+    if not label:
+        return {}
+
+    # 1. 从数据库读取映射表 (如果没有则使用默认值)
+    mapping_data = settings_db.get_setting('rating_mapping') or DEFAULT_RATING_MAPPING
+    
+    # 2. 强制锁定使用 'US' 标准 (因为 TMDb 的 US 数据最全)
+    us_rules = mapping_data.get('US', [])
+    
+    # 3. 找到所有匹配该 Label 的 Code (例如 '成人' -> ['R', 'TV-MA'])
+    target_codes = [
+        rule['code'] 
+        for rule in us_rules 
+        if rule.get('label') == label and rule.get('code')
+    ]
+    
+    if not target_codes:
+        return {}
+    
+    # 用管道符连接 (OR 逻辑)
+    codes_str = "|".join(target_codes)
+    
+    params = {}
+    if item_type == 'Movie':
+        # 电影：必须指定 certification_country 才能让 certification 生效
+        params['certification_country'] = 'US'
+        params['certification'] = codes_str
+    elif item_type == 'Series':
+        # 剧集：使用 with_content_ratings，配合 watch_region 提高准确度
+        params['watch_region'] = 'US'
+        params['with_content_ratings'] = codes_str
+        
+    return params
 
 def _filter_and_enrich_results(tmdb_data: dict, current_user_id: str, db_item_type: str) -> dict:
     """
@@ -147,13 +185,24 @@ def discover_movies():
             'with_origin_country': data.get('with_origin_country', ''),
         }
         
-        # 5. 清理空参数
+        # 5. 处理分级筛选 
+        rating_label = data.get('with_rating_label')
+        if rating_label:
+            rating_params = _get_tmdb_rating_params(rating_label, 'Movie')
+            tmdb_params.update(rating_params)
+            
+            # 特殊处理：如果是搜“成人”或“限制级”，必须把 TMDb 的 include_adult 关掉
+            # 因为我们是用分级(R/NC-17)来搜，而不是用 TMDb 的 Porn 开关
+            # (虽然默认就是 false，这里强调一下逻辑)
+            pass 
+
+        # 6. 清理空参数
         tmdb_params = {k: v for k, v in tmdb_params.items() if v is not None and v != ''}
 
-        # 6. 调用 TMDb 接口
+        # 7. 调用 TMDb 接口
         tmdb_data = tmdb.discover_movie_tmdb(api_key, tmdb_params)
         
-        # 7. 附加在库状态和订阅状态
+        # 8. 附加在库状态和订阅状态
         processed_data = _filter_and_enrich_results(tmdb_data, current_user_id, 'Movie')
         
         return jsonify(processed_data)
@@ -201,6 +250,12 @@ def discover_tv_shows():
             'with_origin_country': data.get('with_origin_country', ''),
         }
         
+        # 处理分级筛选 
+        rating_label = data.get('with_rating_label')
+        if rating_label:
+            rating_params = _get_tmdb_rating_params(rating_label, 'Series')
+            tmdb_params.update(rating_params)
+
         tmdb_params = {k: v for k, v in tmdb_params.items() if v is not None and v != ''}
 
         tmdb_data = tmdb.discover_tv_tmdb(api_key, tmdb_params)

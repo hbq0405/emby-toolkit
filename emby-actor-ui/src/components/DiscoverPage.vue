@@ -56,6 +56,17 @@
                 />
               </n-space>
               <n-space align="center">
+                <label>分级:</label>
+                <n-select
+                  v-model:value="selectedRating"
+                  :disabled="isSearchMode"
+                  clearable
+                  placeholder="选择内容分级"
+                  :options="ratingOptions"
+                  style="min-width: 300px;"
+                />
+              </n-space>
+              <n-space align="center">
               <label>地区:</label>
               <n-select
                   v-model:value="selectedRegions"
@@ -342,6 +353,8 @@ const yearTo = ref(null);
 const recommendationPool = ref([]); 
 const currentRecommendation = ref(null); 
 const isPoolLoading = ref(true); 
+const ratingOptions = ref([]);
+const selectedRating = ref(null);
 const recommendationThemeName = ref('每日推荐');
 const filters = reactive({
   sort_by: 'popularity.desc',
@@ -425,6 +438,19 @@ const fetchStudios = async () => {
     message.error('加载工作室列表失败');
   }
 };
+const fetchRatings = async () => {
+  try {
+    // 调用你之前写好的接口，获取 ['全年龄', '成人', '限制级'...]
+    const response = await axios.get('/api/custom_collections/config/unified_ratings_options');
+    // 转换为 n-select 需要的格式
+    ratingOptions.value = response.data.map(label => ({
+      label: label,
+      value: label
+    }));
+  } catch (error) {
+    message.error('加载分级列表失败');
+  }
+};
 const fetchDiscoverData = async () => {
   if (isLoadingMore.value || loading.value) return;
   if (filters.page === 1) { loading.value = true; } else { isLoadingMore.value = true; }
@@ -445,6 +471,7 @@ const fetchDiscoverData = async () => {
         'with_original_language': selectedLanguage.value,
         'with_keywords': selectedKeywords.value,
         'with_companies': selectedStudios.value,
+        'with_rating_label': selectedRating.value
       };
       if (selectedGenres.value.length > 0) {
         if (genreFilterMode.value === 'include') { apiParams.with_genres = selectedGenres.value.join(','); } 
@@ -696,7 +723,7 @@ watch(mediaType, () => {
   resetAndFetch();
 });
 watch(searchQuery, (newValue) => { resetAndFetch(); });
-watch([() => filters.sort_by, () => filters.vote_average_gte, selectedGenres, selectedRegions, selectedLanguage, selectedKeywords, selectedStudios, genreFilterMode, yearFrom, yearTo], () => { resetAndFetch(); }, { deep: true });
+watch([() => filters.sort_by, () => filters.vote_average_gte, selectedGenres, selectedRegions, selectedLanguage, selectedKeywords, selectedStudios, genreFilterMode, yearFrom, yearTo, selectedRating], () => { resetAndFetch(); }, { deep: true });
 let observer = null;
 onMounted(() => {
   fetchGenres();
@@ -704,6 +731,7 @@ onMounted(() => {
   fetchLanguages();
   fetchKeywords();
   fetchStudios();
+  fetchRatings();
   fetchEmbyConfig(); 
   fetchRecommendationPool();
   resetAndFetch();
