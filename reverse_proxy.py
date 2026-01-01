@@ -759,41 +759,28 @@ def proxy_all(path):
             
             greenlets = [spawn(forward_to_server), spawn(forward_to_client)]
             joinall(greenlets)
+            
+            # WebSocket 结束后返回空响应
+            return Response()
 
         except Exception as e:
             logger.error(f"WebSocket 代理错误: {e}")
-        
-        return Response()
+            return Response(status=500)
 
     # --- 2. HTTP 代理逻辑 ---
     try:
         full_path = f'/{path}'
 
-        # --- ✨ 新增拦截 2: 虚拟项目海报图片 ✨ ---
+        # --- 拦截 A: 虚拟项目海报图片 ---
         if path.startswith('emby/Items/') and '/Images/Primary' in path:
             item_id = path.split('/')[2]
             if is_missing_item_id(item_id):
-                # 1. 解析 ID
                 combined_id = parse_missing_item_id(item_id)
-                
-                # 提取纯 TMDb ID (如果是 剧ID_S_季号，取剧ID；如果是纯ID，取纯ID)
-                # 因为我们现在的策略是：海报文件名始终基于 剧集ID (或电影ID)
                 real_tmdb_id = combined_id.split('_S_')[0] if '_S_' in combined_id else combined_id
-                
-                # 2. ★★★ 修复：调用智能查询函数获取“最佳状态” ★★★
-                # 即使 combined_id 是剧集ID，而数据库只存了季的 PENDING_RELEASE，
-                # 这个函数也能查出来 PENDING_RELEASE。
                 meta = queries_db.get_best_metadata_by_tmdb_id(real_tmdb_id)
-                
-                # 3. 确定状态
                 db_status = meta.get('subscription_status', 'WANTED')
-                # 过滤掉无效状态，兜底为 WANTED
                 current_status = db_status if db_status in ['WANTED', 'SUBSCRIBED', 'PENDING_RELEASE', 'PAUSED', 'IGNORED'] else 'WANTED'
                 
-                # 4. 获取海报
-                # 此时 real_tmdb_id 是剧ID，current_status 是正确的 PENDING_RELEASE
-                # get_missing_poster 会去寻找 {剧ID}_PENDING_RELEASE.jpg
-                # 这正是后台任务生成的那个文件！
                 from handler.poster_generator import get_missing_poster
                 img_file_path = get_missing_poster(
                     tmdb_id=real_tmdb_id, 
@@ -806,36 +793,43 @@ def proxy_all(path):
                     resp.headers['Cache-Control'] = 'no-cache, no-store, must-revalidate'
                     return resp
 
+        # --- 拦截 B: 视图列表 (Views) ---
         if path.endswith('/Views') and path.startswith('emby/Users/'):
             return handle_get_views()
 
+        # --- 拦截 C: 最新项目 (Latest) ---
         if path.endswith('/Items/Latest'):
             user_id_match = re.search(r'/emby/Users/([^/]+)/', full_path)
             if user_id_match:
                 return handle_get_latest_items(user_id_match.group(1), request.args)
 
+        # --- 拦截 D: 虚拟库详情 ---
         details_match = MIMICKED_ITEM_DETAILS_RE.search(full_path)
         if details_match:
             user_id = details_match.group(1)
             mimicked_id = details_match.group(2)
             return handle_get_mimicked_library_details(user_id, mimicked_id)
 
+        # --- 拦截 E: 虚拟库图片 ---
         if path.startswith('emby/Items/') and '/Images/' in path:
             item_id = path.split('/')[2]
             if is_mimicked_id(item_id):
                 return handle_get_mimicked_library_image(path)
         
+        # --- 拦截 F: 虚拟库内容浏览 (Items) ---
         parent_id = request.args.get("ParentId")
         if parent_id and is_mimicked_id(parent_id):
+            # 处理元数据请求
             if any(path.endswith(endpoint) for endpoint in UNSUPPORTED_METADATA_ENDPOINTS + ['/Items/Prefixes', '/Genres', '/Studios', '/Tags', '/OfficialRatings', '/Years']):
                 return handle_mimicked_library_metadata_endpoint(path, parent_id, request.args)
             
+            # 处理内容列表请求
             user_id_match = re.search(r'emby/Users/([^/]+)/Items', path)
             if user_id_match:
                 user_id = user_id_match.group(1)
                 return handle_get_mimicked_library_items(user_id, parent_id, request.args)
 
-        # 默认转发
+        # 兜底逻辑
         base_url, api_key = _get_real_emby_url_and_key()
         target_url = f"{base_url}/{path.lstrip('/')}"
         
