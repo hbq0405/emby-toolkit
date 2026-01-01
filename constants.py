@@ -77,6 +77,7 @@ CONFIG_SECTION_TMDB = "TMDB"
 CONFIG_OPTION_TMDB_API_KEY = "tmdb_api_key" # TMDb API密钥
 CONFIG_OPTION_TMDB_API_BASE_URL = "tmdb_api_base_url" # TMDb API基础URL
 ENV_VAR_TMDB_API_BASE_URL = "TMDB_API_BASE_URL" # TMDb API基础URL环境变量
+CONFIG_OPTION_TMDB_INCLUDE_ADULT = "tmdb_include_adult" # 是否在搜索中包含成人内容 
 # --- GitHub (用于版本检查) ---
 CONFIG_SECTION_GITHUB = "GitHub"
 CONFIG_OPTION_GITHUB_TOKEN = "github_token" # 用于提高API速率限制的个人访问令牌

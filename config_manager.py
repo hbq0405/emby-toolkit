@@ -79,6 +79,7 @@ DYNAMIC_CONFIG_DEF = {
     # [TMDB]
     constants.CONFIG_OPTION_TMDB_API_KEY: (constants.CONFIG_SECTION_TMDB, 'string', ""),
     constants.CONFIG_OPTION_TMDB_API_BASE_URL: (constants.CONFIG_SECTION_TMDB, 'string', "https://api.themoviedb.org/3"),
+    constants.CONFIG_OPTION_TMDB_INCLUDE_ADULT: (constants.CONFIG_SECTION_TMDB, 'boolean', False),
     constants.CONFIG_OPTION_GITHUB_TOKEN: (constants.CONFIG_SECTION_GITHUB, 'string', ""),
 
     # [DoubanAPI]

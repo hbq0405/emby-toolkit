@@ -64,6 +64,14 @@
                       <n-input v-model:value="configModel.tmdb_api_base_url" placeholder="https://api.themoviedb.org/3" />
                       <template #feedback><n-text depth="3" style="font-size:0.8em;">TMDb API的基础URL，通常不需要修改。可通过环境变量 TMDB_API_BASE_URL 设置。</n-text></template>
                     </n-form-item>
+                    <n-form-item label="允许成人内容探索" path="tmdb_include_adult">
+                      <n-space align="center">
+                        <n-switch v-model:value="configModel.tmdb_include_adult" />
+                        <n-text depth="3" style="font-size: 0.9em; margin-left: 8px;">
+                          开启后，仅当在探索页面筛选“限制级”分级时，才会返回 TMDb 成人内容。
+                        </n-text>
+                      </n-space>
+                    </n-form-item>
                     <n-form-item label="GitHub 个人访问令牌" path="github_token">
                       <n-input type="password" show-password-on="mousedown" v-model:value="configModel.github_token" placeholder="可选，用于提高API请求频率限制"/>
                       <template #feedback><n-text depth="3" style="font-size:0.8em;"><a href="https://github.com/settings/tokens/new" target="_blank" style="font-size: 1.3em; margin-left: 8px; color: var(--n-primary-color); text-decoration: underline;">免费申请GithubTOKEN</a></n-text></template>
