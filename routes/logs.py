@@ -330,8 +330,8 @@ def search_logs_with_context():
         return jsonify({"error": "搜索关键词不能为空"}), 400
 
     # --- 正则定义 (保持 V10 的精准逻辑) ---
-    START_MARKER = re.compile(r"后台任务\s'(?:Webhook: 收到入库事件|手动处理):\s(.+?)'\s开始执行")
-    END_MARKER = re.compile(r"后台任务\s'(?:元数据同步|手动处理):\s(.+?)'\s结束")
+    START_MARKER = re.compile(r"Webhook: 收到入库事件\s'(.+?)'，已分派预检任务。")
+    END_MARKER = re.compile(r"后台任务\s'Webhook入库:\s(.+?)'\s结束，最终状态:\s处理完成。")
     INTERFERENCE_MARKER = re.compile(r"(?:Webhook: 收到入库事件|项目|预检.+?检测到|开始检查|开始处理|处理完成)\s'(.+?)'")
     TIMESTAMP_REGEX = re.compile(r"^(\d{4}-\d{2}-\d{2}\s\d{2}:\d{2}:\d{2})")
 
