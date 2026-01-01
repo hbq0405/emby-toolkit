@@ -175,6 +175,7 @@ def init_db():
                         runtime_minutes INTEGER,
                         rating REAL,
                         rating_json JSONB,
+                        rating_locked BOOLEAN DEFAULT FALSE,
                         genres_json JSONB,
                         actors_json JSONB,
                         directors_json JSONB,
@@ -447,7 +448,8 @@ def init_db():
                             "watchlist_missing_info_json": "JSONB",
                             "watchlist_is_airing": "BOOLEAN DEFAULT FALSE",
                             "total_episodes": "INTEGER DEFAULT 0",
-                            "total_episodes_locked": "BOOLEAN DEFAULT FALSE"
+                            "total_episodes_locked": "BOOLEAN DEFAULT FALSE",
+                            "rating_locked": "BOOLEAN DEFAULT FALSE"
                         },
                         'resubscribe_rules': {
                             "resubscribe_subtitle_effect_only": "BOOLEAN DEFAULT FALSE",

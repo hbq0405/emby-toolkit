@@ -912,7 +912,13 @@ def task_populate_metadata_cache(processor, batch_size: int = 50, force_full_upd
                                 if col in ('tmdb_id', 'item_type', 'subscription_sources_json', 'subscription_status'): 
                                     continue
                                 
-                                update_clauses.append(f"{col} = EXCLUDED.{col}")
+                                # ★★★ 核心修改：如果分级被锁定，则不更新 rating_json ★★★
+                                if col == 'rating_json':
+                                    # 逻辑：如果 media_metadata.rating_locked 为 TRUE，则保持原值 (media_metadata.rating_json)
+                                    # 否则使用新值 (EXCLUDED.rating_json)
+                                    update_clauses.append("rating_json = CASE WHEN media_metadata.rating_locked IS TRUE THEN media_metadata.rating_json ELSE EXCLUDED.rating_json END")
+                                else:
+                                    update_clauses.append(f"{col} = EXCLUDED.{col}")
                             
                             sql = f"""
                                 INSERT INTO media_metadata ({cols_str}, last_synced_at) 

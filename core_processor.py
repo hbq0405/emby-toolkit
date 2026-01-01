@@ -3100,19 +3100,23 @@ class MediaProcessor:
 
                     # 分级同步逻辑 
                     new_rating = item_details.get('OfficialRating')
-                    if new_rating:
+                    # 注意：只要 Emby 传来了分级字段（哪怕是空的，代表用户清空了分级），我们都视为用户意图，进行锁定
+                    if 'OfficialRating' in item_details: 
                         # 1. 先查出旧的 rating_json
                         cursor.execute("SELECT rating_json FROM media_metadata WHERE tmdb_id = %s AND item_type = %s", (tmdb_id, item_type))
                         row = cursor.fetchone()
                         current_rating_json = row['rating_json'] if row and row['rating_json'] else {}
                         
-                        # 2. 更新 US 字段 (Emby 的 OfficialRating 通常对应 US 标准，或者作为通用标准)
-                        # 如果你想更智能一点，可以判断 new_rating 的格式，但通常直接覆盖 US 是最安全的做法
+                        # 2. 更新 US 字段 (作为主分级)
                         current_rating_json['US'] = new_rating
                         
                         # 3. 加入更新队列
                         updates["rating_json"] = json.dumps(current_rating_json, ensure_ascii=False)
-                        logger.debug(f"  ➜ {log_prefix} 同步分级: {new_rating}")
+                        
+                        # ★★★ 核心：一旦手动同步了分级，就锁定它 ★★★
+                        updates["rating_locked"] = True
+                        
+                        logger.debug(f"  ➜ {log_prefix} 同步分级: '{new_rating}' 并已锁定 (防止TMDb覆盖)。")
                     
                     # 构建 SQL
                     set_clauses = [f"{key} = %s" for key in updates.keys()]
