@@ -537,7 +537,7 @@ def get_stale_subscribed_media(movie_search_window: int, protection_days: int) -
         WHERE 
             subscription_status = 'SUBSCRIBED'
             AND last_subscribed_at IS NOT NULL
-            AND NOW() > last_subscribed_at + INTERVAL '{movie_search_window} days'
+            AND NOW() - last_subscribed_at > INTERVAL '{movie_search_window} days'
             AND release_date IS NOT NULL
             AND release_date < NOW() - INTERVAL '{protection_days} days';
     """
