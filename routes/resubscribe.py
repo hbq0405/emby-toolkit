@@ -11,8 +11,7 @@ import extensions
 import handler.emby as emby
 from extensions import admin_required, task_lock_required
 from database import resubscribe_db
-from tasks.resubscribe import task_update_resubscribe_cache
-
+from tasks.resubscribe import task_update_resubscribe_cache, task_resubscribe_batch, task_resubscribe_library
 resubscribe_bp = Blueprint('resubscribe', __name__, url_prefix='/api/resubscribe')
 logger = logging.getLogger(__name__)
 
@@ -134,7 +133,7 @@ def trigger_resubscribe_all():
     """触发一键洗版全部的任务。"""
     try:
         task_manager.submit_task(
-            tasks.task_resubscribe_library,
+            task_resubscribe_library,
             task_name="全库媒体洗版",
             processor_type='media'
         )
@@ -219,7 +218,7 @@ def batch_action():
         # 4. 执行操作
         if action == 'subscribe':
             task_manager.submit_task(
-                tasks.task_resubscribe_batch,
+                task_resubscribe_batch,
                 task_name="批量媒体整理",
                 processor_type='media',
                 item_ids=item_ids
