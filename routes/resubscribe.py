@@ -10,7 +10,8 @@ import handler.moviepilot as moviepilot
 import extensions
 import handler.emby as emby
 from extensions import admin_required, task_lock_required
-from database import resubscribe_db, settings_db, maintenance_db
+from database import resubscribe_db
+from tasks.resubscribe import task_update_resubscribe_cache
 
 resubscribe_bp = Blueprint('resubscribe', __name__, url_prefix='/api/resubscribe')
 logger = logging.getLogger(__name__)
@@ -118,7 +119,7 @@ def trigger_refresh_status():
     """触发缓存刷新任务。"""
     try:
         task_manager.submit_task(
-            tasks.task_update_resubscribe_cache, 
+            task_update_resubscribe_cache, 
             task_name="刷新媒体整理",
             processor_type='media'
         )
