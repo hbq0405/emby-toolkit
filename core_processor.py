@@ -1425,6 +1425,33 @@ class MediaProcessor:
             if final_processed_cast is None:
                 logger.info(f"  ➜ 未命中缓存或强制重处理，开始处理演员表...")
 
+                # 此时必须从 TMDb 拉取最新的导演、分级、工作室，否则 Emby 的数据太残缺。
+                if not force_full_update and self.tmdb_api_key:
+                    logger.info(f"  ➜ [首次入库] 检测到本地无有效缓存，正在从 TMDb 补全元数据骨架(导演/分级/工作室)...")
+                    try:
+                        if item_type == "Movie":
+                            fresh_data = tmdb.get_movie_details(tmdb_id, self.tmdb_api_key)
+                            if fresh_data:
+                                # 1. 覆盖骨架 (导演、分级、工作室、简介等)
+                                tmdb_details_for_extra.update(fresh_data)
+                                # 2. 更新演员源 (确保是 TMDb 原版顺序)
+                                if fresh_data.get("credits", {}).get("cast"):
+                                    authoritative_cast_source = fresh_data["credits"]["cast"]
+                                logger.info(f"  ➜ [首次入库] 电影元数据补全成功。")
+
+                        elif item_type == "Series":
+                            aggregated_tmdb_data = tmdb.aggregate_full_series_data_from_tmdb(int(tmdb_id), self.tmdb_api_key)
+                            if aggregated_tmdb_data:
+                                series_details = aggregated_tmdb_data.get("series_details", {})
+                                # 1. 覆盖骨架
+                                tmdb_details_for_extra.update(series_details)
+                                # 2. 更新演员源
+                                all_episodes = list(aggregated_tmdb_data.get("episodes_details", {}).values())
+                                authoritative_cast_source = _aggregate_series_cast_from_tmdb_data(series_details, all_episodes)
+                                logger.info(f"  ➜ [首次入库] 剧集元数据补全成功。")
+                    except Exception as e_fetch:
+                        logger.warning(f"  ➜ [首次入库] 尝试补全元数据时失败，将使用 Emby 原始数据兜底: {e_fetch}")
+
                 with get_central_db_connection() as conn:
                     cursor = conn.cursor()
                     
@@ -3071,14 +3098,21 @@ class MediaProcessor:
                     if item_details.get('ProductionYear'):
                         updates["release_year"] = item_details['ProductionYear']
 
-                    # 针对电影，更新资产详情 (路径等)
-                    if item_type == 'Movie':
-                        # 注意：这里需要重新获取一次带 MediaSources 的详情，或者上面的 fields_to_get 加上 MediaSources
-                        # 为了轻量化，如果只是改标题，其实不需要更新 asset_details。
-                        # 但为了严谨，如果用户改了路径，这里最好也更新一下。
-                        # 鉴于 metadata.update 很少涉及路径变更，这里可以选择性忽略 asset_details 的更新，
-                        # 或者为了保险起见，保持原有的 asset_details 更新逻辑。
-                        pass 
+                    # 分级同步逻辑 
+                    new_rating = item_details.get('OfficialRating')
+                    if new_rating:
+                        # 1. 先查出旧的 rating_json
+                        cursor.execute("SELECT rating_json FROM media_metadata WHERE tmdb_id = %s AND item_type = %s", (tmdb_id, item_type))
+                        row = cursor.fetchone()
+                        current_rating_json = row['rating_json'] if row and row['rating_json'] else {}
+                        
+                        # 2. 更新 US 字段 (Emby 的 OfficialRating 通常对应 US 标准，或者作为通用标准)
+                        # 如果你想更智能一点，可以判断 new_rating 的格式，但通常直接覆盖 US 是最安全的做法
+                        current_rating_json['US'] = new_rating
+                        
+                        # 3. 加入更新队列
+                        updates["rating_json"] = json.dumps(current_rating_json, ensure_ascii=False)
+                        logger.debug(f"  ➜ {log_prefix} 同步分级: {new_rating}")
                     
                     # 构建 SQL
                     set_clauses = [f"{key} = %s" for key in updates.keys()]
