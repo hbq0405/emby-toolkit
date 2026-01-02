@@ -9,7 +9,7 @@ import requests
 from pathlib import Path
 from typing import Dict, Any, List, Tuple, Optional
 from gevent import spawn_later
-from database import custom_collection_db, queries_db, media_db
+from database import custom_collection_db, queries_db
 import config_manager
 import handler.emby as emby 
 from extensions import UPDATING_IMAGES
@@ -87,7 +87,7 @@ class CoverGeneratorService:
             # 检查是否有足够的 Emby ID
             valid_emby_ids = [i for i in media_info_list if i.get('emby_id')]
             
-            # 如果本地已经有不少于 3 个的匹配项，优先用 Emby 的（高清且无网络延迟）
+            # 如果本地已经有不少于 3 个的匹配项，优先用 Emby 的
             if len(valid_emby_ids) >= 3:
                 return None
 
@@ -122,7 +122,7 @@ class CoverGeneratorService:
                     # 构造完整 URL
                     full_url = f"https://image.tmdb.org/t/p/w500{poster_path}"
                     
-                    # 下载 (带代理)
+                    # 下载
                     save_name = f"tmdb_{tmdb_id}.jpg"
                     local_path = self.__download_external_image(full_url, library_name, save_name)
                     if local_path:
@@ -133,6 +133,22 @@ class CoverGeneratorService:
                 return None
 
             logger.info(f"  ➜ 成功获取到 {len(image_paths)} 张真实海报，正在生成封面...")
+            
+            # ==================================================================
+            # ★★★ 核心修复：清理旧的缓存图片 ★★★
+            # 必须删除 1.jpg - 9.jpg，否则 __prepare_multi_images 会复用旧的占位符图片
+            # ==================================================================
+            subdir = self.covers_path / library_name
+            if subdir.exists():
+                for i in range(1, 10):
+                    old_cache = subdir / f"{i}.jpg"
+                    if old_cache.exists():
+                        try:
+                            old_cache.unlink()
+                        except Exception:
+                            pass
+            # ==================================================================
+
             return self.__generate_image_from_path(library_name, title, [str(p) for p in image_paths], item_count)
 
         except Exception as e:
