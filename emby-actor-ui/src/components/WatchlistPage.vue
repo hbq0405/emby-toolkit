@@ -500,6 +500,23 @@
         </div>
       </div>
 
+      <n-divider style="margin: 0" />
+      <!-- 复活检查回溯期 -->
+      <div class="setting-item">
+        <div class="setting-icon"><n-icon :component="TimeIcon" /></div>
+        <div class="setting-content">
+          <div class="setting-header">
+            <div class="setting-label">全量刷新回溯期</div>
+            <n-input-number v-model:value="watchlistConfig.revival_check_days" size="small" style="width: 100px">
+              <template #suffix>天</template>
+            </n-input-number>
+          </div>
+          <div class="setting-desc">
+            对于已完结超过此天数的剧集，仅进行轻量级检查（只看有没有新季），不再全量刷新元数据，以提高效率。
+          </div>
+        </div>
+      </div>
+
       <template #footer>
         <n-space justify="end">
           <n-button @click="showConfigModal = false">取消</n-button>
@@ -572,7 +589,8 @@ const watchlistConfig = ref({
   auto_pause: false,
   auto_resub_ended: false,
   gap_fill_resubscribe: false,
-  sync_mp_subscription: false
+  sync_mp_subscription: false,
+  revival_check_days: 365
 });
 
 const openConfigModal = async () => {
@@ -591,7 +609,8 @@ const openConfigModal = async () => {
          auto_resub_ended: data.auto_resub_ended ?? false,
          gap_fill_resubscribe: data.gap_fill_resubscribe ?? false,
          enable_backfill: data.enable_backfill ?? false,
-         sync_mp_subscription: data.sync_mp_subscription ?? false
+         sync_mp_subscription: data.sync_mp_subscription ?? false,
+         revival_check_days: data.revival_check_days ?? 365
        };
     }
   } catch (e) {

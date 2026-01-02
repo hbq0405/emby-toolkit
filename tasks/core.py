@@ -14,7 +14,7 @@ from .actors import (task_sync_person_map, task_enrich_aliases, task_actor_trans
                      task_process_actor_subscriptions, task_purge_unregistered_actors, task_merge_duplicate_actors,
                      task_purge_ghost_actors)
 from .media import task_role_translation, task_populate_metadata_cache 
-from .watchlist import task_process_watchlist, task_run_new_season_check, task_scan_library_gaps, task_scan_old_seasons_backfill
+from .watchlist import task_process_watchlist, task_refresh_completed_series, task_scan_library_gaps, task_scan_old_seasons_backfill
 from .custom_collections import task_process_all_custom_collections, process_single_custom_collection
 from .tmdb_collections import task_refresh_collections
 from .subscriptions import task_auto_subscribe, task_manual_subscribe_batch
@@ -198,7 +198,7 @@ def get_task_registry(context: str = 'all'):
         'sync-all-user-data': (task_sync_all_user_data, "同步用户数据", 'media', True),
         'check-expired-users': (task_check_expired_users, "检查过期用户", 'media', True),
         'generate_embeddings': (task_generate_embeddings, "生成媒体向量", 'media', True),
-        'run_new_season_check': (task_run_new_season_check, "全量刷新剧集", 'watchlist', True),
+        'run_new_season_check': (task_refresh_completed_series, "全量刷新剧集", 'watchlist', True),
         
         # --- 不适合任务链的、需要特定参数的任务 ---
         'process_all_custom_collections': (task_process_all_custom_collections, "生成所有自建合集", 'media', False),
