@@ -22,7 +22,6 @@ logger = logging.getLogger(__name__)
 # 为每个独立的定时任务定义清晰的ID
 HIGH_FREQ_CHAIN_JOB_ID = 'high_freq_task_chain_job'
 LOW_FREQ_CHAIN_JOB_ID = 'low_freq_task_chain_job'
-REVIVAL_CHECK_JOB_ID = 'weekly_revival_check_job'
 DAILY_THEME_JOB_ID = 'daily_theme_job'
 
 
@@ -219,7 +218,6 @@ class SchedulerManager:
         logger.info("  ➜ 正在根据最新配置更新所有定时任务...")
         self.update_high_freq_task_chain_job()
         self.update_low_freq_task_chain_job()
-        self.update_revival_check_job()
         self.update_daily_theme_job()
 
     def _update_single_task_chain_job(self, job_id: str, job_name: str, task_key: str, enabled_key: str, cron_key: str, sequence_key: str, runtime_key: str):
@@ -311,48 +309,6 @@ class SchedulerManager:
             sequence_key='task_chain_low_freq_sequence',
             runtime_key=constants.CONFIG_OPTION_TASK_CHAIN_LOW_FREQ_MAX_RUNTIME_MINUTES
         )
-
-    def update_revival_check_job(self):
-        """根据硬编码的规则，设置每天的新季上线检查任务。"""
-        if not self.scheduler.running:
-            return
-
-        logger.debug("正在更新固定的'新季上线检查'定时任务...")
-
-        try:
-            self.scheduler.remove_job(REVIVAL_CHECK_JOB_ID)
-        except JobLookupError:
-            pass 
-
-        cron_str = '0 5 * * *' 
-        registry = get_task_registry()
-        task_info = registry.get('run_new_season_check')
-        
-        if not task_info:
-            logger.error("设置'剧集复活检查'任务失败：在任务注册表中未找到 'run_new_season_check'。")
-            return
-            
-        task_function, task_description, processor_type = task_info
-
-        def scheduled_revival_check_wrapper():
-            logger.info(f"定时任务触发：{task_description}。")
-            task_manager.submit_task(
-                task_function=task_function,
-                task_name=task_description,
-                processor_type=processor_type
-            )
-
-        try:
-            self.scheduler.add_job(
-                func=scheduled_revival_check_wrapper,
-                trigger=CronTrigger.from_crontab(cron_str, timezone=str(pytz.timezone(constants.TIMEZONE))),
-                id=REVIVAL_CHECK_JOB_ID,
-                name=task_description,
-                replace_existing=True
-            )
-            logger.trace(f"已成功设置'{task_description}'任务，执行计划: 每周日 05:00。")
-        except ValueError as e:
-            logger.error(f"设置'{task_description}'任务失败：CRON表达式 '{cron_str}' 无效。错误: {e}")
 
     def update_daily_theme_job(self):
         """根据硬编码的规则，设置每日推荐的更新任务。"""

@@ -198,6 +198,7 @@ def get_task_registry(context: str = 'all'):
         'sync-all-user-data': (task_sync_all_user_data, "同步用户数据", 'media', True),
         'check-expired-users': (task_check_expired_users, "检查过期用户", 'media', True),
         'generate_embeddings': (task_generate_embeddings, "生成媒体向量", 'media', True),
+        'run_new_season_check': (task_run_new_season_check, "新季上线检查", 'watchlist', True),
         
         # --- 不适合任务链的、需要特定参数的任务 ---
         'process_all_custom_collections': (task_process_all_custom_collections, "生成所有自建合集", 'media', False),
