@@ -204,7 +204,6 @@ def get_task_registry(context: str = 'all'):
         'process_all_custom_collections': (task_process_all_custom_collections, "生成所有自建合集", 'media', False),
         'process-single-custom-collection': (process_single_custom_collection, "生成单个自建合集", 'media', False),
         'scan-cleanup-issues': (task_scan_for_cleanup_issues, "扫描媒体重复项", 'media', False),
-        'run_new_season_check': (task_run_new_season_check, "新季上线检查", 'watchlist', False),
         'resubscribe-library': (task_resubscribe_library, "媒体订阅删除", 'media', False),
         'update-daily-theme': (task_update_daily_theme, "更新每日主题", 'media', False),
         'manual_subscribe_batch': (task_manual_subscribe_batch, "手动订阅处理", 'media', False),
