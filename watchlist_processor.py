@@ -515,8 +515,7 @@ class WatchlistProcessor:
             "genres_json": json.dumps(genres_json) if genres_json else None, # 类型
             "keywords_json": json.dumps(keywords_json) if keywords_json else None, # 关键字
             "studios_json": json.dumps(studios_json) if studios_json else None, # 制作公司
-            "countries_json": json.dumps(countries_json) if countries_json else None, # 产地
-            "last_updated_at": datetime.now(timezone.utc)
+            "countries_json": json.dumps(countries_json) if countries_json else None # 产地
         }
         
         # 调用 DB 更新 (注意：这里使用 update_media_metadata_fields，它会处理 JSON 序列化)
