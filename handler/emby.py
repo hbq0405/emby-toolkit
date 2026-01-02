@@ -1394,22 +1394,40 @@ def create_or_update_collection_with_emby_ids(
                     f"{base_url.rstrip('/')}/Items", 
                     params={
                         'api_key': api_key, 
-                        'Limit': 9,             # 抓9个是为了让默认封面看起来像个九宫格，不那么单调
+                        'Limit': 20,            # ★ 改大数量，方便后续过滤
                         'Recursive': 'true', 
                         'IncludeItemTypes': 'Movie,Series',
                         'SortBy': 'Random',     # 随机抓取
-                        'ImageTypes': 'Primary' # 确保有图
+                        'ImageTypes': 'Primary', # 确保有图
+                        'Fields': 'OfficialRating' # ★ 必须请求分级字段
                     },
                     timeout=api_timeout
                 )
                 
                 if temp_resp.status_code == 200:
                     items = temp_resp.json().get('Items', [])
-                    if items:
-                        desired_emby_ids = [i['Id'] for i in items]
-                        logger.info(f"  ➜ 成功抓取 {len(desired_emby_ids)} 个随机素材 (将用于填充/轮换封面)。")
+                    
+                    # ★★★ 核心：鉴黄过滤器 ★★★
+                    valid_items = []
+                    # 定义少儿不宜的黑名单 (不区分大小写)
+                    unsafe_ratings = {'NC-17', 'X', 'XXX', 'R18+', 'R-18', 'ADULT', '18+'}
+                    
+                    for item in items:
+                        # 获取分级并转大写
+                        rating = item.get('OfficialRating', '').upper()
+                        # 如果不在黑名单里，则是安全的
+                        if rating not in unsafe_ratings:
+                            valid_items.append(item)
+                        
+                        # 凑够9个就收手
+                        if len(valid_items) >= 9:
+                            break
+                    
+                    if valid_items:
+                        desired_emby_ids = [i['Id'] for i in valid_items]
+                        logger.info(f"  ➜ 成功抓取 {len(desired_emby_ids)} 个随机素材 (已过滤 NC-17/R18+ 等内容)。")
                     else:
-                        logger.warning("  ➜ Emby 返回了空列表，无法获取封面素材。")
+                        logger.warning("  ➜ Emby 返回了列表，但经过分级过滤后没有剩余可用项。")
                 else:
                     logger.warning(f"  ➜ 获取随机媒体项失败: {temp_resp.status_code}")
                     
