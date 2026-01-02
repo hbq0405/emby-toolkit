@@ -9,7 +9,7 @@ import requests
 from pathlib import Path
 from typing import Dict, Any, List, Tuple, Optional
 from gevent import spawn_later
-from database import custom_collection_db, queries_db
+from database import custom_collection_db, queries_db, media_db
 import config_manager
 import handler.emby as emby 
 from extensions import UPDATING_IMAGES
@@ -65,8 +65,108 @@ class CoverGeneratorService:
         if custom_image_paths:
             logger.info(f"  ➜ 发现媒体库 '{library_name}' 的自定义图片，将使用路径模式生成。")
             return self.__generate_image_from_path(library_name, title, custom_image_paths, item_count)
+        
+        # ★★★ 真实海报兜底 (针对“即将上线”等本地无资源的榜单) ★★★
+        if custom_collection_data and custom_collection_data.get('type') in ['list', 'ai_recommendation_global']:
+            tmdb_image_data = self.__generate_from_local_tmdb_metadata(library_name, title, custom_collection_data, item_count)
+            if tmdb_image_data:
+                return tmdb_image_data
+
         logger.trace(f"  ➜ 未发现自定义图片，将从服务器 '{server_id}' 获取媒体项作为封面来源。")
         return self.__generate_from_server(server_id, library, title, item_count, content_types, custom_collection_data)
+
+    def __generate_from_local_tmdb_metadata(self, library_name: str, title: Tuple[str, str], custom_collection_data: Dict, item_count: Optional[int]) -> Optional[bytes]:
+        """
+        当本地没有 Emby 媒体项时，利用数据库里存储的 poster_path 下载海报。
+        """
+        try:
+            media_info_list = custom_collection_data.get('generated_media_info_json') or []
+            if isinstance(media_info_list, str):
+                media_info_list = json.loads(media_info_list)
+
+            # 检查是否有足够的 Emby ID
+            valid_emby_ids = [i for i in media_info_list if i.get('emby_id')]
+            
+            # 如果本地已经有不少于 3 个的匹配项，优先用 Emby 的（高清且无网络延迟）
+            if len(valid_emby_ids) >= 3:
+                return None
+
+            logger.info(f"  ➜ 合集 '{library_name}' 本地资源不足 (Emby匹配数: {len(valid_emby_ids)})，尝试使用 TMDB 元数据生成真实封面...")
+
+            # 提取 TMDB ID
+            candidates = [i for i in media_info_list if i.get('tmdb_id')]
+            
+            if not candidates:
+                return None
+
+            # 如果是随机模式，洗牌
+            if self._sort_by == "Random":
+                random.shuffle(candidates)
+            
+            # 限制数量
+            limit = 1 if self._cover_style.startswith('single') else 9
+            candidates = candidates[:limit]
+            
+            # 提取纯 ID 列表
+            tmdb_ids = [str(item['tmdb_id']) for item in candidates]
+            
+            # 从数据库批量查询 poster_path
+            metadata_map = queries_db.get_missing_items_metadata(tmdb_ids)
+            
+            image_paths = []
+            
+            for tmdb_id in tmdb_ids:
+                meta = metadata_map.get(tmdb_id)
+                if meta and meta.get('poster_path'):
+                    poster_path = meta['poster_path']
+                    # 构造完整 URL
+                    full_url = f"https://image.tmdb.org/t/p/w500{poster_path}"
+                    
+                    # 下载 (带代理)
+                    save_name = f"tmdb_{tmdb_id}.jpg"
+                    local_path = self.__download_external_image(full_url, library_name, save_name)
+                    if local_path:
+                        image_paths.append(local_path)
+            
+            if not image_paths:
+                logger.warning(f"  ➜ 数据库中未找到有效的 poster_path。")
+                return None
+
+            logger.info(f"  ➜ 成功获取到 {len(image_paths)} 张真实海报，正在生成封面...")
+            return self.__generate_image_from_path(library_name, title, [str(p) for p in image_paths], item_count)
+
+        except Exception as e:
+            logger.error(f"  ➜ TMDB 海报兜底流程出错: {e}", exc_info=True)
+            return None
+
+    def __download_external_image(self, url: str, library_name: str, filename: str) -> Optional[Path]:
+        """通用的外部图片下载方法 (支持代理)"""
+        subdir = self.covers_path / library_name
+        subdir.mkdir(parents=True, exist_ok=True)
+        filepath = subdir / filename
+        
+        # 简单的缓存机制
+        if filepath.exists() and filepath.stat().st_size > 0:
+            return filepath
+
+        try:
+            session = requests.Session()
+            adapter = requests.adapters.HTTPAdapter(max_retries=3)
+            session.mount('https://', adapter)
+            
+            # ★★★ 注入代理 ★★★
+            proxies = config_manager.get_proxies_for_requests()
+            if proxies:
+                session.proxies.update(proxies)
+            
+            resp = session.get(url, stream=True, timeout=15)
+            if resp.status_code == 200:
+                with open(filepath, 'wb') as f:
+                    shutil.copyfileobj(resp.raw, f)
+                return filepath
+        except Exception as e:
+            logger.warning(f"  ➜ 下载外部图片失败 {url}: {e}")
+        return None
 
     def __generate_from_server(self, server_id: str, library: Dict[str, Any], title: Tuple[str, str], item_count: Optional[int] = None, content_types: Optional[List[str]] = None, custom_collection_data: Optional[Dict] = None) -> bytes:
         required_items_count = 1 if self._cover_style.startswith('single') else 9
@@ -103,18 +203,12 @@ class CoverGeneratorService:
         # ======================================================================
         # 策略 A: 实时筛选类合集 (Filter / AI Recommendation)
         # ======================================================================
-        # 逻辑：直接调用 queries_db 实时查询，结果即为虚拟库当前内容，无需额外过滤
         if custom_collection_data and custom_collection_data.get('type') in ['filter', 'ai_recommendation']:
             logger.info(f"  ➜ 检测到 '{library_name}' 为实时筛选/推荐合集，正在调用查询引擎获取封面素材...")
             try:
                 definition = custom_collection_data.get('definition_json', {})
-                
-                # 1. 映射排序方式 (封面生成器的配置 -> 数据库查询的配置)
-                # Random -> Random, Latest -> DateCreated
                 db_sort_by = 'Random' if self._sort_by == 'Random' else 'DateCreated'
                 
-                # 2. 调用查询引擎
-                # 注意：这里我们多取一些 (limit * 2)，以防某些项目没有图片
                 items_from_db, _ = queries_db.query_virtual_library_items(
                     rules=definition.get('rules', []),
                     logic=definition.get('logic', 'AND'),
@@ -130,7 +224,6 @@ class CoverGeneratorService:
                     logger.warning(f"  ➜ 实时查询未返回任何结果，无法生成封面。")
                     return []
 
-                # 3. 提取 ID 并向 Emby 请求图片信息 (因为 queries_db 只返回 ID)
                 target_ids = [item['Id'] for item in items_from_db]
                 ids_str = ",".join(target_ids)
                 
@@ -146,10 +239,8 @@ class CoverGeneratorService:
                 data = resp.json()
                 items_from_emby = data.get('Items', [])
                 
-                # 4. 过滤有图片的项
                 valid_items = [item for item in items_from_emby if self.__get_image_url(item)]
                 
-                # 5. 如果是 Random 模式，Emby 返回的顺序可能被 ID 顺序影响，这里再洗一次牌确保随机
                 if self._sort_by == "Random":
                     random.shuffle(valid_items)
                 
@@ -162,13 +253,10 @@ class CoverGeneratorService:
 
             except Exception as e:
                 logger.error(f"  ➜ 处理实时合集 '{library_name}' 封面生成时出错: {e}", exc_info=True)
-                # 出错后回退到下方逻辑
 
         # ======================================================================
         # 策略 B: 静态/缓存类合集 (List / Global AI)
         # ======================================================================
-        # 逻辑：从 generated_media_info_json 读取 Emby ID
-        # 尝试从传入的 custom_collection_data 获取，如果没有则查库
         custom_collection = custom_collection_data
         if not custom_collection:
             custom_collection = custom_collection_db.get_custom_collection_by_emby_id(library_id)
@@ -176,9 +264,7 @@ class CoverGeneratorService:
         if custom_collection and custom_collection.get('type') in ['list', 'ai_recommendation_global']:
             logger.info(f"  ➜ 检测到 '{library_name}' 为榜单/全局推荐合集，正在从数据库获取媒体项ID...")
             try:
-                # 1. 从数据库 JSON 中提取 Emby ID
                 media_info_list = custom_collection.get('generated_media_info_json') or []
-                # 解析 JSON (如果是字符串)
                 if isinstance(media_info_list, str):
                     media_info_list = json.loads(media_info_list)
                     
@@ -191,15 +277,12 @@ class CoverGeneratorService:
                 if valid_emby_ids:
                     logger.trace(f"  ➜ 从数据库中提取到 {len(valid_emby_ids)} 个有效的 Emby ID。")
                     
-                    # 2. 本地处理排序 (Random 模式下洗牌)
                     if self._sort_by == "Random":
                         random.shuffle(valid_emby_ids)
                     
-                    # 3. 截取需要的数量
                     target_ids = valid_emby_ids[:max(limit * 2, 20)]
                     ids_str = ",".join(target_ids)
 
-                    # 4. 直接向 Emby 查询这些特定 ID 的详情
                     url = f"{base_url.rstrip('/')}/Users/{user_id}/Items"
                     headers = {"X-Emby-Token": api_key, "Content-Type": "application/json"}
                     params = {
@@ -212,7 +295,6 @@ class CoverGeneratorService:
                     data = resp.json()
                     items_from_emby = data.get('Items', [])
 
-                    # 5. 再次过滤，确保有图片
                     valid_items = [item for item in items_from_emby if self.__get_image_url(item)]
                     
                     if valid_items:
@@ -222,13 +304,12 @@ class CoverGeneratorService:
                         logger.warning(f"  ➜ 自定义合集 '{library_name}' 中的项目均无有效封面。")
                         return []
                 else:
-                    # ★★★ 核心修复：当数据库记录为空时（如“即将上线”榜单），尝试直接使用合集内的现有成员（特洛伊木马） ★★★
+                    # Fallback: 尝试使用合集现有成员 (特洛伊木马)
                     logger.warning(f"  ➜ 自定义合集 '{library_name}' 数据库记录中没有有效的 Emby ID，尝试使用合集现有成员作为封面素材...")
                     
                     fallback_items = emby.get_emby_library_items(
                         base_url=base_url, api_key=api_key, user_id=user_id,
                         library_ids=[library_id],
-                        # 使用宽泛的类型过滤，确保能抓到任何占位符
                         media_type_filter="Movie,Series,Season,Episode", 
                         fields="Id,Name,Type,ImageTags,BackdropImageTags,PrimaryImageTag,PrimaryImageItemId",
                         limit=limit
@@ -270,10 +351,10 @@ class CoverGeneratorService:
             logger.trace(f"  ➜ 检测到合集 '{library_name}'，为提升性能，将仅使用类型 '{media_type_to_fetch}' 进行查询。")
 
         sort_by_param = "Random"
-        sort_order_param = None  # 随机排序不需要顺序
-        if self._sort_by != "Random": # 处理 "Latest" 或其他未来可能的排序
+        sort_order_param = None
+        if self._sort_by != "Random":
             sort_by_param = "DateCreated"
-            sort_order_param = "Descending" # 明确指定降序
+            sort_order_param = "Descending"
         
         api_limit = limit * 5 if limit < 10 else limit * 2 
 
@@ -291,7 +372,6 @@ class CoverGeneratorService:
         if not all_items: return []
         valid_items = [item for item in all_items if self.__get_image_url(item)]
         
-        # 如果是 Random 模式，本地再洗一次牌
         if self._sort_by == "Random":
             random.shuffle(valid_items)
             
@@ -314,16 +394,12 @@ class CoverGeneratorService:
         if backdrop_tags:
             backdrop_url = f'/emby/Items/{item_id}/Images/Backdrop/0?tag={backdrop_tags[0]}'
         
-        # 1. 是单图模式，且“单图使用海报”开关已打开
-        # 2. 是多图模式，且“多图使用海报”开关已打开
         should_use_primary = (self._cover_style.startswith('single') and self._single_use_primary) or \
                              (self._cover_style.startswith('multi') and self._multi_1_use_primary)
 
         if should_use_primary:
-            # 如果应该优先用海报，则返回海报URL，如果海报不存在，再用横幅URL保底
             return primary_url or backdrop_url
         else:
-            # 否则，按默认逻辑，优先用横幅，横幅不存在再用海报保底
             return backdrop_url or primary_url
 
     def __download_image(self, server_id: str, api_path: str, library_name: str, count: int) -> Path:
@@ -411,7 +487,6 @@ class CoverGeneratorService:
             if library_id:
                 UPDATING_IMAGES.add(library_id)
                 
-                # 定义清理函数 (30秒后移除标记，给 Emby 足够的反应时间)
                 def _clear_flag():
                     UPDATING_IMAGES.discard(library_id)
                 spawn_later(30, _clear_flag)
@@ -463,7 +538,9 @@ class CoverGeneratorService:
             return
         logger.info(f"  ➜ 字体文件不存在，正在从URL下载: {dest_path.name}...")
         try:
-            response = requests.get(url, stream=True, timeout=60)
+            # ★★★ 注入代理 ★★★
+            proxies = config_manager.get_proxies_for_requests()
+            response = requests.get(url, stream=True, timeout=60, proxies=proxies)
             response.raise_for_status()
             with open(dest_path, 'wb') as f:
                 for chunk in response.iter_content(chunk_size=8192):
