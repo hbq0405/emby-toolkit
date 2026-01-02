@@ -1393,7 +1393,7 @@ def create_or_update_collection_with_emby_ids(
                     f"{base_url.rstrip('/')}/Items", 
                     params={
                         'api_key': api_key, 
-                        'Limit': 20,           # ★ 进货量加大
+                        'Limit': 100,           # ★ 进货量加大到 100
                         'Recursive': 'true', 
                         'IncludeItemTypes': 'Movie,Series',
                         'SortBy': 'Random',     
