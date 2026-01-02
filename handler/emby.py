@@ -1467,40 +1467,66 @@ def create_or_update_collection_with_emby_ids(
                 try:
                     api_timeout = config_manager.APP_CONFIG.get(constants.CONFIG_OPTION_EMBY_API_TIMEOUT, 60)
                     
-                    # ★★★ 核心修改：增加分级过滤参数 ★★★
-                    # MaxOfficialRating: 设置最高允许的分级。
-                    # 'PG-13' 通常能过滤掉 R 级及以上 (NC-17, X)。
-                    # 注意：这依赖于 Emby 服务器的元数据分级标准 (US标准最通用)。
-                    params = {
-                        'api_key': api_key, 
-                        'Limit': 9,             
-                        'Recursive': 'true', 
-                        'IncludeItemTypes': 'Movie,Series',
-                        'SortBy': 'Random',     
-                        'ImageTypes': 'Primary',
-                        'MaxOfficialRating': 'PG-13' # 👈 过滤掉 R 级及以上
-                    }
+                    # ★★★ 核心修改 1: 获取配置的媒体库列表 ★★★
+                    target_lib_ids = config_manager.APP_CONFIG.get(constants.CONFIG_OPTION_EMBY_LIBRARIES_TO_PROCESS) or []
                     
-                    temp_resp = requests.get(
-                        f"{base_url.rstrip('/')}/Items", 
-                        params=params,
-                        timeout=api_timeout
-                    )
-                    if temp_resp.status_code == 200:
-                        items = temp_resp.json().get('Items', [])
-                        if items:
-                            ids_for_creation = [i['Id'] for i in items]
-                            logger.info(f"  ➜ 成功抓取 {len(ids_for_creation)} 个随机素材(已过滤R级+)用于突破创建限制。")
-                        else:
-                            # 如果过滤太严抓不到，尝试放宽一点点或者记录警告
-                            logger.warning("  ➜ 随机抓取返回空 (可能是分级过滤太严)，尝试移除分级限制重试...")
-                            params.pop('MaxOfficialRating')
-                            temp_resp_retry = requests.get(f"{base_url.rstrip('/')}/Items", params=params, timeout=api_timeout)
-                            items_retry = temp_resp_retry.json().get('Items', [])
-                            if items_retry:
-                                ids_for_creation = [i['Id'] for i in items_retry]
-                                logger.info(f"  ➜ 重试成功抓取 {len(ids_for_creation)} 个随机素材 (无分级限制)。")
+                    # 定义搜索范围：如果有配置库，则只在库里找；否则全局找 ([None])
+                    search_scopes = target_lib_ids if target_lib_ids else [None]
                     
+                    found_item = None
+                    
+                    # ★★★ 核心修改 2: 遍历搜索范围，直到找到九个合法的“良民” ★★★
+                    for parent_id in search_scopes:
+                        params = {
+                            'api_key': api_key, 
+                            'Limit': 9,             
+                            'Recursive': 'true', 
+                            'IncludeItemTypes': 'Movie,Series',
+                            'SortBy': 'Random',     
+                            'ImageTypes': 'Primary',
+                            'MaxOfficialRating': 'PG-13' # 过滤掉 R 级及以上
+                        }
+                        
+                        # 如果指定了库 ID，则限制在此库内
+                        if parent_id:
+                            params['ParentId'] = parent_id
+                        
+                        try:
+                            temp_resp = requests.get(
+                                f"{base_url.rstrip('/')}/Items", 
+                                params=params,
+                                timeout=api_timeout
+                            )
+                            
+                            if temp_resp.status_code == 200:
+                                items = temp_resp.json().get('Items', [])
+                                if items:
+                                    found_item = items[0]
+                                    ids_for_creation = [found_item['Id']]
+                                    scope_name = f"媒体库 {parent_id}" if parent_id else "全局"
+                                    logger.info(f"  ➜ 在 {scope_name} 中成功抓取到随机素材 '{found_item.get('Name')}' (已过滤R级+)。")
+                                    break # 找到了就停止
+                        except Exception:
+                            continue # 这个库失败了就试下一个
+
+                    # ★★★ 核心修改 3: 如果太严格没找到，尝试放宽分级限制 (仅在已配置的库中重试) ★★★
+                    if not ids_for_creation and target_lib_ids:
+                         logger.warning("  ➜ 严格分级模式下未找到素材，尝试在受控库中放宽分级限制重试...")
+                         for parent_id in target_lib_ids:
+                            params = {
+                                'api_key': api_key, 'Limit': 1, 'Recursive': 'true', 
+                                'IncludeItemTypes': 'Movie,Series', 'SortBy': 'Random', 'ImageTypes': 'Primary',
+                                'ParentId': parent_id # 必须限制在库内
+                            }
+                            try:
+                                temp_resp = requests.get(f"{base_url.rstrip('/')}/Items", params=params, timeout=api_timeout)
+                                items = temp_resp.json().get('Items', [])
+                                if items:
+                                    ids_for_creation = [items[0]['Id']]
+                                    logger.info(f"  ➜ 重试成功：在媒体库 {parent_id} 中抓取到素材 (无分级限制)。")
+                                    break
+                            except Exception: continue
+
                 except Exception as e:
                     logger.error(f"  ➜ 获取随机素材失败: {e}")
 
@@ -1510,8 +1536,7 @@ def create_or_update_collection_with_emby_ids(
                     logger.warning(f"合集 '{collection_name}' 在媒体库中没有任何匹配项，跳过创建。")
                     return None
                 else:
-                    # 极端情况：allow_empty=True 但连随机素材都抓不到（库是空的？）
-                    logger.error(f"无法创建空合集 '{collection_name}'，因为无法获取占位素材。")
+                    logger.error(f"无法创建空合集 '{collection_name}'，因为无法获取占位素材 (可能是库为空)。")
                     return None
 
             api_url = f"{base_url.rstrip('/')}/Collections"
@@ -1523,9 +1548,6 @@ def create_or_update_collection_with_emby_ids(
             response.raise_for_status()
             new_collection_info = response.json()
             emby_collection_id = new_collection_info.get('Id')
-            
-            # (可选) 如果你是完美主义者，可以在这里立即把那个占位符删掉，让合集变成真正的空合集
-            # 但通常保留一个也无伤大雅，下次同步会自动清理
             
             return emby_collection_id
 
