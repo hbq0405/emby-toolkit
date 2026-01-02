@@ -483,21 +483,21 @@ class WatchlistProcessor:
             if iso and rating:
                 rating_json[iso] = rating
 
-        # 提取类型 (Genres)
+        # ★★★ 修改：提取类型 (Genres) 为纯字符串列表 ★★★
+        # 目的：保持与 tags, countries 一致，简化 SQL 查询逻辑
         genres = latest_series_data.get("genres", [])
-        genres_json = [{"id": g["id"], "name": g["name"]} for g in genres]
+        genres_json = [g["name"] for g in genres if g.get("name")]
 
-        # 提取关键字 (Keywords)
+        # 提取关键字 (Keywords) - 保持对象结构，因为关键字重名率高，ID 匹配更准
         keywords = latest_series_data.get("keywords", {}).get("results", [])
         keywords_json = [{"id": k["id"], "name": k["name"]} for k in keywords]
         
-        # 提取制片公司 (Studios)
+        # 提取制片公司 (Studios) - 保持对象结构
         studios = latest_series_data.get("production_companies", [])
         studios_json = [{"id": s["id"], "name": s["name"]} for s in studios]
         
-        # 提取产地 (Countries)
+        # 提取产地 (Countries) - TMDb TV 接口返回的就是纯字符串列表 ["CN", "US"]
         countries = latest_series_data.get("origin_country", [])
-        # 统一转为 JSONB 数组格式
         countries_json = countries if isinstance(countries, list) else [countries]
 
         series_updates = {
