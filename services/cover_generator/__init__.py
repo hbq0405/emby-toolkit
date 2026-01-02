@@ -3,12 +3,13 @@
 import logging
 import shutil
 import yaml
+import json
 import random
 import requests
 from pathlib import Path
 from typing import Dict, Any, List, Tuple, Optional
 from gevent import spawn_later
-from database import custom_collection_db
+from database import custom_collection_db, queries_db
 import config_manager
 import handler.emby as emby 
 from extensions import UPDATING_IMAGES
@@ -42,11 +43,11 @@ class CoverGeneratorService:
         self.en_font_path_multi_1 = None
         self._fonts_checked_and_ready = False
 
-    def generate_for_library(self, emby_server_id: str, library: Dict[str, Any], item_count: Optional[int] = None, content_types: Optional[List[str]] = None):
+    def generate_for_library(self, emby_server_id: str, library: Dict[str, Any], item_count: Optional[int] = None, content_types: Optional[List[str]] = None, custom_collection_data: Optional[Dict] = None):
         sort_by_name = self.SORT_BY_DISPLAY_NAME.get(self._sort_by, self._sort_by)
         logger.info(f"  ➜ 开始以排序方式: {sort_by_name} 为媒体库 '{library['Name']}' 生成封面...")
         self.__get_fonts()
-        image_data = self.__generate_image_data(emby_server_id, library, item_count, content_types)
+        image_data = self.__generate_image_data(emby_server_id, library, item_count, content_types, custom_collection_data)
         if not image_data:
             logger.error(f"  ➜ 为媒体库 '{library['Name']}' 生成封面图片失败。")
             return False
@@ -57,7 +58,7 @@ class CoverGeneratorService:
             logger.error(f"  ➜ 上传封面到媒体库 '{library['Name']}' 失败。")
         return success
 
-    def __generate_image_data(self, server_id: str, library: Dict[str, Any], item_count: Optional[int] = None, content_types: Optional[List[str]] = None) -> bytes:
+    def __generate_image_data(self, server_id: str, library: Dict[str, Any], item_count: Optional[int] = None, content_types: Optional[List[str]] = None, custom_collection_data: Optional[Dict] = None) -> bytes:
         library_name = library['Name']
         title = self.__get_library_title_from_yaml(library_name)
         custom_image_paths = self.__check_custom_image(library_name)
@@ -65,11 +66,11 @@ class CoverGeneratorService:
             logger.info(f"  ➜ 发现媒体库 '{library_name}' 的自定义图片，将使用路径模式生成。")
             return self.__generate_image_from_path(library_name, title, custom_image_paths, item_count)
         logger.trace(f"  ➜ 未发现自定义图片，将从服务器 '{server_id}' 获取媒体项作为封面来源。")
-        return self.__generate_from_server(server_id, library, title, item_count, content_types)
+        return self.__generate_from_server(server_id, library, title, item_count, content_types, custom_collection_data)
 
-    def __generate_from_server(self, server_id: str, library: Dict[str, Any], title: Tuple[str, str], item_count: Optional[int] = None, content_types: Optional[List[str]] = None) -> bytes:
+    def __generate_from_server(self, server_id: str, library: Dict[str, Any], title: Tuple[str, str], item_count: Optional[int] = None, content_types: Optional[List[str]] = None, custom_collection_data: Optional[Dict] = None) -> bytes:
         required_items_count = 1 if self._cover_style.startswith('single') else 9
-        items = self.__get_valid_items_from_library(server_id, library, required_items_count, content_types)
+        items = self.__get_valid_items_from_library(server_id, library, required_items_count, content_types, custom_collection_data)
         if not items:
             logger.warning(f"  ➜ 在媒体库 '{library['Name']}' 中找不到任何带有可用图片的媒体项。")
             return None
@@ -92,33 +93,95 @@ class CoverGeneratorService:
                 return None
             return self.__generate_image_from_path(library['Name'], title, image_paths, item_count)
 
-    def __get_valid_items_from_library(self, server_id: str, library: Dict[str, Any], limit: int, content_types: Optional[List[str]] = None) -> List[Dict]:
+    def __get_valid_items_from_library(self, server_id: str, library: Dict[str, Any], limit: int, content_types: Optional[List[str]] = None, custom_collection_data: Optional[Dict] = None) -> List[Dict]:
         library_id = library.get("Id") or library.get("ItemId")
         library_name = library.get("Name")
         base_url = config_manager.APP_CONFIG.get('emby_server_url')
         api_key = config_manager.APP_CONFIG.get('emby_api_key')
         user_id = config_manager.APP_CONFIG.get('emby_user_id')
 
-        # 定义少儿不宜的黑名单 (不区分大小写)
-        unsafe_ratings = {'NC-17', 'X', 'XXX', 'R18+', 'R-18', 'ADULT', '18+'}
-        
-        # ★★★ 核心修复：关键词豁免机制 ★★★
-        # 如果合集名字里明摆着写了这些词，说明用户就是想看这些，跳过过滤
-        bypass_keywords = ['限制级', 'R18', 'Adult', '成人', '福利', 'XXX', 'H版', '里番']
-        enable_rating_filter = True
-        
-        if any(k.lower() in library_name.lower() for k in bypass_keywords):
-            logger.info(f"  ➜ 检测到合集名称 '{library_name}' 包含敏感关键词，已自动解除分级过滤限制。")
-            enable_rating_filter = False
+        # ======================================================================
+        # 策略 A: 实时筛选类合集 (Filter / AI Recommendation)
+        # ======================================================================
+        # 逻辑：直接调用 queries_db 实时查询，结果即为虚拟库当前内容，无需额外过滤
+        if custom_collection_data and custom_collection_data.get('type') in ['filter', 'ai_recommendation']:
+            logger.info(f"  ➜ 检测到 '{library_name}' 为实时筛选/推荐合集，正在调用查询引擎获取封面素材...")
+            try:
+                definition = custom_collection_data.get('definition_json', {})
+                
+                # 1. 映射排序方式 (封面生成器的配置 -> 数据库查询的配置)
+                # Random -> Random, Latest -> DateCreated
+                db_sort_by = 'Random' if self._sort_by == 'Random' else 'DateCreated'
+                
+                # 2. 调用查询引擎
+                # 注意：这里我们多取一些 (limit * 2)，以防某些项目没有图片
+                items_from_db, _ = queries_db.query_virtual_library_items(
+                    rules=definition.get('rules', []),
+                    logic=definition.get('logic', 'AND'),
+                    user_id=user_id,
+                    limit=max(limit * 2, 20),
+                    offset=0,
+                    sort_by=db_sort_by,
+                    item_types=definition.get('item_type', ['Movie']),
+                    target_library_ids=definition.get('target_library_ids')
+                )
+                
+                if not items_from_db:
+                    logger.warning(f"  ➜ 实时查询未返回任何结果，无法生成封面。")
+                    return []
 
-        # --- 优先检查是否为本地自定义合集 
-        custom_collection = custom_collection_db.get_custom_collection_by_emby_id(library_id)
+                # 3. 提取 ID 并向 Emby 请求图片信息 (因为 queries_db 只返回 ID)
+                target_ids = [item['Id'] for item in items_from_db]
+                ids_str = ",".join(target_ids)
+                
+                url = f"{base_url.rstrip('/')}/Users/{user_id}/Items"
+                headers = {"X-Emby-Token": api_key, "Content-Type": "application/json"}
+                params = {
+                    'Ids': ids_str,
+                    'Fields': "Id,Name,Type,ImageTags,BackdropImageTags,PrimaryImageTag,PrimaryImageItemId",
+                }
+                
+                resp = requests.get(url, params=params, headers=headers, timeout=30)
+                resp.raise_for_status()
+                data = resp.json()
+                items_from_emby = data.get('Items', [])
+                
+                # 4. 过滤有图片的项
+                valid_items = [item for item in items_from_emby if self.__get_image_url(item)]
+                
+                # 5. 如果是 Random 模式，Emby 返回的顺序可能被 ID 顺序影响，这里再洗一次牌确保随机
+                if self._sort_by == "Random":
+                    random.shuffle(valid_items)
+                
+                if valid_items:
+                    logger.info(f"  ➜ 成功从实时查询结果中获取到 {len(valid_items)} 个带封面的媒体项。")
+                    return valid_items[:limit]
+                else:
+                    logger.warning(f"  ➜ 实时查询到的项目均无有效封面。")
+                    return []
+
+            except Exception as e:
+                logger.error(f"  ➜ 处理实时合集 '{library_name}' 封面生成时出错: {e}", exc_info=True)
+                # 出错后回退到下方逻辑
+
+        # ======================================================================
+        # 策略 B: 静态/缓存类合集 (List / Global AI)
+        # ======================================================================
+        # 逻辑：从 generated_media_info_json 读取 Emby ID
+        # 尝试从传入的 custom_collection_data 获取，如果没有则查库
+        custom_collection = custom_collection_data
+        if not custom_collection:
+            custom_collection = custom_collection_db.get_custom_collection_by_emby_id(library_id)
     
-        if custom_collection:
-            logger.info(f"  ➜ 检测到 '{library_name}' 为自定义合集，正在从数据库获取媒体项ID...")
+        if custom_collection and custom_collection.get('type') in ['list', 'ai_recommendation_global']:
+            logger.info(f"  ➜ 检测到 '{library_name}' 为榜单/全局推荐合集，正在从数据库获取媒体项ID...")
             try:
                 # 1. 从数据库 JSON 中提取 Emby ID
                 media_info_list = custom_collection.get('generated_media_info_json') or []
+                # 解析 JSON (如果是字符串)
+                if isinstance(media_info_list, str):
+                    media_info_list = json.loads(media_info_list)
+                    
                 valid_emby_ids = [
                     str(item['emby_id']) 
                     for item in media_info_list 
@@ -128,24 +191,20 @@ class CoverGeneratorService:
                 if valid_emby_ids:
                     logger.trace(f"  ➜ 从数据库中提取到 {len(valid_emby_ids)} 个有效的 Emby ID。")
                     
-                    # 2. 本地处理排序
+                    # 2. 本地处理排序 (Random 模式下洗牌)
                     if self._sort_by == "Random":
                         random.shuffle(valid_emby_ids)
                     
-                    # 3. 截取需要的数量 (加大采样量以应对过滤)
-                    target_ids = valid_emby_ids[:max(limit * 5, 50)]
+                    # 3. 截取需要的数量
+                    target_ids = valid_emby_ids[:max(limit * 2, 20)]
                     ids_str = ",".join(target_ids)
 
                     # 4. 直接向 Emby 查询这些特定 ID 的详情
                     url = f"{base_url.rstrip('/')}/Users/{user_id}/Items"
-                    
-                    headers = {
-                        "X-Emby-Token": api_key,
-                        "Content-Type": "application/json"
-                    }
+                    headers = {"X-Emby-Token": api_key, "Content-Type": "application/json"}
                     params = {
                         'Ids': ids_str,
-                        'Fields': "Id,Name,Type,ImageTags,BackdropImageTags,DateCreated,PrimaryImageTag,PrimaryImageItemId,OfficialRating", 
+                        'Fields': "Id,Name,Type,ImageTags,BackdropImageTags,PrimaryImageTag,PrimaryImageItemId",
                     }
                     
                     resp = requests.get(url, params=params, headers=headers, timeout=30)
@@ -153,31 +212,23 @@ class CoverGeneratorService:
                     data = resp.json()
                     items_from_emby = data.get('Items', [])
 
-                    # ★★★ 鉴黄过滤 (带开关) ★★★
-                    safe_items = []
-                    for item in items_from_emby:
-                        # 如果过滤器开启，且分级在黑名单中，则跳过
-                        if enable_rating_filter:
-                            rating = item.get('OfficialRating', '').upper()
-                            if rating in unsafe_ratings:
-                                continue
-                        safe_items.append(item)
-
                     # 5. 再次过滤，确保有图片
-                    valid_items = [item for item in safe_items if self.__get_image_url(item)]
+                    valid_items = [item for item in items_from_emby if self.__get_image_url(item)]
                     
                     if valid_items:
                         logger.info(f"  ➜ 成功从自定义合集获取到 {len(valid_items)} 个带封面的媒体项。")
                         return valid_items[:limit]
                     else:
-                        logger.warning(f"  ➜ 自定义合集 '{library_name}' 中的项目均无有效封面或已被过滤。")
+                        logger.warning(f"  ➜ 自定义合集 '{library_name}' 中的项目均无有效封面。")
                         return []
                 else:
-                    logger.warning(f"  ➜ 自定义合集 '{library_name}' 数据库记录中没有有效的 Emby ID (可能尚未同步)。")
+                    logger.warning(f"  ➜ 自定义合集 '{library_name}' 数据库记录中没有有效的 Emby ID。")
             except Exception as e:
                 logger.error(f"  ➜ 处理自定义合集 '{library_name}' 的本地数据时出错: {e}，将尝试回退到普通模式。", exc_info=True)
         
-        # 原有逻辑 (作为回退或处理普通库)
+        # ======================================================================
+        # 策略 C: 普通媒体库 / 回退逻辑
+        # ======================================================================
         media_type_to_fetch = None
         if content_types:
             media_type_to_fetch = ",".join(content_types)
@@ -204,14 +255,13 @@ class CoverGeneratorService:
             sort_by_param = "DateCreated"
             sort_order_param = "Descending" # 明确指定降序
         
-        # ★ 加大获取数量
-        api_limit = max(limit * 10, 100)
+        api_limit = limit * 5 if limit < 10 else limit * 2 
 
         all_items = emby.get_emby_library_items(
             base_url=base_url, api_key=api_key, user_id=user_id,
             library_ids=[library_id],
             media_type_filter=media_type_to_fetch,
-            fields="Id,Name,Type,ImageTags,BackdropImageTags,DateCreated,PrimaryImageTag,PrimaryImageItemId,OfficialRating", 
+            fields="Id,Name,Type,ImageTags,BackdropImageTags,DateCreated,PrimaryImageTag,PrimaryImageItemId",
             sort_by=sort_by_param,
             sort_order=sort_order_param,
             limit=api_limit,
@@ -219,21 +269,12 @@ class CoverGeneratorService:
         )
         
         if not all_items: return []
-
-        # ★★★ 鉴黄过滤 (带开关) ★★★
-        safe_items = []
-        for item in all_items:
-            if enable_rating_filter:
-                rating = item.get('OfficialRating', '').upper()
-                if rating in unsafe_ratings:
-                    continue
-            safe_items.append(item)
-
-        # ★★★ 本地强制洗牌 ★★★
+        valid_items = [item for item in all_items if self.__get_image_url(item)]
+        
+        # 如果是 Random 模式，本地再洗一次牌
         if self._sort_by == "Random":
-            random.shuffle(safe_items)
-
-        valid_items = [item for item in safe_items if self.__get_image_url(item)]
+            random.shuffle(valid_items)
+            
         if not valid_items: return []
         return valid_items[:limit]
 

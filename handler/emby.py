@@ -4,7 +4,7 @@ import requests
 import concurrent.futures
 import os
 import gc
-import random
+import json
 import base64
 import shutil
 import time
@@ -1381,52 +1381,35 @@ def create_or_update_collection_with_emby_ids(
         desired_emby_ids = emby_ids_in_library
         
         # ==============================================================================
-        # ★★★ 核心修复：前置“特洛伊木马”逻辑 (随机封面生成) ★★★
+        # ★★★ 核心修复：前置“特洛伊木马”逻辑 ★★★
+        # 不管是创建还是更新，只要列表为空且允许为空，就先抓 9 个壮丁
         # ==============================================================================
         if not desired_emby_ids and allow_empty:
-            logger.info(f"  ➜ 合集 '{collection_name}' 为空壳模式，正在抓取随机媒体项作为封面素材(已开启扫黄+强制洗牌)...")
+            logger.info(f"  ➜ 合集 '{collection_name}' 为空壳模式，正在抓取 9 个随机媒体项作为封面素材...")
             try:
+                # 动态获取超时配置
                 api_timeout = config_manager.APP_CONFIG.get(constants.CONFIG_OPTION_EMBY_API_TIMEOUT, 60)
                 
-                # 1. 向 Emby 要更多数据 (Limit=100)，以对抗 Emby 的随机缓存
                 temp_resp = requests.get(
                     f"{base_url.rstrip('/')}/Items", 
                     params={
                         'api_key': api_key, 
-                        'Limit': 100,           # ★ 进货量加大到 100
+                        'Limit': 9,             # 抓9个是为了让默认封面看起来像个九宫格，不那么单调
                         'Recursive': 'true', 
                         'IncludeItemTypes': 'Movie,Series',
-                        'SortBy': 'Random',     
-                        'ImageTypes': 'Primary', 
-                        'Fields': 'OfficialRating' # 获取分级用于过滤
+                        'SortBy': 'Random',     # 随机抓取
+                        'ImageTypes': 'Primary' # 确保有图
                     },
                     timeout=api_timeout
                 )
                 
                 if temp_resp.status_code == 200:
                     items = temp_resp.json().get('Items', [])
-                    
-                    # 2. 鉴黄过滤器
-                    valid_items = []
-                    unsafe_ratings = {'NC-17', 'X', 'XXX', 'R18+', 'R-18', 'ADULT', '18+'}
-                    
-                    for item in items:
-                        rating = item.get('OfficialRating', '').upper()
-                        if rating not in unsafe_ratings:
-                            valid_items.append(item)
-                    
-                    # 3. ★★★ 核心：本地强制二次洗牌 ★★★
-                    # 即使 Emby 返回了缓存的一样的 100 个，这里也会把顺序彻底打乱
-                    random.shuffle(valid_items)
-
-                    # 4. 截取前 9 个
-                    final_items = valid_items[:9]
-                    
-                    if final_items:
-                        desired_emby_ids = [i['Id'] for i in final_items]
-                        logger.info(f"  ➜ 成功抓取 {len(desired_emby_ids)} 个随机素材 (已过滤敏感内容并强制乱序)。")
+                    if items:
+                        desired_emby_ids = [i['Id'] for i in items]
+                        logger.info(f"  ➜ 成功抓取 {len(desired_emby_ids)} 个随机素材 (将用于填充/轮换封面)。")
                     else:
-                        logger.warning("  ➜ Emby 返回了列表，但经过分级过滤后没有剩余可用项。")
+                        logger.warning("  ➜ Emby 返回了空列表，无法获取封面素材。")
                 else:
                     logger.warning(f"  ➜ 获取随机媒体项失败: {temp_resp.status_code}")
                     
