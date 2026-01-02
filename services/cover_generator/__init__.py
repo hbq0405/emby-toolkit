@@ -101,6 +101,15 @@ class CoverGeneratorService:
 
         # 定义少儿不宜的黑名单 (不区分大小写)
         unsafe_ratings = {'NC-17', 'X', 'XXX', 'R18+', 'R-18', 'ADULT', '18+'}
+        
+        # ★★★ 核心修复：关键词豁免机制 ★★★
+        # 如果合集名字里明摆着写了这些词，说明用户就是想看这些，跳过过滤
+        bypass_keywords = ['限制级', 'R18', 'Adult', '成人', '福利', 'XXX', 'H版', '里番']
+        enable_rating_filter = True
+        
+        if any(k.lower() in library_name.lower() for k in bypass_keywords):
+            logger.info(f"  ➜ 检测到合集名称 '{library_name}' 包含敏感关键词，已自动解除分级过滤限制。")
+            enable_rating_filter = False
 
         # --- 优先检查是否为本地自定义合集 
         custom_collection = custom_collection_db.get_custom_collection_by_emby_id(library_id)
@@ -136,7 +145,7 @@ class CoverGeneratorService:
                     }
                     params = {
                         'Ids': ids_str,
-                        'Fields': "Id,Name,Type,ImageTags,BackdropImageTags,DateCreated,PrimaryImageTag,PrimaryImageItemId,OfficialRating", # ★ 增加 OfficialRating
+                        'Fields': "Id,Name,Type,ImageTags,BackdropImageTags,DateCreated,PrimaryImageTag,PrimaryImageItemId,OfficialRating", 
                     }
                     
                     resp = requests.get(url, params=params, headers=headers, timeout=30)
@@ -144,18 +153,21 @@ class CoverGeneratorService:
                     data = resp.json()
                     items_from_emby = data.get('Items', [])
 
-                    # ★★★ 鉴黄过滤 ★★★
+                    # ★★★ 鉴黄过滤 (带开关) ★★★
                     safe_items = []
                     for item in items_from_emby:
-                        rating = item.get('OfficialRating', '').upper()
-                        if rating not in unsafe_ratings:
-                            safe_items.append(item)
+                        # 如果过滤器开启，且分级在黑名单中，则跳过
+                        if enable_rating_filter:
+                            rating = item.get('OfficialRating', '').upper()
+                            if rating in unsafe_ratings:
+                                continue
+                        safe_items.append(item)
 
                     # 5. 再次过滤，确保有图片
                     valid_items = [item for item in safe_items if self.__get_image_url(item)]
                     
                     if valid_items:
-                        logger.info(f"  ➜ 成功从自定义合集获取到 {len(valid_items)} 个带封面的媒体项 (已过滤敏感内容)。")
+                        logger.info(f"  ➜ 成功从自定义合集获取到 {len(valid_items)} 个带封面的媒体项。")
                         return valid_items[:limit]
                     else:
                         logger.warning(f"  ➜ 自定义合集 '{library_name}' 中的项目均无有效封面或已被过滤。")
@@ -192,14 +204,14 @@ class CoverGeneratorService:
             sort_by_param = "DateCreated"
             sort_order_param = "Descending" # 明确指定降序
         
-        # ★ 加大获取数量，防止过滤后不够，同时为本地洗牌提供样本
+        # ★ 加大获取数量
         api_limit = max(limit * 10, 100)
 
         all_items = emby.get_emby_library_items(
             base_url=base_url, api_key=api_key, user_id=user_id,
             library_ids=[library_id],
             media_type_filter=media_type_to_fetch,
-            fields="Id,Name,Type,ImageTags,BackdropImageTags,DateCreated,PrimaryImageTag,PrimaryImageItemId,OfficialRating", # ★ 增加 OfficialRating
+            fields="Id,Name,Type,ImageTags,BackdropImageTags,DateCreated,PrimaryImageTag,PrimaryImageItemId,OfficialRating", 
             sort_by=sort_by_param,
             sort_order=sort_order_param,
             limit=api_limit,
@@ -208,14 +220,16 @@ class CoverGeneratorService:
         
         if not all_items: return []
 
-        # ★★★ 鉴黄过滤 ★★★
+        # ★★★ 鉴黄过滤 (带开关) ★★★
         safe_items = []
         for item in all_items:
-            rating = item.get('OfficialRating', '').upper()
-            if rating not in unsafe_ratings:
-                safe_items.append(item)
+            if enable_rating_filter:
+                rating = item.get('OfficialRating', '').upper()
+                if rating in unsafe_ratings:
+                    continue
+            safe_items.append(item)
 
-        # ★★★ 本地强制洗牌 (解决 Emby 随机缓存问题) ★★★
+        # ★★★ 本地强制洗牌 ★★★
         if self._sort_by == "Random":
             random.shuffle(safe_items)
 
