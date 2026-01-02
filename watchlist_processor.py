@@ -453,9 +453,9 @@ class WatchlistProcessor:
         通用辅助函数：
         1. 获取 TMDb 最新剧集详情
         2. 更新本地 JSON 缓存
-        3. 更新数据库基础字段 (Series)
+        3. 更新数据库基础字段 (Series) ★★★ 增强版 ★★★
         4. 通知 Emby 刷新元数据
-        5. ★★★ 同步所有季和集的元数据到数据库 (Seasons & Episodes) ★★★
+        5. 同步所有季和集的元数据到数据库 (Seasons & Episodes)
         
         返回: (latest_series_data, all_tmdb_episodes, emby_seasons_state) 或 None
         """
@@ -464,6 +464,7 @@ class WatchlistProcessor:
             return None
 
         # 1. 从TMDb获取最新元数据
+        # 注意：get_tv_details 内部应该已经包含了 content_ratings (分级) 的获取逻辑
         latest_series_data = tmdb.get_tv_details(tmdb_id, self.tmdb_api_key)
         if not latest_series_data:
             logger.error(f"  🚫 无法获取 '{item_name}' 的TMDb详情，元数据刷新中止。")
@@ -472,19 +473,57 @@ class WatchlistProcessor:
         # 2. 将 TMDb 最新数据合并写入本地 JSON (series.json) 
         self._save_local_json(f"override/tmdb-tv/{tmdb_id}/series.json", latest_series_data)
 
-        # 3. 将 TMDb 最新数据写入数据库 (Series 层级)
+        # 3. ★★★ 增强：将 TMDb 最新数据全量写入数据库 (Series 层级) ★★★
+        # 提取分级信息 (Content Ratings)
+        content_ratings = latest_series_data.get("content_ratings", {}).get("results", [])
+        rating_json = {}
+        for r in content_ratings:
+            iso = r.get("iso_3166_1")
+            rating = r.get("rating")
+            if iso and rating:
+                rating_json[iso] = rating
+
+        # 提取类型 (Genres)
+        genres = latest_series_data.get("genres", [])
+        genres_json = [{"id": g["id"], "name": g["name"]} for g in genres]
+
+        # 提取关键字 (Keywords)
+        keywords = latest_series_data.get("keywords", {}).get("results", [])
+        keywords_json = [{"id": k["id"], "name": k["name"]} for k in keywords]
+        
+        # 提取制片公司 (Studios)
+        studios = latest_series_data.get("production_companies", [])
+        studios_json = [{"id": s["id"], "name": s["name"]} for s in studios]
+        
+        # 提取产地 (Countries)
+        countries = latest_series_data.get("origin_country", [])
+        # 统一转为 JSONB 数组格式
+        countries_json = countries if isinstance(countries, list) else [countries]
+
         series_updates = {
+            # --- 基础信息 ---
             "original_title": latest_series_data.get("original_name"),
             "overview": latest_series_data.get("overview"),
             "poster_path": latest_series_data.get("poster_path"),
             "release_date": latest_series_data.get("first_air_date") or None,
+            "release_year": int(latest_series_data.get("first_air_date")[:4]) if latest_series_data.get("first_air_date") else None,
             "original_language": latest_series_data.get("original_language"),
             "watchlist_tmdb_status": latest_series_data.get("status"),
-            "total_episodes": latest_series_data.get("number_of_episodes", 0)
+            "total_episodes": latest_series_data.get("number_of_episodes", 0),
+            "rating": latest_series_data.get("vote_average"), # TMDb 评分
+            "rating_json": json.dumps(rating_json) if rating_json else None, # 分级信息
+            "genres_json": json.dumps(genres_json) if genres_json else None, # 类型
+            "keywords_json": json.dumps(keywords_json) if keywords_json else None, # 关键字
+            "studios_json": json.dumps(studios_json) if studios_json else None, # 制作公司
+            "countries_json": json.dumps(countries_json) if countries_json else None, # 产地
+            "last_updated_at": datetime.now(timezone.utc)
         }
+        
+        # 调用 DB 更新 (注意：这里使用 update_media_metadata_fields，它会处理 JSON 序列化)
         media_db.update_media_metadata_fields(tmdb_id, 'Series', series_updates)
+        logger.debug(f"  ➜ 已全量刷新 '{item_name}' 的 Series 元数据 (含分级/评分/类型)。")
 
-        # 4. 获取所有季和集的数据
+        # 4. 获取所有季和集的数据 
         all_tmdb_episodes = []
         tmdb_seasons = latest_series_data.get("seasons", [])
         
@@ -492,11 +531,9 @@ class WatchlistProcessor:
             season_num = season_summary.get("season_number")
             if season_num is None or season_num == 0: continue
             
-            # 获取分季详情
             season_details = tmdb.get_season_details_tmdb(tmdb_id, season_num, self.tmdb_api_key)
             
             if season_details:
-                # 本地 JSON 缓存
                 self._save_local_json(f"override/tmdb-tv/{tmdb_id}/season-{season_num}.json", season_details)
 
                 if season_details.get("episodes"):
@@ -511,7 +548,7 @@ class WatchlistProcessor:
                             )
             time.sleep(0.1)
 
-        # 5. 通知 Emby 刷新元数据 (让 Emby 也就是本地文件系统先更新)
+        # 5. 通知 Emby 刷新元数据 
         if item_id:
             emby.refresh_emby_item_metadata(
                 item_emby_id=item_id,
@@ -522,12 +559,10 @@ class WatchlistProcessor:
                 item_name_for_log=item_name
             )
 
-        # 6. ★★★ 核心修复：同步季和集到数据库 ★★★
-        # 先获取本地 Emby 的状态（因为刚才刷新了 Emby，现在获取的是最新的本地状态）
+        # 6. 同步季和集到数据库 
         emby_seasons_state = media_db.get_series_local_children_info(tmdb_id)
         
         try:
-            # 将 TMDb 的全量数据 + 本地 Emby 的存在状态，同步写入 media_metadata 表
             media_db.sync_series_children_metadata(
                 parent_tmdb_id=tmdb_id,
                 seasons=tmdb_seasons,
@@ -538,7 +573,6 @@ class WatchlistProcessor:
         except Exception as e_sync:
             logger.error(f"  ➜ 同步 '{item_name}' 子项目数据库时出错: {e_sync}", exc_info=True)
         
-        # 返回 emby_seasons_state 供后续逻辑使用，避免重复查询
         return latest_series_data, all_tmdb_episodes, emby_seasons_state
     
     # ★★★ 辅助方法：检查是否满足自动待定条件 ★★★
