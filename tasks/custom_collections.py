@@ -174,6 +174,37 @@ def task_process_all_custom_collections(processor):
                     rec_engine = RecommendationEngine(processor.tmdb_api_key)
                     raw_tmdb_items = rec_engine.generate(definition)
 
+                # ==============================================================================
+                # ★★★ 新增逻辑：如果源数据为空，则删除合集并跳过 ★★★
+                # ==============================================================================
+                if not raw_tmdb_items:
+                    logger.info(f"  ➜ 合集 '{collection_name}' 的外部源未返回任何数据 (真空壳)。")
+                    logger.info(f"  ➜ 正在尝试从 Emby 中移除该合集 (如果存在)...")
+                    
+                    # 调用 Emby 模块删除合集
+                    is_deleted = emby.delete_collection_by_name(
+                        collection_name=collection_name,
+                        base_url=processor.emby_url,
+                        api_key=processor.emby_api_key,
+                        user_id=processor.emby_user_id
+                    )
+                    
+                    # 更新数据库状态为 0
+                    update_data = {
+                        "emby_collection_id": None, # ID 置空
+                        "last_synced_at": datetime.now(pytz.utc),
+                        "in_library_count": 0,
+                        "generated_media_info_json": json.dumps([], ensure_ascii=False)
+                    }
+                    custom_collection_db.update_custom_collection_sync_results(collection_id, update_data)
+                    
+                    if is_deleted:
+                        logger.info(f"  ✅ 合集 '{collection_name}' 已清理完毕。")
+                    else:
+                        logger.info(f"  ➜ 合集 '{collection_name}' 在 Emby 中不存在，无需清理。")
+                        
+                    continue # 跳过本次循环，处理下一个合集
+
                 # 应用修正
                 raw_tmdb_items, corrected_id_to_original_id_map = _apply_id_corrections(raw_tmdb_items, definition, collection_name)
                 
@@ -393,6 +424,32 @@ def process_single_custom_collection(processor, custom_collection_id: int):
                 from handler.custom_collection import RecommendationEngine
                 rec_engine = RecommendationEngine(processor.tmdb_api_key)
                 raw_tmdb_items = rec_engine.generate(definition)
+
+            # ==============================================================================
+            # ★★★ 新增逻辑：如果源数据为空，则删除合集并跳过 ★★★
+            # ==============================================================================
+            if not raw_tmdb_items:
+                logger.info(f"  ➜ 合集 '{collection_name}' 的外部源未返回任何数据 (真空壳)。")
+                logger.info(f"  ➜ 正在尝试从 Emby 中移除该合集 (如果存在)...")
+                
+                emby.delete_collection_by_name(
+                    collection_name=collection_name,
+                    base_url=processor.emby_url,
+                    api_key=processor.emby_api_key,
+                    user_id=processor.emby_user_id
+                )
+                
+                # 更新数据库
+                update_data = {
+                    "emby_collection_id": None,
+                    "last_synced_at": datetime.now(pytz.utc),
+                    "in_library_count": 0,
+                    "generated_media_info_json": json.dumps([], ensure_ascii=False)
+                }
+                custom_collection_db.update_custom_collection_sync_results(custom_collection_id, update_data)
+                
+                task_manager.update_status_from_thread(100, f"源数据为空，合集 '{collection_name}' 已清理。")
+                return # 结束任务
 
             raw_tmdb_items, corrected_id_to_original_id_map = _apply_id_corrections(raw_tmdb_items, definition, collection_name)
             

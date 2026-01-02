@@ -1366,6 +1366,45 @@ def empty_collection_in_emby(collection_id: str, base_url: str, api_key: str, us
         
     return success
 
+def delete_collection_by_name(collection_name: str, base_url: str, api_key: str, user_id: str) -> bool:
+    """
+    根据合集名称查找并彻底删除合集。
+    策略：先调用 empty_collection_in_emby 清空内容 (触发Emby自动清理)，
+    如果合集依然存在 (例如原本就是空的)，则强制调用删除接口。
+    """
+    try:
+        # 1. 查找合集
+        collection = get_collection_by_name(collection_name, base_url, api_key, user_id)
+        if not collection:
+            return True # 合集本来就不存在，视为删除成功
+            
+        collection_id = collection.get('Id')
+        if not collection_id:
+            return False
+
+        logger.info(f"  ➜ 正在清理合集: {collection_name} (ID: {collection_id})...")
+
+        # 2. 核心步骤：清空合集内容
+        # Emby 的机制通常是：当合集内最后一个物品被移除时，合集会自动消失
+        empty_collection_in_emby(collection_id, base_url, api_key, user_id)
+        
+        # 3. 补刀检查：如果清空后合集还在 (比如它本来就是空的，或者Emby没自动删)，则强制删除
+        # 稍微等待一下 Emby 处理
+        time.sleep(0.5)
+        
+        # 再次检查是否存在
+        check_again = get_emby_item_details(collection_id, base_url, api_key, user_id, silent_404=True)
+        if check_again:
+            logger.info(f"  ➜ 合集 {collection_name} 清空后依然存在 (可能是空壳)，执行强制删除...")
+            return delete_item(collection_id, base_url, api_key, user_id)
+        else:
+            logger.info(f"  ✅ 合集 {collection_name} 已通过清空内容自动移除。")
+            return True
+        
+    except Exception as e:
+        logger.error(f"删除合集 '{collection_name}' 失败: {e}")
+        return False
+
 def create_or_update_collection_with_emby_ids(
     collection_name: str, 
     emby_ids_in_library: List[str],
@@ -1421,30 +1460,47 @@ def create_or_update_collection_with_emby_ids(
             # ==============================================================================
             logger.info(f"  ➜ 未找到合集 '{collection_name}'，将开始创建...")
             
-            # ★★★ 核心修复：只在创建且列表为空时，才启用“特洛伊木马” ★★★
             ids_for_creation = desired_emby_ids
             
             if not ids_for_creation and allow_empty:
-                logger.info(f"  ➜ 合集 '{collection_name}' 为空壳模式，正在抓取 9 个随机媒体项作为创建占位...")
+                logger.info(f"  ➜ 合集 '{collection_name}' 为空壳模式，正在抓取 1 个随机媒体项作为创建占位...")
                 try:
                     api_timeout = config_manager.APP_CONFIG.get(constants.CONFIG_OPTION_EMBY_API_TIMEOUT, 60)
+                    
+                    # ★★★ 核心修改：增加分级过滤参数 ★★★
+                    # MaxOfficialRating: 设置最高允许的分级。
+                    # 'PG-13' 通常能过滤掉 R 级及以上 (NC-17, X)。
+                    # 注意：这依赖于 Emby 服务器的元数据分级标准 (US标准最通用)。
+                    params = {
+                        'api_key': api_key, 
+                        'Limit': 9,             
+                        'Recursive': 'true', 
+                        'IncludeItemTypes': 'Movie,Series',
+                        'SortBy': 'Random',     
+                        'ImageTypes': 'Primary',
+                        'MaxOfficialRating': 'PG-13' # 👈 过滤掉 R 级及以上
+                    }
+                    
                     temp_resp = requests.get(
                         f"{base_url.rstrip('/')}/Items", 
-                        params={
-                            'api_key': api_key, 
-                            'Limit': 9,             
-                            'Recursive': 'true', 
-                            'IncludeItemTypes': 'Movie,Series',
-                            'SortBy': 'Random',     
-                            'ImageTypes': 'Primary' 
-                        },
+                        params=params,
                         timeout=api_timeout
                     )
                     if temp_resp.status_code == 200:
                         items = temp_resp.json().get('Items', [])
                         if items:
                             ids_for_creation = [i['Id'] for i in items]
-                            logger.info(f"  ➜ 成功抓取 {len(ids_for_creation)} 个随机素材用于突破创建限制。")
+                            logger.info(f"  ➜ 成功抓取 {len(ids_for_creation)} 个随机素材(已过滤R级+)用于突破创建限制。")
+                        else:
+                            # 如果过滤太严抓不到，尝试放宽一点点或者记录警告
+                            logger.warning("  ➜ 随机抓取返回空 (可能是分级过滤太严)，尝试移除分级限制重试...")
+                            params.pop('MaxOfficialRating')
+                            temp_resp_retry = requests.get(f"{base_url.rstrip('/')}/Items", params=params, timeout=api_timeout)
+                            items_retry = temp_resp_retry.json().get('Items', [])
+                            if items_retry:
+                                ids_for_creation = [i['Id'] for i in items_retry]
+                                logger.info(f"  ➜ 重试成功抓取 {len(ids_for_creation)} 个随机素材 (无分级限制)。")
+                    
                 except Exception as e:
                     logger.error(f"  ➜ 获取随机素材失败: {e}")
 
