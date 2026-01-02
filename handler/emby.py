@@ -1382,10 +1382,10 @@ def create_or_update_collection_with_emby_ids(
         
         # ==============================================================================
         # ★★★ 核心修复：前置“特洛伊木马”逻辑 ★★★
-        # 不管是创建还是更新，只要列表为空且允许为空，就先抓 9 个壮丁
+        # 不管是创建还是更新，只要列表为空且允许为空，就先抓 1 个壮丁
         # ==============================================================================
         if not desired_emby_ids and allow_empty:
-            logger.info(f"  ➜ 合集 '{collection_name}' 为空壳模式，正在抓取 9 个随机媒体项作为封面素材...")
+            logger.info(f"  ➜ 合集 '{collection_name}' 为空壳模式，正在抓取 1 个随机媒体项占位...")
             try:
                 # 动态获取超时配置
                 api_timeout = config_manager.APP_CONFIG.get(constants.CONFIG_OPTION_EMBY_API_TIMEOUT, 60)
@@ -1394,7 +1394,7 @@ def create_or_update_collection_with_emby_ids(
                     f"{base_url.rstrip('/')}/Items", 
                     params={
                         'api_key': api_key, 
-                        'Limit': 9,             # 抓9个是为了让默认封面看起来像个九宫格，不那么单调
+                        'Limit': 1,             # 1 个就够了
                         'Recursive': 'true', 
                         'IncludeItemTypes': 'Movie,Series',
                         'SortBy': 'Random',     # 随机抓取
@@ -1407,14 +1407,14 @@ def create_or_update_collection_with_emby_ids(
                     items = temp_resp.json().get('Items', [])
                     if items:
                         desired_emby_ids = [i['Id'] for i in items]
-                        logger.info(f"  ➜ 成功抓取 {len(desired_emby_ids)} 个随机素材 (将用于填充/轮换封面)。")
+                        logger.info(f"  ➜ 成功抓取 {len(desired_emby_ids)} 个随机素材作为合集占位。")
                     else:
-                        logger.warning("  ➜ Emby 返回了空列表，无法获取封面素材。")
+                        logger.warning("  ➜ Emby 返回了空列表。")
                 else:
                     logger.warning(f"  ➜ 获取随机媒体项失败: {temp_resp.status_code}")
                     
             except Exception as e:
-                logger.error(f"  ➜ 获取随机封面素材失败: {e}")
+                logger.error(f"  ➜ 获取随机素材失败: {e}")
         
         # ==============================================================================
 
@@ -1437,15 +1437,15 @@ def create_or_update_collection_with_emby_ids(
             ids_to_add = list(set_desired - set_current)
 
             if ids_to_remove:
-                logger.info(f"  ➜ 发现 {len(ids_to_remove)} 个旧封面素材需要移除...")
+                logger.info(f"  ➜ 发现 {len(ids_to_remove)} 个旧素材需要移除...")
                 remove_items_from_collection(emby_collection_id, ids_to_remove, base_url, api_key)
             
             if ids_to_add:
-                logger.info(f"  ➜ 发现 {len(ids_to_add)} 个新封面素材需要添加...")
+                logger.info(f"  ➜ 发现 {len(ids_to_add)} 个新素材需要添加...")
                 add_items_to_collection(emby_collection_id, ids_to_add, base_url, api_key)
 
             if not ids_to_remove and not ids_to_add:
-                logger.info("  ➜ 合集封面素材已是最新（随机结果居然一样？），无需改动。")
+                logger.info("  ➜ 合集素材已是最新（随机结果居然一样？），无需改动。")
 
             return emby_collection_id
         else:
