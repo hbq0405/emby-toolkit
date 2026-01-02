@@ -242,12 +242,19 @@ def query_virtual_library_items(
         """
         where_clauses.append(tag_block_sql)
 
-        # C. 分级控制
+        # C. 分级控制 (★ 核心修复 ★)
         rating_expr = "COALESCE(m.rating_json->>'US', m.rating_json->>'CN', m.rating_json->>'GB', m.rating_json->>'JP', m.rating_json->>'KR')"
 
         parental_control_sql = f"""
     (
         (u.policy_json->'MaxParentalRating' IS NULL)
+        OR
+        -- ★★★ 修复：显式放行未分级/空分级的内容，防止被 MaxParentalRating 误杀 ★★★
+        (
+            {rating_expr} IS NULL 
+            OR {rating_expr} = '' 
+            OR {rating_expr} IN ('NR', 'UR', 'Unrated', 'Not Rated')
+        )
         OR
         (
             {rating_expr} IS NOT NULL 
