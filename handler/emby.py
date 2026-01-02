@@ -1417,7 +1417,77 @@ def create_or_update_collection_with_emby_ids(
     logger.info(f"  ➜ 开始在Emby中处理名为 '{collection_name}' 的合集...")
     
     try:
-        desired_emby_ids = emby_ids_in_library
+        # ==============================================================================
+        # ★★★ 核心修复：将“特洛伊木马”逻辑提权到最顶层 ★★★
+        # 无论是创建还是更新，只要目标列表为空且允许为空，就先抓壮丁
+        # ==============================================================================
+        final_emby_ids = list(emby_ids_in_library) # 复制一份，避免修改原列表
+        
+        if not final_emby_ids and allow_empty:
+            logger.info(f"  ➜ 合集 '{collection_name}' 内容为空 (可能是即将上线/占位)，正在抓取 9 个随机媒体项作为占位...")
+            try:
+                api_timeout = config_manager.APP_CONFIG.get(constants.CONFIG_OPTION_EMBY_API_TIMEOUT, 60)
+                target_lib_ids = config_manager.APP_CONFIG.get(constants.CONFIG_OPTION_EMBY_LIBRARIES_TO_PROCESS) or []
+                search_scopes = target_lib_ids if target_lib_ids else [None]
+                
+                found_item = None
+                
+                # 1. 优先尝试：带分级过滤 (PG-13)
+                for parent_id in search_scopes:
+                    params = {
+                        'api_key': api_key, 
+                        'Limit': 9,             
+                        'Recursive': 'true', 
+                        'IncludeItemTypes': 'Movie,Series',
+                        'SortBy': 'Random',     
+                        'ImageTypes': 'Primary',
+                        'MaxOfficialRating': 'PG-13' # 过滤掉 R 级及以上
+                    }
+                    if parent_id: params['ParentId'] = parent_id
+                    
+                    try:
+                        temp_resp = requests.get(f"{base_url.rstrip('/')}/Items", params=params, timeout=api_timeout)
+                        if temp_resp.status_code == 200:
+                            items = temp_resp.json().get('Items', [])
+                            if items:
+                                found_item = items[0]
+                                scope_name = f"媒体库 {parent_id}" if parent_id else "全局"
+                                logger.info(f"  ➜ 在 {scope_name} 中成功抓取到随机素材 '{found_item.get('Name')}' (已过滤R级+)。")
+                                break
+                    except Exception: continue
+
+                # 2. 兜底尝试：如果没找到且指定了库，放宽分级限制
+                if not found_item and target_lib_ids:
+                     logger.warning("  ➜ 严格分级模式下未找到素材，尝试在受控库中放宽分级限制重试...")
+                     for parent_id in target_lib_ids:
+                        params = {
+                            'api_key': api_key, 'Limit': 1, 'Recursive': 'true', 
+                            'IncludeItemTypes': 'Movie,Series', 'SortBy': 'Random', 'ImageTypes': 'Primary',
+                            'ParentId': parent_id
+                        }
+                        try:
+                            temp_resp = requests.get(f"{base_url.rstrip('/')}/Items", params=params, timeout=api_timeout)
+                            items = temp_resp.json().get('Items', [])
+                            if items:
+                                found_item = items[0]
+                                logger.info(f"  ➜ 重试成功：在媒体库 {parent_id} 中抓取到素材 (无分级限制)。")
+                                break
+                        except Exception: continue
+                
+                if found_item:
+                    final_emby_ids.append(found_item['Id'])
+                else:
+                    # 如果连壮丁都抓不到，且必须为空，那就真的没办法了
+                    if not allow_empty:
+                        logger.warning(f"无法获取占位素材，且不允许创建空合集，跳过处理 '{collection_name}'。")
+                        return None
+                    else:
+                        logger.warning(f"无法获取占位素材，合集 '{collection_name}' 将保持真正的空状态 (可能会被Emby自动清理)。")
+
+            except Exception as e:
+                logger.error(f"  ➜ 获取随机素材失败: {e}")
+
+        # ==============================================================================
         
         # 1. 先尝试查找合集
         collection = prefetched_collection_map.get(collection_name.lower()) if prefetched_collection_map is not None else get_collection_by_name(collection_name, base_url, api_key, user_id)
@@ -1426,7 +1496,7 @@ def create_or_update_collection_with_emby_ids(
 
         if collection:
             # ==============================================================================
-            # 分支 A: 合集已存在 -> 正常同步 (支持清空)
+            # 分支 A: 合集已存在 -> 更新 (使用 final_emby_ids)
             # ==============================================================================
             emby_collection_id = collection['Id']
             logger.info(f"  ➜ 发现已存在的合集 '{collection_name}' (ID: {emby_collection_id})，开始同步...")
@@ -1436,7 +1506,7 @@ def create_or_update_collection_with_emby_ids(
                 raise Exception("无法获取当前合集成员，同步中止。")
 
             set_current = set(current_emby_ids)
-            set_desired = set(desired_emby_ids)
+            set_desired = set(final_emby_ids) # ★ 使用处理后的列表
             
             ids_to_remove = list(set_current - set_desired)
             ids_to_add = list(set_desired - set_current)
@@ -1456,92 +1526,20 @@ def create_or_update_collection_with_emby_ids(
             
         else:
             # ==============================================================================
-            # 分支 B: 合集不存在 -> 创建合集 (需要特洛伊木马)
+            # 分支 B: 合集不存在 -> 创建 (使用 final_emby_ids)
             # ==============================================================================
             logger.info(f"  ➜ 未找到合集 '{collection_name}'，将开始创建...")
             
-            ids_for_creation = desired_emby_ids
-            
-            if not ids_for_creation and allow_empty:
-                logger.info(f"  ➜ 合集 '{collection_name}' 为空壳模式，正在抓取 1 个随机媒体项作为创建占位...")
-                try:
-                    api_timeout = config_manager.APP_CONFIG.get(constants.CONFIG_OPTION_EMBY_API_TIMEOUT, 60)
-                    
-                    # ★★★ 核心修改 1: 获取配置的媒体库列表 ★★★
-                    target_lib_ids = config_manager.APP_CONFIG.get(constants.CONFIG_OPTION_EMBY_LIBRARIES_TO_PROCESS) or []
-                    
-                    # 定义搜索范围：如果有配置库，则只在库里找；否则全局找 ([None])
-                    search_scopes = target_lib_ids if target_lib_ids else [None]
-                    
-                    found_item = None
-                    
-                    # ★★★ 核心修改 2: 遍历搜索范围，直到找到九个合法的“良民” ★★★
-                    for parent_id in search_scopes:
-                        params = {
-                            'api_key': api_key, 
-                            'Limit': 9,             
-                            'Recursive': 'true', 
-                            'IncludeItemTypes': 'Movie,Series',
-                            'SortBy': 'Random',     
-                            'ImageTypes': 'Primary',
-                            'MaxOfficialRating': 'PG-13' # 过滤掉 R 级及以上
-                        }
-                        
-                        # 如果指定了库 ID，则限制在此库内
-                        if parent_id:
-                            params['ParentId'] = parent_id
-                        
-                        try:
-                            temp_resp = requests.get(
-                                f"{base_url.rstrip('/')}/Items", 
-                                params=params,
-                                timeout=api_timeout
-                            )
-                            
-                            if temp_resp.status_code == 200:
-                                items = temp_resp.json().get('Items', [])
-                                if items:
-                                    found_item = items[0]
-                                    ids_for_creation = [found_item['Id']]
-                                    scope_name = f"媒体库 {parent_id}" if parent_id else "全局"
-                                    logger.info(f"  ➜ 在 {scope_name} 中成功抓取到随机素材 '{found_item.get('Name')}' (已过滤R级+)。")
-                                    break # 找到了就停止
-                        except Exception:
-                            continue # 这个库失败了就试下一个
-
-                    # ★★★ 核心修改 3: 如果太严格没找到，尝试放宽分级限制 (仅在已配置的库中重试) ★★★
-                    if not ids_for_creation and target_lib_ids:
-                         logger.warning("  ➜ 严格分级模式下未找到素材，尝试在受控库中放宽分级限制重试...")
-                         for parent_id in target_lib_ids:
-                            params = {
-                                'api_key': api_key, 'Limit': 1, 'Recursive': 'true', 
-                                'IncludeItemTypes': 'Movie,Series', 'SortBy': 'Random', 'ImageTypes': 'Primary',
-                                'ParentId': parent_id # 必须限制在库内
-                            }
-                            try:
-                                temp_resp = requests.get(f"{base_url.rstrip('/')}/Items", params=params, timeout=api_timeout)
-                                items = temp_resp.json().get('Items', [])
-                                if items:
-                                    ids_for_creation = [items[0]['Id']]
-                                    logger.info(f"  ➜ 重试成功：在媒体库 {parent_id} 中抓取到素材 (无分级限制)。")
-                                    break
-                            except Exception: continue
-
-                except Exception as e:
-                    logger.error(f"  ➜ 获取随机素材失败: {e}")
-
             # 如果经过抓取后还是空的，且不允许为空，则放弃
-            if not ids_for_creation:
+            if not final_emby_ids:
                 if not allow_empty:
                     logger.warning(f"合集 '{collection_name}' 在媒体库中没有任何匹配项，跳过创建。")
                     return None
-                else:
-                    logger.error(f"无法创建空合集 '{collection_name}'，因为无法获取占位素材 (可能是库为空)。")
-                    return None
+                # 如果 allow_empty=True 但没抓到壮丁，尝试创建空合集（Emby可能会报错，但值得一试）
 
             api_url = f"{base_url.rstrip('/')}/Collections"
             params = {'api_key': api_key}
-            payload = {'Name': collection_name, 'Ids': ",".join(ids_for_creation)}
+            payload = {'Name': collection_name, 'Ids': ",".join(final_emby_ids)} # ★ 使用处理后的列表
             
             api_timeout = config_manager.APP_CONFIG.get(constants.CONFIG_OPTION_EMBY_API_TIMEOUT, 60)
             response = requests.post(api_url, params=params, data=payload, timeout=api_timeout)
