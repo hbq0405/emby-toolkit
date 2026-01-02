@@ -270,7 +270,7 @@ class WatchlistProcessor:
                         # 3. 决策：如果没有新内容，直接跳过后续所有逻辑
                         if not has_new_content:
                             skipped_count += 1
-                            logger.trace(f"  💤 《{series_name}》无新内容，跳过全量刷新。")
+                            logger.info(f"  💤 《{series_name}》无新内容，跳过全量刷新。")
                             continue 
                         
                         # 如果代码走到这里，说明 has_new_content = True，将自然向下执行到第 3 步
