@@ -500,19 +500,30 @@
         </div>
       </div>
 
-      <n-divider style="margin: 0" />
-      <!-- 复活检查回溯期 -->
-      <div class="setting-item">
-        <div class="setting-icon"><n-icon :component="TimeIcon" /></div>
-        <div class="setting-content">
-          <div class="setting-header">
-            <div class="setting-label">全量刷新回溯期</div>
-            <n-input-number v-model:value="watchlistConfig.revival_check_days" size="small" style="width: 100px">
-              <template #suffix>天</template>
-            </n-input-number>
-          </div>
-          <div class="setting-desc">
-            对于已完结超过此天数的剧集，仅进行轻量级检查（只看有没有新季），不再全量刷新元数据，以提高效率。
+      <!-- 第三组：跟踪与维护 -->
+      <div class="settings-group-title" style="margin-top: 24px;">跟踪与维护</div>
+      <div class="settings-card">
+        
+        <!-- 6. 全量刷新回溯期 -->
+        <div class="setting-item">
+          <div class="setting-icon"><n-icon :component="TimeIcon" /></div>
+          <div class="setting-content">
+            <div class="setting-header">
+              <div class="setting-label">全量刷新回溯期</div>
+              <!-- ★★★ 修改：加宽输入框 (100px -> 160px) ★★★ -->
+              <n-input-number 
+                v-model:value="watchlistConfig.revival_check_days" 
+                size="small" 
+                style="width: 160px" 
+                placeholder="天数"
+                :min="1"
+              >
+                <template #suffix>天</template>
+              </n-input-number>
+            </div>
+            <div class="setting-desc">
+              对于已完结超过此天数的剧集，仅进行轻量级检查（只看有没有新季），不再全量刷新元数据，以提高效率。
+            </div>
           </div>
         </div>
       </div>
