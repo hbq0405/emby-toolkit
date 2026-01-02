@@ -1421,27 +1421,29 @@ def create_or_update_collection_with_emby_ids(
         # ★★★ 核心修复：将“特洛伊木马”逻辑提权到最顶层 ★★★
         # 无论是创建还是更新，只要目标列表为空且允许为空，就先抓壮丁
         # ==============================================================================
-        final_emby_ids = list(emby_ids_in_library) # 复制一份，避免修改原列表
-        
+        final_emby_ids = list(emby_ids_in_library)
         if not final_emby_ids and allow_empty:
-            logger.info(f"  ➜ 合集 '{collection_name}' 内容为空 (可能是即将上线/占位)，正在抓取 9 个随机媒体项作为占位...")
+            # 想要生成 9 宫格封面，至少需要 9 个占位符
+            PLACEHOLDER_COUNT = 9 
+            logger.info(f"  ➜ 合集 '{collection_name}' 内容为空，正在抓取 {PLACEHOLDER_COUNT} 个随机媒体项作为占位...")
+            
             try:
                 api_timeout = config_manager.APP_CONFIG.get(constants.CONFIG_OPTION_EMBY_API_TIMEOUT, 60)
                 target_lib_ids = config_manager.APP_CONFIG.get(constants.CONFIG_OPTION_EMBY_LIBRARIES_TO_PROCESS) or []
                 search_scopes = target_lib_ids if target_lib_ids else [None]
                 
-                found_item = None
+                found_items_batch = [] # 改用列表存储
                 
                 # 1. 优先尝试：带分级过滤 (PG-13)
                 for parent_id in search_scopes:
                     params = {
                         'api_key': api_key, 
-                        'Limit': 9,             
+                        'Limit': PLACEHOLDER_COUNT, # ★ 请求 9 个
                         'Recursive': 'true', 
                         'IncludeItemTypes': 'Movie,Series',
                         'SortBy': 'Random',     
                         'ImageTypes': 'Primary',
-                        'MaxOfficialRating': 'PG-13' # 过滤掉 R 级及以上
+                        'MaxOfficialRating': 'PG-13'
                     }
                     if parent_id: params['ParentId'] = parent_id
                     
@@ -1450,18 +1452,20 @@ def create_or_update_collection_with_emby_ids(
                         if temp_resp.status_code == 200:
                             items = temp_resp.json().get('Items', [])
                             if items:
-                                found_item = items[0]
+                                found_items_batch = items # ★ 保留所有结果
                                 scope_name = f"媒体库 {parent_id}" if parent_id else "全局"
-                                logger.info(f"  ➜ 在 {scope_name} 中成功抓取到随机素材 '{found_item.get('Name')}' (已过滤R级+)。")
+                                logger.info(f"  ➜ 在 {scope_name} 中成功抓取到 {len(items)} 个随机素材 (已过滤R级+)。")
                                 break
                     except Exception: continue
 
-                # 2. 兜底尝试：如果没找到且指定了库，放宽分级限制
-                if not found_item and target_lib_ids:
+                # 2. 兜底尝试
+                if not found_items_batch and target_lib_ids:
                      logger.warning("  ➜ 严格分级模式下未找到素材，尝试在受控库中放宽分级限制重试...")
                      for parent_id in target_lib_ids:
                         params = {
-                            'api_key': api_key, 'Limit': 1, 'Recursive': 'true', 
+                            'api_key': api_key, 
+                            'Limit': PLACEHOLDER_COUNT, # ★ 请求 9 个
+                            'Recursive': 'true', 
                             'IncludeItemTypes': 'Movie,Series', 'SortBy': 'Random', 'ImageTypes': 'Primary',
                             'ParentId': parent_id
                         }
@@ -1469,20 +1473,21 @@ def create_or_update_collection_with_emby_ids(
                             temp_resp = requests.get(f"{base_url.rstrip('/')}/Items", params=params, timeout=api_timeout)
                             items = temp_resp.json().get('Items', [])
                             if items:
-                                found_item = items[0]
-                                logger.info(f"  ➜ 重试成功：在媒体库 {parent_id} 中抓取到素材 (无分级限制)。")
+                                found_items_batch = items # ★ 保留所有结果
+                                logger.info(f"  ➜ 重试成功：在媒体库 {parent_id} 中抓取到 {len(items)} 个素材 (无分级限制)。")
                                 break
                         except Exception: continue
                 
-                if found_item:
-                    final_emby_ids.append(found_item['Id'])
+                # ★★★ 将抓取到的所有 ID 加入列表 ★★★
+                if found_items_batch:
+                    found_ids = [i['Id'] for i in found_items_batch]
+                    final_emby_ids.extend(found_ids) # 使用 extend 批量添加
                 else:
-                    # 如果连壮丁都抓不到，且必须为空，那就真的没办法了
                     if not allow_empty:
                         logger.warning(f"无法获取占位素材，且不允许创建空合集，跳过处理 '{collection_name}'。")
                         return None
                     else:
-                        logger.warning(f"无法获取占位素材，合集 '{collection_name}' 将保持真正的空状态 (可能会被Emby自动清理)。")
+                        logger.warning(f"无法获取占位素材，合集 '{collection_name}' 将保持真正的空状态。")
 
             except Exception as e:
                 logger.error(f"  ➜ 获取随机素材失败: {e}")
