@@ -209,7 +209,7 @@ class WatchlistProcessor:
                 self.progress_callback(100, "没有需要检查的已完结剧集。")
                 return
 
-            logger.info(f"开始检查 {total} 部已完结剧集 (全量刷新回溯期: {revival_check_days}天)...")
+            logger.info(f"  ➜ 开始检查 {total} 部已完结剧集 (全量刷新回溯期: {revival_check_days}天)...")
             
             revived_count = 0
             skipped_count = 0
@@ -217,7 +217,7 @@ class WatchlistProcessor:
 
             for i, series in enumerate(completed_series):
                 if self.is_stop_requested(): break
-                
+                progress = 10 + int(((i + 1) / total) * 90)
                 series_name = series['item_name']
                 tmdb_id = series['tmdb_id']
                 emby_ids = series.get('emby_item_ids_json', [])
@@ -243,72 +243,57 @@ class WatchlistProcessor:
                         except ValueError: pass
 
                 # --- 2. 分流处理 ---
-                tmdb_details = None
-                emby_seasons_state = None
                 
                 if is_ancient:
-                    # ★★★ 轻量级检查模式 ★★★
-                    # 只请求 TMDb 基础信息，不更新本地 DB，不刷新 Emby，不遍历 Season/Episode
-                    self.progress_callback(10 + int(((i + 1) / total) * 90), f"轻量检查: {series_name[:15]}... ({i+1}/{total})")
+                    # ★★★ 核心修复：轻量级检查逻辑 ★★★
+                    # 只有当 TMDb 有新动态时，才放行到下方的全量刷新，否则 continue
+                    self.progress_callback(progress, f"轻量检查: {series_name[:15]}... ({i+1}/{total})")
                     
                     try:
-                        # 仅获取 Series 详情
+                        # 1. 轻量请求：只获取 Series 基础详情 (数据量小，速度快)
                         tmdb_basic = tmdb.get_tv_details(tmdb_id, self.tmdb_api_key)
                         if not tmdb_basic: continue
 
-                        # 核心比对：检查 TMDb 的最新播出日期是否晚于本地记录
-                        # 或者检查 TMDb 的总季数是否大于本地
                         has_new_content = False
                         
-                        # 比对 A: 最后播出日期
+                        # 2. 比对 A: 检查 TMDb 的最新播出日期是否晚于本地记录
                         tmdb_last_ep = tmdb_basic.get('last_episode_to_air')
                         if tmdb_last_ep and tmdb_last_ep.get('air_date'):
                             try:
                                 tmdb_last_date = datetime.strptime(tmdb_last_ep['air_date'], '%Y-%m-%d').date()
+                                # 如果 TMDb 的日期比本地新，说明有新集播出了
                                 if last_air_date_local and tmdb_last_date > last_air_date_local:
                                     has_new_content = True
-                                    logger.info(f"  ⚡ [诈尸检测] 《{series_name}》发现新播出记录 ({tmdb_last_date} > {last_air_date_local})，触发全量刷新。")
+                                    logger.info(f"  ⚡ [新季检测] 《{series_name}》发现新播出记录 ({tmdb_last_date} > {last_air_date_local})，触发全量刷新。")
                             except: pass
                         
-                        # 比对 B: 状态变化 (如果 TMDb 变回了 Returning Series)
-                        if not has_new_content and tmdb_basic.get('status') == 'Returning Series':
-                             # 即使日期没变，但状态变了，也值得刷新一下看看
-                             # (不过对于远古剧，状态通常不会乱变，除非真的复活)
-                             pass 
-
+                        # 3. 决策：如果没有新内容，直接跳过后续所有逻辑
                         if not has_new_content:
-                            # 确实没变化，跳过
                             skipped_count += 1
                             logger.trace(f"  💤 《{series_name}》无新内容，跳过全量刷新。")
-                            continue
+                            continue 
                         
-                        # 如果发现新内容，则继续向下执行，进入全量刷新流程
-                        tmdb_details = tmdb_basic
+                        # 如果代码走到这里，说明 has_new_content = True，将自然向下执行到第 3 步
 
                     except Exception as e:
-                        logger.warning(f"轻量检查《{series_name}》失败: {e}")
+                        logger.warning(f"  ➜ 轻量检查《{series_name}》失败: {e}")
                         continue
                 else:
-                    # ★★★ 全量刷新模式 (近期完结) ★★★
-                    self.progress_callback(10 + int(((i + 1) / total) * 90), f"全量刷新: {series_name[:15]}... ({i+1}/{total})")
+                    # 近期完结：直接全量刷新
+                    self.progress_callback(progress, f"全量刷新: {series_name[:15]}... ({i+1}/{total})")
 
-                # --- 3. 执行全量刷新 (如果需要) ---
-                # 如果是轻量模式且没发现新内容，上面已经 continue 了
-                # 如果是轻量模式且发现了新内容，tmdb_details 已经有了
-                # 如果是全量模式，tmdb_details 为 None，需要 _refresh_series_metadata 获取
+                # --- 3. 执行全量刷新 (合并后的逻辑) ---
+                # 无论是“近期完结”还是“远古诈尸”，只要代码能跑到这里，
+                # 就说明需要更新数据库、同步子集和刷新 Emby。
                 
-                if not tmdb_details:
-                    refresh_result = self._refresh_series_metadata(tmdb_id, series_name, item_id)
-                    if not refresh_result: continue
-                    tmdb_details, _, emby_seasons_state = refresh_result
-                else:
-                    # 如果是轻量模式转过来的，我们需要补全 _refresh_series_metadata 的其他步骤
-                    # 因为刚才只获取了 basic info，没存库，没同步子集
-                    refresh_result = self._refresh_series_metadata(tmdb_id, series_name, item_id)
-                    if not refresh_result: continue
-                    tmdb_details, _, emby_seasons_state = refresh_result
+                refresh_result = self._refresh_series_metadata(tmdb_id, series_name, item_id)
+                if not refresh_result: 
+                    continue
+                
+                # 解包返回结果，供后续复活判定逻辑使用
+                tmdb_details, _, emby_seasons_state = refresh_result
 
-                # --- 4. 复活判定逻辑 (保持原有逻辑不变) ---
+                # --- 4. 复活判定逻辑 ---
                 
                 # 计算本地已有的最大季号
                 local_max_season = 0
