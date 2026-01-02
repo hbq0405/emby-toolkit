@@ -759,7 +759,7 @@ def task_auto_subscribe(processor):
                         source_display_parts.append(f"用户请求({user_db.get_username_by_id(user_id) or user_id})")
                     elif source_type == 'actor_subscription':
                         source_display_parts.append(f"演员订阅({source.get('name', '未知')})")
-                    elif source_type in ['collection', 'native_collection']:
+                    elif source_type in ['custom_collection', 'native_collection']:
                         source_display_parts.append(f"合集({source.get('name', '未知')})")
                     elif source_type == 'gap_scan':
                         source_display_parts.append("缺集扫描")
