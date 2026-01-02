@@ -211,7 +211,7 @@ DEFAULT_KEYWORD_MAPPING = [
 DEFAULT_STUDIO_MAPPING = [
     # --- 全球流媒体 (Network IDs) ---
     {"label": "网飞", "en": ["Netflix"], "ids": [213]},
-    {"label": "HBO", "en": ["HBO"], "ids": [49]},
+    {"label": "HBO", "en": ["HBO"], "ids": [49, 3268]},
     {"label": "Disney+", "en": ["Disney+"], "ids": [2739]},
     {"label": "Apple TV+", "en": ["Apple TV+"], "ids": [2552]},
     {"label": "Amazon", "en": ["Amazon Prime Video"], "ids": [1024]},
@@ -225,7 +225,7 @@ DEFAULT_STUDIO_MAPPING = [
     {"label": "央视", "en": ["CCTV-8", "CCTV-1"], "ids": [521, 1363]}, 
     {"label": "浙江卫视", "en": ["Zhejiang Television"], "ids": [989]},
     {"label": "江苏卫视", "en": ["Jiangsu Television"], "ids": [1055]},
-    {"label": "TVB", "en": ["TVB Jade"], "ids": [48]},
+    {"label": "TVB", "en": ["TVB Jade", "Television Broadcasts Limited"], "ids": [48, 79261]},
     # --- 传统制作公司 (Company IDs) ---
     # 这些通常用于电影，或者作为电视剧的制作方（非播出平台）
     {"label": "漫威", "en": ["Marvel Studios"], "ids": [420]},
