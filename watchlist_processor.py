@@ -417,12 +417,28 @@ class WatchlistProcessor:
 
             # 定义要更新的字段 (TMDb 字段 -> JSON 字段)
             fields_to_update = {
-                "overview": "overview",           # 简介：TMDb 更新最快
-                "poster_path": "poster_path",     # 海报路径
-                "backdrop_path": "backdrop_path", # 背景图路径
-                "still_path": "still_path",       # 剧照路径
+                # --- 基础视觉与文本 ---
+                "overview": "overview",           # 简介
+                "poster_path": "poster_path",     # 海报
+                "backdrop_path": "backdrop_path", # 背景
+                "still_path": "still_path",       # 剧照
+                "tagline": "tagline",             # 标语
+                
+                # --- 日期 ---
                 "first_air_date": "release_date", # 首播日期 (Series)
-                "air_date": "release_date"        # 播出日期 (Episode/Season)
+                "air_date": "release_date",       # 播出日期 (Episode/Season)
+                
+                # --- ★★★ 新增：核心元数据 ★★★ ---
+                "genres": "genres",                         # 类型 (对象数组)
+                "keywords": "keywords",                     # 关键词 (对象结构)
+                "content_ratings": "content_ratings",       # 分级信息 (对象结构)
+                "origin_country": "origin_country",         # 产地 (字符串数组)
+                "production_companies": "production_companies", # 制作公司 (对象数组)
+                
+                # --- ★★★ 新增：评分与状态 ★★★ ---
+                "vote_average": "vote_average",   # 评分
+                "vote_count": "vote_count",       # 评分人数
+                "popularity": "popularity"        # 热度
             }
 
             # 差异化保护：只有非 series.json 才允许更新标题
