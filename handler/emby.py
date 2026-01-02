@@ -1425,14 +1425,14 @@ def create_or_update_collection_with_emby_ids(
             ids_for_creation = desired_emby_ids
             
             if not ids_for_creation and allow_empty:
-                logger.info(f"  ➜ 合集 '{collection_name}' 为空壳模式，正在抓取 1 个随机媒体项作为创建占位...")
+                logger.info(f"  ➜ 合集 '{collection_name}' 为空壳模式，正在抓取 9 个随机媒体项作为创建占位...")
                 try:
                     api_timeout = config_manager.APP_CONFIG.get(constants.CONFIG_OPTION_EMBY_API_TIMEOUT, 60)
                     temp_resp = requests.get(
                         f"{base_url.rstrip('/')}/Items", 
                         params={
                             'api_key': api_key, 
-                            'Limit': 1,             
+                            'Limit': 9,             
                             'Recursive': 'true', 
                             'IncludeItemTypes': 'Movie,Series',
                             'SortBy': 'Random',     

@@ -222,7 +222,27 @@ class CoverGeneratorService:
                         logger.warning(f"  ➜ 自定义合集 '{library_name}' 中的项目均无有效封面。")
                         return []
                 else:
-                    logger.warning(f"  ➜ 自定义合集 '{library_name}' 数据库记录中没有有效的 Emby ID。")
+                    # ★★★ 核心修复：当数据库记录为空时（如“即将上线”榜单），尝试直接使用合集内的现有成员（特洛伊木马） ★★★
+                    logger.warning(f"  ➜ 自定义合集 '{library_name}' 数据库记录中没有有效的 Emby ID，尝试使用合集现有成员作为封面素材...")
+                    
+                    fallback_items = emby.get_emby_library_items(
+                        base_url=base_url, api_key=api_key, user_id=user_id,
+                        library_ids=[library_id],
+                        # 使用宽泛的类型过滤，确保能抓到任何占位符
+                        media_type_filter="Movie,Series,Season,Episode", 
+                        fields="Id,Name,Type,ImageTags,BackdropImageTags,PrimaryImageTag,PrimaryImageItemId",
+                        limit=limit
+                    )
+                    
+                    valid_items = [item for item in fallback_items if self.__get_image_url(item)] if fallback_items else []
+                    
+                    if valid_items:
+                        logger.info(f"  ➜ 成功从合集现有成员中获取到 {len(valid_items)} 个带封面的媒体项 (Fallback)。")
+                        return valid_items[:limit]
+                    else:
+                        logger.warning(f"  ➜ 合集现有成员中也未发现有效封面素材。")
+                        return []
+
             except Exception as e:
                 logger.error(f"  ➜ 处理自定义合集 '{library_name}' 的本地数据时出错: {e}，将尝试回退到普通模式。", exc_info=True)
         
