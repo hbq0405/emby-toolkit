@@ -1380,49 +1380,15 @@ def create_or_update_collection_with_emby_ids(
     try:
         desired_emby_ids = emby_ids_in_library
         
-        # ==============================================================================
-        # ★★★ 核心修复：前置“特洛伊木马”逻辑 ★★★
-        # 不管是创建还是更新，只要列表为空且允许为空，就先抓 1 个壮丁
-        # ==============================================================================
-        if not desired_emby_ids and allow_empty:
-            logger.info(f"  ➜ 合集 '{collection_name}' 为空壳模式，正在抓取 1 个随机媒体项占位...")
-            try:
-                # 动态获取超时配置
-                api_timeout = config_manager.APP_CONFIG.get(constants.CONFIG_OPTION_EMBY_API_TIMEOUT, 60)
-                
-                temp_resp = requests.get(
-                    f"{base_url.rstrip('/')}/Items", 
-                    params={
-                        'api_key': api_key, 
-                        'Limit': 1,             # 1 个就够了
-                        'Recursive': 'true', 
-                        'IncludeItemTypes': 'Movie,Series',
-                        'SortBy': 'Random',     # 随机抓取
-                        'ImageTypes': 'Primary' # 确保有图
-                    },
-                    timeout=api_timeout
-                )
-                
-                if temp_resp.status_code == 200:
-                    items = temp_resp.json().get('Items', [])
-                    if items:
-                        desired_emby_ids = [i['Id'] for i in items]
-                        logger.info(f"  ➜ 成功抓取 {len(desired_emby_ids)} 个随机素材作为合集占位。")
-                    else:
-                        logger.warning("  ➜ Emby 返回了空列表。")
-                else:
-                    logger.warning(f"  ➜ 获取随机媒体项失败: {temp_resp.status_code}")
-                    
-            except Exception as e:
-                logger.error(f"  ➜ 获取随机素材失败: {e}")
-        
-        # ==============================================================================
-
+        # 1. 先尝试查找合集
         collection = prefetched_collection_map.get(collection_name.lower()) if prefetched_collection_map is not None else get_collection_by_name(collection_name, base_url, api_key, user_id)
         
         emby_collection_id = None
 
         if collection:
+            # ==============================================================================
+            # 分支 A: 合集已存在 -> 正常同步 (支持清空)
+            # ==============================================================================
             emby_collection_id = collection['Id']
             logger.info(f"  ➜ 发现已存在的合集 '{collection_name}' (ID: {emby_collection_id})，开始同步...")
             
@@ -1445,26 +1411,65 @@ def create_or_update_collection_with_emby_ids(
                 add_items_to_collection(emby_collection_id, ids_to_add, base_url, api_key)
 
             if not ids_to_remove and not ids_to_add:
-                logger.info("  ➜ 合集素材已是最新（随机结果居然一样？），无需改动。")
+                logger.info("  ➜ 合集素材已是最新，无需改动。")
 
             return emby_collection_id
+            
         else:
+            # ==============================================================================
+            # 分支 B: 合集不存在 -> 创建合集 (需要特洛伊木马)
+            # ==============================================================================
             logger.info(f"  ➜ 未找到合集 '{collection_name}'，将开始创建...")
             
-            # 如果经过上面的抓取逻辑后还是空的，且不允许为空，才报错
-            if not desired_emby_ids and not allow_empty:
-                logger.warning(f"合集 '{collection_name}' 在媒体库中没有任何匹配项，跳过创建。")
-                return None
+            # ★★★ 核心修复：只在创建且列表为空时，才启用“特洛伊木马” ★★★
+            ids_for_creation = desired_emby_ids
+            
+            if not ids_for_creation and allow_empty:
+                logger.info(f"  ➜ 合集 '{collection_name}' 为空壳模式，正在抓取 1 个随机媒体项作为创建占位...")
+                try:
+                    api_timeout = config_manager.APP_CONFIG.get(constants.CONFIG_OPTION_EMBY_API_TIMEOUT, 60)
+                    temp_resp = requests.get(
+                        f"{base_url.rstrip('/')}/Items", 
+                        params={
+                            'api_key': api_key, 
+                            'Limit': 1,             
+                            'Recursive': 'true', 
+                            'IncludeItemTypes': 'Movie,Series',
+                            'SortBy': 'Random',     
+                            'ImageTypes': 'Primary' 
+                        },
+                        timeout=api_timeout
+                    )
+                    if temp_resp.status_code == 200:
+                        items = temp_resp.json().get('Items', [])
+                        if items:
+                            ids_for_creation = [i['Id'] for i in items]
+                            logger.info(f"  ➜ 成功抓取 {len(ids_for_creation)} 个随机素材用于突破创建限制。")
+                except Exception as e:
+                    logger.error(f"  ➜ 获取随机素材失败: {e}")
+
+            # 如果经过抓取后还是空的，且不允许为空，则放弃
+            if not ids_for_creation:
+                if not allow_empty:
+                    logger.warning(f"合集 '{collection_name}' 在媒体库中没有任何匹配项，跳过创建。")
+                    return None
+                else:
+                    # 极端情况：allow_empty=True 但连随机素材都抓不到（库是空的？）
+                    logger.error(f"无法创建空合集 '{collection_name}'，因为无法获取占位素材。")
+                    return None
 
             api_url = f"{base_url.rstrip('/')}/Collections"
             params = {'api_key': api_key}
-            payload = {'Name': collection_name, 'Ids': ",".join(desired_emby_ids)}
+            payload = {'Name': collection_name, 'Ids': ",".join(ids_for_creation)}
             
             api_timeout = config_manager.APP_CONFIG.get(constants.CONFIG_OPTION_EMBY_API_TIMEOUT, 60)
             response = requests.post(api_url, params=params, data=payload, timeout=api_timeout)
             response.raise_for_status()
             new_collection_info = response.json()
             emby_collection_id = new_collection_info.get('Id')
+            
+            # (可选) 如果你是完美主义者，可以在这里立即把那个占位符删掉，让合集变成真正的空合集
+            # 但通常保留一个也无伤大雅，下次同步会自动清理
             
             return emby_collection_id
 
