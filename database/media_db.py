@@ -524,7 +524,7 @@ def update_media_metadata_fields(tmdb_id: str, item_type: str, updates: Dict[str
 
     safe_updates = {
         k: v for k, v in updates.items() 
-        if k not in ['title', 'actors_json', 'tmdb_id', 'item_type']
+        if k not in ['title', 'actors_json', 'tmdb_id', 'item_type', 'last_updated_at']
     }
     
     if not safe_updates:
