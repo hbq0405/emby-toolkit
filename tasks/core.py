@@ -109,7 +109,6 @@ def _task_run_chain_internal(processor, task_name: str, sequence_config_key: str
                 tasks_requiring_force_flag = [
                     'role-translation', 
                     'enrich-aliases', 
-                    'process-watchlist', 
                     'populate-metadata'
                 ]
                 

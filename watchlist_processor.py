@@ -118,27 +118,22 @@ class WatchlistProcessor:
             logger.error(f"自动添加剧集 '{item_name}' 时出错: {e}")
 
     # --- 核心任务启动器  ---
-    def run_regular_processing_task_concurrent(self, progress_callback: callable, tmdb_id: Optional[str] = None, force_full_update: bool = False):
-        """【V3 - 终极修复版】核心任务启动器，正确处理 tmdb_id。"""
+    def run_regular_processing_task_concurrent(self, progress_callback: callable, tmdb_id: Optional[str] = None):
+        """核心任务启动器，只处理活跃剧集。"""
         self.progress_callback = progress_callback
         task_name = "并发追剧更新"
-        if force_full_update: task_name = "并发追剧更新 (深度模式)"
         if tmdb_id: task_name = f"单项追剧更新 (TMDb ID: {tmdb_id})"
         
         self.progress_callback(0, "准备检查待更新剧集...")
         try:
             where_clause = ""
-            if not tmdb_id: # 只有在非单项刷新时，才构建 WHERE 子句
-                if force_full_update:
-                    where_clause = "WHERE force_ended = FALSE"
-                    logger.info("  ➜ 已启用【深度模式】，将刷新所有追剧列表中的项目。")
-                else:
-                    today_str = datetime.now().date().isoformat()
-                    where_clause = f"""
-                        WHERE watching_status = '{STATUS_WATCHING}' 
-                           OR watching_status = '{STATUS_PENDING}' 
-                           OR (watching_status = '{STATUS_PAUSED}' AND paused_until <= '{today_str}')
-                    """
+            if not tmdb_id: 
+                today_str = datetime.now().date().isoformat()
+                where_clause = f"""
+                    WHERE watching_status = '{STATUS_WATCHING}' 
+                       OR watching_status = '{STATUS_PENDING}' 
+                       OR (watching_status = '{STATUS_PAUSED}' AND paused_until <= '{today_str}')
+                """
 
             active_series = self._get_series_to_process(where_clause, tmdb_id=tmdb_id)
             
@@ -190,8 +185,7 @@ class WatchlistProcessor:
         finally:
             self.progress_callback = None
 
-    # ★★★ 专门用于“已完结剧集”预定新季的任务方法 ★★★
-    # ★★★ 专门用于“已完结剧集”预定新季的任务方法 (优化版) ★★★
+    # --- 全量刷新已完结剧集任务 ---
     def refresh_completed_series_task(self, progress_callback: callable):
         """ 
         低频扫描所有已完结剧集。

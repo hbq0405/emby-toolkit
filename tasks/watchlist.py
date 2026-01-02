@@ -16,11 +16,9 @@ from watchlist_processor import STATUS_WATCHING, STATUS_PAUSED, STATUS_COMPLETED
 logger = logging.getLogger(__name__)
 
 # --- 追剧 ---    
-def task_process_watchlist(processor, tmdb_id: Optional[str] = None, force_full_update: bool = False):
+def task_process_watchlist(processor, tmdb_id: Optional[str] = None):
     """
-    【V9 - 启动器】
-    调用处理器实例来执行追剧任务，并处理UI状态更新。
-    现在支持 deep_mode 参数。
+    只负责刷新“活跃”剧集（追剧中、待定中、暂停到期）。
     """
     def progress_updater(progress, message):
         task_manager.update_status_from_thread(progress, message)
@@ -28,18 +26,16 @@ def task_process_watchlist(processor, tmdb_id: Optional[str] = None, force_full_
     try:
         processor.run_regular_processing_task_concurrent(
             progress_callback=progress_updater, 
-            tmdb_id=tmdb_id, # <--- 将接收到的 tmdb_id 传递给处理器
-            force_full_update=force_full_update
+            tmdb_id=tmdb_id
         )
 
     except Exception as e:
         task_name = "追剧列表更新"
-        if force_full_update: task_name += " (深度模式)"
         if tmdb_id: task_name = f"单项追剧更新 (TMDb ID: {tmdb_id})"
         logger.error(f"执行 '{task_name}' 时发生顶层错误: {e}", exc_info=True)
         progress_updater(-1, f"启动任务时发生错误: {e}")
 
-# ★★★ 低频任务 - 检查已完结剧集是否有新季上线 ★★★
+# --- 全量刷新已完结剧集任务 ---
 def task_refresh_completed_series(processor):
     """
     【低频任务】全量刷新已完结剧集并检查是否有新季上线。
@@ -57,13 +53,11 @@ def task_refresh_completed_series(processor):
         logger.error(f"执行 '{task_name}' 时发生顶层错误: {e}", exc_info=True)
         progress_updater(-1, f"启动任务时发生错误: {e}")
 
-# ✨✨✨ 一键添加所有剧集到追剧列表的任务 ✨✨✨
+# --- 一键扫描库内剧集任务 ---
 def task_add_all_series_to_watchlist(processor):
     """
-    【V6 - 存量导入版】
     - 扫描库内未纳管的剧集，将其直接标记为“已完结”。
-    - 不会自动触发追剧检查，避免老剧被误洗版。
-    - 真正还在连载的剧集，将由“已完结剧集复活检查”任务后续慢慢发现。
+    - 导入完成后，触发 '全量刷新剧集' 任务，以校准状态并发现新季。
     """
     task_name = "一键扫描库内剧集"
     logger.info(f"--- 开始执行 '{task_name}' (存量导入模式) ---")
@@ -86,29 +80,23 @@ def task_add_all_series_to_watchlist(processor):
         except Exception as e_db:
             raise RuntimeError(f"数据库执行失败: {e_db}")
 
-        # 3. 触发后续任务链 (深度模式)
+        # 3. 触发后续任务链 (改为调用全量刷新任务)
         if updated_count > 0:
-            logger.info(f"  ➜ 扫描到 {updated_count} 部新剧集。正在启动全量深度检查以校准状态...")
-            task_manager.update_status_from_thread(99, "导入完成，正在深度刷新剧集状态...")
+            logger.info(f"  ➜ 扫描到 {updated_count} 部新剧集。正在启动全量刷新任务以校准状态...")
+            task_manager.update_status_from_thread(99, "导入完成，正在启动全量刷新...")
             
-            # 给数据库一点喘息时间
             time.sleep(2)
             
             try:
-                watchlist_proc = extensions.watchlist_processor_instance
-                if watchlist_proc:
-                    task_process_watchlist(
-                        processor=watchlist_proc, 
-                        tmdb_id=None, 
-                        force_full_update=True 
-                    )
-                    final_message = "自动化流程完成：存量导入与全量体检均已结束。"
-                    task_manager.update_status_from_thread(100, final_message)
-                else:
-                    raise RuntimeError("WatchlistProcessor 未初始化。")
+                # ★★★ 修改：调用 task_refresh_completed_series ★★★
+                # 因为新导入的剧集状态都是 Completed，正好归它管
+                task_refresh_completed_series(processor)
+                
+                final_message = "自动化流程完成：存量导入与全量刷新均已结束。"
+                task_manager.update_status_from_thread(100, final_message)
             except Exception as e_chain:
-                 logger.error(f"执行链式任务失败: {e_chain}", exc_info=True)
-                 task_manager.update_status_from_thread(-1, f"链式任务失败: {e_chain}")
+                 logger.error(f"执行后续刷新任务失败: {e_chain}", exc_info=True)
+                 task_manager.update_status_from_thread(-1, f"后续刷新任务失败: {e_chain}")
         else:
             final_message = "扫描完成！没有发现未追踪的剧集。"
             logger.info(f"  ➜ {final_message}")
