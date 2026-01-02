@@ -99,6 +99,9 @@ class CoverGeneratorService:
         api_key = config_manager.APP_CONFIG.get('emby_api_key')
         user_id = config_manager.APP_CONFIG.get('emby_user_id')
 
+        # 定义少儿不宜的黑名单 (不区分大小写)
+        unsafe_ratings = {'NC-17', 'X', 'XXX', 'R18+', 'R-18', 'ADULT', '18+'}
+
         # --- 优先检查是否为本地自定义合集 
         custom_collection = custom_collection_db.get_custom_collection_by_emby_id(library_id)
     
@@ -120,22 +123,20 @@ class CoverGeneratorService:
                     if self._sort_by == "Random":
                         random.shuffle(valid_emby_ids)
                     
-                    # 3. 截取需要的数量
-                    target_ids = valid_emby_ids[:max(limit * 2, 20)]
+                    # 3. 截取需要的数量 (加大采样量以应对过滤)
+                    target_ids = valid_emby_ids[:max(limit * 5, 50)]
                     ids_str = ",".join(target_ids)
 
                     # 4. 直接向 Emby 查询这些特定 ID 的详情
                     url = f"{base_url.rstrip('/')}/Users/{user_id}/Items"
                     
-                    # ★★★ 修复：使用 Header 传递 Token，并修正参数名 ★★★
                     headers = {
                         "X-Emby-Token": api_key,
                         "Content-Type": "application/json"
                     }
                     params = {
                         'Ids': ids_str,
-                        'Fields': "Id,Name,Type,ImageTags,BackdropImageTags,DateCreated,PrimaryImageTag,PrimaryImageItemId",
-                        # 'api_key': api_key # Header 中已包含，此处可省略，或使用小写 'api_key'
+                        'Fields': "Id,Name,Type,ImageTags,BackdropImageTags,DateCreated,PrimaryImageTag,PrimaryImageItemId,OfficialRating", # ★ 增加 OfficialRating
                     }
                     
                     resp = requests.get(url, params=params, headers=headers, timeout=30)
@@ -143,14 +144,21 @@ class CoverGeneratorService:
                     data = resp.json()
                     items_from_emby = data.get('Items', [])
 
+                    # ★★★ 鉴黄过滤 ★★★
+                    safe_items = []
+                    for item in items_from_emby:
+                        rating = item.get('OfficialRating', '').upper()
+                        if rating not in unsafe_ratings:
+                            safe_items.append(item)
+
                     # 5. 再次过滤，确保有图片
-                    valid_items = [item for item in items_from_emby if self.__get_image_url(item)]
+                    valid_items = [item for item in safe_items if self.__get_image_url(item)]
                     
                     if valid_items:
-                        logger.info(f"  ➜ 成功从自定义合集获取到 {len(valid_items)} 个带封面的媒体项。")
+                        logger.info(f"  ➜ 成功从自定义合集获取到 {len(valid_items)} 个带封面的媒体项 (已过滤敏感内容)。")
                         return valid_items[:limit]
                     else:
-                        logger.warning(f"  ➜ 自定义合集 '{library_name}' 中的项目均无有效封面。")
+                        logger.warning(f"  ➜ 自定义合集 '{library_name}' 中的项目均无有效封面或已被过滤。")
                         return []
                 else:
                     logger.warning(f"  ➜ 自定义合集 '{library_name}' 数据库记录中没有有效的 Emby ID (可能尚未同步)。")
@@ -184,13 +192,14 @@ class CoverGeneratorService:
             sort_by_param = "DateCreated"
             sort_order_param = "Descending" # 明确指定降序
         
-        api_limit = limit * 5 if limit < 10 else limit * 2 
+        # ★ 加大获取数量，防止过滤后不够，同时为本地洗牌提供样本
+        api_limit = max(limit * 10, 100)
 
         all_items = emby.get_emby_library_items(
             base_url=base_url, api_key=api_key, user_id=user_id,
             library_ids=[library_id],
             media_type_filter=media_type_to_fetch,
-            fields="Id,Name,Type,ImageTags,BackdropImageTags,DateCreated,PrimaryImageTag,PrimaryImageItemId",
+            fields="Id,Name,Type,ImageTags,BackdropImageTags,DateCreated,PrimaryImageTag,PrimaryImageItemId,OfficialRating", # ★ 增加 OfficialRating
             sort_by=sort_by_param,
             sort_order=sort_order_param,
             limit=api_limit,
@@ -198,7 +207,19 @@ class CoverGeneratorService:
         )
         
         if not all_items: return []
-        valid_items = [item for item in all_items if self.__get_image_url(item)]
+
+        # ★★★ 鉴黄过滤 ★★★
+        safe_items = []
+        for item in all_items:
+            rating = item.get('OfficialRating', '').upper()
+            if rating not in unsafe_ratings:
+                safe_items.append(item)
+
+        # ★★★ 本地强制洗牌 (解决 Emby 随机缓存问题) ★★★
+        if self._sort_by == "Random":
+            random.shuffle(safe_items)
+
+        valid_items = [item for item in safe_items if self.__get_image_url(item)]
         if not valid_items: return []
         return valid_items[:limit]
 
