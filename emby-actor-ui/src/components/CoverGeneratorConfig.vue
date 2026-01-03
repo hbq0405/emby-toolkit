@@ -64,10 +64,10 @@
             <!-- ★★★ 新增：第五列 (安全分级上限) ★★★ -->
             <!-- 如果想排版好看，可以把上面的 :cols="4" 改为 :cols="5"，或者让它换行 -->
             <n-gi>
-              <n-form-item label="默认安全分级上限">
+              <n-form-item label="默认分级上限">
                 <n-select v-model:value="configData.max_safe_rating" :options="ratingLimitOptions" />
                 <template #feedback>
-                  无分级规则的合集将限制在此等级以下
+                  最高用于生成封面的分级海报，分级规则类合集不受此限制。
                 </template>
               </n-form-item>
             </n-gi>
