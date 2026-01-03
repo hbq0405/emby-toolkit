@@ -245,9 +245,10 @@ class CoverGeneratorService:
                 
                 url = f"{base_url.rstrip('/')}/Users/{user_id}/Items"
                 headers = {"X-Emby-Token": api_key, "Content-Type": "application/json"}
+                # ★★★ 修复：增加 SeriesPrimaryImageTag,SeriesId 以便单集能回溯到剧集海报 ★★★
                 params = {
                     'Ids': ids_str,
-                    'Fields': "Id,Name,Type,ImageTags,BackdropImageTags,PrimaryImageTag,PrimaryImageItemId",
+                    'Fields': "Id,Name,Type,ImageTags,BackdropImageTags,PrimaryImageTag,PrimaryImageItemId,SeriesPrimaryImageTag,SeriesId",
                 }
                 
                 resp = requests.get(url, params=params, headers=headers, timeout=30)
@@ -301,9 +302,10 @@ class CoverGeneratorService:
 
                     url = f"{base_url.rstrip('/')}/Users/{user_id}/Items"
                     headers = {"X-Emby-Token": api_key, "Content-Type": "application/json"}
+                    # ★★★ 修复：增加 SeriesPrimaryImageTag,SeriesId ★★★
                     params = {
                         'Ids': ids_str,
-                        'Fields': "Id,Name,Type,ImageTags,BackdropImageTags,PrimaryImageTag,PrimaryImageItemId",
+                        'Fields': "Id,Name,Type,ImageTags,BackdropImageTags,PrimaryImageTag,PrimaryImageItemId,SeriesPrimaryImageTag,SeriesId",
                     }
                     
                     resp = requests.get(url, params=params, headers=headers, timeout=30)
@@ -323,11 +325,12 @@ class CoverGeneratorService:
                     # Fallback: 尝试使用合集现有成员 (特洛伊木马)
                     logger.warning(f"  ➜ 自定义合集 '{library_name}' 数据库记录中没有有效的 Emby ID，尝试使用合集现有成员作为封面素材...")
                     
+                    # ★★★ 修复：增加 SeriesPrimaryImageTag,SeriesId ★★★
                     fallback_items = emby.get_emby_library_items(
                         base_url=base_url, api_key=api_key, user_id=user_id,
                         library_ids=[library_id],
                         media_type_filter="Movie,Series,Season,Episode", 
-                        fields="Id,Name,Type,ImageTags,BackdropImageTags,PrimaryImageTag,PrimaryImageItemId",
+                        fields="Id,Name,Type,ImageTags,BackdropImageTags,PrimaryImageTag,PrimaryImageItemId,SeriesPrimaryImageTag,SeriesId",
                         limit=limit
                     )
                     
@@ -374,11 +377,12 @@ class CoverGeneratorService:
         
         api_limit = limit * 5 if limit < 10 else limit * 2 
 
+        # ★★★ 修复：增加 SeriesPrimaryImageTag,SeriesId ★★★
         all_items = emby.get_emby_library_items(
             base_url=base_url, api_key=api_key, user_id=user_id,
             library_ids=[library_id],
             media_type_filter=media_type_to_fetch,
-            fields="Id,Name,Type,ImageTags,BackdropImageTags,DateCreated,PrimaryImageTag,PrimaryImageItemId",
+            fields="Id,Name,Type,ImageTags,BackdropImageTags,DateCreated,PrimaryImageTag,PrimaryImageItemId,SeriesPrimaryImageTag,SeriesId",
             sort_by=sort_by_param,
             sort_order=sort_order_param,
             limit=api_limit,
@@ -397,6 +401,14 @@ class CoverGeneratorService:
     def __get_image_url(self, item: Dict[str, Any]) -> str:
         item_id = item.get("Id")
         if not item_id: return None
+
+        # ★★★ 核心修复：如果是单集(Episode)，优先使用父剧集(Series)的海报 ★★★
+        if item.get('Type') == 'Episode':
+            series_id = item.get('SeriesId')
+            series_tag = item.get('SeriesPrimaryImageTag')
+            if series_id and series_tag:
+                 return f'/emby/Items/{series_id}/Images/Primary?tag={series_tag}'
+
         primary_url, backdrop_url = None, None
         primary_tag_in_dict = item.get("ImageTags", {}).get("Primary")
         if primary_tag_in_dict:
