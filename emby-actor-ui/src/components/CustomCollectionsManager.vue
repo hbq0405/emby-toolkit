@@ -1254,27 +1254,33 @@ const handleFixMatchClick = (media) => {
 
 // 3. 新增：智能获取封面 URL 函数 (替换原有的 getTmdbImageUrl 调用逻辑)
 const getCardImageUrl = (item) => {
-  // 优先级 1: 如果已同步到 Emby，直接使用 Emby 的 Primary 封面 (这就是生成的拼图封面)
-  if (item.emby_collection_id && configModel.value?.emby_server_url && configModel.value?.emby_api_key) {
-    const baseUrl = configModel.value.emby_server_url.replace(/\/$/, '');
-    const apiKey = configModel.value.emby_api_key;
-    // 添加 maxHeight 限制大小，添加 tag 防止缓存旧图 (如果有 emby_image_tag 字段最好，没有也无妨)
-    return `${baseUrl}/Items/${item.emby_collection_id}/Images/Primary?api_key=${apiKey}&maxHeight=600&quality=90`;
+  // 优先级 1: Emby 封面
+  // ★★★ 修改：走后端 /image_proxy 代理，解决外网无法加载内网 Emby 图片的问题 ★★★
+  if (item.emby_collection_id) {
+    // 逻辑说明：
+    // 1. 我们不需要传 http://emby-ip:8096，后端会自动拼接配置里的 Emby 地址。
+    // 2. 我们不需要传 api_key，后端会自动注入，这样也更安全。
+    // 3. 直接返回相对路径，Vite (开发环境) 或 Nginx (生产环境) 会把它转发给 Python 后端。
+    return `/image_proxy/Items/${item.emby_collection_id}/Images/Primary?maxHeight=600&quality=90`;
   }
 
-  // 优先级 2: 使用 TMDb 的背景图 (Backdrop) - 适合 16:9
+  // 优先级 2: TMDb 背景图 (走通用代理)
+  let tmdbUrl = null;
   if (item.backdrop_path) {
-    return `https://image.tmdb.org/t/p/w780${item.backdrop_path}`;
+    tmdbUrl = `https://image.tmdb.org/t/p/w780${item.backdrop_path}`;
+  }
+  // 优先级 3: TMDb 海报图 (走通用代理)
+  else if (item.poster_path) {
+    tmdbUrl = `https://image.tmdb.org/t/p/w780${item.poster_path}`;
   }
 
-  // 优先级 3: 使用 TMDb 的海报图 (Poster)
-  if (item.poster_path) {
-    return `https://image.tmdb.org/t/p/w780${item.poster_path}`;
+  if (tmdbUrl) {
+    return `/api/image_proxy?url=${encodeURIComponent(tmdbUrl)}`;
   }
 
-  // 都没有则返回 null，显示渐变色
   return null;
 };
+
 
 const submitFixMatch = async (payload) => {
   if (!selectedCollectionDetails.value?.id) return;
