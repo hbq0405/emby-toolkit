@@ -216,77 +216,56 @@ class CoverGeneratorService:
         api_key = config_manager.APP_CONFIG.get('emby_api_key')
         user_id = config_manager.APP_CONFIG.get('emby_user_id')
 
-        # 定义一个内部函数用于去重和截取
-        def process_and_deduplicate(items_data):
-            unique_items = []
-            seen_visual_ids = set()
-            
-            for item in items_data:
-                # 核心去重逻辑：
-                # 如果是单集(Episode)，用它的 SeriesId (剧集ID) 作为去重键
-                # 如果是电影/剧集，用它自己的 Id 作为去重键
-                visual_id = item.get('SeriesId') if item.get('Type') == 'Episode' else item.get('Id')
-                
-                # 兜底：万一单集没有 SeriesId，就用自己的 Id
-                if not visual_id: 
-                    visual_id = item.get('Id')
-
-                if visual_id in seen_visual_ids:
-                    continue
-                
-                # 确保这张图是有效的才添加
-                if self.__get_image_url(item):
-                    unique_items.append(item)
-                    seen_visual_ids.add(visual_id)
-            
-            return unique_items
-
         # ======================================================================
         # 策略 A: 实时筛选类合集 (Filter / AI Recommendation)
         # ======================================================================
         if custom_collection_data and custom_collection_data.get('type') in ['filter', 'ai_recommendation']:
-            # ... (省略日志和 definition 获取代码) ...
-            logger.info(f"  ➜ 检测到 '{library_name}' 为实时筛选/推荐合集...")
+            logger.info(f"  ➜ 检测到 '{library_name}' 为实时筛选/推荐合集，正在调用查询引擎获取封面素材...")
             try:
                 definition = custom_collection_data.get('definition_json', {})
                 db_sort_by = 'Random' if self._sort_by == 'Random' else 'DateCreated'
                 
-                # 1. 查询数据库 (扩大 limit，因为去重后数量会变少，比如查 50 个可能去重后只剩 5 个剧)
-                items_from_db, _ = queries_db.query_virtual_library_items(
+                items_from_db = queries_db.query_unique_series_for_covers(
                     rules=definition.get('rules', []),
                     logic=definition.get('logic', 'AND'),
                     user_id=user_id,
-                    limit=max(limit * 5, 100), # <--- 关键：扩大查询基数
-                    offset=0,
+                    limit=limit, # 直接传需要的数量即可，因为SQL已经去重了
                     sort_by=db_sort_by,
+                    sort_order='Descending', # 封面通常用最新的
                     item_types=definition.get('item_type', ['Movie']),
                     target_library_ids=definition.get('target_library_ids')
                 )
                 
-                if not items_from_db: return []
+                if not items_from_db:
+                    logger.warning(f"  ➜ 实时查询未返回任何结果，无法生成封面。")
+                    return []
 
                 target_ids = [item['Id'] for item in items_from_db]
                 ids_str = ",".join(target_ids)
                 
                 url = f"{base_url.rstrip('/')}/Users/{user_id}/Items"
                 headers = {"X-Emby-Token": api_key, "Content-Type": "application/json"}
-                # ★★★ 关键：请求 SeriesId 和 SeriesPrimaryImageTag ★★★
                 params = {
                     'Ids': ids_str,
-                    'Fields': "Id,Name,Type,ImageTags,BackdropImageTags,PrimaryImageTag,PrimaryImageItemId,SeriesPrimaryImageTag,SeriesId",
+                    'Fields': "Id,Name,Type,ImageTags,BackdropImageTags,PrimaryImageTag,PrimaryImageItemId",
                 }
                 
                 resp = requests.get(url, params=params, headers=headers, timeout=30)
                 resp.raise_for_status()
-                items_from_emby = resp.json().get('Items', [])
+                data = resp.json()
+                items_from_emby = data.get('Items', [])
                 
-                # 2. 执行去重
-                valid_items = process_and_deduplicate(items_from_emby)
+                valid_items = [item for item in items_from_emby if self.__get_image_url(item)]
                 
                 if self._sort_by == "Random":
                     random.shuffle(valid_items)
                 
-                return valid_items[:limit]
+                if valid_items:
+                    logger.info(f"  ➜ 成功从实时查询结果中获取到 {len(valid_items)} 个带封面的媒体项。")
+                    return valid_items[:limit]
+                else:
+                    logger.warning(f"  ➜ 实时查询到的项目均无有效封面。")
+                    return []
 
             except Exception as e:
                 logger.error(f"  ➜ 处理实时合集 '{library_name}' 封面生成时出错: {e}", exc_info=True)
@@ -322,10 +301,9 @@ class CoverGeneratorService:
 
                     url = f"{base_url.rstrip('/')}/Users/{user_id}/Items"
                     headers = {"X-Emby-Token": api_key, "Content-Type": "application/json"}
-                    # ★★★ 修复：增加 SeriesPrimaryImageTag,SeriesId ★★★
                     params = {
                         'Ids': ids_str,
-                        'Fields': "Id,Name,Type,ImageTags,BackdropImageTags,PrimaryImageTag,PrimaryImageItemId,SeriesPrimaryImageTag,SeriesId",
+                        'Fields': "Id,Name,Type,ImageTags,BackdropImageTags,PrimaryImageTag,PrimaryImageItemId",
                     }
                     
                     resp = requests.get(url, params=params, headers=headers, timeout=30)
@@ -345,12 +323,11 @@ class CoverGeneratorService:
                     # Fallback: 尝试使用合集现有成员 (特洛伊木马)
                     logger.warning(f"  ➜ 自定义合集 '{library_name}' 数据库记录中没有有效的 Emby ID，尝试使用合集现有成员作为封面素材...")
                     
-                    # ★★★ 修复：增加 SeriesPrimaryImageTag,SeriesId ★★★
                     fallback_items = emby.get_emby_library_items(
                         base_url=base_url, api_key=api_key, user_id=user_id,
                         library_ids=[library_id],
                         media_type_filter="Movie,Series,Season,Episode", 
-                        fields="Id,Name,Type,ImageTags,BackdropImageTags,PrimaryImageTag,PrimaryImageItemId,SeriesPrimaryImageTag,SeriesId",
+                        fields="Id,Name,Type,ImageTags,BackdropImageTags,PrimaryImageTag,PrimaryImageItemId",
                         limit=limit
                     )
                     
@@ -397,12 +374,11 @@ class CoverGeneratorService:
         
         api_limit = limit * 5 if limit < 10 else limit * 2 
 
-        # ★★★ 修复：增加 SeriesPrimaryImageTag,SeriesId ★★★
         all_items = emby.get_emby_library_items(
             base_url=base_url, api_key=api_key, user_id=user_id,
             library_ids=[library_id],
             media_type_filter=media_type_to_fetch,
-            fields="Id,Name,Type,ImageTags,BackdropImageTags,DateCreated,PrimaryImageTag,PrimaryImageItemId,SeriesPrimaryImageTag,SeriesId",
+            fields="Id,Name,Type,ImageTags,BackdropImageTags,DateCreated,PrimaryImageTag,PrimaryImageItemId",
             sort_by=sort_by_param,
             sort_order=sort_order_param,
             limit=api_limit,
@@ -421,14 +397,6 @@ class CoverGeneratorService:
     def __get_image_url(self, item: Dict[str, Any]) -> str:
         item_id = item.get("Id")
         if not item_id: return None
-
-        # ★★★ 核心修复：如果是单集(Episode)，优先使用父剧集(Series)的海报 ★★★
-        if item.get('Type') == 'Episode':
-            series_id = item.get('SeriesId')
-            series_tag = item.get('SeriesPrimaryImageTag')
-            if series_id and series_tag:
-                 return f'/emby/Items/{series_id}/Images/Primary?tag={series_tag}'
-
         primary_url, backdrop_url = None, None
         primary_tag_in_dict = item.get("ImageTags", {}).get("Primary")
         if primary_tag_in_dict:
