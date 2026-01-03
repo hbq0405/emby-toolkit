@@ -216,36 +216,61 @@ class CoverGeneratorService:
         api_key = config_manager.APP_CONFIG.get('emby_api_key')
         user_id = config_manager.APP_CONFIG.get('emby_user_id')
 
+        # 定义一个内部函数用于去重和截取
+        def process_and_deduplicate(items_data):
+            unique_items = []
+            seen_visual_ids = set()
+            
+            for item in items_data:
+                # 核心去重逻辑：
+                # 如果是单集(Episode)，用它的 SeriesId (剧集ID) 作为去重键
+                # 如果是电影/剧集，用它自己的 Id 作为去重键
+                visual_id = item.get('SeriesId') if item.get('Type') == 'Episode' else item.get('Id')
+                
+                # 兜底：万一单集没有 SeriesId，就用自己的 Id
+                if not visual_id: 
+                    visual_id = item.get('Id')
+
+                if visual_id in seen_visual_ids:
+                    continue
+                
+                # 确保这张图是有效的才添加
+                if self.__get_image_url(item):
+                    unique_items.append(item)
+                    seen_visual_ids.add(visual_id)
+            
+            return unique_items
+
         # ======================================================================
         # 策略 A: 实时筛选类合集 (Filter / AI Recommendation)
         # ======================================================================
         if custom_collection_data and custom_collection_data.get('type') in ['filter', 'ai_recommendation']:
-            logger.info(f"  ➜ 检测到 '{library_name}' 为实时筛选/推荐合集，正在调用查询引擎获取封面素材...")
+            # ... (省略日志和 definition 获取代码) ...
+            logger.info(f"  ➜ 检测到 '{library_name}' 为实时筛选/推荐合集...")
             try:
                 definition = custom_collection_data.get('definition_json', {})
                 db_sort_by = 'Random' if self._sort_by == 'Random' else 'DateCreated'
                 
+                # 1. 查询数据库 (扩大 limit，因为去重后数量会变少，比如查 50 个可能去重后只剩 5 个剧)
                 items_from_db, _ = queries_db.query_virtual_library_items(
                     rules=definition.get('rules', []),
                     logic=definition.get('logic', 'AND'),
                     user_id=user_id,
-                    limit=max(limit * 2, 20),
+                    limit=max(limit * 5, 100), # <--- 关键：扩大查询基数
                     offset=0,
                     sort_by=db_sort_by,
                     item_types=definition.get('item_type', ['Movie']),
                     target_library_ids=definition.get('target_library_ids')
                 )
                 
-                if not items_from_db:
-                    logger.warning(f"  ➜ 实时查询未返回任何结果，无法生成封面。")
-                    return []
+                if not items_from_db: return []
 
                 target_ids = [item['Id'] for item in items_from_db]
                 ids_str = ",".join(target_ids)
                 
                 url = f"{base_url.rstrip('/')}/Users/{user_id}/Items"
                 headers = {"X-Emby-Token": api_key, "Content-Type": "application/json"}
-                # ★★★ 修复：增加 SeriesPrimaryImageTag,SeriesId 以便单集能回溯到剧集海报 ★★★
+                # ★★★ 关键：请求 SeriesId 和 SeriesPrimaryImageTag ★★★
                 params = {
                     'Ids': ids_str,
                     'Fields': "Id,Name,Type,ImageTags,BackdropImageTags,PrimaryImageTag,PrimaryImageItemId,SeriesPrimaryImageTag,SeriesId",
@@ -253,20 +278,15 @@ class CoverGeneratorService:
                 
                 resp = requests.get(url, params=params, headers=headers, timeout=30)
                 resp.raise_for_status()
-                data = resp.json()
-                items_from_emby = data.get('Items', [])
+                items_from_emby = resp.json().get('Items', [])
                 
-                valid_items = [item for item in items_from_emby if self.__get_image_url(item)]
+                # 2. 执行去重
+                valid_items = process_and_deduplicate(items_from_emby)
                 
                 if self._sort_by == "Random":
                     random.shuffle(valid_items)
                 
-                if valid_items:
-                    logger.info(f"  ➜ 成功从实时查询结果中获取到 {len(valid_items)} 个带封面的媒体项。")
-                    return valid_items[:limit]
-                else:
-                    logger.warning(f"  ➜ 实时查询到的项目均无有效封面。")
-                    return []
+                return valid_items[:limit]
 
             except Exception as e:
                 logger.error(f"  ➜ 处理实时合集 '{library_name}' 封面生成时出错: {e}", exc_info=True)
