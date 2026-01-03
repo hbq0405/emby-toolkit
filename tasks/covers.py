@@ -194,7 +194,9 @@ def task_generate_all_custom_collection_covers(processor):
                     emby_server_id='main_emby',
                     library=emby_collection_details,
                     item_count=item_count_to_pass, # <-- 使用计算好的角标参数
-                    content_types=content_types
+                    content_types=content_types,
+                    # ★★★ 修复：传入 custom_collection_data，激活策略 A/B ★★★
+                    custom_collection_data=collection_db_info
                 )
             except Exception as e_gen:
                 logger.error(f"为自建合集 '{collection_name}' 生成封面时发生错误: {e_gen}", exc_info=True)
