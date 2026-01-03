@@ -225,13 +225,13 @@ class CoverGeneratorService:
                 definition = custom_collection_data.get('definition_json', {})
                 db_sort_by = 'Random' if self._sort_by == 'Random' else 'DateCreated'
                 
-                items_from_db, _ = queries_db.query_virtual_library_items(
+                items_from_db = queries_db.query_unique_series_for_covers(
                     rules=definition.get('rules', []),
                     logic=definition.get('logic', 'AND'),
                     user_id=user_id,
-                    limit=max(limit * 2, 20),
-                    offset=0,
+                    limit=limit,
                     sort_by=db_sort_by,
+                    sort_order='Descending', 
                     item_types=definition.get('item_type', ['Movie']),
                     target_library_ids=definition.get('target_library_ids')
                 )
