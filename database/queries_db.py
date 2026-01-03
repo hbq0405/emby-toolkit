@@ -98,6 +98,31 @@ def _expand_rating_labels(labels: List[str]) -> List[str]:
     
     return list(target_codes)
 
+def _build_rating_value_sql(rating_expr: str) -> str:
+    """
+    根据配置动态生成分级值转换 SQL
+    """
+    mapping_data = settings_db.get_setting('rating_mapping') or {}
+    if not mapping_data:
+        from utils import DEFAULT_RATING_MAPPING
+        mapping_data = DEFAULT_RATING_MAPPING
+
+    whens = []
+    for country, rules in mapping_data.items():
+        for rule in rules:
+            code = rule.get('code')
+            val = rule.get('emby_value')
+            if code and val is not None:
+                safe_code = code.replace("'", "''")
+                whens.append(f"WHEN {rating_expr} = '{safe_code}' THEN {val}")
+
+    else_logic = f"COALESCE(NULLIF(REGEXP_REPLACE({rating_expr}, '[^0-9]', '', 'g'), ''), '0')::int"
+    
+    if not whens:
+        return else_logic
+
+    return f"CASE {chr(10).join(whens)} ELSE {else_logic} END"
+
 def get_user_allowed_library_ids(user_id: str, emby_url: str, emby_api_key: str) -> List[str]:
     """
     辅助函数：调用 Emby API 获取指定用户有权访问的顶层 View ID 列表。
@@ -125,7 +150,8 @@ def query_virtual_library_items(
     sort_order: str = 'Descending',
     item_types: List[str] = None,
     target_library_ids: List[str] = None,
-    tmdb_ids: List[str] = None  
+    tmdb_ids: List[str] = None,
+    max_rating_override: Optional[int] = None  
 ) -> Tuple[List[Dict[str, Any]], int]:
     """
     【核心函数】根据筛选规则 + 用户实时权限，查询媒体项。
@@ -186,11 +212,51 @@ def query_virtual_library_items(
         params.append(target_library_ids)
 
     # ======================================================================
-    # ★★★ 4. 权限控制 (核心逻辑) ★★★
+    # ★★★ 4. 权限控制 (核心逻辑优化) ★★★
     # ======================================================================
     
+    # 定义分级字段表达式
+    rating_expr = "COALESCE(m.rating_json->>'US', m.rating_json->>'CN', m.rating_json->>'GB', m.rating_json->>'JP', m.rating_json->>'KR')"
+
+    # --- A. 处理分级数值限制 (Rating Value Limit) ---
+    # 逻辑：优先使用 override，如果没有 override 且有 user_id，则使用 user policy
+    limit_value_sql = None
+    
+    if max_rating_override is not None:
+        # 情况1: 强制覆盖 (通常用于管理员生成封面)
+        limit_value_sql = str(max_rating_override)
+    elif user_id:
+        # 情况2: 使用用户策略
+        limit_value_sql = "(u.policy_json->>'MaxParentalRating')::int"
+    
+    # 只有当存在限制值时，才应用过滤
+    if limit_value_sql:
+        rating_value_calc_sql = _build_rating_value_sql(rating_expr)
+        
+        rating_limit_sql = f"""
+        (
+            -- 1. 如果限制值本身为空(无限制)，则通过
+            ({limit_value_sql} IS NULL)
+            OR
+            -- 2. 显式放行未分级/空分级 (防止被数值比较误杀)
+            (
+                {rating_expr} IS NULL 
+                OR {rating_expr} = '' 
+                OR {rating_expr} IN ('NR', 'UR', 'Unrated', 'Not Rated')
+            )
+            OR
+            -- 3. 有分级且数值 <= 限制值
+            (
+                {rating_expr} IS NOT NULL 
+                AND ({rating_value_calc_sql}) <= {limit_value_sql}
+            )
+        )
+        """
+        where_clauses.append(rating_limit_sql)
+
+    # --- B. 处理用户专属逻辑 (依赖 emby_users 表) ---
     if user_id:
-        # A. 文件夹/库权限
+        # 1. 文件夹/库权限 (保持原样)
         folder_perm_sql = """
         EXISTS (
             SELECT 1 
@@ -200,107 +266,57 @@ def query_virtual_library_items(
                     (u.policy_json->'EnableAllFolders' = 'true'::jsonb)
                     OR
                     COALESCE(asset->'ancestor_ids', '[]'::jsonb) ?| ARRAY(
-                        SELECT jsonb_array_elements_text(
-                            CASE WHEN jsonb_typeof(u.policy_json->'EnabledFolders') = 'array' 
-                                 THEN u.policy_json->'EnabledFolders' 
-                                 ELSE '[]'::jsonb END
-                        )
+                        SELECT jsonb_array_elements_text(COALESCE(u.policy_json->'EnabledFolders', '[]'::jsonb))
                     )
                     OR
                     (asset->>'source_library_id') = ANY(
-                        ARRAY(SELECT jsonb_array_elements_text(
-                            CASE WHEN jsonb_typeof(u.policy_json->'EnabledFolders') = 'array' 
-                                 THEN u.policy_json->'EnabledFolders' 
-                                 ELSE '[]'::jsonb END
-                        ))
+                        ARRAY(SELECT jsonb_array_elements_text(COALESCE(u.policy_json->'EnabledFolders', '[]'::jsonb)))
                     )
                 )
                 AND NOT (
                     COALESCE(asset->'ancestor_ids', '[]'::jsonb) ?| ARRAY(
-                        SELECT jsonb_array_elements_text(
-                            CASE WHEN jsonb_typeof(u.policy_json->'ExcludedSubFolders') = 'array' 
-                                 THEN u.policy_json->'ExcludedSubFolders' 
-                                 ELSE '[]'::jsonb END
-                        )
+                        SELECT jsonb_array_elements_text(COALESCE(u.policy_json->'ExcludedSubFolders', '[]'::jsonb))
                     )
                 )
         )
         """
         where_clauses.append(folder_perm_sql)
 
-        # B. 标签屏蔽
+        # 2. 标签屏蔽 (保持原样)
         tag_block_sql = """
         NOT (
             COALESCE(m.tags_json, '[]'::jsonb) ?| ARRAY(
-                SELECT jsonb_array_elements_text(
-                    CASE WHEN jsonb_typeof(u.policy_json->'BlockedTags') = 'array' 
-                         THEN u.policy_json->'BlockedTags' 
-                         ELSE '[]'::jsonb END
-                )
+                SELECT jsonb_array_elements_text(COALESCE(u.policy_json->'BlockedTags', '[]'::jsonb))
             )
         )
         """
         where_clauses.append(tag_block_sql)
 
-        # C. 分级控制 (★ 核心修复 ★)
-        rating_expr = "COALESCE(m.rating_json->>'US', m.rating_json->>'CN', m.rating_json->>'GB', m.rating_json->>'JP', m.rating_json->>'KR')"
-
-        parental_control_sql = f"""
-    (
-        (u.policy_json->'MaxParentalRating' IS NULL)
-        OR
-        -- ★★★ 修复：显式放行未分级/空分级的内容，防止被 MaxParentalRating 误杀 ★★★
-        (
-            {rating_expr} IS NULL 
-            OR {rating_expr} = '' 
-            OR {rating_expr} IN ('NR', 'UR', 'Unrated', 'Not Rated')
-        )
-        OR
-        (
-            {rating_expr} IS NOT NULL 
-            AND (
-                CASE 
-                    WHEN {rating_expr} = 'PG-13' THEN 8
-                    WHEN {rating_expr} = 'TV-PG' THEN 5 
-                    WHEN {rating_expr} = 'TV-Y7' THEN 4
-                    WHEN {rating_expr} = 'TV-14' THEN 8
-                    WHEN {rating_expr} IN ('G', 'TV-G', 'TV-Y') THEN 1
-                    WHEN {rating_expr} = 'PG' THEN 5 
-                    WHEN {rating_expr} = 'R' THEN 9
-                    WHEN {rating_expr} = 'TV-MA' THEN 9
-                    WHEN {rating_expr} = 'NC-17' THEN 10
-                    WHEN {rating_expr} IN ('X', 'XXX', 'AO') THEN 18
-                    WHEN {rating_expr} IN ('NR', 'UR', 'Unrated', 'Not Rated') THEN 0
-                    ELSE COALESCE(
-                        NULLIF(REGEXP_REPLACE({rating_expr}, '[^0-9]', '', 'g'), ''), 
-                        '0'
-                    )::int
-                END
-            ) <= (u.policy_json->>'MaxParentalRating')::int
-        )
-    )
-    AND NOT (
-        (
-            jsonb_typeof(u.policy_json->'BlockUnratedItems') = 'array'
+        # 3. 屏蔽未分级内容 (BlockUnratedItems)
+        # ★ 注意：这个逻辑必须放在 if user_id 里，因为它依赖 u.policy_json
+        block_unrated_sql = f"""
+        NOT (
+            (
+                jsonb_typeof(u.policy_json->'BlockUnratedItems') = 'array'
+                AND
+                u.policy_json->'BlockUnratedItems' @> to_jsonb(m.item_type)
+            )
             AND
-            u.policy_json->'BlockUnratedItems' @> to_jsonb(m.item_type)
-        )
-        AND
-        (
-            {rating_expr} IS NULL 
-            OR {rating_expr} = '' 
-            OR {rating_expr} IN ('NR', 'UR', 'Unrated', 'Not Rated')
-            OR (
-                {rating_expr} NOT IN (
-                    'G','PG','PG-13','R','NC-17','X','XXX','AO',
-                    'TV-Y','TV-Y7','TV-G','TV-PG','TV-14','TV-MA'
+            (
+                {rating_expr} IS NULL 
+                OR {rating_expr} = '' 
+                OR {rating_expr} IN ('NR', 'UR', 'Unrated', 'Not Rated')
+                OR (
+                    {rating_expr} NOT IN (
+                        'G','PG','PG-13','R','NC-17','X','XXX','AO',
+                        'TV-Y','TV-Y7','TV-G','TV-PG','TV-14','TV-MA'
+                    )
+                    AND REGEXP_REPLACE({rating_expr}, '[^0-9]', '', 'g') = ''
                 )
-                AND REGEXP_REPLACE({rating_expr}, '[^0-9]', '', 'g') = ''
             )
         )
-    )
-    """
-        where_clauses.append(parental_control_sql)
+        """
+        where_clauses.append(block_unrated_sql)
 
     # ======================================================================
     # 5. 动态构建筛选规则 SQL
@@ -813,503 +829,3 @@ def get_best_metadata_by_tmdb_id(tmdb_id: str) -> Dict[str, Any]:
         logger.error(f"获取最佳元数据失败 (ID: {tmdb_id}): {e}")
         
     return {}
-
-def query_unique_series_for_covers(
-    rules: List[Dict[str, Any]], 
-    logic: str, 
-    user_id: Optional[str],
-    limit: int = 9, 
-    sort_by: str = 'DateCreated',
-    sort_order: str = 'Descending',
-    item_types: List[str] = None,
-    target_library_ids: List[str] = None
-) -> List[Dict[str, Any]]:
-    """
-    【封面生成专用】
-    基于筛选规则，查询去重后的剧集/电影列表。
-    解决了 "最新添加" 排序时，同一部剧的多个集占满封面的问题。
-    逻辑：
-      1. 筛选出所有符合条件的记录 (可能是 Episode, Season, Movie...)
-      2. 将 Episode/Season 映射回 Parent Series ID
-      3. 按 Series ID 分组去重，取组内排序值最大(或最小)的记录
-      4. 返回 Series/Movie 实体的 Emby ID (用于展示海报)
-    """
-    
-    # --- 1. 复用筛选条件构建逻辑 (为了不修改原函数，此处需独立构建 WHERE) ---
-    # (注：此处代码逻辑与 query_virtual_library_items 中的构建过程一致)
-    
-    params = []
-    where_clauses = ["m.in_library = TRUE"]
-
-    # 基础连接
-    if user_id:
-        # 权限控制需要连接用户表
-        join_clause = "JOIN emby_users u ON u.id = %s"
-        params.append(user_id)
-    else:
-        join_clause = ""
-
-    # 类型过滤
-    if item_types:
-        where_clauses.append("m.item_type = ANY(%s)")
-        params.append(item_types)
-
-    # 媒体库过滤
-    if target_library_ids:
-        where_clauses.append("""
-        EXISTS (
-            SELECT 1 FROM jsonb_array_elements(COALESCE(m.asset_details_json, '[]'::jsonb)) AS a 
-            WHERE a->>'source_library_id' = ANY(%s)
-        )
-        """)
-        params.append(target_library_ids)
-
-    # 权限控制 (复用原逻辑)
-    if user_id:
-        # A. 文件夹权限
-        where_clauses.append("""
-        EXISTS (
-            SELECT 1 FROM jsonb_array_elements(COALESCE(m.asset_details_json, '[]'::jsonb)) AS asset
-            WHERE (
-                (u.policy_json->'EnableAllFolders' = 'true'::jsonb) OR
-                COALESCE(asset->'ancestor_ids', '[]'::jsonb) ?| ARRAY(SELECT jsonb_array_elements_text(CASE WHEN jsonb_typeof(u.policy_json->'EnabledFolders') = 'array' THEN u.policy_json->'EnabledFolders' ELSE '[]'::jsonb END)) OR
-                (asset->>'source_library_id') = ANY(ARRAY(SELECT jsonb_array_elements_text(CASE WHEN jsonb_typeof(u.policy_json->'EnabledFolders') = 'array' THEN u.policy_json->'EnabledFolders' ELSE '[]'::jsonb END)))
-            ) AND NOT (
-                COALESCE(asset->'ancestor_ids', '[]'::jsonb) ?| ARRAY(SELECT jsonb_array_elements_text(CASE WHEN jsonb_typeof(u.policy_json->'ExcludedSubFolders') = 'array' THEN u.policy_json->'ExcludedSubFolders' ELSE '[]'::jsonb END))
-            )
-        )
-        """)
-        # B. 标签屏蔽
-        where_clauses.append("""
-        NOT (COALESCE(m.tags_json, '[]'::jsonb) ?| ARRAY(SELECT jsonb_array_elements_text(CASE WHEN jsonb_typeof(u.policy_json->'BlockedTags') = 'array' THEN u.policy_json->'BlockedTags' ELSE '[]'::jsonb END)))
-        """)
-        # C. 分级控制 (简化版，复用核心逻辑)
-        rating_expr = "COALESCE(m.rating_json->>'US', m.rating_json->>'CN', m.rating_json->>'GB', m.rating_json->>'JP', m.rating_json->>'KR')"
-        where_clauses.append(f"""
-        (
-            (u.policy_json->'MaxParentalRating' IS NULL) OR
-            ({rating_expr} IS NULL OR {rating_expr} = '' OR {rating_expr} IN ('NR', 'UR', 'Unrated', 'Not Rated')) OR
-            ({rating_expr} IS NOT NULL AND (
-                CASE 
-                    WHEN {rating_expr} = 'PG-13' THEN 8 WHEN {rating_expr} = 'TV-PG' THEN 5 WHEN {rating_expr} = 'TV-Y7' THEN 4
-                    WHEN {rating_expr} = 'TV-14' THEN 8 WHEN {rating_expr} IN ('G', 'TV-G', 'TV-Y') THEN 1 WHEN {rating_expr} = 'PG' THEN 5 
-                    WHEN {rating_expr} = 'R' THEN 9 WHEN {rating_expr} = 'TV-MA' THEN 9 WHEN {rating_expr} = 'NC-17' THEN 10
-                    WHEN {rating_expr} IN ('X', 'XXX', 'AO') THEN 18 WHEN {rating_expr} IN ('NR', 'UR', 'Unrated', 'Not Rated') THEN 0
-                    ELSE COALESCE(NULLIF(REGEXP_REPLACE({rating_expr}, '[^0-9]', '', 'g'), ''), '0')::int
-                END
-            ) <= (u.policy_json->>'MaxParentalRating')::int)
-        )
-        """)
-
-    # ======================================================================
-    # 5. 动态构建筛选规则 SQL
-    # ======================================================================
-    rule_clauses = []
-    for rule in rules:
-        field = rule.get('field')
-        op = rule.get('operator')
-        value = rule.get('value')
-        
-        if value is None or value == '' or (isinstance(value, list) and len(value) == 0):
-            continue
-
-        clause = None
-        
-        # --- 1. 基础 JSONB 数组类型 (Genres, Tags, Countries) ---
-        # ★★★ 修改：移除 studios，因为它需要特殊处理 ★★★
-        jsonb_array_fields = ['genres', 'tags', 'countries']
-        if field in jsonb_array_fields:
-            column = f"COALESCE(m.{field}_json, '[]'::jsonb)"
-            if op in ['contains', 'eq']:
-                clause = f"{column} ? %s"
-                params.append(str(value))
-            elif op == 'is_one_of':
-                clause = f"{column} ?| %s"
-                params.append(list(value) if isinstance(value, list) else [value])
-            elif op == 'is_none_of':
-                clause = f"NOT ({column} ?| %s)"
-                params.append(list(value) if isinstance(value, list) else [value])
-            elif op == 'is_primary':
-                clause = f"{column}->>0 = %s"
-                params.append(str(value))
-
-        # --- 2. 关键词 (Keywords) ---
-        elif field == 'keywords':
-            expanded = _expand_keyword_labels(value)
-            target_ids = expanded['ids']
-            # 名字转小写以便模糊匹配
-            target_names = [str(n).lower() for n in expanded['names']]
-            
-            if not target_ids and not target_names: continue
-            
-            column = "COALESCE(m.keywords_json, '[]'::jsonb)"
-            
-            # 逻辑：(ID 匹配) OR (Name 匹配)
-            # s->>'id' 取出来是文本，所以我们把 target_ids 也转成了文本
-            match_logic = """
-            (
-                (k->>'id') = ANY(%s) 
-                OR 
-                LOWER(k->>'name') = ANY(%s)
-            )
-            """
-            
-            if op in ['contains', 'is_one_of', 'eq']:
-                clause = f"""
-                EXISTS (
-                    SELECT 1 FROM jsonb_array_elements({column}) k 
-                    WHERE {match_logic}
-                )
-                """
-                params.extend([target_ids, target_names])
-                
-            elif op == 'is_none_of':
-                clause = f"""
-                NOT EXISTS (
-                    SELECT 1 FROM jsonb_array_elements({column}) k 
-                    WHERE {match_logic}
-                )
-                """
-                params.extend([target_ids, target_names])
-
-        # --- 3. 工作室 (Studios) ---
-        elif field == 'studios':
-            expanded = _expand_studio_labels(value)
-            target_ids = expanded['ids']
-            target_names = [str(n).lower() for n in expanded['names']]
-            
-            if not target_ids and not target_names: continue
-            
-            column = "COALESCE(m.studios_json, '[]'::jsonb)"
-            
-            match_logic = """
-            (
-                (s->>'id') = ANY(%s) 
-                OR 
-                LOWER(s->>'name') = ANY(%s)
-            )
-            """
-            
-            if op in ['contains', 'is_one_of', 'eq']:
-                clause = f"""
-                EXISTS (
-                    SELECT 1 FROM jsonb_array_elements({column}) s 
-                    WHERE {match_logic}
-                )
-                """
-                params.extend([target_ids, target_names])
-                
-            elif op == 'is_none_of':
-                clause = f"""
-                NOT EXISTS (
-                    SELECT 1 FROM jsonb_array_elements({column}) s 
-                    WHERE {match_logic}
-                )
-                """
-                params.extend([target_ids, target_names])
-                
-            elif op == 'is_primary':
-                # 主工作室是数组第0个
-                clause = f"""
-                (
-                    ({column}->0->>'id') = ANY(%s)
-                    OR
-                    LOWER({column}->0->>'name') = ANY(%s)
-                )
-                """
-                params.extend([target_ids, target_names])
-
-        # --- 4. 复杂对象数组 (Actors, Directors) ---
-        elif field in ['actors', 'directors']:
-            ids = []
-            if isinstance(value, list):
-                ids = [item['id'] if isinstance(item, dict) else item for item in value]
-            elif isinstance(value, dict):
-                ids = [value.get('id')]
-            else:
-                ids = [value]
-            ids = [int(i) for i in ids if str(i).isdigit()]
-            if not ids: continue
-
-            id_key = 'tmdb_id' if field == 'actors' else 'id'
-            safe_column = f"COALESCE(m.{field}_json, '[]'::jsonb)"
-
-            if op == 'is_primary':
-                clause = f"""
-                EXISTS (
-                    SELECT 1 FROM jsonb_array_elements({safe_column}) WITH ORDINALITY AS t(elem, ord) 
-                    WHERE t.ord <= 3 AND (t.elem->>'{id_key}')::int = ANY(%s)
-                )
-                """
-                params.append(ids)
-            elif op in ['contains', 'is_one_of', 'eq']:
-                clause = f"EXISTS (SELECT 1 FROM jsonb_array_elements({safe_column}) elem WHERE (elem->>'{id_key}')::int = ANY(%s))"
-                params.append(ids)
-            elif op == 'is_none_of':
-                clause = f"NOT EXISTS (SELECT 1 FROM jsonb_array_elements({safe_column}) elem WHERE (elem->>'{id_key}')::int = ANY(%s))"
-                params.append(ids)
-
-        # --- 5. 家长分级 (Unified Rating) ---
-        elif field == 'unified_rating':
-            # 1. 反向展开：中文标签 -> 原始代码列表
-            target_codes = _expand_rating_labels(list(value) if isinstance(value, list) else [value])
-            
-            if not target_codes:
-                # 如果没找到对应的代码，说明这个标签没映射任何分级，理论上查不到数据
-                # 但为了逻辑闭环，我们可以让它查空，或者忽略
-                continue 
-
-            # A. 获取用户配置的优先级 (例如 ['ORIGIN', 'US', 'JP'])
-            priority_list = settings_db.get_setting('rating_priority') or []
-
-            # 2. 构建 SQL
-            # 逻辑：检查 rating_json 的所有 value 中，是否存在于 target_codes 列表中
-            # m.rating_json 是 {"US": "R", ...}
-            # jsonb_each_text(m.rating_json) 会返回 (key, value) 行
-            
-            json_keys = []
-            for p in priority_list:
-                if p == 'ORIGIN':
-                    # 动态获取原产国：从 countries_json 取第一个元素作为 Key
-                    # 语法：m.rating_json ->> (m.countries_json ->> 0)
-                    json_keys.append("m.rating_json->>(m.countries_json->>0)")
-                else:
-                    # 获取指定国家：直接取 Key
-                    # 语法：m.rating_json ->> 'US'
-                    json_keys.append(f"m.rating_json->>'{p}'")
-            
-            # 兜底：如果列表为空，默认取 US
-            if not json_keys:
-                json_keys = ["m.rating_json->>'US'"]
-                
-            # 组合成 SQL 表达式
-            # target_rating_expr 代表了“根据优先级策略最终生效的那个分级代码”
-            target_rating_expr = f"COALESCE({', '.join(json_keys)})"
-
-            # C. 构建查询语句
-            # 逻辑：判断 最终生效的分级代码 是否在 target_codes 列表中
-            
-            if op in ['eq', 'is_one_of']:
-                # 正向筛选 (是...): 
-                # 如果分级为 NULL，NULL = ANY(...) 结果为 NULL (False)。
-                # 只有明确有分级且匹配的才会显示。符合“冷宫”逻辑。
-                clause = f"{target_rating_expr} = ANY(%s)"
-                params.append(target_codes)
-                
-            elif op == 'is_none_of':
-                # 反向筛选 (不是...):
-                # 旧逻辑: (IS NULL OR NOT MATCH) -> 没分级的也会显示。
-                # 新逻辑: (IS NOT NULL AND NOT MATCH) -> 必须有分级，且不匹配目标，才显示。
-                # 没分级的直接被过滤掉 (打入冷宫)。
-                clause = f"({target_rating_expr} IS NOT NULL AND NOT ({target_rating_expr} = ANY(%s)))"
-                params.append(target_codes)
-
-        # --- 6. 数值比较 (Runtime, Year, Rating) ---
-        elif field == 'runtime':
-            try:
-                val = float(value)
-                runtime_logic = """
-                (CASE
-                    WHEN m.item_type = 'Series' THEN (
-                        SELECT COALESCE(AVG(ep.runtime_minutes), 0)
-                        FROM media_metadata ep
-                        WHERE ep.parent_series_tmdb_id = m.tmdb_id 
-                          AND ep.item_type = 'Episode'
-                          AND ep.runtime_minutes > 0
-                    )
-                    ELSE COALESCE(m.runtime_minutes, 0)
-                END)
-                """
-                if op == 'gte': clause = f"{runtime_logic} >= %s"
-                elif op == 'lte': clause = f"{runtime_logic} <= %s"
-                elif op == 'eq': clause = f"{runtime_logic} = %s"
-                if clause: params.append(val)
-            except (ValueError, TypeError): continue
-
-        elif field in ['release_year', 'rating']:
-            col_map = {'release_year': 'm.release_year', 'rating': 'm.rating'}
-            column = col_map[field]
-            try:
-                val = float(value)
-                safe_col = f"COALESCE({column}, 0)"
-                if op == 'gte': clause = f"{safe_col} >= %s"
-                elif op == 'lte': clause = f"{safe_col} <= %s"
-                elif op == 'eq': clause = f"{safe_col} = %s"
-                if clause: params.append(val)
-            except (ValueError, TypeError): continue
-
-        # --- 7. 日期偏移 ---
-        elif field in ['date_added', 'release_date']:
-            column = f"m.{field}"
-            try:
-                days = int(value)
-                if op == 'in_last_days':
-                    clause = f"{column} >= NOW() - INTERVAL '%s days'"
-                elif op == 'not_in_last_days':
-                    clause = f"{column} < NOW() - INTERVAL '%s days'"
-                if clause: params.append(days)
-            except (ValueError, TypeError): continue
-
-        # --- 8. 文本模糊匹配 ---
-        elif field == 'title':
-            if op == 'contains':
-                clause = "m.title ILIKE %s"
-                params.append(f"%{value}%")
-            elif op == 'starts_with':
-                clause = "m.title ILIKE %s"
-                params.append(f"{value}%")
-            elif op == 'ends_with':
-                clause = "m.title ILIKE %s"
-                params.append(f"%{value}")
-            elif op == 'eq':
-                clause = "m.title = %s"
-                params.append(value)
-            elif op == 'does_not_contain':
-                clause = "m.title NOT ILIKE %s"
-                params.append(f"%{value}%")
-
-        # --- 9. 原始语言 ---
-        elif field == 'original_language':
-            if op == 'eq':
-                clause = "m.original_language = %s"
-                params.append(value)
-            elif op == 'is_one_of':
-                clause = "m.original_language = ANY(%s)"
-                params.append(list(value) if isinstance(value, list) else [value])
-
-        # --- 10. 追剧状态 ---
-        elif field == 'is_in_progress':
-            if op == 'is':
-                clause = "m.watchlist_is_airing = %s"
-                params.append(bool(value))
-
-        # --- 11. 视频流属性 ---
-        asset_map = {
-            'resolution': 'resolution_display',
-            'quality': 'quality_display',
-            'effect': 'effect_display',
-            'codec': 'codec_display'
-        }
-        if field in asset_map:
-            json_key = asset_map[field]
-            safe_assets = "COALESCE(m.asset_details_json, '[]'::jsonb)"
-            
-            if op == 'eq':
-                clause = f"EXISTS (SELECT 1 FROM jsonb_array_elements({safe_assets}) a WHERE a->>'{json_key}' = %s)"
-                params.append(value)
-            elif op == 'is_one_of':
-                clause = f"EXISTS (SELECT 1 FROM jsonb_array_elements({safe_assets}) a WHERE a->>'{json_key}' = ANY(%s))"
-                params.append(list(value))
-            elif op == 'is_none_of':
-                clause = f"NOT EXISTS (SELECT 1 FROM jsonb_array_elements({safe_assets}) a WHERE a->>'{json_key}' = ANY(%s))"
-                params.append(list(value))
-
-        # --- 12. 音轨筛选 ---
-        elif field == 'audio_lang':
-            safe_assets = "COALESCE(m.asset_details_json, '[]'::jsonb)"
-            if op in ['contains', 'eq']:
-                clause = f"EXISTS (SELECT 1 FROM jsonb_array_elements({safe_assets}) a WHERE a->>'audio_display' ILIKE %s)"
-                params.append(f"%{value}%")
-            elif op == 'is_one_of':
-                sub_clauses = []
-                for val in (value if isinstance(value, list) else [value]):
-                    sub_clauses.append(f"a->>'audio_display' ILIKE %s")
-                    params.append(f"%{val}%")
-                if sub_clauses:
-                    clause = f"EXISTS (SELECT 1 FROM jsonb_array_elements({safe_assets}) a WHERE ({' OR '.join(sub_clauses)}))"
-
-        if clause:
-            rule_clauses.append(clause)
-
-    if rule_clauses:
-        join_op = " AND " if logic.upper() == 'AND' else " OR "
-        where_clauses.append(f"({join_op.join(rule_clauses)})")
-
-    full_where = " AND ".join(where_clauses)
-
-    # --- 2. 排序映射 ---
-    sort_map = {
-        'DateCreated': 'm.date_added',
-        'SortName': 'm.title',
-        'ProductionYear': 'm.release_year',
-        'CommunityRating': 'm.rating',
-        'PremiereDate': 'm.release_date',
-        'Random': 'RANDOM()'
-    }
-    db_sort_col = sort_map.get(sort_by, 'm.date_added')
-    
-    # --- 3. 构建去重查询 SQL ---
-    
-    if db_sort_col == 'RANDOM()':
-        # 随机排序特殊处理：先分组，再随机取组
-        sql = f"""
-        WITH raw_matches AS (
-            SELECT 
-                CASE 
-                    WHEN m.item_type IN ('Season', 'Episode') THEN m.parent_series_tmdb_id 
-                    ELSE m.tmdb_id 
-                END as group_id
-            FROM media_metadata m
-            {join_clause}
-            WHERE {full_where}
-        ),
-        grouped_ids AS (
-            SELECT group_id 
-            FROM raw_matches 
-            WHERE group_id IS NOT NULL 
-            GROUP BY group_id
-        )
-        SELECT t.emby_item_ids_json->>0 as emby_id, t.tmdb_id
-        FROM grouped_ids g
-        JOIN media_metadata t ON t.tmdb_id = g.group_id
-        WHERE t.item_type IN ('Series', 'Movie')
-        ORDER BY RANDOM()
-        LIMIT %s
-        """
-        query_params = params + [limit]
-    else:
-        # 常规排序：按聚合后的最大/最小值排序
-        agg_func = "MIN" if sort_order == 'Ascending' else "MAX"
-        sort_dir = "ASC" if sort_order == 'Ascending' else "DESC"
-        
-        sql = f"""
-        WITH raw_matches AS (
-            SELECT 
-                CASE 
-                    WHEN m.item_type IN ('Season', 'Episode') THEN m.parent_series_tmdb_id 
-                    ELSE m.tmdb_id 
-                END as group_id,
-                {db_sort_col} as sort_val
-            FROM media_metadata m
-            {join_clause}
-            WHERE {full_where}
-        ),
-        grouped_stats AS (
-            SELECT 
-                group_id, 
-                {agg_func}(sort_val) as agg_sort_val
-            FROM raw_matches
-            WHERE group_id IS NOT NULL
-            GROUP BY group_id
-        )
-        SELECT t.emby_item_ids_json->>0 as emby_id, t.tmdb_id
-        FROM grouped_stats g
-        JOIN media_metadata t ON t.tmdb_id = g.group_id
-        WHERE t.item_type IN ('Series', 'Movie')
-        ORDER BY g.agg_sort_val {sort_dir}
-        LIMIT %s
-        """
-        query_params = params + [limit]
-
-    try:
-        with get_db_connection() as conn:
-            with conn.cursor() as cursor:
-                cursor.execute(sql, tuple(query_params))
-                rows = cursor.fetchall()
-                return [
-                    {'Id': row['emby_id'], 'tmdb_id': row['tmdb_id']} 
-                    for row in rows if row['emby_id']
-                ]
-    except Exception as e:
-        logger.error(f"封面生成去重查询失败: {e}", exc_info=True)
-        return []

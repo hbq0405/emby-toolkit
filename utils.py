@@ -125,54 +125,54 @@ DEFAULT_RATING_PRIORITY = ["ORIGIN", "US", "HK", "TW", "JP", "KR", "GB"]
 # 格式: { 国家代码: [ { code: 原分级, label: 映射中文 }, ... ] }
 DEFAULT_RATING_MAPPING = {
     "US": [
-        {"code": "G", "label": "全年龄"},
-        {"code": "TV-Y", "label": "全年龄"},
-        {"code": "TV-G", "label": "全年龄"},
-        {"code": "TV-Y7", "label": "家长辅导"},
-        {"code": "PG", "label": "家长辅导"},
-        {"code": "TV-PG", "label": "家长辅导"},
-        {"code": "PG-13", "label": "青少年"},
-        {"code": "TV-14", "label": "青少年"},
-        {"code": "R", "label": "成人"},
-        {"code": "TV-MA", "label": "成人"},
-        {"code": "NC-17", "label": "限制级"},
-        {"code": "NR", "label": "未知"},
-        {"code": "Unrated", "label": "未知"}
+        {"code": "G", "label": "全年龄", "emby_value": 1},
+        {"code": "TV-Y", "label": "全年龄", "emby_value": 1},
+        {"code": "TV-G", "label": "全年龄", "emby_value": 1},
+        {"code": "TV-Y7", "label": "家长辅导", "emby_value": 4},
+        {"code": "PG", "label": "家长辅导", "emby_value": 5},
+        {"code": "TV-PG", "label": "家长辅导", "emby_value": 5},
+        {"code": "PG-13", "label": "青少年", "emby_value": 8},
+        {"code": "TV-14", "label": "青少年", "emby_value": 8},
+        {"code": "R", "label": "成人", "emby_value": 9},
+        {"code": "TV-MA", "label": "成人", "emby_value": 9},
+        {"code": "NC-17", "label": "限制级", "emby_value": 10},
+        {"code": "NR", "label": "未知", "emby_value": 0},
+        {"code": "Unrated", "label": "未知", "emby_value": 0}
     ],
     "JP": [
-        {"code": "G", "label": "全年龄"},
-        {"code": "PG12", "label": "家长辅导"},
-        {"code": "R15+", "label": "成人"},
-        {"code": "R18+", "label": "限制级"}
+        {"code": "G", "label": "全年龄", "emby_value": 1},
+        {"code": "PG12", "label": "家长辅导", "emby_value": 6},
+        {"code": "R15+", "label": "成人", "emby_value": 9},
+        {"code": "R18+", "label": "限制级", "emby_value": 18}
     ],
     "HK": [
-        {"code": "I", "label": "全年龄"},
-        {"code": "IIA", "label": "家长辅导"},
-        {"code": "IIB", "label": "青少年"},
-        {"code": "III", "label": "限制级"}
+        {"code": "I", "label": "全年龄", "emby_value": 1},
+        {"code": "IIA", "label": "家长辅导", "emby_value": 5},
+        {"code": "IIB", "label": "青少年", "emby_value": 9}, # 港版 IIB 经常包含 R 级内容
+        {"code": "III", "label": "限制级", "emby_value": 18}
     ],
     "TW": [
-        {"code": "0+", "label": "全年龄"},
-        {"code": "6+", "label": "家长辅导"},
-        {"code": "12+", "label": "青少年"},
-        {"code": "15+", "label": "成人"},
-        {"code": "18+", "label": "成人"}
+        {"code": "0+", "label": "全年龄", "emby_value": 1},
+        {"code": "6+", "label": "家长辅导", "emby_value": 4},
+        {"code": "12+", "label": "青少年", "emby_value": 7},
+        {"code": "15+", "label": "成人", "emby_value": 9},
+        {"code": "18+", "label": "成人", "emby_value": 18}
     ],
     "KR": [
-        {"code": "All", "label": "全年龄"},
-        {"code": "12", "label": "家长辅导"},
-        {"code": "15", "label": "青少年"},
-        {"code": "18", "label": "成人"},
-        {"code": "Restricted", "label": "限制级"}
+        {"code": "All", "label": "全年龄", "emby_value": 1},
+        {"code": "12", "label": "家长辅导", "emby_value": 6},
+        {"code": "15", "label": "青少年", "emby_value": 8},
+        {"code": "18", "label": "成人", "emby_value": 18},
+        {"code": "Restricted", "label": "限制级", "emby_value": 19}
     ],
     "GB": [
-        {"code": "U", "label": "全年龄"},
-        {"code": "PG", "label": "家长辅导"},
-        {"code": "12", "label": "青少年"},
-        {"code": "12A", "label": "青少年"},
-        {"code": "15", "label": "成人"},
-        {"code": "18", "label": "成人"},
-        {"code": "R18", "label": "限制级"}
+        {"code": "U", "label": "全年龄", "emby_value": 1},
+        {"code": "PG", "label": "家长辅导", "emby_value": 5},
+        {"code": "12", "label": "青少年", "emby_value": 7},
+        {"code": "12A", "label": "青少年", "emby_value": 7},
+        {"code": "15", "label": "成人", "emby_value": 9},
+        {"code": "18", "label": "成人", "emby_value": 18},
+        {"code": "R18", "label": "限制级", "emby_value": 19}
     ]
 }
 

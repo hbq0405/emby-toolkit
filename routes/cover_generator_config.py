@@ -26,6 +26,10 @@ def get_default_config():
         "exclude_libraries": [], # 现在是勾选框
         "sort_by": "Latest", # 默认改为最新添加
 
+        # ★★★ 新增：默认安全分级上限 (默认为 8，即 PG-13) ★★★
+        # 999 代表无限制
+        "max_safe_rating": 8,
+
         # 媒体数量开关
         "show_item_count": False, # 默认为关闭
         "badge_style": "badge",

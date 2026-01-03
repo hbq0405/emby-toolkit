@@ -33,7 +33,7 @@
             <!-- 将 card-title 类应用到标题文本的容器上 -->
             <span class="card-title">基础设置</span>
           </template>
-          <n-grid :cols="4" :x-gap="24" :y-gap="16" responsive="screen"> <!-- 建议加一个 y-gap -->
+          <n-grid :cols="5" :x-gap="24" :y-gap="16" responsive="screen"> <!-- 建议加一个 y-gap -->
             <!-- 第一列 -->
             <n-gi>
               <n-form-item label="启用">
@@ -61,13 +61,24 @@
               </n-form-item>
             </n-gi>
 
+            <!-- ★★★ 新增：第五列 (安全分级上限) ★★★ -->
+            <!-- 如果想排版好看，可以把上面的 :cols="4" 改为 :cols="5"，或者让它换行 -->
+            <n-gi>
+              <n-form-item label="默认安全分级上限">
+                <n-select v-model:value="configData.max_safe_rating" :options="ratingLimitOptions" />
+                <template #feedback>
+                  无分级规则的合集将限制在此等级以下
+                </template>
+              </n-form-item>
+            </n-gi>
+
             <!-- ★★★ 新增的分割线 ★★★ -->
-            <n-gi :span="4">
+            <n-gi :span="5">
               <n-divider style="margin-top: 8px; margin-bottom: 8px;" />
             </n-gi>
             
             <!-- 忽略媒体库部分 -->
-            <n-gi :span="4"> <!-- ★ 确保这里也是 span="4" -->
+            <n-gi :span="5"> <!-- ★ 确保这里也是 span="4" -->
               <n-form-item label="选择要【忽略】的媒体库">
                 <n-checkbox-group 
                   v-model:value="configData.exclude_libraries"
@@ -351,7 +362,7 @@ const isLoading = ref(true);
 const isSaving = ref(false);
 const isGenerating = ref(false);
 const configData = ref({});
-
+const ratingLimitOptions = ref([]);
 // ★ 新增：用于封面标题UI的结构化数据
 const titleConfigs = ref([]);
 
@@ -484,6 +495,57 @@ function debounceUpdatePreview() {
   previewUpdateTimeout = setTimeout(updateAllPreviews, 500);
 }
 
+// ★★★ 修改 2: 新增获取动态分级选项的函数 ★★★
+const fetchRatingOptions = async () => {
+  try {
+    // 调用之前在 MappingManager 中用过的 API
+    const response = await axios.get('/api/custom_collections/config/rating_mapping');
+    const mapping = response.data || {};
+    
+    // 使用 Map 来去重 (Key: emby_value, Value: label)
+    // 目的：多个国家可能有相同的分级值(比如8)，我们只需要显示一个代表性的中文标签
+    const valueMap = new Map();
+
+    // 遍历所有国家的配置
+    Object.values(mapping).forEach(rules => {
+      if (Array.isArray(rules)) {
+        rules.forEach(rule => {
+          // 只有当 emby_value 有效且有中文标签时才收集
+          if (rule.emby_value !== null && rule.emby_value !== undefined && rule.label) {
+            // 如果这个分级值还没被收录，或者当前是"US"的规则(通常US最标准)，则更新
+            // 这里简化逻辑：只要 Map 里没有这个值，就存进去。
+            // 这样通常会保留优先级靠前的国家的标签（取决于后端返回顺序）
+            if (!valueMap.has(rule.emby_value)) {
+              valueMap.set(rule.emby_value, rule.label);
+            }
+          }
+        });
+      }
+    });
+
+    // 将 Map 转为数组，并按分级值从小到大排序
+    const dynamicOptions = Array.from(valueMap.entries())
+      .sort((a, b) => a[0] - b[0])
+      .map(([val, label]) => ({
+        label: `${label} (等级 ${val})`, // 显示格式：成人 (等级 9)
+        value: val
+      }));
+
+    // ★★★ 始终在最后追加“无限制”选项 ★★★
+    dynamicOptions.push({ label: '无限制 (全视之眼)', value: 999 });
+
+    ratingLimitOptions.value = dynamicOptions;
+
+  } catch (error) {
+    console.error("获取分级映射失败", error);
+    // 兜底：如果获取失败，使用最基础的默认值
+    ratingLimitOptions.value = [
+      { label: '青少年 (等级 8) - 默认', value: 8 },
+      { label: '无限制 (全视之眼)', value: 999 }
+    ];
+  }
+};
+
 async function updateAllPreviews() {
   if (!configData.value.show_item_count) {
     stylePreviews.value.single_1 = single_1;
@@ -536,6 +598,7 @@ watch(
 onMounted(() => {
   fetchConfig();
   fetchLibraryOptions();
+  fetchRatingOptions();
 });
 </script>
 

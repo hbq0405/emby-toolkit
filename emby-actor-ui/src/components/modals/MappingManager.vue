@@ -138,7 +138,7 @@
       <n-tab-pane name="ratings" tab="分级制度">
         <n-alert type="info" :bordered="false" class="mb-4">
           TMDb 返回各国分级数据。在此定义<b>优先级</b>和<b>中文映射</b>。<br/>
-          系统将按优先级顺序查找分级，并将其转换为对应的中文标签。
+          <b>Emby等级值</b>：用于封面生成时的权限控制 (G=1, PG=5, PG-13=8, R=9, NC-17=10, R18+=18)。
         </n-alert>
 
         <!-- 1. 优先级策略 -->
@@ -185,7 +185,6 @@
         <div class="rating-container">
           <n-collapse display-directive="show" :default-expanded-names="['US']">
             
-            <!-- ★★★ 核心修改：遍历 sortedMappingKeys 而不是 ratingMapping ★★★ -->
             <n-collapse-item 
               v-for="countryCode in sortedMappingKeys" 
               :key="countryCode" 
@@ -197,21 +196,42 @@
               </template>
 
               <!-- 具体分级规则表格 -->
-              <!-- 注意：这里依然绑定到 ratingMapping 对象上 -->
+              <!-- ★★★ 修改：初始化时增加 emby_value 字段 ★★★ -->
               <n-dynamic-input 
                 v-model:value="ratingMapping[countryCode]" 
-                :on-create="() => ({ code: '', label: '全年龄' })"
+                :on-create="() => ({ code: '', label: '全年龄', emby_value: null })"
               >
                 <template #default="{ value }">
                   <div style="display: flex; align-items: center; width: 100%; gap: 10px">
-                    <n-input v-model:value="value.code" placeholder="原始分级 (如 R)" style="flex: 1" />
+                    <!-- 1. 原始分级代码 -->
+                    <n-input v-model:value="value.code" placeholder="原始分级 (如 R)" style="flex: 1.5" />
+                    
+                    <!-- 2. Emby 等级值 (新增) -->
+                    <n-tooltip trigger="focus">
+                      <template #trigger>
+                        <n-input-number 
+                          v-model:value="value.emby_value" 
+                          placeholder="等级值" 
+                          :min="0" 
+                          :max="100"
+                          style="width: 110px"
+                          :show-button="false"
+                        >
+                          <template #suffix>级</template>
+                        </n-input-number>
+                      </template>
+                      Emby 内部限制等级 (MaxParentalRating)<br/>
+                      参考值：G=1, PG=5, PG-13=8, R=9, NC-17=10, 18+=18
+                    </n-tooltip>
+
                     <div style="width: 20px; text-align: center">➜</div>
                     
+                    <!-- 3. 中文标签 -->
                     <n-select 
                       v-model:value="value.label" 
                       :options="dynamicRatingOptions" 
                       placeholder="选择中文标签" 
-                      style="flex: 1" 
+                      style="flex: 1.5" 
                       filterable 
                       tag 
                     />
