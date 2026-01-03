@@ -1170,16 +1170,24 @@ class WatchlistProcessor:
                     logger.info(f"  👀 [判定-连载中] 缺乏播出日期数据，默认保持“追剧中”状态。")
 
         # 自动待定 (Auto Pending) 覆盖逻辑
-        # 只有当剧集处于“连载中”或“暂停”状态时，才检查是否需要转为“待定”
         # 读取配置 (提前读取，后面要用)
         watchlist_cfg = settings_db.get_setting('watchlist_config') or {}
         auto_pending_cfg = watchlist_cfg.get('auto_pending', {})
         
-        if final_status in [STATUS_WATCHING, STATUS_PAUSED]:
-            if self._check_auto_pending_condition(latest_series_data, auto_pending_cfg):
+        # ★★★ 修复：将 STATUS_COMPLETED 加入检查列表 ★★★
+        # 只有这样，当逻辑误判为“已完结”时，下面的代码才有机会把它救回来
+        if final_status in [STATUS_WATCHING, STATUS_PAUSED, STATUS_COMPLETED]:
+            
+            # 安全检查：如果 TMDb 明确说是 Ended/Canceled，那就不救了，是真的完结了
+            if new_tmdb_status in ["Ended", "Canceled"]:
+                 pass 
+            
+            # 核心检查：如果 TMDb 还在连载(Returning Series)，但满足新剧条件(集数少、时间短)
+            elif self._check_auto_pending_condition(latest_series_data, auto_pending_cfg):
                 final_status = STATUS_PENDING
                 paused_until_date = None 
-                #logger.info(f"  🛡️ [自动待定生效] 《{item_name}》满足新剧保护条件，状态强制设为 '待定 (Pending)'。")
+                # 这里的日志会出现在“判定已完结”之后，表示修正成功
+                logger.info(f"  🛡️ [自动待定生效] 《{item_name}》虽被判定完结，但满足新剧保护条件，状态强制修正为 '待定 (Pending)'。")
 
         # 手动强制完结
         if is_force_ended and final_status != STATUS_COMPLETED:

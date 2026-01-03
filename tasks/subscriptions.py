@@ -48,7 +48,6 @@ def _subscribe_full_series_with_logic(tmdb_id: int, series_name: str, config: Di
     1. 查询 TMDb 获取所有季。
     2. 遍历所有季。
     3. 检查是否未上映 -> 设为 PENDING_RELEASE。
-    4. 仅对【最后一季】检查是否需要“自动待定”。
     5. 检查是否完结/配置开启 -> 决定 best_version。
     6. 逐季提交订阅并更新本地数据库。
     """
@@ -164,26 +163,11 @@ def _subscribe_full_series_with_logic(tmdb_id: int, series_name: str, config: Di
                 "season": s_num
             }
             
-            is_pending = False
-            fake_total = 0
-
-            # ==============================================================
-            # 逻辑 C: 检查是否需要“自动待定” (仅针对最后一季)
-            # ==============================================================
-            if s_num == last_season_num:
-                is_pending, fake_total = should_mark_as_pending(tmdb_id, s_num, tmdb_api_key)
-                if is_pending:
-                    mp_payload["status"] = "P"
-                    mp_payload["total_episode"] = fake_total
-                    logger.info(f"  🛡️ [自动待定] S{s_num} 是最新季且符合条件，初始状态设为 '待定(P)'。")
-
             # ==============================================================
             # 逻辑 D: 决定 Best Version (洗版/完结检测)
             # ==============================================================
-            if not is_pending:
-                # 只要季没完结，就绝对不能用 best_version=1
-                if check_series_completion(tmdb_id, tmdb_api_key, season_number=s_num, series_name=final_series_name):
-                    mp_payload["best_version"] = 1
+            if check_series_completion(tmdb_id, tmdb_api_key, season_number=s_num, series_name=final_series_name):
+                mp_payload["best_version"] = 1
 
             # ==============================================================
             # 逻辑 E: 提交订阅
@@ -290,13 +274,6 @@ def task_manual_subscribe_batch(processor, subscribe_requests: List[Dict]):
                         "season": int(season_number)
                     }
 
-                    # A. 自动待定检查 (新剧保护)
-                    is_pending, fake_total = should_mark_as_pending(int(tmdb_id), int(season_number), tmdb_api_key)
-                    if is_pending:
-                        mp_payload["status"] = "P"
-                        mp_payload["total_episode"] = fake_total
-                        logger.info(f"  🛡️ [自动待定] 手动订阅《{series_name}》S{season_number} 符合条件，初始状态将设为 '待定(P)'。")
-                    
                     # B. ★★★ 核心：完结状态检查 ★★★
                     # 手动订阅不看配置，只看事实：完结了就洗版(best_version=1)，没完结就追更。
                     is_completed = check_series_completion(
@@ -664,13 +641,6 @@ def task_auto_subscribe(processor):
                             "season": season_num
                         }
                         
-                        # 初始待定判断 
-                        is_pending, fake_total = should_mark_as_pending(int(parent_tmdb_id), season_num, tmdb_api_key)
-                        if is_pending:
-                            mp_payload["status"] = "P"
-                            mp_payload["total_episode"] = fake_total
-                            logger.info(f"  🛡️ [自动待定] 新订阅《{series_name}》S{season_num} 符合条件，初始状态将设为 '待定(P)'。")
-
                         # 1. 检查具体的来源类型
                         is_explicit_resub = any(source.get('type') == 'resubscribe' for source in sources)
                         is_gap_scan = any(source.get('type') == 'gap_scan' for source in sources)
@@ -695,19 +665,6 @@ def task_auto_subscribe(processor):
                                 mp_payload["best_version"] = 1
                         
                         success = moviepilot.subscribe_with_custom_payload(mp_payload, config)
-                        # 如果待定，更新本地 DB 状态为 PENDING_METADATA
-                        if is_pending:
-                                watchlist_db.update_watching_status_by_tmdb_id(
-                                    str(item['tmdb_id']), 
-                                    item_type,
-                                    'Pending'
-                                )
-                                
-                                # 我们还需要把父剧集设为 Watching (或 Pending)
-                                if item_type == 'Season':
-                                    parent_id = item.get('parent_series_tmdb_id')
-                                    if parent_id:
-                                        watchlist_db.add_item_to_watchlist(str(parent_id), series_name)
                     else:
                         success = False
 
