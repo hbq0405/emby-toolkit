@@ -174,8 +174,8 @@ def init_db():
                         poster_path TEXT,
                         runtime_minutes INTEGER,
                         rating REAL,
-                        rating_json JSONB,
-                        rating_locked BOOLEAN DEFAULT FALSE,
+                        official_rating_json JSONB,
+                        custom_rating TEXT,
                         genres_json JSONB,
                         actors_json JSONB,
                         directors_json JSONB,
@@ -412,6 +412,20 @@ def init_db():
                             all_existing_columns[table] = set()
                         all_existing_columns[table].add(row['column_name'])
 
+                    # ======================================================================
+                    # ★★★ 特殊迁移：分级字段重构 ★★★
+                    # ======================================================================
+                    if 'media_metadata' in all_existing_columns:
+                        cols = all_existing_columns['media_metadata']
+                        
+                        # 1. 重命名 rating_json -> official_rating_json
+                        if 'rating_json' in cols and 'official_rating_json' not in cols:
+                            logger.info("    ➜ [数据库升级] 检测到旧字段 'rating_json'，正在重命名为 'official_rating_json'...")
+                            cursor.execute("ALTER TABLE media_metadata RENAME COLUMN rating_json TO official_rating_json;")
+                            # 更新本地集合以便后续检查
+                            cols.remove('rating_json')
+                            cols.add('official_rating_json')
+
                     schema_upgrades = {
                         'emby_users': {
                             "policy_json": "JSONB"  
@@ -422,7 +436,8 @@ def init_db():
                             "last_updated_at": "TIMESTAMP WITH TIME ZONE",
                             "overview": "TEXT",
                             "overview_embedding": "JSONB",
-                            "rating_json": "JSONB",
+                            "official_rating_json": "JSONB", 
+                            "custom_rating": "TEXT",         
                             "keywords_json": "JSONB",
                             "in_library": "BOOLEAN DEFAULT FALSE NOT NULL",
                             "emby_item_ids_json": "JSONB NOT NULL DEFAULT '[]'::jsonb",
@@ -448,8 +463,7 @@ def init_db():
                             "watchlist_missing_info_json": "JSONB",
                             "watchlist_is_airing": "BOOLEAN DEFAULT FALSE",
                             "total_episodes": "INTEGER DEFAULT 0",
-                            "total_episodes_locked": "BOOLEAN DEFAULT FALSE",
-                            "rating_locked": "BOOLEAN DEFAULT FALSE"
+                            "total_episodes_locked": "BOOLEAN DEFAULT FALSE"
                         },
                         'resubscribe_rules': {
                             "resubscribe_subtitle_effect_only": "BOOLEAN DEFAULT FALSE",
@@ -509,21 +523,6 @@ def init_db():
                 except Exception as e_alter:
                     logger.error(f"  ➜ [数据库升级] 检查或添加新字段时出错: {e_alter}", exc_info=True)
                 
-                # ======================================================================
-                # ★★★ 修复：用户状态默认值修正补丁 ★★★
-                # ======================================================================
-                try:
-                    # 1. 修改列的默认值定义
-                    cursor.execute("ALTER TABLE emby_users_extended ALTER COLUMN status SET DEFAULT 'active'")
-                    
-                    # 2. 将现有的 'pending' 状态全部刷为 'active'
-                    cursor.execute("UPDATE emby_users_extended SET status = 'active' WHERE status = 'pending'")
-                    
-                    # 3. 确保 registration_date 列存在 (虽然之前应该有了，但为了保险)
-                    # Emby API 返回的是 DateCreated，我们需要存入 registration_date
-                except Exception as e_fix_status:
-                    logger.trace(f"  ➜ [数据库修正] 尝试修改用户默认状态失败 (可能是已修改): {e_fix_status}")
-
                 # ======================================================================
                 # ★★★ 统一创建验证所有索引 ★★★
                 # 此处代码用于集中创建所有表需要的索引。
@@ -625,8 +624,7 @@ def init_db():
                             'next_episode_to_air_json',
                             'is_airing',
                             'total_seasons',
-                            'unified_rating',
-                            'official_rating'
+                            'rating_locked'
                         ],
                         'collections_info': [
                             'status', 

@@ -398,8 +398,8 @@ class MediaProcessor:
                     if cert:
                         raw_ratings_map[country] = cert
                 
-                # ★★★ 2. 存入 rating_json ★★★
-                movie_record['rating_json'] = json.dumps(raw_ratings_map, ensure_ascii=False)
+                # ★★★ 2. 存入 official_rating_json ★★★
+                movie_record['official_rating_json'] = json.dumps(raw_ratings_map, ensure_ascii=False)
                 
                 # 导演 (电影在 credits.crew 中)
                 crew = source_data_package.get("credits", {}).get('crew', [])
@@ -448,8 +448,8 @@ class MediaProcessor:
                     if country and rating:
                         raw_ratings_map[country] = rating
                 
-                # ★★★ 4. 存入 rating_json ★★★
-                series_record['rating_json'] = json.dumps(raw_ratings_map, ensure_ascii=False)
+                # ★★★ 4. 存入 official_rating_json ★★★
+                series_record['official_rating_json'] = json.dumps(raw_ratings_map, ensure_ascii=False)
 
                 # ★★★ 提取通用字段 (传入 'Series') ★★★
                 g_json, s_json, k_json, c_json = _extract_common_json_fields(series_details, 'Series')
@@ -557,7 +557,7 @@ class MediaProcessor:
                 "original_language",
                 "poster_path", "rating", "actors_json", "parent_series_tmdb_id", "season_number", "episode_number",
                 "in_library", "subscription_status", "subscription_sources_json", "emby_item_ids_json", "date_added",
-                "rating_json",
+                "official_rating_json",
                 "genres_json", "directors_json", "studios_json", "countries_json", "keywords_json", "ignore_reason",
                 "asset_details_json",
                 "runtime_minutes",
@@ -582,90 +582,9 @@ class MediaProcessor:
                 
                 data_for_batch.append(db_row_complete)
 
-            # 在写入前，检查数据库中是否有值，避免被空值替换。
-            if data_for_batch:
-                try:
-                    batch_tmdb_ids = [r['tmdb_id'] for r in data_for_batch if r.get('tmdb_id')]
-                    
-                    if batch_tmdb_ids:
-                        # 1. 查询数据库中现有的完整记录
-                        cursor.execute("""
-                            SELECT * 
-                            FROM media_metadata 
-                            WHERE tmdb_id = ANY(%s)
-                        """, (batch_tmdb_ids,))
-                        
-                        existing_rows = cursor.fetchall()
-                        
-                        # (tmdb_id, item_type) -> row
-                        existing_map = {
-                            (str(row['tmdb_id']), row['item_type']): row 
-                            for row in existing_rows
-                        }
-                        
-                        # 定义需要保护的元数据字段 (不包含 in_library 等状态字段)
-                        # 注意：rating_json 单独处理
-                        metadata_cols_to_protect = [
-                            'title', 'original_title', 'overview', 'release_date', 'release_year',
-                            'poster_path', 'rating', 'original_language',
-                            'genres_json', 'directors_json', 'studios_json', 
-                            'countries_json', 'keywords_json', 'actors_json'
-                        ]
-
-                        # 辅助函数：判断值是否视为“空”
-                        def is_value_empty(v):
-                            if v is None: return True
-                            if isinstance(v, str):
-                                s = v.strip()
-                                return s == "" or s == "{}" or s == "[]" or s == "null"
-                            return False
-
-                        for row in data_for_batch:
-                            key = (str(row['tmdb_id']), row['item_type'])
-                            
-                            if key in existing_map:
-                                db_record = existing_map[key]
-                                
-                                # --- A. 特殊处理：分级锁定 (最高优先级) ---
-                                is_locked = db_record.get('rating_locked')
-                                old_rating = db_record.get('rating_json')
-                                new_rating_str = row.get('rating_json')
-                                
-                                # 如果已锁定，或者新分级为空但旧分级有效 -> 回退
-                                should_revert_rating = False
-                                if is_locked:
-                                    should_revert_rating = True
-                                elif is_value_empty(new_rating_str) and not is_value_empty(old_rating):
-                                    should_revert_rating = True
-                                    # logger.debug(f"    🛡️ [非空保护] 保留原分级: {row.get('title')}")
-
-                                if should_revert_rating and old_rating:
-                                    # 数据库读出的是 dict/list，需要转回 json str
-                                    row['rating_json'] = json.dumps(old_rating, ensure_ascii=False)
-
-                                # --- B. 通用处理：其他元数据字段 ---
-                                for col in metadata_cols_to_protect:
-                                    new_val = row.get(col)
-                                    old_val = db_record.get(col)
-                                    
-                                    # 如果新值为空，但旧值有效 -> 回退
-                                    if is_value_empty(new_val) and not is_value_empty(old_val):
-                                        # 注意类型转换：
-                                        # data_for_batch 里 JSON 字段是 str
-                                        # db_record 里 JSON 字段是 dict/list (因为 RealDictCursor)
-                                        if col.endswith('_json') and isinstance(old_val, (dict, list)):
-                                            row[col] = json.dumps(old_val, ensure_ascii=False)
-                                        else:
-                                            row[col] = old_val
-                                        
-                                        # logger.trace(f"    🛡️ [非空保护] 字段 '{col}' 保留原值: {row.get('title')}")
-
-                except Exception as e_protect:
-                    logger.error(f"  ⚠️ 执行全字段数据保护机制时出错: {e_protect}", exc_info=True)
-
             cols_str = ", ".join(all_possible_columns)
             placeholders_str = ", ".join([f"%({col})s" for col in all_possible_columns])
-            cols_to_update = [col for col in all_possible_columns if col not in ['tmdb_id', 'item_type']]
+            cols_to_update = [col for col in all_possible_columns if col not in ['tmdb_id', 'item_type', 'custom_rating']]
             
             cols_to_protect = ['subscription_sources_json']
             timestamp_field = "last_synced_at"
@@ -3140,7 +3059,7 @@ class MediaProcessor:
         try:
             # 1. 获取 Emby 最新详情
             # 不需要请求 MediaSources 等重型字段，只需要元数据
-            fields_to_get = "ProviderIds,Type,Name,OriginalTitle,Overview,Tags,TagItems,OfficialRating,Path,_SourceLibraryId,PremiereDate,ProductionYear"
+            fields_to_get = "ProviderIds,Type,Name,OriginalTitle,Overview,Tags,TagItems,OfficialRating,CustomRating,Path,_SourceLibraryId,PremiereDate,ProductionYear"
             item_details = emby.get_emby_item_details(item_id, self.emby_url, self.emby_api_key, self.emby_user_id, fields=fields_to_get)
             
             if not item_details:
@@ -3180,24 +3099,20 @@ class MediaProcessor:
                         updates["release_year"] = item_details['ProductionYear']
 
                     # 分级同步逻辑 
-                    new_rating = item_details.get('OfficialRating')
-                    # 注意：只要 Emby 传来了分级字段（哪怕是空的，代表用户清空了分级），我们都视为用户意图，进行锁定
-                    if 'OfficialRating' in item_details: 
-                        # 1. 先查出旧的 rating_json
-                        cursor.execute("SELECT rating_json FROM media_metadata WHERE tmdb_id = %s AND item_type = %s", (tmdb_id, item_type))
+                    new_official_rating = item_details.get('OfficialRating')
+                    if new_official_rating is not None: # 允许空字符串更新，代表清空
+                        # 先查旧数据
+                        cursor.execute("SELECT official_rating_json FROM media_metadata WHERE tmdb_id = %s AND item_type = %s", (tmdb_id, item_type))
                         row = cursor.fetchone()
-                        current_rating_json = row['rating_json'] if row and row['rating_json'] else {}
+                        current_rating_json = row['official_rating_json'] if row and row['official_rating_json'] else {}
                         
-                        # 2. 更新 US 字段 (作为主分级)
-                        current_rating_json['US'] = new_rating
-                        
-                        # 3. 加入更新队列
-                        updates["rating_json"] = json.dumps(current_rating_json, ensure_ascii=False)
-                        
-                        # ★★★ 核心：一旦手动同步了分级，就锁定它 ★★★
-                        updates["rating_locked"] = True
-                        
-                        logger.debug(f"  ➜ {log_prefix} 同步分级: '{new_rating}' 并已锁定 (防止TMDb覆盖)。")
+                        # 更新 US 字段
+                        current_rating_json['US'] = new_official_rating
+                        updates["official_rating_json"] = json.dumps(current_rating_json, ensure_ascii=False)
+                    
+                    # B. 同步自定义分级 (Emby 的 CustomRating -> 数据库 custom_rating)
+                    # 直接赋值，Emby 传什么就是什么
+                    updates["custom_rating"] = item_details.get('CustomRating')
                     
                     # 构建 SQL
                     set_clauses = [f"{key} = %s" for key in updates.keys()]

@@ -216,17 +216,19 @@ def query_virtual_library_items(
     # ======================================================================
     
     # 1. 定义分级取值表达式
-    # 修复：增加兜底逻辑。如果 US/CN 等主要国家都没有分级，尝试取 JSON 中的任意一个值。
-    # 防止像 {"DE": "18"} 这种只有德国分级的内容因为取不到值变成 NULL，从而绕过限制。
+    # 逻辑：
+    # 1. 优先取 m.custom_rating (如果非空)
+    # 2. 其次取 m.official_rating_json 中的各国分级
+    # 3. 兜底取 JSON 中任意值
     rating_expr = """
     COALESCE(
-        m.rating_json->>'US', 
-        m.rating_json->>'CN', 
-        m.rating_json->>'GB', 
-        m.rating_json->>'JP', 
-        m.rating_json->>'KR',
-        -- 兜底：取 JSON 中第一个非空的值 (Postgres 语法)
-        (SELECT value FROM jsonb_each_text(m.rating_json) LIMIT 1)
+        NULLIF(m.custom_rating, ''), -- ★ 优先使用自定义分级
+        m.official_rating_json->>'US', 
+        m.official_rating_json->>'CN', 
+        m.official_rating_json->>'GB', 
+        m.official_rating_json->>'JP', 
+        m.official_rating_json->>'KR',
+        (SELECT value FROM jsonb_each_text(m.official_rating_json) LIMIT 1)
     )
     """
 
@@ -485,14 +487,16 @@ def query_virtual_library_items(
             priority_list = settings_db.get_setting('rating_priority') or []
 
             json_keys = []
+            json_keys.append("NULLIF(m.custom_rating, '')")
+
             for p in priority_list:
                 if p == 'ORIGIN':
-                    json_keys.append("m.rating_json->>(m.countries_json->>0)")
+                    json_keys.append("m.official_rating_json->>(m.countries_json->>0)")
                 else:
-                    json_keys.append(f"m.rating_json->>'{p}'")
+                    json_keys.append(f"m.official_rating_json->>'{p}'")
             
             if not json_keys:
-                json_keys = ["m.rating_json->>'US'"]
+                json_keys = ["m.official_rating_json->>'US'"]
                 
             target_rating_expr = f"COALESCE({', '.join(json_keys)})"
 
