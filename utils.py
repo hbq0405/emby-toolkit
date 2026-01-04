@@ -308,6 +308,8 @@ MOVIE_SKELETON_TEMPLATE = {
   "backdrop_path": "",
   "belongs_to_collection": None, # { "id": 0, "name": "", "poster_path": "", "backdrop_path": "" }
   "budget": 0,
+  "mpaa": "",          # Emby/Kodi 常用兼容字段
+  "certification": "",
   "genres": [], # [ { "id": 0, "name": "" } ]
   "homepage": "",
   "id": 0,
@@ -357,6 +359,8 @@ SERIES_SKELETON_TEMPLATE = {
   "created_by": [], # [ { "id": 0, "name": "", "profile_path": "" } ]
   "episode_run_time": [], # [ 60 ]
   "first_air_date": "",
+  "mpaa": "",          
+  "certification": "",
   "genres": [], # [ { "id": 0, "name": "" } ]
   "homepage": "",
   "id": 0,
