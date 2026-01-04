@@ -4,6 +4,7 @@ import json
 from typing import List, Dict, Any, Optional, Tuple
 from .connection import get_db_connection
 from database import settings_db
+import utils
 
 logger = logging.getLogger(__name__)
 
@@ -11,7 +12,7 @@ def _expand_keyword_labels(value) -> Dict[str, List]:
     """
     将中文标签展开为 { 'ids': [...], 'names': [...] }
     """
-    mapping_data = settings_db.get_setting('keyword_mapping') or []
+    mapping_data = settings_db.get_setting('keyword_mapping') or utils.DEFAULT_KEYWORD_MAPPING
     
     mapping = {}
     if isinstance(mapping_data, list):
@@ -49,7 +50,7 @@ def _expand_studio_labels(value) -> Dict[str, List]:
     """
     将中文工作室展开为 { 'ids': [...], 'names': [...] }
     """
-    mapping_data = settings_db.get_setting('studio_mapping') or []
+    mapping_data = settings_db.get_setting('studio_mapping') or utils.DEFAULT_STUDIO_MAPPING
     
     mapping = {}
     if isinstance(mapping_data, list):
@@ -84,7 +85,7 @@ def _expand_rating_labels(labels: List[str]) -> List[str]:
     将中文分级标签（如 '青少年'）反向展开为所有对应的原始分级代码（如 'PG-13', 'TV-14', '12'）。
     """
     # 1. 获取映射表
-    mapping_data = settings_db.get_setting('rating_mapping') or []
+    mapping_data = settings_db.get_setting('rating_mapping') or utils.DEFAULT_RATING_MAPPING
     
     target_codes = set()
     
@@ -102,7 +103,7 @@ def _build_rating_value_sql(rating_expr: str) -> str:
     """
     根据配置动态生成分级值转换 SQL
     """
-    mapping_data = settings_db.get_setting('rating_mapping') or {}
+    mapping_data = settings_db.get_setting('rating_mapping') or utils.DEFAULT_RATING_MAPPING
     if not mapping_data:
         from utils import DEFAULT_RATING_MAPPING
         mapping_data = DEFAULT_RATING_MAPPING
@@ -198,20 +199,33 @@ def query_virtual_library_items(
     # ★★★ 4. 权限控制 (修复版) ★★★
     # ======================================================================
     
-    # 1. 定义分级取值表达式
+    # 1. 动态构建分级取值表达式
     # 逻辑：
     # 1. 优先取 m.custom_rating (如果非空)
-    # 2. 其次取 m.official_rating_json 中的各国分级
+    # 2. 其次根据配置的 rating_priority 顺序取 m.official_rating_json
     # 3. 兜底取 JSON 中任意值
-    rating_expr = """
+    
+    # A. 获取用户配置的优先级 (如果没有配置，使用默认列表)
+    priority_list = settings_db.get_setting('rating_priority') or utils.DEFAULT_RATING_PRIORITY
+    
+    # B. 构建 SQL 字段列表
+    rating_sql_parts = ["NULLIF(m.custom_rating, '')"] # 始终最优先
+    
+    for p in priority_list:
+        if p == 'ORIGIN':
+            # 特殊处理原产国：从 countries_json 取第一个国家代码，去 official_rating_json 查
+            rating_sql_parts.append("m.official_rating_json->>(m.countries_json->>0)")
+        else:
+            # 标准国家代码
+            rating_sql_parts.append(f"m.official_rating_json->>'{p}'")
+            
+    # C. 添加最终兜底 (取 JSON 里随便一个值，防止前面都匹配不到导致 NULL)
+    rating_sql_parts.append("(SELECT value FROM jsonb_each_text(m.official_rating_json) LIMIT 1)")
+    
+    # D. 组合成 COALESCE 语句
+    rating_expr = f"""
     COALESCE(
-        NULLIF(m.custom_rating, ''), -- ★ 优先使用自定义分级
-        m.official_rating_json->>'US', 
-        m.official_rating_json->>'CN', 
-        m.official_rating_json->>'GB', 
-        m.official_rating_json->>'JP', 
-        m.official_rating_json->>'KR',
-        (SELECT value FROM jsonb_each_text(m.official_rating_json) LIMIT 1)
+        {', '.join(rating_sql_parts)}
     )
     """
 
