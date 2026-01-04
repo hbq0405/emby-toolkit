@@ -366,7 +366,7 @@ SERIES_SKELETON_TEMPLATE = {
   "vote_average": 0.0,
   "vote_count": 0,
   # ★ Emby 特有结构：演员表 (电视剧层级通常只包含常驻演员)
-  "casts": {
+  "credits": {
     "cast": [], 
     "crew": []
   },
@@ -391,20 +391,23 @@ SERIES_SKELETON_TEMPLATE = {
 
 # 用于生成 season-X.json (季)
 SEASON_SKELETON_TEMPLATE = {
-  "air_date": "",
   "name": "",
   "overview": "",
+  "air_date": "", 
   "id": 0,
   "poster_path": "",
   "season_number": 0,
   "vote_average": 0.0,
+  
+  "external_ids": {
+    "tvdb_id": None
+  },
+  
   "credits": {
     "cast": [],
     "crew": []
   },
-  "external_ids": {
-    "tvdb_id": 0
-  },
+  
   "videos": {
     "results": []
   }
@@ -412,26 +415,24 @@ SEASON_SKELETON_TEMPLATE = {
 
 # 用于生成 season-X-episode-Y.json (分集)
 EPISODE_SKELETON_TEMPLATE = {
-  "air_date": "",
-  "episode_number": 0,
   "name": "",
   "overview": "",
-  "id": 0,
-  "production_code": "",
-  "season_number": 0,
-  "still_path": "",
-  "vote_average": 0.0,
-  "vote_count": 0,
-  "external_ids": {
-    "imdb_id": "",
-    "tvdb_id": 0
-  },
-  "credits": {
-    "cast": [], # 分集特约演员 (Guest Stars) 通常也混在这里或单独处理
-    "crew": [],
-    "guest_stars": []
-  },
   "videos": {
     "results": []
+  },
+  
+  "external_ids": {
+    "tvdb_id": None,
+    "tvrage_id": None,
+    "imdb_id": ""
+  },
+  
+  "air_date": "",
+  "vote_average": 0.0,
+
+  "credits": {
+    "cast": [],
+    "guest_stars": [],
+    "crew": []
   }
 }

@@ -1292,26 +1292,44 @@ class MediaProcessor:
                                 })
                         tmdb_details_for_extra['trailers']['youtube'] = youtube_list
 
-                # --- D. 剧集特殊映射 ---
+                # --- D. 剧集特殊映射 (修复版) ---
                 elif item_type == "Series":
-                    # 1. 演员表
+                    # 1. 演员表 (写入 credits 节点)
                     credits_source = fresh_data.get('aggregate_credits') or fresh_data.get('credits') or {}
+                    
                     if credits_source:
-                        tmdb_details_for_extra['casts']['cast'] = credits_source.get('cast', [])
-                        tmdb_details_for_extra['casts']['crew'] = credits_source.get('crew', [])
+                        # ★★★ 修复：写入 credits 而不是 casts ★★★
+                        tmdb_details_for_extra['credits']['cast'] = credits_source.get('cast', [])
+                        tmdb_details_for_extra['credits']['crew'] = credits_source.get('crew', [])
                         
+                        # 更新权威演员源
                         if aggregated_tmdb_data:
                             all_episodes = list(aggregated_tmdb_data.get("episodes_details", {}).values())
                             authoritative_cast_source = _aggregate_series_cast_from_tmdb_data(fresh_data, all_episodes)
                         else:
                             authoritative_cast_source = credits_source.get('cast', [])
 
-                    # 2. 其他字段
-                    if 'content_ratings' in fresh_data: tmdb_details_for_extra['content_ratings'] = fresh_data['content_ratings']
-                    if 'keywords' in fresh_data: tmdb_details_for_extra['keywords'] = fresh_data['keywords']
-                    if 'external_ids' in fresh_data: tmdb_details_for_extra['external_ids'] = fresh_data['external_ids']
-                    if 'videos' in fresh_data: tmdb_details_for_extra['videos'] = fresh_data['videos']
-                    
+                    # 2. 分级
+                    if 'content_ratings' in fresh_data:
+                        tmdb_details_for_extra['content_ratings'] = fresh_data['content_ratings']
+
+                    # 3. 关键词
+                    if 'keywords' in fresh_data:
+                        tmdb_details_for_extra['keywords'] = fresh_data['keywords']
+
+                    # 4. 外部ID
+                    if 'external_ids' in fresh_data:
+                        # 简单的合并，保留骨架里的 None 默认值
+                        ext_ids = fresh_data['external_ids']
+                        if 'imdb_id' in ext_ids: tmdb_details_for_extra['external_ids']['imdb_id'] = ext_ids['imdb_id']
+                        if 'tvdb_id' in ext_ids: tmdb_details_for_extra['external_ids']['tvdb_id'] = ext_ids['tvdb_id']
+                        if 'tvrage_id' in ext_ids: tmdb_details_for_extra['external_ids']['tvrage_id'] = ext_ids['tvrage_id']
+
+                    # 5. 预告片
+                    if 'videos' in fresh_data:
+                        tmdb_details_for_extra['videos'] = fresh_data['videos']
+
+                    # 6. 挂载子项数据
                     if aggregated_tmdb_data:
                         tmdb_details_for_extra['seasons_details'] = aggregated_tmdb_data.get('seasons_details', [])
                         tmdb_details_for_extra['episodes_details'] = aggregated_tmdb_data.get('episodes_details', {})
@@ -2724,7 +2742,7 @@ class MediaProcessor:
                                 sync_timestamp_iso: Optional[str] = None,
                                 final_cast_override: Optional[List[Dict[str, Any]]] = None,
                                 episode_ids_to_sync: Optional[List[str]] = None,
-                                metadata_override: Optional[Dict[str, Any]] = None): # <--- 1. 新增参数
+                                metadata_override: Optional[Dict[str, Any]] = None): 
         """
         纯粹的项目经理，负责接收设计师的所有材料，并分发给施工队。
         """
@@ -2757,7 +2775,7 @@ class MediaProcessor:
                 tmdb_id, 
                 final_cast_override=final_cast_override, 
                 episode_ids_to_sync=episode_ids_to_sync,
-                metadata_override=metadata_override # <--- 2. 透传参数给 sync_item_metadata
+                metadata_override=metadata_override 
             )
 
             # 3. 记录工时
@@ -3086,22 +3104,25 @@ class MediaProcessor:
                 # ★★★ 步骤 C: 填充骨架 ★★★
                 if data_source:
                     for key in child_data.keys():
-                        if key in data_source:
+                        # 特殊处理：如果源数据里是旧的 casts，映射到 credits
+                        if key == 'credits' and 'casts' in data_source and 'credits' not in data_source:
+                             child_data['credits'] = data_source['casts']
+                        elif key in data_source:
                             child_data[key] = data_source[key]
                 
-                # ★★★ 步骤 D: 智能修补演员表 ★★★
+                # ★★★ 步骤 D: 智能修补演员表 (针对 credits 节点) ★★★
                 if cast_list is not None:
-                    credits_node = child_data.get('credits', {})
-                    # 确保 credits 节点存在且是字典
+                    # 确保获取的是 credits 节点
+                    credits_node = child_data.get('credits')
                     if not isinstance(credits_node, dict):
                         credits_node = {}
                         child_data['credits'] = credits_node
 
-                    # 1. 修补常规演员表
+                    # 1. 修补常规演员表 (cast)
                     if 'cast' in credits_node and isinstance(credits_node['cast'], list):
                         patch_actor_list(credits_node['cast'])
                     
-                    # 2. 修补客串演员表
+                    # 2. 修补客串演员表 (guest_stars)
                     if 'guest_stars' in credits_node and isinstance(credits_node['guest_stars'], list):
                         patch_actor_list(credits_node['guest_stars'])
                     
