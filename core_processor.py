@@ -1152,7 +1152,8 @@ class MediaProcessor:
                         # 默认优先级：原产国 > 美国 > 英国 > 日本 > 德国...
                         priority_list = settings_db.get_setting('rating_priority') or ["ORIGIN", "US", "HK", "TW", "JP", "KR", "GB", "ES", "DE"]
                         
-                        origin_country = fresh_data.get('production_countries', [{}])[0].get('iso_3166_1')
+                        _countries = fresh_data.get('production_countries')
+                        origin_country = _countries[0].get('iso_3166_1') if _countries else None
 
                         # C. 按优先级寻找最佳分级
                         target_us_code = None
