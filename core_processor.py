@@ -1150,7 +1150,7 @@ class MediaProcessor:
                         from database import settings_db
                         rating_mapping = settings_db.get_setting('rating_mapping') or utils.DEFAULT_RATING_MAPPING
                         # 默认优先级：原产国 > 美国 > 英国 > 日本 > 德国...
-                        priority_list = settings_db.get_setting('rating_priority') or ["ORIGIN", "US", "HK", "TW", "JP", "KR", "GB", "ES", "DE"]
+                        priority_list = settings_db.get_setting('rating_priority') or utils.DEFAULT_RATING_PRIORITY
                         
                         _countries = fresh_data.get('production_countries')
                         origin_country = _countries[0].get('iso_3166_1') if _countries else None
@@ -1293,7 +1293,7 @@ class MediaProcessor:
                         # B. 加载配置
                         from database import settings_db
                         rating_mapping = settings_db.get_setting('rating_mapping') or utils.DEFAULT_RATING_MAPPING
-                        priority_list = settings_db.get_setting('rating_priority') or ["ORIGIN", "US", "HK", "TW", "JP", "KR", "GB", "ES", "DE"]
+                        priority_list = settings_db.get_setting('rating_priority') or utils.DEFAULT_RATING_PRIORITY
                         
                         origin_country = fresh_data.get('origin_country', [])
                         origin_country_code = origin_country[0] if origin_country else None
