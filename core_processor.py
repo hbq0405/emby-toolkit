@@ -582,6 +582,87 @@ class MediaProcessor:
                 
                 data_for_batch.append(db_row_complete)
 
+            # 在写入前，检查数据库中是否有值，避免被空值替换。
+            if data_for_batch:
+                try:
+                    batch_tmdb_ids = [r['tmdb_id'] for r in data_for_batch if r.get('tmdb_id')]
+                    
+                    if batch_tmdb_ids:
+                        # 1. 查询数据库中现有的完整记录
+                        cursor.execute("""
+                            SELECT * 
+                            FROM media_metadata 
+                            WHERE tmdb_id = ANY(%s)
+                        """, (batch_tmdb_ids,))
+                        
+                        existing_rows = cursor.fetchall()
+                        
+                        # (tmdb_id, item_type) -> row
+                        existing_map = {
+                            (str(row['tmdb_id']), row['item_type']): row 
+                            for row in existing_rows
+                        }
+                        
+                        # 定义需要保护的元数据字段 (不包含 in_library 等状态字段)
+                        # 注意：rating_json 单独处理
+                        metadata_cols_to_protect = [
+                            'title', 'original_title', 'overview', 'release_date', 'release_year',
+                            'poster_path', 'rating', 'original_language',
+                            'genres_json', 'directors_json', 'studios_json', 
+                            'countries_json', 'keywords_json', 'actors_json'
+                        ]
+
+                        # 辅助函数：判断值是否视为“空”
+                        def is_value_empty(v):
+                            if v is None: return True
+                            if isinstance(v, str):
+                                s = v.strip()
+                                return s == "" or s == "{}" or s == "[]" or s == "null"
+                            return False
+
+                        for row in data_for_batch:
+                            key = (str(row['tmdb_id']), row['item_type'])
+                            
+                            if key in existing_map:
+                                db_record = existing_map[key]
+                                
+                                # --- A. 特殊处理：分级锁定 (最高优先级) ---
+                                is_locked = db_record.get('rating_locked')
+                                old_rating = db_record.get('rating_json')
+                                new_rating_str = row.get('rating_json')
+                                
+                                # 如果已锁定，或者新分级为空但旧分级有效 -> 回退
+                                should_revert_rating = False
+                                if is_locked:
+                                    should_revert_rating = True
+                                elif is_value_empty(new_rating_str) and not is_value_empty(old_rating):
+                                    should_revert_rating = True
+                                    # logger.debug(f"    🛡️ [非空保护] 保留原分级: {row.get('title')}")
+
+                                if should_revert_rating and old_rating:
+                                    # 数据库读出的是 dict/list，需要转回 json str
+                                    row['rating_json'] = json.dumps(old_rating, ensure_ascii=False)
+
+                                # --- B. 通用处理：其他元数据字段 ---
+                                for col in metadata_cols_to_protect:
+                                    new_val = row.get(col)
+                                    old_val = db_record.get(col)
+                                    
+                                    # 如果新值为空，但旧值有效 -> 回退
+                                    if is_value_empty(new_val) and not is_value_empty(old_val):
+                                        # 注意类型转换：
+                                        # data_for_batch 里 JSON 字段是 str
+                                        # db_record 里 JSON 字段是 dict/list (因为 RealDictCursor)
+                                        if col.endswith('_json') and isinstance(old_val, (dict, list)):
+                                            row[col] = json.dumps(old_val, ensure_ascii=False)
+                                        else:
+                                            row[col] = old_val
+                                        
+                                        # logger.trace(f"    🛡️ [非空保护] 字段 '{col}' 保留原值: {row.get('title')}")
+
+                except Exception as e_protect:
+                    logger.error(f"  ⚠️ 执行全字段数据保护机制时出错: {e_protect}", exc_info=True)
+
             cols_str = ", ".join(all_possible_columns)
             placeholders_str = ", ".join([f"%({col})s" for col in all_possible_columns])
             cols_to_update = [col for col in all_possible_columns if col not in ['tmdb_id', 'item_type']]
