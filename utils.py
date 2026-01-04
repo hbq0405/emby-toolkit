@@ -119,7 +119,7 @@ UNIFIED_RATING_CATEGORIES = [
 
 # 2. 默认优先级策略 (如果数据库没配置，就用这个)
 # ORIGIN 代表原产国，如果原产国没数据，按顺序找后面的
-DEFAULT_RATING_PRIORITY = ["ORIGIN", "US", "HK", "TW", "JP", "KR", "GB"]
+DEFAULT_RATING_PRIORITY = ["ORIGIN", "US", "HK", "TW", "JP", "KR", "GB", "ES"]
 
 # 3. 默认分级映射表 (如果数据库没配置，就用这个)
 # 格式: { 国家代码: [ { code: 原分级, label: 映射中文 }, ... ] }
