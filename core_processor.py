@@ -3152,13 +3152,32 @@ class MediaProcessor:
                 # 2. 填充数据
                 if specific_tmdb_data:
                     # 【方案 A】如果有 TMDb 原始分集数据 -> 使用它 (精准!)
+                    
+                    # 获取配置开关 (默认 True: 移除)
+                    should_remove_no_avatar = self.config.get(constants.CONFIG_OPTION_REMOVE_ACTORS_WITHOUT_AVATARS, True)
+
+                    # --- 定义受配置控制的过滤函数 ---
+                    def process_actor_list(actors):
+                        if not actors: return []
+                        # 如果开关开启，且没有 profile_path，则过滤
+                        if should_remove_no_avatar:
+                            return [a for a in actors if a.get('profile_path')]
+                        # 否则原样返回
+                        return actors
+
                     # 填充 cast (常规演员)
-                    if specific_tmdb_data.get('credits', {}).get('cast'):
-                        credits_node['cast'] = specific_tmdb_data['credits']['cast']
+                    raw_cast = specific_tmdb_data.get('credits', {}).get('cast', [])
+                    filtered_cast = process_actor_list(raw_cast)
+                    if filtered_cast:
+                        credits_node['cast'] = filtered_cast
+                    
                     # 填充 guest_stars (客串演员)
-                    if specific_tmdb_data.get('credits', {}).get('guest_stars'):
-                        credits_node['guest_stars'] = specific_tmdb_data['credits']['guest_stars']
-                    # 填充 crew (幕后人员，如导演编剧)
+                    raw_guests = specific_tmdb_data.get('credits', {}).get('guest_stars', [])
+                    filtered_guests = process_actor_list(raw_guests)
+                    if filtered_guests:
+                        credits_node['guest_stars'] = filtered_guests
+                    
+                    # 填充 crew (幕后人员) - 幕后人员通常不看头像，直接保留
                     if specific_tmdb_data.get('credits', {}).get('crew'):
                         credits_node['crew'] = specific_tmdb_data['credits']['crew']
                 
