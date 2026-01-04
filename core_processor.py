@@ -1058,83 +1058,7 @@ class MediaProcessor:
             tmdb_details_for_extra = None # 用于内部缓存
 
             # =========================================================
-            # ★★★ 步骤1:检查json是否缺失 ★★★
-            # =========================================================
-            cache_folder_name = "tmdb-movies2" if item_type == "Movie" else "tmdb-tv"
-            source_cache_dir = os.path.join(self.local_data_path, "cache", cache_folder_name, tmdb_id)
-            main_json_filename = "all.json" if item_type == "Movie" else "series.json"
-            source_json_path = os.path.join(source_cache_dir, main_json_filename)
-
-            if not os.path.exists(source_json_path):
-                logger.warning(f"  ➜ 核心处理前置检查：本地元数据文件 '{source_json_path}' 不存在。启动备用方案...")
-                logger.info(f"  ➜ 正在通知 Emby 为 '{item_name_for_log}' 刷新元数据以生成缓存文件...")
-                
-                emby.refresh_emby_item_metadata(
-                    item_emby_id=item_id,
-                    emby_server_url=self.emby_url,
-                    emby_api_key=self.emby_api_key,
-                    user_id_for_ops=self.emby_user_id,
-                    replace_all_metadata_param=True,
-                    item_name_for_log=item_name_for_log
-                )
-
-                # --- 根据媒体类型选择不同的等待策略 ---
-                if item_type == "Series":
-                    # 电视剧：智能等待模式
-                    logger.info("  ➜ 检测到为电视剧，启动智能等待模式...")
-                    total_wait_time = 0
-                    idle_time = 0
-                    last_file_count = 0
-                    CHECK_INTERVAL = 10  # 每10秒检查一次
-                    MAX_IDLE_TIME = 60   # 连续60秒没动静则超时
-                    MAX_TOTAL_WAIT_MINUTES = 15 # 总最长等待时间15分钟
-
-                    while total_wait_time < MAX_TOTAL_WAIT_MINUTES * 60:
-                        time_module.sleep(CHECK_INTERVAL)
-                        total_wait_time += CHECK_INTERVAL
-
-                        # 检查主文件是否已生成
-                        if os.path.exists(source_json_path):
-                            logger.info(f"  ➜ 主文件 '{main_json_filename}' 已生成！等待结束。")
-                            break
-                        
-                        # 检查目录内文件数量变化
-                        try:
-                            current_file_count = len(os.listdir(source_cache_dir))
-                        except FileNotFoundError:
-                            current_file_count = 0
-
-                        if current_file_count > last_file_count:
-                            logger.info(f"  ➜ 缓存目录有活动，检测到 {current_file_count - last_file_count} 个新文件。重置空闲计时器。")
-                            idle_time = 0 # 有新文件，重置空闲计时
-                            last_file_count = current_file_count
-                        else:
-                            idle_time += CHECK_INTERVAL
-                            logger.info(f"  ➜ 缓存目录无新文件，空闲时间累计: {idle_time}/{MAX_IDLE_TIME}秒。")
-
-                        if idle_time >= MAX_IDLE_TIME:
-                            logger.warning(f"  ➜ 缓存目录连续 {MAX_IDLE_TIME} 秒无活动，判定任务完成或超时。")
-                            break
-                    else: # while循环正常结束（达到总时长）
-                        logger.warning(f"  ➜ 已达到总最长等待时间 {MAX_TOTAL_WAIT_MINUTES} 分钟，停止等待。")
-
-                else:
-                    # 电影：简单定时等待
-                    logger.info("  ➜ 检测到为电影，启动简单等待模式...")
-                    for attempt in range(10):
-                        logger.info(f"  ➜ 等待3秒后检查文件... (第 {attempt + 1}/10 次尝试)")
-                        time_module.sleep(3)
-                        if os.path.exists(source_json_path):
-                            logger.info(f"  ➜ 文件已成功生成！")
-                            break
-            
-            # 在所有尝试后，最终确认文件是否存在
-            if not os.path.exists(source_json_path):
-                logger.error(f"  ➜ 等待超时，元数据文件仍未生成。无法继续处理 '{item_name_for_log}'，已跳过。")
-                return False
-
-            # =========================================================
-            # ★★★ 步骤 2: 确定元数据骨架 ★★★
+            # ★★★ 步骤 1: 确定元数据骨架 ★★★
             # =========================================================
             logger.info(f"  ➜ 正在构建标准元数据骨架...")
             
@@ -1427,21 +1351,8 @@ class MediaProcessor:
                         tmdb_details_for_extra['seasons_details'] = aggregated_tmdb_data.get('seasons_details', [])
                         tmdb_details_for_extra['episodes_details'] = aggregated_tmdb_data.get('episodes_details', {})
 
-            # --- 兜底：如果 API 失败，尝试从本地旧缓存读取并迁移 ---
-            elif not fresh_data:
-                # ... (这里可以保留之前的读取 source_json_path 的逻辑作为最后的救命稻草) ...
-                # 但既然你说 cache 是鸡肋，我们这里可以简化处理：
-                # 如果没有 API 数据，且没有 override 文件，那就报错跳过，或者仅使用 Emby 的基本信息填充骨架。
-                if os.path.exists(source_json_path):
-                     logger.warning(f"  ➜ API 获取失败，降级使用本地缓存填充骨架 (可能不完整)...")
-                     local_data = _read_local_json(source_json_path)
-                     if local_data:
-                         tmdb_details_for_extra.update(local_data) # 简单粗暴合并
-                         # 尝试提取演员表
-                         authoritative_cast_source = (local_data.get("casts", {}) or local_data.get("credits", {})).get("cast", [])
-                
             # =========================================================
-            # ★★★ 步骤 3: 移除无头像演员 ★★★
+            # ★★★ 步骤 2: 移除无头像演员 ★★★
             # =========================================================
             if self.config.get(constants.CONFIG_OPTION_REMOVE_ACTORS_WITHOUT_AVATARS, True) and authoritative_cast_source:
                 original_count = len(authoritative_cast_source)
@@ -1460,7 +1371,7 @@ class MediaProcessor:
                     logger.debug("  ➜ (预检查) 所有源数据中的演员均有头像，无需预先移除。")
                 
             # =========================================================
-            # ★★★ 步骤 4:  数据来源 ★★★
+            # ★★★ 步骤 3:  数据来源 ★★★
             # =========================================================
             final_processed_cast = None
             cache_row = None 
@@ -1510,30 +1421,7 @@ class MediaProcessor:
                                                         else:
                                                             seasons_details_list.append(data)
                                         
-                                        # 2. 再读 Source (新的)，补全 Override 里没有的
-                                        if os.path.exists(source_cache_dir):
-                                            recovered_count = 0
-                                            for fname in os.listdir(source_cache_dir):
-                                                if fname.startswith("season-") and fname.endswith(".json") and "-episode-" in fname:
-                                                    try:
-                                                        parts = fname.replace(".json", "").split("-")
-                                                        s_num = int(parts[1])
-                                                        e_num = int(parts[3])
-                                                        key = f"S{s_num}E{e_num}"
-                                                        
-                                                        # ★ 关键：如果 Override 里没有，就从 Source 拿 ★
-                                                        if key not in episodes_details_map:
-                                                            source_file = os.path.join(source_cache_dir, fname)
-                                                            ep_data = _read_local_json(source_file)
-                                                            if ep_data:
-                                                                episodes_details_map[key] = ep_data
-                                                                recovered_count += 1
-                                                    except: continue
-                                            
-                                            if recovered_count > 0:
-                                                logger.info(f"  ➜ [快速模式] 成功从源缓存补全了 {recovered_count} 个新分集的数据。")
-
-                                        # 3. 塞回骨架
+                                        # 2. 塞回骨架
                                         if episodes_details_map:
                                             tmdb_details_for_extra['episodes_details'] = episodes_details_map
                                             logger.info(f"  ➜ [快速模式] 最终聚合了 {len(episodes_details_map)} 个分集的元数据。")
@@ -1634,7 +1522,7 @@ class MediaProcessor:
                     )
 
             # =========================================================
-            # ★★★ 步骤 5: 统一的收尾流程 ★★★
+            # ★★★ 步骤 4: 统一的收尾流程 ★★★
             # =========================================================
             if final_processed_cast is None:
                 raise ValueError("未能生成有效的最终演员列表。")
@@ -2668,7 +2556,7 @@ class MediaProcessor:
             if item_type == "Series":
                 self._inject_cast_to_series_files(
                     target_dir=target_override_dir, cast_list=final_cast_for_json,
-                    series_details=item_details, source_dir=os.path.join(self.local_data_path, "cache", cache_folder_name, tmdb_id)
+                    series_details=item_details
                 )
 
             # ======================================================================
@@ -3015,24 +2903,11 @@ class MediaProcessor:
 
         # 定义核心路径
         cache_folder_name = "tmdb-movies2" if item_type == "Movie" else "tmdb-tv"
-        source_cache_dir = os.path.join(self.local_data_path, "cache", cache_folder_name, tmdb_id)
         target_override_dir = os.path.join(self.local_data_path, "override", cache_folder_name, tmdb_id)
         main_json_filename = "all.json" if item_type == "Movie" else "series.json"
         main_json_path = os.path.join(target_override_dir, main_json_filename)
-
-        # 步骤 1: 进场施工，打好基础 (复制毛坯房)
-        # 只有在需要进行主体装修时（主流程调用），才需要复制。追更等零活不需要。
-        if final_cast_override is not None:
-            logger.info(f"  ➜ {log_prefix} 开始为 '{item_name_for_log}' 写入覆盖缓存...")
-            if not os.path.exists(source_cache_dir):
-                logger.error(f"  ➜ {log_prefix} 找不到源缓存目录！路径: {source_cache_dir}")
-                return
-            try:
-                shutil.copytree(source_cache_dir, target_override_dir, dirs_exist_ok=True)
-            except Exception as e:
-                logger.error(f"  ➜ {log_prefix} 复制元数据时失败: {e}", exc_info=True)
-                return
-
+        # 确保目标目录存在
+        os.makedirs(target_override_dir, exist_ok=True)
         perfect_cast_for_injection = []
         # 如果有元数据覆盖，先写入元数据 
         if metadata_override and final_cast_override is not None:
@@ -3059,14 +2934,21 @@ class MediaProcessor:
             perfect_cast_for_injection = new_cast_for_json
 
             # 步骤 2: 修改主文件
-            with open(main_json_path, 'r+', encoding='utf-8') as f:
-                data = json.load(f)
-                if 'casts' in data: data['casts']['cast'] = perfect_cast_for_injection
-                else: data.setdefault('credits', {})['cast'] = perfect_cast_for_injection
-                
-                f.seek(0)
+            if not os.path.exists(main_json_path):
+                skeleton = utils.MOVIE_SKELETON_TEMPLATE if item_type == "Movie" else utils.SERIES_SKELETON_TEMPLATE
+                # 深拷贝一份骨架
+                data = json.loads(json.dumps(skeleton))
+            else:
+                with open(main_json_path, 'r', encoding='utf-8') as f:
+                    data = json.load(f)
+
+            # 更新演员表
+            if 'casts' in data: data['casts']['cast'] = perfect_cast_for_injection
+            else: data.setdefault('credits', {})['cast'] = perfect_cast_for_injection
+            
+            # 写入
+            with open(main_json_path, 'w', encoding='utf-8') as f:
                 json.dump(data, f, ensure_ascii=False, indent=2)
-                f.truncate()
         else:
             # --- 角色二：零活处理 (追更) ---
             logger.info(f"  ➜ {log_prefix} [追更] 开始为 '{item_name_for_log}' 的新分集写入覆盖缓存...")
@@ -3087,7 +2969,6 @@ class MediaProcessor:
                 target_dir=target_override_dir, 
                 cast_list=perfect_cast_for_injection, 
                 series_details=item_details, 
-                source_dir=source_cache_dir,  
                 episode_ids_to_sync=episode_ids_to_sync
             )
 
@@ -3108,7 +2989,7 @@ class MediaProcessor:
         return cast_list
 
     # --- 辅助函数：将演员表注入剧集的季/集JSON文件 ---
-    def _inject_cast_to_series_files(self, target_dir: str, cast_list: List[Dict[str, Any]], series_details: Dict[str, Any], source_dir: str, episode_ids_to_sync: Optional[List[str]] = None):
+    def _inject_cast_to_series_files(self, target_dir: str, cast_list: List[Dict[str, Any]], series_details: Dict[str, Any], episode_ids_to_sync: Optional[List[str]] = None):
         """
         辅助函数：将演员表注入剧集的季/集JSON文件。
         【骨架修复版】始终基于 utils 中的完美骨架构建数据，确保结构完整。
@@ -3166,10 +3047,11 @@ class MediaProcessor:
                 
                 # 必须两者都有值
                 if s_num is not None and e_num is not None:
-                    # 【优化修复】强制转为 int 进行判断，防止 Emby 返回字符串类型的 "0" 导致过滤失效
+                    # 【终极修复】强制转 int 判断。
+                    # Emby 有时返回数字 0，有时返回字符串 "0"，必须统一转 int 才能准确拦截！
                     try:
                         if int(s_num) == 0 and int(e_num) == 0:
-                            continue
+                            continue # 彻底切除阑尾
                     except (ValueError, TypeError):
                         pass
 
@@ -3207,7 +3089,6 @@ class MediaProcessor:
 
             for filename in sorted_files_to_process:
                 child_json_path = os.path.join(target_dir, filename)
-                source_json_path = os.path.join(source_dir, filename)
                 
                 is_season_file = filename.startswith("season-") and "-episode-" not in filename
                 is_episode_file = "-episode-" in filename
@@ -3224,11 +3105,13 @@ class MediaProcessor:
                 # ★★★ 步骤 B: 加载数据源 (优先 Override，其次 Source) ★★★
                 data_source = None
                 if os.path.exists(child_json_path):
-                    # 如果目标文件已存在，读取它（保留之前的修改）
                     data_source = _read_local_json(child_json_path)
-                elif os.path.exists(source_json_path):
-                    # 否则读取源缓存
-                    data_source = _read_local_json(source_json_path)
+                    if data_source:
+                        for key in child_data.keys():
+                            if key == 'credits' and 'casts' in data_source and 'credits' not in data_source:
+                                 child_data['credits'] = data_source['casts']
+                            elif key in data_source:
+                                child_data[key] = data_source[key]
                 
                 # 如果两边都没数据，且不是强制生成，可能需要跳过？
                 # 但为了保证 Emby 元数据能写入，我们允许仅基于骨架生成
@@ -3479,8 +3362,7 @@ class MediaProcessor:
                 self._inject_cast_to_series_files(
                     target_dir=target_override_dir,
                     cast_list=None, # ★★★ 关键：传入 None 表示我们只更新元数据，不碰演员表 ★★★
-                    series_details=item_details,
-                    source_dir=os.path.join(self.local_data_path, "cache", cache_folder_name, tmdb_id)
+                    series_details=item_details
                 )
 
             logger.info(f"  ➜ {log_prefix} 成功为 '{item_name_for_log}' 持久化了元数据修改。")
