@@ -1259,21 +1259,6 @@ class MediaProcessor:
 
                         tmdb_details_for_extra['releases']['countries'] = countries_list
 
-                    elif 'releases' in fresh_data:
-                        tmdb_details_for_extra['releases'] = fresh_data['releases']
-                        # 尝试从旧结构提取
-                        try:
-                            r_list = fresh_data['releases'].get('countries', [])
-                            if r_list:
-                                final_rating_str = r_list[0].get('certification', '')
-                        except: pass
-
-                    # ★★★ 核心修复：写入根节点兜底字段 ★★★
-                    if final_rating_str:
-                        tmdb_details_for_extra['mpaa'] = final_rating_str
-                        tmdb_details_for_extra['certification'] = final_rating_str
-                        logger.info(f"  ➜ 已提取主分级 '{final_rating_str}' 并写入根节点，确保 Emby 识别。")
-
                     # 3. 关键词
                     if 'keywords' in fresh_data:
                         kw_data = fresh_data['keywords']
