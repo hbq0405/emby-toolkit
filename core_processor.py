@@ -1200,15 +1200,20 @@ class MediaProcessor:
                         countries_list = []
                         existing_us_rating = False
                         
-                        # A. 加载分级映射表
+                        # ★★★ A. 显式加载分级映射表 ★★★
                         from database import settings_db
-                        rating_mapping = settings_db.get_setting('rating_mapping') or utils.DEFAULT_RATING_MAPPING
+                        # 优先读数据库，读不到用默认值
+                        rating_mapping = settings_db.get_setting('rating_mapping')
+                        if not rating_mapping:
+                            rating_mapping = utils.DEFAULT_RATING_MAPPING
                         
                         # B. 遍历原始分级
                         for r in fresh_data['release_dates'].get('results', []):
                             country_code = r.get('iso_3166_1')
                             cert = ""
                             release_date = ""
+                            
+                            # 提取该国家的分级
                             for rel in r.get('release_dates', []):
                                 if rel.get('certification'):
                                     cert = rel.get('certification')
@@ -1216,7 +1221,7 @@ class MediaProcessor:
                                     break
                             
                             if cert:
-                                # 添加原始分级
+                                # 1. 添加原始分级
                                 countries_list.append({
                                     "iso_3166_1": country_code,
                                     "certification": cert,
@@ -1227,35 +1232,42 @@ class MediaProcessor:
                                 if country_code == 'US':
                                     existing_us_rating = True
                                 
-                                # ★★★ C. 智能补全 US 分级 ★★★
-                                # 如果当前不是 US 分级，且还没有找到 US 分级，尝试映射
-                                if not existing_us_rating and country_code in rating_mapping and 'US' in rating_mapping:
-                                    # 1. 查找当前分级的 emby_value
-                                    current_val = None
-                                    for rule in rating_mapping[country_code]:
-                                        if rule['code'] == cert:
-                                            current_val = rule.get('emby_value')
-                                            break
-                                    
-                                    # 2. 如果找到了值，去 US 规则里找对应分级
-                                    if current_val is not None:
-                                        target_us_code = None
-                                        # 优先找完全相等的
-                                        for rule in rating_mapping['US']:
-                                            if rule.get('emby_value') == current_val:
-                                                target_us_code = rule['code']
+                                # ★★★ C. 智能补全 US 分级 (核心修复) ★★★
+                                # 只有当：目前没找到US分级 且 当前国家在映射表中 且 US也在映射表中
+                                if not existing_us_rating and country_code != 'US' and isinstance(rating_mapping, dict):
+                                    if country_code in rating_mapping and 'US' in rating_mapping:
+                                        
+                                        # C1. 查找当前分级的 emby_value
+                                        current_val = None
+                                        for rule in rating_mapping[country_code]:
+                                            # 比较时去除空格，忽略大小写，确保匹配率
+                                            if str(rule['code']).strip().upper() == str(cert).strip().upper():
+                                                current_val = rule.get('emby_value')
                                                 break
                                         
-                                        # 3. 如果找到了对应 US 分级，添加它！
-                                        if target_us_code:
-                                            logger.info(f"  ➜ [分级映射] 将 {country_code}:{cert} (val={current_val}) 映射为 US:{target_us_code}")
-                                            countries_list.append({
-                                                "iso_3166_1": "US",
-                                                "certification": target_us_code,
-                                                "release_date": release_date, # 沿用原日期
-                                                "primary": False
-                                            })
-                                            existing_us_rating = True # 标记已找到，避免重复添加
+                                        # C2. 如果找到了值，去 US 规则里找对应分级
+                                        if current_val is not None:
+                                            target_us_code = None
+                                            # 遍历 US 规则
+                                            for rule in rating_mapping['US']:
+                                                # 强制转 int 比较，防止类型不一致
+                                                try:
+                                                    if int(rule.get('emby_value')) == int(current_val):
+                                                        target_us_code = rule['code']
+                                                        break
+                                                except (ValueError, TypeError):
+                                                    continue
+                                            
+                                            # C3. 找到对应 US 分级，添加！
+                                            if target_us_code:
+                                                logger.info(f"  ➜ [分级映射] 成功将 {country_code}:{cert} (val={current_val}) 映射为 US:{target_us_code}")
+                                                countries_list.append({
+                                                    "iso_3166_1": "US",
+                                                    "certification": target_us_code,
+                                                    "release_date": release_date, # 沿用原日期
+                                                    "primary": False
+                                                })
+                                                existing_us_rating = True # 标记已找到
 
                         tmdb_details_for_extra['releases']['countries'] = countries_list
 
