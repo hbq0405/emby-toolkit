@@ -3034,13 +3034,24 @@ class MediaProcessor:
                 return
 
         perfect_cast_for_injection = []
-        # ★★★ 新增：如果有元数据覆盖，先写入元数据 ★★★
+        # 如果有元数据覆盖，先写入元数据 
         if metadata_override and final_cast_override is not None:
             logger.info(f"  ➜ {log_prefix} 检测到元数据修正（分级/类型等），正在写入主文件...")
-            # 注意：metadata_override 是我们精心构建的 tmdb_details_for_extra
-            # 我们直接把它写入 main_json_path
+            
+            # 1. 创建一个副本，避免修改原始对象影响后续逻辑
+            data_to_write = metadata_override.copy()
+            
+            # 2. 剔除不需要写入主文件的临时字段
+            # 这些字段是我们在 _process_item_core_logic 里挂载上去为了传给 _inject_cast_to_series_files 用的
+            # 但它们不应该出现在 series.json 里
+            keys_to_remove = ['seasons_details', 'episodes_details', 'release_dates'] # release_dates 是电影的临时字段
+            for k in keys_to_remove:
+                if k in data_to_write:
+                    del data_to_write[k]
+
+            # 3. 写入净化后的数据
             with open(main_json_path, 'w', encoding='utf-8') as f:
-                json.dump(metadata_override, f, ensure_ascii=False, indent=2)
+                json.dump(data_to_write, f, ensure_ascii=False, indent=2)
         if final_cast_override is not None:
             # --- 角色一：主体精装修 ---
             new_cast_for_json = self._build_cast_from_final_data(final_cast_override)
