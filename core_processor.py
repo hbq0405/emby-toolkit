@@ -3187,6 +3187,12 @@ class MediaProcessor:
                     if child.get("Id") in id_set and child.get("Type") == "Episode":
                         s_num = child.get('ParentIndexNumber')
                         e_num = child.get('IndexNumber')
+                        try:
+                            if s_num is not None and e_num is not None:
+                                if int(s_num) == 0 and int(e_num) == 0:
+                                    continue # 跳过 S0E0
+                        except (ValueError, TypeError):
+                            pass
                         if s_num is not None:
                             if e_num is not None: files_to_process.add(f"season-{s_num}-episode-{e_num}.json")
                             files_to_process.add(f"season-{s_num}.json")
