@@ -3152,9 +3152,27 @@ class MediaProcessor:
         child_data_map = {}
         for child in children_from_emby:
             key = None
-            if child.get("Type") == "Season": key = f"season-{child.get('IndexNumber')}"
-            elif child.get("Type") == "Episode": key = f"season-{child.get('ParentIndexNumber')}-episode-{child.get('IndexNumber')}"
-            if key: child_data_map[key] = child
+            
+            # ★★★ 修复：增加非空判断，防止生成 season-None.json ★★★
+            if child.get("Type") == "Season": 
+                idx = child.get('IndexNumber')
+                if idx is not None:
+                    key = f"season-{idx}"
+            
+            # ★★★ 修复：增加非空判断，防止生成 season-0-episode-0.json ★★★
+            elif child.get("Type") == "Episode": 
+                s_num = child.get('ParentIndexNumber')
+                e_num = child.get('IndexNumber')
+                
+                # 必须两者都有值。且通常过滤掉 S0E0 (虽然技术上S0是特典，但E0通常是错误的)
+                if s_num is not None and e_num is not None:
+                    # 额外过滤：如果 S=0 且 E=0，通常是脏数据，跳过
+                    if s_num == 0 and e_num == 0:
+                        continue
+                    key = f"season-{s_num}-episode-{e_num}"
+            
+            if key: 
+                child_data_map[key] = child
 
         updated_children_count = 0
         try:
