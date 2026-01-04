@@ -212,25 +212,39 @@ def query_virtual_library_items(
         params.append(target_library_ids)
 
     # ======================================================================
-    # ★★★ 4. 权限控制 (核心逻辑优化) ★★★
+    # ★★★ 4. 权限控制 (修复版) ★★★
     # ======================================================================
     
-    # 定义分级字段表达式
-    rating_expr = "COALESCE(m.rating_json->>'US', m.rating_json->>'CN', m.rating_json->>'GB', m.rating_json->>'JP', m.rating_json->>'KR')"
+    # 1. 定义分级取值表达式
+    # 修复：增加兜底逻辑。如果 US/CN 等主要国家都没有分级，尝试取 JSON 中的任意一个值。
+    # 防止像 {"DE": "18"} 这种只有德国分级的内容因为取不到值变成 NULL，从而绕过限制。
+    rating_expr = """
+    COALESCE(
+        m.rating_json->>'US', 
+        m.rating_json->>'CN', 
+        m.rating_json->>'GB', 
+        m.rating_json->>'JP', 
+        m.rating_json->>'KR',
+        -- 兜底：取 JSON 中第一个非空的值 (Postgres 语法)
+        (SELECT value FROM jsonb_each_text(m.rating_json) LIMIT 1)
+    )
+    """
 
     # --- A. 处理分级数值限制 (Rating Value Limit) ---
-    # 逻辑：优先使用 override，如果没有 override 且有 user_id，则使用 user policy
+    # 逻辑：未分级(Unrated/None) 默认为 0 (安全)。
+    # 只要 (计算出的分级值 <= 限制值) 即放行。
+    
     limit_value_sql = None
     
     if max_rating_override is not None:
-        # 情况1: 强制覆盖 (通常用于管理员生成封面)
+        # 情况1: 强制覆盖 (封面生成器)
         limit_value_sql = str(max_rating_override)
     elif user_id:
         # 情况2: 使用用户策略
         limit_value_sql = "(u.policy_json->>'MaxParentalRating')::int"
     
-    # 只有当存在限制值时，才应用过滤
     if limit_value_sql:
+        # 计算分级数值 (利用 _build_rating_value_sql 的逻辑：映射不到或非数字则为0)
         rating_value_calc_sql = _build_rating_value_sql(rating_expr)
         
         rating_limit_sql = f"""
@@ -238,18 +252,11 @@ def query_virtual_library_items(
             -- 1. 如果限制值本身为空(无限制)，则通过
             ({limit_value_sql} IS NULL)
             OR
-            -- 2. 显式放行未分级/空分级 (防止被数值比较误杀)
-            (
-                {rating_expr} IS NULL 
-                OR {rating_expr} = '' 
-                OR {rating_expr} IN ('NR', 'UR', 'Unrated', 'Not Rated')
-            )
-            OR
-            -- 3. 有分级且数值 <= 限制值
-            (
-                {rating_expr} IS NOT NULL 
-                AND ({rating_value_calc_sql}) <= {limit_value_sql}
-            )
+            -- 2. 数值比较：分级值 <= 限制值
+            -- 未分级/无分级 内容会被计算为 0。
+            -- 0 <= 8 (PG-13) -> TRUE (通过)
+            -- 9 (R) <= 8 (PG-13) -> FALSE (拦截)
+            (({rating_value_calc_sql}) <= {limit_value_sql})
         )
         """
         where_clauses.append(rating_limit_sql)
@@ -472,53 +479,34 @@ def query_virtual_library_items(
             target_codes = _expand_rating_labels(list(value) if isinstance(value, list) else [value])
             
             if not target_codes:
-                # 如果没找到对应的代码，说明这个标签没映射任何分级，理论上查不到数据
-                # 但为了逻辑闭环，我们可以让它查空，或者忽略
                 continue 
 
-            # A. 获取用户配置的优先级 (例如 ['ORIGIN', 'US', 'JP'])
+            # A. 获取用户配置的优先级
             priority_list = settings_db.get_setting('rating_priority') or []
 
-            # 2. 构建 SQL
-            # 逻辑：检查 rating_json 的所有 value 中，是否存在于 target_codes 列表中
-            # m.rating_json 是 {"US": "R", ...}
-            # jsonb_each_text(m.rating_json) 会返回 (key, value) 行
-            
             json_keys = []
             for p in priority_list:
                 if p == 'ORIGIN':
-                    # 动态获取原产国：从 countries_json 取第一个元素作为 Key
-                    # 语法：m.rating_json ->> (m.countries_json ->> 0)
                     json_keys.append("m.rating_json->>(m.countries_json->>0)")
                 else:
-                    # 获取指定国家：直接取 Key
-                    # 语法：m.rating_json ->> 'US'
                     json_keys.append(f"m.rating_json->>'{p}'")
             
-            # 兜底：如果列表为空，默认取 US
             if not json_keys:
                 json_keys = ["m.rating_json->>'US'"]
                 
-            # 组合成 SQL 表达式
-            # target_rating_expr 代表了“根据优先级策略最终生效的那个分级代码”
             target_rating_expr = f"COALESCE({', '.join(json_keys)})"
 
             # C. 构建查询语句
-            # 逻辑：判断 最终生效的分级代码 是否在 target_codes 列表中
-            
             if op in ['eq', 'is_one_of']:
-                # 正向筛选 (是...): 
-                # 如果分级为 NULL，NULL = ANY(...) 结果为 NULL (False)。
-                # 只有明确有分级且匹配的才会显示。符合“冷宫”逻辑。
+                # 正向筛选 (是...): 必须有分级且匹配
                 clause = f"{target_rating_expr} = ANY(%s)"
                 params.append(target_codes)
                 
             elif op == 'is_none_of':
-                # 反向筛选 (不是...):
-                # 旧逻辑: (IS NULL OR NOT MATCH) -> 没分级的也会显示。
-                # 新逻辑: (IS NOT NULL AND NOT MATCH) -> 必须有分级，且不匹配目标，才显示。
-                # 没分级的直接被过滤掉 (打入冷宫)。
-                clause = f"({target_rating_expr} IS NOT NULL AND NOT ({target_rating_expr} = ANY(%s)))"
+                # ★★★ 修复：反向筛选 (不是...) ★★★
+                # 旧逻辑: (IS NOT NULL AND NOT MATCH) -> 导致无分级内容被误杀
+                # 新逻辑: (IS NULL OR NOT MATCH) -> 保留无分级内容
+                clause = f"({target_rating_expr} IS NULL OR NOT ({target_rating_expr} = ANY(%s)))"
                 params.append(target_codes)
 
         # --- 6. 数值比较 (Runtime, Year, Rating) ---
