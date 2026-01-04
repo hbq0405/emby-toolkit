@@ -123,23 +123,6 @@ def _build_rating_value_sql(rating_expr: str) -> str:
 
     return f"CASE {chr(10).join(whens)} ELSE {else_logic} END"
 
-def get_user_allowed_library_ids(user_id: str, emby_url: str, emby_api_key: str) -> List[str]:
-    """
-    辅助函数：调用 Emby API 获取指定用户有权访问的顶层 View ID 列表。
-    主要用于反向代理层做缓存或兜底，核心查询逻辑已下沉到 SQL。
-    """
-    import requests
-    try:
-        # 使用 /Users/{Id}/Views 接口获取用户可见的顶层库
-        url = f"{emby_url.rstrip('/')}/emby/Users/{user_id}/Views"
-        resp = requests.get(url, params={'api_key': emby_api_key}, timeout=5)
-        resp.raise_for_status()
-        data = resp.json()
-        return [item['Id'] for item in data.get('Items', [])]
-    except Exception as e:
-        logger.error(f"获取用户 {user_id} 媒体库权限失败: {e}")
-        return []
-
 def query_virtual_library_items(
     rules: List[Dict[str, Any]], 
     logic: str, 
