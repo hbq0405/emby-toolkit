@@ -286,3 +286,150 @@ DEFAULT_LANGUAGE_MAPPING = [
     {"label": "拉丁语", "value": "la"},
     {"label": "无语言", "value": "xx"},
 ]
+
+# --- ★★★ Emby 兼容 JSON 骨架模板 (V1 - 电影版) ★★★ ---
+# 用于生成 all.json (电影)
+MOVIE_SKELETON_TEMPLATE = {
+  "adult": False,
+  "backdrop_path": "",
+  "belongs_to_collection": None, # { "id": 0, "name": "", "poster_path": "", "backdrop_path": "" }
+  "budget": 0,
+  "genres": [], # [ { "id": 0, "name": "" } ]
+  "homepage": "",
+  "id": 0,
+  "imdb_id": "",
+  "original_language": "",
+  "original_title": "",
+  "overview": "",
+  "popularity": 0.0,
+  "poster_path": "",
+  "production_companies": [], # [ { "id": 0, "name": "", "origin_country": "", "logo_path": "" } ]
+  "production_countries": [], # [ { "iso_3166_1": "", "name": "" } ]
+  "release_date": "",
+  "revenue": 0,
+  "runtime": 0,
+  "spoken_languages": [], # [ { "iso_639_1": "", "name": "", "english_name": "" } ]
+  "status": "",
+  "tagline": "",
+  "title": "",
+  "video": False,
+  "vote_average": 0.0,
+  "vote_count": 0,
+  # ★ Emby 特有结构：演员表
+  "casts": {
+    "cast": [], # [ { "id": 0, "name": "", "character": "", "profile_path": "", "order": 0, ... } ]
+    "crew": []  # [ { "id": 0, "name": "", "job": "", "department": "", ... } ]
+  },
+  # ★ Emby 特有结构：分级信息
+  "releases": {
+    "countries": [] # [ { "iso_3166_1": "US", "certification": "PG-13", "release_date": "" } ]
+  },
+  # ★ Emby 特有结构：关键词
+  "keywords": {
+    "keywords": [] # [ { "id": 0, "name": "" } ]
+  },
+  # ★ Emby 特有结构：预告片
+  "trailers": {
+    "quicktime": [],
+    "youtube": [] # [ { "name": "", "size": "", "source": "", "type": "" } ]
+  }
+}
+
+# 用于生成 series.json (电视剧)
+SERIES_SKELETON_TEMPLATE = {
+  "backdrop_path": "",
+  "created_by": [], # [ { "id": 0, "name": "", "profile_path": "" } ]
+  "episode_run_time": [], # [ 60 ]
+  "first_air_date": "",
+  "genres": [], # [ { "id": 0, "name": "" } ]
+  "homepage": "",
+  "id": 0,
+  "in_production": False,
+  "languages": [], # [ "en" ]
+  "last_air_date": "",
+  "name": "",
+  "networks": [], # [ { "id": 0, "name": "" } ]
+  "number_of_episodes": 0,
+  "number_of_seasons": 0,
+  "origin_country": [], # [ "US" ]
+  "original_language": "",
+  "original_name": "",
+  "overview": "",
+  "popularity": 0.0,
+  "poster_path": "",
+  "production_companies": [], # [ { "id": 0, "name": "", "origin_country": "", "logo_path": "" } ]
+  "status": "",
+  "tagline": "",
+  "type": "",
+  "vote_average": 0.0,
+  "vote_count": 0,
+  # ★ Emby 特有结构：演员表 (电视剧层级通常只包含常驻演员)
+  "casts": {
+    "cast": [], 
+    "crew": []
+  },
+  # ★ Emby 特有结构：分级信息
+  "content_ratings": {
+    "results": [] # [ { "iso_3166_1": "US", "rating": "TV-MA" } ]
+  },
+  # ★ Emby 特有结构：关键词
+  "keywords": {
+    "results": [] # [ { "id": 0, "name": "" } ] (注意：剧集关键词通常在 results 里，不同于电影的 keywords)
+  },
+  # ★ Emby 特有结构：外部ID
+  "external_ids": {
+    "imdb_id": "",
+    "tvdb_id": 0
+  },
+  # ★ Emby 特有结构：预告片
+  "videos": {
+    "results": [] 
+  }
+}
+
+# 用于生成 season-X.json (季)
+SEASON_SKELETON_TEMPLATE = {
+  "air_date": "",
+  "name": "",
+  "overview": "",
+  "id": 0,
+  "poster_path": "",
+  "season_number": 0,
+  "vote_average": 0.0,
+  "credits": {
+    "cast": [],
+    "crew": []
+  },
+  "external_ids": {
+    "tvdb_id": 0
+  },
+  "videos": {
+    "results": []
+  }
+}
+
+# 用于生成 season-X-episode-Y.json (分集)
+EPISODE_SKELETON_TEMPLATE = {
+  "air_date": "",
+  "episode_number": 0,
+  "name": "",
+  "overview": "",
+  "id": 0,
+  "production_code": "",
+  "season_number": 0,
+  "still_path": "",
+  "vote_average": 0.0,
+  "vote_count": 0,
+  "external_ids": {
+    "imdb_id": "",
+    "tvdb_id": 0
+  },
+  "credits": {
+    "cast": [], # 分集特约演员 (Guest Stars) 通常也混在这里或单独处理
+    "crew": [],
+    "guest_stars": []
+  },
+  "videos": {
+    "results": []
+  }
+}
