@@ -1150,7 +1150,7 @@ class MediaProcessor:
                         from database import settings_db
                         rating_mapping = settings_db.get_setting('rating_mapping') or utils.DEFAULT_RATING_MAPPING
                         # 默认优先级：原产国 > 美国 > 英国 > 日本 > 德国...
-                        priority_list = settings_db.get_setting('rating_priority') or ["ORIGIN", "US", "GB", "JP", "DE", "KR", "HK", "TW", "CN"]
+                        priority_list = settings_db.get_setting('rating_priority') or ["ORIGIN", "US", "HK", "TW", "JP", "KR", "GB", "ES", "DE"]
                         
                         origin_country = fresh_data.get('production_countries', [{}])[0].get('iso_3166_1')
 
@@ -1181,14 +1181,31 @@ class MediaProcessor:
                                                 current_val = rule.get('emby_value')
                                                 break
                                         
-                                        # C2. 找 US 对应
+                                        # C2. 找 US 对应 
                                         if current_val is not None:
+                                            # 1. 筛选出符合当前媒体类型的 US 分级
+                                            valid_us_rules = []
                                             for rule in rating_mapping['US']:
-                                                try:
-                                                    if int(rule.get('emby_value')) == int(current_val):
+                                                r_code = rule.get('code', '')
+                                                # 如果是电影，跳过所有 TV- 开头的 (除了 TV-14/MA 有时会被混用，但通常电影用 PG/R)
+                                                # 这里我们严格一点：电影不要 TV-Y, TV-G, TV-Y7 等
+                                                if r_code.startswith('TV-'):
+                                                    continue
+                                                valid_us_rules.append(rule)
+                                            
+                                            # 2. 尝试精确匹配数值 (例如 4 == 4)
+                                            for rule in valid_us_rules:
+                                                if int(rule.get('emby_value')) == int(current_val):
+                                                    target_us_code = rule['code']
+                                                    break
+                                            
+                                            # 3. 如果没找到 (例如 DE 6 是 4，但 US 电影没有 4，只有 PG 是 5)，尝试向上兼容 (+1)
+                                            if not target_us_code:
+                                                for rule in valid_us_rules:
+                                                    # 找稍微严格一点的 (Value + 1)
+                                                    if int(rule.get('emby_value')) == int(current_val) + 1:
                                                         target_us_code = rule['code']
                                                         break
-                                                except: continue
                                     
                                     # 如果找到了映射，或者虽然没映射但我们想用它做兜底
                                     if target_us_code:
@@ -1275,7 +1292,7 @@ class MediaProcessor:
                         # B. 加载配置
                         from database import settings_db
                         rating_mapping = settings_db.get_setting('rating_mapping') or utils.DEFAULT_RATING_MAPPING
-                        priority_list = settings_db.get_setting('rating_priority') or ["ORIGIN", "US", "GB", "JP", "DE", "KR", "HK", "TW", "CN"]
+                        priority_list = settings_db.get_setting('rating_priority') or ["ORIGIN", "US", "HK", "TW", "JP", "KR", "GB", "ES", "DE"]
                         
                         origin_country = fresh_data.get('origin_country', [])
                         origin_country_code = origin_country[0] if origin_country else None
@@ -1302,7 +1319,15 @@ class MediaProcessor:
                                                 break
                                         
                                         if current_val is not None:
+                                            valid_us_rules = []
                                             for rule in rating_mapping['US']:
+                                                r_code = rule.get('code', '')
+                                                # 如果是剧集，我们优先要 TV- 开头的
+                                                # 但如果没有 TV- 对应的，MPAA 分级也能凑合用，所以这里不做硬性过滤，
+                                                # 而是依赖 utils.py 中 TV- 分级通常排在前面的特性
+                                                valid_us_rules.append(rule)
+
+                                            for rule in valid_us_rules:
                                                 try:
                                                     if int(rule.get('emby_value')) == int(current_val):
                                                         target_us_code = rule['code']
