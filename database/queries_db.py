@@ -480,7 +480,7 @@ def query_virtual_library_items(
                 continue 
 
             # A. 获取用户配置的优先级
-            priority_list = settings_db.get_setting('rating_priority') or []
+            priority_list = settings_db.get_setting('rating_priority') or utils.DEFAULT_RATING_PRIORITY
 
             json_keys = []
             json_keys.append("NULLIF(m.custom_rating, '')")
