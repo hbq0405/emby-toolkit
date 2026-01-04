@@ -2723,7 +2723,8 @@ class MediaProcessor:
                                 update_description: Optional[str] = None, 
                                 sync_timestamp_iso: Optional[str] = None,
                                 final_cast_override: Optional[List[Dict[str, Any]]] = None,
-                                episode_ids_to_sync: Optional[List[str]] = None):
+                                episode_ids_to_sync: Optional[List[str]] = None,
+                                metadata_override: Optional[Dict[str, Any]] = None): # <--- 1. 新增参数
         """
         纯粹的项目经理，负责接收设计师的所有材料，并分发给施工队。
         """
@@ -2755,7 +2756,8 @@ class MediaProcessor:
                 item_details, 
                 tmdb_id, 
                 final_cast_override=final_cast_override, 
-                episode_ids_to_sync=episode_ids_to_sync
+                episode_ids_to_sync=episode_ids_to_sync,
+                metadata_override=metadata_override # <--- 2. 透传参数给 sync_item_metadata
             )
 
             # 3. 记录工时
