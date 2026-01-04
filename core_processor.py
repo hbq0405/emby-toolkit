@@ -1309,9 +1309,61 @@ class MediaProcessor:
                         else:
                             authoritative_cast_source = credits_source.get('cast', [])
 
-                    # 2. 分级
+                    # 2. 分级 (智能映射 + 自动补全 US)
                     if 'content_ratings' in fresh_data:
-                        tmdb_details_for_extra['content_ratings'] = fresh_data['content_ratings']
+                        # 剧集结构: { "results": [ { "iso_3166_1": "US", "rating": "TV-MA" } ] }
+                        ratings_list = fresh_data['content_ratings'].get('results', [])
+                        existing_us_rating = False
+                        
+                        # A. 显式加载分级映射表
+                        from database import settings_db
+                        rating_mapping = settings_db.get_setting('rating_mapping')
+                        if not rating_mapping:
+                            rating_mapping = utils.DEFAULT_RATING_MAPPING
+
+                        # B. 检查是否已有 US 分级
+                        for r in ratings_list:
+                            if r.get('iso_3166_1') == 'US':
+                                existing_us_rating = True
+                                break
+                        
+                        # C. 智能补全
+                        if not existing_us_rating and isinstance(rating_mapping, dict) and 'US' in rating_mapping:
+                            mapped_us_rating = None
+                            
+                            for r in ratings_list:
+                                country_code = r.get('iso_3166_1')
+                                rating_val = r.get('rating')
+                                
+                                if country_code in rating_mapping:
+                                    # C1. 查找当前分级的 emby_value
+                                    current_val = None
+                                    for rule in rating_mapping[country_code]:
+                                        if str(rule['code']).strip().upper() == str(rating_val).strip().upper():
+                                            current_val = rule.get('emby_value')
+                                            break
+                                    
+                                    # C2. 映射到 US
+                                    if current_val is not None:
+                                        for rule in rating_mapping['US']:
+                                            try:
+                                                if int(rule.get('emby_value')) == int(current_val):
+                                                    mapped_us_rating = rule['code']
+                                                    break
+                                            except: continue
+                                    
+                                    if mapped_us_rating:
+                                        logger.info(f"  ➜ [剧集分级映射] 成功将 {country_code}:{rating_val} 映射为 US:{mapped_us_rating}")
+                                        break # 找到一个能映射的就行了
+                            
+                            # D. 写入
+                            if mapped_us_rating:
+                                ratings_list.append({
+                                    "iso_3166_1": "US",
+                                    "rating": mapped_us_rating
+                                })
+
+                        tmdb_details_for_extra['content_ratings']['results'] = ratings_list
 
                     # 3. 关键词
                     if 'keywords' in fresh_data:

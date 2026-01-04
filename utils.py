@@ -173,6 +173,13 @@ DEFAULT_RATING_MAPPING = {
         {"code": "15", "label": "成人", "emby_value": 9},
         {"code": "18", "label": "成人", "emby_value": 9},
         {"code": "R18", "label": "限制级", "emby_value": 10}
+    ],
+    "ES": [
+        {"code": "TP", "label": "全年龄", "emby_value": 1},
+        {"code": "7", "label": "家长辅导", "emby_value": 4},
+        {"code": "12", "label": "青少年", "emby_value": 8},
+        {"code": "16", "label": "成人", "emby_value": 9},
+        {"code": "18", "label": "限制级", "emby_value": 10}
     ]
 }
 
