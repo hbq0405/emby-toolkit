@@ -1160,10 +1160,69 @@ class MediaProcessor:
                     if key in fresh_data and key not in ['casts', 'releases', 'keywords', 'trailers', 'content_ratings', 'videos', 'credits']:
                         tmdb_details_for_extra[key] = fresh_data[key]
                 
-                # --- B. 电影特殊映射 (保持不变) ---
+                # --- B. 电影特殊映射 ---
                 if item_type == "Movie":
-                    # ... (原电影映射代码保持不变) ...
-                    pass 
+                    
+                    # ★★★ 修复 1: 演员表 (兼容 credits 和 casts) ★★★
+                    # 优先找 credits (标准)，找不到找 casts (旧版/特殊处理版)
+                    credits_source = fresh_data.get('credits') or fresh_data.get('casts') or {}
+                    
+                    if credits_source:
+                        tmdb_details_for_extra['casts']['cast'] = credits_source.get('cast', [])
+                        tmdb_details_for_extra['casts']['crew'] = credits_source.get('crew', [])
+                        # 更新权威演员源 !!!
+                        authoritative_cast_source = credits_source.get('cast', [])
+                    else:
+                        logger.warning(f"  ⚠️ 在 TMDb 返回数据中未找到演员表 (credits/casts)。")
+
+                    # ★★★ 修复 2: 分级 (兼容 release_dates 和 releases) ★★★
+                    # 优先找 release_dates (标准)，找不到找 releases (旧版)
+                    if 'release_dates' in fresh_data:
+                        # 标准 TMDb 结构
+                        countries_list = []
+                        for r in fresh_data['release_dates'].get('results', []):
+                            country_code = r.get('iso_3166_1')
+                            cert = ""
+                            release_date = ""
+                            for rel in r.get('release_dates', []):
+                                if rel.get('certification'):
+                                    cert = rel.get('certification')
+                                    release_date = rel.get('release_date')
+                                    break
+                            if cert:
+                                countries_list.append({
+                                    "iso_3166_1": country_code,
+                                    "certification": cert,
+                                    "release_date": release_date,
+                                    "primary": (country_code == fresh_data.get('production_countries', [{}])[0].get('iso_3166_1'))
+                                })
+                        tmdb_details_for_extra['releases']['countries'] = countries_list
+                    
+                    elif 'releases' in fresh_data:
+                        # 旧版结构兼容
+                        tmdb_details_for_extra['releases'] = fresh_data['releases']
+
+                    # 3. 关键词 (keywords -> keywords)
+                    if 'keywords' in fresh_data:
+                        kw_data = fresh_data['keywords']
+                        # 兼容 {keywords: [...]} 和 [...]
+                        if isinstance(kw_data, dict):
+                            tmdb_details_for_extra['keywords']['keywords'] = kw_data.get('keywords', [])
+                        elif isinstance(kw_data, list):
+                            tmdb_details_for_extra['keywords']['keywords'] = kw_data
+
+                    # 4. 预告片 (videos -> trailers)
+                    if 'videos' in fresh_data:
+                        youtube_list = []
+                        for v in fresh_data['videos'].get('results', []):
+                            if v.get('site') == 'YouTube' and v.get('type') == 'Trailer':
+                                youtube_list.append({
+                                    "name": v.get('name'),
+                                    "size": str(v.get('size', 'HD')),
+                                    "source": v.get('key'),
+                                    "type": "Trailer"
+                                })
+                        tmdb_details_for_extra['trailers']['youtube'] = youtube_list
 
                 # --- C. 剧集特殊映射 (新增) ---
                 elif item_type == "Series":
