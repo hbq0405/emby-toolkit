@@ -383,26 +383,41 @@ class MediaProcessor:
                 movie_record['keywords_json'] = k_json
                 movie_record['countries_json'] = c_json
 
-                # ★★★ 提取分级 (Rating) ★★★
+                # ★★★ 修复：提取分级 (Rating) - 兼容 releases.countries ★★★
                 raw_ratings_map = {}
-                # source_data_package 就是 TMDb 的 movie details
+                
+                # 1. 尝试标准 TMDb 结构 (release_dates)
                 results = source_data_package.get('release_dates', {}).get('results', [])
-                for r in results:
-                    country = r.get('iso_3166_1')
-                    if not country: continue
-                    cert = None
-                    for release in r.get('release_dates', []):
-                        if release.get('certification'):
-                            cert = release.get('certification')
-                            break
-                    if cert:
-                        raw_ratings_map[country] = cert
+                if results:
+                    for r in results:
+                        country = r.get('iso_3166_1')
+                        if not country: continue
+                        cert = None
+                        for release in r.get('release_dates', []):
+                            if release.get('certification'):
+                                cert = release.get('certification')
+                                break
+                        if cert:
+                            raw_ratings_map[country] = cert
+                
+                # 2. ★★★ 尝试旧版/骨架结构 (releases.countries) ★★★
+                # 这是关键修复：因为我们之前把数据转成了 releases 结构
+                else:
+                    releases = source_data_package.get('releases', {}).get('countries', [])
+                    for r in releases:
+                        country = r.get('iso_3166_1')
+                        cert = r.get('certification')
+                        if country and cert:
+                            raw_ratings_map[country] = cert
                 
                 # ★★★ 2. 存入 official_rating_json ★★★
                 movie_record['official_rating_json'] = json.dumps(raw_ratings_map, ensure_ascii=False)
                 
-                # 导演 (电影在 cast.crew 中)
-                crew = source_data_package.get("cast", {}).get('crew', [])
+                # ★★★ 修复：导演提取 - 兼容 casts.crew ★★★
+                # 优先找 credits，找不到找 casts
+                credits_data = source_data_package.get("credits") or source_data_package.get("casts") or {}
+                crew = credits_data.get('crew', [])
+                
                 movie_record['directors_json'] = json.dumps([{'id': p.get('id'), 'name': p.get('name')} for p in crew if p.get('job') == 'Director'], ensure_ascii=False)
 
                 records_to_upsert.append(movie_record)
