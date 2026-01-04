@@ -1551,7 +1551,8 @@ class MediaProcessor:
                         item_id=item_id,
                         update_description="主流程处理完成" if not specific_episode_ids else f"追更: {len(specific_episode_ids)}个分集",
                         final_cast_override=final_processed_cast,
-                        episode_ids_to_sync=specific_episode_ids 
+                        episode_ids_to_sync=specific_episode_ids,
+                        metadata_override=tmdb_details_for_extra 
                     )
 
                     # 通过 API 实时更新 Emby 演员库中的名字
@@ -2888,7 +2889,8 @@ class MediaProcessor:
     # --- 备份元数据 ---
     def sync_item_metadata(self, item_details: Dict[str, Any], tmdb_id: str,
                        final_cast_override: Optional[List[Dict[str, Any]]] = None,
-                       episode_ids_to_sync: Optional[List[str]] = None):
+                       episode_ids_to_sync: Optional[List[str]] = None,
+                       metadata_override: Optional[Dict[str, Any]] = None):
         """
         【V4 - 精装修施工队最终版】
         本函数是唯一的施工队，负责所有 override 文件的读写操作。
@@ -2919,6 +2921,13 @@ class MediaProcessor:
                 return
 
         perfect_cast_for_injection = []
+        # ★★★ 新增：如果有元数据覆盖，先写入元数据 ★★★
+        if metadata_override and final_cast_override is not None:
+            logger.info(f"  ➜ {log_prefix} 检测到元数据修正（分级/类型等），正在写入主文件...")
+            # 注意：metadata_override 是我们精心构建的 tmdb_details_for_extra
+            # 我们直接把它写入 main_json_path
+            with open(main_json_path, 'w', encoding='utf-8') as f:
+                json.dump(metadata_override, f, ensure_ascii=False, indent=2)
         if final_cast_override is not None:
             # --- 角色一：主体精装修 ---
             new_cast_for_json = self._build_cast_from_final_data(final_cast_override)
