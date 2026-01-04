@@ -294,8 +294,6 @@ MOVIE_SKELETON_TEMPLATE = {
   "backdrop_path": "",
   "belongs_to_collection": None, # { "id": 0, "name": "", "poster_path": "", "backdrop_path": "" }
   "budget": 0,
-  "mpaa": "",          # Emby/Kodi 常用兼容字段
-  "certification": "", # TMDb 常用字段
   "genres": [], # [ { "id": 0, "name": "" } ]
   "homepage": "",
   "id": 0,

@@ -1193,16 +1193,18 @@ class MediaProcessor:
                         tmdb_details_for_extra['casts']['crew'] = credits_source.get('crew', [])
                         authoritative_cast_source = credits_source.get('cast', [])
 
-                    # 2. 分级 (双重保险 + 暴力兜底)
-                    final_rating_str = "" # 用于存储最终选出的分级
-                    
+                    # 2. 分级 (智能映射 + 自动补全 US)
                     if 'release_dates' in fresh_data:
                         tmdb_details_for_extra['release_dates'] = fresh_data['release_dates']
 
                         countries_list = []
-                        # 优先级策略：先存起来，最后挑
-                        found_ratings = {} 
+                        existing_us_rating = False
                         
+                        # A. 加载分级映射表
+                        from database import settings_db
+                        rating_mapping = settings_db.get_setting('rating_mapping') or utils.DEFAULT_RATING_MAPPING
+                        
+                        # B. 遍历原始分级
                         for r in fresh_data['release_dates'].get('results', []):
                             country_code = r.get('iso_3166_1')
                             cert = ""
@@ -1212,28 +1214,50 @@ class MediaProcessor:
                                     cert = rel.get('certification')
                                     release_date = rel.get('release_date')
                                     break
+                            
                             if cert:
-                                entry = {
+                                # 添加原始分级
+                                countries_list.append({
                                     "iso_3166_1": country_code,
                                     "certification": cert,
                                     "release_date": release_date,
                                     "primary": (country_code == fresh_data.get('production_countries', [{}])[0].get('iso_3166_1'))
-                                }
-                                countries_list.append(entry)
-                                found_ratings[country_code] = cert
-                        
+                                })
+                                
+                                if country_code == 'US':
+                                    existing_us_rating = True
+                                
+                                # ★★★ C. 智能补全 US 分级 ★★★
+                                # 如果当前不是 US 分级，且还没有找到 US 分级，尝试映射
+                                if not existing_us_rating and country_code in rating_mapping and 'US' in rating_mapping:
+                                    # 1. 查找当前分级的 emby_value
+                                    current_val = None
+                                    for rule in rating_mapping[country_code]:
+                                        if rule['code'] == cert:
+                                            current_val = rule.get('emby_value')
+                                            break
+                                    
+                                    # 2. 如果找到了值，去 US 规则里找对应分级
+                                    if current_val is not None:
+                                        target_us_code = None
+                                        # 优先找完全相等的
+                                        for rule in rating_mapping['US']:
+                                            if rule.get('emby_value') == current_val:
+                                                target_us_code = rule['code']
+                                                break
+                                        
+                                        # 3. 如果找到了对应 US 分级，添加它！
+                                        if target_us_code:
+                                            logger.info(f"  ➜ [分级映射] 将 {country_code}:{cert} (val={current_val}) 映射为 US:{target_us_code}")
+                                            countries_list.append({
+                                                "iso_3166_1": "US",
+                                                "certification": target_us_code,
+                                                "release_date": release_date, # 沿用原日期
+                                                "primary": False
+                                            })
+                                            existing_us_rating = True # 标记已找到，避免重复添加
+
                         tmdb_details_for_extra['releases']['countries'] = countries_list
-                        
-                        # ★★★ 挑选最佳分级用于兜底 ★★★
-                        # 优先级：US > CN > 原产国 > 任意第一个
-                        if 'US' in found_ratings:
-                            final_rating_str = found_ratings['US']
-                        elif 'CN' in found_ratings:
-                            final_rating_str = found_ratings['CN']
-                        elif countries_list:
-                            # 找 primary
-                            primary = next((x['certification'] for x in countries_list if x['primary']), None)
-                            final_rating_str = primary if primary else countries_list[0]['certification']
 
                     elif 'releases' in fresh_data:
                         tmdb_details_for_extra['releases'] = fresh_data['releases']
