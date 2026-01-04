@@ -1193,13 +1193,16 @@ class MediaProcessor:
                         tmdb_details_for_extra['casts']['crew'] = credits_source.get('crew', [])
                         authoritative_cast_source = credits_source.get('cast', [])
 
-                    # 2. 分级 (双重保险：同时保留 release_dates 和 releases)
+                    # 2. 分级 (双重保险 + 暴力兜底)
+                    final_rating_str = "" # 用于存储最终选出的分级
+                    
                     if 'release_dates' in fresh_data:
-                        # 保留 v3 标准格式 (Emby 新版可能优先读这个)
                         tmdb_details_for_extra['release_dates'] = fresh_data['release_dates']
 
-                        # 同时生成旧版 releases 格式 (兼容性更好)
                         countries_list = []
+                        # 优先级策略：先存起来，最后挑
+                        found_ratings = {} 
+                        
                         for r in fresh_data['release_dates'].get('results', []):
                             country_code = r.get('iso_3166_1')
                             cert = ""
@@ -1210,17 +1213,42 @@ class MediaProcessor:
                                     release_date = rel.get('release_date')
                                     break
                             if cert:
-                                countries_list.append({
+                                entry = {
                                     "iso_3166_1": country_code,
                                     "certification": cert,
                                     "release_date": release_date,
                                     "primary": (country_code == fresh_data.get('production_countries', [{}])[0].get('iso_3166_1'))
-                                })
+                                }
+                                countries_list.append(entry)
+                                found_ratings[country_code] = cert
+                        
                         tmdb_details_for_extra['releases']['countries'] = countries_list
-                    
+                        
+                        # ★★★ 挑选最佳分级用于兜底 ★★★
+                        # 优先级：US > CN > 原产国 > 任意第一个
+                        if 'US' in found_ratings:
+                            final_rating_str = found_ratings['US']
+                        elif 'CN' in found_ratings:
+                            final_rating_str = found_ratings['CN']
+                        elif countries_list:
+                            # 找 primary
+                            primary = next((x['certification'] for x in countries_list if x['primary']), None)
+                            final_rating_str = primary if primary else countries_list[0]['certification']
+
                     elif 'releases' in fresh_data:
-                        # 如果源数据本身就是旧版，直接用
                         tmdb_details_for_extra['releases'] = fresh_data['releases']
+                        # 尝试从旧结构提取
+                        try:
+                            r_list = fresh_data['releases'].get('countries', [])
+                            if r_list:
+                                final_rating_str = r_list[0].get('certification', '')
+                        except: pass
+
+                    # ★★★ 核心修复：写入根节点兜底字段 ★★★
+                    if final_rating_str:
+                        tmdb_details_for_extra['mpaa'] = final_rating_str
+                        tmdb_details_for_extra['certification'] = final_rating_str
+                        logger.info(f"  ➜ 已提取主分级 '{final_rating_str}' 并写入根节点，确保 Emby 识别。")
 
                     # 3. 关键词
                     if 'keywords' in fresh_data:
