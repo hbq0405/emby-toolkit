@@ -401,8 +401,8 @@ class MediaProcessor:
                 # ★★★ 2. 存入 official_rating_json ★★★
                 movie_record['official_rating_json'] = json.dumps(raw_ratings_map, ensure_ascii=False)
                 
-                # 导演 (电影在 credits.crew 中)
-                crew = source_data_package.get("credits", {}).get('crew', [])
+                # 导演 (电影在 cast.crew 中)
+                crew = source_data_package.get("cast", {}).get('crew', [])
                 movie_record['directors_json'] = json.dumps([{'id': p.get('id'), 'name': p.get('name')} for p in crew if p.get('job') == 'Director'], ensure_ascii=False)
 
                 records_to_upsert.append(movie_record)
