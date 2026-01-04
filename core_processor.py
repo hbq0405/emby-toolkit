@@ -1139,11 +1139,14 @@ class MediaProcessor:
                             
                             if cert:
                                 available_ratings[country_code] = cert
+                                production_countries = fresh_data.get('production_countries')
+                                primary_country_code = production_countries[0].get('iso_3166_1') if production_countries else None
+
                                 countries_list.append({
                                     "iso_3166_1": country_code,
                                     "certification": cert,
                                     "release_date": release_date,
-                                    "primary": (country_code == fresh_data.get('production_countries', [{}])[0].get('iso_3166_1'))
+                                    "primary": (country_code == primary_country_code)
                                 })
 
                         # B. 加载配置
