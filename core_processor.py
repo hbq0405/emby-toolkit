@@ -3164,11 +3164,15 @@ class MediaProcessor:
                 s_num = child.get('ParentIndexNumber')
                 e_num = child.get('IndexNumber')
                 
-                # 必须两者都有值。且通常过滤掉 S0E0 (虽然技术上S0是特典，但E0通常是错误的)
+                # 必须两者都有值
                 if s_num is not None and e_num is not None:
-                    # 额外过滤：如果 S=0 且 E=0，通常是脏数据，跳过
-                    if s_num == 0 and e_num == 0:
-                        continue
+                    # 【优化修复】强制转为 int 进行判断，防止 Emby 返回字符串类型的 "0" 导致过滤失效
+                    try:
+                        if int(s_num) == 0 and int(e_num) == 0:
+                            continue
+                    except (ValueError, TypeError):
+                        pass
+
                     key = f"season-{s_num}-episode-{e_num}"
             
             if key: 
