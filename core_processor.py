@@ -1171,29 +1171,34 @@ class MediaProcessor:
             if fresh_data:
                 # --- A. 基础字段直接覆盖 (通用) ---
                 for key in tmdb_details_for_extra.keys():
-                    # 跳过特殊结构字段，稍后单独处理
-                    if key in fresh_data and key not in ['casts', 'releases', 'keywords', 'trailers', 'content_ratings', 'videos', 'credits']:
+                    # 排除特殊字段，稍后处理
+                    if key in fresh_data and key not in ['casts', 'releases', 'release_dates', 'keywords', 'trailers', 'content_ratings', 'videos', 'credits', 'genres']:
                         tmdb_details_for_extra[key] = fresh_data[key]
                 
-                # --- B. 电影特殊映射 ---
+                # --- B. 通用修复：类型 (Genres) ---
+                # 逻辑：优先用 TMDb，如果没有，用 Emby 兜底
+                if 'genres' in fresh_data and fresh_data['genres']:
+                    tmdb_details_for_extra['genres'] = fresh_data['genres']
+                elif item_details_from_emby.get('Genres'):
+                    # Emby 只有字符串列表，我们需要构造成对象列表以符合 JSON 标准
+                    tmdb_details_for_extra['genres'] = [{'id': 0, 'name': g} for g in item_details_from_emby['Genres']]
+
+                # --- C. 电影特殊映射 ---
                 if item_type == "Movie":
                     
-                    # ★★★ 修复 1: 演员表 (兼容 credits 和 casts) ★★★
-                    # 优先找 credits (标准)，找不到找 casts (旧版/特殊处理版)
+                    # 1. 演员表 (兼容 credits 和 casts)
                     credits_source = fresh_data.get('credits') or fresh_data.get('casts') or {}
-                    
                     if credits_source:
                         tmdb_details_for_extra['casts']['cast'] = credits_source.get('cast', [])
                         tmdb_details_for_extra['casts']['crew'] = credits_source.get('crew', [])
-                        # 更新权威演员源 !!!
                         authoritative_cast_source = credits_source.get('cast', [])
-                    else:
-                        logger.warning(f"  ⚠️ 在 TMDb 返回数据中未找到演员表 (credits/casts)。")
 
-                    # ★★★ 修复 2: 分级 (兼容 release_dates 和 releases) ★★★
-                    # 优先找 release_dates (标准)，找不到找 releases (旧版)
+                    # 2. 分级 (双重保险：同时保留 release_dates 和 releases)
                     if 'release_dates' in fresh_data:
-                        # 标准 TMDb 结构
+                        # 保留 v3 标准格式 (Emby 新版可能优先读这个)
+                        tmdb_details_for_extra['release_dates'] = fresh_data['release_dates']
+
+                        # 同时生成旧版 releases 格式 (兼容性更好)
                         countries_list = []
                         for r in fresh_data['release_dates'].get('results', []):
                             country_code = r.get('iso_3166_1')
@@ -1214,19 +1219,18 @@ class MediaProcessor:
                         tmdb_details_for_extra['releases']['countries'] = countries_list
                     
                     elif 'releases' in fresh_data:
-                        # 旧版结构兼容
+                        # 如果源数据本身就是旧版，直接用
                         tmdb_details_for_extra['releases'] = fresh_data['releases']
 
-                    # 3. 关键词 (keywords -> keywords)
+                    # 3. 关键词
                     if 'keywords' in fresh_data:
                         kw_data = fresh_data['keywords']
-                        # 兼容 {keywords: [...]} 和 [...]
                         if isinstance(kw_data, dict):
                             tmdb_details_for_extra['keywords']['keywords'] = kw_data.get('keywords', [])
                         elif isinstance(kw_data, list):
                             tmdb_details_for_extra['keywords']['keywords'] = kw_data
 
-                    # 4. 预告片 (videos -> trailers)
+                    # 4. 预告片
                     if 'videos' in fresh_data:
                         youtube_list = []
                         for v in fresh_data['videos'].get('results', []):
@@ -1239,43 +1243,26 @@ class MediaProcessor:
                                 })
                         tmdb_details_for_extra['trailers']['youtube'] = youtube_list
 
-                # --- C. 剧集特殊映射 (新增) ---
+                # --- D. 剧集特殊映射 ---
                 elif item_type == "Series":
-                    # 1. 演员表 (credits -> casts)
-                    # 剧集通常有 'credits' (常驻) 和 'aggregate_credits' (聚合)
-                    # 优先使用 aggregate_credits 如果有，否则使用 credits
+                    # 1. 演员表
                     credits_source = fresh_data.get('aggregate_credits') or fresh_data.get('credits') or {}
-                    
                     if credits_source:
                         tmdb_details_for_extra['casts']['cast'] = credits_source.get('cast', [])
                         tmdb_details_for_extra['casts']['crew'] = credits_source.get('crew', [])
                         
-                        # 更新权威演员源 (用于后续处理)
-                        # 注意：如果是 Series，我们通常希望聚合所有分集的演员
                         if aggregated_tmdb_data:
                             all_episodes = list(aggregated_tmdb_data.get("episodes_details", {}).values())
                             authoritative_cast_source = _aggregate_series_cast_from_tmdb_data(fresh_data, all_episodes)
                         else:
                             authoritative_cast_source = credits_source.get('cast', [])
 
-                    # 2. 分级 (content_ratings -> content_ratings)
-                    if 'content_ratings' in fresh_data:
-                        tmdb_details_for_extra['content_ratings'] = fresh_data['content_ratings']
-
-                    # 3. 关键词 (keywords -> keywords)
-                    if 'keywords' in fresh_data:
-                        # 剧集关键词通常在 'results' 列表里
-                        tmdb_details_for_extra['keywords'] = fresh_data['keywords']
-
-                    # 4. 外部ID (external_ids -> external_ids)
-                    if 'external_ids' in fresh_data:
-                        tmdb_details_for_extra['external_ids'] = fresh_data['external_ids']
-
-                    # 5. 预告片 (videos -> videos)
-                    if 'videos' in fresh_data:
-                        tmdb_details_for_extra['videos'] = fresh_data['videos']
-
-                    # ★★★ 6. 挂载子项数据 (供后续生成子文件使用) ★★★
+                    # 2. 其他字段
+                    if 'content_ratings' in fresh_data: tmdb_details_for_extra['content_ratings'] = fresh_data['content_ratings']
+                    if 'keywords' in fresh_data: tmdb_details_for_extra['keywords'] = fresh_data['keywords']
+                    if 'external_ids' in fresh_data: tmdb_details_for_extra['external_ids'] = fresh_data['external_ids']
+                    if 'videos' in fresh_data: tmdb_details_for_extra['videos'] = fresh_data['videos']
+                    
                     if aggregated_tmdb_data:
                         tmdb_details_for_extra['seasons_details'] = aggregated_tmdb_data.get('seasons_details', [])
                         tmdb_details_for_extra['episodes_details'] = aggregated_tmdb_data.get('episodes_details', {})
