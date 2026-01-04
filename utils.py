@@ -328,6 +328,8 @@ MOVIE_SKELETON_TEMPLATE = {
   "keywords": {
     "keywords": [] # [ { "id": 0, "name": "" } ]
   },
+  # ★ 属于合集
+  "belongs_to_collection": None,
   # ★ Emby 特有结构：预告片
   "trailers": {
     "quicktime": [],
