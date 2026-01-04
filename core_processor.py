@@ -2893,8 +2893,9 @@ class MediaProcessor:
                        episode_ids_to_sync: Optional[List[str]] = None,
                        metadata_override: Optional[Dict[str, Any]] = None):
         """
-        【V4 - 精装修施工队最终版】
-        本函数是唯一的施工队，负责所有 override 文件的读写操作。
+        【V6 - 最终版】
+        不再从 cache 复制文件，而是基于模板和现有数据构建 override 文件。
+        同时支持传递 TMDb 分集原始数据。
         """
         item_id = item_details.get("Id")
         item_name_for_log = item_details.get("Name", f"未知项目(ID:{item_id})")
@@ -2906,20 +2907,30 @@ class MediaProcessor:
         target_override_dir = os.path.join(self.local_data_path, "override", cache_folder_name, tmdb_id)
         main_json_filename = "all.json" if item_type == "Movie" else "series.json"
         main_json_path = os.path.join(target_override_dir, main_json_filename)
+
         # 确保目标目录存在
         os.makedirs(target_override_dir, exist_ok=True)
+
         perfect_cast_for_injection = []
+        
+        #  定义一个变量用来存分集数据 
+        tmdb_episodes_data = None 
+
         # 如果有元数据覆盖，先写入元数据 
-        if metadata_override and final_cast_override is not None:
-            logger.info(f"  ➜ {log_prefix} 检测到元数据修正（分级/类型等），正在写入主文件...")
+        if metadata_override:
+            logger.info(f"  ➜ {log_prefix} 检测到元数据修正，正在写入主文件...")
             
+            #  在删除前，先把分集数据提取出来！ 
+            if 'episodes_details' in metadata_override:
+                tmdb_episodes_data = metadata_override['episodes_details']
+            # =========================================================
+
             # 1. 创建一个副本，避免修改原始对象影响后续逻辑
             data_to_write = metadata_override.copy()
             
             # 2. 剔除不需要写入主文件的临时字段
-            # 这些字段是我们在 _process_item_core_logic 里挂载上去为了传给 _inject_cast_to_series_files 用的
-            # 但它们不应该出现在 series.json 里
-            keys_to_remove = ['seasons_details', 'episodes_details', 'release_dates'] # release_dates 是电影的临时字段
+            # (注意：这里删除了 episodes_details，所以上面必须先提取)
+            keys_to_remove = ['seasons_details', 'episodes_details', 'release_dates'] 
             for k in keys_to_remove:
                 if k in data_to_write:
                     del data_to_write[k]
@@ -2927,41 +2938,31 @@ class MediaProcessor:
             # 3. 写入净化后的数据
             with open(main_json_path, 'w', encoding='utf-8') as f:
                 json.dump(data_to_write, f, ensure_ascii=False, indent=2)
+
         if final_cast_override is not None:
             # --- 角色一：主体精装修 ---
             new_cast_for_json = self._build_cast_from_final_data(final_cast_override)
-            
             perfect_cast_for_injection = new_cast_for_json
 
-            # 步骤 2: 修改主文件
+            # 步骤 2: 修改或创建主文件
             if not os.path.exists(main_json_path):
                 skeleton = utils.MOVIE_SKELETON_TEMPLATE if item_type == "Movie" else utils.SERIES_SKELETON_TEMPLATE
-                # 深拷贝一份骨架
                 data = json.loads(json.dumps(skeleton))
             else:
                 with open(main_json_path, 'r', encoding='utf-8') as f:
                     data = json.load(f)
 
-            # 更新演员表
             if 'casts' in data: data['casts']['cast'] = perfect_cast_for_injection
             else: data.setdefault('credits', {})['cast'] = perfect_cast_for_injection
             
-            # 写入
             with open(main_json_path, 'w', encoding='utf-8') as f:
                 json.dump(data, f, ensure_ascii=False, indent=2)
         else:
             # --- 角色二：零活处理 (追更) ---
-            logger.info(f"  ➜ {log_prefix} [追更] 开始为 '{item_name_for_log}' 的新分集写入覆盖缓存...")
-            if not os.path.exists(main_json_path):
-                logger.error(f"  ➜ {log_prefix} 追更任务失败：找不到主元数据文件 '{main_json_path}'。")
-                return
-            try:
-                with open(main_json_path, 'r', encoding='utf-8') as f:
+            if os.path.exists(main_json_path):
+                 with open(main_json_path, 'r', encoding='utf-8') as f:
                     data = json.load(f)
                     perfect_cast_for_injection = (data.get('casts', {}) or data.get('credits', {})).get('cast', [])
-            except Exception as e:
-                logger.error(f"  ➜ {log_prefix} 读取主元数据文件 '{main_json_path}' 时失败: {e}", exc_info=True)
-                return
 
         # 步骤 3: 公共施工 - 注入分集文件
         if item_type == "Series" and perfect_cast_for_injection:
@@ -2969,7 +2970,8 @@ class MediaProcessor:
                 target_dir=target_override_dir, 
                 cast_list=perfect_cast_for_injection, 
                 series_details=item_details, 
-                episode_ids_to_sync=episode_ids_to_sync
+                episode_ids_to_sync=episode_ids_to_sync,
+                tmdb_episodes_data=tmdb_episodes_data 
             )
 
     # --- 辅助函数：从不同数据源构建演员列表 ---
@@ -2989,7 +2991,7 @@ class MediaProcessor:
         return cast_list
 
     # --- 辅助函数：将演员表注入剧集的季/集JSON文件 ---
-    def _inject_cast_to_series_files(self, target_dir: str, cast_list: List[Dict[str, Any]], series_details: Dict[str, Any], episode_ids_to_sync: Optional[List[str]] = None):
+    def _inject_cast_to_series_files(self, target_dir: str, cast_list: List[Dict[str, Any]], series_details: Dict[str, Any], episode_ids_to_sync: Optional[List[str]] = None, tmdb_episodes_data: Optional[Dict[str, Any]] = None):
         """
         辅助函数：将演员表注入剧集的季/集JSON文件。
         【骨架修复版】始终基于 utils 中的完美骨架构建数据，确保结构完整。
@@ -3126,26 +3128,61 @@ class MediaProcessor:
                             child_data[key] = data_source[key]
                 
                 # ★★★ 步骤 D: 智能修补演员表 (针对 credits 节点) ★★★
-                if cast_list is not None:
-                    # 确保获取的是 credits 节点
-                    credits_node = child_data.get('credits')
-                    if not isinstance(credits_node, dict):
-                        credits_node = {}
-                        child_data['credits'] = credits_node
+                # 1. 尝试获取该分集的 TMDb 原始数据
+                specific_tmdb_data = None
+                if is_episode_file and tmdb_episodes_data:
+                    # 解析文件名获取 S和E (例如 season-1-episode-2.json)
+                    try:
+                        parts = filename.replace(".json", "").split("-")
+                        # 格式通常是 season-X-episode-Y
+                        if len(parts) >= 4:
+                            s_num = int(parts[1])
+                            e_num = int(parts[3])
+                            key = f"S{s_num}E{e_num}" # 对应 core_processor 里生成的 key
+                            specific_tmdb_data = tmdb_episodes_data.get(key)
+                    except:
+                        pass
 
-                    # 1. 修补常规演员表 (cast)
+                # 确保 credits 节点存在
+                credits_node = child_data.get('credits')
+                if not isinstance(credits_node, dict):
+                    credits_node = {}
+                    child_data['credits'] = credits_node
+
+                # 2. 填充数据
+                if specific_tmdb_data:
+                    # 【方案 A】如果有 TMDb 原始分集数据 -> 使用它 (精准!)
+                    # 填充 cast (常规演员)
+                    if specific_tmdb_data.get('credits', {}).get('cast'):
+                        credits_node['cast'] = specific_tmdb_data['credits']['cast']
+                    # 填充 guest_stars (客串演员)
+                    if specific_tmdb_data.get('credits', {}).get('guest_stars'):
+                        credits_node['guest_stars'] = specific_tmdb_data['credits']['guest_stars']
+                    # 填充 crew (幕后人员，如导演编剧)
+                    if specific_tmdb_data.get('credits', {}).get('crew'):
+                        credits_node['crew'] = specific_tmdb_data['credits']['crew']
+                
+                elif is_episode_file:
+                    # 【方案 B】如果没有原始数据 (兜底) -> 使用全剧演员表
+                    # 只有当 cast 为空时才注入，避免覆盖已有的 override 数据
+                    if not credits_node.get('cast'):
+                        credits_node['cast'] = cast_list
+
+                elif is_season_file:
+                    # 【季文件】通常只放全剧常驻演员
+                    if not credits_node.get('cast'):
+                        credits_node['cast'] = cast_list
+
+                # 3. 执行汉化修补 (Magic Step!)
+                # 无论数据来源是 TMDb 原始数据，还是全剧列表，
+                # 这里都会遍历它们，用 master_actor_map (已翻译、有头像的主表) 去更新它们。
+                # 效果：常驻演员变中文，客串演员保留英文(因为主表里没有)。
+                if cast_list is not None:
                     if 'cast' in credits_node and isinstance(credits_node['cast'], list):
                         patch_actor_list(credits_node['cast'])
                     
-                    # 2. 修补客串演员表 (guest_stars)
                     if 'guest_stars' in credits_node and isinstance(credits_node['guest_stars'], list):
                         patch_actor_list(credits_node['guest_stars'])
-                    
-                    # 3. 季文件兜底注入
-                    if is_season_file:
-                        has_cast = credits_node.get('cast')
-                        if not has_cast:
-                            credits_node['cast'] = cast_list
 
                 # ★★★ 步骤 E: 更新 Emby 实时元数据 ★★★
                 file_key = os.path.splitext(filename)[0]
