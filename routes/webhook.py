@@ -205,23 +205,42 @@ def _handle_full_processing_flow(processor: 'MediaProcessor', item_id: str, forc
     # 此时 Emby 应该已经读取了我们修正后的元数据 (如分级 XXX)，
     # 再次运行打标逻辑，可以命中那些依赖修正后分级的规则。
     # ======================================================================
-    if is_new_item: # 仅对新入库项目执行，追更通常不需要重新打标
+    # ======================================================================
+    # ★★★ 极致优化：基于本地数据库的“精准补刀打标” ★★★
+    # 直接读取刚刚写入数据库的“真理”数据，无需等待 Emby 刷新 NFO。
+    # ======================================================================
+    if is_new_item: 
         try:
-            # 获取库信息 (因为 _handle_immediate_tagging_with_lib 需要 lib_id)
-            # 注意：这里重新获取一次库信息，确保准确
-            library_info = emby.get_library_root_for_item(
-                item_id, processor.emby_url, processor.emby_api_key, processor.emby_user_id
-            )
+            # 1. 从数据库获取最新记录
+            db_record = media_db.get_media_details(str(tmdb_id), item_type)
             
-            if library_info:
-                lib_id = library_info.get("Id")
-                lib_name = library_info.get("Name", "未知库")
+            if db_record:
+                # 2. 提取 Library ID
+                # asset_details_json 是一个列表，取第一个即可
+                assets = db_record.get('asset_details_json')
+                lib_id = None
+                if assets and isinstance(assets, list) and len(assets) > 0:
+                    lib_id = assets[0].get('source_library_id')
                 
-                # 延迟 5 秒执行，给 Emby 一点时间消化 NFO 的变更
-                logger.debug(f"  ➜ [自动打标] 安排 5秒 后对 '{item_name_for_log}' 进行二次打标检查 (基于修正后的元数据)...")
-                spawn_later(5, _handle_immediate_tagging_with_lib, item_id, item_name_for_log, lib_id, lib_name)
+                # 3. 提取修正后的分级 (US)
+                # official_rating_json: {"US": "XXX", "DE": "18"}
+                ratings = db_record.get('official_rating_json')
+                us_rating = None
+                if ratings and isinstance(ratings, dict):
+                    us_rating = ratings.get('US')
+                
+                if lib_id:
+                    # 既然数据都在手里了，不需要延迟，直接干！
+                    logger.info(f"  ➜ [自动打标] 基于数据库最新元数据 (库ID:{lib_id}, 分级:{us_rating}) 执行二次检查...")
+                    # 这里的 lib_name 传个占位符即可，不影响逻辑，只影响日志
+                    _handle_immediate_tagging_with_lib(item_id, item_name_for_log, lib_id, "DB_Source", known_rating=us_rating)
+                else:
+                    logger.warning(f"  ➜ [自动打标] 数据库记录中未找到 来源库，跳过打标。")
+            else:
+                logger.warning(f"  ➜ [自动打标] 无法从数据库读取刚写入的记录，跳过打标。")
+
         except Exception as e:
-            logger.warning(f"  ➜ [自动打标] 触发二次打标失败: {e}")
+            logger.warning(f"  ➜ [自动打标] 触发打标失败: {e}")
 
     # 刷新智能追剧状态 
     if item_type == "Series" and tmdb_id:
@@ -240,52 +259,58 @@ def _handle_full_processing_flow(processor: 'MediaProcessor', item_id: str, forc
         # 启动协程，不等待结果，直接让当前 Webhook 任务结束
         spawn(_async_trigger_watchlist)
 
-def _handle_immediate_tagging_with_lib(item_id, item_name, lib_id, lib_name):
+def _handle_immediate_tagging_with_lib(item_id, item_name, lib_id, lib_name, known_rating=None):
     """
     自动打标 (支持分级过滤)。
+    增加 known_rating 参数：如果调用方已经知道确切分级（如从数据库查到的），直接使用，不再查询 Emby。
     """
     try:
         processor = extensions.media_processor_instance
         tagging_config = settings_db.get_setting('auto_tagging_rules') or []
         
-        # 预先获取一次详情，因为我们需要 OfficialRating 来做判断
-        # 如果没有规则命中，这次请求可能浪费，但为了分级过滤是必须的
+        # 只有当没有传入 known_rating 时，才需要去 Emby 查
         item_details = None 
         
         for rule in tagging_config:
             target_libs = rule.get('library_ids', [])
             if lib_id in target_libs:
                 tags = rule.get('tags', [])
-                # ★★★ 获取分级过滤配置 ★★★
                 rating_filters = rule.get('rating_filters', [])
                 
                 if tags:
-                    # 如果有分级限制，且还没获取详情，则获取详情
-                    if rating_filters and item_details is None:
-                        item_details = emby.get_emby_item_details(
-                            item_id, processor.emby_url, processor.emby_api_key, processor.emby_user_id,
-                            fields="OfficialRating"
-                        )
-                    
-                    # ★★★ 检查分级匹配 ★★★
+                    # ★★★ 核心修改：分级匹配逻辑 ★★★
                     if rating_filters:
-                        if not item_details:
-                            continue # 获取详情失败，跳过
+                        # 1. 优先使用传入的已知分级 (数据库里的真理)
+                        current_rating = known_rating
                         
-                        item_rating = item_details.get('OfficialRating')
+                        # 2. 如果没传，且还没查过 Emby，则去查 (兜底逻辑)
+                        if not current_rating and item_details is None:
+                            item_details = emby.get_emby_item_details(
+                                item_id, processor.emby_url, processor.emby_api_key, processor.emby_user_id,
+                                fields="OfficialRating"
+                            )
+                            if item_details:
+                                current_rating = item_details.get('OfficialRating')
+                        
+                        # 3. 执行匹配
+                        if not current_rating:
+                            continue # 拿不到分级，跳过
+                            
                         target_codes = queries_db._expand_rating_labels(rating_filters)
                         
-                        if item_rating not in target_codes:
-                            logger.debug(f"  🏷️ 媒体项 '{item_name}' 分级 '{item_rating}' 不满足规则限制 {rating_filters}，跳过打标。")
+                        # 兼容 "US: XXX" 和 "XXX" 两种格式
+                        rating_code = current_rating.split(':')[-1].strip()
+                        
+                        if rating_code not in target_codes:
+                            logger.debug(f"  🏷️ 媒体项 '{item_name}' 分级 '{current_rating}' 不满足规则限制 {rating_filters}，跳过打标。")
                             continue
 
                     logger.info(f"  🏷️ 媒体项 '{item_name}' 命中库 '{lib_name}' 规则，追加标签: {tags}")
                     emby.add_tags_to_item(item_id, tags, processor.emby_url, processor.emby_api_key, processor.emby_user_id)
                 
-                # 命中一条规则后是否继续匹配其他规则？通常 break 即可，或者根据需求去掉 break
                 break 
     except Exception as e:
-        logger.error(f"  🚫 [入口打标] 失败: {e}")
+        logger.error(f"  🚫 [自动打标] 失败: {e}")
 
 # --- 辅助函数 ---
 def _process_batch_webhook_events():
