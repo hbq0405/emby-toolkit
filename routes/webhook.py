@@ -305,7 +305,12 @@ def _handle_immediate_tagging_with_lib(item_id, item_name, lib_id, lib_name, kno
                             logger.debug(f"  🏷️ 媒体项 '{item_name}' 分级 '{current_rating}' 不满足规则限制 {rating_filters}，跳过打标。")
                             continue
 
-                    logger.info(f"  🏷️ 媒体项 '{item_name}' 命中库 '{lib_name}' 规则，追加标签: {tags}")
+                    if rating_filters:
+                        rule_desc = f"分级 '{','.join(rating_filters)}'"
+                    else:
+                        rule_desc = f"库 '{lib_name}'"
+
+                    logger.info(f"  🏷️ 媒体项 '{item_name}' 命中 {rule_desc} 规则，追加标签: {tags}")
                     emby.add_tags_to_item(item_id, tags, processor.emby_url, processor.emby_api_key, processor.emby_user_id)
                 
                 break 
