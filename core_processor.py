@@ -591,9 +591,14 @@ class MediaProcessor:
                 if db_row_complete['emby_item_ids_json'] is None: db_row_complete['emby_item_ids_json'] = '[]'
 
                 # 提取年份
-                release_date_str = db_row_complete.get('release_date')
-                if release_date_str and len(release_date_str) >= 4:
-                    try: db_row_complete['release_year'] = int(release_date_str[:4])
+                r_date = db_row_complete.get('release_date')
+                if not r_date:  # 包含 None 和 ""
+                    db_row_complete['release_date'] = None
+                
+                # 提取年份 (基于清洗后的数据)
+                final_date_val = db_row_complete.get('release_date')
+                if final_date_val and isinstance(final_date_val, str) and len(final_date_val) >= 4:
+                    try: db_row_complete['release_year'] = int(final_date_val[:4])
                     except (ValueError, TypeError): pass
                 
                 data_for_batch.append(db_row_complete)

@@ -1111,11 +1111,11 @@ def task_bulk_remove_tags(processor, library_ids: List[str], tags: List[str]):
 def task_sync_ratings_to_emby(processor, force_full_update: bool = False):
     """
     【分级同步任务】
-    force_full_update=True: 同步 CustomRating + OfficialRating (单向强制: DB US -> Emby)。
-    force_full_update=False: 仅同步 CustomRating (双向互补: 有覆盖无)。
+    force_full_update=False (快速): 仅同步 CustomRating (双向互补)。
+    force_full_update=True  (深度): 同步 CustomRating + OfficialRating (单向强制: DB US -> Emby)。
     """
     mode = 'deep' if force_full_update else 'fast'
-    logger.info(f"--- 开始执行分级同步任务 (模式: {mode}) ---")
+    logger.info(f"--- 开始执行分级同步任务 (模式: {mode}, 深度更新: {force_full_update}) ---")
     
     # 1. 从数据库获取所有在库项目
     # 我们只需要查那些确实在库里的，不在库的同步了也没意义
