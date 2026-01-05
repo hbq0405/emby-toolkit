@@ -273,7 +273,7 @@ def _handle_immediate_tagging_with_lib(item_id, item_name, lib_id, lib_name, kno
         
         for rule in tagging_config:
             target_libs = rule.get('library_ids', [])
-            if lib_id in target_libs:
+            if not target_libs or lib_id in target_libs:
                 tags = rule.get('tags', [])
                 rating_filters = rule.get('rating_filters', [])
                 

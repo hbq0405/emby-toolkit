@@ -641,10 +641,11 @@ def run_tagging_now():
     tags = data.get('tags')
     # ★★★ 新增：接收分级筛选参数 ★★★
     rating_filters = data.get('rating_filters') 
-    lib_name_display = data.get('library_name', "多个库")
+    lib_name_display = data.get('library_name') or ("所有库" if not lib_ids else "多个库")
 
-    if not lib_ids or not tags:
-        return jsonify({"error": "参数不完整"}), 400
+    # ★★★ 修改：不再校验 lib_ids 是否为空，只校验 tags ★★★
+    if not tags:
+        return jsonify({"error": "标签不能为空"}), 400
 
     task_manager.submit_task(
         task_bulk_auto_tag,

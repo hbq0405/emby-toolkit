@@ -27,7 +27,7 @@
               <n-select
                   v-model:value="rule.library_ids" 
                   :options="libraryOptions"
-                  placeholder="选择媒体库"
+                  placeholder="留空即全选" 
                   filterable
                   multiple
                   clearable
@@ -158,6 +158,23 @@ const removeRule = (index) => {
 };
 
 const saveRules = async () => {
+  // ★★★ 新增校验逻辑 ★★★
+  for (let i = 0; i < rules.value.length; i++) {
+    const rule = rules.value[i];
+    const noLib = !rule.library_ids || rule.library_ids.length === 0;
+    const noRating = !rule.rating_filters || rule.rating_filters.length === 0;
+    
+    if (noLib && noRating) {
+      message.error(`第 ${i + 1} 条规则无效：【目标媒体库】和【目标分级】不能同时为空！否则会误伤全站视频。`);
+      return;
+    }
+    
+    if (!rule.tags || rule.tags.length === 0) {
+      message.error(`第 ${i + 1} 条规则无效：必须填写【追加标签】。`);
+      return;
+    }
+  }
+
   saving.value = true;
   try {
     await axios.post('/api/auto_tagging/rules', rules.value);
@@ -169,6 +186,10 @@ const appendNow = (rule) => {
   // 1. 基础校验
   if (!rule.library_ids || !rule.library_ids.length || !rule.tags.length) {
     return message.warning('请先选择媒体库并填写标签');
+  }
+
+  if ((!rule.library_ids || !rule.library_ids.length) && (!rule.rating_filters || !rule.rating_filters.length)) {
+     return message.error('为了安全，不能对“所有媒体库”且“不限分级”执行批量操作！');
   }
 
   // 2. 格式化显示信息
@@ -204,13 +225,21 @@ const appendNow = (rule) => {
 };
 
 const clearNow = (rule) => {
-  if (!rule.library_ids?.length || !rule.tags?.length) {
-    return message.warning('请先选择媒体库并填写要移除的标签');
+  // 1. 基础校验
+  if (!rule.tags?.length) {
+    return message.warning('请填写要移除的标签');
+  }
+  
+  // ★★★ 新增：防止手动运行时也是全空 ★★★
+  if ((!rule.library_ids || !rule.library_ids.length) && (!rule.rating_filters || !rule.rating_filters.length)) {
+     return message.error('为了安全，不能对“所有媒体库”且“不限分级”执行批量操作！');
   }
 
-  const libNames = libraryOptions.value
-    .filter(o => rule.library_ids.includes(o.value))
-    .map(o => o.label).join(', ');
+  const libNames = (!rule.library_ids || !rule.library_ids.length)
+    ? '所有媒体库'
+    : libraryOptions.value
+        .filter(o => rule.library_ids.includes(o.value))
+        .map(o => o.label).join(', ');
     
   const ratingInfo = rule.rating_filters && rule.rating_filters.length > 0 
     ? ` (仅限: ${rule.rating_filters.join(', ')})` 

@@ -1079,9 +1079,13 @@ def task_bulk_auto_tag(processor, library_ids: List[str], tags: List[str], ratin
     后台任务：支持为多个媒体库批量打标签 (支持分级过滤)。
     """
     try:
-        # ★★★ 1. 打印任务启动参数，确认后端是否收到了 rating_filters ★★★
-        logger.info(f"启动批量打标任务 | 目标库: {len(library_ids)}个 | 标签: {tags} | 分级限制: {rating_filters if rating_filters else '无 (全量)'}")
-
+        if not library_ids:
+            logger.info("  ➜ 未指定媒体库，将扫描所有库...")
+            all_libs = emby.get_emby_libraries(processor.emby_url, processor.emby_api_key, processor.emby_user_id)
+            if all_libs:
+                # 过滤掉合集、播放列表等非内容库
+                library_ids = [l['Id'] for l in all_libs if l.get('CollectionType') not in ['boxsets', 'playlists', 'music']]
+        
         total_libs = len(library_ids)
         filter_msg = f" (分级限制: {','.join(rating_filters)})" if rating_filters else ""
         
@@ -1143,6 +1147,11 @@ def task_bulk_remove_tags(processor, library_ids: List[str], tags: List[str], ra
     后台任务：从指定媒体库中批量移除特定标签 (支持分级过滤)。
     """
     try:
+        if not library_ids:
+            logger.info("  ➜ 未指定媒体库，将扫描所有库...")
+            all_libs = emby.get_emby_libraries(processor.emby_url, processor.emby_api_key, processor.emby_user_id)
+            if all_libs:
+                library_ids = [l['Id'] for l in all_libs if l.get('CollectionType') not in ['boxsets', 'playlists', 'music']]
         logger.info(f"启动批量移除任务 | 目标库: {len(library_ids)}个 | 标签: {tags} | 分级限制: {rating_filters if rating_filters else '无 (全量)'}")
         
         total_libs = len(library_ids)
