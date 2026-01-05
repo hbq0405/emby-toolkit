@@ -136,8 +136,6 @@ DEFAULT_RATING_MAPPING = {
         {"code": "R", "label": "R级", "emby_value": 9},
         {"code": "TV-MA", "label": "R级", "emby_value": 9},
         {"code": "NC-17", "label": "限制级", "emby_value": 10},
-        {"code": "AO", "label": "成人", "emby_value": 15},
-        {"code": "X", "label": "成人", "emby_value": 15},
         {"code": "XXX", "label": "成人", "emby_value": 15},
         {"code": "NR", "label": "未知", "emby_value": 0},
         {"code": "Unrated", "label": "未知", "emby_value": 0}

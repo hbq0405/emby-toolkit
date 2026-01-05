@@ -1169,8 +1169,8 @@ class MediaProcessor:
                         
                         # 如果 TMDb 标记为成人，无视其他国家分级，直接强制为 US: NC-17
                         if fresh_data.get('adult') is True:
-                            logger.info(f"  ➜ [分级修正] 检测到 TMDb 'adult=True' 标志，强制将 US 分级锁定为 'AO'。")
-                            target_us_code = 'AO'
+                            logger.info(f"  ➜ [分级修正] 检测到 TMDb 'adult=True' 标志，强制将 US 分级锁定为 'XXX'。")
+                            target_us_code = 'XXX'
                         
                         # 只有当不是成人内容时，才走常规映射逻辑
                         elif 'US' in available_ratings:
@@ -1320,8 +1320,8 @@ class MediaProcessor:
                         target_us_code = None
                         
                         if fresh_data.get('adult') is True:
-                            logger.info(f"  ➜ [剧集分级修正] 检测到 TMDb 'adult=True' 标志，强制将 US 分级锁定为 'AO'。")
-                            target_us_code = 'AO'
+                            logger.info(f"  ➜ [剧集分级修正] 检测到 TMDb 'adult=True' 标志，强制将 US 分级锁定为 'XXX'。")
+                            target_us_code = 'XXX'
                         
                         # 只有当不是成人内容时，才走常规映射逻辑
                         elif 'US' in available_ratings:

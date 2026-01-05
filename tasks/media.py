@@ -256,7 +256,7 @@ def _extract_and_map_tmdb_ratings(tmdb_details, item_type):
 
     # 无论原始数据里有没有 US 分级，只要 TMDb 说是成人，就必须是 AO
     if tmdb_details.get('adult') is True:
-        ratings_map['US'] = 'AO'
+        ratings_map['US'] = 'XXX'
         return ratings_map # 既然是成人，直接返回，不需要后续的映射逻辑了
 
     # 2. ★★★ 执行映射逻辑 (核心修复) ★★★
