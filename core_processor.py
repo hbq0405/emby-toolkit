@@ -383,10 +383,10 @@ class MediaProcessor:
                 movie_record['keywords_json'] = k_json
                 movie_record['countries_json'] = c_json
 
-                # ★★★ 修复：提取分级 (Rating) - 兼容 releases.countries ★★★
+                # ★★★ 修复：提取分级 (Rating) - 强制合并逻辑 ★★★
                 raw_ratings_map = {}
                 
-                # 1. 尝试标准 TMDb 结构 (release_dates)
+                # 1. 先读取标准 TMDb 结构 (release_dates)
                 results = source_data_package.get('release_dates', {}).get('results', [])
                 if results:
                     for r in results:
@@ -400,15 +400,16 @@ class MediaProcessor:
                         if cert:
                             raw_ratings_map[country] = cert
                 
-                # 2. ★★★ 尝试旧版/骨架结构 (releases.countries) ★★★
-                # 这是关键修复：因为我们之前把数据转成了 releases 结构
-                else:
-                    releases = source_data_package.get('releases', {}).get('countries', [])
-                    for r in releases:
-                        country = r.get('iso_3166_1')
-                        cert = r.get('certification')
-                        if country and cert:
-                            raw_ratings_map[country] = cert
+                # 2. ★★★ 再读取并合并骨架结构 (releases.countries) ★★★
+                # 关键修改：移除 else，始终执行此步。
+                # 这样我们刚才在主逻辑里手动注入的 'US' 分级就能覆盖或补充进去了。
+                releases = source_data_package.get('releases', {}).get('countries', [])
+                for r in releases:
+                    country = r.get('iso_3166_1')
+                    cert = r.get('certification')
+                    if country and cert:
+                        # 直接覆盖：如果我们手动计算出了分级，说明它比 TMDb 原生的更准确或更符合我们的映射规则
+                        raw_ratings_map[country] = cert
                 
                 # ★★★ 2. 存入 official_rating_json ★★★
                 movie_record['official_rating_json'] = json.dumps(raw_ratings_map, ensure_ascii=False)
