@@ -1222,6 +1222,10 @@ class MediaProcessor:
 
                         # D. 补全 US 分级到列表
                         if target_us_code:
+                            # 先移除列表中已存在的 US 条目（如果有），防止 SQL 读取到旧的 Unrated/NR
+                            countries_list = [c for c in countries_list if c.get('iso_3166_1') != 'US']
+                            
+                            # 添加我们要强制生效的映射分级
                             countries_list.append({
                                 "iso_3166_1": "US",
                                 "certification": target_us_code,
@@ -1345,8 +1349,12 @@ class MediaProcessor:
                                     elif not final_rating_str:
                                         final_rating_str = source_rating
 
-                        # D. 补全
+                        # D. 补全/强制覆盖
                         if target_us_code:
+                            # 先移除列表中已存在的 US 条目
+                            ratings_list = [r for r in ratings_list if r.get('iso_3166_1') != 'US']
+                            
+                            # 添加映射后的分级
                             ratings_list.append({
                                 "iso_3166_1": "US",
                                 "rating": target_us_code
