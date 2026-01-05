@@ -208,11 +208,19 @@ def query_virtual_library_items(
     priority_list = settings_db.get_setting('rating_priority') or utils.DEFAULT_RATING_PRIORITY
     
     # B. 构建 SQL 字段列表
-    rating_sql_parts = ["NULLIF(m.custom_rating, '')"] # 始终最优先
+    rating_sql_parts = ["NULLIF(m.custom_rating, '')"] # 1. 人工自定义最优先
     
+    # ★★★ 核心修复：确立 US 分级的宗主地位 ★★★
+    # 因为我们在入库时已经把所有逻辑（包括成人拦截、多国映射）都浓缩进了 US 字段。
+    # 所以 SQL 查询时，必须优先读取 US，否则会读到未处理的原产国分级（如 DE:18），导致权限逃逸。
+    rating_sql_parts.append("m.official_rating_json->>'US'") 
+
     for p in priority_list:
+        # 避免重复添加 US
+        if p == 'US': continue
+        
         if p == 'ORIGIN':
-            # 特殊处理原产国：从 countries_json 取第一个国家代码，去 official_rating_json 查
+            # 特殊处理原产国
             rating_sql_parts.append("m.official_rating_json->>(m.countries_json->>0)")
         else:
             # 标准国家代码
