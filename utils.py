@@ -133,36 +133,39 @@ DEFAULT_RATING_MAPPING = {
         {"code": "TV-PG", "label": "家长辅导", "emby_value": 5},
         {"code": "PG-13", "label": "青少年", "emby_value": 8},
         {"code": "TV-14", "label": "青少年", "emby_value": 8},
-        {"code": "R", "label": "成人", "emby_value": 9},
-        {"code": "TV-MA", "label": "成人", "emby_value": 9},
+        {"code": "R", "label": "R级", "emby_value": 9},
+        {"code": "TV-MA", "label": "R级", "emby_value": 9},
         {"code": "NC-17", "label": "限制级", "emby_value": 10},
+        {"code": "AO", "label": "成人", "emby_value": 15},
+        {"code": "X", "label": "成人", "emby_value": 15},
+        {"code": "XXX", "label": "成人", "emby_value": 15},
         {"code": "NR", "label": "未知", "emby_value": 0},
         {"code": "Unrated", "label": "未知", "emby_value": 0}
     ],
     "JP": [
         {"code": "G", "label": "全年龄", "emby_value": 1},
         {"code": "PG12", "label": "家长辅导", "emby_value": 5},
-        {"code": "R15+", "label": "成人", "emby_value": 9},
+        {"code": "R15+", "label": "R级", "emby_value": 9},
         {"code": "R18+", "label": "限制级", "emby_value": 10}
     ],
     "HK": [
         {"code": "I", "label": "全年龄", "emby_value": 1},
         {"code": "IIA", "label": "家长辅导", "emby_value": 5},
-        {"code": "IIB", "label": "成人", "emby_value": 9}, 
+        {"code": "IIB", "label": "R级", "emby_value": 9}, 
         {"code": "III", "label": "限制级", "emby_value": 10}
     ],
     "TW": [
         {"code": "0+", "label": "全年龄", "emby_value": 1},
         {"code": "6+", "label": "家长辅导", "emby_value": 4},
         {"code": "12+", "label": "青少年", "emby_value": 8},
-        {"code": "15+", "label": "成人", "emby_value": 9},
+        {"code": "15+", "label": "R级", "emby_value": 9},
         {"code": "18+", "label": "限制级", "emby_value": 10}
     ],
     "KR": [
         {"code": "All", "label": "全年龄", "emby_value": 1},
         {"code": "12", "label": "家长辅导", "emby_value": 5},
         {"code": "15", "label": "青少年", "emby_value": 8},
-        {"code": "18", "label": "成人", "emby_value": 9},
+        {"code": "18", "label": "R级", "emby_value": 9},
         {"code": "Restricted", "label": "限制级", "emby_value": 10}
     ],
     "GB": [
@@ -170,22 +173,22 @@ DEFAULT_RATING_MAPPING = {
         {"code": "PG", "label": "家长辅导", "emby_value": 5},
         {"code": "12", "label": "青少年", "emby_value": 8},
         {"code": "12A", "label": "青少年", "emby_value": 8},
-        {"code": "15", "label": "成人", "emby_value": 9},
-        {"code": "18", "label": "成人", "emby_value": 9},
+        {"code": "15", "label": "R级", "emby_value": 9},
+        {"code": "18", "label": "R级", "emby_value": 9},
         {"code": "R18", "label": "限制级", "emby_value": 10}
     ],
     "ES": [
         {"code": "TP", "label": "全年龄", "emby_value": 1},
         {"code": "7", "label": "家长辅导", "emby_value": 5},
         {"code": "12", "label": "青少年", "emby_value": 8},
-        {"code": "16", "label": "成人", "emby_value": 9},
+        {"code": "16", "label": "R级", "emby_value": 9},
         {"code": "18", "label": "限制级", "emby_value": 10}
     ],
     "DE": [
         {"code": "0", "label": "全年龄", "emby_value": 1},
         {"code": "6", "label": "家长辅导", "emby_value": 4},
         {"code": "12", "label": "青少年", "emby_value": 8},
-        {"code": "16", "label": "成人", "emby_value": 9},
+        {"code": "16", "label": "R级", "emby_value": 9},
         {"code": "18", "label": "限制级", "emby_value": 10}   
     ]
 }

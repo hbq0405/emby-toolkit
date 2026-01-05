@@ -1167,8 +1167,13 @@ class MediaProcessor:
                         # C. 按优先级寻找最佳分级
                         target_us_code = None
                         
-                        # 如果本身就有 US，直接用，不用映射
-                        if 'US' in available_ratings:
+                        # 如果 TMDb 标记为成人，无视其他国家分级，直接强制为 US: NC-17
+                        if fresh_data.get('adult') is True:
+                            logger.info(f"  ➜ [分级修正] 检测到 TMDb 'adult=True' 标志，强制将 US 分级锁定为 'AO'。")
+                            target_us_code = 'AO'
+                        
+                        # 只有当不是成人内容时，才走常规映射逻辑
+                        elif 'US' in available_ratings:
                             final_rating_str = available_ratings['US']
                         else:
                             # 遍历优先级列表
@@ -1314,7 +1319,12 @@ class MediaProcessor:
                         # C. 按优先级查找
                         target_us_code = None
                         
-                        if 'US' in available_ratings:
+                        if fresh_data.get('adult') is True:
+                            logger.info(f"  ➜ [剧集分级修正] 检测到 TMDb 'adult=True' 标志，强制将 US 分级锁定为 'AO'。")
+                            target_us_code = 'AO'
+                        
+                        # 只有当不是成人内容时，才走常规映射逻辑
+                        elif 'US' in available_ratings:
                             final_rating_str = available_ratings['US']
                         else:
                             for p_country in priority_list:
