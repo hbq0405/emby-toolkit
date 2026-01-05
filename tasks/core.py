@@ -13,7 +13,7 @@ import task_manager
 from .actors import (task_sync_person_map, task_enrich_aliases, task_actor_translation, 
                      task_process_actor_subscriptions, task_purge_unregistered_actors, task_merge_duplicate_actors,
                      task_purge_ghost_actors)
-from .media import task_role_translation, task_populate_metadata_cache 
+from .media import task_role_translation, task_populate_metadata_cache, task_sync_ratings_to_emby 
 from .watchlist import task_process_watchlist, task_refresh_completed_series, task_scan_library_gaps, task_scan_old_seasons_backfill
 from .custom_collections import task_process_all_custom_collections, process_single_custom_collection
 from .tmdb_collections import task_refresh_collections
