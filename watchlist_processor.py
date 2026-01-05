@@ -527,11 +527,17 @@ class WatchlistProcessor:
         # 提取分级信息 (Content Ratings)
         content_ratings = latest_series_data.get("content_ratings", {}).get("results", [])
         official_rating_json = {}
-        for r in content_ratings:
-            iso = r.get("iso_3166_1")
-            rating = r.get("rating")
-            if iso and rating:
-                official_rating_json[iso] = rating
+        if latest_series_data.get('adult') is True:
+            # 如果是成人内容，强制锁定 US 分级，无视其他
+            official_rating_json['US'] = 'XXX' 
+        else:
+            # 只有不是成人内容时，才提取常规分级
+            content_ratings = latest_series_data.get("content_ratings", {}).get("results", [])
+            for r in content_ratings:
+                iso = r.get("iso_3166_1")
+                rating = r.get("rating")
+                if iso and rating:
+                    official_rating_json[iso] = rating
 
         # ★★★ 修改：提取类型 (Genres) 为纯字符串列表 ★★★
         # 目的：保持与 tags, countries 一致，简化 SQL 查询逻辑
