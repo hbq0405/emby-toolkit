@@ -1108,12 +1108,13 @@ def task_bulk_remove_tags(processor, library_ids: List[str], tags: List[str]):
         task_manager.update_status_from_thread(-1, "清理任务异常中止")
 
 # ★★★ 分级同步特种部队 ★★★
-def task_sync_ratings_to_emby(processor, mode: str = 'fast'):
+def task_sync_ratings_to_emby(processor, force_full_update: bool = False):
     """
     【分级同步任务】
-    mode='fast': 仅同步 CustomRating (双向互补: 有覆盖无)。
-    mode='deep': 同步 CustomRating + OfficialRating (单向强制: DB US -> Emby)。
+    force_full_update=True: 同步 CustomRating + OfficialRating (单向强制: DB US -> Emby)。
+    force_full_update=False: 仅同步 CustomRating (双向互补: 有覆盖无)。
     """
+    mode = 'deep' if force_full_update else 'fast'
     logger.info(f"--- 开始执行分级同步任务 (模式: {mode}) ---")
     
     # 1. 从数据库获取所有在库项目

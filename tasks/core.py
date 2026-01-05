@@ -109,7 +109,8 @@ def _task_run_chain_internal(processor, task_name: str, sequence_config_key: str
                 tasks_requiring_force_flag = [
                     'role-translation', 
                     'enrich-aliases', 
-                    'populate-metadata'
+                    'populate-metadata',
+                    'sync_ratings_to_emby'
                 ]
                 
                 if task_key in tasks_requiring_force_flag:
@@ -197,6 +198,7 @@ def get_task_registry(context: str = 'all'):
         'sync-all-user-data': (task_sync_all_user_data, "同步用户数据", 'media', True),
         'check-expired-users': (task_check_expired_users, "检查过期用户", 'media', True),
         'generate_embeddings': (task_generate_embeddings, "生成媒体向量", 'media', True),
+        'sync_ratings_to_emby': (task_sync_ratings_to_emby, "同步分级数据", 'media', True),
         'refresh_completed_series': (task_refresh_completed_series, "全量刷新剧集", 'watchlist', True),
         
         # --- 不适合任务链的、需要特定参数的任务 ---
