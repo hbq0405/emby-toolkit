@@ -289,8 +289,7 @@ const message = useMessage();
 const DUAL_MODE_TASKS = [
   'role-translation',    
   'populate-metadata',
-  'enrich-aliases',
-  'sync_ratings_to_emby'
+  'enrich-aliases'
 ];
 
 // --- Composable Hooks ---

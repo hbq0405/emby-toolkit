@@ -1107,18 +1107,17 @@ def task_bulk_remove_tags(processor, library_ids: List[str], tags: List[str]):
         logger.error(f"批量清理任务失败: {e}")
         task_manager.update_status_from_thread(-1, "清理任务异常中止")
 
-# ★★★ 分级同步特种部队 ★★★
-def task_sync_ratings_to_emby(processor, force_full_update: bool = False):
+# --- 分级同步任务 ---
+def task_sync_ratings_to_emby(processor):
     """
     【分级同步任务】
-    force_full_update=False (快速): 仅同步 CustomRating (双向互补)。
-    force_full_update=True  (深度): 同步 CustomRating + OfficialRating (单向强制: DB US -> Emby)。
+    不再区分模式，每次执行都确保：
+    1. CustomRating: 双向互补 (以DB为准)。
+    2. OfficialRating: 单向强制 (DB US -> Emby)。
     """
-    mode = 'deep' if force_full_update else 'fast'
-    logger.info(f"--- 开始执行分级同步任务 (模式: {mode}, 深度更新: {force_full_update}) ---")
+    logger.info(f"--- 开始执行分级同步任务 (全量比对) ---")
     
     # 1. 从数据库获取所有在库项目
-    # 我们只需要查那些确实在库里的，不在库的同步了也没意义
     with connection.get_db_connection() as conn:
         cursor = conn.cursor()
         cursor.execute("""
@@ -1133,7 +1132,6 @@ def task_sync_ratings_to_emby(processor, force_full_update: bool = False):
     total_items = len(all_items)
     logger.info(f"  ➜ 扫描到 {total_items} 个在库项目，准备进行差异比对...")
     
-    # 分批处理，避免内存爆炸
     BATCH_SIZE = 200
     updated_emby_count = 0
     updated_db_count = 0
@@ -1143,15 +1141,13 @@ def task_sync_ratings_to_emby(processor, force_full_update: bool = False):
         
         batch = all_items[i : i + BATCH_SIZE]
         
-        # 提取这一批的 Emby ID
-        emby_id_map = {} # {emby_id: db_row}
+        emby_id_map = {} 
         emby_ids_to_fetch = []
         
         for row in batch:
             try:
                 e_ids = row['emby_item_ids_json']
                 if e_ids:
-                    # 通常取第一个 ID 即可
                     eid = e_ids[0]
                     emby_id_map[eid] = row
                     emby_ids_to_fetch.append(eid)
@@ -1159,8 +1155,7 @@ def task_sync_ratings_to_emby(processor, force_full_update: bool = False):
 
         if not emby_ids_to_fetch: continue
 
-        # 批量获取 Emby 侧的现状
-        # 我们只需要 OfficialRating, CustomRating, LockedFields
+        # 批量获取 Emby 现状
         emby_items = emby.get_emby_items_by_id(
             base_url=processor.emby_url,
             api_key=processor.emby_api_key,
@@ -1178,63 +1173,40 @@ def task_sync_ratings_to_emby(processor, force_full_update: bool = False):
             item_type = db_row['item_type']
             item_name = e_item.get('Name', tmdb_id)
             
-            # --- 数据准备 ---
             db_custom = db_row['custom_rating']
             emby_custom = e_item.get('CustomRating')
             
             db_official_json = db_row['official_rating_json'] or {}
-            # 这里的 json 可能是 dict 也可能是 str，psycopg2 cursor_factory=RealDictCursor 通常会自动转 dict
-            # 但为了保险，如果是 str 就 load 一下
             if isinstance(db_official_json, str):
                 try: db_official_json = json.loads(db_official_json)
                 except: db_official_json = {}
             
-            # 提取 DB 里的 US 分级 (这是我们的真理标准)
             db_us_rating = db_official_json.get('US')
             emby_official = e_item.get('OfficialRating')
 
             changes_to_emby = {}
             changes_to_db = {}
 
-            # =========================================================
-            # 逻辑 A: CustomRating (双向互补 - 有覆盖无)
-            # =========================================================
-            # 1. DB 有，Emby 无 -> 推给 Emby (恢复丢失的数据)
+            # --- 1. CustomRating (双向互补) ---
             if db_custom and not emby_custom:
                 changes_to_emby['CustomRating'] = db_custom
-            
-            # 2. Emby 有，DB 无 -> 拉回 DB (保存用户在前端的操作)
             elif emby_custom and not db_custom:
                 changes_to_db['custom_rating'] = emby_custom
-            
-            # 3. 都有，但不一致 -> 以 DB 为准 (防止 Emby 瞎改，或者用户想回滚)
-            # 这里你也可以选择以 Emby 为准，看你觉得哪边更权威。
-            # 既然你说 "Emby一刷新就没了"，说明 DB 是避风港，所以冲突时信 DB。
             elif db_custom and emby_custom and db_custom != emby_custom:
                 changes_to_emby['CustomRating'] = db_custom
 
-            # =========================================================
-            # 逻辑 B: OfficialRating (深度模式 - 单向强制 DB->Emby)
-            # =========================================================
-            if mode == 'deep':
-                # 只有当 DB 里明确有 US 分级，且 Emby 当前分级不一致时，才覆盖
-                # 这样能解决 "虚拟库看得到(因为读DB)，Emby看不到(因为Emby分级错)" 的灰块问题
-                if db_us_rating and db_us_rating != emby_official:
-                    changes_to_emby['OfficialRating'] = db_us_rating
-                    
-                    # 如果 Emby 锁定了 OfficialRating，我们需要解锁吗？
-                    # update_emby_item_details 内部逻辑通常不处理解锁，
-                    # 如果需要强行覆盖，最好把 LockedFields 也处理一下
-                    locked = e_item.get('LockedFields', [])
-                    if 'OfficialRating' in locked:
-                        locked.remove('OfficialRating')
-                        changes_to_emby['LockedFields'] = locked
+            # --- 2. OfficialRating (单向强制) ---
+            # 只要 DB 有 US 分级，且 Emby 不一致，就覆盖！
+            if db_us_rating and db_us_rating != emby_official:
+                changes_to_emby['OfficialRating'] = db_us_rating
+                
+                # 自动解锁 OfficialRating 防止修改失败
+                locked = e_item.get('LockedFields', [])
+                if 'OfficialRating' in locked:
+                    locked.remove('OfficialRating')
+                    changes_to_emby['LockedFields'] = locked
 
-            # =========================================================
-            # 执行更新
-            # =========================================================
-            
-            # 1. 更新 Emby
+            # --- 执行更新 ---
             if changes_to_emby:
                 success = emby.update_emby_item_details(
                     item_id=eid,
@@ -1245,19 +1217,17 @@ def task_sync_ratings_to_emby(processor, force_full_update: bool = False):
                 )
                 if success:
                     updated_emby_count += 1
-                    logger.trace(f"  ➜ [同步->Emby] {item_name}: {changes_to_emby}")
+                    # logger.trace(f"  ➜ [同步->Emby] {item_name}: {changes_to_emby}")
 
-            # 2. 更新 DB
             if changes_to_db:
                 media_db.update_media_metadata_fields(tmdb_id, item_type, changes_to_db)
                 updated_db_count += 1
-                logger.trace(f"  ➜ [同步->DB] {item_name}: {changes_to_db}")
+                # logger.trace(f"  ➜ [同步->DB] {item_name}: {changes_to_db}")
 
-        # 进度汇报
         progress = int((i / total_items) * 100)
-        task_manager.update_status_from_thread(progress, f"分级同步({mode}): 已处理 {i}/{total_items}...")
+        task_manager.update_status_from_thread(progress, f"分级同步: 已处理 {i}/{total_items}...")
 
-    logger.info(f"--- 分级同步完成 ({mode}) ---")
-    logger.info(f"  ➜ 推送给 Emby 的更新: {updated_emby_count} 条")
-    logger.info(f"  ➜ 拉取回 DB 的更新: {updated_db_count} 条")
-    task_manager.update_status_from_thread(100, f"分级同步完成: Emby更新{updated_emby_count}, DB更新{updated_db_count}")
+    logger.info(f"--- 分级同步完成 ---")
+    logger.info(f"  ➜ Emby 修正: {updated_emby_count} 条")
+    logger.info(f"  ➜ DB 回写: {updated_db_count} 条")
+    task_manager.update_status_from_thread(100, f"分级同步完成: Emby修正{updated_emby_count}, DB回写{updated_db_count}")
