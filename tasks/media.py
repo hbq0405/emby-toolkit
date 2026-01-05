@@ -5,17 +5,17 @@ import time
 import json
 import gc
 import logging
-from typing import Optional, List
-from datetime import datetime, timezone
+from typing import List
 import concurrent.futures
 from collections import defaultdict
 
 # 导入需要的底层模块和共享实例
 import task_manager
+import utils
 import handler.tmdb as tmdb
 import handler.emby as emby
 import handler.telegram as telegram
-from database import connection
+from database import connection, settings_db
 from .helpers import parse_full_asset_details
 
 logger = logging.getLogger(__name__)
@@ -209,33 +209,37 @@ def extract_tag_names(item_data):
     return list(tags_set)
 
 # --- 提取原始分级数据，不进行任何计算 ---
-def _extract_tmdb_ratings_raw(tmdb_details, item_type):
+def _extract_and_map_tmdb_ratings(tmdb_details, item_type):
     """
-    从 TMDb 详情中提取所有国家的分级数据。
+    从 TMDb 详情中提取所有国家的分级数据，并执行智能映射（补全 US 分级）。
     返回: 字典 { 'US': 'R', 'CN': 'PG-13', ... }
     """
     if not tmdb_details:
         return {}
 
     ratings_map = {}
-    
+    origin_country = None
+
+    # 1. 提取原始数据
     if item_type == 'Movie':
         # 电影：在 release_dates 中查找
         results = tmdb_details.get('release_dates', {}).get('results', [])
         for r in results:
             country = r.get('iso_3166_1')
             if not country: continue
-            
-            # 电影可能有多个发行日期，取第一个有分级的
             cert = None
             for release in r.get('release_dates', []):
                 if release.get('certification'):
                     cert = release.get('certification')
                     break 
-            
             if cert:
                 ratings_map[country] = cert
-                
+        
+        # 获取原产国
+        p_countries = tmdb_details.get('production_countries', [])
+        if p_countries:
+            origin_country = p_countries[0].get('iso_3166_1')
+
     elif item_type == 'Series':
         # 剧集：在 content_ratings 中查找
         results = tmdb_details.get('content_ratings', {}).get('results', [])
@@ -244,6 +248,75 @@ def _extract_tmdb_ratings_raw(tmdb_details, item_type):
             rating = r.get('rating')
             if country and rating:
                 ratings_map[country] = rating
+        
+        # 获取原产国
+        o_countries = tmdb_details.get('origin_country', [])
+        if o_countries:
+            origin_country = o_countries[0]
+
+    # 2. ★★★ 执行映射逻辑 (核心修复) ★★★
+    # 如果已经有 US 分级，直接返回，不做映射（以 TMDb 原生 US 为准，或者你可以选择覆盖）
+    # 这里我们选择：如果原生没有 US，或者我们想强制检查映射，就执行映射。
+    # 为了保险，我们总是尝试计算映射值，如果计算出来了，就补全进去。
+    
+    target_us_code = None
+    
+    # 加载配置
+    rating_mapping = settings_db.get_setting('rating_mapping') or utils.DEFAULT_RATING_MAPPING
+    priority_list = settings_db.get_setting('rating_priority') or utils.DEFAULT_RATING_PRIORITY
+
+    # 按优先级查找
+    for p_country in priority_list:
+        search_country = origin_country if p_country == 'ORIGIN' else p_country
+        if not search_country: continue
+        
+        if search_country in ratings_map:
+            source_rating = ratings_map[search_country]
+            
+            # 尝试映射
+            if isinstance(rating_mapping, dict) and search_country in rating_mapping and 'US' in rating_mapping:
+                current_val = None
+                # 找源分级对应的 Value
+                for rule in rating_mapping[search_country]:
+                    if str(rule['code']).strip().upper() == str(source_rating).strip().upper():
+                        current_val = rule.get('emby_value')
+                        break
+                
+                # 找 US 对应的 Code
+                if current_val is not None:
+                    valid_us_rules = []
+                    for rule in rating_mapping['US']:
+                        r_code = rule.get('code', '')
+                        # 简单的类型过滤
+                        if item_type == 'Movie' and r_code.startswith('TV-'): continue
+                        valid_us_rules.append(rule)
+                    
+                    for rule in valid_us_rules:
+                        # 尝试精确匹配
+                        try:
+                            if int(rule.get('emby_value')) == int(current_val):
+                                target_us_code = rule['code']
+                                break
+                        except: continue
+                    
+                    # 如果没精确匹配，尝试向上兼容 (+1)
+                    if not target_us_code:
+                        for rule in valid_us_rules:
+                            try:
+                                if int(rule.get('emby_value')) == int(current_val) + 1:
+                                    target_us_code = rule['code']
+                                    break
+                            except: continue
+
+            if target_us_code:
+                break
+            # 如果没映射成功，但这是高优先级国家，且没有 US 分级，也可以考虑直接用它的分级做兜底（视需求而定）
+            # 这里我们只做映射补全
+
+    # 3. 补全 US 分级
+    if target_us_code:
+        # 强制覆盖/添加 US 分级
+        ratings_map['US'] = target_us_code
 
     return ratings_map
 
@@ -651,7 +724,7 @@ def task_populate_metadata_cache(processor, batch_size: int = 50, force_full_upd
                 
                 final_release_date = emby_date or tmdb_date
                 # 提取全量分级数据
-                raw_ratings_map = _extract_tmdb_ratings_raw(tmdb_details, item_type)
+                raw_ratings_map = _extract_and_map_tmdb_ratings(tmdb_details, item_type)
                 # 序列化为 JSON 字符串，准备存入数据库
                 rating_json_str = json.dumps(raw_ratings_map, ensure_ascii=False)
                 top_record = {
