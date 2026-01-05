@@ -24,7 +24,7 @@ from tasks.media import task_sync_all_metadata, task_sync_images
 from handler.custom_collection import RecommendationEngine
 from handler import tmdb_collections as collections_handler
 from services.cover_generator import CoverGeneratorService
-from database import custom_collection_db, tmdb_collection_db, settings_db, user_db, maintenance_db, media_db
+from database import custom_collection_db, tmdb_collection_db, settings_db, user_db, maintenance_db, media_db, queries_db
 from database.log_db import LogDBManager
 from handler.tmdb import get_movie_details, get_tv_details
 import logging
@@ -200,6 +200,29 @@ def _handle_full_processing_flow(processor: 'MediaProcessor', item_id: str, forc
 
     logger.trace(f"  ➜ Webhook 任务及所有后续流程完成: '{item_name_for_log}'")
 
+    # ======================================================================
+    # ★★★ 新增：处理完成后的“二次打标” (补刀逻辑) ★★★
+    # 此时 Emby 应该已经读取了我们修正后的元数据 (如分级 XXX)，
+    # 再次运行打标逻辑，可以命中那些依赖修正后分级的规则。
+    # ======================================================================
+    if is_new_item: # 仅对新入库项目执行，追更通常不需要重新打标
+        try:
+            # 获取库信息 (因为 _handle_immediate_tagging_with_lib 需要 lib_id)
+            # 注意：这里重新获取一次库信息，确保准确
+            library_info = emby.get_library_root_for_item(
+                item_id, processor.emby_url, processor.emby_api_key, processor.emby_user_id
+            )
+            
+            if library_info:
+                lib_id = library_info.get("Id")
+                lib_name = library_info.get("Name", "未知库")
+                
+                # 延迟 5 秒执行，给 Emby 一点时间消化 NFO 的变更
+                logger.debug(f"  ➜ [自动打标] 安排 5秒 后对 '{item_name_for_log}' 进行二次打标检查 (基于修正后的元数据)...")
+                spawn_later(5, _handle_immediate_tagging_with_lib, item_id, item_name_for_log, lib_id, lib_name)
+        except Exception as e:
+            logger.warning(f"  ➜ [自动打标] 触发二次打标失败: {e}")
+
     # 刷新智能追剧状态 
     if item_type == "Series" and tmdb_id:
         def _async_trigger_watchlist():
@@ -219,19 +242,48 @@ def _handle_full_processing_flow(processor: 'MediaProcessor', item_id: str, forc
 
 def _handle_immediate_tagging_with_lib(item_id, item_name, lib_id, lib_name):
     """
-    自动打标。
+    自动打标 (支持分级过滤)。
     """
     try:
         processor = extensions.media_processor_instance
         tagging_config = settings_db.get_setting('auto_tagging_rules') or []
+        
+        # 预先获取一次详情，因为我们需要 OfficialRating 来做判断
+        # 如果没有规则命中，这次请求可能浪费，但为了分级过滤是必须的
+        item_details = None 
+        
         for rule in tagging_config:
             target_libs = rule.get('library_ids', [])
             if lib_id in target_libs:
                 tags = rule.get('tags', [])
+                # ★★★ 获取分级过滤配置 ★★★
+                rating_filters = rule.get('rating_filters', [])
+                
                 if tags:
+                    # 如果有分级限制，且还没获取详情，则获取详情
+                    if rating_filters and item_details is None:
+                        item_details = emby.get_emby_item_details(
+                            item_id, processor.emby_url, processor.emby_api_key, processor.emby_user_id,
+                            fields="OfficialRating"
+                        )
+                    
+                    # ★★★ 检查分级匹配 ★★★
+                    if rating_filters:
+                        if not item_details:
+                            continue # 获取详情失败，跳过
+                        
+                        item_rating = item_details.get('OfficialRating')
+                        target_codes = queries_db._expand_rating_labels(rating_filters)
+                        
+                        if item_rating not in target_codes:
+                            logger.debug(f"  🏷️ 媒体项 '{item_name}' 分级 '{item_rating}' 不满足规则限制 {rating_filters}，跳过打标。")
+                            continue
+
                     logger.info(f"  🏷️ 媒体项 '{item_name}' 命中库 '{lib_name}' 规则，追加标签: {tags}")
                     emby.add_tags_to_item(item_id, tags, processor.emby_url, processor.emby_api_key, processor.emby_user_id)
-                break
+                
+                # 命中一条规则后是否继续匹配其他规则？通常 break 即可，或者根据需求去掉 break
+                break 
     except Exception as e:
         logger.error(f"  🚫 [入口打标] 失败: {e}")
 

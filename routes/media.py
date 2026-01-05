@@ -639,6 +639,8 @@ def run_tagging_now():
     data = request.json
     lib_ids = data.get('library_ids') 
     tags = data.get('tags')
+    # ★★★ 新增：接收分级筛选参数 ★★★
+    rating_filters = data.get('rating_filters') 
     lib_name_display = data.get('library_name', "多个库")
 
     if not lib_ids or not tags:
@@ -648,8 +650,10 @@ def run_tagging_now():
         task_bulk_auto_tag,
         task_name=f"手动补打标签: {lib_name_display}",
         processor_type='media',
-        library_ids=lib_ids, # 传列表
-        tags=tags
+        library_ids=lib_ids,
+        tags=tags,
+        # ★★★ 传递给任务 ★★★
+        rating_filters=rating_filters 
     )
     return jsonify({"message": "批量打标任务已启动"})
 
@@ -661,6 +665,8 @@ def clear_tagging_now():
     data = request.json
     lib_ids = data.get('library_ids')
     tags = data.get('tags')
+    # ★★★ 新增：接收分级筛选参数 ★★★
+    rating_filters = data.get('rating_filters')
     lib_name_display = data.get('library_name', "多个库")
 
     task_manager.submit_task(
@@ -668,6 +674,8 @@ def clear_tagging_now():
         task_name=f"手动移除标签: {lib_name_display}",
         processor_type='media',
         library_ids=lib_ids,
-        tags=tags
+        tags=tags,
+        # ★★★ 传递给任务 ★★★
+        rating_filters=rating_filters
     )
     return jsonify({"message": "批量移除任务已启动"})

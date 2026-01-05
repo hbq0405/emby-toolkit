@@ -5,7 +5,7 @@ import time
 import json
 import gc
 import logging
-from typing import List
+from typing import List, Optional
 import concurrent.futures
 from collections import defaultdict
 
@@ -15,7 +15,7 @@ import utils
 import handler.tmdb as tmdb
 import handler.emby as emby
 import handler.telegram as telegram
-from database import connection, settings_db, media_db
+from database import connection, settings_db, media_db, queries_db
 from .helpers import parse_full_asset_details
 
 logger = logging.getLogger(__name__)
@@ -1049,63 +1049,138 @@ def task_populate_metadata_cache(processor, batch_size: int = 50, force_full_upd
         logger.error(f"执行 '{task_name}' 任务时发生严重错误: {e}", exc_info=True)
         task_manager.update_status_from_thread(-1, f"任务失败: {e}")
 
-# --- 自动打标 ---
-def task_bulk_auto_tag(processor, library_ids: List[str], tags: List[str]):
+# --- 辅助函数：检查分级是否匹配 (带日志调试版) ---
+def _is_rating_match(item_name: str, item_rating: str, rating_filters: List[str]) -> bool:
     """
-    后台任务：支持为多个媒体库批量打标签。
+    检查 Emby 的 OfficialRating 是否匹配指定的中分级标签列表。
+    """
+    if not rating_filters:
+        return True # 未设置过滤器，默认匹配所有
+    
+    # 1. 如果项目没有分级，直接不匹配
+    if not item_rating:
+        # logger.trace(f"  [分级过滤] '{item_name}' 无分级信息 -> 跳过")
+        return False 
+
+    # 2. 将中文标签（如"限制级"）展开为所有可能的代码（如"R", "NC-17"）
+    target_codes = queries_db._expand_rating_labels(rating_filters)
+    
+    # 3. 检查匹配
+    # Emby 的 OfficialRating 可能是 "R" 也可能是 "US: R"，这里做宽松匹配
+    is_match = item_rating in target_codes or \
+               (item_rating.split(':')[-1].strip() in target_codes)
+    
+    # logger.trace(f"  [分级过滤] '{item_name}' 分级: {item_rating} | 目标: {target_codes} | 匹配: {is_match}")
+    return is_match
+
+# --- 自动打标 (增强调试版) ---
+def task_bulk_auto_tag(processor, library_ids: List[str], tags: List[str], rating_filters: Optional[List[str]] = None):
+    """
+    后台任务：支持为多个媒体库批量打标签 (支持分级过滤)。
     """
     try:
+        # ★★★ 1. 打印任务启动参数，确认后端是否收到了 rating_filters ★★★
+        logger.info(f"启动批量打标任务 | 目标库: {len(library_ids)}个 | 标签: {tags} | 分级限制: {rating_filters if rating_filters else '无 (全量)'}")
+
         total_libs = len(library_ids)
+        filter_msg = f" (分级限制: {','.join(rating_filters)})" if rating_filters else ""
+        
         for lib_idx, lib_id in enumerate(library_ids):
-            task_manager.update_status_from_thread(int((lib_idx/total_libs)*100), f"正在扫描第 {lib_idx+1}/{total_libs} 个媒体库...")
+            task_manager.update_status_from_thread(int((lib_idx/total_libs)*100), f"正在扫描第 {lib_idx+1}/{total_libs} 个媒体库{filter_msg}...")
             
+            # ★★★ 2. 必须请求 OfficialRating 字段 ★★★
             items = emby.get_emby_library_items(
                 base_url=processor.emby_url,
                 api_key=processor.emby_api_key,
                 library_ids=[lib_id],
                 media_type_filter="Movie,Series,Episode",
-                user_id=processor.emby_user_id
+                user_id=processor.emby_user_id,
+                fields="Id,Name,OfficialRating" # <--- 显式请求分级字段
             )
             
-            if not items: continue
+            if not items: 
+                logger.info(f"  媒体库 {lib_id} 为空或无法访问。")
+                continue
+
+            logger.info(f"  媒体库 {lib_id} 扫描到 {len(items)} 个项目，开始过滤...")
+            
+            processed_count = 0
+            skipped_count = 0
 
             for i, item in enumerate(items):
                 if processor.is_stop_requested(): return
                 
-                # 进度显示优化：显示当前库的进度
-                task_manager.update_status_from_thread(
-                    int((lib_idx/total_libs)*100 + (i/len(items))*(100/total_libs)), 
-                    f"库({lib_idx+1}/{total_libs}) 正在打标: {item.get('Name')}"
-                )
+                item_name = item.get('Name', '未知')
                 
-                emby.add_tags_to_item(item.get("Id"), tags, processor.emby_url, processor.emby_api_key, processor.emby_user_id)
+                # ★★★ 3. 分级过滤逻辑 ★★★
+                if rating_filters:
+                    item_rating = item.get('OfficialRating')
+                    if not _is_rating_match(item_name, item_rating, rating_filters):
+                        skipped_count += 1
+                        continue # 分级不匹配，跳过
+
+                # 进度显示优化
+                if i % 20 == 0:
+                    task_manager.update_status_from_thread(
+                        int((lib_idx/total_libs)*100 + (i/len(items))*(100/total_libs)), 
+                        f"库({lib_idx+1}/{total_libs}) 正在打标: {item_name}"
+                    )
+                
+                # 执行打标
+                success = emby.add_tags_to_item(item.get("Id"), tags, processor.emby_url, processor.emby_api_key, processor.emby_user_id)
+                if success:
+                    processed_count += 1
+
+            logger.info(f"  媒体库 {lib_id} 处理完成: 打标 {processed_count} 个, 跳过 {skipped_count} 个 (不符分级)。")
         
         task_manager.update_status_from_thread(100, "所有选定库批量打标完成")
     except Exception as e:
-        logger.error(f"批量打标任务失败: {e}")
+        logger.error(f"批量打标任务失败: {e}", exc_info=True)
         task_manager.update_status_from_thread(-1, "任务异常中止")
 
-def task_bulk_remove_tags(processor, library_ids: List[str], tags: List[str]):
+def task_bulk_remove_tags(processor, library_ids: List[str], tags: List[str], rating_filters: Optional[List[str]] = None):
     """
-    后台任务：从指定媒体库中批量移除特定标签。
+    后台任务：从指定媒体库中批量移除特定标签 (支持分级过滤)。
     """
     try:
+        logger.info(f"启动批量移除任务 | 目标库: {len(library_ids)}个 | 标签: {tags} | 分级限制: {rating_filters if rating_filters else '无 (全量)'}")
+        
         total_libs = len(library_ids)
+        filter_msg = f" (分级限制: {','.join(rating_filters)})" if rating_filters else ""
+
         for lib_idx, lib_id in enumerate(library_ids):
             items = emby.get_emby_library_items(
                 base_url=processor.emby_url, api_key=processor.emby_api_key,
                 library_ids=[lib_id], media_type_filter="Movie,Series,Episode",
-                user_id=processor.emby_user_id
+                user_id=processor.emby_user_id,
+                fields="Id,Name,OfficialRating"
             )
             if not items: continue
 
+            processed_count = 0
+            skipped_count = 0
+
             for i, item in enumerate(items):
                 if processor.is_stop_requested(): return
-                task_manager.update_status_from_thread(
-                    int((lib_idx/total_libs)*100 + (i/len(items))*(100/total_libs)), 
-                    f"正在移除标签({lib_idx+1}/{total_libs}): {item.get('Name')}"
-                )
-                emby.remove_tags_from_item(item.get("Id"), tags, processor.emby_url, processor.emby_api_key, processor.emby_user_id)
+                
+                # ★★★ 分级过滤逻辑 ★★★
+                if rating_filters:
+                    item_rating = item.get('OfficialRating')
+                    if not _is_rating_match(item.get('Name'), item_rating, rating_filters):
+                        skipped_count += 1
+                        continue 
+
+                if i % 20 == 0:
+                    task_manager.update_status_from_thread(
+                        int((lib_idx/total_libs)*100 + (i/len(items))*(100/total_libs)), 
+                        f"正在移除标签({lib_idx+1}/{total_libs}): {item.get('Name')}"
+                    )
+                
+                success = emby.remove_tags_from_item(item.get("Id"), tags, processor.emby_url, processor.emby_api_key, processor.emby_user_id)
+                if success:
+                    processed_count += 1
+            
+            logger.info(f"  媒体库 {lib_id} 处理完成: 移除 {processed_count} 个, 跳过 {skipped_count} 个。")
         
         task_manager.update_status_from_thread(100, "批量标签移除完成")
     except Exception as e:
