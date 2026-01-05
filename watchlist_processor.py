@@ -526,12 +526,12 @@ class WatchlistProcessor:
         # 3. ★★★ 增强：将 TMDb 最新数据全量写入数据库 (Series 层级) ★★★
         # 提取分级信息 (Content Ratings)
         content_ratings = latest_series_data.get("content_ratings", {}).get("results", [])
-        rating_json = {}
+        official_rating_json = {}
         for r in content_ratings:
             iso = r.get("iso_3166_1")
             rating = r.get("rating")
             if iso and rating:
-                rating_json[iso] = rating
+                official_rating_json[iso] = rating
 
         # ★★★ 修改：提取类型 (Genres) 为纯字符串列表 ★★★
         # 目的：保持与 tags, countries 一致，简化 SQL 查询逻辑
@@ -561,7 +561,7 @@ class WatchlistProcessor:
             "watchlist_tmdb_status": latest_series_data.get("status"),
             "total_episodes": latest_series_data.get("number_of_episodes", 0),
             "rating": latest_series_data.get("vote_average"), # TMDb 评分
-            "rating_json": json.dumps(rating_json) if rating_json else None, # 分级信息
+            "official_rating_json": json.dumps(official_rating_json) if official_rating_json else None, # 分级信息
             "genres_json": json.dumps(genres_json) if genres_json else None, # 类型
             "keywords_json": json.dumps(keywords_json) if keywords_json else None, # 关键字
             "studios_json": json.dumps(studios_json) if studios_json else None, # 制作公司
