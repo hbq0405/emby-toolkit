@@ -3404,7 +3404,7 @@ class MediaProcessor:
         main_json_filename = "all.json" if item_type == "Movie" else "series.json"
         main_json_path = os.path.join(target_override_dir, main_json_filename)
 
-        # --- 安全检查：如果 override 文件不存在，说明从未被完整处理过，不应继续 ---
+        # --- 安全检查 ---
         if not os.path.exists(main_json_path):
             logger.warning(f"  ➜ {log_prefix} 无法持久化修改：主覆盖文件 '{main_json_path}' 不存在。请先对该项目进行一次完整处理。")
             return
@@ -3413,41 +3413,100 @@ class MediaProcessor:
             # --- 核心的 "读-改-写" 逻辑 ---
             with open(main_json_path, 'r+', encoding='utf-8') as f:
                 data = json.load(f)
+                updated_count = 0
 
-                # 定义要从 Emby 同步的字段
+                # 1. 基础字段映射更新
                 fields_to_update = {
                     "Name": "title",
                     "OriginalTitle": "original_title",
                     "Overview": "overview",
                     "Tagline": "tagline",
-                    "CommunityRating": "vote_average", # 用户评分
-                    "OfficialRating": "official_rating",
+                    "CommunityRating": "vote_average",
                     "Genres": "genres",
                     "Studios": "production_companies",
                     "Tags": "keywords"
                 }
                 
-                updated_count = 0
                 for emby_key, json_key in fields_to_update.items():
                     if emby_key in item_details:
                         new_value = item_details[emby_key]
-                        # 特殊处理 Studios 和 Genres
+                        
+                        # 特殊处理 Studios 和 Genres (Emby返回的是对象列表或字符串列表)
                         if emby_key in ["Studios", "Genres"]:
-                            # 假设源数据是 [{ "Name": "Studio A" }] 或 ["Action"]
                             if isinstance(new_value, list):
                                 if emby_key == "Studios":
                                      data[json_key] = [{"name": s.get("Name")} for s in new_value if s.get("Name")]
                                 else: # Genres
-                                     data[json_key] = new_value
+                                     data[json_key] = [{"id": 0, "name": g} for g in new_value] # 保持 utils 骨架格式
                                 updated_count += 1
                         else:
                             data[json_key] = new_value
                             updated_count += 1
                 
-                # 处理日期
-                if 'PremiereDate' in item_details:
-                    data['release_date'] = (item_details['PremiereDate'] or '').split('T')[0]
+                # 2. 分级 (OfficialRating) 深度注入 
+                if 'OfficialRating' in item_details:
+                    new_rating = item_details['OfficialRating']
+                    
+                    # A. 更新顶层兼容字段 (Emby/Kodi 常用)
+                    data['mpaa'] = new_rating
+                    data['certification'] = new_rating
+                    
+                    # B. 更新嵌套结构 (TMDb 标准结构)
+                    # 默认我们将 Emby 的分级视为 'US' 分级
+                    target_country = 'US'
+                    
+                    if item_type == 'Movie':
+                        # 结构: releases -> countries -> list
+                        releases = data.setdefault('releases', {})
+                        countries = releases.setdefault('countries', [])
+                        
+                        # 查找并更新 US 条目
+                        found = False
+                        for c in countries:
+                            if c.get('iso_3166_1') == target_country:
+                                c['certification'] = new_rating
+                                found = True
+                                break
+                        # 如果没找到，追加一个
+                        if not found:
+                            countries.append({
+                                "iso_3166_1": target_country,
+                                "certification": new_rating,
+                                "primary": False,
+                                "release_date": ""
+                            })
+                            
+                    elif item_type == 'Series':
+                        # 结构: content_ratings -> results -> list
+                        c_ratings = data.setdefault('content_ratings', {})
+                        results = c_ratings.setdefault('results', [])
+                        
+                        # 查找并更新 US 条目
+                        found = False
+                        for r in results:
+                            if r.get('iso_3166_1') == target_country:
+                                r['rating'] = new_rating
+                                found = True
+                                break
+                        # 如果没找到，追加一个
+                        if not found:
+                            results.append({
+                                "iso_3166_1": target_country,
+                                "rating": new_rating
+                            })
+                    
                     updated_count += 1
+
+                # 3. 处理日期
+                if 'PremiereDate' in item_details:
+                    # Emby: 2023-01-01T00:00:00.0000000Z -> JSON: 2023-01-01
+                    date_val = item_details['PremiereDate']
+                    if date_val and len(date_val) >= 10:
+                        if item_type == 'Movie':
+                            data['release_date'] = date_val[:10]
+                        elif item_type == 'Series':
+                            data['first_air_date'] = date_val[:10]
+                        updated_count += 1
 
                 logger.info(f"  ➜ {log_prefix} 准备将 {updated_count} 项更新写入 '{main_json_filename}'。")
 
@@ -3460,7 +3519,7 @@ class MediaProcessor:
                 logger.info(f"  ➜ {log_prefix} 检测到为剧集，开始同步更新子项（季/集）的元数据...")
                 self._inject_cast_to_series_files(
                     target_dir=target_override_dir,
-                    cast_list=None, # ★★★ 关键：传入 None 表示我们只更新元数据，不碰演员表 ★★★
+                    cast_list=None, 
                     series_details=item_details
                 )
 
