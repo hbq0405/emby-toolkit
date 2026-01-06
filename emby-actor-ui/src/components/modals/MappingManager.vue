@@ -138,7 +138,7 @@
       <n-tab-pane name="ratings" tab="分级制度">
         <n-alert type="info" :bordered="false" class="mb-4">
           TMDb 返回各国分级数据。在此定义<b>优先级</b>和<b>中文映射</b>。<br/>
-          <b>Emby等级值</b>：用于封面生成时的权限控制 (G=1, PG=5, PG-13=8, R=9, NC-17=10, R18+=18)。
+          <b>Emby等级值</b>：用于封面生成时的权限控制 (G=1, PG=5, PG-13=8, R=9, NC-17=10, XXX=15)。
         </n-alert>
 
         <!-- 1. 优先级策略 -->
@@ -221,7 +221,7 @@
                         </n-input-number>
                       </template>
                       Emby 内部限制等级 (MaxParentalRating)<br/>
-                      参考值：G=1, PG=5, PG-13=8, R=9, NC-17=10, 18+=18
+                      参考值：G=1, PG=5, PG-13=8, R=9, NC-17=10, XXX=15
                     </n-tooltip>
 
                     <div style="width: 20px; text-align: center">➜</div>
