@@ -101,7 +101,7 @@
                       <n-form-item-grid-item>
                         <template #label>
                           <div style="display: flex; align-items: center; justify-content: flex-end; width: 100%;">
-                            <span>Emby 服务器 URL</span>
+                            <span>Emby URL</span>
                             <n-tooltip trigger="hover">
                               <template #trigger>
                                 <n-icon :component="AlertIcon" class="info-icon" />
@@ -114,17 +114,17 @@
                       </n-form-item-grid-item>
 
                       <!-- 2. 外网访问 URL (右) -->
-                      <n-form-item-grid-item label="外网访问URL" path="emby_public_url">
+                      <n-form-item-grid-item label="外网URL" path="emby_public_url">
                         <n-input v-model:value="configModel.emby_public_url" placeholder="无外网访问需求可留空" />
                       </n-form-item-grid-item>
 
                       <!-- 3. API Key (左) -->
-                      <n-form-item-grid-item label="Emby API Key" path="emby_api_key">
+                      <n-form-item-grid-item label="APIKey" path="emby_api_key">
                         <n-input v-model:value="configModel.emby_api_key" type="password" show-password-on="click" placeholder="输入 API Key" />
                       </n-form-item-grid-item>
 
                       <!-- 4. 用户 ID (右) -->
-                      <n-form-item-grid-item label="Emby 用户 ID" :rule="embyUserIdRule" path="emby_user_id">
+                      <n-form-item-grid-item label="用户ID" :rule="embyUserIdRule" path="emby_user_id">
                         <n-input v-model:value="configModel.emby_user_id" placeholder="请输入32位的用户ID" />
                         <template #feedback>
                           <div v-if="isInvalidUserId" style="color: #e88080; font-size: 12px;">格式错误！ID应为32位。</div>
@@ -137,12 +137,12 @@
                       </n-gi>
 
                       <!-- 5. 管理员用户 (左) -->
-                      <n-form-item-grid-item label="Emby 管理员用户名" path="emby_admin_user">
+                      <n-form-item-grid-item label="用户名" path="emby_admin_user">
                         <n-input v-model:value="configModel.emby_admin_user" placeholder="输入管理员用户名" />
                       </n-form-item-grid-item>
 
                       <!-- 6. 管理员密码 (右) -->
-                      <n-form-item-grid-item label="Emby 管理员密码" path="emby_admin_pass">
+                      <n-form-item-grid-item label="密码" path="emby_admin_pass">
                         <n-input v-model:value="configModel.emby_admin_pass" type="password" show-password-on="click" placeholder="输入对应的密码" />
                       </n-form-item-grid-item>
 
@@ -203,7 +203,7 @@
                       <n-form-item-grid-item>
                         <template #label>
                           <div style="display: flex; align-items: center; justify-content: flex-end; width: 100%;">
-                            <span>虚拟库访问端口</span>
+                            <span>虚拟库端口</span>
                             <n-tooltip trigger="hover">
                               <template #trigger>
                                 <n-icon :component="AlertIcon" class="info-icon" style="margin-left: 4px;" />
@@ -214,7 +214,7 @@
                         </template>
                         <n-input-number v-model:value="configModel.proxy_port" :min="1025" :max="65535" :disabled="!configModel.proxy_enabled" style="width: 100%;"/>
                       </n-form-item-grid-item>
-                      <n-form-item-grid-item label="显示缺失媒体占位符" path="proxy_show_missing_placeholders">
+                      <n-form-item-grid-item label="缺失占位符" path="proxy_show_missing_placeholders">
                         <n-switch v-model:value="configModel.proxy_show_missing_placeholders" :disabled="!configModel.proxy_enabled"/>
                         <template #feedback>
                           <n-text depth="3" style="font-size:0.8em;">
@@ -226,7 +226,7 @@
                       <n-form-item-grid-item>
                         <template #label>
                           <div style="display: flex; align-items: center; justify-content: flex-end; width: 100%;">
-                            <span>302重定向服务地址</span>
+                            <span>302重定向</span>
                             <n-tooltip trigger="hover">
                               <template #trigger>
                                 <n-icon :component="AlertIcon" class="info-icon" style="margin-left: 4px;" />
@@ -248,12 +248,12 @@
                       </n-form-item-grid-item>
 
                       <!-- 4. 合并原生库 (左) -->
-                      <n-form-item-grid-item label="合并原生媒体库" path="proxy_merge_native_libraries">
+                      <n-form-item-grid-item label="原生媒体库" path="proxy_merge_native_libraries">
                         <n-switch v-model:value="configModel.proxy_merge_native_libraries" :disabled="!configModel.proxy_enabled"/>
                       </n-form-item-grid-item>
 
                       <!-- 5. 显示位置 (右) -->
-                      <n-form-item-grid-item label="原生媒体库显示位置" path="proxy_native_view_order">
+                      <n-form-item-grid-item label="显示位置" path="proxy_native_view_order">
                         <n-radio-group v-model:value="configModel.proxy_native_view_order" :disabled="!configModel.proxy_enabled || !configModel.proxy_merge_native_libraries">
                           <n-radio value="before">在前</n-radio>
                           <n-radio value="after">在后</n-radio>
