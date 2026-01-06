@@ -2728,21 +2728,23 @@ createRuleWatcher(() => currentCollection.value.definition.dynamic_rules);
 .rule-row {
   display: flex;
   align-items: center;
-  gap: 8px;
+  gap: 10px;
   background-color: var(--n-card-color);
   padding: 8px 12px;
   border-radius: 6px;
   border: 1px solid var(--n-border-color);
+  width: 100%;
 }
 .rule-index {
-  width: 20px;
+  width: 30px;
   color: var(--n-text-color-3);
   font-size: 12px;
   font-weight: bold;
+  flex-shrink: 0;
 }
-.rule-field { width: 140px; }
-.rule-op { width: 110px; }
-.rule-value { flex: 1; display: flex; }
+.rule-field { width: 160px; }
+.rule-op { width: 160px; }
+.rule-value { flex: 1; display: flex; min-width: 0; }
 .rule-delete { margin-left: 4px; }
 
 .ai-section {
