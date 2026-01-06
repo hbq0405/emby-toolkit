@@ -188,19 +188,32 @@ def discover_movies():
         # 5. 处理分级筛选 
         rating_label = data.get('with_rating_label')
         
-        # 1. 获取全局配置开关 (通过 tmdb 模块访问 config_manager)
+        # 1. 获取全局配置开关
         allow_adult_config = tmdb.config_manager.APP_CONFIG.get(tmdb.constants.CONFIG_OPTION_TMDB_INCLUDE_ADULT, False)
         
-        # 2. 定义哪些标签被视为“成人/限制级”
-        # 请根据你的 unified_ratings_options 实际返回值调整这里的列表
-        adult_labels = ['限制级']
+        # 2. 动态定义哪些标签被视为“成人” (emby_value == 15)
+        # 读取配置，如果为空则使用默认值
+        mapping_data = settings_db.get_setting('rating_mapping') or DEFAULT_RATING_MAPPING
         
-        # 3. 只有当 [开关开启] 且 [用户选择了成人标签] 时，才请求成人内容
+        adult_labels = set()
+        if isinstance(mapping_data, dict):
+            # 遍历所有国家/地区 (US, JP, etc.)
+            for country_rules in mapping_data.values():
+                for rule in country_rules:
+                    # 提取 emby_value 为 15 的所有标签名
+                    if rule.get('emby_value') == 15 and rule.get('label'):
+                        adult_labels.add(rule['label'])
+        
+        # 兜底：如果配置里完全没有 15 分值的（极少见），默认加一个 '成人'
+        if not adult_labels:
+            adult_labels.add('成人')
+
+        # 3. 只有当 [开关开启] 且 [用户当前选中的标签属于成人标签] 时，才请求 TMDb 成人内容
         if allow_adult_config and rating_label in adult_labels:
             tmdb_params['include_adult'] = 'true'
         else:
             tmdb_params['include_adult'] = 'false'
-        rating_label = data.get('with_rating_label')
+            
         if rating_label:
             rating_params = _get_tmdb_rating_params(rating_label, 'Movie')
             tmdb_params.update(rating_params)
