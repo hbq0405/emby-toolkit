@@ -60,7 +60,7 @@ def task_update_daily_theme(processor):
                 'with_keywords': today_theme_ids, 
                 'sort_by': 'popularity.desc',
                 'page': page_to_fetch, 
-                'include_adult': True
+                'include_adult': False
             }
             movies_data = tmdb.discover_movie_tmdb(api_key, discover_params)
             
