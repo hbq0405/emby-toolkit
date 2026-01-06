@@ -635,32 +635,11 @@ const handleSubscribe = async (media) => {
       }
     }
     
-    // 应用最终状态
-    updateMediaStatus(media.id, finalStatus);
-    // ★★★ 核心修复结束 ★★★
-
-    // 5. (仅管理员) 立即触发后台任务
-    const shouldTriggerTaskImmediately = isPrivilegedUser.value && ['WANTED', 'REQUESTED', 'NONE', 'IGNORED'].includes(originalStatus);
-    
-    if (shouldTriggerTaskImmediately) {
-      message.info('已提交到后台立即处理...');
-      const requestItem = { 
-        tmdb_id: media.id, 
-        item_type: itemTypeForApi, 
-        title: media.title || media.name,
-        user_id: authStore.user?.id 
-      };
-      const taskPayload = { task_name: 'manual_subscribe_batch', subscribe_requests: [requestItem] };
-      
-      // 再次更新为已订阅
-      updateMediaStatus(media.id, 'SUBSCRIBED');
-      
-      axios.post('/api/tasks/run', taskPayload)
-        .catch(taskError => {
-          // 任务失败回滚到上一步的状态
-          updateMediaStatus(media.id, finalStatus); 
-          message.error(taskError.response?.data?.message || '提交立即处理任务失败。');
-        });
+    // 如果是管理员/VIP，后端会自动触发订阅，前端直接显示“已订阅”即可 ★★★
+    if (isPrivilegedUser.value && finalStatus === 'approved') {
+        updateMediaStatus(media.id, 'SUBSCRIBED');
+    } else {
+        updateMediaStatus(media.id, finalStatus);
     }
 
     // 移除每日推荐

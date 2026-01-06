@@ -2,17 +2,18 @@
 import logging
 import requests
 import threading
-from datetime import datetime, date
 from flask import Blueprint, jsonify, session, request
 
-from extensions import emby_login_required # 保护我们的新接口
+from extensions import emby_login_required 
 from database import user_db, settings_db, media_db, request_db
-import config_manager     # ★ 2. 导入配置管理器，因为 MP 处理器需要它
+import config_manager     
 import constants
 import handler.tmdb as tmdb
 import handler.emby as emby
 from handler.telegram import send_telegram_message
 from routes.discover import check_and_replenish_pool
+import task_manager
+from tasks.subscriptions import task_manual_subscribe_batch
 
 # 1. 创建一个新的蓝图
 user_portal_bp = Blueprint('user_portal_bp', __name__, url_prefix='/api/portal')
@@ -125,8 +126,32 @@ def request_subscription():
         except Exception as e:
             logger.error(f"  ➜ 发送管理员审核通知时出错: {e}", exc_info=True)
 
+    # 1. 【核心】后端直接触发“订阅直通车”
+    # 只有状态为 approved (即管理员/VIP且已上映) 时才立即触发
+    if new_status_for_frontend == 'approved':
+        logger.info(f"  ➜ [直通车] 为管理员/VIP '{emby_username}' 立即触发订阅任务: {item_name}")
+        
+        req_item = {
+            'tmdb_id': tmdb_id,
+            'item_type': item_type,
+            'title': item_name,
+            'user_id': emby_user_id,
+            'season_number': data.get('season_number')
+        }
+        
+        # 提交任务
+        task_manager.submit_task(
+            task_function=task_manual_subscribe_batch,
+            task_name=f"立即订阅: {item_name}",
+            processor_type='media',
+            subscribe_requests=[req_item]
+        )
+
+    # 2. 推荐池处理
     if new_status_for_frontend in ['approved', 'pending'] and item_type == 'Movie':
+        # 先移除
         settings_db.remove_item_from_recommendation_pool(tmdb_id)
+        # 再异步补货 (发后即忘)
         threading.Thread(target=check_and_replenish_pool).start()
 
     try:
