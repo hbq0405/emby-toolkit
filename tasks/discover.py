@@ -192,7 +192,7 @@ def task_replenish_recommendation_pool(processor):
 
         discover_params = {
             'with_keywords': current_theme_ids, 'sort_by': 'popularity.desc',
-            'page': next_page_to_fetch, 'include_adult': True
+            'page': next_page_to_fetch, 'include_adult': False
         }
         more_movies_data = tmdb.discover_movie_tmdb(api_key, discover_params)
 
