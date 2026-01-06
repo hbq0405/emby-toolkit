@@ -85,7 +85,7 @@
               </n-grid>
             </n-tab-pane>
 
-            <!-- ================== 标签页 2: Emby (最终版 - 左右卡片布局) ================== -->
+            <!-- ================== 标签页 2: Emby (紧凑双列版) ================== -->
             <n-tab-pane name="emby" tab="Emby & 虚拟库">
               <n-grid cols="1 l:2" :x-gap="24" :y-gap="24" responsive="screen">
 
@@ -94,11 +94,12 @@
                   <n-card :bordered="false" class="dashboard-card">
                     <template #header><span class="card-title">Emby 连接设置</span></template>
                     
-                    <!-- ★★★ 修改点：使用 n-grid 替代 n-space 实现双列布局 ★★★ -->
-                    <n-grid cols="1 m:2" :x-gap="24" :y-gap="12" responsive="screen">
+                    <!-- ★★★ 调整点1: 恢复双列，但减小间距 x-gap="12" ★★★ -->
+                    <n-grid cols="1 m:2" :x-gap="12" :y-gap="12" responsive="screen">
                       
                       <!-- 1. Emby URL (左) -->
-                      <n-form-item-grid-item>
+                      <!-- ★★★ 调整点2: label-width="100" 覆盖全局的200，让输入框更长、更紧凑 ★★★ -->
+                      <n-form-item-grid-item label-width="100">
                         <template #label>
                           <div style="display: flex; align-items: center; justify-content: flex-end; width: 100%;">
                             <span>Emby URL</span>
@@ -110,64 +111,54 @@
                             </n-tooltip>
                           </div>
                         </template>
-                        <n-input v-model:value="configModel.emby_server_url" placeholder="例如: http://localhost:8096" />
+                        <n-input v-model:value="configModel.emby_server_url" placeholder="http://localhost:8096" />
                       </n-form-item-grid-item>
 
                       <!-- 2. 外网访问 URL (右) -->
-                      <n-form-item-grid-item label="外网URL" path="emby_public_url">
-                        <n-input v-model:value="configModel.emby_public_url" placeholder="无外网访问需求可留空" />
+                      <n-form-item-grid-item label="外网URL" path="emby_public_url" label-width="100">
+                        <n-input v-model:value="configModel.emby_public_url" placeholder="留空则不开启" />
                       </n-form-item-grid-item>
 
                       <!-- 3. API Key (左) -->
-                      <n-form-item-grid-item label="APIKey" path="emby_api_key">
+                      <n-form-item-grid-item label="APIKey" path="emby_api_key" label-width="100">
                         <n-input v-model:value="configModel.emby_api_key" type="password" show-password-on="click" placeholder="输入 API Key" />
                       </n-form-item-grid-item>
 
                       <!-- 4. 用户 ID (右) -->
-                      <n-form-item-grid-item label="用户ID" :rule="embyUserIdRule" path="emby_user_id">
-                        <n-input v-model:value="configModel.emby_user_id" placeholder="请输入32位的用户ID" />
+                      <n-form-item-grid-item label="用户ID" :rule="embyUserIdRule" path="emby_user_id" label-width="100">
+                        <n-input v-model:value="configModel.emby_user_id" placeholder="32位用户ID" />
                         <template #feedback>
                           <div v-if="isInvalidUserId" style="color: #e88080; font-size: 12px;">格式错误！ID应为32位。</div>
                         </template>
                       </n-form-item-grid-item>
 
                       <!-- 分割线 (占满一行) -->
-                      <n-gi span="2">
-                        <n-divider title-placement="left" style="margin: 10px 0;">管理员登录凭证 (用于删除等高级操作)</n-divider>
+                      <n-gi span="1 m:2">
+                        <n-divider title-placement="left" style="margin: 8px 0; font-size: 0.9em; color: gray;">管理员凭证 (选填)</n-divider>
                       </n-gi>
 
                       <!-- 5. 管理员用户 (左) -->
-                      <n-form-item-grid-item label="用户名" path="emby_admin_user">
-                        <n-input v-model:value="configModel.emby_admin_user" placeholder="输入管理员用户名" />
+                      <n-form-item-grid-item label="用户名" path="emby_admin_user" label-width="100">
+                        <n-input v-model:value="configModel.emby_admin_user" placeholder="管理员用户名" />
                       </n-form-item-grid-item>
 
                       <!-- 6. 管理员密码 (右) -->
-                      <n-form-item-grid-item label="密码" path="emby_admin_pass">
-                        <n-input v-model:value="configModel.emby_admin_pass" type="password" show-password-on="click" placeholder="输入对应的密码" />
+                      <n-form-item-grid-item label="密码" path="emby_admin_pass" label-width="100">
+                        <n-input v-model:value="configModel.emby_admin_pass" type="password" show-password-on="click" placeholder="管理员密码" />
                       </n-form-item-grid-item>
 
-                      <!-- 分割线 (占满一行) -->
-                      <n-gi span="2">
-                        <n-divider style="margin: 10px 0;" />
-                      </n-gi>
-
-                      <!-- 7. 超时时间 (占满一行，因为说明文字较长) -->
-                      <n-form-item-grid-item label="Emby API 超时时间 (秒)" path="emby_api_timeout" span="2">
+                      <!-- 7. 超时时间 (占满一行，保持长标签) -->
+                      <n-form-item-grid-item label="Emby API 超时时间 (秒)" path="emby_api_timeout" span="1 m:2" label-width="200">
                         <n-input-number v-model:value="configModel.emby_api_timeout" :min="15" :step="5" placeholder="建议 30-90" style="width: 100%;" />
-                        <template #feedback>
-                          <n-text depth="3" style="font-size:0.8em;">
-                            当Emby服务器性能较差或媒体库巨大时，适当增加此值可防止网络请求失败。
-                          </n-text>
-                        </template>
                       </n-form-item-grid-item>
 
-                      <!-- 分割线 (占满一行) -->
-                      <n-gi span="2">
+                      <!-- 分割线 -->
+                      <n-gi span="1 m:2">
                         <n-divider title-placement="left" style="margin-top: 10px;">选择要处理的媒体库</n-divider>
                       </n-gi>
 
-                      <!-- 8. 媒体库选择 (占满一行) -->
-                      <n-form-item-grid-item label-placement="top" span="2">
+                      <!-- 8. 媒体库选择 -->
+                      <n-form-item-grid-item label-placement="top" span="1 m:2">
                         <n-spin :show="loadingLibraries">
                           <n-checkbox-group v-model:value="configModel.libraries_to_process">
                             <n-space item-style="display: flex; flex-wrap: wrap;">
@@ -190,40 +181,40 @@
                   <n-card :bordered="false" class="dashboard-card">
                     <template #header><span class="card-title">虚拟库</span></template>
                     
-                    <!-- ★★★ 修改点：使用 n-grid 替代 n-space 实现双列布局 ★★★ -->
-                    <n-grid cols="1 m:2" :x-gap="24" :y-gap="12" responsive="screen">
+                    <!-- 同样使用紧凑双列 -->
+                    <n-grid cols="1 m:2" :x-gap="12" :y-gap="12" responsive="screen">
 
-                      <!-- 1. 启用开关 (左) -->
-                      <n-form-item-grid-item label="启用" path="proxy_enabled">
+                      <!-- 1. 启用开关 -->
+                      <n-form-item-grid-item label="启用" path="proxy_enabled" label-width="100">
                         <n-switch v-model:value="configModel.proxy_enabled" />
-                        <template #feedback><n-text depth="3" style="font-size:0.8em;">开启后需用右侧配置的端口访问。</n-text></template>
                       </n-form-item-grid-item>
 
-                      <!-- 2. 端口 (右) -->
-                      <n-form-item-grid-item>
+                      <!-- 2. 端口 -->
+                      <n-form-item-grid-item label-width="100">
                         <template #label>
                           <div style="display: flex; align-items: center; justify-content: flex-end; width: 100%;">
-                            <span>虚拟库端口</span>
+                            <span>端口</span>
                             <n-tooltip trigger="hover">
                               <template #trigger>
                                 <n-icon :component="AlertIcon" class="info-icon" style="margin-left: 4px;" />
                               </template>
-                              此项修改需要重启容器才能生效。
+                              需重启容器生效
                             </n-tooltip>
                           </div>
                         </template>
-                        <n-input-number v-model:value="configModel.proxy_port" :min="1025" :max="65535" :disabled="!configModel.proxy_enabled" style="width: 100%;"/>
+                        <n-input-number v-model:value="configModel.proxy_port" :min="1025" :max="65535" :disabled="!configModel.proxy_enabled" style="width: 100%;" placeholder="8096"/>
                       </n-form-item-grid-item>
-                      <n-form-item-grid-item label="缺失占位符" path="proxy_show_missing_placeholders">
-                        <n-switch v-model:value="configModel.proxy_show_missing_placeholders" :disabled="!configModel.proxy_enabled"/>
-                        <template #feedback>
-                          <n-text depth="3" style="font-size:0.8em;">
-                            在榜单类虚拟库中显示未入库的媒体海报（带状态角标）。
-                          </n-text>
-                        </template>
+                      
+                      <!-- 3. 缺失占位符 (占满一行，因为说明文字较长) -->
+                      <n-form-item-grid-item label="缺失占位符" path="proxy_show_missing_placeholders" span="1 m:2" label-width="100">
+                         <n-space align="center">
+                            <n-switch v-model:value="configModel.proxy_show_missing_placeholders" :disabled="!configModel.proxy_enabled"/>
+                            <n-text depth="3" style="font-size: 0.8em;">在榜单中显示未入库海报</n-text>
+                         </n-space>
                       </n-form-item-grid-item>
-                      <!-- 3. 302重定向  -->
-                      <n-form-item-grid-item>
+
+                      <!-- 4. 302重定向 (占满一行，URL通常较长) -->
+                      <n-form-item-grid-item span="1 m:2" label-width="100">
                         <template #label>
                           <div style="display: flex; align-items: center; justify-content: flex-end; width: 100%;">
                             <span>302重定向</span>
@@ -231,7 +222,7 @@
                               <template #trigger>
                                 <n-icon :component="AlertIcon" class="info-icon" style="margin-left: 4px;" />
                               </template>
-                              此项修改需要重启容器才能生效。
+                              需重启容器生效
                             </n-tooltip>
                           </div>
                         </template>
@@ -240,37 +231,32 @@
                           placeholder="例如: http://192.168.31.177:9096" 
                           :disabled="!configModel.proxy_enabled"
                         />
-                        <template #feedback>
-                          <n-text depth="3" style="font-size:0.8em;">
-                            填写独立的302重定向服务URL。所有视频播放请求直接转发到此地址。
-                          </n-text>
-                        </template>
                       </n-form-item-grid-item>
 
-                      <!-- 4. 合并原生库 (左) -->
-                      <n-form-item-grid-item label="原生媒体库" path="proxy_merge_native_libraries">
+                      <!-- 5. 合并原生库 -->
+                      <n-form-item-grid-item label="合并原生库" path="proxy_merge_native_libraries" label-width="100">
                         <n-switch v-model:value="configModel.proxy_merge_native_libraries" :disabled="!configModel.proxy_enabled"/>
                       </n-form-item-grid-item>
 
-                      <!-- 5. 显示位置 (右) -->
-                      <n-form-item-grid-item label="显示位置" path="proxy_native_view_order">
+                      <!-- 6. 显示位置 -->
+                      <n-form-item-grid-item label="显示位置" path="proxy_native_view_order" label-width="100">
                         <n-radio-group v-model:value="configModel.proxy_native_view_order" :disabled="!configModel.proxy_enabled || !configModel.proxy_merge_native_libraries">
                           <n-radio value="before">在前</n-radio>
                           <n-radio value="after">在后</n-radio>
                         </n-radio-group>
                       </n-form-item-grid-item>
 
-                      <!-- 分割线 (占满一行) -->
-                      <n-gi span="2">
+                      <!-- 分割线 -->
+                      <n-gi span="1 m:2">
                         <n-divider title-placement="left" style="margin-top: 10px;">选择合并显示的原生媒体库</n-divider>
                       </n-gi>
 
-                      <!-- 6. 原生库选择 (占满一行) -->
+                      <!-- 7. 原生库选择 -->
                       <n-form-item-grid-item 
                         v-if="configModel.proxy_enabled && configModel.proxy_merge_native_libraries" 
                         path="proxy_native_view_selection" 
                         label-placement="top"
-                        span="2"
+                        span="1 m:2"
                       >
                         <n-spin :show="loadingNativeLibraries">
                           <n-checkbox-group v-model:value="configModel.proxy_native_view_selection">
