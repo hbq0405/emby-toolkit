@@ -68,7 +68,7 @@
                       <n-space align="center">
                         <n-switch v-model:value="configModel.tmdb_include_adult" />
                         <n-text depth="3" style="font-size: 0.9em; margin-left: 8px;">
-                          开启后，仅当在探索页面筛选“限制级”分级时，才会返回 TMDb 成人内容。
+                          开启后，仅当在探索页面筛选“成人”分级时，才会返回 TMDb 成人内容。
                         </n-text>
                       </n-space>
                     </n-form-item>
