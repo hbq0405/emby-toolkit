@@ -184,10 +184,6 @@ const saveRules = async () => {
 
 const appendNow = (rule) => {
   // 1. 基础校验
-  if (!rule.library_ids || !rule.library_ids.length || !rule.tags.length) {
-    return message.warning('请先选择媒体库并填写标签');
-  }
-
   if ((!rule.library_ids || !rule.library_ids.length) && (!rule.rating_filters || !rule.rating_filters.length)) {
      return message.error('为了安全，不能对“所有媒体库”且“不限分级”执行批量操作！');
   }
