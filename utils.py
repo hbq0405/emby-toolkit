@@ -114,7 +114,7 @@ def normalize_name_for_matching(name: Optional[str]) -> str:
 # --- ★★★ 统一分级映射功能 (V2 - 健壮版) ★★★ ---
 # 1. 统一的分级选项 (前端下拉框用)
 UNIFIED_RATING_CATEGORIES = [
-    '全年龄', '家长辅导', '青少年', 'R级', '限制级', '成人', '未知'
+    '全年龄', '家长辅导', '青少年', '限制级', '18禁', '成人', '未知'
 ]
 
 # 2. 默认优先级策略 (如果数据库没配置，就用这个)
@@ -133,9 +133,9 @@ DEFAULT_RATING_MAPPING = {
         {"code": "TV-PG", "label": "家长辅导", "emby_value": 5},
         {"code": "PG-13", "label": "青少年", "emby_value": 8},
         {"code": "TV-14", "label": "青少年", "emby_value": 8},
-        {"code": "R", "label": "R级", "emby_value": 9},
-        {"code": "TV-MA", "label": "R级", "emby_value": 9},
-        {"code": "NC-17", "label": "限制级", "emby_value": 10},
+        {"code": "R", "label": "限制级", "emby_value": 9},
+        {"code": "TV-MA", "label": "限制级", "emby_value": 9},
+        {"code": "NC-17", "label": "18禁", "emby_value": 10},
         {"code": "XXX", "label": "成人", "emby_value": 15},
         {"code": "NR", "label": "未知", "emby_value": 0},
         {"code": "Unrated", "label": "未知", "emby_value": 0}
@@ -143,51 +143,51 @@ DEFAULT_RATING_MAPPING = {
     "JP": [
         {"code": "G", "label": "全年龄", "emby_value": 1},
         {"code": "PG12", "label": "家长辅导", "emby_value": 5},
-        {"code": "R15+", "label": "R级", "emby_value": 9},
-        {"code": "R18+", "label": "限制级", "emby_value": 10}
+        {"code": "R15+", "label": "限制级", "emby_value": 9},
+        {"code": "R18+", "label": "18禁", "emby_value": 10}
     ],
     "HK": [
         {"code": "I", "label": "全年龄", "emby_value": 1},
         {"code": "IIA", "label": "家长辅导", "emby_value": 5},
-        {"code": "IIB", "label": "R级", "emby_value": 9}, 
-        {"code": "III", "label": "限制级", "emby_value": 10}
+        {"code": "IIB", "label": "限制级", "emby_value": 9}, 
+        {"code": "III", "label": "18禁", "emby_value": 10}
     ],
     "TW": [
         {"code": "0+", "label": "全年龄", "emby_value": 1},
         {"code": "6+", "label": "家长辅导", "emby_value": 4},
         {"code": "12+", "label": "青少年", "emby_value": 8},
-        {"code": "15+", "label": "R级", "emby_value": 9},
-        {"code": "18+", "label": "限制级", "emby_value": 10}
+        {"code": "15+", "label": "限制级", "emby_value": 9},
+        {"code": "18+", "label": "18禁", "emby_value": 10}
     ],
     "KR": [
         {"code": "All", "label": "全年龄", "emby_value": 1},
         {"code": "12", "label": "家长辅导", "emby_value": 5},
         {"code": "15", "label": "青少年", "emby_value": 8},
-        {"code": "18", "label": "R级", "emby_value": 9},
-        {"code": "Restricted", "label": "限制级", "emby_value": 10}
+        {"code": "18", "label": "限制级", "emby_value": 9},
+        {"code": "Restricted", "label": "18禁", "emby_value": 10}
     ],
     "GB": [
         {"code": "U", "label": "全年龄", "emby_value": 1},
         {"code": "PG", "label": "家长辅导", "emby_value": 5},
         {"code": "12", "label": "青少年", "emby_value": 8},
         {"code": "12A", "label": "青少年", "emby_value": 8},
-        {"code": "15", "label": "R级", "emby_value": 9},
-        {"code": "18", "label": "R级", "emby_value": 9},
-        {"code": "R18", "label": "限制级", "emby_value": 10}
+        {"code": "15", "label": "限制级", "emby_value": 9},
+        {"code": "18", "label": "限制级", "emby_value": 9},
+        {"code": "R18", "label": "18禁", "emby_value": 10}
     ],
     "ES": [
         {"code": "TP", "label": "全年龄", "emby_value": 1},
         {"code": "7", "label": "家长辅导", "emby_value": 5},
         {"code": "12", "label": "青少年", "emby_value": 8},
-        {"code": "16", "label": "R级", "emby_value": 9},
-        {"code": "18", "label": "限制级", "emby_value": 10}
+        {"code": "16", "label": "限制级", "emby_value": 9},
+        {"code": "18", "label": "18禁", "emby_value": 10}
     ],
     "DE": [
         {"code": "0", "label": "全年龄", "emby_value": 1},
         {"code": "6", "label": "家长辅导", "emby_value": 4},
         {"code": "12", "label": "青少年", "emby_value": 8},
-        {"code": "16", "label": "R级", "emby_value": 9},
-        {"code": "18", "label": "限制级", "emby_value": 10}   
+        {"code": "16", "label": "限制级", "emby_value": 9},
+        {"code": "18", "label": "18禁", "emby_value": 10}   
     ]
 }
 
