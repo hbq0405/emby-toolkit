@@ -344,7 +344,6 @@
                         placeholder="选择一个或多个类型"
                         :options="genreOptions"
                         :disabled="!rule.operator"
-                        style="flex-grow: 1; min-width: 180px;"
                       />
                       <n-select
                         v-else
@@ -353,7 +352,6 @@
                         placeholder="选择类型"
                         :options="genreOptions"
                         :disabled="!rule.operator"
-                        style="flex-grow: 1;"
                       />
                     </template>
                     <template v-else-if="rule.field === 'countries'">
@@ -364,7 +362,6 @@
                         placeholder="选择一个或多个地区"
                         :options="countryOptions"
                         :disabled="!rule.operator"
-                        style="flex-grow: 1; min-width: 180px;"
                       />
                       <n-select
                         v-else
@@ -373,7 +370,6 @@
                         placeholder="选择地区"
                         :options="countryOptions"
                         :disabled="!rule.operator"
-                        style="flex-grow: 1;"
                       />
                     </template>
                     <template v-else-if="rule.field === 'original_language'">
@@ -384,7 +380,6 @@
                         placeholder="选择原始语言"
                         clearable
                         filterable
-                        style="flex-grow: 1; min-width: 180px;"
                       />
                     </template>
                     <template v-else-if="rule.field === 'studios'">
@@ -396,7 +391,6 @@
                         placeholder="选择已配置的工作室"
                         :options="studioMappingOptions"
                         :disabled="!rule.operator"
-                        style="flex-grow: 1; min-width: 220px;"
                       />
                       <n-select
                         v-else
@@ -406,14 +400,13 @@
                         :options="studioMappingOptions"
                         :disabled="!rule.operator"
                         clearable
-                        style="flex-grow: 1;"
                       />
                       <!-- 提示用户去配置 -->
                       <n-tooltip trigger="hover">
                         <template #trigger>
-                          <n-icon :component="HelpIcon" style="margin-left: 8px; cursor: help; color: var(--n-text-color-3);" />
+                          <n-icon :component="HelpIcon" style="margin-left: 8px; cursor: help; color: var(--n-text-color-3); flex-shrink: 0;" />
                         </template>
-                        工作室筛选基于“映射管理”中的配置。如需筛选未列出的工作室，请先去添加映射。
+                        工作室筛选基于“映射管理”中的配置。
                       </n-tooltip>
                     </template>
                     <template v-else-if="rule.field === 'keywords'">
@@ -425,7 +418,6 @@
                         placeholder="选择一个或多个关键词"
                         :options="keywordOptions" 
                         :disabled="!rule.operator"
-                        style="flex-grow: 1; min-width: 220px;"
                       />
                       <n-select
                         v-else
@@ -435,7 +427,6 @@
                         :options="keywordOptions"
                         :disabled="!rule.operator"
                         clearable
-                        style="flex-grow: 1;"
                       />
                     </template>
                     <template v-else-if="rule.field === 'tags'">
@@ -448,7 +439,6 @@
                         placeholder="选择或输入标签"
                         :options="tagOptions"
                         :disabled="!rule.operator"
-                        style="flex-grow: 1; min-width: 220px;"
                       />
                       <n-select
                         v-else
@@ -459,7 +449,6 @@
                         :options="tagOptions"
                         :disabled="!rule.operator"
                         clearable
-                        style="flex-grow: 1;"
                       />
                     </template>
                     <template v-else-if="rule.field === 'unified_rating'">
@@ -470,7 +459,6 @@
                         placeholder="选择一个或多个家长分级"
                         :options="unifiedRatingOptions" 
                         :disabled="!rule.operator"
-                        style="flex-grow: 1; min-width: 220px;"
                       />
                       <n-select
                         v-else
@@ -479,7 +467,6 @@
                         :options="unifiedRatingOptions" 
                         :disabled="!rule.operator"
                         clearable
-                        style="flex-grow: 1;"
                       />
                     </template>
                     <!-- 分辨率\质量\特效\音轨 -->
@@ -496,7 +483,6 @@
                         :placeholder="'选择' + ruleConfig[rule.field].label"
                         clearable
                         filterable
-                        style="flex-grow: 1; min-width: 200px;" 
                         @update:value="() => { if(!rule.operator) rule.operator = 'eq' }"
                       />
                     </template>
@@ -512,7 +498,6 @@
                         :loading="isSearchingActors"
                         @search="(query) => handlePersonSearch(query, rule)"  
                         :disabled="!rule.operator"
-                        style="flex-grow: 1; min-width: 220px;"
                         label-field="name"
                         value-field="id"
                         :render-option="renderPersonOption"
@@ -529,27 +514,26 @@
                           { label: '已完结', value: false }
                         ]"
                         :disabled="!rule.field"
-                        style="flex-grow: 1; min-width: 180px;"
                       />
-                      <div style="width: 120px;"></div>
                     </template>
+                    
                     <n-input-number
                       v-else-if="['release_date', 'date_added'].includes(rule.field)"
                       v-model:value="rule.value"
                       placeholder="天数"
                       :disabled="!rule.operator"
-                      style="width: 180px;"
                     >
                       <template #suffix>天内</template>
                     </n-input-number>
+                    
                     <n-input-number
                       v-else-if="['rating', 'release_year', 'runtime'].includes(rule.field)"
                       v-model:value="rule.value"
                       placeholder="数值"
                       :disabled="!rule.operator"
                       :show-button="false"
-                      style="width: 180px;"
                     />
+                    
                     <n-input 
                         v-else-if="!['actors', 'directors'].includes(rule.field)" 
                         v-model:value="rule.value" 
@@ -2728,12 +2712,13 @@ createRuleWatcher(() => currentCollection.value.definition.dynamic_rules);
 .rule-row {
   display: flex;
   align-items: center;
-  gap: 10px;
+  gap: 12px; /*稍微增加一点间距更美观*/
   background-color: var(--n-card-color);
   padding: 8px 12px;
   border-radius: 6px;
   border: 1px solid var(--n-border-color);
   width: 100%;
+  box-sizing: border-box; /* 确保 padding 不会撑破宽度 */
 }
 .rule-index {
   width: 30px;
@@ -2742,10 +2727,32 @@ createRuleWatcher(() => currentCollection.value.definition.dynamic_rules);
   font-weight: bold;
   flex-shrink: 0;
 }
-.rule-field { width: 160px; }
-.rule-op { width: 160px; }
-.rule-value { flex: 1; display: flex; min-width: 0; }
-.rule-delete { margin-left: 4px; }
+.rule-field { 
+  width: 140px !important; 
+  flex-shrink: 0; /* 禁止压缩 */
+}
+.rule-op { 
+  width: 150px !important; 
+  flex-shrink: 0; /* 禁止压缩 */
+}
+.rule-value { 
+  flex: 1; /* 霸占剩余所有空间 */
+  min-width: 0; /* 防止 flex 子元素溢出 */
+  display: flex; 
+  align-items: center;
+}
+/* 4. 强制值区域内部的所有控件填满 */
+.rule-value > .n-select,
+.rule-value > .n-input,
+.rule-value > .n-input-number,
+.rule-value > .n-slider {
+  width: 100% !important; /* 强制填满 rule-value 的空间 */
+  flex-grow: 1;
+}
+.rule-delete { 
+  flex-shrink: 0;
+  margin-left: 4px; 
+}
 
 .ai-section {
   margin-top: 20px;
