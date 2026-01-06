@@ -204,7 +204,8 @@ def get_all_subscriptions() -> List[Dict[str, Any]]:
     """
     获取所有有订阅状态的媒体项，用于前端统一管理。
     当项目类型为 Season 时，会自动查询并拼接父剧集的标题，并额外提供父剧集的TMDb ID用于生成正确的链接。
-    ★ 修改：排除 'Series' 类型，只显示具体的 'Movie' 和 'Season'，避免父剧集条目干扰列表。
+    ★ 修改：不再粗暴排除 'Series'。只有当 Series 下存在有订阅状态的 Season 时，才隐藏 Series 条目，
+    避免“父子同屏”造成冗余；否则保留 Series 条目（适用于整剧订阅或季信息尚未生成的场景）。
     """
     sql = """
         SELECT 
@@ -223,7 +224,6 @@ def get_all_subscriptions() -> List[Dict[str, Any]]:
             m1.last_subscribed_at,
             m1.paused_until,
             CASE
-                -- 虽然排除了 Series，但保留这个逻辑也没错，主要用于 Season 跳转
                 WHEN m1.item_type = 'Series' THEN m1.tmdb_id 
                 WHEN m1.item_type = 'Season' THEN m1.parent_series_tmdb_id 
                 ELSE NULL 
@@ -236,10 +236,17 @@ def get_all_subscriptions() -> List[Dict[str, Any]]:
             m1.parent_series_tmdb_id = m2.tmdb_id AND m2.item_type = 'Series'
         WHERE 
             m1.subscription_status IN ('REQUESTED', 'WANTED', 'PENDING_RELEASE', 'IGNORED', 'SUBSCRIBED', 'PAUSED')
-            -- ★★★ 核心修改：排除父剧集 (Series) ★★★
-            -- 因为实际的订阅执行和下载都是以季 (Season) 为单位的
-            -- 父剧集的 SUBSCRIBED 状态仅用于后台逻辑（如合集检测），不需要在前端展示
-            AND m1.item_type != 'Series'
+            -- ★★★ 核心修改：智能排除父剧集 (Series) ★★★
+            AND (
+                m1.item_type != 'Series'
+                OR NOT EXISTS (
+                    SELECT 1 
+                    FROM media_metadata AS child 
+                    WHERE child.parent_series_tmdb_id = m1.tmdb_id 
+                      AND child.item_type = 'Season' 
+                      AND child.subscription_status IN ('REQUESTED', 'WANTED', 'PENDING_RELEASE', 'IGNORED', 'SUBSCRIBED', 'PAUSED')
+                )
+            )
         ORDER BY 
             m1.first_requested_at DESC;
     """
@@ -249,7 +256,7 @@ def get_all_subscriptions() -> List[Dict[str, Any]]:
             cursor.execute(sql)
             return [dict(row) for row in cursor.fetchall()]
     except Exception as e:
-        logger.error(f"DB: 获取所有非在库媒体失败: {e}", exc_info=True)
+        logger.error(f"DB: 获取所有订阅媒体失败: {e}", exc_info=True)
         return []
     
 def get_user_request_history(user_id: str, page: int = 1, page_size: int = 10, status_filter: str = 'all') -> tuple[List[Dict[str, Any]], int]:
