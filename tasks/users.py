@@ -312,15 +312,37 @@ def task_auto_sync_template_on_policy_change(processor, updated_user_id: str):
 
                         logger.info(f"    ├─ 正在将 '{template_name}' 的新策略应用到用户 '{user_name_to_push}'...")
                         
-                        # ★★★ 核心修改 2/3: 在调用API前，先“插旗” ★★★
                         # 记录下我们即将要更新这个用户，时间精确到当前
                         with SYSTEM_UPDATE_LOCK:
                             SYSTEM_UPDATE_MARKERS[user_id_to_push] = time.time()
                         
-                        # 现在才真正去调用 Emby API
+                        # ★★★ 核心修复开始 ★★★
+                        # 1. 复制一份源策略，因为我们要针对每个用户修改 IsDisabled 字段
+                        # 如果不复制，修改字典会影响到循环中的后续用户
+                        policy_to_apply = new_policy_dict.copy()
+
+                        # 2. 获取目标用户当前的实时状态，确保不覆盖 'IsDisabled' (禁用) 状态
+                        try:
+                            target_current_info = emby.get_user_details(
+                                user_id_to_push, 
+                                config.get("emby_server_url"), 
+                                config.get("emby_api_key")
+                            )
+                            if target_current_info and 'Policy' in target_current_info:
+                                # 获取子用户当前的禁用状态
+                                current_disabled_state = target_current_info['Policy'].get('IsDisabled', False)
+                                # 将其覆盖到我们要推送的策略中
+                                policy_to_apply['IsDisabled'] = current_disabled_state
+                                logger.debug(f"    │  保留用户 '{user_name_to_push}' 的禁用状态: {current_disabled_state}")
+                        except Exception as e:
+                            logger.warning(f"    │  ⚠️ 获取用户 '{user_name_to_push}' 实时状态失败，可能导致禁用状态重置: {e}")
+
+                        # 3. 使用修改后的策略(policy_to_apply)进行推送
                         emby.force_set_user_policy(
-                            user_id_to_push, new_policy_dict,
-                            config.get("emby_server_url"), config.get("emby_api_key")
+                            user_id_to_push, 
+                            policy_to_apply, 
+                            config.get("emby_server_url"), 
+                            config.get("emby_api_key")
                         )
                         time.sleep(0.2)
             
