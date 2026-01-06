@@ -1167,7 +1167,7 @@ class MediaProcessor:
                         # C. 按优先级寻找最佳分级
                         target_us_code = None
                         
-                        # 如果 TMDb 标记为成人，无视其他国家分级，直接强制为 US: NC-17
+                        # 如果 TMDb 标记为成人，无视其他国家分级，直接强制为 US: XXX
                         if fresh_data.get('adult') is True:
                             logger.info(f"  ➜ [分级修正] 检测到 TMDb '成人' 标志，强制将 US 分级锁定为 'XXX'。")
                             target_us_code = 'XXX'
