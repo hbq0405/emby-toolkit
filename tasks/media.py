@@ -292,8 +292,18 @@ def _extract_and_map_tmdb_ratings(tmdb_details, item_type):
                     valid_us_rules = []
                     for rule in rating_mapping['US']:
                         r_code = rule.get('code', '')
-                        # 简单的类型过滤
-                        if item_type == 'Movie' and r_code.startswith('TV-'): continue
+                        
+                        is_tv_code = r_code.upper().startswith('TV-') or r_code.upper() == 'TV-Y7' # 确保涵盖所有TV格式
+                        
+                        # 1. 如果是电影，跳过 TV 分级
+                        if item_type == 'Movie' and is_tv_code:
+                            continue
+                            
+                        # 2. 如果是剧集，跳过非 TV 分级 (强制要求 TV- 开头)
+                        # 注意：US分级中，电视剧通常严格使用 TV-Y, TV-G, TV-14 等
+                        if item_type == 'Series' and not is_tv_code:
+                            continue
+
                         valid_us_rules.append(rule)
                     
                     for rule in valid_us_rules:

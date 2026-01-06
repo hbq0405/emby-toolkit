@@ -154,7 +154,7 @@ DEFAULT_RATING_MAPPING = {
     ],
     "TW": [
         {"code": "0+", "label": "全年龄", "emby_value": 1},
-        {"code": "6+", "label": "家长辅导", "emby_value": 4},
+        {"code": "6+", "label": "家长辅导", "emby_value": 5},
         {"code": "12+", "label": "青少年", "emby_value": 8},
         {"code": "15+", "label": "限制级", "emby_value": 9},
         {"code": "18+", "label": "18禁", "emby_value": 10}
@@ -163,8 +163,8 @@ DEFAULT_RATING_MAPPING = {
         {"code": "All", "label": "全年龄", "emby_value": 1},
         {"code": "12", "label": "家长辅导", "emby_value": 5},
         {"code": "15", "label": "青少年", "emby_value": 8},
-        {"code": "18", "label": "限制级", "emby_value": 9},
-        {"code": "Restricted", "label": "18禁", "emby_value": 10}
+        {"code": "19", "label": "限制级", "emby_value": 9},
+        {"code": "Restricted Screening", "label": "18禁", "emby_value": 10}
     ],
     "GB": [
         {"code": "U", "label": "全年龄", "emby_value": 1},
@@ -184,7 +184,7 @@ DEFAULT_RATING_MAPPING = {
     ],
     "DE": [
         {"code": "0", "label": "全年龄", "emby_value": 1},
-        {"code": "6", "label": "家长辅导", "emby_value": 4},
+        {"code": "6", "label": "家长辅导", "emby_value": 5},
         {"code": "12", "label": "青少年", "emby_value": 8},
         {"code": "16", "label": "限制级", "emby_value": 9},
         {"code": "18", "label": "18禁", "emby_value": 10}   
