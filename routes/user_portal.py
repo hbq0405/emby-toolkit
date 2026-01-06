@@ -1,6 +1,7 @@
 # routes/user_portal.py
 import logging
 import requests
+import threading
 from datetime import datetime, date
 from flask import Blueprint, jsonify, session, request
 
@@ -126,7 +127,7 @@ def request_subscription():
 
     if new_status_for_frontend in ['approved', 'pending'] and item_type == 'Movie':
         settings_db.remove_item_from_recommendation_pool(tmdb_id)
-        check_and_replenish_pool()
+        threading.Thread(target=check_and_replenish_pool).start()
 
     try:
         user_chat_id = user_db.get_user_telegram_chat_id(emby_user_id)

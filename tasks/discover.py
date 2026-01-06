@@ -197,8 +197,9 @@ def task_replenish_recommendation_pool(processor):
         more_movies_data = tmdb.discover_movie_tmdb(api_key, discover_params)
 
         if not more_movies_data or not more_movies_data.get("results"):
-            logger.warning(f"  ➜ 从主题【{current_theme_name}】第 {next_page_to_fetch} 页获取电影失败，无内容可补充。")
-            settings_db.save_setting('recommendation_pool_page', next_page_to_fetch)
+            logger.warning(f"  ➜ 从主题【{current_theme_name}】第 {next_page_to_fetch} 页获取电影失败(或无内容)。")
+            logger.info("  ➜ 可能是页码超出范围，已将推荐池页码重置为 1，下次将重新开始扫描。")
+            settings_db.save_setting('recommendation_pool_page', 1) # <--- 重置为 1
             return
 
         current_pool_ids = {str(movie["id"]) for movie in current_pool}
