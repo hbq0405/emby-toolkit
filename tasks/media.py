@@ -995,9 +995,20 @@ def task_populate_metadata_cache(processor, batch_size: int = 50, force_full_upd
                             vals_str = ', '.join(['%s'] * len(values))
                             
                             update_clauses = []
+                            current_type = metadata.get('item_type')
+                        
                             for col in columns:
-                                # 在 UPDATE 时排除 订阅状态和订阅来源
-                                if col in ('tmdb_id', 'item_type', 'subscription_sources_json', 'subscription_status'): 
+                                # ★★★ 2. 定义基础排除列表 ★★★
+                                # 这些字段永远不更新
+                                exclude_cols = {'tmdb_id', 'item_type', 'subscription_sources_json', 'subscription_status'}
+                                
+                                # ★★★ 3. 动态判断是否排除标题 ★★★
+                                # 只有当类型是 电影(Movie) 或 剧集(Series) 时，才排除 title
+                                # 这样 季(Season) 和 集(Episode) 的标题依然可以正常同步更新
+                                if current_type in ['Movie', 'Series']:
+                                    exclude_cols.add('title')
+
+                                if col in exclude_cols: 
                                     continue
                                 
                                 update_clauses.append(f"{col} = EXCLUDED.{col}")
@@ -1053,6 +1064,14 @@ def task_populate_metadata_cache(processor, batch_size: int = 50, force_full_upd
 
         final_msg = f"同步完成！新增/更新: {total_updated_count} 个媒体项, 标记离线: {total_offline_count} 个媒体项。"
         logger.info(f"  ✅ {final_msg}")
+        # 自动触发分级同步 
+        logger.info("  ➜ [自动触发] 元数据更新完毕，开始同步分级信息到 Emby...")
+        # 为了防止分级同步的进度条覆盖掉主任务的进度，我们可以选择不传 update_status_callback 或者接受它重置进度
+        # 这里直接调用，日志会记录过程
+        try:
+            task_sync_ratings_to_emby(processor)
+        except Exception as e:
+            logger.error(f"  ⚠️ 自动分级同步失败 (不影响主任务完成): {e}")
         task_manager.update_status_from_thread(100, final_msg)
 
     except Exception as e:
