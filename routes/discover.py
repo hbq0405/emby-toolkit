@@ -1,7 +1,7 @@
 # routes/discover.py
 import logging
 from flask import Blueprint, jsonify, request, g, session
-
+import time
 from extensions import any_login_required
 import handler.tmdb as tmdb
 from utils import DEFAULT_KEYWORD_MAPPING, DEFAULT_STUDIO_MAPPING, contains_chinese, DEFAULT_LANGUAGE_MAPPING, DEFAULT_RATING_MAPPING
@@ -150,9 +150,13 @@ def _filter_and_enrich_results(tmdb_data: dict, current_user_id: str, db_item_ty
 def discover_movies():
     """
     根据前端传来的筛选条件，从 TMDb 发现电影。
+    策略调整：成人模式下附加 NC-17 筛选，不再强制剔除非 adult=True 内容，以保证加载速度和列表密度。
     """
     data = request.json
     api_key = tmdb.config_manager.APP_CONFIG.get(tmdb.constants.CONFIG_OPTION_TMDB_API_KEY)
+    
+    # 记录开始时间，用于超时控制
+    start_time = time.time()
 
     try:
         # 1. 权限与用户校验
@@ -170,10 +174,10 @@ def discover_movies():
         if isinstance(studio_labels, str): studio_labels = studio_labels.split(',')
         c_ids_str = _expand_studio_labels_to_ids(studio_labels)
 
-        # 4. 构建参数字典
+        # 4. 构建基础参数字典
         tmdb_params = {
             'sort_by': data.get('sort_by', 'popularity.desc'),
-            'page': data.get('page', 1),
+            # 'page': data.get('page', 1), # page 在循环中控制
             'vote_average.gte': data.get('vote_average.gte', 0),
             'with_genres': data.get('with_genres', ''),
             'with_keywords': k_ids_str,
@@ -188,49 +192,96 @@ def discover_movies():
         # 5. 处理分级筛选 
         rating_label = data.get('with_rating_label')
         
-        # 1. 获取全局配置开关
         allow_adult_config = tmdb.config_manager.APP_CONFIG.get(tmdb.constants.CONFIG_OPTION_TMDB_INCLUDE_ADULT, False)
-        
-        # 2. 动态定义哪些标签被视为“成人” (emby_value == 15)
-        # 读取配置，如果为空则使用默认值
         mapping_data = settings_db.get_setting('rating_mapping') or DEFAULT_RATING_MAPPING
-        
         adult_labels = set()
         if isinstance(mapping_data, dict):
-            # 遍历所有国家/地区 (US, JP, etc.)
             for country_rules in mapping_data.values():
                 for rule in country_rules:
-                    # 提取 emby_value 为 15 的所有标签名
                     if rule.get('emby_value') == 15 and rule.get('label'):
                         adult_labels.add(rule['label'])
-        
-        # 兜底：如果配置里完全没有 15 分值的（极少见），默认加一个 '成人'
-        if not adult_labels:
-            adult_labels.add('成人')
+        if not adult_labels: adult_labels.add('成人')
 
-        # 3. 只有当 [开关开启] 且 [用户当前选中的标签属于成人标签] 时，才请求 TMDb 成人内容
+        is_adult_search = False
         if allow_adult_config and rating_label in adult_labels:
             tmdb_params['include_adult'] = 'true'
+            is_adult_search = True
+            
+            # --- ★★★ 核心修改：附加 NC-17 筛选 ★★★ ---
+            # 这会把搜索范围限制在“美国分级为 NC-17”的电影中
+            # 优点：TMDb 返回的全是符合条件的，不需要后端再清洗，速度极快，列表极满
+            # 缺点：可能会漏掉一些无分级(Unrated)的纯成人片，但体验上比“便秘”好太多
+            tmdb_params['certification_country'] = 'US'
+            tmdb_params['certification'] = 'NC-17'
         else:
             tmdb_params['include_adult'] = 'false'
             
-        if rating_label:
+        # 普通分级逻辑 (成人模式下已手动指定了 NC-17，所以跳过这里)
+        if rating_label and not is_adult_search:
             rating_params = _get_tmdb_rating_params(rating_label, 'Movie')
             tmdb_params.update(rating_params)
             
-            # 特殊处理：如果是搜“成人”或“限制级”，必须把 TMDb 的 include_adult 关掉
-            # 因为我们是用分级(R/NC-17)来搜，而不是用 TMDb 的 Porn 开关
-            # (虽然默认就是 false，这里强调一下逻辑)
-            pass 
-
-        # 6. 清理空参数
         tmdb_params = {k: v for k, v in tmdb_params.items() if v is not None and v != ''}
 
-        # 7. 调用 TMDb 接口
-        tmdb_data = tmdb.discover_movie_tmdb(api_key, tmdb_params)
+        # --- 翻页补货逻辑 ---
         
-        # 8. 附加在库状态和订阅状态
-        processed_data = _filter_and_enrich_results(tmdb_data, current_user_id, 'Movie')
+        final_results = []
+        target_count = 20
+        
+        # 因为加了 NC-17 强过滤，TMDb 返回的数据密度会很高，
+        # 所以不需要像之前那样扫 20 页，扫 3 页通常就绰绰有余了
+        max_pages_to_scan = 3 if is_adult_search else 1 
+        
+        frontend_page = data.get('page', 1)
+        start_tmdb_page = (frontend_page - 1) * max_pages_to_scan + 1
+        current_tmdb_page = start_tmdb_page
+        total_pages_from_tmdb = 0 
+        
+        TIMEOUT_LIMIT = 20 
+        
+        for i in range(max_pages_to_scan):
+            if time.time() - start_time > TIMEOUT_LIMIT:
+                break
+
+            tmdb_params['page'] = current_tmdb_page
+            tmdb_data = tmdb.discover_movie_tmdb(api_key, tmdb_params)
+            
+            batch_results = tmdb_data.get('results', [])
+            total_pages_from_tmdb = tmdb_data.get('total_pages', 0)
+            
+            # --- ★★★ 核心修改：移除严格的 adult=True 过滤 ★★★ ---
+            # 既然我们已经信任了 certification=NC-17 这个筛选条件，
+            # 那么只要有海报，我们就认为它是合格的“成人/大尺度”内容。
+            # 这样列表瞬间就能填满。
+            filtered_batch = [item for item in batch_results if item.get('poster_path')]
+            
+            final_results.extend(filtered_batch)
+            
+            if len(final_results) >= target_count:
+                break
+            
+            if current_tmdb_page >= total_pages_from_tmdb:
+                break
+            
+            current_tmdb_page += 1
+            
+        final_results = final_results[:target_count]
+        
+        if max_pages_to_scan > 1:
+            adjusted_total_pages = total_pages_from_tmdb // max_pages_to_scan
+            if adjusted_total_pages == 0 and total_pages_from_tmdb > 0:
+                adjusted_total_pages = 1
+        else:
+            adjusted_total_pages = total_pages_from_tmdb
+        
+        result_wrapper = {
+            "results": final_results,
+            "page": frontend_page,
+            "total_pages": adjusted_total_pages,
+            "total_results": len(final_results) 
+        }
+        
+        processed_data = _filter_and_enrich_results(result_wrapper, current_user_id, 'Movie')
         
         return jsonify(processed_data)
 
@@ -243,9 +294,13 @@ def discover_movies():
 def discover_tv_shows():
     """
     根据前端传来的筛选条件，从 TMDb 发现电视剧。
+    策略调整：成人模式下附加 TV-MA 筛选，保证列表密度和加载速度。
     """
     data = request.json
     api_key = tmdb.config_manager.APP_CONFIG.get(tmdb.constants.CONFIG_OPTION_TMDB_API_KEY)
+    
+    # 记录开始时间，用于超时控制
+    start_time = time.time()
 
     try:
         if 'emby_user_id' not in session:
@@ -262,10 +317,10 @@ def discover_tv_shows():
         if isinstance(studio_labels, str): studio_labels = studio_labels.split(',')
         c_ids_str = _expand_studio_labels_to_ids(studio_labels)
 
-        # 3. 构建参数
+        # 3. 构建基础参数
         tmdb_params = {
             'sort_by': data.get('sort_by', 'popularity.desc'),
-            'page': data.get('page', 1),
+            # 'page': data.get('page', 1), # page 在循环中控制
             'vote_average.gte': data.get('vote_average.gte', 0),
             'with_genres': data.get('with_genres', ''),
             'with_keywords': k_ids_str,
@@ -277,17 +332,93 @@ def discover_tv_shows():
             'with_origin_country': data.get('with_origin_country', ''),
         }
         
-        # 处理分级筛选 
+        # 4. 处理分级筛选 
         rating_label = data.get('with_rating_label')
-        if rating_label:
+        
+        allow_adult_config = tmdb.config_manager.APP_CONFIG.get(tmdb.constants.CONFIG_OPTION_TMDB_INCLUDE_ADULT, False)
+        mapping_data = settings_db.get_setting('rating_mapping') or DEFAULT_RATING_MAPPING
+        adult_labels = set()
+        if isinstance(mapping_data, dict):
+            for country_rules in mapping_data.values():
+                for rule in country_rules:
+                    if rule.get('emby_value') == 15 and rule.get('label'):
+                        adult_labels.add(rule['label'])
+        if not adult_labels: adult_labels.add('成人')
+
+        is_adult_search = False
+        if allow_adult_config and rating_label in adult_labels:
+            tmdb_params['include_adult'] = 'true'
+            is_adult_search = True
+            
+            # --- ★★★ 核心修改：TV 版附加 TV-MA 筛选 ★★★ ---
+            # 类似于电影的 NC-17，TV-MA 是美国电视分级中的“成熟观众”级别
+            tmdb_params['watch_region'] = 'US'
+            tmdb_params['with_content_ratings'] = 'TV-MA'
+        else:
+            tmdb_params['include_adult'] = 'false'
+            
+        # 普通分级逻辑
+        if rating_label and not is_adult_search:
             rating_params = _get_tmdb_rating_params(rating_label, 'Series')
             tmdb_params.update(rating_params)
 
         tmdb_params = {k: v for k, v in tmdb_params.items() if v is not None and v != ''}
 
-        tmdb_data = tmdb.discover_tv_tmdb(api_key, tmdb_params)
+        # --- 翻页补货逻辑 ---
         
-        processed_data = _filter_and_enrich_results(tmdb_data, current_user_id, 'Series')
+        final_results = []
+        target_count = 20
+        
+        # 同样，因为加了 TV-MA 强过滤，命中率很高，扫 3 页足够
+        max_pages_to_scan = 3 if is_adult_search else 1 
+        
+        frontend_page = data.get('page', 1)
+        start_tmdb_page = (frontend_page - 1) * max_pages_to_scan + 1
+        current_tmdb_page = start_tmdb_page
+        total_pages_from_tmdb = 0 
+        
+        TIMEOUT_LIMIT = 20 
+
+        for i in range(max_pages_to_scan):
+            if time.time() - start_time > TIMEOUT_LIMIT:
+                break
+
+            tmdb_params['page'] = current_tmdb_page
+            tmdb_data = tmdb.discover_tv_tmdb(api_key, tmdb_params)
+            
+            batch_results = tmdb_data.get('results', [])
+            total_pages_from_tmdb = tmdb_data.get('total_pages', 0)
+            
+            # 只过滤海报，不强制过滤 adult=True，保证列表丰富度
+            filtered_batch = [item for item in batch_results if item.get('poster_path')]
+            
+            final_results.extend(filtered_batch)
+            
+            if len(final_results) >= target_count:
+                break
+            
+            if current_tmdb_page >= total_pages_from_tmdb:
+                break
+            
+            current_tmdb_page += 1
+
+        final_results = final_results[:target_count]
+        
+        if max_pages_to_scan > 1:
+            adjusted_total_pages = total_pages_from_tmdb // max_pages_to_scan
+            if adjusted_total_pages == 0 and total_pages_from_tmdb > 0:
+                adjusted_total_pages = 1
+        else:
+            adjusted_total_pages = total_pages_from_tmdb
+
+        result_wrapper = {
+            "results": final_results,
+            "page": frontend_page,
+            "total_pages": adjusted_total_pages,
+            "total_results": len(final_results) 
+        }
+        
+        processed_data = _filter_and_enrich_results(result_wrapper, current_user_id, 'Series')
         return jsonify(processed_data)
 
     except Exception as e:
