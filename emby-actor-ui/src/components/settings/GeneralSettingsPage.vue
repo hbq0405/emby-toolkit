@@ -495,10 +495,26 @@
                   </n-card>
                 </n-gi>
 
-                <!-- 卡片 4: 用户注册设置 (右下) -->
+                <!-- 卡片 4: 通知设置 (右下) -->
                 <n-gi>
                   <n-card :bordered="false" class="dashboard-card">
                     <template #header><span class="card-title">通知设置</span></template>
+                    
+                    <!-- ★★★ 新增：测试按钮区域 ★★★ -->
+                    <template #header-extra>
+                      <n-button 
+                        size="tiny" 
+                        type="primary" 
+                        ghost 
+                        @click="testTelegram" 
+                        :loading="isTestingTelegram"
+                        :disabled="!configModel.telegram_bot_token || !configModel.telegram_channel_id"
+                      >
+                        发送测试
+                      </n-button>
+                    </template>
+                    <!-- ★★★ 结束新增 ★★★ -->
+
                     <n-form-item-grid-item label="Telegram Bot Token" path="telegram_bot_token">
                       <n-input 
                         v-model:value="configModel.telegram_bot_token" 
@@ -1105,6 +1121,36 @@ const handleCustomImportRequest = async ({ file }) => {
     msgReactive.destroy();
     const errorMsg = error.response?.data?.error || '解析备份文件失败，请检查文件是否有效。';
     message.error(errorMsg);
+  }
+};
+
+// ★★★ 新增：Telegram 测试状态和函数 ★★★
+const isTestingTelegram = ref(false);
+
+const testTelegram = async () => {
+  if (!configModel.value.telegram_bot_token || !configModel.value.telegram_channel_id) {
+    message.warning('请先填写 Bot Token 和 频道 ID。');
+    return;
+  }
+
+  isTestingTelegram.value = true;
+  try {
+    // 发送当前输入框中的配置进行测试，无需先保存
+    const response = await axios.post('/api/telegram/test', {
+      token: configModel.value.telegram_bot_token,
+      chat_id: configModel.value.telegram_channel_id
+    });
+    
+    if (response.data.success) {
+      message.success(response.data.message);
+    } else {
+      message.error(`测试失败: ${response.data.message}`);
+    }
+  } catch (error) {
+    const errorMsg = error.response?.data?.message || error.message;
+    message.error(`请求失败: ${errorMsg}`);
+  } finally {
+    isTestingTelegram.value = false;
   }
 };
 

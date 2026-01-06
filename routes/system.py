@@ -165,6 +165,67 @@ def test_proxy_connection():
         return jsonify({"success": False, "message": f"网络请求失败: {e}"}), 500
     except Exception as e:
         return jsonify({"success": False, "message": f"发生未知错误: {e}"}), 500
+    
+# --- Telegram 测试 ---
+@system_bp.route('/telegram/test', methods=['POST'])
+@admin_required
+def api_test_telegram_connection():
+    """
+    测试 Telegram 机器人配置。
+    接收前端传来的 Token 和 Chat ID，尝试发送一条测试消息。
+    """
+    data = request.json
+    token = data.get('token')
+    chat_id = data.get('chat_id')
+
+    if not token or not chat_id:
+        return jsonify({"success": False, "message": "缺少 Token 或 Chat ID"}), 400
+
+    # 构造测试消息
+    import time
+    current_time = time.strftime("%Y-%m-%d %H:%M:%S")
+    text = f"🔔 *Emby Toolkit 测试消息*\n\n这是一条测试消息，证明您的机器人配置正确。\n⏱ 时间: `{current_time}`"
+    
+    # 处理 Chat ID (支持 @username)
+    final_chat_id = str(chat_id).strip()
+    if final_chat_id.startswith('https://t.me/'):
+        username = final_chat_id.split('/')[-1]
+        if username:
+            final_chat_id = f'@{username}'
+
+    api_url = f"https://api.telegram.org/bot{token}/sendMessage"
+    payload = {
+        'chat_id': final_chat_id,
+        'text': text, 
+        'parse_mode': 'MarkdownV2',
+        'disable_web_page_preview': True
+    }
+
+    try:
+        # 获取代理配置
+        proxies = config_manager.get_proxies_for_requests()
+        
+        logger.info(f"正在测试发送 Telegram 消息至: {final_chat_id}")
+        response = requests.post(api_url, json=payload, timeout=15, proxies=proxies)
+        
+        if response.status_code == 200:
+            return jsonify({
+                "success": True, 
+                "message": "测试消息发送成功！请检查您的 Telegram。"
+            })
+        else:
+            return jsonify({
+                "success": False, 
+                "message": f"发送失败 (HTTP {response.status_code}): {response.text}"
+            }), 500
+
+    except requests.exceptions.ProxyError:
+        return jsonify({"success": False, "message": "代理连接失败，请检查网络代理设置。"}), 500
+    except requests.exceptions.ConnectTimeout:
+        return jsonify({"success": False, "message": "连接 Telegram 服务器超时。"}), 500
+    except Exception as e:
+        logger.error(f"Telegram 测试发生错误: {e}")
+        return jsonify({"success": False, "message": f"发生未知错误: {str(e)}"}), 500
 
 # --- API 端点：保存配置 ---
 @system_bp.route('/config', methods=['POST'])
