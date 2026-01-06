@@ -1783,7 +1783,7 @@ def delete_item_sy(item_id: str, emby_server_url: str, emby_api_key: str, user_i
         return False
 
     # 2. 使用临时令牌执行删除
-    # 使用最被社区推荐的 POST /Items/{Id}/Delete 接口
+    # 使用神医Pro专用的 POST /Items/{Id}/DeleteVersion 接口
     api_url = f"{emby_server_url.rstrip('/')}/Items/{item_id}/DeleteVersion"
     
     headers = {
@@ -1802,10 +1802,14 @@ def delete_item_sy(item_id: str, emby_server_url: str, emby_api_key: str, user_i
         logger.info(f"  ✅ 成功删除 Emby 媒体项 ID: {item_id}。")
         return True
     except requests.exceptions.HTTPError as e:
-        logger.error(f"  ✅ 使用临时令牌删除 Emby 媒体项 ID: {item_id} 时发生HTTP错误: {e.response.status_code} - {e.response.text}")
+        # ★★★ 核心修改：捕获 404 错误并提示这是神医Pro专用接口 ★★★
+        if e.response.status_code == 404:
+            logger.error(f"  🚫 删除失败 (ID: {item_id}): 未找到神医Pro专用接口 (/DeleteVersion)。请确认服务端已安装神医Pro插件。")
+        else:
+            logger.error(f"  ❌ 使用临时令牌删除 Emby 媒体项 ID: {item_id} 时发生HTTP错误: {e.response.status_code} - {e.response.text}")
         return False
     except Exception as e:
-        logger.error(f"  ✅ 使用临时令牌删除 Emby 媒体项 ID: {item_id} 时发生未知错误: {e}")
+        logger.error(f"  ❌ 使用临时令牌删除 Emby 媒体项 ID: {item_id} 时发生未知错误: {e}")
         return False
 # --- 删除媒体项官方接口 ---
 def delete_item(item_id: str, emby_server_url: str, emby_api_key: str, user_id: str) -> bool:
