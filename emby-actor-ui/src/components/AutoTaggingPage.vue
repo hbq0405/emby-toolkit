@@ -14,7 +14,7 @@
       <n-table :bordered="false" :single-line="false">
         <thead>
           <tr>
-            <th style="width: 250px">目标媒体库</th>
+            <th style="width: 250px">目标媒体库 (留空即全选)</th>
             <th style="width: 200px">目标分级 (留空即全选)</th>
             <th>追加标签 (逗号分隔)</th>
             <th style="width: 280px">操作</th>
