@@ -169,28 +169,43 @@ class MediaProcessor:
         6. 通知 Emby 刷新。
         """
         try:
+            import time
+            import random
+            time.sleep(random.uniform(0.5, 2.0))
             import re
             from database.connection import get_db_connection # 确保导入数据库连接
             
             filename = os.path.basename(file_path)
             folder_path = os.path.dirname(file_path)
             folder_name = os.path.basename(folder_path)
+            grandparent_path = os.path.dirname(folder_path)
+            grandparent_name = os.path.basename(grandparent_path)
             
             # =========================================================
-            # 步骤 1: 识别信息 (逻辑不变)
+            # 步骤 1: 识别信息 (优化版：支持跨层级查找)
             # =========================================================
             tmdb_id = None
             search_query = None
             search_year = None
             
             tmdb_regex = r'(?:tmdb|tmdbid)[-_=\s]*(\d+)'
+            
+            # 1. 优先查当前文件夹 (电影通常在这里)
             match = re.search(tmdb_regex, folder_name, re.IGNORECASE)
+            
+            # 2. 如果没找到，查爷爷文件夹 (剧集通常在这里)
+            if not match:
+                match = re.search(tmdb_regex, grandparent_name, re.IGNORECASE)
+                if match:
+                    logger.info(f"  ➜ [主动处理] 在父级目录 '{grandparent_name}' 中发现 TMDb ID。")
+
+            # 3. 最后查文件名
             if not match:
                 match = re.search(tmdb_regex, filename, re.IGNORECASE)
                 
             if match:
                 tmdb_id = match.group(1)
-                logger.info(f"  ➜ [主动处理] 从路径提取到 TMDb ID: {tmdb_id}")
+                logger.info(f"  ➜ [主动处理] 成功提取 TMDb ID: {tmdb_id}")
             else:
                 year_regex = r'\b(19|20)\d{2}\b'
                 year_matches = list(re.finditer(year_regex, filename))
