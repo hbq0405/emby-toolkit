@@ -335,7 +335,22 @@ class MediaProcessor:
                 )
 
             # =========================================================
-            # 步骤 6: 下载图片
+            # 步骤 6:写入数据库 (标记为 in_library=False) ★★★
+            # =========================================================
+            logger.info(f"  ➜ [主动处理] 正在将元数据写入数据库 (预占位)...")
+            with get_db_connection() as conn:
+                cursor = conn.cursor()
+                self._upsert_media_metadata(
+                    cursor=cursor,
+                    item_type=item_type,
+                    final_processed_cast=final_processed_cast,
+                    source_data_package=details, # 传入 TMDb 原始数据
+                    item_details_from_emby=fake_item_details # 传入伪造的 Emby 对象 (Id='pending')
+                )
+                conn.commit()
+
+            # =========================================================
+            # 步骤 7: 下载图片
             # =========================================================
             self.download_images_from_tmdb(
                 tmdb_id=tmdb_id,
