@@ -252,12 +252,16 @@ class MediaProcessor:
             main_json_path = os.path.join(base_override_dir, main_json_filename)
 
             if os.path.exists(main_json_path):
-                # 2. 检查数据库中是否存在记录
+                # 检查数据库
                 if media_db.check_if_tmdb_id_exists(str(tmdb_id), item_type):
-                    logger.info(f"  ➜ [主动处理] 检测到 '{filename}' (TMDb:{tmdb_id}) 已有本地覆盖缓存和数据库记录，跳过重复处理。")
-                    should_skip_full_processing = True
+                    logger.info(f"  ➜ [主动处理] 检测到 '{filename}' (TMDb:{tmdb_id}) 已有完美本地数据，跳过处理。")
+                    
+                    # 唯一要做的事：通知 Emby 刷新 (因为文件是新的，Emby 需要扫描)
+                    logger.info(f"  ➜ [主动处理] 通知 Emby 刷新目录: {folder_path}")
+                    emby.refresh_library_by_path(folder_path, self.emby_url, self.emby_api_key)
+                    return # ★★★ 直接结束，不请求TMDb，不写文件 ★★★
                 else:
-                    logger.warning(f"  ➜ [主动处理] 发现本地覆盖缓存文件 '{main_json_path}'，但数据库中无记录。将重新处理。")
+                    logger.warning(f"  ➜ [主动处理] 发现本地文件但无数据库记录，将执行补录。")
             
             # =========================================================
             # 步骤 3: 获取完整详情 & 准备核心处理 (如果未跳过)
@@ -3574,13 +3578,14 @@ class MediaProcessor:
                     else:
                         data[key] = value
                 
-                elif item_type == "Series":
+                if item_type == "Series":
                     # 剧集：aggregate_credits -> credits
                     if key == 'aggregate_credits':
-                        data['credits'] = value
-                    # 剧集：content_ratings -> content_ratings (结构一致)
-                    else:
-                        data[key] = value
+                        # ★★★ 核心修复：如果本地已经有 credits (精修过的)，则忽略 TMDb 的更新 ★★★
+                        if 'credits' in data and data['credits'].get('cast'):
+                            logger.debug("  ➜ 保留本地演员表，忽略 TMDb 更新。")
+                        else:
+                            data['credits'] = value
 
         # ★★★ 步骤 3: 注入精修演员表 (核心处理场景) ★★★
         if final_cast_override is not None:

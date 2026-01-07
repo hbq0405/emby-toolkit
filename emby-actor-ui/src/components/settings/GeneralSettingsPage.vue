@@ -70,11 +70,19 @@
                       <n-dynamic-input v-model:value="configModel.monitor_paths" placeholder="输入Emby媒体库路径" :min="0" />
                       <template #feedback>
                         <n-text depth="3" style="font-size:0.8em;">
-                          监听这些目录下的文件创建/移动事件。支持递归监控。
+                          保持和 Emby 媒体库路径一致，否则刷新不到。
                         </n-text>
                       </template>
                     </n-form-item>
-
+                    <n-form-item label="定时扫描回溯天数" path="monitor_scan_lookback_days">
+                      <n-input-number v-model:value="configModel.monitor_scan_lookback_days" :min="1" :max="365" placeholder="默认 1 天" />
+                      <template #feedback>
+                        <n-text depth="3" style="font-size:0.8em;">
+                          每日定时扫描监控目录时，仅检查最近 N 天内创建或修改过的文件。
+                          <br>设置较小的值（如 1-3 天）可极大提高扫描速度，同时确保不漏掉近期追更的剧集。
+                        </n-text>
+                      </template>
+                    </n-form-item>
                     <n-form-item label="监控扩展名" path="monitor_extensions">
                       <n-select
                         v-model:value="configModel.monitor_extensions"
@@ -87,14 +95,14 @@
                       <!-- 注意：options 设为空数组配合 tag 模式允许用户自由输入 -->
                       <template #feedback>
                         <n-text depth="3" style="font-size:0.8em;">
-                          仅处理这些后缀的文件。默认包含 .mp4, .mkv 等。
+                          仅处理这些后缀的文件，输入扩展名并回车添加新的监控文件类型。
                         </n-text>
                       </template>
                     </n-form-item>
 
                     <n-alert type="info" :show-icon="true" style="margin-top: 10px;">
                       <span style="font-size: 0.85em;">
-                        <b>工作原理：</b> 监控到新文件 -> 优先提取路径中的 TMDb ID (如 tmdb-12345) -> 无ID则提取文件名+年份搜索 -> 预生成元数据 -> 通知 Emby 扫描。
+                        <b>友情提示：</b> 开启实时监控后，系统会自动处理新增媒体并通知Emby扫描入库，所以请关闭Emby媒体库的实时监控以免冲突。
                       </span>
                     </n-alert>
                   </n-card>
