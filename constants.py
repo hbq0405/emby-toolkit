@@ -33,7 +33,7 @@ CONFIG_SECTION_MONITOR = "Monitor"
 CONFIG_OPTION_MONITOR_ENABLED = "monitor_enabled"
 CONFIG_OPTION_MONITOR_PATHS = "monitor_paths"           # 监控目录列表
 CONFIG_OPTION_MONITOR_EXTENSIONS = "monitor_extensions" # 监控扩展名列表
-DEFAULT_MONITOR_EXTENSIONS = [".mp4", ".mkv", ".avi", ".mov", ".iso", ".ts"] # 默认监控的文件扩展名
+DEFAULT_MONITOR_EXTENSIONS = [".mp4", ".mkv", ".avi", ".mov", ".iso", ".ts", ".strm"] # 默认监控的文件扩展名
 CONFIG_OPTION_MONITOR_SCAN_LOOKBACK_DAYS = "monitor_scan_lookback_days" # 定时扫描回溯天数
 DEFAULT_MONITOR_SCAN_LOOKBACK_DAYS = 1  # 默认回溯扫描天数
 
