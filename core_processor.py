@@ -950,36 +950,78 @@ class MediaProcessor:
                 if item_type == "Series":
                     logger.info(f"  ➜ [快速补全] 检测到剧集，正在同步子项目状态...")
                     
-                    # 获取 Emby 中该剧集的所有子项目 (Season, Episode)
+                    # 获取 Emby 中该剧集的所有子项目
                     children = emby.get_series_children(
                         series_id=item_id,
                         base_url=self.emby_url,
                         api_key=self.emby_api_key,
                         user_id=self.emby_user_id,
                         series_name_for_log=item_name,
-                        fields="ProviderIds,Path,Type,ParentId" # 需要这些字段来计算资产
+                        # ★★★ 增加请求 ParentIndexNumber, IndexNumber ★★★
+                        fields="ProviderIds,Path,Type,ParentId,ParentIndexNumber,IndexNumber" 
                     )
                     
                     if children:
                         child_update_count = 0
                         for child in children:
-                            c_tmdb = child.get("ProviderIds", {}).get("Tmdb")
                             c_type = child.get("Type")
                             
-                            # 只有当子项目有 TMDb ID 时才更新 (主动监控写入时肯定有)
-                            # 注意：对于 Season，TMDb ID 可能是 "SeriesID-S1" 这种格式，需要兼容
-                            # 但主动监控写入时，Season 的 tmdb_id 是真实的 TMDb ID (如果 TMDb 有的话)
-                            # 或者我们通过 season_number/episode_number 来匹配更稳妥？
-                            # 鉴于主动监控写入时已经填了 tmdb_id，这里直接用 tmdb_id 匹配最快。
+                            # 补全上下文
+                            child['_SourceLibraryId'] = source_lib_id
+                            if child.get('ParentId'):
+                                id_to_parent_map[child['Id']] = child['ParentId']
+
+                            # ★★★ 核心修复：通过 S/E 编号匹配数据库 ★★★
+                            # 构造 SQL 更新条件：父剧集ID + 季号 + 集号
+                            # 注意：Season 的 ParentIndexNumber 通常为空，IndexNumber 是季号
+                            # Episode 的 ParentIndexNumber 是季号，IndexNumber 是集号
                             
-                            if c_tmdb:
-                                # 补全子项目的上下文信息
-                                child['_SourceLibraryId'] = source_lib_id
-                                # 简单的父级映射
-                                if child.get('ParentId'):
-                                    id_to_parent_map[child['Id']] = child['ParentId']
+                            s_num = None
+                            e_num = None
+                            
+                            if c_type == 'Season':
+                                s_num = child.get('IndexNumber')
+                            elif c_type == 'Episode':
+                                s_num = child.get('ParentIndexNumber')
+                                e_num = child.get('IndexNumber')
+                            
+                            if s_num is not None:
+                                # 构造资产数据
+                                asset_details = []
+                                if child.get('Path'):
+                                    asset = parse_full_asset_details(
+                                        child, 
+                                        id_to_parent_map=id_to_parent_map, 
+                                        library_guid=lib_guid
+                                    )
+                                    asset['source_library_id'] = source_lib_id
+                                    asset_details.append(asset)
                                 
-                                if _update_single_record(cursor, child, c_tmdb, c_type) > 0:
+                                asset_json = json.dumps(asset_details, ensure_ascii=False)
+                                emby_ids_json = json.dumps([child.get('Id')])
+
+                                # 动态构建 WHERE 子句
+                                where_clause = "parent_series_tmdb_id = %s AND item_type = %s AND season_number = %s"
+                                params = [emby_ids_json, asset_json, str(tmdb_id), c_type, s_num]
+                                
+                                if c_type == 'Episode':
+                                    if e_num is not None:
+                                        where_clause += " AND episode_number = %s"
+                                        params.append(e_num)
+                                    else:
+                                        continue # 没有集号的分集无法匹配
+                                
+                                sql = f"""
+                                    UPDATE media_metadata 
+                                    SET in_library = TRUE,
+                                        emby_item_ids_json = %s,
+                                        asset_details_json = %s,
+                                        last_synced_at = NOW()
+                                    WHERE {where_clause}
+                                """
+                                cursor.execute(sql, tuple(params))
+                                
+                                if cursor.rowcount > 0:
                                     child_update_count += 1
                         
                         logger.info(f"  ➜ [快速补全] 额外同步了 {child_update_count} 个子项目 (季/集)。")
