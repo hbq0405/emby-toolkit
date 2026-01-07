@@ -1197,17 +1197,10 @@ def task_bulk_auto_tag(processor, library_ids: List[str], tags: List[str], ratin
                         continue # 分级不匹配，跳过
 
                 
-                # 执行打标 (延迟拔旗)
-                item_id = item.get("Id")
-                UPDATING_METADATA.add(item_id) # 🚩 插旗
-                
-                success = emby.add_tags_to_item(item_id, tags, processor.emby_url, processor.emby_api_key, processor.emby_user_id)
+                # 执行打标
+                success = emby.add_tags_to_item(item.get("Id"), tags, processor.emby_url, processor.emby_api_key, processor.emby_user_id)
                 if success:
                     processed_count += 1
-                
-                # ★★★ 核心修复：延迟 15 秒拔旗，覆盖 Webhook 的网络延迟 ★★★
-                # 使用 discard 防止报错
-                spawn_later(15, lambda: UPDATING_METADATA.discard(item_id))
 
             logger.info(f"  媒体库 {lib_id} 处理完成: 打标 {processed_count} 个, 跳过 {skipped_count} 个 (不符分级)。")
         
@@ -1270,16 +1263,10 @@ def task_bulk_remove_tags(processor, library_ids: List[str], tags: List[str], ra
                         continue 
 
                 
-                # 执行移除 (延迟拔旗)
-                item_id = item.get("Id")
-                UPDATING_METADATA.add(item_id) # 🚩 插旗
-                
-                success = emby.remove_tags_from_item(item_id, tags, processor.emby_url, processor.emby_api_key, processor.emby_user_id)
+                # 执行移除 
+                success = emby.remove_tags_from_item(item.get("Id"), tags, processor.emby_url, processor.emby_api_key, processor.emby_user_id)
                 if success:
                     processed_count += 1
-                
-                # ★★★ 核心修复：延迟 15 秒拔旗 ★★★
-                spawn_later(15, lambda: UPDATING_METADATA.discard(item_id))
             
             logger.info(f"  媒体库 {lib_id} 处理完成: 移除 {processed_count} 个, 跳过 {skipped_count} 个。")
         
