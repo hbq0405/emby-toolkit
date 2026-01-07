@@ -739,6 +739,77 @@ def refresh_emby_item_metadata(item_emby_id: str,
     except requests.exceptions.RequestException as e:
         logger.error(f"  - 刷新请求时发生网络错误: {e}")
         return False
+# ✨✨✨ 根据文件路径刷新对应的媒体库 ✨✨✨
+def refresh_library_by_path(file_path: str, base_url: str, api_key: str) -> bool:
+    """
+    根据传入的文件路径，自动查找它属于哪个 Emby 媒体库，并只刷新该媒体库。
+    实现“秒级入库”的关键步骤。
+    """
+    if not all([file_path, base_url, api_key]):
+        return False
+
+    try:
+        # 1. 获取所有媒体库及其物理路径
+        # 这个函数在 emby.py 上面已经定义过了，直接复用
+        all_libraries = get_all_libraries_with_paths(base_url, api_key)
+        
+        if not all_libraries:
+            logger.warning("  ➜ 无法获取媒体库列表，无法按路径刷新。")
+            return False
+
+        # 2. 寻找匹配的媒体库
+        # 逻辑：看文件的路径是否以某个媒体库的根路径开头
+        target_lib_id = None
+        target_lib_name = None
+        longest_match_len = 0
+
+        # 规范化路径分隔符，防止 Windows/Linux 差异
+        norm_file_path = os.path.normpath(file_path)
+
+        for lib in all_libraries:
+            for root_path in lib.get('paths', []):
+                norm_root = os.path.normpath(root_path)
+                # 检查是否是父目录关系
+                if norm_file_path.startswith(norm_root):
+                    # 找到匹配！如果有多个匹配（比如嵌套库），取路径最长的那个（最精准）
+                    if len(norm_root) > longest_match_len:
+                        longest_match_len = len(norm_root)
+                        target_lib_id = lib['info']['Id']
+                        target_lib_name = lib['info']['Name']
+
+        if target_lib_id:
+            logger.info(f"  ➜ 文件 '{os.path.basename(file_path)}' 归属于媒体库: {target_lib_name} (ID: {target_lib_id})")
+            logger.info(f"  ➜ 正在触发该媒体库的增量刷新...")
+            
+            # 3. 调用刷新接口
+            # POST /Items/{Id}/Refresh?Recursive=true
+            # Recursive=true 是必须的，这样才能发现新加的子文件夹
+            refresh_url = f"{base_url.rstrip('/')}/Items/{target_lib_id}/Refresh"
+            params = {
+                "api_key": api_key,
+                "Recursive": "true",
+                "ImageRefreshMode": "Default",
+                "MetadataRefreshMode": "Default",
+                "ReplaceAllMetadata": "false",
+                "ReplaceAllImages": "false"
+            }
+            
+            api_timeout = config_manager.APP_CONFIG.get(constants.CONFIG_OPTION_EMBY_API_TIMEOUT, 60)
+            response = requests.post(refresh_url, params=params, timeout=api_timeout)
+            
+            if response.status_code == 204:
+                logger.info(f"  ✅ 已成功发送刷新命令给媒体库: {target_lib_name}")
+                return True
+            else:
+                logger.error(f"  ❌ 刷新媒体库失败: HTTP {response.status_code}")
+                return False
+        else:
+            logger.warning(f"  ➜ 未找到文件 '{file_path}' 所属的 Emby 媒体库，跳过刷新。请确认监控路径已添加到 Emby 库中。")
+            return False
+
+    except Exception as e:
+        logger.error(f"按路径刷新媒体库时发生错误: {e}", exc_info=True)
+        return False
 # ✨✨✨ 分批次地从 Emby 获取所有 Person 条目 ✨✨✨
 def get_all_persons_from_emby(
     base_url: str, 

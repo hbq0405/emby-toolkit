@@ -1,11 +1,11 @@
 # core_processor.py
 
 import os
+import re
 import json
 import time
 from typing import Dict, List, Optional, Any, Tuple
 from collections import defaultdict
-import shutil
 import threading
 from datetime import datetime, timezone
 import time as time_module
@@ -157,6 +157,204 @@ class MediaProcessor:
         self._last_lib_map_update = 0
         logger.trace("核心处理器初始化完成。")
 
+    # ★★★ 新增：主动处理文件逻辑 ★★★
+    def process_file_actively(self, file_path: str):
+        """
+        主动处理（完整版）：
+        1. 识别 TMDb ID。
+        2. 获取 TMDb 数据。
+        3. 【关键】调用核心处理流程（AI翻译、去重、清洗）。
+        4. 生成包含“精修数据”的本地 override 文件。
+        5. 下载图片。
+        6. 通知 Emby 刷新。
+        """
+        try:
+            import re
+            from database.connection import get_db_connection # 确保导入数据库连接
+            
+            filename = os.path.basename(file_path)
+            folder_path = os.path.dirname(file_path)
+            folder_name = os.path.basename(folder_path)
+            
+            # =========================================================
+            # 步骤 1: 识别信息 (逻辑不变)
+            # =========================================================
+            tmdb_id = None
+            search_query = None
+            search_year = None
+            
+            tmdb_regex = r'(?:tmdb|tmdbid)[-_=\s]*(\d+)'
+            match = re.search(tmdb_regex, folder_name, re.IGNORECASE)
+            if not match:
+                match = re.search(tmdb_regex, filename, re.IGNORECASE)
+                
+            if match:
+                tmdb_id = match.group(1)
+                logger.info(f"  ➜ [主动处理] 从路径提取到 TMDb ID: {tmdb_id}")
+            else:
+                year_regex = r'\b(19|20)\d{2}\b'
+                year_matches = list(re.finditer(year_regex, filename))
+                if year_matches:
+                    last_year_match = year_matches[-1]
+                    search_year = last_year_match.group(0)
+                    raw_title = filename[:last_year_match.start()]
+                    search_query = raw_title.replace('.', ' ').replace('_', ' ').strip(' ()[]-')
+                else:
+                    search_query = os.path.splitext(filename)[0].replace('.', ' ').replace('_', ' ')
+                logger.info(f"  ➜ [主动处理] 未找到ID，提取搜索信息: 标题='{search_query}', 年份='{search_year}'")
+
+            # =========================================================
+            # 步骤 2: 获取 TMDb 数据 (逻辑不变)
+            # =========================================================
+            if not tmdb_id and search_query:
+                is_series_guess = bool(re.search(r'S\d+E\d+', filename, re.IGNORECASE))
+                search_type = 'tv' if is_series_guess else 'movie'
+                results = tmdb.search_media(search_query, self.tmdb_api_key, item_type=search_type, year=search_year)
+                if results:
+                    tmdb_id = str(results[0].get('id'))
+                    logger.info(f"  ➜ [主动处理] 搜索匹配成功: {results[0].get('title') or results[0].get('name')} (ID: {tmdb_id})")
+                else:
+                    logger.warning(f"  ➜ [主动处理] 搜索失败，无法处理: {search_query}")
+                    return
+
+            if not tmdb_id: return
+
+            # =========================================================
+            # 步骤 3: 获取完整详情 & 准备核心处理
+            # =========================================================
+            is_series = bool(re.search(r'S\d+E\d+', filename, re.IGNORECASE))
+            item_type = "Series" if is_series else "Movie"
+            logger.info(f"  ➜ [主动处理] 正在获取 TMDb 详情并执行核心处理 (ID: {tmdb_id})...")
+            
+            details = None
+            aggregated_tmdb_data = None # 剧集专用
+            
+            if item_type == "Movie":
+                details = tmdb.get_movie_details(int(tmdb_id), self.tmdb_api_key)
+            else:
+                aggregated_tmdb_data = tmdb.aggregate_full_series_data_from_tmdb(int(tmdb_id), self.tmdb_api_key)
+                details = aggregated_tmdb_data.get('series_details') if aggregated_tmdb_data else None
+                
+            if not details:
+                logger.error("  ➜ [主动处理] 无法获取 TMDb 详情。")
+                return
+
+            # =========================================================
+            # ★★★ 步骤 4: 执行核心处理流程 (AI翻译、去重等) ★★★
+            # =========================================================
+            final_processed_cast = None
+            
+            # 准备演员源数据
+            authoritative_cast_source = []
+            if item_type == "Movie":
+                credits_source = details.get('credits') or details.get('casts') or {}
+                authoritative_cast_source = credits_source.get('cast', [])
+            elif item_type == "Series":
+                # 剧集需要聚合所有分集演员
+                if aggregated_tmdb_data:
+                    all_episodes = list(aggregated_tmdb_data.get("episodes_details", {}).values())
+                    # 复用 core_processor 里的聚合函数
+                    authoritative_cast_source = _aggregate_series_cast_from_tmdb_data(details, all_episodes)
+                else:
+                    credits_source = details.get('aggregate_credits') or details.get('credits') or {}
+                    authoritative_cast_source = credits_source.get('cast', [])
+
+            # 开启数据库连接，调用核心处理函数
+            with get_db_connection() as conn:
+                cursor = conn.cursor()
+                
+                # 构造一个伪造的 Emby 对象，仅用于传递给 _process_cast_list 做日志记录
+                # 因为此时 Emby 还没入库，所以没有 People 数据，传空列表
+                dummy_emby_item = {
+                    "Id": "pending",
+                    "Name": details.get('title') or details.get('name'),
+                    "OriginalTitle": details.get('original_title') or details.get('original_name'),
+                    "People": [] # 空的，强制走 TMDb 源
+                }
+                
+                logger.info(f"  ➜ [主动处理] 启动演员表核心处理 (AI翻译/去重/头像检查)...")
+                
+                # ★★★ 调用核心函数 ★★★
+                # 注意：这里 douban_cast_list 传空，为了速度牺牲一点豆瓣匹配，或者你可以加逻辑去抓豆瓣
+                final_processed_cast = self._process_cast_list(
+                    tmdb_cast_people=authoritative_cast_source,
+                    emby_cast_people=[], # 还没有 Emby 数据
+                    douban_cast_list=[], # 暂不进行豆瓣匹配，保证速度
+                    item_details_from_emby=dummy_emby_item,
+                    cursor=cursor,
+                    tmdb_api_key=self.tmdb_api_key,
+                    stop_event=None
+                )
+                
+                conn.commit() # 保存翻译结果到数据库
+
+            if not final_processed_cast:
+                logger.warning("  ➜ [主动处理] 演员处理未能返回结果，将使用原始数据。")
+                final_processed_cast = authoritative_cast_source
+
+            # =========================================================
+            # 步骤 5: 生成本地 override 元数据文件
+            # =========================================================
+            # 构造伪造的 item_details
+            fake_item_details = {
+                "Id": "pending", 
+                "Name": details.get('title') or details.get('name'), 
+                "Type": item_type,
+                "ProviderIds": {"Tmdb": tmdb_id}
+            }
+
+            # 准备要写入的数据：原始详情 + 处理后的演员表
+            # 注意：sync_item_metadata 内部会处理 final_cast_override
+            
+            # 如果是剧集，还需要传递分集数据以便注入到分集 NFO
+            tmdb_episodes_data = aggregated_tmdb_data.get('episodes_details') if aggregated_tmdb_data else None
+
+            logger.info(f"  ➜ [主动处理] 正在写入包含【精修演员表】的本地元数据...")
+            
+            self.sync_item_metadata(
+                item_details=fake_item_details,
+                tmdb_id=tmdb_id,
+                final_cast_override=final_processed_cast, # ★★★ 传入处理后的演员表 ★★★
+                metadata_override=details, # 传入基础元数据
+                # 如果是剧集，这里还可以传入 tmdb_episodes_data，但 sync_item_metadata 需要微调以支持
+                # 目前 sync_item_metadata 主要是通过 metadata_override['episodes_details'] 来传递
+            )
+            
+            # 如果是剧集，确保分集数据也能带上
+            if item_type == "Series" and tmdb_episodes_data:
+                # 重新读取刚才写入的主文件，把分集数据补进去（或者修改 sync_item_metadata 逻辑）
+                # 其实 sync_item_metadata 里的 _inject_cast_to_series_files 已经有逻辑了
+                # 我们只需要确保 metadata_override 里包含 episodes_details
+                details['episodes_details'] = tmdb_episodes_data
+                # 再次调用以确保分集文件生成（稍微有点冗余但安全）
+                self.sync_item_metadata(
+                    item_details=fake_item_details,
+                    tmdb_id=tmdb_id,
+                    final_cast_override=final_processed_cast,
+                    metadata_override=details 
+                )
+
+            # =========================================================
+            # 步骤 6: 下载图片
+            # =========================================================
+            self.download_images_from_tmdb(
+                tmdb_id=tmdb_id,
+                item_type=item_type
+            )
+            
+            logger.info(f"  ➜ [主动处理] 本地数据准备完成。")
+
+            # =========================================================
+            # 步骤 7: 通知 Emby 刷新
+            # =========================================================
+            logger.info(f"  ➜ [主动处理] 通知 Emby 刷新目录: {folder_path}")
+            emby.refresh_library_by_path(folder_path, self.emby_url, self.emby_api_key)
+            
+            logger.info(f"  ✅ [主动处理] 流程结束。Emby 扫描时将直接读取已翻译、已精修的元数据。")
+
+        except Exception as e:
+            logger.error(f"  ➜ [主动处理] 处理文件 {file_path} 时发生错误: {e}", exc_info=True)
+
     def _refresh_lib_guid_map(self):
         """从 Emby 实时获取所有媒体库的 ID 到 GUID 映射"""
         try:
@@ -232,17 +430,24 @@ class MediaProcessor:
     ):
         """
         - 实时元数据写入。
-        【增强修复版 V2】
-        1. 关键词提取采用混合策略，同时查找 results 和 keywords，防止结构不一致导致丢失。
-        2. 剧集工作室优先使用 networks。
+        - [修改] 支持 item_details_from_emby['Id'] == 'pending' 的情况 (主动监控预入库)。
         """
         if not item_details_from_emby:
-            logger.error("  ➜ 写入元数据缓存失败：缺少 Emby 详情数据。")
+            logger.error("  ➜ 元数据写入跳过：缺少 Emby 详情数据。")
             return
+            
         item_id = str(item_details_from_emby.get('Id'))
-        source_lib_id = str(item_details_from_emby.get('_SourceLibraryId'))
-
-        id_to_parent_map, lib_guid = self._get_realtime_ancestor_context(item_id, source_lib_id)
+        is_pending = (item_id == 'pending') # ★ 标记是否为预处理
+        
+        # 初始化变量
+        source_lib_id = ""
+        id_to_parent_map = {}
+        lib_guid = None
+        
+        # ★ 只有在不是 pending 状态下，才去计算祖先链和库信息
+        if not is_pending:
+            source_lib_id = str(item_details_from_emby.get('_SourceLibraryId') or "")
+            id_to_parent_map, lib_guid = self._get_realtime_ancestor_context(item_id, source_lib_id)
 
         def get_representative_runtime(emby_items, tmdb_runtime):
             if not emby_items: return tmdb_runtime
@@ -361,19 +566,26 @@ class MediaProcessor:
                 movie_record['tmdb_id'] = str(movie_record.get('id'))
                 movie_record['runtime_minutes'] = get_representative_runtime([item_details_from_emby], movie_record.get('runtime'))
                 movie_record['rating'] = movie_record.get('vote_average')
-                asset_details = parse_full_asset_details(
-                    item_details_from_emby, 
-                    id_to_parent_map=id_to_parent_map, 
-                    library_guid=lib_guid
-                )
-                asset_details['source_library_id'] = source_lib_id
                 
-                movie_record['asset_details_json'] = json.dumps([asset_details], ensure_ascii=False)
-                movie_record['emby_item_ids_json'] = json.dumps([item_id])
+                # ★ 资产信息处理
+                if is_pending:
+                    movie_record['asset_details_json'] = '[]'
+                    movie_record['emby_item_ids_json'] = '[]'
+                    movie_record['in_library'] = False # ★ 预处理标记为 False
+                else:
+                    asset_details = parse_full_asset_details(
+                        item_details_from_emby, 
+                        id_to_parent_map=id_to_parent_map, 
+                        library_guid=lib_guid
+                    )
+                    asset_details['source_library_id'] = source_lib_id
+                    movie_record['asset_details_json'] = json.dumps([asset_details], ensure_ascii=False)
+                    movie_record['emby_item_ids_json'] = json.dumps([item_id])
+                    movie_record['in_library'] = True # ★ 正式入库标记为 True
+
                 movie_record['actors_json'] = json.dumps([{"tmdb_id": int(p.get("id")), "character": p.get("character"), "order": p.get("order")} for p in final_processed_cast if p.get("id")], ensure_ascii=False)
-                movie_record['in_library'] = True
                 movie_record['subscription_status'] = 'NONE'
-                movie_record['date_added'] = item_details_from_emby.get("DateCreated")
+                movie_record['date_added'] = item_details_from_emby.get("DateCreated") or datetime.now(timezone.utc)
                 movie_record['overview_embedding'] = overview_embedding_json
 
                 # ★★★ 提取通用字段 (传入 'Movie') ★★★
@@ -431,14 +643,15 @@ class MediaProcessor:
                 seasons_details = source_data_package.get("seasons_details", series_details.get("seasons", []))
                 
                 series_asset_details = []
-                series_path = item_details_from_emby.get('Path')
-                if series_path:
-                    series_asset = {
-                        "path": series_path,
-                        "source_library_id": source_lib_id,
-                        "ancestor_ids": calculate_ancestor_ids(item_id, id_to_parent_map, lib_guid)
-                    }
-                    series_asset_details.append(series_asset)
+                if not is_pending:
+                    series_path = item_details_from_emby.get('Path')
+                    if series_path:
+                        series_asset = {
+                            "path": series_path,
+                            "source_library_id": source_lib_id,
+                            "ancestor_ids": calculate_ancestor_ids(item_id, id_to_parent_map, lib_guid)
+                        }
+                        series_asset_details.append(series_asset)
 
                 # 构建 Series 记录
                 series_record = {
@@ -451,7 +664,12 @@ class MediaProcessor:
                     "asset_details_json": json.dumps(series_asset_details, ensure_ascii=False),
                     "overview_embedding": overview_embedding_json
                 }
-                
+                if is_pending:
+                    series_record['in_library'] = False
+                    series_record['emby_item_ids_json'] = '[]'
+                else:
+                    series_record['in_library'] = True
+                    series_record['emby_item_ids_json'] = json.dumps([item_id])
                 actors_relation = [{"tmdb_id": int(p.get("id")), "character": p.get("character"), "order": p.get("order")} for p in final_processed_cast if p.get("id")]
                 series_record['actors_json'] = json.dumps(actors_relation, ensure_ascii=False)
                 
@@ -487,13 +705,15 @@ class MediaProcessor:
                 records_to_upsert.append(series_record)
 
                 # ★★★ 3. 处理季 (Season) ★★★
-                emby_season_versions = emby.get_series_seasons(
-                    series_id=item_details_from_emby.get('Id'),
-                    base_url=self.emby_url,
-                    api_key=self.emby_api_key,
-                    user_id=self.emby_user_id,
-                    series_name_for_log=series_details.get('name')
-                ) or []
+                emby_season_versions = []
+                if not is_pending:
+                    emby_season_versions = emby.get_series_seasons(
+                        series_id=item_details_from_emby.get('Id'),
+                        base_url=self.emby_url,
+                        api_key=self.emby_api_key,
+                        user_id=self.emby_user_id,
+                        series_name_for_log=series_details.get('name')
+                    ) or []
                 seasons_grouped_by_number = defaultdict(list)
                 for s_ver in emby_season_versions:
                     if s_ver.get("IndexNumber") is not None:
@@ -515,19 +735,20 @@ class MediaProcessor:
                         "title": season.get('name'), "overview": season.get('overview'), 
                         "release_date": season.get('air_date'), "poster_path": season_poster, 
                         "season_number": s_num,
-                        "in_library": bool(matched_emby_seasons),
+                        "in_library": bool(matched_emby_seasons) if not is_pending else False,
                         "emby_item_ids_json": json.dumps([s['Id'] for s in matched_emby_seasons]) if matched_emby_seasons else '[]'
                     })
                 
                 # ★★★ 4. 处理分集 (Episode) ★★★
                 raw_episodes = source_data_package.get("episodes_details", {})
                 episodes_details = list(raw_episodes.values()) if isinstance(raw_episodes, dict) else (raw_episodes if isinstance(raw_episodes, list) else [])
-                
-                emby_episode_versions = emby.get_all_library_versions(
-                    base_url=self.emby_url, api_key=self.emby_api_key, user_id=self.emby_user_id,
-                    media_type_filter="Episode", parent_id=item_details_from_emby.get('Id'),
-                    fields="Id,Type,ParentIndexNumber,IndexNumber,MediaStreams,Container,Size,Path,ProviderIds,RunTimeTicks,DateCreated,_SourceLibraryId"
-                ) or []
+                emby_episode_versions = []
+                if not is_pending:
+                    emby_episode_versions = emby.get_all_library_versions(
+                        base_url=self.emby_url, api_key=self.emby_api_key, user_id=self.emby_user_id,
+                        media_type_filter="Episode", parent_id=item_details_from_emby.get('Id'),
+                        fields="Id,Type,ParentIndexNumber,IndexNumber,MediaStreams,Container,Size,Path,ProviderIds,RunTimeTicks,DateCreated,_SourceLibraryId"
+                    ) or []
                 episodes_grouped_by_number = defaultdict(list)
                 for ep_version in emby_episode_versions:
                     s_num = ep_version.get("ParentIndexNumber")
@@ -550,16 +771,21 @@ class MediaProcessor:
                         "season_number": s_num, "episode_number": e_num,
                         "runtime_minutes": final_runtime
                     }
-                    if versions_of_episode:
-                        all_emby_ids = [v.get('Id') for v in versions_of_episode]
-                        all_asset_details = []
-                        for v in versions_of_episode:
-                            details = parse_full_asset_details(v)
-                            details['source_library_id'] = item_details_from_emby.get('_SourceLibraryId')
-                            all_asset_details.append(details)
-                        episode_record['asset_details_json'] = json.dumps(all_asset_details, ensure_ascii=False)
-                        episode_record['emby_item_ids_json'] = json.dumps(all_emby_ids)
-                        episode_record['in_library'] = True
+                    if not is_pending and versions_of_episode:
+                        if versions_of_episode:
+                            all_emby_ids = [v.get('Id') for v in versions_of_episode]
+                            all_asset_details = []
+                            for v in versions_of_episode:
+                                details = parse_full_asset_details(v)
+                                details['source_library_id'] = item_details_from_emby.get('_SourceLibraryId')
+                                all_asset_details.append(details)
+                            episode_record['asset_details_json'] = json.dumps(all_asset_details, ensure_ascii=False)
+                            episode_record['emby_item_ids_json'] = json.dumps(all_emby_ids)
+                            episode_record['in_library'] = True
+                    else:
+                        episode_record['in_library'] = False
+                        episode_record['emby_item_ids_json'] = '[]'
+                        episode_record['asset_details_json'] = '[]'
                     records_to_upsert.append(episode_record)
 
             if not records_to_upsert:
@@ -628,6 +854,83 @@ class MediaProcessor:
         except Exception as e:
             logger.error(f"批量写入层级元数据到数据库时失败: {e}", exc_info=True)
             raise
+
+    # --- 仅链接 Emby ID 和资产数据 (Webhook 补全专用) ---
+    def link_emby_item_to_db(self, item_details: Dict[str, Any]):
+        """
+        【Webhook 专用】
+        当数据库中已存在该 TMDb ID 的记录（由主动监控创建，in_library=False）时，
+        调用此函数仅更新 Emby ID、资产路径和 in_library 状态。
+        跳过所有繁重的元数据处理和 AI 翻译。
+        """
+        item_id = item_details.get('Id')
+        item_type = item_details.get('Type')
+        tmdb_id = item_details.get("ProviderIds", {}).get("Tmdb")
+        item_name = item_details.get("Name")
+
+        if not tmdb_id:
+            return False
+
+        logger.info(f"  ➜ [快速补全] 发现预处理记录，正在为 '{item_name}' (TMDb:{tmdb_id}) 补全 Emby 资产信息...")
+
+        try:
+            # 1. 计算资产信息 (复用现有逻辑)
+            # 补全 _SourceLibraryId
+            if not item_details.get('_SourceLibraryId'):
+                lib_info = emby.get_library_root_for_item(item_id, self.emby_url, self.emby_api_key, self.emby_user_id)
+                if lib_info: item_details['_SourceLibraryId'] = lib_info.get('Id')
+            
+            source_lib_id = str(item_details.get('_SourceLibraryId') or "")
+            id_to_parent_map, lib_guid = self._get_realtime_ancestor_context(item_id, source_lib_id)
+            
+            asset_details = []
+            if item_details.get('Path'):
+                asset = parse_full_asset_details(
+                    item_details, 
+                    id_to_parent_map=id_to_parent_map, 
+                    library_guid=lib_guid
+                )
+                asset['source_library_id'] = source_lib_id
+                asset_details.append(asset)
+            
+            asset_json = json.dumps(asset_details, ensure_ascii=False)
+            emby_ids_json = json.dumps([item_id])
+
+            # 2. 执行轻量级更新
+            with get_central_db_connection() as conn:
+                cursor = conn.cursor()
+                
+                # 更新主表
+                sql = """
+                    UPDATE media_metadata 
+                    SET in_library = TRUE,
+                        emby_item_ids_json = %s,
+                        asset_details_json = %s,
+                        last_synced_at = NOW()
+                    WHERE tmdb_id = %s AND item_type = %s
+                """
+                cursor.execute(sql, (emby_ids_json, asset_json, str(tmdb_id), item_type))
+                
+                # 如果是剧集，可能还需要尝试关联分集 (如果 Webhook 传的是分集)
+                # 但通常 Webhook 是一批一批来的。
+                # 如果这是 Series 的 Webhook，我们只更新 Series 的记录。
+                # 如果是 Episode 的 Webhook，我们在下面处理。
+                
+                conn.commit()
+                
+            logger.info(f"  ✅ [快速补全] '{item_name}' 已标记为入库 (in_library=True)。")
+            
+            # 3. 标记为已处理 (防止重复处理)
+            # 注意：这里我们给一个高分，因为它已经是经过预处理的了
+            with get_central_db_connection() as conn:
+                self._mark_item_as_processed(conn.cursor(), item_id, item_name, score=10.0)
+                conn.commit()
+
+            return True
+
+        except Exception as e:
+            logger.error(f"  🚫 [快速补全] 失败: {e}", exc_info=True)
+            return False
 
     # --- 标记为已处理 ---
     def _mark_item_as_processed(self, cursor: psycopg2.extensions.cursor, item_id: str, item_name: str, score: float = 10.0):
@@ -2940,6 +3243,124 @@ class MediaProcessor:
             logger.error(f"{log_prefix} 为 '{item_name_for_log}' 备份图片时发生未知错误: {e}", exc_info=True)
             return False
     
+    # --- 新增：从 TMDb 直接下载图片 (用于主动监控/预处理) ---
+    def download_images_from_tmdb(self, tmdb_id: str, item_type: str) -> bool:
+        """
+        【主动监控专用】
+        直接从 TMDb API 获取并下载图片到本地 override 目录。
+        用于在 Emby 尚未入库时，预先准备好图片素材。
+        """
+        if not tmdb_id or not self.local_data_path:
+            logger.error(f"  ➜ [TMDb图片预取] 缺少 TMDb ID 或本地路径配置，无法下载。")
+            return False
+
+        try:
+            log_prefix = "[TMDb图片预取]"
+            
+            # 1. 准备目录 (保持与 sync_item_images 一致的目录结构)
+            cache_folder_name = "tmdb-movies2" if item_type == "Movie" else "tmdb-tv"
+            base_override_dir = os.path.join(self.local_data_path, "override", cache_folder_name, str(tmdb_id))
+            image_override_dir = os.path.join(base_override_dir, "images")
+            os.makedirs(image_override_dir, exist_ok=True)
+
+            # 2. 从 TMDb 获取图片数据
+            logger.info(f"  ➜ {log_prefix} 正在从 TMDb API 获取图片链接 (ID: {tmdb_id})...")
+            
+            tmdb_data = None
+            if item_type == "Movie":
+                tmdb_data = tmdb.get_movie_details(int(tmdb_id), self.tmdb_api_key, append_to_response="images")
+            elif item_type == "Series":
+                tmdb_data = tmdb.get_tv_details(int(tmdb_id), self.tmdb_api_key, append_to_response="images,seasons")
+            
+            if not tmdb_data:
+                logger.error(f"  ➜ {log_prefix} 无法获取 TMDb 数据。")
+                return False
+
+            # 3. 定义下载任务列表
+            # 格式: (TMDb_File_Path, Local_File_Name)
+            downloads = []
+
+            # --- A. 通用图片 ---
+            # Poster -> poster.jpg
+            if tmdb_data.get("poster_path"):
+                downloads.append((tmdb_data["poster_path"], "poster.jpg"))
+            
+            # Backdrop -> fanart.jpg
+            if tmdb_data.get("backdrop_path"):
+                downloads.append((tmdb_data["backdrop_path"], "fanart.jpg"))
+            
+            # Images 节点处理 (Logo 和 Thumb)
+            images_node = tmdb_data.get("images", {})
+            
+            # Logo -> clearlogo.png (优先中文 > 英文 > 第一个)
+            logos = images_node.get("logos", [])
+            selected_logo = None
+            if logos:
+                for logo in logos:
+                    if logo.get("iso_639_1") == "zh":
+                        selected_logo = logo["file_path"]
+                        break
+                if not selected_logo:
+                    for logo in logos:
+                        if logo.get("iso_639_1") == "en":
+                            selected_logo = logo["file_path"]
+                            break
+                if not selected_logo:
+                    selected_logo = logos[0]["file_path"]
+                
+                if selected_logo:
+                    downloads.append((selected_logo, "clearlogo.png"))
+
+            # Thumb (Landscape) -> landscape.jpg
+            # 取 backdrops 里的第一张（通常 TMDb 没有专门的 thumb 字段，用 backdrop 代替）
+            backdrops = images_node.get("backdrops", [])
+            if backdrops:
+                downloads.append((backdrops[0]["file_path"], "landscape.jpg"))
+
+            # --- B. 剧集特有：季海报 ---
+            if item_type == "Series":
+                seasons = tmdb_data.get("seasons", [])
+                for season in seasons:
+                    s_num = season.get("season_number")
+                    s_poster = season.get("poster_path")
+                    if s_num is not None and s_poster:
+                        downloads.append((s_poster, f"season-{s_num}.jpg"))
+
+            # 4. 执行下载
+            base_image_url = "https://image.tmdb.org/t/p/original"
+            success_count = 0
+            
+            import requests
+            
+            for tmdb_path, local_name in downloads:
+                if not tmdb_path: continue
+                
+                full_url = f"{base_image_url}{tmdb_path}"
+                save_path = os.path.join(image_override_dir, local_name)
+                
+                # 如果文件已存在且大小不为0，跳过
+                if os.path.exists(save_path) and os.path.getsize(save_path) > 0:
+                    continue
+
+                try:
+                    # 使用简单的 requests 下载，带超时
+                    resp = requests.get(full_url, timeout=15)
+                    if resp.status_code == 200:
+                        with open(save_path, 'wb') as f:
+                            f.write(resp.content)
+                        success_count += 1
+                        # 稍微延时避免触发 TMDb 速率限制
+                        time_module.sleep(0.1)
+                except Exception as e:
+                    logger.warning(f"  ➜ 下载图片失败 {local_name}: {e}")
+
+            logger.info(f"  ➜ {log_prefix} 图片预取完成，共下载 {success_count} 张图片。")
+            return True
+
+        except Exception as e:
+            logger.error(f"{log_prefix} 发生未知错误: {e}", exc_info=True)
+            return False
+
     # --- 备份元数据 ---
     def sync_item_metadata(self, item_details: Dict[str, Any], tmdb_id: str,
                        final_cast_override: Optional[List[Dict[str, Any]]] = None,

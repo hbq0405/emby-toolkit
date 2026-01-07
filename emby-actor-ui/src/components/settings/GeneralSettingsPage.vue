@@ -17,7 +17,7 @@
           <n-tabs type="line" animated size="large" pane-style="padding: 20px; box-sizing: border-box;">
             <!-- ================== 标签页 1: 通用设置 ================== -->
             <n-tab-pane name="general" tab="通用设置">
-              <n-grid cols="1 l:2" :x-gap="24" :y-gap="24" responsive="screen">
+              <n-grid cols="1 l:3" :x-gap="24" :y-gap="24" responsive="screen">
                 <!-- 左侧列 -->
                 <n-gi>
                   <n-card :bordered="false" class="dashboard-card">
@@ -50,7 +50,55 @@
                     </n-form-item-grid-item>
                   </n-card>
                 </n-gi>
-                <!-- 右侧列 -->
+                <!-- 第二列：实时监控 (★★★ 新增 ★★★) -->
+                <n-gi>
+                  <n-card :bordered="false" class="dashboard-card">
+                    <template #header>
+                      <div style="display: flex; align-items: center; gap: 8px;">
+                        <span class="card-title">实时监控</span>
+                      </div>
+                    </template>
+                    
+                    <n-form-item label="启用文件系统监控" path="monitor_enabled">
+                      <n-switch v-model:value="configModel.monitor_enabled">
+                        <template #checked>开启</template>
+                        <template #unchecked>关闭</template>
+                      </n-switch>
+                    </n-form-item>
+
+                    <n-form-item label="监控目录列表" path="monitor_paths">
+                      <n-dynamic-input v-model:value="configModel.monitor_paths" placeholder="输入Emby媒体库路径" :min="0" />
+                      <template #feedback>
+                        <n-text depth="3" style="font-size:0.8em;">
+                          监听这些目录下的文件创建/移动事件。支持递归监控。
+                        </n-text>
+                      </template>
+                    </n-form-item>
+
+                    <n-form-item label="监控扩展名" path="monitor_extensions">
+                      <n-select
+                        v-model:value="configModel.monitor_extensions"
+                        multiple
+                        filterable
+                        tag
+                        placeholder="输入扩展名并回车"
+                        :options="[]" 
+                      />
+                      <!-- 注意：options 设为空数组配合 tag 模式允许用户自由输入 -->
+                      <template #feedback>
+                        <n-text depth="3" style="font-size:0.8em;">
+                          仅处理这些后缀的文件。默认包含 .mp4, .mkv 等。
+                        </n-text>
+                      </template>
+                    </n-form-item>
+
+                    <n-alert type="info" :show-icon="true" style="margin-top: 10px;">
+                      <span style="font-size: 0.85em;">
+                        <b>工作原理：</b> 监控到新文件 -> 优先提取路径中的 TMDb ID (如 tmdb-12345) -> 无ID则提取文件名+年份搜索 -> 预生成元数据 -> 通知 Emby 扫描。
+                      </span>
+                    </n-alert>
+                  </n-card>
+                </n-gi>
                 <n-gi>
                   <n-card :bordered="false" class="dashboard-card">
                     <template #header><span class="card-title">数据源与API</span></template>

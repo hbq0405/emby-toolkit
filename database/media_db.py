@@ -877,3 +877,21 @@ def is_emby_id_in_library(emby_id: str) -> bool:
     except Exception as e:
         logger.error(f"检查 Emby ID {emby_id} 在库状态时出错: {e}", exc_info=True)
         return False
+    
+def check_if_tmdb_id_exists(tmdb_id: str, item_type: str) -> bool:
+    """
+    【轻量级检查】判断指定的 TMDb ID 是否已存在于数据库中（无论 in_library 状态如何）。
+    用于 Webhook 快速判断是否需要执行“快速补全”流程。
+    """
+    if not tmdb_id or not item_type:
+        return False
+        
+    sql = "SELECT 1 FROM media_metadata WHERE tmdb_id = %s AND item_type = %s LIMIT 1"
+    try:
+        with get_db_connection() as conn:
+            with conn.cursor() as cursor:
+                cursor.execute(sql, (tmdb_id, item_type))
+                return cursor.fetchone() is not None
+    except Exception as e:
+        logger.error(f"DB: 检查 TMDb ID 存在性失败: {e}", exc_info=True)
+        return False

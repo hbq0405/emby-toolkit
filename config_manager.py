@@ -94,6 +94,11 @@ DYNAMIC_CONFIG_DEF = {
     constants.CONFIG_OPTION_RESUBSCRIBE_DAILY_CAP: (constants.CONFIG_SECTION_MOVIEPILOT, 'int', 200),
     constants.CONFIG_OPTION_RESUBSCRIBE_DELAY_SECONDS: (constants.CONFIG_SECTION_MOVIEPILOT, 'float', 1.5),
     
+    # [Monitor] - ★★★ 新增部分 ★★★
+    constants.CONFIG_OPTION_MONITOR_ENABLED: (constants.CONFIG_SECTION_MONITOR, 'boolean', False),
+    constants.CONFIG_OPTION_MONITOR_PATHS: (constants.CONFIG_SECTION_MONITOR, 'list', []),
+    constants.CONFIG_OPTION_MONITOR_EXTENSIONS: (constants.CONFIG_SECTION_MONITOR, 'list', constants.DEFAULT_MONITOR_EXTENSIONS),
+
     # [LocalDataSource]
     constants.CONFIG_OPTION_LOCAL_DATA_PATH: (constants.CONFIG_SECTION_LOCAL_DATA, 'string', ""),
 

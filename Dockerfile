@@ -59,6 +59,7 @@ COPY web_app.py \
      extensions.py \
      scheduler_manager.py \
      reverse_proxy.py \
+     monitor_service.py \
      ./
 
 COPY handler/ ./handler/

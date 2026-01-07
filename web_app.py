@@ -56,6 +56,9 @@ import config_manager
 from database import connection, settings_db
 
 import task_manager
+# ★★★ 新增：导入监控服务 ★★★
+from monitor_service import MonitorService 
+
 # --- 核心模块导入结束 ---
 logger = logging.getLogger(__name__)
 logging.getLogger("apscheduler.scheduler").setLevel(logging.WARNING)
@@ -92,6 +95,9 @@ JOB_ID_SYNC_PERSON_MAP = "scheduled_sync_person_map"
 JOB_ID_PROCESS_WATCHLIST = "scheduled_process_watchlist"
 JOB_ID_REVIVAL_CHECK = "scheduled_revival_check"
 
+# ★★★ 新增：全局监控服务实例 ★★★
+monitor_service_instance = None
+
 # --- 数据库辅助函数 ---
 def task_process_single_item(processor: MediaProcessor, item_id: str, force_full_update: bool):
     """任务：处理单个媒体项"""
@@ -102,6 +108,7 @@ def save_config_and_reload(new_config: Dict[str, Any]):
     """
     【新版】调用配置管理器保存配置，并在此处执行所有必要的重新初始化操作。
     """
+    global monitor_service_instance
     try:
         # 步骤 1: 调用 config_manager 来保存文件和更新内存中的 config_manager.APP_CONFIG
         config_manager.save_config(new_config)
@@ -110,6 +117,14 @@ def save_config_and_reload(new_config: Dict[str, Any]):
         initialize_processors()
         
         scheduler_manager.update_all_scheduled_jobs()
+        
+        # ★★★ 新增：重启监控服务以应用新配置 ★★★
+        if monitor_service_instance:
+            monitor_service_instance.stop()
+        
+        if extensions.media_processor_instance:
+            monitor_service_instance = MonitorService(config_manager.APP_CONFIG, extensions.media_processor_instance)
+            monitor_service_instance.start()
         
         logger.info("  ✅ 新配置重新初始化完毕。")
         
@@ -284,7 +299,7 @@ def ensure_cover_generator_fonts():
 # --- 应用退出处理 ---
 def application_exit_handler():
     # global media_processor_instance, scheduler, task_worker_thread # 不再需要 scheduler
-    global media_processor_instance, task_worker_thread # 修正后的
+    global media_processor_instance, task_worker_thread, monitor_service_instance # 修正后的
     logger.info("应用程序正在退出 (atexit)，执行清理操作...")
 
     # 1. 立刻通知当前正在运行的任务停止
@@ -294,6 +309,10 @@ def application_exit_handler():
 
     task_manager.clear_task_queue()
     task_manager.stop_task_worker()
+
+    # ★★★ 新增：停止监控服务 ★★★
+    if monitor_service_instance:
+        monitor_service_instance.stop()
 
     # 4. 关闭其他资源
     if extensions.media_processor_instance: # 从 extensions 获取
@@ -344,6 +363,7 @@ app.register_blueprint(discover_bp)
 
 def main_app_start():
     """将主应用启动逻辑封装成一个函数"""
+    global monitor_service_instance # 声明使用全局变量
     from gevent.pywsgi import WSGIServer
     from geventwebsocket.handler import WebSocketHandler
     import gevent
@@ -367,6 +387,14 @@ def main_app_start():
     initialize_processors()
     task_manager.start_task_worker_if_not_running()
     scheduler_manager.start()
+
+    # ★★★ 新增：启动实时监控服务 ★★★
+    try:
+        if extensions.media_processor_instance:
+            monitor_service_instance = MonitorService(config_manager.APP_CONFIG, extensions.media_processor_instance)
+            monitor_service_instance.start()
+    except Exception as e:
+        logger.error(f"启动实时监控服务失败: {e}", exc_info=True)
 
     def warmup_vector_cache():
         try:

@@ -16,7 +16,8 @@ lxml             # [必须] beautifulsoup4 的高性能解析器
 pypinyin         # 用于处理人名拼音
 concurrent-log-handler # 并发日志处理器
 Jinja2
-
+# --- 实时监控 ---
+watchdog
 # --- 定时任务 ---
 APScheduler
 pytz             # APScheduler 的时区依赖
