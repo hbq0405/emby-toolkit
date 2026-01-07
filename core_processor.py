@@ -3361,15 +3361,15 @@ class MediaProcessor:
             logger.error(f"{log_prefix} 发生未知错误: {e}", exc_info=True)
             return False
 
-    # --- 备份元数据 ---
+    # --- 备份元数据 (V8 - 骨架合并终极版) ---
     def sync_item_metadata(self, item_details: Dict[str, Any], tmdb_id: str,
                        final_cast_override: Optional[List[Dict[str, Any]]] = None,
                        episode_ids_to_sync: Optional[List[str]] = None,
                        metadata_override: Optional[Dict[str, Any]] = None):
         """
-        【V6 - 最终版】
-        不再从 cache 复制文件，而是基于模板和现有数据构建 override 文件。
-        同时支持传递 TMDb 分集原始数据。
+        【V8 - 骨架合并终极版】
+        始终基于 utils 中的标准骨架构建 override 文件。
+        将 TMDb 原始数据智能映射并合并到骨架中，确保结构完美兼容 Emby/神医。
         """
         item_id = item_details.get("Id")
         item_name_for_log = item_details.get("Name", f"未知项目(ID:{item_id})")
@@ -3385,64 +3385,101 @@ class MediaProcessor:
         # 确保目标目录存在
         os.makedirs(target_override_dir, exist_ok=True)
 
-        perfect_cast_for_injection = []
-        
-        #  定义一个变量用来存分集数据 
+        # ★★★ 步骤 1: 初始化完美骨架 ★★★
+        if item_type == "Movie":
+            data = json.loads(json.dumps(utils.MOVIE_SKELETON_TEMPLATE))
+        elif item_type == "Series":
+            data = json.loads(json.dumps(utils.SERIES_SKELETON_TEMPLATE))
+        else:
+            logger.warning(f"  ➜ {log_prefix} 不支持的类型: {item_type}，跳过。")
+            return
+
+        # 如果文件已存在，先读取旧数据覆盖骨架（保留已有修改）
+        if os.path.exists(main_json_path):
+            try:
+                with open(main_json_path, 'r', encoding='utf-8') as f:
+                    existing_data = json.load(f)
+                    # 简单的字典合并：旧数据覆盖骨架默认值
+                    # 注意：这里不做深层合并，直接覆盖顶层键
+                    for k, v in existing_data.items():
+                        data[k] = v
+            except Exception:
+                pass # 读取失败则使用纯骨架
+
         tmdb_episodes_data = None 
 
-        # 如果有元数据覆盖，先写入元数据 
+        # ★★★ 步骤 2: 合并 TMDb 原始数据 (主动监控场景) ★★★
         if metadata_override:
-            logger.info(f"  ➜ {log_prefix} 检测到元数据修正，正在写入主文件...")
+            logger.info(f"  ➜ {log_prefix} 检测到元数据修正，正在合并到标准骨架...")
             
-            #  在删除前，先把分集数据提取出来！ 
             if 'episodes_details' in metadata_override:
                 tmdb_episodes_data = metadata_override['episodes_details']
-            # =========================================================
 
-            # 1. 创建一个副本，避免修改原始对象影响后续逻辑
-            data_to_write = metadata_override.copy()
-            
-            # 2. 剔除不需要写入主文件的临时字段
-            # (注意：这里删除了 episodes_details，所以上面必须先提取)
-            keys_to_remove = ['seasons_details', 'episodes_details', 'release_dates'] 
-            for k in keys_to_remove:
-                if k in data_to_write:
-                    del data_to_write[k]
+            # 遍历 TMDb 数据，智能填入骨架
+            for key, value in metadata_override.items():
+                # 跳过不需要写入主文件的临时字段
+                if key in ['seasons_details', 'episodes_details', 'release_dates']:
+                    continue
+                
+                # --- 特殊映射逻辑 ---
+                if item_type == "Movie":
+                    # 电影：credits -> casts
+                    if key == 'credits':
+                        data['casts'] = value
+                    # 电影：releases -> releases (通常 TMDb 返回 release_dates，需要转换结构，这里假设已处理或直接用)
+                    # 如果 TMDb 返回的是 release_dates，我们需要转换一下结构以符合 Emby 标准
+                    elif key == 'release_dates':
+                        # 简单的转换逻辑：提取 US 分级放入 releases.countries
+                        # (这里为了简化，暂不展开复杂的转换，假设 metadata_override 已经包含基础数据)
+                        pass 
+                    else:
+                        data[key] = value
+                
+                elif item_type == "Series":
+                    # 剧集：aggregate_credits -> credits
+                    if key == 'aggregate_credits':
+                        data['credits'] = value
+                    # 剧集：content_ratings -> content_ratings (结构一致)
+                    else:
+                        data[key] = value
 
-            # 3. 写入净化后的数据
-            with open(main_json_path, 'w', encoding='utf-8') as f:
-                json.dump(data_to_write, f, ensure_ascii=False, indent=2)
-
+        # ★★★ 步骤 3: 注入精修演员表 (核心处理场景) ★★★
         if final_cast_override is not None:
-            # --- 角色一：主体精装修 ---
             new_cast_for_json = self._build_cast_from_final_data(final_cast_override)
-            perfect_cast_for_injection = new_cast_for_json
-
-            # 步骤 2: 修改或创建主文件
-            if not os.path.exists(main_json_path):
-                skeleton = utils.MOVIE_SKELETON_TEMPLATE if item_type == "Movie" else utils.SERIES_SKELETON_TEMPLATE
-                data = json.loads(json.dumps(skeleton))
-            else:
-                with open(main_json_path, 'r', encoding='utf-8') as f:
-                    data = json.load(f)
-
-            if 'casts' in data: data['casts']['cast'] = perfect_cast_for_injection
-            else: data.setdefault('credits', {})['cast'] = perfect_cast_for_injection
             
+            if item_type == "Movie":
+                # 电影：写入 casts.cast
+                if 'casts' not in data: data['casts'] = {}
+                data['casts']['cast'] = new_cast_for_json
+                # 清理可能残留的 credits
+                if 'credits' in data: del data['credits']
+                
+            elif item_type == "Series":
+                # 剧集：写入 credits.cast
+                if 'credits' not in data: data['credits'] = {}
+                data['credits']['cast'] = new_cast_for_json
+                # 清理可能残留的 casts
+                if 'casts' in data: del data['casts']
+
+        # ★★★ 步骤 4: 写入最终文件 ★★★
+        # 只有当有数据变更时才写入 (metadata_override 或 final_cast_override 不为空)
+        if metadata_override or final_cast_override is not None:
             with open(main_json_path, 'w', encoding='utf-8') as f:
                 json.dump(data, f, ensure_ascii=False, indent=2)
-        else:
-            # --- 角色二：零活处理 (追更) ---
-            if os.path.exists(main_json_path):
-                 with open(main_json_path, 'r', encoding='utf-8') as f:
-                    data = json.load(f)
-                    perfect_cast_for_injection = (data.get('casts', {}) or data.get('credits', {})).get('cast', [])
 
-        # 步骤 3: 公共施工 - 注入分集文件
-        if item_type == "Series" and perfect_cast_for_injection:
+        # ★★★ 步骤 5: 注入分集文件 (剧集专用) ★★★
+        # 即使没有 final_cast_override，只要是 Series 且有 tmdb_episodes_data，也应该尝试生成分集文件
+        if item_type == "Series":
+            # 确定要注入的演员表：优先用精修的，没有就用骨架里现有的
+            cast_to_inject = []
+            if final_cast_override is not None:
+                cast_to_inject = self._build_cast_from_final_data(final_cast_override)
+            elif 'credits' in data and 'cast' in data['credits']:
+                cast_to_inject = data['credits']['cast']
+
             self._inject_cast_to_series_files(
                 target_dir=target_override_dir, 
-                cast_list=perfect_cast_for_injection, 
+                cast_list=cast_to_inject, 
                 series_details=item_details, 
                 episode_ids_to_sync=episode_ids_to_sync,
                 tmdb_episodes_data=tmdb_episodes_data 

@@ -88,6 +88,7 @@ logging.getLogger("docker").setLevel(logging.WARNING)
 logging.getLogger("PIL").setLevel(logging.WARNING)
 logging.getLogger("geventwebsocket").setLevel(logging.WARNING)
 logging.getLogger("urllib3").setLevel(logging.WARNING)
+logging.getLogger("watchdog").setLevel(logging.WARNING)
 # --- 全局变量 ---
 
 JOB_ID_FULL_SCAN = "scheduled_full_scan"
