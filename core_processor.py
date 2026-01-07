@@ -885,13 +885,13 @@ class MediaProcessor:
             logger.error(f"批量写入层级元数据到数据库时失败: {e}", exc_info=True)
             raise
 
-    # --- 仅链接 Emby ID 和资产数据 (Webhook 补全专用) ---
+    # --- [新增] 仅链接 Emby ID 和资产数据 (Webhook 补全专用) ---
     def link_emby_item_to_db(self, item_details: Dict[str, Any]):
         """
         【Webhook 专用】
         当数据库中已存在该 TMDb ID 的记录（由主动监控创建，in_library=False）时，
         调用此函数仅更新 Emby ID、资产路径和 in_library 状态。
-        跳过所有繁重的元数据处理和 AI 翻译。
+        ★ 增强：如果是剧集，会自动递归更新其下所有已入库的季和集。
         """
         item_id = item_details.get('Id')
         item_type = item_details.get('Type')
@@ -904,7 +904,7 @@ class MediaProcessor:
         logger.info(f"  ➜ [快速补全] 发现预处理记录，正在为 '{item_name}' (TMDb:{tmdb_id}) 补全 Emby 资产信息...")
 
         try:
-            # 1. 计算资产信息 (复用现有逻辑)
+            # 1. 准备通用数据
             # 补全 _SourceLibraryId
             if not item_details.get('_SourceLibraryId'):
                 lib_info = emby.get_library_root_for_item(item_id, self.emby_url, self.emby_api_key, self.emby_user_id)
@@ -913,24 +913,21 @@ class MediaProcessor:
             source_lib_id = str(item_details.get('_SourceLibraryId') or "")
             id_to_parent_map, lib_guid = self._get_realtime_ancestor_context(item_id, source_lib_id)
             
-            asset_details = []
-            if item_details.get('Path'):
-                asset = parse_full_asset_details(
-                    item_details, 
-                    id_to_parent_map=id_to_parent_map, 
-                    library_guid=lib_guid
-                )
-                asset['source_library_id'] = source_lib_id
-                asset_details.append(asset)
-            
-            asset_json = json.dumps(asset_details, ensure_ascii=False)
-            emby_ids_json = json.dumps([item_id])
-
-            # 2. 执行轻量级更新
-            with get_central_db_connection() as conn:
-                cursor = conn.cursor()
+            # 2. 定义内部更新函数 (复用逻辑)
+            def _update_single_record(cursor, details, t_id, i_type):
+                asset_details = []
+                if details.get('Path'):
+                    asset = parse_full_asset_details(
+                        details, 
+                        id_to_parent_map=id_to_parent_map, 
+                        library_guid=lib_guid
+                    )
+                    asset['source_library_id'] = source_lib_id
+                    asset_details.append(asset)
                 
-                # 更新主表
+                asset_json = json.dumps(asset_details, ensure_ascii=False)
+                emby_ids_json = json.dumps([details.get('Id')])
+
                 sql = """
                     UPDATE media_metadata 
                     SET in_library = TRUE,
@@ -939,19 +936,59 @@ class MediaProcessor:
                         last_synced_at = NOW()
                     WHERE tmdb_id = %s AND item_type = %s
                 """
-                cursor.execute(sql, (emby_ids_json, asset_json, str(tmdb_id), item_type))
+                cursor.execute(sql, (emby_ids_json, asset_json, str(t_id), i_type))
+                return cursor.rowcount
+
+            # 3. 执行更新
+            with get_central_db_connection() as conn:
+                cursor = conn.cursor()
                 
-                # 如果是剧集，可能还需要尝试关联分集 (如果 Webhook 传的是分集)
-                # 但通常 Webhook 是一批一批来的。
-                # 如果这是 Series 的 Webhook，我们只更新 Series 的记录。
-                # 如果是 Episode 的 Webhook，我们在下面处理。
+                # A. 更新主条目
+                updated_count = _update_single_record(cursor, item_details, tmdb_id, item_type)
                 
+                # B. 如果是剧集，递归更新子项目
+                if item_type == "Series":
+                    logger.info(f"  ➜ [快速补全] 检测到剧集，正在同步子项目状态...")
+                    
+                    # 获取 Emby 中该剧集的所有子项目 (Season, Episode)
+                    children = emby.get_series_children(
+                        series_id=item_id,
+                        base_url=self.emby_url,
+                        api_key=self.emby_api_key,
+                        user_id=self.emby_user_id,
+                        series_name_for_log=item_name,
+                        fields="ProviderIds,Path,Type,ParentId" # 需要这些字段来计算资产
+                    )
+                    
+                    if children:
+                        child_update_count = 0
+                        for child in children:
+                            c_tmdb = child.get("ProviderIds", {}).get("Tmdb")
+                            c_type = child.get("Type")
+                            
+                            # 只有当子项目有 TMDb ID 时才更新 (主动监控写入时肯定有)
+                            # 注意：对于 Season，TMDb ID 可能是 "SeriesID-S1" 这种格式，需要兼容
+                            # 但主动监控写入时，Season 的 tmdb_id 是真实的 TMDb ID (如果 TMDb 有的话)
+                            # 或者我们通过 season_number/episode_number 来匹配更稳妥？
+                            # 鉴于主动监控写入时已经填了 tmdb_id，这里直接用 tmdb_id 匹配最快。
+                            
+                            if c_tmdb:
+                                # 补全子项目的上下文信息
+                                child['_SourceLibraryId'] = source_lib_id
+                                # 简单的父级映射
+                                if child.get('ParentId'):
+                                    id_to_parent_map[child['Id']] = child['ParentId']
+                                
+                                if _update_single_record(cursor, child, c_tmdb, c_type) > 0:
+                                    child_update_count += 1
+                        
+                        logger.info(f"  ➜ [快速补全] 额外同步了 {child_update_count} 个子项目 (季/集)。")
+
                 conn.commit()
                 
-            logger.info(f"  ✅ [快速补全] '{item_name}' 已标记为入库 (in_library=True)。")
+            logger.info(f"  ✅ [快速补全] '{item_name}' 及其子项目已标记为入库。")
             
-            # 3. 标记为已处理 (防止重复处理)
-            # 注意：这里我们给一个高分，因为它已经是经过预处理的了
+            # 4. 标记为已处理
             with get_central_db_connection() as conn:
                 self._mark_item_as_processed(conn.cursor(), item_id, item_name, score=10.0)
                 conn.commit()
