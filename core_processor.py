@@ -3558,7 +3558,7 @@ class MediaProcessor:
     def _inject_cast_to_series_files(self, target_dir: str, cast_list: List[Dict[str, Any]], series_details: Dict[str, Any], episode_ids_to_sync: Optional[List[str]] = None, tmdb_episodes_data: Optional[Dict[str, Any]] = None):
         """
         辅助函数：将演员表注入剧集的季/集JSON文件。
-        【骨架修复版】始终基于 utils 中的完美骨架构建数据，确保结构完整。
+        【修复版】支持主动监控模式 (ID='pending')，此时仅基于 TMDb 数据生成文件，不请求 Emby。
         """
         log_prefix = "[覆盖缓存-元数据写入]"
         if cast_list is not None:
@@ -3566,6 +3566,9 @@ class MediaProcessor:
         else:
             logger.info(f"  ➜ {log_prefix} 开始将实时元数据（标题/简介）同步到所有季/集备份文件...")
         
+        series_id = series_details.get("Id")
+        is_pending = (series_id == 'pending') # ★ 标记是否为预处理
+
         # 1. 构建“全剧演员信息字典”
         master_actor_map = {}
         if cast_list:
@@ -3590,34 +3593,66 @@ class MediaProcessor:
                         if master_info.get('character'): person['character'] = master_info.get('character')
                 except ValueError: continue
 
-        children_from_emby = emby.get_series_children(
-            series_id=series_details.get("Id"), base_url=self.emby_url,
-            api_key=self.emby_api_key, user_id=self.emby_user_id,
-            series_name_for_log=series_details.get("Name")
-        ) or []
+        # ★★★ 2. 获取子项目列表 (核心修改) ★★★
+        children_from_emby = []
+        
+        if not is_pending:
+            # 正常模式：从 Emby 获取
+            children_from_emby = emby.get_series_children(
+                series_id=series_id, base_url=self.emby_url,
+                api_key=self.emby_api_key, user_id=self.emby_user_id,
+                series_name_for_log=series_details.get("Name")
+            ) or []
+        else:
+            # 主动监控模式：从 TMDb 数据构造虚拟子项目
+            logger.info(f"  ➜ {log_prefix} 处于预处理模式，将基于 TMDb 数据生成分集文件列表...")
+            if tmdb_episodes_data:
+                import re
+                seen_seasons = set()
+                
+                # tmdb_episodes_data 的 key 是 "S1E1" 格式
+                for key, ep_data in tmdb_episodes_data.items():
+                    # 解析 S1E1
+                    match = re.match(r'S(\d+)E(\d+)', key)
+                    if match:
+                        s_num = int(match.group(1))
+                        e_num = int(match.group(2))
+                        
+                        # 构造虚拟 Episode 对象
+                        children_from_emby.append({
+                            "Type": "Episode",
+                            "ParentIndexNumber": s_num,
+                            "IndexNumber": e_num,
+                            "Name": ep_data.get('name'),
+                            "Overview": ep_data.get('overview')
+                        })
+                        
+                        # 顺便构造虚拟 Season 对象 (去重)
+                        if s_num not in seen_seasons:
+                            children_from_emby.append({
+                                "Type": "Season",
+                                "IndexNumber": s_num,
+                                "Name": f"Season {s_num}"
+                            })
+                            seen_seasons.add(s_num)
 
         child_data_map = {}
         for child in children_from_emby:
             key = None
             
-            # ★★★ 修复：增加非空判断，防止生成 season-None.json ★★★
             if child.get("Type") == "Season": 
                 idx = child.get('IndexNumber')
                 if idx is not None:
                     key = f"season-{idx}"
             
-            # ★★★ 修复：增加非空判断，防止生成 season-0-episode-0.json ★★★
             elif child.get("Type") == "Episode": 
                 s_num = child.get('ParentIndexNumber')
                 e_num = child.get('IndexNumber')
                 
-                # 必须两者都有值
                 if s_num is not None and e_num is not None:
-                    # 【终极修复】强制转 int 判断。
-                    # Emby 有时返回数字 0，有时返回字符串 "0"，必须统一转 int 才能准确拦截！
                     try:
                         if int(s_num) == 0 and int(e_num) == 0:
-                            continue # 彻底切除阑尾
+                            continue 
                     except (ValueError, TypeError):
                         pass
 
@@ -3629,7 +3664,7 @@ class MediaProcessor:
         updated_children_count = 0
         try:
             files_to_process = set() 
-            if episode_ids_to_sync:
+            if episode_ids_to_sync and not is_pending: # 只有非 pending 状态才支持按 ID 过滤
                 id_set = set(episode_ids_to_sync)
                 for child in children_from_emby:
                     if child.get("Id") in id_set and child.get("Type") == "Episode":
@@ -3638,7 +3673,7 @@ class MediaProcessor:
                         try:
                             if s_num is not None and e_num is not None:
                                 if int(s_num) == 0 and int(e_num) == 0:
-                                    continue # 跳过 S0E0
+                                    continue 
                         except (ValueError, TypeError):
                             pass
                         if s_num is not None:
@@ -3661,7 +3696,6 @@ class MediaProcessor:
                 
                 # ★★★ 步骤 A: 初始化完美骨架 ★★★
                 if is_season_file:
-                    # 深拷贝模板
                     child_data = json.loads(json.dumps(utils.SEASON_SKELETON_TEMPLATE))
                 elif is_episode_file:
                     child_data = json.loads(json.dumps(utils.EPISODE_SKELETON_TEMPLATE))
@@ -3679,87 +3713,63 @@ class MediaProcessor:
                             elif key in data_source:
                                 child_data[key] = data_source[key]
                 
-                # 如果两边都没数据，且不是强制生成，可能需要跳过？
-                # 但为了保证 Emby 元数据能写入，我们允许仅基于骨架生成
-                
                 # ★★★ 步骤 C: 填充骨架 ★★★
                 if data_source:
                     for key in child_data.keys():
-                        # 特殊处理：如果源数据里是旧的 casts，映射到 credits
                         if key == 'credits' and 'casts' in data_source and 'credits' not in data_source:
                              child_data['credits'] = data_source['casts']
                         elif key in data_source:
                             child_data[key] = data_source[key]
                 
                 # ★★★ 步骤 D: 智能修补演员表 (针对 credits 节点) ★★★
-                # 1. 尝试获取该分集的 TMDb 原始数据
                 specific_tmdb_data = None
                 if is_episode_file and tmdb_episodes_data:
-                    # 解析文件名获取 S和E (例如 season-1-episode-2.json)
                     try:
                         parts = filename.replace(".json", "").split("-")
-                        # 格式通常是 season-X-episode-Y
                         if len(parts) >= 4:
                             s_num = int(parts[1])
                             e_num = int(parts[3])
-                            key = f"S{s_num}E{e_num}" # 对应 core_processor 里生成的 key
+                            key = f"S{s_num}E{e_num}" 
                             specific_tmdb_data = tmdb_episodes_data.get(key)
                     except:
                         pass
 
-                # 确保 credits 节点存在
                 credits_node = child_data.get('credits')
                 if not isinstance(credits_node, dict):
                     credits_node = {}
                     child_data['credits'] = credits_node
 
-                # 2. 填充数据
                 if specific_tmdb_data:
-                    # 【方案 A】如果有 TMDb 原始分集数据 -> 使用它 (精准!)
-                    
-                    # 获取配置开关 (默认 True: 移除)
                     should_remove_no_avatar = self.config.get(constants.CONFIG_OPTION_REMOVE_ACTORS_WITHOUT_AVATARS, True)
 
-                    # --- 定义受配置控制的过滤函数 ---
                     def process_actor_list(actors):
                         if not actors: return []
-                        # 如果开关开启，且没有 profile_path，则过滤
                         if should_remove_no_avatar:
                             return [a for a in actors if a.get('profile_path')]
-                        # 否则原样返回
                         return actors
 
-                    # 填充 cast (常规演员)
                     raw_cast = specific_tmdb_data.get('credits', {}).get('cast', [])
                     filtered_cast = process_actor_list(raw_cast)
                     if filtered_cast:
                         credits_node['cast'] = filtered_cast
                     
-                    # 填充 guest_stars (客串演员)
                     raw_guests = specific_tmdb_data.get('credits', {}).get('guest_stars', [])
                     filtered_guests = process_actor_list(raw_guests)
                     if filtered_guests:
                         credits_node['guest_stars'] = filtered_guests
                     
-                    # 填充 crew (幕后人员) - 幕后人员通常不看头像，直接保留
                     if specific_tmdb_data.get('credits', {}).get('crew'):
                         credits_node['crew'] = specific_tmdb_data['credits']['crew']
                 
                 elif is_episode_file:
-                    # 【方案 B】如果没有原始数据 (兜底) -> 使用全剧演员表
-                    # 只有当 cast 为空时才注入，避免覆盖已有的 override 数据
                     if not credits_node.get('cast'):
                         credits_node['cast'] = cast_list
 
                 elif is_season_file:
-                    # 【季文件】通常只放全剧常驻演员
                     if not credits_node.get('cast'):
                         credits_node['cast'] = cast_list
 
-                # 3. 执行汉化修补 (Magic Step!)
-                # 无论数据来源是 TMDb 原始数据，还是全剧列表，
-                # 这里都会遍历它们，用 master_actor_map (已翻译、有头像的主表) 去更新它们。
-                # 效果：常驻演员变中文，客串演员保留英文(因为主表里没有)。
+                # 3. 执行汉化修补
                 if cast_list is not None:
                     if 'cast' in credits_node and isinstance(credits_node['cast'], list):
                         patch_actor_list(credits_node['cast'])
