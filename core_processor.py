@@ -3433,7 +3433,7 @@ class MediaProcessor:
             # 遍历 TMDb 数据，智能填入骨架
             for key, value in metadata_override.items():
                 # 跳过不需要写入主文件的临时字段
-                if key in ['seasons_details', 'episodes_details', 'release_dates']:
+                if key in ['seasons_details', 'episodes_details']:
                     continue
                 
                 # --- 特殊映射逻辑 ---
@@ -3444,20 +3444,15 @@ class MediaProcessor:
                     # 电影：releases -> releases (通常 TMDb 返回 release_dates，需要转换结构，这里假设已处理或直接用)
                     # 如果 TMDb 返回的是 release_dates，我们需要转换一下结构以符合 Emby 标准
                     elif key == 'release_dates':
-                        # TMDb 格式: { results: [ { iso_3166_1: 'US', release_dates: [ { certification: 'R', ... } ] } ] }
-                        # Emby 格式: { countries: [ { iso_3166_1: 'US', certification: 'R' } ] }
-                        
                         emby_releases = []
                         results = value.get('results', [])
                         for r in results:
                             country = r.get('iso_3166_1')
-                            # 找第一个有分级的 release
                             cert = ""
                             for rel in r.get('release_dates', []):
                                 if rel.get('certification'):
                                     cert = rel.get('certification')
-                                    break
-                            
+                                    break 
                             if country and cert:
                                 emby_releases.append({
                                     "iso_3166_1": country,
@@ -3468,7 +3463,7 @@ class MediaProcessor:
                         if 'releases' not in data: data['releases'] = {}
                         data['releases']['countries'] = emby_releases
                         
-                        # 顺便把 US 分级写到顶层 mpaa/certification 字段 (Emby 兼容性)
+                        # 顺便把 US 分级写到顶层 mpaa/certification 字段
                         for item in emby_releases:
                             if item['iso_3166_1'] == 'US':
                                 data['mpaa'] = item['certification']
