@@ -157,23 +157,27 @@ class MediaProcessor:
         self._last_lib_map_update = 0
         logger.trace("核心处理器初始化完成。")
 
-    # ★★★ 新增：主动处理文件逻辑 ★★★
+    # --- [优化版] 主动处理文件逻辑 (增加缓存跳过) ---
     def process_file_actively(self, file_path: str):
         """
-        主动处理（完整版）：
+        主动处理（优化版）：
         1. 识别 TMDb ID。
-        2. 获取 TMDb 数据。
-        3. 【关键】调用核心处理流程（AI翻译、去重、清洗）。
-        4. 生成包含“精修数据”的本地 override 文件。
-        5. 下载图片。
-        6. 通知 Emby 刷新。
+        2. 【新增】检查本地缓存和数据库，如果已存在，则跳过 TMDb 请求和演员处理。
+        3. 获取 TMDb 数据。
+        4. 调用核心处理流程（AI翻译、去重等）。
+        5. 生成包含“精修数据”的本地 override 文件。
+        6. 下载图片。
+        7. 通知 Emby 刷新该文件所属的媒体库。
         """
         try:
+            import re
             import time
             import random
+            from database.connection import get_db_connection
+            from database import media_db # 确保导入 media_db
+            
+            # 随机延时 0.5~2 秒，缓解并发压力
             time.sleep(random.uniform(0.5, 2.0))
-            import re
-            from database.connection import get_db_connection # 确保导入数据库连接
             
             filename = os.path.basename(file_path)
             folder_path = os.path.dirname(file_path)
@@ -182,24 +186,16 @@ class MediaProcessor:
             grandparent_name = os.path.basename(grandparent_path)
             
             # =========================================================
-            # 步骤 1: 识别信息 (优化版：支持跨层级查找)
+            # 步骤 1: 识别信息
             # =========================================================
             tmdb_id = None
             search_query = None
             search_year = None
             
             tmdb_regex = r'(?:tmdb|tmdbid)[-_=\s]*(\d+)'
-            
-            # 1. 优先查当前文件夹 (电影通常在这里)
             match = re.search(tmdb_regex, folder_name, re.IGNORECASE)
-            
-            # 2. 如果没找到，查爷爷文件夹 (剧集通常在这里)
             if not match:
                 match = re.search(tmdb_regex, grandparent_name, re.IGNORECASE)
-                if match:
-                    logger.info(f"  ➜ [主动处理] 在父级目录 '{grandparent_name}' 中发现 TMDb ID。")
-
-            # 3. 最后查文件名
             if not match:
                 match = re.search(tmdb_regex, filename, re.IGNORECASE)
                 
@@ -209,17 +205,23 @@ class MediaProcessor:
             else:
                 year_regex = r'\b(19|20)\d{2}\b'
                 year_matches = list(re.finditer(year_regex, filename))
+                season_episode_regex = r'[sS](\d{1,2})[eE](\d{1,2})'
+                se_match = re.search(season_episode_regex, filename)
+
                 if year_matches:
                     last_year_match = year_matches[-1]
                     search_year = last_year_match.group(0)
                     raw_title = filename[:last_year_match.start()]
-                    search_query = raw_title.replace('.', ' ').replace('_', ' ').strip(' ()[]-')
+                elif se_match:
+                    raw_title = filename[:se_match.start()]
                 else:
-                    search_query = os.path.splitext(filename)[0].replace('.', ' ').replace('_', ' ')
+                    raw_title = os.path.splitext(filename)[0]
+
+                search_query = raw_title.replace('.', ' ').replace('_', ' ').strip(' -[]()')
                 logger.info(f"  ➜ [主动处理] 未找到ID，提取搜索信息: 标题='{search_query}', 年份='{search_year}'")
 
             # =========================================================
-            # 步骤 2: 获取 TMDb 数据 (逻辑不变)
+            # 步骤 2: 获取 TMDb 数据 (如果只有标题则搜索)
             # =========================================================
             if not tmdb_id and search_query:
                 is_series_guess = bool(re.search(r'S\d+E\d+', filename, re.IGNORECASE))
@@ -234,83 +236,103 @@ class MediaProcessor:
 
             if not tmdb_id: return
 
-            # =========================================================
-            # 步骤 3: 获取完整详情 & 准备核心处理
-            # =========================================================
+            # 确定类型
             is_series = bool(re.search(r'S\d+E\d+', filename, re.IGNORECASE))
             item_type = "Series" if is_series else "Movie"
-            logger.info(f"  ➜ [主动处理] 正在获取 TMDb 详情并执行核心处理 (ID: {tmdb_id})...")
-            
-            details = None
-            aggregated_tmdb_data = None # 剧集专用
-            
-            if item_type == "Movie":
-                details = tmdb.get_movie_details(int(tmdb_id), self.tmdb_api_key)
-            else:
-                aggregated_tmdb_data = tmdb.aggregate_full_series_data_from_tmdb(int(tmdb_id), self.tmdb_api_key)
-                details = aggregated_tmdb_data.get('series_details') if aggregated_tmdb_data else None
-                
-            if not details:
-                logger.error("  ➜ [主动处理] 无法获取 TMDb 详情。")
-                return
 
             # =========================================================
-            # ★★★ 步骤 4: 执行核心处理流程 (AI翻译、去重等) ★★★
+            # ★★★ 新增：缓存检查与跳过逻辑 ★★★
             # =========================================================
-            final_processed_cast = None
+            should_skip_full_processing = False
             
-            # 准备演员源数据
-            authoritative_cast_source = []
-            if item_type == "Movie":
-                credits_source = details.get('credits') or details.get('casts') or {}
-                authoritative_cast_source = credits_source.get('cast', [])
-            elif item_type == "Series":
-                # 剧集需要聚合所有分集演员
-                if aggregated_tmdb_data:
-                    all_episodes = list(aggregated_tmdb_data.get("episodes_details", {}).values())
-                    # 复用 core_processor 里的聚合函数
-                    authoritative_cast_source = _aggregate_series_cast_from_tmdb_data(details, all_episodes)
+            # 1. 检查本地覆盖缓存文件是否存在
+            cache_folder_name = "tmdb-movies2" if item_type == "Movie" else "tmdb-tv"
+            base_override_dir = os.path.join(self.local_data_path, "override", cache_folder_name, str(tmdb_id))
+            main_json_filename = "all.json" if item_type == "Movie" else "series.json"
+            main_json_path = os.path.join(base_override_dir, main_json_filename)
+
+            if os.path.exists(main_json_path):
+                # 2. 检查数据库中是否存在记录
+                if media_db.check_if_tmdb_id_exists(str(tmdb_id), item_type):
+                    logger.info(f"  ➜ [主动处理] 检测到 '{filename}' (TMDb:{tmdb_id}) 已有本地覆盖缓存和数据库记录，跳过重复处理。")
+                    should_skip_full_processing = True
                 else:
-                    credits_source = details.get('aggregate_credits') or details.get('credits') or {}
+                    logger.warning(f"  ➜ [主动处理] 发现本地覆盖缓存文件 '{main_json_path}'，但数据库中无记录。将重新处理。")
+            
+            # =========================================================
+            # 步骤 3: 获取完整详情 & 准备核心处理 (如果未跳过)
+            # =========================================================
+            details = None
+            aggregated_tmdb_data = None
+            final_processed_cast = None
+
+            if not should_skip_full_processing:
+                logger.info(f"  ➜ [主动处理] 正在获取 TMDb 详情并执行核心处理 (ID: {tmdb_id})...")
+                
+                if item_type == "Movie":
+                    details = tmdb.get_movie_details(int(tmdb_id), self.tmdb_api_key)
+                else:
+                    aggregated_tmdb_data = tmdb.aggregate_full_series_data_from_tmdb(int(tmdb_id), self.tmdb_api_key)
+                    details = aggregated_tmdb_data.get('series_details') if aggregated_tmdb_data else None
+                    
+                if not details:
+                    logger.error("  ➜ [主动处理] 无法获取 TMDb 详情，中止处理。")
+                    return
+
+                # 准备演员源数据
+                authoritative_cast_source = []
+                if item_type == "Movie":
+                    credits_source = details.get('credits') or details.get('casts') or {}
                     authoritative_cast_source = credits_source.get('cast', [])
+                elif item_type == "Series":
+                    if aggregated_tmdb_data:
+                        all_episodes = list(aggregated_tmdb_data.get("episodes_details", {}).values())
+                        authoritative_cast_source = _aggregate_series_cast_from_tmdb_data(details, all_episodes)
+                    else:
+                        credits_source = details.get('aggregate_credits') or details.get('credits') or {}
+                        authoritative_cast_source = credits_source.get('cast', [])
 
-            # 开启数据库连接，调用核心处理函数
-            with get_db_connection() as conn:
-                cursor = conn.cursor()
-                
-                # 构造一个伪造的 Emby 对象，仅用于传递给 _process_cast_list 做日志记录
-                # 因为此时 Emby 还没入库，所以没有 People 数据，传空列表
-                dummy_emby_item = {
-                    "Id": "pending",
-                    "Name": details.get('title') or details.get('name'),
-                    "OriginalTitle": details.get('original_title') or details.get('original_name'),
-                    "People": [] # 空的，强制走 TMDb 源
-                }
-                
-                logger.info(f"  ➜ [主动处理] 启动演员表核心处理 (AI翻译/去重/头像检查)...")
-                
-                # ★★★ 调用核心函数 ★★★
-                # 注意：这里 douban_cast_list 传空，为了速度牺牲一点豆瓣匹配，或者你可以加逻辑去抓豆瓣
-                final_processed_cast = self._process_cast_list(
-                    tmdb_cast_people=authoritative_cast_source,
-                    emby_cast_people=[], # 还没有 Emby 数据
-                    douban_cast_list=[], # 暂不进行豆瓣匹配，保证速度
-                    item_details_from_emby=dummy_emby_item,
-                    cursor=cursor,
-                    tmdb_api_key=self.tmdb_api_key,
-                    stop_event=None
-                )
-                
-                conn.commit() # 保存翻译结果到数据库
+                with get_db_connection() as conn:
+                    cursor = conn.cursor()
+                    dummy_emby_item = {
+                        "Id": "pending",
+                        "Name": details.get('title') or details.get('name'),
+                        "OriginalTitle": details.get('original_title') or details.get('original_name'),
+                        "People": []
+                    }
+                    logger.info(f"  ➜ [主动处理] 启动演员表核心处理 (AI翻译/去重/头像检查)...")
+                    final_processed_cast = self._process_cast_list(
+                        tmdb_cast_people=authoritative_cast_source,
+                        emby_cast_people=[],
+                        douban_cast_list=[],
+                        item_details_from_emby=dummy_emby_item,
+                        cursor=cursor,
+                        tmdb_api_key=self.tmdb_api_key,
+                        stop_event=None
+                    )
+                    conn.commit()
 
-            if not final_processed_cast:
-                logger.warning("  ➜ [主动处理] 演员处理未能返回结果，将使用原始数据。")
-                final_processed_cast = authoritative_cast_source
-
+                if not final_processed_cast:
+                    logger.warning("  ➜ [主动处理] 演员处理未能返回结果，将使用原始数据。")
+                    final_processed_cast = authoritative_cast_source
+            
             # =========================================================
-            # 步骤 5: 生成本地 override 元数据文件
+            # 步骤 4: 生成本地 override 元数据文件 (无论是否跳过，都确保文件存在且最新)
             # =========================================================
-            # 构造伪造的 item_details
+            # 如果跳过了，我们需要从 TMDb 重新获取 details 来生成文件，因为 details 此时是 None
+            if should_skip_full_processing:
+                logger.info(f"  ➜ [主动处理] 跳过核心处理，但重新获取 TMDb 详情以确保 override 文件最新。")
+                if item_type == "Movie":
+                    details = tmdb.get_movie_details(int(tmdb_id), self.tmdb_api_key)
+                else:
+                    aggregated_tmdb_data = tmdb.aggregate_full_series_data_from_tmdb(int(tmdb_id), self.tmdb_api_key)
+                    details = aggregated_tmdb_data.get('series_details') if aggregated_tmdb_data else None
+                
+                if not details:
+                    logger.error("  ➜ [主动处理] 无法获取 TMDb 详情，无法更新 override 文件。")
+                    return
+                # 此时 final_processed_cast 也是 None，sync_item_metadata 会从 details 中读取原始演员表
+
             fake_item_details = {
                 "Id": "pending", 
                 "Name": details.get('title') or details.get('name'), 
@@ -318,54 +340,39 @@ class MediaProcessor:
                 "ProviderIds": {"Tmdb": tmdb_id}
             }
 
-            # 准备要写入的数据：原始详情 + 处理后的演员表
-            # 注意：sync_item_metadata 内部会处理 final_cast_override
+            logger.info(f"  ➜ [主动处理] 正在写入本地元数据文件...")
             
-            # 如果是剧集，还需要传递分集数据以便注入到分集 NFO
-            tmdb_episodes_data = aggregated_tmdb_data.get('episodes_details') if aggregated_tmdb_data else None
+            # 如果是剧集，确保分集数据也能带上
+            if item_type == "Series" and aggregated_tmdb_data:
+                details['episodes_details'] = aggregated_tmdb_data.get('episodes_details')
 
-            logger.info(f"  ➜ [主动处理] 正在写入包含【精修演员表】的本地元数据...")
-            
             self.sync_item_metadata(
                 item_details=fake_item_details,
                 tmdb_id=tmdb_id,
-                final_cast_override=final_processed_cast, # ★★★ 传入处理后的演员表 ★★★
-                metadata_override=details, # 传入基础元数据
-                # 如果是剧集，这里还可以传入 tmdb_episodes_data，但 sync_item_metadata 需要微调以支持
-                # 目前 sync_item_metadata 主要是通过 metadata_override['episodes_details'] 来传递
+                final_cast_override=final_processed_cast,
+                metadata_override=details 
             )
-            
-            # 如果是剧集，确保分集数据也能带上
-            if item_type == "Series" and tmdb_episodes_data:
-                # 重新读取刚才写入的主文件，把分集数据补进去（或者修改 sync_item_metadata 逻辑）
-                # 其实 sync_item_metadata 里的 _inject_cast_to_series_files 已经有逻辑了
-                # 我们只需要确保 metadata_override 里包含 episodes_details
-                details['episodes_details'] = tmdb_episodes_data
-                # 再次调用以确保分集文件生成（稍微有点冗余但安全）
-                self.sync_item_metadata(
-                    item_details=fake_item_details,
-                    tmdb_id=tmdb_id,
-                    final_cast_override=final_processed_cast,
-                    metadata_override=details 
-                )
 
             # =========================================================
-            # 步骤 6:写入数据库 (标记为 in_library=False) ★★★
+            # 步骤 5: 写入数据库 (预占位) - 只有在没有跳过核心处理时才写入
             # =========================================================
-            logger.info(f"  ➜ [主动处理] 正在将元数据写入数据库 (预占位)...")
-            with get_db_connection() as conn:
-                cursor = conn.cursor()
-                self._upsert_media_metadata(
-                    cursor=cursor,
-                    item_type=item_type,
-                    final_processed_cast=final_processed_cast,
-                    source_data_package=details, # 传入 TMDb 原始数据
-                    item_details_from_emby=fake_item_details # 传入伪造的 Emby 对象 (Id='pending')
-                )
-                conn.commit()
+            if not should_skip_full_processing:
+                logger.info(f"  ➜ [主动处理] 正在将元数据写入数据库 (预占位)...")
+                with get_db_connection() as conn:
+                    cursor = conn.cursor()
+                    self._upsert_media_metadata(
+                        cursor=cursor,
+                        item_type=item_type,
+                        final_processed_cast=final_processed_cast,
+                        source_data_package=details,
+                        item_details_from_emby=fake_item_details
+                    )
+                    conn.commit()
+            else:
+                logger.info(f"  ➜ [主动处理] 已跳过数据库预占位写入 (记录已存在)。")
 
             # =========================================================
-            # 步骤 7: 下载图片
+            # 步骤 6: 下载图片
             # =========================================================
             self.download_images_from_tmdb(
                 tmdb_id=tmdb_id,
@@ -375,7 +382,7 @@ class MediaProcessor:
             logger.info(f"  ➜ [主动处理] 本地数据准备完成。")
 
             # =========================================================
-            # 步骤 8: 通知 Emby 刷新
+            # 步骤 7: 通知 Emby 刷新
             # =========================================================
             logger.info(f"  ➜ [主动处理] 通知 Emby 刷新目录: {folder_path}")
             emby.refresh_library_by_path(folder_path, self.emby_url, self.emby_api_key)
