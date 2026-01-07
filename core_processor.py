@@ -259,7 +259,7 @@ class MediaProcessor:
                     # 唯一要做的事：通知 Emby 刷新 (因为文件是新的，Emby 需要扫描)
                     # logger.info(f"  ➜ [实时监控] 通知 Emby 刷新目录: {folder_path}")
                     # emby.refresh_library_by_path(folder_path, self.emby_url, self.emby_api_key)
-                    # return # ★★★ 直接结束，不请求TMDb，不写文件 ★★★
+                    return # ★★★ 直接结束，不请求TMDb，不写文件 ★★★
                 else:
                     logger.warning(f"  ➜ [实时监控] 发现本地文件但无数据库记录，将执行补录。")
             
