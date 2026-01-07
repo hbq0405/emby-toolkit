@@ -1102,6 +1102,36 @@ def _is_rating_match(item_name: str, item_rating: str, rating_filters: List[str]
     # logger.trace(f"  [分级过滤] '{item_name}' 分级: {item_rating} | 目标: {target_codes} | 匹配: {is_match}")
     return is_match
 
+# --- 执行自动打标规则任务 ---
+def task_execute_auto_tagging_rules(processor):
+    """
+    任务：读取数据库中的自动打标规则，并依次执行。
+    """
+    rules = settings_db.get_setting('auto_tagging_rules') or []
+    if not rules:
+        logger.info("  ➜ [自动打标] 未配置任何规则，任务结束。")
+        return
+
+    total_rules = len(rules)
+    logger.info(f"  ➜ [自动打标] 开始执行 {total_rules} 条规则...")
+
+    for idx, rule in enumerate(rules):
+        if processor.is_stop_requested(): 
+            logger.info("  🚫 任务被中止。")
+            break
+
+        tags = rule.get('tags')
+        if not tags: continue
+        
+        library_ids = rule.get('library_ids', [])
+        rating_filters = rule.get('rating_filters', [])
+        
+        # 直接调用现有的批量打标逻辑
+        # 注意：task_bulk_auto_tag 内部会处理进度更新和异常捕获
+        task_bulk_auto_tag(processor, library_ids, tags, rating_filters)
+
+    task_manager.update_status_from_thread(100, "自动打标规则执行完毕")
+
 # --- 自动打标 (增强调试版) ---
 def task_bulk_auto_tag(processor, library_ids: List[str], tags: List[str], rating_filters: Optional[List[str]] = None):
     """
