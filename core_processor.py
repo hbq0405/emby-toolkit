@@ -157,10 +157,10 @@ class MediaProcessor:
         self._last_lib_map_update = 0
         logger.trace("核心处理器初始化完成。")
 
-    # --- [优化版] 主动处理文件逻辑 (增加缓存跳过) ---
+    # --- [优化版] 实时监控文件逻辑 (增加缓存跳过) ---
     def process_file_actively(self, file_path: str):
         """
-        主动处理（优化版）：
+        实时监控（优化版）：
         1. 识别 TMDb ID。
         2. 【新增】检查本地缓存和数据库，如果已存在，则跳过 TMDb 请求和演员处理。
         3. 获取 TMDb 数据。
@@ -201,7 +201,7 @@ class MediaProcessor:
                 
             if match:
                 tmdb_id = match.group(1)
-                logger.info(f"  ➜ [主动处理] 成功提取 TMDb ID: {tmdb_id}")
+                logger.info(f"  ➜ [实时监控] 成功提取 TMDb ID: {tmdb_id}")
             else:
                 year_regex = r'\b(19|20)\d{2}\b'
                 year_matches = list(re.finditer(year_regex, filename))
@@ -218,7 +218,7 @@ class MediaProcessor:
                     raw_title = os.path.splitext(filename)[0]
 
                 search_query = raw_title.replace('.', ' ').replace('_', ' ').strip(' -[]()')
-                logger.info(f"  ➜ [主动处理] 未找到ID，提取搜索信息: 标题='{search_query}', 年份='{search_year}'")
+                logger.info(f"  ➜ [实时监控] 未找到ID，提取搜索信息: 标题='{search_query}', 年份='{search_year}'")
 
             # =========================================================
             # 步骤 2: 获取 TMDb 数据 (如果只有标题则搜索)
@@ -229,9 +229,9 @@ class MediaProcessor:
                 results = tmdb.search_media(search_query, self.tmdb_api_key, item_type=search_type, year=search_year)
                 if results:
                     tmdb_id = str(results[0].get('id'))
-                    logger.info(f"  ➜ [主动处理] 搜索匹配成功: {results[0].get('title') or results[0].get('name')} (ID: {tmdb_id})")
+                    logger.info(f"  ➜ [实时监控] 搜索匹配成功: {results[0].get('title') or results[0].get('name')} (ID: {tmdb_id})")
                 else:
-                    logger.warning(f"  ➜ [主动处理] 搜索失败，无法处理: {search_query}")
+                    logger.warning(f"  ➜ [实时监控] 搜索失败，无法处理: {search_query}")
                     return
 
             if not tmdb_id: return
@@ -254,14 +254,14 @@ class MediaProcessor:
             if os.path.exists(main_json_path):
                 # 检查数据库
                 if media_db.check_if_tmdb_id_exists(str(tmdb_id), item_type):
-                    logger.info(f"  ➜ [主动处理] 检测到 '{filename}' (TMDb:{tmdb_id}) 已有完美本地数据，跳过处理。")
+                    logger.info(f"  ➜ [实时监控] 检测到 '{filename}' (TMDb:{tmdb_id}) 已有完美本地数据，跳过处理。")
                     
                     # 唯一要做的事：通知 Emby 刷新 (因为文件是新的，Emby 需要扫描)
-                    logger.info(f"  ➜ [主动处理] 通知 Emby 刷新目录: {folder_path}")
-                    emby.refresh_library_by_path(folder_path, self.emby_url, self.emby_api_key)
-                    return # ★★★ 直接结束，不请求TMDb，不写文件 ★★★
+                    # logger.info(f"  ➜ [实时监控] 通知 Emby 刷新目录: {folder_path}")
+                    # emby.refresh_library_by_path(folder_path, self.emby_url, self.emby_api_key)
+                    # return # ★★★ 直接结束，不请求TMDb，不写文件 ★★★
                 else:
-                    logger.warning(f"  ➜ [主动处理] 发现本地文件但无数据库记录，将执行补录。")
+                    logger.warning(f"  ➜ [实时监控] 发现本地文件但无数据库记录，将执行补录。")
             
             # =========================================================
             # 步骤 3: 获取完整详情 & 准备核心处理 (如果未跳过)
@@ -271,7 +271,7 @@ class MediaProcessor:
             final_processed_cast = None
 
             if not should_skip_full_processing:
-                logger.info(f"  ➜ [主动处理] 正在获取 TMDb 详情并执行核心处理 (ID: {tmdb_id})...")
+                logger.info(f"  ➜ [实时监控] 正在获取 TMDb 详情并执行核心处理 (ID: {tmdb_id})...")
                 
                 if item_type == "Movie":
                     details = tmdb.get_movie_details(int(tmdb_id), self.tmdb_api_key)
@@ -280,7 +280,7 @@ class MediaProcessor:
                     details = aggregated_tmdb_data.get('series_details') if aggregated_tmdb_data else None
                     
                 if not details:
-                    logger.error("  ➜ [主动处理] 无法获取 TMDb 详情，中止处理。")
+                    logger.error("  ➜ [实时监控] 无法获取 TMDb 详情，中止处理。")
                     return
 
                 # 准备演员源数据
@@ -304,7 +304,7 @@ class MediaProcessor:
                         "OriginalTitle": details.get('original_title') or details.get('original_name'),
                         "People": []
                     }
-                    logger.info(f"  ➜ [主动处理] 启动演员表核心处理 (AI翻译/去重/头像检查)...")
+                    logger.info(f"  ➜ [实时监控] 启动演员表核心处理 (AI翻译/去重/头像检查)...")
                     final_processed_cast = self._process_cast_list(
                         tmdb_cast_people=authoritative_cast_source,
                         emby_cast_people=[],
@@ -317,7 +317,7 @@ class MediaProcessor:
                     conn.commit()
 
                 if not final_processed_cast:
-                    logger.warning("  ➜ [主动处理] 演员处理未能返回结果，将使用原始数据。")
+                    logger.warning("  ➜ [实时监控] 演员处理未能返回结果，将使用原始数据。")
                     final_processed_cast = authoritative_cast_source
             
             # =========================================================
@@ -325,7 +325,7 @@ class MediaProcessor:
             # =========================================================
             # 如果跳过了，我们需要从 TMDb 重新获取 details 来生成文件，因为 details 此时是 None
             if should_skip_full_processing:
-                logger.info(f"  ➜ [主动处理] 跳过核心处理，但重新获取 TMDb 详情以确保 override 文件最新。")
+                logger.info(f"  ➜ [实时监控] 跳过核心处理，但重新获取 TMDb 详情以确保 override 文件最新。")
                 if item_type == "Movie":
                     details = tmdb.get_movie_details(int(tmdb_id), self.tmdb_api_key)
                 else:
@@ -333,7 +333,7 @@ class MediaProcessor:
                     details = aggregated_tmdb_data.get('series_details') if aggregated_tmdb_data else None
                 
                 if not details:
-                    logger.error("  ➜ [主动处理] 无法获取 TMDb 详情，无法更新 override 文件。")
+                    logger.error("  ➜ [实时监控] 无法获取 TMDb 详情，无法更新 override 文件。")
                     return
                 # 此时 final_processed_cast 也是 None，sync_item_metadata 会从 details 中读取原始演员表
 
@@ -344,7 +344,7 @@ class MediaProcessor:
                 "ProviderIds": {"Tmdb": tmdb_id}
             }
 
-            logger.info(f"  ➜ [主动处理] 正在写入本地元数据文件...")
+            logger.info(f"  ➜ [实时监控] 正在写入本地元数据文件...")
             
             # 如果是剧集，确保分集数据也能带上
             if item_type == "Series" and aggregated_tmdb_data:
@@ -361,7 +361,7 @@ class MediaProcessor:
             # 步骤 5: 写入数据库 (预占位) - 只有在没有跳过核心处理时才写入
             # =========================================================
             if not should_skip_full_processing:
-                logger.info(f"  ➜ [主动处理] 正在将元数据写入数据库 (预占位)...")
+                logger.info(f"  ➜ [实时监控] 正在将元数据写入数据库 (预占位)...")
                 with get_db_connection() as conn:
                     cursor = conn.cursor()
                     self._upsert_media_metadata(
@@ -373,7 +373,7 @@ class MediaProcessor:
                     )
                     conn.commit()
             else:
-                logger.info(f"  ➜ [主动处理] 已跳过数据库预占位写入 (记录已存在)。")
+                logger.info(f"  ➜ [实时监控] 已跳过数据库预占位写入 (记录已存在)。")
 
             # =========================================================
             # 步骤 6: 下载图片
@@ -383,18 +383,18 @@ class MediaProcessor:
                 item_type=item_type
             )
             
-            logger.info(f"  ➜ [主动处理] 本地数据准备完成。")
+            logger.info(f"  ➜ [实时监控] 本地数据准备完成。")
 
             # =========================================================
             # 步骤 7: 通知 Emby 刷新
             # =========================================================
-            logger.info(f"  ➜ [主动处理] 通知 Emby 刷新目录: {folder_path}")
+            logger.info(f"  ➜ [实时监控] 通知 Emby 刷新目录: {folder_path}")
             emby.refresh_library_by_path(folder_path, self.emby_url, self.emby_api_key)
             
-            logger.info(f"  ✅ [主动处理] 流程结束。Emby 扫描时将直接读取已翻译、已精修的元数据。")
+            logger.info(f"  ✅ [实时监控] 处理完成，等待Emby入库更新媒体资产数据中...")
 
         except Exception as e:
-            logger.error(f"  ➜ [主动处理] 处理文件 {file_path} 时发生错误: {e}", exc_info=True)
+            logger.error(f"  ➜ [实时监控] 处理文件 {file_path} 时发生错误: {e}", exc_info=True)
 
     def _refresh_lib_guid_map(self):
         """从 Emby 实时获取所有媒体库的 ID 到 GUID 映射"""
