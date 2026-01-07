@@ -360,7 +360,7 @@ class MediaProcessor:
             logger.info(f"  ➜ [主动处理] 本地数据准备完成。")
 
             # =========================================================
-            # 步骤 7: 通知 Emby 刷新
+            # 步骤 8: 通知 Emby 刷新
             # =========================================================
             logger.info(f"  ➜ [主动处理] 通知 Emby 刷新目录: {folder_path}")
             emby.refresh_library_by_path(folder_path, self.emby_url, self.emby_api_key)
@@ -3444,9 +3444,37 @@ class MediaProcessor:
                     # 电影：releases -> releases (通常 TMDb 返回 release_dates，需要转换结构，这里假设已处理或直接用)
                     # 如果 TMDb 返回的是 release_dates，我们需要转换一下结构以符合 Emby 标准
                     elif key == 'release_dates':
-                        # 简单的转换逻辑：提取 US 分级放入 releases.countries
-                        # (这里为了简化，暂不展开复杂的转换，假设 metadata_override 已经包含基础数据)
-                        pass 
+                        # TMDb 格式: { results: [ { iso_3166_1: 'US', release_dates: [ { certification: 'R', ... } ] } ] }
+                        # Emby 格式: { countries: [ { iso_3166_1: 'US', certification: 'R' } ] }
+                        
+                        emby_releases = []
+                        results = value.get('results', [])
+                        for r in results:
+                            country = r.get('iso_3166_1')
+                            # 找第一个有分级的 release
+                            cert = ""
+                            for rel in r.get('release_dates', []):
+                                if rel.get('certification'):
+                                    cert = rel.get('certification')
+                                    break
+                            
+                            if country and cert:
+                                emby_releases.append({
+                                    "iso_3166_1": country,
+                                    "certification": cert
+                                })
+                        
+                        # 写入骨架
+                        if 'releases' not in data: data['releases'] = {}
+                        data['releases']['countries'] = emby_releases
+                        
+                        # 顺便把 US 分级写到顶层 mpaa/certification 字段 (Emby 兼容性)
+                        for item in emby_releases:
+                            if item['iso_3166_1'] == 'US':
+                                data['mpaa'] = item['certification']
+                                data['certification'] = item['certification']
+                                break
+
                     else:
                         data[key] = value
                 
