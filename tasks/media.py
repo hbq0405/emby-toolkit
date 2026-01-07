@@ -1133,10 +1133,10 @@ def task_execute_auto_tagging_rules(processor):
 
     task_manager.update_status_from_thread(100, "自动打标规则执行完毕")
 
-# --- 自动打标 (增强调试版) ---
+# --- 自动打标 (修复进度条卡顿版) ---
 def task_bulk_auto_tag(processor, library_ids: List[str], tags: List[str], rating_filters: Optional[List[str]] = None):
     """
-    后台任务：支持为多个媒体库批量打标签 (支持分级过滤)。
+    后台任务：支持为多个媒体库批量打标签 (支持分级过滤，优先使用自定义分级)。
     """
     try:
         if not library_ids:
@@ -1150,23 +1150,25 @@ def task_bulk_auto_tag(processor, library_ids: List[str], tags: List[str], ratin
         filter_msg = f" (分级限制: {','.join(rating_filters)})" if rating_filters else ""
         
         for lib_idx, lib_id in enumerate(library_ids):
-            task_manager.update_status_from_thread(int((lib_idx/total_libs)*100), f"正在扫描第 {lib_idx+1}/{total_libs} 个媒体库{filter_msg}...")
+            # 初始状态更新
+            task_manager.update_status_from_thread(int((lib_idx/total_libs)*100), f"正在读取第 {lib_idx+1}/{total_libs} 个媒体库...")
             
-            # ★★★ 2. 必须请求 OfficialRating 字段 ★★★
+            # ★★★ 2. 请求 OfficialRating 和 CustomRating 字段 ★★★
             items = emby.get_emby_library_items(
                 base_url=processor.emby_url,
                 api_key=processor.emby_api_key,
                 library_ids=[lib_id],
                 media_type_filter="Movie,Series,Episode",
                 user_id=processor.emby_user_id,
-                fields="Id,Name,OfficialRating" # <--- 显式请求分级字段
+                fields="Id,Name,OfficialRating,CustomRating" 
             )
             
             if not items: 
                 logger.info(f"  媒体库 {lib_id} 为空或无法访问。")
                 continue
 
-            logger.info(f"  媒体库 {lib_id} 扫描到 {len(items)} 个项目，开始过滤...")
+            total_items = len(items)
+            logger.info(f"  媒体库 {lib_id} 扫描到 {total_items} 个项目，开始过滤...")
             
             processed_count = 0
             skipped_count = 0
@@ -1176,19 +1178,24 @@ def task_bulk_auto_tag(processor, library_ids: List[str], tags: List[str], ratin
                 
                 item_name = item.get('Name', '未知')
                 
-                # ★★★ 3. 分级过滤逻辑 ★★★
+                # ★★★ 修复点：将进度更新移到过滤逻辑之前，并提高频率 ★★★
+                if i % 5 == 0:
+                    # 计算全局进度
+                    current_progress = int((lib_idx/total_libs)*100 + (i/total_items)*(100/total_libs))
+                    task_manager.update_status_from_thread(
+                        current_progress, 
+                        f"库({lib_idx+1}/{total_libs}) 正在扫描: {item_name}"
+                    )
+
+                # ★★★ 3. 分级过滤逻辑 (自定义分级优先) ★★★
                 if rating_filters:
-                    item_rating = item.get('OfficialRating')
+                    # 优先取 CustomRating，如果没有则取 OfficialRating
+                    item_rating = item.get('CustomRating') or item.get('OfficialRating')
+                    
                     if not _is_rating_match(item_name, item_rating, rating_filters):
                         skipped_count += 1
                         continue # 分级不匹配，跳过
 
-                # 进度显示优化
-                if i % 20 == 0:
-                    task_manager.update_status_from_thread(
-                        int((lib_idx/total_libs)*100 + (i/len(items))*(100/total_libs)), 
-                        f"库({lib_idx+1}/{total_libs}) 正在打标: {item_name}"
-                    )
                 
                 # 执行打标 (带防回旋镖插旗)
                 item_id = item.get("Id")
@@ -1210,7 +1217,7 @@ def task_bulk_auto_tag(processor, library_ids: List[str], tags: List[str], ratin
 
 def task_bulk_remove_tags(processor, library_ids: List[str], tags: List[str], rating_filters: Optional[List[str]] = None):
     """
-    后台任务：从指定媒体库中批量移除特定标签 (支持分级过滤)。
+    后台任务：从指定媒体库中批量移除特定标签 (支持分级过滤，优先使用自定义分级)。
     """
     try:
         if not library_ids:
@@ -1224,32 +1231,43 @@ def task_bulk_remove_tags(processor, library_ids: List[str], tags: List[str], ra
         filter_msg = f" (分级限制: {','.join(rating_filters)})" if rating_filters else ""
 
         for lib_idx, lib_id in enumerate(library_ids):
+            # 初始状态更新
+            task_manager.update_status_from_thread(int((lib_idx/total_libs)*100), f"正在读取第 {lib_idx+1}/{total_libs} 个媒体库...")
+
             items = emby.get_emby_library_items(
                 base_url=processor.emby_url, api_key=processor.emby_api_key,
                 library_ids=[lib_id], media_type_filter="Movie,Series,Episode",
                 user_id=processor.emby_user_id,
-                fields="Id,Name,OfficialRating"
+                fields="Id,Name,OfficialRating,CustomRating" 
             )
             if not items: continue
 
+            total_items = len(items)
             processed_count = 0
             skipped_count = 0
 
             for i, item in enumerate(items):
                 if processor.is_stop_requested(): return
                 
-                # ★★★ 分级过滤逻辑 ★★★
+                item_name = item.get('Name', '未知')
+
+                # ★★★ 修复点：将进度更新移到过滤逻辑之前，并提高频率 ★★★
+                if i % 5 == 0:
+                    current_progress = int((lib_idx/total_libs)*100 + (i/total_items)*(100/total_libs))
+                    task_manager.update_status_from_thread(
+                        current_progress, 
+                        f"库({lib_idx+1}/{total_libs}) 正在扫描: {item_name}"
+                    )
+
+                # ★★★ 分级过滤逻辑 (自定义分级优先) ★★★
                 if rating_filters:
-                    item_rating = item.get('OfficialRating')
+                    # 优先取 CustomRating，如果没有则取 OfficialRating
+                    item_rating = item.get('CustomRating') or item.get('OfficialRating')
+                    
                     if not _is_rating_match(item.get('Name'), item_rating, rating_filters):
                         skipped_count += 1
                         continue 
 
-                if i % 20 == 0:
-                    task_manager.update_status_from_thread(
-                        int((lib_idx/total_libs)*100 + (i/len(items))*(100/total_libs)), 
-                        f"正在移除标签({lib_idx+1}/{total_libs}): {item.get('Name')}"
-                    )
                 
                 # 执行移除 (带防回旋镖插旗)
                 item_id = item.get("Id")
