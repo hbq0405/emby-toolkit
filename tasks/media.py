@@ -17,6 +17,7 @@ import handler.emby as emby
 import handler.telegram as telegram
 from database import connection, settings_db, media_db, queries_db
 from .helpers import parse_full_asset_details
+from extensions import UPDATING_METADATA
 
 logger = logging.getLogger(__name__)
 
@@ -1189,10 +1190,16 @@ def task_bulk_auto_tag(processor, library_ids: List[str], tags: List[str], ratin
                         f"库({lib_idx+1}/{total_libs}) 正在打标: {item_name}"
                     )
                 
-                # 执行打标
-                success = emby.add_tags_to_item(item.get("Id"), tags, processor.emby_url, processor.emby_api_key, processor.emby_user_id)
-                if success:
-                    processed_count += 1
+                # 执行打标 (带防回旋镖插旗)
+                item_id = item.get("Id")
+                UPDATING_METADATA.add(item_id) # 🚩 插旗
+                try:
+                    success = emby.add_tags_to_item(item_id, tags, processor.emby_url, processor.emby_api_key, processor.emby_user_id)
+                    if success:
+                        processed_count += 1
+                finally:
+                    if item_id in UPDATING_METADATA:
+                        UPDATING_METADATA.remove(item_id) # 🚩 拔旗
 
             logger.info(f"  媒体库 {lib_id} 处理完成: 打标 {processed_count} 个, 跳过 {skipped_count} 个 (不符分级)。")
         
@@ -1244,9 +1251,16 @@ def task_bulk_remove_tags(processor, library_ids: List[str], tags: List[str], ra
                         f"正在移除标签({lib_idx+1}/{total_libs}): {item.get('Name')}"
                     )
                 
-                success = emby.remove_tags_from_item(item.get("Id"), tags, processor.emby_url, processor.emby_api_key, processor.emby_user_id)
-                if success:
-                    processed_count += 1
+                # 执行移除 (带防回旋镖插旗)
+                item_id = item.get("Id")
+                UPDATING_METADATA.add(item_id) # 🚩 插旗
+                try:
+                    success = emby.remove_tags_from_item(item_id, tags, processor.emby_url, processor.emby_api_key, processor.emby_user_id)
+                    if success:
+                        processed_count += 1
+                finally:
+                    if item_id in UPDATING_METADATA:
+                        UPDATING_METADATA.remove(item_id) # 🚩 拔旗
             
             logger.info(f"  媒体库 {lib_id} 处理完成: 移除 {processed_count} 个, 跳过 {skipped_count} 个。")
         

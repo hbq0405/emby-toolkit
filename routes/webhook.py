@@ -16,7 +16,7 @@ import config_manager
 import constants
 import handler.telegram as telegram
 import extensions
-from extensions import SYSTEM_UPDATE_MARKERS, SYSTEM_UPDATE_LOCK, RECURSION_SUPPRESSION_WINDOW, DELETING_COLLECTIONS, UPDATING_IMAGES
+from extensions import SYSTEM_UPDATE_MARKERS, SYSTEM_UPDATE_LOCK, RECURSION_SUPPRESSION_WINDOW, DELETING_COLLECTIONS, UPDATING_IMAGES, UPDATING_METADATA
 from core_processor import MediaProcessor
 from tasks.watchlist import task_process_watchlist
 from tasks.users import task_auto_sync_template_on_policy_change
@@ -771,12 +771,17 @@ def emby_webhook():
     if event_type in ["item.add", "library.new", "metadata.update", "image.update"]:
         processor = extensions.media_processor_instance
         
-        # --- 【新增拦截 1】如果是系统正在生成的封面，直接拦截，不查库，不报错 ---
+        # --- 【拦截 1】如果是系统正在生成的封面，直接拦截，不查库，不报错 ---
         if event_type == "image.update" and original_item_id in UPDATING_IMAGES:
             logger.debug(f"  ➜ Webhook: 忽略项目 '{original_item_name}' 的图片更新通知 (系统生成的封面)。")
             return jsonify({"status": "ignored_self_triggered_update"}), 200
+        
+        # --- 【拦截 2】如果是系统正在更新元数据，直接拦截 ---
+        if event_type == "metadata.update" and original_item_id in UPDATING_METADATA:
+            logger.debug(f"  ➜ Webhook: 忽略项目 '{original_item_name}' 的元数据更新通知 (系统触发的更新)。")
+            return jsonify({"status": "ignored_self_triggered_metadata_update"}), 200
 
-        # --- 【新增拦截 2】如果是合集(BoxSet)，它没有物理路径，直接跳过库路径检查 ---
+        # --- 【拦截 3】如果是合集(BoxSet)，它没有物理路径，直接跳过库路径检查 ---
         if original_item_type == "BoxSet":
             logger.trace(f"  ➜ Webhook: 项目 '{original_item_name}' 是合集类型，跳过媒体库路径检查。")
             # 注意：这里不 return，因为后面可能还有合集的处理逻辑
