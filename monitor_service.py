@@ -61,7 +61,7 @@ class MediaFileHandler(FileSystemEventHandler):
         处理文件事件的入口
         启动一个新线程来处理，避免阻塞监控主线程
         """
-        logger.info(f"🔍 [实时监控] 检测到{event_type}文件: {file_path}")
+        logger.info(f"  🔍 [实时监控] 检测到{event_type}文件: {file_path}")
         threading.Thread(target=self._handle_file_async, args=(file_path,)).start()
 
     def _handle_file_async(self, file_path: str):
@@ -80,7 +80,7 @@ class MediaFileHandler(FileSystemEventHandler):
         for _ in range(max_wait_seconds):
             try:
                 if not os.path.exists(file_path):
-                    logger.debug(f"  [实时监控] 文件在处理前已消失: {file_path}")
+                    logger.debug(f"  ➜ [实时监控] 文件在处理前已消失: {file_path}")
                     return
                 
                 current_size = os.path.getsize(file_path)
@@ -99,7 +99,7 @@ class MediaFileHandler(FileSystemEventHandler):
                 
                 time.sleep(1)
             except Exception as e:
-                logger.warning(f"  [实时监控] 检查文件大小时出错: {e}")
+                logger.warning(f"  ➜ [实时监控] 检查文件大小时出错: {e}")
                 time.sleep(1)
         
         # --- 调用核心处理器 ---
@@ -127,11 +127,11 @@ class MonitorService:
     def start(self):
         """启动监控服务"""
         if not self.enabled:
-            logger.info("实时监控功能未启用。")
+            logger.info("  ➜ 实时监控功能未启用。")
             return
 
         if not self.paths:
-            logger.warning("实时监控已启用，但未配置监控目录列表。")
+            logger.warning("  ➜ 实时监控已启用，但未配置监控目录列表。")
             return
 
         # 实例化 Watchdog 观察者
@@ -147,20 +147,20 @@ class MonitorService:
                     self.observer.schedule(event_handler, path, recursive=True)
                     started_paths.append(path)
                 except Exception as e:
-                    logger.error(f"无法监控目录 '{path}': {e}")
+                    logger.error(f"  ➜ 无法监控目录 '{path}': {e}")
             else:
-                logger.warning(f"监控目录不存在或无效，已跳过: {path}")
+                logger.warning(f"  ➜ 监控目录不存在或无效，已跳过: {path}")
 
         if started_paths:
             self.observer.start()
-            logger.info(f"👀 实时监控服务已启动，正在监听 {len(started_paths)} 个目录: {started_paths}")
+            logger.info(f"  👀 实时监控服务已启动，正在监听 {len(started_paths)} 个目录: {started_paths}")
         else:
-            logger.warning("没有有效的监控目录，实时监控服务未启动。")
+            logger.warning("  ➜ 没有有效的监控目录，实时监控服务未启动。")
 
     def stop(self):
         """停止监控服务"""
         if self.observer:
-            logger.info("正在停止实时监控服务...")
+            logger.info("  ➜ 正在停止实时监控服务...")
             self.observer.stop()
             self.observer.join()
-            logger.info("实时监控服务已停止。")
+            logger.info("  ➜ 实时监控服务已停止。")
