@@ -58,45 +58,6 @@ def create_template():
     except Exception as e:
         return jsonify({"status": "error", "message": str(e)}), 500
 
-@user_management_bp.route('/api/admin/user_templates/<int:template_id>/sync', methods=['POST'])
-@admin_required
-def sync_template(template_id):
-    try:
-        template = user_db.get_template_for_sync(template_id)
-        if not template: return jsonify({"status": "error", "message": "模板不存在"}), 404
-        
-        source_user_id, template_name, template_has_config = template['source_emby_user_id'], template['name'], template['has_config']
-        if not source_user_id: return jsonify({"status": "error", "message": f"无法同步：模板 '{template_name}' 没有记录源用户信息。"}), 400
-
-        logger.info(f"正在为模板 '{template_name}' 从源用户 {source_user_id} 同步最新权限和首选项...")
-        config = config_manager.APP_CONFIG
-        user_details = emby.get_user_details(source_user_id, config.get("emby_server_url"), config.get("emby_api_key"))
-        if not user_details or 'Policy' not in user_details: return jsonify({"status": "error", "message": "无法获取源用户的最新权限策略。"}), 404
-        
-        new_policy_json = json.dumps(user_details['Policy'], ensure_ascii=False)
-        new_config_json = json.dumps(user_details['Configuration'], ensure_ascii=False) if template_has_config and 'Configuration' in user_details else None
-        
-        user_db.update_template_from_sync(template_id, new_policy_json, new_config_json)
-        logger.info(f"模板 '{template_name}' 的数据库记录已更新。")
-
-        users_to_update = user_db.get_users_associated_with_template(template_id)
-        successful_pushes = 0
-        if users_to_update:
-            logger.warning(f"检测到 {len(users_to_update)} 个用户正在使用此模板，将开始逐一推送新配置...")
-            for user in users_to_update:
-                policy_applied = emby.force_set_user_policy(user['id'], user_details['Policy'], config.get("emby_server_url"), config.get("emby_api_key"))
-                config_applied = True
-                if new_config_json:
-                    config_applied = emby.force_set_user_configuration(user['id'], user_details['Configuration'], config.get("emby_server_url"), config.get("emby_api_key"))
-                if policy_applied and config_applied: successful_pushes += 1
-                else: logger.error(f"  ➜ 为用户 '{user['name']}' (ID: {user['id']}) 推送新配置失败！")
-                time.sleep(0.2)
-            logger.info(f"配置推送完成！共成功更新了 {successful_pushes}/{len(users_to_update)} 个用户。")
-        
-        return jsonify({"status": "ok", "message": f"模板已更新，并已成功应用到 {successful_pushes} 个用户！"}), 200
-    except Exception as e:
-        return jsonify({"status": "error", "message": str(e)}), 500
-
 @user_management_bp.route('/api/admin/user_templates/<int:template_id>', methods=['DELETE'])
 @admin_required
 def delete_template(template_id):

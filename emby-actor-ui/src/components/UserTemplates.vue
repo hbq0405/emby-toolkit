@@ -1,4 +1,4 @@
-<!-- src/components/UserTemplates.vue (已增加同步功能) -->
+<!-- src/components/UserTemplates.vue -->
 <template>
   <div>
     <n-button
@@ -46,7 +46,6 @@
             设置为 0 表示永久有效。
           </template>
         </n-form-item>
-        <!-- ★★★ 1. 在编辑模式下，禁用源用户和首选项的修改 ★★★ -->
         <n-form-item v-if="!isEditMode" label="源 Emby 用户" path="source_emby_user_id">
           <n-select v-model:value="formModel.source_emby_user_id" placeholder="选择一个用户作为权限样板" :options="embyUserOptions" filterable />
           <template #feedback>重要：创建后不可更改。模板权限将完全复制源用户。</template>
@@ -56,7 +55,6 @@
           <template #feedback>创建后不可更改。将包含源用户的个性化设置。</template>
         </n-form-item>
 
-        <!-- ★★★ 2. “免审订阅”开关 ★★★ -->
         <n-form-item label="免审订阅" path="allow_unrestricted_subscriptions">
           <n-switch v-model:value="formModel.allow_unrestricted_subscriptions" />
           <template #feedback>开启后，使用此模板的用户提交订阅请求时，将无需管理员审核，直接提交订阅。</template>
@@ -76,26 +74,23 @@ import {
   NButton, NDataTable, NModal, NForm, NFormItem, NSelect, NInputNumber,
   NIcon, NInput, useMessage, NPopconfirm, NSpace
 } from 'naive-ui';
-import { Add as AddIcon, TrashOutline as DeleteIcon, SyncOutline as SyncIcon, CreateOutline as EditIcon } from '@vicons/ionicons5';
+import { Add as AddIcon, TrashOutline as DeleteIcon, CreateOutline as EditIcon } from '@vicons/ionicons5';
 
 // --- API ---
 const api = {
-  getUserTemplates: () => fetch('/api/admin/user_templates'), // <-- 移除 .then(...)
-  getEmbyUsers: () => fetch('/api/admin/users'), // <-- 移除 .then(...)
+  getUserTemplates: () => fetch('/api/admin/user_templates'),
+  getEmbyUsers: () => fetch('/api/admin/users'),
   createTemplate: (data) => fetch('/api/admin/user_templates', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify(data),
-  }), // <-- 移除 .then(...)
-  deleteTemplate: (templateId) => fetch(`/api/admin/user_templates/${templateId}`, { method: 'DELETE' }),
-  syncTemplate: (templateId) => fetch(`/api/admin/user_templates/${templateId}/sync`, {
-    method: 'POST',
   }),
+  deleteTemplate: (templateId) => fetch(`/api/admin/user_templates/${templateId}`, { method: 'DELETE' }),
   updateTemplate: (id, data) => fetch(`/api/admin/user_templates/${id}`, {
     method: 'PUT',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify(data),
-  }), // <-- 移除 .then(...)
+  }),
 };
 
 // --- 状态和Hooks ---
@@ -105,7 +100,6 @@ const embyUsers = ref([]);
 const loading = ref(false);
 const isModalVisible = ref(false);
 const isSubmitting = ref(false);
-const syncingTemplateId = ref(null);
 const formRef = ref(null);
 const isEditMode = ref(false);
 const modalTitle = computed(() => isEditMode.value ? '编辑用户模板' : '创建新的用户模板');
@@ -132,17 +126,12 @@ const embyUserOptions = computed(() =>
 const fetchData = async () => {
   loading.value = true;
   try {
-    // ★★★ 核心修正：分两步处理，先 fetch，再解析 json ★★★
-
-    // 步骤 1: 并发发起所有网络请求
     const [templatesResponse, usersResponse] = await Promise.all([
       api.getUserTemplates(),
       api.getEmbyUsers(),
     ]);
 
-    // 步骤 2: 检查每个响应是否成功，然后并发解析它们的 JSON 内容
     if (!templatesResponse.ok || !usersResponse.ok) {
-      // 如果任一请求失败，则抛出错误
       throw new Error('Failed to fetch initial data.');
     }
     
@@ -151,13 +140,12 @@ const fetchData = async () => {
       usersResponse.json(),
     ]);
 
-    // 步骤 3: 将解析后的正确数据赋值给 ref
     templates.value = templatesData;
     embyUsers.value = usersData;
 
   } catch (error) {
     message.error('加载模板或 Emby 用户列表失败');
-    console.error(error); // 在控制台打印详细错误，方便调试
+    console.error(error);
   } finally {
     loading.value = false;
   }
@@ -175,17 +163,13 @@ const handleCreate = () => {
     include_configuration: true,
     allow_unrestricted_subscriptions: false, 
   };
-  isEditMode.value = false; // 确保切换到创建模式
+  isEditMode.value = false;
   isModalVisible.value = true;
 };
 
 const handleEdit = (template) => {
   isEditMode.value = true;
-  
-  // ★ 核心修正：使用对象扩展运算符 (...) 完整地复制整个 template 对象 ★
-  // 这样，无论 template 里有多少字段，都会被完整地填充到表单模型中
   formModel.value = { ...template }; 
-  
   isModalVisible.value = true;
 };
 
@@ -233,27 +217,6 @@ const handleDelete = async (templateId) => {
   }
 };
 
-// ★★★ 3. 新增 handleSyncTemplate 事件处理函数 ★★★
-const handleSyncTemplate = async (template) => {
-  syncingTemplateId.value = template.id; // 设置当前正在同步的模板ID，用于显示加载状态
-  try {
-    const response = await api.syncTemplate(template.id);
-    const data = await response.json();
-    if (response.ok) {
-      message.success(`模板 “${template.name}” 已成功同步最新权限！`);
-      // 同步成功后，可以重新获取一次数据以防万一有其他信息变更
-      fetchData();
-    } else {
-      throw new Error(data.message || '同步失败');
-    }
-  } catch (error) {
-    message.error(`同步失败: ${error.message}`);
-  } finally {
-    syncingTemplateId.value = null; // 清除加载状态
-  }
-};
-
-
 // --- 表格列定义 ---
 const columns = [
   { title: '模板名称', key: 'name' },
@@ -274,24 +237,8 @@ const columns = [
     title: '操作',
     key: 'actions',
     render(row) {
-      // ★★★ 4. 在操作列中增加“同步权限”按钮 ★★★
       return h(NSpace, null, () => [
         h(NButton, { size: 'small', onClick: () => handleEdit(row) }, { default: () => '编辑', icon: () => h(NIcon, { component: EditIcon }) }),
-        // 同步按钮
-        h(NButton, {
-          size: 'small',
-          type: 'info',
-          ghost: true,
-          // 只有记录了源用户的模板才能同步
-          disabled: !row.source_emby_user_id,
-          // 显示加载状态
-          loading: syncingTemplateId.value === row.id,
-          onClick: () => handleSyncTemplate(row),
-          title: row.source_emby_user_id ? '从源用户更新权限' : '旧版模板，无法同步'
-        }, { 
-          default: () => '同步权限',
-          icon: () => h(NIcon, { component: SyncIcon })
-        }),
         
         // 删除按钮 (使用 Popconfirm 包裹)
         h(NPopconfirm, {
