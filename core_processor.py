@@ -534,9 +534,9 @@ class MediaProcessor:
             
             # 调用 Emby 刷新接口
             emby.refresh_library_by_path(
-                path=folder_path, 
-                base_url=self.emby_url, 
-                api_key=self.emby_api_key
+                folder_path, 
+                self.emby_url, 
+                self.emby_api_key
             )
 
         except Exception as e:

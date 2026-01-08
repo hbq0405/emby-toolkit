@@ -18,27 +18,26 @@ if TYPE_CHECKING:
 logger = logging.getLogger(__name__)
 
 # --- 全局队列和锁 ---
-FILE_EVENT_QUEUE = set() # 使用 set 自动去重
+FILE_EVENT_QUEUE = set() 
 QUEUE_LOCK = threading.Lock()
 DEBOUNCE_TIMER = None
+DELETE_EVENT_QUEUE = set()
+DELETE_QUEUE_LOCK = threading.Lock()
+DELETE_DEBOUNCE_TIMER = None
+
 DEBOUNCE_DELAY = 5 # 防抖延迟秒数
 
 class MediaFileHandler(FileSystemEventHandler):
     """
     文件系统事件处理器
-    负责过滤文件类型，并将有效文件加入全局队列
     """
     def __init__(self, extensions: List[str]):
         self.extensions = [ext.lower() for ext in extensions]
 
     def _is_valid_media_file(self, file_path: str) -> bool:
-        # 注意：对于删除事件，文件已不存在，不能用 isdir 判断，只能靠扩展名
-        # 所以这个辅助函数主要用于 created/moved
         if os.path.exists(file_path) and os.path.isdir(file_path): return False
-        
         _, ext = os.path.splitext(file_path)
         if ext.lower() not in self.extensions: return False
-        
         filename = os.path.basename(file_path)
         if filename.startswith('.'): return False
         if filename.endswith(('.part', '.crdownload', '.tmp', '.aria2')): return False
@@ -52,87 +51,91 @@ class MediaFileHandler(FileSystemEventHandler):
         if not event.is_directory and self._is_valid_media_file(event.dest_path):
             self._enqueue_file(event.dest_path)
 
-    # ★★★ 新增：处理文件删除事件 ★★★
+    # ★★★ 修改：删除事件走专用入队逻辑 ★★★
     def on_deleted(self, event):
         if event.is_directory:
             return
         
-        # 简单的扩展名检查 (因为文件已删，无法做更多检查)
         _, ext = os.path.splitext(event.src_path)
         if ext.lower() not in self.extensions:
             return
 
-        # 直接调用 processor 处理删除，不走防抖队列
-        # 因为删除操作通常是瞬间完成的，且不需要像新增那样等待文件写入
-        processor = MonitorService.processor_instance
-        if processor:
-            # 异步执行，避免阻塞监控线程
-            threading.Thread(target=processor.process_file_deletion, args=(event.src_path,)).start()
-        else:
-            logger.warning("  ⚠️ [实时监控] 检测到文件删除，但处理器未就绪。")
+        self._enqueue_delete(event.src_path)
 
     def _enqueue_file(self, file_path: str):
-        """将文件加入队列并重置计时器"""
+        """新增/移动文件入队"""
         global DEBOUNCE_TIMER
-        
         with QUEUE_LOCK:
             FILE_EVENT_QUEUE.add(file_path)
-            logger.debug(f"  🔍 [实时监控] 文件加入队列: {os.path.basename(file_path)} (当前积压: {len(FILE_EVENT_QUEUE)})")
-            
-            # 重置计时器
-            if DEBOUNCE_TIMER:
-                DEBOUNCE_TIMER.kill()
-            
+            logger.debug(f"  🔍 [实时监控] 文件加入队列: {os.path.basename(file_path)}")
+            if DEBOUNCE_TIMER: DEBOUNCE_TIMER.kill()
             DEBOUNCE_TIMER = spawn_later(DEBOUNCE_DELAY, process_batch_queue)
 
-# --- 批量处理函数 ---
+    def _enqueue_delete(self, file_path: str):
+        global DELETE_DEBOUNCE_TIMER
+        with DELETE_QUEUE_LOCK:
+            DELETE_EVENT_QUEUE.add(file_path)
+            logger.debug(f"  🗑️ [实时监控] 删除事件入队: {os.path.basename(file_path)}")
+            if DELETE_DEBOUNCE_TIMER: DELETE_DEBOUNCE_TIMER.kill()
+            DELETE_DEBOUNCE_TIMER = spawn_later(DEBOUNCE_DELAY, process_delete_batch_queue)
+
 def process_batch_queue():
-    """
-    计时器到期后执行的批量处理逻辑
-    """
+    """处理新增/修改队列"""
     global DEBOUNCE_TIMER
-    
-    # 1. 取出队列中的所有文件
     with QUEUE_LOCK:
         files_to_process = list(FILE_EVENT_QUEUE)
         FILE_EVENT_QUEUE.clear()
         DEBOUNCE_TIMER = None
     
-    if not files_to_process:
-        return
-
-    logger.info(f"  📦 [实时监控] 防抖结束，开始批量处理 {len(files_to_process)} 个文件...")
+    if not files_to_process: return
     
-    # 2. 获取处理器实例
     processor = MonitorService.processor_instance
-    if not processor:
-        logger.error("  ❌ [实时监控] 处理器未初始化，无法处理文件。")
-        return
+    if not processor: return
 
-    # 3. 智能分组 (按父目录分组)
     grouped_files = {}
     for file_path in files_to_process:
         parent_dir = os.path.dirname(file_path)
-        if parent_dir not in grouped_files:
-            grouped_files[parent_dir] = []
+        if parent_dir not in grouped_files: grouped_files[parent_dir] = []
         grouped_files[parent_dir].append(file_path)
 
-    # 4. 逐组处理
     for parent_dir, files in grouped_files.items():
         representative_file = files[0]
-        logger.info(f"  🚀 [实时监控] 聚合处理: {os.path.basename(parent_dir)} (包含 {len(files)} 个新文件)")
-        
-        # 启动异步任务处理，避免阻塞
+        logger.info(f"  🚀 [实时监控] 聚合处理新增: {os.path.basename(parent_dir)} (包含 {len(files)} 个文件)")
         threading.Thread(target=_handle_single_file_task, args=(processor, representative_file)).start()
 
+def process_delete_batch_queue():
+    global DELETE_DEBOUNCE_TIMER
+    with DELETE_QUEUE_LOCK:
+        files = list(DELETE_EVENT_QUEUE)
+        DELETE_EVENT_QUEUE.clear()
+        DELETE_DEBOUNCE_TIMER = None
+    
+    if not files: return
+    
+    processor = MonitorService.processor_instance
+    if not processor: return
+
+    # 按父目录分组去重
+    # 逻辑：同一个目录删了10个文件，只需要通知Emby刷新一次这个目录即可
+    parent_dirs = {}
+    for f in files:
+        p_dir = os.path.dirname(f)
+        if p_dir not in parent_dirs:
+            parent_dirs[p_dir] = f # 记录一个代表文件即可
+
+    logger.info(f"  🗑️ [实时监控] 防抖结束，聚合处理删除事件: 涉及 {len(parent_dirs)} 个目录")
+
+    for p_dir, rep_file in parent_dirs.items():
+        # 调用 processor.process_file_deletion
+        # 虽然传入的是一个文件路径，但 processor 内部会提取 dirname 并刷新整个目录
+        # 这样就实现了“删多文件，只刷一次”的效果
+        threading.Thread(target=processor.process_file_deletion, args=(rep_file,)).start()
+
 def _handle_single_file_task(processor, file_path):
-    """
-    处理单个文件的包装函数，包含文件就绪检查
-    """
-    # 等待文件写入完成 (简单的检查)
+    # ... (保持不变) ...
     stable_count = 0
     last_size = -1
-    for _ in range(60): # 最多等 60 秒
+    for _ in range(60): 
         try:
             if not os.path.exists(file_path): return
             size = os.path.getsize(file_path)
@@ -147,18 +150,14 @@ def _handle_single_file_task(processor, file_path):
         
     processor.process_file_actively(file_path)
 
-
 class MonitorService:
-    """
-    监控服务管理器
-    """
-    # 静态变量，用于给 process_batch_queue 访问
+    # ... (保持不变) ...
     processor_instance = None
 
     def __init__(self, config: dict, processor: 'MediaProcessor'):
         self.config = config
         self.processor = processor
-        MonitorService.processor_instance = processor # 注入实例
+        MonitorService.processor_instance = processor 
         
         self.observer: Optional[Any] = None
         self.enabled = self.config.get(constants.CONFIG_OPTION_MONITOR_ENABLED, False)
@@ -175,7 +174,6 @@ class MonitorService:
             return
 
         self.observer = Observer()
-        # 注意：这里不再传 processor 给 handler，handler 只负责入队
         event_handler = MediaFileHandler(self.extensions)
 
         started_paths = []
