@@ -241,7 +241,7 @@ class MediaProcessor:
             item_type = "Series" if is_series else "Movie"
 
             # =========================================================
-            # ★★★ 新增：缓存检查与跳过逻辑 ★★★
+            # ★★★ 新增：缓存检查与跳过逻辑 (修改版) ★★★
             # =========================================================
             should_skip_full_processing = False
             
@@ -252,16 +252,24 @@ class MediaProcessor:
             main_json_path = os.path.join(base_override_dir, main_json_filename)
 
             if os.path.exists(main_json_path):
-                # 检查数据库
-                if media_db.check_if_tmdb_id_exists(str(tmdb_id), item_type):
-                    logger.info(f"  ➜ [实时监控] 检测到 '{filename}' (TMDb:{tmdb_id}) 已有完美本地数据，跳过处理。")
-                    
-                    # 唯一要做的事：通知 Emby 刷新 (因为文件是新的，Emby 需要扫描)
-                    # logger.info(f"  ➜ [实时监控] 通知 Emby 刷新目录: {folder_path}")
-                    # emby.refresh_library_by_path(folder_path, self.emby_url, self.emby_api_key)
-                    return # ★★★ 直接结束，不请求TMDb，不写文件 ★★★
+                # 获取数据库记录详情
+                db_record = media_db.get_media_details(str(tmdb_id), item_type)
+                
+                if db_record:
+                    # 情况 3: 数据库有记录 且 in_library=True -> 完全跳过
+                    if db_record.get('in_library') is True:
+                        logger.info(f"  ➜ [实时监控] 检测到 '{filename}' (TMDb:{tmdb_id}) 数据库已存在且已入库，直接跳过。")
+                        return 
+
+                    # 情况 2: 数据库有记录 但 in_library=False (预处理/未入库) -> 仅通知Emby扫描
+                    else:
+                        logger.info(f"  ➜ [实时监控] 检测到 '{filename}' (TMDb:{tmdb_id}) 处于预处理状态(in_library=False)。")
+                        logger.info(f"  ➜ [实时监控] 直接通知 Emby 刷新目录以触发入库: {folder_path}")
+                        emby.refresh_library_by_path(folder_path, self.emby_url, self.emby_api_key)
+                        return
                 else:
-                    logger.warning(f"  ➜ [实时监控] 发现本地文件但无数据库记录，将执行补录。")
+                    # 情况 1: 本地有文件但数据库无记录 -> 继续流程进行补录
+                    logger.warning(f"  ➜ [实时监控] 发现本地文件但无数据库记录，将执行补录流程。")
             
             # =========================================================
             # 步骤 3: 获取完整详情 & 准备核心处理 (如果未跳过)
