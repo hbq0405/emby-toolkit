@@ -3359,9 +3359,12 @@ class MediaProcessor:
             if not tmdb_data:
                 logger.error(f"  ➜ {log_prefix} 无法获取 TMDb 数据。")
                 return False
+            
+            # ★★★ 读取语言偏好配置 ★★★
+            lang_pref = self.config.get(constants.CONFIG_OPTION_TMDB_IMAGE_LANGUAGE_PREFERENCE, 'zh')
+            logger.info(f"  ➜ {log_prefix} 图片语言偏好: {'中文优先' if lang_pref == 'zh' else '原语言/英文优先'}")
 
             # 3. 定义下载任务列表
-            # 格式: (TMDb_File_Path, Local_File_Name)
             downloads = []
 
             # --- A. 通用图片 ---
@@ -3376,19 +3379,36 @@ class MediaProcessor:
             # Images 节点处理 (Logo 和 Thumb)
             images_node = tmdb_data.get("images", {})
             
-            # Logo -> clearlogo.png (优先中文 > 英文 > 第一个)
+            # Logo -> clearlogo.png
             logos = images_node.get("logos", [])
             selected_logo = None
+            
             if logos:
-                for logo in logos:
-                    if logo.get("iso_639_1") == "zh":
-                        selected_logo = logo["file_path"]
-                        break
-                if not selected_logo:
+                if lang_pref == 'zh':
+                    # 策略 A: 中文优先 > 英文 > 第一个
+                    for logo in logos:
+                        if logo.get("iso_639_1") == "zh":
+                            selected_logo = logo["file_path"]
+                            break
+                    if not selected_logo:
+                        for logo in logos:
+                            if logo.get("iso_639_1") == "en":
+                                selected_logo = logo["file_path"]
+                                break
+                else:
+                    # 策略 B: 英文/原语言优先 > 中文 > 第一个
+                    # (注：TMDb logo 通常英文居多，这里简单处理为优先找英文，找不到再找中文)
                     for logo in logos:
                         if logo.get("iso_639_1") == "en":
                             selected_logo = logo["file_path"]
                             break
+                    if not selected_logo:
+                        for logo in logos:
+                            if logo.get("iso_639_1") == "zh":
+                                selected_logo = logo["file_path"]
+                                break
+                
+                # 兜底：如果都没找到，取第一个
                 if not selected_logo:
                     selected_logo = logos[0]["file_path"]
                 
@@ -3396,7 +3416,7 @@ class MediaProcessor:
                     downloads.append((selected_logo, "clearlogo.png"))
 
             # Thumb (Landscape) -> landscape.jpg
-            # 取 backdrops 里的第一张（通常 TMDb 没有专门的 thumb 字段，用 backdrop 代替）
+            # 取 backdrops 里的第一张
             backdrops = images_node.get("backdrops", [])
             if backdrops:
                 downloads.append((backdrops[0]["file_path"], "landscape.jpg"))

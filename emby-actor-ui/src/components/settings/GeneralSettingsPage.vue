@@ -79,7 +79,6 @@
                       <template #feedback>
                         <n-text depth="3" style="font-size:0.8em;">
                           每日定时扫描监控目录时，仅检查最近 N 天内创建或修改过的文件。
-                          <br>设置较小的值（如 1-3 天）可极大提高扫描速度，同时确保不漏掉近期追更的剧集。
                         </n-text>
                       </template>
                     </n-form-item>
@@ -99,7 +98,19 @@
                         </n-text>
                       </template>
                     </n-form-item>
-
+                    <n-form-item label="图片语言偏好" path="tmdb_image_language_preference">
+                      <n-radio-group v-model:value="configModel.tmdb_image_language_preference" name="image_lang_group">
+                        <n-space>
+                          <n-radio value="zh">中文优先</n-radio>
+                          <n-radio value="original">英文/原语言优先</n-radio>
+                        </n-space>
+                      </n-radio-group>
+                      <template #feedback>
+                        <n-text depth="3" style="font-size:0.8em;">
+                          控制下载 海报 等图片时的语言优先级。
+                        </n-text>
+                      </template>
+                    </n-form-item>
                     <n-alert type="info" :show-icon="true" style="margin-top: 10px;">
                       <span style="font-size: 0.85em;">
                         <b>友情提示：</b> 开启实时监控后，系统会自动处理新增媒体并通知Emby扫描入库，所以请关闭Emby媒体库的实时监控以免冲突。
