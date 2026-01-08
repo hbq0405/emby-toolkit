@@ -3781,13 +3781,17 @@ class MediaProcessor:
                 elif is_season_file and tmdb_seasons_data and current_s_num is not None:
                     # tmdb_seasons_data 通常是一个列表
                     for season in tmdb_seasons_data:
+                        # ★★★ 修复：增加类型检查，防止 'int' object has no attribute 'get' 错误 ★★★
+                        if not isinstance(season, dict):
+                            continue
+
                         if season.get('season_number') == current_s_num:
                             specific_tmdb_data = season
                             break
                     
                     # ★★★ 关键：覆盖骨架中的 ID 和基础信息 ★★★
                     if specific_tmdb_data:
-                        child_data['id'] = specific_tmdb_data.get('id') # 修复 ID=0 的关键
+                        child_data['id'] = specific_tmdb_data.get('id')
                         child_data['name'] = specific_tmdb_data.get('name')
                         child_data['overview'] = specific_tmdb_data.get('overview')
                         child_data['season_number'] = current_s_num
