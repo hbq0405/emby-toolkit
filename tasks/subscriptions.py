@@ -169,9 +169,9 @@ def _subscribe_full_series_with_logic(tmdb_id: int, series_name: str, config: Di
             # ==============================================================
             if check_series_completion(tmdb_id, tmdb_api_key, season_number=s_num, series_name=final_series_name):
                 mp_payload["best_version"] = 1
-                logger.info(f"  ➜ S{s_num} 已完结，启用洗版模式 (best_version=1)。")
+                logger.info(f"  ➜ S{s_num} 已完结，启用洗版模式订阅。")
             else:
-                logger.info(f"  ➜ S{s_num} 未完结，使用追更模式 (best_version=0)。")
+                logger.info(f"  ➜ S{s_num} 未完结，使用追更模式订阅。")
 
             # ==============================================================
             # 逻辑 E: 提交订阅
