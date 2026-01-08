@@ -577,11 +577,10 @@ class MediaProcessor:
         item_details_from_emby: Optional[Dict[str, Any]] = None
     ):
         """
-        - 实时元数据写入。
-        【增强修复版 V3 - 支持主动监控占位】
-        1. 支持 item_details_from_emby['Id'] == 'pending'，此时 in_library=False，资产为空。
-        2. 关键词提取采用混合策略。
-        3. 剧集工作室优先使用 networks。
+        - 实时元数据写入 (终极稳健版)。
+        - 兼容 'pending' 预处理模式和 'webhook' 回流模式。
+        - 修复了 ID=0 的脏数据问题。
+        - 修复了回流时因类型不匹配导致无法标记入库的问题。
         """
         if not item_details_from_emby:
             logger.error("  ➜ 写入元数据缓存失败：缺少 Emby 详情数据。")
@@ -606,7 +605,7 @@ class MediaProcessor:
             runtimes = [round(item['RunTimeTicks'] / 600000000) for item in emby_items if item.get('RunTimeTicks')]
             return max(runtimes) if runtimes else tmdb_runtime
         
-        # ... (此处保留原有的 _extract_common_json_fields 内部函数，无需改动) ...
+        # ... (保留原有的 _extract_common_json_fields 内部函数，无需改动) ...
         def _extract_common_json_fields(details: Dict[str, Any], m_type: str):
             # 1. Genres (类型)
             genres_raw = details.get('genres', [])
@@ -692,11 +691,11 @@ class MediaProcessor:
                 movie_record['runtime_minutes'] = get_representative_runtime([item_details_from_emby], movie_record.get('runtime'))
                 movie_record['rating'] = movie_record.get('vote_average')
                 
-                # ★ 资产信息处理 (Pending 模式下留空)
+                # ★ 资产信息处理
                 if is_pending:
                     movie_record['asset_details_json'] = '[]'
                     movie_record['emby_item_ids_json'] = '[]'
-                    movie_record['in_library'] = False # ★ 标记为 False
+                    movie_record['in_library'] = False
                 else:
                     asset_details = parse_full_asset_details(
                         item_details_from_emby, 
@@ -829,11 +828,20 @@ class MediaProcessor:
                 
                 seasons_grouped_by_number = defaultdict(list)
                 for s_ver in emby_season_versions:
-                    if s_ver.get("IndexNumber") is not None:
-                        seasons_grouped_by_number[s_ver.get("IndexNumber")].append(s_ver)
+                    # 强制转 int，防止类型不匹配
+                    idx = s_ver.get("IndexNumber")
+                    if idx is not None:
+                        try: seasons_grouped_by_number[int(idx)].append(s_ver)
+                        except: pass
 
                 for season in seasons_details:
                     if not isinstance(season, dict): continue
+                    
+                    # ★★★ 核心修复：严防死守 ID=0 ★★★
+                    s_tmdb_id = season.get('id')
+                    if not s_tmdb_id or str(s_tmdb_id) in ['0', 'None', '']:
+                        continue
+
                     s_num = season.get('season_number')
                     if s_num is None: continue 
                     try: s_num_int = int(s_num)
@@ -843,12 +851,12 @@ class MediaProcessor:
                     matched_emby_seasons = seasons_grouped_by_number.get(s_num_int, [])
 
                     records_to_upsert.append({
-                        "tmdb_id": str(season.get('id')), "item_type": "Season", 
+                        "tmdb_id": str(s_tmdb_id), "item_type": "Season", 
                         "parent_series_tmdb_id": str(series_details.get('id')), 
                         "title": season.get('name'), "overview": season.get('overview'), 
                         "release_date": season.get('air_date'), "poster_path": season_poster, 
                         "season_number": s_num,
-                        # ★ Pending 模式下季也为 False
+                        # ★ 只有非 Pending 且找到了 Emby 对应项，才标记为 True
                         "in_library": bool(matched_emby_seasons) if not is_pending else False,
                         "emby_item_ids_json": json.dumps([s['Id'] for s in matched_emby_seasons]) if matched_emby_seasons else '[]'
                     })
@@ -871,17 +879,26 @@ class MediaProcessor:
                     s_num = ep_version.get("ParentIndexNumber")
                     e_num = ep_version.get("IndexNumber")
                     if s_num is not None and e_num is not None:
-                        episodes_grouped_by_number[(s_num, e_num)].append(ep_version)
+                        try: episodes_grouped_by_number[(int(s_num), int(e_num))].append(ep_version)
+                        except: pass
 
                 for episode in episodes_details:
+                    # ★★★ 核心修复：严防死守 ID=0 ★★★
+                    e_tmdb_id = episode.get('id')
+                    if not e_tmdb_id or str(e_tmdb_id) in ['0', 'None', '']:
+                        continue
+
                     if episode.get('episode_number') is None: continue
-                    s_num = episode.get('season_number')
-                    e_num = episode.get('episode_number')
+                    try:
+                        s_num = int(episode.get('season_number'))
+                        e_num = int(episode.get('episode_number'))
+                    except (ValueError, TypeError): continue
+
                     versions_of_episode = episodes_grouped_by_number.get((s_num, e_num))
                     final_runtime = get_representative_runtime(versions_of_episode, episode.get('runtime'))
 
                     episode_record = {
-                        "tmdb_id": str(episode.get('id')), "item_type": "Episode", 
+                        "tmdb_id": str(e_tmdb_id), "item_type": "Episode", 
                         "parent_series_tmdb_id": str(series_details.get('id')), 
                         "title": episode.get('name'), "overview": episode.get('overview'), 
                         "release_date": episode.get('air_date'), 
@@ -928,6 +945,10 @@ class MediaProcessor:
             ]
             data_for_batch = []
             for record in records_to_upsert:
+                # 再次检查 ID，防止漏网之鱼
+                if not record.get('tmdb_id') or str(record.get('tmdb_id')) == '0':
+                    continue
+
                 db_row_complete = {col: record.get(col) for col in all_possible_columns}
                 
                 if db_row_complete['in_library'] is None: db_row_complete['in_library'] = False
@@ -944,6 +965,9 @@ class MediaProcessor:
                     except (ValueError, TypeError): pass
                 
                 data_for_batch.append(db_row_complete)
+
+            if not data_for_batch:
+                return
 
             cols_str = ", ".join(all_possible_columns)
             placeholders_str = ", ".join([f"%({col})s" for col in all_possible_columns])
