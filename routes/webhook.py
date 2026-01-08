@@ -53,60 +53,31 @@ def _handle_full_processing_flow(processor: 'MediaProcessor', item_id: str, forc
     统一处理 新入库(New) 和 追更(Update) 两种情况。
     """
     if not processor:
+        logger.error(f"  🚫 完整处理流程中止：核心处理器 (MediaProcessor) 未初始化。")
         return
 
-    # 1. 获取详情
     item_details = emby.get_emby_item_details(item_id, processor.emby_url, processor.emby_api_key, processor.emby_user_id)
     if not item_details:
+        logger.error(f"  🚫 无法获取项目 {item_id} 的详情，任务中止。")
         return
     
     item_name_for_log = item_details.get("Name", f"ID:{item_id}")
     item_type = item_details.get("Type")
     tmdb_id = item_details.get("ProviderIds", {}).get("Tmdb")
 
-    # ======================================================================
-    # ★★★ 核心优化：检查是否已被主动监控预处理 ★★★
-    # ======================================================================
-    pre_processed = False
-    if is_new_item and tmdb_id:
-        # 直接调用 media_db 的函数，代码更干净
-        pre_processed = media_db.check_if_tmdb_id_exists(str(tmdb_id), item_type)
+    # 1. 智能追剧判断 - 初始入库
+    if is_new_item and item_type == "Series":
+        processor.check_and_add_to_watchlist(item_details)
 
-    # ======================================================================
+    # 2. 核心调用：统一调用 process_single_item 
+    processed_successfully = processor.process_single_item(
+        item_id, 
+        force_full_update=force_full_update,
+        specific_episode_ids=new_episode_ids 
+    )
     
-    processed_successfully = False
-
-    if pre_processed:
-        # --- 分支 A: 已预处理 -> 快速补全 ---
-        logger.info(f"  ➜ 检测到 '{item_name_for_log}' 已由主动监控预处理，执行 [快速补全] 流程...")
-        processed_successfully = processor.link_emby_item_to_db(item_details)
-        
-        # 如果是剧集，且有新分集ID，我们也需要把分集的状态刷一下
-        # (link_emby_item_to_db 目前只处理了单项，对于剧集的分集，可能需要额外逻辑)
-        # 简单起见，如果是剧集且是预处理过的，我们假设分集数据在主动监控时也写入了(in_library=False)
-        # 这里可以通过 process_single_item 的一个特殊参数来只做 link，或者...
-        # 鉴于分集数量多，且 process_single_item 逻辑复杂，
-        # 如果 link_emby_item_to_db 成功，我们认为主流程OK。
-        # 分集的 in_library=True 更新，可以通过后续的 metadata.update 事件触发，或者在这里做一个简单的批量更新
-        
-        if processed_successfully and item_type == "Series":
-             # 简单的补充：把该剧集下所有分集的 in_library 也设为 True (偷懒但有效)
-             # 更好的做法是遍历 new_episode_ids 并更新它们
-             pass 
-
-    else:
-        # --- 分支 B: 未预处理 -> 完整流程 ---
-        if is_new_item and item_type == "Series":
-            processor.check_and_add_to_watchlist(item_details)
-
-        processed_successfully = processor.process_single_item(
-            item_id, 
-            force_full_update=force_full_update,
-            specific_episode_ids=new_episode_ids 
-        )
-
     if not processed_successfully:
-        logger.warning(f"  ➜ 项目 '{item_name_for_log}' 处理未成功，跳过后续步骤。")
+        logger.warning(f"  ➜ 项目 '{item_name_for_log}' 的元数据处理未成功完成，跳过后续步骤。")
         return
 
     # 3. 后续处理
