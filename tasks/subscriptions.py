@@ -154,7 +154,17 @@ def _subscribe_full_series_with_logic(tmdb_id: int, series_name: str, config: Di
                 continue 
 
             # ==============================================================
-            # 逻辑 B: 准备订阅 Payload
+            # 逻辑 B: 自动待定检查 (Auto Pending) 
+            # ==============================================================
+            # 针对刚上映但集数信息不全的剧集，我们需要将其在 MP 中标记为 'P' (待定)
+            # 并设置一个虚假的总集数，防止 MP 下载完现有集数后直接完结订阅。
+            is_pending_logic, fake_total_episodes = should_mark_as_pending(tmdb_id, s_num, tmdb_api_key)
+            
+            if is_pending_logic:
+                logger.info(f"  ⏳ 季《{final_series_name}》S{s_num} 满足自动待定条件，将执行 [订阅 -> 转待定] 流程。")
+
+            # ==============================================================
+            # 逻辑 C: 准备订阅 Payload
             # ==============================================================
             mp_payload = {
                 "name": final_series_name,
@@ -167,19 +177,42 @@ def _subscribe_full_series_with_logic(tmdb_id: int, series_name: str, config: Di
             # ==============================================================
             # 逻辑 D: 决定 Best Version (洗版/完结检测)
             # ==============================================================
-            if check_series_completion(tmdb_id, tmdb_api_key, season_number=s_num, series_name=final_series_name):
-                mp_payload["best_version"] = 1
-                logger.info(f"  ➜ S{s_num} 已完结，启用洗版模式订阅。")
+            # 只有在【不满足】待定条件时，才去检查完结状态。
+            # 如果已经是待定状态，说明肯定没完结，不需要检查，也不应该开启洗版。
+            if not is_pending_logic:
+                if check_series_completion(tmdb_id, tmdb_api_key, season_number=s_num, series_name=final_series_name):
+                    mp_payload["best_version"] = 1
+                    logger.info(f"  ➜ S{s_num} 已完结，启用洗版模式订阅。")
+                else:
+                    logger.info(f"  ➜ S{s_num} 未完结，使用追更模式订阅。")
             else:
-                logger.info(f"  ➜ S{s_num} 未完结，使用追更模式订阅。")
+                logger.info(f"  ➜ S{s_num} 处于待定模式，使用追更模式订阅。")
 
             # ==============================================================
-            # 逻辑 E: 提交订阅
+            # 逻辑 E: 提交订阅 & 后置状态修正
             # ==============================================================
             if moviepilot.subscribe_with_custom_payload(mp_payload, config):
                 any_success = True
                 
-                # 订阅成功后，更新季的状态为 SUBSCRIBED，并写入季发行日期
+                # ★★★ 核心修复：如果是待定逻辑，订阅成功后立即修改 MP 状态 ★★★
+                if is_pending_logic:
+                    logger.info(f"  ➜ [后置操作] 正在将 S{s_num} 的状态修改为 'P' (待定)，并将总集数修正为 {fake_total_episodes}...")
+                    # 调用 moviepilot.py 中的 update_subscription_status
+                    # 注意：这里传入 fake_total_episodes 以防止 MP 自动完结
+                    mp_update_success = moviepilot.update_subscription_status(
+                        tmdb_id=tmdb_id,
+                        season=s_num,
+                        status='P', # P = Pending
+                        config=config,
+                        total_episodes=fake_total_episodes
+                    )
+                    if mp_update_success:
+                        logger.info(f"  ✅ S{s_num} 已成功转为待定状态。")
+                    else:
+                        logger.warning(f"  ⚠️ S{s_num} 订阅成功，但转待定状态失败。")
+
+                # 订阅成功后，更新本地数据库状态为 SUBSCRIBED
+                # (即使 MP 是 Pending，对于本地请求队列来说，它也算是“已处理/已订阅”)
                 target_s_id = str(s_id) if s_id else f"{tmdb_id}_S{s_num}"
                 media_info = {
                     'tmdb_id': target_s_id,
@@ -187,7 +220,7 @@ def _subscribe_full_series_with_logic(tmdb_id: int, series_name: str, config: Di
                     'season_number': s_num,
                     'title': season.get('name'),
                     'poster_path': final_poster,
-                    'release_date': air_date_str  # 新增季发行日期字段
+                    'release_date': air_date_str
                 }
                 request_db.set_media_status_subscribed(
                     tmdb_ids=[target_s_id],
