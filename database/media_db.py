@@ -895,3 +895,35 @@ def check_if_tmdb_id_exists(tmdb_id: str, item_type: str) -> bool:
     except Exception as e:
         logger.error(f"DB: 检查 TMDb ID 存在性失败: {e}", exc_info=True)
         return False
+    
+def get_episode_in_library_status(parent_tmdb_id: str, season_number: int, episode_number: int) -> Optional[bool]:
+    """
+    根据 父剧集TMDbID + 季号 + 集号，查询该分集是否已入库。
+    返回:
+        True: 已入库
+        False: 未入库 (但有记录，处于预处理状态)
+        None: 无记录
+    """
+    if not parent_tmdb_id:
+        return None
+        
+    sql = """
+        SELECT in_library 
+        FROM media_metadata 
+        WHERE parent_series_tmdb_id = %s 
+          AND item_type = 'Episode' 
+          AND season_number = %s 
+          AND episode_number = %s
+        LIMIT 1
+    """
+    try:
+        with get_db_connection() as conn:
+            with conn.cursor() as cursor:
+                cursor.execute(sql, (parent_tmdb_id, season_number, episode_number))
+                row = cursor.fetchone()
+                if row:
+                    return row['in_library']
+                return None
+    except Exception as e:
+        logger.error(f"DB: 查询分集状态失败 (S{season_number}E{episode_number}): {e}")
+        return None

@@ -241,7 +241,7 @@ class MediaProcessor:
             item_type = "Series" if is_series else "Movie"
 
             # =========================================================
-            # ★★★ 新增：缓存检查与跳过逻辑 (修改版) ★★★
+            # ★★★ 新增：缓存检查与跳过逻辑 (修复版) ★★★
             # =========================================================
             should_skip_full_processing = False
             
@@ -251,25 +251,52 @@ class MediaProcessor:
             main_json_filename = "all.json" if item_type == "Movie" else "series.json"
             main_json_path = os.path.join(base_override_dir, main_json_filename)
 
+            # 数据库记录状态
+            db_in_library = None
+            db_record_exists = False
+
+            # ★★★ 核心修改：针对剧集进行精确的分集状态检查 ★★★
+            if item_type == "Series":
+                # 尝试解析 SxxExx
+                se_match = re.search(r'[sS](\d{1,2})[eE](\d{1,2})', filename)
+                if se_match:
+                    s_num = int(se_match.group(1))
+                    e_num = int(se_match.group(2))
+                    # 使用新函数检查特定分集
+                    db_in_library = media_db.get_episode_in_library_status(str(tmdb_id), s_num, e_num)
+                    if db_in_library is not None:
+                        db_record_exists = True
+                        logger.info(f"  ➜ [实时监控] 剧集检查: S{s_num}E{e_num} (父TMDb:{tmdb_id}) 数据库记录存在，状态: {'已入库' if db_in_library else '预处理'}")
+                else:
+                    # 如果解析不出集数（极少见），回退到查父剧集
+                    details = media_db.get_media_details(str(tmdb_id), "Series")
+                    if details:
+                        db_record_exists = True
+                        db_in_library = details.get('in_library')
+            else:
+                # 电影：直接查 TMDb ID
+                details = media_db.get_media_details(str(tmdb_id), "Movie")
+                if details:
+                    db_record_exists = True
+                    db_in_library = details.get('in_library')
+
+            # ★★★ 决策逻辑 ★★★
             if os.path.exists(main_json_path):
-                # 获取数据库记录详情
-                db_record = media_db.get_media_details(str(tmdb_id), item_type)
-                
-                if db_record:
+                if db_record_exists:
                     # 情况 3: 数据库有记录 且 in_library=True -> 完全跳过
-                    if db_record.get('in_library') is True:
-                        logger.info(f"  ➜ [实时监控] 检测到 '{filename}' (TMDb:{tmdb_id}) 数据库已存在且已入库，直接跳过。")
+                    if db_in_library is True:
+                        logger.info(f"  ➜ [实时监控] 检测到 '{filename}' 已完美入库，直接跳过。")
                         return 
 
                     # 情况 2: 数据库有记录 但 in_library=False (预处理/未入库) -> 仅通知Emby扫描
                     else:
-                        logger.info(f"  ➜ [实时监控] 检测到 '{filename}' (TMDb:{tmdb_id}) 处于预处理状态(in_library=False)。")
+                        logger.info(f"  ➜ [实时监控] 检测到 '{filename}' 处于预处理状态(in_library=False)。")
                         logger.info(f"  ➜ [实时监控] 直接通知 Emby 刷新目录以触发入库: {folder_path}")
                         emby.refresh_library_by_path(folder_path, self.emby_url, self.emby_api_key)
                         return
                 else:
                     # 情况 1: 本地有文件但数据库无记录 -> 继续流程进行补录
-                    logger.warning(f"  ➜ [实时监控] 发现本地文件但无数据库记录，将执行补录流程。")
+                    logger.warning(f"  ➜ [实时监控] 发现本地文件但无数据库记录，将执行补录。")
             
             # =========================================================
             # 步骤 3: 获取完整详情 & 准备核心处理 (如果未跳过)
@@ -911,6 +938,7 @@ class MediaProcessor:
         当数据库中已存在该 TMDb ID 的记录（由主动监控创建，in_library=False）时，
         调用此函数仅更新 Emby ID、资产路径和 in_library 状态。
         ★ 增强：如果是剧集，会自动递归更新其下所有已入库的季和集。
+        ★ 新增：在此处进行“质检”，如果缺失资产数据，标记为“待复核”。
         """
         item_id = item_details.get('Id')
         item_type = item_details.get('Type')
@@ -924,7 +952,6 @@ class MediaProcessor:
 
         try:
             # 1. 准备通用数据
-            # 补全 _SourceLibraryId
             if not item_details.get('_SourceLibraryId'):
                 lib_info = emby.get_library_root_for_item(item_id, self.emby_url, self.emby_api_key, self.emby_user_id)
                 if lib_info: item_details['_SourceLibraryId'] = lib_info.get('Id')
@@ -935,7 +962,10 @@ class MediaProcessor:
             # 2. 定义内部更新函数 (复用逻辑)
             def _update_single_record(cursor, details, t_id, i_type):
                 asset_details = []
+                # ★★★ 质检核心：检查 Path 是否存在 ★★★
+                has_assets = False
                 if details.get('Path'):
+                    has_assets = True
                     asset = parse_full_asset_details(
                         details, 
                         id_to_parent_map=id_to_parent_map, 
@@ -956,27 +986,32 @@ class MediaProcessor:
                     WHERE tmdb_id = %s AND item_type = %s
                 """
                 cursor.execute(sql, (emby_ids_json, asset_json, str(t_id), i_type))
-                return cursor.rowcount
+                return cursor.rowcount, has_assets
 
             # 3. 执行更新
+            main_item_has_assets = False
+            
             with get_central_db_connection() as conn:
                 cursor = conn.cursor()
                 
                 # A. 更新主条目
-                updated_count = _update_single_record(cursor, item_details, tmdb_id, item_type)
+                updated_count, main_item_has_assets = _update_single_record(cursor, item_details, tmdb_id, item_type)
                 
                 # B. 如果是剧集，递归更新子项目
                 if item_type == "Series":
+                    # 对于剧集，主条目通常没有视频文件，所以我们不以主条目的 Path 为准
+                    # 而是默认剧集本身不需要“待复核”（除非它没有任何子集，但这由 Emby 控制）
+                    # 这里我们将 main_item_has_assets 设为 True，避免剧集本身进入待复核
+                    main_item_has_assets = True 
+
                     logger.info(f"  ➜ [快速补全] 检测到剧集，正在同步子项目状态...")
                     
-                    # 获取 Emby 中该剧集的所有子项目
                     children = emby.get_series_children(
                         series_id=item_id,
                         base_url=self.emby_url,
                         api_key=self.emby_api_key,
                         user_id=self.emby_user_id,
                         series_name_for_log=item_name,
-                        # ★★★ 增加请求 ParentIndexNumber, IndexNumber ★★★
                         fields="ProviderIds,Path,Type,ParentId,ParentIndexNumber,IndexNumber" 
                     )
                     
@@ -990,11 +1025,6 @@ class MediaProcessor:
                             if child.get('ParentId'):
                                 id_to_parent_map[child['Id']] = child['ParentId']
 
-                            # ★★★ 核心修复：通过 S/E 编号匹配数据库 ★★★
-                            # 构造 SQL 更新条件：父剧集ID + 季号 + 集号
-                            # 注意：Season 的 ParentIndexNumber 通常为空，IndexNumber 是季号
-                            # Episode 的 ParentIndexNumber 是季号，IndexNumber 是集号
-                            
                             s_num = None
                             e_num = None
                             
@@ -1005,9 +1035,11 @@ class MediaProcessor:
                                 e_num = child.get('IndexNumber')
                             
                             if s_num is not None:
-                                # 构造资产数据
                                 asset_details = []
+                                # ★★★ 子项目质检 ★★★
+                                child_has_assets = False
                                 if child.get('Path'):
+                                    child_has_assets = True
                                     asset = parse_full_asset_details(
                                         child, 
                                         id_to_parent_map=id_to_parent_map, 
@@ -1019,7 +1051,6 @@ class MediaProcessor:
                                 asset_json = json.dumps(asset_details, ensure_ascii=False)
                                 emby_ids_json = json.dumps([child.get('Id')])
 
-                                # 动态构建 WHERE 子句
                                 where_clause = "parent_series_tmdb_id = %s AND item_type = %s AND season_number = %s"
                                 params = [emby_ids_json, asset_json, str(tmdb_id), c_type, s_num]
                                 
@@ -1028,7 +1059,7 @@ class MediaProcessor:
                                         where_clause += " AND episode_number = %s"
                                         params.append(e_num)
                                     else:
-                                        continue # 没有集号的分集无法匹配
+                                        continue 
                                 
                                 sql = f"""
                                     UPDATE media_metadata 
@@ -1042,6 +1073,7 @@ class MediaProcessor:
                                 
                                 if cursor.rowcount > 0:
                                     child_update_count += 1
+                                    # 如果是分集且缺失资产，记录日志（可选，防止日志爆炸，这里暂不记录子项的待复核，只处理主项）
                         
                         logger.info(f"  ➜ [快速补全] 额外同步了 {child_update_count} 个子项目 (季/集)。")
 
@@ -1049,9 +1081,24 @@ class MediaProcessor:
                 
             logger.info(f"  ✅ [快速补全] '{item_name}' 及其子项目已标记为入库。")
             
-            # 4. 标记为已处理
+            # 4. ★★★ 状态标记逻辑 (替代原有的打分机制) ★★★
             with get_central_db_connection() as conn:
-                self._mark_item_as_processed(conn.cursor(), item_id, item_name, score=10.0)
+                cursor = conn.cursor()
+                
+                if main_item_has_assets:
+                    # 资产完整 -> 标记为已处理
+                    self._mark_item_as_processed(cursor, item_id, item_name, score=10.0)
+                    # 移除可能存在的失败日志
+                    self.log_db_manager.remove_from_failed_log(cursor, item_id)
+                    logger.info(f"  ➜ [状态更新] '{item_name}' 资产完整，标记为【已处理】。")
+                else:
+                    # 资产缺失 -> 标记为待复核
+                    reason = "未提取到资产数据 (Path/MediaStreams 缺失)"
+                    self.log_db_manager.save_to_failed_log(cursor, item_id, item_name, reason, item_type, score=0.0)
+                    # 同时也标记为已处理，防止重复循环，但在UI中会显示在“待复核”
+                    self._mark_item_as_processed(cursor, item_id, item_name, score=0.0)
+                    logger.warning(f"  ➜ [状态更新] '{item_name}' 缺失资产数据，已标记为【待复核】。")
+                
                 conn.commit()
 
             return True
