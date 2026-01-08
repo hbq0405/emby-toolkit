@@ -3532,6 +3532,7 @@ class MediaProcessor:
         """
         辅助函数：将演员表注入剧集的季/集JSON文件。
         【修复版】支持主动监控模式 (ID='pending')，此时仅基于 TMDb 数据生成文件，不请求 Emby。
+        【新增】严格校验 tmdb_id 和 season_number，防止生成无效文件。
         """
         log_prefix = "[覆盖缓存-元数据写入]"
         if cast_list is not None:
@@ -3591,6 +3592,11 @@ class MediaProcessor:
                         s_num = int(match.group(1))
                         e_num = int(match.group(2))
                         
+                        # ★★★ 核心校验：跳过无效的季/集号 ★★★
+                        if s_num == 0 or e_num == 0:
+                            logger.warning(f"  ➜ {log_prefix} 跳过无效的季/集数据 (S{s_num}E{e_num})，可能来自无效的TMDb数据。")
+                            continue
+
                         # 构造虚拟 Episode 对象
                         children_from_emby.append({
                             "Type": "Episode",
@@ -3616,7 +3622,13 @@ class MediaProcessor:
             if child.get("Type") == "Season": 
                 idx = child.get('IndexNumber')
                 if idx is not None:
-                    key = f"season-{idx}"
+                    try:
+                        # ★★★ 核心校验：确保季号有效 ★★★
+                        s_num_int = int(idx)
+                        if s_num_int > 0:
+                            key = f"season-{s_num_int}"
+                    except (ValueError, TypeError):
+                        logger.warning(f"  ➜ {log_prefix} 跳过无效的季号 '{idx}'。")
             
             elif child.get("Type") == "Episode": 
                 s_num = child.get('ParentIndexNumber')
@@ -3624,12 +3636,15 @@ class MediaProcessor:
                 
                 if s_num is not None and e_num is not None:
                     try:
-                        if int(s_num) == 0 and int(e_num) == 0:
-                            continue 
+                        # ★★★ 核心校验：确保季号和集号都大于0 ★★★
+                        s_num_int = int(s_num)
+                        e_num_int = int(e_num)
+                        if s_num_int > 0 and e_num_int > 0:
+                            key = f"season-{s_num_int}-episode-{e_num_int}"
+                        else:
+                            logger.warning(f"  ➜ {log_prefix} 跳过无效的季/集号 (S{s_num}E{e_num})。")
                     except (ValueError, TypeError):
-                        pass
-
-                    key = f"season-{s_num}-episode-{e_num}"
+                        logger.warning(f"  ➜ {log_prefix} 跳过无效的季/集号格式 (S:{s_num}, E:{e_num})。")
             
             if key: 
                 child_data_map[key] = child
@@ -3643,16 +3658,17 @@ class MediaProcessor:
                     if child.get("Id") in id_set and child.get("Type") == "Episode":
                         s_num = child.get('ParentIndexNumber')
                         e_num = child.get('IndexNumber')
-                        try:
-                            if s_num is not None and e_num is not None:
-                                if int(s_num) == 0 and int(e_num) == 0:
-                                    continue 
-                        except (ValueError, TypeError):
-                            pass
-                        if s_num is not None:
-                            if e_num is not None: files_to_process.add(f"season-{s_num}-episode-{e_num}.json")
-                            files_to_process.add(f"season-{s_num}.json")
+                        if s_num is not None and e_num is not None:
+                            try:
+                                s_num_int = int(s_num)
+                                e_num_int = int(e_num)
+                                if s_num_int > 0 and e_num_int > 0:
+                                    files_to_process.add(f"season-{s_num_int}-episode-{e_num_int}.json")
+                                    files_to_process.add(f"season-{s_num_int}.json") # 季文件也需要更新
+                            except (ValueError, TypeError):
+                                pass
             else:
+                # 如果没有指定分集，或者处于 Pending 模式，则处理所有季/集文件
                 for key in child_data_map.keys():
                     files_to_process.add(f"{key}.json")
 
@@ -3741,14 +3757,6 @@ class MediaProcessor:
                 elif is_season_file:
                     if not credits_node.get('cast'):
                         credits_node['cast'] = cast_list
-
-                # 3. 执行汉化修补
-                if cast_list is not None:
-                    if 'cast' in credits_node and isinstance(credits_node['cast'], list):
-                        patch_actor_list(credits_node['cast'])
-                    
-                    if 'guest_stars' in credits_node and isinstance(credits_node['guest_stars'], list):
-                        patch_actor_list(credits_node['guest_stars'])
 
                 # ★★★ 步骤 E: 更新 Emby 实时元数据 ★★★
                 file_key = os.path.splitext(filename)[0]
