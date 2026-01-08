@@ -3607,24 +3607,21 @@ class MediaProcessor:
         else:
             # 主动监控模式：从 TMDb 数据构造虚拟子项目
             logger.info(f"  ➜ {log_prefix} 处于预处理模式，将基于 TMDb 数据生成分集文件列表...")
+            
+            seen_seasons = set() # 用于去重
+
+            # A. 处理分集数据 (Episode)
             if tmdb_episodes_data:
                 import re
-                seen_seasons = set()
-                
                 # tmdb_episodes_data 的 key 是 "S1E1" 格式
                 for key, ep_data in tmdb_episodes_data.items():
-                    # 解析 S1E1
                     match = re.match(r'S(\d+)E(\d+)', key)
                     if match:
                         s_num = int(match.group(1))
                         e_num = int(match.group(2))
                         
-                        # ★★★ 核心校验：跳过无效的季/集号 ★★★
-                        if s_num == 0 or e_num == 0:
-                            logger.warning(f"  ➜ {log_prefix} 跳过无效的季/集数据 (S{s_num}E{e_num})，可能来自无效的TMDb数据。")
-                            continue
+                        if s_num == 0 or e_num == 0: continue
 
-                        # 构造虚拟 Episode 对象
                         children_from_emby.append({
                             "Type": "Episode",
                             "ParentIndexNumber": s_num,
@@ -3632,15 +3629,29 @@ class MediaProcessor:
                             "Name": ep_data.get('name'),
                             "Overview": ep_data.get('overview')
                         })
-                        
-                        # 顺便构造虚拟 Season 对象 (去重)
-                        if s_num not in seen_seasons:
+                        # 记录已处理的季
+                        seen_seasons.add(s_num)
+
+            # B. ★★★ 新增：显式处理分季数据 (Season) ★★★
+            # 即使没有分集数据，或者分集循环漏掉了某些季，这里也能补全
+            if tmdb_seasons_data:
+                for season in tmdb_seasons_data:
+                    if not isinstance(season, dict): continue
+                    
+                    s_num = season.get('season_number')
+                    if s_num is not None:
+                        try:
+                            s_num_int = int(s_num)
+                            # 只有当这个季还没被上面的分集循环添加过时，才添加
+                            # 或者，我们可以无视 seen_seasons，因为后面的 child_data_map 会自动去重
+                            # 但为了逻辑清晰，我们还是构造一个 Season 对象
                             children_from_emby.append({
                                 "Type": "Season",
-                                "IndexNumber": s_num,
-                                "Name": f"Season {s_num}"
+                                "IndexNumber": s_num_int,
+                                "Name": season.get('name', f"Season {s_num_int}")
                             })
-                            seen_seasons.add(s_num)
+                        except ValueError:
+                            pass
 
         child_data_map = {}
         for child in children_from_emby:
@@ -3750,12 +3761,11 @@ class MediaProcessor:
                 except:
                     pass
 
-                # --- 核心修复：注入 TMDb 真实数据 (ID, Name, Overview 等) ---
+                # ★★★ 步骤 D: 智能修补 (数据注入) ★★★
                 specific_tmdb_data = None
                 
-                # 1. 处理分集 (Episode) 数据注入
+                # 1. 处理分集 (Episode)
                 if is_episode_file and tmdb_episodes_data and current_s_num is not None and current_e_num is not None:
-                    # 尝试多种 Key 格式 (S1E1 或 列表查找)
                     key_s1e1 = f"S{current_s_num}E{current_e_num}"
                     if isinstance(tmdb_episodes_data, dict):
                         specific_tmdb_data = tmdb_episodes_data.get(key_s1e1)
@@ -3765,9 +3775,8 @@ class MediaProcessor:
                                 specific_tmdb_data = ep
                                 break
                     
-                    # ★★★ 关键：覆盖骨架中的 ID 和基础信息 ★★★
                     if specific_tmdb_data:
-                        child_data['id'] = specific_tmdb_data.get('id') # 修复 ID=0 的关键
+                        child_data['id'] = specific_tmdb_data.get('id')
                         child_data['name'] = specific_tmdb_data.get('name')
                         child_data['overview'] = specific_tmdb_data.get('overview')
                         child_data['season_number'] = current_s_num
@@ -3777,20 +3786,19 @@ class MediaProcessor:
                         if specific_tmdb_data.get('vote_average'):
                             child_data['vote_average'] = specific_tmdb_data.get('vote_average')
 
-                # 2. 处理分季 (Season) 数据注入
+                # 2. 处理分季 (Season)
                 elif is_season_file and tmdb_seasons_data and current_s_num is not None:
-                    # tmdb_seasons_data 通常是一个列表
                     for season in tmdb_seasons_data:
-                        # ★★★ 修复：增加类型检查，防止 'int' object has no attribute 'get' 错误 ★★★
-                        if not isinstance(season, dict):
-                            continue
-
-                        if season.get('season_number') == current_s_num:
+                        if not isinstance(season, dict): continue
+                        
+                        # ★★★ 强制类型转换比较，确保匹配成功 ★★★
+                        s_num_tmdb = season.get('season_number')
+                        if s_num_tmdb is not None and int(s_num_tmdb) == current_s_num:
                             specific_tmdb_data = season
                             break
                     
-                    # ★★★ 关键：覆盖骨架中的 ID 和基础信息 ★★★
                     if specific_tmdb_data:
+                        # ★★★ 修复 ID=0 的关键：注入真实 ID ★★★
                         child_data['id'] = specific_tmdb_data.get('id')
                         child_data['name'] = specific_tmdb_data.get('name')
                         child_data['overview'] = specific_tmdb_data.get('overview')
