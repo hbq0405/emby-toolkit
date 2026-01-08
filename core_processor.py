@@ -948,7 +948,7 @@ class MediaProcessor:
         if not tmdb_id:
             return False
 
-        logger.info(f"  ➜ [快速补全] 发现预处理记录，正在为 '{item_name}' (TMDb:{tmdb_id}) 补全 Emby 资产信息...")
+        logger.info(f"  ➜ [Webhook回流] 发现预处理记录，正在为 '{item_name}' (TMDb:{tmdb_id}) 补全 Emby 资产信息...")
 
         try:
             # 1. 准备通用数据
@@ -1004,7 +1004,7 @@ class MediaProcessor:
                     # 这里我们将 main_item_has_assets 设为 True，避免剧集本身进入待复核
                     main_item_has_assets = True 
 
-                    logger.info(f"  ➜ [快速补全] 检测到剧集，正在同步子项目状态...")
+                    logger.info(f"  ➜ [Webhook回流] 检测到剧集，正在同步子项目状态...")
                     
                     children = emby.get_series_children(
                         series_id=item_id,
@@ -1075,11 +1075,11 @@ class MediaProcessor:
                                     child_update_count += 1
                                     # 如果是分集且缺失资产，记录日志（可选，防止日志爆炸，这里暂不记录子项的待复核，只处理主项）
                         
-                        logger.info(f"  ➜ [快速补全] 额外同步了 {child_update_count} 个子项目 (季/集)。")
+                        logger.info(f"  ➜ [Webhook回流] 额外同步了 {child_update_count} 个子项目 (季/集)。")
 
                 conn.commit()
                 
-            logger.info(f"  ✅ [快速补全] '{item_name}' 及其子项目已标记为入库。")
+            logger.info(f"  ✅ [Webhook回流] '{item_name}' 及其子项目已标记为入库。")
             
             # 4. ★★★ 状态标记逻辑 (替代原有的打分机制) ★★★
             with get_central_db_connection() as conn:

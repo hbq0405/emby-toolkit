@@ -54,6 +54,7 @@
           - "8097:8097"                               # 反代端口，虚拟库用，冒号前面是实际访问端口，冒号后面是管理后台设置的反代监听端口
         volumes:
           - /path/emby-toolkit:/config                # 将宿主机的数据目录挂载到容器的 /config 目录
+          - /path/media:/media                        # 映射Emby媒体目录，用以实时监控，替代Emby刮削。
           - /path/tmdb:/tmdb                          # 映射神医本地TMDB目录，非神医Pro用户可以留空
           - /var/run/docker.sock:/var/run/docker.sock # 一键更新用，不需要可以不配置
         environment:
