@@ -372,24 +372,168 @@ class MediaProcessor:
                     return
                 # 此时 final_processed_cast 也是 None，sync_item_metadata 会从 details 中读取原始演员表
 
+            # 1. 准备伪造的 Emby 对象 (用于后续流程)
             fake_item_details = {
-                "Id": "pending", 
-                "Name": details.get('title') or details.get('name'), 
+                "Id": "pending",
+                "Name": details.get('title') or details.get('name'),
                 "Type": item_type,
                 "ProviderIds": {"Tmdb": tmdb_id}
             }
 
-            logger.info(f"  ➜ [实时监控] 正在写入本地元数据文件...")
-            
-            # 如果是剧集，确保分集数据也能带上
-            if item_type == "Series" and aggregated_tmdb_data:
-                details['episodes_details'] = aggregated_tmdb_data.get('episodes_details')
+            logger.info(f"  ➜ [实时监控] 正在按照骨架模板格式化元数据...")
 
+            # 2. 初始化骨架 (深拷贝)
+            if item_type == "Movie":
+                formatted_metadata = json.loads(json.dumps(utils.MOVIE_SKELETON_TEMPLATE))
+            else:
+                formatted_metadata = json.loads(json.dumps(utils.SERIES_SKELETON_TEMPLATE))
+
+            # 3. 基础字段填充 (自动映射同名键)
+            # 排除特殊结构字段，稍后手动处理
+            exclude_keys = [
+                'casts', 'releases', 'release_dates', 'keywords', 'trailers', 
+                'content_ratings', 'videos', 'credits', 'genres', 
+                'episodes_details', 'seasons_details', 'created_by', 'networks'
+            ]
+            for key in formatted_metadata.keys():
+                if key in details and key not in exclude_keys:
+                    formatted_metadata[key] = details[key]
+
+            # 4. 通用复杂字段处理
+            # Genres
+            if 'genres' in details:
+                formatted_metadata['genres'] = details['genres']
+            
+            # Keywords
+            if 'keywords' in details:
+                kw_data = details['keywords']
+                if item_type == "Movie":
+                    # 电影骨架结构: keywords -> keywords list
+                    if isinstance(kw_data, dict):
+                        formatted_metadata['keywords']['keywords'] = kw_data.get('keywords', [])
+                    elif isinstance(kw_data, list):
+                        formatted_metadata['keywords']['keywords'] = kw_data
+                else:
+                    # 剧集骨架结构: keywords -> results list
+                    if isinstance(kw_data, dict):
+                        formatted_metadata['keywords']['results'] = kw_data.get('results', [])
+                    elif isinstance(kw_data, list):
+                        formatted_metadata['keywords']['results'] = kw_data
+
+            # Videos / Trailers
+            if 'videos' in details:
+                if item_type == "Movie":
+                    # 电影: trailers -> youtube
+                    youtube_list = []
+                    for v in details['videos'].get('results', []):
+                        if v.get('site') == 'YouTube' and v.get('type') == 'Trailer':
+                            youtube_list.append({
+                                "name": v.get('name'),
+                                "size": str(v.get('size', 'HD')),
+                                "source": v.get('key'),
+                                "type": "Trailer"
+                            })
+                    formatted_metadata['trailers']['youtube'] = youtube_list
+                else:
+                    # 剧集: videos -> results
+                    formatted_metadata['videos'] = details['videos']
+
+            # 5. 类型特定处理 (Movie vs Series)
+            if item_type == "Movie":
+                # --- 电影特殊映射 ---
+                
+                # 演员表: TMDb credits -> Skeleton casts
+                credits_source = details.get('credits') or details.get('casts') or {}
+                if credits_source:
+                    formatted_metadata['casts']['cast'] = credits_source.get('cast', [])
+                    formatted_metadata['casts']['crew'] = credits_source.get('crew', [])
+
+                # 分级: TMDb release_dates -> Skeleton releases
+                if 'release_dates' in details:
+                    # 这里简化处理，直接把原始数据挂载，sync_item_metadata 内部逻辑会处理
+                    # 但为了符合骨架，我们需要构建 releases.countries
+                    countries_list = []
+                    for r in details['release_dates'].get('results', []):
+                        country_code = r.get('iso_3166_1')
+                        for rel in r.get('release_dates', []):
+                            if rel.get('certification'):
+                                countries_list.append({
+                                    "iso_3166_1": country_code,
+                                    "certification": rel.get('certification'),
+                                    "release_date": rel.get('release_date'),
+                                    "primary": False
+                                })
+                                break # 取第一个认证即可
+                    formatted_metadata['releases']['countries'] = countries_list
+                    
+                    # 尝试提取 MPAA/Certification 填入根节点
+                    for c in countries_list:
+                        if c['iso_3166_1'] == 'US':
+                            formatted_metadata['mpaa'] = c['certification']
+                            formatted_metadata['certification'] = c['certification']
+                            break
+
+            elif item_type == "Series":
+                # --- 剧集特殊映射 ---
+                
+                # 演员表: TMDb aggregate_credits -> Skeleton credits
+                credits_source = details.get('aggregate_credits') or details.get('credits') or {}
+                if credits_source:
+                    formatted_metadata['credits']['cast'] = credits_source.get('cast', [])
+                    formatted_metadata['credits']['crew'] = credits_source.get('crew', [])
+                
+                # 创作者 & 电视网
+                if 'created_by' in details: formatted_metadata['created_by'] = details['created_by']
+                if 'networks' in details: formatted_metadata['networks'] = details['networks']
+
+                # 分级: TMDb content_ratings -> Skeleton content_ratings
+                if 'content_ratings' in details:
+                    formatted_metadata['content_ratings'] = details['content_ratings']
+                    # 提取根节点分级
+                    for r in details['content_ratings'].get('results', []):
+                        if r.get('iso_3166_1') == 'US':
+                            formatted_metadata['mpaa'] = r.get('rating')
+                            formatted_metadata['certification'] = r.get('rating')
+                            break
+
+                # ★★★ 核心：分集数据格式化 (season-X-episode-Y.json) ★★★
+                if aggregated_tmdb_data:
+                    raw_episodes = aggregated_tmdb_data.get('episodes_details', {})
+                    formatted_episodes = {}
+                    
+                    for key, ep_data in raw_episodes.items():
+                        # 1. 初始化分集骨架
+                        ep_skeleton = json.loads(json.dumps(utils.EPISODE_SKELETON_TEMPLATE))
+                        
+                        # 2. 填充基础数据
+                        ep_skeleton['name'] = ep_data.get('name')
+                        ep_skeleton['overview'] = ep_data.get('overview')
+                        ep_skeleton['air_date'] = ep_data.get('air_date')
+                        ep_skeleton['vote_average'] = ep_data.get('vote_average')
+                        
+                        # 3. 填充演员 (Guest Stars & Crew)
+                        ep_credits = ep_data.get('credits', {})
+                        ep_skeleton['credits']['cast'] = ep_credits.get('cast', []) # 通常分集cast是空的，主要是guest_stars
+                        ep_skeleton['credits']['guest_stars'] = ep_credits.get('guest_stars', [])
+                        ep_skeleton['credits']['crew'] = ep_credits.get('crew', [])
+                        
+                        # 4. 存回字典
+                        formatted_episodes[key] = ep_skeleton
+                    
+                    # 将格式化好的分集数据挂载回去，供 sync_item_metadata 使用
+                    formatted_metadata['episodes_details'] = formatted_episodes
+                    
+                    # 同时也挂载季数据
+                    formatted_metadata['seasons_details'] = aggregated_tmdb_data.get('seasons_details', [])
+
+            # 6. 调用同步
+            logger.info(f"  ➜ [实时监控] 正在写入本地元数据文件 (已格式化)...")
+            
             self.sync_item_metadata(
                 item_details=fake_item_details,
                 tmdb_id=tmdb_id,
                 final_cast_override=final_processed_cast,
-                metadata_override=details 
+                metadata_override=formatted_metadata  # <--- 传入清洗后的数据
             )
 
             # =========================================================
