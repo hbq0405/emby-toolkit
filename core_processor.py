@@ -3362,70 +3362,99 @@ class MediaProcessor:
             
             # ★★★ 读取语言偏好配置 ★★★
             lang_pref = self.config.get(constants.CONFIG_OPTION_TMDB_IMAGE_LANGUAGE_PREFERENCE, 'zh')
-            logger.info(f"  ➜ {log_prefix} 图片语言偏好: {'中文优先' if lang_pref == 'zh' else '原语言/英文优先'}")
+            original_lang_code = tmdb_data.get("original_language", "en")
+            
+            logger.debug(f"  ➜ {log_prefix} 图片偏好: {'中文优先' if lang_pref == 'zh' else '原语言优先'} (原语言: {original_lang_code})")
+
+            # =========================================================
+            # ★★★ 定义通用图片选择逻辑 (不再偷懒，统一逻辑) ★★★
+            # =========================================================
+            def _select_best_image(image_list: list, preference: str, orig_lang: str) -> Optional[str]:
+                if not image_list:
+                    return None
+                
+                selected = None
+                if preference == 'zh':
+                    # 策略 A: 中文 > 原语言 > 英文 > 第一个
+                    for img in image_list:
+                        if img.get("iso_639_1") == "zh": return img["file_path"]
+                    for img in image_list:
+                        if img.get("iso_639_1") == orig_lang: return img["file_path"]
+                    for img in image_list:
+                        if img.get("iso_639_1") == "en": return img["file_path"]
+                else:
+                    # 策略 B: 原语言 > 英文 > 中文 > 第一个
+                    for img in image_list:
+                        if img.get("iso_639_1") == orig_lang: return img["file_path"]
+                    if orig_lang != 'en':
+                        for img in image_list:
+                            if img.get("iso_639_1") == "en": return img["file_path"]
+                    for img in image_list:
+                        if img.get("iso_639_1") == "zh": return img["file_path"]
+                
+                # 兜底：返回评分最高的第一个（TMDb默认已按评分排序）
+                return image_list[0]["file_path"]
 
             # 3. 定义下载任务列表
             downloads = []
-
-            # --- A. 通用图片 ---
-            # Poster -> poster.jpg
-            if tmdb_data.get("poster_path"):
-                downloads.append((tmdb_data["poster_path"], "poster.jpg"))
-            
-            # Backdrop -> fanart.jpg
-            if tmdb_data.get("backdrop_path"):
-                downloads.append((tmdb_data["backdrop_path"], "fanart.jpg"))
-            
-            # Images 节点处理 (Logo 和 Thumb)
             images_node = tmdb_data.get("images", {})
-            
-            # Logo -> clearlogo.png
-            logos = images_node.get("logos", [])
-            selected_logo = None
-            
-            if logos:
-                if lang_pref == 'zh':
-                    # 策略 A: 中文优先 > 英文 > 第一个
-                    for logo in logos:
-                        if logo.get("iso_639_1") == "zh":
-                            selected_logo = logo["file_path"]
-                            break
-                    if not selected_logo:
-                        for logo in logos:
-                            if logo.get("iso_639_1") == "en":
-                                selected_logo = logo["file_path"]
-                                break
-                else:
-                    # 策略 B: 英文/原语言优先 > 中文 > 第一个
-                    # (注：TMDb logo 通常英文居多，这里简单处理为优先找英文，找不到再找中文)
-                    for logo in logos:
-                        if logo.get("iso_639_1") == "en":
-                            selected_logo = logo["file_path"]
-                            break
-                    if not selected_logo:
-                        for logo in logos:
-                            if logo.get("iso_639_1") == "zh":
-                                selected_logo = logo["file_path"]
-                                break
-                
-                # 兜底：如果都没找到，取第一个
-                if not selected_logo:
-                    selected_logo = logos[0]["file_path"]
-                
-                if selected_logo:
-                    downloads.append((selected_logo, "clearlogo.png"))
 
-            # Thumb (Landscape) -> landscape.jpg
-            # 取 backdrops 里的第一张
-            backdrops = images_node.get("backdrops", [])
-            if backdrops:
-                downloads.append((backdrops[0]["file_path"], "landscape.jpg"))
+            # --- A. 海报 (Poster) ---
+            # ★★★ 修复：不再直接取 poster_path，而是去 posters 列表里挑 ★★★
+            posters_list = images_node.get("posters", [])
+            selected_poster = _select_best_image(posters_list, lang_pref, original_lang_code)
+            
+            # 如果列表里没挑出来（极少见），再用顶层字段兜底
+            if not selected_poster:
+                selected_poster = tmdb_data.get("poster_path")
+            
+            if selected_poster:
+                downloads.append((selected_poster, "poster.jpg"))
+            
+            # --- B. 背景 (Backdrop / Fanart) ---
+            # 背景图通常首选无文字(null)，其次才看语言。
+            # 这里我们稍微变通一下：如果用户选了原语言优先，我们尝试找原语言的；
+            # 否则（中文优先），我们倾向于找无文字的或者中文的。
+            # 但为了简单且符合“原图”的高质量要求，背景图我们通常还是信任 TMDb 的默认排序（通常是无文字的高分图）。
+            # 不过既然你要求了，我也让它走一遍选择逻辑，但把 'null' (无文字) 视为最高优先级。
+            
+            backdrops_list = images_node.get("backdrops", [])
+            selected_backdrop = None
+            
+            # 特殊逻辑：背景图优先找无文字 (iso_639_1 is None or 'null')
+            for img in backdrops_list:
+                if img.get("iso_639_1") in [None, "null"]:
+                    selected_backdrop = img["file_path"]
+                    break
+            
+            # 如果没找到无文字的，再按语言偏好找
+            if not selected_backdrop:
+                selected_backdrop = _select_best_image(backdrops_list, lang_pref, original_lang_code)
+            
+            # 兜底
+            if not selected_backdrop:
+                selected_backdrop = tmdb_data.get("backdrop_path")
 
-            # --- B. 剧集特有：季海报 ---
+            if selected_backdrop:
+                downloads.append((selected_backdrop, "fanart.jpg"))
+                # 顺便拿第一张背景做 landscape (缩略图)
+                downloads.append((selected_backdrop, "landscape.jpg"))
+
+            # --- C. Logo (Clearlogo) ---
+            logos_list = images_node.get("logos", [])
+            selected_logo = _select_best_image(logos_list, lang_pref, original_lang_code)
+            
+            if selected_logo:
+                downloads.append((selected_logo, "clearlogo.png"))
+
+            # --- D. 剧集特有：季海报 ---
             if item_type == "Series":
                 seasons = tmdb_data.get("seasons", [])
                 for season in seasons:
                     s_num = season.get("season_number")
+                    # 季海报通常在顶层数据里没有详细的 images 列表，只能拿 poster_path
+                    # 要想精确控制季海报语言，需要单独请求每一季的详情，这会增加很多 API 请求。
+                    # 考虑到性能，季海报这里暂时保持原样（通常季海报文字较少）。
                     s_poster = season.get("poster_path")
                     if s_num is not None and s_poster:
                         downloads.append((s_poster, f"season-{s_num}.jpg"))
