@@ -1002,7 +1002,7 @@ def task_populate_metadata_cache(processor, batch_size: int = 50, force_full_upd
                             for col in columns:
                                 # ★★★ 2. 定义基础排除列表 ★★★
                                 # 这些字段永远不更新
-                                exclude_cols = {'tmdb_id', 'item_type', 'subscription_sources_json'}
+                                exclude_cols = {'tmdb_id', 'item_type', 'subscription_sources_json', 'subscription_status'}
                                 
                                 # ★★★ 3. 动态判断是否排除标题 ★★★
                                 # 只有当类型是 电影(Movie) 或 剧集(Series) 时，才排除 title
