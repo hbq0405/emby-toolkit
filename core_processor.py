@@ -280,11 +280,55 @@ class MediaProcessor:
             if os.path.exists(main_json_path):
                 if db_record_exists:
                     if db_in_library is True:
-                        logger.info(f"  ➜ [实时监控] 检测到 '{filename}' 已完美入库，直接跳过。")
-                        return 
+                        # 如果文件名不同，说明是洗版(新文件替换旧文件)，必须放行！
+                        is_same_file = False
+                        try:
+                            # 1. 获取数据库中记录的文件资产信息
+                            assets_json = None
+                            if item_type == "Movie" and details:
+                                assets_json = details.get('asset_details_json')
+                            elif item_type == "Series":
+                                # 剧集需要单独查一下分集的资产信息
+                                with get_db_connection() as conn:
+                                    cursor = conn.cursor()
+                                    cursor.execute("""
+                                        SELECT asset_details_json FROM media_metadata 
+                                        WHERE parent_series_tmdb_id = %s AND season_number = %s AND episode_number = %s AND item_type = 'Episode'
+                                    """, (tmdb_id, s_num, e_num))
+                                    row = cursor.fetchone()
+                                    if row: assets_json = row[0]
+
+                            # 2. 比对文件名
+                            if assets_json:
+                                # 兼容字符串或列表格式
+                                if isinstance(assets_json, str):
+                                    assets_json = json.loads(assets_json)
+                                
+                                if isinstance(assets_json, list):
+                                    current_filename = os.path.basename(file_path)
+                                    for asset in assets_json:
+                                        # 只要有一个资产的文件名与当前文件匹配，就认为是同一个文件
+                                        # (使用文件名比对而非全路径，以兼容路径映射差异)
+                                        db_path = asset.get('path', '')
+                                        if os.path.basename(db_path) == current_filename:
+                                            is_same_file = True
+                                            break
+                        except Exception as e:
+                            logger.warning(f"  ➜ [实时监控] 洗版检测出错，默认放行: {e}")
+                            is_same_file = False
+
+                        if is_same_file:
+                            logger.info(f"  ➜ [实时监控] 检测到 '{filename}' 已完美入库且文件一致，直接跳过。")
+                            return 
+                        else:
+                            logger.info(f"  ➜ [实时监控] 检测到 '{filename}' 是新文件 (洗版/替换),通知Emby刷新。")
+                            
+                            # 直接触发刷新
+                            emby.refresh_library_by_path(folder_path, self.emby_url, self.emby_api_key)
+                            
+                            return 
                     else:
-                        logger.info(f"  ➜ [实时监控] 检测到 '{filename}' 处于预处理状态(in_library=False)。")
-                        logger.info(f"  ➜ [实时监控] 直接通知 Emby 刷新目录以触发入库: {folder_path}")
+                        logger.info(f"  ➜ [实时监控] 检测到 '{filename}' 处于离线状态，通知 Emby 刷新目录以触发入库。")
                         emby.refresh_library_by_path(folder_path, self.emby_url, self.emby_api_key)
                         return
                 else:
@@ -481,7 +525,7 @@ class MediaProcessor:
             # 步骤 5: 写入数据库 (占位记录)
             # =========================================================
             if not should_skip_full_processing:
-                logger.info(f"  ➜ [实时监控] 正在将元数据写入数据库 (占位记录, in_library=False)...")
+                logger.info(f"  ➜ [实时监控] 正在将元数据写入数据库 ...")
                 with get_db_connection() as conn:
                     cursor = conn.cursor()
                     self._upsert_media_metadata(
@@ -516,7 +560,7 @@ class MediaProcessor:
         except Exception as e:
             logger.error(f"  ➜ [实时监控] 处理文件 {file_path} 时发生错误: {e}", exc_info=True)
 
-    # --- [新增] 实时监控：处理文件删除 ---
+    # --- 实时监控：处理文件删除 ---
     def process_file_deletion(self, file_path: str):
         """
         实时监控：处理文件删除事件。
