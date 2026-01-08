@@ -440,16 +440,29 @@ class MediaProcessor:
                 if aggregated_tmdb_data:
                     raw_episodes = aggregated_tmdb_data.get('episodes_details', {})
                     formatted_episodes = {}
+                    
                     for key, ep_data in raw_episodes.items():
+                        # 1. 初始化分集骨架
                         ep_skeleton = json.loads(json.dumps(utils.EPISODE_SKELETON_TEMPLATE))
+                        
+                        # 2. ★★★ 关键修复：显式赋值 ID 和 季/集号 ★★★
+                        # 如果没有这几行，写入数据库时 ID 就是 0 或 None！
+                        ep_skeleton['id'] = ep_data.get('id') 
+                        ep_skeleton['season_number'] = ep_data.get('season_number')
+                        ep_skeleton['episode_number'] = ep_data.get('episode_number')
+                        
+                        # 3. 填充其他基础数据
                         ep_skeleton['name'] = ep_data.get('name')
                         ep_skeleton['overview'] = ep_data.get('overview')
                         ep_skeleton['air_date'] = ep_data.get('air_date')
                         ep_skeleton['vote_average'] = ep_data.get('vote_average')
+                        
+                        # 4. 填充演员
                         ep_credits = ep_data.get('credits', {})
                         ep_skeleton['credits']['cast'] = ep_credits.get('cast', []) 
                         ep_skeleton['credits']['guest_stars'] = ep_credits.get('guest_stars', [])
                         ep_skeleton['credits']['crew'] = ep_credits.get('crew', [])
+                        
                         formatted_episodes[key] = ep_skeleton
                     
                     formatted_metadata['episodes_details'] = formatted_episodes
@@ -863,10 +876,10 @@ class MediaProcessor:
                 
                 # ★★★ 4. 处理分集 (Episode) ★★★
                 raw_episodes = source_data_package.get("episodes_details", {})
+                # 兼容字典(S1E1: data)和列表两种格式
                 episodes_details = list(raw_episodes.values()) if isinstance(raw_episodes, dict) else (raw_episodes if isinstance(raw_episodes, list) else [])
                 
                 emby_episode_versions = []
-                # ★ Pending 模式下跳过 Emby 查询
                 if not is_pending:
                     emby_episode_versions = emby.get_all_library_versions(
                         base_url=self.emby_url, api_key=self.emby_api_key, user_id=self.emby_user_id,
@@ -883,11 +896,19 @@ class MediaProcessor:
                         except: pass
 
                 for episode in episodes_details:
-                    # ★★★ 核心修复：严防死守 ID=0 ★★★
+                    # ★★★ 核心修复：严防死守，只认 TMDb 数字 ID ★★★
                     e_tmdb_id = episode.get('id')
-                    if not e_tmdb_id or str(e_tmdb_id) in ['0', 'None', '']:
+                    
+                    # 1. 必须有 ID
+                    if not e_tmdb_id: 
+                        continue
+                    
+                    # 2. ID 必须是数字字符串，且不能是 '0'
+                    e_tmdb_id_str = str(e_tmdb_id)
+                    if e_tmdb_id_str in ['0', 'None', ''] or not e_tmdb_id_str.isdigit():
                         continue
 
+                    # 3. 必须有季号和集号
                     if episode.get('episode_number') is None: continue
                     try:
                         s_num = int(episode.get('season_number'))
@@ -898,7 +919,8 @@ class MediaProcessor:
                     final_runtime = get_representative_runtime(versions_of_episode, episode.get('runtime'))
 
                     episode_record = {
-                        "tmdb_id": str(e_tmdb_id), "item_type": "Episode", 
+                        "tmdb_id": e_tmdb_id_str, # ★★★ 确认使用清洗后的 TMDb ID ★★★
+                        "item_type": "Episode", 
                         "parent_series_tmdb_id": str(series_details.get('id')), 
                         "title": episode.get('name'), "overview": episode.get('overview'), 
                         "release_date": episode.get('air_date'), 
@@ -906,7 +928,6 @@ class MediaProcessor:
                         "runtime_minutes": final_runtime
                     }
                     
-                    # ★ Pending 模式下分集也为 False
                     if not is_pending and versions_of_episode:
                         all_emby_ids = [v.get('Id') for v in versions_of_episode]
                         all_asset_details = []
