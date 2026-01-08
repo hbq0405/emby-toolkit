@@ -132,7 +132,8 @@ def get_movie_details(movie_id: int, api_key: str, append_to_response: Optional[
     endpoint = f"/movie/{movie_id}"
     params = {
         "language": DEFAULT_LANGUAGE,
-        "append_to_response": append_to_response or ""
+        "append_to_response": append_to_response or "",
+        "include_image_language": "zh,en,null"
     }
     logger.trace(f"TMDb: 获取电影详情 (ID: {movie_id})")
     details = _tmdb_request(endpoint, api_key, params)
@@ -167,7 +168,8 @@ def get_tv_details(tv_id: int, api_key: str, append_to_response: Optional[str] =
     params = {
         "language": DEFAULT_LANGUAGE,
         # ★★★ 确保 append_to_response 不为空，即使外部没传 ★★★
-        "append_to_response": append_to_response or "" 
+        "append_to_response": append_to_response or "",
+        "include_image_language": "zh,en,null" 
     }
     logger.trace(f"TMDb: 获取电视剧详情 (ID: {tv_id})")
     details = _tmdb_request(endpoint, api_key, params)
