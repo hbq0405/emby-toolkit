@@ -390,7 +390,7 @@ def aggregate_full_series_data_from_tmdb(
     # --- 步骤 4: 将所有结果智能地聚合到一个大字典中 ---
     final_aggregated_data = {
         "series_details": series_details,
-        "seasons_details": {}, # key 是季号, e.g., {1: {...}, 2: {...}}
+        "seasons_details": {}, # 临时使用字典，方便按季号归位
         "episodes_details": {} # key 是 "S1E1", "S1E2", ...
     }
 
@@ -402,7 +402,12 @@ def aggregate_full_series_data_from_tmdb(
             final_aggregated_data["episodes_details"][key] = data
             
     logger.info(f"  ➜ 成功获取 {len(final_aggregated_data['seasons_details'])} 季和 {len(final_aggregated_data['episodes_details'])} 集的详情。")
+    seasons_list = list(final_aggregated_data["seasons_details"].values())
+    # 为了美观和逻辑顺畅，按季号排序
+    seasons_list.sort(key=lambda x: x.get("season_number", 0))
     
+    # 覆盖回字典
+    final_aggregated_data["seasons_details"] = seasons_list
     return final_aggregated_data
 # +++ 获取集详情 +++
 def get_episode_details_tmdb(tv_id: int, season_number: int, episode_number: int, api_key: str, append_to_response: Optional[str] = "credits,videos,images,external_ids") -> Optional[Dict[str, Any]]:

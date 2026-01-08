@@ -3629,8 +3629,17 @@ class MediaProcessor:
                             "Name": ep_data.get('name'),
                             "Overview": ep_data.get('overview')
                         })
-                        # 记录已处理的季
-                        seen_seasons.add(s_num)
+                        
+                        # ★★★ 恢复：顺便构造虚拟 Season 对象 (去重) ★★★
+                        # 这一步非常关键！它保证了只要有分集，对应的季文件 season-X.json 就一定会被创建。
+                        # 即使后面的 B 步骤失败了，我们至少还有一个 ID=0 的文件，而不是文件丢失。
+                        if s_num not in seen_seasons:
+                            children_from_emby.append({
+                                "Type": "Season",
+                                "IndexNumber": s_num,
+                                "Name": f"Season {s_num}"
+                            })
+                            seen_seasons.add(s_num)
 
             # B. ★★★ 新增：显式处理分季数据 (Season) ★★★
             # 即使没有分集数据，或者分集循环漏掉了某些季，这里也能补全
