@@ -3471,8 +3471,10 @@ class MediaProcessor:
 
         perfect_cast_for_injection = []
         
-        #  定义一个变量用来存分集数据 
+        # 定义一个变量用来存分集数据 
         tmdb_episodes_data = None 
+        # ★★★ 新增：定义一个变量用来存分季数据 ★★★
+        tmdb_seasons_data = None
 
         # 如果有元数据覆盖，先写入元数据 
         if metadata_override:
@@ -3481,7 +3483,10 @@ class MediaProcessor:
             #  在删除前，先把分集数据提取出来！ 
             if 'episodes_details' in metadata_override:
                 tmdb_episodes_data = metadata_override['episodes_details']
-            # =========================================================
+            
+            # ★★★ 新增：提取分季数据 ★★★
+            if 'seasons_details' in metadata_override:
+                tmdb_seasons_data = metadata_override['seasons_details']
 
             # 1. 创建一个副本，避免修改原始对象影响后续逻辑
             data_to_write = metadata_override.copy()
@@ -3529,7 +3534,8 @@ class MediaProcessor:
                 cast_list=perfect_cast_for_injection, 
                 series_details=item_details, 
                 episode_ids_to_sync=episode_ids_to_sync,
-                tmdb_episodes_data=tmdb_episodes_data 
+                tmdb_episodes_data=tmdb_episodes_data,
+                tmdb_seasons_data=tmdb_seasons_data 
             )
 
     # --- 辅助函数：从不同数据源构建演员列表 ---
@@ -3549,7 +3555,7 @@ class MediaProcessor:
         return cast_list
 
     # --- 辅助函数：将演员表注入剧集的季/集JSON文件 ---
-    def _inject_cast_to_series_files(self, target_dir: str, cast_list: List[Dict[str, Any]], series_details: Dict[str, Any], episode_ids_to_sync: Optional[List[str]] = None, tmdb_episodes_data: Optional[Dict[str, Any]] = None):
+    def _inject_cast_to_series_files(self, target_dir: str, cast_list: List[Dict[str, Any]], series_details: Dict[str, Any], episode_ids_to_sync: Optional[List[str]] = None, tmdb_episodes_data: Optional[Dict[str, Any]] = None, tmdb_seasons_data: Optional[List[Dict[str, Any]]] = None):
         """
         辅助函数：将演员表注入剧集的季/集JSON文件。
         【修复版】支持主动监控模式 (ID='pending')，此时仅基于 TMDb 数据生成文件，不请求 Emby。
@@ -3730,6 +3736,65 @@ class MediaProcessor:
                              child_data['credits'] = data_source['casts']
                         elif key in data_source:
                             child_data[key] = data_source[key]
+
+                # --- 解析文件名中的季/集号 ---
+                current_s_num = None
+                current_e_num = None
+                try:
+                    parts = filename.replace(".json", "").split("-")
+                    if is_season_file and len(parts) >= 2:
+                        current_s_num = int(parts[1])
+                    elif is_episode_file and len(parts) >= 4:
+                        current_s_num = int(parts[1])
+                        current_e_num = int(parts[3])
+                except:
+                    pass
+
+                # --- 核心修复：注入 TMDb 真实数据 (ID, Name, Overview 等) ---
+                specific_tmdb_data = None
+                
+                # 1. 处理分集 (Episode) 数据注入
+                if is_episode_file and tmdb_episodes_data and current_s_num is not None and current_e_num is not None:
+                    # 尝试多种 Key 格式 (S1E1 或 列表查找)
+                    key_s1e1 = f"S{current_s_num}E{current_e_num}"
+                    if isinstance(tmdb_episodes_data, dict):
+                        specific_tmdb_data = tmdb_episodes_data.get(key_s1e1)
+                    elif isinstance(tmdb_episodes_data, list):
+                        for ep in tmdb_episodes_data:
+                            if ep.get('season_number') == current_s_num and ep.get('episode_number') == current_e_num:
+                                specific_tmdb_data = ep
+                                break
+                    
+                    # ★★★ 关键：覆盖骨架中的 ID 和基础信息 ★★★
+                    if specific_tmdb_data:
+                        child_data['id'] = specific_tmdb_data.get('id') # 修复 ID=0 的关键
+                        child_data['name'] = specific_tmdb_data.get('name')
+                        child_data['overview'] = specific_tmdb_data.get('overview')
+                        child_data['season_number'] = current_s_num
+                        child_data['episode_number'] = current_e_num
+                        if specific_tmdb_data.get('air_date'):
+                            child_data['air_date'] = specific_tmdb_data.get('air_date')
+                        if specific_tmdb_data.get('vote_average'):
+                            child_data['vote_average'] = specific_tmdb_data.get('vote_average')
+
+                # 2. 处理分季 (Season) 数据注入
+                elif is_season_file and tmdb_seasons_data and current_s_num is not None:
+                    # tmdb_seasons_data 通常是一个列表
+                    for season in tmdb_seasons_data:
+                        if season.get('season_number') == current_s_num:
+                            specific_tmdb_data = season
+                            break
+                    
+                    # ★★★ 关键：覆盖骨架中的 ID 和基础信息 ★★★
+                    if specific_tmdb_data:
+                        child_data['id'] = specific_tmdb_data.get('id') # 修复 ID=0 的关键
+                        child_data['name'] = specific_tmdb_data.get('name')
+                        child_data['overview'] = specific_tmdb_data.get('overview')
+                        child_data['season_number'] = current_s_num
+                        if specific_tmdb_data.get('air_date'):
+                            child_data['air_date'] = specific_tmdb_data.get('air_date')
+                        if specific_tmdb_data.get('poster_path'):
+                            child_data['poster_path'] = specific_tmdb_data.get('poster_path')
                 
                 # ★★★ 步骤 D: 智能修补演员表 (针对 credits 节点) ★★★
                 specific_tmdb_data = None
