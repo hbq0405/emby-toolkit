@@ -32,9 +32,13 @@ class MediaFileHandler(FileSystemEventHandler):
         self.extensions = [ext.lower() for ext in extensions]
 
     def _is_valid_media_file(self, file_path: str) -> bool:
-        if os.path.isdir(file_path): return False
+        # 注意：对于删除事件，文件已不存在，不能用 isdir 判断，只能靠扩展名
+        # 所以这个辅助函数主要用于 created/moved
+        if os.path.exists(file_path) and os.path.isdir(file_path): return False
+        
         _, ext = os.path.splitext(file_path)
         if ext.lower() not in self.extensions: return False
+        
         filename = os.path.basename(file_path)
         if filename.startswith('.'): return False
         if filename.endswith(('.part', '.crdownload', '.tmp', '.aria2')): return False
@@ -47,6 +51,25 @@ class MediaFileHandler(FileSystemEventHandler):
     def on_moved(self, event):
         if not event.is_directory and self._is_valid_media_file(event.dest_path):
             self._enqueue_file(event.dest_path)
+
+    # ★★★ 新增：处理文件删除事件 ★★★
+    def on_deleted(self, event):
+        if event.is_directory:
+            return
+        
+        # 简单的扩展名检查 (因为文件已删，无法做更多检查)
+        _, ext = os.path.splitext(event.src_path)
+        if ext.lower() not in self.extensions:
+            return
+
+        # 直接调用 processor 处理删除，不走防抖队列
+        # 因为删除操作通常是瞬间完成的，且不需要像新增那样等待文件写入
+        processor = MonitorService.processor_instance
+        if processor:
+            # 异步执行，避免阻塞监控线程
+            threading.Thread(target=processor.process_file_deletion, args=(event.src_path,)).start()
+        else:
+            logger.warning("  ⚠️ [实时监控] 检测到文件删除，但处理器未就绪。")
 
     def _enqueue_file(self, file_path: str):
         """将文件加入队列并重置计时器"""
@@ -80,16 +103,13 @@ def process_batch_queue():
 
     logger.info(f"  📦 [实时监控] 防抖结束，开始批量处理 {len(files_to_process)} 个文件...")
     
-    # 2. 获取处理器实例 (需要从外部获取，或者设为全局变量)
-    # 这里我们假设 MonitorService 已经把 processor 注入到了某个全局位置，或者我们通过 import 获取
-    # 为了简单，我们在 MonitorService 启动时把 processor 赋值给一个模块级变量
+    # 2. 获取处理器实例
     processor = MonitorService.processor_instance
     if not processor:
         logger.error("  ❌ [实时监控] 处理器未初始化，无法处理文件。")
         return
 
     # 3. 智能分组 (按父目录分组)
-    # 这样同一部剧集的不同分集会被分到一组
     grouped_files = {}
     for file_path in files_to_process:
         parent_dir = os.path.dirname(file_path)
@@ -99,18 +119,6 @@ def process_batch_queue():
 
     # 4. 逐组处理
     for parent_dir, files in grouped_files.items():
-        # 对于每一组，我们只需要处理其中一个文件即可触发该剧集的处理流程
-        # 因为 process_file_actively 内部会识别出这是剧集，并处理整个剧集的数据
-        # 不过，为了稳妥，我们可以把这一组文件都传给 processor (如果 processor 支持的话)
-        # 目前 process_file_actively 只接受单个文件路径。
-        # 策略：只取第一个文件触发处理。
-        # 为什么？因为 process_file_actively 的核心逻辑是：
-        #   1. 识别 TMDb ID (同一组文件 ID 肯定一样)
-        #   2. 获取 TMDb 数据 (一次获取全剧数据)
-        #   3. 生成 override 文件 (一次生成全剧所有季/集文件)
-        #   4. 刷新 Emby (一次刷新父目录)
-        # 所以，处理一个文件等于处理了这一组。
-        
         representative_file = files[0]
         logger.info(f"  🚀 [实时监控] 聚合处理: {os.path.basename(parent_dir)} (包含 {len(files)} 个新文件)")
         
@@ -122,8 +130,6 @@ def _handle_single_file_task(processor, file_path):
     处理单个文件的包装函数，包含文件就绪检查
     """
     # 等待文件写入完成 (简单的检查)
-    # 注意：批量处理时，文件可能还在写入。
-    # 这里我们对代表文件做检查。
     stable_count = 0
     last_size = -1
     for _ in range(60): # 最多等 60 秒

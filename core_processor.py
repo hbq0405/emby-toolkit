@@ -516,6 +516,93 @@ class MediaProcessor:
         except Exception as e:
             logger.error(f"  ➜ [实时监控] 处理文件 {file_path} 时发生错误: {e}", exc_info=True)
 
+    # --- [新增] 实时监控：处理文件删除 ---
+    def process_file_deletion(self, file_path: str):
+        """
+        实时监控：处理文件删除事件。
+        仅通过路径字符串推断信息，并将数据库对应的记录标记为离线 (in_library=False)。
+        """
+        try:
+            filename = os.path.basename(file_path)
+            folder_path = os.path.dirname(file_path)
+            folder_name = os.path.basename(folder_path)
+            grandparent_path = os.path.dirname(folder_path)
+            grandparent_name = os.path.basename(grandparent_path)
+
+            # 1. 尝试提取 TMDb ID
+            tmdb_id = None
+            tmdb_regex = r'(?:tmdb|tmdbid)[-_=\s]*(\d+)'
+            
+            # 按优先级查找 ID: 文件名 -> 父目录 -> 爷目录
+            match = re.search(tmdb_regex, filename, re.IGNORECASE)
+            if not match: match = re.search(tmdb_regex, folder_name, re.IGNORECASE)
+            if not match: match = re.search(tmdb_regex, grandparent_name, re.IGNORECASE)
+            
+            if match:
+                tmdb_id = match.group(1)
+            
+            if not tmdb_id:
+                logger.debug(f"  ➜ [文件删除] 无法从路径中提取 TMDb ID，跳过: {filename}")
+                return
+
+            # 2. 识别类型 (Movie / Episode)
+            se_match = re.search(r'[sS](\d{1,2})[eE](\d{1,2})', filename)
+            
+            with get_central_db_connection() as conn:
+                cursor = conn.cursor()
+                
+                if se_match:
+                    # --- 情况 A: 剧集分集 ---
+                    s_num = int(se_match.group(1))
+                    e_num = int(se_match.group(2))
+                    
+                    logger.info(f"  🗑️ [文件删除] 检测到分集删除: {filename} (ID:{tmdb_id} S{s_num}E{e_num})")
+                    
+                    # 标记该分集为离线
+                    # 注意：这里我们假设文件名里的 ID 是 Series ID (父ID)
+                    cursor.execute("""
+                        UPDATE media_metadata 
+                        SET in_library = FALSE, emby_item_ids_json = '[]'::jsonb, asset_details_json = '[]'::jsonb
+                        WHERE parent_series_tmdb_id = %s AND season_number = %s AND episode_number = %s AND item_type = 'Episode'
+                    """, (tmdb_id, s_num, e_num))
+                    
+                    if cursor.rowcount > 0:
+                        logger.info(f"  ✅ 数据库记录已更新: S{s_num}E{e_num} 标记为离线。")
+                    else:
+                        # 备选方案：有时候文件名里的 ID 可能是分集自己的 ID (虽然少见)，或者数据库里没这条记录
+                        logger.debug(f"  ⚠️ 未能在数据库中找到对应的分集记录，可能已被清理。")
+
+                else:
+                    # --- 情况 B: 电影 ---
+                    # 只有当它看起来不像剧集（没有SxxExx）时，才当作电影处理
+                    # 或者是剧集的 Series.json / Season.json 被删了？(通常监控忽略 json)
+                    # 这里主要针对电影视频文件
+                    
+                    logger.info(f"  🗑️ [文件删除] 检测到媒体删除: {filename} (ID:{tmdb_id})")
+                    
+                    cursor.execute("""
+                        UPDATE media_metadata 
+                        SET in_library = FALSE, emby_item_ids_json = '[]'::jsonb, asset_details_json = '[]'::jsonb
+                        WHERE tmdb_id = %s AND item_type = 'Movie'
+                    """, (tmdb_id,))
+                    
+                    if cursor.rowcount > 0:
+                        logger.info(f"  ✅ 数据库记录已更新: 电影 {tmdb_id} 标记为离线。")
+                    else:
+                        logger.debug(f"  ⚠️ 未能在数据库中找到对应的电影记录。")
+                
+                conn.commit()
+
+            # 3. 触发 Emby 刷新 (可选)
+            # 删除文件后，通知 Emby 扫描该目录，让 Emby 也把条目删掉
+            # 注意：这里传入的是 folder_path (父目录)，因为文件已经没了
+            if os.path.exists(folder_path):
+                logger.debug(f"  ➜ [文件删除] 通知 Emby 刷新父目录: {folder_path}")
+                emby.refresh_library_by_path(folder_path, self.emby_url, self.emby_api_key)
+
+        except Exception as e:
+            logger.error(f"  🚫 处理文件删除事件失败: {e}", exc_info=True)
+
     def _refresh_lib_guid_map(self):
         """从 Emby 实时获取所有媒体库的 ID 到 GUID 映射"""
         try:
