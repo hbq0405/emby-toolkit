@@ -160,7 +160,8 @@ def _subscribe_full_series_with_logic(tmdb_id: int, series_name: str, config: Di
                 "name": final_series_name,
                 "tmdbid": tmdb_id,
                 "type": "电视剧",
-                "season": s_num
+                "season": s_num,
+                "best_version": 0
             }
             
             # ==============================================================
@@ -168,29 +169,32 @@ def _subscribe_full_series_with_logic(tmdb_id: int, series_name: str, config: Di
             # ==============================================================
             if check_series_completion(tmdb_id, tmdb_api_key, season_number=s_num, series_name=final_series_name):
                 mp_payload["best_version"] = 1
+                logger.info(f"  ➜ S{s_num} 已完结，启用洗版模式 (best_version=1)。")
+            else:
+                logger.info(f"  ➜ S{s_num} 未完结，使用追更模式 (best_version=0)。")
 
             # ==============================================================
             # 逻辑 E: 提交订阅
             # ==============================================================
-                if moviepilot.subscribe_with_custom_payload(mp_payload, config):
-                    any_success = True
-                    
-                    # 订阅成功后，更新季的状态为 SUBSCRIBED，并写入季发行日期
-                    target_s_id = str(s_id) if s_id else f"{tmdb_id}_S{s_num}"
-                    media_info = {
-                        'tmdb_id': target_s_id,
-                        'parent_series_tmdb_id': str(tmdb_id),
-                        'season_number': s_num,
-                        'title': season.get('name'),
-                        'poster_path': final_poster,
-                        'release_date': air_date_str  # 新增季发行日期字段
-                    }
-                    request_db.set_media_status_subscribed(
-                        tmdb_ids=[target_s_id],
-                        item_type='Season',
-                        source=source,
-                        media_info_list=[media_info]
-                    )
+            if moviepilot.subscribe_with_custom_payload(mp_payload, config):
+                any_success = True
+                
+                # 订阅成功后，更新季的状态为 SUBSCRIBED，并写入季发行日期
+                target_s_id = str(s_id) if s_id else f"{tmdb_id}_S{s_num}"
+                media_info = {
+                    'tmdb_id': target_s_id,
+                    'parent_series_tmdb_id': str(tmdb_id),
+                    'season_number': s_num,
+                    'title': season.get('name'),
+                    'poster_path': final_poster,
+                    'release_date': air_date_str  # 新增季发行日期字段
+                }
+                request_db.set_media_status_subscribed(
+                    tmdb_ids=[target_s_id],
+                    item_type='Season',
+                    source=source,
+                    media_info_list=[media_info]
+                )
                     
         return any_success
 
