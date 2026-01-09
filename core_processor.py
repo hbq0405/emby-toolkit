@@ -1790,7 +1790,6 @@ class MediaProcessor:
             # =========================================================
             final_processed_cast = None
             cache_row = None 
-            skip_db_cache = False
             # 1.快速模式
             if not force_full_update:
                 # --- 路径准备 ---
@@ -1846,40 +1845,23 @@ class MediaProcessor:
                                             tmdb_details_for_extra['seasons_details'] = seasons_details_list
 
                                         # =========================================================
-                                        # ★★★ [补丁] 脏数据检测：只检查季集文件 ID 是否为 0 ★★★
+                                        # ★★★ [补丁] 脏数据检测：只检查季文件 ID 是否为 0 ★★★
                                         # =========================================================
-                                        found_bad_data = False
-                                        
-                                        # 1. 检查季文件 (Season)
+                                        found_bad_season_data = False
                                         for s in seasons_details_list:
-                                            # 使用 get 获取，如果字段缺失会返回 None
                                             s_id = s.get('id')
-                                            # 判定条件：None (缺失), 0 (数字), '0' (字符串), 'None', '' (空串)
-                                            if s_id is None or str(s_id) in ['0', 'None', '']:
-                                                logger.warning(f"  ⚠️ 脏数据检测：本地季文件 (Season {s.get('season_number')}) ID无效或缺失 (ID={s_id})。")
-                                                found_bad_data = True
+                                            # 检查 ID 是否无效 (0, '0', None, '')
+                                            if not s_id or str(s_id) in ['0', 'None', '']:
+                                                logger.warning(f"  ➜ [快速模式] ⚠️ 检测到脏数据：本地季文件 (Season {s.get('season_number')}) 的 ID 为 0。")
+                                                found_bad_season_data = True
                                                 break
                                         
-                                        # 2. 检查分集文件 (Episode) - 只有季文件通过才查分集
-                                        if not found_bad_data:
-                                            for ep in episodes_details_map.values():
-                                                e_id = ep.get('id')
-                                                # 判定条件同上，覆盖字段完全缺失的情况
-                                                if e_id is None or str(e_id) in ['0', 'None', '']:
-                                                    logger.warning(f"  ⚠️ 脏数据检测：本地分集文件 (S{ep.get('season_number')}E{ep.get('episode_number')}) ID无效或缺失 (ID={e_id})。")
-                                                    found_bad_data = True
-                                                    break
-                                        
-                                        # 3. 如果发现脏数据，设置跳过DB标志并抛出异常
-                                        if found_bad_data:
-                                            logger.warning(f"  ➜ [快速模式] 由于本地缓存存在脏数据 (ID缺失/为0)，强制放弃本地文件并跳过数据库缓存，转为在线获取。")
-                                            
-                                            final_processed_cast = None
-                                            skip_db_cache = True
-                                            
-                                            tmdb_details_for_extra = json.loads(json.dumps(utils.SERIES_SKELETON_TEMPLATE))
-                                            
-                                            raise ValueError("Found invalid/missing ID in local series cache")
+                                        if found_bad_season_data:
+                                            logger.warning(f"  ➜ [快速模式] 由于季文件存在脏数据 (ID=0)，强制放弃本地缓存，转为在线获取并重新生成。")
+                                            final_processed_cast = None  # 置空，迫使程序进入下方的完整模式
+                                            tmdb_details_for_extra = None
+                                            # 抛出异常跳出当前 try 块，进入完整模式
+                                            raise ValueError("Found invalid ID=0 in local season cache")
 
                                     except Exception as e_ep:
                                         # 捕获异常（包括上面抛出的 ValueError），确保回退到完整模式
@@ -1904,7 +1886,7 @@ class MediaProcessor:
 
                 # --- 策略 B: 如果文件不存在，尝试加载数据库缓存 (自动备份模式) ---
                 # 逻辑：文件没了，但数据库里有。读取数据库，并在后续阶段自动重新生成文件。
-                if final_processed_cast is None and not skip_db_cache:
+                if final_processed_cast is None:
                     logger.info(f"  ➜ [快速模式] 本地文件未命中，尝试加载数据库缓存...")
                     try:
                         with get_central_db_connection() as conn:
