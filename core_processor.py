@@ -1704,44 +1704,8 @@ class MediaProcessor:
                                             seasons_details_list.sort(key=lambda x: x.get('season_number', 0))
                                             tmdb_details_for_extra['seasons_details'] = seasons_details_list
 
-                                        # =========================================================
-                                        # ★★★ [补丁] 脏数据检测：只检查季集文件 ID 是否为 0 ★★★
-                                        # =========================================================
-                                        found_bad_data = False
-                                        
-                                        # 1. 检查季文件 (Season)
-                                        for s in seasons_details_list:
-                                            # 使用 get 获取，如果字段缺失会返回 None
-                                            s_id = s.get('id')
-                                            # 判定条件：None (缺失), 0 (数字), '0' (字符串), 'None', '' (空串)
-                                            if s_id is None or str(s_id) in ['0', 'None', '']:
-                                                logger.warning(f"  ➜ [快速模式] ⚠️ 脏数据检测：本地季文件 (Season {s.get('season_number')}) ID无效或缺失 (ID={s_id})。")
-                                                found_bad_data = True
-                                                break
-                                        
-                                        # 2. 检查分集文件 (Episode) - 只有季文件通过才查分集
-                                        if not found_bad_data:
-                                            for ep in episodes_details_map.values():
-                                                e_id = ep.get('id')
-                                                # 判定条件同上，覆盖字段完全缺失的情况
-                                                if e_id is None or str(e_id) in ['0', 'None', '']:
-                                                    logger.warning(f"  ➜ [快速模式] ⚠️ 脏数据检测：本地分集文件 (S{ep.get('season_number')}E{ep.get('episode_number')}) ID无效或缺失 (ID={e_id})。")
-                                                    found_bad_data = True
-                                                    break
-                                        
-                                        # 3. 如果发现脏数据，强制跳出
-                                        if found_bad_data:
-                                            logger.warning(f"  ➜ [快速模式] 由于本地缓存存在脏数据 (ID缺失/为0)，强制放弃本地文件，转为在线获取并重新生成。")
-                                            final_processed_cast = None  # 置空，迫使程序进入下方的完整模式
-                                            tmdb_details_for_extra = None
-                                            # 抛出异常跳出当前 try 块，进入完整模式
-                                            raise ValueError("Found invalid/missing ID in local series cache")
-
                                     except Exception as e_ep:
-                                        # 捕获异常（包括上面抛出的 ValueError），确保回退到完整模式
-                                        if "Found invalid ID=0" not in str(e_ep):
-                                            logger.warning(f"  ➜ [快速模式] 聚合分集/季数据时发生异常: {e_ep}")
-                                        final_processed_cast = None # 确保置空
+                                        logger.warning(f"  ➜ [快速模式] 聚合分集/季数据时发生小错误: {e_ep}")
 
                                 # 关键设置 2: 标记源为文件
                                 cache_row = {'source': 'override_file'} 
@@ -1785,7 +1749,7 @@ class MediaProcessor:
                                 # 我们必须在此处强制补全元数据，否则生成的文件 ID 为 0。
                                 is_metadata_empty = not tmdb_details_for_extra.get('id') or str(tmdb_details_for_extra.get('id')) == '0'
                                 if is_metadata_empty and self.tmdb_api_key:
-                                    logger.info(f"  ➜ [快速模式] 检测到元数据缺失，正在从 TMDb 补全详情...")
+                                    logger.info(f"  ➜ [快速模式] 检测到元数据缺失 (ID=0)，正在从 TMDb 补全详情...")
                                     try:
                                         if item_type == "Movie":
                                             fresh_data_b = tmdb.get_movie_details(tmdb_id, self.tmdb_api_key)
