@@ -434,8 +434,12 @@ SEASON_SKELETON_TEMPLATE = {
 
 # 用于生成 season-X-episode-Y.json (分集)
 EPISODE_SKELETON_TEMPLATE = {
+  "season_number": 0,
+  "episode_number": 0,
   "name": "",
   "overview": "",
+  "id": 0,
+  "still_path": "",
   "videos": {
     "results": []
   },

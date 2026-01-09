@@ -449,20 +449,7 @@ class MediaProcessor:
                     formatted_metadata['casts']['cast'] = credits_source.get('cast', [])
                     formatted_metadata['casts']['crew'] = credits_source.get('crew', [])
 
-                if 'release_dates' in details:
-                    countries_list = []
-                    for r in details['release_dates'].get('results', []):
-                        country_code = r.get('iso_3166_1')
-                        for rel in r.get('release_dates', []):
-                            if rel.get('certification'):
-                                countries_list.append({"iso_3166_1": country_code, "certification": rel.get('certification'), "release_date": rel.get('release_date'), "primary": False})
-                                break 
-                    formatted_metadata['releases']['countries'] = countries_list
-                    for c in countries_list:
-                        if c['iso_3166_1'] == 'US':
-                            formatted_metadata['mpaa'] = c['certification']
-                            formatted_metadata['certification'] = c['certification']
-                            break
+                self._apply_rating_logic(formatted_metadata, details, "Movie")
 
             elif item_type == "Series":
                 credits_source = details.get('aggregate_credits') or details.get('credits') or {}
@@ -473,13 +460,7 @@ class MediaProcessor:
                 if 'created_by' in details: formatted_metadata['created_by'] = details['created_by']
                 if 'networks' in details: formatted_metadata['networks'] = details['networks']
 
-                if 'content_ratings' in details:
-                    formatted_metadata['content_ratings'] = details['content_ratings']
-                    for r in details['content_ratings'].get('results', []):
-                        if r.get('iso_3166_1') == 'US':
-                            formatted_metadata['mpaa'] = r.get('rating')
-                            formatted_metadata['certification'] = r.get('rating')
-                            break
+                self._apply_rating_logic(formatted_metadata, details, "Series")
 
                 if aggregated_tmdb_data:
                     raw_episodes = aggregated_tmdb_data.get('episodes_details', {})
@@ -585,6 +566,146 @@ class MediaProcessor:
 
         except Exception as e:
             logger.error(f"  🚫 [文件删除] 通知 Emby 刷新失败: {e}", exc_info=True)
+
+    # --- 新增：分级处理逻辑封装 ---
+    def _apply_rating_logic(self, metadata_skeleton: Dict[str, Any], tmdb_data: Dict[str, Any], item_type: str):
+        """
+        【核心逻辑复用】将 TMDb 的原始分级数据，经过配置的映射规则处理后，注入到元数据骨架中。
+        """
+        from database import settings_db
+        
+        final_rating_str = ""
+        
+        # 加载配置
+        rating_mapping = settings_db.get_setting('rating_mapping') or utils.DEFAULT_RATING_MAPPING
+        priority_list = settings_db.get_setting('rating_priority') or utils.DEFAULT_RATING_PRIORITY
+        
+        # 获取原产国
+        origin_country = None
+        if item_type == "Movie":
+            _countries = tmdb_data.get('production_countries')
+            origin_country = _countries[0].get('iso_3166_1') if _countries else None
+        else:
+            _countries = tmdb_data.get('origin_country', [])
+            origin_country = _countries[0] if _countries else None
+
+        # 准备数据源
+        available_ratings = {}
+        target_list_node = [] # 指向骨架中的列表节点
+        
+        if item_type == "Movie":
+            # 电影数据源解析
+            if 'release_dates' in tmdb_data:
+                metadata_skeleton['release_dates'] = tmdb_data['release_dates']
+                # 构建列表和字典
+                countries_list = []
+                for r in tmdb_data['release_dates'].get('results', []):
+                    country_code = r.get('iso_3166_1')
+                    cert = ""
+                    release_date = ""
+                    for rel in r.get('release_dates', []):
+                        if rel.get('certification'):
+                            cert = rel.get('certification')
+                            release_date = rel.get('release_date')
+                            break
+                    if cert:
+                        available_ratings[country_code] = cert
+                        countries_list.append({
+                            "iso_3166_1": country_code,
+                            "certification": cert,
+                            "release_date": release_date,
+                            "primary": (country_code == origin_country)
+                        })
+                metadata_skeleton['releases']['countries'] = countries_list
+                target_list_node = metadata_skeleton['releases']['countries']
+                
+        elif item_type == "Series":
+            # 剧集数据源解析
+            if 'content_ratings' in tmdb_data:
+                metadata_skeleton['content_ratings'] = tmdb_data['content_ratings']
+                for r in tmdb_data['content_ratings'].get('results', []):
+                    available_ratings[r.get('iso_3166_1')] = r.get('rating')
+                target_list_node = metadata_skeleton['content_ratings']['results']
+
+        # --- 核心映射逻辑 ---
+        target_us_code = None
+        
+        # 1. 成人强制修正
+        if tmdb_data.get('adult') is True:
+            target_us_code = 'XXX'
+        # 2. 只有当不是成人内容时，才走常规映射逻辑
+        elif 'US' in available_ratings:
+            final_rating_str = available_ratings['US']
+        else:
+            # 3. 按优先级查找
+            for p_country in priority_list:
+                search_country = origin_country if p_country == 'ORIGIN' else p_country
+                if not search_country: continue
+                
+                if search_country in available_ratings:
+                    source_rating = available_ratings[search_country]
+                    
+                    # 尝试映射
+                    if isinstance(rating_mapping, dict) and search_country in rating_mapping and 'US' in rating_mapping:
+                        current_val = None
+                        for rule in rating_mapping[search_country]:
+                            if str(rule['code']).strip().upper() == str(source_rating).strip().upper():
+                                current_val = rule.get('emby_value')
+                                break
+                        
+                        if current_val is not None:
+                            valid_us_rules = []
+                            for rule in rating_mapping['US']:
+                                r_code = rule.get('code', '')
+                                if item_type == "Movie" and r_code.startswith('TV-'): continue
+                                valid_us_rules.append(rule)
+                            
+                            # 精确匹配
+                            for rule in valid_us_rules:
+                                try:
+                                    if int(rule.get('emby_value')) == int(current_val):
+                                        target_us_code = rule['code']
+                                        break
+                                except: pass
+                            
+                            # 向上兼容
+                            if not target_us_code:
+                                for rule in valid_us_rules:
+                                    try:
+                                        if int(rule.get('emby_value')) == int(current_val) + 1:
+                                            target_us_code = rule['code']
+                                            break
+                                    except: pass
+                    
+                    if target_us_code:
+                        logger.info(f"  ➜ [分级映射] 将 {search_country}:{source_rating} 映射为 US:{target_us_code}")
+                        final_rating_str = target_us_code
+                        break
+                    elif not final_rating_str:
+                        final_rating_str = source_rating
+
+        # 4. 补全 US 分级到列表
+        if target_us_code:
+            # 移除旧 US
+            if item_type == "Movie":
+                target_list_node[:] = [c for c in target_list_node if c.get('iso_3166_1') != 'US']
+                target_list_node.append({
+                    "iso_3166_1": "US",
+                    "certification": target_us_code,
+                    "release_date": datetime.now(timezone.utc).strftime('%Y-%m-%dT%H:%M:%S.000Z'),
+                    "primary": False
+                })
+            else:
+                target_list_node[:] = [r for r in target_list_node if r.get('iso_3166_1') != 'US']
+                target_list_node.append({
+                    "iso_3166_1": "US",
+                    "rating": target_us_code
+                })
+
+        # 5. 写入根节点兜底
+        if final_rating_str:
+            metadata_skeleton['mpaa'] = final_rating_str
+            metadata_skeleton['certification'] = final_rating_str
 
     def _refresh_lib_guid_map(self):
         """从 Emby 实时获取所有媒体库的 ID 到 GUID 映射"""
@@ -1581,140 +1702,7 @@ class MediaProcessor:
                         authoritative_cast_source = credits_source.get('cast', [])
 
                     # 2. 分级 (优先级查找 + 智能映射 + 自动补全 US)
-                    final_rating_str = "" # 用于根节点兜底
-
-                    if 'release_dates' in fresh_data:
-                        tmdb_details_for_extra['release_dates'] = fresh_data['release_dates']
-
-                        countries_list = []
-                        available_ratings = {} # 字典：{ 'JP': 'R18+', 'DE': '16' }
-                        
-                        # A. 遍历原始数据，构建列表和查找字典
-                        for r in fresh_data['release_dates'].get('results', []):
-                            country_code = r.get('iso_3166_1')
-                            cert = ""
-                            release_date = ""
-                            for rel in r.get('release_dates', []):
-                                if rel.get('certification'):
-                                    cert = rel.get('certification')
-                                    release_date = rel.get('release_date')
-                                    break
-                            
-                            if cert:
-                                available_ratings[country_code] = cert
-                                production_countries = fresh_data.get('production_countries')
-                                primary_country_code = production_countries[0].get('iso_3166_1') if production_countries else None
-
-                                countries_list.append({
-                                    "iso_3166_1": country_code,
-                                    "certification": cert,
-                                    "release_date": release_date,
-                                    "primary": (country_code == primary_country_code)
-                                })
-
-                        # B. 加载配置
-                        from database import settings_db
-                        rating_mapping = settings_db.get_setting('rating_mapping') or utils.DEFAULT_RATING_MAPPING
-                        # 默认优先级：原产国 > 美国 > 英国 > 日本 > 德国...
-                        priority_list = settings_db.get_setting('rating_priority') or utils.DEFAULT_RATING_PRIORITY
-                        
-                        _countries = fresh_data.get('production_countries')
-                        origin_country = _countries[0].get('iso_3166_1') if _countries else None
-
-                        # C. 按优先级寻找最佳分级
-                        target_us_code = None
-                        
-                        # 如果 TMDb 标记为成人，无视其他国家分级，直接强制为 US: XXX
-                        if fresh_data.get('adult') is True:
-                            logger.info(f"  ➜ [分级修正] 检测到 TMDb '成人' 标志，强制将 US 分级锁定为 'XXX'。")
-                            target_us_code = 'XXX'
-                        
-                        # 只有当不是成人内容时，才走常规映射逻辑
-                        elif 'US' in available_ratings:
-                            final_rating_str = available_ratings['US']
-                        else:
-                            # 遍历优先级列表
-                            for p_country in priority_list:
-                                # 处理 "ORIGIN" 占位符
-                                search_country = origin_country if p_country == 'ORIGIN' else p_country
-                                
-                                if not search_country: continue
-                                
-                                # 如果 TMDb 数据里有这个国家的分级
-                                if search_country in available_ratings:
-                                    source_rating = available_ratings[search_country]
-                                    
-                                    # 尝试映射：Source -> Emby Value -> US Rating
-                                    if isinstance(rating_mapping, dict) and search_country in rating_mapping and 'US' in rating_mapping:
-                                        # C1. 找 Value
-                                        current_val = None
-                                        for rule in rating_mapping[search_country]:
-                                            if str(rule['code']).strip().upper() == str(source_rating).strip().upper():
-                                                current_val = rule.get('emby_value')
-                                                break
-                                        
-                                        # C2. 找 US 对应 
-                                        if current_val is not None:
-                                            # 1. 筛选出符合当前媒体类型的 US 分级
-                                            valid_us_rules = []
-                                            for rule in rating_mapping['US']:
-                                                r_code = rule.get('code', '')
-                                                # 如果是电影，跳过所有 TV- 开头的 (除了 TV-14/MA 有时会被混用，但通常电影用 PG/R)
-                                                # 这里我们严格一点：电影不要 TV-Y, TV-G, TV-Y7 等
-                                                if r_code.startswith('TV-'):
-                                                    continue
-                                                valid_us_rules.append(rule)
-                                            
-                                            # 2. 尝试精确匹配数值 (例如 4 == 4)
-                                            for rule in valid_us_rules:
-                                                if int(rule.get('emby_value')) == int(current_val):
-                                                    target_us_code = rule['code']
-                                                    break
-                                            
-                                            # 3. 如果没找到 (例如 DE 6 是 4，但 US 电影没有 4，只有 PG 是 5)，尝试向上兼容 (+1)
-                                            if not target_us_code:
-                                                for rule in valid_us_rules:
-                                                    # 找稍微严格一点的 (Value + 1)
-                                                    if int(rule.get('emby_value')) == int(current_val) + 1:
-                                                        target_us_code = rule['code']
-                                                        break
-                                    
-                                    # 如果找到了映射，或者虽然没映射但我们想用它做兜底
-                                    if target_us_code:
-                                        logger.info(f"  ➜ [分级映射] 依据优先级 '{p_country}'，将 {search_country}:{source_rating} 映射为 US:{target_us_code}")
-                                        final_rating_str = target_us_code
-                                        break
-                                    elif not final_rating_str:
-                                        # 如果没映射成功，但这是高优先级的国家，先暂存它的原始分级做兜底
-                                        final_rating_str = source_rating
-
-                        # D. 补全 US 分级到列表
-                        if target_us_code:
-                            # 先移除列表中已存在的 US 条目（如果有），防止 SQL 读取到旧的 Unrated/NR
-                            countries_list = [c for c in countries_list if c.get('iso_3166_1') != 'US']
-                            
-                            # 添加我们要强制生效的映射分级
-                            countries_list.append({
-                                "iso_3166_1": "US",
-                                "certification": target_us_code,
-                                "release_date": datetime.now(timezone.utc).strftime('%Y-%m-%dT%H:%M:%S.000Z'),
-                                "primary": False
-                            })
-
-                        tmdb_details_for_extra['releases']['countries'] = countries_list
-
-                    elif 'releases' in fresh_data:
-                        # 旧版兼容
-                        tmdb_details_for_extra['releases'] = fresh_data['releases']
-                        try:
-                            r_list = fresh_data['releases'].get('countries', [])
-                            if r_list: final_rating_str = r_list[0].get('certification', '')
-                        except: pass
-
-                    # ★★★ 写入根节点兜底 ★★★
-                    if final_rating_str:
-                        tmdb_details_for_extra['mpaa'] = final_rating_str
-                        tmdb_details_for_extra['certification'] = final_rating_str
+                    self._apply_rating_logic(tmdb_details_for_extra, fresh_data, "Movie")
 
                     # 3. 关键词
                     if 'keywords' in fresh_data:
@@ -1755,90 +1743,7 @@ class MediaProcessor:
                             authoritative_cast_source = credits_source.get('cast', [])
 
                     # 2. 分级 (优先级查找 + 智能映射 + 自动补全 US)
-                    final_rating_str = ""
-
-                    if 'content_ratings' in fresh_data:
-                        ratings_list = fresh_data['content_ratings'].get('results', [])
-                        available_ratings = {} # { 'US': 'TV-MA', ... }
-                        
-                        # A. 构建查找字典
-                        for r in ratings_list:
-                            available_ratings[r.get('iso_3166_1')] = r.get('rating')
-
-                        # B. 加载配置
-                        from database import settings_db
-                        rating_mapping = settings_db.get_setting('rating_mapping') or utils.DEFAULT_RATING_MAPPING
-                        priority_list = settings_db.get_setting('rating_priority') or utils.DEFAULT_RATING_PRIORITY
-                        
-                        origin_country = fresh_data.get('origin_country', [])
-                        origin_country_code = origin_country[0] if origin_country else None
-
-                        # C. 按优先级查找
-                        target_us_code = None
-                        
-                        if fresh_data.get('adult') is True:
-                            logger.info(f"  ➜ [剧集分级修正] 检测到 TMDb '成人' 标志，强制将 US 分级锁定为 'XXX'。")
-                            target_us_code = 'XXX'
-                        
-                        # 只有当不是成人内容时，才走常规映射逻辑
-                        elif 'US' in available_ratings:
-                            final_rating_str = available_ratings['US']
-                        else:
-                            for p_country in priority_list:
-                                search_country = origin_country_code if p_country == 'ORIGIN' else p_country
-                                if not search_country: continue
-                                
-                                if search_country in available_ratings:
-                                    source_rating = available_ratings[search_country]
-                                    
-                                    # 映射逻辑
-                                    if isinstance(rating_mapping, dict) and search_country in rating_mapping and 'US' in rating_mapping:
-                                        current_val = None
-                                        for rule in rating_mapping[search_country]:
-                                            if str(rule['code']).strip().upper() == str(source_rating).strip().upper():
-                                                current_val = rule.get('emby_value')
-                                                break
-                                        
-                                        if current_val is not None:
-                                            valid_us_rules = []
-                                            for rule in rating_mapping['US']:
-                                                r_code = rule.get('code', '')
-                                                # 如果是剧集，我们优先要 TV- 开头的
-                                                # 但如果没有 TV- 对应的，MPAA 分级也能凑合用，所以这里不做硬性过滤，
-                                                # 而是依赖 utils.py 中 TV- 分级通常排在前面的特性
-                                                valid_us_rules.append(rule)
-
-                                            for rule in valid_us_rules:
-                                                try:
-                                                    if int(rule.get('emby_value')) == int(current_val):
-                                                        target_us_code = rule['code']
-                                                        break
-                                                except: continue
-                                    
-                                    if target_us_code:
-                                        logger.info(f"  ➜ [剧集分级映射] 依据优先级 '{p_country}'，将 {search_country}:{source_rating} 映射为 US:{target_us_code}")
-                                        final_rating_str = target_us_code
-                                        break
-                                    elif not final_rating_str:
-                                        final_rating_str = source_rating
-
-                        # D. 补全/强制覆盖
-                        if target_us_code:
-                            # 先移除列表中已存在的 US 条目
-                            ratings_list = [r for r in ratings_list if r.get('iso_3166_1') != 'US']
-                            
-                            # 添加映射后的分级
-                            ratings_list.append({
-                                "iso_3166_1": "US",
-                                "rating": target_us_code
-                            })
-
-                        tmdb_details_for_extra['content_ratings']['results'] = ratings_list
-
-                        # ★★★ 写入根节点兜底 ★★★
-                        if final_rating_str:
-                            tmdb_details_for_extra['mpaa'] = final_rating_str
-                            tmdb_details_for_extra['certification'] = final_rating_str
+                    self._apply_rating_logic(tmdb_details_for_extra, fresh_data, "Series")
 
                     # 3. 关键词
                     if 'keywords' in fresh_data:
