@@ -254,6 +254,7 @@
                       <!-- 1. 启用开关 -->
                       <n-form-item-grid-item label="启用" path="proxy_enabled" label-width="100">
                         <n-switch v-model:value="configModel.proxy_enabled" />
+                        <n-text depth="3" style="font-size: 0.8em;">访问自建合集虚拟的媒体库</n-text>
                       </n-form-item-grid-item>
 
                       <!-- 2. 端口 -->

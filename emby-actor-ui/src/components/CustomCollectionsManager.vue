@@ -43,7 +43,7 @@
                   target="_blank"
                   style="font-size: 0.85em; margin-left: 8px; color: var(--n-primary-color); text-decoration: underline;"
                 >逗猫佬</a>。</li>
-              <li>在创建或生成“筛选规则”合集前，请先同步演员映射然后点击 <n-icon :component="SyncIcon" /> 按钮快速同步一次最新的媒体库元数据。修改媒体标签等不会变更Emby最后更新时间戳的需要到任务中心运行同步媒体数据并采用深度模式。</li>
+              <li>在创建或生成“筛选规则”合集前，请先点击 <n-icon :component="SyncIcon" /> 按钮同步一次媒体数据。筛选类合集只需要生成一次，如需更换封面请运行生成合集封面任务</li>
               <li>您可以通过拖动卡片来对合集进行排序，Emby虚拟库实时联动更新排序。</li>
             </ul>
           </n-alert>
