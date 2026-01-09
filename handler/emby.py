@@ -4,7 +4,7 @@ import requests
 import concurrent.futures
 import os
 import gc
-import json
+import re
 import base64
 import shutil
 import time
@@ -778,7 +778,15 @@ def refresh_library_by_path(file_path: str, base_url: str, api_key: str) -> bool
                         target_lib_name = lib['info']['Name']
 
         if target_lib_id:
-            logger.info(f"  ➜ 文件 '{os.path.basename(file_path)}' 归属于媒体库: {target_lib_name} (ID: {target_lib_id})")
+            display_name = os.path.basename(file_path)
+            
+            if re.match(r'^(Season|S)\s*\d+|Specials', display_name, re.IGNORECASE):
+                parent_dir = os.path.dirname(file_path)
+                series_name = os.path.basename(parent_dir)
+                if series_name:
+                    display_name = f"{series_name}/{display_name}"
+
+            logger.info(f"  ➜ 路径 '{display_name}' 归属于媒体库: {target_lib_name} (ID: {target_lib_id})")
             logger.info(f"  ➜ 正在触发该媒体库的增量刷新...")
             
             # 3. 调用刷新接口

@@ -888,10 +888,8 @@ class WatchlistProcessor:
                     target_season_id = watchlist_db.get_season_emby_id(tmdb_id, season_number)
                     
                     if target_season_id:
-                        # 调用 Emby 删除接口 (优先尝试神医接口，回退官方接口)
-                        if emby.delete_item_sy(target_season_id, self.emby_url, self.emby_api_key, self.emby_user_id):
+                        if emby.delete_item(target_season_id, self.emby_url, self.emby_api_key, self.emby_user_id):
                             logger.info(f"  ✅ [自动清理] 已成功从 Emby 删除 S{season_number} (ID: {target_season_id})。")
-                            # 稍微等待一下 Emby 处理文件删除
                             time.sleep(2)
                         else:
                             logger.error(f"  ❌ [自动清理] 删除 S{season_number} 失败，将继续执行洗版订阅。")

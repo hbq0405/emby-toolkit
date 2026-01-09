@@ -445,7 +445,7 @@ def task_execute_cleanup(processor, task_ids: List[int], **kwargs):
                 if version_id_to_check != best_version_id:
                     logger.warning(f"  ➜ 准备删除劣质版本 (ID: {version_id_to_check}): {version.get('path')}")
                     
-                    success = emby.delete_item_sy(
+                    success = emby.delete_item(
                         item_id=version_id_to_check,
                         emby_server_url=processor.emby_url,
                         emby_api_key=processor.emby_api_key,
