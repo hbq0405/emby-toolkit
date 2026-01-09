@@ -1715,7 +1715,7 @@ class MediaProcessor:
                                             s_id = s.get('id')
                                             # 判定条件：None (缺失), 0 (数字), '0' (字符串), 'None', '' (空串)
                                             if s_id is None or str(s_id) in ['0', 'None', '']:
-                                                logger.warning(f"  ➜ [快速模式] ⚠️ 脏数据检测：本地季文件 (Season {s.get('season_number')}) ID无效或缺失 (ID={s_id})。")
+                                                logger.warning(f"  ⚠️ 脏数据检测：本地季文件 (Season {s.get('season_number')}) ID无效或缺失 (ID={s_id})。")
                                                 found_bad_data = True
                                                 break
                                         
@@ -1725,16 +1725,19 @@ class MediaProcessor:
                                                 e_id = ep.get('id')
                                                 # 判定条件同上，覆盖字段完全缺失的情况
                                                 if e_id is None or str(e_id) in ['0', 'None', '']:
-                                                    logger.warning(f"  ➜ [快速模式] ⚠️ 脏数据检测：本地分集文件 (S{ep.get('season_number')}E{ep.get('episode_number')}) ID无效或缺失 (ID={e_id})。")
+                                                    logger.warning(f"  ⚠️ 脏数据检测：本地分集文件 (S{ep.get('season_number')}E{ep.get('episode_number')}) ID无效或缺失 (ID={e_id})。")
                                                     found_bad_data = True
                                                     break
                                         
-                                        # 3. 如果发现脏数据，强制跳出
+                                        # 3. 如果发现脏数据，设置跳过DB标志并抛出异常
                                         if found_bad_data:
-                                            logger.warning(f"  ➜ [快速模式] 由于本地缓存存在脏数据 (ID缺失/为0)，从数据库恢复并重新生成。")
-                                            final_processed_cast = None  # 置空，迫使程序进入下方的完整模式
-                                            tmdb_details_for_extra = None
-                                            # 抛出异常跳出当前 try 块，进入完整模式
+                                            logger.warning(f"  ➜ [快速模式] 由于本地缓存存在脏数据 (ID缺失/为0)，强制放弃本地文件并跳过数据库缓存，转为在线获取。")
+                                            
+                                            final_processed_cast = None
+                                            skip_db_cache = True
+                                            
+                                            tmdb_details_for_extra = json.loads(json.dumps(utils.SERIES_SKELETON_TEMPLATE))
+                                            
                                             raise ValueError("Found invalid/missing ID in local series cache")
 
                                     except Exception as e_ep:
@@ -1760,101 +1763,24 @@ class MediaProcessor:
 
                 # --- 策略 B: 如果文件不存在，尝试加载数据库缓存 (自动备份模式) ---
                 # 逻辑：文件没了，但数据库里有。读取数据库，并在后续阶段自动重新生成文件。
-                if final_processed_cast is None:
-                    logger.info(f"  ➜ [快速模式] 本地文件未命中，尝试加载数据库全量缓存...")
+                if final_processed_cast is None and not skip_db_cache:
+                    logger.info(f"  ➜ [快速模式] 本地文件未命中，尝试加载数据库缓存...")
                     try:
                         with get_central_db_connection() as conn:
                             cursor = conn.cursor()
-                            # ★★★ 修改 1: 改为 SELECT * 获取所有字段，而不仅仅是 actors_json
                             cursor.execute("""
-                                SELECT *
+                                SELECT actors_json 
                                 FROM media_metadata 
                                 WHERE tmdb_id = %s AND item_type = %s
+                                  AND actors_json IS NOT NULL AND actors_json::text != '[]'
                             """, (tmdb_id, item_type))
                             db_row = cursor.fetchone()
 
                             if db_row:
-                                # 1. 恢复演员表 (核心逻辑保持不变)
-                                if db_row.get("actors_json"):
-                                    logger.info(f"  ➜ [快速模式] 成功命中数据库缓存! 正在恢复演员表...")
-                                    slim_actors_from_cache = db_row["actors_json"]
-                                    # 注意：这里需要判断 slim_actors_from_cache 是否为空列表字符串
-                                    if slim_actors_from_cache and str(slim_actors_from_cache) != '[]':
-                                        final_processed_cast = self.actor_db_manager.rehydrate_slim_actors(cursor, slim_actors_from_cache)
-                                
+                                logger.info(f"  ➜ [快速模式] 成功命中数据库缓存！")
+                                slim_actors_from_cache = db_row["actors_json"]
+                                final_processed_cast = self.actor_db_manager.rehydrate_slim_actors(cursor, slim_actors_from_cache)
                                 cache_row = db_row 
-
-                                # 2. ★★★ 新增: 恢复其他元数据到 tmdb_details_for_extra ★★★
-                                # 这样后续写入文件时，就会包含数据库里存储的标题、简介、分级等信息
-                                if final_processed_cast:
-                                    logger.info(f"  ➜ [快速模式] 正在从数据库记录恢复基础元数据(标题/简介/分级等)...")
-                                    
-                                    # (1) 基础文本字段映射
-                                    if db_row.get('title'): 
-                                        tmdb_details_for_extra['title'] = db_row['title']
-                                        tmdb_details_for_extra['name'] = db_row['title'] # 剧集兼容
-                                    
-                                    if db_row.get('original_title'):
-                                        tmdb_details_for_extra['original_title'] = db_row['original_title']
-                                        tmdb_details_for_extra['original_name'] = db_row['original_title']
-                                    
-                                    if db_row.get('overview'): 
-                                        tmdb_details_for_extra['overview'] = db_row['overview']
-                                    
-                                    if db_row.get('poster_path'): 
-                                        tmdb_details_for_extra['poster_path'] = db_row['poster_path']
-                                    
-                                    if db_row.get('release_date'):
-                                        # 数据库取出来可能是 date 对象，转字符串
-                                        date_str = str(db_row['release_date'])
-                                        tmdb_details_for_extra['release_date'] = date_str
-                                        tmdb_details_for_extra['first_air_date'] = date_str
-
-                                    if db_row.get('rating'):
-                                        tmdb_details_for_extra['vote_average'] = db_row['rating']
-
-                                    # (2) 复杂 JSON 字段还原 (RealDictCursor 会自动将 JSONB 转为 Python 对象)
-                                    
-                                    # Genres: DB存的是 ["Action", "Drama"]，需转回 [{"id":0, "name":"Action"}, ...]
-                                    if db_row.get('genres_json'):
-                                        g_data = db_row['genres_json']
-                                        if isinstance(g_data, list):
-                                            # 兼容存的是字符串列表的情况
-                                            tmdb_details_for_extra['genres'] = [{'id': 0, 'name': g} if isinstance(g, str) else g for g in g_data]
-
-                                    # Studios / Networks
-                                    if db_row.get('studios_json'):
-                                        s_data = db_row['studios_json']
-                                        tmdb_details_for_extra['production_companies'] = s_data
-                                        if item_type == 'Series':
-                                            tmdb_details_for_extra['networks'] = s_data
-
-                                    # Keywords
-                                    if db_row.get('keywords_json'):
-                                        k_data = db_row['keywords_json']
-                                        if item_type == 'Movie':
-                                            tmdb_details_for_extra['keywords']['keywords'] = k_data
-                                        else:
-                                            tmdb_details_for_extra['keywords']['results'] = k_data
-
-                                    # Official Ratings (分级)
-                                    # DB: {'US': 'PG-13', 'CN': 'R'} -> JSON结构还原
-                                    if db_row.get('official_rating_json'):
-                                        r_map = db_row['official_rating_json']
-                                        if isinstance(r_map, dict):
-                                            if item_type == 'Movie':
-                                                # 还原为 releases.countries 结构
-                                                countries_list = [{'iso_3166_1': k, 'certification': v} for k, v in r_map.items()]
-                                                tmdb_details_for_extra.setdefault('releases', {})['countries'] = countries_list
-                                            else:
-                                                # 还原为 content_ratings.results 结构
-                                                results_list = [{'iso_3166_1': k, 'rating': v} for k, v in r_map.items()]
-                                                tmdb_details_for_extra.setdefault('content_ratings', {})['results'] = results_list
-
-                                    # Directors / Creators
-                                    if db_row.get('directors_json') and item_type == 'Series':
-                                        tmdb_details_for_extra['created_by'] = db_row['directors_json']
-
                     except Exception as e_cache:
                         logger.warning(f"  ➜ 加载数据库缓存失败: {e_cache}。")
 
