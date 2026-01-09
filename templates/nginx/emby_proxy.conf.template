@@ -50,24 +50,26 @@ server {
     # ★★★ 规则 2：【新增的关键规则】拦截“获取库内容”的请求 ★★★
     # 这是我们之前一直缺失的规则！
     location ~ /emby/Users/([a-f0-9]+)/Items$ {
-        # 检查 URL 参数 ParentId 是否为虚拟ID (19xxxxxxxxx)
-        if ($arg_ParentId ~ ^19\d{8,}$) {
+        # 检查 URL 参数中是否包含 ParentId=-xxxxx
+        if ($arg_ParentId ~ ^-\d+$) {
+            # 如果是，就转发给 Python 代理
             proxy_pass http://virtual_library_proxy;
         }
+        # 如果不是，就执行默认行为，转发给真实 Emby
         proxy_pass http://emby_server;
     }
 
     # 规则 3：拦截所有路径中包含虚拟ID的请求 (例如获取图片)
-    location ~ /(emby/Users/[^/]+/Items|emby/Items)/19\d{8,} {
+    location ~ /(emby/Users/[^/]+/Items|emby/Items)/-(\d+) {
         proxy_pass http://virtual_library_proxy;
     }
 
     # 规则 4：拦截虚拟库内的“元数据筛选”和“最新添加”请求
     location ~ /Items/(Prefixes|Genres|Studios|Tags|OfficialRatings|Years|Latest)$ {
-        if ($arg_ParentId ~ ^19\d{8,}$) {
+        if ($arg_ParentId ~ ^-\d+$) {
             proxy_pass http://virtual_library_proxy;
         }
-        if ($arg_customViewId ~ ^19\d{8,}$) {
+        if ($arg_customViewId ~ ^-\d+$) {
             proxy_pass http://virtual_library_proxy;
         }
         proxy_pass http://emby_server;
