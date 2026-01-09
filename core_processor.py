@@ -555,7 +555,7 @@ class MediaProcessor:
             logger.info(f"  ➜ [实时监控] 通知 Emby 刷新目录: {folder_path}")
             emby.refresh_library_by_path(folder_path, self.emby_url, self.emby_api_key)
             
-            logger.info(f"  ✅ [实时监控] 处理完成，等待Emby入库更新媒体资产数据中...")
+            logger.info(f"  ✅ [实时监控] 预处理完成，等待Emby入库更新媒体资产数据...")
 
         except Exception as e:
             logger.error(f"  ➜ [实时监控] 处理文件 {file_path} 时发生错误: {e}", exc_info=True)

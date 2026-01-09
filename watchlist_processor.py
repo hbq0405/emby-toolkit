@@ -871,6 +871,7 @@ class WatchlistProcessor:
         """
         try:
             logger.info(f"  🎉 剧集《{series_name}》已自然完结，正在对最终季 (S{season_number}) 执行洗版流程...")
+            watchlist_cfg = settings_db.get_setting('watchlist_config') or {}
             # 1.检查配额
             if settings_db.get_subscription_quota() <= 0:
                 logger.warning(f"  ⚠️ 每日订阅配额已用尽，跳过《{series_name}》S{season_number} 的完结洗版。")
@@ -879,7 +880,27 @@ class WatchlistProcessor:
             # 如果本地已集齐且版本统一，则直接跳过
             if self._check_season_consistency(tmdb_id, season_number, episode_count):
                 return
-            
+            # 3. 检查是否需要删除旧文件 
+            if watchlist_cfg.get('auto_delete_old_files', False):
+                logger.info(f"  🗑️ [自动清理] 检测到“洗版自动删除”已开启，正在查找并删除 S{season_number} 的旧文件...")
+                try:
+                    # ★★★ 核心修改：直接从数据库获取 Emby ID，不再调用 API 遍历 ★★★
+                    target_season_id = watchlist_db.get_season_emby_id(tmdb_id, season_number)
+                    
+                    if target_season_id:
+                        # 调用 Emby 删除接口 (优先尝试神医接口，回退官方接口)
+                        if emby.delete_item_sy(target_season_id, self.emby_url, self.emby_api_key, self.emby_user_id):
+                            logger.info(f"  ✅ [自动清理] 已成功从 Emby 删除 S{season_number} (ID: {target_season_id})。")
+                            # 稍微等待一下 Emby 处理文件删除
+                            time.sleep(2)
+                        else:
+                            logger.error(f"  ❌ [自动清理] 删除 S{season_number} 失败，将继续执行洗版订阅。")
+                    else:
+                        logger.warning(f"  ⚠️ [自动清理] 数据库中未找到 S{season_number} 的 Emby ID，跳过删除。")
+                        
+                except Exception as e:
+                    logger.error(f"  ❌ [自动清理] 执行删除逻辑时出错: {e}")
+
             # 3. 取消旧订阅
             moviepilot.cancel_subscription(tmdb_id, 'Series', self.config, season=season_number)
             

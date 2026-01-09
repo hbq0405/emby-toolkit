@@ -457,6 +457,24 @@
               <div class="setting-desc">
                 剧集完结后，自动删除旧订阅并提交“洗版订阅”，以获取整季合集。
               </div>
+              <!-- 子选项展开区域 -->
+              <n-collapse-transition :show="watchlistConfig.auto_resub_ended">
+                <div class="setting-sub-panel" style="margin-top: 8px; padding: 8px 12px; background-color: rgba(255,0,0,0.05);">
+                  <div style="display: flex; justify-content: space-between; align-items: center;">
+                    <div style="font-size: 13px;">
+                      <span style="font-weight: 500;">洗版自动删除旧文件</span>
+                      <div style="font-size: 12px; color: var(--n-text-color-3); margin-top: 2px;">
+                        <n-icon :component="TrashIcon" style="vertical-align: text-bottom; margin-right: 2px;" />
+                        危险操作：在提交洗版订阅前，直接从 Emby 删除该季的现有文件。
+                      </div>
+                    </div>
+                    <n-switch v-model:value="watchlistConfig.auto_delete_old_files" size="small">
+                      <template #checked>删除</template>
+                      <template #unchecked>保留</template>
+                    </n-switch>
+                  </div>
+                </div>
+              </n-collapse-transition>
             </div>
           </div>
 
@@ -599,6 +617,7 @@ const watchlistConfig = ref({
   },
   auto_pause: false,
   auto_resub_ended: false,
+  auto_delete_old_files: false,
   gap_fill_resubscribe: false,
   sync_mp_subscription: false,
   revival_check_days: 365
@@ -618,6 +637,7 @@ const openConfigModal = async () => {
          },
          auto_pause: data.auto_pause ?? false,
          auto_resub_ended: data.auto_resub_ended ?? false,
+         auto_delete_old_files: data.auto_delete_old_files ?? false,
          gap_fill_resubscribe: data.gap_fill_resubscribe ?? false,
          enable_backfill: data.enable_backfill ?? false,
          sync_mp_subscription: data.sync_mp_subscription ?? false,

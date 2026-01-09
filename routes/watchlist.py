@@ -277,8 +277,11 @@ def api_watchlist_settings():
         },
         "auto_pause": False,
         "auto_resub_ended": False,
+        "auto_delete_old_files": False, 
         "gap_fill_resubscribe": False,
-        "enable_backfill": False
+        "enable_backfill": False,
+        "sync_mp_subscription": False,  
+        "revival_check_days": 365      
     }
 
     if request.method == 'GET':

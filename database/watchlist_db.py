@@ -1051,3 +1051,32 @@ def update_watchlist_metadata(tmdb_id: str, updates: Dict[str, Any]):
     except Exception as e:
         logger.error(f"DB: 更新剧集 {tmdb_id} 追剧元数据失败: {e}")
         raise
+
+def get_season_emby_id(parent_tmdb_id: str, season_number: int) -> Optional[str]:
+    """
+    根据父剧集 TMDb ID 和季号，查询该季在 Emby 中的 Item ID。
+    """
+    if not parent_tmdb_id:
+        return None
+        
+    sql = """
+        SELECT emby_item_ids_json 
+        FROM media_metadata 
+        WHERE parent_series_tmdb_id = %s 
+          AND item_type = 'Season' 
+          AND season_number = %s
+          AND in_library = TRUE
+        LIMIT 1
+    """
+    try:
+        with get_db_connection() as conn:
+            with conn.cursor() as cursor:
+                cursor.execute(sql, (parent_tmdb_id, season_number))
+                row = cursor.fetchone()
+                if row and row['emby_item_ids_json']:
+                    # 返回列表中的第一个 ID
+                    return row['emby_item_ids_json'][0]
+                return None
+    except Exception as e:
+        logger.error(f"DB: 查询季 Emby ID 失败 (TMDb: {parent_tmdb_id}, S{season_number}): {e}")
+        return None
