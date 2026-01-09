@@ -96,8 +96,14 @@ def process_batch_queue():
     grouped_files = {}
     for file_path in files_to_process:
         parent_dir = os.path.dirname(file_path)
+        if parent_dir not in grouped_files: grouped_files[parent_dir] = []
+        grouped_files[parent_dir].append(file_path)
+
+    for parent_dir, files in grouped_files.items():
+        representative_file = files[0]
         folder_name = os.path.basename(parent_dir)
         display_name = folder_name
+        
         if re.match(r'^(Season|S)\s*\d+|Specials', folder_name, re.IGNORECASE):
             grandparent_dir = os.path.dirname(parent_dir)
             series_name = os.path.basename(grandparent_dir)
@@ -105,11 +111,6 @@ def process_batch_queue():
         
         logger.info(f"  🚀 [实时监控] 聚合处理新增: {display_name} (包含 {len(files)} 个文件)")
         
-        threading.Thread(target=_handle_single_file_task, args=(processor, representative_file)).start()
-
-    for parent_dir, files in grouped_files.items():
-        representative_file = files[0]
-        logger.info(f"  🚀 [实时监控] 聚合处理新增: {os.path.basename(parent_dir)} (包含 {len(files)} 个文件)")
         threading.Thread(target=_handle_single_file_task, args=(processor, representative_file)).start()
 
 def process_delete_batch_queue():
