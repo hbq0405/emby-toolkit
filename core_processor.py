@@ -1704,30 +1704,8 @@ class MediaProcessor:
                                             seasons_details_list.sort(key=lambda x: x.get('season_number', 0))
                                             tmdb_details_for_extra['seasons_details'] = seasons_details_list
 
-                                        # =========================================================
-                                        # ★★★ [补丁] 脏数据检测：只检查季文件 ID 是否为 0 ★★★
-                                        # =========================================================
-                                        found_bad_season_data = False
-                                        for s in seasons_details_list:
-                                            s_id = s.get('id')
-                                            # 检查 ID 是否无效 (0, '0', None, '')
-                                            if not s_id or str(s_id) in ['0', 'None', '']:
-                                                logger.warning(f"  ➜ [快速模式] ⚠️ 检测到脏数据：本地季文件 (Season {s.get('season_number')}) 的 ID 为 0。")
-                                                found_bad_season_data = True
-                                                break
-                                        
-                                        if found_bad_season_data:
-                                            logger.warning(f"  ➜ [快速模式] 由于季文件存在脏数据 (ID=0)，强制放弃本地缓存，转为在线获取并重新生成。")
-                                            final_processed_cast = None  # 置空，迫使程序进入下方的完整模式
-                                            tmdb_details_for_extra = None
-                                            # 抛出异常跳出当前 try 块，进入完整模式
-                                            raise ValueError("Found invalid ID=0 in local season cache")
-
                                     except Exception as e_ep:
-                                        # 捕获异常（包括上面抛出的 ValueError），确保回退到完整模式
-                                        if "Found invalid ID=0" not in str(e_ep):
-                                            logger.warning(f"  ➜ [快速模式] 聚合分集/季数据时发生异常: {e_ep}")
-                                        final_processed_cast = None # 确保置空
+                                        logger.warning(f"  ➜ [快速模式] 聚合分集/季数据时发生小错误: {e_ep}")
 
                                 # 关键设置 2: 标记源为文件
                                 cache_row = {'source': 'override_file'} 
