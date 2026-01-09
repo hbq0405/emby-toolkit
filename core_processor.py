@@ -1659,8 +1659,6 @@ class MediaProcessor:
                 override_json_path = os.path.join(target_override_dir, main_json_filename)
                 
                 # --- 策略 A: 优先尝试加载本地 Override 文件 (反哺模式) ---
-                # 逻辑：如果本地文件存在，它就是“真理”。无论数据库里有没有，都以文件为准。
-                # 优势：1. 确保手动修改生效 2. 标记为'override_file'源，后续可跳过冗余写入，性能最高。
                 if os.path.exists(override_json_path):
                     logger.info(f"  ➜ [快速模式] 发现本地覆盖文件，优先加载: {override_json_path}")
                     try:
@@ -1678,73 +1676,61 @@ class MediaProcessor:
                                 # ★★★ 填补盲区：如果是剧集，必须把分集文件也读进来！ ★★★
                                 # =========================================================
                                 if item_type == "Series":
-                                    logger.info("  ➜ [快速模式] 检测到剧集，正在聚合本地分集元数据以恢复数据库记录...")
+                                    logger.info("  ➜ [快速模式] 检测到剧集，正在聚合本地分集元数据...")
                                     episodes_details_map = {}
                                     seasons_details_list = [] 
                                     
                                     try:
-                                        # 1. 先读 Override (旧的/手动修改过的)
+                                        # 1. 先读 Override (保留你的手动修改)
                                         if os.path.exists(target_override_dir):
                                             for fname in os.listdir(target_override_dir):
                                                 full_path = os.path.join(target_override_dir, fname)
                                                 if fname.startswith("season-") and fname.endswith(".json"):
-                                                    data = _read_local_json(full_path)
-                                                    if data:
-                                                        if "-episode-" in fname:
-                                                            key = f"S{data.get('season_number')}E{data.get('episode_number')}"
-                                                            episodes_details_map[key] = data
-                                                        else:
-                                                            seasons_details_list.append(data)
+                                                    try:
+                                                        data = _read_local_json(full_path)
+                                                        if data:
+                                                            if "-episode-" in fname:
+                                                                key = f"S{data.get('season_number')}E{data.get('episode_number')}"
+                                                                episodes_details_map[key] = data
+                                                            else:
+                                                                seasons_details_list.append(data)
+                                                    except: pass
                                         
-                                        # 2. 塞回骨架
+                                        # 2. 查漏补缺：从 TMDb 获取新分集 ID
+                                        if self.tmdb_api_key:
+                                            # logger.debug("  ➜ [快速模式] 正在比对 TMDb 数据以补全追更分集...")
+                                            fresh_agg_data = tmdb.aggregate_full_series_data_from_tmdb(int(tmdb_id), self.tmdb_api_key)
+                                            
+                                            if fresh_agg_data:
+                                                fresh_eps = fresh_agg_data.get("episodes_details", {})
+                                                added_count = 0
+                                                
+                                                for k, v in fresh_eps.items():
+                                                    # ★★★ 核心逻辑：只有本地没有的，才加进去 ★★★
+                                                    # 这样既有了新集的 ID，又不会覆盖老集的数据
+                                                    if k not in episodes_details_map:
+                                                        episodes_details_map[k] = v
+                                                        added_count += 1
+                                                        
+                                                if added_count > 0:
+                                                    logger.info(f"  ➜ [快速模式] 成功补全了 {added_count} 个本地缺失的追更分集数据 (含ID)。")
+
+                                                # 顺便补全一下缺失的季信息 (Seasons)
+                                                fresh_seasons = fresh_agg_data.get("seasons_details", [])
+                                                existing_season_nums = {s.get('season_number') for s in seasons_details_list}
+                                                for fs in fresh_seasons:
+                                                    if fs.get('season_number') not in existing_season_nums:
+                                                        seasons_details_list.append(fs)
+
+                                        # 3. 塞回骨架
                                         if episodes_details_map:
                                             tmdb_details_for_extra['episodes_details'] = episodes_details_map
-                                            logger.info(f"  ➜ [快速模式] 最终聚合了 {len(episodes_details_map)} 个分集的元数据。")
                                         if seasons_details_list:
                                             seasons_details_list.sort(key=lambda x: x.get('season_number', 0))
                                             tmdb_details_for_extra['seasons_details'] = seasons_details_list
 
-                                        # =========================================================
-                                        # ★★★ [补丁] 脏数据检测：只检查季集文件 ID 是否为 0 ★★★
-                                        # =========================================================
-                                        found_bad_data = False
-                                        
-                                        # 1. 检查季文件 (Season)
-                                        for s in seasons_details_list:
-                                            # 使用 get 获取，如果字段缺失会返回 None
-                                            s_id = s.get('id')
-                                            # 判定条件：None (缺失), 0 (数字), '0' (字符串), 'None', '' (空串)
-                                            if s_id is None or str(s_id) in ['0', 'None', '']:
-                                                logger.warning(f"  ⚠️ 脏数据检测：本地季文件 (Season {s.get('season_number')}) ID无效或缺失 (ID={s_id})。")
-                                                found_bad_data = True
-                                                break
-                                        
-                                        # 2. 检查分集文件 (Episode) - 只有季文件通过才查分集
-                                        if not found_bad_data:
-                                            for ep in episodes_details_map.values():
-                                                e_id = ep.get('id')
-                                                # 判定条件同上，覆盖字段完全缺失的情况
-                                                if e_id is None or str(e_id) in ['0', 'None', '']:
-                                                    logger.warning(f"  ⚠️ 脏数据检测：本地分集文件 (S{ep.get('season_number')}E{ep.get('episode_number')}) ID无效或缺失 (ID={e_id})。")
-                                                    found_bad_data = True
-                                                    break
-                                        
-                                        # 3. 如果发现脏数据，设置跳过DB标志并抛出异常
-                                        if found_bad_data:
-                                            logger.warning(f"  ➜ [快速模式] 由于本地缓存存在脏数据 (ID缺失/为0)，强制放弃本地文件并跳过数据库缓存，转为在线获取。")
-                                            
-                                            final_processed_cast = None
-                                            skip_db_cache = True
-                                            
-                                            tmdb_details_for_extra = json.loads(json.dumps(utils.SERIES_SKELETON_TEMPLATE))
-                                            
-                                            raise ValueError("Found invalid/missing ID in local series cache")
-
                                     except Exception as e_ep:
-                                        # 捕获异常（包括上面抛出的 ValueError），确保回退到完整模式
-                                        if "Found invalid ID=0" not in str(e_ep):
-                                            logger.warning(f"  ➜ [快速模式] 聚合分集/季数据时发生异常: {e_ep}")
-                                        final_processed_cast = None # 确保置空
+                                        logger.warning(f"  ➜ [快速模式] 聚合分集/季数据时发生异常: {e_ep}")
 
                                 # 关键设置 2: 标记源为文件
                                 cache_row = {'source': 'override_file'} 
@@ -1763,7 +1749,7 @@ class MediaProcessor:
 
                 # --- 策略 B: 如果文件不存在，尝试加载数据库缓存 (自动备份模式) ---
                 # 逻辑：文件没了，但数据库里有。读取数据库，并在后续阶段自动重新生成文件。
-                if final_processed_cast is None and not skip_db_cache:
+                if final_processed_cast is None:
                     logger.info(f"  ➜ [快速模式] 本地文件未命中，尝试加载数据库缓存...")
                     try:
                         with get_central_db_connection() as conn:
