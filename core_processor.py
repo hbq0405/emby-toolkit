@@ -460,7 +460,7 @@ class MediaProcessor:
                 if 'created_by' in details: formatted_metadata['created_by'] = details['created_by']
                 if 'networks' in details: formatted_metadata['networks'] = details['networks']
 
-                self._apply_rating_logic(formatted_metadata, details, "Series")
+                apply_rating_logic(formatted_metadata, details, "Series")
 
                 if aggregated_tmdb_data:
                     raw_episodes = aggregated_tmdb_data.get('episodes_details', {})

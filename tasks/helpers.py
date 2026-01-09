@@ -1016,7 +1016,7 @@ def process_subscription_items_and_update_db(
     
     return processed_active_ids
 
-def apply_rating_logic(self, metadata_skeleton: Dict[str, Any], tmdb_data: Dict[str, Any], item_type: str):
+def apply_rating_logic(metadata_skeleton: Dict[str, Any], tmdb_data: Dict[str, Any], item_type: str):
     """
     将 TMDb 的原始分级数据，经过配置的映射规则处理后，注入到元数据骨架中。
     """
