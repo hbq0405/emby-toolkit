@@ -1790,6 +1790,7 @@ class MediaProcessor:
             # =========================================================
             final_processed_cast = None
             cache_row = None 
+            skip_db_cache = False
             # 1.快速模式
             if not force_full_update:
                 # --- 路径准备 ---
@@ -1874,7 +1875,7 @@ class MediaProcessor:
                                             logger.warning(f"  ➜ [快速模式] 由于本地缓存存在脏数据 (ID缺失/为0)，强制放弃本地文件，转为在线获取并重新生成。")
                                             final_processed_cast = None  # 置空，迫使程序进入下方的完整模式
                                             tmdb_details_for_extra = None
-                                            # 抛出异常跳出当前 try 块，进入完整模式
+                                            skip_db_cache = True  # 跳过数据库缓存，直接在线获取
                                             raise ValueError("Found invalid/missing ID in local series cache")
 
                                     except Exception as e_ep:
@@ -1900,7 +1901,7 @@ class MediaProcessor:
 
                 # --- 策略 B: 如果文件不存在，尝试加载数据库缓存 (自动备份模式) ---
                 # 逻辑：文件没了，但数据库里有。读取数据库，并在后续阶段自动重新生成文件。
-                if final_processed_cast is None:
+                if final_processed_cast is None and not skip_db_cache:
                     logger.info(f"  ➜ [快速模式] 本地文件未命中，尝试加载数据库缓存...")
                     try:
                         with get_central_db_connection() as conn:
