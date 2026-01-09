@@ -1870,12 +1870,15 @@ class MediaProcessor:
                                                     found_bad_data = True
                                                     break
                                         
-                                        # 3. 如果发现脏数据，强制跳出
+                                        # 3. 如果发现脏数据，设置跳过DB标志并抛出异常
                                         if found_bad_data:
-                                            logger.warning(f"  ➜ [快速模式] 由于本地缓存存在脏数据 (ID缺失/为0)，强制放弃本地文件，转为在线获取并重新生成。")
-                                            final_processed_cast = None  # 置空，迫使程序进入下方的完整模式
-                                            tmdb_details_for_extra = None
-                                            skip_db_cache = True  # 跳过数据库缓存，直接在线获取
+                                            logger.warning(f"  ➜ [快速模式] 由于本地缓存存在脏数据 (ID缺失/为0)，强制放弃本地文件并跳过数据库缓存，转为在线获取。")
+                                            
+                                            final_processed_cast = None
+                                            skip_db_cache = True
+                                            
+                                            tmdb_details_for_extra = json.loads(json.dumps(utils.SERIES_SKELETON_TEMPLATE))
+                                            
                                             raise ValueError("Found invalid/missing ID in local series cache")
 
                                     except Exception as e_ep:
