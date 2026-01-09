@@ -1856,7 +1856,7 @@ class MediaProcessor:
                                             s_id = s.get('id')
                                             # 判定条件：None (缺失), 0 (数字), '0' (字符串), 'None', '' (空串)
                                             if s_id is None or str(s_id) in ['0', 'None', '']:
-                                                logger.warning(f"  ➜ [快速模式] ⚠️ 脏数据检测：本地季文件 (Season {s.get('season_number')}) ID无效或缺失 (ID={s_id})。")
+                                                logger.warning(f"  ⚠️ 脏数据检测：本地季文件 (Season {s.get('season_number')}) ID无效或缺失 (ID={s_id})。")
                                                 found_bad_data = True
                                                 break
                                         
@@ -1866,7 +1866,7 @@ class MediaProcessor:
                                                 e_id = ep.get('id')
                                                 # 判定条件同上，覆盖字段完全缺失的情况
                                                 if e_id is None or str(e_id) in ['0', 'None', '']:
-                                                    logger.warning(f"  ➜ [快速模式] ⚠️ 脏数据检测：本地分集文件 (S{ep.get('season_number')}E{ep.get('episode_number')}) ID无效或缺失 (ID={e_id})。")
+                                                    logger.warning(f"  ⚠️ 脏数据检测：本地分集文件 (S{ep.get('season_number')}E{ep.get('episode_number')}) ID无效或缺失 (ID={e_id})。")
                                                     found_bad_data = True
                                                     break
                                         
