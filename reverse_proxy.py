@@ -35,34 +35,14 @@ def is_missing_item_id(item_id):
 def parse_missing_item_id(item_id):
     # 从 -800000_12345 中提取出 12345
     return item_id.replace(MISSING_ID_PREFIX, "")
-# 使用 19 亿作为基数 (int32 max 约为 21 亿，留出空间且避开 Emby 真实 ID)
-MIMICKED_ID_BASE = 1900000000 
-
-def to_mimicked_id(db_id): 
-    # 数据库 ID (如 1) -> 虚拟 ID (1900000001)
-    return str(MIMICKED_ID_BASE + int(db_id))
-
-def from_mimicked_id(mimicked_id): 
-    # 虚拟 ID (1900000001) -> 数据库 ID (1)
-    return int(mimicked_id) - MIMICKED_ID_BASE
-
+MIMICKED_ID_BASE = 900000
+def to_mimicked_id(db_id): return str(-(MIMICKED_ID_BASE + db_id))
+def from_mimicked_id(mimicked_id): return -(int(mimicked_id)) - MIMICKED_ID_BASE
 def is_mimicked_id(item_id):
-    """
-    判断是否为虚拟库 ID。
-    逻辑：必须是纯数字，且数值大于等于基数。
-    """
-    try:
-        if not isinstance(item_id, str): return False
-        if not item_id.isdigit(): return False # 必须是正整数
-        val = int(item_id)
-        return val >= MIMICKED_ID_BASE
-    except: 
-        return False
-
-# 正则修改：不再匹配负号，改为匹配纯数字
-# 注意：这会匹配到所有 Emby 项目请求，所以后续必须配合 is_mimicked_id 使用
-MIMICKED_ITEMS_RE = re.compile(r'/emby/Users/([^/]+)/Items/(\d+)')
-MIMICKED_ITEM_DETAILS_RE = re.compile(r'emby/Users/([^/]+)/Items/(\d+)$')
+    try: return isinstance(item_id, str) and item_id.startswith('-')
+    except: return False
+MIMICKED_ITEMS_RE = re.compile(r'/emby/Users/([^/]+)/Items/(-(\d+))')
+MIMICKED_ITEM_DETAILS_RE = re.compile(r'emby/Users/([^/]+)/Items/(-(\d+))$')
 
 def _get_real_emby_url_and_key():
     base_url = config_manager.APP_CONFIG.get("emby_server_url", "").rstrip('/')
@@ -828,22 +808,16 @@ def proxy_all(path):
         if details_match:
             user_id = details_match.group(1)
             mimicked_id = details_match.group(2)
-            
-            # 只有当 ID 在虚拟 ID 范围内时，才拦截处理
-            if is_mimicked_id(mimicked_id):
-                return handle_get_mimicked_library_details(user_id, mimicked_id)
-            # 否则，如果是普通 Emby ID (如 "12345")，跳过此块，进入下方的兜底转发逻辑
+            return handle_get_mimicked_library_details(user_id, mimicked_id)
 
         # --- 拦截 E: 虚拟库图片 ---
         if path.startswith('emby/Items/') and '/Images/' in path:
             item_id = path.split('/')[2]
-            # is_mimicked_id 内部逻辑已更新，此处直接复用
             if is_mimicked_id(item_id):
                 return handle_get_mimicked_library_image(path)
         
         # --- 拦截 F: 虚拟库内容浏览 (Items) ---
         parent_id = request.args.get("ParentId")
-        # is_mimicked_id 内部逻辑已更新，此处直接复用
         if parent_id and is_mimicked_id(parent_id):
             # 处理元数据请求
             if any(path.endswith(endpoint) for endpoint in UNSUPPORTED_METADATA_ENDPOINTS + ['/Items/Prefixes', '/Genres', '/Studios', '/Tags', '/OfficialRatings', '/Years']):
