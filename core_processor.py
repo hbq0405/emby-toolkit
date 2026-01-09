@@ -1697,8 +1697,13 @@ class MediaProcessor:
                                         
                                         # 2. 查漏补缺：从 TMDb 获取新分集 ID
                                         if self.tmdb_api_key:
-                                            # logger.debug("  ➜ [快速模式] 正在比对 TMDb 数据以补全追更分集...")
-                                            fresh_agg_data = tmdb.aggregate_full_series_data_from_tmdb(int(tmdb_id), self.tmdb_api_key)
+                                            # ★★★ 优化：直接复用函数开头已经获取到的数据，不再重复请求 ★★★
+                                            fresh_agg_data = aggregated_tmdb_data
+                                            
+                                            #以此为防线：万一开头没获取到（虽然不太可能），再尝试获取一次
+                                            if not fresh_agg_data:
+                                                # logger.debug("  ➜ [快速模式] 首次聚合未命中，正在补充请求 TMDb 数据...")
+                                                fresh_agg_data = tmdb.aggregate_full_series_data_from_tmdb(int(tmdb_id), self.tmdb_api_key)
                                             
                                             if fresh_agg_data:
                                                 fresh_eps = fresh_agg_data.get("episodes_details", {})
@@ -1707,8 +1712,7 @@ class MediaProcessor:
                                                 for k, v in fresh_eps.items():
                                                     # ★★★ 核心逻辑：只有本地没有的，才加进去 ★★★
                                                     if k not in episodes_details_map:
-                                                        # ✨✨✨ 关键修改：删除 TMDb 自带的原始演员表 ✨✨✨
-                                                        # 这样下游逻辑就会强制注入本地精修/翻译过的主演列表
+                                                        # ✨ 删除 TMDb 自带的原始演员表，强制使用本地精修表 ✨
                                                         if 'credits' in v:
                                                             del v['credits']
                                                             
@@ -1716,7 +1720,7 @@ class MediaProcessor:
                                                         added_count += 1
                                                         
                                                 if added_count > 0:
-                                                    logger.info(f"  ➜ [快速模式] 成功补全了 {added_count} 个本地缺失的追更分集数据。")
+                                                    logger.info(f"  ➜ [快速模式] 成功补全了 {added_count} 个本地缺失的追更分集数据 (内存补全)。")
 
                                                 # 顺便补全一下缺失的季信息 (Seasons)
                                                 fresh_seasons = fresh_agg_data.get("seasons_details", [])
@@ -3733,16 +3737,23 @@ class MediaProcessor:
                             return [a for a in actors if a.get('profile_path')]
                         return actors
 
+                    # 1. 尝试从 TMDb 数据中提取 (因为我们del了，这里会是空的)
                     raw_cast = specific_tmdb_data.get('credits', {}).get('cast', [])
                     filtered_cast = process_actor_list(raw_cast)
                     if filtered_cast:
                         credits_node['cast'] = filtered_cast
                     
+                    # ★★★ 核心修复：如果 TMDb 没提供演员 (或被我们删了)，就用全剧通用的 ★★★
+                    if not credits_node.get('cast') and cast_list:
+                        credits_node['cast'] = cast_list
+
+                    # 2. 处理客串演员 (Guest Stars) - 这个保留 TMDb 的
                     raw_guests = specific_tmdb_data.get('credits', {}).get('guest_stars', [])
                     filtered_guests = process_actor_list(raw_guests)
                     if filtered_guests:
                         credits_node['guest_stars'] = filtered_guests
                     
+                    # 3. 处理幕后 (Crew)
                     if specific_tmdb_data.get('credits', {}).get('crew'):
                         credits_node['crew'] = specific_tmdb_data['credits']['crew']
                 
