@@ -1658,7 +1658,6 @@ class MediaProcessor:
                 main_json_filename = "all.json" if item_type == "Movie" else "series.json"
                 override_json_path = os.path.join(target_override_dir, main_json_filename)
                 
-                # --- 策略 A: 优先尝试加载本地 Override 文件 (反哺模式) ---
                 if os.path.exists(override_json_path):
                     logger.info(f"  ➜ [快速模式] 发现本地覆盖文件，优先加载: {override_json_path}")
                     try:
@@ -1707,13 +1706,17 @@ class MediaProcessor:
                                                 
                                                 for k, v in fresh_eps.items():
                                                     # ★★★ 核心逻辑：只有本地没有的，才加进去 ★★★
-                                                    # 这样既有了新集的 ID，又不会覆盖老集的数据
                                                     if k not in episodes_details_map:
+                                                        # ✨✨✨ 关键修改：删除 TMDb 自带的原始演员表 ✨✨✨
+                                                        # 这样下游逻辑就会强制注入本地精修/翻译过的主演列表
+                                                        if 'credits' in v:
+                                                            del v['credits']
+                                                            
                                                         episodes_details_map[k] = v
                                                         added_count += 1
                                                         
                                                 if added_count > 0:
-                                                    logger.info(f"  ➜ [快速模式] 成功补全了 {added_count} 个本地缺失的追更分集数据 (含ID)。")
+                                                    logger.info(f"  ➜ [快速模式] 成功补全了 {added_count} 个本地缺失的追更分集数据。")
 
                                                 # 顺便补全一下缺失的季信息 (Seasons)
                                                 fresh_seasons = fresh_agg_data.get("seasons_details", [])
@@ -1746,29 +1749,6 @@ class MediaProcessor:
                                         actor['emby_person_id'] = tmdb_to_emby_map[aid]
                     except Exception as e:
                         logger.warning(f"  ➜ 读取覆盖文件失败: {e}，将尝试数据库缓存。")
-
-                # --- 策略 B: 如果文件不存在，尝试加载数据库缓存 (自动备份模式) ---
-                # 逻辑：文件没了，但数据库里有。读取数据库，并在后续阶段自动重新生成文件。
-                if final_processed_cast is None:
-                    logger.info(f"  ➜ [快速模式] 本地文件未命中，尝试加载数据库缓存...")
-                    try:
-                        with get_central_db_connection() as conn:
-                            cursor = conn.cursor()
-                            cursor.execute("""
-                                SELECT actors_json 
-                                FROM media_metadata 
-                                WHERE tmdb_id = %s AND item_type = %s
-                                  AND actors_json IS NOT NULL AND actors_json::text != '[]'
-                            """, (tmdb_id, item_type))
-                            db_row = cursor.fetchone()
-
-                            if db_row:
-                                logger.info(f"  ➜ [快速模式] 成功命中数据库缓存！")
-                                slim_actors_from_cache = db_row["actors_json"]
-                                final_processed_cast = self.actor_db_manager.rehydrate_slim_actors(cursor, slim_actors_from_cache)
-                                cache_row = db_row 
-                    except Exception as e_cache:
-                        logger.warning(f"  ➜ 加载数据库缓存失败: {e_cache}。")
 
             # 2.完整模式
             if final_processed_cast is None:
