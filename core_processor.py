@@ -167,13 +167,9 @@ class MediaProcessor:
         """
         实时监控（优化版）：
         1. 识别 TMDb ID。
-        2. 检查本地缓存和数据库，如果已存在，则跳过 TMDb 请求和演员处理。
-        3. 获取 TMDb 数据。
-        4. 调用核心处理流程（AI翻译、去重等）。
-        5. 生成包含“精修数据”的本地 override 文件。
-        6. 写入数据库占位记录 (in_library=False)。
-        7. 下载图片。
-        8. 通知 Emby 刷新该文件所属的媒体库。
+        2. 【升级】双向检查数据库和本地缓存，互补缺失数据。
+        3. 如果任一数据源存在，则生成/恢复另一方，并跳过在线刮削。
+        4. 仅当两方都缺失时，才进行 TMDb 在线获取。
         """
         try:
             # 随机延时 0.5~2 秒，缓解并发压力
@@ -241,6 +237,20 @@ class MediaProcessor:
             item_type = "Series" if is_series else "Movie"
 
             # =========================================================
+            # 极速查重 (利用文件名比对)
+            # =========================================================
+            try:
+                # 获取该 TMDb ID 下所有已入库的文件名 (含电影和所有分集)
+                known_files = media_db.get_known_filenames_by_tmdb_id(tmdb_id)
+                current_filename = os.path.basename(file_path)
+                
+                if current_filename in known_files:
+                    logger.info(f"  ➜ [实时监控] 文件已完美入库 ({current_filename})，直接跳过。")
+                    return
+            except Exception as e:
+                logger.warning(f"  ➜ [实时监控] 查重失败，将继续常规流程: {e}")
+
+            # =========================================================
             # ★★★ 核心升级：数据库与缓存双向互补检查 ★★★
             # =========================================================
             should_skip_full_processing = False
@@ -259,16 +269,20 @@ class MediaProcessor:
             with get_central_db_connection() as conn:
                 cursor = conn.cursor()
                 # A. 查主表
-                # 注意：这里需要 select * 或者列出所有需要的字段
                 cursor.execute(f"SELECT * FROM media_metadata WHERE tmdb_id = %s AND item_type = %s", (str(tmdb_id), item_type))
                 row = cursor.fetchone()
                 if row:
                     db_record = dict(row)
                     # B. 查演员 (如果主表存在)
-                    # 这里的逻辑是：从 actors_json 解析出 ID，然后去 actors 表查详情
                     if db_record.get('actors_json'):
                         try:
-                            actors_link = json.loads(db_record['actors_json'])
+                            raw_actors = db_record['actors_json']
+                            # ★★★ 修复：兼容 list 和 str 两种类型 ★★★
+                            if isinstance(raw_actors, str):
+                                actors_link = json.loads(raw_actors)
+                            else:
+                                actors_link = raw_actors
+
                             # 提取 tmdb_id 列表
                             actor_tmdb_ids = [a['tmdb_id'] for a in actors_link if 'tmdb_id' in a]
                             if actor_tmdb_ids:
@@ -302,9 +316,15 @@ class MediaProcessor:
                     from tasks.helpers import reconstruct_metadata_from_db
                     payload = reconstruct_metadata_from_db(db_record, db_actors)
                     
-                    # 写入文件 (复用 sync_item_metadata)
-                    # 注意：这里不需要 final_cast_override，因为 payload 里已经包含了 cast
-                    fake_item_details = {"Id": "pending", "Name": db_record.get('title'), "Type": item_type, "ProviderIds": {"Tmdb": tmdb_id}}
+                    # ★★★ 修复：使用 db_record 构造 fake_item_details ★★★
+                    fake_item_details = {
+                        "Id": "pending", 
+                        "Name": db_record.get('title'), 
+                        "Type": item_type, 
+                        "ProviderIds": {"Tmdb": tmdb_id}
+                    }
+                    
+                    # 写入文件
                     self.sync_item_metadata(
                         item_details=fake_item_details,
                         tmdb_id=str(tmdb_id),
@@ -363,7 +383,7 @@ class MediaProcessor:
             # --- 分支 D: 都没有 -> 继续后续的 TMDb 在线流程 ---
             else:
                 logger.info(f"  ➜ [实时监控] 本地无缓存 (ID:{tmdb_id})，准备执行 TMDb 在线刮削...")
-            
+
             # =========================================================
             # 步骤 3: 获取完整详情 & 准备核心处理
             # =========================================================
@@ -422,38 +442,37 @@ class MediaProcessor:
                     final_processed_cast = authoritative_cast_source
             
             # =========================================================
-            # 步骤 4: 生成本地 override 元数据文件 (严格骨架格式化)
+            # 步骤 4 & 5: 生成本地 override 元数据文件 & 写入数据库
             # =========================================================
-            # 1. 准备伪造的 Emby 对象
-            fake_item_details = {
-                "Id": "pending",
-                "Name": details.get('title') or details.get('name'),
-                "Type": item_type,
-                "ProviderIds": {"Tmdb": tmdb_id}
-            }
-
-            logger.info(f"  ➜ [实时监控] 正在按照骨架模板格式化元数据...")
-
-            # 2. 初始化骨架
-            formatted_metadata = construct_metadata_payload(
-                item_type=item_type,
-                tmdb_data=details,
-                aggregated_tmdb_data=aggregated_tmdb_data
-            )
-
-            # 3. 写入本地文件
-            logger.info(f"  ➜ [实时监控] 正在写入本地元数据文件...")
-            self.sync_item_metadata(
-                item_details=fake_item_details,
-                tmdb_id=tmdb_id,
-                final_cast_override=final_processed_cast,
-                metadata_override=formatted_metadata 
-            )
-
-            # =========================================================
-            # 步骤 5: 写入数据库 (占位记录)
-            # =========================================================
+            # ★★★ 关键修复：只有当需要完整处理时，才执行这一步 ★★★
             if not should_skip_full_processing:
+                # 1. 准备伪造的 Emby 对象
+                fake_item_details = {
+                    "Id": "pending",
+                    "Name": details.get('title') or details.get('name'),
+                    "Type": item_type,
+                    "ProviderIds": {"Tmdb": tmdb_id}
+                }
+
+                logger.info(f"  ➜ [实时监控] 正在按照骨架模板格式化元数据...")
+
+                # 2. 初始化骨架
+                formatted_metadata = construct_metadata_payload(
+                    item_type=item_type,
+                    tmdb_data=details,
+                    aggregated_tmdb_data=aggregated_tmdb_data
+                )
+
+                # 3. 写入本地文件
+                logger.info(f"  ➜ [实时监控] 正在写入本地元数据文件...")
+                self.sync_item_metadata(
+                    item_details=fake_item_details,
+                    tmdb_id=tmdb_id,
+                    final_cast_override=final_processed_cast,
+                    metadata_override=formatted_metadata 
+                )
+
+                # 4. 写入数据库 (占位记录)
                 logger.info(f"  ➜ [实时监控] 正在将元数据写入数据库 ...")
                 with get_db_connection() as conn:
                     cursor = conn.cursor()
@@ -466,7 +485,7 @@ class MediaProcessor:
                     )
                     conn.commit()
             else:
-                logger.info(f"  ➜ [实时监控] 已跳过数据库占位写入 (记录已存在)。")
+                logger.info(f"  ➜ [实时监控] 已跳过在线刮削和元数据写入 (数据已通过缓存恢复)。")
 
             # =========================================================
             # 步骤 6: 下载图片
