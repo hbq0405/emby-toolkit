@@ -202,23 +202,10 @@ def handle_get_views():
             definition = coll.get('definition_json') or {}
             
             item_type_from_db = definition.get('item_type', 'Movie')
-            
-            # ★★★ 修复：确保 CollectionType 是 Emby 前端能识别的有效字符串 ★★★
-            # Emby 4.9+ 前端 videos.js 会检查 CollectionType.includes(...)，如果 CollectionType 是 undefined 就会报错
-            collection_type = "movies" # 默认值
-            
-            if isinstance(item_type_from_db, list):
-                if "Series" in item_type_from_db and "Movie" not in item_type_from_db:
-                    collection_type = "tvshows"
-                elif "Movie" in item_type_from_db and "Series" not in item_type_from_db:
-                    collection_type = "movies"
-                else:
-                    collection_type = "movies" # 混合类型通常用 movies 兼容性最好，或者用 'homevideos'
-            elif isinstance(item_type_from_db, str):
-                if item_type_from_db == "Series":
-                    collection_type = "tvshows"
-                else:
-                    collection_type = "movies"
+            collection_type = "mixed"
+            if not (isinstance(item_type_from_db, list) and len(item_type_from_db) > 1):
+                 authoritative_type = item_type_from_db[0] if isinstance(item_type_from_db, list) and item_type_from_db else item_type_from_db if isinstance(item_type_from_db, str) else 'Movie'
+                 collection_type = "tvshows" if authoritative_type == 'Series' else "movies"
 
             fake_view = {
                 "Name": coll['name'], "ServerId": real_server_id, "Id": mimicked_id,
@@ -231,11 +218,7 @@ def handle_get_views():
                 "UserData": {"PlaybackPositionTicks": 0, "IsFavorite": False, "Played": False},
                 "ChildCount": coll.get('in_library_count', 1),
                 "PrimaryImageAspectRatio": 1.7777777777777777, 
-                
-                # ★★★ 关键修复：确保 CollectionType 存在且有效 ★★★
-                "CollectionType": collection_type, 
-                
-                "ImageTags": image_tags, "BackdropImageTags": [], 
+                "CollectionType": collection_type, "ImageTags": image_tags, "BackdropImageTags": [], 
                 "LockedFields": [], "LockData": False
             }
             fake_views_items.append(fake_view)
@@ -281,23 +264,15 @@ def handle_get_mimicked_library_details(user_id, mimicked_id):
         
         definition = coll.get('definition_json') or {}
         item_type_from_db = definition.get('item_type', 'Movie')
-        
-        # ★★★ 修复：与 handle_get_views 保持一致的类型判断逻辑 ★★★
-        collection_type = "movies"
-        if isinstance(item_type_from_db, list):
-            if "Series" in item_type_from_db and "Movie" not in item_type_from_db:
-                collection_type = "tvshows"
-            elif "Movie" in item_type_from_db and "Series" not in item_type_from_db:
-                collection_type = "movies"
-        elif isinstance(item_type_from_db, str):
-            if item_type_from_db == "Series":
-                collection_type = "tvshows"
+        collection_type = "mixed"
+        if not (isinstance(item_type_from_db, list) and len(item_type_from_db) > 1):
+             authoritative_type = item_type_from_db[0] if isinstance(item_type_from_db, list) and item_type_from_db else item_type_from_db if isinstance(item_type_from_db, str) else 'Movie'
+             collection_type = "tvshows" if authoritative_type == 'Series' else "movies"
 
         fake_library_details = {
             "Name": coll['name'], "ServerId": real_server_id, "Id": mimicked_id,
             "Type": "CollectionFolder",
-            "CollectionType": collection_type, # ★★★ 确保这里也有值
-            "IsFolder": True, "ImageTags": image_tags,
+            "CollectionType": collection_type, "IsFolder": True, "ImageTags": image_tags,
         }
         return Response(json.dumps(fake_library_details), mimetype='application/json')
     except Exception as e:
