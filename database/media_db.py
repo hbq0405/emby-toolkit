@@ -1,4 +1,5 @@
 # database/media_db.py
+import os
 import logging
 from typing import List, Dict, Optional, Any
 import json
@@ -927,3 +928,46 @@ def get_episode_in_library_status(parent_tmdb_id: str, season_number: int, episo
     except Exception as e:
         logger.error(f"DB: 查询分集状态失败 (S{season_number}E{episode_number}): {e}")
         return None
+    
+def get_known_filenames_by_tmdb_id(tmdb_id: str) -> set:
+    """
+    【监控优化】根据 TMDb ID 获取数据库中已存在的所有文件名集合。
+    
+    逻辑：
+    1. 如果是电影，直接查 tmdb_id = ID
+    2. 如果是剧集，查 parent_series_tmdb_id = ID (查所有分集)
+    3. 解析 asset_details_json，提取文件名 (basename)
+    """
+    if not tmdb_id:
+        return set()
+
+    # 查询该 ID 对应的电影，或者该 ID 作为父剧集的所有分集
+    sql = """
+        SELECT asset_details_json 
+        FROM media_metadata 
+        WHERE (tmdb_id = %s AND item_type = 'Movie')
+           OR (parent_series_tmdb_id = %s AND item_type = 'Episode')
+    """
+    
+    known_files = set()
+    
+    try:
+        with get_db_connection() as conn:
+            with conn.cursor() as cursor:
+                cursor.execute(sql, (tmdb_id, tmdb_id))
+                rows = cursor.fetchall()
+                
+                for row in rows:
+                    assets = row.get('asset_details_json')
+                    if assets and isinstance(assets, list):
+                        for asset in assets:
+                            path = asset.get('path')
+                            if path:
+                                # 只提取文件名，忽略路径差异 (Docker映射问题)
+                                filename = os.path.basename(path)
+                                known_files.add(filename)
+                                
+        return known_files
+    except Exception as e:
+        logger.error(f"DB: 获取已知文件名集合失败 (ID: {tmdb_id}): {e}")
+        return set()

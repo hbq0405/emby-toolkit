@@ -4,6 +4,8 @@
 import time
 import json
 import gc
+import os
+import re
 import logging
 from typing import List, Optional
 import concurrent.futures
@@ -1401,20 +1403,19 @@ def task_sync_ratings_to_emby(processor):
     logger.info(f"  ➜ DB 回写: {updated_db_count} 条")
     task_manager.update_status_from_thread(100, f"分级同步完成: Emby修正{updated_emby_count}, DB回写{updated_db_count}")
 
-# ★★★ [优化版] 扫描监控目录查漏补缺 (带时间过滤) ★★★
+# --- 扫描监控目录查漏补缺 ---
 def task_scan_monitor_folders(processor):
     """
     任务：扫描配置的监控目录，查找数据库中不存在的媒体（漏网之鱼），并触发主动处理。
     优化：
-    1. 回溯时间可配置 (默认1天)。
-    2. 移除目录级剪枝，确保已入库剧集的新分集能被扫描到。
-    3. 优先检查时间戳，极速过滤旧文件。
+    1. 回溯时间可配置。
+    2. 优先检查时间戳，极速过滤旧文件。
+    3. 【新增】查库比对文件名，确保只处理真正未入库的文件。
     """
     # 1. 获取配置
     monitor_enabled = processor.config.get(constants.CONFIG_OPTION_MONITOR_ENABLED)
     monitor_paths = processor.config.get(constants.CONFIG_OPTION_MONITOR_PATHS, [])
     monitor_extensions = processor.config.get(constants.CONFIG_OPTION_MONITOR_EXTENSIONS, constants.DEFAULT_MONITOR_EXTENSIONS)
-    # ★ 获取回溯天数
     lookback_days = processor.config.get(constants.CONFIG_OPTION_MONITOR_SCAN_LOOKBACK_DAYS, constants.DEFAULT_MONITOR_SCAN_LOOKBACK_DAYS)
     
     logger.info(f"--- 开始执行监控目录查漏扫描 (回溯 {lookback_days} 天) ---")
@@ -1426,6 +1427,7 @@ def task_scan_monitor_folders(processor):
     valid_exts = set(ext.lower() for ext in monitor_extensions)
 
     # 2. 获取已知 TMDb ID (白名单)
+    # ... (保留原有白名单逻辑，虽然有了新逻辑，这个白名单依然可以用于快速判断是否是完全陌生的剧) ...
     known_tmdb_ids = set()
     try:
         with connection.get_db_connection() as conn:
@@ -1437,18 +1439,19 @@ def task_scan_monitor_folders(processor):
     except Exception as e:
         logger.error(f"  🚫 无法读取数据库白名单，任务中止: {e}")
         return
-
-    import os
-    import re
-    import time
     
     tmdb_regex = r'(?:tmdb|tmdbid)[-_=\s]*(\d+)'
     processed_in_this_run = set()
+    
+    # ★★★ 新增：本次运行的资产缓存，避免重复查库 ★★★
+    # Key: tmdb_id, Value: Set[filenames]
+    db_assets_cache = {}
+
     scan_count = 0
     trigger_count = 0
     skipped_old_count = 0
+    skipped_exists_count = 0 # 新增统计
     
-    # ★★★ 计算截止时间戳 ★★★
     now = time.time()
     cutoff_time = now - (lookback_days * 24 * 3600)
 
@@ -1460,14 +1463,12 @@ def task_scan_monitor_folders(processor):
         logger.info(f"  ➜ 正在扫描目录: {root_path}")
         
         for dirpath, dirnames, filenames in os.walk(root_path):
-            # 提取当前文件夹的 ID (如果有)
             folder_name = os.path.basename(dirpath)
             match_folder = re.search(tmdb_regex, folder_name, re.IGNORECASE)
             
-            # ★★★ 关键修改：删除了“如果文件夹ID已知则清空filenames”的逻辑 ★★★
-            # 这样即使剧集文件夹已入库，依然会遍历里面的文件，检查是否有新分集。
+            # 提取当前目录可能的 ID (优先用文件夹ID)
+            folder_tmdb_id = match_folder.group(1) if match_folder else None
 
-            # --- 文件扫描 ---
             for filename in filenames:
                 if filename.startswith('.'): continue
                 _, ext = os.path.splitext(filename)
@@ -1476,30 +1477,24 @@ def task_scan_monitor_folders(processor):
                 file_path = os.path.join(dirpath, filename)
                 
                 # ★★★ 第一道防线：时间过滤 (极速) ★★★
-                # 只有最近 N 天变动过的文件才有资格进入后续检查
                 try:
                     stat = os.stat(file_path)
-                    # 取修改时间或创建时间中较晚的那个
                     file_time = max(stat.st_mtime, stat.st_ctime)
                     
                     if file_time < cutoff_time:
                         skipped_old_count += 1
-                        continue # 太旧了，直接跳过，不读正则，不查库
+                        continue 
                 except OSError:
                     continue 
 
                 scan_count += 1
                 if scan_count % 500 == 0:
-                    task_manager.update_status_from_thread(50, f"扫描近期文件... (已扫 {scan_count}, 跳过旧文件 {skipped_old_count})")
+                    task_manager.update_status_from_thread(50, f"扫描中... (已扫 {scan_count}, 跳过旧文件 {skipped_old_count}, 跳过已存 {skipped_exists_count})")
 
-                # --- ID 提取与处理 ---
-                target_id = None
+                # --- ID 提取 ---
+                target_id = folder_tmdb_id
                 
-                # 1. 查当前文件夹
-                if match_folder:
-                    target_id = match_folder.group(1)
-                
-                # 2. 查爷爷文件夹 (针对 Season XX 目录)
+                # 如果文件夹没ID，查爷爷文件夹
                 if not target_id:
                     grandparent_path = os.path.dirname(dirpath)
                     grandparent_name = os.path.basename(grandparent_path)
@@ -1507,7 +1502,7 @@ def task_scan_monitor_folders(processor):
                     if match_grand:
                         target_id = match_grand.group(1)
                 
-                # 3. 查文件名
+                # 如果还没ID，查文件名
                 if not target_id:
                     match_file = re.search(tmdb_regex, filename, re.IGNORECASE)
                     if match_file:
@@ -1515,32 +1510,38 @@ def task_scan_monitor_folders(processor):
                 
                 # --- 判定逻辑 ---
                 if target_id:
-                    # 如果 ID 不在数据库白名单中 -> 肯定是漏网之鱼
-                    # 如果 ID 在白名单中，但这是一个新文件 -> 可能是新分集！
-                    # 这里的逻辑稍微复杂一点：
-                    # 对于剧集，ID 在白名单只代表“这部剧入库了”，不代表“这一集入库了”。
-                    # 但 process_file_actively 内部有“快速补全”和“跳过重复”的逻辑。
-                    # 所以，只要是近期的新文件，我们都尝试触发一次 process_file_actively。
-                    # process_file_actively 内部会检查本地 json 和数据库，如果这一集真的处理过了，它会秒退。
-                    
-                    # 为了避免对同一个 ID 重复触发太多次（比如一下子扫到10个新分集），
-                    # 我们用 processed_in_this_run 做本次运行的去重。
-                    
-                    if target_id not in processed_in_this_run:
-                        logger.info(f"  🔍 发现近期变动文件: {filename} (ID: {target_id})，触发检查...")
-                        try:
-                            # 调用主动处理逻辑
-                            # 注意：process_file_actively 内部有完善的去重机制
-                            processor.process_file_actively(file_path)
-                            
-                            # 标记该 ID 本次已触发，避免同剧集其他文件重复触发
-                            # (因为 process_file_actively 会处理整个剧集目录)
-                            processed_in_this_run.add(target_id)
-                            
-                            trigger_count += 1
-                            time.sleep(1) # 稍微停顿
-                        except Exception as e:
-                            logger.error(f"  🚫 处理文件失败: {e}")
+                    # 1. 如果 ID 已经在本次运行处理过，跳过
+                    if target_id in processed_in_this_run:
+                        continue
 
-    logger.info(f"--- 监控目录扫描完成。扫描近期文件: {scan_count}, 跳过旧文件: {skipped_old_count}, 触发处理: {trigger_count} ---")
-    task_manager.update_status_from_thread(100, f"扫描完成，检查了 {trigger_count} 个项目")
+                    # 2. ★★★ 第二道防线：查库比对文件名 ★★★
+                    # 如果 ID 在缓存里没有，先去数据库查一次并缓存
+                    if target_id not in db_assets_cache:
+                        # 调用 media_db 新增的函数
+                        db_assets_cache[target_id] = media_db.get_known_filenames_by_tmdb_id(target_id)
+                    
+                    # 检查当前文件名是否已在数据库记录中
+                    if filename in db_assets_cache[target_id]:
+                        skipped_exists_count += 1
+                        # logger.trace(f"  ➜ [跳过] 文件已入库: {filename}")
+                        continue
+
+                    # 3. 确实是新文件，触发处理
+                    logger.info(f"  🔍 发现未入库文件: {filename} (ID: {target_id})，触发检查...")
+                    try:
+                        processor.process_file_actively(file_path)
+                        
+                        # 标记该 ID 本次已触发
+                        processed_in_this_run.add(target_id)
+                        
+                        # 乐观更新缓存：假设处理成功，将该文件名加入缓存，防止同一次扫描重复触发
+                        if target_id in db_assets_cache:
+                            db_assets_cache[target_id].add(filename)
+
+                        trigger_count += 1
+                        time.sleep(1) 
+                    except Exception as e:
+                        logger.error(f"  🚫 处理文件失败: {e}")
+
+    logger.info(f"--- 监控目录扫描完成。扫描: {scan_count}, 跳过旧文件: {skipped_old_count}, 跳过已入库: {skipped_exists_count}, 触发处理: {trigger_count} ---")
+    task_manager.update_status_from_thread(100, f"扫描完成，处理了 {trigger_count} 个新项目")
