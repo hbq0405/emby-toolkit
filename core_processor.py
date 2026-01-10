@@ -1707,11 +1707,11 @@ class MediaProcessor:
                         if override_data:
                             cast_data = (override_data.get('casts', {}) or override_data.get('credits', {})).get('cast', [])
                             if cast_data:
-                                logger.info(f"  ➜ [快速模式] 成功从文件加载 {len(cast_data)} 位演员，将激活反哺数据库...")
+                                logger.info(f"  ➜ [快速模式] 成功从文件加载 {len(cast_data)} 位演员和元数据...")
                                 final_processed_cast = cast_data
                                 
                                 # 关键设置 1: 以此为源更新数据库
-                                #tmdb_details_for_extra = override_data 
+                                tmdb_details_for_extra = override_data 
                                 
                                 # =========================================================
                                 # ★★★ 填补盲区：如果是剧集，必须把分集文件也读进来！ ★★★
