@@ -1441,7 +1441,7 @@ def empty_collection_in_emby(collection_id: str, base_url: str, api_key: str, us
     if success:
         logger.info(f"  ✅ 成功从Emby删除合集 {collection_id} 。")
     else:
-        logger.error(f"❌ 发送清空合集 {collection_id} 的请求失败。")
+        logger.error(f"  ❌ 发送清空合集 {collection_id} 的请求失败。")
         
     return success
 

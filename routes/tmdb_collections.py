@@ -73,7 +73,7 @@ def api_delete_collection(emby_collection_id):
     删除指定的 Emby 合集。
     逻辑：先清空合集内的所有媒体项 -> 再删除合集条目本身。
     """
-    logger.info(f"API: 收到删除 Emby 合集请求 (ID: {emby_collection_id})")
+    logger.info(f"  ➜ 收到删除 Emby 合集请求 (ID: {emby_collection_id})")
     
     try:
         # 1. 获取配置
