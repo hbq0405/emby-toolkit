@@ -18,7 +18,7 @@ from database.connection import get_db_connection
 from database import media_db, maintenance_db
 import handler.emby as emby
 import handler.tmdb as tmdb
-from tasks.helpers import parse_full_asset_details, calculate_ancestor_ids, apply_rating_logic
+from tasks.helpers import parse_full_asset_details, calculate_ancestor_ids, construct_metadata_payload
 import utils
 import constants
 import logging
@@ -381,95 +381,13 @@ class MediaProcessor:
             logger.info(f"  ➜ [实时监控] 正在按照骨架模板格式化元数据...")
 
             # 2. 初始化骨架
-            if item_type == "Movie":
-                formatted_metadata = json.loads(json.dumps(utils.MOVIE_SKELETON_TEMPLATE))
-            else:
-                formatted_metadata = json.loads(json.dumps(utils.SERIES_SKELETON_TEMPLATE))
+            formatted_metadata = construct_metadata_payload(
+                item_type=item_type,
+                tmdb_data=details,
+                aggregated_tmdb_data=aggregated_tmdb_data
+            )
 
-            # 3. 基础字段填充
-            exclude_keys = [
-                'casts', 'releases', 'release_dates', 'keywords', 'trailers', 
-                'content_ratings', 'videos', 'credits', 'genres', 
-                'episodes_details', 'seasons_details', 'created_by', 'networks'
-            ]
-            for key in formatted_metadata.keys():
-                if key in details and key not in exclude_keys:
-                    formatted_metadata[key] = details[key]
-
-            # 4. 通用复杂字段处理
-            if 'genres' in details: formatted_metadata['genres'] = details['genres']
-            
-            if 'keywords' in details:
-                kw_data = details['keywords']
-                if item_type == "Movie":
-                    if isinstance(kw_data, dict): formatted_metadata['keywords']['keywords'] = kw_data.get('keywords', [])
-                    elif isinstance(kw_data, list): formatted_metadata['keywords']['keywords'] = kw_data
-                else:
-                    if isinstance(kw_data, dict): formatted_metadata['keywords']['results'] = kw_data.get('results', [])
-                    elif isinstance(kw_data, list): formatted_metadata['keywords']['results'] = kw_data
-
-            if 'videos' in details:
-                if item_type == "Movie":
-                    youtube_list = []
-                    for v in details['videos'].get('results', []):
-                        if v.get('site') == 'YouTube' and v.get('type') == 'Trailer':
-                            youtube_list.append({"name": v.get('name'), "size": str(v.get('size', 'HD')), "source": v.get('key'), "type": "Trailer"})
-                    formatted_metadata['trailers']['youtube'] = youtube_list
-                else:
-                    formatted_metadata['videos'] = details['videos']
-
-            # 5. 类型特定处理
-            if item_type == "Movie":
-                credits_source = details.get('credits') or details.get('casts') or {}
-                if credits_source:
-                    formatted_metadata['casts']['cast'] = credits_source.get('cast', [])
-                    formatted_metadata['casts']['crew'] = credits_source.get('crew', [])
-
-                apply_rating_logic(formatted_metadata, details, "Movie")
-
-            elif item_type == "Series":
-                credits_source = details.get('aggregate_credits') or details.get('credits') or {}
-                if credits_source:
-                    formatted_metadata['credits']['cast'] = credits_source.get('cast', [])
-                    formatted_metadata['credits']['crew'] = credits_source.get('crew', [])
-                
-                if 'created_by' in details: formatted_metadata['created_by'] = details['created_by']
-                if 'networks' in details: formatted_metadata['networks'] = details['networks']
-
-                apply_rating_logic(formatted_metadata, details, "Series")
-
-                if aggregated_tmdb_data:
-                    raw_episodes = aggregated_tmdb_data.get('episodes_details', {})
-                    formatted_episodes = {}
-                    
-                    for key, ep_data in raw_episodes.items():
-                        # 1. 初始化分集骨架
-                        ep_skeleton = json.loads(json.dumps(utils.EPISODE_SKELETON_TEMPLATE))
-                        
-                        # 2. ★★★ 关键修复：显式赋值 ID 和 季/集号 ★★★
-                        # 如果没有这几行，写入数据库时 ID 就是 0 或 None！
-                        ep_skeleton['id'] = ep_data.get('id') 
-                        ep_skeleton['season_number'] = ep_data.get('season_number')
-                        ep_skeleton['episode_number'] = ep_data.get('episode_number')
-                        
-                        # 3. 填充其他基础数据
-                        ep_skeleton['name'] = ep_data.get('name')
-                        ep_skeleton['overview'] = ep_data.get('overview')
-                        ep_skeleton['air_date'] = ep_data.get('air_date')
-                        ep_skeleton['vote_average'] = ep_data.get('vote_average')
-                        
-                        # 4. 填充演员
-                        ep_credits = ep_data.get('credits', {})
-                        ep_skeleton['credits']['cast'] = ep_credits.get('cast', []) 
-                        ep_skeleton['credits']['guest_stars'] = ep_credits.get('guest_stars', [])
-                        ep_skeleton['credits']['crew'] = ep_credits.get('crew', [])
-                        
-                        formatted_episodes[key] = ep_skeleton
-                    
-                    formatted_metadata['episodes_details'] = formatted_episodes
-                    formatted_metadata['seasons_details'] = aggregated_tmdb_data.get('seasons_details', [])
-
-            # 6. 写入本地文件
+            # 3. 写入本地文件
             logger.info(f"  ➜ [实时监控] 正在写入本地元数据文件...")
             self.sync_item_metadata(
                 item_details=fake_item_details,
@@ -1594,93 +1512,29 @@ class MediaProcessor:
             # 3. 填充骨架 (Data Mapping)
             if fresh_data:
                 # --- A. 基础字段直接覆盖 (通用) ---
-                for key in tmdb_details_for_extra.keys():
-                    # 排除特殊字段，稍后处理
-                    if key in fresh_data and key not in ['casts', 'releases', 'release_dates', 'keywords', 'trailers', 'content_ratings', 'videos', 'credits', 'genres']:
-                        tmdb_details_for_extra[key] = fresh_data[key]
+                tmdb_details_for_extra = construct_metadata_payload(
+                    item_type=item_type,
+                    tmdb_data=fresh_data,
+                    aggregated_tmdb_data=aggregated_tmdb_data,
+                    emby_data_fallback=item_details_from_emby
+                )
+                # ★★★ 替换结束 ★★★
                 
-                # --- B. 通用修复：类型 (Genres) ---
-                # 逻辑：优先用 TMDb，如果没有，用 Emby 兜底
-                if 'genres' in fresh_data and fresh_data['genres']:
-                    tmdb_details_for_extra['genres'] = fresh_data['genres']
-                elif item_details_from_emby.get('Genres'):
-                    # Emby 只有字符串列表，我们需要构造成对象列表以符合 JSON 标准
-                    tmdb_details_for_extra['genres'] = [{'id': 0, 'name': g} for g in item_details_from_emby['Genres']]
-
-                # --- C. 电影特殊映射 ---
+                # 注意：原代码中这里有 authoritative_cast_source 的赋值逻辑，
+                # 虽然 _construct_metadata_payload 里处理了 cast，但那是为了写入文件。
+                # 这里 authoritative_cast_source 是为了后续的演员处理流程，所以这部分逻辑需要保留或重新提取。
+                
+                # --- 重新提取 authoritative_cast_source (为了后续流程) ---
                 if item_type == "Movie":
-                    
-                    # 1. 演员表 (兼容 credits 和 casts)
                     credits_source = fresh_data.get('credits') or fresh_data.get('casts') or {}
-                    if credits_source:
-                        tmdb_details_for_extra['casts']['cast'] = credits_source.get('cast', [])
-                        tmdb_details_for_extra['casts']['crew'] = credits_source.get('crew', [])
-                        authoritative_cast_source = credits_source.get('cast', [])
-
-                    # 2. 分级 (优先级查找 + 智能映射 + 自动补全 US)
-                    apply_rating_logic(tmdb_details_for_extra, fresh_data, "Movie")
-
-                    # 3. 关键词
-                    if 'keywords' in fresh_data:
-                        kw_data = fresh_data['keywords']
-                        if isinstance(kw_data, dict):
-                            tmdb_details_for_extra['keywords']['keywords'] = kw_data.get('keywords', [])
-                        elif isinstance(kw_data, list):
-                            tmdb_details_for_extra['keywords']['keywords'] = kw_data
-
-                    # 4. 预告片
-                    if 'videos' in fresh_data:
-                        youtube_list = []
-                        for v in fresh_data['videos'].get('results', []):
-                            if v.get('site') == 'YouTube' and v.get('type') == 'Trailer':
-                                youtube_list.append({
-                                    "name": v.get('name'),
-                                    "size": str(v.get('size', 'HD')),
-                                    "source": v.get('key'),
-                                    "type": "Trailer"
-                                })
-                        tmdb_details_for_extra['trailers']['youtube'] = youtube_list
-
-                # --- D. 剧集特殊映射 (修复版) ---
+                    authoritative_cast_source = credits_source.get('cast', [])
                 elif item_type == "Series":
-                    # 1. 演员表 (写入 credits 节点)
-                    credits_source = fresh_data.get('aggregate_credits') or fresh_data.get('credits') or {}
-                    
-                    if credits_source:
-                        # ★★★ 修复：写入 credits 而不是 casts ★★★
-                        tmdb_details_for_extra['credits']['cast'] = credits_source.get('cast', [])
-                        tmdb_details_for_extra['credits']['crew'] = credits_source.get('crew', [])
-                        
-                        # 更新权威演员源
-                        if aggregated_tmdb_data:
-                            all_episodes = list(aggregated_tmdb_data.get("episodes_details", {}).values())
-                            authoritative_cast_source = _aggregate_series_cast_from_tmdb_data(fresh_data, all_episodes)
-                        else:
-                            authoritative_cast_source = credits_source.get('cast', [])
-
-                    # 2. 分级 (优先级查找 + 智能映射 + 自动补全 US)
-                    apply_rating_logic(tmdb_details_for_extra, fresh_data, "Series")
-
-                    # 3. 关键词
-                    if 'keywords' in fresh_data:
-                        tmdb_details_for_extra['keywords'] = fresh_data['keywords']
-
-                    # 4. 外部ID
-                    if 'external_ids' in fresh_data:
-                        # 简单的合并，保留骨架里的 None 默认值
-                        ext_ids = fresh_data['external_ids']
-                        if 'imdb_id' in ext_ids: tmdb_details_for_extra['external_ids']['imdb_id'] = ext_ids['imdb_id']
-                        if 'tvdb_id' in ext_ids: tmdb_details_for_extra['external_ids']['tvdb_id'] = ext_ids['tvdb_id']
-                        if 'tvrage_id' in ext_ids: tmdb_details_for_extra['external_ids']['tvrage_id'] = ext_ids['tvrage_id']
-
-                    # 5. 预告片
-                    if 'videos' in fresh_data:
-                        tmdb_details_for_extra['videos'] = fresh_data['videos']
-
-                    # 6. 挂载子项数据
                     if aggregated_tmdb_data:
-                        tmdb_details_for_extra['seasons_details'] = aggregated_tmdb_data.get('seasons_details', [])
-                        tmdb_details_for_extra['episodes_details'] = aggregated_tmdb_data.get('episodes_details', {})
+                        all_episodes = list(aggregated_tmdb_data.get("episodes_details", {}).values())
+                        authoritative_cast_source = _aggregate_series_cast_from_tmdb_data(fresh_data, all_episodes)
+                    else:
+                        credits_source = fresh_data.get('aggregate_credits') or fresh_data.get('credits') or {}
+                        authoritative_cast_source = credits_source.get('cast', [])
 
             # =========================================================
             # ★★★ 步骤 2: 移除无头像演员 ★★★
@@ -2704,17 +2558,18 @@ class MediaProcessor:
             tmdb_id = item_details.get("ProviderIds", {}).get("Tmdb")
             if not tmdb_id: raise ValueError(f"项目 {item_id} 缺少 TMDb ID。")
 
-            # --- 新增：获取 TMDb 详情用于分级数据提取 ---
+            # --- 获取 TMDb 详情用于分级数据提取 ---
             tmdb_details_for_manual_extra = None
+            aggregated_tmdb_data_manual = None
             if self.tmdb_api_key:
                 if item_type == "Movie":
                     tmdb_details_for_manual_extra = tmdb.get_movie_details(tmdb_id, self.tmdb_api_key)
                     if not tmdb_details_for_manual_extra:
                         logger.warning(f"  ➜ 手动处理：无法从 TMDb 获取电影 '{item_name}' ({tmdb_id}) 的详情。")
                 elif item_type == "Series":
-                    aggregated_tmdb_data = tmdb.aggregate_full_series_data_from_tmdb(int(tmdb_id), self.tmdb_api_key)
-                    if aggregated_tmdb_data:
-                        tmdb_details_for_manual_extra = aggregated_tmdb_data.get("series_details")
+                    aggregated_tmdb_data_manual = tmdb.aggregate_full_series_data_from_tmdb(int(tmdb_id), self.tmdb_api_key)
+                    if aggregated_tmdb_data_manual:
+                        tmdb_details_for_manual_extra = aggregated_tmdb_data_manual.get("series_details")
                     else:
                         logger.warning(f"  ➜ 手动处理：无法从 TMDb 获取剧集 '{item_name}' ({tmdb_id}) 的详情。")
             else:
@@ -2937,7 +2792,14 @@ class MediaProcessor:
             # 更新我们自己的数据库日志和缓存
             with get_central_db_connection() as conn:
                 cursor = conn.cursor()
-                
+                formatted_manual_metadata = None
+                if tmdb_details_for_manual_extra:
+                    formatted_manual_metadata = construct_metadata_payload(
+                        item_type=item_type,
+                        tmdb_data=tmdb_details_for_manual_extra,
+                        aggregated_tmdb_data=aggregated_tmdb_data_manual,
+                        emby_data_fallback=item_details
+                    )
                 # ======================================================================
                 # ★★★ 调用统一的、已规范化的缓存写入函数 ★★★
                 # ======================================================================
@@ -2946,7 +2808,7 @@ class MediaProcessor:
                     item_type=item_type,
                     item_details_from_emby=item_details,
                     final_processed_cast=final_formatted_cast, 
-                    source_data_package=tmdb_details_for_manual_extra, 
+                    source_data_package=formatted_manual_metadata, 
                 )
                 
                 logger.info(f"  ➜ 正在将手动处理完成的《{item_name}》写入已处理日志...")

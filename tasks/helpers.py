@@ -3,6 +3,7 @@
 
 import os
 import re
+import json
 from typing import Optional, Dict, Tuple, List, Set, Any
 import logging
 from datetime import datetime, timedelta, timezone
@@ -1154,3 +1155,123 @@ def apply_rating_logic(metadata_skeleton: Dict[str, Any], tmdb_data: Dict[str, A
     if final_rating_str:
         metadata_skeleton['mpaa'] = final_rating_str
         metadata_skeleton['certification'] = final_rating_str
+
+def construct_metadata_payload(item_type: str, tmdb_data: Dict[str, Any], 
+                                  aggregated_tmdb_data: Optional[Dict[str, Any]] = None,
+                                  emby_data_fallback: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
+        """
+        统一封装：将 TMDb 原始数据转换为符合本地 override 格式的标准元数据骨架。
+        包含：基础字段映射、复杂字段处理(Genres/Keywords/Videos)、分级逻辑、剧集子项结构化等。
+        """
+        # 1. 初始化骨架
+        if item_type == "Movie":
+            payload = json.loads(json.dumps(utils.MOVIE_SKELETON_TEMPLATE))
+        else:
+            payload = json.loads(json.dumps(utils.SERIES_SKELETON_TEMPLATE))
+
+        if not tmdb_data:
+            return payload
+
+        # 2. 基础字段直接覆盖 (排除特殊字段)
+        exclude_keys = [
+            'casts', 'releases', 'release_dates', 'keywords', 'trailers', 
+            'content_ratings', 'videos', 'credits', 'genres', 
+            'episodes_details', 'seasons_details', 'created_by', 'networks'
+        ]
+        for key in payload.keys():
+            if key in tmdb_data and key not in exclude_keys:
+                payload[key] = tmdb_data[key]
+
+        # 3. 通用复杂字段处理
+        # Genres: 优先 TMDb，Emby 兜底
+        if 'genres' in tmdb_data and tmdb_data['genres']:
+            payload['genres'] = tmdb_data['genres']
+        elif emby_data_fallback and emby_data_fallback.get('Genres'):
+            payload['genres'] = [{'id': 0, 'name': g} for g in emby_data_fallback['Genres']]
+
+        # Keywords
+        if 'keywords' in tmdb_data:
+            kw_data = tmdb_data['keywords']
+            if item_type == "Movie":
+                if isinstance(kw_data, dict): payload['keywords']['keywords'] = kw_data.get('keywords', [])
+                elif isinstance(kw_data, list): payload['keywords']['keywords'] = kw_data
+            else:
+                if isinstance(kw_data, dict): payload['keywords']['results'] = kw_data.get('results', [])
+                elif isinstance(kw_data, list): payload['keywords']['results'] = kw_data
+
+        # Videos / Trailers
+        if 'videos' in tmdb_data:
+            if item_type == "Movie":
+                youtube_list = []
+                for v in tmdb_data['videos'].get('results', []):
+                    if v.get('site') == 'YouTube' and v.get('type') == 'Trailer':
+                        youtube_list.append({
+                            "name": v.get('name'), "size": str(v.get('size', 'HD')), 
+                            "source": v.get('key'), "type": "Trailer"
+                        })
+                payload['trailers']['youtube'] = youtube_list
+            else:
+                payload['videos'] = tmdb_data['videos']
+
+        # 4. 类型特定处理
+        if item_type == "Movie":
+            # 演员表
+            credits_source = tmdb_data.get('credits') or tmdb_data.get('casts') or {}
+            if credits_source:
+                payload['casts']['cast'] = credits_source.get('cast', [])
+                payload['casts']['crew'] = credits_source.get('crew', [])
+            
+            # 分级
+            apply_rating_logic(payload, tmdb_data, "Movie")
+
+        elif item_type == "Series":
+            # 演员表
+            credits_source = tmdb_data.get('aggregate_credits') or tmdb_data.get('credits') or {}
+            if credits_source:
+                payload['credits']['cast'] = credits_source.get('cast', [])
+                payload['credits']['crew'] = credits_source.get('crew', [])
+            
+            if 'created_by' in tmdb_data: payload['created_by'] = tmdb_data['created_by']
+            if 'networks' in tmdb_data: payload['networks'] = tmdb_data['networks']
+            
+            # 外部ID
+            if 'external_ids' in tmdb_data:
+                ext_ids = tmdb_data['external_ids']
+                if 'imdb_id' in ext_ids: payload['external_ids']['imdb_id'] = ext_ids['imdb_id']
+                if 'tvdb_id' in ext_ids: payload['external_ids']['tvdb_id'] = ext_ids['tvdb_id']
+                if 'tvrage_id' in ext_ids: payload['external_ids']['tvrage_id'] = ext_ids['tvrage_id']
+
+            # 分级
+            apply_rating_logic(payload, tmdb_data, "Series")
+
+            # 挂载子项数据 (Seasons / Episodes)
+            if aggregated_tmdb_data:
+                payload['seasons_details'] = aggregated_tmdb_data.get('seasons_details', [])
+                
+                raw_episodes = aggregated_tmdb_data.get('episodes_details', {})
+                formatted_episodes = {}
+                
+                # 统一处理分集骨架
+                for key, ep_data in raw_episodes.items():
+                    ep_skeleton = json.loads(json.dumps(utils.EPISODE_SKELETON_TEMPLATE))
+                    
+                    # 关键字段
+                    ep_skeleton['id'] = ep_data.get('id') 
+                    ep_skeleton['season_number'] = ep_data.get('season_number')
+                    ep_skeleton['episode_number'] = ep_data.get('episode_number')
+                    ep_skeleton['name'] = ep_data.get('name')
+                    ep_skeleton['overview'] = ep_data.get('overview')
+                    ep_skeleton['air_date'] = ep_data.get('air_date')
+                    ep_skeleton['vote_average'] = ep_data.get('vote_average')
+                    
+                    # 演员
+                    ep_credits = ep_data.get('credits', {})
+                    ep_skeleton['credits']['cast'] = ep_credits.get('cast', []) 
+                    ep_skeleton['credits']['guest_stars'] = ep_credits.get('guest_stars', [])
+                    ep_skeleton['credits']['crew'] = ep_credits.get('crew', [])
+                    
+                    formatted_episodes[key] = ep_skeleton
+                
+                payload['episodes_details'] = formatted_episodes
+
+        return payload
