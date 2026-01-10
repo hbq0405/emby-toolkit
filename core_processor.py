@@ -288,7 +288,7 @@ class MediaProcessor:
                             if actor_tmdb_ids:
                                 # 批量查询演员详情
                                 placeholders = ','.join(['%s'] * len(actor_tmdb_ids))
-                                cursor.execute(f"SELECT * FROM actors_metadata WHERE tmdb_id IN ({placeholders})", tuple(actor_tmdb_ids))
+                                cursor.execute(f"SELECT * FROM actor_metadata WHERE tmdb_id IN ({placeholders})", tuple(actor_tmdb_ids))
                                 actor_rows = cursor.fetchall()
                                 actor_map = {r['tmdb_id']: dict(r) for r in actor_rows}
                                 
