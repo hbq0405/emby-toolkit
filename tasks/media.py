@@ -738,7 +738,7 @@ def task_populate_metadata_cache(processor, batch_size: int = 50, force_full_upd
                 emby_runtime = round(item['RunTimeTicks'] / 600000000) if item.get('RunTimeTicks') else None
 
                 # 提取发行日期 
-                emby_date = item.get('PremiereDate')
+                emby_date = item.get('PremiereDate') or None
                 tmdb_date = None
                 if tmdb_details:
                     if item_type == 'Movie': 
@@ -760,7 +760,7 @@ def task_populate_metadata_cache(processor, batch_size: int = 50, force_full_upd
                     "emby_item_ids_json": json.dumps(list(set(v.get('Id') for v in item_group if v.get('Id') and v.get('Type') == item_type)), ensure_ascii=False),
                     "asset_details_json": json.dumps(asset_details_list, ensure_ascii=False),
                     "rating": item.get('CommunityRating'),
-                    "date_added": item.get('DateCreated'),
+                    "date_added": item.get('DateCreated') or None,
                     "release_date": final_release_date,
                     "genres_json": json.dumps(item.get('Genres', []), ensure_ascii=False),
                     "tags_json": json.dumps(extract_tag_names(item), ensure_ascii=False),
@@ -854,10 +854,10 @@ def task_populate_metadata_cache(processor, batch_size: int = 50, force_full_upd
                                     season_poster = tmdb_details.get('poster_path')
 
                                 # 提取季发行日期
-                                s_release_date = s_info.get('air_date')
+                                s_release_date = s_info.get('air_date') or None
                                 
                                 if not s_release_date and matched_emby_seasons:
-                                    s_release_date = matched_emby_seasons[0].get('PremiereDate')
+                                    s_release_date = matched_emby_seasons[0].get('PremiereDate') or None
                                 
                                 # 核心逻辑：如果还没找到，遍历该季下的分集找最早的
                                 if not s_release_date:
@@ -907,7 +907,7 @@ def task_populate_metadata_cache(processor, batch_size: int = 50, force_full_upd
 
                         if s_num not in processed_season_numbers:
                             # 兜底逻辑也加上分集日期推断 
-                            s_release_date = s.get('PremiereDate')
+                            s_release_date = s.get('PremiereDate') or None
                             if not s_release_date:
                                 ep_dates = [
                                     e.get('PremiereDate') for e in my_episodes 
@@ -955,7 +955,7 @@ def task_populate_metadata_cache(processor, batch_size: int = 50, force_full_upd
                         # 提取分集发行日期 
                         ep_release_date = emby_ep.get('PremiereDate')
                         if not ep_release_date and tmdb_ep_info:
-                            ep_release_date = tmdb_ep_info.get('air_date')
+                            ep_release_date = tmdb_ep_info.get('air_date') or None
                         child_record = {
                             "item_type": "Episode",
                             "parent_series_tmdb_id": tmdb_id_str,
