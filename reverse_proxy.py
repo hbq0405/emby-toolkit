@@ -282,7 +282,7 @@ def handle_get_mimicked_library_details(user_id, mimicked_id):
         definition = coll.get('definition_json') or {}
         item_type_from_db = definition.get('item_type', 'Movie')
         
-        # ★★★ 修复：与 handle_get_views 保持一致的类型判断逻辑 ★★★
+        # 类型判断逻辑
         collection_type = "movies"
         if isinstance(item_type_from_db, list):
             if "Series" in item_type_from_db and "Movie" not in item_type_from_db:
@@ -293,11 +293,34 @@ def handle_get_mimicked_library_details(user_id, mimicked_id):
             if item_type_from_db == "Series":
                 collection_type = "tvshows"
 
+        # ★★★ 核心修复：补全所有可能被前端访问的字段 ★★★
         fake_library_details = {
-            "Name": coll['name'], "ServerId": real_server_id, "Id": mimicked_id,
+            "Name": coll['name'], 
+            "ServerId": real_server_id, 
+            "Id": mimicked_id,
+            "Guid": str(uuid.uuid4()), # 补全 Guid
             "Type": "CollectionFolder",
-            "CollectionType": collection_type, # ★★★ 确保这里也有值
-            "IsFolder": True, "ImageTags": image_tags,
+            "CollectionType": collection_type,
+            "IsFolder": True, 
+            "ImageTags": image_tags,
+            
+            # --- 补全缺失的空字段，防止前端报错 ---
+            "Taglines": [],
+            "RemoteTrailers": [],
+            "ExternalUrls": [],
+            "Path": "",  # 某些逻辑可能会检查 Path
+            "Locations": [], # 某些逻辑可能会检查 Locations
+            
+            # --- 补全用户数据 ---
+            "UserData": {"PlaybackPositionTicks": 0, "IsFavorite": False, "Played": False},
+            
+            # --- 补全显示属性 ---
+            "PrimaryImageAspectRatio": 1.7777777777777777,
+            "ChildCount": coll.get('in_library_count', 0),
+            "RecursiveItemCount": coll.get('in_library_count', 0), # 补全计数
+            
+            "LockedFields": [], 
+            "LockData": False
         }
         return Response(json.dumps(fake_library_details), mimetype='application/json')
     except Exception as e:
