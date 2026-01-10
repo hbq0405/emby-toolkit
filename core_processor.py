@@ -319,11 +319,64 @@ class MediaProcessor:
             if db_record and not file_exists:
                 logger.info(f"  ➜ [实时监控] 命中数据库缓存 (ID:{tmdb_id})，但本地文件缺失。正在从数据库反向生成覆盖文件...")
                 try:
-                    # 调用新工具函数生成 payload
+                    # 1. 生成主 payload
                     from tasks.helpers import reconstruct_metadata_from_db
                     payload = reconstruct_metadata_from_db(db_record, db_actors)
+
+                    # ★★★ 新增：如果是剧集，需要查询并注入分季/分集数据 ★★★
+                    if item_type == "Series":
+                        with get_central_db_connection() as conn:
+                            cursor = conn.cursor()
+                            
+                            # A. 查分季
+                            cursor.execute("SELECT * FROM media_metadata WHERE parent_series_tmdb_id = %s AND item_type = 'Season'", (str(tmdb_id),))
+                            seasons_rows = cursor.fetchall()
+                            seasons_data = []
+                            for s_row in seasons_rows:
+                                # 构造简化的 season 对象
+                                s_data = {
+                                    "id": int(s_row['tmdb_id']),
+                                    "name": s_row['title'],
+                                    "overview": s_row['overview'],
+                                    "season_number": s_row['season_number'],
+                                    "air_date": str(s_row['release_date']) if s_row['release_date'] else None,
+                                    "poster_path": s_row['poster_path']
+                                }
+                                seasons_data.append(s_data)
+                            
+                            # B. 查分集
+                            cursor.execute("SELECT * FROM media_metadata WHERE parent_series_tmdb_id = %s AND item_type = 'Episode'", (str(tmdb_id),))
+                            episodes_rows = cursor.fetchall()
+                            episodes_data = {} # 字典格式 S1E1: data
+                            
+                            for e_row in episodes_rows:
+                                s_num = e_row['season_number']
+                                e_num = e_row['episode_number']
+                                key = f"S{s_num}E{e_num}"
+                                
+                                # 构造简化的 episode 对象
+                                e_data = {
+                                    "id": int(e_row['tmdb_id']),
+                                    "name": e_row['title'],
+                                    "overview": e_row['overview'],
+                                    "season_number": s_num,
+                                    "episode_number": e_num,
+                                    "air_date": str(e_row['release_date']) if e_row['release_date'] else None,
+                                    "vote_average": e_row['rating'],
+                                    # 演员表暂时略过，因为数据库里分集通常不存独立演员表，或者存了也很难还原
+                                    # 如果需要，可以解析 e_row['actors_json']
+                                }
+                                episodes_data[key] = e_data
+
+                            # C. 注入 payload
+                            if seasons_data:
+                                payload['seasons_details'] = seasons_data
+                            if episodes_data:
+                                payload['episodes_details'] = episodes_data
+                                
+                            logger.info(f"  ➜ [实时监控] 已从数据库恢复 {len(seasons_data)} 个季和 {len(episodes_data)} 个分集的数据。")
                     
-                    # ★★★ 修复：使用 db_record 构造 fake_item_details ★★★
+                    # 2. 写入文件
                     fake_item_details = {
                         "Id": "pending", 
                         "Name": db_record.get('title'), 
@@ -491,18 +544,17 @@ class MediaProcessor:
                         item_details_from_emby=fake_item_details # Id="pending"
                     )
                     conn.commit()
+
+                # =========================================================
+                # 步骤 6: 下载图片
+                # =========================================================
+                self.download_images_from_tmdb(
+                    tmdb_id=tmdb_id,
+                    item_type=item_type
+                )
+
             else:
                 logger.info(f"  ➜ [实时监控] 已跳过在线刮削和元数据写入 (数据已通过缓存恢复)。")
-
-            # =========================================================
-            # 步骤 6: 下载图片
-            # =========================================================
-            self.download_images_from_tmdb(
-                tmdb_id=tmdb_id,
-                item_type=item_type
-            )
-            
-            logger.info(f"  ➜ [实时监控] 本地数据准备完成。")
 
             # =========================================================
             # 步骤 7: 通知 Emby 刷新
