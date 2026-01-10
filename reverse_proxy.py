@@ -293,34 +293,78 @@ def handle_get_mimicked_library_details(user_id, mimicked_id):
             if item_type_from_db == "Series":
                 collection_type = "tvshows"
 
-        # ★★★ 核心修复：补全所有可能被前端访问的字段 ★★★
+        # ★★★ 终极修复：补全所有字段，模拟真实媒体库对象 ★★★
         fake_library_details = {
             "Name": coll['name'], 
             "ServerId": real_server_id, 
             "Id": mimicked_id,
-            "Guid": str(uuid.uuid4()), # 补全 Guid
+            "Guid": str(uuid.uuid4()),
+            "Etag": f"{real_db_id}{int(time.time())}",
+            "DateCreated": "2025-01-01T00:00:00.0000000Z",
+            
             "Type": "CollectionFolder",
             "CollectionType": collection_type,
             "IsFolder": True, 
-            "ImageTags": image_tags,
             
-            # --- 补全缺失的空字段，防止前端报错 ---
+            "ParentId": "2", 
+            "DisplayPreferencesId": f"custom-{real_db_id}", # ★ 关键字段：用于保存视图设置
+            "PresentationUniqueKey": f"custom-{real_db_id}",
+            
+            "ImageTags": image_tags,
+            "BackdropImageTags": [],
+            
+            # --- 补全空数组字段 (防止 .includes() 报错) ---
             "Taglines": [],
             "RemoteTrailers": [],
             "ExternalUrls": [],
-            "Path": "",  # 某些逻辑可能会检查 Path
-            "Locations": [], # 某些逻辑可能会检查 Locations
+            "Path": f"virtual://custom/{real_db_id}", 
+            "Locations": [], 
+            "PhysicalLocations": [], # ★ 关键字段：Emby 4.9+ 可能会检查物理路径
             
-            # --- 补全用户数据 ---
             "UserData": {"PlaybackPositionTicks": 0, "IsFavorite": False, "Played": False},
             
-            # --- 补全显示属性 ---
             "PrimaryImageAspectRatio": 1.7777777777777777,
             "ChildCount": coll.get('in_library_count', 0),
-            "RecursiveItemCount": coll.get('in_library_count', 0), # 补全计数
+            "RecursiveItemCount": coll.get('in_library_count', 0),
+            
+            "CanDelete": False,
+            "CanDownload": False,
+            "SortName": coll['name'],
+            "ForcedSortName": coll['name'],
             
             "LockedFields": [], 
-            "LockData": False
+            "LockData": False,
+            
+            # --- 补全 LibraryOptions (防止访问配置项报错) ---
+            "LibraryOptions": {
+                "EnablePhotos": False,
+                "EnableRealtimeMonitor": False,
+                "EnableChapterImageExtraction": False,
+                "ExtractChapterImagesDuringLibraryScan": False,
+                "DownloadImagesInAdvance": False,
+                "PathInfos": [],
+                "SaveLocalMetadata": False,
+                "EnableInternetProviders": False,
+                "EnableAutomaticSeriesGrouping": False,
+                "EnableEmbeddedTitles": False,
+                "EnableEmbeddedEpisodeInfos": False,
+                "AutomaticRefreshIntervalDays": 0,
+                "PreferredMetadataLanguage": "zh-CN",
+                "MetadataCountryCode": "CN",
+                "SeasonZeroDisplayName": "Specials",
+                "MetadataSavers": [],
+                "DisabledLocalMetadataReaders": [],
+                "LocalMetadataReaderOrder": [],
+                "DisabledSubtitleFetchers": [],
+                "SubtitleFetcherOrder": [],
+                "SkipSubtitlesIfEmbeddedSubtitlesPresent": False,
+                "SkipSubtitlesIfAudioTrackMatches": False,
+                "SubtitleDownloadLanguages": [],
+                "RequirePerfectSubtitleMatch": False,
+                "SaveSubtitlesWithMedia": False,
+                "ForcedSubtitlesOnly": False,
+                "TypeOptions": []
+            }
         }
         return Response(json.dumps(fake_library_details), mimetype='application/json')
     except Exception as e:
