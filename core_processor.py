@@ -1,7 +1,6 @@
 # core_processor.py
 
 import os
-import re
 import json
 import time
 from typing import Dict, List, Optional, Any, Tuple
@@ -242,6 +241,20 @@ class MediaProcessor:
             item_type = "Series" if is_series else "Movie"
 
             # =========================================================
+            # 极速查重 (利用文件名比对)
+            # =========================================================
+            try:
+                # 获取该 TMDb ID 下所有已入库的文件名 (含电影和所有分集)
+                known_files = media_db.get_known_filenames_by_tmdb_id(tmdb_id)
+                current_filename = os.path.basename(file_path)
+                
+                if current_filename in known_files:
+                    logger.info(f"  ➜ [实时监控] 文件已完美入库 ({current_filename})，直接跳过。")
+                    return
+            except Exception as e:
+                logger.warning(f"  ➜ [实时监控] 查重失败，将继续常规流程: {e}")
+
+            # =========================================================
             # ★★★ 缓存检查与跳过逻辑 ★★★
             # =========================================================
             should_skip_full_processing = False
@@ -280,58 +293,16 @@ class MediaProcessor:
             if os.path.exists(main_json_path):
                 if db_record_exists:
                     if db_in_library is True:
-                        # 如果文件名不同，说明是洗版(新文件替换旧文件)，必须放行！
-                        is_same_file = False
-                        try:
-                            # 1. 获取数据库中记录的文件资产信息
-                            assets_json = None
-                            if item_type == "Movie" and details:
-                                assets_json = details.get('asset_details_json')
-                            elif item_type == "Series":
-                                # 剧集需要单独查一下分集的资产信息
-                                with get_db_connection() as conn:
-                                    cursor = conn.cursor()
-                                    cursor.execute("""
-                                        SELECT asset_details_json FROM media_metadata 
-                                        WHERE parent_series_tmdb_id = %s AND season_number = %s AND episode_number = %s AND item_type = 'Episode'
-                                    """, (tmdb_id, s_num, e_num))
-                                    row = cursor.fetchone()
-                                    # --- 修改开始：兼容字典和元组两种返回格式 ---
-                                    if row: 
-                                        if isinstance(row, dict):
-                                            assets_json = row.get('asset_details_json')
-                                        else:
-                                            assets_json = row[0]
-
-                            # 2. 比对文件名
-                            if assets_json:
-                                # 兼容字符串或列表格式
-                                if isinstance(assets_json, str):
-                                    assets_json = json.loads(assets_json)
-                                
-                                if isinstance(assets_json, list):
-                                    current_filename = os.path.basename(file_path)
-                                    for asset in assets_json:
-                                        # 只要有一个资产的文件名与当前文件匹配，就认为是同一个文件
-                                        # (使用文件名比对而非全路径，以兼容路径映射差异)
-                                        db_path = asset.get('path', '')
-                                        if os.path.basename(db_path) == current_filename:
-                                            is_same_file = True
-                                            break
-                        except Exception as e:
-                            logger.warning(f"  ➜ [实时监控] 洗版检测出错，默认放行: {e}")
-                            is_same_file = False
-
-                        if is_same_file:
-                            logger.info(f"  ➜ [实时监控] 检测到 '{filename}' 已完美入库且文件一致，直接跳过。")
-                            return 
-                        else:
-                            logger.info(f"  ➜ [实时监控] 检测到 '{filename}' 是新文件 (洗版/替换),通知Emby刷新。")
-                            
-                            # 直接触发刷新
-                            emby.refresh_library_by_path(folder_path, self.emby_url, self.emby_api_key)
-                            
-                            return 
+                        # 逻辑推导：
+                        # 1. 代码能运行到这里，说明上面的“极速查重”没命中 -> 文件名肯定不同。
+                        # 2. 数据库显示该项目(或该分集)已入库 -> 说明是旧文件占了坑。
+                        # 结论：这是一个同名项目的新文件 -> 必然是洗版/替换。
+                        
+                        logger.info(f"  ➜ [实时监控] 检测到 '{filename}' 是新文件 (洗版/替换)，通知 Emby 刷新。")
+                        
+                        # 直接触发刷新
+                        emby.refresh_library_by_path(folder_path, self.emby_url, self.emby_api_key)
+                        return  
                     else:
                         logger.info(f"  ➜ [实时监控] 检测到 '{filename}' 处于离线状态，通知 Emby 刷新目录以触发入库。")
                         emby.refresh_library_by_path(folder_path, self.emby_url, self.emby_api_key)
