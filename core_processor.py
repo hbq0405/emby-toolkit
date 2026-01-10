@@ -316,7 +316,7 @@ class MediaProcessor:
             # 3. 决策逻辑分支
             
             # --- 分支 A: 数据库有，文件没有 -> 生成文件 (纸质存档缺失) ---
-            if db_record and not file_exists:
+            if db_record and not file_exists and db_actors:
                 logger.info(f"  ➜ [实时监控] 命中数据库缓存 (ID:{tmdb_id})，但覆盖缓存缺失。正在从数据库生成覆盖缓存文件...")
                 try:
                     # 1. 生成主 payload
