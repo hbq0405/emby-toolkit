@@ -904,9 +904,9 @@ def get_all_persons_from_emby(
         response = requests.get(count_url, params=count_params, timeout=api_timeout)
         response.raise_for_status()
         total_count = response.json().get("TotalRecordCount", 0)
-        logger.info(f"Emby Person 总数: {total_count}")
+        logger.info(f"  ➜ Emby 演员 总数: {total_count}")
     except Exception as e:
-        logger.error(f"获取 Emby Person 总数失败: {e}")
+        logger.error(f"  ➜ 获取 Emby 演员 总数失败: {e}")
     
     # ★★★ 核心修正: 切换到 /Items 端点 ★★★
     api_url = f"{base_url.rstrip('/')}/Items"
