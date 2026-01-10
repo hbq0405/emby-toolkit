@@ -317,7 +317,7 @@ class MediaProcessor:
             
             # --- 分支 A: 数据库有，文件没有 -> 生成文件 (纸质存档缺失) ---
             if db_record and not file_exists:
-                logger.info(f"  ➜ [实时监控] 命中数据库缓存 (ID:{tmdb_id})，但本地文件缺失。正在从数据库反向生成覆盖文件...")
+                logger.info(f"  ➜ [实时监控] 命中数据库缓存 (ID:{tmdb_id})，但覆盖缓存缺失。正在从数据库生成覆盖缓存文件...")
                 try:
                     # 1. 生成主 payload
                     from tasks.helpers import reconstruct_metadata_from_db
@@ -363,8 +363,6 @@ class MediaProcessor:
                                     "episode_number": e_num,
                                     "air_date": str(e_row['release_date']) if e_row['release_date'] else None,
                                     "vote_average": e_row['rating'],
-                                    # 演员表暂时略过，因为数据库里分集通常不存独立演员表，或者存了也很难还原
-                                    # 如果需要，可以解析 e_row['actors_json']
                                 }
                                 episodes_data[key] = e_data
 
@@ -376,7 +374,7 @@ class MediaProcessor:
                                 
                             logger.info(f"  ➜ [实时监控] 已从数据库恢复 {len(seasons_data)} 个季和 {len(episodes_data)} 个分集的数据。")
                     
-                    # 2. 写入文件
+                    # 2. 构造上下文对象
                     fake_item_details = {
                         "Id": "pending", 
                         "Name": db_record.get('title'), 
@@ -384,7 +382,7 @@ class MediaProcessor:
                         "ProviderIds": {"Tmdb": tmdb_id}
                     }
                     
-                    # 写入文件
+                    # 3. 写入文件
                     self.sync_item_metadata(
                         item_details=fake_item_details,
                         tmdb_id=str(tmdb_id),
@@ -504,7 +502,6 @@ class MediaProcessor:
             # =========================================================
             # 步骤 4 & 5: 生成本地 override 元数据文件 & 写入数据库
             # =========================================================
-            # ★★★ 关键修复：只有当需要完整处理时，才执行这一步 ★★★
             if not should_skip_full_processing:
                 # 1. 准备伪造的 Emby 对象
                 fake_item_details = {
@@ -545,9 +542,7 @@ class MediaProcessor:
                     )
                     conn.commit()
 
-                # =========================================================
-                # 步骤 6: 下载图片
-                # =========================================================
+                # 5: 下载图片
                 self.download_images_from_tmdb(
                     tmdb_id=tmdb_id,
                     item_type=item_type
@@ -557,7 +552,7 @@ class MediaProcessor:
                 logger.info(f"  ➜ [实时监控] 已跳过在线刮削和元数据写入 (数据已通过缓存恢复)。")
 
             # =========================================================
-            # 步骤 7: 通知 Emby 刷新
+            # 步骤 6: 通知 Emby 刷新
             # =========================================================
             logger.info(f"  ➜ [实时监控] 通知 Emby 刷新目录: {folder_path}")
             emby.refresh_library_by_path(folder_path, self.emby_url, self.emby_api_key)
@@ -631,7 +626,7 @@ class MediaProcessor:
         except Exception as e:
             logger.error(f"  🚫 [文件删除] 处理失败: {e}", exc_info=True)
 
-    # --- 实时监控：处理文件删除 (批量版 - 修复整剧删除Bug) ---
+    # --- 实时监控：处理文件删除 (批量版) ---
     def process_file_deletion_batch(self, file_paths: List[str]):
         """
         实时监控：批量处理文件删除事件。
@@ -757,7 +752,7 @@ class MediaProcessor:
             return
             
         item_id = str(item_details_from_emby.get('Id'))
-        # ★ 核心判断：是否为预处理/主动监控模式
+        # 核心判断：是否为预处理/主动监控模式
         is_pending = (item_id == 'pending')
 
         # 初始化变量
@@ -765,7 +760,7 @@ class MediaProcessor:
         id_to_parent_map = {}
         lib_guid = None
         
-        # ★ 只有在不是 pending 状态下，才去计算祖先链和库信息
+        # 只有在不是 pending 状态下，才去计算祖先链和库信息
         if not is_pending:
             source_lib_id = str(item_details_from_emby.get('_SourceLibraryId') or "")
             id_to_parent_map, lib_guid = self._get_realtime_ancestor_context(item_id, source_lib_id)
@@ -775,7 +770,6 @@ class MediaProcessor:
             runtimes = [round(item['RunTimeTicks'] / 600000000) for item in emby_items if item.get('RunTimeTicks')]
             return max(runtimes) if runtimes else tmdb_runtime
         
-        # ... (保留原有的 _extract_common_json_fields 内部函数，无需改动) ...
         def _extract_common_json_fields(details: Dict[str, Any], m_type: str):
             # 1. Genres (类型)
             genres_raw = details.get('genres', [])
@@ -1076,7 +1070,7 @@ class MediaProcessor:
                     final_runtime = get_representative_runtime(versions_of_episode, episode.get('runtime'))
 
                     episode_record = {
-                        "tmdb_id": e_tmdb_id_str, # ★★★ 确认使用清洗后的 TMDb ID ★★★
+                        "tmdb_id": e_tmdb_id_str, 
                         "item_type": "Episode", 
                         "parent_series_tmdb_id": str(series_details.get('id')), 
                         "title": episode.get('name'), "overview": episode.get('overview'), 
@@ -1106,7 +1100,7 @@ class MediaProcessor:
                 return
 
             # ==================================================================
-            # 批量写入数据库 (保持原样)
+            # 批量写入数据库
             # ==================================================================
             all_possible_columns = [
                 "tmdb_id", "item_type", "title", "original_title", "overview", "release_date", "release_year",
@@ -1212,7 +1206,7 @@ class MediaProcessor:
             # 3. ★★★ 重新抛出异常，通知上游调用者操作失败 ★★★
             raise
     
-    # ★★★ 公开的、独立的追剧判断方法 ★★★
+    # 公开的、独立的追剧判断方法
     def check_and_add_to_watchlist(self, item_details: Dict[str, Any]):
         """
         检查一个媒体项目是否为剧集，如果是，则执行智能追剧判断并添加到待看列表。
@@ -1268,7 +1262,7 @@ class MediaProcessor:
             logger.error(f"从数据库读取已处理记录失败: {e}", exc_info=True)
         return log_dict
 
-    # ✨ 从 SyncHandler 迁移并改造，用于在本地缓存中查找豆瓣JSON文件
+    # 在本地缓存中查找豆瓣JSON文件
     def _find_local_douban_json(self, imdb_id: Optional[str], douban_id: Optional[str], douban_cache_dir: str) -> Optional[str]:
         """根据 IMDb ID 或 豆瓣 ID 在本地缓存目录中查找对应的豆瓣JSON文件。"""
         if not os.path.exists(douban_cache_dir):
@@ -1426,7 +1420,7 @@ class MediaProcessor:
     # --- 全量处理的入口 ---
     def process_full_library(self, update_status_callback: Optional[callable] = None, force_full_update: bool = False):
         """
-        这是所有全量处理的唯一入口。
+        全量处理的入口。
         """
         self.clear_stop_signal()
         
@@ -1469,7 +1463,7 @@ class MediaProcessor:
             if update_status_callback: update_status_callback(100, "未找到可处理的项目。")
             return
 
-        # --- 新增：清理已删除的媒体项 ---
+        # --- 清理已删除的媒体项 ---
         if update_status_callback: update_status_callback(20, "正在检查并清理已删除的媒体项...")
         
         with get_central_db_connection() as conn:
@@ -1534,7 +1528,6 @@ class MediaProcessor:
     # --- 核心处理总管 ---
     def process_single_item(self, emby_item_id: str, force_full_update: bool = False, specific_episode_ids: Optional[List[str]] = None):
         """
-        【V-API-Ready 最终版 - 带跳过功能】
         入口函数，它会先检查是否需要跳过已处理的项目。
         """
         # 1. 除非强制，否则跳过已处理的
@@ -1580,7 +1573,6 @@ class MediaProcessor:
     # ---核心处理流程 ---
     def _process_item_core_logic(self, item_details_from_emby: Dict[str, Any], force_full_update: bool = False, specific_episode_ids: Optional[List[str]] = None):
         """
-        【V-Final-Architecture-Pro - “设计师”最终版 + 评分机制】
         本函数作为“设计师”，只负责计算和思考，产出“设计图”和“物料清单”，然后全权委托给施工队。
         """
         # ======================================================================
@@ -1616,7 +1608,6 @@ class MediaProcessor:
             if item_type == "Movie":
                 tmdb_details_for_extra = json.loads(json.dumps(utils.MOVIE_SKELETON_TEMPLATE))
             elif item_type == "Series":
-                # ★★★ 新增：剧集骨架初始化 ★★★
                 tmdb_details_for_extra = json.loads(json.dumps(utils.SERIES_SKELETON_TEMPLATE))
             
             # 2. 获取数据源 (TMDb API 或 本地缓存)
@@ -1626,13 +1617,10 @@ class MediaProcessor:
             if self.tmdb_api_key:
                 try:
                     if item_type == "Movie":
-                        # ... (电影获取逻辑保持不变) ...
                         fresh_data = tmdb.get_movie_details(tmdb_id, self.tmdb_api_key)
                         if fresh_data: logger.info(f"  ➜ 成功从 TMDb API 获取到最新电影元数据。")
 
                     elif item_type == "Series":
-                        # ★★★ 新增：剧集获取逻辑 ★★★
-                        # 获取聚合数据 (包含 series_details, seasons_details, episodes_details)
                         aggregated_tmdb_data = tmdb.aggregate_full_series_data_from_tmdb(int(tmdb_id), self.tmdb_api_key)
                         if aggregated_tmdb_data:
                             fresh_data = aggregated_tmdb_data.get("series_details")
@@ -1650,11 +1638,6 @@ class MediaProcessor:
                     aggregated_tmdb_data=aggregated_tmdb_data,
                     emby_data_fallback=item_details_from_emby
                 )
-                # ★★★ 替换结束 ★★★
-                
-                # 注意：原代码中这里有 authoritative_cast_source 的赋值逻辑，
-                # 虽然 _construct_metadata_payload 里处理了 cast，但那是为了写入文件。
-                # 这里 authoritative_cast_source 是为了后续的演员处理流程，所以这部分逻辑需要保留或重新提取。
                 
                 # --- 重新提取 authoritative_cast_source (为了后续流程) ---
                 if item_type == "Movie":
@@ -1713,9 +1696,7 @@ class MediaProcessor:
                                 # 关键设置 1: 以此为源更新数据库
                                 tmdb_details_for_extra = override_data 
                                 
-                                # =========================================================
-                                # ★★★ 填补盲区：如果是剧集，必须把分集文件也读进来！ ★★★
-                                # =========================================================
+                                # 如果是剧集，必须把分集文件也读进来！ 
                                 if item_type == "Series":
                                     logger.info("  ➜ [快速模式] 检测到剧集，正在聚合本地分集元数据...")
                                     episodes_details_map = {}
@@ -1739,7 +1720,7 @@ class MediaProcessor:
                                         
                                         # 2. 查漏补缺：从 TMDb 获取新分集 ID
                                         if self.tmdb_api_key:
-                                            # ★★★ 优化：直接复用函数开头已经获取到的数据，不再重复请求 ★★★
+                                            # 直接复用函数开头已经获取到的数据，不再重复请求
                                             fresh_agg_data = aggregated_tmdb_data
                                             
                                             #以此为防线：万一开头没获取到（虽然不太可能），再尝试获取一次
@@ -1752,7 +1733,7 @@ class MediaProcessor:
                                                 added_count = 0
                                                 
                                                 for k, v in fresh_eps.items():
-                                                    # ★★★ 核心逻辑：只有本地没有的，才加进去 ★★★
+                                                    # 只有本地没有的，才加进去 
                                                     if k not in episodes_details_map:
                                                         # ✨ 删除 TMDb 自带的原始演员表，强制使用本地精修表 ✨
                                                         if 'credits' in v:
@@ -1802,7 +1783,7 @@ class MediaProcessor:
 
                 # 此时必须从 TMDb 拉取最新的导演、分级、工作室，否则 Emby 的数据太残缺。
                 if not force_full_update and self.tmdb_api_key:
-                    logger.info(f"  ➜ [首次入库] 检测到本地无有效缓存，正在从 TMDb 补全元数据骨架(导演/分级/工作室)...")
+                    logger.info(f"  ➜ 检测到本地无有效缓存，正在从 TMDb 补全元数据骨架(导演/分级/工作室)...")
                     try:
                         if item_type == "Movie":
                             fresh_data = tmdb.get_movie_details(tmdb_id, self.tmdb_api_key)
@@ -1812,7 +1793,7 @@ class MediaProcessor:
                                 # 2. 更新演员源 (确保是 TMDb 原版顺序)
                                 if fresh_data.get("credits", {}).get("cast"):
                                     authoritative_cast_source = fresh_data["credits"]["cast"]
-                                logger.info(f"  ➜ [首次入库] 电影元数据补全成功。")
+                                logger.info(f"  ➜ 电影元数据补全成功。")
 
                         elif item_type == "Series":
                             aggregated_tmdb_data = tmdb.aggregate_full_series_data_from_tmdb(int(tmdb_id), self.tmdb_api_key)
@@ -1823,9 +1804,9 @@ class MediaProcessor:
                                 # 2. 更新演员源
                                 all_episodes = list(aggregated_tmdb_data.get("episodes_details", {}).values())
                                 authoritative_cast_source = _aggregate_series_cast_from_tmdb_data(series_details, all_episodes)
-                                logger.info(f"  ➜ [首次入库] 剧集元数据补全成功。")
+                                logger.info(f"  ➜ 剧集元数据补全成功。")
                     except Exception as e_fetch:
-                        logger.warning(f"  ➜ [首次入库] 尝试补全元数据时失败，将使用 Emby 原始数据兜底: {e_fetch}")
+                        logger.warning(f"  ➜ 尝试补全元数据时失败，将使用 Emby 原始数据兜底: {e_fetch}")
 
                 with get_central_db_connection() as conn:
                     cursor = conn.cursor()
@@ -1894,7 +1875,7 @@ class MediaProcessor:
                         item_name_for_log=item_name_for_log
                     )
 
-                # 更新我们自己的数据库缓存 (这是反哺模式的核心目的，必须执行)
+                # 更新我们自己的数据库缓存
                 self._upsert_media_metadata(
                     cursor=cursor,
                     item_type=item_type,
@@ -2647,9 +2628,6 @@ class MediaProcessor:
                 break
             return translated_cast
 
-        # ★★★ 核心修改 2: 彻底删除降级逻辑 ★★★
-        # 原有的 if not ai_translation_succeeded: ... else ... 代码块已全部移除。
-
         logger.info("手动编辑-翻译完成。")
         return translated_cast
     
@@ -2932,9 +2910,7 @@ class MediaProcessor:
                         aggregated_tmdb_data=aggregated_tmdb_data_manual,
                         emby_data_fallback=item_details
                     )
-                # ======================================================================
-                # ★★★ 调用统一的、已规范化的缓存写入函数 ★★★
-                # ======================================================================
+                # 写入数据库
                 self._upsert_media_metadata(
                     cursor=cursor,
                     item_type=item_type,
@@ -3242,7 +3218,7 @@ class MediaProcessor:
             logger.error(f"{log_prefix} 为 '{item_name_for_log}' 备份图片时发生未知错误: {e}", exc_info=True)
             return False
     
-    # --- 新增：从 TMDb 直接下载图片 (用于主动监控/预处理) ---
+    # --- 从 TMDb 直接下载图片 (用于实时监控/预处理) ---
     def download_images_from_tmdb(self, tmdb_id: str, item_type: str) -> bool:
         """
         【主动监控专用】
