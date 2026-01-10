@@ -434,7 +434,7 @@ class MediaProcessor:
                 if db_record.get('in_library') is False:
                      logger.info(f"  ➜ [实时监控] 数据双全 (ID:{tmdb_id})，但数据库标记为离线。无需处理元数据，仅通知 Emby 刷新。")
                 else:
-                     logger.info(f"  ➜ [实时监控] 数据双全且在线 (ID:{tmdb_id})。检测到可能是洗版/替换，跳过元数据处理，仅通知 Emby 刷新。")
+                     logger.info(f"  ➜ [实时监控] 数据双全且在线 (ID:{tmdb_id})。可能是洗版/追更，跳过元数据处理，仅通知 Emby 刷新。")
                 
                 should_skip_full_processing = True
 
