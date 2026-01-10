@@ -114,6 +114,10 @@ def process_batch_queue():
         threading.Thread(target=_handle_single_file_task, args=(processor, representative_file)).start()
 
 def process_delete_batch_queue():
+    """
+    处理删除队列。
+    【修复】不再按目录去重只处理一个文件，而是将所有文件传给 processor 进行批量清理。
+    """
     global DELETE_DEBOUNCE_TIMER
     with DELETE_QUEUE_LOCK:
         files = list(DELETE_EVENT_QUEUE)
@@ -125,21 +129,13 @@ def process_delete_batch_queue():
     processor = MonitorService.processor_instance
     if not processor: return
 
-    # 按父目录分组去重
-    # 逻辑：同一个目录删了10个文件，只需要通知Emby刷新一次这个目录即可
-    parent_dirs = {}
-    for f in files:
-        p_dir = os.path.dirname(f)
-        if p_dir not in parent_dirs:
-            parent_dirs[p_dir] = f # 记录一个代表文件即可
+    logger.info(f"  🗑️ [实时监控] 防抖结束，聚合处理删除事件: 共 {len(files)} 个文件")
 
-    logger.info(f"  🗑️ [实时监控] 防抖结束，聚合处理删除事件: 涉及 {len(parent_dirs)} 个目录")
-
-    for p_dir, rep_file in parent_dirs.items():
-        # 调用 processor.process_file_deletion
-        # 虽然传入的是一个文件路径，但 processor 内部会提取 dirname 并刷新整个目录
-        # 这样就实现了“删多文件，只刷一次”的效果
-        threading.Thread(target=processor.process_file_deletion, args=(rep_file,)).start()
+    # ★★★ 核心修复：调用批量处理接口，确保所有文件的数据库记录都被清理 ★★★
+    # processor.process_file_deletion_batch 内部会负责：
+    # 1. 遍历 files 列表，逐个清理数据库。
+    # 2. 统计涉及的父目录，统一通知 Emby 刷新。
+    threading.Thread(target=processor.process_file_deletion_batch, args=(files,)).start()
 
 def _handle_single_file_task(processor, file_path):
     # ... (保持不变) ...
