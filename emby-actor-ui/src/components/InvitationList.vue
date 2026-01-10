@@ -264,6 +264,17 @@ const createColumns = () => [
       return h(NTag, { type }, () => text.toUpperCase());
     }
   },
+  {
+    title: '注册用户',
+    key: 'used_by_username',
+    width: 120,
+    render: (row) => {
+      if (row.used_by_username) {
+        return h(NTag, { type: 'info', size: 'small', bordered: false }, { default: () => row.used_by_username });
+      }
+      return '-';
+    }
+  },
   { title: '关联模板', key: 'template_name', width: 120, ellipsis: true },
   { title: '用户有效期(天)', key: 'expiration_days', width: 120 },
   {

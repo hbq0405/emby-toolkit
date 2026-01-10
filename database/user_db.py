@@ -747,13 +747,19 @@ def create_invitation_links_batch(template_id, expiration_days, link_expires_in_
         raise
 
 def get_all_invitation_links() -> List[Dict]:
-    """获取所有邀请链接及其关联的模板名称。"""
+    """获取所有邀请链接及其关联的模板名称和使用者名称。"""
     try:
         with get_db_connection() as conn:
             with conn.cursor() as cursor:
+                # ★★★ 修改 SQL：关联 emby_users 表获取用户名 ★★★
                 cursor.execute("""
-                    SELECT i.*, t.name as template_name 
-                    FROM invitations i JOIN user_templates t ON i.template_id = t.id
+                    SELECT 
+                        i.*, 
+                        t.name as template_name,
+                        u.name as used_by_username  -- 获取使用者用户名
+                    FROM invitations i 
+                    JOIN user_templates t ON i.template_id = t.id
+                    LEFT JOIN emby_users u ON i.used_by_user_id = u.id -- 左连接，因为可能还没被使用
                     ORDER BY i.created_at DESC
                 """)
                 return [dict(row) for row in cursor.fetchall()]
