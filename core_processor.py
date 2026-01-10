@@ -288,7 +288,14 @@ class MediaProcessor:
                             if actor_tmdb_ids:
                                 # 批量查询演员详情
                                 placeholders = ','.join(['%s'] * len(actor_tmdb_ids))
-                                cursor.execute(f"SELECT * FROM actor_metadata WHERE tmdb_id IN ({placeholders})", tuple(actor_tmdb_ids))
+                                sql = f"""
+                                    SELECT am.*, pim.primary_name as name
+                                    FROM actor_metadata am
+                                    LEFT JOIN person_identity_map pim ON am.tmdb_id = pim.tmdb_person_id
+                                    WHERE am.tmdb_id IN ({placeholders})
+                                """
+                                cursor.execute(sql, tuple(actor_tmdb_ids))
+                                
                                 actor_rows = cursor.fetchall()
                                 actor_map = {r['tmdb_id']: dict(r) for r in actor_rows}
                                 
@@ -1652,7 +1659,7 @@ class MediaProcessor:
                                 final_processed_cast = cast_data
                                 
                                 # 关键设置 1: 以此为源更新数据库
-                                tmdb_details_for_extra = override_data 
+                                #tmdb_details_for_extra = override_data 
                                 
                                 # =========================================================
                                 # ★★★ 填补盲区：如果是剧集，必须把分集文件也读进来！ ★★★
