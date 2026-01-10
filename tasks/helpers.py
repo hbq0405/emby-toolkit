@@ -1299,13 +1299,15 @@ def reconstruct_metadata_from_db(db_row: Dict[str, Any], actors_list: List[Dict[
     if item_type == "Movie":
         payload['title'] = db_row.get('title')
         payload['original_title'] = db_row.get('original_title')
-        payload['release_date'] = str(db_row.get('release_date') or '')
+        # 转换日期格式 datetime -> str
+        r_date = db_row.get('release_date')
+        payload['release_date'] = str(r_date) if r_date else ''
         payload['runtime'] = db_row.get('runtime_minutes')
     else:
         payload['name'] = db_row.get('title')
         payload['original_name'] = db_row.get('original_title')
-        payload['first_air_date'] = str(db_row.get('release_date') or '')
-        # 剧集没有单一时长，通常不填或填平均值
+        r_date = db_row.get('release_date')
+        payload['first_air_date'] = str(r_date) if r_date else ''
 
     payload['vote_average'] = db_row.get('rating')
     payload['poster_path'] = db_row.get('poster_path')
@@ -1314,41 +1316,52 @@ def reconstruct_metadata_from_db(db_row: Dict[str, Any], actors_list: List[Dict[
     # Genres
     if db_row.get('genres_json'):
         try:
-            genres_list = json.loads(db_row['genres_json'])
-            # 数据库存的是 ["Action", "Drama"]，JSON需要 [{"id":0, "name":"Action"}]
-            payload['genres'] = [{"id": 0, "name": g} for g in genres_list]
-        except: pass
+            raw_genres = db_row['genres_json']
+            # 兼容 list 和 str
+            genres_list = json.loads(raw_genres) if isinstance(raw_genres, str) else raw_genres
+            if genres_list:
+                # 数据库存的是 ["Action", "Drama"]，JSON需要 [{"id":0, "name":"Action"}]
+                payload['genres'] = [{"id": 0, "name": g} for g in genres_list]
+        except Exception as e:
+            logger.warning(f"还原 Genres 失败: {e}")
 
-    # Studios
+    # Studios (production_companies)
     if db_row.get('studios_json'):
         try:
-            studios_list = json.loads(db_row['studios_json'])
-            # 数据库存的是 [{"id":1, "name":"HBO"}]，格式基本一致，注意字段名映射
-            # 骨架里通常叫 production_companies
-            payload['production_companies'] = studios_list
-            if item_type == 'Series':
-                payload['networks'] = studios_list # 简单起见，剧集也填入 networks
-        except: pass
+            raw_studios = db_row['studios_json']
+            studios_list = json.loads(raw_studios) if isinstance(raw_studios, str) else raw_studios
+            if studios_list:
+                # 数据库存的是 [{"id":1, "name":"HBO"}]，格式基本一致
+                payload['production_companies'] = studios_list
+                if item_type == 'Series':
+                    payload['networks'] = studios_list 
+        except Exception as e:
+            logger.warning(f"还原 Studios 失败: {e}")
         
     # Keywords (Tags)
     if db_row.get('keywords_json'):
         try:
-            kw_list = json.loads(db_row['keywords_json'])
-            # 数据库存的是 [{"id":1, "name":"keyword"}]
-            if item_type == "Movie":
-                payload['keywords']['keywords'] = kw_list
-            else:
-                payload['keywords']['results'] = kw_list
-        except: pass
+            raw_kw = db_row['keywords_json']
+            kw_list = json.loads(raw_kw) if isinstance(raw_kw, str) else raw_kw
+            if kw_list:
+                # 数据库存的是 [{"id":1, "name":"keyword"}]
+                if item_type == "Movie":
+                    payload['keywords']['keywords'] = kw_list
+                else:
+                    payload['keywords']['results'] = kw_list
+        except Exception as e:
+            logger.warning(f"还原 Keywords 失败: {e}")
 
     # 4. 演员表 (Cast)
-    # 数据库只存了关系，这里传入的 actors_list 应该是已经查好的完整信息
     if actors_list:
         formatted_cast = []
         for i, actor in enumerate(actors_list):
+            # 确保 name 存在，如果数据库里 name 是空的，尝试用 original_name
+            final_name = actor.get('name') or actor.get('original_name')
+            
             formatted_cast.append({
                 "id": actor.get('tmdb_id'),
-                "name": actor.get('name'),
+                "name": final_name,
                 "original_name": actor.get('original_name'),
                 "character": actor.get('character') or actor.get('role'),
                 "profile_path": actor.get('profile_path'),
@@ -1364,8 +1377,9 @@ def reconstruct_metadata_from_db(db_row: Dict[str, Any], actors_list: List[Dict[
     # 5. 分级 (Official Rating)
     if db_row.get('official_rating_json'):
         try:
-            ratings_map = json.loads(db_row['official_rating_json'])
-            # 还原为 TMDb 结构比较复杂，这里主要还原 Emby 识别的顶层字段
+            raw_rating = db_row['official_rating_json']
+            ratings_map = json.loads(raw_rating) if isinstance(raw_rating, str) else raw_rating
+            
             # 优先取 US，没有则取第一个
             rating_val = ratings_map.get('US')
             if not rating_val and ratings_map:
@@ -1384,6 +1398,7 @@ def reconstruct_metadata_from_db(db_row: Dict[str, Any], actors_list: List[Dict[
                     payload['content_ratings']['results'] = [{
                         "iso_3166_1": "US", "rating": rating_val
                     }]
-        except: pass
+        except Exception as e:
+            logger.warning(f"还原 Rating 失败: {e}")
 
     return payload
