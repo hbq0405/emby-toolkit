@@ -296,7 +296,12 @@ class MediaProcessor:
                                         WHERE parent_series_tmdb_id = %s AND season_number = %s AND episode_number = %s AND item_type = 'Episode'
                                     """, (tmdb_id, s_num, e_num))
                                     row = cursor.fetchone()
-                                    if row: assets_json = row[0]
+                                    # --- 修改开始：兼容字典和元组两种返回格式 ---
+                                    if row: 
+                                        if isinstance(row, dict):
+                                            assets_json = row.get('asset_details_json')
+                                        else:
+                                            assets_json = row[0]
 
                             # 2. 比对文件名
                             if assets_json:
