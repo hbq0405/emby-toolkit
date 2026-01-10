@@ -2737,7 +2737,7 @@ createRuleWatcher(() => currentCollection.value.definition.dynamic_rules);
 }
 .rule-value { 
   flex: 1; /* 霸占剩余所有空间 */
-  min-width: 0; /* 防止 flex 子元素溢出 */
+  min-width: 150px; /* 值选择下拉宽度 */
   display: flex; 
   align-items: center;
 }
