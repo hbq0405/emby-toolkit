@@ -18,7 +18,7 @@ from database.connection import get_db_connection
 from database import media_db, maintenance_db
 import handler.emby as emby
 import handler.tmdb as tmdb
-from tasks.helpers import parse_full_asset_details, calculate_ancestor_ids, construct_metadata_payload
+from tasks.helpers import parse_full_asset_details, calculate_ancestor_ids, construct_metadata_payload, reconstruct_metadata_from_db
 import utils
 import constants
 import logging
@@ -241,74 +241,128 @@ class MediaProcessor:
             item_type = "Series" if is_series else "Movie"
 
             # =========================================================
-            # 极速查重 (利用文件名比对)
-            # =========================================================
-            try:
-                # 获取该 TMDb ID 下所有已入库的文件名 (含电影和所有分集)
-                known_files = media_db.get_known_filenames_by_tmdb_id(tmdb_id)
-                current_filename = os.path.basename(file_path)
-                
-                if current_filename in known_files:
-                    logger.info(f"  ➜ [实时监控] 文件已完美入库 ({current_filename})，直接跳过。")
-                    return
-            except Exception as e:
-                logger.warning(f"  ➜ [实时监控] 查重失败，将继续常规流程: {e}")
-
-            # =========================================================
-            # ★★★ 缓存检查与跳过逻辑 ★★★
+            # ★★★ 核心升级：数据库与缓存双向互补检查 ★★★
             # =========================================================
             should_skip_full_processing = False
             
-            # 1. 检查本地覆盖缓存文件是否存在
+            # 1. 路径准备
             cache_folder_name = "tmdb-movies2" if item_type == "Movie" else "tmdb-tv"
             base_override_dir = os.path.join(self.local_data_path, "override", cache_folder_name, str(tmdb_id))
             main_json_filename = "all.json" if item_type == "Movie" else "series.json"
             main_json_path = os.path.join(base_override_dir, main_json_filename)
+            file_exists = os.path.exists(main_json_path)
 
-            # 数据库记录状态
-            db_in_library = None
-            db_record_exists = False
+            # 2. 数据库查询 (获取完整元数据 + 演员表)
+            db_record = None
+            db_actors = []
+            
+            with get_central_db_connection() as conn:
+                cursor = conn.cursor()
+                # A. 查主表
+                # 注意：这里需要 select * 或者列出所有需要的字段
+                cursor.execute(f"SELECT * FROM media_metadata WHERE tmdb_id = %s AND item_type = %s", (str(tmdb_id), item_type))
+                row = cursor.fetchone()
+                if row:
+                    db_record = dict(row)
+                    # B. 查演员 (如果主表存在)
+                    # 这里的逻辑是：从 actors_json 解析出 ID，然后去 actors 表查详情
+                    if db_record.get('actors_json'):
+                        try:
+                            actors_link = json.loads(db_record['actors_json'])
+                            # 提取 tmdb_id 列表
+                            actor_tmdb_ids = [a['tmdb_id'] for a in actors_link if 'tmdb_id' in a]
+                            if actor_tmdb_ids:
+                                # 批量查询演员详情
+                                placeholders = ','.join(['%s'] * len(actor_tmdb_ids))
+                                cursor.execute(f"SELECT * FROM actors WHERE tmdb_id IN ({placeholders})", tuple(actor_tmdb_ids))
+                                actor_rows = cursor.fetchall()
+                                actor_map = {r['tmdb_id']: dict(r) for r in actor_rows}
+                                
+                                # 组装回有序列表
+                                for link in actors_link:
+                                    tid = link.get('tmdb_id')
+                                    if tid in actor_map:
+                                        full_actor = actor_map[tid].copy()
+                                        full_actor['character'] = link.get('character') # 使用关系表里的角色名
+                                        full_actor['order'] = link.get('order')
+                                        db_actors.append(full_actor)
+                                        
+                                # 按 order 排序
+                                db_actors.sort(key=lambda x: x.get('order', 999))
+                        except Exception as e:
+                            logger.warning(f"  ➜ [实时监控] 从数据库解析演员失败: {e}")
 
-            if item_type == "Series":
-                se_match = re.search(r'[sS](\d{1,2})[eE](\d{1,2})', filename)
-                if se_match:
-                    s_num = int(se_match.group(1))
-                    e_num = int(se_match.group(2))
-                    db_in_library = media_db.get_episode_in_library_status(str(tmdb_id), s_num, e_num)
-                    if db_in_library is not None:
-                        db_record_exists = True
-                        logger.info(f"  ➜ [实时监控] 剧集检查: S{s_num}E{e_num} (父TMDb:{tmdb_id}) 数据库记录存在，状态: {'已入库' if db_in_library else '预处理'}")
+            # 3. 决策逻辑分支
+            
+            # --- 分支 A: 数据库有，文件没有 -> 生成文件 (纸质存档缺失) ---
+            if db_record and not file_exists:
+                logger.info(f"  ➜ [实时监控] 命中数据库缓存 (ID:{tmdb_id})，但本地文件缺失。正在从数据库反向生成覆盖文件...")
+                try:
+                    # 调用新工具函数生成 payload
+                    from tasks.helpers import reconstruct_metadata_from_db
+                    payload = reconstruct_metadata_from_db(db_record, db_actors)
+                    
+                    # 写入文件 (复用 sync_item_metadata)
+                    # 注意：这里不需要 final_cast_override，因为 payload 里已经包含了 cast
+                    fake_item_details = {"Id": "pending", "Name": db_record.get('title'), "Type": item_type, "ProviderIds": {"Tmdb": tmdb_id}}
+                    self.sync_item_metadata(
+                        item_details=fake_item_details,
+                        tmdb_id=str(tmdb_id),
+                        metadata_override=payload
+                    )
+                    should_skip_full_processing = True
+                    logger.info(f"  ➜ [实时监控] 覆盖文件已恢复。跳过在线刮削。")
+                except Exception as e:
+                    logger.error(f"  ➜ [实时监控] 从数据库恢复文件失败: {e}，将回退到在线刮削。")
+
+            # --- 分支 B: 文件有，数据库没有 -> 反哺数据库 (数字存档缺失) ---
+            elif not db_record and file_exists:
+                logger.info(f"  ➜ [实时监控] 命中本地覆盖文件 (ID:{tmdb_id})，但数据库记录缺失。正在反哺数据库...")
+                try:
+                    override_data = _read_local_json(main_json_path)
+                    if override_data:
+                        # 提取演员
+                        cast_data = (override_data.get('casts', {}) or override_data.get('credits', {})).get('cast', [])
+                        
+                        # 构造伪造的 Emby 对象用于 upsert
+                        fake_item_details = {
+                            "Id": "pending", 
+                            "Name": override_data.get('title') or override_data.get('name'), 
+                            "Type": item_type, 
+                            "ProviderIds": {"Tmdb": tmdb_id},
+                            "DateCreated": datetime.now(timezone.utc)
+                        }
+                        
+                        # 写入数据库
+                        with get_central_db_connection() as conn:
+                            cursor = conn.cursor()
+                            self._upsert_media_metadata(
+                                cursor=cursor,
+                                item_type=item_type,
+                                final_processed_cast=cast_data, # 直接使用文件里的演员
+                                source_data_package=override_data,
+                                item_details_from_emby=fake_item_details
+                            )
+                            conn.commit()
+                        
+                        should_skip_full_processing = True
+                        logger.info(f"  ➜ [实时监控] 数据库记录已补全。跳过在线刮削。")
+                except Exception as e:
+                    logger.error(f"  ➜ [实时监控] 反哺数据库失败: {e}，将回退到在线刮削。")
+
+            # --- 分支 C: 都有 -> 完美状态 ---
+            elif db_record and file_exists:
+                # 检查是否需要更新 in_library 状态 (如果是新文件入库)
+                if db_record.get('in_library') is False:
+                     logger.info(f"  ➜ [实时监控] 数据双全 (ID:{tmdb_id})，但数据库标记为离线。无需处理元数据，仅通知 Emby 刷新。")
                 else:
-                    details = media_db.get_media_details(str(tmdb_id), "Series")
-                    if details:
-                        db_record_exists = True
-                        db_in_library = details.get('in_library')
+                     logger.info(f"  ➜ [实时监控] 数据双全且在线 (ID:{tmdb_id})。检测到可能是洗版/替换，跳过元数据处理，仅通知 Emby 刷新。")
+                
+                should_skip_full_processing = True
+
+            # --- 分支 D: 都没有 -> 继续后续的 TMDb 在线流程 ---
             else:
-                details = media_db.get_media_details(str(tmdb_id), "Movie")
-                if details:
-                    db_record_exists = True
-                    db_in_library = details.get('in_library')
-
-            # ★★★ 决策逻辑 ★★★
-            if os.path.exists(main_json_path):
-                if db_record_exists:
-                    if db_in_library is True:
-                        # 逻辑推导：
-                        # 1. 代码能运行到这里，说明上面的“极速查重”没命中 -> 文件名肯定不同。
-                        # 2. 数据库显示该项目(或该分集)已入库 -> 说明是旧文件占了坑。
-                        # 结论：这是一个同名项目的新文件 -> 必然是洗版/替换。
-                        
-                        logger.info(f"  ➜ [实时监控] 检测到 '{filename}' 是新文件 (洗版/替换)，通知 Emby 刷新。")
-                        
-                        # 直接触发刷新
-                        emby.refresh_library_by_path(folder_path, self.emby_url, self.emby_api_key)
-                        return  
-                    else:
-                        logger.info(f"  ➜ [实时监控] 检测到 '{filename}' 处于离线状态，通知 Emby 刷新目录以触发入库。")
-                        emby.refresh_library_by_path(folder_path, self.emby_url, self.emby_api_key)
-                        return
-                else:
-                    logger.warning(f"  ➜ [实时监控] 发现本地文件但无数据库记录，将执行补录。")
+                logger.info(f"  ➜ [实时监控] 本地无缓存 (ID:{tmdb_id})，准备执行 TMDb 在线刮削...")
             
             # =========================================================
             # 步骤 3: 获取完整详情 & 准备核心处理

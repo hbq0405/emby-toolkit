@@ -1275,3 +1275,115 @@ def construct_metadata_payload(item_type: str, tmdb_data: Dict[str, Any],
                 payload['episodes_details'] = formatted_episodes
 
         return payload
+
+def reconstruct_metadata_from_db(db_row: Dict[str, Any], actors_list: List[Dict[str, Any]]) -> Dict[str, Any]:
+    """
+    【新增】将数据库记录还原为符合本地 override 格式的标准元数据骨架。
+    用于：当数据库有记录但本地文件丢失时，从数据库生成文件。
+    :param db_row: media_metadata 表的一行记录 (字典)
+    :param actors_list: 关联的完整演员列表 (包含 name, profile_path 等)
+    """
+    item_type = db_row.get('item_type')
+    
+    # 1. 初始化骨架
+    if item_type == "Movie":
+        payload = json.loads(json.dumps(utils.MOVIE_SKELETON_TEMPLATE))
+    else:
+        payload = json.loads(json.dumps(utils.SERIES_SKELETON_TEMPLATE))
+
+    # 2. 基础字段映射
+    payload['id'] = int(db_row.get('tmdb_id') or 0)
+    payload['overview'] = db_row.get('overview')
+    
+    # 标题
+    if item_type == "Movie":
+        payload['title'] = db_row.get('title')
+        payload['original_title'] = db_row.get('original_title')
+        payload['release_date'] = str(db_row.get('release_date') or '')
+        payload['runtime'] = db_row.get('runtime_minutes')
+    else:
+        payload['name'] = db_row.get('title')
+        payload['original_name'] = db_row.get('original_title')
+        payload['first_air_date'] = str(db_row.get('release_date') or '')
+        # 剧集没有单一时长，通常不填或填平均值
+
+    payload['vote_average'] = db_row.get('rating')
+    payload['poster_path'] = db_row.get('poster_path')
+    
+    # 3. 复杂 JSON 字段还原
+    # Genres
+    if db_row.get('genres_json'):
+        try:
+            genres_list = json.loads(db_row['genres_json'])
+            # 数据库存的是 ["Action", "Drama"]，JSON需要 [{"id":0, "name":"Action"}]
+            payload['genres'] = [{"id": 0, "name": g} for g in genres_list]
+        except: pass
+
+    # Studios
+    if db_row.get('studios_json'):
+        try:
+            studios_list = json.loads(db_row['studios_json'])
+            # 数据库存的是 [{"id":1, "name":"HBO"}]，格式基本一致，注意字段名映射
+            # 骨架里通常叫 production_companies
+            payload['production_companies'] = studios_list
+            if item_type == 'Series':
+                payload['networks'] = studios_list # 简单起见，剧集也填入 networks
+        except: pass
+        
+    # Keywords (Tags)
+    if db_row.get('keywords_json'):
+        try:
+            kw_list = json.loads(db_row['keywords_json'])
+            # 数据库存的是 [{"id":1, "name":"keyword"}]
+            if item_type == "Movie":
+                payload['keywords']['keywords'] = kw_list
+            else:
+                payload['keywords']['results'] = kw_list
+        except: pass
+
+    # 4. 演员表 (Cast)
+    # 数据库只存了关系，这里传入的 actors_list 应该是已经查好的完整信息
+    if actors_list:
+        formatted_cast = []
+        for i, actor in enumerate(actors_list):
+            formatted_cast.append({
+                "id": actor.get('tmdb_id'),
+                "name": actor.get('name'),
+                "original_name": actor.get('original_name'),
+                "character": actor.get('character') or actor.get('role'),
+                "profile_path": actor.get('profile_path'),
+                "order": actor.get('order', i),
+                "known_for_department": "Acting"
+            })
+        
+        if item_type == "Movie":
+            payload['casts']['cast'] = formatted_cast
+        else:
+            payload['credits']['cast'] = formatted_cast
+
+    # 5. 分级 (Official Rating)
+    if db_row.get('official_rating_json'):
+        try:
+            ratings_map = json.loads(db_row['official_rating_json'])
+            # 还原为 TMDb 结构比较复杂，这里主要还原 Emby 识别的顶层字段
+            # 优先取 US，没有则取第一个
+            rating_val = ratings_map.get('US')
+            if not rating_val and ratings_map:
+                rating_val = list(ratings_map.values())[0]
+            
+            if rating_val:
+                payload['mpaa'] = rating_val
+                payload['certification'] = rating_val
+                
+                # 简单构建一个 releases 结构以防万一
+                if item_type == "Movie":
+                    payload['releases']['countries'] = [{
+                        "iso_3166_1": "US", "certification": rating_val, "release_date": "", "primary": True
+                    }]
+                else:
+                    payload['content_ratings']['results'] = [{
+                        "iso_3166_1": "US", "rating": rating_val
+                    }]
+        except: pass
+
+    return payload
