@@ -615,6 +615,9 @@ def task_populate_metadata_cache(processor, batch_size: int = 50, force_full_upd
             batch_tasks = items_to_process[i:i + batch_size]
             
             batch_item_groups = []
+
+            series_to_seasons_map = defaultdict(list)
+            series_to_episode_map = defaultdict(list)
             
             # 预处理：拉取 refetch 的数据
             for task in batch_tasks:
